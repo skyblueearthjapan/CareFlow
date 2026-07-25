@@ -125,6 +125,10 @@ async def build_local_diff(
         compare_target,
         target_week_start=week_start_day,
         target_week_end=week_end_day,
+        # inbound は氏名の空白違い (半角/全角) を正規化して同一人物に束ねる
+        # (偽の delete+add ペア防止・2026-07-26)。outbound は user_name を
+        # カイポケ UI 上の行特定 (RPA) に使うため原文のまま。
+        normalize_names=(direction == "inbound"),
     )
 
     meta = {
@@ -138,6 +142,57 @@ async def build_local_diff(
         meta["week_start"] = week_start.isoformat()
         meta["week_end"] = week_end.isoformat() if week_end else None
     return corrections, meta
+
+
+async def export_current_week_csv(
+    *,
+    kaipoke: KaipokeClient,
+    week_start: date,
+    credentials: dict[str, str] | None = None,
+) -> str:
+    """対象週 (月〜日) をカバーするカイポケ現況CSVを取得する (置換取り込み用)。
+
+    export は月単位のため、週が月を跨ぐ場合 (例: 7/27〜8/2) は両月を取得し、
+    各月から「その月に属する週内の日」の行だけを残して結合する。CSV の日付列は
+    「日」(1-31) のみなので、月ごとに許可日集合で絞らないと 7/1 の行が
+    8/1 の週に誤混入する — その防止が本ヘルパーの存在理由。
+    """
+    week_days = [week_start + timedelta(days=i) for i in range(7)]
+    months: list[str] = []
+    for d in week_days:
+        m = f"{d.year:04d}-{d.month:02d}"
+        if m not in months:
+            months.append(m)
+
+    header: list[str] | None = None
+    merged: list[list[str]] = []
+    for month in months:
+        allowed_days = {d.day for d in week_days if f"{d.year:04d}-{d.month:02d}" == month}
+        payload: dict[str, Any] = {"month": month, "async": False}
+        if credentials:
+            payload["credentials"] = credentials
+        resp = await kaipoke.export(payload, timeout=_SYNC_EXPORT_TIMEOUT)
+        content = (resp.get("result") or {}).get("csv_content") or ""
+        rows = list(csv.reader(io.StringIO(content)))
+        if not rows:
+            continue
+        if header is None:
+            header = rows[0]
+        for r in rows[1:]:
+            if len(r) <= 9:
+                continue
+            try:
+                day = int(r[9].strip())
+            except ValueError:
+                continue
+            if day in allowed_days:
+                merged.append(r)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\r\n")
+    writer.writerow(header or [])
+    writer.writerows(merged)
+    return buf.getvalue()
 
 
 def correction_before_after(c: Correction) -> tuple[dict[str, str], dict[str, str]]:

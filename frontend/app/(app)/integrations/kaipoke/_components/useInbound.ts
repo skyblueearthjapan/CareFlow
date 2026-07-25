@@ -15,12 +15,14 @@ import {
   useCorrectionItems,
   useEventsInboundPreview,
   useInboundEligibility,
+  useReplaceInbound,
   useStartDiffInbound,
 } from '@/lib/queries/integrations';
 import type {
   ApplyInboundResult,
   EventsInboundApplyResult,
   EventsInboundPreview,
+  ReplaceInboundResult,
 } from '@/lib/schemas/integration';
 
 // ──────────────────────────── 定数 ────────────────────────────
@@ -69,6 +71,16 @@ export function field(obj: unknown, key: string): string {
 
 type WeekOption = 'this' | 'next';
 
+/**
+ * 取り込みモード (2026-07-26 PO確定):
+ *  - diff    = 差分取り込み。訪問の行を残したまま中身を直す (打刻等の実績を守る)。
+ *              実績が付いた週の毎週の追いかけはこちら。
+ *  - replace = 置換取り込み。週を白紙化してカイポケの内容で丸ごと書き直す。
+ *              一度も同期していない週の初回整列・未打刻週のズレ一括解消用。
+ *              実績のある週は BE 側ガードで 422 になる。
+ */
+export type InboundMode = 'diff' | 'replace';
+
 export function useInbound({
   busy,
   credentialsConfigured = true,
@@ -100,6 +112,9 @@ export function useInbound({
   const [eventsDryRunResult, setEventsDryRunResult] = useState<EventsInboundApplyResult | null>(
     null,
   );
+  // 取り込みモード (diff=差分 / replace=置換)。既定は安全側の差分。
+  const [mode, setModeState] = useState<InboundMode>('diff');
+  const [replacePlan, setReplacePlan] = useState<ReplaceInboundResult | null>(null);
 
   const thisElig = useInboundEligibility(fmtDate(thisMonday));
   const nextElig = useInboundEligibility(fmtDate(nextMonday));
@@ -110,6 +125,7 @@ export function useInbound({
   const applyInbound = useApplyInbound();
   const eventsPreview = useEventsInboundPreview();
   const applyEvents = useApplyEventsInbound();
+  const replaceInbound = useReplaceInbound();
   const itemsQuery = useCorrectionItems(sheetId ?? undefined, { limit: 500 });
   const items = useMemo(() => itemsQuery.data?.items ?? [], [itemsQuery.data?.items]);
 
@@ -167,7 +183,13 @@ export function useInbound({
     setEventsPlan(null);
     setEventsError(null);
     setEventsDryRunResult(null);
+    setReplacePlan(null);
     autoSelectedRef.current = false;
+  };
+
+  const setMode = (next: InboundMode) => {
+    setModeState(next);
+    resetDiff();
   };
 
   const handleWeekChange = (week: WeekOption) => {
@@ -180,13 +202,24 @@ export function useInbound({
     // ❶ 訪問 → イベント を直列で取得 (RPA は単一スロットのため並列不可)。
     // 片方が失敗しても他方は続行し、失敗側は Alert / eventsError で明示する。
     let visitsOk = false;
-    try {
-      const res = await diffInbound.mutateAsync({ month, weekStart: weekStartStr });
-      setSheetId(res.sheetId);
-      setSummary(res.summary as Record<string, number>);
-      visitsOk = true;
-    } catch {
-      // エラーは Alert で表示。イベント取得は続行する。
+    if (mode === 'replace') {
+      // 置換モード: dry-run で「白紙化 n件 / 挿入 n件 / 対象外」の計画を出す。
+      try {
+        const plan = await replaceInbound.mutateAsync({ weekStart: weekStartStr, dryRun: true });
+        setReplacePlan(plan);
+        visitsOk = true;
+      } catch {
+        // エラーは Alert で表示。イベント取得は続行する。
+      }
+    } else {
+      try {
+        const res = await diffInbound.mutateAsync({ month, weekStart: weekStartStr });
+        setSheetId(res.sheetId);
+        setSummary(res.summary as Record<string, number>);
+        visitsOk = true;
+      } catch {
+        // エラーは Alert で表示。イベント取得は続行する。
+      }
     }
     try {
       const plan = await eventsPreview.mutateAsync({ weekStart: weekStartStr });
@@ -201,15 +234,30 @@ export function useInbound({
   };
 
   const runApply = async (dryRun: boolean) => {
-    const hasVisitTarget = sheetId !== null && selectedDays.size > 0;
+    const hasVisitTarget =
+      mode === 'replace' ? replacePlan !== null : sheetId !== null && selectedDays.size > 0;
     const hasEventTarget = (eventsPlan?.changes.length ?? 0) > 0;
     if (!hasVisitTarget && !hasEventTarget) return;
     setConfirm(false);
     const parts: string[] = [];
     let failed = false;
 
-    // 訪問 (既存フロー・曜日チップ選択に従う)
-    if (hasVisitTarget && sheetId) {
+    // 置換モード: 週を白紙化してカイポケで書き直す (❶が dry-run なので実適用のみ)
+    if (mode === 'replace' && replacePlan !== null && !dryRun) {
+      try {
+        const res = await replaceInbound.mutateAsync({ weekStart: weekStartStr, dryRun: false });
+        parts.push(
+          `訪問(置換): 削除 ${res.wiped} / 挿入 ${res.inserted}` +
+            (res.skipped.length > 0 ? ` / 対象外 ${res.skipped.length}` : ''),
+        );
+      } catch (e) {
+        failed = true;
+        toast.error(e instanceof Error ? e.message : '置換取り込みに失敗しました');
+      }
+    }
+
+    // 訪問 (差分フロー・曜日チップ選択に従う)
+    if (mode === 'diff' && hasVisitTarget && sheetId) {
       const days = Array.from(selectedDays);
       try {
         const res = await applyInbound.mutateAsync({ sheetId, dryRun, days });
@@ -264,7 +312,7 @@ export function useInbound({
     .map((d, i) => WEEKDAYS[weekDays.indexOf(d)] ?? WEEKDAYS[i])
     .join('・');
   const hasEventChanges = (eventsPlan?.changes.length ?? 0) > 0;
-  const fetching = diffInbound.isPending || eventsPreview.isPending;
+  const fetching = diffInbound.isPending || eventsPreview.isPending || replaceInbound.isPending;
 
   return {
     busy,
@@ -297,6 +345,11 @@ export function useInbound({
     hasSelectedDays,
     selectedDayLabels,
     massCancelWarning,
+    // 取り込みモード (diff / replace)
+    mode,
+    setMode,
+    replaceInbound,
+    replacePlan,
     // イベント (個別業務) 取り込み
     eventsPreview,
     applyEvents,

@@ -57,6 +57,9 @@ from app.schemas.integrations import (
     KaipokeLoginTestResult,
     KaipokeStatusRead,
     LiveSnapshotRead,
+    ReplaceInboundRequest,
+    ReplaceInboundResult,
+    ReplaceInboundSkipRead,
     WeekScheduleRead,
     WeekScheduleRow,
 )
@@ -2239,5 +2242,174 @@ async def events_inbound_apply(
                 detail=r.detail,
             )
             for r in summary.results
+        ],
+    )
+
+
+# --- 置換取り込み (週白紙化→カイポケ全挿入・2026-07-26 PO確定) --------------
+
+
+@router.post(
+    "/replace-inbound",
+    response_model=ReplaceInboundResult,
+    summary="Replace the week's visits with the kaipoke schedule (admin)",
+)
+async def replace_inbound(
+    payload: ReplaceInboundRequest,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> ReplaceInboundResult:
+    """対象週のらく助訪問を白紙化し、カイポケ現況で丸ごと書き直す (全置換)。
+
+    「カイポケは請求と紐づく最終的な正・らく助が受け入れる」(PO確定 2026-07-26)。
+    差分突合をしないため名寄せ差 (氏名の空白違い) や同時刻衝突が構造的に発生しない。
+    一度も同期していない週の初回整列・未打刻週のズレ一括解消に使う。
+
+    安全装置: ゲート=差分取り込みと共有 / 実績(打刻)ガード=1件でもあれば422 /
+    dry_run既定 / 白紙化と挿入は同一トランザクション / UI は
+    「らく助側のこの週の情報はすべて削除される可能性がございます」を明記した
+    確認ダイアログを必須とする。
+    """
+    from app.services.diff.engine import parse_csv_from_content
+    from app.services.kaipoke.inbound import inbound_week_eligible
+    from app.services.kaipoke.local_diff import export_current_week_csv
+    from app.services.kaipoke.replace_inbound import (
+        ReplaceBlockedError,
+        replace_week_from_kaipoke,
+    )
+
+    if payload.week_start.weekday() != 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="weekStart は月曜日を指定してください",
+        )
+    eligible, _record = await inbound_week_eligible(db, payload.week_start)
+    if not eligible:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=_EVENTS_GATE_DETAIL,
+        )
+
+    credentials = await _kaipoke_credentials(db)
+    now = datetime.now(UTC)
+    job = KaipokeJob(
+        job_type="fetch",
+        week_start=payload.week_start,
+        params={
+            "op": "replace-inbound",
+            "week_start": payload.week_start.isoformat(),
+            "dry_run": payload.dry_run,
+        },
+        status="running",
+        started_at=now,
+        created_by_user_id=user.id,
+    )
+    db.add(job)
+    await db.flush()
+
+    try:
+        csv_content = await export_current_week_csv(
+            kaipoke=kaipoke, week_start=payload.week_start, credentials=credentials
+        )
+    except KaipokeBusyError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy"
+        ) from exc
+    except KaipokeApiError as exc:
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": str(exc)}
+        await _commit_or_409(db)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+        ) from exc
+
+    entries = parse_csv_from_content(csv_content, "kaipoke")
+    if not entries:
+        # 空CSVでの白紙化は「週全滅」そのもの — 誤操作/取得失敗の疑いが濃いため拒否。
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": "empty kaipoke csv"}
+        await _commit_or_409(db)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "カイポケの現況が0件でした。カイポケにこの週のスケジュールが"
+                "入力されているか確認してください（0件での置換は安全のため拒否します）"
+            ),
+        )
+
+    try:
+        result = await replace_week_from_kaipoke(
+            db,
+            week_start=payload.week_start,
+            entries=entries,
+            dry_run=payload.dry_run,
+            now=now,
+        )
+    except ReplaceBlockedError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    job.status = "completed"
+    job.completed_at = datetime.now(UTC)
+    job.result_summary = {
+        "dry_run": payload.dry_run,
+        "wiped": result.wiped,
+        "inserted": result.inserted,
+        "skipped": len(result.skipped),
+        "sunday_skipped": result.sunday_skipped,
+        "temp_courses": result.temp_courses,
+    }
+
+    job_id: UUID | None = None
+    if payload.dry_run:
+        # dry-run は visits を mutate しない (job 記録も残さない)。明示 rollback。
+        await db.rollback()
+    else:
+        if result.skipped:
+            from app.services.checkin.notify import (
+                _active_admin_manager_users,
+                _create_idempotent,
+            )
+
+            users = await _active_admin_manager_users(db)
+            await _create_idempotent(
+                db,
+                users=users,
+                type_="kaipoke_import_result",
+                reference_type="kaipoke_import",
+                reference_id=job.id,
+                title=f"置換取り込みに対象外 {len(result.skipped)} 件",
+                body=(
+                    f"週 {payload.week_start.isoformat()} の置換取り込みで、挿入できなかった"
+                    f"カイポケ行が {len(result.skipped)} 件あります。連携画面で内訳を確認してください。"
+                ),
+            )
+        await _commit_or_409(db)
+        job_id = job.id
+
+    return ReplaceInboundResult(
+        job_id=job_id,
+        week_start=result.week_start,
+        week_end=result.week_end,
+        dry_run=payload.dry_run,
+        wiped=result.wiped,
+        inserted=result.inserted,
+        sunday_skipped=result.sunday_skipped,
+        temp_courses=result.temp_courses,
+        skipped=[
+            ReplaceInboundSkipRead(
+                reason=s.reason,
+                user_name=s.user_name,
+                staff_name=s.staff_name,
+                target_date=s.date,
+                start=s.start,
+            )
+            for s in result.skipped
         ],
     )

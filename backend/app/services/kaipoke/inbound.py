@@ -447,6 +447,16 @@ async def apply_inbound_items(
         if vids and vids == planned_by_course.get(tkey, set()):
             takeover[tkey] = sid
 
+    # 適用順序: キャンセル/変更 → 追加 (設計 §8 共通原則)。delete で空いた同時刻の
+    # 枠へ add が入る玉突きケースを確実に成立させるため明示ソートする (安定ソート
+    # なので同アクション内の相対順序は保たれる)。2026-07-26 まではシート挿入順に
+    # 依存しており、同時刻の delete+add ペアが順序次第で失敗していた。
+    items = sorted(items, key=lambda it: it.action == "add")
+    # この実行で「キャンセルされる予定」の visit id 集合。dry-run では status を
+    # 書き換えないため、add 側の復活判定 (下記) の予測に使う (dry-run の結果が
+    # 実適用と一致するように)。
+    pending_cancelled: set[uuid.UUID] = set()
+
     for item in items:
         before = item.before or {}
         after = item.after or {}
@@ -508,14 +518,20 @@ async def apply_inbound_items(
                 _finish("failed", "追加予定の時刻が解釈できません", target_date)
                 continue
             existing = index.get((item.patient_id, target_date, start_new))
+            revive: Visit | None = None
             if existing is not None:
-                # cancelled も UNIQUE 枠 (0026: deleted_at IS NULL) を占有する。
-                if existing.status == VISIT_STATUS_CANCELLED:
-                    msg = "同時刻にキャンセル済みの予定が残っています（手動で整理してください）"
+                # cancelled も UNIQUE 枠 (0026: deleted_at IS NULL) を占有するため
+                # INSERT できない。代わりに **キャンセル済みの枠を復活** させて
+                # 上書きする (2026-07-26): 同一実行内の delete+add ペア (名寄せ差 =
+                # 氏名の空白違い等で同一訪問が分解されるケース) が安全に収束する。
+                # dry-run では delete が status を書かないため pending_cancelled で予測。
+                if existing.status == VISIT_STATUS_CANCELLED or existing.id in pending_cancelled:
+                    revive = existing
                 else:
-                    msg = "同時刻の予定が既にあります（差分を取り直してください）"
-                _finish("failed", msg, target_date)
-                continue
+                    _finish(
+                        "failed", "同時刻の予定が既にあります（差分を取り直してください）", target_date
+                    )
+                    continue
             staff1_name = str(after.get("staff1") or "")
             sid_str = match_name(staff1_name, staff_index) if staff1_name else None
             if not sid_str:
@@ -564,9 +580,10 @@ async def apply_inbound_items(
                     sid2 = None
                     staff2_note = f"／担当2「{staff2_name}」は新人のため同行として取り込みました"
             course_note = f"コース{course.code}" if course is not None else "臨時コース新設"
+            revive_note = "・キャンセル済みの枠を復活" if revive is not None else ""
             detail = (
                 f"{target_date.month}/{target_date.day} {after.get('start_time')} を追加"
-                f"（担当 {staff1_name}・{course_note}）{staff2_note}"
+                f"（担当 {staff1_name}・{course_note}{revive_note}）{staff2_note}"
             )
             if not dry_run:
                 if course is None:
@@ -581,6 +598,37 @@ async def apply_inbound_items(
                     if course is None:
                         _finish("failed", "臨時コース枠（臨〜臨9）が満杯です", target_date)
                         continue
+                if revive is not None:
+                    # キャンセル済み (または本実行でキャンセルされた) 同時刻の枠を
+                    # 復活させ、カイポケの内容で上書きする (INSERT しない = UNIQUE 安全)。
+                    revive.status = "planned"
+                    revive.start_time = start_new
+                    revive.end_time = end_new
+                    revive.source = "import"
+                    revive.required_staff_count = 2 if sid2 is not None else 1
+                    revive.primary_staff_id = sid
+                    revive.secondary_staff_id = sid2
+                    revive.course_id = course.id
+                    _stamp_note(revive, "カイポケ取込で復活", today)
+                    await _replace_assignments(
+                        db, revive, [s for s in (sid, sid2) if s is not None]
+                    )
+                    if (
+                        accompaniment_sid2 is not None
+                        and accompaniment_sid2 not in accompaniment_by_visit.get(revive.id, set())
+                    ):
+                        db.add(
+                            TraineeAccompaniment(
+                                trainee_staff_id=accompaniment_sid2,
+                                target_type="visit",
+                                visit_id=revive.id,
+                                source="manual",
+                                created_by=None,
+                            )
+                        )
+                    item.visit_id = revive.id
+                    _finish("added", detail, target_date)
+                    continue
                 new_visit = Visit(
                     patient_id=item.patient_id,
                     visit_date=target_date,
@@ -648,8 +696,9 @@ async def apply_inbound_items(
 
         # --- delete → キャンセル ---------------------------------------------
         if item.action == "delete":
-            if not dry_run:
-                for v in partners:
+            for v in partners:
+                pending_cancelled.add(v.id)  # add 側の復活判定用 (dry-run でも記録)
+                if not dry_run:
                     v.status = VISIT_STATUS_CANCELLED
                     _stamp_note(v, "カイポケ側で削除されたためキャンセル", today)
             _finish(

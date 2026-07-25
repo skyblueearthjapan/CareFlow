@@ -139,6 +139,10 @@ function makeVm(overrides: Partial<InboundVm> = {}): InboundVm {
     hasSelectedDays: false,
     selectedDayLabels: '',
     massCancelWarning: false,
+    mode: 'diff',
+    setMode: vi.fn(),
+    replaceInbound: { ...idleMutation },
+    replacePlan: null,
     eventsPreview: { ...idleMutation },
     applyEvents: { ...idleMutation },
     eventsPlan: null,
@@ -210,6 +214,48 @@ describe('InboundControls — イベント取り込みセクション', () => {
     expect(screen.getByTestId('mass-cancel-warning')).toBeInTheDocument();
     expect(screen.getByText(/キャンセル候補が異常に多いです（42件）/)).toBeInTheDocument();
     expect(screen.getByText(/自動選択を止めています/)).toBeInTheDocument();
+  });
+
+  it('⑥ 置換モード: プレビューと「すべて削除される可能性」の警告が表示される', () => {
+    render(
+      <InboundControls
+        vm={makeVm({
+          mode: 'replace',
+          replacePlan: {
+            jobId: null,
+            weekStart: '2026-07-20',
+            weekEnd: '2026-07-25',
+            dryRun: true,
+            wiped: 131,
+            inserted: 115,
+            sundaySkipped: 0,
+            tempCourses: 12,
+            skipped: [
+              {
+                reason: '担当1が新人のため挿入できません（新人はコースを持たない運用）',
+                userName: '朝倉　美夢',
+                staffName: '髙梨　桂子',
+                date: '2026-07-20',
+                start: '13:30',
+              },
+            ],
+          },
+        })}
+      />,
+    );
+    // モード注意書き (PO指示の文言)
+    expect(screen.getAllByText(/すべて削除される可能性がございます/).length).toBeGreaterThan(0);
+    // プレビューパネル (削除/挿入/対象外)
+    expect(screen.getByTestId('replace-plan-panel')).toBeInTheDocument();
+    expect(screen.getByText(/新人はコースを持たない運用/)).toBeInTheDocument();
+    // 置換実行ボタンが有効
+    expect(screen.getByTestId('replace-apply-button')).toBeEnabled();
+  });
+
+  it('⑥b 置換モード: プレビュー前は実行エリアが出ない', () => {
+    render(<InboundControls vm={makeVm({ mode: 'replace', replacePlan: null })} />);
+    expect(screen.queryByTestId('replace-apply-button')).not.toBeInTheDocument();
+    expect(screen.getByTestId('inbound-mode-toggle')).toBeInTheDocument();
   });
 
   it('④ イベント取得失敗は Alert で明示される（訪問は取得済みの文言つき）', () => {

@@ -23,6 +23,7 @@ import io
 import json
 import logging
 import re
+import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -393,12 +394,23 @@ def compare_schedules(
     )
 
 
+def _normalize_user_name(name: str) -> str:
+    """利用者名のグルーピング用正規化 (NFKC + 空白除去)。
+
+    らく助とカイポケで氏名の空白 (半角/全角) が違うと同一人物が別グループに
+    分かれ、同じ訪問が delete+add ペアに分解される (2026-07-26 実データで
+    11 件確認)。正規化キーで束ねてこの偽差分を防ぐ。
+    """
+    return unicodedata.normalize("NFKC", name).replace(" ", "")
+
+
 def _compare_entries(
     current_entries: list[ScheduleEntry],
     optimized_entries: list[ScheduleEntry],
     target_users: list[str] | None = None,
     target_week_start: int | None = None,
     target_week_end: int | None = None,
+    normalize_names: bool = False,
 ) -> list[Correction]:
     """ScheduleEntry リスト同士を比較して差分を生成 (内部実装).
 
@@ -475,13 +487,23 @@ def _compare_entries(
 
     corrections: list[Correction] = []
 
-    # 利用者ごとにグループ化して比較
-    all_users = set(e.user_name for e in current_entries + optimized_entries)
+    # 利用者ごとにグループ化して比較。
+    # normalize_names=True (inbound 用) では NFKC+空白除去キーで束ね、氏名の
+    # 空白違い (半角/全角) による偽の delete+add ペアを防ぐ。表示名は現況側の
+    # 初出を優先 (Correction.user_name に入る値)。
+    def _ukey(name: str) -> str:
+        return _normalize_user_name(name) if normalize_names else name
+
+    display_by_key: dict[str, str] = {}
+    for e in current_entries + optimized_entries:
+        display_by_key.setdefault(_ukey(e.user_name), e.user_name)
+    all_users = set(display_by_key.keys())
     logger.debug("対象利用者数: %d", len(all_users))
 
-    for user in sorted(all_users):
-        user_current = [e for e in current_entries if e.user_name == user]
-        user_optimized = [e for e in optimized_entries if e.user_name == user]
+    for user_key in sorted(all_users):
+        user = display_by_key[user_key]
+        user_current = [e for e in current_entries if _ukey(e.user_name) == user_key]
+        user_optimized = [e for e in optimized_entries if _ukey(e.user_name) == user_key]
 
         logger.debug("=== 利用者: '%s' ===", user)
         logger.debug("  current: %d件, optimized: %d件", len(user_current), len(user_optimized))
@@ -945,6 +967,7 @@ def compare_schedules_from_content(
     target_users: list[str] | None = None,
     target_week_start: int | None = None,
     target_week_end: int | None = None,
+    normalize_names: bool = False,
 ) -> list[Correction]:
     """CSVテキスト文字列を直接比較して差分を生成.
 
@@ -978,6 +1001,7 @@ def compare_schedules_from_content(
         target_users=target_users,
         target_week_start=target_week_start,
         target_week_end=target_week_end,
+        normalize_names=normalize_names,
     )
 
 

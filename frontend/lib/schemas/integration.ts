@@ -408,3 +408,33 @@ export const EventsInboundApplyResultSchema = z.object({
   results: z.array(EventsInboundApplyItemSchema).default([]),
 });
 export type EventsInboundApplyResult = z.infer<typeof EventsInboundApplyResultSchema>;
+
+// --- 置換取り込み (週白紙化→カイポケ全挿入・2026-07-26 PO確定) --------------
+
+export const ReplaceInboundRequestSchema = z.object({
+  weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  dryRun: z.boolean().optional(),
+});
+export type ReplaceInboundRequest = z.infer<typeof ReplaceInboundRequestSchema>;
+
+export const ReplaceInboundSkipSchema = z.object({
+  reason: z.string(),
+  userName: z.string().default(''),
+  staffName: z.string().default(''),
+  date: z.string().default(''),
+  start: z.string().default(''),
+});
+export type ReplaceInboundSkip = z.infer<typeof ReplaceInboundSkipSchema>;
+
+export const ReplaceInboundResultSchema = z.object({
+  jobId: z.string().uuid().nullable(),
+  weekStart: z.string(),
+  weekEnd: z.string(),
+  dryRun: z.boolean(),
+  wiped: z.number().int().default(0),
+  inserted: z.number().int().default(0),
+  sundaySkipped: z.number().int().default(0),
+  tempCourses: z.number().int().default(0),
+  skipped: z.array(ReplaceInboundSkipSchema).default([]),
+});
+export type ReplaceInboundResult = z.infer<typeof ReplaceInboundResultSchema>;

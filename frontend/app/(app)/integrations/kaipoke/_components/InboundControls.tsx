@@ -73,6 +73,10 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
     hasSelectedDays,
     selectedDayLabels,
     massCancelWarning,
+    mode,
+    setMode,
+    replaceInbound,
+    replacePlan,
     applyEvents,
     eventsPlan,
     eventsError,
@@ -81,10 +85,12 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
     fetching,
   } = vm;
 
-  const applying = applyInbound.isPending || applyEvents.isPending;
-  const canDryRun = hasSelectedDays || hasEventChanges;
-  const showApplyArea = sheetId !== null || eventsPlan !== null;
+  const applying = applyInbound.isPending || applyEvents.isPending || replaceInbound.isPending;
+  const canDryRun = mode === 'diff' && (hasSelectedDays || hasEventChanges);
+  const showApplyArea =
+    mode === 'replace' ? replacePlan !== null : sheetId !== null || eventsPlan !== null;
   const hasDryRun = dryRunResult !== null || eventsDryRunResult !== null;
+  const canReplaceApply = mode === 'replace' && replacePlan !== null;
 
   return (
     <div>
@@ -149,6 +155,41 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
 
       {/* ── 操作エリア（eligible でない場合はグレーアウト） ── */}
       <div className={eligible ? '' : 'pointer-events-none opacity-40'}>
+        {/* ── 取り込みモード選択（2026-07-26 PO確定） ── */}
+        <div className="mb-4">
+          <p className="mb-2 text-xs font-medium text-text-secondary">取り込み方法</p>
+          <div className="flex flex-wrap gap-2" data-testid="inbound-mode-toggle">
+            {(
+              [
+                ['diff', '差分取り込み', '訪問を残したまま直す（打刻などの実績を守る）'],
+                ['replace', '置換取り込み', 'この週を白紙にしてカイポケで丸ごと上書き'],
+              ] as const
+            ).map(([m, label, desc]) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setMode(m)}
+                className={[
+                  'rounded-lg border px-3 py-2 text-left text-sm transition-colors',
+                  mode === m
+                    ? 'border-brand-primary bg-brand-primary/10 text-text-primary'
+                    : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted',
+                ].join(' ')}
+              >
+                <span className="block font-medium">{label}</span>
+                <span className="block text-[11px] text-text-muted">{desc}</span>
+              </button>
+            ))}
+          </div>
+          {mode === 'replace' && (
+            <p className="mt-2 text-xs text-warning-strong">
+              ⚠ 置換取り込みでは、らく助側のこの週の情報（訪問予定）は
+              <strong>すべて削除される可能性がございます</strong>
+              。打刻などの実績が付いた週は安全のため実行できません（差分取り込みを使ってください）。
+            </p>
+          )}
+        </div>
+
         {/* ❶ 差分取得（訪問 → イベントを直列で取得） */}
         <div className="mb-5 space-y-2">
           <Button
@@ -157,10 +198,12 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
             disabled={!credentialsConfigured || !eligible || fetching || busy}
           >
             {fetching
-              ? diffInbound.isPending
+              ? diffInbound.isPending || replaceInbound.isPending
                 ? '訪問の現況を取得中…（1/2）'
                 : 'イベントの現況を取得中…（2/2）'
-              : '❶ カイポケの現況を取得して差分を見る（訪問＋イベント）'}
+              : mode === 'replace'
+                ? '❶ カイポケの現況を取得して置換プレビューを見る（訪問＋イベント）'
+                : '❶ カイポケの現況を取得して差分を見る（訪問＋イベント）'}
           </Button>
           {fetching && (
             <p className="text-xs text-text-muted">
@@ -203,6 +246,67 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                 {diffInbound.error instanceof Error ? diffInbound.error.message : '不明なエラー'}
               </AlertDescription>
             </Alert>
+          )}
+          {replaceInbound.isError && (
+            <Alert variant="destructive">
+              <AlertTitle>置換プレビュー/実行に失敗しました</AlertTitle>
+              <AlertDescription>
+                {replaceInbound.error instanceof Error
+                  ? replaceInbound.error.message
+                  : '不明なエラー'}
+              </AlertDescription>
+            </Alert>
+          )}
+          {mode === 'replace' && replacePlan && (
+            <div className="space-y-2" data-testid="replace-plan-panel">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <SummaryChip label="削除（白紙化）" value={replacePlan.wiped} tone="error" />
+                <SummaryChip label="カイポケから挿入" value={replacePlan.inserted} tone="success" />
+                {replacePlan.tempCourses > 0 && (
+                  <SummaryChip label="臨時コース" value={replacePlan.tempCourses} tone="warning" />
+                )}
+                {replacePlan.skipped.length > 0 && (
+                  <SummaryChip label="対象外" value={replacePlan.skipped.length} tone="warning" />
+                )}
+              </div>
+              {replacePlan.skipped.length > 0 && (
+                <div className="overflow-x-auto rounded-lg border border-border-default">
+                  <table className="min-w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-border-default bg-bg-muted">
+                        <th className="px-3 py-2 text-left font-medium text-text-secondary">
+                          利用者
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium text-text-secondary">
+                          担当
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium text-text-secondary">
+                          日付
+                        </th>
+                        <th className="px-3 py-2 text-left font-medium text-text-secondary">
+                          挿入できない理由
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {replacePlan.skipped.map((s, i) => (
+                        <tr
+                          key={`${s.userName}-${s.date}-${s.start}-${i}`}
+                          className="border-b border-border-subtle"
+                        >
+                          <td className="px-3 py-2 text-text-primary">{s.userName || '—'}</td>
+                          <td className="px-3 py-2 text-text-secondary">{s.staffName || '—'}</td>
+                          <td className="px-3 py-2 tabular-nums text-text-secondary">
+                            {s.date} {s.start}
+                          </td>
+                          <td className="px-3 py-2 text-text-muted">{s.reason}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           )}
           {eventsError && (
             <Alert variant="destructive">
@@ -271,32 +375,47 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
           </div>
         )}
 
-        {/* ❸ dry-run + 実取り込み（訪問＋イベントを直列適用） */}
+        {/* ❸ dry-run + 実取り込み（訪問＋イベントを直列適用）。
+            置換モードは ❶ が dry-run 相当のため、確認ダイアログへ直行する。 */}
         {showApplyArea && (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void runApply(true)}
-                disabled={!credentialsConfigured || !canDryRun || applying || busy}
-              >
-                {applying && !hasDryRun ? '実行中…' : '❸ dry-run で確認'}
-              </Button>
-              {hasDryRun && (
+              {mode === 'replace' ? (
                 <Button
                   variant="destructive"
                   size="sm"
                   onClick={() => setConfirm(true)}
-                  disabled={busy || applying}
+                  disabled={!credentialsConfigured || !canReplaceApply || applying || busy}
+                  data-testid="replace-apply-button"
                 >
-                  取り込む
+                  {applying ? '実行中…' : '❸ この週を置換して取り込む'}
                 </Button>
-              )}
-              {!canDryRun && (
-                <span className="text-xs text-text-muted">
-                  取り込む対象がありません（訪問は曜日を選択・イベントは差分があるときに有効）
-                </span>
+              ) : (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void runApply(true)}
+                    disabled={!credentialsConfigured || !canDryRun || applying || busy}
+                  >
+                    {applying && !hasDryRun ? '実行中…' : '❸ dry-run で確認'}
+                  </Button>
+                  {hasDryRun && (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => setConfirm(true)}
+                      disabled={busy || applying}
+                    >
+                      取り込む
+                    </Button>
+                  )}
+                  {!canDryRun && (
+                    <span className="text-xs text-text-muted">
+                      取り込む対象がありません（訪問は曜日を選択・イベントは差分があるときに有効）
+                    </span>
+                  )}
+                </>
               )}
             </div>
 
@@ -360,13 +479,32 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
       <Dialog open={confirm} onOpenChange={(o) => !o && setConfirm(false)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>カイポケの確定内容を取り込みますか？</DialogTitle>
+            <DialogTitle>
+              {mode === 'replace'
+                ? 'この週を置換して取り込みますか？'
+                : 'カイポケの確定内容を取り込みますか？'}
+            </DialogTitle>
             <DialogDescription className="space-y-2">
               <span className="block">
                 対象週:{' '}
                 <span className="font-medium text-text-primary">{fmtWeekLabel(weekStart)}</span>
               </span>
-              {hasSelectedDays && (
+              {mode === 'replace' && replacePlan && (
+                <>
+                  <span className="block">
+                    訪問（置換）:{' '}
+                    <span className="font-medium text-text-primary">
+                      らく助の {replacePlan.wiped} 件を削除 → カイポケの{' '}
+                      {replacePlan.inserted} 件で置き換え
+                    </span>
+                  </span>
+                  <span className="block font-medium text-error">
+                    ⚠ らく助側のこの週の情報（訪問予定）はすべて削除される可能性がございます。
+                    削除された予定は元に戻せません。カイポケの内容が正として書き込まれます。
+                  </span>
+                </>
+              )}
+              {mode === 'diff' && hasSelectedDays && (
                 <span className="block">
                   訪問の対象曜日:{' '}
                   <span className="font-medium text-text-primary">{selectedDayLabels}</span>
@@ -383,7 +521,7 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
               )}
               <span className="block text-error">
                 らく助のスケジュールに実際に書き込まれます。この操作は Ctrl+Z の対象外です
-                {hasSelectedDays ? '（定期パターンは変わりません）' : ''}。
+                {mode === 'diff' && hasSelectedDays ? '（定期パターンは変わりません）' : ''}。
               </span>
             </DialogDescription>
           </DialogHeader>

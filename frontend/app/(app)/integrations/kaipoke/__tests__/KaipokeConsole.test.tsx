@@ -27,6 +27,7 @@ vi.mock('@/lib/queries/integrations', () => ({
   useApplyInbound: () => ({ ...idleMutation, error: null }),
   useEventsInboundPreview: () => ({ ...idleMutation, error: null }),
   useApplyEventsInbound: () => ({ ...idleMutation, error: null }),
+  useReplaceInbound: () => ({ ...idleMutation, error: null }),
   useStopJob: () => ({ ...idleMutation }),
 }));
 

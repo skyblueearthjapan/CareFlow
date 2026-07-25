@@ -39,6 +39,8 @@ import type {
   KaipokeStatus,
   LiveSnapshot,
   Paginated,
+  ReplaceInboundRequest,
+  ReplaceInboundResult,
   SaveKaipokeCredentialsBody,
   TestKaipokeCredentialsResult,
   WeekSchedule,
@@ -602,6 +604,37 @@ export function useApplyEventsInbound() {
       void qc.invalidateQueries({ queryKey: ['integrations', 'kaipoke', 'jobs'] });
       // イベント帯 (スケジュール画面) を最新化する。
       void qc.invalidateQueries({ queryKey: ['staff', 'events'] });
+    },
+  });
+}
+
+// --- 置換取り込み (週白紙化→カイポケ全挿入・2026-07-26 PO確定) --------------
+
+/**
+ * 対象週のらく助訪問を白紙化してカイポケ現況で書き直す (dryRun 既定 true)。
+ * RPA export を伴うため 〜2分 (月跨ぎ週は両月取得で更に+1分)。
+ * 実適用後は visits/board 系を invalidate する。
+ */
+export function useReplaceInbound() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<ReplaceInboundResult, Error, ReplaceInboundRequest>({
+    mutationFn: (payload) =>
+      fetcher<ReplaceInboundResult>('/api/v1/integrations/replace-inbound', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+        signal: AbortSignal.timeout(240_000),
+      }),
+    onSuccess: (res) => {
+      if (res.dryRun) return;
+      void qc.invalidateQueries({ queryKey: ['integrations', 'kaipoke', 'jobs'] });
+      void qc.invalidateQueries({ queryKey: ['visits'] });
+      void qc.invalidateQueries({ queryKey: ['board'] });
     },
   });
 }

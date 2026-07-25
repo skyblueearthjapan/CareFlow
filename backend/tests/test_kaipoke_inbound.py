@@ -671,3 +671,141 @@ async def test_add_with_unresolved_staff_defaults_off(client, db, stub_kaipoke) 
     body = await _diff_with_state(client, stub_kaipoke, admin, state)
     assert body["summary"]["add"] == 1
     assert body["summary"]["auto_selected"] == 0
+
+
+# --- 6. 2026-07-26 改訂: 名寄せ正規化 + キャンセル枠の復活 --------------------
+
+
+@pytest.mark.asyncio
+async def test_name_spacing_mismatch_produces_edit_not_delete_add(
+    client, db, stub_kaipoke
+) -> None:
+    """氏名の空白違い (半角/全角) でも同一人物に束ね、edit として検出する。
+
+    正規化前はカイポケ「山田 花子」(半角) と CareFlow「山田　花子」(全角) が
+    別人扱いになり delete+add ペアが出ていた (2026-07-26 実データで11件)。
+    """
+    await _seed_week(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+
+    # カイポケ現況: 火曜のみ・時刻変更 (10:00→14:00)・氏名は半角スペース
+    csv_rows = _kaipoke_csv(
+        _kp_row(date(2026, 7, 7), time(14, 0), time(14, 35), patient_name="山田 花子"),
+        _kp_row(date(2026, 7, 8), time(11, 0), time(11, 35), patient_name="山田 花子"),
+        _kp_row(date(2026, 7, 9), time(9, 0), time(9, 35), patient_name="山田 花子"),
+    )
+    stub_kaipoke.responses["export"] = {"result": {"csv_content": csv_rows}}
+    res = await client.post(
+        "/api/v1/integrations/diff-inbound",
+        headers=_bearer(admin),
+        json={"month": MONTH, "weekStart": WEEK_START.isoformat()},
+    )
+    assert res.status_code == 202, res.text
+    summary = res.json()["summary"]
+    assert summary.get("edit", 0) == 1  # 火曜の時刻変更のみ
+    assert summary.get("delete", 0) == 0  # 偽のキャンセル候補が出ない
+    assert summary.get("add", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_same_slot_delete_add_pair_revives_cancelled_visit(client, db) -> None:
+    """delete+add が同一 (患者,日,時刻) を指す場合、キャンセル枠を復活して上書きする。
+
+    2026-07-26 改訂: 以前は add が「同時刻の予定が既にあります」で失敗し、
+    キャンセルだけが適用されて訪問が消えていた。
+    """
+    from datetime import UTC, datetime
+
+    from app.models.correction_sheet import CorrectionSheetItem
+    from app.services.kaipoke.inbound import apply_inbound_items
+
+    seeded = await _seed_week(db)
+    visit = seeded["tue"]  # 7/7 10:00
+    patient = seeded["patient"]
+
+    sheet = CorrectionSheet(
+        target_month=MONTH,
+        direction="inbound",
+        week_start=WEEK_START,
+        week_end=date(2026, 7, 11),
+    )
+    db.add(sheet)
+    await db.flush()
+    item_add = CorrectionSheetItem(
+        sheet_id=sheet.id,
+        action="add",
+        include=True,
+        patient_id=patient.id,
+        after={
+            "user_name": PATIENT_NAME,
+            "date": "7",
+            "start_time": "10:00",
+            "end_time": "10:40",
+            "staff1": STAFF_NAME,
+            "staff2": "",
+        },
+    )
+    item_del = CorrectionSheetItem(
+        sheet_id=sheet.id,
+        action="delete",
+        include=True,
+        patient_id=patient.id,
+        visit_id=visit.id,
+        before={
+            "user_name": PATIENT_NAME,
+            "date": "7",
+            "start_time": "10:00",
+            "end_time": "10:35",
+        },
+    )
+    # add を先に渡しても action ソートで delete が先に処理される
+    db.add_all([item_add, item_del])
+    await db.commit()
+
+    now = datetime.now(UTC)
+
+    # dry-run: 復活を予測 (failed にならない)
+    summary_dry = await apply_inbound_items(
+        db,
+        items=[item_add, item_del],
+        week_start=WEEK_START,
+        week_end=date(2026, 7, 11),
+        days=None,
+        dry_run=True,
+        now=now,
+    )
+    assert summary_dry.failed == 0
+    assert summary_dry.cancelled == 1
+    assert summary_dry.added == 1
+    # dry-run は一切 mutate しないため rollback 不要 (そのまま実適用へ)
+
+    # 実適用: 訪問は1件のまま復活・上書きされる
+    summary = await apply_inbound_items(
+        db,
+        items=[item_add, item_del],
+        week_start=WEEK_START,
+        week_end=date(2026, 7, 11),
+        days=None,
+        dry_run=False,
+        now=now,
+    )
+    await db.commit()
+    assert summary.failed == 0
+    assert summary.cancelled == 1
+    assert summary.added == 1
+
+    await db.refresh(visit)
+    assert visit.status == "planned"  # キャンセルで消えず復活
+    assert visit.source == "import"
+    assert visit.end_time == time(10, 40)  # カイポケの内容で上書き
+    active = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.patient_id == patient.id,
+                Visit.visit_date == date(2026, 7, 7),
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(active) == 1  # 二重挿入しない

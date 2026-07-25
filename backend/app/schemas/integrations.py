@@ -434,3 +434,35 @@ class EventsInboundApplyResult(BaseModel):
     skipped: int = 0
     failed: int = 0
     results: list[EventsInboundApplyItemRead] = Field(default_factory=list)
+
+
+# --- 置換取り込み (週白紙化→カイポケ全挿入・2026-07-26 PO確定) --------------
+
+
+class ReplaceInboundRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    week_start: date = Field(alias="weekStart")
+    # 既定は dry_run=True (安全側)。実適用は明示的に dryRun:false。
+    dry_run: bool = Field(default=True, alias="dryRun")
+
+
+class ReplaceInboundSkipRead(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    reason: str
+    user_name: str = Field(alias="userName")
+    staff_name: str = Field(alias="staffName")
+    target_date: str = Field(alias="date")
+    start: str = ""
+
+
+class ReplaceInboundResult(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    job_id: UUID | None = Field(default=None, alias="jobId")
+    week_start: date = Field(alias="weekStart")
+    week_end: date = Field(alias="weekEnd")
+    dry_run: bool = Field(alias="dryRun")
+    wiped: int = 0
+    inserted: int = 0
+    sunday_skipped: int = Field(default=0, alias="sundaySkipped")
+    temp_courses: int = Field(default=0, alias="tempCourses")
+    skipped: list[ReplaceInboundSkipRead] = Field(default_factory=list)
