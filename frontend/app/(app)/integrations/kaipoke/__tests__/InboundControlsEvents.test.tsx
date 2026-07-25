@@ -138,6 +138,7 @@ function makeVm(overrides: Partial<InboundVm> = {}): InboundVm {
     runApply: vi.fn(),
     hasSelectedDays: false,
     selectedDayLabels: '',
+    massCancelWarning: false,
     eventsPreview: { ...idleMutation },
     applyEvents: { ...idleMutation },
     eventsPlan: null,
@@ -194,6 +195,21 @@ describe('InboundControls — イベント取り込みセクション', () => {
     );
     expect(screen.getByTestId('events-dryrun-table')).toBeInTheDocument();
     expect(screen.getByText(/イベント — 追加: 2 \/ 更新: 1/)).toBeInTheDocument();
+  });
+
+  it('⑤ 大量キャンセル警告: キャンセル候補が閾値以上なら赤警告が出る', () => {
+    render(
+      <InboundControls
+        vm={makeVm({
+          sheetId: 'a4dd44a1-0000-4000-8000-000000000000',
+          summary: { delete: 42, edit: 0, add: 0 },
+          massCancelWarning: true,
+        })}
+      />,
+    );
+    expect(screen.getByTestId('mass-cancel-warning')).toBeInTheDocument();
+    expect(screen.getByText(/キャンセル候補が異常に多いです（42件）/)).toBeInTheDocument();
+    expect(screen.getByText(/自動選択を止めています/)).toBeInTheDocument();
   });
 
   it('④ イベント取得失敗は Alert で明示される（訪問は取得済みの文言つき）', () => {

@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
@@ -46,6 +47,9 @@ if TYPE_CHECKING:
 # 取り込みの実績刻印 (visit.note に追記する行の接頭辞)。人間向け日本語のため
 # モバイルの内部note非表示 (lib/visit-note.ts) の対象外 = 現場にも表示される。
 NOTE_STAMP_PREFIX = "カイポケ取込"
+
+# ゲート判定の「今日」は JST 基準 (サーバは UTC・週境界の判定がずれないように)。
+JST = ZoneInfo("Asia/Tokyo")
 
 # R-3 臨時コース (設計 §8-1・PO合意): 新担当がその日コースを持たない場合に
 # 「その日だけ1人で対応する回り」を新設する。コード=臨/臨2..臨9 (migration 0057)、
@@ -81,6 +85,27 @@ async def real_apply_record(db: AsyncSession, week_start: date) -> KaipokeJob | 
         if p.get("op") == "apply" and p.get("dry_run") is False and p.get("week_start") == iso:
             return job
     return None
+
+
+async def inbound_week_eligible(
+    db: AsyncSession, week_start: date, *, today: date | None = None
+) -> tuple[bool, KaipokeJob | None]:
+    """取り込みゲート (2026-07-26 運用改訂・PO確定) — (eligible, 実apply job) を返す。
+
+    カイポケは請求と紐づく最終的な「正」であり、提供が始まる週は必ずカイポケに
+    入力されている (④反映を使ったかどうかは無関係)。よって:
+
+      * 週開始(月曜) <= 今日(JST) — 過去週・今週はいつでも取り込み可
+      * または その週に実apply記録がある — 前倒しで送った未来週も追いかけ可
+
+    未来週を無条件開放しないのは、らく助が計画中でカイポケ未入力の週を取り込むと
+    計画訪問が全てキャンセル候補になる「週全滅事故」を防ぐため (FE の大量キャンセル
+    警告と二段構え)。
+    """
+    if today is None:
+        today = datetime.now(JST).date()
+    record = await real_apply_record(db, week_start)
+    return (week_start <= today or record is not None), record
 
 
 def day_to_date(day: int, week_start: date, week_end: date) -> date | None:

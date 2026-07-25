@@ -24,8 +24,11 @@ from app.models.staff import Staff, StaffEvent
 from app.services import kaipoke_client as kc_module
 
 # 対象週: 2026-07-20(月) 〜 2026-07-25(土)。7/26 = 日曜。
+# 過去週のため時間ゲート (週開始<=今日) で無条件開放される (2026-07-26 改訂)。
 WEEK_START = date(2026, 7, 20)
 SUNDAY = date(2026, 7, 26)
+# 未来週 (ゲートブロックの検証用)。2100-01-04 = 月曜。
+FUTURE_MONDAY = date(2100, 1, 4)
 
 STAFF_A = "宇田川　優莉"
 STAFF_B = "川名　千恵"
@@ -192,11 +195,12 @@ async def _kaipoke_rows(db) -> list[StaffEvent]:
 
 
 @pytest.mark.asyncio
-async def test_preview_blocked_without_real_apply(client, db, stub_kaipoke) -> None:
+async def test_preview_blocked_for_future_week(client, db, stub_kaipoke) -> None:
+    """未来週は実apply記録が無い限り 422 (過去・今週は時間ゲートで開放)。"""
     await _seed_staff(db)
     admin = await _make_admin(db)
     res = await client.post(
-        PREVIEW_URL, headers=_bearer(admin), json={"weekStart": WEEK_START.isoformat()}
+        PREVIEW_URL, headers=_bearer(admin), json={"weekStart": FUTURE_MONDAY.isoformat()}
     )
     assert res.status_code == 422, res.text
     assert "④反映" in res.json()["detail"]
@@ -204,21 +208,34 @@ async def test_preview_blocked_without_real_apply(client, db, stub_kaipoke) -> N
 
 
 @pytest.mark.asyncio
-async def test_apply_blocked_without_real_apply(client, db, stub_kaipoke) -> None:
+async def test_preview_future_week_opens_with_real_apply(client, db, stub_kaipoke) -> None:
+    """未来週でも実apply記録があれば開放 (前倒しで送った週の追いかけ)。"""
+    await _seed_staff(db)
+    await _seed_real_apply(db, FUTURE_MONDAY)
+    admin = await _make_admin(db)
+    stub_kaipoke.tasks = []
+    res = await client.post(
+        PREVIEW_URL, headers=_bearer(admin), json={"weekStart": FUTURE_MONDAY.isoformat()}
+    )
+    assert res.status_code == 200, res.text
+
+
+@pytest.mark.asyncio
+async def test_apply_blocked_for_future_week(client, db, stub_kaipoke) -> None:
     seeded = await _seed_staff(db)
     admin = await _make_admin(db)
     res = await client.post(
         APPLY_URL,
         headers=_bearer(admin),
         json={
-            "weekStart": WEEK_START.isoformat(),
+            "weekStart": FUTURE_MONDAY.isoformat(),
             "dryRun": True,
             "changes": [
                 {
                     "action": "add",
-                    "externalId": f"1:1:{WEEK_START.isoformat()}",
+                    "externalId": f"1:1:{FUTURE_MONDAY.isoformat()}",
                     "staffId": str(seeded["a"].id),
-                    "date": WEEK_START.isoformat(),
+                    "date": FUTURE_MONDAY.isoformat(),
                     "start": "09:00",
                     "end": "10:00",
                     "title": "x",
@@ -248,8 +265,8 @@ async def test_preview_requires_monday(client, db, stub_kaipoke) -> None:
 
 @pytest.mark.asyncio
 async def test_preview_detects_adds_unmatched_sunday_memo(client, db, stub_kaipoke) -> None:
+    """過去週は実apply記録なしで開放される (時間ゲート・2026-07-26 改訂)。"""
     await _seed_staff(db)
-    await _seed_real_apply(db)
     admin = await _make_admin(db)
     stub_kaipoke.tasks = _default_tasks()
 

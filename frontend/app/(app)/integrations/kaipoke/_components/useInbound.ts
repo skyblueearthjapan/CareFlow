@@ -27,6 +27,13 @@ import type {
 
 export const WEEKDAYS = ['月', '火', '水', '木', '金', '土'] as const;
 
+/**
+ * 大量キャンセル警告のしきい値 (2026-07-26 ゲート改訂とセットの安全弁)。
+ * キャンセル候補がこの件数以上 = 「カイポケにその週が入力されていない」疑いが濃厚
+ * (取り込むとらく助の予定が大量に消える)。警告を出し、曜日の自動選択も止める。
+ */
+export const MASS_CANCEL_THRESHOLD = 10;
+
 // ──────────────────────────── ユーティリティ ────────────────────────────
 
 function mondayOf(d: Date): Date {
@@ -134,18 +141,23 @@ export function useInbound({
     return set;
   }, [items, weekDays]);
 
+  // 大量キャンセル警告: キャンセル候補が閾値以上なら人の確認を強制する
+  // (曜日の自動選択もしない)。カイポケ未入力週の誤取り込み = 週全滅事故の安全弁。
+  const massCancelWarning = (summary?.delete ?? 0) >= MASS_CANCEL_THRESHOLD;
+
   // 差分シートが切り替わったら自動選択フラグをリセット。
   useEffect(() => {
     autoSelectedRef.current = false;
   }, [sheetId]);
 
   // アイテム読み込み完了後、差分がある曜日をすべて自動選択。
+  // ただし大量キャンセル警告中は自動選択しない (人が曜日を選ぶまで進めない)。
   useEffect(() => {
-    if (sheetId && !autoSelectedRef.current && daysWithDiff.size > 0) {
+    if (sheetId && !autoSelectedRef.current && daysWithDiff.size > 0 && !massCancelWarning) {
       autoSelectedRef.current = true;
       setSelectedDays(new Set(daysWithDiff));
     }
-  }, [sheetId, daysWithDiff]);
+  }, [sheetId, daysWithDiff, massCancelWarning]);
 
   const resetDiff = () => {
     setSheetId(null);
@@ -284,6 +296,7 @@ export function useInbound({
     runApply,
     hasSelectedDays,
     selectedDayLabels,
+    massCancelWarning,
     // イベント (個別業務) 取り込み
     eventsPreview,
     applyEvents,

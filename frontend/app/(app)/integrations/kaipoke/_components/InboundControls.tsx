@@ -72,6 +72,7 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
     runApply,
     hasSelectedDays,
     selectedDayLabels,
+    massCancelWarning,
     applyEvents,
     eventsPlan,
     eventsError,
@@ -140,7 +141,8 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
         </div>
         {!currentElig.isLoading && !eligible && (
           <p className="mt-2 text-xs text-text-muted">
-            先に④反映（送る）を済ませてください。apply 実績のある週のみ取り込み可能です。
+            過去・今週はいつでも取り込めます。未来の週は、先に④反映（送る）を済ませると
+            取り込めるようになります（計画中の週を消してしまう事故防止）。
           </p>
         )}
       </div>
@@ -182,6 +184,17 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                 />
               )}
             </div>
+          )}
+          {massCancelWarning && summary !== null && (
+            <Alert variant="destructive" data-testid="mass-cancel-warning">
+              <AlertTitle>⚠ キャンセル候補が異常に多いです（{summary.delete ?? 0}件）</AlertTitle>
+              <AlertDescription>
+                カイポケにこの週のスケジュールが入力されていない可能性があります。
+                このまま取り込むと、らく助のこの週の予定が大量にキャンセルされます。
+                カイポケ側でこの週が表示されることを確認してから、取り込む曜日を
+                <strong>手動で</strong>選んでください（安全のため自動選択を止めています）。
+              </AlertDescription>
+            </Alert>
           )}
           {diffInbound.isError && (
             <Alert variant="destructive">

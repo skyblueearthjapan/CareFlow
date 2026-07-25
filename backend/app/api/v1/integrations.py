@@ -1439,20 +1439,20 @@ async def test_kaipoke_credentials(
 @router.get(
     "/inbound-eligibility",
     response_model=InboundEligibilityRead,
-    summary="対象週が取り込み可能か (apply実績ゲート) を判定 (admin)",
+    summary="対象週が取り込み可能か (時間ゲート or apply実績) を判定 (admin)",
 )
 async def inbound_eligibility(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin"))],
     week_start: date = Query(..., alias="weekStart"),
 ) -> InboundEligibilityRead:
-    """「CareFlow から実apply した週」だけ取り込みを開放する (PO決定・唯一の条件)。"""
-    from app.services.kaipoke.inbound import real_apply_record
+    """過去週・今週は無条件で開放 / 未来週は実apply記録が必要 (2026-07-26 PO確定)。"""
+    from app.services.kaipoke.inbound import inbound_week_eligible
 
-    job = await real_apply_record(db, week_start)
+    eligible, job = await inbound_week_eligible(db, week_start)
     return InboundEligibilityRead(
         week_start=week_start,
-        eligible=job is not None,
+        eligible=eligible,
         last_applied_at=job.completed_at if job else None,
     )
 
@@ -1479,10 +1479,10 @@ async def trigger_diff_inbound(
     from app.models.patient import Patient
     from app.services.kaipoke.inbound import (
         day_to_date,
+        inbound_week_eligible,
         load_staff_name_index,
         load_week_visit_index,
         parse_hhmm,
-        real_apply_record,
     )
     from app.services.kaipoke.local_diff import build_local_diff, correction_before_after
     from app.services.kaipoke.name_match import build_name_index, match_name
@@ -1495,11 +1495,16 @@ async def trigger_diff_inbound(
     week_start = payload.week_start
     week_end = payload.week_end or (week_start + timedelta(days=6))
 
-    # apply実績ゲート: 実apply していない週の正はまだ CareFlow 側にある。
-    if await real_apply_record(db, week_start) is None:
+    # 取り込みゲート (2026-07-26 改訂): 過去週・今週は無条件開放。未来週のみ
+    # 実apply記録が必要 (計画中の週を取り込む「週全滅事故」の防止)。
+    eligible, _record = await inbound_week_eligible(db, week_start)
+    if not eligible:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="この週はまだカイポケへ反映されていません (先に④反映を実行してください)",
+            detail=(
+                "未来の週はまだ取り込めません (計画中の週を消してしまう事故防止のため、"
+                "先に④反映を実行した週のみ取り込めます)"
+            ),
         )
 
     job = KaipokeJob(
@@ -1979,7 +1984,8 @@ async def bulk_update_correction_items(
 
 
 _EVENTS_GATE_DETAIL = (
-    "この週はまだカイポケへ反映（実apply）されていません。先に④反映を実行してください。"
+    "未来の週はまだ取り込めません（計画中の週を消してしまう事故防止のため、"
+    "先に④反映を実行した週のみ取り込めます）"
 )
 
 
@@ -2009,15 +2015,15 @@ async def events_inbound_preview(
         build_events_plan,
         fetch_week_tasks,
     )
-    from app.services.kaipoke.inbound import real_apply_record
+    from app.services.kaipoke.inbound import inbound_week_eligible
 
     if payload.week_start.weekday() != 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="weekStart は月曜日を指定してください",
         )
-    record = await real_apply_record(db, payload.week_start)
-    if record is None:
+    eligible, _record = await inbound_week_eligible(db, payload.week_start)
+    if not eligible:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=_EVENTS_GATE_DETAIL,
@@ -2125,15 +2131,15 @@ async def events_inbound_apply(
         EventChange,
         apply_events_changes,
     )
-    from app.services.kaipoke.inbound import real_apply_record
+    from app.services.kaipoke.inbound import inbound_week_eligible
 
     if payload.week_start.weekday() != 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="weekStart は月曜日を指定してください",
         )
-    record = await real_apply_record(db, payload.week_start)
-    if record is None:
+    eligible, _record = await inbound_week_eligible(db, payload.week_start)
+    if not eligible:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=_EVENTS_GATE_DETAIL,
