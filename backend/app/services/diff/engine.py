@@ -395,13 +395,14 @@ def compare_schedules(
 
 
 def _normalize_user_name(name: str) -> str:
-    """利用者名のグルーピング用正規化 (NFKC + 空白除去)。
+    """利用者名のグルーピング用正規化 (NFKC + 全空白除去)。
 
     らく助とカイポケで氏名の空白 (半角/全角) が違うと同一人物が別グループに
     分かれ、同じ訪問が delete+add ペアに分解される (2026-07-26 実データで
     11 件確認)。正規化キーで束ねてこの偽差分を防ぐ。
+    \\s+ で NBSP (U+00A0) 等の Unicode 空白クラスもまとめて除去する。
     """
-    return unicodedata.normalize("NFKC", name).replace(" ", "")
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", name))
 
 
 def _compare_entries(

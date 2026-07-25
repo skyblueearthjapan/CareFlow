@@ -2313,11 +2313,13 @@ async def replace_inbound(
             kaipoke=kaipoke, week_start=payload.week_start, credentials=credentials
         )
     except KaipokeBusyError as exc:
+        # busy = 単一スロットの一時的な競合 (リトライで解消) → 監査記録は残さない。
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy"
         ) from exc
     except KaipokeApiError as exc:
+        # API エラー = 恒常的な障害の可能性 → failed ジョブとして記録し調査可能にする。
         job.status = "failed"
         job.completed_at = datetime.now(UTC)
         job.result_summary = {"error": str(exc)}

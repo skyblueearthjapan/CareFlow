@@ -179,6 +179,8 @@ async def export_current_week_csv(
         if header is None:
             header = rows[0]
         for r in rows[1:]:
+            # r[9] = 「日付」列 (カイポケ18列フォーマット。csv_builder.HEADER /
+            # engine._parse_kaipoke_rows と同じ列位置に依存)。
             if len(r) <= 9:
                 continue
             try:

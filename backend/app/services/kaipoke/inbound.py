@@ -601,31 +601,45 @@ async def apply_inbound_items(
                 if revive is not None:
                     # キャンセル済み (または本実行でキャンセルされた) 同時刻の枠を
                     # 復活させ、カイポケの内容で上書きする (INSERT しない = UNIQUE 安全)。
-                    revive.status = "planned"
-                    revive.start_time = start_new
-                    revive.end_time = end_new
-                    revive.source = "import"
-                    revive.required_staff_count = 2 if sid2 is not None else 1
-                    revive.primary_staff_id = sid
-                    revive.secondary_staff_id = sid2
-                    revive.course_id = course.id
-                    _stamp_note(revive, "カイポケ取込で復活", today)
-                    await _replace_assignments(
-                        db, revive, [s for s in (sid, sid2) if s is not None]
-                    )
-                    if (
-                        accompaniment_sid2 is not None
-                        and accompaniment_sid2 not in accompaniment_by_visit.get(revive.id, set())
-                    ):
-                        db.add(
-                            TraineeAccompaniment(
-                                trainee_staff_id=accompaniment_sid2,
-                                target_type="visit",
-                                visit_id=revive.id,
-                                source="manual",
-                                created_by=None,
+                    # visit_group_id は保持する: ペア相手も同じ delete+add 復活を
+                    # 通るためリンクは正しく残り、相手がキャンセルのままでも表示・
+                    # 集計は cancelled 除外のため実害がない。
+                    # savepoint で item 単位に隔離 (INSERT 経路と同じ方針・
+                    # 想定外の IntegrityError でバッチを巻き添えにしない)。
+                    try:
+                        async with db.begin_nested():
+                            revive.status = "planned"
+                            revive.start_time = start_new
+                            revive.end_time = end_new
+                            revive.source = "import"
+                            revive.required_staff_count = 2 if sid2 is not None else 1
+                            revive.primary_staff_id = sid
+                            revive.secondary_staff_id = sid2
+                            revive.course_id = course.id
+                            _stamp_note(revive, "カイポケ取込で復活", today)
+                            await _replace_assignments(
+                                db, revive, [s for s in (sid, sid2) if s is not None]
                             )
+                            if accompaniment_sid2 is not None and (
+                                accompaniment_sid2
+                                not in accompaniment_by_visit.get(revive.id, set())
+                            ):
+                                db.add(
+                                    TraineeAccompaniment(
+                                        trainee_staff_id=accompaniment_sid2,
+                                        target_type="visit",
+                                        visit_id=revive.id,
+                                        source="manual",
+                                        created_by=None,
+                                    )
+                                )
+                    except IntegrityError:
+                        _finish(
+                            "failed",
+                            "復活時に衝突しました（差分を取り直してください）",
+                            target_date,
                         )
+                        continue
                     item.visit_id = revive.id
                     _finish("added", detail, target_date)
                     continue
