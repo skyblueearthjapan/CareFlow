@@ -1273,6 +1273,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         same_address_key: sameAddressKeyByPatientId.get(v.patient_id) ?? null,
         // 週カードの📍住所行 (日ビューと情報統一・PO要望)。
         patient_address: patient?.address ?? null,
+        // スタッフ別ビューの帰属用 (2026-07-26: 臨時テンプレ合算の誤帰属を防ぐため
+        // コース担当ではなく訪問の primary で行を決める)。
+        primary_staff_id:
+          (v as { primary_staff_id?: string | null }).primary_staff_id ?? null,
       });
     }
     return out;

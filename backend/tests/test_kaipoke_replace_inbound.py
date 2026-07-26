@@ -322,3 +322,43 @@ async def test_replace_reassigns_course_to_kaipoke_staff(client, db, stub_kaipok
     ).all()
     assert len(visits) == 1
     assert visits[0].primary_staff_id == seeded["staff"].id
+
+
+@pytest.mark.asyncio
+async def test_replace_cleans_residual_temp_courses(client, db, stub_kaipoke) -> None:
+    """置換の再実行で前回の臨時コース残骸を掃除する (2026-07-26)。
+
+    空の臨コースが旧担当のまま残ると、テンプレ単位の表示で他スタッフの
+    臨N訪問が誤帰属する (PO報告)。2回実行しても当週の臨系コースは
+    「今回必要な分だけ」になる。
+    """
+    from app.models.course import Course
+
+    await _seed_week(db)  # コース無し週 → 全て臨時コース行き
+    admin = await _make_admin(db)
+    stub_kaipoke.by_month[MONTH] = _csv(
+        _kp_row(date(2026, 7, 7), time(10, 0), time(10, 35)),
+    )
+
+    res1 = await _post_replace(client, admin, week_start=WEEK_START, dry_run=False)
+    assert res1.status_code == 200, res1.text
+    assert res1.json()["tempCourses"] == 1
+
+    res2 = await _post_replace(client, admin, week_start=WEEK_START, dry_run=False)
+    assert res2.status_code == 200, res2.text
+    assert res2.json()["tempCourses"] == 1
+
+    # 臨系コースは累積せず、active は常に1本 (前回分は soft delete 済み)
+    iso = WEEK_START.isocalendar()
+    temps = (
+        await db.scalars(
+            select(Course).where(
+                Course.iso_year == iso[0],
+                Course.iso_week == iso[1],
+                Course.code.like("臨%"),
+                Course.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(temps) == 1
+    assert temps[0].code == "臨"  # 臨2 へ滑らず先頭コードから振り直される

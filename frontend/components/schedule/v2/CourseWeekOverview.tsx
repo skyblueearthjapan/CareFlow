@@ -80,6 +80,12 @@ export interface WeekOverviewVisit {
   same_address_key?: string | null;
   /** 患者住所。週タイムラインのカード📍行 (日ビューと情報統一・PO要望)。 */
   patient_address?: string | null;
+  /**
+   * 訪問の担当スタッフ (visit.primary_staff_id)。スタッフ別ビューの行帰属に使う
+   * (2026-07-26: 臨時テンプレは複数スタッフの臨Nコースを束ねるため、コース担当
+   * 経由の帰属では他人の訪問が混ざる — 訪問自身の primary が正)。
+   */
+  primary_staff_id?: string | null;
 }
 
 export interface CourseWeekOverviewProps {

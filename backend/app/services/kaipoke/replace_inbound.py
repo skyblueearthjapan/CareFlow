@@ -176,6 +176,21 @@ async def replace_week_from_kaipoke(
         if a.course_id is not None:
             accompaniment_by_course.setdefault(a.course_id, set()).add(a.trainee_staff_id)
 
+    # --- 臨時コースの掃除 (2026-07-26) ---------------------------------------
+    # 前回の置換が作った臨系コースは、訪問の白紙化で空になっても行が残る。
+    # 空の「臨」が旧担当のまま残ると、テンプレ単位の表示 (臨・臨2…を1枠に束ねる)
+    # で他スタッフの臨N訪問がその旧担当へ誤帰属する (PO報告 2026-07-26)。
+    # 置換のたびに当週の臨系コースを削除し、必要な分だけ作り直す。
+    temp_rows = [c for c in course_idx.by_id.values() if str(c.code).startswith("臨")]
+    for c in temp_rows:
+        course_idx.by_id.pop(c.id, None)
+        course_idx.codes_in_use.get((c.weekday, c.office_id), set()).discard(str(c.code))
+        for k, v in list(course_idx.by_staff.items()):
+            if v.id == c.id:
+                course_idx.by_staff.pop(k, None)
+        if not dry_run:
+            c.deleted_at = now
+
     # --- 白紙化 (real のみ) --------------------------------------------------
     if not dry_run:
         for v in wipe_rows:
