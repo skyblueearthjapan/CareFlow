@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
+from app.models.course import Course
 from app.models.patient import Patient
 from app.models.trainee_accompaniment import TraineeAccompaniment
 from app.models.visit import Visit
@@ -50,6 +51,20 @@ if TYPE_CHECKING:
 
 class ReplaceBlockedError(RuntimeError):
     """実績ガード: 打刻等が付いた週は置換できない (差分モードを使う)。"""
+
+
+@dataclass
+class _ResolvedRow:
+    """Phase 1 で名寄せ解決済みのカイポケ行 (Phase 2/3 の入力)。"""
+
+    entry: ScheduleEntry
+    patient: Patient
+    d: date
+    start_t: time
+    end_t: time
+    sid: uuid.UUID
+    sid2: uuid.UUID | None
+    office_id: uuid.UUID
 
 
 @dataclass
@@ -77,6 +92,9 @@ class ReplaceResult:
     # カイポケは最終的な「正」のため取り込むが (PO確定 2026-07-26)、新人フラグの
     # 見直し判断材料として可視化する。
     trainee_solo: dict[str, int] = field(default_factory=dict)
+    # コース担当をカイポケの現実に合わせて付け替えた数 (2026-07-26 改修)。
+    # 「コース丸ごと交代」と同じ考え方で、臨時コース乱立 (→ 表示合算で1枠15件) を防ぐ。
+    courses_reassigned: int = 0
 
 
 async def _count_week_achievements(
@@ -163,7 +181,7 @@ async def replace_week_from_kaipoke(
         for v in wipe_rows:
             v.deleted_at = now
 
-    # --- 挿入 ----------------------------------------------------------------
+    # --- Phase 1: 行の解決 (名寄せ・重複・日曜除外) ---------------------------
     seen_keys: set[tuple[str, date, str]] = set()
 
     def _skip(reason: str, e: ScheduleEntry, d: date | None) -> None:
@@ -177,6 +195,7 @@ async def replace_week_from_kaipoke(
             )
         )
 
+    resolved: list[_ResolvedRow] = []
     for e in entries:
         try:
             day_num = int(str(e.date).strip())
@@ -218,9 +237,8 @@ async def replace_week_from_kaipoke(
             continue
         seen_keys.add(key)
 
-        # staff2 の 3 段階判定 (diff-inbound の add と同じ規則・設計 §9)
+        # staff2 の名寄せ (3段階判定はコース確定後の Phase 3 で行う)
         sid2: uuid.UUID | None = None
-        accompaniment_sid2: uuid.UUID | None = None
         if e.staff2_name:
             sid2_str = match_name(e.staff2_name, staff_index_raw)
             if sid2_str is not None:
@@ -230,10 +248,92 @@ async def replace_week_from_kaipoke(
         if office_id is None:
             _skip("患者の主担当拠点が未設定です", e, d)
             continue
-        weekday = d.weekday()
-        course = course_idx.by_staff.get((weekday, office_id, sid))
 
+        resolved.append(
+            _ResolvedRow(
+                entry=e,
+                patient=patient,
+                d=d,
+                start_t=start_t,
+                end_t=end_t,
+                sid=sid,
+                sid2=sid2,
+                office_id=office_id,
+            )
+        )
+
+    # --- Phase 2: コース計画 (2026-07-26 改修・臨時コース乱立の根治) -----------
+    # カイポケは「正」なので、コースの担当もカイポケの現実に合わせる:
+    #   1. スタッフが既にその日のコースを持っている → そのまま使う
+    #   2. 持っていない → その日の空き通常コース (白紙化で全コース空) の担当を
+    #      そのスタッフへ付け替えて使う (= コース丸ごと交代と同じ考え方)
+    #   3. コースが足りない場合だけ臨時コースへ
+    # これをしないと、らく助の古い割当とズレたスタッフ全員が臨時コース行きになり、
+    # 表示 (テンプレート単位の枠) で臨・臨2・臨3… が1枠に合算されて
+    # 「1枠15件」のような見え方になる (2026-07-26 PO報告の原因)。
+    cell_staff: dict[tuple[int, uuid.UUID], set[uuid.UUID]] = {}
+    for r in resolved:
+        cell_staff.setdefault((r.d.weekday(), r.office_id), set()).add(r.sid)
+
+    regular_by_cell: dict[tuple[int, uuid.UUID], list[Course]] = {}
+    for c in course_idx.by_id.values():
+        code = str(c.code)
+        # M系 (マネージャー予備枠) と 臨系は付け替え対象にしない
+        if code.startswith("臨") or code.upper().startswith("M"):
+            continue
+        regular_by_cell.setdefault((c.weekday, c.office_id), []).append(c)
+    for lst in regular_by_cell.values():
+        lst.sort(key=lambda c: str(c.code))
+
+    course_plan: dict[tuple[int, uuid.UUID, uuid.UUID], Course] = {}
+    reassignments: list[tuple[Course, uuid.UUID]] = []
+    temp_keys: set[tuple[int, uuid.UUID, uuid.UUID]] = set()
+    for cell, staff_ids in cell_staff.items():
+        wd, office_id = cell
+        regs = regular_by_cell.get(cell, [])
+        used_course_ids: set[uuid.UUID] = set()
+        # 1. 現担当がそのままの人 (同一スタッフ複数コースはコード順先頭を採用)
+        for c in regs:
+            if (
+                c.assigned_staff_id is not None
+                and c.assigned_staff_id in staff_ids
+                and (wd, office_id, c.assigned_staff_id) not in course_plan
+            ):
+                course_plan[(wd, office_id, c.assigned_staff_id)] = c
+                used_course_ids.add(c.id)
+        # 2. 残りのスタッフへ空きコースをコード順で付け替え (名前順で決定的に)
+        free = [c for c in regs if c.id not in used_course_ids]
+        pending = sorted(
+            (sid for sid in staff_ids if (wd, office_id, sid) not in course_plan),
+            key=lambda s: staff_map[s].name if s in staff_map else "",
+        )
+        for sid, c in zip(pending, free, strict=False):
+            course_plan[(wd, office_id, sid)] = c
+            if c.assigned_staff_id != sid:
+                reassignments.append((c, sid))
+        # 3. あぶれた分は臨時コース (挿入時に ensure_temp_course)
+        for sid in pending[len(free) :]:
+            temp_keys.add((wd, office_id, sid))
+
+    result.courses_reassigned = len(reassignments)
+    result.temp_courses = len(temp_keys)
+
+    if not dry_run:
+        for c, sid in reassignments:
+            c.assigned_staff_id = sid
+
+    # --- Phase 3: 挿入 -------------------------------------------------------
+    for r in resolved:
+        e = r.entry
+        d = r.d
+        sid = r.sid
+        weekday = d.weekday()
+        course: Course | None = course_plan.get((weekday, r.office_id, sid))
+
+        sid2 = r.sid2
+        accompaniment_sid2: uuid.UUID | None = None
         if sid2 is not None:
+            # staff2 の 3 段階判定 (diff-inbound の add と同じ規則・設計 §9)
             if course is not None and sid2 in accompaniment_by_course.get(course.id, set()):
                 sid2 = None  # コースの同行新人 → secondary にしない
             elif sid2 in trainee_ids:
@@ -241,20 +341,22 @@ async def replace_week_from_kaipoke(
                 sid2 = None  # 新人 → 同行リンクとして取り込む
 
         if dry_run:
-            if course is None:
-                result.temp_courses += 1
             result.inserted += 1
             continue
 
         if course is None:
             course = await ensure_temp_course(
-                db, course_idx, weekday=weekday, office_id=office_id, staff_id=sid, now=now
+                db, course_idx, weekday=weekday, office_id=r.office_id, staff_id=sid, now=now
             )
             if course is None:
                 _skip("臨時コース枠（臨〜臨9）が満杯です", e, d)
                 continue
-            result.temp_courses += 1
+            # 以後の同一スタッフ・同日の行はこのコースへ相乗り
+            course_plan[(weekday, r.office_id, sid)] = course
 
+        patient = r.patient
+        start_t = r.start_t
+        end_t = r.end_t
         new_visit = Visit(
             patient_id=patient.id,
             visit_date=d,

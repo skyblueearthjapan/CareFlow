@@ -262,6 +262,13 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
               <div className="flex flex-wrap items-center gap-1.5">
                 <SummaryChip label="削除（白紙化）" value={replacePlan.wiped} tone="error" />
                 <SummaryChip label="カイポケから挿入" value={replacePlan.inserted} tone="success" />
+                {replacePlan.coursesReassigned > 0 && (
+                  <SummaryChip
+                    label="コース担当変更"
+                    value={replacePlan.coursesReassigned}
+                    tone="warning"
+                  />
+                )}
                 {replacePlan.tempCourses > 0 && (
                   <SummaryChip label="臨時コース" value={replacePlan.tempCourses} tone="warning" />
                 )}

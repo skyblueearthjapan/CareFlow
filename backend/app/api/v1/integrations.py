@@ -2367,6 +2367,7 @@ async def replace_inbound(
         "skipped": len(result.skipped),
         "sunday_skipped": result.sunday_skipped,
         "temp_courses": result.temp_courses,
+        "courses_reassigned": result.courses_reassigned,
     }
 
     job_id: UUID | None = None
@@ -2427,6 +2428,7 @@ async def replace_inbound(
         inserted=result.inserted,
         sunday_skipped=result.sunday_skipped,
         temp_courses=result.temp_courses,
+        courses_reassigned=result.courses_reassigned,
         skipped=[
             ReplaceInboundSkipRead(
                 reason=s.reason,

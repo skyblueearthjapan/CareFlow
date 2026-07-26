@@ -473,6 +473,8 @@ class ReplaceInboundResult(BaseModel):
     inserted: int = 0
     sunday_skipped: int = Field(default=0, alias="sundaySkipped")
     temp_courses: int = Field(default=0, alias="tempCourses")
+    # コース担当をカイポケの現実へ付け替えた数 (臨時コース乱立の根治・2026-07-26)
+    courses_reassigned: int = Field(default=0, alias="coursesReassigned")
     skipped: list[ReplaceInboundSkipRead] = Field(default_factory=list)
     trainee_solo: list[ReplaceInboundTraineeSoloRead] = Field(
         default_factory=list, alias="traineeSolo"

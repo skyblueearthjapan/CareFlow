@@ -230,6 +230,7 @@ describe('InboundControls — イベント取り込みセクション', () => {
             inserted: 115,
             sundaySkipped: 0,
             tempCourses: 12,
+            coursesReassigned: 8,
             skipped: [
               {
                 reason: '患者を名寄せできません（らく助未登録の可能性）',

@@ -278,3 +278,47 @@ async def test_replace_cross_month_week_fetches_both_months(client, db, stub_kai
     # seeded の 7/6 週の訪問は白紙化対象外 (対象週のみ)
     assert body["wiped"] == 0
     assert seeded is not None
+
+
+@pytest.mark.asyncio
+async def test_replace_reassigns_course_to_kaipoke_staff(client, db, stub_kaipoke) -> None:
+    """コース担当をカイポケの現実に付け替える (2026-07-26 改修・臨時コース乱立の根治)。
+
+    らく助では水曜コースAの担当が佐藤だが、カイポケの現実では田中が回っている
+    → コースAの担当を田中へ付け替えて訪問を張り付ける (臨時コースを作らない)。
+    """
+    from tests.test_kaipoke_inbound import _seed_second_staff
+
+    seeded = await _seed_week(db)
+    other = await _seed_second_staff(db, seeded["office"])  # 佐藤　次郎
+    course_a = await _seed_course(db, office=seeded["office"], staff=other, weekday=2, code="A")
+    admin = await _make_admin(db)
+    # カイポケ現実: 水曜は田中が担当
+    stub_kaipoke.by_month[MONTH] = _csv(
+        _kp_row(date(2026, 7, 8), time(11, 0), time(11, 35)),  # 水曜・田中
+    )
+
+    res = await _post_replace(client, admin, week_start=WEEK_START, dry_run=True)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["coursesReassigned"] == 1
+    assert body["tempCourses"] == 0
+
+    # dry-run はコース担当を書き換えない
+    await db.refresh(course_a)
+    assert course_a.assigned_staff_id == other.id
+
+    res2 = await _post_replace(client, admin, week_start=WEEK_START, dry_run=False)
+    assert res2.status_code == 200, res2.text
+    assert res2.json()["coursesReassigned"] == 1
+    assert res2.json()["tempCourses"] == 0
+
+    await db.refresh(course_a)
+    assert course_a.assigned_staff_id == seeded["staff"].id  # 田中へ付け替え
+    visits = (
+        await db.scalars(
+            select(Visit).where(Visit.deleted_at.is_(None), Visit.course_id == course_a.id)
+        )
+    ).all()
+    assert len(visits) == 1
+    assert visits[0].primary_staff_id == seeded["staff"].id
