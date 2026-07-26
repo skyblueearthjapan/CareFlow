@@ -19,6 +19,8 @@ def test_kanji_variants_folded() -> None:
     # 異体字が常用字体へ寄る。
     assert normalize_name_key("髙梨　桂子") == normalize_name_key("高梨 桂子")
     assert normalize_name_key("栁田") == normalize_name_key("柳田")
+    # 槇/槙 (2026-07-26 置換取り込みの実データ: らく助「槇 恵」⇔カイポケ「槙 恵」)
+    assert normalize_name_key("槇　恵") == normalize_name_key("槙 恵")
     assert normalize_name_key("渡邉　太郎") == normalize_name_key("渡辺太郎")
     assert normalize_name_key("山﨑") == normalize_name_key("山崎")
 
