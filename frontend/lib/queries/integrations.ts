@@ -41,6 +41,9 @@ import type {
   Paginated,
   ReplaceInboundRequest,
   ReplaceInboundResult,
+  SmartInboundApplyRequest,
+  SmartInboundApplyResult,
+  SmartInboundPreview,
   SaveKaipokeCredentialsBody,
   TestKaipokeCredentialsResult,
   WeekSchedule,
@@ -624,6 +627,53 @@ export function useReplaceInbound() {
   return useMutation<ReplaceInboundResult, Error, ReplaceInboundRequest>({
     mutationFn: (payload) =>
       fetcher<ReplaceInboundResult>('/api/v1/integrations/replace-inbound', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+        signal: AbortSignal.timeout(240_000),
+      }),
+    onSuccess: (res) => {
+      if (res.dryRun) return;
+      void qc.invalidateQueries({ queryKey: ['integrations', 'kaipoke', 'jobs'] });
+      void qc.invalidateQueries({ queryKey: ['visits'] });
+      void qc.invalidateQueries({ queryKey: ['board'] });
+    },
+  });
+}
+
+// --- smart-inbound (日単位ハイブリッド自動判別・2026-07-26 PO確定) -----------
+
+/**
+ * 打刻あり日=差分・なし日=置換をシステムが自動判別する統合プレビュー (~90s)。
+ */
+export function useSmartInboundPreview() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useMutation<SmartInboundPreview, Error, { weekStart: string }>({
+    mutationFn: (payload) =>
+      fetcher<SmartInboundPreview>('/api/v1/integrations/smart-inbound-preview', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+        signal: AbortSignal.timeout(240_000),
+      }),
+  });
+}
+
+/** 統合適用 (差分=実績日・置換=クリーン日・単一トランザクション)。 */
+export function useApplySmartInbound() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<SmartInboundApplyResult, Error, SmartInboundApplyRequest>({
+    mutationFn: (payload) =>
+      fetcher<SmartInboundApplyResult>('/api/v1/integrations/smart-inbound-apply', {
         method: 'POST',
         body: JSON.stringify(payload),
         accessToken,

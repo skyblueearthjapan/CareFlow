@@ -61,6 +61,10 @@ from app.schemas.integrations import (
     ReplaceInboundResult,
     ReplaceInboundSkipRead,
     ReplaceInboundTraineeSoloRead,
+    SmartInboundApplyRequest,
+    SmartInboundApplyResult,
+    SmartInboundPreviewRead,
+    SmartInboundPreviewRequest,
     WeekScheduleRead,
     WeekScheduleRow,
 )
@@ -1440,6 +1444,100 @@ async def test_kaipoke_credentials(
 # docs/plans/kaipoke-reverse-sync-design.md — 「週のバトンリレー」の取り込み側。
 
 
+async def _build_inbound_sheet(
+    db,
+    *,
+    corrections,
+    month: str,
+    week_start: date,
+    week_end: date,
+    user_id: UUID | None,
+):
+    """inbound Correction 群を名寄せ解決して CorrectionSheet + items に永続化する。
+
+    trigger_diff_inbound と smart-inbound-preview (2026-07-26) の共通部。
+    Returns: (sheet, summary dict)。commit は呼び出し側の責務。
+    """
+    from collections import defaultdict
+
+    from app.models.patient import Patient
+    from app.services.kaipoke.inbound import (
+        day_to_date,
+        load_staff_name_index,
+        load_week_visit_index,
+        parse_hhmm,
+    )
+    from app.services.kaipoke.local_diff import correction_before_after
+    from app.services.kaipoke.name_match import build_name_index, match_name
+
+    # 利用者名 → patient_id、担当名 → staff_id、(patient, date, start) → visit_id の解決。
+    patients = (await db.scalars(select(Patient).where(Patient.deleted_at.is_(None)))).all()
+    pindex = build_name_index({str(p.id): p.name for p in patients})
+    sindex, _smap = await load_staff_name_index(db)
+    visit_index = await load_week_visit_index(db, week_start, week_end)
+
+    sheet = CorrectionSheet(
+        target_month=month,
+        status="ready",
+        direction="inbound",
+        week_start=week_start,
+        week_end=week_end,
+        created_by_user_id=user_id,
+    )
+    db.add(sheet)
+    await db.flush()
+
+    summary: dict[str, int] = defaultdict(int)
+    items: list[CorrectionSheetItem] = []
+    unresolved = 0
+    for c in corrections:
+        pid_str = match_name(c.user_name, pindex)
+        pid = UUID(pid_str) if pid_str else None
+        if pid is None:
+            unresolved += 1
+        before, after = correction_before_after(c)
+
+        # before 側 (CareFlow の現在地) から対象 visit を解決する。
+        visit_id = None
+        if pid is not None and c.action != "add":
+            try:
+                day = int(str(before.get("date")))
+            except (TypeError, ValueError):
+                day = -1
+            target_date = day_to_date(day, week_start, week_end) if day > 0 else None
+            start = parse_hhmm(str(before.get("start_time") or ""))
+            if target_date is not None and start is not None:
+                v = visit_index.get((pid, target_date, start))
+                visit_id = v.id if v is not None else None
+
+        # 既定 include (設計 §8): キャンセル/変更 = 対象 visit まで特定できたもの。
+        # add = 患者と担当が名寄せ解決できたもの (コースは臨時新設で常に解決可能)。
+        # 未解決は OFF で可視化 (人が判断)。
+        if c.action == "add":
+            include = pid is not None and bool(
+                match_name(str((after or {}).get("staff1") or ""), sindex)
+            )
+        else:
+            include = c.action in ("delete", "edit", "date_change") and visit_id is not None
+        items.append(
+            CorrectionSheetItem(
+                sheet_id=sheet.id,
+                patient_id=pid,
+                visit_id=visit_id,
+                action=c.action,
+                before=before,
+                after=after,
+                include=include,
+            )
+        )
+        summary[c.action] += 1
+    summary["total"] = len(items)
+    summary["unresolved_patient"] = unresolved
+    summary["auto_selected"] = sum(1 for it in items if it.include)
+    db.add_all(items)
+    return sheet, summary
+
+
 @router.get(
     "/inbound-eligibility",
     response_model=InboundEligibilityRead,
@@ -1478,18 +1576,11 @@ async def trigger_diff_inbound(
     diff-local の逆向き: before=CareFlow / after=カイポケ現況。
     apply実績ゲートを通った週のみ許可。visit_id まで解決して inbound シートに永続化。
     """
-    from collections import defaultdict
 
-    from app.models.patient import Patient
     from app.services.kaipoke.inbound import (
-        day_to_date,
         inbound_week_eligible,
-        load_staff_name_index,
-        load_week_visit_index,
-        parse_hhmm,
     )
-    from app.services.kaipoke.local_diff import build_local_diff, correction_before_after
-    from app.services.kaipoke.name_match import build_name_index, match_name
+    from app.services.kaipoke.local_diff import build_local_diff
 
     if payload.week_start is None:
         raise HTTPException(
@@ -1556,71 +1647,14 @@ async def trigger_diff_inbound(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="inbound diff failed"
         ) from exc
 
-    # 利用者名 → patient_id、担当名 → staff_id、(patient, date, start) → visit_id の解決。
-    patients = (await db.scalars(select(Patient).where(Patient.deleted_at.is_(None)))).all()
-    pindex = build_name_index({str(p.id): p.name for p in patients})
-    sindex, _smap = await load_staff_name_index(db)
-    visit_index = await load_week_visit_index(db, week_start, week_end)
-
-    sheet = CorrectionSheet(
-        target_month=payload.month,
-        status="ready",
-        direction="inbound",
+    sheet, summary = await _build_inbound_sheet(
+        db,
+        corrections=corrections,
+        month=payload.month,
         week_start=week_start,
         week_end=week_end,
-        created_by_user_id=user.id,
+        user_id=user.id,
     )
-    db.add(sheet)
-    await db.flush()
-
-    summary: dict[str, int] = defaultdict(int)
-    items: list[CorrectionSheetItem] = []
-    unresolved = 0
-    for c in corrections:
-        pid_str = match_name(c.user_name, pindex)
-        pid = UUID(pid_str) if pid_str else None
-        if pid is None:
-            unresolved += 1
-        before, after = correction_before_after(c)
-
-        # before 側 (CareFlow の現在地) から対象 visit を解決する。
-        visit_id = None
-        if pid is not None and c.action != "add":
-            try:
-                day = int(str(before.get("date")))
-            except (TypeError, ValueError):
-                day = -1
-            target_date = day_to_date(day, week_start, week_end) if day > 0 else None
-            start = parse_hhmm(str(before.get("start_time") or ""))
-            if target_date is not None and start is not None:
-                v = visit_index.get((pid, target_date, start))
-                visit_id = v.id if v is not None else None
-
-        # 既定 include (設計 §8): キャンセル/変更 = 対象 visit まで特定できたもの。
-        # add = 患者と担当が名寄せ解決できたもの (コースは臨時新設で常に解決可能)。
-        # 未解決は OFF で可視化 (人が判断)。
-        if c.action == "add":
-            include = pid is not None and bool(
-                match_name(str((after or {}).get("staff1") or ""), sindex)
-            )
-        else:
-            include = c.action in ("delete", "edit", "date_change") and visit_id is not None
-        items.append(
-            CorrectionSheetItem(
-                sheet_id=sheet.id,
-                patient_id=pid,
-                visit_id=visit_id,
-                action=c.action,
-                before=before,
-                after=after,
-                include=include,
-            )
-        )
-        summary[c.action] += 1
-    summary["total"] = len(items)
-    summary["unresolved_patient"] = unresolved
-    summary["auto_selected"] = sum(1 for it in items if it.include)
-    db.add_all(items)
 
     job.status = "completed"
     job.completed_at = datetime.now(UTC)
@@ -2445,4 +2479,401 @@ async def replace_inbound(
             ReplaceInboundTraineeSoloRead(staff_name=name, count=count)
             for name, count in sorted(result.trainee_solo.items())
         ],
+    )
+
+
+# --- smart-inbound (日単位ハイブリッド自動判別・2026-07-26 PO確定) ------------
+# 「打刻あり日 = 差分 (実績の紐付けを守って直す) / なし日 = 置換 (カイポケで書き直す)」
+# をシステムが自動判別し、作業者はモードを選ばない (handoff 2026-07-26 §6-b)。
+# export は preview / apply それぞれ1回だけ実行し、差分計算と置換計画の両方に渡す。
+
+
+def _replace_result_read(result, job_id) -> ReplaceInboundResult:
+    """ReplaceResult (service) → ReplaceInboundResult (schema)。"""
+    return ReplaceInboundResult(
+        job_id=job_id,
+        week_start=result.week_start,
+        week_end=result.week_end,
+        dry_run=result.dry_run,
+        wiped=result.wiped,
+        inserted=result.inserted,
+        sunday_skipped=result.sunday_skipped,
+        temp_courses=result.temp_courses,
+        courses_reassigned=result.courses_reassigned,
+        courses_created=result.courses_created,
+        skipped=[
+            ReplaceInboundSkipRead(
+                reason=s.reason,
+                user_name=s.user_name,
+                staff_name=s.staff_name,
+                target_date=s.date,
+                start=s.start,
+            )
+            for s in result.skipped
+        ],
+        trainee_solo=[
+            ReplaceInboundTraineeSoloRead(staff_name=name, count=count)
+            for name, count in sorted(result.trainee_solo.items())
+        ],
+    )
+
+
+async def _smart_classify(db, week_start: date) -> tuple[list[date], list[date]]:
+    """週の各日を 打刻あり(差分担当) / なし(置換担当) に分類する。"""
+    from app.services.kaipoke.replace_inbound import week_checkin_days
+
+    protected = await week_checkin_days(db, week_start)
+    week_days = [week_start + timedelta(days=i) for i in range(6)]  # 月〜土
+    return (
+        sorted(d for d in week_days if d in protected),
+        sorted(d for d in week_days if d not in protected),
+    )
+
+
+@router.post(
+    "/smart-inbound-preview",
+    response_model=SmartInboundPreviewRead,
+    summary="日単位ハイブリッド取り込みの統合プレビュー (admin)",
+)
+async def smart_inbound_preview(
+    payload: SmartInboundPreviewRequest,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> SmartInboundPreviewRead:
+    """打刻あり日=差分シート作成・なし日=置換dry-run、を1回のexportで実行する。"""
+    from app.services.diff.engine import parse_csv_from_content
+    from app.services.kaipoke.inbound import inbound_week_eligible
+    from app.services.kaipoke.local_diff import build_local_diff, export_current_week_csv
+    from app.services.kaipoke.replace_inbound import replace_week_from_kaipoke
+
+    week_start = payload.week_start
+    if week_start.weekday() != 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="weekStart は月曜日を指定してください",
+        )
+    eligible, _record = await inbound_week_eligible(db, week_start)
+    if not eligible:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=_EVENTS_GATE_DETAIL,
+        )
+
+    protected_days, replace_days = await _smart_classify(db, week_start)
+    credentials = await _kaipoke_credentials(db)
+    now = datetime.now(UTC)
+    job = KaipokeJob(
+        job_type="fetch",
+        week_start=week_start,
+        params={
+            "op": "smart-preview",
+            "week_start": week_start.isoformat(),
+            "protected_days": [d.isoformat() for d in protected_days],
+        },
+        status="running",
+        started_at=now,
+        created_by_user_id=user.id,
+    )
+    db.add(job)
+    await db.flush()
+
+    try:
+        csv_content = await export_current_week_csv(
+            kaipoke=kaipoke, week_start=week_start, credentials=credentials
+        )
+    except KaipokeBusyError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy"
+        ) from exc
+    except KaipokeApiError as exc:
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": str(exc)}
+        await _commit_or_409(db)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+        ) from exc
+
+    entries = parse_csv_from_content(csv_content, "kaipoke")
+    if not entries:
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": "empty kaipoke csv"}
+        await _commit_or_409(db)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "カイポケの現況が0件でした。カイポケにこの週のスケジュールが"
+                "入力されているか確認してください（0件での取り込みは安全のため拒否します）"
+            ),
+        )
+
+    # 差分パート (打刻あり日) — シートは週全体で作り、適用時に日で絞る
+    sheet = None
+    diff_summary: dict[str, int] = {}
+    if protected_days:
+        month = f"{week_start.year:04d}-{week_start.month:02d}"
+        corrections, _meta = await build_local_diff(
+            db,
+            month=month,
+            kaipoke=kaipoke,
+            week_start=week_start,
+            week_end=week_start + timedelta(days=6),
+            direction="inbound",
+            current_csv=csv_content,
+        )
+        sheet, diff_summary = await _build_inbound_sheet(
+            db,
+            corrections=corrections,
+            month=month,
+            week_start=week_start,
+            week_end=week_start + timedelta(days=6),
+            user_id=user.id,
+        )
+
+    # 置換パート (打刻なし日) — dry-run で計画のみ
+    replace_read = None
+    if replace_days:
+        plan = await replace_week_from_kaipoke(
+            db,
+            week_start=week_start,
+            entries=entries,
+            dry_run=True,
+            now=now,
+            target_days=set(replace_days),
+        )
+        replace_read = _replace_result_read(plan, None)
+
+    job.status = "completed"
+    job.completed_at = datetime.now(UTC)
+    job.result_summary = {
+        "protected_days": len(protected_days),
+        "replace_days": len(replace_days),
+        "diff_summary": diff_summary,
+        "replace_wiped": replace_read.wiped if replace_read else 0,
+        "replace_inserted": replace_read.inserted if replace_read else 0,
+    }
+    await _commit_or_409(db)
+
+    return SmartInboundPreviewRead(
+        week_start=week_start,
+        week_end=week_start + timedelta(days=5),
+        protected_days=protected_days,
+        replace_days=replace_days,
+        sheet_id=sheet.id if sheet is not None else None,
+        diff_summary=diff_summary,
+        replace=replace_read,
+    )
+
+
+@router.post(
+    "/smart-inbound-apply",
+    response_model=SmartInboundApplyResult,
+    summary="日単位ハイブリッド取り込みの適用 (admin)",
+)
+async def smart_inbound_apply(
+    payload: SmartInboundApplyRequest,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> SmartInboundApplyResult:
+    """打刻あり日=差分シート適用・なし日=置換、を単一トランザクションで実行する。
+
+    実行時に再分類・再取得する (プレビュー後に打刻やカイポケ入力が進んでも安全)。
+    dry_run=True は一切書き込まない。
+    """
+    from app.services.diff.engine import parse_csv_from_content
+    from app.services.kaipoke.inbound import apply_inbound_items, inbound_week_eligible
+    from app.services.kaipoke.local_diff import export_current_week_csv
+    from app.services.kaipoke.replace_inbound import (
+        ReplaceBlockedError,
+        replace_week_from_kaipoke,
+    )
+
+    week_start = payload.week_start
+    if week_start.weekday() != 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="weekStart は月曜日を指定してください",
+        )
+    eligible, _record = await inbound_week_eligible(db, week_start)
+    if not eligible:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=_EVENTS_GATE_DETAIL,
+        )
+
+    # 実行時に再分類 (プレビュー後の打刻進行を安全側で反映)
+    protected_days, replace_days = await _smart_classify(db, week_start)
+    now = datetime.now(UTC)
+
+    # 置換対象日があるときのみ再取得 (差分のみの週は RPA 不要)
+    entries = None
+    if replace_days:
+        credentials = await _kaipoke_credentials(db)
+        try:
+            csv_content = await export_current_week_csv(
+                kaipoke=kaipoke, week_start=week_start, credentials=credentials
+            )
+        except KaipokeBusyError as exc:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy"
+            ) from exc
+        except KaipokeApiError as exc:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+            ) from exc
+        entries = parse_csv_from_content(csv_content, "kaipoke")
+        if not entries:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "カイポケの現況が0件でした。カイポケにこの週のスケジュールが"
+                    "入力されているか確認してください（0件での置換は安全のため拒否します）"
+                ),
+            )
+
+    # 差分パート (打刻あり日・シートの include 項目を日で絞って適用)
+    diff_result = None
+    if payload.sheet_id is not None and protected_days:
+        sheet = await db.scalar(
+            select(CorrectionSheet)
+            .where(CorrectionSheet.id == payload.sheet_id)
+            .options(selectinload(CorrectionSheet.items))
+            .with_for_update(of=CorrectionSheet)
+        )
+        if sheet is None or sheet.direction != "inbound":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="差分シートが見つかりません（プレビューを取り直してください）",
+            )
+        if sheet.status == "applied":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="sheet already applied"
+            )
+        selected = [it for it in sheet.items if it.include]
+        if selected:
+            summary = await apply_inbound_items(
+                db,
+                items=selected,
+                week_start=week_start,
+                week_end=week_start + timedelta(days=6),
+                days=protected_days,
+                dry_run=payload.dry_run,
+                now=now,
+            )
+            if not payload.dry_run:
+                sheet.status = "applied"
+            diff_result = InboundApplyResult(
+                job_id=None,
+                dry_run=payload.dry_run,
+                cancelled=summary.cancelled,
+                updated=summary.updated,
+                added=summary.added,
+                skipped=summary.skipped,
+                failed=summary.failed,
+                results=[
+                    InboundItemResultRead(
+                        item_id=r.item_id,
+                        action=r.action,
+                        outcome=r.outcome,  # type: ignore[arg-type]
+                        detail=r.detail,
+                        patient_name=r.patient_name,
+                        date=r.date,
+                    )
+                    for r in summary.results
+                ],
+            )
+
+    # 置換パート (打刻なし日)
+    replace_read = None
+    if replace_days and entries is not None:
+        try:
+            plan = await replace_week_from_kaipoke(
+                db,
+                week_start=week_start,
+                entries=entries,
+                dry_run=payload.dry_run,
+                now=now,
+                target_days=set(replace_days),
+            )
+        except ReplaceBlockedError as exc:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            ) from exc
+        replace_read = _replace_result_read(plan, None)
+
+    job_id: UUID | None = None
+    if payload.dry_run:
+        await db.rollback()
+    else:
+        job = KaipokeJob(
+            job_type="fetch",
+            week_start=week_start,
+            params={
+                "op": "smart-apply",
+                "week_start": week_start.isoformat(),
+                "protected_days": [d.isoformat() for d in protected_days],
+                "replace_days": [d.isoformat() for d in replace_days],
+            },
+            status="completed",
+            started_at=now,
+            completed_at=datetime.now(UTC),
+            created_by_user_id=user.id,
+        )
+        job.result_summary = {
+            "diff": diff_result.model_dump(include={"cancelled", "updated", "added", "skipped", "failed"})
+            if diff_result
+            else None,
+            "replace": replace_read.model_dump(
+                include={"wiped", "inserted", "temp_courses", "courses_reassigned", "courses_created"}
+            )
+            if replace_read
+            else None,
+        }
+        db.add(job)
+        await db.flush()
+        # 要確認 (対象外/新人単独/差分失敗) は管理者へ恒久通知
+        n_skipped = len(replace_read.skipped) if replace_read else 0
+        n_trainee = sum(t.count for t in replace_read.trainee_solo) if replace_read else 0
+        n_failed = diff_result.failed if diff_result else 0
+        if n_skipped or n_trainee or n_failed:
+            from app.services.checkin.notify import (
+                _active_admin_manager_users,
+                _create_idempotent,
+            )
+
+            users = await _active_admin_manager_users(db)
+            await _create_idempotent(
+                db,
+                users=users,
+                type_="kaipoke_import_result",
+                reference_type="kaipoke_import",
+                reference_id=job.id,
+                title=(
+                    f"取り込みの要確認（対象外{n_skipped}・新人単独{n_trainee}・失敗{n_failed}）"
+                ),
+                body=(
+                    f"週 {week_start.isoformat()} のハイブリッド取り込みに要確認項目があります。"
+                    "連携画面で内訳を確認してください。"
+                ),
+            )
+        await _commit_or_409(db)
+        job_id = job.id
+        if replace_read is not None:
+            replace_read = replace_read.model_copy(update={"job_id": job_id})
+
+    return SmartInboundApplyResult(
+        week_start=week_start,
+        protected_days=protected_days,
+        replace_days=replace_days,
+        dry_run=payload.dry_run,
+        diff=diff_result,
+        replace=replace_read,
     )

@@ -1,10 +1,11 @@
 /**
- * InboundControls — イベント（個別業務）取り込みセクションの描画契約 (E-2)。
+ * InboundControls — smart-inbound (日単位ハイブリッド自動判別) の描画契約 (2026-07-27)。
  *
  * ① イベント差分（追加/変更/削除・📝メモ・未登録職員）が表示される
- * ② イベント差分のみでも ❸ dry-run が押せる（訪問差分ゼロでも取り込める）
- * ③ イベント dry-run 結果テーブルが表示される
+ * ② イベント差分のみでも ❸「取り込む」が押せる（訪問プランなしでも取り込める）
+ * ③ smart 統合プレビュー: 日別バッジ（🔒差分/置換）・置換サマリ・対象外・新人警告
  * ④ イベント取得失敗 (eventsError) が Alert で明示される
+ * ⑤ 確認ダイアログ: PO指示の「すべて削除される可能性」文言が置換日ありのとき表示される
  */
 import * as React from 'react';
 import { describe, it, expect, vi } from 'vitest';
@@ -14,10 +15,7 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: v
 
 import { InboundControls } from '../_components/InboundControls';
 import type { InboundVm } from '../_components/useInbound';
-import type {
-  EventsInboundApplyResult,
-  EventsInboundPreview,
-} from '@/lib/schemas/integration';
+import type { EventsInboundPreview, SmartInboundPreview } from '@/lib/schemas/integration';
 
 const idleMutation = {
   mutateAsync: vi.fn(),
@@ -30,7 +28,7 @@ const eligQuery = { data: { eligible: true }, isLoading: false };
 
 const MONDAY = new Date(2026, 6, 20); // 2026-07-20 (月)
 
-const PLAN: EventsInboundPreview = {
+const EVENTS_PLAN: EventsInboundPreview = {
   weekStart: '2026-07-20',
   weekEnd: '2026-07-25',
   fetchedTotal: 4,
@@ -79,25 +77,36 @@ const PLAN: EventsInboundPreview = {
   unmatched: [{ staffName: '菅野　頼子', count: 2 }],
 };
 
-const APPLY_RESULT: EventsInboundApplyResult = {
-  jobId: null,
-  dryRun: true,
-  added: 2,
-  updated: 1,
-  deleted: 0,
-  skipped: 0,
-  failed: 0,
-  results: [
-    {
-      action: 'add',
-      externalId: '690499216:4601519:2026-07-20',
-      staffName: '宇田川　優莉',
-      date: '2026-07-20',
-      title: '休み',
-      outcome: 'added',
-      detail: '',
-    },
-  ],
+/** 打刻あり火曜=差分・他は置換、の混在週プラン。 */
+const SMART_PLAN: SmartInboundPreview = {
+  weekStart: '2026-07-20',
+  weekEnd: '2026-07-25',
+  protectedDays: ['2026-07-20', '2026-07-21'],
+  replaceDays: ['2026-07-22', '2026-07-23', '2026-07-24', '2026-07-25'],
+  sheetId: 'a4dd44a1-0000-4000-8000-000000000000',
+  diffSummary: { delete: 3, edit: 2, add: 1 },
+  replace: {
+    jobId: null,
+    weekStart: '2026-07-20',
+    weekEnd: '2026-07-25',
+    dryRun: true,
+    wiped: 78,
+    inserted: 71,
+    sundaySkipped: 0,
+    tempCourses: 2,
+    coursesReassigned: 8,
+    coursesCreated: 1,
+    skipped: [
+      {
+        reason: '患者を名寄せできません（らく助未登録の可能性）',
+        userName: '高尾　幸子',
+        staffName: '川名　千恵',
+        date: '2026-07-24',
+        start: '10:00',
+      },
+    ],
+    traineeSolo: [{ staffName: '髙梨　桂子', count: 17 }],
+  },
 };
 
 function makeVm(overrides: Partial<InboundVm> = {}): InboundVm {
@@ -112,51 +121,36 @@ function makeVm(overrides: Partial<InboundVm> = {}): InboundVm {
     nextElig: eligQuery,
     currentElig: eligQuery,
     eligible: true,
-    diffInbound: { ...idleMutation },
-    applyInbound: { ...idleMutation },
+    handleWeekChange: vi.fn(),
+    smartPreview: { ...idleMutation },
+    applySmart: { ...idleMutation },
+    smartPlan: null,
+    sheetId: null,
     itemsQuery: { data: { items: [] } },
     items: [],
-    weekDays: [
-      '2026-07-20',
-      '2026-07-21',
-      '2026-07-22',
-      '2026-07-23',
-      '2026-07-24',
-      '2026-07-25',
-    ],
-    daysWithDiff: new Set<string>(),
-    sheetId: null,
-    summary: null,
-    selectedDays: new Set<string>(),
-    setSelectedDays: vi.fn(),
-    dryRunResult: null,
-    setDryRunResult: vi.fn(),
-    confirm: false,
-    setConfirm: vi.fn(),
-    handleWeekChange: vi.fn(),
-    runDiff: vi.fn(),
-    runApply: vi.fn(),
-    hasSelectedDays: false,
-    selectedDayLabels: '',
-    massCancelWarning: false,
-    mode: 'diff',
-    setMode: vi.fn(),
-    replaceInbound: { ...idleMutation },
-    replacePlan: null,
     eventsPreview: { ...idleMutation },
     applyEvents: { ...idleMutation },
     eventsPlan: null,
     eventsError: null,
-    eventsDryRunResult: null,
     hasEventChanges: false,
+    confirm: false,
+    setConfirm: vi.fn(),
+    runDiff: vi.fn(),
+    runApply: vi.fn(),
     fetching: false,
+    applying: false,
+    canApply: false,
     ...overrides,
   } as unknown as InboundVm;
 }
 
-describe('InboundControls — イベント取り込みセクション', () => {
+describe('InboundControls — smart-inbound', () => {
   it('① イベント差分（チップ・行・📝メモ・未登録職員）が表示される', () => {
-    render(<InboundControls vm={makeVm({ eventsPlan: PLAN, hasEventChanges: true })} />);
+    render(
+      <InboundControls
+        vm={makeVm({ eventsPlan: EVENTS_PLAN, hasEventChanges: true, canApply: true })}
+      />,
+    );
     const section = screen.getByTestId('events-plan-section');
     expect(section).toBeInTheDocument();
     expect(screen.getByText('休み')).toBeInTheDocument();
@@ -170,107 +164,108 @@ describe('InboundControls — イベント取り込みセクション', () => {
     expect(screen.getByText(/頼子（2件）/)).toBeInTheDocument();
   });
 
-  it('② イベント差分のみでも ❸ dry-run が押せる', () => {
-    render(<InboundControls vm={makeVm({ eventsPlan: PLAN, hasEventChanges: true })} />);
-    const btn = screen.getByRole('button', { name: /dry-run で確認/ });
-    expect(btn).toBeEnabled();
-  });
-
-  it('②b 差分が何もなければ ❸ は無効', () => {
+  it('② イベント差分のみでも ❸「取り込む」が押せる', () => {
     render(
       <InboundControls
-        vm={makeVm({ eventsPlan: { ...PLAN, changes: [], adds: 0, updates: 0 } })}
+        vm={makeVm({ eventsPlan: EVENTS_PLAN, hasEventChanges: true, canApply: true })}
       />,
     );
-    const btn = screen.getByRole('button', { name: /dry-run で確認/ });
-    expect(btn).toBeDisabled();
+    expect(screen.getByTestId('smart-apply-button')).toBeEnabled();
+  });
+
+  it('②b 取り込む対象がなければ ❸ は無効', () => {
+    render(
+      <InboundControls
+        vm={makeVm({
+          eventsPlan: { ...EVENTS_PLAN, changes: [], adds: 0, updates: 0 },
+          canApply: false,
+        })}
+      />,
+    );
+    expect(screen.getByTestId('smart-apply-button')).toBeDisabled();
     expect(screen.getByText(/イベントの差分はありません/)).toBeInTheDocument();
+    expect(screen.getByText(/取り込む対象がありません/)).toBeInTheDocument();
   });
 
-  it('③ イベント dry-run 結果テーブルが表示される', () => {
-    render(
-      <InboundControls
-        vm={makeVm({
-          eventsPlan: PLAN,
-          hasEventChanges: true,
-          eventsDryRunResult: APPLY_RESULT,
-        })}
-      />,
-    );
-    expect(screen.getByTestId('events-dryrun-table')).toBeInTheDocument();
-    expect(screen.getByText(/イベント — 追加: 2 \/ 更新: 1/)).toBeInTheDocument();
-  });
-
-  it('⑤ 大量キャンセル警告: キャンセル候補が閾値以上なら赤警告が出る', () => {
-    render(
-      <InboundControls
-        vm={makeVm({
-          sheetId: 'a4dd44a1-0000-4000-8000-000000000000',
-          summary: { delete: 42, edit: 0, add: 0 },
-          massCancelWarning: true,
-        })}
-      />,
-    );
-    expect(screen.getByTestId('mass-cancel-warning')).toBeInTheDocument();
-    expect(screen.getByText(/キャンセル候補が異常に多いです（42件）/)).toBeInTheDocument();
-    expect(screen.getByText(/自動選択を止めています/)).toBeInTheDocument();
-  });
-
-  it('⑥ 置換モード: プレビューと「すべて削除される可能性」の警告が表示される', () => {
-    render(
-      <InboundControls
-        vm={makeVm({
-          mode: 'replace',
-          replacePlan: {
-            jobId: null,
-            weekStart: '2026-07-20',
-            weekEnd: '2026-07-25',
-            dryRun: true,
-            wiped: 131,
-            inserted: 115,
-            sundaySkipped: 0,
-            tempCourses: 12,
-            coursesReassigned: 8,
-            skipped: [
-              {
-                reason: '患者を名寄せできません（らく助未登録の可能性）',
-                userName: '高尾　幸子',
-                staffName: '川名　千恵',
-                date: '2026-07-24',
-                start: '10:00',
-              },
-            ],
-            traineeSolo: [{ staffName: '髙梨　桂子', count: 17 }],
-          },
-        })}
-      />,
-    );
-    // モード注意書き (PO指示の文言)
-    expect(screen.getAllByText(/すべて削除される可能性がございます/).length).toBeGreaterThan(0);
-    // プレビューパネル (削除/挿入/対象外)
+  it('③ smart 統合プレビュー: 日別バッジ・差分/置換サマリ・対象外・新人警告', () => {
+    render(<InboundControls vm={makeVm({ smartPlan: SMART_PLAN, canApply: true })} />);
+    expect(screen.getByTestId('smart-plan-panel')).toBeInTheDocument();
+    // 日別バッジ: 実績日は 🔒差分・それ以外は置換 (自動判別が見える)
+    expect(screen.getByText(/🔒 7\/20（月） 差分/)).toBeInTheDocument();
+    expect(screen.getByText(/🔒 7\/21（火） 差分/)).toBeInTheDocument();
+    expect(screen.getByText(/7\/22（水） 置換/)).toBeInTheDocument();
+    // 実績日の差分サマリ
+    expect(screen.getByText('実績日の差分:')).toBeInTheDocument();
+    expect(screen.getByText('キャンセル候補')).toBeInTheDocument();
+    // 置換サマリ (削除/挿入/コース担当変更/コース新設/臨時/対象外)
     expect(screen.getByTestId('replace-plan-panel')).toBeInTheDocument();
+    expect(screen.getByText('削除（白紙化）')).toBeInTheDocument();
+    expect(screen.getByText('コース担当変更')).toBeInTheDocument();
+    expect(screen.getByText('コース新設')).toBeInTheDocument();
+    // 対象外の一覧 (隠さない)
     expect(screen.getByText(/患者を名寄せできません/)).toBeInTheDocument();
     // ⚠新人の単独訪問 警告 (取り込むが新人フラグ見直しを促す・PO指示 2026-07-26)
     expect(screen.getByTestId('trainee-solo-warning')).toBeInTheDocument();
     expect(screen.getByText(/新人の単独訪問が含まれています（17件）/)).toBeInTheDocument();
     expect(screen.getByText(/新人フラグをOFFにすることを検討/)).toBeInTheDocument();
-    // 置換実行ボタンが有効
-    expect(screen.getByTestId('replace-apply-button')).toBeEnabled();
+    // ❸ が有効
+    expect(screen.getByTestId('smart-apply-button')).toBeEnabled();
   });
 
-  it('⑥b 置換モード: プレビュー前は実行エリアが出ない', () => {
-    render(<InboundControls vm={makeVm({ mode: 'replace', replacePlan: null })} />);
-    expect(screen.queryByTestId('replace-apply-button')).not.toBeInTheDocument();
-    expect(screen.getByTestId('inbound-mode-toggle')).toBeInTheDocument();
+  it('③b プレビュー前は ❸ 実行エリアが出ない（モード選択も存在しない）', () => {
+    render(<InboundControls vm={makeVm()} />);
+    expect(screen.queryByTestId('smart-apply-button')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('inbound-mode-toggle')).not.toBeInTheDocument();
   });
 
   it('④ イベント取得失敗は Alert で明示される（訪問は取得済みの文言つき）', () => {
     render(
-      <InboundControls
-        vm={makeVm({ sheetId: 'a4dd44a1-0000-4000-8000-000000000000', eventsError: 'RPA 502' })}
-      />,
+      <InboundControls vm={makeVm({ smartPlan: SMART_PLAN, eventsError: 'RPA 502' })} />,
     );
     expect(screen.getByText(/イベント（個別業務）の取得に失敗しました/)).toBeInTheDocument();
     expect(screen.getByText(/訪問だけ取り込めます/)).toBeInTheDocument();
+  });
+
+  it('⑤ 確認ダイアログ: 置換日ありのとき PO指示の削除警告文言と🔒保護日が表示される', () => {
+    render(
+      <InboundControls
+        vm={makeVm({
+          smartPlan: SMART_PLAN,
+          eventsPlan: EVENTS_PLAN,
+          hasEventChanges: true,
+          canApply: true,
+          confirm: true,
+        })}
+      />,
+    );
+    // PO指示の文言 (2026-07-25)
+    expect(screen.getAllByText(/すべて削除される可能性がございます/).length).toBeGreaterThan(0);
+    // 🔒実績日は行を守る旨
+    expect(screen.getByText(/行を残したまま差分を反映します/)).toBeInTheDocument();
+    // 置換規模とイベント件数
+    expect(screen.getByText(/78 件を削除/)).toBeInTheDocument();
+    expect(screen.getByText(/追加 2 \/ 変更 1 \/ 削除 0/)).toBeInTheDocument();
+  });
+
+  it('⑤b 全日置換（打刻ゼロ週）: 🔒行は出ず、置換警告のみ', () => {
+    const cleanPlan: SmartInboundPreview = {
+      ...SMART_PLAN,
+      protectedDays: [],
+      replaceDays: [
+        '2026-07-20',
+        '2026-07-21',
+        '2026-07-22',
+        '2026-07-23',
+        '2026-07-24',
+        '2026-07-25',
+      ],
+      sheetId: null,
+      diffSummary: {},
+    };
+    render(
+      <InboundControls vm={makeVm({ smartPlan: cleanPlan, canApply: true, confirm: true })} />,
+    );
+    expect(screen.queryByText(/行を残したまま差分を反映します/)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/すべて削除される可能性がございます/).length).toBeGreaterThan(0);
   });
 });

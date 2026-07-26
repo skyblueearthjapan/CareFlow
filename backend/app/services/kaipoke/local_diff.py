@@ -66,6 +66,7 @@ async def build_local_diff(
     week_end: date | None = None,
     direction: str = "outbound",
     credentials: dict[str, str] | None = None,
+    current_csv: str | None = None,
 ) -> tuple[list[Correction], dict[str, Any]]:
     """現況(kaipoke) と 最適化(CareFlow生成) の差分を CareFlow 内で計算する。
 
@@ -85,13 +86,17 @@ async def build_local_diff(
     """
     year, mon = int(month[:4]), int(month[5:7])
 
-    export_payload: dict[str, Any] = {"month": month, "async": False}
-    if credentials:
-        # アプリ内設定の認証情報 (C-1)。HTTP body のみに載せ、永続化はしない。
-        export_payload["credentials"] = credentials
-    resp = await kaipoke.export(export_payload, timeout=_SYNC_EXPORT_TIMEOUT)
-    result = resp.get("result") or {}
-    current_csv = result.get("csv_content") or ""
+    # current_csv 注入 (2026-07-26 smart-inbound): ハイブリッド取り込みは export を
+    # 1回だけ実行し、その結果を差分計算と置換計画の両方に渡す。未指定なら従来どおり
+    # ここで export する。
+    if current_csv is None:
+        export_payload: dict[str, Any] = {"month": month, "async": False}
+        if credentials:
+            # アプリ内設定の認証情報 (C-1)。HTTP body のみに載せ、永続化はしない。
+            export_payload["credentials"] = credentials
+        resp = await kaipoke.export(export_payload, timeout=_SYNC_EXPORT_TIMEOUT)
+        result = resp.get("result") or {}
+        current_csv = result.get("csv_content") or ""
 
     # office_id 指定時: optimized は当該拠点のみ生成されるため、current も同じ拠点に
     # 絞る (揃えないと他拠点が全て delete 差分になり非対称化する)。

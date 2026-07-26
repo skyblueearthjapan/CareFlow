@@ -115,6 +115,27 @@ async def _count_week_achievements(
     return int(n or 0)
 
 
+async def week_checkin_days(db: AsyncSession, week_start: date) -> set[date]:
+    """対象週 (月〜土) のうち「打刻実績が1件でもある日」の集合を返す。
+
+    smart-inbound (日単位ハイブリッド・2026-07-26) の判別信号:
+    打刻あり日 = 差分モード (行を残して直す) / なし日 = 置換モード。
+    """
+    mon = week_start
+    sat = week_start + timedelta(days=5)
+    rows = await db.execute(
+        select(Visit.visit_date)
+        .join(VisitCheckin, VisitCheckin.visit_id == Visit.id)
+        .where(
+            Visit.deleted_at.is_(None),
+            Visit.visit_date >= mon,
+            Visit.visit_date <= sat,
+        )
+        .distinct()
+    )
+    return {r[0] for r in rows.all()}
+
+
 async def replace_week_from_kaipoke(
     db: AsyncSession,
     *,
@@ -122,9 +143,12 @@ async def replace_week_from_kaipoke(
     entries: list[ScheduleEntry],
     dry_run: bool,
     now: datetime,
+    target_days: set[date] | None = None,
 ) -> ReplaceResult:
     """対象週 (月〜土) を白紙化し、カイポケ現況 entries で書き直す。
 
+    target_days 指定時 (smart-inbound の日単位ハイブリッド) はその日だけを
+    白紙化+挿入する (他の日は差分モードの担当)。None = 週全体 (従来動作)。
     dry_run=True は一切 mutate しない (計画のみ返す)。
     Raises: ReplaceBlockedError (実績ガード) / ValueError (週開始が月曜でない)。
     """
@@ -137,15 +161,14 @@ async def replace_week_from_kaipoke(
     result = ReplaceResult(week_start=week_start, week_end=week_sat, dry_run=dry_run)
 
     # --- 白紙化対象 (active な全訪問・キャンセル済み含む) ---------------------
-    wipe_rows = (
-        await db.scalars(
-            select(Visit).where(
-                Visit.deleted_at.is_(None),
-                Visit.visit_date >= week_start,
-                Visit.visit_date <= week_sat,
-            )
-        )
-    ).all()
+    wipe_stmt = select(Visit).where(
+        Visit.deleted_at.is_(None),
+        Visit.visit_date >= week_start,
+        Visit.visit_date <= week_sat,
+    )
+    if target_days is not None:
+        wipe_stmt = wipe_stmt.where(Visit.visit_date.in_(sorted(target_days)))
+    wipe_rows = (await db.scalars(wipe_stmt)).all()
     result.wiped = len(wipe_rows)
 
     # --- 実績ガード ----------------------------------------------------------
@@ -186,7 +209,15 @@ async def replace_week_from_kaipoke(
     # 空の「臨」が旧担当のまま残ると、テンプレ単位の表示 (臨・臨2…を1枠に束ねる)
     # で他スタッフの臨N訪問がその旧担当へ誤帰属する (PO報告 2026-07-26)。
     # 置換のたびに当週の臨系コースを削除し、必要な分だけ作り直す。
-    temp_rows = [c for c in course_idx.by_id.values() if str(c.code).startswith("臨")]
+    target_weekdays: set[int] | None = (
+        {d.weekday() for d in target_days} if target_days is not None else None
+    )
+    temp_rows = [
+        c
+        for c in course_idx.by_id.values()
+        if str(c.code).startswith("臨")
+        and (target_weekdays is None or c.weekday in target_weekdays)
+    ]
     for c in temp_rows:
         course_idx.by_id.pop(c.id, None)
         course_idx.codes_in_use.get((c.weekday, c.office_id), set()).discard(str(c.code))
@@ -227,6 +258,8 @@ async def replace_week_from_kaipoke(
         if d.weekday() == 6:
             result.sunday_skipped += 1
             continue
+        if target_days is not None and d not in target_days:
+            continue  # 差分モード担当日 (smart-inbound) — 置換では触らない
 
         start_t = parse_hhmm(e.start_time)
         end_t = parse_hhmm(e.end_time)

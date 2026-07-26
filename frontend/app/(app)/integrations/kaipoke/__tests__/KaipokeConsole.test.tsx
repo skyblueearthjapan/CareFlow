@@ -23,11 +23,10 @@ vi.mock('@/lib/queries/integrations', () => ({
   useWeekSchedule: () => ({ ...idleQuery, data: { rows: [] } }),
   useCorrectionItems: () => ({ ...idleQuery, data: { items: [] } }),
   useInboundEligibility: () => ({ ...idleQuery, data: { eligible: false } }),
-  useStartDiffInbound: () => ({ ...idleMutation, error: null }),
-  useApplyInbound: () => ({ ...idleMutation, error: null }),
+  useSmartInboundPreview: () => ({ ...idleMutation, error: null }),
+  useApplySmartInbound: () => ({ ...idleMutation, error: null }),
   useEventsInboundPreview: () => ({ ...idleMutation, error: null }),
   useApplyEventsInbound: () => ({ ...idleMutation, error: null }),
-  useReplaceInbound: () => ({ ...idleMutation, error: null }),
   useStopJob: () => ({ ...idleMutation }),
 }));
 

@@ -481,3 +481,43 @@ class ReplaceInboundResult(BaseModel):
     trainee_solo: list[ReplaceInboundTraineeSoloRead] = Field(
         default_factory=list, alias="traineeSolo"
     )
+
+
+# --- smart-inbound (日単位ハイブリッド自動判別・2026-07-26 PO確定) ------------
+
+
+class SmartInboundPreviewRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    week_start: date = Field(alias="weekStart")
+
+
+class SmartInboundPreviewRead(BaseModel):
+    """統合プレビュー: 打刻あり日=差分 (🔒実績保護)・なし日=置換、をシステムが自動判別。"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    week_start: date = Field(alias="weekStart")
+    week_end: date = Field(alias="weekEnd")
+    # 打刻実績のある日 (差分モード担当・行を残して直す)
+    protected_days: list[date] = Field(default_factory=list, alias="protectedDays")
+    # 打刻の無い日 (置換モード担当・白紙化して書き直す)
+    replace_days: list[date] = Field(default_factory=list, alias="replaceDays")
+    sheet_id: UUID | None = Field(default=None, alias="sheetId")
+    diff_summary: dict[str, int] = Field(default_factory=dict, alias="diffSummary")
+    replace: ReplaceInboundResult | None = None
+
+
+class SmartInboundApplyRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    week_start: date = Field(alias="weekStart")
+    sheet_id: UUID | None = Field(default=None, alias="sheetId")
+    dry_run: bool = Field(default=True, alias="dryRun")
+
+
+class SmartInboundApplyResult(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    week_start: date = Field(alias="weekStart")
+    protected_days: list[date] = Field(default_factory=list, alias="protectedDays")
+    replace_days: list[date] = Field(default_factory=list, alias="replaceDays")
+    dry_run: bool = Field(alias="dryRun")
+    diff: InboundApplyResult | None = None
+    replace: ReplaceInboundResult | None = None

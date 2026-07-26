@@ -450,3 +450,35 @@ export const ReplaceInboundResultSchema = z.object({
   traineeSolo: z.array(ReplaceInboundTraineeSoloSchema).default([]),
 });
 export type ReplaceInboundResult = z.infer<typeof ReplaceInboundResultSchema>;
+
+// --- smart-inbound (日単位ハイブリッド自動判別・2026-07-26 PO確定) -----------
+
+export const SmartInboundPreviewSchema = z.object({
+  weekStart: z.string(),
+  weekEnd: z.string(),
+  /** 打刻実績のある日 (差分モード担当・行を残して直す) */
+  protectedDays: z.array(z.string()).default([]),
+  /** 打刻の無い日 (置換モード担当・白紙化して書き直す) */
+  replaceDays: z.array(z.string()).default([]),
+  sheetId: z.string().uuid().nullable(),
+  diffSummary: z.record(z.string(), z.number()).default({}),
+  replace: ReplaceInboundResultSchema.nullable(),
+});
+export type SmartInboundPreview = z.infer<typeof SmartInboundPreviewSchema>;
+
+export const SmartInboundApplyRequestSchema = z.object({
+  weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  sheetId: z.string().uuid().nullable(),
+  dryRun: z.boolean().optional(),
+});
+export type SmartInboundApplyRequest = z.infer<typeof SmartInboundApplyRequestSchema>;
+
+export const SmartInboundApplyResultSchema = z.object({
+  weekStart: z.string(),
+  protectedDays: z.array(z.string()).default([]),
+  replaceDays: z.array(z.string()).default([]),
+  dryRun: z.boolean(),
+  diff: ApplyInboundResultSchema.nullable(),
+  replace: ReplaceInboundResultSchema.nullable(),
+});
+export type SmartInboundApplyResult = z.infer<typeof SmartInboundApplyResultSchema>;
