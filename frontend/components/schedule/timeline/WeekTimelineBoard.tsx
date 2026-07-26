@@ -34,6 +34,7 @@ import {
 import { cn } from '@/lib/utils';
 
 import type { AccompanimentBinding } from './accompaniment/types';
+import type { StaffEventFrame } from './TimelineDayBoard';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 const COL_MIN_W = 150;
@@ -52,6 +53,11 @@ export interface WeekTimelineBoardProps {
   options: WeekTimelineOption[];
   /** 全曜日 × 全 template の visits (フラット)。各セクションが templateId で絞る。 */
   visits: WeekOverviewVisit[];
+  /**
+   * イベントセクション (PO確定 2026-07-26): その日コースを持たないがイベントの
+   * あるスタッフの枠 (weekday → frames)。先頭に「イベント」セクションとして描く。
+   */
+  eventFramesByWeekday?: Map<number, StaffEventFrame[]>;
   /** 曜日ヘッダの日付ラベル (0=Mon..5=Sat)。省略時は曜日のみ。 */
   weekdayDates?: (string | null)[];
   /** カードクリック → 患者詳細 (既存ダイアログ)。 */
@@ -439,6 +445,7 @@ function WeekPairBox({
 export function WeekTimelineBoard({
   options,
   visits,
+  eventFramesByWeekday,
   weekdayDates,
   onPatientClick,
   capacityByWeekday,
@@ -458,6 +465,71 @@ export function WeekTimelineBoard({
   return (
     // pb-6: 最後のコースの 18:00 端がスクロール端と密着して「切れて見える」のを防ぐ余白。
     <div className="space-y-4 pb-6" data-testid="week-timeline-board">
+      {/* イベントセクション (PO確定 2026-07-26): コース無しスタッフの枠。
+          曜日列×イベントの簡易グリッド (時間比例ではなくチップ一覧)。 */}
+      {eventFramesByWeekday && eventFramesByWeekday.size > 0 && (
+        <section
+          className="overflow-hidden rounded-lg border border-border-subtle"
+          data-testid="week-timeline-events-section"
+        >
+          <header
+            className="px-3 py-1.5 text-[12px] font-bold"
+            style={{ background: 'var(--sched-event-bg)', color: 'var(--sched-event-ink)' }}
+          >
+            イベント（コース外のスタッフ予定）
+          </header>
+          <div className="grid grid-cols-2 gap-px bg-border-subtle sm:grid-cols-3 lg:grid-cols-6">
+            {WEEKDAY_LABELS.map((label, wd) => {
+              const frames = eventFramesByWeekday.get(wd) ?? [];
+              return (
+                <div key={label} className="bg-bg-base px-2 py-1.5">
+                  <div className="mb-1 text-[10px] font-bold text-text-secondary">
+                    {weekdayDates?.[wd] ? `${weekdayDates[wd]}（${label}）` : label}
+                  </div>
+                  <div className="space-y-0.5">
+                    {frames.flatMap((f) =>
+                      f.events.map((ev) => {
+                        const isMemo = ev.start_time === ev.end_time;
+                        return (
+                          <div
+                            key={`${f.staff.id}-${ev.id}`}
+                            className="rounded border border-l-[3px] px-1 py-0.5 text-[10px] leading-tight"
+                            style={{
+                              background: 'var(--sched-event-bg)',
+                              borderColor: 'var(--sched-event-ln)',
+                              borderLeftColor: 'var(--sched-event-bar)',
+                              color: 'var(--sched-event-ink)',
+                            }}
+                            title={`${f.staff.name} ${ev.title || ev.type}${ev.note ? `\n備考: ${ev.note}` : ''}`}
+                          >
+                            <span className="font-bold">
+                              {isMemo ? '📝 ' : ''}
+                              {f.staff.name}
+                            </span>{' '}
+                            {isMemo ? (
+                              <span>{ev.title || ev.type}</span>
+                            ) : (
+                              <span>
+                                <span className="tnum opacity-80">
+                                  {ev.start_time.slice(0, 5)}-{ev.end_time.slice(0, 5)}
+                                </span>{' '}
+                                {ev.title || ev.type}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      }),
+                    )}
+                    {frames.length === 0 && (
+                      <span className="text-[10px] text-text-muted">—</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
       {options.map((o) => (
         <CourseWeekSection
           key={o.templateId}

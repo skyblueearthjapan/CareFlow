@@ -85,6 +85,12 @@ export interface WeekOverviewVisit {
 export interface CourseWeekOverviewProps {
   /** 表示対象 templates (拠点フィルタ済み). */
   templates: CourseTemplateRead[];
+  /**
+   * イベント専用行 (PO確定 2026-07-26): その日コースを持たないがイベントのある
+   * スタッフの枠。行の意味論 (1行=1枠) を保ったままグリッド先頭に「イベント」行
+   * として編み込む。コース担当スタッフのイベントは従来どおり各セル内に出る。
+   */
+  eventFramesByWeekday?: Map<number, { staff: StaffRead; events: EventRead[] }[]>;
   /** office_id → 拠点名 lookup. 表示順は親で済ませる. */
   officeNameById: Map<string, string>;
   /** 全曜日 × 全 template に対する visits (フラットに渡す)。 */
@@ -179,6 +185,7 @@ export interface CourseWeekOverviewProps {
 export function CourseWeekOverview({
   templates,
   officeNameById,
+  eventFramesByWeekday,
   visits,
   onJumpToDay,
   staffEventsByStaff,
@@ -310,6 +317,63 @@ export function CourseWeekOverview({
               </button>
             );
           })}
+
+          {/* イベント専用行 (PO確定 2026-07-26): コース無しスタッフの枠。グリッド先頭。 */}
+          {eventFramesByWeekday && eventFramesByWeekday.size > 0 && (
+            <>
+              <div
+                className="border-b border-r border-border-default px-2 py-1 text-[11px] font-semibold"
+                style={{
+                  background: 'var(--sched-event-bg)',
+                  color: 'var(--sched-event-ink)',
+                }}
+                data-testid="course-week-overview-row-header-events"
+              >
+                イベント
+              </div>
+              {WEEKDAYS.map((wd) => {
+                const frames = eventFramesByWeekday.get(wd) ?? [];
+                return (
+                  <div
+                    key={`events-${wd}`}
+                    className="border-b border-r border-border-default px-1 py-1"
+                    data-testid={`course-week-overview-events-cell-${wd}`}
+                  >
+                    <ul className="space-y-0.5">
+                      {frames.flatMap((f) =>
+                        f.events.map((ev) => {
+                          const isMemo = ev.start_time === ev.end_time;
+                          return (
+                            <li
+                              key={`${f.staff.id}-${ev.id}`}
+                              className="rounded border border-l-[3px] px-1 py-0.5 text-[10px] leading-tight"
+                              style={{
+                                background: 'var(--sched-event-bg)',
+                                borderColor: 'var(--sched-event-ln)',
+                                borderLeftColor: 'var(--sched-event-bar)',
+                                color: 'var(--sched-event-ink)',
+                              }}
+                              title={`${f.staff.name} ${ev.title || ev.type}${ev.note ? `\n備考: ${ev.note}` : ''}`}
+                            >
+                              <div className="truncate font-medium">
+                                {isMemo ? '📝 ' : ''}
+                                {f.staff.name}
+                              </div>
+                              <div className="truncate opacity-80">
+                                {isMemo
+                                  ? (ev.title || ev.type)
+                                  : `${ev.start_time.slice(0, 5)}-${ev.end_time.slice(0, 5)} ${ev.title || ev.type}`}
+                              </div>
+                            </li>
+                          );
+                        }),
+                      )}
+                    </ul>
+                  </div>
+                );
+              })}
+            </>
+          )}
 
           {/* 行: 各 template × 各 weekday */}
           {sortedTemplates.map((tpl) => {

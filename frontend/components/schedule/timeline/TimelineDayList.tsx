@@ -24,12 +24,17 @@ import { trimSeconds } from '@/components/schedule/v2/_autoScheduleUtils';
 import { formatDuration } from '@/lib/format/duration';
 import { fmtHM, type FreeGap } from '@/lib/scheduling/freeGaps';
 import { genderPalette } from '@/lib/scheduling/timeline';
-import { partnerInfo } from './TimelineDayBoard';
+import { partnerInfo, type StaffEventFrame } from './TimelineDayBoard';
 import type { AccompanimentBinding } from './accompaniment/types';
 import { cn } from '@/lib/utils';
 
 export interface TimelineDayListProps {
   courses: CourseListItem[];
+  /**
+   * スタッフ枠 (PO確定 2026-07-26): その日コースを持たないがイベントのある
+   * スタッフを、コースグループと同格の枠として末尾に表示する (読み取り専用)。
+   */
+  staffFrames?: StaffEventFrame[];
   onPatientClick?: (patientId: string) => void;
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   /**
@@ -396,6 +401,7 @@ export function TimelineDayList({
   onPatientClick,
   onTogglePin,
   onDeleteVisit,
+  staffFrames = [],
   onPromoteWeekOnly,
   accompaniment,
 }: TimelineDayListProps) {
@@ -519,6 +525,60 @@ export function TimelineDayList({
           </div>
         );
       })}
+
+      {/* スタッフ枠 (PO確定 2026-07-26): コース無し・イベントありのスタッフを
+          コースグループと同格の枠として表示。緑=イベントの視覚言語・読み取り専用。 */}
+      {staffFrames.map((f) => (
+        <div
+          key={`staff-frame-${f.staff.id}`}
+          className="overflow-hidden rounded-lg border border-border-subtle"
+          data-testid={`day-list-staff-frame-${f.staff.id}`}
+        >
+          <div
+            className="flex items-center gap-2 px-3 py-1.5"
+            style={{ background: 'var(--sched-event-bg)' }}
+          >
+            <span
+              className="text-[12px] font-bold"
+              style={{ color: 'var(--sched-event-ink)' }}
+            >
+              {f.staff.name}
+            </span>
+            <span
+              className="rounded px-1.5 py-px text-[9px] font-extrabold"
+              style={{ background: 'var(--sched-event-bar)', color: '#fff' }}
+            >
+              イベント {f.events.length}件
+            </span>
+          </div>
+          <ul className="divide-y divide-border-subtle bg-bg-base">
+            {f.events.map((ev) => {
+              const isMemo = ev.start_time === ev.end_time;
+              return (
+                <li
+                  key={ev.id}
+                  className="flex items-baseline gap-2 px-3 py-1.5 text-xs"
+                  title={ev.note ?? undefined}
+                >
+                  {isMemo ? (
+                    <span aria-hidden>📝</span>
+                  ) : (
+                    <span className="tnum shrink-0 text-text-secondary">
+                      {ev.start_time.slice(0, 5)}〜{ev.end_time.slice(0, 5)}
+                    </span>
+                  )}
+                  <span
+                    className="min-w-0 flex-1 truncate font-medium"
+                    style={{ color: 'var(--sched-event-ink)' }}
+                  >
+                    {ev.title || ev.type}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
     </div>
   );
 }

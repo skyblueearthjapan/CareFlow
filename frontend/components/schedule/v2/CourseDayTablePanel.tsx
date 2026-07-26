@@ -150,7 +150,6 @@ import {
   type PartnerLocation,
 } from './courseGrid';
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
-import { EventStrip } from '@/components/schedule/timeline/EventStrip';
 import { StaffWeekBoard } from './StaffWeekBoard';
 import {
   parseTlColDroppableId,
@@ -159,6 +158,7 @@ import {
   TimelineDayBoard,
   TlPairDragGhost,
   TlVisitDragGhost,
+  type StaffEventFrame,
   type TimelineCourseColumn,
 } from '@/components/schedule/timeline/TimelineDayBoard';
 import {
@@ -577,6 +577,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     }
     return m;
   }, [staffEventsByStaff]);
+
 
   // ─── 当該週に visit が実在する course_id の集合 (列の表示条件 ③ の根拠) ──
   // course は曜日固定なので course_id を持つ visit があれば「その曜日に訪問実在」。
@@ -1343,6 +1344,36 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     }
     return m;
   }, [courses, templates]);
+
+  /**
+   * スタッフ枠 (PO確定 2026-07-26): 曜日ごとに「その日コースを持たないが
+   * イベントのあるスタッフ」を枠として盤面に編み込むための元データ。
+   * 休みの人にもその日のスケジュールがある、をUIで表現する。
+   * weekday → frames (スタッフ名順)。
+   */
+  const staffEventFramesByWeekday = useMemo(() => {
+    const assignedByWd = new Map<number, Set<string>>();
+    for (const [key, sid] of assignedStaffByTemplateWeekday.entries()) {
+      const wd = Number(key.split(':')[1]);
+      if (!assignedByWd.has(wd)) assignedByWd.set(wd, new Set());
+      assignedByWd.get(wd)!.add(sid);
+    }
+    const out = new Map<number, StaffEventFrame[]>();
+    for (let wd = 0; wd < 6; wd++) {
+      const assigned = assignedByWd.get(wd) ?? new Set<string>();
+      const frames: StaffEventFrame[] = [];
+      for (const staffId of staffEventsByStaff.keys()) {
+        if (assigned.has(staffId)) continue; // コースあり → 既存の列/セル内に出る
+        const staff = staffMap.get(staffId);
+        if (!staff) continue;
+        const events = getStaffEventsForWeekday(staffId, wd, staffEventsByStaff);
+        if (events.length > 0) frames.push({ staff, events });
+      }
+      frames.sort((a, b) => a.staff.name.localeCompare(b.staff.name, 'ja'));
+      if (frames.length > 0) out.set(wd, frames);
+    }
+    return out;
+  }, [assignedStaffByTemplateWeekday, staffEventsByStaff, staffMap]);
 
   // ─── DnD ──────────────────────────────────────────────────────────
   const sensors = useSensors(
@@ -3398,23 +3429,12 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   weekViewMode === 'overview' && 'lg:flex lg:min-h-0 lg:flex-1 lg:flex-col',
                 )}
               >
-                {/* イベントストリップ (PO確定 2026-07-26): コース列に紐づかない受け皿。
-                    休み等「その日コースを持たないスタッフ」のイベントも必ず見える。
-                    スタッフ別ビューは各セルに全イベントが出るため重複表示しない。 */}
-                {weekViewMode !== 'staff' && (
-                  <EventStrip
-                    staffEventsByStaff={staffEventsByStaff}
-                    staffMap={staffMap}
-                    weekdays={[0, 1, 2, 3, 4, 5]}
-                    weekStart={weekStart}
-                    testId="week-event-strip"
-                  />
-                )}
                 {weekViewMode === 'timeline' ? (
                   /* T-3改: 週タイムライン (全コース縦積み・縦スクロールで一元閲覧). */
                   <WeekTimelineBoard
                     options={weekTimelineOptions}
                     visits={overviewVisits}
+                    eventFramesByWeekday={staffEventFramesByWeekday}
                     weekdayDates={weekdayDates}
                     // 同行モード中は患者詳細を抑止 (§7.1 N-2)。
                     onPatientClick={
@@ -3441,6 +3461,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   <CourseWeekOverview
                     templates={templates}
                     officeNameById={officeNameById}
+                    eventFramesByWeekday={staffEventFramesByWeekday}
                     visits={overviewVisits}
                     onJumpToDay={(wd) => setActiveTab(wd)}
                     staffEventsByStaff={staffEventsByStaff}
@@ -3476,15 +3497,6 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 )}
                 data-testid="course-day-table-list"
               >
-                {/* イベントストリップ (PO確定 2026-07-26): その日の全スタッフの
-                    イベント (休み含む) を緑チップで表示。タイムライン/リスト共通。 */}
-                <EventStrip
-                  staffEventsByStaff={staffEventsByStaff}
-                  staffMap={staffMap}
-                  weekdays={[activeWeekday]}
-                  weekStart={weekStart}
-                  testId="day-event-strip"
-                />
                 {/* PO 2026-07-09: スタッフ不足バナー (表示 A-E 列数 > 稼働スタッフ数)。
                     列は PFV/visit の和集合でも出るため、担当が足りない拠点を曜日単位で警告。 */}
                 {staffShortageBanners.length > 0 ? (
@@ -3511,6 +3523,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   <div data-testid="course-day-timeline-view" className="lg:min-h-0 lg:flex-1">
                     <TimelineDayBoard
                       columns={timelineColumns}
+                      // スタッフ枠 (PO確定 2026-07-26): コース無し・イベントありの
+                      // スタッフを盤面の列として編み込む (休みの人もスケジュールの一員)。
+                      staffFrames={staffEventFramesByWeekday.get(activeWeekday) ?? []}
                       weekdayLabel={WEEKDAY_LABELS[activeWeekday] ?? ''}
                       // 同行モード中は通常のクリック/DnD/空き枠/イベントを全て抑止 (§7.1 N-2)。
                       onPatientClick={
@@ -3566,6 +3581,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   <div data-testid="course-day-list-view">
                     <TimelineDayList
                       courses={weekdayListCourses}
+                      staffFrames={staffEventFramesByWeekday.get(activeWeekday) ?? []}
                       onPatientClick={handleOpenPatientDetail}
                       onTogglePin={canEdit ? handleTogglePin : undefined}
                       // G2: 行末の × (訪問削除)。確認ダイアログは既存ハンドラが持つ。

@@ -135,8 +135,20 @@ export interface TimelineCourseColumn {
   staffOptions: StaffRead[];
 }
 
+/**
+ * スタッフ枠 (PO確定 2026-07-26): その日コースを持たないがイベント (休み/面談/📝) の
+ * あるスタッフを、コース列と同格の「枠」として盤面に編み込む。
+ * その人にもその日のスケジュールがある、をUIで表現する。読み取り専用。
+ */
+export interface StaffEventFrame {
+  staff: StaffRead;
+  events: EventRead[];
+}
+
 export interface TimelineDayBoardProps {
   columns: TimelineCourseColumn[];
+  /** コース無し・イベントありスタッフの枠 (コース列の右に描画)。 */
+  staffFrames?: StaffEventFrame[];
   weekdayLabel: string;
   /** カード / 空き枠クリック → 患者詳細 (既存ダイアログ)。T-1 は詳細を開くのみ。 */
   onPatientClick?: (patientId: string) => void;
@@ -1507,6 +1519,7 @@ function TimelineColumn({
 
 export function TimelineDayBoard({
   columns,
+  staffFrames = [],
   weekdayLabel,
   onPatientClick,
   nowMinutes,
@@ -1525,7 +1538,7 @@ export function TimelineDayBoard({
   const hours: number[] = [];
   for (let m = TL_DAY_START_MIN; m <= TL_DAY_END_MIN; m += 60) hours.push(m);
 
-  if (columns.length === 0) {
+  if (columns.length === 0 && staffFrames.length === 0) {
     return (
       <div className="rounded-lg border border-border-default bg-bg-muted p-4 text-sm text-text-muted">
         {weekdayLabel}曜日の表示対象コースがありません。
@@ -1703,6 +1716,44 @@ export function TimelineDayBoard({
             </div>
           );
         })}
+        {/* スタッフ枠ヘッダ (コース無し・イベントありのスタッフ)。緑=イベントの視覚言語。 */}
+        {staffFrames.map((f) => (
+          <div
+            key={`frame-h-${f.staff.id}`}
+            className="flex items-center gap-1.5 border-l border-border-subtle px-2 py-1.5"
+            style={{ flex: 1, minWidth: COL_MIN_W }}
+            data-testid={`tl-staff-frame-header-${f.staff.id}`}
+          >
+            <span
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-full border-[1.5px] text-[11px] font-bold"
+              style={{
+                background: 'var(--sched-event-bg)',
+                borderColor: 'var(--sched-event-bar)',
+                color: 'var(--sched-event-ink)',
+              }}
+              aria-hidden="true"
+            >
+              {f.staff.name[0]}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[12.5px] font-bold text-text-primary">
+                {f.staff.name}
+              </div>
+              <div className="flex items-center gap-1.5 text-[9.5px] text-text-muted">
+                <span
+                  className="rounded px-1.5 py-px text-[9px] font-extrabold"
+                  style={{
+                    background: 'var(--sched-event-bg)',
+                    color: 'var(--sched-event-ink)',
+                  }}
+                >
+                  イベント
+                </span>
+                <span className="tnum font-bold">{f.events.length}件</span>
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
 
       {/* 本体 (時間軸レール + コース列 + イベント帯 + 現在線) */}
@@ -1733,6 +1784,27 @@ export function TimelineDayBoard({
             accompaniment={accompaniment}
           />
         ))}
+
+        {/* スタッフ枠本体: イベント帯 + 📝メモのみの読み取り専用列。 */}
+        {staffFrames.map((f) => {
+          const frameCol = {
+            key: `staff-frame-${f.staff.id}`,
+            assignedStaff: f.staff,
+          } as unknown as TimelineCourseColumn;
+          return (
+            <div
+              key={`frame-b-${f.staff.id}`}
+              className="relative border-l border-border-subtle"
+              style={{ flex: 1, minWidth: COL_MIN_W, height }}
+              data-testid={`tl-staff-frame-${f.staff.id}`}
+            >
+              {f.events.map((ev) => (
+                <EventBandView key={`fev-${ev.id}`} ev={ev} col={frameCol} />
+              ))}
+              <MemoChipsRow events={f.events} colKey={`staff-frame-${f.staff.id}`} />
+            </div>
+          );
+        })}
 
         {/* 現在時刻ライン */}
         {showNow && nowMinutes != null && (
