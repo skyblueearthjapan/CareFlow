@@ -16,6 +16,7 @@ const COMMAND_LABELS: Record<string, string> = {
   export: 'CSV エクスポート',
   apply: '差分適用',
   diff: '差分計算',
+  individual_tasks: 'イベント取得（個別業務）',
 };
 
 export function commandLabel(command: string | null | undefined): string | null {
