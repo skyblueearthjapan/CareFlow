@@ -150,6 +150,7 @@ import {
   type PartnerLocation,
 } from './courseGrid';
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
+import { StaffWeekBoard } from './StaffWeekBoard';
 import {
   parseTlColDroppableId,
   parseTlPairDraggableId,
@@ -347,7 +348,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const [weekdayViewMode, setWeekdayViewMode] = useState<'list' | 'timeline'>('timeline');
   // T-3: 週タブの見え方。overview=既存の全コース俯瞰(既定・全機能温存) / timeline=週タイムライン(全コース縦積み)。
   // ラベルは overview="リスト" (PO指示 2026-07-08。内部値は据置)。
-  const [weekViewMode, setWeekViewMode] = useState<'overview' | 'timeline'>('overview');
+  // 'staff' = スタッフ別 (カイポケ職員スケジュール同等・案B・PO要望 2026-07-26)。
+  const [weekViewMode, setWeekViewMode] = useState<'overview' | 'timeline' | 'staff'>('overview');
 
   // ─── Master data ────────────────────────────────────────────────────
   const officesQuery = useOffices({ limit: 50 });
@@ -3206,6 +3208,26 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     >
                       リスト
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setWeekViewMode('staff')}
+                      aria-pressed={weekViewMode === 'staff'}
+                      // 同行モード中は選択操作が無いため封じる (リストと同じ扱い)。
+                      disabled={accompaniment.active}
+                      title={
+                        accompaniment.active
+                          ? '新人同行モード中はタイムライン表示のみ使えます'
+                          : 'スタッフごとの週の動きを表示（カイポケの職員スケジュールと同じ構造）'
+                      }
+                      data-testid="course-week-mode-staff"
+                      className={
+                        weekViewMode === 'staff'
+                          ? 'bg-brand-primary px-2 py-1 text-white'
+                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted disabled:cursor-not-allowed disabled:opacity-50'
+                      }
+                    >
+                      スタッフ別
+                    </button>
                   </div>
                 </div>
               )}
@@ -3388,6 +3410,19 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     capacityByWeekday={weekTimelineCapacityByWeekday}
                     staffByWeekday={weekTimelineStaffByWeekday}
                     accompaniment={accompaniment.binding}
+                  />
+                ) : weekViewMode === 'staff' ? (
+                  /* スタッフ別 (案B・PO要望 2026-07-26): 職員×曜日グリッド。
+                     カイポケの職員スケジュールと同じ構造で取り込み結果を突き合わせる。 */
+                  <StaffWeekBoard
+                    templates={templates}
+                    officeNameById={officeNameById}
+                    visits={overviewVisits}
+                    assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
+                    staffMap={staffMap}
+                    staffEventsByStaff={staffEventsByStaff}
+                    weekStart={weekStart}
+                    onPatientClick={handleOpenPatientDetail}
                   />
                 ) : (
                   <CourseWeekOverview
