@@ -23,7 +23,7 @@ import type {
   SmartInboundPreview,
 } from '@/lib/schemas/integration';
 
-import { type InboundVm, fmtDayLabel, fmtWeekLabel } from './useInbound';
+import { type InboundVm, fmtDayLabel, fmtRelativeWeek, fmtWeekLabel } from './useInbound';
 
 const EVENT_ACTION_META: Record<string, { label: string; cls: string }> = {
   add: { label: '追加', cls: 'bg-info-bg text-info' },
@@ -31,21 +31,17 @@ const EVENT_ACTION_META: Record<string, { label: string; cls: string }> = {
   delete: { label: '削除', cls: 'bg-error-bg text-error' },
 };
 
-type WeekOption = 'this' | 'next';
-
 export function InboundControls({ vm }: { vm: InboundVm }) {
   const {
     busy,
     credentialsConfigured,
-    thisMonday,
-    nextMonday,
-    selectedWeek,
+    weekOffset,
     weekStart,
-    thisElig,
-    nextElig,
     currentElig,
     eligible,
-    handleWeekChange,
+    canGoNext,
+    changeWeek,
+    goToThisWeek,
     smartPreview,
     smartPlan,
     eventsPlan,
@@ -85,40 +81,66 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
         </div>
       )}
 
-      {/* ── 週選択チップ ── */}
+      {/* ── 週送りナビ（過去は無制限・未来は来週まで） ── */}
       <div className="mb-5">
         <p className="mb-2 text-xs font-medium text-text-secondary">対象週</p>
-        <div className="flex flex-wrap gap-2">
-          {(['this', 'next'] as WeekOption[]).map((w) => {
-            const mon = w === 'this' ? thisMonday : nextMonday;
-            const elig = w === 'this' ? thisElig : nextElig;
-            const isEligible = elig.data?.eligible ?? false;
-            const isLoading = elig.isLoading;
-            const isSelected = selectedWeek === w;
-            return (
-              <button
-                key={w}
-                type="button"
-                disabled={isLoading || !isEligible}
-                onClick={() => handleWeekChange(w)}
-                className={[
-                  'rounded-full border px-3 py-1.5 text-sm font-medium transition-colors',
-                  isSelected && isEligible
-                    ? 'border-brand-primary bg-brand-primary text-white'
-                    : isEligible
-                      ? 'border-border-default bg-bg-base text-text-primary hover:bg-bg-muted'
-                      : 'cursor-not-allowed border-border-subtle bg-bg-muted text-text-muted opacity-60',
-                ].join(' ')}
-              >
-                {w === 'this' ? '今週' : '来週'}
-                <span className="ml-2 text-xs tabular-nums">{fmtWeekLabel(mon)}</span>
-              </button>
-            );
-          })}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => changeWeek(-1)}
+            disabled={fetching || applying || busy}
+            data-testid="inbound-week-prev"
+          >
+            ◀ 前の週
+          </Button>
+          <span
+            className="inline-flex items-center gap-2 rounded-md border border-border-default bg-bg-base px-3 py-1.5 text-sm"
+            data-testid="inbound-week-label"
+          >
+            <span
+              className={[
+                'rounded px-1.5 py-0.5 text-xs font-medium',
+                weekOffset === 0
+                  ? 'bg-brand-primary text-white'
+                  : weekOffset > 0
+                    ? 'bg-info-bg text-info'
+                    : 'bg-bg-muted text-text-secondary',
+              ].join(' ')}
+            >
+              {fmtRelativeWeek(weekOffset)}
+            </span>
+            <span className="font-medium tabular-nums text-text-primary">
+              {fmtWeekLabel(weekStart)}
+            </span>
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => changeWeek(1)}
+            disabled={!canGoNext || fetching || applying || busy}
+            data-testid="inbound-week-next"
+          >
+            次の週 ▶
+          </Button>
+          {weekOffset !== 0 && (
+            <button
+              type="button"
+              onClick={goToThisWeek}
+              disabled={fetching || applying || busy}
+              className="text-xs text-text-secondary underline underline-offset-2 hover:text-text-primary"
+            >
+              今週へ戻る
+            </button>
+          )}
         </div>
+        <p className="mt-2 text-xs text-text-muted">
+          過去の週はいくらでも遡れます（カイポケは請求と紐づくため過去分も残っています）。
+          未来は来週まで。
+        </p>
         {!currentElig.isLoading && !eligible && (
-          <p className="mt-2 text-xs text-text-muted">
-            過去・今週はいつでも取り込めます。未来の週は、先に④反映（送る）を済ませると
+          <p className="mt-1 text-xs text-warning-strong">
+            この週はまだ取り込めません。未来の週は、先に④反映（送る）を済ませると
             取り込めるようになります（計画中の週を消してしまう事故防止）。
           </p>
         )}

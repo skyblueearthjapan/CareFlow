@@ -9,7 +9,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
 
@@ -113,15 +113,13 @@ function makeVm(overrides: Partial<InboundVm> = {}): InboundVm {
   return {
     busy: false,
     credentialsConfigured: true,
-    thisMonday: MONDAY,
-    nextMonday: new Date(2026, 6, 27),
-    selectedWeek: 'this',
+    weekOffset: 0,
     weekStart: MONDAY,
-    thisElig: eligQuery,
-    nextElig: eligQuery,
     currentElig: eligQuery,
     eligible: true,
-    handleWeekChange: vi.fn(),
+    canGoNext: true,
+    changeWeek: vi.fn(),
+    goToThisWeek: vi.fn(),
     smartPreview: { ...idleMutation },
     applySmart: { ...idleMutation },
     smartPlan: null,
@@ -245,6 +243,29 @@ describe('InboundControls — smart-inbound', () => {
     // 置換規模とイベント件数
     expect(screen.getByText(/78 件を削除/)).toBeInTheDocument();
     expect(screen.getByText(/追加 2 \/ 変更 1 \/ 削除 0/)).toBeInTheDocument();
+  });
+
+  it('⑥ 週送り: 過去へは常に戻れる・未来は来週まで（canGoNext=false で無効）', () => {
+    const changeWeek = vi.fn();
+    render(
+      <InboundControls
+        vm={makeVm({ weekOffset: 1, canGoNext: false, changeWeek, goToThisWeek: vi.fn() })}
+      />,
+    );
+    // 相対ラベルと「今週へ戻る」
+    expect(screen.getByTestId('inbound-week-label')).toHaveTextContent('来週');
+    expect(screen.getByText('今週へ戻る')).toBeInTheDocument();
+    // 未来方向は上限で無効・過去方向は常に有効
+    expect(screen.getByTestId('inbound-week-next')).toBeDisabled();
+    const prev = screen.getByTestId('inbound-week-prev');
+    expect(prev).toBeEnabled();
+    fireEvent.click(prev);
+    expect(changeWeek).toHaveBeenCalledWith(-1);
+  });
+
+  it('⑥b 過去週: 「n週前」ラベルが出る', () => {
+    render(<InboundControls vm={makeVm({ weekOffset: -3 })} />);
+    expect(screen.getByTestId('inbound-week-label')).toHaveTextContent('3週前');
   });
 
   it('⑤b 全日置換（打刻ゼロ週）: 🔒行は出ず、置換警告のみ', () => {

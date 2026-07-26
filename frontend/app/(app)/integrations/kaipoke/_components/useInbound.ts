@@ -51,6 +51,14 @@ export function fmtDayLabel(iso: string): string {
   return `${d.getMonth() + 1}/${d.getDate()}（${WEEKDAYS[wd] ?? '?'}）`;
 }
 
+/** 週オフセット (0=今週) の相対ラベル。過去は「n週前」。 */
+export function fmtRelativeWeek(offset: number): string {
+  if (offset === 0) return '今週';
+  if (offset === 1) return '来週';
+  if (offset === -1) return '先週';
+  return `${-offset}週前`;
+}
+
 export function field(obj: unknown, key: string): string {
   if (obj && typeof obj === 'object' && key in obj) {
     const v = (obj as Record<string, unknown>)[key];
@@ -61,7 +69,12 @@ export function field(obj: unknown, key: string): string {
 
 // ──────────────────────────── フック ────────────────────────────
 
-type WeekOption = 'this' | 'next';
+/**
+ * 未来方向の上限 = 来週まで (PO確定 2026-07-27)。④反映の運用単位が来週分までで、
+ * BEゲートも未来週は実apply記録がある週しか開かない — それ以上進めるUIにしても
+ * 常に押せないだけなので来週で止める。過去方向は無制限 (カイポケ=請求データで残る)。
+ */
+export const MAX_FUTURE_WEEKS = 1;
 
 export function useInbound({
   busy,
@@ -71,14 +84,14 @@ export function useInbound({
   credentialsConfigured?: boolean;
 }) {
   const thisMonday = useMemo(() => mondayOf(new Date()), []);
-  const nextMonday = useMemo(() => {
-    const m = mondayOf(new Date());
-    m.setDate(m.getDate() + 7);
-    return m;
-  }, []);
 
-  const [selectedWeek, setSelectedWeek] = useState<WeekOption>('this');
-  const weekStart = selectedWeek === 'this' ? thisMonday : nextMonday;
+  // 0=今週・負=過去週 (無制限)・正=未来週 (MAX_FUTURE_WEEKS まで)
+  const [weekOffset, setWeekOffset] = useState(0);
+  const weekStart = useMemo(() => {
+    const m = new Date(thisMonday);
+    m.setDate(m.getDate() + weekOffset * 7);
+    return m;
+  }, [thisMonday, weekOffset]);
   const weekStartStr = fmtDate(weekStart);
 
   // smart 統合プレビュー (差分シートID・置換計画・日別分類)
@@ -88,9 +101,7 @@ export function useInbound({
   const [eventsError, setEventsError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
 
-  const thisElig = useInboundEligibility(fmtDate(thisMonday));
-  const nextElig = useInboundEligibility(fmtDate(nextMonday));
-  const currentElig = selectedWeek === 'this' ? thisElig : nextElig;
+  const currentElig = useInboundEligibility(weekStartStr);
   const eligible = currentElig.data?.eligible ?? false;
 
   const smartPreview = useSmartInboundPreview();
@@ -109,8 +120,15 @@ export function useInbound({
     setEventsError(null);
   };
 
-  const handleWeekChange = (week: WeekOption) => {
-    setSelectedWeek(week);
+  const canGoNext = weekOffset < MAX_FUTURE_WEEKS;
+
+  const changeWeek = (delta: number) => {
+    setWeekOffset((o) => Math.min(MAX_FUTURE_WEEKS, o + delta));
+    resetPlan();
+  };
+
+  const goToThisWeek = () => {
+    setWeekOffset(0);
     resetPlan();
   };
 
@@ -206,15 +224,13 @@ export function useInbound({
   return {
     busy,
     credentialsConfigured,
-    thisMonday,
-    nextMonday,
-    selectedWeek,
+    weekOffset,
     weekStart,
-    thisElig,
-    nextElig,
     currentElig,
     eligible,
-    handleWeekChange,
+    canGoNext,
+    changeWeek,
+    goToThisWeek,
     // smart 取り込み
     smartPreview,
     applySmart,
