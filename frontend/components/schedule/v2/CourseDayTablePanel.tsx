@@ -3242,7 +3242,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                           : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted disabled:cursor-not-allowed disabled:opacity-50'
                       }
                     >
-                      リスト
+                      コース別
                     </button>
                     <button
                       type="button"
