@@ -27,7 +27,8 @@ from typing import TYPE_CHECKING
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from app.models.course import Course
+from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
+from app.models.course_template import CourseTemplate
 from app.models.patient import Patient
 from app.models.trainee_accompaniment import TraineeAccompaniment
 from app.models.visit import Visit
@@ -95,6 +96,10 @@ class ReplaceResult:
     # コース担当をカイポケの現実に合わせて付け替えた数 (2026-07-26 改修)。
     # 「コース丸ごと交代」と同じ考え方で、臨時コース乱立 (→ 表示合算で1枠15件) を防ぐ。
     courses_reassigned: int = 0
+    # 未使用の通常テンプレート (例: 稲毛E) からコース行を新設した数 (2026-07-26)。
+    # 既存コース行が足りなくても、テンプレートに空きがあれば臨時ではなく正規の
+    # 枠を立てる — 臨時の合算表示 (臨+臨2 で 9名/枠) を構造的に減らす。
+    courses_created: int = 0
 
 
 async def _count_week_achievements(
@@ -300,6 +305,20 @@ async def replace_week_from_kaipoke(
     for lst in regular_by_cell.values():
         lst.sort(key=lambda c: str(c.code))
 
+    # 未使用の通常テンプレート (例: 稲毛E)。既存コース行が足りないとき、臨時の前に
+    # ここからコース行を新設する (2026-07-26・臨+臨2 合算表示の構造的削減)。
+    regular_templates_by_office: dict[uuid.UUID, list[CourseTemplate]] = {}
+    tpl_rows = (
+        await db.scalars(select(CourseTemplate).where(CourseTemplate.deleted_at.is_(None)))
+    ).all()
+    for t in tpl_rows:
+        label = (t.label or "").strip()
+        if not label or label.startswith("臨") or label.upper().startswith("M"):
+            continue
+        regular_templates_by_office.setdefault(t.office_id, []).append(t)
+    for tlst in regular_templates_by_office.values():
+        tlst.sort(key=lambda t: (t.label or ""))
+
     course_plan: dict[tuple[int, uuid.UUID, uuid.UUID], Course] = {}
     reassignments: list[tuple[Course, uuid.UUID]] = []
     temp_keys: set[tuple[int, uuid.UUID, uuid.UUID]] = set()
@@ -326,9 +345,37 @@ async def replace_week_from_kaipoke(
             course_plan[(wd, office_id, sid)] = c
             if c.assigned_staff_id != sid:
                 reassignments.append((c, sid))
-        # 3. あぶれた分は臨時コース (挿入時に ensure_temp_course)
-        for sid in pending[len(free) :]:
-            temp_keys.add((wd, office_id, sid))
+        # 3. まだあぶれる場合は、未使用の通常テンプレートからコース行を新設
+        leftover = pending[len(free) :]
+        if leftover:
+            used_codes = {str(c.code) for c in regs}
+            avail_tpls = [
+                t
+                for t in regular_templates_by_office.get(office_id, [])
+                if (t.label or "").strip() not in used_codes
+            ]
+            for sid, t in zip(leftover, avail_tpls, strict=False):
+                result.courses_created += 1
+                if not dry_run:
+                    new_course = Course(
+                        iso_year=course_idx.iso_year,
+                        iso_week=course_idx.iso_week,
+                        weekday=wd,
+                        code=(t.label or "").strip(),
+                        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+                        assigned_staff_id=sid,
+                        staff_assigned_at=now,
+                        template_id=t.id,
+                        office_id=office_id,
+                        note="カイポケ置換取込によるコース新設",
+                    )
+                    db.add(new_course)
+                    await db.flush()
+                    course_idx.register(new_course)
+                    course_plan[(wd, office_id, sid)] = new_course
+            # 4. テンプレートも尽きた分だけ臨時コースへ
+            for sid in leftover[len(avail_tpls) :]:
+                temp_keys.add((wd, office_id, sid))
 
     result.courses_reassigned = len(reassignments)
     result.temp_courses = len(temp_keys)

@@ -362,3 +362,59 @@ async def test_replace_cleans_residual_temp_courses(client, db, stub_kaipoke) ->
     ).all()
     assert len(temps) == 1
     assert temps[0].code == "臨"  # 臨2 へ滑らず先頭コードから振り直される
+
+
+@pytest.mark.asyncio
+async def test_replace_creates_course_from_unused_template(client, db, stub_kaipoke) -> None:
+    """既存コース行が足りないとき、未使用の通常テンプレート (例: E) からコース行を
+    新設して割り当てる (2026-07-26・臨時の合算表示の構造的削減)。"""
+    from app.models.course import Course
+    from app.models.course_template import CourseTemplate
+    from tests.test_kaipoke_inbound import _seed_second_staff
+
+    seeded = await _seed_week(db)
+    office = seeded["office"]
+    other = await _seed_second_staff(db, office)  # 佐藤　次郎
+    # テンプレート A/B を用意。コース行は A のみ (佐藤担当) → B は未使用テンプレ
+    tpl_a = CourseTemplate(office_id=office.id, label="A")
+    tpl_b = CourseTemplate(office_id=office.id, label="B")
+    db.add_all([tpl_a, tpl_b])
+    await db.commit()
+    await _seed_course(db, office=office, staff=other, weekday=1, code="A")
+    admin = await _make_admin(db)
+    # カイポケ現実: 火曜に佐藤 (A維持) と田中 (コース無し → B新設されるべき)
+    stub_kaipoke.by_month[MONTH] = _csv(
+        _kp_row(date(2026, 7, 7), time(10, 0), time(10, 35), staff_name="佐藤　次郎"),
+        _kp_row(date(2026, 7, 7), time(11, 0), time(11, 35)),  # 田中
+    )
+
+    res = await _post_replace(client, admin, week_start=WEEK_START, dry_run=True)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["coursesCreated"] == 1
+    assert body["tempCourses"] == 0
+
+    res2 = await _post_replace(client, admin, week_start=WEEK_START, dry_run=False)
+    assert res2.status_code == 200, res2.text
+    assert res2.json()["coursesCreated"] == 1
+    assert res2.json()["tempCourses"] == 0
+
+    iso = WEEK_START.isocalendar()
+    course_b = await db.scalar(
+        select(Course).where(
+            Course.iso_year == iso[0],
+            Course.iso_week == iso[1],
+            Course.weekday == 1,
+            Course.code == "B",
+            Course.deleted_at.is_(None),
+        )
+    )
+    assert course_b is not None
+    assert course_b.assigned_staff_id == seeded["staff"].id  # 田中
+    assert course_b.template_id == tpl_b.id
+    visits = (
+        await db.scalars(
+            select(Visit).where(Visit.deleted_at.is_(None), Visit.course_id == course_b.id)
+        )
+    ).all()
+    assert len(visits) == 1

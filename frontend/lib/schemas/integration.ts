@@ -443,6 +443,8 @@ export const ReplaceInboundResultSchema = z.object({
   tempCourses: z.number().int().default(0),
   // コース担当をカイポケの現実へ付け替えた数 (臨時コース乱立の根治・2026-07-26)
   coursesReassigned: z.number().int().default(0),
+  // 未使用テンプレートから新設したコース行の数 (例: 稲毛E)
+  coursesCreated: z.number().int().default(0),
   skipped: z.array(ReplaceInboundSkipSchema).default([]),
   // ⚠新人の単独訪問 (取り込み済み・新人フラグ見直しの判断材料)
   traineeSolo: z.array(ReplaceInboundTraineeSoloSchema).default([]),

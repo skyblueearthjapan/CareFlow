@@ -269,6 +269,13 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                     tone="warning"
                   />
                 )}
+                {replacePlan.coursesCreated > 0 && (
+                  <SummaryChip
+                    label="コース新設"
+                    value={replacePlan.coursesCreated}
+                    tone="success"
+                  />
+                )}
                 {replacePlan.tempCourses > 0 && (
                   <SummaryChip label="臨時コース" value={replacePlan.tempCourses} tone="warning" />
                 )}
