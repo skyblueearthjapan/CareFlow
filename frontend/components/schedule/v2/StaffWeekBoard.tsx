@@ -20,6 +20,8 @@ import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
 
+import { genderPalette } from '@/lib/scheduling/timeline';
+
 import { getStaffEventsForWeekday } from './courseGrid';
 import type { WeekOverviewVisit } from './CourseWeekOverview';
 
@@ -219,40 +221,62 @@ export function StaffWeekBoard({
                             <div className="mb-0.5 inline-flex items-center rounded bg-bg-muted px-1.5 py-px text-[10px] font-bold text-text-secondary">
                               {cc.label}
                             </div>
-                            <ul className="space-y-px">
+                            <ul className="space-y-0.5">
                               {cc.visits
                                 .slice()
                                 .sort((a, b) =>
                                   (a.start_time ?? '').localeCompare(b.start_time ?? ''),
                                 )
-                                .map((v) => (
-                                  <li key={v.id} className="flex items-baseline gap-1 leading-4">
-                                    <span className="tnum shrink-0 tabular-nums text-text-secondary">
-                                      {hhmm(v.start_time)}
-                                      {v.end_time ? `〜${hhmm(v.end_time)}` : ''}
-                                    </span>
-                                    {onPatientClick ? (
-                                      <button
-                                        type="button"
-                                        onClick={() => onPatientClick(v.patient_id)}
-                                        className={[
-                                          'truncate text-left hover:underline',
-                                          v.patient_sex_restriction === 'female_only'
-                                            ? 'text-error'
-                                            : v.patient_sex_restriction === 'male_only'
-                                              ? 'text-info'
-                                              : 'text-text-primary',
-                                        ].join(' ')}
-                                      >
-                                        {v.patient_name ?? '（無名）'}
-                                      </button>
-                                    ) : (
-                                      <span className="truncate text-text-primary">
-                                        {v.patient_name ?? '（無名）'}
+                                .map((v) => {
+                                  // 週ビュー(リスト)と同じ視覚言語の性別ウォッシュカード行
+                                  // (CourseWeekOverview の visit 行と同一スタイル・PO要望)。
+                                  const pal = genderPalette(v.patient_sex);
+                                  const sexStyle: React.CSSProperties =
+                                    v.patient_sex_restriction === 'female_only'
+                                      ? { color: '#dc2626', fontWeight: 600 }
+                                      : v.patient_sex_restriction === 'male_only'
+                                        ? { color: '#2563eb', fontWeight: 600 }
+                                        : {};
+                                  return (
+                                    <li
+                                      key={v.id}
+                                      className="flex items-center gap-1 rounded border border-l-[3px] px-1 py-0.5 text-[10px] text-text-primary"
+                                      style={{
+                                        background: pal.bg,
+                                        borderColor: pal.ln,
+                                        borderLeftColor: pal.bar,
+                                      }}
+                                      title={v.patient_name ?? undefined}
+                                      data-testid={`staff-week-visit-${v.id}`}
+                                    >
+                                      {/* 行頭の性別ドット (週リストと同じ視覚言語)。 */}
+                                      <i
+                                        className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                        style={{ background: pal.bar }}
+                                        aria-hidden="true"
+                                      />
+                                      <span className="min-w-0 flex-1 truncate">
+                                        <span className="mr-1 tnum text-text-muted">
+                                          {hhmm(v.start_time)}
+                                          {v.end_time ? `〜${hhmm(v.end_time)}` : ''}
+                                        </span>
+                                        {onPatientClick ? (
+                                          <button
+                                            type="button"
+                                            className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                            style={sexStyle}
+                                            onClick={() => onPatientClick(v.patient_id)}
+                                            aria-label={`${v.patient_name ?? ''} の詳細を開く`}
+                                          >
+                                            {v.patient_name ?? '（無名）'}
+                                          </button>
+                                        ) : (
+                                          <span style={sexStyle}>{v.patient_name ?? '（無名）'}</span>
+                                        )}
                                       </span>
-                                    )}
-                                  </li>
-                                ))}
+                                    </li>
+                                  );
+                                })}
                             </ul>
                           </div>
                         ))}
