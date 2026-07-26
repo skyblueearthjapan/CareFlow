@@ -73,6 +73,10 @@ export const proposeMiniScheduleEntrySchema = z.object({
   // T-4: 性別ウォッシュ用 (male/female/unknown)。提案行 (is_here) は BE が None 固定
   // (FE が対象患者マスタから補完)。旧BEは未送出 → nullish。
   sex: z.string().nullish(),
+  // イベント表示 (2026-07-27): この行が担当スタッフのイベントなら true
+  // (name=タイトル・time=開始・end_time=終了)。緑のイベントカードで描画。
+  is_event: z.boolean().default(false),
+  end_time: z.string().nullish(),
 });
 export type ProposeMiniScheduleEntry = z.infer<typeof proposeMiniScheduleEntrySchema>;
 

@@ -55,6 +55,28 @@ export interface TimelineRow extends TimelineRowMeta {
   start: string; // HH:MM
   end?: string; // HH:MM (無ければ開始時刻のみ表示: mini_schedule は終了時刻を持たない)
   kind: 'normal' | 'out' | 'in';
+  /**
+   * イベント表示 (2026-07-27): 担当スタッフのイベント行。緑のイベントカード
+   * (--sched-event-* トークン) で描画し、「様」を付けない。
+   */
+  isEvent?: boolean;
+}
+
+/** スナップショットの events (title/start_time/end_time) を TimelineRow へ変換。 */
+export function eventTimelineRows(
+  events: ReadonlyArray<{ title: string; start_time: string; end_time: string }> | null | undefined,
+  keyPrefix: string,
+): TimelineRow[] {
+  return (events ?? []).map(
+    (e, i): TimelineRow => ({
+      key: `${keyPrefix}-ev-${i}`,
+      name: e.title,
+      start: e.start_time.slice(0, 5),
+      end: e.end_time.slice(0, 5),
+      kind: 'normal',
+      isEvent: true,
+    }),
+  );
 }
 
 export function TimelinePanel({
@@ -77,6 +99,33 @@ export function TimelinePanel({
       <div className="mb-1 text-[11px] font-medium text-text-secondary">{title}</div>
       <div className="space-y-1">
         {sorted.map((row) => {
+          // イベント行 (2026-07-27): 緑のイベントカード。移動対象にはならないため
+          // in/out 装飾は付かない。「様」も付けない。
+          if (row.isEvent) {
+            return (
+              <div
+                key={row.key}
+                className="relative flex items-center gap-1.5 rounded-md border border-l-[3px] px-1.5 py-0.5 text-[11px]"
+                style={{
+                  background: 'var(--sched-event-bg)',
+                  borderColor: 'var(--sched-event-ln)',
+                  borderLeftColor: 'var(--sched-event-bar)',
+                  color: 'var(--sched-event-ink)',
+                }}
+                data-kind="event"
+              >
+                <i
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{ background: 'var(--sched-event-bar)' }}
+                  aria-hidden="true"
+                />
+                <span className="tabular-nums font-semibold">
+                  {row.end ? `${row.start}–${row.end}` : row.start}
+                </span>
+                <span className="truncate">{row.name}</span>
+              </div>
+            );
+          }
           // T-4: 日リスト (TimelineDayList.VisitRow) と同じカード視覚言語。
           // 性別ウォッシュ地 + 性別左帯 + 性別ドット。メタ無し行は中立色。
           const pal = genderPalette(row.sex);
@@ -208,6 +257,8 @@ export function CourseMoveTimeline({
         : 'normal',
     ...metaOf(v.patient_id),
   }));
+  // イベント表示 (2026-07-27): 担当スタッフのイベントを時系列に混ぜる (緑カード).
+  srcRows.push(...eventTimelineRows(src.events, 's'));
 
   if (!dst) {
     // 同一コース内: 1 枚に out (旧位置) と in (新位置) を同居させる.
@@ -234,6 +285,7 @@ export function CourseMoveTimeline({
     kind: cp && v.patient_id === cp.patient_id ? 'out' : 'normal',
     ...metaOf(v.patient_id),
   }));
+  dstRows.push(...eventTimelineRows(dst.events, 'd'));
   dstRows.push(xIn);
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" data-testid="course-move-timeline-pair">

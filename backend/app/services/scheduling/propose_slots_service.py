@@ -580,6 +580,26 @@ def _build_mini_schedule(
             "_sort": _time_to_min(slot.start),
         }
     )
+    # イベント表示 (2026-07-27 PO指示): 担当スタッフのイベントもその日の予定として
+    # 時系列に混ぜる (FE は is_event=True を緑のイベントカードで描画)。ゼロ長メモは除外。
+    for w in bucket.event_windows:
+        if _time_to_min(w.end) <= _time_to_min(w.start):
+            continue
+        entries.append(
+            {
+                "time": _fmt_hhmm(w.start),
+                "name": w.title or "イベント",
+                "ins": None,
+                "is_here": False,
+                "is_pair": False,
+                "sex_restriction": None,
+                "is_multi_staff": False,
+                "sex": None,
+                "is_event": True,
+                "end_time": _fmt_hhmm(w.end),
+                "_sort": _time_to_min(w.start),
+            }
+        )
     entries.sort(key=lambda e: e["_sort"])  # type: ignore[index,arg-type,return-value]
     for e in entries:
         e.pop("_sort", None)

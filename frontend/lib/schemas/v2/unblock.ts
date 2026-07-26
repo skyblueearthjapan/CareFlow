@@ -126,6 +126,10 @@ export const unblockCourseBeforeAfterSchema = z.object({
   course_label: z.string().nullish(),
   before: tolerantArray(unblockCourseEntrySchema).default([]),
   after: tolerantArray(unblockCourseEntrySchema).default([]),
+  // イベント表示 (2026-07-27): 担当スタッフのイベント (before/after 共通・緑カード)。
+  events: z
+    .array(z.object({ title: z.string(), start_time: z.string(), end_time: z.string() }))
+    .catch([]),
 });
 export type UnblockCourseBeforeAfter = z.infer<typeof unblockCourseBeforeAfterSchema>;
 

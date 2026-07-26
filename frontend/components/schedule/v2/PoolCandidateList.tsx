@@ -68,6 +68,7 @@ import { genderPalette } from '@/lib/scheduling/timeline';
 import { ChangeScopeChoice, type ChangeScopeValue } from './ChangeScopeChoice';
 import {
   BeforeAfterCourseTimeline,
+  eventTimelineRows,
   type TimelineRow,
   type TimelineRowMeta,
 } from './CourseMoveTimeline';
@@ -181,6 +182,9 @@ function buildCourseBeforeAfterRows(
       ...(metaOf?.(v.patient_id) ?? {}),
     }),
   );
+  // イベント表示 (2026-07-27): 担当スタッフのイベントを両列へ (緑カード・前後で不変).
+  before.push(...eventTimelineRows(course.events, 'ub'));
+  after.push(...eventTimelineRows(course.events, 'ua'));
   const wd = WEEKDAY_LABELS[course.weekday] ?? '?';
   const title = `${course.course_label ?? course.course_code}・${wd}曜`;
   return { before, after, title };
@@ -218,8 +222,11 @@ function buildMiniBeforeAfterRows(
         key: `mb-${i}`,
         name: r.name,
         start: trimSeconds(r.time),
+        // イベント行 (2026-07-27): 緑カード。end は entry の end_time から。
+        end: r.is_event ? trimSeconds(r.end_time ?? undefined) || undefined : undefined,
         kind: 'normal',
-        condLabel: miniCondLabel(r),
+        isEvent: r.is_event ?? false,
+        condLabel: r.is_event ? null : miniCondLabel(r),
         // T-4: 性別ウォッシュ (BE が entry に載せる sex。旧BEは null=中立色)。
         sex: r.sex ?? null,
       }),
@@ -229,12 +236,16 @@ function buildMiniBeforeAfterRows(
       key: `ma-${i}`,
       name: r.is_here ? insertName : r.name,
       start: trimSeconds(r.time),
+      end: r.is_event ? trimSeconds(r.end_time ?? undefined) || undefined : undefined,
       kind: r.is_here ? 'in' : 'normal',
+      isEvent: r.is_event ?? false,
       sex: r.sex ?? null,
       // is_here 行 (採用対象) は患者マスタ由来の insertMeta (sex/address) が正。
       ...(r.is_here ? (insertMeta ?? {}) : {}),
       // entry 由来のピル (2名 含む) を優先。旧BE (未送出=null) は insertMeta 側で補完。
-      condLabel: miniCondLabel(r) ?? (r.is_here ? (insertMeta?.condLabel ?? null) : null),
+      condLabel: r.is_event
+        ? null
+        : (miniCondLabel(r) ?? (r.is_here ? (insertMeta?.condLabel ?? null) : null)),
     }),
   );
   return { before, after };
@@ -294,6 +305,36 @@ function RowMarkers({ row }: { row: ProposeMiniScheduleEntry }) {
  * 通常リストと同じ色分け (性別制限の名前色・複数バッジ・同住所📍) を付ける.
  */
 function MiniRow({ row }: { row: ProposeMiniScheduleEntry }) {
+  // イベント行 (2026-07-27): 担当スタッフのイベントは緑のイベントカードで描画。
+  if (row.is_event) {
+    return (
+      <div className="flex items-center gap-2" data-testid="mini-event-row">
+        <span className="tnum w-11 shrink-0 text-[11px] text-text-muted">
+          {trimSeconds(row.time)}
+        </span>
+        <div
+          className="flex flex-1 flex-wrap items-center gap-1.5 rounded-md border border-l-[3px] px-2 py-1 text-[11px]"
+          style={{
+            background: 'var(--sched-event-bg)',
+            borderColor: 'var(--sched-event-ln)',
+            borderLeftColor: 'var(--sched-event-bar)',
+            color: 'var(--sched-event-ink)',
+          }}
+        >
+          <i
+            className="h-2 w-2 shrink-0 rounded-full"
+            style={{ background: 'var(--sched-event-bar)' }}
+            aria-hidden="true"
+          />
+          <span className="tnum font-medium">
+            {trimSeconds(row.time)}
+            {row.end_time ? `–${trimSeconds(row.end_time)}` : ''}
+          </span>
+          <span className="truncate">{row.name}</span>
+        </div>
+      </div>
+    );
+  }
   if (row.is_here) {
     return (
       <div className="flex items-center gap-2">

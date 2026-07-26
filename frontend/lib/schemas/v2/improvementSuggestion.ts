@@ -122,6 +122,10 @@ export const courseSnapshotSchema = z.object({
   course_label: z.string(),
   staff_name: z.string().nullable().default(null),
   visits: z.array(courseSnapshotVisitSchema).default([]),
+  // イベント表示 (2026-07-27): 担当スタッフのイベント (緑カード)。旧BE未送出 → []。
+  events: z
+    .array(z.object({ title: z.string(), start_time: z.string(), end_time: z.string() }))
+    .catch([]),
 });
 export type CourseSnapshot = z.infer<typeof courseSnapshotSchema>;
 

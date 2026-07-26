@@ -85,6 +85,13 @@ async def test_clean_slots_avoid_staff_event(client, db) -> None:
         )
         assert s["event_conflicts"] == []
         assert "event_conflict" not in s["warnings"]
+    # イベント表示 (2026-07-27 PO指示): ミニスケジュールにイベント行 (緑カード) が混ざる.
+    first = slots[0]
+    ev_rows = [m for m in first["mini_schedule"] if m.get("is_event")]
+    assert ev_rows, "ミニスケジュールに担当スタッフのイベント行が出るはず"
+    assert ev_rows[0]["name"] == "担当者会議"
+    assert ev_rows[0]["time"] == "13:00"
+    assert ev_rows[0]["end_time"] == "15:00"
 
 
 @pytest.mark.asyncio

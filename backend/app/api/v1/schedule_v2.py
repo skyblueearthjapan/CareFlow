@@ -93,6 +93,7 @@ from app.schemas.v2.board import (
 from app.schemas.v2.improvement_suggestion import (
     ApplySwapRequest,
     ApplySwapResponse,
+    CourseSnapshotEvent,
     ImprovementCandidateSlot,
     ImprovementChanges,
     ImprovementCurrentSlot,
@@ -165,6 +166,7 @@ from app.schemas.v2.unblock import (
     ProposeUnblockApplyResponse,
     ProposeUnblockRequest,
     ProposeUnblockResponse,
+    UnblockCourseEvent,
     UnblockCourseSnapshot,
     UnblockCourseVisit,
     UnblockInsertItem,
@@ -2310,6 +2312,8 @@ def _mini_entries(mini: list[dict[str, object]] | None) -> list[ProposeMiniSched
             sex_restriction=e.get("sex_restriction"),  # type: ignore[arg-type]
             is_multi_staff=bool(e.get("is_multi_staff", False)),
             sex=e.get("sex"),  # type: ignore[arg-type]
+            is_event=bool(e.get("is_event", False)),
+            end_time=e.get("end_time"),  # type: ignore[arg-type]
         )
         for e in mini
     ]
@@ -3975,6 +3979,14 @@ def _scope_snapshot_to_schema(
             )
             for v in s.visits
         ],
+        events=[
+            CourseSnapshotEvent(
+                title=e.title,
+                start_time=_hhmm(e.start_time),
+                end_time=_hhmm(e.end_time),
+            )
+            for e in s.events
+        ],
     )
 
 
@@ -4603,6 +4615,14 @@ def _unblock_course_to_schema(c: Any) -> UnblockCourseSnapshot:
         course_label=c.course_label,
         before=[_visit(v) for v in c.before],
         after=[_visit(v) for v in c.after],
+        events=[
+            UnblockCourseEvent(
+                title=e.title,
+                start_time=_hhmm(e.start_time),
+                end_time=_hhmm(e.end_time),
+            )
+            for e in getattr(c, "events", [])
+        ],
     )
 
 

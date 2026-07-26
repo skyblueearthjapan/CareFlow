@@ -156,6 +156,16 @@ class UnblockCourseVisit(BaseModel):
     end_time: str = Field(..., description="HH:MM")
 
 
+class UnblockCourseEvent(BaseModel):
+    """コーススナップショットの 1 イベント (担当スタッフの staff_events・2026-07-27)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    title: str
+    start_time: str = Field(..., description="HH:MM")
+    end_time: str = Field(..., description="HH:MM")
+
+
 class UnblockCourseSnapshot(BaseModel):
     """プランが影響するコースの before/after スナップショット (W-13b).
 
@@ -176,6 +186,8 @@ class UnblockCourseSnapshot(BaseModel):
     after: list[UnblockCourseVisit] = Field(
         default_factory=list, description="プラン適用後の訪問列 (start 昇順)"
     )
+    # イベント表示 (2026-07-27): 担当スタッフのイベント (before/after 共通・緑カード).
+    events: list[UnblockCourseEvent] = Field(default_factory=list)
 
 
 class UnblockPlanItem(BaseModel):

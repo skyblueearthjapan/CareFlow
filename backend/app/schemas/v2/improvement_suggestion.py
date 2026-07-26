@@ -125,11 +125,22 @@ class CourseSnapshotVisit(BaseModel):
     end_time: str = Field(..., description="HH:MM")
 
 
+class CourseSnapshotEvent(BaseModel):
+    """コーススナップショットの 1 イベント (担当スタッフの staff_events・2026-07-27)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    start_time: str = Field(..., description="HH:MM")
+    end_time: str = Field(..., description="HH:MM")
+
+
 class CourseSnapshot(BaseModel):
     """提案が触るコースのスナップショット (タイムライン表示用・UI 統一).
 
     範囲最適化 (scope-optimization) の step と患者詳細の改善提案で共通の形。
     FE は visits (start 昇順) を描画し、対象患者 / swap 相手の行をハイライトする。
+    events は担当スタッフのイベント (FE は緑カードで時系列に混ぜて描画)。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -140,6 +151,7 @@ class CourseSnapshot(BaseModel):
     course_label: str
     staff_name: str | None = None
     visits: list[CourseSnapshotVisit] = Field(default_factory=list)
+    events: list[CourseSnapshotEvent] = Field(default_factory=list)
 
 
 class ImprovementSuggestion(BaseModel):

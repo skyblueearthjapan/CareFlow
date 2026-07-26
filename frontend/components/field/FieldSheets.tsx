@@ -2227,6 +2227,55 @@ const WEEKDAY_INT_TO_DOW: Record<number, string> = (() => {
 })();
 
 function MiniSlot({ row }: { row: ProposeMiniScheduleEntry }) {
+  // イベント行 (2026-07-27): 担当スタッフのイベントは緑のイベントカードで描画。
+  if (row.is_event) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'stretch', gap: 8 }}>
+        <span
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 10.5,
+            color: '#1c6b42',
+            width: 42,
+            flex: '0 0 42px',
+            paddingTop: 8,
+            fontWeight: 600,
+          }}
+        >
+          {row.time}
+        </span>
+        <div
+          style={{
+            flex: 1,
+            borderRadius: 10,
+            border: '1px solid #cfe9da',
+            borderLeft: '3px solid #2f9e63',
+            background: '#e7f4ec',
+            padding: '7px 11px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            color: '#1c6b42',
+            fontSize: 12,
+          }}
+        >
+          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 10.5 }}>
+            {row.time}
+            {row.end_time ? `–${row.end_time}` : ''}
+          </span>
+          <span
+            style={{
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {row.name}
+          </span>
+        </div>
+      </div>
+    );
+  }
   if (row.is_here) {
     const mint = row.is_pair;
     return (

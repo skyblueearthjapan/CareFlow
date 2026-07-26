@@ -149,6 +149,10 @@ class ProposeMiniScheduleEntry(BaseModel):
     # T-4: タイムラインのカード視覚言語 (性別ウォッシュ) 用。提案行 (is_here) は
     # None 固定 (FE が対象患者マスタから補完する)。
     sex: str | None = Field(default=None, description="'male' | 'female' | 'unknown' | None")
+    # イベント表示 (2026-07-27 PO指示): この行が担当スタッフのイベント (staff_events)
+    # なら True。name=タイトル・time=開始・end_time=終了。FE は緑のイベントカードで描画。
+    is_event: bool = Field(default=False, description="担当スタッフのイベント行か")
+    end_time: str | None = Field(default=None, description="HH:MM (イベント行の終了時刻)")
 
 
 class ProposeEventConflict(BaseModel):

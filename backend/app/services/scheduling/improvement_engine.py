@@ -269,11 +269,21 @@ class CourseSnapshotVisitData:
 
 
 @dataclass
+class CourseSnapshotEventData:
+    """コーススナップショットの 1 イベント (担当スタッフの staff_events・2026-07-27)."""
+
+    title: str
+    start_time: time
+    end_time: time
+
+
+@dataclass
 class CourseSnapshotData:
     """提案が触るコースのスナップショット (タイムライン表示用・UI 統一).
 
     FE は visits を start 昇順で描画し、対象患者 (と swap 相手) に一致する行を
     ハイライト・移動矢印表示する (範囲最適化と同一の見せ方)。
+    events は担当スタッフのイベント (緑カード) — 提案の前後で不変のためリストは 1 本。
     """
 
     office_id: UUID
@@ -282,6 +292,7 @@ class CourseSnapshotData:
     course_label: str
     staff_name: str | None
     visits: list[CourseSnapshotVisitData] = field(default_factory=list)
+    events: list[CourseSnapshotEventData] = field(default_factory=list)
 
 
 def _cached_snapshot(
@@ -297,7 +308,7 @@ def _cached_snapshot(
 
 
 def snapshot_course_bucket(bucket: _CourseBucket) -> CourseSnapshotData:
-    """バケットの現在の訪問列をスナップショットする (start 昇順)."""
+    """バケットの現在の訪問列 + 担当スタッフのイベントをスナップショットする (start 昇順)."""
     return CourseSnapshotData(
         office_id=bucket.office_id,
         weekday=bucket.weekday,
@@ -312,6 +323,17 @@ def snapshot_course_bucket(bucket: _CourseBucket) -> CourseSnapshotData:
                 end_time=v.end_time,
             )
             for v in sorted(bucket.visits, key=lambda x: _time_to_min(x.start_time))
+        ],
+        # イベント表示 (2026-07-27 PO指示): FE は緑のイベントカードで時系列に混ぜて描画.
+        # ゼロ長 (メモ) は除外.
+        events=[
+            CourseSnapshotEventData(
+                title=w.title or "イベント",
+                start_time=w.start,
+                end_time=w.end,
+            )
+            for w in sorted(bucket.event_windows, key=lambda x: _time_to_min(x.start))
+            if _time_to_min(w.end) > _time_to_min(w.start)
         ],
     )
 

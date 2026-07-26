@@ -60,6 +60,7 @@ from app.services.scheduling.constants import (
 )
 from app.services.scheduling.improvement_engine import (
     CourseSnapshotData,
+    CourseSnapshotEventData,
     CourseSnapshotVisitData,
     _bucket_existing_excluding,
     _slot_within_preference,
@@ -146,6 +147,8 @@ class UnblockCourseSnapshotData:
     course_label: str
     before: list[CourseSnapshotVisitData]
     after: list[CourseSnapshotVisitData]
+    # イベント表示 (2026-07-27): 担当スタッフのイベント. 提案の前後で不変のため 1 本.
+    events: list[CourseSnapshotEventData] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -728,6 +731,7 @@ def _build_plan_courses(
                 course_label=snap.course_label,
                 before=before,
                 after=after,
+                events=list(snap.events),
             )
         )
     return out
