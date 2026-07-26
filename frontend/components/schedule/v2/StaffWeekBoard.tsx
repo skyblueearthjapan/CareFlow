@@ -206,7 +206,14 @@ export function StaffWeekBoard({
                           return (
                             <div
                               key={`ev-${ev.id}`}
-                              className="rounded bg-success-bg px-1.5 py-0.5 text-[11px] font-medium text-success"
+                              // イベント緑トークンで統一 (PO確定 2026-07-26)。
+                              className="rounded border border-l-[3px] px-1.5 py-0.5 text-[11px] font-medium"
+                              style={{
+                                background: 'var(--sched-event-bg)',
+                                borderColor: 'var(--sched-event-ln)',
+                                borderLeftColor: 'var(--sched-event-bar)',
+                                color: 'var(--sched-event-ink)',
+                              }}
                               title={ev.note ?? undefined}
                             >
                               {isMemo

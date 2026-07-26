@@ -150,6 +150,7 @@ import {
   type PartnerLocation,
 } from './courseGrid';
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
+import { EventStrip } from '@/components/schedule/timeline/EventStrip';
 import { StaffWeekBoard } from './StaffWeekBoard';
 import {
   parseTlColDroppableId,
@@ -3397,6 +3398,18 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   weekViewMode === 'overview' && 'lg:flex lg:min-h-0 lg:flex-1 lg:flex-col',
                 )}
               >
+                {/* イベントストリップ (PO確定 2026-07-26): コース列に紐づかない受け皿。
+                    休み等「その日コースを持たないスタッフ」のイベントも必ず見える。
+                    スタッフ別ビューは各セルに全イベントが出るため重複表示しない。 */}
+                {weekViewMode !== 'staff' && (
+                  <EventStrip
+                    staffEventsByStaff={staffEventsByStaff}
+                    staffMap={staffMap}
+                    weekdays={[0, 1, 2, 3, 4, 5]}
+                    weekStart={weekStart}
+                    testId="week-event-strip"
+                  />
+                )}
                 {weekViewMode === 'timeline' ? (
                   /* T-3改: 週タイムライン (全コース縦積み・縦スクロールで一元閲覧). */
                   <WeekTimelineBoard
@@ -3463,6 +3476,15 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 )}
                 data-testid="course-day-table-list"
               >
+                {/* イベントストリップ (PO確定 2026-07-26): その日の全スタッフの
+                    イベント (休み含む) を緑チップで表示。タイムライン/リスト共通。 */}
+                <EventStrip
+                  staffEventsByStaff={staffEventsByStaff}
+                  staffMap={staffMap}
+                  weekdays={[activeWeekday]}
+                  weekStart={weekStart}
+                  testId="day-event-strip"
+                />
                 {/* PO 2026-07-09: スタッフ不足バナー (表示 A-E 列数 > 稼働スタッフ数)。
                     列は PFV/visit の和集合でも出るため、担当が足りない拠点を曜日単位で警告。 */}
                 {staffShortageBanners.length > 0 ? (

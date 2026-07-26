@@ -99,11 +99,12 @@
   --sched-neutral-bar: #b4a895;
   --sched-neutral-ink: #6b6258;
   --sched-neutral-ln: #ebe5da;
-  /* 会議・イベント帯 (藤色) */
-  --sched-event-bg: #f1eef9;
-  --sched-event-bar: #9384c4;
-  --sched-event-ink: #584a87;
-  --sched-event-ln: #e2dcf0;
+  /* 会議・イベント帯 (緑・PO確定 2026-07-26: カイポケの個別業務=緑と統一。
+     旧: 藤色 #f1eef9/#9384c4/#584a87/#e2dcf0) */
+  --sched-event-bg: #e7f4ec;
+  --sched-event-bar: #2f9e63;
+  --sched-event-ink: #1c6b42;
+  --sched-event-ln: #cfe9da;
   /* 勤務外ハッチ */
   --sched-offduty-bg: #f5f1ea;
   --sched-offduty-hatch: #efe9df;

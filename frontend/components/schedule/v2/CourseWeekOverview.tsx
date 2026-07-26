@@ -641,12 +641,19 @@ export function CourseWeekOverview({
                                     return (
                                       <li
                                         key={item.id}
-                                        className="text-[10px] leading-tight text-yellow-700"
+                                        // イベントは緑統一 (PO確定 2026-07-26・--sched-event-* トークン)。
+                                        className="rounded border border-l-[3px] px-1 py-0.5 text-[10px] leading-tight"
+                                        style={{
+                                          background: 'var(--sched-event-bg)',
+                                          borderColor: 'var(--sched-event-ln)',
+                                          borderLeftColor: 'var(--sched-event-bar)',
+                                          color: 'var(--sched-event-ink)',
+                                        }}
                                         title={`${item.titleLine} ${item.timeLine}`}
                                         data-testid={`course-week-overview-event-${item.id}`}
                                       >
-                                        <div className="truncate">{item.titleLine}</div>
-                                        <div className="text-text-muted">{item.timeLine}</div>
+                                        <div className="truncate font-medium">{item.titleLine}</div>
+                                        <div className="opacity-75">{item.timeLine}</div>
                                       </li>
                                     );
                                   }
