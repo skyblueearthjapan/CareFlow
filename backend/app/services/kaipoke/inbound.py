@@ -538,16 +538,15 @@ async def apply_inbound_items(
                 _finish("failed", f"担当「{staff1_name}」を解決できませんでした", target_date)
                 continue
             sid = uuid.UUID(sid_str)
-            # 新人同行 §8: 担当1が新人 (is_trainee) の場合、新人はコースを持たない運用
-            # (PO確定) のため visit を作れない (visit は primary 必須)。item を failed に。
-            if sid in trainee_ids:
-                _finish(
-                    "failed",
-                    f"担当1「{staff1_name}」は新人のため反映できません"
-                    "（新人はコースを持たない運用・要確認）",
-                    target_date,
-                )
-                continue
+            # 方針転換 (PO確定 2026-07-26): カイポケは最終的な「正」のため、担当1が
+            # 新人 (is_trainee) でも現実として取り込む (拒否しない)。ただし
+            # ⚠警告注記で可視化し、新人フラグ見直しの判断材料にする。
+            # らく助発の割当経路 (Layer3/course PATCH/apply-staff-review) の封鎖は不変。
+            trainee_note = (
+                f"／⚠担当1「{staff1_name}」は新人です（単独訪問・新人フラグの見直しを検討）"
+                if sid in trainee_ids
+                else ""
+            )
             staff2_name = str(after.get("staff2") or "")
             sid2: uuid.UUID | None = None
             accompaniment_sid2: uuid.UUID | None = None
@@ -583,7 +582,7 @@ async def apply_inbound_items(
             revive_note = "・キャンセル済みの枠を復活" if revive is not None else ""
             detail = (
                 f"{target_date.month}/{target_date.day} {after.get('start_time')} を追加"
-                f"（担当 {staff1_name}・{course_note}{revive_note}）{staff2_note}"
+                f"（担当 {staff1_name}・{course_note}{revive_note}）{staff2_note}{trainee_note}"
             )
             if not dry_run:
                 if course is None:
@@ -762,16 +761,14 @@ async def apply_inbound_items(
                 sid_str = match_name(staff1_after_name, staff_index)
                 if sid_str:
                     new_sid = uuid.UUID(sid_str)
-                    # 新人同行 §8: 担当1が新人 (is_trainee) の場合、新人はコースを
-                    # 持たない運用 (PO確定) のため担当1の変更は適用しない。時刻等の
-                    # 他変更は従来どおり適用するため、未解決と同じ流儀で new_sid を
-                    # None に戻し注記のみ残す。
+                    # 方針転換 (PO確定 2026-07-26): カイポケは最終的な「正」のため、
+                    # 担当1が新人 (is_trainee) でも現実として適用する (拒否しない)。
+                    # ⚠警告注記で可視化し、新人フラグ見直しの判断材料にする。
                     if new_sid in trainee_ids:
                         notes.append(
-                            f"担当1「{staff1_after_name}」は新人のため反映できません"
-                            "（新人はコースを持たない運用・要確認）"
+                            f"⚠担当1「{staff1_after_name}」は新人です"
+                            "（単独訪問・新人フラグの見直しを検討）"
                         )
-                        new_sid = None
                 else:
                     notes.append(f"担当「{staff1_after_name}」未解決（担当変更は未反映）")
 

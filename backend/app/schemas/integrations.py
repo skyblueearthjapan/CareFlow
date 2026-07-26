@@ -455,6 +455,14 @@ class ReplaceInboundSkipRead(BaseModel):
     start: str = ""
 
 
+class ReplaceInboundTraineeSoloRead(BaseModel):
+    """⚠新人の単独訪問 (取り込み済み・新人フラグ見直しの判断材料)。"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    staff_name: str = Field(alias="staffName")
+    count: int
+
+
 class ReplaceInboundResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     job_id: UUID | None = Field(default=None, alias="jobId")
@@ -466,3 +474,6 @@ class ReplaceInboundResult(BaseModel):
     sunday_skipped: int = Field(default=0, alias="sundaySkipped")
     temp_courses: int = Field(default=0, alias="tempCourses")
     skipped: list[ReplaceInboundSkipRead] = Field(default_factory=list)
+    trainee_solo: list[ReplaceInboundTraineeSoloRead] = Field(
+        default_factory=list, alias="traineeSolo"
+    )

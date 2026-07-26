@@ -208,8 +208,9 @@ async def test_replace_real_wipes_and_inserts_then_converges(client, db, stub_ka
 
 
 @pytest.mark.asyncio
-async def test_replace_skips_are_visible(client, db, stub_kaipoke) -> None:
-    """名寄せ不可の患者・新人担当1は挿入せず skipped として返す。"""
+async def test_replace_skips_and_trainee_warning(client, db, stub_kaipoke) -> None:
+    """名寄せ不可の患者は skipped。新人担当1は取り込み + ⚠traineeSolo 警告
+    (方針転換 PO確定 2026-07-26: カイポケの現実を受け入れる)。"""
     seeded = await _seed_week(db)
     trainee = Staff(
         name="髙梨　桂子", role="staff", primary_office_id=seeded["office"].id
@@ -228,10 +229,24 @@ async def test_replace_skips_are_visible(client, db, stub_kaipoke) -> None:
     res = await _post_replace(client, admin, week_start=WEEK_START, dry_run=True)
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["inserted"] == 1
+    assert body["inserted"] == 2  # 正常 + 新人担当1 (取り込む)
     reasons = [s["reason"] for s in body["skipped"]]
     assert any("患者を名寄せできません" in r for r in reasons)
-    assert any("新人" in r for r in reasons)
+    assert not any("新人" in r for r in reasons)  # 新人は skipped に出ない
+    assert body["traineeSolo"] == [{"staffName": "髙梨　桂子", "count": 1}]
+
+    # 実適用: 新人が primary の visit が実際に作られる
+    res2 = await _post_replace(client, admin, week_start=WEEK_START, dry_run=False)
+    assert res2.status_code == 200, res2.text
+    trainee_visits = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.deleted_at.is_(None), Visit.primary_staff_id == trainee.id
+            )
+        )
+    ).all()
+    assert len(trainee_visits) == 1
+    assert trainee_visits[0].course_id is not None  # 臨時コースへ配置
 
 
 @pytest.mark.asyncio

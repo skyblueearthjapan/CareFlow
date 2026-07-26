@@ -73,6 +73,10 @@ class ReplaceResult:
     sunday_skipped: int = 0
     temp_courses: int = 0
     skipped: list[ReplaceSkip] = field(default_factory=list)
+    # ⚠警告: 新人 (is_trainee) が担当1の単独訪問 (staff_name → 件数)。
+    # カイポケは最終的な「正」のため取り込むが (PO確定 2026-07-26)、新人フラグの
+    # 見直し判断材料として可視化する。
+    trainee_solo: dict[str, int] = field(default_factory=dict)
 
 
 async def _count_week_achievements(
@@ -203,8 +207,10 @@ async def replace_week_from_kaipoke(
             continue
         sid = uuid.UUID(sid_str)
         if sid in trainee_ids:
-            _skip("担当1が新人のため挿入できません（新人はコースを持たない運用）", e, d)
-            continue
+            # 方針転換 (PO確定 2026-07-26): カイポケは最終的な「正」のため、担当1が
+            # 新人でも現実として取り込む。⚠警告 (trainee_solo) で可視化して
+            # 新人フラグ見直しの判断材料にする。らく助発の割当経路の封鎖は不変。
+            result.trainee_solo[e.staff1_name] = result.trainee_solo.get(e.staff1_name, 0) + 1
 
         key = (pid_str, d, e.start_time)
         if key in seen_keys:

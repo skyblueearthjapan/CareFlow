@@ -426,6 +426,12 @@ export const ReplaceInboundSkipSchema = z.object({
 });
 export type ReplaceInboundSkip = z.infer<typeof ReplaceInboundSkipSchema>;
 
+export const ReplaceInboundTraineeSoloSchema = z.object({
+  staffName: z.string(),
+  count: z.number().int(),
+});
+export type ReplaceInboundTraineeSolo = z.infer<typeof ReplaceInboundTraineeSoloSchema>;
+
 export const ReplaceInboundResultSchema = z.object({
   jobId: z.string().uuid().nullable(),
   weekStart: z.string(),
@@ -436,5 +442,7 @@ export const ReplaceInboundResultSchema = z.object({
   sundaySkipped: z.number().int().default(0),
   tempCourses: z.number().int().default(0),
   skipped: z.array(ReplaceInboundSkipSchema).default([]),
+  // ⚠新人の単独訪問 (取り込み済み・新人フラグ見直しの判断材料)
+  traineeSolo: z.array(ReplaceInboundTraineeSoloSchema).default([]),
 });
 export type ReplaceInboundResult = z.infer<typeof ReplaceInboundResultSchema>;

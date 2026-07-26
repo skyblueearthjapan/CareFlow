@@ -269,6 +269,22 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                   <SummaryChip label="対象外" value={replacePlan.skipped.length} tone="warning" />
                 )}
               </div>
+              {replacePlan.traineeSolo.length > 0 && (
+                <Alert data-testid="trainee-solo-warning">
+                  <AlertTitle>
+                    ⚠ 新人の単独訪問が含まれています（
+                    {replacePlan.traineeSolo.reduce((n, t) => n + t.count, 0)}件）
+                  </AlertTitle>
+                  <AlertDescription>
+                    {replacePlan.traineeSolo
+                      .map((t) => `${t.staffName}（${t.count}件）`)
+                      .join('・')}{' '}
+                    — カイポケの実態どおり取り込みますが、実際に独り立ちしているなら
+                    スタッフ編集で新人フラグをOFFにすることを検討してください
+                    （らく助の自動割当は新人フラグがONの間、この方を候補にしません）。
+                  </AlertDescription>
+                </Alert>
+              )}
               {replacePlan.skipped.length > 0 && (
                 <div className="overflow-x-auto rounded-lg border border-border-default">
                   <table className="min-w-full text-xs">

@@ -232,13 +232,14 @@ describe('InboundControls — イベント取り込みセクション', () => {
             tempCourses: 12,
             skipped: [
               {
-                reason: '担当1が新人のため挿入できません（新人はコースを持たない運用）',
-                userName: '朝倉　美夢',
-                staffName: '髙梨　桂子',
-                date: '2026-07-20',
-                start: '13:30',
+                reason: '患者を名寄せできません（らく助未登録の可能性）',
+                userName: '高尾　幸子',
+                staffName: '川名　千恵',
+                date: '2026-07-24',
+                start: '10:00',
               },
             ],
+            traineeSolo: [{ staffName: '髙梨　桂子', count: 17 }],
           },
         })}
       />,
@@ -247,7 +248,11 @@ describe('InboundControls — イベント取り込みセクション', () => {
     expect(screen.getAllByText(/すべて削除される可能性がございます/).length).toBeGreaterThan(0);
     // プレビューパネル (削除/挿入/対象外)
     expect(screen.getByTestId('replace-plan-panel')).toBeInTheDocument();
-    expect(screen.getByText(/新人はコースを持たない運用/)).toBeInTheDocument();
+    expect(screen.getByText(/患者を名寄せできません/)).toBeInTheDocument();
+    // ⚠新人の単独訪問 警告 (取り込むが新人フラグ見直しを促す・PO指示 2026-07-26)
+    expect(screen.getByTestId('trainee-solo-warning')).toBeInTheDocument();
+    expect(screen.getByText(/新人の単独訪問が含まれています（17件）/)).toBeInTheDocument();
+    expect(screen.getByText(/新人フラグをOFFにすることを検討/)).toBeInTheDocument();
     // 置換実行ボタンが有効
     expect(screen.getByTestId('replace-apply-button')).toBeEnabled();
   });

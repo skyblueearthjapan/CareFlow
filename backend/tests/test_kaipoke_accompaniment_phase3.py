@@ -682,21 +682,21 @@ async def test_inbound_edit_trainee_staff2_idempotent_reapply(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_inbound_edit_staff1_trainee_not_applied(db) -> None:
-    """穴②(edit): 担当1が新人へ変更されても担当変更は適用しない・注記のみ (設計 §8).
+async def test_inbound_edit_staff1_trainee_applied_with_warning(db) -> None:
+    """方針転換 (PO確定 2026-07-26): 担当1が新人へ変更 → 適用する + ⚠警告注記.
 
-    新人はコースを持たない運用 (PO確定)。担当1が新人へ変わる差分は未反映とし、
-    コース担当 (course.assigned_staff_id) と visit.primary_staff_id は先輩のまま。
-    他に変更点が無ければ注記つき skipped。
+    カイポケは最終的な「正」のため、新人が担当1の現実も取り込む。⚠警告で
+    新人フラグ見直しの判断材料にする。らく助発の割当経路の封鎖は不変。
     """
     office = await _office(db)
     mentor = await _staff(db, "先輩太郎", office)
-    await _staff(db, "新人花子", office, is_trainee=True)
+    trainee = await _staff(db, "新人花子", office, is_trainee=True)
     patient = await _patient(db, "山田様", office)
     course = await _course(db, office, mentor, weekday=1, code="A")
     visit = await _visit(db, patient, mentor, course=course)
     await db.commit()
     mentor_id = mentor.id
+    trainee_id = trainee.id
 
     common = {"user_name": patient.name, "date": "7", "start_time": "10:00", "end_time": "10:35"}
     item = CorrectionSheetItem(
@@ -719,24 +719,28 @@ async def test_inbound_edit_staff1_trainee_not_applied(db) -> None:
     )
     await db.commit()
     await db.refresh(visit)
-    await db.refresh(course)
 
-    # 担当1変更は未反映 — コース担当・primary は先輩のまま。
-    assert visit.primary_staff_id == mentor_id
-    assert course.assigned_staff_id == mentor_id
-    assert summary.skipped == 1  # 他に変更点なし → 注記つき skipped。
+    # 担当1変更は適用される (カイポケの現実を受け入れる) + ⚠警告注記。
+    assert visit.primary_staff_id == trainee_id
+    assert mentor_id is not None  # (旧担当の存在確認のみ)
+    assert summary.updated == 1
+    assert "⚠" in summary.results[0].detail
     assert "新人" in summary.results[0].detail
 
 
 @pytest.mark.asyncio
-async def test_inbound_add_staff1_trainee_failed(db) -> None:
-    """穴②(add): 担当1が新人の追加予定は failed (visit は primary 必須のため作らない)."""
-    from sqlalchemy import func, select
+async def test_inbound_add_staff1_trainee_added_with_warning(db) -> None:
+    """方針転換 (PO確定 2026-07-26): 担当1が新人の追加予定も取り込む + ⚠警告注記.
+
+    コースは新人がその日持たないため臨時コースへ配置される。
+    """
+    from sqlalchemy import select
 
     office = await _office(db)
-    await _staff(db, "新人花子", office, is_trainee=True)
+    trainee = await _staff(db, "新人花子", office, is_trainee=True)
     patient = await _patient(db, "山田様", office)
     await db.commit()
+    trainee_id = trainee.id
 
     item = _add_item(patient, staff1="新人花子", staff2="")
     summary = await apply_inbound_items(
@@ -750,11 +754,12 @@ async def test_inbound_add_staff1_trainee_failed(db) -> None:
     )
     await db.commit()
 
-    # visit は作られない。
-    count = await db.scalar(
-        select(func.count()).select_from(Visit).where(Visit.patient_id == patient.id)
-    )
-    assert count == 0
-    assert summary.added == 0
-    assert summary.failed == 1
+    # visit が作られ、新人が primary・臨時コースへ配置される。
+    visit = await db.scalar(select(Visit).where(Visit.patient_id == patient.id))
+    assert visit is not None
+    assert visit.primary_staff_id == trainee_id
+    assert visit.course_id is not None
+    assert summary.added == 1
+    assert summary.failed == 0
+    assert "⚠" in summary.results[0].detail
     assert "新人" in summary.results[0].detail

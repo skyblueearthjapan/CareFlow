@@ -60,6 +60,7 @@ from app.schemas.integrations import (
     ReplaceInboundRequest,
     ReplaceInboundResult,
     ReplaceInboundSkipRead,
+    ReplaceInboundTraineeSoloRead,
     WeekScheduleRead,
     WeekScheduleRow,
 )
@@ -2373,23 +2374,45 @@ async def replace_inbound(
         # dry-run は visits を mutate しない (job 記録も残さない)。明示 rollback。
         await db.rollback()
     else:
-        if result.skipped:
+        if result.skipped or result.trainee_solo:
             from app.services.checkin.notify import (
                 _active_admin_manager_users,
                 _create_idempotent,
             )
 
             users = await _active_admin_manager_users(db)
+            body_parts: list[str] = []
+            if result.skipped:
+                body_parts.append(
+                    f"挿入できなかったカイポケ行が {len(result.skipped)} 件あります。"
+                )
+            if result.trainee_solo:
+                solo = "・".join(
+                    f"{name}（{count}件）" for name, count in sorted(result.trainee_solo.items())
+                )
+                body_parts.append(
+                    f"⚠ 新人の単独訪問を取り込みました: {solo} — "
+                    "実態に合わせて新人フラグの見直しを検討してください。"
+                )
             await _create_idempotent(
                 db,
                 users=users,
                 type_="kaipoke_import_result",
                 reference_type="kaipoke_import",
                 reference_id=job.id,
-                title=f"置換取り込みに対象外 {len(result.skipped)} 件",
+                title=(
+                    f"置換取り込みの要確認（対象外 {len(result.skipped)} 件"
+                    + (
+                        f"・新人単独 {sum(result.trainee_solo.values())} 件"
+                        if result.trainee_solo
+                        else ""
+                    )
+                    + "）"
+                ),
                 body=(
-                    f"週 {payload.week_start.isoformat()} の置換取り込みで、挿入できなかった"
-                    f"カイポケ行が {len(result.skipped)} 件あります。連携画面で内訳を確認してください。"
+                    f"週 {payload.week_start.isoformat()} の置換取り込み: "
+                    + " ".join(body_parts)
+                    + " 連携画面で内訳を確認してください。"
                 ),
             )
         await _commit_or_409(db)
@@ -2413,5 +2436,9 @@ async def replace_inbound(
                 start=s.start,
             )
             for s in result.skipped
+        ],
+        trainee_solo=[
+            ReplaceInboundTraineeSoloRead(staff_name=name, count=count)
+            for name, count in sorted(result.trainee_solo.items())
         ],
     )
