@@ -137,13 +137,28 @@ RPA: `b79f28d`(individual-tasks)→`33fd1fb`(headed化)。
 | RPA実装 | VPS `/root/PlaywrightTest1`（`commands/individual_tasks.py` / `lib/individual_tasks_parser.py`） |
 | 検証用CSV | `Sampledata/カイポケ個別業務_2026-07-25週.csv`（gitignore・PO突合用） |
 
-## 6-b. ★次の実装テーマ（PO合意済みの方向性・セッション末尾で設計相談済み）
+## 6-b. ★smart-inbound（日単位ハイブリッド自動判別）— **実装済み・本番稼働（2026-07-27 c21d0d3）**
 
 **「差分/置換の自動判別（日単位ハイブリッド取り込み）」** — モード選択UIを廃止し、
-ボタン1つで完結させる。POの想定シナリオ: 水曜に取り込み → 月火は実稼働済み(打刻あり)、
-水〜土は未稼働。
+ボタン1つで完結。POの想定シナリオ: 水曜に取り込み → 月火は実稼働済み(打刻あり)=差分、
+水〜土は未稼働=置換。
 
-設計合意（本セッション最終相談・実装は次セッション）:
+**実装の正典**:
+- BE: `services/kaipoke/replace_inbound.py`（`week_checkin_days()` + `target_days`）/
+  `services/kaipoke/local_diff.py`（`build_local_diff(current_csv=...)` 注入で export 1回化）/
+  `api/v1/integrations.py`（`POST /integrations/smart-inbound-preview` と
+  `smart-inbound-apply`・`_build_inbound_sheet` 抽出・apply 時に再分類+再取得・単一トランザクション）
+- FE: `useInbound.ts`（smart フロー全面書換・mode/選択日/dry-run UI 撤去）/
+  `InboundControls.tsx`（日別バッジ 🔒差分/置換・統合サマリ・新人単独警告・対象外一覧・
+  確認ダイアログは置換日ありのときだけPO指示の削除警告文言）
+- テスト: `backend/tests/test_kaipoke_smart_inbound.py` 4件
+  （未来週ブロック / 打刻ゼロ週=全置換 / 混在週=打刻日の訪問行とcheckin紐付け保存 / dry-run無書込）+
+  FE `InboundControlsEvents.test.tsx` 8件を新契約へ書換
+- 重要仕様: **ブロックは日単位** — その日に打刻1件でもあれば日全体が置換対象外
+  （凍結ではなく差分がその日の全訪問を個別反映）。旧 replace-inbound / diff-inbound
+  エンドポイントは残置（後方互換）だが UI からは smart のみ
+
+設計合意（2026-07-26 相談時の内容・上記どおり実装）:
 1. **判別信号 = `visit_checkins` の日別有無**（実績ガードの週判定を日単位に細分化するだけ）
    - 打刻あり日 → 差分適用（既存の `days` パラメータで日単位適用は実装済み）
    - 打刻なし日 → 置換適用（コース計画は既にセル=曜日×拠点単位。白紙化を指定日に絞る）
