@@ -135,6 +135,11 @@ export const improvementSuggestionSchema = z.object({
   changes: improvementChangesSchema,
   // 寛容パース (warnings 系): 未知コードが混ざっても採用/見送りフローを止めない.
   staff_warnings: z.array(z.string()).catch([]),
+  // イベント考慮2段階提案 (2026-07-27): 候補枠が重なる移動先スタッフのイベント
+  // (フォールバック枠のみ非空). 旧BE未送出 → [] の寛容パース.
+  event_conflicts: z
+    .array(z.object({ title: z.string(), start: z.string(), end: z.string() }))
+    .catch([]),
   feasibility_basis: z.string().default('pfv'),
   requires_patient_confirmation: z.boolean().default(false),
   // #P4-B: 提案先が対象患者の希望範囲内かどうか (省略時 false). true で「ご希望の範囲内」バッジを出す.

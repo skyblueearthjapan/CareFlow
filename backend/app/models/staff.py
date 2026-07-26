@@ -175,6 +175,12 @@ class StaffEvent(Base, TimestampMixin):
         String(16), nullable=False, server_default="manual", default="manual"
     )
     external_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # 🔒絶対に潰せないイベント (mig 0063): 提案エンジンの2段階フォールバック
+    # (パスB=ソフトイベント無視) でも占有として扱い、衝突提案を出さない。
+    # 既定 false。カイポケ再取り込みの update はこの列に触れない (保持される)。
+    blocking: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
 
     __table_args__ = (
         Index("ix_staff_events_when", "staff_id", "starts_at"),

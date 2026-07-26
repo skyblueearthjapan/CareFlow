@@ -155,8 +155,11 @@ class ImprovementSuggestion(BaseModel):
     changes: ImprovementChanges
     staff_warnings: list[str] = Field(
         default_factory=list,
-        description="候補コースの割付スタッフ実態警告 (P0-1 の 3 コード再利用)",
+        description="候補コースの割付スタッフ実態警告 (P0-1 の 3 コード + event_conflict)",
     )
+    # イベント考慮2段階提案 (2026-07-27): 候補枠が重なる移動先スタッフのイベント
+    # (フォールバック枠のみ非空). [{"title", "start" (HH:MM), "end" (HH:MM)}].
+    event_conflicts: list[dict[str, str]] = Field(default_factory=list)
     feasibility_basis: str = Field(
         default="pfv", description="実現可能性判定のベース (PFV = 恒久パターン)"
     )

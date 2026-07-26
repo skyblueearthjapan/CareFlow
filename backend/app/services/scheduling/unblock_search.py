@@ -400,9 +400,19 @@ def _enumerate_retreats(
             window_end=lunch_window_end,
         )
         slots = find_available_slots_for_candidate(
-            existing, cand, lunch_window=lunch, weekday=wd, config=config
+            existing,
+            cand,
+            lunch_window=lunch,
+            weekday=wd,
+            config=config,
+            event_windows=bucket.event_windows,
         )
         for slot in slots:
+            # イベント考慮 (2026-07-27): 退避は「既存患者を動かす」操作のため、
+            # イベントと衝突する枠 (フォールバック) へは退避させない (クリーンのみ).
+            # 衝突を許すのは新規配置 (プール投入) 側の警告付き提案だけ.
+            if slot.event_conflicts:
+                continue
             cand_ev = ExistingVisit(
                 start_time=slot.start,
                 end_time=slot.end,

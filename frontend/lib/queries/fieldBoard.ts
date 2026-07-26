@@ -207,6 +207,9 @@ const PROPOSE_WARNING_LABEL_JA: Record<string, string> = {
   staff_sex_mismatch: '性別条件に不適合',
   // I-07 (H5 統合): 受入枠カレンダー上は受け入れ不可の枠 (警告のみ・除外しない).
   acceptance_calendar: '受入枠カレンダーでは受け入れ不可',
+  // イベント考慮2段階提案 (2026-07-27): クリーン枠ゼロのときだけ出るフォールバック枠。
+  // 詳細 (どのイベントと重なるか) は slot.event_conflicts に入る。
+  event_conflict: '担当スタッフのイベントと重なる（配置後にイベントの調整が必要）',
 };
 
 export function proposeWarningLabel(code: string): string {

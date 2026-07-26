@@ -37,6 +37,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { useDeleteEvent, useUpdateEvent } from '@/lib/queries/staff-events';
 import { eventCreateSchema, type EventCreate, type EventRead } from '@/lib/schemas/staff-events';
@@ -54,6 +55,9 @@ export function EventEditDialog({ staffId, event, open, onOpenChange }: EventEdi
   const update = useUpdateEvent(staffId);
   const remove = useDeleteEvent(staffId);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // 🔒絶対に潰せないイベント (2段階提案): ON なら提案エンジンのフォールバック
+  // (イベント無視の再算出) でも占有として扱われ、衝突提案が出ない。
+  const [blocking, setBlocking] = useState(false);
 
   // Re-use the create schema for edits — every field is required when
   // present in the form, and the API accepts the full body for PATCH too.
@@ -82,6 +86,7 @@ export function EventEditDialog({ staffId, event, open, onOpenChange }: EventEdi
         type: event.type,
         note: event.note ?? '',
       });
+      setBlocking(event.blocking ?? false);
     }
   }, [event, open, form]);
 
@@ -93,6 +98,7 @@ export function EventEditDialog({ staffId, event, open, onOpenChange }: EventEdi
         payload: {
           ...values,
           note: values.note && values.note.trim() !== '' ? values.note.trim() : null,
+          blocking,
         },
       });
       toast.success('イベントを更新しました');
@@ -225,6 +231,25 @@ export function EventEditDialog({ staffId, event, open, onOpenChange }: EventEdi
                   </FormItem>
                 )}
               />
+
+              {/* 🔒 絶対に潰せないイベント (イベント考慮2段階提案・PO確定 2026-07-27) */}
+              <div className="flex items-start justify-between gap-3 rounded-md border border-border-default bg-bg-muted/50 px-3 py-2.5">
+                <div className="space-y-0.5">
+                  <p className="text-sm font-medium text-text-primary">
+                    🔒 この時間は絶対に空けておく
+                  </p>
+                  <p className="text-xs text-text-muted">
+                    ONにすると、空き枠がない場合でもこのイベントに重ねた配置提案は出ません。
+                    （OFF: 空き枠がないときだけ「イベントを動かす前提」の提案が出ます）
+                  </p>
+                </div>
+                <Switch
+                  checked={blocking}
+                  onCheckedChange={setBlocking}
+                  aria-label="この時間は絶対に空けておく"
+                  data-testid="event-blocking-toggle"
+                />
+              </div>
 
               <DialogFooter className="sm:justify-between">
                 <Button

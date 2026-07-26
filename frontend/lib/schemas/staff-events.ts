@@ -55,6 +55,12 @@ export const eventUpdateSchema = z
      * URL の staff_id は「現在の所有者」, body の new_staff_id で移動先を指す.
      */
     new_staff_id: z.string().uuid().optional(),
+    /**
+     * イベント考慮2段階提案 (2026-07-27): 🔒絶対に潰せないイベント。
+     * ON のイベントは提案エンジンのフォールバックでも占有として扱われ、
+     * 衝突提案が出ない。既定 OFF。カイポケ再取り込みでも保持される。
+     */
+    blocking: z.boolean().optional(),
   })
   .refine(
     (v) => {
@@ -81,6 +87,8 @@ export const eventReadSchema = z.object({
   end_time: timeSchema,
   type: eventTypeSchema,
   note: z.string().nullable().optional(),
+  // 🔒絶対に潰せないイベント (旧BE未送出 → false の寛容パース).
+  blocking: z.boolean().catch(false),
 });
 
 export type EventCreate = z.infer<typeof eventCreateSchema>;

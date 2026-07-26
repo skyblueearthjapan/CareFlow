@@ -433,6 +433,21 @@ export function ImprovementSuggestionCard({
         </div>
       ) : null}
 
+      {/* イベント考慮2段階提案: 移動先スタッフのイベントと衝突する枠の詳細.
+          (zod を通らない経路もあるため ?? [] で防御) */}
+      {(suggestion.event_conflicts ?? []).length > 0 ? (
+        <div
+          className="mt-1.5 rounded border border-amber-400/60 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-600 dark:bg-amber-900/20 dark:text-amber-200"
+          data-testid="improvement-event-conflict"
+        >
+          ⚠ 移動先に空き枠がなかったため、イベントを無視して算出した枠です。
+          {(suggestion.event_conflicts ?? [])
+            .map((c) => `「${c.title}（${c.start}〜${c.end}）」`)
+            .join('・')}
+          とぶつかります。採用した場合は、イベントの方を手動で調整してください。
+        </div>
+      ) : null}
+
       {/* 採用 / 見送り (canEdit ガード) */}
       {canEdit ? (
         <div className="mt-2 flex items-center justify-end gap-2">

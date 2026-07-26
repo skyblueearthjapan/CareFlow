@@ -22,6 +22,7 @@ API / UI 接続は次段. 本モジュールは純ロジック + 単体テスト
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace as _dataclass_replace
 from datetime import time
 
 from app.services.scheduling.auto_allocator_v2 import (
@@ -106,6 +107,34 @@ class ExistingVisit:
 
 
 @dataclass(frozen=True)
+class EventWindow:
+    """コース担当スタッフのイベント (個別業務・staff_events) 1 件分の占有窓.
+
+    2段階提案 (PO確定 2026-07-27):
+        - パスA: 全イベントを (前後 ``EVENT_BUFFER_MINUTES`` 分のバッファ込みで)
+          占有としてギャップ走査に織り込む → クリーン枠のみ返す.
+        - パスAが 0 件のときだけパスB: ``blocking=True`` のイベントだけ占有として
+          再走査し、ソフトイベントと重なる枠に ``Slot.event_conflicts`` を付けて返す.
+    ゼロ長 (start == end のメモ) は呼び出し側で除外するか、本モジュールが無視する.
+    """
+
+    start: time
+    end: time
+    title: str = ""
+    # 🔒絶対に潰せないイベント: パスBでも占有のまま (衝突提案を出さない).
+    blocking: bool = False
+
+
+@dataclass(frozen=True)
+class EventConflict:
+    """フォールバック枠が重なったイベントの表示用情報."""
+
+    start: time
+    end: time
+    title: str
+
+
+@dataclass(frozen=True)
 class Candidate:
     """提案対象の候補患者 1 名."""
 
@@ -149,10 +178,21 @@ class Slot:
     near_lunch: bool = False
     reason: str = ""
     warning: str = ""
+    # 2段階提案パスBのみ: この枠と (バッファ込みで) 重なるソフトイベント.
+    # 空タプル = クリーン枠. FE は「⚠ イベント◯◯と重なります。配置後に
+    # イベントの方を調整してください」を表示する.
+    event_conflicts: tuple[EventConflict, ...] = ()
 
 
 # 昼休み近接 (near_lunch) 判定の余裕しきい値 (分).
 _NEAR_LUNCH_MARGIN_MIN: int = 5
+
+# イベント占有の前後バッファ (分). Layer3 の event ハード除外 (W33
+# ``layer3_assignment.BUFFER_MINUTES=15``) と同じ値・同じ意味 (移動・準備の余裕).
+EVENT_BUFFER_MINUTES: int = 15
+
+# イベント擬似訪問の patient_id 接頭辞 (同住所ペア判定から除外するための目印).
+_EVENT_SENTINEL_PREFIX = "__event__"
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +457,77 @@ def _near_lunch(end: time, start: time, lunch: tuple[time, time] | None) -> bool
 
 
 # ---------------------------------------------------------------------------
+# イベント (staff_events) の占有化ヘルパ
+# ---------------------------------------------------------------------------
+
+
+def _min_to_time(minutes: int) -> time:
+    """分 → time (日境界へクランプ)."""
+    m = max(0, min(minutes, 23 * 60 + 59))
+    return time(m // 60, m % 60)
+
+
+def _buffered_event_interval(w: EventWindow) -> tuple[int, int]:
+    """イベント窓を EVENT_BUFFER_MINUTES 分だけ両側へ拡張した [分, 分) 区間."""
+    return (
+        max(0, _time_to_min(w.start) - EVENT_BUFFER_MINUTES),
+        min(23 * 60 + 59, _time_to_min(w.end) + EVENT_BUFFER_MINUTES),
+    )
+
+
+def _event_pseudo_visits(
+    windows: list[EventWindow], candidate: Candidate
+) -> list[ExistingVisit]:
+    """イベント窓をギャップ走査用の擬似訪問へ変換する.
+
+    座標は候補と同一にする (イベントの場所は不明なため移動時間は見積もらず、
+    代わりにバッファ拡張済み区間そのものを占有とする = Layer3 の
+    「event ± BUFFER_MINUTES と重なればハード除外」と同じ強さになる).
+    patient_id は ``__event__`` 接頭辞の目印付き (同住所ペア判定から除外).
+    ゼロ長 (メモ) は無視する.
+    """
+    out: list[ExistingVisit] = []
+    for i, w in enumerate(windows):
+        if _time_to_min(w.end) <= _time_to_min(w.start):
+            continue  # ゼロ長メモ / 異常値は占有にしない.
+        bs, be = _buffered_event_interval(w)
+        out.append(
+            ExistingVisit(
+                start_time=_min_to_time(bs),
+                end_time=_min_to_time(be),
+                lat=candidate.lat,
+                lng=candidate.lng,
+                service_minutes=be - bs,
+                patient_id=f"{_EVENT_SENTINEL_PREFIX}{i}",
+            )
+        )
+    return out
+
+
+def _slot_overlaps_any(slot: Slot, windows: list[EventWindow]) -> bool:
+    """枠 [start, end) がいずれかのイベント (バッファ込み) と重なるか."""
+    s = _time_to_min(slot.start)
+    e = _time_to_min(slot.end)
+    for w in windows:
+        bs, be = _buffered_event_interval(w)
+        if s < be and e > bs:
+            return True
+    return False
+
+
+def _conflicts_for(slot: Slot, windows: list[EventWindow]) -> tuple[EventConflict, ...]:
+    """枠と (バッファ込みで) 重なるイベントの表示用リスト (生の時刻で返す)."""
+    s = _time_to_min(slot.start)
+    e = _time_to_min(slot.end)
+    hits: list[EventConflict] = []
+    for w in windows:
+        bs, be = _buffered_event_interval(w)
+        if s < be and e > bs:
+            hits.append(EventConflict(start=w.start, end=w.end, title=w.title))
+    return tuple(hits)
+
+
+# ---------------------------------------------------------------------------
 # 2. ギャップ走査によるスロット探索
 # ---------------------------------------------------------------------------
 
@@ -431,6 +542,7 @@ def find_available_slots_for_candidate(
     course_minutes_used: int | None = None,
     config: SchedulingConfig | None = None,
     exclusion_sink: list[str] | None = None,
+    event_windows: list[EventWindow] | None = None,
 ) -> list[Slot]:
     """候補をコースの空きに入れられる開始時刻を列挙する (不可なら空リスト).
 
@@ -458,6 +570,9 @@ def find_available_slots_for_candidate(
 
     Returns:
         実現可能 ``Slot`` のリスト (start 昇順). 入れられなければ空リスト.
+        ``event_windows`` を渡した場合は2段階: 全イベント占有でのクリーン枠が
+        1件でもあればそれを返し、0件のときだけ blocking のみ占有で再走査した
+        フォールバック枠 (``event_conflicts`` タグ付き) を返す.
     """
     del weekday  # 現状未使用 (将来の曜日別制約用に signature 保持).
     sv = sorted(existing_visits, key=lambda v: v.start_time)
@@ -471,48 +586,88 @@ def find_available_slots_for_candidate(
 
     # 容量: visit 数 < max_patients かつ total + 候補占有 (= service) <= 480.
     # Phase G-88 Step3: max_patients は config 化. COURSE_MAX_MINUTES は据え置き.
+    # イベント擬似訪問は容量に**算入しない** (件数/分とも実訪問のみ).
     capacity_ok = (
         used_count < _cfg_max_patients(config)
         and used_minutes + int(candidate.service_minutes) <= COURSE_MAX_MINUTES
     )
 
-    slots: list[Slot] = []
-    if capacity_ok:
-        slots.extend(
-            _scan_block(
-                sv, candidate, lunch_window, "am", config=config, exclusion_sink=exclusion_sink
-            )
-        )
-        slots.extend(
-            _scan_block(
-                sv, candidate, lunch_window, "pm", config=config, exclusion_sink=exclusion_sink
-            )
-        )
-    elif exclusion_sink is not None:
-        # 容量上限 (件数 or 分) で am/pm 走査自体をスキップした = capacity_full.
-        exclusion_sink.append("capacity_full")
+    windows = [
+        w for w in (event_windows or []) if _time_to_min(w.end) > _time_to_min(w.start)
+    ]
 
-    # 同住所ペア: 候補が既存の単独患者と同住所なら、その隣に同時刻で入れる.
-    slots.extend(
-        _same_address_pair_slots(
+    def _collect(enforced: list[EventWindow]) -> list[Slot]:
+        """enforced のイベントを占有としてギャップ走査 + 同住所ペアを収集する."""
+        sv_aug = sorted(
+            [*sv, *_event_pseudo_visits(enforced, candidate)],
+            key=lambda v: v.start_time,
+        )
+        slots: list[Slot] = []
+        if capacity_ok:
+            slots.extend(
+                _scan_block(
+                    sv_aug,
+                    candidate,
+                    lunch_window,
+                    "am",
+                    config=config,
+                    exclusion_sink=exclusion_sink,
+                )
+            )
+            slots.extend(
+                _scan_block(
+                    sv_aug,
+                    candidate,
+                    lunch_window,
+                    "pm",
+                    config=config,
+                    exclusion_sink=exclusion_sink,
+                )
+            )
+        elif exclusion_sink is not None:
+            # 容量上限 (件数 or 分) で am/pm 走査自体をスキップした = capacity_full.
+            exclusion_sink.append("capacity_full")
+
+        # 同住所ペア: 候補が既存の単独患者と同住所なら、その隣に同時刻で入れる.
+        # (ペアは実訪問 sv のみ対象。イベント占有との重複は後段フィルタで弾く.)
+        pair_slots = _same_address_pair_slots(
             sv,
             candidate,
             used_count=used_count,
             used_minutes=used_minutes,
             config=config,
         )
-    )
+        slots.extend(s for s in pair_slots if not _slot_overlaps_any(s, enforced))
 
-    # start 昇順 + (start, same_address_pair) で重複除去.
-    seen: set[tuple[int, bool]] = set()
-    unique: list[Slot] = []
-    for s in sorted(slots, key=lambda x: (_time_to_min(x.start), x.same_address_pair)):
-        key = (_time_to_min(s.start), s.same_address_pair)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(s)
-    return unique
+        # start 昇順 + (start, same_address_pair) で重複除去.
+        seen: set[tuple[int, bool]] = set()
+        unique: list[Slot] = []
+        for s in sorted(slots, key=lambda x: (_time_to_min(x.start), x.same_address_pair)):
+            key = (_time_to_min(s.start), s.same_address_pair)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(s)
+        return unique
+
+    if not windows:
+        return _collect([])
+
+    # パスA: 全イベントを占有としてクリーン枠を探す.
+    clean = _collect(windows)
+    if clean:
+        return clean
+
+    # パスB: blocking のみ占有で再走査し、ソフトイベントとの衝突をタグ付けする.
+    hard = [w for w in windows if w.blocking]
+    soft = [w for w in windows if not w.blocking]
+    if not soft:
+        # 全イベントが blocking = パスAと同一条件. 再走査しても結果は同じ.
+        return []
+    fallback = _collect(hard)
+    return [
+        _dataclass_replace(s, event_conflicts=_conflicts_for(s, soft)) for s in fallback
+    ]
 
 
 def _existing_occupancy_end(v: ExistingVisit, others: list[ExistingVisit]) -> time:
@@ -525,11 +680,15 @@ def _existing_occupancy_end(v: ExistingVisit, others: list[ExistingVisit]) -> ti
     占有終端を「前 visit からの最早開始」起点に使うことで、 同住所ペアの 90 分占有の
     最中 (例: 安永/菅原 16:00 ペア → 16:00-17:30) に候補を誤って差し込まないようにする.
     """
+    if v.patient_id is not None and v.patient_id.startswith(_EVENT_SENTINEL_PREFIX):
+        # イベント擬似訪問は同住所ペアの底上げ対象外 (占有はバッファ込み区間そのもの).
+        return v.end_time
     members = [
         o
         for o in others
         if o is not v
         and (o.patient_id is None or v.patient_id is None or o.patient_id != v.patient_id)
+        and not (o.patient_id is not None and o.patient_id.startswith(_EVENT_SENTINEL_PREFIX))
         and _is_same_address(v.lat, v.lng, o.lat, o.lng)
         and (
             o.start_time == v.start_time or o.end_time == v.start_time or v.end_time == o.start_time
@@ -748,6 +907,8 @@ def slot_fits_exact(
     *,
     lunch_window: tuple[time, time] | None,
     config: SchedulingConfig | None = None,
+    event_windows: list[EventWindow] | None = None,
+    enforce_soft_events: bool = True,
 ) -> bool:
     """候補を ``target_start`` ちょうどに配置できるか (時刻系 + 前後移動制約).
 
@@ -765,6 +926,18 @@ def slot_fits_exact(
     ):
         return False
     end = _add_minutes(target_start, candidate.service_minutes)
+    # イベント占有 (2段階提案): enforce_soft_events=True なら全イベント、
+    # False なら blocking のみを占有として T ちょうどの配置を弾く.
+    if event_windows:
+        enforced = [
+            w
+            for w in event_windows
+            if (enforce_soft_events or w.blocking)
+            and _time_to_min(w.end) > _time_to_min(w.start)
+        ]
+        probe = Slot(start=target_start, end=end, block=block)
+        if _slot_overlaps_any(probe, enforced):
+            return False
     p_start = _time_to_min(target_start)
     p_end = _time_to_min(end)
     proposed = ExistingVisit(
@@ -802,6 +975,8 @@ def slot_fits_exact(
 # 後方互換 / 明示 export.
 __all__ = [
     "Candidate",
+    "EventConflict",
+    "EventWindow",
     "ExistingVisit",
     "Slot",
     "_course_total_minutes_from_existing",

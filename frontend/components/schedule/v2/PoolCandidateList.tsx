@@ -1497,6 +1497,22 @@ export function PoolCandidateList({
                   </div>
                 ) : null}
 
+                {/* イベント考慮2段階提案: クリーン枠が無いときのフォールバック枠は
+                    どのイベントと重なるかを明示し、配置後のイベント調整を促す.
+                    (zod を通らない経路もあるため ?? [] で防御) */}
+                {(s.event_conflicts ?? []).length > 0 ? (
+                  <div
+                    className="mt-1 rounded border border-amber-400/60 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-600 dark:bg-amber-900/20 dark:text-amber-200"
+                    data-testid={`pool-event-conflict-${slotKey(s)}`}
+                  >
+                    ⚠ 空き枠がなかったため、イベントを無視して算出した枠です。
+                    {(s.event_conflicts ?? [])
+                      .map((c) => `「${c.title}（${c.start}〜${c.end}）」`)
+                      .join('・')}
+                    とぶつかります。配置する場合は、配置後にイベントの方を手動で調整してください。
+                  </div>
+                ) : null}
+
                 {/* このコース当日の全体スケジュール + 「ここに入れますか」挿入位置. */}
                 {s.mini_schedule.length > 0 ? (
                   <div
@@ -1813,6 +1829,19 @@ export function PoolCandidateList({
               disabled={confirmMut.isPending || placeAndFixMut.isPending}
             />
           </div>
+          {/* イベント考慮2段階提案: 衝突枠の確定前に再度念押しする. */}
+          {(pending.event_conflicts ?? []).length > 0 ? (
+            <div
+              className="mt-2 rounded border border-amber-400/60 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-600 dark:bg-amber-900/20 dark:text-amber-200"
+              data-testid="pool-confirm-event-conflict"
+            >
+              ⚠ この枠は担当スタッフのイベント
+              {(pending.event_conflicts ?? [])
+                .map((c) => `「${c.title}（${c.start}〜${c.end}）」`)
+                .join('・')}
+              とぶつかっています。確定した場合は、イベントの方を手動で変更してください。
+            </div>
+          ) : null}
           {/* 方式b: 定員超過候補の採用理由入力欄 (通常候補では出さない). */}
           {pending.overcapacity ? (
             <div className="mt-2">

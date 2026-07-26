@@ -164,6 +164,10 @@ async def update_event(
     if "type" in data:
         row.event_type = data.pop("type")
 
+    # blocking は NOT NULL — 明示 null は「変更なし」として落とす.
+    if data.get("blocking", ...) is None:
+        data.pop("blocking")
+
     for k, v in data.items():
         setattr(row, k, v)
 

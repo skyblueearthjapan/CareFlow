@@ -132,6 +132,9 @@ class EventUpdate(BaseModel):
     note: str | None = Field(default=None, max_length=500)
     # Wave 39: D&D で event を別スタッフに付け替えるための optional フィールド.
     new_staff_id: UUID | None = None
+    # 🔒絶対に潰せないイベント (2段階提案・mig 0063): 提案エンジンのフォール
+    # バックでも占有として扱う。ユーザーがイベント編集で ON/OFF する。
+    blocking: bool | None = None
 
     @field_validator("type")
     @classmethod
@@ -168,6 +171,8 @@ class EventRead(BaseModel):
     end_time: str
     type: Literal["研修", "イベント"]
     note: str | None = None
+    # 🔒絶対に潰せないイベント (2段階提案). 既定 False.
+    blocking: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -206,4 +211,5 @@ class EventRead(BaseModel):
             "end_time": ends_at.strftime(_HHMM_RE_TIME),
             "type": _db_type_to_label(getattr(data, "event_type", "")),
             "note": getattr(data, "note", None),
+            "blocking": bool(getattr(data, "blocking", False)),
         }

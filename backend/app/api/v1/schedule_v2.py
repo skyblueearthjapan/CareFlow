@@ -127,6 +127,7 @@ from app.schemas.v2.propose_slots import (
     WEEKDAY_INT_TO_CODE,
     ProposeCoverage,
     ProposeCoverageDay,
+    ProposeEventConflict,
     ProposeExcludedReason,
     ProposeMiniScheduleEntry,
     ProposeSlotItem,
@@ -2340,6 +2341,7 @@ def _proposed_to_item(p: ProposedSlot) -> ProposeSlotItem:
         partner_course_template_id=p.partner_course_template_id,
         partner_staff_name=p.partner_staff_name,
         partner_mini_schedule=_mini_entries(p.partner_mini_schedule),
+        event_conflicts=[ProposeEventConflict(**c) for c in p.event_conflicts],
     )
 
 
@@ -3377,6 +3379,7 @@ def _improvement_to_schema(c: ImprovementCandidateData) -> ImprovementSuggestion
         ),
         changes=ImprovementChanges(changes=c.changes, unchanged=c.unchanged),
         staff_warnings=c.staff_warnings,
+        event_conflicts=c.event_conflicts,
         feasibility_basis="pfv",
         requires_patient_confirmation=c.requires_patient_confirmation,
         within_preference=c.within_preference,

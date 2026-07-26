@@ -556,9 +556,18 @@ def _enumerate_step_candidates(
                 window_end=lunch_window_end,
             )
             slots = find_available_slots_for_candidate(
-                existing, cand, lunch_window=lunch, weekday=wd_dst, config=config
+                existing,
+                cand,
+                lunch_window=lunch,
+                weekday=wd_dst,
+                config=config,
+                event_windows=bucket.event_windows,
             )
             for slot in slots:
+                # イベント考慮 (2026-07-27): 範囲最適化は既存患者を自動で動かす経路
+                # のため、イベント衝突枠 (フォールバック) へは動かさない (クリーンのみ).
+                if slot.event_conflicts:
+                    continue
                 # 現在位置そのものは候補にしない.
                 if (
                     is_same_weekday

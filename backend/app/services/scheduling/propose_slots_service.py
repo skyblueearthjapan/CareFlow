@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
-from datetime import date, time
+from datetime import date, datetime, time, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.course import Course
 from app.models.office import Office
 from app.models.patient import Patient
-from app.models.staff import Staff, StaffShift, StaffWeeklyOverride
+from app.models.staff import Staff, StaffEvent, StaffShift, StaffWeeklyOverride
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.services.patient_excel.schema import OFFICE_CODE_TO_SHORT
 from app.services.scheduling.auto_allocator_v2 import (
@@ -71,6 +71,7 @@ from app.services.scheduling.layer3_assignment import (
 )
 from app.services.scheduling.proposal_solver import (
     Candidate,
+    EventWindow,
     ExistingVisit,
     Slot,
     _course_total_minutes_from_existing,
@@ -130,6 +131,9 @@ class _CourseBucket:
     staff_sex: str | None = None
     staff_absent: bool = False
     visits: list[_V2Visit] = field(default_factory=list)
+    # イベント考慮2段階提案 (PO確定 2026-07-27): 割付スタッフの当該曜日の
+    # staff_events (カイポケ取り込み含む) 占有窓. solver へそのまま渡す.
+    event_windows: list[EventWindow] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -186,6 +190,9 @@ class ProposedSlot:
     partner_course_template_id: UUID | None = None
     partner_staff_name: str | None = None
     partner_mini_schedule: list[dict[str, object]] | None = None
+    # イベント考慮2段階提案: フォールバック枠 (パスB) が重なるソフトイベント.
+    # 空ならクリーン枠. [{"title": ..., "start": "HH:MM", "end": "HH:MM"}].
+    event_conflicts: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -261,8 +268,6 @@ async def load_week_course_buckets(
     except ValueError as exc:
         raise ValueError(f"無効な ISO 週: {iso_year}-W{iso_week}") from exc
     # week_sunday_plus1 を排他上限にするため +1 日.
-    from datetime import timedelta
-
     week_upper = week_sunday_plus1 + timedelta(days=1)
 
     stmt = (
@@ -396,7 +401,70 @@ async def load_week_course_buckets(
             shift_absent = shift_on is None or shift_on is False
             b.staff_absent = shift_absent or (shift_key in override_off_keys)
 
+        # イベント考慮2段階提案: 割付スタッフの当該週 staff_events を占有窓として
+        # 各バケットへ配る (solver のパスA/パスB判定に使う).
+        windows_by_staff_wd = await load_week_event_windows(
+            db, staff_ids=list(staff_ids), week_monday=week_monday
+        )
+        for b in buckets.values():
+            if b.assigned_staff_id is None:
+                continue
+            b.event_windows = windows_by_staff_wd.get((b.assigned_staff_id, b.weekday), [])
+
     return buckets, office_name_by_id, office_code_by_id
+
+
+async def load_week_event_windows(
+    db: AsyncSession,
+    *,
+    staff_ids: list[UUID],
+    week_monday: date,
+) -> dict[tuple[UUID, int], list[EventWindow]]:
+    """当該週の staff_events を (staff_id, weekday) 別の EventWindow 列へ変換する.
+
+    - starts_at/ends_at は naive 壁時計として比較する (Layer3 ``_strip_tz`` と同規約:
+      staff_events API は naive を INSERT し、PostgreSQL 経由では UTC tz が付くため剥がす).
+    - 日を跨ぐイベントは各日に切り出す (現状の運用ではほぼ同日内).
+    - ゼロ長 (メモ) は solver 側でも無視するがここでも落とす.
+    """
+    if not staff_ids:
+        return {}
+    range_start = datetime.combine(week_monday, time(0, 0))
+    range_end = datetime.combine(week_monday + timedelta(days=7), time(0, 0))
+    rows = await db.scalars(
+        select(StaffEvent).where(
+            StaffEvent.staff_id.in_(staff_ids),
+            StaffEvent.starts_at < range_end,
+            StaffEvent.ends_at >= range_start,
+        )
+    )
+
+    def _naive(dt: datetime) -> datetime:
+        return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+    out: dict[tuple[UUID, int], list[EventWindow]] = {}
+    for ev in rows.all():
+        ev_start = _naive(ev.starts_at)
+        ev_end = _naive(ev.ends_at)
+        if ev_end <= ev_start:
+            continue  # ゼロ長メモ / 異常値.
+        for offset in range(7):
+            day = week_monday + timedelta(days=offset)
+            day_start = datetime.combine(day, time(0, 0))
+            day_end = day_start + timedelta(days=1)
+            seg_start = max(ev_start, day_start)
+            seg_end = min(ev_end, day_end)
+            if seg_end <= seg_start:
+                continue
+            out.setdefault((ev.staff_id, offset), []).append(
+                EventWindow(
+                    start=seg_start.time(),
+                    end=time(23, 59) if seg_end == day_end else seg_end.time(),
+                    title=ev.title or "イベント",
+                    blocking=bool(ev.blocking),
+                )
+            )
+    return out
 
 
 def _to_existing_visits(bucket: _CourseBucket) -> list[ExistingVisit]:
@@ -557,6 +625,13 @@ _PENALTY_STAFF_UNASSIGNED: float = 20.0
 # を使う (受入不可の枠を確実にクリーン候補より下位へ沈める). pair 1000 は超えないので
 # 同住所ペア最優先は維持. enforce ではないので候補は除外しない (warning + 降格のみ).
 _PENALTY_ACCEPTANCE_CALENDAR: float = 60.0
+
+# イベント考慮2段階提案 (PO確定 2026-07-27): フォールバック枠 (solver パスBで
+# ソフトイベントと衝突) の警告コードと降格幅. staff_absent と同じ機構・同じ幅で、
+# 他コースのクリーン候補より確実に下位へ沈める. 同一バケット内では solver が
+# 「クリーン枠があれば衝突枠を出さない」を保証するため、この降格はコース間比較用.
+_WARN_EVENT_CONFLICT = "event_conflict"
+_PENALTY_EVENT_CONFLICT: float = 60.0
 
 
 def _pair_mode_of(pair_modes: dict[tuple[UUID, UUID], str], a: UUID, b: UUID) -> str | None:
@@ -824,6 +899,7 @@ def _enumerate_candidate_slots(
             weekday=weekday,
             config=config,
             exclusion_sink=bucket_sink,
+            event_windows=bucket.event_windows,
         )
         # I-11: pair_mode='blocked' のペア相手と同時間帯 (同住所同時刻=90分占有) に重なる
         # 同住所ペア slot を除外する (diff-add Stage3 の blocked=同 set 禁止と同義).
@@ -923,6 +999,11 @@ def _enumerate_candidate_slots(
                 staff_sex_mismatch=staff_sex_mismatch,
                 acceptance_blocked=acceptance_blocked,
             )
+            # イベント考慮2段階提案: フォールバック枠は warning + 降格 (除外しない原則)
+            # + 表示用の衝突イベント詳細を載せる.
+            if slot.event_conflicts:
+                warnings = [*warnings, _WARN_EVENT_CONFLICT]
+                score -= _PENALTY_EVENT_CONFLICT
             mini = _build_mini_schedule(
                 bucket,
                 slot,
@@ -949,6 +1030,14 @@ def _enumerate_candidate_slots(
                         pair_partner=pair_partner,
                         mini_schedule=mini,
                         is_efficiency_alternative=is_efficiency_alternative,
+                        event_conflicts=[
+                            {
+                                "title": c.title,
+                                "start": _fmt_hhmm(c.start),
+                                "end": _fmt_hhmm(c.end),
+                            }
+                            for c in slot.event_conflicts
+                        ],
                     ),
                     eff,
                 )
@@ -1140,8 +1229,14 @@ def _enumerate_pair_slots(
             weekday=weekday,
             config=config,
             exclusion_sink=bucket_sink,
+            event_windows=bucket.event_windows,
         )
-        feasible_starts = {s.start for s in slots if not s.same_address_pair}
+        # 2名体制ペア (W-12a) はクリーン枠のみ対象: フォールバック (イベント衝突) の
+        # anchor で2コース同時のペアを組むと衝突が伝播して複雑になるため、イベントと
+        # 重なる場合は単独候補側 (通常経路) の警告付き提案に任せる.
+        feasible_starts = {
+            s.start for s in slots if not s.same_address_pair and not s.event_conflicts
+        }
         used_minutes = _course_total_minutes_from_existing(existing, config=config)
         cap_ok = (
             len(bucket.visits) < max_patients
@@ -1173,12 +1268,22 @@ def _enumerate_pair_slots(
                     continue
                 for anchor in sorted(x_starts | y_starts, key=_time_to_min):
                     x_ok = anchor in x_starts or slot_fits_exact(
-                        x_existing, solver_candidate, anchor, lunch_window=x_lunch, config=config
+                        x_existing,
+                        solver_candidate,
+                        anchor,
+                        lunch_window=x_lunch,
+                        config=config,
+                        event_windows=x_bucket.event_windows,
                     )
                     if not x_ok:
                         continue
                     y_ok = anchor in y_starts or slot_fits_exact(
-                        y_existing, solver_candidate, anchor, lunch_window=y_lunch, config=config
+                        y_existing,
+                        solver_candidate,
+                        anchor,
+                        lunch_window=y_lunch,
+                        config=config,
+                        event_windows=y_bucket.event_windows,
                     )
                     if not y_ok:
                         continue

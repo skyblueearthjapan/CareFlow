@@ -151,6 +151,16 @@ class ProposeMiniScheduleEntry(BaseModel):
     sex: str | None = Field(default=None, description="'male' | 'female' | 'unknown' | None")
 
 
+class ProposeEventConflict(BaseModel):
+    """フォールバック枠が重なるイベント (表示用・イベント考慮2段階提案)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    start: str = Field(..., description="HH:MM")
+    end: str = Field(..., description="HH:MM")
+
+
 class ProposeSlotItem(BaseModel):
     """ランキング済み提案スロット 1 件."""
 
@@ -200,6 +210,10 @@ class ProposeSlotItem(BaseModel):
     partner_mini_schedule: list[ProposeMiniScheduleEntry] | None = Field(
         default=None, description="相方コース当日のミニスケジュール (2名体制ペアのみ)"
     )
+    # イベント考慮2段階提案 (2026-07-27): この枠が重なる担当スタッフのイベント.
+    # 空 = クリーン枠. 非空 = フォールバック枠 (warnings に 'event_conflict' も入る).
+    # 適用時は「配置後にイベントの方を手動調整」を促す.
+    event_conflicts: list[ProposeEventConflict] = Field(default_factory=list)
 
 
 # P-1b: 除外理由コード (N-6「黙って消さない」). service (_pick_bucket_reason /

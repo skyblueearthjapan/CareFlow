@@ -389,6 +389,10 @@ class ImprovementCandidateData:
     requires_patient_confirmation: bool
     changes: list[str]
     unchanged: list[str]
+    # イベント考慮2段階提案 (2026-07-27): 候補枠が重なる移動先スタッフのイベント.
+    # 非空のとき staff_warnings に 'event_conflict' も入る (フォールバック枠).
+    # swap は時刻交換のみで新しい時間帯を作らないため常に空.
+    event_conflicts: list[dict[str, str]] = field(default_factory=list)
     # P4-A: 候補枠 (swap では X の新位置) が患者の希望訪問スケジュール範囲内なら True.
     within_preference: bool = False
     # kind='swap' のときのみ設定される相手患者 Y の情報 (P3-②). それ以外は None.
@@ -1010,6 +1014,7 @@ async def find_improvement_candidates(
                 lunch_window=lunch,
                 weekday=wd,
                 config=config,
+                event_windows=bucket.event_windows,
             )
             if not slots:
                 continue
@@ -1095,6 +1100,16 @@ async def find_improvement_candidates(
                     )
                     else _cached_snapshot(snap_cache, bucket)
                 )
+                # イベント考慮2段階提案: フォールバック枠 (移動先スタッフのイベントと
+                # 衝突) は警告コード + 詳細を載せる (除外しない原則).
+                slot_staff_warnings = _staff_warnings_for_bucket(bucket, patient.sex_restriction)
+                slot_event_conflicts: list[dict[str, str]] = []
+                if slot.event_conflicts:
+                    slot_staff_warnings = [*slot_staff_warnings, "event_conflict"]
+                    slot_event_conflicts = [
+                        {"title": c.title, "start": _fmt_hhmm(c.start), "end": _fmt_hhmm(c.end)}
+                        for c in slot.event_conflicts
+                    ]
                 candidates.append(
                     ImprovementCandidateData(
                         kind=kind,
@@ -1115,7 +1130,8 @@ async def find_improvement_candidates(
                         cand_staff_name=bucket.staff_name,
                         delta_minutes=delta_min,
                         delta_km=round(delta_km, 2),
-                        staff_warnings=_staff_warnings_for_bucket(bucket, patient.sex_restriction),
+                        staff_warnings=slot_staff_warnings,
+                        event_conflicts=slot_event_conflicts,
                         requires_patient_confirmation=(
                             requires_confirmation and kind == "time_change" and not within_pref
                         ),

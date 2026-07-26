@@ -108,6 +108,11 @@ export const proposeSlotItemSchema = z.object({
   partner_staff_name: z.string().nullish(),
   // 相方コース当日のミニスケジュール (来れば 2 段表示・無ければ省略)。旧BE未送出 → undefined。
   partner_mini_schedule: z.array(proposeMiniScheduleEntrySchema).nullish(),
+  // イベント考慮2段階提案 (2026-07-27): この枠が重なる担当スタッフのイベント。
+  // 空 = クリーン枠。非空 = フォールバック枠 (warnings に 'event_conflict' も入る)。
+  event_conflicts: z
+    .array(z.object({ title: z.string(), start: z.string(), end: z.string() }))
+    .default([]),
 });
 export type ProposeSlotItem = z.infer<typeof proposeSlotItemSchema>;
 
