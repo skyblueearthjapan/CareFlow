@@ -1673,6 +1673,18 @@ export function TimelineDayBoard({
                       {col.assignedStaffMissing && col.course?.assigned_staff_id ? (
                         <option value={col.course.assigned_staff_id}>（担当不在）</option>
                       ) : null}
+                      {/* 2026-07-26: 現在の担当が新人 (is_trainee) の場合、候補一覧からは
+                          除外されている (らく助発の割当封鎖) が、カイポケ取込で担当に
+                          なり得る。選択肢に無いと select が空欄=（未割当）に見えるため、
+                          現在値としてだけ表示する。 */}
+                      {!col.assignedStaffMissing &&
+                      col.course?.assigned_staff_id &&
+                      col.assignedStaff &&
+                      !col.staffOptions.some((s) => s.id === col.course?.assigned_staff_id) ? (
+                        <option value={col.course.assigned_staff_id}>
+                          {col.assignedStaff.name}（新人）
+                        </option>
+                      ) : null}
                       {col.staffOptions.map((s) => (
                         <option key={s.id} value={s.id}>
                           {s.name}
