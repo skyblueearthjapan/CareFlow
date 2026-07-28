@@ -10,7 +10,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 
 const { mockToast, mocks } = vi.hoisted(() => ({
   mockToast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
@@ -29,6 +29,8 @@ const { mockToast, mocks } = vi.hoisted(() => ({
     unblockPending: false,
     unblockApplyMutate: vi.fn(),
     unblockApplyPending: false,
+    // 特別訪問週間 (⭐) モードの確定経路 (POST /special-visit-marks/{id}/place)。
+    placeSpecialMutate: vi.fn(),
   },
 }));
 
@@ -107,6 +109,10 @@ vi.mock('@/lib/queries/unblock', () => ({
 
 vi.mock('@/lib/queries/place_and_fix', () => ({
   usePlaceAndFix: () => ({ mutate: mocks.placeAndFixMutate, isPending: false }),
+}));
+
+vi.mock('@/lib/queries/specialVisitWeek', () => ({
+  usePlaceSpecialMark: () => ({ mutate: mocks.placeSpecialMutate, isPending: false }),
 }));
 
 vi.mock('@/components/ui/alert', () => ({
@@ -1426,5 +1432,183 @@ describe('W-14: autoRequestUnblock (詰まり解消探索の自動発火)', () =
     render(<PoolCandidateList {...COMMON} primary autoRequestUnblock />);
     // W-15: capacity_full も発動理由。UnblockConsult が mount され autoFire で 1 回発火する。
     expect(mocks.unblockMutate).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── 特別訪問週間 (⭐) モード: specialTicket prop ────────────────────────────────
+// PO 指示 2026-07-29: 通常プール患者と同じ提案 UI (ポップアップ + ミニスケジュール) で
+// チケットを配置する。prop 未指定時の挙動は 1 バイトも変わらないこと (上の全 describe が担保)。
+
+describe('特別訪問週間モード (specialTicket)', () => {
+  const SPECIAL = {
+    markId: '55555555-5555-4555-8555-555555555555',
+    // 3 = 木曜.
+    weekday: 3,
+    isoYear: 2026,
+    isoWeek: 31,
+    serviceMinutes: 45,
+    lastPlacement: null as {
+      weekday: number;
+      start_time: string;
+      course_label: string;
+      staff_name: string | null;
+    } | null,
+  };
+
+  /** チケット曜日 (木) の候補 1 件. */
+  function makeThuSlot(over: Record<string, unknown> = {}) {
+    return makeSlot({ weekday: 3, weekday_code: 'Thu', ...over });
+  }
+
+  beforeEach(() => {
+    mocks.proposeMutate.mockReset();
+    mocks.confirmMutate.mockReset();
+    mocks.placeAndFixMutate.mockReset();
+    mocks.placeSpecialMutate.mockReset();
+    mocks.proposeData = undefined;
+    mocks.existingFixedVisits = [];
+    mocks.templatesQueries = [];
+    mockToast.success.mockReset();
+    mockToast.error.mockReset();
+    mockToast.warning.mockReset();
+  });
+
+  it('propose の曜日/週/枠長をチケットに固定する (希望曜日ではなくチケット曜日)', () => {
+    render(<PoolCandidateList {...COMMON} primary specialTicket={SPECIAL} />);
+
+    expect(mocks.proposeMutate).toHaveBeenCalledTimes(1);
+    const req = mocks.proposeMutate.mock.calls[0][0];
+    // 患者マスタの希望は ['Tue'] だが、チケット曜日 (木) に固定される.
+    expect(req.preferred_weekdays).toEqual(['Thu']);
+    expect(req.iso_year).toBe(2026);
+    expect(req.iso_week).toBe(31);
+    // BE 正典の所要分 (place と同一計算) を最優先.
+    expect(req.service_minutes).toBe(45);
+    expect(req.frequency_per_week).toBe(1);
+    // 曜日固定が要件なので希望外の代替枠は出さない.
+    expect(req.include_efficiency_alternatives).toBe(false);
+    expect(req.existing_patient_id).toBe(PATIENT.id);
+  });
+
+  it('serviceMinutes=null (旧BE) のときは患者マスタの所要分にフォールバックする', () => {
+    render(
+      <PoolCandidateList
+        {...COMMON}
+        primary
+        specialTicket={{ ...SPECIAL, serviceMinutes: null }}
+      />,
+    );
+    expect(mocks.proposeMutate.mock.calls[0][0].service_minutes).toBe(35);
+  });
+
+  it('採用確認では ChangeScopeChoice を出さず「この週のみ」と説明する', () => {
+    const slot = makeThuSlot();
+    mocks.proposeData = { slots: [slot], message: null };
+    render(<PoolCandidateList {...COMMON} primary specialTicket={SPECIAL} />);
+    fireEvent.click(
+      screen.getByTestId(
+        `pool-candidate-adopt-${slot.office_id}-${slot.weekday}-${slot.course_code}-${slot.start_time}`,
+      ),
+    );
+
+    expect(screen.getByTestId('pool-candidate-confirm')).toBeInTheDocument();
+    expect(screen.queryByTestId('change-scope-choice')).not.toBeInTheDocument();
+    const note = screen.getByTestId('pool-candidate-special-week-only');
+    expect(note.textContent).toContain('この週のみ');
+    expect(note.textContent).toContain('固定訪問週間');
+  });
+
+  it('確定で place (office_id + course_code + start_time) が呼ばれ、confirm/place-and-fix は呼ばれない', async () => {
+    const slot = makeThuSlot();
+    mocks.proposeData = { slots: [slot], message: null };
+    const onAdopted = vi.fn();
+    render(
+      <PoolCandidateList {...COMMON} primary specialTicket={SPECIAL} onAdopted={onAdopted} />,
+    );
+    fireEvent.click(
+      screen.getByTestId(
+        `pool-candidate-adopt-${slot.office_id}-${slot.weekday}-${slot.course_code}-${slot.start_time}`,
+      ),
+    );
+    fireEvent.click(screen.getByTestId('pool-candidate-confirm-apply'));
+
+    await waitFor(() => expect(mocks.placeSpecialMutate).toHaveBeenCalledTimes(1));
+    const [vars, opts] = mocks.placeSpecialMutate.mock.calls[0] as [
+      { markId: string; payload: Record<string, unknown> },
+      { onSuccess: () => void },
+    ];
+    expect(vars.markId).toBe(SPECIAL.markId);
+    expect(vars.payload).toEqual({
+      office_id: slot.office_id,
+      course_code: slot.course_code,
+      // 秒は落として送る.
+      start_time: '14:00',
+    });
+    // 従来の確定経路は使わない.
+    expect(mocks.confirmMutate).not.toHaveBeenCalled();
+    expect(mocks.placeAndFixMutate).not.toHaveBeenCalled();
+
+    // 成功時は「この週のみ・固定化しません」を明記したトースト + 親へ通知.
+    act(() => opts.onSuccess());
+    expect(mockToast.success).toHaveBeenCalledTimes(1);
+    const msg = mockToast.success.mock.calls[0][0] as string;
+    expect(msg).toContain('中尾 要太');
+    expect(msg).toContain('木曜');
+    expect(msg).toContain('14:00');
+    expect(msg).toContain('この週のみ・固定化しません');
+    expect(onAdopted).toHaveBeenCalledTimes(1);
+  });
+
+  it('lastPlacement があれば候補の上に「前回はここでした」ヒントを出す', () => {
+    mocks.proposeData = { slots: [makeThuSlot()], message: null };
+    render(
+      <PoolCandidateList
+        {...COMMON}
+        primary
+        specialTicket={{
+          ...SPECIAL,
+          lastPlacement: {
+            weekday: 1,
+            start_time: '14:00:00',
+            course_label: '稲毛A',
+            staff_name: '山田 花子',
+          },
+        }}
+      />,
+    );
+    const hint = screen.getByTestId('pool-candidate-last-placement');
+    expect(hint.textContent).toContain('前回はここでした');
+    expect(hint.textContent).toContain('火曜');
+    expect(hint.textContent).toContain('14:00');
+    expect(hint.textContent).toContain('稲毛A');
+    expect(hint.textContent).toContain('山田 花子');
+  });
+
+  it('特別モードでは定員超過相談・詰まり解消相談を出さない (シンプル優先)', () => {
+    mocks.proposeData = {
+      slots: [],
+      message: null,
+      excluded_summary: [{ weekday: 3, reason: 'no_gap', count: 2 }],
+      overcapacity_available_count: 2,
+      overcapacity_slots: [],
+    };
+    render(<PoolCandidateList {...COMMON} primary specialTicket={SPECIAL} />);
+    expect(screen.queryByTestId('pool-overcapacity-callout')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('unblock-callout')).not.toBeInTheDocument();
+  });
+
+  it('specialTicket 未指定なら特別モードの表示要素は一切出ない (既存挙動維持)', () => {
+    const slot = makeSlot();
+    mocks.proposeData = { slots: [slot], message: null };
+    render(<PoolCandidateList {...COMMON} primary />);
+    expect(screen.queryByTestId('pool-candidate-last-placement')).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByTestId(
+        `pool-candidate-adopt-${slot.office_id}-${slot.weekday}-${slot.course_code}-${slot.start_time}`,
+      ),
+    );
+    expect(screen.queryByTestId('pool-candidate-special-week-only')).not.toBeInTheDocument();
+    expect(screen.getByTestId('change-scope-choice')).toBeInTheDocument();
+    expect(mocks.proposeMutate.mock.calls[0][0].include_efficiency_alternatives).toBe(true);
   });
 });

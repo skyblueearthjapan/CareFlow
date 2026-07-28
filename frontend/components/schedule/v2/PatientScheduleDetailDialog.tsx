@@ -51,7 +51,7 @@ import type { VisitRead } from '@/lib/schemas/visit';
 import { type TimelineRowMeta } from './CourseMoveTimeline';
 import { ImprovementSuggestionsSection } from './ImprovementSuggestionsSection';
 import { PatientEditDialog } from './PatientEditDialog';
-import { PoolCandidateList } from './PoolCandidateList';
+import { PoolCandidateList, type PoolCandidateSpecialTicket } from './PoolCandidateList';
 import { SpecialVisitWeekDialog } from './SpecialVisitWeekDialog';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
@@ -280,6 +280,12 @@ export interface PatientScheduleDetailDialogProps {
    * カード視覚言語に使う。optional — 未指定でも各セクションが対象患者分を補完する。
    */
   patientMetaById?: ReadonlyMap<string, TimelineRowMeta>;
+  /**
+   * 特別訪問週間 (⭐) のチケットから開いたときだけ渡す。PoolCandidateList を特別モード
+   * (曜日固定・この週のみ・place 確定) にして、通常プール患者と同じポップアップで
+   * 「ここに入れますか」を確認できるようにする。未指定 = 従来どおり。
+   */
+  specialTicket?: PoolCandidateSpecialTicket;
 }
 
 type ApplyStage = 'idle' | 'preview' | 'applying';
@@ -296,6 +302,7 @@ export function PatientScheduleDetailDialog({
   autoRequestOvercapacity = false,
   autoRequestUnblock = false,
   patientMetaById,
+  specialTicket,
 }: PatientScheduleDetailDialogProps) {
   // 週 範囲 (ISO Mon..Sun)
   // Wave Next 1 M2: ISO W53 が存在しない年 (e.g. 2025-W53) を検出.
@@ -426,6 +433,15 @@ export function PatientScheduleDetailDialog({
               <span className="ml-2 text-sm font-normal text-text-secondary">
                 {patient.name}
                 {patient.code ? ` (${patient.code})` : null}
+              </span>
+            ) : null}
+            {/* 特別訪問週間の追加枠から開いたときの小表示 (何を配置しているかの明示)。 */}
+            {specialTicket ? (
+              <span
+                className="ml-2 rounded bg-brand-primary/10 px-1.5 py-0.5 text-[11px] font-normal text-brand-primary"
+                data-testid="patient-schedule-special-ticket-label"
+              >
+                ⭐特別訪問週間の追加枠（{WEEKDAY_LABELS[specialTicket.weekday] ?? '?'}曜）
               </span>
             ) : null}
           </DialogTitle>
@@ -591,7 +607,9 @@ export function PatientScheduleDetailDialog({
                 className="rounded border border-border-default p-3"
                 data-testid="patient-schedule-pool-proposal"
               >
-                <h3 className="mb-2 text-sm font-semibold text-text-primary">プール投入の提案</h3>
+                <h3 className="mb-2 text-sm font-semibold text-text-primary">
+                  {specialTicket ? '追加枠の配置先' : 'プール投入の提案'}
+                </h3>
                 {poolAdopted ? (
                   <div
                     className="rounded border border-success/40 bg-success/5 p-2 text-xs text-success"
@@ -606,11 +624,14 @@ export function PatientScheduleDetailDialog({
                     isoWeek={isoWeek}
                     officeId={officeId}
                     canEdit={canEdit}
-                    onAdopted={() => setPoolAdopted(true)}
+                    // 特別モードは「配置しました」トーストのあとダイアログを閉じる
+                    // (固定枠に反映していないので「反映しました」表示に切り替えない)。
+                    onAdopted={() => (specialTicket ? onClose() : setPoolAdopted(true))}
                     primary
                     autoRequestOvercapacity={autoRequestOvercapacity}
                     autoRequestUnblock={autoRequestUnblock}
                     patientMetaById={patientMetaById}
+                    specialTicket={specialTicket}
                   />
                 ) : null}
               </section>

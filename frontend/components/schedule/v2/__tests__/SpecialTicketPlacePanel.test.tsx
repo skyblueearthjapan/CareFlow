@@ -1,36 +1,29 @@
 /**
- * SpecialVisitPoolSection / SpecialTicketPlacePanel — 特別訪問週間のプール統合テスト.
+ * SpecialVisitPoolSection — 特別訪問週間のプール統合テスト.
  *
- * 正典: `docs/plans/special-visit-week-design.md` §6-2 (Wave2)。
+ * 正典: `docs/plans/special-visit-week-design.md` §6-2 / PO 指示 2026-07-29
+ * (既存 UI へ統一 = 通常プール患者カード + ポップアップ提案)。
  *
  * 検証:
- *   1. チケットが専用セクションに表示される (0 件のときはセクションごと非表示)
- *   2. チケット展開で propose-slots が呼ばれ、preferred_weekdays がチケット曜日になる
- *   3. last_placement があれば「前回はここでした」ヒントが出る
- *   4. 「この枠に配置」で place mutation が (office_id + course_code + start_time) で呼ばれる
+ *   1. チケットが専用セクションに通常プールカードと同じ形で表示される
+ *      (0 件のときはセクションごと非表示)
+ *   2. ⭐ / 種別 (追加枠・固定退避) / 曜日のバッジは維持される
+ *   3. カードクリックで PatientScheduleDetailDialog が特別モード props つきで開く
+ *   4. 「カレンダー」ボタンは設定モーダルを開く (カードのクリックとは別導線)
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 
-const { mockToast, mocks } = vi.hoisted(() => ({
-  mockToast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
+const { mocks } = vi.hoisted(() => ({
   mocks: {
     poolTickets: [] as unknown[],
-    proposeMutate: vi.fn(),
-    proposeData: undefined as unknown,
-    proposePending: false,
-    placeMutate: vi.fn(),
-    patientData: undefined as unknown,
+    detailProps: null as Record<string, unknown> | null,
   },
 }));
 
-vi.mock('sonner', () => ({ toast: mockToast }));
-
 vi.mock('lucide-react', () => ({
-  AlertTriangle: () => <span />,
   CalendarDays: () => <span />,
-  Loader2: () => <span data-testid="loader" />,
   Star: () => <span />,
 }));
 
@@ -64,37 +57,27 @@ vi.mock('../SpecialVisitWeekDialog', () => ({
   ),
 }));
 
+// 提案ポップアップ本体は独自フック群 (QueryClient 必須) を持つため stub し、
+// 受け取った props (特に specialTicket) を露出する.
+vi.mock('../PatientScheduleDetailDialog', () => ({
+  PatientScheduleDetailDialog: (props: Record<string, unknown>) => {
+    mocks.detailProps = props;
+    return (
+      <div data-testid="patient-detail-stub">
+        <button
+          type="button"
+          data-testid="patient-detail-stub-close"
+          onClick={() => (props.onClose as (() => void) | undefined)?.()}
+        >
+          閉じる
+        </button>
+      </div>
+    );
+  },
+}));
+
 vi.mock('@/lib/queries/specialVisitWeek', () => ({
   useSpecialVisitPool: () => ({ data: mocks.poolTickets, isLoading: false, isError: false }),
-  usePlaceSpecialMark: () => ({ mutate: mocks.placeMutate, isPending: false }),
-}));
-
-vi.mock('@/lib/queries/fieldBoard', () => ({
-  useProposeSlots: () => ({
-    mutate: mocks.proposeMutate,
-    isPending: mocks.proposePending,
-    isError: false,
-    data: mocks.proposeData,
-  }),
-  proposeWarningLabel: (code: string) => code,
-}));
-
-vi.mock('@/lib/queries/patients', () => ({
-  usePatient: () => ({ data: mocks.patientData, isLoading: false, isError: false }),
-}));
-
-vi.mock('@/lib/schemas/patient', () => ({
-  coerceWeeklyPattern: () => ({
-    frequency_per_week: 1,
-    visit_frequency: null,
-    visit_weeks: null,
-    preferred_weekdays: ['Mon'],
-    service_minutes: 45,
-    time_type: '固定',
-    preferred_start: '14:00',
-    preferred_end: null,
-    ng_weekdays: null,
-  }),
 }));
 
 import { SpecialVisitPoolSection } from '../SpecialTicketPlacePanel';
@@ -135,31 +118,7 @@ function makeTicket(over: Record<string, unknown> = {}) {
       end_date: '2026-08-16',
     },
     last_placement: null,
-    ...over,
-  };
-}
-
-function makeSlot(over: Record<string, unknown> = {}) {
-  return {
-    office_id: OFFICE_ID,
-    office_name: '稲毛',
-    weekday: 3,
-    weekday_code: 'Thu',
-    course_code: 'A',
-    course_label: '稲毛A',
-    staff_name: '山田 花子',
-    start_time: '14:00:00',
-    end_time: '14:45:00',
-    score: 91,
-    reasons: [],
-    warnings: [],
-    is_pair: false,
-    pair_partner: null,
-    mini_schedule: [],
-    is_efficiency_alternative: false,
-    marginal_cost_minutes: 5,
-    overcapacity: false,
-    event_conflicts: [],
+    service_minutes: 45,
     ...over,
   };
 }
@@ -173,9 +132,7 @@ function renderSection(canEdit = true) {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.poolTickets = [];
-  mocks.proposeData = undefined;
-  mocks.proposePending = false;
-  mocks.patientData = { id: PATIENT_ID, address: '千葉県千葉市稲毛区1-1', weekly_pattern: {} };
+  mocks.detailProps = null;
 });
 
 describe('SpecialVisitPoolSection', () => {
@@ -185,17 +142,20 @@ describe('SpecialVisitPoolSection', () => {
     expect(screen.queryByTestId('special-visit-pool-section')).toBeNull();
   });
 
-  it('チケットを専用セクションに「◯◯様・木曜」+ 種別 + 目標つきで表示する', () => {
+  it('通常プールカードと同じ形 (氏名 + コード) で表示し、⭐/種別/曜日バッジを維持する', () => {
     mocks.poolTickets = [makeTicket()];
     renderSection();
 
     expect(screen.getByTestId('special-visit-pool-section')).toBeTruthy();
-    expect(screen.getByTestId(`special-visit-ticket-${MARK_ID}`)).toBeTruthy();
-    expect(screen.getByTestId(`special-visit-ticket-toggle-${MARK_ID}`).textContent).toContain(
-      '中尾 要太 様・木曜',
-    );
+    const card = screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`);
+    expect(card.textContent).toContain('中尾 要太');
+    expect(card.textContent).toContain('P-001');
+    expect(card.textContent).toContain('⭐');
     expect(screen.getByTestId(`special-visit-ticket-kind-${MARK_ID}`).textContent).toContain(
       '追加枠',
+    );
+    expect(screen.getByTestId(`special-visit-ticket-weekday-${MARK_ID}`).textContent).toContain(
+      '木曜',
     );
     expect(screen.getByTestId('special-visit-pool-section').textContent).toContain('週5回以上');
   });
@@ -208,35 +168,7 @@ describe('SpecialVisitPoolSection', () => {
     );
   });
 
-  it('「カレンダー」ボタンで設定モーダルを開く', () => {
-    mocks.poolTickets = [makeTicket()];
-    renderSection();
-    expect(screen.queryByTestId('svw-dialog-stub')).toBeNull();
-    fireEvent.click(screen.getByTestId(`special-visit-ticket-calendar-${MARK_ID}`));
-    expect(screen.getByTestId('svw-dialog-stub').textContent).toContain('中尾 要太');
-  });
-});
-
-describe('SpecialTicketPlacePanel', () => {
-  it('チケット展開で propose-slots がチケット曜日 (preferred_weekdays) と対象週で呼ばれる', () => {
-    mocks.poolTickets = [makeTicket()];
-    renderSection();
-
-    expect(mocks.proposeMutate).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByTestId(`special-visit-ticket-toggle-${MARK_ID}`));
-
-    expect(mocks.proposeMutate).toHaveBeenCalledTimes(1);
-    const payload = mocks.proposeMutate.mock.calls[0]![0] as Record<string, unknown>;
-    expect(payload.preferred_weekdays).toEqual(['Thu']);
-    expect(payload.iso_year).toBe(2026);
-    expect(payload.iso_week).toBe(31);
-    expect(payload.existing_patient_id).toBe(PATIENT_ID);
-    expect(payload.office_ids).toEqual([OFFICE_ID]);
-    expect(payload.service_minutes).toBe(45);
-    expect(payload.limit).toBe(5);
-  });
-
-  it('last_placement があれば「前回はここでした」ヒントを候補の上に出す', () => {
+  it('カードクリックで患者スケジュール詳細ダイアログを特別モードで開く', () => {
     mocks.poolTickets = [
       makeTicket({
         last_placement: {
@@ -247,70 +179,54 @@ describe('SpecialTicketPlacePanel', () => {
         },
       }),
     ];
-    mocks.proposeData = { slots: [makeSlot()] };
     renderSection();
-    fireEvent.click(screen.getByTestId(`special-visit-ticket-toggle-${MARK_ID}`));
 
-    const hint = screen.getByTestId('special-ticket-last-placement');
-    expect(hint.textContent).toContain('前回はここでした');
-    expect(hint.textContent).toContain('火曜');
-    expect(hint.textContent).toContain('14:00');
-    expect(hint.textContent).toContain('稲毛A');
-    expect(hint.textContent).toContain('山田 花子');
-  });
+    expect(screen.queryByTestId('patient-detail-stub')).toBeNull();
+    fireEvent.click(screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`));
 
-  it('「この枠に配置」で place mutation が (office_id + course_code + start_time) で呼ばれる', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    mocks.poolTickets = [makeTicket()];
-    mocks.proposeData = { slots: [makeSlot()] };
-    renderSection();
-    fireEvent.click(screen.getByTestId(`special-visit-ticket-toggle-${MARK_ID}`));
-
-    const key = `${OFFICE_ID}-A-3-14:00`;
-    fireEvent.click(screen.getByTestId(`special-ticket-place-${key}`));
-
-    expect(confirmSpy).toHaveBeenCalled();
-    expect(mocks.placeMutate).toHaveBeenCalledTimes(1);
-    const [vars] = mocks.placeMutate.mock.calls[0] as [
-      { markId: string; payload: Record<string, unknown> },
-    ];
-    expect(vars.markId).toBe(MARK_ID);
-    expect(vars.payload).toEqual({
-      office_id: OFFICE_ID,
-      course_code: 'A',
-      start_time: '14:00',
+    expect(screen.getByTestId('patient-detail-stub')).toBeTruthy();
+    const props = mocks.detailProps!;
+    expect(props.patientId).toBe(PATIENT_ID);
+    expect(props.enablePoolProposal).toBe(true);
+    expect(props.officeId).toBe(OFFICE_ID);
+    expect(props.canEdit).toBe(true);
+    expect(props.specialTicket).toEqual({
+      markId: MARK_ID,
+      weekday: 3,
+      isoYear: 2026,
+      isoWeek: 31,
+      serviceMinutes: 45,
+      lastPlacement: {
+        weekday: 1,
+        start_time: '14:00:00',
+        course_label: '稲毛A',
+        staff_name: '山田 花子',
+      },
     });
-    confirmSpy.mockRestore();
   });
 
-  it('確認をキャンセルしたら place を呼ばない', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  it('ダイアログを閉じるとポップアップが消える', () => {
     mocks.poolTickets = [makeTicket()];
-    mocks.proposeData = { slots: [makeSlot()] };
     renderSection();
-    fireEvent.click(screen.getByTestId(`special-visit-ticket-toggle-${MARK_ID}`));
-    fireEvent.click(screen.getByTestId(`special-ticket-place-${OFFICE_ID}-A-3-14:00`));
-    expect(mocks.placeMutate).not.toHaveBeenCalled();
-    confirmSpy.mockRestore();
+    fireEvent.click(screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`));
+    expect(screen.getByTestId('patient-detail-stub')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('patient-detail-stub-close'));
+    expect(screen.queryByTestId('patient-detail-stub')).toBeNull();
   });
 
-  it('座標も住所も無い患者は「住所未確定のため提案できません」を出し propose を呼ばない', () => {
-    mocks.patientData = { id: PATIENT_ID, address: '', weekly_pattern: {} };
-    mocks.poolTickets = [
-      makeTicket({ patient: { ...makeTicket().patient, lat: null, lng: null } }),
-    ];
-    renderSection();
-    fireEvent.click(screen.getByTestId(`special-visit-ticket-toggle-${MARK_ID}`));
-
-    expect(screen.getByTestId('special-ticket-no-location')).toBeTruthy();
-    expect(mocks.proposeMutate).not.toHaveBeenCalled();
-  });
-
-  it('canEdit=false のときは配置ボタンを出さない', () => {
+  it('canEdit=false は RBAC をダイアログへ伝播する (閲覧専用)', () => {
     mocks.poolTickets = [makeTicket()];
-    mocks.proposeData = { slots: [makeSlot()] };
     renderSection(false);
-    fireEvent.click(screen.getByTestId(`special-visit-ticket-toggle-${MARK_ID}`));
-    expect(screen.queryByTestId(`special-ticket-place-${OFFICE_ID}-A-3-14:00`)).toBeNull();
+    fireEvent.click(screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`));
+    expect(mocks.detailProps?.canEdit).toBe(false);
+  });
+
+  it('「カレンダー」ボタンで設定モーダルを開く (提案ポップアップは開かない)', () => {
+    mocks.poolTickets = [makeTicket()];
+    renderSection();
+    expect(screen.queryByTestId('svw-dialog-stub')).toBeNull();
+    fireEvent.click(screen.getByTestId(`special-visit-ticket-calendar-${MARK_ID}`));
+    expect(screen.getByTestId('svw-dialog-stub').textContent).toContain('中尾 要太');
+    expect(screen.queryByTestId('patient-detail-stub')).toBeNull();
   });
 });

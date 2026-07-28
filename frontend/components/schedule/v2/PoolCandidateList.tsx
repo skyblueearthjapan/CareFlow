@@ -14,6 +14,11 @@
  *
  * 実現可能性(移動+実働+バッファ・週コース実在・スタッフ稼働)は BE のソルバが担保するため、
  * 非現実な枠・未生成コース・休みスタッフ枠は候補に出ない (③ の狙い).
+ *
+ * 特別訪問週間 (⭐) の追加枠は `specialTicket` prop で「特別モード」に切り替えて同じ UI を
+ * 再利用する (PO 指示 2026-07-29: 提案 UI を通常プール患者と統一する)。
+ * prop 未指定時の挙動・見た目は従来と一切変わらない。詳細は
+ * `PoolCandidateSpecialTicket` の doc / `docs/plans/special-visit-week-design.md` §6-2。
  */
 import * as React from 'react';
 import { useQueries } from '@tanstack/react-query';
@@ -32,6 +37,7 @@ import { fetcher } from '@/lib/api/fetcher';
 import { useProposeSlots, proposeWarningLabel } from '@/lib/queries/fieldBoard';
 import { usePlaceAndFix } from '@/lib/queries/place_and_fix';
 import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
+import { usePlaceSpecialMark } from '@/lib/queries/specialVisitWeek';
 import { useFixedVisits, toastFixedVisitWarnings } from '@/lib/queries/patient_fixed_visits';
 import { useProposeUnblockMutation, useUnblockApplyMutation } from '@/lib/queries/unblock';
 import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
@@ -74,6 +80,60 @@ import {
 } from './CourseMoveTimeline';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
+
+/**
+ * 0=月..6=日 の propose 用曜日コード。特別モード (specialTicket) で
+ * `preferred_weekdays` をチケットの曜日 1 つに固定するときだけ使う。
+ */
+const WEEKDAY_CODES: readonly WeekdayCode[] = [
+  'Mon',
+  'Tue',
+  'Wed',
+  'Thu',
+  'Fri',
+  'Sat',
+  'Sun',
+] as const;
+
+/**
+ * 特別訪問週間 (⭐) のチケットを「通常プール患者と同じ提案 UI」で配置するためのモード指定。
+ *
+ * このプロパティを渡したときだけ PoolCandidateList は特別モードになる:
+ *   a. propose の曜日/週/枠長をチケットの値に固定する
+ *   b. 反映先選択 (ChangeScopeChoice) を出さず「この週のみ・固定化しません」と明示する
+ *   c. 確定は fixed-visits ではなく POST /special-visit-marks/{id}/place
+ *   d. `lastPlacement` があれば候補の上に「前回はここでした」の参考カードを出す
+ *   e. 定員超過相談 / 詰まり解消相談などのサブフローは出さない (シンプル優先)
+ *
+ * 未指定 (undefined) のときは従来の挙動・見た目から一切変わらない。
+ */
+export interface PoolCandidateSpecialTicket {
+  /** 配置先 POST の対象 (special_visit_marks.id)。 */
+  markId: string;
+  /** 0=月..6=日. ○を付けた曜日 (ここにしか配置しない)。 */
+  weekday: number;
+  isoYear: number;
+  isoWeek: number;
+  /** BE 正典の所要分 (PFV 優先・place と同一計算)。null なら患者マスタから算出。 */
+  serviceMinutes: number | null;
+  /** 同一期間内の直近 placed マークの配置先 (参考ヒント・強制しない)。 */
+  lastPlacement: {
+    weekday: number;
+    start_time: string;
+    course_label: string;
+    staff_name: string | null;
+  } | null;
+}
+
+/** ApiError 由来の detail 文字列を取り出す (409「既に配置済みです」等をそのまま出す)。 */
+function apiErrorDetail(err: unknown): string | null {
+  const body = (err as { body?: unknown } | null)?.body;
+  if (body && typeof body === 'object') {
+    const detail = (body as { detail?: unknown }).detail;
+    if (typeof detail === 'string' && detail) return detail;
+  }
+  return null;
+}
 
 /**
  * P-1b: 除外理由コードの日本語ラベル。
@@ -1004,6 +1064,11 @@ export interface PoolCandidateListProps {
    * カード視覚言語に使う。optional — 未指定でも対象患者 (patient) の分は自前で補完する。
    */
   patientMetaById?: ReadonlyMap<string, TimelineRowMeta>;
+  /**
+   * 特別訪問週間 (⭐) の追加枠モード。指定時のみ propose/確定/表示が特別仕様になる
+   * (詳細は `PoolCandidateSpecialTicket` の doc)。未指定 = 従来どおり。
+   */
+  specialTicket?: PoolCandidateSpecialTicket;
 }
 
 export function PoolCandidateList({
@@ -1017,6 +1082,7 @@ export function PoolCandidateList({
   autoRequestOvercapacity = false,
   autoRequestUnblock = false,
   patientMetaById,
+  specialTicket,
 }: PoolCandidateListProps) {
   // T-4: 対象患者の表示メタ (マップ未指定でも自前で構築できる)。
   const targetMeta = React.useMemo<TimelineRowMeta>(
@@ -1050,6 +1116,8 @@ export function PoolCandidateList({
   const proposeMut = useProposeSlots();
   const confirmMut = useConfirmFixedVisits();
   const placeAndFixMut = usePlaceAndFix();
+  // 特別モードの確定経路 (PFV を作らずその週の visit だけを増やす)。
+  const placeSpecialMut = usePlaceSpecialMark();
   // マージ確定用に既存 normal 固定枠を取得 (採用しなかった曜日を保持するため).
   const existingFixedVisitsQuery = useFixedVisits(patient.id, 'normal');
 
@@ -1079,8 +1147,9 @@ export function PoolCandidateList({
     [excludedSummary],
   );
   // 方式b (定員超過) の呼びかけを出すか。W-15: unblock の区切り判定でも再利用する。
+  // 特別モードはサブフローを出さない (§ specialTicket e)。
   const showOvercapacityCallout =
-    !overcapacityRequested && (result?.overcapacity_available_count ?? 0) >= 1;
+    !specialTicket && !overcapacityRequested && (result?.overcapacity_available_count ?? 0) >= 1;
 
   // 採用枠 → course_template_id 解決のため、 候補に出現する拠点の course-templates を取得.
   const slotOfficeIds = React.useMemo(() => {
@@ -1121,30 +1190,38 @@ export function PoolCandidateList({
           address: patient.address ?? '',
           lat: typeof patient.lat === 'number' ? patient.lat : null,
           lng: typeof patient.lng === 'number' ? patient.lng : null,
-          service_minutes: wp.service_minutes,
+          // 特別モード: 枠長は BE 正典 (PFV優先・place と同一計算) を最優先。
+          // 旧BE (未送出=null) は従来どおり患者マスタから。
+          service_minutes: specialTicket?.serviceMinutes ?? wp.service_minutes,
           time_type: wp.time_type as ProposeTimeType,
           preferred_start: showTimeRange ? wp.preferred_start : null,
           preferred_end: showEnd ? wp.preferred_end : null,
-          preferred_weekdays: wp.preferred_weekdays as WeekdayCode[],
-          visit_frequency: wp.visit_frequency ?? undefined,
-          frequency_per_week: wp.frequency_per_week,
+          // 特別モード: 曜日はチケットが正 (○を付けた曜日にしか配置しない)。
+          preferred_weekdays: specialTicket
+            ? [WEEKDAY_CODES[specialTicket.weekday] ?? 'Mon']
+            : (wp.preferred_weekdays as WeekdayCode[]),
+          // 特別モードは「その 1 回分の追加枠」なので週回数の希望は乗せない。
+          visit_frequency: specialTicket ? undefined : (wp.visit_frequency ?? undefined),
+          frequency_per_week: specialTicket ? 1 : wp.frequency_per_week,
           requires_multiple_staff:
             (patient as { requires_multiple_staff?: boolean | null }).requires_multiple_staff ===
             true,
           sex_restriction: (patient.sex_restriction as string | null | undefined) ?? null,
-          iso_year: isoYear,
-          iso_week: isoWeek,
+          // 特別モード: 週はチケットが正。
+          iso_year: specialTicket ? specialTicket.isoYear : isoYear,
+          iso_week: specialTicket ? specialTicket.isoWeek : isoWeek,
           office_ids: officeId ? [officeId] : [],
           existing_patient_id: patient.id,
           limit: 10,
           // W-3: 効率優先の代替枠 (希望外だが近接/余裕が良い枠) を上乗せ提案する。
-          include_efficiency_alternatives: true,
+          // 特別モードは曜日固定が要件なので希望外の代替枠は出さない。
+          include_efficiency_alternatives: !specialTicket,
           include_overcapacity: includeOvercapacity,
         },
         { onError: () => toast.error('候補の取得に失敗しました') },
       );
     },
-    [patient, isoYear, isoWeek, officeId, proposeMut],
+    [patient, isoYear, isoWeek, officeId, proposeMut, specialTicket],
   );
 
   // 主提案モード (単体プール詳細ダイアログ): 開いた時点 / 患者切替時に自動計算する.
@@ -1156,9 +1233,9 @@ export function PoolCandidateList({
       autoFiredRef.current = false;
       handleRun();
     }
-    // patient 切替・週変更・拠点変更でのみ再実行 (handleRun 同値依存は除外).
+    // patient 切替・週変更・拠点変更・チケット切替でのみ再実行 (handleRun 同値依存は除外).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [primary, patient.id, isoYear, isoWeek, officeId]);
+  }, [primary, patient.id, isoYear, isoWeek, officeId, specialTicket?.markId]);
 
   // W-5b: autoRequestOvercapacity — 通常候補 0 件 + 超過候補あり なら自動展開 (1 回限り).
   // primary の自動 propose 結果が返ったあとにこの effect が動く (result 変化で起動).
@@ -1202,6 +1279,36 @@ export function PoolCandidateList({
   const handleConfirmAdopt = () => {
     const slot = pending;
     if (!slot) return;
+
+    // ─── 特別モード: POST /special-visit-marks/{id}/place (この週のみ・固定化しない) ───
+    // PFV を作らないため course_template_id の解決も既存固定枠のマージも不要
+    // (BE は office_id + course_code でその週のコースを引く)。
+    if (specialTicket) {
+      const startTime = trimSeconds(slot.start_time);
+      placeSpecialMut.mutate(
+        {
+          markId: specialTicket.markId,
+          payload: {
+            office_id: slot.office_id,
+            course_code: slot.course_code,
+            start_time: startTime,
+          },
+        },
+        {
+          onSuccess: () => {
+            toast.success(
+              `${patient.name} 様を${WEEKDAY_LABELS[specialTicket.weekday] ?? '?'}曜 ` +
+                `${startTime} に配置しました（この週のみ・固定化しません）`,
+            );
+            setPending(null);
+            onAdopted?.();
+          },
+          onError: (err) => toast.error(apiErrorDetail(err) ?? '配置に失敗しました'),
+        },
+      );
+      return;
+    }
+
     // course_template_id 解決のための course-templates がまだ読み込み中なら待つ.
     if (templatesQueries.some((q) => q.isLoading)) {
       toast.warning('コース情報を読み込み中です。少し待ってからお試しください');
@@ -1299,7 +1406,14 @@ export function PoolCandidateList({
     }
   };
 
-  const isBusy = proposeMut.isPending || confirmMut.isPending || placeAndFixMut.isPending;
+  const isBusy =
+    proposeMut.isPending ||
+    confirmMut.isPending ||
+    placeAndFixMut.isPending ||
+    placeSpecialMut.isPending;
+  /** 採用確認パネルの確定処理中か (特別モードは place ミューテーション)。 */
+  const adoptPending =
+    confirmMut.isPending || placeAndFixMut.isPending || placeSpecialMut.isPending;
 
   // ─── Render ───────────────────────────────────────────────────────
   // primary (主提案) は自動実行のためボタン待ち state を出さない. 併設 (on-demand) は
@@ -1355,6 +1469,21 @@ export function PoolCandidateList({
           size="sm"
           className="mb-2"
         />
+      ) : null}
+
+      {/* 特別モード: 前回配置ヒント (参考・強制しない)。候補リストの最上部に出すだけ。 */}
+      {specialTicket?.lastPlacement ? (
+        <div
+          className="mb-2 rounded border border-border-default bg-bg-muted/30 px-2 py-1.5 text-[11px] text-text-secondary"
+          data-testid="pool-candidate-last-placement"
+        >
+          💡 前回はここでした: {WEEKDAY_LABELS[specialTicket.lastPlacement.weekday] ?? '?'}曜{' '}
+          {trimSeconds(specialTicket.lastPlacement.start_time)}{' '}
+          {specialTicket.lastPlacement.course_label}
+          {specialTicket.lastPlacement.staff_name
+            ? `（担当${specialTicket.lastPlacement.staff_name}）`
+            : ''}
+        </div>
       ) : null}
 
       {proposeMut.isError ? (
@@ -1419,8 +1548,9 @@ export function PoolCandidateList({
             </div>
           ) : null}
           {/* W-12d/W-15: 詰まり解消相談 (時間の重なり or 定員起因で入らない状態のとき)。
-              方式b callout の直下に並べ、両方出るときは軽い区切りを挟む (方式b → unblock)。 */}
-          {hasTimeBlocker ? (
+              方式b callout の直下に並べ、両方出るときは軽い区切りを挟む (方式b → unblock)。
+              特別モードはサブフローを出さない (§ specialTicket e)。 */}
+          {hasTimeBlocker && !specialTicket ? (
             <>
               {showOvercapacityCallout ? (
                 <div
@@ -1857,18 +1987,30 @@ export function PoolCandidateList({
               {WEEKDAY_LABELS[pending.weekday] ?? '?'} {trimSeconds(pending.start_time)}{' '}
               {pending.course_label}
             </span>{' '}
-            に追加します。反映先を選んでください（他曜日の固定枠は維持されます）。
+            {specialTicket
+              ? 'に追加します。'
+              : 'に追加します。反映先を選んでください（他曜日の固定枠は維持されます）。'}
           </div>
           {/* W-13b: 採用前後のコース before/after (mini_schedule から構築。ペアは 2 組)。 */}
           {pending.mini_schedule.length > 0 ? (
             <AdoptBeforeAfter slot={pending} insertName={patient.name} insertMeta={targetMeta} />
           ) : null}
           <div className="mt-2">
-            <ChangeScopeChoice
-              value={scopeChoice}
-              onChange={setScopeChoice}
-              disabled={confirmMut.isPending || placeAndFixMut.isPending}
-            />
+            {specialTicket ? (
+              /* 特別モードは反映先を選ばせない (この週だけの追加枠で確定)。 */
+              <p
+                className="rounded border border-border-default bg-bg-muted/30 px-2 py-1.5 text-[11px] text-text-secondary"
+                data-testid="pool-candidate-special-week-only"
+              >
+                この週のみの追加です。固定訪問週間（毎週の型）は変更しません。
+              </p>
+            ) : (
+              <ChangeScopeChoice
+                value={scopeChoice}
+                onChange={setScopeChoice}
+                disabled={adoptPending}
+              />
+            )}
           </div>
           {/* イベント考慮2段階提案: 衝突枠の確定前に再度念押しする. */}
           {(pending.event_conflicts ?? []).length > 0 ? (
@@ -1896,7 +2038,7 @@ export function PoolCandidateList({
                 placeholder="例: ◯◯様の受け入れ希望が強く、スタッフ稼働に余裕があるため"
                 value={overcapacityReason}
                 onChange={(e) => setOvercapacityReason(e.target.value)}
-                disabled={confirmMut.isPending || placeAndFixMut.isPending}
+                disabled={adoptPending}
                 data-testid="pool-overcapacity-reason-input"
               />
             </div>
@@ -1911,7 +2053,7 @@ export function PoolCandidateList({
                 setScopeChoice('pattern');
                 setOvercapacityReason('');
               }}
-              disabled={confirmMut.isPending || placeAndFixMut.isPending}
+              disabled={adoptPending}
               className="h-7 px-3 text-xs"
               data-testid="pool-candidate-confirm-cancel"
             >
@@ -1923,14 +2065,12 @@ export function PoolCandidateList({
               size="sm"
               onClick={handleConfirmAdopt}
               disabled={
-                confirmMut.isPending ||
-                placeAndFixMut.isPending ||
-                (pending.overcapacity === true && !overcapacityReason.trim())
+                adoptPending || (pending.overcapacity === true && !overcapacityReason.trim())
               }
               className="h-7 px-3 text-xs"
               data-testid="pool-candidate-confirm-apply"
             >
-              {confirmMut.isPending || placeAndFixMut.isPending ? (
+              {adoptPending ? (
                 <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden />
               ) : (
                 <CheckCircle2 className="mr-1 h-3.5 w-3.5" aria-hidden />
