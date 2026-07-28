@@ -204,6 +204,12 @@ export interface PoolGroupedByWeekdayProps {
    * 未指定時は従来どおり患者数スパンのみ描画される。
    */
   headerAction?: React.ReactNode;
+  /**
+   * 特別訪問週間 (§6-2): ヘッダー直下・drop 領域の**最上段**に差し込む React ノード。
+   * 通常のプール患者とは別枠 (強調枠線) で描くため drop 領域の外側に置く。
+   * 未指定時は何も描画されない (従来どおり)。
+   */
+  topSection?: React.ReactNode;
 }
 
 /**
@@ -266,6 +272,7 @@ export function PoolGroupedByWeekday({
   assignedSlotsByPatient,
   partnerLocationByPatientSlot,
   headerAction,
+  topSection,
 }: PoolGroupedByWeekdayProps) {
   const { isOver, setNodeRef } = useDroppable({
     id: POOL_DROPPABLE_ID,
@@ -306,6 +313,8 @@ export function PoolGroupedByWeekday({
         </h2>
         {headerAction ?? null}
       </div>
+      {/* 特別訪問週間セクション (§6-2): 通常プールより上・別枠で描く. */}
+      {topSection ?? null}
       <div
         ref={setNodeRef}
         data-pool="true"

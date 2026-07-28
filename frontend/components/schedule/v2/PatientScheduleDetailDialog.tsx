@@ -52,6 +52,7 @@ import { type TimelineRowMeta } from './CourseMoveTimeline';
 import { ImprovementSuggestionsSection } from './ImprovementSuggestionsSection';
 import { PatientEditDialog } from './PatientEditDialog';
 import { PoolCandidateList } from './PoolCandidateList';
+import { SpecialVisitWeekDialog } from './SpecialVisitWeekDialog';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
@@ -332,6 +333,9 @@ export function PatientScheduleDetailDialog({
   // Phase G-20: 編集ダイアログ (= dialog 内 dialog) の open 状態.
   const [editOpen, setEditOpen] = React.useState(false);
 
+  // 特別訪問週間の設定モーダル (= dialog 内 dialog). 開いたときだけマウントする。
+  const [specialWeekOpen, setSpecialWeekOpen] = React.useState(false);
+
   // ─── プール投入の提案セクション (Pool-detail 統合) ───
   // enablePoolProposal=true (= プール由来クリック) のときだけ表示する。
   // 単体クリックは「その 1 人だけ」を実際の確定済スケジュールに対して空き探索する
@@ -347,6 +351,7 @@ export function PatientScheduleDetailDialog({
       setStage('idle');
       setPreview(null);
       setEditOpen(false);
+      setSpecialWeekOpen(false);
       setPoolAdopted(false);
     }
   }, [open]);
@@ -679,6 +684,18 @@ export function PatientScheduleDetailDialog({
                   編集
                 </Button>
               ) : null}
+              {/* 特別訪問週間 (上乗せ型・期間限定). 編集系なので canEdit 準拠. */}
+              {canEdit ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setSpecialWeekOpen(true)}
+                  disabled={isLoading || isError || !patientId}
+                  data-testid="patient-schedule-special-visit-week-button"
+                >
+                  特別訪問週間
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 onClick={handlePreview}
@@ -707,6 +724,16 @@ export function PatientScheduleDetailDialog({
           open={editOpen}
           onClose={() => setEditOpen(false)}
           canEdit={canEdit}
+        />
+      ) : null}
+
+      {/* 特別訪問週間の設定モーダル. 開いたときだけマウントする (クエリ節約). */}
+      {canEdit && patientId && specialWeekOpen ? (
+        <SpecialVisitWeekDialog
+          patientId={patientId}
+          patientName={patient?.name ?? ''}
+          open
+          onOpenChange={setSpecialWeekOpen}
         />
       ) : null}
     </Dialog>

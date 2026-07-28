@@ -4,6 +4,8 @@
  * PoolOverviewPane — Stage P-2 保留プール俯瞰パネル.
  *
  * PoolGroupedByWeekday を薄くラップし、以下の俯瞰機能を追加する:
+ *   - 最上段の「⭐特別訪問週間」セクション (§6-2・`SpecialVisitPoolSection`。
+ *     表示中の週のチケットが 0 件なら何も描かない)
  *   - ヘッダーの「効果を表示」ボタン (POST /v2/pool-overview を on-demand 実行・緑)
  *   - 各患者行への delta バッジ (+N分) と「投入先なし」バッジ
  *   - 結果表示後は自動で効果順に並ぶ (best_delta_minutes 昇順; null 末尾、
@@ -26,6 +28,7 @@ import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { usePoolOverviewMutation } from '@/lib/queries/poolOverview';
 import { EXCLUDED_REASON_LABEL } from './PoolCandidateList';
+import { SpecialVisitPoolSection } from './SpecialTicketPlacePanel';
 import {
   PoolGroupedByWeekday,
   type PoolGroupedByWeekdayProps,
@@ -345,6 +348,15 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
         assignedSlotsByPatient={assignedSlotsByPatient}
         partnerLocationByPatientSlot={partnerLocationByPatientSlot}
         headerAction={headerAction}
+        topSection={
+          // 特別訪問週間 (§6-2): 表示中の週のチケットを最上段に。0 件なら何も描かない。
+          <SpecialVisitPoolSection
+            isoYear={isoYear}
+            isoWeek={isoWeek}
+            officeId={officeId}
+            canEdit={!disabled}
+          />
+        }
       />
     );
   },

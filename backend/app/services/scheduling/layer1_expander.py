@@ -52,6 +52,11 @@ from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.special_visit import (
+    MARK_KIND_DISPLACED,
+    MARK_STATUS_CANCELLED,
+    SpecialVisitMark,
+)
 from app.models.staff import Staff
 from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, Visit
 
@@ -190,6 +195,32 @@ async def _expand_patient_fixed_visits(
             }
         )
     return entries
+
+
+async def _displaced_weekdays(
+    db: AsyncSession,
+    *,
+    patient_id: UUID,
+    iso_year: int,
+    iso_week: int,
+) -> set[int]:
+    """特別訪問週間で当該週に「退避」された曜日集合を返す.
+
+    `docs/plans/special-visit-week-design.md` §5:
+    status != 'cancelled' の displaced マークがある (patient, iso_year, iso_week,
+    weekday) は PFV 展開を skip する (= その日の固定訪問を生成しない)。
+    extra マークは生成に影響しない (プール専用)。
+    """
+    rows = await db.scalars(
+        select(SpecialVisitMark.weekday).where(
+            SpecialVisitMark.patient_id == patient_id,
+            SpecialVisitMark.iso_year == iso_year,
+            SpecialVisitMark.iso_week == iso_week,
+            SpecialVisitMark.kind == MARK_KIND_DISPLACED,
+            SpecialVisitMark.status != MARK_STATUS_CANCELLED,
+        )
+    )
+    return set(rows.all())
 
 
 def _select_pattern(patient: Patient, iso_year: int, iso_week: int) -> tuple[dict | None, bool]:
@@ -744,6 +775,14 @@ class Layer1Expander:
                 mode=mode,
                 week_monday=week_monday,
             )
+            # 特別訪問週間 (§5): 退避された曜日の固定訪問は生成しない.
+            skip_weekdays = await _displaced_weekdays(
+                db, patient_id=patient.id, iso_year=iso_year, iso_week=iso_week
+            )
+            if skip_weekdays:
+                fixed_entries = [
+                    fe for fe in fixed_entries if fe.get("weekday") not in skip_weekdays
+                ]
             if is_special:
                 result.special_week_applied_count += 1
             return await self._expand_fixed_visits_to_visits(

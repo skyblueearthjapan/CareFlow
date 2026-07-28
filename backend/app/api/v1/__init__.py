@@ -35,6 +35,7 @@ from app.api.v1 import (
     schedule_v2,
     scheduling_settings,
     shift_requests,
+    special_visits,
     staff,
     staff_events,
     staff_excel,
@@ -147,6 +148,10 @@ api_router.include_router(
 # 新人同行 (trainee accompaniment): 週リンク一覧/一括置換 + 既定 GET/PUT.
 # ルートは絶対パス (/trainee-accompaniments[-defaults]) のため prefix なしで登録する。
 api_router.include_router(trainee_accompaniments.router, tags=["trainee-accompaniments"])
+# 特別訪問週間 (special visit week): 期間 + マーク (○ 追加枠 / 固定訪問の日単位退避).
+# ルートは絶対パス (/special-visit-periods[...] / /special-visit-marks[...]) のため
+# prefix なしで登録する (trainee_accompaniments と同方針)。
+api_router.include_router(special_visits.router, tags=["special-visits"])
 api_router.include_router(schedule.router, prefix="/schedule", tags=["schedule"])
 # W41 v2.0: auto-schedule v2 (差分追加 / 全面最適化 / 個別採用 / 固定枠に戻す).
 # v1 (``/schedule/auto-allocate`` 等) は schedule.router にそのまま残し、UI 完成後の

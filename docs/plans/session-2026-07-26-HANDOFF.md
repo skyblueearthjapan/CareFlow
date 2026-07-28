@@ -204,6 +204,28 @@ RPA: `b79f28d`(individual-tasks)→`33fd1fb`(headed化)。
 日跨ぎ分割・(staff,weekday)別）/ テスト = `test_proposal_solver_events.py` 8件 +
 `test_propose_slots_events.py` 4件（空コースはバケット無し→統合テストは既存訪問1件必須）
 
+## 6-d. ★特別訪問週間（上乗せ型・2026-07-29 実装）
+
+**正典 = `docs/plans/special-visit-week-design.md`**（PO確定仕様の全文）。実装の要点:
+- **上乗せ型**: 期間(任意起点〜終了日)+目標「週N回以上」(既定5)。固定訪問はそのまま、
+  カレンダーの曜日セルに○(追加枠)を立て、週ごとにプールチケット化して都度配置。
+  恒久パターン(PFV)には一切書き込まない。既存の置換型 special_weekly_pattern 系は据え置き(不使用)
+- DB: mig 0064 = `special_visit_periods` + `special_visit_marks`(kind=extra/displaced・
+  部分ユニーク=○は1セル1個・displaced_snapshot で復元)
+- 退避=**日単位**: 生成済み週は visit soft-delete+snapshot、未生成週はマークのみ
+  (Layer1 `_displaced_weekdays()` が展開をskip)。restore は placed なら force 必須(409)
+- 週合計 = 固定残 + ○(未配置含む) + 退避チケット(=退避しても不変)。配置済み○の visit は
+  fixed_visits から除外(二重計上防止)
+- API 10本 (`api/v1/special_visits.py`)・place は course_id or (office_id+course_code)。
+  枠長は `_resolve_service_minutes`(PFV優先→weekly_pattern→30分)が正典で、pool チケットにも
+  同値の service_minutes を同梱(提案と配置の枠長一致)
+- FE: `SpecialVisitWeekDialog`(大型カレンダー・期間チップ・○/●・退避トグル・週合計✓/未達赤)。
+  入り口=患者マスタ編集+スケジュール患者詳細。プール最上段に⭐セクション
+  (`SpecialTicketPlacePanel`・propose-slots をチケット曜日で絞り・前回配置ヒント💡・
+  配置は place API=この週のみ・固定化しない)
+- 既知の割り切り: 2名体制患者は同日2枚=2カウント / 手動盤面配置と○の自動リンクなし /
+  全拠点表示時の propose は患者主担当拠点へフォールバック
+
 ## 6. 次の実装相談に備えて
 
 POは「予定のおかしな点を1つずつ相談する」モードで進めている。直近の流れ:

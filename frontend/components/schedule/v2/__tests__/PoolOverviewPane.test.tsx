@@ -41,6 +41,12 @@ vi.mock('@dnd-kit/core', () => ({
   useDroppable: () => ({ isOver: false, setNodeRef: vi.fn() }),
 }));
 
+// 特別訪問週間セクション (§6-2) は独自クエリを持つため、本テストではスタブ化して
+// 俯瞰パネル自身の挙動 (効果計算 / バッジ / ソート) の検証に集中する。
+vi.mock('../SpecialTicketPlacePanel', () => ({
+  SpecialVisitPoolSection: () => null,
+}));
+
 vi.mock('lucide-react', () => ({
   AlertTriangle: () => <span />,
   Inbox: () => <span aria-hidden />,

@@ -24,6 +24,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Checkbox } from '@/components/ui/checkbox';
 import { OfficeCombobox } from '@/components/master/OfficeCombobox';
 import { SameAddressLinksSection } from '@/components/patients/SameAddressLinksSection';
+import { SpecialVisitWeekDialog } from '@/components/schedule/v2/SpecialVisitWeekDialog';
 import {
   INSURANCE_LABEL,
   INSURANCE_OPTIONS,
@@ -128,6 +129,13 @@ export function PatientForm({
   const resolveMut = useResolveOffice();
 
   const watchedAddress = watch('address');
+  const watchedName = watch('name');
+
+  // ── 特別訪問週間 (special-visit-week) ────────────────────────────────────────
+  // 編集モード (= patientId が渡されている既存患者) でのみ導線を出す。
+  // 新規作成では患者 ID がまだ無く期間を作れないためボタン自体を出さない。
+  // ダイアログは開いたときにだけマウントする (クエリを無駄に走らせない)。
+  const [specialWeekOpen, setSpecialWeekOpen] = React.useState(false);
 
   // ── W-7: 地域ルールの学習 (未カバー地域を手動選択した瞬間に一度だけ聞く) ──────
   const watchedOfficeId = watch('primary_office_id');
@@ -458,6 +466,26 @@ export function PatientForm({
         />
       </Card>
 
+      {/* 特別訪問週間 — 編集モード (既存患者) のみ。期間と週の目標を決めて
+          カレンダーに ○ を足す上乗せ型の機能 (恒久パターンは触らない)。 */}
+      {patientId ? (
+        <Card className="p-5 space-y-3">
+          <h2 className="font-serif text-lg font-bold text-text-primary">特別訪問週間</h2>
+          <p className="text-sm text-text-secondary">
+            退院直後など、一定期間だけ訪問を増やしたいときに使います。基本の固定訪問はそのままです。
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setSpecialWeekOpen(true)}
+            disabled={submitting}
+            data-testid="patient-form-special-visit-week-button"
+          >
+            特別訪問週間
+          </Button>
+        </Card>
+      ) : null}
+
       <Card className="p-5 space-y-4">
         <h2 className="font-serif text-lg font-bold text-text-primary">備考</h2>
         <textarea
@@ -483,6 +511,17 @@ export function PatientForm({
           {submitting ? '保存中…' : submitLabel}
         </Button>
       </div>
+
+      {/* Radix Dialog は portal で body 直下に描かれるため、form の内側に置いても
+          送信ボタン等と干渉しない。開いたときだけマウントする。 */}
+      {patientId && specialWeekOpen ? (
+        <SpecialVisitWeekDialog
+          patientId={patientId}
+          patientName={watchedName ?? ''}
+          open
+          onOpenChange={setSpecialWeekOpen}
+        />
+      ) : null}
     </form>
   );
 }
