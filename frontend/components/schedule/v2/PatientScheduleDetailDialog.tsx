@@ -705,16 +705,18 @@ export function PatientScheduleDetailDialog({
                   編集
                 </Button>
               ) : null}
-              {/* 特別訪問週間 (上乗せ型・期間限定). 編集系なので canEdit 準拠. */}
+              {/* 特別訪問週間 (上乗せ型・期間限定). 編集系なので canEdit 準拠.
+                  PO指示 2026-07-29: 枠に色を付けて少し目立たせる. */}
               {canEdit ? (
                 <Button
                   type="button"
                   variant="outline"
                   onClick={() => setSpecialWeekOpen(true)}
                   disabled={isLoading || isError || !patientId}
+                  className="border-brand-primary text-brand-primary hover:bg-brand-primary/10"
                   data-testid="patient-schedule-special-visit-week-button"
                 >
-                  特別訪問週間
+                  ⭐ 特別訪問週間
                 </Button>
               ) : null}
               <Button

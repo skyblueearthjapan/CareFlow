@@ -298,26 +298,46 @@ function PeriodCreateForm({ patientId }: { patientId: string }) {
 
       <div className="space-y-2">
         <span className="text-sm font-medium text-text-secondary">期間</span>
-        <div className="flex flex-wrap gap-2" data-testid="svw-preset-chips">
-          {PERIOD_PRESETS.map((p) => {
-            const selected = p.label === presetLabel;
-            return (
-              <button
-                key={p.label}
-                type="button"
-                onClick={() => setPresetLabel(p.label)}
-                data-testid={`svw-preset-${p.label}`}
-                data-selected={selected ? 'true' : 'false'}
-                className={
-                  selected
-                    ? 'rounded-full border border-brand-primary bg-brand-primary px-3 py-1 text-xs font-medium text-white'
-                    : 'rounded-full border border-border-default bg-bg-base px-3 py-1 text-xs text-text-primary hover:bg-bg-muted'
-                }
-              >
-                {p.label}
-              </button>
-            );
-          })}
+        {/* PO指示 2026-07-29: 開始ボタンは期間チップの右隣 (少し間をあける)。
+            期間を直したあと、そのまま直感的に開始できる配置にする。 */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap gap-2" data-testid="svw-preset-chips">
+            {PERIOD_PRESETS.map((p) => {
+              const selected = p.label === presetLabel;
+              return (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => setPresetLabel(p.label)}
+                  data-testid={`svw-preset-${p.label}`}
+                  data-selected={selected ? 'true' : 'false'}
+                  className={
+                    selected
+                      ? 'rounded-full border border-brand-primary bg-brand-primary px-3 py-1 text-xs font-medium text-white'
+                      : 'rounded-full border border-border-default bg-bg-base px-3 py-1 text-xs text-text-primary hover:bg-bg-muted'
+                  }
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
+          <Button
+            type="button"
+            onClick={handleCreate}
+            disabled={createMut.isPending}
+            className="ml-6"
+            data-testid="svw-create-button"
+          >
+            {createMut.isPending ? (
+              <>
+                <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                作成中…
+              </>
+            ) : (
+              '特別訪問週間を開始する'
+            )}
+          </Button>
         </div>
         <p className="text-xs text-text-muted tnum" data-testid="svw-computed-range">
           {startDate} 〜 {endDate}
@@ -335,23 +355,6 @@ function PeriodCreateForm({ patientId }: { patientId: string }) {
         />
       </label>
 
-      <div className="flex justify-end">
-        <Button
-          type="button"
-          onClick={handleCreate}
-          disabled={createMut.isPending}
-          data-testid="svw-create-button"
-        >
-          {createMut.isPending ? (
-            <>
-              <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-              作成中…
-            </>
-          ) : (
-            '特別訪問週間を開始する'
-          )}
-        </Button>
-      </div>
     </div>
   );
 }
