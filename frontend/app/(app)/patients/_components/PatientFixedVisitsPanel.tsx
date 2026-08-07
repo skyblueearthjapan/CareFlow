@@ -55,6 +55,8 @@ import {
 } from '@/lib/queries/patient_fixed_visits';
 import { useCourseTemplates } from '@/lib/queries/course_templates';
 import { useOffices } from '@/lib/queries/offices';
+import { useTogglePfvPin } from '@/lib/queries/g21';
+import { apiErrorMessage } from '@/lib/api/errorMessage';
 import {
   patientFixedVisitsBulkPutSchema,
   PATIENT_FIXED_VISIT_MODES,
@@ -137,6 +139,14 @@ interface DayRow {
   is_pinned: boolean;
   /** P2-C: 可動域 (提案の可否). is_pinned=true ⇒ locked 扱い. slot 0/1 共通で 1 値. */
   movability: Movability;
+  /**
+   * この曜日に対応する既存 PFV 行の id (slot 0/1 で最大 2 件). 未保存の行は空配列.
+   *
+   * ピン留めの切替は PUT (一括上書き) では **必ず 422 になる** (BE の同一性規約が
+   * is_pinned を含むため / pfv_validator V2). そのため PATCH .../{pfv_id}/pin を
+   * 直接叩く必要があり、そのための id をここで運ぶ。
+   */
+  pfv_ids: string[];
 }
 
 type DayRows = Record<number, DayRow>;
@@ -153,6 +163,7 @@ function emptyDayRow(): DayRow {
     sub_office_id: null,
     is_pinned: false,
     movability: 'unknown',
+    pfv_ids: [],
   };
 }
 
@@ -178,9 +189,12 @@ function readsToDayRows(reads: PatientFixedVisitV2Read[]): DayRows {
     const current = rows[r.weekday] ?? emptyDayRow();
     // start_time は HH:MM:SS の場合もあるので先頭 5 文字に切り詰める
     const startTime = r.start_time.slice(0, 5);
+    // ピン留め切替 (PATCH) に必要な PFV id を slot 0/1 とも集める.
+    const pfvIds = current.pfv_ids.includes(r.id) ? current.pfv_ids : [...current.pfv_ids, r.id];
     if (slot === 0) {
       rows[r.weekday] = {
         ...current,
+        pfv_ids: pfvIds,
         enabled: true,
         start_time: startTime,
         duration_min: r.duration_min,
@@ -197,6 +211,7 @@ function readsToDayRows(reads: PatientFixedVisitV2Read[]): DayRows {
       // slot 1: enabled は slot 0 のフラグを尊重 (slot 0 が無い場合は slot 1 で起こす)
       rows[r.weekday] = {
         ...current,
+        pfv_ids: pfvIds,
         enabled: true,
         // slot 0 が後から上書きしてくれるが、slot 1 だけのケース対応
         start_time: current.enabled ? current.start_time : startTime,
@@ -349,6 +364,8 @@ export function weeklyPatternToDayRows(
       is_pinned: existing.is_pinned,
       // P2-C: 可動域も既存設定を保持 (希望反映で消さない).
       movability: existing.movability,
+      // 既存 PFV への参照 (ピン留め PATCH 用) も維持する.
+      pfv_ids: existing.pfv_ids,
     };
   }
   return rows;
@@ -505,6 +522,14 @@ interface WeekGridProps {
   primaryOfficeId: string | null | undefined;
   /** Phase E-5: 各 row の sub_office_id に対応する course_templates を取得する関数. */
   getSubOfficeCourseTemplates: (subOfficeId: string | null) => CourseTemplateRead[];
+  /**
+   * ピン留めの切替 (2026-08-07).
+   * PUT ではピン解除ができない (BE が 422) ため、保存済み行は PATCH で即時反映する。
+   * ローカル state を書くだけの `update` とは経路が違うので親に委譲する。
+   */
+  onTogglePin: (weekday: number, nextPinned: boolean) => void;
+  /** ピン留め PATCH 実行中 (二重クリック防止). */
+  pinPending?: boolean;
 }
 
 function WeekGrid({
@@ -518,6 +543,8 @@ function WeekGrid({
   offices,
   primaryOfficeId,
   getSubOfficeCourseTemplates,
+  onTogglePin,
+  pinPending,
 }: WeekGridProps) {
   const update = (weekday: number, patch: Partial<DayRow>) => {
     const current = rows[weekday] ?? emptyDayRow();
@@ -539,6 +566,11 @@ function WeekGrid({
         );
         // Phase G-21: 完全固定行は黄色背景で強調する (= リスト/テーブルと統一).
         const pinnedHighlightCls = row.enabled && row.is_pinned ? 'bg-yellow-50' : '';
+        // 2026-08-07: ピン留め行は BE の同一性規約 (pfv_validator V2) により
+        // 時刻 / 所要 / コース / 拠点 / 訪問有無 のどれを変えても保存が 422 になる。
+        // 入力できてしまうと「保存して初めて弾かれる」ため、入力段階で締める。
+        const lockedByPin = row.is_pinned;
+        const editDisabled = disabled || lockedByPin;
         return (
           <div
             key={wd}
@@ -552,7 +584,7 @@ function WeekGrid({
             <Checkbox
               checked={row.enabled}
               onCheckedChange={(c) => update(wd, { enabled: c === true })}
-              disabled={disabled}
+              disabled={editDisabled}
               aria-label={`${WEEKDAY_LABELS[wd]}曜日 訪問あり`}
             />
             {row.enabled ? (
@@ -561,8 +593,8 @@ function WeekGrid({
                   <select
                     value={row.start_time}
                     onChange={(e) => update(wd, { start_time: e.target.value })}
-                    disabled={disabled}
-                    className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary"
+                    disabled={editDisabled}
+                    className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary disabled:opacity-60"
                     aria-label={`${WEEKDAY_LABELS[wd]} 開始時刻`}
                   >
                     {TIME_OPTIONS.map((t) => (
@@ -577,8 +609,8 @@ function WeekGrid({
                   <select
                     value={row.duration_min}
                     onChange={(e) => update(wd, { duration_min: Number(e.target.value) })}
-                    disabled={disabled}
-                    className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary"
+                    disabled={editDisabled}
+                    className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary disabled:opacity-60"
                     aria-label={`${WEEKDAY_LABELS[wd]} 所要時間`}
                   >
                     {DURATION_OPTIONS.map((d) => (
@@ -603,8 +635,8 @@ function WeekGrid({
                           course_template_id_2: null,
                         });
                       }}
-                      disabled={disabled}
-                      className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary"
+                      disabled={editDisabled}
+                      className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary disabled:opacity-60"
                       aria-label={`${WEEKDAY_LABELS[wd]} サブ拠点`}
                       data-testid={`sub-office-select-${wd}`}
                     >
@@ -623,8 +655,8 @@ function WeekGrid({
                   <select
                     value={row.course_template_id ?? ''}
                     onChange={(e) => update(wd, { course_template_id: e.target.value || null })}
-                    disabled={disabled}
-                    className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary"
+                    disabled={editDisabled}
+                    className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary disabled:opacity-60"
                     aria-label={
                       requiresMultipleStaff
                         ? `${WEEKDAY_LABELS[wd]} コース 1`
@@ -647,7 +679,7 @@ function WeekGrid({
                   <select
                     value={row.course_template_id_2 ?? ''}
                     onChange={(e) => update(wd, { course_template_id_2: e.target.value || null })}
-                    disabled={disabled || !requiresMultipleStaff}
+                    disabled={editDisabled || !requiresMultipleStaff}
                     className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary disabled:opacity-50"
                     aria-label={`${WEEKDAY_LABELS[wd]} コース 2`}
                     title={requiresMultipleStaff ? undefined : '複数対応 OFF のため不要'}
@@ -674,17 +706,12 @@ function WeekGrid({
                 >
                   <Checkbox
                     checked={row.is_pinned}
-                    onCheckedChange={(c) => {
-                      const nextPinned = c === true;
-                      // P4-C: ピン留めを OFF にしたとき、ピン由来ロック (movability='locked')
-                      // なら 'unknown' に解放する. ON 時は従来通り (保存時に V6 が locked 化).
-                      const patch: Partial<DayRow> = { is_pinned: nextPinned };
-                      if (!nextPinned && row.movability === 'locked') {
-                        patch.movability = 'unknown';
-                      }
-                      update(wd, patch);
-                    }}
-                    disabled={disabled}
+                    // 2026-08-07: ピン留めは PUT (一括上書き) では切替できない。
+                    // BE の同一性規約 (pfv_validator V2 / test_pinned_flag_only_diff_is_error)
+                    // が is_pinned の差分も「変更」とみなして 422 を返すため、保存済み行は
+                    // PATCH .../{pfv_id}/pin へ流す (親が実行する)。
+                    onCheckedChange={(c) => onTogglePin(wd, c === true)}
+                    disabled={disabled || pinPending}
                     aria-label={`${WEEKDAY_LABELS[wd]} ピン留め`}
                     data-testid={`pfv-pin-checkbox-${wd}`}
                   />
@@ -693,6 +720,11 @@ function WeekGrid({
                   ) : null}
                   <span>ピン留め</span>
                 </label>
+                {lockedByPin ? (
+                  <span className="text-xs text-text-muted" data-testid={`pfv-pin-edit-hint-${wd}`}>
+                    ピン留め中は編集できません。変更するにはピン留めを外してください
+                  </span>
+                ) : null}
                 {/* P2-C / #P4-B: 可動域 (提案の可否) セレクタ.
                     - ピン留め行 (is_pinned=true) は locked 固定 → 「ピン留め（変更不可）」静的表示.
                     - それ以外は既定で畳まれた「詳細設定」disclosure に格下げ (通常運用では非表示). */}
@@ -792,11 +824,22 @@ function ModePanel({
   const updateMut = useUpdateFixedVisits(patientId);
   const deleteMut = useDeleteFixedVisits(patientId);
   const fromWeekMut = useApplyFromWeek(patientId);
+  const togglePinMut = useTogglePfvPin();
 
   const [rows, setRows] = React.useState<DayRows>(emptyDayRows);
   const [fieldErrors, setFieldErrors] = React.useState<Record<number, string>>({});
   const [formError, setFormError] = React.useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false);
+  // ピン留め切替は即時保存 (PATCH) なので、未保存編集があるときだけ確認を挟む.
+  const [pinConfirm, setPinConfirm] = React.useState<{ wd: number; next: boolean } | null>(null);
+
+  // サーバー状態そのままの DayRows. 未保存編集の有無 (isDirty) 判定に使う.
+  const serverRows = React.useMemo(() => readsToDayRows(reads), [reads]);
+  // DayRow はプリミティブと文字列配列のみで構成されるため JSON 比較で十分.
+  const isDirty = React.useMemo(
+    () => JSON.stringify(rows) !== JSON.stringify(serverRows),
+    [rows, serverRows],
+  );
 
   // サーバーデータが変化したらフォームを同期
   React.useEffect(() => {
@@ -836,6 +879,53 @@ function ModePanel({
     }
     return { rowErrors: errs, rowWarnings: warns };
   }, [rows, requiresMultipleStaff]);
+
+  // ── ピン留め切替 (PATCH 即時反映) ──────────────────────────────────────
+  // PUT (一括上書き) ではピン解除ができない。BE の同一性規約 (pfv_validator V2) が
+  // is_pinned の差分も「pinned 行の変更」とみなして 422 を返すため、ピン留め済みの
+  // 行は PATCH /patients/fixed-visits/{pfv_id}/pin を直接叩く必要がある。
+  // (この経路が無かったため、患者マスタ側ではピンを外す手段が存在せず、
+  //  ピン留め行の時刻変更が「保存に失敗しました: API 422」で必ず詰んでいた。)
+  const applyPinToggle = async (wd: number, next: boolean) => {
+    const ids = rows[wd]?.pfv_ids ?? [];
+    try {
+      // 同曜日の slot 0/1 は 1 つの UI 行として扱うため、両方に同じ値を適用する。
+      for (const pfvId of ids) {
+        await togglePinMut.mutateAsync({ pfvId, isPinned: next, patientId });
+      }
+      toast.success(
+        next
+          ? 'ピン留めしました（この操作は即時保存されます）'
+          : 'ピン留めを解除しました（この操作は即時保存されます）',
+      );
+    } catch (e) {
+      toast.error(`ピン留めの変更に失敗しました: ${apiErrorMessage(e)}`);
+    }
+  };
+
+  const handleTogglePin = (wd: number, next: boolean) => {
+    const row = rows[wd];
+    if (!row) return;
+    if (row.pfv_ids.length === 0) {
+      // 未保存の行にはまだ PFV が存在しない → ローカル state のみ変更し、
+      // 「保存」時の PUT で is_pinned ごと新規作成される (V2 は既存 pinned 行のみ保護)。
+      setRows((prev) => {
+        const cur = prev[wd] ?? emptyDayRow();
+        const patch: Partial<DayRow> = { is_pinned: next };
+        // P4-C: ピン由来ロック (movability='locked') は解除時に 'unknown' へ解放する。
+        if (!next && cur.movability === 'locked') patch.movability = 'unknown';
+        return { ...prev, [wd]: { ...cur, ...patch } };
+      });
+      return;
+    }
+    // PATCH 成功後にサーバー状態で rows が再同期されるため、未保存編集は失われる。
+    // 黙って捨てずに確認する。
+    if (isDirty) {
+      setPinConfirm({ wd, next });
+      return;
+    }
+    void applyPinToggle(wd, next);
+  };
 
   // ── 希望から自動生成 ──────────────────────────────────────────────────
   // Phase G-21 T4 reviewer C3 / M2: 既存 rows を base に merge する (= 既存の
@@ -943,7 +1033,10 @@ function ModePanel({
       // 空なら従来どおり success のみ (挙動不変)。
       toastFixedVisitWarnings(res?.warnings);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : '保存に失敗しました';
+      // 2026-08-07: ApiError.message は "API 422 (path)" という機械向け文字列で、
+      // 理由 (pinned 保護 / サブ拠点不一致 など) はすべて body 側にある。
+      // apiErrorMessage で detail を展開しないと現場は原因を判断できない。
+      const msg = apiErrorMessage(e, '保存に失敗しました');
       setFormError(msg);
       toast.error(`保存に失敗しました: ${msg}`);
     }
@@ -959,12 +1052,13 @@ function ModePanel({
       setFormError(null);
       toast.success(`${mode === 'normal' ? '通常' : '特別週'}の固定枠を削除しました`);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : '削除に失敗しました';
+      const msg = apiErrorMessage(e, '削除に失敗しました');
       toast.error(`削除に失敗しました: ${msg}`);
     }
   };
 
-  const isBusy = updateMut.isPending || deleteMut.isPending || fromWeekMut.isPending;
+  const isBusy =
+    updateMut.isPending || deleteMut.isPending || fromWeekMut.isPending || togglePinMut.isPending;
 
   return (
     <div className="space-y-4">
@@ -1005,10 +1099,17 @@ function ModePanel({
           offices={offices}
           primaryOfficeId={primaryOfficeId}
           getSubOfficeCourseTemplates={getSubOfficeCourseTemplates}
+          onTogglePin={handleTogglePin}
+          pinPending={togglePinMut.isPending}
         />
       )}
 
-      {formError ? <p className="text-xs text-error">{formError}</p> : null}
+      {formError ? (
+        // 422 detail は複数行になりうる (pinned 保護の violations 等) ため改行を保つ.
+        <p className="whitespace-pre-line text-xs text-error" data-testid="pfv-form-error">
+          {formError}
+        </p>
+      ) : null}
 
       {!readonly && (
         <div className="flex flex-wrap gap-2 pt-2">
@@ -1072,6 +1173,41 @@ function ModePanel({
               disabled={deleteMut.isPending}
             >
               {deleteMut.isPending ? '削除中...' : '削除する'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ピン留め切替は即時保存 (PATCH)。未保存編集がある場合のみ確認する。 */}
+      <Dialog
+        open={pinConfirm !== null}
+        onOpenChange={(o) => (!o ? setPinConfirm(null) : undefined)}
+      >
+        <DialogContent aria-describedby="pin-confirm-desc">
+          <DialogHeader>
+            <DialogTitle>
+              {pinConfirm?.next ? 'ピン留めしますか？' : 'ピン留めを解除しますか？'}
+            </DialogTitle>
+          </DialogHeader>
+          <p id="pin-confirm-desc" className="text-sm text-text-secondary">
+            ピン留めの変更は「保存」を待たずに即時反映されます。
+            現在の未保存の編集内容は破棄され、保存済みの内容に戻ります。
+          </p>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setPinConfirm(null)}>
+              キャンセル
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                const target = pinConfirm;
+                setPinConfirm(null);
+                if (target) void applyPinToggle(target.wd, target.next);
+              }}
+              disabled={togglePinMut.isPending}
+              data-testid="pin-confirm-submit"
+            >
+              {togglePinMut.isPending ? '変更中...' : '変更する'}
             </Button>
           </DialogFooter>
         </DialogContent>
