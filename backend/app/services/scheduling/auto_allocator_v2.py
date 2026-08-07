@@ -552,6 +552,17 @@ class V2Visit:
     # ``_apply_corrections_to_visits`` (W1 4 経路共通 helper) は本フラグを見て、
     # pinned visit の start_time / end_time / course_code を一切動かさない.
     is_pinned: bool = False
+    # PO 決定 (2026-08-07): 可動域 (PFV.movability) = 'locked' の枠も自動割当が
+    # 時刻を動かさない. ``is_pinned`` とは **別フラグ** にしてある:
+    #   - ``is_pinned``            … ピン留め. 経路優先度 (overlay 経路 2 / 3) や
+    #                                invariant G21-A (weekly_pattern entry の skip)、
+    #                                UI の 📌 表示まで支配する既存セマンティクス.
+    #   - ``is_movability_locked`` … 「時刻を動かさない」だけを意味する狭いフラグ.
+    # 両者を混ぜると経路優先度や UI 表示まで変わってしまうため分離している.
+    # ``_apply_corrections_to_visits`` の凍結フェンスは **どちらか一方でも True** なら
+    # engage する. 本フラグを立てるのは「その PFV 行から組んだ visit」に限る
+    # (weekly_pattern 由来の visit を凍結すると PFV と異なる時刻で固まるため).
+    is_movability_locked: bool = False
     # Phase G-92 (プール投入 固定優先→希望フォールバック): diff_add でこの pool
     # visit がどの希望ソースから展開されたかを示す.
     #   - "fixed"                   : 固定訪問スケジュール (PFV mode='normal') 由来.
@@ -562,6 +573,19 @@ class V2Visit:
     # クリアできない場合に希望側へ差し替える. 既定 ``"preferred"`` で、 PFV 非対象 /
     # full_optimize 等の既存経路は不変.
     pool_origin: Literal["fixed", "preferred", "fixed_fallback_preferred"] = "preferred"
+
+
+def _pfv_movability_locked(pfv: object) -> bool:
+    """PFV 行の可動域が「完全固定」(``movability='locked'``) かを判定する.
+
+    PO 決定 (2026-08-07): 可動域=完全固定 は「提案を出さない」だけでなく
+    「自動割当も時刻を動かさない」を意味する. 本 helper が唯一の判定点で、
+    ``V2Visit.is_movability_locked`` を立てる全経路がここを通る.
+
+    ``getattr`` 経由なのは ``scope_optimizer._SimPfv`` のような duck-typed の
+    模擬 PFV も同じ判定に載せるため (movability 属性を持たない相手は False).
+    """
+    return getattr(pfv, "movability", None) == "locked"
 
 
 @dataclass
@@ -2110,12 +2134,23 @@ def build_visits_for_pool(
         # post-restore) で時刻が動かないようにする. weekly_pattern 分岐でも参照
         # するため if 文の外で構築する.
         pinned_pfv_by_wd: dict[int, PatientFixedVisit] = {}
+        # PO 決定 (2026-08-07): 凍結対象 (ピン留め ∪ 可動域=完全固定) の PFV.
+        # 用途は 2 つ:
+        #   1. weekly_pattern 分岐で「weekly entry を skip して PFV ベースで emit
+        #      する」判定 (G-30.1 の拡張). PFV ベースで emit しないと、凍結される
+        #      時刻が weekly_pattern の希望時刻になり PFV.start_time と乖離する.
+        #   2. fixed-source 分岐で ``is_movability_locked`` を立てる判定.
+        # ピン留めとは独立に「時刻を動かさない」だけを課し、経路選択・優先度
+        # (pinned_pfv_by_wd が支配する部分) には一切影響させない.
+        frozen_pfv_by_wd: dict[int, PatientFixedVisit] = {}
         if fixed_by_patient is not None:
             for _row in fixed_by_patient.get(patient.id) or []:
                 if _row.mode != "normal" or _row.slot_index != 0:
                     continue
                 if _row.is_pinned:
                     pinned_pfv_by_wd[_row.weekday] = _row
+                if _row.is_pinned or _pfv_movability_locked(_row):
+                    frozen_pfv_by_wd[_row.weekday] = _row
         used_fixed = False
         if use_fixed_as_source and fixed_by_patient is not None:
             fixed_rows = fixed_by_patient.get(patient.id) or []
@@ -2186,6 +2221,11 @@ def build_visits_for_pool(
                     # ``is_pinned=True``. legacy 経路でも pinned visit の時刻が
                     # ``apply_travel_corrections`` で動かないようにする.
                     is_pinned_eff = wd in pinned_pfv_by_wd
+                    # PO 決定 (2026-08-07): 可動域=完全固定 の枠も凍結する.
+                    # この visit は当該 weekday の PFV 行から組んでいるため、
+                    # 凍結時刻 = PFV.start_time で一致する.
+                    # (該当 weekday が frozen に無ければ None → 判定は False.)
+                    is_locked_eff = _pfv_movability_locked(frozen_pfv_by_wd.get(wd))
                     # Phase G-45: 最終 office_id_eff (sub_office / cross-office 差し替え後)
                     # が当該 weekday に休業の場合は emit せず skip + warning.
                     if op_weekdays_by_office is not None:
@@ -2224,6 +2264,7 @@ def build_visits_for_pool(
                             sex_restriction=sex_r,
                             requires_multiple_staff=req_multi,
                             is_pinned=is_pinned_eff,
+                            is_movability_locked=is_locked_eff,
                         )
                     )
         if not used_fixed:
@@ -2245,29 +2286,35 @@ def build_visits_for_pool(
                 # entry は完全に skip し、 PFV ベース 1 件のみ emit する.
                 # overlay (pending edit) があれば overlay 値が PFV 値より優先される
                 # (= 既存 fixed-source 分岐 / G-21 と同規約).
-                pinned_pfv = pinned_pfv_by_wd.get(wd)
-                if pinned_pfv is not None:
+                #
+                # PO 決定 (2026-08-07): 可動域=完全固定 (movability='locked') の PFV も
+                # 同じ扱いにする. 凍結フェンスは「snapshot 時点の時刻」に戻すため、
+                # weekly_pattern の希望時刻で emit したまま凍結すると PFV.start_time
+                # ではなく希望時刻で固まってしまう. 「動かさない」を意味あるものに
+                # するには PFV ベースで emit する必要がある (= pinned と同じ理由).
+                frozen_pfv = frozen_pfv_by_wd.get(wd)
+                if frozen_pfv is not None:
                     if wd in emitted_pinned_wds:
                         # Phase G-30.1 HIGH-1: 同 weekday に複数 entry がある場合、
-                        # pinned visit は 1 件しか emit しない (重複防止).
+                        # 凍結 visit は 1 件しか emit しない (重複防止).
                         continue
                     emitted_pinned_wds.add(wd)
                     ov = overlay.get((patient.id, wd))
                     if ov is not None:
                         st_eff = ov.new_start
                         sm_eff = _compute_overlay_duration(
-                            ov, existing_duration=pinned_pfv.duration_min
+                            ov, existing_duration=frozen_pfv.duration_min
                         )
                         tt_eff = ov.new_time_type or "固定"
                         ps_eff = ov.new_start_str
                         pe_eff = ov.new_end_str
                     else:
-                        st_eff = pinned_pfv.start_time
-                        sm_eff = pinned_pfv.duration_min
+                        st_eff = frozen_pfv.start_time
+                        sm_eff = frozen_pfv.duration_min
                         # PFV.time_type カラムは存在しないため固定文字列 "固定" を
                         # セット (= fixed-source 分岐と同じ規約).
                         tt_eff = "固定"
-                        ps_eff = _fmt_hhmm(pinned_pfv.start_time)
+                        ps_eff = _fmt_hhmm(frozen_pfv.start_time)
                         pe_eff = None
                     end_t = _add_minutes(st_eff, sm_eff)
                     am_pm = determine_am_pm(time_type=tt_eff, preferred_start=st_eff)
@@ -2279,24 +2326,24 @@ def build_visits_for_pool(
                     # VPS で再現していた. fixed-source 分岐 (L1716-1721) と同じ
                     # 規約で course_code_by_template_id から引き当てる.
                     cc_eff = (
-                        course_code_by_template_id.get(pinned_pfv.course_template_id)
+                        course_code_by_template_id.get(frozen_pfv.course_template_id)
                         if course_code_by_template_id is not None
-                        and pinned_pfv.course_template_id is not None
+                        and frozen_pfv.course_template_id is not None
                         else None
                     )
-                    # Phase G-33: cross-office pinned PFV 対応. PFV.course_template_id
+                    # Phase G-33: cross-office 凍結 PFV 対応. PFV.course_template_id
                     # が patient.primary_office_id と異なる office を指す場合、
                     # V2Visit.office_id を template の office_id に差し替える.
-                    # Before 側 (Phase G-24) と同じ規約. weekly_pattern 分岐 pinned
+                    # Before 側 (Phase G-24) と同じ規約. weekly_pattern 分岐の凍結
                     # emit は sub_office_scope 経路を使わないため、 cross-office
                     # 差し替えのみで OK.
-                    pinned_course_office_id = (
-                        ct_office_by_id.get(pinned_pfv.course_template_id)
-                        if ct_office_by_id is not None and pinned_pfv.course_template_id is not None
+                    frozen_course_office_id = (
+                        ct_office_by_id.get(frozen_pfv.course_template_id)
+                        if ct_office_by_id is not None and frozen_pfv.course_template_id is not None
                         else None
                     )
-                    office_id_eff = pinned_course_office_id or patient.primary_office_id
-                    # Phase G-45: 拠点休業日 skip (weekly_pattern + pinned PFV 経路).
+                    office_id_eff = frozen_course_office_id or patient.primary_office_id
+                    # Phase G-45: 拠点休業日 skip (weekly_pattern + 凍結 PFV 経路).
                     if op_weekdays_by_office is not None:
                         _op_wd = op_weekdays_by_office.get(office_id_eff)
                         if _op_wd is not None and wd not in _op_wd:
@@ -2332,7 +2379,12 @@ def build_visits_for_pool(
                             preferred_start=ps_eff,
                             preferred_end=pe_eff,
                             requires_multiple_staff=req_multi,
-                            is_pinned=True,
+                            # この visit は frozen_pfv 行から組んでいる. ピン留めと
+                            # 可動域ロックは別フラグとしてそれぞれ実値を流す
+                            # (可動域ロックだけの行で is_pinned が立たないこと =
+                            # 経路優先度・UI の 📌 表示を変えないこと が要件).
+                            is_pinned=bool(frozen_pfv.is_pinned),
+                            is_movability_locked=_pfv_movability_locked(frozen_pfv),
                         )
                     )
                     continue
@@ -2534,6 +2586,7 @@ def build_visits_for_pool_v2(
                     sex_restriction=sex_r,
                     requires_multiple_staff=req_multi,
                     is_pinned=True,
+                    is_movability_locked=_pfv_movability_locked(pfv),
                 )
             )
 
@@ -4662,28 +4715,34 @@ def _apply_corrections_to_visits(
     """
     if not visits:
         return set()
-    # pinned visit の start/end/course を snapshot. 補正後に id(v) で post-restore.
+    # 凍結対象 visit の start/end/course を snapshot. 補正後に id(v) で post-restore.
     # `id(v)` snapshot key は呼出し中の同一 Python オブジェクトに紐付くため
     # 安定して照合できる (apply_travel_corrections は in-place 編集で v を返す).
-    pinned_visits = [v for v in visits if v.is_pinned]
-    pinned_snapshot: dict[int, tuple[time, time, str | None]] = {
-        id(v): (v.start_time, v.end_time, v.course_code) for v in pinned_visits
+    #
+    # PO 決定 (2026-08-07): 凍結対象は ピン留め (``is_pinned``) **と**
+    # 可動域=完全固定 (``is_movability_locked``) の和集合.
+    # それ以前は ``is_pinned`` のみを見ていたため、「可動域=完全固定」の枠が
+    # 提案系エンジンでは不可侵なのに自動割当では時刻が動く、という非対称が
+    # あった (一括ピン解除して提案を出す運用で実害になる).
+    frozen_visits = [v for v in visits if v.is_pinned or v.is_movability_locked]
+    frozen_snapshot: dict[int, tuple[time, time, str | None]] = {
+        id(v): (v.start_time, v.end_time, v.course_code) for v in frozen_visits
     }
-    # Phase G-21 final C4: 入力には全 visit (pinned 含む) を渡す.
+    # Phase G-21 final C4: 入力には全 visit (凍結対象含む) を渡す.
     unassigned = apply_travel_corrections(
         visits,
         warnings=warnings,
         office_name_by_id=office_name_by_id,
         config=config,
     )
-    # pinned visit の値を snapshot から復元する ("監視のみ" — 制約計算には参加
+    # 凍結対象 visit の値を snapshot から復元する ("監視のみ" — 制約計算には参加
     # するが、 自身の時刻 / コースは絶対に動かない).
-    for v in pinned_visits:
-        st, et, cc = pinned_snapshot[id(v)]
+    for v in frozen_visits:
+        st, et, cc = frozen_snapshot[id(v)]
         v.start_time = st
         v.end_time = et
         v.course_code = cc
-        # pinned visit が `course_code=None` に書き換えられた場合 (= 補正で
+        # 凍結対象 visit が `course_code=None` に書き換えられた場合 (= 補正で
         # unassigned 扱いになった) でも post-restore で元 course を復元するため、
         # travel_unassigned_ids 集合からも除外して「物理不可能」扱いを取り消す.
         unassigned.discard(id(v))
@@ -6086,6 +6145,8 @@ async def _load_before_visits_from_pfv(
                 # ここで True を立てておかないと apply_travel_corrections の
                 # pinned fence が engage せず時刻が動く可能性がある.
                 is_pinned=bool(pfv.is_pinned),
+                # PO 決定 (2026-08-07): 可動域=完全固定 も同じ経路で凍結する.
+                is_movability_locked=_pfv_movability_locked(pfv),
             )
         )
 
@@ -6234,6 +6295,10 @@ async def _load_before_visits_v2(
                 getattr(patient, "requires_multiple_staff", False) or False
             ),
             is_pinned=bool(pfv.is_pinned),
+            # PO 決定 (2026-08-07): 経路 2 (pinned PFV) / 経路 3 (非 pinned PFV) の
+            # どちらも本 helper を通るため、可動域=完全固定 の非 pinned PFV も
+            # ここで凍結フラグが立つ.
+            is_movability_locked=_pfv_movability_locked(pfv),
         )
 
     # 経路 1: 既存 DB Visit (当該週). 優先度最高.
