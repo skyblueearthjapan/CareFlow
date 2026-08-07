@@ -182,7 +182,7 @@ import { PatientCard, type PatientCardData } from './PatientCard';
 import { PatientScheduleDetailDialog } from './PatientScheduleDetailDialog';
 import { POOL_DROPPABLE_ID, buildPoolDraggableId, parsePoolDraggableId } from './PoolPanel';
 import { PoolOverviewPane } from './PoolOverviewPane';
-import type { SlotIndex } from '@/lib/schemas/v2/patient_fixed_visit';
+import type { Movability, SlotIndex } from '@/lib/schemas/v2/patient_fixed_visit';
 // Phase G-44: 「希望訪問パターン」 vs 「実 visit 数」 の共通 utility.
 import { countWeekVisits, getDesiredWeeklyVisitCount } from '@/lib/scheduling/preferred-visits';
 // Phase G-55: 空き時間帯 (≥60分) 算出の共有 util (mobile FieldBoard と共通).
@@ -982,11 +982,14 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       }
       let fixedVisitId: string | null = null;
       let isPinned = false;
+      // 2026-08-07 (PO 要望): 可動域を盤面に「うっすら」出すための値.
+      let movability: Movability | null = null;
       if (pfvWeekday !== null && visitHHMM) {
         const pfv = pfvByVisitKey.get(`${v.patient_id}:${pfvWeekday}:${visitHHMM}:${pfvSlot}`);
         if (pfv) {
           fixedVisitId = pfv.id;
           isPinned = pfv.is_pinned === true;
+          movability = pfv.movability ?? null;
         }
       }
       // BE が将来 visit response に直接 fixed_visit_id / is_pinned を expose した
@@ -1021,6 +1024,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         // Phase G-21 T4 reviewer C2: PFV lookup 結果 (= null なら 🔒 ボタンは disabled).
         fixed_visit_id: fixedVisitId,
         is_pinned: isPinned,
+        // 可動域 (2026-08-07): 'locked' は提案系・自動割当とも不可侵、
+        // time_flexible/day_flexible は動かせる範囲を示す。'unknown' は非表示。
+        movability,
         // Wave U-2: 「今週のみ」チップの根拠 (source='manual_week' でチップ表示).
         source: (v as { source?: string | null }).source ?? null,
         // R-2: キャンセル表示 ('cancelled' のとき grey + 打消し線 + バッジ).
@@ -1260,6 +1266,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         // Phase G-23: 週ビュー 🔒 toggle 用
         fixed_visit_id: beFixedVisitId ?? pfvHit?.id ?? null,
         is_pinned: beIsPinned !== null ? beIsPinned === true : pfvHit?.is_pinned === true,
+        // 可動域 (2026-08-07): 週タイムラインでも「固 / 時 / 曜」を淡く出す。
+        movability: pfvHit?.movability ?? null,
         // 週ビューの距離算出用 (コース合計 + 次までの距離).
         lat: (patient as { lat?: number | null } | undefined)?.lat ?? null,
         lng: (patient as { lng?: number | null } | undefined)?.lng ?? null,

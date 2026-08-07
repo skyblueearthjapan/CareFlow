@@ -25,6 +25,7 @@ import {
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
+import type { Movability } from '@/lib/schemas/v2/patient_fixed_visit';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { haversineKm } from '../WeekdayScheduleCard';
@@ -60,6 +61,12 @@ export interface WeekOverviewVisit {
   fixed_visit_id?: string | null;
   /** Phase G-22: PFV.is_pinned のミラー値. */
   is_pinned?: boolean | null;
+  /**
+   * PFV.movability のミラー値 (2026-08-07 / PO 要望).
+   * 週タイムラインで「固 / 時 / 曜」の淡いマークを出すのに使う。
+   * null/undefined/'unknown' は非表示 (日タイムラインと同じ規則)。
+   */
+  movability?: Movability | null;
   /** 患者の緯度経度 (距離算出用). null = 未登録 → 距離は出さない. */
   lat?: number | null;
   lng?: number | null;

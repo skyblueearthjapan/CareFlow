@@ -16,6 +16,7 @@
  *   - 時刻ユーティリティ (`toMinutes` / `floorToCourseSlot`)
  */
 import type { EventRead } from '@/lib/schemas/staff-events';
+import type { Movability } from '@/lib/schemas/v2/patient_fixed_visit';
 import { formatTimeCondition } from '@/components/schedule/WeekdayScheduleCard';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -206,6 +207,18 @@ export interface CourseGridVisit {
    * fixed_visit_id が無い場合は常に false.
    */
   is_pinned?: boolean | null;
+  /**
+   * PFV.movability のミラー値 (2026-08-07 / PO 要望).
+   *
+   * 可動域はピン留めの「さらに先」にある固定手段で、'locked' なら提案系エンジンも
+   * 自動割当も枠を動かさない。それまで盤面には一切表示されておらず、
+   * 「一括ピン解除したが完全固定は守られている」状態が現場から見えなかった。
+   *
+   * - null/undefined : PFV 非紐付け (weekly_pattern 由来) → 表示しない.
+   * - 'unknown'      : 未設定 (既定) → 表示しない (ノイズを増やさない).
+   * - それ以外       : 固 / 時 / 曜 の淡いマークを出す.
+   */
+  movability?: Movability | null;
   /**
    * Wave U-2: visit のソース (入力チャネル).
    * 'manual_week' = この週だけの配置 (型に未反映)。「今週のみ」チップを出す根拠。

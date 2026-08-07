@@ -35,6 +35,7 @@ import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
 import { CornerPushPin } from '@/components/ui/push-pin';
+import { MovabilityMark } from './MovabilityMark';
 import { parseHM, SAME_ADDRESS_PAIR_MIN_OCCUPANCY } from '@/lib/scheduling/freeGaps';
 import {
   assignLanes,
@@ -67,6 +68,7 @@ const TL_SHOW_DELETE_PX = 40;
 
 /** G3: 「今週のみ」→ 固定昇格の確認文 (CourseDayTable と同一文言)。 */
 const PROMOTE_WEEK_ONLY_CONFIRM = 'この配置を固定訪問週間（毎週の型）に反映しますか？';
+
 
 // ─────────────────────────────────────────────────────────────────────────
 // T-2 ②-b: DnD id 規約 (既存の visit:/pool-patient:/course-day-cell: と非衝突)
@@ -511,6 +513,7 @@ function VisitCard({
             <PersonMark />
           </span>
         )}
+        <MovabilityMark visit={visit} visitId={visit.id} />
         <span
           className={cn(
             'truncate text-[13px] font-bold leading-tight',
@@ -932,6 +935,7 @@ function PairMemberRowView({
         </span>
       )}
       {v.is_pinned && <CornerPushPin />}
+      <MovabilityMark visit={v} visitId={v.id} />
       {showHandle ? (
         <span
           data-testid={`tl-pair-member-handle-${v.id}`}

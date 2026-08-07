@@ -17,6 +17,7 @@ import { useMemo } from 'react';
 
 import type { WeekOverviewVisit } from '@/components/schedule/v2/CourseWeekOverview';
 import { CornerPushPin } from '@/components/ui/push-pin';
+import { MovabilityMark } from './MovabilityMark';
 import { parseHM, SAME_ADDRESS_PAIR_MIN_OCCUPANCY } from '@/lib/scheduling/freeGaps';
 import {
   assignLanes,
@@ -208,6 +209,8 @@ function WeekCard({
             <PersonMark />
           </span>
         )}
+        {/* 可動域 (2026-08-07 / PO 要望): 日タイムラインと同じ判定・同じ淡さ。 */}
+        <MovabilityMark visit={v} visitId={v.id} testIdPrefix="wtl" />
         <span className="truncate text-[12px] font-bold leading-tight">
           {v.patient_name ?? '—'}
         </span>
