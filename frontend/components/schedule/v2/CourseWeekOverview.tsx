@@ -374,7 +374,7 @@ export function CourseWeekOverview({
                               </div>
                               <div className="truncate opacity-80">
                                 {isMemo
-                                  ? (ev.title || ev.type)
+                                  ? ev.title || ev.type
                                   : `${ev.start_time.slice(0, 5)}-${ev.end_time.slice(0, 5)} ${ev.title || ev.type}`}
                               </div>
                             </li>
@@ -813,7 +813,9 @@ export function CourseWeekOverview({
                                       {/* 新人同行 (§7.2): 患者個別リンク = 行右端の極小 👥。 */}
                                       <AccompanimentDot
                                         name={
-                                          accInactive ? accompaniment!.visitBadgeName(item.id) : null
+                                          accInactive
+                                            ? accompaniment!.visitBadgeName(item.id)
+                                            : null
                                         }
                                         testId={`course-week-overview-accompaniment-${item.id}`}
                                       />

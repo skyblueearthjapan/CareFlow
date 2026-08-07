@@ -69,7 +69,6 @@ const TL_SHOW_DELETE_PX = 40;
 /** G3: 「今週のみ」→ 固定昇格の確認文 (CourseDayTable と同一文言)。 */
 const PROMOTE_WEEK_ONLY_CONFIRM = 'この配置を固定訪問週間（毎週の型）に反映しますか？';
 
-
 // ─────────────────────────────────────────────────────────────────────────
 // T-2 ②-b: DnD id 規約 (既存の visit:/pool-patient:/course-day-cell: と非衝突)
 // ─────────────────────────────────────────────────────────────────────────
@@ -441,19 +440,19 @@ function VisitCard({
         accInCourse
           ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
           : [
-          drag?.disabled
-            ? visit.is_pinned
-              ? 'ピン留め中のため移動できません（ピンを解除してから移動）'
-              : visit.visit_group_id
-                ? '2名体制（ペア配置）のため個別移動できません'
-                : visit.status === 'cancelled'
-                  ? 'キャンセル済みのため移動できません'
-                  : visit.patient_address
-            : visit.patient_address,
-          partner.tooltip,
-        ]
-          .filter(Boolean)
-          .join(' / ') || undefined
+              drag?.disabled
+                ? visit.is_pinned
+                  ? 'ピン留め中のため移動できません（ピンを解除してから移動）'
+                  : visit.visit_group_id
+                    ? '2名体制（ペア配置）のため個別移動できません'
+                    : visit.status === 'cancelled'
+                      ? 'キャンセル済みのため移動できません'
+                      : visit.patient_address
+                : visit.patient_address,
+              partner.tooltip,
+            ]
+              .filter(Boolean)
+              .join(' / ') || undefined
       }
       className={cn(
         // group: × ボタンを hover / focus-within で出すため (G2)。
@@ -471,11 +470,7 @@ function VisitCard({
         ...laneStyle,
         background: isCancelled ? 'var(--bg-muted)' : pal.bg,
         borderColor: accOverlap ? 'var(--error)' : isCancelled ? 'var(--border-default)' : pal.ln,
-        borderLeftColor: accOverlap
-          ? 'var(--error)'
-          : isCancelled
-            ? 'var(--text-muted)'
-            : pal.bar,
+        borderLeftColor: accOverlap ? 'var(--error)' : isCancelled ? 'var(--text-muted)' : pal.bar,
         color: isCancelled ? 'var(--text-muted)' : pal.ink,
         opacity: isCancelled ? 0.7 : 1,
       }}

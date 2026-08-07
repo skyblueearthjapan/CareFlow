@@ -523,9 +523,7 @@ export function WeekTimelineBoard({
                         );
                       }),
                     )}
-                    {frames.length === 0 && (
-                      <span className="text-[10px] text-text-muted">—</span>
-                    )}
+                    {frames.length === 0 && <span className="text-[10px] text-text-muted">—</span>}
                   </div>
                 </div>
               );
@@ -640,9 +638,7 @@ function CourseWeekSection({
                       }
                     : undefined
                 }
-                data-testid={
-                  accActive ? `wtl-course-header-${option.templateId}-${wd}` : undefined
-                }
+                data-testid={accActive ? `wtl-course-header-${option.templateId}-${wd}` : undefined}
                 data-accompaniment-selected={headerSelected ? 'true' : undefined}
                 className={cn(
                   'border-l border-[var(--border-subtle)] px-2 py-1.5',

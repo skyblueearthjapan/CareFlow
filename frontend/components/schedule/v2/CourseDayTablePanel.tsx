@@ -578,7 +578,6 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     return m;
   }, [staffEventsByStaff]);
 
-
   // ─── 当該週に visit が実在する course_id の集合 (列の表示条件 ③ の根拠) ──
   // course は曜日固定なので course_id を持つ visit があれば「その曜日に訪問実在」。
   const courseIdsWithVisits = useMemo(() => {
@@ -1137,9 +1136,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     const m = new Map<string, FulfillmentVisit[]>();
     for (const v of weekVisits) {
       const courseId = v.course_id ?? null;
-      const courseTemplateId = courseId
-        ? (courseTemplateByCourseId.get(courseId) ?? null)
-        : null;
+      const courseTemplateId = courseId ? (courseTemplateByCourseId.get(courseId) ?? null) : null;
       let weekday: number | null = null;
       if (v.visit_date) {
         const d = new Date(v.visit_date + 'T00:00:00');
@@ -1283,8 +1280,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         patient_address: patient?.address ?? null,
         // スタッフ別ビューの帰属用 (2026-07-26: 臨時テンプレ合算の誤帰属を防ぐため
         // コース担当ではなく訪問の primary で行を決める)。
-        primary_staff_id:
-          (v as { primary_staff_id?: string | null }).primary_staff_id ?? null,
+        primary_staff_id: (v as { primary_staff_id?: string | null }).primary_staff_id ?? null,
       });
     }
     return out;
@@ -2319,7 +2315,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   // W-11: 性別制約を満たす候補ゼロで残った違反の警告 (手動調整が必要・承認不可).
   const [unresolvedWarnings, setUnresolvedWarnings] = useState<UnresolvedGenderWarning[]>([]);
   // 4段ソルバ Stage 2: マネージャー動員のお知らせ (確定済み).
-  const [managerMobilizedNotices, setManagerMobilizedNotices] = useState<StageAssignmentNotice[]>([]);
+  const [managerMobilizedNotices, setManagerMobilizedNotices] = useState<StageAssignmentNotice[]>(
+    [],
+  );
   // v2.0 新Stage 3: 拠点をまたぐ応援の警告 (確定済み).
   const [crossOfficeNotices, setCrossOfficeNotices] = useState<CrossOfficeNotice[]>([]);
   // v2.0 新Stage 3: 応援による入れ替えの報告 (確定済み).
@@ -2432,8 +2430,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             suffixParts.push(`マネージャー動員 ${mobilized.length} 件確定済み`);
           if (crossOffice.length > 0)
             suffixParts.push(`拠点をまたぐ応援 ${crossOffice.length} 件確定済み`);
-          if (swaps.length > 0)
-            suffixParts.push(`入れ替え ${swaps.length} 件`);
+          if (swaps.length > 0) suffixParts.push(`入れ替え ${swaps.length} 件`);
           const suffix = suffixParts.length > 0 ? `（うち${suffixParts.join('・')}）` : '';
           toast.warning(
             `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)。` +
@@ -2450,8 +2447,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             parts.push(`マネージャー動員 ${mobilized.length} 件を自動確定しました`);
           if (crossOffice.length > 0)
             parts.push(`拠点をまたぐ応援 ${crossOffice.length} 件を自動確定しました`);
-          if (swaps.length > 0)
-            parts.push(`応援による入れ替えが ${swaps.length} 件あります`);
+          if (swaps.length > 0) parts.push(`応援による入れ替えが ${swaps.length} 件あります`);
           toast.warning(
             `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)。` +
               `${parts.join('。')}。内容をご確認ください。`,
@@ -3449,9 +3445,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     eventFramesByWeekday={staffEventFramesByWeekday}
                     weekdayDates={weekdayDates}
                     // 同行モード中は患者詳細を抑止 (§7.1 N-2)。
-                    onPatientClick={
-                      accompaniment.active ? undefined : handleOpenPatientDetail
-                    }
+                    onPatientClick={accompaniment.active ? undefined : handleOpenPatientDetail}
                     capacityByWeekday={weekTimelineCapacityByWeekday}
                     staffByWeekday={weekTimelineStaffByWeekday}
                     accompaniment={accompaniment.binding}
@@ -3540,9 +3534,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       staffFrames={staffEventFramesByWeekday.get(activeWeekday) ?? []}
                       weekdayLabel={WEEKDAY_LABELS[activeWeekday] ?? ''}
                       // 同行モード中は通常のクリック/DnD/空き枠/イベントを全て抑止 (§7.1 N-2)。
-                      onPatientClick={
-                        accompaniment.active ? undefined : handleOpenPatientDetail
-                      }
+                      onPatientClick={accompaniment.active ? undefined : handleOpenPatientDetail}
                       nowMinutes={timelineNowMinutes}
                       // T-2 ②-a: canEdit のときだけ空き枠クリック登録を解禁。
                       onFreeSlotClick={
