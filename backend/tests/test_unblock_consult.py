@@ -917,7 +917,9 @@ async def test_w13b_same_bucket_shift_one_course(client, db) -> None:
     assert c["weekday"] == 0 and c["course_code"] == "A"
     assert c["office_name"] == "稲"
     # before: ブロッカーが 10:00 に居る.
-    assert any(v["patient_id"] == str(blocker.id) and v["start_time"] == "10:00" for v in c["before"])
+    assert any(
+        v["patient_id"] == str(blocker.id) and v["start_time"] == "10:00" for v in c["before"]
+    )
     # after: ブロッカーは別時刻へ退避 + 対象患者が 10:30 に新規配置.
     blk_after = [v for v in c["after"] if v["patient_id"] == str(blocker.id)]
     assert blk_after and blk_after[0]["start_time"] != "10:00"
@@ -1077,7 +1079,9 @@ async def test_w15_no_same_bucket_move_when_capacity(client, db) -> None:
     曜日跨ぎ (Tue A) へ退避できないため有効な退避先がなく plans==[] になる。
     """
     admin = await _make_user(db, email="w15same@example.com")
-    office, candidate, _blk = await _seed_capacity_full_bucket(db, blocker_movability="time_flexible")
+    office, candidate, _blk = await _seed_capacity_full_bucket(
+        db, blocker_movability="time_flexible"
+    )
 
     res = await client.post(_URL, headers=_bearer(admin), json=_candidate_body(office, candidate))
     assert res.status_code == 200, res.text

@@ -90,6 +90,8 @@ export interface VisitListItem {
    * 一致 / 固定枠なし は null. ピン留めできない理由の説明に使う.
    */
   master_start_time?: string | null;
+  /** 週のピン (青ピン / 2026-08-09)。source と独立のフラグ。 */
+  week_pinned?: boolean | null;
   /**
    * T-1L: タイムライン兄弟リスト (TimelineDayList) 用の患者性別 (patient.sex:
    * male/female/unknown)。行頭の性別ドット・左色帯に使う。既存 WeekdayScheduleCard は

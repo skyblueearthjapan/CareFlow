@@ -353,9 +353,15 @@ def test_stage3_coverage_regression_guard_prevents_adoption() -> None:
     o1 = uuid4()
     o2 = uuid4()
 
-    course_a = _make_course(code="A", weekday=0, restrictions=frozenset({"female_only"}), office_id=o1)
-    course_b = _make_course(code="B", weekday=0, restrictions=frozenset({"female_only"}), office_id=o1)
-    course_c = _make_course(code="C", weekday=0, restrictions=frozenset({"female_only"}), office_id=o1)
+    course_a = _make_course(
+        code="A", weekday=0, restrictions=frozenset({"female_only"}), office_id=o1
+    )
+    course_b = _make_course(
+        code="B", weekday=0, restrictions=frozenset({"female_only"}), office_id=o1
+    )
+    course_c = _make_course(
+        code="C", weekday=0, restrictions=frozenset({"female_only"}), office_id=o1
+    )
 
     f1 = _make_staff(name="F1", sex="female", primary_office_id=o1)
     f2 = _make_staff(name="F2", sex="female", primary_office_id=o2)
@@ -699,9 +705,7 @@ def test_response_schema_defaults_new_notice_fields_to_empty() -> None:
     """AssignStaffOnlyResponse の新 2 フィールドは default 空配列 (後方互換)."""
     from app.api.v1.schedule import AssignStaffOnlyResponse
 
-    resp = AssignStaffOnlyResponse(
-        iso_year=2026, iso_week=28, courses_assigned=0, message="ok"
-    )
+    resp = AssignStaffOnlyResponse(iso_year=2026, iso_week=28, courses_assigned=0, message="ok")
     assert resp.manager_mobilized_notices == []
     assert resp.cross_office_notices == []
     assert resp.rescue_swap_notices == []

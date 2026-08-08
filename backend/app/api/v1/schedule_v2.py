@@ -30,7 +30,7 @@ from typing import Annotated, Any, NoReturn
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
@@ -1392,24 +1392,28 @@ async def visit_move_week_only_endpoint(
 #     PO 決定 2026-08-08 / 仕様: docs/plans/pin-and-movability-spec.md
 # ---------------------------------------------------------------------------
 
-# 青ピンを掛け外しできる source。
-#   - 型 (PFV/希望) から再生成される値 = 週生成で消える → 「今週固定」に意味がある
-#   - manual_week = 既に青ピン済み → 外せる
-# それ以外 ('manual' = 毎週の手動作成 / 'import' = カイポケ取込) は型の管理下に
-# 無く、週生成でも消えないため、青ピンの掛け外しは意味を持たない (422 で弾く)。
-_WEEK_PIN_TOGGLEABLE_SOURCES: frozenset[str] = frozenset(
-    {"auto", "auto_alloc", "auto_alloc_v2", "auto_alloc_v2w", "pfv", "fixed", "reset_v2"}
-)
-
-# 青ピンを外したときに戻す source。型から再生成される既定値。
+# (旧) 青ピンを掛け外しできる source の制限は PO 決定 2026-08-09 で撤廃した。
+# 実体が visits.week_pinned フラグになり source に触れないため、カイポケ取込
+# (import) や手動作成 (manual) にも安全に掛け外しできる (出所は失われない)。
+# 解除時に「型の管理へ戻す」意味を持つのは manual_week だけなので、その変換用に
+# 定数だけ残す。
 _WEEK_PIN_RELEASED_SOURCE = "auto"
+
+
+def _visit_is_week_pinned(visit: Visit) -> bool:
+    """青ピンが立っているか。フラグ or 旧方式 (source='manual_week') の和集合。
+
+    0066 が manual_week を backfill 済みだが、DnD 移動等で新たに manual_week に
+    なる行はフラグ無しで生まれる。表示・解除の対象はどちらも含める。
+    """
+    return bool(visit.week_pinned) or visit.source == VISIT_SOURCE_MANUAL_WEEK
 
 
 @router.patch(
     "/v2/visits/{visit_id}/week-pin",
     response_model=VisitWeekPinResponse,
     status_code=status.HTTP_200_OK,
-    summary="週のピン (青ピン): 今週この位置で固定する / 型の管理に戻す",
+    summary="週のピン (青ピン): 今週この位置で固定する / 解除する",
 )
 async def visit_week_pin_endpoint(
     visit_id: uuid.UUID,
@@ -1419,23 +1423,20 @@ async def visit_week_pin_endpoint(
 ) -> VisitWeekPinResponse:
     """今週の訪問を「この位置のまま動かさない」状態にする / 解除する。
 
-    赤ピン (``PFV.is_pinned``) との違い:
-      - 赤ピンは **型** に対するもの。毎週効く。型と一致する訪問にしか刺せない。
-      - 青ピンは **今週の訪問** に対するもの。その週だけ効く。
-        **型とズレていても刺せる** (ズレた訪問を今の位置で守れるのはこちらだけ)。
+    実体は ``visits.week_pinned`` フラグ (PO 決定 2026-08-09 / migration 0066)。
+    source には触れないため、カイポケ取込 (import) の訪問にも掛け外しでき、
+    解除しても「取込由来」という出所と保護は失われない。
 
-    実体は ``visit.source='manual_week'``。この値には既に
-      1. 週生成の削除対象から除外される
-      2. 再生成ループが当該 (patient, visit_date) を skip する
-    という意味論があり、本エンドポイントはその入口を足すもの (DB 列の追加なし)。
+    保護の意味論 (reset_visits_to_fixed 側):
+      - week_pinned=true は週生成の削除対象外
+      - 当該 (patient, visit_date) の再生成を skip (型の時刻で上書きされない)
 
-    解除 (``pinned=false``) は source を 'auto' に戻すだけで、**その場では訪問を
-    動かさない**。次に週生成を実行したときに型の時刻が読み込まれる (PO 確認済)。
+    解除 (``pinned=false``):
+      - フラグを下ろす。**その場では訪問を動かさない**。
+      - source='manual_week' (この週だけの手動配置) は 'auto' に戻し、次の週生成で
+        型の時刻が読み込まれる。import / manual 等は source そのまま = 保護継続。
 
-    422 になる条件:
-      - 完了/実績入力済みなど planned 以外の訪問 (運用上動かしてはいけない)
-      - source が型の管理下に無い ('manual' / 'import' 等)。週生成で消えないため
-        青ピンの掛け外しに意味が無く、勝手に source を書き換えると保護が変わる。
+    planned 以外 (完了・実績入力済み等) は 422。
     """
     visit = await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
     if visit is None:
@@ -1450,28 +1451,30 @@ async def visit_week_pin_endpoint(
             detail=f"予定 (planned) 以外の訪問は今週固定を変更できません (status={visit.status})",
         )
 
+    old_flag = bool(visit.week_pinned)
     old_source = visit.source
-    already_pinned = old_source == VISIT_SOURCE_MANUAL_WEEK
-    if not already_pinned and old_source not in _WEEK_PIN_TOGGLEABLE_SOURCES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                "この訪問は固定訪問スケジュールの管理下に無いため、今週固定の対象外です "
-                f"(source={old_source})"
-            ),
-        )
+    changed = False
+    if payload.pinned:
+        if not visit.week_pinned:
+            visit.week_pinned = True
+            changed = True
+    else:
+        if visit.week_pinned:
+            visit.week_pinned = False
+            changed = True
+        if visit.source == VISIT_SOURCE_MANUAL_WEEK:
+            visit.source = _WEEK_PIN_RELEASED_SOURCE
+            changed = True
 
-    new_source = VISIT_SOURCE_MANUAL_WEEK if payload.pinned else _WEEK_PIN_RELEASED_SOURCE
-    if new_source != old_source:
-        visit.source = new_source
+    if changed:
         db.add(
             AuditLog(
                 actor_user_id=current_user.id,
                 action="visit_week_pin_toggle",
                 target_table="visits",
                 target_id=str(visit.id),
-                before={"source": old_source},
-                after={"source": new_source},
+                before={"week_pinned": old_flag, "source": old_source},
+                after={"week_pinned": bool(visit.week_pinned), "source": visit.source},
             )
         )
         await db.commit()
@@ -1479,7 +1482,7 @@ async def visit_week_pin_endpoint(
 
     return VisitWeekPinResponse(
         visit_id=visit.id,
-        pinned=visit.source == VISIT_SOURCE_MANUAL_WEEK,
+        pinned=_visit_is_week_pinned(visit),
         source=visit.source,
     )
 
@@ -1497,16 +1500,19 @@ async def visit_week_pin_bulk_endpoint(
 ) -> VisitWeekPinBulkResponse:
     """赤ピンの「全件ピン留め / 全件ピン留め解除」と対になる青ピンの一括操作。
 
-    - ``pinned=true``  : 当該週の planned 訪問のうち、型の管理下にある source
-      (auto/.../reset_v2) を **一括で 'manual_week' に**。以後、赤ピンを全解除して
-      提案・週生成を回しても今週の実配置は動かない。
-    - ``pinned=false`` : 'manual_week' を一括で 'auto' に戻す。**その場では動かない**
-      が、次の週生成で型の時刻が読み込まれる。
+    実体は ``visits.week_pinned`` フラグ (PO 決定 2026-08-09)。source に触れないため
+    **カイポケ取込 (import) を含む当該週の planned 全訪問** が対象になる
+    (旧実装は source 書き換え方式で import/manual を除外しており、取込週では
+    119 件中 5 件しか固定されなかった)。
 
-    'manual' (毎週の手動作成) / 'import' (カイポケ取込) / planned 以外は対象外として
-    静かに skip する (単発 PATCH の 422 と違い、一括では対象抽出の意味論)。
+    - ``pinned=true``  : planned かつ未固定 (フラグ無し・manual_week でもない) を
+      一括で week_pinned=true に。
+    - ``pinned=false`` : 固定済み (フラグ or manual_week) を一括で解除。
+      **その場では動かない**。manual_week は 'auto' へ戻し、次の週生成で型の時刻が
+      読み込まれる。import / manual は source そのまま = 出所と保護は失われない。
+
     ``dry_run=true`` は件数だけ返す (確認ダイアログ用)。
-    audit_log には 1 回の操作につき 1 行 (counts) を記録する。
+    audit_log は 1 操作 1 行 (counts)。
     """
     try:
         week_monday = date.fromisocalendar(payload.iso_year, payload.iso_week, 1)
@@ -1517,37 +1523,42 @@ async def visit_week_pin_bulk_endpoint(
         ) from exc
     week_sunday = date.fromordinal(week_monday.toordinal() + 6)
 
+    base = [
+        Visit.deleted_at.is_(None),
+        Visit.visit_date >= week_monday,
+        Visit.visit_date <= week_sunday,
+        Visit.status == VISIT_STATUS_PLANNED,
+    ]
     if payload.pinned:
-        source_filter = Visit.source.in_(sorted(_WEEK_PIN_TOGGLEABLE_SOURCES))
-        new_source = VISIT_SOURCE_MANUAL_WEEK
+        # 未固定のみ (既に青ピンの行を数えない = 件数表示が「これから変わる数」になる)。
+        cond = [
+            *base,
+            Visit.week_pinned.is_(False),
+            Visit.source != VISIT_SOURCE_MANUAL_WEEK,
+        ]
     else:
-        source_filter = Visit.source == VISIT_SOURCE_MANUAL_WEEK
-        new_source = _WEEK_PIN_RELEASED_SOURCE
+        cond = [
+            *base,
+            or_(Visit.week_pinned.is_(True), Visit.source == VISIT_SOURCE_MANUAL_WEEK),
+        ]
 
-    rows = (
-        await db.scalars(
-            select(Visit).where(
-                Visit.deleted_at.is_(None),
-                Visit.visit_date >= week_monday,
-                Visit.visit_date <= week_sunday,
-                Visit.status == VISIT_STATUS_PLANNED,
-                source_filter,
-            )
-        )
-    ).all()
+    rows = (await db.scalars(select(Visit).where(*cond))).all()
 
     if payload.dry_run or not rows:
         return VisitWeekPinBulkResponse(target_count=len(rows), updated_count=0)
 
     for v in rows:
-        v.source = new_source
+        if payload.pinned:
+            v.week_pinned = True
+        else:
+            v.week_pinned = False
+            if v.source == VISIT_SOURCE_MANUAL_WEEK:
+                v.source = _WEEK_PIN_RELEASED_SOURCE
     db.add(
         AuditLog(
             actor_user_id=current_user.id,
             action="visit_week_pin_bulk",
             target_table="visits",
-            # 対象は週単位 (visit id 列挙は数百件になり得るため counts のみ記録.
-            # 個別の切替履歴が必要な操作は単発 PATCH 側が per-visit で残す).
             target_id=f"{payload.iso_year}-W{payload.iso_week:02d}",
             before={"pinned": not payload.pinned, "count": len(rows)},
             after={"pinned": payload.pinned, "count": len(rows)},

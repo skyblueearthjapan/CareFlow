@@ -48,9 +48,7 @@ async def run_gps_purge(
     ``retention_days`` が下限 (= ``MIN_RETENTION_DAYS``) 未満なら ``ValueError``。
     """
     if retention_days < MIN_RETENTION_DAYS:
-        raise ValueError(
-            f"retention_days must be >= {MIN_RETENTION_DAYS} (got {retention_days})"
-        )
+        raise ValueError(f"retention_days must be >= {MIN_RETENTION_DAYS} (got {retention_days})")
     if not await try_advisory_xact_lock(db, PURGE_GPS_LOCK_KEY):
         logger.warning("purge_gps: another job holds advisory lock, skipping")
         return {"locked": True, "purged": 0}
@@ -76,7 +74,5 @@ async def run_gps_purge(
     result = await db.execute(stmt)
     purged = int(result.rowcount or 0)
     await db.commit()
-    logger.info(
-        "purge_gps: nulled lat/lng/accuracy for %d checkins (cutoff=%s)", purged, cutoff
-    )
+    logger.info("purge_gps: nulled lat/lng/accuracy for %d checkins (cutoff=%s)", purged, cutoff)
     return {"locked": False, "purged": purged}

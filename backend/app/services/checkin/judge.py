@@ -116,9 +116,7 @@ async def _resolve_patient(
         # 未知トークン: 再発行で失効した旧 QR (= ローテ済) なら 410 Gone を返し、
         # 旧ステッカーで打刻したスタッフに「QR が更新された」と気づかせる。
         # 失効履歴にも無い完全な未知トークンは従来どおり 404。
-        revoked = await db.scalar(
-            select(RevokedQrToken).where(RevokedQrToken.token == qr_token)
-        )
+        revoked = await db.scalar(select(RevokedQrToken).where(RevokedQrToken.token == qr_token))
         if revoked is not None:
             # 氏名スコープ: 旧トークンが「この visit の患者」のものなら氏名入りで
             # 案内する。担当外患者の旧トークン (= 別患者のステッカー誤読) では

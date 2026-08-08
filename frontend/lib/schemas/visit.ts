@@ -34,6 +34,8 @@ export const visitBaseSchema = z.object({
   type: z.string().default('regular'),
   status: z.string().default('planned'),
   source: z.string().default('manual'),
+  // 週のピン (青ピン / PO 決定 2026-08-09)。source と独立の軸 (migration 0066)。
+  week_pinned: z.boolean().optional(),
   note: z.string().nullable().optional(),
   kaipoke_id: z.string().nullable().optional(),
 });

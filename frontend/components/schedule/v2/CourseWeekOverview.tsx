@@ -78,6 +78,8 @@ export interface WeekOverviewVisit {
    * 'manual_week' = 今週固定。欠落は非表示 (寛容)。
    */
   source?: string | null;
+  /** 週のピン (青ピン / 2026-08-09)。source と独立のフラグ。 */
+  week_pinned?: boolean | null;
   /** 患者の緯度経度 (距離算出用). null = 未登録 → 距離は出さない. */
   lat?: number | null;
   lng?: number | null;

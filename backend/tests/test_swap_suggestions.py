@@ -99,7 +99,9 @@ async def _seed_course(db, *, office: Office, staff: Staff, weekday: int, code: 
     return course
 
 
-async def _seed_visit(db, *, patient: Patient, course: Course, weekday: int, start: time, end: time) -> Visit:
+async def _seed_visit(
+    db, *, patient: Patient, course: Course, weekday: int, start: time, end: time
+) -> Visit:
     visit = Visit(
         patient_id=patient.id,
         visit_date=date.fromordinal(WEEK_MONDAY.toordinal() + weekday),
@@ -179,14 +181,24 @@ async def _swap_scenario(
     cb = await _seed_course(db, office=office, staff=s2, weekday=y_weekday, code="B")
     bb1 = await _seed_patient(db, office=office, code="BB1", lat=BASE[0], lng=BASE[1])
     bb2 = await _seed_patient(db, office=office, code="BB2", lat=BASE[0], lng=BASE[1])
-    await _seed_visit(db, patient=bb1, course=cb, weekday=y_weekday, start=time(9, 30), end=time(10, 0))
-    await _seed_visit(db, patient=y, course=cb, weekday=y_weekday, start=time(10, 30), end=time(11, 0))
-    await _seed_visit(db, patient=bb2, course=cb, weekday=y_weekday, start=time(11, 15), end=time(11, 45))
+    await _seed_visit(
+        db, patient=bb1, course=cb, weekday=y_weekday, start=time(9, 30), end=time(10, 0)
+    )
+    await _seed_visit(
+        db, patient=y, course=cb, weekday=y_weekday, start=time(10, 30), end=time(11, 0)
+    )
+    await _seed_visit(
+        db, patient=bb2, course=cb, weekday=y_weekday, start=time(11, 15), end=time(11, 45)
+    )
 
     await _seed_pfv(db, patient=x, weekday=0, start=time(10, 30), movability=x_movability)
     await _seed_pfv(
-        db, patient=y, weekday=y_weekday, start=time(10, 30),
-        movability=y_movability, is_pinned=y_is_pinned,
+        db,
+        patient=y,
+        weekday=y_weekday,
+        start=time(10, 30),
+        movability=y_movability,
+        is_pinned=y_is_pinned,
     )
     await db.commit()
     return office, x, y
@@ -295,9 +307,7 @@ async def test_swap_cross_weekday_ok_when_both_day_flexible(db) -> None:
 
 @pytest.mark.asyncio
 async def test_swap_same_weekday_both_unknown_requires_confirmation(db) -> None:
-    _office, x, _y = await _swap_scenario(
-        db, x_movability="unknown", y_movability="unknown"
-    )
+    _office, x, _y = await _swap_scenario(db, x_movability="unknown", y_movability="unknown")
     suggestions, _summary = await find_improvement_candidates(
         db, patient=x, iso_year=ISO_YEAR, iso_week=ISO_WEEK
     )
@@ -310,11 +320,7 @@ async def test_swap_same_weekday_both_unknown_requires_confirmation(db) -> None:
 @pytest.mark.asyncio
 async def test_swap_dismissed_fingerprint_excluded(db) -> None:
     _office, x, _y = await _swap_scenario(db)
-    db.add(
-        SuggestionDismissal(
-            patient_id=x.id, kind="swap", target_weekday=0, reason="other"
-        )
-    )
+    db.add(SuggestionDismissal(patient_id=x.id, kind="swap", target_weekday=0, reason="other"))
     await db.commit()
 
     suggestions, _summary = await find_improvement_candidates(
@@ -328,11 +334,7 @@ async def test_swap_y_dismissed_fingerprint_excluded(db) -> None:
     """Y 側の却下指紋 (y_pid, 'swap', wy) で該当スワップが除外される (テスト空隙 a)."""
     _office, x, y = await _swap_scenario(db)
     # Y の現在曜日 (wy=0) に対して Y 側で swap 却下.
-    db.add(
-        SuggestionDismissal(
-            patient_id=y.id, kind="swap", target_weekday=0, reason="other"
-        )
-    )
+    db.add(SuggestionDismissal(patient_id=y.id, kind="swap", target_weekday=0, reason="other"))
     await db.commit()
 
     suggestions, _summary = await find_improvement_candidates(
@@ -345,7 +347,9 @@ async def test_swap_y_dismissed_fingerprint_excluded(db) -> None:
 @pytest.mark.asyncio
 async def test_swap_skipped_when_x_already_has_pfv_on_target_weekday(db) -> None:
     """X が月(0)と水(2)に PFV を持つとき、水の Y との月→水スワップは提案されない (MEDIUM-1)."""
-    _office, x, _y = await _swap_scenario(db, x_movability="day_flexible", y_movability="day_flexible", y_weekday=2)
+    _office, x, _y = await _swap_scenario(
+        db, x_movability="day_flexible", y_movability="day_flexible", y_weekday=2
+    )
     # X に水曜(2)の追加 PFV を追加する (既存 月曜 PFV はシナリオ内で作成済み).
     await _seed_pfv(db, patient=x, weekday=2, start=time(14, 0), movability="day_flexible")
     await db.commit()
@@ -365,9 +369,7 @@ async def test_swap_skipped_when_x_already_has_pfv_on_target_weekday(db) -> None
 @pytest.mark.asyncio
 async def test_swap_within_preference_one_side_only_that_side_confirmed(db) -> None:
     """同曜日・双方 unknown で X だけ希望内 → X は確認不要、Y だけ要確認 (層 2 片側適用)."""
-    _office, x, _y = await _swap_scenario(
-        db, x_movability="unknown", y_movability="unknown"
-    )
+    _office, x, _y = await _swap_scenario(db, x_movability="unknown", y_movability="unknown")
     # X の希望に月(0) 終日を登録 → X の新位置 (月, 10:30) が希望内になる.
     x.weekly_pattern = {"entries": [{"weekday": 0, "time_type": None}]}
     await db.commit()
@@ -449,8 +451,12 @@ async def _apply_pfv_pair(
     a = await _seed_patient(db, office=office, code="AA", lat=BASE[0], lng=BASE[1])
     b = await _seed_patient(db, office=office, code="BB", lat=FAR[0], lng=FAR[1])
     await _seed_pfv(
-        db, patient=a, weekday=a_weekday, start=a_start,
-        movability="day_flexible", is_pinned=a_pinned,
+        db,
+        patient=a,
+        weekday=a_weekday,
+        start=a_start,
+        movability="day_flexible",
+        is_pinned=a_pinned,
     )
     await _seed_pfv(db, patient=b, weekday=b_weekday, start=b_start, movability="day_flexible")
     await db.commit()
@@ -498,7 +504,11 @@ async def test_apply_swap_pinned_is_422_and_rolls_back(client, db) -> None:
     """片方が pinned なら 422 で、両患者の PFV は一切変わらない (全 rollback)."""
     admin = await _make_admin(db, email="sw-a2@example.com")
     a, b = await _apply_pfv_pair(
-        db, a_weekday=0, a_start=time(10, 30), b_weekday=2, b_start=time(9, 0),
+        db,
+        a_weekday=0,
+        a_start=time(10, 30),
+        b_weekday=2,
+        b_start=time(9, 0),
         a_pinned=True,
     )
 
@@ -645,14 +655,24 @@ async def test_apply_swap_omitted_b_course_retains_existing(client, db) -> None:
     a = await _seed_patient(db, office=office, code="CTA", lat=BASE[0], lng=BASE[1])
     b = await _seed_patient(db, office=office, code="CTB", lat=FAR[0], lng=FAR[1])
     pfv_a = PatientFixedVisit(
-        patient_id=a.id, mode="normal", weekday=0, slot_index=0,
-        start_time=time(10, 30), duration_min=30,
-        movability="day_flexible", is_pinned=False,
+        patient_id=a.id,
+        mode="normal",
+        weekday=0,
+        slot_index=0,
+        start_time=time(10, 30),
+        duration_min=30,
+        movability="day_flexible",
+        is_pinned=False,
     )
     pfv_b = PatientFixedVisit(
-        patient_id=b.id, mode="normal", weekday=2, slot_index=0,
-        start_time=time(9, 0), duration_min=30,
-        movability="day_flexible", is_pinned=False,
+        patient_id=b.id,
+        mode="normal",
+        weekday=2,
+        slot_index=0,
+        start_time=time(9, 0),
+        duration_min=30,
+        movability="day_flexible",
+        is_pinned=False,
         course_template_id=ct.id,  # B は既存コースを持つ
     )
     db.add_all([pfv_a, pfv_b])
@@ -703,14 +723,24 @@ async def test_apply_swap_explicit_b_course_overwrites(client, db) -> None:
     a = await _seed_patient(db, office=office, code="CTA2", lat=BASE[0], lng=BASE[1])
     b = await _seed_patient(db, office=office, code="CTB2", lat=FAR[0], lng=FAR[1])
     pfv_a = PatientFixedVisit(
-        patient_id=a.id, mode="normal", weekday=0, slot_index=0,
-        start_time=time(10, 30), duration_min=30,
-        movability="day_flexible", is_pinned=False,
+        patient_id=a.id,
+        mode="normal",
+        weekday=0,
+        slot_index=0,
+        start_time=time(10, 30),
+        duration_min=30,
+        movability="day_flexible",
+        is_pinned=False,
     )
     pfv_b = PatientFixedVisit(
-        patient_id=b.id, mode="normal", weekday=2, slot_index=0,
-        start_time=time(9, 0), duration_min=30,
-        movability="day_flexible", is_pinned=False,
+        patient_id=b.id,
+        mode="normal",
+        weekday=2,
+        slot_index=0,
+        start_time=time(9, 0),
+        duration_min=30,
+        movability="day_flexible",
+        is_pinned=False,
         course_template_id=ct_old.id,
     )
     db.add_all([pfv_a, pfv_b])

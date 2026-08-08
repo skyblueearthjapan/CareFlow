@@ -100,9 +100,7 @@ async def _resolve_course_template_id(
         return None
     # 0059: 拠点マスタ (offices.short_label) 駆動で短縮名を解決する.
     office_rows = (
-        await db.execute(
-            select(Office.code, Office.short_label).where(Office.deleted_at.is_(None))
-        )
+        await db.execute(select(Office.code, Office.short_label).where(Office.deleted_at.is_(None)))
     ).all()
     _, short_to_code = build_office_code_short_maps(
         (row.code, row.short_label) for row in office_rows

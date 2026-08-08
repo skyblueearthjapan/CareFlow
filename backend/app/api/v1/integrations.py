@@ -2084,21 +2084,15 @@ async def events_inbound_preview(
         result = await fetch_week_tasks(kaipoke, payload.week_start, credentials)
     except KaipokeBusyError as exc:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy"
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
     except (KaipokeApiError, EventsFetchError) as exc:
         job.status = "failed"
         job.completed_at = datetime.now(UTC)
         job.result_summary = {"error": str(exc)}
         await _commit_or_409(db)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
-    plan = await build_events_plan(
-        db, week_start=payload.week_start, tasks=result["tasks"]
-    )
+    plan = await build_events_plan(db, week_start=payload.week_start, tasks=result["tasks"])
 
     adds = sum(1 for c in plan.changes if c.action == "add")
     updates = sum(1 for c in plan.changes if c.action == "update")
@@ -2350,18 +2344,14 @@ async def replace_inbound(
     except KaipokeBusyError as exc:
         # busy = 単一スロットの一時的な競合 (リトライで解消) → 監査記録は残さない。
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy"
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
     except KaipokeApiError as exc:
         # API エラー = 恒常的な障害の可能性 → failed ジョブとして記録し調査可能にする。
         job.status = "failed"
         job.completed_at = datetime.now(UTC)
         job.result_summary = {"error": str(exc)}
         await _commit_or_409(db)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
     entries = parse_csv_from_content(csv_content, "kaipoke")
     if not entries:
@@ -2584,17 +2574,13 @@ async def smart_inbound_preview(
         )
     except KaipokeBusyError as exc:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy"
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
     except KaipokeApiError as exc:
         job.status = "failed"
         job.completed_at = datetime.now(UTC)
         job.result_summary = {"error": str(exc)}
         await _commit_or_409(db)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
     entries = parse_csv_from_content(csv_content, "kaipoke")
     if not entries:
@@ -2724,9 +2710,7 @@ async def smart_inbound_apply(
             ) from exc
         except KaipokeApiError as exc:
             await db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
-            ) from exc
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
         entries = parse_csv_from_content(csv_content, "kaipoke")
         if not entries:
             await db.rollback()
@@ -2828,11 +2812,19 @@ async def smart_inbound_apply(
             created_by_user_id=user.id,
         )
         job.result_summary = {
-            "diff": diff_result.model_dump(include={"cancelled", "updated", "added", "skipped", "failed"})
+            "diff": diff_result.model_dump(
+                include={"cancelled", "updated", "added", "skipped", "failed"}
+            )
             if diff_result
             else None,
             "replace": replace_read.model_dump(
-                include={"wiped", "inserted", "temp_courses", "courses_reassigned", "courses_created"}
+                include={
+                    "wiped",
+                    "inserted",
+                    "temp_courses",
+                    "courses_reassigned",
+                    "courses_created",
+                }
             )
             if replace_read
             else None,

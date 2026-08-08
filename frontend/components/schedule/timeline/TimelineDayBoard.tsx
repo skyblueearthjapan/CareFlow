@@ -279,10 +279,12 @@ function CardPinControls({
   const redDisabledReason = masterDivergenceTitle(visit) ?? '先に固定枠登録が必要';
   const label = visit.patient_name ?? visit.patient_id;
   // 共通のボタン意匠: × 削除と同寸 (15px)。ON 側は常時表示、OFF 側はホバー出現。
+  // PO 指摘 (2026-08-09): 刺さっている側のトグルを常時表示にすると、右上の画鋲と
+  // 「同じ色のピンが 2 つ」見えて紛らわしく、住所行にも被る。状態表示は右上の
+  // 画鋲に一本化し、操作は × 削除と同じ「ホバーで出現」に統一する。
   const btnBase =
     'grid h-[15px] w-[15px] place-items-center rounded-full border border-transparent bg-bg-base/80 leading-none transition-opacity focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1';
-  const revealOff =
-    'opacity-0 group-focus-within:opacity-60 group-hover:opacity-60 hover:opacity-100';
+  const reveal = 'opacity-0 group-focus-within:opacity-70 group-hover:opacity-70 hover:opacity-100';
   return (
     <span
       className="absolute bottom-0.5 right-[19px] z-[3] flex items-center gap-0.5"
@@ -327,8 +329,8 @@ function CardPinControls({
               className={cn(
                 btnBase,
                 'hover:border-error hover:bg-error-bg focus-visible:ring-error',
-                isPinned ? 'opacity-100' : revealOff,
-                redDisabled && 'cursor-not-allowed opacity-0 group-hover:opacity-25',
+                reveal,
+                redDisabled && 'cursor-not-allowed group-hover:opacity-25',
               )}
             >
               {isPinned ? (
@@ -360,7 +362,7 @@ function CardPinControls({
           className={cn(
             btnBase,
             'hover:border-info hover:bg-info-bg focus-visible:ring-info',
-            isWeekOnly ? 'opacity-100' : revealOff,
+            reveal,
           )}
         >
           {isWeekOnly ? (
@@ -562,7 +564,10 @@ function VisitCard({
   if (visit.patient_sex_restriction_label) pills.push(visit.patient_sex_restriction_label);
   if (isMulti) pills.push('2名');
   if (visit.same_address_group_id) pills.push('📍同住所');
+  // 「今週のみ」チップ = 型に未反映のこの週だけの配置 (source ベース・従来どおり)。
   const isWeekOnly = visit.source === 'manual_week';
+  // 週のピン (青ピン) = フラグ or 旧方式 manual_week の和集合 (PO 決定 2026-08-09)。
+  const isWeekPinned = visit.week_pinned === true || isWeekOnly;
   // 同行モード中はカードクリック=選択トグル (選択済みコース内は個別不可)。
   const accClick = accActive
     ? accInCourse
@@ -656,9 +661,9 @@ function VisitCard({
           className={cn(
             'absolute top-0.5 z-[3] max-w-[70%] truncate rounded-full bg-info-bg px-1 text-[8.5px] font-bold text-info',
             // 画鋲の本数ぶん左へ避ける (赤+青の 2 本 → さらに左)。
-            visit.is_pinned && isWeekOnly
+            visit.is_pinned && isWeekPinned
               ? 'right-[34px]'
-              : visit.is_pinned || isWeekOnly
+              : visit.is_pinned || isWeekPinned
                 ? 'right-[16px]'
                 : 'right-0.5',
           )}
@@ -673,7 +678,7 @@ function VisitCard({
           刺さっていれば 2 本並べる — 青は赤の左隣 (先に青を仕込んでから一括赤解除する
           運用があるため、併存は正常な状態)。 */}
       {visit.is_pinned && <CornerPushPin />}
-      {isWeekOnly && (
+      {isWeekPinned && (
         <CornerWeekPushPin className={visit.is_pinned ? 'right-[14px] translate-x-0' : undefined} />
       )}
       {/* 1行目: アイコン + 患者名 (名前に行を専有させフル表示。切れにくくする)。 */}
@@ -771,7 +776,7 @@ function VisitCard({
       {!isCancelled && height >= TL_SHOW_DELETE_PX && (onTogglePin || onToggleWeekPin) && (
         <CardPinControls
           visit={visit}
-          isWeekOnly={isWeekOnly}
+          isWeekOnly={isWeekPinned}
           onTogglePin={onTogglePin}
           onToggleWeekPin={onToggleWeekPin}
         />

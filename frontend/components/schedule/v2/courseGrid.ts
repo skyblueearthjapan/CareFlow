@@ -233,6 +233,12 @@ export interface CourseGridVisit {
    */
   master_start_time?: string | null;
   /**
+   * 週のピン (青ピン / PO 決定 2026-08-09)。true = 今週この位置のまま動かさない。
+   * source とは独立の軸 (import の訪問にも刺せる・掛け外しで出所は失われない)。
+   * 表示・トグルの判定は week_pinned === true || source === 'manual_week' の和集合。
+   */
+  week_pinned?: boolean | null;
+  /**
    * Wave U-2: visit のソース (入力チャネル).
    * 'manual_week' = この週だけの配置 (型に未反映)。「今週のみ」チップを出す根拠。
    * 欠落 / その他の値ではチップを出さない (寛容)。

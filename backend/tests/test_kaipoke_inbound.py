@@ -677,9 +677,7 @@ async def test_add_with_unresolved_staff_defaults_off(client, db, stub_kaipoke) 
 
 
 @pytest.mark.asyncio
-async def test_name_spacing_mismatch_produces_edit_not_delete_add(
-    client, db, stub_kaipoke
-) -> None:
+async def test_name_spacing_mismatch_produces_edit_not_delete_add(client, db, stub_kaipoke) -> None:
     """氏名の空白違い (半角/全角) でも同一人物に束ね、edit として検出する。
 
     正規化前はカイポケ「山田 花子」(半角) と CareFlow「山田　花子」(全角) が

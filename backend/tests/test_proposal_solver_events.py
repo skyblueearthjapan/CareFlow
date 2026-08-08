@@ -147,9 +147,9 @@ def test_slot_fits_exact_respects_events() -> None:
     cand = Candidate(*BASE, service_minutes=30, time_type="終日", patient_id="X")
     soft = [EventWindow(start=time(10, 0), end=time(11, 0), title="会議")]
     hard = [EventWindow(start=time(10, 0), end=time(11, 0), title="重要", blocking=True)]
-    assert not slot_fits_exact(
-        [], cand, time(10, 0), lunch_window=None, event_windows=soft
-    ), "全イベント強制でイベント中のTは不可"
+    assert not slot_fits_exact([], cand, time(10, 0), lunch_window=None, event_windows=soft), (
+        "全イベント強制でイベント中のTは不可"
+    )
     assert slot_fits_exact(
         [], cand, time(10, 0), lunch_window=None, event_windows=soft, enforce_soft_events=False
     ), "ソフトのみ・非強制なら許容 (フォールバック相当)"

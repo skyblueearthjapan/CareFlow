@@ -150,11 +150,7 @@ def test_movability_backfill_locked_for_pinned(upgraded_engine) -> None:
     """backfill: is_pinned=true の行は locked, それ以外は unknown."""
     engine, _ = upgraded_engine
     with engine.begin() as conn:
-        rows = dict(
-            conn.execute(
-                sa.text("SELECT id, movability FROM patient_fixed_visits")
-            ).all()
-        )
+        rows = dict(conn.execute(sa.text("SELECT id, movability FROM patient_fixed_visits")).all())
     assert rows["pfv-pinned"] == "locked", f"pinned 行は locked のはず: {rows}"
     assert rows["pfv-free"] == "unknown", f"非pinned 行は unknown のはず: {rows}"
 
@@ -292,9 +288,7 @@ def test_suggestion_dismissals_cascade_on_patient_delete(upgraded_engine) -> Non
         conn.execute(sa.text("PRAGMA foreign_keys = ON"))
         conn.execute(sa.text("DELETE FROM patients WHERE id='p1'"))
     with engine.begin() as conn:
-        cnt = conn.execute(
-            sa.text("SELECT COUNT(*) FROM suggestion_dismissals")
-        ).scalar()
+        cnt = conn.execute(sa.text("SELECT COUNT(*) FROM suggestion_dismissals")).scalar()
     assert cnt == 0, "patient 削除で dismissals が CASCADE されていない"
 
 
@@ -375,9 +369,7 @@ async def test_suggestion_dismissal_crud(db) -> None:
     await db.commit()
     await db.refresh(sd)
 
-    got = await db.scalar(
-        select(SuggestionDismissal).where(SuggestionDismissal.patient_id == p.id)
-    )
+    got = await db.scalar(select(SuggestionDismissal).where(SuggestionDismissal.patient_id == p.id))
     assert got is not None
     assert got.kind == "time_change"
     assert got.target_weekday == 3

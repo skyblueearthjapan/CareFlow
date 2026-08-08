@@ -267,9 +267,7 @@ def _bucket_capacity_blocked(
     ずらしは件数も使用分も一切変えず定員を空けないため、定員起因では退避先を他バケット限定に
     する (呼出側で ``exclude_same_bucket=True`` にする根拠)。
     """
-    max_patients = (
-        config.max_patients_per_course if config is not None else MAX_PATIENTS_PER_COURSE
-    )
+    max_patients = config.max_patients_per_course if config is not None else MAX_PATIENTS_PER_COURSE
     if len(bucket.visits) >= max_patients:
         return True
     used_minutes = _course_total_minutes_from_existing(_to_existing_visits(bucket), config=config)
@@ -844,9 +842,7 @@ async def search_unblock_plans(
         moves: list[UnblockMove], ps: ProposedSlot, *, frees_capacity: bool = False
     ) -> UnblockPlan:
         """plan を組み立て、影響コースの before/after スナップショット (W-13b) を付与する."""
-        plan = _make_plan(
-            moves, ps, candidate.existing_patient_id, frees_capacity=frees_capacity
-        )
+        plan = _make_plan(moves, ps, candidate.existing_patient_id, frees_capacity=frees_capacity)
         courses = _build_plan_courses(
             plan.moves,
             plan.insert,

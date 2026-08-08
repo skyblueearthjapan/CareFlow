@@ -1062,6 +1062,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         master_start_time: masterStartTime,
         // Wave U-2: 「今週のみ」チップの根拠 (source='manual_week' でチップ表示).
         source: (v as { source?: string | null }).source ?? null,
+        // 週のピン (青ピン / 2026-08-09): source と独立のフラグ。
+        week_pinned: (v as { week_pinned?: boolean | null }).week_pinned ?? null,
         // R-2: キャンセル表示 ('cancelled' のとき grey + 打消し線 + バッジ).
         status: (v as { status?: string | null }).status ?? null,
         // T-1 縦タイムライン: 実時刻 (時間比例描画) + 患者性別 (カード地色).
@@ -2708,6 +2710,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           // G2/G3: 日リストの × (訪問削除) と「今週のみ」チップ (固定昇格) の根拠.
           visit_id: cv.id,
           source: cv.source ?? null,
+          week_pinned: cv.week_pinned ?? null,
           // T-6撤去: 旧テーブルの ①/② バッジと「相方: ...」注記を日リストへ移設.
           group_slot_label: cv.group_slot_label,
           partner_location: cv.partner_location ?? null,

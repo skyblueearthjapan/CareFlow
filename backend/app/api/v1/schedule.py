@@ -2391,12 +2391,12 @@ async def _build_stage_mobilization_notices(
     """
     committed_set = set(l3_result.committed_course_ids)
     mobilized = [
-        a for a in l3_result.assignments
+        a
+        for a in l3_result.assignments
         if a.via == "manager_mobilized" and a.course_id in committed_set
     ]
     cross = [
-        a for a in l3_result.assignments
-        if a.via == "cross_office" and a.course_id in committed_set
+        a for a in l3_result.assignments if a.via == "cross_office" and a.course_id in committed_set
     ]
     swaps = [s for s in l3_result.rescue_swaps if s.course_id in committed_set]
     if not mobilized and not cross and not swaps:
@@ -2424,9 +2424,9 @@ async def _build_stage_mobilization_notices(
         course_office_map = {c.id: c.office_id for c in crows}
 
     # ----- Office 名を bulk load (course 拠点 + staff 所属拠点) -----
-    office_ids: set[UUID] = {
-        oid for oid in course_office_map.values() if oid is not None
-    } | {oid for oid in staff_office_map.values() if oid is not None}
+    office_ids: set[UUID] = {oid for oid in course_office_map.values() if oid is not None} | {
+        oid for oid in staff_office_map.values() if oid is not None
+    }
     office_name_map: dict[UUID, str] = {}
     if office_ids:
         orows = (await db.scalars(select(Office).where(Office.id.in_(list(office_ids))))).all()

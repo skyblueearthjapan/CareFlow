@@ -43,6 +43,8 @@ class VisitBase(BaseModel):
     type: str
     status: str = "planned"
     source: str = "manual"
+    # 週のピン (青ピン / PO 決定 2026-08-09)。source とは独立の軸。
+    week_pinned: bool = False
     note: str | None = None
     kaipoke_id: str | None = None
 

@@ -102,9 +102,7 @@ class ReplaceResult:
     courses_created: int = 0
 
 
-async def _count_week_achievements(
-    db: AsyncSession, visit_ids: list[uuid.UUID]
-) -> int:
+async def _count_week_achievements(db: AsyncSession, visit_ids: list[uuid.UUID]) -> int:
     """対象訪問に紐づく実績 (打刻) の件数。写真/レビューは checkin 起点のため
     checkin の存在確認で実績週を検出できる。"""
     if not visit_ids:
@@ -350,7 +348,7 @@ async def replace_week_from_kaipoke(
             continue
         regular_templates_by_office.setdefault(t.office_id, []).append(t)
     for tlst in regular_templates_by_office.values():
-        tlst.sort(key=lambda t: (t.label or ""))
+        tlst.sort(key=lambda t: t.label or "")
 
     course_plan: dict[tuple[int, uuid.UUID, uuid.UUID], Course] = {}
     reassignments: list[tuple[Course, uuid.UUID]] = []
@@ -470,9 +468,7 @@ async def replace_week_from_kaipoke(
             async with db.begin_nested():
                 db.add(new_visit)
                 await db.flush()
-                await _replace_assignments(
-                    db, new_visit, [s for s in (sid, sid2) if s is not None]
-                )
+                await _replace_assignments(db, new_visit, [s for s in (sid, sid2) if s is not None])
                 if accompaniment_sid2 is not None:
                     db.add(
                         TraineeAccompaniment(

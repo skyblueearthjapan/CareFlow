@@ -204,7 +204,7 @@ function VisitRow({
           <WeekPinToggleButton
             visitId={v.visit_id}
             patientName={v.patient_name}
-            source={v.source ?? null}
+            isWeekPinned={v.week_pinned === true || v.source === 'manual_week'}
             rowKey={v.key}
             onToggleWeekPin={onToggleWeekPin}
           />
@@ -599,61 +599,45 @@ export function TimelineDayList({
 }
 
 /**
- * 週のピン (青) のトグル — 日リスト行用 (PO 決定 2026-08-08)。
+ * 週のピン (青) のトグル — 日リスト行用 (PO 決定 2026-08-08〜09)。
  *
  * 赤 (PinToggleButton) の右隣に並ぶ。見分け:
  *   - 赤 = 型のピン。毎週。スコープメニュー付き (▾)。
  *   - 青 = 週のピン。今週だけ。単純トグル。
  *
- * 型の管理下に無い source ('manual' 手動作成 / 'import' カイポケ取込) は BE が
- * 422 で弾くため、押させずに理由を tooltip で伝える。
+ * 実体は visits.week_pinned フラグ。source と独立なので、カイポケ取込 (import) や
+ * 手動作成 (manual) にも掛け外しできる (出所は失われない・2026-08-09 にゲート撤廃)。
  */
 function WeekPinToggleButton({
   visitId,
   patientName,
-  source,
+  isWeekPinned,
   rowKey,
   onToggleWeekPin,
 }: {
   visitId: string;
   patientName: string;
-  source: string | null;
+  isWeekPinned: boolean;
   rowKey: string;
   onToggleWeekPin: NonNullable<TimelineDayListProps['onToggleWeekPin']>;
 }) {
-  const isWeekPinned = source === 'manual_week';
-  // BE の _WEEK_PIN_TOGGLEABLE_SOURCES と対 (型の管理下にある source のみ掛け外し可)。
-  const toggleable =
-    isWeekPinned ||
-    source === null ||
-    ['auto', 'auto_alloc', 'auto_alloc_v2', 'auto_alloc_v2w', 'pfv', 'fixed', 'reset_v2'].includes(
-      source,
-    );
   return (
     <button
       type="button"
-      disabled={!toggleable}
       data-testid={`tdl-week-pin-btn-${rowKey}`}
       data-week-pinned={isWeekPinned ? 'true' : 'false'}
       aria-pressed={isWeekPinned}
       aria-label={
-        isWeekPinned
-          ? `${patientName} の今週の固定を解除`
-          : toggleable
-            ? `${patientName} を今週この時刻で固定`
-            : `${patientName} は手動作成・取込の訪問のため今週固定の対象外です`
+        isWeekPinned ? `${patientName} の今週の固定を解除` : `${patientName} を今週この時刻で固定`
       }
       title={
-        !toggleable
-          ? '手動作成・取込の訪問は今週固定の対象外です'
-          : isWeekPinned
-            ? '今週の固定を解除します（この場では動きません。次の週生成で固定訪問スケジュールの時刻が読み込まれます）'
-            : '今週この時刻で固定します（固定訪問スケジュールは変更しません）'
+        isWeekPinned
+          ? '今週の固定を解除します（この場では動きません。次の週生成で固定訪問スケジュールの時刻が読み込まれます）'
+          : '今週この時刻で固定します（固定訪問スケジュールは変更しません）'
       }
       className={cn(
         'inline-flex shrink-0 items-center justify-center rounded px-1 py-0.5 leading-none',
         isWeekPinned ? 'text-info hover:bg-info-bg' : 'text-text-muted hover:bg-bg-muted',
-        !toggleable && 'cursor-not-allowed opacity-30',
       )}
       onClick={() => onToggleWeekPin(visitId, !isWeekPinned)}
     >

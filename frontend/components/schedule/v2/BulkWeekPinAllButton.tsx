@@ -14,6 +14,10 @@
  * 件数は BE の dry_run で取る (赤はクライアント側で全 PFV を fetch して数えるが、
  * 青は週の visits が対象で BE に集約済みのため 1 リクエストで済む)。
  *
+ * PO 決定 2026-08-09: 実体が visits.week_pinned フラグになり、カイポケ取込 (import)
+ * を含む planned 全件が対象になった (取込週で 119 件中 5 件しか固定されない問題の解消)。
+ * 解除しても取込の出所 (source='import') は失われず、取込の保護は続く。
+ *
  * 解除の確認には「次の週生成で固定訪問スケジュールの時刻に戻る」ことを明示する
  * (黙って戻ると「勝手に動く」の再来になるため)。
  */
@@ -95,7 +99,7 @@ export function BulkWeekPinAllButton({ canEdit, isoYear, isoWeek }: BulkWeekPinA
       toast.success(
         target
           ? `${res.updated_count} 件を今週固定しました（固定訪問スケジュールは変更していません）`
-          : `${res.updated_count} 件の今週固定を解除しました（次の週生成で固定訪問スケジュールの時刻に戻ります）`,
+          : `${res.updated_count} 件の今週固定を解除しました（型の管理下の訪問は次の週生成で型の時刻に戻ります）`,
       );
       closeDialog();
     } catch (e) {
@@ -172,7 +176,8 @@ export function BulkWeekPinAllButton({ canEdit, isoYear, isoWeek }: BulkWeekPinA
                     <span className="font-semibold"> {targetCount} 件 </span>
                     を解除します。
                     <span className="font-semibold text-warning">
-                      解除した訪問は、次に週生成を実行したとき固定訪問スケジュールの時刻に戻ります。
+                      解除後、型の管理下にある訪問は次の週生成で固定訪問スケジュールの時刻に戻ります
+                      （カイポケ取込分は取込内容のまま残ります）。
                     </span>
                     続行しますか?
                   </>

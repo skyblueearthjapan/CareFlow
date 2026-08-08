@@ -419,9 +419,7 @@ def _course_token_dropdown_values(
     """
     office_code_by_id: dict[UUID, str] = {o.id: o.code for o in offices if o.code}
     # 0059: 拠点マスタ (offices.short_label) 駆動で短縮名を解決する.
-    code_to_short, _ = build_office_code_short_maps(
-        (o.code, o.short_label) for o in offices
-    )
+    code_to_short, _ = build_office_code_short_maps((o.code, o.short_label) for o in offices)
     by_office: dict[str, set[str]] = {}
     for ct in course_templates:
         code = office_code_by_id.get(ct.office_id)

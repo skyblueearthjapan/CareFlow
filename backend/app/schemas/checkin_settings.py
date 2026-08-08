@@ -93,11 +93,7 @@ class CheckinSettingsUpdate(BaseModel):
         片方のみ指定の場合は既存値とマージ後に API 側で最終検証するため、ここでは
         両方が明示指定 (非 NULL) のケースのみ弾く.
         """
-        if (
-            self.match_m is not None
-            and self.review_m is not None
-            and self.review_m < self.match_m
-        ):
+        if self.match_m is not None and self.review_m is not None and self.review_m < self.match_m:
             raise ValueError("review_m は match_m 以上である必要があります")
         return self
 

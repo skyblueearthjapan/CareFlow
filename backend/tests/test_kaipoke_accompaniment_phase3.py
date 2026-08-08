@@ -539,7 +539,9 @@ async def test_inbound_edit_multiple_trainees_membership(db) -> None:
 # --- D. 案B: 未リンク新人 staff2 の自動同行化 (edit / add / dry_run / 冪等) --------
 
 
-def _add_item(patient: Patient, *, staff1: str, staff2: str, start: str = "15:00") -> CorrectionSheetItem:
+def _add_item(
+    patient: Patient, *, staff1: str, staff2: str, start: str = "15:00"
+) -> CorrectionSheetItem:
     return CorrectionSheetItem(
         sheet_id=uuid.uuid4(),
         patient_id=patient.id,

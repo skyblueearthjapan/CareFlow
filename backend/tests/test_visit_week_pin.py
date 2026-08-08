@@ -1,25 +1,20 @@
 """週のピン (青ピン) — PATCH /api/v1/schedule/v2/visits/{visit_id}/week-pin
 
-PO 決定 2026-08-08 / 仕様: docs/plans/pin-and-movability-spec.md
+PO 決定 2026-08-08〜09 / 仕様: docs/plans/pin-and-movability-spec.md
 
-赤ピン (PFV.is_pinned) との違い:
-  - 赤ピンは **型** に対するもの。毎週効く。型と一致する訪問にしか刺せない。
-  - 青ピンは **今週の訪問** に対するもの。その週だけ効く。
-    **型とズレていても刺せる** — ズレた訪問を今の位置で守れるのはこちらだけ。
-
-実体は ``visit.source='manual_week'``。この値には既に「週生成の削除対象から除外」
-「再生成ループが当該 (patient, visit_date) を skip」という意味論があり、本機能は
-その入口を足すもの (DB 列の追加なし)。
+実体は ``visits.week_pinned`` フラグ (migration 0066)。source には触れないため、
+カイポケ取込 (import) の訪問にも掛け外しでき、解除しても出所は失われない。
+(旧方式は source='manual_week' への書き換えで、取込週では 119 件中 5 件しか
+固定できず、さらに一括解除が取込の保護を剥がす欠陥があった。)
 
 検証観点:
-  1. 青ピンを刺すと source='manual_week' になる
-  2. 型とズレていても刺せる (赤ピンとの決定的な違い)
-  3. 解除すると source='auto' に戻る。**その場では訪問を動かさない**
+  1. 青ピンを刺すと week_pinned=true (source は不変)
+  2. 型とズレていても刺せる / **import にも刺せる** (出所保持)
+  3. 解除でフラグが下りる。manual_week だけは source='auto' へ戻す。
+     **その場では訪問を動かさない**
   4. planned 以外は 422
-  5. 型の管理下に無い source ('manual' / 'import') は 422
-  6. audit_log に before/after が残る
-  7. RBAC: staff は不可
-  8. 冪等 (同じ値を 2 回送っても壊れない)
+  5. audit_log に before/after が残る
+  6. RBAC: staff は不可 / 冪等
 """
 
 from __future__ import annotations
@@ -70,6 +65,7 @@ async def _make_visit(
     source: str = "auto",
     status_value: str = "planned",
     start: time = time(10, 25),
+    week_pinned: bool = False,
 ) -> Visit:
     v = Visit(
         patient_id=patient.id,
@@ -79,6 +75,7 @@ async def _make_visit(
         type="regular",
         status=status_value,
         source=source,
+        week_pinned=week_pinned,
     )
     db.add(v)
     await db.commit()
@@ -105,10 +102,12 @@ async def test_week_pin_sets_manual_week(client, db) -> None:
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["pinned"] is True
-    assert body["source"] == "manual_week"
+    # フラグ方式: source は不変 (出所を保持)。
+    assert body["source"] == "auto"
 
     await db.refresh(visit)
-    assert visit.source == "manual_week"
+    assert visit.week_pinned is True
+    assert visit.source == "auto"
 
 
 @pytest.mark.asyncio
@@ -144,7 +143,8 @@ async def test_week_pin_works_even_when_diverged_from_master(client, db) -> None
     assert res.json()["pinned"] is True
 
     await db.refresh(visit)
-    assert visit.source == "manual_week"
+    assert visit.week_pinned is True
+    assert visit.source == "auto"
     # 訪問の時刻は動かさない (ズレたまま今の位置で固定する、が青ピンの意味).
     assert visit.start_time == time(10, 25)
 
@@ -162,7 +162,9 @@ async def test_week_pin_release_restores_auto_without_moving(client, db) -> None
     """
     admin = await _make_user(db, email="wp-3@example.com", role="admin")
     patient = await _make_patient(db, code="WP-3")
-    visit = await _make_visit(db, patient=patient, source="manual_week", start=time(10, 25))
+    visit = await _make_visit(
+        db, patient=patient, source="manual_week", start=time(10, 25), week_pinned=True
+    )
 
     res = await client.patch(
         _WEEK_PIN_URL.format(vid=visit.id),
@@ -174,6 +176,7 @@ async def test_week_pin_release_restores_auto_without_moving(client, db) -> None
     assert res.json()["source"] == "auto"
 
     await db.refresh(visit)
+    assert visit.week_pinned is False
     assert visit.source == "auto"
     # 解除しただけでは動かない.
     assert visit.start_time == time(10, 25)
@@ -204,24 +207,27 @@ async def test_week_pin_rejects_non_planned(client, db) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["manual", "import"])
-async def test_week_pin_rejects_sources_outside_master_control(client, db, source: str) -> None:
-    """型の管理下に無い source は対象外.
+async def test_week_pin_allows_import_and_manual_keeping_source(client, db, source: str) -> None:
+    """PO 決定 (2026-08-09): import / manual にも刺せる。source は不変 = 出所保持。
 
-    'manual' (毎週の手動作成) / 'import' (カイポケ取込) は週生成でも消えないため、
-    青ピンの掛け外しに意味が無い。勝手に source を書き換えると保護が変わってしまう。
+    往復 (刺す→外す) しても source が変わらないこと = 「一括解除がカイポケ週の
+    保護を剥がす」旧方式の欠陥が構造的に起きないことの確認。
     """
     admin = await _make_user(db, email=f"wp-5-{source}@example.com", role="admin")
     patient = await _make_patient(db, code=f"WP-5-{source}")
     visit = await _make_visit(db, patient=patient, source=source)
 
-    res = await client.patch(
-        _WEEK_PIN_URL.format(vid=visit.id),
-        headers=_bearer(admin),
-        json={"pinned": True},
-    )
-    assert res.status_code == 422, res.text
-    await db.refresh(visit)
-    assert visit.source == source
+    for pinned, expected_flag in ((True, True), (False, False)):
+        res = await client.patch(
+            _WEEK_PIN_URL.format(vid=visit.id),
+            headers=_bearer(admin),
+            json={"pinned": pinned},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["source"] == source
+        await db.refresh(visit)
+        assert visit.week_pinned is expected_flag
+        assert visit.source == source
 
 
 # ---------------------------------------------------------------------------
@@ -249,8 +255,8 @@ async def test_week_pin_writes_audit_log(client, db) -> None:
         )
     )
     assert row is not None
-    assert row.before == {"source": "auto"}
-    assert row.after == {"source": "manual_week"}
+    assert row.before == {"week_pinned": False, "source": "auto"}
+    assert row.after == {"week_pinned": True, "source": "auto"}
 
 
 @pytest.mark.asyncio
@@ -274,7 +280,7 @@ async def test_week_pin_is_idempotent(client, db) -> None:
     """同じ値を 2 回送っても壊れない (2 回目は no-op で 200)."""
     admin = await _make_user(db, email="wp-8@example.com", role="admin")
     patient = await _make_patient(db, code="WP-8")
-    visit = await _make_visit(db, patient=patient, source="manual_week")
+    visit = await _make_visit(db, patient=patient, source="auto", week_pinned=True)
 
     for _ in range(2):
         res = await client.patch(
@@ -283,7 +289,7 @@ async def test_week_pin_is_idempotent(client, db) -> None:
             json={"pinned": True},
         )
         assert res.status_code == 200, res.text
-        assert res.json()["source"] == "manual_week"
+        assert res.json()["pinned"] is True
 
 
 @pytest.mark.asyncio
@@ -307,8 +313,13 @@ _BULK_WEEK = {"iso_year": 2026, "iso_week": 36}
 
 
 @pytest.mark.asyncio
-async def test_bulk_week_pin_pins_all_toggleable(client, db) -> None:
-    """今週全件固定: 型の管理下の source だけが manual_week になり、対象外は据え置き."""
+async def test_bulk_week_pin_pins_all_planned_including_import(client, db) -> None:
+    """今週全件固定 (PO 決定 2026-08-09): import / manual を含む planned 全件が対象。
+
+    旧方式は import / manual を除外しており、カイポケ取込週では 119 件中 5 件しか
+    固定されなかった (PO 指摘)。フラグ方式では source を問わず固定でき、
+    source 自体は不変 = 出所を保持する。planned 以外だけが対象外。
+    """
     admin = await _make_user(db, email="wpb-1@example.com", role="admin")
     patient = await _make_patient(db, code="WPB-1")
     v_auto = await _make_visit(db, patient=patient, source="auto", start=time(9, 0))
@@ -322,37 +333,51 @@ async def test_bulk_week_pin_pins_all_toggleable(client, db) -> None:
     res = await client.post(_BULK_URL, headers=_bearer(admin), json={**_BULK_WEEK, "pinned": True})
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["target_count"] == 2
-    assert body["updated_count"] == 2
+    assert body["target_count"] == 4
+    assert body["updated_count"] == 4
 
-    for v, expected in [
-        (v_auto, "manual_week"),
-        (v_reset, "manual_week"),
-        (v_manual, "manual"),
-        (v_import, "import"),
-        (v_done, "auto"),
+    for v, expected_flag, expected_source in [
+        (v_auto, True, "auto"),
+        (v_reset, True, "reset_v2"),
+        (v_manual, True, "manual"),
+        (v_import, True, "import"),
+        (v_done, False, "auto"),  # planned 以外は対象外
     ]:
         await db.refresh(v)
-        assert v.source == expected, f"{v.start_time}: {v.source} != {expected}"
+        assert v.week_pinned is expected_flag, f"{v.start_time}: flag"
+        assert v.source == expected_source, f"{v.start_time}: source"
 
 
 @pytest.mark.asyncio
-async def test_bulk_week_pin_unpins_only_manual_week(client, db) -> None:
-    """今週全件解除: manual_week だけが auto に戻る。時刻は動かない."""
+async def test_bulk_week_pin_unpin_releases_flag_and_keeps_provenance(client, db) -> None:
+    """今週全件解除: フラグが下り、manual_week だけ auto へ。import の出所は無傷。
+
+    「一括解除がカイポケ週の保護を剥がす」旧方式の欠陥が起きないことの核心確認:
+    解除後も import は import のまま = 週生成の削除対象にならない。
+    """
     admin = await _make_user(db, email="wpb-2@example.com", role="admin")
     patient = await _make_patient(db, code="WPB-2")
-    v_pinned = await _make_visit(db, patient=patient, source="manual_week", start=time(9, 0))
-    v_manual = await _make_visit(db, patient=patient, source="manual", start=time(10, 0))
+    v_moved = await _make_visit(
+        db, patient=patient, source="manual_week", start=time(9, 0), week_pinned=True
+    )
+    v_import = await _make_visit(
+        db, patient=patient, source="import", start=time(10, 0), week_pinned=True
+    )
+    v_free = await _make_visit(db, patient=patient, source="manual", start=time(11, 0))
 
     res = await client.post(_BULK_URL, headers=_bearer(admin), json={**_BULK_WEEK, "pinned": False})
     assert res.status_code == 200, res.text
-    assert res.json()["updated_count"] == 1
+    assert res.json()["updated_count"] == 2
 
-    await db.refresh(v_pinned)
-    await db.refresh(v_manual)
-    assert v_pinned.source == "auto"
-    assert v_pinned.start_time == time(9, 0)  # 解除しても動かない
-    assert v_manual.source == "manual"
+    await db.refresh(v_moved)
+    await db.refresh(v_import)
+    await db.refresh(v_free)
+    assert v_moved.week_pinned is False
+    assert v_moved.source == "auto"  # この週だけの手動配置は型の管理へ戻す
+    assert v_moved.start_time == time(9, 0)  # 解除しても動かない
+    assert v_import.week_pinned is False
+    assert v_import.source == "import"  # 出所無傷 = 保護継続
+    assert v_free.week_pinned is False  # 元々未固定 (対象外)
 
 
 @pytest.mark.asyncio

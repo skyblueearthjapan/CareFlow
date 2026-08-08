@@ -108,9 +108,7 @@ def upgraded_engine(tmp_path: Path):
 
 def _movability_map(engine: sa.engine.Engine) -> dict[str, str]:
     with engine.begin() as conn:
-        return dict(
-            conn.execute(sa.text("SELECT id, movability FROM patient_fixed_visits")).all()
-        )
+        return dict(conn.execute(sa.text("SELECT id, movability FROM patient_fixed_visits")).all())
 
 
 # ---------------------------------------------------------------------------

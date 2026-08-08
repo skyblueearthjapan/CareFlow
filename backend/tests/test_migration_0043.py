@@ -55,9 +55,7 @@ def alembic_cfg() -> Config:
 
 def _load_migration_module() -> object:
     backend_root = Path(__file__).resolve().parent.parent
-    migration_path = (
-        backend_root / "alembic" / "versions" / "0043_checkin_max_inprogress.py"
-    )
+    migration_path = backend_root / "alembic" / "versions" / "0043_checkin_max_inprogress.py"
     spec = importlib.util.spec_from_file_location("migration_0043", migration_path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
@@ -108,9 +106,7 @@ def test_migration_0043_sqlite_roundtrip(tmp_path: Path) -> None:
 
     # NULL は許容。
     with engine.begin() as conn:
-        conn.execute(
-            sa.text("INSERT INTO checkin_settings (id, is_singleton) VALUES ('c1', 1)")
-        )
+        conn.execute(sa.text("INSERT INTO checkin_settings (id, is_singleton) VALUES ('c1', 1)"))
     # 範囲内 (240) は許容。
     with engine.begin() as conn:
         conn.execute(

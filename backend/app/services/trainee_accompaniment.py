@@ -357,9 +357,7 @@ async def resolve_accompaniment_trainees_by_visit(
     course_ids = {v.course_id for v in visits if v.course_id is not None}
 
     course_sets: dict[UUID, set[UUID]] = (
-        await resolve_accompaniment_trainee_by_course(db, list(course_ids))
-        if course_ids
-        else {}
+        await resolve_accompaniment_trainee_by_course(db, list(course_ids)) if course_ids else {}
     )
 
     direct_sets: dict[UUID, set[UUID]] = {}

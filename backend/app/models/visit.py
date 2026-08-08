@@ -114,6 +114,11 @@ class Visit(Base, TimestampMixin):
     )
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
 
+    # 週のピン (青ピン / PO 決定 2026-08-09)。true = 今週この位置のまま動かさない
+    # (週生成の削除対象外 + 当該患者日の再生成 skip)。source とは独立の軸で、
+    # 掛け外ししても出所 (import 等) は失われない (migration 0066)。
+    week_pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     kaipoke_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 

@@ -113,9 +113,7 @@ async def test_review_unknown_visit_404(client, db) -> None:
     admin = await _make_user(db, "rev-admin404@example.com", "admin")
     from uuid import uuid4
 
-    res = await client.post(
-        f"/api/v1/visits/{uuid4()}/review", json={}, headers=_bearer(admin)
-    )
+    res = await client.post(f"/api/v1/visits/{uuid4()}/review", json={}, headers=_bearer(admin))
     assert res.status_code == 404, res.text
 
 
@@ -259,9 +257,7 @@ async def test_two_staff_group_review_is_per_visit(client, db) -> None:
     assert _find(before, v_b.id).alert_level == ALERT_MISSING
 
     # 片方 (A) のみ review → A は抑制、B はトレイ残存。
-    res = await client.post(
-        f"/api/v1/visits/{v_a.id}/review", json={}, headers=_bearer(admin)
-    )
+    res = await client.post(f"/api/v1/visits/{v_a.id}/review", json={}, headers=_bearer(admin))
     assert res.status_code == 200, res.text
     partial = await build_monitor(db, TARGET, now=_utc(13, 30))
     assert _find(partial, v_a.id).alert_level == ALERT_NONE
@@ -270,9 +266,7 @@ async def test_two_staff_group_review_is_per_visit(client, db) -> None:
     assert _find(partial, v_b.id).reviewed is False
 
     # 両方 review → グループ全体が消える。
-    res_b = await client.post(
-        f"/api/v1/visits/{v_b.id}/review", json={}, headers=_bearer(admin)
-    )
+    res_b = await client.post(f"/api/v1/visits/{v_b.id}/review", json={}, headers=_bearer(admin))
     assert res_b.status_code == 200, res_b.text
     both = await build_monitor(db, TARGET, now=_utc(13, 30))
     assert _find(both, v_a.id).alert_level == ALERT_NONE

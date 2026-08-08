@@ -2303,15 +2303,11 @@ class Layer3Assigner:
             preserved_staff_ids = {a.staff_id for a in preserved_fixed}
 
             # 再解対象コース = 温存 fixed 以外の当該曜日全コース.
-            resolve_courses = [
-                c for c in day_courses if c.course_id not in preserved_course_ids
-            ]
+            resolve_courses = [c for c in day_courses if c.course_id not in preserved_course_ids]
             # 候補 = 当日勤務の全要員 (非新人・staff+manager・全拠点). 温存 fixed で
             # 消費済みの者は除外 (1日1コース). 勤務曜日/性別/event は _cost_single_cell 判定.
             resolve_pool = [
-                s
-                for s in staff_pool
-                if not s.is_trainee and s.staff_id not in preserved_staff_ids
+                s for s in staff_pool if not s.is_trainee and s.staff_id not in preserved_staff_ids
             ]
             if not resolve_courses or not resolve_pool:
                 return None
@@ -2335,9 +2331,7 @@ class Layer3Assigner:
             # 退行チェックを省くと「既存コースAを捨てて別のB/Cを充足する解」が採用され、
             # Aが無報告で未割当化する (PO要件「お知らせ・報告」違反).
             new_covered = preserved_course_ids | {a.course_id for a in matched}
-            new_unassigned = sum(
-                1 for c in day_courses if c.course_id not in new_covered
-            )
+            new_unassigned = sum(1 for c in day_courses if c.course_id not in new_covered)
             if new_unassigned >= original_unassigned:
                 return None
             # 退行チェック: 元カバーが新カバーに完全に含まれること.

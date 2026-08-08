@@ -9192,6 +9192,8 @@ async def apply_week_only(
                 Visit.visit_date <= week_sunday,
                 Visit.status.in_(_RESET_DELETABLE_STATUSES),
                 Visit.source.in_(_RESET_DELETABLE_SOURCES),
+                # 週のピン (青ピン / PO 決定 2026-08-09): source を問わず削除しない。
+                Visit.week_pinned.is_(False),
             )
             .with_for_update()
         )
@@ -9762,6 +9764,8 @@ async def reset_visits_to_fixed(
                 Visit.visit_date <= week_sunday,
                 Visit.status.in_(_RESET_DELETABLE_STATUSES),
                 Visit.source.in_(_RESET_DELETABLE_SOURCES),
+                # 週のピン (青ピン / PO 決定 2026-08-09): source を問わず削除しない。
+                Visit.week_pinned.is_(False),
             )
             .with_for_update()
         )
@@ -9810,13 +9814,18 @@ async def reset_visits_to_fixed(
                 (v.patient_id, v.visit_date, v.start_time, v.visit_group_id)
             ] = v
 
-    # M-2 恒久対策 (Wave U-3): 生存 manual_week visit の (patient_id, visit_date) 集合。
-    # 再生成ループでこの集合にある日をスキップし、「この週だけの決定」が型スロットを
-    # 一時上書きする意味論を完成させる。削除側は変更しない（manual_week は U-0 で保護済み）。
+    # M-2 恒久対策 (Wave U-3) + PO 決定 (2026-08-09) 拡張:
+    # 「その日の実配置が正」である生存 visit の (patient_id, visit_date) 集合。
+    # 再生成ループでこの集合にある日をスキップする。対象は:
+    #   - source='manual_week' … この週だけの手動配置 (従来 = M-2)
+    #   - source='import'      … カイポケ取込 (取込が正の原則。旧実装は削除からは
+    #     保護していたが日スキップが無く、取込週で週生成を回すと型の時刻で重複
+    #     挿入され得た = 案 B の穴の修正)
+    #   - week_pinned=true     … 週のピン (青ピン)。source を問わず「今週この位置」
     manual_week_day_keys: set[tuple[UUID, date]] = {
         (v.patient_id, v.visit_date)
         for v in protected_existing_keys.values()
-        if v.source == VISIT_SOURCE_MANUAL_WEEK
+        if v.source in (VISIT_SOURCE_MANUAL_WEEK, "import") or bool(v.week_pinned)
     }
 
     # 2) patient_fixed_visits から visits を再生成

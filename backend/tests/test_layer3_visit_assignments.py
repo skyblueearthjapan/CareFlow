@@ -555,12 +555,8 @@ async def test_persist_processes_non_override_visit_alongside_override(db) -> No
     await assigner._persist(
         db,
         [
-            StaffAssignment(
-                weekday=0, course_code="A", course_id=course_a.id, staff_id=s1.id
-            ),
-            StaffAssignment(
-                weekday=0, course_code="B", course_id=course_b.id, staff_id=s1.id
-            ),
+            StaffAssignment(weekday=0, course_code="A", course_id=course_a.id, staff_id=s1.id),
+            StaffAssignment(weekday=0, course_code="B", course_id=course_b.id, staff_id=s1.id),
         ],
     )
     await db.commit()
@@ -622,12 +618,8 @@ async def test_persist_protects_two_person_override_pair(db) -> None:
     await assigner._persist(
         db,
         [
-            StaffAssignment(
-                weekday=0, course_code="A", course_id=course_a.id, staff_id=s1.id
-            ),
-            StaffAssignment(
-                weekday=0, course_code="B", course_id=course_b.id, staff_id=s2.id
-            ),
+            StaffAssignment(weekday=0, course_code="A", course_id=course_a.id, staff_id=s1.id),
+            StaffAssignment(weekday=0, course_code="B", course_id=course_b.id, staff_id=s2.id),
         ],
     )
     await db.commit()

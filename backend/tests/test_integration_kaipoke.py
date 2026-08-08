@@ -732,15 +732,25 @@ async def test_week_schedule_shows_visits_without_legacy_primary_staff(
     db.add(staff)
     await db.flush()
     patient = Patient(
-        code="W28-1", name="患者 一郎", status="active", lat=35.6, lng=140.1,
-        primary_office_id=office.id, sex="female",
+        code="W28-1",
+        name="患者 一郎",
+        status="active",
+        lat=35.6,
+        lng=140.1,
+        primary_office_id=office.id,
+        sex="female",
     )
     db.add(patient)
     await db.flush()
     # 対象週 = 2026-07-06(月)〜07-12(日)。visit は 07-08(水)。
     course = Course(
-        iso_year=2026, iso_week=28, weekday=2, code="A",
-        course_status="staff_assigned", assigned_staff_id=staff.id, office_id=office.id,
+        iso_year=2026,
+        iso_week=28,
+        weekday=2,
+        code="A",
+        course_status="staff_assigned",
+        assigned_staff_id=staff.id,
+        office_id=office.id,
     )
     db.add(course)
     await db.flush()

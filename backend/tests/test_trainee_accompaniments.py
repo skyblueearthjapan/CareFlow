@@ -74,7 +74,9 @@ async def _make_template(db, office: Office, label: str) -> CourseTemplate:
     return t
 
 
-async def _make_patient(db, name: str, *, lat: float | None = None, lng: float | None = None) -> Patient:
+async def _make_patient(
+    db, name: str, *, lat: float | None = None, lng: float | None = None
+) -> Patient:
     p = Patient(code=f"P-{uuid.uuid4().hex[:8]}", name=name, lat=lat, lng=lng)
     db.add(p)
     await db.commit()
@@ -280,7 +282,11 @@ async def test_put_week_course_link_and_get(client, db) -> None:
     course = await _make_course(db, office, weekday=0, code="A")
     patient = await _make_patient(db, "山田")
     await _make_visit(
-        db, patient, visit_date=_week_date(0), start=time(10, 0), end=time(11, 0),
+        db,
+        patient,
+        visit_date=_week_date(0),
+        start=time(10, 0),
+        end=time(11, 0),
         course_id=course.id,
     )
 
@@ -359,8 +365,11 @@ async def test_put_week_visit_week_mismatch_422(client, db) -> None:
     patient = await _make_patient(db, "佐藤")
     # 翌週の visit
     v = await _make_visit(
-        db, patient, visit_date=_week_date(0, iso_week=ISO_WEEK + 1),
-        start=time(10, 0), end=time(11, 0),
+        db,
+        patient,
+        visit_date=_week_date(0, iso_week=ISO_WEEK + 1),
+        start=time(10, 0),
+        end=time(11, 0),
     )
 
     res = await client.put(
@@ -514,9 +523,7 @@ async def test_put_week_overlap_course_x_visit_422(client, db) -> None:
     await _make_visit(
         db, p1, visit_date=_week_date(0), start=time(10, 0), end=time(11, 0), course_id=c1.id
     )
-    v2 = await _make_visit(
-        db, p2, visit_date=_week_date(0), start=time(10, 30), end=time(11, 30)
-    )
+    v2 = await _make_visit(db, p2, visit_date=_week_date(0), start=time(10, 30), end=time(11, 30))
 
     res = await client.put(
         "/api/v1/trainee-accompaniments",
@@ -672,9 +679,7 @@ async def test_expand_idempotent(db) -> None:
     t = await _make_template(db, office, "A")
     course = await _make_course(db, office, weekday=0, code="A", template_id=t.id)
     db.add(
-        TraineeAccompanimentDefault(
-            trainee_staff_id=trainee.id, weekday=0, course_template_id=t.id
-        )
+        TraineeAccompanimentDefault(trainee_staff_id=trainee.id, weekday=0, course_template_id=t.id)
     )
     await db.commit()
 
@@ -698,9 +703,7 @@ async def test_expand_skips_proposed(db) -> None:
     # proposed コースは展開対象外
     await _make_course(db, office, weekday=0, code="A", template_id=t.id, status="proposed")
     db.add(
-        TraineeAccompanimentDefault(
-            trainee_staff_id=trainee.id, weekday=0, course_template_id=t.id
-        )
+        TraineeAccompanimentDefault(trainee_staff_id=trainee.id, weekday=0, course_template_id=t.id)
     )
     await db.commit()
 
@@ -725,9 +728,7 @@ async def test_expand_manual_not_overwritten(db) -> None:
         )
     )
     db.add(
-        TraineeAccompanimentDefault(
-            trainee_staff_id=trainee.id, weekday=0, course_template_id=t.id
-        )
+        TraineeAccompanimentDefault(trainee_staff_id=trainee.id, weekday=0, course_template_id=t.id)
     )
     await db.commit()
 
@@ -793,8 +794,13 @@ async def test_visibility_list_via_course_link(client, db) -> None:
     course = await _make_course(db, office, weekday=0, code="A", assigned_staff_id=mentor.id)
     p = await _make_patient(db, "I様")
     v = await _make_visit(
-        db, p, visit_date=_week_date(0), start=time(10, 0), end=time(11, 0),
-        course_id=course.id, primary_staff_id=mentor.id,
+        db,
+        p,
+        visit_date=_week_date(0),
+        start=time(10, 0),
+        end=time(11, 0),
+        course_id=course.id,
+        primary_staff_id=mentor.id,
     )
     db.add(
         TraineeAccompaniment(
@@ -834,7 +840,11 @@ async def test_visibility_get_by_id_via_visit_link(client, db) -> None:
     other_user = await _make_user(db, "ta-vis2-other@example.com", "staff", staff_id=other.id)
     p = await _make_patient(db, "J様")
     v = await _make_visit(
-        db, p, visit_date=_week_date(0), start=time(10, 0), end=time(11, 0),
+        db,
+        p,
+        visit_date=_week_date(0),
+        start=time(10, 0),
+        end=time(11, 0),
         primary_staff_id=mentor.id,
     )
     db.add(
@@ -894,8 +904,13 @@ async def test_monitor_accompaniment_field(db) -> None:
     p = await _make_patient(db, "L様")
     target = _week_date(0)
     v = await _make_visit(
-        db, p, visit_date=target, start=time(10, 0), end=time(11, 0),
-        course_id=course.id, primary_staff_id=mentor.id,
+        db,
+        p,
+        visit_date=target,
+        start=time(10, 0),
+        end=time(11, 0),
+        course_id=course.id,
+        primary_staff_id=mentor.id,
     )
     db.add(
         TraineeAccompaniment(
@@ -962,12 +977,22 @@ async def test_course_guard_reports_current_and_future_courses(client, db) -> No
 
     # 今週のコースを新人担当に (レガシー状態を模す)
     await _make_course(
-        db, office, weekday=0, code="A", iso_year=cy, iso_week=cw,
+        db,
+        office,
+        weekday=0,
+        code="A",
+        iso_year=cy,
+        iso_week=cw,
         assigned_staff_id=trainee.id,
     )
     # 過去週 (前年) のコース担当 — ガード対象外
     await _make_course(
-        db, office, weekday=1, code="B", iso_year=cy - 1, iso_week=1,
+        db,
+        office,
+        weekday=1,
+        code="B",
+        iso_year=cy - 1,
+        iso_week=1,
         assigned_staff_id=trainee.id,
     )
 
@@ -991,29 +1016,46 @@ async def test_delete_future_removes_future_links_and_defaults_keeps_past(client
     cy, cw = _cur_week()
 
     future_course = await _make_course(
-        db, office, weekday=0, code="A", template_id=t.id, iso_year=cy, iso_week=cw,
+        db,
+        office,
+        weekday=0,
+        code="A",
+        template_id=t.id,
+        iso_year=cy,
+        iso_week=cw,
     )
     past_course = await _make_course(
-        db, office, weekday=1, code="B", iso_year=cy - 1, iso_week=1,
+        db,
+        office,
+        weekday=1,
+        code="B",
+        iso_year=cy - 1,
+        iso_week=1,
     )
 
     # 週リンク 2 件 (今週 + 過去週) を直接 INSERT。
     db.add(
         TraineeAccompaniment(
-            trainee_staff_id=trainee.id, target_type="course",
-            course_id=future_course.id, source="manual",
+            trainee_staff_id=trainee.id,
+            target_type="course",
+            course_id=future_course.id,
+            source="manual",
         )
     )
     db.add(
         TraineeAccompaniment(
-            trainee_staff_id=trainee.id, target_type="course",
-            course_id=past_course.id, source="manual",
+            trainee_staff_id=trainee.id,
+            target_type="course",
+            course_id=past_course.id,
+            source="manual",
         )
     )
     # 既定も 1 件。
     db.add(
         TraineeAccompanimentDefault(
-            trainee_staff_id=trainee.id, weekday=0, course_template_id=t.id,
+            trainee_staff_id=trainee.id,
+            weekday=0,
+            course_template_id=t.id,
         )
     )
     await db.commit()

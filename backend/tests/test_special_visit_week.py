@@ -287,7 +287,9 @@ async def test_calendar_generated_and_ungenerated_weeks(client, db) -> None:
     # 週 20 のみ生成済み (Course 行が存在する) + 実 visit 2 件.
     mon_course = await _seed_course(db, office=office, staff=staff, weekday=0, template=template)
     wed_course = await _seed_course(db, office=office, staff=staff, weekday=2, template=template)
-    await _seed_visit(db, patient=patient, course=mon_course, visit_date=WEEK_MONDAY, start=time(9, 30))
+    await _seed_visit(
+        db, patient=patient, course=mon_course, visit_date=WEEK_MONDAY, start=time(9, 30)
+    )
     await _seed_visit(
         db,
         patient=patient,
@@ -480,7 +482,9 @@ async def test_displace_soft_deletes_visit_and_restore_brings_it_back(client, db
     assert visit.deleted_at is not None
 
     # snapshot に復元情報が入っている.
-    mark_row = await db.scalar(select(SpecialVisitMark).where(SpecialVisitMark.id == UUID(mark["id"])))
+    mark_row = await db.scalar(
+        select(SpecialVisitMark).where(SpecialVisitMark.id == UUID(mark["id"]))
+    )
     assert mark_row is not None
     snapshot = mark_row.displaced_snapshot
     assert snapshot is not None

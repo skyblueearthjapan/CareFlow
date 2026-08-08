@@ -611,9 +611,7 @@ async def trainee_course_guard(
         )
     ).all()
     courses = [
-        TraineeCourseGuardCourse(
-            id=cid, iso_year=iy, iso_week=iw, weekday=wd, code=code
-        )
+        TraineeCourseGuardCourse(id=cid, iso_year=iy, iso_week=iw, weekday=wd, code=code)
         for (cid, iy, iw, wd, code) in rows
     ]
     return TraineeCourseGuardResponse(

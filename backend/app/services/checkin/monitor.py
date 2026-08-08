@@ -379,9 +379,9 @@ async def build_monitor(
     if course_ids:
         for cid, code, coid, asid in (
             await db.execute(
-                select(
-                    Course.id, Course.code, Course.office_id, Course.assigned_staff_id
-                ).where(Course.id.in_(course_ids))
+                select(Course.id, Course.code, Course.office_id, Course.assigned_staff_id).where(
+                    Course.id.in_(course_ids)
+                )
             )
         ).all():
             course_code[cid] = code

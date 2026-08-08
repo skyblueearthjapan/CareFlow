@@ -475,9 +475,7 @@ def _buffered_event_interval(w: EventWindow) -> tuple[int, int]:
     )
 
 
-def _event_pseudo_visits(
-    windows: list[EventWindow], candidate: Candidate
-) -> list[ExistingVisit]:
+def _event_pseudo_visits(windows: list[EventWindow], candidate: Candidate) -> list[ExistingVisit]:
     """イベント窓をギャップ走査用の擬似訪問へ変換する.
 
     座標は候補と同一にする (イベントの場所は不明なため移動時間は見積もらず、
@@ -592,9 +590,7 @@ def find_available_slots_for_candidate(
         and used_minutes + int(candidate.service_minutes) <= COURSE_MAX_MINUTES
     )
 
-    windows = [
-        w for w in (event_windows or []) if _time_to_min(w.end) > _time_to_min(w.start)
-    ]
+    windows = [w for w in (event_windows or []) if _time_to_min(w.end) > _time_to_min(w.start)]
 
     def _collect(enforced: list[EventWindow]) -> list[Slot]:
         """enforced のイベントを占有としてギャップ走査 + 同住所ペアを収集する."""
@@ -665,9 +661,7 @@ def find_available_slots_for_candidate(
         # 全イベントが blocking = パスAと同一条件. 再走査しても結果は同じ.
         return []
     fallback = _collect(hard)
-    return [
-        _dataclass_replace(s, event_conflicts=_conflicts_for(s, soft)) for s in fallback
-    ]
+    return [_dataclass_replace(s, event_conflicts=_conflicts_for(s, soft)) for s in fallback]
 
 
 def _existing_occupancy_end(v: ExistingVisit, others: list[ExistingVisit]) -> time:
@@ -932,8 +926,7 @@ def slot_fits_exact(
         enforced = [
             w
             for w in event_windows
-            if (enforce_soft_events or w.blocking)
-            and _time_to_min(w.end) > _time_to_min(w.start)
+            if (enforce_soft_events or w.blocking) and _time_to_min(w.end) > _time_to_min(w.start)
         ]
         probe = Slot(start=target_start, end=end, block=block)
         if _slot_overlaps_any(probe, enforced):

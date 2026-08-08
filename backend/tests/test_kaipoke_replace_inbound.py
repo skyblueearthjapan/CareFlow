@@ -186,9 +186,7 @@ async def test_replace_real_wipes_and_inserts_then_converges(client, db, stub_ka
     assert body["jobId"] is not None
 
     visits = (
-        await db.scalars(
-            select(Visit).where(Visit.deleted_at.is_(None)).order_by(Visit.visit_date)
-        )
+        await db.scalars(select(Visit).where(Visit.deleted_at.is_(None)).order_by(Visit.visit_date))
     ).all()
     assert len(visits) == 2  # 旧3件は soft delete 済み
     assert [v.visit_date for v in visits] == [date(2026, 7, 7), date(2026, 7, 10)]
@@ -212,9 +210,7 @@ async def test_replace_skips_and_trainee_warning(client, db, stub_kaipoke) -> No
     """名寄せ不可の患者は skipped。新人担当1は取り込み + ⚠traineeSolo 警告
     (方針転換 PO確定 2026-07-26: カイポケの現実を受け入れる)。"""
     seeded = await _seed_week(db)
-    trainee = Staff(
-        name="髙梨　桂子", role="staff", primary_office_id=seeded["office"].id
-    )
+    trainee = Staff(name="髙梨　桂子", role="staff", primary_office_id=seeded["office"].id)
     trainee.is_trainee = True
     db.add(trainee)
     await db.commit()
@@ -240,9 +236,7 @@ async def test_replace_skips_and_trainee_warning(client, db, stub_kaipoke) -> No
     assert res2.status_code == 200, res2.text
     trainee_visits = (
         await db.scalars(
-            select(Visit).where(
-                Visit.deleted_at.is_(None), Visit.primary_staff_id == trainee.id
-            )
+            select(Visit).where(Visit.deleted_at.is_(None), Visit.primary_staff_id == trainee.id)
         )
     ).all()
     assert len(trainee_visits) == 1

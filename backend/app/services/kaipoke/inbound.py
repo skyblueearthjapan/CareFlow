@@ -363,9 +363,7 @@ async def apply_inbound_items(
     # - add 経路: 新設 visit が張り付くコースの course-level リンクで突合。
     # いずれも「新人集合への membership 判定」(複数新人リンク時の last-wins 非決定性で
     # 誤って secondary へ書き戻す汚染を防ぐ — Phase 3 レビュー MINOR-2)。
-    accompaniment_by_visit = await resolve_accompaniment_trainees_by_visit(
-        db, list(index.values())
-    )
+    accompaniment_by_visit = await resolve_accompaniment_trainees_by_visit(db, list(index.values()))
     accompaniment_by_course = await resolve_accompaniment_trainee_by_course(
         db, list(course_idx.by_id.keys())
     )
@@ -529,7 +527,9 @@ async def apply_inbound_items(
                     revive = existing
                 else:
                     _finish(
-                        "failed", "同時刻の予定が既にあります（差分を取り直してください）", target_date
+                        "failed",
+                        "同時刻の予定が既にあります（差分を取り直してください）",
+                        target_date,
                     )
                     continue
             staff1_name = str(after.get("staff1") or "")
@@ -787,7 +787,9 @@ async def apply_inbound_items(
                     # ① 既存の同行リンクと一致 → secondary へ書かず要2名化しない
                     #    (ラウンドトリップ汚染防止。同行は trainee_accompaniments が唯一の正典)。
                     if resolved_sid2 in accompaniment_by_visit.get(visit.id, set()):
-                        notes.append(f"担当2「{staff2_after_name}」は同行のため未反映（要2名化しない）")
+                        notes.append(
+                            f"担当2「{staff2_after_name}」は同行のため未反映（要2名化しない）"
+                        )
                     # ② リンクは無いが新人 → 同行リンクを自動作成し要2名化しない。
                     elif resolved_sid2 in trainee_ids:
                         accompaniment_sid2 = resolved_sid2

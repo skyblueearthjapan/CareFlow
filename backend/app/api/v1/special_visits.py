@@ -137,9 +137,7 @@ def _mark_read(mark: SpecialVisitMark, placed_summary: PlacedSummary | None = No
 
 
 async def _get_period(db, period_id: UUID) -> SpecialVisitPeriod:
-    period = await db.scalar(
-        select(SpecialVisitPeriod).where(SpecialVisitPeriod.id == period_id)
-    )
+    period = await db.scalar(select(SpecialVisitPeriod).where(SpecialVisitPeriod.id == period_id))
     if period is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return period
@@ -205,9 +203,7 @@ async def _visit_is_alive(db, visit_id: UUID | None) -> Visit | None:
     """``visit_id`` の訪問が生きていれば返す (自己回復判定に使う)."""
     if visit_id is None:
         return None
-    return await db.scalar(
-        select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None))
-    )
+    return await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
 
 
 async def _placed_summary_for(db, visit_id: UUID | None) -> PlacedSummary | None:
@@ -244,9 +240,7 @@ async def _placed_summary_for(db, visit_id: UUID | None) -> PlacedSummary | None
 )
 async def create_period(payload: PeriodCreate, db: DbDep, _user: AdminManager) -> PeriodRead:
     patient = await db.scalar(
-        select(Patient).where(
-            Patient.id == payload.patient_id, Patient.deleted_at.is_(None)
-        )
+        select(Patient).where(Patient.id == payload.patient_id, Patient.deleted_at.is_(None))
     )
     if patient is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
@@ -958,15 +952,11 @@ async def place_mark(
 ) -> PlaceResponse:
     mark = await _get_mark(db, mark_id)
     if mark.status == MARK_STATUS_CANCELLED:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="取消済みのチケットです"
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="取消済みのチケットです")
     if mark.status == MARK_STATUS_PLACED:
         # 自己回復: 訪問が生きている場合のみ二重配置として弾く.
         if await _visit_is_alive(db, mark.placed_visit_id) is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT, detail="既に配置済みです"
-            )
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="既に配置済みです")
 
     if payload.course_id is not None:
         course = await db.scalar(

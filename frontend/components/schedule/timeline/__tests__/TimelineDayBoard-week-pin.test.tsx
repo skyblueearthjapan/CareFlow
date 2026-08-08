@@ -82,6 +82,14 @@ describe('週のピン (青ピン)', () => {
     expect(onToggle).toHaveBeenCalledWith('v3', false);
   });
 
+  it('week_pinned フラグだけでも青ピンが立つ — 取込 (import) の訪問を固定した状態', () => {
+    // PO 決定 2026-08-09: 実体はフラグ。source は import のまま = 出所保持。
+    renderBoard(visit({ id: 'v7f', source: 'import', week_pinned: true }), vi.fn());
+    expect(document.querySelector('[data-icon="corner-week-push-pin"]')).toBeInTheDocument();
+    const btn = screen.getByTestId('tl-week-pin-toggle-v7f');
+    expect(btn).toHaveAttribute('data-week-pinned', 'true');
+  });
+
   it('赤ピン中でも青ピンのトグルは出る（先に青を仕込んでから一括赤解除する運用のため）', async () => {
     // 旧仕様は「赤ピン中は青トグルを出さない」だったが、全件ピン留めすると青の
     // 入口が全滅し、一括赤解除前の保護を仕込めなかった (PO 指摘 2026-08-08)。

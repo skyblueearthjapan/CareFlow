@@ -41,9 +41,7 @@ router = APIRouter()
 
 async def _load_singleton(db: DbDep) -> CheckinSettings | None:
     """checkin_settings シングルトン行 (無ければ None) を返す."""
-    return await db.scalar(
-        select(CheckinSettings).where(CheckinSettings.is_singleton.is_(True))
-    )
+    return await db.scalar(select(CheckinSettings).where(CheckinSettings.is_singleton.is_(True)))
 
 
 def _effective(row: CheckinSettings | None, field: str) -> int:

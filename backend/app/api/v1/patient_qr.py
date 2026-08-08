@@ -46,9 +46,7 @@ async def _generate_unique_token(db: AsyncSession) -> str:
     for _ in range(_QR_TOKEN_RETRY_MAX):
         token = secrets.token_urlsafe(16)
         in_patients = await db.scalar(select(Patient.id).where(Patient.qr_token == token))
-        in_revoked = await db.scalar(
-            select(RevokedQrToken.id).where(RevokedQrToken.token == token)
-        )
+        in_revoked = await db.scalar(select(RevokedQrToken.id).where(RevokedQrToken.token == token))
         if in_patients is None and in_revoked is None:
             return token
     raise HTTPException(

@@ -90,7 +90,7 @@ describe('BulkWeekPinAllButton', () => {
     const dialog = await screen.findByTestId('bulk-week-pin-confirm-dialog');
     // 解除の影響 (次の週生成で型の時刻に戻る) を必ず伝える。
     expect(dialog).toHaveTextContent(
-      '次に週生成を実行したとき固定訪問スケジュールの時刻に戻ります',
+      '型の管理下にある訪問は次の週生成で固定訪問スケジュールの時刻に戻ります',
     );
 
     fireEvent.click(screen.getByTestId('bulk-week-pin-step1-confirm-button'));
@@ -101,7 +101,7 @@ describe('BulkWeekPinAllButton', () => {
     );
     await waitFor(() =>
       expect(mockToast.success).toHaveBeenCalledWith(
-        expect.stringContaining('次の週生成で固定訪問スケジュールの時刻に戻ります'),
+        expect.stringContaining('型の管理下の訪問は次の週生成で型の時刻に戻ります'),
       ),
     );
   });

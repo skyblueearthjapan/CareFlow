@@ -38,7 +38,9 @@ def _bearer(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def _make_patient(db, code: str, *, lat=None, lng=None, qr_token=None, name="利用者") -> Patient:
+async def _make_patient(
+    db, code: str, *, lat=None, lng=None, qr_token=None, name="利用者"
+) -> Patient:
     p = Patient(code=code, name=name, lat=lat, lng=lng, qr_token=qr_token)
     db.add(p)
     await db.commit()
@@ -106,26 +108,20 @@ async def test_regenerate_rotates_token_and_records(client, db) -> None:
     assert p.qr_version == 1
     pid = p.id  # API は別 session でコミットするため PK を先に確保。
 
-    res = await client.post(
-        f"/api/v1/patients/{pid}/qr/regenerate", headers=_bearer(admin)
-    )
+    res = await client.post(f"/api/v1/patients/{pid}/qr/regenerate", headers=_bearer(admin))
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["token"] != "old-token-xyz"
     assert body["version"] == 2
 
     # 旧トークンが revoked 入り (fresh オブジェクトなので identity map の影響なし)。
-    revoked = await db.scalar(
-        select(RevokedQrToken).where(RevokedQrToken.token == "old-token-xyz")
-    )
+    revoked = await db.scalar(select(RevokedQrToken).where(RevokedQrToken.token == "old-token-xyz"))
     assert revoked is not None
     assert revoked.patient_id == pid
 
     # patients.qr_token / qr_version が更新済み (populate_existing で最新を読む)。
     refreshed = await db.scalar(
-        select(Patient)
-        .where(Patient.id == pid)
-        .execution_options(populate_existing=True)
+        select(Patient).where(Patient.id == pid).execution_options(populate_existing=True)
     )
     assert refreshed.qr_token == body["token"]
     assert refreshed.qr_version == 2
@@ -148,16 +144,12 @@ async def test_regenerate_from_null_token_does_not_revoke(client, db) -> None:
     admin = await _make_user(db, "qr-regen-null@example.com", "admin")
     p = await _make_patient(db, "QR-REGEN-NULL")
 
-    res = await client.post(
-        f"/api/v1/patients/{p.id}/qr/regenerate", headers=_bearer(admin)
-    )
+    res = await client.post(f"/api/v1/patients/{p.id}/qr/regenerate", headers=_bearer(admin))
     assert res.status_code == 200, res.text
     assert res.json()["version"] == 2
 
     count = await db.scalar(
-        select(func.count())
-        .select_from(RevokedQrToken)
-        .where(RevokedQrToken.patient_id == p.id)
+        select(func.count()).select_from(RevokedQrToken).where(RevokedQrToken.patient_id == p.id)
     )
     assert count == 0
 
@@ -166,9 +158,7 @@ async def test_regenerate_from_null_token_does_not_revoke(client, db) -> None:
 async def test_regenerate_staff_returns_403(client, db) -> None:
     staff_user = await _make_user(db, "qr-regen-staff@example.com", "staff")
     p = await _make_patient(db, "QR-REGEN-RBAC", qr_token="tok-rbac")
-    res = await client.post(
-        f"/api/v1/patients/{p.id}/qr/regenerate", headers=_bearer(staff_user)
-    )
+    res = await client.post(f"/api/v1/patients/{p.id}/qr/regenerate", headers=_bearer(staff_user))
     assert res.status_code == 403, res.text
 
 
@@ -207,13 +197,13 @@ async def test_checkin_with_revoked_qr_returns_410(client, db) -> None:
     """再発行で失効した旧トークンでの打刻は 410 Gone."""
     admin = await _make_user(db, "qr-410-admin@example.com", "admin")
     staff, staff_user = await _make_staff_user(db, "qr-410-staff@example.com")
-    p = await _make_patient(db, "QR-410", lat=35.0, lng=139.0, qr_token="rotate-old", name="山田 太郎")
+    p = await _make_patient(
+        db, "QR-410", lat=35.0, lng=139.0, qr_token="rotate-old", name="山田 太郎"
+    )
     visit = await _make_visit(db, p.id, staff.id)
 
     # admin が再発行 → rotate-old が失効する。
-    regen = await client.post(
-        f"/api/v1/patients/{p.id}/qr/regenerate", headers=_bearer(admin)
-    )
+    regen = await client.post(f"/api/v1/patients/{p.id}/qr/regenerate", headers=_bearer(admin))
     assert regen.status_code == 200, regen.text
 
     # staff が旧ステッカー (rotate-old) で打刻 → 410。
@@ -275,9 +265,7 @@ async def test_checkin_with_new_qr_after_regenerate_succeeds(client, db) -> None
     p = await _make_patient(db, "QR-NEW", lat=35.0, lng=139.0, qr_token="old-1")
     visit = await _make_visit(db, p.id, staff.id)
 
-    regen = await client.post(
-        f"/api/v1/patients/{p.id}/qr/regenerate", headers=_bearer(admin)
-    )
+    regen = await client.post(f"/api/v1/patients/{p.id}/qr/regenerate", headers=_bearer(admin))
     assert regen.status_code == 200, regen.text
     new_token = regen.json()["token"]
 

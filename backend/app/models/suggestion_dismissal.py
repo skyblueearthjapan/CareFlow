@@ -53,9 +53,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 SuggestionDismissalKind = Literal["time_change", "day_change", "swap"]
-SuggestionDismissalReason = Literal[
-    "day_immovable", "time_immovable", "staff_relation", "other"
-]
+SuggestionDismissalReason = Literal["day_immovable", "time_immovable", "staff_relation", "other"]
 
 
 class SuggestionDismissal(Base):

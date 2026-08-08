@@ -124,9 +124,7 @@ async def test_dismiss_creates_row(client, db) -> None:
     assert body["new_movability"] is None
 
     rows = (
-        await db.scalars(
-            select(SuggestionDismissal).where(SuggestionDismissal.patient_id == p.id)
-        )
+        await db.scalars(select(SuggestionDismissal).where(SuggestionDismissal.patient_id == p.id))
     ).all()
     assert len(rows) == 1
     assert rows[0].reason == "other"
@@ -153,9 +151,7 @@ async def test_dismiss_same_fingerprint_upserts(client, db) -> None:
     assert r1.json()["dismissal_id"] == r2.json()["dismissal_id"]
 
     rows = (
-        await db.scalars(
-            select(SuggestionDismissal).where(SuggestionDismissal.patient_id == p.id)
-        )
+        await db.scalars(select(SuggestionDismissal).where(SuggestionDismissal.patient_id == p.id))
     ).all()
     assert len(rows) == 1
     assert rows[0].reason == "staff_relation"
@@ -378,9 +374,7 @@ async def test_dismiss_upsert_refreshes_dismissed_at(client, db) -> None:
 
     # 1 回目の dismissed_at を記録 (re-SELECT = 必ず DB から取得)
     rows = (
-        await db.scalars(
-            select(SuggestionDismissal).where(SuggestionDismissal.patient_id == p_id)
-        )
+        await db.scalars(select(SuggestionDismissal).where(SuggestionDismissal.patient_id == p_id))
     ).all()
     assert len(rows) == 1
     row = rows[0]

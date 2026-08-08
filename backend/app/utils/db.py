@@ -23,8 +23,6 @@ async def try_advisory_xact_lock(db: AsyncSession, key: int) -> bool:
     if db.bind is None or db.bind.dialect.name != "postgresql":
         return True
     row = (
-        await db.execute(
-            text("SELECT pg_try_advisory_xact_lock(:key)").bindparams(key=key)
-        )
+        await db.execute(text("SELECT pg_try_advisory_xact_lock(:key)").bindparams(key=key))
     ).scalar()
     return bool(row)

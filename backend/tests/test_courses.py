@@ -570,7 +570,11 @@ async def test_courses_patch_staff_propagates_to_visits(client, db) -> None:
     db.add_all([s_old, s_new])
     await db.flush()
     p = Patient(
-        code="CPSPROP", name="患者", status="active", lat=35.6, lng=140.1,
+        code="CPSPROP",
+        name="患者",
+        status="active",
+        lat=35.6,
+        lng=140.1,
         primary_office_id=office.id,
     )
     db.add(p)
@@ -580,7 +584,10 @@ async def test_courses_patch_staff_propagates_to_visits(client, db) -> None:
         "/api/v1/courses",
         headers=_bearer(admin),
         json=_course_payload(
-            office.id, weekday=3, code="A", course_status="staff_assigned",
+            office.id,
+            weekday=3,
+            code="A",
+            course_status="staff_assigned",
             assigned_staff_id=str(s_old.id),
         ),
     )
@@ -589,17 +596,31 @@ async def test_courses_patch_staff_propagates_to_visits(client, db) -> None:
 
     # このコースに紐付く visit (旧担当で割当済み)。
     v = Visit(
-        patient_id=p.id, course_id=cid, visit_date=date(2026, 5, 14),
-        start_time=time(9, 0), end_time=time(9, 40), type="regular",
-        status="planned", source="auto_alloc", required_staff_count=1,
-        primary_staff_id=s_old.id, manual_staff_override=False,
+        patient_id=p.id,
+        course_id=cid,
+        visit_date=date(2026, 5, 14),
+        start_time=time(9, 0),
+        end_time=time(9, 40),
+        type="regular",
+        status="planned",
+        source="auto_alloc",
+        required_staff_count=1,
+        primary_staff_id=s_old.id,
+        manual_staff_override=False,
     )
     # 手動上書き visit は担当変更で触られないこと。
     v_manual = Visit(
-        patient_id=p.id, course_id=cid, visit_date=date(2026, 5, 14),
-        start_time=time(10, 0), end_time=time(10, 40), type="regular",
-        status="planned", source="manual", required_staff_count=1,
-        primary_staff_id=s_old.id, manual_staff_override=True,
+        patient_id=p.id,
+        course_id=cid,
+        visit_date=date(2026, 5, 14),
+        start_time=time(10, 0),
+        end_time=time(10, 40),
+        type="regular",
+        status="planned",
+        source="manual",
+        required_staff_count=1,
+        primary_staff_id=s_old.id,
+        manual_staff_override=True,
     )
     db.add_all([v, v_manual])
     await db.commit()
