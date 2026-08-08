@@ -7,11 +7,11 @@
  * (Phase G-43 で Row 1 を flex 単一 toolbar 化。W-9/W-9b で両端配置に変更):
  *   ┌─ ヘッダー ────────────────────────────────────────────┐
  *   │  Row 1 (両端配置 toolbar, admin/manager only):                                 │
- *   │  [週を生成][週次ガイド]   [新規患者登録][診断][最適化] │ [固定枠戻][全件保存] │
+ *   │  [週を生成][週次ガイド] [新規患者登録][診断][最適化] │ [固定枠戻][全件保存] │ [全件ピン留め/解除] │ [今週全件固定/解除] │
  *   │  ─── border-t ────────────────────                                            │
  *   │  Row 2 (曜日タブ + 表示モード + 二次操作):                                      │
  *   │    [月][火][水][木][金][土][週] YYYY-Www                                       │
- *   │    [タイムライン | リスト] │ [自動スタッフ割当 🟢][一斉スタッフ未割当] │ [🔒][🔓] │
+ *   │    [タイムライン | リスト] │ [戻る][進む][自動スタッフ割当][一斉スタッフ未割当] (右寄せ) │
  *   ├──────────────────────────────────────────────────────┤
  *   │  選択曜日の盤面 (縦タイムライン or 日リスト)             │
  *   │   - 本店 A / B / C / D / E / M + 都賀 A 等             │
@@ -3133,6 +3133,17 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   disabled={!canEdit || isProcessing}
                 />
                 <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
+
+                {/* 一括ピン群 (PO 指示 2026-08-09: Row 2 から Row 1 へ移動)。
+                    赤=全件ピン留め/解除 (型・毎週) │ 青=今週全件固定/解除 (今週のみ)。 */}
+                <span
+                  aria-hidden
+                  className="h-5 w-px bg-border-default"
+                  data-testid="course-day-row1-pin-divider"
+                />
+                <BulkPinAllPfvsButton canEdit={canEdit} />
+                <span aria-hidden className="h-5 w-px bg-border-default" />
+                <BulkWeekPinAllButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
               </div>
             </div>
           }
@@ -3444,22 +3455,6 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                         👥 新人同行
                       </Button>
                     )}
-                  </div>
-
-                  {/* γ / δ 間の区切り線. */}
-                  <span
-                    aria-hidden
-                    className="h-5 w-px bg-border-default"
-                    data-testid="course-day-row2-divider"
-                  />
-
-                  {/* Group δ: 一括設定。赤 (型・毎週) と 青 (今週) を並べる (PO 決定 2026-08-08)。
-                      赤=全件ピン留め/解除、青=今週全件固定/解除。間の細い区切りで
-                      「別のスコープの操作」であることを示す。 */}
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <BulkPinAllPfvsButton canEdit={canEdit} />
-                    <span aria-hidden className="h-5 w-px bg-border-default" />
-                    <BulkWeekPinAllButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
                   </div>
                 </>
               }
