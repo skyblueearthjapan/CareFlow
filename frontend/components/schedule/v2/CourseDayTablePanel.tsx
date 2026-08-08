@@ -134,6 +134,7 @@ import {
 import { TimelineDayList } from '@/components/schedule/timeline/TimelineDayList';
 import { BulkFixToPatternButton } from './BulkFixToPatternButton';
 import { BulkPinAllPfvsButton } from './BulkPinAllPfvsButton';
+import { BulkWeekPinAllButton } from './BulkWeekPinAllButton';
 import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDialog';
 import { BulkPoolInsertDialog } from './BulkPoolInsertDialog';
 import { RegisterPatientButton } from './RegisterPatientButton';
@@ -3452,9 +3453,13 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     data-testid="course-day-row2-divider"
                   />
 
-                  {/* Group δ: 一括設定 (🔒 全件ロック + 🔓 全件解除). */}
+                  {/* Group δ: 一括設定。赤 (型・毎週) と 青 (今週) を並べる (PO 決定 2026-08-08)。
+                      赤=全件ピン留め/解除、青=今週全件固定/解除。間の細い区切りで
+                      「別のスコープの操作」であることを示す。 */}
                   <div className="flex flex-wrap items-center gap-1.5">
                     <BulkPinAllPfvsButton canEdit={canEdit} />
+                    <span aria-hidden className="h-5 w-px bg-border-default" />
+                    <BulkWeekPinAllButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
                   </div>
                 </>
               }

@@ -59,3 +59,55 @@ export function useToggleVisitWeekPin(): UseMutationResult<
     },
   });
 }
+
+// ─── 一括 (青の全件固定 / 全件解除) — PO 決定 2026-08-08 ─────────────────────
+
+export interface BulkVisitWeekPinVariables {
+  isoYear: number;
+  isoWeek: number;
+  /** true=今週全件固定 / false=今週の固定を全解除 */
+  pinned: boolean;
+  /** true なら件数だけ返して何も変更しない (確認ダイアログ用) */
+  dryRun?: boolean;
+}
+
+export interface BulkVisitWeekPinResult {
+  target_count: number;
+  updated_count: number;
+}
+
+/**
+ * 当該週の対象訪問を一括で今週固定する / 解除する。
+ * 赤ピンの「全件ピン留め / 全件ピン留め解除」と対になる青ピン版。
+ */
+export function useBulkVisitWeekPin(): UseMutationResult<
+  BulkVisitWeekPinResult,
+  Error,
+  BulkVisitWeekPinVariables
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useMutation<BulkVisitWeekPinResult, Error, BulkVisitWeekPinVariables>({
+    mutationFn: async ({ isoYear, isoWeek, pinned, dryRun }) =>
+      fetcher<BulkVisitWeekPinResult>('/api/v1/schedule/v2/visits/week-pin/bulk', {
+        method: 'POST',
+        body: JSON.stringify({
+          iso_year: isoYear,
+          iso_week: isoWeek,
+          pinned,
+          dry_run: dryRun ?? false,
+        }),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: (_res, vars) => {
+      // dry_run (件数確認) では何も変わっていないため invalidate しない。
+      if (vars.dryRun) return;
+      void qc.invalidateQueries({ queryKey: ['visits'] });
+      void qc.invalidateQueries({ queryKey: ['courses'] });
+    },
+  });
+}

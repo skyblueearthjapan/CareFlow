@@ -295,3 +295,121 @@ async def test_week_pin_404_for_unknown_visit(client, db) -> None:
         json={"pinned": True},
     )
     assert res.status_code == 404, res.text
+
+
+# ---------------------------------------------------------------------------
+# 一括 (青の全件固定 / 全件解除) — PO 決定 2026-08-08
+# ---------------------------------------------------------------------------
+
+_BULK_URL = "/api/v1/schedule/v2/visits/week-pin/bulk"
+# _make_visit の visit_date=2026-09-04 (金) が属する ISO 週。
+_BULK_WEEK = {"iso_year": 2026, "iso_week": 36}
+
+
+@pytest.mark.asyncio
+async def test_bulk_week_pin_pins_all_toggleable(client, db) -> None:
+    """今週全件固定: 型の管理下の source だけが manual_week になり、対象外は据え置き."""
+    admin = await _make_user(db, email="wpb-1@example.com", role="admin")
+    patient = await _make_patient(db, code="WPB-1")
+    v_auto = await _make_visit(db, patient=patient, source="auto", start=time(9, 0))
+    v_reset = await _make_visit(db, patient=patient, source="reset_v2", start=time(10, 0))
+    v_manual = await _make_visit(db, patient=patient, source="manual", start=time(11, 0))
+    v_import = await _make_visit(db, patient=patient, source="import", start=time(12, 0))
+    v_done = await _make_visit(
+        db, patient=patient, source="auto", status_value="completed", start=time(13, 0)
+    )
+
+    res = await client.post(_BULK_URL, headers=_bearer(admin), json={**_BULK_WEEK, "pinned": True})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["target_count"] == 2
+    assert body["updated_count"] == 2
+
+    for v, expected in [
+        (v_auto, "manual_week"),
+        (v_reset, "manual_week"),
+        (v_manual, "manual"),
+        (v_import, "import"),
+        (v_done, "auto"),
+    ]:
+        await db.refresh(v)
+        assert v.source == expected, f"{v.start_time}: {v.source} != {expected}"
+
+
+@pytest.mark.asyncio
+async def test_bulk_week_pin_unpins_only_manual_week(client, db) -> None:
+    """今週全件解除: manual_week だけが auto に戻る。時刻は動かない."""
+    admin = await _make_user(db, email="wpb-2@example.com", role="admin")
+    patient = await _make_patient(db, code="WPB-2")
+    v_pinned = await _make_visit(db, patient=patient, source="manual_week", start=time(9, 0))
+    v_manual = await _make_visit(db, patient=patient, source="manual", start=time(10, 0))
+
+    res = await client.post(_BULK_URL, headers=_bearer(admin), json={**_BULK_WEEK, "pinned": False})
+    assert res.status_code == 200, res.text
+    assert res.json()["updated_count"] == 1
+
+    await db.refresh(v_pinned)
+    await db.refresh(v_manual)
+    assert v_pinned.source == "auto"
+    assert v_pinned.start_time == time(9, 0)  # 解除しても動かない
+    assert v_manual.source == "manual"
+
+
+@pytest.mark.asyncio
+async def test_bulk_week_pin_dry_run_counts_without_changing(client, db) -> None:
+    """dry_run: 件数だけ返して何も変更しない (確認ダイアログの件数表示用)."""
+    admin = await _make_user(db, email="wpb-3@example.com", role="admin")
+    patient = await _make_patient(db, code="WPB-3")
+    v = await _make_visit(db, patient=patient, source="auto")
+
+    res = await client.post(
+        _BULK_URL,
+        headers=_bearer(admin),
+        json={**_BULK_WEEK, "pinned": True, "dry_run": True},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json() == {"target_count": 1, "updated_count": 0}
+    await db.refresh(v)
+    assert v.source == "auto"
+
+
+@pytest.mark.asyncio
+async def test_bulk_week_pin_writes_single_audit_row(client, db) -> None:
+    admin = await _make_user(db, email="wpb-4@example.com", role="admin")
+    patient = await _make_patient(db, code="WPB-4")
+    await _make_visit(db, patient=patient, source="auto")
+
+    res = await client.post(_BULK_URL, headers=_bearer(admin), json={**_BULK_WEEK, "pinned": True})
+    assert res.status_code == 200, res.text
+
+    row = await db.scalar(select(AuditLog).where(AuditLog.action == "visit_week_pin_bulk"))
+    assert row is not None
+    assert row.target_id == "2026-W36"
+    assert row.after == {"pinned": True, "count": 1}
+
+
+@pytest.mark.asyncio
+async def test_bulk_week_pin_forbidden_for_staff(client, db) -> None:
+    staff_user = await _make_user(db, email="wpb-5@example.com", role="staff")
+    res = await client.post(
+        _BULK_URL, headers=_bearer(staff_user), json={**_BULK_WEEK, "pinned": True}
+    )
+    assert res.status_code == 403, res.text
+
+
+@pytest.mark.asyncio
+async def test_bulk_week_pin_other_week_untouched(client, db) -> None:
+    """対象週の外の訪問には触れない."""
+    admin = await _make_user(db, email="wpb-6@example.com", role="admin")
+    patient = await _make_patient(db, code="WPB-6")
+    v = await _make_visit(db, patient=patient, source="auto")
+
+    res = await client.post(
+        _BULK_URL,
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 40, "pinned": True},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["target_count"] == 0
+    await db.refresh(v)
+    assert v.source == "auto"

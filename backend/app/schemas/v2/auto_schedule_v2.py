@@ -687,6 +687,39 @@ class VisitWeekPinResponse(BaseModel):
     source: str = Field(description="適用後の visit.source")
 
 
+class VisitWeekPinBulkRequest(BaseModel):
+    """``POST /api/v1/schedule/v2/visits/week-pin/bulk`` request (PO 決定 2026-08-08).
+
+    当該週の対象訪問を **一括で** 今週固定する / 解除する。赤ピンの
+    「全件ピン留め / 全件ピン留め解除」(POST /patients/fixed-visits/pin/bulk) と
+    対になる青ピン版。対象は単発 PATCH と同じ規則:
+      - status='planned' のみ
+      - pinned=true  : 型の管理下にある source (auto/.../reset_v2) → 'manual_week'
+      - pinned=false : 'manual_week' → 'auto'
+    'manual' (毎週の手動作成) / 'import' (カイポケ取込) は対象外として skip する
+    (単発 PATCH は 422 だが、一括では「対象外を静かに除く」が自然な意味論)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    iso_year: int = Field(ge=2020, le=2100)
+    iso_week: int = Field(ge=1, le=53)
+    pinned: bool = Field(description="true=今週全件固定 / false=今週の固定を全解除")
+    dry_run: bool = Field(
+        default=False,
+        description="true なら件数だけ返して何も変更しない (確認ダイアログの件数表示用)",
+    )
+
+
+class VisitWeekPinBulkResponse(BaseModel):
+    """``POST .../week-pin/bulk`` response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_count: int = Field(ge=0, description="対象になった訪問数 (dry_run でも返す)")
+    updated_count: int = Field(ge=0, description="実際に更新した訪問数 (dry_run では 0)")
+
+
 # ---------------------------------------------------------------------------
 # 5) /apply-week-only (この週だけ反映)
 #

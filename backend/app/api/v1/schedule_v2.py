@@ -78,6 +78,8 @@ from app.schemas.v2.auto_schedule_v2 import (
     V2WeekdayBeforeAfter,
     VisitMoveWeekOnlyRequest,
     VisitMoveWeekOnlyResponse,
+    VisitWeekPinBulkRequest,
+    VisitWeekPinBulkResponse,
     VisitWeekPinRequest,
     VisitWeekPinResponse,
     WeekdayStaffCapacityItem,
@@ -1480,6 +1482,80 @@ async def visit_week_pin_endpoint(
         pinned=visit.source == VISIT_SOURCE_MANUAL_WEEK,
         source=visit.source,
     )
+
+
+@router.post(
+    "/v2/visits/week-pin/bulk",
+    response_model=VisitWeekPinBulkResponse,
+    status_code=status.HTTP_200_OK,
+    summary="週のピン (青) 一括: 今週を全件固定する / 今週の固定を全解除する",
+)
+async def visit_week_pin_bulk_endpoint(
+    payload: VisitWeekPinBulkRequest,
+    db: DbDep,
+    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> VisitWeekPinBulkResponse:
+    """赤ピンの「全件ピン留め / 全件ピン留め解除」と対になる青ピンの一括操作。
+
+    - ``pinned=true``  : 当該週の planned 訪問のうち、型の管理下にある source
+      (auto/.../reset_v2) を **一括で 'manual_week' に**。以後、赤ピンを全解除して
+      提案・週生成を回しても今週の実配置は動かない。
+    - ``pinned=false`` : 'manual_week' を一括で 'auto' に戻す。**その場では動かない**
+      が、次の週生成で型の時刻が読み込まれる。
+
+    'manual' (毎週の手動作成) / 'import' (カイポケ取込) / planned 以外は対象外として
+    静かに skip する (単発 PATCH の 422 と違い、一括では対象抽出の意味論)。
+    ``dry_run=true`` は件数だけ返す (確認ダイアログ用)。
+    audit_log には 1 回の操作につき 1 行 (counts) を記録する。
+    """
+    try:
+        week_monday = date.fromisocalendar(payload.iso_year, payload.iso_week, 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid ISO week: year={payload.iso_year} week={payload.iso_week}",
+        ) from exc
+    week_sunday = date.fromordinal(week_monday.toordinal() + 6)
+
+    if payload.pinned:
+        source_filter = Visit.source.in_(sorted(_WEEK_PIN_TOGGLEABLE_SOURCES))
+        new_source = VISIT_SOURCE_MANUAL_WEEK
+    else:
+        source_filter = Visit.source == VISIT_SOURCE_MANUAL_WEEK
+        new_source = _WEEK_PIN_RELEASED_SOURCE
+
+    rows = (
+        await db.scalars(
+            select(Visit).where(
+                Visit.deleted_at.is_(None),
+                Visit.visit_date >= week_monday,
+                Visit.visit_date <= week_sunday,
+                Visit.status == VISIT_STATUS_PLANNED,
+                source_filter,
+            )
+        )
+    ).all()
+
+    if payload.dry_run or not rows:
+        return VisitWeekPinBulkResponse(target_count=len(rows), updated_count=0)
+
+    for v in rows:
+        v.source = new_source
+    db.add(
+        AuditLog(
+            actor_user_id=current_user.id,
+            action="visit_week_pin_bulk",
+            target_table="visits",
+            # 対象は週単位 (visit id 列挙は数百件になり得るため counts のみ記録.
+            # 個別の切替履歴が必要な操作は単発 PATCH 側が per-visit で残す).
+            target_id=f"{payload.iso_year}-W{payload.iso_week:02d}",
+            before={"pinned": not payload.pinned, "count": len(rows)},
+            after={"pinned": payload.pinned, "count": len(rows)},
+        )
+    )
+    await db.commit()
+
+    return VisitWeekPinBulkResponse(target_count=len(rows), updated_count=len(rows))
 
 
 # ---------------------------------------------------------------------------
