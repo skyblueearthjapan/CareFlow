@@ -36,6 +36,12 @@ import type { EventRead } from '@/lib/schemas/staff-events';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
 import { CornerPushPin } from '@/components/ui/push-pin';
 import { MovabilityMark } from './MovabilityMark';
+import {
+  isDivergedFromMaster,
+  masterDivergenceCardStyle,
+  masterDivergenceTitle,
+  masterTimeSuffix,
+} from './masterDivergence';
 import { parseHM, SAME_ADDRESS_PAIR_MIN_OCCUPANCY } from '@/lib/scheduling/freeGaps';
 import {
   assignLanes,
@@ -473,7 +479,11 @@ function VisitCard({
         borderLeftColor: accOverlap ? 'var(--error)' : isCancelled ? 'var(--text-muted)' : pal.bar,
         color: isCancelled ? 'var(--text-muted)' : pal.ink,
         opacity: isCancelled ? 0.7 : 1,
+        // 案 A (2026-08-08): 型とズレている訪問は左端の帯を破線＋警告色にする。
+        // 同行の重なり (error) / キャンセルの表示より優先度は低いので後置きで上書き。
+        ...(!accOverlap && !isCancelled ? (masterDivergenceCardStyle(visit) ?? {}) : {}),
       }}
+      data-master-diverged={isDivergedFromMaster(visit) ? 'true' : undefined}
     >
       {/* 同行モード: 選択チェック / 常時表示: 個別同行バッジ (§7.2)。 */}
       {accActive && accSelected && (
@@ -537,6 +547,17 @@ function VisitCard({
           <span className="tnum shrink-0 font-semibold">
             {(visit.start_time ?? '').slice(0, 5)}・{durMin}分
           </span>
+          {/* 案 B (2026-08-08): 型とズレているときだけ本来の時刻を併記する。
+              ズレの有無だけでは判断できない (2 時間半ズレる例がある) ため。 */}
+          {masterTimeSuffix(visit) ? (
+            <span
+              className="tnum shrink-0 font-semibold text-warning"
+              data-testid={`tl-master-diverged-${visit.id}`}
+              title={masterDivergenceTitle(visit) ?? undefined}
+            >
+              {masterTimeSuffix(visit)}
+            </span>
+          ) : null}
           <span className="truncate">
             {isCancelled ? 'キャンセル' : (visit.patient_time_type ?? '')}
           </span>

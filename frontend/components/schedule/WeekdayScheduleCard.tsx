@@ -86,6 +86,11 @@ export interface VisitListItem {
   /** Phase G-21: PFV.is_pinned のミラー値. true で 🔒 active 表示. */
   is_pinned?: boolean | null;
   /**
+   * 2026-08-08: 型 (固定訪問スケジュール) とズレているときの型の開始時刻 'HH:MM'.
+   * 一致 / 固定枠なし は null. ピン留めできない理由の説明に使う.
+   */
+  master_start_time?: string | null;
+  /**
    * T-1L: タイムライン兄弟リスト (TimelineDayList) 用の患者性別 (patient.sex:
    * male/female/unknown)。行頭の性別ドット・左色帯に使う。既存 WeekdayScheduleCard は
    * 未使用 (加算のみ・無影響)。
@@ -830,6 +835,14 @@ export function PinToggleButton({ visit, onTogglePin }: PinToggleButtonProps) {
   // visit.patient_id が無い (= weekly_pattern fallback 等の例外) ときは disabled.
   const patientId = visit.patient_id ?? null;
   const disabled = !pfvId || !patientId;
+  // 論点 1 (PO 決定 2026-08-08): 無効の理由を正しく伝える。
+  // 固定枠が在るのに時刻がズレている場合、「先に固定枠登録が必要」は嘘になる。
+  // 合わせ直す導線は設けず、事実を伝えるだけにする。
+  const masterStartTime = visit.master_start_time ?? null;
+  const diverged = !pfvId && !!masterStartTime;
+  const disabledReason = diverged
+    ? `固定訪問スケジュールは ${masterStartTime} です。この時間帯ではピン留めできません`
+    : '先に固定枠登録が必要';
   // Phase G-47: click 即時 toggle を廃し、 PinScopeMenu で「曜日のみ / 全曜日」 2 択を提示.
   return (
     <PinScopeMenu
@@ -849,12 +862,12 @@ export function PinToggleButton({ visit, onTogglePin }: PinToggleButtonProps) {
             isPinned
               ? `${visit.patient_name} のピン留めスコープを選択 (ピン留めを外す)`
               : disabled
-                ? `${visit.patient_name} は固定枠が無いためピン留めできません`
+                ? `${visit.patient_name} は${disabledReason}`
                 : `${visit.patient_name} のピン留めスコープを選択 (ピン留めする)`
           }
           title={
             disabled
-              ? '先に固定枠登録が必要'
+              ? disabledReason
               : isPinned
                 ? 'ピン留めを外すスコープを選択 (この曜日のみ / 全曜日)'
                 : 'ピン留めするスコープを選択 (この曜日のみ / 全曜日)'

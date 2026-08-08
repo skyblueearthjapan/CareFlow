@@ -67,6 +67,12 @@ export interface WeekOverviewVisit {
    * null/undefined/'unknown' は非表示 (日タイムラインと同じ規則)。
    */
   movability?: Movability | null;
+  /**
+   * 型 (固定訪問スケジュール) とのズレ (2026-08-08 / PO 要望).
+   * 固定枠は在るが開始時刻が一致しないときだけ、その固定枠の 'HH:MM' が入る。
+   * 一致 / 固定枠なし は null。ズレ表示とピン留め不可メッセージに使う。
+   */
+  master_start_time?: string | null;
   /** 患者の緯度経度 (距離算出用). null = 未登録 → 距離は出さない. */
   lat?: number | null;
   lng?: number | null;
@@ -504,6 +510,8 @@ export function CourseWeekOverview({
                         fixedVisitId: string | null;
                         /** Phase G-22: PFV.is_pinned. */
                         isPinned: boolean;
+                        /** 2026-08-08: 型とズレているときの型の開始時刻 'HH:MM' (一致なら null)。 */
+                        masterStartTime: string | null;
                         /** 患者性別 (male/female/unknown)。行頭ドット (日リストと同じ視覚言語)。 */
                         patientSex: string | null;
                       }
@@ -541,6 +549,8 @@ export function CourseWeekOverview({
                         sexRestriction: v.patient_sex_restriction ?? null,
                         fixedVisitId: v.fixed_visit_id ?? null,
                         isPinned: v.is_pinned === true,
+                        // 2026-08-08: ピン留め不可の理由を正しく出すために型の時刻を運ぶ。
+                        masterStartTime: v.master_start_time ?? null,
                         patientSex: v.patient_sex ?? null,
                       };
                     }),
@@ -792,6 +802,7 @@ export function CourseWeekOverview({
                                           <PinIconButton
                                             fixedVisitId={item.fixedVisitId}
                                             isPinned={item.isPinned}
+                                            masterStartTime={item.masterStartTime}
                                             label={item.label}
                                             patientId={item.patient_id}
                                             onTogglePin={onTogglePin}
@@ -894,6 +905,7 @@ export function CourseWeekOverview({
                                                 <PinIconButton
                                                   fixedVisitId={v.fixedVisitId}
                                                   isPinned={v.isPinned}
+                                                  masterStartTime={v.masterStartTime}
                                                   label={v.label}
                                                   patientId={v.patient_id}
                                                   onTogglePin={onTogglePin}
@@ -950,6 +962,12 @@ export function CourseWeekOverview({
 interface PinIconButtonProps {
   fixedVisitId: string | null;
   isPinned: boolean;
+  /**
+   * 型 (固定訪問スケジュール) の開始時刻。今週の実配置とズレているときだけ 'HH:MM'。
+   * ズレている場合は「固定枠が無い」のではなく「時刻が違う」のでピン留めできない。
+   * 旧実装は両者を区別せず「先に固定枠登録が必要」と表示しており、嘘になっていた。
+   */
+  masterStartTime?: string | null;
   label: string;
   /** Phase G-47: bulk (全曜日) スコープ選択時に patient の全 PFV 対象として渡る. */
   patientId: string;
@@ -961,6 +979,7 @@ interface PinIconButtonProps {
 function PinIconButton({
   fixedVisitId,
   isPinned,
+  masterStartTime,
   label,
   patientId,
   visitId,
@@ -968,6 +987,11 @@ function PinIconButton({
   onTogglePin,
 }: PinIconButtonProps) {
   const disabled = !fixedVisitId;
+  // 論点 1 (PO 決定 2026-08-08): 無効の理由を正しく伝える。合わせ直す導線は設けない。
+  const diverged = disabled && typeof masterStartTime === 'string' && masterStartTime.length > 0;
+  const disabledReason = diverged
+    ? `固定訪問スケジュールは ${masterStartTime} です。この時間帯ではピン留めできません`
+    : '先に固定枠登録が必要';
   // Phase G-47: click 即時 toggle を廃し、 PinScopeMenu で「曜日のみ / 全曜日」 2 択を提示.
   return (
     <PinScopeMenu
@@ -987,12 +1011,12 @@ function PinIconButton({
             isPinned
               ? `${label} のピン留めスコープを選択 (ピン留めを外す)`
               : disabled
-                ? `${label} は固定枠が無いためピン留めできません`
+                ? `${label} は${disabledReason}`
                 : `${label} のピン留めスコープを選択 (ピン留めする)`
           }
           title={
             disabled
-              ? '先に固定枠登録が必要'
+              ? disabledReason
               : isPinned
                 ? 'ピン留めを外すスコープを選択 (この曜日のみ / 全曜日)'
                 : 'ピン留めするスコープを選択 (この曜日のみ / 全曜日)'

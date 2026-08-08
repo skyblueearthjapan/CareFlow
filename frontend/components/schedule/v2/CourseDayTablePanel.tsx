@@ -485,6 +485,24 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pfvPatientIds.join(','), pfvQueriesDepKey]);
 
+  // `(patient_id, weekday, slot_index) → PFV` の **時刻を含まない** lookup (2026-08-08).
+  //
+  // 上の pfvByVisitKey は開始時刻まで含めた完全一致なので、型とズレている訪問は
+  // 「固定枠なし」と区別がつかない。ズレを可視化し、ピン留めできない理由を正確に
+  // 伝える (「固定訪問スケジュールは 13:00 です」) には、時刻抜きで引ける必要がある。
+  const pfvByPatientWeekdaySlot = useMemo(() => {
+    const m = new Map<string, PatientFixedVisitV2Read>();
+    pfvPatientIds.forEach((pid, i) => {
+      const list = pfvQueries[i]?.data ?? [];
+      for (const pfv of list) {
+        if (pfv.mode !== 'normal') continue;
+        m.set(`${pid}:${pfv.weekday}:${pfv.slot_index ?? 0}`, pfv);
+      }
+    });
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pfvPatientIds.join(','), pfvQueriesDepKey]);
+
   // Phase G-21 T4 reviewer C2: 単一 PFV pin toggle hook (panel 全体で 1 instance).
   const togglePfvPin = useTogglePfvPin();
   // Phase G-47: 「全曜日」 スコープ選択時の bulk hook (panel 全体で 1 instance).
@@ -983,12 +1001,23 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       let isPinned = false;
       // 2026-08-07 (PO 要望): 可動域を盤面に「うっすら」出すための値.
       let movability: Movability | null = null;
+      // 2026-08-08 (PO 要望): 型とズレている場合の「型の開始時刻」.
+      let masterStartTime: string | null = null;
       if (pfvWeekday !== null && visitHHMM) {
         const pfv = pfvByVisitKey.get(`${v.patient_id}:${pfvWeekday}:${visitHHMM}:${pfvSlot}`);
         if (pfv) {
           fixedVisitId = pfv.id;
           isPinned = pfv.is_pinned === true;
           movability = pfv.movability ?? null;
+        } else {
+          // 完全一致が無い = 「固定枠が無い」か「固定枠はあるが時刻がズレている」。
+          // 後者だけを拾って型の時刻を伝える (前者は従来どおり null のまま)。
+          const byWd = pfvByPatientWeekdaySlot.get(`${v.patient_id}:${pfvWeekday}:${pfvSlot}`);
+          if (byWd) {
+            masterStartTime = (byWd.start_time ?? '').slice(0, 5) || null;
+            // 可動域は「その枠の性質」なのでズレていても伝える (盤面の一貫性).
+            movability = byWd.movability ?? null;
+          }
         }
       }
       // BE が将来 visit response に直接 fixed_visit_id / is_pinned を expose した
@@ -1023,9 +1052,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         // Phase G-21 T4 reviewer C2: PFV lookup 結果 (= null なら 🔒 ボタンは disabled).
         fixed_visit_id: fixedVisitId,
         is_pinned: isPinned,
-        // 可動域 (2026-08-07): 'locked' は提案系・自動割当とも不可侵、
-        // time_flexible/day_flexible は動かせる範囲を示す。'unknown' は非表示。
+        // 可動域 (2026-08-07): 'locked' は提案系・自動割当とも不可侵。'unknown' は非表示。
         movability,
+        // 型とのズレ (2026-08-08): ズレている場合のみ型の開始時刻が入る。
+        master_start_time: masterStartTime,
         // Wave U-2: 「今週のみ」チップの根拠 (source='manual_week' でチップ表示).
         source: (v as { source?: string | null }).source ?? null,
         // R-2: キャンセル表示 ('cancelled' のとき grey + 打消し線 + バッジ).
@@ -1048,6 +1078,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     partnerLocationByVisit,
     sameAddressKeyByPatientId,
     pfvByVisitKey,
+    pfvByPatientWeekdaySlot,
   ]);
 
   // ─── Phase G-55: course_id → 空き時間帯 (≥60分) のマップ ───────────────
@@ -1246,6 +1277,11 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       const pfvHit = visitHHMM
         ? pfvByVisitKey.get(`${v.patient_id}:${wd}:${visitHHMM}:${pfvSlot}`)
         : undefined;
+      // 2026-08-08: 完全一致が無いときだけ、時刻抜きで固定枠を引いてズレを判定する。
+      const pfvByWd = pfvHit
+        ? undefined
+        : pfvByPatientWeekdaySlot.get(`${v.patient_id}:${wd}:${pfvSlot}`);
+      const masterStartTime = pfvByWd ? (pfvByWd.start_time ?? '').slice(0, 5) || null : null;
       // BE が将来 fixed_visit_id / is_pinned を直接返した場合のフォールバック
       const beFixedVisitId = (v as { fixed_visit_id?: string | null }).fixed_visit_id ?? null;
       const beIsPinned = (v as { is_pinned?: boolean | null }).is_pinned ?? null;
@@ -1264,7 +1300,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         fixed_visit_id: beFixedVisitId ?? pfvHit?.id ?? null,
         is_pinned: beIsPinned !== null ? beIsPinned === true : pfvHit?.is_pinned === true,
         // 可動域 (2026-08-07): 週タイムラインでも「固 / 時 / 曜」を淡く出す。
-        movability: pfvHit?.movability ?? null,
+        movability: pfvHit?.movability ?? pfvByWd?.movability ?? null,
+        // 型とのズレ (2026-08-08): ズレている場合のみ型の開始時刻が入る。
+        master_start_time: masterStartTime,
         // 週ビューの距離算出用 (コース合計 + 次までの距離).
         lat: (patient as { lat?: number | null } | undefined)?.lat ?? null,
         lng: (patient as { lng?: number | null } | undefined)?.lng ?? null,
@@ -1290,6 +1328,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     courses,
     patientById,
     pfvByVisitKey,
+    pfvByPatientWeekdaySlot,
     visitsByGroupId,
     sameAddressKeyByPatientId,
   ]);

@@ -18,6 +18,12 @@ import { useMemo } from 'react';
 import type { WeekOverviewVisit } from '@/components/schedule/v2/CourseWeekOverview';
 import { CornerPushPin } from '@/components/ui/push-pin';
 import { MovabilityMark } from './MovabilityMark';
+import {
+  isDivergedFromMaster,
+  masterDivergenceCardStyle,
+  masterDivergenceTitle,
+  masterTimeSuffix,
+} from './masterDivergence';
 import { parseHM, SAME_ADDRESS_PAIR_MIN_OCCUPANCY } from '@/lib/scheduling/freeGaps';
 import {
   assignLanes,
@@ -174,7 +180,10 @@ function WeekCard({
         borderColor: accOverlap ? 'var(--error)' : pal.ln,
         borderLeftColor: accOverlap ? 'var(--error)' : pal.bar,
         color: pal.ink,
+        // 案 A (2026-08-08): 型とズレている訪問は左端の帯を破線＋警告色に (日ビューと同一)。
+        ...(!accOverlap ? (masterDivergenceCardStyle(v) ?? {}) : {}),
       }}
+      data-master-diverged={isDivergedFromMaster(v) ? 'true' : undefined}
     >
       {/* 同行モード: 選択チェック (実効選択集合に入っている訪問)。 */}
       {accActive && accSelected && (
@@ -217,8 +226,20 @@ function WeekCard({
       </span>
       {/* 2行目: 時刻・所要分 (日ビューと同じ構成)。 */}
       {h >= TL_SHOW_SVC_PX && (
-        <span className="tnum text-[9.5px] font-semibold opacity-75">
-          {(v.start_time ?? '').slice(0, 5)}・{durMin}分
+        <span className="tnum flex min-w-0 items-center gap-1 text-[9.5px] font-semibold opacity-75">
+          <span className="shrink-0">
+            {(v.start_time ?? '').slice(0, 5)}・{durMin}分
+          </span>
+          {/* 案 B (2026-08-08): 型とズレているときだけ本来の時刻を併記 (日ビューと同一)。 */}
+          {masterTimeSuffix(v) ? (
+            <span
+              className="shrink-0 text-warning"
+              data-testid={`wtl-master-diverged-${v.id}`}
+              title={masterDivergenceTitle(v) ?? undefined}
+            >
+              {masterTimeSuffix(v)}
+            </span>
+          ) : null}
         </span>
       )}
       {/* 3行目: 📍住所 (日ビューと情報統一・30分カードから表示)。 */}
