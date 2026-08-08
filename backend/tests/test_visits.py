@@ -40,6 +40,38 @@ async def test_visits_list_admin_returns_200(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_visits_list_exposes_week_pinned(client, db) -> None:
+    """回帰 (2026-08-09): 一覧 API が week_pinned を返すこと。
+
+    _serialize_visit は手書き dict のため、列を足してもここに追記しないと
+    VisitRead の default False で上書きされ、DB が true でも API が false を
+    返す (実際に起きた: 青ピンが盤面に一切出なかった)。
+    """
+    admin = await _make_user(db, "v-wp@example.com", "admin")
+    p = Patient(code="V-WP", name="患者")
+    db.add(p)
+    await db.commit()
+    await db.refresh(p)
+    visit = Visit(
+        patient_id=p.id,
+        visit_date=date(2026, 5, 1),
+        start_time=time(9, 0),
+        end_time=time(10, 0),
+        type="visit",
+        source="import",
+        week_pinned=True,
+    )
+    db.add(visit)
+    await db.commit()
+
+    res = await client.get("/api/v1/visits", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    row = next(r for r in res.json() if r["id"] == str(visit.id))
+    assert row["week_pinned"] is True
+    assert row["source"] == "import"
+
+
+@pytest.mark.asyncio
 async def test_visits_get_unknown_returns_404(client, db) -> None:
     admin = await _make_user(db, "v-admin2@example.com", "admin")
     res = await client.get(f"/api/v1/visits/{uuid4()}", headers=_bearer(admin))

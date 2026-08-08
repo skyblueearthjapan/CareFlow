@@ -160,6 +160,10 @@ def _serialize_visit(
         "type": visit.type,
         "status": visit.status,
         "source": visit.source,
+        # 週のピン (青ピン / 2026-08-09)。手書き dict のため列追加時はここにも
+        # 足すこと — 漏れると VisitRead の default False で上書きされ、DB が true
+        # でも API が false を返す (実際に起きた事故)。
+        "week_pinned": bool(getattr(visit, "week_pinned", False)),
         "note": visit.note,
         "kaipoke_id": visit.kaipoke_id,
         # W2-BE4 v2 fields
