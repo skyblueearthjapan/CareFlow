@@ -34,7 +34,7 @@ import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
-import { CornerPushPin } from '@/components/ui/push-pin';
+import { CornerPushPin, CornerWeekPushPin, PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { MovabilityMark } from './MovabilityMark';
 import {
   isDivergedFromMaster,
@@ -196,6 +196,14 @@ export interface TimelineDayBoardProps {
    */
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
   /**
+   * 週のピン (青ピン / PO 決定 2026-08-08)。「今週はこの位置のまま動かさない」。
+   *
+   * 赤ピン (型のピン) は型と一致する訪問にしか刺せないため、型とズレた訪問を
+   * 今の位置で守る手段が無かった。青ピンはその穴を埋める。
+   * 未指定ならトグルを描画しない (閲覧のみのロール / 表示専用の呼び出し)。
+   */
+  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
+  /**
    * 新人同行 (§7.1/§7.2)。active なら列ヘッダ/カードが選択トグル (通常操作は親が抑止)、
    * inactive なら常時表示バッジを描く。
    */
@@ -246,6 +254,8 @@ function WeekOnlyChip({
 }: {
   visit: CourseGridVisit;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  /** 週のピン (青ピン) のトグル。未指定なら描画しない。 */
+  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
   className?: string;
 }) {
   const base = cn(
@@ -351,6 +361,7 @@ function VisitCard({
   drag,
   onDeleteVisit,
   onPromoteWeekOnly,
+  onToggleWeekPin,
   accompaniment,
 }: {
   visit: CourseGridVisit;
@@ -362,6 +373,8 @@ function VisitCard({
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   /** G3: 「今週のみ」チップの昇格ハンドラ。未指定でもチップ自体は表示する。 */
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  /** 週のピン (青ピン) のトグル。未指定ならトグルを描画しない。 */
+  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
   /** 新人同行 (§7.1/§7.2)。 */
   accompaniment?: AccompanimentBinding;
 }) {
@@ -508,8 +521,47 @@ function VisitCard({
           👥{accBadge}
         </span>
       )}
-      {/* ピン留め: 右上に打ち込んだ画鋲 (📍住所と誤認しない・PO要望 2026-07-08)。 */}
+      {/* ピン留め: 右上に打ち込んだ画鋲 (📍住所と誤認しない・PO要望 2026-07-08)。
+          赤=型のピン (毎週) / 青=週のピン (今週だけ)。赤が刺さっている訪問は型と
+          一致しているため、通常この 2 つが同時に立つことは無い。 */}
       {visit.is_pinned && <CornerPushPin />}
+      {isWeekOnly && !visit.is_pinned && <CornerWeekPushPin />}
+      {/* 週のピンのトグル (青ピン)。型とズレていても刺せる唯一の固定手段なので、
+          カードから直接操作できるようにする。赤ピンが刺さっている訪問には出さない
+          (型のピンが既に不可侵を担保しており、二重の固定は意味が無い)。 */}
+      {onToggleWeekPin && !visit.is_pinned && !isCancelled && height >= TL_SHOW_SVC_PX && (
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleWeekPin(visit.id, !isWeekOnly);
+          }}
+          data-testid={`tl-week-pin-toggle-${visit.id}`}
+          data-week-pinned={isWeekOnly ? 'true' : 'false'}
+          aria-pressed={isWeekOnly}
+          aria-label={
+            isWeekOnly
+              ? `${visit.patient_name ?? '訪問'} の今週の固定を解除`
+              : `${visit.patient_name ?? '訪問'} を今週この時刻で固定`
+          }
+          title={
+            isWeekOnly
+              ? '今週の固定を解除します（この場では動きません。次の週生成で固定訪問スケジュールの時刻が読み込まれます）'
+              : '今週この時刻で固定します（固定訪問スケジュールは変更しません）'
+          }
+          className={cn(
+            'absolute bottom-0 left-0 z-[3] flex h-4 w-4 items-center justify-center rounded-sm text-[10px] leading-none transition-opacity',
+            isWeekOnly ? 'text-info opacity-90' : 'opacity-25 hover:opacity-80',
+          )}
+        >
+          {isWeekOnly ? (
+            <PushPin className="h-3 w-3 text-info" />
+          ) : (
+            <PushPinOff className="h-3 w-3" />
+          )}
+        </button>
+      )}
       {/* 1行目: アイコン + 患者名 (名前に行を専有させフル表示。切れにくくする)。 */}
       <span className="flex min-w-0 items-center gap-1">
         {isMulti && (
@@ -622,6 +674,7 @@ function DraggableVisitCard({
   laneInfo,
   onDeleteVisit,
   onPromoteWeekOnly,
+  onToggleWeekPin,
   accompaniment,
 }: {
   visit: CourseGridVisit;
@@ -629,6 +682,8 @@ function DraggableVisitCard({
   laneInfo?: CardLane;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  /** 週のピン (青ピン) のトグル。未指定なら描画しない。 */
+  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
   accompaniment?: AccompanimentBinding;
 }) {
   const dragDisabled =
@@ -646,6 +701,7 @@ function DraggableVisitCard({
       drag={{ attributes, listeners, setNodeRef, isDragging, disabled: dragDisabled }}
       onDeleteVisit={onDeleteVisit}
       onPromoteWeekOnly={onPromoteWeekOnly}
+      onToggleWeekPin={onToggleWeekPin}
       accompaniment={accompaniment}
     />
   );
@@ -669,6 +725,8 @@ function DraggablePairBox({
   onPatientClick?: (patientId: string) => void;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  /** 週のピン (青ピン) のトグル。未指定なら描画しない。 */
+  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
   accompaniment?: AccompanimentBinding;
 }) {
   const dragDisabled = item.visits.some(
@@ -876,6 +934,8 @@ function PairMemberRowView({
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   /** G3: ペア行の「今週のみ」チップ。 */
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  /** 週のピン (青ピン) のトグル。未指定なら描画しない。 */
+  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
   /** 新人同行 (§7.1/§7.2)。 */
   accompaniment?: AccompanimentBinding;
 }) {
@@ -1042,6 +1102,8 @@ function DraggablePairMemberRow({
   onPatientClick?: (patientId: string) => void;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  /** 週のピン (青ピン) のトグル。未指定なら描画しない。 */
+  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
   accompaniment?: AccompanimentBinding;
 }) {
   const dragDisabled =
@@ -1083,6 +1145,8 @@ function PairBox({
   memberDndEnabled?: boolean;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  /** 週のピン (青ピン) のトグル。未指定なら描画しない。 */
+  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
   /** 新人同行 (§7.1/§7.2)。 */
   accompaniment?: AccompanimentBinding;
 }) {
@@ -1378,6 +1442,7 @@ function TimelineColumn({
   dndEnabled,
   onDeleteVisit,
   onPromoteWeekOnly,
+  onToggleWeekPin,
   accompaniment,
 }: {
   col: TimelineCourseColumn;
@@ -1387,6 +1452,8 @@ function TimelineColumn({
   dndEnabled?: boolean;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
+  /** 週のピン (青ピン) のトグル。未指定なら描画しない。 */
+  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
   accompaniment?: AccompanimentBinding;
 }) {
   const height = timelineHeightPx();
@@ -1517,6 +1584,7 @@ function TimelineColumn({
             onClick={onPatientClick ? () => onPatientClick(it.v.patient_id) : undefined}
             onDeleteVisit={onDeleteVisit}
             onPromoteWeekOnly={onPromoteWeekOnly}
+            onToggleWeekPin={onToggleWeekPin}
             accompaniment={accompaniment}
           />
         ) : (
@@ -1527,6 +1595,7 @@ function TimelineColumn({
             onClick={onPatientClick ? () => onPatientClick(it.v.patient_id) : undefined}
             onDeleteVisit={onDeleteVisit}
             onPromoteWeekOnly={onPromoteWeekOnly}
+            onToggleWeekPin={onToggleWeekPin}
             accompaniment={accompaniment}
           />
         ),
@@ -1550,6 +1619,7 @@ export function TimelineDayBoard({
   isStaffMutating,
   onDeleteVisit,
   onPromoteWeekOnly,
+  onToggleWeekPin,
   accompaniment,
   accompanimentWeekday,
 }: TimelineDayBoardProps) {
@@ -1813,6 +1883,7 @@ export function TimelineDayBoard({
             dndEnabled={dndEnabled}
             onDeleteVisit={onDeleteVisit}
             onPromoteWeekOnly={onPromoteWeekOnly}
+            onToggleWeekPin={onToggleWeekPin}
             accompaniment={accompaniment}
           />
         ))}

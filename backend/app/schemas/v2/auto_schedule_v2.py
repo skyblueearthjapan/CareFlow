@@ -654,6 +654,40 @@ class VisitMoveWeekOnlyResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 4d) 週のピン (青ピン) — PO 決定 2026-08-08
+# ---------------------------------------------------------------------------
+
+
+class VisitWeekPinRequest(BaseModel):
+    """``PATCH /api/v1/schedule/v2/visits/{visit_id}/week-pin`` request.
+
+    「今週はこの位置のまま動かさない」を表す **週のピン (青ピン)**。
+    型 (固定訪問スケジュール) に対する赤ピン (``PFV.is_pinned``) とは別物で、
+    型とズレている訪問にも刺せる (赤ピンは型と一致する訪問にしか刺せない)。
+
+    実体は ``visit.source='manual_week'``。この値は既に
+      - 週生成の削除対象から除外される
+      - 再生成ループが当該 (patient, visit_date) を skip する
+        (= 「この週だけの決定」が型スロットを一時上書きする)
+    という意味論を持っており、青ピンはその **入口** を足すもの。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pinned: bool = Field(description="true=今週固定する / false=型の管理に戻す")
+
+
+class VisitWeekPinResponse(BaseModel):
+    """``PATCH .../week-pin`` response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    visit_id: uuid.UUID
+    pinned: bool = Field(description="適用後の状態 (true=今週固定)")
+    source: str = Field(description="適用後の visit.source")
+
+
+# ---------------------------------------------------------------------------
 # 5) /apply-week-only (この週だけ反映)
 #
 # 全面最適化の結果を **その週の visits だけ** に反映する慎重モード.

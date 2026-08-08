@@ -78,6 +78,8 @@ from app.schemas.v2.auto_schedule_v2 import (
     V2WeekdayBeforeAfter,
     VisitMoveWeekOnlyRequest,
     VisitMoveWeekOnlyResponse,
+    VisitWeekPinRequest,
+    VisitWeekPinResponse,
     WeekdayStaffCapacityItem,
     WeekdayStaffCapacityResponse,
 )
@@ -1381,6 +1383,103 @@ async def visit_move_week_only_endpoint(
         await db.commit()
 
     return VisitMoveWeekOnlyResponse(visits_moved=moved)
+
+
+# ---------------------------------------------------------------------------
+# 4d) PATCH /schedule/v2/visits/{visit_id}/week-pin (週のピン = 青ピン)
+#     PO 決定 2026-08-08 / 仕様: docs/plans/pin-and-movability-spec.md
+# ---------------------------------------------------------------------------
+
+# 青ピンを掛け外しできる source。
+#   - 型 (PFV/希望) から再生成される値 = 週生成で消える → 「今週固定」に意味がある
+#   - manual_week = 既に青ピン済み → 外せる
+# それ以外 ('manual' = 毎週の手動作成 / 'import' = カイポケ取込) は型の管理下に
+# 無く、週生成でも消えないため、青ピンの掛け外しは意味を持たない (422 で弾く)。
+_WEEK_PIN_TOGGLEABLE_SOURCES: frozenset[str] = frozenset(
+    {"auto", "auto_alloc", "auto_alloc_v2", "auto_alloc_v2w", "pfv", "fixed", "reset_v2"}
+)
+
+# 青ピンを外したときに戻す source。型から再生成される既定値。
+_WEEK_PIN_RELEASED_SOURCE = "auto"
+
+
+@router.patch(
+    "/v2/visits/{visit_id}/week-pin",
+    response_model=VisitWeekPinResponse,
+    status_code=status.HTTP_200_OK,
+    summary="週のピン (青ピン): 今週この位置で固定する / 型の管理に戻す",
+)
+async def visit_week_pin_endpoint(
+    visit_id: uuid.UUID,
+    payload: VisitWeekPinRequest,
+    db: DbDep,
+    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> VisitWeekPinResponse:
+    """今週の訪問を「この位置のまま動かさない」状態にする / 解除する。
+
+    赤ピン (``PFV.is_pinned``) との違い:
+      - 赤ピンは **型** に対するもの。毎週効く。型と一致する訪問にしか刺せない。
+      - 青ピンは **今週の訪問** に対するもの。その週だけ効く。
+        **型とズレていても刺せる** (ズレた訪問を今の位置で守れるのはこちらだけ)。
+
+    実体は ``visit.source='manual_week'``。この値には既に
+      1. 週生成の削除対象から除外される
+      2. 再生成ループが当該 (patient, visit_date) を skip する
+    という意味論があり、本エンドポイントはその入口を足すもの (DB 列の追加なし)。
+
+    解除 (``pinned=false``) は source を 'auto' に戻すだけで、**その場では訪問を
+    動かさない**。次に週生成を実行したときに型の時刻が読み込まれる (PO 確認済)。
+
+    422 になる条件:
+      - 完了/実績入力済みなど planned 以外の訪問 (運用上動かしてはいけない)
+      - source が型の管理下に無い ('manual' / 'import' 等)。週生成で消えないため
+        青ピンの掛け外しに意味が無く、勝手に source を書き換えると保護が変わる。
+    """
+    visit = await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
+    if visit is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"visit_id={visit_id} が見つかりません",
+        )
+
+    if visit.status != VISIT_STATUS_PLANNED:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"予定 (planned) 以外の訪問は今週固定を変更できません (status={visit.status})",
+        )
+
+    old_source = visit.source
+    already_pinned = old_source == VISIT_SOURCE_MANUAL_WEEK
+    if not already_pinned and old_source not in _WEEK_PIN_TOGGLEABLE_SOURCES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "この訪問は固定訪問スケジュールの管理下に無いため、今週固定の対象外です "
+                f"(source={old_source})"
+            ),
+        )
+
+    new_source = VISIT_SOURCE_MANUAL_WEEK if payload.pinned else _WEEK_PIN_RELEASED_SOURCE
+    if new_source != old_source:
+        visit.source = new_source
+        db.add(
+            AuditLog(
+                actor_user_id=current_user.id,
+                action="visit_week_pin_toggle",
+                target_table="visits",
+                target_id=str(visit.id),
+                before={"source": old_source},
+                after={"source": new_source},
+            )
+        )
+        await db.commit()
+        await db.refresh(visit)
+
+    return VisitWeekPinResponse(
+        visit_id=visit.id,
+        pinned=visit.source == VISIT_SOURCE_MANUAL_WEEK,
+        source=visit.source,
+    )
 
 
 # ---------------------------------------------------------------------------

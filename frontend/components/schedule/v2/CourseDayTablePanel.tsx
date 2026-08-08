@@ -104,6 +104,8 @@ import type { EventRead } from '@/lib/schemas/staff-events';
 import { useDeleteVisit, useVisits } from '@/lib/queries/visits';
 import { useBulkSyncWeekToFixedMutation } from '@/lib/api/patientSync';
 import { useBulkPinPfvs, useTogglePfvPin } from '@/lib/queries/g21';
+import { useToggleVisitWeekPin } from '@/lib/queries/visit_week_pin';
+import { apiErrorMessage } from '@/lib/api/errorMessage';
 // Phase G-47: PinScope 型 (= 個別 🔒 toggle のスコープ '曜日のみ' / '全曜日').
 import type { PinScope } from './PinScopeMenu';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
@@ -1453,6 +1455,32 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   //   使えない)、patient_ids 配列を渡せる bulk 版フックを 1 患者で流用する。
   const bulkSyncWeekToFixedMut = useBulkSyncWeekToFixedMutation();
   // 同住所ペアの2名セット移動でも一括昇格できるよう patient_ids 配列を受ける。
+  // 週のピン (青ピン / PO 決定 2026-08-08)。
+  // 型とズレている訪問は赤ピン (型のピン) が刺せないため、今の位置で守る手段が
+  // これしか無い。解除してもその場では動かず、次の週生成で型の時刻が読み込まれる。
+  const toggleWeekPinMut = useToggleVisitWeekPin();
+  const handleToggleWeekPin = useCallback(
+    (visitId: string, nextPinned: boolean) => {
+      if (!canEdit) return;
+      toggleWeekPinMut.mutate(
+        { visitId, pinned: nextPinned },
+        {
+          onSuccess: () => {
+            toast.success(
+              nextPinned
+                ? '今週この時刻で固定しました（固定訪問スケジュールは変更していません）'
+                : '今週の固定を解除しました（次の週生成で固定訪問スケジュールの時刻に戻ります）',
+            );
+          },
+          onError: (e) => {
+            toast.error(`今週の固定を変更できませんでした: ${apiErrorMessage(e)}`);
+          },
+        },
+      );
+    },
+    [canEdit, toggleWeekPinMut],
+  );
+
   const promoteWeekToFixed = useCallback(
     (patientIds: string[], label: string) => {
       bulkSyncWeekToFixedMut.mutate(
@@ -3613,6 +3641,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                         canEdit && !accompaniment.active
                           ? (patientId, patientName) => promoteWeekToFixed([patientId], patientName)
                           : undefined
+                      }
+                      // 週のピン (青ピン): 型とズレた訪問を今週この位置で固定する。
+                      onToggleWeekPin={
+                        canEdit && !accompaniment.active ? handleToggleWeekPin : undefined
                       }
                       accompaniment={accompaniment.binding}
                       accompanimentWeekday={activeWeekday}

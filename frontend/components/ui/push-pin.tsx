@@ -105,6 +105,50 @@ export function CornerPushPin({ className, ...props }: PushPinIconProps) {
   );
 }
 
+/**
+ * CornerWeekPushPin — カード右上に打ち込む **青い** 画鋲 (週のピン / PO 決定 2026-08-08).
+ *
+ * 赤い画鋲 (CornerPushPin) との対比で色分けする:
+ *   - 赤 = 型 (固定訪問スケジュール) に対するピン。毎週効く。型と一致する訪問にしか刺せない
+ *   - 青 = 今週の訪問に対するピン。その週だけ効く。**型とズレていても刺せる**
+ *
+ * 意匠は赤と完全に同じ (グロス頭 + 白リム + つや + 落ち影)。色だけが違うことで
+ * 「同じ種類の操作の色違い」だと直感的に読める。
+ *
+ * 赤と同時に立つことは通常無い (赤が刺さる = 型と一致 = 週ピンの出番が無い) が、
+ * 併存しても重ならないよう既定位置を少し左にずらしてある。
+ */
+export function CornerWeekPushPin({ className, ...props }: PushPinIconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      role="img"
+      aria-label="今週のピン留め"
+      data-icon="corner-week-push-pin"
+      className={cn(
+        'pointer-events-none absolute right-0 top-0 z-[3] h-5 w-5 translate-x-[36%] -translate-y-[29%]',
+        'drop-shadow-[1px_2px_1.5px_rgba(38,52,74,0.35)]',
+        className,
+      )}
+      {...props}
+    >
+      <line
+        x1="12.4"
+        y1="11.0"
+        x2="7.0"
+        y2="19.2"
+        stroke="#9b9289"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+      />
+      {/* 頭: 青いグロス玉 + 白リム。赤 (fill-error) との対比で var(--info) を使う。 */}
+      <circle cx="15.3" cy="6.9" r="5.9" fill="var(--info)" stroke="#fff" strokeWidth="1.4" />
+      <circle cx="13.3" cy="4.9" r="1.7" fill="#fff" opacity="0.85" />
+    </svg>
+  );
+}
+
 /** 未ピン: 灰色アウトラインの丸頭 (塗りなし) + currentColor の針. */
 export function PushPinOff({ className, ...props }: PushPinIconProps) {
   return (
