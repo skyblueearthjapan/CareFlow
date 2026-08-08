@@ -7,7 +7,8 @@
  * (Phase G-43 で Row 1 を flex 単一 toolbar 化。W-9/W-9b で両端配置に変更):
  *   ┌─ ヘッダー ────────────────────────────────────────────┐
  *   │  Row 1 (両端配置 toolbar, admin/manager only):                                 │
- *   │  [週を生成][週次ガイド] [新規患者登録][診断][最適化] │ [固定枠戻][全件保存] │ [全件ピン留め/解除] │ [今週全件固定/解除] │
+ *   │  [週を生成][週次ガイド] [新規患者登録][診断][最適化] │ [固定枠戻][全件保存] │
+ *   │  (中段・右寄せ) [全件ピン留め][全件ピン留め解除] │ [今週全件固定][今週全件解除] │
  *   │  ─── border-t ────────────────────                                            │
  *   │  Row 2 (曜日タブ + 表示モード + 二次操作):                                      │
  *   │    [月][火][水][木][金][土][週] YYYY-Www                                       │
@@ -3133,23 +3134,25 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   disabled={!canEdit || isProcessing}
                 />
                 <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
-
-                {/* 一括ピン群 (PO 指示 2026-08-09: Row 2 から Row 1 へ移動)。
-                    赤=全件ピン留め/解除 (型・毎週) │ 青=今週全件固定/解除 (今週のみ)。 */}
-                <span
-                  aria-hidden
-                  className="h-5 w-px bg-border-default"
-                  data-testid="course-day-row1-pin-divider"
-                />
-                <BulkPinAllPfvsButton canEdit={canEdit} />
-                <span aria-hidden className="h-5 w-px bg-border-default" />
-                <BulkWeekPinAllButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
               </div>
             </div>
           }
 
-          {/* Row 2: 曜日タブ (左) + テーブル/リスト + 二次操作 (右、canEdit のみ).
-              canEdit 時のみ Row 1 (主要操作) との間に border-t + mt-3 pt-3 で水平区切り線 + 余白. */}
+          {/* Row 2 (中段・PO 指示 2026-08-09): 一括ピン群を独立した段に。
+              赤=全件ピン留め/解除 (型・毎週) │ 青=今週全件固定/解除 (今週のみ)。
+              右寄せ = Row 1 右端の [固定枠戻][全件保存] (一括データ操作) の真下に揃え、
+              右側に「一括操作の列」を作る。 */}
+          <div
+            className="mt-2 flex flex-wrap items-center justify-end gap-1.5"
+            data-testid="course-day-bulk-pin-row"
+          >
+            <BulkPinAllPfvsButton canEdit={canEdit} />
+            <span aria-hidden className="h-5 w-px bg-border-default" />
+            <BulkWeekPinAllButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
+          </div>
+
+          {/* Row 3: 曜日タブ (左) + 表示切替・二次操作 (右寄せ).
+              中段 (一括ピン群) との間に border-t + mt-3 pt-3 で水平区切り線 + 余白. */}
           <div
             className="mt-3 flex flex-wrap items-center gap-2 border-t border-border-default pt-3"
             data-testid="course-day-tab-row"
