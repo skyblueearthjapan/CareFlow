@@ -181,10 +181,14 @@ describe('BulkPinAllPfvsButton (Phase G-34)', () => {
   it('2. canEdit=true → 全件ピン留め / 全件ピン留め解除 ボタンが描画される', () => {
     render(<BulkPinAllPfvsButton canEdit />);
     expect(
-      screen.getByRole('button', { name: '全患者の固定枠を一括ピン留め' }),
+      screen.getByRole('button', {
+        name: '全患者の固定訪問スケジュール（固定枠）の時間を一括ピン留め',
+      }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: '全患者の固定枠を一括ピン留め解除' }),
+      screen.getByRole('button', {
+        name: '全患者の固定訪問スケジュール（固定枠）のピン留めを一括解除',
+      }),
     ).toBeInTheDocument();
   });
 
@@ -195,7 +199,11 @@ describe('BulkPinAllPfvsButton (Phase G-34)', () => {
     });
 
     render(<BulkPinAllPfvsButton canEdit />);
-    fireEvent.click(screen.getByRole('button', { name: '全患者の固定枠を一括ピン留め' }));
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: '全患者の固定訪問スケジュール（固定枠）の時間を一括ピン留め',
+      }),
+    );
 
     await waitFor(() => {
       expect(mockToast.info).toHaveBeenCalledWith('既に全件ピン留め状態です');
@@ -212,7 +220,11 @@ describe('BulkPinAllPfvsButton (Phase G-34)', () => {
     mockMutateAsync.mockResolvedValueOnce(undefined);
 
     render(<BulkPinAllPfvsButton canEdit />);
-    fireEvent.click(screen.getByRole('button', { name: '全患者の固定枠を一括ピン留め' }));
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: '全患者の固定訪問スケジュール（固定枠）の時間を一括ピン留め',
+      }),
+    );
 
     // 1 段目ダイアログが開く (= unpinned が 1 件あるので)
     await waitFor(() => {
@@ -247,7 +259,11 @@ describe('BulkPinAllPfvsButton (Phase G-34)', () => {
     mockMutateAsync.mockResolvedValueOnce(undefined);
 
     render(<BulkPinAllPfvsButton canEdit />);
-    fireEvent.click(screen.getByRole('button', { name: '全患者の固定枠を一括ピン留め解除' }));
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: '全患者の固定訪問スケジュール（固定枠）のピン留めを一括解除',
+      }),
+    );
 
     await waitFor(() => {
       expect(screen.getByTestId('dialog')).toBeInTheDocument();

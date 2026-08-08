@@ -517,6 +517,8 @@ export function CourseWeekOverview({
                         fixedVisitId: string | null;
                         /** Phase G-22: PFV.is_pinned. */
                         isPinned: boolean;
+                        /** 週のピン (青 / 2026-08-09)。コース別一覧でも見えるようにする。 */
+                        isWeekPinned: boolean;
                         /** 2026-08-08: 型とズレているときの型の開始時刻 'HH:MM' (一致なら null)。 */
                         masterStartTime: string | null;
                         /** 患者性別 (male/female/unknown)。行頭ドット (日リストと同じ視覚言語)。 */
@@ -556,6 +558,8 @@ export function CourseWeekOverview({
                         sexRestriction: v.patient_sex_restriction ?? null,
                         fixedVisitId: v.fixed_visit_id ?? null,
                         isPinned: v.is_pinned === true,
+                        // 週のピン (青 / 2026-08-09): フラグ ∪ 旧 manual_week の和集合。
+                        isWeekPinned: v.week_pinned === true || v.source === 'manual_week',
                         // 2026-08-08: ピン留め不可の理由を正しく出すために型の時刻を運ぶ。
                         masterStartTime: v.master_start_time ?? null,
                         patientSex: v.patient_sex ?? null,
@@ -804,6 +808,15 @@ export function CourseWeekOverview({
                                             <span style={sexStyle}>{item.label}</span>
                                           );
                                         })()}
+                                        {/* 週のピン (青 / 2026-08-09): コース別一覧では状態表示のみ
+                                            (操作は日ビュー / 一括ボタン)。 */}
+                                        {item.isWeekPinned && (
+                                          <PushPin
+                                            className="ml-0.5 inline-block h-3 w-3 shrink-0 text-info [&_.fill-error]:fill-[var(--info)]"
+                                            aria-label="今週固定"
+                                            data-testid={`course-week-overview-week-pin-${item.id}`}
+                                          />
+                                        )}
                                         {/* Phase G-22 / G-47: 🔒 完全固定 toggle (週ビュー) — scope 選択メニュー化 */}
                                         {onTogglePin && (
                                           <PinIconButton
@@ -907,6 +920,14 @@ export function CourseWeekOverview({
                                                   <span style={sexStyle}>{v.label}</span>
                                                 );
                                               })()}
+                                              {/* 週のピン (青 / 2026-08-09): 状態表示のみ。 */}
+                                              {v.isWeekPinned && (
+                                                <PushPin
+                                                  className="ml-0.5 inline-block h-3 w-3 shrink-0 text-info [&_.fill-error]:fill-[var(--info)]"
+                                                  aria-label="今週固定"
+                                                  data-testid={`course-week-overview-week-pin-${v.id}`}
+                                                />
+                                              )}
                                               {/* Phase G-22 / G-47: 🔒 完全固定 toggle (週ビュー pair cluster) — scope 選択メニュー化 */}
                                               {onTogglePin && (
                                                 <PinIconButton

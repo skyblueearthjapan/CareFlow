@@ -131,7 +131,7 @@ export function BulkWeekPinAllButton({ canEdit, isoYear, isoWeek }: BulkWeekPinA
         ) : (
           <PushPin className={bluePinCls} aria-hidden />
         )}
-        今週全件固定
+        全件固定
       </Button>
       <Button
         type="button"
@@ -149,7 +149,7 @@ export function BulkWeekPinAllButton({ canEdit, isoYear, isoWeek }: BulkWeekPinA
         ) : (
           <PushPinOff className="h-4 w-4 text-info" aria-hidden />
         )}
-        今週全件解除
+        全件解除
       </Button>
 
       <Dialog open={dialogOpen} onOpenChange={(o) => (!o ? closeDialog() : undefined)}>

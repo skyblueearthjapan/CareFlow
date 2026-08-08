@@ -1309,8 +1309,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         movability: pfvHit?.movability ?? pfvByWd?.movability ?? null,
         // 型とのズレ (2026-08-08): ズレている場合のみ型の開始時刻が入る。
         master_start_time: masterStartTime,
-        // 週のピン (青) の表示根拠 (2026-08-08)。
+        // 週のピン (青) の表示根拠。source と week_pinned の両方を運ぶ (2026-08-09)。
         source: (v as { source?: string | null }).source ?? null,
+        week_pinned: (v as { week_pinned?: boolean | null }).week_pinned ?? null,
         // 週ビューの距離算出用 (コース合計 + 次までの距離).
         lat: (patient as { lat?: number | null } | undefined)?.lat ?? null,
         lng: (patient as { lng?: number | null } | undefined)?.lng ?? null,
@@ -3149,8 +3150,12 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             className="mt-2 flex flex-wrap items-center justify-end gap-1.5"
             data-testid="course-day-bulk-pin-row"
           >
+            {/* PO 指摘 (2026-08-09): 「全件ピン留め」だけでは "今表示されている全件"
+                と誤読される。何に対する一括かをグループ見出しで明示する。 */}
+            <span className="text-[11px] font-semibold text-text-muted">固定枠（毎週の型）:</span>
             <BulkPinAllPfvsButton canEdit={canEdit} />
             <span aria-hidden className="h-5 w-px bg-border-default" />
+            <span className="text-[11px] font-semibold text-text-muted">今週の配置:</span>
             <BulkWeekPinAllButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
           </div>
 

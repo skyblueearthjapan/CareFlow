@@ -181,7 +181,8 @@ export function BulkPinAllPfvsButton({ canEdit }: BulkPinAllPfvsButtonProps) {
         onClick={() => void handleClick(true)}
         disabled={!canEdit || isLoading || isPending}
         className="gap-1.5"
-        aria-label="全患者の固定枠を一括ピン留め"
+        aria-label="全患者の固定訪問スケジュール（固定枠）の時間を一括ピン留め"
+        title="固定訪問スケジュール（毎週の型）の時間をすべてピン留めします。今週の盤面ではなく固定枠に対する操作です"
         data-testid="bulk-pin-all-lock-button"
       >
         {isLoading || isPending ? (
@@ -189,7 +190,7 @@ export function BulkPinAllPfvsButton({ canEdit }: BulkPinAllPfvsButtonProps) {
         ) : (
           <PushPin className="h-4 w-4" aria-hidden />
         )}
-        全件ピン留め
+        時間を全ピン留め
       </Button>
       <Button
         type="button"
@@ -198,7 +199,8 @@ export function BulkPinAllPfvsButton({ canEdit }: BulkPinAllPfvsButtonProps) {
         onClick={() => void handleClick(false)}
         disabled={!canEdit || isLoading || isPending}
         className="gap-1.5"
-        aria-label="全患者の固定枠を一括ピン留め解除"
+        aria-label="全患者の固定訪問スケジュール（固定枠）のピン留めを一括解除"
+        title="固定訪問スケジュール（毎週の型）のピン留めをすべて外します。今週の盤面ではなく固定枠に対する操作です"
         data-testid="bulk-pin-all-unlock-button"
       >
         {isLoading || isPending ? (
@@ -206,7 +208,7 @@ export function BulkPinAllPfvsButton({ canEdit }: BulkPinAllPfvsButtonProps) {
         ) : (
           <PushPinOff className="h-4 w-4" aria-hidden />
         )}
-        全件ピン留め解除
+        全ピン解除
       </Button>
 
       <Dialog open={dialogOpen} onOpenChange={(o) => (!o ? closeDialog() : undefined)}>
