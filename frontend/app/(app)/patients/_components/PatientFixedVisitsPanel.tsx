@@ -96,16 +96,40 @@ const TIME_OPTIONS: string[] = (() => {
 const DURATION_OPTIONS = [15, 30, 45, 60, 90, 120, 150, 180, 240, 300, 360, 480] as const;
 
 /**
- * P2-C: 可動域 (movability) セレクタの選択肢. 提案の可否を表す (§1.1).
- *   unknown(未設定・保守的) / time_flexible(時刻変更可) / day_flexible(曜日変更可) / locked(完全固定).
- * is_pinned=true の行は locked 固定表示で変更不可 (is_pinned ⇒ locked; BE V6 が矯正).
+ * 可動域 (movability) セレクタの選択肢.
+ *   unknown(未設定) / time_flexible(時刻変更可) / day_flexible(曜日変更可) / locked(完全固定).
+ *
+ * PO 決定 (2026-08-08): 可動域とピン留めは **独立した 2 軸**.
+ * 可動域は「この枠をどこまで動かしてよいか」という現場の判断の記録で、
+ * ピン留めは一括で掛け外しする上乗せの錠。ピン留め中でも表示・編集できる
+ * (一括ピン解除の前に「完全固定」を仕込めることが要件).
  */
 const MOVABILITY_OPTIONS: ReadonlyArray<{ value: Movability; label: string }> = [
-  { value: 'unknown', label: '未設定' },
-  { value: 'time_flexible', label: '時刻変更可' },
-  { value: 'day_flexible', label: '曜日変更可' },
+  { value: 'unknown', label: '指定なし' },
   { value: 'locked', label: '完全固定' },
 ];
+
+/**
+ * 旧 4 段階時代の値のラベル (PO 決定 2026-08-08 で 2 段階へ整理).
+ *
+ * 本番の利用実績は time_flexible / day_flexible とも **0 件** だったため移行は
+ * 不要だったが、万一これらの値が入っている行を開いたときに、選択肢に無いせいで
+ * 黙って別の値へ化けることがないよう、表示用のラベルだけ残す。
+ * 一度でも編集されれば 2 段階のいずれかに収束する。
+ */
+const LEGACY_MOVABILITY_LABELS: Record<string, string> = {
+  time_flexible: '時刻変更可（旧設定）',
+  day_flexible: '曜日変更可（旧設定）',
+};
+
+/** 可動域の表示ラベル。旧値もそのまま読めるようにする。 */
+function movabilityLabel(value: Movability): string {
+  return (
+    MOVABILITY_OPTIONS.find((o) => o.value === value)?.label ??
+    LEGACY_MOVABILITY_LABELS[value] ??
+    '指定なし'
+  );
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -137,7 +161,10 @@ interface DayRow {
   sub_office_id: string | null;
   /** Phase G-21: 完全固定フラグ (true = visit 移動禁止). */
   is_pinned: boolean;
-  /** P2-C: 可動域 (提案の可否). is_pinned=true ⇒ locked 扱い. slot 0/1 共通で 1 値. */
+  /**
+   * 可動域. ピン留めとは独立した軸で、ピン留めの掛け外しでは変化しない
+   * (PO 決定 2026-08-08). slot 0/1 共通で 1 値.
+   */
   movability: Movability;
   /**
    * この曜日に対応する既存 PFV 行の id (slot 0/1 で最大 2 件). 未保存の行は空配列.
@@ -259,8 +286,10 @@ function dayRowsToItems(rows: DayRows, requiresMultipleStaff: boolean): PatientF
 
     const effectiveSlot0Course = promote ? slot1Course : slot0Course;
 
-    // P2-C: is_pinned=true ⇒ movability='locked' (含意整合; BE V6 も矯正するが FE でも一致させる).
-    const effectiveMovability: Movability = row.is_pinned ? 'locked' : row.movability;
+    // PO 決定 (2026-08-08): 可動域とピン留めは独立した 2 軸。ピン留め中でも
+    // 現場が設定した可動域をそのまま送る (旧実装は is_pinned なら 'locked' に
+    // 強制上書きしており、ピン留めの掛け外しで現場の設定が消えていた)。
+    const effectiveMovability: Movability = row.movability;
 
     items.push({
       weekday,
@@ -722,48 +751,61 @@ function WeekGrid({
                 </label>
                 {lockedByPin ? (
                   <span className="text-xs text-text-muted" data-testid={`pfv-pin-edit-hint-${wd}`}>
-                    ピン留め中は編集できません。変更するにはピン留めを外してください
+                    ピン留め中は時刻・コースを変更できません（可動域は変更できます）
                   </span>
                 ) : null}
-                {/* P2-C / #P4-B: 可動域 (提案の可否) セレクタ.
-                    - ピン留め行 (is_pinned=true) は locked 固定 → 「ピン留め（変更不可）」静的表示.
-                    - それ以外は既定で畳まれた「詳細設定」disclosure に格下げ (通常運用では非表示). */}
+                {/* 可動域 (PO 決定 2026-08-08).
+                    ピン留めとは独立した軸なので、ピン留め中でも **表示し、編集できる**。
+                    - 表示: 現在値を summary に出して、開かなくても識別できるようにする
+                      (「ピンを外しても、完全固定なのか時刻変更可なのか分かるように」)。
+                    - 編集: ピン留め中に「完全固定」を仕込めることが要件。そうでないと
+                      一括ピン解除の前に保護を用意できない (先に外すと動いてしまう)。
+                      BE の pinned 保護 (V2) は同一性タプルに movability を含めないため、
+                      ピン留め行の可動域変更は 422 にならない。 */}
                 <div className="flex items-center gap-1" data-testid={`pfv-movability-wrap-${wd}`}>
-                  {row.is_pinned ? (
-                    <span
-                      className="inline-flex items-center gap-0.5 rounded border border-border-default bg-bg-muted px-2 py-1 text-xs text-text-muted"
-                      data-testid={`pfv-movability-locked-${wd}`}
+                  <details
+                    className="text-xs text-text-muted"
+                    data-testid={`pfv-movability-details-${wd}`}
+                  >
+                    <summary
+                      className="cursor-pointer select-none text-text-secondary"
+                      data-testid={`pfv-movability-summary-${wd}`}
                     >
-                      <PushPin className="h-3 w-3 text-yellow-700" aria-hidden />
-                      ピン留め（変更不可）
-                    </span>
-                  ) : (
-                    <details
-                      className="text-xs text-text-muted"
-                      data-testid={`pfv-movability-details-${wd}`}
-                    >
-                      <summary className="cursor-pointer select-none text-text-secondary">
-                        詳細設定
-                      </summary>
-                      <div className="mt-1 flex items-center gap-1">
-                        <select
-                          value={row.movability}
-                          onChange={(e) => update(wd, { movability: e.target.value as Movability })}
-                          disabled={disabled}
-                          className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary"
-                          aria-label={`${WEEKDAY_LABELS[wd]} 可動域`}
-                          data-testid={`pfv-movability-select-${wd}`}
+                      可動域: {movabilityLabel(row.movability)}
+                    </summary>
+                    <div className="mt-1 flex items-center gap-1">
+                      <select
+                        value={row.movability}
+                        onChange={(e) => update(wd, { movability: e.target.value as Movability })}
+                        disabled={disabled}
+                        className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary"
+                        aria-label={`${WEEKDAY_LABELS[wd]} 可動域`}
+                        data-testid={`pfv-movability-select-${wd}`}
+                      >
+                        {MOVABILITY_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                        {/* 旧 4 段階の値が入っている行を開いたとき、選択肢に無いせいで
+                            黙って別の値へ化けないよう、その値だけ一時的に選択肢へ足す。
+                            本番の利用実績は 0 件なので通常は描画されない。 */}
+                        {LEGACY_MOVABILITY_LABELS[row.movability] ? (
+                          <option value={row.movability}>
+                            {LEGACY_MOVABILITY_LABELS[row.movability]}
+                          </option>
+                        ) : null}
+                      </select>
+                      {lockedByPin ? (
+                        <span
+                          className="text-xs text-text-muted"
+                          data-testid={`pfv-movability-pin-note-${wd}`}
                         >
-                          {MOVABILITY_OPTIONS.map((o) => (
-                            <option key={o.value} value={o.value}>
-                              {o.label}
-                            </option>
-                          ))}
-                        </select>
-                        <span className="text-xs text-text-muted">可動域</span>
-                      </div>
-                    </details>
-                  )}
+                          ピン留め中はピンが優先されます。ピンを外すとこの可動域で動きます
+                        </span>
+                      ) : null}
+                    </div>
+                  </details>
                 </div>
                 {errors[wd] ? <span className="text-xs text-error">{errors[wd]}</span> : null}
                 {!errors[wd] && warnings[wd] ? (
@@ -911,10 +953,9 @@ function ModePanel({
       // 「保存」時の PUT で is_pinned ごと新規作成される (V2 は既存 pinned 行のみ保護)。
       setRows((prev) => {
         const cur = prev[wd] ?? emptyDayRow();
-        const patch: Partial<DayRow> = { is_pinned: next };
-        // P4-C: ピン由来ロック (movability='locked') は解除時に 'unknown' へ解放する。
-        if (!next && cur.movability === 'locked') patch.movability = 'unknown';
-        return { ...prev, [wd]: { ...cur, ...patch } };
+        // PO 決定 (2026-08-08): 可動域はピン留めの掛け外しで変えない (独立した 2 軸)。
+        // 旧実装は解除時に 'locked' を 'unknown' へ戻しており、現場の設定が消えていた。
+        return { ...prev, [wd]: { ...cur, is_pinned: next } };
       });
       return;
     }

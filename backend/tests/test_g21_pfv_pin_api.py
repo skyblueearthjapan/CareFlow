@@ -53,7 +53,12 @@ async def _make_patient(db, *, code: str) -> Patient:
 
 
 async def _make_pfv(
-    db, *, patient: Patient, weekday: int, is_pinned: bool = False
+    db,
+    *,
+    patient: Patient,
+    weekday: int,
+    is_pinned: bool = False,
+    movability: str = "unknown",
 ) -> PatientFixedVisit:
     pfv = PatientFixedVisit(
         patient_id=patient.id,
@@ -63,6 +68,7 @@ async def _make_pfv(
         duration_min=30,
         slot_index=0,
         is_pinned=is_pinned,
+        movability=movability,
     )
     db.add(pfv)
     await db.commit()
@@ -104,6 +110,84 @@ async def test_t2_1_patch_pin_toggles_is_pinned(client, db) -> None:
     )
     assert res.status_code == 200, res.text
     assert res.json()["is_pinned"] is False
+
+
+# ---------------------------------------------------------------------------
+# 可動域はピン留めの掛け外しで変わらない (PO 決定 2026-08-08 / 旧 P4-C の廃止)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unpin_keeps_movability_locked(client, db) -> None:
+    """核心: ピンを外しても可動域='完全固定' は残る.
+
+    PO 要件「一括でピンを抜いても、裏で完全固定にしている枠は動かない」の担保。
+    旧 P4-C はここで 'unknown' へ戻しており、現場の判断が消えていた。
+    """
+    admin = await _make_user(db, email="pin-keep-lock@example.com", role="admin")
+    patient = await _make_patient(db, code="PIN-KEEP-1")
+    pfv = await _make_pfv(db, patient=patient, weekday=0, is_pinned=True, movability="locked")
+
+    res = await client.patch(
+        f"/api/v1/patients/fixed-visits/{pfv.id}/pin",
+        headers=_bearer(admin),
+        json={"is_pinned": False},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["is_pinned"] is False
+    assert res.json()["movability"] == "locked"
+
+    pfv2 = await db.scalar(select(PatientFixedVisit).where(PatientFixedVisit.id == pfv.id))
+    await db.refresh(pfv2)
+    assert pfv2.movability == "locked"
+
+
+@pytest.mark.asyncio
+async def test_pin_toggle_roundtrip_keeps_time_flexible(client, db) -> None:
+    """ピン留め → 解除 の往復で 'time_flexible' が消えない (旧実装の消失バグの回帰防止)."""
+    admin = await _make_user(db, email="pin-keep-flex@example.com", role="admin")
+    patient = await _make_patient(db, code="PIN-KEEP-2")
+    pfv = await _make_pfv(
+        db, patient=patient, weekday=0, is_pinned=False, movability="time_flexible"
+    )
+
+    for next_pinned in (True, False):
+        res = await client.patch(
+            f"/api/v1/patients/fixed-visits/{pfv.id}/pin",
+            headers=_bearer(admin),
+            json={"is_pinned": next_pinned},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["movability"] == "time_flexible"
+
+    pfv2 = await db.scalar(select(PatientFixedVisit).where(PatientFixedVisit.id == pfv.id))
+    await db.refresh(pfv2)
+    assert pfv2.movability == "time_flexible"
+    assert pfv2.is_pinned is False
+
+
+@pytest.mark.asyncio
+async def test_bulk_unpin_keeps_movability(client, db) -> None:
+    """一括ピン解除でも可動域は据え置き (一括操作こそ PO の運用の本命)."""
+    admin = await _make_user(db, email="pin-keep-bulk@example.com", role="admin")
+    patient = await _make_patient(db, code="PIN-KEEP-3")
+    locked = await _make_pfv(db, patient=patient, weekday=0, is_pinned=True, movability="locked")
+    plain = await _make_pfv(db, patient=patient, weekday=1, is_pinned=True, movability="unknown")
+
+    res = await client.post(
+        "/api/v1/patients/fixed-visits/pin/bulk",
+        headers=_bearer(admin),
+        json=[
+            {"pfv_id": str(locked.id), "is_pinned": False},
+            {"pfv_id": str(plain.id), "is_pinned": False},
+        ],
+    )
+    assert res.status_code == 200, res.text
+    by_id = {row["id"]: row for row in res.json()}
+    # 完全固定は残る = 一括解除しても動かない.
+    assert by_id[str(locked.id)]["movability"] == "locked"
+    # 未設定は未設定のまま = 一括解除で提案対象になる (運用が回る).
+    assert by_id[str(plain.id)]["movability"] == "unknown"
 
 
 # ---------------------------------------------------------------------------

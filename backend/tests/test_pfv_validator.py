@@ -341,9 +341,7 @@ async def test_capacity_minutes_exceeded(db) -> None:
     items = [_item(0, time(9, 30), 200)]
     result = await validate_pfv_changes(db, target.id, items, "normal", config=CFG)
 
-    assert any(
-        w.code == CODE_CAPACITY and "分" in w.message for w in result.warnings
-    )
+    assert any(w.code == CODE_CAPACITY and "分" in w.message for w in result.warnings)
 
 
 @pytest.mark.asyncio
@@ -358,33 +356,33 @@ async def test_no_capacity_warning_when_no_office(db) -> None:
 
 
 # ---------------------------------------------------------------------------
-# V6: pinned 行の movability 矯正 (is_pinned=True ⇒ movability='locked')
+# 可動域はピン留めで上書きしない (PO 決定 2026-08-08 / 旧 V6 の廃止)
+#
+# 可動域は「この枠をどこまで動かしてよいか」という現場の判断の記録であり、
+# ピン留めは一括で掛け外しする上乗せの錠。独立した 2 軸として扱う。
+# 旧 V6 は保存のたびに pinned 行の可動域を 'locked' で上書きしていたため、
+# ピン留めの掛け外しで現場の設定が消えていた。
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_v6_pinned_movability_corrected_to_locked(db) -> None:
-    """is_pinned=True かつ movability='unknown' → corrected_items で 'locked' + warning."""
+async def test_pinned_row_keeps_its_movability_unknown(db) -> None:
+    """is_pinned=True でも movability='unknown' はそのまま保存される (旧 V6 は locked に矯正していた)."""
     p = await _make_patient(db, code="MV-V6-1")
     items = [_item(0, time(9, 0), 30, is_pinned=True, movability="unknown")]
     result = await validate_pfv_changes(db, p.id, items, "normal", config=CFG)
 
-    # 矯正 warning が出る (error ではない = 続行可).
     assert not result.has_errors
-    assert any(
-        w.code == CODE_MOVABILITY_CORRECTED and w.severity == "warning"
-        for w in result.warnings
-    )
-    # corrected_items の movability が 'locked' に矯正されている.
+    # 矯正 warning はもう出ない.
+    assert all(w.code != CODE_MOVABILITY_CORRECTED for w in result.warnings)
     assert len(result.corrected_items) == 1
-    assert result.corrected_items[0].movability == "locked"
-    # 元 items は汚さない (副作用なし).
+    assert result.corrected_items[0].movability == "unknown"
     assert items[0].movability == "unknown"
 
 
 @pytest.mark.asyncio
-async def test_v6_no_correction_when_already_locked(db) -> None:
-    """is_pinned=True かつ movability='locked' は矯正不要 (warning なし)."""
+async def test_pinned_row_keeps_explicit_locked(db) -> None:
+    """is_pinned=True かつ明示 'locked' はそのまま (ピンを外した後も保護が残る前提)."""
     p = await _make_patient(db, code="MV-V6-2")
     items = [_item(0, time(9, 0), 30, is_pinned=True, movability="locked")]
     result = await validate_pfv_changes(db, p.id, items, "normal", config=CFG)
@@ -394,9 +392,24 @@ async def test_v6_no_correction_when_already_locked(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_v6_no_correction_for_non_pinned(db) -> None:
-    """非 pinned 行は movability を矯正しない (time_flexible をそのまま保持)."""
+async def test_pinned_row_keeps_time_flexible(db) -> None:
+    """核心: ピン留め中でも 'time_flexible' が保持される.
+
+    旧実装ではここが 'locked' に潰され、ピンを外すと 'unknown' に戻っていたため、
+    現場が設定した「時刻変更可」が往復で消えていた。
+    """
     p = await _make_patient(db, code="MV-V6-3")
+    items = [_item(0, time(9, 0), 30, is_pinned=True, movability="time_flexible")]
+    result = await validate_pfv_changes(db, p.id, items, "normal", config=CFG)
+
+    assert all(w.code != CODE_MOVABILITY_CORRECTED for w in result.warnings)
+    assert result.corrected_items[0].movability == "time_flexible"
+
+
+@pytest.mark.asyncio
+async def test_non_pinned_row_keeps_its_movability(db) -> None:
+    """非 pinned 行は従来どおりそのまま保持 (regression)."""
+    p = await _make_patient(db, code="MV-V6-4")
     items = [_item(0, time(9, 0), 30, is_pinned=False, movability="time_flexible")]
     result = await validate_pfv_changes(db, p.id, items, "normal", config=CFG)
 

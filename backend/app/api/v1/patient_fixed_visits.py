@@ -729,15 +729,27 @@ async def from_week_bulk(
 
 
 def _release_pin_lock(old_pinned: bool, new_pinned: bool, movability: str) -> str:
-    """P4-C: ピン留め解除 (True→False) 時にピン由来ロックを解放する.
+    """ピン留め切替時の可動域を決める. **現在は常に据え置き** (何も変更しない).
 
-    ``is_pinned`` を True→False にする際、当該行の ``movability=='locked'`` なら
-    'unknown' にリセットして返す. ピン由来ロック (P2-A backfill / pfv_validator V6) の
-    解放であり、意図的な完全固定は解除後に可動域セレクタで再設定する運用.
-    False→False / True→True の冪等ケースや locked 以外の値は触らない (そのまま返す).
+    PO 決定 (2026-08-08): 可動域とピン留めは独立した 2 軸として扱う.
+
+      - 可動域 … 「この枠をどこまで動かしてよいか」という現場の判断の記録.
+                  一度設定したら、ピン留めの掛け外しでは失われない.
+      - ピン留め … 一括で掛け外しする上乗せの錠.
+
+    旧 P4-C はピン解除時に ``movability=='locked'`` を 'unknown' へ戻していた.
+    当時は locked が全て「ピン由来の自動付与」だったため妥当だったが、現場が
+    可動域を明示設定する運用に移った今は **現場の判断を消す挙動** になる.
+    pfv_validator の旧 V6 (ピン留め時の locked 強制) も同時に廃止したため、
+    ピン留めが可動域を上書きすることはもう無い.
+
+    これにより PO の要件が成立する: 一括でピンを抜いても、可動域=完全固定 の枠は
+    動かない (「同じ曜日・同じ時間に行く」ことが担保される).
+
+    シグネチャは呼出側 (単体 PATCH / bulk POST) と audit_log の before/after 記録を
+    変えずに済むよう維持する.
     """
-    if old_pinned and not new_pinned and movability == "locked":
-        return "unknown"
+    del old_pinned, new_pinned  # 可動域はピン留めの状態に依存しない.
     return movability
 
 

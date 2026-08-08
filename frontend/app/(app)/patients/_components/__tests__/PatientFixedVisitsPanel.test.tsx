@@ -925,7 +925,9 @@ describe('PatientFixedVisitsPanel', () => {
 
   // ─── P2-C: 可動域 (movability) selector tests ──────────────────────────────
   describe('P2-C (movability)', () => {
-    it('MV-1. 曜日 ON で可動域 selector が表示され 4 択を持つ', async () => {
+    it('MV-1. 曜日 ON で可動域 selector が表示され 2 択を持つ', async () => {
+      // PO 決定 (2026-08-08): 4 段階 → 2 段階へ整理。
+      // time_flexible / day_flexible は本番の利用実績が 0 件だった。
       setupMocks({ reads: [] });
       render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
 
@@ -934,7 +936,37 @@ describe('PatientFixedVisitsPanel', () => {
 
       const select = screen.getByLabelText('月 可動域') as HTMLSelectElement;
       const options = Array.from(select.options).map((o) => o.text);
-      expect(options).toEqual(['未設定', '時刻変更可', '曜日変更可', '完全固定']);
+      expect(options).toEqual(['指定なし', '完全固定']);
+    });
+
+    it('MV-1b. 旧 4 段階の値が入っている行でも黙って別の値へ化けない', async () => {
+      // 本番実績 0 件だが、万一入っていたら選択肢に無いせいで値が化けるのを防ぐ。
+      setupMocks({
+        reads: [
+          {
+            id: 'read-legacy',
+            patient_id: PATIENT_ID,
+            weekday: 0,
+            start_time: '09:00',
+            duration_min: 30,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            is_pinned: false,
+            movability: 'day_flexible',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+        ],
+      });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      const select = (await screen.findByLabelText('月 可動域')) as HTMLSelectElement;
+      expect(select.value).toBe('day_flexible');
+      expect(Array.from(select.options).map((o) => o.text)).toContain('曜日変更可（旧設定）');
+      expect(screen.getByTestId('pfv-movability-summary-0')).toHaveTextContent(
+        '可動域: 曜日変更可（旧設定）',
+      );
     });
 
     it('MV-6. (#P4-B) 可動域 selector は「詳細設定」disclosure 内に格下げされ、展開で操作可能', async () => {
@@ -953,12 +985,12 @@ describe('PatientFixedVisitsPanel', () => {
 
       // 展開 (details.open=true) して値を変更でき、保存 payload に反映される.
       (details as HTMLDetailsElement).open = true;
-      fireEvent.change(select, { target: { value: 'day_flexible' } });
+      fireEvent.change(select, { target: { value: 'locked' } });
       const saveBtn = screen.getByRole('button', { name: '保存' });
       await userEvent.click(saveBtn);
       await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
       const call = updateFn.mock.calls[0][0] as { items: { movability?: string }[] };
-      expect(call.items[0]?.movability).toBe('day_flexible');
+      expect(call.items[0]?.movability).toBe('locked');
     });
 
     it('MV-2. 可動域を選んで保存すると movability が payload に含まれる', async () => {
@@ -970,14 +1002,14 @@ describe('PatientFixedVisitsPanel', () => {
       await userEvent.click(checkboxes[0]);
 
       const select = screen.getByLabelText('月 可動域');
-      fireEvent.change(select, { target: { value: 'day_flexible' } });
+      fireEvent.change(select, { target: { value: 'locked' } });
 
       const saveBtn = screen.getByRole('button', { name: '保存' });
       await userEvent.click(saveBtn);
 
       await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
       const call = updateFn.mock.calls[0][0] as { items: { movability?: string }[] };
-      expect(call.items[0]?.movability).toBe('day_flexible');
+      expect(call.items[0]?.movability).toBe('locked');
     });
 
     it('MV-3. サーバーから movability が返ると selector に反映される (ラウンドトリップ)', async () => {
@@ -1006,7 +1038,11 @@ describe('PatientFixedVisitsPanel', () => {
       expect((screen.getByLabelText('月 可動域') as HTMLSelectElement).value).toBe('time_flexible');
     });
 
-    it('MV-4. is_pinned=true の行は「ピン留め（変更不可）」表示で selector なし・payload は locked', async () => {
+    it('MV-4. ピン留め行でも可動域は表示・編集でき、送信値も上書きされない', async () => {
+      // PO 決定 (2026-08-08): 可動域とピン留めは独立した 2 軸。
+      // 旧実装は pinned 行の selector を隠し、送信時に 'locked' へ強制していたため、
+      // ピン留めの掛け外しで現場の設定が消えていた。
+      // ピン留め中に「完全固定」を仕込めることが要件（先にピンを外すと動いてしまう）。
       const updateFn = vi.fn().mockResolvedValue([]);
       setupMocks({
         reads: [
@@ -1020,7 +1056,7 @@ describe('PatientFixedVisitsPanel', () => {
             course_template_id: null,
             slot_index: 0,
             is_pinned: true,
-            movability: 'locked',
+            movability: 'time_flexible',
             created_at: '2026-01-01T00:00:00',
             updated_at: '2026-01-01T00:00:00',
           },
@@ -1029,17 +1065,57 @@ describe('PatientFixedVisitsPanel', () => {
       });
       render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
 
-      // pinned 行は selector を出さず固定表示.
+      // 開かなくても現在値が読める (「ピンを外しても何だったか識別できる」要件)。
       await waitFor(() => {
-        expect(screen.getByTestId('pfv-movability-locked-0')).toHaveTextContent(
-          'ピン留め（変更不可）',
+        expect(screen.getByTestId('pfv-movability-summary-0')).toHaveTextContent(
+          '可動域: 時刻変更可',
         );
       });
-      expect(screen.queryByLabelText('月 可動域')).not.toBeInTheDocument();
+      // ピン留め中でも selector は存在し、操作できる。
+      const select = screen.getByLabelText('月 可動域');
+      expect(select).toBeInTheDocument();
+      expect(select).not.toBeDisabled();
+      expect(screen.getByTestId('pfv-movability-pin-note-0')).toBeInTheDocument();
 
-      // 保存すると movability=locked が送られる (is_pinned ⇒ locked 整合).
+      // 保存すると設定値がそのまま送られる (locked に強制されない)。
       const saveBtn = screen.getByRole('button', { name: '保存' });
       await userEvent.click(saveBtn);
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as {
+        items: { movability?: string; is_pinned?: boolean }[];
+      };
+      expect(call.items[0]?.movability).toBe('time_flexible');
+      expect(call.items[0]?.is_pinned).toBe(true);
+    });
+
+    it('MV-4b. ピン留め中に可動域を「完全固定」に設定して保存できる', async () => {
+      // 一括ピン解除の前に保護を仕込む、という PO の運用手順を担保する。
+      const updateFn = vi.fn().mockResolvedValue([]);
+      setupMocks({
+        reads: [
+          {
+            id: 'read-pin-2',
+            patient_id: PATIENT_ID,
+            weekday: 0,
+            start_time: '09:00',
+            duration_min: 30,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            is_pinned: true,
+            movability: 'unknown',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+        ],
+        updateFn,
+      });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      const select = await screen.findByLabelText('月 可動域');
+      await userEvent.selectOptions(select, 'locked');
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+
       await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
       const call = updateFn.mock.calls[0][0] as {
         items: { movability?: string; is_pinned?: boolean }[];
@@ -1127,8 +1203,8 @@ describe('PatientFixedVisitsPanel', () => {
         items: { movability?: string; is_pinned?: boolean }[];
       };
       expect(call.items[0]?.is_pinned).toBe(true);
-      // FE 側でも含意 (is_pinned ⇒ locked) を揃えて送る.
-      expect(call.items[0]?.movability).toBe('locked');
+      // PO 決定 (2026-08-08): ピン留めは可動域を上書きしない。未設定のまま送る。
+      expect(call.items[0]?.movability).toBe('unknown');
     });
 
     it('MV-9. ピン留め行は時刻・所要・コースの入力が編集不可になる', async () => {

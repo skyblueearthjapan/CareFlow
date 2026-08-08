@@ -604,8 +604,13 @@ async def test_put_default_movability_is_unknown(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_put_pinned_movability_corrected_to_locked(client, db) -> None:
-    """P2-A V6: is_pinned=True + movability='unknown' 送信 → 保存値 'locked' + warning."""
+async def test_put_pinned_row_keeps_sent_movability(client, db) -> None:
+    """PO 決定 (2026-08-08): ピン留め行の可動域は上書きしない (旧 V6 の廃止).
+
+    可動域は現場の判断の記録、ピン留めは一括で掛け外しする上乗せの錠。
+    旧実装は保存のたびに pinned 行を 'locked' へ矯正しており、ピン留めの
+    掛け外しで現場の設定が消えていた。
+    """
     admin = await _make_user(db, "pfv-mv-v6@example.com", "admin")
     patient = await _make_patient(db, "PFV-MVV6")
 
@@ -620,25 +625,25 @@ async def test_put_pinned_movability_corrected_to_locked(client, db) -> None:
                     "start_time": "09:00",
                     "duration_min": 30,
                     "is_pinned": True,
-                    "movability": "unknown",
+                    "movability": "time_flexible",
                 }
             ],
         ),
     )
     assert res.status_code == 200, res.text
     body = res.json()
-    # 保存値が 'locked' に矯正されている.
-    assert body["items"][0]["movability"] == "locked"
+    # 送った値がそのまま保存される (locked へ矯正されない).
+    assert body["items"][0]["movability"] == "time_flexible"
     assert body["items"][0]["is_pinned"] is True
-    # 矯正 warning が同梱される.
-    assert any(w["code"] == "movability_corrected" for w in body["warnings"])
+    # 矯正 warning はもう出ない.
+    assert all(w["code"] != "movability_corrected" for w in body["warnings"])
 
-    # DB (GET) にも locked が反映されている.
+    # DB (GET) にも送った値が反映されている.
     res_get = await client.get(
         f"/api/v1/patients/{patient.id}/fixed-visits?mode=normal",
         headers=_bearer(admin),
     )
-    assert res_get.json()[0]["movability"] == "locked"
+    assert res_get.json()[0]["movability"] == "time_flexible"
 
 
 @pytest.mark.asyncio
@@ -651,12 +656,22 @@ async def test_put_conflict_returns_200_with_warning(client, db) -> None:
     await db.refresh(office)
 
     target = Patient(
-        code="PFV-CT", name="対象", special_week_active=[],
-        primary_office_id=office.id, status="active", lat=35.600, lng=140.100,
+        code="PFV-CT",
+        name="対象",
+        special_week_active=[],
+        primary_office_id=office.id,
+        status="active",
+        lat=35.600,
+        lng=140.100,
     )
     other = Patient(
-        code="PFV-CO", name="山田", special_week_active=[],
-        primary_office_id=office.id, status="active", lat=35.700, lng=140.200,
+        code="PFV-CO",
+        name="山田",
+        special_week_active=[],
+        primary_office_id=office.id,
+        status="active",
+        lat=35.700,
+        lng=140.200,
     )
     db.add_all([target, other])
     await db.commit()
@@ -665,8 +680,12 @@ async def test_put_conflict_returns_200_with_warning(client, db) -> None:
     # 他患者 PFV: 月 10:00 (異住所).
     db.add(
         PatientFixedVisit(
-            patient_id=other.id, mode="normal", weekday=0,
-            start_time=time(10, 0), duration_min=30, slot_index=0,
+            patient_id=other.id,
+            mode="normal",
+            weekday=0,
+            start_time=time(10, 0),
+            duration_min=30,
+            slot_index=0,
         )
     )
     await db.commit()
@@ -709,8 +728,13 @@ async def _make_pfv_with_movability(
 
 
 @pytest.mark.asyncio
-async def test_p4c_patch_unpin_releases_locked_movability(client, db) -> None:
-    """PATCH で is_pinned True→False にすると movability='locked' が 'unknown' に解放される."""
+async def test_patch_unpin_keeps_locked_movability(client, db) -> None:
+    """PO 決定 (2026-08-08): ピン解除しても movability='locked' は据え置く.
+
+    旧 P4-C はここで 'unknown' へ解放していた。当時は locked が全てピン由来の
+    自動付与だったため妥当だったが、可動域を現場が明示設定する運用に移った今は
+    「現場の判断を消す」挙動になる。可動域とピン留めは独立した 2 軸として扱う。
+    """
     admin = await _make_user(db, "p4c-unpin@example.com", "admin")
     patient = await _make_patient(db, "P4C-U1")
     pfv = await _make_pfv_with_movability(
@@ -725,13 +749,13 @@ async def test_p4c_patch_unpin_releases_locked_movability(client, db) -> None:
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["is_pinned"] is False
-    assert body["movability"] == "unknown"
+    assert body["movability"] == "locked"
 
     await db.refresh(pfv)
     assert pfv.is_pinned is False
-    assert pfv.movability == "unknown"
+    assert pfv.movability == "locked"
 
-    # audit_log に movability の before/after が含まれる (既存 is_pinned と同居).
+    # audit_log には movability の before/after を引き続き記録する (据え置きでも同値で残す).
     row = await db.scalar(
         select(AuditLog).where(
             AuditLog.action == "pfv_pin_toggle",
@@ -740,7 +764,7 @@ async def test_p4c_patch_unpin_releases_locked_movability(client, db) -> None:
     )
     assert row is not None
     assert row.before == {"is_pinned": True, "movability": "locked"}
-    assert row.after == {"is_pinned": False, "movability": "unknown"}
+    assert row.after == {"is_pinned": False, "movability": "locked"}
 
 
 @pytest.mark.asyncio
@@ -805,19 +829,23 @@ async def test_p4c_patch_idempotent_false_to_false_untouched(client, db) -> None
 
 
 @pytest.mark.asyncio
-async def test_p4c_bulk_unpin_releases_locked(client, db) -> None:
-    """bulk /pin: True→False で locked のみ解放、locked 以外/pin維持は触らない."""
+async def test_bulk_pin_toggle_never_touches_movability(client, db) -> None:
+    """bulk /pin: 掛け外しのいずれでも movability は据え置く (PO 決定 2026-08-08).
+
+    「一括でピンを抜いても、裏で完全固定にしている枠は動かない」という運用要件の
+    担保。旧 P4-C は解除時に locked を unknown へ落としていた。
+    """
     admin = await _make_user(db, "p4c-bulk@example.com", "admin")
     patient = await _make_patient(db, "P4C-B1")
-    # a: 解除対象で locked → unknown
+    # a: 解除対象で locked → locked のまま (現場の判断を保持)
     pfv_a = await _make_pfv_with_movability(
         db, patient=patient, weekday=0, is_pinned=True, movability="locked"
     )
-    # b: 解除対象だが time_flexible → 維持
+    # b: 解除対象で time_flexible → 維持
     pfv_b = await _make_pfv_with_movability(
         db, patient=patient, weekday=1, is_pinned=True, movability="time_flexible"
     )
-    # c: pin ON 側 (False→True) → movability そのまま
+    # c: pin ON 側 (False→True) → movability そのまま (上書きしない)
     pfv_c = await _make_pfv_with_movability(
         db, patient=patient, weekday=2, is_pinned=False, movability="unknown"
     )
@@ -833,11 +861,11 @@ async def test_p4c_bulk_unpin_releases_locked(client, db) -> None:
     )
     assert res.status_code == 200, res.text
     by_id = {row["id"]: row for row in res.json()}
-    assert by_id[str(pfv_a.id)]["movability"] == "unknown"
+    assert by_id[str(pfv_a.id)]["movability"] == "locked"
     assert by_id[str(pfv_b.id)]["movability"] == "time_flexible"
     assert by_id[str(pfv_c.id)]["movability"] == "unknown"
 
-    for pfv, expected in [(pfv_a, "unknown"), (pfv_b, "time_flexible"), (pfv_c, "unknown")]:
+    for pfv, expected in [(pfv_a, "locked"), (pfv_b, "time_flexible"), (pfv_c, "unknown")]:
         await db.refresh(pfv)
         assert pfv.movability == expected
 
@@ -850,4 +878,4 @@ async def test_p4c_bulk_unpin_releases_locked(client, db) -> None:
     )
     assert row_a is not None
     assert row_a.before == {"is_pinned": True, "movability": "locked"}
-    assert row_a.after == {"is_pinned": False, "movability": "unknown"}
+    assert row_a.after == {"is_pinned": False, "movability": "locked"}
