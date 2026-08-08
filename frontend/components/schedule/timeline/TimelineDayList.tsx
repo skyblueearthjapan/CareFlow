@@ -18,7 +18,7 @@
 
 import type { CourseListItem, VisitListItem } from '@/components/schedule/WeekdayScheduleCard';
 import { formatTimeCondition, PinToggleButton } from '@/components/schedule/WeekdayScheduleCard';
-import { CornerPushPin } from '@/components/ui/push-pin';
+import { CornerPushPin, PushPin, PushPinOff } from '@/components/ui/push-pin';
 import type { PinScope } from '@/components/schedule/v2/PinScopeMenu';
 import { trimSeconds } from '@/components/schedule/v2/_autoScheduleUtils';
 import { formatDuration } from '@/lib/format/duration';
@@ -37,6 +37,8 @@ export interface TimelineDayListProps {
   staffFrames?: StaffEventFrame[];
   onPatientClick?: (patientId: string) => void;
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
+  /** 週のピン (青) のトグル (PO 決定 2026-08-08)。赤トグルの右隣に並ぶ。 */
+  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
   /**
    * 新人同行モード binding (§7.2)。表示専用: `active=false` のときのみ inactive バッジ
    * (個別=visitBadgeName / コース丸ごと=courseBadgeName ∘ resolveCourseId) を出す。
@@ -82,6 +84,7 @@ function VisitRow({
   v,
   onPatientClick,
   onTogglePin,
+  onToggleWeekPin,
   onDeleteVisit,
   onPromoteWeekOnly,
   accompaniment,
@@ -89,6 +92,7 @@ function VisitRow({
   v: VisitListItem;
   onPatientClick?: (patientId: string) => void;
   onTogglePin?: TimelineDayListProps['onTogglePin'];
+  onToggleWeekPin?: TimelineDayListProps['onToggleWeekPin'];
   onDeleteVisit?: TimelineDayListProps['onDeleteVisit'];
   onPromoteWeekOnly?: TimelineDayListProps['onPromoteWeekOnly'];
   accompaniment?: AccompanimentBinding;
@@ -193,6 +197,17 @@ function VisitRow({
           <span className="shrink-0">
             <PinToggleButton visit={v} onTogglePin={onTogglePin} />
           </span>
+        ) : null}
+        {/* 週のピン (青) — 赤トグルの右隣 (PO 決定 2026-08-08)。型とズレていても
+            刺せる唯一の固定手段。解除してもその場では動かず、次の週生成で型の時刻に戻る。 */}
+        {onToggleWeekPin && v.visit_id ? (
+          <WeekPinToggleButton
+            visitId={v.visit_id}
+            patientName={v.patient_name}
+            source={v.source ?? null}
+            rowKey={v.key}
+            onToggleWeekPin={onToggleWeekPin}
+          />
         ) : null}
         {/* G2: 訪問削除 (×) — ピン留めトグルの隣。visit_id が無い行には出さない。 */}
         {onDeleteVisit && v.visit_id ? (
@@ -400,6 +415,7 @@ export function TimelineDayList({
   courses,
   onPatientClick,
   onTogglePin,
+  onToggleWeekPin,
   onDeleteVisit,
   staffFrames = [],
   onPromoteWeekOnly,
@@ -499,6 +515,7 @@ export function TimelineDayList({
                             v={v}
                             onPatientClick={onPatientClick}
                             onTogglePin={onTogglePin}
+                            onToggleWeekPin={onToggleWeekPin}
                             onDeleteVisit={onDeleteVisit}
                             onPromoteWeekOnly={onPromoteWeekOnly}
                             accompaniment={accompaniment}
@@ -514,6 +531,7 @@ export function TimelineDayList({
                       v={grp.v}
                       onPatientClick={onPatientClick}
                       onTogglePin={onTogglePin}
+                      onToggleWeekPin={onToggleWeekPin}
                       onDeleteVisit={onDeleteVisit}
                       onPromoteWeekOnly={onPromoteWeekOnly}
                       accompaniment={accompaniment}
@@ -538,10 +556,7 @@ export function TimelineDayList({
             className="flex items-center gap-2 px-3 py-1.5"
             style={{ background: 'var(--sched-event-bg)' }}
           >
-            <span
-              className="text-[12px] font-bold"
-              style={{ color: 'var(--sched-event-ink)' }}
-            >
+            <span className="text-[12px] font-bold" style={{ color: 'var(--sched-event-ink)' }}>
               {f.staff.name}
             </span>
             <span
@@ -580,5 +595,73 @@ export function TimelineDayList({
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * 週のピン (青) のトグル — 日リスト行用 (PO 決定 2026-08-08)。
+ *
+ * 赤 (PinToggleButton) の右隣に並ぶ。見分け:
+ *   - 赤 = 型のピン。毎週。スコープメニュー付き (▾)。
+ *   - 青 = 週のピン。今週だけ。単純トグル。
+ *
+ * 型の管理下に無い source ('manual' 手動作成 / 'import' カイポケ取込) は BE が
+ * 422 で弾くため、押させずに理由を tooltip で伝える。
+ */
+function WeekPinToggleButton({
+  visitId,
+  patientName,
+  source,
+  rowKey,
+  onToggleWeekPin,
+}: {
+  visitId: string;
+  patientName: string;
+  source: string | null;
+  rowKey: string;
+  onToggleWeekPin: NonNullable<TimelineDayListProps['onToggleWeekPin']>;
+}) {
+  const isWeekPinned = source === 'manual_week';
+  // BE の _WEEK_PIN_TOGGLEABLE_SOURCES と対 (型の管理下にある source のみ掛け外し可)。
+  const toggleable =
+    isWeekPinned ||
+    source === null ||
+    ['auto', 'auto_alloc', 'auto_alloc_v2', 'auto_alloc_v2w', 'pfv', 'fixed', 'reset_v2'].includes(
+      source,
+    );
+  return (
+    <button
+      type="button"
+      disabled={!toggleable}
+      data-testid={`tdl-week-pin-btn-${rowKey}`}
+      data-week-pinned={isWeekPinned ? 'true' : 'false'}
+      aria-pressed={isWeekPinned}
+      aria-label={
+        isWeekPinned
+          ? `${patientName} の今週の固定を解除`
+          : toggleable
+            ? `${patientName} を今週この時刻で固定`
+            : `${patientName} は手動作成・取込の訪問のため今週固定の対象外です`
+      }
+      title={
+        !toggleable
+          ? '手動作成・取込の訪問は今週固定の対象外です'
+          : isWeekPinned
+            ? '今週の固定を解除します（この場では動きません。次の週生成で固定訪問スケジュールの時刻が読み込まれます）'
+            : '今週この時刻で固定します（固定訪問スケジュールは変更しません）'
+      }
+      className={cn(
+        'inline-flex shrink-0 items-center justify-center rounded px-1 py-0.5 leading-none',
+        isWeekPinned ? 'text-info hover:bg-info-bg' : 'text-text-muted hover:bg-bg-muted',
+        !toggleable && 'cursor-not-allowed opacity-30',
+      )}
+      onClick={() => onToggleWeekPin(visitId, !isWeekPinned)}
+    >
+      {isWeekPinned ? (
+        <PushPin className="h-3.5 w-3.5 text-info [&_.fill-error]:fill-[var(--info)]" />
+      ) : (
+        <PushPinOff className="h-3.5 w-3.5" />
+      )}
+    </button>
   );
 }

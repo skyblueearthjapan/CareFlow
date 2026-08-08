@@ -1305,6 +1305,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         movability: pfvHit?.movability ?? pfvByWd?.movability ?? null,
         // 型とのズレ (2026-08-08): ズレている場合のみ型の開始時刻が入る。
         master_start_time: masterStartTime,
+        // 週のピン (青) の表示根拠 (2026-08-08)。
+        source: (v as { source?: string | null }).source ?? null,
         // 週ビューの距離算出用 (コース合計 + 次までの距離).
         lat: (patient as { lat?: number | null } | undefined)?.lat ?? null,
         lng: (patient as { lng?: number | null } | undefined)?.lng ?? null,
@@ -2697,6 +2699,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           // Phase G-21 T4 reviewer C2: list view にも pin 状態を流し込む.
           fixed_visit_id: cv.fixed_visit_id ?? null,
           is_pinned: cv.is_pinned === true,
+          // 型とのズレ (2026-08-08): 赤トグルが押せない理由を正しく出すのに必要。
+          master_start_time: cv.master_start_time ?? null,
           // T-1L: タイムライン兄弟リスト用の患者性別 (行頭ドット・左色帯).
           patient_sex: (patient?.sex as string | null | undefined) ?? null,
           // G2/G3: 日リストの × (訪問削除) と「今週のみ」チップ (固定昇格) の根拠.
@@ -3646,6 +3650,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       onToggleWeekPin={
                         canEdit && !accompaniment.active ? handleToggleWeekPin : undefined
                       }
+                      // 型のピン (赤): カード右下クラスタから毎週の固定を操作 (PO 決定 2026-08-08)。
+                      onTogglePin={canEdit && !accompaniment.active ? handleTogglePin : undefined}
                       accompaniment={accompaniment.binding}
                       accompanimentWeekday={activeWeekday}
                     />
@@ -3659,6 +3665,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       staffFrames={staffEventFramesByWeekday.get(activeWeekday) ?? []}
                       onPatientClick={handleOpenPatientDetail}
                       onTogglePin={canEdit ? handleTogglePin : undefined}
+                      // 週のピン (青): 赤トグルの右隣に並ぶ (PO 決定 2026-08-08)。
+                      onToggleWeekPin={canEdit ? handleToggleWeekPin : undefined}
                       // G2: 行末の × (訪問削除)。確認ダイアログは既存ハンドラが持つ。
                       onDeleteVisit={
                         canEdit

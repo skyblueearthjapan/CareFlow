@@ -16,7 +16,7 @@
 import { useMemo } from 'react';
 
 import type { WeekOverviewVisit } from '@/components/schedule/v2/CourseWeekOverview';
-import { CornerPushPin } from '@/components/ui/push-pin';
+import { CornerPushPin, CornerWeekPushPin } from '@/components/ui/push-pin';
 import { MovabilityMark } from './MovabilityMark';
 import {
   isDivergedFromMaster,
@@ -209,8 +209,12 @@ function WeekCard({
           👥{accBadge}
         </span>
       )}
-      {/* ピン留め: 右上に打ち込んだ画鋲 (📍住所と誤認しない・PO要望 2026-07-08)。 */}
+      {/* ピン留めの状態表示: 赤=型のピン (毎週) / 青=週のピン (今週だけ)。
+          両方刺さっていれば 2 本並べる — 青は赤の左隣 (PO 決定 2026-08-08)。 */}
       {v.is_pinned && <CornerPushPin className="h-4 w-4" />}
+      {v.source === 'manual_week' && (
+        <CornerWeekPushPin className={cn('h-4 w-4', v.is_pinned && 'right-[11px] translate-x-0')} />
+      )}
       {/* 1行目: アイコン + 患者名 (フル表示)。 */}
       <span className="flex min-w-0 items-center gap-0.5">
         {isMulti && (

@@ -82,13 +82,55 @@ describe('週のピン (青ピン)', () => {
     expect(onToggle).toHaveBeenCalledWith('v3', false);
   });
 
-  it('赤ピン (型のピン) が刺さっている訪問には青ピンのトグルを出さない', () => {
-    // 型のピンが既に不可侵を担保しているため、二重の固定は意味が無い。
-    renderBoard(visit({ id: 'v4', source: 'auto', is_pinned: true }), vi.fn());
-    expect(screen.queryByTestId('tl-week-pin-toggle-v4')).not.toBeInTheDocument();
-    // 赤い画鋲のみが立つ。
+  it('赤ピン中でも青ピンのトグルは出る（先に青を仕込んでから一括赤解除する運用のため）', async () => {
+    // 旧仕様は「赤ピン中は青トグルを出さない」だったが、全件ピン留めすると青の
+    // 入口が全滅し、一括赤解除前の保護を仕込めなかった (PO 指摘 2026-08-08)。
+    const onToggle = vi.fn();
+    renderBoard(visit({ id: 'v4', source: 'auto', is_pinned: true }), onToggle);
+    const btn = screen.getByTestId('tl-week-pin-toggle-v4');
+    expect(btn).toBeInTheDocument();
+    await userEvent.click(btn);
+    expect(onToggle).toHaveBeenCalledWith('v4', true);
+  });
+
+  it('赤と青が両方刺さっていれば画鋲が 2 本並ぶ（青は赤の左隣）', () => {
+    renderBoard(visit({ id: 'v6', source: 'manual_week', is_pinned: true }), vi.fn());
     expect(document.querySelector('[data-icon="corner-push-pin"]')).toBeInTheDocument();
-    expect(document.querySelector('[data-icon="corner-week-push-pin"]')).not.toBeInTheDocument();
+    const blue = document.querySelector('[data-icon="corner-week-push-pin"]');
+    expect(blue).toBeInTheDocument();
+    // 青は赤の左隣スロットへ避ける (right-[14px])。
+    expect(blue?.getAttribute('class') ?? '').toContain('right-[14px]');
+  });
+
+  it('赤トグルは型と一致する訪問で操作でき、ズレていれば理由を示して無効', () => {
+    const onTogglePin = vi.fn();
+    // 一致 (fixed_visit_id あり) → 有効
+    render(
+      <TimelineDayBoard
+        columns={[column([visit({ id: 'v7', source: 'auto', fixed_visit_id: 'pfv-7' })])]}
+        onTogglePin={onTogglePin}
+      />,
+    );
+    expect(screen.getByTestId('tl-pin-toggle-v7')).not.toBeDisabled();
+  });
+
+  it('赤トグル: 型とズレた訪問は無効で、型の時刻を理由に出す（論点1）', () => {
+    render(
+      <TimelineDayBoard
+        columns={[
+          column([
+            visit({ id: 'v8', source: 'auto', fixed_visit_id: null, master_start_time: '13:00' }),
+          ]),
+        ]}
+        onTogglePin={vi.fn()}
+      />,
+    );
+    const btn = screen.getByTestId('tl-pin-toggle-v8');
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute(
+      'title',
+      '固定訪問スケジュールは 13:00 です。この時間帯ではピン留めできません',
+    );
   });
 
   it('ハンドラ未指定 (閲覧のみ) ではトグルを描画しない', () => {

@@ -73,6 +73,11 @@ export interface WeekOverviewVisit {
    * 一致 / 固定枠なし は null。ズレ表示とピン留め不可メッセージに使う。
    */
   master_start_time?: string | null;
+  /**
+   * visit のソース (2026-08-08)。週タイムラインの青画鋲 (週のピン) 表示に使う。
+   * 'manual_week' = 今週固定。欠落は非表示 (寛容)。
+   */
+  source?: string | null;
   /** 患者の緯度経度 (距離算出用). null = 未登録 → 距離は出さない. */
   lat?: number | null;
   lng?: number | null;
