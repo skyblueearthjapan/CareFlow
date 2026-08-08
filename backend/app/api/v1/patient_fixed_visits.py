@@ -504,8 +504,9 @@ async def put_fixed_visits(
                 slot_index=item.slot_index,
                 # Phase E-5 (項目 ⑥B): サブ拠点 ID (任意).
                 sub_office_id=item.sub_office_id,
-                # P0-2: pinned 保護フラグを引き継ぐ (省略すると silent に False になる).
-                is_pinned=item.is_pinned,
+                # 統合 (2026-08-09): is_pinned は movability='locked' の非推奨ミラー。
+                # クライアント値に依らずサーバ側で同期する (単一の真実 = movability)。
+                is_pinned=(item.movability == "locked"),
                 # P2-A (§1.3): 可動域フラグを運搬. 省略すると保存のたび 'unknown' に
                 # 戻る (P0-2 の is_pinned BLOCKER と同型の罠). 必ず引き継ぐこと.
                 movability=item.movability,
@@ -729,28 +730,21 @@ async def from_week_bulk(
 
 
 def _release_pin_lock(old_pinned: bool, new_pinned: bool, movability: str) -> str:
-    """ピン留め切替時の可動域を決める. **現在は常に据え置き** (何も変更しない).
+    """ピン切替時の可動域を決める — 統合セマンティクス (PO 決定 2026-08-09).
 
-    PO 決定 (2026-08-08): 可動域とピン留めは独立した 2 軸として扱う.
+    赤ピンと可動域「完全固定」は **1 概念に統合** された。正典は movability で、
+    is_pinned は読み取り互換のための非推奨ミラー (movability='locked' と常に同値)。
+    よってピンの掛け外し = 完全固定の掛け外し:
 
-      - 可動域 … 「この枠をどこまで動かしてよいか」という現場の判断の記録.
-                  一度設定したら、ピン留めの掛け外しでは失われない.
-      - ピン留め … 一括で掛け外しする上乗せの錠.
+      - pin ON  → movability='locked'
+      - pin OFF → movability='unknown' (指定なし)
 
-    旧 P4-C はピン解除時に ``movability=='locked'`` を 'unknown' へ戻していた.
-    当時は locked が全て「ピン由来の自動付与」だったため妥当だったが、現場が
-    可動域を明示設定する運用に移った今は **現場の判断を消す挙動** になる.
-    pfv_validator の旧 V6 (ピン留め時の locked 強制) も同時に廃止したため、
-    ピン留めが可動域を上書きすることはもう無い.
-
-    これにより PO の要件が成立する: 一括でピンを抜いても、可動域=完全固定 の枠は
-    動かない (「同じ曜日・同じ時間に行く」ことが担保される).
-
-    シグネチャは呼出側 (単体 PATCH / bulk POST) と audit_log の before/after 記録を
-    変えずに済むよう維持する.
+    (2026-08-08 の「独立 2 軸」は 1 日で役目を終えた。独立化は「ピンが判断の記録を
+    壊す」問題への対処だったが、統合により軸が 1 本になり問題自体が消滅した。)
     """
-    del old_pinned, new_pinned  # 可動域はピン留めの状態に依存しない.
-    return movability
+    del old_pinned  # 旧値は audit 用に呼出側が持つ.
+    del movability
+    return "locked" if new_pinned else "unknown"
 
 
 @router.patch(
@@ -779,6 +773,7 @@ async def update_pfv_pin(
     new_value = bool(payload.is_pinned)
     old_movability = pfv.movability
     new_movability = _release_pin_lock(old_value, new_value, old_movability)
+    # 統合 (2026-08-09): 正典 movability を書き、is_pinned はミラーとして同期。
     pfv.is_pinned = new_value
     pfv.movability = new_movability
 

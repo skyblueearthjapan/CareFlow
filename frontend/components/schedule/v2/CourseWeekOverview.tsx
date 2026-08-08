@@ -1018,7 +1018,7 @@ function PinIconButton({
   // 論点 1 (PO 決定 2026-08-08): 無効の理由を正しく伝える。合わせ直す導線は設けない。
   const diverged = disabled && typeof masterStartTime === 'string' && masterStartTime.length > 0;
   const disabledReason = diverged
-    ? `固定訪問スケジュールは ${masterStartTime} です。この時間帯ではピン留めできません`
+    ? `固定訪問スケジュールは ${masterStartTime} です。この時間帯では完全固定にできません`
     : '先に固定枠登録が必要';
   // Phase G-47: click 即時 toggle を廃し、 PinScopeMenu で「曜日のみ / 全曜日」 2 択を提示.
   return (
@@ -1037,17 +1037,17 @@ function PinIconButton({
           disabled={disabled}
           aria-label={
             isPinned
-              ? `${label} のピン留めスコープを選択 (ピン留めを外す)`
+              ? `${label} の完全固定スコープを選択 (完全固定を外す)`
               : disabled
                 ? `${label} は${disabledReason}`
-                : `${label} のピン留めスコープを選択 (ピン留めする)`
+                : `${label} の完全固定スコープを選択 (完全固定にする)`
           }
           title={
             disabled
               ? disabledReason
               : isPinned
-                ? 'ピン留めを外すスコープを選択 (この曜日のみ / 全曜日)'
-                : 'ピン留めするスコープを選択 (この曜日のみ / 全曜日)'
+                ? '完全固定を外すスコープを選択 (この曜日のみ / 全曜日)'
+                : '完全固定にするスコープを選択 (この曜日のみ / 全曜日)'
           }
           aria-pressed={isPinned}
           aria-haspopup="menu"

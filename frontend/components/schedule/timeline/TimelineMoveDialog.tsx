@@ -37,6 +37,11 @@ export interface TimelineMoveContext {
   newTimeHM: string;
   durationMin: number;
   courseChanged: boolean;
+  /**
+   * 統合 (PO 決定 2026-08-09): 移動対象に完全固定 (movability='locked') を含む。
+   * エンジンは動かさないが、人手は注意書きを見たうえで動かせる (確認して可)。
+   */
+  lockedNotice?: boolean;
 }
 
 export interface TimelineMoveDialogProps {
@@ -98,6 +103,15 @@ export function TimelineMoveDialog({
             ) : null}
           </DialogDescription>
         </DialogHeader>
+
+        {context?.lockedNotice ? (
+          <div
+            className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700"
+            data-testid="timeline-move-locked-notice"
+          >
+            ⚠ これは完全固定です。システムは動かしませんが、この操作では手動で移動します。
+          </div>
+        ) : null}
 
         <div className="py-2">
           <ChangeScopeChoice

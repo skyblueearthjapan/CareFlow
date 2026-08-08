@@ -227,16 +227,25 @@ function DeleteVisitButton({
   onDeleteVisit: (visitId: string, patientName: string) => void;
 }) {
   const label = visit.patient_name ?? visit.patient_id;
+  // 青 (今週固定) は蓋 = 削除も不可 (解除してから。BE も 422 で二重防御)。
+  const lidLocked = visit.week_pinned === true;
   return (
     <button
       type="button"
       data-testid={`tl-delete-visit-${visit.id}`}
       aria-label={`${label} の訪問を削除`}
-      title="この訪問を削除"
-      className="absolute bottom-0.5 right-0.5 z-[3] grid h-[15px] w-[15px] place-items-center rounded-full border border-transparent bg-bg-base/80 text-[11px] font-bold leading-none text-error opacity-0 transition-opacity hover:border-error hover:bg-error-bg group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-error"
+      aria-disabled={lidLocked || undefined}
+      title={lidLocked ? '今週固定（青ピン）を解除してから削除してください' : 'この訪問を削除'}
+      className={cn(
+        'absolute bottom-0.5 right-0.5 z-[3] grid h-[15px] w-[15px] place-items-center rounded-full border border-transparent bg-bg-base/80 text-[11px] font-bold leading-none text-error opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-error',
+        lidLocked
+          ? 'cursor-not-allowed text-text-muted group-hover:opacity-40'
+          : 'hover:border-error hover:bg-error-bg',
+      )}
       onClick={(ev) => {
         // カード本体の onClick (患者詳細) を発火させない。
         ev.stopPropagation();
+        if (lidLocked) return;
         onDeleteVisit(visit.id, label);
       }}
       onPointerDown={(ev) => {
@@ -256,11 +265,11 @@ function DeleteVisitButton({
  * 慣例に合わせ、**未固定側のトグルはホバー時のみ薄く出る**。刺さっている側は
  * 色付きで常時表示する (状態の一次表示は右上の画鋲が担い、こちらは操作の足場)。
  *
- *   - 赤 = 型のピン (毎週)。型と一致する訪問でのみ操作可 (§1.3)。
- *     スコープ (この曜日のみ / 全曜日) は既存 PinScopeMenu で選ぶ。
+ *   - 赤 = 完全固定 (統合 2026-08-09: movability='locked' の表示/操作)。
+ *     型と一致する訪問でのみ操作可 (§1.3)。スコープは PinScopeMenu で選ぶ。
  *     ズレていて押せないときは理由を title で正しく伝える (論点 1)。
- *   - 青 = 週のピン (今週だけ)。型とズレていても刺せる。**赤ピン中でも操作できる**
- *     (先に青を仕込んでから一括赤解除する運用のため)。
+ *   - 青 = 週のピン (今週だけ)。型とズレていても刺せる。**完全固定中でも操作できる**。
+ *     青が刺さっている間は盤面の人手操作 (移動/削除) も蓋 = ブロックされる。
  */
 function CardPinControls({
   visit,
@@ -314,17 +323,17 @@ function CardPinControls({
               aria-expanded={isOpen}
               aria-label={
                 isPinned
-                  ? `${label} の毎週の固定 (型のピン) を外すスコープを選択`
+                  ? `${label} の完全固定を外すスコープを選択`
                   : redDisabled
                     ? `${label} は${redDisabledReason}`
-                    : `${label} を毎週この時刻で固定 (型のピン) するスコープを選択`
+                    : `${label} を完全固定にするスコープを選択`
               }
               title={
                 redDisabled
                   ? redDisabledReason
                   : isPinned
-                    ? '毎週の固定 (型のピン) を外す — スコープを選択 (この曜日のみ / 全曜日)'
-                    : '毎週この時刻で固定 (型のピン) — スコープを選択 (この曜日のみ / 全曜日)'
+                    ? '完全固定を外す（システムが動かせるようになります）— スコープを選択 (この曜日のみ / 全曜日)'
+                    : '完全固定にする（システムはこの枠を動かしません）— スコープを選択 (この曜日のみ / 全曜日)'
               }
               className={cn(
                 btnBase,
@@ -589,7 +598,7 @@ function VisitCard({
       // 後勝ちで listeners の onPointerDown を上書きし、ドラッグが死ぬ (②-c で実バグ化)。
       {...(drag
         ? drag.disabled
-          ? visit.is_pinned === true
+          ? visit.week_pinned === true
             ? { onPointerDown: () => setShake(true) }
             : {}
           : { ...drag.listeners, ...drag.attributes }
@@ -607,8 +616,8 @@ function VisitCard({
           ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
           : [
               drag?.disabled
-                ? visit.is_pinned
-                  ? 'ピン留め中のため移動できません（ピンを解除してから移動）'
+                ? visit.week_pinned
+                  ? '今週固定（青ピン）中のため動かせません（青ピンを解除してから移動）'
                   : visit.visit_group_id
                     ? '2名体制（ペア配置）のため個別移動できません'
                     : visit.status === 'cancelled'
@@ -820,8 +829,11 @@ function DraggableVisitCard({
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   accompaniment?: AccompanimentBinding;
 }) {
+  // 統合 (PO 決定 2026-08-09): 赤 (完全固定) はドラッグ可 — 移動確認ダイアログで
+  // 「これは完全固定です」注意書きを出したうえで人手移動を許す。
+  // 青 (今週固定) は蓋 = ドラッグ不可 (解除してから動かす。BE も 422 で二重防御)。
   const dragDisabled =
-    visit.is_pinned === true || visit.status === 'cancelled' || Boolean(visit.visit_group_id);
+    visit.week_pinned === true || visit.status === 'cancelled' || Boolean(visit.visit_group_id);
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: tlVisitDraggableId(visit.id),
     disabled: dragDisabled,
@@ -869,8 +881,9 @@ function DraggablePairBox({
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   accompaniment?: AccompanimentBinding;
 }) {
+  // 青 (今週固定) を含むペアは蓋 = ドラッグ不可。赤 (完全固定) は移動確認で注意書き。
   const dragDisabled = item.visits.some(
-    (v) => v.is_pinned === true || v.status === 'cancelled' || Boolean(v.visit_group_id),
+    (v) => v.week_pinned === true || v.status === 'cancelled' || Boolean(v.visit_group_id),
   );
   const [id1, id2] = [item.visits[0]!.id, item.visits[1]?.id ?? item.visits[0]!.id];
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
@@ -1256,8 +1269,9 @@ function DraggablePairMemberRow({
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   accompaniment?: AccompanimentBinding;
 }) {
+  // 青 (今週固定) は蓋 = ドラッグ不可。赤 (完全固定) は移動確認で注意書き。
   const dragDisabled =
-    v.is_pinned === true || v.status === 'cancelled' || Boolean(v.visit_group_id);
+    v.week_pinned === true || v.status === 'cancelled' || Boolean(v.visit_group_id);
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: tlVisitDraggableId(v.id),
     disabled: dragDisabled,
@@ -1306,7 +1320,7 @@ function PairBox({
   accompaniment?: AccompanimentBinding;
 }) {
   const [shake, setShake] = useState(false);
-  const anyPinned = item.visits.some((v) => v.is_pinned === true);
+  const anyWeekPinned = item.visits.some((v) => v.week_pinned === true);
   const anyGroup = item.visits.some((v) => Boolean(v.visit_group_id));
   const cs = Math.max(item.startMin, TL_DAY_START_MIN);
   const ce = Math.min(item.endMin, TL_DAY_END_MIN);
@@ -1333,7 +1347,7 @@ function PairBox({
       // (別プロップで書くと後勝ち上書きでドラッグが死ぬ — 64acdef の教訓)。
       {...(drag
         ? drag.disabled
-          ? anyPinned || anyGroup
+          ? anyWeekPinned || anyGroup
             ? { onPointerDown: () => setShake(true) }
             : {}
           : { ...drag.listeners, ...drag.attributes }
@@ -1341,8 +1355,8 @@ function PairBox({
       onAnimationEnd={shake ? () => setShake(false) : undefined}
       title={
         drag?.disabled
-          ? anyPinned
-            ? 'ピン留めを含むため移動できません（ピンを解除してから移動）'
+          ? anyWeekPinned
+            ? '今週固定（青ピン）を含むため動かせません（青ピンを解除してから移動）'
             : anyGroup
               ? '2名体制（ペア配置）を含むため移動できません'
               : 'キャンセル済みを含むため移動できません'

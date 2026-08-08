@@ -153,6 +153,6 @@ describe('CourseMoveTimeline (T-4 意匠統一)', () => {
     expect(screen.getByTestId('ba-test-after')).toBeInTheDocument();
     expect(screen.getByText(/変更前（稲B・火曜）/)).toBeInTheDocument();
     expect(screen.getAllByText('2名').length).toBe(2);
-    expect(screen.getAllByLabelText('ピン留め').length).toBe(2);
+    expect(screen.getAllByLabelText('完全固定').length).toBe(2);
   });
 });

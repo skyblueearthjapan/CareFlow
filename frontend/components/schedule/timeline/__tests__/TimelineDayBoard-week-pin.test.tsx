@@ -137,7 +137,7 @@ describe('週のピン (青ピン)', () => {
     expect(btn).toBeDisabled();
     expect(btn).toHaveAttribute(
       'title',
-      '固定訪問スケジュールは 13:00 です。この時間帯ではピン留めできません',
+      '固定訪問スケジュールは 13:00 です。この時間帯では完全固定にできません',
     );
   });
 

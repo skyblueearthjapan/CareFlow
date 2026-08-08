@@ -125,11 +125,11 @@ function formatDelta(before: number, after: number, unit: '分' | 'km'): DeltaDi
   return { text: `${sign}${value}${unit}`, toneClass };
 }
 
-/** excluded_summary → 「ピン留めN件・…」の内訳テキスト (0 は省略). */
+/** excluded_summary → 「完全固定N件・…」の内訳テキスト (0 は省略).
+    統合 (2026-08-09): 旧「ピン留め」と「可動域が完全固定」は同一概念のため合算表示。 */
 function summarizeExcluded(ex: ScopeOptimizationExcludedSummary): string[] {
   const parts: Array<[number, string]> = [
-    [ex.pinned, `ピン留め${ex.pinned}件`],
-    [ex.locked, `可動域が完全固定${ex.locked}件`],
+    [ex.pinned + ex.locked, `完全固定${ex.pinned + ex.locked}件`],
     [ex.dismissed, `却下済み${ex.dismissed}件`],
     [ex.confirmation_required_excluded, `要確認のため除外${ex.confirmation_required_excluded}件`],
     [ex.no_current_visit, `固定枠と対応不明${ex.no_current_visit}件`],

@@ -371,21 +371,24 @@ describe('ImprovementSuggestionsSection', () => {
     };
     renderSection();
     const empty = screen.getByTestId('improvement-suggestions-empty');
-    expect(empty).toHaveTextContent('ピン留め2件');
+    expect(empty).toHaveTextContent('完全固定2件');
     expect(empty).toHaveTextContent('効果が閾値未満1件');
     // 0 のカテゴリ (却下済み) は出さない.
     expect(empty).not.toHaveTextContent('却下済み');
   });
 
-  it('5b. (#P4-C) locked 内訳は「可動域が完全固定N件」と表示 (ピン留めと混同防止)', () => {
+  it('5b. 統合 (2026-08-09): pinned と locked は合算して「完全固定N件」と表示', () => {
+    // is_pinned は movability='locked' のミラーになったため別カテゴリ表示は廃止。
+    // (BE の内訳計上は if/elif で排他 → 合算しても二重計上にならない)
     mocks.suggestionsResult = {
-      data: makeResponse([], { locked: 3 }),
+      data: makeResponse([], { pinned: 2, locked: 3 }),
       isLoading: false,
       isError: false,
     };
     renderSection();
     const empty = screen.getByTestId('improvement-suggestions-empty');
-    expect(empty).toHaveTextContent('可動域が完全固定3件');
+    expect(empty).toHaveTextContent('完全固定5件');
+    expect(empty).not.toHaveTextContent('可動域が完全固定');
   });
 
   it('6. fetch エラー時はエラーテキストのみ (セクションは生きる)', () => {

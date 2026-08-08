@@ -438,3 +438,85 @@ async def test_bulk_week_pin_other_week_untouched(client, db) -> None:
     assert res.json()["target_count"] == 0
     await db.refresh(v)
     assert v.source == "auto"
+
+
+# ---------------------------------------------------------------------------
+# 蓋ロック (PO 決定 2026-08-09): 青ピン中は人手でも配置を触れない
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_blue_lid_blocks_week_only_move(client, db) -> None:
+    """青ピンの訪問は「今週だけ移動」も 422 (解除してから動かす 2 段操作)."""
+    admin = await _make_user(db, email="lid-1@example.com", role="admin")
+    patient = await _make_patient(db, code="LID-1")
+    visit = await _make_visit(
+        db, patient=patient, source="import", start=time(10, 25), week_pinned=True
+    )
+
+    res = await client.post(
+        "/api/v1/schedule/v2/visit-move-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": 2026,
+            "iso_week": 36,
+            "patient_id": str(patient.id),
+            "old_weekday": 4,
+            "old_start_time": "10:25",
+            "new_weekday": 4,
+            "new_start_time": "14:00",
+        },
+    )
+    assert res.status_code == 422, res.text
+    assert "青ピン" in res.json()["detail"]
+    await db.refresh(visit)
+    assert visit.start_time == time(10, 25)
+
+
+@pytest.mark.asyncio
+async def test_blue_lid_blocks_delete(client, db) -> None:
+    """青ピンの訪問は削除も 422。解除すれば削除できる."""
+    admin = await _make_user(db, email="lid-2@example.com", role="admin")
+    patient = await _make_patient(db, code="LID-2")
+    visit = await _make_visit(db, patient=patient, source="auto", week_pinned=True)
+
+    res = await client.delete(f"/api/v1/visits/{visit.id}", headers=_bearer(admin))
+    assert res.status_code == 422, res.text
+    assert "青ピン" in res.json()["detail"]
+
+    # 解除 → 削除できる。
+    res2 = await client.patch(
+        _WEEK_PIN_URL.format(vid=visit.id),
+        headers=_bearer(admin),
+        json={"pinned": False},
+    )
+    assert res2.status_code == 200
+    res3 = await client.delete(f"/api/v1/visits/{visit.id}", headers=_bearer(admin))
+    assert res3.status_code == 204, res3.text
+
+
+@pytest.mark.asyncio
+async def test_blue_lid_blocks_placement_patch_but_allows_meta(client, db) -> None:
+    """青ピン中は時刻・日付の PATCH は 422。担当スタッフ等の非配置フィールドは可."""
+    admin = await _make_user(db, email="lid-3@example.com", role="admin")
+    patient = await _make_patient(db, code="LID-3")
+    visit = await _make_visit(db, patient=patient, source="auto", week_pinned=True)
+
+    res = await client.patch(
+        f"/api/v1/visits/{visit.id}",
+        headers=_bearer(admin),
+        json={"start_time": "14:00:00", "end_time": "15:00:00"},
+    )
+    assert res.status_code == 422, res.text
+    assert "青ピン" in res.json()["detail"]
+
+    # 非配置フィールド (note) は通る。
+    res2 = await client.patch(
+        f"/api/v1/visits/{visit.id}",
+        headers=_bearer(admin),
+        json={"note": "鍵は裏口"},
+    )
+    assert res2.status_code == 200, res2.text
+    await db.refresh(visit)
+    assert visit.note == "鍵は裏口"
+    assert visit.start_time == time(10, 25)

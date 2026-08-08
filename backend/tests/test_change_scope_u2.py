@@ -423,8 +423,12 @@ async def test_visit_move_week_only_moves_and_keeps_pfv(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_visit_move_week_only_pinned_pfv_is_422(client, db) -> None:
-    """移動元に一致する pinned PFV があれば 422 / visit は動かない."""
+async def test_visit_move_week_only_pinned_pfv_is_allowed(client, db) -> None:
+    """統合 (PO 決定 2026-08-09): 完全固定 (旧 pinned) でも人手の「今週だけ移動」は可。
+
+    旧 422 ブロックは撤廃 — 人手の移動は正当 (FE が「これは完全固定です」確認を出す)。
+    ブロックするのは青ピン (week_pinned) だけ (蓋ロック / test_visit_week_pin 参照)。
+    """
     admin = await _make_user(db, email="u2-move-pinned@example.com", role="admin")
     office = await _make_office(db, "u2-move-pinned-office")
     p = await _make_patient(db, "U2-MOVE-PIN", office_id=office.id)
@@ -444,12 +448,14 @@ async def test_visit_move_week_only_pinned_pfv_is_422(client, db) -> None:
             "new_start_time": "11:00:00",
         },
     )
-    assert res.status_code == 422, res.text
+    assert res.status_code == 200, res.text
+    assert res.json()["visits_moved"] == 1
 
-    # visit は動いていない (Mon 10:00 のまま).
+    # visit は火曜 11:00 へ移動し、型 (PFV) は不変。
     visits = await _active_visits(db, p.id)
     assert len(visits) == 1
-    assert visits[0].visit_date == MON and visits[0].start_time == time(10, 0)
+    assert visits[0].visit_date == date.fromordinal(MON.toordinal() + 1)
+    assert visits[0].start_time == time(11, 0)
 
 
 @pytest.mark.asyncio

@@ -404,7 +404,23 @@ async def update_visit(
     if visit is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    # 青ピン (week_pinned) は蓋 (PO 決定 2026-08-09): 配置 (日付・時刻) の変更は
+    # 解除するまで人手でも不可。担当・状態・メモ等の非配置フィールドは許可する
+    # (青ピンが守るのは「今週この位置」であって業務メタ情報ではない)。
+    # week_pinned 自体の変更 (= 解除操作) はもちろん許可。
+    _placement_fields = {"visit_date", "start_time", "end_time"}
+    if (
+        bool(getattr(visit, "week_pinned", False))
+        and changes.get("week_pinned") is not False
+        and _placement_fields & set(changes.keys())
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="今週固定（青ピン）されています。解除してから時刻・日付を変更してください",
+        )
+
+    for field, value in changes.items():
         setattr(visit, field, value)
     try:
         await db.commit()
@@ -508,26 +524,19 @@ async def delete_visit(
     # 翌週展開で二重訪問になり得るため). slot_index 0/1 も全て削除される
     # (W37 Phase 2-A: 2 名体制患者の partner も含めた全 slot を一掃).
     #
-    # Phase G-21 final C1: pinned PFV (is_pinned=True) は D&D / cascade で
-    # 動かせない (= 物理削除 + 新規 PFV で is_pinned=false 化されるバイパス防止).
-    # 削除対象に pinned PFV が 1 件でもあれば 422 で拒否し、ユーザーに先に
-    # 完全固定を解除するよう促す.
+    # 青ピン (week_pinned) は蓋 (PO 決定 2026-08-09): 解除するまで人手でも
+    # 削除できない。「今週の盤面を凍らせる」ための明示的な 2 段操作にする。
+    if bool(getattr(visit, "week_pinned", False)):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="今週固定（青ピン）されています。解除してから削除してください",
+        )
+
+    # PO 決定 (2026-08-09): 完全固定 (旧 pinned) の 422 ブロックは撤廃。
+    # 完全固定の意味は「エンジンが動かさない」であり、人手の削除は常に正当。
+    # FE 側が「これは完全固定です」の確認を出したうえで到達する。
     if cascade_fixed_visit:
         old_weekday = visit.visit_date.weekday()
-        pinned_targets = (
-            await db.scalars(
-                select(PatientFixedVisit).where(
-                    PatientFixedVisit.patient_id == visit.patient_id,
-                    PatientFixedVisit.weekday == old_weekday,
-                    PatientFixedVisit.is_pinned.is_(True),
-                )
-            )
-        ).all()
-        if pinned_targets:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=("完全固定の固定枠は削除できません. 先に完全固定を解除してください."),
-            )
         await db.execute(
             delete(PatientFixedVisit).where(
                 PatientFixedVisit.patient_id == visit.patient_id,

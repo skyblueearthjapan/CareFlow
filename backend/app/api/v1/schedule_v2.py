@@ -1299,19 +1299,27 @@ async def visit_move_week_only_endpoint(
             detail=f"patient_id={payload.patient_id} が見つかりません",
         )
 
-    # 安全網: 移動元位置に一致する pinned PFV があれば 422 (U-1 scope pinned 検証と同水準).
-    pinned = await db.scalar(
-        select(PatientFixedVisit.id).where(
-            PatientFixedVisit.patient_id == payload.patient_id,
-            PatientFixedVisit.weekday == payload.old_weekday,
-            PatientFixedVisit.start_time == payload.old_start_time,
-            PatientFixedVisit.is_pinned.is_(True),
+    # PO 決定 (2026-08-09): 旧 pinned (=完全固定) の人手ブロックは撤廃 — 人手の
+    # 「今週だけ移動」は常に正当 (FE が「これは完全固定です」確認を出す)。
+    # 代わりに **青ピン (week_pinned) は蓋**: 解除するまで人手でも動かせない。
+    blue_locked = await db.scalar(
+        select(Visit.id).where(
+            Visit.patient_id == payload.patient_id,
+            Visit.deleted_at.is_(None),
+            Visit.status == VISIT_STATUS_PLANNED,
+            Visit.week_pinned.is_(True),
+            Visit.visit_date
+            == date.fromordinal(
+                date.fromisocalendar(payload.iso_year, payload.iso_week, 1).toordinal()
+                + payload.old_weekday
+            ),
+            Visit.start_time == payload.old_start_time,
         )
     )
-    if pinned is not None:
+    if blue_locked is not None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="ピン留めされた枠は「この週だけ」でも動かせません",
+            detail="今週固定（青ピン）されています。解除してから動かしてください",
         )
 
     counters: dict[str, Any] = {"visits": 0, "patients": set()}

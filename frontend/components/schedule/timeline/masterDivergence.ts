@@ -39,12 +39,13 @@ export function masterTimeSuffix(visit: MasterDivergenceSource): string | null {
 
 /**
  * カード全体に付ける説明 (title 属性)。ズレていなければ null。
- * ピン留めできない理由もここで説明する (論点 1: 合わせる導線は設けず、伝えるだけ)。
+ * 完全固定にできない理由もここで説明する (論点 1: 合わせる導線は設けず、伝えるだけ)。
  */
 export function masterDivergenceTitle(visit: MasterDivergenceSource): string | null {
   if (!isDivergedFromMaster(visit)) return null;
   return (
-    `固定訪問スケジュールは ${visit.master_start_time} です。` + 'この時間帯ではピン留めできません'
+    `固定訪問スケジュールは ${visit.master_start_time} です。` +
+    'この時間帯では完全固定にできません'
   );
 }
 

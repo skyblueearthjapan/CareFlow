@@ -385,7 +385,7 @@ describe('TimelineDayBoard', () => {
     expect(screen.getByTestId('tl-visit-short').getAttribute('title')).toBe('稲毛区園生町100');
   });
 
-  it('同住所ペアボックスは dndEnabled で2名セットのまま掴める (ピン含みは不可)', () => {
+  it('同住所ペアボックスは dndEnabled で2名セットのまま掴める (青ピン含みは不可)', () => {
     render(
       <DndContext>
         <TimelineDayBoard
@@ -413,7 +413,7 @@ describe('TimelineDayBoard', () => {
                   end_time: '13:35:00',
                   same_address_group_id: 'g2',
                   patient_id: 'p-qa',
-                  is_pinned: true,
+                  week_pinned: true,
                 }),
                 visit({
                   id: 'qb',
@@ -432,7 +432,8 @@ describe('TimelineDayBoard', () => {
     );
     const okPair = screen.getByTestId('tl-pair-pair:pa:pb');
     expect(okPair.getAttribute('data-tl-drag')).toBe('enabled');
-    // ピンを含むペアは掴めない + shake で拒否。
+    // 青ピン (今週固定) を含むペアは掴めない + shake で拒否 (統合 2026-08-09:
+    // 赤=完全固定はドラッグ可・移動確認ダイアログで注意書き)。
     const pinnedPair = screen.getByTestId('tl-pair-pair:qa:qb');
     expect(pinnedPair.getAttribute('data-tl-drag')).toBe('disabled');
     fireEvent.pointerDown(pinnedPair);
@@ -475,7 +476,7 @@ describe('TimelineDayBoard', () => {
     expect(onClick.mock.calls[0]![1].startMin).toBe(780);
   });
 
-  it('dndEnabled のとき単独カードは draggable・ピン留め/ペアは掴めない (T-2 ②-b)', () => {
+  it('dndEnabled のとき単独カードは draggable・青ピン/ペアは掴めない (赤=完全固定は掴める)', () => {
     render(
       <DndContext>
         <TimelineDayBoard
@@ -488,6 +489,12 @@ describe('TimelineDayBoard', () => {
                   id: 'pin',
                   start_time: '11:00:00',
                   end_time: '11:45:00',
+                  week_pinned: true,
+                }),
+                visit({
+                  id: 'red',
+                  start_time: '14:30:00',
+                  end_time: '15:15:00',
                   is_pinned: true,
                 }),
                 visit({
@@ -505,13 +512,17 @@ describe('TimelineDayBoard', () => {
       </DndContext>,
     );
     expect(screen.getByTestId('tl-visit-norm').getAttribute('data-tl-drag')).toBe('enabled');
+    // 青 (今週固定) は蓋 = 掴めない。
     expect(screen.getByTestId('tl-visit-pin').getAttribute('data-tl-drag')).toBe('disabled');
+    // 赤 (完全固定) は掴める — 移動確認ダイアログで「これは完全固定です」を出す
+    // (統合 / PO 決定 2026-08-09)。
+    expect(screen.getByTestId('tl-visit-red').getAttribute('data-tl-drag')).toBe('enabled');
     expect(screen.getByTestId('tl-visit-pair').getAttribute('data-tl-drag')).toBe('disabled');
     // 列 droppable レイヤが張られる。
     expect(screen.getByTestId('tl-col-drop-c1')).toBeInTheDocument();
   });
 
-  it('同住所ペアの各行に ⠿ ハンドルが出て個別 draggable・ピン行はハンドル無し (T-6 パリティ③)', () => {
+  it('同住所ペアの各行に ⠿ ハンドルが出て個別 draggable・青ピン行はハンドル無し (T-6 パリティ③)', () => {
     render(
       <DndContext>
         <TimelineDayBoard
@@ -532,7 +543,7 @@ describe('TimelineDayBoard', () => {
                   start_time: '16:00:00',
                   end_time: '16:35:00',
                   same_address_group_id: 'g1',
-                  is_pinned: true,
+                  week_pinned: true,
                 }),
               ],
             }),
@@ -545,10 +556,10 @@ describe('TimelineDayBoard', () => {
     // 非ピンの行 = ハンドルあり・個別 draggable。
     expect(screen.getByTestId('tl-pair-member-handle-sa1')).toBeInTheDocument();
     expect(screen.getByTestId('tl-visit-sa1').getAttribute('data-tl-member-drag')).toBe('enabled');
-    // ピン留めの行 = ハンドル無し (disabled)。
+    // 青ピン (今週固定) の行 = ハンドル無し (disabled)。
     expect(screen.queryByTestId('tl-pair-member-handle-sa2')).toBeNull();
     expect(screen.getByTestId('tl-visit-sa2').getAttribute('data-tl-member-drag')).toBe('disabled');
-    // 箱自体はピン留めを含むため 2名セット移動が disabled のまま (既存契約)。
+    // 箱自体は青ピンを含むため 2名セット移動が disabled のまま (既存契約)。
     expect(screen.getByTestId('tl-pair-pair:sa1:sa2').getAttribute('data-tl-drag')).toBe(
       'disabled',
     );
@@ -628,7 +639,7 @@ describe('TimelineDayBoard', () => {
     await endDragAndFlush();
   });
 
-  it('ピン留めカードを掴もうとすると shake で拒否を伝える (T-2 ②-c)', () => {
+  it('青ピン (今週固定) カードを掴もうとすると shake で拒否を伝える (T-2 ②-c)', () => {
     render(
       <DndContext>
         <TimelineDayBoard
@@ -636,7 +647,12 @@ describe('TimelineDayBoard', () => {
             column({
               key: 'c1',
               visits: [
-                visit({ id: 'pin', start_time: '09:30:00', end_time: '10:15:00', is_pinned: true }),
+                visit({
+                  id: 'pin',
+                  start_time: '09:30:00',
+                  end_time: '10:15:00',
+                  week_pinned: true,
+                }),
                 visit({ id: 'norm', start_time: '11:00:00', end_time: '11:45:00' }),
               ],
             }),
@@ -647,8 +663,8 @@ describe('TimelineDayBoard', () => {
       </DndContext>,
     );
     const pinned = screen.getByTestId('tl-visit-pin');
-    // ピン表示はカード右上に打ち込む CornerPushPin (PO要望 2026-07-08: 📍住所と誤認しない)。
-    expect(pinned.querySelector('[data-icon="corner-push-pin"]')).not.toBeNull();
+    // 青ピン表示はカード右上に打ち込む CornerWeekPushPin。
+    expect(pinned.querySelector('[data-icon="corner-week-push-pin"]')).not.toBeNull();
     fireEvent.pointerDown(pinned);
     expect(pinned.className).toContain('tl-shake');
     // アニメーション終了で解除 (再度掴んだらまた shake できる)。

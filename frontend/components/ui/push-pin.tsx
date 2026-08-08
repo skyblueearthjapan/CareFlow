@@ -77,7 +77,7 @@ export function CornerPushPin({ className, ...props }: PushPinIconProps) {
       viewBox="0 0 24 24"
       fill="none"
       role="img"
-      aria-label="ピン留め"
+      aria-label="完全固定"
       data-icon="corner-push-pin"
       className={cn(
         // translate は自身サイズ比 → h-4/h-3.5 に縮めても「頭の中心≒カードの角」を維持。
@@ -124,7 +124,7 @@ export function CornerWeekPushPin({ className, ...props }: PushPinIconProps) {
       viewBox="0 0 24 24"
       fill="none"
       role="img"
-      aria-label="今週のピン留め"
+      aria-label="今週固定（青ピン）"
       data-icon="corner-week-push-pin"
       className={cn(
         'pointer-events-none absolute right-0 top-0 z-[3] h-5 w-5 translate-x-[36%] -translate-y-[29%]',

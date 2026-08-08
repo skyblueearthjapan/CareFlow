@@ -122,9 +122,12 @@ async def _make_pfv(
 
 
 @pytest.mark.asyncio
-async def test_f2_delete_visit_cascade_rejects_pinned_pfv(client, db) -> None:
-    """pinned PFV を持つ patient の visit を cascade_fixed_visit=true で削除
-    しようとしたら 422 で拒否される (= D&D 経路での pinned バイパス防止)."""
+async def test_f2_delete_visit_cascade_allows_pinned_pfv(client, db) -> None:
+    """統合 (PO 決定 2026-08-09): 完全固定 (旧 pinned) でも人手の cascade 削除は可。
+
+    旧 422 ブロックは撤廃 (完全固定 = エンジンが動かさない、の意味に純化)。
+    FE が「これは完全固定です」の確認を出したうえで到達する。
+    """
     from datetime import date
 
     from app.models import Visit
@@ -148,15 +151,12 @@ async def test_f2_delete_visit_cascade_rejects_pinned_pfv(client, db) -> None:
         f"/api/v1/visits/{visit.id}?cascade_fixed_visit=true",
         headers=_bearer(admin),
     )
-    assert res.status_code == 422, res.text
-    body = res.json()
-    assert "完全固定" in body["detail"]
+    assert res.status_code == 204, res.text
 
-    # PFV は不変 (= 物理削除されていない).
+    # PFV も cascade で物理削除される (人手削除の完遂)。
     db.expunge_all()
     pfv_after = await db.scalar(select(PatientFixedVisit).where(PatientFixedVisit.id == pfv.id))
-    assert pfv_after is not None
-    assert pfv_after.is_pinned is True
+    assert pfv_after is None
 
 
 @pytest.mark.asyncio
@@ -202,10 +202,12 @@ async def test_f2_delete_visit_cascade_allows_non_pinned_pfv(client, db) -> None
 
 
 @pytest.mark.asyncio
-async def test_f3_place_and_fix_rejects_pinned_overwrite(client, db) -> None:
-    """既存 pinned PFV (mode='normal', weekday=W) がある状態で place-and-fix を
-    同 (patient, weekday) に呼ぶと 422 で拒否される. = place-and-fix は内部で
-    DELETE→INSERT で upsert するため、 pinned PFV を物理削除する経路を塞ぐ."""
+async def test_f3_place_and_fix_allows_pinned_overwrite_and_inherits_lock(client, db) -> None:
+    """統合 (PO 決定 2026-08-09): 完全固定の枠への place-and-fix (人手の配置変更) は可。
+
+    さらに「完全固定である」という判断 (movability='locked') は新しい時刻の行へ
+    引き継がれる — 人手が時刻を変えても、エンジン不可侵という性質は消えない。
+    """
     admin = await _make_user(db, email="f3-admin@example.com", role="admin")
     office = await _make_office(db, name="F3-office")
     template = CourseTemplate(office_id=office.id, label="A")
@@ -214,7 +216,9 @@ async def test_f3_place_and_fix_rejects_pinned_overwrite(client, db) -> None:
     await db.refresh(template)
 
     p = await _make_patient(db, code="F3", office=office)
-    await _make_pfv(db, patient=p, weekday=0, is_pinned=True)
+    pfv_old = await _make_pfv(db, patient=p, weekday=0, is_pinned=True)
+    pfv_old.movability = "locked"
+    await db.commit()
 
     res = await client.post(
         "/api/v1/schedule/place-and-fix",
@@ -224,16 +228,29 @@ async def test_f3_place_and_fix_rejects_pinned_overwrite(client, db) -> None:
             "course_template_id": str(template.id),
             "iso_year": 2026,
             "iso_week": 20,
-            "weekday": 0,  # 同 weekday に対する upsert
-            "start_time": "11:00",  # 違う時刻でも禁止
+            "weekday": 0,
+            "start_time": "11:00",
             "duration_min": 30,
             "staff_count": 1,
             "fix_pattern": True,
         },
     )
-    assert res.status_code == 422, res.text
-    body = res.json()
-    assert "完全固定" in body["detail"]
+    assert res.status_code in (200, 201), res.text
+
+    db.expunge_all()
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(
+                PatientFixedVisit.patient_id == p.id,
+                PatientFixedVisit.mode == "normal",
+                PatientFixedVisit.weekday == 0,
+            )
+        )
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].start_time == time(11, 0)
+    assert rows[0].movability == "locked"  # 判断の引き継ぎ
+    assert rows[0].is_pinned is True  # ミラー同期
 
 
 # ===========================================================================

@@ -1010,26 +1010,22 @@ async def place_and_fix(
             #   - staff_count=1 → slot_index=0 のみ DELETE (Phase 1 互換挙動を維持).
             #   - staff_count=2 → slot_index=0 と 1 を DELETE.
             slot_targets = list(range(body.staff_count))  # [0] or [0, 1]
-            # Phase G-21 final C1: DELETE 対象に pinned PFV (is_pinned=True) が
-            # 含まれていれば 422 で拒否. place-and-fix は内部で DELETE→INSERT で
-            # PFV を upsert するため、pinned PFV を物理削除して is_pinned=false で
-            # 上書きするバイパスを塞ぐ.
-            pinned_targets_paf = (
-                await db.scalars(
-                    select(PatientFixedVisit).where(
-                        PatientFixedVisit.patient_id == body.patient_id,
-                        PatientFixedVisit.mode == fv_mode,
-                        PatientFixedVisit.weekday == body.weekday,
-                        PatientFixedVisit.slot_index.in_(slot_targets),
-                        PatientFixedVisit.is_pinned.is_(True),
+            # PO 決定 (2026-08-09): 完全固定 (旧 pinned) の 422 ブロックは撤廃。
+            # 人手の配置変更は常に正当 (FE が「これは完全固定です」確認を出す)。
+            # 置換前の完全固定判断は下の INSERT で引き継ぐ。
+            prior_movability_paf: dict[int, str] = {
+                row.slot_index: row.movability
+                for row in (
+                    await db.scalars(
+                        select(PatientFixedVisit).where(
+                            PatientFixedVisit.patient_id == body.patient_id,
+                            PatientFixedVisit.mode == fv_mode,
+                            PatientFixedVisit.weekday == body.weekday,
+                            PatientFixedVisit.slot_index.in_(slot_targets),
+                        )
                     )
-                )
-            ).all()
-            if pinned_targets_paf:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=("完全固定の固定枠は削除できません. 先に完全固定を解除してください."),
-                )
+                ).all()
+            }
             await db.execute(
                 delete(PatientFixedVisit).where(
                     PatientFixedVisit.patient_id == body.patient_id,
@@ -1039,6 +1035,9 @@ async def place_and_fix(
                 )
             )
             for slot_idx, tpl_id in enumerate(template_ids):
+                # 統合 (2026-08-09): 置換前の完全固定判断を引き継ぐ (人手の時刻変更で
+                # 「完全固定である」という判断まで消さない)。is_pinned はミラー。
+                _mov = prior_movability_paf.get(slot_idx, "unknown")
                 fv = PatientFixedVisit(
                     patient_id=body.patient_id,
                     mode=fv_mode,
@@ -1050,6 +1049,8 @@ async def place_and_fix(
                     course_template_id=tpl_id,
                     # W37 Phase 2-A: slot_index は 0 から順番に割り当てる.
                     slot_index=slot_idx,
+                    movability=_mov,
+                    is_pinned=(_mov == "locked"),
                 )
                 db.add(fv)
                 new_fvs.append(fv)

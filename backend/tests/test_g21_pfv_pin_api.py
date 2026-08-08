@@ -118,11 +118,11 @@ async def test_t2_1_patch_pin_toggles_is_pinned(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unpin_keeps_movability_locked(client, db) -> None:
-    """核心: ピンを外しても可動域='完全固定' は残る.
+async def test_unpin_unlocks(client, db) -> None:
+    """統合 (PO 決定 2026-08-09): ピン=完全固定の 1 概念。解除 = 完全固定も外れる。
 
-    PO 要件「一括でピンを抜いても、裏で完全固定にしている枠は動かない」の担保。
-    旧 P4-C はここで 'unknown' へ戻しており、現場の判断が消えていた。
+    (旧「ピンを外しても locked は残る」は独立 2 軸時代の要件。統合により
+    赤ピン表示そのものが locked のミラーになったため、挙動が一本化された。)
     """
     admin = await _make_user(db, email="pin-keep-lock@example.com", role="admin")
     patient = await _make_patient(db, code="PIN-KEEP-1")
@@ -135,22 +135,24 @@ async def test_unpin_keeps_movability_locked(client, db) -> None:
     )
     assert res.status_code == 200, res.text
     assert res.json()["is_pinned"] is False
-    assert res.json()["movability"] == "locked"
+    assert res.json()["movability"] == "unknown"
 
     pfv2 = await db.scalar(select(PatientFixedVisit).where(PatientFixedVisit.id == pfv.id))
     await db.refresh(pfv2)
-    assert pfv2.movability == "locked"
+    assert pfv2.movability == "unknown"
+    assert pfv2.is_pinned is False
 
 
 @pytest.mark.asyncio
-async def test_pin_toggle_roundtrip_keeps_time_flexible(client, db) -> None:
-    """ピン留め → 解除 の往復で 'time_flexible' が消えない (旧実装の消失バグの回帰防止)."""
+async def test_pin_toggle_roundtrip_normalizes_to_two_values(client, db) -> None:
+    """統合: 往復で movability は locked → unknown の 2 値に正規化される."""
     admin = await _make_user(db, email="pin-keep-flex@example.com", role="admin")
     patient = await _make_patient(db, code="PIN-KEEP-2")
     pfv = await _make_pfv(
         db, patient=patient, weekday=0, is_pinned=False, movability="time_flexible"
     )
 
+    expected = {True: "locked", False: "unknown"}
     for next_pinned in (True, False):
         res = await client.patch(
             f"/api/v1/patients/fixed-visits/{pfv.id}/pin",
@@ -158,17 +160,21 @@ async def test_pin_toggle_roundtrip_keeps_time_flexible(client, db) -> None:
             json={"is_pinned": next_pinned},
         )
         assert res.status_code == 200, res.text
-        assert res.json()["movability"] == "time_flexible"
+        assert res.json()["movability"] == expected[next_pinned]
 
     pfv2 = await db.scalar(select(PatientFixedVisit).where(PatientFixedVisit.id == pfv.id))
     await db.refresh(pfv2)
-    assert pfv2.movability == "time_flexible"
+    assert pfv2.movability == "unknown"
     assert pfv2.is_pinned is False
 
 
 @pytest.mark.asyncio
-async def test_bulk_unpin_keeps_movability(client, db) -> None:
-    """一括ピン解除でも可動域は据え置き (一括操作こそ PO の運用の本命)."""
+async def test_bulk_unpin_unlocks_all(client, db) -> None:
+    """統合: 一括解除 = 完全固定も一括で外れる (ピン=完全固定の 1 概念).
+
+    NOTE: 一括の赤ボタン自体は UI から廃止 (PO 決定 2026-08-09)。エンドポイントは
+    PinScopeMenu「全曜日」用に残る。
+    """
     admin = await _make_user(db, email="pin-keep-bulk@example.com", role="admin")
     patient = await _make_patient(db, code="PIN-KEEP-3")
     locked = await _make_pfv(db, patient=patient, weekday=0, is_pinned=True, movability="locked")
@@ -184,9 +190,7 @@ async def test_bulk_unpin_keeps_movability(client, db) -> None:
     )
     assert res.status_code == 200, res.text
     by_id = {row["id"]: row for row in res.json()}
-    # 完全固定は残る = 一括解除しても動かない.
-    assert by_id[str(locked.id)]["movability"] == "locked"
-    # 未設定は未設定のまま = 一括解除で提案対象になる (運用が回る).
+    assert by_id[str(locked.id)]["movability"] == "unknown"
     assert by_id[str(plain.id)]["movability"] == "unknown"
 
 
@@ -287,10 +291,9 @@ async def test_t2_4_pin_toggle_writes_audit_log(client, db) -> None:
     row = rows[0]
     assert row.actor_user_id == admin.id
     assert row.target_table == "patient_fixed_visits"
-    # P4-C: audit に movability の before/after も含まれる形式に拡張された.
-    # (ピンON なので movability は 'unknown' のまま = 解放は解除時のみ)
+    # 統合 (2026-08-09): ピン ON = movability='locked' への切替として記録される.
     assert row.before == {"is_pinned": False, "movability": "unknown"}
-    assert row.after == {"is_pinned": True, "movability": "unknown"}
+    assert row.after == {"is_pinned": True, "movability": "locked"}
 
 
 # ---------------------------------------------------------------------------

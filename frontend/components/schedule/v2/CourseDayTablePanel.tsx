@@ -134,7 +134,6 @@ import {
 } from '../WeekdayScheduleCard';
 import { TimelineDayList } from '@/components/schedule/timeline/TimelineDayList';
 import { BulkFixToPatternButton } from './BulkFixToPatternButton';
-import { BulkPinAllPfvsButton } from './BulkPinAllPfvsButton';
 import { BulkWeekPinAllButton } from './BulkWeekPinAllButton';
 import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDialog';
 import { BulkPoolInsertDialog } from './BulkPoolInsertDialog';
@@ -1889,6 +1888,15 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           (v) => patientById.get(v.patient_id)?.name ?? v.patient_name ?? v.patient_id,
         );
         const label = poolVisits.length >= 2 ? `${names.join('・')}（同住所2名）` : names[0]!;
+        // 赤 (完全固定) は注意書きを見せたうえで人手操作を許す (PO 決定 2026-08-09)。
+        if (poolVisits.some((v) => v.is_pinned === true)) {
+          if (
+            !window.confirm(
+              `⚠ これは完全固定です。\n${label} をプールに戻しますか？\n(固定枠は保持されます)`,
+            )
+          )
+            return;
+        }
         // catch から参照するため try の外で数える (部分成功の件数を toast に出す)。
         let doneCount = 0;
         try {
@@ -2240,7 +2248,18 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
 
   // ─── Wave 36: visit × ボタン削除ハンドラ ────────────────────────
   const handleDeleteVisit = async (visitId: string, patientName: string) => {
-    if (!window.confirm(`${patientName} の訪問を削除しますか？\n(固定枠は保持されます)`)) return;
+    const targetVisit = timelineColumns.flatMap((c) => c.visits).find((x) => x.id === visitId);
+    // 青 (今週固定) は蓋 = 削除不可 (ボタン側でも防ぐが二重防御。BE も 422)。
+    if (targetVisit?.week_pinned === true) {
+      toast.warning('今週固定（青ピン）されています。解除してから削除してください');
+      return;
+    }
+    // 赤 (完全固定) は注意書きを見せたうえで人手削除を許す (PO 決定 2026-08-09)。
+    const lockedNote = targetVisit?.is_pinned === true ? '\n⚠ これは完全固定です。' : '';
+    if (
+      !window.confirm(`${patientName} の訪問を削除しますか？${lockedNote}\n(固定枠は保持されます)`)
+    )
+      return;
     try {
       await deleteVisitMut.mutateAsync({ id: visitId, cascadeFixedVisit: false });
       toast.success(`${patientName} の訪問を削除しました`);
@@ -2319,12 +2338,12 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           {
             onSuccess: () => {
               toast.success(
-                nextPinned ? 'ピン留めしました (Layer 2 は動かしません)' : 'ピン留めを外しました',
+                nextPinned ? '完全固定にしました (システムは動かしません)' : '完全固定を外しました',
               );
             },
             onError: (err) => {
               const msg = err instanceof Error ? err.message : '不明なエラー';
-              toast.error(`ピン留めの更新に失敗: ${msg}`);
+              toast.error(`完全固定の更新に失敗: ${msg}`);
             },
           },
         );
@@ -2354,7 +2373,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       // 既に target 状態の PFV は除外 (= 無駄な PATCH 抑止 + audit_log のノイズ削減).
       const needUpdate = allPfvs.filter((p) => Boolean(p.is_pinned) !== nextPinned);
       if (needUpdate.length === 0) {
-        toast.info(nextPinned ? '既に全曜日ピン留め状態です' : '既に全曜日ピン留め解除状態です');
+        toast.info(
+          nextPinned ? '既に全曜日 完全固定の状態です' : '既に全曜日 完全固定なしの状態です',
+        );
         return;
       }
       const items = needUpdate.map((p) => ({ pfv_id: p.id, is_pinned: nextPinned }));
@@ -2362,13 +2383,13 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         onSuccess: () => {
           toast.success(
             nextPinned
-              ? `全曜日 ${items.length} 件をピン留めしました (Layer 2 は動かしません)`
-              : `全曜日 ${items.length} 件のピン留めを外しました`,
+              ? `全曜日 ${items.length} 件を完全固定にしました (システムは動かしません)`
+              : `全曜日 ${items.length} 件の完全固定を外しました`,
           );
         },
         onError: (err) => {
           const msg = err instanceof Error ? err.message : '不明なエラー';
-          toast.error(`全曜日のピン留め更新に失敗: ${msg}`);
+          toast.error(`全曜日の完全固定更新に失敗: ${msg}`);
         },
       });
     },
@@ -3142,19 +3163,14 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             </div>
           }
 
-          {/* Row 2 (中段・PO 指示 2026-08-09): 一括ピン群を独立した段に。
-              赤=全件ピン留め/解除 (型・毎週) │ 青=今週全件固定/解除 (今週のみ)。
-              右寄せ = Row 1 右端の [固定枠戻][全件保存] (一括データ操作) の真下に揃え、
-              右側に「一括操作の列」を作る。 */}
+          {/* Row 2 (中段): 青ピン一括のみ (PO 決定 2026-08-09)。
+              赤の一括 (全件ピン留め/解除) は統合により廃止 — 完全固定は患者マスタの
+              固定訪問スケジュールで設定する (週全体 / 曜日ごと)。 */}
           <div
             className="mt-2 flex flex-wrap items-center justify-end gap-1.5"
             data-testid="course-day-bulk-pin-row"
           >
-            {/* PO 指摘 (2026-08-09): 「全件ピン留め」だけでは "今表示されている全件"
-                と誤読される。何に対する一括かをグループ見出しで明示する。 */}
-            <span className="text-[11px] font-semibold text-text-muted">固定枠（毎週の型）:</span>
-            <BulkPinAllPfvsButton canEdit={canEdit} />
-            <span aria-hidden className="h-5 w-px bg-border-default" />
+            {/* 何に対する一括かをグループ見出しで明示する (PO 指摘 2026-08-09)。 */}
             <span className="text-[11px] font-semibold text-text-muted">今週の配置:</span>
             <BulkWeekPinAllButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
           </div>
@@ -3919,6 +3935,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   newTimeHM: fmtHM(tlMoveState.newStartMin),
                   durationMin: tlMoveState.durationMin,
                   courseChanged: tlMoveState.toCol.template.id !== tlMoveState.fromCol.template.id,
+                  // 完全固定 (赤) を含む移動は注意書き付きで許可 (PO 決定 2026-08-09)。
+                  lockedNotice: tlMoveState.visits.some((v) => v.is_pinned === true),
                 }
               : null
           }

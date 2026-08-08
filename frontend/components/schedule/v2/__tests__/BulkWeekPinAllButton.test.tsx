@@ -1,7 +1,7 @@
 /**
  * BulkWeekPinAllButton テスト (PO 決定 2026-08-08)。
  *
- * 赤ピンの一括ボタン (BulkPinAllPfvsButton) と対になる青ピン版:
+ * 青ピンの一括ボタン (赤の一括は 2026-08-09 統合で廃止済み):
  *   1. 「今週全件固定」 click → dry_run で件数取得 → 2 段階 dialog → 実行で pinned=true
  *   2. 対象 0 件なら toast.info を出して dialog を開かない
  *   3. 「今週全件解除」の確認文に「次の週生成で…戻ります」の警告が入る

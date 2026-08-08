@@ -105,13 +105,14 @@ export function PinScopeMenu({
 }: PinScopeMenuProps) {
   const [open, setOpen] = React.useState(false);
 
-  const dayLabel = isPinned ? 'この曜日のみ ピン留め解除' : 'この曜日のみ ピン留め';
-  const allLabel = isPinned ? 'この患者の全曜日 ピン留め解除' : 'この患者の全曜日 ピン留め';
-  // アイコンは「実行される操作」を表す: 未ピン → これからピン留め (PushPin), ピン留め中 → 外す (PushPinOff).
+  // 統合 (PO 決定 2026-08-09): 赤ピン = 完全固定の表示。文言も「完全固定」へ統一。
+  const dayLabel = isPinned ? 'この曜日のみ 完全固定を解除' : 'この曜日のみ 完全固定';
+  const allLabel = isPinned ? 'この患者の全曜日 完全固定を解除' : 'この患者の全曜日 完全固定';
+  // アイコンは「実行される操作」を表す: 未固定 → これから完全固定 (PushPin), 完全固定中 → 外す (PushPinOff).
   const actionIcon = isPinned ? (
     <PushPinOff className="h-3.5 w-3.5 text-text-muted" aria-hidden />
   ) : (
-    <PushPin className="h-3.5 w-3.5 text-yellow-700" aria-hidden />
+    <PushPin className="h-3.5 w-3.5 text-red-600" aria-hidden />
   );
 
   const handleSelect = (scope: PinScope) => {

@@ -272,18 +272,10 @@ async def validate_pfv_changes(
     # 「ピンを抜いた瞬間から効く、保存された判断」として控える.
     # DB CHECK は 4 値の検査のみで含意を強制していないため制約違反にもならない.
 
-    # --- V2: pinned 保護 (Q1: 既存 PFV 行) -------------------------------
-    existing_rows = list(
-        (
-            await db.scalars(
-                select(PatientFixedVisit).where(
-                    PatientFixedVisit.patient_id == patient_id,
-                    PatientFixedVisit.mode == mode,
-                )
-            )
-        ).all()
-    )
-    warnings.extend(_check_pinned(existing_rows, proposed_items))
+    # (旧 V2: pinned 保護 — PO 決定 2026-08-09 で撤廃)
+    # 完全固定の意味は「エンジンが動かさない」であり、人手による型の編集は
+    # 常に正当な操作。編集ブロック (422) は行わない。FE 側が「これは完全固定です」
+    # の注意書きを出す (警告のみ・操作は通す)。
 
     # --- V4: H10 昼休み重複 (座標不要・per item) --------------------------
     lunch_s = config.lunch_window_start.strftime("%H:%M")

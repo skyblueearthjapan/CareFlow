@@ -69,6 +69,7 @@ vi.mock('@/components/ui/sonner', () => ({
   toast: {
     success: vi.fn(),
     error: vi.fn(),
+    info: vi.fn(),
   },
 }));
 
@@ -923,24 +924,225 @@ describe('PatientFixedVisitsPanel', () => {
     });
   });
 
-  // ─── P2-C: 可動域 (movability) selector tests ──────────────────────────────
-  describe('P2-C (movability)', () => {
-    it('MV-1. 曜日 ON で可動域 selector が表示され 2 択を持つ', async () => {
-      // PO 決定 (2026-08-08): 4 段階 → 2 段階へ整理。
-      // time_flexible / day_flexible は本番の利用実績が 0 件だった。
+  // ─── 完全固定 (統合 / PO 決定 2026-08-09) ──────────────────────────────────
+  // 旧「ピン留め (is_pinned)」と「可動域: 完全固定 (movability='locked')」を
+  // 1 概念に統合。行内チェックボックス + 週一括ボタンで movability を切り替え、
+  // 保存 (PUT) で確定する。is_pinned は送信時に movability から導出するミラー。
+  // 旧 PATCH /pin フロー・編集ロック (422) は廃止。
+  describe('完全固定 (統合)', () => {
+    it('LK-1. 曜日 ON で「完全固定」チェックボックスが表示される', async () => {
       setupMocks({ reads: [] });
       render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
 
-      const checkboxes = screen.getAllByRole('checkbox');
-      await userEvent.click(checkboxes[0]);
-
-      const select = screen.getByLabelText('月 可動域') as HTMLSelectElement;
-      const options = Array.from(select.options).map((o) => o.text);
-      expect(options).toEqual(['指定なし', '完全固定']);
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      const cb = screen.getByTestId('pfv-locked-checkbox-0');
+      expect(cb).toBeInTheDocument();
+      expect(cb).not.toBeChecked();
     });
 
-    it('MV-1b. 旧 4 段階の値が入っている行でも黙って別の値へ化けない', async () => {
-      // 本番実績 0 件だが、万一入っていたら選択肢に無いせいで値が化けるのを防ぐ。
+    it('LK-2. チェック ON で movability=locked + is_pinned ミラーが payload に乗る', async () => {
+      const updateFn = vi.fn().mockResolvedValue([]);
+      setupMocks({ reads: [], updateFn });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      await userEvent.click(screen.getByTestId('pfv-locked-checkbox-0'));
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as {
+        items: { movability?: string; is_pinned?: boolean }[];
+      };
+      expect(call.items[0]?.movability).toBe('locked');
+      expect(call.items[0]?.is_pinned).toBe(true);
+    });
+
+    it('LK-3. サーバーの locked 行はチェック済みで表示され、注意書きが出る (ラウンドトリップ)', async () => {
+      setupMocks({
+        reads: [
+          {
+            id: 'read-locked',
+            patient_id: PATIENT_ID,
+            weekday: 0,
+            start_time: '09:00',
+            duration_min: 30,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            is_pinned: true,
+            movability: 'locked',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+        ],
+      });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      expect(await screen.findByTestId('pfv-locked-checkbox-0')).toBeChecked();
+      expect(screen.getByTestId('pfv-locked-note-0')).toHaveTextContent(
+        'システムはこの枠を動かしません',
+      );
+    });
+
+    it('LK-4. 完全固定の行でも時刻・所要・コース・訪問有無は編集できる (編集ロック撤廃)', async () => {
+      // 統合の本質 (PO 2026-08-09): 「大元の固定訪問スケジュール自体はユーザーが
+      // 変更できること」。完全固定はエンジンだけを縛る。
+      setupMocks({
+        reads: [
+          {
+            id: 'read-locked-editable',
+            patient_id: PATIENT_ID,
+            weekday: 0,
+            start_time: '09:00',
+            duration_min: 30,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            is_pinned: true,
+            movability: 'locked',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+        ],
+      });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      expect(await screen.findByLabelText('月 開始時刻')).not.toBeDisabled();
+      expect(screen.getByLabelText('月 所要時間')).not.toBeDisabled();
+      expect(screen.getByLabelText('月 コース')).not.toBeDisabled();
+      expect(screen.getByLabelText('月曜日 訪問あり')).not.toBeDisabled();
+      expect(screen.getByTestId('pfv-locked-checkbox-0')).not.toBeDisabled();
+    });
+
+    it('LK-5. 保存済み locked 行のチェック OFF → PUT で movability=unknown / is_pinned=false (PATCH は使わない)', async () => {
+      const updateFn = vi.fn().mockResolvedValue([]);
+      const togglePinFn = vi.fn().mockResolvedValue({});
+      setupMocks({
+        reads: [
+          {
+            id: 'read-locked-off',
+            patient_id: PATIENT_ID,
+            weekday: 0,
+            start_time: '09:00',
+            duration_min: 30,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            is_pinned: true,
+            movability: 'locked',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+        ],
+        updateFn,
+        togglePinFn,
+      });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(await screen.findByTestId('pfv-locked-checkbox-0'));
+      // 旧 PATCH /pin フローは廃止 — 即時反映しない。
+      expect(togglePinFn).not.toHaveBeenCalled();
+
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as {
+        items: { movability?: string; is_pinned?: boolean }[];
+      };
+      expect(call.items[0]?.movability).toBe('unknown');
+      expect(call.items[0]?.is_pinned).toBe(false);
+    });
+
+    it('LK-6. 週一括「全曜日を完全固定」→ 訪問ありの全曜日が locked で送られる', async () => {
+      const updateFn = vi.fn().mockResolvedValue([]);
+      setupMocks({
+        reads: [
+          {
+            id: 'read-w-mon',
+            patient_id: PATIENT_ID,
+            weekday: 0,
+            start_time: '09:00',
+            duration_min: 30,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            is_pinned: false,
+            movability: 'unknown',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+          {
+            id: 'read-w-wed',
+            patient_id: PATIENT_ID,
+            weekday: 2,
+            start_time: '13:00',
+            duration_min: 60,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            is_pinned: false,
+            movability: 'unknown',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+        ],
+        updateFn,
+      });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(await screen.findByTestId('pfv-lock-all-button'));
+      // チェックボックスへ即時反映 (ローカル state)。
+      expect(screen.getByTestId('pfv-locked-checkbox-0')).toBeChecked();
+      expect(screen.getByTestId('pfv-locked-checkbox-2')).toBeChecked();
+
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as {
+        items: { weekday: number; movability?: string; is_pinned?: boolean }[];
+      };
+      expect(call.items).toHaveLength(2);
+      for (const item of call.items) {
+        expect(item.movability).toBe('locked');
+        expect(item.is_pinned).toBe(true);
+      }
+    });
+
+    it('LK-7. 週一括「全曜日の完全固定を解除」→ 全曜日 unknown で送られる', async () => {
+      const updateFn = vi.fn().mockResolvedValue([]);
+      setupMocks({
+        reads: [
+          {
+            id: 'read-u-mon',
+            patient_id: PATIENT_ID,
+            weekday: 0,
+            start_time: '09:00',
+            duration_min: 30,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            is_pinned: true,
+            movability: 'locked',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+        ],
+        updateFn,
+      });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(await screen.findByTestId('pfv-unlock-all-button'));
+      expect(screen.getByTestId('pfv-locked-checkbox-0')).not.toBeChecked();
+
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as {
+        items: { movability?: string; is_pinned?: boolean }[];
+      };
+      expect(call.items[0]?.movability).toBe('unknown');
+      expect(call.items[0]?.is_pinned).toBe(false);
+    });
+
+    it('LK-8. 旧 4 段階の値が入っている行は「旧設定」表示され、チェックは OFF 扱い', async () => {
+      // 本番実績 0 件だが、万一入っていても黙って化けない。保存すれば 2 値に収束。
       setupMocks({
         reads: [
           {
@@ -961,170 +1163,13 @@ describe('PatientFixedVisitsPanel', () => {
       });
       render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
 
-      const select = (await screen.findByLabelText('月 可動域')) as HTMLSelectElement;
-      expect(select.value).toBe('day_flexible');
-      expect(Array.from(select.options).map((o) => o.text)).toContain('曜日変更可（旧設定）');
-      expect(screen.getByTestId('pfv-movability-summary-0')).toHaveTextContent(
-        '可動域: 曜日変更可（旧設定）',
+      expect(await screen.findByTestId('pfv-legacy-movability-0')).toHaveTextContent(
+        '曜日変更可（旧設定）',
       );
+      expect(screen.getByTestId('pfv-locked-checkbox-0')).not.toBeChecked();
     });
 
-    it('MV-6. (#P4-B) 可動域 selector は「詳細設定」disclosure 内に格下げされ、展開で操作可能', async () => {
-      const updateFn = vi.fn().mockResolvedValue([]);
-      setupMocks({ reads: [], updateFn });
-      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
-
-      const checkboxes = screen.getAllByRole('checkbox');
-      await userEvent.click(checkboxes[0]);
-
-      // 可動域 selector は details (詳細設定) 内に置かれる.
-      const details = screen.getByTestId('pfv-movability-details-0');
-      expect(details.tagName.toLowerCase()).toBe('details');
-      const select = screen.getByLabelText('月 可動域');
-      expect(details.contains(select)).toBe(true);
-
-      // 展開 (details.open=true) して値を変更でき、保存 payload に反映される.
-      (details as HTMLDetailsElement).open = true;
-      fireEvent.change(select, { target: { value: 'locked' } });
-      const saveBtn = screen.getByRole('button', { name: '保存' });
-      await userEvent.click(saveBtn);
-      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
-      const call = updateFn.mock.calls[0][0] as { items: { movability?: string }[] };
-      expect(call.items[0]?.movability).toBe('locked');
-    });
-
-    it('MV-2. 可動域を選んで保存すると movability が payload に含まれる', async () => {
-      const updateFn = vi.fn().mockResolvedValue([]);
-      setupMocks({ reads: [], updateFn });
-      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
-
-      const checkboxes = screen.getAllByRole('checkbox');
-      await userEvent.click(checkboxes[0]);
-
-      const select = screen.getByLabelText('月 可動域');
-      fireEvent.change(select, { target: { value: 'locked' } });
-
-      const saveBtn = screen.getByRole('button', { name: '保存' });
-      await userEvent.click(saveBtn);
-
-      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
-      const call = updateFn.mock.calls[0][0] as { items: { movability?: string }[] };
-      expect(call.items[0]?.movability).toBe('locked');
-    });
-
-    it('MV-3. サーバーから movability が返ると selector に反映される (ラウンドトリップ)', async () => {
-      setupMocks({
-        reads: [
-          {
-            id: 'read-mv',
-            patient_id: PATIENT_ID,
-            weekday: 0,
-            start_time: '09:00',
-            duration_min: 30,
-            mode: 'normal',
-            course_template_id: null,
-            slot_index: 0,
-            movability: 'time_flexible',
-            created_at: '2026-01-01T00:00:00',
-            updated_at: '2026-01-01T00:00:00',
-          },
-        ],
-      });
-      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
-
-      await waitFor(() => {
-        expect(screen.getByLabelText('月 可動域')).toBeInTheDocument();
-      });
-      expect((screen.getByLabelText('月 可動域') as HTMLSelectElement).value).toBe('time_flexible');
-    });
-
-    it('MV-4. ピン留め行でも可動域は表示・編集でき、送信値も上書きされない', async () => {
-      // PO 決定 (2026-08-08): 可動域とピン留めは独立した 2 軸。
-      // 旧実装は pinned 行の selector を隠し、送信時に 'locked' へ強制していたため、
-      // ピン留めの掛け外しで現場の設定が消えていた。
-      // ピン留め中に「完全固定」を仕込めることが要件（先にピンを外すと動いてしまう）。
-      const updateFn = vi.fn().mockResolvedValue([]);
-      setupMocks({
-        reads: [
-          {
-            id: 'read-pin',
-            patient_id: PATIENT_ID,
-            weekday: 0,
-            start_time: '09:00',
-            duration_min: 30,
-            mode: 'normal',
-            course_template_id: null,
-            slot_index: 0,
-            is_pinned: true,
-            movability: 'time_flexible',
-            created_at: '2026-01-01T00:00:00',
-            updated_at: '2026-01-01T00:00:00',
-          },
-        ],
-        updateFn,
-      });
-      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
-
-      // 開かなくても現在値が読める (「ピンを外しても何だったか識別できる」要件)。
-      await waitFor(() => {
-        expect(screen.getByTestId('pfv-movability-summary-0')).toHaveTextContent(
-          '可動域: 時刻変更可',
-        );
-      });
-      // ピン留め中でも selector は存在し、操作できる。
-      const select = screen.getByLabelText('月 可動域');
-      expect(select).toBeInTheDocument();
-      expect(select).not.toBeDisabled();
-      expect(screen.getByTestId('pfv-movability-pin-note-0')).toBeInTheDocument();
-
-      // 保存すると設定値がそのまま送られる (locked に強制されない)。
-      const saveBtn = screen.getByRole('button', { name: '保存' });
-      await userEvent.click(saveBtn);
-      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
-      const call = updateFn.mock.calls[0][0] as {
-        items: { movability?: string; is_pinned?: boolean }[];
-      };
-      expect(call.items[0]?.movability).toBe('time_flexible');
-      expect(call.items[0]?.is_pinned).toBe(true);
-    });
-
-    it('MV-4b. ピン留め中に可動域を「完全固定」に設定して保存できる', async () => {
-      // 一括ピン解除の前に保護を仕込む、という PO の運用手順を担保する。
-      const updateFn = vi.fn().mockResolvedValue([]);
-      setupMocks({
-        reads: [
-          {
-            id: 'read-pin-2',
-            patient_id: PATIENT_ID,
-            weekday: 0,
-            start_time: '09:00',
-            duration_min: 30,
-            mode: 'normal',
-            course_template_id: null,
-            slot_index: 0,
-            is_pinned: true,
-            movability: 'unknown',
-            created_at: '2026-01-01T00:00:00',
-            updated_at: '2026-01-01T00:00:00',
-          },
-        ],
-        updateFn,
-      });
-      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
-
-      const select = await screen.findByLabelText('月 可動域');
-      await userEvent.selectOptions(select, 'locked');
-      await userEvent.click(screen.getByRole('button', { name: '保存' }));
-
-      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
-      const call = updateFn.mock.calls[0][0] as {
-        items: { movability?: string; is_pinned?: boolean }[];
-      };
-      expect(call.items[0]?.movability).toBe('locked');
-      expect(call.items[0]?.is_pinned).toBe(true);
-    });
-
-    it('MV-5. patientFixedVisitV2BaseSchema が movability を受理する', async () => {
+    it('LK-9. patientFixedVisitV2BaseSchema が movability を受理する', async () => {
       const { patientFixedVisitV2BaseSchema } = await import(
         '@/lib/schemas/v2/patient_fixed_visit'
       );
@@ -1132,123 +1177,23 @@ describe('PatientFixedVisitsPanel', () => {
         weekday: 0,
         start_time: '09:00',
         duration_min: 30,
-        movability: 'day_flexible',
+        movability: 'locked',
       });
-      expect(parsed.movability).toBe('day_flexible');
+      expect(parsed.movability).toBe('locked');
     });
 
-    it('MV-7. (#P4-C) 保存済み行のピン留め OFF は PATCH 経路で即時実行される', async () => {
-      // 2026-08-07 変更: 旧実装はローカル state を書いて PUT で送っていたが、
-      // BE の同一性規約 (pfv_validator V2 / test_pinned_flag_only_diff_is_error) は
-      // is_pinned の差分も「pinned 行の変更」とみなして 422 を返す。
-      // = PUT ではピンを外せない (患者マスタから時刻変更が詰む原因だった)。
-      // 保存済み行は PATCH /patients/fixed-visits/{pfv_id}/pin へ流す。
-      // movability='locked' の解放は BE 側 `_release_pin_lock` が行う。
-      const updateFn = vi.fn().mockResolvedValue([]);
-      const togglePinFn = vi.fn().mockResolvedValue({});
-      setupMocks({
-        reads: [
-          {
-            id: 'read-pin-p4c',
-            patient_id: PATIENT_ID,
-            weekday: 0,
-            start_time: '09:00',
-            duration_min: 30,
-            mode: 'normal',
-            course_template_id: null,
-            slot_index: 0,
-            is_pinned: true,
-            movability: 'locked',
-            created_at: '2026-01-01T00:00:00',
-            updated_at: '2026-01-01T00:00:00',
-          },
-        ],
-        updateFn,
-        togglePinFn,
-      });
-      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
-
-      const pinCheckbox = await screen.findByTestId('pfv-pin-checkbox-0');
-      await userEvent.click(pinCheckbox); // OFF に切替.
-
-      await waitFor(() => expect(togglePinFn).toHaveBeenCalledTimes(1));
-      expect(togglePinFn).toHaveBeenCalledWith({
-        pfvId: 'read-pin-p4c',
-        isPinned: false,
-        patientId: PATIENT_ID,
-      });
-      // PUT は呼ばれない (呼ぶと 422 になる).
-      expect(updateFn).not.toHaveBeenCalled();
-    });
-
-    it('MV-8. 未保存の行のピン留めはローカル state のみで、保存時に PUT へ乗る', async () => {
-      // PFV がまだ存在しない行には PATCH 対象 id が無い。V2 の pinned 保護は
-      // 「既存 pinned 行」のみを見るため、新規行は PUT で is_pinned ごと作れる。
-      const updateFn = vi.fn().mockResolvedValue([]);
-      const togglePinFn = vi.fn().mockResolvedValue({});
-      setupMocks({ reads: [], updateFn, togglePinFn });
-      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
-
-      // 月曜を ON にしてから、ピン留めを ON.
-      const enableCheckbox = await screen.findByLabelText('月曜日 訪問あり');
-      await userEvent.click(enableCheckbox);
-      await userEvent.click(screen.getByTestId('pfv-pin-checkbox-0'));
-
-      // PATCH は呼ばれない (対象 PFV がまだ無い).
-      expect(togglePinFn).not.toHaveBeenCalled();
-
-      await userEvent.click(screen.getByRole('button', { name: '保存' }));
-      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
-      const call = updateFn.mock.calls[0][0] as {
-        items: { movability?: string; is_pinned?: boolean }[];
-      };
-      expect(call.items[0]?.is_pinned).toBe(true);
-      // PO 決定 (2026-08-08): ピン留めは可動域を上書きしない。未設定のまま送る。
-      expect(call.items[0]?.movability).toBe('unknown');
-    });
-
-    it('MV-9. ピン留め行は時刻・所要・コースの入力が編集不可になる', async () => {
-      setupMocks({
-        reads: [
-          {
-            id: 'read-pin-locked-inputs',
-            patient_id: PATIENT_ID,
-            weekday: 0,
-            start_time: '09:00',
-            duration_min: 30,
-            mode: 'normal',
-            course_template_id: null,
-            slot_index: 0,
-            is_pinned: true,
-            movability: 'locked',
-            created_at: '2026-01-01T00:00:00',
-            updated_at: '2026-01-01T00:00:00',
-          },
-        ],
-      });
-      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
-
-      expect(await screen.findByLabelText('月 開始時刻')).toBeDisabled();
-      expect(screen.getByLabelText('月 所要時間')).toBeDisabled();
-      expect(screen.getByLabelText('月 コース')).toBeDisabled();
-      expect(screen.getByLabelText('月曜日 訪問あり')).toBeDisabled();
-      // ピン留めチェック自体は操作できる (= 外す導線を塞がない).
-      expect(screen.getByTestId('pfv-pin-checkbox-0')).not.toBeDisabled();
-      expect(screen.getByTestId('pfv-pin-edit-hint-0')).toBeInTheDocument();
-    });
-
-    it('MV-10. 保存が 422 のとき BE の detail が画面とトーストに出る', async () => {
+    it('LK-10. 保存が 422 のとき BE の detail が画面とトーストに出る', async () => {
       // 旧実装は e.message ("API 422 (path)") だけを出しており、
-      // 現場は原因 (pinned 保護 / サブ拠点不一致 など) を判断できなかった。
+      // 現場は原因 (サブ拠点不一致 など) を判断できなかった。
       const { ApiError } = await import('@/lib/api-client');
       const updateFn = vi.fn().mockRejectedValue(
         new ApiError('API 422  (/api/v1/patients/x/fixed-visits)', 422, {
           detail: {
-            message: '完全固定 (is_pinned) の枠を変更・削除しようとしています',
+            message: 'サブ拠点の設定に不整合があります',
             violations: [
               {
-                code: 'pinned_protection',
-                message: '月曜 枠0 のピン留めされた枠を変更・削除しようとしています。',
+                code: 'sub_office_mismatch',
+                message: '月曜 枠0 のサブ拠点が主担当拠点と重複しています。',
                 weekday: 0,
                 severity: 'error',
               },
@@ -1264,10 +1209,10 @@ describe('PatientFixedVisitsPanel', () => {
 
       await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
       const err = await screen.findByTestId('pfv-form-error');
-      expect(err).toHaveTextContent('完全固定 (is_pinned) の枠を変更・削除しようとしています');
-      expect(err).toHaveTextContent('月曜 枠0 のピン留めされた枠を変更・削除しようとしています。');
+      expect(err).toHaveTextContent('サブ拠点の設定に不整合があります');
+      expect(err).toHaveTextContent('月曜 枠0 のサブ拠点が主担当拠点と重複しています。');
       expect(toast.error).toHaveBeenCalledWith(
-        expect.stringContaining('月曜 枠0 のピン留めされた枠を変更・削除しようとしています。'),
+        expect.stringContaining('月曜 枠0 のサブ拠点が主担当拠点と重複しています。'),
       );
     });
   });

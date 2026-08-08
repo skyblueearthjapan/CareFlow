@@ -209,15 +209,29 @@ function VisitRow({
             onToggleWeekPin={onToggleWeekPin}
           />
         ) : null}
-        {/* G2: 訪問削除 (×) — ピン留めトグルの隣。visit_id が無い行には出さない。 */}
+        {/* G2: 訪問削除 (×) — ピン留めトグルの隣。visit_id が無い行には出さない。
+            青 (今週固定) は蓋 = 削除不可 (解除してから。BE も 422 で二重防御)。 */}
         {onDeleteVisit && v.visit_id ? (
           <button
             type="button"
             data-testid={`tdl-delete-visit-${v.key}`}
             aria-label={`${v.patient_name} の訪問を削除`}
-            title="この訪問を削除"
-            className="shrink-0 rounded p-0.5 text-[11px] font-bold leading-none text-error opacity-40 transition-opacity hover:bg-error-bg hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-error"
-            onClick={() => onDeleteVisit(v.visit_id!, v.patient_name)}
+            aria-disabled={v.week_pinned === true || undefined}
+            title={
+              v.week_pinned === true
+                ? '今週固定（青ピン）を解除してから削除してください'
+                : 'この訪問を削除'
+            }
+            className={cn(
+              'shrink-0 rounded p-0.5 text-[11px] font-bold leading-none opacity-40 transition-opacity focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-error',
+              v.week_pinned === true
+                ? 'cursor-not-allowed text-text-muted'
+                : 'text-error hover:bg-error-bg hover:opacity-100',
+            )}
+            onClick={() => {
+              if (v.week_pinned === true) return;
+              onDeleteVisit(v.visit_id!, v.patient_name);
+            }}
           >
             ×
           </button>

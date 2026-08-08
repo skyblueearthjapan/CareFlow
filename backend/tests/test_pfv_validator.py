@@ -139,44 +139,42 @@ async def test_pinned_preserved_is_ok(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_pinned_changed_is_error(db) -> None:
-    """既存 pinned 行の属性 (start_time) を変更 → 422 (error)."""
+async def test_pinned_changed_is_allowed(db) -> None:
+    """統合 (PO 決定 2026-08-09): 完全固定の枠でも人手の型編集は常に可 (旧 V2 撤廃).
+
+    完全固定の意味は「エンジンが動かさない」。人手ブロック (422) はしない。
+    """
     p = await _make_patient(db, code="PIN-2")
     await _add_pfv(db, patient=p, weekday=0, start=time(9, 0), duration=30, is_pinned=True)
 
-    # 同 weekday/slot だが start_time が異なる = 変更.
     items = [_item(0, time(10, 0), 30, is_pinned=True)]
     result = await validate_pfv_changes(db, p.id, items, "normal", config=CFG)
 
-    assert result.has_errors
-    assert any(w.code == CODE_PINNED and w.severity == "error" for w in result.warnings)
+    assert not result.has_errors
+    assert all(w.code != CODE_PINNED for w in result.warnings)
 
 
 @pytest.mark.asyncio
-async def test_pinned_deleted_is_error(db) -> None:
-    """既存 pinned 行が body から消える (削除) → 422 (error)."""
+async def test_pinned_deleted_is_allowed(db) -> None:
+    """統合: 完全固定の枠の削除も人手なら可 (旧 V2 撤廃)."""
     p = await _make_patient(db, code="PIN-3")
     await _add_pfv(db, patient=p, weekday=0, start=time(9, 0), duration=30, is_pinned=True)
 
     result = await validate_pfv_changes(db, p.id, [], "normal", config=CFG)
 
-    assert result.has_errors
-    assert any(w.code == CODE_PINNED for w in result.errors)
+    assert not result.has_errors
 
 
 @pytest.mark.asyncio
-async def test_pinned_flag_only_diff_is_error(db) -> None:
-    """既存 pinned 行を is_pinned=False で送る (フラグのみ相違) → 変更扱いで error.
-
-    (安全弁は今回不要 = FE が is_pinned を運搬しているため厳格規約を適用.)
-    """
+async def test_pinned_flag_only_diff_is_allowed(db) -> None:
+    """統合: フラグ差分も 422 にしない (人手の完全固定解除は PUT でも可)."""
     p = await _make_patient(db, code="PIN-4")
     await _add_pfv(db, patient=p, weekday=0, start=time(9, 0), duration=30, is_pinned=True)
 
     items = [_item(0, time(9, 0), 30, is_pinned=False)]
     result = await validate_pfv_changes(db, p.id, items, "normal", config=CFG)
 
-    assert result.has_errors
+    assert not result.has_errors
 
 
 @pytest.mark.asyncio
