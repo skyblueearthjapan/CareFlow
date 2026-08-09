@@ -24,6 +24,7 @@ vi.mock('@/lib/queries/integrations', () => ({
   useCorrectionItems: () => ({ ...idleQuery, data: { items: [] } }),
   useInboundEligibility: () => ({ ...idleQuery, data: { eligible: true } }),
   useInboundSnapshots: () => ({ ...idleQuery, data: { snapshots: [] } }),
+  useKaipokeJobs: () => ({ ...idleQuery, data: { items: [], total: 0, limit: 5, offset: 0 } }),
   useRestoreInboundSnapshot: () => ({ ...idleMutation }),
   useSmartInboundPreview: () => ({ ...idleMutation, error: null }),
   useApplySmartInbound: () => ({ ...idleMutation, error: null }),
