@@ -56,7 +56,7 @@ export function fmtRelativeWeek(offset: number): string {
   if (offset === 0) return '今週';
   if (offset === 1) return '来週';
   if (offset === -1) return '先週';
-  return `${-offset}週前`;
+  return offset > 0 ? `${offset}週後` : `${-offset}週前`;
 }
 
 export function field(obj: unknown, key: string): string {
@@ -74,7 +74,12 @@ export function field(obj: unknown, key: string): string {
  * BEゲートも未来週は実apply記録がある週しか開かない — それ以上進めるUIにしても
  * 常に押せないだけなので来週で止める。過去方向は無制限 (カイポケ=請求データで残る)。
  */
-export const MAX_FUTURE_WEEKS = 1;
+/**
+ * 未来週の上限 (2026-08-09 撤廃・PO確定): 客先は「カイポケで先に計画を入れ、
+ * らく助へ映す」運用のため無制限に開放。事故防止は時間ではなく内容ベース
+ * (空CSV拒否 / dry-run / 大量キャンセル警告 / 未来週専用の警告表示) が担う。
+ */
+export const MAX_FUTURE_WEEKS = Number.POSITIVE_INFINITY;
 
 export function useInbound({
   busy,

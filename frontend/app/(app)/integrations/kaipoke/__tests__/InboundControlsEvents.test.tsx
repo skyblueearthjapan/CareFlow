@@ -217,9 +217,7 @@ describe('InboundControls — smart-inbound', () => {
   });
 
   it('④ イベント取得失敗は Alert で明示される（訪問は取得済みの文言つき）', () => {
-    render(
-      <InboundControls vm={makeVm({ smartPlan: SMART_PLAN, eventsError: 'RPA 502' })} />,
-    );
+    render(<InboundControls vm={makeVm({ smartPlan: SMART_PLAN, eventsError: 'RPA 502' })} />);
     expect(screen.getByText(/イベント（個別業務）の取得に失敗しました/)).toBeInTheDocument();
     expect(screen.getByText(/訪問だけ取り込めます/)).toBeInTheDocument();
   });
@@ -245,18 +243,20 @@ describe('InboundControls — smart-inbound', () => {
     expect(screen.getByText(/追加 2 \/ 変更 1 \/ 削除 0/)).toBeInTheDocument();
   });
 
-  it('⑥ 週送り: 過去へは常に戻れる・未来は来週まで（canGoNext=false で無効）', () => {
+  it('⑥ 週送り: 過去へも未来へも進める（2026-08-09 開放）+ 未来週警告が出る', () => {
     const changeWeek = vi.fn();
     render(
       <InboundControls
-        vm={makeVm({ weekOffset: 1, canGoNext: false, changeWeek, goToThisWeek: vi.fn() })}
+        vm={makeVm({ weekOffset: 1, canGoNext: true, changeWeek, goToThisWeek: vi.fn() })}
       />,
     );
     // 相対ラベルと「今週へ戻る」
     expect(screen.getByTestId('inbound-week-label')).toHaveTextContent('来週');
     expect(screen.getByText('今週へ戻る')).toBeInTheDocument();
-    // 未来方向は上限で無効・過去方向は常に有効
-    expect(screen.getByTestId('inbound-week-next')).toBeDisabled();
+    // 未来週専用の警告 (開放とセットの安全装置)
+    expect(screen.getByTestId('inbound-future-week-warning')).toBeInTheDocument();
+    // 未来方向・過去方向とも有効
+    expect(screen.getByTestId('inbound-week-next')).toBeEnabled();
     const prev = screen.getByTestId('inbound-week-prev');
     expect(prev).toBeEnabled();
     fireEvent.click(prev);

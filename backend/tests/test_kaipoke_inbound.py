@@ -232,12 +232,13 @@ async def _run_diff_inbound(client, db, stub_kaipoke, admin) -> dict[str, Any]:
     return res.json()
 
 
-# --- 1. 取り込みゲート (2026-07-26 改訂: 過去/今週=無条件・未来週=実apply要) -----
+# --- 1. 取り込みゲート (2026-08-09 改訂: 全週開放・時間ゲート撤廃) -------------
 
 
 @pytest.mark.asyncio
-async def test_diff_inbound_blocked_for_future_week(client, db, stub_kaipoke) -> None:
-    """未来週は実apply記録が無い限り 422 (計画中の週の全滅事故防止)。"""
+async def test_diff_inbound_allowed_for_future_week(client, db, stub_kaipoke) -> None:
+    """未来週も取り込み可 (2026-08-09 PO確定: カイポケで先に計画を入れる客先運用に対応。
+    事故防止は空CSV拒否/dry-run/大量キャンセル警告/実績ガードの内容ベースへ移譲)。"""
     await _seed_week(db)
     admin = await _make_admin(db)
     res = await client.post(
@@ -245,15 +246,14 @@ async def test_diff_inbound_blocked_for_future_week(client, db, stub_kaipoke) ->
         headers=_bearer(admin),
         json={"month": "2100-01", "weekStart": FUTURE_MONDAY.isoformat()},
     )
-    assert res.status_code == 422, res.text
-    assert "④反映" in res.json()["detail"]
+    assert res.status_code == 202, res.text
 
 
 @pytest.mark.asyncio
 async def test_inbound_eligibility_endpoint(client, db, stub_kaipoke) -> None:
     admin = await _make_admin(db)
 
-    # 過去週: 実apply記録なしでも時間ゲートで開放 (2026-07-26 改訂)
+    # 過去週: 開放 (従来どおり)
     res = await client.get(
         f"/api/v1/integrations/inbound-eligibility?weekStart={WEEK_START.isoformat()}",
         headers=_bearer(admin),
@@ -261,39 +261,16 @@ async def test_inbound_eligibility_endpoint(client, db, stub_kaipoke) -> None:
     assert res.status_code == 200, res.text
     assert res.json()["eligible"] is True
 
-    # 未来週: 実apply記録が無いと閉鎖 → 記録を作ると開放
+    # 未来週: 実apply記録が無くても開放 (2026-08-09 改訂)
     future_url = f"/api/v1/integrations/inbound-eligibility?weekStart={FUTURE_MONDAY.isoformat()}"
     res = await client.get(future_url, headers=_bearer(admin))
-    assert res.json()["eligible"] is False
+    assert res.json()["eligible"] is True
+    assert res.json()["lastAppliedAt"] is None
 
+    # 実apply記録があっても当然開放のまま (record は表示用として維持)
     await _seed_real_apply(db, FUTURE_MONDAY)
     res = await client.get(future_url, headers=_bearer(admin))
     assert res.json()["eligible"] is True
-
-
-@pytest.mark.asyncio
-async def test_dry_run_apply_job_does_not_open_gate(client, db, stub_kaipoke) -> None:
-    """dry-run の apply 記録では未来週を開放しない (実apply のみがバトンタッチ)。"""
-    admin = await _make_admin(db)
-    db.add(
-        KaipokeJob(
-            job_type="push",
-            week_start=FUTURE_MONDAY,
-            params={
-                "op": "apply",
-                "sheet_id": "dummy",
-                "dry_run": True,
-                "week_start": FUTURE_MONDAY.isoformat(),
-            },
-            status="completed",
-        )
-    )
-    await db.commit()
-    res = await client.get(
-        f"/api/v1/integrations/inbound-eligibility?weekStart={FUTURE_MONDAY.isoformat()}",
-        headers=_bearer(admin),
-    )
-    assert res.json()["eligible"] is False
 
 
 # --- 2. diff-inbound ----------------------------------------------------------

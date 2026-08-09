@@ -116,14 +116,27 @@ async def _apply(client, admin, *, sheet_id: str | None, dry_run: bool):
 
 
 @pytest.mark.asyncio
-async def test_smart_blocked_for_future_week(client, db, stub_kaipoke) -> None:
+async def test_smart_future_week_open(client, db, stub_kaipoke) -> None:
+    """未来週も smart 取り込み可 (2026-08-09 改訂: 時間ゲート撤廃)。
+
+    カイポケが空の未来週は空CSV拒否 422 が働く (ゲート通過の証明 = ④反映の文言ではない)。
+    カイポケに入力がある未来週はプレビューが返る。
+    """
     await _seed_week(db)
     admin = await _make_admin(db)
+
     res = await client.post(
         PREVIEW_URL, headers=_bearer(admin), json={"weekStart": FUTURE_MONDAY.isoformat()}
     )
     assert res.status_code == 422, res.text
-    assert stub_kaipoke.calls == []
+    assert "0件" in res.json()["detail"]
+    assert "④反映" not in res.json()["detail"]
+
+    stub_kaipoke.by_month["2100-01"] = _csv(_kp_row(date(2100, 1, 5), time(10, 0), time(10, 35)))
+    res = await client.post(
+        PREVIEW_URL, headers=_bearer(admin), json={"weekStart": FUTURE_MONDAY.isoformat()}
+    )
+    assert res.status_code in (200, 202), res.text
 
 
 @pytest.mark.asyncio

@@ -211,21 +211,20 @@ async def _kaipoke_rows(db) -> list[StaffEvent]:
 
 
 @pytest.mark.asyncio
-async def test_preview_blocked_for_future_week(client, db, stub_kaipoke) -> None:
-    """未来週は実apply記録が無い限り 422 (過去・今週は時間ゲートで開放)。"""
+async def test_preview_future_week_open(client, db, stub_kaipoke) -> None:
+    """未来週も実apply記録なしで開放 (2026-08-09 改訂: 時間ゲート撤廃)。"""
     await _seed_staff(db)
     admin = await _make_admin(db)
+    stub_kaipoke.tasks = []
     res = await client.post(
         PREVIEW_URL, headers=_bearer(admin), json={"weekStart": FUTURE_MONDAY.isoformat()}
     )
-    assert res.status_code == 422, res.text
-    assert "④反映" in res.json()["detail"]
-    assert stub_kaipoke.calls == []  # ゲート前に RPA を呼ばない
+    assert res.status_code == 200, res.text
 
 
 @pytest.mark.asyncio
 async def test_preview_future_week_opens_with_real_apply(client, db, stub_kaipoke) -> None:
-    """未来週でも実apply記録があれば開放 (前倒しで送った週の追いかけ)。"""
+    """実apply記録があっても当然開放 (record は表示用として維持)。"""
     await _seed_staff(db)
     await _seed_real_apply(db, FUTURE_MONDAY)
     admin = await _make_admin(db)
@@ -237,7 +236,8 @@ async def test_preview_future_week_opens_with_real_apply(client, db, stub_kaipok
 
 
 @pytest.mark.asyncio
-async def test_apply_blocked_for_future_week(client, db, stub_kaipoke) -> None:
+async def test_apply_future_week_open(client, db, stub_kaipoke) -> None:
+    """未来週の apply も開放 (2026-08-09 改訂)。dryRun なので書込は無い。"""
     seeded = await _seed_staff(db)
     admin = await _make_admin(db)
     res = await client.post(
@@ -259,7 +259,7 @@ async def test_apply_blocked_for_future_week(client, db, stub_kaipoke) -> None:
             ],
         },
     )
-    assert res.status_code == 422, res.text
+    assert res.status_code == 200, res.text
 
 
 @pytest.mark.asyncio

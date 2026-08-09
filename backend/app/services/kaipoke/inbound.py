@@ -90,22 +90,24 @@ async def real_apply_record(db: AsyncSession, week_start: date) -> KaipokeJob | 
 async def inbound_week_eligible(
     db: AsyncSession, week_start: date, *, today: date | None = None
 ) -> tuple[bool, KaipokeJob | None]:
-    """取り込みゲート (2026-07-26 運用改訂・PO確定) — (eligible, 実apply job) を返す。
+    """取り込みゲート (2026-08-09 改訂・PO確定) — (eligible, 実apply job) を返す。
 
-    カイポケは請求と紐づく最終的な「正」であり、提供が始まる週は必ずカイポケに
-    入力されている (④反映を使ったかどうかは無関係)。よって:
+    **全週で取り込み可 (常に eligible=True)**。客先運用は「カイポケで先に計画を
+    入れ、らく助へ映す」— 未来週でもカイポケが正になり得るため、旧・時間ゲート
+    (週開始<=今日 or 実apply記録) は撤廃した (2026-07-26 改訂の置き換え)。
 
-      * 週開始(月曜) <= 今日(JST) — 過去週・今週はいつでも取り込み可
-      * または その週に実apply記録がある — 前倒しで送った未来週も追いかけ可
+    事故防止は時間ではなく**内容ベースの安全装置**へ移譲:
+      * 空CSV拒否 — カイポケが空の週での白紙化 (週全滅) はゲートと無関係に拒否
+      * dry-run 既定 + 確認ダイアログ (挿入n/削除n を見てから実行)
+      * FE 大量キャンセル警告 (候補>=10で赤警告) + 未来週専用の警告表示
+      * 実績(打刻)ガード — 打刻のある週は置換不可
 
-    未来週を無条件開放しないのは、らく助が計画中でカイポケ未入力の週を取り込むと
-    計画訪問が全てキャンセル候補になる「週全滅事故」を防ぐため (FE の大量キャンセル
-    警告と二段構え)。
+    戻り値の tuple 形と実apply record は表示用 (last_applied_at) と将来の
+    再制限に備えて維持する。today 引数も互換のため残す (判定には不使用)。
     """
-    if today is None:
-        today = datetime.now(JST).date()
+    del today  # 2026-08-09 撤廃: 時間判定はしない (シグネチャ互換のため受け取るだけ)
     record = await real_apply_record(db, week_start)
-    return (week_start <= today or record is not None), record
+    return True, record
 
 
 def day_to_date(day: int, week_start: date, week_end: date) -> date | None:

@@ -9,7 +9,7 @@ docs/plans/kaipoke-event-inbound-design.md 追補 (置換モード):
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 import pytest
@@ -95,12 +95,30 @@ async def _post_replace(client, admin, *, week_start: date, dry_run: bool):
 
 
 @pytest.mark.asyncio
-async def test_replace_blocked_for_future_week(client, db, stub_kaipoke) -> None:
+async def test_replace_future_week_open(client, db, stub_kaipoke) -> None:
+    """未来週も置換取り込み可 (2026-08-09 改訂: 時間ゲート撤廃)。
+
+    カイポケに入力がある未来週 → dry_run 202。
+    カイポケが空の未来週 → 空CSV拒否 422 (週全滅防止はゲートではなく内容ベースで残る)。
+    """
     await _seed_week(db)
     admin = await _make_admin(db)
+
+    # カイポケ側が空のままだと空CSV拒否 (ゲートは通過している = ④反映の文言ではない)
     res = await _post_replace(client, admin, week_start=FUTURE_MONDAY, dry_run=True)
     assert res.status_code == 422, res.text
-    assert stub_kaipoke.calls == []
+    assert "0件" in res.json()["detail"]
+    assert "④反映" not in res.json()["detail"]
+
+    # カイポケに入力があれば取り込める
+    stub_kaipoke.by_month["2100-01"] = _csv(
+        _kp_row(FUTURE_MONDAY + timedelta(days=1), time(10, 0), time(10, 35))
+    )
+    res = await _post_replace(client, admin, week_start=FUTURE_MONDAY, dry_run=True)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["dryRun"] is True
+    assert body["inserted"] == 1
 
 
 @pytest.mark.asyncio

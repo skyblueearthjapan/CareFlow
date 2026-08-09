@@ -81,7 +81,7 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
         </div>
       )}
 
-      {/* ── 週送りナビ（過去は無制限・未来は来週まで） ── */}
+      {/* ── 週送りナビ（過去・未来とも無制限 / 2026-08-09 開放） ── */}
       <div className="mb-5">
         <p className="mb-2 text-xs font-medium text-text-secondary">対象週</p>
         <div className="flex flex-wrap items-center gap-2">
@@ -135,13 +135,18 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
           )}
         </div>
         <p className="mt-2 text-xs text-text-muted">
-          過去の週はいくらでも遡れます（カイポケは請求と紐づくため過去分も残っています）。
-          未来は来週まで。
+          過去・未来ともどの週でも取り込めます（過去分はカイポケが請求と紐づくため残っています。
+          未来週はカイポケに入力済みの計画を映せます）。
         </p>
-        {!currentElig.isLoading && !eligible && (
-          <p className="mt-1 text-xs text-warning-strong">
-            この週はまだ取り込めません。未来の週は、先に④反映（送る）を済ませると
-            取り込めるようになります（計画中の週を消してしまう事故防止）。
+        {/* 未来週専用の警告 (2026-08-09 開放とセットの安全装置)。 */}
+        {weekOffset > 0 && (
+          <p
+            className="mt-1 rounded-md border border-amber-500/50 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900"
+            data-testid="inbound-future-week-warning"
+          >
+            ⚠ 未来週です。カイポケ側の内容が「正」として取り込まれ、らく助側でこの週に
+            計画中の内容は上書き（削除・キャンセル候補）になります。カイポケにこの週の
+            スケジュールが入力済みであることを確認してから取り込んでください。
           </p>
         )}
       </div>
@@ -252,6 +257,12 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                     追加 {eventsPlan.adds} / 変更 {eventsPlan.updates} / 削除 {eventsPlan.deletes}
                     （週全体）
                   </span>
+                </span>
+              )}
+              {weekOffset > 0 && (
+                <span className="block font-medium text-error" data-testid="confirm-future-week">
+                  ⚠ 未来週への取り込みです。らく助側でこの週に計画中の内容は
+                  カイポケの内容で上書きされます。
                 </span>
               )}
               <span className="block text-error">
