@@ -51,6 +51,16 @@ vi.mock('@/lib/queries/patient_fixed_visits', () => ({
   useUpdateFixedVisits: vi.fn(),
   useDeleteFixedVisits: vi.fn(),
   useApplyFromWeek: vi.fn(),
+  // 案Z (2026-08-09): 賢いマスタ用フック。詳細ページは readOnly なので未使用だが
+  // モジュールモックには全 export が必要。
+  useValidateFixedVisits: vi.fn(() => ({
+    mutateAsync: vi.fn().mockResolvedValue({ warnings: [] }),
+    isPending: false,
+  })),
+  useFixedVisitsCourseLoad: vi.fn(() => ({
+    data: { course_max_minutes: 480, max_patients_per_course: 6, cells: [] },
+    isLoading: false,
+  })),
 }));
 
 // ─── Mock course_templates query ──────────────────────────────────────────────
