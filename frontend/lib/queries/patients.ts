@@ -28,6 +28,7 @@ import { useSession } from 'next-auth/react';
 import { fetcher } from '@/lib/api/fetcher';
 import {
   normalizePatientInsurance,
+  normalizePatientStatus,
   patientCreateSchema,
   patientUpdateSchema,
   type PatientCreate,
@@ -48,6 +49,11 @@ export interface PatientsListParams {
   /** Filter by insurance label. */
   insurance?: string;
   /**
+   * ステータスタブ (PO 決定 2026-08-09): 'active' 等の 5 値 or 'all'。
+   * insurance と同じくクライアント側フィルタ。省略時は 'all' 相当。
+   */
+  status?: string;
+  /**
    * 取得ゲート (default true)。`false` のときは fetch を抑止する。
    *
    * 現場ボード `/m` の提案シートでは「既存のお客様」モードのときだけ患者一覧
@@ -66,6 +72,11 @@ export interface PatientsListResult {
   /** True when the backend list returned exactly the hard cap (500), so the
    * client view may be silently truncated. */
   truncated: boolean;
+  /**
+   * ステータス別件数 (検索・保険区分フィルタ適用後 / ステータス絞り込み前)。
+   * タブの件数バッジ用。key はステータス値 + 'all'。
+   */
+  statusCounts: Record<string, number>;
 }
 
 /** Backend hard cap for the list endpoint — keep in sync with the API. */
@@ -150,10 +161,11 @@ export function usePatients(
   const limit = Math.max(1, params.limit ?? 20);
   const search = params.search?.trim().toLowerCase() ?? '';
   const insurance = params.insurance ?? '';
+  const statusFilter = params.status && params.status !== 'all' ? params.status : '';
   const gate = params.enabled ?? true;
 
   return useQuery<PatientsListResult, Error>({
-    queryKey: [...PATIENTS_KEY, { page, limit, search, insurance }],
+    queryKey: [...PATIENTS_KEY, { page, limit, search, insurance, statusFilter }],
     enabled: status === 'authenticated' && gate,
     queryFn: async () => {
       // Fetch a generous window so the client-side search across pages
@@ -174,14 +186,27 @@ export function usePatients(
         const hay = `${p.name ?? ''} ${p.kana ?? ''} ${p.code ?? ''}`.toLowerCase();
         return hay.includes(search);
       });
+      // ステータス別件数 (タブのバッジ用)。検索・保険区分の適用後に数える =
+      // バッジの数字と切替後の表示件数が常に一致する。
+      const statusCounts: Record<string, number> = { all: filtered.length };
+      for (const p of filtered) {
+        const st = normalizePatientStatus(p.status as string | null | undefined);
+        statusCounts[st] = (statusCounts[st] ?? 0) + 1;
+      }
+      const byStatus = statusFilter
+        ? filtered.filter(
+            (p) => normalizePatientStatus(p.status as string | null | undefined) === statusFilter,
+          )
+        : filtered;
       const start = (page - 1) * limit;
-      const slice = filtered.slice(start, start + limit);
+      const slice = byStatus.slice(start, start + limit);
       return {
         items: slice,
-        total: filtered.length,
+        total: byStatus.length,
         page,
         limit,
         truncated,
+        statusCounts,
       };
     },
   });

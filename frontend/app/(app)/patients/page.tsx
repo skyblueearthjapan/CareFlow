@@ -1,7 +1,8 @@
 /**
  * Patient master list (Phase 3-1).
  *
- * Filters: 検索 (name/kana/code, 300ms debounce), 保険区分, 状態 (有効/削除済).
+ * Filters: ステータスタブ (稼働中/開始前/一時休止/入院中/解約済み/すべて・PO決定 2026-08-09),
+ *          検索 (name/kana/code, 300ms debounce), 保険区分.
  * Pagination: limit=20, prev/next + page numbers.
  * Roles: 「+ 新規登録」 is admin/manager only.
  */
@@ -36,6 +37,26 @@ import { PatientsReplaceAllButton } from '@/components/patients/PatientsReplaceA
 
 const PAGE_SIZE = 20;
 
+/**
+ * ステータスタブ (PO 決定 2026-08-09)。並びはライフサイクル順で「稼働中」先頭・既定。
+ * ラベルは一覧の「状態」列 (STATUS_LABEL) と同一 — 表記の揺れを作らない。
+ */
+const STATUS_TABS = [
+  { value: 'active', label: STATUS_LABEL.active },
+  { value: 'pending', label: STATUS_LABEL.pending },
+  { value: 'suspended', label: STATUS_LABEL.suspended },
+  { value: 'admitted', label: STATUS_LABEL.admitted },
+  { value: 'cancelled', label: STATUS_LABEL.cancelled },
+  { value: 'all', label: 'すべて' },
+] as const;
+type StatusTabValue = (typeof STATUS_TABS)[number]['value'];
+
+function initialStatusTab(): StatusTabValue {
+  if (typeof window === 'undefined') return 'active';
+  const v = new URLSearchParams(window.location.search).get('status');
+  return STATUS_TABS.some((t) => t.value === v) ? (v as StatusTabValue) : 'active';
+}
+
 export default function PatientsPage() {
   const { data: session } = useSession();
   const role = session?.user?.role;
@@ -45,8 +66,17 @@ export default function PatientsPage() {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [insurance, setInsurance] = useState<string>('');
-  const [showActiveOnly, setShowActiveOnly] = useState(true);
+  const [statusTab, setStatusTab] = useState<StatusTabValue>(initialStatusTab);
   const [page, setPage] = useState(1);
+
+  // タブを URL (?status=) に同期 — ブックマーク・戻る・他画面からのリンクに対応。
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (statusTab === 'active') params.delete('status');
+    else params.set('status', statusTab);
+    const qs = params.toString();
+    window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
+  }, [statusTab]);
 
   // 300ms debounce for the search box.
   useEffect(() => {
@@ -62,6 +92,7 @@ export default function PatientsPage() {
     limit: PAGE_SIZE,
     search,
     insurance: insurance || undefined,
+    status: statusTab,
   });
 
   // 拠点 id → 名前マップ (一覧で primary_office_id を拠点名表示するため)
@@ -74,10 +105,10 @@ export default function PatientsPage() {
     return m;
   }, [offices]);
 
-  const items = useMemo(() => {
-    if (!data) return [];
-    return showActiveOnly ? data.items.filter((p) => !p.deleted_at) : data.items;
-  }, [data, showActiveOnly]);
+  // 削除済みは BE が返さない (deleted_at IS NULL 固定) ため、旧「有効のみ」
+  // チェックは実質無効だった — ステータスタブ導入に合わせて撤去 (2026-08-09)。
+  const items = data?.items ?? [];
+  const statusCounts = data?.statusCounts;
 
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -138,8 +169,52 @@ export default function PatientsPage() {
         </div>
       </header>
 
+      {/* ステータスタブ (PO 決定 2026-08-09): 稼働中を先頭・既定。件数バッジ付き。 */}
+      <div
+        role="tablist"
+        aria-label="ステータスで絞り込み"
+        className="flex flex-wrap gap-1.5"
+        data-testid="patient-status-tabs"
+      >
+        {STATUS_TABS.map((t) => {
+          const selected = statusTab === t.value;
+          const count = statusCounts?.[t.value];
+          return (
+            <button
+              key={t.value}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              data-testid={`patient-status-tab-${t.value}`}
+              onClick={() => {
+                setStatusTab(t.value);
+                setPage(1);
+              }}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors',
+                selected
+                  ? 'border-brand-primary bg-brand-primary text-white shadow-sm'
+                  : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted',
+              )}
+            >
+              {t.label}
+              {count != null && (
+                <span
+                  className={cn(
+                    'tnum rounded-full px-1.5 text-xs',
+                    selected ? 'bg-white/25 text-white' : 'bg-bg-muted text-text-muted',
+                  )}
+                >
+                  {count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
       <Card className="p-4">
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_220px_auto]">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_220px]">
           <Input
             type="search"
             placeholder="氏名・カナ・コードで検索"
@@ -161,14 +236,6 @@ export default function PatientsPage() {
               </option>
             ))}
           </select>
-          <label className="flex items-center gap-2 text-sm text-text-secondary">
-            <input
-              type="checkbox"
-              checked={showActiveOnly}
-              onChange={(e) => setShowActiveOnly(e.target.checked)}
-            />
-            有効のみ
-          </label>
         </div>
       </Card>
 
@@ -196,11 +263,19 @@ export default function PatientsPage() {
             </AlertDescription>
           </Alert>
         ) : items.length === 0 ? (
-          <RakusukeNote
-            pose="heart"
-            title="患者が登録されていません"
-            comment="「新規登録」から最初の患者さんを迎えましょう"
-          />
+          statusTab === 'all' ? (
+            <RakusukeNote
+              pose="heart"
+              title="患者が登録されていません"
+              comment="「新規登録」から最初の患者さんを迎えましょう"
+            />
+          ) : (
+            <RakusukeNote
+              pose="heart"
+              title={`${STATUS_TABS.find((t) => t.value === statusTab)?.label ?? ''}の患者様はいません`}
+              comment="他のタブや「すべて」で確認できます"
+            />
+          )
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
