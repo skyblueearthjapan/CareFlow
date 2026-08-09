@@ -44,9 +44,12 @@ class Staff(Base, TimestampMixin):
     kana: Mapped[str | None] = mapped_column(String(120), nullable=True)
     sex: Mapped[str | None] = mapped_column(String(8), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    # 業務ロール (staff=スタッフ / manager=マネージャー)。**スケジュールエンジン専用**:
+    # manager は自動割当の対象外 (埋まらないコースの救済にのみ入る)・人数カウント外。
+    # ログインのアカウント権限 (users.role: admin/staff) とは無関係 (二軸分離・2026-08-09)。
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="staff")
     # K-1b: カイポケ18列CSV「職種」列の値 (看護師/准看護師/理学療法士…)。
-    # role (admin/manager/staff = システム権限) とは独立。カイポケ転記専用。
+    # 業務ロールとも独立。カイポケ転記専用。
     qualification: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     primary_office_id: Mapped[uuid.UUID | None] = mapped_column(

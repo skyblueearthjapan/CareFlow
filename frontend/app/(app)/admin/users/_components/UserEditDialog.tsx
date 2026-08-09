@@ -27,8 +27,10 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAdminUsers, useUpdateAdminUser } from '@/lib/queries/admin-users';
 import { useStaffList } from '@/lib/queries/staff';
+import { isAdminRole } from '@/lib/rbac';
 import {
   ADMIN_USER_ROLES,
+  ADMIN_USER_ROLE_OPTIONS,
   type AdminUserRead,
   type AdminUserRole,
   type AdminUserUpdate,
@@ -77,10 +79,7 @@ export function UserEditDialog({ target, onClose }: Props) {
     return set;
   }, [usersData, target?.id]);
 
-  const staffOptions = useMemo(
-    () => (staffList ?? []).filter((s) => !s.deleted_at),
-    [staffList],
-  );
+  const staffOptions = useMemo(() => (staffList ?? []).filter((s) => !s.deleted_at), [staffList]);
 
   const update = useUpdateAdminUser({
     onSuccess: () => onClose(),
@@ -112,7 +111,7 @@ export function UserEditDialog({ target, onClose }: Props) {
   // When the role is being changed, enforce the same rules as the create dialog:
   // staff role → username required; admin/manager → email required.
   const roleChanged = target !== null && role !== target.role;
-  const emailRequired = roleChanged && (role === 'admin' || role === 'manager');
+  const emailRequired = roleChanged && isAdminRole(role);
   const usernameRequired = roleChanged && role === 'staff';
   const roleConstraintViolated =
     (emailRequired && normalizedEmail === null) ||
@@ -133,8 +132,7 @@ export function UserEditDialog({ target, onClose }: Props) {
       role: role !== target.role ? role : undefined,
       // Send null explicitly to unlink; undefined leaves it unchanged.
       staff_id: nextStaff !== currentStaff ? nextStaff : undefined,
-      must_change_password:
-        mustChange !== target.must_change_password ? mustChange : undefined,
+      must_change_password: mustChange !== target.must_change_password ? mustChange : undefined,
     };
     update.mutate({ id: target.id, payload });
   };
@@ -164,7 +162,7 @@ export function UserEditDialog({ target, onClose }: Props) {
               onChange={(e) => setRole(e.target.value as AdminUserRole)}
               className="h-10 w-full rounded-md border border-border-default bg-bg-base px-3 text-sm"
             >
-              {ADMIN_USER_ROLES.map((r) => (
+              {ADMIN_USER_ROLE_OPTIONS.map((r) => (
                 <option key={r} value={r}>
                   {roleLabel(r)}
                 </option>

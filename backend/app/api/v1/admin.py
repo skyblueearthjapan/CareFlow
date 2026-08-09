@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.deps import DbDep, require_role
 from app.core.security import hash_password
 from app.models.staff import Staff
-from app.models.user import USER_ROLES, User
+from app.models.user import USER_ROLES, User, normalize_user_role
 from app.schemas._pagination import Paginated
 from app.schemas.admin_user import (
     AdminPasswordResetResponse,
@@ -42,7 +42,7 @@ def _generate_temp_password() -> str:
 
 
 def _validate_role_or_400(role: str) -> None:
-    if role not in USER_ROLES:
+    if normalize_user_role(role) not in USER_ROLES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"role must be one of {USER_ROLES}, got {role!r}",
@@ -174,7 +174,7 @@ async def create_user(
         )
     # Role-specific identifier requirements (§4): admin/manager need email for
     # current email-based login flow; staff need username for code-based login (P1b).
-    if payload.role in ("admin", "manager") and payload.email is None:
+    if normalize_user_role(payload.role) == "admin" and payload.email is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="email is required for admin/manager role",
@@ -191,7 +191,7 @@ async def create_user(
         email=payload.email,
         username=payload.username,
         password_hash=hash_password(temp_password),
-        role=payload.role,
+        role=normalize_user_role(payload.role) or payload.role,
         staff_id=payload.staff_id,
         must_change_password=True,
     )
@@ -224,6 +224,9 @@ async def update_user(
         _validate_role_or_400(data["role"])
     if "email" in data and data["email"] is not None:
         data["email"] = str(data["email"])
+    # 二軸分離 (2026-08-09): 旧 'manager' 指定は admin へ正規化して保存する。
+    if data.get("role") is not None:
+        data["role"] = normalize_user_role(data["role"])
     # staff soft-delete check (FK does not detect soft-delete).
     if data.get("staff_id") is not None:
         await _ensure_staff_alive_or_422(db, data["staff_id"])
@@ -244,7 +247,7 @@ async def update_user(
     # account inconsistent with its new role. Ordinary edits that don't touch role
     # stay flexible (the login-possibility guard above is the always-on floor).
     if "role" in data:
-        if user.role in ("admin", "manager") and user.email is None:
+        if normalize_user_role(user.role) == "admin" and user.email is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="email is required for admin/manager role",

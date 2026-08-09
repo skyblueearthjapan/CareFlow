@@ -31,7 +31,7 @@ router = APIRouter()
 async def compute_diff(
     request: Request,
     payload: DiffRequest,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> DiffResponse:
     try:
         corrections = compare_schedules_from_content(

@@ -49,7 +49,7 @@ router = APIRouter()
 )
 async def get_acceptance_matrix(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
+    _user: Annotated[User, Depends(require_role("admin", "staff"))],
     iso_year: Annotated[int, Query(ge=2020, le=2100, description="ISO 年")],
     iso_week: Annotated[int, Query(ge=1, le=53, description="ISO 週")],
     office_id: Annotated[UUID | None, Query(description="拠点 ID (未指定なら全拠点)")] = None,
@@ -76,7 +76,7 @@ async def get_acceptance_matrix(
 async def upsert_week_override(
     payload: WeekOverrideUpsert,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> WeekOverrideRead:
     """(office_id, iso_year, iso_week, weekday, time_slot) の週別上書きを upsert する.
 
@@ -139,7 +139,7 @@ async def upsert_week_override(
 )
 async def delete_week_override(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     office_id: Annotated[UUID, Query()],
     iso_year: Annotated[int, Query(ge=2020, le=2100)],
     iso_week: Annotated[int, Query(ge=1, le=53)],
@@ -183,7 +183,7 @@ async def _resolve_standing_office_ids(db: AsyncSession, office_id: UUID | None)
 async def upsert_standing_override(
     payload: StandingOverrideUpsert,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> dict[str, int]:
     """(office_id?, weekday, time_slot) の常設上書きを upsert する (毎週共通).
 
@@ -239,7 +239,7 @@ async def upsert_standing_override(
 )
 async def delete_standing_override(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     weekday: Annotated[int, Query(ge=0, le=6)],
     time_slot: Annotated[time, Query(description="時間帯の開始時刻 (例 10:00:00)")],
     office_id: Annotated[UUID | None, Query(description="省略=全拠点まとめて解除")] = None,

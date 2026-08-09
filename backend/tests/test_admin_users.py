@@ -122,7 +122,8 @@ async def test_patch_user_changes_role(client, db) -> None:
         json={"role": "manager"},
     )
     assert res.status_code == 200, res.text
-    assert res.json()["role"] == "manager"
+    # 二軸分離 (2026-08-09): 旧 'manager' 指定は admin へ寛容パースされる。
+    assert res.json()["role"] == "admin"
 
 
 @pytest.mark.asyncio
@@ -170,14 +171,27 @@ async def test_admin_cannot_self_delete(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_manager_cannot_create_user(client, db) -> None:
+async def test_staff_cannot_create_user_manager_alias_can(client, db) -> None:
+    """二軸分離 (2026-08-09): 一般 (staff) はユーザー作成不可。
+    旧 'manager' は admin の別名なので作成できる。"""
+    staff = await _make_user(db, "wave4f-staff-1@example.com", "staff")
+    res = await client.post(
+        "/api/v1/admin/users",
+        headers=_bearer(staff),
+        json={"email": "x@example.com", "role": "staff"},
+    )
+    assert res.status_code == 403, res.text
+
+    # 403 経路の後は共有セッションに未消化ステートメントが残ることがある
+    # (aiosqlite の既知の不安定さ)。次の commit を安定させるため明示 rollback。
+    await db.rollback()
     manager = await _make_user(db, "wave4f-mgr-1@example.com", "manager")
     res = await client.post(
         "/api/v1/admin/users",
         headers=_bearer(manager),
-        json={"email": "x@example.com", "role": "staff"},
+        json={"email": "x2@example.com", "username": "x2", "role": "staff"},
     )
-    assert res.status_code == 403, res.text
+    assert res.status_code == 201, res.text
 
 
 # ---------------------------------------------------------------------------
@@ -209,12 +223,16 @@ async def test_audit_logs_admin_returns_200(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_audit_logs_manager_returns_403(client, db) -> None:
-    """Manager role (chie.kawana's actual role per Sample 2 管理者 sheet)
-    must NOT access /audit-logs. This documents that the 2026-05 403 report
-    is expected behaviour, not a bug."""
+async def test_audit_logs_manager_alias_is_admin(client, db) -> None:
+    """二軸分離 (PO 決定 2026-08-09): 旧 'manager' 権限は admin の別名。
+    残存する manager 行/トークンでも管理者として扱われ、audit-logs にも入れる
+    (本番行は migration 0069 で admin へ移行済み)。一般 (staff) は従来どおり 403。"""
     manager = await _make_user(db, "audit-rbac-manager@example.com", "manager")
     res = await client.get("/api/v1/audit-logs", headers=_bearer(manager))
+    assert res.status_code == 200, res.text
+
+    staff = await _make_user(db, "audit-rbac-staff@example.com", "staff")
+    res = await client.get("/api/v1/audit-logs", headers=_bearer(staff))
     assert res.status_code == 403, res.text
 
 

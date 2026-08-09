@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.staff import Staff, StaffEvent
-from app.models.user import User
+from app.models.user import User, normalize_user_role
 from app.schemas.staff_events import EventCreate, EventRead, EventUpdate
 
 router = APIRouter()
@@ -30,7 +30,7 @@ def _combine(d: date, hhmm: str) -> datetime:
 
 
 def _check_read_access(user: User, staff_id: UUID) -> None:
-    if user.role not in {"admin", "manager", "staff"}:
+    if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
     if user.role == "staff" and user.staff_id != staff_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -90,7 +90,7 @@ async def create_event(
     staff_id: UUID,
     payload: EventCreate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> StaffEvent:
     await _ensure_staff_exists(db, staff_id)
     row = StaffEvent(
@@ -117,7 +117,7 @@ async def update_event(
     event_id: UUID,
     payload: EventUpdate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> StaffEvent:
     """Update event (Wave 39: ``new_staff_id`` で別 staff への付け替えに対応).
 
@@ -190,7 +190,7 @@ async def delete_event(
     staff_id: UUID,
     event_id: UUID,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> None:
     row = await db.scalar(
         select(StaffEvent).where(

@@ -80,7 +80,7 @@ async def get_scheduling_settings(
     db: DbDep,
     # 閲覧系画面 (PC スケジュール・現場ボード) が営業時間等の表示に使うため
     # staff にも read を許可する。更新 (PUT) は引き続き admin/manager のみ。
-    _actor: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
+    _actor: Annotated[User, Depends(require_role("admin", "staff"))],
 ) -> SchedulingSettingsRead:
     row = await load_scheduling_settings_row(db)
     return _build_read(row)
@@ -94,7 +94,7 @@ async def get_scheduling_settings(
 async def update_scheduling_settings(
     payload: SchedulingSettingsUpdate,
     db: DbDep,
-    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> SchedulingSettingsRead:
     """部分更新.
 

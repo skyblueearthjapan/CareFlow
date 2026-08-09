@@ -72,7 +72,7 @@ async def _get_patient_or_404(db: AsyncSession, patient_id: UUID) -> Patient:
 async def get_patient_qr(
     patient_id: UUID,
     db: DbDep,
-    _actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    _actor: Annotated[User, Depends(require_role("admin"))],
 ) -> PatientQrRead:
     """患者の QR トークンを返す。``qr_token`` が NULL なら遅延生成して保存する。"""
     patient = await _get_patient_or_404(db, patient_id)
@@ -111,7 +111,7 @@ async def get_patient_qr(
 async def regenerate_patient_qr(
     patient_id: UUID,
     db: DbDep,
-    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> PatientQrRead:
     """旧トークンを ``revoked_qr_tokens`` に退避し、新トークンを発行する。
 

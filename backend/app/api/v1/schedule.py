@@ -196,7 +196,7 @@ class GenerateWeekResponse(BaseModel):
 async def fix_schedule(
     payload: ScheduleFixRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> ScheduleFixResponse:
     """週レイアウトを各患者の ``weekly_pattern`` に保存する.
 
@@ -234,7 +234,7 @@ async def fix_schedule(
 async def generate_week(
     payload: GenerateWeekRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> GenerateWeekResponse:
     """Layer 1 アルゴリズムを実行し、当該週の visits を生成する.
 
@@ -315,7 +315,7 @@ class FixOrPatternRequest(BaseModel):
 async def fix_or_pattern(
     body: FixOrPatternRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> dict:
     """**既存 visit の時刻変更**専用エンドポイント (W9-BE2).
 
@@ -811,7 +811,7 @@ async def _get_or_create_course_for_template_week(
 async def place_and_fix(
     body: PlaceAndFixRequest,
     db: DbDep,
-    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
+    current_user: Annotated[User, Depends(require_role("admin"))],
 ) -> PlaceAndFixResponse:
     """新規 visit を作成し、必要に応じて patient_fixed_visits を upsert する.
 
@@ -1151,7 +1151,7 @@ class GenerateAndAssignResponse(BaseModel):
 async def generate_and_assign(
     payload: GenerateAndAssignRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> GenerateAndAssignResponse:
     """Layer 1 (visit 展開) と Layer 3 (staff 割付) を 1 TX で連続実行する.
 
@@ -1583,7 +1583,7 @@ class AssignStaffOnlyResponse(BaseModel):
 async def generate_week_only(
     payload: GenerateWeekOnlyRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> GenerateWeekOnlyResponse:
     """Layer 1 のみ実行し visits を展開する。staff 割付は行わない (W17-BE-A1).
 
@@ -1700,7 +1700,7 @@ def _get_assign_staff_only_lock(iso_year: int, iso_week: int) -> asyncio.Lock:
 async def assign_staff_only(
     payload: AssignStaffOnlyRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> AssignStaffOnlyResponse:
     """assign-staff-only の HTTP 入口 — 週単位の二度押しガード付き (2026-07-11).
 
@@ -2041,7 +2041,7 @@ class ApplyStaffReviewResponse(BaseModel):
 async def apply_staff_review(
     payload: ApplyStaffReviewRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> ApplyStaffReviewResponse:
     """確認レビューフローで承認されたコースを ``_persist`` 経由で DB 反映する.
 
@@ -2673,7 +2673,7 @@ _ = LAYER1_VISIT_SOURCE
 async def auto_allocate_endpoint(
     payload: AutoAllocateRequest,  # noqa: ARG001 — payload は schema validation のため受け取る
     db: DbDep,  # noqa: ARG001
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> AutoAllocateResponse:
     """指定週・拠点に対し自動算出を実行し、proposed course / visit を永続化する.
 
@@ -2702,7 +2702,7 @@ async def auto_allocate_endpoint(
 async def apply_proposal(
     proposal_batch_id: UUID,  # noqa: ARG001
     db: DbDep,  # noqa: ARG001
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> ProposalApplyResponse:
     """提案バッチを採用し、course_status を ``staff_assigned`` まで進める.
 
@@ -2725,7 +2725,7 @@ async def apply_proposal(
 async def discard_proposal(
     proposal_batch_id: UUID,  # noqa: ARG001
     db: DbDep,  # noqa: ARG001
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> ProposalDiscardResponse:
     """提案バッチに紐付く未採用 (proposed) course と visits を物理削除する.
 

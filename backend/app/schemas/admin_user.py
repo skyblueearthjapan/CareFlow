@@ -13,7 +13,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from app.models.user import USER_ROLES
+from app.models.user import USER_ROLES, normalize_user_role
 
 # username は小文字英数字 / アンダースコア / ドット / ハイフンのみ許可。
 # schema 層で正規化 (strip().lower()) + 文字種検査を行い、DB 側の制約と二重防御する。
@@ -107,6 +107,8 @@ class AdminPasswordResetResponse(BaseModel):
 
 
 def validate_role(value: str) -> str:
-    if value not in USER_ROLES:
+    # 旧 'manager' は admin の別名として受理・正規化 (2026-08-09 二軸分離)。
+    normalized = normalize_user_role(value)
+    if normalized not in USER_ROLES:
         raise ValueError(f"role must be one of {USER_ROLES}, got {value!r}")
-    return value
+    return normalized

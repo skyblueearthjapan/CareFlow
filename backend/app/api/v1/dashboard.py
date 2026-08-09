@@ -27,6 +27,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import case, func, or_, select
 
 from app.core.deps import CurrentActiveUser, DbDep
+from app.models.user import normalize_user_role
 from app.models.visit import (
     VISIT_STATUS_CANCELLED,
     VISIT_STATUS_COMPLETED,
@@ -46,11 +47,12 @@ router = APIRouter()
 # from `app.models.visit` (backed by the `VisitStatus` Literal).
 JST = ZoneInfo("Asia/Tokyo")
 
-_ALLOWED_ROLES = {"admin", "manager", "staff"}
+_ALLOWED_ROLES = {"admin", "staff"}
 
 
 def _require_dashboard_role(role: str) -> None:
-    if role not in _ALLOWED_ROLES:
+    # アカウント権限は 2 値 (管理者/一般・2026-08-09)。旧 'manager' は別名正規化。
+    if normalize_user_role(role) not in _ALLOWED_ROLES:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
 

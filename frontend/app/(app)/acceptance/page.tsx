@@ -35,11 +35,12 @@ import {
 } from '@/lib/queries/acceptance_matrix';
 import { toIsoYearWeek } from '@/lib/queries/fieldBoard';
 import { useOffices } from '@/lib/queries/offices';
+import { isAdminRole } from '@/lib/rbac';
 
 export default function AcceptanceMatrixPage() {
   const { data: session } = useSession();
   const role = session?.user?.role;
-  const canEdit = role === 'admin' || role === 'manager';
+  const canEdit = isAdminRole(role);
 
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
   const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);

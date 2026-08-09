@@ -114,14 +114,20 @@ CurrentActiveUser = Annotated[User, Depends(get_current_active_user)]
 
 
 def require_role(*roles: str):
-    """Build a dependency that allows only the given roles (admin/manager/staff).
+    """Build a dependency that allows only the given roles (admin/staff).
+
+    アカウント権限は 2 値 (admin=管理者 / staff=一般・PO 決定 2026-08-09)。
+    旧 'manager' は admin の別名として正規化してから判定する (移行期の
+    旧セッション・残存データを 403 にしない)。
 
     Chains through `get_current_active_user` so that future soft-deleted users
     are rejected before a role check runs (Codex Phase 2 review fix).
     """
 
     async def _checker(user: CurrentActiveUser) -> User:
-        if user.role not in roles:
+        from app.models.user import normalize_user_role
+
+        if normalize_user_role(user.role) not in roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Insufficient role",

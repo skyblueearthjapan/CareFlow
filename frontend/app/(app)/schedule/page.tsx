@@ -32,6 +32,7 @@ import { Card } from '@/components/ui/card';
 import { useOffices } from '@/lib/queries/offices';
 import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 import { useSession } from 'next-auth/react';
+import { isAdminRole } from '@/lib/rbac';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Page
@@ -40,7 +41,7 @@ import { useSession } from 'next-auth/react';
 export default function SchedulePage() {
   const { data: session } = useSession();
   const role = session?.user?.role ?? 'staff';
-  const canEdit = role === 'admin' || role === 'manager';
+  const canEdit = isAdminRole(role);
 
   // 週 state.
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));

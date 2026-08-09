@@ -351,7 +351,7 @@ async def sync_week_visits_to_fixed_endpoint(
     patient_id: UUID,
     payload: SyncWeekToFixedRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> SyncWeekToFixedResponse:
     """指定週の患者 active visits を PFV (mode='normal', slot_index=0) に upsert.
 
@@ -621,7 +621,7 @@ async def sync_week_visits_to_fixed_endpoint(
 async def bulk_sync_week_visits_to_fixed_endpoint(
     payload: BulkSyncWeekToFixedRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> BulkSyncWeekToFixedResponse:
     """``sync_week_visits_to_fixed`` を複数 patient に対し 1 transaction で実行.
 
@@ -793,7 +793,7 @@ _WEEK_ONLY_BULK_ALLOWED_SOURCES = frozenset(
 async def bulk_apply_week_only_visit_changes_endpoint(
     payload: BulkApplyWeekOnlyVisitChangesRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> BulkApplyWeekOnlyVisitChangesResponse:
     """指定週の active visits を (patient, weekday) 単位で update する.
 

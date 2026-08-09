@@ -40,6 +40,7 @@ import { usePatients } from '@/lib/queries/patients';
 import { useStaffList } from '@/lib/queries/staff';
 import { cn } from '@/lib/utils';
 import type { PendingRequestV2Read, RequestType } from '@/lib/schemas/pending_request';
+import { isAdminRole } from '@/lib/rbac';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants
@@ -108,7 +109,7 @@ export function PendingRequestPanel({
 }: PendingRequestPanelProps) {
   const { data: session, status: sessionStatus } = useSession();
   const role = session?.user?.role;
-  const isAuthorized = role === 'admin' || role === 'manager';
+  const isAuthorized = isAdminRole(role);
 
   // RBAC: admin/manager 以外には何も描画しない。
   // 認証中もしくは staff の場合は null を返す (= layout 側で空白)。

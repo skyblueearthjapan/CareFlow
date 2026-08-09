@@ -632,7 +632,7 @@ def _build_individual_proposals(
 async def diff_add_endpoint(
     payload: AutoScheduleV2DiffAddRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> AutoScheduleV2DiffAddResponse:
     """機能 A: プール患者 (固定枠未登録 active) を抽出し、各 1 件ごとの提案を返す.
 
@@ -747,7 +747,7 @@ async def diff_add_endpoint(
 async def full_optimize_endpoint(
     payload: AutoScheduleV2FullOptimizeRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> AutoScheduleV2FullOptimizeResponse:
     """機能 B: 全 active 患者で再構築し、週単位 Before/After + 個別提案を返す.
 
@@ -831,7 +831,7 @@ async def full_optimize_endpoint(
 async def apply_individual_endpoint(
     payload: AutoScheduleV2ApplyIndividualRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> AutoScheduleV2ApplyIndividualResponse:
     """機能 A/B 共通: 1 患者の固定枠 (patient_fixed_visits) を提案で更新する.
 
@@ -1046,7 +1046,7 @@ async def apply_individual_endpoint(
 async def reset_to_fixed_endpoint(
     payload: AutoScheduleV2ResetToFixedRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> AutoScheduleV2ResetToFixedResponse:
     """機能 D: 対象週の visits を soft-delete → patient_fixed_visits から再生成.
 
@@ -1168,7 +1168,7 @@ async def reset_to_fixed_endpoint(
 async def sync_fixed_to_week_endpoint(
     payload: AutoScheduleV2SyncFixedToWeekRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> AutoScheduleV2SyncFixedToWeekResponse:
     """1 患者の当該週 visits を patient_fixed_visits ベースで再生成する.
 
@@ -1269,7 +1269,7 @@ async def sync_fixed_to_week_endpoint(
 async def visit_move_week_only_endpoint(
     payload: VisitMoveWeekOnlyRequest,
     db: DbDep,
-    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
+    current_user: Annotated[User, Depends(require_role("admin"))],
 ) -> VisitMoveWeekOnlyResponse:
     """改善提案 move の「この週だけ」経路 (§2.2 B). ``_apply_visit_move_week_only`` の薄い公開ラッパ.
 
@@ -1427,7 +1427,7 @@ async def visit_week_pin_endpoint(
     visit_id: uuid.UUID,
     payload: VisitWeekPinRequest,
     db: DbDep,
-    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
+    current_user: Annotated[User, Depends(require_role("admin"))],
 ) -> VisitWeekPinResponse:
     """今週の訪問を「この位置のまま動かさない」状態にする / 解除する。
 
@@ -1504,7 +1504,7 @@ async def visit_week_pin_endpoint(
 async def visit_week_pin_bulk_endpoint(
     payload: VisitWeekPinBulkRequest,
     db: DbDep,
-    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
+    current_user: Annotated[User, Depends(require_role("admin"))],
 ) -> VisitWeekPinBulkResponse:
     """赤ピンの「全件ピン留め / 全件ピン留め解除」と対になる青ピンの一括操作。
 
@@ -1591,7 +1591,7 @@ async def visit_week_pin_bulk_endpoint(
 async def apply_week_only_endpoint(
     payload: AutoScheduleV2ApplyWeekOnlyRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> AutoScheduleV2ApplyWeekOnlyResponse:
     """全面最適化提案を visits のみへ反映する慎重モード.
 
@@ -1870,7 +1870,7 @@ def _update_weekly_pattern_entry(
 async def update_fixed_time_master_endpoint(
     payload: UpdateFixedTimeMasterRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> UpdateFixedTimeMasterResponse:
     """同住所集約警告の「マスター更新」アクション用エンドポイント.
 
@@ -2033,7 +2033,7 @@ _WEEK_ONLY_ALLOWED_SOURCE_PREFIX: str = "auto_alloc_v2"
 async def update_fixed_time_week_only_endpoint(
     payload: UpdateFixedTimeWeekOnlyRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> UpdateFixedTimeWeekOnlyResponse:
     """提案中 visit の start_time / end_time を 1 件だけ上書きする.
 
@@ -2152,7 +2152,7 @@ async def update_fixed_time_week_only_endpoint(
 async def unassign_all_staff_endpoint(
     payload: AutoScheduleV2UnassignAllRequest,
     db: DbDep,
-    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> AutoScheduleV2UnassignAllResponse:
     """Phase G-17: 表示中の週の全 Course 担当 + visit_staff_assignments を一括解除.
 
@@ -2210,7 +2210,7 @@ async def unassign_all_staff_endpoint(
 )
 async def weekday_staff_capacity_endpoint(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     iso_year: int = Query(..., ge=2020, le=2100),
     iso_week: int = Query(..., ge=1, le=53),
     office_id: UUID | None = Query(
@@ -2287,7 +2287,7 @@ async def weekday_staff_capacity_endpoint(
 )
 async def pfv_course_presence_endpoint(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> PfvCoursePresenceResponse:
     """PO 決定 (2026-07-09): 固定訪問スケジュール (PFV) に含まれるコースを「正」とし、
     スタッフ数連動の開講判定と和集合で週/日ビューの列を出すための read-only 集計.
@@ -2347,7 +2347,7 @@ async def pfv_course_presence_endpoint(
 )
 async def schedule_health_endpoint(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     iso_year: int = Query(..., ge=2020, le=2100),
     iso_week: int = Query(..., ge=1, le=53),
     office_id: UUID | None = Query(
@@ -2384,7 +2384,7 @@ async def schedule_health_endpoint(
 )
 async def schedule_health_trend_endpoint(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     iso_year: int = Query(..., ge=2020, le=2100),
     iso_week: int = Query(..., ge=1, le=53),
     weeks: int = Query(default=8, ge=1, le=12, description="遡る週数 (上限12)."),
@@ -2423,7 +2423,7 @@ async def schedule_health_trend_endpoint(
 )
 async def schedule_health_course_detail_endpoint(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     iso_year: int = Query(..., ge=2020, le=2100),
     iso_week: int = Query(..., ge=1, le=53),
     office_id: UUID = Query(..., description="対象拠点"),
@@ -2552,7 +2552,7 @@ def _proposed_to_item(p: ProposedSlot) -> ProposeSlotItem:
 async def propose_slots_endpoint(
     payload: ProposeSlotsRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> ProposeSlotsResponse:
     """候補患者の希望から、対象週 × 拠点の実スケジュールの実現可能な空き枠を返す.
 
@@ -2853,7 +2853,7 @@ def _pick_top_excluded_reason(excluded: list[ExcludedReasonSummary]) -> str | No
 async def pool_overview_endpoint(
     payload: PoolOverviewRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> PoolOverviewResponse:
     """保留プールの患者それぞれの「最良候補 1 件」を軽量計算して返す read-only API.
 
@@ -2976,7 +2976,7 @@ async def pool_overview_endpoint(
 async def pool_bulk_simulate_endpoint(
     payload: PoolBulkSimulateRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> PoolBulkSimulateResponse:
     """プール一括投入の read-only プレビュー (設計書 §3-4).
 
@@ -3087,7 +3087,7 @@ def _parse_placement_start(s: str) -> time_cls:
 async def pool_bulk_apply_endpoint(
     payload: PoolBulkApplyRequest,
     db: DbDep,
-    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> PoolBulkApplyResponse:
     """simulate の placements を **1 トランザクション**で固定訪問週間 (PFV) に登録する.
 
@@ -3263,7 +3263,7 @@ async def pool_bulk_apply_endpoint(
 async def travel_estimate_endpoint(
     payload: TravelEstimateRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> TravelEstimateResponse:
     """空き枠直接配置 (案2) 用に from→to の移動時間を推定する read-only API.
 
@@ -3397,7 +3397,7 @@ def _board_course_to_schema(
 async def board_endpoint(
     db: DbDep,
     # 現場ボードは全ロール閲覧可 (staff は FE 側で閲覧専用 UI)。編集系 API は別途 admin/manager。
-    _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
+    _user: Annotated[User, Depends(require_role("admin", "staff"))],
     iso_year: int = Query(..., ge=2020, le=2100),
     iso_week: int = Query(..., ge=1, le=53),
     office_id: UUID | None = Query(
@@ -3598,7 +3598,7 @@ def _improvement_to_schema(c: ImprovementCandidateData) -> ImprovementSuggestion
 )
 async def improvement_suggestions_endpoint(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     patient_id: Annotated[UUID, Query(description="対象患者 ID")],
     iso_year: Annotated[int, Query(ge=2020, le=2100)],
     iso_week: Annotated[int, Query(ge=1, le=53)],
@@ -3663,7 +3663,7 @@ _PROMOTE_TARGET: dict[str, str] = {
 async def improvement_dismiss_endpoint(
     payload: ImprovementDismissRequest,
     db: DbDep,
-    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> ImprovementDismissResponse:
     """改善提案の却下を記録する.
 
@@ -3864,7 +3864,7 @@ async def _apply_pfv_move(
 async def improvement_apply_swap_endpoint(
     payload: ApplySwapRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> ApplySwapResponse:
     """A の枠と B の枠を入れ替える. A は b の旧位置 (a_new) へ、B は a の旧位置 (b_new) へ.
 
@@ -3933,7 +3933,24 @@ async def improvement_apply_swap_endpoint(
             detail="対象の固定枠 (slot0) が見つかりません",
         )
 
-    # N-4 再検証 (read-only). pinned 保護違反は適用前に 422 で返す.
+    # 完全固定ガード (統合 2026-08-09): スワップは提案エンジン経路なので、
+    # 完全固定 (movability='locked'・is_pinned はミラー) の枠は動かさない。
+    # 旧実装は validate_pfv_changes の V2 (pinned 422) に依存していたが、V2 は
+    # 「人手の編集は常に可」の統合で撤廃されたため、エンジン経路のガードを
+    # ここで明示的に行う (人手経路の自由化とは独立にエンジンの不可侵を守る)。
+    def _is_locked(row: PatientFixedVisit) -> bool:
+        return bool(row.is_pinned) or getattr(row, "movability", None) == "locked"
+
+    if _is_locked(a_row) or _is_locked(b_row):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "完全固定の枠は入れ替えできません（エンジンによる移動は不可侵）",
+                "violations": [],
+            },
+        )
+
+    # N-4 再検証 (read-only). warning (衝突/昼休み/容量) は適用せずに返す.
     config = await load_scheduling_config(db)
     a_proposed = _proposed_with_move(
         a_all,
@@ -4193,7 +4210,7 @@ def _scope_snapshot_to_schema(
 async def scope_optimization_simulate_endpoint(
     payload: ScopeOptimizationSimulateRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> ScopeOptimizationSimulateResponse:
     """選択範囲の中で move / swap を貪欲反復で積み上げ、手順列と前後メトリクスを返す.
 
@@ -4436,12 +4453,14 @@ async def _validate_and_move_one(
             f"手順{seq}の対象枠が見つかりません。スケジュールが変更された可能性が"
             "あります。再計算してください",
         )
-    if moving.is_pinned:
-        # エンジンは pinned の手を生成しない (手作りペイロード対策の防御).
+    if moving.is_pinned or getattr(moving, "movability", None) == "locked":
+        # エンジンは完全固定の手を生成しない (手作りペイロード対策の防御)。
+        # 統合 (2026-08-09): is_pinned は movability='locked' のミラーだが、
+        # 万一ミラーが破れても守れるよう両方を見る。
         await _abort_apply(
             db,
             status.HTTP_422_UNPROCESSABLE_ENTITY,
-            f"手順{seq}: ピン留めされた枠は動かせません",
+            f"手順{seq}: 完全固定の枠は動かせません",
         )
 
     proposed = _proposed_with_move(
@@ -4509,7 +4528,7 @@ async def _validate_and_move_one(
 async def scope_optimization_apply_endpoint(
     payload: ScopeOptimizationApplyRequest,
     db: DbDep,
-    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> ScopeOptimizationApplyResponse:
     """simulate 結果の先頭から N 手を PFV へ適用する (all-or-nothing / 1 TX).
 
@@ -4866,7 +4885,7 @@ def _unblock_plan_to_schema(p: Any) -> UnblockPlanItem:
 async def propose_unblock_endpoint(
     payload: ProposeUnblockRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> ProposeUnblockResponse:
     """対象患者 (候補 0 件) を入れるための開通手順を、乱れの小さい順に提案する.
 
@@ -4983,6 +5002,18 @@ async def _insert_target_pfv(
         (r.weekday, r.slot_index): _pfv_to_base(r) for r in existing_rows
     }
     ex0 = existing_by_ws.get((wd, 0))
+    # 完全固定ガード (統合 2026-08-09): プール投入はエンジン経路。既存の完全固定
+    # slot を別時刻で上書きする手は生成されない前提だが、防御として明示ブロック。
+    if (
+        ex0 is not None
+        and (ex0.is_pinned or getattr(ex0, "movability", None) == "locked")
+        and ex0.start_time != start
+    ):
+        await _abort_apply(
+            db,
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "対象患者の完全固定の枠を上書きすることはできません",
+        )
     desired[(wd, 0)] = PatientFixedVisitV2Base(
         weekday=wd,
         start_time=start,
@@ -5061,7 +5092,7 @@ async def _insert_target_pfv(
 async def propose_unblock_apply_endpoint(
     payload: ProposeUnblockApplyRequest,
     db: DbDep,
-    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> ProposeUnblockApplyResponse:
     """プランの退避 (moves) を逐次適用 → 対象患者を配置 → 影響患者の今週 visits を再生成.
 

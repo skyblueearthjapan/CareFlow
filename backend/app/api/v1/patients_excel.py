@@ -69,7 +69,7 @@ def _attachment_headers(filename: str) -> dict[str, str]:
 )
 async def download_template(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> Response:
     """ヘッダーと DataValidation のみ書かれた空ワークブックを返す."""
     # template でも office / course_template の dropdown は将来ロードして書きたいが、
@@ -104,7 +104,7 @@ async def download_template(
 )
 async def export_all(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> Response:
     """alive な患者全件 + 関連 PFV をワークブックに書いて返す."""
     patients = (
@@ -163,7 +163,7 @@ async def export_all(
 )
 async def import_excel(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     file: UploadFile = File(..., description="Excel ファイル (.xlsx)"),
     dry_run: bool = True,
 ) -> PatientExcelImportResponse:
@@ -375,7 +375,7 @@ def _karte_attachment_headers(filename: str) -> dict[str, str]:
 )
 async def download_karte_template(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> Response:
     """dropdown と体裁のみの空白カルテを返す (新規患者ヒアリング記入用)."""
     offices = (await db.scalars(select(Office).where(Office.deleted_at.is_(None)))).all()
@@ -401,7 +401,7 @@ async def download_karte_template(
 )
 async def export_karte(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     patient_id: UUID,
 ) -> Response:
     """指定患者のカルテ Excel を返す. Content-Disposition は 患者コード_氏名.xlsx."""
@@ -442,7 +442,7 @@ async def export_karte(
 )
 async def import_karte(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     file: UploadFile = File(..., description="カルテ Excel ファイル (.xlsx)"),
     dry_run: bool = True,
 ) -> PatientExcelImportResponse:

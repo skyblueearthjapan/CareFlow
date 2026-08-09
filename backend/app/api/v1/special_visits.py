@@ -9,7 +9,7 @@
 退避 = ``visits.deleted_at`` を立てる soft-delete、復元 = ``deleted_at`` を NULL に戻す
 (行が消えている場合のみ snapshot から再作成)。
 
-すべて require_role("admin", "manager")。
+すべて require_role("admin")。
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ from app.services.scheduling.auto_allocator_v2 import _extract_weekly_entries, _
 
 router = APIRouter()
 
-AdminManager = Annotated[User, Depends(require_role("admin", "manager"))]
+AdminManager = Annotated[User, Depends(require_role("admin"))]
 
 # Layer1 が生成する固定訪問と同じ type / source (復元時の再作成で使う).
 _FIXED_VISIT_TYPE = "regular"

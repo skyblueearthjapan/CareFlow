@@ -36,6 +36,7 @@ import {
 } from '@/lib/schemas/checkinSettings';
 
 import { SliderField } from '../scheduling/_components/SliderField';
+import { isAdminRole } from '@/lib/rbac';
 
 // ─────────────────────────────────────────────────────────────────────────
 // プレビュー: 距離 → 判定 (クライアント概算。正本はサーバ judge)
@@ -62,7 +63,7 @@ const VERDICT_META: Record<PreviewVerdict, { label: string; cls: string }> = {
 export default function CheckinSettingsPage() {
   const { data: session, status } = useSession();
   const role = session?.user?.role;
-  const canEdit = role === 'admin' || role === 'manager';
+  const canEdit = isAdminRole(role);
 
   // RB (PO決定 2026-07-08): 閲覧は全ロール (PC版の表示統一)。保存系は canEdit で
   // disabled にし、BE の RBAC (PUT=admin/manager) が最終防衛する。

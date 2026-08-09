@@ -24,7 +24,14 @@ import { z } from 'zod';
 
 export const STAFF_SEX_VALUES = ['male', 'female', 'unknown'] as const;
 export const STAFF_STATUS_VALUES = ['active', 'on_leave', 'retired'] as const;
+// 業務ロール (二軸分離・PO 決定 2026-08-09): スケジュールエンジン専用の 2 値。
+//   staff = スタッフ (自動割当の対象) / manager = マネージャー (割当対象外・救済のみ)
+// ログインのアカウント権限 (管理者/一般) とは無関係。
+// 'admin' は旧データ読み取り互換のため型には残す (選択肢には出さない)。
 export const STAFF_ROLE_VALUES = ['admin', 'manager', 'staff'] as const;
+
+/** 業務ロールの入力選択肢 (2 値・スタッフを先頭)。 */
+export const STAFF_ROLE_OPTIONS = ['staff', 'manager'] as const;
 
 export const staffBaseSchema = z.object({
   code: z.string().max(64).nullable().optional(),

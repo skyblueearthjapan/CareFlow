@@ -34,6 +34,7 @@ import { useOffices } from '@/lib/queries/offices';
 import { PatientsExcelButtons } from '@/components/patients/PatientsExcelButtons';
 import { PatientKarteButtons } from '@/components/patients/PatientKarteButtons';
 import { PatientsReplaceAllButton } from '@/components/patients/PatientsReplaceAllButton';
+import { isAdminRole } from '@/lib/rbac';
 
 const PAGE_SIZE = 20;
 
@@ -60,7 +61,7 @@ function initialStatusTab(): StatusTabValue {
 export default function PatientsPage() {
   const { data: session } = useSession();
   const role = session?.user?.role;
-  const canCreate = role === 'admin' || role === 'manager';
+  const canCreate = isAdminRole(role);
   const isAdmin = role === 'admin';
 
   const [searchInput, setSearchInput] = useState('');

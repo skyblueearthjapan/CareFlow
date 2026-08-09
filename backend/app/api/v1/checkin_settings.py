@@ -71,7 +71,7 @@ def _build_read(row: CheckinSettings | None) -> CheckinSettingsRead:
 async def get_checkin_settings(
     db: DbDep,
     # RB (2026-07-08): 閲覧は全ロール (PC版の表示統一)。PUT は admin/manager のまま。
-    _actor: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
+    _actor: Annotated[User, Depends(require_role("admin", "staff"))],
 ) -> CheckinSettingsRead:
     row = await _load_singleton(db)
     return _build_read(row)
@@ -107,7 +107,7 @@ async def get_checkin_settings_public(
 async def update_checkin_settings(
     payload: CheckinSettingsUpdate,
     db: DbDep,
-    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> CheckinSettingsRead:
     """部分更新 (lazy upsert).
 

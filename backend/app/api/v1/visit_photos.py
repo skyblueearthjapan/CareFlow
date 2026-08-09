@@ -37,7 +37,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
-from app.models.user import User
+from app.models.user import User, normalize_user_role
 from app.models.visit import Visit
 from app.models.visit_photo import VisitPhoto
 from app.schemas.visit_photo import VisitPhotoRead
@@ -86,7 +86,7 @@ async def _load_visit_or_404(db, visit_id: uuid.UUID) -> Visit:
 
 def _check_visit_access(user: User, visit: Visit) -> None:
     """Enforce same staff-visibility as ``visits.get_visit``."""
-    if user.role not in {"admin", "manager", "staff"}:
+    if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
     if user.role == "staff":
         if user.staff_id is None or user.staff_id not in {
@@ -219,7 +219,7 @@ async def delete_visit_photo(
     visit_id: uuid.UUID,
     photo_id: uuid.UUID,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> None:
     row = await db.scalar(
         select(VisitPhoto).where(VisitPhoto.id == photo_id, VisitPhoto.visit_id == visit_id)

@@ -142,10 +142,10 @@ describe('UserCreateDialog — P2 staff linkage', () => {
     expect(screen.getByRole('button', { name: '作成' })).toBeDisabled();
   });
 
-  it('admin/manager role: payload has no username or staff_id when not set', () => {
+  it('管理者ロール: payload has no username or staff_id when not set (二軸分離 2026-08-09: manager 選択肢は廃止)', () => {
     render(<UserCreateDialog open onOpenChange={() => {}} />);
 
-    fireEvent.change(screen.getByLabelText('ロール'), { target: { value: 'manager' } });
+    fireEvent.change(screen.getByLabelText('ロール'), { target: { value: 'admin' } });
     fireEvent.change(screen.getByLabelText(/メールアドレス/), {
       target: { value: 'mgr@x.jp' },
     });
@@ -153,7 +153,7 @@ describe('UserCreateDialog — P2 staff linkage', () => {
 
     expect(mockCreate).toHaveBeenCalledTimes(1);
     const payload = mockCreate.mock.calls[0][0];
-    expect(payload).toMatchObject({ role: 'manager', email: 'mgr@x.jp' });
+    expect(payload).toMatchObject({ role: 'admin', email: 'mgr@x.jp' });
     expect(payload.username).toBeUndefined();
     expect(payload.staff_id).toBeUndefined();
   });
@@ -217,7 +217,12 @@ describe('UserEditDialog — P2 staff linkage', () => {
 
   it('role change to admin/manager with no email blocks submit and shows message', () => {
     // Target has email. Clear it, then switch role to admin.
-    render(<UserEditDialog target={{ ...managerTarget, role: 'staff', email: null, username: 'S002' }} onClose={() => {}} />);
+    render(
+      <UserEditDialog
+        target={{ ...managerTarget, role: 'staff', email: null, username: 'S002' }}
+        onClose={() => {}}
+      />,
+    );
 
     fireEvent.change(screen.getByLabelText('ロール'), { target: { value: 'admin' } });
 

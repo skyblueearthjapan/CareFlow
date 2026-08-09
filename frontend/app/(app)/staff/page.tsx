@@ -26,6 +26,7 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useOffices } from '@/lib/queries/offices';
 import { useStaffList } from '@/lib/queries/staff';
+import { isAdminRole } from '@/lib/rbac';
 import {
   STAFF_SEX_VALUES,
   roleLabel,
@@ -51,7 +52,7 @@ function matchesSearch(row: StaffRead, term: string): boolean {
 export default function StaffPage() {
   const { data: session } = useSession();
   const role = session?.user?.role;
-  const canCreate = role === 'admin' || role === 'manager';
+  const canCreate = isAdminRole(role);
   const isAdmin = role === 'admin';
 
   const [search, setSearch] = useState('');

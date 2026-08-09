@@ -114,7 +114,11 @@ async def test_visits_list_no_token_returns_401(client) -> None:
 
 @pytest.mark.asyncio
 async def test_visits_delete_manager_returns_204(client, db) -> None:
-    """W18 Codex-fix 重大-1: manager ロールが visit を soft-delete できる."""
+    """W18 Codex-fix 重大-1: manager ロール (=admin 別名・2026-08-09) が visit を
+    soft-delete できる."""
+    # aiosqlite の既知の不安定さ (前テストの未消化ステートメントで commit が
+    # "SQL statements in progress" になる) への防御。バッチ実行時のみ発生する。
+    await db.rollback()
     p = Patient(code="V-MGR-1", name="患者")
     db.add(p)
     await db.commit()

@@ -29,8 +29,10 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAdminUsers, useCreateAdminUser } from '@/lib/queries/admin-users';
 import { useStaffList } from '@/lib/queries/staff';
+import { isAdminRole } from '@/lib/rbac';
 import {
   ADMIN_USER_ROLES,
+  ADMIN_USER_ROLE_OPTIONS,
   type AdminUserCreate,
   type AdminUserCreateResponse,
   type AdminUserRole,
@@ -67,10 +69,7 @@ export function UserCreateDialog({ open, onOpenChange }: Props) {
     return set;
   }, [usersData]);
 
-  const staffOptions = useMemo(
-    () => (staffList ?? []).filter((s) => !s.deleted_at),
-    [staffList],
-  );
+  const staffOptions = useMemo(() => (staffList ?? []).filter((s) => !s.deleted_at), [staffList]);
 
   const create = useCreateAdminUser({
     onSuccess: (resp) => setResult(resp),
@@ -114,7 +113,7 @@ export function UserCreateDialog({ open, onOpenChange }: Props) {
   };
 
   // Role-based required fields (mirrors backend 422 rules).
-  const emailRequired = role === 'admin' || role === 'manager';
+  const emailRequired = isAdminRole(role);
   const usernameRequired = role === 'staff';
 
   const canSubmit =
@@ -213,7 +212,7 @@ export function UserCreateDialog({ open, onOpenChange }: Props) {
                 className="h-10 w-full rounded-md border border-border-default bg-bg-base px-3 text-sm"
                 autoFocus
               >
-                {ADMIN_USER_ROLES.map((r) => (
+                {ADMIN_USER_ROLE_OPTIONS.map((r) => (
                   <option key={r} value={r}>
                     {roleLabel(r)}
                   </option>

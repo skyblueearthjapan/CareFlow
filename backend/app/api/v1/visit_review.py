@@ -60,7 +60,7 @@ async def review_visit(
     visit_id: UUID,
     payload: VisitReviewRequest,
     db: DbDep,
-    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> VisitReviewResponse:
     """確認済みマークを upsert する (reviewed_by=current_user / reviewed_at=now)."""
     await _load_visit_or_404(db, visit_id)
@@ -117,7 +117,7 @@ async def review_visit(
 async def unreview_visit(
     visit_id: UUID,
     db: DbDep,
-    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> None:
     """確認済みマークを削除する (要対応トレイに復活)."""
     review = await db.scalar(select(VisitReview).where(VisitReview.visit_id == visit_id))

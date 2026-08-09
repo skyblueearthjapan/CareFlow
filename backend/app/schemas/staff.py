@@ -25,7 +25,10 @@ from pydantic import BaseModel, ConfigDict, Field
 # 列挙値 (§4.2 / Wave 0-C `app.schemas.v2.staff` と同一定義)
 # ---------------------------------------------------------------------------
 
-# 役割: admin = 全権 / manager (= M1) = 管理者枠 (割当対象外) / staff = 通常
+# 業務ロール (二軸分離・2026-08-09): 実運用は staff(スタッフ) / manager(マネージャー) の 2 値。
+# manager は自動割当の対象外 (埋まらないコースの救済にのみ入る)。
+# 'admin' は旧データ読み取り互換のためだけに残す (新規入力の選択肢には出さない)。
+# ログインのアカウント権限 (users.role: admin/staff) とは **無関係**。
 RoleV2 = Literal["admin", "manager", "staff"]
 
 # 状態: 在籍 (active) / 休職 (on_leave) / 退職 (retired) の 3 値
@@ -46,7 +49,10 @@ class StaffBase(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     kana: str | None = Field(default=None, max_length=120)
     sex: SexV2 | None = Field(default=None, description="性別 (患者の性別制限と突合)")
-    role: RoleV2 = Field(default="staff", description="manager (=M1) は割当対象外")
+    role: RoleV2 = Field(
+        default="staff",
+        description="業務ロール。manager は自動割当の対象外 (救済のみ)。アカウント権限とは無関係",
+    )
     status: StaffStatusV2 = Field(
         default="active",
         description="在籍 (active) 以外 (on_leave / retired) は割当除外",

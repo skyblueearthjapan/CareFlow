@@ -21,6 +21,7 @@ import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
+import { isAdminRole } from '@/lib/rbac';
 
 const PFV_COURSE_PRESENCE_PATH = '/api/v1/schedule/v2/pfv-course-presence';
 
@@ -64,7 +65,7 @@ export function usePfvCoursePresence(): UseQueryResult<PfvCoursePresenceResponse
   const role = session?.user?.role;
   return useQuery<PfvCoursePresenceResponse, Error>({
     queryKey: ['pfv-course-presence'],
-    enabled: status === 'authenticated' && (role === 'admin' || role === 'manager'),
+    enabled: status === 'authenticated' && isAdminRole(role),
     // PFV は編集頻度が低いのでフォーカス毎の refetch を抑える (レビューLOW)。
     staleTime: 5 * 60 * 1000,
     queryFn: () =>

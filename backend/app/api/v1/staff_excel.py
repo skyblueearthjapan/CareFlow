@@ -62,7 +62,7 @@ def _attachment_headers(filename: str) -> dict[str, str]:
 )
 async def download_template(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> Response:
     """ヘッダーと DataValidation のみ書かれた空ワークブックを返す."""
     offices = (await db.scalars(select(Office).where(Office.deleted_at.is_(None)))).all()
@@ -91,7 +91,7 @@ async def download_template(
 )
 async def export_all(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> Response:
     """alive なスタッフ全件 + 関連 shift をワークブックに書いて返す."""
     staff_list = (
@@ -164,7 +164,7 @@ async def export_all(
 )
 async def import_excel(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     file: UploadFile = File(..., description="Excel ファイル (.xlsx)"),
     dry_run: bool = True,
 ) -> StaffExcelImportResponse:

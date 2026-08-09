@@ -33,7 +33,7 @@ from sqlalchemy import or_, select
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.audit_log import AuditLog
 from app.models.patient_same_address_link import PatientSameAddressLink
-from app.models.user import User
+from app.models.user import User, normalize_user_role
 from app.models.visit import Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.patient_same_address_link import (
@@ -87,7 +87,7 @@ def _staff_patient_ids_subquery(staff_id: UUID):
 async def create_link(
     payload: PatientSameAddressLinkCreate,
     db: DbDep,
-    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> PatientSameAddressLinkRead | None:
     """同住所リンクを UPSERT.
 
@@ -197,7 +197,7 @@ async def delete_link(
     patient_a_id: UUID,
     patient_b_id: UUID,
     db: DbDep,
-    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> None:
     """同住所リンクを削除する. 行が無い場合は 204 で冪等 (= 既に preferred).
 
@@ -251,7 +251,7 @@ async def list_links(
 
     Staff は担当患者を含む link のみに絞り込む (= 他患者の link を盗み見できない).
     """
-    if user.role not in {"admin", "manager", "staff"}:
+    if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
     stmt = select(PatientSameAddressLink).order_by(

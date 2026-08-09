@@ -50,6 +50,7 @@ import { OverrideAddDialog } from './_components/OverrideAddDialog';
 import { OverrideEditDialog } from './_components/OverrideEditDialog';
 import { ShiftsEditDialog } from './_components/ShiftsEditDialog';
 import { TraineeAccompanimentSummary } from './_components/TraineeAccompanimentSummary';
+import { isAdminRole } from '@/lib/rbac';
 
 /** Overrides default window: today through +90 days. */
 const OVERRIDES_RANGE_DAYS_FORWARD = 90;
@@ -137,7 +138,7 @@ export default function StaffDetailPage() {
   //   - PATCH /staff/{id}  -> admin/manager only
   //   - DELETE /staff/{id} -> admin only
   // Staff users (even on their own record) cannot edit; they read-only.
-  const isPrivileged = role === 'admin' || role === 'manager';
+  const isPrivileged = isAdminRole(role);
   const canEdit = isPrivileged;
   const canDelete = role === 'admin';
 

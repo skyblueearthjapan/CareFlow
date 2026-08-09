@@ -39,6 +39,7 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
+import { isAdminRole } from '@/lib/rbac';
 import {
   useApproveRequest,
   useApproveWithEdit,
@@ -124,7 +125,7 @@ export default function AdminPendingRequestsPage() {
   const { data: session, status: sessionStatus } = useSession();
   const router = useRouter();
   const role = session?.user?.role;
-  const isAuthorized = role === 'admin' || role === 'manager';
+  const isAuthorized = isAdminRole(role);
 
   // Soft client-side guard. The API enforces RBAC server-side as well.
   useEffect(() => {
@@ -268,11 +269,7 @@ export default function AdminPendingRequestsPage() {
         <RakusukeTitle
           pose="clap"
           title="モバイル申請履歴"
-          subtitle={
-            <>
-              全 {total} 件 — モバイル経由の申請を管理者が承認・却下します
-            </>
-          }
+          subtitle={<>全 {total} 件 — モバイル経由の申請を管理者が承認・却下します</>}
         />
         <Button variant="outline" size="sm" onClick={() => void refetch()} disabled={isFetching}>
           <RefreshCw className={`h-4 w-4 ${isFetching ? 'animate-spin' : ''}`} />

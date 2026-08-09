@@ -55,7 +55,7 @@ router = APIRouter()
 async def geocode(
     payload: GeocodeRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
+    _user: Annotated[User, Depends(require_role("admin", "staff"))],
 ) -> GeocodeResponse:
     """Cache-first geocode lookup.
 
@@ -165,7 +165,7 @@ async def geocode(
 )
 async def list_geocoding_cache(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     q: Annotated[str | None, Query(description="Substring filter on the cached address")] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,

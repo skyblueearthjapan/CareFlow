@@ -60,7 +60,7 @@ async def _ensure_office_exists(db: AsyncSession, office_id: UUID) -> Office:
 )
 async def list_acceptance_calendar(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
+    _user: Annotated[User, Depends(require_role("admin", "staff"))],
     office_id: Annotated[UUID, Query(description="拠点 ID (必須)")],
 ) -> list[AcceptanceCalendarRead]:
     """指定拠点の全エントリを weekday + time_slot 昇順で返す."""
@@ -85,7 +85,7 @@ async def list_acceptance_calendar(
 async def upsert_acceptance_calendar(
     payload: AcceptanceCalendarBulkUpsert,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> list[AcceptanceCalendarRead]:
     """1 TX で当該 office_id の既存エントリを削除 → entries を INSERT.
 

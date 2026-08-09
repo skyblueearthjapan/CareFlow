@@ -263,7 +263,7 @@ async def run_allocate(
     request: Request,
     payload: AllocateRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> AllocateResponse:
     # ``request`` is required by slowapi to extract the client IP for the
     # per-IP 3/min ceiling on this CPU-heavy endpoint.

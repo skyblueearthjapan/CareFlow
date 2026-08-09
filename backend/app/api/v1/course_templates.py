@@ -97,7 +97,7 @@ async def _get_template_or_404(db: AsyncSession, template_id: UUID) -> CourseTem
 )
 async def list_course_templates(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
+    _user: Annotated[User, Depends(require_role("admin", "staff"))],
     office_id: Annotated[UUID, Query(description="拠点 ID (必須)")],
 ) -> list[CourseTemplateRead]:
     """指定拠点の全テンプレート (deleted_at IS NULL) を label 昇順で返す."""
@@ -123,7 +123,7 @@ async def list_course_templates(
 async def create_course_template(
     payload: CourseTemplateCreate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> CourseTemplateRead:
     """新規テンプレート作成. UNIQUE (office_id, label) 違反は 409."""
     await _ensure_office_exists(db, payload.office_id)
@@ -156,7 +156,7 @@ async def update_course_template(
     template_id: UUID,
     payload: CourseTemplateUpdate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> CourseTemplateRead:
     """部分更新. office_id は変更不可."""
     tpl = await _get_template_or_404(db, template_id)

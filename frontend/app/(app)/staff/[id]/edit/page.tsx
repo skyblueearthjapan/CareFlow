@@ -44,6 +44,7 @@ import {
 import { useDeleteStaff, useStaff, useStaffList, useUpdateStaff } from '@/lib/queries/staff';
 import type { OverrideRead } from '@/lib/schemas/staff-overrides';
 import {
+  STAFF_ROLE_OPTIONS,
   STAFF_ROLE_VALUES,
   STAFF_SEX_VALUES,
   STAFF_STATUS_VALUES,
@@ -67,6 +68,7 @@ import { EventEditDialog } from '../_components/EventEditDialog';
 import { OverrideAddDialog } from '../_components/OverrideAddDialog';
 import { OverrideEditDialog } from '../_components/OverrideEditDialog';
 import { ShiftsEditDialog } from '../_components/ShiftsEditDialog';
+import { isAdminRole } from '@/lib/rbac';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -130,7 +132,7 @@ export default function StaffEditPage() {
 
   const { data: session, status } = useSession();
   const sessionRole = session?.user?.role;
-  const isPrivileged = sessionRole === 'admin' || sessionRole === 'manager';
+  const isPrivileged = isAdminRole(sessionRole);
   const canDelete = sessionRole === 'admin';
   const denied = status === 'authenticated' && !isPrivileged;
 
@@ -183,8 +185,7 @@ export default function StaffEditPage() {
   // §8-4: 新人フラグ ON 中に「今週以降のコース担当」に残っていれば警告する
   // (自動解除はしない・警告主義)。フラグ OFF の間はクエリを走らせない。
   const traineeGuard = useTraineeCourseGuard(id, !!form?.is_trainee);
-  const traineeStillHoldsCourses =
-    !!form?.is_trainee && (traineeGuard.data?.count ?? 0) > 0;
+  const traineeStillHoldsCourses = !!form?.is_trainee && (traineeGuard.data?.count ?? 0) > 0;
 
   useEffect(() => {
     if (data && form === null) {
@@ -360,7 +361,7 @@ export default function StaffEditPage() {
                 setIsFormDirty(true);
               }}
               sexOptions={STAFF_SEX_VALUES.map((v) => ({ value: v, label: sexLabel(v) }))}
-              roleOptions={STAFF_ROLE_VALUES.map((v) => ({ value: v, label: roleLabel(v) }))}
+              roleOptions={STAFF_ROLE_OPTIONS.map((v) => ({ value: v, label: roleLabel(v) }))}
               statusOptions={STAFF_STATUS_VALUES.map((v) => ({
                 value: v,
                 label: statusLabel(v),

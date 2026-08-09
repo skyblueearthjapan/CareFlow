@@ -25,6 +25,7 @@ import { usePatientQr } from '@/lib/queries/patientQr';
 import type { PatientRead } from '@/lib/schemas/patient';
 
 import './qr-print.css';
+import { isAdminRole } from '@/lib/rbac';
 
 type Mode = 'single' | 'bulk';
 
@@ -67,7 +68,7 @@ function QrPrintPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const role = session?.user?.role;
-  const canView = role === 'admin' || role === 'manager';
+  const canView = isAdminRole(role);
 
   useEffect(() => {
     if (status === 'authenticated' && !canView) {
@@ -240,9 +241,7 @@ function QrPrintPageInner() {
               type="button"
               className="qrprint-btn"
               onClick={() =>
-                setSelected(
-                  new Set(shownPatients.slice(0, BULK_PRINT_LIMIT).map((p) => p.id)),
-                )
+                setSelected(new Set(shownPatients.slice(0, BULK_PRINT_LIMIT).map((p) => p.id)))
               }
             >
               全選択
@@ -264,7 +263,9 @@ function QrPrintPageInner() {
 
       {overLimit ? (
         <div className="qrprint-warn" role="alert">
-          ⚠ 表示 {shownPatients.length}名 は印刷上限 {BULK_PRINT_LIMIT}件 を超えています。拠点で絞り込んでから印刷してください（選択は最大 {BULK_PRINT_LIMIT}名まで）。
+          ⚠ 表示 {shownPatients.length}名 は印刷上限 {BULK_PRINT_LIMIT}件
+          を超えています。拠点で絞り込んでから印刷してください（選択は最大 {BULK_PRINT_LIMIT}
+          名まで）。
         </div>
       ) : null}
 

@@ -268,7 +268,7 @@ async def list_trainee_accompaniments(
 async def put_trainee_accompaniments(
     body: TraineeAccompanimentsPut,
     db: DbDep,
-    user: Annotated[User, Depends(require_role("admin", "manager"))],
+    user: Annotated[User, Depends(require_role("admin"))],
 ) -> TraineeAccompanimentsListResponse:
     """1 TX でその新人×その週のリンクを全置換する (§6.2).
 
@@ -498,7 +498,7 @@ async def list_trainee_accompaniment_defaults(
 async def put_trainee_accompaniment_defaults(
     body: TraineeAccompanimentDefaultsPut,
     db: DbDep,
-    user: Annotated[User, Depends(require_role("admin", "manager"))],
+    user: Annotated[User, Depends(require_role("admin"))],
 ) -> list[TraineeAccompanimentDefaultRead]:
     """当該新人の既定を全置換する (曜日×course_template の配列).
 
@@ -633,7 +633,7 @@ async def trainee_course_guard(
 )
 async def delete_future_trainee_accompaniments(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     trainee_staff_id: Annotated[UUID, Query()],
 ) -> TraineeAccompanimentFutureDeleteResponse:
     """今週以降の週リンク (course/visit) を物理削除し、毎週の既定を全削除する (§7.5).

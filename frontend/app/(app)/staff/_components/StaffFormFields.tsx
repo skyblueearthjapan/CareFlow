@@ -102,7 +102,12 @@ export function StaffFormFields({
           />
         </Field>
 
-        <Field label="役割" required error={errors.role}>
+        <Field
+          label="業務ロール"
+          required
+          error={errors.role}
+          hint="マネージャーは自動スタッフ割当の対象外になります（埋まらないコースの救済にだけ入ります）。ログイン権限（管理者/一般）とは無関係です"
+        >
           <SelectInput
             value={form.role}
             onChange={(v) => set('role', v as RoleValue)}

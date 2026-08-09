@@ -21,6 +21,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useCreateStaff } from '@/lib/queries/staff';
 import {
+  STAFF_ROLE_OPTIONS,
   STAFF_ROLE_VALUES,
   STAFF_SEX_VALUES,
   STAFF_STATUS_VALUES,
@@ -134,7 +135,7 @@ export default function StaffNewPage() {
               errors={errors}
               onChange={setForm}
               sexOptions={STAFF_SEX_VALUES.map((v) => ({ value: v, label: sexLabel(v) }))}
-              roleOptions={STAFF_ROLE_VALUES.map((v) => ({ value: v, label: roleLabel(v) }))}
+              roleOptions={STAFF_ROLE_OPTIONS.map((v) => ({ value: v, label: roleLabel(v) }))}
               statusOptions={STAFF_STATUS_VALUES.map((v) => ({
                 value: v,
                 label: statusLabel(v),

@@ -109,7 +109,7 @@ async def _commit_or_409(db) -> None:
 )
 async def list_kaipoke_jobs(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     week_start: Annotated[date | None, Query(description="Filter by week_start")] = None,
     job_status: Annotated[str | None, Query(alias="status")] = None,
     job_type: Annotated[str | None, Query(alias="type")] = None,
@@ -155,7 +155,7 @@ async def list_kaipoke_jobs(
 async def get_kaipoke_job(
     job_id: UUID,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> KaipokeJobRead:
     job = await db.scalar(
         select(KaipokeJob).where(KaipokeJob.id == job_id).options(selectinload(KaipokeJob.items))

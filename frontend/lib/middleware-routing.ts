@@ -63,7 +63,10 @@ export function decideRoute({ pathname, session }: RouteContext): RouteDecision 
   const isPendingRequests = pathname.startsWith('/admin/pending-requests');
   if (
     pathname.startsWith(ADMIN_PREFIX) &&
-    (isPendingRequests ? !['admin', 'manager'].includes(role ?? '') : role !== 'admin')
+    // 二軸分離 (2026-08-09): 権限は 2 値。旧 'manager' は admin の別名として許容。
+    (isPendingRequests
+      ? !['admin', 'manager'].includes(role ?? '')
+      : !['admin', 'manager'].includes(role ?? ''))
   ) {
     return { kind: 'redirect', to: '/dashboard' };
   }

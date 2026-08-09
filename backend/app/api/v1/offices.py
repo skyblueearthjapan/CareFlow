@@ -86,7 +86,7 @@ class OfficeResolveResponse(BaseModel):
 async def resolve_office(
     payload: OfficeResolveRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> OfficeResolveResponse:
     """住所文字列から該当する拠点を自動判定する。
 
@@ -167,7 +167,7 @@ class AreaPromptDismissalRequest(BaseModel):
 async def dismiss_area_prompt(
     payload: AreaPromptDismissalRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> None:
     """未カバー地域の担当エリア登録呼びかけを組織として却下し、記憶する (W-7)。
 
@@ -199,7 +199,7 @@ async def add_office_area_city(
     office_id: UUID,
     payload: AreaCityAddRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> AreaCityAddResponse:
     """拠点の担当エリアに City を 1 件追加する (additive / 冪等) (W-7)。
 
@@ -275,7 +275,7 @@ def _to_read(office: Office) -> OfficeRead:
 @router.get("", response_model=list[OfficeRead], summary="List offices")
 async def list_offices(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
+    _user: Annotated[User, Depends(require_role("admin", "staff"))],
     q: Annotated[str | None, Query(description="Substring filter on name/code")] = None,
     limit: Annotated[int, Query(ge=1, le=2000)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -300,7 +300,7 @@ async def list_offices(
 async def get_office(
     office_id: UUID,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
+    _user: Annotated[User, Depends(require_role("admin", "staff"))],
 ) -> OfficeRead:
     office = await db.scalar(
         select(Office)
@@ -328,7 +328,7 @@ async def _replace_office_cities(db, office_id: UUID, city_ids: list[UUID]) -> N
 async def create_office(
     payload: OfficeCreate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> OfficeRead:
     data = payload.model_dump(exclude={"allowed_cities"})
     office = Office(**data)
@@ -352,7 +352,7 @@ async def update_office(
     office_id: UUID,
     payload: OfficeUpdate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> OfficeRead:
     office = await db.scalar(
         select(Office)

@@ -25,7 +25,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.patient_fixed_visit import PatientFixedVisit
-from app.models.user import User
+from app.models.user import User, normalize_user_role
 from app.models.visit import (
     VISIT_STATUS_COMPLETED,
     VISIT_STATUS_IN_PROGRESS,
@@ -239,7 +239,7 @@ async def list_visits(
         ),
     ] = None,
 ) -> list[dict]:
-    if user.role not in {"admin", "manager", "staff"}:
+    if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
     stmt = (
@@ -310,7 +310,7 @@ async def get_visit(
     db: DbDep,
     user: CurrentActiveUser,
 ) -> dict:
-    if user.role not in {"admin", "manager", "staff"}:
+    if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
     visit = await db.scalar(
@@ -363,7 +363,7 @@ async def get_visit(
 async def create_visit(
     payload: VisitCreate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> dict:
     visit = Visit(**payload.model_dump())
     db.add(visit)
@@ -398,7 +398,7 @@ async def update_visit(
     visit_id: UUID,
     payload: VisitUpdate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> dict:
     visit = await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
     if visit is None:
@@ -455,7 +455,7 @@ async def update_visit(
 async def delete_visit(
     visit_id: UUID,
     db: DbDep,
-    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
+    current_user: Annotated[User, Depends(require_role("admin"))],
     cascade_fixed_visit: Annotated[
         bool,
         Query(
@@ -599,7 +599,7 @@ async def add_visit_staff(
     visit_id: UUID,
     payload: VisitStaffAddRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> dict:
     visit = await db.scalar(
         select(Visit)
@@ -642,7 +642,7 @@ async def remove_visit_staff(
     visit_id: UUID,
     staff_id: UUID,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> None:
     # 確認: visit が存在するか
     visit = await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
@@ -700,7 +700,7 @@ async def _load_visit_for_checkin(db, visit_id: UUID, user: User) -> tuple[Visit
 
     検証済みの ``(visit, staff_id)`` を返す (``staff_id`` は非 NULL を保証)。
     """
-    if user.role not in {"admin", "manager", "staff"}:
+    if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
     staff_id = user.staff_id
     if staff_id is None:

@@ -41,6 +41,7 @@ import {
 
 import { PatientForm, type PatientFormHandle } from '../../_components/PatientForm';
 import { PatientFixedVisitsPanel } from '../../_components/PatientFixedVisitsPanel';
+import { isAdminRole } from '@/lib/rbac';
 
 export default function EditPatientPage() {
   const params = useParams<{ id: string }>();
@@ -48,7 +49,7 @@ export default function EditPatientPage() {
   const router = useRouter();
   const { data: session, status } = useSession();
   const role = session?.user?.role;
-  const canEdit = role === 'admin' || role === 'manager';
+  const canEdit = isAdminRole(role);
   const canDelete = role === 'admin';
 
   const { data: patient, isLoading, isError, error } = usePatient(id);

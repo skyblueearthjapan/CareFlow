@@ -33,7 +33,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.patient import Patient
 from app.models.patient_same_address_link import PatientSameAddressLink
-from app.models.user import User
+from app.models.user import User, normalize_user_role
 from app.models.visit import Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.patient import PatientCreate, PatientRead, PatientUpdate
@@ -128,7 +128,7 @@ async def list_patients(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[Patient]:
-    if user.role not in {"admin", "manager", "staff"}:
+    if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
     # 登録ナンバー (code) 昇順で常に固定表示。code 未設定は末尾、同コードは登録順で安定化。
@@ -154,7 +154,7 @@ async def get_patient(
     db: DbDep,
     user: CurrentActiveUser,
 ) -> Patient:
-    if user.role not in {"admin", "manager", "staff"}:
+    if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
     patient = await db.scalar(
@@ -190,7 +190,7 @@ async def get_patient(
 async def create_patient(
     payload: PatientCreate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> Patient:
     data = _model_dump_for_orm(payload, partial=False)
 
@@ -231,7 +231,7 @@ async def update_patient(
     patient_id: UUID,
     payload: PatientUpdate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> Patient:
     patient = await db.scalar(
         select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
@@ -312,7 +312,7 @@ async def get_same_address_candidates(
     RBAC: admin / manager / staff (read). staff は role チェックのみ (= patient 単位
     の絞り込みは行わない. UI 側の表示制御に委ねる).
     """
-    if user.role not in {"admin", "manager", "staff"}:
+    if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
     base = await db.scalar(

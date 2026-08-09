@@ -22,7 +22,7 @@ from sqlalchemy import select
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.shift_request import ShiftRequest
 from app.models.staff import Staff
-from app.models.user import User
+from app.models.user import User, normalize_user_role
 from app.schemas.shift_request import (
     ShiftRequestCreate,
     ShiftRequestRead,
@@ -37,7 +37,7 @@ status_router = APIRouter()
 
 
 def _check_staff_access(user: User, staff_id: UUID) -> None:
-    if user.role not in {"admin", "manager", "staff"}:
+    if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
     if user.role == "staff" and user.staff_id != staff_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -111,7 +111,7 @@ async def update_shift_request_status(
     request_id: UUID,
     payload: ShiftRequestStatusUpdate,
     db: DbDep,
-    user: Annotated[User, Depends(require_role("admin", "manager"))],
+    user: Annotated[User, Depends(require_role("admin"))],
 ) -> ShiftRequest:
     row = await db.scalar(select(ShiftRequest).where(ShiftRequest.id == request_id))
     if row is None:

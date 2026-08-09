@@ -16,7 +16,7 @@ from sqlalchemy import delete, select
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.staff import Staff, StaffShift
-from app.models.user import User
+from app.models.user import User, normalize_user_role
 from app.schemas.staff_shifts import (
     ShiftsBulkUpdate,
     ShiftsResponse,
@@ -28,7 +28,7 @@ router = APIRouter()
 
 def _check_read_access(user: User, staff_id: UUID) -> None:
     """Mirror the `staff.py` IDOR pattern — staff role sees only its own row."""
-    if user.role not in {"admin", "manager", "staff"}:
+    if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
     if user.role == "staff" and user.staff_id != staff_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -90,7 +90,7 @@ async def put_shifts(
     staff_id: UUID,
     payload: ShiftsBulkUpdate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> ShiftsResponse:
     await _ensure_staff_exists(db, staff_id)
 

@@ -47,6 +47,7 @@ import { usePatients } from '@/lib/queries/patients';
 import { useStaffList } from '@/lib/queries/staff';
 import { buildStaffEventsMap, useWeekStaffEvents } from '@/lib/queries/staff-events';
 import { genderPalette } from '@/lib/scheduling/timeline';
+import { isAdminRole } from '@/lib/rbac';
 
 type OnlyFilter = null | 'anomaly' | 'missing';
 
@@ -84,7 +85,7 @@ export default function MonitorPage() {
   const role = session?.user?.role;
   // RB (PO決定 2026-07-08): 閲覧は全ロール (BE GET も staff 許可済み)。
   // 確認済みトグル等の書込み操作だけ admin/manager (canReview)。
-  const canReview = role === 'admin' || role === 'manager';
+  const canReview = isAdminRole(role);
 
   const [date, setDate] = useState<string>(todayJst);
   const [officeId, setOfficeId] = useState<string | null>(null);

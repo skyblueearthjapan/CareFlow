@@ -42,7 +42,7 @@ async def _commit_or_409(db) -> None:
 @router.get("", response_model=list[CityRead], summary="List cities")
 async def list_cities(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
+    _user: Annotated[User, Depends(require_role("admin", "staff"))],
     q: Annotated[str | None, Query(description="Substring filter on name/prefecture")] = None,
     prefecture: Annotated[str | None, Query(description="Exact prefecture filter")] = None,
     limit: Annotated[int, Query(ge=1, le=2000)] = 100,
@@ -68,7 +68,7 @@ async def list_cities(
 async def get_city(
     city_id: UUID,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
+    _user: Annotated[User, Depends(require_role("admin", "staff"))],
 ) -> City:
     city = await db.scalar(select(City).where(City.id == city_id, City.deleted_at.is_(None)))
     if city is None:
@@ -85,7 +85,7 @@ async def get_city(
 async def create_city(
     payload: CityCreate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> City:
     city = City(**payload.model_dump())
     db.add(city)
@@ -99,7 +99,7 @@ async def update_city(
     city_id: UUID,
     payload: CityUpdate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> City:
     city = await db.scalar(select(City).where(City.id == city_id, City.deleted_at.is_(None)))
     if city is None:

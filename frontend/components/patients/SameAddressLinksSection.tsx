@@ -33,6 +33,7 @@ import {
   useSetSameAddressLink,
 } from '@/lib/queries/g21';
 import { PAIR_MODES, type PairMode, type SameAddressCandidate } from '@/lib/schemas/g21';
+import { isAdminRole } from '@/lib/rbac';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Labels
@@ -69,7 +70,7 @@ export interface SameAddressLinksSectionProps {
 export function SameAddressLinksSection({ patientId, readOnly }: SameAddressLinksSectionProps) {
   const { data: session } = useSession();
   const role = session?.user?.role;
-  const canEdit = !readOnly && (role === 'admin' || role === 'manager');
+  const canEdit = !readOnly && isAdminRole(role);
 
   const { data: candidates = [], isLoading, isError, error } = useSameAddressCandidates(patientId);
 

@@ -35,7 +35,7 @@ from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
-from app.models.user import User
+from app.models.user import User, normalize_user_role
 from app.models.visit import Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.v2.patient_fixed_visit import (
@@ -121,7 +121,7 @@ async def _staff_owns_patient(db: AsyncSession, *, staff_id: UUID, patient_id: U
 
 async def _check_read_access(db: AsyncSession, user: User, patient_id: UUID) -> None:
     """admin/manager は全患者可; staff は担当患者のみ可 (範囲外は 403)."""
-    if user.role in {"admin", "manager"}:
+    if normalize_user_role(user.role) == "admin":
         return
     if user.role == "staff":
         if user.staff_id is None or not await _staff_owns_patient(
@@ -440,7 +440,7 @@ async def validate_fixed_visits(
     patient_id: UUID,
     body: PfvValidateRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> PfvValidateResponse:
     """案Z (PO 決定 2026-08-09): マスタ編集の入力中ライブ検査。
 
@@ -469,7 +469,7 @@ async def validate_fixed_visits(
 async def get_fixed_visits_course_load(
     patient_id: UUID,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     mode: PatientFixedVisitMode = Query(default="normal"),
 ) -> PfvCourseLoadResponse:
     """案Z: コースセレクトの空き情報 (○△×・残容量) の材料。
@@ -528,7 +528,7 @@ async def put_fixed_visits(
     patient_id: UUID,
     body: PatientFixedVisitsBulkPut,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> PatientFixedVisitsBulkPutResponse:
     await _ensure_patient_exists(db, patient_id)
 
@@ -687,7 +687,7 @@ async def put_fixed_visits(
 async def delete_fixed_visits(
     patient_id: UUID,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     mode: PatientFixedVisitMode = Query(..., description="削除する mode: normal または special"),
 ) -> None:
     await _ensure_patient_exists(db, patient_id)
@@ -713,7 +713,7 @@ async def delete_fixed_visits(
 )
 async def from_week_bulk(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     iso_year: int = Query(...),
     iso_week: int = Query(...),
     mode: PatientFixedVisitMode | None = Query(default=None),
@@ -849,7 +849,7 @@ async def update_pfv_pin(
     pfv_id: UUID,
     payload: PatientFixedVisitPinUpdate,
     db: DbDep,
-    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> PatientFixedVisitV2Read:
     """Phase G-21: 単一 PFV 行の ``is_pinned`` を切替.
 
@@ -894,7 +894,7 @@ async def update_pfv_pin(
 async def bulk_pin_pfvs(
     payload: list[PatientFixedVisitPinBulkItem],
     db: DbDep,
-    actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> list[PatientFixedVisitV2Read]:
     """Phase G-21: 複数 PFV 行の ``is_pinned`` を一括切替.
 
@@ -973,7 +973,7 @@ async def bulk_pin_pfvs(
 async def from_week(
     patient_id: UUID,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     iso_year: int = Query(...),
     iso_week: int = Query(...),
     mode: PatientFixedVisitMode | None = Query(default=None),

@@ -48,6 +48,7 @@ import { CF_THEME, CF_DOWS, cc } from './theme';
 import { MobileSurfaceSwitcher } from '@/components/mobile/MobileSurfaceSwitcher';
 import { KarteSheet, SuggestSheet, PlacementSheet, PatientManageSheet, Toast } from './FieldSheets';
 import { ApprovePanel } from './ApprovePanel';
+import { isAdminRole } from '@/lib/rbac';
 
 const { TEAL, TEAL_DEEP, TERRA, TERRA_DEEP, INK, INK2, INK3, CREAM, LINE, PANEL } = CF_THEME;
 
@@ -229,7 +230,7 @@ export function FieldBoard() {
   // 編集系の認可: manager / admin のみ編集 UI (提案・承認・患者管理・直接配置・
   // カルテ編集) を出す。staff は閲覧専用でボード自体は見られる。
   const { data: session } = useSession();
-  const canEditKarte = session?.user?.role === 'admin' || session?.user?.role === 'manager';
+  const canEditKarte = isAdminRole(session?.user?.role);
 
   const [dayIdx, setDayIdx] = useState(0); // 0=月..6=日
   const [approve, setApprove] = useState(false);

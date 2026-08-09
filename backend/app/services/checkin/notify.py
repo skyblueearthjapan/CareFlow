@@ -71,6 +71,8 @@ async def _active_admin_manager_users(db: AsyncSession) -> list[User]:
         (
             await db.scalars(
                 select(User).where(
+                    # 管理者アカウントへ通知 (旧 'manager' は 0069 で admin へ移行済み。
+                    # 万一の残存行も受け取れるよう別名込みで維持)。
                     User.role.in_(("admin", "manager")),
                     User.deleted_at.is_(None),
                 )

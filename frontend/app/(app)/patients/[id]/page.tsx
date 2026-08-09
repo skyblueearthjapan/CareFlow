@@ -45,6 +45,7 @@ import {
   type WeekdayKey,
 } from '@/lib/schemas/patient';
 import { PatientFixedVisitsPanel } from '../_components/PatientFixedVisitsPanel';
+import { isAdminRole } from '@/lib/rbac';
 
 export default function PatientDetailPage() {
   const params = useParams<{ id: string }>();
@@ -52,9 +53,9 @@ export default function PatientDetailPage() {
   const router = useRouter();
   const { data: session } = useSession();
   const role = session?.user?.role;
-  const canEdit = role === 'admin' || role === 'manager';
+  const canEdit = isAdminRole(role);
   const canDelete = role === 'admin';
-  const canExportKarte = role === 'admin' || role === 'manager';
+  const canExportKarte = isAdminRole(role);
   const accessToken = session?.accessToken ?? null;
   const refreshToken = session?.refreshToken ?? null;
 

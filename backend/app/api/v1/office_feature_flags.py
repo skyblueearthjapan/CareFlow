@@ -36,7 +36,7 @@ router = APIRouter()
 )
 async def list_flags(
     db: DbDep,
-    _actor: Annotated[User, Depends(require_role("admin", "manager"))],
+    _actor: Annotated[User, Depends(require_role("admin"))],
     feature_key: str | None = Query(default=None, description="feature_key で絞り込み"),
 ) -> list[OfficeFeatureFlagRead]:
     stmt = select(OfficeFeatureFlag).order_by(

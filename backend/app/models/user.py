@@ -16,8 +16,22 @@ if TYPE_CHECKING:
     from app.models.staff import Staff
 
 
-# Roles per MASTER-AUDIT-REPORT contract: admin / manager / staff.
-USER_ROLES = ("admin", "manager", "staff")
+# アカウント権限 (PO 決定 2026-08-09「二軸分離」): 管理者(admin) / 一般(staff) の 2 値。
+# これは **ログイン権限** であり、スタッフマスタの業務ロール (Staff.role:
+# staff/manager = スケジュールエンジン専用) とは無関係。
+USER_ROLES = ("admin", "staff")
+
+# 旧 'manager' 権限 (2026-08-09 廃止) は admin の別名として恒久的に受理する。
+# 既存行は migration 0069 で admin へ移行済みだが、旧 JWT クレームや取り込み
+# データに残る値を 403 にしないための安全弁。
+LEGACY_USER_ROLE_ALIASES = {"manager": "admin"}
+
+
+def normalize_user_role(role: str | None) -> str | None:
+    """旧権限名を現行の 2 値へ正規化する ('manager' → 'admin')。"""
+    if role is None:
+        return None
+    return LEGACY_USER_ROLE_ALIASES.get(role, role)
 
 
 class User(Base, TimestampMixin):

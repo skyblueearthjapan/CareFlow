@@ -76,6 +76,7 @@ import {
   type WeeklyPattern,
 } from '@/lib/schemas/patient';
 import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
+import { isAdminRole } from '@/lib/rbac';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -1533,7 +1534,7 @@ export function PatientFixedVisitsPanel({
 }: PatientFixedVisitsPanelProps) {
   const { data: session } = useSession();
   const role = session?.user?.role;
-  const readonly = readOnly === true || (role !== 'admin' && role !== 'manager');
+  const readonly = readOnly === true || !isAdminRole(role);
 
   // W22: 拠点の course_templates を取得
   const { data: courseTemplates = [] } = useCourseTemplates({

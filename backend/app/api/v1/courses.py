@@ -80,7 +80,7 @@ def _to_read(course: Course) -> CourseRead:
 @router.get("", response_model=list[CourseRead], summary="List courses")
 async def list_courses(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
     iso_year: Annotated[int | None, Query(ge=2000, le=2100)] = None,
     iso_week: Annotated[int | None, Query(ge=1, le=53)] = None,
     weekday: Annotated[int | None, Query(ge=0, le=6)] = None,
@@ -153,7 +153,7 @@ class CourseGenerateResponse(BaseModel):
 async def generate_courses(
     payload: CourseGenerateRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> CourseGenerateResponse:
     """Layer 2 アルゴリズムを実行し、コース分け案を返す.
 
@@ -222,7 +222,7 @@ class CourseAssignStaffResponse(BaseModel):
 async def assign_staff_to_courses(
     payload: CourseAssignStaffRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> CourseAssignStaffResponse:
     """Layer 3 アルゴリズムを実行し、当該週の確定済みコースにスタッフを割り付ける.
 
@@ -262,7 +262,7 @@ async def assign_staff_to_courses(
 async def get_course(
     course_id: UUID,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> CourseRead:
     course = await db.scalar(
         select(Course).where(Course.id == course_id, Course.deleted_at.is_(None))
@@ -281,7 +281,7 @@ async def get_course(
 async def create_course(
     payload: CourseCreate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    _user: Annotated[User, Depends(require_role("admin"))],
 ) -> CourseRead:
     # CourseCreate (=CourseV2Create) は Pydantic 側でフィールド型を担保しているため、
     # そのまま ORM へ流し込む。CourseStatus enum -> str.
@@ -309,7 +309,7 @@ async def update_course(
     course_id: UUID,
     payload: CourseUpdate,
     db: DbDep,
-    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
+    current_user: Annotated[User, Depends(require_role("admin"))],
 ) -> CourseRead:
     course = await db.scalar(
         select(Course).where(Course.id == course_id, Course.deleted_at.is_(None))

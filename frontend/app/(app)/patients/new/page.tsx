@@ -17,12 +17,13 @@ import { useCreatePatient } from '@/lib/queries/patients';
 import type { PatientFormValues } from '@/lib/schemas/patient';
 
 import { PatientForm } from '../_components/PatientForm';
+import { isAdminRole } from '@/lib/rbac';
 
 export default function NewPatientPage() {
   const router = useRouter();
   const { data: session, status } = useSession();
   const role = session?.user?.role;
-  const canCreate = role === 'admin' || role === 'manager';
+  const canCreate = isAdminRole(role);
 
   const createMutation = useCreatePatient();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);

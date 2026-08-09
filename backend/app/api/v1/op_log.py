@@ -36,7 +36,7 @@ router = APIRouter()
 )
 async def get_op_log_state(
     db: DbDep,
-    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
+    current_user: Annotated[User, Depends(require_role("admin"))],
     iso_year: Annotated[int, Query(ge=2000, le=2100)],
     iso_week: Annotated[int, Query(ge=1, le=53)],
 ) -> OpLogStateResponse:
@@ -59,7 +59,7 @@ async def get_op_log_state(
 async def undo_op(
     body: UndoRedoRequest,
     db: DbDep,
-    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
+    current_user: Annotated[User, Depends(require_role("admin"))],
 ) -> UndoRedoResponse:
     """自分の最新の undone=False グループを inverse 実行する（グループ内は逆順）。
 
@@ -112,7 +112,7 @@ async def undo_op(
 async def redo_op(
     body: UndoRedoRequest,
     db: DbDep,
-    current_user: Annotated[User, Depends(require_role("admin", "manager"))],
+    current_user: Annotated[User, Depends(require_role("admin"))],
 ) -> UndoRedoResponse:
     """自分の最古の undone=True グループの forward を再実行する（グループ内は正順）。
 

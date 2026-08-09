@@ -49,7 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.pending_request import PendingRequest
-from app.models.user import User
+from app.models.user import User, normalize_user_role
 from app.models.visit import Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas._pagination import Paginated
@@ -304,7 +304,7 @@ async def _commit_or_409(db: AsyncSession) -> None:
 
 def _check_read_access(user: User, row: PendingRequest) -> None:
     """Staff は自分の申請 + 自分宛のみ閲覧可能 (§3.5.3)."""
-    if user.role in {"admin", "manager"}:
+    if normalize_user_role(user.role) == "admin":
         return
     if user.role != "staff":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
@@ -349,7 +349,7 @@ def _build_pending_request_row(
 async def create_pending_request(
     payload: PendingRequestV2Create,
     db: DbDep,
-    user: Annotated[User, Depends(require_role("admin", "manager", "staff"))],
+    user: Annotated[User, Depends(require_role("admin", "staff"))],
 ) -> PendingRequestV2Read:
     _enforce_staff_self_scope(user, payload)
     _enforce_reschedule_scope_required(payload)
@@ -378,7 +378,7 @@ async def create_pending_request(
 async def create_and_apply_pending_request(
     payload: PendingRequestV2Create,
     db: DbDep,
-    user: Annotated[User, Depends(require_role("admin", "manager"))],
+    user: Annotated[User, Depends(require_role("admin"))],
 ) -> PendingRequestV2Read:
     """申請作成 + applier による業務反映を **同一トランザクション** で実行する.
 
@@ -459,7 +459,7 @@ async def list_pending_requests(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Paginated[PendingRequestV2Read]:
-    if user.role not in {"admin", "manager", "staff"}:
+    if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
     base_stmt = select(PendingRequest)
@@ -658,7 +658,7 @@ async def approve_pending_request(
     request_id: UUID,
     payload: PendingRequestApprove,
     db: DbDep,
-    user: Annotated[User, Depends(require_role("admin", "manager"))],
+    user: Annotated[User, Depends(require_role("admin"))],
 ) -> PendingRequestV2Read:
     return await _do_approve(db, request_id, user, payload.edited_payload)
 
@@ -672,7 +672,7 @@ async def approve_with_edit_pending_request(
     request_id: UUID,
     payload: PendingRequestApprove,
     db: DbDep,
-    user: Annotated[User, Depends(require_role("admin", "manager"))],
+    user: Annotated[User, Depends(require_role("admin"))],
 ) -> PendingRequestV2Read:
     if payload.edited_payload is None:
         raise HTTPException(
@@ -691,7 +691,7 @@ async def reject_pending_request(
     request_id: UUID,
     payload: PendingRequestReject,
     db: DbDep,
-    user: Annotated[User, Depends(require_role("admin", "manager"))],
+    user: Annotated[User, Depends(require_role("admin"))],
 ) -> PendingRequestV2Read:
     row = await db.scalar(select(PendingRequest).where(PendingRequest.id == request_id))
     if row is None:
