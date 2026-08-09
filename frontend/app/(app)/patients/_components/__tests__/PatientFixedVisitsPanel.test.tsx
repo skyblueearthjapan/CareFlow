@@ -1019,6 +1019,23 @@ describe('PatientFixedVisitsPanel', () => {
       expect(Array.from(select.options).map((op) => op.value)).toContain('65');
     });
 
+    it('BT-6. 所要時間の選択肢は希望側と同じ 5 分刻み (15〜180) になっている', async () => {
+      // PO 指示 (2026-08-09): 固定訪問パターンの時間入力を希望訪問パターンの
+      // 5 分刻みプルダウンに合わせる。ソースは SERVICE_MINUTES_OPTIONS で共有。
+      setupMocks({ reads: [] });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      const select = screen.getByLabelText('月 所要時間') as HTMLSelectElement;
+      const values = Array.from(select.options).map((op) => Number(op.value));
+      for (let m = 15; m <= 180; m += 5) {
+        expect(values).toContain(m);
+      }
+      // 旧・独自刻みにあった 5 分刻み外の粗い値は出ない (180 分超は現在値のみ)。
+      expect(values).not.toContain(240);
+      expect(values).not.toContain(480);
+    });
+
     it('BT-5. readonly 表示でも基本と異なる行にはイレギュラー表示が出る', () => {
       setupMocks({
         role: 'staff',

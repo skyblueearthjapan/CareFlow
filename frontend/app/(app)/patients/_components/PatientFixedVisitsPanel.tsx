@@ -66,7 +66,11 @@ import {
 } from '@/lib/schemas/v2/patient_fixed_visit';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { Office } from '@/lib/schemas/office';
-import type { WeeklyPattern } from '@/lib/schemas/patient';
+import {
+  SERVICE_MINUTES_OPTIONS,
+  DEFAULT_SERVICE_MINUTES,
+  type WeeklyPattern,
+} from '@/lib/schemas/patient';
 import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -92,12 +96,13 @@ const TIME_OPTIONS: string[] = (() => {
   return opts;
 })();
 
-// 訪問看護の基本時間 35 分を含む (PO 決定 2026-08-09: 35 分が基本なのに選択肢に
-// 無かったため、35 分の行を開くと未選択表示になり 30/45 へ化けるドリフトが起きていた)。
-const DURATION_OPTIONS = [15, 30, 35, 45, 60, 90, 120, 150, 180, 240, 300, 360, 480] as const;
+// 所要時間の選択肢は希望訪問パターン (WeeklyPatternEditor) と**完全に同一**の
+// 5 分刻み 15〜180 分にする (PO 指示 2026-08-09: 希望側に合わせる)。
+// 独自の刻み (旧 15/30/45/60…) は 35 分が無く、35 分の行を開くと未選択表示に
+// なり 30/45 へ化けるドリフトの真因だった。ソースを 1 つにして再発を防ぐ。
 
-/** 希望訪問パターン未設定時の基本訪問時間 (分)。BE の各フォールバックと同値。 */
-const DEFAULT_BASE_MINUTES = 35;
+/** 希望訪問パターン未設定時の基本訪問時間 (分)。希望側の既定値と同じソース。 */
+const DEFAULT_BASE_MINUTES = DEFAULT_SERVICE_MINUTES;
 
 /**
  * その患者の「基本の訪問時間」(PO 決定 2026-08-09)。
@@ -118,7 +123,9 @@ function baseServiceMinutes(pattern: WeeklyPattern | null | undefined): number {
  * 未選択表示のまま黙って別の値へ化けるのを防ぐため (可動域の旧値と同じ流儀)。
  */
 function durationOptionsFor(baseMin: number, currentMin: number): number[] {
-  return Array.from(new Set([...DURATION_OPTIONS, baseMin, currentMin])).sort((a, b) => a - b);
+  return Array.from(new Set([...SERVICE_MINUTES_OPTIONS, baseMin, currentMin])).sort(
+    (a, b) => a - b,
+  );
 }
 
 /**
