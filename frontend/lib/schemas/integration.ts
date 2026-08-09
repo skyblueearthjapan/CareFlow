@@ -256,6 +256,29 @@ export const InboundEligibilitySchema = z.object({
 });
 export type InboundEligibility = z.infer<typeof InboundEligibilitySchema>;
 
+// 取り込み前スナップショット (PO 決定 2026-08-09: 「取り込み前に戻す」)
+export const InboundSnapshotSchema = z.object({
+  id: z.string().uuid(),
+  weekStart: z.string(),
+  kind: z.string(),
+  visitsCount: z.number().int(),
+  createdAt: z.string(),
+});
+export type InboundSnapshot = z.infer<typeof InboundSnapshotSchema>;
+
+export const InboundSnapshotListSchema = z.object({
+  snapshots: z.array(InboundSnapshotSchema),
+});
+export type InboundSnapshotList = z.infer<typeof InboundSnapshotListSchema>;
+
+export const SnapshotRestoreResultSchema = z.object({
+  wiped: z.number().int(),
+  restored: z.number().int(),
+  coursesRestored: z.number().int(),
+  coursesRemoved: z.number().int(),
+});
+export type SnapshotRestoreResult = z.infer<typeof SnapshotRestoreResultSchema>;
+
 export const DiffInboundRequestSchema = z.object({
   month: z.string().regex(/^\d{4}-\d{2}$/, 'YYYY-MM で入力してください'),
   weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD で入力してください'),

@@ -12,6 +12,8 @@ import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
 import type {
+  InboundSnapshotList,
+  SnapshotRestoreResult,
   ApplyInboundRequest,
   ApplyInboundResult,
   ApplyRequest,
@@ -463,6 +465,46 @@ export function useInboundEligibility(weekStart: string | null) {
         { accessToken, refreshToken },
       ),
     enabled: status === 'authenticated' && session?.user?.role === 'admin' && Boolean(weekStart),
+  });
+}
+
+/** 取り込み前スナップショット一覧 (直近5世代・新しい順)。 */
+export function useInboundSnapshots(weekStart: string | null) {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useQuery<InboundSnapshotList>({
+    queryKey: ['integrations', 'inbound-snapshots', weekStart],
+    queryFn: () =>
+      fetcher<InboundSnapshotList>(
+        `/api/v1/integrations/inbound-snapshots?weekStart=${weekStart}`,
+        { accessToken, refreshToken },
+      ),
+    enabled: status === 'authenticated' && session?.user?.role === 'admin' && Boolean(weekStart),
+  });
+}
+
+/** 「取り込み前に戻す」— 週を白紙化してスナップショットの盤面を書き戻す。 */
+export function useRestoreInboundSnapshot() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<SnapshotRestoreResult, Error, { snapshotId: string }>({
+    mutationFn: ({ snapshotId }) =>
+      fetcher<SnapshotRestoreResult>(
+        `/api/v1/integrations/inbound-snapshots/${snapshotId}/restore`,
+        { method: 'POST', accessToken, refreshToken },
+      ),
+    onSuccess: () => {
+      // 盤面全体が入れ替わるため訪問系を広く invalidate。
+      void qc.invalidateQueries({ queryKey: ['integrations'] });
+      void qc.invalidateQueries({ queryKey: ['visits'] });
+      void qc.invalidateQueries({ queryKey: ['courses'] });
+      void qc.invalidateQueries({ queryKey: ['schedule'] });
+    },
   });
 }
 

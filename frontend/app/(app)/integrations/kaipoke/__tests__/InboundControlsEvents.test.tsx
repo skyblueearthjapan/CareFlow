@@ -138,6 +138,9 @@ function makeVm(overrides: Partial<InboundVm> = {}): InboundVm {
     fetching: false,
     applying: false,
     canApply: false,
+    snapshots: [],
+    restoreSnapshot: vi.fn(),
+    restoring: false,
     ...overrides,
   } as unknown as InboundVm;
 }
@@ -241,6 +244,32 @@ describe('InboundControls — smart-inbound', () => {
     // 置換規模とイベント件数
     expect(screen.getByText(/78 件を削除/)).toBeInTheDocument();
     expect(screen.getByText(/追加 2 \/ 変更 1 \/ 削除 0/)).toBeInTheDocument();
+  });
+
+  it('⑦ 取り込み前スナップショットがあると「取り込み前に戻す」が出て復元を呼べる', () => {
+    const restoreSnapshot = vi.fn();
+    render(
+      <InboundControls
+        vm={makeVm({
+          snapshots: [
+            {
+              id: '11111111-1111-1111-1111-111111111111',
+              weekStart: '2026-07-06',
+              kind: 'smart',
+              visitsCount: 35,
+              createdAt: '2026-08-09T21:30:00+09:00',
+            },
+          ],
+          restoreSnapshot,
+        })}
+      />,
+    );
+    expect(screen.getByTestId('inbound-snapshot-section')).toBeInTheDocument();
+    expect(screen.getByText(/訪問 35 件/)).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByTestId('inbound-snapshot-restore-11111111-1111-1111-1111-111111111111'),
+    );
+    expect(restoreSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it('⑥ 週送り: 過去へも未来へも進める（2026-08-09 開放）+ 未来週警告が出る', () => {

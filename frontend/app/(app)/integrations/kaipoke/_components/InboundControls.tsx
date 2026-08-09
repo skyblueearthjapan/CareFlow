@@ -54,6 +54,9 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
     fetching,
     applying,
     canApply,
+    snapshots,
+    restoreSnapshot,
+    restoring,
   } = vm;
 
   return (
@@ -150,6 +153,44 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
           </p>
         )}
       </div>
+
+      {/* ── 取り込み前に戻す (PO 決定 2026-08-09: 間違えて取り込んでも戻せる) ── */}
+      {snapshots.length > 0 && (
+        <div
+          className="mb-5 rounded-md border border-border-default bg-bg-muted/40 px-3 py-2"
+          data-testid="inbound-snapshot-section"
+        >
+          <p className="mb-1.5 text-xs font-medium text-text-secondary">
+            取り込み前に戻す
+            <span className="ml-2 font-normal text-text-muted">
+              取り込みのたびに直前の盤面を自動保存しています（直近 5 回分）。
+              間違えて取り込んだときはここから復元できます。
+            </span>
+          </p>
+          <ul className="space-y-1">
+            {snapshots.map((sn) => {
+              const taken = new Date(sn.createdAt);
+              const label = `${taken.getMonth() + 1}/${taken.getDate()} ${String(taken.getHours()).padStart(2, '0')}:${String(taken.getMinutes()).padStart(2, '0')}`;
+              return (
+                <li key={sn.id} className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="tnum font-medium text-text-primary">{label}</span>
+                  <span className="text-text-muted">取り込み直前・訪問 {sn.visitsCount} 件</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    disabled={restoring || busy || fetching || applying}
+                    onClick={() => void restoreSnapshot(sn.id, label)}
+                    data-testid={`inbound-snapshot-restore-${sn.id}`}
+                  >
+                    {restoring ? '復元中…' : 'この時点に戻す'}
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
 
       {/* ── 操作エリア（eligible でない場合はグレーアウト） ── */}
       <div className={eligible ? '' : 'pointer-events-none opacity-40'}>

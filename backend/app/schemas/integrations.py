@@ -257,6 +257,32 @@ class InboundEligibilityRead(BaseModel):
     last_applied_at: datetime | None = Field(default=None, alias="lastAppliedAt")
 
 
+class InboundSnapshotRead(BaseModel):
+    """取り込み前スナップショットの一覧行 (payload は返さない)。"""
+
+    model_config = ConfigDict(populate_by_name=True, from_attributes=True)
+    id: UUID
+    week_start: date = Field(alias="weekStart")
+    kind: str
+    visits_count: int = Field(alias="visitsCount")
+    created_at: datetime = Field(alias="createdAt")
+
+
+class InboundSnapshotListRead(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    snapshots: list[InboundSnapshotRead]
+
+
+class SnapshotRestoreResultRead(BaseModel):
+    """「取り込み前に戻す」の実行結果。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+    wiped: int
+    restored: int
+    courses_restored: int = Field(alias="coursesRestored")
+    courses_removed: int = Field(alias="coursesRemoved")
+
+
 class InboundApplyRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     sheet_id: UUID = Field(alias="sheetId")

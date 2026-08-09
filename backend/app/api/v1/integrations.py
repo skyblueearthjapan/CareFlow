@@ -44,6 +44,8 @@ from app.schemas.integrations import (
     InboundApplyResult,
     InboundEligibilityRead,
     InboundItemResultRead,
+    InboundSnapshotListRead,
+    InboundSnapshotRead,
     IntegrationApplyRequest,
     IntegrationDiffRequest,
     IntegrationExpandRequest,
@@ -65,6 +67,7 @@ from app.schemas.integrations import (
     SmartInboundApplyResult,
     SmartInboundPreviewRead,
     SmartInboundPreviewRequest,
+    SnapshotRestoreResultRead,
     WeekScheduleRead,
     WeekScheduleRow,
 )
@@ -1559,6 +1562,69 @@ async def inbound_eligibility(
     )
 
 
+@router.get(
+    "/inbound-snapshots",
+    response_model=InboundSnapshotListRead,
+    summary="取り込み前スナップショットの一覧 (週単位・admin)",
+)
+async def list_inbound_snapshots(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    week_start: date = Query(..., alias="weekStart"),
+) -> InboundSnapshotListRead:
+    """対象週の「取り込み前に戻す」候補 (直近 5 世代・新しい順)。"""
+    from app.models.inbound_snapshot import InboundSnapshot
+
+    rows = (
+        await db.scalars(
+            select(InboundSnapshot)
+            .where(InboundSnapshot.week_start == week_start)
+            .order_by(InboundSnapshot.created_at.desc(), InboundSnapshot.id.desc())
+        )
+    ).all()
+    return InboundSnapshotListRead(snapshots=[InboundSnapshotRead.model_validate(r) for r in rows])
+
+
+@router.post(
+    "/inbound-snapshots/{snapshot_id}/restore",
+    response_model=SnapshotRestoreResultRead,
+    summary="取り込み前の盤面へ復元する (admin)",
+)
+async def restore_inbound_snapshot(
+    snapshot_id: UUID,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+) -> SnapshotRestoreResultRead:
+    """週を白紙化してスナップショットの盤面を書き戻す (PO 決定 2026-08-09)。
+
+    「間違えて取り込んでも、取り込む前に戻せる」の実行部。
+    打刻ガード: 打刻の付いた週は 422 (実績の紐付け先を消さない)。
+    """
+    from app.models.inbound_snapshot import InboundSnapshot
+    from app.services.kaipoke.inbound_snapshot import (
+        SnapshotRestoreBlockedError,
+        restore_snapshot,
+    )
+
+    snap = await db.get(InboundSnapshot, snapshot_id)
+    if snap is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="snapshot not found")
+    try:
+        result = await restore_snapshot(db, snap, now=datetime.now(UTC))
+    except SnapshotRestoreBlockedError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    await _commit_or_409(db)
+    return SnapshotRestoreResultRead(
+        wiped=result.wiped,
+        restored=result.restored,
+        courses_restored=result.courses_restored,
+        courses_removed=result.courses_removed,
+    )
+
+
 @router.post(
     "/diff-inbound",
     response_model=DiffAccepted,
@@ -1711,6 +1777,12 @@ async def trigger_apply_inbound(
         )
 
     now = datetime.now(UTC)
+    if not payload.dry_run:
+        # 取り込み前スナップショット (PO 決定 2026-08-09: 「取り込み前に戻す」用)。
+        # 取り込みと同一トランザクション = 適用が失敗すれば残らない。
+        from app.services.kaipoke.inbound_snapshot import snapshot_week
+
+        await snapshot_week(db, sheet.week_start, kind="diff", user_id=user.id)
     summary = await apply_inbound_items(
         db,
         items=selected,
@@ -2368,6 +2440,11 @@ async def replace_inbound(
             ),
         )
 
+    if not payload.dry_run:
+        # 取り込み前スナップショット (PO 決定 2026-08-09: 「取り込み前に戻す」用)。
+        from app.services.kaipoke.inbound_snapshot import snapshot_week
+
+        await snapshot_week(db, payload.week_start, kind="replace", user_id=user.id)
     try:
         result = await replace_week_from_kaipoke(
             db,
@@ -2694,6 +2771,13 @@ async def smart_inbound_apply(
     # 実行時に再分類 (プレビュー後の打刻進行を安全側で反映)
     protected_days, replace_days = await _smart_classify(db, week_start)
     now = datetime.now(UTC)
+
+    if not payload.dry_run:
+        # 取り込み前スナップショット (PO 決定 2026-08-09: 「取り込み前に戻す」用)。
+        # 差分・置換のどちらの変異よりも前 = 取り込み前の盤面が丸ごと残る。
+        from app.services.kaipoke.inbound_snapshot import snapshot_week
+
+        await snapshot_week(db, week_start, kind="smart", user_id=user.id)
 
     # 置換対象日があるときのみ再取得 (差分のみの週は RPA 不要)
     entries = None

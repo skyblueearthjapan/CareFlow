@@ -213,6 +213,17 @@ async def test_replace_real_wipes_and_inserts_then_converges(client, db, stub_ka
     assert visits[0].start_time == time(14, 0)
     assert visits[0].note and "カイポケ置換取込" in visits[0].note
 
+    # 実適用の直前スナップショットが自動保存される (PO 決定 2026-08-09:
+    # 「取り込み前に戻す」用。dry-run では作られない)。
+    from app.models.inbound_snapshot import InboundSnapshot
+
+    snaps = (
+        await db.scalars(select(InboundSnapshot).where(InboundSnapshot.week_start == WEEK_START))
+    ).all()
+    assert len(snaps) == 1
+    assert snaps[0].kind == "replace"
+    assert snaps[0].visits_count == 3  # 取り込み前の 3 件が保存されている
+
     # 2回目 (冪等): 前回挿入分が白紙化対象になり、同じ2件が再挿入される
     res2 = await _post_replace(client, admin, week_start=WEEK_START, dry_run=False)
     assert res2.status_code == 200, res2.text

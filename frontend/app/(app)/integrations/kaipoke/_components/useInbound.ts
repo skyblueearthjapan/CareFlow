@@ -17,6 +17,8 @@ import {
   useCorrectionItems,
   useEventsInboundPreview,
   useInboundEligibility,
+  useInboundSnapshots,
+  useRestoreInboundSnapshot,
   useSmartInboundPreview,
 } from '@/lib/queries/integrations';
 import type { EventsInboundPreview, SmartInboundPreview } from '@/lib/schemas/integration';
@@ -108,6 +110,29 @@ export function useInbound({
 
   const currentElig = useInboundEligibility(weekStartStr);
   const eligible = currentElig.data?.eligible ?? false;
+
+  // 取り込み前スナップショット (PO 決定 2026-08-09: 「取り込み前に戻す」)。
+  const snapshotsQuery = useInboundSnapshots(weekStartStr);
+  const snapshots = snapshotsQuery.data?.snapshots ?? [];
+  const restoreMut = useRestoreInboundSnapshot();
+  const restoreSnapshot = async (snapshotId: string, takenLabel: string) => {
+    if (
+      !window.confirm(
+        `この週の盤面を「${takenLabel} 時点（取り込み前）」の状態に戻しますか？\n` +
+          '現在のこの週の訪問はすべて置き換えられます。この操作は Ctrl+Z の対象外です。',
+      )
+    )
+      return;
+    try {
+      const r = await restoreMut.mutateAsync({ snapshotId });
+      resetPlan();
+      toast.success(
+        `取り込み前の盤面に戻しました（復元 ${r.restored} 件・置換前の ${r.wiped} 件を整理）`,
+      );
+    } catch (e) {
+      toast.error(`復元に失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
   const smartPreview = useSmartInboundPreview();
   const applySmart = useApplySmartInbound();
@@ -257,6 +282,10 @@ export function useInbound({
     fetching,
     applying,
     canApply,
+    // 取り込み前に戻す
+    snapshots,
+    restoreSnapshot,
+    restoring: restoreMut.isPending,
   };
 }
 
