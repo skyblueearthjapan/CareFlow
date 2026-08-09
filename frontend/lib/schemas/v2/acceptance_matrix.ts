@@ -50,6 +50,9 @@ export const officeMatrixSchema = z.object({
   city_names: z.array(z.string()).default([]),
   operating_weekdays: z.array(z.number().int().min(0).max(6)).default([]),
   week_generated: z.boolean().default(false),
+  // 設定漏れ診断 (PO 要望 2026-08-10): なぜ○×が出ないのかの理由。
+  //   no_manager / not_generated / assignment_pending / null(正常)
+  setup_state: z.string().nullable().optional().catch(null),
   days: z.array(dayMatrixSchema).default([]),
 });
 export type OfficeMatrix = z.infer<typeof officeMatrixSchema>;

@@ -344,6 +344,36 @@ function OfficeMatrixTable({
         )}
       </div>
 
+      {/* 設定漏れの明示 (PO 要望 2026-08-10): なぜ○×が出ないのかを具体的に案内する。 */}
+      {office.setup_state && (
+        <div
+          className="rounded-md border border-amber-500/60 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+          data-testid={`acceptance-setup-${office.office_id}`}
+        >
+          {office.setup_state === 'no_manager' ? (
+            <>
+              ⚠ ○×を計算できません。この拠点に業務ロール
+              <span className="mx-1 font-bold">「マネージャー」</span>
+              のスタッフがいません。スタッフマスタで主担当のマネージャーを設定してください
+              （週の生成にはマネージャーの在籍が必要です）。
+            </>
+          ) : office.setup_state === 'assignment_pending' ? (
+            <>
+              ⚠ ○×を計算できません。スケジュール画面で
+              <span className="mx-1 font-bold">「自動スタッフ割当」</span>
+              を実行してください（この工程がコースの確定を兼ねており、実行するまで
+              受け入れ枠の対象になりません）。
+            </>
+          ) : (
+            <>
+              ⚠ ○×を計算できません。この週のスケジュールが未生成です。スケジュール画面で
+              <span className="mx-1 font-bold">「週を生成」</span>
+              を実行してください。
+            </>
+          )}
+        </div>
+      )}
+
       <div className="overflow-x-auto">
         <div
           className="min-w-[420px] overflow-hidden rounded-lg border border-border-default bg-bg-base"

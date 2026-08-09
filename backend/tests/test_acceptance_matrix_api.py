@@ -197,6 +197,49 @@ async def test_week_not_generated(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_setup_state_diagnosis(client, db) -> None:
+    """設定漏れ診断 (PO 要望 2026-08-10): なぜ○×が出ないのかを setup_state で返す。
+
+    - proposed のみ (マネージャー在籍) → assignment_pending (自動スタッフ割当が未実行)
+    - コースゼロ + マネージャー不在 → no_manager
+    - コースゼロ + マネージャー在籍 → not_generated
+    - 確定コースあり → null (正常)
+    """
+    admin = await _make_user(db, email="am-admin-setup@example.com", role="admin")
+
+    # 拠点1: proposed のみ + マネージャー在籍 → assignment_pending
+    office1, staff1 = await _seed_office_staff(db, name="拠点1", code="OF1")
+    mgr1 = Staff(name="主任1", role="manager", is_trainee=False, primary_office_id=office1.id)
+    db.add(mgr1)
+    await _seed_course(db, office=office1, staff=staff1, status=COURSE_STATUS_PROPOSED)
+
+    # 拠点2: コースゼロ + マネージャー不在 → no_manager
+    office2 = Office(name="拠点2", code="OF2")
+    db.add(office2)
+    await db.flush()
+
+    # 拠点3: コースゼロ + マネージャー在籍 → not_generated
+    office3 = Office(name="拠点3", code="OF3")
+    db.add(office3)
+    await db.flush()
+    mgr3 = Staff(name="主任3", role="manager", is_trainee=False, primary_office_id=office3.id)
+    db.add(mgr3)
+
+    # 拠点4: 確定コースあり → null
+    office4, staff4 = await _seed_office_staff(db, name="拠点4", code="OF4")
+    await _seed_course(db, office=office4, staff=staff4)
+    await db.commit()
+
+    res = await client.get(_url(), headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    by_name = {o["office_name"]: o for o in res.json()["offices"]}
+    assert by_name["拠点1"]["setup_state"] == "assignment_pending"
+    assert by_name["拠点2"]["setup_state"] == "no_manager"
+    assert by_name["拠点3"]["setup_state"] == "not_generated"
+    assert by_name["拠点4"]["setup_state"] is None
+
+
+@pytest.mark.asyncio
 async def test_city_names_included(client, db) -> None:
     admin = await _make_user(db, email="am-admin5@example.com", role="admin")
     office, staff = await _seed_office_staff(db)

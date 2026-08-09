@@ -390,23 +390,45 @@ async def compute_acceptance_matrix(
             "offices": [],
         }
 
-    # --- 当週の確定コース (proposed 除外) ---
-    course_rows = (
+    # --- 当週のコース (診断のため proposed も含めて取得し、後で分ける) ---
+    all_course_rows = (
         await db.scalars(
             select(Course).where(
                 Course.iso_year == iso_year,
                 Course.iso_week == iso_week,
                 Course.office_id.in_(target_office_ids),
                 Course.deleted_at.is_(None),
-                Course.course_status != COURSE_STATUS_PROPOSED,
             )
         )
     ).all()
+    # 設定漏れ診断 (PO 要望 2026-08-10): proposed しか無い拠点 = 自動スタッフ割当が
+    # 未実行 (この工程がコース確定 proposed→course_fixed を兼ねる)。
+    offices_with_any_courses: set[UUID] = {
+        c.office_id for c in all_course_rows if not _is_manager_course(c.code)
+    }
+    # マトリックスの母集合は従来どおり proposed 除外。
+    course_rows = [c for c in all_course_rows if c.course_status != COURSE_STATUS_PROPOSED]
     # M系コース (M/M2..M9) はマネージャー予備枠で常に空のため、受け入れ枠の ○△× 対象
     # から除外する (PO決定 2026-07-10「Mは受け入れ先になり得ない」)。除外しないと A-D が
     # 満床でも空の M が「6名受けられる」と誤カウントし、満床の枠まで ○ になっていた。
     # 臨時コース (臨..) は実訪問を持つ稼働コースなので除外しない。
     course_rows = [c for c in course_rows if not _is_manager_course(c.code)]
+    # 業務ロール「マネージャー」在籍拠点 (週生成のコース作成前提・診断用)。
+    from app.models.staff import Staff
+
+    manager_office_ids: set[UUID] = set(
+        (
+            await db.scalars(
+                select(Staff.primary_office_id).where(
+                    Staff.role == "manager",
+                    Staff.status == "active",
+                    Staff.deleted_at.is_(None),
+                    Staff.primary_office_id.in_(target_office_ids),
+                )
+            )
+        ).all()
+    )
+
     courses_by_day: dict[tuple[UUID, int], list[Course]] = {}
     course_id_to_key: dict[UUID, tuple[UUID, int]] = {}
     offices_with_courses: set[UUID] = set()
@@ -574,6 +596,15 @@ async def compute_acceptance_matrix(
                 }
             )
 
+        # 設定漏れ診断 (優先順: マネージャー不在 > 週未生成 > 割当未実行)。
+        if office_has_courses:
+            setup_state = None
+        elif office.id not in manager_office_ids:
+            setup_state = "no_manager"
+        elif office.id in offices_with_any_courses:
+            setup_state = "assignment_pending"
+        else:
+            setup_state = "not_generated"
         offices_out.append(
             {
                 "office_id": office.id,
@@ -581,6 +612,7 @@ async def compute_acceptance_matrix(
                 "city_names": city_names,
                 "operating_weekdays": sorted(op_weekdays),
                 "week_generated": office_has_courses,
+                "setup_state": setup_state,
                 "days": days_out,
             }
         )
