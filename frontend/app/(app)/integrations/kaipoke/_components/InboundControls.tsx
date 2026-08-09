@@ -57,10 +57,11 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
     snapshots,
     restoreSnapshot,
     restoring,
+    inboundHistory,
   } = vm;
 
   return (
-    <div>
+    <div className="flex h-full flex-col">
       {/* ── ヘッダー ── */}
       <div className="mb-3 flex flex-wrap items-center gap-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">カイポケから取り込む</h2>
@@ -261,6 +262,44 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
       </div>
 
       {/* ── 確認ダイアログ ── */}
+      {/* ── 直近の取り込み (PO 要望 2026-08-09: どの週を取り込んだかを枠内で見える化)。
+          mt-auto でカード最下部へ — flex-1 で伸びた余白が履歴スペースになる。 ── */}
+      {inboundHistory.length > 0 && (
+        <div
+          className="mt-auto border-t border-border-default pt-3"
+          data-testid="inbound-history-section"
+        >
+          <p className="mb-2 text-xs font-medium text-text-secondary">直近の取り込み</p>
+          <ul className="space-y-1.5">
+            {inboundHistory.map((h) => {
+              const at = new Date(h.at);
+              const atLabel = `${at.getMonth() + 1}/${at.getDate()} ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+              const mon = new Date(h.weekStart + 'T00:00:00');
+              return (
+                <li key={h.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs">
+                  <span className="tnum shrink-0 text-text-muted">{atLabel}</span>
+                  <span className="tnum min-w-0 flex-1 truncate font-medium text-text-primary">
+                    {fmtWeekLabel(mon)} の週
+                  </span>
+                  <span className="text-text-secondary">{h.opLabel}</span>
+                  <span
+                    className={
+                      h.status === 'failed'
+                        ? 'font-bold text-error'
+                        : h.status === 'completed'
+                          ? 'text-success'
+                          : 'text-text-muted'
+                    }
+                  >
+                    {h.status === 'completed' ? '成功' : h.status === 'failed' ? '失敗' : h.status}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
       <Dialog open={confirm} onOpenChange={(o) => !o && setConfirm(false)}>
         <DialogContent>
           <DialogHeader>

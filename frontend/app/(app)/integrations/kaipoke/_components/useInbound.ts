@@ -18,6 +18,7 @@ import {
   useEventsInboundPreview,
   useInboundEligibility,
   useInboundSnapshots,
+  useKaipokeJobs,
   useRestoreInboundSnapshot,
   useSmartInboundPreview,
 } from '@/lib/queries/integrations';
@@ -54,6 +55,22 @@ export function fmtDayLabel(iso: string): string {
 }
 
 /** 週オフセット (0=今週) の相対ラベル。過去は「n週前」。 */
+/** 取り込みの実適用として履歴に出す op → 表示ラベル (dry-run はジョブ記録なし)。 */
+export const INBOUND_APPLY_OP_LABELS: Record<string, string> = {
+  'smart-apply': '取り込み（自動判別）',
+  'replace-inbound': '取り込み（置換）',
+  'apply-inbound': '取り込み（差分）',
+};
+
+/** 直近の取り込み履歴の 1 行。 */
+export interface InboundHistoryRow {
+  id: string;
+  weekStart: string;
+  opLabel: string;
+  status: string;
+  at: string;
+}
+
 export function fmtRelativeWeek(offset: number): string {
   if (offset === 0) return '今週';
   if (offset === 1) return '来週';
@@ -105,6 +122,26 @@ export function useInbound({
 
   const currentElig = useInboundEligibility(weekStartStr);
   const eligible = currentElig.data?.eligible ?? false;
+
+  // 直近の取り込み履歴 (PO 要望 2026-08-09: どの週を取り込んだかを枠内に出す)。
+  // 実適用のみジョブ記録が残る (dry-run は残らない) ため、そのまま「取り込んだ週」の履歴になる。
+  const jobsQuery = useKaipokeJobs({ limit: 50 });
+  const inboundHistory: InboundHistoryRow[] = useMemo(
+    () =>
+      (jobsQuery.data?.items ?? [])
+        .filter(
+          (j) => typeof j.params?.op === 'string' && String(j.params.op) in INBOUND_APPLY_OP_LABELS,
+        )
+        .slice(0, 5)
+        .map((j) => ({
+          id: j.id,
+          weekStart: j.week_start,
+          opLabel: INBOUND_APPLY_OP_LABELS[String(j.params.op)]!,
+          status: j.status,
+          at: j.completed_at ?? j.created_at,
+        })),
+    [jobsQuery.data],
+  );
 
   // 取り込み前スナップショット (PO 決定 2026-08-09: 「取り込み前に戻す」)。
   const snapshotsQuery = useInboundSnapshots(weekStartStr);
@@ -281,6 +318,8 @@ export function useInbound({
     snapshots,
     restoreSnapshot,
     restoring: restoreMut.isPending,
+    // 直近の取り込み履歴
+    inboundHistory,
   };
 }
 

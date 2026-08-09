@@ -141,6 +141,7 @@ function makeVm(overrides: Partial<InboundVm> = {}): InboundVm {
     snapshots: [],
     restoreSnapshot: vi.fn(),
     restoring: false,
+    inboundHistory: [],
     ...overrides,
   } as unknown as InboundVm;
 }
@@ -244,6 +245,38 @@ describe('InboundControls — smart-inbound', () => {
     // 置換規模とイベント件数
     expect(screen.getByText(/78 件を削除/)).toBeInTheDocument();
     expect(screen.getByText(/追加 2 \/ 変更 1 \/ 削除 0/)).toBeInTheDocument();
+  });
+
+  it('⑧ 直近の取り込み履歴が週・種別・成否つきで出る', () => {
+    render(
+      <InboundControls
+        vm={makeVm({
+          inboundHistory: [
+            {
+              id: 'h1',
+              weekStart: '2026-08-17',
+              opLabel: '取り込み（自動判別）',
+              status: 'completed',
+              at: '2026-08-09T21:30:00+09:00',
+            },
+            {
+              id: 'h2',
+              weekStart: '2026-08-03',
+              opLabel: '取り込み（置換）',
+              status: 'failed',
+              at: '2026-08-08T10:00:00+09:00',
+            },
+          ],
+        })}
+      />,
+    );
+    const section = screen.getByTestId('inbound-history-section');
+    expect(section).toBeInTheDocument();
+    expect(section).toHaveTextContent('8/17（月）〜 8/22（土） の週');
+    expect(section).toHaveTextContent('取り込み（自動判別）');
+    expect(section).toHaveTextContent('成功');
+    expect(section).toHaveTextContent('取り込み（置換）');
+    expect(section).toHaveTextContent('失敗');
   });
 
   it('⑦ 取り込み前スナップショットがあると「取り込み前に戻す」が出て復元を呼べる', () => {
