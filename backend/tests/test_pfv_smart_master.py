@@ -15,8 +15,10 @@ import pytest
 from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
-from app.models import CourseTemplate, Office, Patient, User
+from app.models import Course, CourseTemplate, Office, Patient, User, Visit
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.services.scheduling.config import load_scheduling_config
+from app.services.scheduling.pfv_validator import validate_pfv_changes
 
 
 async def _make_admin(db) -> User:
@@ -190,3 +192,83 @@ async def test_course_load_unknown_patient_404(client, db) -> None:
         headers=_bearer(admin),
     )
     assert res.status_code == 404, res.text
+
+
+# ---------------------------------------------------------------------------
+# V8: 二段検査 — 型 vs 今週の実配置 (PO確定 2026-08-09)
+# ---------------------------------------------------------------------------
+
+from datetime import date  # noqa: E402
+
+WEEK_MONDAY = date(2026, 5, 11)  # 2026-W20 月曜
+
+
+@pytest.mark.asyncio
+async def test_week_conflict_two_tier(db, client) -> None:
+    """型同士 (V3) は空いていても、今週の実配置 (カイポケ取込等) と重なるなら
+    【今週のみ】の week_conflict が別段で出る。来週 (別週) の visit では出ない。"""
+    seeded = await _seed(db)
+    iso = WEEK_MONDAY.isocalendar()
+    course = Course(
+        iso_year=iso.year,
+        iso_week=iso.week,
+        weekday=1,  # 火曜
+        code="A",
+        course_status="staff_assigned",
+        template_id=seeded["tpl"].id,
+        office_id=seeded["office"].id,
+    )
+    db.add(course)
+    await db.flush()
+    # 他患者の「今週の実配置」: 火曜 10:00-10:35 (型には存在しない = カイポケ取込を模す)
+    db.add(
+        Visit(
+            patient_id=seeded["other"].id,
+            visit_date=WEEK_MONDAY.replace(day=WEEK_MONDAY.day + 1),
+            start_time=time(10, 0),
+            end_time=time(10, 35),
+            type="regular",
+            status="planned",
+            source="import",
+            required_staff_count=1,
+            course_id=course.id,
+        )
+    )
+    await db.commit()
+
+    config = await load_scheduling_config(db)
+    items_schema = __import__(
+        "app.schemas.v2.patient_fixed_visit", fromlist=["PatientFixedVisitV2Base"]
+    ).PatientFixedVisitV2Base
+    items = [
+        items_schema(
+            weekday=1,
+            start_time=time(10, 0),
+            duration_min=35,
+            course_template_id=seeded["tpl"].id,
+            slot_index=0,
+        )
+    ]
+
+    # 今週 (WEEK_MONDAY の週) を today に注入 → week_conflict が出る
+    result = await validate_pfv_changes(
+        db, seeded["target"].id, items, "normal", config=config, today=WEEK_MONDAY
+    )
+    codes = [w.code for w in result.warnings]
+    assert "week_conflict" in codes
+    msg = next(w.message for w in result.warnings if w.code == "week_conflict")
+    assert "【今週のみ】" in msg
+    assert "佐藤 花子" in msg
+    # 型同士 (V3) では衝突していない (他患者の型は月曜のみ)
+    assert codes.count("patient_time_conflict") == 0
+
+    # 別の週を today にすると week_conflict は出ない (恒久検査 V3 のみが残る)
+    result2 = await validate_pfv_changes(
+        db,
+        seeded["target"].id,
+        items,
+        "normal",
+        config=config,
+        today=date(2026, 6, 1),
+    )
+    assert "week_conflict" not in [w.code for w in result2.warnings]

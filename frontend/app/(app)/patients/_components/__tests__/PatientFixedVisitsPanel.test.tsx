@@ -1036,6 +1036,45 @@ describe('PatientFixedVisitsPanel', () => {
       await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
     });
 
+    it('SM-5. 二段検査 — week_conflict は「今週の検査」の段に分かれて表示される', async () => {
+      const validateFn = vi.fn().mockResolvedValue({
+        warnings: [
+          {
+            code: 'patient_time_conflict',
+            message:
+              '月曜 10:00 の枠が 佐藤 花子 様の訪問と重なる可能性があります（移動時間込み）。',
+            weekday: 0,
+            severity: 'warning',
+          },
+          {
+            code: 'week_conflict',
+            message:
+              '【今週のみ】月曜 10:00 の枠が、田中 一郎 様の今週の実際の訪問（10:00〜）と重なる可能性があります（移動時間込み）。来週以降は型どおりであれば問題ありません。',
+            weekday: 0,
+            severity: 'warning',
+          },
+        ],
+      });
+      setupMocks({ reads: [], validateFn });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      await waitFor(
+        () => {
+          expect(screen.getByTestId('pfv-warnings-weekly')).toHaveTextContent('佐藤 花子');
+          expect(screen.getByTestId('pfv-warnings-week-only')).toHaveTextContent('【今週のみ】');
+          expect(screen.getByTestId('pfv-warnings-week-only')).toHaveTextContent('田中 一郎');
+        },
+        { timeout: 3000 },
+      );
+    });
+
+    it('SM-6. 「この患者様の空き提案を見る」導線が /schedule?proposePatient= を指す', async () => {
+      setupMocks({ reads: [] });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+      expect(await screen.findAllByTestId('pfv-open-proposal')).not.toHaveLength(0);
+    });
+
     it('SM-4. 警告ゼロなら確認なしでそのまま保存される', async () => {
       const updateFn = vi.fn().mockResolvedValue({ items: [], warnings: [] });
       setupMocks({ reads: [], updateFn });

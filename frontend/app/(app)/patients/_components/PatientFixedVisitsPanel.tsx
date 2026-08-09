@@ -1197,13 +1197,27 @@ function ModePanel({
       ) : null}
 
       {!readonly && (
-        <p className="rounded-md border border-border-default bg-bg-muted/40 px-3 py-2 text-xs text-text-secondary">
-          💡 空きを確認しながら枠を取るには、スケジュール画面の
-          <span className="mx-1 font-medium text-text-primary">空き枠クリック（空き枠登録）</span>や
-          <span className="mx-1 font-medium text-text-primary">保留プールからの提案</span>
-          が確実です。ここで直接編集する場合は、コースの空き表示（○△×）と下の検査結果を
-          確認してから保存してください。
-        </p>
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-bg-muted/40 px-3 py-2">
+          <p className="min-w-0 flex-1 text-xs text-text-secondary">
+            💡 空きを確認しながら枠を取るには、検査済みの候補を出す
+            <span className="mx-1 font-medium text-text-primary">空き提案</span>
+            が確実です。ここで直接編集する場合は、コースの空き表示（○△×）と下の検査結果を
+            確認してから保存してください。
+          </p>
+          {/* 案1融合 (PO確定 2026-08-09): 正規ルート (提案ダイアログ) への 1 クリック導線。
+              /schedule?proposePatient= の deep link で提案ダイアログが直接開く。 */}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              window.location.href = `/schedule?proposePatient=${patientId}`;
+            }}
+            data-testid="pfv-open-proposal"
+          >
+            この患者様の空き提案を見る
+          </Button>
+        </div>
       )}
 
       {isLoading ? (
@@ -1237,26 +1251,50 @@ function ModePanel({
         />
       )}
 
-      {/* 案Z: 入力中ライブ検査の常設表示 (トーストと違い消えない)。 */}
+      {/* 案Z: 入力中ライブ検査の常設表示 (トーストと違い消えない)。
+          二段検査 (PO確定 2026-08-09): 毎週 (型同士) と 今週のみ (実配置) を分けて表示。 */}
       {!readonly && !isLoading && enabledDayCount > 0 && (
         <div data-testid="pfv-live-warnings">
           {liveWarnings.length > 0 ? (
-            <div className="rounded-md border border-amber-500/60 bg-amber-50 px-3 py-2">
-              <p className="mb-1 text-xs font-bold text-amber-900">
+            <div className="space-y-2 rounded-md border border-amber-500/60 bg-amber-50 px-3 py-2">
+              <p className="text-xs font-bold text-amber-900">
                 ⚠ 保存前の検査で {liveWarnings.length} 件の指摘があります
                 {liveChecking ? '（再検査中…）' : ''}
               </p>
-              <ul className="list-disc space-y-0.5 pl-4 text-xs text-amber-900">
-                {liveWarnings.map((w, i) => (
-                  <li key={`${w.code}-${w.weekday}-${i}`}>{w.message}</li>
-                ))}
-              </ul>
+              {liveWarnings.some((w) => w.code !== 'week_conflict') && (
+                <div data-testid="pfv-warnings-weekly">
+                  <p className="text-[11px] font-medium text-amber-800">
+                    毎週の検査（固定訪問スケジュール同士）
+                  </p>
+                  <ul className="list-disc space-y-0.5 pl-4 text-xs text-amber-900">
+                    {liveWarnings
+                      .filter((w) => w.code !== 'week_conflict')
+                      .map((w, i) => (
+                        <li key={`${w.code}-${w.weekday}-${i}`}>{w.message}</li>
+                      ))}
+                  </ul>
+                </div>
+              )}
+              {liveWarnings.some((w) => w.code === 'week_conflict') && (
+                <div data-testid="pfv-warnings-week-only">
+                  <p className="text-[11px] font-medium text-amber-800">
+                    今週の検査（今週の実際の配置との突合）
+                  </p>
+                  <ul className="list-disc space-y-0.5 pl-4 text-xs text-amber-900">
+                    {liveWarnings
+                      .filter((w) => w.code === 'week_conflict')
+                      .map((w, i) => (
+                        <li key={`${w.code}-${w.weekday}-${i}`}>{w.message}</li>
+                      ))}
+                  </ul>
+                </div>
+              )}
             </div>
           ) : (
             <p className="text-xs text-success" data-testid="pfv-live-ok">
               {liveChecking
                 ? '空き・衝突を検査中…'
-                : '✓ 他の患者様との衝突・コース容量の問題は見つかっていません'}
+                : '✓ 毎週（型同士）・今週（実配置）とも、衝突・容量の問題は見つかっていません'}
             </p>
           )}
         </div>

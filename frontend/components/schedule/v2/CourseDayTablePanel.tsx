@@ -2308,6 +2308,23 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     setPatientDetailAutoUnblock(false);
   }, []);
 
+  // 案1融合 (PO確定 2026-08-09): 患者マスタの「空き提案を見る」からの deep link。
+  // /schedule?proposePatient={id} で開くと、その患者の提案ダイアログ (プール投入
+  // 提案セクション有効) を直接開く。1 回だけ発火し、URL からは消す (戻る対策)。
+  const proposeHandledRef = useRef(false);
+  useEffect(() => {
+    if (proposeHandledRef.current) return;
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const pid = params.get('proposePatient');
+    if (!pid) return;
+    proposeHandledRef.current = true;
+    handleOpenPoolPatientDetail(pid);
+    params.delete('proposePatient');
+    const qs = params.toString();
+    window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
+  }, [handleOpenPoolPatientDetail]);
+
   // ─── Phase G-21 T4 reviewer C2: 🔒 完全固定 toggle handler ────────────
   // CourseDayTable / CourseWeekOverview / WeekdayScheduleCard から
   // (pfvId, nextPinned, scope, patientId) で呼ばれる.

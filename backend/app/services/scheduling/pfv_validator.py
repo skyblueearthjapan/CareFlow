@@ -23,14 +23,16 @@ PUT /patients/{id}/fixed-visits（手動系統＋候補採用系統）の削除�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import time
+from datetime import date, time, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.course import Course
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.visit import Visit
 from app.schemas.v2.patient_fixed_visit import PatientFixedVisitV2Base
 from app.services.scheduling.auto_allocator_v2 import (
     COURSE_MAX_MINUTES,
@@ -58,6 +60,9 @@ CODE_CAPACITY = "course_capacity_exceeded"  # V5 (warning)
 # レスポンスを解釈する FE / ログ解析のために code 定数だけ残す (寛容パース対象).
 CODE_MOVABILITY_CORRECTED = "movability_corrected"  # V6 (廃止済み・未発火)
 CODE_MULTI_STAFF_INCOMPLETE_PAIR = "multi_staff_incomplete_pair"  # V7 (warning)
+# V8 (2026-08-09 PO確定「二段検査」): 型 vs 今週の実配置。型同士 (V3) は毎週の恒久検査、
+# V8 は「今週に限り」現実 (カイポケ取込・手動調整) とぶつかるかを別段で知らせる。
+CODE_WEEK_CONFLICT = "week_conflict"  # V8 (warning)
 
 _WEEKDAY_JP: tuple[str, ...] = ("月", "火", "水", "木", "金", "土", "日")
 
@@ -242,6 +247,7 @@ async def validate_pfv_changes(
     mode: str = "normal",
     *,
     config: SchedulingConfig,
+    today: date | None = None,
 ) -> PfvValidationResult:
     """PFV 変更の適用前再検証 (read-only).
 
@@ -441,6 +447,97 @@ async def validate_pfv_changes(
                             f"上限 {COURSE_MAX_MINUTES} 分を超えます。"
                         ),
                         weekday=weekday,
+                        severity="warning",
+                    )
+                )
+
+    # --- V8: 型 vs 今週の実配置 (二段検査・PO確定 2026-08-09) ------------------
+    # V3 (型同士) は「毎週」の恒久検査。しかし保存は今週へも即反映される (A経路) ため、
+    # 今週の現実 (カイポケ取込・手動調整で型からズレた配置) との衝突は V3 では見えない。
+    # ここでは今週の他患者 visits と突合し、「今週に限り」の衝突を別 code で知らせる。
+    # 来週以降は型どおりなら問題ない、が現場で判別できるよう message に【今週のみ】を刻む。
+    if (
+        mode == "normal"
+        and patient is not None
+        and patient.primary_office_id is not None
+        and patient.lat is not None
+        and patient.lng is not None
+    ):
+        if today is None:
+            today = date.today()
+        week_monday = today - timedelta(days=today.weekday())
+        week_sunday = week_monday + timedelta(days=6)
+        week_rows = (
+            await db.execute(
+                select(Visit, Patient, Course)
+                .join(Patient, Patient.id == Visit.patient_id)
+                .outerjoin(Course, Course.id == Visit.course_id)
+                .where(
+                    Visit.visit_date >= week_monday,
+                    Visit.visit_date <= week_sunday,
+                    Visit.deleted_at.is_(None),
+                    Visit.status != "cancelled",
+                    Visit.patient_id != patient_id,
+                    Patient.primary_office_id == patient.primary_office_id,
+                    Patient.deleted_at.is_(None),
+                    Patient.lat.is_not(None),
+                    Patient.lng.is_not(None),
+                )
+            )
+        ).all()
+
+        # (weekday, course_template_id) 単位で今週の実配置を束ねる (V3 と同じ突合キー)。
+        week_by_course: dict[CourseKey, list[_OtherVisit]] = {}
+        for visit, other_patient, course in week_rows:
+            key = (visit.visit_date.weekday(), course.template_id if course else None)
+            week_by_course.setdefault(key, []).append(
+                _OtherVisit(
+                    ev=ExistingVisit(
+                        start_time=visit.start_time,
+                        end_time=visit.end_time,
+                        lat=float(other_patient.lat),
+                        lng=float(other_patient.lng),
+                        service_minutes=max(
+                            0,
+                            (visit.end_time.hour * 60 + visit.end_time.minute)
+                            - (visit.start_time.hour * 60 + visit.start_time.minute),
+                        ),
+                        patient_id=str(visit.patient_id),
+                    ),
+                    patient_name=other_patient.name,
+                )
+            )
+
+        p_lat2 = float(patient.lat)
+        p_lng2 = float(patient.lng)
+        for item in proposed_items:
+            key = (item.weekday, item.course_template_id)
+            others = week_by_course.get(key, [])
+            if not others:
+                continue
+            pev = ExistingVisit(
+                start_time=item.start_time,
+                end_time=_add_minutes(item.start_time, item.duration_min),
+                lat=p_lat2,
+                lng=p_lng2,
+                service_minutes=item.duration_min,
+                patient_id=str(patient_id),
+            )
+            conflict = _find_conflict(pev, [ov.ev for ov in others], config=config)
+            if conflict is not None:
+                other_name = next((ov.patient_name for ov in others if ov.ev is conflict), "他患者")
+                warnings.append(
+                    PfvValidationWarning(
+                        code=CODE_WEEK_CONFLICT,
+                        message=(
+                            f"【今週のみ】{_wd_name(item.weekday)}曜 "
+                            f"{item.start_time.strftime('%H:%M')} の枠が、"
+                            f"{other_name} 様の今週の実際の訪問"
+                            f"（{conflict.start_time.strftime('%H:%M')}〜）と"
+                            "重なる可能性があります（移動時間込み）。"
+                            "来週以降は型どおりであれば問題ありません。"
+                        ),
+                        weekday=item.weekday,
                         severity="warning",
                     )
                 )
