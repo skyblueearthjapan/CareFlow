@@ -92,16 +92,16 @@ class OfficeMatrix(BaseModel):
     week_generated: bool = Field(
         default=False, description="当週に確定コースが 1 つ以上あるか (false=週未生成)"
     )
-    # 設定漏れの診断 (PO 要望 2026-08-10: なぜ○×が出ないのかを明示する)。
+    # 設定漏れの診断 (PO 要望 2026-08-10)。
     #   null                 … 正常 (○×を計算できる)
-    #   'no_manager'         … 業務ロール「マネージャー」のスタッフが拠点に不在
-    #                          (週生成のコース作成前提を満たさない)
-    #   'not_generated'      … マネージャーは居るが当週のコースが 1 本も無い (週未生成)
+    #   'not_generated'      … 当週のコースが 1 本も無い (週未生成)
     #   'assignment_pending' … コースはあるが全て proposed (自動スタッフ割当が未実行。
     #                          この工程がコース確定を兼ねるため ○× の対象にならない)
+    # ※ マネージャー在籍は診断に含めない (2026-08-10 訂正): マネージャーが条件なのは
+    #    M 系予備枠の生成だけで、M 系はマトリックス母集合から除外済み。
     setup_state: str | None = Field(
         default=None,
-        description="設定漏れ診断: no_manager / not_generated / assignment_pending / null=正常",
+        description="設定漏れ診断: not_generated / assignment_pending / null=正常",
     )
     days: list[DayMatrix] = Field(default_factory=list)
 

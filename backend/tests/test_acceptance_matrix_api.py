@@ -200,9 +200,9 @@ async def test_week_not_generated(client, db) -> None:
 async def test_setup_state_diagnosis(client, db) -> None:
     """設定漏れ診断 (PO 要望 2026-08-10): なぜ○×が出ないのかを setup_state で返す。
 
-    - proposed のみ (マネージャー在籍) → assignment_pending (自動スタッフ割当が未実行)
-    - コースゼロ + マネージャー不在 → no_manager
-    - コースゼロ + マネージャー在籍 → not_generated
+    - proposed のみ → assignment_pending (自動スタッフ割当が未実行)
+    - コースゼロ → not_generated (マネージャー在籍の有無は診断に影響しない。
+      2026-08-10 訂正: マネージャーが条件なのは M 系予備枠のみで母集合から除外済み)
     - 確定コースあり → null (正常)
     """
     admin = await _make_user(db, email="am-admin-setup@example.com", role="admin")
@@ -234,7 +234,8 @@ async def test_setup_state_diagnosis(client, db) -> None:
     assert res.status_code == 200, res.text
     by_name = {o["office_name"]: o for o in res.json()["offices"]}
     assert by_name["拠点1"]["setup_state"] == "assignment_pending"
-    assert by_name["拠点2"]["setup_state"] == "no_manager"
+    # マネージャー不在 (拠点2) でも在籍 (拠点3) でも、コースゼロは等しく not_generated。
+    assert by_name["拠点2"]["setup_state"] == "not_generated"
     assert by_name["拠点3"]["setup_state"] == "not_generated"
     assert by_name["拠点4"]["setup_state"] is None
 

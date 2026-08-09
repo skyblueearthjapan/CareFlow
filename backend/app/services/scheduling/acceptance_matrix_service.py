@@ -413,22 +413,6 @@ async def compute_acceptance_matrix(
     # 満床でも空の M が「6名受けられる」と誤カウントし、満床の枠まで ○ になっていた。
     # 臨時コース (臨..) は実訪問を持つ稼働コースなので除外しない。
     course_rows = [c for c in course_rows if not _is_manager_course(c.code)]
-    # 業務ロール「マネージャー」在籍拠点 (週生成のコース作成前提・診断用)。
-    from app.models.staff import Staff
-
-    manager_office_ids: set[UUID] = set(
-        (
-            await db.scalars(
-                select(Staff.primary_office_id).where(
-                    Staff.role == "manager",
-                    Staff.status == "active",
-                    Staff.deleted_at.is_(None),
-                    Staff.primary_office_id.in_(target_office_ids),
-                )
-            )
-        ).all()
-    )
-
     courses_by_day: dict[tuple[UUID, int], list[Course]] = {}
     course_id_to_key: dict[UUID, tuple[UUID, int]] = {}
     offices_with_courses: set[UUID] = set()
@@ -596,11 +580,11 @@ async def compute_acceptance_matrix(
                 }
             )
 
-        # 設定漏れ診断 (優先順: マネージャー不在 > 週未生成 > 割当未実行)。
+        # 設定漏れ診断 (2026-08-10 訂正: 「マネージャー不在」は診断に含めない。
+        # マネージャー在籍が条件なのは M 系予備枠の生成のみで、M 系はマトリックスの
+        # 母集合から除外済み。通常コースの生成・確定にマネージャーは不要)。
         if office_has_courses:
             setup_state = None
-        elif office.id not in manager_office_ids:
-            setup_state = "no_manager"
         elif office.id in offices_with_any_courses:
             setup_state = "assignment_pending"
         else:
