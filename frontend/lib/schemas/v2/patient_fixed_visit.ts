@@ -165,6 +165,28 @@ export const patientFixedVisitWarningSchema = z
   .passthrough();
 export type PatientFixedVisitWarning = z.infer<typeof patientFixedVisitWarningSchema>;
 
+// ─── 案Z (PO 決定 2026-08-09): dry-run 検証 + コース負荷 ─────────────────────
+
+/** POST /fixed-visits/validate のレスポンス (保存せず警告だけ返す)。 */
+export const pfvValidateResponseSchema = z.object({
+  warnings: z.array(patientFixedVisitWarningSchema).catch([]),
+});
+export type PfvValidateResponse = z.infer<typeof pfvValidateResponseSchema>;
+
+/** GET /fixed-visits/course-load — (曜日×コース) の他患者負荷。空き表示の材料。 */
+export const pfvCourseLoadCellSchema = z.object({
+  weekday: z.number().int(),
+  course_template_id: z.string().uuid().nullable(),
+  used_minutes: z.number().int(),
+  patient_count: z.number().int(),
+});
+export const pfvCourseLoadResponseSchema = z.object({
+  course_max_minutes: z.number().int(),
+  max_patients_per_course: z.number().int(),
+  cells: z.array(pfvCourseLoadCellSchema).catch([]),
+});
+export type PfvCourseLoadResponse = z.infer<typeof pfvCourseLoadResponseSchema>;
+
 /**
  * PUT /patients/{id}/fixed-visits のエンベロープレスポンス。
  * - items: 既存 Read スキーマで検証。要素 drift 時は `.catch([])` で items のみ空に落とし、

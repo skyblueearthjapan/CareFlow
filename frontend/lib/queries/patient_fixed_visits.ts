@@ -28,6 +28,10 @@ import { useSession } from 'next-auth/react';
 import { fetcher } from '@/lib/api/fetcher';
 import {
   parsePatientFixedVisitsBulkPutResponse,
+  pfvCourseLoadResponseSchema,
+  pfvValidateResponseSchema,
+  type PfvCourseLoadResponse,
+  type PfvValidateResponse,
   type PatientFixedVisitMode,
   type PatientFixedVisitsBulkPut,
   type PatientFixedVisitsBulkPutResponse,
@@ -95,6 +99,52 @@ export function useFixedVisits(
         accessToken,
         refreshToken,
       }),
+  });
+}
+
+// ─── 案Z (PO 決定 2026-08-09): dry-run 検証 + コース負荷 ─────────────────────
+
+/** 入力中のライブ検査 (保存しない)。PUT と同じ再検証カーネルを dry-run で叩く。 */
+export function useValidateFixedVisits(
+  patientId: string,
+): UseMutationResult<
+  PfvValidateResponse,
+  Error,
+  { mode: PatientFixedVisitMode; items: unknown[] }
+> {
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+  return useMutation({
+    mutationFn: async (payload) => {
+      const raw = await fetcher<unknown>(`/api/v1/patients/${patientId}/fixed-visits/validate`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      });
+      return pfvValidateResponseSchema.parse(raw);
+    },
+  });
+}
+
+/** コースセレクトの空き表示用: (曜日×コース) の他患者負荷 + 容量定数。 */
+export function useFixedVisitsCourseLoad(
+  patientId: string,
+  mode: PatientFixedVisitMode,
+  opts?: { enabled?: boolean },
+): UseQueryResult<PfvCourseLoadResponse, Error> {
+  const { data: session, status } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+  return useQuery({
+    queryKey: [...FIXED_VISITS_KEY(patientId, mode), 'course-load'],
+    enabled: status === 'authenticated' && !!patientId && (opts?.enabled ?? true),
+    queryFn: async () => {
+      const raw = await fetcher<unknown>(
+        `/api/v1/patients/${patientId}/fixed-visits/course-load?mode=${mode}`,
+        { accessToken, refreshToken },
+      );
+      return pfvCourseLoadResponseSchema.parse(raw);
+    },
   });
 }
 

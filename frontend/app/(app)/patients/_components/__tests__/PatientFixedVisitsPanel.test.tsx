@@ -30,6 +30,8 @@ vi.mock('@/lib/queries/patient_fixed_visits', () => ({
   useUpdateFixedVisits: vi.fn(),
   useDeleteFixedVisits: vi.fn(),
   useApplyFromWeek: vi.fn(),
+  useValidateFixedVisits: vi.fn(),
+  useFixedVisitsCourseLoad: vi.fn(),
   // P0-2 Commit 3: 保存成功パスで呼ばれる警告トーストヘルパ (欠落すると
   // undefined() の TypeError が catch に飲まれテストが嘘をつく)。
   toastFixedVisitWarnings: vi.fn(),
@@ -80,6 +82,8 @@ import {
   useUpdateFixedVisits,
   useDeleteFixedVisits,
   useApplyFromWeek,
+  useValidateFixedVisits,
+  useFixedVisitsCourseLoad,
 } from '@/lib/queries/patient_fixed_visits';
 import { useCourseTemplates } from '@/lib/queries/course_templates';
 import { useOffices } from '@/lib/queries/offices';
@@ -116,6 +120,12 @@ function setupMocks(
     deleteFn?: Mock;
     fromWeekFn?: Mock;
     togglePinFn?: Mock;
+    validateFn?: Mock;
+    courseLoad?: {
+      course_max_minutes: number;
+      max_patients_per_course: number;
+      cells: unknown[];
+    };
     courseTemplates?: { id: string; label: string; office_id: string }[];
     offices?: { id: string; name: string; code?: string | null }[];
     subOfficeCourseTemplates?: { id: string; label: string; office_id: string }[];
@@ -127,6 +137,15 @@ function setupMocks(
   (useUpdateFixedVisits as Mock).mockReturnValue(makeMutation(opts.updateFn));
   (useDeleteFixedVisits as Mock).mockReturnValue(makeMutation(opts.deleteFn));
   (useApplyFromWeek as Mock).mockReturnValue(makeMutation(opts.fromWeekFn));
+  // 案Z: dry-run 検証は既定で警告 0 件 (保存が素通りする)。
+  (useValidateFixedVisits as Mock).mockReturnValue(
+    makeMutation(opts.validateFn ?? vi.fn().mockResolvedValue({ warnings: [] })),
+  );
+  (useFixedVisitsCourseLoad as Mock).mockReturnValue(
+    makeQueryResult(
+      opts.courseLoad ?? { course_max_minutes: 480, max_patients_per_course: 6, cells: [] },
+    ),
+  );
   (useTogglePfvPin as Mock).mockReturnValue(makeMutation(opts.togglePinFn));
   (useCourseTemplates as Mock).mockReturnValue(makeQueryResult(opts.courseTemplates ?? []));
   // Phase E-5 (項目 ⑥B): useOffices と useQueries (sub-office course templates 用) を mock.
@@ -367,11 +386,11 @@ describe('PatientFixedVisitsPanel', () => {
     await userEvent.click(checkboxes[0]);
 
     const courseSelect = screen.getByLabelText('月 コース');
-    // "未指定" + "A" + "B" の 3 options
+    // "未指定" + "A" + "B" の 3 options (案Z: ○△×つき空き表示ラベル)
     const options = Array.from((courseSelect as HTMLSelectElement).options).map((o) => o.text);
-    expect(options).toContain('未指定');
-    expect(options).toContain('A');
-    expect(options).toContain('B');
+    expect(options).toContain('未指定（空き検査の対象外）');
+    expect(options.some((t) => t.startsWith('A '))).toBe(true);
+    expect(options.some((t) => t.startsWith('B '))).toBe(true);
     expect(options).toHaveLength(3);
   });
 
@@ -463,7 +482,7 @@ describe('PatientFixedVisitsPanel', () => {
 
     const courseSelect = screen.getByLabelText('月 コース');
     const options = Array.from((courseSelect as HTMLSelectElement).options).map((o) => o.text);
-    expect(options).toEqual(['未指定']);
+    expect(options).toEqual(['未指定（空き検査の対象外）']);
   });
 
   // ─── W26: readOnly prop tests ──────────────────────────────────────────────
@@ -921,6 +940,111 @@ describe('PatientFixedVisitsPanel', () => {
         sub_office_id: TSUGA_ID,
       });
       expect(parsed.sub_office_id).toBe(TSUGA_ID);
+    });
+  });
+
+  // ─── 案Z: マスタを賢くする (PO 決定 2026-08-09) ─────────────────────────────
+  // ライブ検査 (常設表示)・コースセレクトの空き表示・警告あり保存の確認必須。
+  describe('案Z (賢いマスタ)', () => {
+    const COURSE_A = { id: '33333333-3333-3333-3333-333333333331', label: 'A', office_id: 'o1' };
+
+    it('SM-1. コースセレクトに空き表示 — 満杯コースは × が付く', async () => {
+      setupMocks({
+        courseTemplates: [COURSE_A],
+        courseLoad: {
+          course_max_minutes: 480,
+          max_patients_per_course: 6,
+          // 月曜 A は既に 460 分使用 → 35 分は入らない (×)
+          cells: [
+            {
+              weekday: 0,
+              course_template_id: COURSE_A.id,
+              used_minutes: 460,
+              patient_count: 5,
+            },
+          ],
+        },
+      });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} primaryOfficeId="o1" />);
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      const monSelect = screen.getByLabelText('月 コース') as HTMLSelectElement;
+      const monA = Array.from(monSelect.options).find((op) => op.text.startsWith('A'));
+      expect(monA?.text).toContain('×');
+
+      // 火曜 (負荷なし) は ○ と残分数
+      await userEvent.click(screen.getByLabelText('火曜日 訪問あり'));
+      const tueSelect = screen.getByLabelText('火 コース') as HTMLSelectElement;
+      const tueA = Array.from(tueSelect.options).find((op) => op.text.startsWith('A'));
+      expect(tueA?.text).toContain('○');
+      expect(tueA?.text).toContain('残445分');
+    });
+
+    it('SM-2. 入力中ライブ検査 — 警告が常設表示される (トーストではない)', async () => {
+      const validateFn = vi.fn().mockResolvedValue({
+        warnings: [
+          {
+            code: 'patient_time_conflict',
+            message:
+              '月曜 10:00 の枠が 佐藤 花子 様の訪問と重なる可能性があります（移動時間込み）。',
+            weekday: 0,
+            severity: 'warning',
+          },
+        ],
+      });
+      setupMocks({ reads: [], validateFn });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      // 700ms デバウンス後に dry-run が走り、常設パネルに出る
+      await waitFor(
+        () => {
+          expect(screen.getByTestId('pfv-live-warnings')).toHaveTextContent(
+            '佐藤 花子 様の訪問と重なる可能性',
+          );
+        },
+        { timeout: 3000 },
+      );
+      expect(validateFn).toHaveBeenCalled();
+    });
+
+    it('SM-3. 警告があるままの保存は確認ダイアログ必須 → 了解で PUT が走る', async () => {
+      const updateFn = vi.fn().mockResolvedValue({ items: [], warnings: [] });
+      const validateFn = vi.fn().mockResolvedValue({
+        warnings: [
+          {
+            code: 'course_capacity_exceeded',
+            message: '月曜 コースA の容量を超えています。',
+            weekday: 0,
+            severity: 'warning',
+          },
+        ],
+      });
+      setupMocks({ reads: [], updateFn, validateFn });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+
+      // PUT はまだ呼ばれず、確認ダイアログが出る
+      const submit = await screen.findByTestId('pfv-save-confirm-submit');
+      expect(updateFn).not.toHaveBeenCalled();
+      // ライブ検査パネルと確認ダイアログの両方に出る (常設表示 + 確認)
+      expect(screen.getAllByText(/容量を超えています/).length).toBeGreaterThanOrEqual(1);
+
+      await userEvent.click(submit);
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+    });
+
+    it('SM-4. 警告ゼロなら確認なしでそのまま保存される', async () => {
+      const updateFn = vi.fn().mockResolvedValue({ items: [], warnings: [] });
+      setupMocks({ reads: [], updateFn });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      expect(screen.queryByTestId('pfv-save-confirm-submit')).toBeNull();
     });
   });
 

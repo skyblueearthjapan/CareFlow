@@ -192,6 +192,50 @@ class PatientFixedVisitsBulkPutResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 案Z (PO 決定 2026-08-09): マスタ編集の「賢い化」用 dry-run 検証 + コース負荷
+# ---------------------------------------------------------------------------
+
+
+class PfvValidateRequest(BaseModel):
+    """POST /patients/{id}/fixed-visits/validate — 保存せずに再検証だけ実行する。
+
+    入力中のライブ検査用 (常設表示)。PUT と同じ items 形で、削除も INSERT もしない。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: PatientFixedVisitMode
+    items: list[PatientFixedVisitV2Base] = Field(default_factory=list, max_length=14)
+
+
+class PfvValidateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    warnings: list[PfvValidationWarningOut] = Field(default_factory=list)
+
+
+class PfvCourseLoadCell(BaseModel):
+    """(曜日 × コース) 単位の既存負荷 (対象患者自身を除く他患者の型の合計)。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    weekday: int
+    course_template_id: UUID | None
+    used_minutes: int
+    patient_count: int
+
+
+class PfvCourseLoadResponse(BaseModel):
+    """GET /patients/{id}/fixed-visits/course-load — コースセレクトの空き表示用。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_max_minutes: int
+    max_patients_per_course: int
+    cells: list[PfvCourseLoadCell] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Phase G-21 T2: is_pinned 単独切替用 schema
 # ---------------------------------------------------------------------------
 

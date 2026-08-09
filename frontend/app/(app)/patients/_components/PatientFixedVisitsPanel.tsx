@@ -51,6 +51,8 @@ import {
   useUpdateFixedVisits,
   useDeleteFixedVisits,
   useApplyFromWeek,
+  useValidateFixedVisits,
+  useFixedVisitsCourseLoad,
   toastFixedVisitWarnings,
 } from '@/lib/queries/patient_fixed_visits';
 import { useCourseTemplates } from '@/lib/queries/course_templates';
@@ -60,6 +62,8 @@ import {
   patientFixedVisitsBulkPutSchema,
   PATIENT_FIXED_VISIT_MODES,
   type Movability,
+  type PatientFixedVisitWarning,
+  type PfvCourseLoadResponse,
   type PatientFixedVisitMode,
   type PatientFixedVisitV2Base,
   type PatientFixedVisitV2Read,
@@ -140,6 +144,49 @@ const LEGACY_MOVABILITY_LABELS: Record<string, string> = {
   time_flexible: '時刻変更可（旧設定）',
   day_flexible: '曜日変更可（旧設定）',
 };
+
+// ─── 案Z (PO 決定 2026-08-09): コース空き判定 ────────────────────────────────
+
+/** (曜日, コース) の空きマーク。○=余裕 / △=残りわずか / ×=容量超過。 */
+export interface CourseAvailability {
+  mark: '○' | '△' | '×';
+  remainingMin: number;
+  patientCount: number;
+}
+
+/**
+ * コースの空きを判定する。used = 他患者の (曜日×コース) 合計、そこへ
+ * この行の duration を足したときの残りで判定する。
+ *   × … 残りがマイナス or 人数上限に到達済み
+ *   △ … 残り 60 分未満 (もう 1〜2 枠でいっぱい)
+ *   ○ … それ以外
+ */
+export function courseAvailabilityFor(
+  load: PfvCourseLoadResponse | undefined,
+  weekday: number,
+  courseTemplateId: string,
+  durationMin: number,
+): CourseAvailability | null {
+  if (!load) return null;
+  const cell = load.cells.find(
+    (c) => c.weekday === weekday && c.course_template_id === courseTemplateId,
+  );
+  const used = cell?.used_minutes ?? 0;
+  const patients = cell?.patient_count ?? 0;
+  const remaining = load.course_max_minutes - used - durationMin;
+  const mark: CourseAvailability['mark'] =
+    remaining < 0 || patients >= load.max_patients_per_course ? '×' : remaining < 60 ? '△' : '○';
+  return { mark, remainingMin: remaining, patientCount: patients };
+}
+
+/** option 表示: 「A ○ 残85分」 / 「B × 満杯」。 */
+export function courseOptionLabel(label: string, avail: CourseAvailability | null): string {
+  if (!avail) return label;
+  if (avail.mark === '×') {
+    return `${label} ×（満杯${avail.remainingMin < 0 ? '' : '・人数上限'}）`;
+  }
+  return `${label} ${avail.mark} 残${avail.remainingMin}分`;
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -578,6 +625,11 @@ interface WeekGridProps {
    * 所要時間のデフォルト・「（基本）」ラベル・イレギュラー表示に使う。
    */
   baseMinutes: number;
+  /**
+   * 案Z (PO 決定 2026-08-09): (曜日×コース) の他患者負荷。コースセレクトに
+   * ○△×と残容量を出すための材料。undefined = 読込中 (ラベルのみ表示)。
+   */
+  courseLoad?: PfvCourseLoadResponse;
 }
 
 function WeekGrid({
@@ -592,6 +644,7 @@ function WeekGrid({
   primaryOfficeId,
   getSubOfficeCourseTemplates,
   baseMinutes,
+  courseLoad,
 }: WeekGridProps) {
   const update = (weekday: number, patch: Partial<DayRow>) => {
     const current = rows[weekday] ?? emptyDayRow(baseMinutes);
@@ -721,10 +774,13 @@ function WeekGrid({
                         : `${WEEKDAY_LABELS[wd]} コース`
                     }
                   >
-                    <option value="">未指定</option>
+                    <option value="">未指定（空き検査の対象外）</option>
                     {rowCourseTemplates.map((tpl) => (
                       <option key={tpl.id} value={tpl.id}>
-                        {tpl.label}
+                        {courseOptionLabel(
+                          tpl.label,
+                          courseAvailabilityFor(courseLoad, wd, tpl.id, row.duration_min),
+                        )}
                       </option>
                     ))}
                   </select>
@@ -748,7 +804,10 @@ function WeekGrid({
                     {requiresMultipleStaff
                       ? rowCourseTemplates.map((tpl) => (
                           <option key={tpl.id} value={tpl.id}>
-                            {tpl.label}
+                            {courseOptionLabel(
+                              tpl.label,
+                              courseAvailabilityFor(courseLoad, wd, tpl.id, row.duration_min),
+                            )}
                           </option>
                         ))
                       : null}
@@ -852,6 +911,9 @@ function ModePanel({
   const updateMut = useUpdateFixedVisits(patientId);
   const deleteMut = useDeleteFixedVisits(patientId);
   const fromWeekMut = useApplyFromWeek(patientId);
+  // 案Z (PO 決定 2026-08-09): 入力中ライブ検査 + コース空き表示。
+  const validateMut = useValidateFixedVisits(patientId);
+  const courseLoadQuery = useFixedVisitsCourseLoad(patientId, mode, { enabled: !readonly });
 
   // 基本の訪問時間 = 希望訪問パターンの service_minutes (PO 決定 2026-08-09)。
   const baseMinutes = baseServiceMinutes(weeklyPattern);
@@ -859,6 +921,13 @@ function ModePanel({
   const [fieldErrors, setFieldErrors] = React.useState<Record<number, string>>({});
   const [formError, setFormError] = React.useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false);
+  // 案Z: 入力中ライブ検査の結果 (常設表示。トーストと違い消えない)。
+  const [liveWarnings, setLiveWarnings] = React.useState<PatientFixedVisitWarning[]>([]);
+  const [liveChecking, setLiveChecking] = React.useState(false);
+  // 案Z: 警告があるままの保存は確認ダイアログ必須。
+  const [saveConfirm, setSaveConfirm] = React.useState<{
+    warnings: PatientFixedVisitWarning[];
+  } | null>(null);
 
   // サーバー状態そのままの DayRows. 未保存編集の有無 (isDirty) 判定に使う.
   const serverRows = React.useMemo(() => readsToDayRows(reads, baseMinutes), [reads, baseMinutes]);
@@ -906,6 +975,34 @@ function ModePanel({
     }
     return { rowErrors: errs, rowWarnings: warns };
   }, [rows, requiresMultipleStaff]);
+
+  // ── 案Z: 入力中ライブ検査 (700ms デバウンス・dry-run・常設表示) ─────────
+  // 保存前に「当てずっぽう」を可視化する。read-only エンドポイントなので
+  // 何度呼んでも安全。編集の手が止まったタイミングで最新の rows を検査する。
+  const validateRef = React.useRef(validateMut.mutateAsync);
+  validateRef.current = validateMut.mutateAsync;
+  React.useEffect(() => {
+    if (readonly || isLoading) return;
+    const items = dayRowsToItems(rows, requiresMultipleStaff);
+    if (items.length === 0) {
+      setLiveWarnings([]);
+      return;
+    }
+    setLiveChecking(true);
+    const timer = window.setTimeout(() => {
+      void validateRef
+        .current({ mode, items })
+        .then((res) => setLiveWarnings(res.warnings))
+        .catch(() => {
+          // ライブ検査の失敗は編集を妨げない (保存時に再検査される)。
+        })
+        .finally(() => setLiveChecking(false));
+    }, 700);
+    return () => {
+      window.clearTimeout(timer);
+      setLiveChecking(false);
+    };
+  }, [rows, mode, readonly, isLoading, requiresMultipleStaff]);
 
   // ── 週全体の完全固定 (PO 要望 2026-08-09) ──────────────────────────────
   // 「1 週間分全体を完全固定にする」入口。訪問ありの全曜日の movability を
@@ -973,7 +1070,8 @@ function ModePanel({
   };
 
   // ── 保存 ─────────────────────────────────────────────────────────────
-  const handleSave = async () => {
+  // skipWarningConfirm: 確認ダイアログで「このまま保存」を選んだ 2 周目。
+  const handleSave = async (skipWarningConfirm = false) => {
     setFieldErrors({});
     setFormError(null);
 
@@ -1022,6 +1120,21 @@ function ModePanel({
       setFieldErrors(errs);
       if (generalError) setFormError(generalError);
       return;
+    }
+
+    // 案Z: 保存直前に最新の items で dry-run 検査し、警告があれば確認を挟む。
+    // (ライブ検査はデバウンス中の可能性があるため保存時に必ず取り直す。)
+    if (!skipWarningConfirm) {
+      try {
+        const check = await validateMut.mutateAsync({ mode, items });
+        if (check.warnings.length > 0) {
+          setLiveWarnings(check.warnings);
+          setSaveConfirm({ warnings: check.warnings });
+          return;
+        }
+      } catch {
+        // 検査自体の失敗は保存を妨げない (PUT 側でも同じ検査が走り警告が返る)。
+      }
     }
 
     try {
@@ -1083,6 +1196,16 @@ function ModePanel({
         </Alert>
       ) : null}
 
+      {!readonly && (
+        <p className="rounded-md border border-border-default bg-bg-muted/40 px-3 py-2 text-xs text-text-secondary">
+          💡 空きを確認しながら枠を取るには、スケジュール画面の
+          <span className="mx-1 font-medium text-text-primary">空き枠クリック（空き枠登録）</span>や
+          <span className="mx-1 font-medium text-text-primary">保留プールからの提案</span>
+          が確実です。ここで直接編集する場合は、コースの空き表示（○△×）と下の検査結果を
+          確認してから保存してください。
+        </p>
+      )}
+
       {isLoading ? (
         <p className="text-sm text-text-muted">読み込み中...</p>
       ) : readonly ? (
@@ -1110,7 +1233,33 @@ function ModePanel({
           primaryOfficeId={primaryOfficeId}
           getSubOfficeCourseTemplates={getSubOfficeCourseTemplates}
           baseMinutes={baseMinutes}
+          courseLoad={courseLoadQuery.data}
         />
+      )}
+
+      {/* 案Z: 入力中ライブ検査の常設表示 (トーストと違い消えない)。 */}
+      {!readonly && !isLoading && enabledDayCount > 0 && (
+        <div data-testid="pfv-live-warnings">
+          {liveWarnings.length > 0 ? (
+            <div className="rounded-md border border-amber-500/60 bg-amber-50 px-3 py-2">
+              <p className="mb-1 text-xs font-bold text-amber-900">
+                ⚠ 保存前の検査で {liveWarnings.length} 件の指摘があります
+                {liveChecking ? '（再検査中…）' : ''}
+              </p>
+              <ul className="list-disc space-y-0.5 pl-4 text-xs text-amber-900">
+                {liveWarnings.map((w, i) => (
+                  <li key={`${w.code}-${w.weekday}-${i}`}>{w.message}</li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="text-xs text-success" data-testid="pfv-live-ok">
+              {liveChecking
+                ? '空き・衝突を検査中…'
+                : '✓ 他の患者様との衝突・コース容量の問題は見つかっていません'}
+            </p>
+          )}
+        </div>
       )}
 
       {formError ? (
@@ -1194,6 +1343,49 @@ function ModePanel({
           </Button>
         </div>
       )}
+
+      {/* 案Z: 警告があるままの保存の確認 (必須)。 */}
+      <Dialog open={saveConfirm !== null} onOpenChange={(open) => !open && setSaveConfirm(null)}>
+        <DialogContent aria-describedby="pfv-save-confirm-desc">
+          <DialogHeader>
+            <DialogTitle>検査で指摘がありますが保存しますか？</DialogTitle>
+          </DialogHeader>
+          <div id="pfv-save-confirm-desc" className="space-y-2 text-sm text-text-secondary">
+            <ul className="list-disc space-y-1 pl-5">
+              {(saveConfirm?.warnings ?? []).map((w, i) => (
+                <li key={`${w.code}-${w.weekday}-${i}`}>{w.message}</li>
+              ))}
+            </ul>
+            <p className="text-xs text-text-muted">
+              このまま保存すると、盤面で衝突表示になったり、自動割当が時刻をずらして
+              解決を試みることがあります。空きを確認して置くには、スケジュール画面の
+              空き枠登録やプールからの提案が確実です。
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setSaveConfirm(null)}
+              data-testid="pfv-save-confirm-cancel"
+            >
+              やめる
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={updateMut.isPending}
+              onClick={() => {
+                setSaveConfirm(null);
+                void handleSave(true);
+              }}
+              data-testid="pfv-save-confirm-submit"
+            >
+              指摘を理解して保存する
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* 削除確認ダイアログ */}
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>

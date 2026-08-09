@@ -46,10 +46,15 @@ from app.schemas.v2.patient_fixed_visit import (
     PatientFixedVisitsBulkPutResponse,
     PatientFixedVisitV2Base,
     PatientFixedVisitV2Read,
+    PfvCourseLoadCell,
+    PfvCourseLoadResponse,
+    PfvValidateRequest,
+    PfvValidateResponse,
     PfvValidationWarningOut,
     PfvWeekSyncOut,
 )
 from app.services.scheduling.auto_allocator_v2 import (
+    COURSE_MAX_MINUTES,
     reset_visits_to_fixed,
     resolve_reset_office_ids,
 )
@@ -424,6 +429,94 @@ async def get_fixed_visits(
 
     rows = (await db.scalars(stmt)).all()
     return [PatientFixedVisitV2Read.model_validate(r) for r in rows]
+
+
+@router.post(
+    "/{patient_id}/fixed-visits/validate",
+    response_model=PfvValidateResponse,
+    summary="固定訪問パターンの dry-run 検証 (保存しない・admin/manager)",
+)
+async def validate_fixed_visits(
+    patient_id: UUID,
+    body: PfvValidateRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+) -> PfvValidateResponse:
+    """案Z (PO 決定 2026-08-09): マスタ編集の入力中ライブ検査。
+
+    PUT と同じ再検証カーネル (患者間衝突 V3 / 昼休み V4 / コース容量 V5 /
+    2名体制 V7) を **一切書き込まずに** 実行し、警告を常設表示用に返す。
+    保存前に「当てずっぽう」を可視化するための read-only エンドポイント。
+    """
+    await _ensure_patient_exists(db, patient_id)
+    config = await load_scheduling_config(db)
+    validation = await validate_pfv_changes(db, patient_id, body.items, body.mode, config=config)
+    return PfvValidateResponse(
+        warnings=[
+            PfvValidationWarningOut(
+                code=w.code, message=w.message, weekday=w.weekday, severity=w.severity
+            )
+            for w in validation.warnings
+        ]
+    )
+
+
+@router.get(
+    "/{patient_id}/fixed-visits/course-load",
+    response_model=PfvCourseLoadResponse,
+    summary="コース負荷 (曜日×コースの他患者合計・空き表示用・admin/manager)",
+)
+async def get_fixed_visits_course_load(
+    patient_id: UUID,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "manager"))],
+    mode: PatientFixedVisitMode = Query(default="normal"),
+) -> PfvCourseLoadResponse:
+    """案Z: コースセレクトの空き情報 (○△×・残容量) の材料。
+
+    同一拠点・同 mode の **他患者** の型を (曜日 × コース) で集計して返す。
+    対象患者自身の行は含めない (編集中の値は FE が足す)。
+    """
+    await _ensure_patient_exists(db, patient_id)
+    patient = await db.scalar(select(Patient).where(Patient.id == patient_id))
+    config = await load_scheduling_config(db)
+
+    cells: list[PfvCourseLoadCell] = []
+    if patient is not None and patient.primary_office_id is not None:
+        rows = (
+            await db.execute(
+                select(PatientFixedVisit)
+                .join(Patient, Patient.id == PatientFixedVisit.patient_id)
+                .where(
+                    PatientFixedVisit.mode == mode,
+                    PatientFixedVisit.patient_id != patient_id,
+                    Patient.primary_office_id == patient.primary_office_id,
+                    Patient.deleted_at.is_(None),
+                    Patient.status == "active",
+                )
+            )
+        ).scalars()
+        agg: dict[tuple[int, UUID | None], dict] = {}
+        for pfv in rows:
+            key = (pfv.weekday, pfv.course_template_id)
+            cell = agg.setdefault(key, {"minutes": 0, "patients": set()})
+            cell["minutes"] += pfv.duration_min
+            cell["patients"].add(pfv.patient_id)
+        cells = [
+            PfvCourseLoadCell(
+                weekday=wd,
+                course_template_id=tpl,
+                used_minutes=v["minutes"],
+                patient_count=len(v["patients"]),
+            )
+            for (wd, tpl), v in sorted(agg.items(), key=lambda kv: (kv[0][0], str(kv[0][1] or "")))
+        ]
+
+    return PfvCourseLoadResponse(
+        course_max_minutes=COURSE_MAX_MINUTES,
+        max_patients_per_course=config.max_patients_per_course,
+        cells=cells,
+    )
 
 
 @router.put(
