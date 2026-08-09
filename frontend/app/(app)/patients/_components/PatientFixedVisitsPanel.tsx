@@ -92,7 +92,34 @@ const TIME_OPTIONS: string[] = (() => {
   return opts;
 })();
 
-const DURATION_OPTIONS = [15, 30, 45, 60, 90, 120, 150, 180, 240, 300, 360, 480] as const;
+// 訪問看護の基本時間 35 分を含む (PO 決定 2026-08-09: 35 分が基本なのに選択肢に
+// 無かったため、35 分の行を開くと未選択表示になり 30/45 へ化けるドリフトが起きていた)。
+const DURATION_OPTIONS = [15, 30, 35, 45, 60, 90, 120, 150, 180, 240, 300, 360, 480] as const;
+
+/** 希望訪問パターン未設定時の基本訪問時間 (分)。BE の各フォールバックと同値。 */
+const DEFAULT_BASE_MINUTES = 35;
+
+/**
+ * その患者の「基本の訪問時間」(PO 決定 2026-08-09)。
+ * 希望訪問パターンの service_minutes を 1 つのベースとし、固定訪問パターンの
+ * 所要時間はこの値をデフォルトにする。変えるのはイレギュラー対応のみ。
+ */
+function baseServiceMinutes(pattern: WeeklyPattern | null | undefined): number {
+  const raw = pattern?.service_minutes;
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 1) {
+    return Math.min(480, Math.floor(raw));
+  }
+  return DEFAULT_BASE_MINUTES;
+}
+
+/**
+ * 所要時間セレクトの選択肢。標準の刻みに「基本時間」と「現在値」を必ず含める。
+ * 現在値を含めるのは、選択肢に無い値 (取込由来の 65 分など) を開いたときに
+ * 未選択表示のまま黙って別の値へ化けるのを防ぐため (可動域の旧値と同じ流儀)。
+ */
+function durationOptionsFor(baseMin: number, currentMin: number): number[] {
+  return Array.from(new Set([...DURATION_OPTIONS, baseMin, currentMin])).sort((a, b) => a - b);
+}
 
 /**
  * 旧 4 段階時代の値のラベル (PO 決定 2026-08-08 で 2 段階へ整理).
@@ -150,11 +177,12 @@ type DayRows = Record<number, DayRow>;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function emptyDayRow(): DayRow {
+function emptyDayRow(baseMin: number = DEFAULT_BASE_MINUTES): DayRow {
   return {
     enabled: false,
     start_time: '09:00',
-    duration_min: 30,
+    // 基本の訪問時間 (希望訪問パターン) をデフォルトにする (PO 決定 2026-08-09)。
+    duration_min: baseMin,
     course_template_id: null,
     course_template_id_2: null,
     sub_office_id: null,
@@ -164,10 +192,10 @@ function emptyDayRow(): DayRow {
   };
 }
 
-function emptyDayRows(): DayRows {
+function emptyDayRows(baseMin: number = DEFAULT_BASE_MINUTES): DayRows {
   const rows: DayRows = {};
   for (let i = 0; i < 7; i++) {
-    rows[i] = emptyDayRow();
+    rows[i] = emptyDayRow(baseMin);
   }
   return rows;
 }
@@ -178,12 +206,15 @@ function emptyDayRows(): DayRows {
  * W37: slot_index=0 → course_template_id, slot_index=1 → course_template_id_2.
  * start_time / duration_min は slot 0 を優先し、slot 0 が無ければ slot 1 を使う。
  */
-function readsToDayRows(reads: PatientFixedVisitV2Read[]): DayRows {
-  const rows = emptyDayRows();
+function readsToDayRows(
+  reads: PatientFixedVisitV2Read[],
+  baseMin: number = DEFAULT_BASE_MINUTES,
+): DayRows {
+  const rows = emptyDayRows(baseMin);
   for (const r of reads) {
     if (r.weekday < 0 || r.weekday > 6) continue;
     const slot = r.slot_index ?? 0;
-    const current = rows[r.weekday] ?? emptyDayRow();
+    const current = rows[r.weekday] ?? emptyDayRow(baseMin);
     // start_time は HH:MM:SS の場合もあるので先頭 5 文字に切り詰める
     const startTime = r.start_time.slice(0, 5);
     // この曜日の既存 PFV id を slot 0/1 とも集める (参照用).
@@ -313,9 +344,10 @@ function dayRowsToItems(rows: DayRows, requiresMultipleStaff: boolean): PatientF
 export function weeklyPatternToDayRows(
   pattern: WeeklyPattern | null | undefined,
   current?: DayRows,
+  baseMin: number = DEFAULT_BASE_MINUTES,
 ): DayRows {
   // base は current の shallow copy (= 引数なしなら従来通り全曜日 空 row).
-  const rows: DayRows = current ? { ...current } : emptyDayRows();
+  const rows: DayRows = current ? { ...current } : emptyDayRows(baseMin);
   if (!pattern) return rows;
 
   const WEEKDAY_KEY_MAP: Record<string, number> = {
@@ -350,7 +382,7 @@ export function weeklyPatternToDayRows(
   for (const wd of preferred) {
     const idx = WEEKDAY_KEY_MAP[wd];
     if (idx === undefined) continue;
-    const existing = rows[idx] ?? emptyDayRow();
+    const existing = rows[idx] ?? emptyDayRow(baseMin);
     rows[idx] = {
       // enabled は確実に true (= 希望曜日であることを反映)
       enabled: true,
@@ -410,7 +442,8 @@ function ReadOnlyWeekGrid({
   courseTemplates,
   requiresMultipleStaff,
   offices,
-}: ReadOnlyWeekGridProps) {
+  baseMinutes = DEFAULT_BASE_MINUTES,
+}: ReadOnlyWeekGridProps & { baseMinutes?: number }) {
   /** course_template_id → label の逆引きマップ */
   const labelMap = React.useMemo(() => {
     const m: Record<string, string> = {};
@@ -451,6 +484,16 @@ function ReadOnlyWeekGrid({
               <>
                 <span className="text-text-primary tnum">{row.start_time}</span>
                 <span className="text-text-muted">{row.duration_min} 分</span>
+                {/* 基本時間 (希望) と違う分数はイレギュラー対応として明示 (PO 2026-08-09)。 */}
+                {row.duration_min !== baseMinutes ? (
+                  <span
+                    className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800"
+                    data-testid={`ro-duration-irregular-${wd}`}
+                    title={`基本の訪問時間は ${baseMinutes} 分です（希望訪問パターン）`}
+                  >
+                    基本{baseMinutes}分と異なる
+                  </span>
+                ) : null}
                 {/* 統合 (2026-08-09): 完全固定行は赤ピンバッジを併記. */}
                 {roLocked ? (
                   <span
@@ -523,6 +566,11 @@ interface WeekGridProps {
   primaryOfficeId: string | null | undefined;
   /** Phase E-5: 各 row の sub_office_id に対応する course_templates を取得する関数. */
   getSubOfficeCourseTemplates: (subOfficeId: string | null) => CourseTemplateRead[];
+  /**
+   * 基本の訪問時間 (分) = 希望訪問パターンの service_minutes (PO 決定 2026-08-09)。
+   * 所要時間のデフォルト・「（基本）」ラベル・イレギュラー表示に使う。
+   */
+  baseMinutes: number;
 }
 
 function WeekGrid({
@@ -536,9 +584,10 @@ function WeekGrid({
   offices,
   primaryOfficeId,
   getSubOfficeCourseTemplates,
+  baseMinutes,
 }: WeekGridProps) {
   const update = (weekday: number, patch: Partial<DayRow>) => {
-    const current = rows[weekday] ?? emptyDayRow();
+    const current = rows[weekday] ?? emptyDayRow(baseMinutes);
     onChange({ ...rows, [weekday]: { ...current, ...patch } as DayRow });
   };
 
@@ -548,7 +597,7 @@ function WeekGrid({
   return (
     <div className="space-y-2">
       {[0, 1, 2, 3, 4, 5, 6].map((wd) => {
-        const row = rows[wd] ?? emptyDayRow();
+        const row = rows[wd] ?? emptyDayRow(baseMinutes);
         // Phase E-5: row.sub_office_id に応じてコース選択肢を切り替える.
         const rowCourseTemplates = resolveRowCourseTemplates(
           row,
@@ -604,12 +653,23 @@ function WeekGrid({
                     className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary disabled:opacity-60"
                     aria-label={`${WEEKDAY_LABELS[wd]} 所要時間`}
                   >
-                    {DURATION_OPTIONS.map((d) => (
+                    {durationOptionsFor(baseMinutes, row.duration_min).map((d) => (
                       <option key={d} value={d}>
-                        {d} 分
+                        {d} 分{d === baseMinutes ? '（基本）' : ''}
                       </option>
                     ))}
                   </select>
+                  {/* 基本時間と違う分数はイレギュラー対応として明示 (PO 2026-08-09:
+                      希望の 1 つの時間がベース。変えるのはイレギュラーな例のみ)。 */}
+                  {row.duration_min !== baseMinutes ? (
+                    <span
+                      className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800"
+                      data-testid={`pfv-duration-irregular-${wd}`}
+                      title={`基本の訪問時間は ${baseMinutes} 分です（希望訪問パターンで設定）。イレギュラー対応の場合のみ変更してください`}
+                    >
+                      基本{baseMinutes}分と異なる
+                    </span>
+                  ) : null}
                 </div>
                 {/* Phase E-5 (項目 ⑥B): サブ拠点 selector. 主担当拠点以外の候補がある場合のみ表示. */}
                 {subOfficeCandidates.length > 0 ? (
@@ -786,13 +846,15 @@ function ModePanel({
   const deleteMut = useDeleteFixedVisits(patientId);
   const fromWeekMut = useApplyFromWeek(patientId);
 
-  const [rows, setRows] = React.useState<DayRows>(emptyDayRows);
+  // 基本の訪問時間 = 希望訪問パターンの service_minutes (PO 決定 2026-08-09)。
+  const baseMinutes = baseServiceMinutes(weeklyPattern);
+  const [rows, setRows] = React.useState<DayRows>(() => emptyDayRows(baseMinutes));
   const [fieldErrors, setFieldErrors] = React.useState<Record<number, string>>({});
   const [formError, setFormError] = React.useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false);
 
   // サーバー状態そのままの DayRows. 未保存編集の有無 (isDirty) 判定に使う.
-  const serverRows = React.useMemo(() => readsToDayRows(reads), [reads]);
+  const serverRows = React.useMemo(() => readsToDayRows(reads, baseMinutes), [reads, baseMinutes]);
   // DayRow はプリミティブと文字列配列のみで構成されるため JSON 比較で十分.
   const isDirty = React.useMemo(
     () => JSON.stringify(rows) !== JSON.stringify(serverRows),
@@ -802,11 +864,11 @@ function ModePanel({
   // サーバーデータが変化したらフォームを同期
   React.useEffect(() => {
     if (!isLoading) {
-      setRows(readsToDayRows(reads));
+      setRows(readsToDayRows(reads, baseMinutes));
       setFieldErrors({});
       setFormError(null);
     }
-  }, [reads, isLoading]);
+  }, [reads, isLoading, baseMinutes]);
 
   // ── W37 Phase 3-A / hotfix M-4: クライアント側バリデーション ─────────────
   // コース 1 と コース 2 が同一 → エラー (保存ブロック)
@@ -873,7 +935,7 @@ function ModePanel({
   // is_pinned / コース選択 / サブ拠点 を保持). preferred_weekdays に無い曜日も
   // 既存の enabled/設定をそのまま残す.
   const handleAutoFill = () => {
-    const newRows = weeklyPatternToDayRows(weeklyPattern, rows);
+    const newRows = weeklyPatternToDayRows(weeklyPattern, rows, baseMinutes);
     setRows(newRows);
     setFieldErrors({});
     setFormError(null);
@@ -988,7 +1050,7 @@ function ModePanel({
     setDeleteDialogOpen(false);
     try {
       await deleteMut.mutateAsync(mode);
-      setRows(emptyDayRows());
+      setRows(emptyDayRows(baseMinutes));
       setFieldErrors({});
       setFormError(null);
       toast.success(`${mode === 'normal' ? '通常' : '特別週'}の固定枠を削除しました`);
@@ -1023,6 +1085,7 @@ function ModePanel({
           courseTemplates={courseTemplates}
           requiresMultipleStaff={requiresMultipleStaff}
           offices={offices}
+          baseMinutes={baseMinutes}
         />
       ) : (
         <WeekGrid
@@ -1039,6 +1102,7 @@ function ModePanel({
           offices={offices}
           primaryOfficeId={primaryOfficeId}
           getSubOfficeCourseTemplates={getSubOfficeCourseTemplates}
+          baseMinutes={baseMinutes}
         />
       )}
 

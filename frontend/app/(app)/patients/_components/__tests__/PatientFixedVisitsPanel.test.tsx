@@ -924,6 +924,132 @@ describe('PatientFixedVisitsPanel', () => {
     });
   });
 
+  // ─── 基本の訪問時間 (PO 決定 2026-08-09) ───────────────────────────────────
+  // 希望訪問パターンの service_minutes = その患者のベースの時間。
+  // 固定訪問パターンの所要時間はこの値をデフォルトにし、違う値はイレギュラー表示。
+  describe('基本の訪問時間 (base minutes)', () => {
+    const makeWeeklyPattern = (serviceMinutes: number) => ({
+      frequency_per_week: 1,
+      visit_frequency: null,
+      visit_weeks: null,
+      preferred_weekdays: ['Mon'] as const,
+      service_minutes: serviceMinutes,
+      time_type: '固定' as const,
+      preferred_start: '10:00',
+      preferred_end: null,
+      ng_weekdays: null,
+    });
+
+    it('BT-1. 希望未設定 → 新規 ON 行のデフォルトは 35 分で「（基本）」ラベルが付く', async () => {
+      setupMocks({ reads: [] });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      const select = screen.getByLabelText('月 所要時間') as HTMLSelectElement;
+      expect(select.value).toBe('35');
+      const optionTexts = Array.from(select.options).map((op) => op.text);
+      expect(optionTexts).toContain('35 分（基本）');
+      // 基本と一致しているのでイレギュラー表示は出ない。
+      expect(screen.queryByTestId('pfv-duration-irregular-0')).toBeNull();
+    });
+
+    it('BT-2. 希望が 40 分 → 新規 ON 行のデフォルトは 40 分（基本）', async () => {
+      setupMocks({ reads: [] });
+      render(
+        <PatientFixedVisitsPanel patientId={PATIENT_ID} weeklyPattern={makeWeeklyPattern(40)} />,
+      );
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      const select = screen.getByLabelText('月 所要時間') as HTMLSelectElement;
+      expect(select.value).toBe('40');
+      expect(Array.from(select.options).map((op) => op.text)).toContain('40 分（基本）');
+    });
+
+    it('BT-3. 基本と異なる分数の行は「基本N分と異なる」イレギュラー表示が出る', async () => {
+      // PO の実例: 希望 35 分 vs 型 30 分のズレを画面で見えるようにする。
+      setupMocks({
+        reads: [
+          {
+            id: 'read-irregular',
+            patient_id: PATIENT_ID,
+            weekday: 0,
+            start_time: '09:00',
+            duration_min: 30,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            is_pinned: false,
+            movability: 'unknown',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+        ],
+      });
+      render(
+        <PatientFixedVisitsPanel patientId={PATIENT_ID} weeklyPattern={makeWeeklyPattern(35)} />,
+      );
+
+      const badge = await screen.findByTestId('pfv-duration-irregular-0');
+      expect(badge).toHaveTextContent('基本35分と異なる');
+    });
+
+    it('BT-4. 選択肢に無い分数 (取込由来 65 分など) も現在値として選択肢に含まれ、黙って化けない', async () => {
+      setupMocks({
+        reads: [
+          {
+            id: 'read-65',
+            patient_id: PATIENT_ID,
+            weekday: 0,
+            start_time: '09:00',
+            duration_min: 65,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            is_pinned: false,
+            movability: 'unknown',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+        ],
+      });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      const select = (await screen.findByLabelText('月 所要時間')) as HTMLSelectElement;
+      expect(select.value).toBe('65');
+      expect(Array.from(select.options).map((op) => op.value)).toContain('65');
+    });
+
+    it('BT-5. readonly 表示でも基本と異なる行にはイレギュラー表示が出る', () => {
+      setupMocks({
+        role: 'staff',
+        reads: [
+          {
+            id: 'read-ro-irregular',
+            patient_id: PATIENT_ID,
+            weekday: 0,
+            start_time: '09:00',
+            duration_min: 30,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            is_pinned: false,
+            movability: 'unknown',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+        ],
+      });
+      render(
+        <PatientFixedVisitsPanel
+          patientId={PATIENT_ID}
+          readOnly
+          weeklyPattern={makeWeeklyPattern(35)}
+        />,
+      );
+      expect(screen.getByTestId('ro-duration-irregular-0')).toHaveTextContent('基本35分と異なる');
+    });
+  });
+
   // ─── 完全固定 (統合 / PO 決定 2026-08-09) ──────────────────────────────────
   // 旧「ピン留め (is_pinned)」と「可動域: 完全固定 (movability='locked')」を
   // 1 概念に統合。行内チェックボックス + 週一括ボタンで movability を切り替え、

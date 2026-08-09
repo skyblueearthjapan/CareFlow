@@ -140,7 +140,10 @@ export function WeeklyPatternEditor({
       </Field>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <Field label="サービス時間 (分)" hint="5分刻み・基本35分">
+        <Field
+          label="基本の訪問時間 (分)"
+          hint="この患者のベースの時間（基本35分）。固定訪問パターンの所要時間の初期値になります。変えるのはイレギュラー対応のみ"
+        >
           <Select
             disabled={disabled}
             value={String(value.service_minutes)}

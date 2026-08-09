@@ -86,14 +86,14 @@ export function SlotRegisterDialog({
   onClose,
 }: SlotRegisterDialogProps) {
   const [patientId, setPatientId] = React.useState<string>('');
-  const [durationMin, setDurationMin] = React.useState<number>(60);
+  const [durationMin, setDurationMin] = React.useState<number>(35);
   const [startMin, setStartMin] = React.useState<number | null>(null);
 
   // open のたびに選択をリセット (gap 開始 = 既定の開始時刻)。
   React.useEffect(() => {
     if (open) {
       setPatientId('');
-      setDurationMin(60);
+      setDurationMin(35);
       setStartMin(context?.gapStartMin ?? null);
     }
   }, [open, context]);

@@ -40,7 +40,8 @@ export type Movability = (typeof MOVABILITY_VALUES)[number];
 export const patientFixedVisitV2BaseSchema = z.object({
   weekday: z.number().int().min(0).max(6),
   start_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/, 'HH:MM 形式'),
-  duration_min: z.number().int().min(1).max(480).default(30),
+  // 基本の訪問時間 35 分をデフォルトに (PO 決定 2026-08-09。BE 側デフォルトと同値)。
+  duration_min: z.number().int().min(1).max(480).default(35),
   /** W22: コーステンプレート ID (UUID | null). null = 未指定 (Layer 1 フォールバック). */
   course_template_id: z.string().uuid().nullable().optional(),
   /**

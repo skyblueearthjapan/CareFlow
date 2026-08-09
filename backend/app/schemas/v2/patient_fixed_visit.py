@@ -30,7 +30,8 @@ class PatientFixedVisitV2Base(BaseModel):
 
     weekday: int = Field(ge=0, le=6, description="0=月 … 6=日")
     start_time: time = Field(description="訪問開始時刻 HH:MM")
-    duration_min: int = Field(ge=1, le=480, default=30, description="訪問時間 (分)")
+    # 基本の訪問時間 35 分をデフォルトに (PO 決定 2026-08-09。FE zod と同値)。
+    duration_min: int = Field(ge=1, le=480, default=35, description="訪問時間 (分)")
     # W22 Phase A: 固定枠が属するコーステンプレート ID (省略可).
     course_template_id: UUID | None = Field(
         default=None,

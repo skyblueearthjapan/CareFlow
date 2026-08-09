@@ -1605,7 +1605,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         return {
           id: p.id,
           name: p.name,
-          defaultDurationMin: Math.max(1, Number(wp?.service_minutes ?? 60)),
+          // 基本の訪問時間 35 分にフォールバック (PO 決定 2026-08-09。旧 60 分)。
+          defaultDurationMin: Math.max(1, Number(wp?.service_minutes ?? 35)),
           shortage: patientShortageById.get(p.id)?.shortage ?? 0,
         };
       });
