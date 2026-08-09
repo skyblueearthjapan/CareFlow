@@ -150,6 +150,8 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
             ⚠ 未来週です。カイポケ側の内容が「正」として取り込まれ、らく助側でこの週に
             計画中の内容は上書き（削除・キャンセル候補）になります。カイポケにこの週の
             スケジュールが入力済みであることを確認してから取り込んでください。
+            なお、取り込みの直前の盤面は毎回自動保存されるため、間違えた場合は
+            「取り込み前に戻す」（取り込み後にこのカードに表示）でいつでも復元できます。
           </p>
         )}
       </div>
@@ -309,6 +311,10 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
               <span className="block text-error">
                 らく助のスケジュールに実際に書き込まれます。この操作は Ctrl+Z
                 の対象外です（定期パターンは変わりません）。
+              </span>
+              <span className="block text-text-secondary">
+                取り込みの直前の盤面は自動保存されます。間違えた場合は
+                「取り込み前に戻す」で復元できます（打刻実績が記録された週を除く）。
               </span>
             </DialogDescription>
           </DialogHeader>
