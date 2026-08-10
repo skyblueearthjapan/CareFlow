@@ -382,7 +382,19 @@
   .qrprint-sheet {
     margin: 0;
     box-shadow: none;
+    /* A4 ちょうど (297mm) だと端数の繰り上がりで白紙ページが出る環境があるため、
+     * 高さはわずかに控えて改ページは明示指定に任せる (2026-08-10 PO報告: 1名印刷で
+     * 2ページ目が白紙になる)。 */
+    height: 296.5mm;
     page-break-after: always;
+    page-break-inside: avoid;
+  }
+  /* 最後に印字されるシートの後ろでは改ページしない (末尾の白紙ページ防止)。
+   * .off (印刷対象外) が末尾に並ぶ一括印刷でも効くよう、
+   * 「自分より後ろに .off でないシートが存在しない」= 最後の可視シートを
+   * :not(.off):not(:has(~ .qrprint-sheet:not(.off))) で選ぶ。 */
+  .qrprint-sheet:not(.off):not(:has(~ .qrprint-sheet:not(.off))) {
+    page-break-after: auto;
   }
   .qrprint-chk {
     display: none;
