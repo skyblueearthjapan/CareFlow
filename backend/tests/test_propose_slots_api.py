@@ -31,6 +31,7 @@ import pytest
 from app.core.security import create_access_token, hash_password
 from app.models import Office, Patient, User
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
+from app.models.patient_ng_staff import PatientNgStaff
 from app.models.staff import Staff, StaffShift, StaffWeeklyOverride
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 
@@ -834,6 +835,62 @@ async def test_propose_staff_sex_unknown_no_warning(client, db) -> None:
     body = res.json()
     assert body["slots"], body
     assert all("staff_sex_mismatch" not in s["warnings"] for s in body["slots"])
+
+
+@pytest.mark.asyncio
+async def test_propose_staff_ng_mismatch_warns_and_demotes(client, db) -> None:
+    """NG スタッフのコースも候補は出るが staff_ng_mismatch 警告 + 降格 (設計書 §6).
+
+    同一 office・同一 geometry の 2 コース (A=クリーン / B=NG スタッフ担当) を用意し、
+    候補患者 (existing_patient_id) が B の担当を NG 指定している状況を作る。
+    - B の枠は除外されない (候補は出る) が全て staff_ng_mismatch 付き。
+    - A (NG でないスタッフ) の枠には警告が付かない。
+    - 降格: B の最高スコア < A の最高スコア (性別/欠勤と同値 60.0 の降格)。
+    """
+    admin = await _make_user(db, email="ps-ng-mm@example.com", role="admin")
+    office = Office(name="稲", code="INAGE")
+    db.add(office)
+    await db.flush()
+    staff_ok = Staff(name="通常看護師", role="staff", primary_office_id=office.id)
+    staff_ng = Staff(name="NG看護師", role="staff", primary_office_id=office.id)
+    db.add_all([staff_ok, staff_ng])
+    await db.flush()
+    await _seed_shift(db, staff=staff_ok, weekday=0, is_on=True)
+    await _seed_shift(db, staff=staff_ng, weekday=0, is_on=True)
+    # クリーンコース A / NG スタッフのコース B (同一 geometry で条件を揃える).
+    c_ok = await _seed_course(db, office=office, staff=staff_ok, weekday=0, code="A")
+    p_ok = await _seed_patient(db, office=office, code="NG_A", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(db, patient=p_ok, course=c_ok, start=time(9, 30), end=time(10, 0))
+    c_ng = await _seed_course(db, office=office, staff=staff_ng, weekday=0, code="B")
+    p_ng = await _seed_patient(db, office=office, code="NG_B", lat=NEAR[0], lng=NEAR[1])
+    await _seed_visit(db, patient=p_ng, course=c_ng, start=time(9, 30), end=time(10, 0))
+    # 候補患者 (未配置) と NG 指定行.
+    cand = await _seed_patient(db, office=office, code="NG_CAND", lat=BASE[0], lng=BASE[1])
+    db.add(PatientNgStaff(patient_id=cand.id, staff_id=staff_ng.id, note="相性不良"))
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office, limit=50, existing_patient_id=str(cand.id)),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    a_slots = [s for s in body["slots"] if s["course_code"] == "A"]
+    b_slots = [s for s in body["slots"] if s["course_code"] == "B"]
+    assert a_slots and b_slots, body["slots"]  # 除外しない.
+    assert all("staff_ng_mismatch" in s["warnings"] for s in b_slots)
+    assert "staff_ng_mismatch" not in _all_warnings(a_slots)
+    assert max(s["score"] for s in b_slots) < max(s["score"] for s in a_slots)
+
+    # 新規候補 (existing_patient_id なし) は DB 上 NG 行を持ち得ないので警告は出ない.
+    res_new = await client.post(
+        "/api/v1/schedule/v2/propose-slots",
+        headers=_bearer(admin),
+        json=_base_payload(office, limit=50),
+    )
+    assert res_new.status_code == 200, res_new.text
+    assert "staff_ng_mismatch" not in _all_warnings(res_new.json()["slots"])
 
 
 @pytest.mark.asyncio

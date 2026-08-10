@@ -29,6 +29,7 @@ from app.core.security import create_access_token, hash_password
 from app.models import Office, Patient, User
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.patient_ng_staff import PatientNgStaff
 from app.models.staff import Staff
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.services.scheduling.pool_bulk_inserter import compute_bulk_state_token
@@ -285,6 +286,34 @@ async def test_bulk_multi_weekday_coverage(client, db) -> None:
     assert {pl["weekday"] for pl in my} == {0, 2}, my
     assert body["partial"] == []
     assert body["unplaced"] == []
+
+
+@pytest.mark.asyncio
+async def test_bulk_placement_carries_staff_ng_warning(client, db) -> None:
+    """NG スタッフのコースへ入る placement に staff_ng_mismatch が伝搬する (設計書 §6).
+
+    pool_bulk は propose-slots (compute_all_proposed_slots) へ委譲しているため、
+    pool_bulk_inserter 側の変更なしで警告が載る (投入自体はブロックしない).
+    """
+    admin = await _make_user(db, email="pb-ng@example.com", role="admin")
+    office, staff = await _seed_office_staff(db)
+    await _seed_anchor_course(db, office=office, staff=staff, weekday=0, code="A", anchor_xy=NEAR)
+    p = await _seed_patient(
+        db, office=office, code="NGB", lat=BASE[0], lng=BASE[1], weekly_pattern=_pool_wp()
+    )
+    db.add(PatientNgStaff(patient_id=p.id, staff_id=staff.id))
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/pool-bulk-simulate",
+        headers=_bearer(admin),
+        json=_simulate_payload(office, [str(p.id)]),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    my = [pl for pl in body["placements"] if pl["patient_id"] == str(p.id)]
+    assert len(my) == 1, body  # 除外しない (投入はされる).
+    assert "staff_ng_mismatch" in my[0]["warnings"], my[0]
 
 
 # ---------------------------------------------------------------------------

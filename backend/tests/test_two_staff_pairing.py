@@ -92,6 +92,7 @@ def _bucket(
     staff_absent: bool = False,
     staff_sex: str | None = None,
     assigned_staff_id: UUID | None = None,
+    ng_patient_ids: frozenset[UUID] = frozenset(),
 ) -> _CourseBucket:
     return _CourseBucket(
         office_id=office_id,
@@ -104,6 +105,7 @@ def _bucket(
         staff_absent=staff_absent,
         staff_sex=staff_sex,
         assigned_staff_id=assigned_staff_id,
+        ng_patient_ids=ng_patient_ids,
     )
 
 
@@ -372,6 +374,36 @@ def test_pair_partner_sex_mismatch_warns() -> None:
     assert results, "ペアは成立するはず (sex_mismatch は除外しない)"
     for ps in results:
         assert "staff_sex_mismatch" in ps.warnings, ps.warnings
+
+
+def test_pair_partner_ng_staff_warns() -> None:
+    """相方 (partner) だけが NG スタッフでも staff_ng_mismatch 警告が付く (OR 判定・§6)."""
+    oid = uuid4()
+    cand_pid = uuid4()
+    buckets = {
+        # primary (A): NG ではない担当.
+        (oid, 0, "A"): _bucket(oid, "A", [], assigned_staff_id=uuid4()),
+        # partner (B): 候補患者がこの担当を NG 指定している.
+        (oid, 0, "B"): _bucket(
+            oid, "B", [], assigned_staff_id=uuid4(), ng_patient_ids=frozenset({cand_pid})
+        ),
+    }
+    cand = CandidateInput(
+        lat=BASE[0],
+        lng=BASE[1],
+        service_minutes=30,
+        time_type="終日",
+        preferred_start=None,
+        preferred_end=None,
+        preferred_weekdays=frozenset({0}),
+        requires_multiple_staff=True,
+        existing_patient_id=cand_pid,
+    )
+    results = _compute(buckets, cand)
+    assert results, "ペアは成立するはず (ng_mismatch は除外しない)"
+    for ps in results:
+        assert ps.partner_course_code == "B", ps.partner_course_code
+        assert "staff_ng_mismatch" in ps.warnings, ps.warnings
 
 
 def test_pair_acceptance_blocked_warns() -> None:

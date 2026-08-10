@@ -276,6 +276,8 @@ def _copy_bucket(b: _CourseBucket) -> _CourseBucket:
         assigned_staff_id=b.assigned_staff_id,
         staff_sex=b.staff_sex,
         staff_absent=b.staff_absent,
+        # NG スタッフ (§6): 警告判定に使うので複製時も引き継ぐ (frozenset なので共有可).
+        ng_patient_ids=b.ng_patient_ids,
         visits=list(b.visits),
     )
 
@@ -651,7 +653,7 @@ def _enumerate_step_candidates(
                             delta_minutes=delta_min,
                             delta_km=round(delta_km, 2),
                             staff_warnings=_staff_warnings_for_bucket(
-                                bucket, patient.sex_restriction
+                                bucket, patient.sex_restriction, pid
                             ),
                             requires_patient_confirmation=False,  # D-2: 確認不要のみ.
                             within_preference=within_pref,

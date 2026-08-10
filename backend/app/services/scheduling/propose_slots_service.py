@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.course import Course
 from app.models.office import Office
 from app.models.patient import Patient
+from app.models.patient_ng_staff import PatientNgStaff
 from app.models.staff import Staff, StaffEvent, StaffShift, StaffWeeklyOverride
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.services.patient_excel.schema import OFFICE_CODE_TO_SHORT
@@ -130,6 +131,10 @@ class _CourseBucket:
     assigned_staff_id: UUID | None = None
     staff_sex: str | None = None
     staff_absent: bool = False
+    # NG スタッフ (patient_ng_staff / 設計書 §6): このコースの割付スタッフを NG 指定して
+    # いる患者 ID 集合 (逆引き). load 時に ix_patient_ng_staff_staff で 1 クエリ一括ロード
+    # する. 候補患者がこの集合に居れば staff_ng_mismatch (除外はせず警告 + 降格).
+    ng_patient_ids: frozenset[UUID] = frozenset()
     visits: list[_V2Visit] = field(default_factory=list)
     # イベント考慮2段階提案 (PO確定 2026-07-27): 割付スタッフの当該曜日の
     # staff_events (カイポケ取り込み含む) 占有窓. solver へそのまま渡す.
@@ -392,6 +397,19 @@ async def load_week_course_buckets(
         for sid, wd in override_rows.all():
             override_off_keys.add((sid, wd))
 
+        # NG スタッフ (設計書 §6): バケット割付スタッフを NG 指定している患者を
+        # **逆引きで 1 クエリ** 一括ロードする (ix_patient_ng_staff_staff の用途そのもの).
+        # 候補患者は呼出時まで分からないので「staff → NG 指定患者集合」の向きで持ち、
+        # 判定は `_staff_ng_mismatch(candidate.existing_patient_id, bucket.ng_patient_ids)`.
+        ng_patients_by_staff: dict[UUID, set[UUID]] = {}
+        ng_rows = await db.execute(
+            select(PatientNgStaff.staff_id, PatientNgStaff.patient_id).where(
+                PatientNgStaff.staff_id.in_(staff_ids)
+            )
+        )
+        for sid, pid in ng_rows.all():
+            ng_patients_by_staff.setdefault(sid, set()).add(pid)
+
         for b in buckets.values():
             sid = b.assigned_staff_id
             if sid is None:
@@ -400,6 +418,7 @@ async def load_week_course_buckets(
             shift_on = shift_on_by_key.get(shift_key)  # None = シフト行なし
             shift_absent = shift_on is None or shift_on is False
             b.staff_absent = shift_absent or (shift_key in override_off_keys)
+            b.ng_patient_ids = frozenset(ng_patients_by_staff.get(sid, ()))
 
         # イベント考慮2段階提案: 割付スタッフの当該週 staff_events を占有窓として
         # 各バケットへ配る (solver のパスA/パスB判定に使う).
@@ -621,6 +640,9 @@ _REASON_EFFICIENCY_ALTERNATIVE = "希望外だが効率的（近接/余裕）"
 _WARN_STAFF_UNASSIGNED = "staff_unassigned"
 _WARN_STAFF_ABSENT = "staff_absent"
 _WARN_STAFF_SEX_MISMATCH = "staff_sex_mismatch"
+# NG スタッフ (設計書 patient-ng-staff-design.md §6): 性別制限と完全に同格の扱い.
+# エンジン (Layer3) はハード制約だが、提案系は **除外せず警告 + 降格** (方針 N-3 の L1.5).
+_WARN_STAFF_NG_MISMATCH = "staff_ng_mismatch"
 
 # I-07 (H5 受入カレンダー / N-6): diff-add (auto_allocator_v2._filter_unavailable_and_lunch)
 # は受入 × を enforce (除外) するが、propose-slots では **warning 方式** にする.
@@ -632,13 +654,15 @@ _WARN_ACCEPTANCE_CALENDAR = "acceptance_calendar"
 
 # スコア降格ペナルティ. 既存重み (proximity 50 / preference 30 / balance 20 /
 # pair 1000) を基準にした相対値:
-#   ABSENT / SEX_MISMATCH = 60.0 … proximity 満点 (50) + preference 片側一致 (15)
-#     を上回る大きさ. クリーンな候補より確実に下位へ沈める (現場の信頼確保のため
-#     「休みスタッフ/性別不適合」の枠は必ず後ろに回す). pair 1000 は超えないので
-#     同住所ペアの最優先は維持される.
+#   ABSENT / SEX_MISMATCH / NG_MISMATCH = 60.0 … proximity 満点 (50) + preference
+#     片側一致 (15) を上回る大きさ. クリーンな候補より確実に下位へ沈める (現場の信頼
+#     確保のため「休みスタッフ/性別不適合/NG スタッフ」の枠は必ず後ろに回す).
+#     pair 1000 は超えないので同住所ペアの最優先は維持される.
 #   UNASSIGNED = 20.0 … 週次 Layer3 割付で解消され得る軽度事象なので軽い降格.
 _PENALTY_STAFF_ABSENT: float = 60.0
 _PENALTY_STAFF_SEX_MISMATCH: float = 60.0
+# NG スタッフ: 性別制限と同格 (設計書 §2) なので同値・同層のペナルティにする.
+_PENALTY_STAFF_NG_MISMATCH: float = 60.0
 _PENALTY_STAFF_UNASSIGNED: float = 20.0
 
 # I-07 (H5): 受入カレンダー × の降格幅. P0-1 の staff_absent と同じ機構・同じ幅 (60.0)
@@ -706,6 +730,21 @@ def _staff_sex_mismatch(staff_sex: str | None, sex_restriction: str | None) -> b
     return not _sex_satisfies_restrictions(staff_sex, frozenset({sex_restriction}))
 
 
+def _staff_ng_mismatch(patient_id: UUID | None, ng_patient_ids: frozenset[UUID]) -> bool:
+    """候補患者がそのコース割付スタッフを NG 指定していれば True (設計書 §6).
+
+    ``_staff_sex_mismatch`` と同じ流儀の純関数. 判定は「patient_ng_staff に
+    (候補患者, 割付スタッフ) 行があるか」だけで、除外はしない (警告 + 降格のみ).
+    以下は判定 skip (False):
+      - ``patient_id`` が None → 新規候補 (DB 未登録) なので NG 行は存在し得ない.
+      - ``ng_patient_ids`` が空 → コース割付スタッフを NG 指定した患者が居ない
+        (割付スタッフ未定 = ``assigned_staff_id`` None のバケットも空のまま).
+    """
+    if patient_id is None:
+        return False
+    return patient_id in ng_patient_ids
+
+
 def _slot_reasons_and_warnings(
     slot: Slot,
     candidate: CandidateInput,
@@ -716,6 +755,7 @@ def _slot_reasons_and_warnings(
     staff_unassigned: bool = False,
     staff_absent: bool = False,
     staff_sex_mismatch: bool = False,
+    staff_ng_mismatch: bool = False,
     acceptance_blocked: bool = False,
     is_efficiency_alternative: bool = False,
     suppress_two_staff: bool = False,
@@ -765,6 +805,9 @@ def _slot_reasons_and_warnings(
         warnings.append(_WARN_STAFF_ABSENT)
     if staff_sex_mismatch:
         warnings.append(_WARN_STAFF_SEX_MISMATCH)
+    # NG スタッフ (§6): 性別と同格. 除外はせず警告 + 降格のみ.
+    if staff_ng_mismatch:
+        warnings.append(_WARN_STAFF_NG_MISMATCH)
     # I-07 (H5): 受入カレンダー × の時刻に該当する枠は除外せず警告のみ (N-6).
     if acceptance_blocked:
         warnings.append(_WARN_ACCEPTANCE_CALENDAR)
@@ -783,6 +826,7 @@ def _score_slot(
     staff_unassigned: bool = False,
     staff_absent: bool = False,
     staff_sex_mismatch: bool = False,
+    staff_ng_mismatch: bool = False,
     acceptance_blocked: bool = False,
 ) -> float:
     """合成スコア (降順用). 同住所ペアは大ボーナスで最優先.
@@ -816,6 +860,9 @@ def _score_slot(
         score -= _PENALTY_STAFF_ABSENT
     if staff_sex_mismatch:
         score -= _PENALTY_STAFF_SEX_MISMATCH
+    # NG スタッフ (§6): 性別と同値・同層で降格 (除外はしない).
+    if staff_ng_mismatch:
+        score -= _PENALTY_STAFF_NG_MISMATCH
     if staff_unassigned:
         score -= _PENALTY_STAFF_UNASSIGNED
     # I-07 (H5): 受入カレンダー × の枠は staff_absent と同じ幅で降格 (除外はしない).
@@ -949,6 +996,8 @@ def _enumerate_candidate_slots(
         staff_unassigned = bucket.assigned_staff_id is None
         staff_absent = bucket.staff_absent
         staff_sex_mismatch = _staff_sex_mismatch(bucket.staff_sex, candidate.sex_restriction)
+        # NG スタッフ (§6): 候補患者がこのコースの割付スタッフを NG 指定しているか.
+        staff_ng_mismatch = _staff_ng_mismatch(candidate.existing_patient_id, bucket.ng_patient_ids)
         # I-07 (H5): 当該 (office, weekday) の受入 × 時刻集合 (diff-add と同一データ源).
         # slot ごとに start が × 時刻に一致するかを判定する (診断は per-slot).
         blocked_starts = (
@@ -1003,6 +1052,7 @@ def _enumerate_candidate_slots(
                 staff_unassigned=staff_unassigned,
                 staff_absent=staff_absent,
                 staff_sex_mismatch=staff_sex_mismatch,
+                staff_ng_mismatch=staff_ng_mismatch,
                 acceptance_blocked=acceptance_blocked,
                 is_efficiency_alternative=is_efficiency_alternative,
             )
@@ -1017,6 +1067,7 @@ def _enumerate_candidate_slots(
                 staff_unassigned=staff_unassigned,
                 staff_absent=staff_absent,
                 staff_sex_mismatch=staff_sex_mismatch,
+                staff_ng_mismatch=staff_ng_mismatch,
                 acceptance_blocked=acceptance_blocked,
             )
             # イベント考慮2段階提案: フォールバック枠は warning + 降格 (除外しない原則)
@@ -1085,8 +1136,8 @@ def _build_pair_proposed_slot(
     ``_TWO_STAFF_BONUS`` を上乗せする. two_staff_not_guaranteed 警告は付けない (相方保証済).
     delta (marginal_cost_minutes) は後段 ``_assign_marginal_and_resort`` が 2 コース合計で付与する.
 
-    W-12a review FIX-1: staff_unassigned / staff_absent / staff_sex_mismatch はどちらかの
-    コースで該当すれば警告 / ペナルティを出す (OR 合成).
+    W-12a review FIX-1: staff_unassigned / staff_absent / staff_sex_mismatch /
+    staff_ng_mismatch はどちらかのコースで該当すれば警告 / ペナルティを出す (OR 合成).
     W-12a review FIX-2: アンカー時刻 T が受入カレンダー × なら acceptance_blocked=True.
     """
     service = int(candidate.service_minutes)
@@ -1108,6 +1159,10 @@ def _build_pair_proposed_slot(
     staff_sex_mismatch = _staff_sex_mismatch(
         primary_bucket.staff_sex, candidate.sex_restriction
     ) or _staff_sex_mismatch(partner_bucket.staff_sex, candidate.sex_restriction)
+    # NG スタッフ (§6) も FIX-1 と同じ OR 合成: 2 名のどちらかが NG なら警告 + 降格.
+    staff_ng_mismatch = _staff_ng_mismatch(
+        candidate.existing_patient_id, primary_bucket.ng_patient_ids
+    ) or _staff_ng_mismatch(candidate.existing_patient_id, partner_bucket.ng_patient_ids)
     # FIX-2: 受入カレンダー × — primary/partner は同 office/weekday グループなので 1 回だけ判定.
     blocked_set = unavailable_slots.get((office_id, weekday), set()) if unavailable_slots else set()
     acceptance_blocked = start in blocked_set
@@ -1121,6 +1176,7 @@ def _build_pair_proposed_slot(
         staff_unassigned=staff_unassigned,
         staff_absent=staff_absent,
         staff_sex_mismatch=staff_sex_mismatch,
+        staff_ng_mismatch=staff_ng_mismatch,
         acceptance_blocked=acceptance_blocked,
         suppress_two_staff=True,
     )
@@ -1136,6 +1192,7 @@ def _build_pair_proposed_slot(
             staff_unassigned=staff_unassigned,
             staff_absent=staff_absent,
             staff_sex_mismatch=staff_sex_mismatch,
+            staff_ng_mismatch=staff_ng_mismatch,
             acceptance_blocked=acceptance_blocked,
         )
         + _TWO_STAFF_BONUS

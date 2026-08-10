@@ -33,6 +33,7 @@ from app.services.scheduling.scope_optimizer import (
     SCOPE_STEP_THRESHOLD_MIN,
     OptimizationScope,
     _apply_swap,
+    _copy_bucket,
     _CourseBucket,
     _ScopeCandidate,
     _SimPfv,
@@ -488,6 +489,20 @@ def _v2visit(pid, name, wd, start_h, start_m, dur, lat, lng, office_id, code):
         source_kind="fixed",
         course_code=code,
     )
+
+
+def test_copy_bucket_preserves_ng_patient_ids() -> None:
+    """シミュレーション用の複製でも NG スタッフ集合を引き継ぐ (§6 の警告判定に必要)."""
+    office_id = uuid4()
+    ng_pid = uuid4()
+    src = _CourseBucket(
+        office_id=office_id,
+        weekday=0,
+        course_code="A",
+        assigned_staff_id=uuid4(),
+        ng_patient_ids=frozenset({ng_pid}),
+    )
+    assert _copy_bucket(src).ng_patient_ids == frozenset({ng_pid})
 
 
 def test_apply_swap_updates_sim_state() -> None:

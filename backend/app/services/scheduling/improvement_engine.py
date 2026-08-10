@@ -60,6 +60,7 @@ from app.services.scheduling.propose_slots_service import (
     _course_label,
     _CourseBucket,
     _fmt_hhmm,
+    _staff_ng_mismatch,
     _staff_sex_mismatch,
     load_week_course_buckets,
 )
@@ -82,6 +83,8 @@ MAX_SWAP_SUGGESTIONS_PER_PATIENT: int = 2
 _WARN_STAFF_UNASSIGNED = "staff_unassigned"
 _WARN_STAFF_ABSENT = "staff_absent"
 _WARN_STAFF_SEX_MISMATCH = "staff_sex_mismatch"
+# NG スタッフ (patient-ng-staff-design.md §6). 性別と同格・除外はせず注意喚起のみ.
+_WARN_STAFF_NG_MISMATCH = "staff_ng_mismatch"
 
 # 曜日ラベル (0=Mon..6=Sun).
 _WEEKDAY_JA: tuple[str, ...] = ("月", "火", "水", "木", "金", "土", "日")
@@ -546,8 +549,17 @@ def _find_current_placement(
     )
 
 
-def _staff_warnings_for_bucket(bucket: _CourseBucket, sex_restriction: str | None) -> list[str]:
-    """候補コースのスタッフ実態警告 (P0-1 の 3 コード). 除外はせず注意喚起のみ."""
+def _staff_warnings_for_bucket(
+    bucket: _CourseBucket,
+    sex_restriction: str | None,
+    patient_id: UUID | None = None,
+) -> list[str]:
+    """候補コースのスタッフ実態警告 (P0-1 の 3 コード + NG スタッフ). 除外はせず注意喚起のみ.
+
+    ``patient_id`` (移動対象の患者) を渡すと、その患者がコース割付スタッフを NG 指定
+    しているとき ``staff_ng_mismatch`` を追加する (設計書 §6. 性別と同格の扱い).
+    NG 集合は ``load_week_course_buckets`` が 1 クエリでバケットへ載せている.
+    """
     warnings: list[str] = []
     if bucket.assigned_staff_id is None:
         warnings.append(_WARN_STAFF_UNASSIGNED)
@@ -555,6 +567,8 @@ def _staff_warnings_for_bucket(bucket: _CourseBucket, sex_restriction: str | Non
         warnings.append(_WARN_STAFF_ABSENT)
     if _staff_sex_mismatch(bucket.staff_sex, sex_restriction):
         warnings.append(_WARN_STAFF_SEX_MISMATCH)
+    if _staff_ng_mismatch(patient_id, bucket.ng_patient_ids):
+        warnings.append(_WARN_STAFF_NG_MISMATCH)
     return warnings
 
 
@@ -829,7 +843,9 @@ def _swap_candidates_for_pfv(
                     cand_staff_name=bucket_y.staff_name,
                     delta_minutes=delta_min,
                     delta_km=round(delta_km, 2),
-                    staff_warnings=_staff_warnings_for_bucket(bucket_y, patient.sex_restriction),
+                    staff_warnings=_staff_warnings_for_bucket(
+                        bucket_y, patient.sex_restriction, patient.id
+                    ),
                     requires_patient_confirmation=x_conf,
                     within_preference=within_pref_x,
                     changes=changes,
@@ -1124,7 +1140,9 @@ async def find_improvement_candidates(
                 )
                 # イベント考慮2段階提案: フォールバック枠 (移動先スタッフのイベントと
                 # 衝突) は警告コード + 詳細を載せる (除外しない原則).
-                slot_staff_warnings = _staff_warnings_for_bucket(bucket, patient.sex_restriction)
+                slot_staff_warnings = _staff_warnings_for_bucket(
+                    bucket, patient.sex_restriction, patient.id
+                )
                 slot_event_conflicts: list[dict[str, str]] = []
                 if slot.event_conflicts:
                     slot_staff_warnings = [*slot_staff_warnings, "event_conflict"]

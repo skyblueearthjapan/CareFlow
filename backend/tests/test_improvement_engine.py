@@ -19,11 +19,13 @@ from datetime import date, time
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.patient_ng_staff import PatientNgStaff
 from app.models.staff import Staff, StaffShift
 from app.models.suggestion_dismissal import SuggestionDismissal
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
@@ -329,6 +331,36 @@ async def test_time_flexible_same_weekday_no_confirmation(db) -> None:
     assert suggestions
     assert all(s.kind == "time_change" for s in suggestions)
     assert all(not s.requires_patient_confirmation for s in suggestions)
+
+
+@pytest.mark.asyncio
+async def test_improvement_staff_ng_mismatch_warning(db) -> None:
+    """移動先コース (B) の担当が NG スタッフなら staff_warnings に staff_ng_mismatch (§6).
+
+    除外はしない (提案自体は同じだけ出る) = 注意喚起のみ. NG 設定前は警告が付かない
+    ことも同一シナリオで確認する.
+    """
+    _office, p = await _two_course_improvement_scenario(
+        db, target_movability="time_flexible", target_weekday=0, alt_weekday=0
+    )
+    before, _summary = await find_improvement_candidates(
+        db, patient=p, iso_year=ISO_YEAR, iso_week=ISO_WEEK
+    )
+    b_before = [s for s in before if s.cand_course_code == "B"]
+    assert b_before, before
+    assert all("staff_ng_mismatch" not in s.staff_warnings for s in b_before)
+
+    # Course B の担当 (S2) を NG 指定する.
+    s2 = (await db.scalars(select(Staff).where(Staff.name == "S2"))).one()
+    db.add(PatientNgStaff(patient_id=p.id, staff_id=s2.id))
+    await db.commit()
+
+    after, _summary2 = await find_improvement_candidates(
+        db, patient=p, iso_year=ISO_YEAR, iso_week=ISO_WEEK
+    )
+    b_after = [s for s in after if s.cand_course_code == "B"]
+    assert len(b_after) == len(b_before), "NG は除外しない (件数不変)"
+    assert all("staff_ng_mismatch" in s.staff_warnings for s in b_after)
 
 
 # ---------------------------------------------------------------------------
