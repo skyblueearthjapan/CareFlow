@@ -219,121 +219,132 @@ function QrPrintPageInner() {
     <div className="qrprint-root">
       {/* ツールバー (画面のみ) */}
       <div className="qrprint-toolbar">
-        {/* 戻る導線 (PO 要望 2026-08-10): サイドバー頼みだったのを明示ボタンに。
+        {/* 1 段目: 戻る + 見出し (PO 要望 2026-08-10: ツールバーは明示 2 段構造)。 */}
+        <div className="qrprint-toolbar-row">
+          {/* 戻る導線 (PO 要望 2026-08-10): サイドバー頼みだったのを明示ボタンに。
             一括 → 患者マスタ (現在のステータス絞り込みを引き継ぐ) /
             個別 (患者詳細から遷移) → その患者の詳細へ戻る。 */}
-        <Link
-          href={
-            mode === 'single' && urlPatientId
-              ? `/patients/${urlPatientId}`
-              : `/patients${statusTab !== 'active' ? `?status=${statusTab}` : ''}`
-          }
-          className="qrprint-btn"
-          data-testid="qrprint-back"
-        >
-          ← {mode === 'single' && urlPatientId ? '患者詳細へ戻る' : '患者マスタへ戻る'}
-        </Link>
-        <span className="qrprint-sep" />
-        <div>
-          <div className="qrprint-crumb">
-            {mode === 'single' ? '患者マスタ › 患者詳細 › QR印刷' : '患者マスタ › QR一括印刷'}
+          <Link
+            href={
+              mode === 'single' && urlPatientId
+                ? `/patients/${urlPatientId}`
+                : `/patients${statusTab !== 'active' ? `?status=${statusTab}` : ''}`
+            }
+            className="qrprint-btn"
+            data-testid="qrprint-back"
+          >
+            ← {mode === 'single' && urlPatientId ? '患者詳細へ戻る' : '患者マスタへ戻る'}
+          </Link>
+          <span className="qrprint-sep" />
+          <div>
+            <div className="qrprint-crumb">
+              {mode === 'single' ? '患者マスタ › 患者詳細 › QR印刷' : '患者マスタ › QR一括印刷'}
+            </div>
+            <h1 className="qrprint-title">患者QR 印刷</h1>
           </div>
-          <h1 className="qrprint-title">患者QR 印刷</h1>
         </div>
-        <span className="qrprint-sep" />
-        <div className="qrprint-seg">
-          <button
-            type="button"
-            className={mode === 'single' ? 'on' : ''}
-            onClick={() => setMode('single')}
-          >
-            個別（患者詳細から1名）
-          </button>
-          <button
-            type="button"
-            className={mode === 'bulk' ? 'on' : ''}
-            onClick={() => setMode('bulk')}
-          >
-            一括（一覧から全員）
-          </button>
-        </div>
-        <span className="qrprint-sep" />
-        {mode === 'single' ? (
-          <span>
-            患者：
-            <select
-              className="qrprint-select"
-              value={selectedPatientId}
-              onChange={(e) => setSelectedPatientId(e.target.value)}
+
+        {/* 2 段目: 左=モード切替+絞り込み群 / 右=件数+全選択/全解除/印刷 (PO 要望)。 */}
+        <div className="qrprint-toolbar-row">
+          <div className="qrprint-seg">
+            <button
+              type="button"
+              className={mode === 'single' ? 'on' : ''}
+              onClick={() => setMode('single')}
             >
-              {allPatients.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}（{p.code}
-                  {p.primary_office_id ? `・${officeNameMap.get(p.primary_office_id) ?? ''}` : ''}）
-                </option>
-              ))}
-            </select>
-          </span>
-        ) : (
-          <span className="qrprint-chips">
-            {/* ステータス絞り込み (患者マスタのタブと同じ区分・PO 要望 2026-08-10)。 */}
-            {QR_STATUS_TABS.map((t) => (
-              <span
-                key={t.value}
-                className={`qrprint-chip${statusTab === t.value ? ' on' : ''}`}
-                data-testid={`qrprint-status-${t.value}`}
-                onClick={() => setStatusTab(t.value)}
+              個別（患者詳細から1名）
+            </button>
+            <button
+              type="button"
+              className={mode === 'bulk' ? 'on' : ''}
+              onClick={() => setMode('bulk')}
+            >
+              一括（一覧から全員）
+            </button>
+          </div>
+          <span className="qrprint-sep" />
+          {mode === 'single' ? (
+            <span>
+              患者：
+              <select
+                className="qrprint-select"
+                value={selectedPatientId}
+                onChange={(e) => setSelectedPatientId(e.target.value)}
               >
-                {t.label} {statusCounts[t.value] ?? 0}
-              </span>
-            ))}
-            <span className="qrprint-sep" />
-            <span
-              className={`qrprint-chip${office === 'all' ? ' on' : ''}`}
-              onClick={() => setOffice('all')}
-            >
-              全拠点
+                {allPatients.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}（{p.code}
+                    {p.primary_office_id ? `・${officeNameMap.get(p.primary_office_id) ?? ''}` : ''}
+                    ）
+                  </option>
+                ))}
+              </select>
             </span>
-            {officeChips.map((o) => (
+          ) : (
+            <span className="qrprint-chips">
+              {/* ステータス絞り込み (患者マスタのタブと同じ区分・PO 要望 2026-08-10)。 */}
+              {QR_STATUS_TABS.map((t) => (
+                <span
+                  key={t.value}
+                  className={`qrprint-chip${statusTab === t.value ? ' on' : ''}`}
+                  data-testid={`qrprint-status-${t.value}`}
+                  onClick={() => setStatusTab(t.value)}
+                >
+                  {t.label} {statusCounts[t.value] ?? 0}
+                </span>
+              ))}
+              <span className="qrprint-sep" />
               <span
-                key={o.id}
-                className={`qrprint-chip${office === o.id ? ' on' : ''}`}
-                onClick={() => setOffice(o.id)}
+                className={`qrprint-chip${office === 'all' ? ' on' : ''}`}
+                onClick={() => setOffice('all')}
               >
-                {o.name}
+                全拠点
               </span>
-            ))}
-          </span>
-        )}
-        {/* 2 行目 (PO 要望 2026-08-10): 操作ボタン群は右下の行にまとめて揃える。
+              {officeChips.map((o) => (
+                <span
+                  key={o.id}
+                  className={`qrprint-chip${office === o.id ? ' on' : ''}`}
+                  onClick={() => setOffice(o.id)}
+                >
+                  {o.name}
+                </span>
+              ))}
+            </span>
+          )}
+          {/* 2 行目 (PO 要望 2026-08-10): 操作ボタン群は右下の行にまとめて揃える。
             戻るボタン追加でツールバーが折り返し、全選択だけ 1 行目に残り
             全解除/印刷が左下へ流れていたのを、明示的な右寄せ行に固定する。 */}
-        <span className="qrprint-actions" data-testid="qrprint-actions">
-          <span className="qrprint-count">
-            {mode === 'single'
-              ? '印刷 1枚'
-              : `表示 ${shownPatients.length}名 / 印刷 ${bulkSelectedPatients.length}枚`}
+          <span className="qrprint-actions" data-testid="qrprint-actions">
+            <span className="qrprint-count">
+              {mode === 'single'
+                ? '印刷 1枚'
+                : `表示 ${shownPatients.length}名 / 印刷 ${bulkSelectedPatients.length}枚`}
+            </span>
+            {mode === 'bulk' ? (
+              <>
+                <button
+                  type="button"
+                  className="qrprint-btn"
+                  onClick={() =>
+                    setSelected(new Set(shownPatients.slice(0, BULK_PRINT_LIMIT).map((p) => p.id)))
+                  }
+                >
+                  全選択
+                </button>
+                <button
+                  type="button"
+                  className="qrprint-btn"
+                  onClick={() => setSelected(new Set())}
+                >
+                  全解除
+                </button>
+              </>
+            ) : null}
+            <button type="button" className="qrprint-btn brand" onClick={() => window.print()}>
+              🖨 印刷
+            </button>
           </span>
-          {mode === 'bulk' ? (
-            <>
-              <button
-                type="button"
-                className="qrprint-btn"
-                onClick={() =>
-                  setSelected(new Set(shownPatients.slice(0, BULK_PRINT_LIMIT).map((p) => p.id)))
-                }
-              >
-                全選択
-              </button>
-              <button type="button" className="qrprint-btn" onClick={() => setSelected(new Set())}>
-                全解除
-              </button>
-            </>
-          ) : null}
-          <button type="button" className="qrprint-btn brand" onClick={() => window.print()}>
-            🖨 印刷
-          </button>
-        </span>
+        </div>
       </div>
       <div className="qrprint-hint">
         {mode === 'single'
