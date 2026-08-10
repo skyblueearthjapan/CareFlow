@@ -23,6 +23,7 @@ import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Checkbox } from '@/components/ui/checkbox';
 import { OfficeCombobox } from '@/components/master/OfficeCombobox';
+import { PatientNgStaffSection } from '@/components/patients/PatientNgStaffSection';
 import { SameAddressLinksSection } from '@/components/patients/SameAddressLinksSection';
 import { SpecialVisitWeekDialog } from '@/components/schedule/v2/SpecialVisitWeekDialog';
 import {
@@ -497,6 +498,10 @@ export function PatientForm({
 
       {/* Phase G-21: 同住所紐付け (edit 画面のみ; patientId が渡された場合に描画). */}
       {patientId ? <SameAddressLinksSection patientId={patientId} /> : null}
+
+      {/* NGスタッフ (patient-ng-staff-design.md §8-1): 編集モードのみ描画.
+          患者マスタ編集 / PatientEditDialog / CreatePatientDialog の各画面に相乗りする. */}
+      {patientId ? <PatientNgStaffSection patientId={patientId} /> : null}
 
       <div className="flex items-center justify-end gap-2">
         <Button

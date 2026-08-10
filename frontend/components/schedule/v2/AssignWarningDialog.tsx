@@ -7,10 +7,13 @@
  * 最終判断する確認レビューフローに作り替えたダイアログ。
  * 直前の「埋めて事後警告」 (Phase G-89) を置換する。
  *
- * 表示対象 (review_items) は 2 種:
+ * 表示対象 (review_items) は 3 種:
  *   🔴 性別 (gender / 重度): 適合性別の同拠点スタッフが居ないコース。
  *      候補スタッフ (= 性別無視時の候補) を提示し、 「割り当てる」 ボタン →
  *      確認モーダル 1 回 (= 計 2 ステップ) を踏んで承認する。
+ *   ⛔ NG スタッフ (ng_staff / 重度): 患者の NG 指定を外さないと埋まらないコース。
+ *      性別と同格 (patient-ng-staff-design.md §1 決定1) のため同じ 2 ステップ確認・
+ *      一斉承認の対象外。
  *   🟡 連続 (consecutive / 軽度): 患者の直近担当者と同じになるコース。
  *      候補スタッフを提示し、 チェックボックスで承認する (追加モーダル無し)。
  *      件数が多いときのために「一斉承認」ボタンで全件を一括チェックできる
@@ -44,8 +47,10 @@ import type {
   CrossOfficeNotice,
   RescueSwapNotice,
   ReviewItem,
+  SecondaryConstraintWarning,
   StageAssignmentNotice,
   UnresolvedGenderWarning,
+  UnresolvedNgWarning,
 } from '@/lib/queries/assign_staff_only';
 import { cn } from '@/lib/utils';
 
@@ -73,6 +78,10 @@ function fmtSexRestriction(sr: string | null | undefined): string | null {
 export interface ApprovedReviewItem {
   course_id: string;
   candidate_staff_id: string;
+  /** 承認元カードの理由 (BE の管理者お知らせ判定に使う・後方互換のため任意). */
+  reason?: ReviewItem['reason'];
+  /** 同時に違反している他制約 ('gender' / 'ng_staff'). */
+  also_violates?: string[];
 }
 
 export interface AssignWarningDialogProps {
@@ -94,6 +103,16 @@ export interface AssignWarningDialogProps {
    * このダイアログでは approve 対象外・常時表示。
    */
   unresolvedWarnings?: UnresolvedGenderWarning[];
+  /**
+   * NG スタッフ: NG 制約を満たす候補ゼロで残った違反の警告.
+   * 🟧 残留エリアのサブセクションとして表示 (approve 対象外・常時表示).
+   */
+  unresolvedNgWarnings?: UnresolvedNgWarning[];
+  /**
+   * 2 名体制の 2 人目 (secondary) が性別 / NG に抵触している警告 (割当自体は済).
+   * 🟧 残留エリアのサブセクションとして表示 (approve 対象外・常時表示).
+   */
+  secondaryConstraintWarnings?: SecondaryConstraintWarning[];
   /**
    * 4段ソルバ Stage 2: マネージャー動員で埋めたコースのお知らせ (確定済み・アクション不要).
    * 折りたたみで表示。同一コースが auto_committed_notices にも載る場合は、
@@ -121,6 +140,8 @@ export function AssignWarningDialog({
   applying = false,
   notices = [],
   unresolvedWarnings = [],
+  unresolvedNgWarnings = [],
+  secondaryConstraintWarnings = [],
   managerMobilizedNotices = [],
   crossOfficeNotices = [],
   rescueSwapNotices = [],
@@ -147,7 +168,29 @@ export function AssignWarningDialog({
   }, [open]);
 
   const genderItems = reviewItems.filter((i) => i.reason === 'gender');
+  const ngItems = reviewItems.filter((i) => i.reason === 'ng_staff');
   const consecutiveItems = reviewItems.filter((i) => i.reason === 'consecutive');
+
+  // review 以外の (承認できない) 情報が 1 件でもあるか. 説明文と「レビュー対象なし」
+  // 判定を 1 箇所に集約する (セクション追加のたびに条件式が伸びるのを防ぐ).
+  const hasOtherContent =
+    notices.length > 0 ||
+    unresolvedWarnings.length > 0 ||
+    unresolvedNgWarnings.length > 0 ||
+    secondaryConstraintWarnings.length > 0 ||
+    managerMobilizedNotices.length > 0 ||
+    crossOfficeNotices.length > 0 ||
+    rescueSwapNotices.length > 0;
+  const isEmpty = reviewItems.length === 0 && !hasOtherContent;
+  // らく助のトーン判定: 確定済みお知らせ (notices) だけなら従来どおり「大丈夫」トーン。
+  const isAllClear =
+    reviewItems.length === 0 &&
+    unresolvedWarnings.length === 0 &&
+    unresolvedNgWarnings.length === 0 &&
+    secondaryConstraintWarnings.length === 0 &&
+    managerMobilizedNotices.length === 0 &&
+    crossOfficeNotices.length === 0 &&
+    rescueSwapNotices.length === 0;
 
   // §4.1 チップ併記: auto_committed_notices と新 Stage 通知の重複を視覚整理するための course_id セット.
   const managerMobilizedIds = new Set(managerMobilizedNotices.map((n) => n.course_id));
@@ -162,7 +205,8 @@ export function AssignWarningDialog({
     });
   };
 
-  const handleConfirmGender = () => {
+  // 🔴 性別 / ⛔ NG の確認モーダル OK (= 2 ステップ目).
+  const handleConfirmOverride = () => {
     if (confirmTarget) {
       toggleApproved(confirmTarget.course_id, true);
       setConfirmTarget(null);
@@ -190,27 +234,32 @@ export function AssignWarningDialog({
     // partner 補完では DB から拾えないため、 FE で review_item の candidate を明示的に
     // 同梱して X+Y 一括 _persist させ、 secondary 対称解決で half-assigned を防ぐ。
     const itemByCourse = new Map(reviewItems.map((i) => [i.course_id, i]));
-    const selected = new Map<string, string>();
+    const selected = new Map<string, ApprovedReviewItem>();
+    const toApproved = (i: ReviewItem): ApprovedReviewItem => ({
+      course_id: i.course_id,
+      candidate_staff_id: i.candidate_staff_id,
+      // NG スタッフ対応: BE の管理者お知らせ (§7-3) 判定用に理由を同送する。
+      reason: i.reason,
+      also_violates: i.also_violates ?? [],
+    });
     for (const item of reviewItems) {
       if (!approved.has(item.course_id)) continue;
       // 承認カード本体.
-      if (!selected.has(item.course_id)) selected.set(item.course_id, item.candidate_staff_id);
+      if (!selected.has(item.course_id)) selected.set(item.course_id, toApproved(item));
       // linked partner も candidate 付きで co-select (先勝ち)。
       for (const linkedId of item.linked_course_ids ?? []) {
         const linked = itemByCourse.get(linkedId);
         if (linked && !selected.has(linkedId)) {
-          selected.set(linkedId, linked.candidate_staff_id);
+          selected.set(linkedId, toApproved(linked));
         }
       }
     }
-    const list: ApprovedReviewItem[] = Array.from(selected, ([course_id, candidate_staff_id]) => ({
-      course_id,
-      candidate_staff_id,
-    }));
-    await onApply(list);
+    await onApply(Array.from(selected.values()));
   };
 
   const approvedCount = approved.size;
+  // 確認モーダルの testid 接頭辞 (gender / ng).
+  const confirmKind = confirmTarget?.reason === 'ng_staff' ? 'ng' : 'gender';
 
   return (
     <>
@@ -234,6 +283,12 @@ export function AssignWarningDialog({
                 {unresolvedWarnings.length > 0
                   ? `性別制約を満たすスタッフが見つからない残留が ${unresolvedWarnings.length} 件あります。理由をご確認のうえ手動で調整してください。`
                   : null}
+                {unresolvedNgWarnings.length > 0
+                  ? `NGスタッフ以外に割り当てられない残留が ${unresolvedNgWarnings.length} 件あります。理由をご確認のうえ手動で調整してください。`
+                  : null}
+                {secondaryConstraintWarnings.length > 0
+                  ? `2名体制の2人目が性別制限やNGスタッフに該当しているコースが ${secondaryConstraintWarnings.length} 件あります。ご確認のうえ必要なら手動で調整してください。`
+                  : null}
                 {managerMobilizedNotices.length > 0
                   ? `マネージャー動員が ${managerMobilizedNotices.length} 件あり、確定済みです。`
                   : null}
@@ -243,13 +298,7 @@ export function AssignWarningDialog({
                 {rescueSwapNotices.length > 0
                   ? `応援による入れ替えが ${rescueSwapNotices.length} 件あります。`
                   : null}
-                {notices.length === 0 &&
-                unresolvedWarnings.length === 0 &&
-                managerMobilizedNotices.length === 0 &&
-                crossOfficeNotices.length === 0 &&
-                rescueSwapNotices.length === 0
-                  ? 'レビュー対象はありません。'
-                  : null}
+                {isEmpty ? 'レビュー対象はありません。' : null}
               </DialogDescription>
             ) : (
               <DialogDescription>
@@ -261,21 +310,9 @@ export function AssignWarningDialog({
 
           {/* R-10: らく助アドバイザー (docs/plans/rakusuke-advisor-ux-design.md) */}
           <RakusukeSays
-            pose={
-              reviewItems.length === 0 &&
-              unresolvedWarnings.length === 0 &&
-              managerMobilizedNotices.length === 0 &&
-              crossOfficeNotices.length === 0 &&
-              rescueSwapNotices.length === 0
-                ? 'cheer'
-                : 'clap'
-            }
+            pose={isAllClear ? 'cheer' : 'clap'}
             message={
-              reviewItems.length === 0 &&
-              unresolvedWarnings.length === 0 &&
-              managerMobilizedNotices.length === 0 &&
-              crossOfficeNotices.length === 0 &&
-              rescueSwapNotices.length === 0
+              isAllClear
                 ? 'スタッフの割当ができました！このまま確定して大丈夫です✨'
                 : `スタッフの割当ができました。${reviewItems.length > 0 ? `${reviewItems.length}件だけ一緒に確認させてください` : '残った気になる点を確認してください'}`
             }
@@ -295,7 +332,28 @@ export function AssignWarningDialog({
                       key={item.course_id}
                       item={item}
                       approved={approved.has(item.course_id)}
-                      onApproveGender={() => setConfirmTarget(item)}
+                      onApproveWithConfirm={() => setConfirmTarget(item)}
+                      onUnapprove={() => toggleApproved(item.course_id, false)}
+                    />
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+
+            {/* ⛔ NG スタッフセクション (性別と同格・2 ステップ確認・一斉承認対象外) */}
+            {ngItems.length > 0 ? (
+              <section data-testid="assign-review-ng-section">
+                <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-text-primary">
+                  <span aria-hidden>⛔</span>
+                  NGスタッフ ({ngItems.length} 件) — 確認のうえ割り当て
+                </h3>
+                <ul className="space-y-2">
+                  {ngItems.map((item) => (
+                    <ReviewCard
+                      key={item.course_id}
+                      item={item}
+                      approved={approved.has(item.course_id)}
+                      onApproveWithConfirm={() => setConfirmTarget(item)}
                       onUnapprove={() => toggleApproved(item.course_id, false)}
                     />
                   ))}
@@ -518,12 +576,76 @@ export function AssignWarningDialog({
               </section>
             ) : null}
 
-            {reviewItems.length === 0 &&
-            notices.length === 0 &&
-            unresolvedWarnings.length === 0 &&
-            managerMobilizedNotices.length === 0 &&
-            crossOfficeNotices.length === 0 &&
-            rescueSwapNotices.length === 0 ? (
+            {/* 🟧 残留違反サブセクション: NG 候補ゼロ (patient-ng-staff-design.md §5). */}
+            {unresolvedNgWarnings.length > 0 ? (
+              <section data-testid="assign-unresolved-ng-section">
+                <h3 className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-text-primary">
+                  <span aria-hidden>🟧</span>
+                  NGスタッフを避けられない残留（{unresolvedNgWarnings.length} 件・要手動調整）
+                </h3>
+                <ul className="space-y-1">
+                  {unresolvedNgWarnings.map((w, i) => (
+                    <li
+                      key={`${w.course_id}-${i}`}
+                      className="flex flex-wrap items-center gap-1 rounded border border-warning/40 bg-warning/5 px-2 py-1 text-xs text-text-secondary"
+                      data-testid="assign-unresolved-ng-row"
+                    >
+                      <span>
+                        {w.office_name || '—'} / {w.course_code} / {fmtWeekday(w.weekday)}
+                      </span>
+                      <span className="text-text-muted">|</span>
+                      <span className="font-medium text-text-primary">{w.current_staff_name}</span>
+                      {w.patient_names.length > 0 ? (
+                        <>
+                          <span className="text-text-muted">|</span>
+                          <span>{w.patient_names.join('・')}</span>
+                        </>
+                      ) : null}
+                      <span className="text-text-muted">|</span>
+                      <span>{w.reason_text}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+
+            {/* 🟧 残留違反サブセクション: 2 名体制 secondary の性別 / NG 抵触 (決定4). */}
+            {secondaryConstraintWarnings.length > 0 ? (
+              <section data-testid="assign-secondary-constraint-section">
+                <h3 className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-text-primary">
+                  <span aria-hidden>🟧</span>
+                  2名体制の2人目が制約に該当しています（{secondaryConstraintWarnings.length}{' '}
+                  件・割当済み・要確認）
+                </h3>
+                <ul className="space-y-1">
+                  {secondaryConstraintWarnings.map((w, i) => (
+                    <li
+                      key={`${w.course_id}-${w.patient_id}-${i}`}
+                      className="flex flex-wrap items-center gap-1 rounded border border-warning/40 bg-warning/5 px-2 py-1 text-xs text-text-secondary"
+                      data-testid="assign-secondary-constraint-row"
+                      data-kind={w.kind}
+                    >
+                      <span>
+                        2名体制の2人目{' '}
+                        <span className="font-medium text-text-primary">{w.staff_name}</span> が{' '}
+                        <span className="font-medium text-text-primary">{w.patient_name}</span>
+                        様の
+                        {w.kind === 'ng_staff' ? 'NGスタッフ' : '性別制限外'}
+                        です（コース{w.course_code}・{fmtWeekday(w.weekday)}）
+                      </span>
+                      {w.office_name ? (
+                        <>
+                          <span className="text-text-muted">|</span>
+                          <span>{w.office_name}</span>
+                        </>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+
+            {isEmpty ? (
               <div className="py-4 text-center text-xs text-text-muted">
                 レビュー対象はありません。
               </div>
@@ -552,23 +674,38 @@ export function AssignWarningDialog({
         </DialogContent>
       </Dialog>
 
-      {/* 🔴 性別カードの確認モーダル (1 回). */}
+      {/* 🔴 性別 / ⛔ NG カードの確認モーダル (1 回).
+          testid は理由ごとに分ける (assign-review-gender-confirm / assign-review-ng-confirm). */}
       <Dialog
         open={confirmTarget !== null}
         onOpenChange={(o) => (!o ? setConfirmTarget(null) : undefined)}
       >
-        <DialogContent className="max-w-md" data-testid="assign-review-gender-confirm">
+        <DialogContent className="max-w-md" data-testid={`assign-review-${confirmKind}-confirm`}>
           <DialogHeader>
             <DialogTitle>本当に割り当てますか？</DialogTitle>
             <DialogDescription>
               {confirmTarget ? (
                 <>
-                  性別制限のあるコース「{confirmTarget.course_code} /{' '}
-                  {fmtWeekday(confirmTarget.weekday)}」 に{' '}
+                  {confirmTarget.reason === 'ng_staff'
+                    ? 'NGスタッフに指定されているコース「'
+                    : '性別制限のあるコース「'}
+                  {confirmTarget.course_code} / {fmtWeekday(confirmTarget.weekday)}」 に{' '}
                   <span className="font-medium text-text-primary">
                     {confirmTarget.candidate_staff_name}
                   </span>{' '}
-                  を割り当てます。 適合する性別のスタッフが居ないため、 管理者の判断で割り当てます。
+                  を割り当てます。{' '}
+                  {confirmTarget.reason === 'ng_staff'
+                    ? '適合するスタッフが居ないため、 管理者の判断で割り当てます。'
+                    : '適合する性別のスタッフが居ないため、 管理者の判断で割り当てます。'}
+                  {/* 設計書 §5: 性別と NG が同時に該当する場合は確認文言に両方を併記する. */}
+                  {confirmTarget.reason === 'gender' &&
+                  (confirmTarget.also_violates ?? []).includes('ng_staff')
+                    ? ' さらにこのスタッフは患者のNGスタッフにも該当します。'
+                    : null}
+                  {confirmTarget.reason === 'ng_staff' &&
+                  (confirmTarget.also_violates ?? []).includes('gender')
+                    ? ' さらにこのスタッフは患者の性別制限にも適合しません。'
+                    : null}
                 </>
               ) : null}
             </DialogDescription>
@@ -578,14 +715,14 @@ export function AssignWarningDialog({
               type="button"
               variant="outline"
               onClick={() => setConfirmTarget(null)}
-              data-testid="assign-review-gender-confirm-cancel"
+              data-testid={`assign-review-${confirmKind}-confirm-cancel`}
             >
               やめる
             </Button>
             <Button
               type="button"
-              onClick={handleConfirmGender}
-              data-testid="assign-review-gender-confirm-ok"
+              onClick={handleConfirmOverride}
+              data-testid={`assign-review-${confirmKind}-confirm-ok`}
             >
               割り当てる
             </Button>
@@ -601,9 +738,9 @@ interface ReviewCardProps {
   approved: boolean;
   /** 🟡 連続: チェックボックス切替. */
   onToggleConsecutive?: (next: boolean) => void;
-  /** 🔴 性別: 「割り当てる」 ボタン (= 確認モーダルを開く). */
-  onApproveGender?: () => void;
-  /** 🔴 性別: 承認解除 (= 「割り当てる」 後に取り消す). */
+  /** 🔴 性別 / ⛔ NG: 「割り当てる」 ボタン (= 確認モーダルを開く). */
+  onApproveWithConfirm?: () => void;
+  /** 🔴 性別 / ⛔ NG: 承認解除 (= 「割り当てる」 後に取り消す). */
   onUnapprove?: () => void;
 }
 
@@ -611,15 +748,19 @@ function ReviewCard({
   item,
   approved,
   onToggleConsecutive,
-  onApproveGender,
+  onApproveWithConfirm,
   onUnapprove,
 }: ReviewCardProps) {
   const isGender = item.reason === 'gender';
+  const isNg = item.reason === 'ng_staff';
+  // 重度 (性別 / NG) は 2 ステップ確認・一斉承認対象外。
+  const isSevere = isGender || isNg;
+  const kind = isNg ? 'ng' : 'gender';
   return (
     <li
       className={cn(
         'rounded-md border p-3 text-xs',
-        isGender ? 'border-error/40 bg-error/5' : 'border-warning/40 bg-warning/5',
+        isSevere ? 'border-error/40 bg-error/5' : 'border-warning/40 bg-warning/5',
         approved && 'ring-2 ring-brand-primary',
       )}
       data-testid="assign-review-card"
@@ -628,8 +769,8 @@ function ReviewCard({
     >
       {/* ヘッダ行: 拠点 / コード / 曜日 + 候補スタッフ (右上). */}
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <Badge variant={isGender ? 'destructive' : 'warning'} className="text-[10px]">
-          {isGender ? '性別' : '連続'}
+        <Badge variant={isSevere ? 'destructive' : 'warning'} className="text-[10px]">
+          {isNg ? 'NGスタッフ' : isGender ? '性別' : '連続'}
         </Badge>
         <span className="font-medium text-text-primary">{item.course_code}</span>
         <span className="text-text-muted">{fmtWeekday(item.weekday)}</span>
@@ -650,7 +791,7 @@ function ReviewCard({
               className={cn(
                 'flex flex-wrap items-center gap-2 rounded border border-border-default bg-bg-base px-2 py-1',
                 v.is_cause && 'border-l-4',
-                v.is_cause && (isGender ? 'border-l-error' : 'border-l-warning'),
+                v.is_cause && (isSevere ? 'border-l-error' : 'border-l-warning'),
               )}
               data-testid="assign-review-visit"
               data-cause={v.is_cause ? 'true' : 'false'}
@@ -664,10 +805,10 @@ function ReviewCard({
               ) : null}
               {v.is_cause ? (
                 <Badge
-                  variant={isGender ? 'destructive' : 'warning'}
+                  variant={isSevere ? 'destructive' : 'warning'}
                   className="ml-auto text-[10px]"
                 >
-                  {isGender ? '性別NG' : '連続'}
+                  {isNg ? 'NG' : isGender ? '性別NG' : '連続'}
                 </Badge>
               ) : null}
             </li>
@@ -677,7 +818,7 @@ function ReviewCard({
 
       {/* アクション行. */}
       <div className="mt-2 flex items-center justify-end gap-2">
-        {isGender ? (
+        {isSevere ? (
           approved ? (
             <div className="flex items-center gap-2">
               <Badge variant="success" className="text-[10px]">
@@ -688,7 +829,7 @@ function ReviewCard({
                 variant="ghost"
                 size="sm"
                 onClick={onUnapprove}
-                data-testid="assign-review-gender-unapprove"
+                data-testid={`assign-review-${kind}-unapprove`}
               >
                 取り消す
               </Button>
@@ -697,8 +838,8 @@ function ReviewCard({
             <Button
               type="button"
               size="sm"
-              onClick={onApproveGender}
-              data-testid="assign-review-gender-approve"
+              onClick={onApproveWithConfirm}
+              data-testid={`assign-review-${kind}-approve`}
             >
               割り当てる
             </Button>

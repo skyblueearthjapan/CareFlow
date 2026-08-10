@@ -44,6 +44,8 @@ import { useSyncWeekVisitsToFixedMutation } from '@/lib/api/patientSync';
 import type { SyncWeekToFixedResponse } from '@/lib/schemas/patientSync';
 import { usePatient } from '@/lib/queries/patients';
 import { useFixedVisits } from '@/lib/queries/patient_fixed_visits';
+import { useNgStaffList } from '@/lib/queries/patient_ng_staff';
+import { formatNgStaffNames } from '@/lib/schemas/patient_ng_staff';
 import { useVisits } from '@/lib/queries/visits';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
 import type { VisitRead } from '@/lib/schemas/visit';
@@ -323,6 +325,8 @@ export function PatientScheduleDetailDialog({
       ? { patient_id: patientId, week_start: weekStartStr, week_end: weekEndStr }
       : {},
   );
+  // NGスタッフ (patient-ng-staff-design.md §8-2): 基本情報サマリに 1 行出す.
+  const ngStaffQuery = useNgStaffList(open ? patientId : null);
 
   const fixedRows = (pfvQuery.data ?? []).filter((p) => p.mode === 'normal');
   const weekRows = (visitsQuery.data?.items ?? []).filter((v) => !v.deleted_at);
@@ -496,6 +500,12 @@ export function PatientScheduleDetailDialog({
                       : patient?.sex_restriction === 'male_only'
                         ? '男性のみ'
                         : 'なし'}
+                  </dd>
+                </div>
+                <div className="col-span-2 sm:col-span-1">
+                  <dt className="text-text-muted">NGスタッフ</dt>
+                  <dd className="font-medium" data-testid="patient-schedule-ng-staff">
+                    {formatNgStaffNames(ngStaffQuery.data ?? [])}
                   </dd>
                 </div>
                 <div className="col-span-2">

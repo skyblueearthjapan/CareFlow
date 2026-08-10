@@ -101,6 +101,10 @@ vi.mock('@/lib/queries/patient_fixed_visits', () => ({
 vi.mock('@/lib/queries/visits', () => ({
   useVisits: () => ({ data: { items: [] }, isLoading: false, isError: false }),
 }));
+// NGスタッフ (基本情報サマリの 1 行). QueryClient を持たないので hook をモックする.
+vi.mock('@/lib/queries/patient_ng_staff', () => ({
+  useNgStaffList: () => ({ data: [], isLoading: false, isError: false }),
+}));
 vi.mock('@/lib/api/patientSync', () => ({
   useSyncWeekVisitsToFixedMutation: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));

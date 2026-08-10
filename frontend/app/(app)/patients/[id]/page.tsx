@@ -27,6 +27,7 @@ import { toast } from '@/components/ui/sonner';
 import { downloadPatientKarte, triggerBlobDownload } from '@/lib/api/patientsExcel';
 import { RecordNavigator, type NavigatorRecord } from '@/components/RecordNavigator';
 import { useDeletePatient, usePatient, usePatients } from '@/lib/queries/patients';
+import { useNgStaffList } from '@/lib/queries/patient_ng_staff';
 import { useRegeneratePatientQr } from '@/lib/queries/patientQr';
 import { useOffices } from '@/lib/queries/offices';
 import {
@@ -44,6 +45,7 @@ import {
   type PatientRead,
   type WeekdayKey,
 } from '@/lib/schemas/patient';
+import { formatNgStaffNames } from '@/lib/schemas/patient_ng_staff';
 import { PatientFixedVisitsPanel } from '../_components/PatientFixedVisitsPanel';
 import { isAdminRole } from '@/lib/rbac';
 
@@ -61,6 +63,8 @@ export default function PatientDetailPage() {
 
   const { data, isLoading, isError, error } = usePatient(id);
   const { data: patientsList } = usePatients({ limit: 500 });
+  // NGスタッフ (patient-ng-staff-design.md §8-2): 「訪問条件」Card に名前を列挙する.
+  const { data: ngStaff = [] } = useNgStaffList(id);
   const { offices } = useOffices();
   const deleteMutation = useDeletePatient();
   const regenerateQr = useRegeneratePatientQr(id);
@@ -288,6 +292,8 @@ export default function PatientDetailPage() {
             );
             return [
               ['性別制限', sexResNorm ? SEX_RESTRICTION_LABEL[sexResNorm] : 'なし'],
+              // NGスタッフ (patient-ng-staff-design.md §8-2): 性別制限の隣に列挙.
+              ['NGスタッフ', formatNgStaffNames(ngStaff)],
               ['特別週パターン', data.special_weekly_pattern ? '有効' : '--'],
               ['2 名体制必須', data.requires_multiple_staff ? 'はい' : 'いいえ'],
             ];

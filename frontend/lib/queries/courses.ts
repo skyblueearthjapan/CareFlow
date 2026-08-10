@@ -115,6 +115,12 @@ export interface CourseV2Update {
    * 使用。省略可 (旧 BE 互換)。
    */
   op_group_id?: string | null;
+  /**
+   * NG スタッフ / 性別制限に抵触する担当変更を「確認済み」として通す
+   * (patient-ng-staff-design.md §7-2)。 未指定で違反があると BE が 422
+   * `constraint_confirmation_required` を返すので、 確認ダイアログ後に true で再送する。
+   */
+  acknowledge_constraint_warnings?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────

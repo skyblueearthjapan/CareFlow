@@ -103,14 +103,28 @@ export const reviewVisitSchema = z.object({
 
 export type ReviewVisit = z.infer<typeof reviewVisitSchema>;
 
+/**
+ * レビュー理由。
+ * 'consecutive' (🟡 連続/軽度) | 'gender' (🔴 性別/重度) | 'ng_staff' (⛔ NG スタッフ/重度).
+ * NG スタッフは性別制限と同格 (patient-ng-staff-design.md §1 決定1)。
+ */
+export const REVIEW_REASONS = ['consecutive', 'gender', 'ng_staff'] as const;
+export type ReviewReason = (typeof REVIEW_REASONS)[number];
+
 /** 確認レビューフローの 1 カード (= レビュー対象の 1 コース). */
 export const reviewItemSchema = z.object({
   course_id: z.string().uuid(),
   office_name: z.string(),
   course_code: z.string(),
   weekday: z.number().int().min(0).max(6),
-  // 'consecutive' (🟡 連続/軽度) | 'gender' (🔴 性別/重度).
-  reason: z.enum(['consecutive', 'gender']),
+  reason: z.enum(REVIEW_REASONS),
+  /**
+   * reason 以外にも同時に違反している制約の一覧 ('gender' / 'ng_staff')。
+   * 性別と NG が同一コースで同時に候補ゼロになるケースで、 review_item を 2 枚に
+   * 分けず確認文言に両方を併記するために使う (設計書 §5)。
+   * 旧 BE は本フィールドを返さないため default([])。
+   */
+  also_violates: z.array(z.string()).default([]),
   candidate_staff_id: z.string().uuid(),
   candidate_staff_name: z.string(),
   candidate_staff_sex: z.string().nullable().optional(),
@@ -164,6 +178,54 @@ export const unresolvedGenderWarningSchema = z.object({
 });
 
 export type UnresolvedGenderWarning = z.infer<typeof unresolvedGenderWarningSchema>;
+
+// ---------------------------------------------------------------------------
+// NG スタッフ: 候補ゼロで残った NG 違反の警告 — BE スキーマとミラー
+// (patient-ng-staff-design.md §5 残留違反)
+// ---------------------------------------------------------------------------
+
+/**
+ * NG 残留違反 1 件の警告.
+ * NG ブロック未割当 + override 候補ゼロ + 現担当が NG 該当のコースに出る。
+ * 承認/確定ではなくアクション不能の警告 (= 管理者に手動調整を促す)。
+ * 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
+ */
+export const unresolvedNgWarningSchema = z.object({
+  course_id: z.string(),
+  course_code: z.string(),
+  weekday: z.number().int().min(0).max(6),
+  office_name: z.string().nullable().optional(),
+  current_staff_name: z.string(),
+  patient_names: z.array(z.string()).default([]),
+  reason_text: z.string(),
+});
+
+export type UnresolvedNgWarning = z.infer<typeof unresolvedNgWarningSchema>;
+
+// ---------------------------------------------------------------------------
+// 2 名体制 secondary の制約違反警告 — BE スキーマとミラー
+// (patient-ng-staff-design.md §1 決定4 / §5 secondary 検証)
+// ---------------------------------------------------------------------------
+
+/**
+ * 2 名体制の 2 人目 (secondary) が性別制限 / NG スタッフに抵触したため
+ * secondary が制約に抵触していることの警告 1 件 (割当自体は行われている = 見える化のみ)。
+ * 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
+ */
+export const secondaryConstraintWarningSchema = z.object({
+  course_id: z.string(),
+  course_code: z.string(),
+  office_name: z.string().nullable().optional(),
+  weekday: z.number().int().min(0).max(6),
+  staff_id: z.string(),
+  staff_name: z.string(),
+  patient_id: z.string(),
+  patient_name: z.string(),
+  // 'gender' | 'ng_staff'
+  kind: z.enum(['gender', 'ng_staff']),
+});
+
+export type SecondaryConstraintWarning = z.infer<typeof secondaryConstraintWarningSchema>;
 
 // ---------------------------------------------------------------------------
 // 4段ソルバ Stage 2: マネージャー動員の情報通知 1 件 — BE スキーマとミラー
@@ -239,6 +301,12 @@ export const assignStaffOnlyResponseSchema = z.object({
   // W-11: 性別残留違反の警告 (候補ゼロ・手動調整を促す).
   // 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
   unresolved_warnings: z.array(unresolvedGenderWarningSchema).default([]).catch([]),
+  // NG スタッフ: NG 制約を満たす候補ゼロで残った違反の警告 (手動調整を促す).
+  // 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
+  unresolved_ng_warnings: z.array(unresolvedNgWarningSchema).default([]).catch([]),
+  // 2 名体制 secondary の性別 / NG 違反の警告 (割当は済・見える化のみ).
+  // 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
+  secondary_constraint_warnings: z.array(secondaryConstraintWarningSchema).default([]).catch([]),
   // 4段ソルバ Stage 2: スタッフ不足でマネージャーを動員して埋めたコース一覧.
   // 旧 BE は本フィールドを返さないため .default([]).catch([]) で寛容に受け取る.
   manager_mobilized_notices: z.array(stageAssignmentNoticeSchema).default([]).catch([]),
@@ -320,6 +388,14 @@ const APPLY_STAFF_REVIEW_PATH = '/api/v1/schedule/apply-staff-review';
 export const applyStaffReviewItemSchema = z.object({
   course_id: z.string().uuid(),
   staff_id: z.string().uuid(),
+  /**
+   * 承認元カードの理由 ('consecutive' | 'gender' | 'ng_staff')。
+   * BE は §7-3 の管理者お知らせ (constraint_override) の判定に使う。
+   * 後方互換のため任意 (旧 BE は無視する)。
+   */
+  reason: z.enum(REVIEW_REASONS).optional(),
+  /** 同時に違反している他制約 ('gender' / 'ng_staff')。後方互換のため任意。 */
+  also_violates: z.array(z.string()).optional(),
 });
 
 export type ApplyStaffReviewItem = z.infer<typeof applyStaffReviewItemSchema>;

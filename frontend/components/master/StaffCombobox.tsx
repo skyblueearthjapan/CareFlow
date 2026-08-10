@@ -18,6 +18,8 @@ interface StaffComboboxProps {
   /** Soft-deleted rows are filtered out automatically. Pass a staff id here
    *  to also remove that single row (e.g. mentor ≠ self). */
   excludeId?: string;
+  /** 複数除外 (例: NG スタッフで既に追加済みの staff を候補から外す). */
+  excludeIds?: readonly string[];
   disabled?: boolean;
   placeholder?: string;
   className?: string;
@@ -27,21 +29,27 @@ export function StaffCombobox({
   value,
   onChange,
   excludeId,
+  excludeIds,
   disabled,
   placeholder = 'スタッフを選択',
   className,
 }: StaffComboboxProps) {
   const { data: staff, isLoading } = useStaffList({ limit: 500 });
 
+  const excluded = React.useMemo(
+    () => new Set<string>([...(excludeIds ?? []), ...(excludeId ? [excludeId] : [])]),
+    [excludeIds, excludeId],
+  );
+
   const options = React.useMemo<ComboboxOption[]>(
     () =>
       (staff ?? [])
-        .filter((s) => !s.deleted_at && (excludeId ? s.id !== excludeId : true))
+        .filter((s) => !s.deleted_at && !excluded.has(s.id))
         .map((s) => ({
           value: s.id,
           label: s.code ? `${s.name} (${s.code})` : s.name,
         })),
-    [staff, excludeId],
+    [staff, excluded],
   );
 
   return (

@@ -21,8 +21,10 @@ import type {
   CrossOfficeNotice,
   RescueSwapNotice,
   ReviewItem,
+  SecondaryConstraintWarning,
   StageAssignmentNotice,
   UnresolvedGenderWarning,
+  UnresolvedNgWarning,
 } from '@/lib/queries/assign_staff_only';
 
 function makeGender(over: Partial<ReviewItem> = {}): ReviewItem {
@@ -32,6 +34,7 @@ function makeGender(over: Partial<ReviewItem> = {}): ReviewItem {
     course_code: 'A',
     weekday: 0,
     reason: 'gender',
+    also_violates: [],
     candidate_staff_id: '22222222-2222-2222-2222-222222222222',
     candidate_staff_name: '山田太郎',
     candidate_staff_sex: 'male',
@@ -55,6 +58,7 @@ function makeConsecutive(over: Partial<ReviewItem> = {}): ReviewItem {
     course_code: 'C',
     weekday: 2,
     reason: 'consecutive',
+    also_violates: [],
     candidate_staff_id: '66666666-6666-6666-6666-666666666666',
     candidate_staff_name: '鈴木花子',
     candidate_staff_sex: 'female',
@@ -135,6 +139,8 @@ describe('AssignWarningDialog (Phase G-91 review flow)', () => {
       {
         course_id: '33333333-3333-3333-3333-333333333333',
         candidate_staff_id: '22222222-2222-2222-2222-222222222222',
+        reason: 'gender',
+        also_violates: [],
       },
     ]);
   });
@@ -159,6 +165,8 @@ describe('AssignWarningDialog (Phase G-91 review flow)', () => {
       {
         course_id: '44444444-4444-4444-4444-444444444444',
         candidate_staff_id: '66666666-6666-6666-6666-666666666666',
+        reason: 'consecutive',
+        also_violates: [],
       },
     ]);
   });
@@ -205,8 +213,18 @@ describe('AssignWarningDialog (Phase G-91 review flow)', () => {
     const applied = onApply.mock.calls[0][0];
     // X と Y の両方が candidate 付きで apply 対象に入る (順不同).
     expect(applied).toHaveLength(2);
-    expect(applied).toContainEqual({ course_id: xId, candidate_staff_id: xStaff });
-    expect(applied).toContainEqual({ course_id: yId, candidate_staff_id: yStaff });
+    expect(applied).toContainEqual({
+      course_id: xId,
+      candidate_staff_id: xStaff,
+      reason: 'consecutive',
+      also_violates: [],
+    });
+    expect(applied).toContainEqual({
+      course_id: yId,
+      candidate_staff_id: yStaff,
+      reason: 'consecutive',
+      also_violates: [],
+    });
   });
 
   it('一斉承認 = 連続カードを全件まとめて承認して apply に渡る', async () => {
@@ -228,10 +246,14 @@ describe('AssignWarningDialog (Phase G-91 review flow)', () => {
     expect(applied).toContainEqual({
       course_id: c1.course_id,
       candidate_staff_id: c1.candidate_staff_id,
+      reason: 'consecutive',
+      also_violates: [],
     });
     expect(applied).toContainEqual({
       course_id: c2.course_id,
       candidate_staff_id: c2.candidate_staff_id,
+      reason: 'consecutive',
+      also_violates: [],
     });
   });
 
@@ -298,7 +320,8 @@ function makeNotice(over: Partial<AutoCommittedNotice> = {}): AutoCommittedNotic
     staff_name: '田中スタッフ',
     cause_patient_names: ['患者A', '患者B'],
     reason_kind: 'single_staff',
-    reason_text: 'この曜日に都賀拠点で勤務できるスタッフが田中スタッフ 1 名のため、連続担当は避けられません',
+    reason_text:
+      'この曜日に都賀拠点で勤務できるスタッフが田中スタッフ 1 名のため、連続担当は避けられません',
     ...over,
   };
 }
@@ -404,9 +427,7 @@ describe('AssignWarningDialog — Wave N-2 notices セクション', () => {
 // W-11: unresolved_warnings (性別候補ゼロの残留違反) セクションのテスト
 // ─────────────────────────────────────────────────────────────────────────
 
-function makeUnresolved(
-  over: Partial<UnresolvedGenderWarning> = {},
-): UnresolvedGenderWarning {
+function makeUnresolved(over: Partial<UnresolvedGenderWarning> = {}): UnresolvedGenderWarning {
   return {
     course_id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
     course_code: 'B',
@@ -553,7 +574,9 @@ describe('AssignWarningDialog — 4段ソルバ Stage 2 + v2.0 新Stage 3 notice
     // 既定は折りたたみ = 行は非表示
     expect(screen.queryByTestId('assign-manager-mobilized-row')).not.toBeInTheDocument();
     // 説明文が出る
-    expect(screen.getByText(/スタッフ不足のため、以下のコースにマネージャーを割り当てました/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/スタッフ不足のため、以下のコースにマネージャーを割り当てました/),
+    ).toBeInTheDocument();
   });
 
   it('「詳細を見る ▼」を押すとマネージャー動員の行が表示される', () => {
@@ -775,5 +798,290 @@ describe('AssignWarningDialog — 4段ソルバ Stage 2 + v2.0 新Stage 3 notice
     expect(screen.getByTestId('assign-manager-mobilized-section')).toBeInTheDocument();
     expect(screen.getByTestId('assign-cross-office-section')).toBeInTheDocument();
     expect(screen.getByTestId('assign-rescue-swap-section')).toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// NG スタッフ (patient-ng-staff-design.md §8-2):
+//   ⛔ セクション / 一斉承認対象外 / also_violates 併記 /
+//   🟧 残留 NG + 2 名体制 secondary サブセクション
+// ─────────────────────────────────────────────────────────────────────────
+
+const NG_COURSE_ID = 'a0000000-0000-0000-0000-00000000000a';
+const NG_STAFF_ID = 'a0000000-0000-0000-0000-00000000000b';
+
+function makeNg(over: Partial<ReviewItem> = {}): ReviewItem {
+  return {
+    course_id: NG_COURSE_ID,
+    office_name: '稲毛拠点',
+    course_code: 'D',
+    weekday: 4,
+    reason: 'ng_staff',
+    also_violates: [],
+    candidate_staff_id: NG_STAFF_ID,
+    candidate_staff_name: 'NG候補 花子',
+    candidate_staff_sex: 'female',
+    visits: [
+      {
+        patient_id: 'a0000000-0000-0000-0000-00000000000c',
+        patient_name: 'NG指定患者',
+        start_time: '11:00:00',
+        sex_restriction: null,
+        is_cause: true,
+      },
+    ],
+    ...over,
+  };
+}
+
+function makeUnresolvedNg(over: Partial<UnresolvedNgWarning> = {}): UnresolvedNgWarning {
+  return {
+    course_id: 'b0000000-0000-0000-0000-00000000000a',
+    course_code: 'C',
+    weekday: 1,
+    office_name: '都賀拠点',
+    current_staff_name: 'NG該当 太郎',
+    patient_names: ['山田様', '佐藤様'],
+    reason_text:
+      'NGスタッフ以外の候補が見つかりません。現在の担当（NG該当 太郎）はNG指定です — 手動で調整してください',
+    ...over,
+  };
+}
+
+function makeSecondary(over: Partial<SecondaryConstraintWarning> = {}): SecondaryConstraintWarning {
+  return {
+    course_id: 'c0000000-0000-0000-0000-00000000000a',
+    course_code: 'B',
+    office_name: '稲毛拠点',
+    weekday: 2,
+    staff_id: 'c0000000-0000-0000-0000-00000000000b',
+    staff_name: '二人目 次郎',
+    patient_id: 'c0000000-0000-0000-0000-00000000000c',
+    patient_name: '高橋',
+    kind: 'ng_staff',
+    ...over,
+  };
+}
+
+describe('AssignWarningDialog — ⛔ NG スタッフセクション', () => {
+  it('reason=ng_staff のカードは ⛔ セクションに描画される (性別/連続とは別セクション)', () => {
+    render(
+      <AssignWarningDialog open onClose={() => {}} reviewItems={[makeNg()]} onApply={() => {}} />,
+    );
+    expect(screen.getByTestId('assign-review-ng-section')).toBeInTheDocument();
+    expect(screen.queryByTestId('assign-review-gender-section')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('assign-review-consecutive-section')).not.toBeInTheDocument();
+    const card = screen.getByTestId('assign-review-card');
+    expect(card).toHaveAttribute('data-reason', 'ng_staff');
+    expect(card).toHaveTextContent('NGスタッフ');
+    expect(card).toHaveTextContent('D');
+    expect(card).toHaveTextContent('金');
+    expect(card).toHaveTextContent('NG候補 花子');
+    expect(card).toHaveTextContent('NG指定患者');
+  });
+
+  it('NG = 「割り当てる」→ 確認モーダル 1 回 → apply に reason 付きで渡る (2 ステップ)', async () => {
+    const onApply = vi.fn<(a: ApprovedReviewItem[]) => void>();
+    render(
+      <AssignWarningDialog open onClose={() => {}} reviewItems={[makeNg()]} onApply={onApply} />,
+    );
+    fireEvent.click(screen.getByTestId('assign-review-ng-approve'));
+    const confirm = screen.getByTestId('assign-review-ng-confirm');
+    expect(confirm).toBeInTheDocument();
+    expect(confirm).toHaveTextContent(/NGスタッフに指定されているコース/);
+    expect(confirm).toHaveTextContent(/適合するスタッフが居ないため/);
+    fireEvent.click(screen.getByTestId('assign-review-ng-confirm-ok'));
+    fireEvent.click(screen.getByTestId('assign-review-apply'));
+    await waitFor(() => expect(onApply).toHaveBeenCalledTimes(1));
+    expect(onApply).toHaveBeenCalledWith([
+      {
+        course_id: NG_COURSE_ID,
+        candidate_staff_id: NG_STAFF_ID,
+        reason: 'ng_staff',
+        also_violates: [],
+      },
+    ]);
+  });
+
+  it('確認モーダルで「やめる」を押すと承認されない', () => {
+    render(
+      <AssignWarningDialog open onClose={() => {}} reviewItems={[makeNg()]} onApply={() => {}} />,
+    );
+    fireEvent.click(screen.getByTestId('assign-review-ng-approve'));
+    fireEvent.click(screen.getByTestId('assign-review-ng-confirm-cancel'));
+    expect(screen.getByTestId('assign-review-card')).toHaveAttribute('data-approved', 'false');
+    expect(screen.getByTestId('assign-review-apply')).toBeDisabled();
+  });
+
+  it('一斉承認は ⛔ NG カードを対象にしない (連続のみ)', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[makeNg(), makeConsecutive()]}
+        onApply={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('assign-review-consecutive-approve-all'));
+    const cards = screen.getAllByTestId('assign-review-card');
+    const ng = cards.find((c) => c.getAttribute('data-reason') === 'ng_staff');
+    const consecutive = cards.find((c) => c.getAttribute('data-reason') === 'consecutive');
+    expect(ng).toHaveAttribute('data-approved', 'false');
+    expect(consecutive).toHaveAttribute('data-approved', 'true');
+  });
+
+  it('⛔ NG セクションに一斉承認ボタンは存在しない (連続セクションのみ)', () => {
+    render(
+      <AssignWarningDialog open onClose={() => {}} reviewItems={[makeNg()]} onApply={() => {}} />,
+    );
+    expect(screen.queryByTestId('assign-review-consecutive-approve-all')).not.toBeInTheDocument();
+  });
+
+  it('🔴 性別カードの also_violates に ng_staff があると確認文言に NG も併記される', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[makeGender({ also_violates: ['ng_staff'] })]}
+        onApply={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('assign-review-gender-approve'));
+    const confirm = screen.getByTestId('assign-review-gender-confirm');
+    expect(confirm).toHaveTextContent(/性別制限のあるコース/);
+    expect(confirm).toHaveTextContent(/さらにこのスタッフは患者のNGスタッフにも該当します/);
+  });
+
+  it('🔴 性別カードの also_violates が空なら NG 併記は出ない', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[makeGender()]}
+        onApply={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('assign-review-gender-approve'));
+    expect(screen.getByTestId('assign-review-gender-confirm')).not.toHaveTextContent(
+      /NGスタッフにも該当します/,
+    );
+  });
+
+  it('⛔ NG カードの also_violates に gender があると確認文言に性別も併記される', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[makeNg({ also_violates: ['gender'] })]}
+        onApply={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('assign-review-ng-approve'));
+    expect(screen.getByTestId('assign-review-ng-confirm')).toHaveTextContent(
+      /さらにこのスタッフは患者の性別制限にも適合しません/,
+    );
+  });
+});
+
+describe('AssignWarningDialog — 🟧 残留 NG / 2名体制 secondary サブセクション', () => {
+  it('unresolvedNgWarnings を渡すと NG 残留セクションが常時表示される (reason_text をそのまま表示)', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        unresolvedNgWarnings={[makeUnresolvedNg()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-unresolved-ng-section')).toBeInTheDocument();
+    const row = screen.getByTestId('assign-unresolved-ng-row');
+    expect(row).toHaveTextContent('都賀拠点');
+    expect(row).toHaveTextContent('C');
+    expect(row).toHaveTextContent('火');
+    expect(row).toHaveTextContent('NG該当 太郎');
+    expect(row).toHaveTextContent('山田様・佐藤様');
+    expect(row).toHaveTextContent('手動で調整してください');
+  });
+
+  it('secondaryConstraintWarnings (ng_staff) は「2名体制の2人目 … NGスタッフです」と表示する', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        secondaryConstraintWarnings={[makeSecondary()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-secondary-constraint-section')).toBeInTheDocument();
+    const row = screen.getByTestId('assign-secondary-constraint-row');
+    expect(row).toHaveAttribute('data-kind', 'ng_staff');
+    expect(row).toHaveTextContent('2名体制の2人目');
+    expect(row).toHaveTextContent('二人目 次郎');
+    expect(row).toHaveTextContent('高橋');
+    expect(row).toHaveTextContent('NGスタッフ');
+    expect(row).toHaveTextContent('コースB');
+    expect(row).toHaveTextContent('水');
+  });
+
+  it('secondaryConstraintWarnings (gender) は「性別制限外です」と表示する', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        secondaryConstraintWarnings={[makeSecondary({ kind: 'gender' })]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-secondary-constraint-row')).toHaveTextContent('性別制限外');
+  });
+
+  it('残留 NG / secondary は承認対象外 (apply ボタンは disabled のまま)', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        unresolvedNgWarnings={[makeUnresolvedNg()]}
+        secondaryConstraintWarnings={[makeSecondary()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('assign-review-apply')).toBeDisabled();
+  });
+
+  it('残留 NG / secondary のみでも「レビュー対象はありません」で誤誘導しない', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[]}
+        unresolvedNgWarnings={[makeUnresolvedNg()]}
+        secondaryConstraintWarnings={[makeSecondary()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.queryByText(/レビュー対象はありません/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/NGスタッフ以外に割り当てられない残留が.*件あります/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/2名体制の2人目が性別制限やNGスタッフに該当しているコースが.*件あります/),
+    ).toBeInTheDocument();
+  });
+
+  it('デフォルト (未指定) では NG 残留 / secondary セクションが出ない', () => {
+    render(
+      <AssignWarningDialog
+        open
+        onClose={() => {}}
+        reviewItems={[makeConsecutive()]}
+        onApply={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId('assign-unresolved-ng-section')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('assign-secondary-constraint-section')).not.toBeInTheDocument();
   });
 });

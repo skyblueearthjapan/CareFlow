@@ -86,9 +86,15 @@ import {
   type CrossOfficeNotice,
   type RescueSwapNotice,
   type ReviewItem,
+  type SecondaryConstraintWarning,
   type StageAssignmentNotice,
   type UnresolvedGenderWarning,
+  type UnresolvedNgWarning,
 } from '@/lib/queries/assign_staff_only';
+import {
+  parseConstraintConfirmationDetail,
+  type ConstraintWarning,
+} from '@/lib/schemas/patient_ng_staff';
 import { useCourses, useUpdateCourse, type CourseV2Read } from '@/lib/queries/courses';
 import { useGenerateWeekOnly } from '@/lib/queries/generate_week';
 import { useOffices } from '@/lib/queries/offices';
@@ -136,6 +142,7 @@ import { TimelineDayList } from '@/components/schedule/timeline/TimelineDayList'
 import { BulkFixToPatternButton } from './BulkFixToPatternButton';
 import { BulkWeekPinAllButton } from './BulkWeekPinAllButton';
 import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDialog';
+import { ConstraintOverrideConfirmDialog } from './ConstraintOverrideConfirmDialog';
 import { BulkPoolInsertDialog } from './BulkPoolInsertDialog';
 import { RegisterPatientButton } from './RegisterPatientButton';
 import { ScheduleHealthDialog } from './ScheduleHealthDialog';
@@ -2427,6 +2434,11 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const [autoCommittedNotices, setAutoCommittedNotices] = useState<AutoCommittedNotice[]>([]);
   // W-11: 性別制約を満たす候補ゼロで残った違反の警告 (手動調整が必要・承認不可).
   const [unresolvedWarnings, setUnresolvedWarnings] = useState<UnresolvedGenderWarning[]>([]);
+  // NG スタッフ: NG 候補ゼロで残った違反 / 2 名体制 secondary の制約違反 (承認不可).
+  const [unresolvedNgWarnings, setUnresolvedNgWarnings] = useState<UnresolvedNgWarning[]>([]);
+  const [secondaryConstraintWarnings, setSecondaryConstraintWarnings] = useState<
+    SecondaryConstraintWarning[]
+  >([]);
   // 4段ソルバ Stage 2: マネージャー動員のお知らせ (確定済み).
   const [managerMobilizedNotices, setManagerMobilizedNotices] = useState<StageAssignmentNotice[]>(
     [],
@@ -2518,10 +2530,15 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       const mobilized = res.manager_mobilized_notices ?? [];
       const crossOffice = res.cross_office_notices ?? [];
       const swaps = res.rescue_swap_notices ?? [];
+      // NG スタッフ (patient-ng-staff-design.md §5): NG 残留 / secondary 制約違反.
+      const unresolvedNg = res.unresolved_ng_warnings ?? [];
+      const secondaryConstraints = res.secondary_constraint_warnings ?? [];
       if (
         items.length > 0 ||
         notices.length > 0 ||
         unresolved.length > 0 ||
+        unresolvedNg.length > 0 ||
+        secondaryConstraints.length > 0 ||
         mobilized.length > 0 ||
         crossOffice.length > 0 ||
         swaps.length > 0
@@ -2529,6 +2546,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         setReviewItems(items);
         setAutoCommittedNotices(notices);
         setUnresolvedWarnings(unresolved);
+        setUnresolvedNgWarnings(unresolvedNg);
+        setSecondaryConstraintWarnings(secondaryConstraints);
         setManagerMobilizedNotices(mobilized);
         setCrossOfficeNotices(crossOffice);
         setRescueSwapNotices(swaps);
@@ -2539,6 +2558,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             suffixParts.push(`体制上不可避の連続 ${notices.length} 件は確定済み`);
           if (unresolved.length > 0)
             suffixParts.push(`性別制約を満たせない残留 ${unresolved.length} 件`);
+          if (unresolvedNg.length > 0)
+            suffixParts.push(`NGスタッフを避けられない残留 ${unresolvedNg.length} 件`);
+          if (secondaryConstraints.length > 0)
+            suffixParts.push(`2名体制の2人目未確定 ${secondaryConstraints.length} 件`);
           if (mobilized.length > 0)
             suffixParts.push(`マネージャー動員 ${mobilized.length} 件確定済み`);
           if (crossOffice.length > 0)
@@ -2556,6 +2579,12 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             parts.push(`体制上不可避の連続 ${notices.length} 件を自動確定しました`);
           if (unresolved.length > 0)
             parts.push(`性別制約を満たせない残留が ${unresolved.length} 件あります`);
+          if (unresolvedNg.length > 0)
+            parts.push(`NGスタッフを避けられない残留が ${unresolvedNg.length} 件あります`);
+          if (secondaryConstraints.length > 0)
+            parts.push(
+              `2名体制の2人目が性別制限やNGスタッフに該当しているコースが ${secondaryConstraints.length} 件あります`,
+            );
           if (mobilized.length > 0)
             parts.push(`マネージャー動員 ${mobilized.length} 件を自動確定しました`);
           if (crossOffice.length > 0)
@@ -2605,6 +2634,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         items: approvedList.map((a) => ({
           course_id: a.course_id,
           staff_id: a.candidate_staff_id,
+          // NG スタッフ: BE の管理者お知らせ (§7-3) 判定用に理由を同送 (旧 BE は無視).
+          reason: a.reason,
+          also_violates: a.also_violates,
         })),
       });
       // 承認した course のうち成功したものを抽出 (= partner 自動補完分は無視)。
@@ -2634,7 +2666,20 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     }
   };
 
-  const handleChangeAssignedStaff = async (courseId: string, staffId: string | null) => {
+  // NG スタッフ / 性別制限に抵触する担当変更の確認ダイアログ (§7-2 acknowledge 方式).
+  // BE が 422 `constraint_confirmation_required` を返したら、 内容を提示して
+  // OK なら acknowledge_constraint_warnings: true を足して同じ PATCH を再送する。
+  const [constraintConfirm, setConstraintConfirm] = useState<{
+    courseId: string;
+    staffId: string | null;
+    warnings: ConstraintWarning[];
+  } | null>(null);
+
+  const handleChangeAssignedStaff = async (
+    courseId: string,
+    staffId: string | null,
+    acknowledge = false,
+  ) => {
     if (!canEdit) {
       toast.warning('編集権限がありません');
       return;
@@ -2643,17 +2688,32 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       const opGroupId = crypto.randomUUID();
       await updateCourseMut.mutateAsync({
         id: courseId,
-        patch: { assigned_staff_id: staffId, op_group_id: opGroupId },
+        patch: {
+          assigned_staff_id: staffId,
+          op_group_id: opGroupId,
+          ...(acknowledge ? { acknowledge_constraint_warnings: true } : {}),
+        },
       });
       invalidateOpLog(isoYear, isoWeek);
+      setConstraintConfirm(null);
       toast.success(staffId ? '担当を更新しました' : '担当を未割当にしました');
     } catch (err) {
+      // 422 + 構造化 detail なら「確認して通す」フローへ (ブロックではない)。
+      const detail =
+        err instanceof ApiError && err.status === 422
+          ? parseConstraintConfirmationDetail(err.body)
+          : null;
+      if (detail && !acknowledge) {
+        setConstraintConfirm({ courseId, staffId, warnings: detail.warnings });
+        return;
+      }
       const msg =
         err instanceof ApiError
           ? `${err.status} ${err.message}`
           : err instanceof Error
             ? err.message
             : '不明なエラー';
+      setConstraintConfirm(null);
       toast.error(`担当の更新に失敗しました: ${msg}`);
     }
   };
@@ -4038,6 +4098,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             setReviewItems([]);
             setAutoCommittedNotices([]);
             setUnresolvedWarnings([]);
+            setUnresolvedNgWarnings([]);
+            setSecondaryConstraintWarnings([]);
             setManagerMobilizedNotices([]);
             setCrossOfficeNotices([]);
             setRescueSwapNotices([]);
@@ -4047,9 +4109,27 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           applying={reviewApplying}
           notices={autoCommittedNotices}
           unresolvedWarnings={unresolvedWarnings}
+          unresolvedNgWarnings={unresolvedNgWarnings}
+          secondaryConstraintWarnings={secondaryConstraintWarnings}
           managerMobilizedNotices={managerMobilizedNotices}
           crossOfficeNotices={crossOfficeNotices}
           rescueSwapNotices={rescueSwapNotices}
+        />
+
+        {/* NG スタッフ §7-2: 手動でのコース担当変更が NG / 性別に抵触したときの確認. */}
+        <ConstraintOverrideConfirmDialog
+          open={constraintConfirm !== null}
+          warnings={constraintConfirm?.warnings ?? []}
+          applying={updateCourseMut.isPending}
+          onCancel={() => setConstraintConfirm(null)}
+          onConfirm={() => {
+            if (!constraintConfirm) return;
+            void handleChangeAssignedStaff(
+              constraintConfirm.courseId,
+              constraintConfirm.staffId,
+              true,
+            );
+          }}
         />
 
         {/* P3-⑥: 週次ガイドダイアログ (案内のみ・BE 変更なし). */}
