@@ -27,11 +27,12 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.patient import Patient
+from app.models.patient_ng_staff import PatientNgStaff
 from app.models.patient_same_address_link import PatientSameAddressLink
 from app.models.user import User, normalize_user_role
 from app.models.visit import Visit
@@ -263,6 +264,9 @@ async def delete_patient(
     DB 上 FK ON DELETE CASCADE が付いていないため、reviewer 指摘に従い endpoint で
     明示削除する (= soft delete patient を re-create した時に古い link が復活しない
     ことを保証).
+
+    NG スタッフ行 (:class:`PatientNgStaff`) も同じ理由で物理削除する
+    (soft delete では FK CASCADE が発火しない — 同住所リンクと同じ既知罠).
     """
     patient = await db.scalar(
         select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
@@ -284,6 +288,9 @@ async def delete_patient(
     ).all()
     for link in link_rows:
         await db.delete(link)
+
+    # NG スタッフ行を物理削除 (soft delete では FK CASCADE が発火しないため).
+    await db.execute(delete(PatientNgStaff).where(PatientNgStaff.patient_id == patient_id))
 
     await db.commit()
     return None

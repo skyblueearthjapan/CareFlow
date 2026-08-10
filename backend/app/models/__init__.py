@@ -22,6 +22,7 @@ from app.models.office_area_prompt_dismissal import OfficeAreaPromptDismissal
 from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.patient import Patient, PatientAllowedOffice
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.patient_ng_staff import PatientNgStaff
 from app.models.patient_same_address_link import PatientSameAddressLink
 from app.models.pending_request import PendingRequest
 from app.models.revoked_qr_token import RevokedQrToken
@@ -72,6 +73,7 @@ __all__ = [
     "Patient",
     "PatientAllowedOffice",
     "PatientFixedVisit",
+    "PatientNgStaff",
     "PatientSameAddressLink",
     "PendingRequest",
     "RevokedQrToken",

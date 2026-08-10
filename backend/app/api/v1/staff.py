@@ -17,10 +17,11 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
+from app.models.patient_ng_staff import PatientNgStaff
 from app.models.staff import Staff
 from app.models.user import User, normalize_user_role
 from app.schemas.staff import StaffCreate, StaffRead, StaffUpdate
@@ -165,12 +166,21 @@ async def delete_staff(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> None:
+    """Soft-delete staff.
+
+    NG スタッフ行 (:class:`PatientNgStaff`) は物理削除する。soft delete では
+    FK ON DELETE CASCADE が発火しないため (同住所リンクと同じ既知罠)。
+    """
     staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
     if staff is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     # W16-A-4: 退職対象の拠点を後で sync するため事前に保存
     sync_office_id = staff.primary_office_id if staff.role == "manager" else None
     staff.deleted_at = func.now()
+
+    # NG スタッフ行を物理削除 (soft delete では FK CASCADE が発火しないため).
+    await db.execute(delete(PatientNgStaff).where(PatientNgStaff.staff_id == staff_id))
+
     await db.flush()
 
     # W16-A-4: manager の削除 → 当該拠点の M 系 course_templates を自動同期

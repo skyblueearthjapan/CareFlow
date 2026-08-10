@@ -25,6 +25,7 @@ from app.api.v1 import (
     offices,
     op_log,
     patient_fixed_visits,
+    patient_ng_staff,
     patient_qr,
     patient_same_address_links,
     patient_sync,
@@ -77,6 +78,10 @@ api_router.include_router(
 # patients.router の **前** に登録し、/patients/{id}/qr が /patients/{id} の
 # catch-all に吸われないようにする (patient_fixed_visits と同方針)。
 api_router.include_router(patient_qr.router, prefix="/patients", tags=["patient-qr"])
+# NG スタッフ (患者×スタッフ割当禁止) sub-resource.
+# patient_fixed_visits / patient_qr と同方針で patients.router の **前** に登録し、
+# /patients/{id}/ng-staff が /patients/{id} の catch-all に吸われないようにする。
+api_router.include_router(patient_ng_staff.router, prefix="/patients", tags=["patient-ng-staff"])
 api_router.include_router(patients.router, prefix="/patients", tags=["patients"])
 # 今週 visits → 固定枠 (PFV) 個別反映 sub-resource.
 # POST /patients/{patient_id}/sync-week-visits-to-fixed
