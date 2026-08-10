@@ -150,6 +150,34 @@ describe('QrPrintPage — Phase 5-1', () => {
     expect(screen.getByRole('button', { name: '全選択' })).toBeInTheDocument();
   });
 
+  it('B. 戻るボタン: 一括=患者マスタへ (status引き継ぎ)・個別=患者詳細へ (PO要望 2026-08-10)', async () => {
+    // 一括モード (既定タブ=稼働中) → /patients (稼働中は既定なので ?status なし)
+    setupCommon({ mode: 'bulk', patients: [makePatient()] });
+    const { unmount } = render(<QrPrintPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId('qrprint-back')).toHaveAttribute('href', '/patients');
+    });
+    expect(screen.getByTestId('qrprint-back')).toHaveTextContent('患者マスタへ戻る');
+
+    // 解約済みタブへ切替 → 戻り先にも status が付く
+    fireEvent.click(screen.getByTestId('qrprint-status-cancelled'));
+    await waitFor(() => {
+      expect(screen.getByTestId('qrprint-back')).toHaveAttribute(
+        'href',
+        '/patients?status=cancelled',
+      );
+    });
+    unmount();
+
+    // 個別モード (patient 指定) → その患者の詳細へ戻る
+    setupCommon({ mode: 'single', patients: [makePatient()], patientId: 'patient-0001' });
+    render(<QrPrintPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId('qrprint-back')).toHaveAttribute('href', '/patients/patient-0001');
+    });
+    expect(screen.getByTestId('qrprint-back')).toHaveTextContent('患者詳細へ戻る');
+  });
+
   it('S. 一括: ステータス絞り込み (既定=稼働中・切替で対象が変わる・PO要望 2026-08-10)', async () => {
     const patients = [
       makePatient({ id: 'p1', code: 'P001', name: '山田 花子', status: 'active' }),

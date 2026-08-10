@@ -14,6 +14,7 @@
  */
 
 import { Suspense, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { QRCodeSVG } from 'qrcode.react';
@@ -218,6 +219,21 @@ function QrPrintPageInner() {
     <div className="qrprint-root">
       {/* ツールバー (画面のみ) */}
       <div className="qrprint-toolbar">
+        {/* 戻る導線 (PO 要望 2026-08-10): サイドバー頼みだったのを明示ボタンに。
+            一括 → 患者マスタ (現在のステータス絞り込みを引き継ぐ) /
+            個別 (患者詳細から遷移) → その患者の詳細へ戻る。 */}
+        <Link
+          href={
+            mode === 'single' && urlPatientId
+              ? `/patients/${urlPatientId}`
+              : `/patients${statusTab !== 'active' ? `?status=${statusTab}` : ''}`
+          }
+          className="qrprint-btn"
+          data-testid="qrprint-back"
+        >
+          ← {mode === 'single' && urlPatientId ? '患者詳細へ戻る' : '患者マスタへ戻る'}
+        </Link>
+        <span className="qrprint-sep" />
         <div>
           <div className="qrprint-crumb">
             {mode === 'single' ? '患者マスタ › 患者詳細 › QR印刷' : '患者マスタ › QR一括印刷'}
