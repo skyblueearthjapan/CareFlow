@@ -305,31 +305,35 @@ function QrPrintPageInner() {
             ))}
           </span>
         )}
-        <span className="qrprint-spacer" />
-        <span className="qrprint-count">
-          {mode === 'single'
-            ? '印刷 1枚'
-            : `表示 ${shownPatients.length}名 / 印刷 ${bulkSelectedPatients.length}枚`}
+        {/* 2 行目 (PO 要望 2026-08-10): 操作ボタン群は右下の行にまとめて揃える。
+            戻るボタン追加でツールバーが折り返し、全選択だけ 1 行目に残り
+            全解除/印刷が左下へ流れていたのを、明示的な右寄せ行に固定する。 */}
+        <span className="qrprint-actions" data-testid="qrprint-actions">
+          <span className="qrprint-count">
+            {mode === 'single'
+              ? '印刷 1枚'
+              : `表示 ${shownPatients.length}名 / 印刷 ${bulkSelectedPatients.length}枚`}
+          </span>
+          {mode === 'bulk' ? (
+            <>
+              <button
+                type="button"
+                className="qrprint-btn"
+                onClick={() =>
+                  setSelected(new Set(shownPatients.slice(0, BULK_PRINT_LIMIT).map((p) => p.id)))
+                }
+              >
+                全選択
+              </button>
+              <button type="button" className="qrprint-btn" onClick={() => setSelected(new Set())}>
+                全解除
+              </button>
+            </>
+          ) : null}
+          <button type="button" className="qrprint-btn brand" onClick={() => window.print()}>
+            🖨 印刷
+          </button>
         </span>
-        {mode === 'bulk' ? (
-          <>
-            <button
-              type="button"
-              className="qrprint-btn"
-              onClick={() =>
-                setSelected(new Set(shownPatients.slice(0, BULK_PRINT_LIMIT).map((p) => p.id)))
-              }
-            >
-              全選択
-            </button>
-            <button type="button" className="qrprint-btn" onClick={() => setSelected(new Set())}>
-              全解除
-            </button>
-          </>
-        ) : null}
-        <button type="button" className="qrprint-btn brand" onClick={() => window.print()}>
-          🖨 印刷
-        </button>
       </div>
       <div className="qrprint-hint">
         {mode === 'single'

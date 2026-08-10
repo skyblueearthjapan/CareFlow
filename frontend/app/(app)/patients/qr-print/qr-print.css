@@ -35,6 +35,18 @@
   padding: 12px 22px;
   flex-wrap: wrap;
 }
+/* 操作ボタン群 (件数/全選択/全解除/印刷) — 常にツールバーの右端の行にまとまる。
+ * flex-basis:100% 相当の折返し + margin-left:auto で「右側の下の行」に固定する
+ * (PO 要望 2026-08-10: 折返しでボタンがバラけない)。 */
+.qrprint-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
 .qrprint-title {
   font-size: 16px;
   margin: 0;
