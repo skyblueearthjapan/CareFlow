@@ -334,6 +334,39 @@
   margin: 0;
 }
 @media print {
+  /* AppShell (サイドバー/ヘッダ/角丸枠) ごと隠し、QR シートだけを印字する。
+   * 受け入れ枠 (#acceptance-print / globals.css) で実運用済みの方式を移植 (2026-08-10)。
+   * body:has() でスコープしているため、他ページの印刷には影響しない。 */
+  body:has(#qr-print-area) {
+    overflow: visible !important;
+    height: auto !important;
+    background: #fff !important;
+  }
+  body:has(#qr-print-area) * {
+    visibility: hidden !important;
+  }
+  body:has(#qr-print-area) #qr-print-area,
+  body:has(#qr-print-area) #qr-print-area * {
+    visibility: visible !important;
+  }
+  body:has(#qr-print-area) #qr-print-area {
+    position: absolute !important;
+    left: 0;
+    top: 0;
+    width: 100%;
+    padding: 0 !important;
+  }
+  /* AppShell の h-screen/overflow-hidden による 1 画面切れを解除 (改ページを効かせる)。 */
+  body:has(#qr-print-area) .h-screen,
+  body:has(#qr-print-area) main {
+    height: auto !important;
+    overflow: visible !important;
+  }
+  body:has(#qr-print-area) #qr-print-area * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
   .qrprint-root {
     background: #fff;
   }

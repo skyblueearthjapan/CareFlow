@@ -269,7 +269,10 @@ function QrPrintPageInner() {
         </div>
       ) : null}
 
-      <div className="qrprint-pages" data-testid="qrprint-pages">
+      {/* 印刷スコープ (2026-08-10 PO要望): 印刷時はこのブロックだけを印字し、
+          AppShell (サイドバー/ヘッダ) を含む他要素は qr-print.css の
+          body:has(#qr-print-area) ルールで全て隠す (受け入れ枠 #acceptance-print と同方式)。 */}
+      <div id="qr-print-area" className="qrprint-pages" data-testid="qrprint-pages">
         {mode === 'single' ? (
           singlePatient ? (
             <QrSheet
