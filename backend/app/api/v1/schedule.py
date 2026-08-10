@@ -95,8 +95,10 @@ from app.services.scheduling.layer3_assignment import (
     Layer3Result,
     ReviewItem,
     RotationConflict,
+    SecondaryConstraintWarning,
     StaffAssignment,
     UnresolvedGenderWarning,
+    UnresolvedNgStaffWarning,
 )
 from app.services.trainee_accompaniment import expand_accompaniment_defaults
 
@@ -1422,6 +1424,9 @@ class ReviewItemSchema(BaseModel):
         同じスタッフになるケース. candidate は本来割り当たるスタッフ.
       - reason='gender' (🔴 性別/重度): 適合性別の同拠点スタッフが居ないケース.
         candidate は性別制約を無視したら割り当たる候補スタッフ.
+      - reason='ng_staff' (⛔ NG スタッフ/重度): コース所属患者の NG スタッフ指定で
+        適格者が居ないケース. candidate は NG を無視したら割り当たる候補スタッフ.
+        (正典: ``docs/plans/patient-ng-staff-design.md`` §4-2 / §5)
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1430,7 +1435,7 @@ class ReviewItemSchema(BaseModel):
     office_name: str
     course_code: str
     weekday: int = Field(ge=0, le=6)
-    reason: Literal["consecutive", "gender"]
+    reason: Literal["consecutive", "gender", "ng_staff"]
     candidate_staff_id: UUID
     candidate_staff_name: str
     candidate_staff_sex: str | None = None
@@ -1439,6 +1444,10 @@ class ReviewItemSchema(BaseModel):
     # X と Y は片方だけ apply すると half-assigned になるため、 apply 時に同一
     # _persist へ一緒に渡す (BE 側 apply-staff-review が group 単位で自動補完する).
     linked_course_ids: list[UUID] = Field(default_factory=list)
+    # NG スタッフ: ``reason`` 以外にも同時に違反している制約の種類 (例: ['ng_staff']).
+    # 性別と NG が同時に候補ゼロを作ったときのみ立ち、 FE が確認文言に併記する.
+    # **通常は空配列** (= 追加のみ・default 空で後方互換).
+    also_violates: list[str] = Field(default_factory=list)
 
 
 class AutoCommittedNoticeSchema(BaseModel):
@@ -1479,6 +1488,53 @@ class UnresolvedGenderWarningSchema(BaseModel):
     office_name: str
     current_staff_name: str
     reason_text: str
+
+
+class UnresolvedNgWarningSchema(BaseModel):
+    """NG スタッフ制約を満たす候補ゼロで自動解消できなかった残留違反の警告.
+
+    ``UnresolvedGenderWarningSchema`` (W-11) と同型 + 原因患者名リスト.
+    既存 ``unresolved_warnings`` (性別) のスキーマは一切変えず、 NG は
+    ``unresolved_ng_warnings`` として **別フィールド**で返す (FE zod 後方互換).
+
+    現在の ``assigned_staff_id`` がコース所属患者の NG スタッフのまま残っている
+    ことを可視化するのみ (= 自動クリアしない・アクション不能・手動調整を促す).
+    正典: ``docs/plans/patient-ng-staff-design.md`` §4-2 / §5.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: UUID
+    course_code: str
+    weekday: int = Field(ge=0, le=6)
+    office_name: str
+    current_staff_name: str
+    # 当該スタッフを NG 指定している患者名の一覧 (= 原因患者. 決定的順).
+    patient_names: list[str] = Field(default_factory=list)
+    reason_text: str
+
+
+class SecondaryConstraintWarningSchema(BaseModel):
+    """PO 決定4: 2 名体制 secondary の性別 / NG 違反警告 1 件.
+
+    ``_persist`` の secondary 解決 (= partner course の担当をそのまま secondary に
+    据える経路) は従来 性別も NG も未検証だった. 本警告はその穴を可視化する.
+
+    **違反しても割当自体は行う** (= 2 名体制の構造的ペアリングを壊さない). 管理者が
+    後から手動で是正するための情報提示.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: UUID
+    course_code: str
+    office_name: str
+    weekday: int = Field(ge=0, le=6)
+    staff_id: UUID
+    staff_name: str
+    patient_id: UUID
+    patient_name: str
+    kind: Literal["gender", "ng_staff"]
 
 
 class StageAssignmentNoticeSchema(BaseModel):
@@ -1558,6 +1614,14 @@ class AssignStaffOnlyResponse(BaseModel):
     # W-11: 性別制約を満たす候補ゼロで残った違反 (アクション不能・手動調整を促す警告).
     # 後方互換 (= 既存クライアントは本フィールドを無視できる).
     unresolved_warnings: list[UnresolvedGenderWarningSchema] = Field(default_factory=list)
+    # NG スタッフ: NG 制約を満たす候補ゼロで残った違反 (アクション不能・手動調整を促す).
+    # 追加のみ (additive)・default 空配列で後方互換 (= 既存 FE zod は無視できる).
+    unresolved_ng_warnings: list[UnresolvedNgWarningSchema] = Field(default_factory=list)
+    # PO 決定4: 2 名体制 secondary の性別 / NG 違反警告 (割当は済・見える化のみ).
+    # 追加のみ (additive)・default 空配列で後方互換.
+    secondary_constraint_warnings: list[SecondaryConstraintWarningSchema] = Field(
+        default_factory=list
+    )
     # 4段ソルバ Stage 2: スタッフ不足でマネージャーを動員して埋めたコース一覧.
     # 追加のみ (additive)・default 空配列で後方互換.
     manager_mobilized_notices: list[StageAssignmentNoticeSchema] = Field(default_factory=list)
@@ -1861,6 +1925,20 @@ async def _assign_staff_only_impl(
     # W-11: 性別残留違反 (候補ゼロ) の警告をスキーマ変換.
     unresolved_warnings = _build_unresolved_warnings_response(l3_result.unresolved_warnings)
 
+    # NG スタッフ: 残留違反 / secondary 制約違反の警告をスキーマ変換 (commit 後・
+    # best-effort). 変換自体は純粋写像だが、 事後警告は「構築失敗で確定済み割付を
+    # 壊さない」既存方針 (= 空リストで 200) に揃える.
+    try:
+        unresolved_ng_warnings = _build_unresolved_ng_warnings_response(
+            l3_result.unresolved_ng_warnings
+        )
+        secondary_constraint_warnings = _build_secondary_constraint_warnings_response(
+            l3_result.secondary_constraint_warnings
+        )
+    except Exception:
+        logger.exception("ng warning build failed post-commit; returning empty warnings")
+        unresolved_ng_warnings, secondary_constraint_warnings = [], []
+
     # 4段ソルバ: Stage 2 動員 / Stage 3 跨ぎ救援のお知らせを via 集計で構築
     # (commit 後・graceful). 事後お知らせは best-effort とし、構築失敗で確定済み割付を
     # 壊さない (空リストで 200).
@@ -1900,6 +1978,8 @@ async def _assign_staff_only_impl(
         review_items=review_items,
         auto_committed_notices=auto_committed_notices,
         unresolved_warnings=unresolved_warnings,
+        unresolved_ng_warnings=unresolved_ng_warnings,
+        secondary_constraint_warnings=secondary_constraint_warnings,
         manager_mobilized_notices=manager_mobilized_notices,
         cross_office_notices=cross_office_notices,
         rescue_swap_notices=rescue_swap_notices,
@@ -1934,6 +2014,7 @@ def _build_review_items_response(items: list[ReviewItem]) -> list[ReviewItemSche
                 for v in item.visits
             ],
             linked_course_ids=item.linked_course_ids,
+            also_violates=list(item.also_violates),
         )
         for item in items
     ]
@@ -1978,6 +2059,52 @@ def _build_unresolved_warnings_response(
             office_name=w.office_name,
             current_staff_name=w.current_staff_name,
             reason_text=w.reason_text,
+        )
+        for w in warnings
+    ]
+
+
+def _build_unresolved_ng_warnings_response(
+    warnings: list[UnresolvedNgStaffWarning],
+) -> list[UnresolvedNgWarningSchema]:
+    """NG 残留違反 (候補ゼロ) の dataclass をレスポンス schema へ変換.
+
+    ``_build_unresolved_warnings_response`` (性別版) と同型の純粋なフィールド写像
+    (= DB I/O なし). 並びは Layer3 側で (weekday, course_code) 昇順にソート済み.
+    """
+    return [
+        UnresolvedNgWarningSchema(
+            course_id=w.course_id,
+            course_code=w.course_code,
+            weekday=w.weekday,
+            office_name=w.office_name,
+            current_staff_name=w.current_staff_name,
+            patient_names=list(w.patient_names),
+            reason_text=w.reason_text,
+        )
+        for w in warnings
+    ]
+
+
+def _build_secondary_constraint_warnings_response(
+    warnings: list[SecondaryConstraintWarning],
+) -> list[SecondaryConstraintWarningSchema]:
+    """PO 決定4: secondary の性別 / NG 違反警告をレスポンス schema へ変換.
+
+    純粋なフィールド写像 (= DB I/O は ``Layer3Assigner._persist`` が commit 前に完了).
+    並びは Layer3 側で決定的にソート済みなので保持する.
+    """
+    return [
+        SecondaryConstraintWarningSchema(
+            course_id=w.course_id,
+            course_code=w.course_code,
+            office_name=w.office_name,
+            weekday=w.weekday,
+            staff_id=w.staff_id,
+            staff_name=w.staff_name,
+            patient_id=w.patient_id,
+            patient_name=w.patient_name,
+            kind=w.kind,  # type: ignore[arg-type]  # 'gender'|'ng_staff' を Literal へ
         )
         for w in warnings
     ]

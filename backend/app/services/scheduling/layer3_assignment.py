@@ -11,6 +11,8 @@
 
 ハード制約 (§3.6.4):
     - 性別: 患者の sex_restriction を満たすスタッフ
+    - NG スタッフ: 患者の ``patient_ng_staff`` に載るスタッフは割当不可
+      (性別制限と同格のハード制約. 正典 ``docs/plans/patient-ng-staff-design.md`` §5)
     - 勤務日: 当該曜日にスタッフ勤務 (StaffShift.is_on=True)
     - 単一性: 1 スタッフは 1 日 1 コース
     - 役割: マネージャー (M1) は対象外 (role='manager' を除外)
@@ -63,6 +65,7 @@ from app.models.course import (
 from app.models.office import Office
 from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.patient import Patient
+from app.models.patient_ng_staff import PatientNgStaff
 from app.models.staff import (
     Staff,
     StaffEvent,
@@ -305,6 +308,15 @@ class CourseAssignmentTarget:
     # ``_load_course_targets`` が ``Course.office_id`` を populate する.
     # ``None`` (= 合成テスト fixture / 後方互換) のときは拠点ハード制約を skip する.
     office_id: UUID | None = None
+    # NG スタッフ (設計書 ``patient-ng-staff-design.md`` §5): コース所属患者の
+    # NG スタッフ集合の **union**. ``gender_restrictions`` と同格のハード制約で、
+    # ``_cost_single_cell`` が ``staff.id in ng_staff_ids`` を INF 除外する.
+    # 既定は空集合 (= 合成 fixture / 後方互換では NG 制約なし).
+    ng_staff_ids: frozenset[UUID] = frozenset()
+    # 「どの患者由来の NG か」を残す内訳マップ (patient_id -> NG staff 集合).
+    # 残留違反警告 (``_build_unresolved_ng_warnings``) が原因患者名を出すために使う.
+    # ``ng_staff_ids`` は本マップの値の union (= 単一ソースは本マップ側).
+    ng_staff_by_patient: dict[UUID, frozenset[UUID]] = field(default_factory=dict)
 
 
 class StaffAssignment(BaseModel):
@@ -389,13 +401,23 @@ class ReviewItem:
     - reason='gender' (🔴 性別/重度): コースに性別制限患者が居て、 適合性別の
       同拠点スタッフが居ないケース. candidate_staff は性別制約を無視したら
       割り当たる候補スタッフ (= 管理者が override 判断する材料).
+    - reason='ng_staff' (⛔ NG スタッフ/重度): コース所属患者の NG スタッフ指定
+      により適格者が居ないケース. candidate_staff は NG を無視したら割り当たる
+      候補スタッフ (= 管理者が override 判断する材料).
+
+    reason の決定は **段階式** (設計書 §5 / ディレクター決定):
+      1. 性別だけ緩和して候補が出る → 'gender'
+      2. 出なければ NG だけ緩和して候補が出る → 'ng_staff'
+      3. 出なければ両方緩和して候補が出る → 'gender' + ``also_violates=['ng_staff']``
+      4. それでも出ない → review ではなく残留警告 (``UnresolvedNgStaffWarning`` /
+         ``UnresolvedGenderWarning``)
 
     Attributes:
         course_id: レビュー対象コースの ID.
         office_name: コース所属拠点名 (表示用).
         course_code: コースコード (A/B/C/D/E/M).
         weekday: 0=Mon..6=Sun.
-        reason: 'consecutive' (連続) または 'gender' (性別).
+        reason: 'consecutive' (連続) / 'gender' (性別) / 'ng_staff' (NG スタッフ).
         candidate_staff_id: 候補スタッフ ID (= apply 時に割り当てる staff).
         candidate_staff_name: 候補スタッフ名 (表示用).
         candidate_staff_sex: 候補スタッフ性別 ('male'/'female'/None).
@@ -404,18 +426,23 @@ class ReviewItem:
             連続コース X とその visit_group partner Y は片方だけ apply すると
             half-assigned になるため、 apply 時に必ず同じ ``_persist`` 呼出へ
             一緒に渡す必要がある course を表す. 単独コースは空.
+        also_violates: ``reason`` 以外にも同時に違反している制約の種類
+            (例: ``['ng_staff']``). 段階式 reason 決定の 3 番目のケースでのみ
+            立つ (= 性別と NG が同時に候補ゼロを作った). FE が確認文言に併記する用.
+            **通常は空リスト** (= 既存クライアントは無視できる後方互換フィールド).
     """
 
     course_id: UUID
     office_name: str
     course_code: str
     weekday: int
-    reason: str  # 'consecutive' | 'gender'
+    reason: str  # 'consecutive' | 'gender' | 'ng_staff'
     candidate_staff_id: UUID
     candidate_staff_name: str
     candidate_staff_sex: str | None
     visits: list[ReviewVisit] = field(default_factory=list)
     linked_course_ids: list[UUID] = field(default_factory=list)
+    also_violates: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -482,6 +509,73 @@ class UnresolvedGenderWarning:
 
 
 @dataclass(frozen=True)
+class UnresolvedNgStaffWarning:
+    """NG スタッフ制約を満たす候補ゼロで自動解消できなかった残留違反の警告.
+
+    W-11 の ``UnresolvedGenderWarning`` と **同型・別リスト**
+    (設計書 ``patient-ng-staff-design.md`` §5 / 本タスク仕様 6). 既存
+    ``unresolved_warnings`` はスキーマ互換のため一切変えず、 NG 用は
+    ``unresolved_ng_warnings`` として新設する.
+
+    条件 = 「NG (および性別) を緩和しても override 候補が 1 名も出ない」 かつ
+    「現在の ``assigned_staff_id`` がコース所属患者の誰かの NG スタッフである」.
+    性別版と同じく **自動クリアはしない** (= 「黙って消さない」原則・可視化のみ).
+
+    Attributes:
+        course_id: 残留違反が残っているコースの ID.
+        course_code: コースコード (A/B/C/D/E/M).
+        weekday: 0=Mon..6=Sun.
+        office_name: コース所属拠点名 (表示用).
+        current_staff_name: 現在割り当てられている (NG 該当の) スタッフ名.
+        patient_names: 当該スタッフを NG 指定している患者名の一覧 (表示用・決定的順).
+        reason_text: BE で組み立てた日本語の理由文 (FE はそのまま表示).
+    """
+
+    course_id: UUID
+    course_code: str
+    weekday: int
+    office_name: str
+    current_staff_name: str
+    patient_names: list[str]
+    reason_text: str
+
+
+@dataclass(frozen=True)
+class SecondaryConstraintWarning:
+    """2 名体制 secondary の性別 / NG 違反警告 (PO 決定4).
+
+    ``_persist`` の 2 名体制 secondary 解決 (= partner course の担当をそのまま
+    secondary に据える経路) は従来 **性別も NG も未検証** だった (設計書 §5 の
+    「決定4」). 本警告はその穴を可視化する.
+
+    重要 (ディレクター決定): **違反しても割当自体は行う**. secondary を立てない
+    と 2 名体制の構造的ペアリング (同住所 90 分ペア等) が壊れて現場が回らなく
+    なるため、 「止めずに見える化する」 方針を採る.
+
+    Attributes:
+        course_id: 当該 visit が属するコース (= patient 側のコース) の ID.
+        course_code: コースコード (A/B/C/D/E/M).
+        office_name: コース所属拠点名 (表示用).
+        weekday: 0=Mon..6=Sun.
+        staff_id: 違反している secondary スタッフの ID (= partner course の担当).
+        staff_name: 同スタッフ名 (表示用).
+        patient_id: 制約の主体となる患者 (= 当該 visit の患者) の ID.
+        patient_name: 同患者名 (表示用).
+        kind: 'gender' (性別制限違反) | 'ng_staff' (NG スタッフ該当).
+    """
+
+    course_id: UUID
+    course_code: str
+    office_name: str
+    weekday: int
+    staff_id: UUID
+    staff_name: str
+    patient_id: UUID
+    patient_name: str
+    kind: str  # 'gender' | 'ng_staff'
+
+
+@dataclass(frozen=True)
 class RescueSwap:
     """4段ソルバ Stage 3: 拠点跨ぎ救援で担当が入れ替わった 1 コースの記録 (報告用).
 
@@ -539,6 +633,14 @@ class Layer3Result:
     # のコースを検出して積む (= review にも notice にも出さず、 可視化のみ・自動クリアなし).
     # 既存呼出は default の空 list で互換維持.
     unresolved_warnings: list[UnresolvedGenderWarning] = field(default_factory=list)
+    # NG スタッフ制約を満たす候補ゼロで自動解消できなかった残留違反の警告一覧.
+    # 既存 ``unresolved_warnings`` (性別) はスキーマ互換のため不変とし、 NG は
+    # **別リスト** として持つ (設計書 §5 / 本タスク仕様 6).
+    # 既存呼出は default の空 list で互換維持.
+    unresolved_ng_warnings: list[UnresolvedNgStaffWarning] = field(default_factory=list)
+    # PO 決定4: 2 名体制 secondary の性別 / NG 違反警告 (割当自体は行う = 見える化のみ).
+    # ``_persist`` が secondary 解決時に検証して積む. 既存呼出は default の空 list.
+    secondary_constraint_warnings: list[SecondaryConstraintWarning] = field(default_factory=list)
     # 4段ソルバ Stage 3 (拠点跨ぎ救援): 当日全再解で担当が入れ替わった行の記録 (報告用).
     # ``solve()`` の曜日ループで ``_solve_stage3_cross_office`` 採用時に元との diff から
     # 収集する. 既存呼出は default の空 list で互換維持.
@@ -617,6 +719,21 @@ def _staff_satisfies_gender(staff: StaffInfo, course: CourseAssignmentTarget) ->
     固定割当の 3 経路で同一ロジックを共有し、 固定割当ルートの性別未チェックを塞ぐ.
     """
     return _sex_satisfies_restrictions(staff.sex, course.gender_restrictions)
+
+
+def _staff_satisfies_ng(staff: StaffInfo, course: CourseAssignmentTarget) -> bool:
+    """staff がコースの NG スタッフハード制約を満たすなら True (= 割当可能).
+
+    NG スタッフ (``docs/plans/patient-ng-staff-design.md`` §5) は性別制限と同格の
+    ハード制約: コース所属患者の誰か 1 人でも当該 staff を NG 指定していれば
+    そのコースには割り当てられない (= ``course.ng_staff_ids`` は所属患者の union).
+
+    ``_staff_satisfies_gender`` と同じ流儀で、 ``_cost_single_cell`` (Stage 1/2/3
+    共通) と固定割当ルート (``_solve_one_day``) が共有する **単一ソース**.
+    """
+    if not course.ng_staff_ids:
+        return True
+    return staff.staff_id not in course.ng_staff_ids
 
 
 def _has_event_overlap(
@@ -961,6 +1078,7 @@ class Layer3Assigner:
             exclude_course_ids,
             auto_committed_notices,
             unresolved_warnings,
+            unresolved_ng_warnings,
         ) = await self._build_review_items(
             db,
             course_targets=course_targets,
@@ -980,6 +1098,8 @@ class Layer3Assigner:
         result.auto_committed_notices = auto_committed_notices
         # W-11: 性別制約を満たす候補ゼロで自動解消できなかった残留違反の警告.
         result.unresolved_warnings = unresolved_warnings
+        # NG 版 (別リスト・既存フィールドの形は不変 = FE 後方互換).
+        result.unresolved_ng_warnings = unresolved_ng_warnings
 
         # 連続 index0 コースは自動 commit しない (= DB 未割当のまま). visit_group
         # partner を含めた除外集合を使い、 _persist へ渡す assignments から落とす.
@@ -991,7 +1111,9 @@ class Layer3Assigner:
         result.committed_course_ids = [a.course_id for a in persist_assignments]
 
         # ---------- 6. DB 反映 ----------
-        await self._persist(db, persist_assignments)
+        # PO 決定4: _persist は 2 名体制 secondary の性別 / NG 違反を検証して警告を
+        # 返す (割当自体は行う = 構造的ペアリングを壊さない).
+        result.secondary_constraint_warnings = await self._persist(db, persist_assignments)
 
         return result
 
@@ -1019,8 +1141,9 @@ class Layer3Assigner:
         set[UUID],
         list[AutoCommittedNotice],
         list[UnresolvedGenderWarning],
+        list[UnresolvedNgStaffWarning],
     ]:
-        """Phase G-91: 連続 index0 / 性別ブロックの ``ReviewItem`` を構築する.
+        """Phase G-91: 連続 index0 / 性別・NG ブロックの ``ReviewItem`` を構築する.
 
         レビュー対象 2 種を判定し、 表示用メタ (拠点名 / 患者名 / 訪問時刻 /
         sex_restriction / is_cause / 候補スタッフ) を DB から肉付けして返す.
@@ -1031,10 +1154,16 @@ class Layer3Assigner:
           除外しない** (修正3 / オーナー決定 B: 1 名拠点でも連続は必ずレビューに
           出す. candidate = solve が割り当てた staff = 固定なら本名 1 名と同一).
           原因患者 (is_cause) = 連続になる患者 (= conflict の patient_id).
-        - 🔴 性別 (gender): ``result.unassigned_course_ids`` のうち、
-          gender_restrictions を持ち、 性別を無視したときの候補スタッフが居る
-          course. candidate = ``_compute_gender_candidate_for_course`` の結果.
-          原因患者 (is_cause) = 性別制限を持つ患者.
+        - 🔴 性別 (gender) / ⛔ NG (ng_staff): ``result.unassigned_course_ids``
+          のうち gender_restrictions か ng_staff_ids を持ち、 制約を緩和したときの
+          候補スタッフが居る course.
+          candidate = ``_compute_gender_candidate_for_course`` の結果.
+          reason は **段階式** で決める (ディレクター決定・設計書 §5):
+            1. 性別だけ緩和して候補が出る → 'gender'
+            2. 出なければ NG だけ緩和して候補が出る → 'ng_staff'
+            3. 出なければ両方緩和して候補が出る → 'gender' + ``also_violates=['ng_staff']``
+            4. それでも出ない → review に出さず残留警告へ (下記 W-11 / NG 版)
+          原因患者 (is_cause) = 性別制限を持つ患者 / 候補を NG 指定している患者.
         - 🔗 partner (修正4): 連続コース X の visit_group partner Y (clean) も
           review_item に出す (candidate = Y の solve 割当 staff). X と Y は
           ``linked_course_ids`` で相互に紐付け、 apply 時に同一 ``_persist`` へ
@@ -1071,12 +1200,20 @@ class Layer3Assigner:
             として返す (自動クリアはしない = 「黙って消さない」原則). 現担当が性別制約を
             満たす / assigned_staff_id が null (純粋未割当) のときは従来どおり何も出さない.
 
+        NG 残留違反の可視化:
+            上記段階 4 (どう緩和しても候補ゼロ) のコースのうち、 現在の
+            ``assigned_staff_id`` がコース所属患者の NG スタッフであるものを
+            ``UnresolvedNgStaffWarning`` として返す (自動クリアしない).
+            既存 ``unresolved_warnings`` (性別) はスキーマ互換のため不変で、
+            NG は **別リスト** として返す.
+
         Returns:
             ``(review_items, exclude_course_ids, auto_committed_notices,
-            unresolved_warnings)``.
+            unresolved_warnings, unresolved_ng_warnings)``.
             review_items は (weekday, course_code, 代表 start_time) で決定的ソート.
             auto_committed_notices は (weekday, course_code) で決定的ソート.
-            unresolved_warnings は (weekday, course_code) で決定的ソート.
+            unresolved_warnings / unresolved_ng_warnings は
+            (weekday, course_code) で決定的ソート.
         """
         targets_by_id: dict[UUID, CourseAssignmentTarget] = {
             ct.course_id: ct for ct in course_targets
@@ -1116,19 +1253,27 @@ class Layer3Assigner:
                 conflict.patient_id
             )
 
-        # ----- 🔴 性別ブロック コース (候補が居るもののみ) -----
-        # course_id -> candidate StaffInfo.
-        gender_candidates: dict[UUID, StaffInfo] = {}
+        # ----- 🔴 性別 / ⛔ NG ブロック コース (候補が居るもののみ) -----
+        # course_id -> candidate StaffInfo / reason / also_violates.
+        # 段階式 reason 決定 (ディレクター決定・設計書 §5):
+        #   1. 性別だけ緩和して候補が出る → 'gender' (既存どおり)
+        #   2. 出なければ NG だけ緩和して候補が出る → 'ng_staff'
+        #   3. 出なければ両方緩和して候補が出る → 'gender' + also_violates=['ng_staff']
+        #   4. それでも出ない → 残留警告 (下の *_blocked_no_candidate)
+        constraint_candidates: dict[UUID, StaffInfo] = {}
+        constraint_reason: dict[UUID, str] = {}
+        constraint_also_violates: dict[UUID, list[str]] = {}
         # W-11: 性別ブロック未割当 + override 候補ゼロ (純粋人手不足) のコース集合.
         # このうち「現担当が非 null かつ性別制約違反」のものを後段で残留違反警告にする.
         gender_blocked_no_candidate: set[UUID] = set()
-        for course_id in result.unassigned_course_ids:
-            course = targets_by_id.get(course_id)
-            if course is None:
-                continue
-            if not course.gender_restrictions:
-                continue  # 性別制限が無い → 純粋人手不足 (レビュー対象外)
-            candidate = self._compute_gender_candidate_for_course(
+        # NG 版 (別リスト). 「現担当が非 null かつ NG 該当」のものを残留警告にする.
+        ng_blocked_no_candidate: set[UUID] = set()
+
+        def _candidate_for(
+            course: CourseAssignmentTarget, *, relax_gender: bool, relax_ng: bool
+        ) -> StaffInfo | None:
+            """段階式 reason 決定で使う「緩和つき override 候補」の呼び出しラッパ."""
+            return self._compute_gender_candidate_for_course(
                 course=course,
                 staff_pool=staff_pool,
                 weekday=course.weekday,
@@ -1140,20 +1285,53 @@ class Layer3Assigner:
                 iso_year=iso_year,
                 iso_week=iso_week,
                 patient_recent_staff=patient_recent_staff,
+                relax_gender=relax_gender,
+                relax_ng=relax_ng,
             )
+
+        for course_id in result.unassigned_course_ids:
+            course = targets_by_id.get(course_id)
+            if course is None:
+                continue
+            if not course.gender_restrictions and not course.ng_staff_ids:
+                continue  # 性別制限も NG も無い → 純粋人手不足 (レビュー対象外)
+
+            # 段階 1: 性別だけ緩和 (= NG は守る). NG 未設定コースでは従来と同一挙動.
+            candidate = _candidate_for(course, relax_gender=True, relax_ng=False)
+            reason = "gender"
+            also_violates: list[str] = []
             if candidate is None:
-                # W-11: 性別無視でも候補なし = 純粋人手不足. 従来は黙って continue して
-                # いたが、 現担当が性別制約違反のまま残っている可能性があるため観測ログを
-                # 残し、 後段 (_build_unresolved_gender_warnings) で残留違反を可視化する.
-                gender_blocked_no_candidate.add(course_id)
+                # 段階 2: NG だけ緩和 (= 性別は守る).
+                candidate = _candidate_for(course, relax_gender=False, relax_ng=True)
+                reason = "ng_staff"
+            if candidate is None:
+                # 段階 3: 両方緩和. ここで初めて出た候補は「性別も NG も違反」が
+                # 確定する (段階 1/2 が両方 None = 単独緩和では誰も通らないため).
+                # reason は 'gender' に寄せ、 NG は also_violates で併記する.
+                candidate = _candidate_for(course, relax_gender=True, relax_ng=True)
+                reason = "gender"
+                also_violates = ["ng_staff"]
+            if candidate is None:
+                # 段階 4: どう緩和しても候補なし = 純粋人手不足. 従来は黙って continue
+                # していたが、 現担当が制約違反のまま残っている可能性があるため観測ログを
+                # 残し、 後段 (_build_unresolved_*_warnings) で残留違反を可視化する.
+                if course.gender_restrictions:
+                    gender_blocked_no_candidate.add(course_id)
+                if course.ng_staff_ids:
+                    ng_blocked_no_candidate.add(course_id)
                 logger.warning(
-                    "gender_blocked_no_candidate: course_id=%s weekday=%s office_id=%s",
+                    "constraint_blocked_no_candidate: course_id=%s weekday=%s office_id=%s "
+                    "gender=%s ng=%s",
                     course_id,
                     course.weekday,
                     course.office_id,
+                    bool(course.gender_restrictions),
+                    bool(course.ng_staff_ids),
                 )
                 continue
-            gender_candidates[course_id] = candidate
+            constraint_candidates[course_id] = candidate
+            constraint_reason[course_id] = reason
+            constraint_also_violates[course_id] = also_violates
 
         # W-11: 性別残留違反警告を構築 (= 現担当が非 null かつ性別制約違反のみ).
         # DB I/O を伴うため review 早期 return より前で 1 度だけ実行し、 全 return
@@ -1161,6 +1339,12 @@ class Layer3Assigner:
         unresolved_warnings = await self._build_unresolved_gender_warnings(
             db,
             course_ids=gender_blocked_no_candidate,
+            targets_by_id=targets_by_id,
+        )
+        # NG 版 (別リスト・既存 unresolved_warnings のスキーマは不変).
+        unresolved_ng_warnings = await self._build_unresolved_ng_warnings(
+            db,
+            course_ids=ng_blocked_no_candidate,
             targets_by_id=targets_by_id,
         )
 
@@ -1190,9 +1374,9 @@ class Layer3Assigner:
         for cid in unavoidable_reason:
             consecutive_cause_patients.pop(cid, None)
 
-        if not consecutive_cause_patients and not gender_candidates and not unavoidable_reason:
+        if not consecutive_cause_patients and not constraint_candidates and not unavoidable_reason:
             # W-11: review/notice が無くても残留違反警告だけは返す.
-            return [], set(), [], unresolved_warnings
+            return [], set(), [], unresolved_warnings, unresolved_ng_warnings
 
         # ----- 🔗 修正4: 連続コースの visit_group partner を解決 -----
         # 連続コース X を非 commit にする際、 同 visit_group の partner course Y
@@ -1252,12 +1436,12 @@ class Layer3Assigner:
         partner_only_ids = exclude_course_ids - set(consecutive_cause_patients)
 
         review_course_ids = (
-            set(consecutive_cause_patients) | set(gender_candidates) | partner_only_ids
+            set(consecutive_cause_patients) | set(constraint_candidates) | partner_only_ids
         )
         # Wave N-1: notice の理由文組み立て用に不可避コースの名前も一括ロードする.
         name_course_ids = review_course_ids | set(unavoidable_reason)
         if not name_course_ids:
-            return [], exclude_course_ids, [], unresolved_warnings
+            return [], exclude_course_ids, [], unresolved_warnings, unresolved_ng_warnings
 
         # ----- visit 情報 (patient_id, patient_name, start_time, sex_restriction) を一括ロード -----
         # course_id -> [(start_time, patient_id, patient_name, sex_restriction), ...]
@@ -1305,14 +1489,18 @@ class Layer3Assigner:
             if course is None:
                 continue
             is_consecutive = course_id in consecutive_cause_patients
-            is_gender = course_id in gender_candidates
+            is_constraint = course_id in constraint_candidates
             # 連続 / partner はともに reason='consecutive' (= 黄カード) で扱う.
             # partner Y は連続コードではないが、 X と連動して apply するため同 reason.
-            reason = "gender" if is_gender else "consecutive"
+            # 性別 / NG ブロックは段階式判定の結果 ('gender' | 'ng_staff') を使う.
+            reason = constraint_reason.get(course_id, "gender") if is_constraint else "consecutive"
+            also_violates = (
+                list(constraint_also_violates.get(course_id, [])) if is_constraint else []
+            )
 
             # 候補スタッフ
-            if is_gender:
-                candidate = gender_candidates.get(course_id)
+            if is_constraint:
+                candidate = constraint_candidates.get(course_id)
             else:
                 # 連続 X / partner Y はともに solve が割り当てた staff が候補.
                 candidate_id = assigned_staff_by_course.get(course_id)
@@ -1323,11 +1511,22 @@ class Layer3Assigner:
             # 原因患者集合 (is_cause)
             if is_consecutive:
                 cause_pids = consecutive_cause_patients.get(course_id, set())
-            elif is_gender:
+            elif is_constraint:
                 # 性別: sex_restriction を持つ患者が原因.
-                cause_pids = {
-                    p_id for (_st, p_id, _name, sr) in visits_by_course.get(course_id, []) if sr
-                }
+                # NG: 候補スタッフを NG 指定している患者が原因.
+                # 段階 3 (reason='gender' + also_violates=['ng_staff']) は両方が原因.
+                violated = {reason, *also_violates}
+                cause_pids = set()
+                if "gender" in violated:
+                    cause_pids |= {
+                        p_id for (_st, p_id, _name, sr) in visits_by_course.get(course_id, []) if sr
+                    }
+                if "ng_staff" in violated:
+                    cause_pids |= {
+                        p_id
+                        for p_id, ng in course.ng_staff_by_patient.items()
+                        if candidate.staff_id in ng
+                    }
             else:
                 # partner Y 自体は原因患者なし (= X が原因; Y は連動 apply のため出すだけ).
                 cause_pids = set()
@@ -1366,6 +1565,7 @@ class Layer3Assigner:
                     candidate_staff_sex=candidate.sex,
                     visits=review_visits,
                     linked_course_ids=linked,
+                    also_violates=also_violates,
                 )
             )
 
@@ -1386,7 +1586,7 @@ class Layer3Assigner:
             visits_by_course=visits_by_course,
             office_name_by_id=office_name_by_id,
         )
-        return items, exclude_course_ids, notices, unresolved_warnings
+        return items, exclude_course_ids, notices, unresolved_warnings, unresolved_ng_warnings
 
     # ------------------------------------------------------------------ #
     # W-11: 性別残留違反 (候補ゼロ) の可視化警告構築
@@ -1454,6 +1654,105 @@ class Layer3Assigner:
                     reason_text=(
                         f"性別制約を満たす候補が見つかりません。現在の担当（{name}）は"
                         "性別制約を満たしていません — 手動で調整してください"
+                    ),
+                )
+            )
+
+        warnings.sort(key=lambda w: (w.weekday, w.course_code))
+        return warnings
+
+    # ------------------------------------------------------------------ #
+    # NG スタッフ残留違反 (候補ゼロ) の可視化警告構築
+    # ------------------------------------------------------------------ #
+
+    async def _build_unresolved_ng_warnings(
+        self,
+        db: AsyncSession,
+        *,
+        course_ids: set[UUID],
+        targets_by_id: dict[UUID, CourseAssignmentTarget],
+    ) -> list[UnresolvedNgStaffWarning]:
+        """NG ブロック未割当 + 候補ゼロのコースの残留違反を可視化する.
+
+        W-11 の ``_build_unresolved_gender_warnings`` と **同型** (= 同じ流儀・
+        同じ判定順序) の NG 版. ``course_ids`` = NG 指定つき未割当 かつ
+        ``_compute_gender_candidate_for_course`` がどう緩和しても候補を返せなかった
+        コース集合. このうち現在の ``assigned_staff_id`` が非 null かつその担当が
+        コース所属患者の **誰かの NG スタッフ** であるものだけを警告にする。
+        自動クリアはしない (可視化のみ)。
+
+        判定に使う担当スタッフは ``status`` を問わず Staff 行から解決する (= 既に退職
+        した違反担当も名前を表示できるようにするため).
+
+        Returns:
+            (weekday, course_code) 昇順の ``UnresolvedNgStaffWarning`` list.
+            ``course_ids`` が空なら空 list.
+        """
+        if not course_ids:
+            return []
+
+        rows = (
+            await db.execute(
+                select(
+                    Course.id,
+                    Course.assigned_staff_id,
+                    Staff.name,
+                    Office.name,
+                )
+                .join(Staff, Staff.id == Course.assigned_staff_id)
+                .outerjoin(Office, Office.id == Course.office_id)
+                .where(
+                    Course.id.in_(list(course_ids)),
+                    Course.assigned_staff_id.isnot(None),
+                )
+            )
+        ).all()
+
+        # 原因患者 (= 現担当を NG 指定している患者) を course ごとに先に確定させ、
+        # 名前解決は 1 クエリでまとめる (N+1 禁止).
+        pending: list[tuple[UUID, str, str, list[UUID]]] = []
+        cause_pids_all: set[UUID] = set()
+        for c_id, staff_id, staff_name, office_name in rows:
+            course = targets_by_id.get(c_id)
+            if course is None:
+                continue
+            cause_pids = [pid for pid, ng in course.ng_staff_by_patient.items() if staff_id in ng]
+            if not cause_pids:
+                continue  # 現担当は NG 該当ではない (= 残留違反ではない).
+            cause_pids_all.update(cause_pids)
+            pending.append((c_id, staff_name or "不明", office_name or "", cause_pids))
+        if not pending:
+            return []
+
+        name_rows = (
+            await db.execute(
+                select(Patient.id, Patient.name).where(
+                    Patient.id.in_(sorted(cause_pids_all, key=str))
+                )
+            )
+        ).all()
+        patient_name_by_id: dict[UUID, str] = {pid: (name or "") for pid, name in name_rows}
+
+        warnings: list[UnresolvedNgStaffWarning] = []
+        for c_id, staff_name, office_name, cause_pids in pending:
+            course = targets_by_id[c_id]
+            # 表示順を決定的に (患者名 → patient_id).
+            patient_names = [
+                patient_name_by_id.get(pid, "")
+                for pid in sorted(cause_pids, key=lambda p: (patient_name_by_id.get(p, ""), str(p)))
+            ]
+            joined = "・".join(n for n in patient_names if n)
+            warnings.append(
+                UnresolvedNgStaffWarning(
+                    course_id=c_id,
+                    course_code=course.course_code,
+                    weekday=course.weekday,
+                    office_name=office_name,
+                    current_staff_name=staff_name,
+                    patient_names=patient_names,
+                    reason_text=(
+                        f"NG制約を満たす候補が見つかりません。現在の担当（{staff_name}）は"
+                        f"{joined}様のNGスタッフです — 手動で調整してください"
                     ),
                 )
             )
@@ -1839,7 +2138,7 @@ class Layer3Assigner:
             # ---------- Stage 3: 拠点跨ぎ救援 (rescue re-solve) ----------
             # Stage 2 後もなお未割当コースが残る場合のみ、当日を全再解して隣接拠点の
             # 要員で埋める (= スワップ許可). 拠点ハード除外だけをソフト大ペナルティに
-            # 緩和し、性別・シフト・イベント・新人は緩和しない (INF のまま).
+            # 緩和し、性別・NG スタッフ・シフト・イベント・新人は緩和しない (INF のまま).
             # 採用ガードは「未割当コース数が厳密に減る場合のみ」= 全体不足週では元を維持.
             rescue = self._solve_stage3_cross_office(
                 weekday=weekday,
@@ -1994,7 +2293,8 @@ class Layer3Assigner:
         # ----- W16 + Phase 1: 固定割当を先に剥がす (有効な固定のみ確定) -----
         # Phase 1: 固定割当ルートは従来 work_days のみ見て無条件確定し、 性別 /
         # event 重複のハード制約を素通りしていた (= 患者安全の穴). 固定 course は
-        # 「(a) staff が pool に存在 (b) 当日勤務 (c) 性別制約を満たす (d) event 重複なし」
+        # 「(a) staff が pool に存在 (b) 当日勤務 (c) 性別制約を満たす
+        #   (c1) NG スタッフでない (d) event 重複なし」
         # を **全て満たす時のみ** 確定し、 満たさない course は free_courses に回して
         # 通常ハンガリアン + manager fallback で正しい性別の人へ割当する (不能なら未割当).
         result: list[StaffAssignment] = []
@@ -2014,6 +2314,13 @@ class Layer3Assigner:
                 continue
             # (c) 性別ハード制約 (Phase 1: 固定割当ルートの性別穴塞ぎ)
             if not _staff_satisfies_gender(staff, course):
+                free_courses.append(course)
+                continue
+            # (c1) NG スタッフハード制約 (性別と同格・同じ扱い).
+            # 固定指定 (manager M / primary staff A / 既存 staff_assigned 保護) でも
+            # NG 該当なら確定させず free_courses に回し、 通常ハンガリアンで別の人へ
+            # 割り当てる (不能なら未割当 = 誤割当より未割当を選ぶ).
+            if not _staff_satisfies_ng(staff, course):
                 free_courses.append(course)
                 continue
             # (c2) Phase G-90: 拠点ハード制約 (固定割当ルートの多重防御).
@@ -2105,7 +2412,7 @@ class Layer3Assigner:
             pool: 候補スタッフ list (= まだ当日未割当の要員).
             relax_office_constraint: True のとき Phase G-90 拠点ハード除外をソフト
                 大ペナルティ (COST_CROSS_OFFICE_VIOLATION) に緩和する (Stage 3 用).
-                性別・シフト・イベント・新人は緩和しない (INF のまま).
+                性別・NG スタッフ・シフト・イベント・新人は緩和しない (INF のまま).
 
         Returns:
             割当 ``StaffAssignment`` の list. ``via`` は既定 "hungarian" のまま返す
@@ -2263,7 +2570,8 @@ class Layer3Assigner:
 
         PO 要件 (2026-07-12): 自拠点で埋まらないコースを、 隣接拠点の要員が越境して
         救援する (レベル1 救援・スワップ許可・マネージャーも対象). 拠点ハード除外だけを
-        ソフト大ペナルティに緩和し、 性別・シフト・イベント・新人は緩和しない (INF のまま).
+        ソフト大ペナルティに緩和し、 性別・NG スタッフ・シフト・イベント・新人は
+        緩和しない (INF のまま).
 
         発動条件 = Stage 2 完了後もなお未割当コースが残っている場合のみ.
 
@@ -2421,7 +2729,8 @@ class Layer3Assigner:
 
         ``relax_office_constraint=True`` (Stage 3 拠点跨ぎ救援) のとき、 拠点ハード
         除外だけを INF から ``COST_CROSS_OFFICE_VIOLATION`` (ソフト大ペナルティ) に
-        差し替える. 性別・シフト・イベント・新人は緩和しない (INF のまま).
+        差し替える. 性別・**NG スタッフ**・シフト・イベント・新人は緩和しない
+        (INF のまま).
 
         Phase G-90: 距離 (α) はコストから撤去した. スタッフは自拠点コースにのみ
         行く (拠点ハード制約) ため、 同拠点内では距離 (km) は割付に無関係.
@@ -2444,6 +2753,16 @@ class Layer3Assigner:
         # (固定割当ルートと同一セマンティクス). 'female_only'/'male_only' の
         # 正規化と AND semantics は同ヘルパー内で処理する (Phase G-27 fix 維持).
         if not _staff_satisfies_gender(staff, course):
+            return HUNGARIAN_INFINITY
+
+        # ---------- NG スタッフ (ハード制約・性別と同格) ----------
+        # コース所属患者の誰か 1 人でも当該 staff を NG 指定していれば割当不可.
+        # 判定は ``_staff_satisfies_ng`` に単一ソース化 (固定割当ルートと同一
+        # セマンティクス). 本 return により Stage 1/2/3 の全ハンガリアンに加え、
+        # ``_cost_single_cell`` を再利用する不可避連続判定
+        # (``_detect_unavoidable_consecutive``) にも自動で効く.
+        # 正典: ``docs/plans/patient-ng-staff-design.md`` §5.
+        if not _staff_satisfies_ng(staff, course):
             return HUNGARIAN_INFINITY
 
         # ---------- Phase G-90: 拠点ハード制約 (Stage 3 では跨ぎ救援で緩和可) ----------
@@ -2591,24 +2910,37 @@ class Layer3Assigner:
         iso_year: int | None,
         iso_week: int | None,
         patient_recent_staff: dict[UUID, list[UUID]],
+        relax_gender: bool = True,
+        relax_ng: bool = False,
     ) -> StaffInfo | None:
-        """Phase G-91: 性別ブロック course の「性別を無視したら誰が割り当たるか」候補.
+        """Phase G-91: ブロック course の「制約を無視したら誰が割り当たるか」候補.
 
-        性別制限 (= ``_staff_satisfies_gender``) のため Layer 3 で未割当になった
-        course について、 **性別制約だけを外した** ときの最小コスト same-office
-        staff を 1 名 greedy に算出する (= 管理者が override 判断する材料).
+        性別制限 (= ``_staff_satisfies_gender``) / NG スタッフ
+        (= ``_staff_satisfies_ng``) のため Layer 3 で未割当になった course に
+        ついて、 **指定した制約だけを外した** ときの最小コスト same-office staff を
+        1 名 greedy に算出する (= 管理者が override 判断する材料).
 
         選定ロジック (architect 助言 Q2):
         - 固定対象 (都賀 A / manager M) ならその固定スタッフを候補にする
-          (= 性別違反でも「管理者が override すべきか」 の判断材料として返す).
+          (= 違反でも「管理者が override すべきか」 の判断材料として返す).
+          ただし **緩和対象でない制約** に違反する固定スタッフは候補にしない
+          (= NG 非緩和なら NG 該当の固定スタッフは返さない). 緩和フラグが既定
+          (性別のみ緩和) かつ NG 未設定のコースでは従来と完全に同じ挙動.
         - それ以外は「同拠点 (effective_office_for_weekday==course.office_id) +
-          当日勤務 + event 重複なし」 の same-office staff のうち、 性別以外の
-          コスト (= ``_cost_single_cell`` を性別 skip で算出) が最小の 1 名.
+          当日勤務 + event 重複なし」 の same-office staff のうち、 緩和対象以外の
+          コスト (= ``_cost_single_cell`` を擬似コースで算出) が最小の 1 名.
         - タイブレーク: cost 昇順 → 同コストは staff_id (UUID) 昇順で決定的に安定化.
 
-        Hungarian 全体を gender 無効で再実行しないのは、 既に確定した他コースの
+        Hungarian 全体を制約無効で再実行しないのは、 既に確定した他コースの
         結果を引きはがして整合性を壊すため (= レビュー候補は排他性不要、 単一
         course の greedy で十分).
+
+        Args:
+            relax_gender: True で性別制限を無効化して候補を探す (既定 = 従来挙動).
+            relax_ng: True で NG スタッフ制約を無効化して候補を探す.
+                段階式 reason 決定 (``_build_review_items``) が
+                (gender, ng) = (True, False) → (False, True) → (True, True) の順で
+                本メソッドを呼び分ける.
 
         Returns:
             候補 ``StaffInfo`` または None (純粋人手不足 = 候補なし → レビュー対象外).
@@ -2617,7 +2949,13 @@ class Layer3Assigner:
         fixed_staff_id = fixed_staff_by_course.get(course.course_id)
         if fixed_staff_id is not None:
             fixed_staff = next((s for s in staff_pool if s.staff_id == fixed_staff_id), None)
-            if fixed_staff is not None and weekday in fixed_staff.work_days:
+            if (
+                fixed_staff is not None
+                and weekday in fixed_staff.work_days
+                # 緩和していない制約は固定ルートでも守る (= 誤った reason を防ぐ).
+                and (relax_gender or _staff_satisfies_gender(fixed_staff, course))
+                and (relax_ng or _staff_satisfies_ng(fixed_staff, course))
+            ):
                 return fixed_staff
 
         # ---------- 性別以外のハード制約を満たす same-office staff を greedy 評価 ----------
@@ -2649,22 +2987,24 @@ class Layer3Assigner:
                     week_monday=week_monday,
                 ):
                     continue
-            # 性別「以外」のコスト. _cost_single_cell は gender INF を返し得るので、
-            # gender_restrictions を空にした課題コースを使って性別だけ無効化する.
-            course_no_gender = CourseAssignmentTarget(
+            # 緩和対象「以外」のコスト. _cost_single_cell は gender / NG で INF を
+            # 返し得るので、 該当フィールドを空にした擬似コースで当該制約だけ無効化する
+            # (= 緩和しない側の制約は擬似コースにも残るので INF で正しく弾かれる).
+            course_relaxed = CourseAssignmentTarget(
                 course_id=course.course_id,
                 weekday=course.weekday,
                 course_code=course.course_code,
                 centroid_lat=course.centroid_lat,
                 centroid_lng=course.centroid_lng,
-                gender_restrictions=frozenset(),
+                gender_restrictions=(frozenset() if relax_gender else course.gender_restrictions),
                 patient_ids=course.patient_ids,
                 visits=course.visits,
                 office_id=course.office_id,
+                ng_staff_ids=frozenset() if relax_ng else course.ng_staff_ids,
             )
             cost = self._cost_single_cell(
                 weekday=weekday,
-                course=course_no_gender,
+                course=course_relaxed,
                 staff=staff,
                 history=history,
                 prev_day_pairs=prev_day_pairs,
@@ -2675,7 +3015,7 @@ class Layer3Assigner:
                 patient_recent_staff=patient_recent_staff,
             )
             if cost >= HUNGARIAN_INFINITY:
-                # 性別以外のハード制約 (= 履歴除外等) で不可 → 候補外.
+                # 緩和対象以外のハード制約 (= 非緩和の性別/NG・履歴除外等) で不可 → 候補外.
                 continue
             key = (cost, str(staff.staff_id))
             if best_key is None or key < best_key:
@@ -2726,6 +3066,8 @@ class Layer3Assigner:
 
         各コースの重心は所属する visits の患者 lat/lng の平均で算出。
         性別制限はコース内全患者の sex_restriction 集合。
+        NG スタッフはコース内全患者の ``patient_ng_staff`` の union
+        (= ``_load_ng_staff_pairs`` を 1 クエリで呼び、 ループ後に配る)。
 
         Args:
             office_id: 指定時は当該拠点のコースに絞る (W16).
@@ -2820,6 +3162,24 @@ class Layer3Assigner:
                     office_id=course.office_id,
                 )
             )
+
+        # ---------- NG スタッフ (性別制限と同格のハード制約) を一括ロード ----------
+        # 上のコースループは元々コース単位クエリだが、 NG は **全コースの患者を
+        # まとめて 1 クエリ**で引き、 ループ後に各 target へ配る (N+1 禁止・設計書 §5).
+        all_patient_ids = sorted({pid for t in targets for pid in t.patient_ids}, key=str)
+        ng_by_patient = await self._load_ng_staff_pairs(db, all_patient_ids)
+        if ng_by_patient:
+            for target in targets:
+                course_ng_by_patient = {
+                    pid: ng_by_patient[pid] for pid in target.patient_ids if pid in ng_by_patient
+                }
+                if not course_ng_by_patient:
+                    continue
+                target.ng_staff_by_patient = course_ng_by_patient
+                union: set[UUID] = set()
+                for ng in course_ng_by_patient.values():
+                    union |= ng
+                target.ng_staff_ids = frozenset(union)
         return targets
 
     async def load_active_staff(
@@ -3132,6 +3492,77 @@ class Layer3Assigner:
         return {cid: frozenset(vals) for cid, vals in out.items()}
 
     @staticmethod
+    async def _load_ng_staff_pairs(
+        db: AsyncSession, patient_ids: list[UUID]
+    ) -> dict[UUID, frozenset[UUID]]:
+        """患者ごとの NG スタッフ集合を **1 クエリ**でまとめて返す (N+1 禁止).
+
+        正典: ``docs/plans/patient-ng-staff-design.md`` §3 / §5.
+        ``patient_ng_staff`` は「NG のみ行を作る」方式なので、 行が存在する
+        (patient_id, staff_id) の組がそのまま禁止ペアである.
+
+        ORM 側に relationship を張らない設計 (設計書 §3 末尾) のため、 利用側の
+        本メソッドが明示クエリで一括ロードする.
+
+        Args:
+            db: 共有 AsyncSession.
+            patient_ids: 対象患者 ID. 空ならクエリ skip.
+
+        Returns:
+            ``{patient_id: frozenset[staff_id]}``. NG 行のない患者はキーを持たない
+            (= ``.get(pid, frozenset())`` で空扱いするのが定石).
+        """
+        if not patient_ids:
+            return {}
+        rows = (
+            await db.execute(
+                select(PatientNgStaff.patient_id, PatientNgStaff.staff_id).where(
+                    PatientNgStaff.patient_id.in_(patient_ids)
+                )
+            )
+        ).all()
+        out: dict[UUID, set[UUID]] = {}
+        for pid, sid in rows:
+            if pid is None or sid is None:
+                continue
+            out.setdefault(pid, set()).add(sid)
+        return {pid: frozenset(vals) for pid, vals in out.items()}
+
+    @staticmethod
+    async def _load_ng_staff_by_courses(
+        db: AsyncSession, course_ids: list[UUID]
+    ) -> dict[UUID, frozenset[UUID]]:
+        """指定 course の所属患者の NG スタッフ集合 (union) を course_id 別に返す.
+
+        ``_load_gender_restrictions_by_courses`` の NG 版 (= 同じ流儀・同じ用途).
+        ``_build_fixed_assignments`` で固定割当 (manager→M / primary staff→A) を
+        貼る前に NG ハード制約を多重防御チェックするために使う. 1 クエリ.
+
+        Returns:
+            ``{course_id: frozenset[staff_id]}``. NG のないコースはキーを持たない
+            (= ``.get(cid, frozenset())`` で空扱い).
+        """
+        if not course_ids:
+            return {}
+        rows = (
+            await db.execute(
+                select(Visit.course_id, PatientNgStaff.staff_id)
+                .join(PatientNgStaff, PatientNgStaff.patient_id == Visit.patient_id)
+                .where(
+                    Visit.course_id.in_(course_ids),
+                    Visit.status == VISIT_STATUS_PLANNED,
+                    Visit.deleted_at.is_(None),
+                )
+            )
+        ).all()
+        out: dict[UUID, set[UUID]] = {}
+        for cid, sid in rows:
+            if cid is None or sid is None:
+                continue
+            out.setdefault(cid, set()).add(sid)
+        return {cid: frozenset(vals) for cid, vals in out.items()}
+
+    @staticmethod
     async def _load_l3_fix_primary_staff_offices(
         db: AsyncSession,
         *,
@@ -3281,6 +3712,9 @@ class Layer3Assigner:
             mgr_restrictions = await self._load_gender_restrictions_by_courses(
                 db, [c.id for c in mgr_courses]
             )
+            # NG スタッフも同様に多重防御 (性別と同格). NG 該当の manager は固定せず
+            # 通常割付に回す (``_solve_one_day`` の (c1) ガードと二重防御).
+            mgr_ng = await self._load_ng_staff_by_courses(db, [c.id for c in mgr_courses])
 
             # NOTE: code 列は ('A','B','C','D','E','M') CHECK 制約があるため
             # 複数 manager の場合も全て code='M' で運用される (W16 想定 N=1).
@@ -3298,6 +3732,8 @@ class Layer3Assigner:
                     if not _sex_satisfies_restrictions(
                         mgr.sex, mgr_restrictions.get(course.id, frozenset())
                     ):
+                        continue
+                    if mgr.id in mgr_ng.get(course.id, frozenset()):
                         continue
                     result[course.id] = mgr.id
 
@@ -3366,10 +3802,14 @@ class Layer3Assigner:
             tsuga_restrictions = await self._load_gender_restrictions_by_courses(
                 db, [c.id for c in tsuga_courses]
             )
+            # NG スタッフも同様に多重防御 (性別と同格).
+            tsuga_ng = await self._load_ng_staff_by_courses(db, [c.id for c in tsuga_courses])
             for course in tsuga_courses:
                 if not _sex_satisfies_restrictions(
                     primary_staff.sex, tsuga_restrictions.get(course.id, frozenset())
                 ):
+                    continue
+                if primary_staff.id in tsuga_ng.get(course.id, frozenset()):
                     continue
                 result[course.id] = primary_staff.id
 
@@ -3436,7 +3876,7 @@ class Layer3Assigner:
         self,
         db: AsyncSession,
         assignments: list[StaffAssignment],
-    ) -> None:
+    ) -> list[SecondaryConstraintWarning]:
         """割当結果を DB に反映する (W7-BE4 / Codex Must-fix #7).
 
         実施内容:
@@ -3453,12 +3893,21 @@ class Layer3Assigner:
                も同期更新 (Wave 6 まで併用)
             5. 冪等性: 既存の ``visit_staff_assignments`` 行は DELETE してから
                再 INSERT する
+            6. PO 決定4: 3 で立てた secondary が当該 visit の患者の性別制限 / NG
+               スタッフに違反していないか検証する。 **違反しても割当は行い**
+               (= 2 名体制の構造的ペアリングを壊さない)、
+               ``SecondaryConstraintWarning`` として返して可視化する。
 
         本サービスは commit しない。呼び出し側がトランザクション境界を握る
         (§5.4 / module docstring)。
+
+        Returns:
+            2 名体制 secondary の制約違反警告 (PO 決定4). 違反なしなら空 list.
+            ``assign()`` が ``Layer3Result.secondary_constraint_warnings`` に載せる.
+            他の呼出元 (apply-staff-review) は戻り値を無視してよい (後方互換).
         """
         if not assignments:
-            return
+            return []
 
         # ---------- 1. course の更新 ----------
         course_ids = [a.course_id for a in assignments]
@@ -3479,7 +3928,7 @@ class Layer3Assigner:
 
         if not staff_by_course:
             await db.flush()
-            return
+            return []
 
         # ---------- 2. 対象 visits をロード ----------
         # 当該コース配下の planned visits + (2 名体制ペア解決のため) 同一
@@ -3505,7 +3954,7 @@ class Layer3Assigner:
 
         if not target_visits:
             await db.flush()
-            return
+            return []
 
         # 2 名体制グループの partner 解決のため、同じ visit_group_id を持つ
         # visit を全件取得 (別コースに所属する partner も含む)
@@ -3547,6 +3996,8 @@ class Layer3Assigner:
         )
 
         # ---------- 4. visit_staff_assignments を再 INSERT ----------
+        # PO 決定4: 立てた secondary を後段でまとめて検証するため (visit, secondary) を集める.
+        secondary_pairs: list[tuple[Visit, UUID]] = []
         for visit in target_visits:
             primary_staff_id = (
                 staff_by_course.get(visit.course_id) if visit.course_id is not None else None
@@ -3574,6 +4025,10 @@ class Layer3Assigner:
                     break
                 if secondary_staff_id is not None:
                     staff_ids.append(secondary_staff_id)
+                    # PO 決定4: この secondary は partner course の担当をそのまま
+                    # 据えたもので、 当該 visit の患者の性別制限 / NG は未検証.
+                    # 割当は行い (構造的ペアリングを壊さない)、 後段で警告化する.
+                    secondary_pairs.append((visit, secondary_staff_id))
 
             # 重複排除 (primary == secondary になり得ないが念のため)
             seen: set[UUID] = set()
@@ -3593,6 +4048,120 @@ class Layer3Assigner:
             visit.secondary_staff_id = secondary_staff_id
 
         await db.flush()
+
+        # ---------- 6. PO 決定4: secondary の性別 / NG 検証 (警告のみ) ----------
+        return await self._build_secondary_constraint_warnings(db, secondary_pairs)
+
+    async def _build_secondary_constraint_warnings(
+        self,
+        db: AsyncSession,
+        secondary_pairs: list[tuple[Visit, UUID]],
+    ) -> list[SecondaryConstraintWarning]:
+        """PO 決定4: 2 名体制 secondary の性別 / NG 違反を検証して警告に変換する.
+
+        ``_persist`` が partner course の担当をそのまま secondary に据えた
+        (visit, secondary_staff_id) の組を受け取り、 当該 visit の **患者** から見て
+        その secondary が
+
+        - 性別制限 (``Patient.sex_restriction``) に違反する → kind='gender'
+        - NG スタッフ (``patient_ng_staff``) に該当する → kind='ng_staff'
+
+        のいずれかなら 1 件ずつ警告を積む (両方該当なら 2 件). **割当は取り消さない**
+        (= 構造的ペアリングを壊さない・見える化のみ).
+
+        警告の ``course_id`` は「その患者の visit が属するコース」 (= secondary の
+        出所である partner course ではない). 患者・コース・入る人が 1 レコードで
+        揃う方が管理者の是正操作に直結するため.
+
+        DB I/O は患者 / スタッフ / コース / NG の 4 クエリのみ (N+1 禁止).
+        """
+        if not secondary_pairs:
+            return []
+
+        patient_ids = sorted(
+            {v.patient_id for v, _ in secondary_pairs if v.patient_id is not None}, key=str
+        )
+        staff_ids = sorted({sid for _, sid in secondary_pairs}, key=str)
+        course_ids = sorted(
+            {v.course_id for v, _ in secondary_pairs if v.course_id is not None}, key=str
+        )
+        if not patient_ids or not staff_ids:
+            return []
+
+        p_rows = (
+            await db.execute(
+                select(Patient.id, Patient.name, Patient.sex_restriction).where(
+                    Patient.id.in_(patient_ids)
+                )
+            )
+        ).all()
+        patient_by_id = {pid: (name or "", sr) for pid, name, sr in p_rows}
+
+        s_rows = (
+            await db.execute(select(Staff.id, Staff.name, Staff.sex).where(Staff.id.in_(staff_ids)))
+        ).all()
+        staff_by_id = {sid: (name or "", sex) for sid, name, sex in s_rows}
+
+        c_rows = (
+            await db.execute(
+                select(Course.id, Course.code, Course.weekday, Office.name)
+                .outerjoin(Office, Office.id == Course.office_id)
+                .where(Course.id.in_(course_ids))
+            )
+            if course_ids
+            else None
+        )
+        course_by_id: dict[UUID, tuple[str, int, str]] = {}
+        if c_rows is not None:
+            course_by_id = {
+                cid: (code or "", weekday, office_name or "")
+                for cid, code, weekday, office_name in c_rows.all()
+            }
+
+        ng_by_patient = await self._load_ng_staff_pairs(db, patient_ids)
+
+        # 同一 (course, patient, staff, kind) の重複 (= 週内の複数 visit) を畳む.
+        seen: set[tuple[UUID, UUID, UUID, str]] = set()
+        warnings: list[SecondaryConstraintWarning] = []
+        for visit, staff_id in secondary_pairs:
+            if visit.patient_id is None or visit.course_id is None:
+                continue
+            patient = patient_by_id.get(visit.patient_id)
+            staff = staff_by_id.get(staff_id)
+            if patient is None or staff is None:
+                continue
+            patient_name, sex_restriction = patient
+            staff_name, staff_sex = staff
+            course_code, weekday, office_name = course_by_id.get(visit.course_id, ("", 0, ""))
+
+            kinds: list[str] = []
+            restrictions = frozenset({sex_restriction}) if sex_restriction else frozenset()
+            if not _sex_satisfies_restrictions(staff_sex, restrictions):
+                kinds.append("gender")
+            if staff_id in ng_by_patient.get(visit.patient_id, frozenset()):
+                kinds.append("ng_staff")
+
+            for kind in kinds:
+                key = (visit.course_id, visit.patient_id, staff_id, kind)
+                if key in seen:
+                    continue
+                seen.add(key)
+                warnings.append(
+                    SecondaryConstraintWarning(
+                        course_id=visit.course_id,
+                        course_code=course_code,
+                        office_name=office_name,
+                        weekday=weekday,
+                        staff_id=staff_id,
+                        staff_name=staff_name,
+                        patient_id=visit.patient_id,
+                        patient_name=patient_name,
+                        kind=kind,
+                    )
+                )
+
+        warnings.sort(key=lambda w: (w.weekday, w.course_code, w.kind, str(w.patient_id)))
+        return warnings
 
 
 # ---------------------------------------------------------------------------
