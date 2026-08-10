@@ -147,7 +147,7 @@ export default function PatientsPage() {
           </div>
           {canCreate ? (
             <Button asChild variant="outline">
-              <Link href="/patients/qr-print?mode=bulk">QR一括印刷</Link>
+              <Link href={`/patients/qr-print?mode=bulk&status=${statusTab}`}>QR一括印刷</Link>
             </Button>
           ) : (
             <Button variant="outline" disabled>

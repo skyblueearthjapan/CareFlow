@@ -20,6 +20,7 @@ import { QRCodeSVG } from 'qrcode.react';
 
 import { Skeleton } from '@/components/ui/skeleton';
 import { usePatients } from '@/lib/queries/patients';
+import { STATUS_LABEL, normalizePatientStatus } from '@/lib/schemas/patient';
 import { useOffices } from '@/lib/queries/offices';
 import { usePatientQr } from '@/lib/queries/patientQr';
 import type { PatientRead } from '@/lib/schemas/patient';
@@ -35,6 +36,21 @@ type Mode = 'single' | 'bulk';
  * 絞り込みを促す警告を出す。
  */
 const BULK_PRINT_LIMIT = 60;
+
+/**
+ * ステータス絞り込み (PO 要望 2026-08-10): 患者マスタのステータスタブと同じ
+ * 並び・ラベルで、一括印刷の対象を「稼働中だけ」等に絞れるようにする。
+ * URL ?status= を尊重する (患者マスタのタブから遷移したとき同じ絞り込みで開く)。
+ */
+const QR_STATUS_TABS = [
+  { value: 'active', label: STATUS_LABEL.active },
+  { value: 'pending', label: STATUS_LABEL.pending },
+  { value: 'suspended', label: STATUS_LABEL.suspended },
+  { value: 'admitted', label: STATUS_LABEL.admitted },
+  { value: 'cancelled', label: STATUS_LABEL.cancelled },
+  { value: 'all', label: 'すべて' },
+] as const;
+type QrStatusValue = (typeof QR_STATUS_TABS)[number]['value'];
 
 /** 今日 (JST) の YYYY-MM-DD。 */
 function todayJst(): string {
@@ -79,8 +95,14 @@ function QrPrintPageInner() {
   const initialMode: Mode = searchParams?.get('mode') === 'bulk' ? 'bulk' : 'single';
   const urlPatientId = searchParams?.get('patient') ?? '';
 
+  const urlStatus = searchParams?.get('status') ?? '';
+  const initialStatus: QrStatusValue = QR_STATUS_TABS.some((t) => t.value === urlStatus)
+    ? (urlStatus as QrStatusValue)
+    : 'active';
+
   const [mode, setMode] = useState<Mode>(initialMode);
   const [office, setOffice] = useState<string>('all');
+  const [statusTab, setStatusTab] = useState<QrStatusValue>(initialStatus);
   const [selectedPatientId, setSelectedPatientId] = useState<string>(urlPatientId);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -108,11 +130,28 @@ function QrPrintPageInner() {
     return Array.from(ids).map((id) => ({ id, name: officeNameMap.get(id) ?? id }));
   }, [allPatients, officeNameMap]);
 
-  // 一括: 拠点で絞った表示対象。
-  const shownPatients = useMemo<PatientRead[]>(
+  // 一括: 拠点 × ステータスで絞った表示対象 (PO 要望 2026-08-10)。
+  const officeFiltered = useMemo<PatientRead[]>(
     () =>
       office === 'all' ? allPatients : allPatients.filter((p) => p.primary_office_id === office),
     [allPatients, office],
+  );
+  const statusCounts = useMemo<Record<string, number>>(() => {
+    const counts: Record<string, number> = { all: officeFiltered.length };
+    for (const p of officeFiltered) {
+      const st = normalizePatientStatus(p.status as string | null | undefined);
+      counts[st] = (counts[st] ?? 0) + 1;
+    }
+    return counts;
+  }, [officeFiltered]);
+  const shownPatients = useMemo<PatientRead[]>(
+    () =>
+      statusTab === 'all'
+        ? officeFiltered
+        : officeFiltered.filter(
+            (p) => normalizePatientStatus(p.status as string | null | undefined) === statusTab,
+          ),
+    [officeFiltered, statusTab],
   );
 
   // 単一モードの初期 selectedPatientId を、未指定なら先頭患者に補完。
@@ -132,6 +171,15 @@ function QrPrintPageInner() {
       });
     }
   }, [mode, shownPatients]);
+
+  // ステータス/拠点の切替時は選択を作り直す (別ステータスの残留選択で
+  // 「稼働中だけのはずが解約済みも刷れた」を防ぐ)。
+  useEffect(() => {
+    if (mode === 'bulk') {
+      setSelected(new Set(shownPatients.slice(0, BULK_PRINT_LIMIT).map((p) => p.id)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusTab, office]);
 
   // 選択トグル。追加方向は上限ガード (これ以上は GET 殺到/重DOM を避ける)。
   const toggleSelected = (id: string, next: boolean) =>
@@ -212,6 +260,18 @@ function QrPrintPageInner() {
           </span>
         ) : (
           <span className="qrprint-chips">
+            {/* ステータス絞り込み (患者マスタのタブと同じ区分・PO 要望 2026-08-10)。 */}
+            {QR_STATUS_TABS.map((t) => (
+              <span
+                key={t.value}
+                className={`qrprint-chip${statusTab === t.value ? ' on' : ''}`}
+                data-testid={`qrprint-status-${t.value}`}
+                onClick={() => setStatusTab(t.value)}
+              >
+                {t.label} {statusCounts[t.value] ?? 0}
+              </span>
+            ))}
+            <span className="qrprint-sep" />
             <span
               className={`qrprint-chip${office === 'all' ? ' on' : ''}`}
               onClick={() => setOffice('all')}

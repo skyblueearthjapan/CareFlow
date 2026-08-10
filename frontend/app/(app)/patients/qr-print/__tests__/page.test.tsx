@@ -150,6 +150,36 @@ describe('QrPrintPage — Phase 5-1', () => {
     expect(screen.getByRole('button', { name: '全選択' })).toBeInTheDocument();
   });
 
+  it('S. 一括: ステータス絞り込み (既定=稼働中・切替で対象が変わる・PO要望 2026-08-10)', async () => {
+    const patients = [
+      makePatient({ id: 'p1', code: 'P001', name: '山田 花子', status: 'active' }),
+      makePatient({ id: 'p2', code: 'P002', name: '佐藤 一郎', status: 'cancelled' }),
+      makePatient({ id: 'p3', code: 'P003', name: '鈴木 二郎', status: 'active' }),
+    ];
+    setupCommon({ mode: 'bulk', patients });
+    render(<QrPrintPage />);
+
+    // 既定は「稼働中」だけ → 2 名 (解約済みの佐藤は対象外)。
+    await waitFor(() => {
+      expect(screen.getByText('表示 2名 / 印刷 2枚')).toBeInTheDocument();
+    });
+    // 件数バッジつきのステータスチップ。
+    expect(screen.getByTestId('qrprint-status-active')).toHaveTextContent('稼働中 2');
+    expect(screen.getByTestId('qrprint-status-cancelled')).toHaveTextContent('解約済み 1');
+
+    // 「解約済み」タブへ切替 → 1 名だけになり選択も作り直される。
+    fireEvent.click(screen.getByTestId('qrprint-status-cancelled'));
+    await waitFor(() => {
+      expect(screen.getByText('表示 1名 / 印刷 1枚')).toBeInTheDocument();
+    });
+
+    // 「すべて」で 3 名。
+    fireEvent.click(screen.getByTestId('qrprint-status-all'));
+    await waitFor(() => {
+      expect(screen.getByText('表示 3名 / 印刷 3枚')).toBeInTheDocument();
+    });
+  });
+
   it('4. 一括: 選択解除でシート→コンパクト行に変わり GET 対象 (= full シート) が減る', async () => {
     const patients = [
       makePatient({ id: 'p1', code: 'P001', name: '山田 花子' }),
