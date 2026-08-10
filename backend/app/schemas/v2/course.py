@@ -104,6 +104,11 @@ class CourseV2Update(BaseModel):
     staff_assigned_at: datetime | None = None
     # Wave U-3 操作ジャーナル: assigned_staff_id 変更時の undo/redo グループ ID
     op_group_id: UUID | None = None
+    # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
+    # **入力専用フィールド** (Course モデルには存在せず DB へ保存しない)。
+    # 既定 False = 既存 PATCH の挙動は不変。True を付けて再送すると、違反があっても
+    # 適用し、管理者へお知らせ通知を作る。
+    acknowledge_constraint_warnings: bool = False
 
 
 class CourseV2Read(CourseV2Base):

@@ -68,6 +68,10 @@ from app.schemas.v2.auto_allocate import (
 )
 from app.schemas.v2.patient_fixed_visit import PatientFixedVisitMode, PatientFixedVisitV2Read
 from app.schemas.v2.visit import VisitV2Read
+from app.services.constraint_override_notify import (
+    collect_constraint_warnings,
+    notify_constraint_override,
+)
 from app.services.op_log_service import fmt_time, fmt_weekday, record_op
 from app.services.schedule_fix_service import (
     FixedVisit,
@@ -2122,6 +2126,12 @@ class ApplyStaffReviewItem(BaseModel):
 
     course_id: UUID
     staff_id: UUID
+    # NG スタッフ §7-3: 承認元 review_item の reason / also_violates。
+    # 'gender' / 'ng_staff' を承認した = 制約 override なので管理者へお知らせを出す
+    # (確認 UI は既存の 2 ステップがあるため 422 フローは不要・通知のみ)。
+    # **後方互換**: 省略 (= 旧 FE) のときは通知を作らず従来どおり通す。
+    reason: Literal["consecutive", "gender", "ng_staff"] | None = None
+    also_violates: list[str] = Field(default_factory=list)
 
 
 class ApplyStaffReviewRequest(BaseModel):
@@ -2168,7 +2178,7 @@ class ApplyStaffReviewResponse(BaseModel):
 async def apply_staff_review(
     payload: ApplyStaffReviewRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin"))],
+    current_user: Annotated[User, Depends(require_role("admin"))],
 ) -> ApplyStaffReviewResponse:
     """確認レビューフローで承認されたコースを ``_persist`` 経由で DB 反映する.
 
@@ -2209,8 +2219,15 @@ async def apply_staff_review(
 
     # ----- 重複 course_id 排除 (= 同一 course が複数 item にある場合は先勝ち) -----
     requested_staff_by_course: dict[UUID, UUID] = {}
+    # NG スタッフ §7-3: 制約 override として通知すべき course → 種別集合。
+    # reason 省略 (旧 FE) の item は空のまま = 通知なし (後方互換)。
+    override_kinds_by_course: dict[UUID, set[str]] = {}
     for it in payload.items:
         requested_staff_by_course.setdefault(it.course_id, it.staff_id)
+        _kinds = ({it.reason} if it.reason else set()) | set(it.also_violates)
+        override_kinds_by_course.setdefault(it.course_id, set()).update(
+            _kinds & {"gender", "ng_staff"}
+        )
 
     # 新人同行 §8: payload の staff_id に新人 (is_trainee=true) が含まれる場合は 422。
     # 新人はコースを持たない運用 (PO確定)。無検証で _persist に流すと手動レビュー承認
@@ -2356,6 +2373,41 @@ async def apply_staff_review(
                     staff_id=staff_id,
                 )
             )
+
+        # ----- NG スタッフ §7-3: 制約 override の承認を管理者へお知らせ -----
+        # 確認 UI は既存の 2 ステップ (AssignWarningDialog) があるため 422 フローは
+        # 不要。ここは「通した事実」の通知のみ。commit 前に add = 反映と同一 TX。
+        # apply 単位の識別子が無いため reference_id=None (= 毎回通知)。
+        # 通知本文の明細 (患者名 / NG メモ) は course × staff から算出する。
+        _notify_course_ids = [
+            cid
+            for cid, kinds in override_kinds_by_course.items()
+            if kinds and cid in apply_staff_by_course
+        ]
+        if _notify_course_ids:
+            _notify_staff_ids = {apply_staff_by_course[cid] for cid in _notify_course_ids}
+            _staff_by_id = {
+                s.id: s
+                for s in (
+                    await db.scalars(select(Staff).where(Staff.id.in_(list(_notify_staff_ids))))
+                ).all()
+            }
+            for cid in _notify_course_ids:
+                _course = course_by_id.get(cid)
+                _staff = _staff_by_id.get(apply_staff_by_course[cid])
+                if _course is None or _staff is None:
+                    continue
+                await notify_constraint_override(
+                    db,
+                    kind_summary=override_kinds_by_course[cid],
+                    course=_course,
+                    staff=_staff,
+                    patient_warnings=await collect_constraint_warnings(
+                        db, course_id=cid, staff=_staff
+                    ),
+                    actor=current_user,
+                    op_group_id=None,
+                )
 
         # ----- 自動割付と同一の _persist 経由で反映 -----
         assigner = Layer3Assigner()

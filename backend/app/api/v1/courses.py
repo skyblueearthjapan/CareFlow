@@ -40,6 +40,11 @@ from app.models.user import User
 from app.models.visit import Visit
 from app.schemas.course import CourseCreate, CourseRead, CourseUpdate
 from app.schemas.v2.enums import CourseStatus
+from app.services.constraint_override_notify import (
+    ConstraintWarning,
+    collect_constraint_warnings,
+    notify_constraint_override,
+)
 from app.services.op_log_service import record_op
 from app.services.scheduling import (
     CourseProposal,
@@ -321,6 +326,8 @@ async def update_course(
     # Wave U-3: op_group_id は Course モデルに存在しない — 取り出してから適用
     _op_group_id_raw: str | None = update_data.pop("op_group_id", None)
     _op_group_id: UUID | None = UUID(_op_group_id_raw) if _op_group_id_raw else None
+    # NG スタッフ / 性別制限の確認フロー (§7-2): 入力専用フィールドなので同様に取り出す。
+    _acknowledge: bool = bool(update_data.pop("acknowledge_constraint_warnings", False))
 
     # model_dump(mode="json") で UUID が str 化されるため、ORM 列用に UUID オブジェクトへ戻す
     # (create_course と同じ対応: PG_UUID(as_uuid=True) は uuid.UUID を要求する)
@@ -338,6 +345,8 @@ async def update_course(
     # 新人同行 §8: 新人 (is_trainee=true) はコース担当にできない。
     # マスタ駆動なのでフラグ OFF で自動復帰する。担当は「同行」で割り当てる。
     _new_assigned = update_data.get("assigned_staff_id")
+    _cand: Staff | None = None
+    _constraint_warnings: list[ConstraintWarning] = []
     if "assigned_staff_id" in update_data and _new_assigned is not None:
         _cand = await db.scalar(
             select(Staff).where(Staff.id == _new_assigned, Staff.deleted_at.is_(None))
@@ -346,6 +355,24 @@ async def update_course(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="新人はコース担当にできません（同行で割り当ててください）",
+            )
+
+        # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
+        # 新人 422 の **後** に置く: あちらは override 不可の絶対ブロック、こちらは
+        # acknowledge で通せる確認付き警告。絶対ブロックを先に効かせる方が自然で、
+        # 弾かれる担当に対して患者スキャンの追加クエリも走らない。
+        # 担当解除 (None 化) と、assigned_staff_id を含まない PATCH は無検査。
+        if _cand is not None:
+            _constraint_warnings = await collect_constraint_warnings(
+                db, course_id=course.id, staff=_cand
+            )
+        if _constraint_warnings and not _acknowledge:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "constraint_confirmation_required",
+                    "warnings": [w.to_detail() for w in _constraint_warnings],
+                },
             )
 
     # assigned_staff_id 変更を op_log に記録するため変更前の値を保存
@@ -372,6 +399,19 @@ async def update_course(
                 Visit.manual_staff_override.is_(False),
             )
             .values(primary_staff_id=_new_staff_id)
+        )
+
+    # §7-3: acknowledge 付きで制約を通した事実を管理者へお知らせする。
+    # commit 前に add = 担当変更と同一トランザクション (適用されたものだけ通知される)。
+    if _constraint_warnings and _cand is not None:
+        await notify_constraint_override(
+            db,
+            kind_summary={w.kind for w in _constraint_warnings},
+            course=course,
+            staff=_cand,
+            patient_warnings=_constraint_warnings,
+            actor=current_user,
+            op_group_id=_op_group_id,
         )
 
     await _commit_or_409(db)
