@@ -302,6 +302,24 @@ class InboundItemResultRead(BaseModel):
     date: str = ""
 
 
+class NgConflictRead(BaseModel):
+    """⛔ 取込後に生まれる NG スタッフ (patient_ng_staff) の組 — **警告のみ**。
+
+    正典設計書 ``docs/plans/patient-ng-staff-design.md`` §6 末尾 / §11。
+    カイポケは請求と紐づく最終的な「正」なので取り込みはブロックせず、dry-run
+    (プレビュー) でのみ可視化する。実適用の応答では常に空。
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    patient_id: UUID = Field(alias="patientId")
+    patient_name: str = Field(default="", alias="patientName")
+    staff_id: UUID = Field(alias="staffId")
+    staff_name: str = Field(default="", alias="staffName")
+    target_date: date = Field(alias="date")
+    weekday: int = Field(ge=0, le=6, description="0=月 … 6=日")
+    course_code: str | None = Field(default=None, alias="courseCode")
+
+
 class InboundApplyResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     job_id: UUID | None = Field(default=None, alias="jobId")
@@ -312,6 +330,8 @@ class InboundApplyResult(BaseModel):
     skipped: int = 0
     failed: int = 0
     results: list[InboundItemResultRead] = Field(default_factory=list)
+    # dry-run のみ非空 (警告・取込はブロックしない)。追加フィールドのみで後方互換。
+    ng_conflicts: list[NgConflictRead] = Field(default_factory=list, alias="ngConflicts")
 
 
 class DiffAccepted(BaseModel):
@@ -507,6 +527,8 @@ class ReplaceInboundResult(BaseModel):
     trainee_solo: list[ReplaceInboundTraineeSoloRead] = Field(
         default_factory=list, alias="traineeSolo"
     )
+    # dry-run のみ非空 (警告・取込はブロックしない)。追加フィールドのみで後方互換。
+    ng_conflicts: list[NgConflictRead] = Field(default_factory=list, alias="ngConflicts")
 
 
 # --- smart-inbound (日単位ハイブリッド自動判別・2026-07-26 PO確定) ------------

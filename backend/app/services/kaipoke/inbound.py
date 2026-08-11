@@ -34,6 +34,7 @@ from app.models.trainee_accompaniment import TraineeAccompaniment
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.kaipoke.name_match import build_name_index, match_name
+from app.services.kaipoke.ng_conflicts import NgConflict, NgPair, collect_ng_conflicts
 from app.services.trainee_accompaniment import (
     resolve_accompaniment_trainee_by_course,
     resolve_accompaniment_trainees_by_visit,
@@ -314,6 +315,10 @@ class InboundApplySummary:
     skipped: int = 0
     failed: int = 0
     results: list[InboundItemResult] = field(default_factory=list)
+    # ⛔ NG スタッフ (patient_ng_staff) に該当する組み合わせ (dry-run のみ集計)。
+    # カイポケが「正」なので取り込みはブロックしない — 警告として可視化するだけ。
+    # ``as_dict`` には **載せない**: 実適用の job.result_summary を変えないため。
+    ng_conflicts: list[NgConflict] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -446,6 +451,20 @@ async def apply_inbound_items(
         sid, vids = next(iter(votes.items()))
         if vids and vids == planned_by_course.get(tkey, set()):
             takeover[tkey] = sid
+
+    # ⛔ NG スタッフ警告 (Phase 3・設計書 §6 末尾): 取込適用後に「担当スタッフ ×
+    # その担当が回る患者」が NG ペア (patient_ng_staff) になる組を集める。
+    # **警告のみ・取込はブロックしない** (カイポケが正)。照会は末尾で 1 回だけ行い、
+    # 実適用 (dry_run=False) では照会そのものを走らせない (apply の挙動は不変)。
+    ng_pairs: list[NgPair] = []
+    patient_by_visit_id = {v.id: v.patient_id for v in index.values()}
+    for (takeover_course_id, takeover_date), takeover_sid in takeover.items():
+        takeover_course = course_idx.by_id.get(takeover_course_id)
+        takeover_code = str(takeover_course.code) if takeover_course is not None else None
+        for vid in planned_by_course.get((takeover_course_id, takeover_date), set()):
+            pid = patient_by_visit_id.get(vid)
+            if pid is not None:
+                ng_pairs.append((pid, takeover_sid, takeover_date, takeover_code))
 
     # 適用順序: キャンセル/変更 → 追加 (設計 §8 共通原則)。delete で空いた同時刻の
     # 枠へ add が入る玉突きケースを確実に成立させるため明示ソートする (安定ソート
@@ -581,6 +600,17 @@ async def apply_inbound_items(
                     sid2 = None
                     staff2_note = f"／担当2「{staff2_name}」は新人のため同行として取り込みました"
             course_note = f"コース{course.code}" if course is not None else "臨時コース新設"
+            # ⛔ NG: 追加される訪問の担当 (1/2) × 患者。
+            for ng_sid in (sid, sid2):
+                if ng_sid is not None:
+                    ng_pairs.append(
+                        (
+                            item.patient_id,
+                            ng_sid,
+                            target_date,
+                            str(course.code) if course is not None else None,
+                        )
+                    )
             revive_note = "・キャンセル済みの枠を復活" if revive is not None else ""
             detail = (
                 f"{target_date.month}/{target_date.day} {after.get('start_time')} を追加"
@@ -851,6 +881,17 @@ async def apply_inbound_items(
                     changes.append(
                         f"担当 {staff1_before_name or '−'}→{staff1_after_name}（臨時コース新設）"
                     )
+        # ⛔ NG: 担当変更 (丸ごと交代 / 既存コースへ移動 / 臨時新設) 後の担当 × 患者。
+        # 丸ごと交代は事前パスでも同組を積むが、collect_ng_conflicts が重複を畳む。
+        if new_sid is not None or new_sid2 is not None:
+            ng_course = target_course
+            if ng_course is None and course_takeover and visit.course_id is not None:
+                ng_course = course_idx.by_id.get(visit.course_id)
+            ng_code = str(ng_course.code) if ng_course is not None else None
+            for ng_sid in (new_sid, new_sid2):
+                if ng_sid is not None:
+                    ng_pairs.append((item.patient_id, ng_sid, final_date, ng_code))
+
         if staff2_update:
             changes.append(f"担当2 →{staff2_after_name}" if new_sid2 is not None else "担当2を解除")
         # 案B②: 新人 staff2 の自動同行化はリンク作成が実変更 → updated として集計する
@@ -927,5 +968,8 @@ async def apply_inbound_items(
                 )
                 accompaniment_by_visit.setdefault(visit.id, set()).add(accompaniment_sid2)
         _finish("updated", detail, target_date)
+
+    if dry_run:
+        summary.ng_conflicts = await collect_ng_conflicts(db, ng_pairs)
 
     return summary

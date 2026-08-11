@@ -10,6 +10,7 @@ PUT /patients/{id}/fixed-visits（手動系統＋候補採用系統）の削除�
     - V4  H10 昼休み重複（``_is_in_lunch_break`` + config lunch 窓）  → warning
     - V5  コース容量 480 分 / 6 名 超過                              → warning
     - V7  2名体制の相方枠なし（W-12a: 片肺の曜日・非ブロッキング）    → warning
+    - V9  コース担当が NG スタッフ / 性別制限に不適合                → warning
 
 設計方針:
     - 距離・移動・バッファー・同住所・90 分占有・昼休み・容量のプリミティブは
@@ -32,6 +33,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.course import Course
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.patient_ng_staff import PatientNgStaff
+from app.models.staff import Staff
 from app.models.visit import Visit
 from app.schemas.v2.patient_fixed_visit import PatientFixedVisitV2Base
 from app.services.scheduling.auto_allocator_v2 import (
@@ -41,6 +44,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     _time_to_min,
 )
 from app.services.scheduling.config import SchedulingConfig
+from app.services.scheduling.layer3_assignment import sex_satisfies_restrictions
 from app.services.scheduling.proposal_solver import (
     ExistingVisit,
     _course_total_minutes_from_existing,
@@ -63,8 +67,20 @@ CODE_MULTI_STAFF_INCOMPLETE_PAIR = "multi_staff_incomplete_pair"  # V7 (warning)
 # V8 (2026-08-09 PO確定「二段検査」): 型 vs 今週の実配置。型同士 (V3) は毎週の恒久検査、
 # V8 は「今週に限り」現実 (カイポケ取込・手動調整) とぶつかるかを別段で知らせる。
 CODE_WEEK_CONFLICT = "week_conflict"  # V8 (warning)
+# V9 (NG スタッフ Phase 3 / docs/plans/patient-ng-staff-design.md §6 末尾):
+# 編集中の行が指すコースの担当スタッフが、当該患者の NG スタッフ または 性別制限に
+# 不適合な場合の注意喚起。**警告のみ** (保存はブロックしない — 人手操作は縛らない
+# というピンモデル / §2 の原則)。
+CODE_COURSE_STAFF_NG = "course_staff_ng"  # V9 (warning)
+CODE_COURSE_STAFF_SEX = "course_staff_sex_mismatch"  # V9 (warning)
 
 _WEEKDAY_JP: tuple[str, ...] = ("月", "火", "水", "木", "金", "土", "日")
+
+# 現場向け文言 (FE の SEX_RESTRICTION_LABELS と同じ日本語)。
+_SEX_RESTRICTION_JP: dict[str, str] = {
+    "female_only": "女性のみ",
+    "male_only": "男性のみ",
+}
 
 
 def _wd_name(weekday: int) -> str:
@@ -238,6 +254,132 @@ CourseKey = tuple[int, object]  # (weekday, course_template_id)
 # (旧 V6: pinned 行の movability 矯正 — PO 決定 2026-08-08 で廃止. 下記 validate 内の
 #  コメント参照. 可動域とピン留めは独立した軸として扱う.)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# V9: コース担当スタッフ × 患者制約 (NG スタッフ / 性別制限)
+# ---------------------------------------------------------------------------
+
+
+async def _check_course_staff_constraints(
+    db: AsyncSession,
+    *,
+    patient: Patient,
+    proposed_items: list[PatientFixedVisitV2Base],
+    today: date,
+) -> list[PfvValidationWarning]:
+    """V9: 編集中の行が指すコースの担当が NG スタッフ / 性別制限に反していないか.
+
+    正典設計書 ``docs/plans/patient-ng-staff-design.md`` §6 末尾 (Phase 3).
+    賢いマスタのライブ検査は「当てずっぽうの入力を可視化する」ためのものなので、
+    ここも **警告のみ** (保存はブロックしない). 人手操作を縛らないのはピンモデル /
+    NG 設計 §2 の一貫した方針.
+
+    コース担当の正典は ``courses.assigned_staff_id`` (PFV は course_template_id しか
+    持たないため、当該週の週次コース行を経由して担当を引く). 週は V8 と同じ「今週」.
+
+    誤検知で信頼を失う方が害なので、以下は警告を出さない:
+      - 行がコース未指定 (``course_template_id`` None)
+      - 今週の当該コース行が無い / 担当未割当 (``assigned_staff_id`` None)
+      - ``staff.sex`` が None (性別不明) — 提案系 ``_staff_sex_mismatch`` と同じ
+        誤検知回避 (NG 判定は行の有無だけなので影響しない)
+
+    N+1 禁止: コース / スタッフ / NG 行をそれぞれ 1 クエリで一括ロードする.
+    """
+    keys: set[CourseKey] = {
+        (item.weekday, item.course_template_id)
+        for item in proposed_items
+        if item.course_template_id is not None
+    }
+    if not keys:
+        return []
+
+    iso = today.isocalendar()
+    course_rows = (
+        await db.scalars(
+            select(Course).where(
+                Course.iso_year == iso[0],
+                Course.iso_week == iso[1],
+                Course.weekday.in_({k[0] for k in keys}),
+                Course.template_id.in_({k[1] for k in keys}),
+                Course.deleted_at.is_(None),
+            )
+        )
+    ).all()
+
+    # 同一 (weekday, template) に複数行が並ぶことがある (再算出の proposed が
+    # finalized と併存する partial UNIQUE 設計). 確定済み・担当ありを優先する.
+    course_by_key: dict[CourseKey, Course] = {}
+    for course in sorted(
+        course_rows,
+        key=lambda c: (
+            c.course_status == "proposed",
+            c.assigned_staff_id is None,
+            str(c.code),
+        ),
+    ):
+        course_by_key.setdefault((course.weekday, course.template_id), course)
+
+    staff_ids = {
+        c.assigned_staff_id for c in course_by_key.values() if c.assigned_staff_id is not None
+    }
+    if not staff_ids:
+        return []
+
+    staff_by_id = {
+        s.id: s for s in (await db.scalars(select(Staff).where(Staff.id.in_(staff_ids)))).all()
+    }
+    ng_staff_ids = set(
+        (
+            await db.scalars(
+                select(PatientNgStaff.staff_id).where(
+                    PatientNgStaff.patient_id == patient.id,
+                    PatientNgStaff.staff_id.in_(staff_ids),
+                )
+            )
+        ).all()
+    )
+
+    restriction = patient.sex_restriction or None
+    restriction_jp = _SEX_RESTRICTION_JP.get(restriction or "", restriction or "")
+
+    out: list[PfvValidationWarning] = []
+    for weekday, template_id in sorted(keys, key=lambda k: (k[0], str(k[1]))):
+        course = course_by_key.get((weekday, template_id))
+        if course is None or course.assigned_staff_id is None:
+            continue
+        staff = staff_by_id.get(course.assigned_staff_id)
+        if staff is None:
+            continue
+        if course.assigned_staff_id in ng_staff_ids:
+            out.append(
+                PfvValidationWarning(
+                    code=CODE_COURSE_STAFF_NG,
+                    message=(
+                        f"{_wd_name(weekday)}曜 コース{course.code}の担当"
+                        f"（{staff.name}）はこの患者様のNGスタッフです。"
+                    ),
+                    weekday=weekday,
+                    severity="warning",
+                )
+            )
+        if (
+            restriction
+            and staff.sex is not None
+            and not sex_satisfies_restrictions(staff.sex, frozenset({restriction}))
+        ):
+            out.append(
+                PfvValidationWarning(
+                    code=CODE_COURSE_STAFF_SEX,
+                    message=(
+                        f"{_wd_name(weekday)}曜 コース{course.code}の担当"
+                        f"（{staff.name}）は性別制限（{restriction_jp}）に適合しません。"
+                    ),
+                    weekday=weekday,
+                    severity="warning",
+                )
+            )
+    return out
 
 
 async def validate_pfv_changes(
@@ -541,6 +683,17 @@ async def validate_pfv_changes(
                         severity="warning",
                     )
                 )
+
+    # --- V9: コース担当 × NG スタッフ / 性別制限 (警告のみ) --------------------
+    if patient is not None:
+        warnings.extend(
+            await _check_course_staff_constraints(
+                db,
+                patient=patient,
+                proposed_items=proposed_items,
+                today=today if today is not None else date.today(),
+            )
+        )
 
     has_errors = any(w.severity == "error" for w in warnings)
     return PfvValidationResult(

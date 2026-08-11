@@ -43,6 +43,7 @@ from app.services.kaipoke.inbound import (
     parse_hhmm,
 )
 from app.services.kaipoke.name_match import build_name_index, match_name
+from app.services.kaipoke.ng_conflicts import NgConflict, NgPair, collect_ng_conflicts
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -100,6 +101,9 @@ class ReplaceResult:
     # 既存コース行が足りなくても、テンプレートに空きがあれば臨時ではなく正規の
     # 枠を立てる — 臨時の合算表示 (臨+臨2 で 9名/枠) を構造的に減らす。
     courses_created: int = 0
+    # ⛔ NG スタッフ (patient_ng_staff) に該当する組み合わせ (dry-run のみ集計)。
+    # カイポケが「正」なので取り込みはブロックしない — 警告として可視化するだけ。
+    ng_conflicts: list[NgConflict] = field(default_factory=list)
 
 
 async def _count_week_achievements(db: AsyncSession, visit_ids: list[uuid.UUID]) -> int:
@@ -416,6 +420,9 @@ async def replace_week_from_kaipoke(
             c.assigned_staff_id = sid
 
     # --- Phase 3: 挿入 -------------------------------------------------------
+    # ⛔ NG スタッフ警告 (Phase 3・警告のみ): 取込後に「担当スタッフ × その患者」が
+    # NG ペアになる組を dry-run のときだけ集める (実適用の挙動は変えない)。
+    ng_pairs: list[NgPair] = []
     for r in resolved:
         e = r.entry
         d = r.d
@@ -434,6 +441,10 @@ async def replace_week_from_kaipoke(
                 sid2 = None  # 新人 → 同行リンクとして取り込む
 
         if dry_run:
+            course_code = str(course.code) if course is not None else None
+            for staff_id in (sid, sid2):
+                if staff_id is not None:
+                    ng_pairs.append((r.patient.id, staff_id, d, course_code))
             result.inserted += 1
             continue
 
@@ -483,5 +494,8 @@ async def replace_week_from_kaipoke(
             _skip("UNIQUE衝突（想定外・要確認）", e, d)
             continue
         result.inserted += 1
+
+    if dry_run:
+        result.ng_conflicts = await collect_ng_conflicts(db, ng_pairs)
 
     return result

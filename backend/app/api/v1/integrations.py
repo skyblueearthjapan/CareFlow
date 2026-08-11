@@ -59,6 +59,7 @@ from app.schemas.integrations import (
     KaipokeLoginTestResult,
     KaipokeStatusRead,
     LiveSnapshotRead,
+    NgConflictRead,
     ReplaceInboundRequest,
     ReplaceInboundResult,
     ReplaceInboundSkipRead,
@@ -1730,6 +1731,26 @@ async def trigger_diff_inbound(
     return DiffAccepted(job_id=job.id, sheet_id=sheet.id, summary=dict(summary))
 
 
+def _ng_conflicts_read(conflicts) -> list[NgConflictRead]:
+    """NgConflict (service) → NgConflictRead (schema)。dry-run のみ非空。
+
+    ⛔ NG スタッフ警告は **可視化のみ**で取込はブロックしない
+    (docs/plans/patient-ng-staff-design.md §6 末尾 / §11)。
+    """
+    return [
+        NgConflictRead(
+            patient_id=c.patient_id,
+            patient_name=c.patient_name,
+            staff_id=c.staff_id,
+            staff_name=c.staff_name,
+            target_date=c.target_date,
+            weekday=c.weekday,
+            course_code=c.course_code,
+        )
+        for c in conflicts
+    ]
+
+
 @router.post(
     "/apply-inbound",
     response_model=InboundApplyResult,
@@ -1849,6 +1870,7 @@ async def trigger_apply_inbound(
         skipped=summary.skipped,
         failed=summary.failed,
         results=[InboundItemResultRead(**r.__dict__) for r in summary.results],
+        ng_conflicts=_ng_conflicts_read(summary.ng_conflicts),
     )
 
 
@@ -2546,6 +2568,7 @@ async def replace_inbound(
             ReplaceInboundTraineeSoloRead(staff_name=name, count=count)
             for name, count in sorted(result.trainee_solo.items())
         ],
+        ng_conflicts=_ng_conflicts_read(result.ng_conflicts),
     )
 
 
@@ -2582,6 +2605,7 @@ def _replace_result_read(result, job_id) -> ReplaceInboundResult:
             ReplaceInboundTraineeSoloRead(staff_name=name, count=count)
             for name, count in sorted(result.trainee_solo.items())
         ],
+        ng_conflicts=_ng_conflicts_read(result.ng_conflicts),
     )
 
 
@@ -2856,6 +2880,7 @@ async def smart_inbound_apply(
                     )
                     for r in summary.results
                 ],
+                ng_conflicts=_ng_conflicts_read(summary.ng_conflicts),
             )
 
     # 置換パート (打刻なし日)

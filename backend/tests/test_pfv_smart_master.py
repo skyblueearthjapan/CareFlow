@@ -15,8 +15,18 @@ import pytest
 from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
-from app.models import Course, CourseTemplate, Office, Patient, User, Visit
+from app.models import (
+    Course,
+    CourseTemplate,
+    Office,
+    Patient,
+    PatientNgStaff,
+    Staff,
+    User,
+    Visit,
+)
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.schemas.v2.patient_fixed_visit import PatientFixedVisitV2Base
 from app.services.scheduling.config import load_scheduling_config
 from app.services.scheduling.pfv_validator import validate_pfv_changes
 
@@ -272,3 +282,192 @@ async def test_week_conflict_two_tier(db, client) -> None:
         today=date(2026, 6, 1),
     )
     assert "week_conflict" not in [w.code for w in result2.warnings]
+
+
+# ---------------------------------------------------------------------------
+# V9: コース担当 × NG スタッフ / 性別制限 (NG スタッフ設計 §6 Phase 3)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_course_with_staff(
+    db,
+    seeded: dict,
+    *,
+    staff_name: str,
+    staff_sex: str | None,
+    weekday: int = 1,
+) -> Staff:
+    """今週 (WEEK_MONDAY の週) の当該曜日コースに担当スタッフを立てる。"""
+    staff = Staff(name=staff_name, sex=staff_sex, status="active")
+    db.add(staff)
+    await db.flush()
+    iso = WEEK_MONDAY.isocalendar()
+    db.add(
+        Course(
+            iso_year=iso.year,
+            iso_week=iso.week,
+            weekday=weekday,
+            code="A",
+            course_status="staff_assigned",
+            template_id=seeded["tpl"].id,
+            office_id=seeded["office"].id,
+            assigned_staff_id=staff.id,
+        )
+    )
+    await db.commit()
+    await db.refresh(staff)
+    return staff
+
+
+def _v9_items(seeded: dict, weekday: int = 1) -> list:
+    return [
+        PatientFixedVisitV2Base(
+            weekday=weekday,
+            start_time=time(14, 0),
+            duration_min=35,
+            course_template_id=seeded["tpl"].id,
+            slot_index=0,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v9_course_staff_ng_warns(db) -> None:
+    """コース担当が当該患者の NG スタッフ → course_staff_ng 警告 (保存はブロックしない)。"""
+    seeded = await _seed(db)
+    staff = await _seed_course_with_staff(db, seeded, staff_name="鈴木 一郎", staff_sex="male")
+    db.add(PatientNgStaff(patient_id=seeded["target"].id, staff_id=staff.id, note="相性"))
+    await db.commit()
+
+    config = await load_scheduling_config(db)
+    result = await validate_pfv_changes(
+        db, seeded["target"].id, _v9_items(seeded), "normal", config=config, today=WEEK_MONDAY
+    )
+    ng = [w for w in result.warnings if w.code == "course_staff_ng"]
+    assert len(ng) == 1
+    assert "鈴木 一郎" in ng[0].message
+    assert "コースA" in ng[0].message
+    assert ng[0].severity == "warning"
+    assert result.has_errors is False
+
+
+@pytest.mark.asyncio
+async def test_v9_no_warning_when_not_ng(db) -> None:
+    """NG 行が無ければ従来どおり (V9 警告なし)。"""
+    seeded = await _seed(db)
+    await _seed_course_with_staff(db, seeded, staff_name="鈴木 一郎", staff_sex="male")
+
+    config = await load_scheduling_config(db)
+    result = await validate_pfv_changes(
+        db, seeded["target"].id, _v9_items(seeded), "normal", config=config, today=WEEK_MONDAY
+    )
+    codes = {w.code for w in result.warnings}
+    assert "course_staff_ng" not in codes
+    assert "course_staff_sex_mismatch" not in codes
+
+
+@pytest.mark.asyncio
+async def test_v9_sex_restriction_mismatch_warns(db) -> None:
+    """女性のみの患者 × 男性のコース担当 → course_staff_sex_mismatch 警告。"""
+    seeded = await _seed(db)
+    seeded["target"].sex_restriction = "female_only"
+    await _seed_course_with_staff(db, seeded, staff_name="鈴木 一郎", staff_sex="male")
+
+    config = await load_scheduling_config(db)
+    result = await validate_pfv_changes(
+        db, seeded["target"].id, _v9_items(seeded), "normal", config=config, today=WEEK_MONDAY
+    )
+    sex = [w for w in result.warnings if w.code == "course_staff_sex_mismatch"]
+    assert len(sex) == 1
+    assert "女性のみ" in sex[0].message
+    assert "鈴木 一郎" in sex[0].message
+
+
+@pytest.mark.asyncio
+async def test_v9_unknown_staff_sex_is_not_flagged(db) -> None:
+    """staff.sex 未設定は OK 側に倒す (提案系と同じ誤検知回避)。"""
+    seeded = await _seed(db)
+    seeded["target"].sex_restriction = "female_only"
+    await _seed_course_with_staff(db, seeded, staff_name="性別未設定", staff_sex=None)
+
+    config = await load_scheduling_config(db)
+    result = await validate_pfv_changes(
+        db, seeded["target"].id, _v9_items(seeded), "normal", config=config, today=WEEK_MONDAY
+    )
+    assert "course_staff_sex_mismatch" not in {w.code for w in result.warnings}
+
+
+@pytest.mark.asyncio
+async def test_v9_unassigned_course_no_warning(db) -> None:
+    """コース担当が未割当 (assigned_staff_id=None) なら警告を出さない。"""
+    seeded = await _seed(db)
+    seeded["target"].sex_restriction = "female_only"
+    iso = WEEK_MONDAY.isocalendar()
+    db.add(
+        Course(
+            iso_year=iso.year,
+            iso_week=iso.week,
+            weekday=1,
+            code="A",
+            course_status="course_fixed",
+            template_id=seeded["tpl"].id,
+            office_id=seeded["office"].id,
+        )
+    )
+    await db.commit()
+
+    config = await load_scheduling_config(db)
+    result = await validate_pfv_changes(
+        db, seeded["target"].id, _v9_items(seeded), "normal", config=config, today=WEEK_MONDAY
+    )
+    codes = {w.code for w in result.warnings}
+    assert "course_staff_ng" not in codes
+    assert "course_staff_sex_mismatch" not in codes
+
+
+@pytest.mark.asyncio
+async def test_v9_surfaces_in_validate_endpoint(db, client) -> None:
+    """FE のライブ検査 (POST /validate) の warnings に既存警告と同じ形で載る。"""
+    seeded = await _seed(db)
+    admin = await _make_admin(db)
+    today = date.today()
+    iso = today.isocalendar()
+    staff = Staff(name="鈴木 一郎", sex="male", status="active")
+    db.add(staff)
+    await db.flush()
+    db.add(
+        Course(
+            iso_year=iso.year,
+            iso_week=iso.week,
+            weekday=1,
+            code="A",
+            course_status="staff_assigned",
+            template_id=seeded["tpl"].id,
+            office_id=seeded["office"].id,
+            assigned_staff_id=staff.id,
+        )
+    )
+    db.add(PatientNgStaff(patient_id=seeded["target"].id, staff_id=staff.id))
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/patients/{seeded['target'].id}/fixed-visits/validate",
+        headers=_bearer(admin),
+        json={
+            "mode": "normal",
+            "items": [
+                {
+                    "weekday": 1,
+                    "start_time": "14:00",
+                    "duration_min": 35,
+                    "course_template_id": str(seeded["tpl"].id),
+                    "slot_index": 0,
+                }
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    ng = [w for w in res.json()["warnings"] if w["code"] == "course_staff_ng"]
+    assert len(ng) == 1
+    assert ng[0]["severity"] == "warning"
+    assert ng[0]["weekday"] == 1
