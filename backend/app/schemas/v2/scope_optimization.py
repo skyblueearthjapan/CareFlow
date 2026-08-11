@@ -231,6 +231,13 @@ class ScopeOptimizationApplyRequest(BaseModel):
             "pattern_and_week=型+今週(A) / week_only=今週だけ(B)."
         ),
     )
+    # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
+    # simulate 後に NG が登録された場合、state_token は PFV 指紋しか見ないため素通りする。
+    # apply は **全手を適用前にまとめて事前検査** し、違反があれば 1 手も適用せず 422。
+    acknowledge_constraint_warnings: bool = Field(
+        default=False,
+        description="NGスタッフ/性別制限の警告を確認済みとして続行する (422 の再送用)。",
+    )
 
 
 class ScopeOptimizationWeekSync(BaseModel):

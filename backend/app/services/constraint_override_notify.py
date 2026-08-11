@@ -223,6 +223,30 @@ async def collect_constraint_warnings(
     return await _match_patients_against_staff(db, patients=patients, staff=staff)
 
 
+async def collect_constraint_warnings_for_staff(
+    db: AsyncSession,
+    *,
+    staff_id: UUID,
+    patient_ids: Sequence[UUID],
+) -> list[ConstraintWarning]:
+    """**スタッフ 1 名を直接指定**する経路用の検査 (患者 1〜N 名 × そのスタッフ).
+
+    ``collect_constraint_warnings_for_patients`` はコース経由 (course.assigned_staff_id)
+    で担当を解決するが、``POST /visits/{id}/staff`` / ``PATCH /visits/{id}`` の
+    ``primary_staff_id`` のように **スタッフを名指しする** 経路はコースを経由しない。
+    その場合の入口がこれ (判定の芯は ``_match_patients_against_staff`` で共有)。
+
+    スタッフが見つからない / soft-delete 済みなら空 = 素通し (fail-open)。
+    """
+    if not patient_ids:
+        return []
+    staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
+    if staff is None:
+        return []
+    patients = await _load_patients_ordered(db, patient_ids)
+    return await _match_patients_against_staff(db, patients=patients, staff=staff)
+
+
 async def collect_constraint_warnings_for_patients(
     db: AsyncSession,
     *,
@@ -241,18 +265,11 @@ async def collect_constraint_warnings_for_patients(
     確認すべき相手が居ないため素通し。担当が soft-delete 済みの場合も同様。
     判定の意味論は ``_match_patients_against_staff`` (共通の芯) を参照。
     """
-    if course.assigned_staff_id is None or not patient_ids:
+    if course.assigned_staff_id is None:
         return []
-    staff = await db.scalar(
-        select(Staff).where(
-            Staff.id == course.assigned_staff_id,
-            Staff.deleted_at.is_(None),
-        )
+    return await collect_constraint_warnings_for_staff(
+        db, staff_id=course.assigned_staff_id, patient_ids=patient_ids
     )
-    if staff is None:
-        return []
-    patients = await _load_patients_ordered(db, patient_ids)
-    return await _match_patients_against_staff(db, patients=patients, staff=staff)
 
 
 async def resolve_week_course_for_template(

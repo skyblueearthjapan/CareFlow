@@ -282,6 +282,14 @@ class ProposeUnblockApplyRequest(BaseModel):
         ...,
         description="配置対象患者の UUID (plan_id 先頭との一致 + ハッシュ再導出で改竄を検出).",
     )
+    # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
+    # plan 指紋は NG 行を含まないため、探索後に NG が登録されると apply が素通りする。
+    # 退避 (moves) + 配置 (insert) の **全手を適用前にまとめて事前検査** する
+    # (途中 422 は部分適用になるため)。
+    acknowledge_constraint_warnings: bool = Field(
+        default=False,
+        description="NGスタッフ/性別制限の警告を確認済みとして続行する (422 の再送用)。",
+    )
 
 
 class ProposeUnblockApplyResponse(BaseModel):

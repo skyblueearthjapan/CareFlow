@@ -181,6 +181,13 @@ class PoolBulkApplyRequest(BaseModel):
     )
     # 楽観ロック用指紋 (simulate が返したもの). サーバ再計算と不一致なら 409.
     state_token: str
+    # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
+    # simulate は NG 枠を提案しないが、simulate 後に NG が登録されると古い placements の
+    # apply が素通りするため、**患者ループの前に全 placements をまとめて事前検査** する。
+    acknowledge_constraint_warnings: bool = Field(
+        default=False,
+        description="NGスタッフ/性別制限の警告を確認済みとして続行する (422 の再送用)。",
+    )
 
 
 class PoolBulkApplyResponse(BaseModel):

@@ -350,8 +350,8 @@ class ApplySwapRequest(BaseModel):
         ge=2020,
         le=2100,
         description=(
-            "監査ログ記録・将来の週スコープ検証予約フィールド. "
-            "現在の apply-swap ロジックでは直接参照しないが、FE 契約の安定のため削除しない."
+            "対象週. week_only の反映先に加え、NG スタッフ / 性別制限の検査で "
+            "「移動先コースの当該週の担当」を解決するのに使う (§7-2)."
         ),
     )
     iso_week: int = Field(
@@ -359,8 +359,8 @@ class ApplySwapRequest(BaseModel):
         ge=1,
         le=53,
         description=(
-            "監査ログ記録・将来の週スコープ検証予約フィールド. "
-            "現在の apply-swap ロジックでは直接参照しないが、FE 契約の安定のため削除しない."
+            "対象週. week_only の反映先に加え、NG スタッフ / 性別制限の検査で "
+            "「移動先コースの当該週の担当」を解決するのに使う (§7-2)."
         ),
     )
     # Wave U-2 (§2.2 反映先の統一): 入れ替え結果をどこへ書くか.
@@ -373,6 +373,13 @@ class ApplySwapRequest(BaseModel):
             "反映先の統一 (Wave U-2). pattern_only=型のみ(既定) / "
             "pattern_and_week=型+今週(A) / week_only=今週だけ(B)."
         ),
+    )
+    # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
+    # 提案生成後に NG が登録されると古い提案の apply が素通りするため apply 側でも守る
+    # (plan 指紋は NG 行を含まないので指紋照合では検出できない)。
+    acknowledge_constraint_warnings: bool = Field(
+        default=False,
+        description="NGスタッフ/性別制限の警告を確認済みとして続行する (422 の再送用)。",
     )
 
 

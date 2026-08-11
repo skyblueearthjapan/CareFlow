@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
+from app.models.course import Course
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User, normalize_user_role
 from app.models.visit import (
@@ -38,6 +39,12 @@ from app.schemas.visit import VisitCreate, VisitRead, VisitUpdate
 from app.schemas.visit_checkin import CheckinCreate
 from app.services.checkin.judge import judge_checkin
 from app.services.checkin.notify import notify_checkin_mismatch, resolve_checkin_missing
+from app.services.constraint_override_notify import (
+    ConstraintWarning,
+    collect_constraint_warnings_for_patients,
+    collect_constraint_warnings_for_staff,
+    constraint_confirmation_detail,
+)
 from app.services.op_log_service import fmt_time, fmt_weekday, record_op
 from app.services.trainee_accompaniment import (
     accompaniment_visibility_condition,
@@ -65,6 +72,62 @@ def _staff_visibility_filter(staff_id: UUID):
         Visit.id.in_(assignments_subq),
         accompaniment_visibility_condition(staff_id),
     )
+
+
+async def _guard_constraint_violations(
+    db,
+    *,
+    patient_id: UUID,
+    staff_id: UUID | None = None,
+    course_id: UUID | None = None,
+) -> None:
+    """NG スタッフ / 性別制限に触れる割当なら 422 で弾く (visits 直 API の防御).
+
+    正典設計書: ``docs/plans/patient-ng-staff-design.md`` §7-2。
+
+    **確認フロー (422 → acknowledge → 通知) ではなく単純 422** にする理由:
+    本 router (``POST /visits`` / ``PATCH /visits/{id}`` / ``POST /visits/{id}/staff``)
+    は FE 導線を持たない汎用 CRUD = 「管理者が API を直接叩く」経路であり、
+    確認ダイアログを出す相手 (UI) が居ない。承認して通す意思表示は、確認フローを
+    備えた業務経路 (訪問を移動 / 配置 / 提案採用) 側で行う。detail の ``code`` は
+    全経路で統一し (``constraint_confirmation_required``)、将来 UI が付いたときに
+    同じパーサで確認フローへ格上げできるようにしておく。
+
+    ``staff_id`` (名指し) と ``course_id`` (コースの現担当) の両方を見る。
+    同一スタッフで重複した警告は 1 件にまとめる。
+    """
+    warnings: list[ConstraintWarning] = []
+    seen: set[tuple[str, UUID, UUID]] = set()
+
+    def _extend(rows: list[ConstraintWarning]) -> None:
+        for w in rows:
+            key = (w.kind, w.patient_id, w.staff_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            warnings.append(w)
+
+    if staff_id is not None:
+        _extend(
+            await collect_constraint_warnings_for_staff(
+                db, staff_id=staff_id, patient_ids=[patient_id]
+            )
+        )
+    if course_id is not None:
+        course = await db.scalar(
+            select(Course).where(Course.id == course_id, Course.deleted_at.is_(None))
+        )
+        if course is not None:
+            _extend(
+                await collect_constraint_warnings_for_patients(
+                    db, course=course, patient_ids=[patient_id]
+                )
+            )
+    if warnings:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=constraint_confirmation_detail(warnings),
+        )
 
 
 async def _load_assignments(db, visit_id: UUID) -> list[dict]:
@@ -365,6 +428,13 @@ async def create_visit(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> dict:
+    # NG スタッフ / 性別制限 (§7-2): 作成時に担当 / コースが指定されていれば検査する。
+    await _guard_constraint_violations(
+        db,
+        patient_id=payload.patient_id,
+        staff_id=payload.primary_staff_id,
+        course_id=payload.course_id,
+    )
     visit = Visit(**payload.model_dump())
     db.add(visit)
     try:
@@ -418,6 +488,28 @@ async def update_visit(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="今週固定（青ピン）されています。解除してから時刻・日付を変更してください",
+        )
+
+    # NG スタッフ / 性別制限 (§7-2): 担当 (primary_staff_id) かコース (course_id) が
+    # **変わるとき**だけ検査する (無関係なフィールドの更新で既存の割当を蒸し返さない)。
+    # 患者の付け替えも同時に来た場合は変更後の患者で見る。
+    _eff_patient_id = changes.get("patient_id") or visit.patient_id
+    _new_staff_id = (
+        changes["primary_staff_id"]
+        if "primary_staff_id" in changes and changes["primary_staff_id"] != visit.primary_staff_id
+        else None
+    )
+    _new_course_id = (
+        changes["course_id"]
+        if "course_id" in changes and changes["course_id"] != visit.course_id
+        else None
+    )
+    if _new_staff_id is not None or _new_course_id is not None:
+        await _guard_constraint_violations(
+            db,
+            patient_id=_eff_patient_id,
+            staff_id=_new_staff_id,
+            course_id=_new_course_id,
         )
 
     for field, value in changes.items():
@@ -611,6 +703,10 @@ async def add_visit_staff(
     )
     if visit is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    # NG スタッフ / 性別制限 (§7-2): 当該 visit の患者に対して NG / 性別制限外の
+    # スタッフを足そうとしていれば 422 (書き込み前)。
+    await _guard_constraint_violations(db, patient_id=visit.patient_id, staff_id=payload.staff_id)
 
     assignment = VisitStaffAssignment(visit_id=visit_id, staff_id=payload.staff_id)
     db.add(assignment)

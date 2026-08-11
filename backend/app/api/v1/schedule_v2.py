@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as time_cls
 from typing import Annotated, Any, NoReturn
@@ -283,6 +284,84 @@ from app.services.scheduling.unblock_search import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Helpers — NG スタッフ / 性別制限の事前一括検査 (§7-2 の apply 側防御)
+# ---------------------------------------------------------------------------
+
+# 「配置先 1 つぶん」の検査単位: (course_template_id, weekday, patient_id)。
+# course_template_id が None (テンプレート未解決 = コース据え置き) の要素は検査対象外。
+ConstraintPlacement = tuple[UUID | None, int, UUID]
+
+# 事前一括検査の戻り: (全警告の平坦リスト, コース別の内訳 = 通知の単位)。
+ConstraintPreflight = tuple[list[ConstraintWarning], list[tuple[Course, list[ConstraintWarning]]]]
+
+
+async def _preflight_constraint_warnings(
+    db: DbDep,
+    *,
+    iso_year: int,
+    iso_week: int,
+    placements: Sequence[ConstraintPlacement],
+) -> ConstraintPreflight:
+    """複数手ぶんの「患者 × 配置先コースの現担当」を **適用前に**まとめて検査する.
+
+    **なぜ事前一括か** (設計の要): 範囲最適化 apply / 詰まり解消 apply は
+    ``_validate_and_move_one`` を手数ぶんループする。手ごとに 422 を投げると
+    「3 手目で中断 = 1〜2 手目は適用済み」の **部分適用** になり、all-or-nothing の
+    契約 (state_token・plan 指紋・完全固定ガードと同じ層) が崩れる。そこで
+    **1 手も適用する前に**全配置先を検査し、違反があれば書き込みゼロで 422、
+    acknowledge 付きの再送なら全手を適用してからまとめて通知する。
+
+    ``(course_template_id, weekday)`` でグルーピングしてから週コースを解決する
+    (N+1 禁止 / 同一コースへ複数患者を置く手順列でも解決は 1 回)。
+    週コース実体が無い / 担当未割当なら空 = 素通し (fail-open)。
+    ``collect_constraint_warnings_for_patients`` の契約どおり。
+
+    順序は入力順から決まる (dict の挿入順) = 422 detail と通知本文が決定的。
+    """
+    by_key: dict[tuple[UUID, int], list[UUID]] = {}
+    for template_id, weekday, patient_id in placements:
+        if template_id is None:
+            continue
+        bucket = by_key.setdefault((template_id, weekday), [])
+        if patient_id not in bucket:
+            bucket.append(patient_id)
+
+    all_warnings: list[ConstraintWarning] = []
+    by_course: list[tuple[Course, list[ConstraintWarning]]] = []
+    for (template_id, weekday), patient_ids in by_key.items():
+        course = await resolve_week_course_for_template(
+            db,
+            course_template_id=template_id,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            weekday=weekday,
+        )
+        if course is None:
+            continue
+        warnings = await collect_constraint_warnings_for_patients(
+            db, course=course, patient_ids=patient_ids
+        )
+        if warnings:
+            all_warnings.extend(warnings)
+            by_course.append((course, warnings))
+    return all_warnings, by_course
+
+
+async def _notify_constraint_preflight(
+    db: DbDep,
+    *,
+    by_course: Sequence[tuple[Course, list[ConstraintWarning]]],
+    actor: User | None,
+    op_group_id: UUID | None = None,
+) -> None:
+    """acknowledge を通した事実を管理者へお知らせする (**commit しない** = 同一 TX)."""
+    for course, warnings in by_course:
+        await notify_constraint_override_for_course(
+            db, course=course, warnings=warnings, actor=actor, op_group_id=op_group_id
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3224,6 +3303,10 @@ async def pool_bulk_apply_endpoint(
       scope-optimization apply と同じ ``AuditLog`` 監査方式に統一する.
     - session は autoflush=False のため、患者ごとに明示 flush して後続患者の SELECT へ
       DB レベルで反映する (逐次適用の教訓).
+    - **NG スタッフ / 性別制限 (§7-2)**: 患者ごとの適用ループの **前に**全 placements を
+      検査する (途中の 422 は部分適用になるため)。違反があれば 1 人も適用せず
+      ``code=constraint_confirmation_required`` の 422、
+      ``acknowledge_constraint_warnings`` 付きの再送で全適用 + 管理者へお知らせ。
     """
     config = await load_scheduling_config(db)
 
@@ -3250,6 +3333,49 @@ async def pool_bulk_apply_endpoint(
     for pl in payload.placements:
         by_patient.setdefault(pl.patient_id, []).append(pl)
         name_by_patient.setdefault(pl.patient_id, pl.patient_name)
+
+    # 3. NG スタッフ / 性別制限の事前一括検査 (§7-2)。simulate は NG 枠を提案しないが
+    # (ba7c1da)、simulate 後に NG が登録されると **古い placements の apply が素通り**
+    # する (state_token は PFV 指紋のみで NG 行を含まない)。患者ごとの適用ループに
+    # 入る前に全 placements を洗い、違反があれば 1 人も適用せず 422。
+    #
+    # placements は course_template ではなく (office_id, course_code) を持つため、
+    # apply-individual と同じく 4-tuple (office, code, weekday) で当該週の Course を
+    # 一括解決する (N+1 禁止)。
+    _cw: list[ConstraintWarning] = []
+    _cw_by_course: list[tuple[Course, list[ConstraintWarning]]] = []
+    _pl_keys = {(pl.office_id, pl.course_code, pl.weekday) for pl in payload.placements}
+    _week_courses = list(
+        (
+            await db.scalars(
+                select(Course).where(
+                    Course.iso_year == payload.iso_year,
+                    Course.iso_week == payload.iso_week,
+                    Course.deleted_at.is_(None),
+                    tuple_(Course.office_id, Course.code, Course.weekday).in_(list(_pl_keys)),
+                )
+            )
+        ).all()
+    )
+    _course_by_key = {(c.office_id, c.code, c.weekday): c for c in _week_courses}
+    _patients_by_course: dict[UUID, tuple[Course, list[UUID]]] = {}
+    for pl in payload.placements:
+        _c = _course_by_key.get((pl.office_id, pl.course_code, pl.weekday))
+        if _c is None:
+            continue  # その週にコース実体が無い = 担当も居ない (fail-open)
+        _bucket = _patients_by_course.setdefault(_c.id, (_c, []))[1]
+        if pl.patient_id not in _bucket:
+            _bucket.append(pl.patient_id)
+    for _c, _pids in _patients_by_course.values():
+        _w = await collect_constraint_warnings_for_patients(db, course=_c, patient_ids=_pids)
+        if _w:
+            _cw.extend(_w)
+            _cw_by_course.append((_c, _w))
+    if _cw and not payload.acknowledge_constraint_warnings:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=constraint_confirmation_detail(_cw),
+        )
 
     warnings: list[str] = []
     applied_patients = 0
@@ -3304,6 +3430,9 @@ async def pool_bulk_apply_endpoint(
             await db.flush()
             applied_patients += 1
             applied_slots += len(pls)
+
+        # §7-3: acknowledge を通した事実を管理者へお知らせする (適用と同一 TX)。
+        await _notify_constraint_preflight(db, by_course=_cw_by_course, actor=actor)
 
         # 監査ログ (適用サマリ). undo 対象外のため schedule_op_log ではなく AuditLog.
         db.add(
@@ -3982,13 +4111,17 @@ async def _apply_pfv_move(
 async def improvement_apply_swap_endpoint(
     payload: ApplySwapRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin"))],
+    actor: Annotated[User, Depends(require_role("admin"))],
 ) -> ApplySwapResponse:
     """A の枠と B の枠を入れ替える. A は b の旧位置 (a_new) へ、B は a の旧位置 (b_new) へ.
 
     N-4 再検証: pinned 枠の移動は 422. validate_pfv_changes の warning
     (患者間衝突 / 昼休み / 容量) と両者の新位置同士の相互衝突はブロックせず warnings に載せる.
     all-or-nothing (1 トランザクション).
+
+    NG スタッフ / 性別制限 (§7-2): 完全固定ガードの直後に **両患者ぶん**を検査し、
+    違反があれば ``code=constraint_confirmation_required`` の 422 (書き込み前)。
+    ``acknowledge_constraint_warnings`` 付きの再送で続行し、管理者へお知らせを飛ばす。
     """
     # 同一患者を両方に指定するのは論理エラー (早期ガード).
     if payload.patient_a_id == payload.patient_b_id:
@@ -4066,6 +4199,49 @@ async def improvement_apply_swap_endpoint(
                 "message": "完全固定の枠は入れ替えできません（エンジンによる移動は不可侵）",
                 "violations": [],
             },
+        )
+
+    # NG スタッフ / 性別制限の確認フロー (§7-2)。**両方向**を見る = 入れ替えは
+    # 2 人とも相手側のバケットへ移るため、片側だけの検査では反対側の NG を見逃す。
+    # 提案生成後に NG が登録されると古い提案の apply が素通りする (提案の指紋は
+    # NG 行を含まない) ので、エンジン側の除外 (ba7c1da) とは別に apply でも守る。
+    #
+    # 移動先コースの解決は **適用ロジックと同一ソース**にする (ズレると見当違いの
+    # スタッフで警告してしまう):
+    #   - PFV 経路 (pattern_only / pattern_and_week) = ``_apply_pfv_move`` の
+    #     「省略 = 既存コースを保持」(後方互換オプション b)。FE は counterpart 側
+    #     (b_new) の course_template_id を送れないため、B は **自分の旧コース**の
+    #     まま新しい曜日へ移る → 曜日が変われば Course 実体が変わり担当も変わる。
+    #   - week_only 経路 = ``_apply_visit_move_week_only`` に payload の値をそのまま
+    #     渡しており、None なら course_id 据え置き = 担当も変わらない → 検査不要。
+    _week_only_scope = payload.change_scope == "week_only"
+
+    def _dest_template(explicit: UUID | None, row: PatientFixedVisit) -> UUID | None:
+        if explicit is not None:
+            return explicit
+        return None if _week_only_scope else row.course_template_id
+
+    _cw, _cw_by_course = await _preflight_constraint_warnings(
+        db,
+        iso_year=payload.iso_year,
+        iso_week=payload.iso_week,
+        placements=[
+            (
+                _dest_template(payload.a_new.course_template_id, a_row),
+                payload.a_new.weekday,
+                payload.patient_a_id,
+            ),
+            (
+                _dest_template(payload.b_new.course_template_id, b_row),
+                payload.b_new.weekday,
+                payload.patient_b_id,
+            ),
+        ],
+    )
+    if _cw and not payload.acknowledge_constraint_warnings:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=constraint_confirmation_detail(_cw),
         )
 
     # N-4 再検証 (read-only). warning (衝突/昼休み/容量) は適用せずに返す.
@@ -4219,6 +4395,10 @@ async def improvement_apply_swap_endpoint(
             visits_regenerated=int(week_counters["visits"]),
             visits_soft_deleted=0,
         )
+
+    # §7-3: acknowledge を通した事実を管理者へお知らせする (入れ替えと同一 TX)。
+    # apply-swap は操作識別子を持たないため op_group_id=None (= 毎回通知)。
+    await _notify_constraint_preflight(db, by_course=_cw_by_course, actor=actor)
 
     try:
         await db.commit()
@@ -4669,6 +4849,51 @@ async def _validate_and_move_one(
     await db.flush()
 
 
+async def _scope_apply_placements(
+    db: DbDep, payload: ScopeOptimizationApplyRequest
+) -> list[ConstraintPlacement]:
+    """範囲最適化 apply の全手ぶんの「配置先 (course_template, weekday) × 患者」を洗う.
+
+    適用ループ (``scope_optimization_apply_endpoint``) の course 解決を **read-only で
+    そのまま写した**もの (``_resolve_course_template_id`` / swap は X の旧コースを Y が
+    引き継ぐ)。ここがズレると見当違いのスタッフで警告が出るため、片方を直したら
+    もう片方も直すこと。
+
+    不正な step (swap なのに counterpart 無し等) は読み飛ばす = 適用ループ側が既存の
+    422 を返す (検査は「確認を出すか」を決めるだけで、入力検証はしない)。
+
+    **逐次状態との差**: swap の ``x_old_course`` は適用ループでは「先行手を反映した
+    状態」から読むが、ここは適用前の初期状態から読む。simulate の手順列は初期状態を
+    前提に生成され、state_token も初期状態の指紋なので通常は一致する。部分適用を
+    避けること (書き込み前に全部見る) を優先した設計上の割り切り。
+    """
+    placements: list[ConstraintPlacement] = []
+    for step in payload.steps:
+        sug = step.suggestion
+        if sug.kind in ("time_change", "day_change"):
+            new_course = await _resolve_course_template_id(
+                db, sug.candidate.office_id, sug.candidate.course_code
+            )
+            placements.append((new_course, sug.candidate.weekday, step.patient_id))
+        elif sug.kind == "swap":
+            cp = sug.swap_counterpart
+            if cp is None:
+                continue
+            x_rows = await _load_normal_pfvs(db, step.patient_id)
+            x_row = next(
+                (r for r in x_rows if r.weekday == sug.current.weekday and r.slot_index == 0),
+                None,
+            )
+            x_old_course = x_row.course_template_id if x_row is not None else None
+            x_new_course = await _resolve_course_template_id(
+                db, sug.candidate.office_id, sug.candidate.course_code
+            )
+            placements.append((x_new_course, sug.candidate.weekday, step.patient_id))
+            # Y は X の旧バケットへ移る (コースは X の旧コースを引き継ぐ).
+            placements.append((x_old_course, cp.new_weekday, cp.patient_id))
+    return placements
+
+
 @router.post(
     "/v2/scope-optimization/apply",
     response_model=ScopeOptimizationApplyResponse,
@@ -4688,6 +4913,10 @@ async def scope_optimization_apply_endpoint(
       (simulate 以降に scope 患者の固定枠が変わった)。
     - 各 step は適用直前に pfv_validator (N-4) で再検証する。pinned 違反 (V2) は
       422 で全体 rollback、V3-V5 は warnings で返しブロックしない (P0-2 と同じ扱い)。
+    - **NG スタッフ / 性別制限 (§7-2)**: 全手の移動先を適用ループの **前に**まとめて
+      検査する (手ごとの 422 は部分適用になるため)。違反があれば 1 手も適用せず
+      ``code=constraint_confirmation_required`` の 422、
+      ``acknowledge_constraint_warnings`` 付きの再送で全適用 + 管理者へお知らせ。
     """
     # プレフィックス検証 (seq=1..N 連続).
     seqs = [s.seq for s in payload.steps]
@@ -4721,6 +4950,21 @@ async def scope_optimization_apply_endpoint(
 
     config = await load_scheduling_config(db)
     warnings: list[str] = []
+
+    # NG スタッフ / 性別制限の事前一括検査 (§7-2)。**適用ループに入る前に**全手の
+    # 移動先を洗う = 途中の手で 422 を投げると部分適用になるため (state_token /
+    # プレフィックス検証と同じ「書き込み前」の層に置く)。
+    _cw, _cw_by_course = await _preflight_constraint_warnings(
+        db,
+        iso_year=payload.iso_year,
+        iso_week=payload.iso_week,
+        placements=await _scope_apply_placements(db, payload),
+    )
+    if _cw and not payload.acknowledge_constraint_warnings:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=constraint_confirmation_detail(_cw),
+        )
 
     # Wave U-1 (§2.2 反映先の統一): week_only は PFV を触らず今週 visits にのみ反映する.
     week_only = payload.change_scope == "week_only"
@@ -4868,6 +5112,9 @@ async def scope_optimization_apply_endpoint(
             visits_regenerated=int(week_counters["visits"]),
             visits_soft_deleted=0,
         )
+
+    # §7-3: acknowledge を通した事実を管理者へお知らせする (適用と同一 TX)。
+    await _notify_constraint_preflight(db, by_course=_cw_by_course, actor=actor)
 
     # 監査ログ (適用サマリ).
     db.add(
@@ -5256,6 +5503,10 @@ async def propose_unblock_apply_endpoint(
       (patient_id, visit_date) に生存 manual_week visit がある日の再生成をスキップする。
       手動上書き visit は本エンドポイントで消えない。
     - 適用は型レベル (pattern_and_week) 固定 (設計 P-6)。監査は AuditLog のみ (op_log 非汚染)。
+    - **NG スタッフ / 性別制限 (§7-2)**: 退避 + 配置の全手を **適用開始前に**まとめて
+      検査する (手ごとの 422 は「退避だけ済んだ」部分適用になるため)。違反があれば
+      1 手も適用せず ``code=constraint_confirmation_required`` の 422、
+      ``acknowledge_constraint_warnings`` 付きの再送で全適用 + 管理者へお知らせ。
     """
     # W-13a: office_id 省略時は target_patient_id の主担当拠点から解決する.
     office_id = await _resolve_unblock_office_id(
@@ -5356,6 +5607,47 @@ async def propose_unblock_apply_endpoint(
     warnings: list[str] = []
     affected_patient_ids: set[UUID] = set()
 
+    # NG スタッフ / 性別制限の事前一括検査 (§7-2)。退避 (moves) + 対象患者の配置
+    # (insert・2 名体制なら partner コースも) の **全部**を書き込み前に洗う。
+    # 手ごとに 422 を投げると「退避は済んだが配置は失敗」の部分適用になるため、
+    # plan 指紋 / state_token と同じ「適用開始前」の層に置く。
+    _cw_placements: list[ConstraintPlacement] = []
+    for m in plan.moves:
+        _cw_placements.append(
+            (
+                await _resolve_course_template_id(db, office_id, m.to.course_code),
+                m.to.weekday,
+                m.patient_id,
+            )
+        )
+    _cw_placements.append(
+        (
+            await _resolve_course_template_id(db, office_id, plan.insert.course_code),
+            plan.insert.weekday,
+            payload.target_patient_id,
+        )
+    )
+    if insert_requires_multiple_staff and plan.insert.partner_course_code is not None:
+        # 2 名体制は slot0 / slot1 が別コース = 相方コースの担当も対象になる。
+        _cw_placements.append(
+            (
+                await _resolve_course_template_id(db, office_id, plan.insert.partner_course_code),
+                plan.insert.weekday,
+                payload.target_patient_id,
+            )
+        )
+    _cw, _cw_by_course = await _preflight_constraint_warnings(
+        db,
+        iso_year=payload.iso_year,
+        iso_week=payload.iso_week,
+        placements=_cw_placements,
+    )
+    if _cw and not payload.acknowledge_constraint_warnings:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=constraint_confirmation_detail(_cw),
+        )
+
     # --- 退避 (moves) を逐次適用 (scope apply と同一機構) ---
     for idx, m in enumerate(plan.moves, start=1):
         try:
@@ -5409,6 +5701,9 @@ async def propose_unblock_apply_endpoint(
             config=config,
             patient_id=pid,
         )
+
+    # §7-3: acknowledge を通した事実を管理者へお知らせする (適用と同一 TX)。
+    await _notify_constraint_preflight(db, by_course=_cw_by_course, actor=actor)
 
     db.add(
         AuditLog(
