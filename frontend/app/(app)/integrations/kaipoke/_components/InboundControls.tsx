@@ -455,6 +455,26 @@ function SmartPlanPanel({ plan }: { plan: SmartInboundPreview }) {
         </Alert>
       )}
 
+      {/* ⛔ NG スタッフ衝突 (取り込むが管理者に確認を促す・patient-ng-staff-design.md §9) */}
+      {plan.replace && plan.replace.ngConflicts.length > 0 && (
+        <Alert data-testid="ng-conflict-warning">
+          <AlertTitle>
+            ⛔ NGスタッフの組み合わせが含まれています（{plan.replace.ngConflicts.length}件）
+          </AlertTitle>
+          <AlertDescription>
+            {plan.replace.ngConflicts
+              .map(
+                (c) =>
+                  `${c.patientName || '利用者'}様 ← ${c.staffName || '担当者'}（${c.date}${
+                    c.courseCode ? `・コース${c.courseCode}` : ''
+                  }）`,
+              )
+              .join('・')}{' '}
+            — カイポケの実態どおり取り込みますが、取り込み後に担当の調整をご検討ください。
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* 対象外の一覧 (隠さない) */}
       {plan.replace && plan.replace.skipped.length > 0 && (
         <div className="overflow-x-auto rounded-lg border border-border-default">

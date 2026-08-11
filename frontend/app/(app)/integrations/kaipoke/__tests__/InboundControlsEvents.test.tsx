@@ -106,6 +106,7 @@ const SMART_PLAN: SmartInboundPreview = {
       },
     ],
     traineeSolo: [{ staffName: '髙梨　桂子', count: 17 }],
+    ngConflicts: [],
   },
 };
 
@@ -211,6 +212,33 @@ describe('InboundControls — smart-inbound', () => {
     expect(screen.getByText(/新人の単独訪問が含まれています（17件）/)).toBeInTheDocument();
     expect(screen.getByText(/新人フラグをOFFにすることを検討/)).toBeInTheDocument();
     // ❸ が有効
+    expect(screen.getByTestId('smart-apply-button')).toBeEnabled();
+  });
+
+  it('③c ⛔NGスタッフ衝突: dry-run で検出されると警告 Alert が出る（取込はブロックしない）', () => {
+    const planWithNg = {
+      ...SMART_PLAN,
+      replace: {
+        ...SMART_PLAN.replace!,
+        ngConflicts: [
+          {
+            patientId: 'p-1',
+            patientName: '山田　花子',
+            staffId: 's-1',
+            staffName: '田中　看護師',
+            date: '2026-07-22',
+            weekday: 2,
+            courseCode: 'A',
+          },
+        ],
+      },
+    };
+    render(<InboundControls vm={makeVm({ smartPlan: planWithNg, canApply: true })} />);
+    const ngAlert = screen.getByTestId('ng-conflict-warning');
+    expect(ngAlert).toBeInTheDocument();
+    expect(ngAlert.textContent).toContain('NGスタッフの組み合わせが含まれています（1件）');
+    expect(ngAlert.textContent).toContain('山田　花子様 ← 田中　看護師（2026-07-22・コースA）');
+    // 取込自体はブロックしない
     expect(screen.getByTestId('smart-apply-button')).toBeEnabled();
   });
 

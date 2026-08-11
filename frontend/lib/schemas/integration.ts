@@ -314,6 +314,19 @@ export const ApplyInboundResultItemSchema = z.object({
 });
 export type ApplyInboundResultItem = z.infer<typeof ApplyInboundResultItemSchema>;
 
+// ⛔ NG スタッフ衝突 1 件 (patient-ng-staff-design.md §9 Phase 3)。
+// dry-run のみ BE が集計して返す (実適用時は常に空)。取込はブロックしない (カイポケが正)。
+export const NgConflictSchema = z.object({
+  patientId: z.string(),
+  patientName: z.string().default(''),
+  staffId: z.string(),
+  staffName: z.string().default(''),
+  date: z.string().default(''),
+  weekday: z.number().int().nullable().optional(),
+  courseCode: z.string().nullable().optional(),
+});
+export type NgConflict = z.infer<typeof NgConflictSchema>;
+
 export const ApplyInboundResultSchema = z.object({
   jobId: z.string().uuid().nullable(),
   dryRun: z.boolean(),
@@ -323,6 +336,8 @@ export const ApplyInboundResultSchema = z.object({
   skipped: z.number().int().default(0),
   failed: z.number().int().default(0),
   results: z.array(ApplyInboundResultItemSchema).default([]),
+  // ⛔ NG スタッフ衝突 (dry-run のみ・旧 BE は返さないため default [])
+  ngConflicts: z.array(NgConflictSchema).default([]),
 });
 export type ApplyInboundResult = z.infer<typeof ApplyInboundResultSchema>;
 
@@ -471,6 +486,8 @@ export const ReplaceInboundResultSchema = z.object({
   skipped: z.array(ReplaceInboundSkipSchema).default([]),
   // ⚠新人の単独訪問 (取り込み済み・新人フラグ見直しの判断材料)
   traineeSolo: z.array(ReplaceInboundTraineeSoloSchema).default([]),
+  // ⛔ NG スタッフ衝突 (dry-run のみ・旧 BE は返さないため default [])
+  ngConflicts: z.array(NgConflictSchema).default([]),
 });
 export type ReplaceInboundResult = z.infer<typeof ReplaceInboundResultSchema>;
 
