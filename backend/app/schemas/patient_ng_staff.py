@@ -32,6 +32,23 @@ class PatientNgStaffRead(BaseModel):
     created_at: datetime
 
 
+class StaffNgPatientRead(BaseModel):
+    """逆引き (``GET /staff/{staff_id}/ng-patients``) レスポンス 1 件.
+
+    「このスタッフを NG 指定している患者」1 名分. スタッフ詳細の閲覧サマリ
+    (設計書 §8-2 Phase 2「スタッフ詳細の逆引き」) 専用の派生ビュー.
+    ``patient_name`` は patients を JOIN して都度解決する (二重化しない).
+    削除済み患者 (``patients.deleted_at IS NOT NULL``) は含めない.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: UUID
+    patient_name: str
+    note: str | None = None
+    created_at: datetime
+
+
 class PatientNgStaffUpsert(BaseModel):
     """PUT リクエスト body (理由メモのみ).
 

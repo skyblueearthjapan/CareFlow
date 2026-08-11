@@ -22,11 +22,20 @@ import {
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
-import { patientNgStaffListSchema, type PatientNgStaffRead } from '@/lib/schemas/patient_ng_staff';
+import {
+  patientNgStaffListSchema,
+  staffNgPatientListSchema,
+  type PatientNgStaffRead,
+  type StaffNgPatientRead,
+} from '@/lib/schemas/patient_ng_staff';
 
 // ─── Query key factory ───────────────────────────────────────────────────────
 
 export const NG_STAFF_KEY = (patientId: string) => ['patients', patientId, 'ng-staff'] as const;
+
+/** 逆引き (スタッフ詳細サマリ)。`STAFF_KEY` prefix にぶら下げる。 */
+export const STAFF_NG_PATIENTS_KEY = (staffId: string) =>
+  ['staff', staffId, 'ng-patients'] as const;
 
 // ─── Auth helper ─────────────────────────────────────────────────────────────
 
@@ -57,6 +66,31 @@ export function useNgStaffList(
         refreshToken,
       });
       return patientNgStaffListSchema.parse(raw);
+    },
+  });
+}
+
+// ─── GET /api/v1/staff/{staff_id}/ng-patients (逆引き) ───────────────────────
+
+/**
+ * 「このスタッフを NG 指定している患者」一覧 (閲覧専用・全ロール可)。
+ * スタッフ詳細のサマリカードで使う (設計書 §8-2 Phase 2)。
+ */
+export function useStaffNgPatients(
+  staffId: string | null | undefined,
+): UseQueryResult<StaffNgPatientRead[], Error> {
+  const { data: session, status } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useQuery<StaffNgPatientRead[], Error>({
+    queryKey: STAFF_NG_PATIENTS_KEY(staffId ?? ''),
+    enabled: status === 'authenticated' && !!staffId,
+    queryFn: async () => {
+      const raw = await fetcher<unknown>(`/api/v1/staff/${staffId}/ng-patients`, {
+        accessToken,
+        refreshToken,
+      });
+      return staffNgPatientListSchema.parse(raw);
     },
   });
 }

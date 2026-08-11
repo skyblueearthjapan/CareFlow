@@ -70,6 +70,8 @@ import {
   usePatients,
   useUpdatePatient,
 } from '@/lib/queries/patients';
+import { useNgStaffList } from '@/lib/queries/patient_ng_staff';
+import { formatNgStaffNames } from '@/lib/schemas/patient_ng_staff';
 import { useCreatePendingRequest } from '@/lib/queries/pending_requests';
 import { useGeocode } from '@/lib/queries/geocoding';
 import { useResolveOffice } from '@/lib/queries/offices';
@@ -148,6 +150,15 @@ export function KarteSheet({
   // 患者詳細を実 API から取得 (基本情報 / 希望曜日 / 備考 等)。
   const patientQuery = usePatient(visit.patient_id);
   const p = patientQuery.data;
+
+  // NG スタッフ (docs/plans/patient-ng-staff-design.md §8-2 Phase 2)。
+  // モバイルは **表示のみ** (編集は PC の患者マスタ限定)。正典は専用 API。
+  const ngStaffQuery = useNgStaffList(visit.patient_id);
+  const ngStaffLabel = ngStaffQuery.isLoading
+    ? '読み込み中…'
+    : ngStaffQuery.isError
+      ? '取得できませんでした'
+      : formatNgStaffNames(ngStaffQuery.data ?? []);
 
   // 閲覧 ⇄ 編集モードのトグル。患者が切り替わったら閲覧へ戻す。
   const [editing, setEditing] = useState(false);
@@ -360,6 +371,8 @@ export function KarteSheet({
           {sex && <KV k="性別" v={SEX_LABEL[sex]} />}
           {status && <KV k="ステータス" v={STATUS_LABEL[status]} />}
           <KV k="性別制限" v={sexRestriction ? SEX_RESTRICTION_LABEL[sexRestriction] : 'なし'} />
+          {/* NG スタッフ (閲覧のみ・§8-2 Phase 2)。設定変更は PC の患者マスタから。 */}
+          <KV k="NGスタッフ" v={ngStaffLabel} />
           <KV k="複数スタッフ必須" v={requiresMultiple ? 'はい' : 'いいえ'} />
           {address && (
             <KV

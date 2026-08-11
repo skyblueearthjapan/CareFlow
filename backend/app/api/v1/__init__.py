@@ -102,6 +102,10 @@ api_router.include_router(staff_overrides.router, prefix="/staff", tags=["staff-
 api_router.include_router(staff_events.router, prefix="/staff", tags=["staff-events"])
 # Wave 4-D: shift-request sub-resource (/staff/{id}/shift-requests).
 api_router.include_router(shift_requests.router, prefix="/staff", tags=["shift-requests"])
+# NG スタッフ逆引き (/staff/{id}/ng-patients). 実装は patient_ng_staff.py に同居
+# (同じ patient_ng_staff テーブルが正典). staff.router の **前** に登録し、
+# /staff/{staff_id} の catch-all に吸われないようにする。
+api_router.include_router(patient_ng_staff.staff_router, prefix="/staff", tags=["patient-ng-staff"])
 api_router.include_router(staff.router, prefix="/staff", tags=["staff"])
 # Wave 4-D: visit photo sub-resource (/visits/{id}/photos[...]) — registered
 # before visits.router so its routes are matched before the generic

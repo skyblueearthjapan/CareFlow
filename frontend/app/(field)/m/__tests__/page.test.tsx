@@ -60,6 +60,12 @@ vi.mock('@/lib/queries/patients', () => ({
   useCreatePatient: vi.fn(),
 }));
 
+// KarteSheet の「NGスタッフ」行 (patient-ng-staff-design.md §8-2 Phase 2)。
+// 未モックだと QueryClientProvider 無しの本テスト環境で例外になる。
+vi.mock('@/lib/queries/patient_ng_staff', () => ({
+  useNgStaffList: () => ({ data: [], isLoading: false, isError: false, error: null }),
+}));
+
 vi.mock('@/lib/queries/geocoding', () => ({
   useGeocode: vi.fn(),
 }));

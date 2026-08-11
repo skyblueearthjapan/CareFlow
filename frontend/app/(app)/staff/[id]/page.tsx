@@ -49,6 +49,7 @@ import { EventEditDialog } from './_components/EventEditDialog';
 import { OverrideAddDialog } from './_components/OverrideAddDialog';
 import { OverrideEditDialog } from './_components/OverrideEditDialog';
 import { ShiftsEditDialog } from './_components/ShiftsEditDialog';
+import { StaffNgPatientsSummary } from './_components/StaffNgPatientsSummary';
 import { TraineeAccompanimentSummary } from './_components/TraineeAccompanimentSummary';
 import { isAdminRole } from '@/lib/rbac';
 
@@ -217,6 +218,9 @@ export default function StaffDetailPage() {
 
       {/* 新人同行サマリ — is_trainee=true のときのみ表示 (§7.5・閲覧専用) */}
       {data.is_trainee && <TraineeAccompanimentCard staffId={data.id} />}
+
+      {/* NG 指定されている患者 (逆引き・閲覧専用)。0 件ならカードごと非表示。 */}
+      <StaffNgPatientsSummary staffId={data.id} />
 
       <DeleteConfirmModal
         open={confirmOpen}

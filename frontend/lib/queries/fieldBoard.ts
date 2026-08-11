@@ -205,6 +205,8 @@ const PROPOSE_WARNING_LABEL_JA: Record<string, string> = {
   staff_unassigned: 'スタッフ未割付',
   staff_absent: '担当スタッフが休み',
   staff_sex_mismatch: '性別条件に不適合',
+  // NG スタッフ (患者×スタッフ割当禁止, docs/plans/patient-ng-staff-design.md §6).
+  staff_ng_mismatch: 'NGスタッフに該当',
   // I-07 (H5 統合): 受入枠カレンダー上は受け入れ不可の枠 (警告のみ・除外しない).
   acceptance_calendar: '受入枠カレンダーでは受け入れ不可',
   // イベント考慮2段階提案 (2026-07-27): クリーン枠ゼロのときだけ出るフォールバック枠。

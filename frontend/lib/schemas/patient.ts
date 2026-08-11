@@ -345,6 +345,12 @@ export const patientReadSchema = patientBaseSchema.extend({
   created_at: z.string(),
   updated_at: z.string(),
   deleted_at: z.string().nullable().optional(),
+  /**
+   * NG スタッフ登録件数 (派生値・`docs/plans/patient-ng-staff-design.md` §8-2 Phase 2)。
+   * プールカードの「NGあり」バッジ判定に使う。正典は
+   * `GET /patients/{id}/ng-staff`。未対応 BE では 0 に落ちる (後方互換)。
+   */
+  ng_staff_count: z.number().int().nonnegative().optional().default(0),
 });
 
 /**

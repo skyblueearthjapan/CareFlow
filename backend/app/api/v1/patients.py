@@ -122,6 +122,36 @@ def _staff_patient_ids_subquery(staff_id: UUID):
     )
 
 
+def _ng_staff_count_expr():
+    """患者 1 行ごとの NG スタッフ件数を返す相関スカラーサブクエリ.
+
+    一覧 GET で 1 クエリのまま件数を載せるための集計 (N+1 禁止・設計書 §4-1)。
+    ``patients`` の各行に相関するため、外側の SELECT にそのまま同梱できる。
+    """
+    return (
+        select(func.count())
+        .select_from(PatientNgStaff)
+        .where(PatientNgStaff.patient_id == Patient.id)
+        .correlate(Patient)
+        .scalar_subquery()
+    )
+
+
+async def _attach_ng_staff_count(db, patient: Patient) -> Patient:
+    """単票経路 (detail / create / update) で ``ng_staff_count`` を載せる.
+
+    ``Patient`` ORM に対応する列は無く、``PatientRead.ng_staff_count`` は
+    from_attributes でこの動的属性を読む (未設定なら default 0)。
+    """
+    count = await db.scalar(
+        select(func.count())
+        .select_from(PatientNgStaff)
+        .where(PatientNgStaff.patient_id == patient.id)
+    )
+    patient.ng_staff_count = int(count or 0)  # type: ignore[attr-defined]
+    return patient
+
+
 @router.get("", response_model=list[PatientRead], summary="List patients")
 async def list_patients(
     db: DbDep,
@@ -133,8 +163,9 @@ async def list_patients(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
     # 登録ナンバー (code) 昇順で常に固定表示。code 未設定は末尾、同コードは登録順で安定化。
+    # NG スタッフ件数は相関サブクエリで同梱する (追加クエリを撃たない)。
     stmt = (
-        select(Patient)
+        select(Patient, _ng_staff_count_expr().label("ng_staff_count"))
         .where(Patient.deleted_at.is_(None))
         .order_by(Patient.code.asc().nulls_last(), Patient.created_at.asc())
     )
@@ -145,8 +176,13 @@ async def list_patients(
             return []
         stmt = stmt.where(Patient.id.in_(_staff_patient_ids_subquery(user.staff_id)))
     stmt = stmt.limit(limit).offset(offset)
-    rows = (await db.scalars(stmt)).all()
-    return list(rows)
+    rows = (await db.execute(stmt)).all()
+
+    out: list[Patient] = []
+    for patient, ng_count in rows:
+        patient.ng_staff_count = int(ng_count or 0)  # type: ignore[attr-defined]
+        out.append(patient)
+    return out
 
 
 @router.get("/{patient_id}", response_model=PatientRead, summary="Get patient by id")
@@ -179,7 +215,7 @@ async def get_patient(
         )
         if in_scope is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    return patient
+    return await _attach_ng_staff_count(db, patient)
 
 
 @router.post(
@@ -245,7 +281,8 @@ async def update_patient(
         setattr(patient, field, value)
     await _commit_or_409(db)
     await db.refresh(patient)
-    return patient
+    # refresh で動的属性が落ちるため、返す直前に載せ直す。
+    return await _attach_ng_staff_count(db, patient)
 
 
 @router.delete(

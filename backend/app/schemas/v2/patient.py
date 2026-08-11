@@ -301,3 +301,13 @@ class PatientV2Read(PatientV2Base):
     weekly_pattern: dict | None = None  # type: ignore[assignment]
     special_weekly_pattern: dict | None = None  # type: ignore[assignment]
     special_week_active: list[dict] = []  # type: ignore[assignment]
+
+    # NG スタッフ件数 (docs/plans/patient-ng-staff-design.md §4-1 / §8-2 Phase 2).
+    # 正典は ``patient_ng_staff`` テーブル。ここは一覧バッジ用の派生カウントのみ。
+    # ORM (``Patient``) に対応する列は無く、endpoint 側が集計して属性に載せる
+    # (載せない経路では default 0 = 後方互換)。
+    ng_staff_count: int = Field(
+        default=0,
+        ge=0,
+        description="NG スタッフ登録件数 (派生値・プールカードの「NGあり」バッジ用)",
+    )

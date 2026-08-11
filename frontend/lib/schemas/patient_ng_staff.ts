@@ -41,6 +41,21 @@ export function formatNgStaffNames(rows: readonly PatientNgStaffRead[]): string 
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/v1/staff/{staff_id}/ng-patients — 逆引き (§8-2 Phase 2)
+// ---------------------------------------------------------------------------
+
+/** 「このスタッフを NG 指定している患者」1 件。削除済み患者は BE 側で除外済み。 */
+export const staffNgPatientReadSchema = z.object({
+  patient_id: z.string().uuid(),
+  patient_name: z.string().nullable().optional(),
+  note: z.string().nullable().optional(),
+  created_at: z.string().nullable().optional(),
+});
+export type StaffNgPatientRead = z.infer<typeof staffNgPatientReadSchema>;
+
+export const staffNgPatientListSchema = z.array(staffNgPatientReadSchema);
+
+// ---------------------------------------------------------------------------
 // PUT /api/v1/patients/{patient_id}/ng-staff/{staff_id} — request (§4-1)
 // ---------------------------------------------------------------------------
 

@@ -10,6 +10,9 @@
   N4  患者 soft-delete で NG 行が物理削除される
   N5  スタッフ soft-delete で NG 行が物理削除される
   N6  存在しない patient_id / staff_id は 404 / 未登録行の DELETE は 404
+  N7  Phase 2: 患者一覧 / 個別 GET の ``ng_staff_count`` (0 件 / 複数件)
+  N8  Phase 2: 逆引き ``GET /staff/{id}/ng-patients`` (一覧 / 削除済み患者除外 /
+      全ロール閲覧 / 未知スタッフ 404)
 """
 
 from __future__ import annotations
@@ -49,7 +52,9 @@ def _bearer(user: User) -> dict[str, str]:
 
 
 async def _make_patient(db, *, code: str) -> Patient:
-    p = Patient(code=code, name=f"P-{code}", status="active")
+    # special_week_active は nullable かつ既定なし。None のままだと
+    # GET /patients の response_model (list 必須) が 500 になるため [] を入れる。
+    p = Patient(code=code, name=f"P-{code}", status="active", special_week_active=[])
     db.add(p)
     await db.commit()
     await db.refresh(p)
@@ -359,4 +364,119 @@ async def test_n6_unknown_ids_return_404(client, db) -> None:
         f"/api/v1/patients/{patient.id}/ng-staff/{s.id}",
         headers=_bearer(admin),
     )
+    assert res.status_code == 404, res.text
+
+
+# ---------------------------------------------------------------------------
+# N7: Phase 2 — 患者一覧 / 個別 GET の ng_staff_count
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_n7_patient_read_exposes_ng_staff_count(client, db) -> None:
+    admin = await _make_user(db, email="ng-count-admin@example.com", role="admin")
+    headers = _bearer(admin)
+    with_ng = await _make_patient(db, code="NG-CNT-1")
+    without_ng = await _make_patient(db, code="NG-CNT-2")
+    s1 = await _make_staff(db, code="NG-CNT-S1", name="カウント 一郎")
+    s2 = await _make_staff(db, code="NG-CNT-S2", name="カウント 二郎")
+    with_ng_id, without_ng_id = with_ng.id, without_ng.id
+
+    for staff_id in (s1.id, s2.id):
+        res = await client.put(
+            f"/api/v1/patients/{with_ng_id}/ng-staff/{staff_id}",
+            headers=headers,
+            json={"note": None},
+        )
+        assert res.status_code == 200, res.text
+
+    # --- 一覧 GET: 複数件 / 0 件の両方が正しく載る ---
+    res = await client.get("/api/v1/patients?limit=500", headers=headers)
+    assert res.status_code == 200, res.text
+    by_id = {row["id"]: row for row in res.json()}
+    assert by_id[str(with_ng_id)]["ng_staff_count"] == 2
+    assert by_id[str(without_ng_id)]["ng_staff_count"] == 0
+
+    # --- 個別 GET ---
+    res = await client.get(f"/api/v1/patients/{with_ng_id}", headers=headers)
+    assert res.status_code == 200, res.text
+    assert res.json()["ng_staff_count"] == 2
+
+    res = await client.get(f"/api/v1/patients/{without_ng_id}", headers=headers)
+    assert res.status_code == 200, res.text
+    assert res.json()["ng_staff_count"] == 0
+
+    # --- 解除すると減る ---
+    res = await client.delete(f"/api/v1/patients/{with_ng_id}/ng-staff/{s1.id}", headers=headers)
+    assert res.status_code == 204, res.text
+    res = await client.get(f"/api/v1/patients/{with_ng_id}", headers=headers)
+    assert res.json()["ng_staff_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# N8: Phase 2 — 逆引き GET /staff/{staff_id}/ng-patients
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_n8_reverse_lookup_ng_patients(client, db) -> None:
+    admin = await _make_user(db, email="ng-rev-admin@example.com", role="admin")
+    staff_user = await _make_user(db, email="ng-rev-staff@example.com", role="staff")
+    admin_headers = _bearer(admin)
+    staff_headers = _bearer(staff_user)
+
+    target = await _make_staff(db, code="NG-REV-S1", name="逆引き 対象")
+    other = await _make_staff(db, code="NG-REV-S2", name="逆引き 対象外")
+    p_a = await _make_patient(db, code="NG-REV-A")
+    p_b = await _make_patient(db, code="NG-REV-B")
+    p_deleted = await _make_patient(db, code="NG-REV-DEL")
+    target_id, other_id = target.id, other.id
+    a_id, b_id, deleted_id = p_a.id, p_b.id, p_deleted.id
+
+    # target を 3 患者が NG 指定 / other は 1 患者だけ
+    for patient_id, note in ((a_id, "相性不良"), (b_id, None), (deleted_id, "消える予定")):
+        res = await client.put(
+            f"/api/v1/patients/{patient_id}/ng-staff/{target_id}",
+            headers=admin_headers,
+            json={"note": note},
+        )
+        assert res.status_code == 200, res.text
+    res = await client.put(
+        f"/api/v1/patients/{a_id}/ng-staff/{other_id}",
+        headers=admin_headers,
+        json={"note": None},
+    )
+    assert res.status_code == 200, res.text
+
+    # --- 一覧 (自分を NG 指定している患者だけ返る) ---
+    res = await client.get(f"/api/v1/staff/{target_id}/ng-patients", headers=admin_headers)
+    assert res.status_code == 200, res.text
+    rows = res.json()
+    assert len(rows) == 3
+    by_pid = {row["patient_id"]: row for row in rows}
+    assert set(by_pid) == {str(a_id), str(b_id), str(deleted_id)}
+    assert by_pid[str(a_id)]["patient_name"] == "P-NG-REV-A"
+    assert by_pid[str(a_id)]["note"] == "相性不良"
+    assert by_pid[str(b_id)]["note"] is None
+
+    # --- 削除済み患者は除外される ---
+    # 患者削除 API は NG 行ごと物理削除するため、ここでは deleted_at だけ立てて
+    # 「NG 行は残っているが患者が soft delete 済み」= JOIN 条件で落ちることを検証する。
+    await db.rollback()
+    await db.execute(
+        update(Patient).where(Patient.id == deleted_id).values(deleted_at=datetime.now(UTC))
+    )
+    await db.commit()
+
+    res = await client.get(f"/api/v1/staff/{target_id}/ng-patients", headers=admin_headers)
+    assert res.status_code == 200, res.text
+    assert {row["patient_id"] for row in res.json()} == {str(a_id), str(b_id)}
+
+    # --- 閲覧は全ロール (staff も 200) ---
+    res = await client.get(f"/api/v1/staff/{target_id}/ng-patients", headers=staff_headers)
+    assert res.status_code == 200, res.text
+    assert len(res.json()) == 2
+
+    # --- 未知スタッフは 404 ---
+    res = await client.get(f"/api/v1/staff/{uuid4()}/ng-patients", headers=admin_headers)
     assert res.status_code == 404, res.text

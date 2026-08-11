@@ -9,7 +9,10 @@ import {
   parseConstraintConfirmationDetail,
   patientNgStaffListSchema,
   patientNgStaffReadSchema,
+  staffNgPatientListSchema,
+  staffNgPatientReadSchema,
 } from '../patient_ng_staff';
+import { patientReadSchema } from '../patient';
 
 const STAFF_ID = '00000000-0000-0000-0000-0000000000a1';
 
@@ -78,6 +81,60 @@ describe('formatNgStaffNames', () => {
       patientNgStaffReadSchema.parse({ ...validRow, staff_name: null }),
     ]);
     expect(label).toBe('(氏名未登録)');
+  });
+});
+
+describe('staffNgPatientReadSchema (§8-2 Phase 2: 逆引き)', () => {
+  const validReverseRow = {
+    patient_id: '00000000-0000-0000-0000-0000000000b1',
+    patient_name: '山田 太郎',
+    note: '相性不良',
+    created_at: '2026-08-11T00:00:00Z',
+  };
+
+  it('9. 正しい行を parse できる', () => {
+    const r = staffNgPatientReadSchema.parse(validReverseRow);
+    expect(r.patient_id).toBe(validReverseRow.patient_id);
+    expect(r.patient_name).toBe('山田 太郎');
+    expect(r.note).toBe('相性不良');
+  });
+
+  it('10. note / patient_name / created_at が null でも parse 成功', () => {
+    const r = staffNgPatientReadSchema.parse({
+      ...validReverseRow,
+      patient_name: null,
+      note: null,
+      created_at: null,
+    });
+    expect(r.note).toBeNull();
+  });
+
+  it('11. patient_id が UUID でなければ ZodError', () => {
+    expect(() => staffNgPatientReadSchema.parse({ ...validReverseRow, patient_id: 'x' })).toThrow();
+  });
+
+  it('12. 配列 (一覧レスポンス) を parse できる。0 件は []', () => {
+    expect(staffNgPatientListSchema.parse([validReverseRow])).toHaveLength(1);
+    expect(staffNgPatientListSchema.parse([])).toEqual([]);
+  });
+});
+
+describe('patientReadSchema.ng_staff_count (§8-2 Phase 2: バッジ用の派生値)', () => {
+  const basePatient = {
+    id: '00000000-0000-0000-0000-0000000000c1',
+    code: 'P-001',
+    name: '佐藤 花子',
+    status: 'active',
+    created_at: '2026-08-11T00:00:00Z',
+    updated_at: '2026-08-11T00:00:00Z',
+  };
+
+  it('13. BE が返した件数がそのまま入る', () => {
+    expect(patientReadSchema.parse({ ...basePatient, ng_staff_count: 2 }).ng_staff_count).toBe(2);
+  });
+
+  it('14. フィールド欠落 (旧 BE) では 0 にフォールバック', () => {
+    expect(patientReadSchema.parse(basePatient).ng_staff_count).toBe(0);
   });
 });
 

@@ -6,12 +6,25 @@
 GET    /patients/{patient_id}/ng-staff              → 一覧
 PUT    /patients/{patient_id}/ng-staff/{staff_id}   → upsert {note}
 DELETE /patients/{patient_id}/ng-staff/{staff_id}   → 削除
+GET    /staff/{staff_id}/ng-patients                → 逆引き一覧 (``staff_router``)
 
 RBAC:
   GET             — admin / staff (閲覧は全ロール開放.
                     RBAC UI 統一「全ロール同一表示・操作は権限どおり」の原則。
                     先例 = monitor / nearby / checkin-settings)
   PUT / DELETE    — admin のみ
+
+ルータ構成
+----------
+本モジュールは prefix の異なる 2 本のルータを公開する:
+
+* ``router``       — ``/patients`` 配下 (CRUD 本体)
+* ``staff_router`` — ``/staff`` 配下 (逆引き 1 本のみ)
+
+逆引きは同じ ``patient_ng_staff`` テーブルが正典なので実装をここに同居させ、
+登録側 (``api/v1/__init__.py``) で prefix を分けている (先例 =
+``shift_requests.status_router``). ``staff.py`` へは置かない — NG の知識を
+スタッフ CRUD に染み出させないため.
 
 設計メモ
 --------
@@ -36,9 +49,15 @@ from app.models.patient import Patient
 from app.models.patient_ng_staff import PatientNgStaff
 from app.models.staff import Staff
 from app.models.user import User
-from app.schemas.patient_ng_staff import PatientNgStaffRead, PatientNgStaffUpsert
+from app.schemas.patient_ng_staff import (
+    PatientNgStaffRead,
+    PatientNgStaffUpsert,
+    StaffNgPatientRead,
+)
 
 router = APIRouter()
+# 逆引き専用ルータ. ``/staff`` prefix で登録する (module docstring「ルータ構成」参照).
+staff_router = APIRouter()
 
 
 async def _require_active_patient(db, patient_id: UUID) -> Patient:
@@ -179,3 +198,51 @@ async def delete_patient_ng_staff(
     await db.delete(existing)
     await db.commit()
     return None
+
+
+# ---------------------------------------------------------------------------
+# 逆引き: このスタッフを NG 指定している患者 (設計書 §8-2 Phase 2)
+# ---------------------------------------------------------------------------
+
+
+@staff_router.get(
+    "/{staff_id}/ng-patients",
+    response_model=list[StaffNgPatientRead],
+    summary="このスタッフを NG 指定している患者一覧 (閲覧は全ロール)",
+)
+async def list_staff_ng_patients(
+    staff_id: UUID,
+    db: DbDep,
+    _actor: Annotated[User, Depends(require_role("admin", "staff"))],
+) -> list[StaffNgPatientRead]:
+    """スタッフ詳細の閲覧サマリ用の逆引き.
+
+    * 削除済み患者 (``patients.deleted_at IS NOT NULL``) は除外する.
+    * 患者氏名は JOIN で都度解決する (1 クエリ・N+1 なし).
+    * 未登録 / 削除済みスタッフは 404 (``GET /staff/{id}`` と同じ判定).
+    """
+    staff = await db.scalar(select(Staff).where(Staff.id == staff_id, Staff.deleted_at.is_(None)))
+    if staff is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Staff not found")
+
+    rows = (
+        await db.execute(
+            select(PatientNgStaff, Patient.name)
+            .join(Patient, Patient.id == PatientNgStaff.patient_id)
+            .where(
+                PatientNgStaff.staff_id == staff_id,
+                Patient.deleted_at.is_(None),
+            )
+            .order_by(Patient.name, PatientNgStaff.patient_id)
+        )
+    ).all()
+
+    return [
+        StaffNgPatientRead(
+            patient_id=ng.patient_id,
+            patient_name=patient_name,
+            note=ng.note,
+            created_at=ng.created_at,
+        )
+        for ng, patient_name in rows
+    ]

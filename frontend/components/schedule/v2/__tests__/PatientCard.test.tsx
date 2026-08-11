@@ -151,6 +151,21 @@ describe('PatientCard — Wave 20 (名前・希望時間・条件バッジ)', ()
     expect(screen.queryByTestId('patient-card-badges-test-patient-1')).not.toBeInTheDocument();
   });
 
+  it('ngStaffCount>0 → 「NGあり」バッジ表示', () => {
+    renderCard({ ngStaffCount: 2 });
+    expect(screen.getByTestId('patient-card-badge-ng-staff-test-patient-1')).toHaveTextContent(
+      'NGあり',
+    );
+  });
+
+  it('ngStaffCount=0 / 未指定 → 「NGあり」バッジ非表示 (バッジ枠も出ない)', () => {
+    renderCard({ ngStaffCount: 0, patientStatus: 'active' });
+    expect(
+      screen.queryByTestId('patient-card-badge-ng-staff-test-patient-1'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('patient-card-badges-test-patient-1')).not.toBeInTheDocument();
+  });
+
   it('複数バッジが同時に表示される (女性のみ + 複数 + 新規)', () => {
     renderCard({
       sexRestriction: 'female_only',

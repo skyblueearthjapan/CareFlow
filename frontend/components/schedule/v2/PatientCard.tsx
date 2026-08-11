@@ -63,6 +63,12 @@ export interface PatientCardData {
    */
   patientStatus?: string | null;
   /**
+   * NG スタッフ登録件数 (`docs/plans/patient-ng-staff-design.md` §8-2 Phase 2).
+   * 1 以上 → 「NGあり」バッジ。未指定 / 0 → 非表示 (= 既存挙動)。
+   * 正典は `GET /patients/{id}/ng-staff`。ここは患者一覧の派生カウントを素通しする。
+   */
+  ngStaffCount?: number | null;
+  /**
    * W37 Phase 3-B: 複数スタッフ対応患者の slot index (0 or 1).
    * - `null` / `undefined`: 通常 1 名体制 (= 既存挙動)。
    * - `0`: スロット ① (右上に「①」バッジ + 左ボーダー強調)。
@@ -226,7 +232,9 @@ export function PatientCard({
   const maleOnly = patient.sexRestriction === 'male_only';
   const multi = patient.requiresMultipleStaff === true;
   const isNew = patient.patientStatus === 'before_start';
-  const hasBadges = femaleOnly || maleOnly || multi || isNew;
+  // NG スタッフあり (§8-2 Phase 2). 件数は出さず「あり/なし」だけを示す。
+  const hasNgStaff = (patient.ngStaffCount ?? 0) > 0;
+  const hasBadges = femaleOnly || maleOnly || multi || isNew || hasNgStaff;
 
   // W37 Phase 3-B: 複数スタッフ対応のスロット表示
   // slotIndex が 0/1 のときのみ ①/② バッジ + 左ボーダー強調を出す。
@@ -356,6 +364,16 @@ export function PatientCard({
                 data-testid={`patient-card-badge-new-${patient.id}`}
               >
                 新規
+              </Badge>
+            )}
+            {hasNgStaff && (
+              <Badge
+                variant="warning"
+                className="h-4 px-1 text-[10px]"
+                data-testid={`patient-card-badge-ng-staff-${patient.id}`}
+                title="この患者には NG スタッフが設定されています（患者マスタで確認）"
+              >
+                NGあり
               </Badge>
             )}
           </div>

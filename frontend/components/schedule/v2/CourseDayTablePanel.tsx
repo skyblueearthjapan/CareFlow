@@ -3856,6 +3856,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff ??
                     null,
                   patientStatus: p.status ?? null,
+                  // NG スタッフあり バッジ (§8-2 Phase 2). 患者一覧 (usePatients) が
+                  // 載せている派生カウントをそのまま渡す。
+                  ngStaffCount: p.ng_staff_count ?? null,
                   slotIndex: slotInfo.slotIndex,
                   partnerAssigned: slotInfo.partnerAssigned,
                   // Wave 38: 相方の現在地ラベル ("本店-A 15:00" など) を素通しする.
