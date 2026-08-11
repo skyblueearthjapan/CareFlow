@@ -15,10 +15,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, time
 from io import BytesIO
+from uuid import UUID
 
 import pytest
 from openpyxl import Workbook, load_workbook
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.security import create_access_token, hash_password
 from app.models import (
@@ -30,6 +31,9 @@ from app.models import (
     PatientFixedVisit,
     User,
 )
+from app.models.patient_ng_staff import PatientNgStaff
+from app.models.patient_same_address_link import PatientSameAddressLink
+from app.models.staff import Staff
 from app.services.patient_excel.schema import (
     PATIENT_COL_INDEX,
     PATIENT_COLUMNS,
@@ -1264,3 +1268,235 @@ async def test_replace_all_pfv_edit_roundtrip_recreates_pfvs(client, db) -> None
     assert by_wd[0].course_template_id == inage_b_id
     assert by_wd[3].start_time == time(10, 30)
     assert by_wd[3].course_template_id == tsuga_a_id  # クロス拠点も保たれる
+
+
+# ---------------------------------------------------------------------------
+# NG スタッフ (patient_ng_staff) — 完全置換では **weekly_pattern 式の merge 例外**
+#
+# 空セル / 列なし = 維持 (NULL 上書きしない). 値がある場合のみ集合一致.
+# 理由: 完全置換はバックアップ復元用途. NG 列を持たない/埋めていない古い
+# バックアップで NG 設定が全消しになる事故を防ぐ.
+# ---------------------------------------------------------------------------
+
+
+async def _make_staff_for_ng(db, *, code: str, name: str):
+    """テスト用スタッフを作り staff_id (UUID) を返す (expire_all 後の属性アクセス回避)."""
+    s = Staff(code=code, name=name, status="active")
+    db.add(s)
+    await db.commit()
+    await db.refresh(s)
+    return s.id
+
+
+async def _add_ng(db, *, patient_id, staff_id) -> None:
+    db.add(PatientNgStaff(patient_id=patient_id, staff_id=staff_id))
+    await db.commit()
+
+
+async def _ng_staff_ids(db, patient_id) -> set:
+    rows = (
+        await db.scalars(
+            select(PatientNgStaff.staff_id).where(PatientNgStaff.patient_id == patient_id)
+        )
+    ).all()
+    return set(rows)
+
+
+def _build_workbook_bytes_without_ng_column(*, patient_rows: list[dict]) -> bytes:
+    """NG スタッフ列を持たない旧形式 workbook (delete_flag までの列数)."""
+    legacy_columns = [c for c in PATIENT_COLUMNS if c["key"] != "ng_staff_codes"]
+    assert str(legacy_columns[-1]["key"]) == "delete_flag"  # 新列は必ず末尾である前提
+    legacy_index = {str(c["key"]): i for i, c in enumerate(legacy_columns)}
+    wb = Workbook()
+    ws_p = wb.active
+    ws_p.title = SHEET_PATIENTS
+    for col_idx, col in enumerate(legacy_columns, start=1):
+        ws_p.cell(row=1, column=col_idx, value=str(col["header"]))
+    for r_idx, row_dict in enumerate(patient_rows, start=2):
+        for col_key, idx in legacy_index.items():
+            v = row_dict.get(col_key)
+            if v is not None:
+                ws_p.cell(row=r_idx, column=idx + 1, value=v)
+    ws_f = wb.create_sheet(title=SHEET_PFV)
+    for col_idx, header in enumerate(_pfv_headers(), start=1):
+        ws_f.cell(row=1, column=col_idx, value=header)
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_replace_all_blank_ng_staff_preserves_existing(client, db) -> None:
+    """merge 例外: 空セルでも NG 設定は消えない (他列は NULL 上書きされる)."""
+    admin = await _make_user(db, "ra-ng-1@example.com", "admin")
+    p = await _make_patient(db, code="P-RA-NG1", name="維持対象", kana="イジ")
+    pid = p.id
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+    await _add_ng(db, patient_id=pid, staff_id=s1)
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-RA-NG1",
+                "name": "維持対象",
+                "sex": "male",
+                "status": "active",
+                "address": "千葉市稲毛区test",
+                # kana と ng_staff_codes は空セル.
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p_after = (await db.scalars(select(Patient).where(Patient.id == pid))).first()
+    assert p_after is not None
+    assert p_after.kana is None  # 通常列は完全置換 (空セル = NULL)
+    assert await _ng_staff_ids(db, pid) == {s1}  # NG だけは merge 例外で維持
+
+
+@pytest.mark.asyncio
+async def test_replace_all_legacy_file_without_ng_column_preserves(client, db) -> None:
+    """NG 列そのものが無い旧バックアップでも NG 設定は消えない."""
+    admin = await _make_user(db, "ra-ng-2@example.com", "admin")
+    p = await _make_patient(db, code="P-RA-NG2", name="旧形式")
+    pid = p.id
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+    await _add_ng(db, patient_id=pid, staff_id=s1)
+
+    content = _build_workbook_bytes_without_ng_column(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-RA-NG2",
+                "name": "旧形式",
+                "sex": "male",
+                "status": "active",
+                "address": "千葉市稲毛区test",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    assert res.json()["summary"]["patients_error"] == 0, res.text
+    assert await _ng_staff_ids(db, pid) == {s1}
+
+
+@pytest.mark.asyncio
+async def test_replace_all_ng_staff_value_matches_set(client, db) -> None:
+    """値がある場合はその集合に一致させる (追加 + 削除)."""
+    admin = await _make_user(db, "ra-ng-3@example.com", "admin")
+    p = await _make_patient(db, code="P-RA-NG3", name="集合一致")
+    pid = p.id
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+    s2 = await _make_staff_for_ng(db, code="NG-S2", name="S2")
+    s3 = await _make_staff_for_ng(db, code="NG-S3", name="S3")
+    await _add_ng(db, patient_id=pid, staff_id=s1)
+    await _add_ng(db, patient_id=pid, staff_id=s2)
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-RA-NG3",
+                "name": "集合一致",
+                "sex": "male",
+                "status": "active",
+                "address": "千葉市稲毛区test",
+                "ng_staff_codes": "NG-S1,NG-S3",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    assert await _ng_staff_ids(db, pid) == {s1, s3}
+
+
+@pytest.mark.asyncio
+async def test_replace_all_ng_staff_clear_marker_removes_all(client, db) -> None:
+    """merge 例外列なので <CLEAR> は完全置換でも有効 (唯一の明示的な全解除手段)."""
+    admin = await _make_user(db, "ra-ng-4@example.com", "admin")
+    p = await _make_patient(db, code="P-RA-NG4", name="全解除")
+    pid = p.id
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+    await _add_ng(db, patient_id=pid, staff_id=s1)
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-RA-NG4",
+                "name": "全解除",
+                "sex": "male",
+                "status": "active",
+                "address": "千葉市稲毛区test",
+                "ng_staff_codes": "<CLEAR>",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    assert await _ng_staff_ids(db, pid) == set()
+
+
+@pytest.mark.asyncio
+async def test_replace_all_soft_delete_cleans_ng_and_same_address_links(client, db) -> None:
+    """Excel に無い患者の soft delete でも NG 行 / 同住所リンクが物理削除される.
+
+    soft delete では FK ON DELETE CASCADE が発火しないため、アプリ層で明示 DELETE
+    しないと「同じ code で復活したときに古い紐付けが蘇る」既知罠にハマる.
+    """
+    admin = await _make_user(db, "ra-ng-5@example.com", "admin")
+    # CHECK (patient_a_id < patient_b_id) があるため UUID の大小を固定する.
+    # 数字のみの UUID は sqlite の NUMERIC affinity で float に化けるため英字を混ぜる.
+    low_id = UUID("aaaaaaaa-0000-4000-8000-00000000000a")
+    target_id = UUID("bbbbbbbb-0000-4000-8000-00000000000b")
+    high_id = UUID("cccccccc-0000-4000-8000-00000000000c")
+    await _make_patient(db, id=low_id, code="P-RA-LOW", name="残る低")
+    await _make_patient(db, id=target_id, code="P-RA-DEL", name="削除対象")
+    await _make_patient(db, id=high_id, code="P-RA-HIGH", name="残る高")
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+    await _add_ng(db, patient_id=target_id, staff_id=s1)
+    await _add_ng(db, patient_id=low_id, staff_id=s1)
+    db.add(PatientSameAddressLink(patient_a_id=low_id, patient_b_id=target_id, pair_mode="blocked"))
+    db.add(
+        PatientSameAddressLink(patient_a_id=target_id, patient_b_id=high_id, pair_mode="preferred")
+    )
+    await db.commit()
+
+    # target を Excel から外す → soft delete 対象になる.
+    def _row(pid, code, name):
+        return {
+            "patient_id": str(pid),
+            "patient_code": code,
+            "name": name,
+            "sex": "male",
+            "status": "active",
+            "address": "千葉市稲毛区test",
+        }
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            _row(low_id, "P-RA-LOW", "残る低"),
+            _row(high_id, "P-RA-HIGH", "残る高"),
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    assert res.json()["summary"]["patients_to_soft_delete"] == 1, res.text
+
+    db.expire_all()
+    assert await _ng_staff_ids(db, target_id) == set()  # 掃除された
+    assert await _ng_staff_ids(db, low_id) == {s1}  # 巻き添えにしない
+    links = (
+        await db.scalars(
+            select(PatientSameAddressLink).where(
+                or_(
+                    PatientSameAddressLink.patient_a_id == target_id,
+                    PatientSameAddressLink.patient_b_id == target_id,
+                )
+            )
+        )
+    ).all()
+    assert list(links) == []

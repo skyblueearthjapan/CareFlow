@@ -24,11 +24,15 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.worksheet import Worksheet
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.patient_ng_staff import PatientNgStaff
+from app.models.staff import Staff
 from app.services.patient_excel.schema import (
     COMMENT_AUTHOR,
     DEFAULT_TIME_TYPE,
@@ -204,17 +208,60 @@ def _attach_time_greyout_conditional_format(
         ws.conditional_formatting.add(rng, rule)
 
 
+async def load_ng_staff_codes_by_patient(
+    db: AsyncSession,
+    patient_ids: Sequence[UUID],
+) -> dict[UUID, str]:
+    """患者 ID → NG スタッフコードのカンマ区切り文字列 (sorted) を一括ロードする.
+
+    N+1 を避けるため patient_ng_staff × staff を 1 クエリで JOIN して引く.
+
+    * 退職済み (staff.deleted_at IS NOT NULL) スタッフも含める — 既存 NG 行は
+      退職後も残るため、export で落とすと round-trip で暗黙解除されてしまう.
+    * ``staff.code`` が NULL / 空のスタッフは **skip** する (staff_id (UUID 文字列)
+      へのフォールバックはしない). import 側は staff_code でしか解決できないため、
+      UUID を書き出しても再取込で「不明コード」となり無意味だから. code 無しスタッフは
+      運用上存在しない想定なので、発生した場合は warning ログで気付けるようにする.
+    """
+    if not patient_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(PatientNgStaff.patient_id, Staff.code)
+            .join(Staff, Staff.id == PatientNgStaff.staff_id)
+            .where(PatientNgStaff.patient_id.in_(list(patient_ids)))
+        )
+    ).all()
+    codes_by_patient: dict[UUID, list[str]] = {}
+    missing_code_count = 0
+    for patient_id, staff_code in rows:
+        if not staff_code:
+            missing_code_count += 1
+            continue
+        codes_by_patient.setdefault(patient_id, []).append(str(staff_code))
+    if missing_code_count:
+        logger.warning(
+            "patient_excel export: staff_code 未設定のスタッフを NG 列から %d 件 skip しました.",
+            missing_code_count,
+        )
+    return {pid: ",".join(sorted(codes)) for pid, codes in codes_by_patient.items() if codes}
+
+
 def _write_patient_row(
     ws: Worksheet,
     row_idx: int,
     patient: Patient,
     *,
     office_code_by_id: dict[UUID, str],
+    ng_staff_codes_by_patient: dict[UUID, str] | None = None,
 ) -> None:
     """1 行分の患者データを書き込む.
 
     primary_office_id → 拠点コード (INAGE/TSUGA) の lookup は呼び出し側で構築済みの
     ``office_code_by_id`` を使う.
+
+    NG スタッフ列は ``load_ng_staff_codes_by_patient`` で precompute 済みの
+    ``ng_staff_codes_by_patient`` (patient_id → "S-001,S-014") をそのまま書く.
     """
     code = ""
     if patient.primary_office_id is not None:
@@ -277,6 +324,8 @@ def _write_patient_row(
         "preferred_end": wp.get("preferred_end"),
         "note": patient.note,
         "delete_flag": None,
+        # NG スタッフ: 無ければ空セル (= import 側で「維持」).
+        "ng_staff_codes": ((ng_staff_codes_by_patient or {}).get(patient.id) or None),
     }
     for col_key, col_idx in PATIENT_COL_INDEX.items():
         ws.cell(row=row_idx, column=col_idx + 1, value=values.get(col_key))
@@ -696,6 +745,7 @@ def build_workbook(
     offices: Sequence[Office],
     course_templates: Sequence[CourseTemplate],
     crossoffice_warnings_out: list[str] | None = None,
+    ng_staff_codes_by_patient: dict[UUID, str] | None = None,
 ) -> Workbook:
     """テンプレート + データ込みのワークブックを構築する.
 
@@ -733,7 +783,13 @@ def build_workbook(
         (office.code, office.short_label) for office in offices
     )
     for i, patient in enumerate(patients, start=2):
-        _write_patient_row(ws_p, i, patient, office_code_by_id=office_code_by_id)
+        _write_patient_row(
+            ws_p,
+            i,
+            patient,
+            office_code_by_id=office_code_by_id,
+            ng_staff_codes_by_patient=ng_staff_codes_by_patient,
+        )
     # Phase G-48/G-49: patient_id / 緯度 / 経度 / 拠点コード の派生列はグレー塗りで
     # 「触らない雰囲気」.
     _shade_id_column_data_rows(ws_p, "patient_id", PATIENT_COLUMNS, data_row_count=len(patients))

@@ -30,7 +30,11 @@ from app.schemas.v2.patient_excel import (
     PatientExcelImportResponse,
     PatientExcelReplaceAllResponse,
 )
-from app.services.patient_excel.exporter import build_workbook, workbook_to_bytes
+from app.services.patient_excel.exporter import (
+    build_workbook,
+    load_ng_staff_codes_by_patient,
+    workbook_to_bytes,
+)
 from app.services.patient_excel.importer import apply_changes, parse_and_diff
 from app.services.patient_excel.karte import (
     build_blank_karte_template,
@@ -133,12 +137,15 @@ async def export_all(
     # response header (X-Excel-Crossoffice-Warnings-Count) で operator が気付ける
     # ようにする. 0 件でも常に header を返す.
     crossoffice_warnings: list[str] = []
+    # NG スタッフ列: patient_id → "S-001,S-014" を 1 クエリで precompute (N+1 回避).
+    ng_staff_codes_by_patient = await load_ng_staff_codes_by_patient(db, [p.id for p in patients])
     wb = build_workbook(
         patients=list(patients),
         pfvs=list(pfvs),
         offices=list(offices),
         course_templates=list(course_templates),
         crossoffice_warnings_out=crossoffice_warnings,
+        ng_staff_codes_by_patient=ng_staff_codes_by_patient,
     )
     content = workbook_to_bytes(wb)
     ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")

@@ -17,20 +17,25 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, time
 from io import BytesIO
 from typing import Any
 from uuid import UUID
 
 from openpyxl import load_workbook
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.patient_ng_staff import PatientNgStaff
+from app.models.patient_same_address_link import PatientSameAddressLink
+from app.models.staff import Staff
 from app.schemas.v2.patient_excel import (
     PatientExcelChange,
     PatientExcelImportRow,
@@ -75,6 +80,8 @@ from app.services.patient_excel.schema import (
     weekday_yesno_cells_to_en,
     weekdays_cell_to_en,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # Phase G-48: 日本語ラベル → DB 英語 enum 値への変換マップ.
@@ -295,6 +302,201 @@ async def _load_pfvs_by_key(
 
 
 # ---------------------------------------------------------------------------
+# NG スタッフ (patient_ng_staff 中間テーブル) — 共通ヘルパー
+#
+# セマンティクスは staff_excel の secondary_office_codes 列に揃える:
+#   空セル = 維持 / <CLEAR> = 全解除 / カンマ区切り = その集合に一致させる.
+# replace_all.py もこれらのヘルパーを import して同じ挙動を共有する.
+# ---------------------------------------------------------------------------
+
+
+async def _load_staff_by_code(db: AsyncSession) -> dict[str, Staff]:
+    """staff.code → Staff (退職済みも含む).
+
+    退職済み (deleted_at IS NOT NULL) を含めるのは、既存 NG 行が退職後も残るため.
+    export → そのまま import の round-trip で退職者の既存行を「不明コード」扱いに
+    してしまわないよう、存在判定には退職者も載せる. 退職者の **新規** 指定だけを
+    後段 (:func:`_resolve_ng_staff_ids`) で skip する.
+    """
+    rows = (await db.scalars(select(Staff).where(Staff.code.is_not(None)))).all()
+    return {str(s.code): s for s in rows}
+
+
+async def _load_ng_staff_by_patient(db: AsyncSession) -> dict[UUID, set[UUID]]:
+    """patient_id → NG スタッフ staff_id 集合 (全患者分を 1 クエリ)."""
+    rows = (await db.execute(select(PatientNgStaff.patient_id, PatientNgStaff.staff_id))).all()
+    out: dict[UUID, set[UUID]] = {}
+    for patient_id, staff_id in rows:
+        out.setdefault(patient_id, set()).add(staff_id)
+    return out
+
+
+def _parse_ng_staff_cell(
+    raw: Any,
+    *,
+    staff_by_code: dict[str, Staff],
+    row_number: int,
+) -> list[tuple[UUID, bool]] | None:
+    """NG スタッフ列のセルを ``[(staff_id, staff_is_deleted), ...]`` に解決する.
+
+    戻り値 ``None`` = 「この列は触らない」(空セル / 列そのものが無い旧ファイル).
+    空 list = 全解除 (``<CLEAR>`` もしくは区切り文字のみ).
+
+    ``<CLEAR>`` は通常 import / 完全置換 import の **どちらでも** 有効にする.
+    完全置換でも NG 列は「空セル = 維持」の merge 例外扱いなので、明示的な
+    全解除手段が他に無いため.
+
+    不明コードは error にせず warning + skip (= secondary_office_codes と同じ
+    ベストエフォート方針. バックアップ復元運用で 1 セルのタイプミスが全体を
+    落とさないようにするため).
+    """
+    if _is_blank(raw):
+        return None
+    if is_magic_clear(raw):
+        return []
+    raw_str = _read_str(raw) or ""
+    codes = [c.strip() for c in raw_str.split(",") if c.strip()]
+    resolved: list[tuple[UUID, bool]] = []
+    unknown: list[str] = []
+    for code in codes:
+        staff = staff_by_code.get(code)
+        if staff is None:
+            unknown.append(code)
+            continue
+        resolved.append((staff.id, staff.deleted_at is not None))
+    if unknown:
+        logger.warning(
+            "patient_excel import row=%d: NG スタッフの不明コード %r を skip しました",
+            row_number,
+            unknown,
+        )
+    return resolved
+
+
+def _resolve_ng_staff_ids(
+    resolved: list[tuple[UUID, bool]],
+    current_ids: set[UUID],
+    *,
+    row_number: int,
+) -> list[UUID]:
+    """解決済み候補を「実際に設定する staff_id list」へ絞り込む (重複除去 + 順序保持).
+
+    退職済みスタッフの **新規** 指定は warning + skip (CRUD API が 422 で弾くのと
+    整合させる). 既に NG 行が存在するスタッフはそのまま維持する (export した
+    退職者付き行をそのまま import して暗黙解除されないようにするため).
+    """
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    skipped_retired: list[str] = []
+    for staff_id, is_deleted in resolved:
+        if staff_id in seen:
+            continue
+        if is_deleted and staff_id not in current_ids:
+            skipped_retired.append(str(staff_id))
+            continue
+        seen.add(staff_id)
+        out.append(staff_id)
+    if skipped_retired:
+        logger.warning(
+            "patient_excel import row=%d: 退職済みスタッフ %r の NG 新規指定を skip しました",
+            row_number,
+            skipped_retired,
+        )
+    return out
+
+
+def _ng_codes_for_view(
+    staff_ids: Sequence[UUID],
+    staff_code_by_id: dict[UUID, str],
+) -> list[str]:
+    """diff 表示用: staff_id list → sorted な staff_code list (code 無しは UUID 文字列)."""
+    return sorted(staff_code_by_id.get(sid) or str(sid) for sid in staff_ids)
+
+
+def _build_ng_staff_change(
+    resolved: list[tuple[UUID, bool]] | None,
+    current_ids: set[UUID],
+    *,
+    row_number: int,
+    staff_code_by_id: dict[UUID, str],
+) -> tuple[PatientExcelChange, list[UUID]] | None:
+    """NG スタッフの差分 (表示用 change + 目標 staff_id list) を返す. 差分無しなら None."""
+    if resolved is None:
+        return None  # 空セル = 維持
+    target_ids = _resolve_ng_staff_ids(resolved, current_ids, row_number=row_number)
+    if set(target_ids) == current_ids:
+        return None
+    change = PatientExcelChange(
+        field="ng_staff",
+        old_value=_ng_codes_for_view(sorted(current_ids, key=str), staff_code_by_id),
+        new_value=_ng_codes_for_view(target_ids, staff_code_by_id),
+    )
+    return change, target_ids
+
+
+async def apply_ng_staff_updates(
+    db: AsyncSession,
+    updates: Sequence[tuple[UUID, list[UUID]]],
+) -> None:
+    """``patient_ng_staff`` を目標集合に一致させる (差分 INSERT / DELETE).
+
+    既存行は note / decided_by_user_id ごと維持する (Excel は note を扱わないため、
+    集合に残るスタッフの note を潰さない). 新規行は note=NULL /
+    decided_by_user_id=NULL で INSERT する (Excel 経由の設定者は記録しない).
+    """
+    for patient_id, target_ids in updates:
+        current_ids = set(
+            (
+                await db.scalars(
+                    select(PatientNgStaff.staff_id).where(PatientNgStaff.patient_id == patient_id)
+                )
+            ).all()
+        )
+        target_set = set(target_ids)
+        to_delete = current_ids - target_set
+        if to_delete:
+            await db.execute(
+                delete(PatientNgStaff).where(
+                    PatientNgStaff.patient_id == patient_id,
+                    PatientNgStaff.staff_id.in_(list(to_delete)),
+                )
+            )
+        for staff_id in target_ids:
+            if staff_id in current_ids:
+                continue  # 既存行は note ごと維持
+            db.add(PatientNgStaff(patient_id=patient_id, staff_id=staff_id))
+    if updates:
+        await db.flush()
+
+
+async def cleanup_soft_deleted_patient_links(
+    db: AsyncSession,
+    patient_ids: Sequence[UUID],
+) -> None:
+    """soft-delete された患者の中間テーブル行を物理削除する.
+
+    ``patients.deleted_at`` を立てるだけの soft delete では FK ``ON DELETE CASCADE``
+    が発火しないため、``api/v1/patients.py::delete_patient`` と同じ流儀でアプリ層から
+    明示 DELETE する (同じ code で患者が復活したときに古い紐付けが蘇るのを防ぐ):
+
+      * :class:`PatientSameAddressLink` — patient_a_id / patient_b_id の **両側**.
+      * :class:`PatientNgStaff` — patient_id 側.
+    """
+    if not patient_ids:
+        return
+    ids = list(patient_ids)
+    await db.execute(
+        delete(PatientSameAddressLink).where(
+            or_(
+                PatientSameAddressLink.patient_a_id.in_(ids),
+                PatientSameAddressLink.patient_b_id.in_(ids),
+            )
+        )
+    )
+    await db.execute(delete(PatientNgStaff).where(PatientNgStaff.patient_id.in_(ids)))
+
+
+# ---------------------------------------------------------------------------
 # Patient sheet parser
 # ---------------------------------------------------------------------------
 
@@ -310,12 +512,18 @@ def _parse_patient_row(
     existing_codes: set[str],
     already_seen_codes: set[str],
     office_index: PreloadedOfficeCities | None = None,
+    staff_by_code: dict[str, Staff] | None = None,
+    ng_staff_by_patient: dict[UUID, set[UUID]] | None = None,
+    staff_code_by_id: dict[UUID, str] | None = None,
 ) -> tuple[PatientExcelImportRow, dict[str, Any] | None]:
     """1 行を差分行に変換する.
 
     戻り値の第 2 要素は apply 時に使う「DB 用 dict」. operation が "error" / "noop" /
     "delete" のときは None or 部分的に意味のあるもの.
     """
+    staff_by_code = staff_by_code if staff_by_code is not None else {}
+    ng_staff_by_patient = ng_staff_by_patient if ng_staff_by_patient is not None else {}
+    staff_code_by_id = staff_code_by_id if staff_code_by_id is not None else {}
     cells: dict[str, Any] = {}
     for col_key, idx in PATIENT_COL_INDEX.items():
         cells[col_key] = row[idx] if idx < len(row) else None
@@ -538,6 +746,15 @@ def _parse_patient_row(
         else:
             parsed["requires_multiple_staff"] = ("SET", rm)
 
+    # NG スタッフ (patient_ng_staff). relationship なので ``parsed`` には入れず
+    # (新規行の flatten ループが Patient(**data) に渡してしまうため) 別変数で持つ.
+    # None = 空セル / 列なし = 維持.
+    ng_resolved = _parse_ng_staff_cell(
+        cells.get("ng_staff_codes"),
+        staff_by_code=staff_by_code,
+        row_number=row_number,
+    )
+
     if errors:
         return (
             PatientExcelImportRow(
@@ -683,6 +900,18 @@ def _parse_patient_row(
                     )
                 )
                 updates["primary_office_id"] = auto_office_id
+            # NG スタッフ: relationship なので ``_`` 前置きキーで op dict に外出しする.
+            ng_op_dict: dict[str, Any] = {}
+            ng_change = _build_ng_staff_change(
+                ng_resolved,
+                ng_staff_by_patient.get(resurrect_id, set()),
+                row_number=row_number,
+                staff_code_by_id=staff_code_by_id,
+            )
+            if ng_change is not None:
+                change, target_ids = ng_change
+                changes_for_view.append(change)
+                ng_op_dict["_ng_staff_ids"] = target_ids
             return (
                 PatientExcelImportRow(
                     row_number=row_number,
@@ -695,6 +924,7 @@ def _parse_patient_row(
                     "_op": "resurrect",
                     "_patient_id": resurrect_id,
                     "_updates": updates,
+                    **ng_op_dict,
                 },
             )
 
@@ -733,6 +963,18 @@ def _parse_patient_row(
             for k in sorted(new_dict.keys())
             if not k.startswith("_") and k not in ("code", "id")
         ]
+        # NG スタッフ: Patient(**data) には渡せないので ``_ng_staff_ids`` で外出し.
+        # 新規患者の現状集合は空 → 退職済みスタッフの指定は必ず「新規指定」= skip.
+        ng_change = _build_ng_staff_change(
+            ng_resolved,
+            set(),
+            row_number=row_number,
+            staff_code_by_id=staff_code_by_id,
+        )
+        if ng_change is not None:
+            change, target_ids = ng_change
+            changes_for_view.append(change)
+            new_dict["_ng_staff_ids"] = target_ids
         return (
             PatientExcelImportRow(
                 row_number=row_number,
@@ -817,6 +1059,18 @@ def _parse_patient_row(
             )
         )
         update_dict[orm_attr] = new_val
+
+    # NG スタッフ (relationship): ``_ng_staff_ids`` で op dict に外出し.
+    ng_change = _build_ng_staff_change(
+        ng_resolved,
+        ng_staff_by_patient.get(existing_patient.id, set()),
+        row_number=row_number,
+        staff_code_by_id=staff_code_by_id,
+    )
+    if ng_change is not None:
+        change, target_ids = ng_change
+        changes.append(change)
+        update_dict["_ng_staff_ids"] = target_ids
 
     if not changes:
         return (
@@ -1245,8 +1499,7 @@ def _parse_pfv_row(
             if ct is not None:
                 course_template_id = ct.id
         # 解決できなかった場合は course_template_id を None のまま継続 (info 扱い).
-        # round-trip 運用で多発するため warning ログは出さない (importer 全体で
-        # logger を持っていない設計も合わせる).
+        # round-trip 運用で多発するため、この経路では warning ログを出さない.
 
     # ---- ファイル内 (patient_id, mode, weekday, slot_index) 重複検査 ----
     if key in pending_new_keys:
@@ -1977,6 +2230,10 @@ async def parse_and_diff(
     # Phase G-49: 拠点コード空欄の住所→拠点 自動割当用. cities/office_cities を
     # 一度だけロードし、行ごとは同期照合 (N+1 回避).
     office_index = await load_office_cities_index(db)
+    # NG スタッフ列用: staff_code → Staff (退職者含む) と 既存 NG 集合を bulk load.
+    staff_by_code = await _load_staff_by_code(db)
+    staff_code_by_id: dict[UUID, str] = {s.id: str(s.code) for s in staff_by_code.values()}
+    ng_staff_by_patient = await _load_ng_staff_by_patient(db)
 
     # ---- 患者シート ----
     ws_p = wb[SHEET_PATIENTS]
@@ -2000,6 +2257,9 @@ async def parse_and_diff(
             existing_codes=existing_codes,
             already_seen_codes=already_seen_codes,
             office_index=office_index,
+            staff_by_code=staff_by_code,
+            ng_staff_by_patient=ng_staff_by_patient,
+            staff_code_by_id=staff_code_by_id,
         )
         patient_rows.append(diff_row)
         if op is not None:
@@ -2259,12 +2519,18 @@ async def apply_changes(
     # 1) Patient: new → insert / update → 既存行を更新 / delete → soft delete /
     #    resurrect → deleted_at=NULL に戻して内容上書き
     patients_by_id: dict[UUID, Patient] = {}
+    # NG スタッフ (中間テーブル) の差分は patient flush 後にまとめて適用する.
+    ng_staff_updates: list[tuple[UUID, list[UUID]]] = []
+    # soft delete した患者 (中間テーブル掃除の対象).
+    soft_deleted_patient_ids: list[UUID] = []
     for op in patient_ops:
         op_type = op.get("_op")
         if op_type == "new":
             data = {k: v for k, v in op.items() if not k.startswith("_")}
             new_patient = Patient(**data)
             db.add(new_patient)
+            if "_ng_staff_ids" in op:
+                ng_staff_updates.append((op["_new_patient_id"], op["_ng_staff_ids"]))
         elif op_type == "resurrect":
             pid = op["_patient_id"]
             if pid not in patients_by_id:
@@ -2275,6 +2541,8 @@ async def apply_changes(
             patient.deleted_at = None
             for k, v in op["_updates"].items():
                 setattr(patient, k, v)
+            if "_ng_staff_ids" in op:
+                ng_staff_updates.append((pid, op["_ng_staff_ids"]))
         elif op_type == "update":
             pid = op["_patient_id"]
             if pid not in patients_by_id:
@@ -2286,6 +2554,8 @@ async def apply_changes(
                 if k.startswith("_"):
                     continue
                 setattr(patient, k, v)
+            if "_ng_staff_ids" in op:
+                ng_staff_updates.append((pid, op["_ng_staff_ids"]))
         elif op_type == "delete":
             pid = op["_patient_id"]
             if pid not in patients_by_id:
@@ -2293,6 +2563,7 @@ async def apply_changes(
             patient = patients_by_id[pid]
             if patient is not None:
                 patient.deleted_at = func.now()
+                soft_deleted_patient_ids.append(pid)
                 # 関連 PFV を物理削除 (soft-delete 患者に orphan PFV が残ると
                 # スケジュール生成側でゴースト枠として現れるのを防ぐ).
                 pfvs_to_cleanup = (
@@ -2302,8 +2573,14 @@ async def apply_changes(
                 ).all()
                 for pfv in pfvs_to_cleanup:
                     await db.delete(pfv)
+    # soft delete では FK CASCADE が発火しないため、中間テーブル (同住所リンク /
+    # NG スタッフ) をアプリ層で明示削除する (delete_patient endpoint と同じ流儀).
+    await cleanup_soft_deleted_patient_links(db, soft_deleted_patient_ids)
     # 中間 flush で patient row を確定 (PFV new で patient_id を再参照する可能性).
     await db.flush()
+
+    # 1-b) NG スタッフ (patient_ng_staff): 新規患者行の INSERT 後に差分適用.
+    await apply_ng_staff_updates(db, ng_staff_updates)
 
     # 2) PFV: new → insert / update → 既存行を更新 / delete → 物理削除
     pfvs_by_id: dict[UUID, PatientFixedVisit] = {}

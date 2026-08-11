@@ -549,7 +549,12 @@ def parse_karte_workbook(wb_or_bytes: Workbook | bytes) -> bytes:
         "preferred_start": preferred_start,
         "preferred_end": preferred_end,
         "note": note,
+        # NG スタッフ列 (ng_staff_codes) はカルテのレイアウトが固定 (A1:H22) のため
+        # 対象外. ここで未設定 = 空セル → importer 側で「維持」となり、カルテ取込で
+        # 既存 NG 設定が消えることはない.
     }
+    # PATIENT_COLUMNS に列が増えても patient_values に無いキーは空セルのまま
+    # (= importer の「空セル = 維持」) になるので、この loop は列追加に自動追従する.
     for col_key, idx in PATIENT_COL_INDEX.items():
         v = patient_values.get(col_key)
         if v is not None:

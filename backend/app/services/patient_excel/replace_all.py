@@ -29,6 +29,7 @@ from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.staff import Staff
 from app.schemas.v2.patient_excel import (
     PatientExcelChange,
     PatientExcelImportRow,
@@ -48,8 +49,14 @@ from app.services.patient_excel.importer import (
     SEX_ANY_TO_EN,
     SEX_RESTRICTION_ANY_TO_EN,
     STATUS_ANY_TO_EN,
+    _build_ng_staff_change,
+    _load_ng_staff_by_patient,
+    _load_staff_by_code,
     _merge_weekly_pattern,
+    _parse_ng_staff_cell,
     _parse_weekly_from_patient_cells,
+    apply_ng_staff_updates,
+    cleanup_soft_deleted_patient_links,
 )
 from app.services.patient_excel.importer import (
     _parse_weekly_row as _parse_weekly_row_replace,  # noqa: E402
@@ -208,6 +215,9 @@ def _parse_patient_row_replace(
     offices_by_code: dict[str, Office],
     already_seen_codes: set[str],
     office_index: PreloadedOfficeCities | None = None,
+    staff_by_code: dict[str, Staff] | None = None,
+    ng_staff_by_patient: dict[UUID, set[UUID]] | None = None,
+    staff_code_by_id: dict[UUID, str] | None = None,
 ) -> tuple[PatientExcelImportRow, dict[str, Any] | None]:
     """1 行をパースして差分行 + apply 用 op を返す.
 
@@ -217,7 +227,18 @@ def _parse_patient_row_replace(
       - patient_id 空 + patient_code が DB の alive 患者と一致 → 同じく上書き
         (UI 経由で id を消した行も identity を保つ).
       - patient_id 空 + patient_code が DB に無い (or soft-deleted) → 新規 or 復活.
+
+    **NG スタッフ列だけは weekly_pattern と同じ「merge 例外」**:
+      - 空セル = 維持 (NULL 上書きしない). 列そのものが無い旧ファイルも同じく維持.
+      - 値がある場合のみその集合に一致させる. ``<CLEAR>`` で明示的に全解除.
+      理由: 完全置換はバックアップ復元用途で使われるため、NG 列を持たない/埋めて
+      いない古いバックアップを取り込むと NG 設定が全消しになる事故が起きる.
+      NG は「このスタッフを絶対に当ててはいけない」という安全側の情報なので、
+      暗黙の消失は許容できない (weekly_pattern の全消し事故防止と同じ判断).
     """
+    staff_by_code = staff_by_code if staff_by_code is not None else {}
+    ng_staff_by_patient = ng_staff_by_patient if ng_staff_by_patient is not None else {}
+    staff_code_by_id = staff_code_by_id if staff_code_by_id is not None else {}
     cells: dict[str, Any] = {}
     for col_key, idx in PATIENT_COL_INDEX.items():
         cells[col_key] = row[idx] if idx < len(row) else None
@@ -352,6 +373,14 @@ def _parse_patient_row_replace(
         except ValueError as exc:
             errors.append(f"列「requires_multiple_staff」が TRUE/FALSE ではありません: {exc}")
 
+    # NG スタッフ (merge 例外列). None = 空セル / 列なし = 維持.
+    # relationship なので ``parsed`` には入れず別変数で持つ.
+    ng_resolved = _parse_ng_staff_cell(
+        cells.get("ng_staff_codes"),
+        staff_by_code=staff_by_code,
+        row_number=row_number,
+    )
+
     if errors:
         return (
             PatientExcelImportRow(
@@ -451,6 +480,18 @@ def _parse_patient_row_replace(
             )
             update_dict[orm_attr] = new_val
 
+        # NG スタッフ (merge 例外): 値がある場合のみ集合一致.
+        ng_change = _build_ng_staff_change(
+            ng_resolved,
+            ng_staff_by_patient.get(existing_patient.id, set()),
+            row_number=row_number,
+            staff_code_by_id=staff_code_by_id,
+        )
+        if ng_change is not None:
+            change, target_ids = ng_change
+            changes.append(change)
+            update_dict["_ng_staff_ids"] = target_ids
+
         if not changes:
             return (
                 PatientExcelImportRow(
@@ -530,6 +571,17 @@ def _parse_patient_row_replace(
                 )
             )
             updates[orm_attr] = new_val
+        ng_op_dict: dict[str, Any] = {}
+        ng_change = _build_ng_staff_change(
+            ng_resolved,
+            ng_staff_by_patient.get(resurrect_id, set()),
+            row_number=row_number,
+            staff_code_by_id=staff_code_by_id,
+        )
+        if ng_change is not None:
+            change, target_ids = ng_change
+            changes_for_view.append(change)
+            ng_op_dict["_ng_staff_ids"] = target_ids
         return (
             PatientExcelImportRow(
                 row_number=row_number,
@@ -542,6 +594,7 @@ def _parse_patient_row_replace(
                 "_op": "resurrect",
                 "_patient_id": resurrect_id,
                 "_updates": updates,
+                **ng_op_dict,
             },
         )
 
@@ -565,6 +618,17 @@ def _parse_patient_row_replace(
         for k in sorted(new_dict.keys())
         if not k.startswith("_") and k not in ("id",)
     ]
+    # NG スタッフ: Patient(**data) には渡せないので ``_ng_staff_ids`` で外出し.
+    ng_change = _build_ng_staff_change(
+        ng_resolved,
+        set(),
+        row_number=row_number,
+        staff_code_by_id=staff_code_by_id,
+    )
+    if ng_change is not None:
+        change, target_ids = ng_change
+        changes_for_view.append(change)
+        new_dict["_ng_staff_ids"] = target_ids
     return (
         PatientExcelImportRow(
             row_number=row_number,
@@ -1237,6 +1301,10 @@ async def parse_and_diff_replace_all(
     # Phase G-49: 拠点コード空欄の住所→拠点 自動割当用. cities/office_cities を
     # 一度だけロードし、行ごとは同期照合 (N+1 回避).
     office_index = await load_office_cities_index(db)
+    # NG スタッフ列用 (merge 例外): staff_code → Staff (退職者含む) / 既存 NG 集合.
+    staff_by_code = await _load_staff_by_code(db)
+    staff_code_by_id: dict[UUID, str] = {s.id: str(s.code) for s in staff_by_code.values()}
+    ng_staff_by_patient = await _load_ng_staff_by_patient(db)
 
     # ---- patient sheet ----
     ws_p = wb[SHEET_PATIENTS]
@@ -1260,6 +1328,9 @@ async def parse_and_diff_replace_all(
             offices_by_code=offices_by_code,
             already_seen_codes=already_seen_codes,
             office_index=office_index,
+            staff_by_code=staff_by_code,
+            ng_staff_by_patient=ng_staff_by_patient,
+            staff_code_by_id=staff_code_by_id,
         )
         patient_rows.append(diff_row)
         if op is not None:
@@ -1499,10 +1570,13 @@ async def apply_replace_all(
 
     順序:
       1. 削除対象 patient の関連 PFV を全件物理削除 (orphan 防止 / FK 整合)
-      2. 削除対象 patient を soft delete (deleted_at=now)
+      2. 削除対象 patient を soft delete (deleted_at=now) +
+         中間テーブル (同住所リンク / NG スタッフ) を物理削除
+         (soft delete では FK CASCADE が発火しないため — delete_patient と同じ流儀)
       3. 残り (alive) 全 patient の PFV を全件物理削除 (replace 仕様)
       4. patient_ops を順に apply (new / update / resurrect)
-      5. pfv_ops を順に INSERT
+      5. NG スタッフ (patient_ng_staff) の差分を適用
+      6. pfv_ops を順に INSERT
 
     例外は呼び出し側にバブルアップ (rollback は呼び出し側で実施).
     """
@@ -1518,11 +1592,12 @@ async def apply_replace_all(
         for pfv in pfvs_for_delete:
             await db.delete(pfv)
         await db.flush()
-        # 2) 削除対象 patient を soft delete
+        # 2) 削除対象 patient を soft delete + 中間テーブル掃除
         for pid in patient_ids_to_soft_delete:
             patient = await db.get(Patient, pid)
             if patient is not None:
                 patient.deleted_at = func.now()
+        await cleanup_soft_deleted_patient_links(db, patient_ids_to_soft_delete)
         await db.flush()
 
     # 3) 残り (alive) の patient の PFV を全件物理削除. Excel から再投入する.
@@ -1544,12 +1619,15 @@ async def apply_replace_all(
 
     # 4) Patient ops
     patients_by_id: dict[UUID, Patient] = {}
+    ng_staff_updates: list[tuple[UUID, list[UUID]]] = []
     for op in patient_ops:
         op_type = op.get("_op")
         if op_type == "new":
             data = {k: v for k, v in op.items() if not k.startswith("_")}
             new_patient = Patient(**data)
             db.add(new_patient)
+            if "_ng_staff_ids" in op:
+                ng_staff_updates.append((op["_new_patient_id"], op["_ng_staff_ids"]))
         elif op_type == "resurrect":
             pid = op["_patient_id"]
             if pid not in patients_by_id:
@@ -1560,6 +1638,8 @@ async def apply_replace_all(
             patient.deleted_at = None
             for k, v in op["_updates"].items():
                 setattr(patient, k, v)
+            if "_ng_staff_ids" in op:
+                ng_staff_updates.append((pid, op["_ng_staff_ids"]))
         elif op_type == "update":
             pid = op["_patient_id"]
             if pid not in patients_by_id:
@@ -1571,9 +1651,14 @@ async def apply_replace_all(
                 if k.startswith("_"):
                     continue
                 setattr(patient, k, v)
+            if "_ng_staff_ids" in op:
+                ng_staff_updates.append((pid, op["_ng_staff_ids"]))
     await db.flush()
 
-    # 5) PFV: 新規 INSERT のみ
+    # 5) NG スタッフ (patient_ng_staff): 新規患者 INSERT 後に差分適用.
+    await apply_ng_staff_updates(db, ng_staff_updates)
+
+    # 6) PFV: 新規 INSERT のみ
     for op in pfv_ops:
         if op.get("_op") != "new":
             continue

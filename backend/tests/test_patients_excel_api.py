@@ -26,11 +26,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, time
 from io import BytesIO
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from openpyxl import Workbook, load_workbook
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.security import create_access_token, hash_password
 from app.models import (
@@ -42,6 +42,9 @@ from app.models import (
     PatientFixedVisit,
     User,
 )
+from app.models.patient_ng_staff import PatientNgStaff
+from app.models.patient_same_address_link import PatientSameAddressLink
+from app.models.staff import Staff
 from app.services.patient_excel.schema import (
     PATIENT_COL_INDEX,
     PATIENT_COLUMNS,
@@ -3539,3 +3542,492 @@ async def test_pfv_edit_replace_preserves_special_mode(client, db) -> None:
     ).all()
     modes = sorted((r.mode, r.weekday) for r in rows)
     assert modes == [("normal", 0), ("special", 1)]  # special 保持
+
+
+# ---------------------------------------------------------------------------
+# NG スタッフ (patient_ng_staff) Excel 往復
+#
+# セマンティクス (staff_excel の secondary_office_codes 列と同じ):
+#   空セル = 維持 / <CLEAR> = 全解除 / カンマ区切り = その集合に一致させる.
+#   不明コード・退職済みスタッフの新規指定は error にせず warning + skip.
+# ---------------------------------------------------------------------------
+
+
+async def _make_staff_for_ng(db, *, code: str, name: str, deleted: bool = False):
+    """テスト用スタッフを作り **staff_id (UUID) を返す**.
+
+    ORM オブジェクトではなく id を返すのは、後段で ``db.expire_all()`` を呼んだ
+    あとに ``staff.id`` へ触れると同期 lazy load (MissingGreenlet) になるため.
+    """
+    s = Staff(code=code, name=name, status="active")
+    if deleted:
+        s.deleted_at = datetime.now(UTC)
+    db.add(s)
+    await db.commit()
+    await db.refresh(s)
+    return s.id
+
+
+async def _add_ng(db, *, patient_id, staff_id, note: str | None = None) -> None:
+    db.add(PatientNgStaff(patient_id=patient_id, staff_id=staff_id, note=note))
+    await db.commit()
+
+
+async def _ng_staff_ids(db, patient_id) -> set:
+    """patient_ng_staff を DB から直接引く (column select なので identity map を介さない).
+
+    ここで ``db.expire_all()`` は呼ばない — 呼び出し側が保持している ORM
+    オブジェクト (Staff など) まで expire され、後続の属性アクセスが
+    同期 lazy load となって MissingGreenlet になるため.
+    """
+    rows = (
+        await db.scalars(
+            select(PatientNgStaff.staff_id).where(PatientNgStaff.patient_id == patient_id)
+        )
+    ).all()
+    return set(rows)
+
+
+def _ng_cell(wb_bytes: bytes, row: int = 2):
+    wb = load_workbook(BytesIO(wb_bytes))
+    ws = wb[SHEET_PATIENTS]
+    return ws.cell(row=row, column=PATIENT_COL_INDEX["ng_staff_codes"] + 1).value
+
+
+# --- export ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_export_writes_ng_staff_codes_comma_joined_sorted(client, db) -> None:
+    """NG スタッフありの患者 → コードを sorted して カンマ区切りで 1 セルに書く."""
+    admin = await _make_user(db, "ng-ex-1@example.com", "admin")
+    p = await _make_patient(db, code="P-NG-EX1", name="NGあり")
+    # わざと辞書順と逆順に登録して、export が sorted することを担保する.
+    s_b = await _make_staff_for_ng(db, code="NG-B", name="B さん")
+    s_a = await _make_staff_for_ng(db, code="NG-A", name="A さん")
+    await _add_ng(db, patient_id=p.id, staff_id=s_b)
+    await _add_ng(db, patient_id=p.id, staff_id=s_a)
+
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    assert _ng_cell(res.content) == "NG-A,NG-B"
+
+
+@pytest.mark.asyncio
+async def test_export_writes_blank_ng_staff_codes_when_none(client, db) -> None:
+    """NG スタッフ無しの患者 → 空セル (= 再取込で「維持」)."""
+    admin = await _make_user(db, "ng-ex-2@example.com", "admin")
+    await _make_patient(db, code="P-NG-EX2", name="NGなし")
+
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    assert _ng_cell(res.content) is None
+
+
+@pytest.mark.asyncio
+async def test_export_includes_retired_staff_in_ng_column(client, db) -> None:
+    """退職済みスタッフの既存 NG 行も export される (落とすと round-trip で暗黙解除される)."""
+    admin = await _make_user(db, "ng-ex-3@example.com", "admin")
+    p = await _make_patient(db, code="P-NG-EX3", name="退職者NG")
+    s_alive = await _make_staff_for_ng(db, code="NG-ALIVE", name="現役")
+    s_gone = await _make_staff_for_ng(db, code="NG-GONE", name="退職", deleted=True)
+    await _add_ng(db, patient_id=p.id, staff_id=s_alive)
+    await _add_ng(db, patient_id=p.id, staff_id=s_gone)
+
+    res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert res.status_code == 200
+    assert _ng_cell(res.content) == "NG-ALIVE,NG-GONE"
+
+
+# --- import (差分) --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_import_sets_ng_staff_on_existing_patient(client, db) -> None:
+    """既存患者に NG スタッフを新規設定 (noop ではなく update として検出される)."""
+    admin = await _make_user(db, "ng-im-1@example.com", "admin")
+    p = await _make_patient(db, code="P-NG-IM1", name="設定対象")
+    pid = p.id
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+    s2 = await _make_staff_for_ng(db, code="NG-S2", name="S2")
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-NG-IM1",
+                "ng_staff_codes": "NG-S1,NG-S2",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["patients_update"] == 1, body
+    # diff は field="ng_staff" でコードリスト表示.
+    change = next(c for c in body["patient_rows"][0]["changes"] if c["field"] == "ng_staff")
+    assert change["old_value"] == []
+    assert change["new_value"] == ["NG-S1", "NG-S2"]
+    assert await _ng_staff_ids(db, pid) == {s1, s2}
+
+
+@pytest.mark.asyncio
+async def test_import_ng_staff_matches_set_add_and_remove(client, db) -> None:
+    """カンマ区切りの集合に一致させる = 追加と削除が同時に起きる."""
+    admin = await _make_user(db, "ng-im-2@example.com", "admin")
+    p = await _make_patient(db, code="P-NG-IM2", name="集合一致")
+    pid = p.id
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+    s2 = await _make_staff_for_ng(db, code="NG-S2", name="S2")
+    s3 = await _make_staff_for_ng(db, code="NG-S3", name="S3")
+    await _add_ng(db, patient_id=pid, staff_id=s1)
+    await _add_ng(db, patient_id=pid, staff_id=s2)
+
+    # S1 を残し / S2 を消し / S3 を足す.
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-NG-IM2",
+                "ng_staff_codes": "NG-S1,NG-S3",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    assert await _ng_staff_ids(db, pid) == {s1, s3}  # s2 は消える
+
+
+@pytest.mark.asyncio
+async def test_import_ng_staff_clear_marker_removes_all(client, db) -> None:
+    """<CLEAR> で NG スタッフを全解除."""
+    admin = await _make_user(db, "ng-im-3@example.com", "admin")
+    p = await _make_patient(db, code="P-NG-IM3", name="全解除")
+    pid = p.id
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+    await _add_ng(db, patient_id=pid, staff_id=s1)
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-NG-IM3",
+                "ng_staff_codes": "<CLEAR>",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    assert res.json()["summary"]["patients_update"] == 1
+    assert await _ng_staff_ids(db, pid) == set()
+
+
+@pytest.mark.asyncio
+async def test_import_blank_ng_staff_preserves_existing(client, db) -> None:
+    """空セル = 維持. 他列だけ更新しても NG は消えない."""
+    admin = await _make_user(db, "ng-im-4@example.com", "admin")
+    p = await _make_patient(db, code="P-NG-IM4", name="維持対象")
+    pid = p.id
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+    await _add_ng(db, patient_id=pid, staff_id=s1)
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {"patient_id": str(pid), "patient_code": "P-NG-IM4", "name": "新名前"},
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p_after = (await db.scalars(select(Patient).where(Patient.id == pid))).first()
+    assert p_after is not None
+    assert p_after.name == "新名前"
+    assert await _ng_staff_ids(db, pid) == {s1}  # 維持
+
+
+@pytest.mark.asyncio
+async def test_import_ng_staff_unknown_code_warns_and_skips(client, db) -> None:
+    """不明コードは error にせず skip. 既知コードだけが反映される."""
+    admin = await _make_user(db, "ng-im-5@example.com", "admin")
+    p = await _make_patient(db, code="P-NG-IM5", name="不明コード")
+    pid = p.id
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-NG-IM5",
+                "ng_staff_codes": "NG-S1,NG-NOPE",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    assert res.json()["summary"]["patients_error"] == 0
+    assert await _ng_staff_ids(db, pid) == {s1}
+
+
+@pytest.mark.asyncio
+async def test_import_ng_staff_retired_new_assignment_skipped(client, db) -> None:
+    """退職済みスタッフの **新規** 指定は warning + skip (CRUD API の 422 と整合)."""
+    admin = await _make_user(db, "ng-im-6@example.com", "admin")
+    p = await _make_patient(db, code="P-NG-IM6", name="退職者指定")
+    pid = p.id
+    s_alive = await _make_staff_for_ng(db, code="NG-S1", name="現役")
+    await _make_staff_for_ng(db, code="NG-GONE", name="退職", deleted=True)
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-NG-IM6",
+                "ng_staff_codes": "NG-S1,NG-GONE",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    assert res.json()["summary"]["patients_error"] == 0
+    assert await _ng_staff_ids(db, pid) == {s_alive}  # 退職者は入らない
+
+
+@pytest.mark.asyncio
+async def test_import_ng_staff_retired_existing_row_is_kept(client, db) -> None:
+    """退職済みでも **既存** NG 行はそのまま維持される (round-trip で暗黙解除しない)."""
+    admin = await _make_user(db, "ng-im-7@example.com", "admin")
+    p = await _make_patient(db, code="P-NG-IM7", name="退職者維持")
+    pid = p.id
+    s_gone = await _make_staff_for_ng(db, code="NG-GONE", name="退職", deleted=True)
+    await _add_ng(db, patient_id=pid, staff_id=s_gone)
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-NG-IM7",
+                "ng_staff_codes": "NG-GONE",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    # 集合が既に一致しているので noop.
+    assert res.json()["summary"]["patients_noop"] == 1, res.text
+    assert await _ng_staff_ids(db, pid) == {s_gone}
+
+
+@pytest.mark.asyncio
+async def test_import_ng_staff_keeps_note_on_surviving_row(client, db) -> None:
+    """Excel は note を扱わない: 集合に残るスタッフの note は潰さない."""
+    admin = await _make_user(db, "ng-im-8@example.com", "admin")
+    p = await _make_patient(db, code="P-NG-IM8", name="note維持")
+    pid = p.id
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+    s2 = await _make_staff_for_ng(db, code="NG-S2", name="S2")
+    await _add_ng(db, patient_id=pid, staff_id=s1, note="相性不良")
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-NG-IM8",
+                "ng_staff_codes": "NG-S1,NG-S2",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    rows = (await db.scalars(select(PatientNgStaff).where(PatientNgStaff.patient_id == pid))).all()
+    by_staff = {r.staff_id: r for r in rows}
+    assert by_staff[s1].note == "相性不良"  # 既存行は維持
+    assert by_staff[s2].note is None  # 新規行は note=NULL
+    assert by_staff[s2].decided_by_user_id is None  # Excel 経由は設定者を記録しない
+
+
+@pytest.mark.asyncio
+async def test_import_new_patient_with_ng_staff(client, db) -> None:
+    """新規患者行でも NG スタッフを設定できる (仮 UUID で INSERT 後に紐付け)."""
+    admin = await _make_user(db, "ng-im-9@example.com", "admin")
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {
+                "patient_code": "P-NG-NEW",
+                "name": "新規NGあり",
+                "sex": "female",
+                "status": "active",
+                "address": "千葉市稲毛区",
+                "ng_staff_codes": "NG-S1",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    p = (await db.scalars(select(Patient).where(Patient.code == "P-NG-NEW"))).first()
+    assert p is not None
+    assert await _ng_staff_ids(db, p.id) == {s1}
+
+
+@pytest.mark.asyncio
+async def test_import_dry_run_does_not_touch_ng_staff(client, db) -> None:
+    """dry_run では NG 行が変わらない."""
+    admin = await _make_user(db, "ng-im-10@example.com", "admin")
+    p = await _make_patient(db, code="P-NG-DRY", name="dry")
+    pid = p.id
+    await _make_staff_for_ng(db, code="NG-S1", name="S1")
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {"patient_id": str(pid), "patient_code": "P-NG-DRY", "ng_staff_codes": "NG-S1"},
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=True)
+    assert res.status_code == 200, res.text
+    assert res.json()["summary"]["patients_update"] == 1
+    assert await _ng_staff_ids(db, pid) == set()  # DB は無変更
+
+
+# --- round-trip -----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_roundtrip_ng_staff_is_noop(client, db) -> None:
+    """export → そのまま import で NG スタッフは完全 noop (変更検出されない)."""
+    admin = await _make_user(db, "ng-rt-1@example.com", "admin")
+    p = await _make_patient(db, code="P-NG-RT", name="往復")
+    pid = p.id
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+    s2 = await _make_staff_for_ng(db, code="NG-S2", name="S2")
+    await _add_ng(db, patient_id=pid, staff_id=s1)
+    await _add_ng(db, patient_id=pid, staff_id=s2)
+
+    export_res = await client.get("/api/v1/patients/import-export/export", headers=_bearer(admin))
+    assert export_res.status_code == 200
+    res = await _upload(client, admin, content=export_res.content, dry_run=False)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["patients_error"] == 0, body
+    assert body["summary"]["patients_update"] == 0, body
+    assert body["summary"]["patients_noop"] == 1, body
+    assert await _ng_staff_ids(db, pid) == {s1, s2}
+
+
+# --- 削除経路の中間テーブル掃除 -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_import_delete_flag_cleans_ng_staff_and_same_address_links(client, db) -> None:
+    """<DELETE> 経由の soft delete でも NG 行 / 同住所リンクが物理削除される.
+
+    soft delete では FK ON DELETE CASCADE が発火しないため、アプリ層で明示 DELETE
+    しないと「同じ code で復活したときに古い紐付けが蘇る」既知罠にハマる.
+    """
+    admin = await _make_user(db, "ng-del-1@example.com", "admin")
+    # patient_same_address_links には CHECK (patient_a_id < patient_b_id) があるため、
+    # 「target が a 側」「target が b 側」の 2 本を張るには UUID の大小を固定する必要が
+    # ある. Patient.id は Python 側 default (uuid4) なので明示指定できる.
+    # 数字のみの UUID は sqlite の NUMERIC affinity で float に化けるため英字を混ぜる.
+    low_id = UUID("aaaaaaaa-0000-4000-8000-00000000000a")
+    target_id = UUID("bbbbbbbb-0000-4000-8000-00000000000b")
+    high_id = UUID("cccccccc-0000-4000-8000-00000000000c")
+    await _make_patient(db, id=low_id, code="P-NG-LOW", name="相方低")
+    await _make_patient(db, id=target_id, code="P-NG-DEL", name="削除対象")
+    await _make_patient(db, id=high_id, code="P-NG-HIGH", name="相方高")
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+    await _add_ng(db, patient_id=target_id, staff_id=s1)
+    await _add_ng(db, patient_id=low_id, staff_id=s1)
+    # 同住所リンクを a 側 / b 側の両方で 1 本ずつ張る.
+    db.add(PatientSameAddressLink(patient_a_id=low_id, patient_b_id=target_id, pair_mode="blocked"))
+    db.add(
+        PatientSameAddressLink(patient_a_id=target_id, patient_b_id=high_id, pair_mode="preferred")
+    )
+    await db.commit()
+
+    content = _build_workbook_bytes(
+        patient_rows=[
+            {"patient_id": str(target_id), "patient_code": "P-NG-DEL", "delete_flag": "<DELETE>"},
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    assert res.json()["summary"]["patients_delete"] == 1
+
+    db.expire_all()
+    assert await _ng_staff_ids(db, target_id) == set()  # 掃除された
+    assert await _ng_staff_ids(db, low_id) == {s1}  # 巻き添えにしない
+    links = (
+        await db.scalars(
+            select(PatientSameAddressLink).where(
+                or_(
+                    PatientSameAddressLink.patient_a_id == target_id,
+                    PatientSameAddressLink.patient_b_id == target_id,
+                )
+            )
+        )
+    ).all()
+    assert list(links) == []
+
+
+# --- 後方互換 (新列を持たない旧 export ファイル) ---------------------------
+
+
+def _build_legacy_workbook_bytes_without_ng_column(*, patient_rows: list[dict]) -> bytes:
+    """NG スタッフ列を持たない旧形式 (delete_flag までの列数) の workbook を作る."""
+    legacy_columns = [c for c in PATIENT_COLUMNS if c["key"] != "ng_staff_codes"]
+    assert str(legacy_columns[-1]["key"]) == "delete_flag"  # 新列は必ず末尾である前提
+    legacy_index = {str(c["key"]): i for i, c in enumerate(legacy_columns)}
+    wb = Workbook()
+    ws_p = wb.active
+    ws_p.title = SHEET_PATIENTS
+    for col_idx, col in enumerate(legacy_columns, start=1):
+        ws_p.cell(row=1, column=col_idx, value=str(col["header"]))
+    for r_idx, row_dict in enumerate(patient_rows, start=2):
+        for col_key, idx in legacy_index.items():
+            v = row_dict.get(col_key)
+            if v is not None:
+                ws_p.cell(row=r_idx, column=idx + 1, value=v)
+    ws_f = wb.create_sheet(title=SHEET_PFV)
+    for col_idx, header in enumerate(_pfv_headers(), start=1):
+        ws_f.cell(row=1, column=col_idx, value=header)
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_import_legacy_file_without_ng_column_still_works(client, db) -> None:
+    """新列を持たない旧 export ファイル: 従来どおり更新でき、NG は維持される.
+
+    列位置ベースで読むため、新列を末尾以外に足すと旧ファイルが silent 破壊される.
+    このテストは「末尾追加」の不変条件を守るためのガード.
+    """
+    admin = await _make_user(db, "ng-legacy-1@example.com", "admin")
+    p = await _make_patient(db, code="P-NG-LEGACY", name="旧形式", note="元の備考")
+    pid = p.id
+    s1 = await _make_staff_for_ng(db, code="NG-S1", name="S1")
+    await _add_ng(db, patient_id=pid, staff_id=s1)
+
+    content = _build_legacy_workbook_bytes_without_ng_column(
+        patient_rows=[
+            {
+                "patient_id": str(pid),
+                "patient_code": "P-NG-LEGACY",
+                "name": "旧形式-改",
+                "note": "新しい備考",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    assert res.json()["summary"]["patients_error"] == 0, res.text
+    db.expire_all()
+    p_after = (await db.scalars(select(Patient).where(Patient.id == pid))).first()
+    assert p_after is not None
+    # 列ズレが起きていれば name / note が壊れる.
+    assert p_after.name == "旧形式-改"
+    assert p_after.note == "新しい備考"
+    assert await _ng_staff_ids(db, pid) == {s1}  # 列が無い = 維持

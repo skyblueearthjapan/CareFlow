@@ -413,6 +413,21 @@ PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
     {"key": "preferred_end", "header": "希望終了時刻", "width": 14, "dropdown": HHMM_VALUES},
     {"key": "note", "header": "備考", "width": 30, "dropdown": None},
     {"key": "delete_flag", "header": "(削除フラグ)", "width": 14, "dropdown": DELETE_FLAG_VALUES},
+    # ---- NG スタッフ (patient_ng_staff 中間テーブル) ----
+    # 【重要】importer / replace_all は列位置 (index) ベースで読む (ヘッダー名は読まない).
+    # 既存列の途中に挿入すると過去 export ファイルの列がずれて silent データ破壊に
+    # なるため、新規列は必ずこの末尾に追加すること.
+    # 旧ファイル (この列を持たない) は row[idx] が範囲外 → None → 「空セル = 維持」で無害.
+    #
+    # カンマ区切りの staff.code 列挙 (例: "S-001,S-014"). 空セル = 維持 /
+    # ``<CLEAR>`` = 全解除 / 値あり = その集合に一致させる (追加 + 削除).
+    # dropdown は値が複数入るため設定しない (サブ拠点コード列と同じ方針).
+    {
+        "key": "ng_staff_codes",
+        "header": "NGスタッフコード (カンマ区切り, 解除は <CLEAR>)",
+        "width": 32,
+        "dropdown": None,
+    },
 ]
 
 # index lookup
