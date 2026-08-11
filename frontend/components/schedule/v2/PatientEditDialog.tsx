@@ -155,7 +155,8 @@ export function PatientEditDialog({
             ) : null}
           </DialogTitle>
           <DialogDescription id="patient-edit-dialog-description">
-            基本情報・希望訪問パターン・固定訪問パターンを編集できます。保存後すぐにスケジュールに反映されます。
+            基本情報・訪問条件 (NGスタッフ /
+            同住所紐付けを含む)・希望訪問パターン・固定訪問パターンを編集できます。保存後すぐにスケジュールに反映されます。
           </DialogDescription>
         </DialogHeader>
 
@@ -185,6 +186,9 @@ export function PatientEditDialog({
           ) : (
             <div className="space-y-6">
               <PatientForm
+                // patientId を渡さないと PatientForm 内の「訪問条件」セクション
+                // (NGスタッフ / 同住所紐付け / 特別訪問週間) が一切描画されない。
+                patientId={patientId}
                 defaultValues={initialFormValues}
                 onSubmit={handleSubmit}
                 onCancel={handleCancel}

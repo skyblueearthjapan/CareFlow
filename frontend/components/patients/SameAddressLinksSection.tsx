@@ -65,19 +65,32 @@ export interface SameAddressLinksSectionProps {
   patientId: string;
   /** true で強制的に読み取り専用 (= staff role 等). */
   readOnly?: boolean;
+  /**
+   * true で外側の Card を描画せず、見出しをサブ見出し (h3) に落として中身だけ返す.
+   * 「訪問条件」Card の中に埋め込む用途 (PatientForm). 既定 (false) は従来どおり単独 Card.
+   */
+  embedded?: boolean;
 }
 
-export function SameAddressLinksSection({ patientId, readOnly }: SameAddressLinksSectionProps) {
+export function SameAddressLinksSection({
+  patientId,
+  readOnly,
+  embedded = false,
+}: SameAddressLinksSectionProps) {
   const { data: session } = useSession();
   const role = session?.user?.role;
   const canEdit = !readOnly && isAdminRole(role);
 
   const { data: candidates = [], isLoading, isError, error } = useSameAddressCandidates(patientId);
 
-  return (
-    <Card className="p-5 space-y-3" data-testid="same-address-links-section">
+  const body = (
+    <>
       <div className="flex items-center justify-between">
-        <h2 className="font-serif text-lg font-bold text-text-primary">同住所紐付け</h2>
+        {embedded ? (
+          <h3 className="font-serif text-base font-bold text-text-primary">同住所紐付け</h3>
+        ) : (
+          <h2 className="font-serif text-lg font-bold text-text-primary">同住所紐付け</h2>
+        )}
         {!canEdit ? (
           <span className="text-xs text-text-muted bg-bg-muted rounded px-2 py-0.5">閲覧のみ</span>
         ) : null}
@@ -114,6 +127,23 @@ export function SameAddressLinksSection({ patientId, readOnly }: SameAddressLink
           ))}
         </ul>
       )}
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div
+        className="space-y-3 border-t border-border-default pt-4"
+        data-testid="same-address-links-section"
+      >
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <Card className="p-5 space-y-3" data-testid="same-address-links-section">
+      {body}
     </Card>
   );
 }

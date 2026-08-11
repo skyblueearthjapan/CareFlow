@@ -93,6 +93,33 @@ export const sameAddressCandidateSchema = z.object({
 export type SameAddressCandidate = z.infer<typeof sameAddressCandidateSchema>;
 
 /**
+ * 閲覧系 (患者詳細の「訪問条件」など) の 1 行表示用ラベル。
+ * 編集 UI (SameAddressLinksSection の radio) は説明的な長いラベルを使うため、
+ * 一覧に並べる用の短縮版をここに置く。
+ */
+export const PAIR_MODE_SHORT_LABEL: Record<PairMode, string> = {
+  preferred: 'ペア優先',
+  required: 'ペア必須',
+  blocked: 'ペア禁止',
+};
+
+/**
+ * 同住所候補のうち **明示設定済み** (pair_mode あり) のものを
+ * 「氏名（モード）・氏名（モード）」形式に整形する。0 件は「なし」。
+ *
+ * 手本: `formatNgStaffNames` (`lib/schemas/patient_ng_staff.ts`)。
+ */
+export function formatSameAddressLinkNames(candidates: readonly SameAddressCandidate[]): string {
+  const decided = candidates.filter(
+    (c): c is SameAddressCandidate & { pair_mode: PairMode } => c.pair_mode != null,
+  );
+  if (decided.length === 0) return 'なし';
+  return decided
+    .map((c) => `${c.patient_name ?? '(氏名未登録)'}（${PAIR_MODE_SHORT_LABEL[c.pair_mode]}）`)
+    .join('・');
+}
+
+/**
  * POST /patient-same-address-links body.
  *
  * Phase G-21 T4 reviewer M3: FE 側 input maxLength=500 と整合させるため zod でも

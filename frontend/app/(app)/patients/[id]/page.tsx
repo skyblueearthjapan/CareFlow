@@ -46,6 +46,8 @@ import {
   type WeekdayKey,
 } from '@/lib/schemas/patient';
 import { formatNgStaffNames } from '@/lib/schemas/patient_ng_staff';
+import { useSameAddressCandidates } from '@/lib/queries/g21';
+import { formatSameAddressLinkNames } from '@/lib/schemas/g21';
 import { PatientFixedVisitsPanel } from '../_components/PatientFixedVisitsPanel';
 import { isAdminRole } from '@/lib/rbac';
 
@@ -65,6 +67,8 @@ export default function PatientDetailPage() {
   const { data: patientsList } = usePatients({ limit: 500 });
   // NGスタッフ (patient-ng-staff-design.md §8-2): 「訪問条件」Card に名前を列挙する.
   const { data: ngStaff = [] } = useNgStaffList(id);
+  // 同住所紐付け (Phase G-21): NGスタッフと並べて「訪問条件」Card に列挙する.
+  const { data: sameAddressCandidates = [] } = useSameAddressCandidates(id);
   const { offices } = useOffices();
   const deleteMutation = useDeletePatient();
   const regenerateQr = useRegeneratePatientQr(id);
@@ -294,6 +298,8 @@ export default function PatientDetailPage() {
               ['性別制限', sexResNorm ? SEX_RESTRICTION_LABEL[sexResNorm] : 'なし'],
               // NGスタッフ (patient-ng-staff-design.md §8-2): 性別制限の隣に列挙.
               ['NGスタッフ', formatNgStaffNames(ngStaff)],
+              // 同住所紐付け (Phase G-21): 明示設定済みの相手のみ「氏名（モード）」で列挙.
+              ['同住所紐付け', formatSameAddressLinkNames(sameAddressCandidates)],
               ['特別週パターン', data.special_weekly_pattern ? '有効' : '--'],
               ['2 名体制必須', data.requires_multiple_staff ? 'はい' : 'いいえ'],
             ];

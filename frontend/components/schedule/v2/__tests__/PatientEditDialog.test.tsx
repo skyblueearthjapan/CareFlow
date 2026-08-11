@@ -86,6 +86,8 @@ interface FormProps {
   submitLabel?: string;
   submitting?: boolean;
   errorMessage?: string | null;
+  /** 回帰テスト用: 親が patientId を渡しているか (= 訪問条件セクションが出るか)。 */
+  patientId?: string;
 }
 vi.mock('@/app/(app)/patients/_components/PatientForm', () => ({
   PatientForm: (props: FormProps) => {
@@ -94,7 +96,15 @@ vi.mock('@/app/(app)/patients/_components/PatientForm', () => ({
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
     return (
-      <div data-testid="mock-patient-form">
+      <div data-testid="mock-patient-form" data-patient-id={props.patientId ?? ''}>
+        {/* patientId が渡ったときだけ描画される「訪問条件」内セクション
+            (本物の PatientForm と同じ条件) を再現する。 */}
+        {props.patientId ? (
+          <>
+            <div data-testid="mock-same-address-links-section" />
+            <div data-testid="mock-patient-ng-staff-section" />
+          </>
+        ) : null}
         {props.errorMessage ? (
           <p data-testid="mock-patient-form-error">{props.errorMessage}</p>
         ) : null}
@@ -174,6 +184,18 @@ describe('PatientEditDialog — Phase G-20', () => {
     expect(screen.getByTestId('mock-patient-form')).toBeInTheDocument();
     expect(screen.getByTestId('mock-pfv-panel')).toBeInTheDocument();
     expect(screen.getByTestId('mock-pfv-panel').getAttribute('data-patient-id')).toBe('p-1');
+  });
+
+  // ─── 回帰テスト (2026-08-11 PO 実機確認で発覚したバグ) ────────────────────
+  // PatientForm に patientId を渡し忘れると、「訪問条件」内の
+  // 同住所紐付け / NGスタッフ セクションがスケジュール画面の編集ポップアップから
+  // まるごと消える。props 伝搬とセクション描画の両方を固定する。
+  it('2-b. PatientForm に patientId が伝搬し、訪問条件セクション (同住所/NG) が描画される', () => {
+    setup({ open: true, canEdit: true, patientId: 'p-1' });
+
+    expect(screen.getByTestId('mock-patient-form').getAttribute('data-patient-id')).toBe('p-1');
+    expect(screen.getByTestId('mock-same-address-links-section')).toBeInTheDocument();
+    expect(screen.getByTestId('mock-patient-ng-staff-section')).toBeInTheDocument();
   });
 
   it('3. canEdit=false → 「権限がありません」 + PatientForm 非表示', () => {

@@ -15,7 +15,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, within } from '@testing-library/react';
 
 // ─── Mock next-auth ───────────────────────────────────────────────────────────
 vi.mock('next-auth/react', () => ({
@@ -83,10 +83,32 @@ vi.mock('../WeeklyPatternEditor', () => ({
   WeeklyPatternEditor: () => <div data-testid="weekly-pattern-editor" />,
 }));
 
+// ─── Mock 訪問条件 Card 内の関係セクション (react-query 実フックを避ける) ─────
+vi.mock('@/components/patients/SameAddressLinksSection', () => ({
+  SameAddressLinksSection: ({ patientId, embedded }: { patientId: string; embedded?: boolean }) => (
+    <div
+      data-testid="same-address-links-section"
+      data-patient-id={patientId}
+      data-embedded={embedded ? 'true' : 'false'}
+    />
+  ),
+}));
+vi.mock('@/components/patients/PatientNgStaffSection', () => ({
+  PatientNgStaffSection: ({ patientId, embedded }: { patientId: string; embedded?: boolean }) => (
+    <div
+      data-testid="patient-ng-staff-section"
+      data-patient-id={patientId}
+      data-embedded={embedded ? 'true' : 'false'}
+    />
+  ),
+}));
+
 // ─── Mock UI components ──────────────────────────────────────────────────────
 vi.mock('@/components/ui/card', () => ({
   Card: ({ children, className }: { children: React.ReactNode; className?: string }) => (
-    <div className={className}>{children}</div>
+    <div className={className} data-testid="card">
+      {children}
+    </div>
   ),
 }));
 vi.mock('@/components/ui/alert', () => ({
@@ -516,6 +538,43 @@ describe('PatientForm — W12-FE 住所→拠点自動判定', () => {
     expect(combobox.value).toBe('office-uuid-1');
   });
 
+  // ─── 2026-08-11: 「訪問条件」への同住所紐付け / NGスタッフ統合 ────────────────
+
+  describe('訪問条件セクション統合', () => {
+    it('patientId あり → 同住所紐付け / NGスタッフ が「訪問条件」Card の中に embedded で並ぶ', () => {
+      setupMocks();
+
+      render(<PatientForm onSubmit={vi.fn()} patientId="patient-0001" />);
+
+      const visitConditionCard = screen
+        .getByRole('heading', { level: 2, name: '訪問条件' })
+        .closest('[data-testid="card"]') as HTMLElement;
+      expect(visitConditionCard).not.toBeNull();
+
+      const scoped = within(visitConditionCard);
+      const sameAddress = scoped.getByTestId('same-address-links-section');
+      const ngStaff = scoped.getByTestId('patient-ng-staff-section');
+
+      // 患者 ID が伝搬し、embedded (Card 二重描画なし) で描かれる。
+      expect(sameAddress).toHaveAttribute('data-patient-id', 'patient-0001');
+      expect(sameAddress).toHaveAttribute('data-embedded', 'true');
+      expect(ngStaff).toHaveAttribute('data-patient-id', 'patient-0001');
+      expect(ngStaff).toHaveAttribute('data-embedded', 'true');
+
+      // 並び順は「同住所紐付け → NGスタッフ」を維持。
+      expect(sameAddress.compareDocumentPosition(ngStaff)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+
+    it('patientId なし (新規作成) → 両セクションとも描画されない', () => {
+      setupMocks();
+
+      render(<PatientForm onSubmit={vi.fn()} />);
+
+      expect(screen.queryByTestId('same-address-links-section')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('patient-ng-staff-section')).not.toBeInTheDocument();
+    });
+  });
+
   // ─── W-7: 地域ルールの学習 (未カバー地域の呼びかけ) ──────────────────────────
 
   describe('W-7 地域ルール呼びかけ', () => {
@@ -532,9 +591,15 @@ describe('PatientForm — W12-FE 住所→拠点自動判定', () => {
     });
 
     it('confidence=exact なら callout は出ない', async () => {
-      const mutateAsync = vi.fn().mockResolvedValue(
-        noneWithCity({ confidence: 'exact', office_id: 'office-uuid-1', office_name: '稲毛拠点' }),
-      );
+      const mutateAsync = vi
+        .fn()
+        .mockResolvedValue(
+          noneWithCity({
+            confidence: 'exact',
+            office_id: 'office-uuid-1',
+            office_name: '稲毛拠点',
+          }),
+        );
       setupMocks(mutateAsync);
 
       render(<PatientForm onSubmit={vi.fn()} />);

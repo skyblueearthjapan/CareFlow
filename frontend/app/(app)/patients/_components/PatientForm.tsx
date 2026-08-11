@@ -78,8 +78,9 @@ interface PatientFormProps {
   /** フォームのメソッドを親から呼び出すための ref (W10-FE3: sticky bar 用) */
   formRef?: React.Ref<PatientFormHandle>;
   /**
-   * Phase G-21: 対象患者の ID. 指定時のみ最下部に
-   * <SameAddressLinksSection /> を描画する (新規作成画面では undefined).
+   * Phase G-21: 対象患者の ID. 指定時のみ「訪問条件」Card 内に
+   * <SameAddressLinksSection /> / <PatientNgStaffSection /> を描画する
+   * (新規作成画面では undefined → 非表示。保存後に設定してもらう).
    */
   patientId?: string;
 }
@@ -437,6 +438,16 @@ export function PatientForm({
             />
           </Field>
         </div>
+
+        {/* 同住所紐付け / NGスタッフ も「訪問条件」の一部として同じ Card に収める
+            (Phase G-21 / patient-ng-staff-design.md §8-1)。編集モード
+            (patientId あり) のみ描画し、新規作成では保存後に設定してもらう。 */}
+        {patientId ? (
+          <>
+            <SameAddressLinksSection patientId={patientId} embedded />
+            <PatientNgStaffSection patientId={patientId} embedded />
+          </>
+        ) : null}
       </Card>
 
       <Card className="p-5 space-y-4">
@@ -495,13 +506,6 @@ export function PatientForm({
           className="w-full rounded-md border border-border-default bg-bg-base px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus-visible:outline-none focus-visible:border-brand-primary focus-visible:ring-2 focus-visible:ring-brand-primary-light"
         />
       </Card>
-
-      {/* Phase G-21: 同住所紐付け (edit 画面のみ; patientId が渡された場合に描画). */}
-      {patientId ? <SameAddressLinksSection patientId={patientId} /> : null}
-
-      {/* NGスタッフ (patient-ng-staff-design.md §8-1): 編集モードのみ描画.
-          患者マスタ編集 / PatientEditDialog / CreatePatientDialog の各画面に相乗りする. */}
-      {patientId ? <PatientNgStaffSection patientId={patientId} /> : null}
 
       <div className="flex items-center justify-end gap-2">
         <Button

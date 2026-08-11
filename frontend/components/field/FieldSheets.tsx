@@ -311,69 +311,9 @@ export function KarteSheet({
           </div>
         )}
 
-        {mates.length > 0 && (
-          <KSec title="同住所ペア" icon={<MapPin size={12} />}>
-            {mates.map((mate) => (
-              <button
-                key={mate.visit_id}
-                onClick={() => onOpenVisit(mate)}
-                style={{
-                  width: '100%',
-                  textAlign: 'left',
-                  background: 'linear-gradient(180deg,#F7F0FB,#F1E7F8)',
-                  border: `2px solid ${_PLUM}`,
-                  borderRadius: 14,
-                  padding: '12px 14px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  marginBottom: 8,
-                }}
-              >
-                <div
-                  style={{
-                    width: 40,
-                    height: 40,
-                    borderRadius: 13,
-                    background: _PLUM,
-                    color: '#fff',
-                    display: 'grid',
-                    placeItems: 'center',
-                    fontFamily: 'var(--font-serif)',
-                    fontSize: 17,
-                    fontWeight: 700,
-                    flex: '0 0 auto',
-                  }}
-                >
-                  {mate.patient_name.charAt(0)}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontFamily: 'var(--font-serif)',
-                      fontSize: 14.5,
-                      fontWeight: 700,
-                      color: '#7A4E91',
-                    }}
-                  >
-                    相手: {mate.patient_name} 様 ›
-                  </div>
-                  <div style={{ fontSize: 10.5, color: _INK2, marginTop: 2 }}>
-                    同住所・連続訪問（{mate.start_time}〜{mate.end_time}）
-                  </div>
-                </div>
-              </button>
-            ))}
-          </KSec>
-        )}
-
         <KSec title="基本情報" icon={<User size={12} />}>
           {sex && <KV k="性別" v={SEX_LABEL[sex]} />}
           {status && <KV k="ステータス" v={STATUS_LABEL[status]} />}
-          <KV k="性別制限" v={sexRestriction ? SEX_RESTRICTION_LABEL[sexRestriction] : 'なし'} />
-          {/* NG スタッフ (閲覧のみ・§8-2 Phase 2)。設定変更は PC の患者マスタから。 */}
-          <KV k="NGスタッフ" v={ngStaffLabel} />
-          <KV k="複数スタッフ必須" v={requiresMultiple ? 'はい' : 'いいえ'} />
           {address && (
             <KV
               k="ご住所"
@@ -386,6 +326,71 @@ export function KarteSheet({
             />
           )}
           {primaryOfficeName && <KV k="主担当拠点" v={primaryOfficeName} />}
+        </KSec>
+
+        {/* 訪問条件: 性別制限 / 複数スタッフ / NGスタッフ / 同住所ペアを 1 箇所に集約
+            (PC 版「訪問条件」Card と同じ括り。モバイルは閲覧のみ)。 */}
+        <KSec title="訪問条件" icon={<ClipboardCheck size={12} />}>
+          <KV k="性別制限" v={sexRestriction ? SEX_RESTRICTION_LABEL[sexRestriction] : 'なし'} />
+          <KV k="複数スタッフ必須" v={requiresMultiple ? 'はい' : 'いいえ'} />
+          {/* NG スタッフ (閲覧のみ・§8-2 Phase 2)。設定変更は PC の患者マスタから。 */}
+          <KV k="NGスタッフ" v={ngStaffLabel} />
+          {mates.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 12.5, color: _INK2, marginBottom: 6 }}>同住所ペア</div>
+              {mates.map((mate) => (
+                <button
+                  key={mate.visit_id}
+                  onClick={() => onOpenVisit(mate)}
+                  style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    background: 'linear-gradient(180deg,#F7F0FB,#F1E7F8)',
+                    border: `2px solid ${_PLUM}`,
+                    borderRadius: 14,
+                    padding: '12px 14px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    marginBottom: 8,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 40,
+                      height: 40,
+                      borderRadius: 13,
+                      background: _PLUM,
+                      color: '#fff',
+                      display: 'grid',
+                      placeItems: 'center',
+                      fontFamily: 'var(--font-serif)',
+                      fontSize: 17,
+                      fontWeight: 700,
+                      flex: '0 0 auto',
+                    }}
+                  >
+                    {mate.patient_name.charAt(0)}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontFamily: 'var(--font-serif)',
+                        fontSize: 14.5,
+                        fontWeight: 700,
+                        color: '#7A4E91',
+                      }}
+                    >
+                      相手: {mate.patient_name} 様 ›
+                    </div>
+                    <div style={{ fontSize: 10.5, color: _INK2, marginTop: 2 }}>
+                      同住所・連続訪問（{mate.start_time}〜{mate.end_time}）
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
         </KSec>
 
         <KSec title="保険・サービス" icon={<Heart size={12} />}>
@@ -837,6 +842,25 @@ function KarteEditSheet({
           </div>
         </Field>
 
+        {/* 訪問条件 (PC 版「訪問条件」Card と同じ括り)。関係エディタ
+            (NGスタッフ / 同住所紐付け) はモバイルに実装せず PC 限定。 */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            fontFamily: 'var(--font-serif)',
+            fontSize: 12,
+            color: _PLUM,
+            fontWeight: 700,
+            margin: '6px 0 10px',
+          }}
+        >
+          <ClipboardCheck size={13} />
+          訪問条件
+          <span style={{ flex: 1, height: 2, background: '#F0E7F5', borderRadius: 2 }} />
+        </div>
+
         <Field label="性別制限">
           <select
             style={cfInput}
@@ -903,6 +927,10 @@ function KarteEditSheet({
             </span>
           </button>
         </Field>
+
+        <div style={{ fontSize: 10.5, color: _INK2, margin: '-4px 0 4px', lineHeight: 1.5 }}>
+          ※ NGスタッフ・同住所紐付けはPC版の患者マスタで設定できます。
+        </div>
 
         <div
           style={{

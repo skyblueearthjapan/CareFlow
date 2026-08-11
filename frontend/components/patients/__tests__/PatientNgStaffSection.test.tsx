@@ -209,4 +209,23 @@ describe('PatientNgStaffSection', () => {
     render(<PatientNgStaffSection patientId={PATIENT_ID} />);
     expect(screen.queryByTestId('patient-ng-staff-empty')).not.toBeInTheDocument();
   });
+
+  // ─── embedded (訪問条件 Card 内への埋め込み) ───────────────────────────
+  it('10. embedded=true → Card を描画せず見出しは h3 (中身は既定と同じ)', () => {
+    setupMocks({ rows: [rowA] });
+    render(<PatientNgStaffSection patientId={PATIENT_ID} embedded />);
+
+    expect(screen.getByRole('heading', { level: 3, name: 'NGスタッフ' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 2, name: 'NGスタッフ' })).not.toBeInTheDocument();
+    // 中身 (一覧 / 追加 UI) は既定と同じ。
+    expect(screen.getByTestId('patient-ng-staff-section')).toBeInTheDocument();
+    expect(screen.getByText('田中 一郎')).toBeInTheDocument();
+    expect(screen.getByTestId('patient-ng-staff-add-row')).toBeInTheDocument();
+  });
+
+  it('11. 既定 (embedded 未指定) の見出しは h2 のまま (後方互換)', () => {
+    setupMocks({ rows: [] });
+    render(<PatientNgStaffSection patientId={PATIENT_ID} />);
+    expect(screen.getByRole('heading', { level: 2, name: 'NGスタッフ' })).toBeInTheDocument();
+  });
 });

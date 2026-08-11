@@ -18,7 +18,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 
 import type { BoardResponse } from '@/lib/schemas/v2/board';
 import type { PatientRead } from '@/lib/schemas/patient';
@@ -781,6 +781,30 @@ describe('/m カルテ 閲覧の情報拡充', () => {
     expect(screen.getByText('隔週')).toBeInTheDocument();
   });
 
+  // 2026-08-11: 訪問条件 (性別制限 / 複数スタッフ必須 / NGスタッフ / 同住所ペア) を
+  // 基本情報から分離して 1 セクションに集約した。
+  it('「訪問条件」セクションに 性別制限 / 複数スタッフ必須 / NGスタッフ をまとめる', () => {
+    setSession('manager');
+    render(<FieldBoardPage />);
+    openKarte();
+
+    const heading = screen.getByText('訪問条件');
+    expect(heading).toBeInTheDocument();
+
+    // KSec: <div>{見出し div}{children}</div> → 見出しの親がセクション本体。
+    const section = heading.parentElement as HTMLElement;
+    expect(within(section).getByText('性別制限')).toBeInTheDocument();
+    expect(within(section).getByText('複数スタッフ必須')).toBeInTheDocument();
+    expect(within(section).getByText('NGスタッフ')).toBeInTheDocument();
+
+    // 基本情報からは当該 3 項目が外れる (氏名/住所などは残る)。
+    const basic = screen.getByText('基本情報').parentElement as HTMLElement;
+    expect(within(basic).queryByText('性別制限')).not.toBeInTheDocument();
+    expect(within(basic).queryByText('複数スタッフ必須')).not.toBeInTheDocument();
+    expect(within(basic).queryByText('NGスタッフ')).not.toBeInTheDocument();
+    expect(within(basic).getByText('ステータス')).toBeInTheDocument();
+  });
+
   it('希望曜日に日曜 (日) を含む 月〜日 7 日を表示する', () => {
     setSession('manager');
     render(<FieldBoardPage />);
@@ -855,6 +879,21 @@ describe('/m カルテ 編集 → 保存', () => {
     expect(wp.frequency_per_week).toBe(3);
     expect(wp.visit_frequency).toBe('biweekly');
     expect(wp.preferred_weekdays).toEqual(['Mon', 'Fri', 'Sun']);
+  });
+
+  // 2026-08-11: 編集シートにも「訪問条件」見出しを置き、関係編集は PC 版へ誘導する。
+  it('編集シートに「訪問条件」見出しと PC 版誘導の補足文が出る', () => {
+    setSession('manager');
+    render(<FieldBoardPage />);
+    openKarte();
+    fireEvent.click(screen.getByRole('button', { name: 'カルテを編集' }));
+
+    expect(screen.getByText('訪問条件')).toBeInTheDocument();
+    expect(
+      screen.getByText('※ NGスタッフ・同住所紐付けはPC版の患者マスタで設定できます。'),
+    ).toBeInTheDocument();
+    // 関係エディタ自体はモバイルに実装しない (PC 限定)。
+    expect(screen.queryByText('同住所紐付け')).not.toBeInTheDocument();
   });
 
   it('住所未変更なら保存時にジオコード・拠点解決を呼ばない (best-effort)', async () => {

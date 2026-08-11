@@ -313,6 +313,40 @@ describe('SameAddressLinksSection (Phase G-21)', () => {
     expect(group).toBeInTheDocument();
   });
 
+  // ─── embedded (訪問条件 Card 内への埋め込み) ───────────────────────────
+  it('9. embedded=true → Card を描画せず見出しは h3 (中身は既定と同じ)', () => {
+    setupMocks({
+      candidates: [
+        {
+          patient_id: OTHER_ID,
+          patient_code: 'P-002',
+          patient_name: '山田太郎',
+          address: '千葉県',
+          pair_mode: 'blocked',
+          decided_by_user_id: null,
+          note: null,
+        },
+      ],
+    });
+
+    render(<SameAddressLinksSection patientId={PATIENT_ID} embedded />);
+
+    // 見出しは h3 (既定は h2)。
+    expect(screen.getByRole('heading', { level: 3, name: '同住所紐付け' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { level: 2, name: '同住所紐付け' }),
+    ).not.toBeInTheDocument();
+    // 中身 (候補行 / radio) は既定と同じ。
+    expect(screen.getByTestId('same-address-links-section')).toBeInTheDocument();
+    expect(screen.getByTestId(`pair-mode-radio-${OTHER_ID}-blocked`)).toBeChecked();
+  });
+
+  it('10. 既定 (embedded 未指定) の見出しは h2 のまま (後方互換)', () => {
+    setupMocks({ candidates: [] });
+    render(<SameAddressLinksSection patientId={PATIENT_ID} />);
+    expect(screen.getByRole('heading', { level: 2, name: '同住所紐付け' })).toBeInTheDocument();
+  });
+
   it('H3: setLink.isPending=true 中の note blur は POST しない (二重送信ガード)', async () => {
     // setLink を「常に pending」状態にして blur しても mutateAsync が呼ばれないことを確認.
     const setFn = vi.fn().mockResolvedValue(undefined);

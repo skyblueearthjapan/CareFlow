@@ -73,6 +73,16 @@ vi.mock('@/lib/queries/offices', () => ({
   useOffices: vi.fn(),
 }));
 
+// ─── Mock NGスタッフ / 同住所紐付け の read hook ───────────────────────────────
+// (訪問条件 Card の 2 行。他 export は実物のまま = PatientFixedVisitsPanel が使う)
+vi.mock('@/lib/queries/patient_ng_staff', () => ({
+  useNgStaffList: vi.fn(),
+}));
+vi.mock('@/lib/queries/g21', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/queries/g21')>();
+  return { ...actual, useSameAddressCandidates: vi.fn() };
+});
+
 // ─── Mock toast ───────────────────────────────────────────────────────────────
 vi.mock('@/components/ui/sonner', () => ({
   toast: {
@@ -92,6 +102,8 @@ import {
 } from '@/lib/queries/patient_fixed_visits';
 import { useCourseTemplates } from '@/lib/queries/course_templates';
 import { useOffices } from '@/lib/queries/offices';
+import { useNgStaffList } from '@/lib/queries/patient_ng_staff';
+import { useSameAddressCandidates } from '@/lib/queries/g21';
 
 import PatientDetailPage from '../page';
 
@@ -182,6 +194,8 @@ function setupMocks(
     patientOverrides?: Partial<Record<string, unknown>>;
     fixedVisitReads?: unknown[];
     role?: 'admin' | 'manager' | 'staff';
+    ngStaff?: unknown[];
+    sameAddressCandidates?: unknown[];
   } = {},
 ) {
   const role = opts.role ?? 'admin';
@@ -207,6 +221,10 @@ function setupMocks(
   (useDeleteFixedVisits as Mock).mockReturnValue(makeMutation());
   (useApplyFromWeek as Mock).mockReturnValue(makeMutation());
   (useCourseTemplates as Mock).mockReturnValue(makeQueryResult(COURSE_TEMPLATES));
+  (useNgStaffList as Mock).mockReturnValue(makeQueryResult(opts.ngStaff ?? []));
+  (useSameAddressCandidates as Mock).mockReturnValue(
+    makeQueryResult(opts.sameAddressCandidates ?? []),
+  );
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -360,6 +378,35 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
       // normal / special の 2 タブ分、少なくとも 7 件以上 (通常タブのみ初期表示なら 7)
       expect(noVisitItems.length).toBeGreaterThanOrEqual(7);
     });
+  });
+
+  // ─── 2026-08-11: 訪問条件 Card に「同住所紐付け」行を追加 ────────────────────
+
+  it('9. 訪問条件に「同住所紐付け」行 (氏名 + モード) が NGスタッフの隣に出る', () => {
+    setupMocks({
+      sameAddressCandidates: [
+        { patient_id: 'p-a', patient_name: '山田 太郎', pair_mode: 'blocked' },
+        { patient_id: 'p-b', patient_name: '佐藤 花子', pair_mode: 'required' },
+        // 未設定 (pair_mode=null) の候補は列挙しない。
+        { patient_id: 'p-c', patient_name: '未設定 三郎', pair_mode: null },
+      ],
+    });
+
+    renderPage();
+
+    expect(screen.getByText('同住所紐付け')).toBeInTheDocument();
+    expect(screen.getByText('山田 太郎（ペア禁止）・佐藤 花子（ペア必須）')).toBeInTheDocument();
+    expect(screen.queryByText(/未設定 三郎/)).not.toBeInTheDocument();
+  });
+
+  it('10. 同住所紐付けが 0 件なら「なし」', () => {
+    setupMocks({ sameAddressCandidates: [] });
+
+    renderPage();
+
+    expect(screen.getByText('同住所紐付け')).toBeInTheDocument();
+    // NGスタッフ / 同住所紐付け ともに 0 件 → 「なし」が 2 行ぶん出る。
+    expect(screen.getAllByText('なし').length).toBeGreaterThanOrEqual(2);
   });
 
   it('8. requires_multiple_staff=true でも 保存ボタンなし (readOnly 確認)', () => {
