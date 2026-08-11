@@ -85,6 +85,7 @@ from app.services.scheduling.proposal_solver import (
 from app.services.scheduling.propose_slots_service import (
     _course_label,
     _CourseBucket,
+    _staff_ng_mismatch,
     load_week_course_buckets,
 )
 from app.services.scheduling.schedule_health import (
@@ -276,7 +277,7 @@ def _copy_bucket(b: _CourseBucket) -> _CourseBucket:
         assigned_staff_id=b.assigned_staff_id,
         staff_sex=b.staff_sex,
         staff_absent=b.staff_absent,
-        # NG スタッフ (§6): 警告判定に使うので複製時も引き継ぐ (frozenset なので共有可).
+        # NG スタッフ (§6): 除外判定に使うので複製時も引き継ぐ (frozenset なので共有可).
         ng_patient_ids=b.ng_patient_ids,
         visits=list(b.visits),
     )
@@ -541,6 +542,11 @@ def _enumerate_step_candidates(
             patient_id=str(pid),
         )
         for (office_id, wd_dst, code), bucket in sim.buckets.items():
+            # NG スタッフ (§6 / PO確定 2026-08-11): 対象患者が移動先コースの割付スタッフを
+            # NG 指定していれば手を作らない (ハード除外. swap 経路は共有の
+            # _swap_candidates_for_pfv が両方向で除外する).
+            if _staff_ng_mismatch(pid, bucket.ng_patient_ids):
+                continue
             is_same_weekday = wd_dst == wd_src
             kind = "time_change" if is_same_weekday else "day_change"
 

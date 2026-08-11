@@ -334,11 +334,11 @@ async def test_time_flexible_same_weekday_no_confirmation(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_improvement_staff_ng_mismatch_warning(db) -> None:
-    """移動先コース (B) の担当が NG スタッフなら staff_warnings に staff_ng_mismatch (§6).
+async def test_improvement_staff_ng_destination_excluded(db) -> None:
+    """移動先コース (B) の担当が NG スタッフなら候補が出ない (PO確定 2026-08-11 の除外・§6).
 
-    除外はしない (提案自体は同じだけ出る) = 注意喚起のみ. NG 設定前は警告が付かない
-    ことも同一シナリオで確認する.
+    NG 設定前は B への候補が出ることを同一シナリオで確認してから NG を張り、B の候補が
+    消えること (= 警告方式からハード除外への格上げ) を確認する.
     """
     _office, p = await _two_course_improvement_scenario(
         db, target_movability="time_flexible", target_weekday=0, alt_weekday=0
@@ -359,8 +359,8 @@ async def test_improvement_staff_ng_mismatch_warning(db) -> None:
         db, patient=p, iso_year=ISO_YEAR, iso_week=ISO_WEEK
     )
     b_after = [s for s in after if s.cand_course_code == "B"]
-    assert len(b_after) == len(b_before), "NG は除外しない (件数不変)"
-    assert all("staff_ng_mismatch" in s.staff_warnings for s in b_after)
+    assert not b_after, b_after  # NG コースへの提案は一切出さない.
+    assert all("staff_ng_mismatch" not in s.staff_warnings for s in after)
 
 
 # ---------------------------------------------------------------------------

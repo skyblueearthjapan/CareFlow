@@ -78,6 +78,7 @@ from app.services.scheduling.propose_slots_service import (
     CandidateInput,
     ProposedSlot,
     _CourseBucket,
+    _staff_ng_mismatch,
     _to_existing_visits,
     compute_all_proposed_slots,
     load_week_course_buckets,
@@ -222,6 +223,10 @@ def _bucket_without(bucket: _CourseBucket, *exclude: V2Visit) -> _CourseBucket:
         assigned_staff_id=bucket.assigned_staff_id,
         staff_sex=bucket.staff_sex,
         staff_absent=bucket.staff_absent,
+        # NG スタッフ (§6) / イベント窓: 複製で落とすと NG 除外 (PO確定 2026-08-11) と
+        # イベント判定が模擬状態だけ無効化されるため必ず引き継ぐ (共に不変オブジェクト).
+        ng_patient_ids=bucket.ng_patient_ids,
+        event_windows=bucket.event_windows,
         visits=[v for v in bucket.visits if id(v) not in excluded_ids],
     )
 
@@ -247,6 +252,9 @@ def _add_retreated_visit(
         assigned_staff_id=base.assigned_staff_id,
         staff_sex=base.staff_sex,
         staff_absent=base.staff_absent,
+        # _bucket_without と同じく NG 集合 / イベント窓を引き継ぐ (落とすと除外が無効化).
+        ng_patient_ids=base.ng_patient_ids,
+        event_windows=base.event_windows,
         visits=base.visits + [retreated],
     )
 
@@ -389,6 +397,11 @@ def _enumerate_retreats(
         kind = "time_change" if is_same_weekday else "day_change"
         # 曜日跨ぎ: 移動先曜日を既に占有していたら apply 不能 (デッドエンド防止).
         if not is_same_weekday and wd in occupied_weekdays:
+            continue
+        # NG スタッフ (§6 / PO確定 2026-08-11): 退避させられる患者にとって NG のコースへは
+        # 退避させない (ハード除外). 対象患者の投入先側は compute_all_proposed_slots が
+        # 同じ判定で除外する (_fits_involving_bucket 経由).
+        if _staff_ng_mismatch(patient.id, bucket.ng_patient_ids):
             continue
 
         existing = _bucket_existing_excluding(bucket, patient.id)

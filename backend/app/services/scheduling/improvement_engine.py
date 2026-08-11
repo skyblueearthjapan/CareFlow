@@ -83,7 +83,9 @@ MAX_SWAP_SUGGESTIONS_PER_PATIENT: int = 2
 _WARN_STAFF_UNASSIGNED = "staff_unassigned"
 _WARN_STAFF_ABSENT = "staff_absent"
 _WARN_STAFF_SEX_MISMATCH = "staff_sex_mismatch"
-# NG スタッフ (patient-ng-staff-design.md §6). 性別と同格・除外はせず注意喚起のみ.
+# NG スタッフ (patient-ng-staff-design.md §6).
+# PO確定 2026-08-11: 提案系でも **ハード除外** (NG スタッフのコースへは提案しない).
+# よってこのコードが staff_warnings に載ることは通常ない (定数は後方互換で残す).
 _WARN_STAFF_NG_MISMATCH = "staff_ng_mismatch"
 
 # 曜日ラベル (0=Mon..6=Sun).
@@ -554,10 +556,11 @@ def _staff_warnings_for_bucket(
     sex_restriction: str | None,
     patient_id: UUID | None = None,
 ) -> list[str]:
-    """候補コースのスタッフ実態警告 (P0-1 の 3 コード + NG スタッフ). 除外はせず注意喚起のみ.
+    """候補コースのスタッフ実態警告 (P0-1 の 3 コード). 除外はせず注意喚起のみ.
 
-    ``patient_id`` (移動対象の患者) を渡すと、その患者がコース割付スタッフを NG 指定
-    しているとき ``staff_ng_mismatch`` を追加する (設計書 §6. 性別と同格の扱い).
+    NG スタッフ (§6) は PO確定 2026-08-11 で **候補生成前のハード除外** に変わったため、
+    ここへ到達する bucket は NG 非該当である (二重の安全網として判定自体は残す).
+    ``patient_id`` を渡すと万一 NG 該当なら ``staff_ng_mismatch`` を付ける.
     NG 集合は ``load_week_course_buckets`` が 1 クエリでバケットへ載せている.
     """
     warnings: list[str] = []
@@ -669,12 +672,21 @@ def _swap_candidates_for_pfv(
         # 同一 office のバケットのみ交換候補にする.
         if office_id_y != current.bucket.office_id:
             continue
+        # NG スタッフ (§6 / PO確定 2026-08-11) 方向 X: 対象患者 X が移動先 (bucket_y) の
+        # 割付スタッフを NG 指定していれば、この移動先とのスワップは一切出さない.
+        if _staff_ng_mismatch(patient.id, bucket_y.ng_patient_ids):
+            continue
         same_bucket = bucket_y is current.bucket
         weekday_changes = wy != wx
 
         for vy in bucket_y.visits:
             y_pid = vy.patient_id  # type: ignore[attr-defined]
             if y_pid == patient.id:
+                continue
+            # NG スタッフ 方向 Y (欠落していた相手方向の検査): スワップで Y は X の現在
+            # コース (current.bucket) へ移るので、Y がそのコースの割付スタッフを NG 指定
+            # していればこのスワップも出さない (両方向ハード除外).
+            if _staff_ng_mismatch(y_pid, current.bucket.ng_patient_ids):
                 continue
             # Y の可動域 / pin は Y の PFV から判定 (PFV 基準). 無ければ保守的に skip.
             pfv_y = pfv_by_pw.get((y_pid, wy))
@@ -1037,6 +1049,10 @@ async def find_improvement_candidates(
         _day_dismissed_counted = False
 
         for (office_id, wd, course_code), bucket in buckets.items():
+            # NG スタッフ (§6 / PO確定 2026-08-11): 対象患者が移動先コースの割付スタッフを
+            # NG 指定していれば候補を一切生成しない (従来の警告 + 表示から除外へ格上げ).
+            if _staff_ng_mismatch(patient.id, bucket.ng_patient_ids):
+                continue
             existing = _bucket_existing_excluding(bucket, patient.id)
             lunch = compute_lunch_window(
                 bucket.visits,

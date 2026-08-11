@@ -23,6 +23,7 @@ from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.patient_ng_staff import PatientNgStaff
 from app.models.staff import Staff, StaffShift
 from app.models.suggestion_dismissal import SuggestionDismissal
 from app.models.user import User
@@ -338,6 +339,89 @@ async def test_confirmation_required_blocker_not_moved(client, db) -> None:
     data = res.json()
     assert data["plans"] == []
     assert data["unmovable_summary"]["confirmation_required"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# NG スタッフ (§6 / PO確定 2026-08-11): 投入先・退避先ともハード除外
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unblock_target_ng_staff_no_plan(client, db) -> None:
+    """対象患者が詰まりコースの担当を NG 指定 → 開通プランを出さない (投入先の除外).
+
+    模擬バケット複製 (``_bucket_without`` / ``_add_retreated_visit``) が
+    ``ng_patient_ids`` を落とすと除外が効かずプランが出てしまうため、その回帰も兼ねる。
+    """
+    admin = await _make_user(db, email="ubngt@example.com")
+    office, candidate, _blk = await _seed_single_blocker(db)
+    staff = (await db.scalars(select(Staff).where(Staff.name == "S1"))).one()
+    db.add(PatientNgStaff(patient_id=candidate.id, staff_id=staff.id))
+    await db.commit()
+
+    res = await client.post(_URL, headers=_bearer(admin), json=_candidate_body(office, candidate))
+    assert res.status_code == 200, res.text
+    assert res.json()["plans"] == [], res.text
+
+
+async def _seed_retreat_shape(db, *, email: str, with_ng: bool):
+    """Mon A = S1 / Tue A = S2 の「退避で開通する」形状を作る.
+
+    with_ng=True でブロッカーが S2 (退避先 Tue A の担当) を NG 指定する。
+    NG 行は **リクエスト前に** commit しておく (対照→NG追加→再リクエストの
+    1 テスト 2 段構成はバッチ実行時に NG 行の可視性タイミングへ依存して
+    フレークするため、シナリオごとに独立したテストへ分割している)。
+    """
+    admin = await _make_user(db, email=email)
+    office, staff = await _mk_office_staff(db)
+    staff2 = Staff(name="S2", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add(staff2)
+    await db.flush()
+    for wd in range(5):
+        db.add(StaffShift(staff_id=staff2.id, weekday=wd, is_on=True))
+    ct_a = await _mk_template(db, office, "A")
+    mon_a = await _mk_course(db, office, staff, 0, "A", ct_a)
+    tue_a = await _mk_course(db, office, staff2, 1, "A", ct_a)
+
+    blocker = _patient("BLK", V_COORD, office.id)
+    fill = _patient("FILL", FILL, office.id)
+    candidate = _patient("TGT", BASE, office.id)
+    db.add_all([blocker, fill, candidate])
+    await db.flush()
+    await _add_visit_and_pfv(db, blocker, mon_a, staff, weekday=0, start=time(10, 0))
+    await _add_visit_and_pfv(
+        db, fill, tue_a, staff2, weekday=1, start=time(9, 30), movability="locked"
+    )
+    if with_ng:
+        db.add(PatientNgStaff(patient_id=blocker.id, staff_id=staff2.id))
+    await db.commit()
+    return admin, office, candidate
+
+
+@pytest.mark.asyncio
+async def test_unblock_retreat_shape_opens_without_ng(client, db) -> None:
+    """対照: NG 無しなら Tue A への退避で開通する (退避先除外テストの前提形状)."""
+    admin, office, candidate = await _seed_retreat_shape(
+        db, email="ubngr0@example.com", with_ng=False
+    )
+    res = await client.post(_URL, headers=_bearer(admin), json=_candidate_body(office, candidate))
+    assert res.status_code == 200, res.text
+    assert res.json()["plans"], res.text
+
+
+@pytest.mark.asyncio
+async def test_unblock_retreat_destination_ng_staff_excluded(client, db) -> None:
+    """退避させられる患者にとって NG のコースへは退避させない (退避先の除外).
+
+    退避先が Tue A しかないため、ブロッカーが S2 を NG 指定しているとプランは 0 件。
+    (NG 無しで開通する形状であることは前段の対照テストが保証する。)
+    """
+    admin, office, candidate = await _seed_retreat_shape(
+        db, email="ubngr@example.com", with_ng=True
+    )
+    res = await client.post(_URL, headers=_bearer(admin), json=_candidate_body(office, candidate))
+    assert res.status_code == 200, res.text
+    assert res.json()["plans"] == [], res.text
 
 
 # ---------------------------------------------------------------------------

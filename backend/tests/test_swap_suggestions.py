@@ -29,6 +29,7 @@ from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.patient_ng_staff import PatientNgStaff
 from app.models.staff import Staff, StaffShift
 from app.models.suggestion_dismissal import SuggestionDismissal
 from app.models.user import User
@@ -258,6 +259,50 @@ async def test_swap_rejected_when_one_direction_infeasible(db) -> None:
         db, patient=x, iso_year=ISO_YEAR, iso_week=ISO_WEEK
     )
     assert all(s.kind != "swap" for s in suggestions), suggestions
+
+
+@pytest.mark.asyncio
+async def test_swap_rejected_when_target_ng_on_destination_staff(db) -> None:
+    """方向 X: 対象患者 X が移動先コース B の担当を NG 指定 → swap を出さない (§6 除外)."""
+    _office, x, _y = await _swap_scenario(db)
+    # 対照: NG 無しでは swap が出る形状であることを先に確認.
+    before, _s0 = await find_improvement_candidates(
+        db, patient=x, iso_year=ISO_YEAR, iso_week=ISO_WEEK
+    )
+    assert [s for s in before if s.kind == "swap"], before
+
+    s2 = (await db.scalars(select(Staff).where(Staff.name == "S2"))).one()
+    db.add(PatientNgStaff(patient_id=x.id, staff_id=s2.id))
+    await db.commit()
+
+    after, _s1 = await find_improvement_candidates(
+        db, patient=x, iso_year=ISO_YEAR, iso_week=ISO_WEEK
+    )
+    assert all(s.kind != "swap" for s in after), after
+    # move 候補も B (NG コース) へは出ない.
+    assert all(s.cand_course_code != "B" for s in after), after
+
+
+@pytest.mark.asyncio
+async def test_swap_rejected_when_counterpart_ng_on_current_staff(db) -> None:
+    """方向 Y (相手方向): 相手 Y が X の現在コース A の担当を NG 指定 → swap を出さない.
+
+    従来は X→移動先しか検査しておらず、Y が NG スタッフのコースへ送られる提案が出ていた.
+    """
+    _office, x, y = await _swap_scenario(db)
+    before, _s0 = await find_improvement_candidates(
+        db, patient=x, iso_year=ISO_YEAR, iso_week=ISO_WEEK
+    )
+    assert [s for s in before if s.kind == "swap"], before
+
+    s1 = (await db.scalars(select(Staff).where(Staff.name == "S1"))).one()
+    db.add(PatientNgStaff(patient_id=y.id, staff_id=s1.id))
+    await db.commit()
+
+    after, _s1 = await find_improvement_candidates(
+        db, patient=x, iso_year=ISO_YEAR, iso_week=ISO_WEEK
+    )
+    assert all(s.kind != "swap" for s in after), after
 
 
 @pytest.mark.asyncio

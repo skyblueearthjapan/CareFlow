@@ -289,11 +289,11 @@ async def test_bulk_multi_weekday_coverage(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bulk_placement_carries_staff_ng_warning(client, db) -> None:
-    """NG スタッフのコースへ入る placement に staff_ng_mismatch が伝搬する (設計書 §6).
+async def test_bulk_placement_excludes_staff_ng_course(client, db) -> None:
+    """NG スタッフのコースへは投入しない (PO確定 2026-08-11 の除外・設計書 §6).
 
     pool_bulk は propose-slots (compute_all_proposed_slots) へ委譲しているため、
-    pool_bulk_inserter 側の変更なしで警告が載る (投入自体はブロックしない).
+    pool_bulk_inserter 側の変更なしで除外が効く (唯一のコースが NG → 未投入).
     """
     admin = await _make_user(db, email="pb-ng@example.com", role="admin")
     office, staff = await _seed_office_staff(db)
@@ -312,8 +312,8 @@ async def test_bulk_placement_carries_staff_ng_warning(client, db) -> None:
     assert res.status_code == 200, res.text
     body = res.json()
     my = [pl for pl in body["placements"] if pl["patient_id"] == str(p.id)]
-    assert len(my) == 1, body  # 除外しない (投入はされる).
-    assert "staff_ng_mismatch" in my[0]["warnings"], my[0]
+    assert my == [], body  # NG コースしかないので 1 件も配置されない.
+    assert str(p.id) in {u["patient_id"] for u in body["unplaced"]}, body
 
 
 # ---------------------------------------------------------------------------

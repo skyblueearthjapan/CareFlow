@@ -13,6 +13,7 @@ DB 部はローカル SQLite のみ (本番 DB 禁止).
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, time
 from typing import Any
 from uuid import UUID, uuid4
@@ -376,8 +377,11 @@ def test_pair_partner_sex_mismatch_warns() -> None:
         assert "staff_sex_mismatch" in ps.warnings, ps.warnings
 
 
-def test_pair_partner_ng_staff_warns() -> None:
-    """相方 (partner) だけが NG スタッフでも staff_ng_mismatch 警告が付く (OR 判定・§6)."""
+def test_pair_partner_ng_staff_excluded() -> None:
+    """相方 (partner) だけが NG スタッフならペア枠自体が出ない (PO確定 2026-08-11 の除外・§6).
+
+    A/B の 2 コースしかないので、B が NG で使えない = 相方が居ない → ペアは 0 件になる。
+    """
     oid = uuid4()
     cand_pid = uuid4()
     buckets = {
@@ -400,10 +404,39 @@ def test_pair_partner_ng_staff_warns() -> None:
         existing_patient_id=cand_pid,
     )
     results = _compute(buckets, cand)
-    assert results, "ペアは成立するはず (ng_mismatch は除外しない)"
-    for ps in results:
+    assert not results, [ps.course_code for ps in results]
+
+    # 対照: 同じ盤面で NG 指定の無い候補ならペアは従来どおり成立する.
+    clean = replace(cand, existing_patient_id=uuid4())
+    clean_results = _compute(buckets, clean)
+    assert clean_results, "NG が無ければペアは成立するはず"
+    for ps in clean_results:
         assert ps.partner_course_code == "B", ps.partner_course_code
-        assert "staff_ng_mismatch" in ps.warnings, ps.warnings
+        assert "staff_ng_mismatch" not in ps.warnings, ps.warnings
+
+
+def test_pair_primary_ng_staff_excluded() -> None:
+    """primary 側が NG のときもペア枠は出ない (どちらか一方でも NG なら除外・§6)."""
+    oid = uuid4()
+    cand_pid = uuid4()
+    buckets = {
+        (oid, 0, "A"): _bucket(
+            oid, "A", [], assigned_staff_id=uuid4(), ng_patient_ids=frozenset({cand_pid})
+        ),
+        (oid, 0, "B"): _bucket(oid, "B", [], assigned_staff_id=uuid4()),
+    }
+    cand = CandidateInput(
+        lat=BASE[0],
+        lng=BASE[1],
+        service_minutes=30,
+        time_type="終日",
+        preferred_start=None,
+        preferred_end=None,
+        preferred_weekdays=frozenset({0}),
+        requires_multiple_staff=True,
+        existing_patient_id=cand_pid,
+    )
+    assert not _compute(buckets, cand)
 
 
 def test_pair_acceptance_blocked_warns() -> None:

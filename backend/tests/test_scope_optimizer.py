@@ -24,6 +24,7 @@ from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.patient_ng_staff import PatientNgStaff
 from app.models.staff import Staff, StaffShift
 from app.models.suggestion_dismissal import SuggestionDismissal
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
@@ -266,6 +267,28 @@ async def test_empty_scope_returns_zero_steps(db) -> None:
 # ---------------------------------------------------------------------------
 # D-1: pinned / locked 除外
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scope_move_excludes_ng_staff_course(db) -> None:
+    """NG スタッフのコースへは move の手を作らない (PO確定 2026-08-11 の除外・§6).
+
+    ①と同一形状 (course A 内で 1 手浮く) だが、対象患者が course A の担当 S1 を NG 指定
+    しているので手が 1 つも積まれない。
+    """
+    office, p = await _sandwich_scenario(db, target_movability="time_flexible")
+    s1 = (await db.scalars(select(Staff).where(Staff.name == "S1"))).one()
+    db.add(PatientNgStaff(patient_id=p.id, staff_id=s1.id))
+    await db.commit()
+
+    result = await simulate_scope_optimization(
+        db,
+        iso_year=ISO_YEAR,
+        iso_week=ISO_WEEK,
+        scope=_scope(office, weekdays=[0], course_codes=["A"]),
+        config=CONFIG,
+    )
+    assert result.steps == [], result.steps
 
 
 @pytest.mark.asyncio
