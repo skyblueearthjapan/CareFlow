@@ -27,6 +27,7 @@ from __future__ import annotations
 from datetime import date, time, timedelta
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
@@ -65,6 +66,21 @@ _VISITS_URL = "/api/v1/visits"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _leave_session_clean(db):
+    """各テストの終わりに test session の TX を閉じる (aiosqlite 共有コネクション対策).
+
+    conftest の in-memory SQLite は 1 コネクションを app session と共有するため、
+    テストが **開いた読み取り TX を残したまま**終わると、次のテスト (別ファイルも含む)
+    の commit が ``cannot commit transaction - SQL statements in progress`` で落ちる。
+    本ファイルは apply 後の検証で毎回 SELECT して終わるので、明示的に閉じておく
+    (``tests/test_visits.py::test_visits_delete_manager_returns_204`` の防御コメント
+    と同じ既知事象)。
+    """
+    yield
+    await db.rollback()
 
 
 async def _make_admin(db, email: str) -> User:
