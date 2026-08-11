@@ -69,8 +69,12 @@ from app.schemas.v2.auto_allocate import (
 from app.schemas.v2.patient_fixed_visit import PatientFixedVisitMode, PatientFixedVisitV2Read
 from app.schemas.v2.visit import VisitV2Read
 from app.services.constraint_override_notify import (
+    ConstraintWarning,
     collect_constraint_warnings,
+    collect_constraint_warnings_for_patients,
+    constraint_confirmation_detail,
     notify_constraint_override,
+    notify_constraint_override_for_course,
 )
 from app.services.op_log_service import fmt_time, fmt_weekday, record_op
 from app.services.schedule_fix_service import (
@@ -557,6 +561,12 @@ class PlaceAndFixRequest(BaseModel):
         default=None,
         description="操作グループ ID（FE が DnD の delete+place に同値を送る）。省略で自動発行。",
     )
+    # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
+    # 既定 False = 従来どおり。違反があれば 422 (code=constraint_confirmation_required)。
+    acknowledge_constraint_warnings: bool = Field(
+        default=False,
+        description="NGスタッフ/性別制限の警告を確認済みとして続行する (422 の再送用)。",
+    )
 
     @model_validator(mode="after")
     def _validate_course_templates_shape(self) -> PlaceAndFixRequest:
@@ -846,6 +856,11 @@ async def place_and_fix(
            - staff_count=2 では slot_index=0 / 1 を 2 行 INSERT
         6. 1 トランザクションで commit。例外時は全 rollback (片方だけ残らない)。
 
+    NG スタッフ / 性別制限 (§7-2): Course 確保の直後・visit 作成の **前** に
+    「配置する患者 × 配置先コースの現担当」(2 名体制なら 2 コース分) を検査し、
+    違反があれば ``code=constraint_confirmation_required`` の 422。
+    ``acknowledge_constraint_warnings=true`` の再送で続行し、管理者へお知らせを飛ばす。
+
     Returns:
         後方互換: ``visit`` / ``fixed_visit`` (1 件目を入れる) と、
         新形式: ``visits`` / ``fixed_visits`` (配列) と ``visit_group_id``.
@@ -972,6 +987,25 @@ async def place_and_fix(
             )
             courses.append(c)
 
+        # ----- 1b) NG スタッフ / 性別制限の確認フロー (§7-2) -----
+        # 「患者を動かす」方向の検査: 配置する患者 × 配置先コースの現担当。
+        # 2 名体制では 2 コース (= 2 担当) 全てを対象にする。visit を作る **前** に
+        # 置き、422 なら何も書かずに rollback して返す (行だけ作って弾く事故を防ぐ)。
+        _cw: list[ConstraintWarning] = []
+        _cw_by_course: list[tuple[Course, list[ConstraintWarning]]] = []
+        for course in courses:
+            _w = await collect_constraint_warnings_for_patients(
+                db, course=course, patient_ids=[body.patient_id]
+            )
+            if _w:
+                _cw.extend(_w)
+                _cw_by_course.append((course, _w))
+        if _cw and not body.acknowledge_constraint_warnings:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=constraint_confirmation_detail(_cw),
+            )
+
         # ----- 1) visits に新規行を作成 (staff_count 件; 共通 visit_group_id) -----
         # W37 Phase 2-A: 2 名体制では visit_group_id を共有することで partial UNIQUE
         # uq_visits_pds_group_active (visit_group_id 込み) を通過させる.
@@ -1061,6 +1095,12 @@ async def place_and_fix(
                 db.add(fv)
                 new_fvs.append(fv)
             await db.flush()
+
+        # ----- 2b) §7-3: acknowledge を通した事実を管理者へお知らせ (commit 前 = 同一 TX) -----
+        for _c, _w in _cw_by_course:
+            await notify_constraint_override_for_course(
+                db, course=_c, warnings=_w, actor=current_user, op_group_id=body.op_group_id
+            )
 
         # ----- 3) 1 トランザクション commit -----
         await db.commit()

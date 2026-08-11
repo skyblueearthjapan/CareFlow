@@ -30,11 +30,13 @@ from typing import Annotated, Any, NoReturn
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
 from app.models.audit_log import AuditLog
+from app.models.course import Course
 from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
@@ -42,6 +44,7 @@ from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.suggestion_dismissal import SuggestionDismissal
 from app.models.user import User
 from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, VISIT_STATUS_PLANNED, Visit
+from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.v2.auto_schedule_v2 import (
     ApplyIndividualWeekSync,
     AutoScheduleV2ApplyIndividualRequest,
@@ -178,6 +181,13 @@ from app.schemas.v2.unblock import (
     UnblockPlanItem,
     UnblockSlotRef,
     UnblockUnmovableSummary,
+)
+from app.services.constraint_override_notify import (
+    ConstraintWarning,
+    collect_constraint_warnings_for_patients,
+    constraint_confirmation_detail,
+    notify_constraint_override_for_course,
+    resolve_week_course_for_template,
 )
 from app.services.geocoding.client import (
     GeocodingServiceError,
@@ -831,7 +841,7 @@ async def full_optimize_endpoint(
 async def apply_individual_endpoint(
     payload: AutoScheduleV2ApplyIndividualRequest,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin"))],
+    current_user: Annotated[User, Depends(require_role("admin"))],
 ) -> AutoScheduleV2ApplyIndividualResponse:
     """機能 A/B 共通: 1 患者の固定枠 (patient_fixed_visits) を提案で更新する.
 
@@ -844,6 +854,11 @@ async def apply_individual_endpoint(
     同コース 11:30-12:15 が他 visit で占有されていれば unassigned になり得る.
     UX 影響: 「採用したのに翌週消えた」というユーザー混乱が起こり得る.
     緩和策: FE 側で「採用後 即 full-optimize」フローを推奨済 (1ca5bba commit).
+
+    NG スタッフ / 性別制限 (§7-2): ``change_scope='pattern_and_week'`` のときのみ
+    「採用する患者 × 配置先コースの現担当」を検査し、違反があれば
+    ``code=constraint_confirmation_required`` の 422。``pattern_only`` は週が特定
+    できず配置先コースの実体が無いためスキップする。
     """
     if not payload.confirm:
         raise HTTPException(
@@ -923,12 +938,56 @@ async def apply_individual_endpoint(
                 ),
             )
 
+    # NG スタッフ / 性別制限の確認フロー (§7-2)。「提案を採用して患者を置く」経路も
+    # 手動配置と同じ穴を持つため、apply 直前 (= PFV を壊す前) に検査する。
+    # ``pattern_and_week`` のときのみ = 週が特定できて初めて「どのコースの誰に
+    # 当たるか」が決まる (pattern_only は型だけなので週コースが存在しない)。
+    _cw: list[ConstraintWarning] = []
+    _cw_by_course: list[tuple[Course, list[ConstraintWarning]]] = []
+    if payload.change_scope == "pattern_and_week":
+        assert payload.iso_year is not None and payload.iso_week is not None  # 上で 422 済み
+        # visit_plans は course_template_id を持たない (office_id + course_code)。
+        # 週 × 曜日 × 拠点 × コード の 4-tuple で当該週の Course 実体を一括解決する
+        # (N+1 禁止: plan ごとに引かず 1 クエリ + メモリ側で突合)。
+        _keys = {(vp.office_id, vp.course_code, vp.weekday) for vp in payload.visit_plans}
+        if _keys:
+            _week_courses = list(
+                (
+                    await db.scalars(
+                        select(Course).where(
+                            Course.iso_year == payload.iso_year,
+                            Course.iso_week == payload.iso_week,
+                            Course.deleted_at.is_(None),
+                            tuple_(Course.office_id, Course.code, Course.weekday).in_(list(_keys)),
+                        )
+                    )
+                ).all()
+            )
+            for _c in _week_courses:
+                _w = await collect_constraint_warnings_for_patients(
+                    db, course=_c, patient_ids=[payload.patient_id]
+                )
+                if _w:
+                    _cw.extend(_w)
+                    _cw_by_course.append((_c, _w))
+    if _cw and not payload.acknowledge_constraint_warnings:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=constraint_confirmation_detail(_cw),
+        )
+
     # Pydantic model → dict
     plans = [vp.model_dump() for vp in payload.visit_plans]
     try:
         result = await apply_individual_proposal(
             db, patient_id=payload.patient_id, visit_plans=plans, config=config
         )
+        # §7-3: acknowledge を通した事実を管理者へお知らせする (PFV 更新と同一 TX)。
+        # apply 単位の識別子が無いため op_group_id=None (= 毎回通知)。
+        for _c, _w in _cw_by_course:
+            await notify_constraint_override_for_course(
+                db, course=_c, warnings=_w, actor=current_user, op_group_id=None
+            )
         await db.commit()
     except HTTPException:
         await db.rollback()
@@ -1279,6 +1338,11 @@ async def visit_move_week_only_endpoint(
 
     安全網 (改善提案 B 経路): 移動元 (patient, old_weekday, old_start_time) に一致する
     ``is_pinned=True`` の PFV があれば 422 (ピン留め枠は週だけでも動かさない)。
+
+    NG スタッフ / 性別制限 (§7-2): ``new_course_template_id`` でコースが変わるときは
+    「動かす患者 × 移動先コースの現担当」を検査し、違反があれば
+    ``code=constraint_confirmation_required`` の 422。``acknowledge_constraint_warnings``
+    付きの再送で続行し、管理者へお知らせを飛ばす。
     """
     # ISO 週の妥当性検証 (date 算出前に 400 で弾く).
     try:
@@ -1322,6 +1386,50 @@ async def visit_move_week_only_endpoint(
             detail="今週固定（青ピン）されています。解除してから動かしてください",
         )
 
+    # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
+    # PO 実機テストの穴: 「訪問を移動」で患者を NG 指定スタッフのコースへ無警告で
+    # 移せてしまっていた。青ピン (絶対ブロック) の **後** に置く = 通せない蓋を先に
+    # 効かせ、確認で通せる警告は後 (courses.py の新人 422 → 制約確認と同じ順序)。
+    _cw: list[ConstraintWarning] = []
+    _dest_course: Course | None = None
+    if payload.new_course_template_id is not None:
+        _dest_course = await resolve_week_course_for_template(
+            db,
+            course_template_id=payload.new_course_template_id,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            weekday=payload.new_weekday,
+        )
+    if _dest_course is not None:
+        # 「コースが変わる場合のみ」= 移動対象 visit が既に移動先コースに載っている
+        # (= 同一コース内の時刻/曜日移動) なら担当は変わらないので検査しない。
+        _current_course_ids = set(
+            (
+                await db.scalars(
+                    select(Visit.course_id).where(
+                        Visit.patient_id == payload.patient_id,
+                        Visit.visit_date
+                        == date.fromordinal(
+                            date.fromisocalendar(payload.iso_year, payload.iso_week, 1).toordinal()
+                            + payload.old_weekday
+                        ),
+                        Visit.start_time == payload.old_start_time,
+                        Visit.status == VISIT_STATUS_PLANNED,
+                        Visit.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+        )
+        if _current_course_ids != {_dest_course.id}:
+            _cw = await collect_constraint_warnings_for_patients(
+                db, course=_dest_course, patient_ids=[payload.patient_id]
+            )
+    if _cw and not payload.acknowledge_constraint_warnings:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=constraint_confirmation_detail(_cw),
+        )
+
     counters: dict[str, Any] = {"visits": 0, "patients": set()}
     try:
         await _apply_visit_move_week_only(
@@ -1336,6 +1444,16 @@ async def visit_move_week_only_endpoint(
             iso_week=payload.iso_week,
             counters=counters,
         )
+        # §7-3: acknowledge を通した事実を管理者へお知らせする。commit 前に add =
+        # 移動と同一トランザクション (適用されたものだけ通知される)。
+        if _cw and _dest_course is not None and int(counters["visits"]) > 0:
+            await notify_constraint_override_for_course(
+                db,
+                course=_dest_course,
+                warnings=_cw,
+                actor=current_user,
+                op_group_id=payload.op_group_id,
+            )
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -4355,6 +4473,8 @@ async def _apply_visit_move_week_only(
     ``source='manual_week'`` を刻む (週生成・固定枠戻で保護される値・U-0 保証)。
     コース (course_id) は移動先曜日の Course を解決/生成して更新する
     (``new_course`` = course_template_id。解決不能なら据え置き = _apply_pfv_move と同義)。
+    **コースが実際に変わったときは担当も移動先コースの ``assigned_staff_id`` へ
+    付け替える** (visits.primary_staff_id + visit_staff_assignments の両方)。
 
     今週の該当 visit が無い step は no-op (この週の表に元々出ていないため反映不要)。
     ``counters`` に更新した visit 数と患者集合を積む (week_sync サマリ用)。
@@ -4386,6 +4506,7 @@ async def _apply_visit_move_week_only(
 
     # 移動先曜日の Course を解決 (course_template_id が取れたときのみ course_id を更新).
     new_course_id: UUID | None = None
+    new_staff_id: UUID | None = None
     if new_course is not None:
         course = await _get_or_create_course_for_template_week(
             db,
@@ -4395,6 +4516,7 @@ async def _apply_visit_move_week_only(
             weekday=new_weekday,
         )
         new_course_id = course.id
+        new_staff_id = course.assigned_staff_id
 
     for v in visits:
         dur_min = (v.end_time.hour * 60 + v.end_time.minute) - (
@@ -4406,8 +4528,36 @@ async def _apply_visit_move_week_only(
         v.visit_date = new_date
         v.start_time = new_start
         v.end_time = time_cls(min(end_minutes // 60, 23), end_minutes % 60)
-        if new_course_id is not None:
+        if new_course_id is not None and v.course_id != new_course_id:
+            # 副次バグ修正 (2026-08-11): コース跨ぎ移動で course_id だけ差し替えて
+            # 担当を放置していたため、移動後も **旧コースの担当** が visit に残り、
+            # 訪問モニター / モバイル「今日の訪問」/ 子アプリの可視性 (VSA) が
+            # 実態とズレていた (= NG スタッフ確認フローも意味を成さない)。
+            # 書き方は reset_visits_to_fixed / apply_week_only と同じ流儀:
+            # VSA (正典) と visits.primary_staff_id (レガシー互換) の両方を書く。
+            _old_staff_id = v.primary_staff_id
             v.course_id = new_course_id
+            v.primary_staff_id = new_staff_id  # 新担当が未割当なら None (=未割当表示)
+            # VSA は「旧 primary の行だけ」を外して新 primary を足す。全削除にすると
+            # 2 名体制の相方 (secondary) の可視性まで巻き添えで消える。
+            # 新人同行は trainee_accompaniments 側で管理され VSA には書かないため
+            # (2026-07-12 の教訓)、ここで触れる必要はない。
+            if _old_staff_id is not None and _old_staff_id != new_staff_id:
+                await db.execute(
+                    sa_delete(VisitStaffAssignment).where(
+                        VisitStaffAssignment.visit_id == v.id,
+                        VisitStaffAssignment.staff_id == _old_staff_id,
+                    )
+                )
+            if new_staff_id is not None:
+                _already = await db.scalar(
+                    select(VisitStaffAssignment.visit_id).where(
+                        VisitStaffAssignment.visit_id == v.id,
+                        VisitStaffAssignment.staff_id == new_staff_id,
+                    )
+                )
+                if _already is None:
+                    db.add(VisitStaffAssignment(visit_id=v.id, staff_id=new_staff_id))
         v.source = VISIT_SOURCE_MANUAL_WEEK
         counters["visits"] += 1
         counters["patients"].add(patient_id)

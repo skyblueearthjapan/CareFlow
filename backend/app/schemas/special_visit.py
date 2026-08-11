@@ -137,6 +137,9 @@ class PlaceRequest(BaseModel):
     office_id: UUID | None = None
     course_code: str | None = None
     start_time: str
+    # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
+    # 既定 False = 従来どおり。違反があれば 422 (code=constraint_confirmation_required)。
+    acknowledge_constraint_warnings: bool = False
 
     @model_validator(mode="after")
     def _check_course_ref(self) -> PlaceRequest:

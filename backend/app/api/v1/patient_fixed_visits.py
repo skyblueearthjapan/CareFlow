@@ -53,6 +53,13 @@ from app.schemas.v2.patient_fixed_visit import (
     PfvValidationWarningOut,
     PfvWeekSyncOut,
 )
+from app.services.constraint_override_notify import (
+    ConstraintWarning,
+    collect_constraint_warnings_for_patients,
+    constraint_confirmation_detail,
+    notify_constraint_override_for_course,
+    resolve_week_course_for_template,
+)
 from app.services.scheduling.auto_allocator_v2 import (
     COURSE_MAX_MINUTES,
     reset_visits_to_fixed,
@@ -529,8 +536,19 @@ async def put_fixed_visits(
     patient_id: UUID,
     body: PatientFixedVisitsBulkPut,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin"))],
+    current_user: Annotated[User, Depends(require_role("admin"))],
 ) -> PatientFixedVisitsBulkPutResponse:
+    """患者の固定訪問パターンを一括上書きする (提案採用「固定訪問週間に登録」の実体).
+
+    NG スタッフ / 性別制限 (§7-2): ``change_scope='pattern_and_week'`` のときのみ
+    「登録する患者 × 配置先コースの現担当」を検査する。**``pattern_only`` /
+    ``week_only`` 相当はスキップ**する — 型だけの更新では対象週が特定できず、
+    「どのコースの誰に当たるか」が決まらないため (週が決まる経路 =
+    ``pattern_and_week`` / ``visit-move-week-only`` / ``place-and-fix`` で塞ぐ)。
+    検査対象は **変更/新設される行のみ** (既存とまったく同じ行は担当が変わらない)。
+    違反があれば ``code=constraint_confirmation_required`` の 422、
+    ``acknowledge_constraint_warnings=true`` の再送で続行 + 管理者へお知らせ。
+    """
     await _ensure_patient_exists(db, patient_id)
 
     # 定員超過の管理者相談プロセス (方式b): 採用時の理由記録 (監査はミドルウェア任せ).
@@ -575,6 +593,66 @@ async def put_fixed_visits(
             },
         )
 
+    # NG スタッフ / 性別制限の確認フロー (§7-2)。
+    # pinned 保護の 422 (= override 不可の絶対ブロック) の **後**・破壊的な DELETE の
+    # **前** に置く: 絶対ブロックを先に効かせ、確認で通せる警告は後 (courses.py の
+    # 新人 422 → 制約確認と同じ順序)。
+    _cw: list[ConstraintWarning] = []
+    _cw_by_course: list[tuple[Course, list[ConstraintWarning]]] = []
+    if body.change_scope == "pattern_and_week":
+        assert body.iso_year is not None and body.iso_week is not None  # 上で 422 済み
+        # 既存行と完全一致する item は「維持」= 担当が変わらないので検査対象外にする。
+        _existing = {
+            (row.weekday, row.slot_index): (
+                row.start_time,
+                row.duration_min,
+                row.course_template_id,
+            )
+            for row in (
+                await db.scalars(
+                    select(PatientFixedVisit).where(
+                        PatientFixedVisit.patient_id == patient_id,
+                        PatientFixedVisit.mode == body.mode,
+                    )
+                )
+            ).all()
+        }
+        # 同一 (template, weekday) は 1 回だけ引く (N+1 禁止)。
+        _checked: set[tuple[UUID, int]] = set()
+        for item in body.items:
+            if item.course_template_id is None:
+                continue
+            if _existing.get((item.weekday, item.slot_index)) == (
+                item.start_time,
+                item.duration_min,
+                item.course_template_id,
+            ):
+                continue
+            key = (item.course_template_id, item.weekday)
+            if key in _checked:
+                continue
+            _checked.add(key)
+            course = await resolve_week_course_for_template(
+                db,
+                course_template_id=item.course_template_id,
+                iso_year=body.iso_year,
+                iso_week=body.iso_week,
+                weekday=item.weekday,
+            )
+            if course is None:
+                continue
+            _w = await collect_constraint_warnings_for_patients(
+                db, course=course, patient_ids=[patient_id]
+            )
+            if _w:
+                _cw.extend(_w)
+                _cw_by_course.append((course, _w))
+    if _cw and not body.acknowledge_constraint_warnings:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=constraint_confirmation_detail(_cw),
+        )
+
     # 1 TX: 当該 (patient_id, mode) を DELETE → INSERT
     await db.execute(
         delete(PatientFixedVisit).where(
@@ -605,6 +683,13 @@ async def put_fixed_visits(
                 # 戻る (P0-2 の is_pinned BLOCKER と同型の罠). 必ず引き継ぐこと.
                 movability=item.movability,
             )
+        )
+
+    # §7-3: acknowledge を通した事実を管理者へお知らせ (commit 前 = PFV 更新と同一 TX)。
+    # 採用単位の識別子が無いため op_group_id=None (= 毎回通知)。
+    for _c, _w in _cw_by_course:
+        await notify_constraint_override_for_course(
+            db, course=_c, warnings=_w, actor=current_user, op_group_id=None
         )
     await _commit_or_409(db)
 

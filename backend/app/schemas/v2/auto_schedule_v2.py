@@ -495,6 +495,12 @@ class AutoScheduleV2ApplyIndividualRequest(BaseModel):
             "pattern_and_week=型+今週再生成(A). 後者は iso_year/iso_week 必須."
         ),
     )
+    # NG スタッフ / 性別制限の確認フロー (§7-2)。pattern_and_week のときのみ検査対象
+    # (週が特定できて初めて「どのコースの誰に当たるか」が決まるため)。
+    acknowledge_constraint_warnings: bool = Field(
+        default=False,
+        description="NGスタッフ/性別制限の警告を確認済みとして続行する (422 の再送用)。",
+    )
 
 
 class ApplyIndividualWeekSync(BaseModel):
@@ -642,6 +648,13 @@ class VisitMoveWeekOnlyRequest(BaseModel):
     op_group_id: uuid.UUID | None = Field(
         default=None,
         description="操作グループ ID（Wave U-3 undo/redo）。省略で自動発行。",
+    )
+    # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
+    # 既定 False = 従来どおり。違反があれば 422 (code=constraint_confirmation_required)、
+    # ユーザーが確認して再送するとき true になる。
+    acknowledge_constraint_warnings: bool = Field(
+        default=False,
+        description="NGスタッフ/性別制限の警告を確認済みとして続行する (422 の再送用)。",
     )
 
 

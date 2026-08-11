@@ -133,6 +133,14 @@ class PatientFixedVisitsBulkPut(BaseModel):
     # (pfv_validator の容量チェックは既に warning-only). 後方互換の任意項目.
     capacity_override_reason: str | None = Field(default=None, max_length=500)
 
+    # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
+    # 既定 False = 従来どおり。change_scope='pattern_and_week' のときのみ検査対象
+    # (週が特定できて初めて「どのコースの誰に当たるか」が決まる)。
+    acknowledge_constraint_warnings: bool = Field(
+        default=False,
+        description="NGスタッフ/性別制限の警告を確認済みとして続行する (422 の再送用)。",
+    )
+
     @model_validator(mode="after")
     def _no_duplicate_weekday_slot(self) -> PatientFixedVisitsBulkPut:
         keys = [(item.weekday, item.slot_index) for item in self.items]

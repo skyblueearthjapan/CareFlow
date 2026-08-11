@@ -7,9 +7,12 @@ PO 決定2 = 手動経路の「素通し」をやめる。操作ユーザーに�
 
 本モジュールは 2 つの役割を持つ:
 
-1. **検査** (``collect_constraint_warnings``): コース × 新担当スタッフの組で
-   性別制限 / NG スタッフの違反を洗い出す。手動経路 (``PATCH /courses/{id}``)
-   の 422 確認フローと、通知本文の生成の両方で使う単一ソース。
+1. **検査**: 性別制限 / NG スタッフの違反を洗い出す。向きが 2 つある:
+   - ``collect_constraint_warnings``: **コース担当を変える**方向
+     (コース所属の全患者 × 新担当)。``PATCH /courses/{id}`` 用。
+   - ``collect_constraint_warnings_for_patients``: **患者を動かす**方向
+     (動かす患者 × 移動先コースの現担当)。訪問移動 / 手動配置 / 提案採用用。
+   どちらも 422 確認フローと通知本文の生成で使う単一ソース。
 2. **通知** (``notify_constraint_override``): active な admin へお知らせを add する
    (**commit しない** = 呼び出し側が TX 境界を握る。``services/checkin/notify.py``
    と同方針)。
@@ -23,7 +26,7 @@ PO 決定2 = 手動経路の「素通し」をやめる。操作ユーザーに�
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
 from uuid import UUID
@@ -32,6 +35,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.course import Course
+from app.models.course_template import CourseTemplate
 from app.models.notification import Notification
 from app.models.office import Office
 from app.models.patient import Patient
@@ -51,6 +55,9 @@ logger = logging.getLogger(__name__)
 
 # notifications.type / reference_type に使う種別 (frontend のアイコン選択キーと共用)。
 NOTIFY_CONSTRAINT_OVERRIDE: Final = "constraint_override"
+
+# 422 detail の code。FE は本文字列でダイアログ表示を分岐する (全経路で同一)。
+CONSTRAINT_CONFIRMATION_CODE: Final = "constraint_confirmation_required"
 
 # notifications.title は String(200)。日本語でも安全側に倒して切り詰める。
 _TITLE_MAX_LEN: Final = 200
@@ -84,17 +91,44 @@ class ConstraintWarning:
         }
 
 
-async def collect_constraint_warnings(
-    db: AsyncSession,
-    *,
-    course_id: UUID,
-    staff: Staff,
-) -> list[ConstraintWarning]:
-    """コース所属患者 × 新担当スタッフの性別制限 / NG スタッフ違反を洗い出す.
+def constraint_confirmation_detail(
+    warnings: Sequence[ConstraintWarning],
+) -> dict[str, object]:
+    """422 の detail body (設計書 §7-2) を組む.
 
-    検査対象 = そのコースに載っている planned visit (``deleted_at IS NULL``) の
-    患者全員。コースは (iso_year, iso_week, weekday) スコープのため、course_id で
-    絞るだけで「今週分」になる。
+    全経路 (コース担当変更 / 訪問移動 / 配置 / 提案採用) で **完全同形**にする。
+    FE は 1 つのパーサ・1 つの確認ダイアログを使い回す。
+    """
+    return {
+        "code": CONSTRAINT_CONFIRMATION_CODE,
+        "warnings": [w.to_detail() for w in warnings],
+    }
+
+
+async def _load_patients_ordered(db: AsyncSession, patient_ids: Sequence[UUID]) -> list[Patient]:
+    """検査対象の患者を決定的な順序 (name → id) でまとめて引く (N+1 禁止)."""
+    if not patient_ids:
+        return []
+    return list(
+        (
+            await db.scalars(
+                select(Patient)
+                .where(Patient.id.in_(list(patient_ids)), Patient.deleted_at.is_(None))
+                .order_by(Patient.name, Patient.id)
+            )
+        ).all()
+    )
+
+
+async def _match_patients_against_staff(
+    db: AsyncSession, *, patients: Sequence[Patient], staff: Staff
+) -> list[ConstraintWarning]:
+    """患者集合 × スタッフ 1 名の突き合わせ (NG スタッフ → 性別制限の順).
+
+    ``collect_constraint_warnings`` (コースの全患者 × 新担当) と
+    ``collect_constraint_warnings_for_patients`` (動かす患者 × 移動先の現担当) の
+    **共通の芯**。判定と警告の形をここ 1 箇所に閉じ込め、方向違いの 2 経路で
+    仕様がズレないようにする。
 
     **手動経路の性別判定は staff.sex が None なら違反にしない**:
         エンジン (Layer3) のハード制約は ``sex is None`` を「割当不可」として扱うが
@@ -103,36 +137,10 @@ async def collect_constraint_warnings(
         破綻するため、ここは提案系と同じ **誤検知回避側** に倒す
         (= 性別不明は警告を出さない)。判定の意味論そのもの (AND / '_only' 正規化)
         は ``layer3_assignment.sex_satisfies_restrictions`` と同一ソース。
-
-    返却は決定的な順序 (患者名 → NG → 性別) にする (テスト・UI 表示の安定のため)。
     """
-    patient_ids = list(
-        (
-            await db.scalars(
-                select(Visit.patient_id)
-                .where(
-                    Visit.course_id == course_id,
-                    Visit.status == VISIT_STATUS_PLANNED,
-                    Visit.deleted_at.is_(None),
-                )
-                .distinct()
-            )
-        ).all()
-    )
-    if not patient_ids:
-        return []
-
-    patients = list(
-        (
-            await db.scalars(
-                select(Patient)
-                .where(Patient.id.in_(patient_ids), Patient.deleted_at.is_(None))
-                .order_by(Patient.name, Patient.id)
-            )
-        ).all()
-    )
     if not patients:
         return []
+    patient_ids = [p.id for p in patients]
 
     # NG 行は (patient_id, staff_id) の複合 PK。当該スタッフ分のみ 1 クエリで引く。
     ng_notes: dict[UUID, str | None] = {
@@ -179,6 +187,126 @@ async def collect_constraint_warnings(
                 )
             )
     return warnings
+
+
+async def collect_constraint_warnings(
+    db: AsyncSession,
+    *,
+    course_id: UUID,
+    staff: Staff,
+) -> list[ConstraintWarning]:
+    """コース所属患者 × 新担当スタッフの性別制限 / NG スタッフ違反を洗い出す.
+
+    検査対象 = そのコースに載っている planned visit (``deleted_at IS NULL``) の
+    患者全員。コースは (iso_year, iso_week, weekday) スコープのため、course_id で
+    絞るだけで「今週分」になる。
+
+    判定の意味論 (性別不明は警告しない等) は ``_match_patients_against_staff``
+    の docstring を参照 (両方向の経路で共有する単一ソース)。
+
+    返却は決定的な順序 (患者名 → NG → 性別) にする (テスト・UI 表示の安定のため)。
+    """
+    patient_ids = list(
+        (
+            await db.scalars(
+                select(Visit.patient_id)
+                .where(
+                    Visit.course_id == course_id,
+                    Visit.status == VISIT_STATUS_PLANNED,
+                    Visit.deleted_at.is_(None),
+                )
+                .distinct()
+            )
+        ).all()
+    )
+    patients = await _load_patients_ordered(db, patient_ids)
+    return await _match_patients_against_staff(db, patients=patients, staff=staff)
+
+
+async def collect_constraint_warnings_for_patients(
+    db: AsyncSession,
+    *,
+    course: Course,
+    patient_ids: Sequence[UUID],
+) -> list[ConstraintWarning]:
+    """**患者を動かす**方向の検査: 動かす患者 (1〜N 名) × 移動先コースの現担当 1 名.
+
+    ``collect_constraint_warnings`` の対 (N:1 の向きが逆)。あちらは「コース担当を
+    差し替える」経路 (コース所属の全患者 × 新担当)、こちらは「訪問を別コースへ
+    移す / 新しく置く」経路 (動かす患者 × そのコースに既に居る担当)。
+    PO 実機テストで見つかった穴 (患者を NG スタッフのコースへ無警告で移動できる)
+    は、こちら側の検査が手動配置・提案採用の全経路で欠けていたことによる。
+
+    ``course.assigned_staff_id`` が None (担当未割当) なら **空**を返す =
+    確認すべき相手が居ないため素通し。担当が soft-delete 済みの場合も同様。
+    判定の意味論は ``_match_patients_against_staff`` (共通の芯) を参照。
+    """
+    if course.assigned_staff_id is None or not patient_ids:
+        return []
+    staff = await db.scalar(
+        select(Staff).where(
+            Staff.id == course.assigned_staff_id,
+            Staff.deleted_at.is_(None),
+        )
+    )
+    if staff is None:
+        return []
+    patients = await _load_patients_ordered(db, patient_ids)
+    return await _match_patients_against_staff(db, patients=patients, staff=staff)
+
+
+async def resolve_week_course_for_template(
+    db: AsyncSession,
+    *,
+    course_template_id: UUID,
+    iso_year: int,
+    iso_week: int,
+    weekday: int,
+) -> Course | None:
+    """course_template × 週 × 曜日 の Course 実体を **SELECT のみ**で解決する.
+
+    ``schedule._get_or_create_course_for_template_week`` の解決順序 (1st:
+    template_id / 2nd: UNIQUE key (office_id, code, ...)) と同じ 2 段で引くが、
+    **INSERT も template_id 補正もしない**。検査は「確認を出すか」を決めるための
+    read-only 前処理であり、422 で弾きうる時点で行を作ってはいけない。
+
+    見つからない = その週にコース実体が無い = 担当も居ない → 呼び出し側は検査を
+    スキップする (fail-open)。実配置時に helper が Course を新規作成しても
+    ``assigned_staff_id`` は NULL なので、検査すべき相手はやはり存在しない。
+    """
+    course = await db.scalar(
+        select(Course).where(
+            Course.template_id == course_template_id,
+            Course.iso_year == iso_year,
+            Course.iso_week == iso_week,
+            Course.weekday == weekday,
+            Course.deleted_at.is_(None),
+        )
+    )
+    if course is not None:
+        return course
+
+    # 2nd try: template_id が NULL / 別 template を指す不整合行を UNIQUE key で拾う。
+    template = await db.scalar(
+        select(CourseTemplate).where(
+            CourseTemplate.id == course_template_id,
+            CourseTemplate.deleted_at.is_(None),
+        )
+    )
+    if template is None:
+        return None
+    label_first = (template.label or "").strip()[:1].upper()
+    code = label_first if label_first in ("A", "B", "C", "D", "E", "M") else "M"
+    return await db.scalar(
+        select(Course).where(
+            Course.office_id == template.office_id,
+            Course.code == code,
+            Course.iso_year == iso_year,
+            Course.iso_week == iso_week,
+            Course.weekday == weekday,
+            Course.deleted_at.is_(None),
+        )
+    )
 
 
 async def _active_admin_users(db: AsyncSession) -> list[User]:
@@ -319,3 +447,34 @@ async def notify_constraint_override(
         )
         created += 1
     return created
+
+
+async def notify_constraint_override_for_course(
+    db: AsyncSession,
+    *,
+    course: Course,
+    warnings: list[ConstraintWarning],
+    actor: User | None,
+    op_group_id: UUID | None,
+) -> int:
+    """「患者を動かす」経路用の通知ラッパ (**commit しない**).
+
+    通知相手のスタッフは ``course.assigned_staff_id`` から解決する
+    (``collect_constraint_warnings_for_patients`` が既に非 NULL を確認済みの前提)。
+    警告が空なら何もしない = **acknowledge を通過したときだけ通知**する契約を
+    呼び出し側で書き間違えないようにするためのガード。
+    """
+    if not warnings or course.assigned_staff_id is None:
+        return 0
+    staff = await db.scalar(select(Staff).where(Staff.id == course.assigned_staff_id))
+    if staff is None:
+        return 0
+    return await notify_constraint_override(
+        db,
+        kind_summary={w.kind for w in warnings},
+        course=course,
+        staff=staff,
+        patient_warnings=warnings,
+        actor=actor,
+        op_group_id=op_group_id,
+    )

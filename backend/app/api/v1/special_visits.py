@@ -59,6 +59,11 @@ from app.schemas.special_visit import (
     PoolTicketRead,
     PreferredSlot,
 )
+from app.services.constraint_override_notify import (
+    collect_constraint_warnings_for_patients,
+    constraint_confirmation_detail,
+    notify_constraint_override_for_course,
+)
 from app.services.patient_excel.schema import OFFICE_CODE_TO_SHORT
 from app.services.scheduling.auto_allocator_v2 import _extract_weekly_entries, _parse_hhmm
 
@@ -948,8 +953,17 @@ async def _last_placement(db, *, period_id: UUID) -> LastPlacement | None:
     summary="チケットをその週のコースへ配置 (admin/manager)",
 )
 async def place_mark(
-    mark_id: UUID, payload: PlaceRequest, db: DbDep, _user: AdminManager
+    mark_id: UUID, payload: PlaceRequest, db: DbDep, current_user: AdminManager
 ) -> PlaceResponse:
+    """特別訪問週間の追加枠チケットを、その週のコースへ配置する.
+
+    NG スタッフ / 性別制限 (§7-2): course と patient が揃った直後・Visit 生成の
+    **前** に「配置する患者 × 配置先コースの現担当」を検査する。本経路は
+    ``primary_staff_id=course.assigned_staff_id`` を明示セットする最も直接的な
+    配置経路のため、無警告で NG スタッフに紐づく穴が最も大きかった。
+    違反があれば ``code=constraint_confirmation_required`` の 422、
+    ``acknowledge_constraint_warnings=true`` の再送で続行 + 管理者へお知らせ。
+    """
     mark = await _get_mark(db, mark_id)
     if mark.status == MARK_STATUS_CANCELLED:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="取消済みのチケットです")
@@ -992,6 +1006,16 @@ async def place_mark(
     if patient is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
 
+    # NG スタッフ / 性別制限の確認フロー (§7-2). Visit 生成前に検査する。
+    _cw = await collect_constraint_warnings_for_patients(
+        db, course=course, patient_ids=[mark.patient_id]
+    )
+    if _cw and not payload.acknowledge_constraint_warnings:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=constraint_confirmation_detail(_cw),
+        )
+
     start_t = _parse_hhmm(payload.start_time)
     if start_t is None:
         raise HTTPException(
@@ -1020,6 +1044,12 @@ async def place_mark(
 
     mark.status = MARK_STATUS_PLACED
     mark.placed_visit_id = visit.id
+
+    # §7-3: acknowledge を通した事実を管理者へお知らせ (commit 前 = 配置と同一 TX)。
+    # 配置単位の識別子が無いため op_group_id=None (= 毎回通知)。
+    await notify_constraint_override_for_course(
+        db, course=course, warnings=_cw, actor=current_user, op_group_id=None
+    )
     await db.commit()
     await db.refresh(mark)
 
