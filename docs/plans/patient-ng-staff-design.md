@@ -45,8 +45,13 @@ cb0812e FE面展開+逆引き / 9f8d0bc 賢いマスタV9+取込dry-run警告 / 
 - 制約の性格は性別制限（`Patient.sex_restriction`）と完全に同格:
   - **エンジン（Layer3 自動スタッフ割当）**: ハード制約。候補から除外（INF）。
     Stage3 拠点跨ぎ救援でも緩和しない。適合候補ゼロのコースは赤レビューへ。
-  - **提案系（propose-slots / 改善提案 / 範囲最適化）**: 除外せず理由付き警告 + スコア降格
-    （方針 N-3 の L1.5、`docs/plans/scheduling-logic-normalization.md:180`）。
+  - **提案系（propose-slots / 改善提案 / 範囲最適化 / 詰まり解消）**:
+    **NG はハード除外（候補を生成しない）**。⚠ 2026-08-11 PO 実機テストで
+    「NG スタッフのコースへの入れ替え提案」が出たことを受け、当初の
+    「警告 + スコア降格（L1.5）」から格上げした（PO 明言:「NG のところに
+    システムが提案を進めるのは機能していないのと同じ」）。スワップは**両方向**
+    （対象患者→移動先 と 相手患者→対象患者の現コース）を検査。
+    性別制限（`staff_sex_mismatch`）は従来どおり警告 + 降格のまま。
   - **人手操作**: ブロックしない。確認ダイアログで「⚠ NG スタッフです」を明示し、
     OK なら通す + 管理者へお知らせ（§7）。ピンモデルの
     「エンジンだけ縛り、人手は自由（ただし見える化）」の思想に整合。
@@ -134,13 +139,31 @@ review_item を 2 枚に分けない）。
 
 ## 7. 手動経路の「確認して通す + 管理者お知らせ」（決定2・性別と NG 共通）
 
-### 7-1. 対象経路
+### 7-1. 対象経路（2026-08-11 全実装済み）
 
-| Phase | 経路 | 現状 |
-|---|---|---|
-| 1 | コース担当変更 `PATCH /api/v1/courses/{course_id}`（担当ドロップダウン・一括変更 `CourseDayTablePanel.tsx:2646` / `TimelineDayBoard.tsx:1908-1969`） | 性別・NG ともノーチェック |
-| 1 | 割当レビュー承認 `POST /schedule/apply-staff-review` | 2 ステップ確認 UI が既にあるため**確認はそのまま**。NG reason の受け入れ + §7-3 の通知のみ追加 |
-| 2 | 患者の枠移動で新たに NG/性別違反の組が生まれる経路（タイムライン DnD・プール投入 apply 等） | 未検査。Phase 2 で警告追加を検討（apply 系は propose 段階の警告で大半カバーされる） |
+**方向1: コース担当を変える**（コースの全患者 × 新担当）
+| 経路 | 方式 |
+|---|---|
+| `PATCH /courses/{id}`（担当ドロップダウン） | 422 確認フロー |
+| `POST /schedule/apply-staff-review` | 既存 2 ステップ確認 + 通知 |
+
+**方向2: 患者を動かす**（動かされる患者 × 移動先コース現担当・
+`collect_constraint_warnings_for_patients` / 適用系は書き込み前の一括事前検査で部分適用ゼロ）
+| 経路 | 方式 |
+|---|---|
+| `POST /schedule/v2/visit-move-week-only`（訪問を移動・DnD・ペア・改善提案の週反映） | 422 確認フロー |
+| `POST /schedule/place-and-fix`（プール直接ドロップ・空き枠登録・採用この週だけ） | 422 確認フロー |
+| `POST /special-visit-marks/{id}/place` | 422 確認フロー |
+| `PUT /patients/{id}/fixed-visits`（pattern_and_week のみ・週未特定の型のみはスキップ） | 422 確認フロー |
+| `POST /schedule/v2/apply-individual`（pattern_and_week） | 422 確認フロー |
+| `POST /schedule/v2/improvement-suggestions/apply-swap`（両患者） | 422 確認フロー |
+| `POST /schedule/v2/scope-optimization/apply` / `propose-unblock/apply` / `pool-bulk-apply` | 全手一括事前検査 → 422 確認フロー |
+| visits 直 API 3 本（POST/PATCH/staff 追加・FE 導線なし） | 単純 422（同一 code・将来昇格可） |
+
+FE は `useConstraintConfirmRetry` 共有フック + `ConstraintOverrideConfirmDialog`
+（経路別文言）で統一。**NG/同住所の変更時は提案系キャッシュ
+（improvement-suggestions ほか）を必ず失効させる**（2026-08-11 の
+「NG 登録直後に古い提案が出続ける」事故の再発防止）。
 
 ### 7-2. プロトコル（acknowledge 方式・BE が正）
 

@@ -388,11 +388,13 @@ export function ImprovementSuggestionsSection({
   //   b = counterpart Y. b_new = counterpart.new_* (= X の旧枠へ Y が移る).
   //     Y の移動先 (X の旧枠) の course は current に course_code が無く解決不能なため
   //     course_template_id は省略 (BE 契約上 optional).
-  const handleConfirmSwap = React.useCallback(() => {
+  // NOTE: 422 確認 (constraintConfirm) から acknowledge=true で自己再帰するため
+  // useCallback ではなく関数宣言 (applyMove と同じ流儀)。
+  function handleConfirmSwap(acknowledge = false) {
     const s = swapConfirmTarget;
     const cp = s?.swap_counterpart;
     if (!s || !cp) return;
-    if (applySwapMut.isPending) return;
+    if (!acknowledge && applySwapMut.isPending) return;
     const fp = fingerprint(s);
     const aTpl = resolveCourseTemplateId(s.candidate.office_id, s.candidate.course_code);
     // Wave U-2: 反映先 A=型入替+今週 / B=今週だけ.
@@ -413,6 +415,7 @@ export function ImprovementSuggestionsSection({
         iso_year: isoYear,
         iso_week: isoWeek,
         change_scope: changeScope,
+        ...ackFlag(acknowledge),
       },
       {
         onSuccess: (data) => {
@@ -440,20 +443,23 @@ export function ImprovementSuggestionsSection({
           setSwapConfirmTarget(null);
           onAdopted?.();
         },
-        onError: () => toast.error('入れ替えに失敗しました'),
+        onError: (err) => {
+          // NG/性別 422 (§7-2): 確認ダイアログを出し、OK なら acknowledge 付きで再送。
+          if (
+            !acknowledge &&
+            constraintConfirm.capture(err, () => handleConfirmSwap(true), {
+              title: 'それでも入れ替えますか？',
+              description: 'この入れ替え先の担当者は、次の制約に抵触します',
+              confirmLabel: '入れ替える',
+            })
+          ) {
+            return;
+          }
+          toast.error('入れ替えに失敗しました');
+        },
       },
     );
-  }, [
-    swapConfirmTarget,
-    swapScope,
-    applySwapMut,
-    resolveCourseTemplateId,
-    patient.id,
-    patient.name,
-    isoYear,
-    isoWeek,
-    onAdopted,
-  ]);
+  }
 
   // ─── Render ───────────────────────────────────────────────────────
   const isLoading = suggestionsQuery.isLoading;
@@ -581,7 +587,9 @@ export function ImprovementSuggestionsSection({
             </Button>
             <Button
               type="button"
-              onClick={handleConfirmSwap}
+              // NOTE: onClick={handleConfirmSwap} は click event が第1引数
+              // (acknowledge) に入り truthy になるため必ずアロー経由で呼ぶ。
+              onClick={() => handleConfirmSwap()}
               disabled={applySwapMut.isPending}
               data-testid="swap-confirm-apply"
             >

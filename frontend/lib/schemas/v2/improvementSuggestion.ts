@@ -251,6 +251,8 @@ export const applySwapRequestSchema = z.object({
   iso_week: z.number().int(),
   /** Wave U-2: 反映先選択. 省略時 BE default (pattern_only). */
   change_scope: z.enum(['pattern_only', 'pattern_and_week', 'week_only']).optional(),
+  /** NG/性別422 (constraint_confirmation_required) を確認済みとして通すフラグ (§7-2). */
+  acknowledge_constraint_warnings: z.boolean().optional(),
 });
 export type ApplySwapRequest = z.input<typeof applySwapRequestSchema>;
 
