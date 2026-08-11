@@ -42,6 +42,11 @@ export const visitMoveWeekOnlyRequestSchema = z.object({
    * BE 側で op-log をグループ化する。省略可 (旧 BE 互換)。
    */
   op_group_id: z.string().uuid().nullish(),
+  /**
+   * NG スタッフ / 性別制限 (§7-2): 422 `constraint_confirmation_required` を
+   * 確認ダイアログで通したときだけ true で再送する。省略時 BE default=false。
+   */
+  acknowledge_constraint_warnings: z.boolean().optional(),
 });
 export type VisitMoveWeekOnlyRequest = z.input<typeof visitMoveWeekOnlyRequestSchema>;
 

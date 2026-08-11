@@ -49,11 +49,14 @@ function SlotChip({
   weekday,
   time,
   courseLabel,
+  staffName,
 }: {
   tone: 'from' | 'to';
   weekday: number;
   time: string;
   courseLabel?: string | null;
+  /** 指定時のみ「担当: ◯◯」を添える (swap カードで移動先の担当を明示するため). */
+  staffName?: string | null;
 }) {
   const isTo = tone === 'to';
   return (
@@ -85,6 +88,14 @@ function SlotChip({
       >
         {WEEKDAY_LABELS[weekday] ?? '?'} {time}
       </span>
+      {staffName ? (
+        <span
+          className="text-[11px] text-text-secondary"
+          data-testid={`improvement-slot-${tone}-staff`}
+        >
+          担当: {staffName}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -95,18 +106,22 @@ function MoveVisual({
   fromWeekday,
   fromTime,
   fromCourse,
+  fromStaff,
   toWeekday,
   toTime,
   toCourse,
+  toStaff,
   testId,
 }: {
   label?: string;
   fromWeekday: number;
   fromTime: string;
   fromCourse?: string | null;
+  fromStaff?: string | null;
   toWeekday: number;
   toTime: string;
   toCourse?: string | null;
+  toStaff?: string | null;
   testId?: string;
 }) {
   return (
@@ -114,9 +129,21 @@ function MoveVisual({
       {label ? (
         <span className="w-full text-xs font-bold text-text-primary sm:w-auto">{label}</span>
       ) : null}
-      <SlotChip tone="from" weekday={fromWeekday} time={fromTime} courseLabel={fromCourse} />
+      <SlotChip
+        tone="from"
+        weekday={fromWeekday}
+        time={fromTime}
+        courseLabel={fromCourse}
+        staffName={fromStaff}
+      />
       <ArrowRight className="h-5 w-5 shrink-0 text-brand-primary" strokeWidth={2.5} aria-hidden />
-      <SlotChip tone="to" weekday={toWeekday} time={toTime} courseLabel={toCourse} />
+      <SlotChip
+        tone="to"
+        weekday={toWeekday}
+        time={toTime}
+        courseLabel={toCourse}
+        staffName={toStaff}
+      />
     </div>
   );
 }
@@ -225,7 +252,10 @@ function SwapCard({
         </span>
       </div>
 
-      {/* 双方向の移動表示 (チップ型: 誰が・どのコースの何時から・どこへ、が一目で分かる). */}
+      {/* 双方向の移動表示 (チップ型: 誰が・どのコースの何時から・どこへ、が一目で分かる).
+          2026-08-11: 移動先の担当名が一切出ていなかった欠陥を修正。NG スタッフ /
+          性別制限の判断材料になるため、コースの担当 (candidate/current.staff_name) を添える
+          (BE のスキーマに既にある値のみ。相手 Y は X の旧枠へ入るので current 側が担当). */}
       <div className="mt-2 space-y-2" data-testid="improvement-swap-moves">
         {/* X: current → candidate (candidate = Y の旧枠). */}
         <MoveVisual
@@ -233,9 +263,11 @@ function SwapCard({
           fromWeekday={current.weekday}
           fromTime={trimSeconds(current.start_time)}
           fromCourse={current.course_label}
+          fromStaff={current.staff_name}
           toWeekday={candidate.weekday}
           toTime={trimSeconds(candidate.start_time)}
           toCourse={candidate.course_label}
+          toStaff={candidate.staff_name}
           testId="improvement-swap-move-x"
         />
         {/* Y: 現在枠 (= candidate のコース) → X の旧枠 (= current のコース). */}
@@ -244,9 +276,11 @@ function SwapCard({
           fromWeekday={cp.current_weekday}
           fromTime={trimSeconds(cp.current_start_time)}
           fromCourse={candidate.course_label}
+          fromStaff={candidate.staff_name}
           toWeekday={cp.new_weekday}
           toTime={trimSeconds(cp.new_start_time)}
           toCourse={current.course_label}
+          toStaff={current.staff_name}
           testId="improvement-swap-move-y"
         />
       </div>

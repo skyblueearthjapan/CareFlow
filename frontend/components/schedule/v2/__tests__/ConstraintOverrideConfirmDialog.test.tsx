@@ -118,6 +118,42 @@ describe('ConstraintOverrideConfirmDialog', () => {
     expect(screen.getByTestId('constraint-override-cancel')).toBeDisabled();
   });
 
+  it('6b. 文言 props 省略時は既定 (コース担当変更) の文言 — 後方互換', () => {
+    render(
+      <ConstraintOverrideConfirmDialog
+        open
+        warnings={[ngWarning]}
+        onCancel={() => {}}
+        onConfirm={() => {}}
+      />,
+    );
+    const dialog = screen.getByTestId('constraint-override-confirm');
+    expect(dialog).toHaveTextContent('それでも割り当てますか？');
+    expect(dialog).toHaveTextContent('この担当変更は、次の制約に抵触します');
+    expect(screen.getByTestId('constraint-override-ok')).toHaveTextContent('割り当てる');
+  });
+
+  it('6c. title / description / confirmLabel を差し替えられる (移動・配置などの経路)', () => {
+    render(
+      <ConstraintOverrideConfirmDialog
+        open
+        warnings={[ngWarning]}
+        title="それでも移動しますか？"
+        description="この移動先の担当者は、次の制約に抵触します"
+        confirmLabel="移動する"
+        onCancel={() => {}}
+        onConfirm={() => {}}
+      />,
+    );
+    const dialog = screen.getByTestId('constraint-override-confirm');
+    expect(dialog).toHaveTextContent('それでも移動しますか？');
+    expect(dialog).toHaveTextContent('この移動先の担当者は、次の制約に抵触します');
+    // 説明文の定型後半にも実行ボタン名が入る。
+    expect(dialog).toHaveTextContent('「移動する」を押してください');
+    expect(screen.getByTestId('constraint-override-ok')).toHaveTextContent('移動する');
+    expect(dialog).not.toHaveTextContent('それでも割り当てますか？');
+  });
+
   it('7. open=false では描画しない', () => {
     render(
       <ConstraintOverrideConfirmDialog

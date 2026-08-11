@@ -62,11 +62,20 @@ import {
   mergeAdoptedIntoNormalFixedVisits,
 } from './_proposeSlotUtils';
 import { ChangeScopeChoice, type ChangeScopeValue } from './ChangeScopeChoice';
+import { ConstraintOverrideConfirmDialog } from './ConstraintOverrideConfirmDialog';
 import { CourseMoveTimeline, type TimelineRowMeta } from './CourseMoveTimeline';
 import { DismissReasonDialog } from './DismissReasonDialog';
 import { ImprovementSuggestionCard } from './ImprovementSuggestionCard';
+import { ackFlag, useConstraintConfirmRetry } from './useConstraintConfirmRetry';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
+
+/** NG スタッフ / 性別制限の確認ダイアログ文言 (提案採用の経路)。 */
+const ADOPT_CONSTRAINT_TEXT = {
+  title: 'それでも採用しますか？',
+  description: 'この提案の移動先の担当者は、次の制約に抵触します',
+  confirmLabel: '採用する',
+} as const;
 
 /** 提案の指紋 (dismiss / 採用済み判定と同一: kind × target_weekday). */
 function fingerprint(s: ImprovementSuggestion): string {
@@ -129,6 +138,8 @@ export function ImprovementSuggestionsSection({
   const confirmMut = useConfirmFixedVisits();
   const applySwapMut = useApplySwap();
   const visitMoveWeekOnlyMut = useVisitMoveWeekOnly();
+  // NG スタッフ / 性別制限 (§7-2): 422 を確認ダイアログ → acknowledge 再送で通す.
+  const constraintConfirm = useConstraintConfirmRetry();
   // マージ確定用に既存 normal 固定枠を取得 (採用しなかった曜日を保持するため).
   const existingFixedVisitsQuery = useFixedVisits(patient.id, 'normal');
 
@@ -159,6 +170,9 @@ export function ImprovementSuggestionsSection({
     setMoveConfirmTarget(null);
     setMoveScope('pattern');
     setSwapScope('pattern');
+    constraintConfirm.reset();
+    // reset は useCallback 安定なので依存に載せない (患者・週の切替でのみ走らせる).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [patient.id, isoYear, isoWeek]);
 
   const allSuggestions = React.useMemo(
@@ -237,12 +251,13 @@ export function ImprovementSuggestionsSection({
   // Wave U-2: move 採用の確定 (反映先 A/B 付き).
   //   A (pattern): PUT fixed-visits に change_scope='pattern_and_week' + iso を付与 (型 + 今週).
   //   B (week):    visit-move-week-only で今週の visit だけ移す (型は不変).
-  const handleConfirmMove = React.useCallback(() => {
-    const s = moveConfirmTarget;
-    if (!s) return;
+  //
+  // acknowledge=true は「NG スタッフ / 性別制限の確認ダイアログで OK した再送」。
+  // 再帰的に自分を呼ぶため関数宣言で書く (useCallback だと自己参照できない).
+  function applyMove(s: ImprovementSuggestion, scope: ChangeScopeValue, acknowledge: boolean) {
     const fp = fingerprint(s);
 
-    if (moveScope === 'pattern') {
+    if (scope === 'pattern') {
       // ─── A 経路: 型変更 + 今週即反映 ─────────────────────────────
       if (existingFixedVisitsQuery.isLoading || existingFixedVisitsQuery.isFetching) {
         toast.warning('既存の固定枠を読み込み中です。少し待ってからお試しください');
@@ -266,6 +281,7 @@ export function ImprovementSuggestionsSection({
         change_scope: 'pattern_and_week',
         iso_year: isoYear,
         iso_week: isoWeek,
+        ...ackFlag(acknowledge),
       };
       confirmMut.mutate(
         { patientId: patient.id, body: putBody },
@@ -289,8 +305,15 @@ export function ImprovementSuggestionsSection({
             void qc.invalidateQueries({ queryKey: [IMPROVEMENT_SUGGESTIONS_KEY] });
             onAdopted?.();
           },
-          onError: () => {
+          onError: (err) => {
             setAdoptingFp(null);
+            // NG スタッフ / 性別制限の 422 は「確認して通す」フローへ (ブロックではない).
+            if (
+              !acknowledge &&
+              constraintConfirm.capture(err, () => applyMove(s, scope, true), ADOPT_CONSTRAINT_TEXT)
+            ) {
+              return;
+            }
             toast.error('採用に失敗しました');
           },
         },
@@ -318,6 +341,7 @@ export function ImprovementSuggestionsSection({
         new_start_time: s.candidate.start_time,
         ...(tplId ? { new_course_template_id: tplId } : {}),
         op_group_id: opGroupId,
+        ...ackFlag(acknowledge),
       },
       {
         onSuccess: () => {
@@ -331,28 +355,25 @@ export function ImprovementSuggestionsSection({
           void qc.invalidateQueries({ queryKey: [OP_LOG_STATE_KEY, isoYear, isoWeek] });
           onAdopted?.();
         },
-        onError: () => {
+        onError: (err) => {
           setAdoptingFp(null);
+          if (
+            !acknowledge &&
+            constraintConfirm.capture(err, () => applyMove(s, scope, true), ADOPT_CONSTRAINT_TEXT)
+          ) {
+            return;
+          }
           toast.error('この週だけの反映に失敗しました');
         },
       },
     );
-  }, [
-    moveConfirmTarget,
-    moveScope,
-    existingFixedVisitsQuery,
-    templatesQueries,
-    patient.id,
-    patient.name,
-    confirmMut,
-    visitMoveWeekOnlyMut,
-    resolveCourseTemplateId,
-    buildMergedPut,
-    isoYear,
-    isoWeek,
-    qc,
-    onAdopted,
-  ]);
+  }
+
+  const handleConfirmMove = () => {
+    const s = moveConfirmTarget;
+    if (!s) return;
+    applyMove(s, moveScope, false);
+  };
 
   const handleDismissed = React.useCallback(() => {
     if (dismissTarget) {
@@ -513,6 +534,9 @@ export function ImprovementSuggestionsSection({
           })()}
         </div>
       )}
+
+      {/* NG スタッフ / 性別制限 (§7-2): 採用が 422 で返ったときの確認 → acknowledge 再送. */}
+      <ConstraintOverrideConfirmDialog {...constraintConfirm.dialogProps} />
 
       <DismissReasonDialog
         open={dismissTarget != null}

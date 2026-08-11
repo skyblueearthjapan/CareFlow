@@ -77,6 +77,48 @@ describe('SlotRegisterDialog', () => {
     });
   });
 
+  // ── NG スタッフ (patient-ng-staff-design.md §7-2 の見える化) ──────────────
+
+  it('枠の担当を NG 指定している患者はセレクトに ⛔NG が付く', () => {
+    renderDialog({
+      patients: [
+        { id: 'p1', name: '青柳 あい', defaultDurationMin: 45, shortage: 2, ngWithSlotStaff: true },
+        { id: 'p2', name: '佐藤 二郎', defaultDurationMin: 60, shortage: 1 },
+      ],
+    });
+    const select = screen.getByTestId('slot-register-patient-select');
+    const opts = Array.from(select.querySelectorAll('option')).map((o) => o.textContent ?? '');
+    expect(opts.some((t) => t.startsWith('⛔NG 青柳 あい'))).toBe(true);
+    expect(opts.some((t) => t.includes('⛔NG 佐藤 二郎'))).toBe(false);
+    // 未選択のうちは警告帯を出さない。
+    expect(screen.queryByTestId('slot-register-ng-warning')).not.toBeInTheDocument();
+  });
+
+  it('NG 患者を選ぶと警告帯が出る (ブロックはしない)', () => {
+    renderDialog({
+      patients: [
+        { id: 'p1', name: '青柳 あい', defaultDurationMin: 45, shortage: 2, ngWithSlotStaff: true },
+      ],
+    });
+    fireEvent.change(screen.getByTestId('slot-register-patient-select'), {
+      target: { value: 'p1' },
+    });
+    const warn = screen.getByTestId('slot-register-ng-warning');
+    expect(warn).toHaveTextContent('青柳 あい');
+    expect(warn).toHaveTextContent('田中 一郎さん');
+    expect(warn).toHaveTextContent('NGスタッフに指定しています');
+    // 確定ボタンは無効化しない (通せる = 確認は BE の 422 → 確認ダイアログ)。
+    expect(screen.getByTestId('slot-register-confirm')).not.toBeDisabled();
+  });
+
+  it('ngWithSlotStaff 未指定 (既存の呼び出し) では表示が一切変わらない', () => {
+    renderDialog();
+    const select = screen.getByTestId('slot-register-patient-select');
+    expect(select.textContent).not.toContain('⛔');
+    fireEvent.change(select, { target: { value: 'p1' } });
+    expect(screen.queryByTestId('slot-register-ng-warning')).not.toBeInTheDocument();
+  });
+
   it('開始時刻は 15分刻みで選べる (gap 起点)', () => {
     renderDialog();
     fireEvent.change(screen.getByTestId('slot-register-patient-select'), {

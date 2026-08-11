@@ -137,6 +137,12 @@ export const patientFixedVisitsBulkPutSchema = z.object({
   iso_week: z.number().int().min(1).max(53).optional(),
   // 方式b: 定員超過採用時の管理者判断理由 (最大500字)。通常候補では null/省略。旧BE互換。
   capacity_override_reason: z.string().max(500).nullish(),
+  /**
+   * NG スタッフ / 性別制限 (patient-ng-staff-design.md §7-2): change_scope=
+   * 'pattern_and_week' のとき BE が 422 `constraint_confirmation_required` を返す。
+   * 確認ダイアログで通したときだけ true で再送する。省略時 BE default=false。
+   */
+  acknowledge_constraint_warnings: z.boolean().optional(),
 });
 
 export type PatientFixedVisitV2Base = z.infer<typeof patientFixedVisitV2BaseSchema>;

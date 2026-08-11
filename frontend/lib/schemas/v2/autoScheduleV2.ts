@@ -436,6 +436,12 @@ export const applyIndividualRequestSchema = z.object({
    *   省略時は BE 側 default (pattern_only = 従来挙動) が適用される。
    */
   change_scope: z.enum(['pattern_only', 'pattern_and_week']).optional(),
+  /**
+   * NG スタッフ / 性別制限 (patient-ng-staff-design.md §7-2): change_scope=
+   * 'pattern_and_week' のとき BE が 422 `constraint_confirmation_required` を返す。
+   * 確認ダイアログで通したときだけ true で再送する。省略時 BE default=false。
+   */
+  acknowledge_constraint_warnings: z.boolean().optional(),
 });
 export type ApplyIndividualRequest = z.infer<typeof applyIndividualRequestSchema>;
 

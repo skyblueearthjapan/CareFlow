@@ -284,6 +284,12 @@ export const specialVisitPlaceSchema = z
     course_code: z.string().min(1).optional(),
     /** "HH:MM". */
     start_time: z.string().regex(/^\d{2}:\d{2}$/, '時刻は HH:MM 形式で入力してください'),
+    /**
+     * NG スタッフ / 性別制限 (patient-ng-staff-design.md §7-2): 422
+     * `constraint_confirmation_required` を確認ダイアログで通したときだけ true で
+     * 再送する。省略時 BE default=false。
+     */
+    acknowledge_constraint_warnings: z.boolean().optional(),
   })
   .refine((v) => v.course_id != null || (v.office_id != null && v.course_code != null), {
     message: 'コースは course_id か (office_id + course_code) で指定してください',

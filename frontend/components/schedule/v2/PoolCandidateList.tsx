@@ -72,14 +72,23 @@ import {
 import { genderPalette } from '@/lib/scheduling/timeline';
 
 import { ChangeScopeChoice, type ChangeScopeValue } from './ChangeScopeChoice';
+import { ConstraintOverrideConfirmDialog } from './ConstraintOverrideConfirmDialog';
 import {
   BeforeAfterCourseTimeline,
   eventTimelineRows,
   type TimelineRow,
   type TimelineRowMeta,
 } from './CourseMoveTimeline';
+import { ackFlag, useConstraintConfirmRetry } from './useConstraintConfirmRetry';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
+
+/** NG スタッフ / 性別制限の確認ダイアログ文言 (候補採用の経路)。 */
+const ADOPT_CONSTRAINT_TEXT = {
+  title: 'それでも採用しますか？',
+  description: 'この枠の担当者は、次の制約に抵触します',
+  confirmLabel: '採用する',
+} as const;
 
 /**
  * 0=月..6=日 の propose 用曜日コード。特別モード (specialTicket) で
@@ -952,10 +961,7 @@ function UnblockConsult({
     <div className="mt-2" data-testid="unblock-result">
       {plans.length > 0 ? (
         <div className="space-y-2" data-testid="unblock-plans">
-          <RakusukeSays
-            pose="calendar"
-            message="少しずらすと入ります。どうしますか？"
-          />
+          <RakusukeSays pose="calendar" message="少しずらすと入ります。どうしますか？" />
           <div className="flex items-center gap-1.5 text-xs font-semibold text-warning-strong">
             <Sparkles className="h-3.5 w-3.5" aria-hidden />
             既存の訪問をずらせば入る手（{plans.length}件）
@@ -1118,6 +1124,8 @@ export function PoolCandidateList({
   const placeAndFixMut = usePlaceAndFix();
   // 特別モードの確定経路 (PFV を作らずその週の visit だけを増やす)。
   const placeSpecialMut = usePlaceSpecialMark();
+  // NG スタッフ / 性別制限 (§7-2): 422 を確認ダイアログ → acknowledge 再送で通す.
+  const constraintConfirm = useConstraintConfirmRetry();
   // マージ確定用に既存 normal 固定枠を取得 (採用しなかった曜日を保持するため).
   const existingFixedVisitsQuery = useFixedVisits(patient.id, 'normal');
 
@@ -1276,10 +1284,9 @@ export function PoolCandidateList({
     [patient.weekly_pattern, resolveCourseTemplateId],
   );
 
-  const handleConfirmAdopt = () => {
-    const slot = pending;
-    if (!slot) return;
-
+  // 採用の実処理。acknowledge=true は「NG スタッフ / 性別制限の確認ダイアログで OK した
+  // 再送」(§7-2)。自己参照するため関数宣言で書く。
+  function applyAdopt(slot: ProposeSlotItem, acknowledge: boolean) {
     // ─── 特別モード: POST /special-visit-marks/{id}/place (この週のみ・固定化しない) ───
     // PFV を作らないため course_template_id の解決も既存固定枠のマージも不要
     // (BE は office_id + course_code でその週のコースを引く)。
@@ -1292,6 +1299,7 @@ export function PoolCandidateList({
             office_id: slot.office_id,
             course_code: slot.course_code,
             start_time: startTime,
+            ...ackFlag(acknowledge),
           },
         },
         {
@@ -1303,7 +1311,15 @@ export function PoolCandidateList({
             setPending(null);
             onAdopted?.();
           },
-          onError: (err) => toast.error(apiErrorDetail(err) ?? '配置に失敗しました'),
+          onError: (err) => {
+            if (
+              !acknowledge &&
+              constraintConfirm.capture(err, () => applyAdopt(slot, true), ADOPT_CONSTRAINT_TEXT)
+            ) {
+              return;
+            }
+            toast.error(apiErrorDetail(err) ?? '配置に失敗しました');
+          },
         },
       );
       return;
@@ -1334,6 +1350,7 @@ export function PoolCandidateList({
         iso_year: isoYear,
         iso_week: isoWeek,
         ...(slot.overcapacity ? { capacity_override_reason: overcapacityReason } : {}),
+        ...ackFlag(acknowledge),
       };
       confirmMut.mutate(
         { patientId: patient.id, body: putBody },
@@ -1366,7 +1383,15 @@ export function PoolCandidateList({
             setOvercapacityRequested(false);
             onAdopted?.();
           },
-          onError: () => toast.error('採用に失敗しました'),
+          onError: (err) => {
+            if (
+              !acknowledge &&
+              constraintConfirm.capture(err, () => applyAdopt(slot, true), ADOPT_CONSTRAINT_TEXT)
+            ) {
+              return;
+            }
+            toast.error('採用に失敗しました');
+          },
         },
       );
     } else {
@@ -1389,21 +1414,36 @@ export function PoolCandidateList({
         toast.error('コース情報を解決できませんでした。再読み込みしてお試しください');
         return;
       }
-      placeAndFixMut.mutate(req, {
-        onSuccess: () => {
-          toast.success(
-            `${patient.name} 様を今週だけ配置しました（毎週の型は変更していません）` +
-              (slot.overcapacity ? '（定員超過を管理者判断で許可）' : ''),
-          );
-          setPending(null);
-          setScopeChoice('pattern');
-          setOvercapacityReason('');
-          setOvercapacityRequested(false);
-          onAdopted?.();
+      placeAndFixMut.mutate(
+        { ...req, ...ackFlag(acknowledge) },
+        {
+          onSuccess: () => {
+            toast.success(
+              `${patient.name} 様を今週だけ配置しました（毎週の型は変更していません）` +
+                (slot.overcapacity ? '（定員超過を管理者判断で許可）' : ''),
+            );
+            setPending(null);
+            setScopeChoice('pattern');
+            setOvercapacityReason('');
+            setOvercapacityRequested(false);
+            onAdopted?.();
+          },
+          onError: (err) => {
+            if (
+              !acknowledge &&
+              constraintConfirm.capture(err, () => applyAdopt(slot, true), ADOPT_CONSTRAINT_TEXT)
+            ) {
+              return;
+            }
+            toast.error('配置に失敗しました');
+          },
         },
-        onError: () => toast.error('配置に失敗しました'),
-      });
+      );
     }
+  }
+
+  const handleConfirmAdopt = () => {
+    if (pending) applyAdopt(pending, false);
   };
 
   const isBusy =
@@ -1463,12 +1503,7 @@ export function PoolCandidateList({
       </div>
 
       {primary ? (
-        <RakusukeSays
-          pose="idea"
-          message="この方、ここに入れそうです"
-          size="sm"
-          className="mb-2"
-        />
+        <RakusukeSays pose="idea" message="この方、ここに入れそうです" size="sm" className="mb-2" />
       ) : null}
 
       {/* 特別モード: 前回配置ヒント (参考・強制しない)。候補リストの最上部に出すだけ。 */}
@@ -2080,6 +2115,9 @@ export function PoolCandidateList({
           </div>
         </div>
       ) : null}
+
+      {/* NG スタッフ / 性別制限 (§7-2): 採用が 422 で返ったときの確認 → acknowledge 再送. */}
+      <ConstraintOverrideConfirmDialog {...constraintConfirm.dialogProps} />
     </div>
   );
 }

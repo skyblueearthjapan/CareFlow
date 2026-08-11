@@ -95,6 +95,7 @@ import {
   parseConstraintConfirmationDetail,
   type ConstraintWarning,
 } from '@/lib/schemas/patient_ng_staff';
+import { useStaffNgPatients } from '@/lib/queries/patient_ng_staff';
 import { useCourses, useUpdateCourse, type CourseV2Read } from '@/lib/queries/courses';
 import { useGenerateWeekOnly } from '@/lib/queries/generate_week';
 import { useOffices } from '@/lib/queries/offices';
@@ -143,6 +144,7 @@ import { BulkFixToPatternButton } from './BulkFixToPatternButton';
 import { BulkWeekPinAllButton } from './BulkWeekPinAllButton';
 import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDialog';
 import { ConstraintOverrideConfirmDialog } from './ConstraintOverrideConfirmDialog';
+import { ackFlag, useConstraintConfirmRetry } from './useConstraintConfirmRetry';
 import { BulkPoolInsertDialog } from './BulkPoolInsertDialog';
 import { RegisterPatientButton } from './RegisterPatientButton';
 import { ScheduleHealthDialog } from './ScheduleHealthDialog';
@@ -232,6 +234,21 @@ import { useSchedulingSettings } from '@/lib/queries/schedulingSettings';
 /** 表示曜日 (月〜土の 6 つ). 日曜は除外. */
 export const DISPLAY_WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
+
+/**
+ * NG スタッフ / 性別制限 (patient-ng-staff-design.md §7-2) の確認ダイアログ文言。
+ * 経路ごとに動詞を合わせる (BE は同一の 422 を返す)。
+ */
+const MOVE_CONSTRAINT_TEXT = {
+  title: 'それでも移動しますか？',
+  description: 'この移動先の担当者は、次の制約に抵触します',
+  confirmLabel: '移動する',
+} as const;
+const PLACE_CONSTRAINT_TEXT = {
+  title: 'それでも配置しますか？',
+  description: 'この配置先の担当者は、次の制約に抵触します',
+  confirmLabel: '配置する',
+} as const;
 
 // ─────────────────────────────────────────────────────────────────────────
 // dnd-kit helpers (プール用 draggable id)
@@ -1576,6 +1593,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [canEdit, opLogState, undoMut.isPending, redoMut.isPending, handleUndo, handleRedo]);
 
+  // NG スタッフ / 性別制限 (§7-2) の確認 → acknowledge 再送。移動 / 配置 / 空き枠登録の
+  // 3 経路で共用する (同時に 2 つは起きない)。コース担当変更は別 state (constraintConfirm)。
+  const placementConstraintConfirm = useConstraintConfirmRetry();
+
   // ─── T-2 ②-a: 空き枠クリック → 登録モーダル ──────────────────────────
   // タイムラインの空き枠クリックで開く。訪問=place-and-fix (fix_pattern=false =
   // この週だけ・プールDnDと同じ契約/トースト昇格)、会議・イベント=TimelineEventAddDialog
@@ -1600,6 +1621,17 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     [canEdit],
   );
 
+  // NG スタッフ (§8-2 逆引き): 枠の担当を NG 指定している患者を 1 クエリで引く。
+  // 患者ごとの ng-staff を N 本引くより安く、`ng_staff_count` では「誰を NG か」が
+  // 分からない (この枠の担当が NG かは突合が要る) ため逆引きが正解。
+  // 未割当コース (staffId=null) では実行されず、⛔ 注記も出ない。
+  const slotStaffId = slotRegState?.col.assignedStaff?.id ?? null;
+  const slotNgPatientsQuery = useStaffNgPatients(slotStaffId);
+  const slotNgPatientIds = useMemo(
+    () => new Set((slotNgPatientsQuery.data ?? []).map((r) => r.patient_id)),
+    [slotNgPatientsQuery.data],
+  );
+
   // 配置候補 = プール患者 (不足あり)。2名体制はプールDnD (相方コース選択) に委譲。
   const slotPatientOptions = useMemo<SlotPatientOption[]>(() => {
     if (!slotRegState) return [];
@@ -1615,63 +1647,71 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           // 基本の訪問時間 35 分にフォールバック (PO 決定 2026-08-09。旧 60 分)。
           defaultDurationMin: Math.max(1, Number(wp?.service_minutes ?? 35)),
           shortage: patientShortageById.get(p.id)?.shortage ?? 0,
+          // この枠の担当をこの患者が NG 指定しているか (⛔ 注記 + 警告帯の材料)。
+          ngWithSlotStaff: slotNgPatientIds.has(p.id),
         };
       });
-  }, [slotRegState, poolPatients, patientShortageById]);
+  }, [slotRegState, poolPatients, patientShortageById, slotNgPatientIds]);
 
-  const handleSlotRegisterVisit = useCallback(
-    async ({
+  // acknowledge=true は「NG スタッフ / 性別制限の確認ダイアログで OK した再送」(§7-2)。
+  // 自己参照するため関数宣言で書く (useCallback だと自分を呼べない)。
+  async function handleSlotRegisterVisit(
+    {
       patientId,
       startHM,
       durationMin,
+      courseTemplateId,
     }: {
       patientId: string;
       startHM: string;
       durationMin: number;
-    }) => {
-      if (!slotRegState) return;
-      const patient = patientById.get(patientId);
-      try {
-        const opGroupId = crypto.randomUUID();
-        await placeAndFixMut.mutateAsync({
-          patient_id: patientId,
-          course_template_id: slotRegState.col.template.id,
-          iso_year: isoYear,
-          iso_week: isoWeek,
-          weekday: activeWeekday,
-          start_time: startHM,
-          duration_min: durationMin,
-          staff_count: 1,
-          fix_pattern: false,
-          op_group_id: opGroupId,
-        });
-        invalidateOpLog(isoYear, isoWeek);
-        const pname = patient?.name ?? patientId;
-        toast.success(
-          `${pname} を ${startHM} に配置しました（今週のみ・毎週の型は変更していません）`,
-          {
-            action: promoteToastAction([patientId], pname),
-            // ②-c: op-log 記録済みのためトーストから直接 undo できる。
-            cancel: { label: '元に戻す', onClick: () => void handleUndo() },
-          },
-        );
-        setSlotRegState(null);
-      } catch (err) {
-        toast.error(`配置に失敗しました: ${formatErr(err)}`);
-      }
+      /** 再送時は slotRegState が閉じている可能性があるため確定値を持ち回る。 */
+      courseTemplateId: string;
     },
-    [
-      slotRegState,
-      patientById,
-      placeAndFixMut,
-      isoYear,
-      isoWeek,
-      activeWeekday,
-      invalidateOpLog,
-      promoteToastAction,
-      handleUndo,
-    ],
-  );
+    acknowledge = false,
+  ) {
+    const patient = patientById.get(patientId);
+    try {
+      const opGroupId = crypto.randomUUID();
+      await placeAndFixMut.mutateAsync({
+        patient_id: patientId,
+        course_template_id: courseTemplateId,
+        iso_year: isoYear,
+        iso_week: isoWeek,
+        weekday: activeWeekday,
+        start_time: startHM,
+        duration_min: durationMin,
+        staff_count: 1,
+        fix_pattern: false,
+        op_group_id: opGroupId,
+        ...ackFlag(acknowledge),
+      });
+      invalidateOpLog(isoYear, isoWeek);
+      const pname = patient?.name ?? patientId;
+      toast.success(
+        `${pname} を ${startHM} に配置しました（今週のみ・毎週の型は変更していません）`,
+        {
+          action: promoteToastAction([patientId], pname),
+          // ②-c: op-log 記録済みのためトーストから直接 undo できる。
+          cancel: { label: '元に戻す', onClick: () => void handleUndo() },
+        },
+      );
+      setSlotRegState(null);
+    } catch (err) {
+      if (
+        !acknowledge &&
+        placementConstraintConfirm.capture(
+          err,
+          () =>
+            handleSlotRegisterVisit({ patientId, startHM, durationMin, courseTemplateId }, true),
+          PLACE_CONSTRAINT_TEXT,
+        )
+      ) {
+        return;
+      }
+      toast.error(`配置に失敗しました: ${formatErr(err)}`);
+    }
+  }
 
   const handleSlotSwitchToEvent = useCallback(() => {
     if (!slotRegState) return;
@@ -1717,68 +1757,92 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     durationMin: number;
   } | null>(null);
 
-  const handleTlMoveConfirm = useCallback(
-    async (scope: ChangeScopeValue) => {
-      const st = tlMoveState;
-      if (!st || st.visits.length === 0) return;
-      const names = st.visits.map(
-        (v) => patientById.get(v.patient_id)?.name ?? v.patient_name ?? v.patient_id,
-      );
-      const label = st.visits.length >= 2 ? `${names.join('・')}（同住所2名）` : names[0]!;
-      const patientIds = st.visits.map((v) => v.patient_id);
-      const courseChanged = st.toCol.template.id !== st.fromCol.template.id;
-      try {
-        // 2名セットは同一 op_group_id で連続移動 (undo で両方まとめて戻る)。
-        const opGroupId = crypto.randomUUID();
-        for (const v of st.visits) {
-          await visitMoveWeekOnlyMut.mutateAsync({
-            iso_year: isoYear,
-            iso_week: isoWeek,
-            patient_id: v.patient_id,
-            old_weekday: activeWeekday,
-            old_start_time: (v.start_time ?? '').slice(0, 5),
-            new_weekday: activeWeekday,
-            new_start_time: fmtHM(st.newStartMin),
-            ...(courseChanged ? { new_course_template_id: st.toCol.template.id } : {}),
-            op_group_id: opGroupId,
-          });
-        }
-        invalidateOpLog(isoYear, isoWeek);
-        if (scope === 'pattern') {
-          // 週→型同期の成功/失敗トーストは promoteWeekToFixed 側が出す。
-          toast.success(`${label} を ${fmtHM(st.newStartMin)} に移動しました`);
-          promoteWeekToFixed(patientIds, label);
-        } else {
-          toast.success(
-            `${label} を ${fmtHM(st.newStartMin)} に移動しました（今週のみ・毎週の型は変更していません）`,
-            {
-              action: promoteToastAction(patientIds, label),
-              // ②-c: op-log 記録済みのためトーストから直接 undo できる。
-              cancel: { label: '元に戻す', onClick: () => void handleUndo() },
-            },
-          );
-        }
-        setTlMoveState(null);
-      } catch (err) {
-        // ペアの2件目で失敗した場合も、1件目の op-log を undo バーへ即時反映する
-        // (レビューMED対応。Ctrl+Z で復旧可能)。
-        invalidateOpLog(isoYear, isoWeek);
-        toast.error(`移動に失敗しました: ${formatErr(err)}`);
+  /**
+   * 移動の実処理。同住所ペアは 1 件ずつ順に投げるため、
+   *   - `fromIndex` = まだ移していない先頭 (= 途中の 1 件が 422 でも既に成功した分を再送しない)
+   *   - `acknowledge` = NG スタッフ / 性別制限の確認ダイアログで OK した再送 (§7-2)
+   * を持ち回る。既存の「部分成功でも op-log を undo バーへ出す」方針は踏襲。
+   * 自己参照するため関数宣言で書く。
+   */
+  async function applyTlMove(
+    st: NonNullable<typeof tlMoveState>,
+    scope: ChangeScopeValue,
+    opts: { acknowledge?: boolean; fromIndex?: number; opGroupId?: string } = {},
+  ) {
+    const { acknowledge = false, fromIndex = 0 } = opts;
+    if (st.visits.length === 0) return;
+    const names = st.visits.map(
+      (v) => patientById.get(v.patient_id)?.name ?? v.patient_name ?? v.patient_id,
+    );
+    const label = st.visits.length >= 2 ? `${names.join('・')}（同住所2名）` : names[0]!;
+    const patientIds = st.visits.map((v) => v.patient_id);
+    const courseChanged = st.toCol.template.id !== st.fromCol.template.id;
+    // 2名セットは同一 op_group_id で連続移動 (undo で両方まとめて戻る)。
+    const opGroupId = opts.opGroupId ?? crypto.randomUUID();
+    let i = fromIndex;
+    try {
+      for (; i < st.visits.length; i++) {
+        const v = st.visits[i]!;
+        await visitMoveWeekOnlyMut.mutateAsync({
+          iso_year: isoYear,
+          iso_week: isoWeek,
+          patient_id: v.patient_id,
+          old_weekday: activeWeekday,
+          old_start_time: (v.start_time ?? '').slice(0, 5),
+          new_weekday: activeWeekday,
+          new_start_time: fmtHM(st.newStartMin),
+          ...(courseChanged ? { new_course_template_id: st.toCol.template.id } : {}),
+          op_group_id: opGroupId,
+          ...ackFlag(acknowledge),
+        });
       }
-    },
-    [
-      tlMoveState,
-      patientById,
-      visitMoveWeekOnlyMut,
-      isoYear,
-      isoWeek,
-      activeWeekday,
-      invalidateOpLog,
-      promoteWeekToFixed,
-      promoteToastAction,
-      handleUndo,
-    ],
-  );
+      invalidateOpLog(isoYear, isoWeek);
+      if (scope === 'pattern') {
+        // 週→型同期の成功/失敗トーストは promoteWeekToFixed 側が出す。
+        toast.success(`${label} を ${fmtHM(st.newStartMin)} に移動しました`);
+        promoteWeekToFixed(patientIds, label);
+      } else {
+        toast.success(
+          `${label} を ${fmtHM(st.newStartMin)} に移動しました（今週のみ・毎週の型は変更していません）`,
+          {
+            action: promoteToastAction(patientIds, label),
+            // ②-c: op-log 記録済みのためトーストから直接 undo できる。
+            cancel: { label: '元に戻す', onClick: () => void handleUndo() },
+          },
+        );
+      }
+      setTlMoveState(null);
+    } catch (err) {
+      // ペアの2件目で失敗した場合も、1件目の op-log を undo バーへ即時反映する
+      // (レビューMED対応。Ctrl+Z で復旧可能)。
+      invalidateOpLog(isoYear, isoWeek);
+      // NG スタッフ / 性別制限の 422 は「確認して通す」フローへ (ブロックではない)。
+      // 失敗した i 件目から ack 付きで再開する (成功済みは二重移動しない)。
+      const failedIndex = i;
+      if (
+        !acknowledge &&
+        placementConstraintConfirm.capture(
+          err,
+          () =>
+            applyTlMove(st, scope, {
+              acknowledge: true,
+              fromIndex: failedIndex,
+              opGroupId,
+            }),
+          MOVE_CONSTRAINT_TEXT,
+        )
+      ) {
+        return;
+      }
+      toast.error(`移動に失敗しました: ${formatErr(err)}`);
+    }
+  }
+
+  const handleTlMoveConfirm = async (scope: ChangeScopeValue) => {
+    const st = tlMoveState;
+    if (!st) return;
+    await applyTlMove(st, scope);
+  };
 
   // ─── Wave 37 Phase 3-C: 相方コース選択ダイアログの state ───────────────
   // requires_multiple_staff=true の患者を D&D したときにダイアログを表示する。
@@ -2186,34 +2250,59 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
 
       // 通常患者 (1 名体制): Wave U-2 D-2 既定B = この週だけ配置 (fix_pattern=false)。
       // 型は変えず source=manual_week で今週のみ置く。トーストで昇格導線を出す。
-      try {
-        const opGroupId = crypto.randomUUID();
-        await placeAndFixMut.mutateAsync({
-          patient_id: patientId,
-          course_template_id: cell.courseTemplateId,
-          iso_year: isoYear,
-          iso_week: isoWeek,
-          weekday: cell.weekday,
-          start_time: cell.time,
-          duration_min: durationMin,
-          staff_count: 1,
-          fix_pattern: false,
-          op_group_id: opGroupId,
-        });
-        invalidateOpLog(isoYear, isoWeek);
-        const pname = patient?.name ?? patientId;
-        toast.success(
-          `${pname} を ${cell.time} に配置しました（今週のみ・毎週の型は変更していません）`,
-          {
-            action: promoteToastAction([patientId], pname),
-          },
-        );
-      } catch (err) {
-        toast.error(`配置に失敗しました: ${formatErr(err)}`);
-      }
+      await applyPoolDrop(patientId, cell, durationMin);
       return;
     }
   };
+
+  /**
+   * プールカード → 列 の 1 名体制配置 (place-and-fix)。
+   * acknowledge=true は NG スタッフ / 性別制限の確認ダイアログで OK した再送 (§7-2)。
+   */
+  async function applyPoolDrop(
+    patientId: string,
+    cell: DropCell,
+    durationMin: number,
+    acknowledge = false,
+  ) {
+    const patient = patientById.get(patientId);
+    try {
+      const opGroupId = crypto.randomUUID();
+      await placeAndFixMut.mutateAsync({
+        patient_id: patientId,
+        course_template_id: cell.courseTemplateId,
+        iso_year: isoYear,
+        iso_week: isoWeek,
+        weekday: cell.weekday,
+        start_time: cell.time,
+        duration_min: durationMin,
+        staff_count: 1,
+        fix_pattern: false,
+        op_group_id: opGroupId,
+        ...ackFlag(acknowledge),
+      });
+      invalidateOpLog(isoYear, isoWeek);
+      const pname = patient?.name ?? patientId;
+      toast.success(
+        `${pname} を ${cell.time} に配置しました（今週のみ・毎週の型は変更していません）`,
+        {
+          action: promoteToastAction([patientId], pname),
+        },
+      );
+    } catch (err) {
+      if (
+        !acknowledge &&
+        placementConstraintConfirm.capture(
+          err,
+          () => applyPoolDrop(patientId, cell, durationMin, true),
+          PLACE_CONSTRAINT_TEXT,
+        )
+      ) {
+        return;
+      }
+      toast.error(`配置に失敗しました: ${formatErr(err)}`);
+    }
+  }
 
   // ─── Wave 37 Phase 3-C: 相方コース確定ハンドラ ─────────────────────
   // ダイアログで 2 つ目の course_template_id を確定したら、staff_count=2 で
@@ -2222,6 +2311,15 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     const ds = partnerDialogState;
     if (!ds) return;
     closePartnerDialog();
+    await applyPartnerPlace(ds, secondaryTemplateId);
+  };
+
+  /** 2 名体制の配置本体。acknowledge=true は §7-2 の確認ダイアログ経由の再送。 */
+  async function applyPartnerPlace(
+    ds: NonNullable<typeof partnerDialogState>,
+    secondaryTemplateId: string,
+    acknowledge = false,
+  ) {
     const patient = patientById.get(ds.patientId);
     try {
       const opGroupId = crypto.randomUUID();
@@ -2240,6 +2338,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         // 週→型同期で両 slot がまとめて上がる (bulk-sync は patient 単位)。
         fix_pattern: false,
         op_group_id: opGroupId,
+        ...ackFlag(acknowledge),
       });
       invalidateOpLog(isoYear, isoWeek);
       const pname = patient?.name ?? ds.patientId;
@@ -2250,9 +2349,19 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         },
       );
     } catch (err) {
+      if (
+        !acknowledge &&
+        placementConstraintConfirm.capture(
+          err,
+          () => applyPartnerPlace(ds, secondaryTemplateId, true),
+          PLACE_CONSTRAINT_TEXT,
+        )
+      ) {
+        return;
+      }
       toast.error(`2 名体制配置に失敗しました: ${formatErr(err)}`);
     }
-  };
+  }
 
   // ─── Wave 36: visit × ボタン削除ハンドラ ────────────────────────
   const handleDeleteVisit = async (visitId: string, patientName: string) => {
@@ -3966,7 +4075,11 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           }
           patients={slotPatientOptions}
           busy={placeAndFixMut.isPending}
-          onRegisterVisit={(args) => void handleSlotRegisterVisit(args)}
+          onRegisterVisit={(args) => {
+            const tplId = slotRegState?.col.template.id;
+            if (!tplId) return;
+            void handleSlotRegisterVisit({ ...args, courseTemplateId: tplId });
+          }}
           onSwitchToEvent={handleSlotSwitchToEvent}
           onClose={() => setSlotRegState(null)}
         />
@@ -4118,6 +4231,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           crossOfficeNotices={crossOfficeNotices}
           rescueSwapNotices={rescueSwapNotices}
         />
+
+        {/* NG スタッフ §7-2: 移動 / 配置 / 空き枠登録が NG / 性別に抵触したときの確認. */}
+        <ConstraintOverrideConfirmDialog {...placementConstraintConfirm.dialogProps} />
 
         {/* NG スタッフ §7-2: 手動でのコース担当変更が NG / 性別に抵触したときの確認. */}
         <ConstraintOverrideConfirmDialog

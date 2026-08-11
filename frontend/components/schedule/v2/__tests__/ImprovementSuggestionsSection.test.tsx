@@ -15,6 +15,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+import { ApiError } from '@/lib/api-client';
+
 const { mockToast, mocks } = vi.hoisted(() => ({
   mockToast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
   mocks: {
@@ -545,6 +547,137 @@ describe('ImprovementSuggestionsSection', () => {
     };
     expect(body.kind).toBe('swap');
     expect(body.promote_movability).toBe(false);
+  });
+
+  // ── NG スタッフ / 性別制限 (§7-2): 422 → 確認 → acknowledge 再送 ──────────
+
+  it('13. 採用 (A: 固定訪問週間に登録) が 422 → 確認ダイアログ → ack 付きで再送', async () => {
+    mocks.suggestionsResult = {
+      data: makeResponse([makeSuggestion()]),
+      isLoading: false,
+      isError: false,
+    };
+    // 1 回目は 422 constraint、2 回目 (ack 付き) は成功。
+    mocks.confirmMutate
+      .mockImplementationOnce((_vars: unknown, opts: { onError?: (e: unknown) => void }) =>
+        opts.onError?.(
+          new ApiError('Unprocessable Entity', 422, {
+            detail: {
+              code: 'constraint_confirmation_required',
+              warnings: [
+                {
+                  kind: 'gender',
+                  patient_id: PATIENT.id,
+                  patient_name: '中尾 要太',
+                  staff_id: '55555555-5555-4555-8555-555555555555',
+                  staff_name: '山本 三郎',
+                  note: null,
+                },
+              ],
+            },
+          }),
+        ),
+      )
+      .mockImplementationOnce((_vars: unknown, opts: { onSuccess?: (d: unknown) => void }) =>
+        opts.onSuccess?.({ warnings: [] }),
+      );
+    renderSection();
+
+    await userEvent.click(screen.getByTestId('improvement-adopt-button'));
+    await userEvent.click(screen.getByTestId('move-confirm-apply'));
+
+    // 採用用の文言で確認ダイアログが開く (失敗トーストは出さない).
+    const dialog = await screen.findByTestId('constraint-override-confirm');
+    expect(dialog).toHaveTextContent('それでも採用しますか？');
+    expect(screen.getByTestId('constraint-override-warning-row')).toHaveTextContent(
+      '山本 三郎さんは中尾 要太様の性別制限に適合しません',
+    );
+    expect(mockToast.error).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByTestId('constraint-override-ok'));
+    await waitFor(() => expect(mocks.confirmMutate).toHaveBeenCalledTimes(2));
+    const first = mocks.confirmMutate.mock.calls[0][0] as {
+      body: { acknowledge_constraint_warnings?: boolean };
+    };
+    const second = mocks.confirmMutate.mock.calls[1][0] as {
+      body: { acknowledge_constraint_warnings?: boolean; change_scope?: string };
+    };
+    expect(first.body.acknowledge_constraint_warnings).toBeUndefined();
+    expect(second.body.acknowledge_constraint_warnings).toBe(true);
+    expect(second.body.change_scope).toBe('pattern_and_week');
+  });
+
+  it('14. 採用 (B: この週だけ) が 422 → 確認 → visit-move-week-only を ack 付きで再送', async () => {
+    mocks.suggestionsResult = {
+      data: makeResponse([makeSuggestion()]),
+      isLoading: false,
+      isError: false,
+    };
+    mocks.visitMoveWeekOnlyMutate
+      .mockImplementationOnce((_vars: unknown, opts: { onError?: (e: unknown) => void }) =>
+        opts.onError?.(
+          new ApiError('Unprocessable Entity', 422, {
+            detail: {
+              code: 'constraint_confirmation_required',
+              warnings: [
+                {
+                  kind: 'ng_staff',
+                  patient_id: PATIENT.id,
+                  patient_name: '中尾 要太',
+                  staff_id: '55555555-5555-4555-8555-555555555555',
+                  staff_name: '山本 三郎',
+                  note: null,
+                },
+              ],
+            },
+          }),
+        ),
+      )
+      .mockImplementationOnce((_vars: unknown, opts: { onSuccess?: () => void }) =>
+        opts.onSuccess?.(),
+      );
+    renderSection();
+
+    await userEvent.click(screen.getByTestId('improvement-adopt-button'));
+    // 反映先 B (この週だけ) に切り替えてから反映する。
+    await userEvent.click(screen.getByTestId('change-scope-week'));
+    await userEvent.click(screen.getByTestId('move-confirm-apply'));
+
+    await screen.findByTestId('constraint-override-confirm');
+    await userEvent.click(screen.getByTestId('constraint-override-ok'));
+
+    await waitFor(() => expect(mocks.visitMoveWeekOnlyMutate).toHaveBeenCalledTimes(2));
+    const req0 = mocks.visitMoveWeekOnlyMutate.mock.calls[0][0] as Record<string, unknown>;
+    const req1 = mocks.visitMoveWeekOnlyMutate.mock.calls[1][0] as Record<string, unknown>;
+    expect(req0.acknowledge_constraint_warnings).toBeUndefined();
+    expect(req1.acknowledge_constraint_warnings).toBe(true);
+  });
+
+  it('15. swap カード: 移動先/移動元の担当名を「担当: ◯◯」で表示する', () => {
+    const swap = makeSwapSuggestion();
+    swap.current = { ...swap.current, staff_name: '熊澤 妙子' };
+    swap.candidate = { ...swap.candidate, staff_name: '山本 三郎' };
+    mocks.suggestionsResult = { data: makeResponse([swap]), isLoading: false, isError: false };
+    renderSection();
+
+    // X: current (熊澤) → candidate (山本) — 移動先の担当が読める。
+    const moveX = screen.getByTestId('improvement-swap-move-x');
+    expect(moveX).toHaveTextContent('担当: 熊澤 妙子');
+    expect(moveX).toHaveTextContent('担当: 山本 三郎');
+    // Y: candidate のコース (山本) → current のコース (熊澤).
+    const moveY = screen.getByTestId('improvement-swap-move-y');
+    expect(moveY).toHaveTextContent('担当: 山本 三郎');
+    expect(moveY).toHaveTextContent('担当: 熊澤 妙子');
+  });
+
+  it('15b. staff_name が null なら担当表記を出さない (旧 BE 互換)', () => {
+    mocks.suggestionsResult = {
+      data: makeResponse([makeSwapSuggestion()]),
+      isLoading: false,
+      isError: false,
+    };
+    renderSection();
+    expect(screen.getByTestId('improvement-swap-move-x')).not.toHaveTextContent('担当:');
   });
 
   it('12. 未知 kind の要素は静かに除外され、既知カードは表示される (寛容化の施錠)', () => {

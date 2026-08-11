@@ -22,6 +22,7 @@ import {
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
+import { IMPROVEMENT_SUGGESTIONS_KEY } from '@/lib/queries/improvementSuggestions';
 import {
   patientNgStaffListSchema,
   staffNgPatientListSchema,
@@ -36,6 +37,36 @@ export const NG_STAFF_KEY = (patientId: string) => ['patients', patientId, 'ng-s
 /** 逆引き (スタッフ詳細サマリ)。`STAFF_KEY` prefix にぶら下げる。 */
 export const STAFF_NG_PATIENTS_KEY = (staffId: string) =>
   ['staff', staffId, 'ng-patients'] as const;
+
+/**
+ * NG 指定の変更で古くなる **提案系** キャッシュをまとめて失効させる。
+ *
+ * 2026-08-11 の欠陥: upsert/delete が当該患者の ng-staff キーしか無効化しておらず、
+ *   - 改善提案 (staleTime 5 分) が NG 追加前の結果を返し続ける
+ *   - プール投入提案 (diff-add) / 現場ボードも同様
+ *   - 患者一覧の `ng_staff_count` バッジが増減しない
+ *   - スタッフ詳細の逆引き (ng-patients) が更新されない
+ * ため「NG を足したのに警告が出ない」ように見えていた。
+ *
+ * NOTE: propose-slots (PoolCandidateList の候補一覧) / unblock / scope-optimization は
+ *   いずれも **mutation** (キャッシュを持たない on-demand 実行) のため無効化対象なし。
+ *   再実行すれば必ず最新の NG 指定で計算される。
+ */
+function invalidateNgStaffDependents(
+  qc: ReturnType<typeof useQueryClient>,
+  vars: { patientId: string; staffId: string },
+): void {
+  void qc.invalidateQueries({ queryKey: NG_STAFF_KEY(vars.patientId) });
+  // 逆引き (スタッフ詳細の「このスタッフを NG 指定している患者」).
+  void qc.invalidateQueries({ queryKey: STAFF_NG_PATIENTS_KEY(vars.staffId) });
+  // 患者一覧・詳細 (ng_staff_count バッジ = プールカードの ⛔ 表示元).
+  void qc.invalidateQueries({ queryKey: ['patients'] });
+  // 改善提案 (staleTime 5 分。ここを外さないと NG 追加が反映されない).
+  void qc.invalidateQueries({ queryKey: [IMPROVEMENT_SUGGESTIONS_KEY] });
+  // プール投入提案 (差分追加) と現場ボードの候補.
+  void qc.invalidateQueries({ queryKey: ['diff-add'] });
+  void qc.invalidateQueries({ queryKey: ['field-board'] });
+}
 
 // ─── Auth helper ─────────────────────────────────────────────────────────────
 
@@ -119,7 +150,7 @@ export function useUpsertNgStaff(): UseMutationResult<unknown, Error, UpsertNgSt
         refreshToken,
       }),
     onSuccess: (_data, vars) => {
-      void qc.invalidateQueries({ queryKey: NG_STAFF_KEY(vars.patientId) });
+      invalidateNgStaffDependents(qc, vars);
     },
   });
 }
@@ -145,7 +176,7 @@ export function useDeleteNgStaff(): UseMutationResult<unknown, Error, DeleteNgSt
         refreshToken,
       }),
     onSuccess: (_data, vars) => {
-      void qc.invalidateQueries({ queryKey: NG_STAFF_KEY(vars.patientId) });
+      invalidateNgStaffDependents(qc, vars);
     },
   });
 }

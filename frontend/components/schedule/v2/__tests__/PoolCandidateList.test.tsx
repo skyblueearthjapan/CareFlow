@@ -850,7 +850,11 @@ describe('W-3: 効率優先の代替枠 (efficiency alternatives)', () => {
     expect(screen.getByTestId('pool-efficiency-slot-list')).toBeInTheDocument();
 
     // 効率スロットのラベルが存在する (details が open でないと hidden になるが DOM には存在する)
-    expect(screen.getByTestId(`pool-efficiency-${effSlot.office_id}-${effSlot.weekday}-${effSlot.course_code}-${effSlot.start_time}`)).toBeInTheDocument();
+    expect(
+      screen.getByTestId(
+        `pool-efficiency-${effSlot.office_id}-${effSlot.weekday}-${effSlot.course_code}-${effSlot.start_time}`,
+      ),
+    ).toBeInTheDocument();
   });
 });
 
@@ -1093,9 +1097,7 @@ describe('W-12a: 2名体制ペア候補 (PoolCandidateList)', () => {
     mocks.proposeData = {
       slots: [],
       message: null,
-      excluded_summary: [
-        { reason: 'no_pair_slot', count: 2, weekday: 1, sample_course_code: 'C' },
-      ],
+      excluded_summary: [{ reason: 'no_pair_slot', count: 2, weekday: 1, sample_course_code: 'C' }],
     };
     render(<PoolCandidateList {...COMMON} />);
     fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
@@ -1190,7 +1192,9 @@ describe('W-12d: 詰まり解消相談 (unblock)', () => {
     mocks.proposeData = {
       slots: [],
       message: null,
-      excluded_summary: [{ reason: 'capacity_full', count: 3, weekday: 1, sample_course_code: 'A' }],
+      excluded_summary: [
+        { reason: 'capacity_full', count: 3, weekday: 1, sample_course_code: 'A' },
+      ],
     };
     render(<PoolCandidateList {...COMMON} />);
     fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
@@ -1207,7 +1211,9 @@ describe('W-12d: 詰まり解消相談 (unblock)', () => {
       slots: [],
       message: null,
       overcapacity_available_count: 2,
-      excluded_summary: [{ reason: 'capacity_full', count: 3, weekday: 1, sample_course_code: 'A' }],
+      excluded_summary: [
+        { reason: 'capacity_full', count: 3, weekday: 1, sample_course_code: 'A' },
+      ],
     };
     render(<PoolCandidateList {...COMMON} />);
     fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
@@ -1389,9 +1395,7 @@ describe('W-14: autoRequestUnblock (詰まり解消探索の自動発火)', () =
 
   it('primary + autoRequestUnblock: 候補0 + 時間起因で探索が自動発火する (1 回だけ)', () => {
     mocks.proposeData = TIME_BLOCKER_PROPOSE;
-    const { rerender } = render(
-      <PoolCandidateList {...COMMON} primary autoRequestUnblock />,
-    );
+    const { rerender } = render(<PoolCandidateList {...COMMON} primary autoRequestUnblock />);
     // mount 直後に propose-unblock (runSearch) が 1 回だけ自動発火する。
     expect(mocks.unblockMutate).toHaveBeenCalledTimes(1);
     const req = mocks.unblockMutate.mock.calls[0][0];
@@ -1522,9 +1526,7 @@ describe('特別訪問週間モード (specialTicket)', () => {
     const slot = makeThuSlot();
     mocks.proposeData = { slots: [slot], message: null };
     const onAdopted = vi.fn();
-    render(
-      <PoolCandidateList {...COMMON} primary specialTicket={SPECIAL} onAdopted={onAdopted} />,
-    );
+    render(<PoolCandidateList {...COMMON} primary specialTicket={SPECIAL} onAdopted={onAdopted} />);
     fireEvent.click(
       screen.getByTestId(
         `pool-candidate-adopt-${slot.office_id}-${slot.weekday}-${slot.course_code}-${slot.start_time}`,
@@ -1610,5 +1612,166 @@ describe('特別訪問週間モード (specialTicket)', () => {
     expect(screen.queryByTestId('pool-candidate-special-week-only')).not.toBeInTheDocument();
     expect(screen.getByTestId('change-scope-choice')).toBeInTheDocument();
     expect(mocks.proposeMutate.mock.calls[0][0].include_efficiency_alternatives).toBe(true);
+  });
+});
+
+// ── NG スタッフ / 性別制限 (§7-2): 422 → 確認 → acknowledge 再送 ──────────────
+
+describe('NG スタッフ / 性別制限の確認フロー (§7-2)', () => {
+  /** BE の 422 `constraint_confirmation_required`. */
+  function constraintError() {
+    return new ApiError('Unprocessable Entity', 422, {
+      detail: {
+        code: 'constraint_confirmation_required',
+        warnings: [
+          {
+            kind: 'ng_staff',
+            patient_id: PATIENT.id,
+            patient_name: '中尾 要太',
+            staff_id: '77777777-7777-4777-8777-777777777777',
+            staff_name: '山田',
+            note: null,
+          },
+        ],
+      },
+    });
+  }
+
+  beforeEach(() => {
+    mocks.proposeMutate.mockReset();
+    mocks.confirmMutate.mockReset();
+    mocks.placeAndFixMutate.mockReset();
+    mocks.placeSpecialMutate.mockReset();
+    mocks.proposeData = undefined;
+    mocks.existingFixedVisits = [];
+    mocks.templatesQueries = [];
+    mockToast.success.mockReset();
+    mockToast.error.mockReset();
+    mockToast.warning.mockReset();
+  });
+
+  /** 候補 1 件を出して「この枠で確定」まで進める。 */
+  function adoptFirstSlot(slot: ReturnType<typeof makeSlot>) {
+    mocks.proposeData = { slots: [slot], message: null };
+    render(<PoolCandidateList {...COMMON} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-run-button'));
+    fireEvent.click(
+      screen.getByTestId(
+        `pool-candidate-adopt-${slot.office_id}-${slot.weekday}-${slot.course_code}-${slot.start_time}`,
+      ),
+    );
+  }
+
+  it('A 経路 (固定訪問週間に登録) が 422 → 確認 → PUT を ack 付きで再送', async () => {
+    mocks.confirmMutate
+      .mockImplementationOnce((_v: unknown, o: { onError?: (e: unknown) => void }) =>
+        o.onError?.(constraintError()),
+      )
+      .mockImplementationOnce((_v: unknown, o: { onSuccess?: (d: unknown) => void }) =>
+        o.onSuccess?.({ warnings: [] }),
+      );
+    adoptFirstSlot(makeSlot());
+    fireEvent.click(screen.getByTestId('pool-candidate-confirm-apply'));
+
+    const dialog = await screen.findByTestId('constraint-override-confirm');
+    expect(dialog).toHaveTextContent('それでも採用しますか？');
+    expect(screen.getByTestId('constraint-override-ok')).toHaveTextContent('採用する');
+    // 確認前に失敗トーストは出さない。
+    expect(mockToast.error).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('constraint-override-ok'));
+    await waitFor(() => expect(mocks.confirmMutate).toHaveBeenCalledTimes(2));
+    expect(
+      mocks.confirmMutate.mock.calls[0][0].body.acknowledge_constraint_warnings,
+    ).toBeUndefined();
+    expect(mocks.confirmMutate.mock.calls[1][0].body.acknowledge_constraint_warnings).toBe(true);
+  });
+
+  it('B 経路 (この週だけ = place-and-fix) が 422 → 確認 → ack 付きで再送', async () => {
+    mocks.templatesQueries = [
+      {
+        data: [
+          {
+            id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            office_id: '11111111-1111-4111-8111-111111111111',
+            label: 'C',
+            deleted_at: null,
+          },
+        ],
+        status: 'success',
+        isLoading: false,
+        dataUpdatedAt: Date.now(),
+      },
+    ];
+    mocks.placeAndFixMutate
+      .mockImplementationOnce((_v: unknown, o: { onError?: (e: unknown) => void }) =>
+        o.onError?.(constraintError()),
+      )
+      .mockImplementationOnce((_v: unknown, o: { onSuccess?: () => void }) => o.onSuccess?.());
+    adoptFirstSlot(makeSlot());
+    fireEvent.click(screen.getByTestId('change-scope-week'));
+    fireEvent.click(screen.getByTestId('pool-candidate-confirm-apply'));
+
+    await screen.findByTestId('constraint-override-confirm');
+    fireEvent.click(screen.getByTestId('constraint-override-ok'));
+
+    await waitFor(() => expect(mocks.placeAndFixMutate).toHaveBeenCalledTimes(2));
+    expect(
+      mocks.placeAndFixMutate.mock.calls[0][0].acknowledge_constraint_warnings,
+    ).toBeUndefined();
+    expect(mocks.placeAndFixMutate.mock.calls[1][0].acknowledge_constraint_warnings).toBe(true);
+  });
+
+  it('特別訪問週間チケットの配置 (place) が 422 → 確認 → ack 付きで再送', async () => {
+    const slot = makeSlot({ weekday: 3, weekday_code: 'Thu' });
+    mocks.placeSpecialMutate
+      .mockImplementationOnce((_v: unknown, o: { onError?: (e: unknown) => void }) =>
+        o.onError?.(constraintError()),
+      )
+      .mockImplementationOnce((_v: unknown, o: { onSuccess?: () => void }) => o.onSuccess?.());
+    mocks.proposeData = { slots: [slot], message: null };
+    render(
+      <PoolCandidateList
+        {...COMMON}
+        primary
+        specialTicket={{
+          markId: '55555555-5555-4555-8555-555555555555',
+          weekday: 3,
+          isoYear: 2026,
+          isoWeek: 31,
+          serviceMinutes: 45,
+          lastPlacement: null,
+        }}
+      />,
+    );
+    fireEvent.click(
+      screen.getByTestId(
+        `pool-candidate-adopt-${slot.office_id}-${slot.weekday}-${slot.course_code}-${slot.start_time}`,
+      ),
+    );
+    fireEvent.click(screen.getByTestId('pool-candidate-confirm-apply'));
+
+    await screen.findByTestId('constraint-override-confirm');
+    fireEvent.click(screen.getByTestId('constraint-override-ok'));
+
+    await waitFor(() => expect(mocks.placeSpecialMutate).toHaveBeenCalledTimes(2));
+    expect(
+      mocks.placeSpecialMutate.mock.calls[0][0].payload.acknowledge_constraint_warnings,
+    ).toBeUndefined();
+    expect(mocks.placeSpecialMutate.mock.calls[1][0].payload.acknowledge_constraint_warnings).toBe(
+      true,
+    );
+  });
+
+  it('422 でない失敗は従来どおり toast.error のみ (確認ダイアログを出さない)', async () => {
+    mocks.confirmMutate.mockImplementationOnce(
+      (_v: unknown, o: { onError?: (e: unknown) => void }) =>
+        o.onError?.(new ApiError('Conflict', 409, { detail: '既に配置済みです' })),
+    );
+    adoptFirstSlot(makeSlot());
+    fireEvent.click(screen.getByTestId('pool-candidate-confirm-apply'));
+
+    await waitFor(() => expect(mockToast.error).toHaveBeenCalledWith('採用に失敗しました'));
+    expect(screen.queryByTestId('constraint-override-confirm')).not.toBeInTheDocument();
   });
 });

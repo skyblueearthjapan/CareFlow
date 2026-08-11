@@ -59,6 +59,11 @@ export const placeAndFixRequestSchema = z
      * visit DELETE 等）に同値を送ることで BE 側で op-log をグループ化する。省略可 (旧 BE 互換)。
      */
     op_group_id: z.string().uuid().nullish(),
+    /**
+     * NG スタッフ / 性別制限 (§7-2): 422 `constraint_confirmation_required` を
+     * 確認ダイアログで通したときだけ true で再送する。省略時 BE default=false。
+     */
+    acknowledge_constraint_warnings: z.boolean().optional(),
   })
   .superRefine((data, ctx) => {
     const hasSingle = data.course_template_id !== null && data.course_template_id !== undefined;

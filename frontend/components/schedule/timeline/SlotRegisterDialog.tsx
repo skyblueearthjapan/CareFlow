@@ -50,6 +50,13 @@ export interface SlotPatientOption {
   defaultDurationMin: number;
   /** 今週の不足数 (希望 - 配置済)。 */
   shortage: number;
+  /**
+   * この枠の担当スタッフをこの患者が NG 指定しているか
+   * (`GET /staff/{id}/ng-patients` の逆引きで突合)。
+   * true でセレクトに「⛔NG」を付け、選択中は警告帯を出す。
+   * 性別制限は BE の 422 確認ダイアログ側でカバーする (ここでは判定しない)。
+   */
+  ngWithSlotStaff?: boolean;
 }
 
 export interface SlotRegisterDialogProps {
@@ -99,6 +106,7 @@ export function SlotRegisterDialog({
   }, [open, context]);
 
   const gapLen = context ? context.gapEndMin - context.gapStartMin : 0;
+  const selectedPatient = patients.find((p) => p.id === patientId) ?? null;
 
   // 時間候補: よく使う長さ + 患者既定値を gap に収まる範囲で。
   const durationOptions = React.useMemo(() => {
@@ -175,12 +183,27 @@ export function SlotRegisterDialog({
                   <option value="">— 選択してください —</option>
                   {patients.map((p) => (
                     <option key={p.id} value={p.id}>
+                      {p.ngWithSlotStaff ? '⛔NG ' : ''}
                       {p.name}
                       {p.shortage > 0 ? `（不足${p.shortage}件・${p.defaultDurationMin}分）` : ''}
                     </option>
                   ))}
                 </select>
               </label>
+
+              {/* NG スタッフ (patient-ng-staff-design.md §7-2): ブロックせず見える化する。
+                  そのまま進めた場合は BE が 422 を返し、確認ダイアログで通す。 */}
+              {selectedPatient?.ngWithSlotStaff ? (
+                <div
+                  className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"
+                  data-testid="slot-register-ng-warning"
+                  role="alert"
+                >
+                  ⛔ {selectedPatient.name} 様は
+                  {context?.staffName ? `${context.staffName}さん` : 'この枠の担当者'}
+                  をNGスタッフに指定しています。 このまま進めると確認画面が出ます。
+                </div>
+              ) : null}
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="flex flex-col gap-1 text-sm">

@@ -20,6 +20,7 @@ import {
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
+import { IMPROVEMENT_SUGGESTIONS_KEY } from '@/lib/queries/improvementSuggestions';
 import type {
   OfficeFeatureFlag,
   OfficeFeatureFlagUpsert,
@@ -52,6 +53,17 @@ export const SAME_ADDRESS_LINKS_KEY = (patientId?: string) =>
 
 export const OFFICE_FEATURE_FLAGS_KEY = (featureKey?: OfficeFeatureKey) =>
   ['office-feature-flags', featureKey ?? 'all'] as const;
+
+/**
+ * 同住所リンクの変更で古くなる **提案系** キャッシュ (NG スタッフ側と同一の欠陥).
+ * ペア (同時刻・別コース) の成立可否が変わるため、改善提案 / プール投入提案 /
+ * 現場ボードは必ず再計算させる。propose-slots・unblock は mutation なので対象外。
+ */
+function invalidateSameAddressDependents(qc: ReturnType<typeof useQueryClient>): void {
+  void qc.invalidateQueries({ queryKey: [IMPROVEMENT_SUGGESTIONS_KEY] });
+  void qc.invalidateQueries({ queryKey: ['diff-add'] });
+  void qc.invalidateQueries({ queryKey: ['field-board'] });
+}
 
 // ─── PATCH /api/v1/patients/fixed-visits/{pfv_id}/pin ────────────────────────
 
@@ -171,6 +183,7 @@ export function useSetSameAddressLink(): UseMutationResult<
       // Phase G-21 T4 reviewer H1: prefix match 暗黙挙動に依存させず exact:false を明示.
       // ['patient-same-address-links', '<patientId>' | 'all'] を網羅的に無効化する.
       void qc.invalidateQueries({ queryKey: ['patient-same-address-links'], exact: false });
+      invalidateSameAddressDependents(qc);
     },
   });
 }
@@ -203,6 +216,7 @@ export function useDeleteSameAddressLink(): UseMutationResult<
       void qc.invalidateQueries({ queryKey: SAME_ADDRESS_CANDIDATES_KEY(vars.patient_b_id) });
       // Phase G-21 T4 reviewer H1: prefix match 暗黙挙動に依存させず exact:false を明示.
       void qc.invalidateQueries({ queryKey: ['patient-same-address-links'], exact: false });
+      invalidateSameAddressDependents(qc);
     },
   });
 }
