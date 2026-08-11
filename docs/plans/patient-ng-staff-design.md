@@ -1,7 +1,19 @@
 # NGスタッフ（患者×スタッフ割当禁止）+ 手動経路の確認フロー — 設計書
 
 作成: 2026-08-11（ドラフト）
-ステータス: **PO 4論点確定済み・実装未着手**
+ステータス: **実装完了（2026-08-11・Phase 1〜3 全部）**
+
+実装コミット（時系列）: 9f3d9ef 基盤(mig 0070) / 31097a2 Layer3ハード制約 /
+f71b7b6 提案系警告 / 6e9bbbf 手動経路確認フロー+管理者通知 / 01364a6 FEコア /
+cb0812e FE面展開+逆引き / 9f8d0bc 賢いマスタV9+取込dry-run警告 / 3e9e4e7 連携画面表示。
+
+実装時の主な確定事項（本文の「実装時に決定」の解決）:
+- 段階式reason決定: 性別緩和→NG緩和→両方緩和(reason='gender'+`also_violates=['ng_staff']`)
+- 残留警告は別リスト `unresolved_ng_warnings`（既存 `unresolved_warnings` は不変）
+- secondary検証は**割当を維持して警告のみ**（`secondary_constraint_warnings`・ペア構造を壊さない）
+- 提案系のNG集合は「バケット→NG指定患者」の逆引き1クエリ（全経路に自動適用）
+- 通知の冪等キーは `op_group_id`（None時は毎回通知。checkin版の `IS NULL` 罠を回避して再実装）
+- 賢いマスタはV9ファミリ2コード（`course_staff_ng` / `course_staff_sex_mismatch`）
 
 ---
 
