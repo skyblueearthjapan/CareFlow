@@ -16,6 +16,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { ApiError } from '@/lib/api-client';
+import { enqueuePending } from '@/lib/checkin-queue';
 import { pickQrCandidate, type QrResolveCandidate } from '@/lib/queries/qrResolve';
 
 // --- module mocks ----------------------------------------------------------
@@ -192,6 +193,57 @@ describe('/q/{token} ランディング — 担当外 (代行 / 予定外の選�
   });
 });
 
+describe('/q/{token} ランディング — 旧BE (v1) 後方互換', () => {
+  it('is_mine / patient_name を欠く v1 レスポンスは全件「自分の担当」として扱う', async () => {
+    // 第1弾 BE は自分の担当だけを返し、patient_name も is_mine も持たない。
+    mockApi({
+      resolve: {
+        candidates: [
+          { visit_id: 'visit-v1', start_time: '09:00:00', end_time: '10:00:00', status: 'planned' },
+        ],
+      },
+    });
+    renderPage();
+    await waitFor(() => expect(routerReplace).toHaveBeenCalledWith('/m/today/visit-v1?qr=TOK123'));
+  });
+
+  it('v1 かつ候補ゼロは第1弾の案内へ退避する (代行/予定外は出さない)', async () => {
+    mockApi({ resolve: { candidates: [] } });
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByText('本日の担当訪問が見つかりません')).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId('qr-substitute-choice')).not.toBeInTheDocument();
+  });
+});
+
+describe('/q/{token} ランディング — 候補の除外規則', () => {
+  it('取消済みの予定には代行ボタンを出さない', async () => {
+    mockApi({
+      resolve: {
+        patient_name: '田中 太郎',
+        candidates: [cand('visit-c', { status: 'cancelled' })],
+      },
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('qr-substitute-choice')).toBeInTheDocument());
+    expect(screen.getByText('この訪問は取り消されています。')).toBeInTheDocument();
+    expect(screen.queryByText('この予定の代行として記録')).not.toBeInTheDocument();
+  });
+
+  it('visit_id を欠く候補は表示しない', async () => {
+    mockApi({
+      resolve: {
+        patient_name: '田中 太郎',
+        candidates: [{ ...cand('x'), visit_id: '' }, cand('visit-ok')],
+      },
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('qr-substitute-choice')).toBeInTheDocument());
+    expect(screen.getAllByTestId('qr-candidate')).toHaveLength(1);
+  });
+});
+
 describe('/q/{token} ランディング — 予定外の記録', () => {
   it('GPS プレビューを挟んでから adhoc-checkin し、生成 visit へ遷移する', async () => {
     mockApi({
@@ -274,6 +326,34 @@ describe('/q/{token} ランディング — 圏外 (resolve 失敗)', () => {
     ) as Array<{ kind: string }>;
     expect(entries).toHaveLength(1);
     expect(entries[0]?.kind).toBe('adhoc_arrival');
+  });
+});
+
+describe('/q/{token} ランディング — 未送信の再送', () => {
+  it('マウント時に保留を再送し、4xx で破棄した分は必ず通知する', async () => {
+    enqueuePending('staff-1', {
+      visit_id: 'visit-1',
+      kind: 'arrival',
+      payload: { at: '2026-08-16T01:00:00Z', qr_token: 'OLD' },
+    });
+    asMock(fetcher).mockImplementation(async (path: string) => {
+      if (path === '/api/v1/visits/visit-1/checkin') {
+        throw new ApiError('gone', 410, { detail: 'QRが再発行されています' });
+      }
+      if (path.startsWith('/api/v1/visits/resolve-qr/')) {
+        return { patient_name: '田中 太郎', candidates: [] };
+      }
+      return {};
+    });
+    renderPage();
+    // 黙って捨てず、理由付きでトースト通知する (キューの契約)。
+    await waitFor(() =>
+      expect(asMock(toast.error)).toHaveBeenCalledWith(
+        '未送信の1件は送信できませんでした',
+        expect.objectContaining({ description: 'QRが再発行されています' }),
+      ),
+    );
+    expect(window.localStorage.getItem('checkin-pending:staff-1')).toBeNull();
   });
 });
 

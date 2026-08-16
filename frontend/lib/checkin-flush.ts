@@ -53,6 +53,7 @@ export function dropReasonOf(err: unknown): string {
   const status = err instanceof ApiError ? err.status : null;
   if (status === 404) return detailOf(err) ?? '無効なQRのため';
   if (status === 409) return detailOf(err) ?? '対象外の患者のため';
+  if (status === 410) return detailOf(err) ?? 'QRが再発行され無効になったため';
   return detailOf(err) ?? '送信できないため';
 }
 
@@ -88,11 +89,40 @@ export async function postPending(
   }
 }
 
-/** そのスタッフの保留分をすべて再送する。 */
+/**
+ * 実行中 / 予約済みの flush (staffId 毎)。
+ *
+ * 再送は複数の画面 (一覧 / 訪問詳細 / QR ランディング) と `online` イベントから
+ * 同時に呼ばれる。ガードが無いと**同じ entry を並行 POST**してしまい、先に届いた
+ * 方が成功・後から届いた方が 409 (対象外) を受けて「送信できませんでした」と
+ * 誤通知したうえで、実際には記録済みの控えを破棄してしまう。ここで staffId 毎に
+ * 直列化し、後発の呼び出しは前の flush の完了後にキューを読み直す (= 既に送信済み
+ * の entry は消えているので二重 POST にならない)。
+ */
+const inFlight = new Map<string, Promise<FlushResult>>();
+
+/** そのスタッフの保留分をすべて再送する (同一 staffId の並行実行は直列化)。 */
 export function flushCheckinQueue(
   staffId: string,
   accessToken: string | null,
   refreshToken: string | null,
 ): Promise<FlushResult> {
-  return flushPending(staffId, (entry) => postPending(entry, accessToken, refreshToken));
+  const prev = inFlight.get(staffId);
+  const next = (prev ? prev.then(noop, noop) : Promise.resolve()).then(() =>
+    flushPending(staffId, (entry) => postPending(entry, accessToken, refreshToken)),
+  );
+  inFlight.set(staffId, next);
+  void next.then(
+    () => release(staffId, next),
+    () => release(staffId, next),
+  );
+  return next;
+}
+
+function noop(): void {
+  /* 前の flush の結果 / 失敗は後発の実行可否に影響させない。 */
+}
+
+function release(staffId: string, settled: Promise<FlushResult>): void {
+  if (inFlight.get(staffId) === settled) inFlight.delete(staffId);
 }

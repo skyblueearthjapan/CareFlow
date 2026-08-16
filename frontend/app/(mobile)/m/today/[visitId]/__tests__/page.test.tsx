@@ -28,10 +28,11 @@ vi.mock('next-auth/react', () => ({
 // searchParamsGet を差し替える。
 const searchParamsGet = vi.fn<(key: string) => string | null>(() => null);
 const routerReplace = vi.fn();
+const routerPush = vi.fn();
 vi.mock('next/navigation', () => ({
   useParams: () => ({ visitId: 'visit-1' }),
   useSearchParams: () => ({ get: searchParamsGet }),
-  useRouter: () => ({ replace: routerReplace, push: vi.fn() }),
+  useRouter: () => ({ replace: routerReplace, push: routerPush }),
 }));
 
 // Stable QueryClient stub so the page's useQueryClient() works without a provider.
@@ -308,6 +309,24 @@ describe('QR チェックイン モバイル — 代行 (担当外) モード', 
     expect(screen.queryByText('訪問できなかった（理由を記録）')).not.toBeInTheDocument();
   });
 
+  it('?qr= 無しなら担当欄に自分が居なくても代行モードにしない (assignments 担当の回帰防止)', () => {
+    // searchParamsGet は beforeEach で「?qr= 無し」に戻る。visit_staff_assignments
+    // だけで担当しているスタッフは VisitRead の担当欄に出ないため、QR 経由でない
+    // 通常導線でも代行扱いすると no-show / 手動フォールバックが消える回帰になる。
+    asMock(useMyVisit).mockReturnValue({
+      data: { ...makeVisit(), primary_staff_id: 'staff-9', staff_name: '田中 先輩' },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    render(<MobileVisitDetailPage />);
+    expect(screen.queryByTestId('mobile-detail-substitute')).not.toBeInTheDocument();
+    expect(screen.getByText('訪問できなかった（理由を記録）')).toBeInTheDocument();
+    // 手動フォールバックも従来どおり出る。
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    expect(screen.getByText('__manual__')).toBeInTheDocument();
+  });
+
   it('打刻 POST に qr_token を必ず載せ、退出は手動フォールバック無しの再スキャン', async () => {
     setSubstituteVisit();
     render(<MobileVisitDetailPage />);
@@ -453,19 +472,19 @@ describe('QR チェックイン モバイル — 404/409 はユーザー向け�
     expect(window.localStorage.getItem('checkin-pending:staff-1')).toBeNull();
   });
 
-  it('409 は「このQRは別の患者のものです」を表示する', async () => {
+  it('409 は代行/予定外への導線を出し、/q/{token} へ渡す (設計 §5)', async () => {
     checkInMutate.mockRejectedValueOnce(new ApiError('conflict', 409, { detail: 'other' }));
     render(<MobileVisitDetailPage />);
     fireEvent.click(screen.getByText('QRで到着を記録'));
     fireEvent.click(screen.getByText('__scan__'));
     await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
     fireEvent.click(screen.getByText('到着を記録する'));
-    await waitFor(() =>
-      expect(asMock(toast.error)).toHaveBeenCalledWith(
-        'このQRは別の患者のものです',
-        expect.anything(),
-      ),
-    );
+
+    // 行き止まりのトーストではなく、読んだ QR の患者を記録する導線を出す。
+    await waitFor(() => expect(screen.getByTestId('wrong-patient-panel')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('代行／予定外として記録する'));
+    expect(routerPush).toHaveBeenCalledWith('/q/TESTTOKEN');
+    // 記録は退避しない (サーバの確定回答)。
     expect(window.localStorage.getItem('checkin-pending:staff-1')).toBeNull();
   });
 });

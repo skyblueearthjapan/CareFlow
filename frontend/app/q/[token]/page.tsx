@@ -27,7 +27,8 @@ import { CheckCircle2, Clock, Loader2, MapPin, QrCode, RefreshCw, UserPlus } fro
 
 import { ApiError } from '@/lib/api-client';
 import { enqueuePending, type PendingPayload } from '@/lib/checkin-queue';
-import { flushCheckinQueue, isServerUnreachable } from '@/lib/checkin-flush';
+import { isServerUnreachable } from '@/lib/checkin-flush';
+import { useCheckinFlush } from '@/lib/queries/checkinFlush';
 import { coordsOf, geoErrorHint, getGeolocation, type GeoFix } from '@/lib/geo';
 import { extractQrToken } from '@/lib/qr-token';
 import { useAdhocCheckin } from '@/lib/queries/me';
@@ -74,7 +75,14 @@ function isOngoing(c: QrResolveCandidate): boolean {
 }
 
 function isFinished(c: QrResolveCandidate): boolean {
-  return c.status === 'done' || c.status === 'completed' || c.status === 'checked_out';
+  // cancelled も「この枠には打刻させない」= 記録済みと同じ扱い (取消済みの予定に
+  // 代行で乗せると、取消のはずの訪問が実績付きで復活してしまう)。
+  return (
+    c.status === 'done' ||
+    c.status === 'completed' ||
+    c.status === 'checked_out' ||
+    c.status === 'cancelled'
+  );
 }
 
 /** 案内カード (エラー / 候補なし共通の器)。 */
@@ -100,8 +108,6 @@ export default function QrLandingPage() {
   const router = useRouter();
   const { data: session } = useSession();
   const staffId = session?.user?.staffId ?? '';
-  const accessToken = session?.accessToken ?? null;
-  const refreshToken = session?.refreshToken ?? null;
   // パス断片は生トークンだが、コピペ等で URL 全体が入っても拾えるよう
   // extractQrToken で寛容に解析する (不正文字は null = 無効表示)。
   const token = useMemo(() => extractQrToken(params?.token ?? ''), [params?.token]);
@@ -116,10 +122,8 @@ export default function QrLandingPage() {
   const [flow, setFlow] = useState<AdhocFlow>({ step: 'none' });
 
   // 未送信の打刻 (前回圏外で退避した分) を、QR を読んだこの機会に再送する。
-  useEffect(() => {
-    if (typeof window === 'undefined' || !staffId) return;
-    void flushCheckinQueue(staffId, accessToken, refreshToken);
-  }, [staffId, accessToken, refreshToken]);
+  // 破棄分の通知も共通フックが行う (「黙って捨てない」契約)。
+  const { refreshPending } = useCheckinFlush();
 
   // 自分の担当候補が解決できたら訪問詳細へ replace (戻るでここに戻らない)。
   // StrictMode の二重実行や再レンダで多重 replace しないよう ref でガード。
@@ -170,6 +174,7 @@ export default function QrLandingPage() {
         // 圏外 / 5xx — 記録を失わないよう予定外の到着として退避する。
         const payload: PendingPayload = { qr_token: token, at, ...coords };
         enqueuePending(staffId, { visit_id: '', kind: 'adhoc_arrival', payload });
+        refreshPending();
         setFlow({ step: 'none' });
         toast.warning('未送信として保存しました', {
           description: '電波が戻り次第、自動で送信します',
@@ -194,6 +199,7 @@ export default function QrLandingPage() {
             patientName={data?.patient_name ?? ''}
             geo={flow.geo}
             matchM={matchM}
+            submitting={adhocCheckin.isPending}
             onRecord={() => void recordAdhoc(flow.geo)}
             onRelocate={() => void beginAdhoc()}
             onCancel={() => setFlow({ step: 'none' })}
@@ -270,6 +276,16 @@ export default function QrLandingPage() {
         </Card>
       );
     }
+  } else if (data && !picked && !data.patient_name) {
+    // `patient_name` の有無が resolve v2 のマーカー。無い = 旧 BE (第1弾) なので、
+    // 担当外の候補も adhoc-checkin もまだ存在しない。FE 先行デプロイで「代行/予定外」
+    // を出すと、押した先が 404 になり現場を混乱させるため第1弾の案内へ退避する。
+    body = (
+      <GuideCard
+        title="本日の担当訪問が見つかりません"
+        description="このQRの利用者は、本日のあなたの担当訪問にありません。「本日の訪問」からご確認ください。"
+      />
+    );
   } else if (data && !picked) {
     // 担当外 — 代行 / 予定外を本人に選ばせる (自動マッチはしない・決定#2)。
     body = (
@@ -346,7 +362,11 @@ function SubstituteChoice({ patientName, candidates, onPick, onAdhoc }: Substitu
                     : `予定の担当: ${c.planned_staff_name ?? '未割当'}`}
                 </p>
                 {finished ? (
-                  <p className="text-xs text-muted-foreground">この訪問は記録済みです。</p>
+                  <p className="text-xs text-muted-foreground">
+                    {c.status === 'cancelled'
+                      ? 'この訪問は取り消されています。'
+                      : 'この訪問は記録済みです。'}
+                  </p>
                 ) : (
                   <Button className="w-full" onClick={() => onPick(c.visit_id)}>
                     {ongoing ? '退出の記録へ' : 'この予定の代行として記録'}
@@ -382,6 +402,8 @@ interface AdhocPreviewCardProps {
   patientName: string;
   geo: GeoFix;
   matchM: number;
+  /** POST 実行中 — 二度押しで visit を 2 件作らせない。 */
+  submitting: boolean;
   onRecord: () => void;
   onRelocate: () => void;
   onCancel: () => void;
@@ -391,6 +413,7 @@ function AdhocPreviewCard({
   patientName,
   geo,
   matchM,
+  submitting,
   onRecord,
   onRelocate,
   onCancel,
@@ -432,10 +455,11 @@ function AdhocPreviewCard({
         </p>
       )}
 
-      <Button className="w-full" onClick={onRecord}>
+      <Button className="w-full" disabled={submitting} onClick={onRecord}>
+        {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
         予定外の訪問として記録する
       </Button>
-      <Button variant="ghost" className="w-full" onClick={onRelocate}>
+      <Button variant="ghost" className="w-full" disabled={submitting} onClick={onRelocate}>
         <RefreshCw className="h-4 w-4" />
         位置を再取得
       </Button>

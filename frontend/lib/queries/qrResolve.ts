@@ -53,18 +53,22 @@ function normalize(raw: unknown): QrResolveRead {
   const list = Array.isArray(obj.candidates) ? obj.candidates : [];
   return {
     patient_name: typeof obj.patient_name === 'string' ? obj.patient_name : '',
-    candidates: list.map((item) => {
-      const c = (item ?? {}) as Record<string, unknown>;
-      return {
-        visit_id: String(c.visit_id ?? ''),
-        start_time: String(c.start_time ?? ''),
-        end_time: String(c.end_time ?? ''),
-        status: String(c.status ?? 'planned'),
-        planned_staff_name: typeof c.planned_staff_name === 'string' ? c.planned_staff_name : null,
-        is_mine: c.is_mine === undefined ? true : c.is_mine === true,
-        is_unplanned: c.is_unplanned === true,
-      };
-    }),
+    candidates: list
+      .map((item) => {
+        const c = (item ?? {}) as Record<string, unknown>;
+        return {
+          visit_id: String(c.visit_id ?? ''),
+          start_time: String(c.start_time ?? ''),
+          end_time: String(c.end_time ?? ''),
+          status: String(c.status ?? 'planned'),
+          planned_staff_name:
+            typeof c.planned_staff_name === 'string' ? c.planned_staff_name : null,
+          is_mine: c.is_mine === undefined ? true : c.is_mine === true,
+          is_unplanned: c.is_unplanned === true,
+        };
+      })
+      // visit_id を欠く候補は遷移先を作れない (押しても /m/today/ に飛ぶ) ため落とす。
+      .filter((c) => c.visit_id !== ''),
   };
 }
 

@@ -4,7 +4,6 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -22,13 +21,8 @@ import {
 
 import { ApiError } from '@/lib/api-client';
 import { clearCheckin, loadCheckin, saveCheckin } from '@/lib/checkin-storage';
-import {
-  countPending,
-  enqueuePending,
-  type PendingKind,
-  type PendingPayload,
-} from '@/lib/checkin-queue';
-import { detailOf, flushCheckinQueue, isServerUnreachable } from '@/lib/checkin-flush';
+import { enqueuePending, type PendingKind, type PendingPayload } from '@/lib/checkin-queue';
+import { detailOf, isServerUnreachable } from '@/lib/checkin-flush';
 import {
   coordsOf,
   geoErrorHint,
@@ -60,6 +54,7 @@ import {
   type MyVisit,
 } from '@/lib/queries/me';
 import { useUploadPhoto, useVisitPhotos } from '@/lib/queries/visit-photos';
+import { useCheckinFlush } from '@/lib/queries/checkinFlush';
 import { useCheckinSettingsPublic } from '@/lib/queries/checkinSettings';
 import { CHECKIN_PUBLIC_FALLBACK } from '@/lib/schemas/checkinSettings';
 
@@ -86,6 +81,9 @@ type Flow =
       status: CheckinMatchStatus;
     }
   | { step: 'submitting'; mode: ScanMode }
+  // 読み取った QR が表示中 visit の患者と一致しない (409)。設計 §5 の
+  // 「代行 / 予定外として記録しますか？」導線をここから出す。
+  | { step: 'wrong_patient'; token: string }
   | { step: 'noshow' };
 
 /** Quick-pick chips for the no-show reason. */
@@ -216,9 +214,8 @@ function MobileVisitDetailPageInner() {
   const searchParams = useSearchParams();
   const { data: session } = useSession();
   const staffId = session?.user?.staffId ?? '';
+  // 写真の認証付き表示にだけ使う (再送は useCheckinFlush が担う)。
   const accessToken = session?.accessToken ?? null;
-  const refreshToken = session?.refreshToken ?? null;
-  const qc = useQueryClient();
 
   // ディープリンク (/q/{token} → ?qr=) 由来の QR トークン。
   //   - `readToken`     … 詳細 GET の担当外フォールバック用 (画面を離れるまで保持・
@@ -267,10 +264,16 @@ function MobileVisitDetailPageInner() {
   // スキャンフローに戻す (退出時も現地で QR を読み直させる = 現地証明を弱めない)。
   const clearDeepLinkToken = useCallback(() => {
     setDeepLinkToken(null);
-    // URL からも ?qr= を外し、リロード時に再度スキャン省略にならないようにする。
-    if (typeof window !== 'undefined' && window.location.search.includes('qr=')) {
-      router.replace(window.location.pathname, { scroll: false });
-    }
+    // URL からも `qr` だけを外し (他のクエリは保全)、リロード時に再度スキャン
+    // 省略にならないようにする。
+    if (typeof window === 'undefined') return;
+    const qs = new URLSearchParams(window.location.search);
+    if (!qs.has('qr')) return;
+    qs.delete('qr');
+    const rest = qs.toString();
+    router.replace(rest ? `${window.location.pathname}?${rest}` : window.location.pathname, {
+      scroll: false,
+    });
   }, [router]);
 
   const [flow, setFlow] = useState<Flow>({ step: 'none' });
@@ -279,8 +282,8 @@ function MobileVisitDetailPageInner() {
   const [noshowReason, setNoshowReason] = useState('');
   // Guards a no-show submit across the (awaited) GPS fetch (二重送信防止).
   const [noShowSubmitting, setNoShowSubmitting] = useState(false);
-  // Count of un-sent records waiting for connectivity (control display).
-  const [pendingCount, setPendingCount] = useState(0);
+  // 未送信の再送 (マウント時 / online 時) + 残件数。通知は共通フック側で行う。
+  const { pendingCount, refreshPending } = useCheckinFlush();
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { data: photos } = useVisitPhotos(visitId);
@@ -314,36 +317,6 @@ function MobileVisitDetailPageInner() {
     }
   }
 
-  // ---- Pending re-send queue (offline best-effort) -------------------------
-  const refreshPending = useCallback(() => {
-    if (!staffId) return;
-    setPendingCount(countPending(staffId));
-  }, [staffId]);
-
-  const flushNow = useCallback(async () => {
-    if (typeof window === 'undefined' || !staffId) return;
-    const { remaining, dropped } = await flushCheckinQueue(staffId, accessToken, refreshToken);
-    setPendingCount(remaining);
-    // 4xx で破棄された未送信分は黙って消さず、利用者へ通知する。
-    if (dropped.length > 0) {
-      toast.error(`未送信の${dropped.length}件は送信できませんでした`, {
-        description: '無効なQR／対象外のため破棄しました',
-      });
-    }
-    // Re-sent records change server-side status; refresh the visit view.
-    void qc.invalidateQueries({ queryKey: ['me'] });
-  }, [staffId, accessToken, refreshToken, qc]);
-
-  // On mount (and whenever connectivity returns) flush the pending queue.
-  useEffect(() => {
-    if (typeof window === 'undefined' || !staffId) return;
-    refreshPending();
-    void flushNow();
-    const onOnline = () => void flushNow();
-    window.addEventListener('online', onOnline);
-    return () => window.removeEventListener('online', onOnline);
-  }, [staffId, flushNow, refreshPending]);
-
   const effectiveCheckedIn = isCheckedIn(visit) || localStatus === 'checked_in';
   const effectiveCompleted = isCompleted(visit) || localStatus === 'checked_out';
 
@@ -357,11 +330,14 @@ function MobileVisitDetailPageInner() {
    *     手動フォールバック (QRなしで記録) は出さない。
    *   - 未訪問 (no-show) は担当スタッフ専用なので出さない (設計 §2)。
    *
-   * 判定は visit の担当欄のみで行う (visit_staff_assignments は VisitRead に
-   * 含まれないため、そこだけで担当している稀なケースは代行表示になる — 記録内容は
-   * 変わらず、サーバが実績スタッフとして正しく残す)。
+   * **前提に `readToken` を置く**のが要点。担当判定に使える VisitRead の欄は
+   * primary/secondary/mentor/同行 だけで、`visit_staff_assignments` だけで担当して
+   * いるスタッフは「担当外」に見えてしまう。QR 経由 (`?qr=`) でない通常導線まで
+   * この判定に晒すと、その人の no-show ボタンと手動フォールバックが消える回帰に
+   * なる。代行モードは `/q` から来たときだけに限定し、構造的に塞ぐ。
    */
   const substituteMode =
+    !!readToken &&
     !!visit &&
     !!staffId &&
     visit.primary_staff_id !== staffId &&
@@ -525,7 +501,13 @@ function MobileVisitDetailPageInner() {
         return;
       }
       if (apiStatus === 409) {
-        toast.error('このQRは別の患者のものです', {
+        // 読んだ QR は「別の利用者」のもの。現地に居ることは確かなので、
+        // 行き止まりにせず代行 / 予定外の記録へ渡す (設計 §5)。
+        if (qrToken) {
+          setFlow({ step: 'wrong_patient', token: qrToken });
+          return;
+        }
+        toast.error('このQRは別の利用者のものです', {
           description: detailOf(err) ?? '正しい患者宅のQRを読み取ってください',
         });
         setFlow({ step: 'none' });
@@ -769,6 +751,35 @@ function MobileVisitDetailPageInner() {
               <Rakusuke pose="visit" className="h-10 shrink-0" />
               <Loader2 className="h-5 w-5 animate-spin text-brand-primary" />
               {flow.step === 'locating' ? '位置情報を取得しています…' : '記録しています…'}
+            </Card>
+          )}
+
+          {/* ---- 別の利用者の QR を読んだ (409) — 代行/予定外へ渡す ------- */}
+          {flow.step === 'wrong_patient' && (
+            <Card className="space-y-3 p-4" data-testid="wrong-patient-panel">
+              <div className="flex items-center gap-2 text-warning">
+                <AlertTriangle className="h-5 w-5" />
+                <p className="font-semibold">このQRは別の利用者のものです</p>
+              </div>
+              <p className="text-sm text-text-secondary">
+                読み取ったQRは「{patientName}」さんではありません。
+                この利用者宅にいる場合は、代行または予定外の訪問として記録できます。
+              </p>
+              <Button
+                type="button"
+                className="w-full"
+                onClick={() => router.push(`/q/${encodeURIComponent(flow.token)}`)}
+              >
+                代行／予定外として記録する
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full"
+                onClick={() => setFlow({ step: 'none' })}
+              >
+                戻る（この訪問の画面に留まる）
+              </Button>
             </Card>
           )}
 
