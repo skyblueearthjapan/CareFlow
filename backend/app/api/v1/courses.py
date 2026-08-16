@@ -24,7 +24,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
 from typing import Annotated
 from uuid import UUID
 
@@ -383,20 +382,14 @@ async def update_course(
             )
 
         # 逆方向の警告 (一般化 決定#1 後段): 同行を先に登録してから担当を割り当てる
-        # 向きは**ブロックしない** (エンジンのハード対応は別案件)。同じ日に
-        # その人の同行が入っていることを警告 + 管理者通知で気づけるようにする。
+        # 向きは**ブロックしない** (エンジンのハード対応は別案件)。このコースの訪問と
+        # その人の同行が**時間帯で交差**するときだけ警告 + 管理者通知を出す
+        # (同日というだけで鳴らすとノイズになる — レビュー M-4)。
         # 新人 422 / NG・性別 422 の**後** = 弾かれる担当に対して余計なクエリを走らせない。
         if _cand is not None:
-            try:
-                _course_date = date.fromisocalendar(
-                    course.iso_year, course.iso_week, course.weekday + 1
-                )
-            except ValueError:
-                _course_date = None
-            if _course_date is not None:
-                _accompaniment_warnings = await collect_accompaniment_duty_warnings(
-                    db, staff_id=_cand.id, dates=[_course_date]
-                )
+            _accompaniment_warnings = await collect_accompaniment_duty_warnings(
+                db, staff_id=_cand.id, course_ids=[course.id]
+            )
 
     # assigned_staff_id 変更を op_log に記録するため変更前の値を保存
     _old_staff_id: UUID | None = course.assigned_staff_id

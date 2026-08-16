@@ -7,11 +7,13 @@
 - 本人担当との重複 = ハード 422 (``code='accompaniment_overlap'`` / reason='own_duty')
 - 同住所免除が本人担当の側でも効く
 - NG スタッフ抵触 → 422 確認 → acknowledge 再送で通過 + 管理者通知 (冪等)
-- コース担当変更 (PATCH /courses) の逆方向警告 + 管理者通知
+- 逆方向警告 (PATCH /courses・apply-staff-review) が**時間帯交差**のときだけ鳴ること
 - 複数同行の決定的順序と ``VisitRead.accompaniments[]`` (単数は先頭要素で互換)
-- 一般スタッフの毎週の既定
-- スタッフの status 非 active 化で将来リンク + 既定が消える
-- course-guard が一般スタッフでは applicable=false
+- 複数同行時に 2 人目が「代行」と誤判定されないこと
+- 一般スタッフの毎週の既定と、その kind が週リンクへ引き継がれること
+- 休職 (status 非 active) = 週リンクのみ削除・既定は温存 / 退職 = 既定ごと削除
+- course-guard が **kind でゲートされない** こと (保存前フォーム値で使うため)
+- inbound_snapshot の新旧キー両書き + 旧キーのみ payload の復元
 
 **時刻非依存**: 週は固定の ISO 週 (2026-W29) を使い、"今週" に依存する EP
 (course-guard / DELETE future / status 非 active 化) だけは実行時の JST 現在週から
@@ -697,21 +699,30 @@ async def test_visit_read_no_accompaniment_is_empty(client, db) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_course_patch_warns_when_staff_has_accompaniment_same_day(client, db) -> None:
-    """同行が入っている日にコース担当を付けたら **警告 + 管理者通知** (非ブロック)."""
-    admin = await _make_user(db, "acc-rev1@example.com", "admin")
+async def _reverse_warning_fixture(
+    db,
+    email: str,
+    *,
+    acc_start: time,
+    acc_end: time,
+    duty_start: time,
+    duty_end: time,
+    acc_weekday: int = 0,
+    duty_weekday: int = 0,
+):
+    """同行あり / 担当を付けようとしているコースあり、の 2 本立てを組む."""
+    admin = await _make_user(db, email, "admin")
     staff = await _make_staff(db, "掛け持ちスタッフ")
     office = await _make_office(db)
-    # 同行しているコース。
-    acc_course = await _make_course(db, office, weekday=0, code="C")
+
+    acc_course = await _make_course(db, office, weekday=acc_weekday, code="C")
     p_acc = await _make_patient(db, "同行先患者")
     await _make_visit(
         db,
         p_acc,
-        visit_date=_week_date(0),
-        start=time(10, 0),
-        end=time(11, 0),
+        visit_date=_week_date(acc_weekday),
+        start=acc_start,
+        end=acc_end,
         course_id=acc_course.id,
     )
     db.add(
@@ -723,9 +734,32 @@ async def test_course_patch_warns_when_staff_has_accompaniment_same_day(client, 
             kind="support",
         )
     )
-    # 担当を付けようとしている別コース (同じ曜日)。
-    target = await _make_course(db, office, weekday=0, code="A")
+    # 担当を付けようとしているコース (訪問つき = 交差判定の左辺)。
+    target = await _make_course(db, office, weekday=duty_weekday, code="A")
+    p_duty = await _make_patient(db, "担当先患者")
+    await _make_visit(
+        db,
+        p_duty,
+        visit_date=_week_date(duty_weekday),
+        start=duty_start,
+        end=duty_end,
+        course_id=target.id,
+    )
     await db.commit()
+    return admin, staff, target
+
+
+@pytest.mark.asyncio
+async def test_course_patch_warns_when_accompaniment_overlaps_duty(client, db) -> None:
+    """担当する訪問と同行が**時間帯で交差**したら警告 + 管理者通知 (非ブロック)."""
+    admin, staff, target = await _reverse_warning_fixture(
+        db,
+        "acc-rev1@example.com",
+        acc_start=time(10, 0),
+        acc_end=time(11, 0),
+        duty_start=time(10, 30),
+        duty_end=time(11, 30),
+    )
 
     res = await client.patch(
         f"/api/v1/courses/{target.id}",
@@ -754,30 +788,42 @@ async def test_course_patch_warns_when_staff_has_accompaniment_same_day(client, 
 @pytest.mark.asyncio
 async def test_course_patch_no_warning_on_other_day(client, db) -> None:
     """同行が別の曜日なら警告は出ない (誤警告でトーストを鳴らさない)."""
-    admin = await _make_user(db, "acc-rev2@example.com", "admin")
-    staff = await _make_staff(db, "別曜日スタッフ")
-    office = await _make_office(db)
-    acc_course = await _make_course(db, office, weekday=1, code="C")
-    p_acc = await _make_patient(db, "火曜の患者")
-    await _make_visit(
+    admin, staff, target = await _reverse_warning_fixture(
         db,
-        p_acc,
-        visit_date=_week_date(1),
-        start=time(10, 0),
-        end=time(11, 0),
-        course_id=acc_course.id,
+        "acc-rev2@example.com",
+        acc_weekday=1,  # 同行は火曜。
+        acc_start=time(10, 0),
+        acc_end=time(11, 0),
+        duty_weekday=0,  # 担当は月曜。
+        duty_start=time(10, 0),
+        duty_end=time(11, 0),
     )
-    db.add(
-        Accompaniment(
-            accompanying_staff_id=staff.id,
-            target_type="course",
-            course_id=acc_course.id,
-            source="manual",
-            kind="support",
-        )
+
+    res = await client.patch(
+        f"/api/v1/courses/{target.id}",
+        headers=_bearer(admin),
+        json={"assigned_staff_id": str(staff.id)},
     )
-    target = await _make_course(db, office, weekday=0, code="A")  # 月曜。
-    await db.commit()
+    assert res.status_code == 200, res.text
+    assert res.json()["accompaniment_warnings"] == []
+    assert await db.scalar(select(func.count()).select_from(Notification)) == 0
+
+
+@pytest.mark.asyncio
+async def test_course_patch_no_warning_when_times_do_not_overlap(client, db) -> None:
+    """**同日でも時間帯が交差しなければ鳴らさない** (レビュー M-4 のノイズ低減).
+
+    午前の同行と午後の担当は実務上まったく問題ない。ここで鳴らすと警告が
+    オオカミ少年になり、本当に危ない交差が読み飛ばされる。
+    """
+    admin, staff, target = await _reverse_warning_fixture(
+        db,
+        "acc-rev3@example.com",
+        acc_start=time(9, 0),
+        acc_end=time(10, 0),
+        duty_start=time(14, 0),  # 同じ月曜だが午後。
+        duty_end=time(15, 0),
+    )
 
     res = await client.patch(
         f"/api/v1/courses/{target.id}",
@@ -825,8 +871,13 @@ async def test_defaults_general_staff_kind_support(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_course_guard_not_applicable_for_general_staff(client, db) -> None:
-    """course-guard は kind='trainee' のときだけ有効 (一般スタッフは applicable=false)."""
+async def test_course_guard_counts_for_general_staff(client, db) -> None:
+    """**保存済み kind でゲートしない** (レビュー HIGH で撤廃した機能回帰の防止).
+
+    このEPは「これから is_trainee を ON にする人」への事前警告で、FE は保存前の
+    フォーム値で発火する。呼ばれる時点の DB 上は一般スタッフなので、kind で
+    ゲートすると警告が恒久的に出なくなる。一般スタッフでも件数を返すこと。
+    """
     admin = await _make_user(db, "acc-cg1@example.com", "admin")
     general = await _make_staff(db, "一般ガード", is_trainee=False)
     office = await _make_office(db)
@@ -846,9 +897,9 @@ async def test_course_guard_not_applicable_for_general_staff(client, db) -> None
     )
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["applicable"] is False
-    assert body["count"] == 0
-    assert body["courses"] == []
+    assert body["applicable"] is True  # 常に true (互換のため残しているだけ)。
+    assert body["count"] == 1
+    assert body["courses"][0]["code"] == "A"
 
 
 @pytest.mark.asyncio
@@ -883,8 +934,11 @@ async def test_course_guard_applicable_for_trainee(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_staff_deactivation_purges_future_links_and_defaults(client, db) -> None:
-    """status を active から外すと今週以降のリンク + 既定が消える (§3-7).
+async def test_staff_deactivation_purges_links_but_keeps_defaults(client, db) -> None:
+    """休職 (status 非 active 化) は**週リンクだけ**消し、毎週の既定は温存する.
+
+    レビュー M-2: 休職は復帰前提。既定まで消すと復帰時に人手で組み直しになる。
+    週リンクを消せば盤面からは即消え、復帰後の週生成で既定が再展開される。
 
     「今週」は実行時の JST 現在週から組むため、深夜に走らせても結果は変わらない。
     """
@@ -919,6 +973,9 @@ async def test_staff_deactivation_purges_future_links_and_defaults(client, db) -
         f"/api/v1/staff/{staff.id}", headers=_bearer(admin), json={"status": "retired"}
     )
     assert res.status_code == 200, res.text
+    # 非破壊追加した削除件数が返る (FE 表示配線は Phase E)。
+    assert res.json()["purged_accompaniment_links"] == 1
+    assert res.json()["purged_accompaniment_defaults"] == 0
 
     links = await db.scalar(
         select(func.count())
@@ -930,8 +987,8 @@ async def test_staff_deactivation_purges_future_links_and_defaults(client, db) -
         .select_from(AccompanimentDefault)
         .where(AccompanimentDefault.accompanying_staff_id == staff.id)
     )
-    assert links == 0
-    assert defaults == 0
+    assert links == 0  # 週リンクは消える。
+    assert defaults == 1  # **既定は温存** (復帰時に自動復活する)。
 
 
 @pytest.mark.asyncio
@@ -969,11 +1026,16 @@ async def test_staff_update_keeps_links_when_still_active(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_staff_soft_delete_purges_future_links(client, db) -> None:
-    """論理削除 (退職) でも将来リンクを消す (FK CASCADE は soft delete で発火しない)."""
+async def test_staff_soft_delete_purges_links_and_defaults(client, db) -> None:
+    """論理削除 (退職) は将来リンク**と既定**を消す — 休職 (PATCH) との対比.
+
+    FK CASCADE は soft delete で発火しないのでアプリ層で消す必要がある。
+    退職は復帰前提ではないため既定ごと畳む (レビュー M-2 の使い分け)。
+    """
     admin = await _make_user(db, "acc-life3@example.com", "admin")
     staff = await _make_staff(db, "削除スタッフ")
     office = await _make_office(db)
+    t = await _make_template(db, office, "A")
     cur_year, cur_week = _current_week()
     course = await _make_course(
         db, office, weekday=0, code="A", iso_year=cur_year, iso_week=cur_week
@@ -987,6 +1049,14 @@ async def test_staff_soft_delete_purges_future_links(client, db) -> None:
             kind="support",
         )
     )
+    db.add(
+        AccompanimentDefault(
+            accompanying_staff_id=staff.id,
+            weekday=0,
+            course_template_id=t.id,
+            kind="support",
+        )
+    )
     await db.commit()
 
     res = await client.delete(f"/api/v1/staff/{staff.id}", headers=_bearer(admin))
@@ -997,7 +1067,13 @@ async def test_staff_soft_delete_purges_future_links(client, db) -> None:
         .select_from(Accompaniment)
         .where(Accompaniment.accompanying_staff_id == staff.id)
     )
+    defaults = await db.scalar(
+        select(func.count())
+        .select_from(AccompanimentDefault)
+        .where(AccompanimentDefault.accompanying_staff_id == staff.id)
+    )
     assert links == 0
+    assert defaults == 0  # 退職は既定まで畳む。
 
 
 # ---------------------------------------------------------------------------
@@ -1049,3 +1125,316 @@ async def test_put_requires_staff_id(client, db) -> None:
         json={"iso_year": ISO_YEAR, "iso_week": ISO_WEEK, "course_ids": []},
     )
     assert res.status_code == 422, res.text
+
+
+# ---------------------------------------------------------------------------
+# apply-staff-review の逆方向警告 (レビュー M-6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_staff_review_reports_accompaniment_warnings(client, db) -> None:
+    """apply-staff-review も逆方向警告を返し、管理者へ 1 通に集約して通知する.
+
+    スタッフごとに通知すると、同じ op_group_id の 2 通目以降が冪等判定で落ちて
+    別スタッフの警告が消える — 集約が正しい形 (レビュー M-4)。
+    """
+    admin = await _make_user(db, "acc-apply1@example.com", "admin")
+    staff = await _make_staff(db, "承認対象スタッフ")
+    office = await _make_office(db)
+
+    # 同行しているコース (月 10:00-11:00)。
+    acc_course = await _make_course(db, office, weekday=0, code="C")
+    p_acc = await _make_patient(db, "同行先患者")
+    await _make_visit(
+        db,
+        p_acc,
+        visit_date=_week_date(0),
+        start=time(10, 0),
+        end=time(11, 0),
+        course_id=acc_course.id,
+    )
+    db.add(
+        Accompaniment(
+            accompanying_staff_id=staff.id,
+            target_type="course",
+            course_id=acc_course.id,
+            source="manual",
+            kind="support",
+        )
+    )
+    # 承認して担当を付けるコース (月 10:30-11:30 = 交差)。
+    target = await _make_course(db, office, weekday=0, code="A")
+    p_duty = await _make_patient(db, "担当先患者")
+    await _make_visit(
+        db,
+        p_duty,
+        visit_date=_week_date(0),
+        start=time(10, 30),
+        end=time(11, 30),
+        course_id=target.id,
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/apply-staff-review",
+        headers=_bearer(admin),
+        json={
+            "iso_year": ISO_YEAR,
+            "iso_week": ISO_WEEK,
+            "items": [{"course_id": str(target.id), "staff_id": str(staff.id)}],
+        },
+    )
+    assert res.status_code == 200, res.text
+    warns = res.json()["accompaniment_warnings"]
+    assert len(warns) == 1
+    assert warns[0]["staff_id"] == str(staff.id)
+    assert warns[0]["patient_name"] == "同行先患者"
+
+    notes = list(
+        (
+            await db.scalars(
+                select(Notification).where(Notification.reference_type == "accompaniment_conflict")
+            )
+        ).all()
+    )
+    assert len(notes) == 1
+    assert "承認対象スタッフ" in notes[0].title
+
+
+@pytest.mark.asyncio
+async def test_apply_staff_review_no_warning_without_overlap(client, db) -> None:
+    """交差しなければ apply-staff-review も鳴らさない."""
+    admin = await _make_user(db, "acc-apply2@example.com", "admin")
+    staff = await _make_staff(db, "無干渉スタッフ")
+    office = await _make_office(db)
+
+    acc_course = await _make_course(db, office, weekday=0, code="C")
+    p_acc = await _make_patient(db, "朝の同行先")
+    await _make_visit(
+        db,
+        p_acc,
+        visit_date=_week_date(0),
+        start=time(9, 0),
+        end=time(10, 0),
+        course_id=acc_course.id,
+    )
+    db.add(
+        Accompaniment(
+            accompanying_staff_id=staff.id,
+            target_type="course",
+            course_id=acc_course.id,
+            source="manual",
+            kind="support",
+        )
+    )
+    target = await _make_course(db, office, weekday=0, code="A")
+    p_duty = await _make_patient(db, "午後の担当先")
+    await _make_visit(
+        db,
+        p_duty,
+        visit_date=_week_date(0),
+        start=time(15, 0),
+        end=time(16, 0),
+        course_id=target.id,
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/apply-staff-review",
+        headers=_bearer(admin),
+        json={
+            "iso_year": ISO_YEAR,
+            "iso_week": ISO_WEEK,
+            "items": [{"course_id": str(target.id), "staff_id": str(staff.id)}],
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["accompaniment_warnings"] == []
+    assert (
+        await db.scalar(
+            select(func.count())
+            .select_from(Notification)
+            .where(Notification.reference_type == "accompaniment_conflict")
+        )
+        == 0
+    )
+
+
+# ---------------------------------------------------------------------------
+# 複数同行 × 代行判定 (レビュー M-6) — visit_staff_id_set の集合化 回帰
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_second_accompanying_staff_is_not_flagged_as_substitute(db) -> None:
+    """2 人目の同行者の打刻を「代行」と誤判定しないこと.
+
+    担当集合を代表 1 名で組むと、決定的順序で 2 番目に来た同行者が集合から漏れ、
+    正規に同行した人の打刻が代行扱いになって管理者へ誤通知が飛ぶ。
+    ``visit_staff_id_set`` が同行を**全件**受ける回帰テスト。
+    """
+    from app.services.accompaniment import resolve_accompaniment_by_visit
+    from app.services.checkin.monitor import visit_staff_id_set
+
+    office = await _make_office(db)
+    course = await _make_course(db, office, weekday=0, code="A")
+    patient = await _make_patient(db, "複数同行患者")
+    primary = await _make_staff(db, "主担当")
+    # 決定的順序では「あ応援」が先頭・「い応援」が 2 番目。
+    first = await _make_staff(db, "あ応援")
+    second = await _make_staff(db, "い応援")
+    visit = await _make_visit(
+        db,
+        patient,
+        visit_date=_week_date(0),
+        start=time(10, 0),
+        end=time(11, 0),
+        course_id=course.id,
+        primary_staff_id=primary.id,
+    )
+    for s in (first, second):
+        db.add(
+            Accompaniment(
+                accompanying_staff_id=s.id,
+                target_type="course",
+                course_id=course.id,
+                source="manual",
+                kind="support",
+            )
+        )
+    await db.commit()
+
+    entries = (await resolve_accompaniment_by_visit(db, [visit]))[visit.id]
+    assert [e.staff_name for e in entries] == ["あ応援", "い応援"]
+
+    assigned = visit_staff_id_set(visit, accompaniment_staff_ids=[e.staff_id for e in entries])
+    # 2 人目も担当集合に含まれる = 代行と判定されない。
+    assert first.id in assigned
+    assert second.id in assigned
+    assert primary.id in assigned
+
+
+# ---------------------------------------------------------------------------
+# inbound_snapshot の新旧キー (レビュー M-6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_snapshot_writes_both_keys_and_restores_legacy_only(db) -> None:
+    """スナップショットは新旧キーを両方書き、**旧キーのみ**の payload も復元できる.
+
+    mig 0072 以前に取ったスナップショットが本番に残っているため、復元側は
+    ``trainee_staff_id`` しか無い payload を読めなければならない。
+    """
+    from datetime import datetime as _dt
+
+    from app.services.kaipoke.inbound_snapshot import restore_snapshot, snapshot_week
+
+    office = await _make_office(db)
+    course = await _make_course(db, office, weekday=0, code="A")
+    patient = await _make_patient(db, "スナップ患者")
+    staff = await _make_staff(db, "スナップ同行者")
+    week_start = _week_date(0)
+    visit = await _make_visit(
+        db,
+        patient,
+        visit_date=week_start,
+        start=time(10, 0),
+        end=time(11, 0),
+        course_id=course.id,
+    )
+    db.add(
+        Accompaniment(
+            accompanying_staff_id=staff.id,
+            target_type="visit",
+            visit_id=visit.id,
+            source="manual",
+            kind="support",
+        )
+    )
+    await db.commit()
+
+    snap = await snapshot_week(db, week_start, kind="test", user_id=None)
+    await db.commit()
+
+    # --- 新旧キーが両方書かれている ---
+    acc_payload = snap.payload["accompaniments"]
+    assert len(acc_payload) == 1
+    assert acc_payload[0]["accompanying_staff_id"] == str(staff.id)
+    assert acc_payload[0]["trainee_staff_id"] == str(staff.id)
+    assert acc_payload[0]["kind"] == "support"
+
+    # --- 旧キーだけの payload (mig 0072 以前のスナップショット) でも復元できる ---
+    legacy_entry = {
+        "visit_index": acc_payload[0]["visit_index"],
+        "trainee_staff_id": str(staff.id),
+        "source": "manual",
+    }
+    snap.payload = {**snap.payload, "accompaniments": [legacy_entry]}
+    await db.commit()
+
+    await restore_snapshot(db, snap, now=_dt.now(JST).replace(tzinfo=None))
+    await db.commit()
+
+    # 復元は週を白紙化して visit を作り直すため、**生きている visit** に紐づく
+    # リンクだけを見る (旧 visit は soft-delete で残り、FK CASCADE は発火しない。
+    # 孤立リンクは後続の週生成で _cleanup_orphan_links が掃除する既存仕様)。
+    restored = list(
+        (
+            await db.scalars(
+                select(Accompaniment)
+                .join(Visit, Accompaniment.visit_id == Visit.id)
+                .where(
+                    Accompaniment.accompanying_staff_id == staff.id,
+                    Visit.deleted_at.is_(None),
+                )
+            )
+        ).all()
+    )
+    assert len(restored) == 1
+    # kind 欠落の旧 payload は既定 'trainee' で復元される。
+    assert restored[0].kind == "trainee"
+
+
+# ---------------------------------------------------------------------------
+# 既定の kind が週リンクへ引き継がれること (レビュー M-6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_default_kind_support_propagates_to_week_link(client, db) -> None:
+    """一般スタッフの既定 (kind='support') を展開した週リンクも 'support' になる.
+
+    展開は既定行の kind をそのまま引き継ぐ (再判定しない) 契約の担保。
+    """
+    from app.services.accompaniment import expand_accompaniment_defaults
+
+    admin = await _make_user(db, "acc-defkind@example.com", "admin")
+    staff = await _make_staff(db, "既定サポート", is_trainee=False)
+    office = await _make_office(db)
+    tmpl = await _make_template(db, office, "A")
+
+    res = await client.put(
+        "/api/v1/accompaniment-defaults",
+        headers=_bearer(admin),
+        json={
+            "staff_id": str(staff.id),
+            "items": [{"weekday": 0, "course_template_id": str(tmpl.id)}],
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()[0]["kind"] == "support"
+
+    # 既定が指すテンプレの週コースを用意して展開する。
+    await _make_course(db, office, weekday=0, code="A", template_id=tmpl.id)
+    created = await expand_accompaniment_defaults(db, ISO_YEAR, ISO_WEEK)
+    await db.commit()
+    assert created == 1
+
+    link = await db.scalar(
+        select(Accompaniment).where(Accompaniment.accompanying_staff_id == staff.id)
+    )
+    assert link is not None
+    assert link.kind == "support"  # 既定の kind を引き継ぐ。
+    assert link.source == "default"

@@ -42,7 +42,7 @@ from app.models.patient import Patient
 from app.models.patient_ng_staff import PatientNgStaff
 from app.models.staff import Staff
 from app.models.user import User
-from app.models.visit import VISIT_STATUS_PLANNED, Visit
+from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 
 # 性別制限の判定意味論は Layer3 割当と単一ソースにする (AND 意味論 /
 # 'female_only' → 'female' 正規化)。公開エイリアス経由で参照する
@@ -197,9 +197,15 @@ async def collect_constraint_warnings(
 ) -> list[ConstraintWarning]:
     """コース所属患者 × 新担当スタッフの性別制限 / NG スタッフ違反を洗い出す.
 
-    検査対象 = そのコースに載っている planned visit (``deleted_at IS NULL``) の
-    患者全員。コースは (iso_year, iso_week, weekday) スコープのため、course_id で
-    絞るだけで「今週分」になる。
+    検査対象 = そのコースに載っている visit (``deleted_at IS NULL`` かつ
+    ``status != 'cancelled'``) の患者全員。コースは (iso_year, iso_week, weekday)
+    スコープのため、course_id で絞るだけで「今週分」になる。
+
+    母集合は同行の重複検査 (``accompaniment.load_effective_visits`` /
+    ``load_own_duty_visits``) と**同じ定義**に揃えてある (2026-08-17 レビュー LOW-6)。
+    以前は ``status == 'planned'`` 限定で、in_progress / done の訪問が検査から
+    漏れていた — 実際に訪問が始まっていても NG は NG なので、除くべきは
+    cancelled と論理削除だけ。
 
     判定の意味論 (性別不明は警告しない等) は ``_match_patients_against_staff``
     の docstring を参照 (両方向の経路で共有する単一ソース)。
@@ -212,7 +218,7 @@ async def collect_constraint_warnings(
                 select(Visit.patient_id)
                 .where(
                     Visit.course_id == course_id,
-                    Visit.status == VISIT_STATUS_PLANNED,
+                    Visit.status != VISIT_STATUS_CANCELLED,
                     Visit.deleted_at.is_(None),
                 )
                 .distinct()
@@ -379,7 +385,7 @@ async def notify_constraint_override(
     db: AsyncSession,
     *,
     kind_summary: Iterable[str],
-    course: Course,
+    course: Course | None,
     staff: Staff,
     patient_warnings: list[ConstraintWarning],
     actor: User | None,
@@ -392,6 +398,10 @@ async def notify_constraint_override(
             ``patient_warnings`` から導出する。
         course: 対象コース。**属性は呼び出し時点で読める状態であること**
             (commit 後の expire 済みオブジェクトを渡さない)。
+            **None 可** (2026-08-17 レビュー M-3): 同行の患者単位リンクが臨時 /
+            予定外 visit (course_id NULL) だけに掛かっている場合、コースが引けない。
+            そこで通知を諦めると「確認して通した」監査記録が欠落するため、
+            週 / コース / 拠点の行を省いて通知そのものは必ず出す。
         staff: 新しく割り当てるスタッフ。
         patient_warnings: 本文に載せる違反明細 (空でも通知は作る)。
         actor: 操作者 (監査表示用)。
@@ -412,16 +422,20 @@ async def notify_constraint_override(
 
     staff_name = staff.name or "担当者"
     actor_name = await _resolve_actor_name(db, actor)
-    office_name = await db.scalar(select(Office.name).where(Office.id == course.office_id))
-    weekday = course.weekday
-    weekday_ja = _WEEKDAY_JA[weekday] if 0 <= weekday < len(_WEEKDAY_JA) else str(weekday)
 
-    lines = [
-        f"週: {course.iso_year}年 第{course.iso_week}週（{weekday_ja}曜）",
-        f"コース: {course.code}",
-        f"拠点: {office_name or '不明'}",
-        f"操作者: {actor_name}",
-    ]
+    # コースが引けない経路 (同行の患者単位リンク × 臨時/予定外 visit) では
+    # 週 / コース / 拠点の行を省く。通知自体は必ず出す (監査記録の欠落を防ぐ)。
+    lines: list[str] = []
+    if course is not None:
+        office_name = await db.scalar(select(Office.name).where(Office.id == course.office_id))
+        weekday = course.weekday
+        weekday_ja = _WEEKDAY_JA[weekday] if 0 <= weekday < len(_WEEKDAY_JA) else str(weekday)
+        lines += [
+            f"週: {course.iso_year}年 第{course.iso_week}週（{weekday_ja}曜）",
+            f"コース: {course.code}",
+            f"拠点: {office_name or '不明'}",
+        ]
+    lines.append(f"操作者: {actor_name}")
     for w in patient_warnings:
         if w.kind == "ng_staff":
             memo = f"（メモ: {w.note}）" if w.note else ""

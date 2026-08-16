@@ -160,9 +160,14 @@ async def snapshot_week(
             for a in assignment_rows
             if a.visit_id in index_of
         ],
-        # mig 0072 で列名が trainee_staff_id → accompanying_staff_id へ変わったが、
-        # **旧キーも書き続ける**: 本番に残る旧スナップショットを読む復元側と、
-        # 新スナップショットを読む旧デプロイ (ロールバック時) の両方が壊れないため。
+        # mig 0072 で列名が trainee_staff_id → accompanying_staff_id へ変わった。
+        # **旧キーも書き続ける**理由は「本番に残る **mig 0072 以前に取った**
+        # スナップショットを、新コードの復元側が読めるようにする」ことと対で、
+        # ペイロードの形を新旧どちらの読み手でも壊さないため。
+        #
+        # 注意: これは「アプリだけ旧デプロイへ戻す」ケースの保険にはならない。
+        # 旧コードは旧テーブル (trainee_accompaniments) を読むので、mig を戻さない
+        # 限り復元以前に動かない。migration 込みでロールバックする前提。
         # 復元側は新キー優先 → 旧キーの順で読む。
         "accompaniments": [
             {

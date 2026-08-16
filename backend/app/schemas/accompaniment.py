@@ -235,9 +235,10 @@ class CourseGuardCourse(BaseModel):
 class CourseGuardResponse(BaseModel):
     """GET /accompaniments/course-guard レスポンス (§8-4 警告主義).
 
-    一般化 §3-7: このガードは **kind='trainee' のときだけ意味がある**
-    (新人はコースを持たない運用のため)。一般スタッフはコース担当と同行を
-    両立できるので、サーバは ``applicable=false`` + 空配列を返す。
+    ``applicable`` は **常に true** (互換のため残しているフィールド)。
+    かつて kind='trainee' 限定にしようとしたが、このEPは「これから is_trainee を
+    ON にする人」への事前警告で、FE は保存前のフォーム値で発火する。保存済み kind で
+    ゲートすると警告が恒久的に出なくなる (2026-08-17 レビュー HIGH で撤廃)。
     """
 
     model_config = ConfigDict(extra="forbid")

@@ -747,12 +747,22 @@ async def delete_future_accompaniments(
     iso_year: int,
     iso_week: int,
     monday: date,
+    include_defaults: bool = True,
 ) -> tuple[int, int]:
-    """今週以降の同行リンクと、毎週の既定を全削除する (**commit しない**).
+    """今週以降の同行リンク (と、任意で毎週の既定) を削除する (**commit しない**).
 
     ``DELETE /accompaniments/future`` (is_trainee OFF の確認ダイアログ) と、
     スタッフの退職 / 非 active 化 (``PATCH /staff/{id}`` / ``DELETE /staff/{id}``) の
     両方から呼ぶ単一ソース。過去週のリンクは実績履歴として残す。
+
+    ``include_defaults`` (2026-08-17 レビュー M-2):
+        **休職は「消す」ではなく「止める」**。status を非 active にしただけの休職者は
+        いずれ復帰するので、毎週の既定 (テンプレ層) を消すと復帰時に人手で組み直す
+        羽目になる。週リンクだけ消せば盤面からは即座に消え、復帰後の週生成で既定が
+        再展開されて自動的に戻る。
+
+        既定まで消すのは「もう戻らない / 同行者ではなくなる」と確定した経路だけ:
+        退職 (論理削除) と is_trainee OFF (``DELETE /accompaniments/future``)。
 
     返却 = (削除したリンク数, 削除した既定数)。冪等 (対象ゼロでも成功)。
     """
@@ -773,10 +783,15 @@ async def delete_future_accompaniments(
             ),
         )
     )
-    res_defaults = await db.execute(
-        delete(AccompanimentDefault).where(AccompanimentDefault.accompanying_staff_id == staff_id)
-    )
-    return int(res_links.rowcount or 0), int(res_defaults.rowcount or 0)
+    deleted_defaults = 0
+    if include_defaults:
+        res_defaults = await db.execute(
+            delete(AccompanimentDefault).where(
+                AccompanimentDefault.accompanying_staff_id == staff_id
+            )
+        )
+        deleted_defaults = int(res_defaults.rowcount or 0)
+    return int(res_links.rowcount or 0), deleted_defaults
 
 
 async def has_accompaniment_on_dates(
@@ -856,18 +871,61 @@ async def collect_accompaniment_duty_warnings(
     db: AsyncSession,
     *,
     staff_id: UUID,
-    dates: list[date],
+    course_ids: list[UUID],
 ) -> list[AccompanimentDutyWarning]:
-    """指定スタッフ × 指定日に同行リンクがあれば警告として列挙する (決定#1 後段).
+    """担当に付けようとしているコースの訪問と、その人の同行が**時間帯で交差**するか.
 
-    コース担当変更 (``PATCH /courses/{id}``) と ``apply-staff-review`` の両方から
-    呼ぶ。判定粒度は設計どおり **同日** (時間帯の厳密突合はエンジン本体の対応と
-    セットで別案件)。空リスト = 警告なし。
+    コース担当変更 (``PATCH /courses/{id}``) と ``apply-staff-review`` の両方から呼ぶ。
+
+    **同日ではなく時間帯交差で絞る** (2026-08-17 レビュー M-4):
+    「同じ日に同行がある」だけで鳴らすと、午前の担当と夕方の同行のように実務上
+    まったく問題ない組み合わせまで警告 + 管理者通知が飛ぶ。オオカミ少年になった
+    警告は読まれなくなるので、実際に体が 2 つ要る組み合わせだけを残す。
+    交差判定は PUT の重複検査と同じ ``_overlaps`` を使う (= 同住所ペアは免除)。
+
+    同一 visit (担当コースの訪問に自分が同行している) は交差扱いしない — 同じ
+    現場に居るだけで物理矛盾ではない。空リスト = 警告なし。
     """
-    visits = await has_accompaniment_on_dates(db, staff_id=staff_id, dates=dates)
-    if not visits:
+    if not course_ids:
         return []
+
+    # 担当することになる訪問 (= 交差判定の左辺)。
+    duty_visits = list(
+        (
+            await db.scalars(
+                select(Visit)
+                .where(
+                    Visit.course_id.in_(course_ids),
+                    Visit.deleted_at.is_(None),
+                    Visit.status != VISIT_STATUS_CANCELLED,
+                )
+                .options(selectinload(Visit.patient))
+            )
+        ).all()
+    )
+    if not duty_visits:
+        return []
+
+    dates = sorted({v.visit_date for v in duty_visits})
+    acc_visits = await has_accompaniment_on_dates(db, staff_id=staff_id, dates=dates)
+    if not acc_visits:
+        return []
+
+    duty_by_date: dict[date, list[Visit]] = defaultdict(list)
+    for v in duty_visits:
+        duty_by_date[v.visit_date].append(v)
+    duty_ids = {v.id for v in duty_visits}
+
     staff_name = await db.scalar(select(Staff.name).where(Staff.id == staff_id))
+    conflicting: dict[UUID, Visit] = {}
+    for acc in acc_visits:
+        if acc.id in duty_ids:
+            continue  # 担当コースの訪問に自分が同行 = 同じ現場・矛盾なし。
+        for duty in duty_by_date.get(acc.visit_date, []):
+            if _overlaps(acc, duty):
+                conflicting[acc.id] = acc
+                break
+
     return [
         AccompanimentDutyWarning(
             staff_id=staff_id,
@@ -879,7 +937,7 @@ async def collect_accompaniment_duty_warnings(
             end=v.end_time.strftime("%H:%M"),
             patient_name=(getattr(v.patient, "name", None) if v.patient is not None else None),
         )
-        for v in visits
+        for v in sorted(conflicting.values(), key=lambda v: (v.visit_date, v.start_time, str(v.id)))
     ]
 
 
@@ -924,14 +982,19 @@ async def notify_accompaniment_duty_conflict(
         if actor_name == "不明":
             actor_name = actor.username or actor.email or "不明"
 
-    head = warnings[0]
-    staff_name = head.staff_name or "担当者"
-    title = f"同行と担当が重なりました: {staff_name}"[:_NOTIFY_TITLE_MAX_LEN]
-    lines = [f"操作者: {actor_name}", f"対象スタッフ: {staff_name}"]
+    # 1 通に複数スタッフ分が載りうる (apply-staff-review の集約通知)。
+    staff_names = list(dict.fromkeys(w.staff_name or "担当者" for w in warnings))
+    head_name = staff_names[0]
+    if len(staff_names) > 1:
+        head_name = f"{head_name} 他{len(staff_names) - 1}名"
+    title = f"同行と担当が重なりました: {head_name}"[:_NOTIFY_TITLE_MAX_LEN]
+
+    lines = [f"操作者: {actor_name}"]
     for w in warnings:
         wd = _WEEKDAY_JA[w.weekday] if 0 <= w.weekday < len(_WEEKDAY_JA) else str(w.weekday)
         patient = f"{w.patient_name}様" if w.patient_name else "利用者"
-        lines.append(f"⚠ {w.date.isoformat()}({wd}) {w.start}-{w.end} 同行あり: {patient}")
+        who = w.staff_name or "担当者"
+        lines.append(f"⚠ {who}: {w.date.isoformat()}({wd}) {w.start}-{w.end} 同行あり ({patient})")
     body = "\n".join(lines)
 
     already: set[UUID] = set()

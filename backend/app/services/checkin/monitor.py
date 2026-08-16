@@ -694,6 +694,9 @@ async def build_monitor(
                         else None
                     ),
                     accompaniment_staff_name=(_acc_entries[0].staff_name if _acc_entries else None),
+                    accompaniment_staff_names=[
+                        e.staff_name for e in _acc_entries if e.staff_name is not None
+                    ],
                     # 実績 (打刻した人) と予定の乖離 (§6)。予定側の担当は書き換えない。
                     actual_staff_id=actual_staff_id,
                     actual_staff_name=(

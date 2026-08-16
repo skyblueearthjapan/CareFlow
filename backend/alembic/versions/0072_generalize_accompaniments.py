@@ -47,6 +47,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
@@ -58,6 +59,9 @@ depends_on: str | Sequence[str] | None = None
 
 
 # (旧名, 新名) — 週リンク側 (accompaniments)。
+# 明示的に名前を付けた CHECK / UNIQUE / index に加え、**PK と FK も** rename する:
+# これらは alembic が自動命名した ``trainee_accompaniments_*`` を持つため、放置すると
+# 表名と制約名が食い違い、障害調査で「どの表の制約か」を読み違える (レビュー LOW-7)。
 _LINK_CONSTRAINTS: tuple[tuple[str, str], ...] = (
     ("ck_ta_target_type", "ck_acc_target_type"),
     ("ck_ta_course_presence", "ck_acc_course_presence"),
@@ -65,6 +69,15 @@ _LINK_CONSTRAINTS: tuple[tuple[str, str], ...] = (
     ("ck_ta_source", "ck_acc_source"),
     ("uq_ta_trainee_course", "uq_acc_staff_course"),
     ("uq_ta_trainee_visit", "uq_acc_staff_visit"),
+    # PK / FK (自動命名)。
+    ("trainee_accompaniments_pkey", "accompaniments_pkey"),
+    (
+        "trainee_accompaniments_trainee_staff_id_fkey",
+        "accompaniments_accompanying_staff_id_fkey",
+    ),
+    ("trainee_accompaniments_course_id_fkey", "accompaniments_course_id_fkey"),
+    ("trainee_accompaniments_visit_id_fkey", "accompaniments_visit_id_fkey"),
+    ("trainee_accompaniments_created_by_fkey", "accompaniments_created_by_fkey"),
 )
 _LINK_INDEXES: tuple[tuple[str, str], ...] = (
     ("ix_ta_course", "ix_acc_course"),
@@ -76,6 +89,20 @@ _LINK_INDEXES: tuple[tuple[str, str], ...] = (
 _DEFAULT_CONSTRAINTS: tuple[tuple[str, str], ...] = (
     ("uq_tad_trainee_weekday", "uq_accd_staff_weekday"),
     ("ck_tad_weekday", "ck_accd_weekday"),
+    # PK / FK (自動命名)。
+    ("trainee_accompaniment_defaults_pkey", "accompaniment_defaults_pkey"),
+    (
+        "trainee_accompaniment_defaults_trainee_staff_id_fkey",
+        "accompaniment_defaults_accompanying_staff_id_fkey",
+    ),
+    (
+        "trainee_accompaniment_defaults_course_template_id_fkey",
+        "accompaniment_defaults_course_template_id_fkey",
+    ),
+    (
+        "trainee_accompaniment_defaults_created_by_fkey",
+        "accompaniment_defaults_created_by_fkey",
+    ),
 )
 _DEFAULT_INDEXES: tuple[tuple[str, str], ...] = (("ix_tad_trainee", "ix_accd_staff"),)
 
@@ -93,19 +120,38 @@ def _is_pg() -> bool:
 
 
 def _rename_constraints(table: str, pairs: Sequence[tuple[str, str]]) -> None:
-    """制約名を rename する (PostgreSQL のみ)."""
+    """制約名を rename する (PostgreSQL のみ・**存在するものだけ**).
+
+    PK / FK は alembic の自動命名に依存するため、環境によって名前が違う / 既に
+    別名になっている可能性がある。``RENAME CONSTRAINT`` は ``IF EXISTS`` を
+    受け付けないので、``pg_constraint`` を引く DO ブロックで存在確認してから
+    rename する。**名前の掃除のために本体のデプロイを落とさない**ための保険。
+    """
     if not _is_pg():
         return
     for old, new in pairs:
-        op.execute(f'ALTER TABLE {table} RENAME CONSTRAINT "{old}" TO "{new}"')
+        op.execute(
+            f"""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = '{old}'
+                      AND conrelid = '{table}'::regclass
+                ) THEN
+                    ALTER TABLE {table} RENAME CONSTRAINT "{old}" TO "{new}";
+                END IF;
+            END $$;
+            """
+        )
 
 
 def _rename_indexes(pairs: Sequence[tuple[str, str]]) -> None:
-    """インデックス名を rename する (PostgreSQL のみ)."""
+    """インデックス名を rename する (PostgreSQL のみ・存在するものだけ)."""
     if not _is_pg():
         return
     for old, new in pairs:
-        op.execute(f'ALTER INDEX "{old}" RENAME TO "{new}"')
+        op.execute(f'ALTER INDEX IF EXISTS "{old}" RENAME TO "{new}"')
 
 
 def upgrade() -> None:
@@ -118,14 +164,14 @@ def upgrade() -> None:
         "accompaniments",
         "trainee_staff_id",
         new_column_name="accompanying_staff_id",
-        existing_type=sa.dialects.postgresql.UUID(as_uuid=True) if _is_pg() else sa.String(36),
+        existing_type=postgresql.UUID(as_uuid=True) if _is_pg() else sa.String(36),
         existing_nullable=False,
     )
     op.alter_column(
         "accompaniment_defaults",
         "trainee_staff_id",
         new_column_name="accompanying_staff_id",
-        existing_type=sa.dialects.postgresql.UUID(as_uuid=True) if _is_pg() else sa.String(36),
+        existing_type=postgresql.UUID(as_uuid=True) if _is_pg() else sa.String(36),
         existing_nullable=False,
     )
 
@@ -169,14 +215,14 @@ def downgrade() -> None:
         "accompaniment_defaults",
         "accompanying_staff_id",
         new_column_name="trainee_staff_id",
-        existing_type=sa.dialects.postgresql.UUID(as_uuid=True) if _is_pg() else sa.String(36),
+        existing_type=postgresql.UUID(as_uuid=True) if _is_pg() else sa.String(36),
         existing_nullable=False,
     )
     op.alter_column(
         "accompaniments",
         "accompanying_staff_id",
         new_column_name="trainee_staff_id",
-        existing_type=sa.dialects.postgresql.UUID(as_uuid=True) if _is_pg() else sa.String(36),
+        existing_type=postgresql.UUID(as_uuid=True) if _is_pg() else sa.String(36),
         existing_nullable=False,
     )
 

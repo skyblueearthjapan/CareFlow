@@ -365,7 +365,7 @@ async def apply_inbound_items(
     # カイポケへ送った「同行の新人」が逆取込で staff2 として返ってきたとき、それを
     # 「要2名患者」として secondary_staff_id へ書き戻す/required_staff_count=2 へ昇格
     # させると汚染が起きる。同行リンク済みの新人と一致する staff2 は同行由来とみなし
-    # 反映しない (同行は trainee_accompaniments が唯一の正典)。
+    # 反映しない (同行は accompaniments が唯一の正典)。
     # - edit/delete 経路: 実在 visit を visit_id で突合 (バッチ・N+1 回避)。
     # - add 経路: 新設 visit が張り付くコースの course-level リンクで突合。
     # いずれも「新人集合への membership 判定」(複数新人リンク時の last-wins 非決定性で
@@ -817,7 +817,7 @@ async def apply_inbound_items(
                     resolved_sid2 = uuid.UUID(sid2_str)
                     # staff2 の 3 段階判定 (案B・設計 §9 拡張):
                     # ① 既存の同行リンクと一致 → secondary へ書かず要2名化しない
-                    #    (ラウンドトリップ汚染防止。同行は trainee_accompaniments が唯一の正典)。
+                    #    (ラウンドトリップ汚染防止。同行は accompaniments が唯一の正典)。
                     if resolved_sid2 in accompaniment_by_visit.get(visit.id, set()):
                         notes.append(
                             f"担当2「{staff2_after_name}」は同行のため未反映（要2名化しない）"

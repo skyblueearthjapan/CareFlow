@@ -6,7 +6,7 @@
 
 W10-BE1: mentor_id 廃止 → is_trainee 追加。
 Phase 2 (新人同行 v1.1 §3): 旧 staff_companion_assignments 機構は撤去済み。
-同行は trainee_accompaniments (スケジュール画面の同行モード) が正典。
+同行は accompaniments (スケジュール画面の同行モード) が正典。
 """
 
 from __future__ import annotations

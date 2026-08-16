@@ -38,7 +38,6 @@ from sqlalchemy.orm import selectinload
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.accompaniment import (
-    ACCOMPANIMENT_KIND_TRAINEE,
     Accompaniment,
     AccompanimentDefault,
 )
@@ -296,11 +295,14 @@ async def _notify_accompaniment_override(
 ) -> None:
     """acknowledge で通した制約 override を管理者へお知らせする (**commit しない**).
 
-    通知本文は course 単位のフォーマッタ (``notify_constraint_override``) を使うため
-    「代表コース」を 1 つ選ぶ: 違反が出た患者が乗っている訪問のうち、日付→開始時刻が
-    最も早いもののコース。コースが解決できない (個別リンクのみ等) 場合は通知を
-    諦めるのではなく、その訪問の course_id が無いだけなので**通知しない**
-    (本文の週/コース欄が埋まらず監査情報として役に立たないため)。
+    通知本文は「代表コース」を 1 つ選んで週/コース/拠点欄に使う: 違反が出た患者が
+    乗っている訪問のうち、日付→開始時刻が最も早いもののコース。
+
+    **コースが引けなくても通知は必ず出す** (2026-08-17 レビュー M-3):
+    患者単位リンクが臨時 / 予定外 visit (course_id NULL) にだけ掛かっていると
+    代表コースが取れないが、そこで黙ると「確認して通した」監査記録が欠落する
+    (通知はお知らせ兼監査ログ)。``notify_constraint_override`` は course=None を
+    受けられるので、その場合は週/コース欄を省いた本文で通知する。
 
     冪等キー: 同行 PUT には op_group_id が無いため ``reference_id=None`` = 毎回通知。
     None を突き合わせると過去の NULL 通知全部にヒットして以後止まる既知の罠が
@@ -312,12 +314,12 @@ async def _notify_accompaniment_override(
     candidates = [
         v for v in effective if v.patient_id in warned_patient_ids and v.course_id is not None
     ]
-    if not candidates:
-        return
-    candidates.sort(key=lambda v: (v.visit_date, v.start_time, str(v.id)))
-    course = await db.scalar(select(Course).where(Course.id == candidates[0].course_id))
-    if course is None:
-        return
+    course: Course | None = None
+    if candidates:
+        candidates.sort(key=lambda v: (v.visit_date, v.start_time, str(v.id)))
+        # 未 flush の DELETE/INSERT が autoflush で割り込む順序依存を断つため明示 flush。
+        await db.flush()
+        course = await db.scalar(select(Course).where(Course.id == candidates[0].course_id))
     await notify_constraint_override(
         db,
         kind_summary={w.kind for w in warnings},
@@ -713,24 +715,19 @@ async def accompaniment_course_guard(
 
     is_trainee を ON にする際の警告表示用。自動解除はしない (警告主義・§8-4)。
 
-    **一般化 §3-7: kind='trainee' のときだけ有効**。一般スタッフ (support) は
-    コース担当と同行を両立できるので警告する理由が無い — 問い合わせても
-    ``applicable=false`` + 空配列を返し、FE 側の分岐を 1 本にする。
+    **保存済み ``kind`` でゲートしてはいけない** (2026-08-17 レビュー HIGH):
+    このEPの用途は「**これから** is_trainee を ON にする人」への事前警告で、FE は
+    保存前のフォーム値で発火する。呼ばれる時点の DB 上のスタッフはまだ一般スタッフ
+    (= kind 'support' 相当) なので、kind でゲートすると警告が恒久的に出なくなる
+    (機能回帰)。判定はせず常に件数を返し、出すか否かは FE のフォーム状態に委ねる。
+
+    ``applicable`` は互換のため残すが**常に true**。
     """
     target = staff_id or trainee_staff_id
     if target is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="staff_id (or legacy trainee_staff_id) is required",
-        )
-    staff = await db.scalar(select(Staff).where(Staff.id == target, Staff.deleted_at.is_(None)))
-    if staff is None or resolve_accompaniment_kind(staff) != ACCOMPANIMENT_KIND_TRAINEE:
-        return CourseGuardResponse(
-            staff_id=target,
-            trainee_staff_id=target,
-            applicable=False,
-            count=0,
-            courses=[],
         )
 
     cur_year, cur_week, _monday = _current_week()
@@ -849,5 +846,8 @@ for _path, _method, _endpoint, _response_model in _LEGACY_ROUTES:
         methods=[_method],
         response_model=_response_model,
         include_in_schema=False,
+        # 明示的なルート名を付ける (レビュー LOW-9)。既定は endpoint 関数名なので、
+        # 新パスと旧エイリアスが同名になり ``url_path_for`` が引けなくなる。
+        name=f"legacy_{_method.lower()}_{_path.strip('/').replace('/', '_').replace('-', '_')}",
         summary=f"[deprecated] {_path} — /accompaniments 系の互換エイリアス",
     )
