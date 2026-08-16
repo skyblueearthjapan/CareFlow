@@ -65,6 +65,16 @@ def _today_jst() -> date:
     return datetime.now(JST).date()
 
 
+def _expected_adhoc_end(today: date, start: time, minutes: int) -> time:
+    """adhoc visit の暫定 end_time 期待値 (visits.py の 23:59 日跨ぎクランプを再現).
+
+    素朴に start+minutes を期待すると、深夜帯 (JST で日付を跨ぐ時間帯) の実行だけ
+    クランプ仕様との差で落ちる時刻依存テストになるため、期待値側にも同じ規則を適用する。
+    """
+    naive_end = datetime.combine(today, start) + timedelta(minutes=minutes)
+    return time(23, 59) if naive_end.date() > today else naive_end.time()
+
+
 def _bearer(user: User) -> dict[str, str]:
     token = create_access_token(subject=user.id, role=user.role, staff_id=user.staff_id)
     return {"Authorization": f"Bearer {token}"}
@@ -619,7 +629,7 @@ async def test_adhoc_checkin_defaults_to_60_minutes(client, db) -> None:
     start = time.fromisoformat(body["start_time"])
     end = time.fromisoformat(body["end_time"])
     today = _today_jst()
-    assert datetime.combine(today, end) - datetime.combine(today, start) == timedelta(minutes=60)
+    assert end == _expected_adhoc_end(today, start, 60)
     assert body["patient_id"] == str(p.id)
     await db.rollback()
 
@@ -649,7 +659,7 @@ async def test_adhoc_checkin_prefers_fixed_visit_duration(client, db) -> None:
     today = _today_jst()
     start = time.fromisoformat(body["start_time"])
     end = time.fromisoformat(body["end_time"])
-    assert datetime.combine(today, end) - datetime.combine(today, start) == timedelta(minutes=90)
+    assert end == _expected_adhoc_end(today, start, 90)
     await db.rollback()
 
 
