@@ -34,8 +34,10 @@ from app.models.staff import Staff
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.accompaniment import (
+    resolve_accompaniment_kind,
     resolve_accompaniment_staff_by_course,
     resolve_accompaniment_staff_by_visit,
+    resolve_direct_accompaniment_staff_by_visit,
 )
 from app.services.kaipoke.name_match import build_name_index, match_name
 from app.services.kaipoke.ng_conflicts import NgConflict, NgPair, collect_ng_conflicts
@@ -356,29 +358,58 @@ async def apply_inbound_items(
     """
     summary = InboundApplySummary()
     index = await load_week_visit_index(db, week_start, week_end)
-    staff_index, _staff_map = await load_staff_name_index(db)
+    staff_index, staff_map = await load_staff_name_index(db)
     course_idx = await load_week_course_index(db, week_start)
     today = now.date()
     day_set = set(days) if days else None
 
-    # 同行由来 staff2 のラウンドトリップ汚染防止 (設計 §9): CareFlow が職員名2 として
-    # カイポケへ送った「同行の新人」が逆取込で staff2 として返ってきたとき、それを
-    # 「要2名患者」として secondary_staff_id へ書き戻す/required_staff_count=2 へ昇格
-    # させると汚染が起きる。同行リンク済みの新人と一致する staff2 は同行由来とみなし
+    # 同行由来 staff2 のラウンドトリップ汚染防止 (設計 §9 / 一般化 §3-5): CareFlow が
+    # 職員名2 としてカイポケへ送った同行スタッフが逆取込で staff2 として返ってきたとき、
+    # それを「要2名患者」として secondary_staff_id へ書き戻す / required_staff_count=2 へ
+    # 昇格させると汚染が起きる。既存の同行リンクと一致する staff2 は同行由来とみなし
     # 反映しない (同行は accompaniments が唯一の正典)。
-    # - edit/delete 経路: 実在 visit を visit_id で突合 (バッチ・N+1 回避)。
-    # - add 経路: 新設 visit が張り付くコースの course-level リンクで突合。
-    # いずれも「新人集合への membership 判定」(複数新人リンク時の last-wins 非決定性で
-    # 誤って secondary へ書き戻す汚染を防ぐ — Phase 3 レビュー MINOR-2)。
+    #
+    # **判定① は kind を問わない** (一般化 §3-5): 新人同行 (kind='trainee') も一般スタッフの
+    # 同行 (kind='support') も CSV では等しく職員名2 に載る = 同じ経路で返ってくるため、
+    # 「新人かどうか」ではなく「**そのリンクが実在するかどうか**」で判定するのが正しい。
+    # 下 3 本のヘルパーは kind でフィルタせず全同行リンクを返すので、集合の汎化はここで
+    # 完了している (新人限定なのは後述の判定② だけ)。staff2 判定を持つのは edit と add の
+    # 2 経路だけ (delete は訪問をキャンセルするだけで staff2 を読まない)。
+    # - edit 経路: 実在 visit を visit_id で突合 (直リンク ∪ コースリンク・N+1 回避)。
+    #   visit のコースは変わらないので、現在の course_id のリンクを混ぜてよい。
+    # - add 経路: 新設 visit が張り付く**新しい**コースの course-level リンクで突合。
+    #   復活枠 (revive) はそこへ **visit 直リンクのみ**を足す — 復活は course_id を
+    #   付け替えるため、旧コースのリンクを混ぜると誤マッチする (レビュー MEDIUM-2)。
+    # いずれも「同行スタッフ集合への membership 判定」(複数同行リンク時の last-wins
+    # 非決定性で誤って secondary へ書き戻す汚染を防ぐ — Phase 3 レビュー MINOR-2)。
     accompaniment_by_visit = await resolve_accompaniment_staff_by_visit(db, list(index.values()))
+    accompaniment_direct_by_visit = await resolve_direct_accompaniment_staff_by_visit(
+        db, list(index.values())
+    )
     accompaniment_by_course = await resolve_accompaniment_staff_by_course(
         db, list(course_idx.by_id.keys())
     )
+
+    def _remember_accompaniment(visit_id: uuid.UUID, staff_id: uuid.UUID) -> None:
+        """自動作成した同行リンクを突合集合へ反映する (同一実行内の二重 INSERT 予防).
+
+        1 回の apply に同じ訪問の item が 2 つ入っていると (名寄せ差の delete+add 等)、
+        2 つ目が判定② をもう一度通って同じリンクを INSERT しようとし UNIQUE
+        (staff, visit_id) で落ちる。作成直後に集合へ足しておけば 2 つ目は判定① へ
+        落ちて何もしない。edit / add / 復活枠の 3 経路すべてから呼ぶ。
+        """
+        accompaniment_by_visit.setdefault(visit_id, set()).add(staff_id)
+        accompaniment_direct_by_visit.setdefault(visit_id, set()).add(staff_id)
 
     # 案B (設計 §9 拡張・PO承認 2026-07-12): カイポケ側 staff2 がリンク未作成でも新人
     # (is_trainee) なら「要2名患者」化せず同行リンクを自動作成する。判定用に active・
     # 未削除の新人 staff id を1クエリでロード (N+1 回避)。match_name で解決した staff.id
     # がこの集合に含まれるかで判定 2 (自動同行化) と判定 3 (実スタッフの要2名化) を分岐。
+    #
+    # **一般化しない** (一般化 §3-5 で意図的に見送り): 判定② を一般スタッフへ開放すると、
+    # 本当に 2 名体制で入った訪問まで「同行」に化けて要2名化が消える。リンクの無い
+    # 一般スタッフの staff2 は従来どおり判定③ (2名体制) へ落とす。
+    # (staff1 が新人のときの ⚠警告注記も同じ集合を使う。)
     trainee_ids: set[uuid.UUID] = set(
         (
             await db.scalars(
@@ -584,15 +615,30 @@ async def apply_inbound_items(
                 continue
             weekday = target_date.weekday()
             course = course_idx.by_staff.get((weekday, office_id, sid))
-            # staff2 の 3 段階判定 (案B・設計 §9 拡張):
-            # ① 既存の同行リンクと一致 (新設 visit が張り付くコースの同行新人と一致) →
+            # staff2 の 3 段階判定 (案B・設計 §9 拡張 / 一般化 §3-5):
+            # ① 既存の同行リンクと一致 (**kind 不問** = 新人同行も一般スタッフの同行も) →
             #    secondary へ書かず要2名化もしない (ラウンドトリップ汚染防止)。
+            #    突合先 = 訪問が**これから張り付く**コースのリンク ∪ (復活枠なら) その
+            #    visit の **直リンクのみ**。
+            #    直リンクを足す理由: 復活枠は visit を再利用するので、patient 単位で
+            #    張った同行 (target_type='visit') が生き残っている。落とすと一般スタッフの
+            #    同行が ③ へ流れて secondary へ書き戻される (一般化で露出した汚染経路)。
+            #    直リンク**だけ**に絞る理由: 復活は course_id を新しいコースへ付け替える
+            #    ため、その visit が今居る旧コースのリンクは復活後には効かない。混ぜると
+            #    旧コースの同行者と同名の staff2 が ① へ誤マッチし、本物の 2 人目が
+            #    secondary に書かれず消える (2026-08-17 レビュー MEDIUM-2)。
             # ② リンクは無いが新人 (is_trainee) → visit 新設後に同行リンクを自動作成し、
             #    secondary へは書かない・要2名化しない (盤面に2人目コース列の無い不整合を
-            #    生む「要2名化」を避ける・PO指摘)。
-            # ③ 新人でない実スタッフ → 従来どおり secondary + required_staff_count=2。
+            #    生む「要2名化」を避ける・PO指摘)。一般スタッフへは開放しない (上述)。
+            # ③ 新人でない実スタッフ (リンク無し) → 従来どおり secondary +
+            #    required_staff_count=2 (= 2名体制への昇格)。
             if sid2 is not None:
-                if course is not None and sid2 in accompaniment_by_course.get(course.id, set()):
+                linked: set[uuid.UUID] = set()
+                if course is not None:
+                    linked |= accompaniment_by_course.get(course.id, set())
+                if revive is not None:
+                    linked |= accompaniment_direct_by_visit.get(revive.id, set())
+                if sid2 in linked:
                     sid2 = None
                     staff2_note = "／担当2は同行のため未反映（要2名化しない）"
                 elif sid2 in trainee_ids:
@@ -651,9 +697,12 @@ async def apply_inbound_items(
                             await _replace_assignments(
                                 db, revive, [s for s in (sid, sid2) if s is not None]
                             )
+                            # 案B②: 復活枠へ新人 staff2 の同行リンクを自動作成。
+                            # 冪等ガードは **直リンク集合** で見る — UNIQUE は
+                            # (staff, visit_id) なので、コースリンクの有無は衝突と無関係。
                             if accompaniment_sid2 is not None and (
                                 accompaniment_sid2
-                                not in accompaniment_by_visit.get(revive.id, set())
+                                not in accompaniment_direct_by_visit.get(revive.id, set())
                             ):
                                 db.add(
                                     Accompaniment(
@@ -661,9 +710,13 @@ async def apply_inbound_items(
                                         target_type="visit",
                                         visit_id=revive.id,
                                         source="manual",
+                                        kind=resolve_accompaniment_kind(
+                                            staff_map[accompaniment_sid2]
+                                        ),
                                         created_by=None,
                                     )
                                 )
+                                _remember_accompaniment(revive.id, accompaniment_sid2)
                     except IntegrityError:
                         _finish(
                             "failed",
@@ -701,7 +754,7 @@ async def apply_inbound_items(
                         # 案B②: 新人 staff2 を同行リンク (visit 直リンク) として自動作成。
                         # flush 後 = new_visit.id が確定してから。source='inbound' 値は
                         # 追加せず 'manual' を刻む (CHECK 制約 migration を避ける・既定の
-                        # 再展開が上書きしない挙動は 'manual' で正しい)。UNIQUE(trainee,
+                        # 再展開が上書きしない挙動は 'manual' で正しい)。UNIQUE(staff,
                         # visit_id) が冪等を担保 (新設 visit の id は毎回新規のため衝突なし)。
                         if accompaniment_sid2 is not None:
                             db.add(
@@ -710,9 +763,11 @@ async def apply_inbound_items(
                                     target_type="visit",
                                     visit_id=new_visit.id,
                                     source="manual",
+                                    kind=resolve_accompaniment_kind(staff_map[accompaniment_sid2]),
                                     created_by=None,
                                 )
                             )
+                            _remember_accompaniment(new_visit.id, accompaniment_sid2)
                 except IntegrityError:
                     _finish(
                         "failed",
@@ -815,17 +870,20 @@ async def apply_inbound_items(
                 sid2_str = match_name(staff2_after_name, staff_index)
                 if sid2_str:
                     resolved_sid2 = uuid.UUID(sid2_str)
-                    # staff2 の 3 段階判定 (案B・設計 §9 拡張):
-                    # ① 既存の同行リンクと一致 → secondary へ書かず要2名化しない
-                    #    (ラウンドトリップ汚染防止。同行は accompaniments が唯一の正典)。
+                    # staff2 の 3 段階判定 (案B・設計 §9 拡張 / 一般化 §3-5):
+                    # ① 既存の同行リンクと一致 (**kind 不問** = 新人同行も一般スタッフの
+                    #    同行も) → secondary へ書かず要2名化しない (ラウンドトリップ
+                    #    汚染防止。同行は accompaniments が唯一の正典)。
+                    #    突合集合は直リンク ∪ コースリンクの和 (resolve_..._by_visit)。
                     if resolved_sid2 in accompaniment_by_visit.get(visit.id, set()):
                         notes.append(
                             f"担当2「{staff2_after_name}」は同行のため未反映（要2名化しない）"
                         )
-                    # ② リンクは無いが新人 → 同行リンクを自動作成し要2名化しない。
+                    # ② リンクは無いが新人 → 同行リンクを自動作成し要2名化しない
+                    #    (一般スタッフへは開放しない = 一般化 §3-5 で意図的に見送り)。
                     elif resolved_sid2 in trainee_ids:
                         accompaniment_sid2 = resolved_sid2
-                    # ③ 新人でない実スタッフ → 従来どおり secondary + 要2名化。
+                    # ③ 新人でない実スタッフ (リンク無し) → 従来どおり secondary + 要2名化。
                     else:
                         new_sid2 = resolved_sid2
                         staff2_update = True
@@ -954,8 +1012,14 @@ async def apply_inbound_items(
             # 案B②: 新人 staff2 を同行リンク (visit 直リンク) として自動作成 (対象 visit へ)。
             # source='inbound' 値は追加せず 'manual' を刻む (CHECK 制約 migration を避ける)。
             # 同一実行内の item 重複でも二重に張らないよう、作成後は突合集合へ反映して
-            # 以降は判定 ① (スキップ) に落ちるようにする。UNIQUE(trainee, visit_id) も冪等
+            # 以降は判定 ① (スキップ) に落ちるようにする。UNIQUE(staff, visit_id) も冪等
             # を担保 (別実行の二重取込は再ロードされた突合集合で判定 ① に落ちる)。
+            #
+            # この ``db.add`` が savepoint の外にあるのは意図的: edit 経路は visit を
+            # INSERT しないため UNIQUE 衝突の主因が無く、唯一の衝突源だった「同一実行内の
+            # 二重 INSERT」は上の集合更新 (``_remember_accompaniment``) で予防している。
+            # savepoint で包むと、まとめて 1 TX にしている呼び出し側の境界を細切れにする
+            # 割に得るものが無い。
             if accompaniment_sid2 is not None:
                 db.add(
                     Accompaniment(
@@ -963,10 +1027,11 @@ async def apply_inbound_items(
                         target_type="visit",
                         visit_id=visit.id,
                         source="manual",
+                        kind=resolve_accompaniment_kind(staff_map[accompaniment_sid2]),
                         created_by=None,
                     )
                 )
-                accompaniment_by_visit.setdefault(visit.id, set()).add(accompaniment_sid2)
+                _remember_accompaniment(visit.id, accompaniment_sid2)
         _finish("updated", detail, target_date)
 
     if dry_run:

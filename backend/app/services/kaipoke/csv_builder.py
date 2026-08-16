@@ -184,7 +184,7 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
     from app.models.office import Office
     from app.models.staff import Staff
     from app.models.visit import Visit
-    from app.services.accompaniment import resolve_primary_accompaniment_by_visit
+    from app.services.accompaniment import resolve_accompaniment_by_visit
 
     first = date(opts.year, opts.month, 1)
     last = date(opts.year, opts.month, monthrange(opts.year, opts.month)[1])
@@ -203,24 +203,32 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
     )
     visits = list((await db.scalars(stmt)).all())
 
-    # 同行 (設計 §9): visit_id -> (staff_id, name) をバッチ解決 (N+1 回避)。
-    # 唯一の正典 accompaniments を live JOIN で引く。職員名2/3 の解決順は
-    # secondary(要2名の正規2人目) → 同行 → mentor(レガシー)。
+    # 同行 (設計 §9 / 一般化 決定#6): visit_id -> 同行者エントリ**全件**をバッチ解決
+    # (N+1 回避)。唯一の正典 accompaniments を live JOIN で引く。
     #
-    # **代表 1 名のみ**採る (mig 0072 時点の据え置き): 複数同行を職員名2/3 へ
-    # どう配分するか (一般化 決定#6) は Phase D の課題で、ここは従来の 1 名分の
-    # 挙動を変えない。代表の選び方だけが last-wins → 決定的順序に直っている。
-    accompaniment_by_visit = await resolve_primary_accompaniment_by_visit(db, visits)
+    # 複数同行 (決定#5) を職員名2/3 へ配分する順序は**決定的**:
+    #   secondary(要2名の正規2人目) → 同行[support 優先 → スタッフ名昇順 → id]
+    #   → mentor(レガシー)
+    # 同行内の並びは ``services/accompaniment._entry_sort_key`` と共有する。これで
+    # 「同行者のうち誰を先に出すか」が月次CSV・週次反映 (local_diff の
+    # Correction.staff2)・画面表示で一致し、実行のたびに別人がカイポケへ押される事故
+    # (旧 last-wins) が構造的に起きない。
+    #
+    # 注意: **職員名2 が画面の代表 1 名と一致するのは secondary が居ない訪問だけ**。
+    # 要2名の訪問では職員名2=secondary・職員名3=同行の先頭になる (下の配分どおり)。
+    # 揃っているのは同行者どうしの順序であって、slot への割り付けではない。
+    accompaniment_by_visit = await resolve_accompaniment_by_visit(db, visits)
 
-    # スタッフを一括ロード (name/qualification 解決用)。同行の新人も qualification
+    # スタッフを一括ロード (name/qualification 解決用)。同行スタッフも qualification
     # 解決のため staff_ids に含める。
     staff_ids = set()
     for v in visits:
         for sid in (v.primary_staff_id, v.secondary_staff_id, v.mentor_staff_id):
             if sid:
                 staff_ids.add(sid)
-    for tsid, _tname in accompaniment_by_visit.values():
-        staff_ids.add(tsid)
+    for entries in accompaniment_by_visit.values():
+        for entry in entries:
+            staff_ids.add(entry.staff_id)
     staff_map: dict[uuid.UUID, Staff] = {}
     if staff_ids:
         srows = (await db.scalars(select(Staff).where(Staff.id.in_(staff_ids)))).all()
@@ -257,27 +265,28 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
             # 主担当未確定の訪問は転記対象外 (カイポケには職員必須)。
             continue
         secondary = _cell(v.secondary_staff_id, companion=False)
-        # 同行の新人 (設計決定事項#4): 職員名2 へ「正規スタッフとして」載せる。
-        # 同行フラグ等の特別扱いはしない (companion=False = 同行N列に ○ を付けない)。
-        accompaniment: StaffCell | None = None
-        accomp = accompaniment_by_visit.get(v.id)
-        if accomp is not None:
-            accompaniment = _cell(accomp[0], companion=False)
+        # 同行者 (設計決定事項#4 / 一般化 決定#6): 新人同行も一般スタッフの同行も
+        # 職員名2 へ「正規スタッフとして」載せる (kind で区別しない)。同行フラグ等の
+        # 特別扱いはしない (companion=False = 同行N列に ○ を付けない)。
+        accomp_entries = accompaniment_by_visit.get(v.id, [])
         mentor = _cell(v.mentor_staff_id, companion=opts.mentor_as_companion)
-        # 職員名2/3 の解決順: secondary → 同行(新人) → mentor(レガシー)。
-        # 先頭 2 名を slot2/slot3 に載せる。secondary+同行の 3 人ケースは職員名3=同行。
-        # 週次反映 (diff/apply) では Correction が 2 枠 (staff1/staff2) までのため slot3 は
-        # 落ちる (設計 §9 既知制限)。月次CSV では職員名3 として反映される。
-        # 同一人物が secondary/同行/mentor に重複して載らないよう staff_id でデデュープ
+        # 職員名2/3 の解決順 (決定#6): secondary → 同行(決定的順序・複数可) →
+        # mentor(レガシー)。同一人物が重複して載らないよう staff_id でデデュープ
         # (順序保持)。primary と同一人物も除外 (職員名1 との二重掲載防止)。
-        accomp_id = accomp[0] if accomp is not None else None
+        # デデュープ後の先頭 2 名を職員名2/職員名3 に載せる。
+        #
+        # **3 人目以降は落ちる (現行踏襲・一般化 §6 の既存制限)**: カイポケCSV の枠が
+        # 職員名3 までのため、secondary + 同行2名 のような 4 人目相当は転記されない。
+        # さらに週次反映 (diff/apply) の Correction は 2 枠 (staff1/staff2) までなので、
+        # 職員名3 は月次CSV にしか載らない。ここでエラーにせず黙って切り捨てるのは、
+        # 3名同行が運用上ほぼ無い一方で失敗させると月次CSV 全体が出せなくなるため。
+        # 順序が決定的なので「誰が落ちるか」は実行のたびに変わらず再現する。
         candidates: list[StaffCell] = []
         seen_ids = {v.primary_staff_id}
-        for sid, cell in (
-            (v.secondary_staff_id, secondary),
-            (accomp_id, accompaniment),
-            (v.mentor_staff_id, mentor),
-        ):
+        pairs: list[tuple[uuid.UUID | None, StaffCell | None]] = [(v.secondary_staff_id, secondary)]
+        pairs += [(e.staff_id, _cell(e.staff_id, companion=False)) for e in accomp_entries]
+        pairs.append((v.mentor_staff_id, mentor))
+        for sid, cell in pairs:
             if cell is not None and sid not in seen_ids:
                 seen_ids.add(sid)
                 candidates.append(cell)
