@@ -66,8 +66,15 @@ class MonitorVisit(BaseModel):
     # 「予定した人 / 実際に行った人」を並記する。未到着は None。
     actual_staff_id: UUID | None = None
     actual_staff_name: str | None = None
-    # 代行 = 実績スタッフが visit の担当集合 (primary/secondary/mentor/assignments/
-    # 新人同行) の外。UI はバーに「代行」バッジ + 実績名を出す。
+    # 代行した人 = arrival 打刻者のうち担当集合の外だった最新の 1 名。
+    # ``actual_staff_*`` は「最新の打刻者」なので、代行の後に担当本人が打ち直すと
+    # 実績名は担当本人になる。「代行バッジ + 担当本人名」という自己矛盾表示を防ぐ
+    # ため、UI はバッジの根拠 (誰が代行したか) をこちらから取る。
+    # ``is_substitute`` が false のときは常に None。
+    substitute_staff_id: UUID | None = None
+    substitute_staff_name: str | None = None
+    # 代行 = arrival 打刻者の**いずれか**が visit の担当集合 (primary/secondary/
+    # mentor/assignments/新人同行) の外。UI はバーに「代行」バッジ + 代行者名を出す。
     is_substitute: bool = False
     # 予定外訪問 (visits.is_unplanned)。専用行「📌予定外訪問」に集約される。
     is_unplanned: bool = False
