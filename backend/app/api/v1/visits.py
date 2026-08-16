@@ -13,7 +13,7 @@ W2-BE4 (`docs/plans/v2-allocation-redesign.md` v0.9 §3.3 / §4.5):
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -28,6 +28,7 @@ from app.models.course import Course
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User, normalize_user_role
 from app.models.visit import (
+    VISIT_STATUS_CANCELLED,
     VISIT_STATUS_COMPLETED,
     VISIT_STATUS_IN_PROGRESS,
     VISIT_STATUS_PLANNED,
@@ -36,8 +37,8 @@ from app.models.visit import (
 from app.models.visit_checkin import VisitCheckin
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.visit import VisitCreate, VisitRead, VisitUpdate
-from app.schemas.visit_checkin import CheckinCreate
-from app.services.checkin.judge import judge_checkin
+from app.schemas.visit_checkin import CheckinCreate, QrResolveRead
+from app.services.checkin.judge import JST, judge_checkin, resolve_qr_patient
 from app.services.checkin.notify import notify_checkin_mismatch, resolve_checkin_missing
 from app.services.constraint_override_notify import (
     ConstraintWarning,
@@ -365,6 +366,68 @@ async def list_visits(
         )
         for v in rows
     ]
+
+
+@router.get(
+    "/resolve-qr/{token}",
+    response_model=QrResolveRead,
+    summary="QR トークン → 本日の担当 visit 解決 (汎用カメラ・ディープリンク用)",
+)
+async def resolve_qr_visits(
+    token: str,
+    db: DbDep,
+    user: CurrentActiveUser,
+) -> dict:
+    """`/q/{token}` ランディングページの遷移先解決。
+
+    患者宅 QR を標準カメラ / Chrome で読むと `/q/{token}` へ遷移するため、FE は
+    本 API でトークンを「本日 (JST) の自分の担当 visit」へ解決し、モバイル訪問
+    詳細 (`/m/today/{visitId}`) へディープリンクする。
+
+    - 認可は打刻 (`_load_visit_for_checkin`) と同方針: admin/staff かつ
+      staff 紐付け必須 (未紐付けは打刻者を確定できないため 403)。
+    - トークン解決は判定 (`_resolve_patient`) と同ルール: 未知 = 404 /
+      失効 (ローテ済) = 410。visit 文脈が無いので 410 の案内は氏名を出さない。
+    - 候補は当日 (JST)・未削除・取消以外・**自分に可視** (primary/secondary/
+      mentor/assignments + 新人同行) のみ。担当外患者のトークンは 200 + 空配列
+      とし、404 と区別させない (「その患者を担当しているか」の秘匿)。
+    """
+    if normalize_user_role(user.role) not in {"admin", "staff"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
+    staff_id = user.staff_id
+    if staff_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is not linked to a staff record",
+        )
+
+    patient = await resolve_qr_patient(db, token)
+
+    today_jst = datetime.now(UTC).astimezone(JST).date()
+    rows = (
+        await db.scalars(
+            select(Visit)
+            .where(
+                Visit.patient_id == patient.id,
+                Visit.visit_date == today_jst,
+                Visit.deleted_at.is_(None),
+                Visit.status != VISIT_STATUS_CANCELLED,
+                _staff_visibility_filter(staff_id),
+            )
+            .order_by(Visit.start_time)
+        )
+    ).all()
+    return {
+        "candidates": [
+            {
+                "visit_id": v.id,
+                "start_time": v.start_time,
+                "end_time": v.end_time,
+                "status": v.status,
+            }
+            for v in rows
+        ]
+    }
 
 
 @router.get("/{visit_id}", response_model=VisitRead, summary="Get visit by id")

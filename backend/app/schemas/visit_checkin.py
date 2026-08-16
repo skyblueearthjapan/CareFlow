@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -60,4 +60,30 @@ class CheckinRead(BaseModel):
     is_override: bool
 
 
-__all__ = ["CheckinCreate", "CheckinRead"]
+class QrResolveCandidate(BaseModel):
+    """GET /visits/resolve-qr/{token} の候補 1 件.
+
+    汎用カメラのディープリンクで「本日の自分の担当 visit」へ遷移するための最小
+    情報のみ。**患者名・住所は載せない** (担当 visit の存在自体は担当者が既に
+    知り得る情報だが、患者属性はここで増やさない)。
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    visit_id: UUID
+    start_time: time
+    end_time: time
+    status: str
+
+
+class QrResolveRead(BaseModel):
+    """resolve-qr レスポンス。
+
+    候補ゼロ (担当外患者のトークン含む) は 200 + 空配列 — 404 と区別させず
+    「その患者を担当しているか」を漏らさない (存在秘匿)。
+    """
+
+    candidates: list[QrResolveCandidate]
+
+
+__all__ = ["CheckinCreate", "CheckinRead", "QrResolveCandidate", "QrResolveRead"]

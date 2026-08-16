@@ -24,8 +24,14 @@ vi.mock('next-auth/react', () => ({
   useSession: vi.fn(),
 }));
 
+// useSearchParams: 既定は ?qr= 無し (通常フロー)。ディープリンク系テストは
+// searchParamsGet を差し替える。
+const searchParamsGet = vi.fn<(key: string) => string | null>(() => null);
+const routerReplace = vi.fn();
 vi.mock('next/navigation', () => ({
   useParams: () => ({ visitId: 'visit-1' }),
+  useSearchParams: () => ({ get: searchParamsGet }),
+  useRouter: () => ({ replace: routerReplace, push: vi.fn() }),
 }));
 
 // Stable QueryClient stub so the page's useQueryClient() works without a provider.
@@ -171,6 +177,10 @@ function mockGeolocation(mode: 'ok' | 'deny' = 'ok') {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks は implementation を消さないため、ディープリンク系テストで
+  // 差し替えた searchParamsGet を毎回「?qr= 無し」へ戻す (漏れると後続の
+  // スキャナ系テストが全部プレビュー直行になる)。
+  searchParamsGet.mockImplementation(() => null);
   window.localStorage.clear();
   mockGeolocation('ok');
 
@@ -243,6 +253,28 @@ describe('QR チェックイン モバイル — 到着→訪問中→退出フ�
 
     // 完了。
     expect(screen.getByText('訪問完了')).toBeInTheDocument();
+  });
+});
+
+describe('QR チェックイン モバイル — ディープリンク (?qr=) のスキャン省略', () => {
+  it('?qr= があれば到着はスキャナを出さずプレビューへ直行し、記録成功で消費する', async () => {
+    searchParamsGet.mockImplementation((key: string) => (key === 'qr' ? 'DEEPTOKEN1' : null));
+    render(<MobileVisitDetailPage />);
+
+    // 到着: スキャナは出ず、GPS 取得 → プレビューへ直行 (自動送信はしない)。
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    expect(screen.queryByTestId('qr-scanner')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    expect(checkInMutate).not.toHaveBeenCalled();
+
+    // 「到着を記録する」でディープリンクの token 付き単一 POST。
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(checkInMutate).toHaveBeenCalledTimes(1));
+    expect(checkInMutate.mock.calls[0][0]).toMatchObject({ qr_token: 'DEEPTOKEN1' });
+
+    // token は 1 記録で消費される — 退出は通常どおりスキャナが出る。
+    fireEvent.click(screen.getByText('QRで退出を記録'));
+    expect(screen.getByTestId('qr-scanner')).toBeInTheDocument();
   });
 });
 

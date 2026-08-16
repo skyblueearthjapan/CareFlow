@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
@@ -33,6 +33,7 @@ import {
   type PendingPayload,
 } from '@/lib/checkin-queue';
 import { haversineMeters } from '@/lib/geo';
+import { extractQrToken } from '@/lib/qr-token';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -310,8 +311,27 @@ async function postPending(
 }
 
 export default function MobileVisitDetailPage() {
+  // useSearchParams (?qr= ディープリンク) は Suspense 境界が必須
+  // (Next 15 の CSR bailout 対策 — qr-print ページと同パターン)。
+  return (
+    <Suspense
+      fallback={
+        <div className="space-y-3 p-4">
+          <Skeleton className="h-8 w-1/2" />
+          <Skeleton className="h-40 w-full" />
+        </div>
+      }
+    >
+      <MobileVisitDetailPageInner />
+    </Suspense>
+  );
+}
+
+function MobileVisitDetailPageInner() {
   const params = useParams<{ visitId: string }>();
   const visitId = params?.visitId ?? '';
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session } = useSession();
   const staffId = session?.user?.staffId ?? '';
   const accessToken = session?.accessToken ?? null;
@@ -347,6 +367,23 @@ export default function MobileVisitDetailPage() {
       );
     }
   }, [visitId, staffId]);
+
+  // ディープリンク (/q/{token} → ?qr=) 由来の QR トークン。存在する間は
+  // 「開始/完了」でスキャン工程を省略し GPS プレビューへ直行する。記録成功 /
+  // 無効判明 (404/409) で消費し、以後は通常のスキャンフローに戻す (退出時も
+  // 現地で QR を読み直させる = 現地証明を弱めない)。
+  const [deepLinkToken, setDeepLinkToken] = useState<string | null>(() => {
+    const raw = searchParams?.get('qr');
+    return raw ? extractQrToken(raw) : null;
+  });
+
+  const clearDeepLinkToken = useCallback(() => {
+    setDeepLinkToken(null);
+    // URL からも ?qr= を外し、リロード時に再度スキャン省略にならないようにする。
+    if (typeof window !== 'undefined' && window.location.search.includes('qr=')) {
+      router.replace(window.location.pathname, { scroll: false });
+    }
+  }, [router]);
 
   const [flow, setFlow] = useState<Flow>({ step: 'none' });
   // Reason drafts for the mismatch / no-show forms.
@@ -448,6 +485,13 @@ export default function MobileVisitDetailPage() {
       return;
     }
     setMismatchReason('');
+    if (deepLinkToken) {
+      // ディープリンク経由: トークンは URL から取得済みなのでスキャンを省略し、
+      // GPS 取得 → プレビュー確認へ直行する (自動送信はしない — 「記録する」は
+      // 必ず本人が押す)。トークンの真正性はサーバが検証する (別患者 = 409)。
+      void beginPreview(mode, deepLinkToken);
+      return;
+    }
     setFlow({ step: 'scanning', mode });
   }
 
@@ -536,6 +580,8 @@ export default function MobileVisitDetailPage() {
     try {
       const updated = await mutation.mutateAsync(payload);
       clearCheckin(staffId, visitId);
+      // ディープリンクのトークンは 1 記録で消費する (退出時は改めて現地で読む)。
+      if (qrToken && qrToken === deepLinkToken) clearDeepLinkToken();
       setLocalStatus(mode === 'arrival' ? 'checked_in' : 'checked_out');
       setFlow({ step: 'none' });
       // Reflect the server's authoritative verdict.
@@ -548,6 +594,13 @@ export default function MobileVisitDetailPage() {
       }
     } catch (err) {
       const apiStatus = err instanceof ApiError ? err.status : null;
+      // 無効と確定したディープリンク token は破棄し、次回は通常スキャンに戻す。
+      if (
+        (apiStatus === 404 || apiStatus === 409 || apiStatus === 410) &&
+        qrToken === deepLinkToken
+      ) {
+        clearDeepLinkToken();
+      }
       if (apiStatus === 404) {
         toast.error('このQRは無効です', {
           description: detailOf(err) ?? '患者マスタでQRを再発行してください',

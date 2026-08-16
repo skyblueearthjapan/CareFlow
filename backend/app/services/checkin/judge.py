@@ -99,24 +99,56 @@ def compute_match_status(
     return "mismatch"
 
 
-async def _resolve_patient(
-    db: AsyncSession, visit: Visit, qr_token: str | None
-) -> tuple[Patient, str]:
-    """QR トークンから患者を解決する。無し = manual で visit.patient を採用 (R1)."""
-    if not qr_token:
-        return visit.patient, "manual"
-    patient = await db.scalar(
+async def _lookup_active_patient_by_token(db: AsyncSession, qr_token: str) -> Patient | None:
+    """QR トークンに一致する active・未削除の患者を引く (無ければ None)."""
+    return await db.scalar(
         select(Patient).where(
             Patient.qr_token == qr_token,
             Patient.deleted_at.is_(None),
             Patient.status == "active",
         )
     )
+
+
+async def _lookup_revoked_token(db: AsyncSession, qr_token: str) -> RevokedQrToken | None:
+    """再発行で失効した旧トークンの履歴行を引く (無ければ None)."""
+    return await db.scalar(select(RevokedQrToken).where(RevokedQrToken.token == qr_token))
+
+
+async def resolve_qr_patient(db: AsyncSession, qr_token: str) -> Patient:
+    """QR トークン**単独** (visit 文脈なし) から患者を解決する。
+
+    汎用カメラのディープリンク (`GET /visits/resolve-qr/{token}`) 用。
+    `_resolve_patient` と同じルールだが、visit が無いため失効 QR (410) の案内は
+    患者名を出さない汎用文に固定する (情報露出の最小化)。
+    未知トークンは 404 (checkin API と同水準の存在情報として許容)。
+    """
+    patient = await _lookup_active_patient_by_token(db, qr_token)
+    if patient is not None:
+        return patient
+    if await _lookup_revoked_token(db, qr_token) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="このQRは更新されています。正しいQRをご利用ください",
+        )
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="QR token not found",
+    )
+
+
+async def _resolve_patient(
+    db: AsyncSession, visit: Visit, qr_token: str | None
+) -> tuple[Patient, str]:
+    """QR トークンから患者を解決する。無し = manual で visit.patient を採用 (R1)."""
+    if not qr_token:
+        return visit.patient, "manual"
+    patient = await _lookup_active_patient_by_token(db, qr_token)
     if patient is None:
         # 未知トークン: 再発行で失効した旧 QR (= ローテ済) なら 410 Gone を返し、
         # 旧ステッカーで打刻したスタッフに「QR が更新された」と気づかせる。
         # 失効履歴にも無い完全な未知トークンは従来どおり 404。
-        revoked = await db.scalar(select(RevokedQrToken).where(RevokedQrToken.token == qr_token))
+        revoked = await _lookup_revoked_token(db, qr_token)
         if revoked is not None:
             # 氏名スコープ: 旧トークンが「この visit の患者」のものなら氏名入りで
             # 案内する。担当外患者の旧トークン (= 別患者のステッカー誤読) では
