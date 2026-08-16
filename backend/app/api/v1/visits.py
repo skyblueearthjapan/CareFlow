@@ -288,20 +288,27 @@ def _restrict_to_qr_capability(data: dict) -> dict:
 
     「QR 所持 = 現地に居る」で正当化できるのは **その訪問を遂行するのに要る情報**
     まで。resolve v2 (§4-1) が既に開示している範囲 (患者氏名 / 時間帯 / status /
-    予定担当名) と、現地判定に要る住所・座標・性別・自分の打刻 (latest_checkin) は
-    残し、事業所の業務情報は落とす:
+    予定担当名) と、現地判定に要る住所・座標・性別は残し、事業所の業務情報は落とす:
 
     * ``note`` (申し送り・業務メモ) / ``kaipoke_id`` (外部システムの識別子)
     * ``staff_assignments`` (誰が組まれているかの一覧) / ``accompaniment`` (同行者名)
+    * ``latest_checkin.reason`` — ``latest_checkin`` は「この visit の最新打刻」で
+      あって**自分の打刻とは限らない**。担当スタッフが書いた場所違い / 未訪問の
+      理由 (自由記述) は業務メモと同質なので落とす。退出導線の判断に要る構造情報
+      (``kind`` / ``scanned_at`` / ``match_status`` 等) は残す。
 
     担当者本人の GET (通常の可視性で通った場合) は従来どおり全量を返す。
     """
+    latest_checkin = data.get("latest_checkin")
     return {
         **data,
         "note": None,
         "kaipoke_id": None,
         "staff_assignments": [],
         "accompaniment": None,
+        "latest_checkin": (
+            {**latest_checkin, "reason": None} if latest_checkin is not None else None
+        ),
     }
 
 
@@ -527,10 +534,16 @@ async def get_visit(
     詳細画面を打刻経路と同じ認可で一本化する)。トークン無しの担当外は従来どおり
     404 (存在秘匿)。
 
+    **GET は失敗も 404 に丸める**: 通常の可視性で見えない visit に対しては、
+    トークンが別患者 (409) / 失効 (410) でも 404 を返す。さもないと担当外が
+    任意の visit_id にトークンを添えるだけで「その ID の visit は実在する」を
+    引き出せてしまい、存在秘匿 (決定#1) が崩れる。打刻 (checkin / checkout) は
+    現地で読んだ QR の誤りをスタッフに伝える必要があるため 409 / 410 のまま。
+
     **capability 経由 (担当外) のレスポンスは絞り込む**: 現地に居る前提で正当な
-    範囲 (患者氏名 / 住所 / 座標 / 性別 / 時間帯 / status / 予定担当名 /
-    latest_checkin = resolve v2 で既に開示済みの範囲) は返すが、業務メモ
-    (``note``) / カイポケ ID / 担当者一覧 / 同行者名は落とす。
+    範囲 (患者氏名 / 住所 / 座標 / 性別 / 時間帯 / status / 予定担当名 = resolve v2
+    で既に開示済みの範囲) は返すが、業務メモ (``note``) / カイポケ ID /
+    担当者一覧 / 同行者名 / 打刻理由 (``latest_checkin.reason``) は落とす。
     """
     if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
@@ -569,8 +582,17 @@ async def get_visit(
                 db, visit_id=visit.id, course_id=visit.course_id, staff_id=user.staff_id
             )
         # QR capability (§4-2): 現地 QR を持っていれば担当外でも詳細を返す。
+        # 解決失敗 (別患者 409 / 失効 410) は **GET に限り 404 へ丸める**: 元々
+        # 見えない visit なので、エラーコードの差から存在を推測させない。
         if not visible:
-            visible = via_qr_capability = await _qr_capability_allows(db, visit, effective_qr_token)
+            try:
+                visible = via_qr_capability = await _qr_capability_allows(
+                    db, visit, effective_qr_token
+                )
+            except HTTPException as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Not found"
+                ) from exc
         if not visible:
             # Hide existence from non-assigned staff.
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -1146,6 +1168,41 @@ def _as_jst_time(dt: datetime) -> time:
     return dt.astimezone(JST).time().replace(second=0, microsecond=0)
 
 
+# device_time が当日 (JST) 外だったときの 422 文言。FE はこれをそのまま「破棄した
+# 理由」として表示できる (退避キューから消す判断がユーザーに伝わる文にする)。
+ADHOC_STALE_DEVICE_TIME_DETAIL = (
+    "打刻した日付が変わったため送信できません。管理者に連絡してください"
+)
+
+
+def _adhoc_visit_moment(device_time: datetime | None, now: datetime) -> datetime:
+    """予定外 visit の ``visit_date`` / ``start_time`` の基準時刻を決める。
+
+    圏外で退避された打刻はネットワーク復帰まで送信されない。サーバ受信時刻を
+    基準にすると数時間後の再送で訪問時刻がずれ、日を跨ぐと日付ごと誤るため、
+    端末が記録した ``device_time`` を基準に採る (``scanned_at`` は従来どおり
+    サーバ時刻 = 受信の事実を保つ)。
+
+    * 未来の ``device_time`` は**無視**してサーバ時刻を使う (端末の時計ズレ対策。
+      進んだ時計をそのまま採ると未来時刻の visit が生える)。
+    * 当日 (JST) 外の ``device_time`` は 422。visit は ``visit_date`` 1 日で完結
+      する行で、判定 (``_guard_visit``) も当日のみ許すため、日跨ぎの再送は
+      サーバ時刻に丸めると別日の訪問を今日の実績として記録してしまう。
+    * ``device_time`` 無しは従来どおりサーバ時刻。
+    """
+    if device_time is None:
+        return now
+    dt = device_time if device_time.tzinfo is not None else device_time.replace(tzinfo=UTC)
+    if dt > now:
+        return now
+    if dt.astimezone(JST).date() != now.astimezone(JST).date():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=ADHOC_STALE_DEVICE_TIME_DETAIL,
+        )
+    return dt
+
+
 def _weekly_pattern_service_minutes(patient: Patient) -> int | None:
     """``weekly_pattern`` (サマリ形式 → entries) から基本訪問時間 (分) を取る."""
     pattern = patient.weekly_pattern
@@ -1201,6 +1258,10 @@ async def adhoc_checkin(
     - ``qr_token`` **必須** (無ければ 422)。患者特定に QR が構造上必要であり、
       担当外の記録は QR 所持を認可の鍵とする (決定#1 / #6)。未知 = 404 /
       失効 = 410 は resolve と同じ意味論。
+    - **打刻時刻の基準**: ``device_time`` (端末時刻) があり当日 (JST) かつ未来で
+      なければそれを ``visit_date`` / ``start_time`` の基準に採る (圏外退避 →
+      復帰後の再送で訪問時刻がずれないように)。当日外は 422 / 未来は無視して
+      サーバ時刻。``scanned_at`` は常にサーバ時刻 (``_adhoc_visit_moment``)。
     - 生成値: ``visit_date`` = 当日 (JST) / ``start_time`` = 打刻時刻 /
       ``end_time`` = 開始 + 患者の基本訪問時間 (無ければ 60 分・**退出打刻で実時刻へ
       更新**) / ``course_id`` = NULL / ``primary_staff_id`` = 打刻スタッフ /
@@ -1223,7 +1284,10 @@ async def adhoc_checkin(
     patient = await resolve_qr_patient(db, payload.qr_token)
 
     now = datetime.now(UTC)
-    today_jst = now.astimezone(JST).date()
+    # オフライン退避の再送で訪問時刻がずれないよう、端末時刻を基準に採る
+    # (当日外は 422 / 未来は無視・``_adhoc_visit_moment``)。
+    moment = _adhoc_visit_moment(payload.device_time, now)
+    today_jst = moment.astimezone(JST).date()
 
     # 同時 POST の直列化 (二重生成ガードの前段)。lock は commit / rollback で
     # 自動解放される。取得できない = 同じ 3 つ組の打刻が処理中なので、増殖を
@@ -1250,7 +1314,7 @@ async def adhoc_checkin(
         .limit(1)
     )
     if visit is None:
-        start_time = _as_jst_time(now)
+        start_time = _as_jst_time(moment)
         start_dt = datetime.combine(today_jst, start_time)
         end_dt = start_dt + timedelta(minutes=await _patient_service_minutes(db, patient))
         # 日跨ぎは当日内に収める (visit は visit_date 1 日で完結する行のため)。
