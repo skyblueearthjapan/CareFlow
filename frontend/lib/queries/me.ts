@@ -98,6 +98,15 @@ export interface MyVisit {
    * 「同行」バッジを出す。BE `_serialize_visit` が非破壊追加 (旧デプロイは undefined)。
    */
   accompaniment?: { staff_id: string; staff_name: string | null } | null;
+  /**
+   * `visit_staff_assignments` 経由の割当スタッフ全員 (§4.5)。
+   *
+   * primary/secondary/mentor に載らず**この一覧だけで担当**しているスタッフが居る
+   * ため、担当判定 (代行モード) に必要。BE `_serialize_visit` が常に返す (非破壊
+   * 追加・旧デプロイは undefined)。担当外の QR capability GET では空配列に落として
+   * 返されるので、真の担当外がこれで担当と誤判定されることはない。
+   */
+  staff_assignments?: { visit_id: string; staff_id: string; assigned_at: string }[] | null;
 }
 
 const ME_KEY = ['me'] as const;

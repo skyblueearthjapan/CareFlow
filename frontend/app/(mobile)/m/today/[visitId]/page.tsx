@@ -330,11 +330,16 @@ function MobileVisitDetailPageInner() {
    *     手動フォールバック (QRなしで記録) は出さない。
    *   - 未訪問 (no-show) は担当スタッフ専用なので出さない (設計 §2)。
    *
-   * **前提に `readToken` を置く**のが要点。担当判定に使える VisitRead の欄は
-   * primary/secondary/mentor/同行 だけで、`visit_staff_assignments` だけで担当して
-   * いるスタッフは「担当外」に見えてしまう。QR 経由 (`?qr=`) でない通常導線まで
-   * この判定に晒すと、その人の no-show ボタンと手動フォールバックが消える回帰に
-   * なる。代行モードは `/q` から来たときだけに限定し、構造的に塞ぐ。
+   * **前提に `readToken` を置く**のが要点。QR 経由 (`?qr=`) でない通常導線まで
+   * この判定に晒すと、担当欄の取りこぼしがそのまま「no-show ボタンと手動
+   * フォールバックが消える」回帰になる。代行モードは `/q` から来たときだけに
+   * 限定し、構造的に塞ぐ。
+   *
+   * 担当欄は primary/secondary/mentor/同行 に加えて `staff_assignments`
+   * (visit_staff_assignments) も見る (最終レビュー M-4)。この一覧だけで担当して
+   * いるスタッフが `/q` 経由で開くと誤って代行扱いになっていた。担当外の QR
+   * capability GET では BE がこの一覧を空配列に落とすため、真の担当外の判定には
+   * 影響しない。
    */
   const substituteMode =
     !!readToken &&
@@ -343,7 +348,8 @@ function MobileVisitDetailPageInner() {
     visit.primary_staff_id !== staffId &&
     visit.secondary_staff_id !== staffId &&
     visit.mentor_staff_id !== staffId &&
-    visit.accompaniment?.staff_id !== staffId;
+    visit.accompaniment?.staff_id !== staffId &&
+    !visit.staff_assignments?.some((a) => a.staff_id === staffId);
 
   useEffect(() => {
     if (!effectiveCheckedIn || effectiveCompleted) return;

@@ -96,6 +96,83 @@ describe('flushCheckinQueue — 送信先ルーティング', () => {
   });
 });
 
+/**
+ * M-1: BE ロールバック時の 404/405 で予定外訪問の記録を落とさない。
+ *
+ * `/visits/adhoc-checkin` は新設ルートなので、旧 BE では 404 (ルート不在) /
+ * 405 (メソッド不許可) が返る。これを確定回答として破棄すると、オフライン退避した
+ * 訪問記録が永久に消える。QR トークン起因の 404 だけは従来どおり破棄する。
+ */
+describe('flushCheckinQueue — 予定外の 404/405 はルート不在として保持する', () => {
+  function enqueueAdhoc(): void {
+    enqueuePending(STAFF, {
+      visit_id: '',
+      kind: 'adhoc_arrival',
+      payload: { at: '2026-08-16T01:00:00Z', qr_token: 'TOK' },
+    });
+  }
+
+  it('ルート不在の 404 (detail なし) はキューに残る', async () => {
+    enqueueAdhoc();
+    asMock(fetcher).mockRejectedValueOnce(new ApiError('not found', 404, null));
+    const { remaining, dropped } = await flushCheckinQueue(STAFF, 'a', 'r');
+    expect(remaining).toBe(1);
+    expect(dropped).toHaveLength(0);
+  });
+
+  it('ルート不一致の 404 (FastAPI 既定 detail) もキューに残る', async () => {
+    enqueueAdhoc();
+    asMock(fetcher).mockRejectedValueOnce(new ApiError('not found', 404, { detail: 'Not Found' }));
+    const { remaining, dropped } = await flushCheckinQueue(STAFF, 'a', 'r');
+    expect(remaining).toBe(1);
+    expect(dropped).toHaveLength(0);
+  });
+
+  it('トークン起因の 404 は従来どおり理由付きで破棄する', async () => {
+    enqueueAdhoc();
+    asMock(fetcher).mockRejectedValueOnce(
+      new ApiError('not found', 404, { detail: 'QR token not found' }),
+    );
+    const { remaining, dropped } = await flushCheckinQueue(STAFF, 'a', 'r');
+    expect(remaining).toBe(0);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]?.reason).toBe('QR token not found');
+  });
+
+  it('405 (メソッド不許可) は無条件でキューに残る', async () => {
+    enqueueAdhoc();
+    asMock(fetcher).mockRejectedValueOnce(
+      new ApiError('method not allowed', 405, { detail: 'Method Not Allowed' }),
+    );
+    const { remaining, dropped } = await flushCheckinQueue(STAFF, 'a', 'r');
+    expect(remaining).toBe(1);
+    expect(dropped).toHaveLength(0);
+  });
+
+  it('422 は破棄し、BE の detail をそのまま破棄理由として返す', async () => {
+    enqueueAdhoc();
+    asMock(fetcher).mockRejectedValueOnce(
+      new ApiError('unprocessable', 422, { detail: '日付が変わったため送信できません' }),
+    );
+    const { remaining, dropped } = await flushCheckinQueue(STAFF, 'a', 'r');
+    expect(remaining).toBe(0);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]?.reason).toBe('日付が変わったため送信できません');
+  });
+
+  it('通常の打刻 (arrival) の 404 は従来どおり破棄する (旧 BE にもルートがある)', async () => {
+    enqueuePending(STAFF, {
+      visit_id: 'visit-1',
+      kind: 'arrival',
+      payload: { at: '2026-08-16T01:00:00Z', qr_token: 'TOK' },
+    });
+    asMock(fetcher).mockRejectedValueOnce(new ApiError('not found', 404, null));
+    const { remaining, dropped } = await flushCheckinQueue(STAFF, 'a', 'r');
+    expect(remaining).toBe(0);
+    expect(dropped[0]?.reason).toBe('無効なQRのため');
+  });
+});
+
 describe('flushCheckinQueue — 並行実行の直列化', () => {
   it('同一スタッフの同時 flush は同じ entry を二重 POST しない', async () => {
     enqueuePending(STAFF, {

@@ -327,6 +327,47 @@ describe('QR チェックイン モバイル — 代行 (担当外) モード', 
     expect(screen.getByText('__manual__')).toBeInTheDocument();
   });
 
+  it('assignments だけで担当していれば ?qr= 付きでも代行モードにしない (M-4)', () => {
+    // primary/secondary/mentor/同行 には出ないが visit_staff_assignments で担当して
+    // いるスタッフ。/q 経由で開いても本人なので no-show / 手動フォールバックは残す。
+    searchParamsGet.mockImplementation((key: string) => (key === 'qr' ? 'DEEPTOKEN1' : null));
+    asMock(useMyVisit).mockReturnValue({
+      data: {
+        ...makeVisit(),
+        primary_staff_id: 'staff-9',
+        staff_name: '田中 先輩',
+        staff_assignments: [
+          { visit_id: 'visit-1', staff_id: 'staff-1', assigned_at: '2026-06-30T00:00:00Z' },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    render(<MobileVisitDetailPage />);
+    expect(screen.queryByTestId('mobile-detail-substitute')).not.toBeInTheDocument();
+    expect(screen.getByText('訪問できなかった（理由を記録）')).toBeInTheDocument();
+  });
+
+  it('真の担当外 (assignments 空配列) は ?qr= 付きで代行モードのまま (M-4)', () => {
+    // 担当外の QR capability GET では BE が staff_assignments を空配列に落とす。
+    searchParamsGet.mockImplementation((key: string) => (key === 'qr' ? 'DEEPTOKEN1' : null));
+    asMock(useMyVisit).mockReturnValue({
+      data: {
+        ...makeVisit(),
+        primary_staff_id: 'staff-9',
+        staff_name: '田中 先輩',
+        staff_assignments: [],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByTestId('mobile-detail-substitute')).toBeInTheDocument();
+    expect(screen.queryByText('訪問できなかった（理由を記録）')).not.toBeInTheDocument();
+  });
+
   it('打刻 POST に qr_token を必ず載せ、退出は手動フォールバック無しの再スキャン', async () => {
     setSubstituteVisit();
     render(<MobileVisitDetailPage />);

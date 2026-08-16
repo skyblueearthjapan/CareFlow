@@ -22,7 +22,6 @@ import { genderPalette } from '@/lib/scheduling/timeline';
 import {
   MISSING_BAR_BG,
   STATUS_COLOR,
-  UNPLANNED_ROW_LABEL,
   TL_END_MIN,
   TL_START_MIN,
   assignVisitLanes,
@@ -49,11 +48,15 @@ export interface MonitorPatientMeta {
  * course_label はどの行も同じ・staff_id は行内の担当が 1 名のときだけ入る。そのまま
  * だと (a) 複数拠点の予定外行同士 (b) 予定外行と同じスタッフのコース無し行 でキーが
  * 衝突し、React キー重複・2 行同時選択・地図の誤対象を招くため、拠点でキーを分ける。
+ *
+ * 予定外行の判定は配色・印と同じ {@link isUnplannedRow} (visit のフラグ) に揃える。
+ * 以前はここだけラベル文字列と比較しており、文言を変えるとキーだけが別系統で
+ * 変わる (= 行キーと表示の判定が食い違う) 危険があった。
  */
 export function monitorRowKey(
-  row: Pick<MonitorStaffRow, 'course_id' | 'staff_id' | 'course_label' | 'office_id'>,
+  row: Pick<MonitorStaffRow, 'course_id' | 'staff_id' | 'course_label' | 'office_id' | 'visits'>,
 ): string {
-  if (row.course_label === UNPLANNED_ROW_LABEL) return `unplanned-${row.office_id ?? 'none'}`;
+  if (isUnplannedRow(row)) return `unplanned-${row.office_id ?? 'none'}`;
   return row.course_id ?? row.staff_id ?? `unassigned-${row.course_label ?? ''}`;
 }
 
