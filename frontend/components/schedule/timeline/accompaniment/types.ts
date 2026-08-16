@@ -1,5 +1,6 @@
 /**
- * 新人同行モード — タイムライン盤 (週/日) と親 (CourseDayTablePanel) の間の契約。
+ * 同行モード — タイムライン盤 (週/日) と親 (CourseDayTablePanel) の間の契約。
+ * 同行者は新人に限らない (general-accompaniment-design.md §4)。
  *
  * 盤は「表示専用」を保つため、同行モードのロジック (選択状態・重複判定・PUT) は
  * すべて親側の `useAccompanimentController` が持ち、盤にはこの binding を 1 つ渡すだけ
@@ -51,11 +52,20 @@ export interface AccompanimentBinding {
   /** 訪問個別の選択をトグル (選択済みコース内なら no-op)。 */
   toggleVisit: (visitId: string) => void;
 
+  // --- 入力補助 (二択フィルタ・general-accompaniment-design.md 確定#2) --------
+  /** コース(曜日)単位のクリックを受け付けるか。false=ヘッダは選択不可。 */
+  isCourseArmed: boolean;
+  /** 患者(訪問)単位のクリックを受け付けるか。false=カード/行は選択不可。 */
+  isVisitArmed: boolean;
+
   // --- 常時表示 (inactive・§7.2) --------------------------------------------
-  /** 個別リンク先訪問に出す同行新人名 (姓)。null=なし。 */
-  visitBadgeName: (visitId: string) => string | null;
-  /** コース丸ごと同行の列ヘッダに出す同行新人名。null=なし。 */
-  courseBadgeName: (courseId: string | null) => string | null;
+  /**
+   * 個別リンク先訪問に出す同行スタッフ名。1 訪問に複数名が付きうる
+   * (確定#5) ため配列。空配列=なし。
+   */
+  visitBadgeName: (visitId: string) => string[];
+  /** コース丸ごと同行の列ヘッダに出す同行スタッフ名 (複数可)。空配列=なし。 */
+  courseBadgeName: (courseId: string | null) => string[];
 
   // --- 週盤用リゾルバ (週盤は templateId+weekday しか持たない) ----------------
   /** (course_template_id, weekday) → その週のコースインスタンス id。未生成なら null。 */

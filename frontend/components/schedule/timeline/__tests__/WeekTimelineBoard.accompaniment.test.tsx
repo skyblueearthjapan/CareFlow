@@ -34,14 +34,16 @@ function makeBinding(over: Partial<AccompanimentBinding> = {}): AccompanimentBin
     isVisitOverlapping: () => false,
     toggleCourse: vi.fn(),
     toggleVisit: vi.fn(),
-    visitBadgeName: () => null,
-    courseBadgeName: () => null,
+    isCourseArmed: true,
+    isVisitArmed: true,
+    visitBadgeName: () => [],
+    courseBadgeName: () => [],
     resolveCourseId: (t, wd) => `${t}:${wd}`,
     ...over,
   };
 }
 
-describe('WeekTimelineBoard 新人同行モード', () => {
+describe('WeekTimelineBoard 同行モード', () => {
   it('モード中: 曜日コース列ヘッダのクリックで toggleCourse(courseId, templateId, weekday)', () => {
     const toggleCourse = vi.fn();
     render(
@@ -110,18 +112,67 @@ describe('WeekTimelineBoard 新人同行モード', () => {
         visits={[wv({ id: 'a', weekday: 0 })]}
         accompaniment={makeBinding({
           active: false,
-          visitBadgeName: (id) => (id === 'a' ? '髙梨' : null),
-          courseBadgeName: (cid) => (cid === 't1:0' ? '川名' : null),
+          visitBadgeName: (id) => (id === 'a' ? ['髙梨'] : []),
+          courseBadgeName: (cid) => (cid === 't1:0' ? ['川名'] : []),
         })}
       />,
     );
     expect(screen.getByTestId('wtl-accompaniment-badge-a').textContent).toContain('髙梨');
     // コース同行はスタッフ名の右隣に 👥短縮チップで併記 (別行に積まない=高さ不変・PO要望)。
-    // 「同行: 川名（新人）」の全文は title 属性に保持する。
+    // 「同行: 川名」の全文は title 属性に保持する。
     const courseAcc = screen.getByTestId('wtl-course-accompaniment-t1-0');
     expect(courseAcc.textContent).toContain('川名');
-    expect(courseAcc.getAttribute('title')).toBe('同行: 川名（新人）');
+    expect(courseAcc.getAttribute('title')).toBe('同行: 川名');
     // モード外では選択ヘッダ (button) は出ない。
     expect(screen.queryByTestId('wtl-course-header-t1-0')).toBeNull();
+  });
+
+  it('モード外: 同行が複数名なら「・」連結で全員を出す (確定#5)', () => {
+    render(
+      <WeekTimelineBoard
+        options={OPTIONS}
+        visits={[wv({ id: 'a', weekday: 0 })]}
+        accompaniment={makeBinding({
+          active: false,
+          visitBadgeName: (id) => (id === 'a' ? ['髙梨', '川名'] : []),
+          courseBadgeName: (cid) => (cid === 't1:0' ? ['熊澤', '青柳'] : []),
+        })}
+      />,
+    );
+    const badge = screen.getByTestId('wtl-accompaniment-badge-a');
+    expect(badge.textContent).toContain('髙梨・川名');
+    expect(badge.getAttribute('title')).toBe('同行: 髙梨・川名');
+    expect(screen.getByTestId('wtl-course-accompaniment-t1-0').getAttribute('title')).toBe(
+      '同行: 熊澤・青柳',
+    );
+  });
+
+  it('患者単位に絞っている間はコース列ヘッダを選択できない (確定#2)', () => {
+    const toggleCourse = vi.fn();
+    render(
+      <WeekTimelineBoard
+        options={OPTIONS}
+        visits={[wv({ id: 'a', weekday: 0 })]}
+        accompaniment={makeBinding({ isCourseArmed: false, toggleCourse })}
+      />,
+    );
+    const header = screen.getByTestId('wtl-course-header-t1-0');
+    // ヘッダは残るがボタン化されず、クリックしてもトグルしない。
+    expect(header.getAttribute('role')).toBeNull();
+    header.click();
+    expect(toggleCourse).not.toHaveBeenCalled();
+  });
+
+  it('コース単位に絞っている間は患者カードのクリックで toggleVisit しない (確定#2)', () => {
+    const toggleVisit = vi.fn();
+    render(
+      <WeekTimelineBoard
+        options={OPTIONS}
+        visits={[wv({ id: 'a', weekday: 0 })]}
+        accompaniment={makeBinding({ isVisitArmed: false, toggleVisit })}
+      />,
+    );
+    screen.getByTestId('wtl-visit-a').click();
+    expect(toggleVisit).not.toHaveBeenCalled();
   });
 });

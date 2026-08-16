@@ -538,8 +538,11 @@ function VisitCard({
   const accSelected = accActive && accompaniment!.isVisitSelected(visit.id);
   const accInCourse = accActive && accompaniment!.isVisitInSelectedCourse(visit.id);
   const accOverlap = accActive && accompaniment!.isVisitOverlapping(visit.id);
+  // 同行者は複数名ありうる (確定#5) ので配列を「・」で連結して 1 バッジに出す。
   const accBadge =
-    accompaniment && !accompaniment.active ? accompaniment.visitBadgeName(visit.id) : null;
+    accompaniment && !accompaniment.active
+      ? accompaniment.visitBadgeName(visit.id).join('・') || null
+      : null;
   const startMin = parseHM(visit.start_time);
   const endMin = parseHM(visit.end_time);
   if (startMin === null || endMin === null || endMin <= startMin) return null;
@@ -578,8 +581,9 @@ function VisitCard({
   // 週のピン (青ピン) = フラグ or 旧方式 manual_week の和集合 (PO 決定 2026-08-09)。
   const isWeekPinned = visit.week_pinned === true || isWeekOnly;
   // 同行モード中はカードクリック=選択トグル (選択済みコース内は個別不可)。
+  // 「コース(曜日)単位」に絞っている間は患者カードを受け付けない (確定#2)。
   const accClick = accActive
-    ? accInCourse
+    ? accInCourse || !accompaniment!.isVisitArmed
       ? undefined
       : () => accompaniment!.toggleVisit(visit.id)
     : onClick;
@@ -612,22 +616,24 @@ function VisitCard({
       data-tl-drag={drag ? (drag.disabled ? 'disabled' : 'enabled') : undefined}
       // 小さいカードは行が出ないため、相方情報はツールチップで必ず補完する。
       title={
-        accInCourse
-          ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
-          : [
-              drag?.disabled
-                ? visit.week_pinned
-                  ? '今週固定（青ピン）中のため動かせません（青ピンを解除してから移動）'
-                  : visit.visit_group_id
-                    ? '2名体制（ペア配置）のため個別移動できません'
-                    : visit.status === 'cancelled'
-                      ? 'キャンセル済みのため移動できません'
-                      : visit.patient_address
-                : visit.patient_address,
-              partner.tooltip,
-            ]
-              .filter(Boolean)
-              .join(' / ') || undefined
+        accActive && !accompaniment!.isVisitArmed
+          ? '患者ごとに同行を付けるには、下部バーの対象を「患者単位」に切り替えてください'
+          : accInCourse
+            ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
+            : [
+                drag?.disabled
+                  ? visit.week_pinned
+                    ? '今週固定（青ピン）中のため動かせません（青ピンを解除してから移動）'
+                    : visit.visit_group_id
+                      ? '2名体制（ペア配置）のため個別移動できません'
+                      : visit.status === 'cancelled'
+                        ? 'キャンセル済みのため移動できません'
+                        : visit.patient_address
+                  : visit.patient_address,
+                partner.tooltip,
+              ]
+                .filter(Boolean)
+                .join(' / ') || undefined
       }
       className={cn(
         // group: × ボタンを hover / focus-within で出すため (G2)。
@@ -635,7 +641,8 @@ function VisitCard({
         drag && !drag.disabled && 'cursor-grab touch-none active:cursor-grabbing',
         drag?.isDragging && 'opacity-40',
         shake && 'tl-shake',
-        accActive && !accInCourse && 'cursor-pointer',
+        // armed でない対象は「押せそう」に見せない (確定#2)。
+        accActive && !accInCourse && accompaniment!.isVisitArmed && 'cursor-pointer',
         accOverlap && 'z-[4] ring-2 ring-error',
         accSelected && !accOverlap && 'z-[4] ring-2 ring-brand-primary',
       )}
@@ -1107,9 +1114,11 @@ function PairMemberRowView({
   const accInCourse = accActive && accompaniment!.isVisitInSelectedCourse(v.id);
   const accOverlap = accActive && accompaniment!.isVisitOverlapping(v.id);
   const accBadge =
-    accompaniment && !accompaniment.active ? accompaniment.visitBadgeName(v.id) : null;
+    accompaniment && !accompaniment.active
+      ? accompaniment.visitBadgeName(v.id).join('・') || null
+      : null;
   const onRowClick = accActive
-    ? accInCourse
+    ? accInCourse || !accompaniment!.isVisitArmed
       ? undefined
       : () => accompaniment!.toggleVisit(v.id)
     : onPatientClick
@@ -1128,16 +1137,19 @@ function PairMemberRowView({
       onClick={onRowClick}
       onKeyDown={cardKeyDownHandler(onRowClick)}
       title={
-        accInCourse
-          ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
-          : undefined
+        accActive && !accompaniment!.isVisitArmed
+          ? '患者ごとに同行を付けるには、下部バーの対象を「患者単位」に切り替えてください'
+          : accInCourse
+            ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
+            : undefined
       }
       className={cn(
         'group relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded-md border border-l-[3px] px-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
         showHandle && 'pl-4',
         onDeleteVisit && 'pr-4',
         drag?.isDragging && 'opacity-40',
-        accActive && !accInCourse && 'cursor-pointer',
+        // armed でない対象は「押せそう」に見せない (確定#2)。
+        accActive && !accInCourse && accompaniment!.isVisitArmed && 'cursor-pointer',
         accOverlap && 'ring-2 ring-error',
         accSelected && !accOverlap && 'ring-2 ring-brand-primary',
       )}
@@ -1834,12 +1846,16 @@ export function TimelineDayBoard({
           const full = col.capacity.filled >= col.capacity.max;
           // 同行モード: 列ヘッダ = その日のこのコース全体を選択トグル。
           const accCourseId = col.course?.id ?? null;
+          // 「患者単位」に絞っている間はコースヘッダを受け付けない (確定#2)。
           const headerSelectable =
-            accActive && !!accCourseId && typeof accompanimentWeekday === 'number';
+            accActive &&
+            !!accCourseId &&
+            typeof accompanimentWeekday === 'number' &&
+            accompaniment!.isCourseArmed;
           const headerSelected = accActive && accompaniment!.isCourseSelected(accCourseId);
           const courseBadge =
             accompaniment && !accompaniment.active
-              ? accompaniment.courseBadgeName(accCourseId)
+              ? accompaniment.courseBadgeName(accCourseId).join('・') || null
               : null;
           return (
             <div
@@ -1973,8 +1989,8 @@ export function TimelineDayBoard({
                     <span
                       className="inline-flex shrink-0 items-center rounded-full bg-info-bg px-1 text-[10px] font-bold text-info"
                       data-testid={`tl-course-accompaniment-${col.key}`}
-                      title={`同行: ${courseBadge}（新人）`}
-                      aria-label={`同行: ${courseBadge}（新人）`}
+                      title={`同行: ${courseBadge}`}
+                      aria-label={`同行: ${courseBadge}`}
                     >
                       👥
                     </span>

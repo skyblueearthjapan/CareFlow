@@ -16,8 +16,10 @@ function makeBinding(over: Partial<AccompanimentBinding> = {}): AccompanimentBin
     isVisitOverlapping: () => false,
     toggleCourse: vi.fn(),
     toggleVisit: vi.fn(),
-    visitBadgeName: () => null,
-    courseBadgeName: () => null,
+    isCourseArmed: true,
+    isVisitArmed: true,
+    visitBadgeName: () => [],
+    courseBadgeName: () => [],
     resolveCourseId: (t, wd) => `${t}:${wd}`,
     ...over,
   };
@@ -348,13 +350,13 @@ describe('TimelineDayList', () => {
             }),
           ]}
           accompaniment={makeBinding({
-            visitBadgeName: (id) => (id === 'vis-a' ? '髙梨' : null),
+            visitBadgeName: (id) => (id === 'vis-a' ? ['髙梨'] : []),
           })}
         />,
       );
       const chip = screen.getByTestId('tdl-accompaniment-a');
       expect(chip).toHaveTextContent('髙梨');
-      expect(chip.getAttribute('title')).toBe('同行: 髙梨（新人）');
+      expect(chip.getAttribute('title')).toBe('同行: 髙梨');
     });
 
     it('コース見出し: courseBadgeName があれば見出しに「👥新人名」チップ', () => {
@@ -370,13 +372,32 @@ describe('TimelineDayList', () => {
           ]}
           accompaniment={makeBinding({
             // resolveCourseId('tpl-A', 0) = 'tpl-A:0'.
-            courseBadgeName: (cid) => (cid === 'tpl-A:0' ? '川名' : null),
+            courseBadgeName: (cid) => (cid === 'tpl-A:0' ? ['川名'] : []),
           })}
         />,
       );
       const chip = screen.getByTestId('tdl-course-accompaniment-tpl-A:0');
       expect(chip).toHaveTextContent('川名');
-      expect(chip.getAttribute('title')).toBe('同行: 川名（新人）');
+      expect(chip.getAttribute('title')).toBe('同行: 川名');
+    });
+
+    it('複数名の同行は「・」連結で全員をチップに出す (確定#5)', () => {
+      render(
+        <TimelineDayList
+          courses={[
+            course({
+              key: 'tpl-A:0',
+              visits: [v({ key: 'a', visit_id: 'vis-a', patient_name: '青柳 あい' })],
+            }),
+          ]}
+          accompaniment={makeBinding({
+            visitBadgeName: (id) => (id === 'vis-a' ? ['髙梨', '川名'] : []),
+          })}
+        />,
+      );
+      const chip = screen.getByTestId('tdl-accompaniment-a');
+      expect(chip).toHaveTextContent('髙梨・川名');
+      expect(chip.getAttribute('title')).toBe('同行: 髙梨・川名');
     });
 
     it('accompaniment 未指定ならチップを出さない', () => {
@@ -409,8 +430,8 @@ describe('TimelineDayList', () => {
           ]}
           accompaniment={makeBinding({
             active: true,
-            visitBadgeName: () => '髙梨',
-            courseBadgeName: () => '川名',
+            visitBadgeName: () => ['髙梨'],
+            courseBadgeName: () => ['川名'],
           })}
         />,
       );

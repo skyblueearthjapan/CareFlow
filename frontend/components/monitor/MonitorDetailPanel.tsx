@@ -235,15 +235,19 @@ function VisitDetail({
           .join(' ／ ')}
       </div>
 
-      {/* 新人同行 (§7.3): 担当乖離とは別枠の情報表示。 */}
-      {visit.accompaniment_staff_name && (
+      {/* 同行 (§7.3): 担当乖離とは別枠の情報表示 (複数名対応・確定#5)。 */}
+      {(visit.accompaniment_staff_names?.length ?? 0) > 0 ||
+      visit.accompaniment_staff_name ? (
         <div
           className="mb-3 text-xs font-medium text-info"
           data-testid="monitor-detail-accompaniment"
         >
-          同行: {visit.accompaniment_staff_name}
+          同行:{' '}
+          {(visit.accompaniment_staff_names?.length ?? 0) > 0
+            ? visit.accompaniment_staff_names!.join('・')
+            : visit.accompaniment_staff_name}
         </div>
-      )}
+      ) : null}
 
       {/* 予定外訪問 (qr-open-checkin-design.md §6): 予定に無い実績。専用行と同じ配色。 */}
       {visit.is_unplanned && (

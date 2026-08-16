@@ -54,8 +54,10 @@ function makeBinding(over: Partial<AccompanimentBinding> = {}): AccompanimentBin
     isVisitOverlapping: () => false,
     toggleCourse: vi.fn(),
     toggleVisit: vi.fn(),
-    visitBadgeName: () => null,
-    courseBadgeName: () => null,
+    isCourseArmed: true,
+    isVisitArmed: true,
+    visitBadgeName: () => [],
+    courseBadgeName: () => [],
     resolveCourseId: (t, wd) => `${t}:${wd}`,
     ...over,
   };
@@ -621,7 +623,7 @@ describe('CourseWeekOverview (B-6)', () => {
           onJumpToDay={vi.fn()}
           staffCountFor={fullStaff}
           accompaniment={makeBinding({
-            visitBadgeName: (id) => (id === 'v-acc' ? '髙梨' : null),
+            visitBadgeName: (id) => (id === 'v-acc' ? ['髙梨'] : []),
           })}
         />,
       );
@@ -642,13 +644,30 @@ describe('CourseWeekOverview (B-6)', () => {
           staffCountFor={fullStaff}
           accompaniment={makeBinding({
             // resolveCourseId('tpl-A', 0) = 'tpl-A:0'.
-            courseBadgeName: (cid) => (cid === 'tpl-A:0' ? '川名' : null),
+            courseBadgeName: (cid) => (cid === 'tpl-A:0' ? ['川名'] : []),
           })}
         />,
       );
       const chip = screen.getByTestId('course-week-overview-course-accompaniment-tpl-A-0');
       expect(chip).toHaveTextContent('👥');
-      expect(chip.getAttribute('title')).toBe('同行: 川名（新人）');
+      expect(chip.getAttribute('title')).toBe('同行: 川名');
+    });
+
+    it('複数名の同行は title に「・」連結で全員を出す (確定#5)', () => {
+      render(
+        <CourseWeekOverview
+          templates={[tpl]}
+          officeNameById={new Map([['o1', '本店']])}
+          visits={visits}
+          onJumpToDay={vi.fn()}
+          staffCountFor={fullStaff}
+          accompaniment={makeBinding({
+            visitBadgeName: (id) => (id === 'v-acc' ? ['髙梨', '川名'] : []),
+          })}
+        />,
+      );
+      const dot = screen.getByTestId('course-week-overview-accompaniment-v-acc');
+      expect(dot.getAttribute('title')).toBe('同行: 髙梨・川名');
     });
 
     it('accompaniment 未指定なら 👥 を出さない (他利用箇所を壊さない)', () => {
@@ -662,9 +681,7 @@ describe('CourseWeekOverview (B-6)', () => {
         />,
       );
       expect(screen.queryByTestId('course-week-overview-accompaniment-v-acc')).toBeNull();
-      expect(
-        screen.queryByTestId('course-week-overview-course-accompaniment-tpl-A-0'),
-      ).toBeNull();
+      expect(screen.queryByTestId('course-week-overview-course-accompaniment-tpl-A-0')).toBeNull();
     });
 
     it('同行モード中 (active) はリストにバッジを出さない (選択UIはタイムライン専用)', () => {
@@ -677,15 +694,13 @@ describe('CourseWeekOverview (B-6)', () => {
           staffCountFor={fullStaff}
           accompaniment={makeBinding({
             active: true,
-            visitBadgeName: () => '髙梨',
-            courseBadgeName: () => '川名',
+            visitBadgeName: () => ['髙梨'],
+            courseBadgeName: () => ['川名'],
           })}
         />,
       );
       expect(screen.queryByTestId('course-week-overview-accompaniment-v-acc')).toBeNull();
-      expect(
-        screen.queryByTestId('course-week-overview-course-accompaniment-tpl-A-0'),
-      ).toBeNull();
+      expect(screen.queryByTestId('course-week-overview-course-accompaniment-tpl-A-0')).toBeNull();
     });
   });
 });

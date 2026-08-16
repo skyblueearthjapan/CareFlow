@@ -423,7 +423,9 @@ export function CourseWeekOverview({
                   // 新人同行 (§7.2): このセル (template×weekday) がコース丸ごと同行の
                   // 対象なら、上部に極小 👥 を出す (名前は title のみ・高さ/幅は増やさない)。
                   const courseAccName = accInactive
-                    ? accompaniment!.courseBadgeName(accompaniment!.resolveCourseId(tpl.id, wd))
+                    ? accompaniment!
+                        .courseBadgeName(accompaniment!.resolveCourseId(tpl.id, wd))
+                        .join('・') || null
                     : null;
                   // PO 2026-07-09: cap=0 (スタッフ不足) でも PFV があるか visit が実在する
                   // セルは「休」で隠さず内容を表示する (既存訪問を管理画面から不可視に
@@ -662,8 +664,8 @@ export function CourseWeekOverview({
                               <span
                                 className="ml-1 text-info"
                                 data-testid={`course-week-overview-course-accompaniment-${tpl.id}-${wd}`}
-                                title={`同行: ${courseAccName}（新人）`}
-                                aria-label={`同行: ${courseAccName}（新人）`}
+                                title={`同行: ${courseAccName}`}
+                                aria-label={`同行: ${courseAccName}`}
                               >
                                 👥{courseAccName}
                               </span>
@@ -841,11 +843,12 @@ export function CourseWeekOverview({
                                           {distByVisitId.get(item.id)!.toFixed(1)}km
                                         </span>
                                       ) : null}
-                                      {/* 新人同行 (§7.2): 患者個別リンク = 行右端の極小 👥。 */}
+                                      {/* 同行 (§7.2): 患者個別リンク = 行右端の極小 👥。 */}
                                       <AccompanimentDot
                                         name={
                                           accInactive
-                                            ? accompaniment!.visitBadgeName(item.id)
+                                            ? accompaniment!.visitBadgeName(item.id).join('・') ||
+                                              null
                                             : null
                                         }
                                         testId={`course-week-overview-accompaniment-${item.id}`}
@@ -951,11 +954,13 @@ export function CourseWeekOverview({
                                                 {distByVisitId.get(v.id)!.toFixed(1)}km
                                               </span>
                                             ) : null}
-                                            {/* 新人同行 (§7.2): pair cluster 内も行右端の極小 👥。 */}
+                                            {/* 同行 (§7.2): pair cluster 内も行右端の極小 👥。 */}
                                             <AccompanimentDot
                                               name={
                                                 accInactive
-                                                  ? accompaniment!.visitBadgeName(v.id)
+                                                  ? accompaniment!
+                                                      .visitBadgeName(v.id)
+                                                      .join('・') || null
                                                   : null
                                               }
                                               testId={`course-week-overview-accompaniment-${v.id}`}

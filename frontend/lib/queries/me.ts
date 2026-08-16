@@ -93,11 +93,19 @@ export interface MyVisit {
    */
   latest_checkin?: LatestCheckin | null;
   /**
-   * 新人同行 (§7.4): この訪問に同行する新人スタッフ。null = 同行なし。
-   * 先輩側は「同行: ◯◯」、新人本人 (accompaniment.staff_id === 自分の staff_id) は
-   * 「同行」バッジを出す。BE `_serialize_visit` が非破壊追加 (旧デプロイは undefined)。
+   * 同行 (§7.4): この訪問に同行するスタッフ (単数・後方互換)。null = 同行なし。
+   * 複数名いる場合は `accompaniments` の先頭 1 名。新規実装は `accompaniments` を
+   * 優先し、これは旧デプロイ向けのフォールバックに使う。
    */
   accompaniment?: { staff_id: string; staff_name: string | null } | null;
+  /**
+   * 同行スタッフ全員 (一般化・確定#5)。担当側は「同行: ◯◯・◯◯」、同行者本人
+   * (自分の staff_id を含む) は「同行」バッジを出す。BE `_serialize_visit` が
+   * 非破壊追加 (旧デプロイは undefined → accompaniment 単数へフォールバック)。
+   */
+  accompaniments?:
+    | { staff_id: string; staff_name: string | null; kind?: 'trainee' | 'support' | null }[]
+    | null;
   /**
    * `visit_staff_assignments` 経由の割当スタッフ全員 (§4.5)。
    *

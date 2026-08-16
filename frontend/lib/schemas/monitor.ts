@@ -28,9 +28,11 @@ export const monitorVisitSchema = z.object({
   staff_name: z.string().nullable().optional(),
   // 2 名体制のグルーピングキー。同一値の visit が 2 行 (各スタッフ 1 行)。通常は null。
   visit_group_id: z.string().uuid().nullable().optional(),
-  // 新人同行 (§7.3): この訪問に同行する新人スタッフ名。null=同行なし。
+  // 同行 (§7.3): この訪問に同行するスタッフ名 (単数・後方互換)。null=同行なし。
   // 担当乖離 ⚠ (course_staff_name ≠ staff_name) とは別ラベル「＋◯◯（同行）」で表示する。
   accompaniment_staff_name: z.string().nullable().optional(),
+  // 同行スタッフ名の全件 (一般化・確定#5)。旧デプロイは undefined → 単数へ落とす。
+  accompaniment_staff_names: z.array(z.string()).nullable().optional(),
   // 実績 (arrival 打刻者)。予定担当 (staff_name) と食い違う = 代行
   // (qr-open-checkin-design.md §6)。予定側は書き換えず「予定/実績」を並記する。
   actual_staff_id: z.string().uuid().nullable().optional(),

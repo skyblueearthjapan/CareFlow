@@ -120,8 +120,11 @@ function WeekCard({
   const accSelected = accActive && accompaniment!.isVisitSelected(v.id);
   const accInCourse = accActive && accompaniment!.isVisitInSelectedCourse(v.id);
   const accOverlap = accActive && accompaniment!.isVisitOverlapping(v.id);
+  // 同行者は複数名ありうる (確定#5) ので配列を「・」で連結して 1 バッジに出す。
   const accBadge =
-    accompaniment && !accompaniment.active ? accompaniment.visitBadgeName(v.id) : null;
+    accompaniment && !accompaniment.active
+      ? accompaniment.visitBadgeName(v.id).join('・') || null
+      : null;
   const s = parseHM(v.start_time);
   // 終了が無い場合は既定 35 分で描く (週ビューは終了を持たない訪問もあるため寛容)。
   const e = parseHM(v.end_time) ?? (s !== null ? s + WTL_DEFAULT_SERVICE_MIN : null);
@@ -151,8 +154,9 @@ function WeekCard({
         }
       : { left: '2px', right: '2px' };
   // 同行モード中はカードクリック=選択トグル (選択済みコース内は個別トグル不可)。
+  // 「コース(曜日)単位」に絞っている間は患者カードを受け付けない (確定#2)。
   const effectiveOnClick = accActive
-    ? accInCourse
+    ? accInCourse || !accompaniment!.isVisitArmed
       ? undefined
       : () => accompaniment!.toggleVisit(v.id)
     : onClick;
@@ -163,9 +167,11 @@ function WeekCard({
       data-testid={`wtl-visit-${v.id}`}
       data-accompaniment-selected={accSelected ? 'true' : undefined}
       title={
-        accInCourse
-          ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
-          : (v.patient_address ?? undefined)
+        accActive && !accompaniment!.isVisitArmed
+          ? '患者ごとに同行を付けるには、下部バーの対象を「患者単位」に切り替えてください'
+          : accInCourse
+            ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
+            : (v.patient_address ?? undefined)
       }
       className={cn(
         'absolute flex flex-col gap-px rounded-md border border-l-[3px] px-1.5 py-0.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
@@ -372,9 +378,11 @@ function WeekPairBox({
           const accInCourse = accActive && accompaniment!.isVisitInSelectedCourse(v.id);
           const accOverlap = accActive && accompaniment!.isVisitOverlapping(v.id);
           const accBadge =
-            accompaniment && !accompaniment.active ? accompaniment.visitBadgeName(v.id) : null;
+            accompaniment && !accompaniment.active
+              ? accompaniment.visitBadgeName(v.id).join('・') || null
+              : null;
           const onCardClick = accActive
-            ? accInCourse
+            ? accInCourse || !accompaniment!.isVisitArmed
               ? undefined
               : () => accompaniment!.toggleVisit(v.id)
             : onPatientClick
@@ -388,9 +396,11 @@ function WeekPairBox({
               data-accompaniment-selected={accSelected ? 'true' : undefined}
               onClick={onCardClick}
               title={
-                accInCourse
-                  ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
-                  : undefined
+                accActive && !accompaniment!.isVisitArmed
+                  ? '患者ごとに同行を付けるには、下部バーの対象を「患者単位」に切り替えてください'
+                  : accInCourse
+                    ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
+                    : undefined
               }
               className={cn(
                 'relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded border border-l-[3px] px-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
@@ -637,11 +647,12 @@ function CourseWeekSection({
             const pal = genderPalette(staff?.sex);
             // 同行モード: この曜日のコースインスタンスを解決し、ヘッダを選択トグルにする。
             const courseId = accompaniment?.resolveCourseId(option.templateId, wd) ?? null;
-            const headerSelectable = accActive && !!courseId;
+            // 「患者単位」に絞っている間はコースヘッダを受け付けない (確定#2)。
+            const headerSelectable = accActive && !!courseId && accompaniment!.isCourseArmed;
             const headerSelected = accActive && accompaniment!.isCourseSelected(courseId);
             const courseBadge =
               accompaniment && !accompaniment.active
-                ? accompaniment.courseBadgeName(courseId)
+                ? accompaniment.courseBadgeName(courseId).join('・') || null
                 : null;
             return (
               <div
@@ -718,7 +729,7 @@ function CourseWeekSection({
                         <span
                           className="inline-flex max-w-[55%] shrink-0 items-center truncate rounded-full bg-info-bg px-1 text-[9px] font-bold text-info"
                           data-testid={`wtl-course-accompaniment-${option.templateId}-${wd}`}
-                          title={`同行: ${courseBadge}（新人）`}
+                          title={`同行: ${courseBadge}`}
                         >
                           👥{courseBadge}
                         </span>
