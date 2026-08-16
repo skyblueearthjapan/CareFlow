@@ -107,6 +107,47 @@ export function isAlert(v: Pick<MonitorVisit, 'alert_level'>): boolean {
   return v.alert_level === 'missing' || v.alert_level === 'mismatch' || v.alert_level === 'review';
 }
 
+// ---------------------------------------------------------------------------
+// 代行 / 予定外訪問 (qr-open-checkin-design.md §6)
+// ---------------------------------------------------------------------------
+
+/**
+ * 予定外訪問の専用行ラベル。BE ``monitor.py`` の ``UNPLANNED_ROW_LABEL`` のミラー。
+ * 行は拠点ごとに 1 本作られるが、ラベルはどの行も同じ。
+ */
+export const UNPLANNED_ROW_LABEL = '📌予定外訪問';
+
+/**
+ * 予定外訪問の専用行か。
+ *
+ * BE は is_unplanned な visit だけを専用行に集約する (通常コース行への混載はしない)
+ * ため、行内の全 visit が予定外なら専用行とみなす。ラベル文字列ではなくフラグで
+ * 判定するのは、文言変更に表示が引きずられないようにするため。
+ */
+export function isUnplannedRow(row: Pick<MonitorStaffRow, 'visits'>): boolean {
+  return row.visits.length > 0 && row.visits.every((v) => v.is_unplanned);
+}
+
+/**
+ * 代行 / 予定外の理由ラベル (トレイのチップ)。
+ *
+ * トレイの優先順 (未訪問 → 場所違い → 要確認) は不変で、これは「要確認」の中の
+ * 種別を補足するだけ (設計 §6)。
+ */
+export function alertReasonChips(
+  v: Pick<MonitorVisit, 'is_substitute' | 'is_unplanned'>,
+): string[] {
+  const chips: string[] = [];
+  if (v.is_unplanned) chips.push('予定外');
+  if (v.is_substitute) chips.push('代行');
+  return chips;
+}
+
+/** 「予定: ○○ / 実績: △△」のツールチップ文言 (代行バー / 詳細パネル共通)。 */
+export function substituteTitle(v: Pick<MonitorVisit, 'staff_name' | 'actual_staff_name'>): string {
+  return `予定: ${v.staff_name ?? '—'} / 実績: ${v.actual_staff_name ?? '—'}`;
+}
+
 /**
  * 退出忘れ (長時間 inprogress) の表示しきい値 (分) の既定。BE の
  * checkin_settings.max_inprogress_min が無いときのフォールバック。

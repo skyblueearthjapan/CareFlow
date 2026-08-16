@@ -31,6 +31,14 @@ export const monitorVisitSchema = z.object({
   // 新人同行 (§7.3): この訪問に同行する新人スタッフ名。null=同行なし。
   // 担当乖離 ⚠ (course_staff_name ≠ staff_name) とは別ラベル「＋◯◯（同行）」で表示する。
   accompaniment_staff_name: z.string().nullable().optional(),
+  // 実績 (arrival 打刻者)。予定担当 (staff_name) と食い違う = 代行
+  // (qr-open-checkin-design.md §6)。予定側は書き換えず「予定/実績」を並記する。
+  actual_staff_id: z.string().uuid().nullable().optional(),
+  actual_staff_name: z.string().nullable().optional(),
+  // 代行 = 実績スタッフが visit の担当集合の外。バーに「代行」バッジ+実績名。
+  is_substitute: z.boolean().default(false),
+  // 予定外訪問 (visits.is_unplanned)。BE が専用行「📌予定外訪問」に集約する。
+  is_unplanned: z.boolean().default(false),
   patient_id: z.string().uuid(),
   patient_name: z.string().nullable().optional(),
   patient_code: z.string().nullable().optional(),

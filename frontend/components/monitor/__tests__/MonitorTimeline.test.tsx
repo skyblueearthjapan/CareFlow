@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 
 import { MonitorTimeline, monitorRowKey } from '../MonitorTimeline';
+import { UNPLANNED_ROW_LABEL } from '../constants';
 import { makeRow, makeVisit } from './fixtures';
 
 describe('MonitorTimeline', () => {
@@ -257,5 +258,85 @@ describe('MonitorTimeline', () => {
     // ＋◯◯（同行）ラベル (別要素として共存)
     const accompanimentLabel = screen.getByTestId(`monitor-row-accompaniment-${monitorRowKey(row)}`);
     expect(accompanimentLabel.textContent).toContain('＋新人 花子（同行）');
+  });
+
+  // --- 代行 / 予定外 (qr-open-checkin-design.md §6) ---
+
+  it('代行 visit のバーに「代行」バッジと実績スタッフ名が出る', () => {
+    const v = makeVisit({
+      patient_name: '代行 対象',
+      staff_name: '予定 太郎',
+      actual_staff_name: '実績 次郎',
+      is_substitute: true,
+      alert_level: 'review',
+    });
+    render(
+      <MonitorTimeline
+        rows={[makeRow({ visits: [v] })]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    const badge = screen.getByTestId(`monitor-bar-substitute-${v.visit_id}`);
+    expect(badge.textContent).toBe('代行');
+    // 行レベル ⚠ (担当乖離) とは別物なので、⚠ は出ない。
+    expect(screen.queryByText('⚠')).toBeNull();
+    // ツールチップに「予定: ○○ / 実績: △△」。
+    expect(badge.getAttribute('title')).toBe('予定: 予定 太郎 / 実績: 実績 次郎');
+    expect(screen.getByTestId(`monitor-bar-actual-staff-${v.visit_id}`).textContent).toBe(
+      '→実績 次郎',
+    );
+  });
+
+  it('通常 visit には代行バッジを出さない', () => {
+    const v = makeVisit({ actual_staff_name: '実績 次郎', is_substitute: false });
+    render(
+      <MonitorTimeline
+        rows={[makeRow({ visits: [v] })]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId(`monitor-bar-substitute-${v.visit_id}`)).toBeNull();
+    expect(screen.queryByTestId(`monitor-bar-actual-staff-${v.visit_id}`)).toBeNull();
+  });
+
+  it('予定外訪問の専用行は独自スタイルで描画され、バーに患者名+実績名が出る', () => {
+    const v = makeVisit({
+      patient_name: '飛込 花子',
+      actual_staff_name: '実績 次郎',
+      is_unplanned: true,
+      alert_level: 'review',
+    });
+    const row = makeRow({
+      course_id: null,
+      course_label: UNPLANNED_ROW_LABEL,
+      visits: [v],
+    });
+    render(
+      <MonitorTimeline
+        rows={[makeRow({ visits: [makeVisit()] }), row]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    // 予定外行だけに印が付く (通常コース行は素のまま)。
+    expect(screen.getByTestId('monitor-row-0').getAttribute('data-unplanned')).toBeNull();
+    expect(screen.getByTestId('monitor-row-1').getAttribute('data-unplanned')).toBe('true');
+    const label = screen.getByTestId(`monitor-row-unplanned-${monitorRowKey(row)}`);
+    expect(label.textContent).toBe(UNPLANNED_ROW_LABEL);
+    expect(screen.getAllByText('飛込 花子').length).toBeGreaterThan(0);
+    expect(screen.getByTestId(`monitor-bar-actual-staff-${v.visit_id}`).textContent).toBe(
+      '→実績 次郎',
+    );
   });
 });

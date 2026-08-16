@@ -28,8 +28,10 @@ import {
   displayStatus,
   formatDistance,
   hmToMinutes,
+  isUnplannedRow,
   isoToHm,
   minutesToPct,
+  substituteTitle,
 } from './constants';
 
 /** M-4a: 予定カードの性別ウォッシュ・📍住所用メタ (患者マスタ FE join・未指定=中立色)。 */
@@ -211,6 +213,11 @@ export function MonitorTimeline({
         const rowLaneCount = laneMap.size > 0 ? laneMap.values().next().value!.laneCount : 1;
         // スケジュール側のコース担当 (courses.assigned) と実訪問の担当 (visits.primary) の突合。
         // 食い違いは隠さず ⚠ を出す (設計原則③)。
+        // 予定外訪問の専用行 (§6): 予定が無い実績だけの行なので、通常のコース行とは
+        // 別配色 (c-coupled 系) にして「予定の列」と読み違えないようにする。
+        // 並び順は BE の sort (拠点 → コースコード) がラベル「📌…」を末尾に置くため、
+        // FE 側では通常コース行の後ろに自然に並ぶ (並べ替えロジックは追加しない)。
+        const unplannedRow = isUnplannedRow(row);
         const scheduleStaff = row.course_staff_name ?? null;
         const visitStaffIds = row.staff_ids ?? [];
         const staffMismatch =
@@ -232,6 +239,7 @@ export function MonitorTimeline({
             role="button"
             tabIndex={0}
             data-testid={`monitor-row-${idx}`}
+            data-unplanned={unplannedRow ? 'true' : undefined}
             onClick={() => onSelectRow(rowKey)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') onSelectRow(rowKey);
@@ -254,7 +262,9 @@ export function MonitorTimeline({
                 // 選択アクセント線はセル側に置く (行側だと不透明な sticky セルに隠れる)。
                 isSel
                   ? 'bg-brand-primary-light shadow-[inset_5px_0_0_var(--brand-primary)]'
-                  : 'bg-bg-base group-hover:bg-bg-muted',
+                  : unplannedRow
+                    ? 'bg-c-coupled-bg shadow-[inset_5px_0_0_var(--c-coupled)]'
+                    : 'bg-bg-base group-hover:bg-bg-muted',
               )}
             >
               <span
@@ -265,12 +275,18 @@ export function MonitorTimeline({
                 style={
                   isSel
                     ? undefined
-                    : (() => {
-                        const sp = genderPalette(
-                          row.staff_id ? (staffSexById?.get(row.staff_id) ?? null) : null,
-                        );
-                        return { background: sp.bg, borderColor: sp.bar, color: sp.ink };
-                      })()
+                    : unplannedRow
+                      ? {
+                          background: 'var(--c-coupled-bg)',
+                          borderColor: 'var(--c-coupled)',
+                          color: 'var(--c-coupled)',
+                        }
+                      : (() => {
+                          const sp = genderPalette(
+                            row.staff_id ? (staffSexById?.get(row.staff_id) ?? null) : null,
+                          );
+                          return { background: sp.bg, borderColor: sp.bar, color: sp.ink };
+                        })()
                 }
               >
                 {idx + 1}
@@ -280,10 +296,17 @@ export function MonitorTimeline({
                 <span
                   className={cn(
                     'block truncate text-[13px] font-semibold',
-                    isSel ? 'text-brand-primary-hover' : 'text-text-primary',
+                    isSel
+                      ? 'text-brand-primary-hover'
+                      : unplannedRow
+                        ? 'text-c-coupled'
+                        : 'text-text-primary',
                   )}
+                  data-testid={unplannedRow ? `monitor-row-unplanned-${key}` : undefined}
                   title={
-                    [row.course_label, row.staff_name].filter(Boolean).join(' ・ ') || undefined
+                    unplannedRow
+                      ? '予定に無い訪問の実績（QR打刻）です。コース行には混ぜていません。'
+                      : [row.course_label, row.staff_name].filter(Boolean).join(' ・ ') || undefined
                   }
                 >
                   {row.course_label ?? row.staff_name ?? '（担当未設定）'}
@@ -291,6 +314,9 @@ export function MonitorTimeline({
                 <span className="block truncate text-[11px] text-text-muted">
                   {isSel ? (
                     '● 選択中'
+                  ) : unplannedRow ? (
+                    // 予定外行は「予定の担当」が存在しないので、拠点と実績スタッフを出す。
+                    [row.office_name, row.staff_name ?? '実績のみ'].filter(Boolean).join(' ・ ')
                   ) : (
                     <>
                       {/* 担当 = スケジュールのコース担当を優先表示 (無ければ実訪問の担当)。 */}
@@ -472,6 +498,18 @@ function VisitBars({
   const dn = visit.distance_to_next_m;
   // M-4a: 予定カードの性別ウォッシュ (患者マスタ FE join。未指定/未登録=中立色)。
   const pal = genderPalette(meta?.sex ?? null);
+  // §6: 予定外訪問のカードは性別ウォッシュではなく専用配色 (c-coupled 系)。
+  // 「予定の列」に見えないよう、行の配色と揃える。
+  const cardStyle = visit.is_unplanned
+    ? {
+        background: 'var(--c-coupled-bg)',
+        borderColor: 'var(--c-coupled)',
+        borderLeftColor: 'var(--c-coupled)',
+        color: 'var(--c-coupled)',
+      }
+    : { background: pal.bg, borderColor: pal.ln, borderLeftColor: pal.bar, color: pal.ink };
+  // 代行 / 予定外の実績スタッフ名 (カード 2 行目)。予定担当は書き換えない (§6)。
+  const actualName = visit.actual_staff_name ?? null;
 
   return (
     <>
@@ -513,30 +551,36 @@ function VisitBars({
           e.stopPropagation();
           onSelect(visit.visit_id);
         }}
-        title={`予定 ${visit.start_time}–${visit.end_time} ${visit.patient_name ?? ''}${
-          visit.staff_name ? `｜担当: ${visit.staff_name}` : ''
+        title={`${visit.is_unplanned ? '予定外訪問 ' : '予定 '}${visit.start_time}–${visit.end_time} ${
+          visit.patient_name ?? ''
+        }${visit.staff_name ? `｜担当: ${visit.staff_name}` : ''}${
+          visit.is_substitute ? `｜代行（${substituteTitle(visit)}）` : ''
+        }${
+          visit.is_unplanned && actualName ? `｜実績: ${actualName}` : ''
         }${meta?.address ? `｜📍${meta.address}` : ''}`}
         className="absolute z-[2] flex flex-col justify-center gap-px overflow-hidden rounded-md border border-l-[3px] px-1.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-sm)]"
-        style={{
-          left: `${pL}%`,
-          width: `${pW}%`,
-          top: pos.cardTop,
-          height: pos.cardH,
-          background: pal.bg,
-          borderColor: pal.ln,
-          borderLeftColor: pal.bar,
-          color: pal.ink,
-        }}
+        style={{ left: `${pL}%`, width: `${pW}%`, top: pos.cardTop, height: pos.cardH, ...cardStyle }}
       >
         <span className="flex min-w-0 items-center gap-1">
           <i
             className="h-1.5 w-1.5 shrink-0 rounded-full"
-            style={{ background: pal.bar }}
+            style={{ background: visit.is_unplanned ? 'var(--c-coupled)' : pal.bar }}
             aria-hidden="true"
           />
           <span className="min-w-0 truncate text-[11px] font-bold leading-tight">
             {visit.patient_name ?? '—'}
           </span>
+          {/* 代行バッジ (§6 #7): 行レベルの ⚠ (スケジュール担当≠visit 予定担当・amber) とは
+              別物なので、色 (info=teal) とラベルの両方で区別する。 */}
+          {visit.is_substitute && (
+            <span
+              data-testid={`monitor-bar-substitute-${visit.visit_id}`}
+              title={substituteTitle(visit)}
+              className="shrink-0 rounded-full bg-info px-1 py-px text-[9px] font-bold text-white"
+            >
+              代行
+            </span>
+          )}
           {isPair && (
             <span className="shrink-0 rounded-full bg-c-coupled-bg px-1 py-px text-[9px] font-bold text-c-coupled">
               2名
@@ -547,6 +591,15 @@ function VisitBars({
           <span className="tnum shrink-0 font-semibold">
             {visit.start_time}–{visit.end_time}
           </span>
+          {/* 実績スタッフ名 (代行・予定外)。予定担当は書き換えず並記する。 */}
+          {(visit.is_substitute || visit.is_unplanned) && actualName ? (
+            <span
+              data-testid={`monitor-bar-actual-staff-${visit.visit_id}`}
+              className="min-w-0 truncate font-semibold"
+            >
+              →{actualName}
+            </span>
+          ) : null}
           {meta?.address ? <span className="min-w-0 truncate">📍{meta.address}</span> : null}
         </span>
       </button>

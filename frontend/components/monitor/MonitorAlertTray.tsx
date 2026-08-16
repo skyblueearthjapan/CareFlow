@@ -19,9 +19,11 @@ import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 import {
   ALERT_RANK,
   LONG_INPROGRESS_REASON,
+  alertReasonChips,
   groupVisits,
   hmToMinutes,
   isLongInprogress,
+  substituteTitle,
 } from './constants';
 
 interface AlertEntry {
@@ -50,6 +52,9 @@ function alertTag(v: MonitorVisit): string {
 function alertReason(v: MonitorVisit, maxInprogressMin?: number): string {
   if (v.reason) return v.reason;
   if (isLongInprogress(v, maxInprogressMin)) return LONG_INPROGRESS_REASON;
+  // 代行 / 予定外 (§6) は理由入力が無くても、何が起きたかを 1 行で示す。
+  if (v.is_unplanned) return '予定に無い訪問（QR打刻）';
+  if (v.is_substitute) return substituteTitle(v);
   return v.alert_level === 'missing' ? '理由未入力（要確認）' : '理由なし';
 }
 
@@ -131,6 +136,21 @@ export function MonitorAlertTray({
         >
           {alertTag(v)}
         </span>
+        {/* 代行 / 予定外の理由ラベル (§6 #9)。優先順 (未訪問→場所違い→要確認) は不変で、
+            「要確認」の中の種別を補足するチップ。予定外=行と同じ c-coupled 系、
+            代行=info (行レベル ⚠ の amber と区別)。 */}
+        {alertReasonChips(v).map((chip) => (
+          <span
+            key={chip}
+            data-testid={`monitor-alert-chip-${chip === '予定外' ? 'unplanned' : 'substitute'}-${v.visit_id}`}
+            className={cn(
+              'whitespace-nowrap rounded-full px-1.5 py-0.5 text-[10px] font-bold',
+              chip === '予定外' ? 'bg-c-coupled-bg text-c-coupled' : 'bg-info-bg text-info',
+            )}
+          >
+            {chip}
+          </span>
+        ))}
         <span className="whitespace-nowrap text-[13px] font-bold text-text-primary">
           {v.patient_name ?? '—'}
         </span>

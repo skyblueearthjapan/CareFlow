@@ -97,4 +97,52 @@ describe('MonitorAlertTray', () => {
     expect(screen.getByText('2名')).toBeInTheDocument();
     expect(screen.getByText('A介護・B介護')).toBeInTheDocument();
   });
+
+  // --- 代行 / 予定外 (qr-open-checkin-design.md §6 #9) ---
+
+  it('代行・予定外は理由ラベルのチップを出す (優先順は不変)', () => {
+    const sub = makeVisit({
+      patient_name: '代行 対象',
+      staff_name: '予定 太郎',
+      actual_staff_name: '実績 次郎',
+      is_substitute: true,
+      alert_level: 'review',
+      start_time: '09:00',
+    });
+    const unplanned = makeVisit({
+      patient_name: '飛込 花子',
+      actual_staff_name: '実績 次郎',
+      is_unplanned: true,
+      alert_level: 'review',
+      start_time: '10:00',
+    });
+    const missing = makeVisit({
+      patient_name: 'M男',
+      alert_level: 'missing',
+      phase: 'missing',
+      start_time: '11:00',
+    });
+    render(
+      <MonitorAlertTray
+        rows={[makeRow({ visits: [sub, unplanned, missing] })]}
+        selectedVisitId={null}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId(`monitor-alert-chip-substitute-${sub.visit_id}`).textContent).toBe(
+      '代行',
+    );
+    expect(
+      screen.getByTestId(`monitor-alert-chip-unplanned-${unplanned.visit_id}`).textContent,
+    ).toBe('予定外');
+    // 理由未入力でも代行/予定外は 1 行で状況を示す。
+    expect(screen.getAllByText('予定: 予定 太郎 / 実績: 実績 次郎').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('予定に無い訪問（QR打刻）').length).toBeGreaterThan(0);
+    // 優先順 (未訪問 → 場所違い → 要確認) は不変: 未訪問が先頭。
+    const cards = document.querySelectorAll('[role="button"][data-testid^="monitor-alert-"]');
+    expect(cards[0].getAttribute('data-testid')).toBe(`monitor-alert-${missing.visit_id}`);
+    // 通常の要対応にはチップを出さない。
+    expect(screen.queryByTestId(`monitor-alert-chip-substitute-${missing.visit_id}`)).toBeNull();
+    expect(screen.queryByTestId(`monitor-alert-chip-unplanned-${missing.visit_id}`)).toBeNull();
+  });
 });

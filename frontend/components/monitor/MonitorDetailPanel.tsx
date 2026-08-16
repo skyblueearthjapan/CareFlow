@@ -13,9 +13,11 @@ import {
   CircleDot,
   CircleX,
   Clock,
+  MapPin,
   OctagonAlert,
   Timer,
   TriangleAlert,
+  UserCheck,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -240,6 +242,41 @@ function VisitDetail({
           data-testid="monitor-detail-accompaniment"
         >
           同行: {visit.accompaniment_staff_name}
+        </div>
+      )}
+
+      {/* 予定外訪問 (qr-open-checkin-design.md §6): 予定に無い実績。専用行と同じ配色。 */}
+      {visit.is_unplanned && (
+        <div
+          className="mb-3 rounded border p-3 text-[13px] leading-relaxed"
+          style={{
+            background: 'var(--c-coupled-bg)',
+            borderColor: 'var(--c-coupled)',
+            color: 'var(--c-coupled)',
+          }}
+          data-testid="monitor-detail-unplanned"
+        >
+          <span className="mb-1 flex items-center gap-1 text-[11px] font-bold">
+            <MapPin className="h-3.5 w-3.5" />
+            予定外訪問
+          </span>
+          予定に無い訪問の実績です（QR打刻で記録）。
+          {visit.actual_staff_name && `実際の訪問: ${visit.actual_staff_name}`}
+        </div>
+      )}
+
+      {/* 代行 (§6 #7): 予定側の担当は書き換えず「予定 / 実績」を並記する。 */}
+      {visit.is_substitute && !visit.is_unplanned && (
+        <div
+          className="mb-3 rounded border border-info bg-info-bg p-3 text-[13px] leading-relaxed text-text-primary"
+          data-testid="monitor-detail-substitute"
+        >
+          <span className="mb-1 flex items-center gap-1 text-[11px] font-bold text-info">
+            <UserCheck className="h-3.5 w-3.5" />
+            代行
+          </span>
+          <div>予定の担当: {visit.staff_name ?? '—'}</div>
+          <div>実際の訪問: {visit.actual_staff_name ?? '—'}</div>
         </div>
       )}
 
