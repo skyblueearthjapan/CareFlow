@@ -29,8 +29,12 @@ export interface QrScannerProps {
   onScan: (token: string) => void;
   /** 「閉じる」押下時。 */
   onCancel: () => void;
-  /** 「QRなしで記録」押下時 (カメラ不可フォールバック → manual checkin)。 */
-  onManual: () => void;
+  /**
+   * 「QRなしで記録」押下時 (カメラ不可フォールバック → manual checkin)。
+   * **省略するとボタン自体を出さない** — 担当外 (代行) の打刻は QR 必須のため
+   * 手動フォールバックを封じる (設計 決定#6)。
+   */
+  onManual?: () => void;
   /** スキャン対象の説明 (例: "山田 花子 さん宅 / 到着")。 */
   targetLabel?: string;
 }
@@ -68,7 +72,7 @@ export function QrScanner({ onScan, onCancel, onManual, targetLabel }: QrScanner
   const [manualTapped, setManualTapped] = useState(false);
 
   function handleManualClick() {
-    if (handledRef.current) return;
+    if (handledRef.current || !onManual) return;
     handledRef.current = true;
     setManualTapped(true);
     onManual();
@@ -155,7 +159,9 @@ export function QrScanner({ onScan, onCancel, onManual, targetLabel }: QrScanner
             <p className="text-sm text-stone-200">カメラを起動できませんでした</p>
             <p className="text-xs text-stone-400">{cameraError}</p>
             <p className="text-xs text-stone-400">
-              カメラの権限を許可するか、下の「手入力で選ぶ」で記録できます。
+              {onManual
+                ? 'カメラの権限を許可するか、下の「手入力で選ぶ」で記録できます。'
+                : 'カメラの権限を許可してから、もう一度お試しください。担当外の訪問はQRの読み取りが必要です。'}
             </p>
           </div>
         ) : (
@@ -178,14 +184,16 @@ export function QrScanner({ onScan, onCancel, onManual, targetLabel }: QrScanner
       </div>
 
       <div className="px-6 pb-[max(env(safe-area-inset-bottom),1.5rem)]">
-        <button
-          type="button"
-          onClick={handleManualClick}
-          disabled={manualTapped}
-          className="mx-auto flex items-center justify-center gap-2 rounded-full bg-white/15 px-6 py-3 text-sm font-semibold text-white disabled:opacity-60"
-        >
-          <Keyboard className="h-4 w-4" /> QRなしで記録
-        </button>
+        {onManual && (
+          <button
+            type="button"
+            onClick={handleManualClick}
+            disabled={manualTapped}
+            className="mx-auto flex items-center justify-center gap-2 rounded-full bg-white/15 px-6 py-3 text-sm font-semibold text-white disabled:opacity-60"
+          >
+            <Keyboard className="h-4 w-4" /> QRなしで記録
+          </button>
+        )}
       </div>
     </div>
   );

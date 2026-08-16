@@ -21,18 +21,21 @@ import {
 } from 'lucide-react';
 
 import { ApiError } from '@/lib/api-client';
-import { fetcher } from '@/lib/api/fetcher';
 import { clearCheckin, loadCheckin, saveCheckin } from '@/lib/checkin-storage';
 import {
   countPending,
-  DropPendingError,
   enqueuePending,
-  flushPending,
-  type PendingEntry,
   type PendingKind,
   type PendingPayload,
 } from '@/lib/checkin-queue';
-import { haversineMeters } from '@/lib/geo';
+import { detailOf, flushCheckinQueue, isServerUnreachable } from '@/lib/checkin-flush';
+import {
+  coordsOf,
+  geoErrorHint,
+  getGeolocation,
+  haversineMeters,
+  type GeoFix as Geo,
+} from '@/lib/geo';
 import { extractQrToken } from '@/lib/qr-token';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -61,15 +64,6 @@ import { useCheckinSettingsPublic } from '@/lib/queries/checkinSettings';
 import { CHECKIN_PUBLIC_FALLBACK } from '@/lib/schemas/checkinSettings';
 
 type ScanMode = 'arrival' | 'departure';
-
-/** Best-effort browser geolocation result (empty fields on failure). */
-type Geo = {
-  lat?: number;
-  lng?: number;
-  accuracy?: number;
-  /** GeolocationPositionError.code (1=権限拒否 2=測位不能 3=タイムアウト)。 */
-  errorCode?: number;
-};
 
 /**
  * Transient overlay flow layered on top of the base visit-detail view.
@@ -184,57 +178,6 @@ function fmtElapsed(ms: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-/**
- * Best-effort browser geolocation. Resolves with empty fields on failure /
- * denial / timeout so the caller can still POST (the backend judges `no_gps`).
- *
- * `enableHighAccuracy` is requested but treated as best-effort — a slow or
- * denied fix must never block the check-in. Timeout is generous (15s) so a
- * first cold GPS fix on a phone has a chance before we fall back to no_gps.
- */
-function getGeolocation(): Promise<Geo> {
-  return new Promise((resolve) => {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      resolve({ errorCode: 2 });
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (pos) =>
-        resolve({
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-        }),
-      // 失敗理由 (権限拒否/測位不能/タイムアウト) をプレビューの案内に使う。
-      (err) => resolve({ errorCode: err.code }),
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
-    );
-  });
-}
-
-/** 測位失敗コード → 現場向けの対処ヒント。 */
-function geoErrorHint(code: number | undefined): string | null {
-  switch (code) {
-    case 1:
-      return '位置情報の利用が許可されていません。端末の設定でこのサイト（ブラウザ）の位置情報を「許可」にしてから「位置を再取得」を押してください。';
-    case 3:
-      return '測位がタイムアウトしました。屋外や窓際で「位置を再取得」をお試しください。';
-    case 2:
-      return '端末が位置を測位できませんでした。電波状況を確認して「位置を再取得」をお試しください。';
-    default:
-      return null;
-  }
-}
-
-/** Project a Geo into the payload coord fields (omitting undefined). */
-function coordsOf(geo: Geo): { lat?: number; lng?: number; accuracy?: number } {
-  return {
-    ...(geo.lat !== undefined ? { lat: geo.lat } : {}),
-    ...(geo.lng !== undefined ? { lng: geo.lng } : {}),
-    ...(geo.accuracy !== undefined ? { accuracy: geo.accuracy } : {}),
-  };
-}
-
 function isCheckedIn(visit: MyVisit | undefined): boolean {
   if (!visit) return false;
   return visit.status === 'in_progress' || visit.status === 'checked_in';
@@ -247,67 +190,6 @@ function isCompleted(visit: MyVisit | undefined): boolean {
 
 function memoKey(staffId: string, visitId: string): string {
   return `visit-memo:${staffId}:${visitId}`;
-}
-
-/**
- * True when the failure means the server never durably accepted the record —
- * a fetch-level network error OR a 5xx (server-side transient). These are the
- * cases we stash locally + enqueue for re-send. 4xx (incl. 404/409) are real
- * answers from the server and are NOT stashed.
- */
-function isServerUnreachable(err: unknown): boolean {
-  if (!(err instanceof ApiError)) return true; // fetch threw → network error
-  return err.status >= 500;
-}
-
-/** Extract a backend `detail` string from an ApiError body, if present. */
-function detailOf(err: unknown): string | null {
-  if (err instanceof ApiError && err.body && typeof err.body === 'object') {
-    const d = (err.body as Record<string, unknown>).detail;
-    if (typeof d === 'string') return d;
-  }
-  return null;
-}
-
-const REST_PATH: Record<PendingKind, string> = {
-  arrival: 'checkin',
-  departure: 'checkout',
-  no_show: 'no-show',
-};
-
-/** Human-readable drop reason for a definitive 4xx re-send failure. */
-function dropReasonOf(err: unknown): string {
-  const status = err instanceof ApiError ? err.status : null;
-  if (status === 404) return detailOf(err) ?? '無効なQRのため';
-  if (status === 409) return detailOf(err) ?? '対象外の患者のため';
-  return detailOf(err) ?? '送信できないため';
-}
-
-/**
- * Re-POST a single pending entry (best-effort). Resolves when the record is
- * delivered. Throws a {@link DropPendingError} on a definitive 4xx (invalid /
- * wrong QR) that a retry can't fix — `flushPending` then drops it from the queue
- * AND surfaces the reason so the user is notified (no silent loss). Rejects with
- * the raw error only when the server is still unreachable (network / 5xx) so the
- * entry stays queued for next time.
- */
-async function postPending(
-  entry: PendingEntry,
-  accessToken: string | null,
-  refreshToken: string | null,
-): Promise<void> {
-  try {
-    await fetcher(`/api/v1/visits/${entry.visit_id}/${REST_PATH[entry.kind]}`, {
-      method: 'POST',
-      body: JSON.stringify(entry.payload),
-      accessToken,
-      refreshToken,
-    });
-  } catch (err) {
-    if (isServerUnreachable(err)) throw err; // keep queued (network / 5xx)
-    // definitive 4xx → won't succeed on retry; drop it WITH a reason.
-    throw new DropPendingError(dropReasonOf(err));
-  }
 }
 
 export default function MobileVisitDetailPage() {
@@ -337,7 +219,20 @@ function MobileVisitDetailPageInner() {
   const accessToken = session?.accessToken ?? null;
   const refreshToken = session?.refreshToken ?? null;
   const qc = useQueryClient();
-  const { data: visit, isLoading, isError, error } = useMyVisit(visitId);
+
+  // ディープリンク (/q/{token} → ?qr=) 由来の QR トークン。
+  //   - `readToken`     … 詳細 GET の担当外フォールバック用 (画面を離れるまで保持・
+  //                        URL には残さない)。担当外 visit は通常 GET が 404 のため、
+  //                        記録後の再取得でも同じ鍵が要る。
+  //   - `deepLinkToken` … **打刻用**。1 記録で消費し、退出は現地で読み直させる
+  //                        (設計 §4-2 の「代行の退出は再スキャン必須」)。
+  const [readToken] = useState<string | null>(() => {
+    const raw = searchParams?.get('qr');
+    return raw ? extractQrToken(raw) : null;
+  });
+  const [deepLinkToken, setDeepLinkToken] = useState<string | null>(readToken);
+
+  const { data: visit, isLoading, isError, error } = useMyVisit(visitId, readToken);
 
   const checkIn = useCheckIn(visitId);
   const checkOut = useCheckOut(visitId);
@@ -368,15 +263,8 @@ function MobileVisitDetailPageInner() {
     }
   }, [visitId, staffId]);
 
-  // ディープリンク (/q/{token} → ?qr=) 由来の QR トークン。存在する間は
-  // 「開始/完了」でスキャン工程を省略し GPS プレビューへ直行する。記録成功 /
-  // 無効判明 (404/409) で消費し、以後は通常のスキャンフローに戻す (退出時も
-  // 現地で QR を読み直させる = 現地証明を弱めない)。
-  const [deepLinkToken, setDeepLinkToken] = useState<string | null>(() => {
-    const raw = searchParams?.get('qr');
-    return raw ? extractQrToken(raw) : null;
-  });
-
+  // 打刻用トークンは記録成功 / 無効判明 (404/409/410) で消費し、以後は通常の
+  // スキャンフローに戻す (退出時も現地で QR を読み直させる = 現地証明を弱めない)。
   const clearDeepLinkToken = useCallback(() => {
     setDeepLinkToken(null);
     // URL からも ?qr= を外し、リロード時に再度スキャン省略にならないようにする。
@@ -434,9 +322,7 @@ function MobileVisitDetailPageInner() {
 
   const flushNow = useCallback(async () => {
     if (typeof window === 'undefined' || !staffId) return;
-    const { remaining, dropped } = await flushPending(staffId, (entry) =>
-      postPending(entry, accessToken, refreshToken),
-    );
+    const { remaining, dropped } = await flushCheckinQueue(staffId, accessToken, refreshToken);
     setPendingCount(remaining);
     // 4xx で破棄された未送信分は黙って消さず、利用者へ通知する。
     if (dropped.length > 0) {
@@ -460,6 +346,28 @@ function MobileVisitDetailPageInner() {
 
   const effectiveCheckedIn = isCheckedIn(visit) || localStatus === 'checked_in';
   const effectiveCompleted = isCompleted(visit) || localStatus === 'checked_out';
+
+  /**
+   * 代行モード — 自分の担当ではない visit を QR を鍵に開いている状態
+   * (`/q/{token}` の「この予定の代行として記録」から来る)。
+   *
+   * この画面では:
+   *   - 「代行」バッジを出し、予定の担当者名を並記する (予定の担当は書き換えない)。
+   *   - 打刻には QR トークンを必ず添える (担当外は QR 必須・設計 決定#6)。
+   *     手動フォールバック (QRなしで記録) は出さない。
+   *   - 未訪問 (no-show) は担当スタッフ専用なので出さない (設計 §2)。
+   *
+   * 判定は visit の担当欄のみで行う (visit_staff_assignments は VisitRead に
+   * 含まれないため、そこだけで担当している稀なケースは代行表示になる — 記録内容は
+   * 変わらず、サーバが実績スタッフとして正しく残す)。
+   */
+  const substituteMode =
+    !!visit &&
+    !!staffId &&
+    visit.primary_staff_id !== staffId &&
+    visit.secondary_staff_id !== staffId &&
+    visit.mentor_staff_id !== staffId &&
+    visit.accompaniment?.staff_id !== staffId;
 
   useEffect(() => {
     if (!effectiveCheckedIn || effectiveCompleted) return;
@@ -541,6 +449,14 @@ function MobileVisitDetailPageInner() {
   function recordPreview() {
     if (flow.step !== 'preview') return;
     const { mode, token, geo, status } = flow;
+    // 担当外 (代行) は QR 必須 — トークン無しの記録は受け付けない (決定#6)。
+    if (substituteMode && !token) {
+      toast.error('QRの読み取りが必要です', {
+        description: '担当外の訪問は患者宅のQRを読み取って記録してください',
+      });
+      setFlow({ step: 'none' });
+      return;
+    }
     const isMismatch = status === 'mismatch';
     const reason = mismatchReason.trim();
     // Arrival mismatch requires a reason (departure mismatch reason is optional).
@@ -728,7 +644,8 @@ function MobileVisitDetailPageInner() {
       <QrScanner
         targetLabel={`${patientName} / ${flow.mode === 'arrival' ? '到着' : '退出'}`}
         onScan={(token) => handleScanned(token, flow.mode)}
-        onManual={() => handleManual(flow.mode)}
+        // 代行 (担当外) は QR 必須 — 手動フォールバックは出さない (決定#6)。
+        onManual={substituteMode ? undefined : () => handleManual(flow.mode)}
         onCancel={() => setFlow({ step: 'none' })}
       />
     );
@@ -780,8 +697,21 @@ function MobileVisitDetailPageInner() {
                 <p className="font-serif text-lg font-bold text-text-primary">{patientName}</p>
                 <p className="text-xs text-text-muted">{visit.visit_date}</p>
               </div>
-              <Badge variant={meta.variant}>{meta.label}</Badge>
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                {substituteMode && (
+                  <Badge variant="warning" data-testid="mobile-detail-substitute">
+                    代行
+                  </Badge>
+                )}
+                <Badge variant={meta.variant}>{meta.label}</Badge>
+              </div>
             </div>
+            {substituteMode && (
+              <div className="rounded-md bg-warning/10 px-3 py-2 text-xs text-warning">
+                担当外の訪問です。予定の担当: {visit.staff_name ?? '未割当'}。
+                あなたが実際に訪問した記録として残ります（予定の担当者は変わりません）。
+              </div>
+            )}
             <div className="space-y-2 text-sm">
               <div className="flex items-center gap-2 text-text-secondary">
                 <Clock className="h-4 w-4 shrink-0" />
@@ -858,17 +788,20 @@ function MobileVisitDetailPageInner() {
                     <QrCode className="h-5 w-5" />
                     QRで到着を記録
                   </CheckInButton>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="w-full text-error"
-                    onClick={() => {
-                      setNoshowReason('');
-                      setFlow({ step: 'noshow' });
-                    }}
-                  >
-                    訪問できなかった（理由を記録）
-                  </Button>
+                  {/* 未訪問 (no-show) は担当スタッフ専用 — 代行では出さない (設計 §2)。 */}
+                  {!substituteMode && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full text-error"
+                      onClick={() => {
+                        setNoshowReason('');
+                        setFlow({ step: 'noshow' });
+                      }}
+                    >
+                      訪問できなかった（理由を記録）
+                    </Button>
+                  )}
                 </>
               )}
 

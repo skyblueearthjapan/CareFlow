@@ -51,6 +51,8 @@ vi.mock('@/components/ui/sonner', () => ({
 }));
 
 // Scanner stub — exposes buttons to drive onScan / onManual / onCancel.
+// onManual は省略可能 (代行モードでは手動フォールバックを出さない) なので、
+// 渡されたときだけボタンを描画して本番と同じ見え方にする。
 vi.mock('@/components/mobile/QrScanner', () => ({
   QrScanner: ({
     onScan,
@@ -58,12 +60,12 @@ vi.mock('@/components/mobile/QrScanner', () => ({
     onCancel,
   }: {
     onScan: (t: string) => void;
-    onManual: () => void;
+    onManual?: () => void;
     onCancel: () => void;
   }) => (
     <div data-testid="qr-scanner">
       <button onClick={() => onScan('TESTTOKEN')}>__scan__</button>
-      <button onClick={onManual}>__manual__</button>
+      {onManual && <button onClick={onManual}>__manual__</button>}
       <button onClick={onCancel}>__cancel__</button>
     </div>
   ),
@@ -275,6 +277,57 @@ describe('QR チェックイン モバイル — ディープリンク (?qr=) �
     // token は 1 記録で消費される — 退出は通常どおりスキャナが出る。
     fireEvent.click(screen.getByText('QRで退出を記録'));
     expect(screen.getByTestId('qr-scanner')).toBeInTheDocument();
+  });
+});
+
+describe('QR チェックイン モバイル — 代行 (担当外) モード', () => {
+  /** 担当が別スタッフの visit (= 代行) を ?qr= 付きで開いた状態。 */
+  function setSubstituteVisit(status = 'planned') {
+    searchParamsGet.mockImplementation((key: string) => (key === 'qr' ? 'DEEPTOKEN1' : null));
+    asMock(useMyVisit).mockReturnValue({
+      data: { ...makeVisit(status), primary_staff_id: 'staff-9', staff_name: '田中 先輩' },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+  }
+
+  it('詳細 GET には qr_token を渡し、代行バッジと予定担当を表示する', () => {
+    setSubstituteVisit();
+    render(<MobileVisitDetailPage />);
+    // 担当外は通常 GET が 404 になるため、フックへトークンを渡してフォールバックさせる。
+    expect(asMock(useMyVisit).mock.calls[0]).toEqual(['visit-1', 'DEEPTOKEN1']);
+    expect(screen.getByTestId('mobile-detail-substitute')).toBeInTheDocument();
+    expect(screen.getByText(/予定の担当: 田中 先輩/)).toBeInTheDocument();
+  });
+
+  it('未訪問 (no-show) は出さない (担当スタッフ専用)', () => {
+    setSubstituteVisit();
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByText('QRで到着を記録')).toBeInTheDocument();
+    expect(screen.queryByText('訪問できなかった（理由を記録）')).not.toBeInTheDocument();
+  });
+
+  it('打刻 POST に qr_token を必ず載せ、退出は手動フォールバック無しの再スキャン', async () => {
+    setSubstituteVisit();
+    render(<MobileVisitDetailPage />);
+
+    // 到着: ディープリンクの token でプレビュー直行 → 記録 (token 同梱)。
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(checkInMutate).toHaveBeenCalledTimes(1));
+    expect(checkInMutate.mock.calls[0][0]).toMatchObject({ qr_token: 'DEEPTOKEN1' });
+
+    // 退出: token は消費済み → 再スキャン。手動フォールバックは出さない (決定#6)。
+    fireEvent.click(screen.getByText('QRで退出を記録'));
+    expect(screen.getByTestId('qr-scanner')).toBeInTheDocument();
+    expect(screen.queryByText('__manual__')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('退出の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('退出を記録する'));
+    await waitFor(() => expect(checkOutMutate).toHaveBeenCalledTimes(1));
+    expect(checkOutMutate.mock.calls[0][0]).toMatchObject({ qr_token: 'TESTTOKEN' });
   });
 });
 
