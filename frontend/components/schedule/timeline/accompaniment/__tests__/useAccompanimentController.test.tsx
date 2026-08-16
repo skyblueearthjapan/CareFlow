@@ -15,13 +15,36 @@ import type { AccompanimentWeekVisit } from '../types';
 import type { StaffRead } from '@/lib/schemas/staff';
 import { ApiError } from '@/lib/api-client';
 import * as queries from '@/lib/queries/trainee_accompaniments';
+import { toast } from 'sonner';
 
 vi.mock('@/lib/queries/trainee_accompaniments', () => ({
   useTraineeAccompaniments: vi.fn(),
   useUpdateTraineeAccompaniments: vi.fn(),
 }));
 
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+}));
+
 const mutateAsync = vi.fn();
+
+/** NG/性別の 422 (確認フローを起こす)。 */
+function constraintError() {
+  return new ApiError('unprocessable', 422, {
+    detail: {
+      code: 'constraint_confirmation_required',
+      warnings: [
+        {
+          kind: 'ng_staff',
+          patient_id: 'p1',
+          patient_name: '山田 太郎',
+          staff_id: 's1',
+          staff_name: '髙梨',
+        },
+      ],
+    },
+  });
+}
 
 function staff(id: string, name: string, isTrainee = true): StaffRead {
   return { id, name, status: 'active', role: 'staff', is_trainee: isTrainee } as StaffRead;
@@ -62,6 +85,7 @@ function setup(
 }
 
 beforeEach(() => {
+  vi.mocked(toast.error).mockClear();
   mutateAsync.mockReset();
   mutateAsync.mockResolvedValue([]);
   vi.mocked(queries.useTraineeAccompaniments).mockReturnValue({
@@ -159,7 +183,7 @@ describe('useAccompanimentController', () => {
     act(() => result.current.bar?.onConfirm());
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
     const payload = mutateAsync.mock.calls[0]![0];
-    expect(payload.trainee_staff_id).toBe('s1');
+    expect(payload.staff_id).toBe('s1');
     expect(payload.course_ids).toEqual(['c1']);
     expect(payload.visit_ids).toEqual(['v3']);
     expect(payload.defaults).toEqual([{ weekday: 0, course_template_id: 't1' }]);
@@ -226,22 +250,7 @@ describe('useAccompanimentController', () => {
   });
 
   it('NG/性別 422 は確認ダイアログ → OK で acknowledge つき再送 (確定#4)', async () => {
-    mutateAsync.mockRejectedValueOnce(
-      new ApiError('unprocessable', 422, {
-        detail: {
-          code: 'constraint_confirmation_required',
-          warnings: [
-            {
-              kind: 'ng_staff',
-              patient_id: 'p1',
-              patient_name: '山田 太郎',
-              staff_id: 's1',
-              staff_name: '髙梨',
-            },
-          ],
-        },
-      }),
-    );
+    mutateAsync.mockRejectedValueOnce(constraintError());
     const weekVisits = [visit({ visitId: 'v1', courseId: 'c1' })];
     const { result } = setup({}, weekVisits);
     act(() => result.current.enter());
@@ -255,6 +264,109 @@ describe('useAccompanimentController', () => {
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(2));
     expect(mutateAsync.mock.calls[1]![0].acknowledge_constraint_warnings).toBe(true);
     await waitFor(() => expect(result.current.active).toBe(false));
+  });
+
+  it('ack 再送がまた 422 でもダイアログを再度開かず、トーストで知らせる (ループ防止)', async () => {
+    mutateAsync.mockRejectedValue(constraintError());
+    const weekVisits = [visit({ visitId: 'v1', courseId: 'c1' })];
+    const { result } = setup({}, weekVisits);
+    act(() => result.current.enter());
+    act(() => result.current.binding.toggleCourse('c1', 't1', 0));
+    act(() => result.current.bar?.onConfirm());
+    await waitFor(() => expect(result.current.constraintDialogProps.open).toBe(true));
+
+    act(() => result.current.constraintDialogProps.onConfirm());
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(2));
+    // 2 回目の 422 では再度開かない = 無限ループしない。
+    await waitFor(() => expect(result.current.constraintDialogProps.open).toBe(false));
+    expect(mutateAsync).toHaveBeenCalledTimes(2);
+    // 無音で失敗させない。
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    // 選択は残したまま (やり直せる)。
+    expect(result.current.active).toBe(true);
+  });
+
+  it('422 以外のエラーは無音にせずトーストを出す', async () => {
+    mutateAsync.mockRejectedValueOnce(new ApiError('boom', 500, null));
+    const weekVisits = [visit({ visitId: 'v1', courseId: 'c1' })];
+    const { result } = setup({}, weekVisits);
+    act(() => result.current.enter());
+    act(() => result.current.binding.toggleCourse('c1', 't1', 0));
+    act(() => result.current.bar?.onConfirm());
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(result.current.active).toBe(true);
+  });
+
+  it('onCancel でモードを閉じ、選択・警告・確認待ちをすべて巻き戻す', async () => {
+    mutateAsync.mockRejectedValueOnce(constraintError());
+    const weekVisits = [visit({ visitId: 'v1', courseId: 'c1' })];
+    const { result } = setup({}, weekVisits);
+    act(() => result.current.enter());
+    act(() => result.current.bar?.onChangeTargetMode('visit'));
+    act(() => result.current.binding.toggleVisit('v1'));
+    act(() => result.current.bar?.onToggleSetDefault(true));
+    act(() => result.current.bar?.onConfirm());
+    await waitFor(() => expect(result.current.constraintDialogProps.open).toBe(true));
+
+    act(() => result.current.bar!.onCancel());
+    expect(result.current.active).toBe(false);
+    expect(result.current.constraintDialogProps.open).toBe(false);
+    // 再入場したら初期状態 (対象=コース単位・既定チェックOFF・選択0)。
+    act(() => result.current.enter());
+    expect(result.current.bar?.targetMode).toBe('course');
+    expect(result.current.bar?.setDefaultChecked).toBe(false);
+    expect(result.current.bar?.visitCount).toBe(0);
+    expect(result.current.bar?.courseCount).toBe(0);
+  });
+
+  it('スタッフ切替は選択・既定チェック・対象の二択をすべて初期化する', () => {
+    const weekVisits = [visit({ visitId: 'v1', courseId: 'c1' })];
+    const { result } = setup(
+      { staffOptions: [staff('s1', '髙梨'), staff('g1', '熊澤', false)] },
+      weekVisits,
+    );
+    act(() => result.current.enter());
+    act(() => result.current.bar!.onSelectStaff('s1'));
+    act(() => result.current.binding.toggleCourse('c1', 't1', 0));
+    act(() => result.current.bar?.onToggleSetDefault(true));
+    act(() => result.current.bar?.onChangeTargetMode('visit'));
+
+    act(() => result.current.bar!.onSelectStaff('g1'));
+    expect(result.current.bar?.selectedStaffId).toBe('g1');
+    expect(result.current.bar?.courseCount).toBe(0);
+    expect(result.current.bar?.setDefaultChecked).toBe(false);
+    expect(result.current.bar?.targetMode).toBe('course');
+  });
+
+  it('対象の二択を切り替えるとサーバ 422 の理由表示をクリアする', async () => {
+    mutateAsync.mockRejectedValueOnce(
+      new ApiError('unprocessable', 422, {
+        detail: {
+          code: 'accompaniment_overlap',
+          conflicts: [
+            {
+              date: '2026-08-18',
+              weekday: 1,
+              start: '10:00',
+              end: '10:35',
+              patient_name: '山田 太郎',
+              course_label: '稲毛A',
+              reason: 'own_duty',
+            },
+          ],
+        },
+      }),
+    );
+    const weekVisits = [visit({ visitId: 'v1', courseId: 'c1' })];
+    const { result } = setup({}, weekVisits);
+    act(() => result.current.enter());
+    act(() => result.current.binding.toggleCourse('c1', 't1', 0));
+    act(() => result.current.bar?.onConfirm());
+    await waitFor(() =>
+      expect(result.current.bar?.serverOverlapMessages.length).toBeGreaterThan(0),
+    );
+    act(() => result.current.bar?.onChangeTargetMode('visit'));
+    expect(result.current.bar?.serverOverlapMessages).toEqual([]);
   });
 
   it('常時表示バッジは 1 訪問/1コースの複数名を配列で返す (確定#5)', () => {

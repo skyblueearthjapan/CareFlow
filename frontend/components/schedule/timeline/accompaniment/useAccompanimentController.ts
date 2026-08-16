@@ -17,8 +17,10 @@
  * FE は「誰でも選べる・新人は先頭に出す」だけを担う。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 
 import { ApiError } from '@/lib/api-client';
+import { apiErrorMessage } from '@/lib/api/errorMessage';
 import {
   useTraineeAccompaniments,
   useUpdateTraineeAccompaniments,
@@ -367,18 +369,23 @@ export function useAccompanimentController({
   );
 
   // --- モード制御 ------------------------------------------------------------
+  /**
+   * 選択・警告・「毎週の既定」チェック・対象の二択をすべて初期状態へ戻す。
+   * スタッフ切替でも必ずこれを通す (前スタッフのチェック状態が残ったまま確定して
+   * 意図しない無期限の既定が書かれる事故を防ぐ)。
+   */
   const resetSelection = useCallback(() => {
     setSelectedCourses(new Map());
     setSelectedVisitIds(new Set());
     setServerOverlaps([]);
     setServerConflicts([]);
     setDefaultCheckedState(false);
+    setTargetMode('course');
     seededForRef.current = null;
   }, []);
 
   const enter = useCallback(() => {
     resetSelection();
-    setTargetMode('course');
     setSelectedStaffId(staffOptions.length === 1 ? (staffOptions[0]?.id ?? null) : null);
     setActive(true);
   }, [resetSelection, staffOptions]);
@@ -390,18 +397,23 @@ export function useAccompanimentController({
     constraintConfirm.reset();
   }, [resetSelection, constraintConfirm]);
 
-  const onSelectStaff = useCallback((id: string) => {
-    seededForRef.current = null;
-    setSelectedCourses(new Map());
-    setSelectedVisitIds(new Set());
-    setServerOverlaps([]);
-    setServerConflicts([]);
-    setSelectedStaffId(id);
-  }, []);
+  const onSelectStaff = useCallback(
+    (id: string) => {
+      resetSelection();
+      constraintConfirm.reset();
+      setSelectedStaffId(id);
+    },
+    [resetSelection, constraintConfirm],
+  );
 
-  const onChangeTargetMode = useCallback((mode: AccompanimentTargetMode) => {
-    setTargetMode(mode);
-  }, []);
+  const onChangeTargetMode = useCallback(
+    (mode: AccompanimentTargetMode) => {
+      // 対象を切り替えたら前の対象で出た 422 理由は無効なので消す。
+      clearServerErrors();
+      setTargetMode(mode);
+    },
+    [clearServerErrors],
+  );
 
   /**
    * 確定 PUT。NG/性別の 422 は確認ダイアログ → ack つきで自己再送する
@@ -411,7 +423,7 @@ export function useAccompanimentController({
     if (!selectedStaffId) return;
     const courseMetas = [...selectedCourses.values()];
     const payload = {
-      trainee_staff_id: selectedStaffId,
+      staff_id: selectedStaffId,
       iso_year: isoYear,
       iso_week: isoWeek,
       course_ids: [...selectedCourses.keys()],
@@ -445,8 +457,15 @@ export function useAccompanimentController({
             return;
           }
           const legacy = parseOverlapDetail(err.body);
-          if (legacy) setServerOverlaps(legacy.overlaps);
+          if (legacy) {
+            setServerOverlaps(legacy.overlaps);
+            return;
+          }
         }
+        // それ以外 (500/ネットワーク/ack 再送でも通らなかった 422 など) は
+        // 無音にせずトーストで必ず知らせる。無音の失敗は「押したのに保存された
+        // つもり」を生む。
+        toast.error(`同行の保存に失敗しました: ${apiErrorMessage(err)}`);
       }
     };
     void run(false);

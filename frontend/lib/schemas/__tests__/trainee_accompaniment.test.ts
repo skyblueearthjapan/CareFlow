@@ -8,7 +8,9 @@ import {
   formatAccompanimentConflict,
   parseAccompanimentConflictDetail,
   parseOverlapDetail,
+  traineeAccompanimentsPutSchema,
   traineeAccompanimentsResponseSchema,
+  traineeCourseGuardResponseSchema,
   visitAccompaniments,
 } from '../trainee_accompaniment';
 
@@ -209,5 +211,43 @@ describe('visitAccompaniments (確定#5 複数名 + 旧単数フォールバッ�
     ).toHaveLength(1);
     expect(visitAccompaniments({ accompaniments: [], accompaniment: null })).toEqual([]);
     expect(visitAccompaniments({})).toEqual([]);
+  });
+});
+
+describe('traineeCourseGuardResponseSchema (applicable の追随)', () => {
+  const base = { trainee_staff_id: UUID, count: 0, courses: [] };
+
+  it('applicable つきのレスポンスを受理する', () => {
+    const parsed = traineeCourseGuardResponseSchema.parse({ ...base, applicable: false });
+    expect(parsed.applicable).toBe(false);
+    // 表示分岐は従来どおり count を見る (applicable は受理のみ)。
+    expect(parsed.count).toBe(0);
+  });
+
+  it('applicable が無い旧デプロイのレスポンスも受理する', () => {
+    expect(traineeCourseGuardResponseSchema.parse(base).applicable).toBeUndefined();
+  });
+});
+
+describe('PUT ボディのキー (staff_id へ移行)', () => {
+  it('staff_id を受理し、旧 trainee_staff_id だけのボディは弾く', () => {
+    expect(
+      traineeAccompanimentsPutSchema.parse({
+        staff_id: UUID,
+        iso_year: 2026,
+        iso_week: 34,
+        course_ids: [],
+        visit_ids: [],
+      }).staff_id,
+    ).toBe(UUID);
+    expect(
+      traineeAccompanimentsPutSchema.safeParse({
+        trainee_staff_id: UUID,
+        iso_year: 2026,
+        iso_week: 34,
+        course_ids: [],
+        visit_ids: [],
+      }).success,
+    ).toBe(false);
   });
 });

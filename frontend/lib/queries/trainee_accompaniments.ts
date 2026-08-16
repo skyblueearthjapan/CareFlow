@@ -30,7 +30,9 @@ import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
 import {
+  traineeAccompanimentFutureDeleteResponseSchema,
   traineeAccompanimentsResponseSchema,
+  traineeCourseGuardResponseSchema,
   type TraineeAccompanimentDefaultRead,
   type TraineeAccompanimentDefaultsPut,
   type TraineeAccompanimentFutureDeleteResponse,
@@ -138,10 +140,10 @@ export function useUpdateTraineeAccompaniments(
     },
     ...options,
     onSuccess: (data, variables, onMutateResult, context) => {
-      // その新人ぶん + 週全体 (常時表示) の両方を invalidate。
+      // その同行者ぶん + 週全体 (常時表示) の両方を invalidate。
       void qc.invalidateQueries({ queryKey: ['trainee-accompaniments'] });
       void qc.invalidateQueries({
-        queryKey: traineeAccompanimentDefaultsKey(variables.trainee_staff_id),
+        queryKey: traineeAccompanimentDefaultsKey(variables.staff_id),
       });
       options.onSuccess?.(data, variables, onMutateResult, context);
     },
@@ -196,7 +198,7 @@ export function useUpdateTraineeAccompanimentDefaults(
     ...options,
     onSuccess: (data, variables, onMutateResult, context) => {
       void qc.invalidateQueries({
-        queryKey: traineeAccompanimentDefaultsKey(variables.trainee_staff_id),
+        queryKey: traineeAccompanimentDefaultsKey(variables.staff_id),
       });
       options.onSuccess?.(data, variables, onMutateResult, context);
     },
@@ -216,13 +218,15 @@ export function useTraineeCourseGuard(traineeStaffId: string | null | undefined,
 
   return useQuery<TraineeCourseGuardResponse, Error>({
     queryKey: traineeCourseGuardKey(traineeStaffId),
-    queryFn: () => {
+    queryFn: async () => {
       if (!traineeStaffId) throw new Error('trainee_staff_id is required');
       const qs = new URLSearchParams({ trainee_staff_id: traineeStaffId });
-      return fetcher<TraineeCourseGuardResponse>(`${BASE}/course-guard?${qs.toString()}`, {
+      const raw = await fetcher<unknown>(`${BASE}/course-guard?${qs.toString()}`, {
         accessToken,
         refreshToken,
       });
+      // 形崩れを画面ではなくここで落とす (applicable は受理のみ・判定は count)。
+      return traineeCourseGuardResponseSchema.parse(raw);
     },
     enabled: isAuthenticated && enabled && !!traineeStaffId,
   });
@@ -250,13 +254,14 @@ export function useDeleteTraineeAccompanimentsFuture(
   const { accessToken, refreshToken } = useAuthTokens();
 
   return useMutation<TraineeAccompanimentFutureDeleteResponse, Error, void>({
-    mutationFn: () => {
+    mutationFn: async () => {
       const qs = new URLSearchParams({ trainee_staff_id: traineeStaffId });
-      return fetcher<TraineeAccompanimentFutureDeleteResponse>(`${BASE}/future?${qs.toString()}`, {
+      const raw = await fetcher<unknown>(`${BASE}/future?${qs.toString()}`, {
         method: 'DELETE',
         accessToken,
         refreshToken,
       });
+      return traineeAccompanimentFutureDeleteResponseSchema.parse(raw);
     },
     ...options,
     onSuccess: (data, variables, onMutateResult, context) => {

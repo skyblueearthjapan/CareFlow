@@ -118,8 +118,16 @@ export type TraineeAccompanimentDefaultInput = z.infer<
   typeof traineeAccompanimentDefaultInputSchema
 >;
 
+/**
+ * PUT ボディ。同行者のキーは一般化後の `staff_id` (BE は旧 `trainee_staff_id` も
+ * 受け付けるが、レガシーキー削除に向けて FE は新キーだけを送る)。
+ *
+ * TODO(Phase E): フック名 / React Query キー / data-testid に残る "trainee" 呼称
+ * (`useTraineeAccompaniments` / `['trainee-accompaniments']` / GET のクエリ引数
+ * `trainee_staff_id` など) の全面リネームは、BE の互換エイリアス削除と同時に行う。
+ */
 export const traineeAccompanimentsPutSchema = z.object({
-  trainee_staff_id: z.string().uuid(),
+  staff_id: z.string().uuid(),
   iso_year: z.number().int(),
   iso_week: z.number().int(),
   course_ids: z.array(z.string().uuid()),
@@ -296,6 +304,12 @@ export const traineeCourseGuardResponseSchema = z.object({
   trainee_staff_id: z.string().uuid(),
   count: z.number().int(),
   courses: z.array(traineeCourseGuardCourseSchema),
+  /**
+   * 一般化後: このガードが適用対象か (BE が kind などから判定して載せる)。
+   * 旧デプロイでは undefined。**表示分岐は従来どおり `count` を見る** —
+   * BE 側で kind 非依存へ戻す修正が入るまで applicable は受理のみ (§4)。
+   */
+  applicable: z.boolean().optional(),
 });
 export type TraineeCourseGuardResponse = z.infer<typeof traineeCourseGuardResponseSchema>;
 
@@ -312,9 +326,9 @@ export type TraineeAccompanimentFutureDeleteResponse = z.infer<
   typeof traineeAccompanimentFutureDeleteResponseSchema
 >;
 
-/** PUT /trainee-accompaniment-defaults — 全置換ボディ。 */
+/** PUT /accompaniment-defaults — 全置換ボディ (キーは一般化後の `staff_id`)。 */
 export const traineeAccompanimentDefaultsPutSchema = z.object({
-  trainee_staff_id: z.string().uuid(),
+  staff_id: z.string().uuid(),
   items: z.array(traineeAccompanimentDefaultInputSchema),
 });
 export type TraineeAccompanimentDefaultsPut = z.infer<typeof traineeAccompanimentDefaultsPutSchema>;

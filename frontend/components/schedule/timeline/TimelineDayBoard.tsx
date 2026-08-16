@@ -616,22 +616,24 @@ function VisitCard({
       data-tl-drag={drag ? (drag.disabled ? 'disabled' : 'enabled') : undefined}
       // 小さいカードは行が出ないため、相方情報はツールチップで必ず補完する。
       title={
-        accInCourse
-          ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
-          : [
-              drag?.disabled
-                ? visit.week_pinned
-                  ? '今週固定（青ピン）中のため動かせません（青ピンを解除してから移動）'
-                  : visit.visit_group_id
-                    ? '2名体制（ペア配置）のため個別移動できません'
-                    : visit.status === 'cancelled'
-                      ? 'キャンセル済みのため移動できません'
-                      : visit.patient_address
-                : visit.patient_address,
-              partner.tooltip,
-            ]
-              .filter(Boolean)
-              .join(' / ') || undefined
+        accActive && !accompaniment!.isVisitArmed
+          ? '患者ごとに同行を付けるには、下部バーの対象を「患者単位」に切り替えてください'
+          : accInCourse
+            ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
+            : [
+                drag?.disabled
+                  ? visit.week_pinned
+                    ? '今週固定（青ピン）中のため動かせません（青ピンを解除してから移動）'
+                    : visit.visit_group_id
+                      ? '2名体制（ペア配置）のため個別移動できません'
+                      : visit.status === 'cancelled'
+                        ? 'キャンセル済みのため移動できません'
+                        : visit.patient_address
+                  : visit.patient_address,
+                partner.tooltip,
+              ]
+                .filter(Boolean)
+                .join(' / ') || undefined
       }
       className={cn(
         // group: × ボタンを hover / focus-within で出すため (G2)。
@@ -639,7 +641,8 @@ function VisitCard({
         drag && !drag.disabled && 'cursor-grab touch-none active:cursor-grabbing',
         drag?.isDragging && 'opacity-40',
         shake && 'tl-shake',
-        accActive && !accInCourse && 'cursor-pointer',
+        // armed でない対象は「押せそう」に見せない (確定#2)。
+        accActive && !accInCourse && accompaniment!.isVisitArmed && 'cursor-pointer',
         accOverlap && 'z-[4] ring-2 ring-error',
         accSelected && !accOverlap && 'z-[4] ring-2 ring-brand-primary',
       )}
@@ -1134,16 +1137,19 @@ function PairMemberRowView({
       onClick={onRowClick}
       onKeyDown={cardKeyDownHandler(onRowClick)}
       title={
-        accInCourse
-          ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
-          : undefined
+        accActive && !accompaniment!.isVisitArmed
+          ? '患者ごとに同行を付けるには、下部バーの対象を「患者単位」に切り替えてください'
+          : accInCourse
+            ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
+            : undefined
       }
       className={cn(
         'group relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded-md border border-l-[3px] px-1.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
         showHandle && 'pl-4',
         onDeleteVisit && 'pr-4',
         drag?.isDragging && 'opacity-40',
-        accActive && !accInCourse && 'cursor-pointer',
+        // armed でない対象は「押せそう」に見せない (確定#2)。
+        accActive && !accInCourse && accompaniment!.isVisitArmed && 'cursor-pointer',
         accOverlap && 'ring-2 ring-error',
         accSelected && !accOverlap && 'ring-2 ring-brand-primary',
       )}

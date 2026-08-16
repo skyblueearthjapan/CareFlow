@@ -9,6 +9,11 @@
  *
  * 追加/変更はスケジュール画面の同行モードが主導線。ここには「今週の同行」の
  * **個別解除** だけを置く (週 PUT から当該 1 件を差し引いて再送する)。
+ *
+ * 週 PUT は BE が「残る全リンク」を再検査するため、解除でも NG/性別の 422
+ * (`constraint_confirmation_required`) や重複 422 (`accompaniment_overlap`) が
+ * 返りうる。司令塔 (`useAccompanimentController`) と同じ確認フロー + 日本語の
+ * 理由表示をここにも配線する (生の英語 422 を現場に見せない)。
  */
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -17,28 +22,60 @@ import { CalendarClock, CalendarCheck, ArrowRight } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ConstraintOverrideConfirmDialog } from '@/components/schedule/v2/ConstraintOverrideConfirmDialog';
+import {
+  ackFlag,
+  useConstraintConfirmRetry,
+  type ConstraintConfirmText,
+} from '@/components/schedule/v2/useConstraintConfirmRetry';
+import { ApiError } from '@/lib/api-client';
+import { apiErrorMessage } from '@/lib/api/errorMessage';
 import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 import {
   useTraineeAccompanimentDefaults,
   useTraineeAccompaniments,
   useUpdateTraineeAccompaniments,
 } from '@/lib/queries/trainee_accompaniments';
-import type { TraineeAccompanimentItem } from '@/lib/schemas/trainee_accompaniment';
+import {
+  formatAccompanimentConflict,
+  parseAccompanimentConflictDetail,
+  parseOverlapDetail,
+  type TraineeAccompanimentItem,
+} from '@/lib/schemas/trainee_accompaniment';
 import { WEEKDAY_LABELS } from '@/lib/schemas/staff';
 
-/** 週リンク一覧を PUT の course_ids / visit_ids へ畳む (解除は差し引いて再送)。 */
+/** 解除経路の NG/性別 確認ダイアログ文言。 */
+export const ACCOMPANIMENT_RELEASE_CONSTRAINT_TEXT: ConstraintConfirmText = {
+  title: 'それでも同行を解除しますか？',
+  description: '解除後に残る同行がNGスタッフ/性別制限に該当します',
+  confirmLabel: '解除する',
+};
+
+/**
+ * 週リンク一覧を PUT の course_ids / visit_ids へ畳む (解除は差し引いて再送)。
+ *
+ * リンク先 id が解決できない行は `unresolved` に集める。**黙って落とすと
+ * その同行まで一緒に消える**ため、呼び出し側は 1 件でもあれば解除を中断する
+ * (破壊的操作は安全側に倒す)。
+ */
 export function buildWeekLinkIds(
   items: readonly TraineeAccompanimentItem[],
   excludeId?: string,
-): { course_ids: string[]; visit_ids: string[] } {
+): { course_ids: string[]; visit_ids: string[]; unresolved: TraineeAccompanimentItem[] } {
   const course_ids: string[] = [];
   const visit_ids: string[] = [];
+  const unresolved: TraineeAccompanimentItem[] = [];
   for (const it of items) {
     if (excludeId && it.id === excludeId) continue;
-    if (it.target_type === 'course' && it.course?.id) course_ids.push(it.course.id);
-    if (it.target_type === 'visit' && it.visit?.id) visit_ids.push(it.visit.id);
+    if (it.target_type === 'course') {
+      if (it.course?.id) course_ids.push(it.course.id);
+      else unresolved.push(it);
+    } else if (it.target_type === 'visit') {
+      if (it.visit?.id) visit_ids.push(it.visit.id);
+      else unresolved.push(it);
+    }
   }
-  return { course_ids, visit_ids };
+  return { course_ids, visit_ids, unresolved };
 }
 
 export function AccompanimentSummary({
@@ -59,8 +96,9 @@ export function AccompanimentSummary({
   });
 
   const [releasingId, setReleasingId] = useState<string | null>(null);
-  const [releaseError, setReleaseError] = useState<string | null>(null);
+  const [releaseErrors, setReleaseErrors] = useState<string[]>([]);
   const updateMut = useUpdateTraineeAccompaniments();
+  const constraintConfirm = useConstraintConfirmRetry();
 
   const defaults = [...(data ?? [])].sort((a, b) => a.weekday - b.weekday);
   const weekItems = useMemo(() => {
@@ -73,21 +111,60 @@ export function AccompanimentSummary({
     });
   }, [weekQuery.data]);
 
-  const handleRelease = async (item: TraineeAccompanimentItem) => {
-    setReleaseError(null);
+  /**
+   * 今週の同行を 1 件解除する (週 PUT の減算)。
+   * NG/性別 422 → 確認ダイアログ → ack つきで再送 / 重複 422 → 日本語の理由表示。
+   */
+  const handleRelease = async (item: TraineeAccompanimentItem, acknowledge = false) => {
+    setReleaseErrors([]);
+    const { course_ids, visit_ids, unresolved } = buildWeekLinkIds(weekQuery.data ?? [], item.id);
+    if (unresolved.length > 0) {
+      // 送ると解決できなかったリンクまで巻き添えで消える → 中断して人に返す。
+      setReleaseErrors([
+        `今週の同行のうち ${unresolved.length} 件がリンク先を特定できないため、安全のため解除を中止しました。画面を再読み込みしても直らない場合は管理者へご連絡ください。`,
+      ]);
+      return;
+    }
     setReleasingId(item.id);
-    const ids = buildWeekLinkIds(weekQuery.data ?? [], item.id);
     try {
       await updateMut.mutateAsync({
-        trainee_staff_id: staffId,
+        staff_id: staffId,
         iso_year: isoYear,
         iso_week: isoWeek,
-        ...ids,
+        course_ids,
+        visit_ids,
         // 毎週の既定には触れない (今週ぶんの解除のみ)。
         defaults: null,
+        ...ackFlag(acknowledge),
       });
     } catch (err) {
-      setReleaseError(err instanceof Error ? err.message : '解除に失敗しました');
+      // NG/性別 → 確認ダイアログ (OK なら ack つきで再送)。
+      if (!acknowledge) {
+        const captured = constraintConfirm.capture(
+          err,
+          () => handleRelease(item, true),
+          ACCOMPANIMENT_RELEASE_CONSTRAINT_TEXT,
+        );
+        if (captured) return;
+      }
+      if (err instanceof ApiError && err.status === 422) {
+        const conflict = parseAccompanimentConflictDetail(err.body);
+        if (conflict) {
+          setReleaseErrors(conflict.conflicts.map(formatAccompanimentConflict));
+          return;
+        }
+        const legacy = parseOverlapDetail(err.body);
+        if (legacy) {
+          setReleaseErrors(
+            legacy.overlaps.map(
+              (o) =>
+                `${o.date} ${o.a.patient_name ?? '—'} と ${o.b.patient_name ?? '—'} の時間が重なるため解除できません`,
+            ),
+          );
+          return;
+        }
+      }
+      setReleaseErrors([apiErrorMessage(err, '解除に失敗しました')]);
     } finally {
       setReleasingId(null);
     }
@@ -147,10 +224,16 @@ export function AccompanimentSummary({
           <CalendarCheck className="h-4 w-4" />
           今週の同行（{isoYear}-W{String(isoWeek).padStart(2, '0')}）
         </div>
-        {releaseError && (
-          <Alert variant="destructive" className="mb-2">
-            <AlertTitle>解除に失敗しました</AlertTitle>
-            <AlertDescription>{releaseError}</AlertDescription>
+        {releaseErrors.length > 0 && (
+          <Alert variant="destructive" className="mb-2" data-testid="accompaniment-release-error">
+            <AlertTitle>解除できませんでした</AlertTitle>
+            <AlertDescription>
+              <ul className="space-y-1">
+                {releaseErrors.map((m) => (
+                  <li key={m}>{m}</li>
+                ))}
+              </ul>
+            </AlertDescription>
           </Alert>
         )}
         {weekQuery.isLoading ? (
@@ -208,6 +291,9 @@ export function AccompanimentSummary({
           </Link>
         </Button>
       </div>
+
+      {/* NG スタッフ §7-2: 解除後に残る同行が NG/性別に抵触したときの確認 (ack 再送)。 */}
+      <ConstraintOverrideConfirmDialog {...constraintConfirm.dialogProps} />
     </div>
   );
 }

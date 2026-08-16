@@ -167,9 +167,11 @@ function WeekCard({
       data-testid={`wtl-visit-${v.id}`}
       data-accompaniment-selected={accSelected ? 'true' : undefined}
       title={
-        accInCourse
-          ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
-          : (v.patient_address ?? undefined)
+        accActive && !accompaniment!.isVisitArmed
+          ? '患者ごとに同行を付けるには、下部バーの対象を「患者単位」に切り替えてください'
+          : accInCourse
+            ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
+            : (v.patient_address ?? undefined)
       }
       className={cn(
         'absolute flex flex-col gap-px rounded-md border border-l-[3px] px-1.5 py-0.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
@@ -394,9 +396,11 @@ function WeekPairBox({
               data-accompaniment-selected={accSelected ? 'true' : undefined}
               onClick={onCardClick}
               title={
-                accInCourse
-                  ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
-                  : undefined
+                accActive && !accompaniment!.isVisitArmed
+                  ? '患者ごとに同行を付けるには、下部バーの対象を「患者単位」に切り替えてください'
+                  : accInCourse
+                    ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
+                    : undefined
               }
               className={cn(
                 'relative flex min-h-0 flex-1 flex-col justify-center gap-px rounded border border-l-[3px] px-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
