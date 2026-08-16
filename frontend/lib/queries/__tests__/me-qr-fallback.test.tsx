@@ -45,21 +45,30 @@ beforeEach(() => {
 });
 
 describe('useMyVisit — 担当外フォールバック', () => {
-  it('通常の GET が通れば qr_token は付けない', async () => {
+  it('通常の GET はトークンを一切送らない', async () => {
     (fetcher as Mock).mockResolvedValueOnce(VISIT);
     const { result } = renderHook(() => useMyVisit('visit-1', 'TOK123'), { wrapper });
     await waitFor(() => expect(result.current.data).toBeTruthy());
     expect((fetcher as Mock).mock.calls).toHaveLength(1);
-    expect((fetcher as Mock).mock.calls[0][0]).toBe('/api/v1/visits/visit-1');
+    const [path, init] = (fetcher as Mock).mock.calls[0] as [string, Record<string, unknown>];
+    expect(path).toBe('/api/v1/visits/visit-1');
+    expect(init.headers).toBeUndefined();
   });
 
-  it('404 + qr_token 所持なら ?qr_token= 付きで取り直す', async () => {
+  it('404 + qr_token 所持なら X-QR-Token ヘッダで取り直す (URL には残さない)', async () => {
     (fetcher as Mock)
       .mockRejectedValueOnce(new ApiError('not found', 404, null))
       .mockResolvedValueOnce(VISIT);
     const { result } = renderHook(() => useMyVisit('visit-1', 'TOK123'), { wrapper });
     await waitFor(() => expect(result.current.data).toBeTruthy());
-    expect((fetcher as Mock).mock.calls[1][0]).toBe('/api/v1/visits/visit-1?qr_token=TOK123');
+    const [path, init] = (fetcher as Mock).mock.calls[1] as [
+      string,
+      { headers?: Record<string, string> },
+    ];
+    // トークンはヘッダのみ。クエリに載せるとアクセスログ/Referer/履歴に残る。
+    expect(path).toBe('/api/v1/visits/visit-1');
+    expect(path).not.toContain('qr_token');
+    expect(init.headers).toEqual({ 'X-QR-Token': 'TOK123' });
   });
 
   it('qr_token が無ければ 404 のままエラー (担当外の秘匿を維持)', async () => {

@@ -215,10 +215,15 @@ export function useMyVisits(params: UseMyVisitsParams = {}): UseQueryResult<MyVi
  * GET /api/v1/visits/{id} — single visit detail (auth-scoped on the server).
  *
  * `qrToken` を渡すと**担当外フォールバック**が効く: 通常の GET が 404 (担当外は
- * 秘匿されたまま = 設計 §1 決定#1) のとき、`?qr_token=` 付きで取り直す。トークンが
+ * 秘匿されたまま = 設計 §1 決定#1) のとき、QR トークンを鍵に取り直す。トークンが
  * その visit の患者に解決できればサーバは 200 を返す (設計 §4-2)。これにより
  * 代行スタッフでも訪問詳細 → 打刻の導線が 1 本で通る。
+ *
+ * トークンは**ヘッダ `X-QR-Token` で送る**。クエリ (`?qr_token=`) だと URL が
+ * アクセスログ・Referer・ブラウザ履歴に残り、現地証明の鍵が漏れる (BEレビュー
+ * 指摘)。サーバはクエリも後方互換で受けるが、FE からは送らない。
  */
+const QR_TOKEN_HEADER = 'X-QR-Token';
 export function useMyVisit(
   visitId: string | null | undefined,
   qrToken?: string | null,
@@ -239,10 +244,11 @@ export function useMyVisit(
       } catch (err) {
         // 担当外 (404) + QR 所持 → トークンを鍵に取り直す。それ以外はそのまま。
         if (!qrToken || !(err instanceof ApiError) || err.status !== 404) throw err;
-        return fetcher<MyVisit>(
-          `/api/v1/visits/${visitId}?qr_token=${encodeURIComponent(qrToken)}`,
-          { accessToken, refreshToken },
-        );
+        return fetcher<MyVisit>(`/api/v1/visits/${visitId}`, {
+          accessToken,
+          refreshToken,
+          headers: { [QR_TOKEN_HEADER]: qrToken },
+        });
       }
     },
   });
