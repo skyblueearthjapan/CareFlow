@@ -313,7 +313,7 @@ async def _apply_staff_mentor(db: AsyncSession, request: PendingRequest, payload
 
     旧「曜日×午前/午後×同行者」機構 (staff_companion_assignments・向きが逆) を撤去した。
     新人フラグは PATCH /staff で直接更新し、同行はスケジュール画面の同行モードで
-    設定する (trainee_accompaniments が唯一の正典)。
+    設定する (accompaniments が唯一の正典)。
 
     既存の未処理 ``staff_mentor`` 申請が残っていても一覧表示は壊れない
     (enum / FE ラベルは存続) が、承認 (適用) しようとした場合はここで

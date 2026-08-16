@@ -43,10 +43,10 @@ from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_checkin import VisitCheckin
 from app.models.visit_review import VisitReview
 from app.models.visit_staff_assignment import VisitStaffAssignment
+from app.services.accompaniment import resolve_accompaniment_by_visit
 from app.services.checkin.judge import load_thresholds
 from app.services.checkin.monitor import compute_pair_effective_starts, visit_staff_id_set
 from app.services.constraint_override_notify import collect_constraint_warnings_for_staff
-from app.services.trainee_accompaniment import resolve_accompaniment_by_visit
 from app.utils.db import try_advisory_xact_lock
 
 logger = logging.getLogger(__name__)
@@ -207,11 +207,13 @@ async def _resolve_visit_staff_ids(db: AsyncSession, visit: Visit) -> set[UUID]:
             )
         ).all()
     )
-    accompaniment = (await resolve_accompaniment_by_visit(db, [visit])).get(visit.id)
+    # 同行は複数名あり得る (一般化 決定#5)。代表 1 名だけ渡すと 2 人目の同行者の
+    # 打刻が「代行」と誤判定され、管理者へ誤通知が飛ぶため**全件**渡す。
+    accompaniment = (await resolve_accompaniment_by_visit(db, [visit])).get(visit.id, [])
     return visit_staff_id_set(
         visit,
         assignment_staff_ids=assignment_ids,
-        accompaniment_staff_id=accompaniment[0] if accompaniment is not None else None,
+        accompaniment_staff_ids=[e.staff_id for e in accompaniment],
     )
 
 

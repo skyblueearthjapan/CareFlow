@@ -1,8 +1,14 @@
-"""新人同行 (trainee accompaniment) Phase 1 BE テスト — 設計 §10.
+"""同行 (accompaniment) BE テスト — 設計 §10 / 一般化 (mig 0072).
+
+**本ファイルは旧パス (``/api/v1/trainee-accompaniments`` 系) を叩き続ける**。
+一般化 §3-8 の互換エイリアスが生きていること (旧 FE がそのまま動くこと) を、
+基盤の全観点ごと回帰で守るのが狙い。新パス (``/accompaniments``) と一般化で
+追加した挙動は ``test_accompaniments_general.py`` が受け持つ。
 
 検証観点:
-- 既定 GET/PUT (trainee 以外 409 / 曜日重複 422 / テンプレ不正 422 / RBAC)
-- 週 PUT の重複 422 (同時刻・部分交差・コース×個別・別日 OK) / 週不一致 422 / trainee 以外 409
+- 既定 GET/PUT (曜日重複 422 / テンプレ不正 422 / RBAC)
+- 週 PUT の重複 422 (同時刻・部分交差・コース×個別・別日 OK) / 週不一致 422
+- **新人限定の 409 が撤廃されたこと** (一般スタッフでも登録できる)
 - 既定展開の冪等性 (2 回展開・proposed 除外・manual 不上書き)
 - 孤立リンク掃除 (soft-delete 済み course/visit)
 - 可視性 3 経路 (list / GET by id / checkin)・他人に漏れない
@@ -19,17 +25,17 @@ import pytest
 
 from app.core.security import create_access_token, hash_password
 from app.models import (
+    Accompaniment,
+    AccompanimentDefault,
     Course,
     CourseTemplate,
     Office,
     Patient,
     Staff,
-    TraineeAccompaniment,
-    TraineeAccompanimentDefault,
     User,
     Visit,
 )
-from app.services.trainee_accompaniment import expand_accompaniment_defaults
+from app.services.accompaniment import expand_accompaniment_defaults
 
 JST = ZoneInfo("Asia/Tokyo")
 
@@ -188,7 +194,13 @@ async def test_put_defaults_and_get(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_put_defaults_not_trainee_409(client, db) -> None:
+async def test_put_defaults_general_staff_allowed_no_more_409(client, db) -> None:
+    """一般化 §3-1: 新人限定の 409 は**撤廃**された (一般スタッフも既定を持てる).
+
+    旧仕様は ``is_trainee=False`` を 409 で弾いていた。同行を一般スタッフへ
+    開放した以上、ここで弾いてはいけない (回帰防止のため 409 でないことを明示)。
+    kind はサーバ自動判定で 'support' になる。
+    """
     admin = await _make_user(db, "ta-def2@example.com", "admin")
     non_trainee = await _make_staff(db, "ベテラン", is_trainee=False)
     office = await _make_office(db)
@@ -202,7 +214,13 @@ async def test_put_defaults_not_trainee_409(client, db) -> None:
             "items": [{"weekday": 0, "course_template_id": str(t.id)}],
         },
     )
-    assert res.status_code == 409, res.text
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(body) == 1
+    assert body[0]["kind"] == "support"
+    assert body[0]["staff_id"] == str(non_trainee.id)
+    # 旧 FE 互換キーも同じ値で返る。
+    assert body[0]["trainee_staff_id"] == str(non_trainee.id)
 
 
 @pytest.mark.asyncio
@@ -318,7 +336,11 @@ async def test_put_week_course_link_and_get(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_put_week_not_trainee_409(client, db) -> None:
+async def test_put_week_general_staff_allowed_no_more_409(client, db) -> None:
+    """一般化 §3-1: 週 PUT でも新人限定の 409 は**撤廃**された.
+
+    一般スタッフのリンクは kind='support' で保存される (サーバ自動判定)。
+    """
     admin = await _make_user(db, "ta-w2@example.com", "admin")
     non_trainee = await _make_staff(db, "ベテランF", is_trainee=False)
     office = await _make_office(db)
@@ -334,7 +356,11 @@ async def test_put_week_not_trainee_409(client, db) -> None:
             "course_ids": [str(course.id)],
         },
     )
-    assert res.status_code == 409, res.text
+    assert res.status_code == 200, res.text
+    items = res.json()["items"]
+    assert len(items) == 1
+    assert items[0]["kind"] == "support"
+    assert items[0]["staff_id"] == str(non_trainee.id)
 
 
 @pytest.mark.asyncio
@@ -387,7 +413,12 @@ async def test_put_week_visit_week_mismatch_422(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_put_week_overlap_same_time_422(client, db) -> None:
-    """2 コースの訪問が同一日同時刻に重なる → 確定ブロック 422 (重複ペア詳細)."""
+    """2 コースの訪問が同一日同時刻に重なる → 確定ブロック 422 (構造化 conflicts).
+
+    一般化 決定#1 で detail の形が ``{code, message, conflicts[]}`` に統一された
+    (旧: ``{message, overlaps[]}`` のペア形)。同行選択どうしの衝突は
+    ``reason='accompaniment'`` で**両方の訪問**が載る。
+    """
     admin = await _make_user(db, "ta-ov1@example.com", "admin")
     trainee = await _make_staff(db, "新人I", is_trainee=True)
     office = await _make_office(db)
@@ -414,8 +445,18 @@ async def test_put_week_overlap_same_time_422(client, db) -> None:
     )
     assert res.status_code == 422, res.text
     detail = res.json()["detail"]
-    assert "overlaps" in detail
-    assert len(detail["overlaps"]) == 1
+    assert detail["code"] == "accompaniment_overlap"
+    conflicts = detail["conflicts"]
+    # 衝突ペアの両側が 1 件ずつ載る (どちらが悪いとも言えないため)。
+    assert len(conflicts) == 2
+    assert {c["reason"] for c in conflicts} == {"accompaniment"}
+    assert {c["patient_name"] for c in conflicts} == {"山田", "佐藤"}
+    for c in conflicts:
+        assert c["date"] == _week_date(0).isoformat()
+        assert c["weekday"] == 0
+        assert c["start"] == "10:00"
+        assert c["end"] == "11:00"
+        assert c["course_label"] in {"A", "C"}
 
 
 @pytest.mark.asyncio
@@ -679,7 +720,7 @@ async def test_expand_idempotent(db) -> None:
     t = await _make_template(db, office, "A")
     course = await _make_course(db, office, weekday=0, code="A", template_id=t.id)
     db.add(
-        TraineeAccompanimentDefault(trainee_staff_id=trainee.id, weekday=0, course_template_id=t.id)
+        AccompanimentDefault(accompanying_staff_id=trainee.id, weekday=0, course_template_id=t.id)
     )
     await db.commit()
 
@@ -703,7 +744,7 @@ async def test_expand_skips_proposed(db) -> None:
     # proposed コースは展開対象外
     await _make_course(db, office, weekday=0, code="A", template_id=t.id, status="proposed")
     db.add(
-        TraineeAccompanimentDefault(trainee_staff_id=trainee.id, weekday=0, course_template_id=t.id)
+        AccompanimentDefault(accompanying_staff_id=trainee.id, weekday=0, course_template_id=t.id)
     )
     await db.commit()
 
@@ -720,15 +761,15 @@ async def test_expand_manual_not_overwritten(db) -> None:
     t = await _make_template(db, office, "A")
     course = await _make_course(db, office, weekday=0, code="A", template_id=t.id)
     db.add(
-        TraineeAccompaniment(
-            trainee_staff_id=trainee.id,
+        Accompaniment(
+            accompanying_staff_id=trainee.id,
             target_type="course",
             course_id=course.id,
             source="manual",
         )
     )
     db.add(
-        TraineeAccompanimentDefault(trainee_staff_id=trainee.id, weekday=0, course_template_id=t.id)
+        AccompanimentDefault(accompanying_staff_id=trainee.id, weekday=0, course_template_id=t.id)
     )
     await db.commit()
 
@@ -751,16 +792,16 @@ async def test_orphan_cleanup(db) -> None:
         db, p, visit_date=_week_date(0), start=time(10, 0), end=time(11, 0), deleted=True
     )
     db.add(
-        TraineeAccompaniment(
-            trainee_staff_id=trainee.id,
+        Accompaniment(
+            accompanying_staff_id=trainee.id,
             target_type="course",
             course_id=dead_course.id,
             source="manual",
         )
     )
     db.add(
-        TraineeAccompaniment(
-            trainee_staff_id=trainee.id,
+        Accompaniment(
+            accompanying_staff_id=trainee.id,
             target_type="visit",
             visit_id=dead_visit.id,
             source="manual",
@@ -773,7 +814,7 @@ async def test_orphan_cleanup(db) -> None:
 
     from sqlalchemy import func, select
 
-    remaining = await db.scalar(select(func.count()).select_from(TraineeAccompaniment))
+    remaining = await db.scalar(select(func.count()).select_from(Accompaniment))
     assert remaining == 0
 
 
@@ -803,8 +844,11 @@ async def test_visibility_list_via_course_link(client, db) -> None:
         primary_staff_id=mentor.id,
     )
     db.add(
-        TraineeAccompaniment(
-            trainee_staff_id=trainee.id, target_type="course", course_id=course.id, source="manual"
+        Accompaniment(
+            accompanying_staff_id=trainee.id,
+            target_type="course",
+            course_id=course.id,
+            source="manual",
         )
     )
     await db.commit()
@@ -848,8 +892,8 @@ async def test_visibility_get_by_id_via_visit_link(client, db) -> None:
         primary_staff_id=mentor.id,
     )
     db.add(
-        TraineeAccompaniment(
-            trainee_staff_id=trainee.id, target_type="visit", visit_id=v.id, source="manual"
+        Accompaniment(
+            accompanying_staff_id=trainee.id, target_type="visit", visit_id=v.id, source="manual"
         )
     )
     await db.commit()
@@ -874,8 +918,8 @@ async def test_visibility_checkin_via_visit_link(client, db) -> None:
         db, p, visit_date=today, start=time(10, 0), end=time(11, 0), primary_staff_id=mentor.id
     )
     db.add(
-        TraineeAccompaniment(
-            trainee_staff_id=trainee.id, target_type="visit", visit_id=v.id, source="manual"
+        Accompaniment(
+            accompanying_staff_id=trainee.id, target_type="visit", visit_id=v.id, source="manual"
         )
     )
     await db.commit()
@@ -913,8 +957,11 @@ async def test_monitor_accompaniment_field(db) -> None:
         primary_staff_id=mentor.id,
     )
     db.add(
-        TraineeAccompaniment(
-            trainee_staff_id=trainee.id, target_type="course", course_id=course.id, source="manual"
+        Accompaniment(
+            accompanying_staff_id=trainee.id,
+            target_type="course",
+            course_id=course.id,
+            source="manual",
         )
     )
     await db.commit()
@@ -1035,16 +1082,16 @@ async def test_delete_future_removes_future_links_and_defaults_keeps_past(client
 
     # 週リンク 2 件 (今週 + 過去週) を直接 INSERT。
     db.add(
-        TraineeAccompaniment(
-            trainee_staff_id=trainee.id,
+        Accompaniment(
+            accompanying_staff_id=trainee.id,
             target_type="course",
             course_id=future_course.id,
             source="manual",
         )
     )
     db.add(
-        TraineeAccompaniment(
-            trainee_staff_id=trainee.id,
+        Accompaniment(
+            accompanying_staff_id=trainee.id,
             target_type="course",
             course_id=past_course.id,
             source="manual",
@@ -1052,8 +1099,8 @@ async def test_delete_future_removes_future_links_and_defaults_keeps_past(client
     )
     # 既定も 1 件。
     db.add(
-        TraineeAccompanimentDefault(
-            trainee_staff_id=trainee.id,
+        AccompanimentDefault(
+            accompanying_staff_id=trainee.id,
             weekday=0,
             course_template_id=t.id,
         )
@@ -1074,14 +1121,14 @@ async def test_delete_future_removes_future_links_and_defaults_keeps_past(client
 
     remaining_links = await db.scalar(
         select(func.count())
-        .select_from(TraineeAccompaniment)
-        .where(TraineeAccompaniment.trainee_staff_id == trainee.id)
+        .select_from(Accompaniment)
+        .where(Accompaniment.accompanying_staff_id == trainee.id)
     )
     assert remaining_links == 1
     remaining_defaults = await db.scalar(
         select(func.count())
-        .select_from(TraineeAccompanimentDefault)
-        .where(TraineeAccompanimentDefault.trainee_staff_id == trainee.id)
+        .select_from(AccompanimentDefault)
+        .where(AccompanimentDefault.accompanying_staff_id == trainee.id)
     )
     assert remaining_defaults == 0
 
@@ -1114,7 +1161,7 @@ async def test_delete_future_rbac_staff_forbidden(client, db) -> None:
 def select_ta(trainee_id, course_id):
     from sqlalchemy import select
 
-    return select(TraineeAccompaniment).where(
-        TraineeAccompaniment.trainee_staff_id == trainee_id,
-        TraineeAccompaniment.course_id == course_id,
+    return select(Accompaniment).where(
+        Accompaniment.accompanying_staff_id == trainee_id,
+        Accompaniment.course_id == course_id,
     )

@@ -68,6 +68,12 @@ from app.schemas.v2.auto_allocate import (
 )
 from app.schemas.v2.patient_fixed_visit import PatientFixedVisitMode, PatientFixedVisitV2Read
 from app.schemas.v2.visit import VisitV2Read
+from app.services.accompaniment import (
+    AccompanimentDutyWarning,
+    collect_accompaniment_duty_warnings,
+    expand_accompaniment_defaults,
+    notify_accompaniment_duty_conflict,
+)
 from app.services.constraint_override_notify import (
     ConstraintWarning,
     collect_constraint_warnings,
@@ -108,7 +114,6 @@ from app.services.scheduling.layer3_assignment import (
     UnresolvedGenderWarning,
     UnresolvedNgStaffWarning,
 )
-from app.services.trainee_accompaniment import expand_accompaniment_defaults
 
 logger = logging.getLogger(__name__)
 
@@ -2187,6 +2192,10 @@ class ApplyStaffReviewRequest(BaseModel):
     iso_year: int = Field(ge=2000, le=2100)
     iso_week: int = Field(ge=1, le=53)
     items: list[ApplyStaffReviewItem] = Field(min_length=1)
+    # 同行×担当の逆方向警告 (一般化 決定#1 後段) の通知冪等キー。
+    # **非破壊追加** (省略可): 与えられれば同一 apply の再送で通知が増えない。
+    # 省略時はサーバが毎回発行する (= 再送のたびに 1 通)。
+    op_group_id: UUID | None = None
 
 
 class ApplyStaffReviewResultItem(BaseModel):
@@ -2207,6 +2216,10 @@ class ApplyStaffReviewResponse(BaseModel):
     applied_count: int
     results: list[ApplyStaffReviewResultItem] = Field(default_factory=list)
     message: str
+    # 一般化 決定#1 後段 (docs/plans/general-accompaniment-design.md):
+    # 担当を付けた日に、その人の同行リンクが入っていた場合の警告 (**非ブロック**)。
+    # 非破壊追加 (既定 []) — 旧 FE は無視できる。
+    accompaniment_warnings: list[dict] = Field(default_factory=list)
 
 
 @router.post(
@@ -2293,6 +2306,7 @@ async def apply_staff_review(
             )
 
     results: list[ApplyStaffReviewResultItem] = []
+    accompaniment_warnings: list[dict] = []
 
     try:
         # ----- 対象 course を当該週・非削除でロード -----
@@ -2449,6 +2463,35 @@ async def apply_staff_review(
                     op_group_id=None,
                 )
 
+        # ----- 一般化 決定#1 後段: 逆方向 (同行が先・担当が後) の警告 + 管理者通知 -----
+        # ブロックはしない (エンジンのハード対応は別案件)。「担当する訪問と同行が
+        # **時間帯で交差**する」ものだけを FE のトーストと管理者ベルの両方へ出す
+        # (同日というだけで鳴らすとノイズ — レビュー M-4)。
+        # 同一スタッフが複数コースに乗る場合はコースをまとめて 1 回で引く (N+1 禁止)。
+        _courses_by_staff: dict[UUID, list[UUID]] = {}
+        for _cid, _sid in apply_staff_by_course.items():
+            if _cid in course_by_id:
+                _courses_by_staff.setdefault(_sid, []).append(_cid)
+        _all_warns: list[AccompanimentDutyWarning] = []
+        for _sid in sorted(_courses_by_staff, key=str):
+            _all_warns.extend(
+                await collect_accompaniment_duty_warnings(
+                    db, staff_id=_sid, course_ids=sorted(_courses_by_staff[_sid], key=str)
+                )
+            )
+        if _all_warns:
+            accompaniment_warnings.extend(w.to_payload() for w in _all_warns)
+            # apply 1 回分の識別子で **1 通に集約**する (レビュー M-4)。
+            # スタッフごとに送ると、同じ op_group_id の 2 通目以降が冪等判定で
+            # 落ちて別スタッフの警告が消える — 集約が正しい形。
+            # payload に op_group_id が来ていればそれを使い、FE の再送を冪等化する。
+            await notify_accompaniment_duty_conflict(
+                db,
+                warnings=_all_warns,
+                actor=current_user,
+                op_group_id=payload.op_group_id or uuid.uuid4(),
+            )
+
         # ----- 自動割付と同一の _persist 経由で反映 -----
         assigner = Layer3Assigner()
         await assigner._persist(db, assignments)
@@ -2468,6 +2511,7 @@ async def apply_staff_review(
         applied_count=applied_count,
         results=results,
         message=f"Applied staff to {applied_count} courses",
+        accompaniment_warnings=accompaniment_warnings,
     )
 
 

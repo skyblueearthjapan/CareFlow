@@ -128,3 +128,8 @@ class CourseV2Read(CourseV2Base):
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None
+    # 一般化 決定#1 後段 (docs/plans/general-accompaniment-design.md):
+    # 担当を付けた日に、その人の同行リンクが入っていた場合の警告 (**非ブロック**)。
+    # ORM に対応する属性は無く、``PATCH`` が model_copy で載せるときだけ非空になる
+    # (from_attributes の解決では既定 [] が使われる = GET/LIST は従来どおり)。
+    accompaniment_warnings: list[dict] = Field(default_factory=list)

@@ -10,7 +10,7 @@ areas / max_per_day / skill_level / assignment_volume の 6 + 3 項目。
 
 W10-BE1: mentor_id 廃止、is_trainee 追加。
 Phase 2 (新人同行 v1.1 §3): 旧 staff_companion_assignments 機構は撤去済み。
-同行は trainee_accompaniments (スケジュール画面の同行モード) が正典。
+同行は accompaniments (スケジュール画面の同行モード) が正典。
 """
 
 from __future__ import annotations
@@ -99,3 +99,9 @@ class StaffRead(StaffBase):
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None
+    # 同行のライフサイクル (docs/plans/general-accompaniment-design.md §3-7):
+    # status を active から外した PATCH が畳んだ同行リンク / 既定の件数。
+    # ORM に対応する属性は無く、``PATCH`` が model_copy で載せるときだけ非ゼロ
+    # (GET/LIST は from_attributes の解決で既定 0)。FE 表示配線は Phase E。
+    purged_accompaniment_links: int = 0
+    purged_accompaniment_defaults: int = 0

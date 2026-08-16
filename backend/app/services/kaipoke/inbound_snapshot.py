@@ -25,9 +25,9 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+from app.models.accompaniment import ACCOMPANIMENT_KIND_TRAINEE, Accompaniment
 from app.models.course import Course
 from app.models.inbound_snapshot import InboundSnapshot
-from app.models.trainee_accompaniment import TraineeAccompaniment
 from app.models.visit import Visit
 from app.models.visit_checkin import VisitCheckin
 from app.models.visit_staff_assignment import VisitStaffAssignment
@@ -131,7 +131,7 @@ async def snapshot_week(
     visit_ids = [v.id for v in visits]
 
     assignment_rows: list[VisitStaffAssignment] = []
-    accompaniment_rows: list[TraineeAccompaniment] = []
+    accompaniment_rows: list[Accompaniment] = []
     if visit_ids:
         assignment_rows = list(
             (
@@ -143,9 +143,9 @@ async def snapshot_week(
         accompaniment_rows = list(
             (
                 await db.scalars(
-                    select(TraineeAccompaniment).where(
-                        TraineeAccompaniment.target_type == "visit",
-                        TraineeAccompaniment.visit_id.in_(visit_ids),
+                    select(Accompaniment).where(
+                        Accompaniment.target_type == "visit",
+                        Accompaniment.visit_id.in_(visit_ids),
                     )
                 )
             ).all()
@@ -160,10 +160,21 @@ async def snapshot_week(
             for a in assignment_rows
             if a.visit_id in index_of
         ],
+        # mig 0072 で列名が trainee_staff_id → accompanying_staff_id へ変わった。
+        # **旧キーも書き続ける**理由は「本番に残る **mig 0072 以前に取った**
+        # スナップショットを、新コードの復元側が読めるようにする」ことと対で、
+        # ペイロードの形を新旧どちらの読み手でも壊さないため。
+        #
+        # 注意: これは「アプリだけ旧デプロイへ戻す」ケースの保険にはならない。
+        # 旧コードは旧テーブル (trainee_accompaniments) を読むので、mig を戻さない
+        # 限り復元以前に動かない。migration 込みでロールバックする前提。
+        # 復元側は新キー優先 → 旧キーの順で読む。
         "accompaniments": [
             {
                 "visit_index": index_of[a.visit_id],
-                "trainee_staff_id": _dump(a.trainee_staff_id),
+                "accompanying_staff_id": _dump(a.accompanying_staff_id),
+                "trainee_staff_id": _dump(a.accompanying_staff_id),
+                "kind": a.kind,
                 "source": a.source,
             }
             for a in accompaniment_rows
@@ -310,14 +321,18 @@ async def restore_snapshot(
             db.add(VisitStaffAssignment(visit_id=new_visits[idx].id, staff_id=sid))
     for tdata in snap.payload.get("accompaniments") or []:
         idx = tdata.get("visit_index")
-        tid = _load_uuid(tdata.get("trainee_staff_id"))
+        # 新キー優先 → 旧キー (mig 0072 以前に取ったスナップショットの復元)。
+        tid = _load_uuid(tdata.get("accompanying_staff_id")) or _load_uuid(
+            tdata.get("trainee_staff_id")
+        )
         if isinstance(idx, int) and 0 <= idx < len(new_visits) and tid is not None:
             db.add(
-                TraineeAccompaniment(
-                    trainee_staff_id=tid,
+                Accompaniment(
+                    accompanying_staff_id=tid,
                     target_type="visit",
                     visit_id=new_visits[idx].id,
                     source=tdata.get("source") or "manual",
+                    kind=tdata.get("kind") or ACCOMPANIMENT_KIND_TRAINEE,
                     created_by=None,
                 )
             )

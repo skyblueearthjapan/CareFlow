@@ -6,7 +6,7 @@ areas / max_per_day / skill_level / assignment_volume の 8 カラムを削除�
 
 W10-BE1: mentor_id / MentorAssignment 廃止。is_trainee 追加。
 Phase 2 (新人同行 v1.1 §3): 旧 staff_companion_assignments 機構を撤去。
-新人同行は trainee_accompaniments/defaults (mig 0060) が唯一の正典。
+同行は accompaniments/accompaniment_defaults (mig 0060 → 0072 で汎化) が唯一の正典。
 """
 
 from __future__ import annotations

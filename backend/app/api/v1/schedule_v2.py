@@ -4720,7 +4720,7 @@ async def _apply_visit_move_week_only(
             v.primary_staff_id = new_staff_id  # 新担当が未割当なら None (=未割当表示)
             # VSA は「旧 primary の行だけ」を外して新 primary を足す。全削除にすると
             # 2 名体制の相方 (secondary) の可視性まで巻き添えで消える。
-            # 新人同行は trainee_accompaniments 側で管理され VSA には書かないため
+            # 同行は accompaniments 側で管理され VSA には書かないため
             # (2026-07-12 の教訓)、ここで触れる必要はない。
             if _old_staff_id is not None and _old_staff_id != new_staff_id:
                 await db.execute(

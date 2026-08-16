@@ -6,6 +6,7 @@ Alembic autogenerate can see them.
 
 from app.models.acceptance_calendar import AcceptanceCalendar
 from app.models.acceptance_calendar_week import AcceptanceCalendarWeek
+from app.models.accompaniment import Accompaniment, AccompanimentDefault
 from app.models.audit_log import AuditLog
 from app.models.checkin_settings import CheckinSettings
 from app.models.city import City
@@ -39,10 +40,6 @@ from app.models.staff import (
     StaffWeeklyOverride,
 )
 from app.models.suggestion_dismissal import SuggestionDismissal
-from app.models.trainee_accompaniment import (
-    TraineeAccompaniment,
-    TraineeAccompanimentDefault,
-)
 from app.models.user import User
 from app.models.visit import Visit
 from app.models.visit_checkin import VisitCheckin
@@ -53,6 +50,8 @@ from app.models.visit_staff_assignment import VisitStaffAssignment
 __all__ = [
     "AcceptanceCalendar",
     "AcceptanceCalendarWeek",
+    "Accompaniment",
+    "AccompanimentDefault",
     "AuditLog",
     "CheckinSettings",
     "City",
@@ -90,8 +89,6 @@ __all__ = [
     "StaffSecondaryOffice",
     "StaffShift",
     "StaffWeeklyOverride",
-    "TraineeAccompaniment",
-    "TraineeAccompanimentDefault",
     "User",
     "Visit",
     "VisitCheckin",

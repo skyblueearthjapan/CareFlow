@@ -27,10 +27,10 @@ from typing import TYPE_CHECKING
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
+from app.models.accompaniment import Accompaniment
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.course_template import CourseTemplate
 from app.models.patient import Patient
-from app.models.trainee_accompaniment import TraineeAccompaniment
 from app.models.visit import Visit
 from app.models.visit_checkin import VisitCheckin
 from app.services.kaipoke.inbound import (
@@ -195,16 +195,16 @@ async def replace_week_from_kaipoke(
     # コース単位の同行リンク (staff2 判定①: コースの同行新人は secondary にしない)
     acc_rows = (
         await db.scalars(
-            select(TraineeAccompaniment).where(
-                TraineeAccompaniment.target_type == "course",
-                TraineeAccompaniment.course_id.in_(list(course_idx.by_id.keys()) or [uuid.uuid4()]),
+            select(Accompaniment).where(
+                Accompaniment.target_type == "course",
+                Accompaniment.course_id.in_(list(course_idx.by_id.keys()) or [uuid.uuid4()]),
             )
         )
     ).all()
     accompaniment_by_course: dict[uuid.UUID, set[uuid.UUID]] = {}
     for a in acc_rows:
         if a.course_id is not None:
-            accompaniment_by_course.setdefault(a.course_id, set()).add(a.trainee_staff_id)
+            accompaniment_by_course.setdefault(a.course_id, set()).add(a.accompanying_staff_id)
 
     # --- 臨時コースの掃除 (2026-07-26) ---------------------------------------
     # 前回の置換が作った臨系コースは、訪問の白紙化で空になっても行が残る。
@@ -482,8 +482,8 @@ async def replace_week_from_kaipoke(
                 await _replace_assignments(db, new_visit, [s for s in (sid, sid2) if s is not None])
                 if accompaniment_sid2 is not None:
                     db.add(
-                        TraineeAccompaniment(
-                            trainee_staff_id=accompaniment_sid2,
+                        Accompaniment(
+                            accompanying_staff_id=accompaniment_sid2,
                             target_type="visit",
                             visit_id=new_visit.id,
                             source="manual",

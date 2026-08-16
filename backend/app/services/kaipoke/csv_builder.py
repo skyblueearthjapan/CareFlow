@@ -184,7 +184,7 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
     from app.models.office import Office
     from app.models.staff import Staff
     from app.models.visit import Visit
-    from app.services.trainee_accompaniment import resolve_accompaniment_by_visit
+    from app.services.accompaniment import resolve_primary_accompaniment_by_visit
 
     first = date(opts.year, opts.month, 1)
     last = date(opts.year, opts.month, monthrange(opts.year, opts.month)[1])
@@ -203,10 +203,14 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
     )
     visits = list((await db.scalars(stmt)).all())
 
-    # 新人同行 (設計 §9): visit_id -> (trainee_staff_id, name) をバッチ解決 (N+1 回避)。
-    # 唯一の正典 trainee_accompaniments を live JOIN で引く。職員名2/3 の解決順は
-    # secondary(要2名の正規2人目) → 同行(新人) → mentor(レガシー)。
-    accompaniment_by_visit = await resolve_accompaniment_by_visit(db, visits)
+    # 同行 (設計 §9): visit_id -> (staff_id, name) をバッチ解決 (N+1 回避)。
+    # 唯一の正典 accompaniments を live JOIN で引く。職員名2/3 の解決順は
+    # secondary(要2名の正規2人目) → 同行 → mentor(レガシー)。
+    #
+    # **代表 1 名のみ**採る (mig 0072 時点の据え置き): 複数同行を職員名2/3 へ
+    # どう配分するか (一般化 決定#6) は Phase D の課題で、ここは従来の 1 名分の
+    # 挙動を変えない。代表の選び方だけが last-wins → 決定的順序に直っている。
+    accompaniment_by_visit = await resolve_primary_accompaniment_by_visit(db, visits)
 
     # スタッフを一括ロード (name/qualification 解決用)。同行の新人も qualification
     # 解決のため staff_ids に含める。

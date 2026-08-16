@@ -40,6 +40,11 @@ from app.models.user import User
 from app.models.visit import Visit
 from app.schemas.course import CourseCreate, CourseRead, CourseUpdate
 from app.schemas.v2.enums import CourseStatus
+from app.services.accompaniment import (
+    AccompanimentDutyWarning,
+    collect_accompaniment_duty_warnings,
+    notify_accompaniment_duty_conflict,
+)
 from app.services.constraint_override_notify import (
     ConstraintWarning,
     collect_constraint_warnings,
@@ -347,6 +352,7 @@ async def update_course(
     _new_assigned = update_data.get("assigned_staff_id")
     _cand: Staff | None = None
     _constraint_warnings: list[ConstraintWarning] = []
+    _accompaniment_warnings: list[AccompanimentDutyWarning] = []
     if "assigned_staff_id" in update_data and _new_assigned is not None:
         _cand = await db.scalar(
             select(Staff).where(Staff.id == _new_assigned, Staff.deleted_at.is_(None))
@@ -373,6 +379,16 @@ async def update_course(
                     "code": "constraint_confirmation_required",
                     "warnings": [w.to_detail() for w in _constraint_warnings],
                 },
+            )
+
+        # 逆方向の警告 (一般化 決定#1 後段): 同行を先に登録してから担当を割り当てる
+        # 向きは**ブロックしない** (エンジンのハード対応は別案件)。このコースの訪問と
+        # その人の同行が**時間帯で交差**するときだけ警告 + 管理者通知を出す
+        # (同日というだけで鳴らすとノイズになる — レビュー M-4)。
+        # 新人 422 / NG・性別 422 の**後** = 弾かれる担当に対して余計なクエリを走らせない。
+        if _cand is not None:
+            _accompaniment_warnings = await collect_accompaniment_duty_warnings(
+                db, staff_id=_cand.id, course_ids=[course.id]
             )
 
     # assigned_staff_id 変更を op_log に記録するため変更前の値を保存
@@ -414,6 +430,16 @@ async def update_course(
             op_group_id=_op_group_id,
         )
 
+    # 一般化 決定#1 後段: 同行と担当が同日に重なった事実を管理者へお知らせする
+    # (ブロックはしない)。commit 前に add = 担当変更と同一トランザクション。
+    if _accompaniment_warnings:
+        await notify_accompaniment_duty_conflict(
+            db,
+            warnings=_accompaniment_warnings,
+            actor=current_user,
+            op_group_id=_op_group_id,
+        )
+
     await _commit_or_409(db)
     await db.refresh(course)
 
@@ -444,7 +470,11 @@ async def update_course(
         )
         await db.commit()
 
-    return _to_read(course)
+    # 逆方向の警告は**レスポンスにも**載せる (非破壊追加・既定 [])。
+    # 通知だけだと操作した本人がその場で気づけないため、FE がトーストを出せる形で返す。
+    return _to_read(course).model_copy(
+        update={"accompaniment_warnings": [w.to_payload() for w in _accompaniment_warnings]}
+    )
 
 
 @router.delete(

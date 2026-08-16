@@ -16,12 +16,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.models.accompaniment import Accompaniment
 from app.models.correction_sheet import CorrectionSheetItem
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.staff import Staff
-from app.models.trainee_accompaniment import TraineeAccompaniment
 from app.models.visit import Visit
 from app.services.diff.engine import compare_schedules_from_content
 from app.services.kaipoke.csv_builder import (
@@ -123,8 +123,8 @@ async def _visit(
 
 def _link_course(db, trainee: Staff, course: Course) -> None:
     db.add(
-        TraineeAccompaniment(
-            trainee_staff_id=trainee.id,
+        Accompaniment(
+            accompanying_staff_id=trainee.id,
             target_type="course",
             course_id=course.id,
             source="manual",
@@ -452,9 +452,9 @@ async def test_inbound_edit_trainee_staff2_auto_accompaniment(db) -> None:
     assert summary.updated == 1  # リンク作成を実変更として updated 集計。
 
     link = await db.scalar(
-        select(TraineeAccompaniment).where(
-            TraineeAccompaniment.trainee_staff_id == trainee.id,
-            TraineeAccompaniment.visit_id == visit.id,
+        select(Accompaniment).where(
+            Accompaniment.accompanying_staff_id == trainee.id,
+            Accompaniment.visit_id == visit.id,
         )
     )
     assert link is not None
@@ -592,9 +592,9 @@ async def test_inbound_add_trainee_staff2_auto_accompaniment(db) -> None:
     assert new_visit.required_staff_count == 1  # 要2名化しない。
 
     link = await db.scalar(
-        select(TraineeAccompaniment).where(
-            TraineeAccompaniment.trainee_staff_id == trainee.id,
-            TraineeAccompaniment.visit_id == new_visit.id,
+        select(Accompaniment).where(
+            Accompaniment.accompanying_staff_id == trainee.id,
+            Accompaniment.visit_id == new_visit.id,
         )
     )
     assert link is not None
@@ -629,7 +629,7 @@ async def test_inbound_dry_run_no_accompaniment_created(db) -> None:
     )
     await db.commit()
 
-    count = await db.scalar(select(func.count()).select_from(TraineeAccompaniment))
+    count = await db.scalar(select(func.count()).select_from(Accompaniment))
     assert count == 0  # dry_run では一切書き込まない。
     # dry_run でも判定は実書き込み時と同じ (edit=updated / add=added)。
     assert summary.updated == 1
@@ -671,10 +671,10 @@ async def test_inbound_edit_trainee_staff2_idempotent_reapply(db) -> None:
 
     count = await db.scalar(
         select(func.count())
-        .select_from(TraineeAccompaniment)
+        .select_from(Accompaniment)
         .where(
-            TraineeAccompaniment.trainee_staff_id == trainee.id,
-            TraineeAccompaniment.visit_id == visit.id,
+            Accompaniment.accompanying_staff_id == trainee.id,
+            Accompaniment.visit_id == visit.id,
         )
     )
     assert count == 1  # 冪等: リンクは 1 件のまま。

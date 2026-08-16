@@ -25,20 +25,20 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
+from app.models.accompaniment import Accompaniment
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.course_template import CourseTemplate
 from app.models.kaipoke_job import KaipokeJob
 from app.models.patient import Patient
 from app.models.staff import Staff
-from app.models.trainee_accompaniment import TraineeAccompaniment
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
+from app.services.accompaniment import (
+    resolve_accompaniment_staff_by_course,
+    resolve_accompaniment_staff_by_visit,
+)
 from app.services.kaipoke.name_match import build_name_index, match_name
 from app.services.kaipoke.ng_conflicts import NgConflict, NgPair, collect_ng_conflicts
-from app.services.trainee_accompaniment import (
-    resolve_accompaniment_trainee_by_course,
-    resolve_accompaniment_trainees_by_visit,
-)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -365,13 +365,13 @@ async def apply_inbound_items(
     # カイポケへ送った「同行の新人」が逆取込で staff2 として返ってきたとき、それを
     # 「要2名患者」として secondary_staff_id へ書き戻す/required_staff_count=2 へ昇格
     # させると汚染が起きる。同行リンク済みの新人と一致する staff2 は同行由来とみなし
-    # 反映しない (同行は trainee_accompaniments が唯一の正典)。
+    # 反映しない (同行は accompaniments が唯一の正典)。
     # - edit/delete 経路: 実在 visit を visit_id で突合 (バッチ・N+1 回避)。
     # - add 経路: 新設 visit が張り付くコースの course-level リンクで突合。
     # いずれも「新人集合への membership 判定」(複数新人リンク時の last-wins 非決定性で
     # 誤って secondary へ書き戻す汚染を防ぐ — Phase 3 レビュー MINOR-2)。
-    accompaniment_by_visit = await resolve_accompaniment_trainees_by_visit(db, list(index.values()))
-    accompaniment_by_course = await resolve_accompaniment_trainee_by_course(
+    accompaniment_by_visit = await resolve_accompaniment_staff_by_visit(db, list(index.values()))
+    accompaniment_by_course = await resolve_accompaniment_staff_by_course(
         db, list(course_idx.by_id.keys())
     )
 
@@ -656,8 +656,8 @@ async def apply_inbound_items(
                                 not in accompaniment_by_visit.get(revive.id, set())
                             ):
                                 db.add(
-                                    TraineeAccompaniment(
-                                        trainee_staff_id=accompaniment_sid2,
+                                    Accompaniment(
+                                        accompanying_staff_id=accompaniment_sid2,
                                         target_type="visit",
                                         visit_id=revive.id,
                                         source="manual",
@@ -705,8 +705,8 @@ async def apply_inbound_items(
                         # visit_id) が冪等を担保 (新設 visit の id は毎回新規のため衝突なし)。
                         if accompaniment_sid2 is not None:
                             db.add(
-                                TraineeAccompaniment(
-                                    trainee_staff_id=accompaniment_sid2,
+                                Accompaniment(
+                                    accompanying_staff_id=accompaniment_sid2,
                                     target_type="visit",
                                     visit_id=new_visit.id,
                                     source="manual",
@@ -817,7 +817,7 @@ async def apply_inbound_items(
                     resolved_sid2 = uuid.UUID(sid2_str)
                     # staff2 の 3 段階判定 (案B・設計 §9 拡張):
                     # ① 既存の同行リンクと一致 → secondary へ書かず要2名化しない
-                    #    (ラウンドトリップ汚染防止。同行は trainee_accompaniments が唯一の正典)。
+                    #    (ラウンドトリップ汚染防止。同行は accompaniments が唯一の正典)。
                     if resolved_sid2 in accompaniment_by_visit.get(visit.id, set()):
                         notes.append(
                             f"担当2「{staff2_after_name}」は同行のため未反映（要2名化しない）"
@@ -958,8 +958,8 @@ async def apply_inbound_items(
             # を担保 (別実行の二重取込は再ロードされた突合集合で判定 ① に落ちる)。
             if accompaniment_sid2 is not None:
                 db.add(
-                    TraineeAccompaniment(
-                        trainee_staff_id=accompaniment_sid2,
+                    Accompaniment(
+                        accompanying_staff_id=accompaniment_sid2,
                         target_type="visit",
                         visit_id=visit.id,
                         source="manual",

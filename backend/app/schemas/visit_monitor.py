@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class MonitorThresholds(BaseModel):
@@ -58,9 +58,14 @@ class MonitorVisit(BaseModel):
     # 2 名体制 (required_staff_count=2) のグルーピングキー。同一値の visit が 2 行。
     # 通常訪問は None。KPI / アラートはこの単位で 1 論理訪問に重複排除する。
     visit_group_id: UUID | None = None
-    # 新人同行 (非破壊追加). 同行新人が付く訪問なら姓名、無ければ None (行ヘッダ/詳細
-    # パネルで「＋◯◯（同行）」表示用)。同行リンクは JOIN 解決 (visits には書かない)。
+    # 同行 (非破壊追加)。行ヘッダ/詳細パネルの「＋◯◯（同行）」表示用。
+    # 同行リンクは JOIN 解決する (visits には書かない)。
+    #
+    # ``accompaniment_staff_names`` = **全件** (決定的順序: support 優先 → 名前昇順)。
+    # 一般化 決定#5 で 1 訪問に複数同行者を認めたため、こちらが正。
+    # ``accompaniment_staff_name`` (単数) は後方互換で先頭要素を載せ続ける。
     accompaniment_staff_name: str | None = None
+    accompaniment_staff_names: list[str] = Field(default_factory=list)
     # 実績 (最新 arrival 打刻の staff)。予定担当 (staff_id) と食い違う = 代行。
     # 設計 ``docs/plans/qr-open-checkin-design.md`` §6: 予定側の担当は書き換えず、
     # 「予定した人 / 実際に行った人」を並記する。未到着は None。
