@@ -83,8 +83,15 @@
   **QR capability 分岐**を追加。可視でない場合でも、payload の `qr_token` が
   **その visit の患者**に解決できれば通す（解決失敗・別患者は従来どおり 404/409/410）。
   `qr_token` 無しの担当外は従来どおり 404（= 決定#6 の QR 必須をサーバ側で強制）。
-- `GET /visits/{visit_id}?qr_token=...`: 同じ capability 分岐を**読み取りにも適用**
-  （担当外の訪問詳細フォールバック表示を一本化するため。token が患者一致なら 200）。
+- `GET /visits/{visit_id}`: 同じ capability 分岐を**読み取りにも適用**（担当外の訪問詳細
+  フォールバック表示を一本化するため。token が患者一致なら 200）。トークンは
+  **`X-QR-Token` ヘッダで送るのが正**（`?qr_token=` クエリは後方互換のみ。アクセスログ/
+  Referer/履歴への露出対策・レビュー指摘 2026-08-16）。
+- **担当外への GET は絞り込み projection**（レビュー指摘→ディレクター決定 2026-08-16）:
+  capability 分岐を通った担当外に返す VisitRead は `note=None` / `kaipoke_id=None` /
+  `staff_assignments=[]` / `accompaniment=None` に落とす。患者氏名・住所・座標・性別・
+  時刻・status・latest_checkin・primary 担当名は維持（現地前提で正当・resolve v2 開示済み
+  範囲）。担当者本人の GET は従来どおり全量。
 - no-show は QR capability 分岐を**適用しない**（担当のみ・現行維持）。
 - **代行の退出は再スキャン必須**: FE はトークンを保持しない（第1弾の「1記録で消費・
   退出は改めて現地で読む」を踏襲）。退出時の再スキャン → `/q/{token}` → 候補に
@@ -94,7 +101,11 @@
 - 入力 = `CheckinCreate` 同等（qr_token 必須）。1トランザクションで
   「visit 生成（§3）+ arrival checkin（judge 経由）+ 通知」まで行う。
 - 二重生成ガード: 同患者×同スタッフ×当日で in_progress の `is_unplanned` visit が
-  既にあればそれを返す（再スキャンで増殖させない）。
+  既にあればそれを返す（再スキャンで増殖させない）。同時 POST の競合は
+  **advisory lock**（`try_advisory_xact_lock`・hash(patient_id, staff_id, 当日JST)）で
+  TX 冒頭に直列化する（read-then-insert だけでは二重生成し得る。レビュー指摘 2026-08-16）。
+- **checkout にも substitute / ng_staff 通知を配線**（退出のみの代行が無通知で
+  completed になる穴を塞ぐ。reference 冪等なので到着時通知済みなら重複しない）。
 - checkout は生成された visit に対する通常の `POST /visits/{id}/checkout`
   （primary=本人なので既存可視性で通る）。checkout 時に `end_time` を実時刻へ更新。
 
@@ -132,9 +143,12 @@
 
 - `build_monitor` 拡張:
   - 各 visit に `actual_staff_id / actual_staff_name / is_substitute` を付与
-    （最新 arrival checkin の staff_id で判定・担当集合に含まれなければ substitute）。
-  - `is_unplanned` visit は**専用行**に集約（行キー `unplanned` 固定・当日発生分のみ・
-    コース行グルーピングから除外）。バー表示は「患者名+実績スタッフ名」。
+    （**いずれかの arrival 打刻者が担当集合外なら substitute** — 「最新 arrival のみ」だと
+    代行後に担当が打刻するとバッジが消え通知と不整合になるため。レビュー指摘 2026-08-16）。
+  - `is_unplanned` visit は**専用行**に集約（**実績スタッフの主担当拠点別の行キー**
+    `(unplanned, office_id)` — 拠点フィルタで行ごと消える/他拠点が混ざる破綻を防ぐ。
+    ラベルは共通「📌予定外訪問」・当日発生分のみ・コース行グルーピングから除外）。
+    バー表示は「患者名+実績スタッフ名」。
 - `compute_alert` 拡張: `is_substitute` / `is_unplanned` は **review 級**でトレイに載せ、
   理由ラベル「代行」「予定外」を表示（トレイ優先順は 未訪問→場所違い→要確認 の現行を
   維持し、要確認内の一種として扱う）。reviewed（確認済み）で消えるのは現行どおり。
