@@ -20,7 +20,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.trainee_accompaniment import AccompanimentRef
+from app.schemas.accompaniment import AccompanimentRef
 from app.schemas.v2.visit import VisitStaffAssignmentV2Read
 from app.schemas.visit_checkin import CheckinRead
 
@@ -124,10 +124,15 @@ class VisitRead(VisitBase):
     # QR チェックイン (Phase 1) の最新打刻 (非破壊追加). 未打刻なら None.
     # 既存クライアント (me.ts の MyVisit) は本フィールドを無視できる.
     latest_checkin: CheckinRead | None = None
-    # 新人同行 (非破壊追加・R-9 の patient_sex と同じ流儀). 同行新人が付く訪問なら
-    # その最小参照、無ければ None. 同行リンクは trainee_accompaniments が唯一の正典で、
-    # 読み出し時に JOIN 解決する (visits.*_staff_id には書かない)。
+    # 同行 (非破壊追加・R-9 の patient_sex と同じ流儀). 同行リンクは accompaniments が
+    # 唯一の正典で、読み出し時に JOIN 解決する (visits.*_staff_id には書かない)。
+    #
+    # ``accompaniments`` = **全件** (決定的順序: support 優先 → 名前昇順)。
+    # 一般化 決定#5 で 1 訪問に複数同行者を認めたため、こちらが正となる。
+    # ``accompaniment`` (単数) は**後方互換**として先頭要素を載せ続ける
+    # (FE 移行後に deprecate)。同行が無ければ空配列 / None。
     accompaniment: AccompanimentRef | None = None
+    accompaniments: list[AccompanimentRef] = Field(default_factory=list)
     # 予定外訪問 (visits.is_unplanned / 設計 qr-open-checkin-design.md §3)。
     # ``adhoc-checkin`` がその場で生成した実績行なら true。**読み取り専用**として
     # ここ (VisitRead) にだけ置く: VisitBase に置くと POST /visits の入力になり、

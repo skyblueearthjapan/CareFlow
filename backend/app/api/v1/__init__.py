@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     acceptance_calendar,
     acceptance_matrix,
+    accompaniments,
     admin,
     admin_checkin,
     admin_geocoding,
@@ -42,7 +43,6 @@ from app.api.v1 import (
     staff_excel,
     staff_overrides,
     staff_shifts,
-    trainee_accompaniments,
     visit_monitor,
     visit_photos,
     visit_review,
@@ -154,12 +154,13 @@ api_router.include_router(
 )
 # W3-BE-FIX: POST /schedule/fix (週レイアウト → patients.weekly_pattern).
 # W4-BE7 で /schedule/generate-week が同じ router に追加される予定。
-# 新人同行 (trainee accompaniment): 週リンク一覧/一括置換 + 既定 GET/PUT.
-# ルートは絶対パス (/trainee-accompaniments[-defaults]) のため prefix なしで登録する。
-api_router.include_router(trainee_accompaniments.router, tags=["trainee-accompaniments"])
+# 同行 (accompaniment): 週リンク一覧/一括置換 + 既定 GET/PUT + course-guard/future.
+# ルートは絶対パス (/accompaniments[-defaults]) のため prefix なしで登録する。
+# 旧 /trainee-accompaniments 系は同 router 内の互換エイリアス (一般化 §3-8)。
+api_router.include_router(accompaniments.router, tags=["accompaniments"])
 # 特別訪問週間 (special visit week): 期間 + マーク (○ 追加枠 / 固定訪問の日単位退避).
 # ルートは絶対パス (/special-visit-periods[...] / /special-visit-marks[...]) のため
-# prefix なしで登録する (trainee_accompaniments と同方針)。
+# prefix なしで登録する (accompaniments と同方針)。
 api_router.include_router(special_visits.router, tags=["special-visits"])
 api_router.include_router(schedule.router, prefix="/schedule", tags=["schedule"])
 # W41 v2.0: auto-schedule v2 (差分追加 / 全面最適化 / 個別採用 / 固定枠に戻す).

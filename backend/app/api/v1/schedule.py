@@ -68,6 +68,11 @@ from app.schemas.v2.auto_allocate import (
 )
 from app.schemas.v2.patient_fixed_visit import PatientFixedVisitMode, PatientFixedVisitV2Read
 from app.schemas.v2.visit import VisitV2Read
+from app.services.accompaniment import (
+    collect_accompaniment_duty_warnings,
+    expand_accompaniment_defaults,
+    notify_accompaniment_duty_conflict,
+)
 from app.services.constraint_override_notify import (
     ConstraintWarning,
     collect_constraint_warnings,
@@ -108,7 +113,6 @@ from app.services.scheduling.layer3_assignment import (
     UnresolvedGenderWarning,
     UnresolvedNgStaffWarning,
 )
-from app.services.trainee_accompaniment import expand_accompaniment_defaults
 
 logger = logging.getLogger(__name__)
 
@@ -2207,6 +2211,10 @@ class ApplyStaffReviewResponse(BaseModel):
     applied_count: int
     results: list[ApplyStaffReviewResultItem] = Field(default_factory=list)
     message: str
+    # 一般化 決定#1 後段 (docs/plans/general-accompaniment-design.md):
+    # 担当を付けた日に、その人の同行リンクが入っていた場合の警告 (**非ブロック**)。
+    # 非破壊追加 (既定 []) — 旧 FE は無視できる。
+    accompaniment_warnings: list[dict] = Field(default_factory=list)
 
 
 @router.post(
@@ -2293,6 +2301,7 @@ async def apply_staff_review(
             )
 
     results: list[ApplyStaffReviewResultItem] = []
+    accompaniment_warnings: list[dict] = []
 
     try:
         # ----- 対象 course を当該週・非削除でロード -----
@@ -2449,6 +2458,32 @@ async def apply_staff_review(
                     op_group_id=None,
                 )
 
+        # ----- 一般化 決定#1 後段: 逆方向 (同行が先・担当が後) の警告 + 管理者通知 -----
+        # ブロックはしない (エンジンのハード対応は別案件)。「担当を付けた日に
+        # その人の同行が入っている」ことを FE のトーストと管理者ベルの両方へ出す。
+        # 同一スタッフが複数コースに乗る場合は日付をまとめて 1 回で引く (N+1 禁止)。
+        _dates_by_staff: dict[UUID, set[date]] = {}
+        for _cid, _sid in apply_staff_by_course.items():
+            _c = course_by_id.get(_cid)
+            if _c is None:
+                continue
+            try:
+                _d = date.fromisocalendar(_c.iso_year, _c.iso_week, _c.weekday + 1)
+            except ValueError:
+                continue
+            _dates_by_staff.setdefault(_sid, set()).add(_d)
+        for _sid in sorted(_dates_by_staff, key=str):
+            _warns = await collect_accompaniment_duty_warnings(
+                db, staff_id=_sid, dates=sorted(_dates_by_staff[_sid])
+            )
+            if not _warns:
+                continue
+            accompaniment_warnings.extend(w.to_payload() for w in _warns)
+            # apply 単位の識別子が無いため reference_id=None (= 毎回通知)。
+            await notify_accompaniment_duty_conflict(
+                db, warnings=_warns, actor=current_user, op_group_id=None
+            )
+
         # ----- 自動割付と同一の _persist 経由で反映 -----
         assigner = Layer3Assigner()
         await assigner._persist(db, assignments)
@@ -2468,6 +2503,7 @@ async def apply_staff_review(
         applied_count=applied_count,
         results=results,
         message=f"Applied staff to {applied_count} courses",
+        accompaniment_warnings=accompaniment_warnings,
     )
 
 

@@ -41,6 +41,12 @@ from app.models.visit_checkin import VisitCheckin
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.visit import VisitCreate, VisitRead, VisitUpdate
 from app.schemas.visit_checkin import CheckinCreate, QrResolveRead
+from app.services.accompaniment import (
+    AccompanimentEntry,
+    accompaniment_visibility_condition,
+    is_accompaniment_visit_for_staff,
+    resolve_accompaniment_by_visit,
+)
 from app.services.checkin.judge import (
     JST,
     judge_checkin,
@@ -59,11 +65,6 @@ from app.services.constraint_override_notify import (
     constraint_confirmation_detail,
 )
 from app.services.op_log_service import fmt_time, fmt_weekday, record_op
-from app.services.trainee_accompaniment import (
-    accompaniment_visibility_condition,
-    is_accompaniment_visit_for_staff,
-    resolve_accompaniment_by_visit,
-)
 from app.utils.db import try_advisory_xact_lock
 
 router = APIRouter()
@@ -219,7 +220,7 @@ def _serialize_visit(
     visit: Visit,
     assignments: list[dict] | None = None,
     latest_checkin: dict | None = None,
-    accompaniment: dict | None = None,
+    accompaniments: list[dict] | None = None,
 ) -> dict:
     """Project a Visit (with optional eager-loaded patient/primary_staff) into
     the VisitRead shape, including denormalized `patient_name`/`staff_name`
@@ -277,8 +278,13 @@ def _serialize_visit(
         "staff_assignments": assignments or [],
         # QR チェックイン (Phase 1) の最新打刻. 既存呼出は None のまま (非破壊).
         "latest_checkin": latest_checkin,
-        # 新人同行 (非破壊追加). 同行新人が付く訪問なら {staff_id, staff_name}、無ければ None.
-        "accompaniment": accompaniment,
+        # 同行 (非破壊追加). 一般化 決定#5 で複数名対応。``accompaniments`` が全件
+        # (決定的順序)、``accompaniment`` は後方互換の先頭要素。
+        # **手書き dict の罠**: week_pinned / is_unplanned と同じ位置づけで、ここに
+        # 足し忘れると VisitRead の default (None / []) で潰れて DB に居るのに
+        # API が返さない (過去に実際に起きた事故)。
+        "accompaniments": accompaniments or [],
+        "accompaniment": (accompaniments[0] if accompaniments else None),
     }
     return data
 
@@ -306,18 +312,22 @@ def _restrict_to_qr_capability(data: dict) -> dict:
         "kaipoke_id": None,
         "staff_assignments": [],
         "accompaniment": None,
+        "accompaniments": [],
         "latest_checkin": (
             {**latest_checkin, "reason": None} if latest_checkin is not None else None
         ),
     }
 
 
-def _accompaniment_payload(resolved: tuple[UUID, str | None] | None) -> dict | None:
-    """resolve_accompaniment_by_visit の (staff_id, name) を VisitRead.accompaniment 形へ."""
-    if resolved is None:
-        return None
-    staff_id, staff_name = resolved
-    return {"staff_id": staff_id, "staff_name": staff_name}
+def _accompaniment_payload(resolved: list[AccompanimentEntry] | None) -> list[dict]:
+    """resolve_accompaniment_by_visit のエントリ列を VisitRead.accompaniments 形へ.
+
+    順序は解決側が保証する決定的順序 (support 優先 → 名前昇順) をそのまま保つ。
+    先頭が後方互換の単数 ``accompaniment`` になるので、並べ替えてはいけない。
+    """
+    if not resolved:
+        return []
+    return [e.to_payload() for e in resolved]
 
 
 @router.get("", response_model=list[VisitRead], summary="List visits")
@@ -407,7 +417,7 @@ async def list_visits(
             v,
             assignments=assignments_by_visit.get(v.id, []),
             latest_checkin=latest_by_visit.get(v.id),
-            accompaniment=_accompaniment_payload(accompaniment_by_visit.get(v.id)),
+            accompaniments=_accompaniment_payload(accompaniment_by_visit.get(v.id)),
         )
         for v in rows
     ]
@@ -602,7 +612,7 @@ async def get_visit(
         visit,
         assignments=assignments,
         latest_checkin=latest_checkin,
-        accompaniment=_accompaniment_payload(accompaniment_by_visit.get(visit.id)),
+        accompaniments=_accompaniment_payload(accompaniment_by_visit.get(visit.id)),
     )
     if via_qr_capability:
         payload = _restrict_to_qr_capability(payload)
@@ -1075,7 +1085,7 @@ async def _checkin_response(db, visit_id: UUID) -> dict:
         visit,
         assignments=assignments,
         latest_checkin=latest_checkin,
-        accompaniment=_accompaniment_payload(accompaniment_by_visit.get(visit_id)),
+        accompaniments=_accompaniment_payload(accompaniment_by_visit.get(visit_id)),
     )
 
 

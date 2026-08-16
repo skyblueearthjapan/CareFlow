@@ -47,8 +47,8 @@ from app.schemas.visit_monitor import (
     NearbyPatient,
     NearbyResponse,
 )
+from app.services.accompaniment import resolve_accompaniment_by_visit
 from app.services.checkin.judge import load_thresholds
-from app.services.trainee_accompaniment import resolve_accompaniment_by_visit
 from app.utils.geo import haversine_m
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -191,7 +191,7 @@ def visit_staff_id_set(
     visit: Visit,
     *,
     assignment_staff_ids: Iterable[UUID] = (),
-    accompaniment_staff_id: UUID | None = None,
+    accompaniment_staff_ids: Iterable[UUID] = (),
 ) -> set[UUID]:
     """visit の **担当集合** (予定として紐付いたスタッフ全員) を組む.
 
@@ -202,15 +202,19 @@ def visit_staff_id_set(
     2 箇所でズレないようにするための単一ソース。
 
     ``assignment_staff_ids`` (visit_staff_assignments) と
-    ``accompaniment_staff_id`` (新人同行) は呼び出し側が解決して渡す
+    ``accompaniment_staff_ids`` (同行) は呼び出し側が解決して渡す
     (1 件引きと一括引きでクエリ形が違うため)。
+
+    同行は**複数名**になり得る (一般化 決定#5)。ここを代表 1 名にすると 2 人目の
+    同行者が担当集合から漏れ、正規に同行した人の打刻が「代行」と誤判定されて
+    管理者へ誤通知が飛ぶ — 表示は代表 1 名でも、**この集合は全件**を受ける。
     """
     ids = {
         visit.primary_staff_id,
         visit.secondary_staff_id,
         visit.mentor_staff_id,
-        accompaniment_staff_id,
     }
+    ids.update(accompaniment_staff_ids)
     ids.update(assignment_staff_ids)
     return {sid for sid in ids if sid is not None}
 
@@ -384,9 +388,12 @@ async def build_monitor(
 
     visit_ids = [v.id for v in visits]
 
-    # 新人同行 (§6.4): その日の訪問群の同行者を 1 度に解決し、行ヘッダ/詳細パネルの
-    # 「＋◯◯（同行）」表示に使う。同行リンクは trainee_accompaniments が唯一の正典で、
+    # 同行 (§6.4): その日の訪問群の同行者を 1 度に解決し、行ヘッダ/詳細パネルの
+    # 「＋◯◯（同行）」表示に使う。同行リンクは accompaniments が唯一の正典で、
     # ここで JOIN 解決する (visits には書かない)。
+    # 解決は**全件** (複数同行・決定的順序)。表示枠は 1 名分しか無いので行の
+    # ヘッダには先頭 (= support 優先 → 名前昇順) を出すが、代行判定の担当集合には
+    # 全員を渡す (2 人目の同行者を代行と誤判定しないため)。
     accompaniment_by_visit = await resolve_accompaniment_by_visit(db, list(visits))
 
     # 全 checkin を 1 クエリで取得し、(visit_id, kind) ごと最新を採用 (scanned_at DESC)。
@@ -613,11 +620,11 @@ async def build_monitor(
             # する (実績欄が空になるより打った人を出す方が読める)。
             actual_source = arrival if arrival is not None else departure
             actual_staff_id = actual_source.staff_id if actual_source is not None else None
-            _acc_pair = accompaniment_by_visit.get(v.id)
+            _acc_entries = accompaniment_by_visit.get(v.id, [])
             _assigned = visit_staff_id_set(
                 v,
                 assignment_staff_ids=assignments_by_visit.get(v.id, set()),
-                accompaniment_staff_id=_acc_pair[0] if _acc_pair is not None else None,
+                accompaniment_staff_ids=[e.staff_id for e in _acc_entries],
             )
             # checkin_staff_ids は scanned_at DESC 順 = 先頭が最新の代行者。
             _substitute_ids = [
@@ -686,7 +693,7 @@ async def build_monitor(
                         if v.primary_staff is not None
                         else None
                     ),
-                    accompaniment_staff_name=_acc_pair[1] if _acc_pair is not None else None,
+                    accompaniment_staff_name=(_acc_entries[0].staff_name if _acc_entries else None),
                     # 実績 (打刻した人) と予定の乖離 (§6)。予定側の担当は書き換えない。
                     actual_staff_id=actual_staff_id,
                     actual_staff_name=(

@@ -25,20 +25,20 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
+from app.models.accompaniment import Accompaniment
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.course_template import CourseTemplate
 from app.models.kaipoke_job import KaipokeJob
 from app.models.patient import Patient
 from app.models.staff import Staff
-from app.models.trainee_accompaniment import TraineeAccompaniment
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
+from app.services.accompaniment import (
+    resolve_accompaniment_staff_by_course,
+    resolve_accompaniment_staff_by_visit,
+)
 from app.services.kaipoke.name_match import build_name_index, match_name
 from app.services.kaipoke.ng_conflicts import NgConflict, NgPair, collect_ng_conflicts
-from app.services.trainee_accompaniment import (
-    resolve_accompaniment_trainee_by_course,
-    resolve_accompaniment_trainees_by_visit,
-)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -370,8 +370,8 @@ async def apply_inbound_items(
     # - add 経路: 新設 visit が張り付くコースの course-level リンクで突合。
     # いずれも「新人集合への membership 判定」(複数新人リンク時の last-wins 非決定性で
     # 誤って secondary へ書き戻す汚染を防ぐ — Phase 3 レビュー MINOR-2)。
-    accompaniment_by_visit = await resolve_accompaniment_trainees_by_visit(db, list(index.values()))
-    accompaniment_by_course = await resolve_accompaniment_trainee_by_course(
+    accompaniment_by_visit = await resolve_accompaniment_staff_by_visit(db, list(index.values()))
+    accompaniment_by_course = await resolve_accompaniment_staff_by_course(
         db, list(course_idx.by_id.keys())
     )
 
@@ -656,8 +656,8 @@ async def apply_inbound_items(
                                 not in accompaniment_by_visit.get(revive.id, set())
                             ):
                                 db.add(
-                                    TraineeAccompaniment(
-                                        trainee_staff_id=accompaniment_sid2,
+                                    Accompaniment(
+                                        accompanying_staff_id=accompaniment_sid2,
                                         target_type="visit",
                                         visit_id=revive.id,
                                         source="manual",
@@ -705,8 +705,8 @@ async def apply_inbound_items(
                         # visit_id) が冪等を担保 (新設 visit の id は毎回新規のため衝突なし)。
                         if accompaniment_sid2 is not None:
                             db.add(
-                                TraineeAccompaniment(
-                                    trainee_staff_id=accompaniment_sid2,
+                                Accompaniment(
+                                    accompanying_staff_id=accompaniment_sid2,
                                     target_type="visit",
                                     visit_id=new_visit.id,
                                     source="manual",
@@ -958,8 +958,8 @@ async def apply_inbound_items(
             # を担保 (別実行の二重取込は再ロードされた突合集合で判定 ① に落ちる)。
             if accompaniment_sid2 is not None:
                 db.add(
-                    TraineeAccompaniment(
-                        trainee_staff_id=accompaniment_sid2,
+                    Accompaniment(
+                        accompanying_staff_id=accompaniment_sid2,
                         target_type="visit",
                         visit_id=visit.id,
                         source="manual",
