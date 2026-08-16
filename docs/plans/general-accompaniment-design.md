@@ -65,7 +65,9 @@ ALTER TABLE accompaniment_defaults ADD COLUMN kind ...同上;
    `code=constraint_confirmation_required` → FE確認 → `acknowledge_constraint_warnings:true` 再送で
    通過+管理者通知（既存の面展開パターンと完全同型・`useConstraintConfirmRetry` 再利用）。
 4. **逆方向の警告（決定#1後段）**: `api/v1/courses.py` PATCH（新人422の直後）と
-   `api/v1/schedule.py` apply-staff-review に「同日に同行リンクあり」の warning を追加+管理者通知。
+   `api/v1/schedule.py` apply-staff-review に「同行リンクと**時間帯が交差**する」warning を追加+
+   管理者通知（同日粒度は通知が形骸化するため交差判定に絞る・apply-staff-review は
+   apply 単位の op_group で冪等。レビューM-4 2026-08-17）。
    Layer3 本体は触らない（`assign-staff-only` 完了後の展開直後に衝突検出→通知のみ）。
 5. **カイポケ（決定#6）**: `kaipoke/inbound.py` / `replace_inbound.py` の staff2 3段階判定で、
    判定①（既存同行リンク一致→取り込まない）の対象集合を「同行リンク保持者全員」へ汎化
@@ -76,8 +78,12 @@ ALTER TABLE accompaniment_defaults ADD COLUMN kind ...同上;
 6. **複数名の解決（決定#5）**: `resolve_accompaniment_by_visit` の last-wins を全件返却
    （`list`）へ。`VisitRead.accompaniment` は後方互換のため単数を残しつつ `accompaniments[]` を追加
    （FE移行後に単数を deprecate）。
-7. **ライフサイクル**: `DELETE /future` のトリガを is_trainee OFF に加えて **status 非active化/退職**
-   にも拡張。`course-guard` は kind='trainee' 時のみ。
+7. **ライフサイクル**: `DELETE /future` のトリガを is_trainee OFF に加えて拡張 —
+   **休職（status 非active化）= 週リンクのみ削除・毎週の既定は温存**（復帰時に自動復活）/
+   **退職（論理削除）と is_trainee OFF = リンク+既定の両方削除**。削除件数はレスポンスに載せる。
+   `course-guard` は **kind でゲートしない**（用途が「これから is_trainee を ON にする人」の
+   事前警告のため、保存済み kind での判定は警告を恒久無効化する。レビューHIGH 2026-08-17 —
+   初版の「kind='trainee' 時のみ」は誤りとして撤回）。
 8. **API パスは `/accompaniments` へ**（旧 `/trainee-accompaniments` は互換エイリアスとして残し
    FE移行後に削除）。
 
