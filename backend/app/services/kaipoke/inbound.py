@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
-from app.models.accompaniment import Accompaniment
+from app.models.accompaniment import ACCOMPANIMENT_KIND_TRAINEE, Accompaniment
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.course_template import CourseTemplate
 from app.models.kaipoke_job import KaipokeJob
@@ -361,15 +361,21 @@ async def apply_inbound_items(
     today = now.date()
     day_set = set(days) if days else None
 
-    # 同行由来 staff2 のラウンドトリップ汚染防止 (設計 §9): CareFlow が職員名2 として
-    # カイポケへ送った「同行の新人」が逆取込で staff2 として返ってきたとき、それを
-    # 「要2名患者」として secondary_staff_id へ書き戻す/required_staff_count=2 へ昇格
-    # させると汚染が起きる。同行リンク済みの新人と一致する staff2 は同行由来とみなし
+    # 同行由来 staff2 のラウンドトリップ汚染防止 (設計 §9 / 一般化 §3-5): CareFlow が
+    # 職員名2 としてカイポケへ送った同行スタッフが逆取込で staff2 として返ってきたとき、
+    # それを「要2名患者」として secondary_staff_id へ書き戻す / required_staff_count=2 へ
+    # 昇格させると汚染が起きる。既存の同行リンクと一致する staff2 は同行由来とみなし
     # 反映しない (同行は accompaniments が唯一の正典)。
-    # - edit/delete 経路: 実在 visit を visit_id で突合 (バッチ・N+1 回避)。
-    # - add 経路: 新設 visit が張り付くコースの course-level リンクで突合。
-    # いずれも「新人集合への membership 判定」(複数新人リンク時の last-wins 非決定性で
-    # 誤って secondary へ書き戻す汚染を防ぐ — Phase 3 レビュー MINOR-2)。
+    #
+    # **判定① は kind を問わない** (一般化 §3-5): 新人同行 (kind='trainee') も一般スタッフの
+    # 同行 (kind='support') も CSV では等しく職員名2 に載る = 同じ経路で返ってくるため、
+    # 「新人かどうか」ではなく「**そのリンクが実在するかどうか**」で判定するのが正しい。
+    # 下 2 本のヘルパーは kind でフィルタせず全同行リンクを返すので、集合の汎化はここで
+    # 完了している (新人限定なのは後述の判定② だけ)。
+    # - edit/delete 経路: 実在 visit を visit_id で突合 (直リンク ∪ コースリンク・N+1 回避)。
+    # - add 経路: 新設 visit が張り付くコースの course-level リンク (+ 復活枠は直リンクも)。
+    # いずれも「同行スタッフ集合への membership 判定」(複数同行リンク時の last-wins
+    # 非決定性で誤って secondary へ書き戻す汚染を防ぐ — Phase 3 レビュー MINOR-2)。
     accompaniment_by_visit = await resolve_accompaniment_staff_by_visit(db, list(index.values()))
     accompaniment_by_course = await resolve_accompaniment_staff_by_course(
         db, list(course_idx.by_id.keys())
@@ -379,6 +385,11 @@ async def apply_inbound_items(
     # (is_trainee) なら「要2名患者」化せず同行リンクを自動作成する。判定用に active・
     # 未削除の新人 staff id を1クエリでロード (N+1 回避)。match_name で解決した staff.id
     # がこの集合に含まれるかで判定 2 (自動同行化) と判定 3 (実スタッフの要2名化) を分岐。
+    #
+    # **一般化しない** (一般化 §3-5 で意図的に見送り): 判定② を一般スタッフへ開放すると、
+    # 本当に 2 名体制で入った訪問まで「同行」に化けて要2名化が消える。リンクの無い
+    # 一般スタッフの staff2 は従来どおり判定③ (2名体制) へ落とす。
+    # (staff1 が新人のときの ⚠警告注記も同じ集合を使う。)
     trainee_ids: set[uuid.UUID] = set(
         (
             await db.scalars(
@@ -584,15 +595,24 @@ async def apply_inbound_items(
                 continue
             weekday = target_date.weekday()
             course = course_idx.by_staff.get((weekday, office_id, sid))
-            # staff2 の 3 段階判定 (案B・設計 §9 拡張):
-            # ① 既存の同行リンクと一致 (新設 visit が張り付くコースの同行新人と一致) →
+            # staff2 の 3 段階判定 (案B・設計 §9 拡張 / 一般化 §3-5):
+            # ① 既存の同行リンクと一致 (**kind 不問** = 新人同行も一般スタッフの同行も) →
             #    secondary へ書かず要2名化もしない (ラウンドトリップ汚染防止)。
+            #    突合先 = 新設 visit が張り付くコースのリンク ∪ (復活枠なら) その visit の
+            #    直リンク。復活枠を外すと、visit 単位で張った一般スタッフの同行が ③ へ
+            #    落ちて secondary へ書き戻される (一般化で初めて露出する汚染経路)。
             # ② リンクは無いが新人 (is_trainee) → visit 新設後に同行リンクを自動作成し、
             #    secondary へは書かない・要2名化しない (盤面に2人目コース列の無い不整合を
-            #    生む「要2名化」を避ける・PO指摘)。
-            # ③ 新人でない実スタッフ → 従来どおり secondary + required_staff_count=2。
+            #    生む「要2名化」を避ける・PO指摘)。一般スタッフへは開放しない (上述)。
+            # ③ 新人でない実スタッフ (リンク無し) → 従来どおり secondary +
+            #    required_staff_count=2 (= 2名体制への昇格)。
             if sid2 is not None:
-                if course is not None and sid2 in accompaniment_by_course.get(course.id, set()):
+                linked: set[uuid.UUID] = set()
+                if course is not None:
+                    linked |= accompaniment_by_course.get(course.id, set())
+                if revive is not None:
+                    linked |= accompaniment_by_visit.get(revive.id, set())
+                if sid2 in linked:
                     sid2 = None
                     staff2_note = "／担当2は同行のため未反映（要2名化しない）"
                 elif sid2 in trainee_ids:
@@ -661,6 +681,8 @@ async def apply_inbound_items(
                                         target_type="visit",
                                         visit_id=revive.id,
                                         source="manual",
+                                        # 判定② は is_trainee 限定 = ここは常に新人同行。
+                                        kind=ACCOMPANIMENT_KIND_TRAINEE,
                                         created_by=None,
                                     )
                                 )
@@ -710,6 +732,8 @@ async def apply_inbound_items(
                                     target_type="visit",
                                     visit_id=new_visit.id,
                                     source="manual",
+                                    # 判定② は is_trainee 限定 = ここは常に新人同行。
+                                    kind=ACCOMPANIMENT_KIND_TRAINEE,
                                     created_by=None,
                                 )
                             )
@@ -815,17 +839,20 @@ async def apply_inbound_items(
                 sid2_str = match_name(staff2_after_name, staff_index)
                 if sid2_str:
                     resolved_sid2 = uuid.UUID(sid2_str)
-                    # staff2 の 3 段階判定 (案B・設計 §9 拡張):
-                    # ① 既存の同行リンクと一致 → secondary へ書かず要2名化しない
-                    #    (ラウンドトリップ汚染防止。同行は accompaniments が唯一の正典)。
+                    # staff2 の 3 段階判定 (案B・設計 §9 拡張 / 一般化 §3-5):
+                    # ① 既存の同行リンクと一致 (**kind 不問** = 新人同行も一般スタッフの
+                    #    同行も) → secondary へ書かず要2名化しない (ラウンドトリップ
+                    #    汚染防止。同行は accompaniments が唯一の正典)。
+                    #    突合集合は直リンク ∪ コースリンクの和 (resolve_..._by_visit)。
                     if resolved_sid2 in accompaniment_by_visit.get(visit.id, set()):
                         notes.append(
                             f"担当2「{staff2_after_name}」は同行のため未反映（要2名化しない）"
                         )
-                    # ② リンクは無いが新人 → 同行リンクを自動作成し要2名化しない。
+                    # ② リンクは無いが新人 → 同行リンクを自動作成し要2名化しない
+                    #    (一般スタッフへは開放しない = 一般化 §3-5 で意図的に見送り)。
                     elif resolved_sid2 in trainee_ids:
                         accompaniment_sid2 = resolved_sid2
-                    # ③ 新人でない実スタッフ → 従来どおり secondary + 要2名化。
+                    # ③ 新人でない実スタッフ (リンク無し) → 従来どおり secondary + 要2名化。
                     else:
                         new_sid2 = resolved_sid2
                         staff2_update = True
@@ -963,6 +990,8 @@ async def apply_inbound_items(
                         target_type="visit",
                         visit_id=visit.id,
                         source="manual",
+                        # 判定② は is_trainee 限定 = ここは常に新人同行。
+                        kind=ACCOMPANIMENT_KIND_TRAINEE,
                         created_by=None,
                     )
                 )

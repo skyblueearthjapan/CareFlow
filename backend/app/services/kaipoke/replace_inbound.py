@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from app.models.accompaniment import Accompaniment
+from app.models.accompaniment import ACCOMPANIMENT_KIND_TRAINEE, Accompaniment
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.course_template import CourseTemplate
 from app.models.patient import Patient
@@ -192,7 +192,17 @@ async def replace_week_from_kaipoke(
     }
 
     course_idx = await load_week_course_index(db, week_start)
-    # コース単位の同行リンク (staff2 判定①: コースの同行新人は secondary にしない)
+    # コース単位の同行リンク (staff2 判定①: コースの同行スタッフは secondary にしない)。
+    #
+    # **kind でフィルタしない** (一般化 §3-5): 新人同行 (kind='trainee') も一般スタッフの
+    # 同行 (kind='support') も職員名2 として送出済みなので、返ってきた staff2 が
+    # 「同行由来か」はリンクの実在だけで決まる。ここで kind を見ると、一般同行が
+    # 判定③ (2名体制昇格) へ落ちて secondary_staff_id が汚染される。
+    #
+    # visit 単位のリンクを見ないのは置換の性質: 対象週の real 訪問は直前に白紙化
+    # (soft-delete) され、visit は全て新規 INSERT される = 突合できる直リンクが存在しない。
+    # 生き残るのはコースリンクだけなので、それだけを引く (diff-inbound の add 経路は
+    # 復活枠があるため直リンクも見る — inbound.py 側の判定① 参照)。
     acc_rows = (
         await db.scalars(
             select(Accompaniment).where(
@@ -433,9 +443,12 @@ async def replace_week_from_kaipoke(
         sid2 = r.sid2
         accompaniment_sid2: uuid.UUID | None = None
         if sid2 is not None:
-            # staff2 の 3 段階判定 (diff-inbound の add と同じ規則・設計 §9)
+            # staff2 の 3 段階判定 (diff-inbound の add と同じ規則・設計 §9 / 一般化 §3-5)
+            # ① コースの同行リンクと一致 (kind 不問) → secondary にしない・要2名化しない
+            # ② リンク無しの新人 → 同行リンクとして取り込む (一般スタッフへは開放しない)
+            # ③ リンク無しの一般スタッフ → 従来どおり secondary + required_staff_count=2
             if course is not None and sid2 in accompaniment_by_course.get(course.id, set()):
-                sid2 = None  # コースの同行新人 → secondary にしない
+                sid2 = None  # コースの同行スタッフ → secondary にしない
             elif sid2 in trainee_ids:
                 accompaniment_sid2 = sid2
                 sid2 = None  # 新人 → 同行リンクとして取り込む
@@ -487,6 +500,8 @@ async def replace_week_from_kaipoke(
                             target_type="visit",
                             visit_id=new_visit.id,
                             source="manual",
+                            # 判定② は is_trainee 限定 = ここは常に新人同行。
+                            kind=ACCOMPANIMENT_KIND_TRAINEE,
                             created_by=None,
                         )
                     )

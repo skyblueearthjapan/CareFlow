@@ -10,6 +10,13 @@ CareFlow 内 (diff/engine.compare_schedules_from_content) で取る。これに�
   2. CareFlow visits から最適化CSVを生成 (build_month_csv)
   3. compare_schedules_from_content(現況, 最適化) → Correction リスト
      (= 現況をCareFlow確定形へ寄せるための修正 = apply でカイポケへ押す内容)
+
+``Correction.staff1/staff2`` は最適化CSV の職員名1/2 をそのまま写した値であり、
+**誰が staff2 になるかは csv_builder の配分順序 1 箇所だけで決まる**
+(secondary → 同行[support優先→スタッフ名昇順→id] → mentor・一般化 決定#6)。
+1 訪問に複数の同行者が居ても (決定#5) 順序が決定的なので、週次反映が実行のたびに
+別人をカイポケへ押すことはない。週次は 2 枠 (staff1/staff2) までのため職員名3 相当は
+Correction に載らない — これは既存制限 (設計 §9 / 一般化 §6) で本 Phase でも据え置き。
 """
 
 from __future__ import annotations

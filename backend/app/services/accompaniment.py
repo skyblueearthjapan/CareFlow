@@ -8,9 +8,9 @@
   週生成 / 固定枠に戻す / 自動割当 の 3 地点から呼ぶ。孤立リンク掃除 (S-1) を同梱。
 - 可視性ヘルパー: モバイル 3 経路 (§6.4 C-1) が同行訪問を「同行スタッフ本人の訪問」と
   みなすための条件 (visit 直リンク OR course リンク・live JOIN)。
-- 射影ヘルパー: VisitRead / モニターへ同行者名を非破壊で載せる解決。
+- 射影ヘルパー: VisitRead / モニター / カイポケ CSV へ同行者を非破壊で載せる解決。
   一般化 決定#5 により **1 訪問に複数同行者**を認めるため、解決は全件返却
-  (決定的順序) を正とし、単数参照が要る既存経路には先頭要素を返す薄い口を用意する。
+  (決定的順序) を正とし、単数しか表現できない口は先頭要素を採る。
 - 重複判定ヘルパー: PUT の確定ブロック (時間重複 422) 用。一般化 決定#1 で
   **本人担当との重複**も同じ土俵で検査する (``load_own_duty_visits``)。
 
@@ -307,8 +307,10 @@ async def resolve_accompaniment_by_visit(
     キーを含めない。VisitRead / モニター / カイポケで共用する。
 
     一般化 決定#5 以前は「代表 1 名 (last-wins)」を返しており、複数同行時に
-    表示されるスタッフが非決定的だった (現行不具合)。全件返却 + 決定的順序で解消し、
-    単数しか扱えない既存経路は ``resolve_primary_accompaniment_by_visit`` を使う。
+    表示されるスタッフが非決定的だった (現行不具合)。全件返却 + 決定的順序で解消。
+    単数しか表現できない口 (``VisitRead.accompaniment`` / モニターの
+    ``accompaniment_staff_name`` / カイポケ職員名2) は**先頭要素**を採る — 代表の
+    選び方をこの 1 関数の順序に寄せることで、経路ごとに別人が出る事故を構造的に断つ。
     """
     if not visits:
         return {}
@@ -369,19 +371,6 @@ async def resolve_accompaniment_by_visit(
     return result
 
 
-async def resolve_primary_accompaniment_by_visit(
-    db: AsyncSession, visits: list[Visit]
-) -> dict[UUID, tuple[UUID, str | None]]:
-    """visit_id -> (staff_id, staff_name) の**代表 1 名**を解決する (後方互換の口).
-
-    単数しか表現できない既存経路 (モニターの ``accompaniment_staff_name`` /
-    打刻通知 / カイポケ職員名2) 用。代表の選び方は ``_entry_sort_key`` の
-    決定的順序の先頭 = support 優先 → 名前昇順 (last-wins だった従来の非決定性を解消)。
-    """
-    resolved = await resolve_accompaniment_by_visit(db, visits)
-    return {vid: (entries[0].staff_id, entries[0].staff_name) for vid, entries in resolved.items()}
-
-
 async def resolve_accompaniment_staff_by_course(
     db: AsyncSession, course_ids: list[UUID]
 ) -> dict[UUID, set[UUID]]:
@@ -395,6 +384,10 @@ async def resolve_accompaniment_staff_by_course(
     (staff, course) 単位のため可能) に単一値の last-wins だと突合が非決定的になり、
     CSV が送ったスタッフと別のスタッフを比較して「同行由来なのに secondary へ書き戻す」
     汚染が起き得るため (Phase 3 レビュー MINOR-2)。membership 判定で構造的に防ぐ。
+
+    ``kind`` ではフィルタしない (一般化 §3-5): カイポケ職員名2 には新人同行も一般
+    スタッフの同行も等しく載るため、返ってきた staff2 が「同行由来か」は**リンクの
+    実在**だけで決まる。
     """
     if not course_ids:
         return {}
@@ -423,10 +416,12 @@ async def resolve_accompaniment_staff_by_visit(
     """visit_id -> その訪問に同行するスタッフ staff_id の集合を解決する (live JOIN).
 
     逆取込 (inbound) の edit 経路の同行由来 staff2 突合用 (設計 §9)。
-    表示用の ``resolve_primary_accompaniment_by_visit`` は代表 1 名しか返さないため、
-    複数リンク時の突合が非決定的になる — こちらは直リンク ∪ course リンクの
-    全集合を返し、membership 判定でラウンドトリップ汚染を構造的に防ぐ
-    (Phase 3 レビュー MINOR-2)。同行が無い visit はキーを含めない。
+    表示用の ``resolve_accompaniment_by_visit`` は名前や kind まで解決するが、突合に
+    要るのは staff_id の集合だけなので軽い口を分けてある。直リンク ∪ course リンクの
+    **全集合**を返し、membership 判定でラウンドトリップ汚染を構造的に防ぐ
+    (Phase 3 レビュー MINOR-2)。kind ではフィルタしない — カイポケ職員名2 には
+    新人同行も一般スタッフの同行も等しく載るため (一般化 §3-5)。
+    同行が無い visit はキーを含めない。
     """
     if not visits:
         return {}
