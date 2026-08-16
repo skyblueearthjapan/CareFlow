@@ -119,6 +119,14 @@ class Visit(Base, TimestampMixin):
     # 掛け外ししても出所 (import 等) は失われない (migration 0066)。
     week_pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # 予定外訪問 (migration 0071 / 設計 ``docs/plans/qr-open-checkin-design.md`` §3)。
+    # true = 当日予定が無い患者宅の QR 打刻 (POST /visits/adhoc-checkin) がその場で
+    # 生成した訪問。course_id は NULL・primary_staff_id は打刻スタッフ・end_time は
+    # 退出打刻で実時刻へ更新される。モニターは専用行 (📌予定外訪問) へ集約する。
+    is_unplanned: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     kaipoke_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
