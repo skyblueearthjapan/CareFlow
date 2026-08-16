@@ -23,7 +23,15 @@
 
 const PREFIX = 'checkin-pending:';
 
-export type PendingKind = 'arrival' | 'departure' | 'no_show';
+/**
+ * 保留打刻の種別。
+ *
+ * `adhoc_arrival` は「予定外訪問の到着」(設計 §4-3 `POST /visits/adhoc-checkin`)。
+ * 圏外で候補一覧を取れないまま担当外の患者宅で読み取った場合、visit がまだ
+ * 存在しない = `visit_id` を持たない打刻になるため、他 3 種と違い
+ * **`visit_id` は空文字**・**`payload.qr_token` 必須** (トークンが患者特定の唯一の鍵)。
+ */
+export type PendingKind = 'arrival' | 'departure' | 'no_show' | 'adhoc_arrival';
 
 /** 再送時にそのまま POST body にする打刻ペイロード。 */
 export interface PendingPayload {
@@ -40,6 +48,7 @@ export interface PendingPayload {
 export interface PendingEntry {
   /** ローカル一意 id (重複再送の取り除きに使う)。 */
   id: string;
+  /** 対象 visit。`adhoc_arrival` は visit 未生成のため空文字。 */
   visit_id: string;
   kind: PendingKind;
   payload: PendingPayload;
@@ -84,9 +93,20 @@ function isPendingEntry(value: unknown): value is PendingEntry {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
   if (typeof v.id !== 'string' || typeof v.visit_id !== 'string') return false;
-  if (v.kind !== 'arrival' && v.kind !== 'departure' && v.kind !== 'no_show') return false;
+  if (
+    v.kind !== 'arrival' &&
+    v.kind !== 'departure' &&
+    v.kind !== 'no_show' &&
+    v.kind !== 'adhoc_arrival'
+  ) {
+    return false;
+  }
   if (!v.payload || typeof v.payload !== 'object') return false;
-  if (typeof (v.payload as Record<string, unknown>).at !== 'string') return false;
+  const payload = v.payload as Record<string, unknown>;
+  if (typeof payload.at !== 'string') return false;
+  // 予定外の到着は qr_token が患者特定の唯一の鍵 — 欠けた entry は再送しても
+  // 必ず失敗するので、読み込み時点で捨てる (キューに居座らせない)。
+  if (v.kind === 'adhoc_arrival' && typeof payload.qr_token !== 'string') return false;
   return true;
 }
 
