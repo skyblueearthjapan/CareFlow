@@ -1438,3 +1438,62 @@ async def test_default_kind_support_propagates_to_week_link(client, db) -> None:
     assert link is not None
     assert link.kind == "support"  # 既定の kind を引き継ぐ。
     assert link.source == "default"
+
+
+# ---------------------------------------------------------------------------
+# 休職スタッフの既定は展開しない (最終レビュー major-1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_defaults_of_inactive_staff_are_not_expanded(client, db) -> None:
+    """status 非 active のスタッフの既定は週展開されない.
+
+    休職時は週リンクのみ purge し既定は温存する (§3-7) が、展開側が status を
+    見ないと週生成 / reset-to-fixed / 自動割当のたびにリンクが復活し、しかも
+    セレクタ・解除 PUT が active 限定のため UI から外せなくなる (major-1)。
+    展開ゲートは expand_accompaniment_defaults の 1 箇所で閉じる契約の担保。
+    """
+    from app.services.accompaniment import expand_accompaniment_defaults
+
+    admin = await _make_user(db, "acc-inactive-def@example.com", "admin")
+    staff = await _make_staff(db, "休職既定", is_trainee=False)
+    office = await _make_office(db)
+    tmpl = await _make_template(db, office, "A")
+
+    res = await client.put(
+        "/api/v1/accompaniment-defaults",
+        headers=_bearer(admin),
+        json={
+            "staff_id": str(staff.id),
+            "items": [{"weekday": 0, "course_template_id": str(tmpl.id)}],
+        },
+    )
+    assert res.status_code == 200, res.text
+
+    # 休職化は API 経由 (テストセッションからの直接 UPDATE は共有 SQLite の既知罠)。
+    res = await client.patch(
+        f"/api/v1/staff/{staff.id}", headers=_bearer(admin), json={"status": "retired"}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["purged_accompaniment_defaults"] == 0  # 既定は温存。
+
+    await _make_course(db, office, weekday=0, code="A", template_id=tmpl.id)
+    created = await expand_accompaniment_defaults(db, ISO_YEAR, ISO_WEEK)
+    await db.commit()
+    assert created == 0  # 休職者の既定は展開されない。
+
+    link = await db.scalar(
+        select(Accompaniment).where(Accompaniment.accompanying_staff_id == staff.id)
+    )
+    assert link is None
+
+    # 復帰 (active 化) すれば従来どおり展開される。
+    res = await client.patch(
+        f"/api/v1/staff/{staff.id}", headers=_bearer(admin), json={"status": "active"}
+    )
+    assert res.status_code == 200, res.text
+    created = await expand_accompaniment_defaults(db, ISO_YEAR, ISO_WEEK)
+    await db.commit()
+    assert created == 1
+    await db.rollback()

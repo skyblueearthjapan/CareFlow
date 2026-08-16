@@ -270,7 +270,7 @@ export function AccompanimentSummary({
                     data-testid={`accompaniment-release-${item.id}`}
                     title={
                       item.source === 'default'
-                        ? '今週ぶんだけ解除します（毎週の既定は残ります）'
+                        ? '今週ぶんだけ解除します（毎週の既定は残るため、週の再生成や「固定枠に戻す」で復活します）'
                         : '今週のこの同行を解除します'
                     }
                   >

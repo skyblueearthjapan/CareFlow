@@ -138,7 +138,17 @@ async def expand_accompaniment_defaults(db: AsyncSession, iso_year: int, iso_wee
                     CourseTemplate,
                     AccompanimentDefault.course_template_id == CourseTemplate.id,
                 )
-                .where(CourseTemplate.deleted_at.is_(None))
+                .join(Staff, AccompanimentDefault.accompanying_staff_id == Staff.id)
+                .where(
+                    CourseTemplate.deleted_at.is_(None),
+                    # 休職・退職スタッフの既定は展開しない (最終レビュー major-1)。
+                    # 休職 (status 非 active) は既定を「温存」するが、展開まで許すと
+                    # 週リンク purge が週生成 / reset-to-fixed / 自動割当のたびに
+                    # 復活し、しかもセレクタ・解除 PUT が active 限定のため UI から
+                    # 二度と外せなくなる。展開ゲートはこの 1 箇所で閉じる。
+                    Staff.status == "active",
+                    Staff.deleted_at.is_(None),
+                )
             )
         ).all()
     )

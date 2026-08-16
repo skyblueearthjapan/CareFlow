@@ -471,7 +471,8 @@ async def update_course(
         await db.commit()
 
     # 逆方向の警告は**レスポンスにも**載せる (非破壊追加・既定 [])。
-    # 通知だけだと操作した本人がその場で気づけないため、FE がトーストを出せる形で返す。
+    # 通知に加えてレスポンスにも載せる (FE のトースト表示は未配線 = Phase E 予定。
+    # 現時点で本人への即時提示は管理者ベル通知のみ)。
     return _to_read(course).model_copy(
         update={"accompaniment_warnings": [w.to_payload() for w in _accompaniment_warnings]}
     )
