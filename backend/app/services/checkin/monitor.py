@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -36,6 +36,7 @@ from app.models.user import User
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_checkin import VisitCheckin
 from app.models.visit_review import VisitReview
+from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.visit_monitor import (
     MonitorCheckin,
     MonitorOffice,
@@ -70,6 +71,14 @@ ALERT_MISSING = "missing"
 # Phase 4 で checkin_settings (max_inprogress_min) 化済。この定数は設定が無い場合の
 # コード既定値 (= DEFAULT_THRESHOLDS["max_inprogress_min"]) として残す。
 MAX_INPROGRESS_MIN = 240
+
+# 予定外訪問 (visits.is_unplanned) の専用行 (設計
+# ``docs/plans/qr-open-checkin-design.md`` §6)。コース行のグルーピングからは除外
+# する (予定に無い実績をコース列に推定混載しない)。行は**拠点ごとに 1 本**
+# (行キー = (UNPLANNED_ROW_KEY, office_id)) — 全拠点を 1 本に混ぜると拠点フィルタ
+# で行ごと消えたり他拠点が紛れ込むため。ラベルはどの行も同じ。
+UNPLANNED_ROW_KEY = "unplanned"
+UNPLANNED_ROW_LABEL = "📌予定外訪問"
 
 
 def _as_jst(dt: datetime) -> datetime:
@@ -127,6 +136,8 @@ def compute_alert(
     max_inprogress_min: int = MAX_INPROGRESS_MIN,
     reviewed: bool = False,
     effective_start_dt: datetime | None = None,
+    is_substitute: bool = False,
+    is_unplanned: bool = False,
 ) -> str:
     """要対応レベルを合成する (位置判定 + 時間遅延の worst).
 
@@ -135,6 +146,9 @@ def compute_alert(
     - 到着あり & match_status==mismatch → mismatch。
     - match_status in (review, no_gps) / 到着遅延 (>= late_min) / 退出忘れ
       (inprogress かつ 滞在 > max_inprogress_min) → review。
+    - **代行 (is_substitute) / 予定外 (is_unplanned) は最低 review**
+      (設計 ``docs/plans/qr-open-checkin-design.md`` §6: mismatch と同格で
+      トレイに載せ、既存の「確認済み」で消す運用に乗せる)。
     - それ以外 (未到着の future/awaiting を含む) → none。
 
     ``max_inprogress_min`` は checkin_settings の設定値 (無ければ既定 240)。
@@ -143,9 +157,11 @@ def compute_alert(
         return ALERT_NONE
     if phase == PHASE_MISSING:
         return ALERT_MISSING
+    # 代行 / 予定外は位置・時間が正常でもトレイに載せる (§6)。
+    flagged = is_substitute or is_unplanned
     if arrival_match_status is None:
         # 未到着 (future / awaiting)。時間アラートは missing で別途拾う。
-        return ALERT_NONE
+        return ALERT_REVIEW if flagged else ALERT_NONE
     if arrival_match_status == "mismatch":
         return ALERT_MISMATCH
     # 到着遅延の起点は同住所・同時刻ペア補正後起点 (相方の退出時刻等)。None なら予定開始。
@@ -157,9 +173,37 @@ def compute_alert(
     long_inprogress = (
         phase == PHASE_INPROGRESS and stay_minutes is not None and stay_minutes > max_inprogress_min
     )
-    if arrival_match_status in ("review", "no_gps") or late or long_inprogress:
+    if arrival_match_status in ("review", "no_gps") or late or long_inprogress or flagged:
         return ALERT_REVIEW
     return ALERT_NONE
+
+
+def visit_staff_id_set(
+    visit: Visit,
+    *,
+    assignment_staff_ids: Iterable[UUID] = (),
+    accompaniment_staff_id: UUID | None = None,
+) -> set[UUID]:
+    """visit の **担当集合** (予定として紐付いたスタッフ全員) を組む.
+
+    正典設計書 ``docs/plans/qr-open-checkin-design.md`` §3 末尾: 代行 (substitute)
+    の検出 = 「arrival checkin の staff_id がこの集合に含まれない」。
+    集合の定義を通知 producer (打刻 1 件ずつ) とモニター合成 (当日分を一括・
+    **いずれかの** arrival が外なら代行) で共有し、「代行」の意味が 2 箇所で
+    ズレないようにするための単一ソース。
+
+    ``assignment_staff_ids`` (visit_staff_assignments) と
+    ``accompaniment_staff_id`` (新人同行) は呼び出し側が解決して渡す
+    (1 件引きと一括引きでクエリ形が違うため)。
+    """
+    ids = {
+        visit.primary_staff_id,
+        visit.secondary_staff_id,
+        visit.mentor_staff_id,
+        accompaniment_staff_id,
+    }
+    ids.update(assignment_staff_ids)
+    return {sid for sid in ids if sid is not None}
 
 
 def _visit_duration_min(v: Visit) -> int:
@@ -328,6 +372,9 @@ async def build_monitor(
 
     # 全 checkin を 1 クエリで取得し、(visit_id, kind) ごと最新を採用 (scanned_at DESC)。
     latest: dict[tuple[UUID, str], VisitCheckin] = {}
+    # 代行判定は「最新」ではなく **全 arrival** を見る (最新が担当本人だと、先に
+    # 打った代行の事実がバッジから消えてしまう / 通知条件とも食い違うため)。
+    arrival_staff_ids: dict[UUID, set[UUID]] = defaultdict(set)
     if visit_ids:
         rows = (
             await db.scalars(
@@ -340,6 +387,33 @@ async def build_monitor(
             key = (r.visit_id, r.kind)
             if key not in latest:  # DESC 並びなので最初に出た = 最新。
                 latest[key] = r
+            if r.kind == "arrival" and r.staff_id is not None:
+                arrival_staff_ids[r.visit_id].add(r.staff_id)
+
+    # 代行検出 (設計 §6): visit の担当集合 (assignments + 同行込み) を 1 クエリで
+    # 束ね、**いずれかの** arrival 打刻者がその外なら代行とみなす。
+    assignments_by_visit: dict[UUID, set[UUID]] = defaultdict(set)
+    if visit_ids:
+        for vid, sid in (
+            await db.execute(
+                select(VisitStaffAssignment.visit_id, VisitStaffAssignment.staff_id).where(
+                    VisitStaffAssignment.visit_id.in_(visit_ids)
+                )
+            )
+        ).all():
+            assignments_by_visit[vid].add(sid)
+
+    # 実績スタッフ名: 到着打刻の staff_id は visits に登場しないスタッフ (代行) の
+    # ことがあるため、別引きで名前を解決する。
+    actual_staff_ids: set[UUID] = set()
+    for ids in arrival_staff_ids.values():
+        actual_staff_ids |= ids
+    actual_staff_names: dict[UUID, str] = {}
+    if actual_staff_ids:
+        for sid, sname in (
+            await db.execute(select(Staff.id, Staff.name).where(Staff.id.in_(actual_staff_ids)))
+        ).all():
+            actual_staff_names[sid] = sname
 
     # 同住所・同時刻ペア補正: 到着/退出の実効時刻マップを組み、補正後起点を導出する。
     arrival_at: dict[UUID, datetime] = {}
@@ -405,8 +479,23 @@ async def build_monitor(
     # コース無し visit は従来どおり担当スタッフ単位 (どちらも無ければ "" で 1 行)。
     by_row: dict[tuple[str, UUID | str], list[Visit]] = defaultdict(list)
     for v in visits:
-        if v.course_id is not None:
-            group_key: tuple[str, UUID | str] = ("course", v.course_id)
+        if v.is_unplanned:
+            # 予定外訪問は「📌予定外訪問」行に集約する (設計 §6)。コース行へ推定
+            # 混載はしない (予定に無い実績を予定の列で語らない)。
+            # **拠点ごとに 1 本**にするのは拠点フィルタのため: 1 本に混ぜると
+            # 「先頭スタッフの拠点」で行ごと消えたり、他拠点の予定外が紛れ込む。
+            # 予定外 visit の primary_staff は打刻スタッフ本人 (§3) = 実績者なので、
+            # その主担当拠点を行の拠点とする。
+            group_key: tuple[str, UUID | str] = (
+                UNPLANNED_ROW_KEY,
+                (
+                    v.primary_staff.primary_office_id
+                    if v.primary_staff is not None and v.primary_staff.primary_office_id is not None
+                    else ""
+                ),
+            )
+        elif v.course_id is not None:
+            group_key = ("course", v.course_id)
         elif v.primary_staff_id is not None:
             group_key = ("staff", v.primary_staff_id)
         else:
@@ -443,7 +532,13 @@ async def build_monitor(
                 row_staff.setdefault(v.primary_staff_id, v.primary_staff)
 
         course_id: UUID | None = None
-        if kind == "course" and isinstance(ident, UUID):
+        if kind == UNPLANNED_ROW_KEY:
+            # 予定外訪問の専用行 (§6)。行キーに拠点を含めてあるので、拠点は
+            # そこから確定する (拠点未設定スタッフの行は oid=None = 拠点フィルタ
+            # 指定時に出ない = コース無し行と同じ扱い)。
+            course_label = UNPLANNED_ROW_LABEL
+            oid = ident if isinstance(ident, UUID) else None
+        elif kind == "course" and isinstance(ident, UUID):
             course_id = ident
             code = course_code.get(course_id)
             course_label = f"{code}コース" if code else None
@@ -474,6 +569,19 @@ async def build_monitor(
             dep_p = _project_checkin(departure) if departure is not None else None
             ns_p = _project_checkin(no_show) if no_show is not None else None
 
+            # 実績スタッフ (最新 arrival の打刻者) と代行判定 (§6)。
+            # 代行は **いずれかの** arrival 打刻者が担当集合の外なら true にする
+            # (担当本人が後から打ち直しても代行の事実を消さない = 通知条件と一致)。
+            actual_staff_id = arrival.staff_id if arrival is not None else None
+            _acc_pair = accompaniment_by_visit.get(v.id)
+            _assigned = visit_staff_id_set(
+                v,
+                assignment_staff_ids=assignments_by_visit.get(v.id, set()),
+                accompaniment_staff_id=_acc_pair[0] if _acc_pair is not None else None,
+            )
+            is_substitute = any(sid not in _assigned for sid in arrival_staff_ids.get(v.id, set()))
+            is_unplanned = v.is_unplanned
+
             start_dt = datetime.combine(v.visit_date, v.start_time, tzinfo=JST)
             arr_scanned = _as_jst(arrival.scanned_at) if arrival is not None else None
             dep_scanned = _as_jst(departure.scanned_at) if departure is not None else None
@@ -502,6 +610,8 @@ async def build_monitor(
                 max_inprogress_min=thresholds["max_inprogress_min"],
                 reviewed=reviewed,
                 effective_start_dt=effective_start,
+                is_substitute=is_substitute,
+                is_unplanned=is_unplanned,
             )
             # ペア待ち: 予定 + grace は過ぎたが、ペア補正で awaiting に留まっている間。
             pair_waiting = (
@@ -522,7 +632,6 @@ async def build_monitor(
             )
 
             patient = v.patient
-            _acc = accompaniment_by_visit.get(v.id)
             mvisits.append(
                 MonitorVisit(
                     visit_id=v.id,
@@ -532,7 +641,16 @@ async def build_monitor(
                         if v.primary_staff is not None
                         else None
                     ),
-                    accompaniment_staff_name=_acc[1] if _acc is not None else None,
+                    accompaniment_staff_name=_acc_pair[1] if _acc_pair is not None else None,
+                    # 実績 (打刻した人) と予定の乖離 (§6)。予定側の担当は書き換えない。
+                    actual_staff_id=actual_staff_id,
+                    actual_staff_name=(
+                        actual_staff_names.get(actual_staff_id)
+                        if actual_staff_id is not None
+                        else None
+                    ),
+                    is_substitute=is_substitute,
+                    is_unplanned=is_unplanned,
                     visit_group_id=v.visit_group_id,
                     patient_id=v.patient_id,
                     patient_name=getattr(patient, "name", None) if patient is not None else None,

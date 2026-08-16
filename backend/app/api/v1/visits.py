@@ -13,18 +13,21 @@ W2-BE4 (`docs/plans/v2-allocation-redesign.md` v0.9 §3.3 / §4.5):
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+import hashlib
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.course import Course
+from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User, normalize_user_role
 from app.models.visit import (
@@ -38,8 +41,17 @@ from app.models.visit_checkin import VisitCheckin
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.visit import VisitCreate, VisitRead, VisitUpdate
 from app.schemas.visit_checkin import CheckinCreate, QrResolveRead
-from app.services.checkin.judge import JST, judge_checkin, resolve_qr_patient
-from app.services.checkin.notify import notify_checkin_mismatch, resolve_checkin_missing
+from app.services.checkin.judge import (
+    JST,
+    judge_checkin,
+    resolve_patient_for_visit,
+    resolve_qr_patient,
+)
+from app.services.checkin.notify import (
+    notify_checkin_anomalies,
+    notify_checkin_mismatch,
+    resolve_checkin_missing,
+)
 from app.services.constraint_override_notify import (
     ConstraintWarning,
     collect_constraint_warnings_for_patients,
@@ -52,6 +64,7 @@ from app.services.trainee_accompaniment import (
     is_accompaniment_visit_for_staff,
     resolve_accompaniment_by_visit,
 )
+from app.utils.db import try_advisory_xact_lock
 
 router = APIRouter()
 
@@ -228,6 +241,9 @@ def _serialize_visit(
         # 足すこと — 漏れると VisitRead の default False で上書きされ、DB が true
         # でも API が false を返す (実際に起きた事故)。
         "week_pinned": bool(getattr(visit, "week_pinned", False)),
+        # 予定外訪問 (adhoc-checkin 生成 / 設計 §3)。week_pinned と同じ罠の位置:
+        # 手書き dict なのでここに足さないと VisitRead の default False で潰れる。
+        "is_unplanned": visit.is_unplanned,
         "note": visit.note,
         "kaipoke_id": visit.kaipoke_id,
         # W2-BE4 v2 fields
@@ -265,6 +281,28 @@ def _serialize_visit(
         "accompaniment": accompaniment,
     }
     return data
+
+
+def _restrict_to_qr_capability(data: dict) -> dict:
+    """QR capability (担当外) の GET レスポンスを絞り込む (設計 §4-2 / ディレクター決定).
+
+    「QR 所持 = 現地に居る」で正当化できるのは **その訪問を遂行するのに要る情報**
+    まで。resolve v2 (§4-1) が既に開示している範囲 (患者氏名 / 時間帯 / status /
+    予定担当名) と、現地判定に要る住所・座標・性別・自分の打刻 (latest_checkin) は
+    残し、事業所の業務情報は落とす:
+
+    * ``note`` (申し送り・業務メモ) / ``kaipoke_id`` (外部システムの識別子)
+    * ``staff_assignments`` (誰が組まれているかの一覧) / ``accompaniment`` (同行者名)
+
+    担当者本人の GET (通常の可視性で通った場合) は従来どおり全量を返す。
+    """
+    return {
+        **data,
+        "note": None,
+        "kaipoke_id": None,
+        "staff_assignments": [],
+        "accompaniment": None,
+    }
 
 
 def _accompaniment_payload(resolved: tuple[UUID, str | None] | None) -> dict | None:
@@ -378,19 +416,22 @@ async def resolve_qr_visits(
     db: DbDep,
     user: CurrentActiveUser,
 ) -> dict:
-    """`/q/{token}` ランディングページの遷移先解決。
+    """`/q/{token}` ランディングページの遷移先解決 (v2 = 凍結コントラクト 2026-08-16)。
+
+    正典設計書: ``docs/plans/qr-open-checkin-design.md`` §4-1。
 
     患者宅 QR を標準カメラ / Chrome で読むと `/q/{token}` へ遷移するため、FE は
-    本 API でトークンを「本日 (JST) の自分の担当 visit」へ解決し、モバイル訪問
-    詳細 (`/m/today/{visitId}`) へディープリンクする。
+    本 API でトークンを「本日 (JST) のその患者の visit」へ解決し、担当なら訪問
+    詳細 (`/m/today/{visitId}`)、担当外なら代行 / 予定外の選択画面へ進む。
 
     - 認可は打刻 (`_load_visit_for_checkin`) と同方針: admin/staff かつ
       staff 紐付け必須 (未紐付けは打刻者を確定できないため 403)。
     - トークン解決は判定 (`_resolve_patient`) と同ルール: 未知 = 404 /
       失効 (ローテ済) = 410。visit 文脈が無いので 410 の案内は氏名を出さない。
-    - 候補は当日 (JST)・未削除・取消以外・**自分に可視** (primary/secondary/
-      mentor/assignments + 新人同行) のみ。担当外患者のトークンは 200 + 空配列
-      とし、404 と区別させない (「その患者を担当しているか」の秘匿)。
+    - **候補は当日 (JST)・未削除・取消以外の全件** (v1 の「自分の担当のみ」は
+      撤廃)。担当かどうかは ``is_mine`` で返す。担当外に患者氏名・予定スタッフ名を
+      開示するのは「QR 所持 = 現地に居る」を認可の鍵とする決定#1 による
+      (誤った利用者への記録を防ぐ確認表示に氏名が必須)。
     """
     if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
@@ -412,21 +453,43 @@ async def resolve_qr_visits(
                 Visit.visit_date == today_jst,
                 Visit.deleted_at.is_(None),
                 Visit.status != VISIT_STATUS_CANCELLED,
-                _staff_visibility_filter(staff_id),
             )
+            .options(selectinload(Visit.primary_staff))
             .order_by(Visit.start_time)
         )
     ).all()
+
+    # is_mine は既存の可視性条件をそのまま再利用する (担当集合の定義を二重に
+    # 書かない)。候補 id に絞った 1 クエリで解決する。
+    mine: set[UUID] = set()
+    if rows:
+        mine = set(
+            (
+                await db.scalars(
+                    select(Visit.id).where(
+                        Visit.id.in_([v.id for v in rows]),
+                        _staff_visibility_filter(staff_id),
+                    )
+                )
+            ).all()
+        )
+
     return {
+        "patient_name": patient.name,
         "candidates": [
             {
                 "visit_id": v.id,
                 "start_time": v.start_time,
                 "end_time": v.end_time,
                 "status": v.status,
+                "planned_staff_name": (
+                    getattr(v.primary_staff, "name", None) if v.primary_staff is not None else None
+                ),
+                "is_mine": v.id in mine,
+                "is_unplanned": v.is_unplanned,
             }
             for v in rows
-        ]
+        ],
     }
 
 
@@ -435,9 +498,45 @@ async def get_visit(
     visit_id: UUID,
     db: DbDep,
     user: CurrentActiveUser,
+    qr_token: Annotated[
+        str | None,
+        Query(
+            description=(
+                "患者宅 QR のトークン (後方互換)。``X-QR-Token`` ヘッダを推奨。"
+                "担当外でも**この visit の患者**に解決できれば 200 を返す "
+                "(QR capability 分岐・設計 §4-2)。代行打刻の訪問詳細表示用。"
+            ),
+        ),
+    ] = None,
+    x_qr_token: Annotated[
+        str | None,
+        Header(
+            alias="X-QR-Token",
+            description=(
+                "患者宅 QR のトークン (推奨)。クエリだとアクセスログ / Referer に "
+                "トークンが残るため、ヘッダ指定を優先する。"
+            ),
+        ),
+    ] = None,
 ) -> dict:
+    """訪問詳細を返す。
+
+    QR capability 分岐 (設計 ``docs/plans/qr-open-checkin-design.md`` §4-2):
+    トークン (``X-QR-Token`` ヘッダ優先・``?qr_token=`` も後方互換で受理) が
+    この visit の患者に解決できれば、担当外スタッフでも 200 を返す (代行打刻の
+    詳細画面を打刻経路と同じ認可で一本化する)。トークン無しの担当外は従来どおり
+    404 (存在秘匿)。
+
+    **capability 経由 (担当外) のレスポンスは絞り込む**: 現地に居る前提で正当な
+    範囲 (患者氏名 / 住所 / 座標 / 性別 / 時間帯 / status / 予定担当名 /
+    latest_checkin = resolve v2 で既に開示済みの範囲) は返すが、業務メモ
+    (``note``) / カイポケ ID / 担当者一覧 / 同行者名は落とす。
+    """
     if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
+
+    # ヘッダ優先 (トークンの露出面を減らす)。
+    effective_qr_token = x_qr_token or qr_token
 
     visit = await db.scalar(
         select(Visit)
@@ -452,6 +551,8 @@ async def get_visit(
 
     assignments = await _load_assignments(db, visit.id)
 
+    # capability (QR) だけで通ったか = 担当外の閲覧か。true なら projection を絞る。
+    via_qr_capability = False
     if user.role == "staff":
         if user.staff_id is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -467,17 +568,23 @@ async def get_visit(
             visible = await is_accompaniment_visit_for_staff(
                 db, visit_id=visit.id, course_id=visit.course_id, staff_id=user.staff_id
             )
+        # QR capability (§4-2): 現地 QR を持っていれば担当外でも詳細を返す。
+        if not visible:
+            visible = via_qr_capability = await _qr_capability_allows(db, visit, effective_qr_token)
         if not visible:
             # Hide existence from non-assigned staff.
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     latest_checkin = await _load_latest_checkin(db, visit.id)
     accompaniment_by_visit = await resolve_accompaniment_by_visit(db, [visit])
-    return _serialize_visit(
+    payload = _serialize_visit(
         visit,
         assignments=assignments,
         latest_checkin=latest_checkin,
         accompaniment=_accompaniment_payload(accompaniment_by_visit.get(visit.id)),
     )
+    if via_qr_capability:
+        payload = _restrict_to_qr_capability(payload)
+    return payload
 
 
 @router.post(
@@ -842,7 +949,37 @@ async def remove_visit_staff(
 # ---------------------------------------------------------------------------
 
 
-async def _load_visit_for_checkin(db, visit_id: UUID, user: User) -> tuple[Visit, UUID]:
+def _require_staff_actor(user: User) -> UUID:
+    """打刻者 (staff) を確定する。admin/staff かつ staff 紐付け必須 (設計 §2-1)."""
+    if normalize_user_role(user.role) not in {"admin", "staff"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
+    if user.staff_id is None:
+        # User に staff 未紐付け → 打刻者を確定できない。
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is not linked to a staff record",
+        )
+    return user.staff_id
+
+
+async def _qr_capability_allows(db, visit: Visit, qr_token: str | None) -> bool:
+    """QR capability 分岐: トークンが**この visit の患者**に解決できれば通す。
+
+    正典設計書 ``docs/plans/qr-open-checkin-design.md`` §4-2。担当外でも
+    「現地の QR を持っている」= 現地証明を認可の鍵とする (決定#1)。判定は判定側の
+    ``_resolve_patient`` に丸ごと委ね、未知 = 404 / 失効 = 410 / 別患者 = 409 の
+    エラー意味論を打刻経路と 1 本に保つ。``qr_token`` 無しは False = 担当外は
+    従来どおり 404 (決定#6 の「担当外は QR 必須」をサーバ側で強制)。
+    """
+    if not qr_token:
+        return False
+    await resolve_patient_for_visit(db, visit, qr_token)
+    return True
+
+
+async def _load_visit_for_checkin(
+    db, visit_id: UUID, user: User, *, qr_token: str | None = None
+) -> tuple[Visit, UUID]:
     """打刻用に visit をロードし、呼び出し元が「自分の visit」か検証する。
 
     visit ガード (削除 / 取消 / 当日) は judge が行うため、ここでは
@@ -857,17 +994,13 @@ async def _load_visit_for_checkin(db, visit_id: UUID, user: User) -> tuple[Visit
     潰れてしまい、この 409 と 404 の区別が付かなくなる。両者を分けるため visit を
     取得後に Python で可視性のみ判定し、deleted/cancelled/当日外は judge に委ねる。
 
+    ``qr_token`` (代行打刻・設計 §4-2) が渡された場合は、可視でなくてもトークンが
+    この visit の患者に解決できれば通す (QR capability 分岐)。no-show は担当専用の
+    ままにするため、この引数を渡さない。
+
     検証済みの ``(visit, staff_id)`` を返す (``staff_id`` は非 NULL を保証)。
     """
-    if normalize_user_role(user.role) not in {"admin", "staff"}:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
-    staff_id = user.staff_id
-    if staff_id is None:
-        # User に staff 未紐付け → 打刻者を確定できない (設計 §2-1)。
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User is not linked to a staff record",
-        )
+    staff_id = _require_staff_actor(user)
 
     visit = await db.scalar(
         select(Visit)
@@ -894,6 +1027,9 @@ async def _load_visit_for_checkin(db, visit_id: UUID, user: User) -> tuple[Visit
         visible = await is_accompaniment_visit_for_staff(
             db, visit_id=visit.id, course_id=visit.course_id, staff_id=staff_id
         )
+    # 代行打刻 (§4-2): 担当外でも現地 QR を持っていれば通す。
+    if not visible:
+        visible = await _qr_capability_allows(db, visit, qr_token)
     if not visible:
         # 担当外には存在を秘匿する。
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -932,7 +1068,8 @@ async def checkin_visit(
     db: DbDep,
     user: CurrentActiveUser,
 ) -> dict:
-    visit, staff_id = await _load_visit_for_checkin(db, visit_id, user)
+    # 代行打刻 (§4-2): 担当外でも現地 QR を持っていれば通す。
+    visit, staff_id = await _load_visit_for_checkin(db, visit_id, user, qr_token=payload.qr_token)
     checkin = await judge_checkin(db, visit, staff_id, payload, "arrival")
     # status 退行ガード: 既に completed の visit に再 checkin しても completed の
     # まま据え置く (in_progress へ巻き戻さない)。planned / in_progress のときのみ
@@ -942,6 +1079,9 @@ async def checkin_visit(
     # Phase 5-2: 場所違い (mismatch) は admin/manager へイベント駆動で冪等通知する
     # (同一 transaction で add し、下の commit で一括永続化)。
     await notify_checkin_mismatch(db, visit=visit, checkin=checkin)
+    # QR 打刻の開放 (§4-4): 代行 / 予定外 / NG 交差も同じ形で冪等通知する
+    # (記録は止めない = 決定#5。気づきは通知とモニターで担保する)。
+    await notify_checkin_anomalies(db, visit=visit, checkin=checkin)
     # 遅刻→到着で cron 生成済みの「未訪問」通知が残らないよう、到着記録と同一
     # transaction で当該 visit の missing 通知を解消する (全ユーザー分削除)。
     await resolve_checkin_missing(db, visit.id)
@@ -960,9 +1100,185 @@ async def checkout_visit(
     db: DbDep,
     user: CurrentActiveUser,
 ) -> dict:
-    visit, staff_id = await _load_visit_for_checkin(db, visit_id, user)
-    await judge_checkin(db, visit, staff_id, payload, "departure")
+    # 代行の退出も QR 再スキャン (§4-2「退出は改めて現地で読む」) で通す。
+    visit, staff_id = await _load_visit_for_checkin(db, visit_id, user, qr_token=payload.qr_token)
+    checkin = await judge_checkin(db, visit, staff_id, payload, "departure")
     visit.status = VISIT_STATUS_COMPLETED
+    # 予定外訪問 (§3) の end_time は生成時の暫定値。退出打刻で実退出時刻へ更新する
+    # (滞在時間・モニターのバー長を実績に合わせる)。開始以前へ巻き戻る値は採らない。
+    if visit.is_unplanned:
+        actual_end = _as_jst_time(checkin.scanned_at)
+        if actual_end > visit.start_time:
+            visit.end_time = actual_end
+    # 到着は担当本人・退出だけ代行が押した場合でも代行 / NG 交差に気づけるよう、
+    # 退出経路でも通知する (reference_id = visit.id で冪等なので、到着時に通知済み
+    # なら重複しない)。
+    await notify_checkin_anomalies(db, visit=visit, checkin=checkin)
+    await db.commit()
+    return await _checkin_response(db, visit_id)
+
+
+# ---------------------------------------------------------------------------
+# 予定外訪問の打刻 (POST /visits/adhoc-checkin) — 設計 §4-3
+# ---------------------------------------------------------------------------
+
+# 予定外訪問の暫定所要時間 (分)。患者の基本訪問時間が取れないときの既定
+# (PO 確認事項 §9-1: 60 分固定で良いか)。
+ADHOC_DEFAULT_SERVICE_MINUTES = 60
+
+
+def _adhoc_lock_key(patient_id: UUID, staff_id: UUID, day: date) -> int:
+    """(患者 × スタッフ × 当日) の advisory lock キー (signed bigint) を作る.
+
+    同一患者宅で連打・二重送信された ``adhoc-checkin`` が並走すると、二重生成
+    ガードの SELECT が互いの未 commit 行を見られず visit が 2 本生える。
+    PostgreSQL の transaction-level advisory lock (``try_advisory_xact_lock``) で
+    この 3 つ組を直列化する (commit / rollback で自動解放)。
+    """
+    raw = f"adhoc:{patient_id}:{staff_id}:{day.isoformat()}".encode()
+    return int.from_bytes(hashlib.blake2b(raw, digest_size=8).digest(), "big", signed=True)
+
+
+def _as_jst_time(dt: datetime) -> time:
+    """timestamptz (SQLite の naive は UTC) を JST の壁時計 (秒切り捨て) にする."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(JST).time().replace(second=0, microsecond=0)
+
+
+def _weekly_pattern_service_minutes(patient: Patient) -> int | None:
+    """``weekly_pattern`` (サマリ形式 → entries) から基本訪問時間 (分) を取る."""
+    pattern = patient.weekly_pattern
+    if not isinstance(pattern, dict):
+        return None
+    candidates: list[object] = [pattern.get("service_minutes")]
+    entries = pattern.get("entries")
+    if isinstance(entries, list):
+        candidates.extend(e.get("service_minutes") for e in entries if isinstance(e, dict))
+    for raw in candidates:
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+            return raw
+    return None
+
+
+async def _patient_service_minutes(db, patient: Patient) -> int:
+    """患者の基本訪問時間 (分)。①固定枠 PFV → ②希望パターン → ③既定 60 分.
+
+    優先順位は配置系の既存解決 (``api/v1/special_visits.py`` の
+    ``_resolve_service_minutes``) と**同順**に揃える (同じ患者の所要時間が経路に
+    よって食い違わないようにする)。既定値だけは設計 §3 の予定外訪問向けに 60 分
+    (あちらは配置枠なので 30 分)。予定外訪問の枠はあくまで暫定で、退出打刻で実
+    時刻へ更新される。
+    """
+    duration = await db.scalar(
+        select(PatientFixedVisit.duration_min)
+        .where(
+            PatientFixedVisit.patient_id == patient.id,
+            PatientFixedVisit.mode == "normal",
+        )
+        .order_by(PatientFixedVisit.weekday, PatientFixedVisit.slot_index)
+        .limit(1)
+    )
+    if duration:
+        return int(duration)
+    return _weekly_pattern_service_minutes(patient) or ADHOC_DEFAULT_SERVICE_MINUTES
+
+
+@router.post(
+    "/adhoc-checkin",
+    response_model=VisitRead,
+    summary="予定外訪問の到着打刻 (QR 必須) — visit を生成して記録",
+)
+async def adhoc_checkin(
+    payload: CheckinCreate,
+    db: DbDep,
+    user: CurrentActiveUser,
+) -> dict:
+    """当日予定が無い患者宅の QR 打刻。visit 生成 + 到着打刻 + 通知を 1 TX で行う。
+
+    正典設計書 ``docs/plans/qr-open-checkin-design.md`` §3 / §4-3。
+
+    - ``qr_token`` **必須** (無ければ 422)。患者特定に QR が構造上必要であり、
+      担当外の記録は QR 所持を認可の鍵とする (決定#1 / #6)。未知 = 404 /
+      失効 = 410 は resolve と同じ意味論。
+    - 生成値: ``visit_date`` = 当日 (JST) / ``start_time`` = 打刻時刻 /
+      ``end_time`` = 開始 + 患者の基本訪問時間 (無ければ 60 分・**退出打刻で実時刻へ
+      更新**) / ``course_id`` = NULL / ``primary_staff_id`` = 打刻スタッフ /
+      ``status`` = in_progress / ``is_unplanned`` = true。
+      primary を打刻者にするのは、生成後に本人の「今日の訪問」に出て退出導線が
+      既存可視性のまま成立するため (決定#4 は既存**予定** visit の話)。
+    - 二重生成ガード: 同患者 × 同スタッフ × 当日 × in_progress の予定外 visit が
+      既にあれば、新規生成せずその visit へ打刻を追記して返す (再スキャンで増殖
+      させない)。同時 POST (連打・二重送信) は advisory lock で直列化し、後発は
+      409 で弾く (未 commit の相手が見えず 2 本生えるのを防ぐ)。
+    - 返却は既存 checkin と同形 (VisitRead + latest_checkin)。
+    """
+    staff_id = _require_staff_actor(user)
+    if payload.qr_token is None or not payload.qr_token.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="qr_token is required for adhoc check-in",
+        )
+
+    patient = await resolve_qr_patient(db, payload.qr_token)
+
+    now = datetime.now(UTC)
+    today_jst = now.astimezone(JST).date()
+
+    # 同時 POST の直列化 (二重生成ガードの前段)。lock は commit / rollback で
+    # 自動解放される。取得できない = 同じ 3 つ組の打刻が処理中なので、増殖を
+    # 作らずに 409 を返して FE のリトライに委ねる (再取得すれば既存 visit が
+    # ガードに引っ掛かり追記になる)。
+    if not await try_advisory_xact_lock(db, _adhoc_lock_key(patient.id, staff_id, today_jst)):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="別の打刻を処理中です。少し待ってからもう一度お試しください",
+        )
+
+    # 二重生成ガード (§4-3)。
+    visit = await db.scalar(
+        select(Visit)
+        .where(
+            Visit.patient_id == patient.id,
+            Visit.primary_staff_id == staff_id,
+            Visit.visit_date == today_jst,
+            Visit.status == VISIT_STATUS_IN_PROGRESS,
+            Visit.is_unplanned.is_(True),
+            Visit.deleted_at.is_(None),
+        )
+        .order_by(Visit.start_time)
+        .limit(1)
+    )
+    if visit is None:
+        start_time = _as_jst_time(now)
+        start_dt = datetime.combine(today_jst, start_time)
+        end_dt = start_dt + timedelta(minutes=await _patient_service_minutes(db, patient))
+        # 日跨ぎは当日内に収める (visit は visit_date 1 日で完結する行のため)。
+        end_time = end_dt.time() if end_dt.date() == today_jst else time(23, 59)
+        visit = Visit(
+            patient_id=patient.id,
+            primary_staff_id=staff_id,
+            visit_date=today_jst,
+            start_time=start_time,
+            end_time=end_time,
+            type="regular",
+            status=VISIT_STATUS_IN_PROGRESS,
+            source="manual",
+            is_unplanned=True,
+        )
+        db.add(visit)
+        # checkin の FK (visit_id) を満たすため commit 前に id を確定させる。
+        await db.flush()
+    # judge / 通知が患者名・座標を引けるよう解決済み患者を関係に載せる
+    # (relationship は lazy="noload" = 生成直後も dup ガード経路も未ロード)。
+    # ``set_committed_value`` は「読み込み済み」として入れるだけで SQL も dirty も
+    # 発生させない (代入だと不要な履歴処理が走る)。
+    set_committed_value(visit, "patient", patient)
+    visit_id = visit.id
+
+    checkin = await judge_checkin(db, visit, staff_id, payload, "arrival", now=now)
+    await notify_checkin_mismatch(db, visit=visit, checkin=checkin)
+    await notify_checkin_anomalies(db, visit=visit, checkin=checkin)
     await db.commit()
     return await _checkin_response(db, visit_id)
 

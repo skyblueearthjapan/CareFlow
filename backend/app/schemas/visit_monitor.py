@@ -61,6 +61,16 @@ class MonitorVisit(BaseModel):
     # 新人同行 (非破壊追加). 同行新人が付く訪問なら姓名、無ければ None (行ヘッダ/詳細
     # パネルで「＋◯◯（同行）」表示用)。同行リンクは JOIN 解決 (visits には書かない)。
     accompaniment_staff_name: str | None = None
+    # 実績 (最新 arrival 打刻の staff)。予定担当 (staff_id) と食い違う = 代行。
+    # 設計 ``docs/plans/qr-open-checkin-design.md`` §6: 予定側の担当は書き換えず、
+    # 「予定した人 / 実際に行った人」を並記する。未到着は None。
+    actual_staff_id: UUID | None = None
+    actual_staff_name: str | None = None
+    # 代行 = 実績スタッフが visit の担当集合 (primary/secondary/mentor/assignments/
+    # 新人同行) の外。UI はバーに「代行」バッジ + 実績名を出す。
+    is_substitute: bool = False
+    # 予定外訪問 (visits.is_unplanned)。専用行「📌予定外訪問」に集約される。
+    is_unplanned: bool = False
     patient_id: UUID
     patient_name: str | None = None
     patient_code: str | None = None

@@ -36,13 +36,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.notification import Notification
+from app.models.patient import Patient
 from app.models.staff import Staff
 from app.models.user import User
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_checkin import VisitCheckin
 from app.models.visit_review import VisitReview
+from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.checkin.judge import load_thresholds
-from app.services.checkin.monitor import compute_pair_effective_starts
+from app.services.checkin.monitor import compute_pair_effective_starts, visit_staff_id_set
+from app.services.constraint_override_notify import collect_constraint_warnings_for_staff
+from app.services.trainee_accompaniment import resolve_accompaniment_by_visit
 from app.utils.db import try_advisory_xact_lock
 
 logger = logging.getLogger(__name__)
@@ -52,6 +56,12 @@ JST = ZoneInfo("Asia/Tokyo")
 # notifications.type / reference_type に使う種別 (frontend のアイコン選択キーと共用)。
 NOTIFY_MISMATCH: Final = "checkin_mismatch"
 NOTIFY_MISSING: Final = "checkin_missing"
+# QR 打刻の開放 (設計 ``docs/plans/qr-open-checkin-design.md`` §4-4)。
+# いずれも reference_id = visit.id (**非 NULL**) で冪等。reference_id に None を
+# 使うと ``IS NULL`` 側へ展開されて以後の通知が永久に沈黙するため使わない。
+NOTIFY_SUBSTITUTE: Final = "checkin_substitute"
+NOTIFY_UNPLANNED: Final = "checkin_unplanned"
+NOTIFY_NG_STAFF: Final = "checkin_ng_staff"
 
 # pg_try_advisory_xact_lock 用キー (bigint 範囲内)。check-missing 専用。
 # "CHKMISSG" 相当の 64-bit 整数 (audit.py の ADVISORY_LOCK_KEY と同方式)。
@@ -161,6 +171,167 @@ async def notify_checkin_mismatch(
         title=title,
         body=body,
     )
+
+
+# ---------------------------------------------------------------------------
+# QR 打刻の開放 (代行 / 予定外 / NG 交差) — 設計 §4-4
+#
+# 「記録は止めない」方針は維持 (決定#5): 打刻フロー内では警告もブロックもせず、
+# 事実を記録したうえで管理者ベルへ冪等通知するだけ。宛先・文面は
+# ``notify_checkin_mismatch`` に準拠する (admin 向け・患者名 + スタッフ名 + 種別)。
+# 文面は仮 (PO 確認事項 §9-3)。
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_patient_name(db: AsyncSession, visit: Visit) -> str:
+    """visit の患者名。eager-load 済みならそれを使い、無ければ 1 行引く.
+
+    予定外訪問 (adhoc-checkin) は visit をその場で生成するため ``visit.patient``
+    が未ロードのことがある (relationship は ``lazy="noload"``)。
+    """
+    name = getattr(visit.patient, "name", None) if visit.patient is not None else None
+    if name:
+        return name
+    name = await db.scalar(select(Patient.name).where(Patient.id == visit.patient_id))
+    return name or "利用者"
+
+
+async def _resolve_visit_staff_ids(db: AsyncSession, visit: Visit) -> set[UUID]:
+    """visit 1 件の担当集合を解決する (assignments + 新人同行を DB から引く)."""
+    assignment_ids = list(
+        (
+            await db.scalars(
+                select(VisitStaffAssignment.staff_id).where(
+                    VisitStaffAssignment.visit_id == visit.id
+                )
+            )
+        ).all()
+    )
+    accompaniment = (await resolve_accompaniment_by_visit(db, [visit])).get(visit.id)
+    return visit_staff_id_set(
+        visit,
+        assignment_staff_ids=assignment_ids,
+        accompaniment_staff_id=accompaniment[0] if accompaniment is not None else None,
+    )
+
+
+async def notify_checkin_substitute(
+    db: AsyncSession,
+    *,
+    visit: Visit,
+    checkin: VisitCheckin,
+) -> int:
+    """代行打刻 (担当外スタッフの到着) を admin へ冪等通知する (**commit しない**).
+
+    代行 = 打刻スタッフが visit の担当集合 (primary/secondary/mentor/assignments/
+    新人同行) の外。予定側の担当は書き換えない (決定#4) ため、乖離に気づく唯一の
+    経路がこの通知とモニターの代行バッジになる。担当内の打刻なら no-op。
+    """
+    if checkin.staff_id in await _resolve_visit_staff_ids(db, visit):
+        return 0
+    users = await _active_admin_manager_users(db)
+    patient_name = await _resolve_patient_name(db, visit)
+    staff_name = await _resolve_staff_name(db, checkin.staff_id)
+    planned_name = await _resolve_staff_name(db, visit.primary_staff_id)
+    hhmm = _as_jst(checkin.scanned_at).strftime("%H:%M")
+    return await _create_idempotent(
+        db,
+        users=users,
+        type_=NOTIFY_SUBSTITUTE,
+        reference_type=NOTIFY_SUBSTITUTE,
+        reference_id=visit.id,
+        title="代行での訪問記録",
+        body=f"{patient_name}（予定: {planned_name} / 実績: {staff_name}）{hhmm} 担当外のスタッフが打刻",
+    )
+
+
+async def notify_checkin_unplanned(
+    db: AsyncSession,
+    *,
+    visit: Visit,
+    checkin: VisitCheckin,
+) -> int:
+    """予定外訪問の打刻を admin へ冪等通知する (**commit しない**).
+
+    ``visit.is_unplanned`` が false なら no-op。予定外訪問は予定に載っていない
+    実績のため、管理者が後から突合 (カイポケ手入力等 §7-1) できるよう必ず通知する。
+    """
+    if not visit.is_unplanned:
+        return 0
+    users = await _active_admin_manager_users(db)
+    patient_name = await _resolve_patient_name(db, visit)
+    staff_name = await _resolve_staff_name(db, checkin.staff_id)
+    hhmm = _as_jst(checkin.scanned_at).strftime("%H:%M")
+    return await _create_idempotent(
+        db,
+        users=users,
+        type_=NOTIFY_UNPLANNED,
+        reference_type=NOTIFY_UNPLANNED,
+        reference_id=visit.id,
+        title="予定外の訪問記録",
+        body=f"{patient_name}（{staff_name}）{hhmm} 予定に無い訪問を記録",
+    )
+
+
+async def notify_checkin_ng_staff(
+    db: AsyncSession,
+    *,
+    visit: Visit,
+    checkin: VisitCheckin,
+) -> int:
+    """NG スタッフ / 性別制限に抵触する打刻を admin へ冪等通知する (**commit しない**).
+
+    判定は手動経路の 422 確認フローと同じ芯
+    (``constraint_override_notify.collect_constraint_warnings_for_staff``) を使う
+    = NG 行あり、または ``patient.sex_restriction`` とスタッフ性別の不一致。
+    性別未登録スタッフを違反にしないのも同じ (誤検知回避側)。
+
+    **打刻は止めない** (決定#5)。抵触が無ければ no-op。
+    """
+    warnings = await collect_constraint_warnings_for_staff(
+        db, staff_id=checkin.staff_id, patient_ids=[visit.patient_id]
+    )
+    if not warnings:
+        return 0
+    users = await _active_admin_manager_users(db)
+    patient_name = await _resolve_patient_name(db, visit)
+    staff_name = await _resolve_staff_name(db, checkin.staff_id)
+    hhmm = _as_jst(checkin.scanned_at).strftime("%H:%M")
+    kinds = {w.kind for w in warnings}
+    if kinds == {"ng_staff"}:
+        label = "NGスタッフ"
+    elif kinds == {"gender"}:
+        label = "性別制限外"
+    else:
+        label = "NGスタッフ・性別制限外"
+    return await _create_idempotent(
+        db,
+        users=users,
+        type_=NOTIFY_NG_STAFF,
+        reference_type=NOTIFY_NG_STAFF,
+        reference_id=visit.id,
+        title=f"{label}のスタッフが訪問",
+        body=f"{patient_name}（{staff_name}）{hhmm} {label}のスタッフが打刻（記録は保存済み）",
+    )
+
+
+async def notify_checkin_anomalies(
+    db: AsyncSession,
+    *,
+    visit: Visit,
+    checkin: VisitCheckin,
+) -> dict[str, int]:
+    """到着打刻の 3 種通知 (代行 / 予定外 / NG 交差) をまとめて発火する.
+
+    到着 (arrival) 打刻の経路 (通常 checkin / adhoc-checkin) から 1 回呼ぶための
+    入口。各 producer が自分で該当しないケースを no-op 判定するため、呼び出し側は
+    条件分岐を持たない。**commit しない** (呼び出し側が TX 境界を握る)。
+    """
+    return {
+        NOTIFY_SUBSTITUTE: await notify_checkin_substitute(db, visit=visit, checkin=checkin),
+        NOTIFY_UNPLANNED: await notify_checkin_unplanned(db, visit=visit, checkin=checkin),
+        NOTIFY_NG_STAFF: await notify_checkin_ng_staff(db, visit=visit, checkin=checkin),
+    }
 
 
 async def resolve_checkin_missing(db: AsyncSession, visit_id: UUID) -> int:
