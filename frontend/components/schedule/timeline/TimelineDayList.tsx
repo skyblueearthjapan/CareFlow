@@ -98,10 +98,10 @@ function VisitRow({
   accompaniment?: AccompanimentBinding;
 }) {
   const pal = genderPalette(v.patient_sex);
-  // 新人同行 (§7.2): inactive 時のみ、この訪問に紐づく同行新人名を出す。
+  // 同行 (§7.2): inactive 時のみ、この訪問に紐づく同行スタッフ名 (複数可) を出す。
   const accName =
     accompaniment && !accompaniment.active && v.visit_id
-      ? accompaniment.visitBadgeName(v.visit_id)
+      ? accompaniment.visitBadgeName(v.visit_id).join('・') || null
       : null;
   const cond = formatTimeCondition({
     time_type: v.time_type,
@@ -175,7 +175,7 @@ function VisitRow({
           <span
             className="inline-flex max-w-[96px] shrink-0 items-center truncate rounded-full bg-info-bg px-1 text-[9px] font-bold text-info"
             data-testid={`tdl-accompaniment-${v.key}`}
-            title={`同行: ${accName}（新人）`}
+            title={`同行: ${accName}`}
           >
             👥{accName}
           </span>
@@ -441,12 +441,12 @@ export function TimelineDayList({
     <div className="space-y-3" data-testid="timeline-day-list">
       {courses.map((c) => {
         const rows = interleave(c);
-        // コース丸ごと同行: (template_id, weekday) → courseId → 見出しの 👥新人名。
+        // コース丸ごと同行: (template_id, weekday) → courseId → 見出しの 👥同行者名。
         const courseAccName =
           accInactive && c.course_template_id != null && c.weekday != null
-            ? accompaniment!.courseBadgeName(
-                accompaniment!.resolveCourseId(c.course_template_id, c.weekday),
-              )
+            ? accompaniment!
+                .courseBadgeName(accompaniment!.resolveCourseId(c.course_template_id, c.weekday))
+                .join('・') || null
             : null;
         return (
           <div key={c.key} className="rounded-lg border border-border-default bg-bg-base px-3 py-2">
@@ -484,7 +484,7 @@ export function TimelineDayList({
                 <span
                   className="inline-flex shrink-0 items-center rounded-full bg-info-bg px-1.5 py-0.5 text-[10px] font-bold text-info"
                   data-testid={`tdl-course-accompaniment-${c.key}`}
-                  title={`同行: ${courseAccName}（新人）`}
+                  title={`同行: ${courseAccName}`}
                 >
                   👥{courseAccName}
                 </span>

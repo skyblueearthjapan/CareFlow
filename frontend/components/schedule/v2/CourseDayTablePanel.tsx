@@ -3157,31 +3157,38 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     [weekdayDates],
   );
 
-  const activeTrainees = useMemo(
-    () => allStaff.filter((s) => s.is_trainee === true && s.status === 'active'),
-    [allStaff],
-  );
+  // 同行者は新人に限らない (general-accompaniment-design.md 確定#1〜#8)。
+  // active な全スタッフを候補にし、新人を先頭グループへ寄せて渡す (§4 セレクタ一般化)。
+  const accompanimentStaffOptions = useMemo(() => {
+    const actives = allStaff.filter((s) => s.status === 'active');
+    return [...actives].sort((a, b) => {
+      const at = a.is_trainee === true ? 0 : 1;
+      const bt = b.is_trainee === true ? 0 : 1;
+      if (at !== bt) return at - bt;
+      return (a.name ?? '').localeCompare(b.name ?? '', 'ja');
+    });
+  }, [allStaff]);
 
   const accompaniment = useAccompanimentController({
     isoYear,
     isoWeek,
     canEdit,
-    trainees: activeTrainees,
+    staffOptions: accompanimentStaffOptions,
     weekVisits: accompanimentWeekVisits,
     resolveCourseId: resolveAccompanimentCourseId,
     weekdayDateLabel,
   });
 
-  // ─── 新人同行で「2人目 (slot1)」を充足した複数名対応患者をプールから消す ───
-  //   週の全新人リンク (保存済みサーバデータ) を取得し、複数名対応患者のうち
+  // ─── 同行で「2人目 (slot1)」を充足した複数名対応患者をプールから消す ─────
+  //   週の全同行リンク (保存済みサーバデータ) を取得し、複数名対応患者のうち
   //   配置済み訪問がすべて同行つきの患者について slot1 を上乗せする。これにより
   //   PoolPanel の②カード (2人目未配置) がプールから消える。同行を外して確定すれば
-  //   invalidate → 再取得で復活する。新人が 0 人なら取得しない (enabled:false)。
+  //   invalidate → 再取得で復活する。kind (新人/一般) は見ない (確定#7)。
   //   ※ controller 内の displayQuery と同一キーのため React Query が dedupe する。
   const traineeAccompanimentsQuery = useTraineeAccompaniments({
     isoYear,
     isoWeek,
-    enabled: activeTrainees.length > 0,
+    enabled: accompanimentStaffOptions.length > 0,
   });
   const accompanimentLinkIndex = useMemo(
     () => buildAccompanimentLinkIndex(traineeAccompanimentsQuery.data),
@@ -3491,7 +3498,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     disabled={accompaniment.active}
                     title={
                       accompaniment.active
-                        ? '新人同行モード中はタイムライン表示のみ使えます'
+                        ? '同行モード中はタイムライン表示のみ使えます'
                         : undefined
                     }
                     data-testid="course-day-mode-list"
@@ -3533,7 +3540,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       disabled={accompaniment.active}
                       title={
                         accompaniment.active
-                          ? '新人同行モード中はタイムライン表示のみ使えます'
+                          ? '同行モード中はタイムライン表示のみ使えます'
                           : undefined
                       }
                       data-testid="course-week-mode-overview"
@@ -3553,7 +3560,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       disabled={accompaniment.active}
                       title={
                         accompaniment.active
-                          ? '新人同行モード中はタイムライン表示のみ使えます'
+                          ? '同行モード中はタイムライン表示のみ使えます'
                           : 'スタッフごとの週の動きを表示（カイポケの職員スケジュールと同じ構造）'
                       }
                       data-testid="course-week-mode-staff"
@@ -3647,7 +3654,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                       officeId={officeId}
                       disabled={!canEdit || isProcessing}
                     />
-                    {/* 新人同行モード (§7.1)。active な新人が 1 人以上・編集権限ありのときのみ。 */}
+                    {/* 同行モード (§7.1)。active なスタッフが 1 人以上・編集権限ありのときのみ。 */}
                     {accompaniment.available && (
                       <Button
                         type="button"
@@ -3664,9 +3671,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                         }}
                         disabled={accompaniment.active}
                         data-testid="accompaniment-enter-button"
-                        title="新人が先輩の訪問に同行する設定を編集します"
+                        title="スタッフが他スタッフの訪問に同行する設定を編集します"
                       >
-                        👥 新人同行
+                        👥 同行
                       </Button>
                     )}
                   </div>
@@ -3978,13 +3985,17 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 // ドラッグ開始時にゴーストへ流用するため「表示中のデータ」を記録。
                 poolCardDataRef.current.set(draggableId, cardData);
 
-                // ── 新人同行モード連携 ─────────────────────────────────
+                // ── 同行モード連携 ─────────────────────────────────────
                 //   ②カード (複数名対応・2人目未配置) を、同行モード中にクリック
                 //   したら、その患者の配置済み訪問を個別リンクとして一括トグルする
                 //   (既にコース選択に内包される訪問はスキップ)。モード中は通常の
                 //   カードクリック (患者詳細) は抑止する。
+                //   ②カードは患者単位の操作なので「患者単位」に絞っているときだけ armed。
                 const isSecondStaffCard =
-                  isMultiStaff && slotInfo.slotIndex === 1 && slotInfo.partnerAssigned === true;
+                  isMultiStaff &&
+                  slotInfo.slotIndex === 1 &&
+                  slotInfo.partnerAssigned === true &&
+                  accompaniment.binding.isVisitArmed;
                 const accSelectableVisitIds =
                   accompaniment.active && isSecondStaffCard
                     ? (placedVisitsByPatient.get(p.id) ?? [])
@@ -4323,8 +4334,11 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           />
         ) : null}
 
-        {/* 新人同行モードの下部固定バー (§7.1)。active のときだけ描画。 */}
+        {/* 同行モードの下部固定バー (§7.1)。active のときだけ描画。 */}
         {accompaniment.bar ? <AccompanimentBar {...accompaniment.bar} /> : null}
+
+        {/* NG スタッフ §7-2: 同行登録が NG / 性別に抵触したときの確認 (ack 再送)。 */}
+        <ConstraintOverrideConfirmDialog {...accompaniment.constraintDialogProps} />
       </section>
     </DndContext>
   );

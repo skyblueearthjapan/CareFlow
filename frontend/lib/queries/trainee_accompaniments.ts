@@ -1,17 +1,23 @@
 'use client';
 
 /**
- * TanStack Query hooks for 新人同行 (trainee accompaniment).
+ * TanStack Query hooks for 同行 (accompaniment).
  *
- * 設計書 §6 の API 契約:
- *   GET  /api/v1/trainee-accompaniments?iso_year=&iso_week=[&trainee_staff_id=]
- *   PUT  /api/v1/trainee-accompaniments                         (週単位の一括置換)
- *   GET  /api/v1/trainee-accompaniment-defaults?trainee_staff_id=
- *   PUT  /api/v1/trainee-accompaniment-defaults                 (全置換)
+ * API 契約 (`general-accompaniment-design.md` §3-8 で一般化パスへ移行。旧
+ * `/trainee-accompaniments` 系は BE 側の互換エイリアスとして残るが FE は使わない):
+ *   GET  /api/v1/accompaniments?iso_year=&iso_week=[&trainee_staff_id=]
+ *   PUT  /api/v1/accompaniments                         (週単位の一括置換)
+ *   GET  /api/v1/accompaniment-defaults?trainee_staff_id=
+ *   PUT  /api/v1/accompaniment-defaults                 (全置換)
+ *   GET  /api/v1/accompaniments/course-guard?trainee_staff_id=
+ *   DELETE /api/v1/accompaniments/future?trainee_staff_id=
  *
  * RBAC: GET=全ロール / PUT=admin・manager (staff は閲覧のみ)。
- * PUT の 422 (時間重複) は ApiError.body に `{ detail: { message, overlaps } }` を持つ。
- * 呼び出し側は `parseOverlapDetail(err.body)` で取り出して同じ警告 UI に流す (§7.1 二重防御)。
+ * PUT の 422 は 2 系統:
+ *   - 時間重複 `{ detail: { code:'accompaniment_overlap', conflicts:[...] } }`
+ *     (旧形 `{ detail: { message, overlaps } }` も互換で読む)
+ *   - NG/性別 `{ detail: { code:'constraint_confirmation_required', warnings:[...] } }`
+ *     → 確認ダイアログ → `acknowledge_constraint_warnings:true` で再送。
  */
 import {
   useMutation,
@@ -33,8 +39,8 @@ import {
   type TraineeCourseGuardResponse,
 } from '@/lib/schemas/trainee_accompaniment';
 
-const BASE = '/api/v1/trainee-accompaniments';
-const DEFAULTS_BASE = '/api/v1/trainee-accompaniment-defaults';
+const BASE = '/api/v1/accompaniments';
+const DEFAULTS_BASE = '/api/v1/accompaniment-defaults';
 
 // ---------------------------------------------------------------------------
 // Auth helper (mirrors pattern in lib/queries/staff.ts)
@@ -57,8 +63,7 @@ export const traineeAccompanimentsKey = (
   isoYear: number,
   isoWeek: number,
   traineeStaffId?: string | null,
-) =>
-  ['trainee-accompaniments', isoYear, isoWeek, traineeStaffId ?? '__all__'] as const;
+) => ['trainee-accompaniments', isoYear, isoWeek, traineeStaffId ?? '__all__'] as const;
 
 export const traineeAccompanimentDefaultsKey = (traineeStaffId: string | null | undefined) =>
   ['trainee-accompaniment-defaults', traineeStaffId ?? '__none__'] as const;
@@ -176,19 +181,11 @@ type UpdateDefaultsOptions = UseMutationOptions<
 
 export function useUpdateTraineeAccompanimentDefaults(
   options: UpdateDefaultsOptions = {},
-): UseMutationResult<
-  TraineeAccompanimentDefaultRead[],
-  Error,
-  TraineeAccompanimentDefaultsPut
-> {
+): UseMutationResult<TraineeAccompanimentDefaultRead[], Error, TraineeAccompanimentDefaultsPut> {
   const qc = useQueryClient();
   const { accessToken, refreshToken } = useAuthTokens();
 
-  return useMutation<
-    TraineeAccompanimentDefaultRead[],
-    Error,
-    TraineeAccompanimentDefaultsPut
-  >({
+  return useMutation<TraineeAccompanimentDefaultRead[], Error, TraineeAccompanimentDefaultsPut>({
     mutationFn: (payload) =>
       fetcher<TraineeAccompanimentDefaultRead[]>(DEFAULTS_BASE, {
         method: 'PUT',
@@ -214,10 +211,7 @@ export function useUpdateTraineeAccompanimentDefaults(
  * 新人が「今週以降のコース担当」に残っているかを返す。
  * is_trainee を ON にする際の警告表示に使う (自動解除はしない・警告主義)。
  */
-export function useTraineeCourseGuard(
-  traineeStaffId: string | null | undefined,
-  enabled = true,
-) {
+export function useTraineeCourseGuard(traineeStaffId: string | null | undefined, enabled = true) {
   const { accessToken, refreshToken, isAuthenticated } = useAuthTokens();
 
   return useQuery<TraineeCourseGuardResponse, Error>({
@@ -225,10 +219,10 @@ export function useTraineeCourseGuard(
     queryFn: () => {
       if (!traineeStaffId) throw new Error('trainee_staff_id is required');
       const qs = new URLSearchParams({ trainee_staff_id: traineeStaffId });
-      return fetcher<TraineeCourseGuardResponse>(
-        `${BASE}/course-guard?${qs.toString()}`,
-        { accessToken, refreshToken },
-      );
+      return fetcher<TraineeCourseGuardResponse>(`${BASE}/course-guard?${qs.toString()}`, {
+        accessToken,
+        refreshToken,
+      });
     },
     enabled: isAuthenticated && enabled && !!traineeStaffId,
   });
@@ -258,10 +252,11 @@ export function useDeleteTraineeAccompanimentsFuture(
   return useMutation<TraineeAccompanimentFutureDeleteResponse, Error, void>({
     mutationFn: () => {
       const qs = new URLSearchParams({ trainee_staff_id: traineeStaffId });
-      return fetcher<TraineeAccompanimentFutureDeleteResponse>(
-        `${BASE}/future?${qs.toString()}`,
-        { method: 'DELETE', accessToken, refreshToken },
-      );
+      return fetcher<TraineeAccompanimentFutureDeleteResponse>(`${BASE}/future?${qs.toString()}`, {
+        method: 'DELETE',
+        accessToken,
+        refreshToken,
+      });
     },
     ...options,
     onSuccess: (data, variables, onMutateResult, context) => {
