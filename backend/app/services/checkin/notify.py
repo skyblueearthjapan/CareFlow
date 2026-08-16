@@ -256,7 +256,7 @@ async def notify_checkin_unplanned(
     ``visit.is_unplanned`` が false なら no-op。予定外訪問は予定に載っていない
     実績のため、管理者が後から突合 (カイポケ手入力等 §7-1) できるよう必ず通知する。
     """
-    if not getattr(visit, "is_unplanned", False):
+    if not visit.is_unplanned:
         return 0
     users = await _active_admin_manager_users(db)
     patient_name = await _resolve_patient_name(db, visit)

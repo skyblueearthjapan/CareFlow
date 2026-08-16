@@ -25,10 +25,13 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import select
 
+from app.api.v1 import visits as visits_api
 from app.core.security import create_access_token, hash_password
 from app.models import (
     Notification,
+    Office,
     Patient,
+    PatientFixedVisit,
     PatientNgStaff,
     RevokedQrToken,
     Staff,
@@ -36,6 +39,7 @@ from app.models import (
     Visit,
     VisitCheckin,
     VisitReview,
+    VisitStaffAssignment,
 )
 from app.services.checkin.monitor import (
     ALERT_NONE,
@@ -48,6 +52,10 @@ from app.services.checkin.notify import (
     NOTIFY_NG_STAFF,
     NOTIFY_SUBSTITUTE,
     NOTIFY_UNPLANNED,
+)
+from app.services.scheduling.auto_allocator_v2 import (
+    _RESET_DELETABLE_SOURCES,
+    _RESET_DELETABLE_STATUSES,
 )
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -273,6 +281,84 @@ async def test_get_visit_with_qr_token_allows_non_assigned_staff(client, db) -> 
 
 
 @pytest.mark.asyncio
+async def test_get_visit_with_qr_token_header(client, db) -> None:
+    """X-QR-Token ヘッダでも capability が通る (クエリはログ / Referer に残るため)."""
+    owner, _ = await _make_staff_user(db, "get-1b-owner@example.com")
+    _, me = await _make_staff_user(db, "get-1b-me@example.com")
+    p = await _make_patient(db, "GET-1B", qr_token="get-tok-1b")
+    visit = await _make_visit(db, p.id, owner.id)
+
+    res = await client.get(
+        f"/api/v1/visits/{visit.id}",
+        headers={**_bearer(me), "X-QR-Token": "get-tok-1b"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["id"] == str(visit.id)
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_get_visit_via_qr_capability_is_restricted(client, db) -> None:
+    """capability 経由 (担当外) の GET は業務情報を落とす (現地に要る範囲のみ返す)."""
+    owner, _ = await _make_staff_user(db, "get-3-owner@example.com", staff_name="予定 太郎")
+    assigned, _ = await _make_staff_user(db, "get-3-asn@example.com")
+    _, me = await _make_staff_user(db, "get-3-me@example.com")
+    p = await _make_patient(
+        db,
+        "GET-3",
+        qr_token="get-tok-3",
+        name="秘匿 花子",
+        address="千葉県1-2-3",
+        lat=35.0,
+        lng=139.0,
+    )
+    visit = await _make_visit(db, p.id, owner.id)
+    visit.note = "鍵は郵便受け・家族と要相談"
+    visit.kaipoke_id = "KP-9999"
+    db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=assigned.id))
+    await db.commit()
+
+    res = await client.get(
+        f"/api/v1/visits/{visit.id}", headers={**_bearer(me), "X-QR-Token": "get-tok-3"}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 落とすもの (事業所の業務情報)。
+    assert body["note"] is None
+    assert body["kaipoke_id"] is None
+    assert body["staff_assignments"] == []
+    assert body["accompaniment"] is None
+    # 残すもの (現地判定・確認表示に要る = resolve v2 で開示済みの範囲)。
+    assert body["patient_name"] == "秘匿 花子"
+    assert body["patient_address"] == "千葉県1-2-3"
+    assert body["patient_lat"] == 35.0
+    assert body["staff_name"] == "予定 太郎"
+    assert body["start_time"] == "09:00:00"
+    assert body["status"] == "planned"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_get_visit_for_assigned_staff_keeps_full_payload(client, db) -> None:
+    """担当者本人の GET は従来どおり全量 (絞り込みは capability 経由だけ)."""
+    mine, me = await _make_staff_user(db, "get-4-me@example.com")
+    p = await _make_patient(db, "GET-4", qr_token="get-tok-4")
+    visit = await _make_visit(db, p.id, mine.id)
+    visit.note = "申し送りメモ"
+    visit.kaipoke_id = "KP-1111"
+    await db.commit()
+
+    res = await client.get(
+        f"/api/v1/visits/{visit.id}", headers={**_bearer(me), "X-QR-Token": "get-tok-4"}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["note"] == "申し送りメモ"
+    assert body["kaipoke_id"] == "KP-1111"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
 async def test_get_visit_with_other_patients_token_returns_409(client, db) -> None:
     """GET でも別患者トークンは 409 (打刻経路と同じ意味論)."""
     owner, _ = await _make_staff_user(db, "get-2-owner@example.com")
@@ -416,6 +502,41 @@ async def test_sex_restriction_checkin_notifies_ng_staff_type(client, db) -> Non
 
 
 @pytest.mark.asyncio
+async def test_checkout_only_substitute_is_notified(client, db) -> None:
+    """到着は担当本人・**退出だけ代行**でも代行通知が出る (退出経路にも配線)."""
+    owner, owner_user = await _make_staff_user(
+        db, "ntf-6-owner@example.com", staff_name="担当 太郎"
+    )
+    _, me = await _make_staff_user(db, "ntf-6-me@example.com", staff_name="代行 花子")
+    await _make_admin(db, "ntf-6-admin@example.com")
+    p = await _make_patient(db, "NTF-6", qr_token="ntf-tok-6")
+    visit = await _make_visit(db, p.id, owner.id)
+
+    arrival = await client.post(
+        f"/api/v1/visits/{visit.id}/checkin",
+        headers=_bearer(owner_user),
+        json={"qr_token": "ntf-tok-6"},
+    )
+    assert arrival.status_code == 200, arrival.text
+    assert await _notification_count(db, NOTIFY_SUBSTITUTE) == 0
+
+    res = await client.post(
+        f"/api/v1/visits/{visit.id}/checkout",
+        headers=_bearer(me),
+        json={"qr_token": "ntf-tok-6"},
+    )
+    assert res.status_code == 200, res.text
+    rows = (
+        await db.scalars(
+            select(Notification).where(Notification.reference_type == NOTIFY_SUBSTITUTE)
+        )
+    ).all()
+    assert len(rows) == 1
+    assert "代行 花子" in rows[0].body
+    await db.rollback()
+
+
+@pytest.mark.asyncio
 async def test_clean_checkin_creates_no_anomaly_notifications(client, db) -> None:
     """通常の担当打刻では 3 種とも通知しない (誤検知で管理者を疲弊させない)."""
     mine, me = await _make_staff_user(db, "ntf-5-me@example.com")
@@ -500,6 +621,105 @@ async def test_adhoc_checkin_defaults_to_60_minutes(client, db) -> None:
     today = _today_jst()
     assert datetime.combine(today, end) - datetime.combine(today, start) == timedelta(minutes=60)
     assert body["patient_id"] == str(p.id)
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_adhoc_checkin_prefers_fixed_visit_duration(client, db) -> None:
+    """所要時間の優先順位は配置系 (special_visits._resolve_service_minutes) と同順.
+
+    ①固定枠 (PFV duration_min) が weekly_pattern より優先される。
+    """
+    _, me = await _make_staff_user(db, "adh-2b@example.com")
+    p = await _make_patient(
+        db, "ADH-2B", qr_token="adh-tok-2b", weekly_pattern={"service_minutes": 45}
+    )
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id, mode="normal", weekday=0, start_time=time(9, 0), duration_min=90
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/visits/adhoc-checkin", headers=_bearer(me), json={"qr_token": "adh-tok-2b"}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    today = _today_jst()
+    start = time.fromisoformat(body["start_time"])
+    end = time.fromisoformat(body["end_time"])
+    assert datetime.combine(today, end) - datetime.combine(today, start) == timedelta(minutes=90)
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_adhoc_checkin_returns_is_unplanned_in_visit_read(client, db) -> None:
+    """VisitRead に is_unplanned が載る (手書き dict の載せ漏れ回帰防止)."""
+    mine, me = await _make_staff_user(db, "adh-2c@example.com")
+    p = await _make_patient(db, "ADH-2C", qr_token="adh-tok-2c")
+    planned = await _make_visit(db, p.id, mine.id)
+
+    created = await client.post(
+        "/api/v1/visits/adhoc-checkin", headers=_bearer(me), json={"qr_token": "adh-tok-2c"}
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["is_unplanned"] is True
+
+    res = await client.get(f"/api/v1/visits/{planned.id}", headers=_bearer(me))
+    assert res.status_code == 200, res.text
+    assert res.json()["is_unplanned"] is False
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_adhoc_checkin_conflicts_when_advisory_lock_is_held(client, db, monkeypatch) -> None:
+    """同時 POST は advisory lock で直列化する (取得失敗 = 409 で増殖ゼロ).
+
+    SQLite では ``try_advisory_xact_lock`` が常に True (排他不要) を返すため、
+    「lock を取りに行っていること」と「取れなければ visit を作らないこと」を
+    取得失敗の注入で固定する。
+    """
+    _, me = await _make_staff_user(db, "adh-8@example.com")
+    p = await _make_patient(db, "ADH-8", qr_token="adh-tok-8")
+
+    captured: list[int] = []
+
+    async def _busy_lock(_db, key: int) -> bool:
+        captured.append(key)
+        return False
+
+    monkeypatch.setattr(visits_api, "try_advisory_xact_lock", _busy_lock)
+
+    res = await client.post(
+        "/api/v1/visits/adhoc-checkin", headers=_bearer(me), json={"qr_token": "adh-tok-8"}
+    )
+    assert res.status_code == 409, res.text
+    assert len(captured) == 1
+    # キーは (患者 × スタッフ × 当日) で決まる (別患者なら別キー)。
+    assert captured[0] == visits_api._adhoc_lock_key(p.id, me.staff_id, _today_jst())
+    assert (await db.scalars(select(Visit).where(Visit.patient_id == p.id))).all() == []
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_adhoc_visit_is_protected_from_week_regeneration(client, db) -> None:
+    """予定外 visit は週生成 / reset-to-fixed の削除対象にならない (設計 §7-3)."""
+    _, me = await _make_staff_user(db, "adh-9@example.com")
+    await _make_patient(db, "ADH-9", qr_token="adh-tok-9")
+
+    res = await client.post(
+        "/api/v1/visits/adhoc-checkin", headers=_bearer(me), json={"qr_token": "adh-tok-9"}
+    )
+    assert res.status_code == 200, res.text
+    visit = await db.scalar(select(Visit).where(Visit.id == UUID(res.json()["id"])))
+
+    # reset-to-fixed の削除 whitelist (source / status) の外に居ること。
+    assert "manual" not in _RESET_DELETABLE_SOURCES
+    assert visit.source not in _RESET_DELETABLE_SOURCES
+    assert visit.status not in _RESET_DELETABLE_STATUSES
+    # generate-week-only は source='auto' のみ削除する。
+    assert visit.source != "auto"
     await db.rollback()
 
 
@@ -796,6 +1016,86 @@ async def test_monitor_groups_unplanned_visits_into_dedicated_row(db) -> None:
     # 同じスタッフの予定 visit は従来どおり通常行のまま。
     planned_row, _ = _find_visit(monitor, planned.id)
     assert planned_row.course_label != UNPLANNED_ROW_LABEL
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_monitor_substitute_survives_later_assigned_arrival(db) -> None:
+    """後から担当本人が打ち直しても代行の事実は消えない (いずれかの arrival で判定)."""
+    owner, _ = await _make_staff_user(db, "mon-6-owner@example.com", staff_name="担当 太郎")
+    sub, _ = await _make_staff_user(db, "mon-6-sub@example.com", staff_name="代行 花子")
+    p = await _make_patient(db, "MON-6")
+    target = _today_jst()
+    visit = await _make_visit(db, p.id, owner.id, visit_date=target)
+    for staff, hh, mm in ((sub, 9, 0), (owner, 9, 10)):  # 代行 → 担当の順に打刻。
+        db.add(
+            VisitCheckin(
+                visit_id=visit.id,
+                patient_id=p.id,
+                staff_id=staff.id,
+                kind="arrival",
+                scanned_at=datetime.combine(target, time(hh, mm), tzinfo=JST).astimezone(UTC),
+                match_status="match",
+                threshold_snapshot={"v": 1},
+            )
+        )
+    await db.commit()
+
+    monitor = await build_monitor(
+        db, target, now=datetime.combine(target, time(9, 30), tzinfo=JST).astimezone(UTC)
+    )
+    _row, mv = _find_visit(monitor, visit.id)
+    assert mv.actual_staff_id == owner.id  # 実績表示は最新の打刻者。
+    assert mv.is_substitute is True  # 代行が居た事実は残す。
+    assert mv.alert_level == ALERT_REVIEW
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_monitor_unplanned_rows_are_split_per_office(db) -> None:
+    """予定外専用行は拠点ごとに分かれ、拠点フィルタで当該拠点分だけ残る (§6)."""
+    office_a = Office(name="拠点A")
+    office_b = Office(name="拠点B")
+    db.add_all([office_a, office_b])
+    await db.commit()
+    await db.refresh(office_a)
+    await db.refresh(office_b)
+    staff_a, _ = await _make_staff_user(db, "mon-7-a@example.com", staff_name="A拠点 太郎")
+    staff_b, _ = await _make_staff_user(db, "mon-7-b@example.com", staff_name="B拠点 花子")
+    staff_a.primary_office_id = office_a.id
+    staff_b.primary_office_id = office_b.id
+    p_a = await _make_patient(db, "MON-7A")
+    p_b = await _make_patient(db, "MON-7B")
+    target = _today_jst()
+    adhoc_a = await _make_visit(
+        db, p_a.id, staff_a.id, visit_date=target, status="in_progress", is_unplanned=True
+    )
+    adhoc_b = await _make_visit(
+        db,
+        p_b.id,
+        staff_b.id,
+        visit_date=target,
+        start=time(13, 0),
+        end=time(14, 0),
+        status="in_progress",
+        is_unplanned=True,
+    )
+    await db.commit()
+
+    now = datetime.combine(target, time(15, 0), tzinfo=JST).astimezone(UTC)
+    # フィルタ無し: 拠点ごとに 1 本ずつ = 2 本。
+    monitor = await build_monitor(db, target, now=now)
+    rows = [r for r in monitor.staff if r.course_label == UNPLANNED_ROW_LABEL]
+    assert len(rows) == 2
+    assert {r.office_id for r in rows} == {office_a.id, office_b.id}
+
+    # 拠点Aフィルタ: A の予定外だけが出る (行ごと消えない / B が混ざらない)。
+    monitor_a = await build_monitor(db, target, office_id=office_a.id, now=now)
+    rows_a = [r for r in monitor_a.staff if r.course_label == UNPLANNED_ROW_LABEL]
+    assert len(rows_a) == 1
+    assert rows_a[0].office_id == office_a.id
+    assert [mv.visit_id for mv in rows_a[0].visits] == [adhoc_a.id]
+    assert adhoc_b.id not in [mv.visit_id for r in monitor_a.staff for mv in r.visits]
     await db.rollback()
 
 

@@ -128,6 +128,11 @@ class VisitRead(VisitBase):
     # その最小参照、無ければ None. 同行リンクは trainee_accompaniments が唯一の正典で、
     # 読み出し時に JOIN 解決する (visits.*_staff_id には書かない)。
     accompaniment: AccompanimentRef | None = None
+    # 予定外訪問 (visits.is_unplanned / 設計 qr-open-checkin-design.md §3)。
+    # ``adhoc-checkin`` がその場で生成した実績行なら true。**読み取り専用**として
+    # ここ (VisitRead) にだけ置く: VisitBase に置くと POST /visits の入力になり、
+    # 予定外を手で作れてしまう (生成経路は adhoc-checkin だけに閉じる)。
+    is_unplanned: bool = False
 
 
 __all__ = [
