@@ -902,6 +902,8 @@ async def test_monitor_marks_substitute_with_actual_staff(db) -> None:
     assert mv.staff_id == owner.id  # 予定は不変。
     assert mv.actual_staff_id == sub.id
     assert mv.actual_staff_name == "代行 花子"
+    assert mv.substitute_staff_id == sub.id
+    assert mv.substitute_staff_name == "代行 花子"
     assert mv.is_substitute is True
     assert mv.is_unplanned is False
     assert mv.alert_level == ALERT_REVIEW
@@ -934,6 +936,9 @@ async def test_monitor_assigned_staff_arrival_is_not_substitute(db) -> None:
     _row, mv = _find_visit(monitor, visit.id)
     assert mv.is_substitute is False
     assert mv.actual_staff_id == owner.id
+    # 代行が居ないので代行者フィールドは None のまま。
+    assert mv.substitute_staff_id is None
+    assert mv.substitute_staff_name is None
     assert mv.alert_level == ALERT_NONE
     await db.rollback()
 
@@ -1046,8 +1051,45 @@ async def test_monitor_substitute_survives_later_assigned_arrival(db) -> None:
     )
     _row, mv = _find_visit(monitor, visit.id)
     assert mv.actual_staff_id == owner.id  # 実績表示は最新の打刻者。
+    assert mv.actual_staff_name == "担当 太郎"
     assert mv.is_substitute is True  # 代行が居た事実は残す。
+    # 「代行バッジ + 担当本人名」の自己矛盾を防ぐため、代行者は別フィールドで返す。
+    assert mv.substitute_staff_id == sub.id
+    assert mv.substitute_staff_name == "代行 花子"
     assert mv.alert_level == ALERT_REVIEW
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_monitor_substitute_staff_is_latest_non_assigned_arrival(db) -> None:
+    """代行者が複数居る場合、substitute_staff_* は**最新**の担当集合外の打刻者."""
+    owner, _ = await _make_staff_user(db, "mon-8-owner@example.com", staff_name="担当 太郎")
+    sub1, _ = await _make_staff_user(db, "mon-8-sub1@example.com", staff_name="代行 一郎")
+    sub2, _ = await _make_staff_user(db, "mon-8-sub2@example.com", staff_name="代行 二郎")
+    p = await _make_patient(db, "MON-8")
+    target = _today_jst()
+    visit = await _make_visit(db, p.id, owner.id, visit_date=target)
+    for staff, hh, mm in ((sub1, 9, 0), (sub2, 9, 5), (owner, 9, 10)):
+        db.add(
+            VisitCheckin(
+                visit_id=visit.id,
+                patient_id=p.id,
+                staff_id=staff.id,
+                kind="arrival",
+                scanned_at=datetime.combine(target, time(hh, mm), tzinfo=JST).astimezone(UTC),
+                match_status="match",
+                threshold_snapshot={"v": 1},
+            )
+        )
+    await db.commit()
+
+    monitor = await build_monitor(
+        db, target, now=datetime.combine(target, time(9, 30), tzinfo=JST).astimezone(UTC)
+    )
+    _row, mv = _find_visit(monitor, visit.id)
+    assert mv.actual_staff_id == owner.id
+    assert mv.substitute_staff_id == sub2.id
+    assert mv.substitute_staff_name == "代行 二郎"
     await db.rollback()
 
 

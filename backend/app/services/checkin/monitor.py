@@ -374,7 +374,8 @@ async def build_monitor(
     latest: dict[tuple[UUID, str], VisitCheckin] = {}
     # 代行判定は「最新」ではなく **全 arrival** を見る (最新が担当本人だと、先に
     # 打った代行の事実がバッジから消えてしまう / 通知条件とも食い違うため)。
-    arrival_staff_ids: dict[UUID, set[UUID]] = defaultdict(set)
+    # 並びは scanned_at DESC を保った重複排除リスト = 先頭が新しい打刻者。
+    arrival_staff_ids: dict[UUID, list[UUID]] = defaultdict(list)
     if visit_ids:
         rows = (
             await db.scalars(
@@ -387,8 +388,12 @@ async def build_monitor(
             key = (r.visit_id, r.kind)
             if key not in latest:  # DESC 並びなので最初に出た = 最新。
                 latest[key] = r
-            if r.kind == "arrival" and r.staff_id is not None:
-                arrival_staff_ids[r.visit_id].add(r.staff_id)
+            if (
+                r.kind == "arrival"
+                and r.staff_id is not None
+                and r.staff_id not in arrival_staff_ids[r.visit_id]
+            ):
+                arrival_staff_ids[r.visit_id].append(r.staff_id)
 
     # 代行検出 (設計 §6): visit の担当集合 (assignments + 同行込み) を 1 クエリで
     # 束ね、**いずれかの** arrival 打刻者がその外なら代行とみなす。
@@ -403,17 +408,18 @@ async def build_monitor(
         ).all():
             assignments_by_visit[vid].add(sid)
 
-    # 実績スタッフ名: 到着打刻の staff_id は visits に登場しないスタッフ (代行) の
-    # ことがあるため、別引きで名前を解決する。
-    actual_staff_ids: set[UUID] = set()
+    # 到着打刻者の氏名: staff_id は visits に登場しないスタッフ (代行) のことが
+    # あるため別引きする。実績 (actual_staff_*) と代行者 (substitute_staff_*) の
+    # 両方がこの 1 マップを引く。
+    arrival_staff_id_set: set[UUID] = set()
     for ids in arrival_staff_ids.values():
-        actual_staff_ids |= ids
-    actual_staff_names: dict[UUID, str] = {}
-    if actual_staff_ids:
+        arrival_staff_id_set |= set(ids)
+    arrival_staff_names: dict[UUID, str] = {}
+    if arrival_staff_id_set:
         for sid, sname in (
-            await db.execute(select(Staff.id, Staff.name).where(Staff.id.in_(actual_staff_ids)))
+            await db.execute(select(Staff.id, Staff.name).where(Staff.id.in_(arrival_staff_id_set)))
         ).all():
-            actual_staff_names[sid] = sname
+            arrival_staff_names[sid] = sname
 
     # 同住所・同時刻ペア補正: 到着/退出の実効時刻マップを組み、補正後起点を導出する。
     arrival_at: dict[UUID, datetime] = {}
@@ -572,6 +578,9 @@ async def build_monitor(
             # 実績スタッフ (最新 arrival の打刻者) と代行判定 (§6)。
             # 代行は **いずれかの** arrival 打刻者が担当集合の外なら true にする
             # (担当本人が後から打ち直しても代行の事実を消さない = 通知条件と一致)。
+            # ただし actual_staff_* は最新の打刻者なので、代行後に担当本人が打ち直すと
+            # 「代行バッジ + 担当本人名」の自己矛盾になる。誰が代行したかは
+            # substitute_staff_* (担当集合外の打刻者のうち最新 1 名) で別に返す。
             actual_staff_id = arrival.staff_id if arrival is not None else None
             _acc_pair = accompaniment_by_visit.get(v.id)
             _assigned = visit_staff_id_set(
@@ -579,7 +588,12 @@ async def build_monitor(
                 assignment_staff_ids=assignments_by_visit.get(v.id, set()),
                 accompaniment_staff_id=_acc_pair[0] if _acc_pair is not None else None,
             )
-            is_substitute = any(sid not in _assigned for sid in arrival_staff_ids.get(v.id, set()))
+            # arrival_staff_ids は scanned_at DESC 順 = 先頭が最新の代行者。
+            _substitute_ids = [
+                sid for sid in arrival_staff_ids.get(v.id, []) if sid not in _assigned
+            ]
+            is_substitute = bool(_substitute_ids)
+            substitute_staff_id = _substitute_ids[0] if _substitute_ids else None
             is_unplanned = v.is_unplanned
 
             start_dt = datetime.combine(v.visit_date, v.start_time, tzinfo=JST)
@@ -645,8 +659,15 @@ async def build_monitor(
                     # 実績 (打刻した人) と予定の乖離 (§6)。予定側の担当は書き換えない。
                     actual_staff_id=actual_staff_id,
                     actual_staff_name=(
-                        actual_staff_names.get(actual_staff_id)
+                        arrival_staff_names.get(actual_staff_id)
                         if actual_staff_id is not None
+                        else None
+                    ),
+                    # 代行した人 (担当集合外の打刻者のうち最新)。is_substitute の根拠。
+                    substitute_staff_id=substitute_staff_id,
+                    substitute_staff_name=(
+                        arrival_staff_names.get(substitute_staff_id)
+                        if substitute_staff_id is not None
                         else None
                     ),
                     is_substitute=is_substitute,
