@@ -22,14 +22,17 @@ import { genderPalette } from '@/lib/scheduling/timeline';
 import {
   MISSING_BAR_BG,
   STATUS_COLOR,
+  UNPLANNED_ROW_LABEL,
   TL_END_MIN,
   TL_START_MIN,
   assignVisitLanes,
   displayStatus,
   formatDistance,
   hmToMinutes,
+  isUnplannedRow,
   isoToHm,
   minutesToPct,
+  substituteTitle,
 } from './constants';
 
 /** M-4a: 予定カードの性別ウォッシュ・📍住所用メタ (患者マスタ FE join・未指定=中立色)。 */
@@ -41,10 +44,16 @@ export interface MonitorPatientMeta {
 /**
  * 行の安定キー。行=コース単位 (2026-07-10) なので course_id が第一キー。
  * コース無し行はスタッフ単位 (staff_id)、どちらも無ければ course_label で識別する。
+ *
+ * 予定外訪問の専用行 (§6) は **拠点ごとに 1 本**作られ、course_id は常に null・
+ * course_label はどの行も同じ・staff_id は行内の担当が 1 名のときだけ入る。そのまま
+ * だと (a) 複数拠点の予定外行同士 (b) 予定外行と同じスタッフのコース無し行 でキーが
+ * 衝突し、React キー重複・2 行同時選択・地図の誤対象を招くため、拠点でキーを分ける。
  */
 export function monitorRowKey(
-  row: Pick<MonitorStaffRow, 'course_id' | 'staff_id' | 'course_label'>,
+  row: Pick<MonitorStaffRow, 'course_id' | 'staff_id' | 'course_label' | 'office_id'>,
 ): string {
+  if (row.course_label === UNPLANNED_ROW_LABEL) return `unplanned-${row.office_id ?? 'none'}`;
   return row.course_id ?? row.staff_id ?? `unassigned-${row.course_label ?? ''}`;
 }
 
@@ -211,6 +220,14 @@ export function MonitorTimeline({
         const rowLaneCount = laneMap.size > 0 ? laneMap.values().next().value!.laneCount : 1;
         // スケジュール側のコース担当 (courses.assigned) と実訪問の担当 (visits.primary) の突合。
         // 食い違いは隠さず ⚠ を出す (設計原則③)。
+        // 予定外訪問の専用行 (§6): 予定が無い実績だけの行なので、通常のコース行とは
+        // 別配色 (--unplanned 系) にして「予定の列」と読み違えないようにする。
+        // 並び順: BE の sort キーは (拠点名 → コースコード → スタッフ名) で、予定外行の
+        // ラベル「📌予定外訪問」は先頭が U+1F4CC (> コース無し行の番兵 U+FFFF) になるため
+        // **各拠点ブロックの末尾**に並ぶ。全行の最後ではない (拠点が複数なら拠点ごとに 1 本)。
+        // 絵文字のコードポイント順に依存した並びなので、ラベル変更時は BE 側の sort も
+        // 併せて見直すこと (FE では並べ替えロジックを持たない)。
+        const unplannedRow = isUnplannedRow(row);
         const scheduleStaff = row.course_staff_name ?? null;
         const visitStaffIds = row.staff_ids ?? [];
         const staffMismatch =
@@ -232,6 +249,7 @@ export function MonitorTimeline({
             role="button"
             tabIndex={0}
             data-testid={`monitor-row-${idx}`}
+            data-unplanned={unplannedRow ? 'true' : undefined}
             onClick={() => onSelectRow(rowKey)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') onSelectRow(rowKey);
@@ -254,7 +272,9 @@ export function MonitorTimeline({
                 // 選択アクセント線はセル側に置く (行側だと不透明な sticky セルに隠れる)。
                 isSel
                   ? 'bg-brand-primary-light shadow-[inset_5px_0_0_var(--brand-primary)]'
-                  : 'bg-bg-base group-hover:bg-bg-muted',
+                  : unplannedRow
+                    ? 'bg-unplanned-bg shadow-[inset_5px_0_0_var(--unplanned)]'
+                    : 'bg-bg-base group-hover:bg-bg-muted',
               )}
             >
               <span
@@ -265,12 +285,18 @@ export function MonitorTimeline({
                 style={
                   isSel
                     ? undefined
-                    : (() => {
-                        const sp = genderPalette(
-                          row.staff_id ? (staffSexById?.get(row.staff_id) ?? null) : null,
-                        );
-                        return { background: sp.bg, borderColor: sp.bar, color: sp.ink };
-                      })()
+                    : unplannedRow
+                      ? {
+                          background: 'var(--unplanned-bg)',
+                          borderColor: 'var(--unplanned)',
+                          color: 'var(--unplanned)',
+                        }
+                      : (() => {
+                          const sp = genderPalette(
+                            row.staff_id ? (staffSexById?.get(row.staff_id) ?? null) : null,
+                          );
+                          return { background: sp.bg, borderColor: sp.bar, color: sp.ink };
+                        })()
                 }
               >
                 {idx + 1}
@@ -280,10 +306,17 @@ export function MonitorTimeline({
                 <span
                   className={cn(
                     'block truncate text-[13px] font-semibold',
-                    isSel ? 'text-brand-primary-hover' : 'text-text-primary',
+                    isSel
+                      ? 'text-brand-primary-hover'
+                      : unplannedRow
+                        ? 'text-unplanned'
+                        : 'text-text-primary',
                   )}
+                  data-testid={unplannedRow ? `monitor-row-unplanned-${key}` : undefined}
                   title={
-                    [row.course_label, row.staff_name].filter(Boolean).join(' ・ ') || undefined
+                    unplannedRow
+                      ? '予定に無い訪問の実績（QR打刻）です。コース行には混ぜていません。'
+                      : [row.course_label, row.staff_name].filter(Boolean).join(' ・ ') || undefined
                   }
                 >
                   {row.course_label ?? row.staff_name ?? '（担当未設定）'}
@@ -291,6 +324,9 @@ export function MonitorTimeline({
                 <span className="block truncate text-[11px] text-text-muted">
                   {isSel ? (
                     '● 選択中'
+                  ) : unplannedRow ? (
+                    // 予定外行は「予定の担当」が存在しないので、拠点と実績スタッフを出す。
+                    [row.office_name, row.staff_name ?? '実績のみ'].filter(Boolean).join(' ・ ')
                   ) : (
                     <>
                       {/* 担当 = スケジュールのコース担当を優先表示 (無ければ実訪問の担当)。 */}
@@ -352,7 +388,16 @@ export function MonitorTimeline({
               {/* M-4b: 会議・イベント帯 (藤色・表示専用・カイポケ反映外)。
                   空き時間の「なぜ空いているか」を説明する。カード (z-[2]) の下。
                   行=コース単位: 行内の全担当 (staff_ids) のイベントを重ねる。 */}
-              {(row.staff_ids?.length ? row.staff_ids : row.staff_id ? [row.staff_id] : [])
+              {/* 予定外行は「予定なし・実績のみ」の行なので、予定側の情報である
+                  イベント帯は描画しない (行の意味論と矛盾するため)。 */}
+              {(unplannedRow
+                ? []
+                : row.staff_ids?.length
+                  ? row.staff_ids
+                  : row.staff_id
+                    ? [row.staff_id]
+                    : []
+              )
                 .flatMap((sid) => eventsByStaffId?.get(sid) ?? [])
                 .map((ev) => {
                     const es = hmToMinutes(ev.start_time.slice(0, 5));
@@ -472,6 +517,25 @@ function VisitBars({
   const dn = visit.distance_to_next_m;
   // M-4a: 予定カードの性別ウォッシュ (患者マスタ FE join。未指定/未登録=中立色)。
   const pal = genderPalette(meta?.sex ?? null);
+  // §6: 予定外訪問のカードは性別ウォッシュではなく専用配色 (c-coupled 系)。
+  // 「予定の列」に見えないよう、行の配色と揃える。
+  const cardStyle = visit.is_unplanned
+    ? {
+        background: 'var(--unplanned-bg)',
+        borderColor: 'var(--unplanned)',
+        borderLeftColor: 'var(--unplanned)',
+        color: 'var(--unplanned)',
+      }
+    : { background: pal.bg, borderColor: pal.ln, borderLeftColor: pal.bar, color: pal.ink };
+  // カード 2 行目に併記する「行った人」。予定担当 (staff_name) は書き換えない (§6)。
+  // 代行は substitute_staff_name (代行した人) — actual_staff_name は最新打刻者なので
+  // 代行後に担当本人が打ち直すと担当本人名になり、バッジと矛盾するため使わない。
+  // 予定外は実績スタッフ (= 打刻者本人) をそのまま出す。名前が無ければ併記しない。
+  const trailingName = visit.is_substitute
+    ? (visit.substitute_staff_name ?? null)
+    : visit.is_unplanned
+      ? (visit.actual_staff_name ?? null)
+      : null;
 
   return (
     <>
@@ -513,8 +577,12 @@ function VisitBars({
           e.stopPropagation();
           onSelect(visit.visit_id);
         }}
-        title={`予定 ${visit.start_time}–${visit.end_time} ${visit.patient_name ?? ''}${
-          visit.staff_name ? `｜担当: ${visit.staff_name}` : ''
+        title={`${visit.is_unplanned ? '予定外訪問 ' : '予定 '}${visit.start_time}–${visit.end_time} ${
+          visit.patient_name ?? ''
+        }${visit.staff_name ? `｜担当: ${visit.staff_name}` : ''}${
+          visit.is_substitute ? `｜${substituteTitle(visit)}` : ''
+        }${
+          visit.is_unplanned && visit.actual_staff_name ? `｜実績: ${visit.actual_staff_name}` : ''
         }${meta?.address ? `｜📍${meta.address}` : ''}`}
         className="absolute z-[2] flex flex-col justify-center gap-px overflow-hidden rounded-md border border-l-[3px] px-1.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-sm)]"
         style={{
@@ -522,21 +590,30 @@ function VisitBars({
           width: `${pW}%`,
           top: pos.cardTop,
           height: pos.cardH,
-          background: pal.bg,
-          borderColor: pal.ln,
-          borderLeftColor: pal.bar,
-          color: pal.ink,
+          ...cardStyle,
         }}
       >
         <span className="flex min-w-0 items-center gap-1">
           <i
             className="h-1.5 w-1.5 shrink-0 rounded-full"
-            style={{ background: pal.bar }}
+            style={{ background: visit.is_unplanned ? 'var(--unplanned)' : pal.bar }}
             aria-hidden="true"
           />
           <span className="min-w-0 truncate text-[11px] font-bold leading-tight">
             {visit.patient_name ?? '—'}
           </span>
+          {/* 代行バッジ (§6 #7): 行レベルの ⚠ (スケジュール担当≠visit 予定担当・amber) とは
+              別物なので、色 (teal) とラベルの両方で区別する。意匠は「2名」バッジと同じ
+              淡色地×濃色文字 (--info-bg × --info-strong = 6.7:1・WCAG AA)。 */}
+          {visit.is_substitute && (
+            <span
+              data-testid={`monitor-bar-substitute-${visit.visit_id}`}
+              title={substituteTitle(visit)}
+              className="shrink-0 rounded-full bg-info-bg px-1 py-px text-[9px] font-bold text-info-strong"
+            >
+              代行
+            </span>
+          )}
           {isPair && (
             <span className="shrink-0 rounded-full bg-c-coupled-bg px-1 py-px text-[9px] font-bold text-c-coupled">
               2名
@@ -547,6 +624,16 @@ function VisitBars({
           <span className="tnum shrink-0 font-semibold">
             {visit.start_time}–{visit.end_time}
           </span>
+          {/* 行った人 (代行者 / 予定外の実績スタッフ)。予定担当は書き換えず並記する。
+              名前が無い応答ではバッジのみとし、誤った名前を出さない。 */}
+          {trailingName ? (
+            <span
+              data-testid={`monitor-bar-actual-staff-${visit.visit_id}`}
+              className="min-w-0 truncate font-semibold"
+            >
+              →{trailingName}
+            </span>
+          ) : null}
           {meta?.address ? <span className="min-w-0 truncate">📍{meta.address}</span> : null}
         </span>
       </button>

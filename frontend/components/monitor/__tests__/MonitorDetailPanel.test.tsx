@@ -97,4 +97,72 @@ describe('MonitorDetailPanel', () => {
     fireEvent.click(screen.getByTestId('monitor-review-undo'));
     expect(onUnreview).toHaveBeenCalledWith(v.visit_id);
   });
+
+  // --- 代行 / 予定外 (qr-open-checkin-design.md §6) ---
+
+  it('代行 visit は「予定の担当 / 実際の訪問」を並記する (実際=代行者)', () => {
+    // 代行 B のあとに担当 A が打ち直しても、「実際の訪問」は代行者 B を出す。
+    const v = makeVisit({
+      staff_name: '担当 A',
+      actual_staff_name: '担当 A',
+      substitute_staff_name: '代行 B',
+      is_substitute: true,
+      alert_level: 'review',
+    });
+    render(<MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />);
+    const box = screen.getByTestId('monitor-detail-substitute');
+    expect(box.textContent).toContain('予定の担当: 担当 A');
+    expect(box.textContent).toContain('実際の訪問: 代行 B');
+    expect(screen.queryByTestId('monitor-detail-unplanned')).toBeNull();
+  });
+
+  it('代行者名が無い応答では名前を併記しない', () => {
+    const v = makeVisit({
+      staff_name: '担当 A',
+      actual_staff_name: '担当 A',
+      substitute_staff_name: null,
+      is_substitute: true,
+      alert_level: 'review',
+    });
+    render(<MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />);
+    const box = screen.getByTestId('monitor-detail-substitute');
+    expect(box.textContent).toContain('予定の担当: 担当 A');
+    expect(box.textContent).not.toContain('実際の訪問:');
+  });
+
+  it('予定外かつ代行なら両方のブロックを出す', () => {
+    const v = makeVisit({
+      staff_name: '担当 A',
+      actual_staff_name: '代行 B',
+      substitute_staff_name: '代行 B',
+      is_substitute: true,
+      is_unplanned: true,
+      alert_level: 'review',
+    });
+    render(<MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />);
+    expect(screen.getByTestId('monitor-detail-unplanned')).toBeInTheDocument();
+    expect(screen.getByTestId('monitor-detail-substitute').textContent).toContain(
+      '実際の訪問: 代行 B',
+    );
+  });
+
+  it('予定外 visit は「予定外訪問」を明示する', () => {
+    const v = makeVisit({
+      patient_name: '飛込 花子',
+      actual_staff_name: '実績 次郎',
+      is_unplanned: true,
+      alert_level: 'review',
+    });
+    render(<MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />);
+    const box = screen.getByTestId('monitor-detail-unplanned');
+    expect(box.textContent).toContain('予定外訪問');
+    expect(box.textContent).toContain('実際の訪問: 実績 次郎');
+  });
+
+  it('通常 visit は代行/予定外の枠を出さない', () => {
+    const v = makeVisit();
+    render(<MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />);
+    expect(screen.queryByTestId('monitor-detail-substitute')).toBeNull();
+    expect(screen.queryByTestId('monitor-detail-unplanned')).toBeNull();
+  });
 });

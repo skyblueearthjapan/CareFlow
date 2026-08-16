@@ -30,6 +30,9 @@ const config: Config = {
         // データ系カラー (業務種別)
         'c-coupled': 'var(--c-coupled)',
         'c-coupled-bg': 'var(--c-coupled-bg)',
+        // 予定外訪問 (QR打刻開放 §6)。2 名体制 (c-coupled) と混同しない専用色。
+        unplanned: 'var(--unplanned)',
+        'unplanned-bg': 'var(--unplanned-bg)',
         // Semantic
         success: 'var(--success)',
         warning: 'var(--warning)',
@@ -40,6 +43,7 @@ const config: Config = {
         'error-bg': 'var(--error-bg)',
         'info-bg': 'var(--info-bg)',
         'warning-strong': 'var(--warning-strong)',
+        'info-strong': 'var(--info-strong)',
       },
       borderRadius: {
         sm: 'var(--radius-sm)',

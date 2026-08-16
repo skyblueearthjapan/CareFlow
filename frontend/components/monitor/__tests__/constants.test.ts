@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 
 import type { VisitWithCoords } from '../constants';
 import {
+  alertReasonChips,
   assignVisitLanes,
   displayStatus,
   formatDistance,
@@ -10,7 +11,9 @@ import {
   groupVisits,
   isAlert,
   isLongInprogress,
+  isUnplannedRow,
   minutesToPct,
+  substituteTitle,
 } from '../constants';
 import { makeRow, makeVisit } from './fixtures';
 
@@ -202,5 +205,41 @@ describe('groupVisits (2 名体制の重複排除)', () => {
   it('visit_group_id が null の訪問は visit.id 単位 (集約しない)', () => {
     const rows = [makeRow({ visits: [makeVisit(), makeVisit()] })];
     expect(groupVisits(rows)).toHaveLength(2);
+  });
+});
+
+describe('代行 / 予定外 (qr-open-checkin-design.md §6)', () => {
+  it('isUnplannedRow: 行内の全 visit が予定外なら専用行', () => {
+    expect(isUnplannedRow(makeRow({ visits: [makeVisit({ is_unplanned: true })] }))).toBe(true);
+    expect(
+      isUnplannedRow(makeRow({ visits: [makeVisit({ is_unplanned: true }), makeVisit()] })),
+    ).toBe(false);
+    expect(isUnplannedRow(makeRow({ visits: [] }))).toBe(false);
+  });
+
+  it('alertReasonChips: 予定外 → 代行 の順で返す', () => {
+    expect(alertReasonChips(makeVisit())).toEqual([]);
+    expect(alertReasonChips(makeVisit({ is_substitute: true }))).toEqual(['代行']);
+    expect(alertReasonChips(makeVisit({ is_unplanned: true, is_substitute: true }))).toEqual([
+      '予定外',
+      '代行',
+    ]);
+  });
+
+  it('substituteTitle: 予定 / 代行 を並記する (代行者名は substitute_staff_name 由来)', () => {
+    // 代行 B → 担当 A 打ち直しでも、代行者は substitute_staff_name (= B)。
+    expect(
+      substituteTitle(
+        makeVisit({
+          staff_name: '担当 A',
+          actual_staff_name: '担当 A',
+          substitute_staff_name: '代行 B',
+        }),
+      ),
+    ).toBe('予定: 担当 A / 代行: 代行 B');
+    // 代行者名が無い応答では名前を併記しない。
+    expect(
+      substituteTitle(makeVisit({ staff_name: '担当 A', substitute_staff_name: null })),
+    ).not.toContain('担当 A');
   });
 });
