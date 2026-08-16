@@ -73,8 +73,10 @@ ALERT_MISSING = "missing"
 MAX_INPROGRESS_MIN = 240
 
 # 予定外訪問 (visits.is_unplanned) の専用行 (設計
-# ``docs/plans/qr-open-checkin-design.md`` §6)。行キーは固定 1 本で、コース行の
-# グルーピングからは除外する (予定に無い実績をコース列に推定混載しない)。
+# ``docs/plans/qr-open-checkin-design.md`` §6)。コース行のグルーピングからは除外
+# する (予定に無い実績をコース列に推定混載しない)。行は**拠点ごとに 1 本**
+# (行キー = (UNPLANNED_ROW_KEY, office_id)) — 全拠点を 1 本に混ぜると拠点フィルタ
+# で行ごと消えたり他拠点が紛れ込むため。ラベルはどの行も同じ。
 UNPLANNED_ROW_KEY = "unplanned"
 UNPLANNED_ROW_LABEL = "📌予定外訪問"
 
@@ -185,9 +187,10 @@ def visit_staff_id_set(
     """visit の **担当集合** (予定として紐付いたスタッフ全員) を組む.
 
     正典設計書 ``docs/plans/qr-open-checkin-design.md`` §3 末尾: 代行 (substitute)
-    の検出 = 「最新 arrival checkin の staff_id がこの集合に含まれない」。
-    集合の定義を通知 producer (1 件ずつ) とモニター合成 (一括) で共有し、
-    「代行」の意味が 2 箇所でズレないようにするための単一ソース。
+    の検出 = 「arrival checkin の staff_id がこの集合に含まれない」。
+    集合の定義を通知 producer (打刻 1 件ずつ) とモニター合成 (当日分を一括・
+    **いずれかの** arrival が外なら代行) で共有し、「代行」の意味が 2 箇所で
+    ズレないようにするための単一ソース。
 
     ``assignment_staff_ids`` (visit_staff_assignments) と
     ``accompaniment_staff_id`` (新人同行) は呼び出し側が解決して渡す
@@ -369,6 +372,9 @@ async def build_monitor(
 
     # 全 checkin を 1 クエリで取得し、(visit_id, kind) ごと最新を採用 (scanned_at DESC)。
     latest: dict[tuple[UUID, str], VisitCheckin] = {}
+    # 代行判定は「最新」ではなく **全 arrival** を見る (最新が担当本人だと、先に
+    # 打った代行の事実がバッジから消えてしまう / 通知条件とも食い違うため)。
+    arrival_staff_ids: dict[UUID, set[UUID]] = defaultdict(set)
     if visit_ids:
         rows = (
             await db.scalars(
@@ -381,9 +387,11 @@ async def build_monitor(
             key = (r.visit_id, r.kind)
             if key not in latest:  # DESC 並びなので最初に出た = 最新。
                 latest[key] = r
+            if r.kind == "arrival" and r.staff_id is not None:
+                arrival_staff_ids[r.visit_id].add(r.staff_id)
 
     # 代行検出 (設計 §6): visit の担当集合 (assignments + 同行込み) を 1 クエリで
-    # 束ね、最新 arrival の staff_id が外なら代行とみなす。
+    # 束ね、**いずれかの** arrival 打刻者がその外なら代行とみなす。
     assignments_by_visit: dict[UUID, set[UUID]] = defaultdict(set)
     if visit_ids:
         for vid, sid in (
@@ -397,9 +405,9 @@ async def build_monitor(
 
     # 実績スタッフ名: 到着打刻の staff_id は visits に登場しないスタッフ (代行) の
     # ことがあるため、別引きで名前を解決する。
-    actual_staff_ids = {
-        row.staff_id for (_vid, kind), row in latest.items() if kind == "arrival" and row.staff_id
-    }
+    actual_staff_ids: set[UUID] = set()
+    for ids in arrival_staff_ids.values():
+        actual_staff_ids |= ids
     actual_staff_names: dict[UUID, str] = {}
     if actual_staff_ids:
         for sid, sname in (
@@ -471,10 +479,21 @@ async def build_monitor(
     # コース無し visit は従来どおり担当スタッフ単位 (どちらも無ければ "" で 1 行)。
     by_row: dict[tuple[str, UUID | str], list[Visit]] = defaultdict(list)
     for v in visits:
-        if getattr(v, "is_unplanned", False):
-            # 予定外訪問は「📌予定外訪問」専用行 1 本に集約する (設計 §6)。
-            # コース行へ推定混載はしない (予定に無い実績を予定の列で語らない)。
-            group_key: tuple[str, UUID | str] = (UNPLANNED_ROW_KEY, "")
+        if v.is_unplanned:
+            # 予定外訪問は「📌予定外訪問」行に集約する (設計 §6)。コース行へ推定
+            # 混載はしない (予定に無い実績を予定の列で語らない)。
+            # **拠点ごとに 1 本**にするのは拠点フィルタのため: 1 本に混ぜると
+            # 「先頭スタッフの拠点」で行ごと消えたり、他拠点の予定外が紛れ込む。
+            # 予定外 visit の primary_staff は打刻スタッフ本人 (§3) = 実績者なので、
+            # その主担当拠点を行の拠点とする。
+            group_key: tuple[str, UUID | str] = (
+                UNPLANNED_ROW_KEY,
+                (
+                    v.primary_staff.primary_office_id
+                    if v.primary_staff is not None and v.primary_staff.primary_office_id is not None
+                    else ""
+                ),
+            )
         elif v.course_id is not None:
             group_key = ("course", v.course_id)
         elif v.primary_staff_id is not None:
@@ -514,11 +533,11 @@ async def build_monitor(
 
         course_id: UUID | None = None
         if kind == UNPLANNED_ROW_KEY:
-            # 予定外訪問の専用行 (§6)。コースには属さないので拠点は実績スタッフの
-            # 主担当拠点で代表させる (拠点フィルタから丸ごと消えないように)。
+            # 予定外訪問の専用行 (§6)。行キーに拠点を含めてあるので、拠点は
+            # そこから確定する (拠点未設定スタッフの行は oid=None = 拠点フィルタ
+            # 指定時に出ない = コース無し行と同じ扱い)。
             course_label = UNPLANNED_ROW_LABEL
-            first_staff = next(iter(row_staff.values()), None)
-            oid = first_staff.primary_office_id if first_staff is not None else None
+            oid = ident if isinstance(ident, UUID) else None
         elif kind == "course" and isinstance(ident, UUID):
             course_id = ident
             code = course_code.get(course_id)
@@ -551,18 +570,17 @@ async def build_monitor(
             ns_p = _project_checkin(no_show) if no_show is not None else None
 
             # 実績スタッフ (最新 arrival の打刻者) と代行判定 (§6)。
+            # 代行は **いずれかの** arrival 打刻者が担当集合の外なら true にする
+            # (担当本人が後から打ち直しても代行の事実を消さない = 通知条件と一致)。
             actual_staff_id = arrival.staff_id if arrival is not None else None
             _acc_pair = accompaniment_by_visit.get(v.id)
-            is_substitute = (
-                actual_staff_id is not None
-                and actual_staff_id
-                not in visit_staff_id_set(
-                    v,
-                    assignment_staff_ids=assignments_by_visit.get(v.id, set()),
-                    accompaniment_staff_id=_acc_pair[0] if _acc_pair is not None else None,
-                )
+            _assigned = visit_staff_id_set(
+                v,
+                assignment_staff_ids=assignments_by_visit.get(v.id, set()),
+                accompaniment_staff_id=_acc_pair[0] if _acc_pair is not None else None,
             )
-            is_unplanned = bool(getattr(v, "is_unplanned", False))
+            is_substitute = any(sid not in _assigned for sid in arrival_staff_ids.get(v.id, set()))
+            is_unplanned = v.is_unplanned
 
             start_dt = datetime.combine(v.visit_date, v.start_time, tzinfo=JST)
             arr_scanned = _as_jst(arrival.scanned_at) if arrival is not None else None
