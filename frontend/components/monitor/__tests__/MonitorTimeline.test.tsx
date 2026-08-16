@@ -445,6 +445,31 @@ describe('MonitorTimeline', () => {
     ).toBe(UNPLANNED_ROW_LABEL);
   });
 
+  it('行キーはラベル文字列ではなく is_unplanned フラグで決まる (m-4)', () => {
+    // ラベルの文言を変えても行キーは `unplanned-{office_id}` のまま = 配色/印の
+    // 判定 (isUnplannedRow) と同じ系統で動く。
+    const officeId = '00000000-0000-0000-0000-0000000000aa';
+    const renamed = makeRow({
+      course_id: null,
+      staff_id: null,
+      course_label: '📌飛び込み訪問', // UNPLANNED_ROW_LABEL とは別の文言
+      office_id: officeId,
+      visits: [makeVisit({ is_unplanned: true })],
+    });
+    expect(renamed.course_label).not.toBe(UNPLANNED_ROW_LABEL);
+    expect(monitorRowKey(renamed)).toBe(`unplanned-${officeId}`);
+
+    // 逆に、ラベルだけ予定外でも中身が通常訪問なら予定外キーにはしない。
+    const labelOnly = makeRow({
+      course_id: null,
+      staff_id: '00000000-0000-0000-0000-0000000000cc',
+      course_label: UNPLANNED_ROW_LABEL,
+      office_id: officeId,
+      visits: [makeVisit()],
+    });
+    expect(monitorRowKey(labelOnly)).toBe('00000000-0000-0000-0000-0000000000cc');
+  });
+
   it('予定外行にはイベント帯を描画しない', () => {
     const staffId = '00000000-0000-0000-0000-0000000000dd';
     const event: EventRead = {

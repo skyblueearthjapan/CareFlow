@@ -63,12 +63,42 @@ function pathOf(entry: PendingEntry): string {
   return `/api/v1/visits/${entry.visit_id}/${REST_PATH[entry.kind]}`;
 }
 
+/** FastAPI / リバースプロキシがルート不在で返す既定 detail (大文字小文字は無視)。 */
+const ROUTE_MISSING_DETAIL = 'not found';
+
+/**
+ * 「サーバにそのルートがまだ無い」ことを示す応答か (最終レビュー M-1)。
+ *
+ * `POST /visits/adhoc-checkin` は本機能で新設したルートなので、**BE をロールバック
+ * した瞬間だけ** 404 (ルート不在) / 405 (メソッド不許可) が返る。これを他の 4xx と
+ * 同じ「サーバの確定回答」として破棄すると、オフライン退避した**予定外訪問の記録が
+ * 永久に消える** (現場は打刻済みのつもりでいる)。BE が戻れば必ず送れるので、
+ * retryable としてキューに残す。
+ *
+ * ただし患者 QR に起因する 404 (`resolve_qr_patient` の `QR token not found` 等) は
+ * 再送しても直らないため従来どおり破棄する。ルート不在の 404 は detail が無い
+ * (HTML エラーページ / プロキシ) か FastAPI 既定の `Not Found` なので、そこで
+ * 見分ける。405 は QR 起因では起こり得ないので無条件に保持する。
+ *
+ * 対象は `adhoc_arrival` のみ。通常の `/visits/{id}/checkin` 等は旧 BE にも存在する
+ * ため、そちらの 404 は「無効な QR」として破棄する従来動作を保つ。
+ */
+function isRouteMissing(entry: PendingEntry, err: unknown): boolean {
+  if (entry.kind !== 'adhoc_arrival') return false;
+  if (!(err instanceof ApiError)) return false;
+  if (err.status === 405) return true;
+  if (err.status !== 404) return false;
+  const detail = detailOf(err);
+  return detail === null || detail.trim().toLowerCase() === ROUTE_MISSING_DETAIL;
+}
+
 /**
  * 保留 entry を 1 件再 POST する (ベストエフォート)。届いたら resolve。
  * 再試行しても直らない 4xx (無効/別患者の QR) は {@link DropPendingError} を
  * throw し、`flushPending` がキューから取り除いたうえで理由を呼び出し元へ返す
- * (黙って消さない)。サーバ未達 (ネットワーク / 5xx) は生のエラーで reject し、
- * entry はキューに残って次回再試行される。
+ * (黙って消さない)。サーバ未達 (ネットワーク / 5xx) と、旧 BE にルートが無いだけの
+ * 404/405 ({@link isRouteMissing}) は生のエラーで reject し、entry はキューに残って
+ * 次回再試行される。
  */
 export async function postPending(
   entry: PendingEntry,
@@ -84,6 +114,8 @@ export async function postPending(
     });
   } catch (err) {
     if (isServerUnreachable(err)) throw err; // keep queued (network / 5xx)
+    // 旧 BE にルートが無いだけ (404/405) — BE 復帰で送れるのでキューに残す。
+    if (isRouteMissing(entry, err)) throw err;
     // definitive 4xx → won't succeed on retry; drop it WITH a reason.
     throw new DropPendingError(dropReasonOf(err));
   }

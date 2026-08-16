@@ -77,6 +77,8 @@ function isOngoing(c: QrResolveCandidate): boolean {
 function isFinished(c: QrResolveCandidate): boolean {
   // cancelled も「この枠には打刻させない」= 記録済みと同じ扱い (取消済みの予定に
   // 代行で乗せると、取消のはずの訪問が実績付きで復活してしまう)。
+  // ※ cancelled は BE の resolve が候補から除外済みで到達しない。BE 側の除外条件が
+  //    緩んだときに黙って打刻可能にならないための防御として残す (削除しない)。
   return (
     c.status === 'done' ||
     c.status === 'completed' ||
