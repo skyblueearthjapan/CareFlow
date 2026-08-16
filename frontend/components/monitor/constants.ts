@@ -143,9 +143,19 @@ export function alertReasonChips(
   return chips;
 }
 
-/** 「予定: ○○ / 実績: △△」のツールチップ文言 (代行バー / 詳細パネル共通)。 */
-export function substituteTitle(v: Pick<MonitorVisit, 'staff_name' | 'actual_staff_name'>): string {
-  return `予定: ${v.staff_name ?? '—'} / 実績: ${v.actual_staff_name ?? '—'}`;
+/**
+ * 「予定: ○○ / 代行: △△」のツールチップ文言 (代行バー / トレイ / 詳細パネル共通)。
+ *
+ * 代行者は ``actual_staff_name`` (= 最新 arrival の打刻者) ではなく
+ * ``substitute_staff_name`` から取る。代行の後に担当本人が打ち直すと実績名は担当本人
+ * になり、「代行バッジ + 担当本人名」という自己矛盾になるため (BE 2026-08-16 修正)。
+ * 代行者名が無い (旧 BE 応答など) 場合は名前を併記しない。
+ */
+export function substituteTitle(
+  v: Pick<MonitorVisit, 'staff_name' | 'substitute_staff_name'>,
+): string {
+  if (!v.substitute_staff_name) return '代行（担当外のスタッフが訪問・代行者名は記録なし）';
+  return `予定: ${v.staff_name ?? '—'} / 代行: ${v.substitute_staff_name}`;
 }
 
 /**

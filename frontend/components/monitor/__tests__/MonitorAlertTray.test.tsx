@@ -103,8 +103,9 @@ describe('MonitorAlertTray', () => {
   it('代行・予定外は理由ラベルのチップを出す (優先順は不変)', () => {
     const sub = makeVisit({
       patient_name: '代行 対象',
-      staff_name: '予定 太郎',
-      actual_staff_name: '実績 次郎',
+      staff_name: '担当 A',
+      actual_staff_name: '担当 A',
+      substitute_staff_name: '代行 B',
       is_substitute: true,
       alert_level: 'review',
       start_time: '09:00',
@@ -136,7 +137,7 @@ describe('MonitorAlertTray', () => {
       screen.getByTestId(`monitor-alert-chip-unplanned-${unplanned.visit_id}`).textContent,
     ).toBe('予定外');
     // 理由未入力でも代行/予定外は 1 行で状況を示す。
-    expect(screen.getAllByText('予定: 予定 太郎 / 実績: 実績 次郎').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('予定: 担当 A / 代行: 代行 B').length).toBeGreaterThan(0);
     expect(screen.getAllByText('予定に無い訪問（QR打刻）').length).toBeGreaterThan(0);
     // 優先順 (未訪問 → 場所違い → 要確認) は不変: 未訪問が先頭。
     const cards = document.querySelectorAll('[role="button"][data-testid^="monitor-alert-"]');

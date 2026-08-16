@@ -35,7 +35,13 @@ export const monitorVisitSchema = z.object({
   // (qr-open-checkin-design.md §6)。予定側は書き換えず「予定/実績」を並記する。
   actual_staff_id: z.string().uuid().nullable().optional(),
   actual_staff_name: z.string().nullable().optional(),
-  // 代行 = 実績スタッフが visit の担当集合の外。バーに「代行」バッジ+実績名。
+  // 代行した人 = arrival 打刻者のうち担当集合の外だった最新の 1 名。
+  // actual_staff_* は「最新の打刻者」なので、代行の後に担当本人が打ち直すと実績名は
+  // 担当本人になる。「代行バッジ + 担当本人名」の自己矛盾を防ぐため、UI はバッジの
+  // 根拠 (誰が代行したか) をこちらから取る。is_substitute=false のときは常に null。
+  substitute_staff_id: z.string().uuid().nullable().optional(),
+  substitute_staff_name: z.string().nullable().optional(),
+  // 代行 = arrival 打刻者のいずれかが visit の担当集合の外。バーに「代行」バッジ+代行者名。
   is_substitute: z.boolean().default(false),
   // 予定外訪問 (visits.is_unplanned)。BE が専用行「📌予定外訪問」に集約する。
   is_unplanned: z.boolean().default(false),

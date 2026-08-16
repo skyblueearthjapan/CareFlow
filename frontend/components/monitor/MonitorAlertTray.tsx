@@ -137,15 +137,15 @@ export function MonitorAlertTray({
           {alertTag(v)}
         </span>
         {/* 代行 / 予定外の理由ラベル (§6 #9)。優先順 (未訪問→場所違い→要確認) は不変で、
-            「要確認」の中の種別を補足するチップ。予定外=行と同じ c-coupled 系、
-            代行=info (行レベル ⚠ の amber と区別)。 */}
+            「要確認」の中の種別を補足するチップ。予定外=専用行と同じ --unplanned 系、
+            代行=teal (行レベル ⚠ の amber と区別)。 */}
         {alertReasonChips(v).map((chip) => (
           <span
             key={chip}
             data-testid={`monitor-alert-chip-${chip === '予定外' ? 'unplanned' : 'substitute'}-${v.visit_id}`}
             className={cn(
               'whitespace-nowrap rounded-full px-1.5 py-0.5 text-[10px] font-bold',
-              chip === '予定外' ? 'bg-c-coupled-bg text-c-coupled' : 'bg-info-bg text-info',
+              chip === '予定外' ? 'bg-unplanned-bg text-unplanned' : 'bg-info-bg text-info-strong',
             )}
           >
             {chip}

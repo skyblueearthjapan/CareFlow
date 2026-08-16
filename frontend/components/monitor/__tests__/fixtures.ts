@@ -20,6 +20,8 @@ export function makeVisit(overrides: Partial<MonitorVisit> = {}): MonitorVisit {
     // 代行 / 予定外 (qr-open-checkin-design.md §6)。既定は通常訪問。
     actual_staff_id: null,
     actual_staff_name: null,
+    substitute_staff_id: null,
+    substitute_staff_name: null,
     is_substitute: false,
     is_unplanned: false,
     phase: 'done',

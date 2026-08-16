@@ -368,12 +368,12 @@ export default function MonitorPage() {
           <Legend swatch="var(--sched-event-bg)" label="会議・イベント" border />
           {/* 代行・予定外 (qr-open-checkin-design.md §6)。行レベル ⚠ (担当乖離) とは別物。 */}
           <span className="inline-flex items-center gap-1.5">
-            <span className="inline-block rounded-full bg-info px-1 py-px text-[9px] font-bold text-white">
+            <span className="inline-block rounded-full bg-info-bg px-1 py-px text-[9px] font-bold text-info-strong">
               代行
             </span>
             担当外スタッフが訪問
           </span>
-          <Legend swatch="var(--c-coupled-bg)" label="📌予定外訪問（予定なし・実績のみ）" />
+          <Legend swatch="var(--unplanned-bg)" label="📌予定外訪問（予定なし・実績のみ）" />
           <span className="text-text-muted">→1.2km 次までの距離</span>
         </div>
 

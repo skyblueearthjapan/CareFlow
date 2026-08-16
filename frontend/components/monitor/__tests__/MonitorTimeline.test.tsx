@@ -2,6 +2,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 
+import type { EventRead } from '@/lib/schemas/staff-events';
+
 import { MonitorTimeline, monitorRowKey } from '../MonitorTimeline';
 import { UNPLANNED_ROW_LABEL } from '../constants';
 import { makeRow, makeVisit } from './fixtures';
@@ -262,11 +264,14 @@ describe('MonitorTimeline', () => {
 
   // --- 代行 / 予定外 (qr-open-checkin-design.md §6) ---
 
-  it('代行 visit のバーに「代行」バッジと実績スタッフ名が出る', () => {
+  it('代行 visit のバーに「代行」バッジと代行者名が出る (代行B→担当A打ち直し)', () => {
+    // 代行 B が打刻したあとに担当 A が打ち直したケース。actual (最新打刻者) は担当 A に
+    // なるが、バッジの根拠は substitute_staff_name (= 代行した B)。
     const v = makeVisit({
       patient_name: '代行 対象',
-      staff_name: '予定 太郎',
-      actual_staff_name: '実績 次郎',
+      staff_name: '担当 A',
+      actual_staff_name: '担当 A',
+      substitute_staff_name: '代行 B',
       is_substitute: true,
       alert_level: 'review',
     });
@@ -284,11 +289,34 @@ describe('MonitorTimeline', () => {
     expect(badge.textContent).toBe('代行');
     // 行レベル ⚠ (担当乖離) とは別物なので、⚠ は出ない。
     expect(screen.queryByText('⚠')).toBeNull();
-    // ツールチップに「予定: ○○ / 実績: △△」。
-    expect(badge.getAttribute('title')).toBe('予定: 予定 太郎 / 実績: 実績 次郎');
+    // ツールチップは「予定: ○○ / 代行: △△」。
+    expect(badge.getAttribute('title')).toBe('予定: 担当 A / 代行: 代行 B');
+    // 併記名は最新打刻者 (担当 A) ではなく代行者 (代行 B)。
     expect(screen.getByTestId(`monitor-bar-actual-staff-${v.visit_id}`).textContent).toBe(
-      '→実績 次郎',
+      '→代行 B',
     );
+  });
+
+  it('代行だが代行者名が無い応答ではバッジのみ出す (名前は併記しない)', () => {
+    const v = makeVisit({
+      staff_name: '担当 A',
+      actual_staff_name: '担当 A',
+      substitute_staff_name: null,
+      is_substitute: true,
+      alert_level: 'review',
+    });
+    render(
+      <MonitorTimeline
+        rows={[makeRow({ visits: [v] })]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId(`monitor-bar-substitute-${v.visit_id}`)).toBeTruthy();
+    expect(screen.queryByTestId(`monitor-bar-actual-staff-${v.visit_id}`)).toBeNull();
   });
 
   it('通常 visit には代行バッジを出さない', () => {
@@ -338,5 +366,132 @@ describe('MonitorTimeline', () => {
     expect(screen.getByTestId(`monitor-bar-actual-staff-${v.visit_id}`).textContent).toBe(
       '→実績 次郎',
     );
+  });
+
+  it('拠点別の予定外行は行キーが衝突しない (2 行同時選択にならない)', () => {
+    // BE は予定外行を拠点ごとに 1 本作る (course_id=null・ラベル共通・掛け持ちなら
+    // staff_id も null)。拠点でキーを分けないと 2 行が同じキーになる。
+    const rowA = makeRow({
+      course_id: null,
+      staff_id: null,
+      course_label: UNPLANNED_ROW_LABEL,
+      office_id: '00000000-0000-0000-0000-0000000000aa',
+      office_name: '稲毛',
+      visits: [makeVisit({ patient_name: '稲毛 太郎', is_unplanned: true })],
+    });
+    const rowB = makeRow({
+      course_id: null,
+      staff_id: null,
+      course_label: UNPLANNED_ROW_LABEL,
+      office_id: '00000000-0000-0000-0000-0000000000bb',
+      office_name: '花見川',
+      visits: [makeVisit({ patient_name: '花見川 花子', is_unplanned: true })],
+    });
+    expect(monitorRowKey(rowA)).not.toBe(monitorRowKey(rowB));
+
+    render(
+      <MonitorTimeline
+        rows={[rowA, rowB]}
+        selectedRowKey={monitorRowKey(rowA)}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    // 選択されるのは片方だけ。
+    expect(screen.getAllByText('● 選択中')).toHaveLength(1);
+    expect(screen.getByTestId('monitor-row-0').getAttribute('data-unplanned')).toBe('true');
+    expect(screen.getByTestId('monitor-row-1').getAttribute('data-unplanned')).toBe('true');
+  });
+
+  it('予定外行と同じスタッフのコース無し行が併存しても行キーが衝突しない', () => {
+    const staffId = '00000000-0000-0000-0000-0000000000cc';
+    const officeId = '00000000-0000-0000-0000-0000000000aa';
+    const unplanned = makeRow({
+      course_id: null,
+      staff_id: staffId,
+      staff_name: '田中 太郎',
+      course_label: UNPLANNED_ROW_LABEL,
+      office_id: officeId,
+      visits: [makeVisit({ is_unplanned: true })],
+    });
+    const noCourse = makeRow({
+      course_id: null,
+      staff_id: staffId,
+      staff_name: '田中 太郎',
+      course_label: null,
+      office_id: officeId,
+      visits: [makeVisit()],
+    });
+    expect(monitorRowKey(unplanned)).toBe(`unplanned-${officeId}`);
+    expect(monitorRowKey(noCourse)).toBe(staffId);
+
+    render(
+      <MonitorTimeline
+        rows={[noCourse, unplanned]}
+        selectedRowKey={monitorRowKey(noCourse)}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    expect(screen.getAllByText('● 選択中')).toHaveLength(1);
+    // 選択されたのはコース無し行のほう (予定外行は非選択のまま独自表示)。
+    expect(screen.getByTestId('monitor-row-1').getAttribute('data-unplanned')).toBe('true');
+    expect(
+      screen.getByTestId(`monitor-row-unplanned-${monitorRowKey(unplanned)}`).textContent,
+    ).toBe(UNPLANNED_ROW_LABEL);
+  });
+
+  it('予定外行にはイベント帯を描画しない', () => {
+    const staffId = '00000000-0000-0000-0000-0000000000dd';
+    const event: EventRead = {
+      id: '00000000-0000-0000-0000-0000000000e1',
+      staff_id: staffId,
+      date: '2026-06-30',
+      type: 'イベント',
+      title: '朝礼',
+      start_time: '09:00',
+      end_time: '10:00',
+      note: null,
+      blocking: false,
+    };
+    const events = new Map<string, EventRead[]>([[staffId, [event]]]);
+    const unplanned = makeRow({
+      course_id: null,
+      staff_id: staffId,
+      course_label: UNPLANNED_ROW_LABEL,
+      visits: [makeVisit({ is_unplanned: true })],
+    });
+    const normal = makeRow({ staff_id: staffId, visits: [makeVisit()] });
+
+    const { rerender } = render(
+      <MonitorTimeline
+        rows={[unplanned]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+        eventsByStaffId={events}
+      />,
+    );
+    expect(screen.queryByTestId('monitor-event-00000000-0000-0000-0000-0000000000e1')).toBeNull();
+
+    // 通常行では従来どおり描画される (回帰確認)。
+    rerender(
+      <MonitorTimeline
+        rows={[normal]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+        eventsByStaffId={events}
+      />,
+    );
+    expect(screen.getByTestId('monitor-event-00000000-0000-0000-0000-0000000000e1')).toBeTruthy();
   });
 });

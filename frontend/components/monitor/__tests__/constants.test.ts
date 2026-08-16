@@ -226,12 +226,20 @@ describe('代行 / 予定外 (qr-open-checkin-design.md §6)', () => {
     ]);
   });
 
-  it('substituteTitle: 予定 / 実績 を並記する (未設定は —)', () => {
+  it('substituteTitle: 予定 / 代行 を並記する (代行者名は substitute_staff_name 由来)', () => {
+    // 代行 B → 担当 A 打ち直しでも、代行者は substitute_staff_name (= B)。
     expect(
-      substituteTitle(makeVisit({ staff_name: '予定 太郎', actual_staff_name: '実績 次郎' })),
-    ).toBe('予定: 予定 太郎 / 実績: 実績 次郎');
-    expect(substituteTitle(makeVisit({ staff_name: null, actual_staff_name: null }))).toBe(
-      '予定: — / 実績: —',
-    );
+      substituteTitle(
+        makeVisit({
+          staff_name: '担当 A',
+          actual_staff_name: '担当 A',
+          substitute_staff_name: '代行 B',
+        }),
+      ),
+    ).toBe('予定: 担当 A / 代行: 代行 B');
+    // 代行者名が無い応答では名前を併記しない。
+    expect(
+      substituteTitle(makeVisit({ staff_name: '担当 A', substitute_staff_name: null })),
+    ).not.toContain('担当 A');
   });
 });
