@@ -1,7 +1,9 @@
 # QR打刻の開放（担当外・予定外訪問の記録）+ モニター表示 — 設計書
 
 作成: 2026-08-16（ドラフト・実装前）
-ステータス: **設計確定（ユーザー/PO 2026-08-16 論点全決着）・未実装**
+ステータス: **Phase A〜D 実装済み（2026-08-16・フェーズ別レビュー+最終統合レビュー通過）**。
+§9 の PO 未決 3 件は**仮値のまま稼働**（①60分既定=`ADHOC_DEFAULT_SERVICE_MINUTES` ③通知文言=notify.py に「仮」明記 ②カイポケ突合=運用課題として未消化・実機確認必須）。
+実装コミット: Phase A=`bdfc389` / B=`e6d2736`〜`613b65e`+`5976c9d` / C=`99e1dc9`〜`ffcd108` / D=`824aef7`+`ad7340f` / 最終レビュー修正は追記参照。
 
 前提となる既存設計: `qr-checkin-implementation-plan.md` / `qr-checkin-backend-design.md`（QR打刻の基盤）、
 `patient-ng-staff-design.md`（NG スタッフ・通知パターン）。
@@ -104,6 +106,11 @@
   既にあればそれを返す（再スキャンで増殖させない）。同時 POST の競合は
   **advisory lock**（`try_advisory_xact_lock`・hash(patient_id, staff_id, 当日JST)）で
   TX 冒頭に直列化する（read-then-insert だけでは二重生成し得る。レビュー指摘 2026-08-16）。
+  **lock 取得失敗時は 409**（visit を作らない。FE は通常エラー表示=再操作で解消）。
+- **オフライン再送の時刻**（最終レビュー M-2）: `device_time` が当日(JST)かつ未来でなければ
+  それを visit_date/start_time の基準に採用（圏外退避→数時間後再送の時刻ドリフト防止）。
+  当日外の device_time は **422**（黙って当日に付け替えない・FE は理由を表示して破棄）。
+  未来の device_time は無視してサーバ時刻（時計ズレ端末対策）。
 - **checkout にも substitute / ng_staff 通知を配線**（退出のみの代行が無通知で
   completed になる穴を塞ぐ。reference 冪等なので到着時通知済みなら重複しない）。
 - checkout は生成された visit に対する通常の `POST /visits/{id}/checkout`
@@ -142,9 +149,13 @@
 ## 6. PC 訪問モニター
 
 - `build_monitor` 拡張:
-  - 各 visit に `actual_staff_id / actual_staff_name / is_substitute` を付与
-    （**いずれかの arrival 打刻者が担当集合外なら substitute** — 「最新 arrival のみ」だと
-    代行後に担当が打刻するとバッジが消え通知と不整合になるため。レビュー指摘 2026-08-16）。
+  - 各 visit に `actual_staff_id / actual_staff_name / is_substitute` +
+    **`substitute_staff_id / substitute_staff_name`**（担当集合外の最新打刻者・
+    is_substitute=True のときのみ非 None。actual_* は「最新到着者」なので代行後に担当が
+    打ち直すと自己矛盾表示になる — UI の代行表示は substitute_* を正とする）を付与。
+  - substitute 判定は「**いずれかの打刻（arrival / departure）の打刻者が担当集合外**」
+    （arrival 限定だと「退出だけ代行」が通知に出てモニターに出ない非対称が生じる。
+    最終レビュー M-3 で departure まで拡張）。
   - `is_unplanned` visit は**専用行**に集約（**実績スタッフの主担当拠点別の行キー**
     `(unplanned, office_id)` — 拠点フィルタで行ごと消える/他拠点が混ざる破綻を防ぐ。
     ラベルは共通「📌予定外訪問」・当日発生分のみ・コース行グルーピングから除外）。
