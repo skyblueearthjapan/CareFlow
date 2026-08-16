@@ -410,6 +410,39 @@ async def resolve_accompaniment_staff_by_course(
     return result
 
 
+async def resolve_direct_accompaniment_staff_by_visit(
+    db: AsyncSession, visits: list[Visit]
+) -> dict[UUID, set[UUID]]:
+    """visit_id -> **visit 直リンク**の同行スタッフ集合 (``target_type='visit'`` のみ).
+
+    コースリンクを混ぜない版。逆取込 (inbound) の **復活枠 (revive)** 経路のために
+    分けてある: 復活はキャンセル済み visit を再利用しつつ ``course_id`` を
+    「カイポケの担当1 から解決した新しいコース」へ**付け替える**ため、その visit が
+    今どのコースに居るかは突合の材料にならない。旧コースのリンクまで混ぜると、
+    旧コースの同行者と同名の staff2 が判定① へ誤マッチして「本物の 2 人目」が
+    secondary へ書かれず消える (2026-08-17 レビュー MEDIUM-2)。
+
+    付け替え**先**のコースリンクは呼び出し側が
+    ``resolve_accompaniment_staff_by_course`` から別途 union する。
+    UNIQUE (staff, visit_id) の冪等ガードにもこの直リンク集合を使う。
+    同行が無い visit はキーを含めない。
+    """
+    if not visits:
+        return {}
+    rows = (
+        await db.execute(
+            select(
+                Accompaniment.visit_id,
+                Accompaniment.accompanying_staff_id,
+            ).where(Accompaniment.visit_id.in_([v.id for v in visits]))
+        )
+    ).all()
+    result: dict[UUID, set[UUID]] = {}
+    for vid, sid in rows:
+        result.setdefault(vid, set()).add(sid)
+    return result
+
+
 async def resolve_accompaniment_staff_by_visit(
     db: AsyncSession, visits: list[Visit]
 ) -> dict[UUID, set[UUID]]:
@@ -422,28 +455,19 @@ async def resolve_accompaniment_staff_by_visit(
     (Phase 3 レビュー MINOR-2)。kind ではフィルタしない — カイポケ職員名2 には
     新人同行も一般スタッフの同行も等しく載るため (一般化 §3-5)。
     同行が無い visit はキーを含めない。
+
+    コースが**付け替わる**経路 (復活枠) では現在の course_id を混ぜてはいけない —
+    ``resolve_direct_accompaniment_staff_by_visit`` を使うこと。
     """
     if not visits:
         return {}
 
-    visit_ids = [v.id for v in visits]
     course_ids = {v.course_id for v in visits if v.course_id is not None}
 
     course_sets: dict[UUID, set[UUID]] = (
         await resolve_accompaniment_staff_by_course(db, list(course_ids)) if course_ids else {}
     )
-
-    direct_sets: dict[UUID, set[UUID]] = {}
-    rows = (
-        await db.execute(
-            select(
-                Accompaniment.visit_id,
-                Accompaniment.accompanying_staff_id,
-            ).where(Accompaniment.visit_id.in_(visit_ids))
-        )
-    ).all()
-    for vid, sid in rows:
-        direct_sets.setdefault(vid, set()).add(sid)
+    direct_sets = await resolve_direct_accompaniment_staff_by_visit(db, visits)
 
     result: dict[UUID, set[UUID]] = {}
     for v in visits:

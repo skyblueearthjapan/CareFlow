@@ -209,10 +209,14 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
     # 複数同行 (決定#5) を職員名2/3 へ配分する順序は**決定的**:
     #   secondary(要2名の正規2人目) → 同行[support 優先 → スタッフ名昇順 → id]
     #   → mentor(レガシー)
-    # 同行内の並びは ``services/accompaniment._entry_sort_key`` と共有する。順序を
-    # 1 箇所に閉じることで、月次CSV・週次反映 (local_diff の Correction.staff2)・
-    # 画面表示の代表 1 名がすべて同じ人になり、実行のたびに別人がカイポケへ押される
-    # 事故 (旧 last-wins) が構造的に起きない。
+    # 同行内の並びは ``services/accompaniment._entry_sort_key`` と共有する。これで
+    # 「同行者のうち誰を先に出すか」が月次CSV・週次反映 (local_diff の
+    # Correction.staff2)・画面表示で一致し、実行のたびに別人がカイポケへ押される事故
+    # (旧 last-wins) が構造的に起きない。
+    #
+    # 注意: **職員名2 が画面の代表 1 名と一致するのは secondary が居ない訪問だけ**。
+    # 要2名の訪問では職員名2=secondary・職員名3=同行の先頭になる (下の配分どおり)。
+    # 揃っているのは同行者どうしの順序であって、slot への割り付けではない。
     accompaniment_by_visit = await resolve_accompaniment_by_visit(db, visits)
 
     # スタッフを一括ロード (name/qualification 解決用)。同行スタッフも qualification

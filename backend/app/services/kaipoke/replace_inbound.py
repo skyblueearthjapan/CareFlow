@@ -27,12 +27,16 @@ from typing import TYPE_CHECKING
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from app.models.accompaniment import ACCOMPANIMENT_KIND_TRAINEE, Accompaniment
+from app.models.accompaniment import Accompaniment
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.course_template import CourseTemplate
 from app.models.patient import Patient
 from app.models.visit import Visit
 from app.models.visit_checkin import VisitCheckin
+from app.services.accompaniment import (
+    resolve_accompaniment_kind,
+    resolve_accompaniment_staff_by_course,
+)
 from app.services.kaipoke.inbound import (
     _replace_assignments,
     _stamp_note,
@@ -193,28 +197,19 @@ async def replace_week_from_kaipoke(
 
     course_idx = await load_week_course_index(db, week_start)
     # コース単位の同行リンク (staff2 判定①: コースの同行スタッフは secondary にしない)。
+    # kind を見ない / 集合で返す等の不変条件は共用ヘルパー側の docstring が正典
+    # (以前はここに同等クエリを手書きしており、条件の説明が 2 箇所へ分散していた)。
     #
-    # **kind でフィルタしない** (一般化 §3-5): 新人同行 (kind='trainee') も一般スタッフの
-    # 同行 (kind='support') も職員名2 として送出済みなので、返ってきた staff2 が
-    # 「同行由来か」はリンクの実在だけで決まる。ここで kind を見ると、一般同行が
-    # 判定③ (2名体制昇格) へ落ちて secondary_staff_id が汚染される。
-    #
-    # visit 単位のリンクを見ないのは置換の性質: 対象週の real 訪問は直前に白紙化
+    # visit 単位のリンクを引かないのは置換の性質: 対象週の real 訪問は直前に白紙化
     # (soft-delete) され、visit は全て新規 INSERT される = 突合できる直リンクが存在しない。
-    # 生き残るのはコースリンクだけなので、それだけを引く (diff-inbound の add 経路は
-    # 復活枠があるため直リンクも見る — inbound.py 側の判定① 参照)。
-    acc_rows = (
-        await db.scalars(
-            select(Accompaniment).where(
-                Accompaniment.target_type == "course",
-                Accompaniment.course_id.in_(list(course_idx.by_id.keys()) or [uuid.uuid4()]),
-            )
-        )
-    ).all()
-    accompaniment_by_course: dict[uuid.UUID, set[uuid.UUID]] = {}
-    for a in acc_rows:
-        if a.course_id is not None:
-            accompaniment_by_course.setdefault(a.course_id, set()).add(a.accompanying_staff_id)
+    # 生き残るのはコースリンクだけ (diff-inbound の add 経路は復活枠があるため直リンクも
+    # 見る — inbound.py 側の判定① 参照)。
+    #
+    # 臨時コースの掃除 (下) より**前**に引く: 掃除は当週の臨系コースへ deleted_at を
+    # 立てるため、後に回すとヘルパーの live JOIN から漏れる。
+    accompaniment_by_course = await resolve_accompaniment_staff_by_course(
+        db, list(course_idx.by_id.keys())
+    )
 
     # --- 臨時コースの掃除 (2026-07-26) ---------------------------------------
     # 前回の置換が作った臨系コースは、訪問の白紙化で空になっても行が残る。
@@ -500,8 +495,7 @@ async def replace_week_from_kaipoke(
                             target_type="visit",
                             visit_id=new_visit.id,
                             source="manual",
-                            # 判定② は is_trainee 限定 = ここは常に新人同行。
-                            kind=ACCOMPANIMENT_KIND_TRAINEE,
+                            kind=resolve_accompaniment_kind(staff_map[accompaniment_sid2]),
                             created_by=None,
                         )
                     )

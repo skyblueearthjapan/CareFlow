@@ -212,6 +212,79 @@ async def test_inbound_add_revive_support_visit_link_skipped(db) -> None:
     assert cancelled.required_staff_count == 1
 
 
+@pytest.mark.asyncio
+async def test_inbound_add_revive_old_course_link_does_not_match(db) -> None:
+    """判定① (add・復活枠): **旧コース**の同行者は突合対象にしない (レビュー MEDIUM-2).
+
+    復活は visit を再利用しつつ course_id を「担当1 から解決した新しいコース」へ
+    付け替える。旧コースのリンクまで突合集合に混ぜると、旧コースの同行者と同じ人が
+    staff2 として来たときに ① へ誤マッチし、**本物の 2 人目**が secondary へ書かれず
+    静かに消える。ここでは担当1 を別スタッフへ変えてコースを付け替えつつ、旧コースの
+    同行者を staff2 に載せ、③ (2名体制) へ正しく落ちることを固定する。
+    """
+    office = await _office(db)
+    old_owner = await _staff(db, "先輩太郎", office)
+    new_owner = await _staff(db, "後輩次郎", office)
+    helper = await _staff(db, "応援三郎", office)
+    patient = await _patient(db, "山田様", office)
+    old_course = await _course(db, office, old_owner, weekday=1, code="A")
+    await _course(db, office, new_owner, weekday=1, code="B")  # 復活後の張り付き先。
+    cancelled = await _visit(
+        db, patient, old_owner, course=old_course, start=time(15, 0), end=time(15, 35)
+    )
+    cancelled.status = "cancelled"
+    _link(db, helper, course=old_course)  # 旧コースにのみ同行リンク。
+    await db.commit()
+    helper_id = helper.id
+
+    # 担当1 を新オーナーにして add → 復活しつつコース B へ付け替わる。
+    summary = await _apply(db, [_add_item(patient, staff1="後輩次郎", staff2="応援三郎")])
+    await db.commit()
+    await db.refresh(cancelled)
+
+    assert summary.added == 1
+    assert cancelled.status == "planned"
+    # 旧コース (A) の同行者は付け替え後の訪問には効かない → ③ = 2 名体制。
+    assert cancelled.secondary_staff_id == helper_id
+    assert cancelled.required_staff_count == 2
+
+
+@pytest.mark.asyncio
+async def test_inbound_add_revive_unlinked_trainee_auto_accompaniment(db) -> None:
+    """判定② (add・復活枠): リンク無しの新人 staff2 は復活枠にも同行リンクを自動作成."""
+    office = await _office(db)
+    mentor = await _staff(db, "先輩太郎", office)
+    trainee = await _staff(db, "新人花子", office, is_trainee=True)
+    patient = await _patient(db, "山田様", office)
+    course = await _course(db, office, mentor, weekday=1, code="A")
+    cancelled = await _visit(
+        db, patient, mentor, course=course, start=time(15, 0), end=time(15, 35)
+    )
+    cancelled.status = "cancelled"  # 同行リンクは張らない。
+    await db.commit()
+    trainee_id = trainee.id
+
+    summary = await _apply(db, [_add_item(patient, staff1="先輩太郎", staff2="新人花子")])
+    await db.commit()
+    await db.refresh(cancelled)
+
+    assert summary.added == 1
+    assert cancelled.status == "planned"
+    assert cancelled.secondary_staff_id is None  # 要2名化しない。
+    assert cancelled.required_staff_count == 1
+
+    link = await db.scalar(
+        select(Accompaniment).where(
+            Accompaniment.accompanying_staff_id == trainee_id,
+            Accompaniment.visit_id == cancelled.id,
+        )
+    )
+    assert link is not None
+    assert link.target_type == "visit"
+    assert link.source == "manual"
+    assert link.kind == ACCOMPANIMENT_KIND_TRAINEE  # kind は staff.is_trainee から自動判定。
+
+
 # --- B. 判定② — is_trainee 限定の維持 (一般開放しない) ------------------------
 
 
