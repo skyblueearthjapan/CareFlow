@@ -1,13 +1,16 @@
 'use client';
 
 /**
- * 新人同行サマリ (閲覧専用) — 新人同行 v1.1 §7.5。
+ * 同行サマリ — 新人同行 v1.1 §7.5 / general-accompaniment-design.md §4。
  *
- * 旧「同行スタッフ割付」パネルの後継。新人 (is_trainee=true) のスタッフ詳細に
- * 「毎週の既定」(曜日 × コースコード/テンプレ名) と「今週の同行」実効一覧を
- * 閲覧表示する。編集導線はスケジュール画面 (同行モード) への誘導リンクのみ。
+ * スタッフ詳細に「毎週の既定」(曜日 × コースコード/テンプレ名) と「今週の同行」
+ * 実効一覧を表示する。同行者は新人に限らないため、リンク・既定が 1 件でもあれば
+ * (新人フラグに関係なく) 表示される。
+ *
+ * 追加/変更はスケジュール画面の同行モードが主導線。ここには「今週の同行」の
+ * **個別解除** だけを置く (週 PUT から当該 1 件を差し引いて再送する)。
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { CalendarClock, CalendarCheck, ArrowRight } from 'lucide-react';
 
@@ -18,10 +21,33 @@ import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 import {
   useTraineeAccompanimentDefaults,
   useTraineeAccompaniments,
+  useUpdateTraineeAccompaniments,
 } from '@/lib/queries/trainee_accompaniments';
+import type { TraineeAccompanimentItem } from '@/lib/schemas/trainee_accompaniment';
 import { WEEKDAY_LABELS } from '@/lib/schemas/staff';
 
-export function TraineeAccompanimentSummary({ staffId }: { staffId: string }) {
+/** 週リンク一覧を PUT の course_ids / visit_ids へ畳む (解除は差し引いて再送)。 */
+export function buildWeekLinkIds(
+  items: readonly TraineeAccompanimentItem[],
+  excludeId?: string,
+): { course_ids: string[]; visit_ids: string[] } {
+  const course_ids: string[] = [];
+  const visit_ids: string[] = [];
+  for (const it of items) {
+    if (excludeId && it.id === excludeId) continue;
+    if (it.target_type === 'course' && it.course?.id) course_ids.push(it.course.id);
+    if (it.target_type === 'visit' && it.visit?.id) visit_ids.push(it.visit.id);
+  }
+  return { course_ids, visit_ids };
+}
+
+export function AccompanimentSummary({
+  staffId,
+  canEdit = false,
+}: {
+  staffId: string;
+  canEdit?: boolean;
+}) {
   const { data, isLoading, isError, error } = useTraineeAccompanimentDefaults(staffId);
 
   // 今週の実効リンク (§7.5 後段)。ブラウザのローカル日付 (JST) 基準。
@@ -31,6 +57,10 @@ export function TraineeAccompanimentSummary({ staffId }: { staffId: string }) {
     isoWeek,
     traineeStaffId: staffId,
   });
+
+  const [releasingId, setReleasingId] = useState<string | null>(null);
+  const [releaseError, setReleaseError] = useState<string | null>(null);
+  const updateMut = useUpdateTraineeAccompaniments();
 
   const defaults = [...(data ?? [])].sort((a, b) => a.weekday - b.weekday);
   const weekItems = useMemo(() => {
@@ -43,11 +73,31 @@ export function TraineeAccompanimentSummary({ staffId }: { staffId: string }) {
     });
   }, [weekQuery.data]);
 
+  const handleRelease = async (item: TraineeAccompanimentItem) => {
+    setReleaseError(null);
+    setReleasingId(item.id);
+    const ids = buildWeekLinkIds(weekQuery.data ?? [], item.id);
+    try {
+      await updateMut.mutateAsync({
+        trainee_staff_id: staffId,
+        iso_year: isoYear,
+        iso_week: isoWeek,
+        ...ids,
+        // 毎週の既定には触れない (今週ぶんの解除のみ)。
+        defaults: null,
+      });
+    } catch (err) {
+      setReleaseError(err instanceof Error ? err.message : '解除に失敗しました');
+    } finally {
+      setReleasingId(null);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <p className="text-sm text-text-secondary">
-        新人はコースを持ちません。先輩の訪問に「同行」として付きます。設定・変更は
-        スケジュール画面の「新人同行」モードから行います。
+        他スタッフの訪問に「同行」として付く設定です。新人・一般スタッフのどちらも
+        同行できます。設定・変更はスケジュール画面の「同行」モードから行います。
       </p>
 
       {isLoading ? (
@@ -63,9 +113,7 @@ export function TraineeAccompanimentSummary({ staffId }: { staffId: string }) {
           </AlertDescription>
         </Alert>
       ) : defaults.length === 0 ? (
-        <p className="text-sm text-text-muted">
-          毎週の既定はまだ設定されていません。
-        </p>
+        <p className="text-sm text-text-muted">毎週の既定はまだ設定されていません。</p>
       ) : (
         <div>
           <div className="mb-2 flex items-center gap-2 text-sm font-medium text-text-primary">
@@ -99,6 +147,12 @@ export function TraineeAccompanimentSummary({ staffId }: { staffId: string }) {
           <CalendarCheck className="h-4 w-4" />
           今週の同行（{isoYear}-W{String(isoWeek).padStart(2, '0')}）
         </div>
+        {releaseError && (
+          <Alert variant="destructive" className="mb-2">
+            <AlertTitle>解除に失敗しました</AlertTitle>
+            <AlertDescription>{releaseError}</AlertDescription>
+          </Alert>
+        )}
         {weekQuery.isLoading ? (
           <Skeleton className="h-8 w-full" />
         ) : weekQuery.isError ? (
@@ -121,6 +175,24 @@ export function TraineeAccompanimentSummary({ staffId }: { staffId: string }) {
                 ) : null}
                 {item.source === 'default' && (
                   <span className="text-xs text-text-muted">（毎週の既定から）</span>
+                )}
+                {canEdit && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="ml-auto"
+                    onClick={() => void handleRelease(item)}
+                    disabled={releasingId !== null}
+                    data-testid={`accompaniment-release-${item.id}`}
+                    title={
+                      item.source === 'default'
+                        ? '今週ぶんだけ解除します（毎週の既定は残ります）'
+                        : '今週のこの同行を解除します'
+                    }
+                  >
+                    {releasingId === item.id ? '解除中…' : '解除'}
+                  </Button>
                 )}
               </li>
             ))}

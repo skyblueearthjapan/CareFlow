@@ -7,9 +7,9 @@
  *   - Weekly shifts        (3-8)  GET/PUT  /api/v1/staff/:id/shifts
  *   - Weekly overrides     (3-9)  GET/POST/PATCH/DELETE /api/v1/staff/:id/overrides
  *   - Events / 研修日       (3-10) /api/v1/staff/:id/events
- *   - 新人同行サマリ        GET /api/v1/trainee-accompaniment-defaults ほか
+ *   - 同行サマリ            GET /api/v1/accompaniment-defaults ほか
  *     (旧 W10 companion-assignments は新人同行 Phase 2 で撤去・後継は
- *      TraineeAccompanimentSummary — docs/plans/trainee-accompaniment-design.md §7.5)
+ *      AccompanimentSummary — docs/plans/general-accompaniment-design.md §4)
  *
  * W10-FE2 変更点:
  *   - 旧「メンター割付」セクション → 「同行スタッフ割付」(閲覧専用) に置換
@@ -30,6 +30,11 @@ import { RecordNavigator, type NavigatorRecord } from '@/components/RecordNaviga
 import { useStaffEvents } from '@/lib/queries/staff-events';
 import { useStaffOverrides, type OverrideRange } from '@/lib/queries/staff-overrides';
 import { useStaffShifts } from '@/lib/queries/staff-shifts';
+import {
+  useTraineeAccompanimentDefaults,
+  useTraineeAccompaniments,
+} from '@/lib/queries/trainee_accompaniments';
+import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 import { useDeleteStaff, useStaff, useStaffList } from '@/lib/queries/staff';
 import { useOffices } from '@/lib/queries/offices';
 import type { OverrideRead } from '@/lib/schemas/staff-overrides';
@@ -50,7 +55,7 @@ import { OverrideAddDialog } from './_components/OverrideAddDialog';
 import { OverrideEditDialog } from './_components/OverrideEditDialog';
 import { ShiftsEditDialog } from './_components/ShiftsEditDialog';
 import { StaffNgPatientsSummary } from './_components/StaffNgPatientsSummary';
-import { TraineeAccompanimentSummary } from './_components/TraineeAccompanimentSummary';
+import { AccompanimentSummary } from './_components/AccompanimentSummary';
 import { isAdminRole } from '@/lib/rbac';
 
 /** Overrides default window: today through +90 days. */
@@ -216,8 +221,8 @@ export default function StaffDetailPage() {
 
       <EventsCard staffId={data.id} canEdit={canEdit} />
 
-      {/* 新人同行サマリ — is_trainee=true のときのみ表示 (§7.5・閲覧専用) */}
-      {data.is_trainee && <TraineeAccompanimentCard staffId={data.id} />}
+      {/* 同行サマリ — 新人 or 同行リンク/既定が 1 件でもあれば表示 (§4 一般化) */}
+      <AccompanimentCard staffId={data.id} isTrainee={data.is_trainee === true} canEdit={canEdit} />
 
       {/* NG 指定されている患者 (逆引き・閲覧専用)。0 件ならカードごと非表示。 */}
       <StaffNgPatientsSummary staffId={data.id} />
@@ -564,17 +569,33 @@ function EventsCard({ staffId, canEdit }: { staffId: string; canEdit: boolean })
 }
 
 /**
- * 新人同行サマリカード (§7.5・閲覧専用).
- * is_trainee=true の場合のみ StaffDetailPage から呼び出される。
+ * 同行サマリカード (§7.5 / general-accompaniment-design.md §4).
+ *
+ * 表示条件は「新人 **または** 同行リンク/既定が 1 件でもある」。同行者は新人に
+ * 限らないため is_trainee だけを条件にすると一般スタッフの同行が見えなくなる。
+ * クエリキーは中身の `AccompanimentSummary` と同一で React Query が dedupe する。
  */
-function TraineeAccompanimentCard({ staffId }: { staffId: string }) {
+function AccompanimentCard({
+  staffId,
+  isTrainee,
+  canEdit,
+}: {
+  staffId: string;
+  isTrainee: boolean;
+  canEdit: boolean;
+}) {
+  const { isoYear, isoWeek } = useMemo(() => isoWeekFromLocalDate(new Date()), []);
+  const defaultsQuery = useTraineeAccompanimentDefaults(staffId);
+  const weekQuery = useTraineeAccompaniments({ isoYear, isoWeek, traineeStaffId: staffId });
+  const hasLinks = (defaultsQuery.data?.length ?? 0) > 0 || (weekQuery.data?.length ?? 0) > 0;
+  if (!isTrainee && !hasLinks) return null;
   return (
-    <Card>
+    <Card data-testid="accompaniment-summary-card">
       <CardHeader>
-        <CardTitle>新人同行</CardTitle>
+        <CardTitle>同行</CardTitle>
       </CardHeader>
       <CardContent>
-        <TraineeAccompanimentSummary staffId={staffId} />
+        <AccompanimentSummary staffId={staffId} canEdit={canEdit} />
       </CardContent>
     </Card>
   );

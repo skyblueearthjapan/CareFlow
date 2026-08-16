@@ -217,6 +217,25 @@ describe('MonitorTimeline', () => {
     expect(screen.getByText('＋新人 一郎（同行）')).toBeTruthy();
   });
 
+  it('複数名の同行は accompaniment_staff_names を「・」連結で出す (確定#5)', () => {
+    const v = makeVisit({
+      accompaniment_staff_name: '新人 一郎',
+      accompaniment_staff_names: ['新人 一郎', '熊澤 二郎'],
+    });
+    const row = makeRow({ visits: [v] });
+    render(
+      <MonitorTimeline
+        rows={[row]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('＋新人 一郎・熊澤 二郎（同行）')).toBeTruthy();
+  });
+
   it('新人同行が無い行はラベルを表示しない', () => {
     const v = makeVisit({ accompaniment_staff_name: null });
     const row = makeRow({ visits: [v] });

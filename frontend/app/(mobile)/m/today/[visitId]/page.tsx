@@ -31,6 +31,7 @@ import {
   type GeoFix as Geo,
 } from '@/lib/geo';
 import { extractQrToken } from '@/lib/qr-token';
+import { visitAccompaniments } from '@/lib/schemas/trainee_accompaniment';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -348,7 +349,8 @@ function MobileVisitDetailPageInner() {
     visit.primary_staff_id !== staffId &&
     visit.secondary_staff_id !== staffId &&
     visit.mentor_staff_id !== staffId &&
-    visit.accompaniment?.staff_id !== staffId &&
+    // 同行者は複数名ありうる (確定#5)。1 人でも自分なら代行扱いにしない。
+    !visitAccompaniments(visit).some((a) => a.staff_id === staffId) &&
     !visit.staff_assignments?.some((a) => a.staff_id === staffId);
 
   useEffect(() => {
@@ -713,13 +715,18 @@ function MobileVisitDetailPageInner() {
                   <span className="whitespace-pre-wrap">{visit.note}</span>
                 </div>
               )}
-              {/* 新人同行 (§7.4): 訪問詳細でも「同行: ◯◯」を表示。 */}
-              {visit.accompaniment && (
+              {/* 同行 (§7.4): 訪問詳細でも「同行: ◯◯・◯◯」を表示 (複数名対応)。 */}
+              {visitAccompaniments(visit).length > 0 && (
                 <div
                   className="flex items-center gap-2 font-medium text-info"
                   data-testid="mobile-detail-accompaniment"
                 >
-                  <span>同行: {visit.accompaniment.staff_name ?? '同行スタッフ'}</span>
+                  <span>
+                    同行:{' '}
+                    {visitAccompaniments(visit)
+                      .map((a) => a.staff_name ?? '同行スタッフ')
+                      .join('・')}
+                  </span>
                 </div>
               )}
               {/* Address / phone live on the patient record; surfaced as

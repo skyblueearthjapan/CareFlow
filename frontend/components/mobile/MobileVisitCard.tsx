@@ -7,6 +7,7 @@ import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { displayVisitNote } from '@/lib/visit-note';
 import { genderPalette } from '@/lib/scheduling/timeline';
+import { visitAccompaniments } from '@/lib/schemas/trainee_accompaniment';
 import type { MyVisit } from '@/lib/queries/me';
 
 /** Map backend `status` → Japanese label + Badge variant. */
@@ -51,11 +52,15 @@ export function MobileVisitCard({ visit, address }: MobileVisitCardProps) {
   // 地色=患者性別ウォッシュ・左帯/性別ドット=性別色・時刻 tnum・📍住所。
   const pal = genderPalette(visit.patient_sex ?? null);
   const shownAddress = address ?? visit.patient_address ?? null;
-  // 新人同行 (§7.4): 先輩側は「同行: ◯◯」、新人本人は「同行」バッジ。
+  // 同行 (§7.4): 担当側は「同行: ◯◯・◯◯」、同行者本人は「同行」バッジ。
+  // 複数名対応 (確定#5): accompaniments[] 優先・旧単数 accompaniment はフォールバック。
   const { data: session } = useSession();
   const myStaffId = session?.user?.staffId ?? null;
-  const accompaniment = visit.accompaniment ?? null;
-  const isTrainee = accompaniment != null && accompaniment.staff_id === myStaffId;
+  const accompaniments = visitAccompaniments(visit);
+  const isTrainee = myStaffId != null && accompaniments.some((a) => a.staff_id === myStaffId);
+  const accompanimentNames = accompaniments
+    .filter((a) => a.staff_id !== myStaffId)
+    .map((a) => a.staff_name ?? '同行スタッフ');
   return (
     <Link
       href={`/m/today/${visit.id}`}
@@ -94,12 +99,12 @@ export function MobileVisitCard({ visit, address }: MobileVisitCardProps) {
               </Badge>
             )}
           </div>
-          {accompaniment && !isTrainee && (
+          {accompanimentNames.length > 0 && (
             <p
               className="mt-1 truncate text-xs font-medium text-info"
               data-testid="mobile-visit-accompaniment"
             >
-              同行: {accompaniment.staff_name ?? '同行スタッフ'}
+              同行: {accompanimentNames.join('・')}
             </p>
           )}
           {shownAddress && (

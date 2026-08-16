@@ -237,12 +237,17 @@ export function MonitorTimeline({
           row.course_staff_id != null &&
           (visitStaffIds.length === 0 ||
             visitStaffIds.some((sid) => sid !== row.course_staff_id));
-        // 新人同行 (§7.3): 行内の訪問から同行スタッフ名を重複無しで収集。
+        // 同行 (§7.3): 行内の訪問から同行スタッフ名を重複無しで収集。
+        // 1 訪問に複数名ありうる (確定#5) ため配列を優先し、無ければ単数へ落とす。
         // ⚠ 担当乖離とは別の情報系ラベルなので混同しないよう独立して描画する。
         const accompanimentNames = Array.from(
           new Set(
             row.visits
-              .map((v) => v.accompaniment_staff_name)
+              .flatMap((v) =>
+                v.accompaniment_staff_names && v.accompaniment_staff_names.length > 0
+                  ? v.accompaniment_staff_names
+                  : [v.accompaniment_staff_name],
+              )
               .filter((n): n is string => !!n),
           ),
         );
@@ -357,7 +362,7 @@ export function MonitorTimeline({
                   <span
                     className="block truncate text-[11px] font-medium text-info"
                     data-testid={`monitor-row-accompaniment-${key}`}
-                    title="この行に新人同行があります"
+                    title="この行に同行があります"
                   >
                     ＋{accompanimentNames.join('・')}（同行）
                   </span>
