@@ -80,6 +80,15 @@ MAX_INPROGRESS_MIN = 240
 UNPLANNED_ROW_KEY = "unplanned"
 UNPLANNED_ROW_LABEL = "📌予定外訪問"
 
+# 行の並び順のうち **行種別** のランク (小さいほど上)。拠点ブロック内は
+# コース行 → コース無し行 → 予定外行 の順に並べる。
+# ラベル文字列のコードポイント比較 (旧実装: "📌" の U+1F4CC が番兵 "￿" = U+FFFF
+# より大きいという偶然) に依存すると、ラベルを変えた瞬間に並びが壊れるため、
+# 種別を明示のキーとして持つ。
+ROW_RANK_COURSE = 0
+ROW_RANK_NO_COURSE = 1
+ROW_RANK_UNPLANNED = 2
+
 
 def _as_jst(dt: datetime) -> datetime:
     """timestamptz (or SQLite の naive) を JST aware に正規化する.
@@ -187,10 +196,10 @@ def visit_staff_id_set(
     """visit の **担当集合** (予定として紐付いたスタッフ全員) を組む.
 
     正典設計書 ``docs/plans/qr-open-checkin-design.md`` §3 末尾: 代行 (substitute)
-    の検出 = 「arrival checkin の staff_id がこの集合に含まれない」。
+    の検出 = 「打刻 (arrival / departure) の staff_id がこの集合に含まれない」。
     集合の定義を通知 producer (打刻 1 件ずつ) とモニター合成 (当日分を一括・
-    **いずれかの** arrival が外なら代行) で共有し、「代行」の意味が 2 箇所で
-    ズレないようにするための単一ソース。
+    **いずれかの**到着 / 退出打刻者が外なら代行) で共有し、「代行」の意味が
+    2 箇所でズレないようにするための単一ソース。
 
     ``assignment_staff_ids`` (visit_staff_assignments) と
     ``accompaniment_staff_id`` (新人同行) は呼び出し側が解決して渡す
@@ -324,7 +333,8 @@ def _stay_minutes(
 def _course_label_first_code(label: str | None) -> str:
     """course_label ("Aコース" / "A/Bコース") から並べ替え用の先頭コースコードを取り出す。
 
-    コース無し (担当未設定など) は "￿" を返し、拠点内の末尾に並ぶ。
+    コース行どうしを A, B, C, ... の順に並べるためのキー。ラベル無しは "￿" を返す
+    (コース行以外の順序は ``ROW_RANK_*`` が決めるので、ここには依存しない)。
     行の並び (拠点 → コース → スタッフ名) をスケジュール本体と揃えるためのキー。
     """
     if not label:
@@ -339,7 +349,16 @@ async def build_monitor(
     office_id: UUID | None = None,
     now: datetime | None = None,
 ) -> MonitorResponse:
-    """指定日の訪問モニター集計を組み立てる (DB 読み取りのみ)."""
+    """指定日の訪問モニター集計を組み立てる (DB 読み取りのみ).
+
+    代行 / 実績スタッフの合成規則 (設計 ``qr-open-checkin-design.md`` §6):
+
+    * ``is_substitute`` / ``substitute_staff_*`` = **到着・退出いずれかの**打刻者が
+      visit の担当集合の外なら代行 (「到着は担当本人・退出だけ代行」も拾う)。
+    * ``actual_staff_*`` = 最新 **arrival** の打刻者 (「到着した人」の表示)。
+      arrival が 1 件も無く departure だけがある場合に限り、最新 departure へ
+      フォールバックする (実績欄を空にするより打った人を出す)。
+    """
     if now is None:
         now = datetime.now(UTC)
     now_jst = _as_jst(now)
@@ -372,10 +391,14 @@ async def build_monitor(
 
     # 全 checkin を 1 クエリで取得し、(visit_id, kind) ごと最新を採用 (scanned_at DESC)。
     latest: dict[tuple[UUID, str], VisitCheckin] = {}
-    # 代行判定は「最新」ではなく **全 arrival** を見る (最新が担当本人だと、先に
-    # 打った代行の事実がバッジから消えてしまう / 通知条件とも食い違うため)。
+    # 代行判定は「最新」ではなく **到着・退出の全打刻者** を見る:
+    #   - 最新だけだと、先に打った代行の事実が担当本人の打ち直しで消える
+    #     (通知条件とも食い違う)。
+    #   - arrival だけだと「到着は担当本人・退出だけ代行」がモニターに出ない
+    #     (通知側は退出でも代行を出すので、こちらだけ黙る不整合になる)。
+    # no_show は担当専用の記録なので集めない。
     # 並びは scanned_at DESC を保った重複排除リスト = 先頭が新しい打刻者。
-    arrival_staff_ids: dict[UUID, list[UUID]] = defaultdict(list)
+    checkin_staff_ids: dict[UUID, list[UUID]] = defaultdict(list)
     if visit_ids:
         rows = (
             await db.scalars(
@@ -389,14 +412,14 @@ async def build_monitor(
             if key not in latest:  # DESC 並びなので最初に出た = 最新。
                 latest[key] = r
             if (
-                r.kind == "arrival"
+                r.kind in ("arrival", "departure")
                 and r.staff_id is not None
-                and r.staff_id not in arrival_staff_ids[r.visit_id]
+                and r.staff_id not in checkin_staff_ids[r.visit_id]
             ):
-                arrival_staff_ids[r.visit_id].append(r.staff_id)
+                checkin_staff_ids[r.visit_id].append(r.staff_id)
 
     # 代行検出 (設計 §6): visit の担当集合 (assignments + 同行込み) を 1 クエリで
-    # 束ね、**いずれかの** arrival 打刻者がその外なら代行とみなす。
+    # 束ね、**いずれかの** 到着 / 退出打刻者がその外なら代行とみなす。
     assignments_by_visit: dict[UUID, set[UUID]] = defaultdict(set)
     if visit_ids:
         for vid, sid in (
@@ -408,18 +431,18 @@ async def build_monitor(
         ).all():
             assignments_by_visit[vid].add(sid)
 
-    # 到着打刻者の氏名: staff_id は visits に登場しないスタッフ (代行) のことが
+    # 打刻者の氏名: staff_id は visits に登場しないスタッフ (代行) のことが
     # あるため別引きする。実績 (actual_staff_*) と代行者 (substitute_staff_*) の
     # 両方がこの 1 マップを引く。
-    arrival_staff_id_set: set[UUID] = set()
-    for ids in arrival_staff_ids.values():
-        arrival_staff_id_set |= set(ids)
-    arrival_staff_names: dict[UUID, str] = {}
-    if arrival_staff_id_set:
+    checkin_staff_id_set: set[UUID] = set()
+    for ids in checkin_staff_ids.values():
+        checkin_staff_id_set |= set(ids)
+    checkin_staff_names: dict[UUID, str] = {}
+    if checkin_staff_id_set:
         for sid, sname in (
-            await db.execute(select(Staff.id, Staff.name).where(Staff.id.in_(arrival_staff_id_set)))
+            await db.execute(select(Staff.id, Staff.name).where(Staff.id.in_(checkin_staff_id_set)))
         ).all():
-            arrival_staff_names[sid] = sname
+            checkin_staff_names[sid] = sname
 
     # 同住所・同時刻ペア補正: 到着/退出の実効時刻マップを組み、補正後起点を導出する。
     arrival_at: dict[UUID, datetime] = {}
@@ -522,7 +545,8 @@ async def build_monitor(
         ).all():
             office_name[oid] = name
 
-    staff_rows: list[MonitorStaffRow] = []
+    # 行は (行種別ランク, 行) で保持する。ランクは並べ替え専用でレスポンスには出ない。
+    ranked_rows: list[tuple[int, MonitorStaffRow]] = []
     for group_key, staff_visits in by_row.items():
         kind, ident = group_key
 
@@ -544,11 +568,13 @@ async def build_monitor(
             # 指定時に出ない = コース無し行と同じ扱い)。
             course_label = UNPLANNED_ROW_LABEL
             oid = ident if isinstance(ident, UUID) else None
+            row_rank = ROW_RANK_UNPLANNED
         elif kind == "course" and isinstance(ident, UUID):
             course_id = ident
             code = course_code.get(course_id)
             course_label = f"{code}コース" if code else None
             oid = course_office.get(course_id)
+            row_rank = ROW_RANK_COURSE
         else:
             codes = sorted(
                 {course_code[v.course_id] for v in staff_visits if v.course_id in course_code}
@@ -556,6 +582,7 @@ async def build_monitor(
             course_label = "/".join(f"{c}コース" for c in codes) if codes else None
             first_staff = next(iter(row_staff.values()), None)
             oid = first_staff.primary_office_id if first_staff is not None else None
+            row_rank = ROW_RANK_NO_COURSE
 
         # 拠点フィルタ: 指定があれば一致行のみ残す。
         if office_id is not None and oid != office_id:
@@ -576,21 +603,25 @@ async def build_monitor(
             ns_p = _project_checkin(no_show) if no_show is not None else None
 
             # 実績スタッフ (最新 arrival の打刻者) と代行判定 (§6)。
-            # 代行は **いずれかの** arrival 打刻者が担当集合の外なら true にする
+            # 代行は **いずれかの** 到着 / 退出打刻者が担当集合の外なら true にする
             # (担当本人が後から打ち直しても代行の事実を消さない = 通知条件と一致)。
             # ただし actual_staff_* は最新の打刻者なので、代行後に担当本人が打ち直すと
             # 「代行バッジ + 担当本人名」の自己矛盾になる。誰が代行したかは
             # substitute_staff_* (担当集合外の打刻者のうち最新 1 名) で別に返す。
-            actual_staff_id = arrival.staff_id if arrival is not None else None
+            # actual_staff_* は「到着した人」なので最新 arrival が正だが、arrival が
+            # 1 件も無い (退出だけ打たれた) ときは最新 departure にフォールバック
+            # する (実績欄が空になるより打った人を出す方が読める)。
+            actual_source = arrival if arrival is not None else departure
+            actual_staff_id = actual_source.staff_id if actual_source is not None else None
             _acc_pair = accompaniment_by_visit.get(v.id)
             _assigned = visit_staff_id_set(
                 v,
                 assignment_staff_ids=assignments_by_visit.get(v.id, set()),
                 accompaniment_staff_id=_acc_pair[0] if _acc_pair is not None else None,
             )
-            # arrival_staff_ids は scanned_at DESC 順 = 先頭が最新の代行者。
+            # checkin_staff_ids は scanned_at DESC 順 = 先頭が最新の代行者。
             _substitute_ids = [
-                sid for sid in arrival_staff_ids.get(v.id, []) if sid not in _assigned
+                sid for sid in checkin_staff_ids.get(v.id, []) if sid not in _assigned
             ]
             is_substitute = bool(_substitute_ids)
             substitute_staff_id = _substitute_ids[0] if _substitute_ids else None
@@ -659,14 +690,14 @@ async def build_monitor(
                     # 実績 (打刻した人) と予定の乖離 (§6)。予定側の担当は書き換えない。
                     actual_staff_id=actual_staff_id,
                     actual_staff_name=(
-                        arrival_staff_names.get(actual_staff_id)
+                        checkin_staff_names.get(actual_staff_id)
                         if actual_staff_id is not None
                         else None
                     ),
                     # 代行した人 (担当集合外の打刻者のうち最新)。is_substitute の根拠。
                     substitute_staff_id=substitute_staff_id,
                     substitute_staff_name=(
-                        arrival_staff_names.get(substitute_staff_id)
+                        checkin_staff_names.get(substitute_staff_id)
                         if substitute_staff_id is not None
                         else None
                     ),
@@ -727,33 +758,41 @@ async def build_monitor(
                     )
 
         course_staff_id = course_assigned.get(course_id) if course_id is not None else None
-        staff_rows.append(
-            MonitorStaffRow(
-                course_id=course_id,
-                course_staff_id=course_staff_id,
-                course_staff_name=(
-                    course_staff_names.get(course_staff_id) if course_staff_id is not None else None
+        ranked_rows.append(
+            (
+                row_rank,
+                MonitorStaffRow(
+                    course_id=course_id,
+                    course_staff_id=course_staff_id,
+                    course_staff_name=(
+                        course_staff_names.get(course_staff_id)
+                        if course_staff_id is not None
+                        else None
+                    ),
+                    staff_id=staff_id,
+                    staff_name=staff_name,
+                    staff_ids=staff_ids,
+                    office_id=oid,
+                    office_name=office_name.get(oid) if oid is not None else None,
+                    course_label=course_label,
+                    visits=mvisits,
                 ),
-                staff_id=staff_id,
-                staff_name=staff_name,
-                staff_ids=staff_ids,
-                office_id=oid,
-                office_name=office_name.get(oid) if oid is not None else None,
-                course_label=course_label,
-                visits=mvisits,
             )
         )
 
-    # 行の並び: 拠点名 → コース (A,B,C,..,M) → スタッフ名。
-    # スケジュール本体 (拠点 → コース順の列) と同じ読み順に揃える (PO要望 2026-07-10。
-    # 旧: 拠点 → スタッフ名 順で、コースで見ると順不同・両拠点の「A」が離れて見えた)。
-    staff_rows.sort(
-        key=lambda r: (
-            r.office_name or "￿",
-            _course_label_first_code(r.course_label),
-            r.staff_name or "￿",
+    # 行の並び: 拠点名 → 行種別 (コース → コース無し → 予定外) → コース (A,B,..,M)
+    # → スタッフ名。スケジュール本体 (拠点 → コース順の列) と同じ読み順に揃える
+    # (PO要望 2026-07-10。旧: 拠点 → スタッフ名 順で、コースで見ると順不同・
+    # 両拠点の「A」が離れて見えた)。
+    ranked_rows.sort(
+        key=lambda item: (
+            item[1].office_name or "￿",
+            item[0],
+            _course_label_first_code(item[1].course_label),
+            item[1].staff_name or "￿",
         )
     )
+    staff_rows = [row for _rank, row in ranked_rows]
 
     # フィルタチップ用の拠点一覧 (当日 visits に登場する拠点)。
     offices = sorted(

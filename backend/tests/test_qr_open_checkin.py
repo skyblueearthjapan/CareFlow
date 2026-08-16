@@ -349,6 +349,49 @@ async def test_get_visit_via_qr_capability_is_restricted(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_visit_via_qr_capability_hides_checkin_reason(client, db) -> None:
+    """capability GET は latest_checkin.reason を落とす (レビュー m-1).
+
+    ``latest_checkin`` は「この visit の最新打刻」= 担当スタッフの打刻でありうる。
+    理由 (自由記述) は業務メモと同質なので担当外には出さない。構造情報
+    (kind / scanned_at / match_status) は退出導線の判断に要るので残す。
+    """
+    owner, owner_user = await _make_staff_user(db, "get-7-owner@example.com")
+    _, me = await _make_staff_user(db, "get-7-me@example.com")
+    p = await _make_patient(db, "GET-7", qr_token="get-tok-7")
+    target = _today_jst()
+    visit = await _make_visit(db, p.id, owner.id, visit_date=target)
+    db.add(
+        VisitCheckin(
+            visit_id=visit.id,
+            patient_id=p.id,
+            staff_id=owner.id,
+            kind="arrival",
+            scanned_at=datetime.combine(target, time(9, 0), tzinfo=JST).astimezone(UTC),
+            match_status="review",
+            reason="家族と口論になり玄関先で待機",
+            threshold_snapshot={"v": 1},
+        )
+    )
+    await db.commit()
+
+    res = await client.get(
+        f"/api/v1/visits/{visit.id}", headers={**_bearer(me), "X-QR-Token": "get-tok-7"}
+    )
+    assert res.status_code == 200, res.text
+    latest = res.json()["latest_checkin"]
+    assert latest["reason"] is None
+    assert latest["kind"] == "arrival"
+    assert latest["match_status"] == "review"
+
+    # 担当者本人には従来どおり見える (絞り込みは capability 経由だけ)。
+    mine = await client.get(f"/api/v1/visits/{visit.id}", headers=_bearer(owner_user))
+    assert mine.status_code == 200, mine.text
+    assert mine.json()["latest_checkin"]["reason"] == "家族と口論になり玄関先で待機"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
 async def test_get_visit_for_assigned_staff_keeps_full_payload(client, db) -> None:
     """担当者本人の GET は従来どおり全量 (絞り込みは capability 経由だけ)."""
     mine, me = await _make_staff_user(db, "get-4-me@example.com")
@@ -369,8 +412,12 @@ async def test_get_visit_for_assigned_staff_keeps_full_payload(client, db) -> No
 
 
 @pytest.mark.asyncio
-async def test_get_visit_with_other_patients_token_returns_409(client, db) -> None:
-    """GET でも別患者トークンは 409 (打刻経路と同じ意味論)."""
+async def test_get_visit_with_other_patients_token_returns_404(client, db) -> None:
+    """担当外 GET の別患者トークンは **404 に丸める** (存在秘匿・レビュー m-2).
+
+    409 を返すと「その visit_id は実在する」が担当外に漏れる (トークンを添える
+    だけで存在を総当たりできる)。GET は元々 404 で秘匿する経路なので丸める。
+    """
     owner, _ = await _make_staff_user(db, "get-2-owner@example.com")
     _, me = await _make_staff_user(db, "get-2-me@example.com")
     p = await _make_patient(db, "GET-2", qr_token="get-tok-2")
@@ -380,7 +427,55 @@ async def test_get_visit_with_other_patients_token_returns_409(client, db) -> No
     res = await client.get(
         f"/api/v1/visits/{visit.id}", headers=_bearer(me), params={"qr_token": "get-tok-2b"}
     )
-    assert res.status_code == 409, res.text
+    assert res.status_code == 404, res.text
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_get_visit_with_revoked_token_returns_404(client, db) -> None:
+    """担当外 GET の失効トークンも 404 (410 だと存在が漏れる・レビュー m-2)."""
+    owner, _ = await _make_staff_user(db, "get-5-owner@example.com")
+    _, me = await _make_staff_user(db, "get-5-me@example.com")
+    p = await _make_patient(db, "GET-5", qr_token="get-tok-5-new")
+    visit = await _make_visit(db, p.id, owner.id)
+    db.add(RevokedQrToken(patient_id=p.id, token="get-tok-5-old"))
+    await db.commit()
+
+    res = await client.get(
+        f"/api/v1/visits/{visit.id}", headers={**_bearer(me), "X-QR-Token": "get-tok-5-old"}
+    )
+    assert res.status_code == 404, res.text
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_checkin_keeps_409_and_410_semantics(client, db) -> None:
+    """打刻 (POST) 側の 409 / 410 は据え置き (404 丸めは GET 限定・レビュー m-2).
+
+    現地で QR を読んだスタッフには「別の利用者の QR」「更新された QR」を伝える
+    必要があるため、打刻経路のエラーは丸めない (FE の代行/予定外導線もこれで分岐)。
+    """
+    owner, _ = await _make_staff_user(db, "get-6-owner@example.com")
+    _, me = await _make_staff_user(db, "get-6-me@example.com")
+    p = await _make_patient(db, "GET-6", qr_token="get-tok-6-new")
+    await _make_patient(db, "GET-6B", qr_token="get-tok-6b")
+    visit = await _make_visit(db, p.id, owner.id)
+    db.add(RevokedQrToken(patient_id=p.id, token="get-tok-6-old"))
+    await db.commit()
+
+    other = await client.post(
+        f"/api/v1/visits/{visit.id}/checkin",
+        headers=_bearer(me),
+        json={"qr_token": "get-tok-6b"},
+    )
+    assert other.status_code == 409, other.text
+
+    revoked = await client.post(
+        f"/api/v1/visits/{visit.id}/checkout",
+        headers=_bearer(me),
+        json={"qr_token": "get-tok-6-old"},
+    )
+    assert revoked.status_code == 410, revoked.text
     await db.rollback()
 
 
@@ -604,10 +699,8 @@ async def test_adhoc_checkin_creates_unplanned_visit(client, db) -> None:
     assert abs(datetime.combine(_today_jst(), start) - before.replace(tzinfo=None)) <= timedelta(
         minutes=1
     )
-    # 終了 = 開始 + 患者の基本訪問時間 (45 分)。
-    assert datetime.combine(_today_jst(), end) - datetime.combine(_today_jst(), start) == timedelta(
-        minutes=45
-    )
+    # 終了 = 開始 + 患者の基本訪問時間 (45 分・深夜帯は 23:59 クランプ)。
+    assert end == _expected_adhoc_end(_today_jst(), start, 45)
 
     visit = await db.scalar(select(Visit).where(Visit.id == UUID(body["id"])))
     assert visit.is_unplanned is True
@@ -791,6 +884,123 @@ async def test_adhoc_checkin_is_guarded_against_double_creation(client, db) -> N
     assert len(checkins) == 2  # 打刻は append-only で 2 行。
     # 通知は冪等 (reference_id = visit.id)。
     assert await _notification_count(db, NOTIFY_UNPLANNED, visits[0].id) == 1
+    await db.rollback()
+
+
+# --- オフライン再送の時刻ドリフト (§4-3 / 最終レビュー M-2) ---------------
+
+
+def _freeze_now(monkeypatch, fixed: datetime) -> None:
+    """``visits.py`` の ``datetime.now`` だけを固定する。
+
+    予定外 visit の開始時刻は「サーバ時刻 or 端末時刻」の選択そのものが検証対象
+    なので、実時刻に依存すると深夜帯 (JST の日跨ぎ) で意味が変わる。``now`` だけ
+    差し替え、``combine`` 等は素の挙動のまま残す。
+    """
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001, ANN206 - stdlib シグネチャに合わせる
+            return fixed.astimezone(tz) if tz is not None else fixed.replace(tzinfo=None)
+
+    monkeypatch.setattr(visits_api, "datetime", _FrozenDatetime)
+
+
+@pytest.mark.asyncio
+async def test_adhoc_checkin_uses_past_device_time_of_today(client, db, monkeypatch) -> None:
+    """当日 (JST) かつ過去の device_time は visit_date / start_time の基準に採る.
+
+    圏外退避 → 数時間後に再送されると、サーバ受信時刻を採った場合に訪問時刻が
+    まるごとずれる (M-2)。scanned_at は受信の事実なのでサーバ時刻のまま。
+    """
+    _, me = await _make_staff_user(db, "adh-dt1@example.com")
+    await _make_patient(db, "ADH-DT1", qr_token="adh-tok-dt1")
+    today = _today_jst()
+    _freeze_now(monkeypatch, datetime.combine(today, time(14, 0), tzinfo=JST))
+
+    res = await client.post(
+        "/api/v1/visits/adhoc-checkin",
+        headers=_bearer(me),
+        json={
+            "qr_token": "adh-tok-dt1",
+            "at": datetime.combine(today, time(9, 30), tzinfo=JST).isoformat(),
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["visit_date"] == today.isoformat()
+    # 開始 = 端末時刻 (サーバの 14:00 ではない)。終了 = 開始 + 既定 60 分。
+    assert body["start_time"] == "09:30:00"
+    assert body["end_time"] == "10:30:00"
+    # scanned_at は従来どおりサーバ時刻 (受信の事実)。
+    scanned = datetime.fromisoformat(body["latest_checkin"]["scanned_at"])
+    assert scanned.astimezone(JST).hour == 14
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_adhoc_checkin_rejects_device_time_of_another_day(client, db, monkeypatch) -> None:
+    """当日 (JST) 外の device_time は 422 (黙って今日へ付け替えない・M-2)."""
+    _, me = await _make_staff_user(db, "adh-dt2@example.com")
+    p = await _make_patient(db, "ADH-DT2", qr_token="adh-tok-dt2")
+    today = _today_jst()
+    _freeze_now(monkeypatch, datetime.combine(today, time(9, 0), tzinfo=JST))
+
+    res = await client.post(
+        "/api/v1/visits/adhoc-checkin",
+        headers=_bearer(me),
+        json={
+            "qr_token": "adh-tok-dt2",
+            "at": datetime.combine(today - timedelta(days=1), time(22, 0), tzinfo=JST).isoformat(),
+        },
+    )
+    assert res.status_code == 422, res.text
+    # FE が「破棄した理由」としてそのまま出せる文言。
+    assert "日付が変わった" in res.json()["detail"]
+    # visit も打刻も作られない (別日の訪問を今日の実績にしない)。
+    assert (await db.scalars(select(Visit).where(Visit.patient_id == p.id))).all() == []
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_adhoc_checkin_ignores_future_device_time(client, db, monkeypatch) -> None:
+    """未来の device_time は無視してサーバ時刻を使う (端末の時計ズレ対策・M-2)."""
+    _, me = await _make_staff_user(db, "adh-dt3@example.com")
+    await _make_patient(db, "ADH-DT3", qr_token="adh-tok-dt3")
+    today = _today_jst()
+    _freeze_now(monkeypatch, datetime.combine(today, time(11, 0), tzinfo=JST))
+
+    res = await client.post(
+        "/api/v1/visits/adhoc-checkin",
+        headers=_bearer(me),
+        json={
+            "qr_token": "adh-tok-dt3",
+            "at": datetime.combine(today, time(16, 0), tzinfo=JST).isoformat(),
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["start_time"] == "11:00:00"
+    assert body["end_time"] == "12:00:00"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_adhoc_checkin_without_device_time_uses_server_time(client, db, monkeypatch) -> None:
+    """device_time 無し (既存モバイル) は従来どおりサーバ時刻 (非破壊・M-2)."""
+    _, me = await _make_staff_user(db, "adh-dt4@example.com")
+    await _make_patient(db, "ADH-DT4", qr_token="adh-tok-dt4")
+    today = _today_jst()
+    _freeze_now(monkeypatch, datetime.combine(today, time(8, 15), tzinfo=JST))
+
+    res = await client.post(
+        "/api/v1/visits/adhoc-checkin", headers=_bearer(me), json={"qr_token": "adh-tok-dt4"}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["visit_date"] == today.isoformat()
+    assert body["start_time"] == "08:15:00"
+    assert body["end_time"] == "09:15:00"
     await db.rollback()
 
 
@@ -1100,6 +1310,152 @@ async def test_monitor_substitute_staff_is_latest_non_assigned_arrival(db) -> No
     assert mv.actual_staff_id == owner.id
     assert mv.substitute_staff_id == sub2.id
     assert mv.substitute_staff_name == "代行 二郎"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_monitor_marks_substitute_when_only_departure_is_delegated(db) -> None:
+    """到着 = 担当本人 / 退出 = 担当外 でも代行が立つ (最終レビュー M-3).
+
+    通知側 (checkout 経路) は退出だけの代行でも substitute を出すため、モニターが
+    arrival だけを見ていると「通知は来たがモニターに出ない」非対称になっていた。
+    実績 (actual_staff_*) は「到着した人」なので最新 arrival のまま。
+    """
+    owner, _ = await _make_staff_user(db, "mon-9-owner@example.com", staff_name="担当 太郎")
+    sub, _ = await _make_staff_user(db, "mon-9-sub@example.com", staff_name="代行 花子")
+    p = await _make_patient(db, "MON-9")
+    target = _today_jst()
+    visit = await _make_visit(db, p.id, owner.id, visit_date=target)
+    for staff, kind, hh, mm in ((owner, "arrival", 9, 0), (sub, "departure", 9, 50)):
+        db.add(
+            VisitCheckin(
+                visit_id=visit.id,
+                patient_id=p.id,
+                staff_id=staff.id,
+                kind=kind,
+                scanned_at=datetime.combine(target, time(hh, mm), tzinfo=JST).astimezone(UTC),
+                match_status="match",
+                threshold_snapshot={"v": 1},
+            )
+        )
+    await db.commit()
+
+    monitor = await build_monitor(
+        db, target, now=datetime.combine(target, time(10, 0), tzinfo=JST).astimezone(UTC)
+    )
+    _row, mv = _find_visit(monitor, visit.id)
+    assert mv.is_substitute is True
+    assert mv.substitute_staff_id == sub.id
+    assert mv.substitute_staff_name == "代行 花子"
+    # 実績 = 到着した人 (退出者で上書きしない)。
+    assert mv.actual_staff_id == owner.id
+    assert mv.actual_staff_name == "担当 太郎"
+    assert mv.alert_level == ALERT_REVIEW
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_monitor_actual_staff_falls_back_to_departure(db) -> None:
+    """arrival が 1 件も無く departure だけなら実績は最新 departure (表示を空にしない)."""
+    owner, _ = await _make_staff_user(db, "mon-10-owner@example.com", staff_name="担当 太郎")
+    p = await _make_patient(db, "MON-10")
+    target = _today_jst()
+    visit = await _make_visit(db, p.id, owner.id, visit_date=target)
+    db.add(
+        VisitCheckin(
+            visit_id=visit.id,
+            patient_id=p.id,
+            staff_id=owner.id,
+            kind="departure",
+            scanned_at=datetime.combine(target, time(9, 50), tzinfo=JST).astimezone(UTC),
+            match_status="match",
+            threshold_snapshot={"v": 1},
+        )
+    )
+    await db.commit()
+
+    monitor = await build_monitor(
+        db, target, now=datetime.combine(target, time(10, 0), tzinfo=JST).astimezone(UTC)
+    )
+    _row, mv = _find_visit(monitor, visit.id)
+    assert mv.actual_staff_id == owner.id
+    assert mv.actual_staff_name == "担当 太郎"
+    assert mv.is_substitute is False  # 担当本人なので代行ではない。
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_monitor_row_order_is_course_then_no_course_then_unplanned(db) -> None:
+    """行の並び = 拠点 → コースコード → コース無し → 予定外 (最終レビュー m-5).
+
+    旧実装はラベル先頭文字のコードポイント比較 ("📌" U+1F4CC > 番兵 "￿" U+FFFF)
+    という偶然に依存していた。行種別ランクへ置き換えても並びが変わらないことを
+    固定する。
+    """
+    from app.models import Course
+
+    office = Office(name="並び順拠点")
+    db.add(office)
+    await db.commit()
+    await db.refresh(office)
+    course_a = Course(
+        iso_year=2026,
+        iso_week=27,
+        weekday=1,
+        code="A",
+        course_status="course_fixed",
+        office_id=office.id,
+    )
+    course_b = Course(
+        iso_year=2026,
+        iso_week=27,
+        weekday=1,
+        code="B",
+        course_status="course_fixed",
+        office_id=office.id,
+    )
+    db.add_all([course_a, course_b])
+    await db.commit()
+    await db.refresh(course_a)
+    await db.refresh(course_b)
+
+    staff, _ = await _make_staff_user(db, "mon-11@example.com", staff_name="並び 太郎")
+    staff.primary_office_id = office.id
+    target = _today_jst()
+    # コース B / コース A / コース無し / 予定外 の順に投入 (登録順に依存しない)。
+    for code, start, is_unplanned in (
+        ("ORD-B", time(10, 0), False),
+        ("ORD-A", time(9, 0), False),
+        ("ORD-N", time(11, 0), False),
+        ("ORD-U", time(12, 0), True),
+    ):
+        patient = await _make_patient(db, code)
+        await _make_visit(
+            db,
+            patient.id,
+            staff.id,
+            visit_date=target,
+            start=start,
+            end=time(start.hour, 30),
+            status="in_progress" if is_unplanned else "planned",
+            is_unplanned=is_unplanned,
+        )
+    # course_id は _make_visit が受けないため、投入後にまとめて設定する。
+    for code, course_id in (("ORD-B", course_b.id), ("ORD-A", course_a.id)):
+        patient = await db.scalar(select(Patient).where(Patient.code == code))
+        visit = await db.scalar(select(Visit).where(Visit.patient_id == patient.id))
+        visit.course_id = course_id
+    await db.commit()
+
+    monitor = await build_monitor(
+        db, target, now=datetime.combine(target, time(13, 0), tzinfo=JST).astimezone(UTC)
+    )
+    assert [r.course_label for r in monitor.staff] == [
+        "Aコース",
+        "Bコース",
+        None,
+        UNPLANNED_ROW_LABEL,
+    ]
     await db.rollback()
 
 
