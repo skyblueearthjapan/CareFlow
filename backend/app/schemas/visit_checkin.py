@@ -61,11 +61,14 @@ class CheckinRead(BaseModel):
 
 
 class QrResolveCandidate(BaseModel):
-    """GET /visits/resolve-qr/{token} の候補 1 件.
+    """GET /visits/resolve-qr/{token} の候補 1 件 (v2 = 凍結コントラクト 2026-08-16).
 
-    汎用カメラのディープリンクで「本日の自分の担当 visit」へ遷移するための最小
-    情報のみ。**患者名・住所は載せない** (担当 visit の存在自体は担当者が既に
-    知り得る情報だが、患者属性はここで増やさない)。
+    正典設計書 ``docs/plans/qr-open-checkin-design.md`` §4-1。第 1 弾は自分の担当
+    visit だけを返していたが、代行・予定外の記録を開放したため **その患者の当日
+    (JST) visit 全件**を返す。担当かどうかは ``is_mine`` で表す。
+
+    予定スタッフ名を担当外へ開示するのは「QR 所持 = 現地に居る」前提 (決定#1)。
+    住所等の患者属性はここで増やさない。
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -74,15 +77,23 @@ class QrResolveCandidate(BaseModel):
     start_time: time
     end_time: time
     status: str
+    # 予定担当 (visits.primary_staff) 名。未割当は None。代行の確認表示用。
+    planned_staff_name: str | None = None
+    # 自分の担当集合 (primary/secondary/mentor/assignments/新人同行) に入っているか。
+    is_mine: bool = False
+    # 既存の予定外訪問 (adhoc-checkin 生成)。二重生成の抑止・退出導線に使う。
+    is_unplanned: bool = False
 
 
 class QrResolveRead(BaseModel):
-    """resolve-qr レスポンス。
+    """resolve-qr レスポンス (v2)。
 
-    候補ゼロ (担当外患者のトークン含む) は 200 + 空配列 — 404 と区別させず
-    「その患者を担当しているか」を漏らさない (存在秘匿)。
+    ``patient_name`` は「誤った利用者に記録しない」ための確認表示に必須のため
+    v2 で追加した (氏名のみ・住所等は返さない)。候補ゼロ (当日予定なし) は
+    200 + 空配列で、FE は予定外訪問の導線へ進む。
     """
 
+    patient_name: str
     candidates: list[QrResolveCandidate]
 
 

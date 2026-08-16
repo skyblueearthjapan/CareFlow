@@ -1,15 +1,19 @@
-"""QR ディープリンク解決 API (GET /visits/resolve-qr/{token}) のテスト.
+"""QR ディープリンク解決 API (GET /visits/resolve-qr/{token}) のテスト (v2).
 
 汎用カメラで患者宅 QR を読むと `/q/{token}` へ遷移する (従来は 404)。FE の
-ランディングページが本 API でトークンを「本日 (JST) の自分の担当 visit」へ
-解決する。
+ランディングページが本 API でトークンを「本日 (JST) のその患者の visit」へ解決し、
+担当なら訪問詳細へ、担当外なら代行 / 予定外の選択画面へ進む。
+
+v2 (凍結コントラクト 2026-08-16 / `docs/plans/qr-open-checkin-design.md` §4-1) で
+**担当限定を撤廃**した: 候補はその患者の当日 visit 全件で、担当かどうかは
+`is_mine` が表す。`patient_name` / `planned_staff_name` / `is_unplanned` も追加。
 
 - 正常系: 候補 1 件 / 複数件 (start_time 昇順) / 空配列。
-- 担当外患者のトークン = 200 + 空配列 (404 と区別させない = 担当関係の秘匿)。
+- 担当外の visit も候補に出る (is_mine=False + 予定スタッフ名つき)。
 - 未知トークン = 404 / 失効 (ローテ済) = 410 (氏名を出さない汎用文)。
 - staff 未紐付けユーザー = 403。
 - 当日外 / 取消 / 削除済み visit は候補に入らない。
-- レスポンスに患者名・住所を載せない。
+- 患者氏名はトップレベルで返す (住所等の患者属性は返さない)。
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ from datetime import datetime, time, timedelta
 import pytest
 
 from app.core.security import create_access_token, hash_password
-from app.models import Patient, RevokedQrToken, Staff, User, Visit
+from app.models import Patient, RevokedQrToken, Staff, User, Visit, VisitStaffAssignment
 from app.services.checkin.judge import JST
 
 
@@ -27,8 +31,10 @@ def _today_jst():
     return datetime.now(JST).date()
 
 
-async def _make_staff_user(db, email: str) -> tuple[Staff, User]:
-    staff = Staff(name="担当ヘルパー")
+async def _make_staff_user(
+    db, email: str, *, staff_name: str = "担当ヘルパー"
+) -> tuple[Staff, User]:
+    staff = Staff(name=staff_name)
     db.add(staff)
     await db.commit()
     await db.refresh(staff)
@@ -49,8 +55,8 @@ def _bearer(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def _make_patient(db, code: str, *, qr_token=None) -> Patient:
-    p = Patient(code=code, name="利用者", address="千葉県テスト市1-2-3", qr_token=qr_token)
+async def _make_patient(db, code: str, *, qr_token=None, name: str = "利用者") -> Patient:
+    p = Patient(code=code, name=name, address="千葉県テスト市1-2-3", qr_token=qr_token)
     db.add(p)
     await db.commit()
     await db.refresh(p)
@@ -66,6 +72,7 @@ async def _make_visit(
     start=time(9, 0),
     end=time(10, 0),
     status="planned",
+    is_unplanned=False,
 ) -> Visit:
     visit = Visit(
         patient_id=patient_id,
@@ -75,6 +82,7 @@ async def _make_visit(
         end_time=end,
         type="regular",
         status=status,
+        is_unplanned=is_unplanned,
     )
     db.add(visit)
     await db.commit()
@@ -84,20 +92,58 @@ async def _make_visit(
 
 @pytest.mark.asyncio
 async def test_resolve_qr_single_candidate(client, db) -> None:
-    staff, user = await _make_staff_user(db, "rq-1@example.com")
-    p = await _make_patient(db, "RQ-1", qr_token="rq-tok-1")
+    """自分の担当 1 件: v2 の全項目 (患者名 / 予定担当名 / is_mine / is_unplanned)."""
+    staff, user = await _make_staff_user(db, "rq-1@example.com", staff_name="山田 花子")
+    p = await _make_patient(db, "RQ-1", qr_token="rq-tok-1", name="田中 太郎")
     visit = await _make_visit(db, p.id, staff.id)
 
     res = await client.get("/api/v1/visits/resolve-qr/rq-tok-1", headers=_bearer(user))
     assert res.status_code == 200, res.text
     body = res.json()
+    # v2: 患者氏名はトップレベル (誤った利用者への記録を防ぐ確認表示に必須)。
+    assert body["patient_name"] == "田中 太郎"
     assert len(body["candidates"]) == 1
     cand = body["candidates"][0]
     assert cand["visit_id"] == str(visit.id)
     assert cand["status"] == "planned"
-    # 患者名・住所は載せない (ディープリンクに必要な最小情報のみ)。
-    assert "patient_name" not in cand
+    assert cand["start_time"] == "09:00:00"
+    assert cand["end_time"] == "10:00:00"
+    assert cand["planned_staff_name"] == "山田 花子"
+    assert cand["is_mine"] is True
+    assert cand["is_unplanned"] is False
+    # 患者属性 (住所等) は候補にも本体にも載せない。
     assert "address" not in cand
+    assert "address" not in body
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_resolve_qr_candidate_without_staff_returns_null_planned_name(client, db) -> None:
+    """予定担当が未割当の visit は planned_staff_name=None (is_mine も False)."""
+    _, user = await _make_staff_user(db, "rq-1b@example.com")
+    p = await _make_patient(db, "RQ-1B", qr_token="rq-tok-1b")
+    await _make_visit(db, p.id, None)
+
+    res = await client.get("/api/v1/visits/resolve-qr/rq-tok-1b", headers=_bearer(user))
+    assert res.status_code == 200, res.text
+    cand = res.json()["candidates"][0]
+    assert cand["planned_staff_name"] is None
+    assert cand["is_mine"] is False
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_resolve_qr_marks_existing_unplanned_visit(client, db) -> None:
+    """既存の予定外 visit は is_unplanned=true で返る (二重生成の抑止・退出導線)."""
+    staff, user = await _make_staff_user(db, "rq-1c@example.com")
+    p = await _make_patient(db, "RQ-1C", qr_token="rq-tok-1c")
+    await _make_visit(db, p.id, staff.id, status="in_progress", is_unplanned=True)
+
+    res = await client.get("/api/v1/visits/resolve-qr/rq-tok-1c", headers=_bearer(user))
+    assert res.status_code == 200, res.text
+    cand = res.json()["candidates"][0]
+    assert cand["is_unplanned"] is True
+    assert cand["is_mine"] is True
     await db.rollback()
 
 
@@ -129,16 +175,42 @@ async def test_resolve_qr_no_visit_today_returns_empty(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_qr_other_staffs_visit_returns_empty_200(client, db) -> None:
-    """担当外患者のトークンも 200 + 空配列 (404 と区別させず担当関係を秘匿)."""
-    other_staff, _ = await _make_staff_user(db, "rq-4-other@example.com")
-    _, user = await _make_staff_user(db, "rq-4-me@example.com")
-    p = await _make_patient(db, "RQ-4", qr_token="rq-tok-4")
-    await _make_visit(db, p.id, other_staff.id)
+async def test_resolve_qr_other_staffs_visit_is_returned_as_not_mine(client, db) -> None:
+    """v2 の仕様変更: 担当外の visit も候補に出る (is_mine=False + 予定担当名つき).
+
+    第 1 弾は「200 + 空配列」で担当関係を秘匿していたが、代行打刻を開放したため
+    「QR 所持 = 現地に居る」を認可の鍵として当日全件を開示する (設計 §4-1 決定#1)。
+    """
+    other_staff, _ = await _make_staff_user(db, "rq-4-other@example.com", staff_name="他人ヘルパー")
+    _, user = await _make_staff_user(db, "rq-4-me@example.com", staff_name="自分ヘルパー")
+    p = await _make_patient(db, "RQ-4", qr_token="rq-tok-4", name="佐藤 花")
+    visit = await _make_visit(db, p.id, other_staff.id)
 
     res = await client.get("/api/v1/visits/resolve-qr/rq-tok-4", headers=_bearer(user))
     assert res.status_code == 200, res.text
-    assert res.json()["candidates"] == []
+    body = res.json()
+    assert body["patient_name"] == "佐藤 花"
+    assert len(body["candidates"]) == 1
+    cand = body["candidates"][0]
+    assert cand["visit_id"] == str(visit.id)
+    assert cand["is_mine"] is False
+    assert cand["planned_staff_name"] == "他人ヘルパー"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_resolve_qr_is_mine_covers_staff_assignments(client, db) -> None:
+    """is_mine は既存の可視性条件と同じ担当集合 (assignments 経由でも true)."""
+    other_staff, _ = await _make_staff_user(db, "rq-4b-other@example.com")
+    me, user = await _make_staff_user(db, "rq-4b-me@example.com")
+    p = await _make_patient(db, "RQ-4B", qr_token="rq-tok-4b")
+    visit = await _make_visit(db, p.id, other_staff.id)
+    db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=me.id))
+    await db.commit()
+
+    res = await client.get("/api/v1/visits/resolve-qr/rq-tok-4b", headers=_bearer(user))
+    assert res.status_code == 200, res.text
+    assert res.json()["candidates"][0]["is_mine"] is True
     await db.rollback()
 
 

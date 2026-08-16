@@ -180,6 +180,12 @@ async def _resolve_patient(
     return patient, "qr"
 
 
+# QR capability 分岐 (``api/v1/visits.py`` §4-2) 用の公開別名。担当外の可視性判定を
+# 打刻の QR 照合と**同じ関数**で行い、未知 404 / 失効 410 / 別患者 409 の意味論が
+# 2 経路でズレないようにする。
+resolve_patient_for_visit = _resolve_patient
+
+
 def _guard_visit(visit: Visit, now: datetime) -> None:
     """visit が打刻可能か (削除 / 取消 / 当日) を検証する (設計 §2-3, R4)."""
     if visit.deleted_at is not None:
