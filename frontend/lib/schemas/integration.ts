@@ -409,6 +409,21 @@ export const EventsInboundPreviewRequestSchema = z.object({
 });
 export type EventsInboundPreviewRequest = z.infer<typeof EventsInboundPreviewRequestSchema>;
 
+/** 非同期プレビュー起動 (202) の応答。jobId で status をポーリングする。 */
+export const EventsInboundStartSchema = z.object({
+  jobId: z.string(),
+  status: z.literal('running').default('running'),
+});
+export type EventsInboundStart = z.infer<typeof EventsInboundStartSchema>;
+
+/** 非同期プレビューの進行状況。completed のとき preview が入る。 */
+export const EventsInboundStatusSchema = z.object({
+  status: z.enum(['running', 'completed', 'failed']),
+  error: z.string().nullable().optional(),
+  preview: EventsInboundPreviewSchema.nullable().optional(),
+});
+export type EventsInboundStatus = z.infer<typeof EventsInboundStatusSchema>;
+
 export const EventsInboundApplyRequestSchema = z.object({
   weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   dryRun: z.boolean().optional(),

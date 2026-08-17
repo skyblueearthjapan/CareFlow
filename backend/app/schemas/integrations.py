@@ -451,6 +451,23 @@ class EventsInboundPreviewRead(BaseModel):
     unmatched: list[EventsInboundUnmatchedRead] = Field(default_factory=list)
 
 
+class EventsInboundStartRead(BaseModel):
+    """非同期プレビュー起動の応答 (202)。job_id で status をポーリングする。"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    job_id: UUID = Field(alias="jobId")
+    status: Literal["running"] = "running"
+
+
+class EventsInboundStatusRead(BaseModel):
+    """非同期プレビューの進行状況。completed のとき preview が入る。"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    status: Literal["running", "completed", "failed"]
+    error: str | None = None
+    preview: EventsInboundPreviewRead | None = None
+
+
 class EventsInboundApplyRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     week_start: date = Field(alias="weekStart")

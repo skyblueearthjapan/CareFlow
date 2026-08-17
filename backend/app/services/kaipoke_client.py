@@ -94,12 +94,23 @@ class KaipokeClient:
     async def individual_tasks(
         self, payload: Mapping[str, Any], *, timeout: float | None = None
     ) -> dict[str, Any]:
-        """個別業務(イベント)取得 (read-only・同期 ~60-90s)。
+        """個別業務(イベント)取得 (read-only)。
 
-        職員スケジュール画面(週間)の btnIndividual 行を返す。呼び出し側で
-        timeout を延長すること (既定 30s では足りない)。
+        職員スケジュール画面(週間)の btnIndividual 行を返す。
+        同期モード (~60-90s ブロック) は呼び出し側で timeout を延長すること。
+        payload に async:true + job_id を渡すと即応答し、結果は
+        individual_tasks_result() でポーリング取得する。
         """
         return await self._request("POST", "/api/individual-tasks", json=payload, timeout=timeout)
+
+    async def individual_tasks_result(self) -> dict[str, Any]:
+        """Poll the (single-slot) individual-tasks result.
+
+        Returns {status: running|completed|error|no_result, job_id?, result?, error?}.
+        job_id は async 起動時に渡した相関IDのエコーバック — 呼び出し側で一致を
+        検証し、RPA 再起動や別ジョブの結果の取り違えを検知する。
+        """
+        return await self._request("GET", "/api/individual-tasks/result")
 
     async def login_test(
         self, payload: Mapping[str, Any], *, timeout: float | None = None

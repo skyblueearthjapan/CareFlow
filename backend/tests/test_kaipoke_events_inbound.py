@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import date, time
 from typing import Any
+from uuid import UUID
 
 import pytest
 from sqlalchemy import select
@@ -42,27 +43,51 @@ APPLY_URL = "/api/v1/integrations/events-inbound-apply"
 
 
 class StubKaipokeClient:
-    """individual_tasks だけ差し替える最小スタブ。"""
+    """individual_tasks / individual_tasks_result だけ差し替える最小スタブ。"""
 
     def __init__(self) -> None:
         self.tasks: list[dict[str, Any]] = []
         self.calls: list[dict[str, Any]] = []
+        self.busy = False
+        # async 起動時に渡された相関ID (result の既定応答にエコーバックする)
+        self.async_job_id: str | None = None
+        # individual_tasks_result の応答キュー (先頭から消費・尽きたら completed 既定)
+        self.result_responses: list[dict[str, Any]] = []
+        self.result_calls = 0
 
     async def aclose(self) -> None:  # pragma: no cover
         pass
+
+    def _sync_result(self) -> dict[str, Any]:
+        return {
+            "success": True,
+            "week_start": WEEK_START.isoformat(),
+            "week_end": SUNDAY.isoformat(),
+            "tasks": list(self.tasks),
+        }
 
     async def individual_tasks(
         self, payload: dict[str, Any], *, timeout: float | None = None
     ) -> dict[str, Any]:
         self.calls.append(dict(payload))
+        if self.busy:
+            from app.services.kaipoke_client import KaipokeBusyError
+
+            raise KaipokeBusyError({"error": "busy"})
+        if payload.get("async"):
+            self.async_job_id = str(payload.get("job_id") or "") or None
+            return {"success": True, "async": True, "job_id": self.async_job_id}
+        return {"success": True, "result": self._sync_result()}
+
+    async def individual_tasks_result(self) -> dict[str, Any]:
+        self.result_calls += 1
+        if self.result_responses:
+            return self.result_responses.pop(0)
         return {
             "success": True,
-            "result": {
-                "success": True,
-                "week_start": WEEK_START.isoformat(),
-                "week_end": SUNDAY.isoformat(),
-                "tasks": list(self.tasks),
-            },
+            "status": "completed",
+            "job_id": self.async_job_id,
+            "result": self._sync_result(),
         }
 
 
@@ -480,3 +505,160 @@ async def test_apply_empty_changes_rejected(client, db, stub_kaipoke) -> None:
         json={"weekStart": WEEK_START.isoformat(), "dryRun": True, "changes": []},
     )
     assert res.status_code == 422, res.text
+
+
+# --- 5. 非同期プレビュー (kaipoke-events-async-preview-design.md) -------------
+
+START_URL = "/api/v1/integrations/events-inbound-preview/start"
+
+
+def _status_url(job_id: str) -> str:
+    return f"/api/v1/integrations/events-inbound-preview/status/{job_id}"
+
+
+async def _start(client, admin) -> str:
+    res = await client.post(
+        START_URL, headers=_bearer(admin), json={"weekStart": WEEK_START.isoformat()}
+    )
+    assert res.status_code == 202, res.text
+    return res.json()["jobId"]
+
+
+@pytest.mark.asyncio
+async def test_async_preview_running_then_completed(client, db, stub_kaipoke) -> None:
+    """start(202) → running → completed。プレビューは同期版と同一内容・冪等再取得可。"""
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    stub_kaipoke.tasks = _default_tasks()
+    job_id = await _start(client, admin)
+
+    # RPA へ async:true + 相関ID (= KaipokeJob.id) が渡っている
+    assert stub_kaipoke.calls[-1]["async"] is True
+    assert stub_kaipoke.calls[-1]["job_id"] == job_id
+    assert stub_kaipoke.calls[-1]["date"] == WEEK_START.isoformat()
+
+    # 1回目: RPA まだ実行中
+    stub_kaipoke.result_responses = [
+        {"success": True, "status": "running", "job_id": job_id},
+    ]
+    res = await client.get(_status_url(job_id), headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    assert res.json() == {"status": "running", "error": None, "preview": None}
+
+    # 2回目: 完了 (キューが尽きて completed 既定応答)
+    res = await client.get(_status_url(job_id), headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "completed"
+    preview = body["preview"]
+    assert preview["weekStart"] == WEEK_START.isoformat()
+    assert preview["fetchedTotal"] == 5
+    assert preview["sundaySkipped"] == 1
+    assert len(preview["changes"]) == 3
+    assert preview["adds"] == 3
+    assert preview["unmatched"] == [{"staffName": UNKNOWN_STAFF, "count": 1}]
+
+    job = await db.get(KaipokeJob, UUID(job_id))
+    assert job is not None and job.status == "completed"
+    assert job.result_summary["preview"]["fetchedTotal"] == 5
+
+    # 3回目: 完了後は DB から返す (RPA は照会しない = 別ジョブ開始後も安全)
+    calls_before = stub_kaipoke.result_calls
+    res = await client.get(_status_url(job_id), headers=_bearer(admin))
+    assert res.status_code == 200
+    assert res.json()["preview"] == preview
+    assert stub_kaipoke.result_calls == calls_before
+
+
+@pytest.mark.asyncio
+async def test_async_preview_start_busy_409(client, db, stub_kaipoke) -> None:
+    """RPA 単一スロット使用中は 409 (ジョブ記録も残さない)。"""
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    stub_kaipoke.busy = True
+    res = await client.post(
+        START_URL, headers=_bearer(admin), json={"weekStart": WEEK_START.isoformat()}
+    )
+    assert res.status_code == 409, res.text
+    jobs = await db.scalars(select(KaipokeJob))
+    assert [j for j in jobs.all() if j.params.get("op") == "events-preview"] == []
+
+
+@pytest.mark.asyncio
+async def test_async_preview_start_requires_monday(client, db, stub_kaipoke) -> None:
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    res = await client.post(START_URL, headers=_bearer(admin), json={"weekStart": "2026-07-21"})
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
+async def test_async_preview_status_rpa_error(client, db, stub_kaipoke) -> None:
+    """RPA がエラー終了 → failed + ジョブ failed 化。"""
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    job_id = await _start(client, admin)
+    stub_kaipoke.result_responses = [
+        {"success": False, "status": "error", "job_id": job_id, "error": "networkidle timeout"},
+    ]
+    res = await client.get(_status_url(job_id), headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "failed"
+    assert "networkidle timeout" in body["error"]
+    job = await db.get(KaipokeJob, UUID(job_id))
+    assert job is not None and job.status == "failed"
+
+    # failed 後の再ポーリングも failed のまま (RPA 再照会なし)
+    calls_before = stub_kaipoke.result_calls
+    res = await client.get(_status_url(job_id), headers=_bearer(admin))
+    assert res.json()["status"] == "failed"
+    assert stub_kaipoke.result_calls == calls_before
+
+
+@pytest.mark.asyncio
+async def test_async_preview_status_lost_result(client, db, stub_kaipoke) -> None:
+    """RPA 再起動 (no_result) や別ジョブの結果 → 取り違えず failed。"""
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+
+    # no_result (RPA 再起動でストア喪失)
+    job_id = await _start(client, admin)
+    stub_kaipoke.result_responses = [
+        {"success": False, "status": "no_result", "job_id": None},
+    ]
+    res = await client.get(_status_url(job_id), headers=_bearer(admin))
+    assert res.json()["status"] == "failed"
+    assert "失われました" in res.json()["error"]
+
+    # 別ジョブがスロットを実行中 (job_id 不一致の running)
+    job_id2 = await _start(client, admin)
+    stub_kaipoke.result_responses = [
+        {"success": True, "status": "running", "job_id": "someone-else"},
+    ]
+    res = await client.get(_status_url(job_id2), headers=_bearer(admin))
+    assert res.json()["status"] == "failed"
+    assert "別のジョブ" in res.json()["error"] or "失われました" in res.json()["error"]
+
+    # 別ジョブの完了結果 (job_id 不一致の completed) も取り込まない
+    job_id3 = await _start(client, admin)
+    stub_kaipoke.result_responses = [
+        {
+            "success": True,
+            "status": "completed",
+            "job_id": "someone-else",
+            "result": stub_kaipoke._sync_result(),
+        },
+    ]
+    res = await client.get(_status_url(job_id3), headers=_bearer(admin))
+    assert res.json()["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_async_preview_status_unknown_job_404(client, db, stub_kaipoke) -> None:
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    res = await client.get(
+        _status_url("00000000-0000-0000-0000-000000000000"), headers=_bearer(admin)
+    )
+    assert res.status_code == 404, res.text

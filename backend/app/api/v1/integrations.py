@@ -36,6 +36,8 @@ from app.schemas.integrations import (
     EventsInboundChange,
     EventsInboundPreviewRead,
     EventsInboundPreviewRequest,
+    EventsInboundStartRead,
+    EventsInboundStatusRead,
     EventsInboundUnmatchedRead,
     ExpandStatusRead,
     GeneratedCsvRead,
@@ -2125,84 +2127,11 @@ def _hhmm(t) -> str:
     return f"{t.hour:02d}:{t.minute:02d}"
 
 
-@router.post(
-    "/events-inbound-preview",
-    response_model=EventsInboundPreviewRead,
-    summary="Fetch kaipoke individual tasks and build an events diff plan (admin)",
-)
-async def events_inbound_preview(
-    payload: EventsInboundPreviewRequest,
-    db: DbDep,
-    user: Annotated[User, Depends(require_role("admin"))],
-    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
-) -> EventsInboundPreviewRead:
-    """カイポケ個別業務(イベント)を取得して staff_events との差分計画を返す。
-
-    read-only (staff_events への書込なし・シート永続化なし。KaipokeJob の監査
-    記録のみ作成)。RPA 同期取得のため ~60-90s かかる。
-    取り込みゲート = 訪問取り込みと同一 (対象週に実apply 記録が必要)。
-    """
-    from app.services.kaipoke.events_inbound import (
-        EventsFetchError,
-        build_events_plan,
-        fetch_week_tasks,
-    )
-    from app.services.kaipoke.inbound import inbound_week_eligible
-
-    if payload.week_start.weekday() != 0:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="weekStart は月曜日を指定してください",
-        )
-    eligible, _record = await inbound_week_eligible(db, payload.week_start)
-    if not eligible:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=_EVENTS_GATE_DETAIL,
-        )
-
-    credentials = await _kaipoke_credentials(db)
-    now = datetime.now(UTC)
-    job = KaipokeJob(
-        job_type="fetch",
-        week_start=payload.week_start,
-        params={"op": "events-preview", "week_start": payload.week_start.isoformat()},
-        status="running",
-        started_at=now,
-        created_by_user_id=user.id,
-    )
-    db.add(job)
-    await db.flush()
-
-    try:
-        result = await fetch_week_tasks(kaipoke, payload.week_start, credentials)
-    except KaipokeBusyError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
-    except (KaipokeApiError, EventsFetchError) as exc:
-        job.status = "failed"
-        job.completed_at = datetime.now(UTC)
-        job.result_summary = {"error": str(exc)}
-        await _commit_or_409(db)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-
-    plan = await build_events_plan(db, week_start=payload.week_start, tasks=result["tasks"])
-
+def _events_plan_to_read(plan) -> EventsInboundPreviewRead:
+    """EventsPlan → API 応答スキーマ (同期版・非同期 status 共用)。"""
     adds = sum(1 for c in plan.changes if c.action == "add")
     updates = sum(1 for c in plan.changes if c.action == "update")
     deletes = sum(1 for c in plan.changes if c.action == "delete")
-    job.status = "completed"
-    job.completed_at = datetime.now(UTC)
-    job.result_summary = {
-        "fetched": plan.fetched_total,
-        "adds": adds,
-        "updates": updates,
-        "deletes": deletes,
-        "unmatched": sum(plan.unmatched.values()),
-        "sunday_skipped": plan.sunday_skipped,
-    }
-    await _commit_or_409(db)
-
     return EventsInboundPreviewRead(
         week_start=plan.week_start,
         week_end=plan.week_end,
@@ -2234,6 +2163,264 @@ async def events_inbound_preview(
             for name, count in sorted(plan.unmatched.items())
         ],
     )
+
+
+def _events_result_summary(preview: EventsInboundPreviewRead, plan) -> dict[str, Any]:
+    """KaipokeJob.result_summary のカウント部 (同期版と同一キー)。"""
+    return {
+        "fetched": preview.fetched_total,
+        "adds": preview.adds,
+        "updates": preview.updates,
+        "deletes": preview.deletes,
+        "unmatched": sum(plan.unmatched.values()),
+        "sunday_skipped": preview.sunday_skipped,
+    }
+
+
+async def _ensure_events_week_valid(db, week_start: date) -> None:
+    """月曜チェック + 取り込みゲート (同期/非同期プレビュー共通)。"""
+    from app.services.kaipoke.inbound import inbound_week_eligible
+
+    if week_start.weekday() != 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="weekStart は月曜日を指定してください",
+        )
+    eligible, _record = await inbound_week_eligible(db, week_start)
+    if not eligible:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=_EVENTS_GATE_DETAIL,
+        )
+
+
+@router.post(
+    "/events-inbound-preview",
+    response_model=EventsInboundPreviewRead,
+    summary="Fetch kaipoke individual tasks and build an events diff plan (admin)",
+)
+async def events_inbound_preview(
+    payload: EventsInboundPreviewRequest,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> EventsInboundPreviewRead:
+    """カイポケ個別業務(イベント)を取得して staff_events との差分計画を返す。
+
+    **deprecated (2026-08-17)**: RPA 同期取得 (~60-90s) が Cloudflare の ~100s
+    制限を跨ぐと成功していても 524 になるため、新 FE は
+    /events-inbound-preview/start + /status/{job_id} を使う。この同期版は
+    PWA 旧チャンク (デプロイ跨ぎの旧 FE) 互換のために残している。
+    read-only (staff_events への書込なし・シート永続化なし。KaipokeJob の監査
+    記録のみ作成)。取り込みゲート = 訪問取り込みと同一。
+    """
+    from app.services.kaipoke.events_inbound import (
+        EventsFetchError,
+        build_events_plan,
+        fetch_week_tasks,
+    )
+
+    await _ensure_events_week_valid(db, payload.week_start)
+
+    credentials = await _kaipoke_credentials(db)
+    now = datetime.now(UTC)
+    job = KaipokeJob(
+        job_type="fetch",
+        week_start=payload.week_start,
+        params={"op": "events-preview", "week_start": payload.week_start.isoformat()},
+        status="running",
+        started_at=now,
+        created_by_user_id=user.id,
+    )
+    db.add(job)
+    await db.flush()
+
+    try:
+        result = await fetch_week_tasks(kaipoke, payload.week_start, credentials)
+    except KaipokeBusyError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
+    except (KaipokeApiError, EventsFetchError) as exc:
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": str(exc)}
+        await _commit_or_409(db)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    plan = await build_events_plan(db, week_start=payload.week_start, tasks=result["tasks"])
+
+    preview = _events_plan_to_read(plan)
+    job.status = "completed"
+    job.completed_at = datetime.now(UTC)
+    job.result_summary = _events_result_summary(preview, plan)
+    await _commit_or_409(db)
+
+    return preview
+
+
+# --- イベント取り込み 非同期プレビュー (kaipoke-events-async-preview-design.md) --
+
+
+async def _fail_events_job(db, job: KaipokeJob, error: str) -> EventsInboundStatusRead:
+    """running ジョブを failed 化して failed 応答を返す。"""
+    job.status = "failed"
+    job.completed_at = datetime.now(UTC)
+    job.result_summary = {"error": error}
+    await _commit_or_409(db)
+    return EventsInboundStatusRead(status="failed", error=error)
+
+
+@router.post(
+    "/events-inbound-preview/start",
+    response_model=EventsInboundStartRead,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start an async kaipoke individual-tasks fetch for the events diff (admin)",
+)
+async def events_inbound_preview_start(
+    payload: EventsInboundPreviewRequest,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> EventsInboundStartRead:
+    """イベント差分プレビューの RPA 取得を非同期で起動する (202 即返し)。
+
+    同期版は Cloudflare の ~100s 制限で成功時でも 524 になり得るため、
+    起動→ /events-inbound-preview/status/{job_id} ポーリングへ分割 (expand/export と同型)。
+    バリデーション・ゲートは同期版と同一。job_id は RPA へ相関IDとして渡し、
+    結果の取り違え (RPA 再起動・別ジョブ) を status 側で検知する。
+    """
+    await _ensure_events_week_valid(db, payload.week_start)
+
+    credentials = await _kaipoke_credentials(db)
+    job = KaipokeJob(
+        job_type="fetch",
+        week_start=payload.week_start,
+        params={
+            "op": "events-preview",
+            "week_start": payload.week_start.isoformat(),
+            "async": True,
+        },
+        status="running",
+        started_at=datetime.now(UTC),
+        created_by_user_id=user.id,
+    )
+    db.add(job)
+    await db.flush()
+
+    body: dict[str, Any] = {
+        "date": payload.week_start.isoformat(),
+        "async": True,
+        "job_id": str(job.id),
+    }
+    _attach_credentials(body, credentials)
+    try:
+        resp = await kaipoke.individual_tasks(body, timeout=30.0)
+    except KaipokeBusyError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
+    except KaipokeApiError as exc:
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": str(exc)}
+        await _commit_or_409(db)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    if not resp.get("success"):
+        error = str(resp.get("error") or "individual-tasks の起動に失敗しました")
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": error}
+        await _commit_or_409(db)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=error)
+
+    await _commit_or_409(db)
+    return EventsInboundStartRead(job_id=job.id)
+
+
+@router.get(
+    "/events-inbound-preview/status/{job_id}",
+    response_model=EventsInboundStatusRead,
+    summary="Poll the async events diff fetch; builds the plan on completion (admin)",
+)
+async def events_inbound_preview_status(
+    job_id: UUID,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> EventsInboundStatusRead:
+    """非同期プレビューの進行確認 (軽量 <1s・Cloudflare 制限とは無縁)。
+
+    RPA 完了を最初に観測したポーリングで差分計画を構築し、プラン全体を
+    KaipokeJob.result_summary.preview に永続化する (以後のポーリングは
+    RPA を見ずにそこから返す = 冪等・RPA の次ジョブ開始後も安全)。
+    """
+    from app.services.kaipoke.events_inbound import build_events_plan
+
+    job = await db.scalar(select(KaipokeJob).where(KaipokeJob.id == job_id))
+    if job is None or (job.params or {}).get("op") != "events-preview":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="events-preview ジョブが見つかりません"
+        )
+
+    if job.status == "completed":
+        stored = (job.result_summary or {}).get("preview")
+        if stored is None:
+            # 同期版のジョブ等 preview を持たない completed (通常ここには来ない)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="このジョブはポーリング対象ではありません",
+            )
+        return EventsInboundStatusRead(
+            status="completed", preview=EventsInboundPreviewRead.model_validate(stored)
+        )
+    if job.status in ("failed", "cancelled", "stopped"):
+        error = str((job.result_summary or {}).get("error") or "イベント取得に失敗しました")
+        return EventsInboundStatusRead(status="failed", error=error)
+
+    # running — RPA の結果ストアを照会
+    rpa = await kaipoke.individual_tasks_result()
+    rpa_status = str(rpa.get("status") or "")
+    rpa_job_id = str(rpa.get("job_id") or "")
+    ours = rpa_job_id == str(job.id)
+
+    if rpa_status == "running":
+        if rpa_job_id and not ours:
+            # 別ジョブが単一スロットを使用中 = 我々の実行・結果は失われた
+            return await _fail_events_job(
+                db, job, "RPA側で結果が失われました（別ジョブが実行中）。再実行してください"
+            )
+        return EventsInboundStatusRead(status="running")
+
+    if not ours:
+        # no_result / 他ジョブの結果 = RPA 再起動などで喪失
+        return await _fail_events_job(db, job, "RPA側で結果が失われました。再実行してください")
+
+    if rpa_status == "error":
+        return await _fail_events_job(
+            db, job, str(rpa.get("error") or "イベント取得に失敗しました")
+        )
+
+    if rpa_status != "completed":
+        return await _fail_events_job(
+            db, job, f"RPA が不明な状態を返しました: {rpa_status or '(空)'}"
+        )
+
+    result = rpa.get("result") or {}
+    if not result.get("success") or not isinstance(result.get("tasks"), list):
+        return await _fail_events_job(
+            db, job, "individual-tasks: 結果の構造が不正です (tasks 欠落)"
+        )
+
+    plan = await build_events_plan(db, week_start=job.week_start, tasks=result["tasks"])
+    preview = _events_plan_to_read(plan)
+    job.status = "completed"
+    job.completed_at = datetime.now(UTC)
+    job.result_summary = {
+        **_events_result_summary(preview, plan),
+        "preview": preview.model_dump(mode="json", by_alias=True),
+    }
+    await _commit_or_409(db)
+    return EventsInboundStatusRead(status="completed", preview=preview)
 
 
 @router.post(

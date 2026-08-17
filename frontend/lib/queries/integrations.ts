@@ -29,6 +29,8 @@ import type {
   EventsInboundApplyResult,
   EventsInboundPreview,
   EventsInboundPreviewRequest,
+  EventsInboundStart,
+  EventsInboundStatus,
   ExpandRequest,
   ExportRequest,
   GeocodingCache,
@@ -603,9 +605,22 @@ export function useTestKaipokeCredentials() {
 
 // --- イベント取り込み (個別業務・kaipoke-event-inbound-design.md E-2) -------
 
+const EVENTS_PREVIEW_POLL_INTERVAL_MS = 4_000;
+const EVENTS_PREVIEW_POLL_DEADLINE_MS = 8 * 60_000;
+// ポーリング1回の一時的な失敗 (電波・BE再起動等) をここまで連続で許容する
+const EVENTS_PREVIEW_POLL_MAX_CONSECUTIVE_ERRORS = 3;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * カイポケ個別業務(イベント)を取得して staff_events との差分計画を返す。
- * RPA 同期取得のため 〜2分かかる (訪問の diff-inbound と直列で使う)。
+ *
+ * 2026-08-17 (kaipoke-events-async-preview-design.md): RPA 同期取得 (~60-140s) が
+ * Cloudflare の ~100s 制限を跨ぐと成功時でも 524 になるため、「start (202) →
+ * status ポーリング」へ内部を変更。mutateAsync が完成プレビューを返す外部
+ * インターフェースは従来と同一 (呼び出し側は無改修)。
  */
 export function useEventsInboundPreview() {
   const { data: session } = useSession();
@@ -613,14 +628,49 @@ export function useEventsInboundPreview() {
   const refreshToken = session?.refreshToken ?? null;
 
   return useMutation<EventsInboundPreview, Error, EventsInboundPreviewRequest>({
-    mutationFn: (payload) =>
-      fetcher<EventsInboundPreview>('/api/v1/integrations/events-inbound-preview', {
-        method: 'POST',
-        body: JSON.stringify(payload),
-        accessToken,
-        refreshToken,
-        signal: AbortSignal.timeout(180_000),
-      }),
+    mutationFn: async (payload) => {
+      const start = await fetcher<EventsInboundStart>(
+        '/api/v1/integrations/events-inbound-preview/start',
+        {
+          method: 'POST',
+          body: JSON.stringify(payload),
+          accessToken,
+          refreshToken,
+          signal: AbortSignal.timeout(45_000),
+        },
+      );
+
+      const deadline = Date.now() + EVENTS_PREVIEW_POLL_DEADLINE_MS;
+      let consecutiveErrors = 0;
+      for (;;) {
+        await sleep(EVENTS_PREVIEW_POLL_INTERVAL_MS);
+        let st: EventsInboundStatus;
+        try {
+          st = await fetcher<EventsInboundStatus>(
+            `/api/v1/integrations/events-inbound-preview/status/${start.jobId}`,
+            { accessToken, refreshToken, signal: AbortSignal.timeout(30_000) },
+          );
+          consecutiveErrors = 0;
+        } catch (e) {
+          consecutiveErrors += 1;
+          if (consecutiveErrors >= EVENTS_PREVIEW_POLL_MAX_CONSECUTIVE_ERRORS) {
+            throw e instanceof Error ? e : new Error('イベント取得の状態確認に失敗しました');
+          }
+          continue;
+        }
+        if (st.status === 'completed' && st.preview) {
+          return st.preview;
+        }
+        if (st.status === 'failed' || (st.status === 'completed' && !st.preview)) {
+          throw new Error(st.error || 'イベント取得に失敗しました');
+        }
+        if (Date.now() > deadline) {
+          throw new Error(
+            'イベント取得がタイムアウトしました（8分）。連携の実行状況を確認のうえ再実行してください',
+          );
+        }
+      }
+    },
   });
 }
 
