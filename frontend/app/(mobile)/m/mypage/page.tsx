@@ -1,8 +1,9 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { signOut, useSession } from 'next-auth/react';
-import { LogOut, Send } from 'lucide-react';
+import { CalendarHeart, ChevronRight, LogOut, Send } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -121,6 +122,20 @@ export default function MobileMyPage() {
           <ProfileRow label="ロール" value={roleLabel(role)} />
         </div>
       </Card>
+
+      <Link
+        href="/m/leave"
+        className="flex items-center justify-between rounded-lg border border-border-default bg-bg-base p-4 transition-colors hover:bg-bg-muted"
+      >
+        <div className="flex items-center gap-3">
+          <CalendarHeart className="h-5 w-5 text-brand-primary" />
+          <div>
+            <p className="font-medium text-text-primary">休みを申請する</p>
+            <p className="text-xs text-text-muted">カレンダーから日付を選ぶだけ</p>
+          </div>
+        </div>
+        <ChevronRight className="h-4 w-4 text-text-muted" />
+      </Link>
 
       <Card className="p-4">
         <h2 className="font-serif text-base font-bold text-text-primary">シフト希望提出</h2>

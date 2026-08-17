@@ -11,6 +11,7 @@
  *   PATCH  /api/v1/pending-requests/{id}/approve             — 承認
  *   PATCH  /api/v1/pending-requests/{id}/approve-with-edit   — 編集承認
  *   PATCH  /api/v1/pending-requests/{id}/reject              — 却下
+ *   DELETE /api/v1/pending-requests/{id}                     — 取り下げ (申請者staff/admin)
  *
  * RBAC (§3.5.3):
  *   - GET / POST: admin / manager / staff (Staff は自分軸のみ)
@@ -245,6 +246,32 @@ export function useApproveWithEdit(): UseMutationResult<
         refreshToken,
       });
       return pendingRequestV2ReadSchema.parse(raw);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: PENDING_REQUESTS_KEY });
+    },
+  });
+}
+
+/**
+ * DELETE /api/v1/pending-requests/{id} — 取り下げ (mobile-leave-request-design.md).
+ *
+ * pending の申請のみ取り下げ可能。staff は自分が申請したもののみ (他人は 404)、
+ * admin は任意の pending。承認/却下済みは Backend が 409 を返す。
+ * モバイル休み申請のポチポチ誤操作の自己修正手段。
+ */
+export function useWithdrawPendingRequest(): UseMutationResult<void, Error, string> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<void, Error, string>({
+    mutationFn: async (id) => {
+      await fetcher<void>(`${PENDING_REQUESTS_BASE}/${id}`, {
+        method: 'DELETE',
+        accessToken,
+        refreshToken,
+      });
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: PENDING_REQUESTS_KEY });

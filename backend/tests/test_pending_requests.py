@@ -603,3 +603,193 @@ async def test_db_row_persisted(client, db) -> None:
     assert row.request_type == "staff_off"
     assert row.status == "pending"
     assert row.requester_user_id == admin.id
+
+
+# ---------------------------------------------------------------------------
+# 13) staff_off 作成時重複ガード (mobile-leave-request-design.md §1-c)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_staff_off_duplicate_pending_is_409(client, db) -> None:
+    """同一スタッフ×同一日に pending の staff_off があると作成は 409。"""
+    staff = await _make_staff(db)
+    user = await _make_user(db, "pr-dup1@example.com", "staff", staff_id=staff.id)
+
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user),
+        json=_staff_off_payload(staff_id=staff.id),
+    )
+    assert res.status_code == 201, res.text
+
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user),
+        json=_staff_off_payload(staff_id=staff.id),
+    )
+    assert res.status_code == 409, res.text
+    assert "申請中" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_staff_off_existing_override_is_409(client, db) -> None:
+    """その日に staff_weekly_overrides 行が既にあると作成は 409 (承認時 IntegrityError の前倒し)。"""
+    from app.models.staff import StaffWeeklyOverride
+
+    staff = await _make_staff(db)
+    user = await _make_user(db, "pr-dup2@example.com", "staff", staff_id=staff.id)
+
+    d = date(2026, 5, 11)
+    iso = d.isocalendar()
+    db.add(
+        StaffWeeklyOverride(
+            staff_id=staff.id,
+            iso_year=iso.year,
+            iso_week=iso.week,
+            weekday=d.weekday(),
+            override_type="off",
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user),
+        json=_staff_off_payload(staff_id=staff.id, target_date=d),
+    )
+    assert res.status_code == 409, res.text
+    assert "登録されています" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_staff_off_other_date_and_after_reject_ok(client, db) -> None:
+    """別日は作成可。却下済みは重複扱いにならず再申請できる。"""
+    admin = await _make_user(db, "pr-dup-admin@example.com", "admin")
+    staff = await _make_staff(db)
+    user = await _make_user(db, "pr-dup3@example.com", "staff", staff_id=staff.id)
+
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user),
+        json=_staff_off_payload(staff_id=staff.id, target_date="2026-05-11"),
+    )
+    assert res.status_code == 201, res.text
+    first_id = res.json()["id"]
+
+    # 別日は通る
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user),
+        json=_staff_off_payload(staff_id=staff.id, target_date="2026-05-12"),
+    )
+    assert res.status_code == 201, res.text
+
+    # 却下後は同日再申請できる (pending のみが重複対象)
+    res = await client.patch(
+        f"/api/v1/pending-requests/{first_id}/reject",
+        headers=_bearer(admin),
+        json={"rejection_reason": "業務都合"},
+    )
+    assert res.status_code == 200, res.text
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user),
+        json=_staff_off_payload(staff_id=staff.id, target_date="2026-05-11"),
+    )
+    assert res.status_code == 201, res.text
+
+
+# ---------------------------------------------------------------------------
+# 14) DELETE 取り下げ (mobile-leave-request-design.md §1-c)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_withdraw_own_pending_then_rerequest(client, db) -> None:
+    """staff 本人は pending を取り下げでき (204)、同日を再申請できる。"""
+    staff = await _make_staff(db)
+    user = await _make_user(db, "pr-wd1@example.com", "staff", staff_id=staff.id)
+
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user),
+        json=_staff_off_payload(staff_id=staff.id),
+    )
+    pr_id = res.json()["id"]
+
+    res = await client.delete(f"/api/v1/pending-requests/{pr_id}", headers=_bearer(user))
+    assert res.status_code == 204, res.text
+
+    from uuid import UUID as _UUID
+
+    from sqlalchemy import select
+
+    assert await db.scalar(select(PendingRequest).where(PendingRequest.id == _UUID(pr_id))) is None
+
+    # 取り下げ後は同日を再申請できる
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user),
+        json=_staff_off_payload(staff_id=staff.id),
+    )
+    assert res.status_code == 201, res.text
+
+
+@pytest.mark.asyncio
+async def test_withdraw_others_request_is_404(client, db) -> None:
+    """他人の申請は存在も明かさず 404。"""
+    staff_a = await _make_staff(db, name="申請者 A")
+    staff_b = await _make_staff(db, name="別人 B")
+    user_a = await _make_user(db, "pr-wd2a@example.com", "staff", staff_id=staff_a.id)
+    user_b = await _make_user(db, "pr-wd2b@example.com", "staff", staff_id=staff_b.id)
+
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user_a),
+        json=_staff_off_payload(staff_id=staff_a.id),
+    )
+    pr_id = res.json()["id"]
+
+    res = await client.delete(f"/api/v1/pending-requests/{pr_id}", headers=_bearer(user_b))
+    assert res.status_code == 404, res.text
+
+
+@pytest.mark.asyncio
+async def test_withdraw_approved_is_409(client, db) -> None:
+    """処理済み (approved) の申請は取り下げ不可 (409)。"""
+    admin = await _make_user(db, "pr-wd3-admin@example.com", "admin")
+    staff = await _make_staff(db)
+    user = await _make_user(db, "pr-wd3@example.com", "staff", staff_id=staff.id)
+
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user),
+        json=_staff_off_payload(staff_id=staff.id),
+    )
+    pr_id = res.json()["id"]
+    res = await client.patch(
+        f"/api/v1/pending-requests/{pr_id}/approve", headers=_bearer(admin), json={}
+    )
+    assert res.status_code == 200, res.text
+
+    res = await client.delete(f"/api/v1/pending-requests/{pr_id}", headers=_bearer(user))
+    assert res.status_code == 409, res.text
+
+
+@pytest.mark.asyncio
+async def test_withdraw_admin_can_delete_any_pending(client, db) -> None:
+    """admin は他人の pending も取り下げ可能。"""
+    staff = await _make_staff(db)
+    user = await _make_user(db, "pr-wd4@example.com", "staff", staff_id=staff.id)
+    admin = await _make_user(db, "pr-wd4-admin@example.com", "admin")
+
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user),
+        json=_staff_off_payload(staff_id=staff.id),
+    )
+    pr_id = res.json()["id"]
+
+    res = await client.delete(f"/api/v1/pending-requests/{pr_id}", headers=_bearer(admin))
+    assert res.status_code == 204, res.text

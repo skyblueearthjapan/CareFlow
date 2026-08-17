@@ -10,6 +10,7 @@
     PATCH  /api/v1/pending-requests/{id}/approve              — 承認 (applier 起動)
     PATCH  /api/v1/pending-requests/{id}/approve-with-edit    — 編集承認 (edited_payload 必須)
     PATCH  /api/v1/pending-requests/{id}/reject               — 却下 (rejection_reason 必須)
+    DELETE /api/v1/pending-requests/{id}          — 取り下げ (申請者staff本人 or admin・pendingのみ)
 
 RBAC:
     - POST  : admin / manager / staff (Staff は自分軸のみ; §3.5.3)
@@ -49,6 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.pending_request import PendingRequest
+from app.models.staff import StaffWeeklyOverride
 from app.models.user import User, normalize_user_role
 from app.models.visit import Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
@@ -285,6 +287,69 @@ def _enforce_reschedule_scope_required(payload: PendingRequestV2Create) -> None:
             )
 
 
+async def _ensure_staff_off_creatable(
+    db: AsyncSession,
+    *,
+    payload: PendingRequestV2Create,
+    payload_dict: dict,
+) -> None:
+    """``staff_off`` の作成時重複ガード (mobile-leave-request-design.md §1-c).
+
+    applier (`_apply_staff_off`) は upsert せず INSERT のみのため、同日に
+    pending 申請や既存 override があると **承認時に** IntegrityError→422 になる。
+    作成時に前倒しで 409 を返し、申請者 (モバイル) に即フィードバックする。
+    staff_id / 日付が特定できない payload は従来どおり素通し
+    (承認時の applier 検証に委ねる — 既存クライアント互換)。
+    """
+    if payload.request_type.value != RequestType.STAFF_OFF.value:
+        return
+
+    staff_id = _coerce_uuid(payload_dict.get("staff_id")) or payload.target_staff_id
+    target: date | None = payload.target_date
+    if target is None:
+        raw = payload_dict.get("date")
+        try:
+            target = date.fromisoformat(str(raw)) if raw else None
+        except ValueError:
+            target = None
+    if staff_id is None or target is None:
+        return
+
+    dup = await db.scalar(
+        select(PendingRequest.id)
+        .where(
+            PendingRequest.request_type == RequestType.STAFF_OFF.value,
+            PendingRequest.status == RequestStatus.PENDING.value,
+            PendingRequest.target_staff_id == staff_id,
+            PendingRequest.target_date == target,
+        )
+        .limit(1)
+    )
+    if dup is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="この日は既に休み申請中です",
+        )
+
+    # applier `_date_to_iso` と同一規約: isocalendar + weekday() (0=月曜)
+    iso = target.isocalendar()
+    existing = await db.scalar(
+        select(StaffWeeklyOverride.id)
+        .where(
+            StaffWeeklyOverride.staff_id == staff_id,
+            StaffWeeklyOverride.iso_year == iso.year,
+            StaffWeeklyOverride.iso_week == iso.week,
+            StaffWeeklyOverride.weekday == target.weekday(),
+        )
+        .limit(1)
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="この日は既に休み・時間変更が登録されています",
+        )
+
+
 async def _commit_or_409(db: AsyncSession) -> None:
     try:
         await db.commit()
@@ -354,6 +419,7 @@ async def create_pending_request(
     _enforce_staff_self_scope(user, payload)
     _enforce_reschedule_scope_required(payload)
     payload_dict = await _enforce_payload_validation(db, user, payload)
+    await _ensure_staff_off_creatable(db, payload=payload, payload_dict=payload_dict)
 
     row = _build_pending_request_row(
         requester_user_id=user.id,
@@ -364,6 +430,48 @@ async def create_pending_request(
     await _commit_or_409(db)
     await db.refresh(row)
     return _to_read(row)
+
+
+@router.delete(
+    "/{request_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Withdraw a pending request (requester-staff or admin)",
+)
+async def withdraw_pending_request(
+    request_id: UUID,
+    db: DbDep,
+    user: CurrentActiveUser,
+) -> None:
+    """未処理 (pending) の申請を取り下げる (mobile-leave-request-design.md §1-c).
+
+    - staff: **自分が申請した** pending のみ。他人の申請は存在も明かさず 404
+      (`_check_read_access` と同じ流儀)。
+    - admin: 任意の pending。
+    - approved / rejected / applied 済みは 409 (業務判断が付いた記録は消さない)。
+    - 行ロックで approve との同時実行競合を防ぐ (approve 側の
+      `SELECT ... FOR UPDATE` と同じ規約)。ハード削除 — 却下と違い
+      業務判断が発生していないため履歴には残さない。
+    """
+    row = (
+        await db.execute(
+            select(PendingRequest).where(PendingRequest.id == request_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    if normalize_user_role(user.role) != "admin":
+        if user.role != "staff" or row.requester_user_id != user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    if row.status != RequestStatus.PENDING.value or row.applied_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="既に処理済みの申請は取り下げできません",
+        )
+
+    await db.delete(row)
+    await _commit_or_409(db)
 
 
 @router.post(
@@ -394,6 +502,7 @@ async def create_and_apply_pending_request(
     """
     _enforce_reschedule_scope_required(payload)
     payload_dict = await _enforce_payload_validation(db, user, payload)
+    await _ensure_staff_off_creatable(db, payload=payload, payload_dict=payload_dict)
 
     # 同一 TX 内で作成 → applier → status 更新 → commit を実行する。
     # 注意: 行は **status='pending'** で初期化する。
