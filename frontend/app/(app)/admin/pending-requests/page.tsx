@@ -40,6 +40,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { isAdminRole } from '@/lib/rbac';
+import { usePatients } from '@/lib/queries/patients';
+import { useStaffList } from '@/lib/queries/staff';
 import { StaffLeavePanel } from './_components/StaffLeavePanel';
 import {
   useApproveRequest,
@@ -105,6 +107,89 @@ const STATUS_LABEL: Record<RequestStatus, string> = {
   rejected: '却下',
 };
 
+/**
+ * 種別チップの配色 (2026-08-18 可読性改善)。同系統の申請は近い色相に寄せる:
+ * 休み系=ブランドピンク / 予定・時間系=青紫 / 新規登録系=緑 / 状態変更系=琥珀 /
+ * キャンセル=ローズ。
+ */
+const REQUEST_TYPE_BADGE_CLASS: Record<RequestType, string> = {
+  staff_off: 'bg-brand-primary-light text-brand-primary',
+  staff_event: 'bg-sky-100 text-sky-700',
+  staff_mentor: 'bg-bg-muted text-text-muted',
+  staff_create: 'bg-emerald-100 text-emerald-700',
+  staff_status_update: 'bg-amber-100 text-amber-700',
+  patient_create: 'bg-emerald-100 text-emerald-700',
+  patient_cancel: 'bg-rose-100 text-rose-700',
+  patient_reschedule: 'bg-violet-100 text-violet-700',
+  patient_special_week_on: 'bg-indigo-100 text-indigo-700',
+  patient_special_week_off: 'bg-indigo-50 text-indigo-500',
+  patient_status_update: 'bg-amber-100 text-amber-700',
+  patient_visit_add: 'bg-teal-100 text-teal-700',
+};
+
+/** scope は patient_reschedule のみ意味を持つ → 独立列ではなく種別の注記に格上げ。 */
+const SCOPE_LABEL: Record<string, string> = {
+  one_time: 'この1回のみ',
+  permanent: '恒久変更',
+};
+
+const WEEKDAYS_JP = ['日', '月', '火', '水', '木', '金', '土'] as const;
+
+/** ISO 日時 → '2026/8/18 13:48' (端末ローカル = JST)。 */
+function fmtDateTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(
+    2,
+    '0',
+  )}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** 'YYYY-MM-DD' → '9/4（金）' (年が違うときだけ '2027年' を前置)。 */
+function fmtTargetDate(iso: string): string {
+  const d = new Date(iso + 'T00:00:00');
+  if (Number.isNaN(d.getTime())) return iso;
+  const yearPrefix = d.getFullYear() !== new Date().getFullYear() ? `${d.getFullYear()}年` : '';
+  return `${yearPrefix}${d.getMonth() + 1}/${d.getDate()}（${WEEKDAYS_JP[d.getDay()]}）`;
+}
+
+/**
+ * payload を人が読める1行要約へ (生 JSON の表示は撤去・2026-08-18 ユーザー要望)。
+ * 完全な内容は「編集承認」ダイアログで従来どおり JSON 編集できる。
+ */
+function summarizeRequest(row: PendingRequestV2Read): string {
+  const p = (row.edited_payload ?? row.payload ?? {}) as Record<string, unknown>;
+  const str = (k: string): string => (typeof p[k] === 'string' ? (p[k] as string) : '');
+  const parts: string[] = [];
+
+  switch (row.request_type) {
+    case 'staff_event':
+      if (str('title')) parts.push(str('title'));
+      if (str('start_time') && str('end_time'))
+        parts.push(`${str('start_time')}〜${str('end_time')}`);
+      break;
+    case 'patient_reschedule':
+    case 'patient_visit_add':
+      if (str('start_time') && str('end_time'))
+        parts.push(`${str('start_time')}〜${str('end_time')}`);
+      break;
+    case 'staff_create':
+    case 'patient_create':
+      if (str('name')) parts.push(`氏名: ${str('name')}`);
+      break;
+    case 'staff_status_update':
+    case 'patient_status_update':
+      if (str('status')) parts.push(`→ ${str('status')}`);
+      break;
+    default:
+      break;
+  }
+
+  const note = str('note') || str('reason');
+  if (note) parts.push(note);
+  return parts.join(' ・ ');
+}
+
 function statusBadgeVariant(s: RequestStatus): 'warning' | 'success' | 'destructive' {
   switch (s) {
     case 'pending':
@@ -168,6 +253,18 @@ export default function AdminPendingRequestsPage() {
   }, [statusFilter, typeFilter, staffIdFilter, patientIdFilter, dateFilter]);
 
   const { data, isLoading, isError, error, refetch, isFetching } = usePendingRequests(queryParams);
+
+  // UUID → 実名の解決 (2026-08-18 可読性改善)。500件キャップは既存リストと同じ規約。
+  const staffList = useStaffList({ limit: 500 });
+  const patientsList = usePatients({ limit: 500 });
+  const staffNameById = useMemo(
+    () => new Map((staffList.data ?? []).map((s) => [s.id, s.name])),
+    [staffList.data],
+  );
+  const patientNameById = useMemo(
+    () => new Map((patientsList.data?.items ?? []).map((p) => [p.id, p.name])),
+    [patientsList.data],
+  );
 
   const approve = useApproveRequest();
   const approveWithEdit = useApproveWithEdit();
@@ -367,6 +464,8 @@ export default function AdminPendingRequestsPage() {
             onEdit={openEditDialog}
             onReject={openRejectDialog}
             actionPending={approve.isPending || approveWithEdit.isPending || reject.isPending}
+            staffNameById={staffNameById}
+            patientNameById={patientNameById}
           />
         </TabsContent>
 
@@ -381,6 +480,8 @@ export default function AdminPendingRequestsPage() {
             onEdit={openEditDialog}
             onReject={openRejectDialog}
             actionPending={approve.isPending || approveWithEdit.isPending || reject.isPending}
+            staffNameById={staffNameById}
+            patientNameById={patientNameById}
           />
         </TabsContent>
       </Tabs>
@@ -517,6 +618,8 @@ interface RequestListProps {
   onEdit: (row: PendingRequestV2Read) => void;
   onReject: (row: PendingRequestV2Read) => void;
   actionPending: boolean;
+  staffNameById: Map<string, string>;
+  patientNameById: Map<string, string>;
 }
 
 function RequestList({
@@ -529,6 +632,8 @@ function RequestList({
   onEdit,
   onReject,
   actionPending,
+  staffNameById,
+  patientNameById,
 }: RequestListProps) {
   if (isLoading) {
     return (
@@ -573,9 +678,8 @@ function RequestList({
               <th className="px-3 py-2 font-medium">対象スタッフ</th>
               <th className="px-3 py-2 font-medium">対象患者</th>
               <th className="px-3 py-2 font-medium">対象日</th>
-              <th className="px-3 py-2 font-medium">スコープ</th>
               <th className="px-3 py-2 font-medium">ステータス</th>
-              <th className="px-3 py-2 font-medium">payload</th>
+              <th className="px-3 py-2 font-medium">内容</th>
               <th className="px-3 py-2 font-medium">操作</th>
             </tr>
           </thead>
@@ -588,6 +692,8 @@ function RequestList({
                 onEdit={onEdit}
                 onReject={onReject}
                 actionPending={actionPending}
+                staffNameById={staffNameById}
+                patientNameById={patientNameById}
               />
             ))}
           </tbody>
@@ -607,32 +713,60 @@ interface RequestRowProps {
   onEdit: (row: PendingRequestV2Read) => void;
   onReject: (row: PendingRequestV2Read) => void;
   actionPending: boolean;
+  staffNameById: Map<string, string>;
+  patientNameById: Map<string, string>;
 }
 
-function RequestRow({ row, onApprove, onEdit, onReject, actionPending }: RequestRowProps) {
+function RequestRow({
+  row,
+  onApprove,
+  onEdit,
+  onReject,
+  actionPending,
+  staffNameById,
+  patientNameById,
+}: RequestRowProps) {
   // 「承認 / 編集承認 / 却下」は pending のときだけ可能。approved / rejected
   // に対して再度 approve するとサーバが 409 を返す (冪等性ガード)。
   const isActionable = row.status === 'pending';
-  const payloadPreview = JSON.stringify(row.edited_payload ?? row.payload ?? {});
+  const summary = summarizeRequest(row);
+  const staffName = row.target_staff_id ? staffNameById.get(row.target_staff_id) : null;
+  const patientName = row.target_patient_id ? patientNameById.get(row.target_patient_id) : null;
 
   return (
     <tr className="border-b border-border-default last:border-0 align-top hover:bg-bg-muted">
-      <td className="px-3 py-2 tnum text-text-secondary whitespace-nowrap">{row.created_at}</td>
-      <td className="px-3 py-2">
-        <span className="inline-flex items-center rounded-full bg-bg-muted px-2 py-0.5 text-xs">
+      <td className="px-3 py-2 tnum text-text-secondary whitespace-nowrap">
+        {fmtDateTime(row.created_at)}
+      </td>
+      <td className="px-3 py-2 whitespace-nowrap">
+        <span
+          className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${REQUEST_TYPE_BADGE_CLASS[row.request_type]}`}
+        >
           {REQUEST_TYPE_LABEL[row.request_type]}
         </span>
+        {row.scope && (
+          <p className="mt-0.5 text-[11px] text-text-muted">
+            {SCOPE_LABEL[row.scope] ?? row.scope}
+          </p>
+        )}
       </td>
-      <td className="px-3 py-2 font-mono text-xs text-text-secondary">
-        {row.target_staff_id ? row.target_staff_id.slice(0, 8) : '--'}
+      <td className="px-3 py-2 whitespace-nowrap text-text-primary">
+        {staffName ?? (
+          <span className="font-mono text-xs text-text-muted">
+            {row.target_staff_id ? row.target_staff_id.slice(0, 8) : '--'}
+          </span>
+        )}
       </td>
-      <td className="px-3 py-2 font-mono text-xs text-text-secondary">
-        {row.target_patient_id ? row.target_patient_id.slice(0, 8) : '--'}
+      <td className="px-3 py-2 whitespace-nowrap text-text-primary">
+        {patientName ?? (
+          <span className="font-mono text-xs text-text-muted">
+            {row.target_patient_id ? row.target_patient_id.slice(0, 8) : '--'}
+          </span>
+        )}
       </td>
-      <td className="px-3 py-2 tnum text-text-secondary whitespace-nowrap">
-        {row.target_date ?? '--'}
+      <td className="px-3 py-2 tnum whitespace-nowrap font-medium text-text-primary">
+        {row.target_date ? fmtTargetDate(row.target_date) : '--'}
       </td>
-      <td className="px-3 py-2 text-text-secondary">{row.scope ?? '--'}</td>
       <td className="px-3 py-2">
         <Badge variant={statusBadgeVariant(row.status)}>{STATUS_LABEL[row.status]}</Badge>
         {row.status === 'rejected' && row.rejection_reason && (
@@ -641,10 +775,14 @@ function RequestRow({ row, onApprove, onEdit, onReject, actionPending }: Request
           </p>
         )}
       </td>
-      <td className="px-3 py-2 max-w-[280px]">
-        <pre className="whitespace-pre-wrap break-words rounded bg-bg-muted px-2 py-1 text-xs">
-          {payloadPreview}
-        </pre>
+      <td className="px-3 py-2 max-w-[260px]">
+        {summary ? (
+          <p className="truncate text-xs text-text-secondary" title={summary}>
+            {summary}
+          </p>
+        ) : (
+          <span className="text-xs text-text-muted">--</span>
+        )}
       </td>
       <td className="px-3 py-2">
         {isActionable ? (
