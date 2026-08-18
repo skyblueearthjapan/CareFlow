@@ -259,7 +259,13 @@ export function StaffLeavePanel({ onStaffChange, className }: StaffLeavePanelPro
       </div>
 
       <div className="flex flex-1 flex-col gap-3 p-4">
-        <StaffCombobox value={staffId} onChange={selectStaff} className="w-full" />
+        <StaffCombobox
+          value={staffId}
+          onChange={selectStaff}
+          clearLabel="― 全員（絞り込みなし）"
+          placeholder="スタッフを選択（未選択 = 全員）"
+          className="w-full"
+        />
 
         {!staffId && (
           // 左カラムとの下端揃えで伸びた分は空状態を縦中央に置いて埋める

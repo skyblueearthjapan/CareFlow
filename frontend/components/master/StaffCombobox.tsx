@@ -12,6 +12,9 @@ import * as React from 'react';
 import { Combobox, type ComboboxOption } from '@/components/ui/combobox';
 import { useStaffList } from '@/lib/queries/staff';
 
+/** 「選択解除」擬似オプションの内部値 (実在の staff id と衝突しない)。 */
+const CLEAR_VALUE = '__clear__';
+
 interface StaffComboboxProps {
   value: string;
   onChange: (id: string) => void;
@@ -20,6 +23,11 @@ interface StaffComboboxProps {
   excludeId?: string;
   /** 複数除外 (例: NG スタッフで既に追加済みの staff を候補から外す). */
   excludeIds?: readonly string[];
+  /**
+   * 指定すると先頭に「選択解除」オプションを出す (選ぶと onChange('') が飛ぶ)。
+   * 例: '― 全員（絞り込みなし）'。絞り込み用途で「全員に戻す」導線が要るとき用。
+   */
+  clearLabel?: string;
   disabled?: boolean;
   placeholder?: string;
   className?: string;
@@ -30,6 +38,7 @@ export function StaffCombobox({
   onChange,
   excludeId,
   excludeIds,
+  clearLabel,
   disabled,
   placeholder = 'スタッフを選択',
   className,
@@ -41,22 +50,21 @@ export function StaffCombobox({
     [excludeIds, excludeId],
   );
 
-  const options = React.useMemo<ComboboxOption[]>(
-    () =>
-      (staff ?? [])
-        .filter((s) => !s.deleted_at && !excluded.has(s.id))
-        .map((s) => ({
-          value: s.id,
-          label: s.code ? `${s.name} (${s.code})` : s.name,
-        })),
-    [staff, excluded],
-  );
+  const options = React.useMemo<ComboboxOption[]>(() => {
+    const list = (staff ?? [])
+      .filter((s) => !s.deleted_at && !excluded.has(s.id))
+      .map((s) => ({
+        value: s.id,
+        label: s.code ? `${s.name} (${s.code})` : s.name,
+      }));
+    return clearLabel ? [{ value: CLEAR_VALUE, label: clearLabel }, ...list] : list;
+  }, [staff, excluded, clearLabel]);
 
   return (
     <Combobox
       options={options}
       value={value || undefined}
-      onChange={(v) => onChange(v ?? '')}
+      onChange={(v) => onChange(!v || v === CLEAR_VALUE ? '' : v)}
       placeholder={isLoading ? '読み込み中…' : placeholder}
       searchPlaceholder="氏名 / コードで検索"
       emptyText="スタッフが見つかりません"
