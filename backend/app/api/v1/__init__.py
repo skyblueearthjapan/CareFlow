@@ -42,6 +42,7 @@ from app.api.v1 import (
     staff_events,
     staff_excel,
     staff_overrides,
+    staff_shift_confirmations,
     staff_shifts,
     visit_monitor,
     visit_photos,
@@ -99,6 +100,9 @@ api_router.include_router(
 )
 api_router.include_router(staff_shifts.router, prefix="/staff", tags=["staff-shifts"])
 api_router.include_router(staff_overrides.router, prefix="/staff", tags=["staff-overrides"])
+api_router.include_router(
+    staff_shift_confirmations.router, prefix="/staff", tags=["staff-shift-confirmations"]
+)
 api_router.include_router(staff_events.router, prefix="/staff", tags=["staff-events"])
 # Wave 4-D: shift-request sub-resource (/staff/{id}/shift-requests).
 api_router.include_router(shift_requests.router, prefix="/staff", tags=["shift-requests"])

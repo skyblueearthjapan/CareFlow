@@ -3,7 +3,14 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
-import { Bell, ChevronRight, CalendarCheck, CalendarHeart, CalendarRange } from 'lucide-react';
+import {
+  Bell,
+  ChevronRight,
+  CalendarCheck,
+  CalendarDays as CalendarDaysIcon,
+  CalendarHeart,
+  CalendarRange,
+} from 'lucide-react';
 
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -183,6 +190,20 @@ export default function MobileHomePage() {
             <div>
               <p className="font-medium text-text-primary">休みを申請する</p>
               <p className="text-xs text-text-muted">カレンダーから選ぶだけ</p>
+            </div>
+          </div>
+          <ChevronRight className="h-4 w-4 text-text-muted" />
+        </Link>
+
+        <Link
+          href="/m/shifts"
+          className="flex items-center justify-between rounded-lg border border-border-default bg-bg-base p-4 transition-colors hover:bg-bg-muted"
+        >
+          <div className="flex items-center gap-3">
+            <CalendarDaysIcon className="h-5 w-5 text-brand-primary" />
+            <div>
+              <p className="font-medium text-text-primary">出勤カレンダー</p>
+              <p className="text-xs text-text-muted">1か月の出勤日とお休み</p>
             </div>
           </div>
           <ChevronRight className="h-4 w-4 text-text-muted" />

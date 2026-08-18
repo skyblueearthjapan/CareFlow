@@ -17,8 +17,9 @@
  * そのまま挿入するため、日本語ラベルを送ってはならない — 設計書 §1-b)。
  */
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useSession } from 'next-auth/react';
-import { Send, Trash2 } from 'lucide-react';
+import { CalendarDays, ChevronRight, Send, Trash2 } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -335,6 +336,20 @@ export default function MobileLeavePage() {
           </ul>
         )}
       </Card>
+
+      <Link
+        href="/m/shifts"
+        className="flex items-center justify-between rounded-lg border border-border-default bg-bg-base p-4 transition-colors hover:bg-bg-muted"
+      >
+        <div className="flex items-center gap-3">
+          <CalendarDays className="h-5 w-5 text-brand-primary" />
+          <div>
+            <p className="font-medium text-text-primary">出勤カレンダーを見る</p>
+            <p className="text-xs text-text-muted">1か月の出勤日とお休み・確定状況</p>
+          </div>
+        </div>
+        <ChevronRight className="h-4 w-4 text-text-muted" />
+      </Link>
 
       {recentResults.length > 0 && (
         <Card className="p-4">

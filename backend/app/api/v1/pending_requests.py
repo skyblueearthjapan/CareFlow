@@ -828,6 +828,12 @@ async def reject_pending_request(
     locked.rejected_by = user.id
     locked.rejected_at = datetime.now(UTC)
     locked.rejection_reason = payload.rejection_reason
+
+    # 休み申請 (staff_off) の却下は申請者本人へ通知 (同一 TX・staff_off 以外は no-op)
+    from app.services.leave_notify import notify_leave_rejected
+
+    await notify_leave_rejected(db, request=locked)
+
     await _commit_or_409(db)
     await db.refresh(locked)
     return _to_read(locked)

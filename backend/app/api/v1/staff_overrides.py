@@ -22,6 +22,7 @@ from app.schemas.staff_overrides import (
     OverrideCreate,
     OverrideRead,
     OverrideUpdate,
+    _db_type_to_label,
 )
 
 router = APIRouter()
@@ -223,6 +224,19 @@ async def delete_override(
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    # スタッフ本人へ取消通知 (staff-shift-confirmation-design.md §2-b・同一 TX)。
+    # 削除前に ISO 三つ組から日付を逆算する (_date_to_iso の逆変換)。
+    from app.services.leave_notify import notify_leave_cancelled
+
+    target = date.fromisocalendar(row.iso_year, row.iso_week, row.weekday + 1)
+    await notify_leave_cancelled(
+        db,
+        staff_id=row.staff_id,
+        target=target,
+        type_label=_db_type_to_label(row.override_type),
+    )
+
     await db.delete(row)
     await db.commit()
     return None

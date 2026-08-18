@@ -37,6 +37,7 @@ from app.models.staff import (
     StaffEvent,
     StaffSecondaryOffice,
     StaffShift,
+    StaffShiftConfirmation,
     StaffWeeklyOverride,
 )
 from app.models.suggestion_dismissal import SuggestionDismissal
@@ -86,6 +87,7 @@ __all__ = [
     "SuggestionDismissal",
     "Staff",
     "StaffEvent",
+    "StaffShiftConfirmation",
     "StaffSecondaryOffice",
     "StaffShift",
     "StaffWeeklyOverride",

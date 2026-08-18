@@ -12,10 +12,11 @@ Phase 2 (新人同行 v1.1 §3): 旧 staff_companion_assignments 機構を撤去
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, time
+from datetime import date, datetime, time
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -195,4 +196,35 @@ class StaffEvent(Base, TimestampMixin):
             postgresql_where=text("external_id IS NOT NULL"),
             sqlite_where=text("external_id IS NOT NULL"),
         ),
+    )
+
+
+class StaffShiftConfirmation(Base, TimestampMixin):
+    """月次の出勤カレンダー確定記録 (staff-shift-confirmation-design.md §1).
+
+    「このスタッフのこの月の出勤/休みを確定として本人へ通知した」1 行。
+    再確定 = 同一行の confirmed_at/confirmed_by 更新 + 再通知 (履歴は持たない)。
+    """
+
+    __tablename__ = "staff_shift_confirmations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    staff_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("staff.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # 月初日 (YYYY-MM-01)。API 層で day==1 を検証する (DB CHECK は貼らない)。
+    month: Mapped[date] = mapped_column(Date, nullable=False)
+    confirmed_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("staff_id", "month", name="uq_staff_shift_confirmation_month"),
     )
