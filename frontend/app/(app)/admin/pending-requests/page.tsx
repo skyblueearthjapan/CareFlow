@@ -285,10 +285,11 @@ export default function AdminPendingRequestsPage() {
         </Alert>
       )}
 
-      {/* 2カラム: 左=申請リスト (主) / 右=休み・月確定パネル (副・sticky)。
+      {/* 2カラム: 左=申請リスト (主) / 右=休み・月確定パネル (副)。
+          両カラムをストレッチして枠の下端を揃える (2026-08-18 ユーザー要望)。
           パネルでスタッフを選ぶと左のリストも同じスタッフで絞り込まれる。 */}
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_400px]">
-        <div className="min-w-0 space-y-4">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_400px]">
+        <div className="flex min-w-0 flex-col gap-4">
       <Card className="p-4">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
@@ -345,13 +346,17 @@ export default function AdminPendingRequestsPage() {
         </div>
       </Card>
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as CategoryTab)}>
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(v as CategoryTab)}
+        className="flex flex-1 flex-col"
+      >
         <TabsList>
           <TabsTrigger value="staff">スタッフ予定 ({staffItems.length})</TabsTrigger>
           <TabsTrigger value="patient">患者関連 ({patientItems.length})</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="staff">
+        <TabsContent value="staff" className="flex-1">
           <RequestList
             items={staffItems}
             isLoading={isLoading}
@@ -365,7 +370,7 @@ export default function AdminPendingRequestsPage() {
           />
         </TabsContent>
 
-        <TabsContent value="patient">
+        <TabsContent value="patient" className="flex-1">
           <RequestList
             items={patientItems}
             isLoading={isLoading}
@@ -382,7 +387,6 @@ export default function AdminPendingRequestsPage() {
         </div>
 
         <StaffLeavePanel
-          className="xl:sticky xl:top-4 xl:max-h-[calc(100vh-2rem)] xl:overflow-y-auto"
           onStaffChange={(id) => {
             setStaffIdFilter(id);
             if (id) setTab('staff');
@@ -528,7 +532,7 @@ function RequestList({
 }: RequestListProps) {
   if (isLoading) {
     return (
-      <Card className="p-5">
+      <Card className="h-full p-5">
         <div className="space-y-2">
           <Skeleton className="h-8 w-full" />
           <Skeleton className="h-8 w-full" />
@@ -550,15 +554,16 @@ function RequestList({
   }
 
   if (items.length === 0) {
+    // h-full + 縦中央: 右パネルとの下端揃えでカードが伸びても空状態が浮かないように
     return (
-      <Card className="p-5">
+      <Card className="flex h-full items-center justify-center p-5">
         <RakusukeNote pose="clap" size="sm" title={emptyMessage} comment="すべて対応済みです" />
       </Card>
     );
   }
 
   return (
-    <Card className="p-0">
+    <Card className="h-full p-0">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="border-b border-border-default text-left text-text-secondary">

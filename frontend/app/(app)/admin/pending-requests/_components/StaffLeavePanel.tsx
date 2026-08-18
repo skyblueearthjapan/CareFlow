@@ -242,7 +242,7 @@ export function StaffLeavePanel({ onStaffChange, className }: StaffLeavePanelPro
     !!staffId && (shiftsQuery.isLoading || overridesQuery.isLoading || requestsQuery.isLoading);
 
   return (
-    <Card className={cn('overflow-hidden', className)}>
+    <Card className={cn('flex flex-col overflow-hidden', className)}>
       {/* ヘッダー: ブランド淡色の帯でメイン表とトーンを分ける */}
       <div className="flex items-center gap-3 border-b border-border-default bg-brand-primary-50 px-4 py-3">
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-primary/15">
@@ -258,16 +258,19 @@ export function StaffLeavePanel({ onStaffChange, className }: StaffLeavePanelPro
         </div>
       </div>
 
-      <div className="space-y-3 p-4">
+      <div className="flex flex-1 flex-col gap-3 p-4">
         <StaffCombobox value={staffId} onChange={selectStaff} className="w-full" />
 
         {!staffId && (
-          <RakusukeNote
-            pose="calendar"
-            size="sm"
-            title="スタッフを選んでください"
-            comment="その人の休みカレンダーがここに表示されます"
-          />
+          // 左カラムとの下端揃えで伸びた分は空状態を縦中央に置いて埋める
+          <div className="flex flex-1 items-center justify-center">
+            <RakusukeNote
+              pose="calendar"
+              size="sm"
+              title="スタッフを選んでください"
+              comment="その人の休みカレンダーがここに表示されます"
+            />
+          </div>
         )}
 
         {staffId && (
@@ -459,8 +462,8 @@ export function StaffLeavePanel({ onStaffChange, className }: StaffLeavePanelPro
               )}
             </div>
 
-            {/* 確定 */}
-            <div className="border-t border-border-default pt-3">
+            {/* 確定 (カラム下端揃えで伸びた分は mt-auto で最下部へ) */}
+            <div className="mt-auto border-t border-border-default pt-3">
               <Button
                 type="button"
                 className="w-full"
