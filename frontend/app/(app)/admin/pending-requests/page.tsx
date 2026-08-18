@@ -9,12 +9,13 @@
  *   1. admin / manager 限定 (UI ガード + Backend RBAC で二重防御)
  *   2. **スタッフ予定 vs 患者関連** をタブで明確に分離 (§3.5.5)
  *   3. ステータス / request_type / 対象スタッフ / 対象患者 / 対象日のフィルタ
- *   4. 各申請に「承認 / 編集承認 / 却下」ボタン
+ *   4. 各申請に「承認 / 却下」ボタン
  *   5. 却下時は理由入力ダイアログで必須化 (§3.5.4)
  *
- * 「編集承認」の編集 UI 自体は本チケットのスコープ外で、JSON テキストエリア
- * での簡易編集にとどめる。リッチな payload エディタは後続 W3-FE7 / W5-FE11
- * で各 request_type 別に拡張する想定。
+ * 「編集承認」(JSON テキストエリア) は 2026-08-18 に UI から撤去 —
+ * 人が読めない生 payload 編集は運用に不適で、休みの調整は右パネル
+ * (StaffLeavePanel) の直接追加/取消で代替できる。BE エンドポイント
+ * (approve-with-edit) と FE フックは互換のため存続。
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -45,7 +46,6 @@ import { useStaffList } from '@/lib/queries/staff';
 import { StaffLeavePanel } from './_components/StaffLeavePanel';
 import {
   useApproveRequest,
-  useApproveWithEdit,
   usePendingRequests,
   useRejectRequest,
   type UsePendingRequestsParams,
@@ -155,7 +155,7 @@ function fmtTargetDate(iso: string): string {
 
 /**
  * payload を人が読める1行要約へ (生 JSON の表示は撤去・2026-08-18 ユーザー要望)。
- * 完全な内容は「編集承認」ダイアログで従来どおり JSON 編集できる。
+ * 生 payload は DB (payload/edited_payload 列) に残り、必要なら監査で参照する。
  */
 function summarizeRequest(row: PendingRequestV2Read): string {
   const p = (row.edited_payload ?? row.payload ?? {}) as Record<string, unknown>;
@@ -231,9 +231,6 @@ export default function AdminPendingRequestsPage() {
   // Action dialog state
   const [rejectTarget, setRejectTarget] = useState<PendingRequestV2Read | null>(null);
   const [rejectReason, setRejectReason] = useState('');
-  const [editTarget, setEditTarget] = useState<PendingRequestV2Read | null>(null);
-  const [editJson, setEditJson] = useState('');
-  const [editError, setEditError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const queryParams = useMemo<UsePendingRequestsParams>(() => {
@@ -267,7 +264,6 @@ export default function AdminPendingRequestsPage() {
   );
 
   const approve = useApproveRequest();
-  const approveWithEdit = useApproveWithEdit();
   const reject = useRejectRequest();
 
   // Split items into staff vs patient buckets.
@@ -295,42 +291,6 @@ export default function AdminPendingRequestsPage() {
     approve.mutate(row.id, {
       onError: (err) => setActionError(err.message),
     });
-  };
-
-  const openEditDialog = (row: PendingRequestV2Read) => {
-    setActionError(null);
-    setEditError(null);
-    setEditTarget(row);
-    // 編集承認は payload を起点に編集する。既に edited_payload が
-    // 入っていればそちらを優先する。
-    const seed = row.edited_payload ?? row.payload ?? {};
-    setEditJson(JSON.stringify(seed, null, 2));
-  };
-
-  const handleEditApprove = () => {
-    if (!editTarget) return;
-    let parsed: Record<string, unknown>;
-    try {
-      const obj: unknown = JSON.parse(editJson);
-      if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
-        throw new Error('payload は JSON オブジェクトである必要があります');
-      }
-      parsed = obj as Record<string, unknown>;
-    } catch (e) {
-      setEditError(e instanceof Error ? e.message : 'JSON の解析に失敗しました');
-      return;
-    }
-    approveWithEdit.mutate(
-      { id: editTarget.id, edited_payload: parsed },
-      {
-        onSuccess: () => {
-          setEditTarget(null);
-          setEditJson('');
-          setEditError(null);
-        },
-        onError: (err) => setEditError(err.message),
-      },
-    );
   };
 
   const openRejectDialog = (row: PendingRequestV2Read) => {
@@ -461,9 +421,8 @@ export default function AdminPendingRequestsPage() {
             error={error}
             emptyMessage="スタッフ予定の申請はありません"
             onApprove={handleApprove}
-            onEdit={openEditDialog}
             onReject={openRejectDialog}
-            actionPending={approve.isPending || approveWithEdit.isPending || reject.isPending}
+            actionPending={approve.isPending || reject.isPending}
             staffNameById={staffNameById}
             patientNameById={patientNameById}
           />
@@ -477,9 +436,8 @@ export default function AdminPendingRequestsPage() {
             error={error}
             emptyMessage="患者関連の申請はありません"
             onApprove={handleApprove}
-            onEdit={openEditDialog}
             onReject={openRejectDialog}
-            actionPending={approve.isPending || approveWithEdit.isPending || reject.isPending}
+            actionPending={approve.isPending || reject.isPending}
             staffNameById={staffNameById}
             patientNameById={patientNameById}
           />
@@ -547,59 +505,6 @@ export default function AdminPendingRequestsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Edit-and-approve dialog — payload を JSON で編集 */}
-      <Dialog
-        open={editTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setEditTarget(null);
-            setEditJson('');
-            setEditError(null);
-          }
-        }}
-      >
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>編集して承認</DialogTitle>
-            <DialogDescription>
-              申請内容 (payload) を編集して承認します。JSON オブジェクト形式で入力してください。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <label htmlFor="edit-payload" className="text-sm font-medium text-text-primary">
-              編集後 payload (JSON)
-            </label>
-            <Textarea
-              id="edit-payload"
-              value={editJson}
-              onChange={(e) => setEditJson(e.target.value)}
-              rows={10}
-              className="font-mono text-xs"
-            />
-            {editError && (
-              <p className="text-sm text-error" role="alert">
-                {editError}
-              </p>
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setEditTarget(null);
-                setEditJson('');
-                setEditError(null);
-              }}
-              disabled={approveWithEdit.isPending}
-            >
-              キャンセル
-            </Button>
-            <Button onClick={handleEditApprove} disabled={approveWithEdit.isPending}>
-              {approveWithEdit.isPending ? '承認中...' : '編集して承認'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </section>
   );
 }
@@ -615,7 +520,6 @@ interface RequestListProps {
   error: Error | null;
   emptyMessage: string;
   onApprove: (row: PendingRequestV2Read) => void;
-  onEdit: (row: PendingRequestV2Read) => void;
   onReject: (row: PendingRequestV2Read) => void;
   actionPending: boolean;
   staffNameById: Map<string, string>;
@@ -629,7 +533,6 @@ function RequestList({
   error,
   emptyMessage,
   onApprove,
-  onEdit,
   onReject,
   actionPending,
   staffNameById,
@@ -689,7 +592,6 @@ function RequestList({
                 key={row.id}
                 row={row}
                 onApprove={onApprove}
-                onEdit={onEdit}
                 onReject={onReject}
                 actionPending={actionPending}
                 staffNameById={staffNameById}
@@ -710,7 +612,6 @@ function RequestList({
 interface RequestRowProps {
   row: PendingRequestV2Read;
   onApprove: (row: PendingRequestV2Read) => void;
-  onEdit: (row: PendingRequestV2Read) => void;
   onReject: (row: PendingRequestV2Read) => void;
   actionPending: boolean;
   staffNameById: Map<string, string>;
@@ -720,13 +621,12 @@ interface RequestRowProps {
 function RequestRow({
   row,
   onApprove,
-  onEdit,
   onReject,
   actionPending,
   staffNameById,
   patientNameById,
 }: RequestRowProps) {
-  // 「承認 / 編集承認 / 却下」は pending のときだけ可能。approved / rejected
+  // 「承認 / 却下」は pending のときだけ可能。approved / rejected
   // に対して再度 approve するとサーバが 409 を返す (冪等性ガード)。
   const isActionable = row.status === 'pending';
   const summary = summarizeRequest(row);
@@ -789,14 +689,6 @@ function RequestRow({
           <div className="flex flex-col gap-1">
             <Button size="sm" onClick={() => onApprove(row)} disabled={actionPending}>
               承認
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => onEdit(row)}
-              disabled={actionPending}
-            >
-              編集承認
             </Button>
             <Button
               size="sm"
