@@ -1,28 +1,14 @@
 /**
- * /admin/staff-leave — スタッフ休み・月確定の smoke テスト.
+ * StaffLeavePanel — 申請履歴ページ右カラム「休み・月確定」パネルの smoke テスト.
  *
  * 担保する約束:
- *   - スタッフ未選択では案内を出す
- *   - スタッフ選択済みなら カレンダー/確定カード/申請中一覧/登録済み一覧 を表示
- *   - 申請中の行に承認/却下ボタンが出て、承認クリックで mutateAsync が飛ぶ
- *   - staff ロールは /dashboard へリダイレクトされる
+ *   - スタッフ未選択では案内 (マスコット) を出す
+ *   - スタッフ選択で親へ通知され (リスト絞り込み連動)、確定ボタン/一覧が表示される
+ *   - 申請中の行の承認クリックで mutateAsync が飛ぶ
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-
-const routerReplace = vi.fn();
-vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: routerReplace, push: vi.fn() }),
-}));
-
-let sessionRole = 'admin';
-vi.mock('next-auth/react', () => ({
-  useSession: () => ({
-    data: { user: { role: sessionRole }, accessToken: 'a', refreshToken: 'r' },
-    status: 'authenticated',
-  }),
-}));
 
 import type * as ReactQueryModule from '@tanstack/react-query';
 
@@ -31,6 +17,13 @@ vi.mock('@tanstack/react-query', async (importOriginal) => {
   const actual = await importOriginal<typeof ReactQueryModule>();
   return { ...actual, useQueryClient: () => qcStub };
 });
+
+vi.mock('next-auth/react', () => ({
+  useSession: () => ({
+    data: { user: { role: 'admin' }, accessToken: 'a', refreshToken: 'r' },
+    status: 'authenticated',
+  }),
+}));
 
 vi.mock('@/components/ui/sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -67,7 +60,10 @@ vi.mock('@/lib/queries/staff-overrides', () => ({
   staffOverridesScopeKey: (id: string) => ['staff-overrides', id],
   useStaffOverrides: () => ({ data: overrides, isLoading: false }),
   useCreateOverride: () => ({ mutateAsync: vi.fn().mockResolvedValue({}), isPending: false }),
-  useDeleteOverride: () => ({ mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false }),
+  useDeleteOverride: () => ({
+    mutateAsync: vi.fn().mockResolvedValue(undefined),
+    isPending: false,
+  }),
 }));
 vi.mock('@/lib/queries/staff-shifts', () => ({
   useStaffShifts: () => ({ data: { shifts: SHIFTS }, isLoading: false }),
@@ -78,7 +74,7 @@ vi.mock('@/lib/queries/staff-shift-confirmations', () => ({
 }));
 
 import { fmtIsoLocal, startOfMonth } from '@/lib/shift-calendar';
-import AdminStaffLeavePage from '../page';
+import { StaffLeavePanel } from '../StaffLeavePanel';
 
 function thisMonthDay15(): string {
   const first = startOfMonth(new Date());
@@ -87,19 +83,18 @@ function thisMonthDay15(): string {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  sessionRole = 'admin';
   pendingItems = [];
   overrides = [];
 });
 
-describe('AdminStaffLeavePage', () => {
+describe('StaffLeavePanel', () => {
   it('スタッフ未選択では案内を表示する', () => {
-    render(<AdminStaffLeavePage />);
-    expect(screen.getByText('スタッフ休み・月確定')).toBeInTheDocument();
-    expect(screen.getByText(/スタッフを選択すると/)).toBeInTheDocument();
+    render(<StaffLeavePanel />);
+    expect(screen.getByText('休み・月確定')).toBeInTheDocument();
+    expect(screen.getByText('スタッフを選んでください')).toBeInTheDocument();
   });
 
-  it('スタッフ選択で確定カードと一覧が表示され、承認が飛ぶ', async () => {
+  it('スタッフ選択で親へ通知され、確定ボタンと一覧が表示・承認が飛ぶ', async () => {
     pendingItems = [
       {
         id: 'req-1',
@@ -113,20 +108,16 @@ describe('AdminStaffLeavePage', () => {
         updated_at: '2026-08-18T00:00:00Z',
       },
     ];
-    render(<AdminStaffLeavePage />);
+    const onStaffChange = vi.fn();
+    render(<StaffLeavePanel onStaffChange={onStaffChange} />);
     fireEvent.click(screen.getByText('__pick-staff__'));
+    expect(onStaffChange).toHaveBeenCalledWith('staff-1');
 
-    expect(await screen.findByText(/の確定$/)).toBeInTheDocument();
-    expect(screen.getByText(/申請中の休み（1件）/)).toBeInTheDocument();
+    expect(await screen.findByText(/この月を確定して通知/)).toBeInTheDocument();
+    expect(screen.getByText(/申請中の休み（1）/)).toBeInTheDocument();
     expect(screen.getByText(/登録済みの休み・時間変更/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '承認' }));
     await waitFor(() => expect(approveMutateAsync).toHaveBeenCalledWith('req-1'));
-  });
-
-  it('staff ロールは /dashboard へリダイレクトする', () => {
-    sessionRole = 'staff';
-    render(<AdminStaffLeavePage />);
-    expect(routerReplace).toHaveBeenCalledWith('/dashboard');
   });
 });

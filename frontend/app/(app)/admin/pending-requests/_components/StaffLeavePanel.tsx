@@ -1,19 +1,16 @@
 'use client';
 
 /**
- * /admin/staff-leave — スタッフ休み・月確定 (staff-shift-confirmation-design.md §3).
+ * StaffLeavePanel — 申請履歴ページ右カラムの「休み・月確定」パネル
+ * (staff-shift-confirmation-design.md §3・2026-08-18 独立ページから移設)。
  *
- * スタッフを選ぶ → その月の休みをカレンダー + 箇条書きで確認し、
- *   - 日クリックで休みを増やす (override 追加) / 減らす (override 取消 = 本人へ通知)
- *   - 申請中 (pending staff_off) は一覧から承認 / 却下 (却下 = 本人へ通知)
- *   - 「この月を確定」で確定記録を upsert し本人へ通知 (再確定 = 再通知)
- * モバイル側の対になる画面 = /m/shifts (出勤カレンダー・確定バッジ表示)。
+ * スタッフを選ぶ → ミニ月カレンダー (5状態) + 申請中/登録済みの箇条書き +
+ * 「この月を確定して通知」。日クリックで休みの追加/取消 (取消・却下・確定は
+ * 本人へ通知)。スタッフ選択は親へ通知し、左の申請リストの絞り込みと連動する。
  */
-import { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { useSession } from 'next-auth/react';
+import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CalendarCheck, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
+import { CalendarCheck, CalendarHeart, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -30,10 +27,14 @@ import {
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
+import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { StaffCombobox } from '@/components/master/StaffCombobox';
 import { cn } from '@/lib/utils';
-import { isAdminRole } from '@/lib/rbac';
-import { usePendingRequests, useApproveRequest, useRejectRequest } from '@/lib/queries/pending_requests';
+import {
+  useApproveRequest,
+  usePendingRequests,
+  useRejectRequest,
+} from '@/lib/queries/pending_requests';
 import {
   staffOverridesScopeKey,
   useCreateOverride,
@@ -64,33 +65,26 @@ function fmtJp(iso: string): string {
 
 function LegendChip({ className, label }: { className: string; label: string }) {
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-text-muted">
-      <span className={cn('inline-block h-3 w-3 rounded-full', className)} />
+    <span className="inline-flex items-center gap-1 text-[11px] text-text-muted">
+      <span className={cn('inline-block h-2.5 w-2.5 rounded-full', className)} />
       {label}
     </span>
   );
 }
 
-export default function AdminStaffLeavePage() {
-  const { data: session, status: sessionStatus } = useSession();
-  const router = useRouter();
-  const role = session?.user?.role;
-  const isAuthorized = isAdminRole(role);
+interface StaffLeavePanelProps {
+  /** スタッフ選択の変更を親へ通知 (左の申請リストの絞り込み連動用)。'' = 解除 */
+  onStaffChange?: (staffId: string) => void;
+  className?: string;
+}
 
-  // Soft client-side guard (API 側でも RBAC 強制)
-  useEffect(() => {
-    if (sessionStatus === 'authenticated' && !isAuthorized) {
-      router.replace('/dashboard');
-    }
-  }, [sessionStatus, isAuthorized, router]);
-
+export function StaffLeavePanel({ onStaffChange, className }: StaffLeavePanelProps) {
   const qc = useQueryClient();
   const [staffId, setStaffId] = useState('');
   const [month, setMonth] = useState<Date>(() => startOfMonth(new Date()));
   const monthStart = useMemo(() => fmtIsoLocal(startOfMonth(month)), [month]);
   const monthEnd = useMemo(() => fmtIsoLocal(endOfMonth(month)), [month]);
 
-  // 却下ダイアログ
   const [rejectTarget, setRejectTarget] = useState<PendingRequestV2Read | null>(null);
   const [rejectReason, setRejectReason] = useState('');
 
@@ -138,10 +132,7 @@ export default function AdminStaffLeavePage() {
     () => new Set(pendingItems.map((i) => i.target_date!)),
     [pendingItems],
   );
-  const monthOverrides = useMemo(
-    () => days.filter((d) => d.override !== null),
-    [days],
-  );
+  const monthOverrides = useMemo(() => days.filter((d) => d.override !== null), [days]);
 
   const dateOf = (iso: string) => new Date(iso + 'T00:00:00');
   const modifierDates = (pick: (d: ShiftDay) => boolean) =>
@@ -158,12 +149,17 @@ export default function AdminStaffLeavePage() {
     if (staffId) void qc.invalidateQueries({ queryKey: staffOverridesScopeKey(staffId) });
   };
 
+  const selectStaff = (id: string) => {
+    setStaffId(id);
+    onStaffChange?.(id);
+  };
+
   async function handleDayClick(day: Date) {
     if (!staffId || busy) return;
     const iso = fmtIsoLocal(day);
     if (!iso.startsWith(monthStart.slice(0, 7))) return;
     if (pendingDates.has(iso)) {
-      toast.info('申請中の日です。下の「申請中の休み」から承認または却下してください');
+      toast.info('申請中の日です。「申請中の休み」から承認または却下してください');
       return;
     }
     const st = dayByIso.get(iso);
@@ -246,61 +242,74 @@ export default function AdminStaffLeavePage() {
     !!staffId && (shiftsQuery.isLoading || overridesQuery.isLoading || requestsQuery.isLoading);
 
   return (
-    <div className="space-y-4 p-6">
-      <div>
-        <h1 className="font-serif text-xl font-bold text-text-primary">スタッフ休み・月確定</h1>
-        <p className="mt-1 text-sm text-text-muted">
-          スタッフを選んで休みを調整し、月の出勤カレンダーを確定して本人に通知します。
-          日をクリックすると休みの追加・取消ができます（取消・却下・確定は本人に通知されます）。
-        </p>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-3">
-        <StaffCombobox value={staffId} onChange={setStaffId} className="w-72" />
-        <div className="flex items-center gap-1">
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            aria-label="前の月"
-            onClick={() => changeMonth(-1)}
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <span className="min-w-28 text-center font-serif text-base font-bold tnum">
-            {month.getFullYear()}年{month.getMonth() + 1}月
-          </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            aria-label="次の月"
-            onClick={() => changeMonth(1)}
-          >
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => setMonth(startOfMonth(new Date()))}
-          >
-            今月
-          </Button>
+    <Card className={cn('overflow-hidden', className)}>
+      {/* ヘッダー: ブランド淡色の帯でメイン表とトーンを分ける */}
+      <div className="flex items-center gap-3 border-b border-border-default bg-brand-primary-50 px-4 py-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-primary/15">
+          <CalendarHeart className="h-5 w-5 text-brand-primary" />
+        </span>
+        <div className="min-w-0">
+          <h2 className="font-serif text-base font-bold leading-tight text-text-primary">
+            休み・月確定
+          </h2>
+          <p className="truncate text-[11px] text-text-muted">
+            スタッフ別に休みを調整し、月を確定して本人へ通知
+          </p>
         </div>
       </div>
 
-      {!staffId && (
-        <Card className="p-8 text-center text-sm text-text-muted">
-          スタッフを選択すると、その人の休みカレンダーが表示されます
-        </Card>
-      )}
+      <div className="space-y-3 p-4">
+        <StaffCombobox value={staffId} onChange={selectStaff} className="w-full" />
 
-      {staffId && (
-        <div className="grid gap-4 lg:grid-cols-[auto_1fr]">
-          <Card className="p-3">
+        {!staffId && (
+          <RakusukeNote
+            pose="calendar"
+            size="sm"
+            title="スタッフを選んでください"
+            comment="その人の休みカレンダーがここに表示されます"
+          />
+        )}
+
+        {staffId && (
+          <>
+            {/* 月ナビ */}
+            <div className="flex items-center justify-between">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                aria-label="前の月"
+                onClick={() => changeMonth(-1)}
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <div className="text-center">
+                <p className="font-serif text-sm font-bold tnum text-text-primary">
+                  {month.getFullYear()}年{month.getMonth() + 1}月
+                </p>
+                {confirmation ? (
+                  <Badge variant="success" className="mt-0.5 text-[10px]">
+                    ✓ 確定済み
+                  </Badge>
+                ) : (
+                  <p className="text-[10px] text-text-muted">未確定</p>
+                )}
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                aria-label="次の月"
+                onClick={() => changeMonth(1)}
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+
             {loading ? (
-              <Skeleton className="h-72 w-80" />
+              <Skeleton className="mx-auto h-64 w-64" />
             ) : (
               <>
                 <Calendar
@@ -323,81 +332,56 @@ export default function AdminStaffLeavePage() {
                     requested: 'ring-2 ring-inset ring-brand-primary',
                   }}
                   classNames={{
-                    day: 'h-10 w-10 p-0 font-normal rounded-md hover:bg-bg-muted',
-                    head_cell: 'text-text-muted rounded-md w-10 font-normal text-[0.8rem]',
+                    day: 'h-9 w-9 p-0 text-sm font-normal rounded-md hover:bg-bg-muted',
+                    head_cell: 'text-text-muted rounded-md w-9 font-normal text-[0.75rem]',
                     nav: 'hidden',
                     caption: 'hidden',
                   }}
+                  className="mx-auto w-fit p-0"
                 />
-                <div className="flex flex-wrap gap-3 border-t border-border-default px-1 pt-2">
+                <div className="flex flex-wrap justify-center gap-2 border-t border-border-default pt-2">
                   <LegendChip className="bg-brand-primary-light line-through" label="休み" />
                   <LegendChip className="bg-brand-primary-50" label="半休" />
                   <LegendChip className="bg-bg-muted" label="時間変更" />
                   <LegendChip className="ring-2 ring-inset ring-brand-primary" label="申請中" />
                   <LegendChip className="opacity-50 border border-border-default" label="勤務外" />
                 </div>
-                <p className="mt-2 px-1 text-xs text-text-muted tnum">
-                  出勤 {summary.workDays} 日 ・ 休み {summary.offDays} 日
+                <p className="text-center text-[11px] text-text-muted tnum">
+                  出勤 {summary.workDays} 日 ・ 休み {summary.offDays} 日 —
+                  日をクリックで休みの追加/取消
                 </p>
               </>
             )}
-          </Card>
 
-          <div className="space-y-4">
-            <Card className="p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="font-serif text-base font-bold text-text-primary">
-                    {month.getFullYear()}年{month.getMonth() + 1}月の確定
-                  </h2>
-                  {confirmation ? (
-                    <p className="mt-1 text-xs text-text-muted">
-                      <Badge variant="success" className="mr-1">
-                        確定済み
-                      </Badge>
-                      {new Date(confirmation.confirmed_at).toLocaleString('ja-JP')} に通知済み。
-                      変更した場合は再確定で再通知できます。
-                    </p>
-                  ) : (
-                    <p className="mt-1 text-xs text-text-muted">
-                      未確定です。確定すると本人へ通知され、モバイルの出勤カレンダーに
-                      確定バッジが付きます。
-                    </p>
-                  )}
-                </div>
-                <Button type="button" onClick={() => void handleConfirmMonth()} disabled={busy}>
-                  <CalendarCheck className="mr-1 h-4 w-4" />
-                  {confirmation ? '再確定して通知' : 'この月を確定して通知'}
-                </Button>
-              </div>
-            </Card>
-
-            <Card className="p-4">
-              <h2 className="font-serif text-base font-bold text-text-primary">
-                申請中の休み（{pendingItems.length}件）
-              </h2>
-              {pendingItems.length === 0 && (
-                <p className="mt-2 text-sm text-text-muted">この月の未処理申請はありません</p>
-              )}
-              {pendingItems.length > 0 && (
-                <ul className="mt-2 space-y-2">
+            {/* 申請中 */}
+            <div>
+              <h3 className="text-xs font-medium text-text-secondary">
+                申請中の休み（{pendingItems.length}）
+              </h3>
+              {pendingItems.length === 0 ? (
+                <p className="mt-1 text-xs text-text-muted">この月の未処理申請はありません</p>
+              ) : (
+                <ul className="mt-1.5 max-h-52 space-y-1.5 overflow-y-auto pr-1">
                   {pendingItems.map((item) => (
                     <li
                       key={item.id}
-                      className="flex items-center justify-between gap-3 rounded-md border border-border-default bg-bg-base p-2"
+                      className="flex items-center justify-between gap-2 rounded-md border border-brand-primary-light bg-brand-primary-50/60 px-2 py-1.5"
                     >
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-text-primary">
+                        <p className="text-xs font-medium text-text-primary">
                           {fmtJp(item.target_date!)}
                         </p>
                         {typeof item.payload?.note === 'string' && item.payload.note && (
-                          <p className="truncate text-xs text-text-muted">{item.payload.note}</p>
+                          <p className="truncate text-[11px] text-text-muted">
+                            {item.payload.note}
+                          </p>
                         )}
                       </div>
-                      <div className="flex shrink-0 gap-2">
+                      <div className="flex shrink-0 gap-1">
                         <Button
                           type="button"
                           size="sm"
+                          className="h-7 px-2 text-xs"
                           onClick={() => void handleApprove(item)}
                           disabled={busy}
                         >
@@ -407,6 +391,7 @@ export default function AdminStaffLeavePage() {
                           type="button"
                           size="sm"
                           variant="outline"
+                          className="h-7 px-2 text-xs"
                           onClick={() => {
                             setRejectTarget(item);
                             setRejectReason('');
@@ -420,60 +405,82 @@ export default function AdminStaffLeavePage() {
                   ))}
                 </ul>
               )}
-            </Card>
+            </div>
 
-            <Card className="p-4">
-              <h2 className="font-serif text-base font-bold text-text-primary">
-                登録済みの休み・時間変更（{monthOverrides.length}件）
-              </h2>
-              {monthOverrides.length === 0 && (
-                <p className="mt-2 text-sm text-text-muted">この月の登録はありません</p>
-              )}
-              {monthOverrides.length > 0 && (
-                <ul className="mt-2 space-y-2">
+            {/* 登録済み */}
+            <div>
+              <h3 className="text-xs font-medium text-text-secondary">
+                登録済みの休み・時間変更（{monthOverrides.length}）
+              </h3>
+              {monthOverrides.length === 0 ? (
+                <p className="mt-1 text-xs text-text-muted">この月の登録はありません</p>
+              ) : (
+                <ul className="mt-1.5 max-h-52 space-y-1.5 overflow-y-auto pr-1">
                   {monthOverrides.map((d) => (
                     <li
                       key={d.override!.id}
-                      className="flex items-center justify-between gap-3 rounded-md border border-border-default bg-bg-base p-2"
+                      className="flex items-center justify-between gap-2 rounded-md border border-border-default bg-bg-base px-2 py-1.5"
                     >
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-text-primary">
+                        <p className="text-xs font-medium text-text-primary">
                           <Badge
                             variant={d.kind === 'off' ? 'destructive' : 'secondary'}
-                            className="mr-2"
+                            className="mr-1.5 px-1.5 py-0 text-[10px]"
                           >
                             {d.override!.type}
                           </Badge>
                           {fmtJp(d.date)}
                           {d.override!.start_time && d.override!.end_time && (
-                            <span className="ml-2 text-xs text-text-muted tnum">
+                            <span className="ml-1.5 text-[11px] text-text-muted tnum">
                               {d.override!.start_time}〜{d.override!.end_time}
                             </span>
                           )}
                         </p>
                         {d.override!.note && (
-                          <p className="truncate text-xs text-text-muted">{d.override!.note}</p>
+                          <p className="truncate text-[11px] text-text-muted">
+                            {d.override!.note}
+                          </p>
                         )}
                       </div>
                       <Button
                         type="button"
                         size="sm"
-                        variant="outline"
+                        variant="ghost"
+                        className="h-7 w-7 shrink-0 p-0 text-text-muted hover:text-destructive"
+                        aria-label={`${fmtJp(d.date)} の${d.override!.type}を取消`}
                         onClick={() => void handleDayClick(dateOf(d.date))}
                         disabled={busy}
                       >
-                        <Trash2 className="mr-1 h-3.5 w-3.5" />
-                        取消
+                        <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </li>
                   ))}
                 </ul>
               )}
-            </Card>
-          </div>
-        </div>
-      )}
+            </div>
 
+            {/* 確定 */}
+            <div className="border-t border-border-default pt-3">
+              <Button
+                type="button"
+                className="w-full"
+                onClick={() => void handleConfirmMonth()}
+                disabled={busy}
+              >
+                <CalendarCheck className="mr-1 h-4 w-4" />
+                {confirmation ? '再確定して通知' : 'この月を確定して通知'}
+              </Button>
+              <p className="mt-1.5 text-center text-[11px] text-text-muted">
+                {confirmation
+                  ? `${new Date(confirmation.confirmed_at).toLocaleString('ja-JP')} に通知済み。変更後は再確定で再通知できます`
+                  : '確定すると本人へ通知され、出勤カレンダーに確定バッジが付きます'}
+              </p>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* 却下ダイアログ */}
       <Dialog
         open={rejectTarget !== null}
         onOpenChange={(open) => {
@@ -489,9 +496,9 @@ export default function AdminStaffLeavePage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <Label htmlFor="reject-reason">却下理由（必須）</Label>
+            <Label htmlFor="leave-reject-reason">却下理由（必須）</Label>
             <textarea
-              id="reject-reason"
+              id="leave-reject-reason"
               value={rejectReason}
               onChange={(e) => setRejectReason(e.target.value)}
               rows={3}
@@ -515,6 +522,6 @@ export default function AdminStaffLeavePage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </Card>
   );
 }

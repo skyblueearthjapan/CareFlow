@@ -40,6 +40,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { isAdminRole } from '@/lib/rbac';
+import { StaffLeavePanel } from './_components/StaffLeavePanel';
 import {
   useApproveRequest,
   useApproveWithEdit,
@@ -284,6 +285,10 @@ export default function AdminPendingRequestsPage() {
         </Alert>
       )}
 
+      {/* 2カラム: 左=申請リスト (主) / 右=休み・月確定パネル (副・sticky)。
+          パネルでスタッフを選ぶと左のリストも同じスタッフで絞り込まれる。 */}
+      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_400px]">
+        <div className="min-w-0 space-y-4">
       <Card className="p-4">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
@@ -374,6 +379,16 @@ export default function AdminPendingRequestsPage() {
           />
         </TabsContent>
       </Tabs>
+        </div>
+
+        <StaffLeavePanel
+          className="xl:sticky xl:top-4 xl:max-h-[calc(100vh-2rem)] xl:overflow-y-auto"
+          onStaffChange={(id) => {
+            setStaffIdFilter(id);
+            if (id) setTab('staff');
+          }}
+        />
+      </div>
 
       {/* Reject dialog — rejection_reason は必須 */}
       <Dialog

@@ -8,7 +8,6 @@ import {
   Users,
   UserCircle2,
   CalendarDays,
-  CalendarHeart,
   Grid3x3,
   Building2,
   Plug,
@@ -39,9 +38,9 @@ const NAV_ITEMS = [
   // 連携はページ側が admin 限定 (認証情報等のセンシティブ) のためメニューも admin のみに揃える
   // (旧: manager にも表示されるが中身で拒否される矛盾があった)。
   { href: '/integrations/kaipoke', label: '連携', icon: Plug, adminOnly: true, strictAdmin: true },
+  // 申請履歴ページ右カラムに「休み・月確定」パネルを同居 (staff-shift-confirmation-design.md §3・
+  // 2026-08-18 サブ配置へ移設。独立ページ /admin/staff-leave は廃止)
   { href: '/admin/pending-requests', label: '申請履歴', icon: Inbox, adminOnly: true },
-  // スタッフ別の休み調整 + 月次出勤カレンダー確定 (staff-shift-confirmation-design.md §3)
-  { href: '/admin/staff-leave', label: '休み・月確定', icon: CalendarHeart, adminOnly: true },
   // Wave 4-F: admin audit logs (admin role only). User management was moved
   // to the header rightmost button so admins can reach it from any screen.
   {

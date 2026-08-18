@@ -69,7 +69,14 @@ UNIQUE `(staff_id, month)` — **再確定 = 同一行の UPDATE + 再通知**�
 
 宛先ユーザー不在（staff 未紐付け）は警告なしの no-op（既存流儀）。
 
-## 3. PC 新ページ `/admin/staff-leave`「スタッフ休み・月確定」
+## 3. PC「スタッフ休み・月確定」
+
+**改訂 (2026-08-18 ユーザー指示)**: 独立ページ `/admin/staff-leave` は廃止し、
+**申請履歴ページ `/admin/pending-requests` の右カラム**へサブ配置
+(`_components/StaffLeavePanel.tsx`・400px・xl で sticky + 内部スクロール、
+狭い画面ではリストの下に回り込み)。パネルでスタッフを選ぶと左の申請リストも
+同じスタッフで絞り込まれ、タブが「スタッフ予定」へ切り替わる連動つき。
+機能内容 (下記) は独立ページ時代と同一。
 
 構成（上から）:
 1. **StaffCombobox**（氏名/コード検索）+ 月ナビ（◀ 今月 ▶ — WeekSelector の型）
