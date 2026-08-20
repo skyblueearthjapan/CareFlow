@@ -305,12 +305,16 @@ export function useUpdateCourse(): UseMutationResult<
         accessToken,
         refreshToken,
       }),
-    onSuccess: () => {
+    onSuccess: (_data, { patch }) => {
       void qc.invalidateQueries({ queryKey: COURSES_KEY });
       // 担当変更は BE 側で visits.primary_staff_id にも伝播する (courses.py)。
       // 職員スケジュール盤面は visits の primary で行を決めるため visits も再取得
       // (週空間 A1: 貼り付け直後に帯が移動して見えるように)。
-      void qc.invalidateQueries({ queryKey: ['visits'] });
+      // note 等の非担当 patch では visits は変わらないため invalidate しない
+      // (レビュー指摘: 全アプリの visits クエリを巻き込む過剰再取得の防止)。
+      if ('assigned_staff_id' in patch) {
+        void qc.invalidateQueries({ queryKey: ['visits'] });
+      }
     },
   });
 }

@@ -2855,6 +2855,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   // 当該週の全スタッフ休み/時間変更 (admin のみ取得可・セル網掛け + 貼り付け警告)。
   const weekOverridesQuery = useWeekStaffOverrides(isoYear, isoWeek, canEdit);
   const offByStaffWeekday = useMemo(() => {
+    // 1 セル 1 件前提: DB は UNIQUE(staff, iso_year, iso_week, weekday) で
+    // 同日複数 override を許さない (models/staff.py)。この制約を緩める場合は
+    // 値を配列化してバッジ/警告も複数表示に変えること (レビュー指摘)。
     const m = new Map<string, WeekOverrideRead>();
     for (const o of weekOverridesQuery.data ?? []) {
       m.set(`${o.staff_id}:${o.weekday}`, o);
