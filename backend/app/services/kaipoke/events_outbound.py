@@ -1,4 +1,4 @@
-"""イベント outbound (楽スケ→カイポケ・Phase 3) のプラン構築と送信後の昇格.
+"""イベント outbound (らく助→カイポケ・Phase 3) のプラン構築と送信後の昇格.
 
 正典 = docs/plans/kaipoke-event-two-way-design.md §3-① / §7-b。
 
@@ -14,7 +14,7 @@
   - RPA が返す external_key を当該行に刻み ``source='kaipoke'`` へ変更
     → 以後は取込の update/delete 管理下に入る (1 予定 1 行を維持)。
   - 同じ key の kaipoke 行が既に居る場合 (過去の取込と衝突) は、同一予定が
-    既に楽スケに 2 本ある状態なので **manual 行を削除**して重複を解消する。
+    既にらく助に 2 本ある状態なので **manual 行を削除**して重複を解消する。
 """
 
 from __future__ import annotations
@@ -161,11 +161,11 @@ def to_rpa_items(items: list[OutboundItem]) -> list[dict[str, Any]]:
 
 
 async def promote_sent_events(db: AsyncSession, results: list[dict[str, Any]]) -> dict[str, int]:
-    """RPA の書き込み結果を楽スケ側へ反映する (昇格 / 重複解消)。commit しない。
+    """RPA の書き込み結果をらく助側へ反映する (昇格 / 重複解消)。commit しない。
 
     outcome 'added' / 'skipped_duplicate' (= カイポケ側に同一予定が既にある) は
     どちらも external_key を持つ → 当該 manual 行を kaipoke 系へ昇格。
-    同じ key の kaipoke 行が既に楽スケに居るなら manual 行を削除 (重複解消)。
+    同じ key の kaipoke 行が既にらく助に居るなら manual 行を削除 (重複解消)。
     """
     promoted = 0
     deduped = 0

@@ -390,6 +390,19 @@ export const EventsInboundUnmatchedSchema = z.object({
 });
 export type EventsInboundUnmatched = z.infer<typeof EventsInboundUnmatchedSchema>;
 
+/** 取込イベント × 既存訪問の時間重なり (案A・隠さず警告)。 */
+export const EventsInboundConflictSchema = z.object({
+  staffName: z.string(),
+  date: z.string(),
+  eventTitle: z.string(),
+  eventStart: z.string(),
+  eventEnd: z.string(),
+  patientName: z.string(),
+  visitStart: z.string(),
+  visitEnd: z.string(),
+});
+export type EventsInboundConflict = z.infer<typeof EventsInboundConflictSchema>;
+
 export const EventsInboundPreviewSchema = z.object({
   weekStart: z.string(),
   weekEnd: z.string(),
@@ -401,6 +414,7 @@ export const EventsInboundPreviewSchema = z.object({
   deletes: z.number().int().default(0),
   changes: z.array(EventsInboundChangeSchema).default([]),
   unmatched: z.array(EventsInboundUnmatchedSchema).default([]),
+  conflicts: z.array(EventsInboundConflictSchema).default([]),
 });
 export type EventsInboundPreview = z.infer<typeof EventsInboundPreviewSchema>;
 
@@ -424,7 +438,7 @@ export const EventsInboundStatusSchema = z.object({
 });
 export type EventsInboundStatus = z.infer<typeof EventsInboundStatusSchema>;
 
-/** イベント送信 (outbound・楽スケ→カイポケ・Phase 3) — プレビュー1行 */
+/** イベント送信 (outbound・らく助→カイポケ・Phase 3) — プレビュー1行 */
 export const EventsOutboundItemSchema = z.object({
   eventId: z.string().uuid(),
   staffId: z.string().uuid(),
@@ -497,6 +511,7 @@ export const EventsInboundApplyResultSchema = z.object({
   skipped: z.number().int().default(0),
   failed: z.number().int().default(0),
   results: z.array(EventsInboundApplyItemSchema).default([]),
+  conflicts: z.array(EventsInboundConflictSchema).default([]),
 });
 export type EventsInboundApplyResult = z.infer<typeof EventsInboundApplyResultSchema>;
 

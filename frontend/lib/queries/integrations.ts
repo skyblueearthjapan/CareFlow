@@ -706,7 +706,7 @@ export function useApplyEventsInbound() {
   });
 }
 
-// --- イベント送信 (outbound・楽スケ→カイポケ・Phase 3) ------------------------
+// --- イベント送信 (outbound・らく助→カイポケ・Phase 3) ------------------------
 // 正典 = docs/plans/kaipoke-event-two-way-design.md §3-①。
 
 /** 送信プレビュー (read-only・RPA 不使用・即応答)。 */

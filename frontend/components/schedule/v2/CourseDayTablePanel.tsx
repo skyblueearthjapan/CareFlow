@@ -3564,7 +3564,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     data-testid="staff-tab-add-event"
                     title="スタッフの打合せ・イベントを追加（複数スタッフ一括可）"
                   >
-                    ＋ イベント
+                    ＋イベント
                   </Button>
                   <Button
                     type="button"
@@ -3575,7 +3575,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     data-testid="staff-tab-import-events"
                     title="この週のカイポケの個別業務（イベント）だけを取り込みます（訪問には触れません）"
                   >
-                    ⇩ カイポケから取り込む
+                    ⇩ カイポケ取込
                   </Button>
                   <Button
                     type="button"
@@ -3586,7 +3586,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     data-testid="staff-tab-send-events"
                     title="この週のらく助のイベントをカイポケの職員スケジュールへ登録します"
                   >
-                    ⇪ カイポケへ送る
+                    ⇪ カイポケ送信
                   </Button>
                 </div>
               ) : (

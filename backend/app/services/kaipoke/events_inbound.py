@@ -8,7 +8,7 @@
     には決して触れない (訪問取り込みの「ラウンドトリップ汚染防止」と同じ原則)
   * 冪等キー = external_id "{個別業務ID}:{職員内部ID}:{YYYY-MM-DD}" (RPA 側で生成)。
     upsert 意味論のため、プレビュー後にカイポケ側が動いても apply は安全 (stale 耐性)
-  * 日曜分は取り込まない (PO確定・楽スケは月〜土運用)。RPA は日曜も返すが本層で除外
+  * 日曜分は取り込まない (PO確定・らく助は月〜土運用)。RPA は日曜も返すが本層で除外
   * メモ系 (start==end) もそのまま保存 (表示は📝チップ・ゼロ長のため割当へ影響なし)
   * スタッフ名寄せは訪問取り込みと同一機構 (load_staff_name_index / match_name)。
     未解決職員の予定は取り込まず unmatched として可視化する
@@ -24,7 +24,10 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+from app.models.patient import Patient
 from app.models.staff import Staff, StaffEvent
+from app.models.visit import Visit
+from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.kaipoke.inbound import load_staff_name_index
 from app.services.kaipoke.name_match import match_name
 
@@ -78,7 +81,7 @@ class EventsPlan:
     week_start: date
     week_end: date  # 月〜土の土曜 (取り込み対象範囲の末日)
     changes: list[EventChange] = field(default_factory=list)
-    # 名寄せ未解決: staff_name → 件数 (楽スケ未登録職員の予定は取り込まない)
+    # 名寄せ未解決: staff_name → 件数 (らく助未登録職員の予定は取り込まない)
     unmatched: dict[str, int] = field(default_factory=dict)
     sunday_skipped: int = 0
     fetched_total: int = 0
@@ -125,6 +128,107 @@ async def fetch_week_tasks(
     if not isinstance(result.get("tasks"), list):
         raise EventsFetchError("individual-tasks: tasks missing in response")
     return result
+
+
+@dataclass
+class EventVisitConflict:
+    """取込イベント × 既存訪問の時間重なり (案A・2026-08-21 ユーザー確定).
+
+    取り込み自体は行い (カイポケが正)、重なりは隠さず警告として返す。
+    解消 (担当変更 / 訪問移動 / イベント側の訂正) は人の判断に委ねる。
+    """
+
+    staff_id: uuid.UUID
+    staff_name: str
+    date: date
+    event_title: str
+    event_start: time
+    event_end: time
+    patient_name: str
+    visit_start: time
+    visit_end: time
+
+
+async def find_event_visit_conflicts(
+    db: AsyncSession,
+    week_start: date,
+    items: list[tuple[uuid.UUID, date, time, time, str]],
+) -> list[EventVisitConflict]:
+    """イベント (staff_id, date, start, end, title) と当該週の訪問の時間重なりを検出する。
+
+    - 対象訪問 = 削除・キャンセル以外で、そのスタッフが担当 (primary または
+      2人体制の assignment) のもの。
+    - メモ系 (start==end) は呼び出し側で除外してから渡すこと。
+    - 判定は半開区間の交差 (visit.start < ev.end AND visit.end > ev.start)。
+    """
+    if not items:
+        return []
+    mon = week_start
+    sunday = week_start + timedelta(days=6)
+    staff_ids = {it[0] for it in items}
+
+    # 当該週・対象スタッフの訪問 (primary + assignment の両経路)
+    base = (
+        select(
+            Visit.id,
+            Visit.visit_date,
+            Visit.start_time,
+            Visit.end_time,
+            Patient.name,
+        )
+        .join(Patient, Patient.id == Visit.patient_id)
+        .where(
+            Visit.visit_date >= mon,
+            Visit.visit_date <= sunday,
+            Visit.deleted_at.is_(None),
+            Visit.status != "cancelled",
+        )
+    )
+    primary_rows = (
+        await db.execute(
+            base.add_columns(Visit.primary_staff_id).where(Visit.primary_staff_id.in_(staff_ids))
+        )
+    ).all()
+    assign_rows = (
+        await db.execute(
+            base.add_columns(VisitStaffAssignment.staff_id)
+            .join(VisitStaffAssignment, VisitStaffAssignment.visit_id == Visit.id)
+            .where(VisitStaffAssignment.staff_id.in_(staff_ids))
+        )
+    ).all()
+
+    # (staff_id, date) → [(patient_name, start, end)] (primary/assignment 重複は排除)
+    by_staff_day: dict[tuple[uuid.UUID, date], list[tuple[str, time, time]]] = {}
+    seen: set[tuple[uuid.UUID, uuid.UUID]] = set()
+    for vid, vdate, vstart, vend, pname, sid in [*primary_rows, *assign_rows]:
+        if sid is None or (vid, sid) in seen:
+            continue
+        seen.add((vid, sid))
+        by_staff_day.setdefault((sid, vdate), []).append((pname or "(無名)", vstart, vend))
+
+    staff_names = {
+        s.id: s.name for s in (await db.scalars(select(Staff).where(Staff.id.in_(staff_ids)))).all()
+    }
+
+    conflicts: list[EventVisitConflict] = []
+    for staff_id, d, ev_start, ev_end, title in items:
+        for pname, vstart, vend in by_staff_day.get((staff_id, d), []):
+            if vstart < ev_end and vend > ev_start:
+                conflicts.append(
+                    EventVisitConflict(
+                        staff_id=staff_id,
+                        staff_name=staff_names.get(staff_id, "(不明)"),
+                        date=d,
+                        event_title=title,
+                        event_start=ev_start,
+                        event_end=ev_end,
+                        patient_name=pname,
+                        visit_start=vstart,
+                        visit_end=vend,
+                    )
+                )
+    conflicts.sort(key=lambda c: (c.date, c.staff_name, c.visit_start))
+    return conflicts
 
 
 async def load_kaipoke_events(db: AsyncSession, week_start: date) -> dict[str, StaffEvent]:

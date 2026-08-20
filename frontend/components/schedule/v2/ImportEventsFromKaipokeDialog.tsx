@@ -20,6 +20,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/sonner';
+import { EventVisitConflictNotice } from './EventVisitConflictNotice';
 import {
   useApplyEventsInbound,
   useEventsInboundPreview,
@@ -161,6 +162,7 @@ export function ImportEventsFromKaipokeDialog({
                 })}
               </ul>
             )}
+            <EventVisitConflictNotice conflicts={plan.conflicts} />
             {plan.unmatched.length > 0 && (
               <p className="text-xs text-warning-strong">
                 ⚠ らく助に未登録の職員の予定 {plan.unmatched.reduce((a, u) => a + u.count, 0)}
@@ -172,9 +174,12 @@ export function ImportEventsFromKaipokeDialog({
         )}
 
         {applied && (
-          <p className="text-sm text-text-primary" data-testid="import-events-done">
-            取り込みが完了しました。盤面のイベント帯に反映されています。
-          </p>
+          <div className="space-y-2">
+            <p className="text-sm text-text-primary" data-testid="import-events-done">
+              取り込みが完了しました。盤面のイベント帯に反映されています。
+            </p>
+            {plan && <EventVisitConflictNotice conflicts={plan.conflicts} />}
+          </div>
         )}
 
         <DialogFooter>

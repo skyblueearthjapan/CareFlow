@@ -1,4 +1,4 @@
-"""イベント送信 (outbound・楽スケ→カイポケ・Phase 3) のテスト.
+"""イベント送信 (outbound・らく助→カイポケ・Phase 3) のテスト.
 
 正典 = docs/plans/kaipoke-event-two-way-design.md §3-①/§7-b。
 
@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Any
-from uuid import UUID
 
 import pytest
 from sqlalchemy import select

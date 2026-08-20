@@ -23,6 +23,7 @@ import type {
   SmartInboundPreview,
 } from '@/lib/schemas/integration';
 
+import { EventVisitConflictNotice } from '@/components/schedule/v2/EventVisitConflictNotice';
 import { type InboundVm, fmtDayLabel, fmtRelativeWeek, fmtWeekLabel } from './useInbound';
 
 const EVENT_ACTION_META: Record<string, { label: string; cls: string }> = {
@@ -390,6 +391,12 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                   </span>
                 </span>
               )}
+              {hasEventChanges && eventsPlan && (eventsPlan.conflicts?.length ?? 0) > 0 && (
+                <span className="block font-medium text-warning-strong" data-testid="confirm-event-conflicts">
+                  ⚠ 訪問と重なるイベントが {eventsPlan.conflicts?.length} 件あります
+                  （取り込み後に警告一覧をご確認ください）
+                </span>
+              )}
               {eventsOnly && (
                 <span className="block font-medium text-text-primary" data-testid="confirm-events-only">
                   イベントのみを取り込みます。訪問の予定には一切触れません。
@@ -585,6 +592,8 @@ function EventsPlanSection({ plan }: { plan: EventsInboundPreview }) {
           </span>
         )}
       </div>
+      {/* 訪問との時間重なり (案A・2026-08-21): 取り込みは行い、隠さず警告する */}
+      <EventVisitConflictNotice conflicts={plan.conflicts} />
       {plan.unmatched.length > 0 && (
         <p className="text-xs text-text-muted">
           らく助未登録のため対象外:{' '}

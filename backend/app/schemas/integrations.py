@@ -437,6 +437,20 @@ class EventsInboundUnmatchedRead(BaseModel):
     count: int
 
 
+class EventsInboundConflictRead(BaseModel):
+    """取込イベント × 既存訪問の時間重なり (案A・警告表示用)。"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    staff_name: str = Field(alias="staffName")
+    target_date: date = Field(alias="date")
+    event_title: str = Field(alias="eventTitle")
+    event_start: str = Field(alias="eventStart")
+    event_end: str = Field(alias="eventEnd")
+    patient_name: str = Field(alias="patientName")
+    visit_start: str = Field(alias="visitStart")
+    visit_end: str = Field(alias="visitEnd")
+
+
 class EventsInboundPreviewRead(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     week_start: date = Field(alias="weekStart")
@@ -449,6 +463,8 @@ class EventsInboundPreviewRead(BaseModel):
     deletes: int = 0
     changes: list[EventsInboundChange] = Field(default_factory=list)
     unmatched: list[EventsInboundUnmatchedRead] = Field(default_factory=list)
+    # 訪問との時間重なり (取り込みは行う・隠さず警告 = 案A)
+    conflicts: list[EventsInboundConflictRead] = Field(default_factory=list)
 
 
 class EventsInboundStartRead(BaseModel):
@@ -476,7 +492,7 @@ class EventsInboundApplyRequest(BaseModel):
     changes: list[EventsInboundChange]
 
 
-# --- イベント送信 (outbound・楽スケ→カイポケ・Phase 3) ------------------------
+# --- イベント送信 (outbound・らく助→カイポケ・Phase 3) ------------------------
 
 
 class EventsOutboundItemRead(BaseModel):
@@ -548,6 +564,8 @@ class EventsInboundApplyResult(BaseModel):
     skipped: int = 0
     failed: int = 0
     results: list[EventsInboundApplyItemRead] = Field(default_factory=list)
+    # 取り込んだイベントと訪問の時間重なり (案A・実適用時のみ算出)
+    conflicts: list[EventsInboundConflictRead] = Field(default_factory=list)
 
 
 # --- 置換取り込み (週白紙化→カイポケ全挿入・2026-07-26 PO確定) --------------

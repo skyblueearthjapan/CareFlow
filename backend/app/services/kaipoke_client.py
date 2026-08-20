@@ -115,7 +115,7 @@ class KaipokeClient:
     async def individual_tasks_apply(
         self, payload: Mapping[str, Any], *, timeout: float | None = None
     ) -> dict[str, Any]:
-        """個別業務(イベント)書き込み (Phase 3・楽スケ→カイポケ)。
+        """個別業務(イベント)書き込み (Phase 3・らく助→カイポケ)。
 
         payload.items を職員スケジュールへ新規登録する (重複は RPA 側で skip)。
         async:true + job_id で即応答し、結果は individual_tasks_apply_result() で

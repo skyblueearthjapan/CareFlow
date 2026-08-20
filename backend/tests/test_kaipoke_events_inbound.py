@@ -662,3 +662,91 @@ async def test_async_preview_status_unknown_job_404(client, db, stub_kaipoke) ->
         _status_url("00000000-0000-0000-0000-000000000000"), headers=_bearer(admin)
     )
     assert res.status_code == 404, res.text
+
+
+# --- 6. 訪問との時間重なり警告 (案A・2026-08-21 ユーザー確定) -----------------
+
+
+async def _seed_visit(db, staff_id, *, d, start_h, end_h, status_val="planned"):
+    from datetime import time as _time
+
+    from app.models import Patient
+    from app.models.visit import Visit
+
+    p = Patient(code=f"P-EC-{start_h}{status_val[:2]}", name="朝倉　美夢", status="active")
+    db.add(p)
+    await db.flush()
+    v = Visit(
+        patient_id=p.id,
+        primary_staff_id=staff_id,
+        visit_date=d,
+        start_time=_time(start_h, 0),
+        end_time=_time(end_h, 0),
+        type="regular",
+        status=status_val,
+        source="manual",
+    )
+    db.add(v)
+    await db.commit()
+    return v
+
+
+@pytest.mark.asyncio
+async def test_preview_reports_visit_conflicts(client, db, stub_kaipoke) -> None:
+    """取込イベントが担当訪問と重なる場合、プレビューに conflicts が載る (取込は妨げない)。"""
+    seeded = await _seed_staff(db)
+    admin = await _make_admin(db)
+
+    # 宇田川の月曜: 9:00-18:00 休みイベント × 10:00-11:00 の訪問 = 重なり
+    await _seed_visit(db, seeded["a"].id, d=WEEK_START, start_h=10, end_h=11)
+    # キャンセル済み訪問は対象外
+    await _seed_visit(
+        db, seeded["a"].id, d=WEEK_START, start_h=14, end_h=15, status_val="cancelled"
+    )
+    stub_kaipoke.tasks = [
+        _task(STAFF_A, "4601519", WEEK_START, "09:00", "18:00", "休み", "690499216"),
+        # メモ系 (start==end) は衝突判定の対象外
+        _task(STAFF_A, "4601519", WEEK_START, "00:00", "00:00", "申し送りメモ", "690499300"),
+    ]
+
+    res = await client.post(
+        PREVIEW_URL, headers=_bearer(admin), json={"weekStart": WEEK_START.isoformat()}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(body["conflicts"]) == 1
+    c = body["conflicts"][0]
+    assert c["staffName"] == STAFF_A
+    assert c["date"] == WEEK_START.isoformat()
+    assert c["eventTitle"] == "休み"
+    assert c["patientName"] == "朝倉　美夢"
+    assert c["visitStart"] == "10:00"
+    assert c["visitEnd"] == "11:00"
+
+
+@pytest.mark.asyncio
+async def test_apply_reports_visit_conflicts(client, db, stub_kaipoke) -> None:
+    """実適用の結果にも conflicts が載る (取り込み自体は成功する)。"""
+    seeded = await _seed_staff(db)
+    admin = await _make_admin(db)
+    await _seed_visit(db, seeded["a"].id, d=WEEK_START, start_h=10, end_h=11)
+
+    result = await _apply(
+        client,
+        admin,
+        [
+            {
+                "action": "add",
+                "externalId": f"690499216:4601519:{WEEK_START.isoformat()}",
+                "staffId": str(seeded["a"].id),
+                "date": WEEK_START.isoformat(),
+                "start": "09:00",
+                "end": "18:00",
+                "title": "休み",
+            }
+        ],
+        dry_run=False,
+    )
+    assert result["added"] == 1  # 取り込みは行われる
+    assert len(result["conflicts"]) == 1
+    assert result["conflicts"][0]["patientName"] == "朝倉　美夢"

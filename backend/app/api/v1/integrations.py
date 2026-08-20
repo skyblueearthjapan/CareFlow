@@ -34,6 +34,7 @@ from app.schemas.integrations import (
     EventsInboundApplyRequest,
     EventsInboundApplyResult,
     EventsInboundChange,
+    EventsInboundConflictRead,
     EventsInboundPreviewRead,
     EventsInboundPreviewRequest,
     EventsInboundStartRead,
@@ -2132,7 +2133,7 @@ def _hhmm(t) -> str:
     return f"{t.hour:02d}:{t.minute:02d}"
 
 
-def _events_plan_to_read(plan) -> EventsInboundPreviewRead:
+def _events_plan_to_read(plan, conflicts=None) -> EventsInboundPreviewRead:
     """EventsPlan → API 応答スキーマ (同期版・非同期 status 共用)。"""
     adds = sum(1 for c in plan.changes if c.action == "add")
     updates = sum(1 for c in plan.changes if c.action == "update")
@@ -2167,7 +2168,30 @@ def _events_plan_to_read(plan) -> EventsInboundPreviewRead:
             EventsInboundUnmatchedRead(staff_name=name, count=count)
             for name, count in sorted(plan.unmatched.items())
         ],
+        conflicts=[_conflict_to_read(c) for c in (conflicts or [])],
     )
+
+
+def _conflict_to_read(c) -> EventsInboundConflictRead:
+    return EventsInboundConflictRead(
+        staff_name=c.staff_name,
+        target_date=c.date,
+        event_title=c.event_title,
+        event_start=_hhmm(c.event_start),
+        event_end=_hhmm(c.event_end),
+        patient_name=c.patient_name,
+        visit_start=_hhmm(c.visit_start),
+        visit_end=_hhmm(c.visit_end),
+    )
+
+
+def _plan_conflict_items(plan):
+    """衝突判定の入力 = add/update のイベント (メモ系 start==end は除外)。"""
+    return [
+        (c.staff_id, c.date, c.start, c.end, c.title)
+        for c in plan.changes
+        if c.action in ("add", "update") and c.start != c.end
+    ]
 
 
 def _events_result_summary(preview: EventsInboundPreviewRead, plan) -> dict[str, Any]:
@@ -2254,7 +2278,10 @@ async def events_inbound_preview(
 
     plan = await build_events_plan(db, week_start=payload.week_start, tasks=result["tasks"])
 
-    preview = _events_plan_to_read(plan)
+    from app.services.kaipoke.events_inbound import find_event_visit_conflicts
+
+    conflicts = await find_event_visit_conflicts(db, payload.week_start, _plan_conflict_items(plan))
+    preview = _events_plan_to_read(plan, conflicts)
     job.status = "completed"
     job.completed_at = datetime.now(UTC)
     job.result_summary = _events_result_summary(preview, plan)
@@ -2417,7 +2444,10 @@ async def events_inbound_preview_status(
         )
 
     plan = await build_events_plan(db, week_start=job.week_start, tasks=result["tasks"])
-    preview = _events_plan_to_read(plan)
+    from app.services.kaipoke.events_inbound import find_event_visit_conflicts
+
+    conflicts = await find_event_visit_conflicts(db, job.week_start, _plan_conflict_items(plan))
+    preview = _events_plan_to_read(plan, conflicts)
     job.status = "completed"
     job.completed_at = datetime.now(UTC)
     job.result_summary = {
@@ -2538,6 +2568,22 @@ async def events_inbound_apply(
         await _commit_or_409(db)
         job_id = job.id
 
+    # 案A (2026-08-21): 取り込んだイベントと訪問の時間重なりを算出して返す
+    # (取り込みは行う・隠さず警告。メモ系と削除は対象外)。
+
+    from app.services.kaipoke.events_inbound import find_event_visit_conflicts
+
+    def _t(v: str) -> _time:
+        h, m = v.split(":")
+        return _time(int(h), int(m))
+
+    conflict_items = [
+        (c.staff_id, c.target_date, _t(c.start), _t(c.end), c.title)
+        for c in payload.changes
+        if c.action in ("add", "update") and c.start != c.end
+    ]
+    conflicts = await find_event_visit_conflicts(db, payload.week_start, conflict_items)
+
     return EventsInboundApplyResult(
         job_id=job_id,
         dry_run=payload.dry_run,
@@ -2558,10 +2604,11 @@ async def events_inbound_apply(
             )
             for r in summary.results
         ],
+        conflicts=[_conflict_to_read(c) for c in conflicts],
     )
 
 
-# --- イベント送信 (outbound・楽スケ→カイポケ・Phase 3) ------------------------
+# --- イベント送信 (outbound・らく助→カイポケ・Phase 3) ------------------------
 # 正典 = docs/plans/kaipoke-event-two-way-design.md §3-①/§7。
 # preview は read-only (RPA 不使用・即応答)。apply は events-preview と同じ
 # 「start(202) → status ポーリング」型で RPA /api/individual-tasks-apply を回す。

@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from typing import Any
 
 import pytest
 from sqlalchemy import func, select
@@ -49,8 +48,14 @@ async def _make_staff(db, name: str = "固定 花子", status: str = "active") -
 
 
 async def _make_default(
-    db, staff: Staff, *, weekday: int = 2, start: str = "09:00", end: str = "09:15",
-    title: str = "朝会", blocking: bool = False,
+    db,
+    staff: Staff,
+    *,
+    weekday: int = 2,
+    start: str = "09:00",
+    end: str = "09:15",
+    title: str = "朝会",
+    blocking: bool = False,
 ) -> StaffEventDefault:
     sh, sm = (int(x) for x in start.split(":"))
     eh, em = (int(x) for x in end.split(":"))
@@ -69,9 +74,7 @@ async def _make_default(
 
 
 async def _fixed_events(db) -> list[StaffEvent]:
-    return list(
-        (await db.scalars(select(StaffEvent).where(StaffEvent.source == "fixed"))).all()
-    )
+    return list((await db.scalars(select(StaffEvent).where(StaffEvent.source == "fixed"))).all())
 
 
 # ---------------------------------------------------------------------------
