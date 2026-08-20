@@ -62,6 +62,45 @@ export function useStaffOverrides(staffId: string | null | undefined, range?: Ov
 }
 
 // ---------------------------------------------------------------------------
+// 週空間 A1: 週の全スタッフ休み/時間変更 (職員スケジュール盤面の休み表示用)
+//   GET /api/v1/staff/overrides-week?iso_year&iso_week  (admin のみ)
+// ---------------------------------------------------------------------------
+
+/** BE `WeekOverrideRead` (schemas/staff_overrides.py) と同期. */
+export interface WeekOverrideRead {
+  id: string;
+  staff_id: string;
+  date: string; // YYYY-MM-DD
+  weekday: number; // 0=Mon..6=Sun
+  type: '休み' | '時間変更' | '午前休' | '午後休';
+  start_time: string | null;
+  end_time: string | null;
+  note: string | null;
+}
+
+export const weekStaffOverridesKey = (isoYear: number, isoWeek: number) =>
+  ['staff-overrides-week', isoYear, isoWeek] as const;
+
+/**
+ * 当該週の全スタッフの休み/時間変更を一覧する (weekly-space-design.md §4-2)。
+ * admin 専用 API のため `enabled` (= canEdit) を必ず渡すこと。
+ * 盤面のセル (staff×weekday) の休み網掛け + コースドロップ時の警告に使う。
+ */
+export function useWeekStaffOverrides(isoYear: number, isoWeek: number, enabled: boolean) {
+  const { accessToken, refreshToken, isAuthenticated } = useAuthTokens();
+
+  return useQuery<WeekOverrideRead[]>({
+    queryKey: weekStaffOverridesKey(isoYear, isoWeek),
+    queryFn: () =>
+      fetcher<WeekOverrideRead[]>(
+        `${STAFF_BASE}/overrides-week?iso_year=${isoYear}&iso_week=${isoWeek}`,
+        { accessToken, refreshToken },
+      ),
+    enabled: isAuthenticated && enabled,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Mutations
 // ---------------------------------------------------------------------------
 

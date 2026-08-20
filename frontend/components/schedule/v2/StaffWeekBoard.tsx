@@ -21,6 +21,7 @@
 import * as React from 'react';
 import { addDays, format } from 'date-fns';
 
+import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
@@ -29,6 +30,11 @@ import { genderPalette } from '@/lib/scheduling/timeline';
 
 import { getStaffEventsForWeekday } from './courseGrid';
 import type { WeekOverviewVisit } from './CourseWeekOverview';
+import {
+  COURSE_DND_MIME,
+  readCourseDragPayload,
+  type CourseDragPayload,
+} from './WeekCoursePalette';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 
@@ -50,6 +56,17 @@ export interface StaffWeekBoardProps {
   onAddEvent?: (staffId: string, date: Date) => void;
   /** イベント帯クリック → 編集/削除ダイアログ。 */
   onEventClick?: (ev: EventRead, staffId: string) => void;
+  // ─── 週空間 A1 (weekly-space-design.md §4): コース貼り付け DnD ───
+  /** `${templateId}:${weekday}` → course_id。コース帯のドラッグ元解決に使う。 */
+  courseIdByTemplateWeekday?: Map<string, string>;
+  /** パレット/他セルからのコースドロップ = 今週のコース担当変更 (週のみ)。 */
+  onCourseDrop?: (courseId: string, staffId: string, weekday: number) => void;
+  /** ドラッグ中 payload (ドロップ可能セルのハイライト用)。 */
+  activeCourseDrag?: CourseDragPayload | null;
+  /** セル内コース帯のドラッグ開始/終了 (パレットと同じ通知)。 */
+  onCourseDragChange?: (drag: CourseDragPayload | null) => void;
+  /** `${staffId}:${weekday}` → 休み/時間変更 (セル網掛け + ドロップ警告の表示根拠)。 */
+  offByStaffWeekday?: Map<string, WeekOverrideRead>;
 }
 
 const UNASSIGNED_KEY = '__unassigned__';
@@ -78,6 +95,11 @@ export function StaffWeekBoard({
   showAllStaff = false,
   onAddEvent,
   onEventClick,
+  courseIdByTemplateWeekday,
+  onCourseDrop,
+  activeCourseDrag,
+  onCourseDragChange,
+  offByStaffWeekday,
 }: StaffWeekBoardProps) {
   const templateById = React.useMemo(() => {
     const m = new Map<string, CourseTemplateRead>();
@@ -217,13 +239,59 @@ export function StaffWeekBoard({
                     rowKey !== UNASSIGNED_KEY
                       ? getStaffEventsForWeekday(rowKey, wd, staffEventsByStaff)
                       : [];
+                  // 週空間 A1: 休み網掛け + コースドロップ受け入れ。
+                  const off =
+                    rowKey !== UNASSIGNED_KEY
+                      ? offByStaffWeekday?.get(`${rowKey}:${wd}`)
+                      : undefined;
+                  const droppable = !!onCourseDrop && rowKey !== UNASSIGNED_KEY;
+                  const dropHighlight =
+                    droppable && activeCourseDrag != null && activeCourseDrag.weekday === wd;
                   return (
                     <td
                       key={wd}
-                      className="border-r border-border-subtle px-2 py-1.5"
+                      className={[
+                        'border-r border-border-subtle px-2 py-1.5',
+                        off ? 'bg-amber-50' : '',
+                        dropHighlight ? 'outline outline-2 -outline-offset-2 outline-brand-primary/50' : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' ')}
                       data-testid={`staff-week-cell-${rowKey}-${wd}`}
+                      onDragOver={
+                        droppable
+                          ? (e) => {
+                              if (!e.dataTransfer.types.includes(COURSE_DND_MIME)) return;
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = 'move';
+                            }
+                          : undefined
+                      }
+                      onDrop={
+                        droppable
+                          ? (e) => {
+                              const payload = readCourseDragPayload(e.dataTransfer);
+                              if (!payload) return;
+                              e.preventDefault();
+                              onCourseDrop(payload.courseId, rowKey, wd);
+                            }
+                          : undefined
+                      }
                     >
                       <div className="space-y-1.5">
+                        {/* 休み/時間変更バッジ (weekly-space-design.md §4-2: 隠さず表示・貼り付け自体は止めない) */}
+                        {off ? (
+                          <div
+                            className="inline-flex items-center rounded bg-amber-100 px-1.5 py-px text-[10px] font-bold text-amber-800"
+                            title={off.note ?? undefined}
+                            data-testid={`staff-week-off-${rowKey}-${wd}`}
+                          >
+                            {off.type}
+                            {off.type === '時間変更' && off.start_time && off.end_time
+                              ? ` ${off.start_time}〜${off.end_time}`
+                              : ''}
+                          </div>
+                        ) : null}
                         {/* イベント (緑・カイポケの個別業務と同じ立ち位置)。📝 = ゼロ長メモ。
                             onEventClick があれば「正典」としてクリック編集可能 (§昇格)。 */}
                         {events.map((ev) => {
@@ -262,10 +330,49 @@ export function StaffWeekBoard({
                             </div>
                           );
                         })}
-                        {/* コース見出し + 訪問明細 (案B: 常時表示) */}
-                        {courses.map((cc) => (
+                        {/* コース見出し + 訪問明細 (案B: 常時表示)。
+                            週空間 A1: 見出しチップは course_id が引ければドラッグ元になる
+                            (別スタッフのセル/パレットへ = 今週のみの担当付替/解除)。 */}
+                        {courses.map((cc) => {
+                          const chipCourseId =
+                            onCourseDrop && courseIdByTemplateWeekday
+                              ? (courseIdByTemplateWeekday.get(`${cc.templateId}:${wd}`) ?? null)
+                              : null;
+                          return (
                           <div key={cc.templateId}>
-                            <div className="mb-0.5 inline-flex items-center rounded bg-bg-muted px-1.5 py-px text-[10px] font-bold text-text-secondary">
+                            <div
+                              className={[
+                                'mb-0.5 inline-flex items-center rounded bg-bg-muted px-1.5 py-px text-[10px] font-bold text-text-secondary',
+                                chipCourseId ? 'cursor-grab active:cursor-grabbing' : '',
+                              ]
+                                .filter(Boolean)
+                                .join(' ')}
+                              draggable={!!chipCourseId}
+                              onDragStart={
+                                chipCourseId
+                                  ? (e) => {
+                                      const payload = {
+                                        courseId: chipCourseId,
+                                        weekday: wd,
+                                      };
+                                      e.dataTransfer.setData(
+                                        COURSE_DND_MIME,
+                                        JSON.stringify(payload),
+                                      );
+                                      e.dataTransfer.effectAllowed = 'move';
+                                      onCourseDragChange?.(payload);
+                                    }
+                                  : undefined
+                              }
+                              onDragEnd={chipCourseId ? () => onCourseDragChange?.(null) : undefined}
+                              title={
+                                chipCourseId
+                                  ? `${cc.label} — 別のスタッフのセルへドラッグで担当付け替え（今週のみ）`
+                                  : undefined
+                              }
+                              data-testid={`staff-week-course-chip-${cc.templateId}-${wd}`}
+                            >
+                              {chipCourseId ? '⠿ ' : ''}
                               {cc.label}
                             </div>
                             <ul className="space-y-0.5">
@@ -326,7 +433,8 @@ export function StaffWeekBoard({
                                 })}
                             </ul>
                           </div>
-                        ))}
+                          );
+                        })}
                         {courses.length === 0 &&
                           events.length === 0 &&
                           !(onAddEvent && rowKey !== UNASSIGNED_KEY) && (

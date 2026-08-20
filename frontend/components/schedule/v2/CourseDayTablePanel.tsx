@@ -108,6 +108,7 @@ import {
   useUpdateEventForDrag,
   useWeekStaffEvents,
 } from '@/lib/queries/staff-events';
+import { useWeekStaffOverrides, type WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import { useDeleteVisit, useVisits } from '@/lib/queries/visits';
 import { useBulkSyncWeekToFixedMutation } from '@/lib/api/patientSync';
@@ -163,6 +164,11 @@ import {
 } from './courseGrid';
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
 import { StaffWeekBoard } from './StaffWeekBoard';
+import {
+  WeekCoursePalette,
+  type CourseDragPayload,
+  type PaletteCourse,
+} from './WeekCoursePalette';
 import {
   parseTlColDroppableId,
   parseTlPairDraggableId,
@@ -2794,14 +2800,16 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     warnings: ConstraintWarning[];
   } | null>(null);
 
+  // 戻り値 (週空間 A1): 反映が成功したら true。422確認フローへ回った/失敗は false
+  // (呼び出し側が「休みの日に貼った」警告トースト等を成功時だけ出すために使う)。
   const handleChangeAssignedStaff = async (
     courseId: string,
     staffId: string | null,
     acknowledge = false,
-  ) => {
+  ): Promise<boolean> => {
     if (!canEdit) {
       toast.warning('編集権限がありません');
-      return;
+      return false;
     }
     try {
       const opGroupId = crypto.randomUUID();
@@ -2816,6 +2824,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       invalidateOpLog(isoYear, isoWeek);
       setConstraintConfirm(null);
       toast.success(staffId ? '担当を更新しました' : '担当を未割当にしました');
+      return true;
     } catch (err) {
       // 422 + 構造化 detail なら「確認して通す」フローへ (ブロックではない)。
       const detail =
@@ -2824,7 +2833,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           : null;
       if (detail && !acknowledge) {
         setConstraintConfirm({ courseId, staffId, warnings: detail.warnings });
-        return;
+        return false;
       }
       const msg =
         err instanceof ApiError
@@ -2834,7 +2843,117 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             : '不明なエラー';
       setConstraintConfirm(null);
       toast.error(`担当の更新に失敗しました: ${msg}`);
+      return false;
     }
+  };
+
+  // ─── 週空間 A1 (weekly-space-design.md §4): コースパレット + 貼り付け DnD ───
+
+  // ドラッグ中 payload (盤面のドロップ可能セルのハイライト用)。
+  const [courseDrag, setCourseDrag] = useState<CourseDragPayload | null>(null);
+
+  // 当該週の全スタッフ休み/時間変更 (admin のみ取得可・セル網掛け + 貼り付け警告)。
+  const weekOverridesQuery = useWeekStaffOverrides(isoYear, isoWeek, canEdit);
+  const offByStaffWeekday = useMemo(() => {
+    const m = new Map<string, WeekOverrideRead>();
+    for (const o of weekOverridesQuery.data ?? []) {
+      m.set(`${o.staff_id}:${o.weekday}`, o);
+    }
+    return m;
+  }, [weekOverridesQuery.data]);
+
+  // `${templateId}:${weekday}` → course_id (assignedStaffByTemplateWeekday と同じ
+  // 突合ロジック・未割当コースも含む)。盤面のコース帯チップのドラッグ元解決に使う。
+  const courseIdByTemplateWeekday = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of courses) {
+      const tpl = templates.find(
+        (t) =>
+          t.office_id === c.office_id &&
+          (t.label || '').trim().slice(0, 1).toUpperCase() === String(c.code).toUpperCase(),
+      );
+      if (tpl) m.set(`${tpl.id}:${c.weekday}`, c.id);
+    }
+    return m;
+  }, [courses, templates]);
+
+  // パレット表示用のコースカード (件数・合計分・時間帯は当週 visits から算出)。
+  const paletteCourses = useMemo<PaletteCourse[]>(() => {
+    const statsByCourseId = new Map<
+      string,
+      { count: number; minutes: number; first: string | null; last: string | null }
+    >();
+    for (const v of weekVisits) {
+      const cid = v.course_id ?? null;
+      if (!cid) continue;
+      let s = statsByCourseId.get(cid);
+      if (!s) {
+        s = { count: 0, minutes: 0, first: null, last: null };
+        statsByCourseId.set(cid, s);
+      }
+      s.count += 1;
+      const st = (v.start_time ?? '').slice(0, 5);
+      const en = (v.end_time ?? '').slice(0, 5);
+      if (st && en) {
+        const mins =
+          (Number(en.slice(0, 2)) - Number(st.slice(0, 2))) * 60 +
+          (Number(en.slice(3, 5)) - Number(st.slice(3, 5)));
+        if (Number.isFinite(mins) && mins > 0) s.minutes += mins;
+      }
+      if (st && (!s.first || st < s.first)) s.first = st;
+      if (en && (!s.last || en > s.last)) s.last = en;
+    }
+    return courses
+      .filter((c) => c.weekday >= 0 && c.weekday <= 5)
+      .map((c) => {
+        const officeName = officeNameById.get(c.office_id) ?? '';
+        const s = statsByCourseId.get(c.id);
+        const staff = c.assigned_staff_id ? staffMap.get(c.assigned_staff_id) : undefined;
+        return {
+          id: c.id,
+          weekday: c.weekday,
+          label: `${officeName}${c.code}`,
+          assignedStaffId: c.assigned_staff_id ?? null,
+          assignedStaffName: staff?.name ?? null,
+          visitCount: s?.count ?? 0,
+          totalMinutes: s?.minutes ?? 0,
+          timeRange: s?.first && s?.last ? `${s.first}〜${s.last}` : null,
+        };
+      });
+  }, [courses, weekVisits, officeNameById, staffMap]);
+
+  /** パレット/セル間のコースドロップ = 今週のコース担当変更 (マスタ不変)。 */
+  const handleCourseDropOnStaff = async (courseId: string, staffId: string, weekday: number) => {
+    setCourseDrag(null);
+    const course = courses.find((c) => c.id === courseId);
+    if (!course) return;
+    if (course.weekday !== weekday) {
+      // 曜日移動は Phase A2 (course-move-weekday)。A1 では同一曜日のみ。
+      toast.info('曜日をまたぐ貼り付けはまだできません — 同じ曜日のセルに貼ってください');
+      return;
+    }
+    if (course.assigned_staff_id === staffId) return;
+    const staff = staffMap.get(staffId);
+    if (staff?.is_trainee) {
+      toast.error('新人はコース担当にできません（同行で割り当ててください）');
+      return;
+    }
+    const ok = await handleChangeAssignedStaff(courseId, staffId);
+    // 休みの日への貼り付けは「行うが隠さず知らせる」(§4-2・ブロックしない)。
+    const off = offByStaffWeekday.get(`${staffId}:${weekday}`);
+    if (ok && off) {
+      toast.warning(
+        `${staff?.name ?? 'このスタッフ'}さんはこの日「${off.type}」の予定です。担当を確認してください`,
+      );
+    }
+  };
+
+  /** パレットへのドロップ = 担当解除 (未割当へ戻す・今週のみ)。 */
+  const handleCourseUnassignDrop = (courseId: string) => {
+    setCourseDrag(null);
+    const course = courses.find((c) => c.id === courseId);
+    if (!course || !course.assigned_staff_id) return;
+    void handleChangeAssignedStaff(courseId, null);
   };
 
   // ─── 2026-W20: 月-土タブ「リスト表示」用 — Before/After 形式の CourseListItem[] ──
@@ -3812,10 +3931,28 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   onEventClick={
                     canEdit ? (ev, staffId) => setTlEventEdit({ staffId, event: ev }) : undefined
                   }
+                  // 週空間 A1: コース貼り付け DnD (weekly-space-design.md §4)。
+                  courseIdByTemplateWeekday={canEdit ? courseIdByTemplateWeekday : undefined}
+                  onCourseDrop={
+                    canEdit
+                      ? (courseId, staffId, weekday) =>
+                          void handleCourseDropOnStaff(courseId, staffId, weekday)
+                      : undefined
+                  }
+                  activeCourseDrag={courseDrag}
+                  onCourseDragChange={setCourseDrag}
+                  offByStaffWeekday={offByStaffWeekday}
+                />
+                {/* コースの表 (パレット): 未割当コースをセルへドラッグして貼り付ける。 */}
+                <WeekCoursePalette
+                  courses={paletteCourses}
+                  canEdit={canEdit}
+                  onDragChange={setCourseDrag}
+                  onUnassignDrop={canEdit ? handleCourseUnassignDrop : undefined}
                 />
                 <p className="text-[11px] text-text-muted">
-                  訪問（コースの予定）はここでは読み取り専用です — 編集は週・曜日タブで。
-                  イベントはこの画面が正典で、＋やイベント帯のクリックで追加・編集できます。
+                  コースは下の「コースの表」からスタッフのセルへドラッグで貼り付け（今週のみ・毎週の型には影響しません）。
+                  訪問明細の編集は週・曜日タブで。イベントはこの画面が正典で、＋やイベント帯のクリックで追加・編集できます。
                 </p>
               </div>
             ) : /* Wave 18 Phase B-6: 「週」タブ選択時は CourseWeekOverview を表示 */

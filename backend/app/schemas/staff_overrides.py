@@ -135,6 +135,26 @@ class OverrideUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class WeekOverrideRead(BaseModel):
+    """1 週の全スタッフ休み/時間変更 (週空間 A1: 職員スケジュール盤面の休み表示用).
+
+    `GET /staff/overrides-week` のレスポンス 1 行。`OverrideRead` と違い
+    staff_id / weekday を露出する (盤面のセル = staff×weekday に直接引くため)。
+    値は endpoint 側で dict に整形して渡す (ORM 直渡しはしない)。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: UUID
+    staff_id: UUID
+    date: _Date
+    weekday: int = Field(ge=0, le=6, description="0=Mon..6=Sun")
+    type: Literal["休み", "時間変更", "午前休", "午後休"]
+    start_time: str | None = None
+    end_time: str | None = None
+    note: str | None = None
+
+
 class OverrideRead(BaseModel):
     """Response contract aligned with Frontend zod `overrideReadSchema`."""
 

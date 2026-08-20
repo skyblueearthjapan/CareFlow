@@ -149,6 +149,66 @@ async def test_overrides_delete_returns_204(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_overrides_week_lists_all_staff_for_week(client, db) -> None:
+    """週空間 A1: GET /staff/overrides-week は当該週の全スタッフ分を返す."""
+    admin = await _make_user(db, "ov-admin6@example.com", "admin")
+    staff_a = await _make_staff(db, name="週太郎")
+    staff_b = await _make_staff(db, name="週次郎")
+    # 2026-05-06(水) = ISO 2026-W19 / 2026-05-13(水) = W20 (週外・除外確認用)
+    for sid, d in (
+        (staff_a.id, "2026-05-06"),
+        (staff_b.id, "2026-05-08"),
+        (staff_a.id, "2026-05-13"),
+    ):
+        r = await client.post(
+            f"/api/v1/staff/{sid}/overrides",
+            headers=_bearer(admin),
+            json={"date": d, "type": "休み"},
+        )
+        assert r.status_code == 201, r.text
+
+    res = await client.get(
+        "/api/v1/staff/overrides-week",
+        headers=_bearer(admin),
+        params={"iso_year": 2026, "iso_week": 19},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(body) == 2
+    by_staff = {row["staff_id"]: row for row in body}
+    assert str(staff_a.id) in by_staff
+    assert str(staff_b.id) in by_staff
+    row_a = by_staff[str(staff_a.id)]
+    assert row_a["date"] == "2026-05-06"
+    assert row_a["weekday"] == 2  # 水曜
+    assert row_a["type"] == "休み"
+
+
+@pytest.mark.asyncio
+async def test_overrides_week_staff_role_returns_403(client, db) -> None:
+    """他人の休みの横断一覧は admin のみ (weekly-space-design.md §4-2)."""
+    staff = await _make_staff(db)
+    sr_user = await _make_user(db, "ov-staff-week@example.com", "staff", staff_id=staff.id)
+    res = await client.get(
+        "/api/v1/staff/overrides-week",
+        headers=_bearer(sr_user),
+        params={"iso_year": 2026, "iso_week": 19},
+    )
+    assert res.status_code == 403, res.text
+
+
+@pytest.mark.asyncio
+async def test_overrides_week_invalid_week_returns_422(client, db) -> None:
+    admin = await _make_user(db, "ov-admin7@example.com", "admin")
+    res = await client.get(
+        "/api/v1/staff/overrides-week",
+        headers=_bearer(admin),
+        params={"iso_year": 2025, "iso_week": 53},  # 2025 は W53 が存在しない (52週の年)
+    )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
 async def test_overrides_post_staff_role_returns_403(client, db) -> None:
     staff = await _make_staff(db)
     sr_user = await _make_user(db, "ov-staff@example.com", "staff", staff_id=staff.id)

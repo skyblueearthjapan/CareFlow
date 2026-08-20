@@ -8,10 +8,12 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 
 import { StaffWeekBoard } from '../StaffWeekBoard';
+import { COURSE_DND_MIME } from '../WeekCoursePalette';
 import type { WeekOverviewVisit } from '../CourseWeekOverview';
+import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
@@ -216,5 +218,111 @@ describe('StaffWeekBoard', () => {
     expect(screen.getByTestId(`staff-week-row-${STAFF_1}`)).toBeInTheDocument();
     expect(screen.getByTestId(`staff-week-row-${STAFF_2}`)).toBeInTheDocument();
     expect(screen.queryByTestId('staff-week-empty')).not.toBeInTheDocument();
+  });
+
+  // ─── 週空間 A1 (weekly-space-design.md §4): コース貼り付け DnD + 休み表示 ──
+
+  const COURSE_ID = '00000000-0000-4000-8000-00000000c001';
+
+  const makeDataTransfer = (payload: object | null) => ({
+    types: payload ? [COURSE_DND_MIME] : [],
+    getData: (t: string) => (payload && t === COURSE_DND_MIME ? JSON.stringify(payload) : ''),
+    setData: vi.fn(),
+    dropEffect: '',
+    effectAllowed: '',
+  });
+
+  it('⑧ offByStaffWeekday: 休みバッジがセルに出る', () => {
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        offByStaffWeekday={
+          new Map([
+            [
+              `${STAFF_1}:0`,
+              {
+                id: 'o1',
+                staff_id: STAFF_1,
+                date: '2026-07-20',
+                weekday: 0,
+                type: '休み',
+                start_time: null,
+                end_time: null,
+                note: '私用',
+              } as WeekOverrideRead,
+            ],
+          ])
+        }
+      />,
+    );
+    const badge = screen.getByTestId(`staff-week-off-${STAFF_1}-0`);
+    expect(badge).toHaveTextContent('休み');
+    // 他セルには出ない
+    expect(screen.queryByTestId(`staff-week-off-${STAFF_1}-1`)).not.toBeInTheDocument();
+  });
+
+  it('⑨ onCourseDrop: セルへのドロップで (courseId, staffId, weekday) が飛ぶ', () => {
+    const onCourseDrop = vi.fn();
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        onCourseDrop={onCourseDrop}
+      />,
+    );
+    const cell = screen.getByTestId(`staff-week-cell-${STAFF_1}-0`);
+    fireEvent.drop(cell, {
+      dataTransfer: makeDataTransfer({ courseId: COURSE_ID, weekday: 0 }),
+    });
+    expect(onCourseDrop).toHaveBeenCalledWith(COURSE_ID, STAFF_1, 0);
+    // 担当なし行はドロップ先にならない
+    onCourseDrop.mockClear();
+    const unassignedCell = screen.getByTestId('staff-week-cell-__unassigned__-2');
+    fireEvent.drop(unassignedCell, {
+      dataTransfer: makeDataTransfer({ courseId: COURSE_ID, weekday: 2 }),
+    });
+    expect(onCourseDrop).not.toHaveBeenCalled();
+  });
+
+  it('⑩ courseIdByTemplateWeekday: コース帯チップがドラッグ可能になり payload を積む', () => {
+    const onCourseDrop = vi.fn();
+    const onCourseDragChange = vi.fn();
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        onCourseDrop={onCourseDrop}
+        onCourseDragChange={onCourseDragChange}
+        courseIdByTemplateWeekday={new Map([[`${TPL_A}:0`, COURSE_ID]])}
+      />,
+    );
+    const chip = screen.getByTestId(`staff-week-course-chip-${TPL_A}-0`);
+    expect(chip).toHaveAttribute('draggable', 'true');
+    const dt = makeDataTransfer(null);
+    fireEvent.dragStart(chip, { dataTransfer: dt });
+    expect(dt.setData).toHaveBeenCalledWith(
+      COURSE_DND_MIME,
+      JSON.stringify({ courseId: COURSE_ID, weekday: 0 }),
+    );
+    expect(onCourseDragChange).toHaveBeenCalledWith({ courseId: COURSE_ID, weekday: 0 });
+    // course_id が引けないチップ (火曜B) はドラッグ不可のまま
+    const tueChip = screen.getByTestId(`staff-week-course-chip-${TPL_B}-1`);
+    expect(tueChip).toHaveAttribute('draggable', 'false');
   });
 });

@@ -22,10 +22,67 @@ from app.schemas.staff_overrides import (
     OverrideCreate,
     OverrideRead,
     OverrideUpdate,
+    WeekOverrideRead,
     _db_type_to_label,
 )
 
 router = APIRouter()
+
+
+@router.get(
+    "/overrides-week",
+    response_model=list[WeekOverrideRead],
+    summary="1 週の全スタッフ休み/時間変更を一覧 (週空間 A1: 職員スケジュール盤面用)",
+)
+async def list_week_overrides(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    iso_year: Annotated[int, Query(ge=2000, le=2100)],
+    iso_week: Annotated[int, Query(ge=1, le=53)],
+) -> list[WeekOverrideRead]:
+    """職員スケジュール盤面 (staff×weekday) にセル単位で引ける形で返す.
+
+    weekly-space-design.md §4-2: コースを貼るスタッフのその日が休みかどうかを
+    盤面表示 + ドロップ時警告に使う (警告のみ・ブロックしない)。
+    RBAC: admin のみ (他人の休みの横断一覧のため)。閲覧側 FE は canEdit の
+    ときだけ取得する。
+    """
+    try:
+        date.fromisocalendar(iso_year, iso_week, 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"invalid ISO week: year={iso_year} week={iso_week}",
+        ) from exc
+
+    rows = (
+        await db.scalars(
+            select(StaffWeeklyOverride)
+            .join(Staff, Staff.id == StaffWeeklyOverride.staff_id)
+            .where(
+                StaffWeeklyOverride.iso_year == iso_year,
+                StaffWeeklyOverride.iso_week == iso_week,
+                Staff.deleted_at.is_(None),
+            )
+            .order_by(StaffWeeklyOverride.weekday)
+        )
+    ).all()
+
+    out: list[WeekOverrideRead] = []
+    for row in rows:
+        out.append(
+            WeekOverrideRead(
+                id=row.id,
+                staff_id=row.staff_id,
+                date=date.fromisocalendar(row.iso_year, row.iso_week, row.weekday + 1),
+                weekday=row.weekday,
+                type=_db_type_to_label(row.override_type),  # type: ignore[arg-type]
+                start_time=row.start_time.strftime("%H:%M") if row.start_time else None,
+                end_time=row.end_time.strftime("%H:%M") if row.end_time else None,
+                note=row.reason,
+            )
+        )
+    return out
 
 
 def _check_read_access(user: User, staff_id: UUID) -> None:

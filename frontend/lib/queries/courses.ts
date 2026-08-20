@@ -307,6 +307,10 @@ export function useUpdateCourse(): UseMutationResult<
       }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: COURSES_KEY });
+      // 担当変更は BE 側で visits.primary_staff_id にも伝播する (courses.py)。
+      // 職員スケジュール盤面は visits の primary で行を決めるため visits も再取得
+      // (週空間 A1: 貼り付け直後に帯が移動して見えるように)。
+      void qc.invalidateQueries({ queryKey: ['visits'] });
     },
   });
 }
