@@ -224,6 +224,7 @@ import {
 } from '@/components/schedule/timeline/SlotRegisterDialog';
 import { TimelineEventAddDialog } from '@/components/schedule/timeline/TimelineEventAddDialog';
 import { EventEditDialog } from '@/app/(app)/staff/[id]/_components/EventEditDialog';
+import { SendEventsToKaipokeDialog } from './SendEventsToKaipokeDialog';
 // Phase G-88: 営業時間設定を空き枠表示に反映 (取得前/失敗時は既定枠にフォールバック).
 import { useSchedulingSettings } from '@/lib/queries/schedulingSettings';
 
@@ -1735,6 +1736,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     staffId: string;
     event: EventRead;
   } | null>(null);
+
+  // イベントをカイポケへ送る (Phase 3・職員スケジュールタブのツールバーから)
+  const [sendEventsOpen, setSendEventsOpen] = useState(false);
 
   const handleTimelineEventClick = useCallback(
     (ev: EventRead, col: TimelineCourseColumn) => {
@@ -3539,25 +3543,38 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   </button>
                 </div>
               ) : activeTab === 'staff' ? (
-                /* 職員スケジュールタブ: イベント追加の常設入口 (スタッフ起点・複数選択可)。 */
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="default"
-                  disabled={!canEdit}
-                  onClick={() =>
-                    setSlotEventState({
-                      staffId: null,
-                      date: format(weekStart, 'yyyy-MM-dd'),
-                      startHM: '09:00',
-                      endHM: '10:00',
-                    })
-                  }
-                  data-testid="staff-tab-add-event"
-                  title="スタッフの打合せ・イベントを追加（複数スタッフ一括可）"
-                >
-                  ＋ イベント
-                </Button>
+                /* 職員スケジュールタブ: イベント追加 + カイポケ送信の常設入口。 */
+                <div className="inline-flex items-center gap-1.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="default"
+                    disabled={!canEdit}
+                    onClick={() =>
+                      setSlotEventState({
+                        staffId: null,
+                        date: format(weekStart, 'yyyy-MM-dd'),
+                        startHM: '09:00',
+                        endHM: '10:00',
+                      })
+                    }
+                    data-testid="staff-tab-add-event"
+                    title="スタッフの打合せ・イベントを追加（複数スタッフ一括可）"
+                  >
+                    ＋ イベント
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={!canEdit}
+                    onClick={() => setSendEventsOpen(true)}
+                    data-testid="staff-tab-send-events"
+                    title="この週のらく助のイベントをカイポケの職員スケジュールへ登録します"
+                  >
+                    ⇪ カイポケへ送る
+                  </Button>
+                </div>
               ) : (
                 /* T-3: 「週」タブ時は タイムライン / リスト の切替を出す (縦スペース不消費). */
                 <div
@@ -4177,6 +4194,12 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             }}
           />
         ) : null}
+        {/* イベントをカイポケへ送る (Phase 3・職員スケジュールタブ) */}
+        <SendEventsToKaipokeDialog
+          open={sendEventsOpen}
+          onClose={() => setSendEventsOpen(false)}
+          weekStartIso={format(weekStart, 'yyyy-MM-dd')}
+        />
         {/* T-2 ②-b: カード DnD 後の二択 (この週だけ / 固定パターン) */}
         <TimelineMoveDialog
           open={tlMoveState != null}

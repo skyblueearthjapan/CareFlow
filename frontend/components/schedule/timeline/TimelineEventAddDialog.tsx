@@ -11,7 +11,7 @@
  * - 既定選択 = 起動元の列の担当スタッフ (未割当列からは選択なしで開く)
  * - 登録は選択スタッフごとに POST (useCreateEventForStaff)。部分失敗時は
  *   成功済みスタッフをチェックから外してダイアログを維持 (再送で二重登録しない)
- * - イベントは staff_events = **カイポケ反映外** (説明文に明示・既存方針)
+ * - イベントは staff_events。カイポケへの反映は職員スケジュールタブの送信 (Phase 3)
  */
 import * as React from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -157,7 +157,7 @@ export function TimelineEventAddDialog({
     }
     setSubmitting(false);
     if (ngIds.length === 0) {
-      toast.success(`「${payload.title}」を ${okIds.length} 名に登録しました（カイポケ反映外）`);
+      toast.success(`「${payload.title}」を ${okIds.length} 名に登録しました`);
       onClose();
       return;
     }
@@ -183,7 +183,7 @@ export function TimelineEventAddDialog({
         <DialogHeader>
           <DialogTitle>スタッフの打合せ・イベントを追加</DialogTitle>
           <DialogDescription>
-            参加するスタッフを選んで登録します（複数選択可・カイポケには反映されません）。
+            参加するスタッフを選んで登録します（複数選択可）。カイポケへは「職員スケジュール」タブの『カイポケへ送る』で反映できます。
           </DialogDescription>
         </DialogHeader>
 

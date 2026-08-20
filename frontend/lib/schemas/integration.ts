@@ -424,6 +424,44 @@ export const EventsInboundStatusSchema = z.object({
 });
 export type EventsInboundStatus = z.infer<typeof EventsInboundStatusSchema>;
 
+/** イベント送信 (outbound・楽スケ→カイポケ・Phase 3) — プレビュー1行 */
+export const EventsOutboundItemSchema = z.object({
+  eventId: z.string().uuid(),
+  staffId: z.string().uuid(),
+  staffName: z.string(),
+  date: z.string(),
+  start: z.string(),
+  end: z.string(),
+  title: z.string(),
+  isMemo: z.boolean().default(false),
+  sendable: z.boolean(),
+  reason: z.string().nullable().optional(),
+});
+export type EventsOutboundItem = z.infer<typeof EventsOutboundItemSchema>;
+
+export const EventsOutboundPreviewSchema = z.object({
+  weekStart: z.string(),
+  weekEnd: z.string(),
+  items: z.array(EventsOutboundItemSchema).default([]),
+  sendableCount: z.number().int().default(0),
+});
+export type EventsOutboundPreview = z.infer<typeof EventsOutboundPreviewSchema>;
+
+export const EventsOutboundStartSchema = z.object({
+  jobId: z.string(),
+  status: z.literal('running').default('running'),
+  count: z.number().int(),
+});
+export type EventsOutboundStart = z.infer<typeof EventsOutboundStartSchema>;
+
+export const EventsOutboundStatusSchema = z.object({
+  status: z.enum(['running', 'completed', 'failed']),
+  error: z.string().nullable().optional(),
+  summary: z.record(z.unknown()).nullable().optional(),
+  results: z.array(z.record(z.unknown())).nullable().optional(),
+});
+export type EventsOutboundStatus = z.infer<typeof EventsOutboundStatusSchema>;
+
 export const EventsInboundApplyRequestSchema = z.object({
   weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   dryRun: z.boolean().optional(),

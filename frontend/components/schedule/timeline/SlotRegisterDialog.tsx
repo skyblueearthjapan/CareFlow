@@ -5,7 +5,7 @@
  *
  * docs/plans/session-2026-07-07-HANDOFF.md §4 A-2。訪問の配置は既存 place-and-fix を
  * 叩くだけ (新規API・ソルバなし)。会議・イベントは TimelineEventAddDialog へ切り替える
- * (onSwitchToEvent — カイポケ反映外である旨を本ダイアログで明示する)。
+ * (onSwitchToEvent — カイポケ送信は職員スケジュールタブの責務である旨を明示)。
  *
  * 表示専用コンポーネントの原則に従い、API/mutation は持たない:
  *   - onRegisterVisit({patientId, startHM, durationMin}) — Panel が place-and-fix
@@ -268,7 +268,7 @@ export function SlotRegisterDialog({
             ※ 2名体制の患者はプールからのドラッグ（相方コース選択）で配置してください。
           </p>
 
-          {/* 会議・イベント登録への切替 (カイポケ反映外を明示)。 */}
+          {/* 会議・イベント登録への切替。カイポケへは職員スケジュールタブの送信で反映 (Phase 3)。 */}
           <div className="border-t border-border-subtle pt-2">
             <Button
               type="button"
@@ -286,7 +286,7 @@ export function SlotRegisterDialog({
             >
               会議・イベントを登録
               <span className="rounded-full border border-border-default bg-bg-muted px-1.5 py-px text-[9px] font-bold text-text-muted">
-                カイポケ反映外
+                カイポケ送信は職員スケジュールから
               </span>
             </Button>
           </div>

@@ -143,9 +143,9 @@ describe('SlotRegisterDialog', () => {
     expect(screen.getByTestId('slot-register-confirm')).toBeDisabled();
   });
 
-  it('会議・イベント切替ボタンは onSwitchToEvent を呼び、カイポケ反映外を明示する', () => {
+  it('会議・イベント切替ボタンは onSwitchToEvent を呼び、カイポケ送信の導線を明示する', () => {
     const { onSwitchToEvent } = renderDialog();
-    expect(screen.getByText('カイポケ反映外')).toBeInTheDocument();
+    expect(screen.getByText('カイポケ送信は職員スケジュールから')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('slot-register-switch-event'));
     expect(onSwitchToEvent).toHaveBeenCalledTimes(1);
   });

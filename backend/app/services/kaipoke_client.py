@@ -112,6 +112,23 @@ class KaipokeClient:
         """
         return await self._request("GET", "/api/individual-tasks/result")
 
+    async def individual_tasks_apply(
+        self, payload: Mapping[str, Any], *, timeout: float | None = None
+    ) -> dict[str, Any]:
+        """個別業務(イベント)書き込み (Phase 3・楽スケ→カイポケ)。
+
+        payload.items を職員スケジュールへ新規登録する (重複は RPA 側で skip)。
+        async:true + job_id で即応答し、結果は individual_tasks_apply_result() で
+        ポーリング取得する。
+        """
+        return await self._request(
+            "POST", "/api/individual-tasks-apply", json=payload, timeout=timeout
+        )
+
+    async def individual_tasks_apply_result(self) -> dict[str, Any]:
+        """Poll the (single-slot) individual-tasks-apply result (書き込み側)。"""
+        return await self._request("GET", "/api/individual-tasks-apply/result")
+
     async def login_test(
         self, payload: Mapping[str, Any], *, timeout: float | None = None
     ) -> dict[str, Any]:

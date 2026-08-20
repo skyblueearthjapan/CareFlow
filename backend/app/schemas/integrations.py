@@ -476,6 +476,57 @@ class EventsInboundApplyRequest(BaseModel):
     changes: list[EventsInboundChange]
 
 
+# --- イベント送信 (outbound・楽スケ→カイポケ・Phase 3) ------------------------
+
+
+class EventsOutboundItemRead(BaseModel):
+    """送信プレビューの 1 行 (manual イベント)。"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    event_id: UUID = Field(alias="eventId")
+    staff_id: UUID = Field(alias="staffId")
+    staff_name: str = Field(alias="staffName")
+    target_date: date = Field(alias="date")
+    start: str
+    end: str
+    title: str
+    is_memo: bool = Field(alias="isMemo")
+    sendable: bool
+    reason: str | None = None
+
+
+class EventsOutboundPreviewRead(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    week_start: date = Field(alias="weekStart")
+    week_end: date = Field(alias="weekEnd")
+    items: list[EventsOutboundItemRead] = Field(default_factory=list)
+    sendable_count: int = Field(alias="sendableCount")
+
+
+class EventsOutboundStartRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    week_start: date = Field(alias="weekStart")
+    # 省略時は sendable 全件。指定時はその中から sendable のものだけ送る。
+    event_ids: list[UUID] | None = Field(default=None, alias="eventIds")
+
+
+class EventsOutboundStartRead(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    job_id: UUID = Field(alias="jobId")
+    status: Literal["running"] = "running"
+    count: int
+
+
+class EventsOutboundStatusRead(BaseModel):
+    """送信の進行状況。completed のとき summary (counts) と results (行別) が入る。"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    status: Literal["running", "completed", "failed"]
+    error: str | None = None
+    summary: dict[str, Any] | None = None
+    results: list[dict[str, Any]] | None = None
+
+
 class EventsInboundApplyItemRead(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     action: str

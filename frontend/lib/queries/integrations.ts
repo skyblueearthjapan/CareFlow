@@ -31,6 +31,9 @@ import type {
   EventsInboundPreviewRequest,
   EventsInboundStart,
   EventsInboundStatus,
+  EventsOutboundPreview,
+  EventsOutboundStart,
+  EventsOutboundStatus,
   ExpandRequest,
   ExportRequest,
   GeocodingCache,
@@ -698,6 +701,87 @@ export function useApplyEventsInbound() {
       if (res.dryRun) return;
       void qc.invalidateQueries({ queryKey: ['integrations', 'kaipoke', 'jobs'] });
       // イベント帯 (スケジュール画面) を最新化する。
+      void qc.invalidateQueries({ queryKey: ['staff', 'events'] });
+    },
+  });
+}
+
+// --- イベント送信 (outbound・楽スケ→カイポケ・Phase 3) ------------------------
+// 正典 = docs/plans/kaipoke-event-two-way-design.md §3-①。
+
+/** 送信プレビュー (read-only・RPA 不使用・即応答)。 */
+export function useEventsOutboundPreview() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useMutation<EventsOutboundPreview, Error, { weekStart: string }>({
+    mutationFn: (payload) =>
+      fetcher<EventsOutboundPreview>('/api/v1/integrations/events-outbound-preview', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+        signal: AbortSignal.timeout(30_000),
+      }),
+  });
+}
+
+const OUTBOUND_POLL_INTERVAL_MS = 4_000;
+const OUTBOUND_POLL_DEADLINE_MS = 10 * 60_000; // 1件≈40s×件数のため長め
+const OUTBOUND_POLL_MAX_CONSECUTIVE_ERRORS = 3;
+
+/**
+ * イベント送信の実行: start (202) → status ポーリング → 完了サマリを返す。
+ * 完了時に BE 側で manual 行が kaipoke 系へ昇格するため staff-events を invalidate。
+ */
+export function useSendEventsOutbound() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  const qc = useQueryClient();
+
+  return useMutation<EventsOutboundStatus, Error, { weekStart: string; eventIds?: string[] }>({
+    mutationFn: async (payload) => {
+      const start = await fetcher<EventsOutboundStart>(
+        '/api/v1/integrations/events-outbound-apply/start',
+        {
+          method: 'POST',
+          body: JSON.stringify(payload),
+          accessToken,
+          refreshToken,
+          signal: AbortSignal.timeout(45_000),
+        },
+      );
+      const deadline = Date.now() + OUTBOUND_POLL_DEADLINE_MS;
+      let consecutiveErrors = 0;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, OUTBOUND_POLL_INTERVAL_MS));
+        let st: EventsOutboundStatus;
+        try {
+          st = await fetcher<EventsOutboundStatus>(
+            `/api/v1/integrations/events-outbound-apply/status/${start.jobId}`,
+            { accessToken, refreshToken, signal: AbortSignal.timeout(30_000) },
+          );
+          consecutiveErrors = 0;
+        } catch (e) {
+          consecutiveErrors += 1;
+          if (consecutiveErrors >= OUTBOUND_POLL_MAX_CONSECUTIVE_ERRORS) {
+            throw e instanceof Error ? e : new Error('送信状態の確認に失敗しました');
+          }
+          continue;
+        }
+        if (st.status === 'completed') return st;
+        if (st.status === 'failed') {
+          throw new Error(st.error || 'カイポケへの送信に失敗しました');
+        }
+        if (Date.now() > deadline) {
+          throw new Error('送信がタイムアウトしました（10分）。連携の実行状況を確認してください');
+        }
+      }
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['integrations', 'kaipoke', 'jobs'] });
       void qc.invalidateQueries({ queryKey: ['staff', 'events'] });
     },
   });

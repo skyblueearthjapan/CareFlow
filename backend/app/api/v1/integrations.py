@@ -39,6 +39,11 @@ from app.schemas.integrations import (
     EventsInboundStartRead,
     EventsInboundStatusRead,
     EventsInboundUnmatchedRead,
+    EventsOutboundItemRead,
+    EventsOutboundPreviewRead,
+    EventsOutboundStartRead,
+    EventsOutboundStartRequest,
+    EventsOutboundStatusRead,
     ExpandStatusRead,
     GeneratedCsvRead,
     GeocodingCacheRead,
@@ -2554,6 +2559,201 @@ async def events_inbound_apply(
             for r in summary.results
         ],
     )
+
+
+# --- イベント送信 (outbound・楽スケ→カイポケ・Phase 3) ------------------------
+# 正典 = docs/plans/kaipoke-event-two-way-design.md §3-①/§7。
+# preview は read-only (RPA 不使用・即応答)。apply は events-preview と同じ
+# 「start(202) → status ポーリング」型で RPA /api/individual-tasks-apply を回す。
+
+
+@router.post(
+    "/events-outbound-preview",
+    response_model=EventsOutboundPreviewRead,
+    summary="Preview which manual events can be pushed to kaipoke (admin)",
+)
+async def events_outbound_preview(
+    payload: EventsInboundPreviewRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+) -> EventsOutboundPreviewRead:
+    from app.services.kaipoke.events_outbound import build_outbound_plan
+
+    if payload.week_start.weekday() != 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="weekStart は月曜日を指定してください",
+        )
+    plan = await build_outbound_plan(db, payload.week_start)
+    return EventsOutboundPreviewRead(
+        week_start=plan.week_start,
+        week_end=plan.week_end,
+        items=[
+            EventsOutboundItemRead(
+                event_id=i.event_id,
+                staff_id=i.staff_id,
+                staff_name=i.staff_name,
+                target_date=i.target_date,
+                start=i.start,
+                end=i.end,
+                title=i.title,
+                is_memo=i.is_memo,
+                sendable=i.sendable,
+                reason=i.reason,
+            )
+            for i in plan.items
+        ],
+        sendable_count=plan.sendable_count,
+    )
+
+
+@router.post(
+    "/events-outbound-apply/start",
+    response_model=EventsOutboundStartRead,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start pushing manual events to kaipoke via RPA (admin)",
+)
+async def events_outbound_apply_start(
+    payload: EventsOutboundStartRequest,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> EventsOutboundStartRead:
+    """イベント送信を非同期起動する (202 即返し・job_id で status をポーリング)。"""
+    from app.services.kaipoke.events_outbound import build_outbound_plan, to_rpa_items
+
+    if payload.week_start.weekday() != 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="weekStart は月曜日を指定してください",
+        )
+    plan = await build_outbound_plan(db, payload.week_start)
+    selected = [i for i in plan.items if i.sendable]
+    if payload.event_ids is not None:
+        wanted = set(payload.event_ids)
+        selected = [i for i in selected if i.event_id in wanted]
+    items = to_rpa_items(selected)
+    if not items:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="送信できるイベントがありません",
+        )
+
+    credentials = await _kaipoke_credentials(db)
+    job = KaipokeJob(
+        job_type="push",
+        week_start=payload.week_start,
+        params={
+            "op": "events-outbound",
+            "week_start": payload.week_start.isoformat(),
+            "count": len(items),
+            "async": True,
+        },
+        status="running",
+        started_at=datetime.now(UTC),
+        created_by_user_id=user.id,
+    )
+    db.add(job)
+    await db.flush()
+
+    body: dict[str, Any] = {"items": items, "async": True, "job_id": str(job.id)}
+    _attach_credentials(body, credentials)
+    try:
+        resp = await kaipoke.individual_tasks_apply(body, timeout=30.0)
+    except KaipokeBusyError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
+    except KaipokeApiError as exc:
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": str(exc)}
+        await _commit_or_409(db)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    if not resp.get("success"):
+        error = str(resp.get("error") or "individual-tasks-apply の起動に失敗しました")
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": error}
+        await _commit_or_409(db)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=error)
+
+    await _commit_or_409(db)
+    return EventsOutboundStartRead(job_id=job.id, count=len(items))
+
+
+async def _fail_outbound_job(db, job: KaipokeJob, error: str) -> EventsOutboundStatusRead:
+    job.status = "failed"
+    job.completed_at = datetime.now(UTC)
+    job.result_summary = {"error": error}
+    await _commit_or_409(db)
+    return EventsOutboundStatusRead(status="failed", error=error)
+
+
+@router.get(
+    "/events-outbound-apply/status/{job_id}",
+    response_model=EventsOutboundStatusRead,
+    summary="Poll the outbound push; promotes sent events on completion (admin)",
+)
+async def events_outbound_apply_status(
+    job_id: UUID,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> EventsOutboundStatusRead:
+    """送信の進行確認。完了を最初に観測したポーリングで昇格 (§7-b) を実行し
+    結果を KaipokeJob.result_summary に永続化する (以後は冪等)。"""
+    from app.services.kaipoke.events_outbound import promote_sent_events
+
+    job = await db.scalar(select(KaipokeJob).where(KaipokeJob.id == job_id))
+    if job is None or (job.params or {}).get("op") != "events-outbound":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="events-outbound ジョブが見つかりません"
+        )
+
+    if job.status == "completed":
+        rs = job.result_summary or {}
+        return EventsOutboundStatusRead(
+            status="completed", summary=rs.get("summary"), results=rs.get("results")
+        )
+    if job.status in ("failed", "cancelled", "stopped"):
+        return EventsOutboundStatusRead(
+            status="failed",
+            error=str((job.result_summary or {}).get("error") or "送信に失敗しました"),
+        )
+
+    rpa = await kaipoke.individual_tasks_apply_result()
+    rpa_status = str(rpa.get("status") or "")
+    ours = str(rpa.get("job_id") or "") == str(job.id)
+
+    if rpa_status == "running":
+        if rpa.get("job_id") and not ours:
+            return await _fail_outbound_job(
+                db, job, "RPA側で結果が失われました（別ジョブが実行中）。再実行してください"
+            )
+        return EventsOutboundStatusRead(status="running")
+    if not ours:
+        return await _fail_outbound_job(db, job, "RPA側で結果が失われました。再実行してください")
+    if rpa_status == "error":
+        return await _fail_outbound_job(db, job, str(rpa.get("error") or "送信に失敗しました"))
+    if rpa_status != "completed":
+        return await _fail_outbound_job(db, job, f"RPA が不明な状態を返しました: {rpa_status}")
+
+    result = rpa.get("result") or {}
+    results = result.get("results")
+    if not isinstance(results, list):
+        return await _fail_outbound_job(db, job, "individual-tasks-apply: 結果の構造が不正です")
+
+    counts = await promote_sent_events(db, results)
+    summary = {
+        **counts,
+        "total": int(result.get("total") or len(results)),
+        "ok": int(result.get("ok") or 0),
+    }
+    job.status = "completed"
+    job.completed_at = datetime.now(UTC)
+    job.result_summary = {"summary": summary, "results": results}
+    await _commit_or_409(db)
+    return EventsOutboundStatusRead(status="completed", summary=summary, results=results)
 
 
 # --- 置換取り込み (週白紙化→カイポケ全挿入・2026-07-26 PO確定) --------------

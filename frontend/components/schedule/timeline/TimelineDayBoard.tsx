@@ -6,7 +6,7 @@
  * docs/plans/schedule-timeline-redesign-design.md / docs/mockups/timeline-mock.html。
  * 列=コース (ヘッダ=担当スタッフ主・コース記号従)、縦=時間軸 9:00〜18:00・30分格子、
  * カード高さ=所要時間に比例、地色=患者性別、勤務外=斜線、空き=「＋n分空き」、
- * 会議・イベント=担当スタッフの列内の藤色帯 (カイポケ反映外・クリックで編集/削除)、
+ * 会議・イベント=担当スタッフの列内の藤色帯 (クリックで編集/削除)、
  * 現在時刻ライン。
  *
  * T-1 は読み取り専用: カード / 空き枠クリックで既存の患者詳細 (onPatientClick) を開くのみ。
@@ -1531,9 +1531,7 @@ function EventBandView({
           </span>
         </span>
       )}
-      {/* 3段目: 備考 (伸縮・truncate) + カイポケ反映外バッジ (この行にだけ置く)。
-          固定幅はバッジのみなので狭い列でもはみ出さない。低い帯ではバッジ非表示
-          (ツールチップに常に明記)。 */}
+      {/* 3段目: 備考 (伸縮・truncate)。旧「カイポケ反映外」バッジは Phase 3 (送信機能) で撤去。 */}
       {showMetaRow && (
         <span className="flex min-w-0 items-center gap-1.5">
           {ev.note ? (
@@ -1544,19 +1542,13 @@ function EventBandView({
               📝 {ev.note}
             </span>
           ) : null}
-          <span
-            className="ml-auto shrink-0 whitespace-nowrap rounded-full border bg-bg-base px-1.5 py-px text-[8.5px] font-bold"
-            style={{ color: 'var(--sched-event-ink)', borderColor: 'var(--sched-event-ln)' }}
-          >
-            カイポケ反映外
-          </span>
         </span>
       )}
     </>
   );
   // hover ツールチップは高さに関係なく全情報を読めるようにする。
   const fullTitle = [
-    `${ev.type}${ev.title ? `: ${ev.title}` : ''}（${fmt(s)}〜${fmt(e)}・${durMin}分・カイポケ反映外）`,
+    `${ev.type}${ev.title ? `: ${ev.title}` : ''}（${fmt(s)}〜${fmt(e)}・${durMin}分）`,
     ev.note ? `備考: ${ev.note}` : null,
     `クリックで編集・削除${drag ? '・ドラッグで移動' : ''}`,
   ]

@@ -152,7 +152,8 @@ describe('TimelineDayBoard', () => {
     // PO指摘 2026-07-08: 帯の主表示はタイトルのみ (「研修: 」前置は狭い列で
     // 種別だけ見えて切れるため廃止。種別はツールチップ/2行目)。
     expect(screen.getByText('接遇研修')).toBeInTheDocument();
-    expect(screen.getByText('カイポケ反映外')).toBeInTheDocument();
+    // 旧「カイポケ反映外」バッジは Phase 3 (カイポケ送信機能) で撤去済み。
+    expect(screen.queryByText('カイポケ反映外')).toBeNull();
     // 帯はイベント所有者の列 (c1) にだけ描かれる。
     expect(screen.getByTestId('tl-event-c1-e1')).toBeInTheDocument();
     expect(screen.queryByTestId('tl-event-c2-e1')).toBeNull();
