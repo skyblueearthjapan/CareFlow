@@ -119,6 +119,9 @@ export function useInbound({
   const [eventsPlan, setEventsPlan] = useState<EventsInboundPreview | null>(null);
   const [eventsError, setEventsError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
+  // 取り込み対象 (kaipoke-event-two-way-design.md §3-③): false = 訪問＋イベント (従来) /
+  // true = イベントのみ (訪問には一切触れない・RPA 1オペで所要も約半分)
+  const [eventsOnly, setEventsOnlyState] = useState(false);
 
   const currentElig = useInboundEligibility(weekStartStr);
   const eligible = currentElig.data?.eligible ?? false;
@@ -182,6 +185,13 @@ export function useInbound({
     setEventsError(null);
   };
 
+  // モード切替時は取得済みプランを破棄する (「訪問＋イベント」で取得したプランを
+  // 「イベントのみ」で❸実行する混成状態を作らない)
+  const setEventsOnly = (v: boolean) => {
+    setEventsOnlyState(v);
+    resetPlan();
+  };
+
   const canGoNext = weekOffset < MAX_FUTURE_WEEKS;
 
   const changeWeek = (delta: number) => {
@@ -198,13 +208,16 @@ export function useInbound({
     resetPlan();
     // ❶ 訪問(smart) → イベント を直列で取得 (RPA は単一スロットのため並列不可)。
     // 片方が失敗しても他方は続行し、失敗側は Alert / eventsError で明示する。
+    // イベントのみモードでは訪問取得を丸ごとスキップする (訪問盤面に一切触れない)。
     let visitsOk = false;
-    try {
-      const plan = await smartPreview.mutateAsync({ weekStart: weekStartStr });
-      setSmartPlan(plan);
-      visitsOk = true;
-    } catch {
-      // エラーは Alert で表示。イベント取得は続行する。
+    if (!eventsOnly) {
+      try {
+        const plan = await smartPreview.mutateAsync({ weekStart: weekStartStr });
+        setSmartPlan(plan);
+        visitsOk = true;
+      } catch {
+        // エラーは Alert で表示。イベント取得は続行する。
+      }
     }
     try {
       const plan = await eventsPreview.mutateAsync({ weekStart: weekStartStr });
@@ -219,7 +232,9 @@ export function useInbound({
   };
 
   const runApply = async () => {
-    const hasVisitTarget = smartPlan !== null;
+    // イベントのみモードでは訪問 apply を実行しない (smartPlan はモード切替で
+    // 破棄されるため通常 null だが、二重の安全のためモードでも封じる)
+    const hasVisitTarget = !eventsOnly && smartPlan !== null;
     const hasEventTarget = (eventsPlan?.changes.length ?? 0) > 0;
     if (!hasVisitTarget && !hasEventTarget) return;
     setConfirm(false);
@@ -306,6 +321,9 @@ export function useInbound({
     eventsPlan,
     eventsError,
     hasEventChanges,
+    // 取り込み対象モード (③イベントのみ取込)
+    eventsOnly,
+    setEventsOnly,
     // 操作
     confirm,
     setConfirm,

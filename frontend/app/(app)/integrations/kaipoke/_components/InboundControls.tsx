@@ -47,6 +47,8 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
     eventsPlan,
     eventsError,
     hasEventChanges,
+    eventsOnly,
+    setEventsOnly,
     confirm,
     setConfirm,
     runDiff,
@@ -143,7 +145,7 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
           未来週はカイポケに入力済みの計画を映せます）。
         </p>
         {/* 未来週専用の警告 (2026-08-09 開放とセットの安全装置)。 */}
-        {weekOffset > 0 && (
+        {weekOffset > 0 && !eventsOnly && (
           <p
             className="mt-1 rounded-md border border-amber-500/50 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900"
             data-testid="inbound-future-week-warning"
@@ -153,6 +155,47 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
             スケジュールが入力済みであることを確認してから取り込んでください。
             なお、取り込みの直前の盤面は毎回自動保存されるため、間違えた場合は
             「取り込み前に戻す」（取り込み後にこのカードに表示）でいつでも復元できます。
+          </p>
+        )}
+      </div>
+
+      {/* ── 取り込む対象 (③イベントのみ取込・kaipoke-event-two-way-design.md) ── */}
+      <div className="mb-5">
+        <p className="mb-2 text-xs font-medium text-text-secondary">取り込む対象</p>
+        <div className="inline-flex overflow-hidden rounded-md border border-border-default text-xs font-medium">
+          <button
+            type="button"
+            onClick={() => setEventsOnly(false)}
+            aria-pressed={!eventsOnly}
+            disabled={fetching || applying || busy}
+            data-testid="inbound-target-both"
+            className={
+              !eventsOnly
+                ? 'bg-brand-primary px-3 py-1.5 text-white'
+                : 'bg-bg-base px-3 py-1.5 text-text-secondary hover:bg-bg-muted disabled:opacity-50'
+            }
+          >
+            訪問＋イベント
+          </button>
+          <button
+            type="button"
+            onClick={() => setEventsOnly(true)}
+            aria-pressed={eventsOnly}
+            disabled={fetching || applying || busy}
+            data-testid="inbound-target-events-only"
+            className={
+              eventsOnly
+                ? 'bg-brand-primary px-3 py-1.5 text-white'
+                : 'bg-bg-base px-3 py-1.5 text-text-secondary hover:bg-bg-muted disabled:opacity-50'
+            }
+          >
+            イベントのみ
+          </button>
+        </div>
+        {eventsOnly && (
+          <p className="mt-1.5 text-xs text-text-muted" data-testid="inbound-events-only-note">
+            イベント（個別業務）だけを取り込みます。<b>訪問の予定には一切触れません</b>。
+            取得はイベント1回分で済むため、所要時間も約半分です。
           </p>
         )}
       </div>
@@ -205,14 +248,20 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
             disabled={!credentialsConfigured || !eligible || fetching || busy}
           >
             {fetching
-              ? smartPreview.isPending
-                ? '訪問の現況を取得中…（1/2）'
-                : 'イベントの現況を取得中…（2/2）'
-              : '❶ カイポケの現況を取得して差分を見る（訪問＋イベント）'}
+              ? eventsOnly
+                ? 'イベントの現況を取得中…'
+                : smartPreview.isPending
+                  ? '訪問の現況を取得中…（1/2）'
+                  : 'イベントの現況を取得中…（2/2）'
+              : eventsOnly
+                ? '❶ カイポケの現況を取得して差分を見る（イベントのみ）'
+                : '❶ カイポケの現況を取得して差分を見る（訪問＋イベント）'}
           </Button>
           {fetching && (
             <p className="text-xs text-text-muted">
-              カイポケから訪問とイベント（個別業務）を順番に取得しています。合計で約2分かかります。
+              {eventsOnly
+                ? 'カイポケからイベント（個別業務）を取得しています。約1分かかります。'
+                : 'カイポケから訪問とイベント（個別業務）を順番に取得しています。合計で約2分かかります。'}
             </p>
           )}
           {smartPreview.isError && (
@@ -341,7 +390,12 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                   </span>
                 </span>
               )}
-              {weekOffset > 0 && (
+              {eventsOnly && (
+                <span className="block font-medium text-text-primary" data-testid="confirm-events-only">
+                  イベントのみを取り込みます。訪問の予定には一切触れません。
+                </span>
+              )}
+              {weekOffset > 0 && !eventsOnly && (
                 <span className="block font-medium text-error" data-testid="confirm-future-week">
                   ⚠ 未来週への取り込みです。らく助側でこの週に計画中の内容は
                   カイポケの内容で上書きされます。
@@ -351,10 +405,12 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                 らく助のスケジュールに実際に書き込まれます。この操作は Ctrl+Z
                 の対象外です（定期パターンは変わりません）。
               </span>
-              <span className="block text-text-secondary">
-                取り込みの直前の盤面は自動保存されます。間違えた場合は
-                「取り込み前に戻す」で復元できます（打刻実績が記録された週を除く）。
-              </span>
+              {!eventsOnly && (
+                <span className="block text-text-secondary">
+                  取り込みの直前の盤面は自動保存されます。間違えた場合は
+                  「取り込み前に戻す」で復元できます（打刻実績が記録された週を除く）。
+                </span>
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
