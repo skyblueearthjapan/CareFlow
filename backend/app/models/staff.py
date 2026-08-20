@@ -199,6 +199,38 @@ class StaffEvent(Base, TimestampMixin):
     )
 
 
+class StaffEventDefault(Base, TimestampMixin):
+    """毎週の固定イベント既定 (朝会など・kaipoke-event-two-way-design.md §3-②).
+
+    スタッフ×曜日×時間帯×名称の「型」。週生成系 3 地点
+    (週生成 / 割付のみ / 固定枠戻し) から `expand_staff_event_defaults` が
+    当該週の staff_events (source='fixed') へ冪等展開する。
+    曜日は 0=月〜5=土 (カイポケ個別業務の運用範囲に合わせ日曜は定義不可)。
+    """
+
+    __tablename__ = "staff_event_defaults"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    staff_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("staff.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    weekday: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 0=月〜5=土
+    start_time: Mapped[time] = mapped_column(Time, nullable=False)
+    end_time: Mapped[time] = mapped_column(Time, nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    # 🔒絶対に潰せないイベントとして展開するか (staff_events.blocking へ引き継ぐ)
+    blocking: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (Index("ix_staff_event_defaults_staff", "staff_id", "weekday"),)
+
+
 class StaffShiftConfirmation(Base, TimestampMixin):
     """月次の出勤カレンダー確定記録 (staff-shift-confirmation-design.md §1).
 

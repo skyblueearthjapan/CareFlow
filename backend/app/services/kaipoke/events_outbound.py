@@ -32,8 +32,10 @@ from app.models.staff import Staff, StaffEvent
 EVENT_SOURCE_MANUAL = "manual"
 EVENT_SOURCE_KAIPOKE = "kaipoke"
 
-# 送信対象の source (Phase 2 で 'fixed' を追加予定)
-OUTBOUND_SOURCES: tuple[str, ...] = (EVENT_SOURCE_MANUAL,)
+EVENT_SOURCE_FIXED = "fixed"
+
+# 送信対象の source: 手動登録 + 固定イベント展開分 (Phase 2)
+OUTBOUND_SOURCES: tuple[str, ...] = (EVENT_SOURCE_MANUAL, EVENT_SOURCE_FIXED)
 
 
 @dataclass

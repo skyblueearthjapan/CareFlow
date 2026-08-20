@@ -10293,6 +10293,9 @@ async def reset_visits_to_fixed(
     from app.services.accompaniment import expand_accompaniment_defaults
 
     await expand_accompaniment_defaults(db, iso_year, iso_week)
+    from app.services.staff_event_defaults import expand_staff_event_defaults
+
+    await expand_staff_event_defaults(db, iso_year, iso_week)
 
     return {
         "visits_regenerated": inserted_visits,

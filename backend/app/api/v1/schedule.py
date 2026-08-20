@@ -114,6 +114,7 @@ from app.services.scheduling.layer3_assignment import (
     UnresolvedGenderWarning,
     UnresolvedNgStaffWarning,
 )
+from app.services.staff_event_defaults import expand_staff_event_defaults
 
 logger = logging.getLogger(__name__)
 
@@ -1751,6 +1752,8 @@ async def generate_week_only(
 
         # 新人同行 (§5.1-1): 展開成功後・commit 前に既定を当該週へ物質化する (冪等)。
         await expand_accompaniment_defaults(db, payload.iso_year, payload.iso_week)
+        # 固定イベント (朝会など・Phase 2) も同じタイミングで冪等展開する。
+        await expand_staff_event_defaults(db, payload.iso_year, payload.iso_week)
 
         await db.commit()
     except Layer1ExpandError as exc:
@@ -1934,6 +1937,8 @@ async def _assign_staff_only_impl(
     # 展開は冪等で、失敗分は次回の週生成 / 固定枠に戻す / 本 API 再実行で回収される)。
     try:
         await expand_accompaniment_defaults(db, payload.iso_year, payload.iso_week)
+        # 固定イベント (朝会など・Phase 2) も同じタイミングで冪等展開する。
+        await expand_staff_event_defaults(db, payload.iso_year, payload.iso_week)
         await db.commit()
     except Exception:  # noqa: BLE001 — 事後展開の失敗で確定済み割付を壊さない
         logger.warning(

@@ -57,6 +57,7 @@ import { ShiftsEditDialog } from './_components/ShiftsEditDialog';
 import { StaffNgPatientsSummary } from './_components/StaffNgPatientsSummary';
 import { AccompanimentSummary } from './_components/AccompanimentSummary';
 import { isAdminRole } from '@/lib/rbac';
+import { EventDefaultsCard } from './_components/EventDefaultsCard';
 
 /** Overrides default window: today through +90 days. */
 const OVERRIDES_RANGE_DAYS_FORWARD = 90;
@@ -220,6 +221,9 @@ export default function StaffDetailPage() {
       <OverridesCard staffId={data.id} canEdit={canEdit} />
 
       <EventsCard staffId={data.id} canEdit={canEdit} />
+
+      {/* 毎週の固定イベント (朝会など・Phase 2)。週生成のたびに自動展開される。 */}
+      <EventDefaultsCard staffId={data.id} canEdit={canEdit} />
 
       {/* 同行サマリ — 新人 or 同行リンク/既定が 1 件でもあれば表示 (§4 一般化) */}
       <AccompanimentCard staffId={data.id} isTrainee={data.is_trainee === true} canEdit={canEdit} />
