@@ -151,6 +151,12 @@ export function WeekCoursePalette({
         activeDrag && !dropHover && 'ring-1 ring-brand-primary/30',
         dropHover && 'bg-brand-primary/5 ring-2 ring-brand-primary/70',
       )}
+      onDragEnter={(e) => {
+        if (!canEdit || !onUnassignDrop) return;
+        if (!e.dataTransfer.types.includes(COURSE_DND_MIME)) return;
+        e.preventDefault();
+        setDropHover(true);
+      }}
       onDragOver={(e) => {
         if (!canEdit || !onUnassignDrop) return;
         if (!e.dataTransfer.types.includes(COURSE_DND_MIME)) return;
@@ -158,7 +164,12 @@ export function WeekCoursePalette({
         e.dataTransfer.dropEffect = 'move';
         setDropHover(true);
       }}
-      onDragLeave={() => setDropHover(false)}
+      onDragLeave={(e) => {
+        // 子要素間の移動で消えないよう、パレットの外へ出たときだけ解除する。
+        const related = e.relatedTarget as Node | null;
+        if (related && e.currentTarget.contains(related)) return;
+        setDropHover(false);
+      }}
       onDrop={(e) => {
         setDropHover(false);
         if (!canEdit || !onUnassignDrop) return;
@@ -168,6 +179,21 @@ export function WeekCoursePalette({
         onUnassignDrop(payload.courseId);
       }}
     >
+      {/* ドラッグ中の大きな戻し先ゾーン (PO指摘 2026-08-21: 戻し先を明確に)。
+          ゾーン自体に個別ハンドラは不要 — セクション全体が drop を受ける。 */}
+      {canEdit && onUnassignDrop && activeDrag ? (
+        <div
+          className={cn(
+            'mb-2 rounded-md border-2 border-dashed px-2 py-2.5 text-center text-[12px] font-bold transition-colors',
+            dropHover
+              ? 'border-brand-primary bg-brand-primary/10 text-brand-primary'
+              : 'border-brand-primary/50 bg-brand-primary/5 text-brand-primary/80',
+          )}
+          data-testid="palette-unassign-dropzone"
+        >
+          ⤵ ここにドロップで担当解除（未割当へ戻す・今週のみ）
+        </div>
+      ) : null}
       <div className="mb-1.5 flex items-center gap-2 px-1">
         <h3 className="text-xs font-bold text-text-primary">コースの表</h3>
         <span className="text-[11px] text-text-muted">

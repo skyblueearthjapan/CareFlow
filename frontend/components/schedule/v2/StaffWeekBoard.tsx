@@ -422,7 +422,7 @@ export function StaffWeekBoard({
                                 <button
                                   type="button"
                                   onClick={() => onCourseUnassign(chipCourseId)}
-                                  className="rounded px-1 py-px text-[10px] font-bold leading-none text-text-muted transition-colors hover:bg-red-50 hover:text-red-600 focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                  className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-red-300 bg-red-50 text-[11px] font-bold leading-none text-red-600 shadow-sm transition-colors hover:border-red-600 hover:bg-red-600 hover:text-white focus:outline-none focus-visible:ring-1 focus-visible:ring-red-500"
                                   title={`${cc.label} の担当を解除して「コースの表」へ戻す（今週のみ）`}
                                   aria-label={`${cc.label} の担当を解除`}
                                   data-testid={`staff-week-course-unassign-${cc.templateId}-${wd}`}

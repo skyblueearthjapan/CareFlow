@@ -102,6 +102,24 @@ describe('WeekCoursePalette', () => {
     const card = screen.getByTestId(`palette-course-${C_MON_A}`);
     expect(card.className).toContain('opacity-40');
     expect(screen.getByText('⤵ ここへ戻すと担当解除（今週のみ）')).toBeInTheDocument();
+    // ドラッグ中は大きな戻し先ゾーンが出る
+    expect(screen.getByTestId('palette-unassign-dropzone')).toBeInTheDocument();
+  });
+
+  it('⑥ 戻し先ゾーンへのドロップでも onUnassignDrop が飛ぶ (バブリング)', () => {
+    const onUnassignDrop = vi.fn();
+    render(
+      <WeekCoursePalette
+        courses={courses}
+        canEdit
+        onUnassignDrop={onUnassignDrop}
+        activeDrag={{ courseId: C_MON_B, weekday: 0 }}
+      />,
+    );
+    fireEvent.drop(screen.getByTestId('palette-unassign-dropzone'), {
+      dataTransfer: makeDataTransfer({ courseId: C_MON_B, weekday: 0 }),
+    });
+    expect(onUnassignDrop).toHaveBeenCalledWith(C_MON_B);
   });
 
   it('④ canEdit=false: カードはドラッグ不可・ドロップも無視', () => {
