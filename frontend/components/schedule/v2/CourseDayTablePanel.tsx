@@ -3586,7 +3586,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     data-testid="staff-tab-send-events"
                     title="この週のらく助のイベントをカイポケの職員スケジュールへ登録します"
                   >
-                    ⇪ カイポケ送信
+                    ⇧ カイポケ送信
                   </Button>
                 </div>
               ) : (
