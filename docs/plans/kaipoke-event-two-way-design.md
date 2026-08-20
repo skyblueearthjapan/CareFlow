@@ -201,7 +201,34 @@ TimelineEventAddDialog を唯一の登録モーダルに昇格:
 Phase 1.5 として「既存スタッフ別ビューの登録可能化 + 登録動線強化」を挟む
 （カイポケに触れずリスクゼロ・②③の UI 受け皿を先に作る位置づけ・新画面なし）。
 
-## 7. リスク・制約（横断）
+## 7. Phase 0 プローブ結果（2026-08-20 実施・読み取りのみ）
+
+本番 RPA で登録ポップアップを実際に開いて DOM 220KB を採取（保存は押していない）。
+
+### 7-a. 登録ポップアップの構造（確定）
+- 開き方: `showIndividualAdd(ym, day, staffInternalId)` を evaluate → ajax POST
+  `/bizhnc/staffSchedule/initIndividualPopup/` → `#idRenderPopupIndividual` に描画。
+- **登録方式は 2 択**（radio `popupSelectedIndividual`）:
+  1. 「登録データから選択する」= select `popupIndividualInternalId`
+     （**過去に登録した個別業務の蓄積マスタ・実測 1,597 件**。朝会・休み等はここに実在）
+  2. 「新しく登録する」= text `popupIndividualName`（自由名称・登録のたびにマスタへ蓄積）
+- 時刻: `popupIndividualStart/EndHour` + `Min(Left/Right)`（分は十の位/一の位の 2 select）。
+- 区分: radio `popupIndividualPlanActDivision`（= 予定 01 / 実績 02）。
+- 保存: `#popupIndividualButtonAdd`「登録する」→ `ajaxDoRegisterDone()`
+  （削除ボタン `submitToDeleteIndividual()` も同ポップアップに存在）。
+- ボタンは `#actDate` が入ると活性化。
+
+### 7-b. Phase 3 実装への含意
+- 書き込みは **UI クリック方式で確定**（auto_apply と同型・ajax URL の逆解析は不要）。
+- **マスタ肥大の抑制**: 送信時は「同名のマスタ項目があれば選択・なければ新規登録」を
+  既定戦略にする（朝会の毎週送信で 1,597 件がさらに膨らむのを防ぐ）。
+- **採番IDの取得** = 保存後に同セルを再パースし、`showIndividualEdit` 引数から
+  個別業務IDを抽出 → `external_key` を組んで楽スケ行へ刻む（二重化対策の昇格）。
+- 削除の自動化も技術的には可能（`submitToDeleteIndividual`）だが Phase 3 スコープ外。
+- **検証には本番カイポケへのテスト書き込みが 1 件必要**（未来日にテスト名称で登録
+  → 画面確認 → ポップアップの削除ボタンで撤去）。実施前にユーザー承認を取ること。
+
+## 8. リスク・制約（横断）
 
 - カイポケ画面の構造変更で RPA が壊れるリスクは読取と同様（書き込みは事故影響が大きい
   ため、保存前スクリーンショット + 事後読取検証を必須にする）。
