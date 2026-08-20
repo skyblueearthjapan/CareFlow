@@ -225,6 +225,7 @@ import {
 import { TimelineEventAddDialog } from '@/components/schedule/timeline/TimelineEventAddDialog';
 import { EventEditDialog } from '@/app/(app)/staff/[id]/_components/EventEditDialog';
 import { SendEventsToKaipokeDialog } from './SendEventsToKaipokeDialog';
+import { ImportEventsFromKaipokeDialog } from './ImportEventsFromKaipokeDialog';
 // Phase G-88: 営業時間設定を空き枠表示に反映 (取得前/失敗時は既定枠にフォールバック).
 import { useSchedulingSettings } from '@/lib/queries/schedulingSettings';
 
@@ -1739,6 +1740,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
 
   // イベントをカイポケへ送る (Phase 3・職員スケジュールタブのツールバーから)
   const [sendEventsOpen, setSendEventsOpen] = useState(false);
+  // カイポケからイベントのみ取り込む (逆方向・同ツールバー)
+  const [importEventsOpen, setImportEventsOpen] = useState(false);
 
   const handleTimelineEventClick = useCallback(
     (ev: EventRead, col: TimelineCourseColumn) => {
@@ -3568,6 +3571,17 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     size="sm"
                     variant="outline"
                     disabled={!canEdit}
+                    onClick={() => setImportEventsOpen(true)}
+                    data-testid="staff-tab-import-events"
+                    title="この週のカイポケの個別業務（イベント）だけを取り込みます（訪問には触れません）"
+                  >
+                    ⇩ カイポケから取り込む
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={!canEdit}
                     onClick={() => setSendEventsOpen(true)}
                     data-testid="staff-tab-send-events"
                     title="この週のらく助のイベントをカイポケの職員スケジュールへ登録します"
@@ -4198,6 +4212,12 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         <SendEventsToKaipokeDialog
           open={sendEventsOpen}
           onClose={() => setSendEventsOpen(false)}
+          weekStartIso={format(weekStart, 'yyyy-MM-dd')}
+        />
+        {/* カイポケからイベントのみ取り込む (逆方向) */}
+        <ImportEventsFromKaipokeDialog
+          open={importEventsOpen}
+          onClose={() => setImportEventsOpen(false)}
           weekStartIso={format(weekStart, 'yyyy-MM-dd')}
         />
         {/* T-2 ②-b: カード DnD 後の二択 (この週だけ / 固定パターン) */}
