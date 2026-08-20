@@ -365,7 +365,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
 
   // ─── 曜日タブ state (Wave 18 Phase B-6: 'week' = 週間ビュー) ─────
   // デフォルトは週ビュー ('week'). 曜日別 (月-土) は各タブで切替.
-  const [activeTab, setActiveTab] = useState<number | 'week'>('week');
+  // 'staff' = 職員スケジュール (スタッフ×曜日・イベント運用の家。
+  // kaipoke-event-two-way-design.md §6-c で週ビュー内サブモードから昇格)。
+  const [activeTab, setActiveTab] = useState<number | 'week' | 'staff'>('week');
   const activeWeekday = typeof activeTab === 'number' ? activeTab : 0;
 
   // ─── 2026-W20: 月-土タブの表示モード ─────────────────────────
@@ -377,7 +379,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   // T-3: 週タブの見え方。overview=既存の全コース俯瞰(既定・全機能温存) / timeline=週タイムライン(全コース縦積み)。
   // ラベルは overview="リスト" (PO指示 2026-07-08。内部値は据置)。
   // 'staff' = スタッフ別 (カイポケ職員スケジュール同等・案B・PO要望 2026-07-26)。
-  const [weekViewMode, setWeekViewMode] = useState<'overview' | 'timeline' | 'staff'>('overview');
+  // 旧 'staff' サブモードはトップレベルタブ「職員スケジュール」へ昇格済み (2026-08-20)。
+  const [weekViewMode, setWeekViewMode] = useState<'overview' | 'timeline'>('overview');
 
   // ─── Master data ────────────────────────────────────────────────────
   const officesQuery = useOffices({ limit: 50 });
@@ -3458,6 +3461,30 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
               >
                 週
               </button>
+              {/* 職員スケジュール (スタッフ×曜日・イベント運用の家)。カイポケの同名画面と
+                  同型。週ビュー内「スタッフ別」サブモードからの昇格 (2026-08-20)。 */}
+              <button
+                key="staff"
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'staff'}
+                aria-controls="course-staff-schedule-panel"
+                onClick={() => setActiveTab('staff')}
+                disabled={accompaniment.active}
+                title={
+                  accompaniment.active
+                    ? '同行モード中はタイムライン表示のみ使えます'
+                    : 'スタッフごとの週の予定とイベント（カイポケの職員スケジュールと同じ構造）'
+                }
+                data-testid="course-day-tab-staff"
+                className={`ml-1 rounded border px-3 py-1 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
+                  activeTab === 'staff'
+                    ? 'border-brand-primary bg-brand-primary text-white'
+                    : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
+                }`}
+              >
+                職員スケジュール
+              </button>
             </div>
 
             <span className="tnum text-[11px] text-text-muted">{isoWeekLabel}</span>
@@ -3471,7 +3498,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
               data-testid="course-day-row2-right-toolbar"
             >
               {/* Group α: タイムライン/リスト切替 (「週」タブ時は非表示). */}
-              {activeTab !== 'week' ? (
+              {typeof activeTab === 'number' ? (
                 <div
                   role="group"
                   aria-label="月-土タブ 表示モード切替"
@@ -3511,6 +3538,26 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     リスト
                   </button>
                 </div>
+              ) : activeTab === 'staff' ? (
+                /* 職員スケジュールタブ: イベント追加の常設入口 (スタッフ起点・複数選択可)。 */
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  disabled={!canEdit}
+                  onClick={() =>
+                    setSlotEventState({
+                      staffId: null,
+                      date: format(weekStart, 'yyyy-MM-dd'),
+                      startHM: '09:00',
+                      endHM: '10:00',
+                    })
+                  }
+                  data-testid="staff-tab-add-event"
+                  title="スタッフの打合せ・イベントを追加（複数スタッフ一括可）"
+                >
+                  ＋ イベント
+                </Button>
               ) : (
                 /* T-3: 「週」タブ時は タイムライン / リスト の切替を出す (縦スペース不消費). */
                 <div
@@ -3552,26 +3599,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     >
                       コース別
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setWeekViewMode('staff')}
-                      aria-pressed={weekViewMode === 'staff'}
-                      // 同行モード中は選択操作が無いため封じる (リストと同じ扱い)。
-                      disabled={accompaniment.active}
-                      title={
-                        accompaniment.active
-                          ? '同行モード中はタイムライン表示のみ使えます'
-                          : 'スタッフごとの週の動きを表示（カイポケの職員スケジュールと同じ構造）'
-                      }
-                      data-testid="course-week-mode-staff"
-                      className={
-                        weekViewMode === 'staff'
-                          ? 'bg-brand-primary px-2 py-1 text-white'
-                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted disabled:cursor-not-allowed disabled:opacity-50'
-                      }
-                    >
-                      スタッフ別
-                    </button>
+                    {/* 旧「スタッフ別」サブモードはトップレベルタブ
+                        「職員スケジュール」へ昇格 (2026-08-20)。 */}
                   </div>
                 </div>
               )}
@@ -3667,6 +3696,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                           // 表示を強制的にタイムラインへ切り替える (PO報告 2026-07-12)。
                           setWeekViewMode('timeline');
                           setWeekdayViewMode('timeline');
+                          // 職員スケジュールタブには同行の選択操作が無いため週タブへ退避
+                          setActiveTab((t) => (t === 'staff' ? 'week' : t));
                           accompaniment.enter();
                         }}
                         disabled={accompaniment.active}
@@ -3710,14 +3741,54 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
               // 日タイムライン/週リストはペインを固定高にして内部スクロールへ委譲
               // (ヘッダ行 sticky が内部スクロールで効く)。週タイムライン(縦積み)や
               // 日リストは従来のペインスクロール。
-              (activeTab !== 'week' && weekdayViewMode === 'timeline') ||
+              (typeof activeTab === 'number' && weekdayViewMode === 'timeline') ||
                 (activeTab === 'week' && weekViewMode === 'overview')
                 ? 'lg:flex lg:flex-col lg:overflow-hidden'
                 : 'lg:overflow-y-auto',
             )}
           >
-            {/* Wave 18 Phase B-6: 「週」タブ選択時は CourseWeekOverview を表示 */}
-            {activeTab === 'week' ? (
+            {/* 職員スケジュール (スタッフ×曜日・イベント運用の家・2026-08-20 昇格)。
+                投影 = 訪問/コース (読むだけ) / 正典 = イベント (＋で追加・帯クリックで編集)。 */}
+            {activeTab === 'staff' ? (
+              <div
+                id="course-staff-schedule-panel"
+                role="tabpanel"
+                aria-labelledby="course-day-tab-staff"
+                data-testid="course-staff-schedule-panel"
+                className="space-y-2"
+              >
+                <StaffWeekBoard
+                  templates={templates}
+                  officeNameById={officeNameById}
+                  visits={overviewVisits}
+                  assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
+                  staffMap={staffMap}
+                  staffEventsByStaff={staffEventsByStaff}
+                  weekStart={weekStart}
+                  onPatientClick={handleOpenPatientDetail}
+                  showAllStaff
+                  onAddEvent={
+                    canEdit
+                      ? (staffId, date) =>
+                          setSlotEventState({
+                            staffId,
+                            date: format(date, 'yyyy-MM-dd'),
+                            startHM: '09:00',
+                            endHM: '10:00',
+                          })
+                      : undefined
+                  }
+                  onEventClick={
+                    canEdit ? (ev, staffId) => setTlEventEdit({ staffId, event: ev }) : undefined
+                  }
+                />
+                <p className="text-[11px] text-text-muted">
+                  訪問（コースの予定）はここでは読み取り専用です — 編集は週・曜日タブで。
+                  イベントはこの画面が正典で、＋やイベント帯のクリックで追加・編集できます。
+                </p>
+              </div>
+            ) : /* Wave 18 Phase B-6: 「週」タブ選択時は CourseWeekOverview を表示 */
+            activeTab === 'week' ? (
               <div
                 id="course-week-overview-panel"
                 role="tabpanel"
@@ -3741,19 +3812,6 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     capacityByWeekday={weekTimelineCapacityByWeekday}
                     staffByWeekday={weekTimelineStaffByWeekday}
                     accompaniment={accompaniment.binding}
-                  />
-                ) : weekViewMode === 'staff' ? (
-                  /* スタッフ別 (案B・PO要望 2026-07-26): 職員×曜日グリッド。
-                     カイポケの職員スケジュールと同じ構造で取り込み結果を突き合わせる。 */
-                  <StaffWeekBoard
-                    templates={templates}
-                    officeNameById={officeNameById}
-                    visits={overviewVisits}
-                    assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
-                    staffMap={staffMap}
-                    staffEventsByStaff={staffEventsByStaff}
-                    weekStart={weekStart}
-                    onPatientClick={handleOpenPatientDetail}
                   />
                 ) : (
                   <CourseWeekOverview

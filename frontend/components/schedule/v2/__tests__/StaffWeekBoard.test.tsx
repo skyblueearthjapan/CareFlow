@@ -37,6 +37,7 @@ const staffMap = new Map<string, StaffRead>([
       name: '宇田川　優莉',
       primary_office_id: OFFICE_ID,
       is_trainee: false,
+      status: 'active',
     } as unknown as StaffRead,
   ],
   [
@@ -46,6 +47,7 @@ const staffMap = new Map<string, StaffRead>([
       name: '髙梨　桂子',
       primary_office_id: OFFICE_ID,
       is_trainee: true,
+      status: 'active',
     } as unknown as StaffRead,
   ],
 ]);
@@ -151,5 +153,68 @@ describe('StaffWeekBoard', () => {
     const row = screen.getByTestId(`staff-week-row-${STAFF_2}`);
     expect(within(row).getByText(/⚠新人/)).toBeInTheDocument();
     expect(within(row).getByText(/文代/)).toBeInTheDocument();
+  });
+
+  // ─── 職員スケジュールタブ昇格 (2026-08-20・kaipoke-event-two-way-design.md §6-c) ──
+
+  it('⑤ onAddEvent 指定時: セルの＋クリックで (staffId, date) が飛ぶ・担当なし行には出ない', () => {
+    const onAddEvent = vi.fn();
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={events}
+        weekStart={WEEK_START}
+        onAddEvent={onAddEvent}
+      />,
+    );
+    screen.getByTestId(`staff-week-add-${STAFF_1}-2`).click();
+    expect(onAddEvent).toHaveBeenCalledTimes(1);
+    const [staffId, date] = onAddEvent.mock.calls[0]!;
+    expect(staffId).toBe(STAFF_1);
+    expect((date as Date).getDate()).toBe(22); // 2026-07-20(月) + 2 = 水曜
+    // 担当なし行には＋を出さない (イベントはスタッフ紐付きが正典)
+    expect(screen.queryByTestId('staff-week-add-__unassigned__-0')).not.toBeInTheDocument();
+  });
+
+  it('⑥ onEventClick 指定時: イベント帯クリックで (event, staffId) が飛ぶ', () => {
+    const onEventClick = vi.fn();
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={events}
+        weekStart={WEEK_START}
+        onEventClick={onEventClick}
+      />,
+    );
+    screen.getByTestId('staff-week-event-00000000-0000-4000-8000-00000000e001').click();
+    expect(onEventClick).toHaveBeenCalledTimes(1);
+    expect(onEventClick.mock.calls[0]![0].id).toBe('00000000-0000-4000-8000-00000000e001');
+    expect(onEventClick.mock.calls[0]![1]).toBe(STAFF_1);
+  });
+
+  it('⑦ showAllStaff: 訪問もイベントも無い在籍スタッフの行も出る', () => {
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={[]}
+        assignedStaffByTemplateWeekday={new Map()}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        showAllStaff
+      />,
+    );
+    expect(screen.getByTestId(`staff-week-row-${STAFF_1}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`staff-week-row-${STAFF_2}`)).toBeInTheDocument();
+    expect(screen.queryByTestId('staff-week-empty')).not.toBeInTheDocument();
   });
 });

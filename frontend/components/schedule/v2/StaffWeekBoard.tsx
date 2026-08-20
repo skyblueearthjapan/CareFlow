@@ -1,15 +1,20 @@
 'use client';
 
 /**
- * StaffWeekBoard — 週ビューの「スタッフ別」表示 (PO要望 2026-07-26・案B)。
+ * StaffWeekBoard — 「職員スケジュール」タブ (スタッフ×月〜土グリッド)。
  *
  * カイポケの職員スケジュール (職員×月〜土グリッド) と同じ構造で、
  * 行 = スタッフ (拠点→名前順)、セル = その日に担当するコース見出し +
  * 訪問明細 (時刻+患者名・常時表示 = 案B) + イベント (緑・📝メモ含む)。
- * 取り込み結果をカイポケ画面と1対1で突き合わせる用途が主眼。
  *
- * 読み取り専用 (操作はコース別ビュー/タイムラインの責務)。データはすべて
- * CourseDayTablePanel が既に持つものを受け取るだけ (BE 追加なし)。
+ * 2026-08-20 昇格 (kaipoke-event-two-way-design.md §6-c): 週ビュー内の
+ * 読み取り専用サブモード (取り込み結果の突き合わせ用・PO要望 2026-07-26 案B) から、
+ * トップレベルタブ「職員スケジュール」= イベント運用の家へ。二層の描き分け:
+ *   - 投影 (読むだけ): 訪問・コースチップ — コースで決まる予定。編集はコース盤面で。
+ *   - 正典 (ここが家): イベント — `onAddEvent`(セルの＋) / `onEventClick`(帯クリック
+ *     → 編集/削除) を渡すと編集可能になる。未指定なら従来どおり読み取り専用。
+ *
+ * データはすべて CourseDayTablePanel が既に持つものを受け取るだけ (BE 追加なし)。
  * 「ズレは隠さず警告」の原則に従い、担当スタッフの居ないコースの訪問も
  * 「（担当なし）」行として必ず表示する。
  */
@@ -39,6 +44,12 @@ export interface StaffWeekBoardProps {
   /** 対象週の月曜。列ヘッダの日付と event の日付一致判定に使う。 */
   weekStart: Date;
   onPatientClick?: (patientId: string) => void;
+  /** 職員スケジュールタブ: 訪問/イベントが無くても在籍スタッフ全員を行に出す。 */
+  showAllStaff?: boolean;
+  /** セルの「＋ イベント」→ 追加ダイアログ (スタッフ・日付は文脈から確定)。 */
+  onAddEvent?: (staffId: string, date: Date) => void;
+  /** イベント帯クリック → 編集/削除ダイアログ。 */
+  onEventClick?: (ev: EventRead, staffId: string) => void;
 }
 
 const UNASSIGNED_KEY = '__unassigned__';
@@ -64,6 +75,9 @@ export function StaffWeekBoard({
   staffEventsByStaff,
   weekStart,
   onPatientClick,
+  showAllStaff = false,
+  onAddEvent,
+  onEventClick,
 }: StaffWeekBoardProps) {
   const templateById = React.useMemo(() => {
     const m = new Map<string, CourseTemplateRead>();
@@ -115,6 +129,13 @@ export function StaffWeekBoard({
     for (const [staffId, events] of staffEventsByStaff) {
       if (events.length > 0 && staffMap.has(staffId)) rows.add(staffId);
     }
+    // 職員スケジュールタブ: 空の週でも在籍スタッフ全員を行に出す
+    // (空セルからイベントを登録できるように)。退職・休職は出さない。
+    if (showAllStaff) {
+      for (const [staffId, s] of staffMap) {
+        if (s.status === 'active') rows.add(staffId);
+      }
+    }
 
     // 並び: 拠点名 → スタッフ名。担当なしは末尾。
     const sorted = Array.from(rows).sort((a, b) => {
@@ -128,7 +149,7 @@ export function StaffWeekBoard({
       return (sa?.name ?? '').localeCompare(sb?.name ?? '', 'ja');
     });
     return { cellMap: cells, rowKeys: sorted };
-  }, [visits, assignedStaffByTemplateWeekday, staffEventsByStaff, staffMap, officeNameById, courseLabel]);
+  }, [visits, assignedStaffByTemplateWeekday, staffEventsByStaff, staffMap, officeNameById, courseLabel, showAllStaff]);
 
   if (rowKeys.length === 0) {
     return (
@@ -203,25 +224,41 @@ export function StaffWeekBoard({
                       data-testid={`staff-week-cell-${rowKey}-${wd}`}
                     >
                       <div className="space-y-1.5">
-                        {/* イベント (緑・カイポケの個別業務と同じ立ち位置)。📝 = ゼロ長メモ */}
+                        {/* イベント (緑・カイポケの個別業務と同じ立ち位置)。📝 = ゼロ長メモ。
+                            onEventClick があれば「正典」としてクリック編集可能 (§昇格)。 */}
                         {events.map((ev) => {
                           const isMemo = ev.start_time === ev.end_time;
-                          return (
+                          const label = isMemo
+                            ? `📝 ${ev.title || ev.type}`
+                            : `${hhmm(ev.start_time)}〜${hhmm(ev.end_time)} ${ev.title || ev.type}`;
+                          const chipStyle: React.CSSProperties = {
+                            background: 'var(--sched-event-bg)',
+                            borderColor: 'var(--sched-event-ln)',
+                            borderLeftColor: 'var(--sched-event-bar)',
+                            color: 'var(--sched-event-ink)',
+                          };
+                          const editable = onEventClick && rowKey !== UNASSIGNED_KEY;
+                          return editable ? (
+                            <button
+                              key={`ev-${ev.id}`}
+                              type="button"
+                              onClick={() => onEventClick(ev, rowKey)}
+                              // イベント緑トークンで統一 (PO確定 2026-07-26)。
+                              className="block w-full rounded border border-l-[3px] px-1.5 py-0.5 text-left text-[11px] font-medium hover:brightness-95 focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                              style={chipStyle}
+                              title={ev.note ? `${ev.note}（クリックで編集）` : 'クリックで編集'}
+                              data-testid={`staff-week-event-${ev.id}`}
+                            >
+                              {label}
+                            </button>
+                          ) : (
                             <div
                               key={`ev-${ev.id}`}
-                              // イベント緑トークンで統一 (PO確定 2026-07-26)。
                               className="rounded border border-l-[3px] px-1.5 py-0.5 text-[11px] font-medium"
-                              style={{
-                                background: 'var(--sched-event-bg)',
-                                borderColor: 'var(--sched-event-ln)',
-                                borderLeftColor: 'var(--sched-event-bar)',
-                                color: 'var(--sched-event-ink)',
-                              }}
+                              style={chipStyle}
                               title={ev.note ?? undefined}
                             >
-                              {isMemo
-                                ? `📝 ${ev.title || ev.type}`
-                                : `${hhmm(ev.start_time)}〜${hhmm(ev.end_time)} ${ev.title || ev.type}`}
+                              {label}
                             </div>
                           );
                         })}
@@ -290,8 +327,22 @@ export function StaffWeekBoard({
                             </ul>
                           </div>
                         ))}
-                        {courses.length === 0 && events.length === 0 && (
-                          <span className="text-[10px] text-text-muted">—</span>
+                        {courses.length === 0 &&
+                          events.length === 0 &&
+                          !(onAddEvent && rowKey !== UNASSIGNED_KEY) && (
+                            <span className="text-[10px] text-text-muted">—</span>
+                          )}
+                        {/* 正典の入口: セルの「＋ イベント」(スタッフ×日が文脈から確定)。 */}
+                        {onAddEvent && rowKey !== UNASSIGNED_KEY && (
+                          <button
+                            type="button"
+                            onClick={() => onAddEvent(rowKey, addDays(weekStart, wd))}
+                            className="block w-full rounded border border-dashed border-border-default px-1 py-0.5 text-[10px] text-text-muted/70 transition-colors hover:border-brand-primary hover:text-brand-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                            aria-label={`${staff?.name ?? ''} ${format(addDays(weekStart, wd), 'M/d')} にイベントを追加`}
+                            data-testid={`staff-week-add-${rowKey}-${wd}`}
+                          >
+                            ＋
+                          </button>
                         )}
                       </div>
                     </td>
