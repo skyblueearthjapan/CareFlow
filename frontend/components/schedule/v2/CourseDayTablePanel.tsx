@@ -3944,6 +3944,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   }
                   activeCourseDrag={courseDrag}
                   onCourseDragChange={setCourseDrag}
+                  onCourseUnassign={canEdit ? handleCourseUnassignDrop : undefined}
                   offByStaffWeekday={offByStaffWeekday}
                 />
                 {/* コースの表 (パレット): 未割当コースをセルへドラッグして貼り付ける。 */}
@@ -3952,9 +3953,11 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   canEdit={canEdit}
                   onDragChange={setCourseDrag}
                   onUnassignDrop={canEdit ? handleCourseUnassignDrop : undefined}
+                  activeDrag={courseDrag}
                 />
                 <p className="text-[11px] text-text-muted">
                   コースは下の「コースの表」からスタッフのセルへドラッグで貼り付け（今週のみ・毎週の型には影響しません）。
+                  戻すときはコース帯の「×」か、コースの表へドラッグ、またはツールバーの「戻る」。
                   訪問明細の編集は週・曜日タブで。イベントはこの画面が正典で、＋やイベント帯のクリックで追加・編集できます。
                 </p>
               </div>

@@ -37,6 +37,49 @@ export function readCourseDragPayload(dt: DataTransfer | null): CourseDragPayloa
   }
 }
 
+/**
+ * ドラッグ中に掴んで見えるゴーストカードを設定する (盤面/パレット共用)。
+ * ブラウザ既定のスナップショット (小さく半透明で貧弱・PO指摘 2026-08-21) を、
+ * ブランド色の縁取り + 影つきカードに差し替える。
+ * jsdom (テスト) には setDragImage が無いためガードして no-op。
+ */
+export function applyCourseDragImage(dt: DataTransfer, label: string, sub?: string): void {
+  if (typeof document === 'undefined' || typeof dt.setDragImage !== 'function') return;
+  const ghost = document.createElement('div');
+  ghost.setAttribute('data-testid', 'course-drag-ghost');
+  // らく助ブランド色 #e15a7f (ハイブリッド配色・2026-07-10 リブランディング)。
+  ghost.style.cssText = [
+    'position:fixed',
+    'top:-200px',
+    'left:-200px',
+    'z-index:9999',
+    'pointer-events:none',
+    'padding:8px 14px',
+    'border-radius:10px',
+    'background:#ffffff',
+    'border:1.5px solid #e15a7f',
+    'border-left:6px solid #e15a7f',
+    'box-shadow:0 10px 28px rgba(0,0,0,0.22)',
+    'font-family:inherit',
+    'max-width:260px',
+    'white-space:nowrap',
+  ].join(';');
+  const title = document.createElement('div');
+  title.textContent = `⠿ ${label}`;
+  title.style.cssText = 'font-size:14px;font-weight:700;color:#1f2937;';
+  ghost.appendChild(title);
+  if (sub) {
+    const subEl = document.createElement('div');
+    subEl.textContent = sub;
+    subEl.style.cssText = 'font-size:11px;color:#6b7280;margin-top:2px;';
+    ghost.appendChild(subEl);
+  }
+  document.body.appendChild(ghost);
+  dt.setDragImage(ghost, 18, 18);
+  // setDragImage はこの時点でスナップショット済みのため次 tick で破棄してよい。
+  window.setTimeout(() => ghost.remove(), 0);
+}
+
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 
 export interface PaletteCourse {
@@ -59,6 +102,8 @@ export interface WeekCoursePaletteProps {
   onDragChange?: (drag: CourseDragPayload | null) => void;
   /** パレットへのドロップ = 担当解除 (割当済コースのみ意味を持つ)。 */
   onUnassignDrop?: (courseId: string) => void;
+  /** ドラッグ中 payload (掴んでいるカードの淡色化 + 戻し先案内の強調)。 */
+  activeDrag?: CourseDragPayload | null;
 }
 
 export function WeekCoursePalette({
@@ -66,6 +111,7 @@ export function WeekCoursePalette({
   canEdit,
   onDragChange,
   onUnassignDrop,
+  activeDrag,
 }: WeekCoursePaletteProps) {
   const [dropHover, setDropHover] = React.useState(false);
 
@@ -99,8 +145,11 @@ export function WeekCoursePalette({
       aria-label="コースの表（この週のコース一覧）"
       data-testid="week-course-palette"
       className={cn(
-        'rounded-lg border border-border-default bg-bg-base p-2',
-        dropHover && 'ring-2 ring-brand-primary/60',
+        'rounded-lg border border-border-default bg-bg-base p-2 transition-shadow',
+        // ドラッグ中はパレット全体を「戻し先」として穏やかに示し、
+        // 実際に上を通ったら強調する (PO指摘 2026-08-21: 表現が貧弱)。
+        activeDrag && !dropHover && 'ring-1 ring-brand-primary/30',
+        dropHover && 'bg-brand-primary/5 ring-2 ring-brand-primary/70',
       )}
       onDragOver={(e) => {
         if (!canEdit || !onUnassignDrop) return;
@@ -127,8 +176,13 @@ export function WeekCoursePalette({
             : 'すべてのコースに担当が付いています'}
         </span>
         {canEdit && onUnassignDrop ? (
-          <span className="ml-auto text-[10px] text-text-muted/80">
-            ここへ戻すと担当解除（今週のみ・毎週の型には影響しません）
+          <span
+            className={cn(
+              'ml-auto text-[10px] transition-colors',
+              activeDrag ? 'font-bold text-brand-primary' : 'text-text-muted/80',
+            )}
+          >
+            {activeDrag ? '⤵ ここへ戻すと担当解除（今週のみ）' : 'ここへ戻すと担当解除（今週のみ・毎週の型には影響しません）'}
           </span>
         ) : null}
       </div>
@@ -155,15 +209,24 @@ export function WeekCoursePalette({
                           };
                           e.dataTransfer.setData(COURSE_DND_MIME, JSON.stringify(payload));
                           e.dataTransfer.effectAllowed = 'move';
+                          applyCourseDragImage(
+                            e.dataTransfer,
+                            c.label,
+                            c.visitCount > 0
+                              ? `${c.visitCount}件・${c.totalMinutes}分${c.timeRange ? `・${c.timeRange}` : ''}`
+                              : '訪問なし',
+                          );
                           onDragChange?.(payload);
                         }}
                         onDragEnd={() => onDragChange?.(null)}
                         className={cn(
-                          'rounded border px-1.5 py-1 text-[11px] leading-tight',
+                          'rounded border px-1.5 py-1 text-[11px] leading-tight transition-opacity',
                           canEdit && 'cursor-grab active:cursor-grabbing',
                           assigned
                             ? 'border-border-subtle bg-bg-base text-text-muted'
                             : 'border-brand-primary/50 bg-brand-primary/5 text-text-primary',
+                          // 掴んでいるカードは半透明 + 破線で「持ち出し中」を示す。
+                          activeDrag?.courseId === c.id && 'border-dashed opacity-40',
                         )}
                         title={
                           canEdit

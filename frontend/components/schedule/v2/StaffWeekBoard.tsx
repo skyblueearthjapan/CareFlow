@@ -31,6 +31,7 @@ import { genderPalette } from '@/lib/scheduling/timeline';
 import { getStaffEventsForWeekday } from './courseGrid';
 import type { WeekOverviewVisit } from './CourseWeekOverview';
 import {
+  applyCourseDragImage,
   COURSE_DND_MIME,
   readCourseDragPayload,
   type CourseDragPayload,
@@ -65,6 +66,8 @@ export interface StaffWeekBoardProps {
   activeCourseDrag?: CourseDragPayload | null;
   /** セル内コース帯のドラッグ開始/終了 (パレットと同じ通知)。 */
   onCourseDragChange?: (drag: CourseDragPayload | null) => void;
+  /** コース帯の「×」= 担当解除 (未割当へ戻す・今週のみ)。PO要望 2026-08-21。 */
+  onCourseUnassign?: (courseId: string) => void;
   /** `${staffId}:${weekday}` → 休み/時間変更 (セル網掛け + ドロップ警告の表示根拠)。 */
   offByStaffWeekday?: Map<string, WeekOverrideRead>;
 }
@@ -99,8 +102,16 @@ export function StaffWeekBoard({
   onCourseDrop,
   activeCourseDrag,
   onCourseDragChange,
+  onCourseUnassign,
   offByStaffWeekday,
 }: StaffWeekBoardProps) {
+  // ドラッグ中に実際に重なっているセル (`${rowKey}:${wd}`)。候補セルの
+  // 淡い破線に対し、重なり中のセルだけ強く光らせる (PO指摘 2026-08-21)。
+  const [dragOverCell, setDragOverCell] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    // ドラッグが終わったら残像を消す。
+    if (!activeCourseDrag) setDragOverCell(null);
+  }, [activeCourseDrag]);
   const templateById = React.useMemo(() => {
     const m = new Map<string, CourseTemplateRead>();
     for (const t of templates) m.set(t.id, t);
@@ -247,13 +258,21 @@ export function StaffWeekBoard({
                   const droppable = !!onCourseDrop && rowKey !== UNASSIGNED_KEY;
                   const dropHighlight =
                     droppable && activeCourseDrag != null && activeCourseDrag.weekday === wd;
+                  const cellKey = `${rowKey}:${wd}`;
+                  const dragOverHere = dropHighlight && dragOverCell === cellKey;
                   return (
                     <td
                       key={wd}
                       className={[
-                        'border-r border-border-subtle px-2 py-1.5',
+                        'border-r border-border-subtle px-2 py-1.5 transition-colors',
                         off ? 'bg-amber-50' : '',
-                        dropHighlight ? 'outline outline-2 -outline-offset-2 outline-brand-primary/50' : '',
+                        // 候補セル (同じ曜日の列) は淡い破線、重なり中は強く光らせる。
+                        dropHighlight && !dragOverHere
+                          ? 'bg-brand-primary/5 outline-dashed outline-1 -outline-offset-2 outline-brand-primary/40'
+                          : '',
+                        dragOverHere
+                          ? 'bg-brand-primary/15 outline outline-2 -outline-offset-2 outline-brand-primary'
+                          : '',
                       ]
                         .filter(Boolean)
                         .join(' ')}
@@ -264,12 +283,21 @@ export function StaffWeekBoard({
                               if (!e.dataTransfer.types.includes(COURSE_DND_MIME)) return;
                               e.preventDefault();
                               e.dataTransfer.dropEffect = 'move';
+                              setDragOverCell(cellKey);
+                            }
+                          : undefined
+                      }
+                      onDragLeave={
+                        droppable
+                          ? () => {
+                              setDragOverCell((cur) => (cur === cellKey ? null : cur));
                             }
                           : undefined
                       }
                       onDrop={
                         droppable
                           ? (e) => {
+                              setDragOverCell(null);
                               const payload = readCourseDragPayload(e.dataTransfer);
                               if (!payload) return;
                               e.preventDefault();
@@ -340,40 +368,68 @@ export function StaffWeekBoard({
                               : null;
                           return (
                           <div key={cc.templateId}>
-                            <div
-                              className={[
-                                'mb-0.5 inline-flex items-center rounded bg-bg-muted px-1.5 py-px text-[10px] font-bold text-text-secondary',
-                                chipCourseId ? 'cursor-grab active:cursor-grabbing' : '',
-                              ]
-                                .filter(Boolean)
-                                .join(' ')}
-                              draggable={!!chipCourseId}
-                              onDragStart={
-                                chipCourseId
-                                  ? (e) => {
-                                      const payload = {
-                                        courseId: chipCourseId,
-                                        weekday: wd,
-                                      };
-                                      e.dataTransfer.setData(
-                                        COURSE_DND_MIME,
-                                        JSON.stringify(payload),
-                                      );
-                                      e.dataTransfer.effectAllowed = 'move';
-                                      onCourseDragChange?.(payload);
-                                    }
-                                  : undefined
-                              }
-                              onDragEnd={chipCourseId ? () => onCourseDragChange?.(null) : undefined}
-                              title={
-                                chipCourseId
-                                  ? `${cc.label} — 別のスタッフのセルへドラッグで担当付け替え（今週のみ）`
-                                  : undefined
-                              }
-                              data-testid={`staff-week-course-chip-${cc.templateId}-${wd}`}
-                            >
-                              {chipCourseId ? '⠿ ' : ''}
-                              {cc.label}
+                            <div className="mb-0.5 inline-flex items-center gap-0.5">
+                              <div
+                                className={[
+                                  'inline-flex items-center rounded bg-bg-muted px-1.5 py-px text-[10px] font-bold text-text-secondary transition-opacity',
+                                  chipCourseId ? 'cursor-grab active:cursor-grabbing' : '',
+                                  // 持ち出し中のコースは半透明 (どれを掴んでいるか明示)。
+                                  chipCourseId && activeCourseDrag?.courseId === chipCourseId
+                                    ? 'opacity-40'
+                                    : '',
+                                ]
+                                  .filter(Boolean)
+                                  .join(' ')}
+                                draggable={!!chipCourseId}
+                                onDragStart={
+                                  chipCourseId
+                                    ? (e) => {
+                                        const payload = {
+                                          courseId: chipCourseId,
+                                          weekday: wd,
+                                        };
+                                        e.dataTransfer.setData(
+                                          COURSE_DND_MIME,
+                                          JSON.stringify(payload),
+                                        );
+                                        e.dataTransfer.effectAllowed = 'move';
+                                        applyCourseDragImage(
+                                          e.dataTransfer,
+                                          cc.label,
+                                          `${cc.visits.length}件 — 別スタッフへ付け替え / コースの表へ戻して解除`,
+                                        );
+                                        onCourseDragChange?.(payload);
+                                      }
+                                    : undefined
+                                }
+                                onDragEnd={
+                                  chipCourseId ? () => onCourseDragChange?.(null) : undefined
+                                }
+                                title={
+                                  chipCourseId
+                                    ? `${cc.label} — 別のスタッフのセルへドラッグで担当付け替え（今週のみ）`
+                                    : undefined
+                                }
+                                data-testid={`staff-week-course-chip-${cc.templateId}-${wd}`}
+                              >
+                                {chipCourseId ? '⠿ ' : ''}
+                                {cc.label}
+                              </div>
+                              {/* × = 担当解除 (未割当へ戻す・今週のみ)。ドラッグより
+                                  直感的な「戻す」入口 (PO要望 2026-08-21)。undo は
+                                  ツールバーの「戻る」でも可能。担当なし行には出さない。 */}
+                              {chipCourseId && onCourseUnassign && rowKey !== UNASSIGNED_KEY ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onCourseUnassign(chipCourseId)}
+                                  className="rounded px-1 py-px text-[10px] font-bold leading-none text-text-muted transition-colors hover:bg-red-50 hover:text-red-600 focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                  title={`${cc.label} の担当を解除して「コースの表」へ戻す（今週のみ）`}
+                                  aria-label={`${cc.label} の担当を解除`}
+                                  data-testid={`staff-week-course-unassign-${cc.templateId}-${wd}`}
+                                >
+                                  ×
+                                </button>
+                              ) : null}
                             </div>
                             <ul className="space-y-0.5">
                               {cc.visits

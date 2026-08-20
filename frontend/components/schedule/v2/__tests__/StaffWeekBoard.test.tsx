@@ -325,4 +325,54 @@ describe('StaffWeekBoard', () => {
     const tueChip = screen.getByTestId(`staff-week-course-chip-${TPL_B}-1`);
     expect(tueChip).toHaveAttribute('draggable', 'false');
   });
+
+  it('⑪ onCourseUnassign: コース帯の×クリックで courseId が飛ぶ・担当なし行には出ない', () => {
+    const onCourseUnassign = vi.fn();
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        onCourseDrop={vi.fn()}
+        onCourseUnassign={onCourseUnassign}
+        courseIdByTemplateWeekday={
+          new Map([
+            [`${TPL_A}:0`, COURSE_ID],
+            // 水曜B (担当なし行) にも course_id はあるが×は出ない
+            [`${TPL_B}:2`, '00000000-0000-4000-8000-00000000c002'],
+          ])
+        }
+      />,
+    );
+    screen.getByTestId(`staff-week-course-unassign-${TPL_A}-0`).click();
+    expect(onCourseUnassign).toHaveBeenCalledWith(COURSE_ID);
+    // 担当なし行 (未割当) には解除ボタンを出さない
+    expect(
+      screen.queryByTestId(`staff-week-course-unassign-${TPL_B}-2`),
+    ).not.toBeInTheDocument();
+  });
+
+  it('⑫ activeCourseDrag: 掴んでいるコースのチップが半透明になる', () => {
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        onCourseDrop={vi.fn()}
+        courseIdByTemplateWeekday={new Map([[`${TPL_A}:0`, COURSE_ID]])}
+        activeCourseDrag={{ courseId: COURSE_ID, weekday: 0 }}
+      />,
+    );
+    expect(screen.getByTestId(`staff-week-course-chip-${TPL_A}-0`).className).toContain(
+      'opacity-40',
+    );
+  });
 });

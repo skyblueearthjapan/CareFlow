@@ -90,6 +90,20 @@ describe('WeekCoursePalette', () => {
     expect(onUnassignDrop).toHaveBeenCalledWith(C_MON_B);
   });
 
+  it('⑤ activeDrag: 掴んでいるカードが半透明+破線になり、戻し先案内が強調される', () => {
+    render(
+      <WeekCoursePalette
+        courses={courses}
+        canEdit
+        onUnassignDrop={vi.fn()}
+        activeDrag={{ courseId: C_MON_A, weekday: 0 }}
+      />,
+    );
+    const card = screen.getByTestId(`palette-course-${C_MON_A}`);
+    expect(card.className).toContain('opacity-40');
+    expect(screen.getByText('⤵ ここへ戻すと担当解除（今週のみ）')).toBeInTheDocument();
+  });
+
   it('④ canEdit=false: カードはドラッグ不可・ドロップも無視', () => {
     const onUnassignDrop = vi.fn();
     render(<WeekCoursePalette courses={courses} canEdit={false} onUnassignDrop={onUnassignDrop} />);
