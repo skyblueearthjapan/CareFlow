@@ -101,7 +101,7 @@ export function ImportEventsFromKaipokeDialog({
         if (!next) onClose();
       }}
     >
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>カイポケからイベントを取り込む</DialogTitle>
           <DialogDescription>
@@ -144,7 +144,7 @@ export function ImportEventsFromKaipokeDialog({
                 {plan.changes.map((c) => {
                   const meta = ACTION_META[c.action] ?? ACTION_META.add!;
                   return (
-                    <li key={`${c.action}-${c.externalId}`} className="flex items-center gap-2 text-xs">
+                    <li key={`${c.action}-${c.externalId}`} className="flex min-w-0 items-center gap-2 text-xs">
                       <span
                         className={`shrink-0 rounded px-1.5 py-0.5 font-medium ${meta.cls}`}
                       >

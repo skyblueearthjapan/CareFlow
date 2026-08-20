@@ -33,7 +33,7 @@ export function EventVisitConflictNotice({
       </p>
       <ul className="mt-1.5 space-y-1">
         {conflicts.map((c, i) => (
-          <li key={i} className="text-xs leading-relaxed text-text-primary">
+          <li key={i} className="break-words text-xs leading-relaxed text-text-primary">
             <span className="tnum font-medium">{fmtJp(c.date)}</span>{' '}
             <span className="font-medium">{c.staffName}さん</span> — イベント「{c.eventTitle}」
             <span className="tnum">

@@ -115,7 +115,7 @@ export function SendEventsToKaipokeDialog({
         if (!next) onClose();
       }}
     >
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>イベントをカイポケへ送る</DialogTitle>
           <DialogDescription>
