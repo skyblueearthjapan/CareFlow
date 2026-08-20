@@ -50,6 +50,8 @@ interface StaffFormFieldsProps {
   sexOptions: Option<SexValue>[];
   roleOptions: Option<RoleValue>[];
   statusOptions: Option<StatusValue>[];
+  /** 新規登録時のみ true: コード空欄で自動採番される旨のヒントを出す。 */
+  codeAutoHint?: boolean;
 }
 
 export function StaffFormFields({
@@ -59,6 +61,7 @@ export function StaffFormFields({
   sexOptions,
   roleOptions,
   statusOptions,
+  codeAutoHint = false,
 }: StaffFormFieldsProps) {
   const set = <K extends keyof StaffFormState>(key: K, value: StaffFormState[K]) =>
     onChange({ ...form, [key]: value });
@@ -89,9 +92,14 @@ export function StaffFormFields({
           <Input
             value={form.code}
             onChange={(e) => set('code', e.target.value)}
-            placeholder="例: S001"
+            placeholder={codeAutoHint ? '空欄で自動採番' : '例: S001'}
             maxLength={64}
           />
+          {codeAutoHint && (
+            <p className="mt-1 text-xs text-text-muted">
+              空欄のまま登録すると、次の番号（S001 形式）が自動で割り当てられます
+            </p>
+          )}
         </Field>
 
         <Field label="性別" error={errors.sex}>

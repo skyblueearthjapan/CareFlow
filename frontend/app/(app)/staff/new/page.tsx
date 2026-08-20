@@ -134,6 +134,7 @@ export default function StaffNewPage() {
               form={form}
               errors={errors}
               onChange={setForm}
+              codeAutoHint
               sexOptions={STAFF_SEX_VALUES.map((v) => ({ value: v, label: sexLabel(v) }))}
               roleOptions={STAFF_ROLE_OPTIONS.map((v) => ({ value: v, label: roleLabel(v) }))}
               statusOptions={STAFF_STATUS_VALUES.map((v) => ({

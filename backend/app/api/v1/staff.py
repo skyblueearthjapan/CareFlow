@@ -140,7 +140,13 @@ async def create_staff(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> Staff:
-    staff = Staff(**payload.model_dump())
+    data = payload.model_dump()
+    # コード空欄 = 自動採番 (S + ゼロ埋め3桁・staff_code.py)。手入力はそのまま尊重。
+    if not (data.get("code") or "").strip():
+        from app.services.staff_code import generate_next_staff_code
+
+        data["code"] = await generate_next_staff_code(db)
+    staff = Staff(**data)
     db.add(staff)
     await db.flush()
 

@@ -340,8 +340,16 @@ async def _apply_staff_create(db: AsyncSession, request: PendingRequest, payload
     is_trainee_raw = payload.get("is_trainee")
     is_trainee = bool(is_trainee_raw) if is_trainee_raw is not None else False
 
+    # コード空欄 = 自動採番 (API 直登録 create_staff と同一規約・staff_code.py)
+    raw_code = payload.get("code")
+    code = raw_code if isinstance(raw_code, str) and raw_code.strip() else None
+    if code is None:
+        from app.services.staff_code import generate_next_staff_code
+
+        code = await generate_next_staff_code(db)
+
     row = Staff(
-        code=payload.get("code"),
+        code=code,
         name=str(name),
         kana=payload.get("kana"),
         sex=payload.get("sex"),
