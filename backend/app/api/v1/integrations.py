@@ -460,6 +460,21 @@ async def _reconcile_latest_job(
     if not kaipoke_idle:
         return job
 
+    # 週空間C1修正 (2026-08-21): events-preview / events-outbound-apply は自前の
+    # status エンドポイントが RPA の個別 result ストア (individual_tasks_result) から
+    # 決着させる**自己完結型**。ここに来る汎用 result には結果が載らないため、
+    # 先取りクローズすると「result_unknown の completed」になり status 側が
+    # プランを構築できない (突合パネルの live 2秒ポーリングで顕在化した 409)。
+    # → 新しいうちは閉じずに任せる。放置残骸 (ブラウザ閉鎖等・FEのポーリング上限
+    # 8分を大きく超えた 30 分超) は従来どおりここで閉じる。
+    _op = (job.params or {}).get("op")
+    if _op in ("events-preview", "events-outbound-apply"):
+        _created = job.created_at
+        if _created is not None and _created.tzinfo is None:
+            _created = _created.replace(tzinfo=UTC)
+        if _created is not None and datetime.now(UTC) - _created < timedelta(minutes=30):
+            return job
+
     payload = result_payload or {}
     if payload.get("status") == "error" or payload.get("error"):
         job.status = "failed"
@@ -2397,10 +2412,39 @@ async def events_inbound_preview_status(
     if job.status == "completed":
         stored = (job.result_summary or {}).get("preview")
         if stored is None:
-            # 同期版のジョブ等 preview を持たない completed (通常ここには来ない)
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="このジョブはポーリング対象ではありません",
+            # preview 無しの completed = 汎用 reconcile (_reconcile_latest_job) が
+            # 先取りクローズした形跡 (result_unknown)。2026-08-21 の 409 障害の型。
+            # 自己回復: RPA の個別 result ストアを直接見て、我々の結果が残っていれば
+            # ここでプランを構築して格納する。無ければ failed で丁寧に返す
+            # (409 は FE が「意味不明なエラー」にしかできない)。
+            from app.services.kaipoke.events_inbound import (
+                build_events_plan as _bep,
+            )
+            from app.services.kaipoke.events_inbound import (
+                find_event_visit_conflicts as _fevc,
+            )
+
+            rpa = await kaipoke.individual_tasks_result()
+            _result = rpa.get("result") or {}
+            if (
+                str(rpa.get("job_id") or "") == str(job.id)
+                and str(rpa.get("status") or "") == "completed"
+                and _result.get("success")
+                and isinstance(_result.get("tasks"), list)
+            ):
+                plan = await _bep(db, week_start=job.week_start, tasks=_result["tasks"])
+                conflicts = await _fevc(db, job.week_start, _plan_conflict_items(plan))
+                preview = _events_plan_to_read(plan, conflicts)
+                job.result_summary = {
+                    **(job.result_summary or {}),
+                    **_events_result_summary(preview, plan),
+                    "preview": preview.model_dump(mode="json", by_alias=True),
+                }
+                await _commit_or_409(db)
+                return EventsInboundStatusRead(status="completed", preview=preview)
+            return EventsInboundStatusRead(
+                status="failed",
+                error="RPA側の結果を確認できませんでした（別処理が先に動いた可能性）。再実行してください",
             )
         return EventsInboundStatusRead(
             status="completed", preview=EventsInboundPreviewRead.model_validate(stored)

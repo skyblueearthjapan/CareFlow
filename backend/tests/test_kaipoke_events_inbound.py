@@ -750,3 +750,102 @@ async def test_apply_reports_visit_conflicts(client, db, stub_kaipoke) -> None:
     assert result["added"] == 1  # 取り込みは行われる
     assert len(result["conflicts"]) == 1
     assert result["conflicts"][0]["patientName"] == "朝倉　美夢"
+
+
+# --- 7. 汎用 reconcile との競合 (週空間C1・2026-08-21 の 409 障害) -------------
+
+
+@pytest.mark.asyncio
+async def test_reconcile_skips_fresh_events_preview_job(client, db, stub_kaipoke) -> None:
+    """_reconcile_latest_job は新しい events-preview ジョブを先取りクローズしない.
+
+    突合パネルの live 2秒ポーリングが idle を先に観測すると、汎用 reconcile が
+    「result_unknown の completed」でジョブを閉じてしまい、status 側がプランを
+    構築できず 409 になっていた (実障害 2026-08-21 job 1bf9a5bc)。
+    """
+    from app.api.v1.integrations import _reconcile_latest_job
+
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    stub_kaipoke.tasks = _default_tasks()
+    job_id = await _start(client, admin)
+
+    job = await _reconcile_latest_job(db, kaipoke_idle=True, result_payload=None)
+    await db.commit()
+    assert job is not None and str(job.id) == job_id
+    assert job.status in ("pending", "running")  # 閉じられていない
+    assert "result_unknown" not in (job.result_summary or {})
+
+
+@pytest.mark.asyncio
+async def test_reconcile_still_closes_stale_events_preview_job(client, db, stub_kaipoke) -> None:
+    """放置残骸 (30分超) は従来どおり閉じる (残骸が running のまま残らない)."""
+    import datetime as _dt
+
+    from app.api.v1.integrations import _reconcile_latest_job
+
+    stale = KaipokeJob(
+        job_type="fetch",
+        week_start=WEEK_START,
+        params={"op": "events-preview", "week_start": WEEK_START.isoformat()},
+        status="running",
+    )
+    db.add(stale)
+    await db.flush()
+    stale.created_at = _dt.datetime.now(_dt.UTC) - _dt.timedelta(minutes=31)
+    await db.commit()
+
+    job = await _reconcile_latest_job(db, kaipoke_idle=True, result_payload=None)
+    await db.commit()
+    assert job is not None and job.id == stale.id
+    assert job.status == "completed"
+    assert (job.result_summary or {}).get("result_unknown") is True
+
+
+@pytest.mark.asyncio
+async def test_async_status_recovers_from_premature_close(client, db, stub_kaipoke) -> None:
+    """preview 無し completed (先取りクローズ痕) でも RPA result から自己回復する."""
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    stub_kaipoke.tasks = _default_tasks()
+    job_id = await _start(client, admin)
+
+    # 汎用 reconcile に先取りクローズされた状態を再現
+    job = await db.get(KaipokeJob, UUID(job_id))
+    assert job is not None
+    job.status = "completed"
+    job.result_summary = {"result_unknown": True}
+    await db.commit()
+
+    res = await client.get(_status_url(job_id), headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "completed"
+    assert body["preview"]["fetchedTotal"] == 5
+
+    await db.refresh(job)
+    assert job.result_summary["preview"]["fetchedTotal"] == 5
+
+
+@pytest.mark.asyncio
+async def test_async_status_premature_close_result_lost(client, db, stub_kaipoke) -> None:
+    """先取りクローズ + RPA result も他ジョブ → 409 でなく failed で丁寧に返す."""
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    stub_kaipoke.tasks = _default_tasks()
+    job_id = await _start(client, admin)
+
+    job = await db.get(KaipokeJob, UUID(job_id))
+    assert job is not None
+    job.status = "completed"
+    job.result_summary = {"result_unknown": True}
+    await db.commit()
+
+    stub_kaipoke.result_responses = [
+        {"success": True, "status": "completed", "job_id": "someone-else"},
+    ]
+    res = await client.get(_status_url(job_id), headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "failed"
+    assert "再実行" in (body["error"] or "")
