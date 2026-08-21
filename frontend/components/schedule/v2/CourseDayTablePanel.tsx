@@ -3682,16 +3682,55 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             </div>
           }
 
-          {/* Row 2 (中段): 青ピン一括のみ (PO 決定 2026-08-09)。
+          {/* Row 2 (中段): 左=戻る/進む (Wave U-3・PO指示 2026-08-21: 空いていた
+              この行へ移設し、タブ行を 2 行に収める) / 右=青ピン一括 (PO 決定 2026-08-09)。
               赤の一括 (全件ピン留め/解除) は統合により廃止 — 完全固定は患者マスタの
               固定訪問スケジュールで設定する (週全体 / 曜日ごと)。 */}
           <div
-            className="mt-2 flex flex-wrap items-center justify-end gap-1.5"
+            className="mt-2 flex flex-wrap items-center justify-between gap-1.5"
             data-testid="course-day-bulk-pin-row"
           >
-            {/* 何に対する一括かをグループ見出しで明示する (PO 指摘 2026-08-09)。 */}
-            <span className="text-[11px] font-semibold text-text-muted">今週の配置:</span>
-            <BulkWeekPinAllButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
+            {/* 戻る/進む (Wave U-3): 曜日/週/職員スケジュールの全タブ共通のため
+                タブ行より上の共通段に置く。 */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void handleUndo()}
+                disabled={!canEdit || !opLogState?.can_undo || undoRedoPending}
+                title={opLogState?.undo_label != null ? `戻す: ${opLogState.undo_label}` : '戻す'}
+                data-testid="schedule-undo-button"
+              >
+                {undoRedoPending ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                ) : (
+                  <Undo2 className="mr-1 h-4 w-4" aria-hidden />
+                )}
+                戻る
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void handleRedo()}
+                disabled={!canEdit || !opLogState?.can_redo || undoRedoPending}
+                title={opLogState?.redo_label != null ? `進む: ${opLogState.redo_label}` : '進む'}
+                data-testid="schedule-redo-button"
+              >
+                {undoRedoPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                ) : (
+                  <Redo2 className="mr-1 h-4 w-4" aria-hidden />
+                )}
+                進む
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {/* 何に対する一括かをグループ見出しで明示する (PO 指摘 2026-08-09)。 */}
+              <span className="text-[11px] font-semibold text-text-muted">今週の配置:</span>
+              <BulkWeekPinAllButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
+            </div>
           </div>
 
           {/* Row 3: 曜日タブ (左) + 表示切替・二次操作 (右寄せ).
@@ -3976,49 +4015,12 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     />
                   ) : null}
 
-                  {/* Group γ: ↶ 戻る / ↷ 進む (Wave U-3) + 自動スタッフ割当 + リセット.
+                  {/* Group γ: 自動スタッフ割当 + リセット.
                       2026-07: 「自動スタッフ割付」を「自動スタッフ割当」に改称し
                       Row 1 から一斉スタッフ未割当の左隣へ移動 (割当⇄リセットの対操作を隣接).
-                      Wave U-3: 戻る/進むを自動スタッフ割当の左に追加。 */}
+                      Wave U-3 の 戻る/進むは Row 2 (青ピン一括の行) へ移設
+                      (PO指示 2026-08-21: 空き行の活用でタブ行を 2 行に収める)。 */}
                   <div className="flex flex-wrap items-center gap-1.5">
-                    {/* Wave U-3: ↶ 戻る */}
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void handleUndo()}
-                      disabled={!canEdit || !opLogState?.can_undo || undoRedoPending}
-                      title={
-                        opLogState?.undo_label != null ? `戻す: ${opLogState.undo_label}` : '戻す'
-                      }
-                      data-testid="schedule-undo-button"
-                    >
-                      {undoRedoPending ? (
-                        <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-                      ) : (
-                        <Undo2 className="mr-1 h-4 w-4" aria-hidden />
-                      )}
-                      戻る
-                    </Button>
-                    {/* Wave U-3: ↷ 進む */}
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void handleRedo()}
-                      disabled={!canEdit || !opLogState?.can_redo || undoRedoPending}
-                      title={
-                        opLogState?.redo_label != null ? `進む: ${opLogState.redo_label}` : '進む'
-                      }
-                      data-testid="schedule-redo-button"
-                    >
-                      {undoRedoPending ? (
-                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                      ) : (
-                        <Redo2 className="mr-1 h-4 w-4" aria-hidden />
-                      )}
-                      進む
-                    </Button>
                     <Button
                       type="button"
                       size="sm"
