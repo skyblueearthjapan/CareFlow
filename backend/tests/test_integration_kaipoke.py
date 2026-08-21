@@ -415,6 +415,17 @@ async def test_apply_partial_item_ids_does_not_lock_sheet(client, db, stub_kaipo
     body2 = [p for (name, p) in stub_kaipoke.calls if name == "apply"][-1]
     assert body2["correction_data"][0]["user_name"] == "患者B"
 
+    # 再送ガード (レビューM1): 送信済み item は include=False に落ち、再指定は 422。
+    await db.refresh(it1)
+    assert it1.include is False
+    res3 = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": str(sheet.id), "dryRun": False, "itemIds": [str(it1.id)]},
+    )
+    assert res3.status_code == 422, res3.text
+    assert "送信済み" in res3.text
+
 
 @pytest.mark.asyncio
 async def test_apply_week_scope_skips_past_days(client, db, stub_kaipoke) -> None:

@@ -23,7 +23,6 @@ import io
 import json
 import logging
 import re
-import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -395,14 +394,17 @@ def compare_schedules(
 
 
 def _normalize_user_name(name: str) -> str:
-    """利用者名のグルーピング用正規化 (NFKC + 全空白除去)。
+    """利用者名のグルーピング用正規化 (NFKC + 全空白除去 + 異体字統一)。
 
     らく助とカイポケで氏名の空白 (半角/全角) が違うと同一人物が別グループに
     分かれ、同じ訪問が delete+add ペアに分解される (2026-07-26 実データで
     11 件確認)。正規化キーで束ねてこの偽差分を防ぐ。
-    \\s+ で NBSP (U+00A0) 等の Unicode 空白クラスもまとめて除去する。
+    2026-08-21 (レビュー指摘): 異体字 (髙/高 等) も同一人物に束ねるため、
+    マスタ突合と同じ normalize_person_name (単一ソース) へ委譲する。
     """
-    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", name))
+    from app.services.kaipoke.master_reconcile import normalize_person_name
+
+    return normalize_person_name(name)
 
 
 def _compare_entries(

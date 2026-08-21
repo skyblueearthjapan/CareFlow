@@ -98,12 +98,13 @@ def extract_names_from_kaipoke_csv(csv_content: str) -> tuple[list[str], list[st
     if csv_content and csv_content[0] == "﻿":
         csv_content = csv_content[1:]
     rows = list(_csv.reader(_io.StringIO(csv_content)))
-    patients: list[str] = []
-    staff: list[str] = []
+    # dict をorderd-setとして使い重複を除去 (月次CSVは同一人物が数百行現れる)。
+    patients: dict[str, None] = {}
+    staff: dict[str, None] = {}
     for r in rows[1:]:
         if len(r) < 18:
             continue
-        patients.append(r[11].strip())
+        patients.setdefault(r[11].strip(), None)
         for idx in (0, 2, 5):
-            staff.append(r[idx].strip())
-    return patients, staff
+            staff.setdefault(r[idx].strip(), None)
+    return list(patients), list(staff)

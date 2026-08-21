@@ -269,3 +269,13 @@ def test_date_change_prefers_nearest_day() -> None:
     assert dc[0].date_to == "3", f"最近接日(3)でなく{dc[0].date_to}が選ばれた"
     # 残り (6日) は追加として出る
     assert any(c.action == "add" and c.date_to == "6" for c in corrections)
+
+
+def test_normalize_names_merges_kanji_variants() -> None:
+    """異体字 (髙/高) 差も同一人物に束ねる (レビュー指摘: マスタ突合の正規化へ委譲)."""
+    cur = CSV_HEADER + _kaipoke_row(user="髙梨　太郎", svc="A", start="09:00", end="10:00")
+    opt = CSV_HEADER + _kaipoke_row(user="高梨太郎", svc="A", start="09:00", end="10:00")
+    corrections = compare_schedules_from_content(
+        cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
+    )
+    assert corrections == [], f"異体字で偽差分: {[(c.action, c.user_name) for c in corrections]}"

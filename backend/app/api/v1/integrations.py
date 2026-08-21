@@ -1369,6 +1369,14 @@ async def trigger_apply(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="指定された修正項目がこのシートに見つかりません（再計算してください）",
             )
+        # 再送ガード (レビューM1): 部分適用で送った item は include=False に落とす
+        # (下の成功時処理)。False の item を再指定されたら 422 — FE の送信済み管理
+        # (React state) はリロードで消えるため、サーバ側でも二重送信を防ぐ。
+        if any(not it.include for it in selected_all) and not payload.dry_run:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="既に送信済み（または対象外）の項目が含まれています。再計算してください",
+            )
     else:
         selected_all = [it for it in sheet.items if it.include]
     if not selected_all:
@@ -1483,6 +1491,11 @@ async def trigger_apply(
         # job 完了を観測して applied/failed へ遷移させる (早計な applied を避ける)。
         # 部分適用 (itemIds) は遷移させない = 同一シートから続けて 1 件ずつ送れる。
         sheet.status = "applying"
+    if not payload.dry_run and payload.item_ids:
+        # 再送ガード (レビューM1): 送った item を include=False に落とす =
+        # 同じ item の再指定は上の 422 で拒否・全体適用(週次反映)の選択からも外れる。
+        for _it in selected:
+            _it.include = False
     await _commit_or_409(db)
 
     return JobAccepted(
