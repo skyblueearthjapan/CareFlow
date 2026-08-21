@@ -714,6 +714,12 @@ def _compare_entries(
         )
 
         for cur_idx, cur_entry in unmatched_current:
+            # 週空間C2 安定化 (2026-08-21): 相手は「最初に見つかった候補」ではなく
+            # **最近接日** (同点なら開始時刻一致を優先、さらに同点は日付順) を選ぶ。
+            # 先着順だと候補が複数ある週で遠い日と結ばれ、同じ実データでも実行間で
+            # edit⇔date_change の出方が揺れて見える一因になっていた。
+            cur_day = _date_key(cur_entry.date)
+            best: tuple[tuple[int, int, int], int, ScheduleEntry] | None = None
             for opt_idx, opt_entry in unmatched_optimized:
                 if opt_idx in all_matched_optimized:
                     continue
@@ -727,34 +733,44 @@ def _compare_entries(
                     svc_match = True
                 else:
                     svc_match = False
-                # サービス内容が一致し、日付が異なる場合は日付変更
-                if svc_match:
-                    # Bug fix (Codex Bug D): compare canonical day keys, not
-                    # raw strings. ``"2026/05/04"`` and ``"4"`` are the same
-                    # day and must NOT trigger a date_change correction.
-                    if _date_key(cur_entry.date) != _date_key(opt_entry.date):
-                        corrections.append(
-                            Correction(
-                                user_name=user,
-                                date_from=cur_entry.date,
-                                date_to=opt_entry.date,
-                                start_time_from=cur_entry.start_time,
-                                start_time_to=opt_entry.start_time,
-                                end_time_from=cur_entry.end_time,
-                                end_time_to=opt_entry.end_time,
-                                staff1_from=cur_entry.staff1_name,
-                                staff1_to=opt_entry.staff1_name,
-                                staff2_from=cur_entry.staff2_name,
-                                staff2_to=opt_entry.staff2_name,
-                                service_type=cur_entry.service_type,
-                                action="date_change",
-                                business_type=cur_entry.business_type,
-                                remarks=opt_entry.remarks,
-                            )
-                        )
-                        all_matched_current.add(cur_idx)
-                        all_matched_optimized.add(opt_idx)
-                        break
+                if not svc_match:
+                    continue
+                # Bug fix (Codex Bug D): compare canonical day keys, not
+                # raw strings. ``"2026/05/04"`` and ``"4"`` are the same
+                # day and must NOT trigger a date_change correction.
+                opt_day = _date_key(opt_entry.date)
+                if cur_day == opt_day:
+                    continue
+                day_dist = (
+                    abs(cur_day - opt_day) if cur_day is not None and opt_day is not None else 99
+                )
+                time_penalty = 0 if cur_entry.start_time == opt_entry.start_time else 1
+                score = (day_dist, time_penalty, opt_day if opt_day is not None else 99)
+                if best is None or score < best[0]:
+                    best = (score, opt_idx, opt_entry)
+            if best is not None:
+                _, opt_idx, opt_entry = best
+                corrections.append(
+                    Correction(
+                        user_name=user,
+                        date_from=cur_entry.date,
+                        date_to=opt_entry.date,
+                        start_time_from=cur_entry.start_time,
+                        start_time_to=opt_entry.start_time,
+                        end_time_from=cur_entry.end_time,
+                        end_time_to=opt_entry.end_time,
+                        staff1_from=cur_entry.staff1_name,
+                        staff1_to=opt_entry.staff1_name,
+                        staff2_from=cur_entry.staff2_name,
+                        staff2_to=opt_entry.staff2_name,
+                        service_type=cur_entry.service_type,
+                        action="date_change",
+                        business_type=cur_entry.business_type,
+                        remarks=opt_entry.remarks,
+                    )
+                )
+                all_matched_current.add(cur_idx)
+                all_matched_optimized.add(opt_idx)
 
         # Pass 4: 削除の検出（currentにのみ存在するエントリ）
         final_unmatched_current = [

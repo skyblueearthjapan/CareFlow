@@ -167,9 +167,29 @@ export const DiffLocalRequestSchema = z.object({
 });
 export type DiffLocalRequest = z.infer<typeof DiffLocalRequestSchema>;
 
+// --- マスタ相互突合 (Phase M・PO発案 2026-08-21) ----------------------------
+
+export const MasterReconcileGroupSchema = z.object({
+  matched: z.number().int().default(0),
+  kaipokeOnly: z.array(z.string()).default([]),
+  rakusukeOnly: z.array(z.string()).default([]),
+  notationDiff: z.array(z.object({ kaipoke: z.string(), rakusuke: z.string() })).default([]),
+});
+export const MasterReconcileSchema = z.object({
+  month: z.string(),
+  patients: MasterReconcileGroupSchema,
+  staff: MasterReconcileGroupSchema,
+});
+export type MasterReconcile = z.infer<typeof MasterReconcileSchema>;
+
 export const ApplyRequestSchema = z.object({
   sheetId: z.string().uuid(),
   dryRun: z.boolean().optional(),
+  /**
+   * 部分適用 (週空間C2・2026-08-21): 指定 item だけ送る。include は見ない。
+   * 部分適用はシートを applied にしない = 同じ計算結果から 1 件ずつ複数回送れる。
+   */
+  itemIds: z.array(z.string().uuid()).optional(),
 });
 export type ApplyRequest = z.infer<typeof ApplyRequestSchema>;
 

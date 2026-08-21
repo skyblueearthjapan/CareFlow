@@ -159,6 +159,12 @@ class BuildOptions:
     default_service_content: str = DEFAULT_SERVICE_CONTENT
     # 同行判定: mentor(指導者=影) を同行○ とみなす。secondary(第2看護師) は既定で非同行。
     mentor_as_companion: bool = True
+    # 主担当未割当の訪問も職員名1='-' (カイポケの未割当表記) で行として含める。
+    # 既定 False = 月次CSV出力(レセプト向け)は従来どおり除外。
+    # 差分計算 (local_diff) は True — 未割当を除外すると「らく助側が空」に見え、
+    # カイポケ全行が偽の delete になる実障害があった (2026-08-21 C2実機テスト:
+    # 週117件全未割当 → 送信差分が delete127 だけになりカイポケ全消し提案に)。
+    include_unassigned: bool = False
 
 
 async def build_month_csv(
@@ -262,8 +268,12 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
 
         primary = _cell(v.primary_staff_id, companion=False)
         if primary is None:
-            # 主担当未確定の訪問は転記対象外 (カイポケには職員必須)。
-            continue
+            if not opts.include_unassigned:
+                # 主担当未確定の訪問は転記対象外 (カイポケには職員必須)。
+                continue
+            # 差分計算用: カイポケの未割当表記 '-' で行として含める
+            # (BuildOptions.include_unassigned の docstring 参照)。
+            primary = StaffCell(name="-", qualification="")
         secondary = _cell(v.secondary_staff_id, companion=False)
         # 同行者 (設計決定事項#4 / 一般化 決定#6): 新人同行も一般スタッフの同行も
         # 職員名2 へ「正規スタッフとして」載せる (kind で区別しない)。同行フラグ等の

@@ -45,6 +45,7 @@ import type {
   ExpandStatus,
   KaipokeStatus,
   LiveSnapshot,
+  MasterReconcile,
   Paginated,
   ReplaceInboundRequest,
   ReplaceInboundResult,
@@ -308,6 +309,28 @@ export function useWeekSchedule(weekStart: string | null, weekEnd: string | null
 
 export function useStartApply() {
   return useRelayMutation<ApplyRequest, JobAccepted>('apply');
+}
+
+/**
+ * マスタ相互突合 (Phase M・PO発案 2026-08-21): カイポケ現況CSVに現れる氏名と
+ * らく助の患者/スタッフマスタを突合し、①カイポケのみ ②らく助のみ ③表記ズレ
+ * を返す (read-only・export 同期 ~50s)。
+ */
+export function useMasterReconcile() {
+  const { data: session } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useMutation<MasterReconcile, Error, { month: string }>({
+    mutationFn: (payload) =>
+      fetcher<MasterReconcile>('/api/v1/integrations/master-reconcile', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+        signal: AbortSignal.timeout(150_000),
+      }),
+  });
 }
 
 export function useStopJob() {

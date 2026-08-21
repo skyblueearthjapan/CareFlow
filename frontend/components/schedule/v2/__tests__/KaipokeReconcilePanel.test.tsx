@@ -18,6 +18,8 @@ const updateItemMutateAsync = vi.fn();
 const bulkItemsMutateAsync = vi.fn();
 const diffLocalMutateAsync = vi.fn();
 const startApplyMutateAsync = vi.fn();
+const diffInboundMutateAsync = vi.fn();
+const masterReconcileMutateAsync = vi.fn();
 let liveRunning = false;
 let correctionItems: unknown[] = [];
 let outCorrectionItems: unknown[] = [];
@@ -37,7 +39,11 @@ vi.mock('@/lib/queries/integrations', () => ({
   }),
   useStartDiffLocal: () => ({ mutateAsync: diffLocalMutateAsync }),
   useStartApply: () => ({ mutateAsync: startApplyMutateAsync }),
+  useStartDiffInbound: () => ({ mutateAsync: diffInboundMutateAsync }),
+  useMasterReconcile: () => ({ mutateAsync: masterReconcileMutateAsync }),
 }));
+
+import { addDays, format } from 'date-fns';
 
 import { KaipokeReconcilePanel } from '../KaipokeReconcilePanel';
 import type { StaffRead } from '@/lib/schemas/staff';
@@ -47,14 +53,22 @@ const SHEET_ID = '00000000-0000-4000-8000-00000000feed';
 const ITEM_1 = '00000000-0000-4000-8000-00000000a001';
 const ITEM_2 = '00000000-0000-4000-8000-00000000a002';
 
-const WEEK_START = '2026-08-17'; // 月曜
+// 過去日フィルタ (実績保護) が実時計基準のため、対象週は常に「来週」を使う
+// (固定日付だとテストが時間経過で腐る)。
+const _today = new Date();
+const _nextMonday = addDays(_today, ((8 - _today.getDay()) % 7) + (_today.getDay() === 1 ? 7 : 0));
+const WEEK_START = format(_nextMonday, 'yyyy-MM-dd');
+const WEEK_END = format(addDays(_nextMonday, 6), 'yyyy-MM-dd');
+const DAY2_ISO = format(addDays(_nextMonday, 1), 'yyyy-MM-dd'); // 火曜 (weekday 1)
+const DAY1_DOM = String(_nextMonday.getDate()); // 月曜の「日」(1-31)
+const MONTH = WEEK_START.slice(0, 7);
 
 const CHANGE_ADD = {
   action: 'add' as const,
-  externalId: '111:22:2026-08-18',
+  externalId: `111:22:${DAY2_ISO}`,
   staffId: STAFF_1,
   staffName: '川名',
-  date: '2026-08-18',
+  date: DAY2_ISO,
   start: '09:00',
   end: '09:30',
   title: '朝会',
@@ -66,7 +80,7 @@ const CHANGE_ADD = {
 
 const EVENTS_PLAN = {
   weekStart: WEEK_START,
-  weekEnd: '2026-08-23',
+  weekEnd: WEEK_END,
   fetchedTotal: 3,
   sundaySkipped: 0,
   memoCount: 0,
@@ -80,9 +94,9 @@ const EVENTS_PLAN = {
 
 const VISITS_PLAN = {
   weekStart: WEEK_START,
-  weekEnd: '2026-08-23',
-  protectedDays: ['2026-08-17'],
-  replaceDays: ['2026-08-19'],
+  weekEnd: WEEK_END,
+  protectedDays: [WEEK_START],
+  replaceDays: [format(addDays(_nextMonday, 2), 'yyyy-MM-dd')],
   sheetId: SHEET_ID,
   diffSummary: { edit: 1 },
   replace: null,
@@ -94,8 +108,8 @@ const VISIT_ITEM = {
   patient_id: null,
   visit_id: null,
   action: 'edit',
-  before: { user_name: '田中', date: '17', start_time: '10:00', staff1: '川名' },
-  after: { user_name: '田中', date: '17', start_time: '10:30', staff1: '川名' },
+  before: { user_name: '田中', date: DAY1_DOM, start_time: '10:00', staff1: '川名' },
+  after: { user_name: '田中', date: DAY1_DOM, start_time: '10:30', staff1: '川名' },
   include: true,
   comment: null,
   created_at: '',
@@ -143,6 +157,11 @@ beforeEach(() => {
     summary: { total: 2 },
   });
   startApplyMutateAsync.mockResolvedValue({ jobId: 'x', status: 'pending' });
+  diffInboundMutateAsync.mockResolvedValue({
+    jobId: '00000000-0000-4000-8000-00000000c9f1',
+    sheetId: SHEET_ID,
+    summary: { total: 2 },
+  });
   eventsPreviewMutateAsync.mockResolvedValue(EVENTS_PLAN);
   smartPreviewMutateAsync.mockResolvedValue(VISITS_PLAN);
   applyEventsMutateAsync.mockResolvedValue({
@@ -221,11 +240,11 @@ describe('KaipokeReconcilePanel', () => {
       id: ITEM_1,
       patch: { include: true },
     });
-    // 「17日」= 2026-08-17 の日単位適用
+    // 対象日 (週の月曜) の日単位適用
     expect(applyInboundMutateAsync).toHaveBeenCalledWith({
       sheetId: SHEET_ID,
       dryRun: false,
-      days: ['2026-08-17'],
+      days: [WEEK_START],
     });
   });
 
@@ -235,7 +254,7 @@ describe('KaipokeReconcilePanel', () => {
     expect(screen.getByTestId('reconcile-fetch-button')).toBeDisabled();
   });
 
-  it('⑤ ⇧送信 (C2): 差分計算→1件送信は include排他 + apply(dryRun:false)・2段クリック確認', async () => {
+  it('⑤ ⇧送信 (C2): 差分計算→1件送信は itemIds 部分適用・2段クリック確認', async () => {
     renderPanel();
     fireEvent.click(screen.getByTestId('reconcile-fetch-button'));
     await waitFor(() =>
@@ -246,32 +265,25 @@ describe('KaipokeReconcilePanel', () => {
       expect(screen.getByTestId('reconcile-outbound-list')).toBeInTheDocument(),
     );
     expect(diffLocalMutateAsync).toHaveBeenCalledWith({
-      month: '2026-08',
+      month: MONTH,
       weekStart: WEEK_START,
-      weekEnd: '2026-08-23',
+      weekEnd: WEEK_END,
     });
+    // 計算時刻の表示 (再突合リセットとセットの改善)
+    expect(screen.getByTestId('reconcile-outbound-fetched-at')).toBeInTheDocument();
     // 1回目クリック = 確認状態 (まだ送信しない)
     const sendBtn = screen.getByTestId(`reconcile-send-outbound-${OUT_ITEM_1}`);
     fireEvent.click(sendBtn);
     expect(startApplyMutateAsync).not.toHaveBeenCalled();
     expect(sendBtn).toHaveTextContent('本当に送信？');
-    // 2回目クリック = 実行
+    // 2回目クリック = 実行 — itemIds 部分適用 (includeいじりはしない・シート非ロック)
     fireEvent.click(sendBtn);
     await waitFor(() => expect(startApplyMutateAsync).toHaveBeenCalled());
-    // include 排他: 他項目 OFF → 対象 ON → apply
-    expect(bulkItemsMutateAsync).toHaveBeenCalledWith({
-      sheetId: OUT_SHEET_ID,
-      ids: [OUT_ITEM_2],
-      patch: { include: false },
-    });
-    expect(bulkItemsMutateAsync).toHaveBeenCalledWith({
-      sheetId: OUT_SHEET_ID,
-      ids: [OUT_ITEM_1],
-      patch: { include: true },
-    });
+    expect(bulkItemsMutateAsync).not.toHaveBeenCalled();
     expect(startApplyMutateAsync).toHaveBeenCalledWith({
       sheetId: OUT_SHEET_ID,
       dryRun: false,
+      itemIds: [OUT_ITEM_1],
     });
     // 送信済み項目は一覧から消える
     await waitFor(() =>
@@ -279,5 +291,55 @@ describe('KaipokeReconcilePanel', () => {
         screen.queryByTestId(`reconcile-outbound-${OUT_ITEM_1}`),
       ).not.toBeInTheDocument(),
     );
+  });
+
+  it('⑥ ⇩取込差分 (全曜日・#7): 計算ボタン→diff-inbound→全曜日の項目が一覧に出る', async () => {
+    renderPanel();
+    fireEvent.click(screen.getByTestId('reconcile-fetch-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('reconcile-inbound-diff-button')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('reconcile-inbound-diff-button'));
+    await waitFor(() =>
+      expect(diffInboundMutateAsync).toHaveBeenCalledWith({
+        month: MONTH,
+        weekStart: WEEK_START,
+      }),
+    );
+    // 見出しが「全曜日」へ変わり、置換日の案内は消える
+    await waitFor(() => expect(screen.getByText(/訪問差分（全曜日）/)).toBeInTheDocument());
+    expect(screen.queryByTestId('reconcile-replace-days')).not.toBeInTheDocument();
+  });
+
+  it('⑦ マスタ突合 (Phase M): 実行→3分類の結果が表示される', async () => {
+    masterReconcileMutateAsync.mockResolvedValue({
+      month: MONTH,
+      patients: {
+        matched: 100,
+        kaipokeOnly: ['カイポケのみ患者'],
+        rakusukeOnly: [],
+        notationDiff: [],
+      },
+      staff: {
+        matched: 6,
+        kaipokeOnly: [],
+        rakusukeOnly: [],
+        notationDiff: [{ kaipoke: '髙梨　桂子', rakusuke: '髙梨桂子' }],
+      },
+    });
+    renderPanel();
+    fireEvent.click(screen.getByTestId('reconcile-fetch-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('reconcile-master-button')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('reconcile-master-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('reconcile-master-result')).toBeInTheDocument(),
+    );
+    expect(masterReconcileMutateAsync).toHaveBeenCalledWith({ month: MONTH });
+    const box = screen.getByTestId('reconcile-master-result');
+    expect(box.textContent).toContain('カイポケのみ患者');
+    expect(box.textContent).toContain('髙梨　桂子');
+    expect(box.textContent).toContain('表記ズレ');
   });
 });

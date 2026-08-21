@@ -224,3 +224,48 @@ def test_bug_d_genuine_date_change_still_detected() -> None:
     assert any(c.action == "date_change" for c in corrections), (
         f"Bug D: genuine date_change (2→4) was lost: {corrections}"
     )
+
+
+# ===========================================================================
+# 週空間C2 (2026-08-21): 氏名スペース差の正規化 — outbound でも偽ペアを作らない
+# ===========================================================================
+
+
+def test_normalize_names_merges_spacing_variants() -> None:
+    """「今井 康敦」(半角スペース) と「今井　康敦」(全角スペース) が同一人物として
+    束ねられ、同時刻の行が偽の delete+add ペアに割れない (C2実機テストの実障害)。"""
+    cur = CSV_HEADER + _kaipoke_row(user="今井　康敦", svc="A", start="14:30", end="15:05")
+    opt = CSV_HEADER + _kaipoke_row(user="今井 康敦", svc="A", start="14:30", end="15:05")
+    corrections = compare_schedules_from_content(
+        cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
+    )
+    assert corrections == [], f"偽差分が発生: {[(c.action, c.user_name) for c in corrections]}"
+
+
+def test_normalize_names_staff_diff_becomes_edit_not_pair() -> None:
+    """氏名スペース差 + 担当違い → delete+add ではなく edit 1 件に畳まれる."""
+    cur = CSV_HEADER + _kaipoke_row(user="今井　康敦", staff1="宇田川　優莉", svc="A")
+    opt = CSV_HEADER + _kaipoke_row(user="今井 康敦", staff1="髙梨桂子", svc="A")
+    corrections = compare_schedules_from_content(
+        cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
+    )
+    assert len(corrections) == 1
+    assert corrections[0].action == "edit"
+    # 表示名は現況(カイポケ)側の原文 = RPA の利用者検索がそのまま成立する
+    assert corrections[0].user_name == "今井　康敦"
+
+
+def test_date_change_prefers_nearest_day() -> None:
+    """日付変更の相手は最近接日を選ぶ (先着順だと遠い日と結ばれ出方が揺れる)."""
+    cur = CSV_HEADER + _kaipoke_row(date="2", user="P1", svc="A", start="09:00", end="10:00")
+    opt = (
+        CSV_HEADER
+        + _kaipoke_row(date="6", user="P1", svc="A", start="09:00", end="10:00")
+        + _kaipoke_row(date="3", user="P1", svc="A", start="09:00", end="10:00")
+    )
+    corrections = compare_schedules_from_content(cur, opt, target_week_start=1, target_week_end=7)
+    dc = [c for c in corrections if c.action == "date_change"]
+    assert len(dc) == 1
+    assert dc[0].date_to == "3", f"最近接日(3)でなく{dc[0].date_to}が選ばれた"
+    # 残り (6日) は追加として出る
+    assert any(c.action == "add" and c.date_to == "6" for c in corrections)

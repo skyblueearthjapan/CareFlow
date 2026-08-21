@@ -209,6 +209,10 @@ class IntegrationApplyRequest(BaseModel):
     # 不可逆な外部書込のため既定は dry_run=True (安全側)。実書込は明示的に
     # dryRun:false を送った時だけ。フィールド送り忘れで実書込が走らないようにする。
     dry_run: bool = Field(default=True, alias="dryRun")
+    # 部分適用 (週空間C2・2026-08-21): 指定した item だけを送る。include フラグは
+    # 見ない。部分適用はシートを applying/applied に遷移させない = 同じ計算結果
+    # から 1 件ずつ複数回送れる (従来は 1 件送るとシート全体がロックされ 409)。
+    item_ids: list[UUID] | None = Field(default=None, alias="itemIds")
 
 
 class JobAccepted(BaseModel):
@@ -332,6 +336,34 @@ class InboundApplyResult(BaseModel):
     results: list[InboundItemResultRead] = Field(default_factory=list)
     # dry-run のみ非空 (警告・取込はブロックしない)。追加フィールドのみで後方互換。
     ng_conflicts: list[NgConflictRead] = Field(default_factory=list, alias="ngConflicts")
+
+
+class MasterReconcileRequest(BaseModel):
+    """マスタ相互突合 (Phase M) — 対象月のカイポケ現況CSVを名簿の近似として使う。"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+
+
+class MasterReconcileNotation(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    kaipoke: str
+    rakusuke: str
+
+
+class MasterReconcileGroup(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    matched: int = 0
+    kaipoke_only: list[str] = Field(default_factory=list, alias="kaipokeOnly")
+    rakusuke_only: list[str] = Field(default_factory=list, alias="rakusukeOnly")
+    notation_diff: list[MasterReconcileNotation] = Field(default_factory=list, alias="notationDiff")
+
+
+class MasterReconcileRead(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    month: str
+    patients: MasterReconcileGroup
+    staff: MasterReconcileGroup
 
 
 class DiffAccepted(BaseModel):

@@ -344,6 +344,175 @@ async def test_apply_rejects_already_applied_sheet(client, db, stub_kaipoke) -> 
     assert res.status_code == 409, res.text
 
 
+# --- 4c. 週空間C2 (2026-08-21): 部分適用 (itemIds) + 過去日ガード -------------
+
+
+def _future_week_sheet_days() -> tuple:
+    """未来週の月曜と、その週の日 (day-of-month) 2つを返す (過去日ガード非発火)。"""
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+    from zoneinfo import ZoneInfo
+
+    today = _dt.now(ZoneInfo("Asia/Tokyo")).date()
+    next_monday = today + _td(days=(7 - today.weekday()))
+    return next_monday, str(next_monday.day), str((next_monday + _td(days=1)).day)
+
+
+@pytest.mark.asyncio
+async def test_apply_partial_item_ids_does_not_lock_sheet(client, db, stub_kaipoke) -> None:
+    """部分適用: itemIds で1件だけ送れる・シートはロックされず連続送信できる."""
+    from app.models.correction_sheet import CorrectionSheet, CorrectionSheetItem
+
+    admin = await _make_user(db, "c2-partial@example.com", "admin")
+    week_start, d1, d2 = _future_week_sheet_days()
+    sheet = CorrectionSheet(
+        target_month="2026-07",
+        status="ready",
+        direction="outbound",
+        week_start=week_start,
+        created_by_user_id=admin.id,
+    )
+    db.add(sheet)
+    await db.flush()
+    it1 = CorrectionSheetItem(
+        sheet_id=sheet.id,
+        action="delete",
+        before={"date": d1, "user_name": "患者A"},
+        after=None,
+        include=True,
+    )
+    it2 = CorrectionSheetItem(
+        sheet_id=sheet.id,
+        action="delete",
+        before={"date": d2, "user_name": "患者B"},
+        after=None,
+        include=True,
+    )
+    db.add_all([it1, it2])
+    await db.commit()
+
+    stub_kaipoke.responses["apply"] = {"async": True}
+    res1 = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": str(sheet.id), "dryRun": False, "itemIds": [str(it1.id)]},
+    )
+    assert res1.status_code == 202, res1.text
+    # 1件だけ送られている
+    body1 = [p for (name, p) in stub_kaipoke.calls if name == "apply"][-1]
+    assert len(body1["correction_data"]) == 1
+    assert body1["correction_data"][0]["user_name"] == "患者A"
+
+    # シートはロックされない (ready のまま) → 2件目も 202
+    await db.refresh(sheet)
+    assert sheet.status == "ready"
+    res2 = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": str(sheet.id), "dryRun": False, "itemIds": [str(it2.id)]},
+    )
+    assert res2.status_code == 202, res2.text
+    body2 = [p for (name, p) in stub_kaipoke.calls if name == "apply"][-1]
+    assert body2["correction_data"][0]["user_name"] == "患者B"
+
+
+@pytest.mark.asyncio
+async def test_apply_week_scope_skips_past_days(client, db, stub_kaipoke) -> None:
+    """過去日ガード: 週スコープの送信は過去日〜当日を除外 (実績保護)."""
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+    from zoneinfo import ZoneInfo
+
+    from app.models.correction_sheet import CorrectionSheet, CorrectionSheetItem
+
+    admin = await _make_user(db, "c2-pastguard@example.com", "admin")
+    today = _dt.now(ZoneInfo("Asia/Tokyo")).date()
+    week_start = today - _td(days=2)  # 過去2日〜未来4日を含む「週」
+    past_day = str((today - _td(days=1)).day)
+    future_day = str((today + _td(days=2)).day)
+    sheet = CorrectionSheet(
+        target_month="2026-07",
+        status="ready",
+        direction="outbound",
+        week_start=week_start,
+        created_by_user_id=admin.id,
+    )
+    db.add(sheet)
+    await db.flush()
+    db.add_all(
+        [
+            CorrectionSheetItem(
+                sheet_id=sheet.id,
+                action="delete",
+                before={"date": past_day, "user_name": "過去日патA"},
+                after=None,
+                include=True,
+            ),
+            CorrectionSheetItem(
+                sheet_id=sheet.id,
+                action="delete",
+                before={"date": future_day, "user_name": "未来日患B"},
+                after=None,
+                include=True,
+            ),
+        ]
+    )
+    await db.commit()
+
+    stub_kaipoke.responses["apply"] = {"async": True}
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": str(sheet.id), "dryRun": True},
+    )
+    assert res.status_code == 202, res.text
+    body = [p for (name, p) in stub_kaipoke.calls if name == "apply"][-1]
+    # 過去日は除外され未来日 1 件だけが送られる
+    assert len(body["correction_data"]) == 1
+    assert body["correction_data"][0]["user_name"] == "未来日患B"
+
+
+@pytest.mark.asyncio
+async def test_apply_week_scope_all_past_returns_422(client, db, stub_kaipoke) -> None:
+    """過去日のみ選択 → 422 (明確なメッセージで拒否)."""
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+    from zoneinfo import ZoneInfo
+
+    from app.models.correction_sheet import CorrectionSheet, CorrectionSheetItem
+
+    admin = await _make_user(db, "c2-pastonly@example.com", "admin")
+    today = _dt.now(ZoneInfo("Asia/Tokyo")).date()
+    week_start = today - _td(days=3)
+    sheet = CorrectionSheet(
+        target_month="2026-07",
+        status="ready",
+        direction="outbound",
+        week_start=week_start,
+        created_by_user_id=admin.id,
+    )
+    db.add(sheet)
+    await db.flush()
+    db.add(
+        CorrectionSheetItem(
+            sheet_id=sheet.id,
+            action="delete",
+            before={"date": str((today - _td(days=1)).day), "user_name": "過去のみ"},
+            after=None,
+            include=True,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": str(sheet.id), "dryRun": True},
+    )
+    assert res.status_code == 422, res.text
+    assert "過去日" in res.text
+
+
 # --- 5. correction items PATCH ---------------------------------------------
 
 

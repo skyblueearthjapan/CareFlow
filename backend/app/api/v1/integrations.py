@@ -67,6 +67,10 @@ from app.schemas.integrations import (
     KaipokeLoginTestResult,
     KaipokeStatusRead,
     LiveSnapshotRead,
+    MasterReconcileGroup,
+    MasterReconcileNotation,
+    MasterReconcileRead,
+    MasterReconcileRequest,
     NgConflictRead,
     ReplaceInboundRequest,
     ReplaceInboundResult,
@@ -1256,6 +1260,72 @@ async def trigger_diff_local(
 
 
 @router.post(
+    "/master-reconcile",
+    response_model=MasterReconcileRead,
+    summary="マスタ相互突合 (Phase M): カイポケ名簿×らく助マスタの氏名突合 (admin)",
+)
+async def master_reconcile(
+    payload: MasterReconcileRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> MasterReconcileRead:
+    """カイポケ現況CSV (対象月のスケジュールに現れた氏名) を名簿の近似として、
+    らく助の患者/スタッフマスタと突合する (PO発案 2026-08-21)。
+
+    正規化 (NFKC+空白除去+異体字統一) キーで束ね、①カイポケのみ ②らく助のみ
+    ③表記ズレ (同一人物・原文違い) を返す。同期不良の予兆をデータ側から潰すための
+    診断 read-only API — DB/カイポケには一切書かない。export 同期のため ~50s。
+    """
+    from app.models.patient import Patient
+    from app.models.staff import Staff as StaffModel
+    from app.services.kaipoke.master_reconcile import (
+        extract_names_from_kaipoke_csv,
+        reconcile_names,
+    )
+
+    export_payload: dict[str, Any] = {"month": payload.month, "async": False}
+    _attach_credentials(export_payload, await _kaipoke_credentials(db))
+    try:
+        resp = await kaipoke.export(export_payload, timeout=90.0)
+    except KaipokeBusyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
+    except KaipokeApiError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    csv_content = (resp.get("result") or {}).get("csv_content") or ""
+    kp_patients, kp_staff = extract_names_from_kaipoke_csv(csv_content)
+
+    rk_patients = [
+        p
+        for (p,) in (
+            await db.execute(select(Patient.name).where(Patient.deleted_at.is_(None)))
+        ).all()
+    ]
+    rk_staff = [
+        s
+        for (s,) in (
+            await db.execute(select(StaffModel.name).where(StaffModel.deleted_at.is_(None)))
+        ).all()
+    ]
+
+    def _group(res) -> MasterReconcileGroup:
+        return MasterReconcileGroup(
+            matched=res.matched,
+            kaipoke_only=res.kaipoke_only,
+            rakusuke_only=res.rakusuke_only,
+            notation_diff=[
+                MasterReconcileNotation(kaipoke=k, rakusuke=r) for (k, r) in res.notation_diff
+            ],
+        )
+
+    return MasterReconcileRead(
+        month=payload.month,
+        patients=_group(reconcile_names(kp_patients, rk_patients)),
+        staff=_group(reconcile_names(kp_staff, rk_staff)),
+    )
+
+
+@router.post(
     "/apply",
     response_model=JobAccepted,
     status_code=status.HTTP_202_ACCEPTED,
@@ -1290,12 +1360,63 @@ async def trigger_apply(
             status_code=status.HTTP_409_CONFLICT, detail="apply already in progress"
         )
 
-    selected = [it for it in sheet.items if it.include]
-    if not selected:
+    # 部分適用 (週空間C2): itemIds 指定時はその item だけ (include は見ない)。
+    if payload.item_ids:
+        _want = {i for i in payload.item_ids}
+        selected_all = [it for it in sheet.items if it.id in _want]
+        if len(selected_all) != len(_want):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="指定された修正項目がこのシートに見つかりません（再計算してください）",
+            )
+    else:
+        selected_all = [it for it in sheet.items if it.include]
+    if not selected_all:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No items selected (include=true)",
         )
+
+    # 過去日ガード (週空間C2・2026-08-21 実機テストの教訓): 週スコープの送信では
+    # 過去日〜当日を対象外にする。カイポケ側は当日以前に実績が入力されている
+    # ことがあり、実績の付いた行は予定画面から動かせない/動かすべきでない
+    # (「⇧送信は未来の予定のみ」の原則)。月次シート (week_start 無し) は従来どおり。
+    skipped_past = 0
+    if sheet.week_start is not None:
+        from zoneinfo import ZoneInfo
+
+        _today_jst = datetime.now(ZoneInfo("Asia/Tokyo")).date()
+
+        def _item_date(it) -> date | None:
+            src = it.before if it.action in ("delete", "edit", "date_change") else it.after
+            raw = str(((src or {}).get("date")) or "").strip()
+            if not raw.isdigit():
+                return None
+            d = int(raw)
+            for i in range(7):
+                cand = sheet.week_start + timedelta(days=i)
+                if cand.day == d:
+                    return cand
+            return None
+
+        _kept: list = []
+        for it in selected_all:
+            _d = _item_date(it)
+            if _d is not None and _d <= _today_jst:
+                skipped_past += 1
+            else:
+                _kept.append(it)
+        selected = _kept
+        if not selected:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "選択された修正はすべて過去日（実績保護のため送信対象外）です。"
+                    "カイポケへ送れるのは明日以降の予定のみです"
+                ),
+            )
+    else:
+        selected = selected_all
 
     from app.services.kaipoke.local_diff import item_to_kaipoke_correction
 
@@ -1306,6 +1427,10 @@ async def trigger_apply(
             "op": "apply",
             "sheet_id": str(sheet.id),
             "dry_run": payload.dry_run,
+            # 部分適用フラグ: reconcile がシートを applied に倒さない判定にも使う
+            # (実体は「applying に遷移させない」ことで担保している)。
+            "partial": bool(payload.item_ids),
+            "skipped_past": skipped_past,
             # apply実績ゲート (逆反映・real_apply_record) の判定キー。
             "week_start": sheet.week_start.isoformat() if sheet.week_start else None,
         },
@@ -1320,8 +1445,10 @@ async def trigger_apply(
     correction_data = [
         item_to_kaipoke_correction(it.action, it.before, it.after) for it in selected
     ]
-    # 安全: 職員1が空(未割当)の修正数を数え、監査に残す (カイポケでは '-' 登録になる)。
-    unassigned = sum(1 for c in correction_data if not c["staff1_to"] and c["action"] != "delete")
+    # 安全: 職員1が空/'-'(未割当)の修正数を数え、監査に残す (カイポケでは '-' 登録になる)。
+    unassigned = sum(
+        1 for c in correction_data if c["staff1_to"] in ("", "-") and c["action"] != "delete"
+    )
 
     body = {
         "correction_data": correction_data,
@@ -1348,11 +1475,13 @@ async def trigger_apply(
         **(job.result_summary or {}),
         "correction_count": len(correction_data),
         "unassigned_staff": unassigned,
+        "skipped_past": skipped_past,
         "dry_run": payload.dry_run,
     }
-    if not payload.dry_run:
+    if not payload.dry_run and not payload.item_ids:
         # 非同期のため投入時は中間状態。実際の完了は _reconcile_latest_job が
         # job 完了を観測して applied/failed へ遷移させる (早計な applied を避ける)。
+        # 部分適用 (itemIds) は遷移させない = 同一シートから続けて 1 件ずつ送れる。
         sheet.status = "applying"
     await _commit_or_409(db)
 

@@ -114,7 +114,12 @@ async def build_local_diff(
             current_csv = _filter_current_by_office(current_csv, office_name)
 
     optimized_bytes = await build_month_csv(
-        db, BuildOptions(year=year, month=mon, office_id=office_id), encoding="utf-8-sig"
+        db,
+        # include_unassigned=True: 差分計算では未割当訪問も '-' 行として比較に含める。
+        # 除外すると「らく助側が空」に見えてカイポケ全行が偽 delete になる
+        # (2026-08-21 C2実機テストの実障害・BuildOptions docstring 参照)。
+        BuildOptions(year=year, month=mon, office_id=office_id, include_unassigned=True),
+        encoding="utf-8-sig",
     )
     optimized_csv = optimized_bytes.decode("utf-8-sig")
 
@@ -137,10 +142,13 @@ async def build_local_diff(
         compare_target,
         target_week_start=week_start_day,
         target_week_end=week_end_day,
-        # inbound は氏名の空白違い (半角/全角) を正規化して同一人物に束ねる
-        # (偽の delete+add ペア防止・2026-07-26)。outbound は user_name を
-        # カイポケ UI 上の行特定 (RPA) に使うため原文のまま。
-        normalize_names=(direction == "inbound"),
+        # 氏名の空白違い (半角/全角) を正規化して同一人物に束ねる
+        # (偽の delete+add ペア防止・2026-07-26)。
+        # 2026-08-21: outbound も正規化する — らく助「今井 康敦」×カイポケ
+        # 「今井　康敦」が同時刻で add+delete ペアに割れる実障害 (C2実機テスト)。
+        # Correction.user_name の表示は現況(カイポケ)側の原文が優先されるため、
+        # RPA の利用者選択 (name_matches = 正規化包含) はそのまま成立する。
+        normalize_names=True,
     )
 
     meta = {

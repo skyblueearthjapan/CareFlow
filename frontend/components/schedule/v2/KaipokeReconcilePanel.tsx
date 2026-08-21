@@ -31,11 +31,14 @@ import {
   useCorrectionItems,
   useEventsInboundPreview,
   useKaipokeLive,
+  useMasterReconcile,
   useSmartInboundPreview,
   useStartApply,
+  useStartDiffInbound,
   useStartDiffLocal,
   useUpdateCorrectionItem,
 } from '@/lib/queries/integrations';
+import type { MasterReconcile } from '@/lib/schemas/integration';
 import type {
   CorrectionItem,
   EventsInboundChange,
@@ -141,7 +144,13 @@ export function KaipokeReconcilePanel({
   const updateItemMut = useUpdateCorrectionItem();
   const bulkItemsMut = useBulkUpdateItems();
 
-  const itemsQuery = useCorrectionItems(visitsPlan?.sheetId ?? undefined, { limit: 500 });
+  // ⇩ 取込差分シート (#7): 実績のない日も 1 件ずつ取り込めるようにする inbound
+  // シート。計算済みならこちらを訪問差分一覧の供給源にする (smart の sheet は
+  // 実績のある日の差分のみのため)。
+  const [inSheetId, setInSheetId] = React.useState<string | null>(null);
+  const [inFetching, setInFetching] = React.useState(false);
+  const effectiveVisitSheetId = inSheetId ?? visitsPlan?.sheetId ?? null;
+  const itemsQuery = useCorrectionItems(effectiveVisitSheetId ?? undefined, { limit: 500 });
   const visitItems = React.useMemo(
     () => itemsQuery.data?.items ?? [],
     [itemsQuery.data],
@@ -153,10 +162,34 @@ export function KaipokeReconcilePanel({
   const startApplyMut = useStartApply();
   const [outSheetId, setOutSheetId] = React.useState<string | null>(null);
   const [outFetching, setOutFetching] = React.useState(false);
+  const [outFetchedAt, setOutFetchedAt] = React.useState<Date | null>(null);
   const [sentItemIds, setSentItemIds] = React.useState<Set<string>>(new Set());
   const [pendingSendKey, setPendingSendKey] = React.useState<string | null>(null);
   const outItemsQuery = useCorrectionItems(outSheetId ?? undefined, { limit: 500 });
   const outItems = React.useMemo(() => outItemsQuery.data?.items ?? [], [outItemsQuery.data]);
+
+  // ⇩ 取込差分 (実績のない日も 1 件ずつ取り込むための inbound シート・#7)。
+  const diffInboundMut = useStartDiffInbound();
+
+  const fetchInboundDiff = async () => {
+    setInFetching(true);
+    try {
+      const res = await diffInboundMut.mutateAsync({
+        month: weekStartIso.slice(0, 7),
+        weekStart: weekStartIso,
+      });
+      setInSheetId(res.sheetId);
+      setAppliedItemIds(new Set());
+      const total = res.summary.total ?? 0;
+      toast.success(`取込差分を計算しました（${total} 件）`);
+    } catch (err) {
+      toast.error(
+        `取込差分の計算に失敗しました: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setInFetching(false);
+    }
+  };
 
   const fetchOutboundDiff = async () => {
     setOutFetching(true);
@@ -170,6 +203,7 @@ export function KaipokeReconcilePanel({
         weekEnd: weekEndIso,
       });
       setOutSheetId(res.sheetId);
+      setOutFetchedAt(new Date());
       const total = res.summary.total ?? 0;
       toast.success(`送信差分を計算しました（${total} 件）`);
     } catch (err) {
@@ -191,22 +225,13 @@ export function KaipokeReconcilePanel({
     if (targets.length === 0) return;
     setBusyKey(key);
     try {
-      // include をこの選択だけに絞ってから apply (= RPA 書込ジョブ 202)。
-      const targetSet = new Set(targets.map((t) => t.id));
-      const offIds = outItems.filter((it) => !targetSet.has(it.id)).map((it) => it.id);
-      if (offIds.length > 0) {
-        await bulkItemsMut.mutateAsync({
-          sheetId: outSheetId,
-          ids: offIds,
-          patch: { include: false },
-        });
-      }
-      await bulkItemsMut.mutateAsync({
+      // 部分適用 (itemIds): include 操作は不要・シートもロックされない
+      // = 同じ計算結果から続けて 1 件ずつ送れる (旧: 1件送ると 409)。
+      await startApplyMut.mutateAsync({
         sheetId: outSheetId,
-        ids: targets.map((t) => t.id),
-        patch: { include: true },
+        dryRun: false,
+        itemIds: targets.map((t) => t.id),
       });
-      await startApplyMut.mutateAsync({ sheetId: outSheetId, dryRun: false });
       setSentItemIds((prev) => {
         const next = new Set(prev);
         for (const t of targets) next.add(t.id);
@@ -223,6 +248,25 @@ export function KaipokeReconcilePanel({
     } finally {
       setBusyKey(null);
       setPendingSendKey(null);
+    }
+  };
+
+  // ─── 👥 マスタ相互突合 (Phase M・PO発案 2026-08-21) ───
+  const masterReconcileMut = useMasterReconcile();
+  const [masterResult, setMasterResult] = React.useState<MasterReconcile | null>(null);
+  const [masterFetching, setMasterFetching] = React.useState(false);
+
+  const runMasterReconcile = async () => {
+    setMasterFetching(true);
+    try {
+      const res = await masterReconcileMut.mutateAsync({ month: weekStartIso.slice(0, 7) });
+      setMasterResult(res);
+    } catch (err) {
+      toast.error(
+        `マスタ突合に失敗しました: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setMasterFetching(false);
     }
   };
 
@@ -245,6 +289,12 @@ export function KaipokeReconcilePanel({
     setVisitsPlan(null);
     setAppliedEventIds(new Set());
     setAppliedItemIds(new Set());
+    // 再突合時は送信/取込差分もリセット (PO指摘 2026-08-21: 古い「取消127件」
+    // リストが残り続けて誤解を招いた)。
+    setOutSheetId(null);
+    setOutFetchedAt(null);
+    setSentItemIds(new Set());
+    setInSheetId(null);
     try {
       setPhase('events');
       const ev = await eventsPreviewMut.mutateAsync({ weekStart: weekStartIso });
@@ -345,7 +395,7 @@ export function KaipokeReconcilePanel({
 
   // ─── 適用: 訪問差分 1 件 (include 排他 → 当日 apply) ───
   const applyVisitItem = async (item: CorrectionItem) => {
-    const sheetId = visitsPlan?.sheetId;
+    const sheetId = effectiveVisitSheetId;
     if (!sheetId) return;
     const dateIso = itemDateIso(item, weekStartIso);
     if (!dateIso) {
@@ -539,15 +589,36 @@ export function KaipokeReconcilePanel({
               ) : null}
             </div>
 
-            {/* ── 訪問差分 (打刻あり日 = 1 件ずつ取込可) ── */}
+            {/* ── 訪問差分 (⇩ 1 件ずつ取込可) ── */}
             {visitsPlan ? (
               <div>
-                <h4 className="mb-1 text-[12px] font-bold text-text-primary">
-                  訪問差分（実績のある日）{pendingVisitItems.length} 件
-                </h4>
-                {visitsPlan.sheetId == null || pendingVisitItems.length === 0 ? (
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <h4 className="text-[12px] font-bold text-text-primary">
+                    訪問差分{inSheetId ? '（全曜日）' : '（実績のある日）'}
+                    {pendingVisitItems.length} 件
+                  </h4>
+                  {/* #7: 実績のない日も 1 件ずつ取り込めるようにする取込差分の計算。 */}
+                  {inSheetId == null ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-6 px-2 text-[11px]"
+                      disabled={!canEdit || inFetching || busyKey !== null || rpaRunning}
+                      onClick={() => void fetchInboundDiff()}
+                      data-testid="reconcile-inbound-diff-button"
+                      title="実績のない日も含めた全曜日の取込差分を計算します（約1分）"
+                    >
+                      {inFetching ? (
+                        <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />
+                      ) : null}
+                      ⇩ 取込差分を計算（全曜日・1件ずつ）
+                    </Button>
+                  ) : null}
+                </div>
+                {effectiveVisitSheetId == null || pendingVisitItems.length === 0 ? (
                   <p className="text-[11px] text-text-muted" data-testid="reconcile-visits-empty">
-                    ✅ 実績のある日の訪問はカイポケと一致しています
+                    ✅ {inSheetId ? '訪問はカイポケと一致しています' : '実績のある日の訪問はカイポケと一致しています'}
                   </p>
                 ) : (
                   <ul className="space-y-1" data-testid="reconcile-visits-list">
@@ -588,13 +659,13 @@ export function KaipokeReconcilePanel({
                   </ul>
                 )}
 
-                {/* ── 置換対象日 (打刻なし日 = 丸ごと差し替えのみ) ── */}
-                {visitsPlan.replaceDays.length > 0 ? (
+                {/* ── 置換対象日の案内 (取込差分を計算すれば 1 件ずつ取込可) ── */}
+                {inSheetId == null && visitsPlan.replaceDays.length > 0 ? (
                   <p className="mt-1.5 text-[11px] text-text-muted" data-testid="reconcile-replace-days">
                     🗓 実績のない日（
                     {visitsPlan.replaceDays.map((d) => fmtMd(d)).join('・')}
-                    ）は日単位の丸ごと差し替えになります — 取り込む場合は連携ページの
-                    「カイポケから取り込む」をご利用ください
+                    ）の差分は上の「⇩ 取込差分を計算」で 1 件ずつ取り込めます。日単位の
+                    丸ごと差し替えは連携ページの「カイポケから取り込む」
                     {visitsPlan.replace ? `（差し替え予定 ${visitsPlan.replace.inserted} 件）` : ''}。
                   </p>
                 ) : null}
@@ -631,10 +702,29 @@ export function KaipokeReconcilePanel({
               ) : null}
               {outSheetId != null ? (
                 (() => {
-                  const pendingOut = outItems.filter((it) => !sentItemIds.has(it.id));
-                  return pendingOut.length === 0 ? (
+                  const pendingAll = outItems.filter((it) => !sentItemIds.has(it.id));
+                  // 過去日ガード (2026-08-21 実機テストの教訓): 過去日〜当日は
+                  // カイポケ側に実績が付いていることがあり送信対象外 (BEも422で拒否)。
+                  const todayIso = format(new Date(), 'yyyy-MM-dd');
+                  const isPast = (it: CorrectionItem) => {
+                    const d = itemDateIso(it, weekStartIso);
+                    return d != null && d <= todayIso;
+                  };
+                  const pastCount = pendingAll.filter(isPast).length;
+                  const pendingOut = pendingAll.filter((it) => !isPast(it));
+                  return (
+                    <>
+                      {outFetchedAt ? (
+                        <p className="mb-1 text-[10px] text-text-muted" data-testid="reconcile-outbound-fetched-at">
+                          計算: {format(outFetchedAt, 'HH:mm')} 時点
+                          {pastCount > 0
+                            ? ` ・ 過去日〜本日の ${pastCount} 件は実績保護のため送信対象外`
+                            : ''}
+                        </p>
+                      ) : null}
+                      {pendingOut.length === 0 ? (
                     <p className="text-[11px] text-text-muted" data-testid="reconcile-outbound-empty">
-                      ✅ カイポケへ送るべき差分はありません
+                      ✅ カイポケへ送るべき差分はありません{pastCount > 0 ? '（未来日分）' : ''}
                     </p>
                   ) : (
                     <>
@@ -645,7 +735,12 @@ export function KaipokeReconcilePanel({
                           variant={pendingSendKey === '__all_out__' ? 'default' : 'outline'}
                           className="h-6 px-2 text-[11px]"
                           disabled={!canEdit || busyKey !== null || rpaRunning}
-                          onClick={() => handleSendClick(null, '__all_out__')}
+                          onClick={() =>
+                            handleSendClick(
+                              pendingOut.map((it) => it.id),
+                              '__all_out__',
+                            )
+                          }
                           data-testid="reconcile-send-all-outbound"
                         >
                           {busyKey === '__all_out__' ? (
@@ -679,6 +774,18 @@ export function KaipokeReconcilePanel({
                             <span className="min-w-0 flex-1 truncate text-text-muted">
                               {itemField(it, 'staff1')}
                             </span>
+                            {/* 担当未割当の送信はカイポケで '-' 登録になる (隠さず表示)。 */}
+                            {it.action !== 'delete' &&
+                            ['', '-'].includes(
+                              String((it.after as Record<string, unknown> | null)?.staff1 ?? ''),
+                            ) ? (
+                              <span
+                                className="rounded bg-amber-100 px-1 py-px text-[10px] font-medium text-amber-800"
+                                data-testid={`reconcile-outbound-unassigned-${it.id}`}
+                              >
+                                担当なし（-で送信）
+                              </span>
+                            ) : null}
                             <Button
                               type="button"
                               size="sm"
@@ -701,8 +808,80 @@ export function KaipokeReconcilePanel({
                         単一スロットのため送信中は取込できません）。
                       </p>
                     </>
+                  )}
+                    </>
                   );
                 })()
+              ) : null}
+            </div>
+
+            {/* ── 👥 マスタ相互突合 (Phase M): 名簿と表記ズレの診断 ── */}
+            <div className="border-t border-border-subtle pt-2">
+              <div className="mb-1 flex flex-wrap items-center gap-2">
+                <h4 className="text-[12px] font-bold text-text-primary">
+                  👥 マスタ突合（名簿チェック）
+                </h4>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-[11px]"
+                  disabled={!canEdit || masterFetching || busyKey !== null || rpaRunning}
+                  onClick={() => void runMasterReconcile()}
+                  data-testid="reconcile-master-button"
+                  title="カイポケの当月スケジュールに現れる氏名と、らく助の患者/スタッフマスタを突き合わせます（約1分）"
+                >
+                  {masterFetching ? (
+                    <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />
+                  ) : null}
+                  実行（約1分）
+                </Button>
+              </div>
+              {masterResult == null && !masterFetching ? (
+                <p className="text-[11px] text-text-muted">
+                  患者・スタッフの登録の有無と表記ズレ（スペース・異体字）を診断します。
+                  取込・送信がうまくマッチしないときの原因調査に。
+                </p>
+              ) : null}
+              {masterResult ? (
+                <div className="space-y-1.5" data-testid="reconcile-master-result">
+                  {(
+                    [
+                      { label: '患者', g: masterResult.patients },
+                      { label: 'スタッフ', g: masterResult.staff },
+                    ] as const
+                  ).map(({ label, g }) => (
+                    <div key={label} className="rounded border border-border-subtle px-2 py-1.5">
+                      <p className="text-[11px] font-bold text-text-primary">
+                        {label}: 一致 {g.matched} ・ 表記ズレ {g.notationDiff.length} ・
+                        カイポケのみ {g.kaipokeOnly.length} ・ らく助のみ {g.rakusukeOnly.length}
+                      </p>
+                      {g.notationDiff.length > 0 ? (
+                        <p className="mt-0.5 text-[11px] text-amber-800">
+                          🟡 表記ズレ（同期は自動吸収済み・マスタ修正推奨）:{' '}
+                          {g.notationDiff
+                            .map((d) => `カイポケ「${d.kaipoke}」⇔らく助「${d.rakusuke}」`)
+                            .join(' / ')}
+                        </p>
+                      ) : null}
+                      {g.kaipokeOnly.length > 0 ? (
+                        <p className="mt-0.5 text-[11px] text-violet-800">
+                          🟣 カイポケのみ（らく助未登録）: {g.kaipokeOnly.join('、')}
+                        </p>
+                      ) : null}
+                      {g.rakusukeOnly.length > 0 ? (
+                        <p className="mt-0.5 text-[11px] text-sky-800">
+                          🔵 らく助のみ（当月のカイポケスケジュールに未出現）:{' '}
+                          {g.rakusukeOnly.join('、')}
+                        </p>
+                      ) : null}
+                    </div>
+                  ))}
+                  <p className="text-[10px] text-text-muted">
+                    ※ カイポケ側は「当月のスケジュールに現れた氏名」で判定します
+                    （予定の無い方は判定できません）。
+                  </p>
+                </div>
               ) : null}
             </div>
           </>
