@@ -666,6 +666,35 @@ class VisitMoveWeekOnlyResponse(BaseModel):
     visits_moved: int = Field(ge=0, description="新位置へ移動した visit 行数 (0 = 対象なし)")
 
 
+class VisitAssignStaffWeekRequest(BaseModel):
+    """``POST /api/v1/schedule/v2/visit-assign-staff-week`` request (週空間 A2).
+
+    訪問 1 件だけの担当を今週限りで付け替える (patient 個別の貼り替え)。
+    weekly-space-design.md §4-2。コース担当は変えない・PFV は不変。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    visit_id: uuid.UUID
+    staff_id: uuid.UUID | None = Field(
+        default=None, description="新しい担当。None = この訪問だけ担当解除 (未割当へ)"
+    )
+    # NG スタッフ / 性別制限 (§7-2): 確認ダイアログで通したときだけ true で再送。
+    acknowledge_constraint_warnings: bool = False
+    # Wave U-3: 1 ユーザー操作 = 1 UUID (undo グループ化)。省略可。
+    op_group_id: uuid.UUID | None = None
+
+
+class VisitAssignStaffWeekResponse(BaseModel):
+    """``POST /api/v1/schedule/v2/visit-assign-staff-week`` response (週空間 A2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    visit_id: uuid.UUID
+    staff_id: uuid.UUID | None
+    changed: bool = Field(description="False = 既に同じ担当 (no-op)")
+
+
 # ---------------------------------------------------------------------------
 # 4d) 週のピン (青ピン) — PO 決定 2026-08-08
 # ---------------------------------------------------------------------------

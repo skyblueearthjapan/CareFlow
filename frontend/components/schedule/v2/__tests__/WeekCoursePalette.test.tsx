@@ -12,6 +12,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 
 import {
   COURSE_DND_MIME,
+  VISIT_DND_MIME,
   WeekCoursePalette,
   type PaletteCourse,
 } from '../WeekCoursePalette';
@@ -43,9 +44,9 @@ const courses: PaletteCourse[] = [
   },
 ];
 
-const makeDataTransfer = (payload: object | null) => ({
-  types: payload ? [COURSE_DND_MIME] : [],
-  getData: (t: string) => (payload && t === COURSE_DND_MIME ? JSON.stringify(payload) : ''),
+const makeDataTransfer = (payload: object | null, mime: string = COURSE_DND_MIME) => ({
+  types: payload ? [mime] : [],
+  getData: (t: string) => (payload && t === mime ? JSON.stringify(payload) : ''),
   setData: vi.fn(),
   dropEffect: '',
   effectAllowed: '',
@@ -120,6 +121,17 @@ describe('WeekCoursePalette', () => {
       dataTransfer: makeDataTransfer({ courseId: C_MON_B, weekday: 0 }),
     });
     expect(onUnassignDrop).toHaveBeenCalledWith(C_MON_B);
+  });
+
+  it('⑦ 訪問 payload のドロップで onVisitUnassignDrop が飛ぶ (週空間 A2)', () => {
+    const onVisitUnassignDrop = vi.fn();
+    render(
+      <WeekCoursePalette courses={courses} canEdit onVisitUnassignDrop={onVisitUnassignDrop} />,
+    );
+    fireEvent.drop(screen.getByTestId('week-course-palette'), {
+      dataTransfer: makeDataTransfer({ visitId: 'v-99', weekday: 0 }, VISIT_DND_MIME),
+    });
+    expect(onVisitUnassignDrop).toHaveBeenCalledWith('v-99');
   });
 
   it('④ canEdit=false: カードはドラッグ不可・ドロップも無視', () => {

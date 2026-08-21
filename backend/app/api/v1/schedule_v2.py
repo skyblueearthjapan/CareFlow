@@ -42,6 +42,7 @@ from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.staff import Staff
 from app.models.suggestion_dismissal import SuggestionDismissal
 from app.models.user import User
 from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, VISIT_STATUS_PLANNED, Visit
@@ -80,6 +81,8 @@ from app.schemas.v2.auto_schedule_v2 import (
     V2VisitPlan,
     V2WarningOut,
     V2WeekdayBeforeAfter,
+    VisitAssignStaffWeekRequest,
+    VisitAssignStaffWeekResponse,
     VisitMoveWeekOnlyRequest,
     VisitMoveWeekOnlyResponse,
     VisitWeekPinBulkRequest,
@@ -186,6 +189,7 @@ from app.schemas.v2.unblock import (
 from app.services.constraint_override_notify import (
     ConstraintWarning,
     collect_constraint_warnings_for_patients,
+    collect_constraint_warnings_for_staff,
     constraint_confirmation_detail,
     notify_constraint_override_for_course,
     resolve_week_course_for_template,
@@ -1590,6 +1594,150 @@ async def visit_move_week_only_endpoint(
         await db.commit()
 
     return VisitMoveWeekOnlyResponse(visits_moved=moved)
+
+
+@router.post(
+    "/v2/visit-assign-staff-week",
+    response_model=VisitAssignStaffWeekResponse,
+    status_code=status.HTTP_200_OK,
+    summary="週空間 A2: 訪問 1 件だけの担当を今週限りで付け替える (患者個別の貼り替え)",
+)
+async def visit_assign_staff_week(
+    payload: VisitAssignStaffWeekRequest,
+    db: DbDep,
+    current_user: Annotated[User, Depends(require_role("admin"))],
+) -> VisitAssignStaffWeekResponse:
+    """職員スケジュール盤面で患者 1 名の訪問をスタッフ間ドラッグしたときの反映.
+
+    正典設計書: weekly-space-design.md §4-2 (Phase A2)。書込は 3 点セット:
+      1. ``visits.primary_staff_id`` = 新担当 (モニター/モバイル表示の正)
+      2. ``visits.manual_staff_override`` = True (担当あり時) —
+         コース担当変更の一括伝播 (courses.py) と Layer3 再実行から**この 1 件を守る**。
+         担当解除 (staff_id=None) では False = 自動割当が再び埋めてよい状態に戻す
+      3. ``visit_staff_assignments`` 置換 (= 本人アプリの visit 可視性・v2 正典)
+
+    コース担当 (courses.assigned_staff_id) と PFV には一切触れない。
+    2 名体制 (visit_group) の相方 visit も触れない = 「1 名ずつ」の操作。
+
+    ガード: planned 以外 422 (打刻済み等) / 青ピン 422 / 新人 422 /
+    NG・性別は ``constraint_confirmation_required`` 422 + acknowledge 再送
+    (courses.py PATCH と同じ確認フロー・通した事実は管理者へお知らせ)。
+    undo: op_log ``set_visit_staff`` (ツールバー「戻る」対応)。
+    """
+    visit = await db.scalar(
+        select(Visit).where(Visit.id == payload.visit_id, Visit.deleted_at.is_(None))
+    )
+    if visit is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Visit not found")
+    if visit.status != VISIT_STATUS_PLANNED:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="予定 (planned) の訪問のみ担当を変更できます（打刻済み・完了は不可）",
+        )
+    # 青ピン (蓋) は担当変更もブロックしない — が守るのは「位置」。ここは位置を
+    # 変えないため通す (visits.py PATCH の非配置フィールド許可と同じ整理)。
+
+    old_staff_id = visit.primary_staff_id
+    if payload.staff_id == old_staff_id:
+        return VisitAssignStaffWeekResponse(visit_id=visit.id, staff_id=old_staff_id, changed=False)
+
+    _cw: list[ConstraintWarning] = []
+    staff: Staff | None = None
+    if payload.staff_id is not None:
+        staff = await db.scalar(
+            select(Staff).where(Staff.id == payload.staff_id, Staff.deleted_at.is_(None))
+        )
+        if staff is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Staff not found")
+        # 新人はコースを持たない運用 (PO確定) — 訪問単位でも同じ。同行で割り当てる。
+        if staff.is_trainee:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="新人は担当にできません（同行で割り当ててください）",
+            )
+        # NG スタッフ / 性別制限 (§7-2): スタッフ名指し経路の検査。
+        _cw = await collect_constraint_warnings_for_staff(
+            db, staff_id=staff.id, patient_ids=[visit.patient_id]
+        )
+        if _cw and not payload.acknowledge_constraint_warnings:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=constraint_confirmation_detail(_cw),
+            )
+
+    old_manual = bool(visit.manual_staff_override)
+    new_manual = payload.staff_id is not None
+
+    try:
+        visit.primary_staff_id = payload.staff_id
+        visit.manual_staff_override = new_manual
+        # VSA 置換は ORM 経由 + 先 flush (op_log_service._set_visit_staff と同じ理由:
+        # bulk delete + 同一 PK 再 INSERT は flush 順序で相殺される罠がある)。
+        _existing_vsa = (
+            await db.scalars(
+                select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == visit.id)
+            )
+        ).all()
+        for _row in _existing_vsa:
+            await db.delete(_row)
+        await db.flush()
+        if payload.staff_id is not None:
+            db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=payload.staff_id))
+
+        # §7-3: acknowledge で通した事実を管理者へお知らせ (同一 TX)。
+        # 通知 helper はコース文脈が必要 — visit にコースが無い (臨時等で NULL) なら
+        # 通知はスキップ (確認ダイアログは既に出ている・422 フロー自体は損なわない)。
+        if _cw and visit.course_id is not None:
+            _course = await db.scalar(
+                select(Course).where(Course.id == visit.course_id, Course.deleted_at.is_(None))
+            )
+            if _course is not None:
+                await notify_constraint_override_for_course(
+                    db,
+                    course=_course,
+                    warnings=_cw,
+                    actor=current_user,
+                    op_group_id=payload.op_group_id,
+                )
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="他のユーザーが同じ訪問を処理中です。もう一度実行してください。",
+        ) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    # Wave U-3: 操作ジャーナル (ベストエフォート・ツールバー「戻る」対応)。
+    _iso = visit.visit_date.isocalendar()
+    _patient_name = await db.scalar(select(Patient.name).where(Patient.id == visit.patient_id))
+    _staff_label = (staff.name if staff is not None else None) or "未割当"
+    await record_op(
+        db,
+        user_id=current_user.id,
+        iso_year=_iso.year,
+        iso_week=_iso.week,
+        op_group_id=payload.op_group_id,
+        op_kind="set_visit_staff",
+        label=f"{_patient_name or '患者'}様の訪問担当を{_staff_label}に変更",
+        forward_payload={
+            "op": "set_visit_staff",
+            "visit_id": str(visit.id),
+            "staff_id": str(payload.staff_id) if payload.staff_id else None,
+            "manual": new_manual,
+        },
+        inverse_payload={
+            "op": "set_visit_staff",
+            "visit_id": str(visit.id),
+            "staff_id": str(old_staff_id) if old_staff_id else None,
+            "manual": old_manual,
+        },
+    )
+    await db.commit()
+
+    return VisitAssignStaffWeekResponse(visit_id=visit.id, staff_id=payload.staff_id, changed=True)
 
 
 # ---------------------------------------------------------------------------

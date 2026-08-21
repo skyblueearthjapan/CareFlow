@@ -34,7 +34,9 @@ import {
   applyCourseDragImage,
   COURSE_DND_MIME,
   readCourseDragPayload,
-  type CourseDragPayload,
+  readVisitDragPayload,
+  VISIT_DND_MIME,
+  type BoardDragState,
 } from './WeekCoursePalette';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
@@ -62,10 +64,12 @@ export interface StaffWeekBoardProps {
   courseIdByTemplateWeekday?: Map<string, string>;
   /** パレット/他セルからのコースドロップ = 今週のコース担当変更 (週のみ)。 */
   onCourseDrop?: (courseId: string, staffId: string, weekday: number) => void;
-  /** ドラッグ中 payload (ドロップ可能セルのハイライト用)。 */
-  activeCourseDrag?: CourseDragPayload | null;
-  /** セル内コース帯のドラッグ開始/終了 (パレットと同じ通知)。 */
-  onCourseDragChange?: (drag: CourseDragPayload | null) => void;
+  /** 訪問 1 件のドロップ = その訪問だけ担当付け替え (週空間 A2・週のみ)。 */
+  onVisitDrop?: (visitId: string, staffId: string, weekday: number) => void;
+  /** ドラッグ中 payload (ドロップ可能セルのハイライト用・コース/訪問共通)。 */
+  activeCourseDrag?: BoardDragState | null;
+  /** セル内コース帯/訪問行のドラッグ開始/終了 (パレットと同じ通知)。 */
+  onCourseDragChange?: (drag: BoardDragState | null) => void;
   /** コース帯の「×」= 担当解除 (未割当へ戻す・今週のみ)。PO要望 2026-08-21。 */
   onCourseUnassign?: (courseId: string) => void;
   /** `${staffId}:${weekday}` → 休み/時間変更 (セル網掛け + ドロップ警告の表示根拠)。 */
@@ -100,6 +104,7 @@ export function StaffWeekBoard({
   onEventClick,
   courseIdByTemplateWeekday,
   onCourseDrop,
+  onVisitDrop,
   activeCourseDrag,
   onCourseDragChange,
   onCourseUnassign,
@@ -255,7 +260,7 @@ export function StaffWeekBoard({
                     rowKey !== UNASSIGNED_KEY
                       ? offByStaffWeekday?.get(`${rowKey}:${wd}`)
                       : undefined;
-                  const droppable = !!onCourseDrop && rowKey !== UNASSIGNED_KEY;
+                  const droppable = (!!onCourseDrop || !!onVisitDrop) && rowKey !== UNASSIGNED_KEY;
                   const dropHighlight =
                     droppable && activeCourseDrag != null && activeCourseDrag.weekday === wd;
                   const cellKey = `${rowKey}:${wd}`;
@@ -280,7 +285,11 @@ export function StaffWeekBoard({
                       onDragOver={
                         droppable
                           ? (e) => {
-                              if (!e.dataTransfer.types.includes(COURSE_DND_MIME)) return;
+                              if (
+                                !e.dataTransfer.types.includes(COURSE_DND_MIME) &&
+                                !e.dataTransfer.types.includes(VISIT_DND_MIME)
+                              )
+                                return;
                               e.preventDefault();
                               e.dataTransfer.dropEffect = 'move';
                               setDragOverCell(cellKey);
@@ -298,10 +307,21 @@ export function StaffWeekBoard({
                         droppable
                           ? (e) => {
                               setDragOverCell(null);
-                              const payload = readCourseDragPayload(e.dataTransfer);
-                              if (!payload) return;
-                              e.preventDefault();
-                              onCourseDrop(payload.courseId, rowKey, wd);
+                              const coursePayload = onCourseDrop
+                                ? readCourseDragPayload(e.dataTransfer)
+                                : null;
+                              if (coursePayload) {
+                                e.preventDefault();
+                                onCourseDrop?.(coursePayload.courseId, rowKey, wd);
+                                return;
+                              }
+                              const visitPayload = onVisitDrop
+                                ? readVisitDragPayload(e.dataTransfer)
+                                : null;
+                              if (visitPayload) {
+                                e.preventDefault();
+                                onVisitDrop?.(visitPayload.visitId, rowKey, wd);
+                              }
                             }
                           : undefined
                       }
@@ -447,16 +467,51 @@ export function StaffWeekBoard({
                                       : v.patient_sex_restriction === 'male_only'
                                         ? { color: '#2563eb', fontWeight: 600 }
                                         : {};
+                                  // 週空間 A2: 訪問行 1 件を掴んで別スタッフへ
+                                  // (患者個別の貼り替え・今週のみ)。
+                                  const visitDraggable = !!onVisitDrop;
                                   return (
                                     <li
                                       key={v.id}
-                                      className="flex items-center gap-1 rounded border border-l-[3px] px-1 py-0.5 text-[10px] text-text-primary"
+                                      className={[
+                                        'flex items-center gap-1 rounded border border-l-[3px] px-1 py-0.5 text-[10px] text-text-primary transition-opacity',
+                                        visitDraggable ? 'cursor-grab active:cursor-grabbing' : '',
+                                        activeCourseDrag?.visitId === v.id ? 'opacity-40' : '',
+                                      ]
+                                        .filter(Boolean)
+                                        .join(' ')}
                                       style={{
                                         background: pal.bg,
                                         borderColor: pal.ln,
                                         borderLeftColor: pal.bar,
                                       }}
-                                      title={v.patient_name ?? undefined}
+                                      draggable={visitDraggable}
+                                      onDragStart={
+                                        visitDraggable
+                                          ? (e) => {
+                                              const payload = { visitId: v.id, weekday: wd };
+                                              e.dataTransfer.setData(
+                                                VISIT_DND_MIME,
+                                                JSON.stringify(payload),
+                                              );
+                                              e.dataTransfer.effectAllowed = 'move';
+                                              applyCourseDragImage(
+                                                e.dataTransfer,
+                                                `${v.patient_name ?? '患者'}様 ${hhmm(v.start_time)}`,
+                                                'この訪問だけ別スタッフへ / コースの表へ戻して解除',
+                                              );
+                                              onCourseDragChange?.(payload);
+                                            }
+                                          : undefined
+                                      }
+                                      onDragEnd={
+                                        visitDraggable ? () => onCourseDragChange?.(null) : undefined
+                                      }
+                                      title={
+                                        visitDraggable
+                                          ? `${v.patient_name ?? ''} — ドラッグでこの訪問だけ担当を付け替え（今週のみ）`
+                                          : (v.patient_name ?? undefined)
+                                      }
                                       data-testid={`staff-week-visit-${v.id}`}
                                     >
                                       {/* 行頭の性別ドット (週リストと同じ視覚言語)。 */}

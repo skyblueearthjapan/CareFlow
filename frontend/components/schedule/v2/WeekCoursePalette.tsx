@@ -17,9 +17,27 @@ import { cn } from '@/lib/utils';
 
 /** DnD payload の MIME。盤面 (StaffWeekBoard) と共有する。 */
 export const COURSE_DND_MIME = 'application/x-rakusuke-course';
+/** 訪問 1 件 (患者個別) のドラッグ用 MIME (週空間 A2)。 */
+export const VISIT_DND_MIME = 'application/x-rakusuke-visit';
 
 export interface CourseDragPayload {
   courseId: string;
+  weekday: number;
+}
+
+/** 訪問 1 件のドラッグ payload (週空間 A2: 患者個別の貼り替え)。 */
+export interface VisitDragPayload {
+  visitId: string;
+  weekday: number;
+}
+
+/**
+ * ドラッグ中のハイライト共有用: コース/訪問どちらのドラッグかを
+ * optional キーで区別する (weekday は両者共通 = ドロップ可能列の判定に使う)。
+ */
+export interface BoardDragState {
+  courseId?: string;
+  visitId?: string;
   weekday: number;
 }
 
@@ -35,6 +53,25 @@ export function readCourseDragPayload(dt: DataTransfer | null): CourseDragPayloa
   } catch {
     return null;
   }
+}
+
+/** dataTransfer から訪問 payload を安全に読む (盤面/パレット共用)。 */
+export function readVisitDragPayload(dt: DataTransfer | null): VisitDragPayload | null {
+  if (!dt) return null;
+  try {
+    const raw = dt.getData(VISIT_DND_MIME);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<VisitDragPayload>;
+    if (typeof parsed.visitId !== 'string' || typeof parsed.weekday !== 'number') return null;
+    return { visitId: parsed.visitId, weekday: parsed.weekday };
+  } catch {
+    return null;
+  }
+}
+
+/** ドラッグイベントがコース/訪問いずれかの payload を運んでいるか。 */
+function hasDragMime(dt: DataTransfer): boolean {
+  return dt.types.includes(COURSE_DND_MIME) || dt.types.includes(VISIT_DND_MIME);
 }
 
 /**
@@ -102,8 +139,10 @@ export interface WeekCoursePaletteProps {
   onDragChange?: (drag: CourseDragPayload | null) => void;
   /** パレットへのドロップ = 担当解除 (割当済コースのみ意味を持つ)。 */
   onUnassignDrop?: (courseId: string) => void;
+  /** 訪問 1 件のドロップ = その訪問だけ担当解除 (週空間 A2)。 */
+  onVisitUnassignDrop?: (visitId: string) => void;
   /** ドラッグ中 payload (掴んでいるカードの淡色化 + 戻し先案内の強調)。 */
-  activeDrag?: CourseDragPayload | null;
+  activeDrag?: BoardDragState | null;
 }
 
 export function WeekCoursePalette({
@@ -111,6 +150,7 @@ export function WeekCoursePalette({
   canEdit,
   onDragChange,
   onUnassignDrop,
+  onVisitUnassignDrop,
   activeDrag,
 }: WeekCoursePaletteProps) {
   const [dropHover, setDropHover] = React.useState(false);
@@ -152,14 +192,14 @@ export function WeekCoursePalette({
         dropHover && 'bg-brand-primary/5 ring-2 ring-brand-primary/70',
       )}
       onDragEnter={(e) => {
-        if (!canEdit || !onUnassignDrop) return;
-        if (!e.dataTransfer.types.includes(COURSE_DND_MIME)) return;
+        if (!canEdit || (!onUnassignDrop && !onVisitUnassignDrop)) return;
+        if (!hasDragMime(e.dataTransfer)) return;
         e.preventDefault();
         setDropHover(true);
       }}
       onDragOver={(e) => {
-        if (!canEdit || !onUnassignDrop) return;
-        if (!e.dataTransfer.types.includes(COURSE_DND_MIME)) return;
+        if (!canEdit || (!onUnassignDrop && !onVisitUnassignDrop)) return;
+        if (!hasDragMime(e.dataTransfer)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
         setDropHover(true);
@@ -172,16 +212,23 @@ export function WeekCoursePalette({
       }}
       onDrop={(e) => {
         setDropHover(false);
-        if (!canEdit || !onUnassignDrop) return;
-        const payload = readCourseDragPayload(e.dataTransfer);
-        if (!payload) return;
-        e.preventDefault();
-        onUnassignDrop(payload.courseId);
+        if (!canEdit) return;
+        const coursePayload = onUnassignDrop ? readCourseDragPayload(e.dataTransfer) : null;
+        if (coursePayload) {
+          e.preventDefault();
+          onUnassignDrop?.(coursePayload.courseId);
+          return;
+        }
+        const visitPayload = onVisitUnassignDrop ? readVisitDragPayload(e.dataTransfer) : null;
+        if (visitPayload) {
+          e.preventDefault();
+          onVisitUnassignDrop?.(visitPayload.visitId);
+        }
       }}
     >
       {/* ドラッグ中の大きな戻し先ゾーン (PO指摘 2026-08-21: 戻し先を明確に)。
           ゾーン自体に個別ハンドラは不要 — セクション全体が drop を受ける。 */}
-      {canEdit && onUnassignDrop && activeDrag ? (
+      {canEdit && (onUnassignDrop || onVisitUnassignDrop) && activeDrag ? (
         <div
           className={cn(
             'mb-2 rounded-md border-2 border-dashed px-2 py-2.5 text-center text-[12px] font-bold transition-colors',
@@ -201,7 +248,7 @@ export function WeekCoursePalette({
             ? `未割当 ${unassignedCount} 件 — カードを上のスタッフのセルへドラッグして貼り付け`
             : 'すべてのコースに担当が付いています'}
         </span>
-        {canEdit && onUnassignDrop ? (
+        {canEdit && (onUnassignDrop || onVisitUnassignDrop) ? (
           <span
             className={cn(
               'ml-auto text-[10px] transition-colors',

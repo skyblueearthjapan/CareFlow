@@ -11,7 +11,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 
 import { StaffWeekBoard } from '../StaffWeekBoard';
-import { COURSE_DND_MIME } from '../WeekCoursePalette';
+import { COURSE_DND_MIME, VISIT_DND_MIME } from '../WeekCoursePalette';
 import type { WeekOverviewVisit } from '../CourseWeekOverview';
 import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
@@ -224,9 +224,9 @@ describe('StaffWeekBoard', () => {
 
   const COURSE_ID = '00000000-0000-4000-8000-00000000c001';
 
-  const makeDataTransfer = (payload: object | null) => ({
-    types: payload ? [COURSE_DND_MIME] : [],
-    getData: (t: string) => (payload && t === COURSE_DND_MIME ? JSON.stringify(payload) : ''),
+  const makeDataTransfer = (payload: object | null, mime: string = COURSE_DND_MIME) => ({
+    types: payload ? [mime] : [],
+    getData: (t: string) => (payload && t === mime ? JSON.stringify(payload) : ''),
     setData: vi.fn(),
     dropEffect: '',
     effectAllowed: '',
@@ -374,5 +374,55 @@ describe('StaffWeekBoard', () => {
     expect(screen.getByTestId(`staff-week-course-chip-${TPL_A}-0`).className).toContain(
       'opacity-40',
     );
+  });
+
+  // ─── 週空間 A2: 患者個別の貼り替え (訪問行の DnD) ──
+
+  it('⑬ onVisitDrop: 訪問行がドラッグ可能になり payload を積む', () => {
+    const onVisitDrop = vi.fn();
+    const onCourseDragChange = vi.fn();
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        onVisitDrop={onVisitDrop}
+        onCourseDragChange={onCourseDragChange}
+      />,
+    );
+    const row = screen.getByTestId('staff-week-visit-v1');
+    expect(row).toHaveAttribute('draggable', 'true');
+    const dt = makeDataTransfer(null);
+    fireEvent.dragStart(row, { dataTransfer: dt });
+    expect(dt.setData).toHaveBeenCalledWith(
+      VISIT_DND_MIME,
+      JSON.stringify({ visitId: 'v1', weekday: 0 }),
+    );
+    expect(onCourseDragChange).toHaveBeenCalledWith({ visitId: 'v1', weekday: 0 });
+  });
+
+  it('⑭ onVisitDrop: 訪問 payload のセルドロップで (visitId, staffId, weekday) が飛ぶ', () => {
+    const onVisitDrop = vi.fn();
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        onVisitDrop={onVisitDrop}
+      />,
+    );
+    const cell = screen.getByTestId(`staff-week-cell-${STAFF_2}-0`);
+    fireEvent.drop(cell, {
+      dataTransfer: makeDataTransfer({ visitId: 'v1', weekday: 0 }, VISIT_DND_MIME),
+    });
+    expect(onVisitDrop).toHaveBeenCalledWith('v1', STAFF_2, 0);
   });
 });

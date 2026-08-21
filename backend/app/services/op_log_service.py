@@ -19,6 +19,9 @@
     "set_course_staff"     — course の assigned_staff_id を staff_id に設定
     "move_visit_week_only" — (patient_id, iso_year, iso_week, from_weekday, from_start,
                               to_weekday, to_start) で visit 位置を変更
+    "set_visit_staff"      — visit 1 件の primary_staff_id / manual_staff_override /
+                              visit_staff_assignments を (staff_id, manual) に設定
+                              (週空間 A2: 患者個別の担当貼り替え)
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.course import Course
 from app.models.schedule_op_log import ScheduleOpLog
 from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, Visit
+from app.models.visit_staff_assignment import VisitStaffAssignment
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +326,14 @@ async def _verify_forward_state(db: AsyncSession, row: ScheduleOpLog) -> None:
         to_start = _parse_time(fp["to_start"])
         await _assert_visit_at_position(db, patient_id, iso_year, iso_week, to_weekday, to_start)
 
+    elif op_name == "set_visit_staff":
+        # forward result = visit.primary_staff_id == fp["staff_id"]
+        await _assert_visit_staff(
+            db,
+            UUID(fp["visit_id"]),
+            UUID(fp["staff_id"]) if fp.get("staff_id") else None,
+        )
+
     # 他 op_name は検証なしで通過（将来拡張用）
 
 
@@ -359,6 +371,14 @@ async def _verify_inverse_state(db: AsyncSession, row: ScheduleOpLog) -> None:
         to_start = _parse_time(ip["to_start"])
         await _assert_visit_at_position(db, patient_id, iso_year, iso_week, to_weekday, to_start)
 
+    elif op_name == "set_visit_staff":
+        # inverse result = visit.primary_staff_id == ip["staff_id"]
+        await _assert_visit_staff(
+            db,
+            UUID(ip["visit_id"]),
+            UUID(ip["staff_id"]) if ip.get("staff_id") else None,
+        )
+
 
 async def _execute_payload(db: AsyncSession, payload: dict[str, Any]) -> None:
     """payload の op に応じて DB 更新を実行する."""
@@ -388,6 +408,14 @@ async def _execute_payload(db: AsyncSession, payload: dict[str, Any]) -> None:
         to_start = _parse_time(payload["to_start"])
         await _move_visits(
             db, patient_id, iso_year, iso_week, from_weekday, from_start, to_weekday, to_start
+        )
+
+    elif op_name == "set_visit_staff":
+        await _set_visit_staff(
+            db,
+            UUID(payload["visit_id"]),
+            UUID(payload["staff_id"]) if payload.get("staff_id") else None,
+            bool(payload.get("manual", False)),
         )
 
     else:
@@ -429,6 +457,45 @@ async def _assert_visits_deleted(db: AsyncSession, visit_ids: list[UUID]) -> Non
         raise OpLogConflictError(
             f"他の変更があったため戻せません (visit {still_active[0]} が既にアクティブです)"
         )
+
+
+async def _assert_visit_staff(db: AsyncSession, visit_id: UUID, expected: UUID | None) -> None:
+    """set_visit_staff の undo/redo 前検証: 訪問の現担当が期待値のままか."""
+    visit = await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
+    if visit is None:
+        raise OpLogConflictError("他の変更があったため戻せません (対象の訪問が見つかりません)")
+    if visit.primary_staff_id != expected:
+        raise OpLogConflictError(
+            "他の変更があったため戻せません (訪問の担当が既に変更されています)"
+        )
+
+
+async def _set_visit_staff(
+    db: AsyncSession, visit_id: UUID, staff_id: UUID | None, manual: bool
+) -> None:
+    """visit 1 件の担当を (staff_id, manual) に設定する (週空間 A2).
+
+    正典の書込 3 点セット (endpoint 側と同一):
+      primary_staff_id + manual_staff_override + visit_staff_assignments 置換。
+    """
+    visit = await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
+    if visit is None:
+        raise OpLogConflictError("他の変更があったため戻せません (対象の訪問が見つかりません)")
+    visit.primary_staff_id = staff_id
+    visit.manual_staff_override = manual
+    # VSA 置換は ORM 経由 + 先 flush: bulk delete は同一セッションに残る旧行と
+    # 同一 PK の再 INSERT が flush 順序 (INSERT→DELETE) で相殺される罠がある。
+    existing = (
+        await db.scalars(
+            select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == visit_id)
+        )
+    ).all()
+    for row in existing:
+        await db.delete(row)
+    await db.flush()
+    if staff_id is not None:
+        db.add(VisitStaffAssignment(visit_id=visit_id, staff_id=staff_id))
+    await db.flush()
 
 
 async def _assert_course_staff(db: AsyncSession, course_id: UUID, expected: UUID | None) -> None:
