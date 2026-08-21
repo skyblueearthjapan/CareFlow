@@ -4114,6 +4114,17 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 data-testid="course-staff-schedule-panel"
                 className="space-y-2"
               >
+                {/* カイポケ突合ビュー (C1/C2): 盤面の上に表示 — 「🔄 突合」を押した
+                    瞬間に目に入る位置 (PO指摘 2026-08-21: 下だと何も起きないように見える)。 */}
+                {reconcileOpen ? (
+                  <KaipokeReconcilePanel
+                    weekStartIso={format(weekStart, 'yyyy-MM-dd')}
+                    canEdit={canEdit}
+                    staffMap={staffMap}
+                    onClose={() => setReconcileOpen(false)}
+                    onEventMarkersChange={setReconcileMarkers}
+                  />
+                ) : null}
                 <StaffWeekBoard
                   templates={templates}
                   officeNameById={officeNameById}
@@ -4165,16 +4176,6 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   onVisitUnassignDrop={canEdit ? handleVisitUnassignDrop : undefined}
                   reconcileMarkersByCell={reconcileOpen ? reconcileMarkers : null}
                 />
-                {/* カイポケ突合ビュー (C1): 差分4態の一覧 + 差分単位の⇩取込。 */}
-                {reconcileOpen ? (
-                  <KaipokeReconcilePanel
-                    weekStartIso={format(weekStart, 'yyyy-MM-dd')}
-                    canEdit={canEdit}
-                    staffMap={staffMap}
-                    onClose={() => setReconcileOpen(false)}
-                    onEventMarkersChange={setReconcileMarkers}
-                  />
-                ) : null}
                 <p className="text-[11px] text-text-muted">
                   コース帯（⠿）や訪問の行はドラッグでスタッフ間・曜日間を移動できます（今週のみ・毎週の型には影響しません。曜日を跨ぐと時刻は同じまま曜日ごと移動）。
                   担当を外すときはコース帯の「×」か「（担当なし）」行へドラッグ。ツールバーの「戻る」で取り消せます。

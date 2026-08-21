@@ -132,6 +132,7 @@ export function KaipokeReconcilePanel({
 
   const live = useKaipokeLive();
   const rpaRunning = live.data?.running === true;
+  const rootRef = React.useRef<HTMLElement | null>(null);
 
   const eventsPreviewMut = useEventsInboundPreview();
   const applyEventsMut = useApplyEventsInbound();
@@ -293,6 +294,24 @@ export function KaipokeReconcilePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ─── 開いた瞬間の分かりやすさ (PO指摘 2026-08-21: 押しても何が起きたか不明) ───
+  // ①パネル位置へスクロール ②RPAが空いていれば自動で突合を開始する
+  // (live スナップショットの初回取得を最大3秒待ってから判定・1回だけ)。
+  const autoStartedRef = React.useRef(false);
+  React.useEffect(() => {
+    // jsdom (テスト) には scrollIntoView が無いため optional call。
+    rootRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  }, []);
+  React.useEffect(() => {
+    if (autoStartedRef.current) return;
+    if (!canEdit || phase !== 'idle') return;
+    if (live.data === undefined) return; // running 判定がまだ
+    if (live.data.running === true) return; // RPA空き待ち — 空いたら本effectが再発火して開始
+    autoStartedRef.current = true;
+    void runFetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canEdit, phase, live.data]);
+
   // ─── 適用: イベント 1 件 / 全件 ───
   const applyEventChanges = async (changes: EventsInboundChange[], label: string) => {
     if (changes.length === 0) return;
@@ -375,7 +394,8 @@ export function KaipokeReconcilePanel({
 
   return (
     <section
-      className="rounded-lg border border-border-default bg-bg-base"
+      ref={rootRef}
+      className="rounded-lg border-2 border-brand-primary/40 bg-bg-base shadow-sm"
       data-testid="kaipoke-reconcile-panel"
       aria-label="カイポケ突合（差分の一覧と取込）"
     >
@@ -420,13 +440,15 @@ export function KaipokeReconcilePanel({
       <div className="space-y-3 px-3 py-2">
         {rpaRunning && phase === 'idle' ? (
           <p className="text-[12px] text-warning-strong">
-            カイポケ連携が実行中のため待機しています（RPA は同時に 1 つだけ）。
+            カイポケ連携が実行中のため空き待ちです（RPA は同時に 1 つだけ）。空き次第、
+            自動で突合を開始します。
           </p>
         ) : null}
-        {phase === 'idle' ? (
-          <p className="text-[12px] text-text-muted">
-            「カイポケと突合」を押すと、カイポケの当週（イベント→訪問の順・2〜3分）を取得し、
-            らく助との差分をここと盤面上（破線ゴースト）に表示します。取り込みは差分 1 件ずつ選べます。
+        {!rpaRunning && phase === 'idle' ? (
+          <p className="text-[12px] text-text-secondary">
+            <Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin" aria-hidden />
+            まもなく突合を開始します — カイポケの当週（イベント→訪問の順・2〜3分）を取得し、
+            らく助との差分をここと盤面上（破線ゴースト）に表示します。
           </p>
         ) : null}
         {phase === 'events' ? (
