@@ -318,9 +318,13 @@ describe('StaffWeekBoard', () => {
     fireEvent.dragStart(chip, { dataTransfer: dt });
     expect(dt.setData).toHaveBeenCalledWith(
       COURSE_DND_MIME,
-      JSON.stringify({ courseId: COURSE_ID, weekday: 0 }),
+      JSON.stringify({ courseId: COURSE_ID, weekday: 0, fromStaffId: STAFF_1 }),
     );
-    expect(onCourseDragChange).toHaveBeenCalledWith({ courseId: COURSE_ID, weekday: 0 });
+    expect(onCourseDragChange).toHaveBeenCalledWith({
+      courseId: COURSE_ID,
+      weekday: 0,
+      fromStaffId: STAFF_1,
+    });
     // course_id が引けないチップ (火曜B) はドラッグ不可のまま
     const tueChip = screen.getByTestId(`staff-week-course-chip-${TPL_B}-1`);
     expect(tueChip).toHaveAttribute('draggable', 'false');
@@ -349,7 +353,12 @@ describe('StaffWeekBoard', () => {
       />,
     );
     screen.getByTestId(`staff-week-course-unassign-${TPL_A}-0`).click();
-    expect(onCourseUnassign).toHaveBeenCalledWith(COURSE_ID);
+    expect(onCourseUnassign).toHaveBeenCalledWith({
+      courseId: COURSE_ID,
+      staffId: STAFF_1,
+      weekday: 0,
+      visitIds: ['v1', 'v2'],
+    });
     // 担当なし行 (未割当) には解除ボタンを出さない
     expect(
       screen.queryByTestId(`staff-week-course-unassign-${TPL_B}-2`),

@@ -2952,12 +2952,29 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     }
   };
 
-  /** パレットへのドロップ = 担当解除 (未割当へ戻す・今週のみ)。 */
-  const handleCourseUnassignDrop = (courseId: string) => {
+  /** パレットへのドロップ = 担当解除 (未割当へ戻す・今週のみ)。
+   *  コース行の担当が空でも、セル帯から掴んだ場合 (fromStaffId あり) は
+   *  訪問の個別解除でフォールバックする (handleCourseBandUnassign と同じ整理)。 */
+  const handleCourseUnassignDrop = (courseId: string, fromStaffId?: string) => {
     setCourseDrag(null);
     const course = courses.find((c) => c.id === courseId);
-    if (!course || !course.assigned_staff_id) return;
-    void handleChangeAssignedStaff(courseId, null);
+    if (course?.assigned_staff_id) {
+      void handleChangeAssignedStaff(courseId, null);
+      return;
+    }
+    if (fromStaffId) {
+      const visitIds = weekVisits
+        .filter((v) => (v.course_id ?? null) === courseId)
+        .map((v) => v.id);
+      void handleCourseBandUnassign({
+        courseId,
+        staffId: fromStaffId,
+        weekday: course?.weekday ?? 0,
+        visitIds,
+      });
+      return;
+    }
+    toast.info('このコースは既に未割当です');
   };
 
   // ─── 週空間 A2 (weekly-space-design.md §4-2): 患者個別の貼り替え ───
@@ -2968,17 +2985,18 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const doAssignVisitStaff = async (
     visitId: string,
     staffId: string | null,
-    acknowledge = false,
+    opts: { acknowledge?: boolean; silent?: boolean; opGroupId?: string } = {},
   ): Promise<boolean> => {
+    const { acknowledge = false, silent = false, opGroupId } = opts;
     try {
       const res = await visitAssignMut.mutateAsync({
         visit_id: visitId,
         staff_id: staffId,
-        op_group_id: crypto.randomUUID(),
+        op_group_id: opGroupId ?? crypto.randomUUID(),
         ...ackFlag(acknowledge),
       });
       invalidateOpLog(isoYear, isoWeek);
-      if (res.changed) {
+      if (res.changed && !silent) {
         toast.success(
           staffId
             ? 'この訪問の担当を付け替えました（今週のみ）'
@@ -2992,7 +3010,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         placementConstraintConfirm.capture(
           err,
           async () => {
-            await doAssignVisitStaff(visitId, staffId, true);
+            await doAssignVisitStaff(visitId, staffId, { ...opts, acknowledge: true });
           },
           {
           title: '確認して付け替えますか？',
@@ -3005,6 +3023,47 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       }
       toast.error(`担当の付け替えに失敗しました: ${formatErr(err)}`);
       return false;
+    }
+  };
+
+  /**
+   * コース帯の一括解除 (×ボタン/パレット戻しの共通実体)。
+   * ①コース行の担当がこの行スタッフなら course 解除 (伝播で visits も外れる)。
+   * ②それ以外 (取込由来 = courses.assigned_staff_id が空/別人で、visits.primary
+   *   だけで帯が出ているケース) は帯の訪問を個別に未割当へ — 従来ここが
+   *   無反応だった (PO報告 2026-08-21)。個別解除は 1 op_group にまとめ
+   *   「戻る」1 回で復元できるようにする。
+   */
+  const handleCourseBandUnassign = async (args: {
+    courseId: string | null;
+    staffId: string;
+    weekday: number;
+    visitIds: string[];
+  }) => {
+    setCourseDrag(null);
+    const course = args.courseId ? courses.find((c) => c.id === args.courseId) : undefined;
+    if (course?.assigned_staff_id && course.assigned_staff_id === args.staffId) {
+      await handleChangeAssignedStaff(course.id, null);
+      return;
+    }
+    // フォールバック: この帯 (このスタッフ行) の訪問を個別に未割当へ。
+    const targets = args.visitIds.filter((id) => {
+      const v = visitById.get(id);
+      if (!v) return false;
+      return ((v as { primary_staff_id?: string | null }).primary_staff_id ?? null) === args.staffId;
+    });
+    if (targets.length === 0) {
+      toast.info('解除できる担当が見つかりませんでした（既に未割当の可能性があります）');
+      return;
+    }
+    const opGroupId = crypto.randomUUID();
+    let done = 0;
+    for (const id of targets) {
+      const ok = await doAssignVisitStaff(id, null, { silent: true, opGroupId });
+      if (ok) done += 1;
+    }
+    if (done > 0) {
+      toast.success(`${done} 件の訪問を未割当に戻しました（今週のみ）`);
     }
   };
 
@@ -4038,7 +4097,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   }
                   activeCourseDrag={courseDrag}
                   onCourseDragChange={setCourseDrag}
-                  onCourseUnassign={canEdit ? handleCourseUnassignDrop : undefined}
+                  onCourseUnassign={
+                    canEdit ? (args) => void handleCourseBandUnassign(args) : undefined
+                  }
                   offByStaffWeekday={offByStaffWeekday}
                 />
                 {/* コースの表 (パレット): 未割当コースをセルへドラッグして貼り付ける。 */}

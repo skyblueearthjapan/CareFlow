@@ -88,7 +88,13 @@ describe('WeekCoursePalette', () => {
     fireEvent.drop(screen.getByTestId('week-course-palette'), {
       dataTransfer: makeDataTransfer({ courseId: C_MON_B, weekday: 0 }),
     });
-    expect(onUnassignDrop).toHaveBeenCalledWith(C_MON_B);
+    expect(onUnassignDrop).toHaveBeenCalledWith(C_MON_B, undefined);
+    // セル帯から掴んだ場合は fromStaffId が伝播する (個別解除フォールバック用)
+    onUnassignDrop.mockClear();
+    fireEvent.drop(screen.getByTestId('week-course-palette'), {
+      dataTransfer: makeDataTransfer({ courseId: C_MON_B, weekday: 0, fromStaffId: STAFF_1 }),
+    });
+    expect(onUnassignDrop).toHaveBeenCalledWith(C_MON_B, STAFF_1);
   });
 
   it('⑤ activeDrag: 掴んでいるカードが半透明+破線になり、戻し先案内が強調される', () => {
@@ -120,7 +126,7 @@ describe('WeekCoursePalette', () => {
     fireEvent.drop(screen.getByTestId('palette-unassign-dropzone'), {
       dataTransfer: makeDataTransfer({ courseId: C_MON_B, weekday: 0 }),
     });
-    expect(onUnassignDrop).toHaveBeenCalledWith(C_MON_B);
+    expect(onUnassignDrop).toHaveBeenCalledWith(C_MON_B, undefined);
   });
 
   it('⑦ 訪問 payload のドロップで onVisitUnassignDrop が飛ぶ (週空間 A2)', () => {

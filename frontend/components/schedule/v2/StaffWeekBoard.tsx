@@ -70,8 +70,18 @@ export interface StaffWeekBoardProps {
   activeCourseDrag?: BoardDragState | null;
   /** セル内コース帯/訪問行のドラッグ開始/終了 (パレットと同じ通知)。 */
   onCourseDragChange?: (drag: BoardDragState | null) => void;
-  /** コース帯の「×」= 担当解除 (未割当へ戻す・今週のみ)。PO要望 2026-08-21。 */
-  onCourseUnassign?: (courseId: string) => void;
+  /**
+   * コース帯の「×」= 担当解除 (未割当へ戻す・今週のみ)。PO要望 2026-08-21。
+   * courseId はコース行が引けないとき null (臨時テンプレ等)。呼び出し側は
+   * コース行の担当が無い/一致しないとき visitIds の個別解除でフォールバックする
+   * (取込由来 = visits.primary だけで帯が出ているケースで×が無反応になる不具合対応)。
+   */
+  onCourseUnassign?: (args: {
+    courseId: string | null;
+    staffId: string;
+    weekday: number;
+    visitIds: string[];
+  }) => void;
   /** `${staffId}:${weekday}` → 休み/時間変更 (セル網掛け + ドロップ警告の表示根拠)。 */
   offByStaffWeekday?: Map<string, WeekOverrideRead>;
 }
@@ -407,6 +417,10 @@ export function StaffWeekBoard({
                                         const payload = {
                                           courseId: chipCourseId,
                                           weekday: wd,
+                                          // パレット戻し時の個別解除フォールバック用。
+                                          ...(rowKey !== UNASSIGNED_KEY
+                                            ? { fromStaffId: rowKey }
+                                            : {}),
                                         };
                                         e.dataTransfer.setData(
                                           COURSE_DND_MIME,
@@ -437,11 +451,20 @@ export function StaffWeekBoard({
                               </div>
                               {/* × = 担当解除 (未割当へ戻す・今週のみ)。ドラッグより
                                   直感的な「戻す」入口 (PO要望 2026-08-21)。undo は
-                                  ツールバーの「戻る」でも可能。担当なし行には出さない。 */}
-                              {chipCourseId && onCourseUnassign && rowKey !== UNASSIGNED_KEY ? (
+                                  ツールバーの「戻る」でも可能。担当なし行には出さない。
+                                  コース行が引けない帯 (臨時等) でも出す — 呼び出し側が
+                                  訪問の個別解除でフォールバックする。 */}
+                              {onCourseUnassign && rowKey !== UNASSIGNED_KEY ? (
                                 <button
                                   type="button"
-                                  onClick={() => onCourseUnassign(chipCourseId)}
+                                  onClick={() =>
+                                    onCourseUnassign({
+                                      courseId: chipCourseId,
+                                      staffId: rowKey,
+                                      weekday: wd,
+                                      visitIds: cc.visits.map((vv) => vv.id),
+                                    })
+                                  }
                                   className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-red-300 bg-red-50 text-[11px] font-bold leading-none text-red-600 shadow-sm transition-colors hover:border-red-600 hover:bg-red-600 hover:text-white focus:outline-none focus-visible:ring-1 focus-visible:ring-red-500"
                                   title={`${cc.label} の担当を解除して「コースの表」へ戻す（今週のみ）`}
                                   aria-label={`${cc.label} の担当を解除`}

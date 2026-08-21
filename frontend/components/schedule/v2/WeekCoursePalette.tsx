@@ -23,6 +23,12 @@ export const VISIT_DND_MIME = 'application/x-rakusuke-visit';
 export interface CourseDragPayload {
   courseId: string;
   weekday: number;
+  /**
+   * 盤面セルのコース帯から掴んだ場合の行スタッフ。パレットへ戻したとき、
+   * コース行の担当 (assigned_staff_id) が空でも訪問 primary ベースで帯が
+   * 出ているケース (取込由来など) を個別解除でフォールバックするために使う。
+   */
+  fromStaffId?: string;
 }
 
 /** 訪問 1 件のドラッグ payload (週空間 A2: 患者個別の貼り替え)。 */
@@ -49,7 +55,11 @@ export function readCourseDragPayload(dt: DataTransfer | null): CourseDragPayloa
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<CourseDragPayload>;
     if (typeof parsed.courseId !== 'string' || typeof parsed.weekday !== 'number') return null;
-    return { courseId: parsed.courseId, weekday: parsed.weekday };
+    return {
+      courseId: parsed.courseId,
+      weekday: parsed.weekday,
+      ...(typeof parsed.fromStaffId === 'string' ? { fromStaffId: parsed.fromStaffId } : {}),
+    };
   } catch {
     return null;
   }
@@ -137,8 +147,8 @@ export interface WeekCoursePaletteProps {
   canEdit: boolean;
   /** ドラッグ開始/終了の通知 (盤面のドロップ先ハイライト用)。 */
   onDragChange?: (drag: CourseDragPayload | null) => void;
-  /** パレットへのドロップ = 担当解除 (割当済コースのみ意味を持つ)。 */
-  onUnassignDrop?: (courseId: string) => void;
+  /** パレットへのドロップ = 担当解除。fromStaffId はセル帯からのドラッグ時のみ。 */
+  onUnassignDrop?: (courseId: string, fromStaffId?: string) => void;
   /** 訪問 1 件のドロップ = その訪問だけ担当解除 (週空間 A2)。 */
   onVisitUnassignDrop?: (visitId: string) => void;
   /** ドラッグ中 payload (掴んでいるカードの淡色化 + 戻し先案内の強調)。 */
@@ -216,7 +226,7 @@ export function WeekCoursePalette({
         const coursePayload = onUnassignDrop ? readCourseDragPayload(e.dataTransfer) : null;
         if (coursePayload) {
           e.preventDefault();
-          onUnassignDrop?.(coursePayload.courseId);
+          onUnassignDrop?.(coursePayload.courseId, coursePayload.fromStaffId);
           return;
         }
         const visitPayload = onVisitUnassignDrop ? readVisitDragPayload(e.dataTransfer) : null;
