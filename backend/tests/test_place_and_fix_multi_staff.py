@@ -685,14 +685,14 @@ async def test_visit_delete_cascade_partner_false_removes_one(client, db) -> Non
 
 
 # ---------------------------------------------------------------------------
-# 15. cascade_partner + cascade_fixed_visit 併用 → 2 visit + 全 slot 固定枠を一掃
+# 15. (改・週空間 Phase B) cascade_fixed_visit は廃止 422 — 併用指定でも封鎖
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_visit_delete_cascade_partner_and_fixed_visit(client, db) -> None:
-    """cascade_partner=true & cascade_fixed_visit=true で
-    2 visit + 同 weekday の固定枠 (slot 0/1, normal/special) を全削除."""
+async def test_visit_delete_cascade_fixed_visit_sealed_even_with_partner(client, db) -> None:
+    """週空間 Phase B (weekly-space-design.md §6-#1): cascade_fixed_visit=true は
+    cascade_partner との併用でも 422 で封鎖され、visit も固定枠も無傷."""
     admin = await _make_user(db, "paf-multi-del-3@example.com")
     office = await _make_office(db, "事業所DEL3")
     patient = await _make_patient(db, "PAF-DEL-3", primary_office_id=office.id)
@@ -714,14 +714,15 @@ async def test_visit_delete_cascade_partner_and_fixed_visit(client, db) -> None:
     assert r.status_code == 200, r.text
     visit_ids = [v["id"] for v in r.json()["visits"]]
 
-    # cascade 両指定
+    # cascade 両指定 → 封鎖 422
     res = await client.delete(
         f"/api/v1/visits/{visit_ids[0]}?cascade_partner=true&cascade_fixed_visit=true",
         headers=_bearer(admin),
     )
-    assert res.status_code == 204, res.text
+    assert res.status_code == 422, res.text
+    assert "廃止" in res.text
 
-    # DB: visits は 0 件 active, 固定枠も 0 件
+    # DB: visits も固定枠も無傷 (2 visit active / 固定枠 2 件)
     db.expunge_all()
     active_visits = (
         await db.scalars(
@@ -731,13 +732,13 @@ async def test_visit_delete_cascade_partner_and_fixed_visit(client, db) -> None:
             )
         )
     ).all()
-    assert len(active_visits) == 0
+    assert len(active_visits) == 2
     fvs = (
         await db.scalars(
             select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
         )
     ).all()
-    assert len(fvs) == 0, "cascade_fixed_visit=true で slot 0/1 全削除されるはず"
+    assert len(fvs) == 2, "封鎖後は固定枠が無傷で残るはず"
 
 
 # ---------------------------------------------------------------------------

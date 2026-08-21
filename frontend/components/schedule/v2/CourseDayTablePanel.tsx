@@ -110,6 +110,7 @@ import {
 } from '@/lib/queries/staff-events';
 import { useWeekStaffOverrides, type WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import { useVisitAssignStaffWeek } from '@/lib/queries/visitAssignStaffWeek';
+import { useCourseMoveWeekdayWeekOnly } from '@/lib/queries/courseMoveWeekday';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import { useDeleteVisit, useVisits } from '@/lib/queries/visits';
 import { useBulkSyncWeekToFixedMutation } from '@/lib/api/patientSync';
@@ -2799,17 +2800,20 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
 
   // 戻り値 (週空間 A1): 反映が成功したら true。422確認フローへ回った/失敗は false
   // (呼び出し側が「休みの日に貼った」警告トースト等を成功時だけ出すために使う)。
+  // opGroupId (A2後段): 曜日移動+担当付替を 1 操作グループ = 「戻る」1回にするため
+  // 呼び出し側から渡せる (省略時は単独操作として自動発行)。
   const handleChangeAssignedStaff = async (
     courseId: string,
     staffId: string | null,
     acknowledge = false,
+    opGroupIdArg?: string,
   ): Promise<boolean> => {
     if (!canEdit) {
       toast.warning('編集権限がありません');
       return false;
     }
     try {
-      const opGroupId = crypto.randomUUID();
+      const opGroupId = opGroupIdArg ?? crypto.randomUUID();
       await updateCourseMut.mutateAsync({
         id: courseId,
         patch: {
@@ -2877,23 +2881,49 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     return m;
   }, [courses, templates]);
 
-  /** セル間のコースドロップ = 今週のコース担当変更 (マスタ不変)。 */
+  const courseMoveWeekdayMut = useCourseMoveWeekdayWeekOnly();
+
+  /** セル間のコースドロップ = 今週のコース担当変更 (+A2後段: 曜日跨ぎは丸ごと移動)。 */
   const handleCourseDropOnStaff = async (courseId: string, staffId: string, weekday: number) => {
     setCourseDrag(null);
     const course = courses.find((c) => c.id === courseId);
     if (!course) return;
-    if (course.weekday !== weekday) {
-      // 曜日移動は Phase A2 (course-move-weekday)。A1 では同一曜日のみ。
-      toast.info('曜日をまたぐ貼り付けはまだできません — 同じ曜日のセルに貼ってください');
-      return;
-    }
-    if (course.assigned_staff_id === staffId) return;
     const staff = staffMap.get(staffId);
     if (staff?.is_trainee) {
       toast.error('新人はコース担当にできません（同行で割り当ててください）');
       return;
     }
-    const ok = await handleChangeAssignedStaff(courseId, staffId);
+    const crossWeekday = course.weekday !== weekday;
+    const needReassign = course.assigned_staff_id !== staffId;
+    if (!crossWeekday && !needReassign) return;
+
+    // 曜日移動 + 担当付替を 1 操作グループにまとめる (「戻る」1回で両方戻る)。
+    const opGroupId = crypto.randomUUID();
+
+    if (crossWeekday) {
+      // A2後段: コース丸ごと別曜日へスライド (今週のみ・担当は付いたまま)。
+      try {
+        const res = await courseMoveWeekdayMut.mutateAsync({
+          course_id: courseId,
+          to_weekday: weekday,
+          op_group_id: opGroupId,
+        });
+        invalidateOpLog(isoYear, isoWeek);
+        const wdLabel = '月火水木金土'[weekday] ?? '';
+        toast.success(
+          `コースを${wdLabel}曜へ移動しました（今週のみ・訪問 ${res.visits_moved} 件）`,
+        );
+        for (const w of res.warnings) toast.warning(w);
+      } catch (err) {
+        toast.error(`コースの曜日移動に失敗しました: ${formatErr(err)}`);
+        return;
+      }
+    }
+
+    let ok = true;
+    if (needReassign) {
+      ok = await handleChangeAssignedStaff(courseId, staffId, false, opGroupId);
+    }
     // 休みの日への貼り付けは「行うが隠さず知らせる」(§4-2・ブロックしない)。
     const off = offByStaffWeekday.get(`${staffId}:${weekday}`);
     if (ok && off) {
@@ -3018,29 +3048,86 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     }
   };
 
-  /** 盤面セルへの訪問ドロップ = その訪問だけ今週の担当付け替え。 */
+  /** 盤面セルへの訪問ドロップ = その訪問だけ今週の担当付け替え (+A2後段: 曜日跨ぎ移動)。 */
   const handleVisitDropOnStaff = async (visitId: string, staffId: string, weekday: number) => {
     setCourseDrag(null);
     const v = weekVisits.find((x) => x.id === visitId);
     if (!v) return;
     const vPrimary = (v as { primary_staff_id?: string | null }).primary_staff_id ?? null;
-    if (vPrimary === staffId) return;
-    // A2 前段: 曜日をまたぐ移動 (時刻の決め直しが要る) は後段まで案内に留める。
-    const vWd = v.visit_date
-      ? (new Date(`${v.visit_date}T00:00:00`).getDay() + 6) % 7
-      : null;
-    if (vWd !== null && vWd !== weekday) {
-      toast.info('曜日をまたぐ移動はまだできません — 同じ曜日のセルに落としてください');
-      return;
-    }
+    const vWd = v.visit_date ? (new Date(`${v.visit_date}T00:00:00`).getDay() + 6) % 7 : null;
+    const crossWeekday = vWd !== null && vWd !== weekday;
+    if (!crossWeekday && vPrimary === staffId) return;
     const staff = staffMap.get(staffId);
     if (staff?.is_trainee) {
       toast.error('新人は担当にできません（同行で割り当ててください）');
       return;
     }
-    const ok = await doAssignVisitStaff(visitId, staffId);
+
+    const opGroupId = crypto.randomUUID();
+
+    if (crossWeekday) {
+      // A2後段: 同時刻のまま別曜日へ (visit-move-week-only)。移動先コースは BE が
+      // 解決し、コースが変わる場合の NG/性別は 422 確認フローで通す。
+      const startHM = (v.start_time ?? '').slice(0, 5);
+      if (!startHM || vWd === null) {
+        toast.error('この訪問の開始時刻が不明なため移動できません');
+        return;
+      }
+      const doMove = async (acknowledge: boolean): Promise<boolean> => {
+        try {
+          const res = await visitMoveWeekOnlyMut.mutateAsync({
+            iso_year: isoYear,
+            iso_week: isoWeek,
+            patient_id: v.patient_id,
+            old_weekday: vWd,
+            old_start_time: startHM,
+            new_weekday: weekday,
+            new_start_time: startHM,
+            op_group_id: opGroupId,
+            ...ackFlag(acknowledge),
+          });
+          invalidateOpLog(isoYear, isoWeek);
+          if (res.visits_moved === 0) {
+            toast.warning('移動対象の訪問が見つかりませんでした');
+            return false;
+          }
+          const wdLabel = '月火水木金土'[weekday] ?? '';
+          toast.success(`${wdLabel}曜 ${startHM} へ移動しました（今週のみ）`);
+          return true;
+        } catch (err) {
+          if (
+            !acknowledge &&
+            placementConstraintConfirm.capture(
+              err,
+              async () => {
+                if (await doMove(true)) {
+                  await doAssignVisitStaff(visitId, staffId, { opGroupId, silent: true });
+                }
+              },
+              {
+                title: '確認して移動しますか？',
+                description:
+                  '移動先コースの担当がこの患者様の NG スタッフ / 性別制限に該当します。内容を確認のうえ移動します。',
+                confirmLabel: '移動する',
+              },
+            )
+          ) {
+            return false;
+          }
+          toast.error(`移動に失敗しました: ${formatErr(err)}`);
+          return false;
+        }
+      };
+      if (!(await doMove(false))) return;
+      // 移動後、行スタッフに合わせて個別付替 (同一グループ =「戻る」1回)。
+      await doAssignVisitStaff(visitId, staffId, { opGroupId, silent: true });
+    } else {
+      const ok = await doAssignVisitStaff(visitId, staffId, { opGroupId });
+      if (!ok) return;
+    }
+
     const off = offByStaffWeekday.get(`${staffId}:${weekday}`);
-    if (ok && off) {
+    if (off) {
       toast.warning(
         `${staff?.name ?? 'このスタッフ'}さんはこの日「${off.type}」の予定です。担当を確認してください`,
       );
@@ -4059,9 +4146,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   onVisitUnassignDrop={canEdit ? handleVisitUnassignDrop : undefined}
                 />
                 <p className="text-[11px] text-text-muted">
-                  コース帯（⠿）や訪問の行はドラッグでスタッフ間を移動できます（今週のみ・毎週の型には影響しません）。
+                  コース帯（⠿）や訪問の行はドラッグでスタッフ間・曜日間を移動できます（今週のみ・毎週の型には影響しません。曜日を跨ぐと時刻は同じまま曜日ごと移動）。
                   担当を外すときはコース帯の「×」か「（担当なし）」行へドラッグ。ツールバーの「戻る」で取り消せます。
-                  時刻・曜日の変更は週・曜日タブで。イベントはこの画面が正典で、＋やイベント帯のクリックで追加・編集できます。
+                  時刻の変更は週・曜日タブで。イベントはこの画面が正典で、＋やイベント帯のクリックで追加・編集できます。
                 </p>
               </div>
             ) : /* Wave 18 Phase B-6: 「週」タブ選択時は CourseWeekOverview を表示 */

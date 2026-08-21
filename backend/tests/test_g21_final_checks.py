@@ -117,16 +117,16 @@ async def _make_pfv(
 
 
 # ===========================================================================
-# F2 (C1 BE): DELETE /visits/{id}?cascade_fixed_visit=true で pinned PFV は 422
+# F2 (改・週空間 Phase B): DELETE /visits/{id}?cascade_fixed_visit=true は廃止 422
 # ===========================================================================
 
 
 @pytest.mark.asyncio
-async def test_f2_delete_visit_cascade_allows_pinned_pfv(client, db) -> None:
-    """統合 (PO 決定 2026-08-09): 完全固定 (旧 pinned) でも人手の cascade 削除は可。
+async def test_f2_delete_visit_cascade_is_sealed_422(client, db) -> None:
+    """週空間 Phase B (weekly-space-design.md §6-#1): cascade は 422 で封鎖。
 
-    旧 422 ブロックは撤廃 (完全固定 = エンジンが動かさない、の意味に純化)。
-    FE が「これは完全固定です」の確認を出したうえで到達する。
+    旧仕様 (週の 1 件削除がマスタ PFV を物理削除) は週空間の憲法違反の
+    最危険経路として廃止。pinned/non-pinned を問わず 422・PFV は無傷。
     """
     from datetime import date
 
@@ -151,49 +151,13 @@ async def test_f2_delete_visit_cascade_allows_pinned_pfv(client, db) -> None:
         f"/api/v1/visits/{visit.id}?cascade_fixed_visit=true",
         headers=_bearer(admin),
     )
-    assert res.status_code == 204, res.text
+    assert res.status_code == 422, res.text
+    assert "廃止" in res.text
 
-    # PFV も cascade で物理削除される (人手削除の完遂)。
+    # PFV も visit も無傷。
     db.expunge_all()
     pfv_after = await db.scalar(select(PatientFixedVisit).where(PatientFixedVisit.id == pfv.id))
-    assert pfv_after is None
-
-
-@pytest.mark.asyncio
-async def test_f2_delete_visit_cascade_allows_non_pinned_pfv(client, db) -> None:
-    """non-pinned PFV はこれまで通り cascade で物理削除される (regression check)."""
-    from datetime import date
-
-    from app.models import Visit
-
-    admin = await _make_user(db, email="f2b-admin@example.com", role="admin")
-    p = await _make_patient(db, code="F2B")
-    await _make_pfv(db, patient=p, weekday=1, is_pinned=False)
-    visit = Visit(
-        patient_id=p.id,
-        visit_date=date(2026, 5, 5),  # Tue -> weekday=1
-        start_time=time(10, 0),
-        end_time=time(10, 30),
-        type="regular",
-        status="planned",
-    )
-    db.add(visit)
-    await db.commit()
-    await db.refresh(visit)
-
-    res = await client.delete(
-        f"/api/v1/visits/{visit.id}?cascade_fixed_visit=true",
-        headers=_bearer(admin),
-    )
-    assert res.status_code == 204, res.text
-
-    db.expunge_all()
-    pfv_ids = (
-        (await db.execute(select(PatientFixedVisit.id).where(PatientFixedVisit.patient_id == p.id)))
-        .scalars()
-        .all()
-    )
-    assert pfv_ids == []
+    assert pfv_after is not None
 
 
 # ===========================================================================

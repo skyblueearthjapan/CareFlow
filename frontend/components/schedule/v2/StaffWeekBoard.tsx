@@ -296,8 +296,8 @@ export function StaffWeekBoard({
                   const unassignDroppable =
                     rowKey === UNASSIGNED_KEY && (!!onCourseUnassignDrop || !!onVisitUnassignDrop);
                   const droppable = assignDroppable || unassignDroppable;
-                  const dropHighlight =
-                    droppable && activeCourseDrag != null && activeCourseDrag.weekday === wd;
+                  // A2後段: 曜日跨ぎ移動に対応したため全曜日のセルがドロップ先。
+                  const dropHighlight = droppable && activeCourseDrag != null;
                   const cellKey = `${rowKey}:${wd}`;
                   const dragOverHere = dropHighlight && dragOverCell === cellKey;
                   return (

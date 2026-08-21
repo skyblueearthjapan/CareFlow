@@ -148,20 +148,22 @@ async def test_visits_delete_manager_returns_204(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
-# W18 Codex-fix 重大-2: cascade_fixed_visit パラメータ
+# 週空間 Phase B (weekly-space-design.md §6-#1): cascade_fixed_visit は廃止
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_visits_delete_cascade_fixed_visit_removes_normal_pfv(client, db) -> None:
-    """重大-2: cascade_fixed_visit=true で同 (patient_id, weekday) の
-    mode='normal' の patient_fixed_visits が物理削除される."""
+async def test_visits_delete_cascade_fixed_visit_is_sealed_422(client, db) -> None:
+    """Phase B: cascade_fixed_visit=true は 422 で封鎖・visit も PFV も無傷.
+
+    「今週の 1 件を消す」操作がマスタ (PFV) を物理削除する最危険経路だった
+    (旧 W18 重大-2)。週空間の憲法 (週の操作はマスタ不変) に基づき廃止。
+    """
     p = Patient(code="V-CFV-1", name="患者")
     db.add(p)
     await db.commit()
     await db.refresh(p)
 
-    # Mon の visit + 同 weekday の固定枠 (mode='normal')
     visit = Visit(
         patient_id=p.id,
         visit_date=date(2026, 5, 4),  # Mon -> weekday=0
@@ -185,82 +187,21 @@ async def test_visits_delete_cascade_fixed_visit_removes_normal_pfv(client, db) 
         f"/api/v1/visits/{visit.id}?cascade_fixed_visit=true",
         headers=_bearer(admin),
     )
-    assert res.status_code == 204, res.text
+    assert res.status_code == 422, res.text
+    assert "廃止" in res.text
 
-    # 固定枠が物理削除されていること.
-    # 別セッションの commit を反映するため、まず ORM の identity map から
-    # 切り離してから ID-only クエリで件数だけ確認する (lazy load を避ける).
+    # visit も PFV も無傷であること。
     db.expunge_all()
+    v_alive = await db.scalar(
+        select(Visit.id).where(Visit.id == visit.id, Visit.deleted_at.is_(None))
+    )
+    assert v_alive is not None
     pfv_ids = (
         (await db.execute(select(PatientFixedVisit.id).where(PatientFixedVisit.patient_id == p.id)))
         .scalars()
         .all()
     )
-    assert pfv_ids == []
-
-
-@pytest.mark.asyncio
-async def test_visits_delete_cascade_fixed_visit_removes_both_modes(client, db) -> None:
-    """重大-2: cascade_fixed_visit=true は同 weekday の normal / special
-    両方の patient_fixed_visits を物理削除する."""
-    p = Patient(code="V-CFV-2", name="患者")
-    db.add(p)
-    await db.commit()
-    await db.refresh(p)
-
-    visit = Visit(
-        patient_id=p.id,
-        visit_date=date(2026, 5, 5),  # Tue -> weekday=1
-        start_time=time(9, 0),
-        end_time=time(10, 0),
-        type="visit",
-    )
-    pfv_normal = PatientFixedVisit(
-        patient_id=p.id,
-        mode="normal",
-        weekday=1,
-        start_time=time(9, 0),
-        duration_min=60,
-    )
-    pfv_special = PatientFixedVisit(
-        patient_id=p.id,
-        mode="special",
-        weekday=1,
-        start_time=time(10, 0),
-        duration_min=45,
-    )
-    # 別 weekday の固定枠は残るべき
-    pfv_other_weekday = PatientFixedVisit(
-        patient_id=p.id,
-        mode="normal",
-        weekday=2,
-        start_time=time(9, 0),
-        duration_min=60,
-    )
-    db.add_all([visit, pfv_normal, pfv_special, pfv_other_weekday])
-    await db.commit()
-    await db.refresh(visit)
-
-    manager_user = await _make_user(db, "v-cfv-2@example.com", "manager")
-    res = await client.delete(
-        f"/api/v1/visits/{visit.id}?cascade_fixed_visit=true",
-        headers=_bearer(manager_user),
-    )
-    assert res.status_code == 204, res.text
-
-    # weekday=1 の normal/special は両方消える、weekday=2 の normal は残る.
-    # identity map 切り離し + tuple-only クエリで lazy load を避ける.
-    db.expunge_all()
-    rows = (
-        await db.execute(
-            select(PatientFixedVisit.weekday, PatientFixedVisit.mode).where(
-                PatientFixedVisit.patient_id == p.id
-            )
-        )
-    ).all()
-    assert len(rows) == 1
-    assert rows[0].weekday == 2
-    assert rows[0].mode == "normal"
+    assert len(pfv_ids) == 1
 
 
 @pytest.mark.asyncio

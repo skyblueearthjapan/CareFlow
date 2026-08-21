@@ -249,18 +249,14 @@ export function useUpdateVisit(): UseMutationResult<VisitRead, Error, UpdateVari
  * Wave 18 Codex-fix 重大-1: RBAC が admin / manager に拡張された (manager も
  * B-5 配置移動を行うため)。
  *
- * Wave 18 Codex-fix 重大-2: ``cascade_fixed_visit=true`` を指定すると、当該
- * visit の (patient_id, weekday) に紐付く ``patient_fixed_visits`` も同時に
- * 物理削除される。B-5 配置移動 (delete + place-and-fix) で旧曜日の固定枠が
- * 残って翌週以降 Layer 1 が二重展開するバグを防ぐ。プールへの戻し / 純削除
- * では cascade=false (default) のままで、固定枠は保持される。
+ * **cascade_fixed_visit は廃止 (週空間 Phase B・weekly-space-design.md §6-#1)**:
+ * 週の訪問削除がマスタ (PFV) を物理削除する経路は BE 側で 422 封鎖済み。
+ * 型の削除は患者詳細の固定訪問スケジュールで行う。
  */
 export interface DeleteVisitVariables {
   id: string;
   /**
-   * True: 同 (patient_id, weekday) の patient_fixed_visits も同時削除
-   * (B-5 配置移動でのみ true を立てる).
-   * デフォルト false (= 固定枠は残す).
+   * 【廃止・週空間 Phase B】互換のため型に残すが送信しない (BE は true を 422 で拒否)。
    */
   cascadeFixedVisit?: boolean;
   /**
@@ -278,12 +274,10 @@ export function useDeleteVisit(): UseMutationResult<void, Error, DeleteVisitVari
   return useMutation<void, Error, DeleteVisitVariables | string>({
     mutationFn: async (input) => {
       // 後方互換: 旧呼出 (id を string でそのまま渡す) も受ける.
-      const { id, cascadeFixedVisit, op_group_id } =
-        typeof input === 'string'
-          ? { id: input, cascadeFixedVisit: false, op_group_id: undefined }
-          : input;
+      const { id, op_group_id } =
+        typeof input === 'string' ? { id: input, op_group_id: undefined } : input;
       const params = new URLSearchParams();
-      if (cascadeFixedVisit) params.set('cascade_fixed_visit', 'true');
+      // cascade_fixed_visit は廃止 — 常に送らない (週空間 Phase B)。
       if (op_group_id) params.set('op_group_id', op_group_id);
       const qs = params.toString() ? `?${params.toString()}` : '';
       await fetcher<void>(`${VISITS_BASE}/${id}${qs}`, {

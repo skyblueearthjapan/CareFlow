@@ -754,10 +754,9 @@ async def delete_visit(
         bool,
         Query(
             description=(
-                "True: 同 (patient_id, weekday) の patient_fixed_visits "
-                "(mode='normal' / 'special') も同時に物理削除する (W18 Codex-fix 重大-2)。"
-                "B-5 配置移動 (delete + place-and-fix) で旧曜日の固定枠が残って"
-                "翌週以降 Layer 1 で二重展開するのを防ぐ。"
+                "【廃止・週空間 Phase B】true を渡すと 422。週の訪問削除がマスタ (PFV) を"
+                "物理削除する経路は封鎖された (weekly-space-design.md §6-#1)。"
+                "型の削除は PUT /patients/{id}/fixed-visits で行うこと。"
             ),
         ),
     ] = False,
@@ -781,18 +780,30 @@ async def delete_visit(
     """visit を soft-delete する.
 
     W18 Codex-fix 重大-1: RBAC を admin / manager に拡張.
-    W18 Codex-fix 重大-2: ``cascade_fixed_visit=true`` のとき、当該 visit の
-    ``(patient_id, visit_date.weekday())`` に紐付く ``patient_fixed_visits``
-    (mode='normal' / 'special' 両方) を **物理削除** する.
+
+    **cascade_fixed_visit は廃止 (週空間 Phase B・weekly-space-design.md §6-#1)**:
+    「今週の 1 件を消す」操作がマスタ (PFV) を物理削除するのは週空間の憲法
+    (週の操作はマスタを変更しない) 違反の最危険経路だった。FE の現行コードに
+    true の呼び出しは存在しない (旧 B-5 DnD フローの残骸)。旧クライアントが
+    true を送ってきた場合は黙殺せず 422 で明示的に拒否する (サイレントに
+    セマンティクスが変わるより安全)。型の削除は患者詳細の固定枠編集
+    (PUT /patients/{id}/fixed-visits) で行うこと。
 
     W37 Phase 2-A: ``cascade_partner=true`` (default) のとき、当該 visit と
     同じ ``visit_group_id`` を持つ partner visit (2 名体制ペア) も同時に
     soft-delete する. 「2 名はペアで削除」が標準フロー. 入力ミスで片方だけ
     消したいケースは ``cascade_partner=false`` で対応.
-
-    両 cascade は併用可能 (cascade_fixed_visit=true & cascade_partner=true で
-    ペアの visit + 共通 weekday の固定枠 normal/special を全て削除).
     """
+    # 週空間 Phase B: マスタ漏れ道の封鎖 (存在チェックより先 = 意図の拒否が最優先)。
+    if cascade_fixed_visit:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "cascade_fixed_visit は廃止されました。今週の訪問削除は毎週の型 (固定枠) に"
+                "影響しません。型を消す場合は患者詳細の固定訪問スケジュールから行ってください"
+            ),
+        )
+
     visit = await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
     if visit is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -813,11 +824,6 @@ async def delete_visit(
         ).all()
         partner_visits = list(partner_rows)
 
-    # cascade_fixed_visit: visit の (patient_id, weekday) に紐付く固定枠を物理削除.
-    # mode='normal' と 'special' の両方を対象にする (どちらが残っていても
-    # 翌週展開で二重訪問になり得るため). slot_index 0/1 も全て削除される
-    # (W37 Phase 2-A: 2 名体制患者の partner も含めた全 slot を一掃).
-    #
     # 青ピン (week_pinned) は蓋 (PO 決定 2026-08-09): 解除するまで人手でも
     # 削除できない。「今週の盤面を凍らせる」ための明示的な 2 段操作にする。
     if bool(getattr(visit, "week_pinned", False)):
@@ -829,14 +835,7 @@ async def delete_visit(
     # PO 決定 (2026-08-09): 完全固定 (旧 pinned) の 422 ブロックは撤廃。
     # 完全固定の意味は「エンジンが動かさない」であり、人手の削除は常に正当。
     # FE 側が「これは完全固定です」の確認を出したうえで到達する。
-    if cascade_fixed_visit:
-        old_weekday = visit.visit_date.weekday()
-        await db.execute(
-            delete(PatientFixedVisit).where(
-                PatientFixedVisit.patient_id == visit.patient_id,
-                PatientFixedVisit.weekday == old_weekday,
-            )
-        )
+    # (旧 cascade_fixed_visit の PFV 物理削除はここにあったが Phase B で封鎖済み)
 
     # Wave U-3: op_log 用データを commit 前に確保
     _op_patient_id = visit.patient_id

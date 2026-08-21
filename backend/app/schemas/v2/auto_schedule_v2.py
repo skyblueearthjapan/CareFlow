@@ -695,6 +695,34 @@ class VisitAssignStaffWeekResponse(BaseModel):
     changed: bool = Field(description="False = 既に同じ担当 (no-op)")
 
 
+class CourseMoveWeekdayWeekOnlyRequest(BaseModel):
+    """``POST /api/v1/schedule/v2/course-move-weekday-week-only`` request (週空間 A2後段).
+
+    コース丸ごと別曜日へスライド (今週のみ)。course.weekday + 配下 planned visits の
+    visit_date を動かす。PFV は不変。weekly-space-design.md §4-2。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: uuid.UUID
+    to_weekday: int = Field(ge=0, le=5, description="0=Mon..5=Sat")
+    # Wave U-3: 1 ユーザー操作 = 1 UUID (undo グループ化)。省略可。
+    op_group_id: uuid.UUID | None = None
+
+
+class CourseMoveWeekdayWeekOnlyResponse(BaseModel):
+    """``POST /api/v1/schedule/v2/course-move-weekday-week-only`` response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: uuid.UUID
+    from_weekday: int
+    to_weekday: int
+    visits_moved: int = Field(ge=0)
+    # 非ブロック警告 (患者の同日重複など)。表示は FE のトースト。
+    warnings: list[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # 4d) 週のピン (青ピン) — PO 決定 2026-08-08
 # ---------------------------------------------------------------------------

@@ -63,6 +63,8 @@ from app.schemas.v2.auto_schedule_v2 import (
     AutoScheduleV2SyncFixedToWeekResponse,
     AutoScheduleV2UnassignAllRequest,
     AutoScheduleV2UnassignAllResponse,
+    CourseMoveWeekdayWeekOnlyRequest,
+    CourseMoveWeekdayWeekOnlyResponse,
     PfvCoursePresenceItem,
     PfvCoursePresenceResponse,
     UnassignedPatient,
@@ -1738,6 +1740,161 @@ async def visit_assign_staff_week(
     await db.commit()
 
     return VisitAssignStaffWeekResponse(visit_id=visit.id, staff_id=payload.staff_id, changed=True)
+
+
+@router.post(
+    "/v2/course-move-weekday-week-only",
+    response_model=CourseMoveWeekdayWeekOnlyResponse,
+    status_code=status.HTTP_200_OK,
+    summary="週空間 A2後段: コース丸ごと別曜日へスライド (今週のみ・PFV不変)",
+)
+async def course_move_weekday_week_only(
+    payload: CourseMoveWeekdayWeekOnlyRequest,
+    db: DbDep,
+    current_user: Annotated[User, Depends(require_role("admin"))],
+) -> CourseMoveWeekdayWeekOnlyResponse:
+    """職員スケジュール盤面でコース帯を別曜日のセルへドロップしたときの反映.
+
+    正典: weekly-space-design.md §4-2。書込 = course.weekday + 配下 planned visits の
+    visit_date (source='manual_week' = 週生成・固定枠戻で保護)。担当は動かさない
+    (コースに付いたまま曜日ごとスライド)。PFV・コーステンプレは不変。
+
+    ガード:
+      - 移動先に同 code コース (非 proposed) が既にあれば 422 (§9-7 当面の整理・
+        DB の partial UNIQUE と同じ条件)
+      - 配下に青ピン (week_pinned) 訪問があれば 422 (位置の蓋)
+      - planned 以外 (打刻済み等) の訪問は動かさず残す (visits_moved に含めない)
+    警告 (非ブロック): 患者の移動先同日重複。undo: op_log ``move_course_weekday``。
+    """
+    course = await db.scalar(
+        select(Course).where(Course.id == payload.course_id, Course.deleted_at.is_(None))
+    )
+    if course is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found")
+
+    from_weekday = course.weekday
+    if payload.to_weekday == from_weekday:
+        return CourseMoveWeekdayWeekOnlyResponse(
+            course_id=course.id,
+            from_weekday=from_weekday,
+            to_weekday=payload.to_weekday,
+            visits_moved=0,
+        )
+
+    # 移動先の同 code コース衝突 (DB partial UNIQUE: status != 'proposed')。
+    dup = await db.scalar(
+        select(Course.id).where(
+            Course.iso_year == course.iso_year,
+            Course.iso_week == course.iso_week,
+            Course.weekday == payload.to_weekday,
+            Course.code == course.code,
+            Course.office_id == course.office_id,
+            Course.course_status != "proposed",
+            Course.deleted_at.is_(None),
+        )
+    )
+    if dup is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"移動先の{fmt_weekday(payload.to_weekday)}曜に同じコースが既にあります",
+        )
+
+    course_visits = list(
+        (
+            await db.scalars(
+                select(Visit).where(
+                    Visit.course_id == course.id,
+                    Visit.deleted_at.is_(None),
+                )
+            )
+        ).all()
+    )
+    if any(bool(v.week_pinned) for v in course_visits if v.status == VISIT_STATUS_PLANNED):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="今週固定（青ピン）の訪問が含まれています。解除してから動かしてください",
+        )
+
+    to_date = date.fromisocalendar(course.iso_year, course.iso_week, payload.to_weekday + 1)
+    moved_visits = [v for v in course_visits if v.status == VISIT_STATUS_PLANNED]
+
+    # 警告 (非ブロック): 移動する患者が移動先の同日に既に別訪問を持つか。
+    warnings: list[str] = []
+    moved_patient_ids = {v.patient_id for v in moved_visits}
+    if moved_patient_ids:
+        moved_ids = {v.id for v in moved_visits}
+        existing_rows = (
+            await db.execute(
+                select(Visit.patient_id, Patient.name)
+                .join(Patient, Patient.id == Visit.patient_id)
+                .where(
+                    Visit.patient_id.in_(list(moved_patient_ids)),
+                    Visit.visit_date == to_date,
+                    Visit.deleted_at.is_(None),
+                    Visit.status != "cancelled",
+                    Visit.id.notin_(list(moved_ids)),
+                )
+                .distinct()
+            )
+        ).all()
+        for _pid, _pname in existing_rows:
+            warnings.append(
+                f"{_pname or '患者'}様は{fmt_weekday(payload.to_weekday)}曜に別の訪問が既にあります"
+            )
+
+    try:
+        for v in moved_visits:
+            v.visit_date = to_date
+            v.source = VISIT_SOURCE_MANUAL_WEEK
+        course.weekday = payload.to_weekday
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="他のユーザーが同じコースを処理中です。もう一度実行してください。",
+        ) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    # Wave U-3: undo (ベストエフォート)。
+    _office_name = await db.scalar(select(Office.name).where(Office.id == course.office_id))
+    await record_op(
+        db,
+        user_id=current_user.id,
+        iso_year=course.iso_year,
+        iso_week=course.iso_week,
+        op_group_id=payload.op_group_id,
+        op_kind="move_course_weekday",
+        label=(
+            f"{_office_name or ''}{course.code}コースを"
+            f"{fmt_weekday(from_weekday)}→{fmt_weekday(payload.to_weekday)}曜へ移動（今週のみ）"
+        ),
+        forward_payload={
+            "op": "move_course_weekday",
+            "course_id": str(course.id),
+            "iso_year": course.iso_year,
+            "iso_week": course.iso_week,
+            "to_weekday": payload.to_weekday,
+        },
+        inverse_payload={
+            "op": "move_course_weekday",
+            "course_id": str(course.id),
+            "iso_year": course.iso_year,
+            "iso_week": course.iso_week,
+            "to_weekday": from_weekday,
+        },
+    )
+    await db.commit()
+
+    return CourseMoveWeekdayWeekOnlyResponse(
+        course_id=course.id,
+        from_weekday=from_weekday,
+        to_weekday=payload.to_weekday,
+        visits_moved=len(moved_visits),
+        warnings=warnings,
+    )
 
 
 # ---------------------------------------------------------------------------

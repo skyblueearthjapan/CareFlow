@@ -22,6 +22,8 @@
     "set_visit_staff"      — visit 1 件の primary_staff_id / manual_staff_override /
                               visit_staff_assignments を (staff_id, manual) に設定
                               (週空間 A2: 患者個別の担当貼り替え)
+    "move_course_weekday"  — course の weekday と配下 planned visits の visit_date を
+                              to_weekday へ移動 (週空間 A2後段: コース丸ごと曜日移動)
 """
 
 from __future__ import annotations
@@ -334,6 +336,10 @@ async def _verify_forward_state(db: AsyncSession, row: ScheduleOpLog) -> None:
             UUID(fp["staff_id"]) if fp.get("staff_id") else None,
         )
 
+    elif op_name == "move_course_weekday":
+        # forward result = course.weekday == fp["to_weekday"]
+        await _assert_course_weekday(db, UUID(fp["course_id"]), int(fp["to_weekday"]))
+
     # 他 op_name は検証なしで通過（将来拡張用）
 
 
@@ -379,6 +385,10 @@ async def _verify_inverse_state(db: AsyncSession, row: ScheduleOpLog) -> None:
             UUID(ip["staff_id"]) if ip.get("staff_id") else None,
         )
 
+    elif op_name == "move_course_weekday":
+        # inverse result = course.weekday == ip["to_weekday"] (= 元の曜日)
+        await _assert_course_weekday(db, UUID(ip["course_id"]), int(ip["to_weekday"]))
+
 
 async def _execute_payload(db: AsyncSession, payload: dict[str, Any]) -> None:
     """payload の op に応じて DB 更新を実行する."""
@@ -416,6 +426,15 @@ async def _execute_payload(db: AsyncSession, payload: dict[str, Any]) -> None:
             UUID(payload["visit_id"]),
             UUID(payload["staff_id"]) if payload.get("staff_id") else None,
             bool(payload.get("manual", False)),
+        )
+
+    elif op_name == "move_course_weekday":
+        await _move_course_weekday(
+            db,
+            UUID(payload["course_id"]),
+            int(payload["iso_year"]),
+            int(payload["iso_week"]),
+            int(payload["to_weekday"]),
         )
 
     else:
@@ -569,6 +588,51 @@ async def _set_course_staff(db: AsyncSession, course_id: UUID, staff_id: UUID | 
         logger.warning("op_log_service: _set_course_staff: course %s が見つかりません", course_id)
         return
     course.assigned_staff_id = staff_id
+    await db.flush()
+
+
+async def _assert_course_weekday(db: AsyncSession, course_id: UUID, expected: int) -> None:
+    """move_course_weekday の undo/redo 前検証: コースの現曜日が期待値のままか."""
+    course = await db.scalar(
+        select(Course).where(Course.id == course_id, Course.deleted_at.is_(None))
+    )
+    if course is None:
+        raise OpLogConflictError("他の変更があったため戻せません (対象のコースが見つかりません)")
+    if course.weekday != expected:
+        raise OpLogConflictError(
+            "他の変更があったため戻せません (コースの曜日が既に変更されています)"
+        )
+
+
+async def _move_course_weekday(
+    db: AsyncSession, course_id: UUID, iso_year: int, iso_week: int, to_weekday: int
+) -> None:
+    """course の weekday と配下 planned visits を to_weekday へ移動 (週空間 A2後段).
+
+    endpoint 側 (schedule_v2.course_move_weekday_week_only) と同一の書込:
+    course.weekday + 配下 visits の visit_date (+source='manual_week')。PFV 不変。
+    """
+    course = await db.scalar(
+        select(Course).where(Course.id == course_id, Course.deleted_at.is_(None))
+    )
+    if course is None:
+        raise OpLogConflictError("他の変更があったため戻せません (対象のコースが見つかりません)")
+    to_date = date.fromisocalendar(iso_year, iso_week, to_weekday + 1)
+    visits = list(
+        (
+            await db.scalars(
+                select(Visit).where(
+                    Visit.course_id == course_id,
+                    Visit.deleted_at.is_(None),
+                    Visit.status == "planned",
+                )
+            )
+        ).all()
+    )
+    for v in visits:
+        v.visit_date = to_date
+        v.source = VISIT_SOURCE_MANUAL_WEEK
+    course.weekday = to_weekday
     await db.flush()
 
 
