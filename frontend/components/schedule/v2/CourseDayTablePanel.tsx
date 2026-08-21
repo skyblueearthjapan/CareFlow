@@ -165,11 +165,7 @@ import {
 } from './courseGrid';
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
 import { StaffWeekBoard } from './StaffWeekBoard';
-import {
-  WeekCoursePalette,
-  type BoardDragState,
-  type PaletteCourse,
-} from './WeekCoursePalette';
+import { type BoardDragState } from './courseDnd';
 import {
   parseTlColDroppableId,
   parseTlPairDraggableId,
@@ -2881,52 +2877,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     return m;
   }, [courses, templates]);
 
-  // パレット表示用のコースカード (件数・合計分・時間帯は当週 visits から算出)。
-  const paletteCourses = useMemo<PaletteCourse[]>(() => {
-    const statsByCourseId = new Map<
-      string,
-      { count: number; minutes: number; first: string | null; last: string | null }
-    >();
-    for (const v of weekVisits) {
-      const cid = v.course_id ?? null;
-      if (!cid) continue;
-      let s = statsByCourseId.get(cid);
-      if (!s) {
-        s = { count: 0, minutes: 0, first: null, last: null };
-        statsByCourseId.set(cid, s);
-      }
-      s.count += 1;
-      const st = (v.start_time ?? '').slice(0, 5);
-      const en = (v.end_time ?? '').slice(0, 5);
-      if (st && en) {
-        const mins =
-          (Number(en.slice(0, 2)) - Number(st.slice(0, 2))) * 60 +
-          (Number(en.slice(3, 5)) - Number(st.slice(3, 5)));
-        if (Number.isFinite(mins) && mins > 0) s.minutes += mins;
-      }
-      if (st && (!s.first || st < s.first)) s.first = st;
-      if (en && (!s.last || en > s.last)) s.last = en;
-    }
-    return courses
-      .filter((c) => c.weekday >= 0 && c.weekday <= 5)
-      .map((c) => {
-        const officeName = officeNameById.get(c.office_id) ?? '';
-        const s = statsByCourseId.get(c.id);
-        const staff = c.assigned_staff_id ? staffMap.get(c.assigned_staff_id) : undefined;
-        return {
-          id: c.id,
-          weekday: c.weekday,
-          label: `${officeName}${c.code}`,
-          assignedStaffId: c.assigned_staff_id ?? null,
-          assignedStaffName: staff?.name ?? null,
-          visitCount: s?.count ?? 0,
-          totalMinutes: s?.minutes ?? 0,
-          timeRange: s?.first && s?.last ? `${s.first}〜${s.last}` : null,
-        };
-      });
-  }, [courses, weekVisits, officeNameById, staffMap]);
-
-  /** パレット/セル間のコースドロップ = 今週のコース担当変更 (マスタ不変)。 */
+  /** セル間のコースドロップ = 今週のコース担当変更 (マスタ不変)。 */
   const handleCourseDropOnStaff = async (courseId: string, staffId: string, weekday: number) => {
     setCourseDrag(null);
     const course = courses.find((c) => c.id === courseId);
@@ -4101,20 +4052,15 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     canEdit ? (args) => void handleCourseBandUnassign(args) : undefined
                   }
                   offByStaffWeekday={offByStaffWeekday}
-                />
-                {/* コースの表 (パレット): 未割当コースをセルへドラッグして貼り付ける。 */}
-                <WeekCoursePalette
-                  courses={paletteCourses}
-                  canEdit={canEdit}
-                  onDragChange={setCourseDrag}
-                  onUnassignDrop={canEdit ? handleCourseUnassignDrop : undefined}
+                  // パレット (コースの表) は PO 判断で撤去 (2026-08-21)。
+                  // 未割当の置き場と戻し先は「（担当なし）」行が担う。
+                  alwaysShowUnassignedRow
+                  onCourseUnassignDrop={canEdit ? handleCourseUnassignDrop : undefined}
                   onVisitUnassignDrop={canEdit ? handleVisitUnassignDrop : undefined}
-                  activeDrag={courseDrag}
                 />
                 <p className="text-[11px] text-text-muted">
-                  コースは下の「コースの表」からスタッフのセルへドラッグで貼り付け（今週のみ・毎週の型には影響しません）。
-                  患者様1件だけ動かすときは訪問の行を掴んで別スタッフのセルへ（同じ曜日内）。
-                  戻すときはコース帯の「×」か、コースの表へドラッグ、またはツールバーの「戻る」。
+                  コース帯（⠿）や訪問の行はドラッグでスタッフ間を移動できます（今週のみ・毎週の型には影響しません）。
+                  担当を外すときはコース帯の「×」か「（担当なし）」行へドラッグ。ツールバーの「戻る」で取り消せます。
                   時刻・曜日の変更は週・曜日タブで。イベントはこの画面が正典で、＋やイベント帯のクリックで追加・編集できます。
                 </p>
               </div>

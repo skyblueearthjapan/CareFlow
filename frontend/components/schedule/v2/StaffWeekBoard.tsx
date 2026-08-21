@@ -37,7 +37,7 @@ import {
   readVisitDragPayload,
   VISIT_DND_MIME,
   type BoardDragState,
-} from './WeekCoursePalette';
+} from './courseDnd';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 
@@ -84,6 +84,15 @@ export interface StaffWeekBoardProps {
   }) => void;
   /** `${staffId}:${weekday}` → 休み/時間変更 (セル網掛け + ドロップ警告の表示根拠)。 */
   offByStaffWeekday?: Map<string, WeekOverrideRead>;
+  /**
+   * 「（担当なし）」行を未割当ゼロでも常に出す (パレット撤去後の置き場・
+   * 担当解除のドロップ先。PO判断 2026-08-21: コースの表は不要)。
+   */
+  alwaysShowUnassignedRow?: boolean;
+  /** 「（担当なし）」行へのコース帯ドロップ = 担当解除。 */
+  onCourseUnassignDrop?: (courseId: string, fromStaffId?: string) => void;
+  /** 「（担当なし）」行への訪問ドロップ = その 1 件だけ担当解除。 */
+  onVisitUnassignDrop?: (visitId: string) => void;
 }
 
 const UNASSIGNED_KEY = '__unassigned__';
@@ -119,6 +128,9 @@ export function StaffWeekBoard({
   onCourseDragChange,
   onCourseUnassign,
   offByStaffWeekday,
+  alwaysShowUnassignedRow = false,
+  onCourseUnassignDrop,
+  onVisitUnassignDrop,
 }: StaffWeekBoardProps) {
   // ドラッグ中に実際に重なっているセル (`${rowKey}:${wd}`)。候補セルの
   // 淡い破線に対し、重なり中のセルだけ強く光らせる (PO指摘 2026-08-21)。
@@ -184,6 +196,9 @@ export function StaffWeekBoard({
         if (s.status === 'active') rows.add(staffId);
       }
     }
+    // パレット撤去後の置き場: 未割当ゼロでも「（担当なし）」行を常設し、
+    // コース/訪問の「戻し先」(担当解除ドロップ) として機能させる。
+    if (alwaysShowUnassignedRow) rows.add(UNASSIGNED_KEY);
 
     // 並び: 拠点名 → スタッフ名。担当なしは末尾。
     const sorted = Array.from(rows).sort((a, b) => {
@@ -197,7 +212,7 @@ export function StaffWeekBoard({
       return (sa?.name ?? '').localeCompare(sb?.name ?? '', 'ja');
     });
     return { cellMap: cells, rowKeys: sorted };
-  }, [visits, assignedStaffByTemplateWeekday, staffEventsByStaff, staffMap, officeNameById, courseLabel, showAllStaff]);
+  }, [visits, assignedStaffByTemplateWeekday, staffEventsByStaff, staffMap, officeNameById, courseLabel, showAllStaff, alwaysShowUnassignedRow]);
 
   if (rowKeys.length === 0) {
     return (
@@ -249,6 +264,11 @@ export function StaffWeekBoard({
                   ) : (
                     <span className="block text-[10px] text-warning-strong">
                       スタッフ未割当の訪問
+                      {onCourseUnassignDrop || onVisitUnassignDrop ? (
+                        <span className="block font-normal text-text-muted">
+                          ⤵ ここへドラッグで担当解除
+                        </span>
+                      ) : null}
                     </span>
                   )}
                 </td>
@@ -270,7 +290,12 @@ export function StaffWeekBoard({
                     rowKey !== UNASSIGNED_KEY
                       ? offByStaffWeekday?.get(`${rowKey}:${wd}`)
                       : undefined;
-                  const droppable = (!!onCourseDrop || !!onVisitDrop) && rowKey !== UNASSIGNED_KEY;
+                  const assignDroppable =
+                    (!!onCourseDrop || !!onVisitDrop) && rowKey !== UNASSIGNED_KEY;
+                  // 「（担当なし）」行は逆向き = 担当解除のドロップ先 (戻し先)。
+                  const unassignDroppable =
+                    rowKey === UNASSIGNED_KEY && (!!onCourseUnassignDrop || !!onVisitUnassignDrop);
+                  const droppable = assignDroppable || unassignDroppable;
                   const dropHighlight =
                     droppable && activeCourseDrag != null && activeCourseDrag.weekday === wd;
                   const cellKey = `${rowKey}:${wd}`;
@@ -317,6 +342,25 @@ export function StaffWeekBoard({
                         droppable
                           ? (e) => {
                               setDragOverCell(null);
+                              if (unassignDroppable) {
+                                // 戻し先 (担当なし行): コース帯/訪問を未割当へ。
+                                const cp = onCourseUnassignDrop
+                                  ? readCourseDragPayload(e.dataTransfer)
+                                  : null;
+                                if (cp) {
+                                  e.preventDefault();
+                                  onCourseUnassignDrop?.(cp.courseId, cp.fromStaffId);
+                                  return;
+                                }
+                                const vp = onVisitUnassignDrop
+                                  ? readVisitDragPayload(e.dataTransfer)
+                                  : null;
+                                if (vp) {
+                                  e.preventDefault();
+                                  onVisitUnassignDrop?.(vp.visitId);
+                                }
+                                return;
+                              }
                               const coursePayload = onCourseDrop
                                 ? readCourseDragPayload(e.dataTransfer)
                                 : null;

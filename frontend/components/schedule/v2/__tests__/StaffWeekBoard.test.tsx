@@ -11,7 +11,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 
 import { StaffWeekBoard } from '../StaffWeekBoard';
-import { COURSE_DND_MIME, VISIT_DND_MIME } from '../WeekCoursePalette';
+import { COURSE_DND_MIME, VISIT_DND_MIME } from '../courseDnd';
 import type { WeekOverviewVisit } from '../CourseWeekOverview';
 import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
@@ -433,5 +433,61 @@ describe('StaffWeekBoard', () => {
       dataTransfer: makeDataTransfer({ visitId: 'v1', weekday: 0 }, VISIT_DND_MIME),
     });
     expect(onVisitDrop).toHaveBeenCalledWith('v1', STAFF_2, 0);
+  });
+
+  // ─── パレット撤去 (PO判断 2026-08-21): （担当なし）行が置き場+戻し先 ──
+
+  it('⑮ alwaysShowUnassignedRow: 未割当ゼロでも（担当なし）行が出る + 戻し先ヒント表示', () => {
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={[
+          // 全訪問が担当あり = 従来なら（担当なし）行は出ない構成
+          visit({ id: 'v1', weekday: 0 }),
+        ]}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        alwaysShowUnassignedRow
+        onCourseUnassignDrop={vi.fn()}
+      />,
+    );
+    const row = screen.getByTestId('staff-week-row-__unassigned__');
+    expect(within(row).getByText('（担当なし）')).toBeInTheDocument();
+    expect(within(row).getByText(/ここへドラッグで担当解除/)).toBeInTheDocument();
+  });
+
+  it('⑯ （担当なし）行へのドロップ: コース帯→onCourseUnassignDrop / 訪問→onVisitUnassignDrop', () => {
+    const onCourseUnassignDrop = vi.fn();
+    const onVisitUnassignDrop = vi.fn();
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        alwaysShowUnassignedRow
+        onCourseUnassignDrop={onCourseUnassignDrop}
+        onVisitUnassignDrop={onVisitUnassignDrop}
+      />,
+    );
+    const cell = screen.getByTestId('staff-week-cell-__unassigned__-0');
+    fireEvent.drop(cell, {
+      dataTransfer: makeDataTransfer({
+        courseId: COURSE_ID,
+        weekday: 0,
+        fromStaffId: STAFF_1,
+      }),
+    });
+    expect(onCourseUnassignDrop).toHaveBeenCalledWith(COURSE_ID, STAFF_1);
+    fireEvent.drop(cell, {
+      dataTransfer: makeDataTransfer({ visitId: 'v1', weekday: 0 }, VISIT_DND_MIME),
+    });
+    expect(onVisitUnassignDrop).toHaveBeenCalledWith('v1');
   });
 });
