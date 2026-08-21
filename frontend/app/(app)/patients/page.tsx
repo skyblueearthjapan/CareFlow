@@ -58,6 +58,14 @@ function initialStatusTab(): StatusTabValue {
   return STATUS_TABS.some((t) => t.value === v) ? (v as StatusTabValue) : 'active';
 }
 
+/** 並び順 (PO要望 2026-08-21): コード順 (既定) / あいうえお順 (kana昇順)。 */
+type SortOrder = 'code' | 'kana';
+
+function initialSortOrder(): SortOrder {
+  if (typeof window === 'undefined') return 'code';
+  return new URLSearchParams(window.location.search).get('sort') === 'kana' ? 'kana' : 'code';
+}
+
 export default function PatientsPage() {
   const { data: session } = useSession();
   const role = session?.user?.role;
@@ -68,16 +76,19 @@ export default function PatientsPage() {
   const [search, setSearch] = useState('');
   const [insurance, setInsurance] = useState<string>('');
   const [statusTab, setStatusTab] = useState<StatusTabValue>(initialStatusTab);
+  const [sortOrder, setSortOrder] = useState<SortOrder>(initialSortOrder);
   const [page, setPage] = useState(1);
 
-  // タブを URL (?status=) に同期 — ブックマーク・戻る・他画面からのリンクに対応。
+  // タブ・並び順を URL (?status= / ?sort=) に同期 — ブックマーク・戻る・他画面からのリンクに対応。
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (statusTab === 'active') params.delete('status');
     else params.set('status', statusTab);
+    if (sortOrder === 'code') params.delete('sort');
+    else params.set('sort', sortOrder);
     const qs = params.toString();
     window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
-  }, [statusTab]);
+  }, [statusTab, sortOrder]);
 
   // 300ms debounce for the search box.
   useEffect(() => {
@@ -94,6 +105,7 @@ export default function PatientsPage() {
     search,
     insurance: insurance || undefined,
     status: statusTab,
+    sort: sortOrder,
   });
 
   // 拠点 id → 名前マップ (一覧で primary_office_id を拠点名表示するため)
@@ -215,7 +227,7 @@ export default function PatientsPage() {
       </div>
 
       <Card className="p-4">
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_220px]">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_220px_auto]">
           <Input
             type="search"
             placeholder="氏名・カナ・コードで検索"
@@ -237,6 +249,39 @@ export default function PatientsPage() {
               </option>
             ))}
           </select>
+          {/* 並び順トグル (PO要望 2026-08-21): コード順 / あいうえお順 (kana昇順)。 */}
+          <div
+            role="group"
+            aria-label="並び順"
+            className="inline-flex h-10 self-start overflow-hidden rounded-md border border-border-default text-sm"
+            data-testid="patient-sort-toggle"
+          >
+            {(
+              [
+                { value: 'code', label: 'コード順' },
+                { value: 'kana', label: 'あいうえお順' },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                aria-pressed={sortOrder === opt.value}
+                data-testid={`patient-sort-${opt.value}`}
+                onClick={() => {
+                  setSortOrder(opt.value);
+                  setPage(1);
+                }}
+                className={cn(
+                  'px-3 py-2 transition-colors',
+                  sortOrder === opt.value
+                    ? 'bg-brand-primary font-medium text-white'
+                    : 'bg-bg-base text-text-secondary hover:bg-bg-muted',
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
       </Card>
 

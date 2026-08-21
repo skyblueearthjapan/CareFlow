@@ -36,6 +36,7 @@ import {
   type PatientRead,
   type PatientUpdate,
 } from '@/lib/schemas/patient';
+import { compareByKana } from '@/lib/kana-sort';
 
 export interface PatientsListParams {
   /** 1-indexed UI page. */
@@ -53,6 +54,11 @@ export interface PatientsListParams {
    * insurance と同じくクライアント側フィルタ。省略時は 'all' 相当。
    */
   status?: string;
+  /**
+   * 並び順 (PO要望 2026-08-21): 'code' (既定・登録ナンバー順) or
+   * 'kana' (あいうえお順・kana昇順/未設定は末尾)。クライアント側ソート。
+   */
+  sort?: 'code' | 'kana';
   /**
    * 取得ゲート (default true)。`false` のときは fetch を抑止する。
    *
@@ -162,10 +168,11 @@ export function usePatients(
   const search = params.search?.trim().toLowerCase() ?? '';
   const insurance = params.insurance ?? '';
   const statusFilter = params.status && params.status !== 'all' ? params.status : '';
+  const sort = params.sort ?? 'code';
   const gate = params.enabled ?? true;
 
   return useQuery<PatientsListResult, Error>({
-    queryKey: [...PATIENTS_KEY, { page, limit, search, insurance, statusFilter }],
+    queryKey: [...PATIENTS_KEY, { page, limit, search, insurance, statusFilter, sort }],
     enabled: status === 'authenticated' && gate,
     queryFn: async () => {
       // Fetch a generous window so the client-side search across pages
@@ -198,8 +205,10 @@ export function usePatients(
             (p) => normalizePatientStatus(p.status as string | null | undefined) === statusFilter,
           )
         : filtered;
+      // あいうえお順 (PO要望 2026-08-21)。'code' は BE の既定順 (code昇順) のまま。
+      const ordered = sort === 'kana' ? [...byStatus].sort(compareByKana) : byStatus;
       const start = (page - 1) * limit;
-      const slice = byStatus.slice(start, start + limit);
+      const slice = ordered.slice(start, start + limit);
       return {
         items: slice,
         total: byStatus.length,

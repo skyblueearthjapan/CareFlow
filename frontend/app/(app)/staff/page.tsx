@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { compareByKana, type MasterSortOrder } from '@/lib/kana-sort';
 import { useOffices } from '@/lib/queries/offices';
 import { useStaffList } from '@/lib/queries/staff';
 import { isAdminRole } from '@/lib/rbac';
@@ -58,6 +59,8 @@ export default function StaffPage() {
   const [search, setSearch] = useState('');
   const [sexFilter, setSexFilter] = useState<SexFilter>('all');
   const [officeFilter, setOfficeFilter] = useState<string>('all');
+  // 並び順 (PO要望 2026-08-21): コード順 (既定) / あいうえお順 (kana昇順)。
+  const [sortOrder, setSortOrder] = useState<MasterSortOrder>('code');
   const [page, setPage] = useState(0);
 
   // Fetch a generous slice; backend caps at 500 per request.
@@ -105,9 +108,15 @@ export default function StaffPage() {
     });
   }, [allRows, search, sexFilter, officeFilter]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  // あいうえお順 (PO要望 2026-08-21)。'code' は BE の既定順 (code昇順) のまま。
+  const sorted = useMemo(
+    () => (sortOrder === 'kana' ? [...filtered].sort(compareByKana) : filtered),
+    [filtered, sortOrder],
+  );
+
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages - 1);
-  const paged = filtered.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+  const paged = sorted.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
 
   return (
     <section className="space-y-4">
@@ -207,6 +216,40 @@ export default function StaffPage() {
               </option>
             ))}
           </select>
+
+          {/* 並び順トグル (PO要望 2026-08-21): コード順 / あいうえお順 (kana昇順)。 */}
+          <div
+            role="group"
+            aria-label="並び順"
+            className="inline-flex h-10 overflow-hidden rounded-md border border-border-default text-sm"
+            data-testid="staff-sort-toggle"
+          >
+            {(
+              [
+                { value: 'code', label: 'コード順' },
+                { value: 'kana', label: 'あいうえお順' },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                aria-pressed={sortOrder === opt.value}
+                data-testid={`staff-sort-${opt.value}`}
+                onClick={() => {
+                  setSortOrder(opt.value);
+                  setPage(0);
+                }}
+                className={cn(
+                  'px-3 py-2 transition-colors',
+                  sortOrder === opt.value
+                    ? 'bg-brand-primary font-medium text-white'
+                    : 'bg-bg-base text-text-secondary hover:bg-bg-muted',
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
       </Card>
 
