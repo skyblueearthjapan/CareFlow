@@ -16,8 +16,13 @@ const smartPreviewMutateAsync = vi.fn();
 const applyInboundMutateAsync = vi.fn();
 const updateItemMutateAsync = vi.fn();
 const bulkItemsMutateAsync = vi.fn();
+const diffLocalMutateAsync = vi.fn();
+const startApplyMutateAsync = vi.fn();
 let liveRunning = false;
 let correctionItems: unknown[] = [];
+let outCorrectionItems: unknown[] = [];
+
+const OUT_SHEET_ID = '00000000-0000-4000-8000-00000000beef';
 
 vi.mock('@/lib/queries/integrations', () => ({
   useEventsInboundPreview: () => ({ mutateAsync: eventsPreviewMutateAsync }),
@@ -27,7 +32,11 @@ vi.mock('@/lib/queries/integrations', () => ({
   useUpdateCorrectionItem: () => ({ mutateAsync: updateItemMutateAsync }),
   useBulkUpdateItems: () => ({ mutateAsync: bulkItemsMutateAsync }),
   useKaipokeLive: () => ({ data: { running: liveRunning } }),
-  useCorrectionItems: () => ({ data: { items: correctionItems } }),
+  useCorrectionItems: (sheetId?: string) => ({
+    data: { items: sheetId === OUT_SHEET_ID ? outCorrectionItems : correctionItems },
+  }),
+  useStartDiffLocal: () => ({ mutateAsync: diffLocalMutateAsync }),
+  useStartApply: () => ({ mutateAsync: startApplyMutateAsync }),
 }));
 
 import { KaipokeReconcilePanel } from '../KaipokeReconcilePanel';
@@ -113,10 +122,27 @@ function renderPanel(onEventMarkersChange = vi.fn()) {
   };
 }
 
+const OUT_ITEM_1 = '00000000-0000-4000-8000-00000000b001';
+const OUT_ITEM_2 = '00000000-0000-4000-8000-00000000b002';
+const OUT_ITEM = {
+  ...VISIT_ITEM,
+  id: OUT_ITEM_1,
+  sheet_id: OUT_SHEET_ID,
+  action: 'edit',
+};
+const OUT_ITEM_B = { ...OUT_ITEM, id: OUT_ITEM_2 };
+
 beforeEach(() => {
   vi.clearAllMocks();
   liveRunning = false;
   correctionItems = [VISIT_ITEM, VISIT_ITEM_OTHER];
+  outCorrectionItems = [OUT_ITEM, OUT_ITEM_B];
+  diffLocalMutateAsync.mockResolvedValue({
+    jobId: '00000000-0000-4000-8000-00000000c9f0',
+    sheetId: OUT_SHEET_ID,
+    summary: { total: 2 },
+  });
+  startApplyMutateAsync.mockResolvedValue({ jobId: 'x', status: 'pending' });
   eventsPreviewMutateAsync.mockResolvedValue(EVENTS_PLAN);
   smartPreviewMutateAsync.mockResolvedValue(VISITS_PLAN);
   applyEventsMutateAsync.mockResolvedValue({
@@ -207,5 +233,51 @@ describe('KaipokeReconcilePanel', () => {
     liveRunning = true;
     renderPanel();
     expect(screen.getByTestId('reconcile-fetch-button')).toBeDisabled();
+  });
+
+  it('⑤ ⇧送信 (C2): 差分計算→1件送信は include排他 + apply(dryRun:false)・2段クリック確認', async () => {
+    renderPanel();
+    fireEvent.click(screen.getByTestId('reconcile-fetch-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('reconcile-outbound-diff-button')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('reconcile-outbound-diff-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('reconcile-outbound-list')).toBeInTheDocument(),
+    );
+    expect(diffLocalMutateAsync).toHaveBeenCalledWith({
+      month: '2026-08',
+      weekStart: WEEK_START,
+      weekEnd: '2026-08-23',
+    });
+    // 1回目クリック = 確認状態 (まだ送信しない)
+    const sendBtn = screen.getByTestId(`reconcile-send-outbound-${OUT_ITEM_1}`);
+    fireEvent.click(sendBtn);
+    expect(startApplyMutateAsync).not.toHaveBeenCalled();
+    expect(sendBtn).toHaveTextContent('本当に送信？');
+    // 2回目クリック = 実行
+    fireEvent.click(sendBtn);
+    await waitFor(() => expect(startApplyMutateAsync).toHaveBeenCalled());
+    // include 排他: 他項目 OFF → 対象 ON → apply
+    expect(bulkItemsMutateAsync).toHaveBeenCalledWith({
+      sheetId: OUT_SHEET_ID,
+      ids: [OUT_ITEM_2],
+      patch: { include: false },
+    });
+    expect(bulkItemsMutateAsync).toHaveBeenCalledWith({
+      sheetId: OUT_SHEET_ID,
+      ids: [OUT_ITEM_1],
+      patch: { include: true },
+    });
+    expect(startApplyMutateAsync).toHaveBeenCalledWith({
+      sheetId: OUT_SHEET_ID,
+      dryRun: false,
+    });
+    // 送信済み項目は一覧から消える
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId(`reconcile-outbound-${OUT_ITEM_1}`),
+      ).not.toBeInTheDocument(),
+    );
   });
 });

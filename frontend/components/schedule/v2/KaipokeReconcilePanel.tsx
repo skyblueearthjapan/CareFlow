@@ -32,6 +32,8 @@ import {
   useEventsInboundPreview,
   useKaipokeLive,
   useSmartInboundPreview,
+  useStartApply,
+  useStartDiffLocal,
   useUpdateCorrectionItem,
 } from '@/lib/queries/integrations';
 import type {
@@ -143,6 +145,97 @@ export function KaipokeReconcilePanel({
     () => itemsQuery.data?.items ?? [],
     [itemsQuery.data],
   );
+
+  // ─── ⇧ 送信方向 (らく助→カイポケ・訪問) — C2 (既存 diff-local + apply の結線) ───
+  // カイポケ書込 RPA は自動反映パイプライン (auto_apply・2026-07 本番稼働) を再利用。
+  const diffLocalMut = useStartDiffLocal();
+  const startApplyMut = useStartApply();
+  const [outSheetId, setOutSheetId] = React.useState<string | null>(null);
+  const [outFetching, setOutFetching] = React.useState(false);
+  const [sentItemIds, setSentItemIds] = React.useState<Set<string>>(new Set());
+  const [pendingSendKey, setPendingSendKey] = React.useState<string | null>(null);
+  const outItemsQuery = useCorrectionItems(outSheetId ?? undefined, { limit: 500 });
+  const outItems = React.useMemo(() => outItemsQuery.data?.items ?? [], [outItemsQuery.data]);
+
+  const fetchOutboundDiff = async () => {
+    setOutFetching(true);
+    setOutSheetId(null);
+    setSentItemIds(new Set());
+    try {
+      const weekEndIso = format(addDays(parseISO(weekStartIso), 6), 'yyyy-MM-dd');
+      const res = await diffLocalMut.mutateAsync({
+        month: weekStartIso.slice(0, 7),
+        weekStart: weekStartIso,
+        weekEnd: weekEndIso,
+      });
+      setOutSheetId(res.sheetId);
+      const total = res.summary.total ?? 0;
+      toast.success(`送信差分を計算しました（${total} 件）`);
+    } catch (err) {
+      toast.error(
+        `送信差分の計算に失敗しました: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setOutFetching(false);
+    }
+  };
+
+  /** 送信 (カイポケの利用者別スケジュールを実変更)。ids=null は全残件。 */
+  const sendOutboundItems = async (targetIds: string[] | null, key: string) => {
+    if (!outSheetId) return;
+    const remaining = outItems.filter((it) => !sentItemIds.has(it.id));
+    const targets = targetIds
+      ? remaining.filter((it) => targetIds.includes(it.id))
+      : remaining;
+    if (targets.length === 0) return;
+    setBusyKey(key);
+    try {
+      // include をこの選択だけに絞ってから apply (= RPA 書込ジョブ 202)。
+      const targetSet = new Set(targets.map((t) => t.id));
+      const offIds = outItems.filter((it) => !targetSet.has(it.id)).map((it) => it.id);
+      if (offIds.length > 0) {
+        await bulkItemsMut.mutateAsync({
+          sheetId: outSheetId,
+          ids: offIds,
+          patch: { include: false },
+        });
+      }
+      await bulkItemsMut.mutateAsync({
+        sheetId: outSheetId,
+        ids: targets.map((t) => t.id),
+        patch: { include: true },
+      });
+      await startApplyMut.mutateAsync({ sheetId: outSheetId, dryRun: false });
+      setSentItemIds((prev) => {
+        const next = new Set(prev);
+        for (const t of targets) next.add(t.id);
+        return next;
+      });
+      toast.success(
+        `カイポケへの送信ジョブを開始しました（${targets.length} 件・1件あたり約30〜60秒）。` +
+          '進行はライブモニターで確認できます。完了後は再突合をおすすめします',
+      );
+    } catch (err) {
+      toast.error(
+        `送信の開始に失敗しました: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setBusyKey(null);
+      setPendingSendKey(null);
+    }
+  };
+
+  /** 2 段クリック確認 (外部システムへの実書込のため)。 */
+  const handleSendClick = (targetIds: string[] | null, key: string) => {
+    if (pendingSendKey === key) {
+      void sendOutboundItems(targetIds, key);
+      return;
+    }
+    setPendingSendKey(key);
+    window.setTimeout(() => {
+      setPendingSendKey((cur) => (cur === key ? null : cur));
+    }, 5000);
+  };
 
   // ─── 取得 (RPA 単一スロットのためイベント→訪問の直列) ───
   const runFetch = React.useCallback(async () => {
@@ -485,6 +578,111 @@ export function KaipokeReconcilePanel({
                 ) : null}
               </div>
             ) : null}
+
+            {/* ── ⇧ 送信方向 (らく助→カイポケ・訪問) — C2 ── */}
+            <div className="border-t border-border-subtle pt-2">
+              <div className="mb-1 flex flex-wrap items-center gap-2">
+                <h4 className="text-[12px] font-bold text-text-primary">
+                  ⇧ らく助 → カイポケ（訪問の送信）
+                </h4>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-[11px]"
+                  disabled={!canEdit || outFetching || busyKey !== null || rpaRunning}
+                  onClick={() => void fetchOutboundDiff()}
+                  data-testid="reconcile-outbound-diff-button"
+                  title="らく助の今週の盤面とカイポケを比べ、カイポケへ送るべき差分を計算します（約1分）"
+                >
+                  {outFetching ? (
+                    <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />
+                  ) : null}
+                  送信差分を計算
+                </Button>
+              </div>
+              {outSheetId == null && !outFetching ? (
+                <p className="text-[11px] text-text-muted">
+                  盤面で組み替えた結果（担当・曜日の変更など）をカイポケの利用者別スケジュールへ
+                  反映できます。まず「送信差分を計算」を押してください。
+                </p>
+              ) : null}
+              {outSheetId != null ? (
+                (() => {
+                  const pendingOut = outItems.filter((it) => !sentItemIds.has(it.id));
+                  return pendingOut.length === 0 ? (
+                    <p className="text-[11px] text-text-muted" data-testid="reconcile-outbound-empty">
+                      ✅ カイポケへ送るべき差分はありません
+                    </p>
+                  ) : (
+                    <>
+                      <div className="mb-1">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={pendingSendKey === '__all_out__' ? 'default' : 'outline'}
+                          className="h-6 px-2 text-[11px]"
+                          disabled={!canEdit || busyKey !== null || rpaRunning}
+                          onClick={() => handleSendClick(null, '__all_out__')}
+                          data-testid="reconcile-send-all-outbound"
+                        >
+                          {busyKey === '__all_out__' ? (
+                            <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />
+                          ) : null}
+                          {pendingSendKey === '__all_out__'
+                            ? `本当に送信しますか？（${pendingOut.length}件・もう一度押すと実行）`
+                            : `⇧ 全件送信（${pendingOut.length}件）`}
+                        </Button>
+                      </div>
+                      <ul className="space-y-1" data-testid="reconcile-outbound-list">
+                        {pendingOut.map((it) => (
+                          <li
+                            key={it.id}
+                            className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded border border-border-subtle px-2 py-1 text-[11px]"
+                            data-testid={`reconcile-outbound-${it.id}`}
+                          >
+                            <span className="font-medium">
+                              🔵 {ITEM_ACTION_JA[it.action] ?? it.action}
+                            </span>
+                            <span className="font-bold">
+                              {itemField(it, 'user_name') || '（患者不明）'}
+                            </span>
+                            <span>
+                              {(() => {
+                                const d = itemDateIso(it, weekStartIso);
+                                return d ? fmtMd(d) : `${itemField(it, 'date')}日`;
+                              })()}
+                            </span>
+                            <span className="tnum">{itemField(it, 'start_time')}</span>
+                            <span className="min-w-0 flex-1 truncate text-text-muted">
+                              {itemField(it, 'staff1')}
+                            </span>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant={pendingSendKey === it.id ? 'default' : 'outline'}
+                              className="h-6 px-2 text-[11px]"
+                              disabled={!canEdit || busyKey !== null || rpaRunning}
+                              onClick={() => handleSendClick([it.id], it.id)}
+                              data-testid={`reconcile-send-outbound-${it.id}`}
+                            >
+                              {busyKey === it.id ? (
+                                <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />
+                              ) : null}
+                              {pendingSendKey === it.id ? '本当に送信？' : '⇧ 送信'}
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="mt-1 text-[10px] text-text-muted">
+                        送信はカイポケの利用者別スケジュールを直接変更します（1件あたり約30〜60秒・
+                        単一スロットのため送信中は取込できません）。
+                      </p>
+                    </>
+                  );
+                })()
+              ) : null}
+            </div>
           </>
         ) : null}
       </div>
