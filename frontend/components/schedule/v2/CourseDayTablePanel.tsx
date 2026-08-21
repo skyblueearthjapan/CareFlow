@@ -168,6 +168,10 @@ import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview
 import { StaffWeekBoard } from './StaffWeekBoard';
 import { type BoardDragState } from './courseDnd';
 import {
+  KaipokeReconcilePanel,
+  type ReconcileMarkersByCell,
+} from './KaipokeReconcilePanel';
+import {
   parseTlColDroppableId,
   parseTlPairDraggableId,
   parseTlVisitDraggableId,
@@ -2853,6 +2857,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   // ドラッグ中 payload (盤面のドロップ可能セルのハイライト用・コース/訪問共通)。
   const [courseDrag, setCourseDrag] = useState<BoardDragState | null>(null);
 
+  // カイポケ突合ビュー (C1・weekly-space-design.md §7-3)。
+  const [reconcileOpen, setReconcileOpen] = useState(false);
+  const [reconcileMarkers, setReconcileMarkers] = useState<ReconcileMarkersByCell | null>(null);
+
   // 当該週の全スタッフ休み/時間変更 (admin のみ取得可・セル網掛け + 貼り付け警告)。
   const weekOverridesQuery = useWeekStaffOverrides(isoYear, isoWeek, canEdit);
   const offByStaffWeekday = useMemo(() => {
@@ -3895,6 +3903,17 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   >
                     ⇧ カイポケ送信
                   </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={reconcileOpen ? 'default' : 'outline'}
+                    disabled={!canEdit}
+                    onClick={() => setReconcileOpen((v) => !v)}
+                    data-testid="staff-tab-reconcile"
+                    title="カイポケの当週データと突き合わせ、差分を盤面と一覧に表示します（差分1件ずつ取込可）"
+                  >
+                    🔄 突合
+                  </Button>
                 </div>
               ) : (
                 /* T-3: 「週」タブ時は タイムライン / リスト の切替を出す (縦スペース不消費). */
@@ -4144,7 +4163,18 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   alwaysShowUnassignedRow
                   onCourseUnassignDrop={canEdit ? handleCourseUnassignDrop : undefined}
                   onVisitUnassignDrop={canEdit ? handleVisitUnassignDrop : undefined}
+                  reconcileMarkersByCell={reconcileOpen ? reconcileMarkers : null}
                 />
+                {/* カイポケ突合ビュー (C1): 差分4態の一覧 + 差分単位の⇩取込。 */}
+                {reconcileOpen ? (
+                  <KaipokeReconcilePanel
+                    weekStartIso={format(weekStart, 'yyyy-MM-dd')}
+                    canEdit={canEdit}
+                    staffMap={staffMap}
+                    onClose={() => setReconcileOpen(false)}
+                    onEventMarkersChange={setReconcileMarkers}
+                  />
+                ) : null}
                 <p className="text-[11px] text-text-muted">
                   コース帯（⠿）や訪問の行はドラッグでスタッフ間・曜日間を移動できます（今週のみ・毎週の型には影響しません。曜日を跨ぐと時刻は同じまま曜日ごと移動）。
                   担当を外すときはコース帯の「×」か「（担当なし）」行へドラッグ。ツールバーの「戻る」で取り消せます。

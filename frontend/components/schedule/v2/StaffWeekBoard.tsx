@@ -38,6 +38,7 @@ import {
   VISIT_DND_MIME,
   type BoardDragState,
 } from './courseDnd';
+import type { ReconcileMarkersByCell } from './KaipokeReconcilePanel';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 
@@ -93,6 +94,12 @@ export interface StaffWeekBoardProps {
   onCourseUnassignDrop?: (courseId: string, fromStaffId?: string) => void;
   /** 「（担当なし）」行への訪問ドロップ = その 1 件だけ担当解除。 */
   onVisitUnassignDrop?: (visitId: string) => void;
+  /**
+   * カイポケ突合 (C1・weekly-space-design.md §7-3) のゴーストマーカー。
+   * `${staffId}:${weekday}` で引く。🟣add=カイポケのみ / 🟡update=変更 /
+   * 🔵delete=らく助のみ。KaipokeReconcilePanel が供給する。
+   */
+  reconcileMarkersByCell?: ReconcileMarkersByCell | null;
 }
 
 const UNASSIGNED_KEY = '__unassigned__';
@@ -131,6 +138,7 @@ export function StaffWeekBoard({
   alwaysShowUnassignedRow = false,
   onCourseUnassignDrop,
   onVisitUnassignDrop,
+  reconcileMarkersByCell,
 }: StaffWeekBoardProps) {
   // ドラッグ中に実際に重なっているセル (`${rowKey}:${wd}`)。候補セルの
   // 淡い破線に対し、重なり中のセルだけ強く光らせる (PO指摘 2026-08-21)。
@@ -394,6 +402,39 @@ export function StaffWeekBoard({
                               : ''}
                           </div>
                         ) : null}
+                        {/* カイポケ突合 (C1): 差分ゴースト (🟣カイポケのみ/🟡変更/🔵らく助のみ)。
+                            破線チップ = 実データではなく「カイポケ側との差」の可視化。 */}
+                        {rowKey !== UNASSIGNED_KEY &&
+                          (reconcileMarkersByCell?.get(`${rowKey}:${wd}`) ?? []).map((mk) => {
+                            const styles =
+                              mk.action === 'add'
+                                ? 'border-violet-400 bg-violet-50 text-violet-800'
+                                : mk.action === 'update'
+                                  ? 'border-amber-400 bg-amber-50 text-amber-800'
+                                  : 'border-sky-400 bg-sky-50 text-sky-800';
+                            const label =
+                              mk.action === 'add'
+                                ? `🟣 ${hhmm(mk.start)}〜${hhmm(mk.end)} ${mk.title}`
+                                : mk.action === 'update'
+                                  ? `🟡 ${mk.beforeStart ?? ''}→${hhmm(mk.start)}〜${hhmm(mk.end)} ${mk.title}`
+                                  : `🔵 ${hhmm(mk.start)}〜${hhmm(mk.end)} ${mk.title}`;
+                            return (
+                              <div
+                                key={`rc-${mk.externalId}`}
+                                className={`rounded border border-dashed px-1.5 py-0.5 text-[10px] font-medium ${styles}`}
+                                title={
+                                  mk.action === 'add'
+                                    ? 'カイポケにだけ存在します（突合パネルから取込できます）'
+                                    : mk.action === 'update'
+                                      ? 'カイポケ側と内容が違います（突合パネルから取込できます）'
+                                      : 'らく助にだけ存在します（カイポケ側にありません）'
+                                }
+                                data-testid={`reconcile-ghost-${mk.externalId}`}
+                              >
+                                {label}
+                              </div>
+                            );
+                          })}
                         {/* イベント (緑・カイポケの個別業務と同じ立ち位置)。📝 = ゼロ長メモ。
                             onEventClick があれば「正典」としてクリック編集可能 (§昇格)。 */}
                         {events.map((ev) => {
