@@ -244,7 +244,10 @@ export function KaipokeReconcilePanel({
     try {
       // include をこの 1 件だけに絞ってから適用する (apply-inbound は
       // include=true の項目 × days のみを反映する — integrations.py:1801)。
-      const otherIds = visitItems.filter((it) => it.id !== item.id).map((it) => it.id);
+      // 適用済み項目は再度 include を触らない (レビュー指摘: 無駄なAPI往復の削減)。
+      const otherIds = visitItems
+        .filter((it) => it.id !== item.id && !appliedItemIds.has(it.id))
+        .map((it) => it.id);
       if (otherIds.length > 0) {
         await bulkItemsMut.mutateAsync({ sheetId, ids: otherIds, patch: { include: false } });
       }

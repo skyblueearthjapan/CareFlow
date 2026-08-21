@@ -617,6 +617,24 @@ async def _move_course_weekday(
     )
     if course is None:
         raise OpLogConflictError("他の変更があったため戻せません (対象のコースが見つかりません)")
+    # 移動先の同 code コース衝突 (endpoint と同じガード — レビュー指摘 2026-08-21:
+    # 無検査だと DB partial UNIQUE が IntegrityError=500 になる。409 の丁寧な文言へ)。
+    dup = await db.scalar(
+        select(Course.id).where(
+            Course.iso_year == course.iso_year,
+            Course.iso_week == course.iso_week,
+            Course.weekday == to_weekday,
+            Course.code == course.code,
+            Course.office_id == course.office_id,
+            Course.course_status != "proposed",
+            Course.deleted_at.is_(None),
+            Course.id != course.id,
+        )
+    )
+    if dup is not None:
+        raise OpLogConflictError(
+            "他の変更があったため戻せません (戻り先の曜日に同じコースが既にあります)"
+        )
     to_date = date.fromisocalendar(iso_year, iso_week, to_weekday + 1)
     visits = list(
         (

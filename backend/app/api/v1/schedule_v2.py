@@ -1714,7 +1714,9 @@ async def visit_assign_staff_week(
 
     # Wave U-3: 操作ジャーナル (ベストエフォート・ツールバー「戻る」対応)。
     _iso = visit.visit_date.isocalendar()
-    _patient_name = await db.scalar(select(Patient.name).where(Patient.id == visit.patient_id))
+    _patient_name = await db.scalar(
+        select(Patient.name).where(Patient.id == visit.patient_id, Patient.deleted_at.is_(None))
+    )
     _staff_label = (staff.name if staff is not None else None) or "未割当"
     await record_op(
         db,
