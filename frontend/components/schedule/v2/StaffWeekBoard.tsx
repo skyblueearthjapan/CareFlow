@@ -44,6 +44,7 @@ import {
   type CockpitMarkersByCell,
 } from './cockpit/reconcileMarkers';
 import type { TimelineVisit } from './cockpit/StaffTimelineView';
+import { SyncedHScroll } from '@/components/ui/synced-h-scroll';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 
@@ -296,7 +297,7 @@ export function StaffWeekBoard({
   }
 
   return (
-    <div className="overflow-x-auto" data-testid="staff-week-board">
+    <SyncedHScroll data-testid="staff-week-board">
       <table className="min-w-full border-collapse text-xs">
         <thead>
           <tr className="border-b border-border-default bg-bg-muted">
@@ -923,6 +924,6 @@ export function StaffWeekBoard({
           })}
         </tbody>
       </table>
-    </div>
+    </SyncedHScroll>
   );
 }

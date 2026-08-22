@@ -42,6 +42,7 @@ import {
 
 import type { WeekOverviewVisit } from '../CourseWeekOverview';
 import { UNASSIGNED_ROW_KEY } from '../courseDnd';
+import { SyncedHScroll } from '@/components/ui/synced-h-scroll';
 
 // ─────────────────────────────────────────────────────────────────────────
 // 型
@@ -694,7 +695,7 @@ export function StaffTimelineView({
         </span>
       </div>
 
-      <div className="overflow-x-auto">
+      <SyncedHScroll>
         <div className="relative" style={{ minWidth: 900 }} ref={tblRef}>
           {/* 時刻ヘッダ */}
           <div
@@ -868,7 +869,7 @@ export function StaffTimelineView({
             ))}
           </svg>
         </div>
-      </div>
+      </SyncedHScroll>
     </section>
   );
 }
