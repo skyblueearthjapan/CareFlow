@@ -175,11 +175,13 @@ const TOTAL_MIN = TL_COCKPIT_END_MIN - TL_COCKPIT_START_MIN;
 const HOUR_COUNT = Math.round(TOTAL_MIN / 60);
 
 /** 氏名列の幅 (px)。モックの 112px を日本語フル氏名向けに少し広げる。 */
-const NAME_COL_PX = 128;
+const NAME_COL_PX = 160;
 /** バー高さ / レーン送り (px)。 */
-const BAR_H = 30;
-const LANE_STEP = 34;
-const LANE_PAD = 7;
+const BAR_H = 48;
+const LANE_STEP = 54;
+const LANE_PAD = 8;
+/** 時間軸の最小幅 (px)。PO 要望 2026-08-22: 患者氏名が読める大きさ (1時間 ≒ 130px)。 */
+const MIN_TRACK_PX = 1600;
 /** 15分スナップ。 */
 const SNAP_MIN = 15;
 /** これ以下の移動はクリック扱い (モック bindTlDrag と同値)。 */
@@ -696,7 +698,7 @@ export function StaffTimelineView({
       </div>
 
       <SyncedHScroll>
-        <div className="relative" style={{ minWidth: 900 }} ref={tblRef}>
+        <div className="relative" style={{ minWidth: MIN_TRACK_PX }} ref={tblRef}>
           {/* 時刻ヘッダ */}
           <div
             className="grid border-b"
@@ -709,7 +711,7 @@ export function StaffTimelineView({
             {Array.from({ length: HOUR_COUNT }, (_, i) => (
               <div
                 key={i}
-                className="border-r px-1 py-0.5 text-[10.5px] tabular-nums"
+                className="border-r px-1.5 py-1 text-xs tabular-nums"
                 style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}
               >
                 {TL_COCKPIT_START_MIN / 60 + i}:00
@@ -729,12 +731,12 @@ export function StaffTimelineView({
               data-testid="tl-lane-fixed"
             >
               <div
-                className="border-r px-1.5 py-1 text-xs font-bold"
+                className="border-r px-2 py-1.5 text-sm font-bold"
                 style={{ borderColor: 'var(--border-default)', color: 'var(--text-secondary)' }}
               >
                 全員（固定）
               </div>
-              <div className="relative" style={{ ...trackBg, minHeight: 32 }}>
+              <div className="relative" style={{ ...trackBg, minHeight: 40 }}>
                 {fixedAllDay.map((f, i) => {
                   const s = parseHM(f.start);
                   const e = parseHM(f.end);
@@ -743,7 +745,7 @@ export function StaffTimelineView({
                   return (
                     <div
                       key={`${f.start}-${f.title}-${i}`}
-                      className="absolute overflow-hidden truncate rounded px-1.5 py-0.5 text-[11px] leading-tight"
+                      className="absolute overflow-hidden truncate rounded px-2 py-1 text-[12px] leading-tight"
                       style={{
                         left: `${leftPct(s)}%`,
                         width: `${widthPct(end - s)}%`,
@@ -778,12 +780,12 @@ export function StaffTimelineView({
                 data-testid={`tl-lane-${row.staffId}`}
               >
                 <div
-                  className="border-r px-1.5 py-1 text-xs font-bold"
+                  className="border-r px-2 py-1.5 text-sm font-bold"
                   style={{ borderColor: 'var(--border-default)', color: 'var(--text-primary)' }}
                 >
                   {row.name}
                   <small
-                    className="block text-[10.5px] font-normal"
+                    className="block text-xs font-normal"
                     style={{ color: 'var(--text-muted)' }}
                   >
                     {row.off ? offLabel(row.off) : (row.office ?? '')}
@@ -969,7 +971,7 @@ const Bar = React.memo(function Bar({
       onPointerCancel={onPointerCancel}
       onClick={(e) => onClick(e, item, rowKey)}
       className={[
-        'absolute overflow-hidden rounded text-left text-[11px] leading-tight',
+        'absolute overflow-hidden rounded text-left text-[13px] leading-tight',
         'motion-safe:transition-shadow',
         movable ? 'cursor-grab' : 'cursor-not-allowed',
         drag?.moved ? 'z-10 opacity-75 shadow-lg' : '',
@@ -981,7 +983,7 @@ const Bar = React.memo(function Bar({
         width: `${widthPct(durationMin)}%`,
         top,
         height: BAR_H,
-        padding: '3px 6px',
+        padding: '5px 8px',
         background: palette.bg,
         borderLeft: `3px solid ${palette.bar}`,
         color: palette.ink,
@@ -990,7 +992,7 @@ const Bar = React.memo(function Bar({
         touchAction: 'none',
       }}
     >
-      <b className="block truncate text-[10px] font-medium tabular-nums opacity-70">
+      <b className="block truncate text-[11px] font-medium tabular-nums opacity-70">
         {timeLabel} {sub}
       </b>
       <span className="block truncate">
@@ -1038,7 +1040,7 @@ function Ghost({
       data-testid={`tl-marker-${isDelete ? 'delete' : side}`}
       data-marker-id={marker.externalId}
       className={[
-        'absolute overflow-hidden truncate rounded px-1.5 text-[11px] leading-[26px]',
+        'absolute overflow-hidden truncate rounded px-2 text-[13px] leading-[44px]',
         !before && !isDelete ? 'motion-safe:animate-pulse' : '',
       ]
         .filter(Boolean)
