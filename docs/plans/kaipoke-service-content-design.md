@@ -46,7 +46,11 @@ def resolve_service_content(patient, primary_staff) -> str:
 | 基本療養費Ⅰ・正看 | **一般の訪問看護 option**(文言未確認) | 「看護師等」 |
 | 基本療養費Ⅰ・准看 | 同上 | 准看護師 |
 
-- **Phase 0(必須)**: headed dry-run(本番登録なし)で `#inPopupEstimate1/2/3` の option 文言を採取しログ保存。採取後に上表の文言を確定。
+- **Phase 0 完了(2026-08-23・RPA `4c5303c`)**: `commands/probe_service_options.py` で採取。value は安定コード:
+  サービス区分 `01`=訪問看護 / `02`=精神科訪問看護、基本療養費 `01`=基本療養費Ⅰ(一般)・`01`=精神科基本療養費Ⅰ(精神科)、
+  職員資格 `01`=看護師等 / `03`=准看護師(`02` は一般=理学療法士等・精神科=作業療法士)。実装は **value 指定**(`resolve_medical_selects` / `_select_value_and_wait`)。
+  `commands/dryrun_service_branch.py` で4パターンの選択結果を実画面で確認済み(登録なし)。
+- **残り**: 本番での 1 件テスト(未来日の准看 add 1 件 → カイポケ目視)→ OK なら `KAIPOKE_RPA_SERVICE_BRANCH_ENABLED=True` で送信ガード解除。
 - 登録後検証: 保存後の一覧行のサービス内容が `service_type` と一致するか確認し、不一致は failed(削除検証と同じ作法)。
 
 ### 3-1. edit ではサービス内容を修正できない(= 届くのは add だけ)
