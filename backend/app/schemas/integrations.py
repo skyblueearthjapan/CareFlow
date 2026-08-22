@@ -709,13 +709,19 @@ class UnsentSnapshotRead(BaseModel):
 
 
 class UnsentItemRead(CorrectionItemRead):
-    """CorrectionItemRead + 実日付。
+    """CorrectionItemRead + 実日付 + RPA 未対応フラグ。
 
     CSV の日付列は「日」(1-31) しか持たないため、盤面と突き合わせるには週から
     実日付を解決する必要がある (BE/FE で過去日判定を一致させるための共有値)。
+
+    ``rpa_unsupported`` は「らく助では作れるが RPA がカイポケへ正しく登録
+    できない行」の印 (S3 完了まで・kaipoke-service-content-design.md §3)。
+    **判定は BE だけが持つ** — FE がサービス内容の文字列を自前で判定すると、
+    S3 で門を開けたときに片方だけ古いルールのまま残る。
     """
 
     date_iso: date | None = None
+    rpa_unsupported: bool = False
 
 
 class UnsentEventRead(BaseModel):
@@ -744,6 +750,11 @@ class UnsentSummaryRead(BaseModel):
     # JST 当日基準。past = 当日以前 (実績保護のため送信対象外) / sendable = 明日以降。
     sendable_count: int = 0
     past_count: int = 0
+    # RPA 未対応 (准看/一般) で送れない件数 (S3 完了まで・§3)。
+    # **過去日と二重に数えない**: 「過去日ではないのに RPA の都合で送れない」件数
+    # だけを数える。これで sendable = 全体 - past - rpa_unsupported が常に成立し、
+    # FE が引き算で負数を出さない。
+    rpa_unsupported_count: int = 0
     # 未送信を算出できなかった/信用できない理由 (FE がバーに出す)。
     warnings: list[str] = Field(default_factory=list)
 

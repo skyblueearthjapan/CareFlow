@@ -80,6 +80,16 @@ export const INSURANCE_V2_VALUES = ['medical', 'care'] as const;
 export const insuranceV2Enum = z.enum(INSURANCE_V2_VALUES);
 export type InsuranceV2 = z.infer<typeof insuranceV2Enum>;
 
+/**
+ * 訪問看護区分 (kaipoke-service-content-design.md §1-1):
+ *   psychiatric = 精神科 (既定・カイポケ「精神科訪問看護」/ 精神基本療養費Ⅰ)
+ *   general     = 一般   (カイポケ「訪問看護」/ 基本療養費Ⅰ)
+ * 保険区分 (医療/介護) とは別軸。カイポケ「サービス内容」のベースを決める。
+ */
+export const VISIT_CATEGORY_V2_VALUES = ['psychiatric', 'general'] as const;
+export const visitCategoryV2Enum = z.enum(VISIT_CATEGORY_V2_VALUES);
+export type VisitCategoryV2 = z.infer<typeof visitCategoryV2Enum>;
+
 // ─────────────────────────────────────────────────────────────────────────
 // HH:MM validator
 // ─────────────────────────────────────────────────────────────────────────
@@ -162,6 +172,13 @@ export const patientV2BaseSchema = z.object({
 
   // 保険・拠点
   insurance: insuranceV2Enum.nullable().optional(),
+  /** 訪問看護区分 (精神科/一般). サービス内容のベースを決める (既定 精神科) */
+  visit_category: visitCategoryV2Enum.default('psychiatric'),
+  /**
+   * カイポケ「サービス内容」列の**上書き**値。非 NULL なら
+   * visit_category × 職員1資格の分岐を無視してこの文字列を出力する (例外運用)。
+   */
+  kaipoke_service_content: z.string().max(64).nullable().optional(),
   primary_office_id: z.string().uuid().nullable().optional(),
 
   // 訪問条件 (ハード制約)
@@ -204,6 +221,8 @@ export const patientV2UpdateSchema = z.object({
   lat: z.number().min(-90).max(90).nullable().optional(),
   lng: z.number().min(-180).max(180).nullable().optional(),
   insurance: insuranceV2Enum.nullable().optional(),
+  visit_category: visitCategoryV2Enum.optional(),
+  kaipoke_service_content: z.string().max(64).nullable().optional(),
   primary_office_id: z.string().uuid().nullable().optional(),
   sex_restriction: sexRestrictionV2Enum.nullable().optional(),
   weekly_pattern: weeklyPatternV2Schema.nullable().optional(),

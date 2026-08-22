@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import csv
 import io
+import uuid
 from datetime import date, time
 
+import pytest
+
+from app.models.office import Office
+from app.models.patient import Patient
+from app.models.staff import Staff
+from app.models.visit import Visit
 from app.services.diff.engine import _parse_kaipoke_rows
 from app.services.kaipoke.csv_builder import (
     HEADER,
@@ -14,8 +21,13 @@ from app.services.kaipoke.csv_builder import (
     StaffCell,
     build_csv,
     business_type_from_insurance,
+    resolve_month_rows,
+    resolve_service_content,
     row_to_cells,
 )
+
+# DB 経由テストの対象日 (2026-07-07 火)。BuildOptions(year=2026, month=7) と対応。
+TUE = date(2026, 7, 7)
 
 
 def _single_row() -> KaipokeCsvRow:
@@ -101,5 +113,206 @@ def test_generated_csv_parses_back_via_diff_engine() -> None:
 
 def test_build_options_defaults() -> None:
     opts = BuildOptions(year=2026, month=7)
+    # 後方互換のため残っているだけのフィールド (行生成には効かない)。
     assert opts.default_service_content == "精神基本療養費Ⅰ・正看"
     assert opts.mentor_as_companion is True
+
+
+# ---------------------------------------------------------------------------
+# S2: resolve_service_content — 患者の訪問看護区分 × 職員1の資格
+# (設計 docs/plans/kaipoke-service-content-design.md §2)
+# ---------------------------------------------------------------------------
+
+
+def _patient(visit_category: str = "psychiatric", override: str | None = None) -> Patient:
+    return Patient(
+        code="P-SC-1",
+        name="サービス内容 太郎",
+        visit_category=visit_category,
+        kaipoke_service_content=override,
+    )
+
+
+def _staff(qualification: str | None) -> Staff:
+    return Staff(name="テスト 職員", qualification=qualification)
+
+
+def test_resolve_service_content_four_quadrants() -> None:
+    """4 象限: 精神科/一般 × 正看/准看。"""
+    assert (
+        resolve_service_content(_patient("psychiatric"), _staff("看護師"))
+        == "精神基本療養費Ⅰ・正看"
+    )
+    assert (
+        resolve_service_content(_patient("psychiatric"), _staff("准看護師"))
+        == "精神基本療養費Ⅰ・准看"
+    )
+    assert resolve_service_content(_patient("general"), _staff("看護師")) == "基本療養費Ⅰ・正看"
+    assert resolve_service_content(_patient("general"), _staff("准看護師")) == "基本療養費Ⅰ・准看"
+
+
+def test_resolve_service_content_override_wins() -> None:
+    """患者上書きがあれば分岐を完全に無視する (例外運用)。"""
+    patient = _patient("general", override="精神基本療養費Ⅲ・准看")
+    assert resolve_service_content(patient, _staff("看護師")) == "精神基本療養費Ⅲ・准看"
+    assert resolve_service_content(patient, None) == "精神基本療養費Ⅲ・准看"
+
+
+def test_resolve_service_content_unassigned_is_nurse_grade() -> None:
+    """職員1 未割当 ('-' 行) は患者ベース + 正看。"""
+    assert resolve_service_content(_patient("psychiatric"), None) == "精神基本療養費Ⅰ・正看"
+    assert resolve_service_content(_patient("general"), None) == "基本療養費Ⅰ・正看"
+
+
+def test_resolve_service_content_non_nurse_qualifications_are_nurse_grade() -> None:
+    """准看護師以外 (PT/OT/ST・未設定) は「正看」に寄せる (§1-2 今回は対象外)。"""
+    for qualification in ("理学療法士", "作業療法士", "言語聴覚士", None):
+        assert (
+            resolve_service_content(_patient("psychiatric"), _staff(qualification))
+            == "精神基本療養費Ⅰ・正看"
+        )
+
+
+def test_resolve_service_content_defaults_to_psychiatric() -> None:
+    """visit_category 未設定 (旧データ) は精神科扱い (既定)。"""
+    patient = Patient(code="P-SC-2", name="旧データ")
+    assert resolve_service_content(patient, _staff("看護師")) == "精神基本療養費Ⅰ・正看"
+
+
+# ---------------------------------------------------------------------------
+# S2: CSV 行生成への結線 (DB 経由) — 職員1 基準であることを実データ経路で固定する
+# ---------------------------------------------------------------------------
+
+
+async def _seed_office(db, name: str = "稲毛") -> Office:
+    o = Office(name=name)
+    db.add(o)
+    await db.flush()
+    return o
+
+
+async def _seed_staff(db, name: str, office: Office, *, qualification: str = "看護師") -> Staff:
+    s = Staff(
+        name=name,
+        role="staff",
+        primary_office_id=office.id,
+        qualification=qualification,
+    )
+    db.add(s)
+    await db.flush()
+    return s
+
+
+async def _seed_patient(
+    db, name: str, office: Office, *, visit_category: str = "psychiatric"
+) -> Patient:
+    p = Patient(
+        code=f"P-{uuid.uuid4().hex[:8]}",
+        name=name,
+        status="active",
+        insurance="medical",
+        primary_office_id=office.id,
+        visit_category=visit_category,
+    )
+    db.add(p)
+    await db.flush()
+    return p
+
+
+async def _seed_visit(
+    db,
+    patient: Patient,
+    primary: Staff,
+    *,
+    start: time = time(10, 0),
+    end: time = time(10, 35),
+    secondary_staff_id=None,
+) -> Visit:
+    v = Visit(
+        patient_id=patient.id,
+        visit_date=TUE,
+        start_time=start,
+        end_time=end,
+        type="regular",
+        status="planned",
+        source="auto",
+        required_staff_count=2 if secondary_staff_id is not None else 1,
+        primary_staff_id=primary.id,
+        secondary_staff_id=secondary_staff_id,
+    )
+    db.add(v)
+    await db.flush()
+    return v
+
+
+@pytest.mark.asyncio
+async def test_row_service_content_uses_primary_staff_qualification(db) -> None:
+    """職員1 が准看なら「准看」・患者区分が一般なら基本療養費Ⅰ。"""
+    office = await _seed_office(db)
+    nurse = await _seed_staff(db, "看護太郎", office)
+    assistant = await _seed_staff(db, "准看花子", office, qualification="准看護師")
+    psychiatric = await _seed_patient(db, "精神様", office)
+    general = await _seed_patient(db, "一般様", office, visit_category="general")
+    await _seed_visit(db, psychiatric, assistant, start=time(9, 0), end=time(9, 35))
+    await _seed_visit(db, general, nurse, start=time(11, 0), end=time(11, 35))
+    await db.commit()
+
+    rows = await resolve_month_rows(db, BuildOptions(year=2026, month=7))
+    by_patient = {r.patient_name: r.service_content for r in rows}
+    assert by_patient["精神様"] == "精神基本療養費Ⅰ・准看"
+    assert by_patient["一般様"] == "基本療養費Ⅰ・正看"
+
+
+@pytest.mark.asyncio
+async def test_row_service_content_ignores_companion_qualification(db) -> None:
+    """同行 (職員2) が准看でも職員1 基準 = 正看のまま (カイポケの実態どおり)。"""
+    office = await _seed_office(db)
+    nurse = await _seed_staff(db, "看護太郎", office)
+    assistant = await _seed_staff(db, "准看花子", office, qualification="准看護師")
+    patient = await _seed_patient(db, "山田様", office)
+    await _seed_visit(db, patient, nurse, secondary_staff_id=assistant.id)
+    await db.commit()
+
+    rows = await resolve_month_rows(db, BuildOptions(year=2026, month=7))
+    assert len(rows) == 1
+    assert rows[0].secondary is not None and rows[0].secondary.name == "准看花子"
+    assert rows[0].service_content == "精神基本療養費Ⅰ・正看"
+
+
+@pytest.mark.asyncio
+async def test_row_service_content_unassigned_primary(db) -> None:
+    """職員1 未割当 ('-' 行) は患者ベース + 正看 (include_unassigned 経路)。"""
+    office = await _seed_office(db)
+    patient = await _seed_patient(db, "未割当様", office, visit_category="general")
+    db.add(
+        Visit(
+            patient_id=patient.id,
+            visit_date=TUE,
+            start_time=time(10, 0),
+            end_time=time(10, 35),
+            type="regular",
+            status="planned",
+            source="auto",
+            required_staff_count=1,
+        )
+    )
+    await db.commit()
+
+    rows = await resolve_month_rows(db, BuildOptions(year=2026, month=7, include_unassigned=True))
+    assert len(rows) == 1
+    assert rows[0].primary.name == "-"
+    assert rows[0].service_content == "基本療養費Ⅰ・正看"
+
+
+@pytest.mark.asyncio
+async def test_row_service_content_override_wins(db) -> None:
+    """患者上書きがあれば職員1 の資格を無視してそのまま出力する。"""
+    office = await _seed_office(db)
+    assistant = await _seed_staff(db, "准看花子", office, qualification="准看護師")
+    patient = await _seed_patient(db, "例外様", office)
+    patient.kaipoke_service_content = "精神基本療養費Ⅲ・正看"
+    await _seed_visit(db, patient, assistant)
+    await db.commit()
+
+    rows = await resolve_month_rows(db, BuildOptions(year=2026, month=7))
+    assert rows[0].service_content == "精神基本療養費Ⅲ・正看"

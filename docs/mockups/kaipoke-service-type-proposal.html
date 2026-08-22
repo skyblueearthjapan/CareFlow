@@ -31,15 +31,19 @@
   .ask li { margin:8px 0; }
   .ask li b { display:block; }
   .note { color:var(--ink2); font-size:13px; margin-top:6px; }
-  @page { size: A4 portrait; margin: 14mm 14mm 16mm; }
+  @page { size: A4 portrait; margin: 9mm 10mm 9mm; }
   @media print {
     html, body { background:#fff !important; color:#111 !important; height:auto !important; overflow:visible !important; }
     main { max-width:none; margin:0; padding:0; }
-    section { break-inside: avoid; page-break-inside: avoid; box-shadow:none; margin-bottom:10px; padding:12px 14px; }
-    h1 { font-size:18px; } h2 { font-size:14px; } body { font-size:12.5px; line-height:1.55; }
-    table { font-size:12px; } th, td { padding:4px 8px; }
-    .box { font-size:12px; }
-    .ask { break-before: auto; }
+    body { font-size:11px; line-height:1.4; }
+    h1 { font-size:15px; margin-bottom:0; } .sub { font-size:10px; margin-bottom:6px; }
+    h2 { font-size:12px; margin-bottom:4px; } h3 { font-size:11px; margin:5px 0 1px; }
+    section { break-inside: avoid; page-break-inside: avoid; box-shadow:none; margin-bottom:5px; padding:6px 9px; border-radius:6px; }
+    table { font-size:10.5px; margin-top:3px; } th, td { padding:2px 6px; }
+    .rule { padding:4px 8px; margin:3px 0; font-size:11px; }
+    .flow { gap:4px; margin-top:3px; } .box { font-size:10px; padding:2px 7px; }
+    .note { font-size:10px; margin-top:2px; }
+    ul { margin-top:1px; } li { margin:1px 0; } .ask li { margin:3px 0; }
     a[href]::after { content:""; }
   }
 </style>

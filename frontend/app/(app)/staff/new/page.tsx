@@ -43,6 +43,7 @@ const EMPTY_FORM: StaffFormState = {
   role: 'staff',
   primary_office_id: '',
   is_trainee: false,
+  qualification: '',
   note: '',
 };
 
@@ -56,6 +57,7 @@ function toPayload(form: StaffFormState): StaffCreate {
     role: form.role,
     primary_office_id: form.primary_office_id.trim() || null,
     is_trainee: form.is_trainee,
+    qualification: form.qualification === '' ? null : form.qualification,
     note: form.note.trim() || null,
   };
 }

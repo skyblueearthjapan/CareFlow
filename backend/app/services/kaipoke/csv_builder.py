@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.models.office import Office
+    from app.models.patient import Patient
     from app.models.staff import Staff
 
 # カイポケ18列ヘッダー (実 export と同一表記)。
@@ -59,11 +60,66 @@ _WEEKDAY_JA = ["月", "火", "水", "木", "金", "土", "日"]  # date.weekday(
 # patient.insurance → カイポケ「業務種別」。
 _INSURANCE_TO_BUSINESS = {"medical": "医療保険", "care": "介護保険"}
 
-# サービス内容が未設定 (patient.kaipoke_service_content=NULL かつ事業所既定も無い) 時の
-# 最終フォールバック。事業所「よりより」= 精神科訪問看護の実データ既定値。
+# DEPRECATED (S2 / 2026-08-23): サービス内容の最終フォールバック。
+# 事業所「よりより」= 精神科訪問看護 × 正看 の実データ既定値だったが、
+# ``resolve_service_content`` が patient.visit_category × 職員1の資格から
+# **必ず**値を作るようになったため、CSV 行生成からは到達しない。
+# 削除しないのは外部からの import (scripts/backfill_kaipoke_fields.py 等) と
+# ``BuildOptions.default_service_content`` の既定値のため。
+# **新しいコードから参照しないこと** — 参照すると「どちらが正か」が二重になる。
 DEFAULT_SERVICE_CONTENT = "精神基本療養費Ⅰ・正看"
 
+# サービス内容のベース (kaipoke-service-content-design.md §2)。
+# patient.visit_category: 'general' = 一般の訪問看護 / それ以外 = 精神科訪問看護 (既定)。
+_SERVICE_BASE_GENERAL = "基本療養費Ⅰ"
+_SERVICE_BASE_PSYCHIATRIC = "精神基本療養費Ⅰ"
+
+# 職員1の資格 → サービス内容の後半。准看護師だけが「准看」、
+# それ以外 (看護師 / PT・OT・ST / 未設定 / 未割当) は「正看」。
+_GRADE_ASSISTANT_NURSE = "准看"
+_GRADE_NURSE = "正看"
+_QUALIFICATION_ASSISTANT_NURSE = "准看護師"
+
 COMPANION_MARK = "○"
+
+
+def resolve_service_content(patient: Patient, primary_staff: Staff | None) -> str:
+    """カイポケ「サービス内容」を決定する (設計 §2 の唯一の正典)。
+
+    規則 = **患者の訪問看護区分 × 職員1の資格**::
+
+        患者上書き (kaipoke_service_content) があればそれをそのまま出力
+        base  = 'general' → 基本療養費Ⅰ / それ以外 → 精神基本療養費Ⅰ
+        grade = 職員1が准看護師 → 准看 / それ以外 → 正看
+        → f"{base}・{grade}"
+
+    優先順位は **患者上書き > 分岐** の 2 段だけ。``BuildOptions
+    .default_service_content`` (事業所既定) は **この関数では使わない**:
+    区分と資格が揃えば必ず値が決まるため、事業所既定を挟むと「どちらが正か」が
+    二重になり偽差分の温床になる。オプションは後方互換 (既存呼び出し) のために
+    残してあるだけで、CSV 行生成の経路には効かない。
+
+    Args:
+        patient: ``visit_category`` / ``kaipoke_service_content`` を持つ患者。
+        primary_staff: 職員1 (``visits.primary_staff_id``) のスタッフ。
+            未割当 ('-' 行) は ``None`` を渡す → 患者ベース + 正看。
+            同行 (職員2/3) は影響しない (カイポケの実態どおり)。
+    """
+    if patient.kaipoke_service_content:
+        return patient.kaipoke_service_content
+    # visit_category は NOT NULL DEFAULT 'psychiatric' (mig 0077)。ORM で新規生成
+    # しただけの未 flush インスタンスは None になり得るので、既定側 (精神科) に倒す
+    # ``!= "general"`` の形で判定する (None も精神科扱い = DB 既定と一致)。
+    base = (
+        _SERVICE_BASE_GENERAL if patient.visit_category == "general" else _SERVICE_BASE_PSYCHIATRIC
+    )
+    grade = (
+        _GRADE_ASSISTANT_NURSE
+        if primary_staff is not None
+        and primary_staff.qualification == _QUALIFICATION_ASSISTANT_NURSE
+        else _GRADE_NURSE
+    )
+    return f"{base}・{grade}"
 
 
 @dataclass
@@ -156,6 +212,11 @@ class BuildOptions:
     year: int
     month: int
     office_id: uuid.UUID | None = None  # None = 全拠点
+    # DEPRECATED (S2 / 2026-08-23) — **到達不能。読まれない**。
+    # サービス内容は ``resolve_service_content`` (患者上書き > 患者区分 × 職員1資格
+    # の分岐) で必ず決まるため、事業所既定は行生成に一切効かない。既存の呼び出し側
+    # (キーワード引数で渡している箇所) を壊さないためにフィールドだけ残す。
+    # 値を変えても出力は変わらないので、指定している箇所は順次落としてよい。
     default_service_content: str = DEFAULT_SERVICE_CONTENT
     # 同行判定: mentor(指導者=影) を同行○ とみなす。secondary(第2看護師) は既定で非同行。
     mentor_as_companion: bool = True
@@ -266,7 +327,6 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
             continue
         office = office_map.get(patient.primary_office_id)
         office_name = (office.kaipoke_name or office.name) if office else ""
-        service_content = patient.kaipoke_service_content or opts.default_service_content
 
         primary = _cell(v.primary_staff_id, companion=False)
         if primary is None:
@@ -276,6 +336,11 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
             # 差分計算用: カイポケの未割当表記 '-' で行として含める
             # (BuildOptions.include_unassigned の docstring 参照)。
             primary = StaffCell(name="-", qualification="")
+        # サービス内容 = 患者上書き > 患者区分 × **職員1** の資格 (設計 §2)。
+        # 未割当 ('-') は職員 None → 患者ベース + 正看。同行 (職員2/3) は無関係。
+        service_content = resolve_service_content(
+            patient, staff_map.get(v.primary_staff_id) if v.primary_staff_id else None
+        )
         secondary = _cell(v.secondary_staff_id, companion=False)
         # 同行者 (設計決定事項#4 / 一般化 決定#6): 新人同行も一般スタッフの同行も
         # 職員名2 へ「正規スタッフとして」載せる (kind で区別しない)。同行フラグ等の

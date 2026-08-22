@@ -46,6 +46,13 @@ export function todayIsoJst(): string {
 
 const KIND_DOT: Record<string, string> = { add: '🟣 新規', delete: '🔵 取消', update: '🟡 変更' };
 
+/**
+ * RPA 未対応の行に付ける注記 (S3 完了まで・kaipoke-service-content-design.md §3)。
+ * 准看/一般のサービス内容は RPA が固定値で登録してしまうため送らない。
+ * 判定そのものは BE (`rpa_unsupported`) が持ち、FE は表示だけ。
+ */
+const RPA_UNSUPPORTED_NOTE = '（RPAが准看/一般の登録に未対応=カイポケで直接登録）';
+
 export interface SyncBarProps {
   /** 対象週の月曜 (YYYY-MM-DD)。 */
   weekStartIso: string;
@@ -77,6 +84,11 @@ interface UnsentRow {
   marker: CockpitMarker | null;
   /** 盤面の予定と突き合わせるキー (● ドット用)。解決できないときは null。 */
   matchKey: string | null;
+  /**
+   * RPA がカイポケへ正しく登録できない行 (S3 完了まで・BE 判定)。
+   * true の間は選べない = 送信対象から外す。
+   */
+  rpaUnsupported: boolean;
 }
 
 export function SyncBar({
@@ -154,10 +166,12 @@ export function SyncBar({
         // らく助側 (after 優先) の日付/時刻/患者名で盤面の訪問と突き合わせる。
         matchKey: dateIso && startTime ? unsentVisitKey(dateIso, startTime, who) : null,
         marker: correctionItemToMarker(it, { weekStartIso, staffIdByName }),
+        rpaUnsupported: it.rpa_unsupported === true,
         label:
           `${KIND_DOT[it.action] ?? '🟡 変更'}｜${dateIso ? fmtMd(dateIso) : '日付不明'} 訪問｜` +
           `${who}｜${staff} ${itemField(it, 'start_time')}` +
-          `${dateIso != null && dateIso <= todayIso ? '（当日以前=送信対象外）' : ''}`,
+          `${dateIso != null && dateIso <= todayIso ? '（当日以前=送信対象外）' : ''}` +
+          `${it.rpa_unsupported === true ? RPA_UNSUPPORTED_NOTE : ''}`,
       });
     }
     for (const ev of summary.events) {
@@ -168,6 +182,8 @@ export function SyncBar({
         dateIso: ev.date,
         matchKey: unsentEventKey(ev.id),
         marker: unsentEventToMarker(ev),
+        // イベントはサービス内容を持たない = RPA 未対応ガードの対象外。
+        rpaUnsupported: false,
         label:
           `${KIND_DOT[ev.kind] ?? '🟡 変更'}｜${fmtMd(ev.date)} イベント｜${ev.title}｜` +
           `${ev.staff_name} ${ev.start_time}` +
@@ -177,12 +193,17 @@ export function SyncBar({
     return rows;
   }, [summary, sentIds, weekStartIso, staffIdByName, todayIso]);
 
-  /** BE の sendable 判定と同じ式 (date 不明は送信可・past = 当日以前のみ)。 */
-  const isSendable = (r: UnsentRow) => r.dateIso == null || r.dateIso > todayIso;
+  /** BE の sendable 判定と同じ式 (date 不明は送信可・past = 当日以前のみ)。
+   *  RPA 未対応 (准看/一般) の行は BE が apply でも弾くのでここでも外す
+   *  = 「送れると見えたのに BE がスキップした」ズレを作らない。 */
+  const isSendable = (r: UnsentRow) =>
+    !r.rpaUnsupported && (r.dateIso == null || r.dateIso > todayIso);
   const sendableRows = unsentRows.filter(isSendable);
-  // 件数の表示は BE の集計 (past_count) を正とし、送信済みの分だけ減らす。
+  // 件数の表示は BE の集計 (past_count / rpa_unsupported_count) を正とし、
+  // 送信済みの分だけ減らす。BE 側は両者を二重に数えないので単純な引き算でよい。
   const pastCount = summary?.past_count ?? 0;
-  const sendableCount = Math.max(0, unsentRows.length - pastCount);
+  const rpaUnsupportedCount = summary?.rpa_unsupported_count ?? 0;
+  const sendableCount = Math.max(0, unsentRows.length - pastCount - rpaUnsupportedCount);
   const selectedUnsent =
     unsentRows.find((r) => r.id === unsentId) ?? sendableRows[0] ?? unsentRows[0] ?? null;
   const selectedDiff: CockpitDiff | null =
@@ -325,7 +346,7 @@ export function SyncBar({
           <span className="text-[11px] font-bold text-info-strong">● 未送信（らく助で変えた）</span>
           <span className="tnum text-[11px] text-text-muted" data-testid="sync-unsent-count">
             {unsentRows.length > 0
-              ? `${unsentRows.length}件（送れる ${sendableCount}${pastCount > 0 ? `・当日以前 ${pastCount}` : ''}）`
+              ? `${unsentRows.length}件（送れる ${sendableCount}${pastCount > 0 ? `・当日以前 ${pastCount}` : ''}${rpaUnsupportedCount > 0 ? `・RPA未対応 ${rpaUnsupportedCount}` : ''}）`
               : ''}
           </span>
           <select

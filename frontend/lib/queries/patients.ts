@@ -123,20 +123,26 @@ function dropUndefined(payload: Record<string, unknown>): Record<string, unknown
  *   送信しない (undefined)、`true→false` の差分時のみ明示的に `null` で
  *   クリアする。
  *
+ * - `kaipoke_service_content` (カイポケ サービス内容の上書き) は
+ *   **変更時のみ送る** (S1 レビュー M5)。空欄 → `null` を毎回送ると、
+ *   氏名だけ直したつもりの保存が他画面/他人の設定した上書きを黙って消す。
+ *   Create では空欄を送らない (undefined → `dropUndefined` で脱落)。
+ *
  * Clear-vs-unchanged semantics (PATCH only):
  * If `initial` is provided and a previously set field is now empty, we emit
  * explicit `null` so the backend clears the column. Without `initial`
  * (Create flow), empty values stay `undefined` and `dropUndefined` removes
  * them from the payload.
  */
-function prepareFormPayload(
+export function prepareFormPayload(
   values: PatientFormValues,
   initial?: PatientFormValues,
 ): Record<string, unknown> {
   // `special_week` (boolean) は `special_weekly_pattern` (JSONB) に変換するので
-  // wire 上には含めない。rest だけを通す。
-  const { special_week, ...rest } = values;
+  // wire 上には含めない。`kaipoke_service_content` は下で差分判定して足す。
+  const { special_week, kaipoke_service_content: _override, ...rest } = values;
   void special_week;
+  void _override;
 
   // Treat the structured weekly_pattern as a JSONB dict. We always emit it
   // (it has sane defaults from `emptyWeeklyPattern`); on Create the schema
@@ -153,7 +159,19 @@ function prepareFormPayload(
     special_weekly_pattern = null;
   }
 
-  return { ...rest, weekly_pattern, special_weekly_pattern };
+  // カイポケ サービス内容の上書き: 変更が無ければキーごと送らない (M5)。
+  // 値は zodResolver の transform を経て null になり得るため ?? '' で揃える。
+  const nextOverride = (values.kaipoke_service_content ?? '').trim();
+  let kaipoke_service_content: string | null | undefined;
+  if (!initial) {
+    // Create: 空欄は送らない (backend の NULL 既定に任せる)。
+    kaipoke_service_content = nextOverride === '' ? undefined : nextOverride;
+  } else if (nextOverride !== (initial.kaipoke_service_content ?? '').trim()) {
+    // Update: 変わったときだけ。空にしたなら明示的な null でクリアする。
+    kaipoke_service_content = nextOverride === '' ? null : nextOverride;
+  }
+
+  return { ...rest, weekly_pattern, special_weekly_pattern, kaipoke_service_content };
 }
 
 /** GET /api/v1/patients — list (with client-side search/pagination wrapper). */

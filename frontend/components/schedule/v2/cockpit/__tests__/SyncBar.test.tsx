@@ -56,6 +56,7 @@ import { SyncBar } from '../SyncBar';
 const SHEET_ID = '00000000-0000-4000-8000-00000000beef';
 const ITEM_FUTURE = '00000000-0000-4000-8000-00000000a001';
 const ITEM_PAST = '00000000-0000-4000-8000-00000000a002';
+const ITEM_RPA = '00000000-0000-4000-8000-00000000a003';
 
 const today = new Date();
 const nextMonday = new Date(today);
@@ -88,6 +89,18 @@ function item(id: string, dateIso: string) {
     created_at: '',
     updated_at: '',
     date_iso: dateIso,
+  };
+}
+
+/** RPA が登録できない add (准看/一般のサービス内容)。BE が rpa_unsupported を立てる。 */
+function rpaUnsupportedItem(id: string, dateIso: string) {
+  const base = item(id, dateIso);
+  return {
+    ...base,
+    action: 'add',
+    before: null,
+    after: { ...base.after, service_type: '基本療養費Ⅰ・正看' },
+    rpa_unsupported: true,
   };
 }
 
@@ -209,6 +222,55 @@ describe('SyncBar', () => {
     ]) {
       expect(screen.getByTestId(id)).toBeDisabled();
     }
+  });
+
+  it('RPA 未対応 (准看/一般) の行は選べず「送れる」から外れる', async () => {
+    unsentMutateAsync.mockResolvedValue({
+      ...EMPTY_SUMMARY,
+      items: [item(ITEM_FUTURE, FUTURE_DAY), rpaUnsupportedItem(ITEM_RPA, FUTURE_DAY)],
+      sendable_count: 1,
+      past_count: 0,
+      rpa_unsupported_count: 1,
+    });
+    renderBar();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('sync-unsent-count')).toHaveTextContent(
+        '2件（送れる 1・RPA未対応 1）',
+      ),
+    );
+
+    const opts = screen
+      .getByTestId('sync-unsent-select')
+      .querySelectorAll('option') as NodeListOf<HTMLOptionElement>;
+    const blocked = [...opts].find((o) => o.value === ITEM_RPA);
+    expect(blocked?.disabled).toBe(true);
+    expect(blocked?.textContent).toContain('RPAが准看/一般の登録に未対応');
+    // 対応済みの行は従来どおり選べる
+    expect([...opts].find((o) => o.value === ITEM_FUTURE)?.disabled).toBe(false);
+
+    // ⇧1件送信 / ⇧全件 のどちらも RPA 未対応を含めない
+    fireEvent.click(screen.getByTestId('sync-unsent-send'));
+    await waitFor(() =>
+      expect(startApplyMutateAsync).toHaveBeenCalledWith({
+        sheetId: SHEET_ID,
+        dryRun: false,
+        itemIds: [ITEM_FUTURE],
+      }),
+    );
+  });
+
+  it('RPA 未対応しか無ければ送信ボタンが無効', async () => {
+    unsentMutateAsync.mockResolvedValue({
+      ...EMPTY_SUMMARY,
+      items: [rpaUnsupportedItem(ITEM_RPA, FUTURE_DAY)],
+      sendable_count: 0,
+      rpa_unsupported_count: 1,
+    });
+    renderBar();
+    await waitFor(() => expect(unsentMutateAsync).toHaveBeenCalled());
+    expect(screen.getByTestId('sync-unsent-send')).toBeDisabled();
+    expect(screen.getByTestId('sync-unsent-send-all')).toBeDisabled();
   });
 
   it('RPA 実行中は未送信の送信ボタンも押せない', async () => {

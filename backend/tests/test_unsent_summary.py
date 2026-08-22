@@ -1097,3 +1097,195 @@ async def test_reverse_requires_admin(client, db, stub_kaipoke) -> None:
         f"/api/v1/integrations/correction-sheets/{sheet.id}/reverse", headers=_bearer(staff_user)
     )
     assert res.status_code == 403, res.text
+
+
+# ===========================================================================
+# H1 (S2 レビュー / 2026-08-23): RPA 未対応ガード
+#
+# 正典 = docs/plans/kaipoke-service-content-design.md §3。
+# S2 でサービス内容が 4 通りに増えたが RPA (auto_apply) はまだ固定値でしか
+# 登録できない。准看/一般の add を送るとカイポケに黙って誤った値が入るので、
+# S3 が終わるまで送信対象から外す (設定で門を開けられる)。
+# ===========================================================================
+
+
+async def _make_patient_general(db, seeded) -> None:
+    """患者を「一般」に切り替える = サービス内容が「基本療養費Ⅰ・正看」になる。"""
+    seeded["patient"].visit_category = "general"
+    await db.commit()
+
+
+def _open_rpa_gate(monkeypatch, *, enabled: bool) -> None:
+    """S3 完了後の状態 (enabled=True) を再現する。
+
+    ``get_settings`` は lru_cache された単一インスタンスなので、その属性を
+    直接差し替える (環境変数 + cache_clear より副作用が小さい)。
+    """
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "kaipoke_rpa_service_branch_enabled", enabled)
+
+
+@pytest.mark.asyncio
+async def test_unsent_summary_flags_rpa_unsupported_add(client, db, stub_kaipoke) -> None:
+    """一般の患者の add は rpa_unsupported=True で「送れる」から外れる。"""
+    admin = await _make_user(db, "unsent-rpa-a@example.com")
+    seeded = await _seed_master(db)
+    await _make_patient_general(db, seeded)
+    week_start = _future_monday()
+    await _add_visit(db, seeded, week_start)
+    await _save_empty_snapshot(db, week_start)
+
+    res = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    assert len(body["items"]) == 1
+    item = body["items"][0]
+    assert item["action"] == "add"
+    assert item["after"]["service_type"] == "基本療養費Ⅰ・正看"
+    assert item["rpa_unsupported"] is True
+    # 過去日ではないが送れない = rpa_unsupported_count に 1、sendable は 0。
+    assert body["rpa_unsupported_count"] == 1
+    assert body["past_count"] == 0
+    assert body["sendable_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_unsent_summary_supported_add_stays_sendable(client, db, stub_kaipoke) -> None:
+    """既定 (精神科 × 看護師) の add は従来どおり送れる (ガードの巻き添えなし)。"""
+    admin = await _make_user(db, "unsent-rpa-b@example.com")
+    seeded = await _seed_master(db)
+    week_start = _future_monday()
+    await _add_visit(db, seeded, week_start)
+    await _save_empty_snapshot(db, week_start)
+
+    res = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    body = res.json()
+    assert body["items"][0]["after"]["service_type"] == "精神基本療養費Ⅰ・正看"
+    assert body["items"][0]["rpa_unsupported"] is False
+    assert body["rpa_unsupported_count"] == 0
+    assert body["sendable_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_unsent_summary_gate_open_after_s3(client, db, stub_kaipoke, monkeypatch) -> None:
+    """設定を True (S3 完了) にすれば一般の add も送れるようになる。"""
+    admin = await _make_user(db, "unsent-rpa-c@example.com")
+    seeded = await _seed_master(db)
+    await _make_patient_general(db, seeded)
+    week_start = _future_monday()
+    await _add_visit(db, seeded, week_start)
+    await _save_empty_snapshot(db, week_start)
+    _open_rpa_gate(monkeypatch, enabled=True)
+
+    res = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    body = res.json()
+    assert body["items"][0]["rpa_unsupported"] is False
+    assert body["rpa_unsupported_count"] == 0
+    assert body["sendable_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_rejects_when_all_items_rpa_unsupported(client, db, stub_kaipoke) -> None:
+    """送信対象が RPA 未対応だけなら 422 で止める (RPA は呼ばない)。"""
+    admin = await _make_user(db, "unsent-rpa-d@example.com")
+    seeded = await _seed_master(db)
+    await _make_patient_general(db, seeded)
+    week_start = _future_monday()
+    await _add_visit(db, seeded, week_start)
+    await _save_empty_snapshot(db, week_start)
+
+    summary = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    body = summary.json()
+    stub_kaipoke.responses["apply"] = {"jobId": "job-rpa"}
+
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        json={
+            "sheetId": body["sheet_id"],
+            "itemIds": [body["items"][0]["id"]],
+            "dryRun": False,
+        },
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 422, res.text
+    assert "RPA が准看/一般の登録に未対応(S3)" in res.json()["detail"]
+    # 一番大事: 誤った値でカイポケに登録しに行っていない。
+    assert [name for name, _ in stub_kaipoke.calls if name == "apply"] == []
+
+
+@pytest.mark.asyncio
+async def test_apply_skips_rpa_unsupported_and_sends_the_rest(client, db, stub_kaipoke) -> None:
+    """混在時: 対応済みだけ送り、除外件数と理由を result_summary に残す。"""
+    from app.models.kaipoke_job import KaipokeJob
+
+    admin = await _make_user(db, "unsent-rpa-e@example.com")
+    seeded = await _seed_master(db)
+    week_start = _future_monday()
+    # 精神科 (送れる) の患者 = 既定シード。一般 (送れない) の患者を足す。
+    general = Patient(
+        code="PT-UNSENT-GEN",
+        name="兼行　様",
+        status="active",
+        insurance="medical",
+        primary_office_id=seeded["office"].id,
+        visit_category="general",
+    )
+    db.add(general)
+    await db.commit()
+    await _add_visit(db, seeded, week_start)
+    db.add(
+        Visit(
+            patient_id=general.id,
+            visit_date=week_start,
+            start_time=time(14, 0),
+            end_time=time(14, 35),
+            type="regular",
+            status="planned",
+            source="auto",
+            required_staff_count=1,
+            primary_staff_id=seeded["staff"].id,
+        )
+    )
+    await db.commit()
+    await _save_empty_snapshot(db, week_start)
+
+    summary = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    body = summary.json()
+    assert len(body["items"]) == 2
+    assert body["rpa_unsupported_count"] == 1
+    assert body["sendable_count"] == 1
+
+    stub_kaipoke.responses["apply"] = {"jobId": "job-rpa-mix"}
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        json={"sheetId": body["sheet_id"], "dryRun": False},
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 202, res.text
+
+    # カイポケへ渡ったのは対応済みの 1 件だけ。
+    apply_calls = [payload for name, payload in stub_kaipoke.calls if name == "apply"]
+    assert len(apply_calls) == 1
+    sent = apply_calls[0]["correction_data"]
+    assert len(sent) == 1
+    assert sent[0]["service_type"] == "精神基本療養費Ⅰ・正看"
+
+    job = await db.scalar(select(KaipokeJob).where(KaipokeJob.id == UUID(res.json()["jobId"])))
+    assert job is not None
+    assert job.result_summary["skipped_rpa_unsupported"] == 1
+    assert (
+        job.result_summary["skipped_rpa_unsupported_reason"] == "RPA が准看/一般の登録に未対応(S3)"
+    )
+    assert job.result_summary["correction_count"] == 1

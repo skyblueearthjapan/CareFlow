@@ -33,6 +33,22 @@ export const STAFF_ROLE_VALUES = ['admin', 'manager', 'staff'] as const;
 /** 業務ロールの入力選択肢 (2 値・スタッフを先頭)。 */
 export const STAFF_ROLE_OPTIONS = ['staff', 'manager'] as const;
 
+/**
+ * 資格 (K-1b カイポケ「職種」列)。業務ロール / ログイン権限とは独立。
+ *
+ * kaipoke-service-content-design.md §1-2: **准看護師だけ**がカイポケの
+ * サービス内容を「・准看」に変える。それ以外 (看護師 / PT・OT・ST) は「・正看」。
+ * 未設定はマスタ突合の警告対象 (送信は止めない)。
+ */
+export const STAFF_QUALIFICATION_VALUES = [
+  '看護師',
+  '准看護師',
+  '理学療法士',
+  '作業療法士',
+  '言語聴覚士',
+] as const;
+export type StaffQualification = (typeof STAFF_QUALIFICATION_VALUES)[number];
+
 export const staffBaseSchema = z.object({
   code: z.string().max(64).nullable().optional(),
   name: z.string().min(1, '氏名は必須です').max(120),
@@ -43,6 +59,8 @@ export const staffBaseSchema = z.object({
   primary_office_id: z.string().uuid().nullable().optional(),
   /** Wave 10: 新人スタッフフラグ。true のとき同行スタッフ割付が必要 (§4.2.x) */
   is_trainee: z.boolean().default(false),
+  /** K-1b カイポケ「職種」列 (看護師/准看護師…)。未設定 = null */
+  qualification: z.enum(STAFF_QUALIFICATION_VALUES).nullable().optional(),
   note: z.string().nullable().optional(),
 });
 
@@ -58,6 +76,8 @@ export const staffUpdateSchema = z.object({
   primary_office_id: z.string().uuid().nullable().optional(),
   /** Wave 10: 新人スタッフフラグ (§4.2.x) */
   is_trainee: z.boolean().optional(),
+  /** K-1b カイポケ「職種」列。null で明示的にクリア */
+  qualification: z.enum(STAFF_QUALIFICATION_VALUES).nullable().optional(),
   note: z.string().nullable().optional(),
 });
 
@@ -180,6 +200,14 @@ export const roleLabel = (role: StaffRead['role']): string => {
       return role ?? '--';
   }
 };
+
+/**
+ * 資格バッジのラベル。未設定は「資格未設定」を返す (呼び出し側で警告色にする)。
+ * カイポケのサービス内容 (正看/准看) が資格から決まるため、空欄は運用上の欠落。
+ */
+export const qualificationLabel = (
+  qualification: StaffRead['qualification'] | string | null | undefined,
+): string => (qualification ? String(qualification) : '資格未設定');
 
 export const statusLabel = (status: StaffRead['status'] | string | null | undefined): string => {
   const normalized =

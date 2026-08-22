@@ -35,6 +35,20 @@ export const STAFF_SEX_V2_VALUES = ['male', 'female', 'unknown'] as const;
 export const staffSexV2Enum = z.enum(STAFF_SEX_V2_VALUES);
 export type StaffSexV2 = z.infer<typeof staffSexV2Enum>;
 
+/**
+ * 資格 (K-1b カイポケ「職種」列)。role (システム権限) / 業務ロールとは独立。
+ * kaipoke-service-content-design.md §1-2: 准看護師のみサービス内容が「・准看」。
+ */
+export const QUALIFICATION_V2_VALUES = [
+  '看護師',
+  '准看護師',
+  '理学療法士',
+  '作業療法士',
+  '言語聴覚士',
+] as const;
+export const qualificationV2Enum = z.enum(QUALIFICATION_V2_VALUES);
+export type QualificationV2 = z.infer<typeof qualificationV2Enum>;
+
 // ─────────────────────────────────────────────────────────────────────────
 // StaffV2 base / Create / Update / Read
 // ─────────────────────────────────────────────────────────────────────────
@@ -70,6 +84,8 @@ export const staffV2BaseSchema = z.object({
    * 旧 mentor_id は Wave 10 にて廃止 (§4.2.x / §13.1)。
    */
   is_trainee: z.boolean().default(false),
+  /** K-1b カイポケ「職種」列 (看護師/准看護師…)。カイポケ転記専用 */
+  qualification: qualificationV2Enum.nullable().optional(),
 });
 export type StaffV2Base = z.infer<typeof staffV2BaseSchema>;
 
@@ -89,6 +105,8 @@ export const staffV2UpdateSchema = z.object({
   note: z.string().nullable().optional(),
   /** Wave 10: 新人フラグ (§4.2.x). 旧 mentor_id は廃止 */
   is_trainee: z.boolean().optional(),
+  /** K-1b カイポケ「職種」列。null で明示的にクリア */
+  qualification: qualificationV2Enum.nullable().optional(),
 });
 export type StaffV2Update = z.infer<typeof staffV2UpdateSchema>;
 

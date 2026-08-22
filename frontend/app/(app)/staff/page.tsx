@@ -36,6 +36,8 @@ import {
   type StaffRead,
 } from '@/lib/schemas/staff';
 
+import { QualificationBadge } from './_components/QualificationBadge';
+
 const PAGE_SIZE = 20;
 
 type SexFilter = 'all' | (typeof STAFF_SEX_VALUES)[number];
@@ -283,6 +285,7 @@ export default function StaffPage() {
                   <th className="px-3 py-2 font-medium">カナ</th>
                   <th className="px-3 py-2 font-medium">性別</th>
                   <th className="px-3 py-2 font-medium">役割</th>
+                  <th className="px-3 py-2 font-medium">資格</th>
                   <th className="px-3 py-2 font-medium">状態</th>
                   <th className="px-3 py-2 font-medium">主担当拠点</th>
                   <th className="px-3 py-2 font-medium">操作</th>
@@ -299,6 +302,9 @@ export default function StaffPage() {
                     <td className="px-3 py-2 text-text-secondary">{row.kana ?? '--'}</td>
                     <td className="px-3 py-2">{sexLabel(row.sex)}</td>
                     <td className="px-3 py-2">{roleLabel(row.role)}</td>
+                    <td className="px-3 py-2">
+                      <QualificationBadge qualification={row.qualification} />
+                    </td>
                     <td className="px-3 py-2">{statusLabel(row.status)}</td>
                     <td className="px-3 py-2 text-text-secondary">
                       {officeLabel(row.primary_office_id)}

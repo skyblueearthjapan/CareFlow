@@ -35,6 +35,8 @@ import {
   SEX_RESTRICTION_OPTIONS,
   STATUS_LABEL,
   STATUS_OPTIONS,
+  VISIT_CATEGORY_LABEL,
+  VISIT_CATEGORY_OPTIONS,
   emptyPatientFormValues,
   patientFormSchema,
   type PatientFormValues,
@@ -323,6 +325,19 @@ export function PatientForm({
               ]}
             />
           </Field>
+          {/* 訪問看護区分 (kaipoke-service-content-design.md §1-1)。
+              カイポケ「サービス内容」のベースを決める分岐キー。 */}
+          <Field
+            label="訪問看護区分"
+            error={errors.visit_category?.message}
+            hint="カイポケのサービス内容に反映されます"
+          >
+            <SelectInput
+              {...register('visit_category')}
+              data-testid="visit-category-select"
+              options={VISIT_CATEGORY_OPTIONS.map((v) => [v, VISIT_CATEGORY_LABEL[v]] as const)}
+            />
+          </Field>
           <Field label="主担当拠点" error={errors.primary_office_id?.message}>
             <Controller
               control={control}
@@ -397,6 +412,29 @@ export function PatientForm({
             )}
           </Field>
         </div>
+
+        {/* 詳細設定 — 通常は触らない例外用。既定は畳んでおく (設計 §1-1)。 */}
+        <details className="rounded-md border border-border-default p-3">
+          <summary
+            className="cursor-pointer text-sm font-medium text-text-secondary"
+            data-testid="patient-advanced-summary"
+          >
+            詳細設定
+          </summary>
+          <div className="mt-3">
+            <Field
+              label="カイポケ サービス内容の上書き"
+              error={errors.kaipoke_service_content?.message}
+              hint="空欄なら訪問看護区分と担当者の資格から自動で決まります"
+            >
+              <Input
+                {...register('kaipoke_service_content')}
+                data-testid="kaipoke-service-content-input"
+                placeholder="例: 精神基本療養費Ⅲ・正看"
+              />
+            </Field>
+          </div>
+        </details>
       </Card>
 
       <Card className="p-5 space-y-4">

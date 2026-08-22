@@ -314,3 +314,93 @@ def test_normalize_names_merges_maki_variant() -> None:
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
     )
     assert corrections == []
+
+
+# ===========================================================================
+# S2 レビュー C1 (2026-08-23): サービス内容の一致は「双方向の前方一致」
+#
+# サービス内容の自動判定 (患者の訪問看護区分 x 職員1の資格) を入れると
+# 4 通りの文字列が出る。旧実装の部分一致では
+# "基本療養費I・正看" が "精神基本療養費I・正看" の部分文字列になるため、
+# 一般の患者が精神科表記の行と結ばれて edit に化けていた。
+# 正しくは delete+add (カイポケの edit ではサービス内容を直せないため)。
+# ===========================================================================
+
+PSY_NURSE = "精神基本療養費Ⅰ・正看"
+PSY_ASSISTANT = "精神基本療養費Ⅰ・准看"
+GEN_NURSE = "基本療養費Ⅰ・正看"
+
+
+def _actions(corrections) -> list[str]:
+    return sorted(c.action for c in corrections)
+
+
+def test_general_patient_not_matched_to_psychiatric_service() -> None:
+    """(A) 患者=一般・他は同一 → edit ではなく delete+add.
+
+    旧実装では「基本療養費Ⅰ・正看」⊂「精神基本療養費Ⅰ・正看」の部分一致で
+    Pass2 が結んでしまい、差分なしの edit すら出ない (= 送っても直らない) か
+    中身のない edit になっていた。
+    """
+    cur = CSV_HEADER + _kaipoke_row(user="兼行　様", svc=PSY_NURSE)
+    opt = CSV_HEADER + _kaipoke_row(user="兼行　様", svc=GEN_NURSE)
+    corrections = compare_schedules_from_content(
+        cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
+    )
+    assert _actions(corrections) == ["add", "delete"], (
+        f"delete+add にならない: {[(c.action, c.service_type) for c in corrections]}"
+    )
+    add = next(c for c in corrections if c.action == "add")
+    assert add.service_type == GEN_NURSE
+    delete = next(c for c in corrections if c.action == "delete")
+    assert delete.service_type == PSY_NURSE
+
+
+def test_general_patient_with_staff_change_is_not_edit() -> None:
+    """(B) 一般 + 担当変更 → delete+add (edit にならない).
+
+    担当だけ見れば edit だが、サービス内容が違う行は edit では直せない。
+    """
+    cur = CSV_HEADER + _kaipoke_row(user="兼行　様", staff1="宇田川　優莉", svc=PSY_NURSE)
+    opt = CSV_HEADER + _kaipoke_row(user="兼行　様", staff1="川名　千恵", svc=GEN_NURSE)
+    corrections = compare_schedules_from_content(
+        cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
+    )
+    assert _actions(corrections) == ["add", "delete"], (
+        f"edit に化けた: {[(c.action, c.staff1_from, c.staff1_to) for c in corrections]}"
+    )
+    add = next(c for c in corrections if c.action == "add")
+    assert add.staff1_to == "川名　千恵"
+    assert add.service_type == GEN_NURSE
+
+
+def test_assistant_nurse_service_is_not_matched_to_nurse() -> None:
+    """(C) 職員1 が准看 → delete+add (正看の行と結ばない).
+
+    「精神基本療養費Ⅰ・准看」と「精神基本療養費Ⅰ・正看」は前方一致もしない。
+    """
+    cur = CSV_HEADER + _kaipoke_row(user="山田　様", svc=PSY_NURSE)
+    opt = CSV_HEADER + _kaipoke_row(user="山田　様", svc=PSY_ASSISTANT)
+    corrections = compare_schedules_from_content(
+        cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
+    )
+    assert _actions(corrections) == ["add", "delete"], (
+        f"正看/准看が同一視された: {[(c.action, c.service_type) for c in corrections]}"
+    )
+    assert next(c for c in corrections if c.action == "add").service_type == PSY_ASSISTANT
+
+
+def test_service_prefix_growth_still_matches() -> None:
+    """接尾が伸びただけ (「精神基本療養費Ⅰ」→「…・正看」) は従来どおり同一扱い.
+
+    前方一致に絞っても、資格の接尾が付いただけのケースは結ばれる
+    (= 時間だけ違えば edit)。ここが壊れると旧データの移行期に
+    全件が delete+add に化ける。
+    """
+    cur = CSV_HEADER + _kaipoke_row(user="山田　様", svc="精神基本療養費Ⅰ", start="09:00")
+    opt = CSV_HEADER + _kaipoke_row(user="山田　様", svc=PSY_NURSE, start="11:00")
+    corrections = compare_schedules_from_content(
+        cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
+    )
+    assert [c.action for c in corrections] == ["edit"]
+    assert corrections[0].start_time_to == "11:00"

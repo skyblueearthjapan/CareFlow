@@ -161,6 +161,125 @@ async def test_patch_patient_v2_partial_update(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 3-b) visit_category (訪問看護区分・mig 0077 / S1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_patient_visit_category_defaults_to_psychiatric(client, db) -> None:
+    """未指定なら既定 = 精神科 (既存 101 名がそのまま移行できること)。"""
+    admin = await _make_user(db, "v2-vc-default@example.com", "admin")
+    res = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json=_v2_payload(code="P-V2-VC-DEF"),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["visit_category"] == "psychiatric"
+
+
+@pytest.mark.asyncio
+async def test_patch_patient_visit_category_to_general(client, db) -> None:
+    """PATCH で「一般」に切り替えられる (兼行様・近藤様の運用)。"""
+    admin = await _make_user(db, "v2-vc-patch@example.com", "admin")
+    res = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json=_v2_payload(code="P-V2-VC-PATCH"),
+    )
+    assert res.status_code == 201, res.text
+    patient_id = res.json()["id"]
+
+    res = await client.patch(
+        f"/api/v1/patients/{patient_id}",
+        headers=_bearer(admin),
+        json={"visit_category": "general"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["visit_category"] == "general"
+
+
+@pytest.mark.asyncio
+async def test_create_patient_visit_category_rejects_unknown_value(client, db) -> None:
+    admin = await _make_user(db, "v2-vc-bad@example.com", "admin")
+    res = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json=_v2_payload(code="P-V2-VC-BAD", visit_category="rehab"),
+    )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
+async def test_patch_patient_visit_category_explicit_null_returns_422(client, db) -> None:
+    """明示的な null は 422 (S1 レビュー M2)。
+
+    列は NOT NULL なのでクリアは存在しない。素通しすると「消したつもり」で
+    黙って無視され、呼び出し側と食い違う。
+    """
+    admin = await _make_user(db, "v2-vc-null@example.com", "admin")
+    res = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json=_v2_payload(code="P-V2-VC-NULL"),
+    )
+    assert res.status_code == 201, res.text
+    patient_id = res.json()["id"]
+
+    res = await client.patch(
+        f"/api/v1/patients/{patient_id}",
+        headers=_bearer(admin),
+        json={"visit_category": None},
+    )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
+async def test_patch_unrelated_field_keeps_visit_category(client, db) -> None:
+    """general 設定後に無関係項目だけ PATCH しても general のまま (S1 レビュー M3)。
+
+    ``exclude_unset`` が効いていないと Base の既定 'psychiatric' が混入して
+    患者の区分が黙って精神科へ戻り、カイポケのサービス内容が偽差分化する。
+    """
+    admin = await _make_user(db, "v2-vc-keep@example.com", "admin")
+    res = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json=_v2_payload(code="P-V2-VC-KEEP", visit_category="general"),
+    )
+    assert res.status_code == 201, res.text
+    patient_id = res.json()["id"]
+    assert res.json()["visit_category"] == "general"
+
+    # 区分に触れない PATCH を 2 回 (2 回目は kaipoke_service_content 経由)。
+    res = await client.patch(
+        f"/api/v1/patients/{patient_id}",
+        headers=_bearer(admin),
+        json={"note": "無関係な更新"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["visit_category"] == "general"
+
+    res = await client.patch(
+        f"/api/v1/patients/{patient_id}",
+        headers=_bearer(admin),
+        json={"kaipoke_service_content": None},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["visit_category"] == "general"
+    assert body["kaipoke_service_content"] is None
+
+    # DB 側も general のまま (レスポンスだけ整っている偽陽性を防ぐ)。
+    from uuid import UUID as _UUID
+
+    patient = await db.get(Patient, _UUID(patient_id))
+    assert patient is not None
+    await db.refresh(patient)
+    assert patient.visit_category == "general"
+
+
+# ---------------------------------------------------------------------------
 # 4) DELETE → soft delete
 # ---------------------------------------------------------------------------
 

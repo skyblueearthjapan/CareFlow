@@ -69,6 +69,16 @@ class Patient(Base, TimestampMixin):
     # K-1b: カイポケ18列CSV「サービス内容」列の値 (例: 精神基本療養費Ⅰ・正看)。
     # 実データ上ほぼ定数のため患者単位の文字列で保持し、NULL時は事業所既定へフォールバック。
     kaipoke_service_content: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # S1 (kaipoke-service-content-design.md §1-1): 訪問看護区分。
+    # 'psychiatric' (精神科・既定) / 'general' (一般)。サービス内容のベース文字列を
+    # 決める分岐キー (精神科 → 精神基本療養費Ⅰ / 一般 → 基本療養費Ⅰ)。
+    # migration 0077 で追加。
+    visit_category: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="psychiatric",
+        server_default="psychiatric",
+    )
 
     address: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lat: Mapped[float | None] = mapped_column(Numeric(10, 7), nullable=True)

@@ -412,6 +412,106 @@ describe('PatientForm — W12-FE 住所→拠点自動判定', () => {
     expect(submittedValues?.requires_multiple_staff).toBe(true);
   });
 
+  // ─── S1: 訪問看護区分 + カイポケ サービス内容の上書き ─────────────────────
+  // 設計 docs/plans/kaipoke-service-content-design.md §1-1。
+  // 区分 (精神科/一般) はカイポケ「サービス内容」のベースを決めるため、
+  // フォームから入力でき、保存 payload に載ることを固定する。
+
+  it('10. 訪問看護区分: 既定は精神科でレンダーされる', async () => {
+    setupMocks();
+
+    render(<PatientForm onSubmit={vi.fn()} />);
+
+    const select = screen.getByTestId('visit-category-select') as HTMLSelectElement;
+    expect(select).toBeInTheDocument();
+    expect(select.value).toBe('psychiatric');
+    // 選択肢は 2 値 (精神科 / 一般) のみ。
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['psychiatric', 'general']);
+  });
+
+  it('11. 訪問看護区分: 「一般」に変更すると submit ペイロードに載る', async () => {
+    setupMocks();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(<PatientForm onSubmit={onSubmit} />);
+
+    const nameInput = screen.getByLabelText(/氏名/) as HTMLInputElement;
+    const select = screen.getByTestId('visit-category-select') as HTMLSelectElement;
+    act(() => {
+      fireEvent.change(nameInput, { target: { value: 'テスト患者' } });
+      fireEvent.change(select, { target: { value: 'general' } });
+    });
+    expect(select.value).toBe('general');
+
+    const submitBtn = screen.getByRole('button', { name: '保存' });
+    await act(async () => {
+      fireEvent.click(submitBtn);
+    });
+    await flushDebounceAndMutation(0);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(onSubmit).toHaveBeenCalled();
+    const submitted = onSubmit.mock.calls[0]?.[0] as { visit_category?: string } | undefined;
+    expect(submitted?.visit_category).toBe('general');
+  });
+
+  it('12. 詳細設定: サービス内容の上書きが submit ペイロードに載る', async () => {
+    setupMocks();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(<PatientForm onSubmit={onSubmit} />);
+
+    const nameInput = screen.getByLabelText(/氏名/) as HTMLInputElement;
+    const override = screen.getByTestId('kaipoke-service-content-input') as HTMLInputElement;
+    act(() => {
+      fireEvent.change(nameInput, { target: { value: 'テスト患者' } });
+      fireEvent.change(override, { target: { value: '精神基本療養費Ⅲ・正看' } });
+    });
+
+    const submitBtn = screen.getByRole('button', { name: '保存' });
+    await act(async () => {
+      fireEvent.click(submitBtn);
+    });
+    await flushDebounceAndMutation(0);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(onSubmit).toHaveBeenCalled();
+    const submitted = onSubmit.mock.calls[0]?.[0] as
+      | { kaipoke_service_content?: string | null }
+      | undefined;
+    expect(submitted?.kaipoke_service_content).toBe('精神基本療養費Ⅲ・正看');
+  });
+
+  it('13. 詳細設定: 上書きが空欄なら null (自動判定に任せる)', async () => {
+    setupMocks();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(<PatientForm onSubmit={onSubmit} />);
+
+    const nameInput = screen.getByLabelText(/氏名/) as HTMLInputElement;
+    act(() => {
+      fireEvent.change(nameInput, { target: { value: 'テスト患者' } });
+    });
+
+    const submitBtn = screen.getByRole('button', { name: '保存' });
+    await act(async () => {
+      fireEvent.click(submitBtn);
+    });
+    await flushDebounceAndMutation(0);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const submitted = onSubmit.mock.calls[0]?.[0] as
+      | { kaipoke_service_content?: string | null }
+      | undefined;
+    expect(submitted?.kaipoke_service_content).toBeNull();
+  });
+
   // ─── Phase G-86: 患者コードの自動採番 (必須→任意) ───────────────────────────
   // code 空 (未入力) でも氏名さえあれば form validation が通り submit できる。
   // backend は空 code を自動採番する契約。

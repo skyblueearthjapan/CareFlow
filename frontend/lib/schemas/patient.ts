@@ -35,11 +35,18 @@ import { z } from 'zod';
 
 export const SEX_OPTIONS = ['male', 'female', 'unknown'] as const;
 export const INSURANCE_OPTIONS = ['medical', 'care'] as const;
+/**
+ * 訪問看護区分 (kaipoke-service-content-design.md §1-1)。
+ * psychiatric = 精神科 (既定) / general = 一般。保険区分 (医療/介護) とは別軸で、
+ * カイポケ「サービス内容」のベース (精神基本療養費Ⅰ / 基本療養費Ⅰ) を決める。
+ */
+export const VISIT_CATEGORY_OPTIONS = ['psychiatric', 'general'] as const;
 export const SEX_RESTRICTION_OPTIONS = ['female_only', 'male_only'] as const;
 export const STATUS_OPTIONS = ['active', 'suspended', 'admitted', 'pending', 'cancelled'] as const;
 
 export const sexEnum = z.enum(SEX_OPTIONS);
 export const insuranceEnum = z.enum(INSURANCE_OPTIONS);
+export const visitCategoryEnum = z.enum(VISIT_CATEGORY_OPTIONS);
 export const sexRestrictionEnum = z.enum(SEX_RESTRICTION_OPTIONS);
 export const statusEnum = z.enum(STATUS_OPTIONS);
 
@@ -56,6 +63,11 @@ export const SEX_LABEL: Record<(typeof SEX_OPTIONS)[number], string> = {
 export const INSURANCE_LABEL: Record<(typeof INSURANCE_OPTIONS)[number], string> = {
   medical: '医療保険',
   care: '介護保険',
+};
+
+export const VISIT_CATEGORY_LABEL: Record<(typeof VISIT_CATEGORY_OPTIONS)[number], string> = {
+  psychiatric: '精神科',
+  general: '一般',
 };
 
 export const SEX_RESTRICTION_LABEL: Record<(typeof SEX_RESTRICTION_OPTIONS)[number], string> = {
@@ -82,6 +94,27 @@ const optionalNullableString = z
   .trim()
   .optional()
   .transform((v) => (v === '' ? undefined : v));
+
+/**
+ * カイポケ「サービス内容」上書き用の文字列。
+ *
+ * 3 値をそのまま通す schema:
+ *   `undefined` = 触らない (PATCH のキーごと省略) /
+ *   `null`      = 明示的にクリア /
+ *   文字列      = その値に設定
+ *
+ * **空 → どれにするかはここでは決めない**。「変更時のみ送る」判定は
+ * `lib/queries/patients.ts` の `prepareFormPayload` が `initial` と比較して行う
+ * (S1 レビュー M5)。schema 側で一律 `null` に畳むと、氏名だけ直した保存でも
+ * 上書きのクリアが毎回飛んでしまう。
+ *
+ * `null` を受けるのは、zodResolver が transform 後の値を onSubmit に渡すため
+ * フォーム → create/update schema の 2 段パースで同じ値が 2 度通るから。
+ */
+const clearableOverrideString = z
+  .union([z.string().trim().max(64), z.null()])
+  .optional()
+  .transform((v) => (v === '' ? null : v));
 
 const optionalEnum = <T extends readonly [string, ...string[]]>(values: T) =>
   z
@@ -182,6 +215,16 @@ export function normalizePatientInsurance(
   return null;
 }
 
+/**
+ * 訪問看護区分の正規化。未設定 (旧データ) / 未知の値は既定の ``psychiatric``
+ * (精神科) に寄せる — backend の NOT NULL DEFAULT と同じ既定。
+ */
+export function normalizeVisitCategory(
+  v: string | null | undefined,
+): (typeof VISIT_CATEGORY_OPTIONS)[number] {
+  return v === 'general' ? 'general' : 'psychiatric';
+}
+
 export function normalizePatientStatus(
   v: string | null | undefined,
 ): (typeof STATUS_OPTIONS)[number] {
@@ -222,6 +265,10 @@ export const patientBaseSchema = z.object({
   sex: optionalEnum(SEX_OPTIONS),
   status: statusEnum.default('active'),
   insurance: optionalEnum(INSURANCE_OPTIONS),
+  /** 訪問看護区分 (精神科/一般). カイポケ「サービス内容」のベースを決める */
+  visit_category: visitCategoryEnum.default('psychiatric'),
+  /** カイポケ「サービス内容」の上書き (空 = 自動判定に任せる) */
+  kaipoke_service_content: clearableOverrideString,
   address: optionalNullableString,
   lat: z.preprocess(
     (v) => (v === '' || v === null || v === undefined ? undefined : v),
@@ -302,6 +349,13 @@ export const patientUpdateSchema = z.object({
       v === '' || v === undefined ? undefined : (v as (typeof STATUS_OPTIONS)[number]),
     ),
   insurance: optionalEnum(INSURANCE_OPTIONS),
+  visit_category: z
+    .union([visitCategoryEnum, z.literal('')])
+    .optional()
+    .transform((v) =>
+      v === '' || v === undefined ? undefined : (v as (typeof VISIT_CATEGORY_OPTIONS)[number]),
+    ),
+  kaipoke_service_content: clearableOverrideString,
   address: optionalNullableString,
   lat: z.preprocess(
     (v) => (v === '' || v === null || v === undefined ? undefined : v),
@@ -396,6 +450,10 @@ export type PatientFormValues = {
   sex: '' | (typeof SEX_OPTIONS)[number];
   status: (typeof STATUS_OPTIONS)[number];
   insurance: '' | (typeof INSURANCE_OPTIONS)[number];
+  /** 訪問看護区分 (精神科/一般). 既定は精神科 */
+  visit_category: (typeof VISIT_CATEGORY_OPTIONS)[number];
+  /** カイポケ「サービス内容」の上書き (空 = 自動判定) */
+  kaipoke_service_content: string;
   address: string;
   lat: string;
   lng: string;
@@ -415,6 +473,8 @@ export const emptyPatientFormValues: PatientFormValues = {
   sex: '',
   status: 'active',
   insurance: '',
+  visit_category: 'psychiatric',
+  kaipoke_service_content: '',
   address: '',
   lat: '',
   lng: '',
@@ -523,6 +583,11 @@ export function patientReadToFormValues(p: PatientRead): PatientFormValues {
       (normalizePatientInsurance(
         p.insurance as string | null | undefined,
       ) as PatientFormValues['insurance']) ?? '',
+    visit_category: normalizeVisitCategory(
+      (p as { visit_category?: string | null }).visit_category,
+    ),
+    kaipoke_service_content:
+      (p as { kaipoke_service_content?: string | null }).kaipoke_service_content ?? '',
     address: p.address ?? '',
     lat: p.lat !== undefined && p.lat !== null ? String(p.lat) : '',
     lng: p.lng !== undefined && p.lng !== null ? String(p.lng) : '',

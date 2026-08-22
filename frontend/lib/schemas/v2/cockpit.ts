@@ -177,9 +177,17 @@ export type EventCancelWeekRequest = z.input<typeof eventCancelWeekRequestSchema
 // §2-4 ●未送信サマリ (RPA を呼ばない・保存済み CSV との差分)
 // ───────────────────────────────────────────────────────────────────────────
 
-/** CorrectionItemRead + `date_iso`(当週の実日付)。 */
+/**
+ * CorrectionItemRead + `date_iso`(当週の実日付) + `rpa_unsupported`。
+ *
+ * `rpa_unsupported` = らく助では作れるが RPA がカイポケへ正しく登録できない行
+ * (S3 完了まで・kaipoke-service-content-design.md §3)。**判定は BE が持つ** ―
+ * FE がサービス内容の文字列を自前で見ると、S3 で門を開けたときに片方だけ
+ * 古いルールで止め続ける。旧 BE 応答では欠けるので既定 false。
+ */
 export const cockpitCorrectionItemSchema = CorrectionItemReadSchema.extend({
   date_iso: z.string().nullable().optional(),
+  rpa_unsupported: z.boolean().default(false),
 });
 export type CockpitCorrectionItem = z.infer<typeof cockpitCorrectionItemSchema>;
 
@@ -219,6 +227,12 @@ export const unsentSummaryReadSchema = z.object({
   sendable_count: z.number().int(),
   /** 当日以前 = 実績保護のため送信対象外。 */
   past_count: z.number().int(),
+  /**
+   * RPA 未対応 (准看/一般) で送れない件数。**過去日とは二重に数えない**ので
+   * `sendable = items+events - past_count - rpa_unsupported_count` が成立する。
+   * 旧 BE 応答では欠けるので既定 0。
+   */
+  rpa_unsupported_count: z.number().int().default(0),
 });
 export type UnsentSummaryRead = z.infer<typeof unsentSummaryReadSchema>;
 

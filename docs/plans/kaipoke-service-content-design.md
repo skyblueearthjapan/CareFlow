@@ -47,8 +47,39 @@ def resolve_service_content(patient, primary_staff) -> str:
 | 基本療養費Ⅰ・准看 | 同上 | 准看護師 |
 
 - **Phase 0(必須)**: headed dry-run(本番登録なし)で `#inPopupEstimate1/2/3` の option 文言を採取しログ保存。採取後に上表の文言を確定。
-- 変更(edit)は現状どおりサービス内容を触らない。必要なら「サービス内容が違う」を edit ではなく delete+add として扱う現行の突合挙動で吸収。
 - 登録後検証: 保存後の一覧行のサービス内容が `service_type` と一致するか確認し、不一致は failed(削除検証と同じ作法)。
+
+### 3-1. edit ではサービス内容を修正できない(= 届くのは add だけ)
+
+カイポケの編集ダイアログはサービス内容を触れない。差分側もこれに合わせてあり、
+`correction_before_after()` は **before/after 双方に同じ `service_type` を入れる**
+(`local_diff.py`)。つまり:
+
+- サービス内容だけが違う行は、edit では表現できず **必ず delete + add** として出る
+  (S2 レビュー C1 で差分エンジンの一致判定を「双方向の前方一致」に直し、
+  「基本療養費Ⅰ・正看」⊂「精神基本療養費Ⅰ・正看」の偽一致で edit に化ける穴を塞いだ)。
+- したがって **RPA が新しいサービス内容を実際に書きに行く経路は add のみ**。
+  delete / edit / date_change は既存行を動かすだけなので影響を受けない。
+
+### 3-2. S3 完了まで送信ガード(実装済み・S2 と同時)
+
+S2 でらく助は 4 通りのサービス内容を出すようになったが、RPA は §3 の分岐が入るまで
+固定値(精神科訪問看護 × 看護師等)でしか登録できない。この状態で准看/一般の add を
+送ると **画面上は成功したまま、カイポケには誤ったサービス内容が入る**(突合しても
+差分が消えず、請求も狂う)。そこで S3 が終わるまでは送らない:
+
+| 場所 | ふるまい |
+|---|---|
+| `POST /integrations/apply` | `action='add'` かつ `after.service_type` が「精神基本療養費Ⅰ・正看」以外の item を送信対象から除外。`job.result_summary.skipped_rpa_unsupported` に件数、`skipped_rpa_unsupported_reason` に理由「RPA が准看/一般の登録に未対応(S3)」。全件が対象外なら 422 |
+| `POST /integrations/unsent-summary` | 各 item に `rpa_unsupported` を立て、`rpa_unsupported_count`(過去日とは二重に数えない)を返す。`sendable_count` からも除外 |
+| FE `SyncBar` | 「送れる N・RPA未対応 M」と表示。当該行は select で disabled + 注記「（RPAが准看/一般の登録に未対応=カイポケで直接登録）」 |
+
+- 判定の正典は `app/services/kaipoke/rpa_capability.py`(BE 単一ソース)。FE は
+  サービス内容の文字列を自前で判定しない — S3 で門を開けたときに片側だけ古い
+  ルールで止め続ける事故を防ぐため。
+- 門の開閉は設定 `KAIPOKE_RPA_SERVICE_BRANCH_ENABLED`(既定 `False`)。
+  **S3 の実機テストが通ったら `True` にする**のが解禁手順。
+- `service_type` が空の行(イベント等)は除外しない(運用を丸ごと止めないため)。
 
 ## 4. 警告・運用
 - 患者の区分が既定(精神科)のまま「一般」の実態がある場合は突合で差分として現れる → 差分カードに「患者の訪問看護区分を確認してください」のヒント。
@@ -60,6 +91,8 @@ def resolve_service_content(patient, primary_staff) -> str:
 |---|---|---|
 | S1 | mig 0077 `patients.visit_category` + BE schema + 患者編集 UI(区分セレクト・詳細で上書き文字列) + スタッフ編集/新規 UI に資格セレクト + 一覧バッジ | BE 小・FE 中 |
 | S2 | `resolve_service_content` + csv_builder 結線 + テスト(4 象限/上書き/未割当/同行) → デプロイ → 再突合で偽差分ゼロ(例外 3 件のみ)を確認 | BE 小 |
-| S3 | RPA Phase 0(option 採取・headed dry-run) → 分岐実装 → 1 件テスト(准看 1 件・一般 1 件) → 運用解禁 | RPA 中 |
+| S3 | RPA Phase 0(option 採取・headed dry-run) → 分岐実装 → 1 件テスト(准看 1 件・一般 1 件) → `KAIPOKE_RPA_SERVICE_BRANCH_ENABLED=True` で送信ガード解除(§3-2) | RPA 中 |
 
-S1+S2 は RPA と独立に進められ、突合の精度改善が先に得られる。
+S1+S2 は RPA と独立に進められ、突合の精度改善が先に得られる。S3 が終わるまでは
+§3-2 の送信ガードが准看/一般の add を止めるので、S2 だけ先に本番へ出しても
+カイポケが誤った値で汚れることはない(該当分はカイポケ側で直接登録する運用)。

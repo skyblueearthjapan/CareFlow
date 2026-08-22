@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     # kaipoke-api.net/novnc/... URL that hits Flask (port 5000) and does not
     # serve noVNC. Both hosts sit behind Cloudflare Access (manager OTP).
     kaipoke_novnc_url: str = Field(default="https://novnc.kaipoke-api.net/vnc.html")
+    # RPA (auto_apply) がサービス内容の分岐に対応しているか
+    # (docs/plans/kaipoke-service-content-design.md §3 / Phase S3)。
+    #
+    # False (既定) = RPA は「精神基本療養費Ⅰ・正看」しか登録できない。この間、
+    # 准看 / 一般の add は **送信対象から除外**する (送ると RPA が既定の
+    # 精神科・看護師等で登録してしまい、カイポケ側が黙って間違った値になる)。
+    # S3 (option 文言の採取 → 分岐実装 → 実機 1 件テスト) が終わったら True。
+    kaipoke_rpa_service_branch_enabled: bool = Field(default=False)
 
     @field_validator("cors_origins")
     @classmethod

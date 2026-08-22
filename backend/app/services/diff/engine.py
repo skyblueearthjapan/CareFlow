@@ -407,6 +407,32 @@ def _normalize_user_name(name: str) -> str:
     return normalize_person_name(name)
 
 
+def _service_matches(cur_svc: str, opt_svc: str) -> bool:
+    """サービス内容の同一判定 (Pass2 / Pass3 の緩いマッチ用・唯一の正典)。
+
+    完全一致か、**双方向の前方一致** のみを同一とみなす。
+
+    2026-08-23 (S2 レビュー C1): 以前は部分一致 (``cur in opt or opt in cur``)
+    だった。サービス内容の自動判定 (患者の訪問看護区分 × 職員1の資格) を入れると
+    「基本療養費Ⅰ・正看」が「精神基本療養費Ⅰ・正看」の**部分文字列**になるため、
+    一般の患者とその精神科表記が同一サービスとして結ばれ、本来 delete+add に
+    なるべき差分が edit に化けていた (カイポケ側でサービス内容を edit しても
+    直らない = 送っても差分が残り続ける)。前方一致にすると
+    「精神基本療養費Ⅰ・正看」.startswith("基本療養費Ⅰ・正看") が False になり、
+    偽一致が構造的に消える。
+
+    「精神基本療養費Ⅰ」(接尾の資格なし) ↔ 「精神基本療養費Ⅰ・正看」のような
+    **接尾が伸びただけ**のケースは従来どおり同一扱い (前方一致で拾える)。
+    どちらかが空文字のときは同一とみなさない (``"" in s`` が常に True になる
+    Python の罠は C-9 で既知・前方一致でも同じ穴があるため明示的に弾く)。
+    """
+    if cur_svc == opt_svc:
+        return True
+    if not cur_svc or not opt_svc:
+        return False
+    return cur_svc.startswith(opt_svc) or opt_svc.startswith(cur_svc)
+
+
 def _compare_entries(
     current_entries: list[ScheduleEntry],
     optimized_entries: list[ScheduleEntry],
@@ -664,19 +690,11 @@ def _compare_entries(
                 for cur_idx, cur_entry in current_on_date:
                     if cur_idx in matched_current_local:
                         continue
-                    # Bug fix (C-9): when either service_type is empty
-                    # string, ``"" in other`` is always True in Python,
-                    # which forced spurious substring matches between
-                    # unrelated services. Require both sides non-empty
-                    # for substring fallback matching.
-                    cur_svc = cur_entry.service_type or ""
-                    opt_svc = opt_entry.service_type or ""
-                    if cur_svc == opt_svc:
-                        svc_match = True
-                    elif cur_svc and opt_svc and (cur_svc in opt_svc or opt_svc in cur_svc):
-                        svc_match = True
-                    else:
-                        svc_match = False
+                    # 完全一致 or 双方向の前方一致 (C-9 の空文字ガード込み)。
+                    # 判定は _service_matches に一本化する (S2 レビュー C1)。
+                    svc_match = _service_matches(
+                        cur_entry.service_type or "", opt_entry.service_type or ""
+                    )
                     if svc_match:
                         # 差分があるかチェック
                         has_diff = (
@@ -735,17 +753,9 @@ def _compare_entries(
             for opt_idx, opt_entry in unmatched_optimized:
                 if opt_idx in all_matched_optimized:
                     continue
-                # Bug fix (C-9): guard substring fallback against empty
-                # strings (``"" in any_string`` is True in Python).
-                cur_svc = cur_entry.service_type or ""
-                opt_svc = opt_entry.service_type or ""
-                if cur_svc == opt_svc:
-                    svc_match = True
-                elif cur_svc and opt_svc and (cur_svc in opt_svc or opt_svc in cur_svc):
-                    svc_match = True
-                else:
-                    svc_match = False
-                if not svc_match:
+                # 完全一致 or 双方向の前方一致 (C-9 の空文字ガード込み)。
+                # 判定は _service_matches に一本化する (S2 レビュー C1)。
+                if not _service_matches(cur_entry.service_type or "", opt_entry.service_type or ""):
                     continue
                 # Bug fix (Codex Bug D): compare canonical day keys, not
                 # raw strings. ``"2026/05/04"`` and ``"4"`` are the same

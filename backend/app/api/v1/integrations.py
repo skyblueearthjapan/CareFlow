@@ -1498,6 +1498,30 @@ async def trigger_apply(
     else:
         selected = selected_all
 
+    # RPA 未対応ガード (S3 完了まで・kaipoke-service-content-design.md §3):
+    # サービス内容が「精神基本療養費Ⅰ・正看」以外の add は、RPA が固定値で
+    # 登録してしまう = カイポケに黙って誤った値が入る。送らずに除外し、
+    # 何件・なぜ落としたかを result_summary に残す (過去日ガードと同じ作法)。
+    from app.services.kaipoke.rpa_capability import RPA_UNSUPPORTED_REASON, is_rpa_unsupported
+
+    skipped_rpa_unsupported = 0
+    _kept_rpa: list = []
+    for it in selected:
+        if is_rpa_unsupported(it.action, it.after):
+            skipped_rpa_unsupported += 1
+        else:
+            _kept_rpa.append(it)
+    selected = _kept_rpa
+    if not selected:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "選択された修正はすべて送信対象外です"
+                f"（{RPA_UNSUPPORTED_REASON}）。"
+                "カイポケ側で直接登録してください"
+            ),
+        )
+
     from app.services.kaipoke.local_diff import item_to_kaipoke_correction
 
     job = KaipokeJob(
@@ -1511,6 +1535,7 @@ async def trigger_apply(
             # (実体は「applying に遷移させない」ことで担保している)。
             "partial": bool(payload.item_ids),
             "skipped_past": skipped_past,
+            "skipped_rpa_unsupported": skipped_rpa_unsupported,
             # apply実績ゲート (逆反映・real_apply_record) の判定キー。
             "week_start": sheet.week_start.isoformat() if sheet.week_start else None,
         },
@@ -1556,6 +1581,10 @@ async def trigger_apply(
         "correction_count": len(correction_data),
         "unassigned_staff": unassigned,
         "skipped_past": skipped_past,
+        # RPA 未対応で送らなかった件数と理由 (S3 完了まで・§3)。0 件でも常に返す
+        # = 「ガードが効いている」ことを監査ログから追えるようにする。
+        "skipped_rpa_unsupported": skipped_rpa_unsupported,
+        "skipped_rpa_unsupported_reason": RPA_UNSUPPORTED_REASON,
         "dry_run": payload.dry_run,
     }
     if not payload.dry_run and not payload.item_ids:
@@ -2429,6 +2458,7 @@ async def unsent_summary(
     from app.services.kaipoke.csv_snapshot import get_latest
     from app.services.kaipoke.local_diff import build_local_diff, correction_before_after
     from app.services.kaipoke.name_match import build_name_index, match_name
+    from app.services.kaipoke.rpa_capability import is_rpa_unsupported
 
     week_start = payload.week_start
     if week_start.weekday() != 0:
@@ -2451,6 +2481,8 @@ async def unsent_summary(
             events=events,
             sendable_count=sum(1 for e in events if e.date > today),
             past_count=sum(1 for e in events if e.date <= today),
+            # イベントはサービス内容を持たない = RPA 未対応ガードの対象外。
+            rpa_unsupported_count=0,
             warnings=warnings,
         )
 
@@ -2539,6 +2571,9 @@ async def unsent_summary(
                 UnsentItemRead(
                     **base,
                     date_iso=resolve_item_date(r.action, r.before, r.after, week_start),
+                    # apply と同じ関数で判定する = バーの「送れる」と実際に送れる
+                    # 件数がずれない (過去日ガードと同じ設計)。
+                    rpa_unsupported=is_rpa_unsupported(r.action, r.after),
                 )
             )
 
@@ -2546,6 +2581,12 @@ async def unsent_summary(
 
     due: list[date | None] = [it.date_iso for it in items_read] + [e.date for e in events]
     past_count = sum(1 for d in due if d is not None and d <= today)
+    # RPA 未対応は「過去日ではないのに送れない」件数だけ数える (二重計上の回避)。
+    rpa_unsupported_count = sum(
+        1
+        for it in items_read
+        if it.rpa_unsupported and not (it.date_iso is not None and it.date_iso <= today)
+    )
     return UnsentSummaryRead(
         week_start=week_start,
         snapshot=UnsentSnapshotRead(
@@ -2554,8 +2595,9 @@ async def unsent_summary(
         sheet_id=sheet_id,
         items=items_read,
         events=events,
-        sendable_count=len(due) - past_count,
+        sendable_count=len(due) - past_count - rpa_unsupported_count,
         past_count=past_count,
+        rpa_unsupported_count=rpa_unsupported_count,
         warnings=[],
     )
 

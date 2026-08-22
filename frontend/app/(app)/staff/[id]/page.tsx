@@ -49,6 +49,7 @@ import type { StaffShiftItem } from '@/lib/schemas/staff-shifts';
 import type { EventRead } from '@/lib/schemas/staff-events';
 
 import { DeleteConfirmModal } from '../_components/DeleteConfirmModal';
+import { QualificationBadge } from '../_components/QualificationBadge';
 import { EventAddDialog } from './_components/EventAddDialog';
 import { EventEditDialog } from './_components/EventEditDialog';
 import { OverrideAddDialog } from './_components/OverrideAddDialog';
@@ -162,10 +163,11 @@ export default function StaffDetailPage() {
           </Button>
           <h1 className="font-serif text-2xl font-bold text-text-primary">{data.name}</h1>
           {data.is_trainee && (
-            <span className="rounded bg-warning px-2 py-0.5 text-xs font-semibold text-warning-foreground">
+            <span className="rounded bg-warning-bg px-2 py-0.5 text-xs font-semibold text-warning-strong">
               新人
             </span>
           )}
+          <QualificationBadge qualification={data.qualification} />
           <span className="rounded bg-bg-muted px-2 py-1 text-xs text-text-secondary">
             {statusLabel(data.status)}
           </span>
@@ -267,6 +269,13 @@ function BasicInfoCard({ staff }: { staff: StaffRead }) {
           <Row label="カナ" value={staff.kana ?? '--'} />
           <Row label="性別" value={sexLabel(staff.sex)} />
           <Row label="役割" value={roleLabel(staff.role)} />
+          {/* 資格 (カイポケ「職種」列)。未設定は警告色バッジで欠落を可視化する。 */}
+          <div>
+            <dt className="text-xs text-text-muted">資格</dt>
+            <dd className="flex items-center gap-1.5 text-text-primary">
+              <QualificationBadge qualification={staff.qualification} />
+            </dd>
+          </div>
           <Row label="状態" value={statusLabel(staff.status)} />
           <Row label="新人フラグ" value={staff.is_trainee ? '新人 (同行スタッフ要)' : '通常'} />
           <Row label="主担当拠点" value={primaryOfficeLabel} />
@@ -290,7 +299,7 @@ function Row({ label, value, badge }: { label: string; value: string; badge?: st
       <dd className="flex items-center gap-1.5 text-text-primary">
         {value}
         {badge && (
-          <span className="rounded bg-warning px-1.5 py-0.5 text-xs font-semibold text-warning-foreground">
+          <span className="rounded bg-warning-bg px-1.5 py-0.5 text-xs font-semibold text-warning-strong">
             {badge}
           </span>
         )}

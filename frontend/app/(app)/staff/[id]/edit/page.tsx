@@ -103,6 +103,7 @@ function fromStaff(staff: StaffRead): StaffFormState {
     role: staff.role,
     primary_office_id: staff.primary_office_id ?? '',
     is_trainee: staff.is_trainee ?? false,
+    qualification: staff.qualification ?? '',
     note: staff.note ?? '',
   };
 }
@@ -117,6 +118,7 @@ function toPayload(form: StaffFormState): StaffUpdate {
     role: form.role,
     primary_office_id: form.primary_office_id.trim() || null,
     is_trainee: form.is_trainee,
+    qualification: form.qualification === '' ? null : form.qualification,
     note: form.note.trim() || null,
   };
 }

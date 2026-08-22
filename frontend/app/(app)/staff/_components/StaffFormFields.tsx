@@ -15,9 +15,11 @@
 import { OfficeCombobox } from '@/components/master/OfficeCombobox';
 import { Input } from '@/components/ui/input';
 import {
+  STAFF_QUALIFICATION_VALUES,
   type STAFF_ROLE_VALUES,
   type STAFF_SEX_VALUES,
   type STAFF_STATUS_VALUES,
+  type StaffQualification,
 } from '@/lib/schemas/staff';
 
 type SexValue = (typeof STAFF_SEX_VALUES)[number];
@@ -35,6 +37,8 @@ export interface StaffFormState {
   primary_office_id: string;
   /** Wave 10: 新人スタッフフラグ (§4.2.x). 旧 mentor_id は廃止 */
   is_trainee: boolean;
+  /** K-1b カイポケ「職種」列。空文字 = 未設定 (backend には null で送る) */
+  qualification: StaffQualification | '';
   note: string;
 }
 
@@ -131,6 +135,27 @@ export function StaffFormFields({
           />
         </Field>
 
+        {/* 資格 (K-1b カイポケ「職種」列)。准看護師のときだけカイポケの
+            サービス内容が「・准看」になる (kaipoke-service-content-design.md §1-2)。 */}
+        <Field
+          label="資格"
+          error={errors.qualification}
+          hint="カイポケの職種・サービス内容（正看/准看）に反映されます"
+        >
+          <SelectInput
+            value={form.qualification}
+            onChange={(v) => set('qualification', v as StaffQualification | '')}
+            options={[
+              { value: '' as StaffQualification | '', label: '未設定' },
+              ...STAFF_QUALIFICATION_VALUES.map((v) => ({
+                value: v as StaffQualification | '',
+                label: v,
+              })),
+            ]}
+            testId="staff-qualification-select"
+          />
+        </Field>
+
         <Field label="主担当拠点" error={errors.primary_office_id}>
           <OfficeCombobox
             value={form.primary_office_id}
@@ -196,14 +221,17 @@ function SelectInput<T extends string>({
   value,
   onChange,
   options,
+  testId,
 }: {
   value: T;
   onChange: (v: T) => void;
   options: Option<T>[];
+  testId?: string;
 }) {
   return (
     <select
       value={value}
+      data-testid={testId}
       onChange={(e) => onChange(e.target.value as T)}
       className="flex h-10 w-full rounded-md border border-border-default bg-bg-base px-3 py-2 text-sm text-text-primary focus-visible:border-brand-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary-light"
     >

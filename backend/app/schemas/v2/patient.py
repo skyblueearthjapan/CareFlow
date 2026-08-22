@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # 7 weekday short codes used in JSONB (Mon..Sun, English short form).
 # v2 でも v1 と同じ表現を維持する。
@@ -53,6 +53,12 @@ PatientStatusV2 = Literal["active", "suspended", "admitted", "pending", "cancell
 
 # 保険区分 (§4.1):
 InsuranceV2 = Literal["medical", "care"]
+
+# 訪問看護区分 (kaipoke-service-content-design.md §1-1):
+#   psychiatric = 精神科 (既定・カイポケ「精神科訪問看護」/ 精神基本療養費Ⅰ)
+#   general     = 一般   (カイポケ「訪問看護」/ 基本療養費Ⅰ)
+# 保険区分 (insurance = 医療/介護) とは別軸。サービス内容のベース文字列を決める。
+VisitCategoryV2 = Literal["psychiatric", "general"]
 
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
@@ -181,10 +187,21 @@ class PatientV2Base(BaseModel):
 
     # 保険・拠点
     insurance: InsuranceV2 | None = Field(default=None, description="医療/介護")
+    visit_category: VisitCategoryV2 = Field(
+        default="psychiatric",
+        description=(
+            "訪問看護区分 (psychiatric=精神科 / general=一般)。カイポケ「サービス内容」の"
+            "ベース文字列を決める (精神科→精神基本療養費Ⅰ / 一般→基本療養費Ⅰ)"
+        ),
+    )
     kaipoke_service_content: str | None = Field(
         default=None,
         max_length=64,
-        description="K-1b カイポケ「サービス内容」列 (例: 精神基本療養費Ⅰ・正看)。NULL時は事業所既定",
+        description=(
+            "K-1b カイポケ「サービス内容」列の**上書き**値 (例: 精神基本療養費Ⅰ・正看)。"
+            "非 NULL なら visit_category × 職員1資格の分岐を無視してこの文字列を出力する"
+            "(例外運用向け)"
+        ),
     )
     primary_office_id: UUID | None = Field(
         default=None,
@@ -271,6 +288,9 @@ class PatientV2Update(BaseModel):
     lat: float | None = Field(default=None, ge=-90, le=90)
     lng: float | None = Field(default=None, ge=-180, le=180)
     insurance: InsuranceV2 | None = None
+    # None = 未指定 (PATCH で touch しない)。**明示的な null は 422**
+    # (下の validator)。列は NOT NULL なので「区分を消す」操作は存在しない。
+    visit_category: VisitCategoryV2 | None = None
     kaipoke_service_content: str | None = Field(default=None, max_length=64)
     primary_office_id: UUID | None = None
     sex_restriction: SexRestrictionV2 | None = None
@@ -280,6 +300,24 @@ class PatientV2Update(BaseModel):
     special_weekly_pattern: WeeklyPatternV2 | None = None
     special_week_active: list[SpecialWeekRefV2] | None = None
     note: str | None = None
+
+    @model_validator(mode="after")
+    def _reject_explicit_null_visit_category(self) -> PatientV2Update:
+        """``{"visit_category": null}`` を 422 にする (S1 レビュー M2)。
+
+        PATCH の慣習では「キーを送らない = 変更しない」「null = クリア」だが、
+        ``patients.visit_category`` は NOT NULL DEFAULT 'psychiatric' でクリアは
+        できない。素の ``VisitCategoryV2 | None`` だと null が「未指定」と同じ
+        扱いで**黙って無視**され、呼び出し側は「消えたつもり」で食い違う。
+        意図の取り違えを起こさないよう、明示的な null は拒否する
+        (既定へ戻したいなら ``"psychiatric"`` を明示的に送る)。
+        """
+        if "visit_category" in self.model_fields_set and self.visit_category is None:
+            raise ValueError(
+                "visit_category に null は指定できません "
+                "(未変更ならキーごと省略 / 既定に戻すなら 'psychiatric' を指定)"
+            )
+        return self
 
 
 class PatientV2Read(PatientV2Base):
