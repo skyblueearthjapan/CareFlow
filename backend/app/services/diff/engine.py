@@ -497,6 +497,16 @@ def _compare_entries(
     def _ukey(name: str) -> str:
         return _normalize_user_name(name) if normalize_names else name
 
+    def _staff_differs(a: str, b: str) -> bool:
+        """職員名の差分判定。normalize_names=True では空白/異体字を無視する。
+
+        2026-08-23 実データ: らく助「髙梨桂子」vs カイポケ「髙梨　桂子」で
+        同一担当の訪問 20 件が偽 edit になった。利用者名と同じ正規化で比較する。
+        """
+        if not normalize_names:
+            return a != b
+        return _normalize_user_name(a or "") != _normalize_user_name(b or "")
+
     display_by_key: dict[str, str] = {}
     for e in current_entries + optimized_entries:
         display_by_key.setdefault(_ukey(e.user_name), e.user_name)
@@ -609,8 +619,8 @@ def _compare_entries(
                         # 差分があるかチェック
                         has_diff = (
                             cur_entry.end_time != opt_entry.end_time
-                            or cur_entry.staff1_name != opt_entry.staff1_name
-                            or cur_entry.staff2_name != opt_entry.staff2_name
+                            or _staff_differs(cur_entry.staff1_name, opt_entry.staff1_name)
+                            or _staff_differs(cur_entry.staff2_name, opt_entry.staff2_name)
                         )
                         if has_diff:
                             corrections.append(
@@ -672,8 +682,8 @@ def _compare_entries(
                         has_diff = (
                             cur_entry.start_time != opt_entry.start_time
                             or cur_entry.end_time != opt_entry.end_time
-                            or cur_entry.staff1_name != opt_entry.staff1_name
-                            or cur_entry.staff2_name != opt_entry.staff2_name
+                            or _staff_differs(cur_entry.staff1_name, opt_entry.staff1_name)
+                            or _staff_differs(cur_entry.staff2_name, opt_entry.staff2_name)
                         )
                         if has_diff:
                             corrections.append(

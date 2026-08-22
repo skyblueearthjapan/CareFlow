@@ -279,3 +279,38 @@ def test_normalize_names_merges_kanji_variants() -> None:
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
     )
     assert corrections == [], f"異体字で偽差分: {[(c.action, c.user_name) for c in corrections]}"
+
+
+# ===========================================================================
+# 2026-08-23 実データ (8/17 週 突合 46 件): 担当者名のスペース差 / 患者名の異体字
+# ===========================================================================
+
+
+def test_normalize_names_ignores_staff_spacing_variants() -> None:
+    """担当者名「髙梨桂子」(らく助) と「髙梨　桂子」(カイポケ) は同一人物 → 偽 edit を出さない."""
+    cur = CSV_HEADER + _kaipoke_row(user="前川　心愛", staff1="髙梨　桂子", svc="A")
+    opt = CSV_HEADER + _kaipoke_row(user="前川　心愛", staff1="髙梨桂子", svc="A")
+    corrections = compare_schedules_from_content(
+        cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
+    )
+    assert corrections == [], f"偽差分が発生: {[(c.action, c.user_name) for c in corrections]}"
+
+
+def test_normalize_names_still_detects_real_staff_change() -> None:
+    """正規化しても別人への担当変更は edit として検出される."""
+    cur = CSV_HEADER + _kaipoke_row(user="前川　心愛", staff1="髙梨　桂子", svc="A")
+    opt = CSV_HEADER + _kaipoke_row(user="前川　心愛", staff1="宇田川　優莉", svc="A")
+    corrections = compare_schedules_from_content(
+        cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
+    )
+    assert [c.action for c in corrections] == ["edit"]
+
+
+def test_normalize_names_merges_maki_variant() -> None:
+    """患者名の異体字 槇/槙 (「槇 恵」vs「槙　恵」) は同一人物として束ねる."""
+    cur = CSV_HEADER + _kaipoke_row(user="槙　恵", svc="A", start="12:00", end="12:35")
+    opt = CSV_HEADER + _kaipoke_row(user="槇 恵", svc="A", start="12:00", end="12:35")
+    corrections = compare_schedules_from_content(
+        cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
+    )
+    assert corrections == []
