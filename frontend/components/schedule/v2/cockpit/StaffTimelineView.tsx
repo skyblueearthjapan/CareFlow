@@ -180,8 +180,8 @@ const NAME_COL_PX = 160;
 const BAR_H = 48;
 const LANE_STEP = 54;
 const LANE_PAD = 8;
-/** 時間軸の最小幅 (px)。PO 要望 2026-08-22: 患者氏名が読める大きさ (1時間 ≒ 130px)。 */
-const MIN_TRACK_PX = 1600;
+/** 時間軸の最小幅 (px)。PO 要望 2026-08-22: 患者氏名が読める大きさ (1時間 ≒ 200px・PO 再要望で 1600→2400)。 */
+const MIN_TRACK_PX = 2400;
 /** 15分スナップ。 */
 const SNAP_MIN = 15;
 /** これ以下の移動はクリック扱い (モック bindTlDrag と同値)。 */
