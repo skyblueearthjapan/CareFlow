@@ -13,7 +13,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -76,11 +76,17 @@ from app.schemas.integrations import (
     ReplaceInboundResult,
     ReplaceInboundSkipRead,
     ReplaceInboundTraineeSoloRead,
+    ReverseSheetResult,
     SmartInboundApplyRequest,
     SmartInboundApplyResult,
     SmartInboundPreviewRead,
     SmartInboundPreviewRequest,
     SnapshotRestoreResultRead,
+    UnsentEventRead,
+    UnsentItemRead,
+    UnsentSnapshotRead,
+    UnsentSummaryRead,
+    UnsentSummaryRequest,
     WeekScheduleRead,
     WeekScheduleRow,
 )
@@ -510,6 +516,13 @@ async def _reconcile_latest_job(
             )
             if sheet is not None and sheet.status == "applying":
                 sheet.status = "applied" if job.status == "completed" else "failed"
+                if sheet.status == "applied":
+                    # 送信が通った = 保存CSV(送信前の姿)はもうカイポケと一致しない。
+                    # 残すと「送ったばかりの変更」が再び未送信に見えるので捨て、
+                    # 「🔄突合で取り直してください」へフェイルクローズする。
+                    from app.services.kaipoke.csv_snapshot import drop_snapshots
+
+                    await drop_snapshots(db, month=sheet.target_month, week_start=sheet.week_start)
         # 失敗/スキップがあれば実行管理者(admin/manager)へ通知を残す。反映後の
         # 失敗/スキップを見逃して放置しないための恒久的な気づき (トーストと違い消えない)。
         await _notify_apply_result(db, job)
@@ -1142,6 +1155,53 @@ def _safe_uuid(v: Any) -> UUID | None:
         return None
 
 
+# --- 週スコープの実日付解決 / JST 当日 (apply の過去日ガードと ●未送信 の共有) ---
+# CSVの日付列は「日」(1-31) しか持たないため、週の 7 日から実日付を復元する。
+# apply (送信) と unsent-summary (未送信表示) が **同じ関数** を使うことで、
+# 「FEで送れると見えたのにBEがスキップした」というズレを構造的に防ぐ
+# (week-cockpit 受け入れ基準: 過去日の送信除外が BE/FE 両方で一致)。
+
+
+def jst_today() -> date:
+    """JST の今日。送信可否 (当日以前は実績保護で送らない) の基準日。"""
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("Asia/Tokyo")).date()
+
+
+def resolve_item_date(
+    action: str,
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+    week_start: date | None,
+) -> date | None:
+    """CorrectionSheetItem の「日」を週内の実日付へ解決する (週外/曖昧/解決不能は None)。
+
+    どちら側の日付を見るかは action で決まる: delete/edit/date_change は
+    before (現況の位置) が送信対象の行、add は after (これから作る位置)。
+
+    **曖昧性ガード**: 週内に同じ「日」が 2 つ以上現れる場合 (月跨ぎ週で理論上
+    起こり得る形) は None を返す。当てずっぽうで日付を決めて過去日判定を
+    すり抜けさせるより、「解決できない」と言う方が安全 (実績のある日を
+    書き換えに行かない)。
+    """
+    if week_start is None:
+        return None
+    src = before if action in ("delete", "edit", "date_change") else after
+    raw = str(((src or {}).get("date")) or "").strip()
+    if not raw.isdigit():
+        return None
+    d = int(raw)
+    matches = [
+        week_start + timedelta(days=i)
+        for i in range(7)
+        if (week_start + timedelta(days=i)).day == d
+    ]
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
 @router.post(
     "/diff-local",
     response_model=DiffAccepted,
@@ -1185,6 +1245,8 @@ async def trigger_diff_local(
             week_start=payload.week_start,
             week_end=payload.week_end,
             credentials=await _kaipoke_credentials(db),
+            # export 成功時に現況CSVを保存する (●未送信の土台・week-cockpit §1 D3)。
+            source_op="diff-local",
         )
     except KaipokeBusyError as exc:
         await db.rollback()
@@ -1262,7 +1324,10 @@ async def trigger_diff_local(
 @router.post(
     "/master-reconcile",
     response_model=MasterReconcileRead,
-    summary="マスタ相互突合 (Phase M): カイポケ名簿×らく助マスタの氏名突合 (admin)",
+    summary=(
+        "マスタ相互突合 (Phase M): カイポケ名簿×らく助マスタの氏名突合 "
+        "(業務データは不変・現況CSVのみキャッシュ保存する・admin)"
+    ),
 )
 async def master_reconcile(
     payload: MasterReconcileRequest,
@@ -1275,7 +1340,12 @@ async def master_reconcile(
 
     正規化 (NFKC+空白除去+異体字統一) キーで束ね、①カイポケのみ ②らく助のみ
     ③表記ズレ (同一人物・原文違い) を返す。同期不良の予兆をデータ側から潰すための
-    診断 read-only API — DB/カイポケには一切書かない。export 同期のため ~50s。
+    診断 API。export 同期のため ~50s。
+
+    書き込みは ``kaipoke_csv_snapshots`` の 1 行だけ (week-cockpit §1 D3): せっかく
+    RPA を回して取った現況CSVを「最後に見たカイポケの姿」として残し、●未送信を
+    RPA なしで出せるようにする。**業務データ (訪問/イベント/マスタ) には一切
+    触れない**という性質は変わらない。
     """
     from app.models.patient import Patient
     from app.models.staff import Staff as StaffModel
@@ -1293,6 +1363,22 @@ async def master_reconcile(
     except KaipokeApiError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     csv_content = (resp.get("result") or {}).get("csv_content") or ""
+
+    # 突合そのものは read-only だが、せっかく取得した現況CSVは「最後に見た姿」として
+    # 保存する (●未送信の土台・week-cockpit §1 D3)。業務データには一切触れない
+    # キャッシュ行のみ。office は指定せず export しているため office_id=None。
+    from app.services.kaipoke.csv_snapshot import save_snapshot
+
+    if await save_snapshot(
+        db,
+        office_id=None,
+        month=payload.month,
+        week_start=None,
+        csv_text=csv_content,
+        source_op="master-reconcile",
+    ):
+        await _commit_or_409(db)
+
     kp_patients, kp_staff = extract_names_from_kaipoke_csv(csv_content)
 
     rk_patients = [
@@ -1391,25 +1477,11 @@ async def trigger_apply(
     # (「⇧送信は未来の予定のみ」の原則)。月次シート (week_start 無し) は従来どおり。
     skipped_past = 0
     if sheet.week_start is not None:
-        from zoneinfo import ZoneInfo
-
-        _today_jst = datetime.now(ZoneInfo("Asia/Tokyo")).date()
-
-        def _item_date(it) -> date | None:
-            src = it.before if it.action in ("delete", "edit", "date_change") else it.after
-            raw = str(((src or {}).get("date")) or "").strip()
-            if not raw.isdigit():
-                return None
-            d = int(raw)
-            for i in range(7):
-                cand = sheet.week_start + timedelta(days=i)
-                if cand.day == d:
-                    return cand
-            return None
+        _today_jst = jst_today()
 
         _kept: list = []
         for it in selected_all:
-            _d = _item_date(it)
+            _d = resolve_item_date(it.action, it.before, it.after, sheet.week_start)
             if _d is not None and _d <= _today_jst:
                 skipped_past += 1
             else:
@@ -1496,6 +1568,14 @@ async def trigger_apply(
         # 同じ item の再指定は上の 422 で拒否・全体適用(週次反映)の選択からも外れる。
         for _it in selected:
             _it.include = False
+        # 部分送信済みの印 (week-cockpit): このシートは「一部だけ送った」状態。
+        # applying には倒さない (続けて 1 件ずつ送れる) が、●未送信の再計算で
+        # 掃除されると送信済みの記録ごと消えるため、掃除の除外集合に入れる。
+        sheet.status = "partial"
+        # 送った分だけカイポケが進んだ = 保存CSVは古い。M1 と同じくフェイルクローズ。
+        from app.services.kaipoke.csv_snapshot import drop_snapshots
+
+        await drop_snapshots(db, month=sheet.target_month, week_start=sheet.week_start)
     await _commit_or_409(db)
 
     return JobAccepted(
@@ -1858,6 +1938,7 @@ async def trigger_diff_inbound(
             week_end=week_end,
             direction="inbound",
             credentials=await _kaipoke_credentials(db),
+            source_op="diff-inbound",
         )
     except KaipokeBusyError as exc:
         await db.rollback()
@@ -2275,6 +2356,311 @@ async def bulk_update_correction_items(
     res = await db.execute(stmt)
     await _commit_or_409(db)
     return {"updated": int(res.rowcount or 0)}
+
+
+# --- 週空間「今週の運転席」Phase E: ●未送信 / ⇧上書き ------------------------
+# 正典 = docs/plans/week-cockpit-design.md §2-4 / §2-5。
+
+
+_REVERSE_ACTION = {"add": "delete", "delete": "add"}
+
+# ●未送信の cached シートを掃除するとき、消してはいけないシート状態。
+# applied/applying = 送信の記録そのもの / partial = 一部だけ送った記録。
+_UNSENT_KEEP_STATUSES = ("applied", "applying", "partial", "failed")
+
+
+async def _unsent_events(db, week_start: date) -> list[UnsentEventRead]:
+    """当該週の「まだカイポケに無いイベント」(week-cockpit §1 D3)。
+
+    判定は ``events_outbound.build_outbound_plan`` に委ねる — 送信可否
+    (source が manual/fixed か・cancelled_at・日曜除外・職員内部IDの有無) の
+    判断を 2 箇所に書くと、バーの「未送信 N 件」と実際に送れる件数がずれる。
+    ここは ``sendable=True`` の行だけを拾う薄い変換に徹する。
+    """
+    from app.services.kaipoke.events_outbound import build_outbound_plan
+
+    plan = await build_outbound_plan(db, week_start)
+    return [
+        UnsentEventRead(
+            id=i.event_id,
+            staff_id=i.staff_id,
+            staff_name=i.staff_name,
+            date=i.target_date,
+            start_time=i.start,
+            end_time=i.end,
+            title=i.title,
+            kind="add",
+        )
+        for i in plan.items
+        if i.sendable
+    ]
+
+
+@router.post(
+    "/unsent-summary",
+    response_model=UnsentSummaryRead,
+    summary="●未送信: 保存済み現況CSVとのローカル差分 (RPA を呼ばない・admin)",
+)
+async def unsent_summary(
+    payload: UnsentSummaryRequest,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+) -> UnsentSummaryRead:
+    """らく助側の変更のうち、まだカイポケへ送っていないものを **即座に** 返す。
+
+    🔄突合 (RPA export ~50s) と違い、最後に保存した現況CSV
+    (``kaipoke_csv_snapshots``) を ``build_local_diff(current_csv=...)`` に流し込む
+    純粋なローカル計算 = 秒で返る。**kaipoke クライアントには一切触れない**
+    (依存も注入しない = 構造的に呼べない・week-cockpit 受け入れ基準)。
+
+    保存CSVが無ければ ``snapshot=null, items=[]`` (FE は「🔄突合してください」)。
+    イベントは現況CSVに依存しない (source/external_id で判定できる) ので常に返す。
+
+    **月跨ぎ週はフェイルクローズ** する。カイポケ export も差分エンジンも月単位で、
+    CSV の日付列は「日」(1-31) しか持たない。7/27〜8/2 のような週では片方の月の
+    行しか現況に無く、もう片方の月の訪問がまるごと「未送信(add)」に化ける。
+    嘘の未送信を出すくらいなら出さない、という判断 (items=[] + warnings)。
+
+    TODO(Phase E 後続): 月跨ぎ週も出せるようにする。両月ぶんの snapshot を
+    それぞれ ``build_local_diff`` に通し (月2回実行)、日→実日付の解決を月ごとに
+    行ってから items をマージすればよい。まずは誤情報を出さないことを優先する。
+    """
+    from app.models.patient import Patient
+    from app.services.kaipoke.csv_snapshot import get_latest
+    from app.services.kaipoke.local_diff import build_local_diff, correction_before_after
+    from app.services.kaipoke.name_match import build_name_index, match_name
+
+    week_start = payload.week_start
+    if week_start.weekday() != 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="weekStart は月曜日を指定してください",
+        )
+    week_end = week_start + timedelta(days=6)
+    month = f"{week_start.year:04d}-{week_start.month:02d}"
+
+    events = await _unsent_events(db, week_start)
+    today = jst_today()
+
+    def _events_only(warnings: list[str]) -> UnsentSummaryRead:
+        return UnsentSummaryRead(
+            week_start=week_start,
+            snapshot=None,
+            sheet_id=None,
+            items=[],
+            events=events,
+            sendable_count=sum(1 for e in events if e.date > today),
+            past_count=sum(1 for e in events if e.date <= today),
+            warnings=warnings,
+        )
+
+    if week_end.month != week_start.month:
+        return _events_only(
+            ["月をまたぐ週の未送信は判定できません。🔄突合でカイポケ現況を確認してください"]
+        )
+
+    snapshot = await get_latest(db, month=month, week_start=week_start)
+    if snapshot is None:
+        return _events_only([])
+
+    corrections, _meta = await build_local_diff(
+        db,
+        month=month,
+        # kaipoke は渡さない — current_csv 注入経路のみを通る (RPA 不使用の担保)。
+        office_id=snapshot.office_id,
+        week_start=week_start,
+        week_end=week_end,
+        direction="outbound",
+        current_csv=snapshot.csv_text,
+    )
+
+    # 同じ週の 'cached' シートは 1 枚だけ残す (未送信は毎回再計算されるため、
+    # 掃除しないと同期バーを開くたびにシートが増える)。ただし**送信の記録を
+    # 持つシートは消さない**: applied/applying/partial/failed、および
+    # include=False の item を 1 件でも持つシート (= 部分送信済みの証跡)。
+    stale_candidates = (
+        await db.scalars(
+            select(CorrectionSheet)
+            .where(
+                CorrectionSheet.direction == "outbound",
+                CorrectionSheet.origin == "cached",
+                CorrectionSheet.week_start == week_start,
+                CorrectionSheet.status.not_in(_UNSENT_KEEP_STATUSES),
+            )
+            .options(selectinload(CorrectionSheet.items))
+        )
+    ).all()
+    stale_ids = [sh.id for sh in stale_candidates if all(it.include for it in sh.items)]
+    if stale_ids:
+        await db.execute(
+            delete(CorrectionSheetItem).where(CorrectionSheetItem.sheet_id.in_(stale_ids))
+        )
+        await db.execute(delete(CorrectionSheet).where(CorrectionSheet.id.in_(stale_ids)))
+
+    items_read: list[UnsentItemRead] = []
+    sheet_id: UUID | None = None
+    if corrections:
+        patients = (await db.scalars(select(Patient).where(Patient.deleted_at.is_(None)))).all()
+        pindex = build_name_index({str(p.id): p.name for p in patients})
+
+        sheet = CorrectionSheet(
+            target_month=month,
+            status="ready",
+            direction="outbound",
+            origin="cached",
+            week_start=week_start,
+            week_end=week_end,
+            created_by_user_id=user.id,
+        )
+        db.add(sheet)
+        await db.flush()
+
+        rows: list[CorrectionSheetItem] = []
+        for c in corrections:
+            pid_str = match_name(c.user_name, pindex)
+            before, after = correction_before_after(c)
+            rows.append(
+                CorrectionSheetItem(
+                    sheet_id=sheet.id,
+                    patient_id=UUID(pid_str) if pid_str else None,
+                    visit_id=None,
+                    action=c.action,
+                    before=before,
+                    after=after,
+                    include=True,
+                )
+            )
+        db.add_all(rows)
+        await db.flush()
+        sheet_id = sheet.id
+        for r in rows:
+            base = CorrectionItemRead.model_validate(r).model_dump()
+            items_read.append(
+                UnsentItemRead(
+                    **base,
+                    date_iso=resolve_item_date(r.action, r.before, r.after, week_start),
+                )
+            )
+
+    await _commit_or_409(db)
+
+    due: list[date | None] = [it.date_iso for it in items_read] + [e.date for e in events]
+    past_count = sum(1 for d in due if d is not None and d <= today)
+    return UnsentSummaryRead(
+        week_start=week_start,
+        snapshot=UnsentSnapshotRead(
+            fetched_at=snapshot.fetched_at, month=snapshot.month, row_count=snapshot.row_count
+        ),
+        sheet_id=sheet_id,
+        items=items_read,
+        events=events,
+        sendable_count=len(due) - past_count,
+        past_count=past_count,
+        warnings=[],
+    )
+
+
+@router.post(
+    "/correction-sheets/{sheet_id}/reverse",
+    response_model=ReverseSheetResult,
+    summary="⇧上書き: inbound シートを反転した outbound シートを作る (admin)",
+)
+async def reverse_correction_sheet(
+    sheet_id: UUID,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+) -> ReverseSheetResult:
+    """「らく助が正」でカイポケを上書きするためのシートを作る (week-cockpit §2-5)。
+
+    inbound シートは before=らく助 / after=カイポケ。before/after を入れ替えれば
+    そのまま「カイポケをらく助へ寄せる」= outbound になる。add↔delete も
+    入替で自然に成立する (add は *_from が空・delete は *_to が空という
+    対称な形で作られているため)。作成後は既存 ``/integrations/apply`` に流す。
+
+    **反転対象は ``include=True`` の item**。inbound シートの include は
+    「取り込む対象」として自動選択された既定値なので、⇧上書きしたい行が違うなら
+    **呼び出し側 (FE) が事前に ``PATCH /correction-sheets/{id}/items/{itemId}`` /
+    bulk-select で include を上書きしてから** 本APIを呼ぶこと。
+
+    既に取り込み適用済み (status='applied') のシートは反転できない — 取り込んだ
+    結果がらく助の現在地なので、その差分をカイポケへ押し返すと往復して壊れる。
+    同じ週の未適用 'reverse' シートは作り直し (毎回増やさない)。
+    """
+    sheet = await db.scalar(
+        select(CorrectionSheet)
+        .where(CorrectionSheet.id == sheet_id)
+        .options(selectinload(CorrectionSheet.items))
+    )
+    if sheet is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sheet not found")
+    if sheet.direction != "inbound":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="反転できるのは取り込み(inbound)シートだけです",
+        )
+    if sheet.status == "applied":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "取り込み済みのシートは上書き送信に使えません"
+                "（取り込んだ内容がらく助の現在地です。再度🔄突合してください）"
+            ),
+        )
+
+    selected = [it for it in sheet.items if it.include]
+    if not selected:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="選択された項目がありません（上書きする差分にチェックを入れてください）",
+        )
+
+    # 同じ週の未適用 'reverse' シートは作り直す (⇧上書きを押すたびに増やさない)。
+    if sheet.week_start is not None:
+        old_ids = list(
+            (
+                await db.scalars(
+                    select(CorrectionSheet.id).where(
+                        CorrectionSheet.direction == "outbound",
+                        CorrectionSheet.origin == "reverse",
+                        CorrectionSheet.week_start == sheet.week_start,
+                        CorrectionSheet.status.not_in(_UNSENT_KEEP_STATUSES),
+                    )
+                )
+            ).all()
+        )
+        if old_ids:
+            await db.execute(
+                delete(CorrectionSheetItem).where(CorrectionSheetItem.sheet_id.in_(old_ids))
+            )
+            await db.execute(delete(CorrectionSheet).where(CorrectionSheet.id.in_(old_ids)))
+
+    new_sheet = CorrectionSheet(
+        target_month=sheet.target_month,
+        status="ready",
+        direction="outbound",
+        origin="reverse",
+        week_start=sheet.week_start,
+        week_end=sheet.week_end,
+        created_by_user_id=user.id,
+    )
+    db.add(new_sheet)
+    await db.flush()
+
+    for it in selected:
+        db.add(
+            CorrectionSheetItem(
+                sheet_id=new_sheet.id,
+                patient_id=it.patient_id,
+                # visit_id は取り込み側 (らく助の行) の識別子。送信には使わない。
+                visit_id=None,
+                action=_REVERSE_ACTION.get(it.action, it.action),
+                before=it.after,
+                after=it.before,
+                include=True,
+            )
+        )
+    await _commit_or_409(db)
+    return ReverseSheetResult(sheet_id=new_sheet.id, item_count=len(selected))
 
 
 # --- イベント取り込み (個別業務・kaipoke-event-inbound-design.md E-1) --------
@@ -3053,7 +3439,13 @@ async def replace_inbound(
 
     try:
         csv_content = await export_current_week_csv(
-            kaipoke=kaipoke, week_start=payload.week_start, credentials=credentials
+            kaipoke=kaipoke,
+            week_start=payload.week_start,
+            credentials=credentials,
+            # 取得できた現況を保存 (●未送信の土台)。office は指定せず export する
+            # 運用 (単一事業所) のため office_id=None で保存する。
+            db=db,
+            source_op="replace-inbound",
         )
     except KaipokeBusyError as exc:
         # busy = 単一スロットの一時的な競合 (リトライで解消) → 監査記録は残さない。
@@ -3291,7 +3683,11 @@ async def smart_inbound_preview(
 
     try:
         csv_content = await export_current_week_csv(
-            kaipoke=kaipoke, week_start=week_start, credentials=credentials
+            kaipoke=kaipoke,
+            week_start=week_start,
+            credentials=credentials,
+            db=db,
+            source_op="smart-preview",
         )
     except KaipokeBusyError as exc:
         await db.rollback()
@@ -3429,7 +3825,11 @@ async def smart_inbound_apply(
         credentials = await _kaipoke_credentials(db)
         try:
             csv_content = await export_current_week_csv(
-                kaipoke=kaipoke, week_start=week_start, credentials=credentials
+                kaipoke=kaipoke,
+                week_start=week_start,
+                credentials=credentials,
+                db=db,
+                source_op="smart-apply",
             )
         except KaipokeBusyError as exc:
             await db.rollback()

@@ -109,6 +109,9 @@ async def build_outbound_plan(db: AsyncSession, week_start: date) -> OutboundPla
                 StaffEvent.source.in_(OUTBOUND_SOURCES),
                 StaffEvent.starts_at >= range_start,
                 StaffEvent.starts_at < range_end,
+                # 「今週だけ外す」(mig 0075) 済みは送らない — 行は残るが
+                # カイポケ側には存在しないものとして扱う (week-cockpit D2)。
+                StaffEvent.cancelled_at.is_(None),
             )
             .order_by(StaffEvent.starts_at)
         )

@@ -147,6 +147,19 @@ class EventUpdate(BaseModel):
         return None if v is None else _validate_hhmm(v)
 
 
+class EventCancelWeekRequest(BaseModel):
+    """「今週だけ外す / 戻す」(week-cockpit-design.md §2-3).
+
+    ``cancel=True`` で ``staff_events.cancelled_at`` を立て、``False`` で降ろす。
+    行そのものは残るため、固定イベント (source='fixed') の週展開は
+    冪等キー一致で skip されたまま = 次の週生成で復活しない。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cancel: bool
+
+
 # ---------------------------------------------------------------------------
 # Response schema (Frontend contract)
 # ---------------------------------------------------------------------------
@@ -173,6 +186,17 @@ class EventRead(BaseModel):
     note: str | None = None
     # 🔒絶対に潰せないイベント (2段階提案). 既定 False.
     blocking: bool = False
+    # 「今週だけ外す」の取消印 (mig 0075 / week-cockpit-design.md §2-3).
+    # None = 有効。値が入っていれば FE は打消線で描き、送信・重なり判定からは
+    # 外れている (行自体は残るので固定イベントの再展開も起きない)。
+    cancelled_at: datetime | None = None
+    # 出所 (manual / fixed / kaipoke)。盤面最上段の「全員（固定）」帯が
+    # source == 'fixed' で絞り込むために必要 (week-cockpit-design.md §3)。
+    # 旧 BE 互換の既定は 'manual' (DB 側の default と同じ)。
+    source: str = "manual"
+    # カイポケ個別業務の複合キー ("{業務ID}:{職員内部ID}:{YYYY-MM-DD}") /
+    # 固定イベント展開キー ("{default_id}:{YYYY-MM-DD}")。未同期は None。
+    external_id: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -212,4 +236,9 @@ class EventRead(BaseModel):
             "type": _db_type_to_label(getattr(data, "event_type", "")),
             "note": getattr(data, "note", None),
             "blocking": bool(getattr(data, "blocking", False)),
+            # **手書き dict の罠**: ここに足さないと EventRead の default (None)
+            # で潰れ、DB に取消印があるのに API が返さない。
+            "cancelled_at": getattr(data, "cancelled_at", None),
+            "source": getattr(data, "source", None) or "manual",
+            "external_id": getattr(data, "external_id", None),
         }

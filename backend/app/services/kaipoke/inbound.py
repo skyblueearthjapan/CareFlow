@@ -12,6 +12,15 @@
   * キャンセルは ``status='cancelled'`` (soft-delete しない・履歴が残る)。
   * 2名体制の防御 — 対象 visit が visit_group_id を持つ場合はグループ全行に同じ
     操作を適用する (片割れだけ残さない)。※本番データは現状グループ0件。
+  * 「今週だけ取消」(週空間 Phase E / week-cockpit-design.md D1) の尊重 —
+    らく助側の取消は ``status='cancelled'`` + ``source='manual_cancel'`` で刻まれる。
+    add がその枠に当たったら復活させず failed にする (⇧送信でカイポケへ delete を
+    反映させてから取込)。**取込 delete 由来**の cancelled (source は元のまま) は
+    従来どおり復活させる — 同一実行内の delete+add ペア (名寄せ差) の収束に要る。
+  * 置換モード (``replace_inbound.replace_week_from_kaipoke``) も同じ考え方で
+    **日単位**に止める: 白紙化対象日に ``manual_cancel`` の visit が居れば、
+    実適用は ReplaceBlockedError (呼び出し側で 422)、プレビューはその日を対象から
+    外して ``skipped`` に理由付きで積む。
 """
 
 from __future__ import annotations
@@ -31,7 +40,11 @@ from app.models.course_template import CourseTemplate
 from app.models.kaipoke_job import KaipokeJob
 from app.models.patient import Patient
 from app.models.staff import Staff
-from app.models.visit import VISIT_STATUS_CANCELLED, Visit
+from app.models.visit import (
+    VISIT_SOURCE_MANUAL_CANCEL,
+    VISIT_STATUS_CANCELLED,
+    Visit,
+)
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.accompaniment import (
     resolve_accompaniment_kind,
@@ -575,6 +588,20 @@ async def apply_inbound_items(
                 # 上書きする (2026-07-26): 同一実行内の delete+add ペア (名寄せ差 =
                 # 氏名の空白違い等で同一訪問が分解されるケース) が安全に収束する。
                 # dry-run では delete が status を書かないため pending_cancelled で予測。
+                #
+                # 例外 = **らく助側の「今週だけ取消」** (source='manual_cancel' /
+                # 週空間 Phase E・week-cockpit-design.md D1)。まだ⇧送信していない
+                # だけなので、取込で黙って復活させると利用者の意思に反して訪問が
+                # 戻る。⇧送信で delete をカイポケへ反映してから取り込ませる。
+                # 取込 delete 由来の cancelled は従来どおり復活してよい。
+                if existing.source == VISIT_SOURCE_MANUAL_CANCEL:
+                    _finish(
+                        "failed",
+                        "らく助側で今週だけ取消済みです。"
+                        "⇧送信でカイポケへ反映してから取り込んでください",
+                        target_date,
+                    )
+                    continue
                 if existing.status == VISIT_STATUS_CANCELLED or existing.id in pending_cancelled:
                     revive = existing
                 else:
@@ -831,6 +858,28 @@ async def apply_inbound_items(
         final_date = new_date if (date_changed and new_date is not None) else target_date
         weekday = final_date.weekday()
 
+        # --- 移動先の占有チェック (先に立ちはだかる枠があれば failed で継続) ---
+        # visits には partial UNIQUE ``uq_visits_pds_active``
+        # (patient_id, visit_date, start_time) WHERE deleted_at IS NULL がある。
+        # 移動先が別の visit に既に取られていると flush 時に IntegrityError =
+        # 500 (残りの item も巻き添え) になるため、ここで item 単位の failed に
+        # 落として続行する。索引は cancelled 行も持つ ⇒ 「今週だけ取消」した枠へ
+        # 別訪問を滑り込ませることも防げる (week-cockpit-design.md D1)。
+        if time_changed or date_changed:
+            final_start = start_after if start_after is not None else visit.start_time
+            occupant = index.get((item.patient_id, final_date, final_start))
+            if occupant is not None and occupant.id not in {v.id for v in partners}:
+                _finish(
+                    "failed",
+                    f"移動先 {final_date.month}/{final_date.day} "
+                    f"{final_start.strftime('%H:%M')} に別の予定があります"
+                    "（差分を取り直してください）",
+                    target_date,
+                )
+                continue
+            # 移動前のキーを控える (書込後は visit の値が変わるので後から引けない)。
+            old_index_keys = [(v.patient_id, v.visit_date, v.start_time) for v in partners]
+
         # --- スタッフ変更の解決 (R-3a: 「コースの変更」として扱う・設計 §8-1) --
         staff1_before_name = str(before.get("staff1") or "")
         staff1_after_name = str(after.get("staff1") or "")
@@ -1032,6 +1081,14 @@ async def apply_inbound_items(
                     )
                 )
                 _remember_accompaniment(visit.id, accompaniment_sid2)
+        # 索引を移動後のキーへ張り替える (同一実行内の後続 item が旧キーを
+        # 占有済みと誤判定したり、空いた枠へ二重に移動して 500 になるのを防ぐ)。
+        # dry-run でも張り替える = 予測と実適用の結果を一致させる。
+        if time_changed or date_changed:
+            _final_start = start_after if start_after is not None else visit.start_time
+            for key in old_index_keys:
+                index.pop(key, None)
+            index[(item.patient_id, final_date, _final_start)] = visit
         _finish("updated", detail, target_date)
 
     if dry_run:

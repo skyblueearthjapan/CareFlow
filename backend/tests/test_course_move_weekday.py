@@ -252,3 +252,91 @@ async def test_oplog_move_course_weekday_restores(client, db) -> None:
     assert restored_course.weekday == 4
     restored_visit = await db.scalar(select(Visit).where(Visit.id == visit_id))
     assert restored_visit.visit_date == date.fromisocalendar(_ISO_YEAR, _ISO_WEEK, 5)
+
+
+# ---------------------------------------------------------------------------
+# 6) 「今週だけ取消」(cancelled) の訪問も一緒に動く (週空間 Phase E / M-9)
+#
+# 取消枠だけ元の曜日に取り残すと、コースと日付の整合が崩れて盤面から迷子になり、
+# 「取消をやめる」を押した瞬間に別曜日へ復活してしまう。status は保持する。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_move_carries_cancelled_visits_and_keeps_status(client, db) -> None:
+    admin = await _make_user(db, email="cmw-cancel@example.com", role="admin")
+    office = await _make_office(db, name="取消移動事業所")
+    course = await _make_course(db, office=office, code="A", weekday=4)  # 金
+    p1 = await _make_patient(db, code="CMW-C1")
+    p2 = await _make_patient(db, code="CMW-C2")
+    p3 = await _make_patient(db, code="CMW-C3")
+    v_planned = await _make_visit(db, patient=p1, course=course, start=time(9, 0))
+    v_cancelled = await _make_visit(
+        db, patient=p2, course=course, status_value="cancelled", start=time(10, 0)
+    )
+    v_done = await _make_visit(
+        db, patient=p3, course=course, status_value="completed", start=time(11, 0)
+    )
+    from_date = v_planned.visit_date
+    to_date = date.fromisocalendar(_ISO_YEAR, _ISO_WEEK, 3)  # 水曜
+
+    res = await client.post(
+        _URL,
+        headers=_bearer(admin),
+        json={"course_id": str(course.id), "to_weekday": 2},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["visits_moved"] == 2  # planned + cancelled (completed は残す)
+
+    for v in (v_planned, v_cancelled, v_done):
+        await db.refresh(v)
+    assert v_planned.visit_date == to_date
+    assert v_cancelled.visit_date == to_date
+    assert v_cancelled.status == "cancelled"  # status は書き換えない
+    assert v_cancelled.source == "manual_week"
+    assert v_done.visit_date == from_date  # 実績のある訪問は動かさない
+    await db.refresh(course)
+    assert course.weekday == 2
+
+
+@pytest.mark.asyncio
+async def test_oplog_undo_carries_cancelled_visits_back(client, db) -> None:
+    """undo (op_log move_course_weekday) でも cancelled が一緒に戻る."""
+    admin = await _make_user(db, email="cmw-cancel-undo@example.com", role="admin")
+    office = await _make_office(db, name="取消undo事業所")
+    course = await _make_course(db, office=office, code="B", weekday=4)
+    p1 = await _make_patient(db, code="CMW-U1")
+    p2 = await _make_patient(db, code="CMW-U2")
+    v_planned = await _make_visit(db, patient=p1, course=course, start=time(9, 0))
+    v_cancelled = await _make_visit(
+        db, patient=p2, course=course, status_value="cancelled", start=time(10, 0)
+    )
+    from_date = v_planned.visit_date
+    course_id, planned_id, cancelled_id = course.id, v_planned.id, v_cancelled.id
+
+    res = await client.post(
+        _URL,
+        headers=_bearer(admin),
+        json={"course_id": str(course_id), "to_weekday": 2},
+    )
+    assert res.status_code == 200, res.text
+    # API は別セッションで書くので identity map を捨ててから undo を実行する
+    db.expire_all()
+
+    await _execute_payload(
+        db,
+        {
+            "op": "move_course_weekday",
+            "course_id": str(course_id),
+            "iso_year": _ISO_YEAR,
+            "iso_week": _ISO_WEEK,
+            "to_weekday": 4,
+        },
+    )
+    await db.commit()
+
+    restored_planned = await db.scalar(select(Visit).where(Visit.id == planned_id))
+    restored_cancelled = await db.scalar(select(Visit).where(Visit.id == cancelled_id))
+    assert restored_planned.visit_date == from_date
+    assert restored_cancelled.visit_date == from_date  # 取消枠も一緒に戻る
+    assert restored_cancelled.status == "cancelled"

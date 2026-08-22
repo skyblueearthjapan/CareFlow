@@ -3416,6 +3416,9 @@ class Layer3Assigner:
             StaffEvent.staff_id.in_(staff_ids),
             StaffEvent.starts_at < range_end,
             StaffEvent.ends_at >= range_start,
+            # 「今週だけ外す」(mig 0075 / week-cockpit D2) 済みは占有として
+            # 数えない — blocking・重なり判定の入力はここ 1 箇所。
+            StaffEvent.cancelled_at.is_(None),
         )
         rows = list((await db.scalars(stmt)).all())
         result: dict[UUID, list[StaffEvent]] = {}

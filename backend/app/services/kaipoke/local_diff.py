@@ -67,13 +67,14 @@ async def build_local_diff(
     db: AsyncSession,
     *,
     month: str,
-    kaipoke: KaipokeClient,
+    kaipoke: KaipokeClient | None = None,
     office_id: uuid.UUID | None = None,
     week_start: date | None = None,
     week_end: date | None = None,
     direction: str = "outbound",
     credentials: dict[str, str] | None = None,
     current_csv: str | None = None,
+    source_op: str = "diff-local",
 ) -> tuple[list[Correction], dict[str, Any]]:
     """現況(kaipoke) と 最適化(CareFlow生成) の差分を CareFlow 内で計算する。
 
@@ -90,13 +91,19 @@ async def build_local_diff(
         (delete=CareFlow にだけ残っている→キャンセル扱い / add=カイポケにだけある)
 
     Returns ``(corrections, meta)``。同期 export は csv_content を直接返す (async=false)。
+
+    ``current_csv`` を渡した場合 RPA には一切触れない (``kaipoke=None`` で呼べる)。
+    「●未送信」(week-cockpit §2-4) はこの経路で保存済みCSVを流し込む。
     """
     year, mon = int(month[:4]), int(month[5:7])
 
     # current_csv 注入 (2026-07-26 smart-inbound): ハイブリッド取り込みは export を
     # 1回だけ実行し、その結果を差分計算と置換計画の両方に渡す。未指定なら従来どおり
     # ここで export する。
+    did_export = current_csv is None
     if current_csv is None:
+        if kaipoke is None:
+            raise ValueError("build_local_diff requires either `kaipoke` or `current_csv`")
         export_payload: dict[str, Any] = {"month": month, "async": False}
         if credentials:
             # アプリ内設定の認証情報 (C-1)。HTTP body のみに載せ、永続化はしない。
@@ -112,6 +119,21 @@ async def build_local_diff(
         if office is not None:
             office_name = office.kaipoke_name or office.name
             current_csv = _filter_current_by_office(current_csv, office_name)
+
+    if did_export:
+        # 「最後に見たカイポケの姿」を保存 (week-cockpit §1 D3・mig 0076)。
+        # 拠点フィルタ後に保存する = 保存CSVの中身は office_id キーと一致する。
+        # 月まるごとの export なので week_start は付けない (どの週にも使える)。
+        from app.services.kaipoke.csv_snapshot import save_snapshot
+
+        await save_snapshot(
+            db,
+            office_id=office_id,
+            month=month,
+            week_start=None,
+            csv_text=current_csv,
+            source_op=source_op,
+        )
 
     optimized_bytes = await build_month_csv(
         db,
@@ -169,6 +191,9 @@ async def export_current_week_csv(
     kaipoke: KaipokeClient,
     week_start: date,
     credentials: dict[str, str] | None = None,
+    db: AsyncSession | None = None,
+    office_id: uuid.UUID | None = None,
+    source_op: str = "export-week",
 ) -> str:
     """対象週 (月〜日) をカバーするカイポケ現況CSVを取得する (置換取り込み用)。
 
@@ -176,6 +201,13 @@ async def export_current_week_csv(
     各月から「その月に属する週内の日」の行だけを残して結合する。CSV の日付列は
     「日」(1-31) のみなので、月ごとに許可日集合で絞らないと 7/1 の行が
     8/1 の週に誤混入する — その防止が本ヘルパーの存在理由。
+
+    ``db`` を渡すと取得結果を ``kaipoke_csv_snapshots`` に保存する
+    (week-cockpit §1 D3)。この CSV は対象週の行しか含まないため、保存時は
+    ``week_start`` を刻んで「この週専用の現況」であることを明示する
+    (別の週の未送信計算に流用すると週が丸ごと空に見える)。
+    ``office_id`` は既定 None — 置換/smart 取り込みは拠点で絞らず export する
+    (単一事業所運用。呼び出し側に拠点の文脈が無い) ため。
     """
     week_days = [week_start + timedelta(days=i) for i in range(7)]
     months: list[str] = []
@@ -214,7 +246,21 @@ async def export_current_week_csv(
     writer = csv.writer(buf, lineterminator="\r\n")
     writer.writerow(header or [])
     writer.writerows(merged)
-    return buf.getvalue()
+    merged_csv = buf.getvalue()
+
+    if db is not None and merged:
+        from app.services.kaipoke.csv_snapshot import save_snapshot
+
+        await save_snapshot(
+            db,
+            office_id=office_id,
+            month=f"{week_start.year:04d}-{week_start.month:02d}",
+            week_start=week_start,
+            csv_text=merged_csv,
+            source_op=source_op,
+        )
+
+    return merged_csv
 
 
 def correction_before_after(c: Correction) -> tuple[dict[str, str], dict[str, str]]:

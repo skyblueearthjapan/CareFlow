@@ -34,6 +34,11 @@ class CorrectionSheet(Base, TimestampMixin):
         nullable=True,
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    # シートの出所 (mig 0076・week-cockpit §2-4/§2-5)。
+    # NULL = 通常の差分計算 (diff-local / diff-inbound / kaipoke diff)
+    # 'cached'  = 保存済み現況CSVからのローカル再計算 (●未送信・RPA なし)
+    # 'reverse' = inbound シートを反転して作った上書き送信シート (⇧上書き)
+    origin: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     items: Mapped[list[CorrectionSheetItem]] = relationship(
         "CorrectionSheetItem",

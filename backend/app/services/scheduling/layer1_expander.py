@@ -58,7 +58,7 @@ from app.models.special_visit import (
     SpecialVisitMark,
 )
 from app.models.staff import Staff
-from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, Visit
+from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, VISIT_STATUS_CANCELLED, Visit
 
 logger = logging.getLogger(__name__)
 
@@ -833,10 +833,19 @@ class Layer1Expander:
         candidate_keys: list[tuple[UUID, date, time]],
     ) -> set[tuple[UUID, date, time]]:
         """INSERT 候補の (patient_id, visit_date, start_time) のうち、
-        既存の non-auto (manual 等) かつ active (deleted_at IS NULL) な visit と
-        衝突するキーを返す。
+        既存の active (deleted_at IS NULL) な visit と衝突するキーを返す。
 
-        返却セットに含まれるキーは auto INSERT を skip する (manual を尊重)。
+        衝突とみなすのは 2 種類:
+          1. **non-auto** (manual / import / manual_week 等) — 人手入力を尊重する
+          2. **cancelled** (source 不問) — 「今週だけ取消」(週空間 Phase E /
+             week-cockpit-design.md D1) された枠。削除側
+             (``_delete_existing_auto_visits``) は ``status='planned'`` しか
+             消さないため cancelled 行は週生成後も
+             生き残る。ここで衝突扱いにしないと同じ (患者×日×開始時刻) に
+             auto 行が再 INSERT され、取消が復活したうえに枠が二重化する
+             (2 名体制なら 2 行とも)。
+
+        返却セットに含まれるキーは auto INSERT を skip する。
         """
         if not candidate_keys:
             return set()
@@ -844,7 +853,10 @@ class Layer1Expander:
         rows = await db.execute(
             select(Visit.patient_id, Visit.visit_date, Visit.start_time).where(
                 Visit.deleted_at.is_(None),
-                Visit.source != LAYER1_VISIT_SOURCE,  # manual / ai / import 等
+                or_(
+                    Visit.source != LAYER1_VISIT_SOURCE,  # manual / ai / import 等
+                    Visit.status == VISIT_STATUS_CANCELLED,  # 今週だけ取消の枠
+                ),
                 tuple_(Visit.patient_id, Visit.visit_date, Visit.start_time).in_(candidate_keys),
             )
         )

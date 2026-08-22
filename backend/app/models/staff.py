@@ -185,6 +185,12 @@ class StaffEvent(Base, TimestampMixin):
     blocking: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false"), default=False
     )
+    # 「今週だけ外す」の取消印 (mig 0075 / week-cockpit-design.md D2)。
+    # **行は消さない**: 削除すると expand_staff_event_defaults の冪等キーが空き
+    # 次の週生成で復活する。取消印を立てた行は展開で skip されたままになる。
+    # 盤面 / GET events は cancelled 行も返す (FE が打消線) が、
+    # outbound 送信・Layer3 の重なり/blocking 判定・提案エンジンは除外する。
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_staff_events_when", "staff_id", "starts_at"),

@@ -101,6 +101,11 @@ export interface WeekOverviewVisit {
   /** 患者住所。週タイムラインのカード📍行 (日ビューと情報統一・PO要望)。 */
   patient_address?: string | null;
   /**
+   * `visits.status`。'cancelled' = 今週だけ取消 (週空間 Phase E / D1)。
+   * 欠落は「取消していない」扱い (寛容)。
+   */
+  status?: string | null;
+  /**
    * 訪問の担当スタッフ (visit.primary_staff_id)。スタッフ別ビューの行帰属に使う
    * (2026-07-26: 臨時テンプレは複数スタッフの臨Nコースを束ねるため、コース担当
    * 経由の帰属では他人の訪問が混ざる — 訪問自身の primary が正)。
@@ -525,6 +530,8 @@ export function CourseWeekOverview({
                         masterStartTime: string | null;
                         /** 患者性別 (male/female/unknown)。行頭ドット (日リストと同じ視覚言語)。 */
                         patientSex: string | null;
+                        /** 今週だけ取消 (visits.status='cancelled')。打消線で見せる。 */
+                        cancelled: boolean;
                       }
                     | {
                         kind: 'event';
@@ -565,6 +572,7 @@ export function CourseWeekOverview({
                         // 2026-08-08: ピン留め不可の理由を正しく出すために型の時刻を運ぶ。
                         masterStartTime: v.master_start_time ?? null,
                         patientSex: v.patient_sex ?? null,
+                        cancelled: v.status === 'cancelled',
                       };
                     }),
                     ...staffDayEvents.map((e) => {
@@ -762,13 +770,23 @@ export function CourseWeekOverview({
                                     <li
                                       key={item.id}
                                       // タイムラインカードと同じ視覚言語の縦幅狭カード行 (PO要望)。
-                                      className="flex items-center gap-1 rounded border border-l-[3px] px-1 py-0.5 text-[10px] text-text-primary"
+                                      className={[
+                                        'flex items-center gap-1 rounded border border-l-[3px] px-1 py-0.5 text-[10px] text-text-primary',
+                                        // 今週だけ取消 (D1): 消さずに打消線で残す。
+                                        item.cancelled ? 'line-through opacity-60' : '',
+                                      ]
+                                        .filter(Boolean)
+                                        .join(' ')}
                                       style={{
                                         background: pal.bg,
                                         borderColor: pal.ln,
                                         borderLeftColor: pal.bar,
                                       }}
-                                      title={item.label}
+                                      title={
+                                        item.cancelled
+                                          ? `${item.label}（今週だけ取消）`
+                                          : item.label
+                                      }
                                       data-testid={`course-week-overview-name-${item.id}`}
                                     >
                                       {/* 行頭の性別ドット (日リストと同じ視覚言語: 患者sex→genderPalette)。 */}
@@ -833,6 +851,14 @@ export function CourseWeekOverview({
                                           />
                                         )}
                                       </span>
+                                      {item.cancelled ? (
+                                        <span
+                                          className="shrink-0 rounded bg-error-bg px-1 text-[9px] font-bold text-error no-underline"
+                                          data-testid={`course-week-overview-cancelled-${item.id}`}
+                                        >
+                                          取消
+                                        </span>
+                                      ) : null}
                                       {/* ここに来るまでの移動距離 (前の患者/拠点から). 行末右端. */}
                                       {distByVisitId.get(item.id) != null ? (
                                         <span

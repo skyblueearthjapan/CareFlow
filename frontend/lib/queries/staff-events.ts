@@ -31,6 +31,7 @@ import {
   type EventRead,
   type EventUpdate,
 } from '@/lib/schemas/staff-events';
+import { cockpitEventReadSchema, type CockpitEventRead } from '@/lib/schemas/v2/cockpit';
 
 const STAFF_EVENTS_KEY = ['staff', 'events'] as const;
 
@@ -81,16 +82,45 @@ export function useStaffEvents(
 }
 
 /**
+ * 週イベントの寛容パース。1 行でも壊れていると週の盤面が丸ごと消えるのは
+ * 割に合わないため、**不正な行だけ捨てて warn** し、残りを返す
+ * (BE の項目追加/欠落に耐える)。配列でない応答は空配列扱い。
+ */
+export function parseWeekEvents(raw: unknown, staffId?: string): CockpitEventRead[] {
+  if (!Array.isArray(raw)) {
+    console.warn('[staff-events] 応答が配列ではありません', { staffId });
+    return [];
+  }
+  const out: CockpitEventRead[] = [];
+  for (const row of raw) {
+    const parsed = cockpitEventReadSchema.safeParse(row);
+    if (parsed.success) {
+      out.push(parsed.data);
+    } else {
+      console.warn('[staff-events] 読めないイベント行を無視しました', {
+        staffId,
+        issues: parsed.error.issues,
+      });
+    }
+  }
+  return out;
+}
+
+/**
  * Wave 27 Phase B-1: 週単位で複数 staff の events を並列バッチ取得する hook.
  *
- * 戻り値は `staffId` の順番に対応した EventRead[][] (空配列でフォールバック)。
+ * 戻り値は `staffId` の順番に対応した CockpitEventRead[][] (空配列でフォールバック)。
  * `staffEventsByStaff` Map に変換して担当 dropdown / セル警告で利用する。
+ *
+ * 週空間 Phase E (2026-08-22): `cockpitEventReadSchema` で parse し、
+ * `cancelled_at`(今週だけ外す) / `source`('fixed'=固定イベント) / `external_id`
+ * を型に載せる。BE が未対応の項目は既定値で埋まるので旧環境でも壊れない。
  */
 export function useWeekStaffEvents(
   staffIds: string[],
   weekStart: Date,
   weekEnd: Date,
-): { data: EventRead[][]; isLoading: boolean } {
+): { data: CockpitEventRead[][]; isLoading: boolean } {
   const { data: session, status } = useSession();
   const { accessToken, refreshToken } = authPair(session);
 
@@ -101,11 +131,13 @@ export function useWeekStaffEvents(
     queries: staffIds.map((id) => ({
       queryKey: [...STAFF_EVENTS_KEY, id, fromStr, toStr] as const,
       enabled: status === 'authenticated' && !!id,
-      queryFn: () =>
-        fetcher<EventRead[]>(buildListUrl(id, { from: fromStr, to: toStr }), {
+      queryFn: async () => {
+        const raw = await fetcher<unknown[]>(buildListUrl(id, { from: fromStr, to: toStr }), {
           accessToken,
           refreshToken,
-        }),
+        });
+        return parseWeekEvents(raw, id);
+      },
     })),
   });
 
@@ -119,11 +151,11 @@ export function useWeekStaffEvents(
  * Wave 27 Phase B-1 helper: `useWeekStaffEvents` の結果を `staffId → EventRead[]` の
  * Map に変換する。
  */
-export function buildStaffEventsMap(
+export function buildStaffEventsMap<T extends EventRead>(
   staffIds: string[],
-  events: EventRead[][],
-): Map<string, EventRead[]> {
-  const m = new Map<string, EventRead[]>();
+  events: T[][],
+): Map<string, T[]> {
+  const m = new Map<string, T[]>();
   staffIds.forEach((id, i) => {
     m.set(id, events[i] ?? []);
   });

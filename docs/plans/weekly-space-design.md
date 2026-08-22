@@ -244,6 +244,7 @@ ChangeScopeChoice の明示2択のみ。本設計は「新規二重DB構築」�
 | **C2** | 突合ビューから訪問の「⇧送信」= 既存 diff-local(outboundシート・~1分)+/integrations/apply(RPA auto_apply)の結線。2段クリック確認・RPA busyガード | ✅ 2026-08-21 実装+**実機検証済**(未来日1件送信→カイポケ反映→遠隔復元まで成功) |
 | **M** | **マスタ相互突合**(PO発案 2026-08-21): カイポケ名簿(現況CSV出現氏名)×らく助マスタの氏名突合 — 一致/表記ズレ(スペース・異体字)/カイポケのみ/らく助のみ。突合パネル「👥マスタ突合」+ POST /integrations/master-reconcile | ✅ 2026-08-21 実装 |
 | **D** | 突合の定期自動実行+差分あり通知=常時同期・カイポケ側更新/削除の自動化 | 将来 |
+| **E** | **今週の運転席**(PO要望 2026-08-22): 急休→代替候補(`substitute-candidates`・Layer3判定流用)→付替 / 訪問メニュー(今週だけ取消=`status='cancelled'`+`source='manual_cancel'`・担当/時刻/曜日・型も変える) / ＋訪問(manual_week)・＋イベント / 固定イベント帯+週内除外(`staff_events.cancelled_at`・mig 0075) / 同期バー=●未送信(`kaipoke_csv_snapshots`・mig 0076・RPAなし `unsent-summary`)+🔄突合(⇩⇧1件/全件・⇧上書き=シート反転) / 横バータイムライン DnD。設計=`week-cockpit-design.md`・調査=`week-cockpit-investigation.md`・進捗=`week-cockpit-progress.md` | ✅ 2026-08-22 実装+レビュー済(未デプロイ) |
 
 ### C2 実機テストの教訓と是正 (2026-08-21・全て実装済み)
 

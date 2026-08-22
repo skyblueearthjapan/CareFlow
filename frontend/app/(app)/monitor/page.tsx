@@ -142,7 +142,8 @@ export default function MonitorPage() {
     // 当日分だけに絞る (フックは日単位でも配列を返すため防御的にフィルタ)。
     const m = new Map<string, EventRead[]>();
     for (const [sid, events] of all.entries()) {
-      const todays = events.filter((ev) => ev.date === date);
+      // 「今週だけ外した」イベント (cancelled_at・mig 0075) は当日の予定ではない。
+      const todays = events.filter((ev) => ev.date === date && ev.cancelled_at == null);
       if (todays.length > 0) m.set(sid, todays);
     }
     return m;

@@ -206,6 +206,8 @@ vi.mock('@/lib/queries/staff', () => ({
 vi.mock('@/lib/queries/visits', () => ({
   useVisits: (...args: unknown[]) => mockVisits(...args),
   useDeleteVisit: () => ({ mutateAsync: mockDeleteVisit, isPending: false }),
+  // 週空間 Phase E: 「＋訪問」(今週だけ) の作成。
+  useCreateVisit: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock('@/lib/queries/courses', () => ({
   useCourses: (...args: unknown[]) => mockCourses(...args),

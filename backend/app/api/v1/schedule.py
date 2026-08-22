@@ -2585,6 +2585,8 @@ async def _collect_event_visit_warnings(
         StaffEvent.staff_id.in_(list(staff_ids)),
         StaffEvent.starts_at < range_end,
         StaffEvent.ends_at >= range_start,
+        # 「今週だけ外す」(mig 0075 / week-cockpit D2) 済みは重なり警告を出さない。
+        StaffEvent.cancelled_at.is_(None),
     )
     events_rows = list((await db.scalars(event_stmt)).all())
     if not events_rows:

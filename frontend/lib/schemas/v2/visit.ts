@@ -30,8 +30,19 @@ export const VISIT_STATUS_V2_VALUES = ['planned', 'completed', 'cancelled', 'no_
 export const visitStatusV2Enum = z.enum(VISIT_STATUS_V2_VALUES);
 export type VisitStatusV2 = z.infer<typeof visitStatusV2Enum>;
 
-/** 入力チャネル (v1 と同じ + Wave U-1 'manual_week' = この週だけ配置). */
-export const VISIT_SOURCE_V2_VALUES = ['manual', 'auto', 'import', 'ai', 'manual_week'] as const;
+/**
+ * 入力チャネル (v1 と同じ + Wave U-1 'manual_week' = この週だけ配置).
+ * 'manual_cancel' = 週空間 Phase E の「今週だけ取消」(BE が status='cancelled' と
+ * 併せて付ける。取消をやめると元の source に戻る)。
+ */
+export const VISIT_SOURCE_V2_VALUES = [
+  'manual',
+  'auto',
+  'import',
+  'ai',
+  'manual_week',
+  'manual_cancel',
+] as const;
 export const visitSourceV2Enum = z.enum(VISIT_SOURCE_V2_VALUES);
 export type VisitSourceV2 = z.infer<typeof visitSourceV2Enum>;
 

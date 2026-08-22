@@ -111,6 +111,15 @@
   --sched-event-bar: #2f9e63;
   --sched-event-ink: #1c6b42;
   --sched-event-ln: #cfe9da;
+  /* カイポケ突合のゴースト (週空間 Phase E・運転席)。
+     before = 青点線「今ここ」/ after = 紫実線「こう変わる・ここに入る」。
+     モック staff-schedule-week-cockpit-mock.html の --del / --add と同値。 */
+  --sched-ghost-before: #2f7fd1;
+  --sched-ghost-before-bg: #e8f1fb;
+  --sched-ghost-after: #7c5cd6;
+  --sched-ghost-after-bg: #efeafc;
+  /* ●未送信ドット (モックの .dot)。らく助が進んでいる予定の目印。 */
+  --sched-unsent-dot: #2f7fd1;
   /* 勤務外ハッチ */
   --sched-offduty-bg: #f5f1ea;
   --sched-offduty-hatch: #efe9df;

@@ -49,7 +49,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
-import { useQueries } from '@tanstack/react-query';
+import { useQueries, useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
 import {
@@ -108,11 +108,15 @@ import {
   useUpdateEventForDrag,
   useWeekStaffEvents,
 } from '@/lib/queries/staff-events';
-import { useWeekStaffOverrides, type WeekOverrideRead } from '@/lib/queries/staff-overrides';
+import {
+  useCreateOverride,
+  useWeekStaffOverrides,
+  type WeekOverrideRead,
+} from '@/lib/queries/staff-overrides';
 import { useVisitAssignStaffWeek } from '@/lib/queries/visitAssignStaffWeek';
 import { useCourseMoveWeekdayWeekOnly } from '@/lib/queries/courseMoveWeekday';
 import type { EventRead } from '@/lib/schemas/staff-events';
-import { useDeleteVisit, useVisits } from '@/lib/queries/visits';
+import { useCreateVisit, useDeleteVisit, useVisits } from '@/lib/queries/visits';
 import { useBulkSyncWeekToFixedMutation } from '@/lib/api/patientSync';
 import { useBulkPinPfvs, useTogglePfvPin } from '@/lib/queries/g21';
 import { useToggleVisitWeekPin } from '@/lib/queries/visit_week_pin';
@@ -167,10 +171,31 @@ import {
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
 import { StaffWeekBoard } from './StaffWeekBoard';
 import { type BoardDragState } from './courseDnd';
+// ─── 週空間 Phase E「今週の運転席」(docs/plans/week-cockpit-design.md §3) ───
+// 部品は FE-A/FE-B が作成済み。ここ (FE-C) は結線だけを行う。
+import { SyncBar } from './cockpit/SyncBar';
+import { FixedEventRow } from './cockpit/FixedEventRow';
+import { VisitActionMenu } from './cockpit/VisitActionMenu';
+import { SubstitutePanel } from './cockpit/SubstitutePanel';
+import { AddVisitDialog, type AddVisitPayload } from './cockpit/AddVisitDialog';
 import {
-  KaipokeReconcilePanel,
-  type ReconcileMarkersByCell,
-} from './KaipokeReconcilePanel';
+  StaffTimelineView,
+  type StaffTimelineRow,
+  type TimelineMarker,
+  type TimelineVisit,
+  type VisitMovePayload,
+} from './cockpit/StaffTimelineView';
+import {
+  toMarkersByCell,
+  unsentEventKey,
+  unsentVisitKey,
+  weekdayOfIso,
+  type CockpitMarker,
+  type CockpitMarkersByCell,
+} from './cockpit/reconcileMarkers';
+import { useEventCancelWeek, useVisitCancelWeek } from '@/lib/queries/cockpit';
+import type { CockpitEventRead, SubstituteApplyPayload } from '@/lib/schemas/v2/cockpit';
+import { ChangeScopeChoice } from '@/components/schedule/v2/ChangeScopeChoice';
 import {
   parseTlColDroppableId,
   parseTlPairDraggableId,
@@ -2141,7 +2166,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       //  - 同 staff 担当の visit (= courses で newStaffId が assigned されている
       //    course に紐づく visit) で時間帯重複 → reject
       const newStaffEvents = staffEventsByStaff.get(newStaffId) ?? [];
-      const sameDateEvents = newStaffEvents.filter((e) => e.id !== ev.id && e.date === ev.date);
+      // 「今週だけ外した」イベント (cancelled_at) は予定ではないので衝突しない。
+      const sameDateEvents = newStaffEvents.filter(
+        (e) => e.id !== ev.id && e.date === ev.date && e.cancelled_at == null,
+      );
       const hasEventOverlap = sameDateEvents.some((e) => {
         const oS = toMinutes(e.start_time) ?? 0;
         const oE = toMinutes(e.end_time) ?? 0;
@@ -2857,9 +2885,36 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   // ドラッグ中 payload (盤面のドロップ可能セルのハイライト用・コース/訪問共通)。
   const [courseDrag, setCourseDrag] = useState<BoardDragState | null>(null);
 
-  // カイポケ突合ビュー (C1・weekly-space-design.md §7-3)。
-  const [reconcileOpen, setReconcileOpen] = useState(false);
-  const [reconcileMarkers, setReconcileMarkers] = useState<ReconcileMarkersByCell | null>(null);
+  // ─── 週空間 Phase E「今週の運転席」(week-cockpit-design.md §3 結線) ───
+  // 同期バー (SyncBar) で選択中の差分 1 件。盤面/タイムラインのゴーストの素。
+  const [cockpitMarker, setCockpitMarker] = useState<CockpitMarker | null>(null);
+  // 職員スケジュールタブの見え方 (T-3 の週タブと同じ意匠)。
+  const [staffViewMode, setStaffViewMode] = useState<'list' | 'timeline'>('list');
+  /** タイムライン表示で見ている曜日 (0=月..5=土)。 */
+  const [staffTimelineDay, setStaffTimelineDay] = useState(0);
+  /** 急な休み: 代替候補パネル (スタッフ × 日)。 */
+  const [offPanel, setOffPanel] = useState<{ staffId: string; date: string } | null>(null);
+  /** ＋訪問 (今週だけ) ダイアログ。 */
+  const [addVisitState, setAddVisitState] = useState<{
+    staffId: string | null;
+    date: string;
+  } | null>(null);
+  /** 「📐 型も変える…」= ChangeScopeChoice の 2 択ダイアログ。 */
+  const [masterScopeVisit, setMasterScopeVisit] = useState<TimelineVisit | null>(null);
+  const [masterScope, setMasterScope] = useState<ChangeScopeValue>('pattern');
+  /**
+   * タイムラインでクリックした訪問。盤面 (リスト) は行そのものがメニューの
+   * トリガーになるが、タイムラインのバーは絶対配置なので、選択中の 1 件を
+   * 盤面上部のチップとして出し、そこにメニューをぶら下げる。
+   */
+  const [timelineMenuVisit, setTimelineMenuVisit] = useState<TimelineVisit | null>(null);
+  /**
+   * ●未送信の突合キー (同期バーが供給)。null = まだ数えていない
+   * =「送信済みか未送信か分からない」— 断定せず「同期バーで確認」と出す。
+   */
+  const [unsentKeys, setUnsentKeys] = useState<Set<string> | null>(null);
+  /** 盤面を操作したら同期バーに未送信を数え直させる (加算するだけ)。 */
+  const [syncReloadKey, setSyncReloadKey] = useState(0);
 
   // 当該週の全スタッフ休み/時間変更 (admin のみ取得可・セル網掛け + 貼り付け警告)。
   const weekOverridesQuery = useWeekStaffOverrides(isoYear, isoWeek, canEdit);
@@ -3002,11 +3057,12 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             await doAssignVisitStaff(visitId, staffId, { ...opts, acknowledge: true });
           },
           {
-          title: '確認して付け替えますか？',
-          description:
-            'この患者様の NG スタッフ / 性別制限に該当します。内容を確認のうえ、この訪問だけ付け替えます。',
-          confirmLabel: '付け替える',
-        })
+            title: '確認して付け替えますか？',
+            description:
+              'この患者様の NG スタッフ / 性別制限に該当します。内容を確認のうえ、この訪問だけ付け替えます。',
+            confirmLabel: '付け替える',
+          },
+        )
       ) {
         return false;
       }
@@ -3039,7 +3095,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     const targets = args.visitIds.filter((id) => {
       const v = visitById.get(id);
       if (!v) return false;
-      return ((v as { primary_staff_id?: string | null }).primary_staff_id ?? null) === args.staffId;
+      return (
+        ((v as { primary_staff_id?: string | null }).primary_staff_id ?? null) === args.staffId
+      );
     });
     if (targets.length === 0) {
       toast.info('解除できる担当が見つかりませんでした（既に未割当の可能性があります）');
@@ -3151,6 +3209,541 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     if (vPrimary === null) return;
     void doAssignVisitStaff(visitId, null);
   };
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 週空間 Phase E「今週の運転席」の結線 (docs/plans/week-cockpit-design.md §3)
+  //
+  // 憲法1: ここから出る操作はすべて「今週だけ」。マスタ (PFV/テンプレ/イベント
+  // 既定) を触るのは「📐 型も変える…」で 'pattern' を選んだときだけ。
+  // ─────────────────────────────────────────────────────────────────────
+
+  const queryClient = useQueryClient();
+  const visitCancelWeekMut = useVisitCancelWeek();
+  const eventCancelWeekMut = useEventCancelWeek();
+  const createVisitMut = useCreateVisit();
+  // useCreateOverride は staffId をフック引数に取る。代替候補パネルで
+  // 選択中のスタッフを渡す (未選択のときは呼ばれない)。
+  const createOverrideMut = useCreateOverride(offPanel?.staffId ?? '');
+
+  const weekStartIso = useMemo(() => format(weekStart, 'yyyy-MM-dd'), [weekStart]);
+
+  /**
+   * 週を切り替えたら、前の週に対して開いていた作業状態を捨てる。
+   * (代替候補パネル / タイムラインで選択中の訪問 / ＋訪問ダイアログ /
+   *  同期バーのゴースト・未送信集計は、どれも「その週の話」)。
+   */
+  useEffect(() => {
+    setOffPanel(null);
+    setTimelineMenuVisit(null);
+    setAddVisitState(null);
+    setMasterScopeVisit(null);
+    setCockpitMarker(null);
+    setUnsentKeys(null);
+  }, [weekStartIso]);
+
+  /** JST の「今日」(BE の過去日ガードと同じ Asia/Tokyo 基準)。 */
+  const todayIsoJst = useMemo(
+    () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date()),
+    [],
+  );
+
+  /** 0=月..5=土 → その週の実日付 (YYYY-MM-DD)。 */
+  const isoOfWeekday = useCallback(
+    (weekday: number) => format(addDays(weekStart, weekday), 'yyyy-MM-dd'),
+    [weekStart],
+  );
+
+  /**
+   * 盤面操作の後始末 (§8): op-log + visits / courses / staff-events。
+   * 各 mutation の onSuccess でも失効させているが、複数 API を跨ぐ操作
+   * (休み+付け替え等) の取りこぼしを防ぐため最後にもう一度まとめて呼ぶ。
+   */
+  const invalidateCockpitBoard = useCallback(() => {
+    invalidateOpLog(isoYear, isoWeek);
+    void queryClient.invalidateQueries({ queryKey: ['visits'] });
+    void queryClient.invalidateQueries({ queryKey: ['courses'] });
+    void queryClient.invalidateQueries({ queryKey: ['staff', 'events'] });
+    // 休み (staff_weekly_override) は週一括の別キー。useCreateOverride は
+    // ['staff-overrides', staffId] しか失効させないため、盤面の網掛けが
+    // 古いままになる (weekStaffOverridesKey = ['staff-overrides-week', ...])。
+    void queryClient.invalidateQueries({ queryKey: ['staff-overrides-week'] });
+    // 盤面が変われば ●未送信 も変わる。同期バーに数え直させる。
+    setSyncReloadKey((k) => k + 1);
+  }, [queryClient, invalidateOpLog, isoYear, isoWeek]);
+
+  /** テンプレ id → 「拠点 コース」表記。 */
+  const cockpitCourseLabel = useCallback(
+    (templateId: string): string | null => {
+      const tpl = templates.find((t) => t.id === templateId);
+      if (!tpl) return null;
+      return `${officeNameById.get(tpl.office_id) ?? ''} ${tpl.label}`.trim();
+    },
+    [templates, officeNameById],
+  );
+
+  /**
+   * 盤面/タイムラインに渡す訪問。`overviewVisits` に運転席で要る
+   * `status`(今週だけ取消) と `course_label` を足しただけ (他タブには影響しない)。
+   */
+  const cockpitVisits = useMemo<TimelineVisit[]>(
+    () =>
+      overviewVisits.map((v) => ({
+        ...v,
+        status: (visitById.get(v.id) as { status?: string | null } | undefined)?.status ?? null,
+        course_label: cockpitCourseLabel(v.course_template_id),
+      })),
+    [overviewVisits, visitById, cockpitCourseLabel],
+  );
+
+  /**
+   * ●未送信の訪問 id / イベント id。同期バーが供給したキー集合を、盤面の
+   * 実データに突き合わせて解決する。null = まだ数えていない (断定しない)。
+   */
+  const unsentVisitIds = useMemo<Set<string> | null>(() => {
+    if (!unsentKeys) return null;
+    const s = new Set<string>();
+    for (const v of cockpitVisits) {
+      const key = unsentVisitKey(
+        isoOfWeekday(v.weekday),
+        (v.start_time ?? '').slice(0, 5),
+        v.patient_name ?? '',
+      );
+      if (unsentKeys.has(key)) s.add(v.id);
+    }
+    return s;
+  }, [unsentKeys, cockpitVisits, isoOfWeekday]);
+
+  const unsentEventIds = useMemo<Set<string> | null>(() => {
+    if (!unsentKeys) return null;
+    const s = new Set<string>();
+    for (const [, events] of staffEventsByStaff) {
+      for (const ev of events) if (unsentKeys.has(unsentEventKey(ev.id))) s.add(ev.id);
+    }
+    return s;
+  }, [unsentKeys, staffEventsByStaff]);
+
+  /** 訪問 + イベントをまとめた id 集合 (タイムラインのバーは両方を描く)。 */
+  const unsentBarIds = useMemo<Set<string> | null>(() => {
+    if (unsentVisitIds == null && unsentEventIds == null) return null;
+    return new Set([...(unsentVisitIds ?? []), ...(unsentEventIds ?? [])]);
+  }, [unsentVisitIds, unsentEventIds]);
+
+  /** ある訪問が ●未送信 か (null = まだ分からない)。 */
+  const isVisitUnsent = useCallback(
+    (visitId: string): boolean | null => (unsentVisitIds ? unsentVisitIds.has(visitId) : null),
+    [unsentVisitIds],
+  );
+
+  /** 当週の固定イベント (source='fixed')。「全員（固定）」帯の材料。 */
+  const fixedWeekEvents = useMemo<CockpitEventRead[]>(() => {
+    const out: CockpitEventRead[] = [];
+    for (const [, events] of staffEventsByStaff) {
+      for (const ev of events) if (ev.source === 'fixed') out.push(ev);
+    }
+    return out;
+  }, [staffEventsByStaff]);
+
+  /**
+   * 盤面 (StaffWeekBoard) へ渡すイベント。固定イベントは最上段の
+   * 「全員（固定）」帯が担当するので、セル側からは外す (二重表示を防ぐ)。
+   */
+  const boardEventsByStaff = useMemo(() => {
+    const m = new Map<string, CockpitEventRead[]>();
+    for (const [staffId, events] of staffEventsByStaff) {
+      m.set(
+        staffId,
+        events.filter((ev) => ev.source !== 'fixed'),
+      );
+    }
+    return m;
+  }, [staffEventsByStaff]);
+
+  /** 出所チップの集計 (Row 2)。訪問の source + 固定イベント件数。 */
+  const cockpitSourceCounts = useMemo(() => {
+    let pattern = 0;
+    let weekOnly = 0;
+    let imported = 0;
+    for (const v of cockpitVisits) {
+      // 今週だけ取消した訪問は「この週の予定」ではないので数えない。
+      if (v.status === 'cancelled') continue;
+      const src = v.source ?? 'auto';
+      // 'manual_cancel' = 今週だけ取消 (BE 付与)。取消は上で除外済みだが、
+      // 取消解除の途中状態などで残っても「今週だけ」系として数える。
+      if (src === 'manual_week' || src === 'manual_cancel') weekOnly += 1;
+      else if (src === 'import' || src === 'kaipoke') imported += 1;
+      else pattern += 1;
+    }
+    return {
+      pattern,
+      weekOnly,
+      imported,
+      // 固定イベントも「今週だけ外した」分は数えない。
+      fixed: fixedWeekEvents.filter((ev) => ev.cancelled_at == null).length,
+    };
+  }, [cockpitVisits, fixedWeekEvents]);
+
+  /** 氏名 → staff_id (突合 CSV には氏名しか無いのでゴーストの宛先解決に使う)。 */
+  const staffIdByName = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of allStaff) m.set(s.name, s.id);
+    return m;
+  }, [allStaff]);
+
+  const staffNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of allStaff) m.set(s.id, s.name);
+    return m;
+  }, [allStaff]);
+
+  /**
+   * ゴーストの盤面索引 (選択中の 1 件だけ)。`toMarkersByCell` は既存 UI との
+   * 互換のため `ReconcileMarkersByCell` を返すが、中身は `CockpitMarker`
+   * (kind 付き) なので盤面用に絞り戻す。
+   */
+  const cockpitMarkersByCell = useMemo(
+    () => (cockpitMarker ? (toMarkersByCell([cockpitMarker]) as CockpitMarkersByCell) : null),
+    [cockpitMarker],
+  );
+
+  /** タイムライン用のゴースト (同じマーカーを行/時刻の形へ)。 */
+  const cockpitTimelineMarkers = useMemo<TimelineMarker[]>(() => {
+    const mk = cockpitMarker;
+    if (!mk) return [];
+    const anchor = mk.after ?? mk.before;
+    if (!anchor) return [];
+    return [
+      {
+        action: mk.action,
+        externalId: mk.externalId,
+        title: mk.title,
+        start: anchor.start,
+        end: anchor.end,
+        beforeStart: mk.before?.start ?? null,
+        beforeEnd: mk.before?.end ?? null,
+        staffId: mk.after?.staff_id ?? mk.before?.staff_id ?? null,
+        beforeStaffId: mk.before?.staff_id ?? null,
+        weekday: weekdayOfIso(anchor.date),
+        kind: mk.kind,
+        patientName: mk.patient_name ?? null,
+        courseLabel: mk.course_label ?? null,
+      },
+    ];
+  }, [cockpitMarker]);
+
+  /** 訪問メニューの担当候補 (在籍スタッフ)。 */
+  const cockpitStaffOptions = useMemo(
+    () => allStaff.filter((s) => s.status === 'active').map((s) => ({ id: s.id, name: s.name })),
+    [allStaff],
+  );
+
+  /** 訪問の「今週だけ取消 / 取消をやめる」(§2-2)。 */
+  const handleVisitCancelWeek = useCallback(
+    async (visit: TimelineVisit, cancel: boolean) => {
+      try {
+        await visitCancelWeekMut.mutateAsync({
+          visit_id: visit.id,
+          cancel,
+          op_group_id: crypto.randomUUID(),
+        });
+        invalidateCockpitBoard();
+        toast.success(
+          cancel
+            ? `${visit.patient_name ?? 'この訪問'} を今週だけ取消しました（毎週の型は変わりません）`
+            : `${visit.patient_name ?? 'この訪問'} の取消をやめました`,
+          { cancel: { label: '元に戻す', onClick: () => void handleUndo() } },
+        );
+      } catch (err) {
+        toast.error(`${cancel ? '今週だけの取消' : '取消の解除'}に失敗しました: ${formatErr(err)}`);
+      }
+    },
+    [visitCancelWeekMut, invalidateCockpitBoard, handleUndo],
+  );
+
+  /**
+   * 訪問 1 件を今週だけ動かす (時刻変更 / 曜日移動 = 同じ API)。
+   * 担当も変える場合は呼び出し側が同じ op_group_id で assign を続けて呼ぶ。
+   */
+  const moveVisitWeekOnly = useCallback(
+    async (
+      visit: TimelineVisit,
+      toWeekday: number,
+      toStartHM: string,
+      opGroupId: string,
+      acknowledge = false,
+    ): Promise<boolean> => {
+      const oldStart = (visit.start_time ?? '').slice(0, 5);
+      if (!oldStart) {
+        toast.error('この訪問の開始時刻が不明なため移動できません');
+        return false;
+      }
+      try {
+        const res = await visitMoveWeekOnlyMut.mutateAsync({
+          iso_year: isoYear,
+          iso_week: isoWeek,
+          patient_id: visit.patient_id,
+          old_weekday: visit.weekday,
+          old_start_time: oldStart,
+          new_weekday: toWeekday,
+          new_start_time: toStartHM,
+          op_group_id: opGroupId,
+          ...ackFlag(acknowledge),
+        });
+        invalidateCockpitBoard();
+        if (res.visits_moved === 0) {
+          toast.warning('移動対象の訪問が見つかりませんでした');
+          return false;
+        }
+        const wdLabel = WEEKDAY_LABELS[toWeekday] ?? '';
+        toast.success(
+          `${visit.patient_name ?? 'この訪問'} を ${wdLabel}曜 ${toStartHM} へ移動しました（今週のみ）`,
+          { cancel: { label: '元に戻す', onClick: () => void handleUndo() } },
+        );
+        return true;
+      } catch (err) {
+        if (
+          !acknowledge &&
+          placementConstraintConfirm.capture(
+            err,
+            async () => {
+              await moveVisitWeekOnly(visit, toWeekday, toStartHM, opGroupId, true);
+            },
+            MOVE_CONSTRAINT_TEXT,
+          )
+        ) {
+          return false;
+        }
+        toast.error(`移動に失敗しました: ${formatErr(err)}`);
+        return false;
+      }
+    },
+    [
+      visitMoveWeekOnlyMut,
+      isoYear,
+      isoWeek,
+      invalidateCockpitBoard,
+      placementConstraintConfirm,
+      handleUndo,
+    ],
+  );
+
+  /**
+   * タイムラインの DnD (D5): 横=時刻 / 縦=担当。
+   * **変わった軸だけ**呼ぶ (toStart===null なら move を呼ばない /
+   * toStaffId が無ければ assign を呼ばない)。両方なら同一 op_group_id。
+   */
+  const handleTimelineVisitMove = async (payload: VisitMovePayload) => {
+    const { visit, toStart, toStaffId } = payload;
+    const opGroupId = crypto.randomUUID();
+    if (toStart != null) {
+      const ok = await moveVisitWeekOnly(visit, visit.weekday, toStart, opGroupId);
+      if (!ok) return;
+    }
+    if (toStaffId !== undefined) {
+      await doAssignVisitStaff(visit.id, toStaffId, { opGroupId, silent: toStart != null });
+    }
+    invalidateCockpitBoard();
+  };
+
+  /** 固定イベントの「今週だけ外す / 戻す」(§2-3)。 */
+  const handleEventExclude = useCallback(
+    async (eventId: string, staffId: string, cancel: boolean) => {
+      const ev = staffEventsByStaff.get(staffId)?.find((e) => e.id === eventId);
+      try {
+        await eventCancelWeekMut.mutateAsync({ staff_id: staffId, event_id: eventId, cancel });
+        invalidateCockpitBoard();
+        toast.success(
+          cancel
+            ? `${staffNameById.get(staffId) ?? 'この方'} を今週だけ外しました`
+            : `${staffNameById.get(staffId) ?? 'この方'} を戻しました`,
+        );
+        // カイポケ由来のイベントは、らく助側で外してもカイポケには残る
+        // (送信の対象外 = 個別業務の削除は別経路)。誤解を生むので必ず知らせる。
+        if (cancel && ev?.source === 'kaipoke') {
+          toast.warning(
+            'このイベントはカイポケ由来です。らく助の盤面から外しましたが、カイポケ側には残ります（カイポケで削除してください）',
+          );
+        }
+      } catch (err) {
+        toast.error(`${cancel ? '今週だけ外す' : '戻す'}操作に失敗しました: ${formatErr(err)}`);
+      }
+    },
+    [eventCancelWeekMut, invalidateCockpitBoard, staffEventsByStaff, staffNameById],
+  );
+
+  /** 急な休み: 「休みにする」= staff_weekly_override を 1 件作る (§D8)。 */
+  const handleSubstituteMarkOff = useCallback(async () => {
+    if (!offPanel) return;
+    const name = staffNameById.get(offPanel.staffId) ?? 'このスタッフ';
+    try {
+      await createOverrideMut.mutateAsync({ type: '休み', date: offPanel.date });
+      // 週一括の休み一覧 (盤面の網掛け) を失効させる。
+      invalidateCockpitBoard();
+      toast.success(`${name} を ${offPanel.date} の休みにしました`);
+    } catch (err) {
+      toast.error(`休みの登録に失敗しました: ${formatErr(err)}`);
+    }
+  }, [offPanel, createOverrideMut, staffNameById, invalidateCockpitBoard]);
+
+  /**
+   * 急な休み: 代替候補の適用 (§D8)。
+   * course があればコース丸ごと (PATCH /courses/{id})、無ければ訪問を 1 件ずつ。
+   * 1 回の付け替えは 1 op_group =「戻る」1 回でまとめて戻る。
+   */
+  const handleSubstituteApply = async (payload: SubstituteApplyPayload) => {
+    {
+      const opGroupId = crypto.randomUUID();
+      const absentName = offPanel ? (staffNameById.get(offPanel.staffId) ?? '') : '';
+      const wdLabel = offPanel ? (WEEKDAY_LABELS[weekdayOfIso(offPanel.date)] ?? '') : '';
+      const toName = payload.toStaffId
+        ? (staffNameById.get(payload.toStaffId) ?? '別のスタッフ')
+        : '（担当なし）';
+      const labels: string[] = [];
+      let done = 0;
+      for (const g of payload.groups) {
+        const course = g.courseId ? courses.find((c) => c.id === g.courseId) : undefined;
+        labels.push(course ? `コース${course.code}` : '臨時');
+        if (course) {
+          const ok = await handleChangeAssignedStaff(
+            course.id,
+            payload.toStaffId,
+            false,
+            opGroupId,
+          );
+          if (ok) done += g.visitIds.length;
+        } else {
+          for (const visitId of g.visitIds) {
+            const ok = await doAssignVisitStaff(visitId, payload.toStaffId, {
+              silent: true,
+              opGroupId,
+            });
+            if (ok) done += 1;
+          }
+        }
+      }
+      invalidateCockpitBoard();
+      if (done > 0 || payload.groups.length > 0) {
+        toast.success(
+          `${absentName} ${wdLabel}曜を休みに。${labels.join('・')}→${toName}（今週だけ）`,
+          { cancel: { label: '元に戻す', onClick: () => void handleUndo() } },
+        );
+      }
+    }
+  };
+
+  /** タイムラインの行 (在籍スタッフ。「（担当なし）」は部品側が足す)。 */
+  const staffTimelineRows = useMemo<StaffTimelineRow[]>(
+    () =>
+      allStaff
+        .filter((s) => s.status === 'active')
+        .map((s) => ({
+          staffId: s.id,
+          name: s.name,
+          office: officeNameById.get(s.primary_office_id ?? '') ?? null,
+          off: offByStaffWeekday.get(`${s.id}:${staffTimelineDay}`) ?? null,
+        })),
+    [allStaff, officeNameById, offByStaffWeekday, staffTimelineDay],
+  );
+
+  /** タイムライン先頭の「全員（固定）」帯 (その日の固定イベントを重複除去)。 */
+  const staffTimelineFixedBands = useMemo(() => {
+    const dayIso = isoOfWeekday(staffTimelineDay);
+    const seen = new Map<string, { start: string; end: string; title: string }>();
+    for (const ev of fixedWeekEvents) {
+      if (ev.date !== dayIso || ev.cancelled_at) continue;
+      const key = `${ev.start_time}|${ev.title}`;
+      if (!seen.has(key)) {
+        seen.set(key, {
+          start: ev.start_time.slice(0, 5),
+          end: ev.end_time.slice(0, 5),
+          title: ev.title,
+        });
+      }
+    }
+    return [...seen.values()];
+  }, [fixedWeekEvents, staffTimelineDay, isoOfWeekday]);
+
+  /**
+   * 訪問メニュー (VisitActionMenu) の組み立て。盤面 (行がトリガー) と
+   * タイムライン (上部チップがトリガー) で同じ結線を使う。
+   */
+  const renderCockpitVisitMenu = (
+    visit: TimelineVisit,
+    weekday: number,
+    trigger: React.ReactElement,
+    defaultOpen = false,
+  ): React.ReactNode => {
+    {
+      const dateIso = isoOfWeekday(weekday);
+      const startHM = (visit.start_time ?? '').slice(0, 5);
+      return (
+        <VisitActionMenu
+          visit={{
+            id: visit.id,
+            patient_name: visit.patient_name ?? '（無名）',
+            date: dateIso,
+            start_time: startHM,
+            end_time: (visit.end_time ?? '').slice(0, 5),
+            course_label: visit.course_label ?? null,
+            status: visit.status ?? 'planned',
+            source: visit.source ?? 'auto',
+            staff_id: visit.primary_staff_id ?? null,
+            week_pinned: visit.week_pinned === true,
+            // ●未送信の正は同期バー (unsent-summary)。まだ数えていない間は
+            // null = 「同期バーで確認」と出す (✓同期済 と言い切らない)。
+            unsent: isVisitUnsent(visit.id),
+          }}
+          staffOptions={cockpitStaffOptions}
+          isPast={dateIso <= todayIsoJst}
+          canEdit={canEdit}
+          defaultOpen={defaultOpen}
+          onCancelToggle={(cancel) => void handleVisitCancelWeek(visit, cancel)}
+          onChangeStaff={(staffId) => void doAssignVisitStaff(visit.id, staffId)}
+          onChangeTime={(start) =>
+            void moveVisitWeekOnly(visit, visit.weekday, start, crypto.randomUUID())
+          }
+          onMoveWeekday={(toWeekday) =>
+            void moveVisitWeekOnly(visit, toWeekday, startHM, crypto.randomUUID())
+          }
+          onChangeMaster={() => {
+            setMasterScope('pattern');
+            setMasterScopeVisit(visit);
+          }}
+        >
+          {trigger}
+        </VisitActionMenu>
+      );
+    }
+  };
+
+  /** ＋訪問 (D6): 既存 POST /visits に source='manual_week' で今週だけ追加。 */
+  const handleAddVisitSubmit = useCallback(
+    async (payload: AddVisitPayload) => {
+      const name = allPatients.find((p) => p.id === payload.patient_id)?.name ?? '患者';
+      try {
+        await createVisitMut.mutateAsync({
+          patient_id: payload.patient_id,
+          primary_staff_id: payload.staff_id,
+          visit_date: payload.date,
+          start_time: payload.start_time,
+          end_time: payload.end_time,
+          type: 'regular',
+          status: 'planned',
+          // D6: 今週だけの追加 (PFV 不変・週生成でも保護される)。
+          source: 'manual_week',
+          course_id: payload.course_id,
+        });
+        invalidateCockpitBoard();
+        setAddVisitState(null);
+        toast.success(
+          `${name} の訪問を今週だけ追加しました（毎週の型は変わりません）` +
+            (payload.course_id ? '' : '。コース未所属のため盤面には出ません（臨時扱い）'),
+        );
+      } catch (err) {
+        toast.error(`訪問の追加に失敗しました: ${formatErr(err)}`);
+      }
+    },
+    [createVisitMut, invalidateCockpitBoard, allPatients],
+  );
 
   // ─── 2026-W20: 月-土タブ「リスト表示」用 — Before/After 形式の CourseListItem[] ──
   // 視覚言語を全面最適化の Before/After と統一. 当該曜日に対応するコース群を
@@ -3900,8 +4493,61 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   </button>
                 </div>
               ) : activeTab === 'staff' ? (
-                /* 職員スケジュールタブ: イベント追加 + カイポケ送信の常設入口。 */
-                <div className="inline-flex items-center gap-1.5">
+                /* 職員スケジュールタブ: 表示切替 + 出所チップ + イベント/カイポケの入口。 */
+                <div className="inline-flex flex-wrap items-center gap-1.5">
+                  {/* 表示切替 (T-3 の週タブと同じ意匠)。 */}
+                  <div
+                    role="group"
+                    aria-label="職員スケジュール 表示モード切替"
+                    className="inline-flex overflow-hidden rounded border border-border-default text-xs"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setStaffViewMode('list')}
+                      aria-pressed={staffViewMode === 'list'}
+                      data-testid="staff-tab-mode-list"
+                      className={
+                        staffViewMode === 'list'
+                          ? 'bg-brand-primary px-2 py-1 text-white'
+                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                      }
+                    >
+                      リスト
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStaffViewMode('timeline')}
+                      aria-pressed={staffViewMode === 'timeline'}
+                      data-testid="staff-tab-mode-timeline"
+                      title="1日分を時間軸で見る（横=時刻・縦=担当。ドラッグで今週だけ動かせます）"
+                      className={
+                        staffViewMode === 'timeline'
+                          ? 'bg-brand-primary px-2 py-1 text-white'
+                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
+                      }
+                    >
+                      タイムライン
+                    </button>
+                  </div>
+                  {/* 出所チップ: この週の予定が「どこから来たか」の内訳。 */}
+                  <span
+                    className="inline-flex flex-wrap items-center gap-1 text-[10px] text-text-muted"
+                    data-testid="staff-tab-source-chips"
+                    title="この週の予定の出所（型どおり / 今週だけ / カイポケ由来 / 固定イベント）"
+                  >
+                    <span className="rounded bg-bg-muted px-1 py-px">
+                      型どおり {cockpitSourceCounts.pattern}
+                    </span>
+                    <span className="rounded bg-bg-muted px-1 py-px">
+                      今週だけ {cockpitSourceCounts.weekOnly}
+                    </span>
+                    <span className="rounded bg-bg-muted px-1 py-px">
+                      カイポケ由来 {cockpitSourceCounts.imported}
+                    </span>
+                    <span className="rounded bg-bg-muted px-1 py-px">
+                      🔒固定 {cockpitSourceCounts.fixed}
+                    </span>
+                  </span>
                   <Button
                     type="button"
                     size="sm"
@@ -3941,17 +4587,6 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     title="この週のらく助のイベントをカイポケの職員スケジュールへ登録します"
                   >
                     ⇧ カイポケ送信
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={reconcileOpen ? 'default' : 'outline'}
-                    disabled={!canEdit}
-                    onClick={() => setReconcileOpen((v) => !v)}
-                    data-testid="staff-tab-reconcile"
-                    title="カイポケの当週データと突き合わせ、差分を盤面と一覧に表示します（差分1件ずつ取込可）"
-                  >
-                    🔄 突合
                   </Button>
                 </div>
               ) : (
@@ -4116,72 +4751,189 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 data-testid="course-staff-schedule-panel"
                 className="space-y-2"
               >
-                {/* カイポケ突合ビュー (C1/C2): 盤面の上に表示 — 「🔄 突合」を押した
-                    瞬間に目に入る位置 (PO指摘 2026-08-21: 下だと何も起きないように見える)。 */}
-                {reconcileOpen ? (
-                  <KaipokeReconcilePanel
-                    weekStartIso={format(weekStart, 'yyyy-MM-dd')}
+                {/* 同期バー (Phase E): ●未送信 / 🔄突合 を盤面の上に常駐させる
+                    — 押した瞬間に目に入る位置 (PO指摘 2026-08-21)。旧
+                    KaipokeReconcilePanel はここに吸収された。 */}
+                <SyncBar
+                  weekStartIso={weekStartIso}
+                  canEdit={canEdit}
+                  staffIdByName={staffIdByName}
+                  staffNameById={staffNameById}
+                  onSelectDiff={setCockpitMarker}
+                  onUnsentChange={setUnsentKeys}
+                  reloadKey={syncReloadKey}
+                />
+
+                {/* 盤面最上段の「全員（固定）」帯 (朝会など・source='fixed')。 */}
+                <FixedEventRow
+                  events={fixedWeekEvents}
+                  staffMap={staffMap}
+                  offByStaffWeekday={offByStaffWeekday}
+                  weekStart={weekStart}
+                  canEdit={canEdit}
+                  onExclude={(eventId, staffId, cancel) =>
+                    void handleEventExclude(eventId, staffId, cancel)
+                  }
+                />
+
+                {/* 急な休み: 代替候補パネル (盤面の上に出す)。 */}
+                {offPanel ? (
+                  <SubstitutePanel
+                    staff={{
+                      id: offPanel.staffId,
+                      name: staffNameById.get(offPanel.staffId) ?? '（不明）',
+                    }}
+                    date={offPanel.date}
                     canEdit={canEdit}
-                    staffMap={staffMap}
-                    onClose={() => setReconcileOpen(false)}
-                    onEventMarkersChange={setReconcileMarkers}
+                    onClose={() => setOffPanel(null)}
+                    // Promise を返す = パネルが「休みの登録が終わってから」
+                    // 付け替えを実行する (void で潰すと順序が逆転する)。
+                    onMarkOff={() => handleSubstituteMarkOff()}
+                    onApply={(payload) => void handleSubstituteApply(payload)}
                   />
                 ) : null}
-                <StaffWeekBoard
-                  templates={templates}
-                  officeNameById={officeNameById}
-                  visits={overviewVisits}
-                  assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
-                  staffMap={staffMap}
-                  staffEventsByStaff={staffEventsByStaff}
-                  weekStart={weekStart}
-                  onPatientClick={handleOpenPatientDetail}
-                  showAllStaff
-                  onAddEvent={
-                    canEdit
-                      ? (staffId, date) =>
-                          setSlotEventState({
-                            staffId,
-                            date: format(date, 'yyyy-MM-dd'),
-                            startHM: '09:00',
-                            endHM: '10:00',
-                          })
-                      : undefined
-                  }
-                  onEventClick={
-                    canEdit ? (ev, staffId) => setTlEventEdit({ staffId, event: ev }) : undefined
-                  }
-                  // 週空間 A1: コース貼り付け DnD (weekly-space-design.md §4)。
-                  courseIdByTemplateWeekday={canEdit ? courseIdByTemplateWeekday : undefined}
-                  onCourseDrop={
-                    canEdit
-                      ? (courseId, staffId, weekday) =>
-                          void handleCourseDropOnStaff(courseId, staffId, weekday)
-                      : undefined
-                  }
-                  onVisitDrop={
-                    canEdit
-                      ? (visitId, staffId, weekday) =>
-                          void handleVisitDropOnStaff(visitId, staffId, weekday)
-                      : undefined
-                  }
-                  activeCourseDrag={courseDrag}
-                  onCourseDragChange={setCourseDrag}
-                  onCourseUnassign={
-                    canEdit ? (args) => void handleCourseBandUnassign(args) : undefined
-                  }
-                  offByStaffWeekday={offByStaffWeekday}
-                  // パレット (コースの表) は PO 判断で撤去 (2026-08-21)。
-                  // 未割当の置き場と戻し先は「（担当なし）」行が担う。
-                  alwaysShowUnassignedRow
-                  onCourseUnassignDrop={canEdit ? handleCourseUnassignDrop : undefined}
-                  onVisitUnassignDrop={canEdit ? handleVisitUnassignDrop : undefined}
-                  reconcileMarkersByCell={reconcileOpen ? reconcileMarkers : null}
-                />
+
+                {staffViewMode === 'timeline' ? (
+                  <StaffTimelineView
+                    weekStart={weekStart}
+                    day={staffTimelineDay}
+                    onDayChange={setStaffTimelineDay}
+                    staffRows={staffTimelineRows}
+                    visits={cockpitVisits}
+                    events={staffEventsByStaff}
+                    fixedAllDay={staffTimelineFixedBands}
+                    markers={cockpitTimelineMarkers}
+                    unsentIds={unsentBarIds}
+                    canEdit={canEdit}
+                    // 当日以前 (JST) は実績の可能性があるためドラッグ不可。
+                    isPast={isoOfWeekday(staffTimelineDay) <= todayIsoJst}
+                    assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
+                    alwaysShowUnassignedRow
+                    onVisitClick={(visit) => setTimelineMenuVisit(visit)}
+                    onVisitMove={(payload) => void handleTimelineVisitMove(payload)}
+                    onEventClick={
+                      canEdit ? (ev, staffId) => setTlEventEdit({ staffId, event: ev }) : undefined
+                    }
+                  />
+                ) : (
+                  <StaffWeekBoard
+                    templates={templates}
+                    officeNameById={officeNameById}
+                    visits={cockpitVisits}
+                    assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
+                    staffMap={staffMap}
+                    // 固定イベントは最上段の帯が担当 (セルに二重表示しない)。
+                    staffEventsByStaff={boardEventsByStaff}
+                    weekStart={weekStart}
+                    onPatientClick={handleOpenPatientDetail}
+                    showAllStaff
+                    onAddEvent={
+                      canEdit
+                        ? (staffId, date) =>
+                            setSlotEventState({
+                              staffId,
+                              date: format(date, 'yyyy-MM-dd'),
+                              startHM: '09:00',
+                              endHM: '10:00',
+                            })
+                        : undefined
+                    }
+                    onEventClick={
+                      canEdit ? (ev, staffId) => setTlEventEdit({ staffId, event: ev }) : undefined
+                    }
+                    // 週空間 A1: コース貼り付け DnD (weekly-space-design.md §4)。
+                    courseIdByTemplateWeekday={canEdit ? courseIdByTemplateWeekday : undefined}
+                    onCourseDrop={
+                      canEdit
+                        ? (courseId, staffId, weekday) =>
+                            void handleCourseDropOnStaff(courseId, staffId, weekday)
+                        : undefined
+                    }
+                    onVisitDrop={
+                      canEdit
+                        ? (visitId, staffId, weekday) =>
+                            void handleVisitDropOnStaff(visitId, staffId, weekday)
+                        : undefined
+                    }
+                    activeCourseDrag={courseDrag}
+                    onCourseDragChange={setCourseDrag}
+                    onCourseUnassign={
+                      canEdit ? (args) => void handleCourseBandUnassign(args) : undefined
+                    }
+                    offByStaffWeekday={offByStaffWeekday}
+                    // パレット (コースの表) は PO 判断で撤去 (2026-08-21)。
+                    // 未割当の置き場と戻し先は「（担当なし）」行が担う。
+                    alwaysShowUnassignedRow
+                    onCourseUnassignDrop={canEdit ? handleCourseUnassignDrop : undefined}
+                    onVisitUnassignDrop={canEdit ? handleVisitUnassignDrop : undefined}
+                    reconcileMarkersByCell={cockpitMarkersByCell}
+                    // ●未送信ドット (同期バーの集計が唯一の正・null=未計測)。
+                    unsentVisitIds={unsentVisitIds}
+                    unsentEventIds={unsentEventIds}
+                    // 運転席 (Phase E): 訪問行のメニュー + セルアクション。
+                    renderVisitMenu={
+                      canEdit
+                        ? (visit, weekday, trigger) =>
+                            renderCockpitVisitMenu(visit, weekday, trigger)
+                        : undefined
+                    }
+                    onMarkOff={
+                      canEdit
+                        ? (staffId, weekday) =>
+                            setOffPanel({ staffId, date: isoOfWeekday(weekday) })
+                        : undefined
+                    }
+                    onAddVisit={
+                      canEdit
+                        ? (staffId, weekday) =>
+                            setAddVisitState({ staffId, date: isoOfWeekday(weekday) })
+                        : undefined
+                    }
+                  />
+                )}
+
+                {/* タイムラインで選んだ訪問のメニュー (バーは絶対配置のため
+                    トリガーをここに置く)。盤面 (リスト) は行が直接トリガー。 */}
+                {staffViewMode === 'timeline' && timelineMenuVisit && canEdit ? (
+                  <div
+                    // 別の訪問を選び直したらメニューを開き直す (defaultOpen は
+                    // 初回マウントにしか効かないので key で作り直す)。
+                    key={timelineMenuVisit.id}
+                    className="flex items-center gap-2"
+                    data-testid="staff-timeline-visit-menu"
+                  >
+                    {renderCockpitVisitMenu(
+                      timelineMenuVisit,
+                      timelineMenuVisit.weekday,
+                      <button
+                        type="button"
+                        className="rounded border border-brand-primary bg-brand-primary/5 px-2 py-1 text-[11px] font-bold text-text-primary"
+                      >
+                        選択中: {timelineMenuVisit.patient_name ?? '（無名）'}{' '}
+                        {(timelineMenuVisit.start_time ?? '').slice(0, 5)} — メニュー
+                      </button>,
+                      true,
+                    )}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setTimelineMenuVisit(null)}
+                      aria-label="選択を解除"
+                    >
+                      ×
+                    </Button>
+                  </div>
+                ) : null}
                 <p className="text-[11px] text-text-muted">
-                  コース帯（⠿）や訪問の行はドラッグでスタッフ間・曜日間を移動できます（今週のみ・毎週の型には影響しません。曜日を跨ぐと時刻は同じまま曜日ごと移動）。
-                  担当を外すときはコース帯の「×」か「（担当なし）」行へドラッグ。ツールバーの「戻る」で取り消せます。
-                  時刻の変更は週・曜日タブで。イベントはこの画面が正典で、＋やイベント帯のクリックで追加・編集できます。
+                  訪問の行をクリックすると「今週だけ取消 / 担当変更 / 時刻変更 /
+                  曜日移動」が選べます（すべて今週のみ・毎週の型は変わりません）。
+                  コース帯（⠿）や訪問の行はドラッグでスタッフ間・曜日間の移動もできます。担当を外すときはコース帯の「×」か「（担当なし）」行へドラッグ。
+                  セルにマウスを乗せると「🛌 休みにする / ＋訪問 /
+                  ＋イベント」が出ます。ツールバーの「戻る」で取り消せます（取消も戻せます）。
+                  カイポケとのズレは上の同期バー（●未送信 /
+                  🔄突合）で確認し、選んだ差分は盤面にゴースト（青点線=今ここ /
+                  紫実線=こう変わる）で出ます。
                 </p>
               </div>
             ) : /* Wave 18 Phase B-6: 「週」タブ選択時は CourseWeekOverview を表示 */
@@ -4215,7 +4967,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     templates={templates}
                     officeNameById={officeNameById}
                     eventFramesByWeekday={staffEventFramesByWeekday}
-                    visits={overviewVisits}
+                    // 週リストも「今週だけ取消」を打消線で見せる (status 付き)。
+                    visits={cockpitVisits}
                     onJumpToDay={(wd) => setActiveTab(wd)}
                     staffEventsByStaff={staffEventsByStaff}
                     assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
@@ -4587,6 +5340,88 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           weekStartIso={format(weekStart, 'yyyy-MM-dd')}
         />
         {/* T-2 ②-b: カード DnD 後の二択 (この週だけ / 固定パターン) */}
+        {/* 週空間 Phase E: ＋訪問 (今週だけ・D6)。 */}
+        {addVisitState ? (
+          <AddVisitDialog
+            open
+            onOpenChange={(o) => {
+              if (!o) setAddVisitState(null);
+            }}
+            staff={
+              addVisitState.staffId
+                ? {
+                    id: addVisitState.staffId,
+                    name: staffNameById.get(addVisitState.staffId) ?? '（不明）',
+                  }
+                : null
+            }
+            date={addVisitState.date}
+            poolCandidates={poolPatients.map((p) => ({
+              patient_id: p.id,
+              patient_name: p.name,
+              hint: formatPreferredTimeLabel(coerceWeeklyPattern(p.weekly_pattern)) || null,
+            }))}
+            courseOptions={courses
+              .filter((c) => c.weekday === weekdayOfIso(addVisitState.date) && !c.deleted_at)
+              .map((c) => ({
+                id: c.id,
+                label: `${officeNameById.get(c.office_id) ?? ''} ${c.code}`.trim(),
+              }))}
+            submitting={createVisitMut.isPending}
+            onSubmit={(payload) => void handleAddVisitSubmit(payload)}
+          />
+        ) : null}
+
+        {/* 週空間 Phase E: 「📐 型も変える…」= 反映先の 2 択 (§2.4 共通部品)。 */}
+        <Dialog
+          open={masterScopeVisit != null}
+          onOpenChange={(o) => {
+            if (!o) setMasterScopeVisit(null);
+          }}
+        >
+          <DialogContent className="max-w-sm" data-testid="cockpit-master-scope-dialog">
+            <DialogHeader>
+              <DialogTitle className="text-sm">反映先を選ぶ</DialogTitle>
+              <DialogDescription className="text-[11px]">
+                {masterScopeVisit?.patient_name ?? 'この患者'}様の今週の予定を毎週の型
+                （固定訪問週間）に反映しますか？
+              </DialogDescription>
+            </DialogHeader>
+            <ChangeScopeChoice
+              value={masterScope}
+              onChange={setMasterScope}
+              disabled={bulkSyncWeekToFixedMut.isPending}
+            />
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setMasterScopeVisit(null)}
+                disabled={bulkSyncWeekToFixedMut.isPending}
+              >
+                やめる
+              </Button>
+              <Button
+                type="button"
+                disabled={bulkSyncWeekToFixedMut.isPending}
+                data-testid="cockpit-master-scope-confirm"
+                onClick={() => {
+                  const v = masterScopeVisit;
+                  setMasterScopeVisit(null);
+                  if (!v) return;
+                  if (masterScope === 'pattern') {
+                    promoteWeekToFixed([v.patient_id], v.patient_name ?? 'この患者様');
+                  } else {
+                    toast.info('今週のままにしました（毎週の型は変わりません）');
+                  }
+                }}
+              >
+                決定
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         <TimelineMoveDialog
           open={tlMoveState != null}
           context={

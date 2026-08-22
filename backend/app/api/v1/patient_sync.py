@@ -44,7 +44,7 @@ from app.core.deps import DbDep, require_role
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User
-from app.models.visit import Visit
+from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.schemas.v2.patient_sync import (
     BulkApplyWeekOnlyVisitChangesRequest,
     BulkApplyWeekOnlyVisitChangesResponse,
@@ -856,6 +856,10 @@ async def bulk_apply_week_only_visit_changes_endpoint(
         Visit.visit_date >= week_monday,
         Visit.visit_date <= week_sunday,
         Visit.course_id.is_not(None),
+        # 「今週だけ取消」(週空間 Phase E / week-cockpit-design.md D1) 済みの枠は
+        # 実施されない = その時刻を占有していない。衝突相手に数えると、取消した
+        # だけで他患者の正当な配置が弾かれる。
+        Visit.status != VISIT_STATUS_CANCELLED,
     )
     other_visit_rows = (await db.scalars(other_visits_stmt)).all()
     # patient_id → Patient 辞書 (住所判定用). payload 外の patient も含める.

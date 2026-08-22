@@ -31,7 +31,11 @@ from app.models.accompaniment import Accompaniment
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.course_template import CourseTemplate
 from app.models.patient import Patient
-from app.models.visit import Visit
+from app.models.visit import (
+    VISIT_SOURCE_MANUAL_CANCEL,
+    VISIT_STATUS_CANCELLED,
+    Visit,
+)
 from app.models.visit_checkin import VisitCheckin
 from app.services.accompaniment import (
     resolve_accompaniment_kind,
@@ -174,8 +178,34 @@ async def replace_week_from_kaipoke(
     )
     if target_days is not None:
         wipe_stmt = wipe_stmt.where(Visit.visit_date.in_(sorted(target_days)))
-    wipe_rows = (await db.scalars(wipe_stmt)).all()
+    wipe_rows = list((await db.scalars(wipe_stmt)).all())
     result.wiped = len(wipe_rows)
+
+    # --- 「今週だけ取消」ガード (week-cockpit-design.md D1) -------------------
+    # 置換は対象日の visit を cancelled 含めて白紙化しカイポケ現況で作り直す。
+    # らく助側で「今週だけ取消」した枠 (= まだ⇧送信していない) がそこに居ると、
+    # 取消が黙って復活してしまう。**日単位**で止める:
+    #   * 実適用 (dry_run=False) → ReplaceBlockedError (呼び出し側が 422)
+    #   * プレビュー (dry_run=True) → その日を対象から外し、カイポケ行を
+    #     ``skipped`` に積んで可視化する (プレビューは例外にしない)
+    # 対象は ``source='manual_cancel'`` = らく助側の取消だけ。**取込 delete 由来**
+    # の cancelled は元々カイポケに無い予定なので置換して構わない。
+    blocked_days: set[date] = {
+        v.visit_date
+        for v in wipe_rows
+        if v.status == VISIT_STATUS_CANCELLED and v.source == VISIT_SOURCE_MANUAL_CANCEL
+    }
+    if blocked_days:
+        _days = "/".join(d.isoformat() for d in sorted(blocked_days))
+        _msg = (
+            "らく助側で今週だけ取消済みの訪問があります。"
+            "⇧送信でカイポケへ反映してから置換してください"
+            f"（対象日: {_days}）"
+        )
+        if not dry_run:
+            raise ReplaceBlockedError(_msg)
+        wipe_rows = [v for v in wipe_rows if v.visit_date not in blocked_days]
+        result.wiped = len(wipe_rows)
 
     # --- 実績ガード ----------------------------------------------------------
     achievements = await _count_week_achievements(db, [v.id for v in wipe_rows])
@@ -267,6 +297,15 @@ async def replace_week_from_kaipoke(
             continue
         if target_days is not None and d not in target_days:
             continue  # 差分モード担当日 (smart-inbound) — 置換では触らない
+        if d in blocked_days:
+            # 「今週だけ取消」がある日 (プレビューのみ到達・実適用は上で 422)。
+            _skip(
+                "らく助側で今週だけ取消済みの訪問があります。"
+                "⇧送信でカイポケへ反映してから置換してください",
+                e,
+                d,
+            )
+            continue
 
         start_t = parse_hhmm(e.start_time)
         end_t = parse_hhmm(e.end_time)

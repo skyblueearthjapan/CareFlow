@@ -231,6 +231,7 @@ vi.mock('@/lib/queries/staff', () => ({
 vi.mock('@/lib/queries/visits', () => ({
   useVisits: (...args: unknown[]) => mockVisits(...args),
   useDeleteVisit: () => ({ mutateAsync: mockDeleteVisit, isPending: false }),
+  useCreateVisit: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock('@/lib/queries/courses', () => ({
   useCourses: (...args: unknown[]) => mockCourses(...args),
@@ -667,6 +668,82 @@ describe('CourseDayTablePanel — Wave 39 event D&D', () => {
     });
     expect(mockUpdateEventDrag).not.toHaveBeenCalled();
     expect(mockToast.warning).toHaveBeenCalledWith(expect.stringMatching(/他のイベント/));
+  });
+
+  it('W39-D-4b. 今週だけ外した (cancelled_at) イベントは衝突扱いしない', async () => {
+    // 週空間 Phase E (D2): 外したイベントは「予定」ではないので邪魔をしない。
+    setupHooks({
+      offices: [{ id: 'office-honten', name: '本店' }],
+      templates: [
+        { id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl },
+        { id: 'tpl-B', office_id: 'office-honten', label: 'B', ...baseTpl },
+      ],
+      courses: [
+        {
+          id: 'course-A',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: STAFF_OLD,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+        {
+          id: 'course-B',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'B',
+          office_id: 'office-honten',
+          assigned_staff_id: STAFF_NEW,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+      staff: [
+        { id: STAFF_OLD, name: '元担当', primary_office_id: 'office-honten', status: 'active' },
+        { id: STAFF_NEW, name: '新担当', primary_office_id: 'office-honten', status: 'active' },
+      ],
+      eventsByStaff: new Map([
+        [
+          STAFF_OLD,
+          [
+            {
+              id: EVENT_ID,
+              staff_id: STAFF_OLD,
+              date: '2026-05-04',
+              title: '研修',
+              start_time: '10:00',
+              end_time: '11:00',
+              type: '研修',
+            },
+          ],
+        ],
+        [
+          STAFF_NEW,
+          [
+            {
+              id: 'event-blocker',
+              staff_id: STAFF_NEW,
+              date: '2026-05-04',
+              title: '別予定',
+              start_time: '12:30',
+              end_time: '13:30', // 時間帯は重なるが、今週だけ外している
+              type: '研修',
+              cancelled_at: '2026-05-03T00:00:00Z',
+            },
+          ],
+        ],
+      ]),
+    });
+    renderPanel();
+    await dndState.capturedHandlers.onDragEnd!({
+      ...dropEventOnColumn(EVENT_ID, 'tpl-B', 0, '13:00'),
+    });
+    expect(mockToast.warning).not.toHaveBeenCalledWith(expect.stringMatching(/他のイベント/));
+    expect(mockUpdateEventDrag).toHaveBeenCalled();
   });
 
   it('W39-D-5. 衝突 — 同 staff 担当 visit と重複 (案 K) → 警告 + PATCH 呼ばれない', async () => {

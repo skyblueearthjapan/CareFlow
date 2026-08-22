@@ -45,6 +45,7 @@ from app.api.v1 import (
     staff_overrides,
     staff_shift_confirmations,
     staff_shifts,
+    substitute_candidates,
     visit_monitor,
     visit_photos,
     visit_review,
@@ -175,6 +176,8 @@ api_router.include_router(schedule.router, prefix="/schedule", tags=["schedule"]
 # v1 (``/schedule/auto-allocate`` 等) は schedule.router にそのまま残し、UI 完成後の
 # 別 PR で削除する.
 api_router.include_router(schedule_v2.router, prefix="/schedule", tags=["schedule-v2"])
+# Phase E (週空間 運転席) BE-1: 急休の代替候補 (/schedule/v2/substitute-candidates).
+api_router.include_router(substitute_candidates.router, prefix="/schedule", tags=["schedule-v2"])
 # Wave U-3: 操作ジャーナル undo/redo エンドポイント (/schedule/v2/op-log/*)
 api_router.include_router(op_log.router, prefix="/schedule", tags=["op-log"])
 # Phase G-21 T2: 同住所紐付け CRUD (blocked / required の link 行管理).

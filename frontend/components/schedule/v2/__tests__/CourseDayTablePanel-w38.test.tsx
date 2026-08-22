@@ -220,6 +220,7 @@ vi.mock('@/lib/queries/staff', () => ({
 vi.mock('@/lib/queries/visits', () => ({
   useVisits: (...args: unknown[]) => mockVisits(...args),
   useDeleteVisit: () => ({ mutateAsync: mockDeleteVisit, isPending: false }),
+  useCreateVisit: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock('@/lib/queries/courses', () => ({
   useCourses: (...args: unknown[]) => mockCourses(...args),

@@ -207,3 +207,15 @@ export const TL_SHOW_ADDR_PX = 46;
 /** カード内の情報量しきい (px): これ以上で 時刻・サービス行 / ピル行 を出す。 */
 export const TL_SHOW_SVC_PX = 46;
 export const TL_SHOW_PILLS_PX = 74;
+
+// ─────────────────────────────────────────────────────────────────────────
+// 「今週の運転席」横タイムライン (week-cockpit-design.md §3 StaffTimelineView)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * 運転席タイムラインの時間軸 (0 時起点の分)。8:00〜19:00。
+ * 縦タイムライン (9:00〜18:00) より広いのは、朝会 (8:30) と遅番の戻り (18:30) を
+ * 盤面に載せるため (モック `staff-schedule-week-cockpit-mock.html` の H0/H1)。
+ */
+export const TL_COCKPIT_START_MIN = 8 * 60;
+export const TL_COCKPIT_END_MIN = 19 * 60;

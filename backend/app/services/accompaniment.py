@@ -855,6 +855,66 @@ async def has_accompaniment_on_dates(
     return list(rows)
 
 
+async def load_accompaniment_visits_by_staff(
+    db: AsyncSession,
+    *,
+    staff_ids: list[UUID],
+    dates: list[date],
+) -> dict[UUID, list[Visit]]:
+    """``has_accompaniment_on_dates`` の一括版 — staff_id ごとの同行訪問を 1 クエリで返す.
+
+    代替候補 API (``substitute_candidates``) が「その候補は同日に同行で拘束されて
+    いないか」を候補全員分まとめて調べるために追加した (BE-1 / 2026-08-22 レビュー)。
+    単体版と **同じ可視性規約** (visit 直リンク OR course リンク・
+    ``courses.deleted_at IS NULL`` の live JOIN / cancelled・deleted は除外) を、
+    JOIN の ON 句に畳んで staff 別に射影する。
+
+    Args:
+        db: 共有 AsyncSession (SELECT のみ).
+        staff_ids: 対象スタッフ (空なら空 dict).
+        dates: 対象日 (空なら空 dict).
+
+    Returns:
+        ``{staff_id: [Visit, ...]}``. 同行が無いスタッフはキーごと現れない。
+        ``patient`` を eager-load 済み (患者名・座標を使う呼び出し側のため)。
+    """
+    if not staff_ids or not dates:
+        return {}
+    live_course_ids = select(Course.id).where(Course.deleted_at.is_(None))
+    stmt = (
+        select(Accompaniment.accompanying_staff_id, Visit)
+        .join(
+            Visit,
+            or_(
+                Visit.id == Accompaniment.visit_id,
+                and_(
+                    Accompaniment.course_id.is_not(None),
+                    Visit.course_id == Accompaniment.course_id,
+                    Accompaniment.course_id.in_(live_course_ids),
+                ),
+            ),
+        )
+        .where(
+            Accompaniment.accompanying_staff_id.in_(list(dict.fromkeys(staff_ids))),
+            Visit.visit_date.in_(list(dict.fromkeys(dates))),
+            Visit.deleted_at.is_(None),
+            Visit.status != VISIT_STATUS_CANCELLED,
+        )
+        .options(selectinload(Visit.patient))
+        .order_by(Visit.visit_date, Visit.start_time, Visit.id)
+    )
+    result: dict[UUID, list[Visit]] = {}
+    seen: set[tuple[UUID, UUID]] = set()
+    for staff_id, visit in (await db.execute(stmt)).all():
+        # 直リンクとコースリンクの両方に当たる訪問がありうるので (staff, visit) で去重.
+        key = (staff_id, visit.id)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.setdefault(staff_id, []).append(visit)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # 逆方向の警告 (決定#1 後段) — 「担当を付けた日に、その人の同行が入っている」
 # ---------------------------------------------------------------------------

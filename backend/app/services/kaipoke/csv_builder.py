@@ -189,7 +189,7 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
 
     from app.models.office import Office
     from app.models.staff import Staff
-    from app.models.visit import Visit
+    from app.models.visit import VISIT_STATUS_CANCELLED, Visit
     from app.services.accompaniment import resolve_accompaniment_by_visit
 
     first = date(opts.year, opts.month, 1)
@@ -202,7 +202,9 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
             Visit.deleted_at.is_(None),
             Visit.visit_date >= first,
             Visit.visit_date <= last,
-            Visit.status != "cancelled",
+            # 「今週だけ取消」(週空間 Phase E) と取込の delete は同一表現。
+            # 送信差分では delete になるので CSV には出さない。
+            Visit.status != VISIT_STATUS_CANCELLED,
         )
         .options(selectinload(Visit.patient))
         .order_by(Visit.visit_date, Visit.start_time)

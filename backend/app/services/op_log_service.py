@@ -24,27 +24,78 @@
                               (週空間 A2: 患者個別の担当貼り替え)
     "move_course_weekday"  — course の weekday と配下 planned visits の visit_date を
                               to_weekday へ移動 (週空間 A2後段: コース丸ごと曜日移動)
+    "cancel_visit"         — visit_ids の status を cancelled / planned へ切り替える
+                              (週空間 Phase E: 今週だけ取消。inverse は逆フラグ)
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date, time
+from datetime import UTC, date, datetime, time
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.course import Course
 from app.models.schedule_op_log import ScheduleOpLog
-from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, Visit
+from app.models.visit import (
+    VISIT_SOURCE_MANUAL_CANCEL,
+    VISIT_SOURCE_MANUAL_WEEK,
+    VISIT_STATUS_CANCELLED,
+    VISIT_STATUS_PLANNED,
+    Visit,
+)
+from app.models.visit_checkin import VisitCheckin
 from app.models.visit_staff_assignment import VisitStaffAssignment
 
 logger = logging.getLogger(__name__)
 
 _WEEKDAY_JP = ("月", "火", "水", "木", "金", "土", "日")
+
+# 「当日以前」の判定は JST 基準 (サーバは UTC・日付境界がずれないように)。
+_JST = ZoneInfo("Asia/Tokyo")
+
+
+async def check_cancel_visit_allowed(
+    db: AsyncSession, visits: list[Visit], *, cancel: bool
+) -> str | None:
+    """「今週だけ取消 / 取消をやめる」の共通ガード (week-cockpit-design.md §2-2).
+
+    エンドポイント (``schedule_v2.visit_cancel_week``) と undo/redo
+    (``_set_visits_cancelled``) で **同一の判定**を使うための単一ソース。
+    片方にしか無いと、undo で過去日の訪問が取り消せる等の抜け道ができる。
+
+    Returns:
+        違反理由 (利用者向け日本語)。問題なければ ``None``。
+        エンドポイントは 422、undo/redo は 409 (OpLogConflictError) に変換する。
+    """
+    if not visits:
+        return None
+    # 青ピン (蓋) はどちら向きでもブロックする — 「今週この位置のまま」の宣言は
+    # 取消にも及ぶ (解除してから操作する)。
+    if any(bool(getattr(v, "week_pinned", False)) for v in visits):
+        return "今週固定（青ピン）されています。解除してから取消してください"
+
+    if not cancel:
+        if any(v.status != VISIT_STATUS_CANCELLED for v in visits):
+            return "取消済み (cancelled) の訪問のみ戻せます"
+        return None
+
+    today_jst = datetime.now(UTC).astimezone(_JST).date()
+    if any(v.visit_date <= today_jst for v in visits):
+        return "当日以前の訪問は取消できません（明日以降の予定のみ）"
+    if any(v.status != VISIT_STATUS_PLANNED for v in visits):
+        return "予定 (planned) の訪問のみ取消できます（訪問中・完了・取消済は不可）"
+    checked_in = await db.scalar(
+        select(VisitCheckin.id).where(VisitCheckin.visit_id.in_([v.id for v in visits]))
+    )
+    if checked_in is not None:
+        return "打刻済みの訪問は取消できません"
+    return None
 
 
 class OpLogConflictError(Exception):
@@ -340,6 +391,14 @@ async def _verify_forward_state(db: AsyncSession, row: ScheduleOpLog) -> None:
         # forward result = course.weekday == fp["to_weekday"]
         await _assert_course_weekday(db, UUID(fp["course_id"]), int(fp["to_weekday"]))
 
+    elif op_name == "cancel_visit":
+        # forward result = 対象 visit の status が forward の結果値のまま
+        await _assert_visits_status(
+            db,
+            [UUID(v) for v in fp.get("visit_ids", [])],
+            VISIT_STATUS_CANCELLED if fp.get("cancel") else VISIT_STATUS_PLANNED,
+        )
+
     # 他 op_name は検証なしで通過（将来拡張用）
 
 
@@ -389,6 +448,14 @@ async def _verify_inverse_state(db: AsyncSession, row: ScheduleOpLog) -> None:
         # inverse result = course.weekday == ip["to_weekday"] (= 元の曜日)
         await _assert_course_weekday(db, UUID(ip["course_id"]), int(ip["to_weekday"]))
 
+    elif op_name == "cancel_visit":
+        # inverse result = 対象 visit の status が inverse の結果値のまま
+        await _assert_visits_status(
+            db,
+            [UUID(v) for v in ip.get("visit_ids", [])],
+            VISIT_STATUS_CANCELLED if ip.get("cancel") else VISIT_STATUS_PLANNED,
+        )
+
 
 async def _execute_payload(db: AsyncSession, payload: dict[str, Any]) -> None:
     """payload の op に応じて DB 更新を実行する."""
@@ -437,6 +504,14 @@ async def _execute_payload(db: AsyncSession, payload: dict[str, Any]) -> None:
             int(payload["to_weekday"]),
         )
 
+    elif op_name == "cancel_visit":
+        await _set_visits_cancelled(
+            db,
+            [UUID(v) for v in payload.get("visit_ids", [])],
+            bool(payload.get("cancel", False)),
+            sources=payload.get("sources") or {},
+        )
+
     else:
         logger.warning("op_log_service: 未知の op_name=%r — スキップ", op_name)
 
@@ -476,6 +551,67 @@ async def _assert_visits_deleted(db: AsyncSession, visit_ids: list[UUID]) -> Non
         raise OpLogConflictError(
             f"他の変更があったため戻せません (visit {still_active[0]} が既にアクティブです)"
         )
+
+
+async def _assert_visits_status(db: AsyncSession, visit_ids: list[UUID], expected: str) -> None:
+    """cancel_visit の undo/redo 前検証: 対象 visit の status が期待値のままか."""
+    if not visit_ids:
+        return
+    rows = await db.scalars(
+        select(Visit).where(Visit.id.in_(visit_ids), Visit.deleted_at.is_(None))
+    )
+    found = list(rows.all())
+    if len(found) != len(set(visit_ids)):
+        raise OpLogConflictError("他の変更があったため戻せません (対象の訪問が見つかりません)")
+    for v in found:
+        if v.status != expected:
+            raise OpLogConflictError(
+                "他の変更があったため戻せません (訪問の状態が既に変更されています)"
+            )
+
+
+async def _set_visits_cancelled(
+    db: AsyncSession,
+    visit_ids: list[UUID],
+    cancel: bool,
+    *,
+    sources: dict[str, str] | None = None,
+) -> None:
+    """visit_ids の status を cancelled / planned へ切り替える (週空間 Phase E).
+
+    endpoint 側 (schedule_v2.visit_cancel_week) と同一の書込。取消の表現は
+    取込の delete と同じ ``status='cancelled'`` (履歴は残り csv_builder が除外する)
+    で、加えて出所に ``manual_cancel`` を刻む (取込 delete 由来の cancelled と
+    区別するため — 取込の add はそちらだけ復活させてよい)。
+
+    Args:
+        sources: 取消前の出所 ``{visit_id: source}``。戻す (cancel=False) ときに
+            使う。無ければ ``manual_week`` (週生成・固定枠戻しから保護される値)。
+    """
+    if not visit_ids:
+        return
+    rows = list(
+        (
+            await db.scalars(
+                select(Visit).where(Visit.id.in_(visit_ids), Visit.deleted_at.is_(None))
+            )
+        ).all()
+    )
+    # エンドポイントと同一のガード (単一ソース)。undo/redo の時点で条件が
+    # 変わっている (日が過ぎた・打刻が付いた・青ピンが刺さった) なら 409。
+    reason = await check_cancel_visit_allowed(db, rows, cancel=cancel)
+    if reason is not None:
+        raise OpLogConflictError(f"戻せません: {reason}")
+    target = VISIT_STATUS_CANCELLED if cancel else VISIT_STATUS_PLANNED
+    _sources = sources or {}
+    for v in rows:
+        v.status = target
+        v.source = (
+            VISIT_SOURCE_MANUAL_CANCEL
+            if cancel
+            else (_sources.get(str(v.id)) or VISIT_SOURCE_MANUAL_WEEK)
+        )
+    await db.flush()
 
 
 async def _assert_visit_staff(db: AsyncSession, visit_id: UUID, expected: UUID | None) -> None:
@@ -636,13 +772,15 @@ async def _move_course_weekday(
             "他の変更があったため戻せません (戻り先の曜日に同じコースが既にあります)"
         )
     to_date = date.fromisocalendar(iso_year, iso_week, to_weekday + 1)
+    # 取消 (cancelled) も planned と一緒に動かす = endpoint と同じ移動対象。
+    # (取消枠だけ元の曜日へ取り残すと、取消をやめた瞬間に別曜日へ復活する)
     visits = list(
         (
             await db.scalars(
                 select(Visit).where(
                     Visit.course_id == course_id,
                     Visit.deleted_at.is_(None),
-                    Visit.status == "planned",
+                    Visit.status.in_((VISIT_STATUS_PLANNED, VISIT_STATUS_CANCELLED)),
                 )
             )
         ).all()

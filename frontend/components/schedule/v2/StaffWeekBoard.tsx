@@ -24,42 +24,75 @@ import { addDays, format } from 'date-fns';
 import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
-import type { EventRead } from '@/lib/schemas/staff-events';
+import type { CockpitEventRead } from '@/lib/schemas/v2/cockpit';
 
 import { genderPalette } from '@/lib/scheduling/timeline';
 
 import { getStaffEventsForWeekday } from './courseGrid';
-import type { WeekOverviewVisit } from './CourseWeekOverview';
 import {
   applyCourseDragImage,
   COURSE_DND_MIME,
   readCourseDragPayload,
   readVisitDragPayload,
+  UNASSIGNED_ROW_KEY,
   VISIT_DND_MIME,
   type BoardDragState,
 } from './courseDnd';
-import type { ReconcileMarkersByCell } from './KaipokeReconcilePanel';
+import {
+  weekdayOfIso,
+  type CockpitMarker,
+  type CockpitMarkersByCell,
+} from './cockpit/reconcileMarkers';
+import type { TimelineVisit } from './cockpit/StaffTimelineView';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 
 export interface StaffWeekBoardProps {
   templates: CourseTemplateRead[];
   officeNameById: Map<string, string>;
-  /** 全曜日 × 全 template の visits (CourseWeekOverview と同じ入力)。 */
-  visits: WeekOverviewVisit[];
+  /**
+   * 全曜日 × 全 template の visits (CourseWeekOverview と同じ入力 +
+   * 運転席で使う `status`(今週だけ取消) / `course_label`)。
+   */
+  visits: TimelineVisit[];
   /** `${templateId}:${weekday}` → assigned_staff_id。 */
   assignedStaffByTemplateWeekday: Map<string, string>;
   staffMap: Map<string, StaffRead>;
-  staffEventsByStaff: Map<string, EventRead[]>;
+  staffEventsByStaff: Map<string, CockpitEventRead[]>;
   /** 対象週の月曜。列ヘッダの日付と event の日付一致判定に使う。 */
   weekStart: Date;
+  /**
+   * 患者名クリック → 患者詳細。運転席では訪問行そのものが
+   * `renderVisitMenu` のトリガーになるため、患者名リンクは「Shift+クリック /
+   * 中クリック相当」ではなく**行内の別ボタン**として共存する。
+   */
   onPatientClick?: (patientId: string) => void;
   /** 職員スケジュールタブ: 訪問/イベントが無くても在籍スタッフ全員を行に出す。 */
   showAllStaff?: boolean;
   /** セルの「＋ イベント」→ 追加ダイアログ (スタッフ・日付は文脈から確定)。 */
   onAddEvent?: (staffId: string, date: Date) => void;
   /** イベント帯クリック → 編集/削除ダイアログ。 */
-  onEventClick?: (ev: EventRead, staffId: string) => void;
+  onEventClick?: (ev: CockpitEventRead, staffId: string) => void;
+  /**
+   * 週空間 Phase E: 訪問行を `VisitActionMenu` (ポップオーバー) で包む。
+   * 盤面は API を知らないままメニューだけ親から差し込める (結線は FE-C)。
+   * 省略時は行をそのまま描く (従来どおり)。
+   */
+  renderVisitMenu?: (
+    visit: TimelineVisit,
+    weekday: number,
+    trigger: React.ReactElement,
+  ) => React.ReactNode;
+  /** セルの「🛌 休みにする」→ 代替候補パネル (急な休み)。 */
+  onMarkOff?: (staffId: string, weekday: number) => void;
+  /** セルの「＋訪問」→ 今週だけの訪問追加ダイアログ。 */
+  onAddVisit?: (staffId: string, weekday: number) => void;
+  /**
+   * ●未送信 (カイポケへまだ送っていない) の訪問 id / イベント id。
+   * `null` = 同期バーがまだ数えていない (ドットを出さない = 断定しない)。
+   */
+  unsentVisitIds?: Set<string> | null;
+  unsentEventIds?: Set<string> | null;
   // ─── 週空間 A1 (weekly-space-design.md §4): コース貼り付け DnD ───
   /** `${templateId}:${weekday}` → course_id。コース帯のドラッグ元解決に使う。 */
   courseIdByTemplateWeekday?: Map<string, string>;
@@ -95,25 +128,43 @@ export interface StaffWeekBoardProps {
   /** 「（担当なし）」行への訪問ドロップ = その 1 件だけ担当解除。 */
   onVisitUnassignDrop?: (visitId: string) => void;
   /**
-   * カイポケ突合 (C1・weekly-space-design.md §7-3) のゴーストマーカー。
-   * `${staffId}:${weekday}` で引く。🟣add=カイポケのみ / 🟡update=変更 /
-   * 🔵delete=らく助のみ。KaipokeReconcilePanel が供給する。
+   * カイポケ突合 (C1/Phase E) のゴーストマーカー。`${staffId}:${weekday}` で引く。
+   * イベントはチップ、訪問 (kind='visit') はコース枠+患者カード風に描く:
+   *   before = 青点線「今ここ」 / after = 紫実線「こう変わる・ここに入る」
+   *   delete = 青の打消し。SyncBar (同期バー) が選択中の 1 件を供給する。
    */
-  reconcileMarkersByCell?: ReconcileMarkersByCell | null;
+  reconcileMarkersByCell?: CockpitMarkersByCell | null;
 }
 
-const UNASSIGNED_KEY = '__unassigned__';
+/** 「（担当なし）」行のキー (courseDnd の単一ソース)。 */
+const UNASSIGNED_KEY = UNASSIGNED_ROW_KEY;
 
 function hhmm(t: string | null | undefined): string {
   if (!t) return '';
   return t.slice(0, 5);
 }
 
+/**
+ * このセル (`rowKey` × `wd`) にゴーストのどちら側を描くか。
+ * `toMarkersByCell` は before/after 両方のセルに同じマーカーを置くため、
+ * セル側で「自分はどちらの側か」を解き直す (両方が同セルなら 2 つ描く)。
+ */
+function ghostSidesFor(mk: CockpitMarker, rowKey: string, wd: number): ('before' | 'after')[] {
+  const sides: ('before' | 'after')[] = [];
+  if (mk.before && mk.before.staff_id === rowKey && weekdayOfIso(mk.before.date) === wd) {
+    sides.push('before');
+  }
+  if (mk.after && mk.after.staff_id === rowKey && weekdayOfIso(mk.after.date) === wd) {
+    sides.push('after');
+  }
+  return sides;
+}
+
 /** セル内のコース1枠 (見出し + 訪問明細)。 */
 interface CellCourse {
   templateId: string;
   label: string; // 例: "稲毛A"
-  visits: WeekOverviewVisit[];
+  visits: TimelineVisit[];
 }
 
 export function StaffWeekBoard({
@@ -139,6 +190,11 @@ export function StaffWeekBoard({
   onCourseUnassignDrop,
   onVisitUnassignDrop,
   reconcileMarkersByCell,
+  renderVisitMenu,
+  onMarkOff,
+  onAddVisit,
+  unsentVisitIds,
+  unsentEventIds,
 }: StaffWeekBoardProps) {
   // ドラッグ中に実際に重なっているセル (`${rowKey}:${wd}`)。候補セルの
   // 淡い破線に対し、重なり中のセルだけ強く光らせる (PO指摘 2026-08-21)。
@@ -220,7 +276,16 @@ export function StaffWeekBoard({
       return (sa?.name ?? '').localeCompare(sb?.name ?? '', 'ja');
     });
     return { cellMap: cells, rowKeys: sorted };
-  }, [visits, assignedStaffByTemplateWeekday, staffEventsByStaff, staffMap, officeNameById, courseLabel, showAllStaff, alwaysShowUnassignedRow]);
+  }, [
+    visits,
+    assignedStaffByTemplateWeekday,
+    staffEventsByStaff,
+    staffMap,
+    officeNameById,
+    courseLabel,
+    showAllStaff,
+    alwaysShowUnassignedRow,
+  ]);
 
   if (rowKeys.length === 0) {
     return (
@@ -289,9 +354,19 @@ export function StaffWeekBoard({
                     : [];
                   // 曜日一致で判定 (CourseWeekOverview と同じ呼び方)。
                   // staffEventsByStaff は親が当該週で取得済みのため週跨ぎ混入はない。
+                  // getStaffEventsForWeekday は EventRead[] を返すが、渡している配列は
+                  // CockpitEventRead[] (cancelled_at/source 付き) なので絞り戻す。
+                  // 盤面だけは includeCancelled=true — 「今週だけ外した」ことを
+                  // 打消線で見せるのがここの仕事 (他の経路は予定から除外する)。
                   const events =
                     rowKey !== UNASSIGNED_KEY
-                      ? getStaffEventsForWeekday(rowKey, wd, staffEventsByStaff)
+                      ? (getStaffEventsForWeekday(
+                          rowKey,
+                          wd,
+                          staffEventsByStaff,
+                          undefined,
+                          true,
+                        ) as CockpitEventRead[])
                       : [];
                   // 週空間 A1: 休み網掛け + コースドロップ受け入れ。
                   const off =
@@ -312,7 +387,7 @@ export function StaffWeekBoard({
                     <td
                       key={wd}
                       className={[
-                        'border-r border-border-subtle px-2 py-1.5 transition-colors',
+                        'group/cell border-r border-border-subtle px-2 py-1.5 transition-colors',
                         off ? 'bg-amber-50' : '',
                         // 候補セル (同じ曜日の列) は淡い破線、重なり中は強く光らせる。
                         dropHighlight && !dragOverHere
@@ -402,10 +477,65 @@ export function StaffWeekBoard({
                               : ''}
                           </div>
                         ) : null}
-                        {/* カイポケ突合 (C1): 差分ゴースト (🟣カイポケのみ/🟡変更/🔵らく助のみ)。
-                            破線チップ = 実データではなく「カイポケ側との差」の可視化。 */}
+                        {/* カイポケ突合 (C1/Phase E): 差分ゴースト。
+                            訪問 (kind='visit') は「今ここ(青点線)→こう変わる(紫実線)」の
+                            2 枚をコース枠+患者カード風に描く。イベント/旧形式は従来のチップ。 */}
                         {rowKey !== UNASSIGNED_KEY &&
-                          (reconcileMarkersByCell?.get(`${rowKey}:${wd}`) ?? []).map((mk) => {
+                          (reconcileMarkersByCell?.get(`${rowKey}:${wd}`) ?? []).flatMap((mk) => {
+                            const cockpit = mk as CockpitMarker;
+                            const sides =
+                              cockpit.kind === 'visit' ? ghostSidesFor(cockpit, rowKey, wd) : [];
+                            if (sides.length > 0) {
+                              return sides.map((side) => {
+                                const s = side === 'before' ? cockpit.before! : cockpit.after!;
+                                const isBefore = side === 'before';
+                                const cancelled = isBefore && cockpit.action === 'delete';
+                                const head = isBefore
+                                  ? cancelled
+                                    ? '🔵 取消（カイポケ側に無し）'
+                                    : '🔵 今ここ'
+                                  : cockpit.action === 'add'
+                                    ? '🟣 ここに入る'
+                                    : '🟣 こう変わる';
+                                return (
+                                  <div
+                                    key={`rc-${cockpit.externalId}-${side}`}
+                                    className="rounded px-1.5 py-0.5 text-[10px] font-medium"
+                                    style={{
+                                      border: isBefore
+                                        ? '1px dashed var(--sched-ghost-before)'
+                                        : '1px solid var(--sched-ghost-after)',
+                                      background: isBefore
+                                        ? 'var(--sched-ghost-before-bg)'
+                                        : 'var(--sched-ghost-after-bg)',
+                                      color: isBefore
+                                        ? 'var(--sched-ghost-before)'
+                                        : 'var(--sched-ghost-after)',
+                                    }}
+                                    title={
+                                      isBefore
+                                        ? 'らく助の今の予定（差分の「前」）'
+                                        : 'この差分を取り込むとこうなります（差分の「後」）'
+                                    }
+                                    data-testid={`reconcile-ghost-${cockpit.externalId}-${side}`}
+                                  >
+                                    <span className="block">{head}</span>
+                                    {s.course_label ? (
+                                      <span className="block font-bold opacity-80">
+                                        {s.course_label}
+                                      </span>
+                                    ) : null}
+                                    <span className={cancelled ? 'block line-through' : 'block'}>
+                                      <span className="tnum mr-1">
+                                        {hhmm(s.start)}
+                                        {s.end ? `〜${hhmm(s.end)}` : ''}
+                                      </span>
+                                      {cockpit.patient_name ?? cockpit.title}
+                                    </span>
+                                  </div>
+                                );
+                              });
+                            }
                             const styles =
                               mk.action === 'add'
                                 ? 'border-violet-400 bg-violet-50 text-violet-800'
@@ -439,6 +569,8 @@ export function StaffWeekBoard({
                             onEventClick があれば「正典」としてクリック編集可能 (§昇格)。 */}
                         {events.map((ev) => {
                           const isMemo = ev.start_time === ev.end_time;
+                          // 今週だけ外したイベント (mig 0075) は行が残るので打消線で示す。
+                          const cancelled = ev.cancelled_at != null;
                           const label = isMemo
                             ? `📝 ${ev.title || ev.type}`
                             : `${hhmm(ev.start_time)}〜${hhmm(ev.end_time)} ${ev.title || ev.type}`;
@@ -447,7 +579,29 @@ export function StaffWeekBoard({
                             borderColor: 'var(--sched-event-ln)',
                             borderLeftColor: 'var(--sched-event-bar)',
                             color: 'var(--sched-event-ink)',
+                            ...(cancelled
+                              ? { textDecoration: 'line-through', opacity: 0.6 }
+                              : null),
                           };
+                          const body = (
+                            <>
+                              {unsentEventIds?.has(ev.id) ? (
+                                <span
+                                  className="mr-1 inline-block h-1.5 w-1.5 rounded-full align-middle"
+                                  style={{ background: 'var(--sched-unsent-dot)' }}
+                                  title="カイポケへまだ送っていません（同期バーの ●未送信）"
+                                  aria-label="未送信"
+                                  data-testid={`staff-week-event-unsent-${ev.id}`}
+                                />
+                              ) : null}
+                              {label}
+                              {cancelled ? (
+                                <span className="ml-1 rounded bg-warning-bg px-1 text-[10px] font-bold no-underline text-warning-strong">
+                                  今週除外
+                                </span>
+                              ) : null}
+                            </>
+                          );
                           const editable = onEventClick && rowKey !== UNASSIGNED_KEY;
                           return editable ? (
                             <button
@@ -457,10 +611,16 @@ export function StaffWeekBoard({
                               // イベント緑トークンで統一 (PO確定 2026-07-26)。
                               className="block w-full rounded border border-l-[3px] px-1.5 py-0.5 text-left text-[11px] font-medium hover:brightness-95 focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
                               style={chipStyle}
-                              title={ev.note ? `${ev.note}（クリックで編集）` : 'クリックで編集'}
+                              title={
+                                cancelled
+                                  ? '今週だけ外しています（クリックで編集）'
+                                  : ev.note
+                                    ? `${ev.note}（クリックで編集）`
+                                    : 'クリックで編集'
+                              }
                               data-testid={`staff-week-event-${ev.id}`}
                             >
-                              {label}
+                              {body}
                             </button>
                           ) : (
                             <div
@@ -468,8 +628,9 @@ export function StaffWeekBoard({
                               className="rounded border border-l-[3px] px-1.5 py-0.5 text-[11px] font-medium"
                               style={chipStyle}
                               title={ev.note ?? undefined}
+                              data-testid={`staff-week-event-${ev.id}`}
                             >
-                              {label}
+                              {body}
                             </div>
                           );
                         })}
@@ -482,176 +643,225 @@ export function StaffWeekBoard({
                               ? (courseIdByTemplateWeekday.get(`${cc.templateId}:${wd}`) ?? null)
                               : null;
                           return (
-                          <div key={cc.templateId}>
-                            <div className="mb-0.5 inline-flex items-center gap-0.5">
-                              <div
-                                className={[
-                                  'inline-flex items-center rounded bg-bg-muted px-1.5 py-px text-[10px] font-bold text-text-secondary transition-opacity',
-                                  chipCourseId ? 'cursor-grab active:cursor-grabbing' : '',
-                                  // 持ち出し中のコースは半透明 (どれを掴んでいるか明示)。
-                                  chipCourseId && activeCourseDrag?.courseId === chipCourseId
-                                    ? 'opacity-40'
-                                    : '',
-                                ]
-                                  .filter(Boolean)
-                                  .join(' ')}
-                                draggable={!!chipCourseId}
-                                onDragStart={
-                                  chipCourseId
-                                    ? (e) => {
-                                        const payload = {
-                                          courseId: chipCourseId,
-                                          weekday: wd,
-                                          // パレット戻し時の個別解除フォールバック用。
-                                          ...(rowKey !== UNASSIGNED_KEY
-                                            ? { fromStaffId: rowKey }
-                                            : {}),
-                                        };
-                                        e.dataTransfer.setData(
-                                          COURSE_DND_MIME,
-                                          JSON.stringify(payload),
-                                        );
-                                        e.dataTransfer.effectAllowed = 'move';
-                                        applyCourseDragImage(
-                                          e.dataTransfer,
-                                          cc.label,
-                                          `${cc.visits.length}件 — 別スタッフへ付け替え / コースの表へ戻して解除`,
-                                        );
-                                        onCourseDragChange?.(payload);
-                                      }
-                                    : undefined
-                                }
-                                onDragEnd={
-                                  chipCourseId ? () => onCourseDragChange?.(null) : undefined
-                                }
-                                title={
-                                  chipCourseId
-                                    ? `${cc.label} — 別のスタッフのセルへドラッグで担当付け替え（今週のみ）`
-                                    : undefined
-                                }
-                                data-testid={`staff-week-course-chip-${cc.templateId}-${wd}`}
-                              >
-                                {chipCourseId ? '⠿ ' : ''}
-                                {cc.label}
-                              </div>
-                              {/* × = 担当解除 (未割当へ戻す・今週のみ)。ドラッグより
+                            <div key={cc.templateId}>
+                              <div className="mb-0.5 inline-flex items-center gap-0.5">
+                                <div
+                                  className={[
+                                    'inline-flex items-center rounded bg-bg-muted px-1.5 py-px text-[10px] font-bold text-text-secondary transition-opacity',
+                                    chipCourseId ? 'cursor-grab active:cursor-grabbing' : '',
+                                    // 持ち出し中のコースは半透明 (どれを掴んでいるか明示)。
+                                    chipCourseId && activeCourseDrag?.courseId === chipCourseId
+                                      ? 'opacity-40'
+                                      : '',
+                                  ]
+                                    .filter(Boolean)
+                                    .join(' ')}
+                                  draggable={!!chipCourseId}
+                                  onDragStart={
+                                    chipCourseId
+                                      ? (e) => {
+                                          const payload = {
+                                            courseId: chipCourseId,
+                                            weekday: wd,
+                                            // パレット戻し時の個別解除フォールバック用。
+                                            ...(rowKey !== UNASSIGNED_KEY
+                                              ? { fromStaffId: rowKey }
+                                              : {}),
+                                          };
+                                          e.dataTransfer.setData(
+                                            COURSE_DND_MIME,
+                                            JSON.stringify(payload),
+                                          );
+                                          e.dataTransfer.effectAllowed = 'move';
+                                          applyCourseDragImage(
+                                            e.dataTransfer,
+                                            cc.label,
+                                            `${cc.visits.length}件 — 別スタッフへ付け替え / コースの表へ戻して解除`,
+                                          );
+                                          onCourseDragChange?.(payload);
+                                        }
+                                      : undefined
+                                  }
+                                  onDragEnd={
+                                    chipCourseId ? () => onCourseDragChange?.(null) : undefined
+                                  }
+                                  title={
+                                    chipCourseId
+                                      ? `${cc.label} — 別のスタッフのセルへドラッグで担当付け替え（今週のみ）`
+                                      : undefined
+                                  }
+                                  data-testid={`staff-week-course-chip-${cc.templateId}-${wd}`}
+                                >
+                                  {chipCourseId ? '⠿ ' : ''}
+                                  {cc.label}
+                                </div>
+                                {/* × = 担当解除 (未割当へ戻す・今週のみ)。ドラッグより
                                   直感的な「戻す」入口 (PO要望 2026-08-21)。undo は
                                   ツールバーの「戻る」でも可能。担当なし行には出さない。
                                   コース行が引けない帯 (臨時等) でも出す — 呼び出し側が
                                   訪問の個別解除でフォールバックする。 */}
-                              {onCourseUnassign && rowKey !== UNASSIGNED_KEY ? (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    onCourseUnassign({
-                                      courseId: chipCourseId,
-                                      staffId: rowKey,
-                                      weekday: wd,
-                                      visitIds: cc.visits.map((vv) => vv.id),
-                                    })
-                                  }
-                                  className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-red-300 bg-red-50 text-[11px] font-bold leading-none text-red-600 shadow-sm transition-colors hover:border-red-600 hover:bg-red-600 hover:text-white focus:outline-none focus-visible:ring-1 focus-visible:ring-red-500"
-                                  title={`${cc.label} の担当を解除して「コースの表」へ戻す（今週のみ）`}
-                                  aria-label={`${cc.label} の担当を解除`}
-                                  data-testid={`staff-week-course-unassign-${cc.templateId}-${wd}`}
-                                >
-                                  ×
-                                </button>
-                              ) : null}
-                            </div>
-                            <ul className="space-y-0.5">
-                              {cc.visits
-                                .slice()
-                                .sort((a, b) =>
-                                  (a.start_time ?? '').localeCompare(b.start_time ?? ''),
-                                )
-                                .map((v) => {
-                                  // 週ビュー(リスト)と同じ視覚言語の性別ウォッシュカード行
-                                  // (CourseWeekOverview の visit 行と同一スタイル・PO要望)。
-                                  const pal = genderPalette(v.patient_sex);
-                                  const sexStyle: React.CSSProperties =
-                                    v.patient_sex_restriction === 'female_only'
-                                      ? { color: '#dc2626', fontWeight: 600 }
-                                      : v.patient_sex_restriction === 'male_only'
-                                        ? { color: '#2563eb', fontWeight: 600 }
-                                        : {};
-                                  // 週空間 A2: 訪問行 1 件を掴んで別スタッフへ
-                                  // (患者個別の貼り替え・今週のみ)。
-                                  const visitDraggable = !!onVisitDrop;
-                                  return (
-                                    <li
-                                      key={v.id}
-                                      className={[
-                                        'flex items-center gap-1 rounded border border-l-[3px] px-1 py-0.5 text-[10px] text-text-primary transition-opacity',
-                                        visitDraggable ? 'cursor-grab active:cursor-grabbing' : '',
-                                        activeCourseDrag?.visitId === v.id ? 'opacity-40' : '',
-                                      ]
-                                        .filter(Boolean)
-                                        .join(' ')}
-                                      style={{
-                                        background: pal.bg,
-                                        borderColor: pal.ln,
-                                        borderLeftColor: pal.bar,
-                                      }}
-                                      draggable={visitDraggable}
-                                      onDragStart={
-                                        visitDraggable
-                                          ? (e) => {
-                                              const payload = { visitId: v.id, weekday: wd };
-                                              e.dataTransfer.setData(
-                                                VISIT_DND_MIME,
-                                                JSON.stringify(payload),
-                                              );
-                                              e.dataTransfer.effectAllowed = 'move';
-                                              applyCourseDragImage(
-                                                e.dataTransfer,
-                                                `${v.patient_name ?? '患者'}様 ${hhmm(v.start_time)}`,
-                                                'この訪問だけ別スタッフへ / コースの表へ戻して解除',
-                                              );
-                                              onCourseDragChange?.(payload);
-                                            }
-                                          : undefined
-                                      }
-                                      onDragEnd={
-                                        visitDraggable ? () => onCourseDragChange?.(null) : undefined
-                                      }
-                                      title={
-                                        visitDraggable
-                                          ? `${v.patient_name ?? ''} — ドラッグでこの訪問だけ担当を付け替え（今週のみ）`
-                                          : (v.patient_name ?? undefined)
-                                      }
-                                      data-testid={`staff-week-visit-${v.id}`}
-                                    >
-                                      {/* 行頭の性別ドット (週リストと同じ視覚言語)。 */}
-                                      <i
-                                        className="h-1.5 w-1.5 shrink-0 rounded-full"
-                                        style={{ background: pal.bar }}
-                                        aria-hidden="true"
-                                      />
-                                      <span className="min-w-0 flex-1 truncate">
-                                        <span className="mr-1 tnum text-text-muted">
-                                          {hhmm(v.start_time)}
-                                          {v.end_time ? `〜${hhmm(v.end_time)}` : ''}
+                                {onCourseUnassign && rowKey !== UNASSIGNED_KEY ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      onCourseUnassign({
+                                        courseId: chipCourseId,
+                                        staffId: rowKey,
+                                        weekday: wd,
+                                        visitIds: cc.visits.map((vv) => vv.id),
+                                      })
+                                    }
+                                    className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-red-300 bg-red-50 text-[11px] font-bold leading-none text-red-600 shadow-sm transition-colors hover:border-red-600 hover:bg-red-600 hover:text-white focus:outline-none focus-visible:ring-1 focus-visible:ring-red-500"
+                                    title={`${cc.label} の担当を解除して「コースの表」へ戻す（今週のみ）`}
+                                    aria-label={`${cc.label} の担当を解除`}
+                                    data-testid={`staff-week-course-unassign-${cc.templateId}-${wd}`}
+                                  >
+                                    ×
+                                  </button>
+                                ) : null}
+                              </div>
+                              <ul className="space-y-0.5">
+                                {cc.visits
+                                  .slice()
+                                  .sort((a, b) =>
+                                    (a.start_time ?? '').localeCompare(b.start_time ?? ''),
+                                  )
+                                  .map((v) => {
+                                    // 週ビュー(リスト)と同じ視覚言語の性別ウォッシュカード行
+                                    // (CourseWeekOverview の visit 行と同一スタイル・PO要望)。
+                                    const pal = genderPalette(v.patient_sex);
+                                    const sexStyle: React.CSSProperties =
+                                      v.patient_sex_restriction === 'female_only'
+                                        ? { color: '#dc2626', fontWeight: 600 }
+                                        : v.patient_sex_restriction === 'male_only'
+                                          ? { color: '#2563eb', fontWeight: 600 }
+                                          : {};
+                                    // 週空間 A2: 訪問行 1 件を掴んで別スタッフへ
+                                    // (患者個別の貼り替え・今週のみ)。
+                                    // 今週だけ取消 (D1) はドラッグ不可・打消線 + 「取消」バッジ。
+                                    const cancelled = v.status === 'cancelled';
+                                    const visitDraggable = !!onVisitDrop && !cancelled;
+                                    const row = (
+                                      <li
+                                        key={v.id}
+                                        className={[
+                                          'flex items-center gap-1 rounded border border-l-[3px] px-1 py-0.5 text-[10px] text-text-primary transition-opacity',
+                                          visitDraggable
+                                            ? 'cursor-grab active:cursor-grabbing'
+                                            : '',
+                                          renderVisitMenu && !visitDraggable
+                                            ? 'cursor-pointer'
+                                            : '',
+                                          cancelled ? 'line-through opacity-60' : '',
+                                          activeCourseDrag?.visitId === v.id ? 'opacity-40' : '',
+                                        ]
+                                          .filter(Boolean)
+                                          .join(' ')}
+                                        style={{
+                                          background: pal.bg,
+                                          borderColor: pal.ln,
+                                          borderLeftColor: pal.bar,
+                                        }}
+                                        draggable={visitDraggable}
+                                        onDragStart={
+                                          visitDraggable
+                                            ? (e) => {
+                                                const payload = { visitId: v.id, weekday: wd };
+                                                e.dataTransfer.setData(
+                                                  VISIT_DND_MIME,
+                                                  JSON.stringify(payload),
+                                                );
+                                                e.dataTransfer.effectAllowed = 'move';
+                                                applyCourseDragImage(
+                                                  e.dataTransfer,
+                                                  `${v.patient_name ?? '患者'}様 ${hhmm(v.start_time)}`,
+                                                  'この訪問だけ別スタッフへ / コースの表へ戻して解除',
+                                                );
+                                                onCourseDragChange?.(payload);
+                                              }
+                                            : undefined
+                                        }
+                                        onDragEnd={
+                                          visitDraggable
+                                            ? () => onCourseDragChange?.(null)
+                                            : undefined
+                                        }
+                                        title={
+                                          visitDraggable
+                                            ? `${v.patient_name ?? ''} — ドラッグでこの訪問だけ担当を付け替え（今週のみ）`
+                                            : (v.patient_name ?? undefined)
+                                        }
+                                        data-testid={`staff-week-visit-${v.id}`}
+                                        // 運転席: 行そのものがメニューのトリガー。
+                                        // キーボードでも開けるようボタン相当にする。
+                                        {...(renderVisitMenu
+                                          ? { role: 'button', tabIndex: 0 }
+                                          : {})}
+                                      >
+                                        {/* 行頭の性別ドット (週リストと同じ視覚言語)。 */}
+                                        <i
+                                          className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                          style={{ background: pal.bar }}
+                                          aria-hidden="true"
+                                        />
+                                        {/* ●未送信 (カイポケへまだ送っていない)。 */}
+                                        {unsentVisitIds?.has(v.id) ? (
+                                          <i
+                                            className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                            style={{ background: 'var(--sched-unsent-dot)' }}
+                                            title="カイポケへまだ送っていません（同期バーの ●未送信）"
+                                            aria-label="未送信"
+                                            data-testid={`staff-week-visit-unsent-${v.id}`}
+                                          />
+                                        ) : null}
+                                        <span className="min-w-0 flex-1 truncate">
+                                          <span className="mr-1 tnum text-text-muted">
+                                            {hhmm(v.start_time)}
+                                            {v.end_time ? `〜${hhmm(v.end_time)}` : ''}
+                                          </span>
+                                          {onPatientClick ? (
+                                            <button
+                                              type="button"
+                                              className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                              style={sexStyle}
+                                              onClick={(e) => {
+                                                // 行そのものが VisitActionMenu のトリガーなので、
+                                                // 患者名クリックはメニューを開かず詳細だけ出す。
+                                                e.stopPropagation();
+                                                onPatientClick(v.patient_id);
+                                              }}
+                                              aria-label={`${v.patient_name ?? ''} の詳細を開く`}
+                                            >
+                                              {v.patient_name ?? '（無名）'}
+                                            </button>
+                                          ) : (
+                                            <span style={sexStyle}>
+                                              {v.patient_name ?? '（無名）'}
+                                            </span>
+                                          )}
                                         </span>
-                                        {onPatientClick ? (
-                                          <button
-                                            type="button"
-                                            className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
-                                            style={sexStyle}
-                                            onClick={() => onPatientClick(v.patient_id)}
-                                            aria-label={`${v.patient_name ?? ''} の詳細を開く`}
+                                        {cancelled ? (
+                                          <span
+                                            className="shrink-0 rounded bg-error-bg px-1 text-[9px] font-bold text-error no-underline"
+                                            data-testid={`staff-week-visit-cancelled-${v.id}`}
                                           >
-                                            {v.patient_name ?? '（無名）'}
-                                          </button>
-                                        ) : (
-                                          <span style={sexStyle}>{v.patient_name ?? '（無名）'}</span>
-                                        )}
-                                      </span>
-                                    </li>
-                                  );
-                                })}
-                            </ul>
-                          </div>
+                                            取消
+                                          </span>
+                                        ) : null}
+                                      </li>
+                                    );
+                                    // 運転席: 行そのものが VisitActionMenu のトリガー。
+                                    // 患者名リンク (onPatientClick) は行内の別ボタンとして共存する。
+                                    return renderVisitMenu ? (
+                                      <React.Fragment key={v.id}>
+                                        {renderVisitMenu(v, wd, row)}
+                                      </React.Fragment>
+                                    ) : (
+                                      row
+                                    );
+                                  })}
+                              </ul>
+                            </div>
                           );
                         })}
                         {courses.length === 0 &&
@@ -659,18 +869,51 @@ export function StaffWeekBoard({
                           !(onAddEvent && rowKey !== UNASSIGNED_KEY) && (
                             <span className="text-[10px] text-text-muted">—</span>
                           )}
-                        {/* 正典の入口: セルの「＋ イベント」(スタッフ×日が文脈から確定)。 */}
-                        {onAddEvent && rowKey !== UNASSIGNED_KEY && (
-                          <button
-                            type="button"
-                            onClick={() => onAddEvent(rowKey, addDays(weekStart, wd))}
-                            className="block w-full rounded border border-dashed border-border-default px-1 py-0.5 text-[10px] text-text-muted/70 transition-colors hover:border-brand-primary hover:text-brand-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
-                            aria-label={`${staff?.name ?? ''} ${format(addDays(weekStart, wd), 'M/d')} にイベントを追加`}
-                            data-testid={`staff-week-add-${rowKey}-${wd}`}
+                        {/* セルのアクション (運転席): 🛌休みにする / ＋訪問 / ＋イベント。
+                            常時出すと盤面が賑やかになるため、hover / フォーカス時のみ
+                            濃く出す (DOM には常にあるのでキーボードでも届く)。 */}
+                        {rowKey !== UNASSIGNED_KEY && (onAddEvent || onMarkOff || onAddVisit) ? (
+                          <div
+                            className="flex flex-wrap gap-1 opacity-40 transition-opacity focus-within:opacity-100 group-hover/cell:opacity-100"
+                            data-testid={`staff-week-cell-actions-${rowKey}-${wd}`}
                           >
-                            ＋
-                          </button>
-                        )}
+                            {onMarkOff ? (
+                              <button
+                                type="button"
+                                onClick={() => onMarkOff(rowKey, wd)}
+                                className="rounded border border-dashed border-border-default px-1 py-0.5 text-[10px] text-text-muted/80 transition-colors hover:border-brand-primary hover:text-brand-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                title={`${staff?.name ?? ''} をこの日休みにして、予定の渡し先を選びます`}
+                                aria-label={`${staff?.name ?? ''} ${format(addDays(weekStart, wd), 'M/d')} を休みにする`}
+                                data-testid={`staff-week-off-action-${rowKey}-${wd}`}
+                              >
+                                🛌 休みにする
+                              </button>
+                            ) : null}
+                            {onAddVisit ? (
+                              <button
+                                type="button"
+                                onClick={() => onAddVisit(rowKey, wd)}
+                                className="rounded border border-dashed border-border-default px-1 py-0.5 text-[10px] text-text-muted/80 transition-colors hover:border-brand-primary hover:text-brand-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                title="今週だけの訪問を追加します（毎週の型は変わりません）"
+                                aria-label={`${staff?.name ?? ''} ${format(addDays(weekStart, wd), 'M/d')} に訪問を追加`}
+                                data-testid={`staff-week-add-visit-${rowKey}-${wd}`}
+                              >
+                                ＋訪問
+                              </button>
+                            ) : null}
+                            {onAddEvent ? (
+                              <button
+                                type="button"
+                                onClick={() => onAddEvent(rowKey, addDays(weekStart, wd))}
+                                className="rounded border border-dashed border-border-default px-1 py-0.5 text-[10px] text-text-muted/80 transition-colors hover:border-brand-primary hover:text-brand-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                aria-label={`${staff?.name ?? ''} ${format(addDays(weekStart, wd), 'M/d')} にイベントを追加`}
+                                data-testid={`staff-week-add-${rowKey}-${wd}`}
+                              >
+                                ＋イベント
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
                     </td>
                   );

@@ -40,7 +40,13 @@ export const visitBaseSchema = z.object({
   kaipoke_id: z.string().nullable().optional(),
 });
 
-export const visitCreateSchema = visitBaseSchema;
+export const visitCreateSchema = visitBaseSchema.extend({
+  /**
+   * Layer 2 のコース所属 (BE `VisitBase.course_id`)。省略/null = 臨時扱い。
+   * 週空間 Phase E の「＋訪問」(source='manual_week') が今週のコースを指定する。
+   */
+  course_id: z.string().uuid().nullable().optional(),
+});
 
 export const visitUpdateSchema = z.object({
   patient_id: z.string().uuid().optional(),

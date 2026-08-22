@@ -455,6 +455,8 @@ async def load_week_event_windows(
             StaffEvent.staff_id.in_(staff_ids),
             StaffEvent.starts_at < range_end,
             StaffEvent.ends_at >= range_start,
+            # 「今週だけ外す」(mig 0075 / week-cockpit D2) 済みは占有としない。
+            StaffEvent.cancelled_at.is_(None),
         )
     )
 

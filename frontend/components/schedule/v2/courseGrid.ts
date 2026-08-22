@@ -364,9 +364,18 @@ export function getStaffEventsForWeekday(
   weekday: number,
   staffEventsByStaff: Map<string, EventRead[]>,
   weekDayDate?: Date,
+  /**
+   * 「今週だけ外した」イベント (`cancelled_at`・mig 0075) も返すか。
+   * 既定 false = **予定として扱う全経路から除外**する (衝突判定・帯・モニター)。
+   * true にしてよいのは「外したことを打消線で見せる」盤面だけ。
+   */
+  includeCancelled = false,
 ): EventRead[] {
   const events = staffEventsByStaff.get(staffId) ?? [];
   return events.filter((ev) => {
+    if (!includeCancelled && (ev as { cancelled_at?: string | null }).cancelled_at != null) {
+      return false;
+    }
     const evDate = new Date(ev.date + 'T00:00:00');
     // weekday: 0=Mon → JS getDay: 1; 5=Sat → 6; 6=Sun → 0
     const jsDay = (weekday + 1) % 7;

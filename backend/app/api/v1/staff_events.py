@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 from typing import Annotated
 from uuid import UUID
 
@@ -13,7 +13,12 @@ from sqlalchemy.exc import IntegrityError
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.staff import Staff, StaffEvent
 from app.models.user import User, normalize_user_role
-from app.schemas.staff_events import EventCreate, EventRead, EventUpdate
+from app.schemas.staff_events import (
+    EventCancelWeekRequest,
+    EventCreate,
+    EventRead,
+    EventUpdate,
+)
 
 router = APIRouter()
 
@@ -176,6 +181,50 @@ async def update_event(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="starts_at must be < ends_at",
         )
+    await _commit_or_422(db)
+    await db.refresh(row)
+    return row
+
+
+@router.post(
+    "/{staff_id}/events/{event_id}/cancel-week",
+    response_model=EventRead,
+    summary="今週の運転席: イベントを今週だけ外す / 戻す (admin)",
+)
+async def cancel_event_week(
+    staff_id: UUID,
+    event_id: UUID,
+    payload: EventCancelWeekRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+) -> StaffEvent:
+    """``staff_events.cancelled_at`` の掛け外し (week-cockpit-design.md §2-3).
+
+    source は不問 (fixed / manual / kaipoke いずれも外せる)。**行は消さない**:
+    固定イベントの展開 (``expand_staff_event_defaults``) は冪等キー
+    (source='fixed' × external_id) の一致で skip するため、行が残っている限り
+    次の週生成でも復活しない。DELETE との違いはここにある。
+
+    取消印が立った行は ``events_outbound.build_outbound_plan`` (送信)・Layer3 の
+    重なり/blocking 判定・提案エンジンのイベント収集から外れる。一方
+    ``GET /staff/{id}/events`` は cancelled 行も返し続ける (FE が打消線で描く)。
+
+    冪等: 既に同じ状態なら何も変えずに現在の行を返す。
+    """
+    row = await db.scalar(
+        select(StaffEvent).where(
+            StaffEvent.id == event_id,
+            StaffEvent.staff_id == staff_id,
+        )
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    if payload.cancel:
+        if row.cancelled_at is None:
+            row.cancelled_at = datetime.now(UTC)
+    else:
+        row.cancelled_at = None
     await _commit_or_422(db)
     await db.refresh(row)
     return row

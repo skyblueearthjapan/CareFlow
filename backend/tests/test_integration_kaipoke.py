@@ -403,9 +403,11 @@ async def test_apply_partial_item_ids_does_not_lock_sheet(client, db, stub_kaipo
     assert len(body1["correction_data"]) == 1
     assert body1["correction_data"][0]["user_name"] == "患者A"
 
-    # シートはロックされない (ready のまま) → 2件目も 202
+    # シートはロックされない (applying に倒れない) → 2件目も 202。
+    # week-cockpit Phase E: 部分送信済みの印として 'partial' を置く
+    # (●未送信の cached シート掃除がこの送信記録を消さないため)。
     await db.refresh(sheet)
-    assert sheet.status == "ready"
+    assert sheet.status == "partial"
     res2 = await client.post(
         "/api/v1/integrations/apply",
         headers=_bearer(admin),

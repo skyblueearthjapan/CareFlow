@@ -34,6 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 
 from app.core.deps import DbDep, require_role
 from app.models.audit_log import AuditLog
@@ -45,7 +46,13 @@ from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.staff import Staff
 from app.models.suggestion_dismissal import SuggestionDismissal
 from app.models.user import User
-from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, VISIT_STATUS_PLANNED, Visit
+from app.models.visit import (
+    VISIT_SOURCE_MANUAL_CANCEL,
+    VISIT_SOURCE_MANUAL_WEEK,
+    VISIT_STATUS_CANCELLED,
+    VISIT_STATUS_PLANNED,
+    Visit,
+)
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.v2.auto_schedule_v2 import (
     ApplyIndividualWeekSync,
@@ -188,6 +195,7 @@ from app.schemas.v2.unblock import (
     UnblockSlotRef,
     UnblockUnmovableSummary,
 )
+from app.schemas.visit import VisitCancelWeekRequest, VisitRead
 from app.services.constraint_override_notify import (
     ConstraintWarning,
     collect_constraint_warnings_for_patients,
@@ -201,7 +209,12 @@ from app.services.geocoding.client import (
     geocode_address,
 )
 from app.services.office_assigner import OfficeAssigner
-from app.services.op_log_service import fmt_time, fmt_weekday, record_op
+from app.services.op_log_service import (
+    check_cancel_visit_allowed,
+    fmt_time,
+    fmt_weekday,
+    record_op,
+)
 from app.services.scheduling.auto_allocator_v2 import (
     _COURSE_CODES_MAX,
     # Wave 3 (#WAVE3): API 境界の H10 (lunch overlap) ガードは
@@ -1765,7 +1778,11 @@ async def course_move_weekday_week_only(
       - 移動先に同 code コース (非 proposed) が既にあれば 422 (§9-7 当面の整理・
         DB の partial UNIQUE と同じ条件)
       - 配下に青ピン (week_pinned) 訪問があれば 422 (位置の蓋)
-      - planned 以外 (打刻済み等) の訪問は動かさず残す (visits_moved に含めない)
+      - 実績のある訪問 (in_progress / completed) は動かさず残す
+        (visits_moved に含めない)
+      - **cancelled は planned と一緒に動かす** (status は保持・週空間 Phase E)。
+        「今週だけ取消」した枠だけ元の曜日に取り残すと、コースと日付の整合が
+        崩れて盤面から迷子になり、取消をやめた瞬間に別曜日へ復活してしまう。
     警告 (非ブロック): 患者の移動先同日重複。undo: op_log ``move_course_weekday``。
     """
     course = await db.scalar(
@@ -1811,18 +1828,20 @@ async def course_move_weekday_week_only(
             )
         ).all()
     )
-    if any(bool(v.week_pinned) for v in course_visits if v.status == VISIT_STATUS_PLANNED):
+    _movable_statuses = (VISIT_STATUS_PLANNED, VISIT_STATUS_CANCELLED)
+    if any(bool(v.week_pinned) for v in course_visits if v.status in _movable_statuses):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="今週固定（青ピン）の訪問が含まれています。解除してから動かしてください",
         )
 
     to_date = date.fromisocalendar(course.iso_year, course.iso_week, payload.to_weekday + 1)
-    moved_visits = [v for v in course_visits if v.status == VISIT_STATUS_PLANNED]
+    # 取消 (cancelled) も一緒に動かす — status は書き換えない (保持)。
+    moved_visits = [v for v in course_visits if v.status in _movable_statuses]
 
     # 警告 (非ブロック): 移動する患者が移動先の同日に既に別訪問を持つか。
     warnings: list[str] = []
-    moved_patient_ids = {v.patient_id for v in moved_visits}
+    moved_patient_ids = {v.patient_id for v in moved_visits if v.status == VISIT_STATUS_PLANNED}
     if moved_patient_ids:
         moved_ids = {v.id for v in moved_visits}
         existing_rows = (
@@ -6048,6 +6067,147 @@ async def propose_unblock_apply_endpoint(
         inserted=inserted,
         warnings=warnings,
     )
+
+
+# ---------------------------------------------------------------------------
+# 週空間 Phase E) POST /schedule/v2/visit-cancel-week — 今週だけ取消 / 取消をやめる
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/v2/visit-cancel-week",
+    response_model=VisitRead,
+    status_code=status.HTTP_200_OK,
+    summary="今週の運転席: 訪問を今週だけ取消 / 取消をやめる (PFV 不変)",
+)
+async def visit_cancel_week(
+    payload: VisitCancelWeekRequest,
+    db: DbDep,
+    current_user: Annotated[User, Depends(require_role("admin"))],
+) -> dict:
+    """訪問 1 件の「今週だけ取消」(week-cockpit-design.md §2-2 / 決定 D1).
+
+    取消の表現は **取込の delete と同一** の ``visits.status='cancelled'``:
+    行は残るので履歴が追え、``csv_builder`` が cancelled を除外するため
+    カイポケへの送信差分は delete になる。PFV / テンプレート / コースには
+    一切触れない (憲法1: 盤面操作はマスタを変えない)。
+
+    ガード (``cancel=true``):
+      * 当日以前 (JST) — 済んだ日は取り消さない
+      * 打刻あり / ``in_progress`` / ``completed`` — 実績のある訪問は消せない
+      * 青ピン (week_pinned) — 蓋。解除してから
+    ``cancel=false`` は cancelled → planned へ戻す (青ピンは同じく 422)。
+
+    2 名体制 (``visit_group_id``) のペアは同時に切り替える (片肺を作らない)。
+    undo: op_log ``cancel_visit`` (inverse は逆フラグ)。
+    """
+    # 循環 import 回避のため関数内 import (schedule_v2 ↔ visits の router 間で
+    # 応答形 (VisitRead) の組み立てだけを借りる。既存の schedule import と同作法)。
+    from app.api.v1.visits import _load_assignments, _serialize_visit
+
+    visit = await db.scalar(
+        select(Visit).where(Visit.id == payload.visit_id, Visit.deleted_at.is_(None))
+    )
+    if visit is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Visit not found")
+
+    # 2 名体制ペアは一緒に動かす (visit_group_id 単位)。
+    targets: list[Visit] = [visit]
+    if visit.visit_group_id is not None:
+        targets = list(
+            (
+                await db.scalars(
+                    select(Visit).where(
+                        Visit.visit_group_id == visit.visit_group_id,
+                        Visit.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+        )
+        if not any(v.id == visit.id for v in targets):  # pragma: no cover (防御)
+            targets.append(visit)
+
+    # ガードは undo/redo と共用の単一ソース (op_log_service.check_cancel_visit_allowed)。
+    # 片方にしか無いと「undo なら過去日でも取り消せる」等の抜け道ができる。
+    _deny = await check_cancel_visit_allowed(db, targets, cancel=payload.cancel)
+    if _deny is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=_deny)
+
+    new_status = VISIT_STATUS_CANCELLED if payload.cancel else VISIT_STATUS_PLANNED
+    # ``reason`` は **visits.note に書かない** (現場向けの申し送りを汚さない /
+    # 取消をやめても消えない残骸になる)。操作ジャーナルの label と
+    # forward_payload に残し、履歴として追えるようにする。
+    _reason = (payload.reason or "").strip()
+    # 出所を ``manual_cancel`` に刻む: status だけでは取込 (カイポケ) の delete 由来の
+    # cancelled と区別が付かず、取込の add が「らく助の今週だけ取消」まで
+    # 復活させてしまう (既存の復活仕様は delete 由来にだけ効かせたい)。
+    # 元の source は op_log に控えて undo で戻す。
+    _prev_sources = {str(v.id): v.source for v in targets}
+    try:
+        for v in targets:
+            v.status = new_status
+            v.source = VISIT_SOURCE_MANUAL_CANCEL if payload.cancel else VISIT_SOURCE_MANUAL_WEEK
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="他のユーザーが同じ訪問を処理中です。もう一度実行してください。",
+        ) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    # 操作ジャーナル (ベストエフォート・ツールバー「戻る」対応)。
+    _iso = visit.visit_date.isocalendar()
+    _patient_name = await db.scalar(
+        select(Patient.name).where(Patient.id == visit.patient_id, Patient.deleted_at.is_(None))
+    )
+    _visit_ids = [str(v.id) for v in targets]
+    _verb = "今週だけ取消" if payload.cancel else "取消をやめる"
+    _label = f"{_patient_name or '患者'}様の訪問を{_verb}"
+    if payload.cancel and _reason:
+        _label = f"{_label}（{_reason}）"
+    _forward: dict[str, Any] = {
+        "op": "cancel_visit",
+        "visit_ids": _visit_ids,
+        "cancel": payload.cancel,
+        # 取消前の出所 (undo で戻す。無ければ 'manual_week' へ倒す)。
+        "sources": _prev_sources,
+    }
+    if _reason:
+        # 理由は note を汚さずジャーナルに残す (履歴として追える)。
+        _forward["reason"] = _reason
+    await record_op(
+        db,
+        user_id=current_user.id,
+        iso_year=_iso.year,
+        iso_week=_iso.week,
+        op_group_id=payload.op_group_id,
+        op_kind="cancel_visit",
+        label=_label,
+        forward_payload=_forward,
+        inverse_payload={
+            "op": "cancel_visit",
+            "visit_ids": _visit_ids,
+            "cancel": not payload.cancel,
+            "sources": _prev_sources,
+        },
+    )
+    # status 更新は既に commit 済み。ジャーナルの commit 失敗で 500 を返さない
+    # (record_op 自体もベストエフォート — 同じ扱いで揃える)。
+    try:
+        await db.commit()
+    except Exception as exc:  # pragma: no cover (防御)
+        await db.rollback()
+        logger.warning("visit-cancel-week: op_log commit failed (ignored): %r", exc)
+
+    visit = await db.scalar(
+        select(Visit)
+        .where(Visit.id == payload.visit_id)
+        .options(selectinload(Visit.patient), selectinload(Visit.primary_staff))
+    )
+    return _serialize_visit(visit, assignments=await _load_assignments(db, payload.visit_id))
 
 
 __all__ = ["router"]

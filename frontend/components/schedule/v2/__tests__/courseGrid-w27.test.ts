@@ -46,6 +46,22 @@ describe('getStaffEventsForWeekday (Wave 27 Phase B-2)', () => {
     const result = getStaffEventsForWeekday('unknown', 0, m);
     expect(result).toEqual([]);
   });
+
+  it('4. 今週だけ外した (cancelled_at) イベントは既定で返さない', () => {
+    // 予定として扱う全経路 (衝突判定・帯・モニター) から外れることの担保。
+    const live = makeEvent({ date: '2026-05-04', id: 'ev-live' });
+    const cancelled = {
+      ...makeEvent({ date: '2026-05-04', id: 'ev-cancelled' }),
+      cancelled_at: '2026-05-03T00:00:00Z',
+    } as EventRead;
+    const m = new Map([['staff-1', [live, cancelled]]]);
+    expect(getStaffEventsForWeekday('staff-1', 0, m).map((e) => e.id)).toEqual(['ev-live']);
+    // 打消線で見せる盤面だけが includeCancelled=true で取り出せる。
+    expect(getStaffEventsForWeekday('staff-1', 0, m, undefined, true).map((e) => e.id)).toEqual([
+      'ev-live',
+      'ev-cancelled',
+    ]);
+  });
 });
 
 describe('hasEventConflict (Wave 27 Phase B-3)', () => {

@@ -16,6 +16,7 @@ from app.models.course_template import CourseTemplate
 from app.models.geocoding_cache import GeocodingCache
 from app.models.inbound_snapshot import InboundSnapshot
 from app.models.kaipoke_credential import KaipokeCredential
+from app.models.kaipoke_csv_snapshot import KaipokeCsvSnapshot
 from app.models.kaipoke_job import KaipokeJob, KaipokeJobItem
 from app.models.notification import Notification
 from app.models.office import Office, OfficeCity
@@ -59,6 +60,7 @@ __all__ = [
     "CorrectionSheet",
     "CorrectionSheetItem",
     "KaipokeCredential",
+    "KaipokeCsvSnapshot",
     "Course",
     "CourseTemplate",
     "GeocodingCache",

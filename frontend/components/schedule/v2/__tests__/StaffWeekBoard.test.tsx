@@ -17,6 +17,7 @@ import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
+import type { CockpitEventRead } from '@/lib/schemas/v2/cockpit';
 
 const WEEK_START = new Date(2026, 6, 20); // 2026-07-20 (月)
 
@@ -360,9 +361,7 @@ describe('StaffWeekBoard', () => {
       visitIds: ['v1', 'v2'],
     });
     // 担当なし行 (未割当) には解除ボタンを出さない
-    expect(
-      screen.queryByTestId(`staff-week-course-unassign-${TPL_B}-2`),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`staff-week-course-unassign-${TPL_B}-2`)).not.toBeInTheDocument();
   });
 
   it('⑫ activeCourseDrag: 掴んでいるコースのチップが半透明になる', () => {
@@ -489,5 +488,163 @@ describe('StaffWeekBoard', () => {
       dataTransfer: makeDataTransfer({ visitId: 'v1', weekday: 0 }, VISIT_DND_MIME),
     });
     expect(onVisitUnassignDrop).toHaveBeenCalledWith('v1');
+  });
+
+  // ─── 週空間 Phase E (運転席) ────────────────────────────────────────────
+
+  it('⑰ status=cancelled の訪問は打消線 +「取消」バッジ・ドラッグ不可', () => {
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={[
+          { ...visit({ id: 'v1', patient_name: '朝倉　美夢' }), status: 'cancelled' },
+          visit({ id: 'v2', patient_name: '川田　春菜', start_time: '10:30' }),
+        ]}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        onVisitDrop={vi.fn()}
+      />,
+    );
+    const cancelled = screen.getByTestId('staff-week-visit-v1');
+    expect(cancelled.className).toContain('line-through');
+    expect(within(cancelled).getByTestId('staff-week-visit-cancelled-v1')).toHaveTextContent(
+      '取消',
+    );
+    expect(cancelled).not.toHaveAttribute('draggable', 'true');
+    // 取消していない訪問は従来どおり掴める。
+    expect(screen.getByTestId('staff-week-visit-v2')).toHaveAttribute('draggable', 'true');
+  });
+
+  it('⑱ cancelled_at のイベント (固定帯の今週除外) は打消線 +「今週除外」', () => {
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={
+          new Map([
+            [
+              STAFF_1,
+              [
+                {
+                  id: '00000000-0000-4000-8000-00000000e003',
+                  date: '2026-07-20',
+                  title: '朝会',
+                  start_time: '09:00',
+                  end_time: '09:15',
+                  type: 'イベント',
+                  note: null,
+                  source: 'fixed',
+                  cancelled_at: '2026-07-19T00:00:00Z',
+                } as unknown as CockpitEventRead,
+              ],
+            ],
+          ])
+        }
+        weekStart={WEEK_START}
+      />,
+    );
+    const chip = screen.getByTestId('staff-week-event-00000000-0000-4000-8000-00000000e003');
+    expect(chip).toHaveTextContent('今週除外');
+    expect(chip.style.textDecoration).toBe('line-through');
+  });
+
+  it('⑲ 訪問マーカー (kind=visit) は before=今ここ / after=こう変わる の 2 枚で描く', () => {
+    const marker = {
+      kind: 'visit' as const,
+      action: 'update' as const,
+      externalId: 'diff-1',
+      title: '朝倉　美夢',
+      patient_name: '朝倉　美夢',
+      start: '11:00',
+      end: '11:30',
+      beforeStart: '09:00',
+      beforeEnd: '09:35',
+      before: {
+        staff_id: STAFF_1,
+        date: '2026-07-20',
+        start: '09:00',
+        end: '09:35',
+        course_label: '身体1',
+      },
+      after: {
+        staff_id: STAFF_1,
+        date: '2026-07-20',
+        start: '11:00',
+        end: '11:30',
+        course_label: '身体1',
+      },
+    };
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        reconcileMarkersByCell={new Map([[`${STAFF_1}:0`, [marker]]])}
+      />,
+    );
+    const before = screen.getByTestId('reconcile-ghost-diff-1-before');
+    const after = screen.getByTestId('reconcile-ghost-diff-1-after');
+    expect(before).toHaveTextContent('今ここ');
+    expect(before).toHaveTextContent('09:00〜09:35');
+    expect(after).toHaveTextContent('こう変わる');
+    expect(after).toHaveTextContent('11:00〜11:30');
+    expect(after).toHaveTextContent('身体1');
+  });
+
+  it('⑲b renderVisitMenu 指定時、訪問行はボタン相当 (role/tabIndex) + ●未送信ドット', () => {
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        renderVisitMenu={(_v, _wd, trigger) => trigger}
+        unsentVisitIds={new Set(['v1'])}
+      />,
+    );
+    const row = screen.getByTestId('staff-week-visit-v1');
+    expect(row).toHaveAttribute('role', 'button');
+    expect(row).toHaveAttribute('tabindex', '0');
+    expect(screen.getByTestId('staff-week-visit-unsent-v1')).toBeInTheDocument();
+    // 未送信でない訪問にはドットを出さない。
+    expect(screen.queryByTestId('staff-week-visit-unsent-v2')).not.toBeInTheDocument();
+  });
+
+  it('⑳ セルアクション: 🛌休みにする / ＋訪問 / ＋イベント が (staffId, weekday) を返す', () => {
+    const onMarkOff = vi.fn();
+    const onAddVisit = vi.fn();
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        alwaysShowUnassignedRow
+        onMarkOff={onMarkOff}
+        onAddVisit={onAddVisit}
+      />,
+    );
+    fireEvent.click(screen.getByTestId(`staff-week-off-action-${STAFF_1}-0`));
+    expect(onMarkOff).toHaveBeenCalledWith(STAFF_1, 0);
+    fireEvent.click(screen.getByTestId(`staff-week-add-visit-${STAFF_1}-3`));
+    expect(onAddVisit).toHaveBeenCalledWith(STAFF_1, 3);
+    // 「（担当なし）」行にはセルアクションを出さない。
+    expect(screen.queryByTestId('staff-week-off-action-__unassigned__-0')).not.toBeInTheDocument();
   });
 });

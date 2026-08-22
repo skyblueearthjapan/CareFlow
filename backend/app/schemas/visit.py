@@ -97,6 +97,23 @@ class VisitUpdate(BaseModel):
     visit_group_id: UUID | None = None
 
 
+class VisitCancelWeekRequest(BaseModel):
+    """POST /api/v1/schedule/v2/visit-cancel-week (week-cockpit-design.md §2-2).
+
+    「今週だけ取消」= ``visits.status`` を planned ↔ cancelled で往復させる
+    (取込の delete と同一表現・行は残るので履歴が追える。csv_builder が
+    cancelled を除外するため、カイポケへの送信差分は delete になる)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    visit_id: UUID
+    cancel: bool
+    reason: str | None = Field(default=None, max_length=200)
+    # 操作ジャーナルのグルーピング (ツールバー「戻る」で 1 手として扱う)。
+    op_group_id: UUID | None = None
+
+
 class VisitRead(VisitBase):
     """GET /api/v1/visits/{id} レスポンス (v2 拡張済み)."""
 
@@ -144,6 +161,7 @@ __all__ = [
     "AccompanimentRef",
     "CheckinRead",
     "VisitBase",
+    "VisitCancelWeekRequest",
     "VisitCreate",
     "VisitRead",
     "VisitStaffAssignmentRead",

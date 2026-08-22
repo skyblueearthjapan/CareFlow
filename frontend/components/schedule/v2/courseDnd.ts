@@ -6,6 +6,14 @@
  * 担当解除は帯の「×」または「（担当なし）」行へのドラッグで行う。
  */
 
+/**
+ * 「（担当なし）」行のキー (盤面 = StaffWeekBoard / タイムライン =
+ * StaffTimelineView.UNASSIGNED_ROW_KEY の**単一ソース**)。
+ * 盤面とタイムラインで行キーが食い違うとゴースト/DnD の宛先がズレるため、
+ * どちらもここを import する (週空間 Phase E・FE-C)。
+ */
+export const UNASSIGNED_ROW_KEY = '__unassigned__';
+
 /** コース帯の DnD payload MIME。 */
 export const COURSE_DND_MIME = 'application/x-rakusuke-course';
 /** 訪問 1 件 (患者個別) のドラッグ用 MIME (週空間 A2)。 */

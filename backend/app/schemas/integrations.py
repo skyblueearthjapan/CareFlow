@@ -412,6 +412,8 @@ class CorrectionSheetRead(BaseModel):
     target_month: str
     status: str
     direction: str = "outbound"
+    # NULL=通常 / 'cached'=保存CSVからの再計算 (●未送信) / 'reverse'=inbound反転 (⇧上書き)
+    origin: str | None = None
     week_start: date | None = None
     week_end: date | None = None
     created_by_user_id: UUID | None = None
@@ -687,3 +689,68 @@ class SmartInboundApplyResult(BaseModel):
     dry_run: bool = Field(alias="dryRun")
     diff: InboundApplyResult | None = None
     replace: ReplaceInboundResult | None = None
+
+
+# --- 週空間「今週の運転席」Phase E (week-cockpit-design.md §2-4 / §2-5) --------
+
+
+class UnsentSummaryRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    week_start: date = Field(alias="weekStart")
+
+
+class UnsentSnapshotRead(BaseModel):
+    """未送信計算に使った「最後に取得したカイポケ現況」のメタ (§2-4)。"""
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+    fetched_at: datetime | None = None
+    month: str
+    row_count: int
+
+
+class UnsentItemRead(CorrectionItemRead):
+    """CorrectionItemRead + 実日付。
+
+    CSV の日付列は「日」(1-31) しか持たないため、盤面と突き合わせるには週から
+    実日付を解決する必要がある (BE/FE で過去日判定を一致させるための共有値)。
+    """
+
+    date_iso: date | None = None
+
+
+class UnsentEventRead(BaseModel):
+    """未送信のイベント (staff_events のうちカイポケへ未昇格のもの)。"""
+
+    model_config = ConfigDict(extra="forbid")
+    id: UUID
+    staff_id: UUID
+    staff_name: str
+    date: date
+    start_time: str  # HH:MM
+    end_time: str  # HH:MM
+    title: str
+    kind: Literal["add", "delete"] = "add"
+
+
+class UnsentSummaryRead(BaseModel):
+    """●未送信サマリ (RPA を一切呼ばずに算出する・§2-4)。"""
+
+    model_config = ConfigDict(extra="forbid")
+    week_start: date
+    snapshot: UnsentSnapshotRead | None = None
+    sheet_id: UUID | None = None
+    items: list[UnsentItemRead] = Field(default_factory=list)
+    events: list[UnsentEventRead] = Field(default_factory=list)
+    # JST 当日基準。past = 当日以前 (実績保護のため送信対象外) / sendable = 明日以降。
+    sendable_count: int = 0
+    past_count: int = 0
+    # 未送信を算出できなかった/信用できない理由 (FE がバーに出す)。
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ReverseSheetResult(BaseModel):
+    """⇧上書き: inbound シートを反転して作った outbound シート (§2-5)。"""
+
+    model_config = ConfigDict(extra="forbid")
+    sheet_id: UUID
+    item_count: int

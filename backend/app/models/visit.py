@@ -67,6 +67,17 @@ VISIT_STATUS_CANCELLED: VisitStatus = "cancelled"
 # 長さは ``Visit.source`` の String(16) に収まる (= 11 文字).
 VISIT_SOURCE_MANUAL_WEEK: str = "manual_week"
 
+# 「今週だけ取消」の出所 (週空間 Phase E / docs/plans/week-cockpit-design.md D1).
+# ``status='cancelled'`` だけでは **取込 (カイポケ) の delete 由来の cancelled** と
+# 区別が付かない。区別が要るのは 2 箇所:
+#   - 取込の add は delete 由来の cancelled 枠を復活させてよい (既存仕様) が、
+#     らく助側の「今週だけ取消」は復活させてはいけない (⇧送信が先)。
+#   - 置換取り込みも同じ理由で manual_cancel のある日だけ止める。
+# 保護規則は manual_week と同じ (generate-week-only は source='auto' のみ削除 /
+# reset-to-fixed は whitelist 方式なので列挙外 = 残る)。
+# 長さは ``Visit.source`` の String(16) に収まる (= 13 文字)。
+VISIT_SOURCE_MANUAL_CANCEL: str = "manual_cancel"
+
 
 class Visit(Base, TimestampMixin):
     __tablename__ = "visits"
