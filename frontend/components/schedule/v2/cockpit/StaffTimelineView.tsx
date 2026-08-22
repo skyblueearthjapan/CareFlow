@@ -18,6 +18,9 @@
  *   - 3px 以内の動き = クリック扱い → `onVisitClick` (親が VisitActionMenu を開く)
  *   - 青ピン (week_pinned) / 今週だけ取消 (status='cancelled') / 過去日 / 閲覧のみ
  *     はドラッグ不可。カーソル・title・aria-label で理由を示し `aria-disabled` を付ける。
+ *   - 氏名列の ⠿ を別のスタッフ行の氏名セルへドロップ = **その日の 2 人の予定を丸ごと入れ替え**
+ *     (PO 要望 2026-08-22)。バーの DnD (1 訪問) とは別物で、HTML5 DnD を使う。
+ *     ここでは `onStaffSwap` を呼ぶだけ (確認ダイアログ・API は親 = FE-C の担当)。
  *
  * **キーボード操作はドラッグでは行わない**: バーは button なので Enter/Space で
  * `onVisitClick` が起き、時刻変更・担当変更・取消はすべて `VisitActionMenu`
@@ -42,6 +45,7 @@ import {
 
 import type { WeekOverviewVisit } from '../CourseWeekOverview';
 import { UNASSIGNED_ROW_KEY } from '../courseDnd';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { SyncedHScroll } from '@/components/ui/synced-h-scroll';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -75,6 +79,11 @@ export interface StaffTimelineRow {
   office?: string | null;
   /** その日の休み/時間変更。あれば行を網掛けし、補足に理由を出す。 */
   off?: WeekOverrideRead | null;
+  /**
+   * 新人 (staff.is_trainee)。新人は担当になれない (同行で割り当てる) ため、
+   * スタッフ入れ替えの掴み元にもドロップ先にもしない。
+   */
+  isTrainee?: boolean;
 }
 
 /** 「全員（固定）」帯 (朝会など・先頭レーン)。 */
@@ -129,6 +138,20 @@ export interface VisitMovePayload {
   toStaffId?: string | null;
 }
 
+/**
+ * スタッフ入れ替え DnD の MIME (PO 要望 2026-08-22)。
+ * バーの DnD (pointer) と混ざらないよう、行見出しの DnD だけ HTML5 DnD + 専用 MIME で扱う。
+ */
+export const STAFF_SWAP_MIME = 'application/x-rakusuke-staff-swap';
+
+/** `onStaffSwap` の引数。「その日の 2 人の予定を丸ごと入れ替える」。 */
+export interface StaffSwapPayload {
+  fromStaffId: string;
+  toStaffId: string;
+  /** 0=月..5=土。 */
+  day: number;
+}
+
 export interface StaffTimelineViewProps {
   /** 対象週の月曜。 */
   weekStart: Date;
@@ -163,6 +186,19 @@ export interface StaffTimelineViewProps {
   onVisitClick: (visit: TimelineVisit, anchorEl: HTMLElement) => void;
   onVisitMove: (payload: VisitMovePayload) => void;
   onEventClick?: (ev: TimelineEvent, staffId: string) => void;
+  /**
+   * 氏名 ⠿ を別のスタッフ行へ落としたとき = その日の 2 人の予定を丸ごと入れ替え。
+   * 未指定なら ⠿ を出さない (= 機能ごと無効)。API は呼ばず親へ委ねる。
+   */
+  onStaffSwap?: (payload: StaffSwapPayload) => void;
+  /**
+   * 行アクション (PO 要望 2026-08-22): リスト盤面のセルと同じ 🛌休みにする /
+   * ＋訪問 / ＋イベント を氏名セルにも置く。渡されたものだけ描く。
+   * `canEdit=false` と過去日では出さない (盤面と同じ扱い)。
+   */
+  onMarkOff?: (staffId: string, day: number, anchorEl: HTMLElement) => void;
+  onAddVisit?: (staffId: string, day: number, anchorEl: HTMLElement) => void;
+  onAddEvent?: (staffId: string, day: number) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -188,6 +224,10 @@ const SNAP_MIN = 15;
 const CLICK_SLOP_PX = 3;
 /** 終了時刻が無い訪問の既定の長さ (分)。 */
 const DEFAULT_DURATION_MIN = 30;
+
+/** 行アクション (🛌休みにする / ＋訪問 / ＋イベント) の見た目 = 盤面セルと同じ。 */
+const ROW_ACTION_CLASS =
+  'rounded border border-dashed border-border-default px-1 py-0.5 text-[10px] font-normal text-text-muted/80 transition-colors hover:border-brand-primary hover:text-brand-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary';
 
 /** ゴーストの色 (モックの --del / --add)。トークン化前なので実値で持つ。 */
 const GHOST_BEFORE = '#2f7fd1';
@@ -324,6 +364,10 @@ export function StaffTimelineView({
   onVisitClick,
   onVisitMove,
   onEventClick,
+  onStaffSwap,
+  onMarkOff,
+  onAddVisit,
+  onAddEvent,
 }: StaffTimelineViewProps) {
   const dayIso = React.useMemo(
     () => format(addDays(weekStart, day), 'yyyy-MM-dd'),
@@ -394,6 +438,133 @@ export function StaffTimelineView({
   const normalizeKey = React.useCallback(
     (key: string): string => (rowKeySet.has(key) ? key : UNASSIGNED_ROW_KEY),
     [rowKeySet],
+  );
+
+  // ── スタッフ入れ替え DnD (氏名列の ⠿) ─────────────────────────────────
+  /**
+   * 入れ替えの相手になれる行 = 親が渡した実在スタッフだけ。
+   * 「（担当なし）」と、ズレを見せるために生やした「（不明なスタッフ）」行は不可。
+   */
+  const isRealStaffRow = React.useCallback(
+    (staffId: string): boolean => staffId !== UNASSIGNED_ROW_KEY && rowKeys.has(staffId),
+    [rowKeys],
+  );
+
+  /** staffId → 行 (新人判定に使う)。 */
+  const rowById = React.useMemo(() => {
+    const m = new Map<string, StaffTimelineRow>();
+    for (const r of rows) m.set(r.staffId, r);
+    return m;
+  }, [rows]);
+
+  /**
+   * 入れ替えの掴み元/ドロップ先になれるか。
+   * 「（担当なし）」「（不明なスタッフ）」に加え、**新人**も不可
+   * (新人は担当になれない = 同行で割り当てる)。
+   */
+  const canSwapRow = React.useCallback(
+    (staffId: string): boolean =>
+      onStaffSwap != null && isRealStaffRow(staffId) && rowById.get(staffId)?.isTrainee !== true,
+    [onStaffSwap, isRealStaffRow, rowById],
+  );
+
+  /** ⠿ を掴めない理由 (掴めるなら null)。title に出す。 */
+  const swapBlockReason: string | null = !canEdit
+    ? '閲覧のみのため入れ替えできません。'
+    : isPast
+      ? '過去日は入れ替えできません。'
+      : null;
+
+  /** ドラッグ中の掴み元 staffId (ドロップ先のハイライト判定に使う)。 */
+  const [swapFrom, setSwapFrom] = React.useState<string | null>(null);
+  /** dragover 中のドロップ先 staffId。 */
+  const [swapOver, setSwapOver] = React.useState<string | null>(null);
+  /** キーボード代替: ⠿ クリックで開く「入れ替え相手を選ぶ」メニューの行。 */
+  const [swapMenuFor, setSwapMenuFor] = React.useState<string | null>(null);
+
+  // 曜日を切り替えたら操作中の状態は捨てる (別の日の相手を選ばせない)。
+  React.useEffect(() => {
+    setSwapFrom(null);
+    setSwapOver(null);
+    setSwapMenuFor(null);
+  }, [day]);
+
+  const handleSwapDragStart = React.useCallback(
+    (e: React.DragEvent<HTMLElement>, staffId: string) => {
+      e.dataTransfer?.setData(STAFF_SWAP_MIME, JSON.stringify({ staffId, day }));
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+      setSwapMenuFor(null);
+      setSwapFrom(staffId);
+    },
+    [day],
+  );
+
+  const handleSwapDragEnd = React.useCallback(() => {
+    setSwapFrom(null);
+    setSwapOver(null);
+  }, []);
+
+  /** dataTransfer から掴み元を読む。この曜日の・別の実在スタッフのときだけ返す。 */
+  const readSwapSource = React.useCallback(
+    (e: React.DragEvent<HTMLElement>, toStaffId: string): string | null => {
+      let raw = '';
+      try {
+        raw = e.dataTransfer?.getData(STAFF_SWAP_MIME) ?? '';
+      } catch {
+        // 一部ブラウザは dragover 中に getData を許さない。掴み元の state で代替する。
+        raw = '';
+      }
+      let fromStaffId: string | null = null;
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as { staffId?: unknown; day?: unknown };
+          if (typeof parsed.staffId === 'string' && parsed.day === day)
+            fromStaffId = parsed.staffId;
+        } catch {
+          fromStaffId = null;
+        }
+      } else {
+        fromStaffId = swapFrom;
+      }
+      if (!fromStaffId || fromStaffId === toStaffId) return null;
+      if (!canSwapRow(fromStaffId) || !canSwapRow(toStaffId)) return null;
+      return fromStaffId;
+    },
+    [day, swapFrom, canSwapRow],
+  );
+
+  const handleSwapDragOver = React.useCallback(
+    (e: React.DragEvent<HTMLElement>, toStaffId: string) => {
+      if (swapBlockReason !== null) return;
+      if (readSwapSource(e, toStaffId) === null) return;
+      e.preventDefault(); // = ここに落とせる
+      setSwapOver((prev) => (prev === toStaffId ? prev : toStaffId));
+    },
+    [swapBlockReason, readSwapSource],
+  );
+
+  const handleSwapDrop = React.useCallback(
+    (e: React.DragEvent<HTMLElement>, toStaffId: string) => {
+      // 掴み元の判定は state を捨てる**前**に行う (getData が使えない環境では
+      // swapFrom がフォールバックの唯一の手掛かりになる)。
+      const fromStaffId = swapBlockReason === null ? readSwapSource(e, toStaffId) : null;
+      setSwapOver(null);
+      setSwapFrom(null);
+      if (fromStaffId === null) return;
+      e.preventDefault();
+      onStaffSwap?.({ fromStaffId, toStaffId, day });
+    },
+    [swapBlockReason, readSwapSource, onStaffSwap, day],
+  );
+
+  /** キーボード代替メニューから相手を選んだ。 */
+  const handleSwapPick = React.useCallback(
+    (fromStaffId: string, toStaffId: string) => {
+      setSwapMenuFor(null);
+      if (fromStaffId === toStaffId) return;
+      onStaffSwap?.({ fromStaffId, toStaffId, day });
+    },
+    [onStaffSwap, day],
   );
 
   // ── 行ごとのバー配置 ────────────────────────────────────────────────
@@ -654,6 +825,15 @@ export function StaffTimelineView({
   );
 
   // ── 描画 ───────────────────────────────────────────────────────────
+  /**
+   * 行アクション (🛌休みにする / ＋訪問 / ＋イベント) を出すか。
+   * 盤面と同じく、閲覧のみ・過去日では出さない。
+   */
+  const showRowActions =
+    canEdit && !isPast && (onMarkOff != null || onAddVisit != null || onAddEvent != null);
+  /** aria-label 用の日付 (例: 8/17)。 */
+  const dayLabel = format(addDays(weekStart, day), 'M/d');
+
   const gridColumns = `${NAME_COL_PX}px 1fr`;
   const trackBg: React.CSSProperties = {
     backgroundImage: 'linear-gradient(90deg, var(--border-subtle) 1px, transparent 1px)',
@@ -694,6 +874,9 @@ export function StaffTimelineView({
         })}
         <span className="ml-auto text-[11px]" style={{ color: 'var(--text-muted)' }}>
           バーを横にドラッグ=時刻(15分刻み) / 別の行へ=担当変更 / クリック=メニュー
+          {onStaffSwap && canEdit && !isPast
+            ? ' ／ 氏名の ⠿ を別の行へ=その日の予定を丸ごと入れ替え'
+            : ''}
         </span>
       </div>
 
@@ -779,6 +962,8 @@ export function StaffTimelineView({
               drag?.moved === true &&
               drag.toRowKey === row.staffId &&
               drag.toRowKey !== drag.fromRowKey;
+            const swappable = canSwapRow(row.staffId);
+            const isSwapOver = swappable && swapOver === row.staffId && swapFrom !== row.staffId;
             return (
               <div
                 key={row.staffId}
@@ -789,20 +974,94 @@ export function StaffTimelineView({
               >
                 <div
                   // 横スクロール時も氏名列を固定 (PO 指摘 2026-08-22)。
-                  className="sticky left-0 z-[5] border-r px-2 py-1.5 text-sm font-bold"
+                  className="group/tl-name relative sticky left-0 z-[5] border-r px-2 py-1.5 text-sm font-bold"
                   style={{
                     borderColor: 'var(--border-default)',
                     color: 'var(--text-primary)',
-                    background: 'var(--bg-base)',
+                    background: isSwapOver ? 'var(--bg-muted)' : 'var(--bg-base)',
+                    ...(isSwapOver
+                      ? { outline: '2px solid var(--brand-primary, #e15a7f)', outlineOffset: -2 }
+                      : null),
                   }}
+                  data-testid={`tl-name-${row.staffId}`}
+                  data-swap-over={isSwapOver ? 'true' : undefined}
+                  onDragOver={swappable ? (e) => handleSwapDragOver(e, row.staffId) : undefined}
+                  onDragLeave={
+                    swappable
+                      ? () => setSwapOver((prev) => (prev === row.staffId ? null : prev))
+                      : undefined
+                  }
+                  onDrop={swappable ? (e) => handleSwapDrop(e, row.staffId) : undefined}
                 >
-                  {row.name}
-                  <small
-                    className="block text-xs font-normal"
-                    style={{ color: 'var(--text-muted)' }}
-                  >
-                    {row.off ? offLabel(row.off) : (row.office ?? '')}
-                  </small>
+                  <span className="flex items-start gap-1">
+                    {swappable ? (
+                      <StaffSwapGrip
+                        row={row}
+                        rows={rows}
+                        canSwapRow={canSwapRow}
+                        blockReason={swapBlockReason}
+                        open={swapMenuFor === row.staffId}
+                        onOpenChange={(o) => setSwapMenuFor(o ? row.staffId : null)}
+                        onDragStart={(e) => handleSwapDragStart(e, row.staffId)}
+                        onDragEnd={handleSwapDragEnd}
+                        onPick={(toStaffId) => handleSwapPick(row.staffId, toStaffId)}
+                      />
+                    ) : null}
+                    <span className="min-w-0 flex-1">
+                      {row.name}
+                      <small
+                        className="block text-xs font-normal"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        {row.off ? offLabel(row.off) : (row.office ?? '')}
+                      </small>
+                    </span>
+                  </span>
+                  {showRowActions && isRealStaffRow(row.staffId) ? (
+                    // 行アクションはアイコンのみ + hover/フォーカス時だけ表示。
+                    // 絶対配置なので行高は伸びない (M2)。
+                    <span
+                      className="pointer-events-none absolute bottom-0.5 right-1 flex gap-0.5 opacity-0 transition-opacity focus-within:pointer-events-auto focus-within:opacity-100 group-hover/tl-name:pointer-events-auto group-hover/tl-name:opacity-100"
+                      data-testid={`tl-row-actions-${row.staffId}`}
+                    >
+                      {onMarkOff ? (
+                        <button
+                          type="button"
+                          onClick={(e) => onMarkOff(row.staffId, day, e.currentTarget)}
+                          className={ROW_ACTION_CLASS}
+                          title={`${row.name} をこの日休みにして、予定の渡し先を選びます`}
+                          aria-label={`${row.name} ${dayLabel} を休みにする`}
+                          data-testid={`tl-off-action-${row.staffId}`}
+                        >
+                          🛌
+                        </button>
+                      ) : null}
+                      {onAddVisit ? (
+                        <button
+                          type="button"
+                          onClick={(e) => onAddVisit(row.staffId, day, e.currentTarget)}
+                          className={ROW_ACTION_CLASS}
+                          title={`${row.name} ${dayLabel} に今週だけの訪問を追加（毎週の型は変わりません）`}
+                          aria-label={`${row.name} ${dayLabel} に訪問を追加`}
+                          data-testid={`tl-add-visit-${row.staffId}`}
+                        >
+                          ＋👤
+                        </button>
+                      ) : null}
+                      {onAddEvent ? (
+                        <button
+                          type="button"
+                          onClick={() => onAddEvent(row.staffId, day)}
+                          className={ROW_ACTION_CLASS}
+                          title={`${row.name} ${dayLabel} にイベントを追加`}
+                          aria-label={`${row.name} ${dayLabel} にイベントを追加`}
+                          data-testid={`tl-add-event-${row.staffId}`}
+                        >
+                          ＋📅
+                        </button>
+                      ) : null}
+                    </span>
+                  ) : null}
                 </div>
                 <div
                   className="relative"
@@ -886,6 +1145,115 @@ export function StaffTimelineView({
         </div>
       </SyncedHScroll>
     </section>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// スタッフ入れ替えの ⠿ グリップ (+ キーボード代替メニュー)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * 氏名列の ⠿。ドラッグ (HTML5 DnD) と、クリック/Enter で開く
+ * 「入れ替え相手を選ぶ」メニューの両方を担う。
+ *
+ * - `<button draggable>` は Firefox でドラッグが始まらないため `span role="button"`。
+ * - メニューは Radix Popover (ポータル + Escape + 外側クリック + フォーカス管理)。
+ *   `@radix-ui/react-dropdown-menu` は本リポジトリ未導入のため、同等の
+ *   dismiss/focus 挙動を持つ Popover を使う (項目は `role="menuitem"`)。
+ */
+function StaffSwapGrip({
+  row,
+  rows,
+  canSwapRow,
+  blockReason,
+  open,
+  onOpenChange,
+  onDragStart,
+  onDragEnd,
+  onPick,
+}: {
+  row: StaffTimelineRow;
+  rows: StaffTimelineRow[];
+  canSwapRow: (staffId: string) => boolean;
+  blockReason: string | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onDragStart: (e: React.DragEvent<HTMLElement>) => void;
+  onDragEnd: () => void;
+  onPick: (toStaffId: string) => void;
+}) {
+  const enabled = blockReason === null;
+  const candidates = rows.filter((r) => r.staffId !== row.staffId && canSwapRow(r.staffId));
+  return (
+    <Popover open={open} onOpenChange={(o) => onOpenChange(enabled && o)}>
+      <PopoverTrigger asChild>
+        <span
+          role="button"
+          tabIndex={0}
+          data-testid={`tl-swap-grip-${row.staffId}`}
+          draggable={enabled}
+          aria-label={`${row.name}さんの予定を入れ替える(ドラッグ、または Enter で相手を選ぶ)`}
+          aria-disabled={enabled ? undefined : true}
+          title={
+            blockReason ??
+            'ドラッグして別のスタッフへ落とす=その日の予定を丸ごと入れ替え / クリック・Enter=相手を選ぶ'
+          }
+          onDragStart={enabled ? onDragStart : undefined}
+          onDragEnd={enabled ? onDragEnd : undefined}
+          // span role="button" はブラウザが Enter/Space を click に変換しないので自前で。
+          onKeyDown={(e) => {
+            if (!enabled) return;
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            onOpenChange(!open);
+          }}
+          className={[
+            'mt-0.5 shrink-0 select-none rounded px-0.5 text-xs leading-none',
+            'focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary',
+            enabled ? 'cursor-grab' : 'cursor-not-allowed',
+          ].join(' ')}
+          style={{ color: 'var(--text-muted)', opacity: enabled ? 1 : 0.4 }}
+        >
+          ⠿
+        </span>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-56 max-h-64 overflow-auto p-1"
+        data-testid={`tl-swap-menu-${row.staffId}`}
+        aria-label={`${row.name}さんの入れ替え相手を選ぶ`}
+      >
+        {candidates.length === 0 ? (
+          <p className="px-2 py-1 text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+            入れ替えられる相手がいません
+          </p>
+        ) : (
+          candidates.map((r) => (
+            <button
+              key={r.staffId}
+              type="button"
+              role="menuitem"
+              data-testid={`tl-swap-option-${r.staffId}`}
+              onClick={() => onPick(r.staffId)}
+              className="block w-full truncate rounded px-2 py-1 text-left text-xs font-normal hover:bg-bg-muted"
+            >
+              {r.name}
+              {r.off ? `（${offLabel(r.off)}）` : ''}さんと入れ替える
+            </button>
+          ))
+        )}
+        <button
+          type="button"
+          role="menuitem"
+          data-testid={`tl-swap-cancel-${row.staffId}`}
+          onClick={() => onOpenChange(false)}
+          className="mt-1 block w-full rounded border-t px-2 py-1 text-left text-xs font-normal"
+          style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}
+        >
+          やめる
+        </button>
+      </PopoverContent>
+    </Popover>
   );
 }
 

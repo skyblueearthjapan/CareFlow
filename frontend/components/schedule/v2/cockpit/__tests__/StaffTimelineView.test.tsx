@@ -9,6 +9,7 @@
  * ⑥ 青ピン・取消・過去日・閲覧のみはドラッグ不可 (理由が title と aria-label に出る)
  * ⑦ ドラッグ状態が次の操作へ漏れない (HIGH-1/2 の回帰)
  * ⑧ 突合マーカー (ゴースト before/after) が描かれる
+ * ⑨ 氏名 ⠿ の HTML5 DnD = その日の 2 人の予定を丸ごと入れ替え (PO 2026-08-22)
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -16,8 +17,10 @@ import { fireEvent, render, screen } from '@testing-library/react';
 
 import {
   snapXOffsetToMinutes,
+  STAFF_SWAP_MIME,
   StaffTimelineView,
   UNASSIGNED_ROW_KEY,
+  type StaffSwapPayload,
   type StaffTimelineRow,
   type TimelineMarker,
   type TimelineVisit,
@@ -101,6 +104,7 @@ function renderView(over: Partial<React.ComponentProps<typeof StaffTimelineView>
   const onVisitMove = vi.fn<[VisitMovePayload], void>();
   const onDayChange = vi.fn();
   const onEventClick = vi.fn();
+  const onStaffSwap = vi.fn<[StaffSwapPayload], void>();
   render(
     <StaffTimelineView
       weekStart={WEEK_START}
@@ -112,10 +116,22 @@ function renderView(over: Partial<React.ComponentProps<typeof StaffTimelineView>
       onVisitClick={onVisitClick}
       onVisitMove={onVisitMove}
       onEventClick={onEventClick}
+      onStaffSwap={onStaffSwap}
       {...over}
     />,
   );
-  return { onVisitClick, onVisitMove, onDayChange, onEventClick };
+  return { onVisitClick, onVisitMove, onDayChange, onEventClick, onStaffSwap };
+}
+
+/** jsdom は DataTransfer 非実装なので、必要な API だけの替え玉を作る。 */
+function makeDataTransfer() {
+  const store = new Map<string, string>();
+  return {
+    effectAllowed: 'none',
+    dropEffect: 'none',
+    setData: (type: string, value: string) => void store.set(type, value),
+    getData: (type: string) => store.get(type) ?? '',
+  };
 }
 
 describe('StaffTimelineView — 描画', () => {
@@ -494,6 +510,215 @@ describe('StaffTimelineView — イベント / マーカー', () => {
     const del = screen.getByTestId('tl-marker-delete');
     expect(del).toHaveTextContent('消えている');
     expect(del.style.textDecoration).toBe('line-through');
+  });
+});
+
+describe('StaffTimelineView — スタッフ入れ替え (氏名 ⠿ DnD)', () => {
+  it('(a) ⠿ を別のスタッフ行の氏名セルへ落とすと onStaffSwap({from,to,day})', () => {
+    const { onStaffSwap } = renderView();
+    const dt = makeDataTransfer();
+
+    fireEvent.dragStart(screen.getByTestId(`tl-swap-grip-${STAFF_1}`), { dataTransfer: dt });
+    expect(dt.getData(STAFF_SWAP_MIME)).toBe(JSON.stringify({ staffId: STAFF_1, day: 0 }));
+
+    const target = screen.getByTestId(`tl-name-${STAFF_2}`);
+    fireEvent.dragOver(target, { dataTransfer: dt });
+    // ドロップ先の行がハイライトされる
+    expect(target).toHaveAttribute('data-swap-over', 'true');
+
+    fireEvent.drop(target, { dataTransfer: dt });
+    expect(onStaffSwap).toHaveBeenCalledTimes(1);
+    expect(onStaffSwap.mock.calls[0][0]).toEqual({
+      fromStaffId: STAFF_1,
+      toStaffId: STAFF_2,
+      day: 0,
+    });
+  });
+
+  it('(a2) 表示中の曜日がそのまま day として渡る', () => {
+    const { onStaffSwap } = renderView({ day: 2 });
+    const dt = makeDataTransfer();
+
+    fireEvent.dragStart(screen.getByTestId(`tl-swap-grip-${STAFF_2}`), { dataTransfer: dt });
+    fireEvent.drop(screen.getByTestId(`tl-name-${STAFF_1}`), { dataTransfer: dt });
+
+    expect(onStaffSwap.mock.calls[0][0]).toEqual({
+      fromStaffId: STAFF_2,
+      toStaffId: STAFF_1,
+      day: 2,
+    });
+  });
+
+  it('(b) 自分自身へのドロップは呼ばれない', () => {
+    const { onStaffSwap } = renderView();
+    const dt = makeDataTransfer();
+
+    fireEvent.dragStart(screen.getByTestId(`tl-swap-grip-${STAFF_1}`), { dataTransfer: dt });
+    const self = screen.getByTestId(`tl-name-${STAFF_1}`);
+    fireEvent.dragOver(self, { dataTransfer: dt });
+    fireEvent.drop(self, { dataTransfer: dt });
+
+    expect(onStaffSwap).not.toHaveBeenCalled();
+    expect(self).not.toHaveAttribute('data-swap-over');
+  });
+
+  it('(b2) 「（担当なし）」行と不明スタッフ行は掴めず・落とせない', () => {
+    const { onStaffSwap } = renderView({
+      visits: [visit({ id: 'vx', primary_staff_id: STAFF_X })],
+    });
+    expect(screen.queryByTestId(`tl-swap-grip-${UNASSIGNED_ROW_KEY}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`tl-swap-grip-${STAFF_X}`)).not.toBeInTheDocument();
+
+    const dt = makeDataTransfer();
+    fireEvent.dragStart(screen.getByTestId(`tl-swap-grip-${STAFF_1}`), { dataTransfer: dt });
+    fireEvent.drop(screen.getByTestId(`tl-name-${UNASSIGNED_ROW_KEY}`), { dataTransfer: dt });
+    fireEvent.drop(screen.getByTestId(`tl-name-${STAFF_X}`), { dataTransfer: dt });
+
+    expect(onStaffSwap).not.toHaveBeenCalled();
+  });
+
+  it('(b3) 過去日は掴めない (理由が title に出る)', () => {
+    const { onStaffSwap } = renderView({ isPast: true });
+    const grip = screen.getByTestId(`tl-swap-grip-${STAFF_1}`);
+    expect(grip).toHaveAttribute('draggable', 'false');
+    expect(grip.getAttribute('title')).toContain('過去日');
+    expect(grip).toHaveAttribute('aria-disabled', 'true');
+
+    const dt = makeDataTransfer();
+    fireEvent.dragStart(grip, { dataTransfer: dt });
+    fireEvent.drop(screen.getByTestId(`tl-name-${STAFF_2}`), { dataTransfer: dt });
+    expect(onStaffSwap).not.toHaveBeenCalled();
+
+    // クリックしても相手選択メニューは開かない
+    fireEvent.click(grip);
+    expect(screen.queryByTestId(`tl-swap-menu-${STAFF_1}`)).not.toBeInTheDocument();
+  });
+
+  it('(b4) canEdit=false は掴めない (理由が title に出る)', () => {
+    const { onStaffSwap } = renderView({ canEdit: false });
+    const grip = screen.getByTestId(`tl-swap-grip-${STAFF_1}`);
+    expect(grip.getAttribute('title')).toContain('閲覧のみ');
+
+    const dt = makeDataTransfer();
+    fireEvent.dragStart(grip, { dataTransfer: dt });
+    fireEvent.drop(screen.getByTestId(`tl-name-${STAFF_2}`), { dataTransfer: dt });
+    expect(onStaffSwap).not.toHaveBeenCalled();
+  });
+
+  it('(c) キーボード代替: ⠿ の Enter で開いた相手選択が同じ onStaffSwap を呼ぶ', () => {
+    const { onStaffSwap } = renderView();
+    const grip = screen.getByTestId(`tl-swap-grip-${STAFF_1}`);
+    expect(grip).toHaveAttribute('role', 'button');
+    expect(grip).toHaveAttribute('tabindex', '0');
+    expect(grip.getAttribute('aria-label')).toBe(
+      '宇田川　優莉さんの予定を入れ替える(ドラッグ、または Enter で相手を選ぶ)',
+    );
+
+    // span role="button" はブラウザが Enter を click に変換しない → keyDown で開く
+    fireEvent.keyDown(grip, { key: 'Enter' });
+    const menu = screen.getByTestId(`tl-swap-menu-${STAFF_1}`);
+    expect(menu).toBeInTheDocument();
+    // 自分自身と「（担当なし）」は候補に出さない
+    expect(screen.getByTestId(`tl-swap-option-${STAFF_2}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`tl-swap-option-${STAFF_1}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`tl-swap-option-${UNASSIGNED_ROW_KEY}`)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId(`tl-swap-option-${STAFF_2}`));
+    expect(onStaffSwap).toHaveBeenCalledTimes(1);
+    expect(onStaffSwap.mock.calls[0][0]).toEqual({
+      fromStaffId: STAFF_1,
+      toStaffId: STAFF_2,
+      day: 0,
+    });
+    expect(screen.queryByTestId(`tl-swap-menu-${STAFF_1}`)).not.toBeInTheDocument();
+  });
+
+  it('(c1) 新人 (isTrainee) は掴めず・落とせない', () => {
+    const { onStaffSwap } = renderView({
+      staffRows: [rows[0]!, { ...rows[1]!, isTrainee: true }, rows[2]!],
+    });
+    expect(screen.queryByTestId(`tl-swap-grip-${STAFF_2}`)).not.toBeInTheDocument();
+
+    const dt = makeDataTransfer();
+    fireEvent.dragStart(screen.getByTestId(`tl-swap-grip-${STAFF_1}`), { dataTransfer: dt });
+    fireEvent.drop(screen.getByTestId(`tl-name-${STAFF_2}`), { dataTransfer: dt });
+    expect(onStaffSwap).not.toHaveBeenCalled();
+
+    // 相手選択メニューの候補にも出さない
+    fireEvent.click(screen.getByTestId(`tl-swap-grip-${STAFF_1}`));
+    expect(screen.queryByTestId(`tl-swap-option-${STAFF_2}`)).not.toBeInTheDocument();
+  });
+
+  it('(c2) メニューは Escape で閉じる (Radix のポータル/dismiss)', async () => {
+    const { onStaffSwap } = renderView();
+    fireEvent.click(screen.getByTestId(`tl-swap-grip-${STAFF_1}`));
+    expect(screen.getByTestId(`tl-swap-menu-${STAFF_1}`)).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await vi.waitFor(() =>
+      expect(screen.queryByTestId(`tl-swap-menu-${STAFF_1}`)).not.toBeInTheDocument(),
+    );
+    expect(onStaffSwap).not.toHaveBeenCalled();
+  });
+
+  it('(c3) メニューの「やめる」は何も呼ばずに閉じる', () => {
+    const { onStaffSwap } = renderView();
+    fireEvent.click(screen.getByTestId(`tl-swap-grip-${STAFF_1}`));
+    fireEvent.click(screen.getByTestId(`tl-swap-cancel-${STAFF_1}`));
+
+    expect(onStaffSwap).not.toHaveBeenCalled();
+    expect(screen.queryByTestId(`tl-swap-menu-${STAFF_1}`)).not.toBeInTheDocument();
+  });
+
+  it('onStaffSwap 未指定なら ⠿ を出さない', () => {
+    renderView({ onStaffSwap: undefined });
+    expect(screen.queryByTestId(`tl-swap-grip-${STAFF_1}`)).not.toBeInTheDocument();
+  });
+});
+
+describe('StaffTimelineView — 行アクション (🛌休みにする / ＋訪問 / ＋イベント)', () => {
+  function renderWithActions(over: Partial<React.ComponentProps<typeof StaffTimelineView>> = {}) {
+    const onMarkOff = vi.fn();
+    const onAddVisit = vi.fn();
+    const onAddEvent = vi.fn();
+    renderView({ onMarkOff, onAddVisit, onAddEvent, ...over });
+    return { onMarkOff, onAddVisit, onAddEvent };
+  }
+
+  it('各アクションが (staffId, day) で呼ばれる', () => {
+    const { onMarkOff, onAddVisit, onAddEvent } = renderWithActions({ day: 3 });
+
+    fireEvent.click(screen.getByTestId(`tl-off-action-${STAFF_2}`));
+    expect(onMarkOff.mock.calls[0]?.slice(0, 2)).toEqual([STAFF_2, 3]);
+    // アンカー要素 (第3引数) はボタン自身
+    expect(onMarkOff.mock.calls[0]?.[2]).toBe(screen.getByTestId(`tl-off-action-${STAFF_2}`));
+
+    fireEvent.click(screen.getByTestId(`tl-add-visit-${STAFF_1}`));
+    expect(onAddVisit.mock.calls[0]?.slice(0, 2)).toEqual([STAFF_1, 3]);
+
+    fireEvent.click(screen.getByTestId(`tl-add-event-${STAFF_1}`));
+    expect(onAddEvent).toHaveBeenCalledWith(STAFF_1, 3);
+  });
+
+  it('「（担当なし）」行と不明スタッフ行には出さない', () => {
+    renderWithActions({ visits: [visit({ id: 'vx', primary_staff_id: STAFF_X })] });
+    expect(screen.queryByTestId(`tl-row-actions-${UNASSIGNED_ROW_KEY}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`tl-row-actions-${STAFF_X}`)).not.toBeInTheDocument();
+  });
+
+  it('過去日 / 閲覧のみでは出さない', () => {
+    renderWithActions({ isPast: true });
+    expect(screen.queryByTestId(`tl-row-actions-${STAFF_1}`)).not.toBeInTheDocument();
+  });
+
+  it('canEdit=false では出さない', () => {
+    renderWithActions({ canEdit: false });
+    expect(screen.queryByTestId(`tl-row-actions-${STAFF_1}`)).not.toBeInTheDocument();
+  });
+
+  it('ハンドラを渡さなければ何も出さない', () => {
+    renderView();
+    expect(screen.queryByTestId(`tl-row-actions-${STAFF_1}`)).not.toBeInTheDocument();
   });
 });
 

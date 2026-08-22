@@ -53,6 +53,8 @@ export interface ConstraintConfirmText {
 interface PendingConstraintConfirm extends ConstraintConfirmText {
   warnings: ConstraintWarning[];
   retry: () => void | Promise<void>;
+  /** 「やめる」/ reset で確認を捨てたときに呼ぶ後始末 (キューの中止など)。 */
+  onAbort?: () => void;
 }
 
 export interface UseConstraintConfirmRetryResult {
@@ -64,10 +66,15 @@ export interface UseConstraintConfirmRetryResult {
     err: unknown,
     retry: () => void | Promise<void>,
     text?: ConstraintConfirmText,
+    /**
+     * 確認を捨てたとき (「やめる」/ `reset()`) に呼ばれる。複数件を順に流す
+     * 呼び出し側が「中止した」と分かる唯一の合図なので、後始末はここでする。
+     */
+    onAbort?: () => void,
   ) => boolean;
   /** ConstraintOverrideConfirmDialog にそのまま spread する。 */
   dialogProps: ConstraintOverrideConfirmDialogProps;
-  /** 週切替・患者切替などで確認待ちを捨てる。 */
+  /** 週切替・患者切替などで確認待ちを捨てる (待機中の onAbort を呼ぶ)。 */
   reset: () => void;
 }
 
@@ -79,36 +86,56 @@ export function ackFlag(acknowledge: boolean): { acknowledge_constraint_warnings
 export function useConstraintConfirmRetry(): UseConstraintConfirmRetryResult {
   const [pending, setPending] = React.useState<PendingConstraintConfirm | null>(null);
   const [applying, setApplying] = React.useState(false);
+  /**
+   * 「今開いている確認」の実体。`reset()` は useCallback([]) で state を読めないため、
+   * onAbort を取り出す口として ref で持つ (state と同じものを指す)。
+   */
+  const pendingRef = React.useRef<PendingConstraintConfirm | null>(null);
 
   const capture = React.useCallback(
-    (err: unknown, retry: () => void | Promise<void>, text?: ConstraintConfirmText): boolean => {
+    (
+      err: unknown,
+      retry: () => void | Promise<void>,
+      text?: ConstraintConfirmText,
+      onAbort?: () => void,
+    ): boolean => {
       const detail =
         err instanceof ApiError && err.status === 422
           ? parseConstraintConfirmationDetail(err.body)
           : null;
       if (!detail) return false;
-      setPending({ warnings: detail.warnings, retry, ...text });
+      const next: PendingConstraintConfirm = { warnings: detail.warnings, retry, onAbort, ...text };
+      pendingRef.current = next;
+      setPending(next);
       return true;
     },
     [],
   );
 
   const reset = React.useCallback(() => {
+    const cur = pendingRef.current;
+    pendingRef.current = null;
     setPending(null);
     setApplying(false);
+    // 「やめる」も週切替も、待っている側から見れば同じ「中止」。
+    cur?.onAbort?.();
   }, []);
 
   const onConfirm = React.useCallback(() => {
     if (!pending) return;
-    const { retry } = pending;
+    const current = pending;
     setApplying(true);
     void (async () => {
       try {
         // retry 側が自前で成功/失敗のトーストを出す契約 (例外は握りつぶす)。
-        await retry();
+        await current.retry();
       } finally {
         setApplying(false);
-        setPending(null);
+        // retry の途中で**次の**確認が積まれることがある (複数件を順に流す経路)。
+        // 無条件に null にするとその 2 件目が消えてキューが止まるので、
+        // 自分が出したものだけを畳む。
+        if (pendingRef.current === current) pendingRef.current = null;
+        setPending((cur) => (cur === current ? null : cur));
       }
     })();
   }, [pending]);

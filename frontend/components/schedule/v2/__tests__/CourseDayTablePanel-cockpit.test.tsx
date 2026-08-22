@@ -6,6 +6,8 @@
  *   (b) セルの「🛌 休みにする」→ 代替候補で付け替え = override → assign の順で呼ぶ
  *   (c) 表示切替 [リスト|タイムライン]
  *   (d) 同期バーで選んだ**訪問**差分が盤面ゴースト (青点線=今ここ / 紫実線=こう変わる) になる
+ *   (g) スタッフ入れ替え (氏名 ⠿ DnD → 確認ダイアログ) が
+ *       コース丸ごと = PATCH /courses / 混在 = visit-assign を件数分 (同一 op_group_id)
  *
  * 既存の CourseDayTablePanel テストと同じ作法 (query hook を全部モックし、
  * QueryClientProvider で包む) に倣う。
@@ -161,6 +163,8 @@ const mockAssignStaffWeek = vi.fn().mockImplementation(async () => {
   callOrder.push('assign');
   return { changed: true };
 });
+/** PATCH /courses/{id} (コース丸ごとの担当変更)。入れ替えの経路判定に使う。 */
+const mockUpdateCourse = vi.fn().mockResolvedValue({ id: 'course-A-mon' });
 
 vi.mock('@tanstack/react-query', async (importOriginal) => {
   // eslint-disable-next-line @typescript-eslint/consistent-type-imports
@@ -211,7 +215,7 @@ vi.mock('@/lib/queries/visits', () => ({
 }));
 vi.mock('@/lib/queries/courses', () => ({
   useCourses: (...args: unknown[]) => mockCourses(...args),
-  useUpdateCourse: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUpdateCourse: () => ({ mutateAsync: mockUpdateCourse, isPending: false }),
 }));
 vi.mock('@/lib/queries/place_and_fix', () => ({
   usePlaceAndFix: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -335,6 +339,8 @@ vi.mock('@/lib/queries/cockpit', () => ({
 
 // ─── Subject under test ─────────────────────────────────────────────────────
 
+import { ApiError } from '@/lib/api-client';
+
 import { CourseDayTablePanel } from '../CourseDayTablePanel';
 
 // ─── fixtures ───────────────────────────────────────────────────────────────
@@ -366,7 +372,7 @@ const baseTpl = {
   deleted_at: null,
 };
 
-function setupHooks(opts: { visits?: Array<Record<string, unknown>> } = {}) {
+function setupHooks(opts: { visits?: Array<Record<string, unknown>>; keepStaff?: boolean } = {}) {
   mockOffices.mockReturnValue({
     allOffices: [{ id: 'office-honten', name: '本店' }],
     isLoading: false,
@@ -377,25 +383,26 @@ function setupHooks(opts: { visits?: Array<Record<string, unknown>> } = {}) {
     },
     isLoading: false,
   });
-  mockStaffList.mockReturnValue({
-    data: [
-      {
-        id: STAFF_1,
-        name: '佐藤',
-        status: 'active',
-        primary_office_id: 'office-honten',
-        is_trainee: false,
-      },
-      {
-        id: STAFF_2,
-        name: '鈴木',
-        status: 'active',
-        primary_office_id: 'office-honten',
-        is_trainee: false,
-      },
-    ],
-    isLoading: false,
-  });
+  if (!opts.keepStaff)
+    mockStaffList.mockReturnValue({
+      data: [
+        {
+          id: STAFF_1,
+          name: '佐藤',
+          status: 'active',
+          primary_office_id: 'office-honten',
+          is_trainee: false,
+        },
+        {
+          id: STAFF_2,
+          name: '鈴木',
+          status: 'active',
+          primary_office_id: 'office-honten',
+          is_trainee: false,
+        },
+      ],
+      isLoading: false,
+    });
   mockUseQueries.mockReturnValue([
     {
       data: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
@@ -437,6 +444,47 @@ function setupHooks(opts: { visits?: Array<Record<string, unknown>> } = {}) {
   });
 }
 
+/** BE の 422 `constraint_confirmation_required` (NG スタッフ / 性別制限)。 */
+function constraintError(): ApiError {
+  return new ApiError('Unprocessable Entity', 422, {
+    detail: {
+      code: 'constraint_confirmation_required',
+      warnings: [{ kind: 'ng_staff', patient_id: 'p1', patient_name: '田中', staff_id: STAFF_2 }],
+    },
+  });
+}
+
+/** 入れ替えテスト用の訪問 (月曜・同じコース・担当だけ違う)。 */
+function swapVisit(
+  id: string,
+  staffId: string,
+  start: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id,
+    patient_id: 'p1',
+    patient_name: '田中',
+    course_id: 'course-A-mon',
+    visit_date: MONDAY_ISO,
+    start_time: start,
+    end_time: start,
+    primary_staff_id: staffId,
+    status: 'planned',
+    source: 'auto',
+    ...extra,
+  };
+}
+
+/**
+ * 佐藤 1 件 / 鈴木 1 件。鈴木側は `manual_staff_override=true`
+ * (= コース伝播では動かない訪問) にして、訪問単位で動くことを実証する。
+ */
+const SWAP_VISITS = [
+  swapVisit('v1', STAFF_1, '09:00:00'),
+  swapVisit('v2', STAFF_2, '11:00:00', { manual_staff_override: true, source: 'kaipoke' }),
+];
+
 function renderStaffTab() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
@@ -446,6 +494,26 @@ function renderStaffTab() {
   );
   fireEvent.click(screen.getByTestId('course-day-tab-staff'));
   return view;
+}
+
+/** jsdom は DataTransfer 非実装なので、必要な API だけの替え玉を作る。 */
+function makeDataTransfer() {
+  const store = new Map<string, string>();
+  return {
+    effectAllowed: 'none',
+    dropEffect: 'none',
+    setData: (type: string, value: string) => void store.set(type, value),
+    getData: (type: string) => store.get(type) ?? '',
+  };
+}
+
+/** タイムラインへ切り替え、佐藤 ⠿ → 鈴木 の入れ替え確認ダイアログを開く。 */
+async function openSwapDialog() {
+  fireEvent.click(screen.getByTestId('staff-tab-mode-timeline'));
+  const dt = makeDataTransfer();
+  fireEvent.dragStart(screen.getByTestId(`tl-swap-grip-${STAFF_1}`), { dataTransfer: dt });
+  fireEvent.drop(screen.getByTestId(`tl-name-${STAFF_2}`), { dataTransfer: dt });
+  return screen.findByTestId('cockpit-staff-swap-dialog');
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -466,6 +534,7 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
       callOrder.push('override:done');
       return payload;
     });
+    mockUpdateCourse.mockResolvedValue({ id: 'course-A-mon' });
   });
 
   it('(a) 訪問行クリックでメニューが開き「今週だけ取消」が visit-cancel-week を呼ぶ', async () => {
@@ -566,6 +635,264 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
 
     fireEvent.click(screen.getByTestId('stub-report-unsent-empty'));
     expect(screen.queryByTestId('staff-week-visit-unsent-v1')).not.toBeInTheDocument();
+  });
+
+  it('(g) スタッフ入れ替え: 常に visit-assign を訪問単位で呼ぶ (PATCH /courses は使わない)', async () => {
+    setupHooks({ visits: SWAP_VISITS });
+    renderStaffTab();
+    await openSwapDialog();
+
+    expect(screen.getByTestId('cockpit-staff-swap-summary')).toHaveTextContent('佐藤');
+    fireEvent.click(screen.getByTestId('cockpit-staff-swap-confirm'));
+
+    await vi.waitFor(() => expect(mockAssignStaffWeek).toHaveBeenCalledTimes(2));
+    // コース経路 (op_log inverse が primary を戻さない / manual_staff_override を
+    // 動かせない / 取消・実施済みも巻き込む) は使わない。
+    expect(mockUpdateCourse).not.toHaveBeenCalled();
+
+    const calls = mockAssignStaffWeek.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    // 佐藤の v1 → 鈴木 / 鈴木の v2 (manual_staff_override) → 佐藤
+    expect(calls).toEqual([
+      expect.objectContaining({ visit_id: 'v1', staff_id: STAFF_2 }),
+      expect.objectContaining({ visit_id: 'v2', staff_id: STAFF_1 }),
+    ]);
+    // 「戻る」1 回でまとめて戻せるよう、双方向とも同じ op_group_id
+    expect(calls[0]?.op_group_id).toBe(calls[1]?.op_group_id);
+    expect(typeof calls[0]?.op_group_id).toBe('string');
+  });
+
+  it('(g2) スタッフ入れ替え: 取消済み・実施済みの訪問は動かさず注記する', async () => {
+    setupHooks({
+      visits: [
+        ...SWAP_VISITS,
+        swapVisit('v3', STAFF_1, '13:00:00', { status: 'cancelled' }),
+        swapVisit('v4', STAFF_2, '14:00:00', { status: 'completed' }),
+      ],
+    });
+    renderStaffTab();
+    await openSwapDialog();
+
+    expect(screen.getByTestId('cockpit-staff-swap-summary')).toHaveTextContent(
+      '取消済み・実施済みの訪問 2 件は入れ替えません',
+    );
+    fireEvent.click(screen.getByTestId('cockpit-staff-swap-confirm'));
+
+    await vi.waitFor(() => expect(mockAssignStaffWeek).toHaveBeenCalledTimes(2));
+    const ids = mockAssignStaffWeek.mock.calls.map((c) => (c[0] as { visit_id: string }).visit_id);
+    expect(ids).toEqual(['v1', 'v2']);
+  });
+
+  it('(g3) スタッフ入れ替え: 青ピン / 新人 / 当日以前 は実行できない', async () => {
+    setupHooks({ visits: [swapVisit('v1', STAFF_1, '09:00:00', { week_pinned: true })] });
+    renderStaffTab();
+    await openSwapDialog();
+
+    expect(screen.getByTestId('cockpit-staff-swap-summary')).toHaveTextContent('青ピン');
+    expect(screen.getByTestId('cockpit-staff-swap-confirm')).toBeDisabled();
+  });
+
+  it('(g4) スタッフ入れ替え: 新人は入れ替え相手にできない (⠿ を出さない)', () => {
+    mockStaffList.mockReturnValue({
+      data: [
+        {
+          id: STAFF_1,
+          name: '佐藤',
+          status: 'active',
+          primary_office_id: 'office-honten',
+          is_trainee: false,
+        },
+        {
+          id: STAFF_2,
+          name: '鈴木',
+          status: 'active',
+          primary_office_id: 'office-honten',
+          is_trainee: true,
+        },
+      ],
+      isLoading: false,
+    });
+    setupHooks({ visits: SWAP_VISITS, keepStaff: true });
+    renderStaffTab();
+    fireEvent.click(screen.getByTestId('staff-tab-mode-timeline'));
+
+    expect(screen.getByTestId(`tl-swap-grip-${STAFF_1}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`tl-swap-grip-${STAFF_2}`)).not.toBeInTheDocument();
+  });
+
+  it('(g5) スタッフ入れ替え: 両者 0 件なら API を呼ばず toast.info で終わる', async () => {
+    setupHooks({ visits: [] });
+    renderStaffTab();
+    await openSwapDialog();
+
+    fireEvent.click(screen.getByTestId('cockpit-staff-swap-confirm'));
+
+    await vi.waitFor(() => expect(mockToast.info).toHaveBeenCalled());
+    expect(mockAssignStaffWeek).not.toHaveBeenCalled();
+    expect(mockToast.info.mock.calls[0]?.[0]).toContain('入れ替えられる予定がありません');
+    // 何も適用していないので「元に戻す」は案内しない
+    expect(mockToast.success).not.toHaveBeenCalled();
+  });
+
+  it('(g6) スタッフ入れ替え: 途中で失敗したら toast.error で「戻る」を案内する', async () => {
+    setupHooks({ visits: SWAP_VISITS });
+    let n = 0;
+    mockAssignStaffWeek.mockImplementation(async () => {
+      n += 1;
+      if (n === 2) throw new Error('boom');
+      return { changed: true };
+    });
+    renderStaffTab();
+    await openSwapDialog();
+
+    fireEvent.click(screen.getByTestId('cockpit-staff-swap-confirm'));
+
+    await vi.waitFor(() => expect(mockToast.error).toHaveBeenCalled());
+    const msgs = mockToast.error.mock.calls.map((c) => String(c[0]));
+    // 失敗は件数で集約し、適用済みがあるので「戻る」を案内する
+    expect(msgs.some((m) => m.includes('1 件失敗しました') && m.includes('「戻る」'))).toBe(true);
+    expect(mockToast.error).toHaveBeenCalledTimes(1);
+    expect(mockToast.success).not.toHaveBeenCalled();
+  });
+
+  it('(g7) スタッフ入れ替え: 422 (NG/性別) は残りを中断 → 確認 → ack 付きで再開する', async () => {
+    setupHooks({ visits: SWAP_VISITS });
+    let n = 0;
+    mockAssignStaffWeek.mockImplementation(async (payload: Record<string, unknown>) => {
+      n += 1;
+      // 1 件目だけ 422。ack 付きの再送 (2 回目) は通す。
+      if (n === 1 && payload.acknowledge_constraint_warnings !== true) throw constraintError();
+      return { changed: true };
+    });
+    renderStaffTab();
+    await openSwapDialog();
+    fireEvent.click(screen.getByTestId('cockpit-staff-swap-confirm'));
+
+    // 1 件目で止まる = 2 件目 (v2) はまだ呼ばれていない
+    expect(await screen.findByTestId('constraint-override-confirm')).toBeInTheDocument();
+    expect(mockAssignStaffWeek).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('constraint-override-ok'));
+
+    // 再送 (ack 付き) → 続きの v2 まで流れる
+    await vi.waitFor(() => expect(mockAssignStaffWeek).toHaveBeenCalledTimes(3));
+    const calls = mockAssignStaffWeek.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    expect(calls[1]).toMatchObject({ visit_id: 'v1', acknowledge_constraint_warnings: true });
+    expect(calls[2]).toMatchObject({ visit_id: 'v2', staff_id: STAFF_1 });
+    // 中断・再開をまたいでも op_group_id は同じ (「戻る」1 回で戻せる)
+    expect(new Set(calls.map((c) => c.op_group_id)).size).toBe(1);
+    await vi.waitFor(() => expect(mockToast.success).toHaveBeenCalled());
+  });
+
+  it('(g8) スタッフ入れ替え: 2 連続 422 → 2 回確認 → 全件適用 (同一 op_group_id)', async () => {
+    setupHooks({ visits: SWAP_VISITS });
+    // ack が無い限り毎回 422 を返す (= 2 件とも確認が要る)。
+    mockAssignStaffWeek.mockImplementation(async (payload: Record<string, unknown>) => {
+      if (payload.acknowledge_constraint_warnings !== true) throw constraintError();
+      return { changed: true };
+    });
+    renderStaffTab();
+    await openSwapDialog();
+    fireEvent.click(screen.getByTestId('cockpit-staff-swap-confirm'));
+
+    // 1 件目の確認
+    expect(await screen.findByTestId('constraint-override-confirm')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('constraint-override-ok'));
+
+    // 2 件目の確認が**消えずに**出る (retry 中に積まれた pending を潰さない回帰)
+    await vi.waitFor(() => expect(mockAssignStaffWeek).toHaveBeenCalledTimes(3));
+    expect(await screen.findByTestId('constraint-override-confirm')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('constraint-override-ok'));
+
+    await vi.waitFor(() => expect(mockAssignStaffWeek).toHaveBeenCalledTimes(4));
+    const calls = mockAssignStaffWeek.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    expect(calls.map((c) => c.visit_id)).toEqual(['v1', 'v1', 'v2', 'v2']);
+    expect(calls[1]).toMatchObject({ acknowledge_constraint_warnings: true, staff_id: STAFF_2 });
+    expect(calls[3]).toMatchObject({ acknowledge_constraint_warnings: true, staff_id: STAFF_1 });
+    // 中断・再開を 2 回はさんでも 1 操作グループ
+    expect(new Set(calls.map((c) => c.op_group_id)).size).toBe(1);
+    await vi.waitFor(() => expect(mockToast.success).toHaveBeenCalled());
+  });
+
+  it('(g9) スタッフ入れ替え: 確認を「やめる」と中止トースト + 残りは送らない', async () => {
+    setupHooks({ visits: SWAP_VISITS });
+    mockAssignStaffWeek.mockImplementation(async (payload: Record<string, unknown>) => {
+      if (payload.acknowledge_constraint_warnings !== true) throw constraintError();
+      return { changed: true };
+    });
+    renderStaffTab();
+    await openSwapDialog();
+    fireEvent.click(screen.getByTestId('cockpit-staff-swap-confirm'));
+
+    expect(await screen.findByTestId('constraint-override-confirm')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('constraint-override-cancel'));
+
+    await vi.waitFor(() => expect(mockToast.warning).toHaveBeenCalled());
+    expect(String(mockToast.warning.mock.calls[0]?.[0])).toContain('入れ替えを中止しました');
+    // 2 件目 (v2) は送らない
+    expect(mockAssignStaffWeek).toHaveBeenCalledTimes(1);
+    expect(mockToast.success).not.toHaveBeenCalled();
+    // 実行が決着したので入れ替えダイアログも閉じる
+    await vi.waitFor(() =>
+      expect(screen.queryByTestId('cockpit-staff-swap-dialog')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('(g10) スタッフ入れ替え: 実行中の二度押しでは二重に流れない', async () => {
+    setupHooks({ visits: SWAP_VISITS });
+    mockAssignStaffWeek.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      return { changed: true };
+    });
+    renderStaffTab();
+    await openSwapDialog();
+
+    const confirm = screen.getByTestId('cockpit-staff-swap-confirm');
+    fireEvent.click(confirm);
+    fireEvent.click(confirm); // 実行中の二度押し
+    fireEvent.click(confirm);
+
+    await vi.waitFor(() => expect(mockToast.success).toHaveBeenCalledTimes(1));
+    // キューは 2 件。二重起動していれば 4 件・6 件になる。
+    expect(mockAssignStaffWeek).toHaveBeenCalledTimes(2);
+  });
+
+  it('(g11) 急な休みの付替: 失敗したら入れ替えと同じ形で toast.error になる', async () => {
+    setupHooks();
+    mockAssignStaffWeek.mockImplementation(async () => {
+      callOrder.push('assign');
+      throw new Error('boom');
+    });
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId(`staff-week-off-action-${STAFF_1}-0`));
+    expect(await screen.findByTestId('substitute-panel')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId(`substitute-cand-__none__0-${STAFF_2}`));
+
+    await vi.waitFor(() => expect(mockToast.error).toHaveBeenCalled());
+    expect(String(mockToast.error.mock.calls[0]?.[0])).toContain('1 件の付け替えに失敗しました');
+    // 休み登録そのものの成功トーストは出るが、**付け替えの成功**は出さない
+    // (従来は失敗しても成功文言が出ていた = 非対称の解消)。
+    const successMsgs = mockToast.success.mock.calls.map((c) => String(c[0]));
+    expect(successMsgs.some((m) => m.includes('曜を休みに。'))).toBe(false);
+  });
+
+  it('(h) タイムラインの行アクション「🛌 休みにする」で SubstitutePanel が開く', async () => {
+    setupHooks();
+    renderStaffTab();
+    fireEvent.click(screen.getByTestId('staff-tab-mode-timeline'));
+
+    expect(screen.queryByTestId('substitute-panel')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId(`tl-off-action-${STAFF_1}`));
+    expect(await screen.findByTestId('substitute-panel')).toBeInTheDocument();
+  });
+
+  it('(h2) タイムラインの「＋訪問」で今週だけの訪問ダイアログが開く', async () => {
+    setupHooks();
+    renderStaffTab();
+    fireEvent.click(screen.getByTestId('staff-tab-mode-timeline'));
+
+    fireEvent.click(screen.getByTestId(`tl-add-visit-${STAFF_2}`));
+    expect(await screen.findByTestId('add-visit-dialog')).toBeInTheDocument();
   });
 
   it('(f) 訪問メニューの同期表示は 未計測=「同期バーで確認」/ 報告後=「●未送信」', async () => {

@@ -179,7 +179,9 @@ import { VisitActionMenu } from './cockpit/VisitActionMenu';
 import { SubstitutePanel } from './cockpit/SubstitutePanel';
 import { AddVisitDialog, type AddVisitPayload } from './cockpit/AddVisitDialog';
 import {
+  resolveVisitRowKey,
   StaffTimelineView,
+  type StaffSwapPayload,
   type StaffTimelineRow,
   type TimelineMarker,
   type TimelineVisit,
@@ -283,6 +285,13 @@ const PLACE_CONSTRAINT_TEXT = {
   title: 'それでも配置しますか？',
   description: 'この配置先の担当者は、次の制約に抵触します',
   confirmLabel: '配置する',
+} as const;
+/** 訪問 1 件の担当付け替え (visit-assign-staff-week) の 422 確認文言。 */
+const ASSIGN_CONSTRAINT_TEXT = {
+  title: '確認して付け替えますか？',
+  description:
+    'この患者様の NG スタッフ / 性別制限に該当します。内容を確認のうえ、この訪問だけ付け替えます。',
+  confirmLabel: '付け替える',
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1634,6 +1643,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   // NG スタッフ / 性別制限 (§7-2) の確認 → acknowledge 再送。移動 / 配置 / 空き枠登録の
   // 3 経路で共用する (同時に 2 つは起きない)。コース担当変更は別 state (constraintConfirm)。
   const placementConstraintConfirm = useConstraintConfirmRetry();
+  /** 週切替の後始末で使う安定参照 (useCallback([]) なのでレンダー間で不変)。 */
+  const resetConstraintConfirm = placementConstraintConfirm.reset;
 
   // ─── T-2 ②-a: 空き枠クリック → 登録モーダル ──────────────────────────
   // タイムラインの空き枠クリックで開く。訪問=place-and-fix (fix_pattern=false =
@@ -2892,6 +2903,11 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const [staffViewMode, setStaffViewMode] = useState<'list' | 'timeline'>('list');
   /** タイムライン表示で見ている曜日 (0=月..5=土)。 */
   const [staffTimelineDay, setStaffTimelineDay] = useState(0);
+  /** スタッフ入れ替え (氏名 ⠿ DnD) の確認ダイアログ。 */
+  const [staffSwap, setStaffSwap] = useState<StaffSwapPayload | null>(null);
+  const [staffSwapRunning, setStaffSwapRunning] = useState(false);
+  /** 実行中フラグの同期版 (二重起動ガード・state 反映を待たない)。 */
+  const staffSwapRunningRef = useRef(false);
   /** 急な休み: 代替候補パネル (スタッフ × 日)。 */
   const [offPanel, setOffPanel] = useState<{ staffId: string; date: string } | null>(null);
   /** ＋訪問 (今週だけ) ダイアログ。 */
@@ -3056,12 +3072,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           async () => {
             await doAssignVisitStaff(visitId, staffId, { ...opts, acknowledge: true });
           },
-          {
-            title: '確認して付け替えますか？',
-            description:
-              'この患者様の NG スタッフ / 性別制限に該当します。内容を確認のうえ、この訪問だけ付け替えます。',
-            confirmLabel: '付け替える',
-          },
+          ASSIGN_CONSTRAINT_TEXT,
         )
       ) {
         return false;
@@ -3239,7 +3250,16 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     setMasterScopeVisit(null);
     setCockpitMarker(null);
     setUnsentKeys(null);
-  }, [weekStartIso]);
+    setStaffSwap(null);
+    setStaffSwapRunning(false);
+    staffSwapRunningRef.current = false;
+    // 別の週へ移ったら「確認して通す」待ちも捨てる (待っているキューは
+    // onAbort 経由で中止される)。
+    // フック戻り値のオブジェクトは毎レンダー新品なので、**安定な reset 関数**
+    // だけを依存に取る (オブジェクトを取ると毎レンダー実行され、開いた直後の
+    // 確認ダイアログを閉じてしまう)。
+    resetConstraintConfirm();
+  }, [weekStartIso, resetConstraintConfirm]);
 
   /** JST の「今日」(BE の過去日ガードと同じ Asia/Tokyo 基準)。 */
   const todayIsoJst = useMemo(
@@ -3584,50 +3604,349 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
     }
   }, [offPanel, createOverrideMut, staffNameById, invalidateCockpitBoard]);
 
+  // ─── 訪問単位の担当付け替えランナー (急な休み / スタッフ入れ替え 共通) ───
+  //
+  // レビュー 2026-08-22 (C1/C2/H1/H3): **コース経路 (PATCH /courses) は使わない**。
+  //   ① op_log の inverse がコース更新では訪問の primary_staff_id を戻さない
+  //   ② manual_staff_override=True の訪問はコース伝播で動かない = 片側だけ移る
+  //   ③ 取消済み・実施済みの訪問まで巻き込む
+  // どれも「入れ替えたつもりが片側だけ動く」事故になるので、常に
+  // `visit-assign-staff-week` を訪問 1 件ずつ・同一 op_group_id で呼ぶ。
+
+  /** ランナーに積む 1 件。 */
+  type AssignQueueItem = { visitId: string; toStaffId: string | null };
+  /** ランナーの結末。`aborted` = 確認ダイアログを「やめる」で中止した。 */
+  type AssignQueueResult = { applied: number; failed: number; aborted: boolean };
+
+  /**
+   * 訪問単位の付け替えを順に流す。
+   *
+   *   - 422 (`constraint_confirmation_required`) → **残りを中断**して確認ダイアログへ。
+   *     OK ならその 1 件を acknowledge 付きで再送し、続きを再開する
+   *     (opGroupId と途中経過を持ち回るので「戻る」1 回でまとめて戻せる)。
+   *     「やめる」/ 週切替なら `onAbort` 経由で `finish({ aborted: true })`。
+   *   - 409 (競合) → **そこで打ち切る**。他の誰かが同じ週を触っている状態で
+   *     残りを流すと、片側だけ動いた盤面になるため。
+   *   - それ以外の失敗 → 件数だけ数えて次へ (トーストは最後に 1 回集約する)。
+   *
+   * `finish` は成功・中断のどちらでも**ちょうど 1 回**呼ばれる。
+   */
+  const runAssignQueue = async (
+    queue: AssignQueueItem[],
+    opGroupId: string,
+    finish: (r: AssignQueueResult) => void,
+    from = 0,
+    ackFirst = false,
+    applied0 = 0,
+    failed0 = 0,
+  ): Promise<void> => {
+    let applied = applied0;
+    let failed = failed0;
+    let touched = false;
+    const done = (r: AssignQueueResult) => {
+      // op-log は 1 操作グループにつき 1 回失効させれば足りる (ループ内で毎回
+      // 呼ぶと「戻る」ボタンの再取得が件数分走る)。
+      if (touched) invalidateOpLog(isoYear, isoWeek);
+      finish(r);
+    };
+    for (let i = from; i < queue.length; i += 1) {
+      const item = queue[i];
+      if (!item) continue;
+      const acknowledge = ackFirst && i === from;
+      try {
+        const res = await visitAssignMut.mutateAsync({
+          visit_id: item.visitId,
+          staff_id: item.toStaffId,
+          op_group_id: opGroupId,
+          ...ackFlag(acknowledge),
+        });
+        touched = true;
+        if (res.changed) applied += 1;
+      } catch (err) {
+        if (
+          !acknowledge &&
+          placementConstraintConfirm.capture(
+            err,
+            () => runAssignQueue(queue, opGroupId, finish, i, true, applied, failed),
+            ASSIGN_CONSTRAINT_TEXT,
+            // 「やめる」/ 週切替で確認を捨てたら、ここまでの結果で締める。
+            () => {
+              if (touched) invalidateOpLog(isoYear, isoWeek);
+              finish({ applied, failed, aborted: true });
+            },
+          )
+        ) {
+          // 確認待ちの間も、ここまでに適用した分は盤面へ反映しておく。
+          if (touched) invalidateOpLog(isoYear, isoWeek);
+          invalidateCockpitBoard();
+          return; // 残りは確認 (再開) か中止 (onAbort) のどちらかで決着する
+        }
+        failed += 1;
+        if (err instanceof ApiError && err.status === 409) {
+          // 競合。残りを流すと片側だけ動いた盤面になるので打ち切る。
+          toast.error('他の操作と競合したため中断しました。画面を更新してやり直してください');
+          done({ applied, failed, aborted: true });
+          return;
+        }
+      }
+    }
+    done({ applied, failed, aborted: false });
+  };
+
   /**
    * 急な休み: 代替候補の適用 (§D8)。
-   * course があればコース丸ごと (PATCH /courses/{id})、無ければ訪問を 1 件ずつ。
+   * コース単位ではなく**訪問 1 件ずつ** (上記ランナー) で付け替える。
    * 1 回の付け替えは 1 op_group =「戻る」1 回でまとめて戻る。
    */
   const handleSubstituteApply = async (payload: SubstituteApplyPayload) => {
-    {
-      const opGroupId = crypto.randomUUID();
-      const absentName = offPanel ? (staffNameById.get(offPanel.staffId) ?? '') : '';
-      const wdLabel = offPanel ? (WEEKDAY_LABELS[weekdayOfIso(offPanel.date)] ?? '') : '';
-      const toName = payload.toStaffId
-        ? (staffNameById.get(payload.toStaffId) ?? '別のスタッフ')
-        : '（担当なし）';
+    const opGroupId = crypto.randomUUID();
+    const absentName = offPanel ? (staffNameById.get(offPanel.staffId) ?? '') : '';
+    const wdLabel = offPanel ? (WEEKDAY_LABELS[weekdayOfIso(offPanel.date)] ?? '') : '';
+    const toName = payload.toStaffId
+      ? (staffNameById.get(payload.toStaffId) ?? '別のスタッフ')
+      : '（担当なし）';
+    const labels = payload.groups.map((g) => {
+      const course = g.courseId ? courses.find((c) => c.id === g.courseId) : undefined;
+      return course ? `コース${course.code}` : '臨時';
+    });
+    const queue: AssignQueueItem[] = payload.groups.flatMap((g) =>
+      g.visitIds.map((visitId) => ({ visitId, toStaffId: payload.toStaffId })),
+    );
+    if (queue.length === 0) {
+      toast.info('付け替える訪問がありません');
+      return;
+    }
+    const undoAction = { cancel: { label: '元に戻す', onClick: () => void handleUndo() } };
+    await runAssignQueue(queue, opGroupId, ({ applied, failed, aborted }) => {
+      invalidateCockpitBoard();
+      // 入れ替え側と同じ締め方 (中止 / 失敗 / 変化なし / 成功) に揃える。
+      if (aborted) {
+        toast.warning(
+          applied > 0
+            ? `付け替えを中止しました（${applied} 件は反映済み・「戻る」で戻せます）`
+            : '付け替えを中止しました',
+          applied > 0 ? undoAction : undefined,
+        );
+        return;
+      }
+      if (failed > 0) {
+        toast.error(
+          applied > 0
+            ? `${failed} 件の付け替えに失敗しました（${applied} 件は反映済み・「戻る」で戻せます）`
+            : `${failed} 件の付け替えに失敗しました`,
+          applied > 0 ? undoAction : undefined,
+        );
+        return;
+      }
+      if (applied === 0) {
+        toast.info('付け替えられる訪問がありませんでした');
+        return;
+      }
+      toast.success(
+        `${absentName} ${wdLabel}曜を休みに。${labels.join('・')}→${toName}（今週だけ）`,
+        undoAction,
+      );
+    });
+  };
+
+  // ─── スタッフ入れ替え (氏名 ⠿ DnD / PO 要望 2026-08-22) ───────────────
+  //
+  // 「その日の 2 人の予定を丸ごと入れ替える」。憲法1 どおり**今週だけ**の操作で、
+  // マスタ (PFV/テンプレ) は触らない。付け替えは上のランナー = 常に訪問単位。
+
+  /** 入れ替え 1 人分の内訳。 */
+  type StaffSwapSide = {
+    /** 実際に動かす訪問 id (生存 = planned のみ・ペア除外後)。 */
+    visitIds: string[];
+    /** ダイアログに出すコース名 (重複除去前)。 */
+    labels: string[];
+    /** 動かす対象のうち青ピン (実行不可) の件数。 */
+    pinned: number;
+    /** 2名体制ペアの両脚が当事者 2 人に載っていて対象外にした件数 (M4)。 */
+    excludedPairs: number;
+    /** その日のイベント件数 (入れ替えないことを注記する)。 */
+    events: number;
+  };
+
+  /**
+   * 入れ替えの下ごしらえ。ダイアログの表示と実行の**単一ソース**。
+   * 除外するもの:
+   *   - 取消済み / 実施済み (status が planned 以外) = 実績・今週だけの取消は動かさない
+   *   - 2名体制ペアで両脚が当事者 2 人に載っているもの (入れ替えても同じ組・M4)
+   *   - イベント (訪問ではないので担当付け替えの対象外)
+   */
+  const buildStaffSwapSide = useCallback(
+    (staffId: string, partnerStaffId: string, day: number): StaffSwapSide => {
+      const rowKeyOf = (v: TimelineVisit) => resolveVisitRowKey(v, assignedStaffByTemplateWeekday);
+      const living = cockpitVisits.filter(
+        (v) => v.weekday === day && (v.status ?? 'planned') === 'planned',
+      );
+      const mine = living.filter((v) => rowKeyOf(v) === staffId);
+      const visitIds: string[] = [];
       const labels: string[] = [];
-      let done = 0;
-      for (const g of payload.groups) {
-        const course = g.courseId ? courses.find((c) => c.id === g.courseId) : undefined;
-        labels.push(course ? `コース${course.code}` : '臨時');
-        if (course) {
-          const ok = await handleChangeAssignedStaff(
-            course.id,
-            payload.toStaffId,
-            false,
-            opGroupId,
-          );
-          if (ok) done += g.visitIds.length;
-        } else {
-          for (const visitId of g.visitIds) {
-            const ok = await doAssignVisitStaff(visitId, payload.toStaffId, {
-              silent: true,
-              opGroupId,
-            });
-            if (ok) done += 1;
+      let excludedPairs = 0;
+      let pinned = 0;
+      for (const v of mine) {
+        const gid = (visitById.get(v.id) as { visit_group_id?: string | null } | undefined)
+          ?.visit_group_id;
+        if (gid) {
+          // 2名体制ペア: 相方が当事者のもう一方なら、入れ替えても同じ組に戻るだけ
+          // (かつ 2 名体制の検査に無駄に触れる) ので対象外にする。
+          const mates = (visitsByGroupId.get(gid) ?? []).filter((m) => m.id !== v.id);
+          const pairedWithPartner = mates.some((m) => {
+            const mv = cockpitVisits.find((x) => x.id === m.id);
+            return mv != null && rowKeyOf(mv) === partnerStaffId;
+          });
+          if (pairedWithPartner) {
+            excludedPairs += 1;
+            continue;
           }
         }
+        visitIds.push(v.id);
+        labels.push(cockpitCourseLabel(v.course_template_id) ?? '臨時');
+        // 青ピンの判定は**実際に動かす対象**だけを見る (除外済みの訪問が
+        // 実行を止めてしまわないように)。
+        if (v.week_pinned === true) pinned += 1;
       }
-      invalidateCockpitBoard();
-      if (done > 0 || payload.groups.length > 0) {
-        toast.success(
-          `${absentName} ${wdLabel}曜を休みに。${labels.join('・')}→${toName}（今週だけ）`,
-          { cancel: { label: '元に戻す', onClick: () => void handleUndo() } },
-        );
-      }
+      const dayIso = isoOfWeekday(day);
+      const events = (staffEventsByStaff.get(staffId) ?? []).filter(
+        (ev) => ev.date === dayIso && ev.cancelled_at == null,
+      ).length;
+      return { visitIds, labels, pinned, excludedPairs, events };
+    },
+    [
+      cockpitVisits,
+      assignedStaffByTemplateWeekday,
+      cockpitCourseLabel,
+      visitById,
+      visitsByGroupId,
+      staffEventsByStaff,
+      isoOfWeekday,
+    ],
+  );
+
+  /** 確認ダイアログの中身 (staffSwap が立っている間だけ)。 */
+  const staffSwapPlan = useMemo(() => {
+    if (!staffSwap) return null;
+    const { fromStaffId, toStaffId, day } = staffSwap;
+    const a = buildStaffSwapSide(fromStaffId, toStaffId, day);
+    const b = buildStaffSwapSide(toStaffId, fromStaffId, day);
+    const dateIso = isoOfWeekday(day);
+    const fromName = staffNameById.get(fromStaffId) ?? '（不明）';
+    const toName = staffNameById.get(toStaffId) ?? '（不明）';
+    const notes: string[] = [];
+    const blockers: string[] = [];
+
+    const offA = offByStaffWeekday.get(`${fromStaffId}:${day}`);
+    const offB = offByStaffWeekday.get(`${toStaffId}:${day}`);
+    if (offA) notes.push(`${fromName}さんはこの日「${offA.type}」です`);
+    if (offB) notes.push(`${toName}さんはこの日「${offB.type}」です`);
+
+    const skipped = cockpitVisits.filter(
+      (v) =>
+        v.weekday === day &&
+        (v.status ?? 'planned') !== 'planned' &&
+        [fromStaffId, toStaffId].includes(resolveVisitRowKey(v, assignedStaffByTemplateWeekday)),
+    ).length;
+    if (skipped > 0) notes.push(`取消済み・実施済みの訪問 ${skipped} 件は入れ替えません`);
+
+    const pairs = a.excludedPairs + b.excludedPairs;
+    if (pairs > 0)
+      notes.push(`2名体制でお二人が組んでいる訪問 ${pairs} 件は入れ替えません（同じ組に戻るため）`);
+
+    const events = a.events + b.events;
+    if (events > 0) notes.push(`イベント ${events} 件は入れ替えません（訪問だけが対象です）`);
+
+    // 実行不可 (M5 当日以前 / H2 新人 / 青ピン)
+    if (dateIso <= todayIsoJst)
+      blockers.push('当日以前は入れ替えできません（実績が入っている可能性があります）');
+    if (
+      staffMap.get(fromStaffId)?.is_trainee === true ||
+      staffMap.get(toStaffId)?.is_trainee === true
+    )
+      blockers.push('新人は担当にできません（同行で割り当ててください）');
+    const pinned = a.pinned + b.pinned;
+    if (pinned > 0)
+      blockers.push(`青ピン（今週だけ固定）の訪問が ${pinned} 件あります。先に解除してください`);
+
+    return {
+      ...staffSwap,
+      dateIso,
+      fromName,
+      toName,
+      from: a,
+      to: b,
+      notes,
+      blockers,
+      blocked: blockers.length > 0,
+      total: a.visitIds.length + b.visitIds.length,
+    };
+  }, [
+    staffSwap,
+    buildStaffSwapSide,
+    isoOfWeekday,
+    offByStaffWeekday,
+    staffNameById,
+    staffMap,
+    cockpitVisits,
+    assignedStaffByTemplateWeekday,
+    todayIsoJst,
+  ]);
+
+  /**
+   * 入れ替えの実行。A の当日訪問を B へ・B の当日訪問を A へ (同一 op_group_id)。
+   * 実行中はダイアログを開いたまま (ボタンは無効) にして、二重起動を防ぐ。
+   */
+  const handleStaffSwapConfirm = async () => {
+    const plan = staffSwapPlan;
+    if (!plan || plan.blocked) return;
+    if (staffSwapRunningRef.current) return; // 二重起動ガード (M1)
+    const mdLabel = `${format(addDays(weekStart, plan.day), 'M/d')}(${WEEKDAY_LABELS[plan.day] ?? ''})`;
+    if (plan.total === 0) {
+      // どちらの行にも動かせる訪問が無い = 何もしない (H4)。
+      setStaffSwap(null);
+      toast.info(`${plan.fromName}・${plan.toName} の ${mdLabel} に入れ替えられる予定がありません`);
+      return;
     }
+    const queue: AssignQueueItem[] = [
+      ...plan.from.visitIds.map((visitId) => ({ visitId, toStaffId: plan.toStaffId })),
+      ...plan.to.visitIds.map((visitId) => ({ visitId, toStaffId: plan.fromStaffId })),
+    ];
+    staffSwapRunningRef.current = true;
+    setStaffSwapRunning(true);
+    const undoAction = { cancel: { label: '元に戻す', onClick: () => void handleUndo() } };
+    await runAssignQueue(queue, crypto.randomUUID(), ({ applied, failed, aborted }) => {
+      staffSwapRunningRef.current = false;
+      setStaffSwapRunning(false);
+      setStaffSwap(null); // 実行が決着してから閉じる
+      invalidateCockpitBoard();
+      if (aborted) {
+        toast.warning(
+          applied > 0
+            ? `入れ替えを中止しました（${applied} 件は反映済み・「戻る」で戻せます）`
+            : '入れ替えを中止しました',
+          applied > 0 ? undoAction : undefined,
+        );
+        return;
+      }
+      if (failed > 0) {
+        toast.error(
+          applied > 0
+            ? `${plan.fromName}↔${plan.toName} の ${mdLabel} の入れ替えは ${failed} 件失敗しました（${applied} 件は反映済み・「戻る」で戻せます）`
+            : `${plan.fromName}↔${plan.toName} の ${mdLabel} の入れ替えに失敗しました（${failed} 件）`,
+          applied > 0 ? undoAction : undefined,
+        );
+        return;
+      }
+      if (applied === 0) {
+        toast.info(`${plan.fromName}・${plan.toName} の ${mdLabel} は変更ありませんでした`);
+        return;
+      }
+      toast.success(
+        `${plan.fromName}↔${plan.toName} の ${mdLabel} の予定を入れ替えました（今週だけ・●未送信）`,
+        undoAction,
+      );
+    });
   };
 
   /** タイムラインの行 (在籍スタッフ。「（担当なし）」は部品側が足す)。 */
@@ -3640,6 +3959,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           name: s.name,
           office: officeNameById.get(s.primary_office_id ?? '') ?? null,
           off: offByStaffWeekday.get(`${s.id}:${staffTimelineDay}`) ?? null,
+          // 新人は担当になれない (同行で割り当てる) → 入れ替えの対象外 (H2)。
+          isTrainee: s.is_trainee === true,
         })),
     [allStaff, officeNameById, offByStaffWeekday, staffTimelineDay],
   );
@@ -4814,6 +5135,38 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                     onEventClick={
                       canEdit ? (ev, staffId) => setTlEventEdit({ staffId, event: ev }) : undefined
                     }
+                    // 氏名 ⠿ の DnD = その日の 2 人の予定を丸ごと入れ替え (確認ダイアログ経由)。
+                    onStaffSwap={
+                      canEdit
+                        ? (payload) => {
+                            setStaffSwapRunning(false);
+                            setStaffSwap(payload);
+                          }
+                        : undefined
+                    }
+                    // 行アクション (PO 2026-08-22): リスト盤面のセルと同じ結線を使う。
+                    onMarkOff={
+                      canEdit
+                        ? (staffId, dayIdx) => setOffPanel({ staffId, date: isoOfWeekday(dayIdx) })
+                        : undefined
+                    }
+                    onAddVisit={
+                      canEdit
+                        ? (staffId, dayIdx) =>
+                            setAddVisitState({ staffId, date: isoOfWeekday(dayIdx) })
+                        : undefined
+                    }
+                    onAddEvent={
+                      canEdit
+                        ? (staffId, dayIdx) =>
+                            setSlotEventState({
+                              staffId,
+                              date: isoOfWeekday(dayIdx),
+                              startHM: '09:00',
+                              endHM: '10:00',
+                            })
+                        : undefined
+                    }
                   />
                 ) : (
                   <StaffWeekBoard
@@ -5417,6 +5770,71 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                 }}
               >
                 決定
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* 週空間 Phase E: スタッフ入れ替え (氏名 ⠿ DnD) の確認 (PO 要望 2026-08-22)。 */}
+        <Dialog
+          open={staffSwapPlan != null}
+          onOpenChange={(o) => {
+            // 実行中は閉じない (途中経過が見えないまま消えると誤解を生む)。
+            if (!o && !staffSwapRunning) setStaffSwap(null);
+          }}
+        >
+          <DialogContent className="max-w-md" data-testid="cockpit-staff-swap-dialog">
+            <DialogHeader>
+              <DialogTitle className="text-sm">
+                {staffSwapPlan
+                  ? `${staffSwapPlan.fromName}さん と ${staffSwapPlan.toName}さん の ${format(addDays(weekStart, staffSwapPlan.day), 'M/d')}(${WEEKDAY_LABELS[staffSwapPlan.day] ?? ''}) の予定を入れ替えますか？`
+                  : ''}
+              </DialogTitle>
+              <DialogDescription className="text-[11px]">
+                この日の担当だけを丸ごと交換します（今週だけ・毎週の型は変わりません）。
+              </DialogDescription>
+            </DialogHeader>
+            {staffSwapPlan ? (
+              <ul className="space-y-1 text-xs" data-testid="cockpit-staff-swap-summary">
+                {(
+                  [
+                    [staffSwapPlan.fromName, staffSwapPlan.from],
+                    [staffSwapPlan.toName, staffSwapPlan.to],
+                  ] as const
+                ).map(([name, side]) => (
+                  <li key={name}>
+                    <b>{name}</b>: {side.visitIds.length} 件
+                    {side.labels.length > 0 ? `（${[...new Set(side.labels)].join('・')}）` : ''}
+                  </li>
+                ))}
+                {staffSwapPlan.notes.map((n) => (
+                  <li key={n} style={{ color: 'var(--warning-fg, #b45309)' }}>
+                    ⚠ {n}
+                  </li>
+                ))}
+                {staffSwapPlan.blockers.map((n) => (
+                  <li key={n} style={{ color: 'var(--danger-fg, #b91c1c)' }}>
+                    ✋ {n}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setStaffSwap(null)}
+                disabled={staffSwapRunning}
+              >
+                やめる
+              </Button>
+              <Button
+                type="button"
+                data-testid="cockpit-staff-swap-confirm"
+                disabled={staffSwapPlan?.blocked === true || staffSwapRunning}
+                onClick={() => void handleStaffSwapConfirm()}
+              >
+                入れ替える
               </Button>
             </DialogFooter>
           </DialogContent>
