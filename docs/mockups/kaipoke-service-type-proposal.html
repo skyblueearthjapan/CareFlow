@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>サービス内容の自動判定について</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --ink:#1f2937; --ink2:#5f5a55; --ink3:#8f877f; --line:#e5e7eb; --bg:#faf7f2; --panel:#fff; --brand:#e15a7f; --brand-50:#fff5f8; --brand-light:#ffd6e0; --ok:#3f9d5a; --ok-bg:#eaf7ed; --warn:#c97a12; --warn-bg:#fdf3e2; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --ink:#f1ece6; --ink2:#c6bdb3; --ink3:#8f877f; --line:#3a3632; --bg:#1c1a19; --panel:#262321; --brand-50:#3a242b; --brand-light:#5a3140; --ok-bg:#243a2b; --warn-bg:#3d2e16; } }
+  :root[data-theme="dark"] { --ink:#f1ece6; --ink2:#c6bdb3; --ink3:#8f877f; --line:#3a3632; --bg:#1c1a19; --panel:#262321; --brand-50:#3a242b; --brand-light:#5a3140; --ok-bg:#243a2b; --warn-bg:#3d2e16; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:"Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic UI","Meiryo",system-ui,sans-serif; font-size:15px; line-height:1.7; }
+  main { max-width:760px; margin:0 auto; padding:32px 20px 56px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--ink3); font-size:13px; margin-bottom:24px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin-bottom:16px; }
+  h2 { font-size:16px; margin:0 0 10px; color:var(--brand); }
+  h3 { font-size:14px; margin:12px 0 4px; }
+  p, li { margin:0; }
+  ul { margin:4px 0 0; padding-left:20px; }
+  li { margin:3px 0; }
+  .rule { background:var(--brand-50); border:1px solid var(--brand-light); border-radius:8px; padding:10px 14px; font-weight:700; text-align:center; margin:8px 0; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin-top:8px; }
+  th, td { border:1px solid var(--line); padding:6px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--bg); font-weight:700; }
+  .tag { display:inline-block; padding:0 8px; border-radius:999px; font-size:12px; font-weight:700; }
+  .ok { background:var(--ok-bg); color:var(--ok); } .warn { background:var(--warn-bg); color:var(--warn); }
+  .flow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px; }
+  .box { border:1px solid var(--line); border-radius:8px; padding:6px 12px; background:var(--bg); font-size:14px; }
+  .arrow { color:var(--ink3); }
+  .ask { border-color:var(--brand); border-width:2px; }
+  .ask li { margin:8px 0; }
+  .ask li b { display:block; }
+  .note { color:var(--ink2); font-size:13px; margin-top:6px; }
+  @page { size: A4 portrait; margin: 14mm 14mm 16mm; }
+  @media print {
+    html, body { background:#fff !important; color:#111 !important; height:auto !important; overflow:visible !important; }
+    main { max-width:none; margin:0; padding:0; }
+    section { break-inside: avoid; page-break-inside: avoid; box-shadow:none; margin-bottom:10px; padding:12px 14px; }
+    h1 { font-size:18px; } h2 { font-size:14px; } body { font-size:12.5px; line-height:1.55; }
+    table { font-size:12px; } th, td { padding:4px 8px; }
+    .box { font-size:12px; }
+    .ask { break-before: auto; }
+    a[href]::after { content:""; }
+  }
+</style>
+<main>
+  <h1>カイポケ「サービス内容」の自動判定について</h1>
+  <div class="sub">らく助 → カイポケ連携　ご確認のお願い（2026-08-23）</div>
+
+  <section>
+    <h2>1. 現状の整理</h2>
+    <h3>(a) らく助側</h3>
+    <p>全ての訪問を一律 <b>「精神基本療養費Ⅰ・正看」</b> としてカイポケへ出力しています。<br>患者様の区分（精神科／一般）や、担当スタッフの資格（看護師／准看護師）は見ていません。</p>
+    <h3>(b) カイポケ側の登録の仕組み</h3>
+    <p>カイポケでは「サービス内容」は直接入力せず、次の3つの選択から自動で決まります。</p>
+    <div class="flow">
+      <span class="box">サービス区分<br><small>精神科訪問看護 ／ 訪問看護</small></span><span class="arrow">×</span>
+      <span class="box">基本療養費<br><small>Ⅰ</small></span><span class="arrow">×</span>
+      <span class="box">職員資格<br><small>看護師等 ／ 准看護師</small></span><span class="arrow">＝</span>
+      <span class="box"><b>サービス内容</b><br><small>例: 精神基本療養費Ⅰ・准看</small></span>
+    </div>
+    <p class="note">8月の登録データ（518件）を確認したところ、515件がこの規則どおりでした。例外3件は入力違いの可能性があります（別途一覧をお渡しします）。</p>
+  </section>
+
+  <section>
+    <h2>2. 変更点と影響</h2>
+    <p>一律出力をやめ、カイポケと同じ規則で判定するため、<b>らく助のマスタに2つの情報が必要</b>になります。</p>
+    <table>
+      <tr><th style="width:28%">どこに</th><th>何を</th><th style="width:30%">現状</th></tr>
+      <tr><td>患者マスタ</td><td><b>訪問看護の区分</b>（精神科 ／ 一般）</td><td><span class="tag warn">未設定</span> 新設。既定は精神科</td></tr>
+      <tr><td>スタッフマスタ</td><td><b>資格</b>（看護師 ／ 准看護師）</td><td><span class="tag ok">項目あり</span> 全員分の入力確認が必要</td></tr>
+    </table>
+    <p class="note">患者様は「一般」の方だけ設定すれば済みます（現在は2名）。スタッフは資格が空欄の方がいないかをご確認ください。</p>
+  </section>
+
+  <section>
+    <h2>3. 自動登録の分岐</h2>
+    <div class="rule">サービス内容 ＝ 患者様の区分 × 基本療養費Ⅰ × 担当スタッフ（1人目）の資格</div>
+    <table>
+      <tr><th>患者様の区分</th><th>担当の資格</th><th>カイポケへの登録</th></tr>
+      <tr><td>精神科</td><td>看護師</td><td>精神基本療養費Ⅰ・正看</td></tr>
+      <tr><td>精神科</td><td>准看護師</td><td>精神基本療養費Ⅰ・准看</td></tr>
+      <tr><td>一般</td><td>看護師</td><td>基本療養費Ⅰ・正看</td></tr>
+      <tr><td>一般</td><td>准看護師</td><td>基本療養費Ⅰ・准看</td></tr>
+    </table>
+    <p class="note">2名で訪問する場合は1人目の資格で決まります（カイポケの現状と同じ）。突き合わせでも同じ規則を使うため、正看／准看の違いによる「差分あり」表示が出なくなります。</p>
+  </section>
+
+  <section class="ask">
+    <h2>4. ご確認事項</h2>
+    <ul>
+      <li><b>(a) この対応は必要でしょうか？</b>准看護師の方や一般区分の患者様の訪問を、らく助からカイポケへ正しく登録するために必要になります。</li>
+      <li><b>(b) 患者マスタ・スタッフマスタに上記の情報を持たせて運用する形で問題ありませんか？</b>設定は らく助の各マスタ画面から行えるようにします。</li>
+    </ul>
+  </section>
+</main>
+</html>
