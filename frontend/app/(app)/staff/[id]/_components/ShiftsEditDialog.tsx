@@ -41,6 +41,10 @@ interface ShiftsEditDialogProps {
   onOpenChange: (next: boolean) => void;
 }
 
+/** 出勤ON時の既定勤務時間 (PO 要望 2026-08-22: 9:00〜18:00)。 */
+export const DEFAULT_SHIFT_START = '09:00';
+export const DEFAULT_SHIFT_END = '18:00';
+
 const FULL_WEEKDAY_LABELS = [
   '月曜日',
   '火曜日',
@@ -89,6 +93,22 @@ export function ShiftsEditDialog({
     }
   }, [open, initialShifts]);
 
+  /** 月〜金 / 月〜土 を標準時間(09:00-18:00)で一括 ON。既に時刻が入っている日は保持。 */
+  const applyPreset = (lastWeekday: 4 | 5) => {
+    setRows((prev) =>
+      prev.map((row) =>
+        row.weekday <= lastWeekday
+          ? {
+              ...row,
+              is_on: true,
+              start_time: row.start_time ?? DEFAULT_SHIFT_START,
+              end_time: row.end_time ?? DEFAULT_SHIFT_END,
+            }
+          : row,
+      ),
+    );
+  };
+
   const updateRow = (idx: number, patch: Partial<StaffShiftItem>) => {
     setRows((prev) => {
       const next = [...prev];
@@ -100,10 +120,11 @@ export function ShiftsEditDialog({
         merged.start_time = null;
         merged.end_time = null;
       }
-      // When toggled on, default to a sensible 09:00-17:00 if blank.
+      // When toggled on, default to the standard working hours if blank
+      // (09:00-18:00 — PO 要望 2026-08-22: 新規スタッフ登録時の手間削減).
       if (patch.is_on === true) {
-        merged.start_time = merged.start_time ?? '09:00';
-        merged.end_time = merged.end_time ?? '17:00';
+        merged.start_time = merged.start_time ?? DEFAULT_SHIFT_START;
+        merged.end_time = merged.end_time ?? DEFAULT_SHIFT_END;
       }
       next[idx] = merged;
       return next;
@@ -159,6 +180,29 @@ export function ShiftsEditDialog({
               <AlertDescription>{formError}</AlertDescription>
             </Alert>
           )}
+
+          <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
+            <span>一括設定:</span>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => applyPreset(4)}
+              data-testid="shifts-preset-weekdays"
+            >
+              月〜金 {DEFAULT_SHIFT_START}〜{DEFAULT_SHIFT_END}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => applyPreset(5)}
+              data-testid="shifts-preset-mon-sat"
+            >
+              月〜土 {DEFAULT_SHIFT_START}〜{DEFAULT_SHIFT_END}
+            </Button>
+            <span className="text-text-muted">（時刻は後から個別に変更できます）</span>
+          </div>
 
           <table className="w-full text-sm">
             <thead className="border-b border-border-default text-left text-text-secondary">
