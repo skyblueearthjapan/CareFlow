@@ -707,7 +707,11 @@ export function StaffTimelineView({
               borderColor: 'var(--border-default)',
             }}
           >
-            <div />
+            <div
+              className="sticky left-0 z-[5]"
+              style={{ background: 'var(--bg-base)' }}
+              aria-hidden="true"
+            />
             {Array.from({ length: HOUR_COUNT }, (_, i) => (
               <div
                 key={i}
@@ -731,8 +735,12 @@ export function StaffTimelineView({
               data-testid="tl-lane-fixed"
             >
               <div
-                className="border-r px-2 py-1.5 text-sm font-bold"
-                style={{ borderColor: 'var(--border-default)', color: 'var(--text-secondary)' }}
+                className="sticky left-0 z-[5] border-r px-2 py-1.5 text-sm font-bold"
+                style={{
+                  borderColor: 'var(--border-default)',
+                  color: 'var(--text-secondary)',
+                  background: 'var(--sched-neutral-bg)',
+                }}
               >
                 全員（固定）
               </div>
@@ -780,8 +788,13 @@ export function StaffTimelineView({
                 data-testid={`tl-lane-${row.staffId}`}
               >
                 <div
-                  className="border-r px-2 py-1.5 text-sm font-bold"
-                  style={{ borderColor: 'var(--border-default)', color: 'var(--text-primary)' }}
+                  // 横スクロール時も氏名列を固定 (PO 指摘 2026-08-22)。
+                  className="sticky left-0 z-[5] border-r px-2 py-1.5 text-sm font-bold"
+                  style={{
+                    borderColor: 'var(--border-default)',
+                    color: 'var(--text-primary)',
+                    background: 'var(--bg-base)',
+                  }}
                 >
                   {row.name}
                   <small
