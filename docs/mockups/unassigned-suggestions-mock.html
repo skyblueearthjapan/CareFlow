@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>担当なしの投入提案 試案</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --brand:#e15a7f; --brand-light:#ffd6e0; --brand-50:#fff5f8; --leaf:#3f9d5a; --leaf-bg:#eaf7ed; --upd:#c97a12; --upd-bg:#fdf3e2; --del:#2f7fd1; --del-bg:#e8f1fb;
+    --cream:#faf7f2; --panel:#fff; --line:#e5e7eb; --line-soft:#f1ece6; --ink:#1f2937; --ink2:#5f5a55; --ink3:#8f877f; --m-bg:#edf4fa; --m-bar:#6d9ec9; --f-bg:#fbeff2; --f-bar:#d48ba0;
+    --sans:"Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic UI","Meiryo",system-ui,sans-serif; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --cream:#1c1a19; --panel:#262321; --line:#3a3632; --line-soft:#302c29; --ink:#f1ece6; --ink2:#c6bdb3; --brand-50:#3a242b; --brand-light:#5a3140; --leaf-bg:#243a2b; --upd-bg:#3d2e16; --del-bg:#1d2d40; --m-bg:#233040; --f-bg:#3a2a30; } }
+  :root[data-theme="dark"] { --cream:#1c1a19; --panel:#262321; --line:#3a3632; --line-soft:#302c29; --ink:#f1ece6; --ink2:#c6bdb3; --brand-50:#3a242b; --brand-light:#5a3140; --leaf-bg:#243a2b; --upd-bg:#3d2e16; --del-bg:#1d2d40; --m-bg:#233040; --f-bg:#3a2a30; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--cream); color:var(--ink); font-family:var(--sans); font-size:14px; line-height:1.5; }
+  button { font-family:inherit; cursor:pointer; border:1px solid var(--line); background:var(--panel); color:inherit; border-radius:8px; padding:5px 11px; font-size:13px; }
+  button:hover { background:var(--line-soft); }
+  button.primary { background:var(--brand); border-color:var(--brand); color:#fff; font-weight:700; }
+  button.ghost { border:none; background:none; color:var(--ink3); padding:3px 6px; }
+  .mast { max-width:1100px; margin:0 auto; padding:24px 20px 8px; }
+  .mast h1 { font-size:20px; margin:0 0 4px; } .mast h1 em { font-style:normal; color:var(--brand); }
+  .mast p { margin:0; color:var(--ink2); font-size:13px; max-width:80ch; }
+  .ctl { max-width:1100px; margin:0 auto; padding:0 20px 12px; display:flex; gap:8px; flex-wrap:wrap; }
+  .ctl button.on { background:var(--ink); color:var(--cream); border-color:var(--ink); }
+  .frame { max-width:1100px; margin:0 auto 20px; padding:0 20px; }
+  .app { background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; box-shadow:0 8px 28px rgba(31,41,55,.08); position:relative; }
+  table { width:100%; border-collapse:separate; border-spacing:0; table-layout:fixed; }
+  th, td { border-bottom:1px solid var(--line); border-right:1px solid var(--line-soft); vertical-align:top; padding:6px 8px; font-size:13px; }
+  th { background:var(--line-soft); text-align:left; }
+  td.staff { width:150px; font-weight:700; } td.staff small { display:block; font-weight:500; color:var(--ink3); font-size:11px; }
+  tr.none td { background:var(--brand-50); } tr.none td.staff { color:var(--ink3); font-style:italic; }
+  .course { border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:5px 8px; margin-bottom:6px; }
+  .course .h { display:flex; align-items:center; gap:6px; font-weight:700; font-size:13px; }
+  .course .h .grip { color:var(--ink3); font-weight:400; }
+  .badge { margin-left:auto; font-size:11px; font-weight:700; padding:1px 8px; border-radius:999px; border:1px solid var(--leaf); color:var(--leaf); background:var(--leaf-bg); cursor:pointer; }
+  .badge.zero { border-color:var(--upd); color:var(--upd); background:var(--upd-bg); }
+  .badge.calc { border-color:var(--line); color:var(--ink3); background:var(--panel); }
+  .v { display:flex; gap:6px; font-size:12px; padding:2px 4px; border-radius:4px; margin-top:3px; cursor:pointer; }
+  .v .t { color:var(--ink3); width:36px; } .v.m { background:var(--m-bg); border-left:2px solid var(--m-bar); } .v.f { background:var(--f-bg); border-left:2px solid var(--f-bar); }
+  .v.sel { outline:2px solid var(--brand); }
+  .toolbar { display:flex; gap:8px; align-items:center; padding:8px 12px; border-bottom:1px solid var(--line); font-size:13px; }
+  .toolbar .sp { flex:1; }
+  /* popover */
+  .pop { position:absolute; z-index:10; background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:0 14px 36px rgba(31,41,55,.18); padding:12px 14px; width:420px; }
+  .pop h4 { margin:0 0 2px; font-size:14px; } .pop .sub { color:var(--ink3); font-size:12px; margin-bottom:8px; }
+  .pop .x { position:absolute; right:8px; top:8px; }
+  .cand { display:flex; align-items:center; gap:10px; border:1px solid var(--line); border-radius:10px; padding:7px 10px; margin-bottom:6px; }
+  .cand .g { font-weight:900; width:18px; font-size:16px; } .cand .g.ok { color:var(--leaf); } .cand .g.warn { color:var(--upd); } .cand .g.ng { color:var(--del); }
+  .cand .nm { font-weight:700; } .cand .why { color:var(--ink3); font-size:12px; } .cand .act { margin-left:auto; }
+  .cand.dim { opacity:.6; }
+  .pop .more { color:var(--ink3); font-size:12px; cursor:pointer; margin:4px 0; }
+  .pop .foot { display:flex; gap:8px; margin-top:8px; align-items:center; } .pop .foot .sp { flex:1; }
+  .sec { border-top:1px dashed var(--line); margin-top:8px; padding-top:8px; }
+  .sec h5 { margin:0 0 4px; font-size:12px; color:var(--ink2); }
+  .notes { max-width:1100px; margin:0 auto 40px; padding:0 20px; display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:12px; }
+  .note { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:13px; line-height:1.6; }
+  .note h3 { margin:0 0 6px; font-size:13px; color:var(--brand); } .note ul { margin:0; padding-left:18px; }
+</style>
+<div class="mast">
+  <h1>「担当なし」からの<em>投入提案</em> 試案</h1>
+  <p>急休などで「担当なし」に戻った予定を、保留プールと同じ感覚で戻す。コース帯の <b>◎ N名 引受可</b> を押すと「誰に当てられるか」、訪問（患者1人）を押すとその1件の候補が出る。</p>
+</div>
+<div class="ctl"><button data-s="idle" class="on">提案前</button><button data-s="badge">「提案を見る」後（バッジ）</button><button data-s="course">コース帯をクリック</button><button data-s="visit">患者1人をクリック</button><button data-s="none">丸ごと可の人がいない</button></div>
+
+<div class="frame"><div class="app" id="app">
+  <div class="toolbar"><span>職員スケジュール — 8/24(月)</span><span class="sp"></span><button id="btn-see">◎ 提案を見る</button><span style="font-size:11px;color:var(--ink3)">（担当なしのコースについて引受可能な人を調べます・約5秒）</span></div>
+  <table>
+    <thead><tr><th style="width:150px">スタッフ</th><th>月 8/24</th><th>火 8/25</th></tr></thead>
+    <tbody>
+      <tr><td class="staff">川名<small>S001・稲毛</small></td><td><div class="course"><div class="h"><span class="grip">⠿</span>稲毛A</div><div class="v f"><span class="t">09:00</span>佐々木 様</div><div class="v m"><span class="t">10:30</span>中村 様</div></div></td><td></td></tr>
+      <tr><td class="staff">髙梨<small>S007・稲毛</small></td><td><div class="course"><div class="h"><span class="grip">⠿</span>稲毛B</div><div class="v m"><span class="t">09:30</span>渡辺 様</div><div class="v f"><span class="t">15:00</span>伊藤 様</div></div></td><td></td></tr>
+      <tr><td class="staff">本名<small>S005・稲毛</small></td><td style="background:repeating-linear-gradient(135deg,transparent 0 6px,var(--line-soft) 6px 7px)"><span style="font-size:11px;color:var(--ink3)">休み</span></td><td></td></tr>
+      <tr class="none"><td class="staff">（担当なし）<small>戻し先・置き場</small></td><td>
+        <div class="course" id="courseC"><div class="h"><span class="grip">⠿</span>稲毛C <span style="font-weight:500;color:var(--ink3)">6件</span><span class="badge calc" id="badgeC">提案を見る</span></div>
+          <div class="v f" data-v="植田"><span class="t">09:30</span>植田 様</div><div class="v m"><span class="t">11:30</span>井川 様</div><div class="v f"><span class="t">13:30</span>小川 様</div><div class="v m"><span class="t">15:00</span>田中 様</div><div class="v m"><span class="t">16:00</span>加藤 様</div><div class="v m"><span class="t">17:00</span>並木 様</div></div>
+        <div class="course"><div class="h"><span class="grip">⠿</span>臨 <span style="font-weight:500;color:var(--ink3)">1件</span><span class="badge calc" id="badgeT">提案を見る</span></div><div class="v m"><span class="t">13:00</span>田村 様</div></div>
+      </td><td></td></tr>
+    </tbody>
+  </table>
+
+  <!-- コース提案 -->
+  <div class="pop" id="popCourse" hidden style="left:380px;top:250px">
+    <button class="ghost x" data-close>✕</button>
+    <h4>稲毛C を誰に？</h4><div class="sub">8/24(月)・6件・09:30〜17:35・本名さんの休みで担当なし</div>
+    <div id="candList">
+      <div class="cand"><span class="g ok">◎</span><div><div class="nm">髙梨 桂子</div><div class="why">空き・同拠点・馴染み 3名（植田様・小川様・加藤様）</div></div><button class="primary act">このコースを割り当てる</button></div>
+      <div class="cand"><span class="g ok">◎</span><div><div class="nm">熊澤 妙子</div><div class="why">空き・他拠点（都賀）</div></div><button class="primary act">このコースを割り当てる</button></div>
+      <div class="cand dim"><span class="g warn">△</span><div><div class="nm">宇田川 優莉</div><div class="why">13:30 が重なる（1件）</div></div><span class="act" style="font-size:12px;color:var(--ink3)">1件ずつなら可</span></div>
+      <div class="more">× 休み・NG・資格不可 3名を表示 ▾</div>
+    </div>
+    <div class="foot"><small style="color:var(--ink3)">割り当ては今週だけ（型は変わりません）。「戻る」で復元できます</small><span class="sp"></span><button>1件ずつ分けて入れる</button></div>
+  </div>
+
+  <!-- 患者1人の提案 (VisitActionMenu の中) -->
+  <div class="pop" id="popVisit" hidden style="left:380px;top:300px;width:360px">
+    <button class="ghost x" data-close>✕</button>
+    <h4>植田 弥生 様 09:30〜10:05</h4><div class="sub">8/24(月)・稲毛C・担当なし</div>
+    <div class="sec" style="border-top:none;margin-top:0;padding-top:0"><h5>提案（この1件を入れられる人）</h5>
+      <div class="cand"><span class="g ok">◎</span><div><div class="nm">髙梨 桂子</div><div class="why">空き・前回担当</div></div><button class="primary act">割り当てる</button></div>
+      <div class="cand"><span class="g ok">◎</span><div><div class="nm">宇田川 優莉</div><div class="why">空き</div></div><button class="primary act">割り当てる</button></div>
+      <div class="cand dim"><span class="g warn">△</span><div><div class="nm">川名 千恵</div><div class="why">09:00〜 佐々木様 と移動時間が足りない</div></div></div>
+    </div>
+    <div class="sec"><h5>その他</h5><div style="display:flex;gap:6px;flex-wrap:wrap"><button>担当変更…</button><button>時刻変更…</button><button>曜日移動…</button><button>今週だけ取消</button></div></div>
+  </div>
+</div></div>
+
+<div class="notes">
+  <div class="note"><h3>流れ</h3><ul><li>「提案を見る」（または帯の「提案を見る」）→ 担当なしの各コースに <b>◎ N名 引受可</b> バッジ</li><li>バッジ／帯クリック → コース提案: ◎（丸ごと可）は割当ボタン、△ は理由のみ、× は折りたたみ</li><li>◎ が 0 名なら「1件ずつ分けて入れる」へ誘導 → 訪問クリックで患者1人の提案</li></ul></div>
+  <div class="note"><h3>保留プールとの対応</h3><ul><li>プール「効果を表示」＝「提案を見る」（on-demand・自動では回さない）</li><li>プールは「空き時刻」を探す／ここは「時刻固定で人」を探す（急休の逆操作）</li><li>提案の判定は急休と同じ単一ソース（休み・NG・性別・新人・拠点・イベント・時間重なり（同住所免除）・同行・馴染み）</li></ul></div>
+  <div class="note"><h3>実行</h3><ul><li>コース丸ごと＝訪問ごとに付替（同一操作・戻る1回）。NG/性別は確認→続行</li><li>割当後は提案を再計算（他コースの候補が変わるため）</li><li>すべて今週だけ・型は不変</li></ul></div>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+function state(s){
+  document.querySelectorAll('.ctl button').forEach(b=>b.classList.toggle('on',b.dataset.s===s));
+  const bc=$('#badgeC'), bt=$('#badgeT');
+  if(s==='idle'){ bc.className='badge calc'; bc.textContent='提案を見る'; bt.className='badge calc'; bt.textContent='提案を見る'; }
+  else { bc.className='badge'; bc.textContent='◎ 2名 引受可'; bt.className='badge'; bt.textContent='◎ 4名 引受可'; }
+  if(s==='none'){ bc.className='badge zero'; bc.textContent='◎ 0名（1件ずつ）'; }
+  $('#popCourse').hidden = !(s==='course'||s==='none');
+  $('#popVisit').hidden = s!=='visit';
+  document.querySelectorAll('.v').forEach(v=>v.classList.toggle('sel', s==='visit' && v.dataset.v==='植田'));
+  if(s==='none'){ $('#candList').innerHTML='<div class="cand dim"><span class="g warn">△</span><div><div class="nm">宇田川 優莉</div><div class="why">13:30 が重なる（1件）</div></div></div><div class="cand dim"><span class="g warn">△</span><div><div class="nm">髙梨 桂子</div><div class="why">09:30・15:00 が重なる（2件）</div></div></div><p style="font-size:12px;color:var(--upd);margin:6px 0 0">コースを丸ごと引き受けられる人はいません。「1件ずつ分けて入れる」から患者ごとに入れてください。</p>'; }
+}
+document.querySelectorAll('.ctl button').forEach(b=>b.onclick=()=>state(b.dataset.s));
+$('#btn-see').onclick=()=>state('badge'); $('#badgeC').onclick=()=>state('course'); $('#courseC .h').onclick=e=>{ if(e.target.id!=='badgeC') state('course'); };
+document.querySelectorAll('[data-v]').forEach(v=>v.onclick=()=>state('visit'));
+document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>state('badge'));
+state('idle');
+</script>
+</html>
