@@ -175,6 +175,7 @@ import {
 } from './courseGrid';
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
 import { StaffWeekBoard } from './StaffWeekBoard';
+import { compareByStaffCode } from '@/lib/kana-sort';
 import { type BoardDragState } from './courseDnd';
 // ─── 週空間 Phase E「今週の運転席」(docs/plans/week-cockpit-design.md §3) ───
 // 部品は FE-A/FE-B が作成済み。ここ (FE-C) は結線だけを行う。
@@ -4039,8 +4040,10 @@ export function CourseDayTablePanel({
   /** タイムラインの行 (在籍スタッフ。「（担当なし）」は部品側が足す)。 */
   const staffTimelineRows = useMemo<StaffTimelineRow[]>(
     () =>
-      allStaff
+      [...allStaff]
         .filter((s) => s.status === 'active')
+        // スタッフコード順 (PO 要望 2026-08-23)。リスト盤面と同じ並び。
+        .sort(compareByStaffCode)
         .map((s) => ({
           staffId: s.id,
           name: s.name,

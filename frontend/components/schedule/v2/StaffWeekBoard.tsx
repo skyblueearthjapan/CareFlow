@@ -26,6 +26,7 @@ import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { CockpitEventRead } from '@/lib/schemas/v2/cockpit';
 
+import { compareByStaffCode } from '@/lib/kana-sort';
 import { genderPalette } from '@/lib/scheduling/timeline';
 
 import { getStaffEventsForWeekday } from './courseGrid';
@@ -265,16 +266,17 @@ export function StaffWeekBoard({
     // コース/訪問の「戻し先」(担当解除ドロップ) として機能させる。
     if (alwaysShowUnassignedRow) rows.add(UNASSIGNED_KEY);
 
-    // 並び: 拠点名 → スタッフ名。担当なしは末尾。
+    // 並び: スタッフコード順 (PO 要望 2026-08-23・旧: 拠点名 → 氏名)。担当なしは末尾。
+    // 行の並びは固定で、タイムラインの「入れ替え」は予定だけが行き来する。
     const sorted = Array.from(rows).sort((a, b) => {
       if (a === UNASSIGNED_KEY) return 1;
       if (b === UNASSIGNED_KEY) return -1;
       const sa = staffMap.get(a);
       const sb = staffMap.get(b);
-      const oa = sa ? (officeNameById.get(sa.primary_office_id ?? '') ?? '') : '';
-      const ob = sb ? (officeNameById.get(sb.primary_office_id ?? '') ?? '') : '';
-      if (oa !== ob) return oa.localeCompare(ob, 'ja');
-      return (sa?.name ?? '').localeCompare(sb?.name ?? '', 'ja');
+      return compareByStaffCode(
+        { code: sa?.code, name: sa?.name },
+        { code: sb?.code, name: sb?.name },
+      );
     });
     return { cellMap: cells, rowKeys: sorted };
   }, [

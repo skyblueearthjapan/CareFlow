@@ -29,3 +29,24 @@ export function compareByKana(a: KanaSortable, b: KanaSortable): number {
 function compareCode(a: KanaSortable, b: KanaSortable): number {
   return (a.code ?? '').localeCompare(b.code ?? '', 'ja');
 }
+
+/**
+ * スタッフコード順 (職員スケジュールの既定の並び・PO 要望 2026-08-23)。
+ *   - コードは "S007" のような英字+数字を想定。数値部分は数値として比較
+ *     (S2 < S10) し、英字部分は辞書順。
+ *   - コード未設定は末尾、同順位は氏名 (ja) で安定化。
+ */
+export interface CodeSortable {
+  code?: string | null;
+  name?: string | null;
+}
+
+export function compareByStaffCode(a: CodeSortable, b: CodeSortable): number {
+  const ac = (a.code ?? '').trim();
+  const bc = (b.code ?? '').trim();
+  if (!ac && !bc) return (a.name ?? '').localeCompare(b.name ?? '', 'ja');
+  if (!ac) return 1;
+  if (!bc) return -1;
+  const c = ac.localeCompare(bc, 'ja', { numeric: true, sensitivity: 'base' });
+  return c !== 0 ? c : (a.name ?? '').localeCompare(b.name ?? '', 'ja');
+}

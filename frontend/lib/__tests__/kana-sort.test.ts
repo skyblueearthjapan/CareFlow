@@ -34,3 +34,19 @@ describe('compareByKana', () => {
     expect(sorted.map((r) => r.code)).toEqual(['C1', 'C2', 'Z0', 'Z1']);
   });
 });
+
+describe('compareByStaffCode (職員スケジュールの既定並び)', () => {
+  it('コード順・数値は自然順 (S2 < S10)・コード無しは末尾・同順位は氏名', async () => {
+    const { compareByStaffCode } = await import('../kana-sort');
+    const rows = [
+      { code: 'S010', name: 'い' },
+      { code: null, name: 'う' },
+      { code: 'S2', name: 'え' },
+      { code: 'S001', name: 'お' },
+      { code: '', name: 'あ' },
+      { code: 'S2', name: 'あ' },
+    ];
+    const out = [...rows].sort(compareByStaffCode).map((r) => `${r.code || '-'}:${r.name}`);
+    expect(out).toEqual(['S001:お', 'S2:あ', 'S2:え', 'S010:い', '-:あ', '-:う']);
+  });
+});
