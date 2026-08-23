@@ -462,12 +462,14 @@ describe('SyncBar — ⇩ カイポケから取り込む', () => {
 
   it('同期確認がまだ (phase=idle) なら開いた時に自動で始める', async () => {
     unsentMutateAsync.mockResolvedValue({ ...EMPTY_SUMMARY, snapshot: null, sheet_id: null });
-    renderBar();
+    const { refresh } = renderBar();
     await openInPanel();
     expect(reconcileStub.runFetch).toHaveBeenCalled();
-    expect(screen.getByTestId('sync-in-empty')).toHaveTextContent(
-      'らく助がカイポケを確認しています',
-    );
+    // 作業中は取り込むパネルにも らく助の演出 + 進捗チップを出す (PO要望 2026-08-23)
+    reconcileStub.phase = 'events';
+    refresh();
+    expect(screen.getByTestId('sync-working')).toBeInTheDocument();
+    expect(screen.getByTestId('sync-progress')).toBeInTheDocument();
   });
 
   it('同期確認済みで差分ゼロなら「変わっている予定はありません」', async () => {

@@ -701,6 +701,27 @@ export function SyncBar({
     }
   };
 
+  /** らく助の作業中演出 (同期確認/取り込む/送る の各パネル共通)。 */
+  const workingBlock = running ? (
+    <div className="mt-2 space-y-2" data-testid="sync-working">
+      <RakusukeWorking
+        message={workingLabel}
+        sub="約2〜3分。その間も盤面は見られます"
+        pose="calendar"
+      />
+      <div className="flex flex-wrap gap-1.5" data-testid="sync-progress">
+        {progressSteps(rec.phase, rec.busyKey).map((s) => (
+          <span
+            key={s.label}
+            className={cn('rounded-full border px-2.5 py-0.5 text-[12px]', STEP_CLS[s.state])}
+          >
+            {s.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  ) : null;
+
   const panelTitleCls = 'flex flex-wrap items-center gap-2 text-[15px] font-bold text-text-primary';
   const closeButton = (
     <Button
@@ -840,11 +861,13 @@ export function SyncBar({
             {closeButton}
           </h3>
 
-          {rec.diffs.length === 0 ? (
+          {running && rec.diffs.length === 0 ? (
+            workingBlock
+          ) : rec.diffs.length === 0 ? (
             <p className="mt-2 text-[13px] text-text-muted" data-testid="sync-in-empty">
               {rec.phase === 'ready'
                 ? 'カイポケ側で変わっている予定はありません。'
-                : 'らく助がカイポケを確認しています。少しお待ちください。'}
+                : '🔄 同期確認を実行すると、カイポケ側の変更がここに並びます。'}
             </p>
           ) : (
             <ul className="mt-2 space-y-1.5">
@@ -938,7 +961,9 @@ export function SyncBar({
             {closeButton}
           </h3>
 
-          {outRows.length === 0 ? (
+          {running && outRows.length === 0 ? (
+            workingBlock
+          ) : outRows.length === 0 ? (
             <p className="mt-2 text-[13px] text-text-muted" data-testid="sync-out-empty">
               {noSnapshot
                 ? 'カイポケ側の控えがまだありません。🔄 同期確認で最新を読み込んでください。'
@@ -1044,26 +1069,7 @@ export function SyncBar({
           </h3>
 
           {running ? (
-            <div className="mt-2 space-y-2" data-testid="sync-working">
-              <RakusukeWorking
-                message={workingLabel}
-                sub="約2〜3分。その間も盤面は見られます"
-                pose="calendar"
-              />
-              <div className="flex flex-wrap gap-1.5" data-testid="sync-progress">
-                {progressSteps(rec.phase, rec.busyKey).map((s) => (
-                  <span
-                    key={s.label}
-                    className={cn(
-                      'rounded-full border px-2.5 py-0.5 text-[12px]',
-                      STEP_CLS[s.state],
-                    )}
-                  >
-                    {s.label}
-                  </span>
-                ))}
-              </div>
-            </div>
+            workingBlock
           ) : (
             <>
               {/* サマリ 3 カード: どこへ進むかを 1 目で。 */}
