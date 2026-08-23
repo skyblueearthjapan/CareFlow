@@ -4571,6 +4571,38 @@ export function CourseDayTablePanel({
   // ─── 戻る/進む (Wave U-3) ───────────────────────────────────────────
   // 展開時は Row 2 の左、折りたたみ時はコンパクト行の右に置くため JSX を共有する
   // (2 箇所に実体を持つと data-testid が重複するため必ず片方だけを描画する)。
+  /** スケジュール診断 / スケジュール最適化 (Row 1 と コンパクト行で共用・同時に片方だけ描画)。 */
+  const healthAndOptimizeButtons = (
+    <>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        onClick={() => setScheduleHealthOpen(true)}
+        disabled={!canEdit}
+        data-testid="schedule-health-button"
+      >
+        <HeartPulse className="mr-1 h-4 w-4" aria-hidden />
+        スケジュール診断
+      </Button>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        onClick={() => {
+          setScopeOptimizeInitialScope(null); // ツールバーからは手動選択で開く.
+          setScopeOptimizeInitialOfficeId(null);
+          setScopeOptimizeOpen(true);
+        }}
+        disabled={!canEdit}
+        data-testid="scope-optimize-button"
+      >
+        <Route className="mr-1 h-4 w-4" aria-hidden />
+        スケジュール最適化
+      </Button>
+    </>
+  );
+
   const undoRedoButtons = (
     <div className="flex flex-wrap items-center gap-1.5">
       <Button
@@ -4696,32 +4728,9 @@ export function CourseDayTablePanel({
                   {/* W-4 (D-4): 旧「＋新規提案」を「＋新規患者登録」に置換。患者マスタの
                     登録フォームを再利用し、登録→希望登録→プール流入の入口を一本化する。 */}
                   <RegisterPatientButton disabled={!canEdit || isProcessing} />
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setScheduleHealthOpen(true)}
-                    disabled={!canEdit}
-                    data-testid="schedule-health-button"
-                  >
-                    <HeartPulse className="mr-1 h-4 w-4" aria-hidden />
-                    スケジュール診断
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setScopeOptimizeInitialScope(null); // ツールバーからは手動選択で開く.
-                      setScopeOptimizeInitialOfficeId(null);
-                      setScopeOptimizeOpen(true);
-                    }}
-                    disabled={!canEdit}
-                    data-testid="scope-optimize-button"
-                  >
-                    <Route className="mr-1 h-4 w-4" aria-hidden />
-                    スケジュール最適化
-                  </Button>
+                  {/* 診断/最適化: コンパクト表示中は右上の空きに常設するため、ここ(ツール)からは外す
+                      (PO 要望 2026-08-23)。 */}
+                  {!headerCollapsed ? healthAndOptimizeButtons : null}
 
                   {/* 主要ボタン群と「固定枠戻 / 全件保存」 の区切り線. */}
                   <span
@@ -5214,6 +5223,8 @@ export function CourseDayTablePanel({
                     data-testid="course-day-button-divider"
                   />
                   {undoRedoButtons}
+                  {/* 診断/最適化 は畳んでも右上に常設 (PO 要望 2026-08-23)。 */}
+                  {healthAndOptimizeButtons}
                   {onOfficeChange ? (
                     <label className="flex items-center gap-1 text-xs text-text-secondary">
                       拠点

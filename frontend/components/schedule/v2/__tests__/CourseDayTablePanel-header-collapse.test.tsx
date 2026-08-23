@@ -16,7 +16,7 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // ─── hoisted 変数 ──────────────────────────────────────────────────────────
@@ -424,6 +424,25 @@ describe('CourseDayTablePanel — 上部折りたたみ (コンパクト表示)'
     // 畳み状態そのものは維持 (永続値は true のまま).
     expect(useUIStore.getState().scheduleHeaderCollapsed).toBe(true);
     expect(screen.getByTestId('schedule-header-collapse-toggle')).toHaveTextContent('上部を表示');
+  });
+
+  it('HC-4b. 畳んでも 診断/最適化 は右上に常設され、「ツール」を開いても重複しない', () => {
+    renderPanel();
+    expect(screen.getAllByTestId('schedule-health-button')).toHaveLength(1);
+    collapse();
+    // 畳んだ 1 行に常設
+    expect(screen.getAllByTestId('schedule-health-button')).toHaveLength(1);
+    expect(screen.getAllByTestId('scope-optimize-button')).toHaveLength(1);
+    // ツールを一時展開しても Row1 側には出ない (= 重複しない)
+    fireEvent.click(screen.getByTestId('schedule-compact-tools-button'));
+    expect(screen.getByTestId('schedule-compact-tools-popover')).toBeInTheDocument();
+    expect(screen.getAllByTestId('schedule-health-button')).toHaveLength(1);
+    expect(screen.getAllByTestId('scope-optimize-button')).toHaveLength(1);
+    expect(
+      within(screen.getByTestId('schedule-compact-tools-popover')).queryByTestId(
+        'schedule-health-button',
+      ),
+    ).toBeNull();
   });
 
   it('HC-5. 「ツール」再押下で一時展開が閉じる', () => {
