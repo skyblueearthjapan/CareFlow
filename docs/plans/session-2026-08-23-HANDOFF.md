@@ -17,8 +17,8 @@
 4. 削除済み患者（近藤 菜穂・8/21 削除）の fixed-visits 404 参照を掃除。
 **完了済み**(レビュー2回・HIGH4/MED5 是正・BE 17+FE 13 テスト)。参考の検証コマンド: `python -m pytest tests/test_staff_off_week.py tests/test_op_log_u3.py tests/test_visit_cancel_week.py -q` / tsc / `pnpm vitest run components/schedule/v2` → コミット → デプロイ（migration 無しの見込み）。
 
-### Phase 2（未着手・設計から）
-「担当なし」行の患者/コースからの **投入提案**（保留プールと同じ「ここに空きがあります/この方はここに入れそう」）。担当なしのコースを上に上げる or 患者単位提案。既存 propose-slots / pool 提案エンジンの流用を前提に設計。
+### Phase 2「担当なし」からの投入提案 — **実装中（PO 承認 2026-08-23 夜・一気通貫指示）**
+設計 = `unassigned-suggestions-design.md` / モック = `docs/mockups/unassigned-suggestions-mock.html`。並行: BE 2-A(`POST /schedule/v2/assign-candidates`・build_candidates_for_visits に分離・whole_ok_staff_ids) / FE 2-B コース提案ポップオーバー+担当なし行バッジ+「提案を見る」+割当(runAssignQueue+useUpdateCourse) / 2-C VisitActionMenu 提案セクション / 2-D 候補ホバーで行ハイライト。中断時: `git status` で差分確認→executor(opus) に設計書を渡して続行(git/stash 禁止)→レビュー→テスト→コミット→デプロイ(migration 無し)。
 
 ---
 
