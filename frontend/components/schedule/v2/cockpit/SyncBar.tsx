@@ -1,18 +1,25 @@
 'use client';
 
 /**
- * SyncBar — 同期バー (週空間 Phase E・運転席)。
+ * SyncBar — カイポケ同期ストリップ (方向性A・docs/mockups/sync-strip-mock.html)。
  *
- * 盤面の上に常駐し、カイポケとのズレを 3 態で見せる:
- *   ✓同期済 (表示なし) / ●未送信 (らく助が進んでいる) / ⚠カイポケ側が違う (要突合)
+ * 普段は **1 行だけ**:
+ *   「カイポケ同期」+ 状態バッジ (✓カイポケと同じ / ⚠差分あり / ?未確認) +
+ *   件数チップ (カイポケから N・らく助から M・要確認 K) +
+ *   [⇩ カイポケから取り込む N] [⇧ カイポケへ送る M] [🔄 同期確認]
  *
- * 左 ●未送信 … `useUnsentSummary` (RPA なし・保存済み CSV との差分)
- *               ⇧1件送信 = 既存 apply の部分適用 (itemIds) / ⇧全件 = 2段クリック
- * 右 🔄突合   … `useKaipokeReconcile` (既存パネルのロジックを hook 化)
- *               ⇩1件 / ⇩全件 / ⇧上書き / ⇧上書き全件 / 👥マスタ突合
+ * ボタンを押した時だけ、その作業のパネルが直下に開く (同時に 1 つ):
+ *   ⇩取り込む … 🔄同期確認で見つかった「カイポケ側が違う」差分をカード行で並べる。
+ *                行を選ぶと「何から何へ」表 + 盤面ゴースト。未確認なら開いた時に自動開始。
+ *   ⇧送る     … ●未送信 (らく助で変えた分) をカード行で並べる。当日以前は非表示、
+ *                自動送信不可 (RPA 未対応) は薄く + 理由。
+ *   🔄同期確認 … 押すと実行 → らく助の作業中演出 → 完了後はサマリ 3 カード +
+ *                「要確認」(サービス内容のズレ / 資格) + 👥名簿の詳細。
  *
+ * ロジックは従来どおり:
+ *   ●未送信 = `useUnsentSummary` (RPA なし・保存済み CSV との差分)
+ *   🔄同期確認 = `useKaipokeReconcile` (イベント → 訪問 → 全曜日差分の直列)
  * 当日以前 (JST) は実績が付いている可能性があるため送信対象外 (BE も 422)。
- * 選択中の差分は `onSelectDiff` で親へ渡し、盤面がゴーストを描く。
  */
 import * as React from 'react';
 import { toast } from 'sonner';
@@ -44,8 +51,10 @@ import {
   unsentEventToMarker,
   unsentVisitKey,
   type CockpitMarker,
+  type CockpitMarkerSide,
 } from './reconcileMarkers';
-import { useKaipokeReconcile, type CockpitDiff } from './useKaipokeReconcile';
+import { SyncStripRow, type SyncRowTone } from './SyncStripRow';
+import { useKaipokeReconcile, type CockpitDiff, type ReconcilePhase } from './useKaipokeReconcile';
 import { cn } from '@/lib/utils';
 
 /** 全件ボタンの 2 段クリック猶予 (モックと同じ 3 秒)。 */
@@ -56,14 +65,45 @@ export function todayIsoJst(): string {
   return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date());
 }
 
-const KIND_DOT: Record<string, string> = { add: '🟣 新規', delete: '🔵 取消', update: '🟡 変更' };
+/** 開いているパネル (同時に 1 つ)。 */
+type PanelKey = 'in' | 'out' | 'check';
+
+type DiffAction = 'add' | 'update' | 'delete';
+
+const ACTION_TAG: Record<DiffAction, { label: string; tone: SyncRowTone }> = {
+  add: { label: '新規', tone: 'add' },
+  update: { label: '変更', tone: 'update' },
+  delete: { label: '取消', tone: 'delete' },
+};
+
+/** ⇩ 取り込む側の補足 (カイポケが正)。 */
+const IN_NOTE: Record<DiffAction, string> = {
+  add: 'カイポケにだけある',
+  update: 'カイポケ側で変わっている',
+  delete: 'カイポケで消えている',
+};
+
+/** ⇧ 送る側の補足 (らく助が正)。 */
+const OUT_NOTE: Record<DiffAction, string> = {
+  add: 'らく助にだけある',
+  update: 'らく助で変えました',
+  delete: 'らく助で取消しました',
+};
 
 /**
- * RPA 未対応の行に付ける注記 (S3 完了まで・kaipoke-service-content-design.md §3)。
+ * RPA 未対応の行に付ける理由 (S3 完了まで・kaipoke-service-content-design.md §3)。
  * 准看/一般のサービス内容は RPA が固定値で登録してしまうため送らない。
  * 判定そのものは BE (`rpa_unsupported`) が持ち、FE は表示だけ。
  */
-const RPA_UNSUPPORTED_NOTE = '（RPAが准看/一般の登録に未対応=カイポケで直接登録）';
+const RPA_UNSUPPORTED_NOTE =
+  '准看護師／一般の登録はRPAが未対応です。カイポケで直接登録してください';
+
+/** BE の差分 action → 表示上の 3 種別。 */
+function diffAction(action: string): DiffAction {
+  if (action === 'add') return 'add';
+  if (action === 'delete') return 'delete';
+  return 'update'; // edit / date_change
+}
 
 export interface SyncBarProps {
   /** 対象週の月曜 (YYYY-MM-DD)。 */
@@ -83,7 +123,7 @@ export interface SyncBarProps {
   onUnsentChange?: (keys: Set<string>) => void;
   /** 値が変わると未送信を数え直す (盤面を操作した直後など)。 */
   reloadKey?: number;
-  /** RPA が空いていれば自動で 1 回だけ突合を始める。 */
+  /** RPA が空いていれば自動で 1 回だけ同期確認を始める。 */
   autoStartReconcile?: boolean;
   className?: string;
 }
@@ -91,14 +131,18 @@ export interface SyncBarProps {
 interface UnsentRow {
   id: string;
   kind: 'visit' | 'event';
-  label: string;
+  action: DiffAction;
   dateIso: string | null;
+  /** 「久須見 様 14:00」など。 */
+  headline: string;
+  /** 「担当 熊澤 → 佐藤」など (無ければ空)。 */
+  change: string;
   marker: CockpitMarker | null;
   /** 盤面の予定と突き合わせるキー (● ドット用)。解決できないときは null。 */
   matchKey: string | null;
   /**
    * RPA がカイポケへ正しく登録できない行 (S3 完了まで・BE 判定)。
-   * true の間は選べない = 送信対象から外す。
+   * true の間は送信対象から外す。
    */
   rpaUnsupported: boolean;
 }
@@ -128,6 +172,76 @@ interface ServiceMismatchPair {
 /** ペアかどうかの判定に使う「サービス内容以外」の項目。 */
 const PAIR_SAME_FIELDS = ['end_time', 'staff1', 'staff2', 'business_type'] as const;
 
+/** 差分の片側の担当者名 (staff_id で引けなければ CSV の氏名)。 */
+function sideStaffName(
+  side: CockpitMarkerSide | undefined,
+  staffNameById?: Map<string, string>,
+): string {
+  if (!side) return '';
+  if (side.staff_id && staffNameById?.has(side.staff_id)) return staffNameById.get(side.staff_id)!;
+  return side.staff_name ?? '';
+}
+
+/** マーカー → 「誰が・何が・どう変わる」の 1 文 (カード行の中央)。 */
+function describeMarker(
+  m: CockpitMarker,
+  staffNameById?: Map<string, string>,
+): { headline: string; change: string } {
+  const anchor = m.after ?? m.before;
+  const start = anchor?.start ?? m.start ?? '';
+  const headline =
+    m.kind === 'visit'
+      ? `${m.patient_name ?? m.title} 様 ${start}`.trim()
+      : `${sideStaffName(anchor, staffNameById) || '（担当不明）'} ${start} ${m.title}`.trim();
+
+  const chg: string[] = [];
+  if (m.before && m.after) {
+    if (m.before.date !== m.after.date) {
+      chg.push(`日付 ${fmtMd(m.before.date)} → ${fmtMd(m.after.date)}`);
+    }
+    if (m.before.start !== m.after.start || m.before.end !== m.after.end) {
+      chg.push(`時刻 ${m.before.start}〜${m.before.end} → ${m.after.start}〜${m.after.end}`);
+    }
+    const b = sideStaffName(m.before, staffNameById);
+    const a = sideStaffName(m.after, staffNameById);
+    if (b !== a) chg.push(`担当 ${b || '—'} → ${a || '—'}`);
+    if ((m.before.course_label ?? '') !== (m.after.course_label ?? '')) {
+      chg.push(`サービス ${m.before.course_label || '—'} → ${m.after.course_label || '—'}`);
+    }
+  }
+  return { headline, change: chg.join('・') };
+}
+
+/** マーカーが載る日付 (after 優先 = 変わった後の置き場)。 */
+function markerDateIso(m: CockpitMarker): string | null {
+  return m.after?.date ?? m.before?.date ?? null;
+}
+
+type StepState = 'todo' | 'now' | 'done';
+
+/** 同期確認の進捗チップ (ログイン → イベント → 訪問 → 差分計算)。 */
+function progressSteps(
+  phase: ReconcilePhase,
+  busyKey: string | null,
+): { label: string; state: StepState }[] {
+  const started = phase !== 'idle';
+  const diffing = busyKey === '__in_diff__';
+  const ready = phase === 'ready';
+  const st = (now: boolean, done: boolean): StepState => (now ? 'now' : done ? 'done' : 'todo');
+  return [
+    { label: 'ログイン', state: st(false, started) },
+    { label: 'イベント', state: st(phase === 'events', phase === 'visits' || ready) },
+    { label: '訪問', state: st(phase === 'visits', ready) },
+    { label: '差分計算', state: st(diffing, ready && !diffing) },
+  ];
+}
+
+const STEP_CLS: Record<StepState, string> = {
+  todo: 'border-border-default text-text-muted',
+  now: 'border-brand-primary font-bold text-brand-primary',
+  done: 'border-success text-success',
+};
+
 export function SyncBar({
   weekStartIso,
   canEdit,
@@ -141,7 +255,7 @@ export function SyncBar({
 }: SyncBarProps) {
   const todayIso = todayIsoJst();
 
-  // ─── 左: ●未送信 ───
+  // ─── ⇧ 送る: ●未送信 ───
   const unsentMut = useUnsentSummary();
   const serviceOverrideMut = useVisitServiceOverride();
   const startApplyMut = useStartApply();
@@ -157,10 +271,13 @@ export function SyncBar({
    */
   const [sentKeys, setSentKeys] = React.useState<Set<string>>(new Set());
   const [unsentId, setUnsentId] = React.useState<string | null>(null);
-  const [activeSide, setActiveSide] = React.useState<'unsent' | 'in'>('unsent');
   const [busy, setBusy] = React.useState<string | null>(null);
   const [armedKey, setArmedKey] = React.useState<string | null>(null);
-  // 資格の「カイポケの職種を採用」(👥マスタ突合)。突合は ~1 分かかるので
+  /** 開いているパネル (押した時だけ・同時に 1 つ)。 */
+  const [openPanel, setOpenPanel] = React.useState<PanelKey | null>(null);
+  /** 👥名簿の詳細 (普段は畳んでおく)。 */
+  const [rosterOpen, setRosterOpen] = React.useState(false);
+  // 資格の「カイポケの職種を採用」(👥名簿の詳細)。突合は ~1 分かかるので
   // 採用済みは結果を取り直さず、FE 側で行を消す。
   const updateStaffMut = useUpdateStaff();
   const [adoptingStaffId, setAdoptingStaffId] = React.useState<string | null>(null);
@@ -177,7 +294,7 @@ export function SyncBar({
    * 入っていない** = 同じ行がもう一度未送信として返ってくる。ここで印を消すと
    * 送ったばかりの行が復活し、二重送信を誘う。
    *
-   * 印を落としてよいのは **🔄突合が終わったとき** だけ = カイポケの現況を
+   * 印を落としてよいのは **🔄同期確認が終わったとき** だけ = カイポケの現況を
    * 実際に見直した後なら、まだ残っている行は「本当にまだ送れていない」行。
    */
   const loadUnsent = React.useCallback(
@@ -218,13 +335,13 @@ export function SyncBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadKey]);
 
-  // ─── 右: 🔄突合 (突合が終わったら未送信も数え直す) ───
+  // ─── ⇩ 取り込む / 🔄 同期確認 (終わったら未送信も数え直す) ───
   const rec = useKaipokeReconcile({
     weekStartIso,
     canEdit,
     staffIdByName,
     autoStart: autoStartReconcile,
-    // 突合＝カイポケの現況を見直した後なので、ここでだけ送信済みの印を落とす。
+    // 同期確認＝カイポケの現況を見直した後なので、ここでだけ送信済みの印を落とす。
     onReady: () => void loadUnsent({ keepSent: false }),
   });
   const [inId, setInId] = React.useState<string | null>(null);
@@ -259,21 +376,21 @@ export function SyncBar({
       const who = itemField(it, 'user_name', side) || '（患者不明）';
       const staff = itemField(it, 'staff1', side);
       const startTime = itemField(it, 'start_time', side);
+      const marker = correctionItemToMarker(it, { weekStartIso, staffIdByName });
+      const desc = marker ? describeMarker(marker, staffNameById) : null;
       rows.push({
         id: it.id,
         kind: 'visit',
+        action: diffAction(it.action),
         dateIso,
         // 日付/時刻/患者名で盤面の訪問と突き合わせる。**側は action で決まる**
         // (delete は before / add は after) — after 固定だと delete 行の
         // 日付と時刻が空文字になり突合できない。
         matchKey: dateIso && startTime ? unsentVisitKey(dateIso, startTime, who) : null,
-        marker: correctionItemToMarker(it, { weekStartIso, staffIdByName }),
+        marker,
         rpaUnsupported: it.rpa_unsupported === true,
-        label:
-          `${KIND_DOT[it.action] ?? '🟡 変更'}｜${dateIso ? fmtMd(dateIso) : '日付不明'} 訪問｜` +
-          `${who}｜${staff} ${startTime}` +
-          `${dateIso != null && dateIso <= todayIso ? '（当日以前=送信対象外）' : ''}` +
-          `${it.rpa_unsupported === true ? RPA_UNSUPPORTED_NOTE : ''}`,
+        headline: `${who} 様 ${startTime}`.trim(),
+        change: desc?.change || (staff ? `担当 ${staff}` : ''),
       });
     }
     for (const ev of summary.events) {
@@ -281,20 +398,19 @@ export function SyncBar({
       rows.push({
         id: ev.id,
         kind: 'event',
+        action: ev.kind === 'add' ? 'add' : 'delete',
         dateIso: ev.date,
         matchKey: unsentEventKey(ev.id),
         marker: unsentEventToMarker(ev),
         // イベントはサービス内容を持たない = RPA 未対応ガードの対象外。
         rpaUnsupported: false,
-        label:
-          `${KIND_DOT[ev.kind] ?? '🟡 変更'}｜${fmtMd(ev.date)} イベント｜${ev.title}｜` +
-          `${ev.staff_name} ${ev.start_time}` +
-          `${ev.date <= todayIso ? '（当日以前=送信対象外）' : ''}`,
+        headline: `${ev.staff_name} ${ev.start_time} ${ev.title}`.trim(),
+        change: '',
       });
     }
     return rows;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [summary, sentKeys, weekStartIso, staffIdByName, todayIso]);
+  }, [summary, sentKeys, weekStartIso, staffIdByName, staffNameById]);
 
   // ─── サービス内容のズレ (delete + add のペアを 1 行に束ねる) ───
   const serviceMismatches = React.useMemo<ServiceMismatchPair[]>(() => {
@@ -376,7 +492,7 @@ export function SyncBar({
     }
   };
 
-  // ─── 資格のズレ / 未設定 (👥マスタ突合の結果から) ───
+  // ─── 資格のズレ / 未設定 (👥名簿の突合結果から) ───
   // `match` は出さない (一致は見ても仕方がない)。`unknown_staff` は氏名側の
   // 「カイポケのみ」で既に見えているので、ここでは二重に出さない。
   const qualificationMismatches = (rec.masterResult?.staffQualifications ?? []).filter(
@@ -426,19 +542,20 @@ export function SyncBar({
   const isSendable = (r: UnsentRow) =>
     !r.rpaUnsupported && (r.dateIso == null || r.dateIso > todayIso);
   const sendableRows = unsentRows.filter(isSendable);
-  // 件数の表示は BE の集計 (past_count / rpa_unsupported_count) を正とし、
-  // 送信済みの分だけ減らす。BE 側は両者を二重に数えないので単純な引き算でよい。
-  const pastCount = summary?.past_count ?? 0;
-  const rpaUnsupportedCount = summary?.rpa_unsupported_count ?? 0;
-  const sendableCount = Math.max(0, unsentRows.length - pastCount - rpaUnsupportedCount);
-  const selectedUnsent =
-    unsentRows.find((r) => r.id === unsentId) ?? sendableRows[0] ?? unsentRows[0] ?? null;
-  const selectedDiff: CockpitDiff | null =
-    rec.diffs.find((d) => d.id === inId) ?? rec.diffs[0] ?? null;
+  /** 当日以前は実績保護のため一覧に出さない (件数だけ注記する)。 */
+  const pastRows = unsentRows.filter((r) => r.dateIso != null && r.dateIso <= todayIso);
+  const outRows = unsentRows.filter((r) => r.dateIso == null || r.dateIso > todayIso);
+
+  const selectedUnsent = outRows.find((r) => r.id === unsentId) ?? null;
+  const selectedDiff: CockpitDiff | null = rec.diffs.find((d) => d.id === inId) ?? null;
 
   // ─── 選択中マーカーを親へ (盤面ゴースト・カードと必ず一致させる) ───
   const activeMarker =
-    activeSide === 'in' ? (selectedDiff?.marker ?? null) : (selectedUnsent?.marker ?? null);
+    openPanel === 'in'
+      ? (selectedDiff?.marker ?? null)
+      : openPanel === 'out'
+        ? (selectedUnsent?.marker ?? null)
+        : null;
   const onSelectDiffRef = React.useRef(onSelectDiff);
   onSelectDiffRef.current = onSelectDiff;
   React.useEffect(() => {
@@ -480,7 +597,7 @@ export function SyncBar({
       if (visitIds.length > 0) {
         if (!summary?.sheet_id) {
           throw new Error(
-            '送信用の差分シートがありません（🔄突合でカイポケ現況を取得してください）',
+            '送信用の差分シートがありません（🔄同期確認でカイポケ現況を取得してください）',
           );
         }
         await startApplyMut.mutateAsync({
@@ -529,7 +646,7 @@ export function SyncBar({
   };
 
   const fetching = rec.phase === 'events' || rec.phase === 'visits';
-  // busy = らく助が何かしている間。突合系も送信系もこの間は押させない。
+  // busy = らく助が何かしている間。同期確認系も送信系もこの間は押させない。
   const running = fetching || busy != null || rec.busyKey != null;
   const workingLabel =
     rec.phase === 'events'
@@ -544,8 +661,59 @@ export function SyncBar({
               ? 'らく助が未送信を数えています'
               : 'らく助がカイポケに入力しています';
 
-  const selectCls =
-    'min-w-0 max-w-[22rem] flex-1 rounded border border-border-default bg-bg-base px-1.5 py-1 text-[11px] disabled:opacity-50';
+  // ─── ストリップの状態バッジ・件数 ───
+  const inCount = rec.diffs.length;
+  const outCount = sendableRows.length;
+  const needsCheckCount =
+    serviceMismatches.length +
+    qualificationMismatches.length +
+    qualificationMissing.length +
+    qualificationAmbiguous.length;
+  const noSnapshot = summary != null && summary.snapshot == null;
+  const checkedAt = rec.fetchedAt
+    ? `${rec.fetchedAt.getHours()}:${String(rec.fetchedAt.getMinutes()).padStart(2, '0')}`
+    : null;
+  const statusText = running
+    ? 'らく助が確認中…'
+    : noSnapshot && rec.phase !== 'ready'
+      ? '? 未確認（カイポケ側の控えがありません）'
+      : inCount + outCount + needsCheckCount > 0
+        ? '⚠ 差分あり'
+        : '✓ カイポケと同じ';
+  const statusCls = running
+    ? 'bg-brand-primary-50 text-brand-primary-hover'
+    : noSnapshot && rec.phase !== 'ready'
+      ? 'bg-bg-muted text-text-secondary'
+      : inCount + outCount + needsCheckCount > 0
+        ? 'bg-warning-bg text-warning-strong'
+        : 'bg-success-bg text-success';
+
+  const stripBtnCls = 'h-8 gap-1.5 px-3 text-[13px] font-bold';
+  const actionsDisabled = !canEdit || running || rec.rpaRunning;
+
+  /** ストリップの 3 ボタン: 押した時だけパネルを開く (同時に 1 つ)。 */
+  const togglePanel = (key: PanelKey) => {
+    const next = openPanel === key ? null : key;
+    setOpenPanel(next);
+    // ⇩ は同期確認の結果を使う。まだなら開いた時に自動で始める。
+    if (next === 'in' && rec.phase === 'idle' && canEdit && !rec.rpaRunning && !running) {
+      void rec.runFetch();
+    }
+  };
+
+  const panelTitleCls = 'flex flex-wrap items-center gap-2 text-[15px] font-bold text-text-primary';
+  const closeButton = (
+    <Button
+      type="button"
+      size="sm"
+      variant="ghost"
+      className="ml-auto h-7 px-2 text-[12px] text-text-muted"
+      data-testid="sync-panel-close"
+      onClick={() => setOpenPanel(null)}
+    >
+      ✕ 閉じる
+    </Button>
+  );
 
   return (
     <section
@@ -553,441 +721,589 @@ export function SyncBar({
       data-testid="sync-bar"
       aria-label="カイポケとの同期"
     >
-      {running ? (
-        <div className="px-3 py-2" data-testid="sync-working">
-          <RakusukeWorking
-            message={workingLabel}
-            sub="約2〜3分。その間も盤面は見られます"
-            pose="calendar"
-          />
-        </div>
-      ) : null}
-
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2">
-        <span className="text-[12px] font-bold text-text-primary">同期</span>
-        <span className="text-[11px] text-text-muted" data-testid="sync-fetched-at">
-          {rec.fetchedAt
-            ? `最終突合 ${rec.fetchedAt.getHours()}:${String(rec.fetchedAt.getMinutes()).padStart(2, '0')}${rec.stale ? '（古い可能性）' : ''}`
-            : 'まだ突合していません'}
+      {/* ── ストリップ (常時 1 行) ── */}
+      <div
+        className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 px-3 py-2"
+        data-testid="sync-strip"
+      >
+        <span className="text-[13px] font-bold text-text-primary">カイポケ同期</span>
+        <span
+          className={cn(
+            'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[13px] font-bold',
+            statusCls,
+          )}
+          data-testid="sync-status"
+        >
+          {statusText}
+          {checkedAt ? (
+            <small className="font-normal text-text-muted">
+              最終確認 {checkedAt}
+              {rec.stale ? '（古い可能性）' : ''}
+            </small>
+          ) : null}
+        </span>
+        <span
+          className="flex flex-wrap items-center gap-2 text-[12px] text-text-secondary"
+          data-testid="sync-counts"
+        >
+          <span>
+            カイポケから{' '}
+            <b className="tnum rounded-full bg-brand-primary-50 px-1.5 text-brand-primary-hover">
+              {inCount}
+            </b>
+          </span>
+          <span>
+            らく助から{' '}
+            <b className="tnum rounded-full bg-info-bg px-1.5 text-info-strong">{outCount}</b>
+          </span>
+          <span>
+            要確認{' '}
+            <b className="tnum rounded-full bg-warning-bg px-1.5 text-warning-strong">
+              {needsCheckCount}
+            </b>
+          </span>
         </span>
 
-        {/* ── 左: ●未送信 ── */}
-        <div className="flex flex-wrap items-center gap-1" data-testid="sync-unsent">
-          <span className="text-[11px] font-bold text-info-strong">● 未送信（らく助で変えた）</span>
-          <span className="tnum text-[11px] text-text-muted" data-testid="sync-unsent-count">
-            {unsentRows.length > 0
-              ? `${unsentRows.length}件（送れる ${sendableCount}${pastCount > 0 ? `・当日以前 ${pastCount}` : ''}${rpaUnsupportedCount > 0 ? `・RPA未対応 ${rpaUnsupportedCount}` : ''}）`
-              : ''}
-          </span>
-          <select
-            className={selectCls}
-            disabled={unsentRows.length === 0}
-            value={selectedUnsent?.id ?? ''}
-            aria-label="未送信"
-            data-testid="sync-unsent-select"
-            onChange={(e) => {
-              setUnsentId(e.target.value || null);
-              setActiveSide('unsent');
-            }}
-          >
-            {unsentRows.length === 0 ? (
-              <option value="">なし（カイポケと同じ）</option>
-            ) : (
-              unsentRows.map((r) => (
-                <option key={r.id} value={r.id} disabled={!isSendable(r)}>
-                  {r.label}
-                </option>
-              ))
-            )}
-          </select>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-6 px-2 text-[11px]"
-            disabled={!canEdit || running || rec.rpaRunning || sendableRows.length === 0}
-            data-testid="sync-unsent-send"
-            onClick={() => {
-              const row =
-                selectedUnsent && isSendable(selectedUnsent) ? selectedUnsent : sendableRows[0];
-              if (row) void sendUnsent([row], row.id);
-            }}
-          >
-            ⇧ 1件送信
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant={armedKey === '__unsent_all__' ? 'default' : 'outline'}
-            className="h-6 px-2 text-[11px]"
-            disabled={!canEdit || running || rec.rpaRunning || sendableRows.length === 0}
-            data-testid="sync-unsent-send-all"
-            onClick={() =>
-              arm('__unsent_all__', () => void sendUnsent(sendableRows, '__unsent_all__'))
-            }
-          >
-            {armedKey === '__unsent_all__'
-              ? `${sendableRows.length}件すべて送信？もう一度押す`
-              : '⇧ 全件'}
-          </Button>
-        </div>
+        <span className="flex-1" />
 
-        {/* ── 右: 🔄突合 ── */}
-        <div className="flex flex-wrap items-center gap-1" data-testid="sync-inbound">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-6 px-2 text-[11px]"
-            disabled={!canEdit || running || rec.rpaRunning}
-            data-testid="sync-reconcile-run"
-            title={
-              rec.rpaRunning
-                ? 'カイポケ連携が実行中です（単一スロット）。完了後に実行してください'
-                : 'カイポケの当週データを取得して突き合わせます（2〜3分）'
-            }
-            onClick={() => void rec.runFetch()}
-          >
-            🔄 {rec.phase === 'idle' || rec.phase === 'error' ? '突合' : '再突合'}
-          </Button>
-          <span className="text-[11px] font-bold text-text-secondary">⇩ カイポケ側が違う</span>
-          <span className="tnum text-[11px] text-text-muted" data-testid="sync-in-count">
-            {rec.diffs.length > 0 ? `${rec.diffs.length}件` : ''}
-          </span>
-          <select
-            className={selectCls}
-            disabled={rec.diffs.length === 0}
-            value={selectedDiff?.id ?? ''}
-            aria-label="取込候補"
-            data-testid="sync-in-select"
-            onChange={(e) => {
-              setInId(e.target.value || null);
-              setActiveSide('in');
-            }}
-          >
-            {rec.diffs.length === 0 ? (
-              <option value="">差分なし（🔄突合で再確認）</option>
-            ) : (
-              rec.diffs.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {`${KIND_DOT[d.marker.action] ?? ''}｜${d.kind === 'visit' ? '訪問' : 'イベント'}｜${
-                    d.marker.patient_name ?? d.marker.title
-                  }`}
-                </option>
-              ))
-            )}
-          </select>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-6 px-2 text-[11px]"
-            disabled={!canEdit || running || rec.rpaRunning || !selectedDiff}
-            data-testid="sync-in-apply"
-            onClick={() => {
-              if (selectedDiff) void rec.applyDiff(selectedDiff);
-            }}
-          >
-            ⇩ 取り込む
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant={armedKey === '__in_all__' ? 'default' : 'outline'}
-            className="h-6 px-2 text-[11px]"
-            disabled={!canEdit || running || rec.rpaRunning || rec.diffs.length === 0}
-            data-testid="sync-in-apply-all"
-            title="差分をすべてらく助へ取り込む（カイポケが正）"
-            onClick={() => arm('__in_all__', () => void rec.applyAllDiffs())}
-          >
-            {armedKey === '__in_all__'
-              ? `${rec.diffs.length}件すべて取り込む？もう一度押す`
-              : '⇩ 全件'}
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-6 px-2 text-[11px]"
-            disabled={!canEdit || running || rec.rpaRunning || selectedDiff?.kind !== 'visit'}
-            data-testid="sync-in-over"
-            title="らく助を正としてカイポケを上書き送信（訪問のみ）"
-            onClick={() => {
-              if (selectedDiff) void rec.overwriteDiff(selectedDiff);
-            }}
-          >
-            ⇧ 上書き
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant={armedKey === '__over_all__' ? 'default' : 'outline'}
-            className="h-6 px-2 text-[11px]"
-            disabled={!canEdit || running || rec.rpaRunning || rec.visitItems.length === 0}
-            data-testid="sync-in-over-all"
-            title="差分をすべてカイポケへ上書き送信（らく助が正・訪問のみ）"
-            onClick={() => arm('__over_all__', () => void rec.overwriteAllDiffs())}
-          >
-            {armedKey === '__over_all__'
-              ? `${rec.visitItems.length}件すべて上書き？もう一度押す`
-              : '⇧ 全件'}
-          </Button>
-        </div>
-
-        <span className="ml-auto text-[11px] text-text-muted" data-testid="sync-meta">
-          {unsentRows.length > 0
-            ? `●未送信 ${unsentRows.length}件 — カイポケと差があります`
-            : summary == null
-              ? '型どおりの予定は ✓同期済（表示なし）'
-              : '✓ カイポケと同じ状態です'}
-        </span>
+        <Button
+          type="button"
+          size="sm"
+          variant={openPanel === 'in' ? 'default' : 'outline'}
+          className={stripBtnCls}
+          disabled={running || rec.rpaRunning}
+          aria-expanded={openPanel === 'in'}
+          data-testid="sync-open-in"
+          title="カイポケ側で変わっている予定をらく助へ取り込みます"
+          onClick={() => togglePanel('in')}
+        >
+          ⇩ カイポケから取り込む <span className="tnum">{inCount}</span>
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={openPanel === 'out' ? 'default' : 'outline'}
+          className={stripBtnCls}
+          disabled={running || rec.rpaRunning}
+          aria-expanded={openPanel === 'out'}
+          data-testid="sync-open-out"
+          title="らく助で変えた予定をカイポケへ送ります（明日以降のみ）"
+          onClick={() => togglePanel('out')}
+        >
+          ⇧ カイポケへ送る <span className="tnum">{outCount}</span>
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={openPanel === 'check' ? 'default' : 'outline'}
+          className={stripBtnCls}
+          disabled={!canEdit || running || rec.rpaRunning}
+          aria-expanded={openPanel === 'check'}
+          data-testid="sync-open-check"
+          title={
+            rec.rpaRunning
+              ? 'カイポケ連携が実行中です（単一スロット）。完了後に実行してください'
+              : 'カイポケの当週データを読んで、らく助と突き合わせます（2〜3分）'
+          }
+          onClick={() => {
+            setOpenPanel('check');
+            void rec.runFetch();
+          }}
+        >
+          🔄 同期確認
+        </Button>
       </div>
 
-      {summary != null && summary.snapshot == null ? (
-        <p className="px-3 pb-2 text-[11px] text-warning-strong" data-testid="sync-no-snapshot">
-          カイポケ側の控えがまだありません。🔄突合でカイポケ現況を取得してください
-        </p>
-      ) : null}
-
-      {/* 実績のない日の案内 (全曜日の取込差分をまだ計算できていないとき)。 */}
-      {rec.inSheetId == null && (rec.visitsPlan?.replaceDays.length ?? 0) > 0 ? (
-        <div
-          className="flex flex-wrap items-center gap-2 px-3 pb-2"
-          data-testid="sync-replace-days"
-        >
-          <p className="text-[11px] text-text-muted">
-            🗓 実績のない日（{rec.visitsPlan!.replaceDays.map((d) => fmtMd(d)).join('・')}
-            ）の差分は「⇩ 取込差分を計算」で 1 件ずつ取り込めます。日単位の丸ごと差し替えは
-            連携ページの「カイポケから取り込む」
-            {rec.visitsPlan!.replace
-              ? `（差し替え予定 ${rec.visitsPlan!.replace.inserted} 件）`
-              : ''}
-            。
-          </p>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-6 px-2 text-[11px]"
-            disabled={!canEdit || running || rec.rpaRunning}
-            data-testid="sync-in-diff-button"
-            title="実績のない日も含めた全曜日の取込差分を計算します（約1分）"
-            onClick={() => void rec.fetchInboundDiff()}
-          >
-            ⇩ 取込差分を計算（全曜日・1件ずつ）
-          </Button>
-        </div>
-      ) : null}
-
       {rec.error ? (
-        <p className="px-3 pb-2 text-[11px] text-error" data-testid="sync-error">
+        <p className="px-3 pb-2 text-[12px] text-error" data-testid="sync-error">
           {rec.error}
         </p>
       ) : null}
 
-      {activeSide === 'in' && selectedDiff ? (
-        <div className="px-3 pb-2">
-          <DiffDetailCard
-            marker={selectedDiff.marker}
-            direction="inbound"
-            staffNameById={staffNameById}
-          />
-        </div>
-      ) : activeSide === 'unsent' && selectedUnsent?.marker ? (
-        <div className="px-3 pb-2">
-          <DiffDetailCard
-            marker={selectedUnsent.marker}
-            direction="outbound"
-            staffNameById={staffNameById}
-          />
-        </div>
-      ) : null}
-
-      {/* ── 🧾 サービス内容のズレ (delete + add のペアを束ねた 1 行) ── */}
-      {serviceMismatches.length > 0 ? (
+      {/* ── ⇩ 取り込む パネル ── */}
+      {openPanel === 'in' ? (
         <div
-          className="border-t border-border-subtle px-3 py-2"
-          data-testid="sync-service-mismatch"
+          className="border-t border-border-subtle bg-bg-base px-3.5 py-3"
+          data-testid="sync-panel-in"
         >
-          <h4 className="mb-1 text-[12px] font-bold text-text-primary">
-            🧾 サービス内容のズレ（{serviceMismatches.length}件）
-          </h4>
-          <p className="mb-1 text-[11px] text-text-muted">
-            日時も担当も同じで、サービス内容だけが違う訪問です。
-            カイポケ側は編集で直せないため、上の一覧では「取消＋新規」の 2 行に見えます。
-          </p>
-          <ul className="space-y-1">
-            {serviceMismatches.map((p) => (
-              <li
-                key={p.key}
-                className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded border border-border-subtle px-2 py-1.5"
-                data-testid="sync-service-mismatch-row"
-              >
-                <span className="text-[11px] text-text-primary">
-                  {fmtMd(p.dateIso)} {p.startTime}｜{p.patientName}
-                </span>
-                <span className="text-[11px] text-text-secondary">
-                  らく助: <b>{p.rakusuke}</b> / カイポケ: <b>{p.kaipoke}</b>
-                </span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="h-6 px-2 text-[11px]"
-                  disabled={!canEdit || running || rec.rpaRunning}
-                  data-testid="sync-service-mismatch-apply"
-                  title="この訪問だけカイポケのサービス内容に合わせます（マスタは変えません）"
-                  onClick={() => void applyServiceContent(p)}
-                >
-                  この訪問だけカイポケに合わせる
-                </Button>
-              </li>
-            ))}
-          </ul>
+          <h3 className={panelTitleCls}>
+            ⇩ カイポケから取り込む
+            <small className="text-[12px] font-normal text-text-muted">
+              カイポケ側で変わっている予定（らく助に反映する）
+            </small>
+            {closeButton}
+          </h3>
+
+          {rec.diffs.length === 0 ? (
+            <p className="mt-2 text-[13px] text-text-muted" data-testid="sync-in-empty">
+              {rec.phase === 'ready'
+                ? 'カイポケ側で変わっている予定はありません。'
+                : 'らく助がカイポケを確認しています。少しお待ちください。'}
+            </p>
+          ) : (
+            <ul className="mt-2 space-y-1.5">
+              {rec.diffs.map((d) => {
+                const act = d.marker.action;
+                const desc = describeMarker(d.marker, staffNameById);
+                const dateIso = markerDateIso(d.marker);
+                const selected = selectedDiff?.id === d.id;
+                return (
+                  <SyncStripRow
+                    key={d.id}
+                    testId="sync-in-row"
+                    dateLabel={dateIso ? fmtMd(dateIso) : '日付不明'}
+                    kindLabel={d.kind === 'visit' ? '訪問' : 'イベント'}
+                    tag={ACTION_TAG[act]}
+                    headline={desc.headline}
+                    change={desc.change}
+                    note={IN_NOTE[act]}
+                    selected={selected}
+                    onSelect={() => setInId(selected ? null : d.id)}
+                    actions={[
+                      {
+                        label: '取り込む',
+                        primary: true,
+                        disabled: actionsDisabled,
+                        testId: 'sync-in-apply',
+                        title: 'らく助をカイポケに合わせます',
+                        onClick: () => void rec.applyDiff(d),
+                      },
+                      ...(d.kind === 'visit'
+                        ? [
+                            {
+                              label: 'らく助を正にして上書き',
+                              disabled: actionsDisabled,
+                              testId: 'sync-in-over',
+                              title: 'カイポケをらく助に合わせます（上書き送信）',
+                              onClick: () => void rec.overwriteDiff(d),
+                            },
+                          ]
+                        : []),
+                    ]}
+                  >
+                    {selected ? (
+                      <DiffDetailCard
+                        marker={d.marker}
+                        direction="inbound"
+                        staffNameById={staffNameById}
+                        className="ml-6 border-brand-primary-light border-l-4 border-l-brand-primary"
+                      />
+                    ) : null}
+                  </SyncStripRow>
+                );
+              })}
+            </ul>
+          )}
+
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            <small className="text-[12px] text-text-muted">
+              行を選ぶと盤面に「今ここ → こう変わる」のゴーストが出ます
+            </small>
+            <span className="flex-1" />
+            <Button
+              type="button"
+              size="sm"
+              variant={armedKey === '__in_all__' ? 'default' : 'outline'}
+              className="h-8 px-3 text-[13px]"
+              disabled={actionsDisabled || rec.diffs.length === 0}
+              data-testid="sync-in-apply-all"
+              title="差分をすべてらく助へ取り込む（カイポケが正）"
+              onClick={() => arm('__in_all__', () => void rec.applyAllDiffs())}
+            >
+              {armedKey === '__in_all__'
+                ? `${rec.diffs.length}件すべて取り込む？もう一度押す`
+                : `⇩ ${rec.diffs.length}件すべて取り込む`}
+            </Button>
+          </div>
         </div>
       ) : null}
 
-      {/* ── 👥 マスタ相互突合 (Phase M): 名簿と表記ズレの診断 ── */}
-      <div className="border-t border-border-subtle px-3 py-2" data-testid="sync-master">
-        <div className="mb-1 flex flex-wrap items-center gap-2">
-          <h4 className="text-[12px] font-bold text-text-primary">👥 マスタ突合（名簿チェック）</h4>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-6 px-2 text-[11px]"
-            disabled={!canEdit || running || rec.rpaRunning}
-            data-testid="sync-master-button"
-            title="カイポケの当月スケジュールに現れる氏名と、らく助の患者/スタッフマスタを突き合わせます（約1分）"
-            onClick={() => void rec.runMasterReconcile()}
-          >
-            実行（約1分）
-          </Button>
-        </div>
-        {rec.masterResult == null ? (
-          <p className="text-[11px] text-text-muted">
-            患者・スタッフの登録の有無と表記ズレ（スペース・異体字）を診断します。
-            取込・送信がうまくマッチしないときの原因調査に。
-          </p>
-        ) : (
-          <div className="space-y-1.5" data-testid="sync-master-result">
-            {(
-              [
-                { label: '患者', g: rec.masterResult.patients },
-                { label: 'スタッフ', g: rec.masterResult.staff },
-              ] as const
-            ).map(({ label, g }) => (
-              <div key={label} className="rounded border border-border-subtle px-2 py-1.5">
-                <p className="text-[11px] font-bold text-text-primary">
-                  {label}: 一致 {g.matched} ・ 表記ズレ {g.notationDiff.length} ・ カイポケのみ{' '}
-                  {g.kaipokeOnly.length} ・ らく助のみ {g.rakusukeOnly.length}
-                </p>
-                {g.notationDiff.length > 0 ? (
-                  <p className="mt-0.5 text-[11px] text-amber-800">
-                    🟡 表記ズレ（同期は自動吸収済み・マスタ修正推奨）:{' '}
-                    {g.notationDiff
-                      .map((d) => `カイポケ「${d.kaipoke}」⇔らく助「${d.rakusuke}」`)
-                      .join(' / ')}
-                  </p>
-                ) : null}
-                {g.kaipokeOnly.length > 0 ? (
-                  <p className="mt-0.5 text-[11px] text-violet-800">
-                    🟣 カイポケのみ（らく助未登録）:{' '}
-                    {g.kaipokeOnly
-                      .map((n) =>
-                        // スタッフ側だけ、カイポケの職種を氏名に添える (資格未登録の
-                        // 人を新規登録するとき、何の資格で作ればよいかが分かる)。
-                        // 資格セクションに別行で出すと「登録すらされていない人の
-                        // 資格ズレ」という読みにくい並びになるのでここへ寄せた。
-                        label === 'スタッフ' && kaipokeQualificationByName.get(n)
-                          ? `${n}（${kaipokeQualificationByName.get(n)}）`
-                          : n,
-                      )
-                      .join('、')}
-                  </p>
-                ) : null}
-                {g.rakusukeOnly.length > 0 ? (
-                  <p className="mt-0.5 text-[11px] text-sky-800">
-                    🔵 らく助のみ（当月のカイポケスケジュールに未出現）: {g.rakusukeOnly.join('、')}
-                  </p>
-                ) : null}
-              </div>
-            ))}
-            {/* 資格 (カイポケ職種1 × らく助 staff.qualification)。
-                サービス内容の 正看/准看 はここで決まる = ズレると偽差分の元。 */}
-            <div
-              className="rounded border border-border-subtle px-2 py-1.5"
-              data-testid="sync-master-qualifications"
+      {/* ── ⇧ 送る パネル ── */}
+      {openPanel === 'out' ? (
+        <div
+          className="border-t border-border-subtle bg-bg-base px-3.5 py-3"
+          data-testid="sync-panel-out"
+        >
+          <h3 className={panelTitleCls}>
+            ⇧ カイポケへ送る
+            <small className="text-[12px] font-normal text-text-muted">
+              らく助で変えた予定（明日以降のみ）
+            </small>
+            {closeButton}
+          </h3>
+
+          {outRows.length === 0 ? (
+            <p className="mt-2 text-[13px] text-text-muted" data-testid="sync-out-empty">
+              {noSnapshot
+                ? 'カイポケ側の控えがまだありません。🔄 同期確認で最新を読み込んでください。'
+                : '送るものはありません（カイポケと同じ状態です）。'}
+            </p>
+          ) : (
+            <ul className="mt-2 space-y-1.5">
+              {outRows.map((r) => {
+                const selected = selectedUnsent?.id === r.id;
+                return (
+                  <SyncStripRow
+                    key={r.id}
+                    testId="sync-out-row"
+                    dateLabel={r.dateIso ? fmtMd(r.dateIso) : '日付不明'}
+                    kindLabel={r.kind === 'visit' ? '訪問' : 'イベント'}
+                    tag={
+                      r.rpaUnsupported
+                        ? { label: '自動送信不可', tone: 'na' }
+                        : ACTION_TAG[r.action]
+                    }
+                    headline={r.headline}
+                    change={r.change}
+                    note={r.rpaUnsupported ? RPA_UNSUPPORTED_NOTE : OUT_NOTE[r.action]}
+                    muted={r.rpaUnsupported}
+                    selected={selected}
+                    onSelect={() => setUnsentId(selected ? null : r.id)}
+                    actions={[
+                      {
+                        label: '送る',
+                        primary: true,
+                        disabled: actionsDisabled || r.rpaUnsupported,
+                        testId: 'sync-out-send',
+                        onClick: () => void sendUnsent([r], r.id),
+                      },
+                    ]}
+                  >
+                    {selected && r.marker ? (
+                      <DiffDetailCard
+                        marker={r.marker}
+                        direction="outbound"
+                        staffNameById={staffNameById}
+                        className="ml-6 border-brand-primary-light border-l-4 border-l-brand-primary"
+                      />
+                    ) : null}
+                  </SyncStripRow>
+                );
+              })}
+            </ul>
+          )}
+
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            <small className="text-[12px] text-text-muted" data-testid="sync-out-past-note">
+              {pastRows.length > 0
+                ? `当日以前の予定は実績保護のため送れません（${pastRows.length}件・非表示）`
+                : ''}
+            </small>
+            <span className="flex-1" />
+            <Button
+              type="button"
+              size="sm"
+              variant={armedKey === '__unsent_all__' ? 'default' : 'outline'}
+              className="h-8 px-3 text-[13px]"
+              disabled={actionsDisabled || sendableRows.length === 0}
+              data-testid="sync-unsent-send-all"
+              onClick={() =>
+                arm('__unsent_all__', () => void sendUnsent(sendableRows, '__unsent_all__'))
+              }
             >
-              <p className="text-[11px] font-bold text-text-primary">
-                資格: ズレ {qualificationMismatches.length} ・ 未設定 {qualificationMissing.length}
-                {qualificationAmbiguous.length > 0
-                  ? ` ・ 同名で判別不可 ${qualificationAmbiguous.length}`
-                  : ''}
-              </p>
-              {qualificationMismatches.length === 0 &&
-              qualificationMissing.length === 0 &&
-              qualificationAmbiguous.length === 0 ? (
-                <p className="mt-0.5 text-[11px] text-text-muted">
-                  カイポケの職種と一致しています（正看/准看の判定は正しく出ます）。
-                </p>
-              ) : null}
-              {qualificationMismatches.map((q) => (
-                <p
-                  key={`mm-${q.name}`}
-                  className="mt-0.5 text-[11px] text-amber-800"
-                  data-testid="sync-master-qual-mismatch"
-                >
-                  🟡 {q.name}: カイポケ「{q.kaipokeQualification}」⇔ らく助「
-                  {q.rakusukeQualification}」（どちらが正しいかご確認ください）
-                </p>
-              ))}
-              {qualificationMissing.map((q) => (
-                <p
-                  key={`ms-${q.staffId ?? q.name}`}
-                  className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-violet-800"
-                  data-testid="sync-master-qual-missing"
-                >
-                  <span>
-                    🟣 {q.name}: らく助が資格未設定（カイポケ「{q.kaipokeQualification}」）
+              {armedKey === '__unsent_all__'
+                ? `${sendableRows.length}件すべて送信？もう一度押す`
+                : `⇧ ${sendableRows.length}件すべて送る`}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ── 🔄 同期確認 パネル ── */}
+      {openPanel === 'check' ? (
+        <div
+          className="border-t border-border-subtle bg-bg-base px-3.5 py-3"
+          data-testid="sync-panel-check"
+        >
+          <h3 className={panelTitleCls}>
+            🔄 同期確認
+            {checkedAt ? (
+              <small className="text-[12px] font-normal text-text-muted">{checkedAt} に確認</small>
+            ) : null}
+            {closeButton}
+          </h3>
+
+          {running ? (
+            <div className="mt-2 space-y-2" data-testid="sync-working">
+              <RakusukeWorking
+                message={workingLabel}
+                sub="約2〜3分。その間も盤面は見られます"
+                pose="calendar"
+              />
+              <div className="flex flex-wrap gap-1.5" data-testid="sync-progress">
+                {progressSteps(rec.phase, rec.busyKey).map((s) => (
+                  <span
+                    key={s.label}
+                    className={cn(
+                      'rounded-full border px-2.5 py-0.5 text-[12px]',
+                      STEP_CLS[s.state],
+                    )}
+                  >
+                    {s.label}
                   </span>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* サマリ 3 カード: どこへ進むかを 1 目で。 */}
+              <div className="mt-2 grid gap-2 sm:grid-cols-3" data-testid="sync-summary">
+                {[
+                  { k: 'カイポケ側で変わっている', v: inCount, s: '件 → ⇩取り込む' },
+                  { k: 'らく助で変えた（未送信）', v: outCount, s: '件 → ⇧送る' },
+                  { k: '要確認（サービス内容のズレ・資格）', v: needsCheckCount, s: '件' },
+                ].map((c) => (
+                  <div
+                    key={c.k}
+                    className="rounded-lg border border-border-subtle bg-bg-base px-3 py-2"
+                  >
+                    <p className="text-[12px] text-text-muted">{c.k}</p>
+                    <p className="text-[22px] font-bold text-text-primary">
+                      <span className="tnum">{c.v}</span>
+                      <small className="ml-1 text-[12px] font-normal text-text-muted">{c.s}</small>
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              {/* 要確認: サービス内容のズレ + 資格。普段は出さない (ここだけ)。 */}
+              {needsCheckCount > 0 ? (
+                <div
+                  className="mt-3 border-t border-dashed border-border-subtle pt-2.5"
+                  data-testid="sync-needs-check"
+                >
+                  <h4 className="mb-1.5 text-[13px] font-bold text-text-secondary">要確認</h4>
+                  <ul className="space-y-1.5" data-testid="sync-service-mismatch">
+                    {serviceMismatches.map((p) => (
+                      <SyncStripRow
+                        key={p.key}
+                        testId="sync-service-mismatch-row"
+                        dateLabel={p.dateIso ? fmtMd(p.dateIso) : '日付不明'}
+                        kindLabel="訪問"
+                        tag={{ label: 'サービス内容', tone: 'update' }}
+                        headline={`${p.patientName} 様 ${p.startTime}`}
+                        note={`らく助: ${p.rakusuke} ／ カイポケ: ${p.kaipoke}`}
+                        actions={[
+                          {
+                            label: 'この訪問だけカイポケに合わせる',
+                            primary: true,
+                            disabled: actionsDisabled,
+                            testId: 'sync-service-mismatch-apply',
+                            title:
+                              'この訪問だけカイポケのサービス内容に合わせます（マスタは変えません）',
+                            onClick: () => void applyServiceContent(p),
+                          },
+                        ]}
+                      />
+                    ))}
+                    {qualificationMismatches.map((q) => (
+                      <SyncStripRow
+                        key={`mm-${q.name}`}
+                        testId="sync-master-qual-mismatch"
+                        dateLabel="スタッフ"
+                        kindLabel="資格"
+                        tag={{ label: 'ズレ', tone: 'update' }}
+                        headline={`${q.name} さん`}
+                        note={`カイポケ「${q.kaipokeQualification}」⇔ らく助「${q.rakusukeQualification}」（どちらが正しいかご確認ください）`}
+                      />
+                    ))}
+                    {qualificationMissing.map((q) => (
+                      <SyncStripRow
+                        key={`ms-${q.staffId ?? q.name}`}
+                        testId="sync-master-qual-missing"
+                        dateLabel="スタッフ"
+                        kindLabel="資格"
+                        tag={{ label: '未設定', tone: 'na' }}
+                        headline={`${q.name} さん`}
+                        note={`カイポケ: ${q.kaipokeQualification} ／ らく助: 未設定`}
+                        actions={[
+                          {
+                            label: 'カイポケの職種を採用',
+                            primary: true,
+                            disabled:
+                              !canEdit ||
+                              adoptingStaffId != null ||
+                              q.staffId == null ||
+                              !isKnownQualification(q.kaipokeQualification),
+                            testId: 'sync-master-qual-adopt',
+                            onClick: () => setAdoptTarget(q),
+                          },
+                        ]}
+                      />
+                    ))}
+                    {qualificationAmbiguous.map((q) => (
+                      <SyncStripRow
+                        key={`am-${q.name}`}
+                        testId="sync-master-qual-ambiguous"
+                        dateLabel="スタッフ"
+                        kindLabel="資格"
+                        tag={{ label: '判別不可', tone: 'na' }}
+                        headline={`${q.name} さん`}
+                        note={`同じ名前の在職スタッフが複数います（カイポケ「${q.kaipokeQualification}」）。スタッフマスタで表記を分けてから設定してください`}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {/* 実績のない日の案内 (全曜日の取込差分をまだ計算できていないとき)。 */}
+              {rec.inSheetId == null && (rec.visitsPlan?.replaceDays.length ?? 0) > 0 ? (
+                <div
+                  className="mt-3 flex flex-wrap items-center gap-2 border-t border-dashed border-border-subtle pt-2.5"
+                  data-testid="sync-replace-days"
+                >
+                  <p className="text-[12px] text-text-muted">
+                    🗓 実績のない日（{rec.visitsPlan!.replaceDays.map((d) => fmtMd(d)).join('・')}
+                    ）の差分は「⇩ 取込差分を計算」で 1 件ずつ取り込めます。日単位の丸ごと差し替えは
+                    連携ページの「カイポケから取り込む」
+                    {rec.visitsPlan!.replace
+                      ? `（差し替え予定 ${rec.visitsPlan!.replace.inserted} 件）`
+                      : ''}
+                    。
+                  </p>
                   <Button
                     type="button"
                     size="sm"
                     variant="outline"
-                    className="h-5 px-1.5 text-[10px]"
-                    disabled={
-                      !canEdit ||
-                      adoptingStaffId != null ||
-                      q.staffId == null ||
-                      !isKnownQualification(q.kaipokeQualification)
-                    }
-                    data-testid="sync-master-qual-adopt"
-                    onClick={() => setAdoptTarget(q)}
+                    className="h-7 px-2.5 text-[12px]"
+                    disabled={actionsDisabled}
+                    data-testid="sync-in-diff-button"
+                    title="実績のない日も含めた全曜日の取込差分を計算します（約1分）"
+                    onClick={() => void rec.fetchInboundDiff()}
                   >
-                    カイポケの職種を採用
+                    ⇩ 取込差分を計算（全曜日・1件ずつ）
                   </Button>
-                </p>
-              ))}
-              {qualificationAmbiguous.map((q) => (
-                <p
-                  key={`am-${q.name}`}
-                  className="mt-0.5 text-[11px] text-text-secondary"
-                  data-testid="sync-master-qual-ambiguous"
-                >
-                  ⚪ {q.name}: 同じ名前の在職スタッフが複数います（カイポケ「
-                  {q.kaipokeQualification}」）。
-                  どちらの方か特定できないため、スタッフマスタで表記を分けてから設定してください
-                </p>
-              ))}
-            </div>
-            <p className="text-[10px] text-text-muted">
-              ※ カイポケ側は「当月のスケジュールに現れた氏名」で判定します
-              （予定の無い方は判定できません）。
-            </p>
-          </div>
-        )}
-      </div>
+                </div>
+              ) : null}
+
+              {/* 👥 名簿の突合 (Phase M)。普段は畳んでおく。 */}
+              <div
+                className="mt-3 border-t border-dashed border-border-subtle pt-2.5"
+                data-testid="sync-master"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <small className="text-[12px] text-text-muted">
+                    {rec.masterResult
+                      ? `名簿（患者・スタッフの氏名）の突合: 一致 ${
+                          rec.masterResult.patients.matched + rec.masterResult.staff.matched
+                        } / 表記ズレ ${
+                          rec.masterResult.patients.notationDiff.length +
+                          rec.masterResult.staff.notationDiff.length
+                        }`
+                      : '名簿（患者・スタッフの氏名）の突合はまだ行っていません'}
+                  </small>
+                  <span className="flex-1" />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2.5 text-[12px]"
+                    aria-expanded={rosterOpen}
+                    data-testid="sync-master-toggle"
+                    onClick={() => setRosterOpen((v) => !v)}
+                  >
+                    👥 名簿の詳細
+                  </Button>
+                </div>
+
+                {rosterOpen ? (
+                  <div className="mt-2 space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2.5 text-[12px]"
+                        disabled={actionsDisabled}
+                        data-testid="sync-master-button"
+                        title="カイポケの当月スケジュールに現れる氏名と、らく助の患者/スタッフマスタを突き合わせます（約1分）"
+                        onClick={() => void rec.runMasterReconcile()}
+                      >
+                        名簿を突き合わせる（約1分）
+                      </Button>
+                    </div>
+                    {rec.masterResult == null ? (
+                      <p className="text-[12px] text-text-muted">
+                        患者・スタッフの登録の有無と表記ズレ（スペース・異体字）を診断します。
+                        取込・送信がうまくマッチしないときの原因調査に。
+                      </p>
+                    ) : (
+                      <div className="space-y-1.5" data-testid="sync-master-result">
+                        {(
+                          [
+                            { label: '患者', g: rec.masterResult.patients },
+                            { label: 'スタッフ', g: rec.masterResult.staff },
+                          ] as const
+                        ).map(({ label, g }) => (
+                          <div
+                            key={label}
+                            className="rounded border border-border-subtle px-2 py-1.5"
+                          >
+                            <p className="text-[12px] font-bold text-text-primary">
+                              {label}: 一致 {g.matched} ・ 表記ズレ {g.notationDiff.length} ・
+                              カイポケのみ {g.kaipokeOnly.length} ・ らく助のみ{' '}
+                              {g.rakusukeOnly.length}
+                            </p>
+                            {g.notationDiff.length > 0 ? (
+                              <p className="mt-0.5 text-[12px] text-amber-800">
+                                🟡 表記ズレ（同期は自動吸収済み・マスタ修正推奨）:{' '}
+                                {g.notationDiff
+                                  .map((d) => `カイポケ「${d.kaipoke}」⇔らく助「${d.rakusuke}」`)
+                                  .join(' / ')}
+                              </p>
+                            ) : null}
+                            {g.kaipokeOnly.length > 0 ? (
+                              <p className="mt-0.5 text-[12px] text-violet-800">
+                                🟣 カイポケのみ（らく助未登録）:{' '}
+                                {g.kaipokeOnly
+                                  .map((n) =>
+                                    // スタッフ側だけ、カイポケの職種を氏名に添える (資格未登録の
+                                    // 人を新規登録するとき、何の資格で作ればよいかが分かる)。
+                                    label === 'スタッフ' && kaipokeQualificationByName.get(n)
+                                      ? `${n}（${kaipokeQualificationByName.get(n)}）`
+                                      : n,
+                                  )
+                                  .join('、')}
+                              </p>
+                            ) : null}
+                            {g.rakusukeOnly.length > 0 ? (
+                              <p className="mt-0.5 text-[12px] text-sky-800">
+                                🔵 らく助のみ（当月のカイポケスケジュールに未出現）:{' '}
+                                {g.rakusukeOnly.join('、')}
+                              </p>
+                            ) : null}
+                          </div>
+                        ))}
+                        <div
+                          className="rounded border border-border-subtle px-2 py-1.5"
+                          data-testid="sync-master-qualifications"
+                        >
+                          <p className="text-[12px] font-bold text-text-primary">
+                            資格: ズレ {qualificationMismatches.length} ・ 未設定{' '}
+                            {qualificationMissing.length}
+                            {qualificationAmbiguous.length > 0
+                              ? ` ・ 同名で判別不可 ${qualificationAmbiguous.length}`
+                              : ''}
+                          </p>
+                          <p className="mt-0.5 text-[12px] text-text-muted">
+                            {needsCheckCount > 0
+                              ? '内容は上の「要確認」に出しています。'
+                              : 'カイポケの職種と一致しています（正看/准看の判定は正しく出ます）。'}
+                          </p>
+                        </div>
+                        <p className="text-[11px] text-text-muted">
+                          ※ カイポケ側は「当月のスケジュールに現れた氏名」で判定します
+                          （予定の無い方は判定できません）。
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            </>
+          )}
+        </div>
+      ) : null}
 
       {/* 資格の採用はマスタ更新 = その職員の全訪問に効く。影響範囲を見せて確認する。 */}
       <Dialog

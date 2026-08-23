@@ -1,16 +1,17 @@
 /**
- * SyncBar — 同期バー (週空間 Phase E)。
+ * SyncBar — カイポケ同期ストリップ (方向性A・docs/mockups/sync-strip-mock.html)。
  *
- * ① 未送信 0 件: 「なし（カイポケと同じ）」+ 送信ボタン無効 + ✓ 表示
- * ② 未送信あり: 件数 (送れる N) が出て、⇧1件送信 が既存 apply の部分適用を呼ぶ
- * ③ 当日以前 (JST) は送信対象外 (option disabled・全件からも除外)
- * ④ ⇧全件 は 2 段クリック (1回目は確認表示のみ・2回目で実行)
+ * ① ストリップは常時 1 行: 状態バッジ + 件数チップ + 3 ボタン
+ * ② パネルは押した時だけ直下に開く (同時に 1 つ)
+ * ③ 行を選ぶと「何から何へ」表 + 盤面ゴースト (onSelectDiff)
+ * ④ 全件は 2 段クリック / RPA 未対応の行は送れない / 当日以前は非表示
+ * ⑤ 未確認 (phase=idle) のまま ⇩ を開くと同期確認を自動で始める
  *
  * 過去日判定は実時計基準のため、送れる分は常に「来週」を使う。
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 const unsentMutateAsync = vi.fn();
 const serviceOverrideMutateAsync = vi.fn();
@@ -40,7 +41,7 @@ const reconcileStub = {
   overwriteAllDiffs: vi.fn(),
 };
 const RECONCILE_DEFAULTS = { ...reconcileStub };
-/** SyncBar が useKaipokeReconcile に渡した onReady (= 突合完了コールバック)。 */
+/** SyncBar が useKaipokeReconcile に渡した onReady (= 同期確認完了コールバック)。 */
 let reconcileOnReady: (() => void) | null = null;
 
 vi.mock('@/lib/queries/cockpit', () => ({
@@ -56,7 +57,7 @@ vi.mock('@/lib/queries/integrations', () => ({
 }));
 vi.mock('../useKaipokeReconcile', () => ({
   useKaipokeReconcile: (opts: { onReady?: () => void }) => {
-    // 「突合が終わった」を後からテストで起こせるよう控えておく。
+    // 「同期確認が終わった」を後からテストで起こせるよう控えておく。
     reconcileOnReady = opts?.onReady ?? null;
     return reconcileStub;
   },
@@ -72,6 +73,8 @@ const ITEM_RPA = '00000000-0000-4000-8000-00000000a003';
 const ITEM_SVC_ADD = '00000000-0000-4000-8000-00000000a004';
 const ITEM_SVC_DELETE = '00000000-0000-4000-8000-00000000a005';
 const STAFF_MISSING = '00000000-0000-4000-8000-0000000000c3';
+const DIFF_VISIT = '00000000-0000-4000-8000-00000000d001';
+const DIFF_EVENT = '00000000-0000-4000-8000-00000000d002';
 
 const today = new Date();
 const nextMonday = new Date(today);
@@ -187,6 +190,68 @@ function servicePairDelete(overrides: Record<string, string> = {}) {
   };
 }
 
+/** 🔄同期確認で見つかった訪問差分 (⇩取り込む パネルの 1 行)。 */
+function visitDiff() {
+  return {
+    id: DIFF_VISIT,
+    kind: 'visit',
+    item: { id: DIFF_VISIT },
+    marker: {
+      kind: 'visit',
+      action: 'update',
+      externalId: DIFF_VISIT,
+      title: '久須見',
+      patient_name: '久須見',
+      start: '10:30',
+      end: '11:15',
+      beforeStart: '10:00',
+      beforeEnd: '10:45',
+      before: {
+        staff_id: null,
+        staff_name: '熊澤',
+        date: FUTURE_DAY,
+        start: '10:00',
+        end: '10:45',
+        course_label: '都賀A',
+      },
+      after: {
+        staff_id: null,
+        staff_name: '佐藤',
+        date: FUTURE_DAY,
+        start: '10:30',
+        end: '11:15',
+        course_label: '都賀B',
+      },
+    },
+  };
+}
+
+/** 🔄同期確認で見つかったイベント差分 (カイポケにだけある)。 */
+function eventDiff() {
+  return {
+    id: DIFF_EVENT,
+    kind: 'event',
+    change: { externalId: DIFF_EVENT },
+    marker: {
+      kind: 'event',
+      action: 'add',
+      externalId: DIFF_EVENT,
+      title: '会議',
+      start: '13:00',
+      end: '14:00',
+      beforeStart: null,
+      beforeEnd: null,
+      after: {
+        staff_id: null,
+        staff_name: '髙梨',
+        date: FUTURE_DAY,
+        start: '13:00',
+        end: '14:00',
+      },
+    },
+  };
+}
+
 const EMPTY_SUMMARY = {
   week_start: WEEK_START,
   snapshot: {
@@ -203,8 +268,13 @@ const EMPTY_SUMMARY = {
 
 function renderBar() {
   const onSelectDiff = vi.fn();
-  render(<SyncBar weekStartIso={WEEK_START} canEdit onSelectDiff={onSelectDiff} />);
-  return onSelectDiff;
+  const view = render(<SyncBar weekStartIso={WEEK_START} canEdit onSelectDiff={onSelectDiff} />);
+  return {
+    onSelectDiff,
+    /** stub の中身を書き換えたあと画面を作り直す (hook は再描画で読み直される)。 */
+    refresh: () =>
+      view.rerender(<SyncBar weekStartIso={WEEK_START} canEdit onSelectDiff={onSelectDiff} />),
+  };
 }
 
 /** `reloadKey` を変えて「盤面を触った直後の数え直し」を再現する。 */
@@ -219,26 +289,201 @@ function renderBarWithReload() {
     );
 }
 
+/** ⇧ 送る パネルを開く (未送信の読み込み完了を待ってから)。 */
+async function openOutPanel() {
+  await waitFor(() => expect(screen.getByTestId('sync-open-out')).toBeEnabled());
+  fireEvent.click(screen.getByTestId('sync-open-out'));
+  return screen.getByTestId('sync-panel-out');
+}
+
+/** ⇩ 取り込む パネルを開く。 */
+async function openInPanel() {
+  await waitFor(() => expect(screen.getByTestId('sync-open-in')).toBeEnabled());
+  fireEvent.click(screen.getByTestId('sync-open-in'));
+  return screen.getByTestId('sync-panel-in');
+}
+
+/** 🔄 同期確認 パネルを開く。 */
+async function openCheckPanel() {
+  await waitFor(() => expect(screen.getByTestId('sync-open-check')).toBeEnabled());
+  fireEvent.click(screen.getByTestId('sync-open-check'));
+  return screen.getByTestId('sync-panel-check');
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   Object.assign(reconcileStub, RECONCILE_DEFAULTS);
+  reconcileStub.diffs = [];
   startApplyMutateAsync.mockResolvedValue({ jobId: 'j1' });
 });
 
-describe('SyncBar', () => {
-  it('未送信 0 件のときは「なし（カイポケと同じ）」で送信できない', async () => {
+describe('SyncBar — ストリップ (常時1行)', () => {
+  it('差分ゼロなら ✓ カイポケと同じ・件数はすべて 0', async () => {
     unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
     renderBar();
     await waitFor(() => expect(unsentMutateAsync).toHaveBeenCalledWith({ week_start: WEEK_START }));
     await waitFor(() =>
-      expect(screen.getByTestId('sync-unsent-select')).toHaveTextContent('なし（カイポケと同じ）'),
+      expect(screen.getByTestId('sync-status')).toHaveTextContent('✓ カイポケと同じ'),
     );
-    expect(screen.getByTestId('sync-unsent-send')).toBeDisabled();
-    expect(screen.getByTestId('sync-unsent-send-all')).toBeDisabled();
-    expect(screen.getByTestId('sync-meta')).toHaveTextContent('カイポケと同じ状態です');
+    const counts = screen.getByTestId('sync-counts');
+    expect(counts).toHaveTextContent('カイポケから 0');
+    expect(counts).toHaveTextContent('らく助から 0');
+    expect(counts).toHaveTextContent('要確認 0');
   });
 
-  it('未送信ありのとき件数が出て ⇧1件送信 が部分適用を呼ぶ', async () => {
+  it('差分があれば ⚠ 差分あり + 件数チップ + ボタンの件数が揃う', async () => {
+    unsentMutateAsync.mockResolvedValue({
+      ...EMPTY_SUMMARY,
+      items: [item(ITEM_FUTURE, FUTURE_DAY), item(ITEM_PAST, '2020-01-06')],
+      sendable_count: 1,
+      past_count: 1,
+    });
+    reconcileStub.diffs = [visitDiff(), eventDiff()];
+    renderBar();
+    await waitFor(() => expect(screen.getByTestId('sync-status')).toHaveTextContent('⚠ 差分あり'));
+    const counts = screen.getByTestId('sync-counts');
+    // カイポケから = 取込差分 / らく助から = 送れる未送信 (当日以前は数えない)
+    expect(counts).toHaveTextContent('カイポケから 2');
+    expect(counts).toHaveTextContent('らく助から 1');
+    expect(screen.getByTestId('sync-open-in')).toHaveTextContent('⇩ カイポケから取り込む 2');
+    expect(screen.getByTestId('sync-open-out')).toHaveTextContent('⇧ カイポケへ送る 1');
+  });
+
+  it('カイポケ側の控えが無ければ ? 未確認', async () => {
+    unsentMutateAsync.mockResolvedValue({ ...EMPTY_SUMMARY, snapshot: null, sheet_id: null });
+    renderBar();
+    await waitFor(() =>
+      expect(screen.getByTestId('sync-status')).toHaveTextContent(
+        '? 未確認（カイポケ側の控えがありません）',
+      ),
+    );
+  });
+
+  it('らく助が作業中はバッジが変わり 3 ボタンとも押せない', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    reconcileStub.busyKey = '__in_diff__';
+    renderBar();
+    await waitFor(() => expect(unsentMutateAsync).toHaveBeenCalled());
+    expect(screen.getByTestId('sync-status')).toHaveTextContent('らく助が確認中');
+    for (const id of ['sync-open-in', 'sync-open-out', 'sync-open-check']) {
+      expect(screen.getByTestId(id)).toBeDisabled();
+    }
+  });
+
+  it('RPA 実行中も 3 ボタンとも押せない', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    reconcileStub.rpaRunning = true;
+    renderBar();
+    await waitFor(() => expect(unsentMutateAsync).toHaveBeenCalled());
+    for (const id of ['sync-open-in', 'sync-open-out', 'sync-open-check']) {
+      expect(screen.getByTestId(id)).toBeDisabled();
+    }
+  });
+
+  it('パネルは同時に 1 つだけ開く (もう一度押すと閉じる)', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    reconcileStub.phase = 'ready';
+    renderBar();
+
+    await openInPanel();
+    expect(screen.queryByTestId('sync-panel-out')).toBeNull();
+    expect(screen.queryByTestId('sync-panel-check')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('sync-open-out'));
+    expect(screen.queryByTestId('sync-panel-in')).toBeNull();
+    expect(screen.getByTestId('sync-panel-out')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('sync-open-out'));
+    expect(screen.queryByTestId('sync-panel-out')).toBeNull();
+  });
+});
+
+describe('SyncBar — ⇩ カイポケから取り込む', () => {
+  it('差分をカード行で並べ、行を選ぶと詳細表 + 盤面ゴーストが出る', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    reconcileStub.phase = 'ready';
+    reconcileStub.diffs = [visitDiff(), eventDiff()];
+    const { onSelectDiff } = renderBar();
+    await openInPanel();
+
+    const rows = screen.getAllByTestId('sync-in-row');
+    expect(rows).toHaveLength(2);
+    // 「誰が・何が・どう変わる」の 1 文
+    expect(rows[0]).toHaveTextContent('久須見 様 10:30');
+    expect(rows[0]).toHaveTextContent('担当 熊澤 → 佐藤');
+    expect(rows[0]).toHaveTextContent('カイポケ側で変わっている');
+    expect(rows[1]).toHaveTextContent('カイポケにだけある');
+
+    // 選ぶまで詳細は出さない
+    expect(screen.queryByTestId('diff-detail-card')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /久須見/ }));
+    expect(await screen.findByTestId('diff-detail-card')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(onSelectDiff).toHaveBeenCalledWith(expect.objectContaining({ kind: 'visit' })),
+    );
+  });
+
+  it('訪問だけ「らく助を正にして上書き」が出る / 1件取込は applyDiff を呼ぶ', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    reconcileStub.phase = 'ready';
+    reconcileStub.diffs = [visitDiff(), eventDiff()];
+    renderBar();
+    await openInPanel();
+
+    const rows = screen.getAllByTestId('sync-in-row');
+    expect(within(rows[0]!).getByTestId('sync-in-over')).toBeInTheDocument();
+    expect(within(rows[1]!).queryByTestId('sync-in-over')).toBeNull();
+
+    fireEvent.click(within(rows[0]!).getByTestId('sync-in-apply'));
+    expect(reconcileStub.applyDiff).toHaveBeenCalledWith(
+      expect.objectContaining({ id: DIFF_VISIT }),
+    );
+    fireEvent.click(within(rows[0]!).getByTestId('sync-in-over'));
+    expect(reconcileStub.overwriteDiff).toHaveBeenCalledWith(
+      expect.objectContaining({ id: DIFF_VISIT }),
+    );
+  });
+
+  it('「全件取り込む」は 2 段クリック (1回目は確認・2回目で実行)', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    reconcileStub.phase = 'ready';
+    reconcileStub.diffs = [visitDiff(), eventDiff()];
+    renderBar();
+    await openInPanel();
+
+    const all = screen.getByTestId('sync-in-apply-all');
+    expect(all).toHaveTextContent('⇩ 2件すべて取り込む');
+    fireEvent.click(all);
+    expect(all).toHaveTextContent('2件すべて取り込む？もう一度押す');
+    expect(reconcileStub.applyAllDiffs).not.toHaveBeenCalled();
+    fireEvent.click(all);
+    expect(reconcileStub.applyAllDiffs).toHaveBeenCalled();
+  });
+
+  it('同期確認がまだ (phase=idle) なら開いた時に自動で始める', async () => {
+    unsentMutateAsync.mockResolvedValue({ ...EMPTY_SUMMARY, snapshot: null, sheet_id: null });
+    renderBar();
+    await openInPanel();
+    expect(reconcileStub.runFetch).toHaveBeenCalled();
+    expect(screen.getByTestId('sync-in-empty')).toHaveTextContent(
+      'らく助がカイポケを確認しています',
+    );
+  });
+
+  it('同期確認済みで差分ゼロなら「変わっている予定はありません」', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    reconcileStub.phase = 'ready';
+    renderBar();
+    await openInPanel();
+    expect(reconcileStub.runFetch).not.toHaveBeenCalled();
+    expect(screen.getByTestId('sync-in-empty')).toHaveTextContent(
+      'カイポケ側で変わっている予定はありません',
+    );
+  });
+});
+
+describe('SyncBar — ⇧ カイポケへ送る', () => {
+  it('行の「送る」が既存 apply の部分適用を呼ぶ / 当日以前は非表示', async () => {
     unsentMutateAsync.mockResolvedValue({
       ...EMPTY_SUMMARY,
       items: [item(ITEM_FUTURE, FUTURE_DAY), item(ITEM_PAST, '2020-01-06')],
@@ -246,22 +491,18 @@ describe('SyncBar', () => {
       past_count: 1,
     });
     renderBar();
-    // 件数は BE の past_count を正として表示する
-    await waitFor(() =>
-      expect(screen.getByTestId('sync-unsent-count')).toHaveTextContent(
-        '2件（送れる 1・当日以前 1）',
-      ),
-    );
-    // 当日以前は選べない
-    const opts = screen
-      .getByTestId('sync-unsent-select')
-      .querySelectorAll('option') as NodeListOf<HTMLOptionElement>;
-    expect([...opts].find((o) => o.value === ITEM_PAST)?.disabled).toBe(true);
-    expect([...opts].find((o) => o.value === ITEM_PAST)?.textContent).toContain(
-      '当日以前=送信対象外',
+    await openOutPanel();
+
+    const rows = screen.getAllByTestId('sync-out-row');
+    expect(rows).toHaveLength(1);
+    // 変更行は「今こうなっている」側 (before) を主語にし、変化点を右に添える。
+    expect(rows[0]).toHaveTextContent('田中 様 10:00');
+    expect(rows[0]).toHaveTextContent('時刻 10:00〜11:00 → 10:30〜11:30');
+    expect(screen.getByTestId('sync-out-past-note')).toHaveTextContent(
+      '当日以前の予定は実績保護のため送れません（1件・非表示）',
     );
 
-    fireEvent.click(screen.getByTestId('sync-unsent-send'));
+    fireEvent.click(within(rows[0]!).getByTestId('sync-out-send'));
     await waitFor(() =>
       expect(startApplyMutateAsync).toHaveBeenCalledWith({
         sheetId: SHEET_ID,
@@ -271,16 +512,67 @@ describe('SyncBar', () => {
     );
   });
 
-  it('⇧全件 は 2 段クリック (1回目は確認・2回目で実行)', async () => {
+  it('行を選ぶと詳細表 + 盤面ゴーストが出る', async () => {
+    unsentMutateAsync.mockResolvedValue({
+      ...EMPTY_SUMMARY,
+      items: [item(ITEM_FUTURE, FUTURE_DAY)],
+      sendable_count: 1,
+    });
+    const { onSelectDiff } = renderBar();
+    await openOutPanel();
+    expect(screen.queryByTestId('diff-detail-card')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /田中/ }));
+    expect(await screen.findByTestId('diff-detail-card')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(onSelectDiff).toHaveBeenCalledWith(expect.objectContaining({ kind: 'visit' })),
+    );
+  });
+
+  it('RPA 未対応 (准看/一般) の行は薄く出して送れない', async () => {
+    unsentMutateAsync.mockResolvedValue({
+      ...EMPTY_SUMMARY,
+      items: [item(ITEM_FUTURE, FUTURE_DAY), rpaUnsupportedItem(ITEM_RPA, FUTURE_DAY)],
+      sendable_count: 1,
+      rpa_unsupported_count: 1,
+    });
+    renderBar();
+    await openOutPanel();
+
+    // 「らく助から」は送れる分だけ数える
+    expect(screen.getByTestId('sync-counts')).toHaveTextContent('らく助から 1');
+    const rows = screen.getAllByTestId('sync-out-row');
+    expect(rows).toHaveLength(2);
+    const blocked = rows.find((r) => r.textContent?.includes('自動送信不可'))!;
+    expect(blocked).toHaveTextContent('准看護師／一般の登録はRPAが未対応です');
+    expect(within(blocked).getByTestId('sync-out-send')).toBeDisabled();
+    const ok = rows.find((r) => r !== blocked)!;
+    expect(within(ok).getByTestId('sync-out-send')).toBeEnabled();
+  });
+
+  it('RPA 未対応しか無ければ「全件送る」も押せない', async () => {
+    unsentMutateAsync.mockResolvedValue({
+      ...EMPTY_SUMMARY,
+      items: [rpaUnsupportedItem(ITEM_RPA, FUTURE_DAY)],
+      sendable_count: 0,
+      rpa_unsupported_count: 1,
+    });
+    renderBar();
+    await openOutPanel();
+    expect(screen.getByTestId('sync-unsent-send-all')).toBeDisabled();
+  });
+
+  it('「全件送る」は 2 段クリック (1回目は確認・2回目で実行)', async () => {
     unsentMutateAsync.mockResolvedValue({
       ...EMPTY_SUMMARY,
       items: [item(ITEM_FUTURE, FUTURE_DAY)],
       sendable_count: 1,
     });
     renderBar();
-    const all = await screen.findByTestId('sync-unsent-send-all');
-    await waitFor(() => expect(all).toBeEnabled());
+    await openOutPanel();
 
+    const all = screen.getByTestId('sync-unsent-send-all');
+    expect(all).toHaveTextContent('⇧ 1件すべて送る');
     fireEvent.click(all);
     expect(all).toHaveTextContent('1件すべて送信？もう一度押す');
     expect(startApplyMutateAsync).not.toHaveBeenCalled();
@@ -295,146 +587,96 @@ describe('SyncBar', () => {
     );
   });
 
-  it('らく助が作業中 (rec.busyKey) は突合系も送信系も押せない', async () => {
+  it('控えが無いときは「🔄 同期確認で最新を読み込んで」と案内する', async () => {
+    unsentMutateAsync.mockResolvedValue({ ...EMPTY_SUMMARY, snapshot: null, sheet_id: null });
+    renderBar();
+    await openOutPanel();
+    expect(screen.getByTestId('sync-out-empty')).toHaveTextContent('🔄 同期確認');
+  });
+
+  // ── 送信済みの印は訪問キー基準 / 再計算では消えない (M1) ──
+
+  it('送信後に数え直しても、送った行は復活しない（item.id が変わっても）', async () => {
+    const row = item(ITEM_FUTURE, FUTURE_DAY);
+    unsentMutateAsync.mockResolvedValue({ ...EMPTY_SUMMARY, items: [row], sendable_count: 1 });
+    const reload = renderBarWithReload();
+    await openOutPanel();
+    fireEvent.click(screen.getByTestId('sync-out-send'));
+    await waitFor(() => expect(startApplyMutateAsync).toHaveBeenCalled());
+
+    // RPA は非同期なので、直後の再計算でも同じ訪問が返る。●未送信は毎回シートを
+    // 作り直すので item.id は変わる — キーで覚えていないと復活してしまう。
     unsentMutateAsync.mockResolvedValue({
       ...EMPTY_SUMMARY,
-      items: [item(ITEM_FUTURE, FUTURE_DAY)],
+      items: [{ ...row, id: '00000000-0000-4000-8000-0000000000ff' }],
       sendable_count: 1,
     });
-    reconcileStub.busyKey = '__in_diff__';
+    reload(1);
+    await waitFor(() => expect(unsentMutateAsync).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryAllByTestId('sync-out-row')).toHaveLength(0));
+  });
+
+  it('🔄同期確認が終わったときだけ送信済みの印を捨てる', async () => {
+    const row = item(ITEM_FUTURE, FUTURE_DAY);
+    unsentMutateAsync.mockResolvedValue({ ...EMPTY_SUMMARY, items: [row], sendable_count: 1 });
     renderBar();
-    await waitFor(() => expect(unsentMutateAsync).toHaveBeenCalled());
+    await openOutPanel();
+    fireEvent.click(screen.getByTestId('sync-out-send'));
+    await waitFor(() => expect(screen.queryAllByTestId('sync-out-row')).toHaveLength(0));
+
+    // 同期確認完了 = カイポケの現況を見直した後。まだ残る行は本当に未送信。
+    await act(async () => {
+      await reconcileOnReady?.();
+    });
+    await waitFor(() => expect(screen.getAllByTestId('sync-out-row')).toHaveLength(1));
+  });
+});
+
+describe('SyncBar — 🔄 同期確認', () => {
+  it('押すと実行し、作業中はらく助の演出と進捗チップを出す', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    const { refresh } = renderBar();
+    await openCheckPanel();
+    expect(reconcileStub.runFetch).toHaveBeenCalled();
+
+    reconcileStub.phase = 'visits';
+    refresh();
     expect(screen.getByTestId('sync-working')).toBeInTheDocument();
-    for (const id of [
-      'sync-reconcile-run',
-      'sync-in-apply',
-      'sync-in-apply-all',
-      'sync-in-over',
-      'sync-in-over-all',
-      'sync-unsent-send',
-      'sync-unsent-send-all',
-      'sync-master-button',
-    ]) {
-      expect(screen.getByTestId(id)).toBeDisabled();
-    }
+    const steps = screen.getByTestId('sync-progress');
+    expect(steps).toHaveTextContent('ログイン');
+    expect(steps).toHaveTextContent('差分計算');
+    // 作業中はサマリを出さない
+    expect(screen.queryByTestId('sync-summary')).toBeNull();
   });
 
-  it('RPA 未対応 (准看/一般) の行は選べず「送れる」から外れる', async () => {
-    unsentMutateAsync.mockResolvedValue({
-      ...EMPTY_SUMMARY,
-      items: [item(ITEM_FUTURE, FUTURE_DAY), rpaUnsupportedItem(ITEM_RPA, FUTURE_DAY)],
-      sendable_count: 1,
-      past_count: 0,
-      rpa_unsupported_count: 1,
-    });
-    renderBar();
-
-    await waitFor(() =>
-      expect(screen.getByTestId('sync-unsent-count')).toHaveTextContent(
-        '2件（送れる 1・RPA未対応 1）',
-      ),
-    );
-
-    const opts = screen
-      .getByTestId('sync-unsent-select')
-      .querySelectorAll('option') as NodeListOf<HTMLOptionElement>;
-    const blocked = [...opts].find((o) => o.value === ITEM_RPA);
-    expect(blocked?.disabled).toBe(true);
-    expect(blocked?.textContent).toContain('RPAが准看/一般の登録に未対応');
-    // 対応済みの行は従来どおり選べる
-    expect([...opts].find((o) => o.value === ITEM_FUTURE)?.disabled).toBe(false);
-
-    // ⇧1件送信 / ⇧全件 のどちらも RPA 未対応を含めない
-    fireEvent.click(screen.getByTestId('sync-unsent-send'));
-    await waitFor(() =>
-      expect(startApplyMutateAsync).toHaveBeenCalledWith({
-        sheetId: SHEET_ID,
-        dryRun: false,
-        itemIds: [ITEM_FUTURE],
-      }),
-    );
-  });
-
-  it('RPA 未対応しか無ければ送信ボタンが無効', async () => {
-    unsentMutateAsync.mockResolvedValue({
-      ...EMPTY_SUMMARY,
-      items: [rpaUnsupportedItem(ITEM_RPA, FUTURE_DAY)],
-      sendable_count: 0,
-      rpa_unsupported_count: 1,
-    });
-    renderBar();
-    await waitFor(() => expect(unsentMutateAsync).toHaveBeenCalled());
-    expect(screen.getByTestId('sync-unsent-send')).toBeDisabled();
-    expect(screen.getByTestId('sync-unsent-send-all')).toBeDisabled();
-  });
-
-  it('RPA 実行中は未送信の送信ボタンも押せない', async () => {
+  it('完了後はサマリ 3 カードを出す', async () => {
     unsentMutateAsync.mockResolvedValue({
       ...EMPTY_SUMMARY,
       items: [item(ITEM_FUTURE, FUTURE_DAY)],
       sendable_count: 1,
     });
-    reconcileStub.rpaRunning = true;
+    reconcileStub.phase = 'ready';
+    reconcileStub.diffs = [visitDiff(), eventDiff()];
     renderBar();
-    await waitFor(() => expect(unsentMutateAsync).toHaveBeenCalled());
-    expect(screen.getByTestId('sync-unsent-send')).toBeDisabled();
-    expect(screen.getByTestId('sync-unsent-send-all')).toBeDisabled();
-  });
-
-  it('未送信を選ばなくても差分カードが出る (既定=先頭の送れる分)', async () => {
-    unsentMutateAsync.mockResolvedValue({
-      ...EMPTY_SUMMARY,
-      items: [item(ITEM_FUTURE, FUTURE_DAY)],
-      sendable_count: 1,
-    });
-    const onSelectDiff = renderBar();
-    expect(await screen.findByTestId('diff-detail-card')).toBeInTheDocument();
-    // 盤面ゴーストにも同じマーカーが渡る
-    await waitFor(() =>
-      expect(onSelectDiff).toHaveBeenCalledWith(expect.objectContaining({ kind: 'visit' })),
-    );
+    await openCheckPanel();
+    const summary = screen.getByTestId('sync-summary');
+    expect(summary).toHaveTextContent('カイポケ側で変わっている');
+    expect(summary).toHaveTextContent('らく助で変えた（未送信）');
+    expect(summary).toHaveTextContent('要確認');
   });
 
   it('実績のない日があれば「取込差分を計算」の案内を出す', async () => {
     unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    reconcileStub.phase = 'ready';
     reconcileStub.visitsPlan = { replaceDays: ['2026-08-19'], replace: { inserted: 4 } };
     renderBar();
-    const box = await screen.findByTestId('sync-replace-days');
-    expect(box).toHaveTextContent('実績のない日');
+    await openCheckPanel();
+    expect(screen.getByTestId('sync-replace-days')).toHaveTextContent('実績のない日');
     fireEvent.click(screen.getByTestId('sync-in-diff-button'));
     expect(reconcileStub.fetchInboundDiff).toHaveBeenCalled();
   });
 
-  it('👥マスタ突合の結果を表示する', async () => {
-    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
-    reconcileStub.masterResult = {
-      month: '2026-08',
-      patients: {
-        matched: 12,
-        notationDiff: [{ kaipoke: '高橋', rakusuke: '髙橋' }],
-        kaipokeOnly: ['新井'],
-        rakusukeOnly: [],
-      },
-      staff: { matched: 5, notationDiff: [], kaipokeOnly: [], rakusukeOnly: ['熊澤'] },
-    };
-    renderBar();
-    const res = await screen.findByTestId('sync-master-result');
-    expect(res).toHaveTextContent('患者: 一致 12');
-    expect(res).toHaveTextContent('カイポケ「高橋」⇔らく助「髙橋」');
-    expect(res).toHaveTextContent('らく助のみ（当月のカイポケスケジュールに未出現）: 熊澤');
-  });
-
-  it('カイポケ側の控えが無ければ突合を促す', async () => {
-    unsentMutateAsync.mockResolvedValue({ ...EMPTY_SUMMARY, snapshot: null, sheet_id: null });
-    renderBar();
-    expect(await screen.findByTestId('sync-no-snapshot')).toHaveTextContent(
-      '🔄突合でカイポケ現況を取得してください',
-    );
-  });
-
-  // ── サービス内容のズレ (kaipoke-service-content-design.md §2 / §3-1) ──
-  // カイポケの編集はサービス内容を触れないため、差分は必ず delete + add で出る。
-  // 生のまま見せると「取消して新規登録する」に読めるので 1 行に束ねる。
+  // ── 要確認: サービス内容のズレ (kaipoke-service-content-design.md §2 / §3-1) ──
 
   it('サービス内容だけが違う delete+add を 1 行に束ね、合わせるボタンで上書きする', async () => {
     unsentMutateAsync.mockResolvedValue({
@@ -446,19 +688,14 @@ describe('SyncBar', () => {
       id: 'v1',
       kaipoke_service_override: '精神基本療養費Ⅰ・准看',
     });
+    reconcileStub.phase = 'ready';
     renderBar();
+    await openCheckPanel();
 
-    const row = await screen.findByTestId('sync-service-mismatch-row');
+    const row = screen.getByTestId('sync-service-mismatch-row');
     expect(row).toHaveTextContent('田中');
     expect(row).toHaveTextContent('らく助: 基本療養費Ⅰ・正看');
     expect(row).toHaveTextContent('カイポケ: 精神基本療養費Ⅰ・准看');
-    // 束ねても各 item は一覧に残る = 個別の ⇧ 送信は引き続きできる。
-    const opts = screen
-      .getByTestId('sync-unsent-select')
-      .querySelectorAll('option') as NodeListOf<HTMLOptionElement>;
-    expect([...opts].map((o) => o.value)).toEqual(
-      expect.arrayContaining([ITEM_SVC_ADD, ITEM_SVC_DELETE]),
-    );
 
     fireEvent.click(screen.getByTestId('sync-service-mismatch-apply'));
     // visit の特定は BE 側 = delete 側 item の id を渡す。
@@ -478,12 +715,13 @@ describe('SyncBar', () => {
       items: [servicePairAdd(), servicePairDelete({ staff1: '別人' })],
       sendable_count: 2,
     });
+    reconcileStub.phase = 'ready';
     renderBar();
-    await waitFor(() => expect(unsentMutateAsync).toHaveBeenCalled());
-    expect(screen.queryByTestId('sync-service-mismatch')).toBeNull();
+    await openCheckPanel();
+    expect(screen.queryByTestId('sync-service-mismatch-row')).toBeNull();
   });
 
-  it('ペアの delete は BE のフラグどおり送信対象から外れる（片肺送信の防止）', async () => {
+  it('ペアの両方が BE のフラグどおり送信対象から外れる（片肺送信の防止）', async () => {
     unsentMutateAsync.mockResolvedValue({
       ...EMPTY_SUMMARY,
       items: [servicePairAdd(), servicePairDelete()],
@@ -492,26 +730,20 @@ describe('SyncBar', () => {
       rpa_unsupported_count: 2,
     });
     renderBar();
-    await screen.findByTestId('sync-service-mismatch-row');
-
-    expect(screen.getByTestId('sync-unsent-count')).toHaveTextContent(
-      '2件（送れる 0・RPA未対応 2）',
-    );
-    const opts = screen
-      .getByTestId('sync-unsent-select')
-      .querySelectorAll('option') as NodeListOf<HTMLOptionElement>;
-    // delete 側も選べない = FE がサービス内容を自前で判定していない証拠。
-    expect([...opts].find((o) => o.value === ITEM_SVC_DELETE)?.disabled).toBe(true);
-    expect([...opts].find((o) => o.value === ITEM_SVC_ADD)?.disabled).toBe(true);
-    expect(screen.getByTestId('sync-unsent-send')).toBeDisabled();
+    await openOutPanel();
+    // 2 行とも「自動送信不可」= FE がサービス内容を自前で判定していない証拠。
+    const sends = screen.getAllByTestId('sync-out-send');
+    expect(sends).toHaveLength(2);
+    for (const b of sends) expect(b).toBeDisabled();
     expect(screen.getByTestId('sync-unsent-send-all')).toBeDisabled();
   });
 
-  // ── 資格のズレ / 未設定 (§1-2) ──
+  // ── 要確認: 資格のズレ / 未設定 (§1-2) ──
 
   it('資格のズレは表示のみ・未設定は「カイポケの職種を採用」で埋められる', async () => {
     unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
     updateStaffMutateAsync.mockResolvedValue({ id: STAFF_MISSING });
+    reconcileStub.phase = 'ready';
     reconcileStub.masterResult = {
       month: '2026-08',
       patients: { matched: 0, notationDiff: [], kaipokeOnly: [], rakusukeOnly: [] },
@@ -541,11 +773,10 @@ describe('SyncBar', () => {
       ],
     };
     renderBar();
+    await openCheckPanel();
 
-    const box = await screen.findByTestId('sync-master-qualifications');
-    expect(box).toHaveTextContent('資格: ズレ 1 ・ 未設定 1');
     // 一致は出さない
-    expect(box).not.toHaveTextContent('一致 太郎');
+    expect(screen.getByTestId('sync-needs-check')).not.toHaveTextContent('一致 太郎');
     // ズレはボタン無し (どちらが正かは人が判断する)
     expect(screen.getByTestId('sync-master-qual-mismatch')).toHaveTextContent(
       'カイポケ「准看護師」⇔ らく助「看護師」',
@@ -572,6 +803,7 @@ describe('SyncBar', () => {
 
   it('同名で判別できない資格は採用ボタンを出さず、注意だけ出す', async () => {
     unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    reconcileStub.phase = 'ready';
     reconcileStub.masterResult = {
       month: '2026-08',
       patients: { matched: 0, notationDiff: [], kaipokeOnly: [], rakusukeOnly: [] },
@@ -587,14 +819,46 @@ describe('SyncBar', () => {
       ],
     };
     renderBar();
-    const row = await screen.findByTestId('sync-master-qual-ambiguous');
-    expect(row).toHaveTextContent('同じ名前の在職スタッフが複数います');
+    await openCheckPanel();
+    expect(screen.getByTestId('sync-master-qual-ambiguous')).toHaveTextContent(
+      '同じ名前の在職スタッフが複数います',
+    );
     expect(screen.queryByTestId('sync-master-qual-adopt')).toBeNull();
-    expect(screen.getByTestId('sync-master-qualifications')).toHaveTextContent('同名で判別不可 1');
+  });
+
+  // ── 👥 名簿の詳細 (折りたたみ) ──
+
+  it('👥名簿の詳細を開くと突合結果を出す', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    reconcileStub.phase = 'ready';
+    reconcileStub.masterResult = {
+      month: '2026-08',
+      patients: {
+        matched: 12,
+        notationDiff: [{ kaipoke: '高橋', rakusuke: '髙橋' }],
+        kaipokeOnly: ['新井'],
+        rakusukeOnly: [],
+      },
+      staff: { matched: 5, notationDiff: [], kaipokeOnly: [], rakusukeOnly: ['熊澤'] },
+    };
+    renderBar();
+    await openCheckPanel();
+
+    // 畳んでいる間は一覧を出さない
+    expect(screen.queryByTestId('sync-master-result')).toBeNull();
+    fireEvent.click(screen.getByTestId('sync-master-toggle'));
+
+    const res = screen.getByTestId('sync-master-result');
+    expect(res).toHaveTextContent('患者: 一致 12');
+    expect(res).toHaveTextContent('カイポケ「高橋」⇔らく助「髙橋」');
+    expect(res).toHaveTextContent('らく助のみ（当月のカイポケスケジュールに未出現）: 熊澤');
+    fireEvent.click(screen.getByTestId('sync-master-button'));
+    expect(reconcileStub.runMasterReconcile).toHaveBeenCalled();
   });
 
   it('らく助未登録のスタッフはカイポケの職種を氏名に添えて出す', async () => {
     unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    reconcileStub.phase = 'ready';
     reconcileStub.masterResult = {
       month: '2026-08',
       patients: { matched: 0, notationDiff: [], kaipokeOnly: ['新井'], rakusukeOnly: [] },
@@ -610,58 +874,15 @@ describe('SyncBar', () => {
       ],
     };
     renderBar();
-    const res = await screen.findByTestId('sync-master-result');
+    await openCheckPanel();
+    fireEvent.click(screen.getByTestId('sync-master-toggle'));
+
+    const res = screen.getByTestId('sync-master-result');
     // スタッフ側だけ職種を添える (患者側はそのまま)。
     // toHaveTextContent は全角スペースを半角へ潰すので、氏名は正規表現で見る。
     expect(res).toHaveTextContent(/新人\s*太郎（准看護師）/);
     expect(res).toHaveTextContent('カイポケのみ（らく助未登録）: 新井');
-    // 資格セクションには二重に出さない。
+    // 要確認には二重に出さない。
     expect(screen.queryByTestId('sync-master-qual-missing')).toBeNull();
-  });
-
-  // ── 送信済みの印は訪問キー基準 / 再計算では消えない (M1) ──
-
-  it('送信後に数え直しても、送った行は復活しない（item.id が変わっても）', async () => {
-    const row = item(ITEM_FUTURE, FUTURE_DAY);
-    unsentMutateAsync.mockResolvedValue({ ...EMPTY_SUMMARY, items: [row], sendable_count: 1 });
-    const reload = renderBarWithReload();
-    await waitFor(() =>
-      expect(screen.getByTestId('sync-unsent-count')).toHaveTextContent('1件（送れる 1）'),
-    );
-
-    fireEvent.click(screen.getByTestId('sync-unsent-send'));
-    await waitFor(() => expect(startApplyMutateAsync).toHaveBeenCalled());
-
-    // RPA は非同期なので、直後の再計算でも同じ訪問が返る。●未送信は毎回シートを
-    // 作り直すので item.id は変わる — キーで覚えていないと復活してしまう。
-    unsentMutateAsync.mockResolvedValue({
-      ...EMPTY_SUMMARY,
-      items: [{ ...row, id: '00000000-0000-4000-8000-0000000000ff' }],
-      sendable_count: 1,
-    });
-    reload(1);
-    await waitFor(() => expect(unsentMutateAsync).toHaveBeenCalledTimes(2));
-    await waitFor(() =>
-      expect(screen.getByTestId('sync-unsent-select')).toHaveTextContent('なし（カイポケと同じ）'),
-    );
-  });
-
-  it('🔄突合が終わったときだけ送信済みの印を捨てる', async () => {
-    const row = item(ITEM_FUTURE, FUTURE_DAY);
-    unsentMutateAsync.mockResolvedValue({ ...EMPTY_SUMMARY, items: [row], sendable_count: 1 });
-    renderBar();
-    await waitFor(() => expect(unsentMutateAsync).toHaveBeenCalled());
-    fireEvent.click(screen.getByTestId('sync-unsent-send'));
-    await waitFor(() =>
-      expect(screen.getByTestId('sync-unsent-select')).toHaveTextContent('なし（カイポケと同じ）'),
-    );
-
-    // 突合完了 = カイポケの現況を見直した後。まだ残る行は本当に未送信。
-    await act(async () => {
-      await reconcileOnReady?.();
-    });
-    await waitFor(() =>
-      expect(screen.getByTestId('sync-unsent-count')).toHaveTextContent('1件（送れる 1）'),
-    );
   });
 });

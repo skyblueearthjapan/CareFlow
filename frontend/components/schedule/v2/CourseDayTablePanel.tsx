@@ -5085,28 +5085,9 @@ export function CourseDayTablePanel({
                   >
                     ＋イベント
                   </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={!canEdit}
-                    onClick={() => setImportEventsOpen(true)}
-                    data-testid="staff-tab-import-events"
-                    title="この週のカイポケの個別業務（イベント）だけを取り込みます（訪問には触れません）"
-                  >
-                    ⇩ カイポケ取込
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={!canEdit}
-                    onClick={() => setSendEventsOpen(true)}
-                    data-testid="staff-tab-send-events"
-                    title="この週のらく助のイベントをカイポケの職員スケジュールへ登録します"
-                  >
-                    ⇧ カイポケ送信
-                  </Button>
+                  {/* 「⇩ カイポケ取込」「⇧ カイポケ送信」(イベント専用の旧ダイアログ) は
+                      同期ストリップ (SyncBar) に集約したためツールバーから撤去
+                      (2026-08-23・方向性A)。ダイアログ自体は当面残置 (未使用)。 */}
                 </div>
               ) : (
                 /* T-3: 「週」タブ時は タイムライン / リスト の切替を出す (縦スペース不消費). */
@@ -5541,8 +5522,8 @@ export function CourseDayTablePanel({
                   コース帯（⠿）や訪問の行はドラッグでスタッフ間・曜日間の移動もできます。担当を外すときはコース帯の「×」か「（担当なし）」行へドラッグ。
                   セルにマウスを乗せると「🛌 休みにする / ＋訪問 /
                   ＋イベント」が出ます。ツールバーの「戻る」で取り消せます（取消も戻せます）。
-                  カイポケとのズレは上の同期バー（●未送信 /
-                  🔄突合）で確認し、選んだ差分は盤面にゴースト（青点線=今ここ /
+                  カイポケとのズレは上の同期ストリップ（⇩ カイポケから取り込む / ⇧ カイポケへ送る /
+                  🔄 同期確認）で確認し、選んだ行は盤面にゴースト（青点線=今ここ /
                   紫実線=こう変わる）で出ます。
                 </p>
               </div>

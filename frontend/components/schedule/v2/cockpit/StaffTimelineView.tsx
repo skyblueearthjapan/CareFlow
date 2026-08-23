@@ -21,6 +21,10 @@
  *   - 氏名列の ⠿ を別のスタッフ行の氏名セルへドロップ = **その日の 2 人の予定を丸ごと入れ替え**
  *     (PO 要望 2026-08-22)。バーの DnD (1 訪問) とは別物で、HTML5 DnD を使う。
  *     ここでは `onStaffSwap` を呼ぶだけ (確認ダイアログ・API は親 = FE-C の担当)。
+ *     掴んだ感 (PO 要望 2026-08-23): ゴーストは氏名カード (`applyStaffSwapDragImage`)・
+ *     掴んだ行は持ち上げ・他の行は「ここに入れ替え」の受け皿にする。
+ *   - 行アクション (🛌休み / ＋訪問 / ＋イベント) は氏名の下に**常時表示**
+ *     (PO 要望 2026-08-23。hover 待ちのアイコンはチープ、の指摘)。
  *
  * **キーボード操作はドラッグでは行わない**: バーは button なので Enter/Space で
  * `onVisitClick` が起き、時刻変更・担当変更・取消はすべて `VisitActionMenu`
@@ -45,6 +49,7 @@ import {
 
 import type { WeekOverviewVisit } from '../CourseWeekOverview';
 import { UNASSIGNED_ROW_KEY } from '../courseDnd';
+import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { SyncedHScroll } from '@/components/ui/synced-h-scroll';
 
@@ -215,8 +220,11 @@ const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 const TOTAL_MIN = TL_COCKPIT_END_MIN - TL_COCKPIT_START_MIN;
 const HOUR_COUNT = Math.round(TOTAL_MIN / 60);
 
-/** 氏名列の幅 (px)。モックの 112px を日本語フル氏名向けに少し広げる。 */
-const NAME_COL_PX = 160;
+/**
+ * 氏名列の幅 (px)。モックの 112px を日本語フル氏名向けに少し広げる。
+ * PO 要望 2026-08-23: 行アクション 3 つを常時表示するため 160 → 196。
+ */
+const NAME_COL_PX = 196;
 /** バー高さ / レーン送り (px)。 */
 const BAR_H = 48;
 const LANE_STEP = 54;
@@ -230,9 +238,16 @@ const CLICK_SLOP_PX = 3;
 /** 終了時刻が無い訪問の既定の長さ (分)。 */
 const DEFAULT_DURATION_MIN = 30;
 
-/** 行アクション (🛌休みにする / ＋訪問 / ＋イベント) の見た目 = 盤面セルと同じ。 */
+/**
+ * 行アクション (🛌休み / ＋訪問 / ＋イベント) の追加クラス。
+ * PO 要望 2026-08-23: hover でだけ薄く出る小さなアイコンをやめ、常時表示の
+ * `Button variant="outline" size="sm"` (高さ 24px に詰めたもの) にする。
+ */
 const ROW_ACTION_CLASS =
-  'rounded border border-dashed border-border-default px-1 py-0.5 text-[10px] font-normal text-text-muted/80 transition-colors hover:border-brand-primary hover:text-brand-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary';
+  'h-6 shrink-0 gap-0.5 px-1.5 text-[11px] font-normal leading-none text-text-secondary hover:border-brand-primary hover:text-brand-primary focus-visible:ring-1 focus-visible:ring-offset-0';
+
+/** スタッフ入れ替えの「持ち上げ」/「受け皿」で使うブランド色 (トークン未整備のため実値も持つ)。 */
+const SWAP_BRAND = 'var(--brand-primary, #e15a7f)';
 
 /** ゴーストの色 (モックの --del / --add)。トークン化前なので実値で持つ。 */
 const GHOST_BEFORE = '#2f7fd1';
@@ -252,6 +267,55 @@ function leftPct(min: number): number {
 
 function widthPct(durationMin: number): number {
   return (durationMin / TOTAL_MIN) * 100;
+}
+
+/**
+ * スタッフ入れ替えドラッグの「掴んだ感」を作る氏名カード風ゴースト
+ * (PO 要望 2026-08-23: ブラウザ既定の半透明スナップショットでは持ち上げた感が無い)。
+ *
+ * 作法は `courseDnd.applyCourseDragImage` と同じ = オフスクリーンに描いて
+ * `setDragImage` に渡し、スナップショット済みの次 tick で捨てる。
+ * jsdom (テスト) の `setDragImage` 欠落はガードして no-op。
+ */
+function applyStaffSwapDragImage(dt: DataTransfer, name: string, office?: string | null): void {
+  if (typeof document === 'undefined' || typeof dt.setDragImage !== 'function') return;
+  const ghost = document.createElement('div');
+  ghost.setAttribute('data-testid', 'tl-swap-drag-ghost');
+  ghost.style.cssText = [
+    'position:fixed',
+    'top:-300px',
+    'left:-300px',
+    'z-index:9999',
+    'pointer-events:none',
+    'padding:8px 14px',
+    'border-radius:10px',
+    'background:#ffffff',
+    'border:1.5px solid #e15a7f',
+    'border-left:6px solid #e15a7f',
+    'box-shadow:0 12px 30px rgba(0,0,0,0.26)',
+    'font-family:inherit',
+    'max-width:280px',
+    'white-space:nowrap',
+    // 少し拡大 = 盤面から持ち上がって見せる。
+    'transform:scale(1.06)',
+  ].join(';');
+  const title = document.createElement('div');
+  title.textContent = `⠿ ${name}`;
+  title.style.cssText = 'font-size:15px;font-weight:700;color:#1f2937;';
+  ghost.appendChild(title);
+  if (office) {
+    const officeEl = document.createElement('div');
+    officeEl.textContent = office;
+    officeEl.style.cssText = 'font-size:11px;color:#6b7280;margin-top:2px;';
+    ghost.appendChild(officeEl);
+  }
+  const action = document.createElement('div');
+  action.textContent = '予定を入れ替え';
+  action.style.cssText = 'font-size:11px;font-weight:700;color:#e15a7f;margin-top:3px;';
+  ghost.appendChild(action);
+  document.body.appendChild(ghost);
+  dt.setDragImage(ghost, 18, 18);
+  window.setTimeout(() => ghost.remove(), 0);
 }
 
 /**
@@ -495,9 +559,14 @@ export function StaffTimelineView({
   }, [day]);
 
   const handleSwapDragStart = React.useCallback(
-    (e: React.DragEvent<HTMLElement>, staffId: string) => {
+    (e: React.DragEvent<HTMLElement>, row: StaffTimelineRow) => {
+      const staffId = row.staffId;
       e.dataTransfer?.setData(STAFF_SWAP_MIME, JSON.stringify({ staffId, day }));
-      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        // 既定のスナップショットではなく氏名カードを掴ませる (PO 要望 2026-08-23)。
+        applyStaffSwapDragImage(e.dataTransfer, row.name, row.office);
+      }
       setSwapMenuFor(null);
       setSwapFrom(staffId);
     },
@@ -968,7 +1037,11 @@ export function StaffTimelineView({
               drag.toRowKey === row.staffId &&
               drag.toRowKey !== drag.fromRowKey;
             const swappable = canSwapRow(row.staffId);
-            const isSwapOver = swappable && swapOver === row.staffId && swapFrom !== row.staffId;
+            /** いま掴んでいる行 = 持ち上げ表示。 */
+            const isSwapSource = swapFrom === row.staffId;
+            /** 掴んでいる最中の、落とせる他の行 = 受け皿表示。 */
+            const isSwapTarget = swappable && swapFrom !== null && !isSwapSource;
+            const isSwapOver = isSwapTarget && swapOver === row.staffId;
             return (
               <div
                 key={row.staffId}
@@ -979,17 +1052,26 @@ export function StaffTimelineView({
               >
                 <div
                   // 横スクロール時も氏名列を固定 (PO 指摘 2026-08-22)。
-                  className="group/tl-name relative sticky left-0 z-[5] border-r px-2 py-1.5 text-sm font-bold"
+                  className={[
+                    'relative sticky left-0 z-[5] border-r px-2 py-1.5 text-sm font-bold',
+                    'motion-safe:transition-all',
+                    // 掴んだ行は持ち上げる (訪問バーの drag?.moved と同じ言語)。
+                    isSwapSource ? 'z-10 opacity-[0.85] shadow-lg ring-2 ring-brand-primary' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
                   style={{
                     borderColor: 'var(--border-default)',
                     color: 'var(--text-primary)',
                     background: isSwapOver ? 'var(--bg-muted)' : 'var(--bg-base)',
+                    ...(isSwapSource ? { transform: 'translateY(-1px) scale(1.02)' } : null),
                     ...(isSwapOver
-                      ? { outline: '2px solid var(--brand-primary, #e15a7f)', outlineOffset: -2 }
+                      ? { outline: `2px solid ${SWAP_BRAND}`, outlineOffset: -2 }
                       : null),
                   }}
                   data-testid={`tl-name-${row.staffId}`}
                   data-swap-over={isSwapOver ? 'true' : undefined}
+                  data-swap-source={isSwapSource ? 'true' : undefined}
                   onDragOver={swappable ? (e) => handleSwapDragOver(e, row.staffId) : undefined}
                   onDragLeave={
                     swappable
@@ -1007,7 +1089,7 @@ export function StaffTimelineView({
                         blockReason={swapBlockReason}
                         open={swapMenuFor === row.staffId}
                         onOpenChange={(o) => setSwapMenuFor(o ? row.staffId : null)}
-                        onDragStart={(e) => handleSwapDragStart(e, row.staffId)}
+                        onDragStart={(e) => handleSwapDragStart(e, row)}
                         onDragEnd={handleSwapDragEnd}
                         onPick={(toStaffId) => handleSwapPick(row.staffId, toStaffId)}
                       />
@@ -1023,48 +1105,69 @@ export function StaffTimelineView({
                     </span>
                   </span>
                   {showRowActions && isRealStaffRow(row.staffId) ? (
-                    // 行アクションはアイコンのみ + hover/フォーカス時だけ表示。
-                    // 絶対配置なので行高は伸びない (M2)。
+                    // PO 要望 2026-08-23: hover 待ちをやめて常時表示。氏名の下に
+                    // アイコン + 短いラベルのボタンを 1 行だけ置く (title は長文のまま)。
                     <span
-                      className="pointer-events-none absolute bottom-0.5 right-1 flex gap-0.5 opacity-0 transition-opacity focus-within:pointer-events-auto focus-within:opacity-100 group-hover/tl-name:pointer-events-auto group-hover/tl-name:opacity-100"
+                      className="mt-1 flex flex-wrap items-center gap-1"
                       data-testid={`tl-row-actions-${row.staffId}`}
                     >
                       {onMarkOff ? (
-                        <button
+                        <Button
                           type="button"
+                          variant="outline"
+                          size="sm"
                           onClick={(e) => onMarkOff(row.staffId, day, e.currentTarget)}
                           className={ROW_ACTION_CLASS}
                           title={`${row.name} をこの日休みにして、予定の渡し先を選びます`}
                           aria-label={`${row.name} ${dayLabel} を休みにする`}
                           data-testid={`tl-off-action-${row.staffId}`}
                         >
-                          🛌
-                        </button>
+                          <span aria-hidden="true">🛌</span>休み
+                        </Button>
                       ) : null}
                       {onAddVisit ? (
-                        <button
+                        <Button
                           type="button"
+                          variant="outline"
+                          size="sm"
                           onClick={(e) => onAddVisit(row.staffId, day, e.currentTarget)}
                           className={ROW_ACTION_CLASS}
                           title={`${row.name} ${dayLabel} に今週だけの訪問を追加（毎週の型は変わりません）`}
                           aria-label={`${row.name} ${dayLabel} に訪問を追加`}
                           data-testid={`tl-add-visit-${row.staffId}`}
                         >
-                          ＋👤
-                        </button>
+                          <span aria-hidden="true">👤</span>＋訪問
+                        </Button>
                       ) : null}
                       {onAddEvent ? (
-                        <button
+                        <Button
                           type="button"
+                          variant="outline"
+                          size="sm"
                           onClick={() => onAddEvent(row.staffId, day)}
                           className={ROW_ACTION_CLASS}
                           title={`${row.name} ${dayLabel} にイベントを追加`}
                           aria-label={`${row.name} ${dayLabel} にイベントを追加`}
                           data-testid={`tl-add-event-${row.staffId}`}
                         >
-                          ＋📅
-                        </button>
+                          <span aria-hidden="true">📅</span>＋イベント
+                        </Button>
                       ) : null}
+                    </span>
+                  ) : null}
+                  {isSwapTarget ? (
+                    // 「ここに落とす」の受け皿。pointer-events-none なので下の
+                    // 氏名セルが dragover/drop を受け続ける。
+                    <span
+                      className="pointer-events-none absolute inset-0.5 flex items-center justify-center rounded border border-dashed text-[11px] font-bold motion-safe:transition-colors"
+                      style={{
+                        borderColor: SWAP_BRAND,
+                        color: SWAP_BRAND,
+                        background: isSwapOver ? 'rgba(225,90,127,0.18)' : 'rgba(225,90,127,0.08)',
+                      }}
+                      data-testid={`tl-swap-drop-hint-${row.staffId}`}
+                    >
+                      ここに入れ替え
                     </span>
                   ) : null}
                 </div>

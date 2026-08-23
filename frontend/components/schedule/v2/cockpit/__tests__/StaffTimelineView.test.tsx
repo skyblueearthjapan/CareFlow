@@ -131,6 +131,8 @@ function makeDataTransfer() {
     dropEffect: 'none',
     setData: (type: string, value: string) => void store.set(type, value),
     getData: (type: string) => store.get(type) ?? '',
+    // 「持ち上げ」ゴースト (PO 要望 2026-08-23) の呼び出しを見るため生やす。
+    setDragImage: vi.fn(),
   };
 }
 
@@ -594,6 +596,59 @@ describe('StaffTimelineView — スタッフ入れ替え (氏名 ⠿ DnD)', () =
     expect(screen.queryByTestId(`tl-swap-menu-${STAFF_1}`)).not.toBeInTheDocument();
   });
 
+  it('(d) dragstart で氏名カード風ゴーストを setDragImage に渡す', () => {
+    renderView();
+    const dt = makeDataTransfer();
+
+    fireEvent.dragStart(screen.getByTestId(`tl-swap-grip-${STAFF_1}`), { dataTransfer: dt });
+
+    expect(dt.setDragImage).toHaveBeenCalledTimes(1);
+    const ghost = dt.setDragImage.mock.calls[0]?.[0] as HTMLElement;
+    expect(ghost).toBeInstanceOf(HTMLElement);
+    // 氏名 + 拠点 + 何が起きるか を載せる (既定のスナップショットでは分からない)
+    expect(ghost.textContent).toContain('宇田川');
+    expect(ghost.textContent).toContain('稲毛');
+    expect(ghost.textContent).toContain('予定を入れ替え');
+  });
+
+  it('(e) ドラッグ中は掴んだ行が持ち上がり、他の行が受け皿になる (dragend で解除)', () => {
+    renderView();
+    const dt = makeDataTransfer();
+    const grip = screen.getByTestId(`tl-swap-grip-${STAFF_1}`);
+    const source = screen.getByTestId(`tl-name-${STAFF_1}`);
+    const other = screen.getByTestId(`tl-name-${STAFF_2}`);
+
+    // 掴む前はどちらも素の状態
+    expect(source).not.toHaveAttribute('data-swap-source');
+    expect(screen.queryByTestId(`tl-swap-drop-hint-${STAFF_2}`)).not.toBeInTheDocument();
+
+    fireEvent.dragStart(grip, { dataTransfer: dt });
+
+    // 掴んだ行 = 持ち上げ (訪問バーの drag?.moved と同じ shadow-lg 系)
+    expect(source).toHaveAttribute('data-swap-source', 'true');
+    expect(source.className).toContain('shadow-lg');
+    expect(source.className).toContain('ring-2');
+    expect(source.className).toContain('motion-safe:transition-all');
+    // 掴んだ行は受け皿にしない
+    expect(screen.queryByTestId(`tl-swap-drop-hint-${STAFF_1}`)).not.toBeInTheDocument();
+    // 「（担当なし）」行は入れ替え相手になれないので受け皿も出ない
+    expect(screen.queryByTestId(`tl-swap-drop-hint-${UNASSIGNED_ROW_KEY}`)).not.toBeInTheDocument();
+
+    // 他の行 = 「ここに入れ替え」の受け皿
+    const hint = screen.getByTestId(`tl-swap-drop-hint-${STAFF_2}`);
+    expect(hint).toHaveTextContent('ここに入れ替え');
+    expect(other).not.toHaveAttribute('data-swap-over');
+
+    // dragover 中の行はさらに強調
+    fireEvent.dragOver(other, { dataTransfer: dt });
+    expect(other).toHaveAttribute('data-swap-over', 'true');
+
+    fireEvent.dragEnd(grip);
+    expect(source).not.toHaveAttribute('data-swap-source');
+    expect(other).not.toHaveAttribute('data-swap-over');
+    expect(screen.queryByTestId(`tl-swap-drop-hint-${STAFF_2}`)).not.toBeInTheDocument();
+  });
+
   it('(b4) canEdit=false は掴めない (理由が title に出る)', () => {
     const { onStaffSwap } = renderView({ canEdit: false });
     const grip = screen.getByTestId(`tl-swap-grip-${STAFF_1}`);
@@ -698,6 +753,26 @@ describe('StaffTimelineView — 行アクション (🛌休みにする / ＋訪
 
     fireEvent.click(screen.getByTestId(`tl-add-event-${STAFF_1}`));
     expect(onAddEvent).toHaveBeenCalledWith(STAFF_1, 3);
+  });
+
+  it('hover 無しで常時見える (opacity 0 で隠さない) / アイコン + 短いラベル', () => {
+    renderWithActions();
+    const actions = screen.getByTestId(`tl-row-actions-${STAFF_1}`);
+
+    // PO 要望 2026-08-23: hover 待ちの opacity-0 / pointer-events-none をやめた
+    expect(actions.className).not.toContain('opacity-0');
+    expect(actions.className).not.toContain('pointer-events-none');
+    expect(actions.className).not.toContain('group-hover');
+
+    const off = screen.getByTestId(`tl-off-action-${STAFF_1}`);
+    const addVisit = screen.getByTestId(`tl-add-visit-${STAFF_1}`);
+    const addEvent = screen.getByTestId(`tl-add-event-${STAFF_1}`);
+    expect(off).toHaveTextContent('休み');
+    expect(addVisit).toHaveTextContent('＋訪問');
+    expect(addEvent).toHaveTextContent('＋イベント');
+    // title は現行の長文のまま (何が起きるかの説明)
+    expect(off.getAttribute('title')).toContain('渡し先');
+    expect(addVisit.getAttribute('title')).toContain('毎週の型は変わりません');
   });
 
   it('「（担当なし）」行と不明スタッフ行には出さない', () => {
