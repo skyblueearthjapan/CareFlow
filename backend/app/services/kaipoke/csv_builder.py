@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from app.models.office import Office
     from app.models.patient import Patient
     from app.models.staff import Staff
+    from app.models.visit import Visit
 
 # カイポケ18列ヘッダー (実 export と同一表記)。
 HEADER: list[str] = [
@@ -82,18 +83,35 @@ _QUALIFICATION_ASSISTANT_NURSE = "准看護師"
 
 COMPANION_MARK = "○"
 
+# 「カイポケのサービス内容に合わせる」で選べる 4 通り (区分 × 資格の全組み合わせ)。
+# **ここが単一ソース** — FE (`lib/schemas/v2/cockpit.ts` の
+# `KAIPOKE_SERVICE_CONTENT_PRESETS`) はこの並びを写している。片方だけ足すと
+# 「画面には出るが BE の想定に無い値」ができるので、変更時は必ず両方直すこと。
+# これ以外の値も API は受け付ける (例外運用の自由入力・FE は確認ダイアログを出す)。
+SERVICE_CONTENT_PRESETS: tuple[str, ...] = (
+    f"{_SERVICE_BASE_PSYCHIATRIC}・{_GRADE_NURSE}",
+    f"{_SERVICE_BASE_PSYCHIATRIC}・{_GRADE_ASSISTANT_NURSE}",
+    f"{_SERVICE_BASE_GENERAL}・{_GRADE_NURSE}",
+    f"{_SERVICE_BASE_GENERAL}・{_GRADE_ASSISTANT_NURSE}",
+)
 
-def resolve_service_content(patient: Patient, primary_staff: Staff | None) -> str:
+
+def resolve_service_content(
+    patient: Patient, primary_staff: Staff | None, visit: Visit | None = None
+) -> str:
     """カイポケ「サービス内容」を決定する (設計 §2 の唯一の正典)。
 
-    規則 = **患者の訪問看護区分 × 職員1の資格**::
+    規則 = **患者の訪問看護区分 × 職員1の資格**、ただし上書きが 2 段ある::
 
-        患者上書き (kaipoke_service_content) があればそれをそのまま出力
+        訪問上書き (visits.kaipoke_service_override) があればそのまま出力
+        患者上書き (patients.kaipoke_service_content) があればそのまま出力
         base  = 'general' → 基本療養費Ⅰ / それ以外 → 精神基本療養費Ⅰ
         grade = 職員1が准看護師 → 准看 / それ以外 → 正看
         → f"{base}・{grade}"
 
-    優先順位は **患者上書き > 分岐** の 2 段だけ。``BuildOptions
+    優先順位は **訪問上書き > 患者上書き > 分岐** の 3 段。狭い方が勝つ:
+    訪問上書きは「この 1 件だけカイポケに合わせる」ための逃げ道で、患者上書きや
+    マスタ (区分 / 資格) を動かさずに済ませるためにある。``BuildOptions
     .default_service_content`` (事業所既定) は **この関数では使わない**:
     区分と資格が揃えば必ず値が決まるため、事業所既定を挟むと「どちらが正か」が
     二重になり偽差分の温床になる。オプションは後方互換 (既存呼び出し) のために
@@ -104,7 +122,11 @@ def resolve_service_content(patient: Patient, primary_staff: Staff | None) -> st
         primary_staff: 職員1 (``visits.primary_staff_id``) のスタッフ。
             未割当 ('-' 行) は ``None`` を渡す → 患者ベース + 正看。
             同行 (職員2/3) は影響しない (カイポケの実態どおり)。
+        visit: 対象の訪問 (``kaipoke_service_override`` を見るためだけに使う)。
+            省略時は訪問上書きなしとして扱う (純関数テスト・旧呼び出し互換)。
     """
+    if visit is not None and visit.kaipoke_service_override:
+        return visit.kaipoke_service_override
     if patient.kaipoke_service_content:
         return patient.kaipoke_service_content
     # visit_category は NOT NULL DEFAULT 'psychiatric' (mig 0077)。ORM で新規生成
@@ -336,10 +358,12 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
             # 差分計算用: カイポケの未割当表記 '-' で行として含める
             # (BuildOptions.include_unassigned の docstring 参照)。
             primary = StaffCell(name="-", qualification="")
-        # サービス内容 = 患者上書き > 患者区分 × **職員1** の資格 (設計 §2)。
+        # サービス内容 = 訪問上書き > 患者上書き > 患者区分 × **職員1** の資格 (設計 §2)。
         # 未割当 ('-') は職員 None → 患者ベース + 正看。同行 (職員2/3) は無関係。
         service_content = resolve_service_content(
-            patient, staff_map.get(v.primary_staff_id) if v.primary_staff_id else None
+            patient,
+            staff_map.get(v.primary_staff_id) if v.primary_staff_id else None,
+            v,
         )
         secondary = _cell(v.secondary_staff_id, companion=False)
         # 同行者 (設計決定事項#4 / 一般化 決定#6): 新人同行も一般スタッフの同行も

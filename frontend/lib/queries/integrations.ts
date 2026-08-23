@@ -56,6 +56,7 @@ import type {
   TestKaipokeCredentialsResult,
   WeekSchedule,
 } from '@/lib/schemas/integration';
+import { MasterReconcileSchema } from '@/lib/schemas/integration';
 
 // --- Kaipoke jobs ---------------------------------------------------------
 
@@ -322,14 +323,18 @@ export function useMasterReconcile() {
   const refreshToken = session?.refreshToken ?? null;
 
   return useMutation<MasterReconcile, Error, { month: string }>({
-    mutationFn: (payload) =>
-      fetcher<MasterReconcile>('/api/v1/integrations/master-reconcile', {
+    mutationFn: async (payload) => {
+      const res = await fetcher<unknown>('/api/v1/integrations/master-reconcile', {
         method: 'POST',
         body: JSON.stringify(payload),
         accessToken,
         refreshToken,
         signal: AbortSignal.timeout(150_000),
-      }),
+      });
+      // zod で通す = 追加フィールド (staffQualifications) の既定値がここで効く。
+      // 旧 BE (未デプロイ) 応答でも [] になり、画面が undefined で落ちない。
+      return MasterReconcileSchema.parse(res);
+    },
   });
 }
 

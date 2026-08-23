@@ -29,10 +29,19 @@ S2 でサービス内容の自動判定 (患者の訪問看護区分 × 職員1�
 入れるため、サービス内容の違いは常に **delete + add** として現れる。
 つまり「RPA が登録できない値」が実際に書き込まれる経路は add のみ。
 delete / edit / date_change は既存行を動かすだけなので素通しでよい。
+
+## ただし delete は「ペアなら」道連れに止める
+
+上の理屈は 1 行ずつ見れば正しいが、**除外した add と対になる delete** だけは
+別扱いが要る。サービス内容のズレは delete + add の 2 行で表現されるので、
+add を落として delete だけ送ると **カイポケから予定が消えたまま作り直されない**。
+誤った値で登録されるより悪い事故なので、``rpa_unsupported_item_ids`` が
+同一キー ``(日, 開始時刻, 正規化利用者名)`` の delete も一緒に外す。
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from app.core.config import get_settings
@@ -69,3 +78,81 @@ def is_rpa_unsupported(action: str, after: dict[str, Any] | None) -> bool:
     if not service_type:
         return False
     return service_type != RPA_SUPPORTED_SERVICE_CONTENT
+
+
+# --- ペア保護 (delete + add の片肺送信を防ぐ) --------------------------------
+
+
+def _side(action: str, before: dict[str, Any] | None, after: dict[str, Any] | None):
+    """その項目の「実体」が載っている側 (resolve_item_date と同じ規則)。
+
+    delete/edit/date_change は before (現況の位置)、add は after (これから作る位置)。
+    """
+    return (before if action in ("delete", "edit", "date_change") else after) or {}
+
+
+def pair_key(
+    action: str, before: dict[str, Any] | None, after: dict[str, Any] | None
+) -> str | None:
+    """delete と add が **同じ訪問** を指しているか判定するキー。
+
+    ``(日, 開始時刻, 正規化した利用者名)``。CSV の日付列は「日」(1-31) しか
+    持たないが、突合は 1 シート = 1 週 (同月) の中で行うので日で足りる。
+    氏名の正規化は ``master_reconcile.normalize_person_name`` を借りる
+    (異体字・空白のゆれで同じ訪問がペアと認識されないのを防ぐ)。
+
+    解決できない (日付か時刻か氏名が空) 場合は ``None`` = ペア判定をしない。
+    """
+    from app.services.kaipoke.master_reconcile import normalize_person_name
+
+    src = _side(action, before, after)
+    day = str(src.get("date") or "").strip()
+    start = str(src.get("start_time") or "").strip()
+    name = str(src.get("user_name") or "").strip()
+    if not day or not start or not name:
+        return None
+    return f"{day}|{start[:5]}|{normalize_person_name(name)}"
+
+
+def rpa_unsupported_item_ids(items: Iterable[Any]) -> set[Any]:
+    """送信対象から外すべき item の id 集合 (**ペアを巻き込んで** 外す)。
+
+    ## なぜ delete まで外すのか
+
+    サービス内容だけが違う訪問は、カイポケの edit がサービス内容を触れない
+    都合で **必ず delete + add の 2 行**として現れる (設計 §3-1)。ここで add
+    だけを除外して delete を送ると、カイポケからその行が消えたまま新しい行が
+    作られない = **予定が丸ごと消える**。誤った値で登録されるより悪い。
+
+    そこで、除外する add と同じ ``pair_key`` を持つ delete も道連れに外す。
+    「サービス内容のズレは、らく助側で 1 件だけ合わせる (visit-service-override)
+    か、カイポケで直接直す」— どちらにせよ RPA には触らせない、という形に揃う。
+
+    Args:
+        items: ``id`` / ``action`` / ``before`` / ``after`` を持つオブジェクト
+            (``CorrectionSheetItem`` を想定)。
+
+    Returns:
+        除外対象の ``item.id`` 集合。門が開いていれば (S3 完了後) 常に空。
+    """
+    if service_branch_enabled():
+        return set()
+
+    rows = list(items)
+    skip: set[Any] = set()
+    blocked_keys: set[str] = set()
+    for it in rows:
+        if is_rpa_unsupported(it.action, it.after):
+            skip.add(it.id)
+            key = pair_key(it.action, it.before, it.after)
+            if key is not None:
+                blocked_keys.add(key)
+
+    if blocked_keys:
+        for it in rows:
+            if it.id in skip or it.action != "delete":
+                continue
+            key = pair_key(it.action, it.before, it.after)
+            if key is not None and key in blocked_keys:
+                skip.add(it.id)
+    return skip

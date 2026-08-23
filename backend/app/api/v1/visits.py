@@ -245,6 +245,10 @@ def _serialize_visit(
         # 予定外訪問 (adhoc-checkin 生成 / 設計 §3)。week_pinned と同じ罠の位置:
         # 手書き dict なのでここに足さないと VisitRead の default False で潰れる。
         "is_unplanned": visit.is_unplanned,
+        # 訪問単位のサービス内容上書き (migration 0078)。week_pinned と同じ罠の
+        # 位置: 手書き dict なのでここに足さないと VisitRead の default None で
+        # 潰れ、DB に値があっても API が null を返す。
+        "kaipoke_service_override": visit.kaipoke_service_override,
         "note": visit.note,
         "kaipoke_id": visit.kaipoke_id,
         # W2-BE4 v2 fields

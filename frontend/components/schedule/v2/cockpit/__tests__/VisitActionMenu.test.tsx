@@ -46,6 +46,7 @@ function renderMenu(overrides: Partial<React.ComponentProps<typeof VisitActionMe
     onChangeTime: vi.fn(),
     onMoveWeekday: vi.fn(),
     onChangeMaster: vi.fn(),
+    onChangeServiceContent: vi.fn(),
   };
   render(
     <VisitActionMenu
@@ -159,5 +160,35 @@ describe('VisitActionMenu', () => {
     expect(screen.getByTestId('visit-action-week-pinned')).toBeInTheDocument();
     expect(screen.getByTestId('visit-action-cancel')).toBeDisabled();
     expect(screen.getByLabelText('担当変更')).toBeDisabled();
+  });
+
+  // ── 🧾 カイポケのサービス内容に合わせる (mig 0078 / 設計 §2) ──
+
+  it('サービス内容の項目は現在値を出し、押すとコールバックを呼ぶ', () => {
+    const h = renderMenu({
+      visit: { ...BASE_VISIT, kaipoke_service_override: '基本療養費Ⅰ・准看' },
+    });
+    const btn = screen.getByTestId('visit-action-service-content');
+    expect(btn).toHaveTextContent('カイポケのサービス内容に合わせる');
+    expect(btn).toHaveTextContent('現在: 基本療養費Ⅰ・准看');
+    fireEvent.click(btn);
+    expect(h.onChangeServiceContent).toHaveBeenCalled();
+  });
+
+  it('上書きが無いときは「この訪問だけ（マスタは変えない）」と出す', () => {
+    renderMenu();
+    expect(screen.getByTestId('visit-action-service-content')).toHaveTextContent(
+      'この訪問だけ（マスタは変えない）',
+    );
+  });
+
+  it('位置を変えないので青ピンでも押せる（取消と違って蓋の対象外）', () => {
+    renderMenu({ visit: { ...BASE_VISIT, week_pinned: true } });
+    expect(screen.getByTestId('visit-action-service-content')).toBeEnabled();
+  });
+
+  it('コールバック未指定なら項目を出さない', () => {
+    renderMenu({ onChangeServiceContent: undefined });
+    expect(screen.queryByTestId('visit-action-service-content')).toBeNull();
   });
 });

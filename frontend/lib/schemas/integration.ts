@@ -175,10 +175,33 @@ export const MasterReconcileGroupSchema = z.object({
   rakusukeOnly: z.array(z.string()).default([]),
   notationDiff: z.array(z.object({ kaipoke: z.string(), rakusuke: z.string() })).default([]),
 });
+/**
+ * スタッフ 1 名ぶんの資格突合 (カイポケ「職種1」× らく助 `staff.qualification`)。
+ * kaipoke-service-content-design.md §1-2 — サービス内容の正看/准看はここで決まる。
+ *
+ * status:
+ *   match               = 一致 (画面には出さない)
+ *   mismatch            = 両方あるが違う → 表示のみ (どちらが正かは人が判断する)
+ *   missing_in_rakusuke = らく助が未設定 → 「カイポケの職種を採用」できる
+ *   unknown_staff       = カイポケに居るがらく助に該当スタッフが無い
+ *                         (画面では氏名側の「カイポケのみ」行に職種を添えて出す)
+ *   ambiguous           = 同じ名前の在職スタッフが複数 → 誰の資格か決められず採用不可
+ */
+export const MasterReconcileQualificationSchema = z.object({
+  staffId: z.string().uuid().nullable().default(null),
+  name: z.string(),
+  kaipokeQualification: z.string().nullable().default(null),
+  rakusukeQualification: z.string().nullable().default(null),
+  status: z.enum(['match', 'mismatch', 'missing_in_rakusuke', 'unknown_staff', 'ambiguous']),
+});
+export type MasterReconcileQualification = z.infer<typeof MasterReconcileQualificationSchema>;
+
 export const MasterReconcileSchema = z.object({
   month: z.string(),
   patients: MasterReconcileGroupSchema,
   staff: MasterReconcileGroupSchema,
+  /** 資格のズレ / 未設定。旧 BE 応答では欠けるので既定 []。 */
+  staffQualifications: z.array(MasterReconcileQualificationSchema).default([]),
 });
 export type MasterReconcile = z.infer<typeof MasterReconcileSchema>;
 

@@ -57,6 +57,19 @@ export function itemField(
   return typeof v === 'string' ? v : v == null ? '' : String(v);
 }
 
+/**
+ * その項目の「実体」が載っている側 (BE `resolve_item_date` / `rpa_capability._side`
+ * と同じ規則)。
+ *
+ * BE の差分は **反対側を空文字で埋める**: delete なら `after` が
+ * `{date:'', start_time:'', ...}`、add なら `before` が空。つまり
+ * `after ?? before` で取ると **delete の日付/時刻が空文字になる**。
+ * 日付や時刻で訪問を突き合わせるときは必ずこの関数で側を決めること。
+ */
+export function itemSide(action: string): 'before' | 'after' {
+  return action === 'delete' || action === 'edit' || action === 'date_change' ? 'before' : 'after';
+}
+
 /** 'YYYY-MM-DD' → ローカル Date (タイムゾーンのずれない曜日計算用)。 */
 export function parseIsoDate(dateIso: string): Date {
   const [y, m, d] = dateIso.split('-');

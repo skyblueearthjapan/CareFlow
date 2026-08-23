@@ -114,6 +114,13 @@ export const visitReadSchema = visitBaseSchema.extend({
     )
     .nullable()
     .optional(),
+  /**
+   * 訪問単位のサービス内容上書き (mig 0078 / kaipoke-service-content-design.md §2)。
+   * null = 自動判定 (患者の区分 × 職員1の資格)。**読み取り専用** —
+   * 書き換えは専用 API (`POST /schedule/v2/visit-service-override`) だけ
+   * (PATCH /visits には無い = admin 限定 + undo 可の経路に 1 本化する)。
+   */
+  kaipoke_service_override: z.string().nullable().optional(),
 });
 
 export type VisitCreate = z.infer<typeof visitCreateSchema>;

@@ -46,10 +46,15 @@ import {
   type UnsentSummaryRequest,
   type VisitCancelWeekRequest,
   type VisitCancelWeekResponse,
+  visitServiceOverrideRequestSchema,
+  visitServiceOverrideResponseSchema,
+  type VisitServiceOverrideRequest,
+  type VisitServiceOverrideResponse,
 } from '@/lib/schemas/v2/cockpit';
 
 const SUBSTITUTE_CANDIDATES_PATH = '/api/v1/schedule/v2/substitute-candidates';
 const VISIT_CANCEL_WEEK_PATH = '/api/v1/schedule/v2/visit-cancel-week';
+const VISIT_SERVICE_OVERRIDE_PATH = '/api/v1/schedule/v2/visit-service-override';
 const UNSENT_SUMMARY_PATH = '/api/v1/integrations/unsent-summary';
 
 /** TanStack Query キー prefix (代替候補)。 */
@@ -135,6 +140,38 @@ export function useVisitCancelWeek(): UseMutationResult<
         refreshToken,
       });
       return visitCancelWeekResponseSchema.parse(result);
+    },
+    onSuccess: () => invalidateBoard(qc),
+  });
+}
+
+/**
+ * この訪問だけカイポケのサービス内容に合わせる (`visits.kaipoke_service_override`)。
+ * マスタ (患者の区分 / スタッフの資格) は動かさない。`service_content: null` で解除。
+ *
+ * 対象は `visit_id` (盤面のカードから) か `item_id` (同期バーの差分行から) の
+ * どちらか一方 — item → visit の解決は **BE 側** が持つ (氏名の正規化ルールを
+ * FE に二重化しない)。
+ */
+export function useVisitServiceOverride(): UseMutationResult<
+  VisitServiceOverrideResponse,
+  Error,
+  VisitServiceOverrideRequest
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<VisitServiceOverrideResponse, Error, VisitServiceOverrideRequest>({
+    mutationFn: async (raw) => {
+      const payload = visitServiceOverrideRequestSchema.parse(raw);
+      const result = await fetcher<unknown>(VISIT_SERVICE_OVERRIDE_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      });
+      return visitServiceOverrideResponseSchema.parse(result);
     },
     onSuccess: () => invalidateBoard(qc),
   });

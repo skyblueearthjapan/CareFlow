@@ -1289,3 +1289,360 @@ async def test_apply_skips_rpa_unsupported_and_sends_the_rest(client, db, stub_k
         job.result_summary["skipped_rpa_unsupported_reason"] == "RPA が准看/一般の登録に未対応(S3)"
     )
     assert job.result_summary["correction_count"] == 1
+
+
+# ===========================================================================
+# H2 (2026-08-23 レビュー): ペア保護 — 除外した add の相方 delete も送らない
+#
+# サービス内容のズレは delete + add の 2 行で表現される (設計 §3-1)。add だけ
+# 落として delete を送ると **カイポケから予定が丸ごと消える** = 誤った値で
+# 登録されるより悪い。同一キー (日, 開始時刻, 正規化患者名) の delete も外す。
+# ===========================================================================
+
+
+async def _seed_general_patient(db, seeded, *, name: str = "兼行　様") -> Patient:
+    """一般 (visit_category='general') の患者 = らく助の add が RPA 未対応になる。"""
+    p = Patient(
+        code=f"PT-PAIR-{name}",
+        name=name,
+        status="active",
+        insurance="medical",
+        primary_office_id=seeded["office"].id,
+        visit_category="general",
+    )
+    db.add(p)
+    await db.commit()
+    return p
+
+
+async def _save_snapshot_with_row(
+    db,
+    week_start: date,
+    *,
+    day: date,
+    patient_name: str,
+    service_content: str,
+    start: str = "10:00",
+    end: str = "10:35",
+) -> None:
+    """カイポケ側に 1 行だけ入っている現況を保存する。
+
+    らく助の同じ訪問とサービス内容だけが違えば、差分は delete + add のペアで出る。
+    """
+    weekday = "月火水木金土日"[day.weekday()]
+    row = [
+        STAFF_NAME,
+        "看護師",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        OFFICE_NAME,
+        str(day.day),
+        weekday,
+        patient_name,
+        "医療保険",
+        service_content,
+        start,
+        end,
+        "35",
+        "",
+    ]
+    csv_text = ",".join(HEADER) + "\r\n" + ",".join(row) + "\r\n"
+    await save_snapshot(
+        db,
+        office_id=None,
+        month=_month_of(week_start),
+        week_start=None,
+        csv_text=csv_text,
+        source_op="test",
+    )
+    await db.commit()
+
+
+async def _seed_service_mismatch_pair(db, seeded, week_start: date) -> tuple[Patient, date]:
+    """「サービス内容だけが違う」状態を作る (らく助=一般 / カイポケ=精神科)。"""
+    general = await _seed_general_patient(db, seeded)
+    day = week_start + timedelta(days=1)
+    db.add(
+        Visit(
+            patient_id=general.id,
+            visit_date=day,
+            start_time=time(10, 0),
+            end_time=time(10, 35),
+            type="regular",
+            status="planned",
+            source="auto",
+            required_staff_count=1,
+            primary_staff_id=seeded["staff"].id,
+        )
+    )
+    await db.commit()
+    await _save_snapshot_with_row(
+        db,
+        week_start,
+        day=day,
+        patient_name=general.name,
+        service_content="精神基本療養費Ⅰ・正看",
+    )
+    return general, day
+
+
+@pytest.mark.asyncio
+async def test_unsent_summary_flags_paired_delete_as_unsupported(client, db, stub_kaipoke) -> None:
+    """サービス内容のズレは delete+add の両方に rpa_unsupported が立ち、送れない。"""
+    admin = await _make_user(db, "unsent-pair-a@example.com")
+    seeded = await _seed_master(db)
+    week_start = _future_monday()
+    await _seed_service_mismatch_pair(db, seeded, week_start)
+
+    res = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    by_action = {it["action"]: it for it in body["items"]}
+    assert set(by_action) == {"add", "delete"}
+    assert by_action["add"]["after"]["service_type"] == "基本療養費Ⅰ・正看"
+    assert by_action["delete"]["before"]["service_type"] == "精神基本療養費Ⅰ・正看"
+    # 相方の delete にもフラグが立つ = FE はサービス内容を自前で見なくてよい。
+    assert by_action["add"]["rpa_unsupported"] is True
+    assert by_action["delete"]["rpa_unsupported"] is True
+    assert body["rpa_unsupported_count"] == 2
+    assert body["sendable_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_refuses_paired_delete_even_when_selected_alone(
+    client, db, stub_kaipoke
+) -> None:
+    """delete だけを部分適用しようとしても送らない (カイポケの行だけ消える事故)。"""
+    admin = await _make_user(db, "unsent-pair-b@example.com")
+    seeded = await _seed_master(db)
+    week_start = _future_monday()
+    await _seed_service_mismatch_pair(db, seeded, week_start)
+
+    body = (
+        await client.post(
+            UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+        )
+    ).json()
+    delete_item = next(it for it in body["items"] if it["action"] == "delete")
+
+    stub_kaipoke.responses["apply"] = {"jobId": "job-pair"}
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        json={"sheetId": body["sheet_id"], "dryRun": False, "itemIds": [delete_item["id"]]},
+        headers=_bearer(admin),
+    )
+    # 送信対象が空になる = 422 (RPA は呼ばない)。
+    assert res.status_code == 422, res.text
+    assert [name for name, _ in stub_kaipoke.calls if name == "apply"] == []
+
+
+@pytest.mark.asyncio
+async def test_apply_keeps_unrelated_delete_sendable(client, db, stub_kaipoke) -> None:
+    """ペアでない delete は巻き添えにしない (ガードの過剰適用を防ぐ)。"""
+    admin = await _make_user(db, "unsent-pair-c@example.com")
+    await _seed_master(db)
+    week_start = _future_monday()
+    day = week_start + timedelta(days=1)
+    # カイポケにだけある行 (らく助に対応する訪問なし) = 純粋な delete。
+    await _save_snapshot_with_row(
+        db,
+        week_start,
+        day=day,
+        patient_name=PATIENT_NAME,
+        service_content="精神基本療養費Ⅰ・正看",
+    )
+
+    body = (
+        await client.post(
+            UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+        )
+    ).json()
+    assert [it["action"] for it in body["items"]] == ["delete"]
+    assert body["items"][0]["rpa_unsupported"] is False
+    assert body["sendable_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_service_override_clears_the_pair_from_unsent(client, db, stub_kaipoke) -> None:
+    """受け入れ: 訪問上書きを適用 → 再計算でペアが消える (C1 の目的そのもの)。"""
+    admin = await _make_user(db, "unsent-pair-d@example.com")
+    seeded = await _seed_master(db)
+    week_start = _future_monday()
+    await _seed_service_mismatch_pair(db, seeded, week_start)
+
+    body = (
+        await client.post(
+            UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+        )
+    ).json()
+    delete_item = next(it for it in body["items"] if it["action"] == "delete")
+
+    # 同期バーの「この訪問だけカイポケに合わせる」= delete 側 item から visit を解決。
+    ov = await client.post(
+        "/api/v1/schedule/v2/visit-service-override",
+        json={"item_id": delete_item["id"], "service_content": "精神基本療養費Ⅰ・正看"},
+        headers=_bearer(admin),
+    )
+    assert ov.status_code == 200, ov.text
+    assert ov.json()["kaipoke_service_override"] == "精神基本療養費Ⅰ・正看"
+
+    after = (
+        await client.post(
+            UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+        )
+    ).json()
+    assert after["items"] == []
+    assert after["rpa_unsupported_count"] == 0
+
+
+# ===========================================================================
+# H3 (2026-08-23): 自動送信できない予定があることを admin へお知らせ
+#
+# 正典 = docs/plans/kaipoke-service-content-design.md §3-2 / §4。
+# ガードは黙って送信対象から外すので、気付けないと該当訪問がいつまでも
+# カイポケに入らない。冪等キーは **週だけ** (同期バーを開くたびに増えず、
+# 件数が変わったら本文を書き換えて未読に戻す = 最新の 1 通だけが残る)。
+# ===========================================================================
+
+
+async def _make_patient_general(db, seeded) -> None:
+    """患者を「一般」に切り替える = サービス内容が「基本療養費Ⅰ・正看」になる。"""
+    seeded["patient"].visit_category = "general"
+    await db.commit()
+
+
+def _open_rpa_gate(monkeypatch, *, enabled: bool) -> None:
+    """S3 完了後の状態 (enabled=True) を再現する。
+
+    ``get_settings`` は lru_cache された単一インスタンスなので、その属性を
+    直接差し替える (環境変数 + cache_clear より副作用が小さい)。
+    """
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "kaipoke_rpa_service_branch_enabled", enabled)
+
+
+@pytest.mark.asyncio
+async def test_unsent_summary_notifies_admin_once_per_week(client, db, stub_kaipoke) -> None:
+    """自動送信できない予定があれば admin へ 1 通。同じ週で件数も同じなら増えない。"""
+    from app.models.notification import Notification
+
+    admin = await _make_user(db, "unsent-notify-a@example.com")
+    other_admin = await _make_user(db, "unsent-notify-a2@example.com")
+    staff_user = await _make_user(db, "unsent-notify-a3@example.com", role="staff")
+    seeded = await _seed_master(db)
+    await _make_patient_general(db, seeded)
+    week_start = _future_monday()
+    await _add_visit(db, seeded, week_start + timedelta(days=1))
+    await _save_empty_snapshot(db, week_start)
+
+    for _ in range(2):
+        res = await client.post(
+            UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["rpa_unsupported_count"] == 1
+
+    rows = list(
+        (
+            await db.scalars(
+                select(Notification).where(Notification.reference_type == "rpa_unsupported")
+            )
+        ).all()
+    )
+    # admin 2 名ぶんだけ (同期バーを 2 回開いても増えない)。staff には出さない。
+    assert {r.user_id for r in rows} == {admin.id, other_admin.id}
+    assert staff_user.id not in {r.user_id for r in rows}
+    assert all(r.title == "カイポケへ自動送信できない予定が 1 件あります" for r in rows)
+    for r in rows:
+        assert "らく助からカイポケへ自動で登録できない予定が 1 件あります" in (r.body or "")
+        assert "准看護師の訪問・一般の訪問看護" in (r.body or "")
+        assert "カイポケの画面から直接ご登録ください" in (r.body or "")
+
+
+@pytest.mark.asyncio
+async def test_unsent_summary_updates_notification_when_count_changes(
+    client, db, stub_kaipoke
+) -> None:
+    """件数が変わったら本文を書き換えて未読に戻す (古い数字の通知を溜めない)。"""
+    from app.models.notification import Notification
+
+    admin = await _make_user(db, "unsent-notify-b@example.com")
+    seeded = await _seed_master(db)
+    await _make_patient_general(db, seeded)
+    week_start = _future_monday()
+    await _add_visit(db, seeded, week_start + timedelta(days=1))
+    await _save_empty_snapshot(db, week_start)
+
+    res = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    assert res.json()["rpa_unsupported_count"] == 1
+
+    # 既読にしてから件数を増やす → 未読に戻って新しい数字になる。
+    row = await db.scalar(
+        select(Notification).where(Notification.reference_type == "rpa_unsupported")
+    )
+    assert row is not None
+    row.read_at = datetime.now(ZoneInfo("Asia/Tokyo"))
+    await db.commit()
+
+    await _add_visit(db, seeded, week_start + timedelta(days=2), start=time(13, 0))
+    res = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    assert res.json()["rpa_unsupported_count"] == 2
+
+    # API は別セッションで UPDATE している。テスト側の identity map に残る
+    # 古い属性を捨ててから読み直す (expire_on_commit=False のため)。
+    db.expire_all()
+    rows = list(
+        (
+            await db.scalars(
+                select(Notification).where(Notification.reference_type == "rpa_unsupported")
+            )
+        ).all()
+    )
+    # 週ごとに 1 通のまま (件数ごとに増やさない)。
+    assert len(rows) == 1
+    assert rows[0].title == "カイポケへ自動送信できない予定が 2 件あります"
+    assert rows[0].read_at is None
+
+
+@pytest.mark.asyncio
+async def test_unsent_summary_does_not_notify_when_all_sendable(client, db, stub_kaipoke) -> None:
+    """自動送信できない予定が 0 件なら通知しない (既定の精神科 × 看護師)。"""
+    from app.models.notification import Notification
+
+    admin = await _make_user(db, "unsent-notify-c@example.com")
+    seeded = await _seed_master(db)
+    week_start = _future_monday()
+    await _add_visit(db, seeded, week_start + timedelta(days=1))
+    await _save_empty_snapshot(db, week_start)
+
+    res = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    assert res.json()["rpa_unsupported_count"] == 0
+    rows = (
+        await db.scalars(
+            select(Notification).where(Notification.reference_type == "rpa_unsupported")
+        )
+    ).all()
+    assert list(rows) == []
+
+
+def test_dedup_reference_id_is_stable_per_week() -> None:
+    """冪等キーは週の決定的 UUID — 件数は含めない (同じ週は 1 通に保つ)。"""
+    from app.services.kaipoke.rpa_unsupported_notify import dedup_reference_id
+
+    week = date(2026, 8, 24)
+    assert dedup_reference_id(week) == dedup_reference_id(week)
+    assert dedup_reference_id(week) != dedup_reference_id(week + timedelta(days=7))

@@ -359,11 +359,35 @@ class MasterReconcileGroup(BaseModel):
     notation_diff: list[MasterReconcileNotation] = Field(default_factory=list, alias="notationDiff")
 
 
+class MasterReconcileQualification(BaseModel):
+    """スタッフ 1 名ぶんの資格突合 (カイポケ「職種1」× らく助 ``staff.qualification``)。
+
+    ``status``:
+      * ``match``               — 一致 (画面には出さない)
+      * ``mismatch``            — 両方あるが違う → 表示のみ (どちらが正かは人が判断)
+      * ``missing_in_rakusuke`` — らく助が未設定 → 「カイポケの職種を採用」できる
+      * ``unknown_staff``       — カイポケに居るがらく助に該当スタッフが無い
+        (画面では氏名側の「カイポケのみ」行に職種を添えて出す)
+      * ``ambiguous``           — 同じ名前の在職スタッフが複数 → 採用不可
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    staff_id: UUID | None = Field(default=None, alias="staffId")
+    name: str
+    kaipoke_qualification: str | None = Field(default=None, alias="kaipokeQualification")
+    rakusuke_qualification: str | None = Field(default=None, alias="rakusukeQualification")
+    status: Literal["match", "mismatch", "missing_in_rakusuke", "unknown_staff", "ambiguous"]
+
+
 class MasterReconcileRead(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     month: str
     patients: MasterReconcileGroup
     staff: MasterReconcileGroup
+    # 資格のズレ / 未設定 (追加フィールドのみ = 既存クライアント後方互換)。
+    staff_qualifications: list[MasterReconcileQualification] = Field(
+        default_factory=list, alias="staffQualifications"
+    )
 
 
 class DiffAccepted(BaseModel):

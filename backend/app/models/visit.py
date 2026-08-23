@@ -141,6 +141,15 @@ class Visit(Base, TimestampMixin):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     kaipoke_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # 訪問単位のサービス内容上書き (migration 0078 / 設計
+    # ``docs/plans/kaipoke-service-content-design.md`` §2)。非 NULL なら
+    # ``csv_builder.resolve_service_content`` がこの値を **そのまま** 返す
+    # (患者上書き・区分 × 資格の分岐より強い)。
+    # 「この 1 訪問だけカイポケに合わせる」ための逃げ道で、マスタ (患者の区分 /
+    # スタッフの資格) を動かさずに済ませるのが目的。位置 (日付/時刻/担当) には
+    # 影響しないので、青ピンや planned 以外でも設定できる。
+    kaipoke_service_override: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # ---- W2-BE4 v2 additions (§3.3 / §4.5) ----------------------------------
     # 所属コース (Layer 2 で決定; CRUD 段階では NULL のまま運用しても可)
     course_id: Mapped[uuid.UUID | None] = mapped_column(

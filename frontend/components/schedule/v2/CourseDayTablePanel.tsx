@@ -178,6 +178,7 @@ import { FixedEventRow } from './cockpit/FixedEventRow';
 import { VisitActionMenu } from './cockpit/VisitActionMenu';
 import { SubstitutePanel } from './cockpit/SubstitutePanel';
 import { AddVisitDialog, type AddVisitPayload } from './cockpit/AddVisitDialog';
+import { ServiceContentDialog } from './cockpit/ServiceContentDialog';
 import {
   resolveVisitRowKey,
   StaffTimelineView,
@@ -195,7 +196,11 @@ import {
   type CockpitMarker,
   type CockpitMarkersByCell,
 } from './cockpit/reconcileMarkers';
-import { useEventCancelWeek, useVisitCancelWeek } from '@/lib/queries/cockpit';
+import {
+  useEventCancelWeek,
+  useVisitCancelWeek,
+  useVisitServiceOverride,
+} from '@/lib/queries/cockpit';
 import type { CockpitEventRead, SubstituteApplyPayload } from '@/lib/schemas/v2/cockpit';
 import { ChangeScopeChoice } from '@/components/schedule/v2/ChangeScopeChoice';
 import {
@@ -509,6 +514,17 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   const weekEndStr = format(addDays(weekStart, 6), 'yyyy-MM-dd');
   const visitsQuery = useVisits({ week_start: weekStartStr, week_end: weekEndStr });
   const weekVisits = useMemo(() => visitsQuery.data?.items ?? [], [visitsQuery.data]);
+
+  /**
+   * visit_id → 訪問単位のサービス内容上書き (mig 0078)。盤面用の型
+   * (WeekOverviewVisit) には持たせず、VisitActionMenu の表示だけに使う
+   * (盤面の見た目は変わらない = カイポケへ送る値だけの話なので)。
+   */
+  const serviceOverrideByVisitId = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const v of weekVisits) m.set(v.id, v.kaipoke_service_override ?? null);
+    return m;
+  }, [weekVisits]);
 
   // ─── Phase G-21 T4 reviewer C2: visit ↔ PFV 逆引き ──────────────
   // BE visits API は現状 `fixed_visit_id` / `is_pinned` を返さない. FE 側で
@@ -2918,6 +2934,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   /** 「📐 型も変える…」= ChangeScopeChoice の 2 択ダイアログ。 */
   const [masterScopeVisit, setMasterScopeVisit] = useState<TimelineVisit | null>(null);
   const [masterScope, setMasterScope] = useState<ChangeScopeValue>('pattern');
+  /** 「🧾 カイポケのサービス内容に合わせる…」= 訪問単位の上書きダイアログ (§2)。 */
+  const [serviceContentVisit, setServiceContentVisit] = useState<TimelineVisit | null>(null);
   /**
    * タイムラインでクリックした訪問。盤面 (リスト) は行そのものがメニューの
    * トリガーになるが、タイムラインのバーは絶対配置なので、選択中の 1 件を
@@ -3230,6 +3248,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
 
   const queryClient = useQueryClient();
   const visitCancelWeekMut = useVisitCancelWeek();
+  const visitServiceOverrideMut = useVisitServiceOverride();
   const eventCancelWeekMut = useEventCancelWeek();
   const createVisitMut = useCreateVisit();
   // useCreateOverride は staffId をフック引数に取る。代替候補パネルで
@@ -3311,8 +3330,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         ...v,
         status: (visitById.get(v.id) as { status?: string | null } | undefined)?.status ?? null,
         course_label: cockpitCourseLabel(v.course_template_id),
+        // 🧾 バッジ用 (mig 0078)。盤面用の型には無いので visits API から引く。
+        kaipoke_service_override: serviceOverrideByVisitId.get(v.id) ?? null,
       })),
-    [overviewVisits, visitById, cockpitCourseLabel],
+    [overviewVisits, visitById, cockpitCourseLabel, serviceOverrideByVisitId],
   );
 
   /**
@@ -3477,6 +3498,33 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
       }
     },
     [visitCancelWeekMut, invalidateCockpitBoard, handleUndo],
+  );
+
+  /**
+   * 「この訪問だけカイポケのサービス内容に合わせる」(§2 / mig 0078)。
+   * `serviceContent === null` は解除 = 自動判定 (区分 × 職員1の資格) へ戻す。
+   * マスタ (患者の区分 / スタッフの資格) には触れない。
+   */
+  const handleVisitServiceOverride = useCallback(
+    async (visit: TimelineVisit, serviceContent: string | null) => {
+      try {
+        await visitServiceOverrideMut.mutateAsync({
+          visit_id: visit.id,
+          service_content: serviceContent,
+          op_group_id: crypto.randomUUID(),
+        });
+        invalidateCockpitBoard();
+        toast.success(
+          serviceContent
+            ? `${visit.patient_name ?? 'この訪問'} のサービス内容を「${serviceContent}」に合わせました`
+            : `${visit.patient_name ?? 'この訪問'} のサービス内容の上書きを解除しました`,
+          { cancel: { label: '元に戻す', onClick: () => void handleUndo() } },
+        );
+      } catch (err) {
+        toast.error(`サービス内容の変更に失敗しました: ${formatErr(err)}`);
+      }
+    },
+    [visitServiceOverrideMut, invalidateCockpitBoard, handleUndo],
   );
 
   /**
@@ -4012,6 +4060,9 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             // ●未送信の正は同期バー (unsent-summary)。まだ数えていない間は
             // null = 「同期バーで確認」と出す (✓同期済 と言い切らない)。
             unsent: isVisitUnsent(visit.id),
+            // 訪問単位のサービス内容上書き (mig 0078)。cockpitVisits で
+            // visits API から載せてある (盤面の 🧾 バッジと同じ値)。
+            kaipoke_service_override: visit.kaipoke_service_override ?? null,
           }}
           staffOptions={cockpitStaffOptions}
           isPast={dateIso <= todayIsoJst}
@@ -4029,6 +4080,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             setMasterScope('pattern');
             setMasterScopeVisit(visit);
           }}
+          onChangeServiceContent={() => setServiceContentVisit(visit)}
         >
           {trigger}
         </VisitActionMenu>
@@ -5774,6 +5826,23 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* この訪問だけカイポケのサービス内容に合わせる (§2 / mig 0078)。 */}
+        <ServiceContentDialog
+          open={serviceContentVisit != null}
+          onOpenChange={(o) => {
+            if (!o) setServiceContentVisit(null);
+          }}
+          patientName={serviceContentVisit?.patient_name ?? 'この患者'}
+          current={serviceContentVisit?.kaipoke_service_override ?? null}
+          submitting={visitServiceOverrideMut.isPending}
+          onSubmit={(serviceContent) => {
+            const v = serviceContentVisit;
+            setServiceContentVisit(null);
+            if (!v) return;
+            void handleVisitServiceOverride(v, serviceContent);
+          }}
+        />
 
         {/* 週空間 Phase E: スタッフ入れ替え (氏名 ⠿ DnD) の確認 (PO 要望 2026-08-22)。 */}
         <Dialog

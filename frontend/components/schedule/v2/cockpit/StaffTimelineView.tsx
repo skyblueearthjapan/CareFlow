@@ -64,6 +64,11 @@ export type TimelineVisit = WeekOverviewVisit & {
   status?: string | null;
   /** コース見出し (例: 稲毛A)。バーの小見出しに出す。省略可。 */
   course_label?: string | null;
+  /**
+   * 訪問単位のサービス内容上書き (mig 0078)。非 null ならバーに 🧾 を出す
+   * (自動判定から外れている印)。
+   */
+  kaipoke_service_override?: string | null;
 };
 
 /** 盤面に載せるイベント。`cancelled_at` は mig 0075 (D2) の「今週だけ外す」。 */
@@ -1301,6 +1306,10 @@ const Bar = React.memo(function Bar({
   const isVisit = item.kind === 'visit';
   const cancelled = isVisit ? item.visit.status === 'cancelled' : item.event.cancelled_at != null;
   const pinned = isVisit ? item.visit.week_pinned === true : false;
+  // 訪問単位でサービス内容を上書きしている印 (mig 0078)。自動判定 (区分 × 資格)
+  // から外れている = 後で「なぜこの訪問だけ違うのか」を追えるようにする。
+  const serviceOverride =
+    isVisit && item.visit.kaipoke_service_override ? item.visit.kaipoke_service_override : null;
 
   // 状態の理由 (取消・青ピン) を種別の理由 (イベント) より先に出す。
   let blockReason: string | null = null;
@@ -1386,6 +1395,14 @@ const Bar = React.memo(function Bar({
           />
         ) : null}
         {pinned ? '📌 ' : ''}
+        {serviceOverride ? (
+          <span
+            title={`カイポケのサービス内容に合わせています: ${serviceOverride}`}
+            data-testid={`tl-service-override-${item.id}`}
+          >
+            🧾{' '}
+          </span>
+        ) : null}
         {title}
       </span>
     </button>

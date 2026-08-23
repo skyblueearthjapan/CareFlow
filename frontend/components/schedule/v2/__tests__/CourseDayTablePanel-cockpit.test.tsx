@@ -149,6 +149,9 @@ const mockUseQueries = vi.fn();
 const mockVisits = vi.fn();
 const mockCourses = vi.fn();
 const mockVisitCancelWeek = vi.fn().mockResolvedValue({ id: 'v1', status: 'cancelled' });
+const mockVisitServiceOverride = vi
+  .fn()
+  .mockResolvedValue({ id: 'v1', kaipoke_service_override: '基本療養費Ⅰ・准看' });
 /**
  * 休み登録は「遅い API」として振る舞わせる。付け替えを await せずに走らせると
  * 順序が逆転するため、遅延を入れて**本当に待っているか**を検証する (M-12)。
@@ -293,6 +296,7 @@ vi.mock('@/lib/queries/staff-overrides', () => ({
 // 運転席の新 API (契約書 §2)。代替候補は 1 グループ (コース無し = 訪問1件) を返す。
 vi.mock('@/lib/queries/cockpit', () => ({
   useVisitCancelWeek: () => ({ mutateAsync: mockVisitCancelWeek, isPending: false }),
+  useVisitServiceOverride: () => ({ mutateAsync: mockVisitServiceOverride, isPending: false }),
   useEventCancelWeek: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useUnsentSummary: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useReverseSheet: () => ({ mutateAsync: vi.fn(), isPending: false }),

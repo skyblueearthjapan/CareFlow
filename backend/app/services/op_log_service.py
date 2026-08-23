@@ -26,6 +26,9 @@
                               to_weekday へ移動 (週空間 A2後段: コース丸ごと曜日移動)
     "cancel_visit"         — visit_ids の status を cancelled / planned へ切り替える
                               (週空間 Phase E: 今週だけ取消。inverse は逆フラグ)
+    "set_visit_service_override"
+                           — visit 1 件の kaipoke_service_override を設定 / 解除する
+                              (カイポケのサービス内容に合わせる。inverse は旧値)
 """
 
 from __future__ import annotations
@@ -399,6 +402,10 @@ async def _verify_forward_state(db: AsyncSession, row: ScheduleOpLog) -> None:
             VISIT_STATUS_CANCELLED if fp.get("cancel") else VISIT_STATUS_PLANNED,
         )
 
+    elif op_name == "set_visit_service_override":
+        # forward result = visit.kaipoke_service_override == fp["service_content"]
+        await _assert_visit_service_override(db, UUID(fp["visit_id"]), fp.get("service_content"))
+
     # 他 op_name は検証なしで通過（将来拡張用）
 
 
@@ -456,6 +463,10 @@ async def _verify_inverse_state(db: AsyncSession, row: ScheduleOpLog) -> None:
             VISIT_STATUS_CANCELLED if ip.get("cancel") else VISIT_STATUS_PLANNED,
         )
 
+    elif op_name == "set_visit_service_override":
+        # inverse result = visit.kaipoke_service_override == ip["service_content"]
+        await _assert_visit_service_override(db, UUID(ip["visit_id"]), ip.get("service_content"))
+
 
 async def _execute_payload(db: AsyncSession, payload: dict[str, Any]) -> None:
     """payload の op に応じて DB 更新を実行する."""
@@ -510,6 +521,11 @@ async def _execute_payload(db: AsyncSession, payload: dict[str, Any]) -> None:
             [UUID(v) for v in payload.get("visit_ids", [])],
             bool(payload.get("cancel", False)),
             sources=payload.get("sources") or {},
+        )
+
+    elif op_name == "set_visit_service_override":
+        await _set_visit_service_override(
+            db, UUID(payload["visit_id"]), payload.get("service_content")
         )
 
     else:
@@ -611,6 +627,35 @@ async def _set_visits_cancelled(
             if cancel
             else (_sources.get(str(v.id)) or VISIT_SOURCE_MANUAL_WEEK)
         )
+    await db.flush()
+
+
+async def _assert_visit_service_override(
+    db: AsyncSession, visit_id: UUID, expected: str | None
+) -> None:
+    """set_visit_service_override の undo/redo 前検証: 上書き値が期待値のままか."""
+    visit = await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
+    if visit is None:
+        raise OpLogConflictError("他の変更があったため戻せません (対象の訪問が見つかりません)")
+    if (visit.kaipoke_service_override or None) != (expected or None):
+        raise OpLogConflictError(
+            "他の変更があったため戻せません (訪問のサービス内容が既に変更されています)"
+        )
+
+
+async def _set_visit_service_override(
+    db: AsyncSession, visit_id: UUID, service_content: str | None
+) -> None:
+    """visit 1 件の ``kaipoke_service_override`` を設定 / 解除する。
+
+    endpoint 側 (``schedule_v2.visit_service_override``) と同一の書込。位置
+    (日付/時刻/担当) は触らないため、取消のような状態ガードは持たない
+    (完了済み訪問のサービス内容を直せることが機能の目的そのもの)。
+    """
+    visit = await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
+    if visit is None:
+        raise OpLogConflictError("他の変更があったため戻せません (対象の訪問が見つかりません)")
+    visit.kaipoke_service_override = (service_content or "").strip() or None
     await db.flush()
 
 

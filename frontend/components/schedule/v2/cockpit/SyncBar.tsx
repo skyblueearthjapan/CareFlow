@@ -19,14 +19,26 @@ import { toast } from 'sonner';
 
 import { RakusukeWorking } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { useSendEventsOutbound, useStartApply } from '@/lib/queries/integrations';
-import { useUnsentSummary } from '@/lib/queries/cockpit';
-import type { UnsentSummaryRead } from '@/lib/schemas/v2/cockpit';
+import { useUnsentSummary, useVisitServiceOverride } from '@/lib/queries/cockpit';
+import { useUpdateStaff } from '@/lib/queries/staff';
+import type { MasterReconcileQualification } from '@/lib/schemas/integration';
+import { STAFF_QUALIFICATION_VALUES, type StaffQualification } from '@/lib/schemas/staff';
+import type { CockpitCorrectionItem, UnsentSummaryRead } from '@/lib/schemas/v2/cockpit';
 import { DiffDetailCard } from './DiffDetailCard';
 import {
   correctionItemToMarker,
   fmtMd,
   itemField,
+  itemSide,
   resolveDayInWeek,
   unsentEventKey,
   unsentEventToMarker,
@@ -91,6 +103,31 @@ interface UnsentRow {
   rpaUnsupported: boolean;
 }
 
+/**
+ * 「サービス内容のズレ」= 同じ訪問 (日付/開始時刻/患者) について delete と add が
+ * 両方立ち、**サービス内容だけ** が違うペア。
+ *
+ * カイポケの編集ダイアログはサービス内容を触れないため、差分エンジンは
+ * この違いを必ず delete + add で表現する (設計 §3-1)。生のまま見せると
+ * 「取消して新規登録する」ように読めて怖いので、1 行に束ねて
+ * 「らく助はこう / カイポケはこう」と並べる。
+ */
+interface ServiceMismatchPair {
+  key: string;
+  dateIso: string;
+  patientName: string;
+  startTime: string;
+  /** らく助が出したサービス内容 (add 側)。 */
+  rakusuke: string;
+  /** カイポケに入っているサービス内容 (delete 側)。 */
+  kaipoke: string;
+  addItemId: string;
+  deleteItemId: string;
+}
+
+/** ペアかどうかの判定に使う「サービス内容以外」の項目。 */
+const PAIR_SAME_FIELDS = ['end_time', 'staff1', 'staff2', 'business_type'] as const;
+
 export function SyncBar({
   weekStartIso,
   canEdit,
@@ -106,39 +143,80 @@ export function SyncBar({
 
   // ─── 左: ●未送信 ───
   const unsentMut = useUnsentSummary();
+  const serviceOverrideMut = useVisitServiceOverride();
   const startApplyMut = useStartApply();
   const sendEventsMut = useSendEventsOutbound();
   const [summary, setSummary] = React.useState<UnsentSummaryRead | null>(null);
-  const [sentIds, setSentIds] = React.useState<Set<string>>(new Set());
+  /**
+   * 送信済みの行 (この画面で ⇧ を押したもの)。
+   *
+   * **item.id ではなく訪問キー** (`unsentVisitKey` / `unsentEventKey`) で持つ:
+   * ●未送信は毎回シートを作り直すので item.id は再計算のたびに変わる。id で
+   * 覚えると再計算した瞬間に「送ったはずの行」が復活して見え、二重送信を
+   * 誘う (BE の再送ガードで 422 になるだけで、操作者には理由が分からない)。
+   */
+  const [sentKeys, setSentKeys] = React.useState<Set<string>>(new Set());
   const [unsentId, setUnsentId] = React.useState<string | null>(null);
   const [activeSide, setActiveSide] = React.useState<'unsent' | 'in'>('unsent');
   const [busy, setBusy] = React.useState<string | null>(null);
   const [armedKey, setArmedKey] = React.useState<string | null>(null);
+  // 資格の「カイポケの職種を採用」(👥マスタ突合)。突合は ~1 分かかるので
+  // 採用済みは結果を取り直さず、FE 側で行を消す。
+  const updateStaffMut = useUpdateStaff();
+  const [adoptingStaffId, setAdoptingStaffId] = React.useState<string | null>(null);
+  const [adoptedStaffIds, setAdoptedStaffIds] = React.useState<Set<string>>(new Set());
+  // 資格はマスタ = その職員の **全訪問** のサービス内容が変わる。押した瞬間に
+  // 書き換えず、影響範囲を見せてから確定させる。
+  const [adoptTarget, setAdoptTarget] = React.useState<MasterReconcileQualification | null>(null);
 
-  const loadUnsent = React.useCallback(async () => {
-    setBusy('__unsent_load__');
-    try {
-      const res = await unsentMut.mutateAsync({ week_start: weekStartIso });
-      // 競合ガード: 週を切り替えた直後に前の週の応答が届いても捨てる。
-      if (res.week_start !== weekStartIso) return;
-      setSummary(res);
-      setSentIds(new Set());
-    } catch (err) {
-      toast.error(
-        `未送信の確認に失敗しました: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    } finally {
-      setBusy(null);
-    }
+  /**
+   * ●未送信を数え直す。
+   *
+   * `keepSent` (既定 true) の間は「この画面で送った」印を保持する。カイポケへの
+   * 反映は RPA が非同期に行うため、送信直後に数え直しても **まだカイポケには
+   * 入っていない** = 同じ行がもう一度未送信として返ってくる。ここで印を消すと
+   * 送ったばかりの行が復活し、二重送信を誘う。
+   *
+   * 印を落としてよいのは **🔄突合が終わったとき** だけ = カイポケの現況を
+   * 実際に見直した後なら、まだ残っている行は「本当にまだ送れていない」行。
+   */
+  const loadUnsent = React.useCallback(
+    async ({ keepSent = true }: { keepSent?: boolean } = {}) => {
+      setBusy('__unsent_load__');
+      try {
+        const res = await unsentMut.mutateAsync({ week_start: weekStartIso });
+        // 競合ガード: 週を切り替えた直後に前の週の応答が届いても捨てる。
+        if (res.week_start !== weekStartIso) return;
+        setSummary(res);
+        if (!keepSent) setSentKeys(new Set());
+      } catch (err) {
+        toast.error(
+          `未送信の確認に失敗しました: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      } finally {
+        setBusy(null);
+      }
+    },
+    // unsentMut は毎レンダー新しい参照になるため依存に入れない
+    // (入れると loadUnsent が毎回作り直され、useEffect が無限に走る)。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weekStartIso]);
+    [weekStartIso],
+  );
 
   React.useEffect(() => {
     if (!canEdit) return;
-    void loadUnsent();
+    // 週が変われば別の話なので印も捨てる (reloadKey の再計算では保持)。
+    setSentKeys(new Set());
+    void loadUnsent({ keepSent: false });
     // reloadKey: 盤面を操作した直後に親が加算する (●未送信を数え直す)。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weekStartIso, canEdit, reloadKey]);
+  }, [weekStartIso, canEdit]);
+
+  React.useEffect(() => {
+    if (!canEdit || reloadKey === 0) return;
+    void loadUnsent();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadKey]);
 
   // ─── 右: 🔄突合 (突合が終わったら未送信も数え直す) ───
   const rec = useKaipokeReconcile({
@@ -146,36 +224,60 @@ export function SyncBar({
     canEdit,
     staffIdByName,
     autoStart: autoStartReconcile,
-    onReady: () => void loadUnsent(),
+    // 突合＝カイポケの現況を見直した後なので、ここでだけ送信済みの印を落とす。
+    onReady: () => void loadUnsent({ keepSent: false }),
   });
   const [inId, setInId] = React.useState<string | null>(null);
+
+  /** 差分行 → 送信済み判定に使う訪問キー (解決できなければ null)。 */
+  const visitSentKey = React.useCallback(
+    (it: CockpitCorrectionItem): string | null => {
+      const side = itemSide(it.action);
+      const dateIso = it.date_iso ?? resolveDayInWeek(itemField(it, 'date', side), weekStartIso);
+      const startTime = itemField(it, 'start_time', side);
+      const who = itemField(it, 'user_name', side);
+      return dateIso && startTime && who ? unsentVisitKey(dateIso, startTime, who) : null;
+    },
+    [weekStartIso],
+  );
+
+  const isSent = React.useCallback(
+    (it: CockpitCorrectionItem): boolean => {
+      const key = visitSentKey(it);
+      return key != null && sentKeys.has(key);
+    },
+    [visitSentKey, sentKeys],
+  );
 
   const unsentRows = React.useMemo<UnsentRow[]>(() => {
     if (!summary) return [];
     const rows: UnsentRow[] = [];
     for (const it of summary.items) {
-      if (sentIds.has(it.id)) continue;
-      const dateIso = it.date_iso ?? resolveDayInWeek(itemField(it, 'date'), weekStartIso);
-      const who = itemField(it, 'user_name') || '（患者不明）';
-      const staff = itemField(it, 'staff1');
-      const startTime = itemField(it, 'start_time');
+      if (isSent(it)) continue;
+      const side = itemSide(it.action);
+      const dateIso = it.date_iso ?? resolveDayInWeek(itemField(it, 'date', side), weekStartIso);
+      const who = itemField(it, 'user_name', side) || '（患者不明）';
+      const staff = itemField(it, 'staff1', side);
+      const startTime = itemField(it, 'start_time', side);
       rows.push({
         id: it.id,
         kind: 'visit',
         dateIso,
-        // らく助側 (after 優先) の日付/時刻/患者名で盤面の訪問と突き合わせる。
+        // 日付/時刻/患者名で盤面の訪問と突き合わせる。**側は action で決まる**
+        // (delete は before / add は after) — after 固定だと delete 行の
+        // 日付と時刻が空文字になり突合できない。
         matchKey: dateIso && startTime ? unsentVisitKey(dateIso, startTime, who) : null,
         marker: correctionItemToMarker(it, { weekStartIso, staffIdByName }),
         rpaUnsupported: it.rpa_unsupported === true,
         label:
           `${KIND_DOT[it.action] ?? '🟡 変更'}｜${dateIso ? fmtMd(dateIso) : '日付不明'} 訪問｜` +
-          `${who}｜${staff} ${itemField(it, 'start_time')}` +
+          `${who}｜${staff} ${startTime}` +
           `${dateIso != null && dateIso <= todayIso ? '（当日以前=送信対象外）' : ''}` +
           `${it.rpa_unsupported === true ? RPA_UNSUPPORTED_NOTE : ''}`,
       });
     }
     for (const ev of summary.events) {
-      if (sentIds.has(ev.id)) continue;
+      if (sentKeys.has(unsentEventKey(ev.id))) continue;
       rows.push({
         id: ev.id,
         kind: 'event',
@@ -191,7 +293,132 @@ export function SyncBar({
       });
     }
     return rows;
-  }, [summary, sentIds, weekStartIso, staffIdByName, todayIso]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summary, sentKeys, weekStartIso, staffIdByName, todayIso]);
+
+  // ─── サービス内容のズレ (delete + add のペアを 1 行に束ねる) ───
+  const serviceMismatches = React.useMemo<ServiceMismatchPair[]>(() => {
+    if (!summary) return [];
+    // BE は反対側を空文字で埋める (delete の after は空 / add の before は空)。
+    // side を明示しないと delete の日付・時刻が空文字になり、ペアが永久に
+    // 成立しない (2026-08-23 レビュー C1)。
+    const field = (it: (typeof summary.items)[number], key: string) =>
+      itemField(it, key, itemSide(it.action));
+
+    const groups = new Map<string, typeof summary.items>();
+    for (const it of summary.items) {
+      if (isSent(it)) continue;
+      if (it.action !== 'add' && it.action !== 'delete') continue;
+      const dateIso = it.date_iso ?? resolveDayInWeek(field(it, 'date'), weekStartIso);
+      const startTime = field(it, 'start_time');
+      const who = field(it, 'user_name');
+      if (!dateIso || !startTime || !who) continue;
+      const key = unsentVisitKey(dateIso, startTime, who);
+      const bucket = groups.get(key);
+      if (bucket) bucket.push(it);
+      else groups.set(key, [it]);
+    }
+
+    const pairs: ServiceMismatchPair[] = [];
+    for (const [key, items] of groups) {
+      const adds = items.filter((i) => i.action === 'add');
+      const deletes = items.filter((i) => i.action === 'delete');
+      // 1 対 1 のときだけ束ねる。複数あるとどれとどれが同じ訪問か決められない
+      // (当てずっぽうで束ねるより、生の delete/add のまま見せる方が安全)。
+      const add = adds.length === 1 ? adds[0] : undefined;
+      const del = deletes.length === 1 ? deletes[0] : undefined;
+      if (!add || !del) continue;
+      const rakusuke = field(add, 'service_type');
+      const kaipoke = field(del, 'service_type');
+      if (!rakusuke || !kaipoke || rakusuke === kaipoke) continue;
+      // サービス内容 **だけ** が違うことを確かめる (担当や時刻も違うなら
+      // それは本当の予定変更で、サービス内容の問題ではない)。
+      // 比較は add.after vs delete.before = それぞれの「実体」側どうし。
+      if (PAIR_SAME_FIELDS.some((f) => field(add, f) !== field(del, f))) continue;
+      pairs.push({
+        key,
+        dateIso: add.date_iso ?? resolveDayInWeek(field(add, 'date'), weekStartIso) ?? '',
+        patientName: field(add, 'user_name'),
+        startTime: field(add, 'start_time'),
+        rakusuke,
+        kaipoke,
+        addItemId: add.id,
+        deleteItemId: del.id,
+      });
+    }
+    return pairs.sort((a, b) => a.key.localeCompare(b.key));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summary, sentKeys, weekStartIso]);
+
+  /**
+   * 「この訪問だけカイポケに合わせる」= 訪問単位の上書き (mig 0078)。
+   * visit の特定は **BE 側**: delete 側 item の日付/開始時刻/患者名から引く
+   * (氏名の正規化ルールを FE に二重化しない)。適用後は未送信を数え直す。
+   */
+  const applyServiceContent = async (pair: ServiceMismatchPair) => {
+    setBusy(`__svc__${pair.key}`);
+    try {
+      await serviceOverrideMut.mutateAsync({
+        item_id: pair.deleteItemId,
+        service_content: pair.kaipoke,
+      });
+      toast.success(
+        `${pair.patientName}様の ${fmtMd(pair.dateIso)} ${pair.startTime} の訪問を` +
+          `カイポケのサービス内容「${pair.kaipoke}」に合わせました`,
+      );
+      await loadUnsent();
+    } catch (err) {
+      toast.error(
+        `サービス内容の変更に失敗しました: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // ─── 資格のズレ / 未設定 (👥マスタ突合の結果から) ───
+  // `match` は出さない (一致は見ても仕方がない)。`unknown_staff` は氏名側の
+  // 「カイポケのみ」で既に見えているので、ここでは二重に出さない。
+  const qualificationMismatches = (rec.masterResult?.staffQualifications ?? []).filter(
+    (q) => q.status === 'mismatch',
+  );
+  // 採用済みは即座に消す (👥突合は ~1 分かかるので結果を取り直さない)。
+  const qualificationMissing = (rec.masterResult?.staffQualifications ?? []).filter(
+    (q) => q.status === 'missing_in_rakusuke' && !(q.staffId && adoptedStaffIds.has(q.staffId)),
+  );
+  // 同じ名前の在職スタッフが複数 = 誰の資格か決められない (採用ボタンは出さない)。
+  const qualificationAmbiguous = (rec.masterResult?.staffQualifications ?? []).filter(
+    (q) => q.status === 'ambiguous',
+  );
+  /** カイポケ側の職種 (氏名 → 職種)。「カイポケのみ」行に添えるのに使う。 */
+  const kaipokeQualificationByName = new Map(
+    (rec.masterResult?.staffQualifications ?? [])
+      .filter((q) => q.status === 'unknown_staff' && q.kaipokeQualification)
+      .map((q) => [q.name, q.kaipokeQualification as string]),
+  );
+
+  /** らく助が扱える資格か (カイポケに未知の職種があっても PATCH を投げない)。 */
+  const isKnownQualification = (v: string | null): v is StaffQualification =>
+    v != null && (STAFF_QUALIFICATION_VALUES as readonly string[]).includes(v);
+
+  /** 「カイポケの職種を採用」= らく助の staff.qualification を埋める (既存 PATCH)。 */
+  const adoptQualification = async (q: MasterReconcileQualification) => {
+    const staffId = q.staffId;
+    if (staffId == null || !isKnownQualification(q.kaipokeQualification)) return;
+    setAdoptingStaffId(staffId);
+    try {
+      await updateStaffMut.mutateAsync({
+        id: staffId,
+        payload: { qualification: q.kaipokeQualification },
+      });
+      setAdoptedStaffIds((prev) => new Set(prev).add(staffId));
+      toast.success(`${q.name} の資格を「${q.kaipokeQualification}」にしました`);
+    } catch (err) {
+      toast.error(`資格の更新に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setAdoptingStaffId(null);
+    }
+  };
 
   /** BE の sendable 判定と同じ式 (date 不明は送信可・past = 当日以前のみ)。
    *  RPA 未対応 (准看/一般) の行は BE が apply でも弾くのでここでも外す
@@ -234,10 +461,13 @@ export function SyncBar({
     );
   }, [unsentKeysSignature, summary]);
 
-  const markSent = (ids: string[]) =>
-    setSentIds((prev) => {
+  /** 送信済みの印を付ける (訪問キー基準 — item.id は再計算で変わるため)。 */
+  const markSent = (rows: UnsentRow[]) =>
+    setSentKeys((prev) => {
       const next = new Set(prev);
-      for (const id of ids) next.add(id);
+      for (const r of rows) {
+        if (r.matchKey != null) next.add(r.matchKey);
+      }
       return next;
     });
 
@@ -262,7 +492,7 @@ export function SyncBar({
       if (eventIds.length > 0) {
         await sendEventsMut.mutateAsync({ weekStart: weekStartIso, eventIds });
       }
-      markSent(rows.map((r) => r.id));
+      markSent(rows);
       setUnsentId(null);
       toast.success(
         `カイポケへ ${rows.length} 件の送信を始めました（1件あたり約30〜60秒）。` +
@@ -573,6 +803,50 @@ export function SyncBar({
         </div>
       ) : null}
 
+      {/* ── 🧾 サービス内容のズレ (delete + add のペアを束ねた 1 行) ── */}
+      {serviceMismatches.length > 0 ? (
+        <div
+          className="border-t border-border-subtle px-3 py-2"
+          data-testid="sync-service-mismatch"
+        >
+          <h4 className="mb-1 text-[12px] font-bold text-text-primary">
+            🧾 サービス内容のズレ（{serviceMismatches.length}件）
+          </h4>
+          <p className="mb-1 text-[11px] text-text-muted">
+            日時も担当も同じで、サービス内容だけが違う訪問です。
+            カイポケ側は編集で直せないため、上の一覧では「取消＋新規」の 2 行に見えます。
+          </p>
+          <ul className="space-y-1">
+            {serviceMismatches.map((p) => (
+              <li
+                key={p.key}
+                className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded border border-border-subtle px-2 py-1.5"
+                data-testid="sync-service-mismatch-row"
+              >
+                <span className="text-[11px] text-text-primary">
+                  {fmtMd(p.dateIso)} {p.startTime}｜{p.patientName}
+                </span>
+                <span className="text-[11px] text-text-secondary">
+                  らく助: <b>{p.rakusuke}</b> / カイポケ: <b>{p.kaipoke}</b>
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-[11px]"
+                  disabled={!canEdit || running || rec.rpaRunning}
+                  data-testid="sync-service-mismatch-apply"
+                  title="この訪問だけカイポケのサービス内容に合わせます（マスタは変えません）"
+                  onClick={() => void applyServiceContent(p)}
+                >
+                  この訪問だけカイポケに合わせる
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {/* ── 👥 マスタ相互突合 (Phase M): 名簿と表記ズレの診断 ── */}
       <div className="border-t border-border-subtle px-3 py-2" data-testid="sync-master">
         <div className="mb-1 flex flex-wrap items-center gap-2">
@@ -618,7 +892,18 @@ export function SyncBar({
                 ) : null}
                 {g.kaipokeOnly.length > 0 ? (
                   <p className="mt-0.5 text-[11px] text-violet-800">
-                    🟣 カイポケのみ（らく助未登録）: {g.kaipokeOnly.join('、')}
+                    🟣 カイポケのみ（らく助未登録）:{' '}
+                    {g.kaipokeOnly
+                      .map((n) =>
+                        // スタッフ側だけ、カイポケの職種を氏名に添える (資格未登録の
+                        // 人を新規登録するとき、何の資格で作ればよいかが分かる)。
+                        // 資格セクションに別行で出すと「登録すらされていない人の
+                        // 資格ズレ」という読みにくい並びになるのでここへ寄せた。
+                        label === 'スタッフ' && kaipokeQualificationByName.get(n)
+                          ? `${n}（${kaipokeQualificationByName.get(n)}）`
+                          : n,
+                      )
+                      .join('、')}
                   </p>
                 ) : null}
                 {g.rakusukeOnly.length > 0 ? (
@@ -628,6 +913,74 @@ export function SyncBar({
                 ) : null}
               </div>
             ))}
+            {/* 資格 (カイポケ職種1 × らく助 staff.qualification)。
+                サービス内容の 正看/准看 はここで決まる = ズレると偽差分の元。 */}
+            <div
+              className="rounded border border-border-subtle px-2 py-1.5"
+              data-testid="sync-master-qualifications"
+            >
+              <p className="text-[11px] font-bold text-text-primary">
+                資格: ズレ {qualificationMismatches.length} ・ 未設定 {qualificationMissing.length}
+                {qualificationAmbiguous.length > 0
+                  ? ` ・ 同名で判別不可 ${qualificationAmbiguous.length}`
+                  : ''}
+              </p>
+              {qualificationMismatches.length === 0 &&
+              qualificationMissing.length === 0 &&
+              qualificationAmbiguous.length === 0 ? (
+                <p className="mt-0.5 text-[11px] text-text-muted">
+                  カイポケの職種と一致しています（正看/准看の判定は正しく出ます）。
+                </p>
+              ) : null}
+              {qualificationMismatches.map((q) => (
+                <p
+                  key={`mm-${q.name}`}
+                  className="mt-0.5 text-[11px] text-amber-800"
+                  data-testid="sync-master-qual-mismatch"
+                >
+                  🟡 {q.name}: カイポケ「{q.kaipokeQualification}」⇔ らく助「
+                  {q.rakusukeQualification}」（どちらが正しいかご確認ください）
+                </p>
+              ))}
+              {qualificationMissing.map((q) => (
+                <p
+                  key={`ms-${q.staffId ?? q.name}`}
+                  className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-violet-800"
+                  data-testid="sync-master-qual-missing"
+                >
+                  <span>
+                    🟣 {q.name}: らく助が資格未設定（カイポケ「{q.kaipokeQualification}」）
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-5 px-1.5 text-[10px]"
+                    disabled={
+                      !canEdit ||
+                      adoptingStaffId != null ||
+                      q.staffId == null ||
+                      !isKnownQualification(q.kaipokeQualification)
+                    }
+                    data-testid="sync-master-qual-adopt"
+                    onClick={() => setAdoptTarget(q)}
+                  >
+                    カイポケの職種を採用
+                  </Button>
+                </p>
+              ))}
+              {qualificationAmbiguous.map((q) => (
+                <p
+                  key={`am-${q.name}`}
+                  className="mt-0.5 text-[11px] text-text-secondary"
+                  data-testid="sync-master-qual-ambiguous"
+                >
+                  ⚪ {q.name}: 同じ名前の在職スタッフが複数います（カイポケ「
+                  {q.kaipokeQualification}」）。
+                  どちらの方か特定できないため、スタッフマスタで表記を分けてから設定してください
+                </p>
+              ))}
+            </div>
             <p className="text-[10px] text-text-muted">
               ※ カイポケ側は「当月のスケジュールに現れた氏名」で判定します
               （予定の無い方は判定できません）。
@@ -635,6 +988,47 @@ export function SyncBar({
           </div>
         )}
       </div>
+
+      {/* 資格の採用はマスタ更新 = その職員の全訪問に効く。影響範囲を見せて確認する。 */}
+      <Dialog
+        open={adoptTarget != null}
+        onOpenChange={(o) => {
+          if (!o && adoptingStaffId == null) setAdoptTarget(null);
+        }}
+      >
+        <DialogContent className="max-w-sm" data-testid="sync-master-qual-confirm-dialog">
+          <DialogHeader>
+            <DialogTitle className="text-sm">資格を設定しますか？</DialogTitle>
+            <DialogDescription className="text-[11px]">
+              {adoptTarget
+                ? `${adoptTarget.name}さんの資格を「${adoptTarget.kaipokeQualification}」にします。この職員の全訪問のサービス内容が変わります。`
+                : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={adoptingStaffId != null}
+              onClick={() => setAdoptTarget(null)}
+            >
+              やめる
+            </Button>
+            <Button
+              type="button"
+              disabled={adoptingStaffId != null}
+              data-testid="sync-master-qual-confirm"
+              onClick={() => {
+                const q = adoptTarget;
+                setAdoptTarget(null);
+                if (q) void adoptQualification(q);
+              }}
+            >
+              設定する
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

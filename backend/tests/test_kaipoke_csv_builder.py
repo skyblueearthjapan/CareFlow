@@ -179,6 +179,32 @@ def test_resolve_service_content_defaults_to_psychiatric() -> None:
     assert resolve_service_content(patient, _staff("看護師")) == "精神基本療養費Ⅰ・正看"
 
 
+def test_resolve_service_content_visit_override_beats_everything() -> None:
+    """訪問上書き (mig 0078) が最優先 — 患者上書きも区分×資格も無視する。"""
+    visit = Visit(kaipoke_service_override="基本療養費Ⅰ・准看")
+    assert (
+        resolve_service_content(_patient("psychiatric"), _staff("看護師"), visit)
+        == "基本療養費Ⅰ・准看"
+    )
+    with_patient_override = _patient("general", override="精神基本療養費Ⅲ・正看")
+    assert (
+        resolve_service_content(with_patient_override, _staff("准看護師"), visit)
+        == "基本療養費Ⅰ・准看"
+    )
+
+
+def test_resolve_service_content_empty_visit_override_falls_through() -> None:
+    """訪問上書きが None / 空なら従来どおり (患者上書き > 区分×資格)。"""
+    for override in (None, ""):
+        visit = Visit(kaipoke_service_override=override)
+        assert (
+            resolve_service_content(_patient("general"), _staff("准看護師"), visit)
+            == "基本療養費Ⅰ・准看"
+        )
+    # visit を渡さない旧呼び出しも従来どおり動く (後方互換)。
+    assert resolve_service_content(_patient("general"), _staff("准看護師")) == "基本療養費Ⅰ・准看"
+
+
 # ---------------------------------------------------------------------------
 # S2: CSV 行生成への結線 (DB 経由) — 職員1 基準であることを実データ経路で固定する
 # ---------------------------------------------------------------------------
@@ -316,3 +342,18 @@ async def test_row_service_content_override_wins(db) -> None:
 
     rows = await resolve_month_rows(db, BuildOptions(year=2026, month=7))
     assert rows[0].service_content == "精神基本療養費Ⅲ・正看"
+
+
+@pytest.mark.asyncio
+async def test_row_service_content_visit_override_wins(db) -> None:
+    """訪問上書き (mig 0078) は患者上書きより強い — 1 件だけカイポケに合わせる経路。"""
+    office = await _seed_office(db)
+    nurse = await _seed_staff(db, "看護太郎", office)
+    patient = await _seed_patient(db, "例外様", office)
+    patient.kaipoke_service_content = "精神基本療養費Ⅲ・正看"
+    visit = await _seed_visit(db, patient, nurse)
+    visit.kaipoke_service_override = "基本療養費Ⅰ・准看"
+    await db.commit()
+
+    rows = await resolve_month_rows(db, BuildOptions(year=2026, month=7))
+    assert [r.service_content for r in rows] == ["基本療養費Ⅰ・准看"]

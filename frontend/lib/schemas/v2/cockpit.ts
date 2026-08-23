@@ -143,6 +143,53 @@ export const visitCancelWeekResponseSchema = z
 export type VisitCancelWeekResponse = z.infer<typeof visitCancelWeekResponseSchema>;
 
 // ───────────────────────────────────────────────────────────────────────────
+// この訪問だけカイポケのサービス内容に合わせる
+// (kaipoke-service-content-design.md §2 / mig 0078)
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * カイポケの新規登録ダイアログで選べる 4 通り (患者の区分 × 職員1の資格)。
+ * 通常はマスタから自動で決まるので、ここは **例外的に 1 件だけ合わせる**
+ * ときの選択肢。合致しない値は自由入力で入れる (確認ダイアログを挟む)。
+ *
+ * **単一ソースは BE** — `backend/app/services/kaipoke/csv_builder.py` の
+ * `SERVICE_CONTENT_PRESETS` をこの並びのまま写している。区分や資格の語を
+ * 変えるときは必ず両方を直すこと (片方だけだと「画面には出るが BE の
+ * 想定に無い値」ができ、突合で永久に差分が残る)。
+ */
+export const KAIPOKE_SERVICE_CONTENT_PRESETS = [
+  '精神基本療養費Ⅰ・正看',
+  '精神基本療養費Ⅰ・准看',
+  '基本療養費Ⅰ・正看',
+  '基本療養費Ⅰ・准看',
+] as const;
+
+export const visitServiceOverrideRequestSchema = z
+  .object({
+    /** 盤面のカードから直接指定する経路。 */
+    visit_id: z.string().uuid().nullish(),
+    /** 同期バーの差分行 (CorrectionSheetItem) から指定する経路。BE が visit を解決する。 */
+    item_id: z.string().uuid().nullish(),
+    /** null / 空文字 = 解除 (自動判定へ戻す)。 */
+    service_content: z.string().max(64).nullable(),
+    /** Wave U-3: 1 ユーザー操作 = 1 UUID (ツールバー「戻る」で 1 手として扱う)。 */
+    op_group_id: z.string().uuid().nullish(),
+  })
+  .refine((v) => (v.visit_id == null) !== (v.item_id == null), {
+    message: 'visit_id か item_id のどちらか一方を指定してください',
+  });
+export type VisitServiceOverrideRequest = z.input<typeof visitServiceOverrideRequestSchema>;
+
+/** res=VisitRead。運転席が読むのは最小限のため寛容に受ける (cancel-week と同流儀)。 */
+export const visitServiceOverrideResponseSchema = z
+  .object({
+    id: z.string().uuid(),
+    kaipoke_service_override: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type VisitServiceOverrideResponse = z.infer<typeof visitServiceOverrideResponseSchema>;
+
+// ───────────────────────────────────────────────────────────────────────────
 // §2-3 固定イベントを今週だけ外す (staff_events.cancelled_at)
 // ───────────────────────────────────────────────────────────────────────────
 

@@ -34,6 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.deps import DbDep, require_role
@@ -195,7 +196,7 @@ from app.schemas.v2.unblock import (
     UnblockSlotRef,
     UnblockUnmovableSummary,
 )
-from app.schemas.visit import VisitCancelWeekRequest, VisitRead
+from app.schemas.visit import VisitCancelWeekRequest, VisitRead, VisitServiceOverrideRequest
 from app.services.constraint_override_notify import (
     ConstraintWarning,
     collect_constraint_warnings_for_patients,
@@ -6208,6 +6209,231 @@ async def visit_cancel_week(
         .options(selectinload(Visit.patient), selectinload(Visit.primary_staff))
     )
     return _serialize_visit(visit, assignments=await _load_assignments(db, payload.visit_id))
+
+
+# ---------------------------------------------------------------------------
+# POST /schedule/v2/visit-service-override — この訪問だけカイポケに合わせる
+# 正典 = docs/plans/kaipoke-service-content-design.md §2
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_visit_for_correction_item(db: AsyncSession, item_id: UUID) -> Visit:
+    """同期バーの差分行 (CorrectionSheetItem) → らく助の訪問 1 件を解決する。
+
+    ``correction_sheet_items.visit_id`` があればそれが最優先 (取込系シートは
+    埋まっている)。●未送信の 'cached' シートは visit_id を持たない (差分は
+    CSV 対 CSV の純計算で作られ、訪問行と紐付いていない) ので、そのときだけ
+    **日付 + 開始時刻 + 患者名** で当該週の visits から引き直す。
+
+    解決は BE に閉じる: FE に「item から visit を探す」ロジックを持たせると
+    氏名の正規化ルール (異体字・空白) が二重管理になり、片方だけ古くなる。
+    """
+    from app.models.correction_sheet import CorrectionSheet, CorrectionSheetItem
+    from app.services.kaipoke.master_reconcile import normalize_person_name
+
+    item = await db.scalar(select(CorrectionSheetItem).where(CorrectionSheetItem.id == item_id))
+    if item is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="差分項目が見つかりません"
+        )
+
+    if item.visit_id is not None:
+        visit = await db.scalar(
+            select(Visit).where(Visit.id == item.visit_id, Visit.deleted_at.is_(None))
+        )
+        if visit is not None:
+            return visit
+
+    sheet = await db.scalar(select(CorrectionSheet).where(CorrectionSheet.id == item.sheet_id))
+    week_start = sheet.week_start if sheet is not None else None
+    # 循環 import 回避 (integrations も schedule_v2 の型を参照し得るため関数内)。
+    from app.api.v1.integrations import resolve_item_date
+
+    target_date = resolve_item_date(item.action, item.before, item.after, week_start)
+    src = item.before if item.action in ("delete", "edit", "date_change") else item.after
+    src = src or {}
+    raw_start = str(src.get("start_time") or "").strip()
+    user_name = str(src.get("user_name") or "").strip()
+    if target_date is None or not raw_start or not user_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="差分項目から訪問を特定できませんでした（日付・時刻・利用者名が不足）",
+        )
+    # 'H:MM' / 'HH:MM' / 'HH:MM:SS' を受ける。カイポケの CSV は時が 1 桁の行
+    # ('9:00') を出すことがあり、そのままでは fromisoformat が失敗して
+    # 「特定できません」になる (実データで踏む)。
+    try:
+        _parts = raw_start.split(":")
+        if len(_parts) < 2:
+            raise ValueError(raw_start)
+        start_time = time_cls(
+            int(_parts[0]), int(_parts[1]), int(_parts[2]) if len(_parts) > 2 else 0
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="差分項目の開始時刻を解釈できませんでした",
+        ) from exc
+
+    candidates = list(
+        (
+            await db.scalars(
+                select(Visit)
+                .where(
+                    Visit.deleted_at.is_(None),
+                    Visit.visit_date == target_date,
+                    Visit.start_time == start_time,
+                    Visit.status != VISIT_STATUS_CANCELLED,
+                )
+                .options(selectinload(Visit.patient))
+            )
+        ).all()
+    )
+    key = normalize_person_name(user_name)
+    matched = [
+        v
+        for v in candidates
+        if v.patient is not None and normalize_person_name(v.patient.name) == key
+    ]
+    if len(matched) != 1:
+        # 0 件 = らく助側に該当訪問が無い / 2 件以上 = 同名同時刻 (当てずっぽうで
+        # 片方を書き換えるより「特定できない」と言う方が安全)。
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="差分項目に対応する訪問を一意に特定できませんでした",
+        )
+    return matched[0]
+
+
+@router.post(
+    "/v2/visit-service-override",
+    response_model=VisitRead,
+    status_code=status.HTTP_200_OK,
+    summary="この訪問だけカイポケのサービス内容に合わせる (マスタ不変)",
+)
+async def visit_service_override(
+    payload: VisitServiceOverrideRequest,
+    db: DbDep,
+    current_user: Annotated[User, Depends(require_role("admin"))],
+) -> dict:
+    """訪問 1 件の ``kaipoke_service_override`` を設定 / 解除する (設計 §2)。
+
+    サービス内容は本来 **患者の区分 × 職員1の資格** から自動で決まるが、
+    「カイポケが正でらく助のマスタが追いついていない」1 件だけを合わせたい
+    ことがある。マスタ (患者の区分 / スタッフの資格) を動かすとその人の
+    **全訪問** に波及するため、訪問 1 行だけを上書きする逃げ道をここに置く
+    (憲法1: 盤面操作はマスタを変えない — PFV / 患者 / スタッフには触れない)。
+
+    ``service_content`` が null / 空文字なら解除 = 自動判定へ戻る。
+
+    **422 を出さない条件**: planned 以外 (完了・訪問中・取消) でも、青ピン
+    (week_pinned) でも設定できる。この操作は訪問の **位置 (日付 / 時刻 /
+    担当)** を一切変えず、カイポケへ送るサービス内容の文字列だけを変える。
+    「今週だけ取消」のようなガードを流用すると、実績のある訪問のサービス内容
+    (= 請求に効く) を直せなくなり、目的そのものが果たせない。
+
+    対象は ``visit_id`` (盤面のカードから) か ``item_id`` (同期バーの差分行
+    から) のどちらか一方。undo: op_log ``set_visit_service_override``。
+    """
+    from app.api.v1.visits import _load_assignments, _serialize_visit
+
+    # ローカル変数へ落としてから分岐する = 型が narrow され、下の呼び出しで
+    # 「UUID | None を UUID に渡している」と怒られない (mypy)。
+    target_visit_id = payload.visit_id
+    target_item_id = payload.item_id
+    if (target_visit_id is None) == (target_item_id is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="visit_id か item_id のどちらか一方を指定してください",
+        )
+
+    new_value = (payload.service_content or "").strip() or None
+    # 制御文字は弾く: CSV の 1 セルにそのまま載る値なので、改行やタブが混ざると
+    # カイポケへ送る 18 列 CSV の行が壊れる (列ズレ = 別の患者の予定を書き換える)。
+    if new_value is not None and any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in new_value):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="サービス内容に改行や制御文字は使えません",
+        )
+
+    if target_visit_id is not None:
+        visit = await db.scalar(
+            select(Visit).where(Visit.id == target_visit_id, Visit.deleted_at.is_(None))
+        )
+        if visit is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Visit not found")
+    else:
+        assert target_item_id is not None  # 上の排他チェックで保証済み (mypy 用)
+        visit = await _resolve_visit_for_correction_item(db, target_item_id)
+
+    visit_id = visit.id
+    old_value = visit.kaipoke_service_override
+    if new_value == old_value:
+        # 冪等: 変化なしなら DB も操作ジャーナルも触らない (「戻る」を無駄に消費しない)。
+        visit = await db.scalar(
+            select(Visit)
+            .where(Visit.id == visit_id)
+            .options(selectinload(Visit.patient), selectinload(Visit.primary_staff))
+        )
+        return _serialize_visit(visit, assignments=await _load_assignments(db, visit_id))
+
+    try:
+        visit.kaipoke_service_override = new_value
+        await db.commit()
+    except IntegrityError as exc:
+        # 単一列の UPDATE なので通常は起きないが、同じ訪問が同時に別経路
+        # (取込の soft-delete 等) で触られると FK/制約で落ちうる。500 ではなく
+        # 409 にして「もう一度」を促す (visit-cancel-week と同じ扱いに揃える)。
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="他のユーザーが同じ訪問を処理中です。もう一度実行してください。",
+        ) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    _iso = visit.visit_date.isocalendar()
+    _patient_name = await db.scalar(
+        select(Patient.name).where(Patient.id == visit.patient_id, Patient.deleted_at.is_(None))
+    )
+    _label = (
+        f"{_patient_name or '患者'}様の訪問のサービス内容を「{new_value}」に合わせる"
+        if new_value
+        else f"{_patient_name or '患者'}様の訪問のサービス内容の上書きを解除"
+    )
+    await record_op(
+        db,
+        user_id=current_user.id,
+        iso_year=_iso.year,
+        iso_week=_iso.week,
+        op_group_id=payload.op_group_id,
+        op_kind="set_visit_service_override",
+        label=_label,
+        forward_payload={
+            "op": "set_visit_service_override",
+            "visit_id": str(visit_id),
+            "service_content": new_value,
+        },
+        inverse_payload={
+            "op": "set_visit_service_override",
+            "visit_id": str(visit_id),
+            "service_content": old_value,
+        },
+    )
+    # 本体は commit 済み。ジャーナルの失敗で 500 は返さない (visit-cancel-week と同作法)。
+    try:
+        await db.commit()
+    except Exception as exc:  # pragma: no cover (防御)
+        await db.rollback()
+        logger.warning("visit-service-override: op_log commit failed (ignored): %r", exc)
+
+    visit = await db.scalar(
+        select(Visit)
+        .where(Visit.id == visit_id)
+        .options(selectinload(Visit.patient), selectinload(Visit.primary_staff))
+    )
+    return _serialize_visit(visit, assignments=await _load_assignments(db, visit_id))
 
 
 __all__ = ["router"]

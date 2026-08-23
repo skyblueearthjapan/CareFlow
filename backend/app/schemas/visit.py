@@ -114,6 +114,31 @@ class VisitCancelWeekRequest(BaseModel):
     op_group_id: UUID | None = None
 
 
+class VisitServiceOverrideRequest(BaseModel):
+    """POST /api/v1/schedule/v2/visit-service-override (設計 §2).
+
+    「この訪問だけカイポケのサービス内容に合わせる」= ``visits
+    .kaipoke_service_override`` を書き換えるだけの操作。マスタ (患者の区分 /
+    スタッフの資格) には一切触れない (憲法1: 盤面操作はマスタを変えない)。
+
+    対象の指定は **どちらか一方**:
+      * ``visit_id`` — 盤面のカード (VisitActionMenu) から直接指定する経路
+      * ``item_id`` — 同期バーの差分行 (CorrectionSheetItem) から指定する経路。
+        BE 側で item → visit を解決する (visit_id 列があればそれ、無ければ
+        日付 + 開始時刻 + 患者名で当該週の visits から引く)
+
+    ``service_content`` が None / 空文字なら **解除** (自動判定へ戻す)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    visit_id: UUID | None = None
+    item_id: UUID | None = None
+    service_content: str | None = Field(default=None, max_length=64)
+    # 操作ジャーナルのグルーピング (ツールバー「戻る」で 1 手として扱う)。
+    op_group_id: UUID | None = None
+
+
 class VisitRead(VisitBase):
     """GET /api/v1/visits/{id} レスポンス (v2 拡張済み)."""
 
@@ -155,6 +180,12 @@ class VisitRead(VisitBase):
     # ここ (VisitRead) にだけ置く: VisitBase に置くと POST /visits の入力になり、
     # 予定外を手で作れてしまう (生成経路は adhoc-checkin だけに閉じる)。
     is_unplanned: bool = False
+    # 訪問単位のサービス内容上書き (migration 0078 / 設計 §2)。非 NULL なら
+    # カイポケへ送るサービス内容がこの文字列で確定する。``is_unplanned`` と
+    # 同じ理由で **VisitRead にだけ** 置く: VisitBase に置くと POST/PATCH
+    # /visits の入力になり、専用 API (visit-service-override) への 1 本化
+    # (admin 限定・op_log で undo 可) が崩れる。
+    kaipoke_service_override: str | None = None
 
 
 __all__ = [
@@ -164,6 +195,7 @@ __all__ = [
     "VisitCancelWeekRequest",
     "VisitCreate",
     "VisitRead",
+    "VisitServiceOverrideRequest",
     "VisitStaffAssignmentRead",
     "VisitUpdate",
 ]

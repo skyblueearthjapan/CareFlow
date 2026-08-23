@@ -11,6 +11,7 @@
  *   🕘 時刻変更 (15分)                … visit-move-week-only
  *   📅 曜日移動                       … visit-move-week-only (曜日跨ぎ)
  *   📐 型も変える…                    … ChangeScopeChoice へ委譲 (マスタ昇格)
+ *   🧾 カイポケのサービス内容に合わせる… … visit-service-override (この訪問だけ)
  *
  * 憲法1: ここから出る操作は「今週だけ」。マスタ(PFV/テンプレ)に触るのは
  * 「📐 型も変える…」を選んだときだけ。
@@ -66,6 +67,11 @@ export interface VisitActionMenuVisit {
    * 言い切ると嘘になるので、そのときは「同期バーで確認」と出す。
    */
   unsent: boolean | null;
+  /**
+   * 訪問単位のサービス内容上書き (`visits.kaipoke_service_override`)。
+   * null = 自動判定 (患者の区分 × 職員1の資格) のまま。
+   */
+  kaipoke_service_override?: string | null;
 }
 
 export interface VisitActionMenuProps {
@@ -90,6 +96,11 @@ export interface VisitActionMenuProps {
   onMoveWeekday: (weekday: number) => void;
   /** 「📐 型も変える…」= ChangeScopeChoice ダイアログを親が開く。 */
   onChangeMaster: () => void;
+  /**
+   * 「🧾 カイポケのサービス内容に合わせる…」= 小ダイアログを親が開く。
+   * 未指定ならメニューに出さない (この操作を配線していない画面向け)。
+   */
+  onChangeServiceContent?: () => void;
 }
 
 function weekdayOf(dateIso: string): number {
@@ -115,6 +126,7 @@ export function VisitActionMenu({
   onChangeTime,
   onMoveWeekday,
   onChangeMaster,
+  onChangeServiceContent,
 }: VisitActionMenuProps) {
   const [open, setOpen] = React.useState(defaultOpen);
   const cancelled = visit.status === 'cancelled';
@@ -286,6 +298,28 @@ export function VisitActionMenu({
             📐 型も変える…
             <span className="ml-1 text-[10px] text-text-muted">マスタへ昇格（2択ダイアログ）</span>
           </button>
+
+          {onChangeServiceContent ? (
+            // 位置 (日付/時刻/担当) を変えないので青ピン (locked) でも押せる。
+            // 完了済み・当日以前でも直せる = 請求に効く値だからこそ後から合わせたい。
+            <button
+              type="button"
+              disabled={!canEdit}
+              data-testid="visit-action-service-content"
+              onClick={() => {
+                onChangeServiceContent();
+                close();
+              }}
+              className="w-full rounded border border-border-default px-2 py-1.5 text-left text-[12px] hover:border-brand-primary/50 disabled:opacity-50"
+            >
+              🧾 カイポケのサービス内容に合わせる…
+              <span className="ml-1 text-[10px] text-text-muted">
+                {visit.kaipoke_service_override
+                  ? `現在: ${visit.kaipoke_service_override}`
+                  : 'この訪問だけ（マスタは変えない）'}
+              </span>
+            </button>
+          ) : null}
         </div>
 
         <div

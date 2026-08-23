@@ -8,6 +8,7 @@ relay endpoints to the existing kaipoke-api (Flask + Playwright) so the
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any
 from uuid import UUID
@@ -69,6 +70,7 @@ from app.schemas.integrations import (
     LiveSnapshotRead,
     MasterReconcileGroup,
     MasterReconcileNotation,
+    MasterReconcileQualification,
     MasterReconcileRead,
     MasterReconcileRequest,
     NgConflictRead,
@@ -96,6 +98,8 @@ from app.services.kaipoke_client import (
     KaipokeClient,
     get_kaipoke_client,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -1351,7 +1355,9 @@ async def master_reconcile(
     from app.models.staff import Staff as StaffModel
     from app.services.kaipoke.master_reconcile import (
         extract_names_from_kaipoke_csv,
+        extract_staff_qualifications_from_kaipoke_csv,
         reconcile_names,
+        reconcile_staff_qualifications,
     )
 
     export_payload: dict[str, Any] = {"month": payload.month, "async": False}
@@ -1387,12 +1393,16 @@ async def master_reconcile(
             await db.execute(select(Patient.name).where(Patient.deleted_at.is_(None)))
         ).all()
     ]
-    rk_staff = [
-        s
-        for (s,) in (
-            await db.execute(select(StaffModel.name).where(StaffModel.deleted_at.is_(None)))
-        ).all()
-    ]
+    # 資格突合 (§1-2) のため id / 資格 / 在職状態まで引く。氏名突合は name だけを使う。
+    # status は同名スタッフが複数居るときの代表選び (在職者優先) に要る。
+    rk_staff_rows = (
+        await db.execute(
+            select(
+                StaffModel.id, StaffModel.name, StaffModel.qualification, StaffModel.status
+            ).where(StaffModel.deleted_at.is_(None))
+        )
+    ).all()
+    rk_staff = [name for (_id, name, _q, _s) in rk_staff_rows]
 
     def _group(res) -> MasterReconcileGroup:
         return MasterReconcileGroup(
@@ -1404,10 +1414,25 @@ async def master_reconcile(
             ],
         )
 
+    qualifications = reconcile_staff_qualifications(
+        extract_staff_qualifications_from_kaipoke_csv(csv_content),
+        [(str(sid), name, q, st) for (sid, name, q, st) in rk_staff_rows],
+    )
+
     return MasterReconcileRead(
         month=payload.month,
         patients=_group(reconcile_names(kp_patients, rk_patients)),
         staff=_group(reconcile_names(kp_staff, rk_staff)),
+        staff_qualifications=[
+            MasterReconcileQualification(
+                staff_id=UUID(d.staff_id) if d.staff_id else None,
+                name=d.name,
+                kaipoke_qualification=d.kaipoke_qualification,
+                rakusuke_qualification=d.rakusuke_qualification,
+                status=d.status,  # type: ignore[arg-type]
+            )
+            for d in qualifications
+        ],
     )
 
 
@@ -1502,16 +1527,21 @@ async def trigger_apply(
     # サービス内容が「精神基本療養費Ⅰ・正看」以外の add は、RPA が固定値で
     # 登録してしまう = カイポケに黙って誤った値が入る。送らずに除外し、
     # 何件・なぜ落としたかを result_summary に残す (過去日ガードと同じ作法)。
-    from app.services.kaipoke.rpa_capability import RPA_UNSUPPORTED_REASON, is_rpa_unsupported
+    #
+    # **ペアも道連れに外す**: サービス内容のズレは delete + add の 2 行で出るため、
+    # add だけ落として delete を送るとカイポケから予定が丸ごと消える。判定は
+    # rpa_capability に一本化する (unsent-summary の「送れる」件数と必ず一致させる)。
+    from app.services.kaipoke.rpa_capability import (
+        RPA_UNSUPPORTED_REASON,
+        rpa_unsupported_item_ids,
+    )
 
-    skipped_rpa_unsupported = 0
-    _kept_rpa: list = []
-    for it in selected:
-        if is_rpa_unsupported(it.action, it.after):
-            skipped_rpa_unsupported += 1
-        else:
-            _kept_rpa.append(it)
-    selected = _kept_rpa
+    # 判定は **シート全体** で行う: 部分適用で delete 側だけを指定されたとき、
+    # selected の中に相方の add が居ないとペアだと気付けず、カイポケの行だけが
+    # 消える (unsent-summary も同じくシート全体で計算しているので表示とも揃う)。
+    _rpa_skip_ids = rpa_unsupported_item_ids(sheet.items)
+    skipped_rpa_unsupported = sum(1 for it in selected if it.id in _rpa_skip_ids)
+    selected = [it for it in selected if it.id not in _rpa_skip_ids]
     if not selected:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -2458,7 +2488,7 @@ async def unsent_summary(
     from app.services.kaipoke.csv_snapshot import get_latest
     from app.services.kaipoke.local_diff import build_local_diff, correction_before_after
     from app.services.kaipoke.name_match import build_name_index, match_name
-    from app.services.kaipoke.rpa_capability import is_rpa_unsupported
+    from app.services.kaipoke.rpa_capability import rpa_unsupported_item_ids
 
     week_start = payload.week_start
     if week_start.weekday() != 0:
@@ -2565,15 +2595,17 @@ async def unsent_summary(
         db.add_all(rows)
         await db.flush()
         sheet_id = sheet.id
+        # apply と **同じ関数** で判定する = バーの「送れる」と実際に送れる件数が
+        # ずれない (過去日ガードと同じ設計)。ペアの delete にもフラグが立つので、
+        # FE は自前でサービス内容を見ずにこのフラグへ従えばよい。
+        rpa_skip_ids = rpa_unsupported_item_ids(rows)
         for r in rows:
             base = CorrectionItemRead.model_validate(r).model_dump()
             items_read.append(
                 UnsentItemRead(
                     **base,
                     date_iso=resolve_item_date(r.action, r.before, r.after, week_start),
-                    # apply と同じ関数で判定する = バーの「送れる」と実際に送れる
-                    # 件数がずれない (過去日ガードと同じ設計)。
-                    rpa_unsupported=is_rpa_unsupported(r.action, r.after),
+                    rpa_unsupported=r.id in rpa_skip_ids,
                 )
             )
 
@@ -2587,6 +2619,23 @@ async def unsent_summary(
         for it in items_read
         if it.rpa_unsupported and not (it.date_iso is not None and it.date_iso <= today)
     )
+    # 送信対象から黙って外したことに気付けるよう admin へお知らせを 1 通落とす
+    # (週 × 件数で冪等 = 同期バーを開くたびに増えない・§3-2)。通知の失敗で
+    # 未送信の表示そのものを落とさない (ベストエフォート)。
+    if rpa_unsupported_count > 0:
+        from app.services.kaipoke.rpa_unsupported_notify import (
+            notify_rpa_unsupported_candidates,
+        )
+
+        try:
+            if await notify_rpa_unsupported_candidates(
+                db, week_start=week_start, count=rpa_unsupported_count
+            ):
+                await db.commit()
+        except Exception as exc:  # pragma: no cover (防御)
+            await db.rollback()
+            logger.warning("unsent-summary: RPA未対応通知の作成に失敗 (無視): %r", exc)
+
     return UnsentSummaryRead(
         week_start=week_start,
         snapshot=UnsentSnapshotRead(
