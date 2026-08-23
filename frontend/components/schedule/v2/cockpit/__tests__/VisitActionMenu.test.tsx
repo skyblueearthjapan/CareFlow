@@ -190,10 +190,10 @@ describe('VisitActionMenu', () => {
     expect(h.onChangeServiceContent).toHaveBeenCalled();
   });
 
-  it('上書きが無いときは「この訪問だけ（マスタは変えない）」と出す', () => {
+  it('上書きが無いときは「この訪問だけ変えます（マスタは変えません）」と出す', () => {
     renderMenu();
     expect(screen.getByTestId('visit-action-service-content')).toHaveTextContent(
-      'この訪問だけ（マスタは変えない）',
+      'この訪問だけ変えます（マスタは変えません）',
     );
   });
 

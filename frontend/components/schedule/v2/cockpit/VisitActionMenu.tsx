@@ -254,7 +254,7 @@ export function VisitActionMenu({
       </PopoverTrigger>
       <PopoverContent
         align="start"
-        className="w-72 p-0"
+        className="w-80 p-0"
         data-testid="visit-action-menu"
         aria-label={`${visit.patient_name} の訪問メニュー`}
       >
@@ -409,7 +409,9 @@ export function VisitActionMenu({
             className="w-full rounded border border-border-default px-2 py-1.5 text-left text-[12px] hover:border-brand-primary/50 disabled:opacity-50"
           >
             📐 型も変える…
-            <span className="ml-1 text-[10px] text-text-muted">マスタへ昇格（2択ダイアログ）</span>
+            <span className="mt-0.5 block text-[10px] leading-snug text-text-muted">
+              毎週の固定スケジュール（マスタ）へ反映します
+            </span>
           </button>
 
           {onChangeServiceContent ? (
@@ -426,10 +428,10 @@ export function VisitActionMenu({
               className="w-full rounded border border-border-default px-2 py-1.5 text-left text-[12px] hover:border-brand-primary/50 disabled:opacity-50"
             >
               🧾 カイポケのサービス内容に合わせる…
-              <span className="ml-1 text-[10px] text-text-muted">
+              <span className="mt-0.5 block text-[10px] leading-snug text-text-muted">
                 {visit.kaipoke_service_override
                   ? `現在: ${visit.kaipoke_service_override}`
-                  : 'この訪問だけ（マスタは変えない）'}
+                  : 'この訪問だけ変えます（マスタは変えません）'}
               </span>
             </button>
           ) : null}
