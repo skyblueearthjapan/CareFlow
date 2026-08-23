@@ -4974,6 +4974,20 @@ export function CourseDayTablePanel({
               <span className="tnum text-[11px] text-text-muted">{isoWeekLabel}</span>
             )}
 
+            {/* 診断/最適化 は畳んでも 1 段目の右端(タブの右の空き)に常設 (PO 要望 2026-08-23)。
+                2 段目(表示切替・自動割当・戻る/進む・拠点)とは別行になるよう、ここで行を区切る。 */}
+            {headerCollapsed ? (
+              <>
+                <div
+                  className="ml-auto flex items-center gap-2"
+                  data-testid="schedule-compact-top-right"
+                >
+                  {healthAndOptimizeButtons}
+                </div>
+                <div className="basis-full" aria-hidden />
+              </>
+            ) : null}
+
             {/* Row 2 右半: 表示モード + 二次操作 を 3 グループ (α/γ/δ) に分けて
                 縦区切り線で分離. ml-auto を持つ最初の見える要素で右寄せを担保 (= α が出ていれば α、
                 「週」タブで α 非表示時は γ にフォールバックして右寄せを維持).
@@ -5226,8 +5240,6 @@ export function CourseDayTablePanel({
                     data-testid="course-day-button-divider"
                   />
                   {undoRedoButtons}
-                  {/* 診断/最適化 は畳んでも右上に常設 (PO 要望 2026-08-23)。 */}
-                  {healthAndOptimizeButtons}
                   {onOfficeChange ? (
                     <label className="flex items-center gap-1 text-xs text-text-secondary">
                       拠点
