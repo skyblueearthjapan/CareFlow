@@ -118,3 +118,13 @@
 .rakusuke-dot {
   animation: rakusuke-blink 1.2s ease-in-out infinite;
 }
+
+/* 横スクロールバーを上の1本に統一するため、本体側のブラウザ既定バーを隠す (案A 2026-08-23)。
+   スクロール自体(横スワイプ/Shift+ホイール/プログラム)は従来どおり効く。 */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
