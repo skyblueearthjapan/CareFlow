@@ -172,7 +172,36 @@ const mockAssignStaffWeek = vi.fn().mockImplementation(async () => {
   return { changed: true };
 });
 /** PATCH /courses/{id} (コース丸ごとの担当変更)。入れ替えの経路判定に使う。 */
-const mockUpdateCourse = vi.fn().mockResolvedValue({ id: 'course-A-mon' });
+const mockUpdateCourse = vi.fn().mockImplementation(async () => {
+  callOrder.push('update-course');
+  return { id: 'course-A-mon' };
+});
+
+/**
+ * 「担当なし」からの投入提案 (Phase 2-B)。ツールバー「◎ 提案を見る」が
+ * 叩く命令的 fetch と、ポップオーバー内の query の両方をここで供給する。
+ */
+const ASSIGN_CANDIDATES_RESULT = {
+  absent_staff: null,
+  date: '',
+  weekday: 0,
+  groups: [] as unknown[],
+  warnings: [] as string[],
+  whole_ok_staff_ids: [] as string[],
+  /** BE 契約 2026-08-23: course_ids のときのコース別内訳 (バッジの件数の正)。 */
+  whole_ok_by_course: {} as Record<string, string[]>,
+};
+const mockFetchAssignCandidates = vi.fn(
+  async (_params: Record<string, unknown>) => ASSIGN_CANDIDATES_RESULT,
+);
+const mockUseAssignCandidates = vi.fn(() => ({
+  data: ASSIGN_CANDIDATES_RESULT,
+  isPending: false,
+  isError: false,
+  error: null,
+  fetchStatus: 'idle',
+  refetch: vi.fn(),
+}));
 
 vi.mock('@tanstack/react-query', async (importOriginal) => {
   // eslint-disable-next-line @typescript-eslint/consistent-type-imports
@@ -345,6 +374,10 @@ vi.mock('@/lib/queries/cockpit', () => ({
     isError: false,
     fetchStatus: 'idle',
   }),
+  // 「担当なし」からの投入提案 (Phase 2-B/2-C)。既定は「鈴木さんが丸ごと ◎」。
+  ASSIGN_CANDIDATES_KEY: 'assign-candidates',
+  useAssignCandidates: (...args: unknown[]) => mockUseAssignCandidates(...args),
+  useAssignCandidatesFetcher: () => mockFetchAssignCandidates,
 }));
 
 // ─── Subject under test ─────────────────────────────────────────────────────
@@ -503,7 +536,14 @@ function renderStaffTab() {
     </QueryClientProvider>,
   );
   fireEvent.click(screen.getByTestId('course-day-tab-staff'));
-  return view;
+  /** 週セレクタを動かす代わりに weekStart prop を差し替える (H1 の検証用)。 */
+  const setWeek = (weekStart: Date) =>
+    view.rerender(
+      <QueryClientProvider client={qc}>
+        <CourseDayTablePanel weekStart={weekStart} officeId={null} canEdit={true} />
+      </QueryClientProvider>,
+    );
+  return Object.assign(view, { qc, setWeek });
 }
 
 /** jsdom は DataTransfer 非実装なので、必要な API だけの替え玉を作る。 */
@@ -515,6 +555,76 @@ function makeDataTransfer() {
     setData: (type: string, value: string) => void store.set(type, value),
     getData: (type: string) => store.get(type) ?? '',
   };
+}
+
+/**
+ * 「担当なし」に 2 件ある月曜のコース A (Phase 2-B のテスト用)。
+ * コース行の担当も外し、訪問の primary_staff_id も null にする。
+ */
+function setupUnassignedHooks(mondayIso: string = MONDAY_ISO) {
+  setupHooks({
+    visits: [
+      {
+        id: 'v1',
+        patient_id: 'p1',
+        patient_name: '田中',
+        course_id: 'course-A-mon',
+        visit_date: mondayIso,
+        start_time: '09:30:00',
+        end_time: '10:05:00',
+        primary_staff_id: null,
+        status: 'planned',
+        source: 'auto',
+      },
+      {
+        id: 'v2',
+        patient_id: 'p1',
+        patient_name: '田中',
+        course_id: 'course-A-mon',
+        visit_date: mondayIso,
+        start_time: '11:30:00',
+        end_time: '12:05:00',
+        primary_staff_id: null,
+        status: 'planned',
+        source: 'auto',
+      },
+    ],
+  });
+  mockCourses.mockReturnValue({
+    data: [
+      {
+        id: 'course-A-mon',
+        office_id: 'office-honten',
+        code: 'A',
+        weekday: 0,
+        assigned_staff_id: null,
+        deleted_at: null,
+      },
+    ],
+    isLoading: false,
+  });
+  // 鈴木さんだけが「コース丸ごと ◎」。
+  ASSIGN_CANDIDATES_RESULT.whole_ok_staff_ids = [STAFF_2];
+  ASSIGN_CANDIDATES_RESULT.whole_ok_by_course = { 'course-A-mon': [STAFF_2] };
+  ASSIGN_CANDIDATES_RESULT.groups = [
+    {
+      course_id: 'course-A-mon',
+      course_label: '本店 A',
+      visits: [],
+      candidates: [
+        {
+          staff_id: STAFF_2,
+          name: '鈴木',
+          sex: 'female',
+          office_name: '本店',
+          status: 'ok',
+          reasons: [],
+          score: 2,
+          load_today: 1,
+        },
+      ],
+    },
+  ];
 }
 
 /** タイムラインへ切り替え、佐藤 ⠿ → 鈴木 の入れ替え確認ダイアログを開く。 */
@@ -549,7 +659,22 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
         op_group_id: '00000000-0000-4000-8000-0000000000bb',
       };
     });
-    mockUpdateCourse.mockResolvedValue({ id: 'course-A-mon' });
+    mockUpdateCourse.mockImplementation(async () => {
+      callOrder.push('update-course');
+      return { id: 'course-A-mon' };
+    });
+    ASSIGN_CANDIDATES_RESULT.groups = [];
+    ASSIGN_CANDIDATES_RESULT.whole_ok_staff_ids = [];
+    ASSIGN_CANDIDATES_RESULT.whole_ok_by_course = {};
+    mockFetchAssignCandidates.mockImplementation(async () => ASSIGN_CANDIDATES_RESULT);
+    mockUseAssignCandidates.mockImplementation(() => ({
+      data: ASSIGN_CANDIDATES_RESULT,
+      isPending: false,
+      isError: false,
+      error: null,
+      fetchStatus: 'idle',
+      refetch: vi.fn(),
+    }));
   });
 
   it('(a) 訪問行クリックでメニューが開き「今週だけ取消」が visit-cancel-week を呼ぶ', async () => {
@@ -992,5 +1117,216 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     fireEvent.click(screen.getByTestId('stub-report-unsent'));
     fireEvent.click(screen.getByTestId('staff-week-visit-v1'));
     expect(await screen.findByTestId('visit-action-footer')).toHaveTextContent('●未送信');
+  });
+
+  // ─── 「担当なし」からの投入提案 (Phase 2-B) ────────────────────────────
+
+  it('(i) 「◎ 提案を見る」→ その日ぶんを course_ids 1 回で調べてバッジにする', async () => {
+    setupUnassignedHooks();
+    renderStaffTab();
+
+    // 押すまでは調べない (自動計算はしない = プールの「効果を表示」と同じ)。
+    expect(mockFetchAssignCandidates).not.toHaveBeenCalled();
+    expect(screen.getByTestId('staff-week-suggest-tpl-A-0')).toHaveTextContent('提案を見る');
+
+    fireEvent.click(screen.getByTestId('staff-tab-see-suggestions'));
+
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('staff-week-suggest-tpl-A-0')).toHaveTextContent('◎ 1名 引受可'),
+    );
+    // BE 契約 2026-08-23: コース数分のファンアウトはしない (曜日ごとに 1 回)。
+    expect(mockFetchAssignCandidates).toHaveBeenCalledTimes(1);
+    const req = mockFetchAssignCandidates.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(req).toMatchObject({ date: MONDAY_ISO, course_ids: ['course-A-mon'] });
+    // 排他: course_id / visit_ids は載せない。
+    expect(req.course_id).toBeUndefined();
+    expect(req.visit_ids).toBeUndefined();
+  });
+
+  it('(i2) バッジ → 提案 → [このコースを割り当てる] = visit-assign N 回 + PATCH /courses 1 回 (同一 op_group)', async () => {
+    setupUnassignedHooks();
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId('staff-week-suggest-tpl-A-0'));
+    expect(await screen.findByTestId('assign-suggestion-popover')).toBeInTheDocument();
+    expect(screen.getByTestId('assign-suggestion-sub')).toHaveTextContent('2件・09:30〜12:05');
+
+    fireEvent.click(screen.getByTestId(`assign-suggestion-apply-${STAFF_2}`));
+
+    await vi.waitFor(() => expect(mockUpdateCourse).toHaveBeenCalledTimes(1));
+    // 訪問ごとの付け替えが**先**・コース担当は後 (表示の正典を最後に合わせる)。
+    expect(callOrder).toEqual(['assign', 'assign', 'update-course']);
+
+    const assignCalls = mockAssignStaffWeek.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    expect(assignCalls.map((c) => c.visit_id)).toEqual(['v1', 'v2']);
+    expect(assignCalls.every((c) => c.staff_id === STAFF_2)).toBe(true);
+    const opGroupId = assignCalls[0]?.op_group_id;
+    expect(typeof opGroupId).toBe('string');
+    expect(assignCalls[1]?.op_group_id).toBe(opGroupId);
+    // 「戻る」1 回で訪問もコースもまとめて戻る。
+    expect(mockUpdateCourse.mock.calls[0]?.[0]).toMatchObject({
+      id: 'course-A-mon',
+      patch: { assigned_staff_id: STAFF_2, op_group_id: opGroupId },
+    });
+
+    await vi.waitFor(() => expect(mockToast.success).toHaveBeenCalled());
+    const msg = String(mockToast.success.mock.calls[0]?.[0]);
+    expect(msg).toContain('2件');
+    expect(msg).toContain('鈴木さんへ');
+    expect(msg).toContain('今週だけ・戻るで復元');
+    // 他コースの候補が変わるのでポップオーバーは閉じ、バッジも捨てる。
+    await vi.waitFor(() =>
+      expect(screen.queryByTestId('assign-suggestion-popover')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('(i3) 「1件ずつ分けて入れる」= 提案を閉じて最初の訪問のメニューを開く', async () => {
+    setupUnassignedHooks();
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId('staff-week-suggest-tpl-A-0'));
+    expect(await screen.findByTestId('assign-suggestion-popover')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('assign-suggestion-split'));
+
+    expect(screen.queryByTestId('assign-suggestion-popover')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('staff-timeline-visit-menu')).toHaveTextContent('選択中');
+    expect(mockAssignStaffWeek).not.toHaveBeenCalled();
+  });
+
+  it('(i4) 2 件目が失敗したらコース担当 (PATCH /courses) は当てない', async () => {
+    setupUnassignedHooks();
+    mockAssignStaffWeek.mockImplementation(async (payload: { visit_id: string }) => {
+      callOrder.push('assign');
+      if (payload.visit_id === 'v2') throw new Error('boom');
+      return { changed: true };
+    });
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId('staff-week-suggest-tpl-A-0'));
+    expect(await screen.findByTestId('assign-suggestion-popover')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId(`assign-suggestion-apply-${STAFF_2}`));
+
+    await vi.waitFor(() => expect(mockToast.error).toHaveBeenCalled());
+    // 片側だけ動いた盤面 (訪問1件だけ移ってコース担当は全部移った) を作らない。
+    expect(mockUpdateCourse).not.toHaveBeenCalled();
+    expect(callOrder).toEqual(['assign', 'assign']);
+    expect(String(mockToast.error.mock.calls[0]?.[0])).toContain('1件失敗');
+    // 途中まで動いているので「元に戻す」を渡す。
+    expect(mockToast.error.mock.calls[0]?.[1]).toMatchObject({ cancel: { label: '元に戻す' } });
+  });
+
+  it('(i5) 422 → 「やめる」= PATCH なし・中止トーストに「元に戻す」が付く', async () => {
+    setupUnassignedHooks();
+    mockAssignStaffWeek.mockImplementation(
+      async (payload: { visit_id: string; acknowledge_constraint_warnings?: boolean }) => {
+        callOrder.push('assign');
+        if (payload.visit_id === 'v2' && payload.acknowledge_constraint_warnings !== true) {
+          throw constraintError();
+        }
+        return { changed: true };
+      },
+    );
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId('staff-week-suggest-tpl-A-0'));
+    expect(await screen.findByTestId('assign-suggestion-popover')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId(`assign-suggestion-apply-${STAFF_2}`));
+
+    expect(await screen.findByTestId('constraint-override-confirm')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('constraint-override-cancel'));
+
+    await vi.waitFor(() => expect(mockToast.warning).toHaveBeenCalled());
+    expect(mockUpdateCourse).not.toHaveBeenCalled();
+    const [msg, opts] = mockToast.warning.mock.calls[0] ?? [];
+    expect(String(msg)).toContain('中止');
+    expect(String(msg)).toContain('1件は反映済み');
+    expect(opts).toMatchObject({ cancel: { label: '元に戻す' } });
+  });
+
+  it('(i6) 422 → 「続ける」= 最後に PATCH /courses が 1 回だけ (ack 引き継ぎ)', async () => {
+    setupUnassignedHooks();
+    mockAssignStaffWeek.mockImplementation(
+      async (payload: { visit_id: string; acknowledge_constraint_warnings?: boolean }) => {
+        callOrder.push('assign');
+        if (payload.visit_id === 'v2' && payload.acknowledge_constraint_warnings !== true) {
+          throw constraintError();
+        }
+        return { changed: true };
+      },
+    );
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId('staff-week-suggest-tpl-A-0'));
+    expect(await screen.findByTestId('assign-suggestion-popover')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId(`assign-suggestion-apply-${STAFF_2}`));
+
+    expect(await screen.findByTestId('constraint-override-confirm')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('constraint-override-ok'));
+
+    await vi.waitFor(() => expect(mockUpdateCourse).toHaveBeenCalledTimes(1));
+    // v1 → v2(422) → v2(ack) → コース の順。PATCH は最後の 1 回だけ。
+    expect(callOrder).toEqual(['assign', 'assign', 'assign', 'update-course']);
+    // M2: 訪問側で実際に確認を通したので、コース PATCH にも ack を引き継ぐ。
+    expect(mockUpdateCourse.mock.calls[0]?.[0]).toMatchObject({
+      patch: { assigned_staff_id: STAFF_2, acknowledge_constraint_warnings: true },
+    });
+  });
+
+  it('(i6b) M2: 確認を通していないときはコース PATCH に ack を付けない', async () => {
+    setupUnassignedHooks();
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId('staff-week-suggest-tpl-A-0'));
+    expect(await screen.findByTestId('assign-suggestion-popover')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId(`assign-suggestion-apply-${STAFF_2}`));
+
+    await vi.waitFor(() => expect(mockUpdateCourse).toHaveBeenCalledTimes(1));
+    const patch = (mockUpdateCourse.mock.calls[0]?.[0] as { patch: Record<string, unknown> }).patch;
+    expect(patch.acknowledge_constraint_warnings).toBeUndefined();
+  });
+
+  it('(i7) H1: 週を切り替えるとバッジは「提案を見る」へ戻る', async () => {
+    setupUnassignedHooks();
+    const { setWeek } = renderStaffTab();
+
+    fireEvent.click(screen.getByTestId('staff-tab-see-suggestions'));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('staff-week-suggest-tpl-A-0')).toHaveTextContent('◎ 1名 引受可'),
+    );
+
+    // 翌週へ (訪問も翌週の日付で返す = 帯は出たままにして「持ち越し」を見る)。
+    const nextWeekStart = new Date(WEEK_START);
+    nextWeekStart.setDate(WEEK_START.getDate() + 7);
+    const nextMondayIso = `${nextWeekStart.getFullYear()}-${String(nextWeekStart.getMonth() + 1).padStart(2, '0')}-${String(nextWeekStart.getDate()).padStart(2, '0')}`;
+    setupUnassignedHooks(nextMondayIso);
+    setWeek(nextWeekStart);
+
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('staff-week-suggest-tpl-A-0')).toHaveTextContent('提案を見る'),
+    );
+  });
+
+  it('(i8) H2: 訪問 1 件の担当変更でも提案キャッシュとバッジが捨てられる', async () => {
+    setupUnassignedHooks();
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId('staff-tab-see-suggestions'));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('staff-week-suggest-tpl-A-0')).toHaveTextContent('◎ 1名 引受可'),
+    );
+
+    // 提案とは別経路 (訪問メニューの「担当変更」) で盤面を動かす。
+    fireEvent.click(screen.getByTestId('staff-week-visit-v1'));
+    expect(await screen.findByTestId('visit-action-menu')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('visit-action-staff'), { target: { value: STAFF_2 } });
+
+    await vi.waitFor(() => expect(mockAssignStaffWeek).toHaveBeenCalled());
+    // 盤面が動けば候補は古い。バッジは「未計算」へ戻す。
+    await vi.waitFor(() =>
+      expect(screen.getByTestId('staff-week-suggest-tpl-A-0')).toHaveTextContent('提案を見る'),
+    );
+    expect(invalidatedKeys.some((k) => Array.isArray(k) && k[0] === 'assign-candidates')).toBe(
+      true,
+    );
   });
 });

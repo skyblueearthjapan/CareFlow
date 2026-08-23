@@ -19,7 +19,10 @@
 import * as React from 'react';
 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { useAssignCandidates } from '@/lib/queries/cockpit';
+import { SUBSTITUTE_STATUS_MARK } from '@/lib/schemas/v2/cockpit';
 import { cn } from '@/lib/utils';
+import { summarizeAssignCandidates } from './AssignSuggestionPopover';
 import { fmtMd, weekdayOfIso } from './reconcileMarkers';
 
 /** 曜日ラベルは reconcileMarkers.fmtMd と同じ 7 要素 (日曜が空文字にならないように)。 */
@@ -101,6 +104,102 @@ export interface VisitActionMenuProps {
    * 未指定ならメニューに出さない (この操作を配線していない画面向け)。
    */
   onChangeServiceContent?: () => void;
+  /**
+   * 「提案（この1件を入れられる人）」セクション (Phase 2-C)。
+   * 既定 true = メニューを開いたときに `assign-candidates` を 1 本だけ叩く。
+   * 担当ありの訪問でも「他に入れられる人」を見たい場面があるので、担当なしに
+   * 限定しない (PO 要望どおり全訪問で出す)。false で機能ごと消す。
+   */
+  showSuggestions?: boolean;
+}
+
+/**
+ * 「提案（この1件を入れられる人）」— 訪問 1 件の候補 (2-C)。
+ *
+ * メニューが開いている間だけマウントされる = 開いたときに初めて取得が走る
+ * (盤面を眺めているだけで全訪問ぶんの候補計算が飛ばないように)。
+ */
+function VisitSuggestions({
+  visitId,
+  date,
+  canEdit,
+  onPick,
+}: {
+  visitId: string;
+  date: string;
+  canEdit: boolean;
+  onPick: (staffId: string) => void;
+}) {
+  const query = useAssignCandidates({ date, visit_ids: [visitId] }, canEdit);
+  const rows = React.useMemo(
+    () => (query.data ? summarizeAssignCandidates(query.data) : []),
+    [query.data],
+  );
+  // × (休み/NG/資格不可) はメニューの中では出さない — 1 件の付け替えで見たいのは
+  // 「入れられる人」だけ。全員ぶんの一覧はコース提案のポップオーバーが持つ。
+  const shown = rows.filter((r) => r.status !== 'ng').slice(0, 5);
+
+  return (
+    <div className="border-t border-border-subtle px-3 py-2" data-testid="visit-action-suggestions">
+      <p className="mb-1 text-[11px] text-text-secondary">提案（この1件を入れられる人）</p>
+      {canEdit && query.isPending ? (
+        <p className="text-[11px] text-text-muted" data-testid="visit-action-suggestions-loading">
+          候補を確認しています…
+        </p>
+      ) : null}
+      {query.isError ? (
+        <p className="text-[11px] text-error" data-testid="visit-action-suggestions-error">
+          候補の確認に失敗しました
+        </p>
+      ) : null}
+      {!query.isPending && !query.isError && shown.length === 0 ? (
+        <p className="text-[11px] text-text-muted" data-testid="visit-action-suggestions-empty">
+          この時間に入れられる人がいません。
+        </p>
+      ) : null}
+      <ul className="space-y-1">
+        {shown.map((row) => (
+          <li
+            key={row.staffId}
+            className={cn(
+              'flex items-center gap-1.5 rounded border border-border-default px-1.5 py-1',
+              row.status === 'warn' ? 'opacity-70' : '',
+            )}
+            data-testid={`visit-action-suggestion-${row.staffId}`}
+          >
+            <span
+              className={cn(
+                'w-3.5 shrink-0 text-[13px] font-black',
+                row.status === 'ok' ? 'text-success' : 'text-warning-strong',
+              )}
+              aria-hidden
+            >
+              {SUBSTITUTE_STATUS_MARK[row.status]}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[11px] font-bold text-text-primary">{row.name}</span>
+              <span className="block text-[10px] text-text-muted">
+                {row.reasons.length > 0
+                  ? row.reasons.join('・')
+                  : ['空き', row.officeName].filter(Boolean).join('・')}
+              </span>
+            </span>
+            {row.status === 'ok' ? (
+              <button
+                type="button"
+                disabled={!canEdit}
+                onClick={() => onPick(row.staffId)}
+                className="shrink-0 rounded bg-brand-primary px-1.5 py-0.5 text-[10px] font-bold text-white disabled:opacity-50"
+                data-testid={`visit-action-suggestion-apply-${row.staffId}`}
+              >
+                割り当てる
+              </button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function weekdayOf(dateIso: string): number {
@@ -127,6 +226,7 @@ export function VisitActionMenu({
   onMoveWeekday,
   onChangeMaster,
   onChangeServiceContent,
+  showSuggestions = true,
 }: VisitActionMenuProps) {
   const [open, setOpen] = React.useState(defaultOpen);
   const cancelled = visit.status === 'cancelled';
@@ -165,6 +265,19 @@ export function VisitActionMenu({
             {visit.course_label ? ` ${visit.course_label}` : ''}
           </p>
         </div>
+
+        {/* 提案 (2-C): 青ピン (locked) や取消済みでは付け替えできないので出さない。 */}
+        {showSuggestions && !disabled && !cancelled ? (
+          <VisitSuggestions
+            visitId={visit.id}
+            date={visit.date}
+            canEdit={canEdit}
+            onPick={(staffId) => {
+              onChangeStaff(staffId);
+              close();
+            }}
+          />
+        ) : null}
 
         <div className="space-y-1.5 px-3 py-2">
           {locked ? (

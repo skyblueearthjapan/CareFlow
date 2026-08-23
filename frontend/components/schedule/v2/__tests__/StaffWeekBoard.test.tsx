@@ -8,7 +8,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 
 import { StaffWeekBoard } from '../StaffWeekBoard';
 import { COURSE_DND_MIME, VISIT_DND_MIME } from '../courseDnd';
@@ -646,5 +646,81 @@ describe('StaffWeekBoard', () => {
     expect(onAddVisit).toHaveBeenCalledWith(STAFF_1, 3);
     // 「（担当なし）」行にはセルアクションを出さない。
     expect(screen.queryByTestId('staff-week-off-action-__unassigned__-0')).not.toBeInTheDocument();
+  });
+
+  // ─── 「担当なし」からの投入提案 (Phase 2-B・unassigned-suggestions-design.md) ──
+
+  const COURSE_B_WED = '00000000-0000-4000-8000-0000000000c2';
+
+  function renderSuggest(
+    badges: Map<string, { ok: number } | 'calc'>,
+    extra: Partial<React.ComponentProps<typeof StaffWeekBoard>> = {},
+  ) {
+    const onSuggestCourse = vi.fn();
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        alwaysShowUnassignedRow
+        courseIdByTemplateWeekday={new Map([[`${TPL_B}:2`, COURSE_B_WED]])}
+        suggestionBadges={badges}
+        onSuggestCourse={onSuggestCourse}
+        {...extra}
+      />,
+    );
+    return onSuggestCourse;
+  }
+
+  it('㉑ 未計算のコース帯は「提案を見る」・クリックで (courseId, weekday) が飛ぶ', () => {
+    const onSuggestCourse = renderSuggest(new Map());
+    const badge = screen.getByTestId(`staff-week-suggest-${TPL_B}-2`);
+    expect(badge).toHaveTextContent('提案を見る');
+    fireEvent.click(badge);
+    expect(onSuggestCourse).toHaveBeenCalledTimes(1);
+    expect(onSuggestCourse.mock.calls[0]?.slice(0, 2)).toEqual([COURSE_B_WED, 2]);
+    // 第 3 引数はアンカー要素 (ポップオーバーの位置合わせ)。
+    expect(onSuggestCourse.mock.calls[0]?.[2]).toBe(badge);
+  });
+
+  it('㉒ バッジは ◎N名 / ◎0名（1件ずつ） / 確認中… を出し分ける', () => {
+    renderSuggest(new Map([[`${TPL_B}:2`, { ok: 2 }]]));
+    expect(screen.getByTestId(`staff-week-suggest-${TPL_B}-2`)).toHaveTextContent('◎ 2名 引受可');
+    cleanup();
+
+    renderSuggest(new Map([[`${TPL_B}:2`, { ok: 0 }]]));
+    expect(screen.getByTestId(`staff-week-suggest-${TPL_B}-2`)).toHaveTextContent(
+      '◎ 0名（1件ずつ）',
+    );
+    cleanup();
+
+    renderSuggest(new Map([[`${TPL_B}:2`, 'calc']]));
+    const calc = screen.getByTestId(`staff-week-suggest-${TPL_B}-2`);
+    expect(calc).toHaveTextContent('確認中…');
+    expect(calc).toBeDisabled();
+  });
+
+  it('㉓ 担当ありの行にはバッジを出さない (提案は「担当なし」専用)', () => {
+    renderSuggest(new Map(), {
+      courseIdByTemplateWeekday: new Map([
+        [`${TPL_B}:2`, COURSE_B_WED],
+        [`${TPL_A}:0`, '00000000-0000-4000-8000-0000000000c1'],
+      ]),
+    });
+    expect(screen.getByTestId(`staff-week-suggest-${TPL_B}-2`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`staff-week-suggest-${TPL_A}-0`)).not.toBeInTheDocument();
+  });
+
+  it('㉔ 2-D: highlightStaffId の行だけ印が付く', () => {
+    renderSuggest(new Map(), { highlightStaffId: STAFF_2 });
+    expect(screen.getByTestId(`staff-week-row-${STAFF_2}`)).toHaveAttribute(
+      'data-highlight',
+      'true',
+    );
+    expect(screen.getByTestId(`staff-week-row-${STAFF_1}`)).not.toHaveAttribute('data-highlight');
   });
 });

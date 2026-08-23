@@ -797,6 +797,58 @@ describe('StaffTimelineView — 行アクション (🛌休みにする / ＋訪
   });
 });
 
+// ─── 「担当なし」からの投入提案 (Phase 2-B/2-D) ──────────────────────────
+
+describe('StaffTimelineView — 担当なしの投入提案バッジ', () => {
+  const COURSE_A_MON = '00000000-0000-4000-8000-0000000000c1';
+
+  /** 担当なしのコース A (月・2件)。 */
+  const unassignedVisits = [
+    visit({ id: 'u1', primary_staff_id: null, start_time: '09:30', course_label: '稲毛C' }),
+    visit({ id: 'u2', primary_staff_id: null, start_time: '11:30', course_label: '稲毛C' }),
+  ];
+
+  it('未計算は「提案を見る」・クリックで (courseId, day, anchor) が飛ぶ', () => {
+    const onSuggestCourse = vi.fn();
+    renderView({
+      visits: unassignedVisits,
+      courseIdByTemplateWeekday: new Map([[`${TPL_A}:0`, COURSE_A_MON]]),
+      onSuggestCourse,
+    });
+    const badge = screen.getByTestId(`tl-suggest-${TPL_A}`);
+    expect(badge).toHaveTextContent('提案を見る');
+    expect(badge).toHaveTextContent('稲毛C');
+    fireEvent.click(badge);
+    expect(onSuggestCourse.mock.calls[0]?.slice(0, 2)).toEqual([COURSE_A_MON, 0]);
+    expect(onSuggestCourse.mock.calls[0]?.[2]).toBe(badge);
+  });
+
+  it('suggestionBadges の値でバッジ文言が変わる', () => {
+    renderView({
+      visits: unassignedVisits,
+      courseIdByTemplateWeekday: new Map([[`${TPL_A}:0`, COURSE_A_MON]]),
+      onSuggestCourse: vi.fn(),
+      suggestionBadges: new Map([[`${TPL_A}:0`, { ok: 3 }]]),
+    });
+    expect(screen.getByTestId(`tl-suggest-${TPL_A}`)).toHaveTextContent('◎ 3名 引受可');
+  });
+
+  it('course_id が引けない帯にはバッジを出さない (1件ずつ提案が受け皿)', () => {
+    renderView({
+      visits: unassignedVisits,
+      courseIdByTemplateWeekday: new Map(),
+      onSuggestCourse: vi.fn(),
+    });
+    expect(screen.queryByTestId('tl-suggest-bands')).not.toBeInTheDocument();
+  });
+
+  it('2-D: highlightStaffId のレーンだけ印が付く', () => {
+    renderView({ highlightStaffId: STAFF_2 });
+    expect(screen.getByTestId(`tl-lane-${STAFF_2}`)).toHaveAttribute('data-highlight', 'true');
+    expect(screen.getByTestId(`tl-lane-${STAFF_1}`)).not.toHaveAttribute('data-highlight');
+  });
+});
+
 describe('snapXOffsetToMinutes', () => {
   it('15分に丸める', () => {
     // 幅 660px = 660分 → 1px = 1分

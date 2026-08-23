@@ -6,10 +6,25 @@
  * ③ 各操作が props のコールバックを正しい引数で呼ぶ (API は呼ばない)
  * ④ cancelled は「取消をやめる」に切り替わる
  * ⑤ 青ピン (week_pinned) は操作不可
+ * ⑥ 提案 (2-C)「この1件を入れられる人」= ◎ で 1 クリック付け替え
  */
 import * as React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+
+// 提案セクション (2-C) は assign-candidates を叩くので、既定は「空の結果」に
+// 差し替えて既存シナリオへ影響させない (各テストで上書きする)。
+const mockAssignCandidates = vi.fn(() => ({
+  data: undefined,
+  isPending: false,
+  isError: false,
+  error: null,
+  fetchStatus: 'idle',
+  refetch: vi.fn(),
+}));
+vi.mock('@/lib/queries/cockpit', () => ({
+  useAssignCandidates: () => mockAssignCandidates(),
+}));
 
 import { VisitActionMenu, type VisitActionMenuVisit } from '../VisitActionMenu';
 
@@ -190,5 +205,98 @@ describe('VisitActionMenu', () => {
   it('コールバック未指定なら項目を出さない', () => {
     renderMenu({ onChangeServiceContent: undefined });
     expect(screen.queryByTestId('visit-action-service-content')).toBeNull();
+  });
+
+  // ── 提案 (Phase 2-C): この1件を入れられる人 ──────────────────────────
+
+  const SUGGEST_A = '00000000-0000-4000-8000-0000000000s1';
+  const SUGGEST_B = '00000000-0000-4000-8000-0000000000s2';
+
+  function suggestResult(over: Record<string, unknown> = {}) {
+    return {
+      data: {
+        absent_staff: null,
+        date: BASE_VISIT.date,
+        weekday: 0,
+        groups: [
+          {
+            course_id: null,
+            course_label: '稲毛C',
+            visits: [],
+            candidates: [
+              {
+                staff_id: SUGGEST_A,
+                name: '髙梨 桂子',
+                sex: 'female',
+                office_name: '稲毛',
+                status: 'ok',
+                reasons: [],
+                score: 2,
+                load_today: 1,
+              },
+              {
+                staff_id: SUGGEST_B,
+                name: '川名 千恵',
+                sex: 'female',
+                office_name: '稲毛',
+                status: 'warn',
+                reasons: [
+                  { code: 'time_overlap', message: '09:00〜 佐々木様 と移動時間が足りない' },
+                ],
+                score: 1,
+                load_today: 3,
+              },
+            ],
+          },
+        ],
+        warnings: [],
+        whole_ok_staff_ids: [SUGGEST_A],
+      },
+      isPending: false,
+      isError: false,
+      error: null,
+      fetchStatus: 'idle',
+      refetch: vi.fn(),
+      ...over,
+    };
+  }
+
+  it('提案セクション: ◎ は [割り当てる] で onChangeStaff・△ は理由のみ', () => {
+    mockAssignCandidates.mockReturnValue(suggestResult());
+    const h = renderMenu();
+    const section = screen.getByTestId('visit-action-suggestions');
+    expect(section).toHaveTextContent('提案（この1件を入れられる人）');
+    expect(screen.getByTestId(`visit-action-suggestion-${SUGGEST_B}`)).toHaveTextContent(
+      '移動時間が足りない',
+    );
+    expect(
+      screen.queryByTestId(`visit-action-suggestion-apply-${SUGGEST_B}`),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId(`visit-action-suggestion-apply-${SUGGEST_A}`));
+    expect(h.onChangeStaff).toHaveBeenCalledWith(SUGGEST_A);
+  });
+
+  it('提案セクション: 読み込み中は「候補を確認しています…」', () => {
+    mockAssignCandidates.mockReturnValue(
+      suggestResult({ data: undefined, isPending: true, fetchStatus: 'fetching' }),
+    );
+    renderMenu();
+    expect(screen.getByTestId('visit-action-suggestions-loading')).toBeInTheDocument();
+  });
+
+  it('提案セクション: 青ピン・取消済みでは出さない (付け替えできないため)', () => {
+    mockAssignCandidates.mockReturnValue(suggestResult());
+    renderMenu({ visit: { ...BASE_VISIT, week_pinned: true } });
+    expect(screen.queryByTestId('visit-action-suggestions')).toBeNull();
+    cleanup();
+    renderMenu({ visit: { ...BASE_VISIT, status: 'cancelled' } });
+    expect(screen.queryByTestId('visit-action-suggestions')).toBeNull();
+  });
+
+  it('提案セクション: showSuggestions=false で機能ごと消える', () => {
+    mockAssignCandidates.mockReturnValue(suggestResult());
+    renderMenu({ showSuggestions: false });
+    expect(screen.queryByTestId('visit-action-suggestions')).toBeNull();
   });
 });

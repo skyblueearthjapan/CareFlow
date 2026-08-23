@@ -45,6 +45,7 @@ import {
   type CockpitMarkersByCell,
 } from './cockpit/reconcileMarkers';
 import type { TimelineVisit } from './cockpit/StaffTimelineView';
+import { suggestionBadgeClass, suggestionBadgeView } from './cockpit/suggestionBadge';
 import { SyncedHScroll } from '@/components/ui/synced-h-scroll';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
@@ -136,6 +137,17 @@ export interface StaffWeekBoardProps {
    *   delete = 青の打消し。SyncBar (同期バー) が選択中の 1 件を供給する。
    */
   reconcileMarkersByCell?: CockpitMarkersByCell | null;
+  /**
+   * 「担当なし」からの投入提案 (Phase 2-B)。キーは `${templateId}:${weekday}`
+   * (`courseIdByTemplateWeekday` と同じ引き方)。
+   *   `'calc'` = 問い合わせ中 / `{ok:n}` = 丸ごと引き受けられる人数。
+   * 未登録のコース帯は「提案を見る」ボタンのまま (自動計算はしない)。
+   */
+  suggestionBadges?: Map<string, { ok: number } | 'calc'>;
+  /** バッジのクリック → コース提案ポップオーバー (親が開く)。 */
+  onSuggestCourse?: (courseId: string, weekday: number, anchorEl: HTMLElement) => void;
+  /** 2-D: 提案の候補行を hover 中のスタッフ。その行を薄くブランド色にする。 */
+  highlightStaffId?: string | null;
 }
 
 /** 「（担当なし）」行のキー (courseDnd の単一ソース)。 */
@@ -197,6 +209,9 @@ export function StaffWeekBoard({
   onAddVisit,
   unsentVisitIds,
   unsentEventIds,
+  suggestionBadges,
+  onSuggestCourse,
+  highlightStaffId,
 }: StaffWeekBoardProps) {
   // ドラッグ中に実際に重なっているセル (`${rowKey}:${wd}`)。候補セルの
   // 淡い破線に対し、重なり中のセルだけ強く光らせる (PO指摘 2026-08-21)。
@@ -325,7 +340,14 @@ export function StaffWeekBoard({
             return (
               <tr
                 key={rowKey}
-                className="border-b border-border-subtle align-top"
+                className={[
+                  'border-b border-border-subtle align-top',
+                  // 2-D: 提案の候補を hover 中 = その人の行を薄くブランド色に。
+                  highlightStaffId === rowKey ? 'bg-brand-primary/10' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                data-highlight={highlightStaffId === rowKey ? 'true' : undefined}
                 data-testid={`staff-week-row-${rowKey}`}
               >
                 <td className="sticky left-0 z-[1] border-r border-border-default bg-bg-base px-3 py-2">
@@ -641,9 +663,15 @@ export function StaffWeekBoard({
                             週空間 A1: 見出しチップは course_id が引ければドラッグ元になる
                             (別スタッフのセル/パレットへ = 今週のみの担当付替/解除)。 */}
                         {courses.map((cc) => {
-                          const chipCourseId =
-                            onCourseDrop && courseIdByTemplateWeekday
-                              ? (courseIdByTemplateWeekday.get(`${cc.templateId}:${wd}`) ?? null)
+                          const bandKey = `${cc.templateId}:${wd}`;
+                          const bandCourseId = courseIdByTemplateWeekday?.get(bandKey) ?? null;
+                          const chipCourseId = onCourseDrop ? bandCourseId : null;
+                          // 提案バッジは「（担当なし）」行のコース帯だけ。コース行が
+                          // 引けない帯 (臨時等) は assign-candidates の course_id が
+                          // 作れないので出さない (訪問クリックの 1 件ずつ提案で拾う)。
+                          const suggest =
+                            onSuggestCourse && rowKey === UNASSIGNED_KEY && bandCourseId
+                              ? suggestionBadgeView(suggestionBadges?.get(bandKey))
                               : null;
                           return (
                             <div key={cc.templateId}>
@@ -720,6 +748,22 @@ export function StaffWeekBoard({
                                     data-testid={`staff-week-course-unassign-${cc.templateId}-${wd}`}
                                   >
                                     ×
+                                  </button>
+                                ) : null}
+                                {/* 「担当なし」= 誰に入れられるかの提案 (Phase 2-B)。
+                                    帯の右端に置く (モックの `.badge` と同じ位置)。 */}
+                                {suggest && bandCourseId ? (
+                                  <button
+                                    type="button"
+                                    disabled={suggest.busy}
+                                    className={suggestionBadgeClass(suggest.tone)}
+                                    onClick={(e) =>
+                                      onSuggestCourse?.(bandCourseId, wd, e.currentTarget)
+                                    }
+                                    title={`${cc.label} を引き受けられる人を調べる（今週だけ・型は変わりません）`}
+                                    data-testid={`staff-week-suggest-${cc.templateId}-${wd}`}
+                                  >
+                                    {suggest.label}
                                   </button>
                                 ) : null}
                               </div>

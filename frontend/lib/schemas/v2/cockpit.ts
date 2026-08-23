@@ -116,6 +116,65 @@ export const substituteCandidatesReadSchema = z.object({
 export type SubstituteCandidatesRead = z.infer<typeof substituteCandidatesReadSchema>;
 
 // ───────────────────────────────────────────────────────────────────────────
+// 「担当なし」からの投入提案 (Phase 2-B/2-C) — POST /schedule/v2/assign-candidates
+//
+// 設計 `docs/plans/unassigned-suggestions-design.md` §2。急休 (substitute) の
+// **逆操作** = 時刻は固定のまま「入れる人」を探す。判定ロジックは
+// `substitute_candidates` と同じ単一ソースで、対象集合の作り方だけが違う。
+//
+//   course_id  … その日のそのコースの planned 訪問すべて (BE 互換・FE は未使用)
+//   course_ids … 複数コースをまとめて 1 リクエストで (ツールバーの「◎ 提案を見る」)
+//   visit_ids  … 指定した訪問だけ (コース提案 2-B / 患者1人の提案 2-C)
+//
+// FE のコース提案が `course_id` ではなく `visit_ids` を送るのは、
+// 「（担当なし）行にある訪問」だけを評価・付け替えたいから。コースには既に
+// 担当の付いた訪問が混ざっていることがあり (取込由来・個別付替の残り)、
+// `course_id` だと**盤面に見えている束と評価対象がズレる**。
+//
+// 3 つは**排他** (2 つ以上を同時に渡すと BE は 422)。FE 側でも zod で弾いて、
+// 誤った組み立てをネットワークまで持って行かない。
+//
+// レスポンスは substitute-candidates と同形 + `whole_ok_staff_ids`
+// (= 全訪問 ◎ の交差 = 対象を丸ごと引き受けられる人) + `whole_ok_by_course`
+// (= コース単位の内訳・course_ids のときのバッジの件数はこちらを使う)。
+// 担当なしの訪問には「抜ける人」が居ないので `absent_staff` は null になる。
+// ───────────────────────────────────────────────────────────────────────────
+
+/** 空配列は「指定なし」として畳む (排他判定を `!= null` だけで書けるように)。 */
+const optionalUuidList = z
+  .array(z.string().uuid())
+  .nullable()
+  .optional()
+  .transform((v) => (v != null && v.length > 0 ? v : undefined));
+
+export const assignCandidatesRequestSchema = z
+  .object({
+    date: isoDateSchema,
+    course_id: z.string().uuid().nullable().optional(),
+    course_ids: optionalUuidList,
+    visit_ids: optionalUuidList,
+  })
+  .refine(
+    (v) => [v.course_id, v.course_ids, v.visit_ids].filter((x) => x != null).length === 1,
+    'course_id / course_ids / visit_ids のいずれか 1 つだけを指定してください',
+  );
+export type AssignCandidatesRequest = z.input<typeof assignCandidatesRequestSchema>;
+
+export const assignCandidatesReadSchema = substituteCandidatesReadSchema.extend({
+  /** 担当なしの訪問が対象のときは「抜ける人」が居ない = null。 */
+  absent_staff: z
+    .object({ id: z.string().uuid(), name: z.string() })
+    .nullable()
+    .optional()
+    .default(null),
+  /** 対象全体で全訪問 ◎ の交差 (単一コース / 訪問指定のときに使う)。 */
+  whole_ok_staff_ids: z.array(z.string().uuid()).default([]),
+  /** course_id → そのコースを丸ごと引き受けられる人 (course_ids のときの内訳)。 */
+  whole_ok_by_course: z.record(z.string(), z.array(z.string().uuid())).default({}),
+});
+export type AssignCandidatesRead = z.infer<typeof assignCandidatesReadSchema>;
+
+// ───────────────────────────────────────────────────────────────────────────
 // 🛌 休みにする (PO 決定 2026-08-23) — POST /schedule/v2/staff-off-week
 //
 // 休みの登録 + その日の担当 (訪問 / コース) の引き受けを **1 リクエスト**で行う。

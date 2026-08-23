@@ -5,6 +5,8 @@
  * `docs/plans/week-cockpit-design.md` §2 / §3。
  *
  *   useSubstituteCandidates — 代替候補 (read-only・POST 検索)
+ *   useAssignCandidates     — 担当なしの投入提案 (read-only・POST 検索)
+ *   useAssignCandidatesFetcher — 同上を命令的に (ツールバーの「◎ 提案を見る」)
  *   useStaffOffWeek         — 🛌 休みにする (休みの登録 + その日の担当の引き受け)
  *   useVisitCancelWeek      — 訪問の「今週だけ取消 / 取消をやめる」
  *   useEventCancelWeek      — 固定イベントの「今週だけ外す / 戻す」
@@ -17,6 +19,7 @@
  *   - 実データを変える系は ['visits'] / ['courses'] / ['staff','events'] /
  *     op-log を invalidate する (opLog.ts の invalidateAfterUndoRedo と同じ範囲)。
  */
+import * as React from 'react';
 import {
   useMutation,
   useQuery,
@@ -47,6 +50,10 @@ import {
   type StaffOffWeekResponse,
   type SubstituteCandidatesRead,
   type SubstituteCandidatesRequest,
+  assignCandidatesReadSchema,
+  assignCandidatesRequestSchema,
+  type AssignCandidatesRead,
+  type AssignCandidatesRequest,
   type UnsentSummaryRead,
   type UnsentSummaryRequest,
   type VisitCancelWeekRequest,
@@ -58,6 +65,7 @@ import {
 } from '@/lib/schemas/v2/cockpit';
 
 const SUBSTITUTE_CANDIDATES_PATH = '/api/v1/schedule/v2/substitute-candidates';
+const ASSIGN_CANDIDATES_PATH = '/api/v1/schedule/v2/assign-candidates';
 const VISIT_CANCEL_WEEK_PATH = '/api/v1/schedule/v2/visit-cancel-week';
 const VISIT_SERVICE_OVERRIDE_PATH = '/api/v1/schedule/v2/visit-service-override';
 const UNSENT_SUMMARY_PATH = '/api/v1/integrations/unsent-summary';
@@ -65,6 +73,36 @@ const STAFF_OFF_WEEK_PATH = '/api/v1/schedule/v2/staff-off-week';
 
 /** TanStack Query キー prefix (代替候補)。 */
 export const SUBSTITUTE_CANDIDATES_KEY = 'substitute-candidates' as const;
+
+/** TanStack Query キー prefix (担当なしの投入提案)。 */
+export const ASSIGN_CANDIDATES_KEY = 'assign-candidates' as const;
+
+/**
+ * 提案のキャッシュ寿命 (ms)。同じ日を何度も開き直しても 1 分は再計算しない
+ * (BE は候補判定を全スタッフ分回すので安くない)。逆に割当を 1 件でも実行したら
+ * 他コースの候補が変わるため、呼び出し側が `removeQueries` で捨てる。
+ */
+const ASSIGN_CANDIDATES_STALE_MS = 60_000;
+
+/**
+ * キャッシュキー (query / 命令的 fetch の**単一ソース**)。
+ *
+ * course_id / course_ids / visit_ids は排他なので、それぞれ別の枠に入れて
+ * **キーを分ける**: 単一コースのポップオーバーと、一括の「◎ 提案を見る」は
+ * 同じコースを含んでいても別のキャッシュとして扱う。
+ */
+function assignCandidatesQueryKey(params: AssignCandidatesRequest | null): unknown[] {
+  // 配列は順序差でキャッシュが分かれないよう並べ直して 1 文字列に畳む。
+  const joined = (ids: readonly string[] | null | undefined) =>
+    ids && ids.length > 0 ? [...ids].sort().join(',') : null;
+  return [
+    ASSIGN_CANDIDATES_KEY,
+    params?.date ?? null,
+    params?.course_id ?? null,
+    joined(params?.course_ids),
+    joined(params?.visit_ids),
+  ];
+}
 
 function authPair(session: ReturnType<typeof useSession>['data']) {
   return {
@@ -117,6 +155,68 @@ export function useSubstituteCandidates(
     enabled: status === 'authenticated' && enabled && params != null,
     staleTime: 30_000,
   });
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// 「担当なし」からの投入提案 (unassigned-suggestions-design.md §2)
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * 「この予定を入れられる人」の候補 (read-only)。`params=null` の間は取得しない。
+ * `substitute-candidates` と同じく副作用の無い POST 検索なので query で扱う。
+ */
+export function useAssignCandidates(params: AssignCandidatesRequest | null, enabled = true) {
+  const { data: session, status } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useQuery<AssignCandidatesRead>({
+    queryKey: assignCandidatesQueryKey(params),
+    queryFn: async () => {
+      const payload = assignCandidatesRequestSchema.parse(params);
+      const raw = await fetcher<unknown>(ASSIGN_CANDIDATES_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      });
+      return assignCandidatesReadSchema.parse(raw);
+    },
+    enabled: status === 'authenticated' && enabled && params != null,
+    staleTime: ASSIGN_CANDIDATES_STALE_MS,
+  });
+}
+
+/**
+ * 命令的な取得 (ツールバーの「◎ 提案を見る」= 担当なしコースを並列に調べる)。
+ *
+ * `fetchQuery` なので **`useAssignCandidates` と同じキャッシュ**を共有する:
+ * バッジを出した直後にポップオーバーを開いても再取得は走らない。
+ */
+export function useAssignCandidatesFetcher(): (
+  params: AssignCandidatesRequest,
+) => Promise<AssignCandidatesRead> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return React.useCallback(
+    (params: AssignCandidatesRequest) =>
+      qc.fetchQuery<AssignCandidatesRead>({
+        queryKey: assignCandidatesQueryKey(params),
+        queryFn: async () => {
+          const payload = assignCandidatesRequestSchema.parse(params);
+          const raw = await fetcher<unknown>(ASSIGN_CANDIDATES_PATH, {
+            method: 'POST',
+            body: JSON.stringify(payload),
+            accessToken,
+            refreshToken,
+          });
+          return assignCandidatesReadSchema.parse(raw);
+        },
+        staleTime: ASSIGN_CANDIDATES_STALE_MS,
+      }),
+    [qc, accessToken, refreshToken],
+  );
 }
 
 // ───────────────────────────────────────────────────────────────────────────

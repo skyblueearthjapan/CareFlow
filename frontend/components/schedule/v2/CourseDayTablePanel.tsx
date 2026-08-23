@@ -172,7 +172,7 @@ import {
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
 import { StaffWeekBoard } from './StaffWeekBoard';
 import { compareByStaffCode } from '@/lib/kana-sort';
-import { type BoardDragState } from './courseDnd';
+import { UNASSIGNED_ROW_KEY, type BoardDragState } from './courseDnd';
 // ─── 週空間 Phase E「今週の運転席」(docs/plans/week-cockpit-design.md §3) ───
 // 部品は FE-A/FE-B が作成済み。ここ (FE-C) は結線だけを行う。
 import { SyncBar } from './cockpit/SyncBar';
@@ -200,11 +200,15 @@ import {
   type CockpitMarkersByCell,
 } from './cockpit/reconcileMarkers';
 import {
+  ASSIGN_CANDIDATES_KEY,
+  useAssignCandidatesFetcher,
   useEventCancelWeek,
   useStaffOffWeek,
   useVisitCancelWeek,
   useVisitServiceOverride,
 } from '@/lib/queries/cockpit';
+import { AssignSuggestionPopover } from './cockpit/AssignSuggestionPopover';
+import type { SuggestionBadgeMap, SuggestionBadgeState } from './cockpit/suggestionBadge';
 import type { CockpitEventRead } from '@/lib/schemas/v2/cockpit';
 import { ChangeScopeChoice } from '@/components/schedule/v2/ChangeScopeChoice';
 import {
@@ -3003,6 +3007,27 @@ export function CourseDayTablePanel({
   /** 盤面を操作したら同期バーに未送信を数え直させる (加算するだけ)。 */
   const [syncReloadKey, setSyncReloadKey] = useState(0);
 
+  // ─── 「担当なし」からの投入提案 (Phase 2-B/2-C) ────────────────────────
+  // 設計 `docs/plans/unassigned-suggestions-design.md`。自動計算はしない
+  // (保留プールの「効果を表示」と同じ on-demand) — ツールバーの「◎ 提案を見る」
+  // かコース帯のバッジを押したときだけ BE を叩く。
+  /** `${templateId}:${weekday}` → 'calc' / {ok:n}。 */
+  const [suggestionBadges, setSuggestionBadges] = useState<SuggestionBadgeMap>(
+    () => new Map<string, SuggestionBadgeState>(),
+  );
+  /** 開いているコース提案ポップオーバー。 */
+  const [suggestCourse, setSuggestCourse] = useState<{
+    courseId: string;
+    weekday: number;
+    label: string;
+    anchorEl: HTMLElement | null;
+  } | null>(null);
+  /** 2-D: 候補行 hover 中のスタッフ (盤面/タイムラインの行を光らせる)。 */
+  const [highlightStaffId, setHighlightStaffId] = useState<string | null>(null);
+  /** 割当実行中 (ポップオーバーのボタン二度押し防止)。 */
+  const [suggestApplying, setSuggestApplying] = useState(false);
+  const fetchAssignCandidates = useAssignCandidatesFetcher();
+
   // 当該週の全スタッフ休み/時間変更 (admin のみ取得可・セル網掛け + 貼り付け警告)。
   const weekOverridesQuery = useWeekStaffOverrides(isoYear, isoWeek, canEdit);
   const offByStaffWeekday = useMemo(() => {
@@ -3127,6 +3152,9 @@ export function CourseDayTablePanel({
         ...ackFlag(acknowledge),
       });
       invalidateOpLog(isoYear, isoWeek);
+      // H2: 担当が動けば「誰が引き受けられるか」も ●未送信 も変わる。
+      // 提案キャッシュ/バッジの破棄はここに畳んである (invalidateCockpitBoard)。
+      invalidateCockpitBoard();
       if (res.changed && !silent) {
         toast.success(
           staffId
@@ -3361,6 +3389,17 @@ export function CourseDayTablePanel({
     void queryClient.invalidateQueries({ queryKey: ['staff-overrides-week'] });
     // 盤面が変われば ●未送信 も変わる。同期バーに数え直させる。
     setSyncReloadKey((k) => k + 1);
+    // 盤面が 1 件でも動けば「誰が引き受けられるか」は変わる (設計 §6)。
+    // 訪問の付替・休み・時刻移動・undo/redo・カイポケ取込 — 盤面を触る経路は
+    // すべてここを通るので、提案の破棄もここに畳んで**取りこぼしを無くす**。
+    // `refetchType:'none'` = 印を付けるだけ (閉じかけの画面で再取得させない)。
+    void queryClient.invalidateQueries({
+      queryKey: [ASSIGN_CANDIDATES_KEY],
+      refetchType: 'none',
+    });
+    setSuggestionBadges((prev) =>
+      prev.size === 0 ? prev : new Map<string, SuggestionBadgeState>(),
+    );
   }, [queryClient, invalidateOpLog, isoYear, isoWeek]);
 
   /** テンプレ id → 「拠点 コース」表記。 */
@@ -3387,6 +3426,27 @@ export function CourseDayTablePanel({
         kaipoke_service_override: serviceOverrideByVisitId.get(v.id) ?? null,
       })),
     [overviewVisits, visitById, cockpitCourseLabel, serviceOverrideByVisitId],
+  );
+
+  /**
+   * 盤面の「候補判定に効く形」の指紋 (H2 の取りこぼし対策)。
+   *
+   * 提案 (assign-candidates) は **担当・時刻・曜日・状態** から候補を出すので、
+   * それらが 1 つでも動けばバッジは古い。呼び出し側で失効させて回るやり方だと、
+   * 自分の関数を通らない経路 (同期バーの ⇩ 取込 apply・undo/redo・別タブの変更を
+   * 拾った再取得) を取りこぼす。データ側の変化を単一の信号にして、
+   * **どの経路で変わっても必ず捨てる**。
+   */
+  const cockpitBoardSignature = useMemo(
+    () =>
+      cockpitVisits
+        .map(
+          (v) =>
+            `${v.id}:${v.weekday}:${v.primary_staff_id ?? ''}:${v.start_time ?? ''}:${v.end_time ?? ''}:${v.status ?? ''}`,
+        )
+        .sort()
+        .join('|'),
+    [cockpitVisits],
   );
 
   /**
@@ -3760,8 +3820,18 @@ export function CourseDayTablePanel({
 
   /** ランナーに積む 1 件。 */
   type AssignQueueItem = { visitId: string; toStaffId: string | null };
-  /** ランナーの結末。`aborted` = 確認ダイアログを「やめる」で中止した。 */
-  type AssignQueueResult = { applied: number; failed: number; aborted: boolean };
+  /**
+   * ランナーの結末。`aborted` = 確認ダイアログを「やめる」で中止した。
+   * `acknowledged` = 途中で NG/性別の確認を通した (= 後続の API にも
+   * `acknowledge_constraint_warnings` を引き継いでよい)。確認していないのに
+   * 付けると、まだ聞いていない警告を黙って握り潰すことになる。
+   */
+  type AssignQueueResult = {
+    applied: number;
+    failed: number;
+    aborted: boolean;
+    acknowledged: boolean;
+  };
 
   /**
    * 訪問単位の付け替えを順に流す。
@@ -3784,9 +3854,12 @@ export function CourseDayTablePanel({
     ackFirst = false,
     applied0 = 0,
     failed0 = 0,
+    acknowledged0 = false,
   ): Promise<void> => {
     let applied = applied0;
     let failed = failed0;
+    // 再開 (ackFirst) = 直前に確認ダイアログを「続ける」で通した、ということ。
+    const acknowledged = acknowledged0 || ackFirst;
     let touched = false;
     const done = (r: AssignQueueResult) => {
       // op-log は 1 操作グループにつき 1 回失効させれば足りる (ループ内で毎回
@@ -3812,12 +3885,12 @@ export function CourseDayTablePanel({
           !acknowledge &&
           placementConstraintConfirm.capture(
             err,
-            () => runAssignQueue(queue, opGroupId, finish, i, true, applied, failed),
+            () => runAssignQueue(queue, opGroupId, finish, i, true, applied, failed, acknowledged),
             ASSIGN_CONSTRAINT_TEXT,
             // 「やめる」/ 週切替で確認を捨てたら、ここまでの結果で締める。
             () => {
               if (touched) invalidateOpLog(isoYear, isoWeek);
-              finish({ applied, failed, aborted: true });
+              finish({ applied, failed, aborted: true, acknowledged });
             },
           )
         ) {
@@ -3830,12 +3903,304 @@ export function CourseDayTablePanel({
         if (err instanceof ApiError && err.status === 409) {
           // 競合。残りを流すと片側だけ動いた盤面になるので打ち切る。
           toast.error('他の操作と競合したため中断しました。画面を更新してやり直してください');
-          done({ applied, failed, aborted: true });
+          done({ applied, failed, aborted: true, acknowledged });
           return;
         }
       }
     }
-    done({ applied, failed, aborted: false });
+    done({ applied, failed, aborted: false, acknowledged });
+  };
+
+  // ─── 「担当なし」からの投入提案 (Phase 2-B・§3 実行は既存 API のみ) ────
+
+  /** 「担当なし」に溜まっているコース帯 1 本。 */
+  type UnassignedBand = {
+    /** `${templateId}:${weekday}` (バッジ Map のキー)。 */
+    key: string;
+    templateId: string;
+    courseId: string;
+    weekday: number;
+    label: string;
+    /** 付け替えの対象 = planned だけ (BE と同じ規則)。 */
+    visits: TimelineVisit[];
+  };
+
+  /**
+   * その曜日の「担当なし」コース帯を集める。
+   * `course_id` が引けない帯 (臨時テンプレ等) は `assign-candidates` の対象を
+   * 作れないので外す — 訪問クリックの「1件ずつ」提案 (2-C) が受け皿になる。
+   */
+  const unassignedBandsFor = useCallback(
+    (weekday: number): UnassignedBand[] => {
+      const m = new Map<string, UnassignedBand>();
+      for (const v of cockpitVisits) {
+        if (v.weekday !== weekday) continue;
+        if ((v.status ?? 'planned') !== 'planned') continue;
+        if (resolveVisitRowKey(v, assignedStaffByTemplateWeekday) !== UNASSIGNED_ROW_KEY) continue;
+        const key = `${v.course_template_id}:${weekday}`;
+        const cur = m.get(key);
+        if (cur) {
+          cur.visits.push(v);
+          continue;
+        }
+        const courseId = courseIdByTemplateWeekday.get(key);
+        if (!courseId) continue;
+        m.set(key, {
+          key,
+          templateId: v.course_template_id,
+          courseId,
+          weekday,
+          label: v.course_label ?? cockpitCourseLabel(v.course_template_id) ?? 'このコース',
+          visits: [v],
+        });
+      }
+      for (const b of m.values()) {
+        b.visits.sort((a, z) => (a.start_time ?? '').localeCompare(z.start_time ?? ''));
+      }
+      return [...m.values()].sort((a, b) => a.label.localeCompare(b.label, 'ja'));
+    },
+    [cockpitVisits, assignedStaffByTemplateWeekday, courseIdByTemplateWeekday, cockpitCourseLabel],
+  );
+
+  /**
+   * 週を切り替えたら提案まわりを白紙に戻す (H1)。バッジ・開きっぱなしの
+   * ポップオーバー・ハイライトは**その週の盤面に紐づく**ので、持ち越すと
+   * 別の週のコースに前の週の人数が出る (誤読) / 消えた帯を指したまま残る。
+   * 依存は `weekStartIso` (文字列) — Date は毎レンダー別物になりうる。
+   */
+  useEffect(() => {
+    setSuggestionBadges((prev) =>
+      prev.size === 0 ? prev : new Map<string, SuggestionBadgeState>(),
+    );
+    setSuggestCourse(null);
+    setHighlightStaffId(null);
+    setSuggestApplying(false);
+  }, [weekStartIso]);
+
+  /**
+   * H2: 盤面 (担当・時刻・曜日・状態) が動いたら提案を捨てる。指紋が変わった
+   * ときだけ走るので、候補を取りに行っただけでは消えない。`invalidateCockpitBoard`
+   * を通らない経路 (⇩ 取込 apply・undo/redo・外部要因の再取得) もここで拾う。
+   */
+  // 依存は指紋**だけ**にする。`queryClient` を deps に入れると、
+  // インスタンスを作り直す環境 (テストのラッパ等) で毎レンダー発火し、
+  // 出したばかりのバッジを即座に消してしまう。
+  const queryClientRef = useRef(queryClient);
+  queryClientRef.current = queryClient;
+  useEffect(() => {
+    setSuggestionBadges((prev) =>
+      prev.size === 0 ? prev : new Map<string, SuggestionBadgeState>(),
+    );
+    void queryClientRef.current.invalidateQueries({
+      queryKey: [ASSIGN_CANDIDATES_KEY],
+      refetchType: 'none',
+    });
+  }, [cockpitBoardSignature]);
+
+  /**
+   * ツールバーの「◎ 提案を見る」。タイムラインならその日・リストならその週の
+   * 担当なしコースを **on-demand** で調べてバッジにする (自動計算はしない)。
+   *
+   * BE 契約 (2026-08-23 確定): 1 日ぶんは `course_ids` で **1 リクエスト**に
+   * まとめ、`whole_ok_by_course[courseId]` を件数に使う (コース数分のファン
+   * アウトはしない)。週 (リスト) は曜日ごとに 1 回 = 最大 6 回・直列。
+   */
+  const handleSeeSuggestions = useCallback(async () => {
+    const days = staffViewMode === 'timeline' ? [staffTimelineDay] : [0, 1, 2, 3, 4, 5];
+    const byDay = days
+      // 当日以前は実績が入っている可能性があり付け替えられない (L5)。
+      // 提案を出しても押せないので、そもそも調べない。
+      .filter((d) => isoOfWeekday(d) > todayIsoJst)
+      .map((d) => ({ day: d, bands: unassignedBandsFor(d) }))
+      .filter((x) => x.bands.length > 0);
+    if (byDay.length === 0) {
+      toast.info(
+        days.every((d) => isoOfWeekday(d) <= todayIsoJst)
+          ? '当日以前は担当を付け替えられないため、提案は出せません'
+          : '担当なしのコースはありません',
+      );
+      return;
+    }
+    setSuggestionBadges((prev) => {
+      const next = new Map(prev);
+      for (const { bands } of byDay) for (const b of bands) next.set(b.key, 'calc');
+      return next;
+    });
+    let failedDays = 0;
+    for (const { day, bands } of byDay) {
+      try {
+        const res = await fetchAssignCandidates({
+          date: isoOfWeekday(day),
+          course_ids: bands.map((b) => b.courseId),
+        });
+        setSuggestionBadges((prev) => {
+          const next = new Map(prev);
+          for (const b of bands) {
+            next.set(b.key, { ok: (res.whole_ok_by_course[b.courseId] ?? []).length });
+          }
+          return next;
+        });
+      } catch {
+        // 失敗は「未計算」へ戻す — 0 名と読ませない (H4: 分からないと言う)。
+        failedDays += 1;
+        setSuggestionBadges((prev) => {
+          const next = new Map(prev);
+          for (const b of bands) next.delete(b.key);
+          return next;
+        });
+      }
+    }
+    if (failedDays > 0) toast.error(`${failedDays} 日ぶんは候補を調べられませんでした`);
+  }, [
+    staffViewMode,
+    staffTimelineDay,
+    unassignedBandsFor,
+    fetchAssignCandidates,
+    isoOfWeekday,
+    todayIsoJst,
+  ]);
+
+  /** 「◎ 提案を見る」を押せる対象日があるか (L5: 全部が当日以前なら無効)。 */
+  const suggestDaysAllPast = useMemo(() => {
+    const days = staffViewMode === 'timeline' ? [staffTimelineDay] : [0, 1, 2, 3, 4, 5];
+    return days.every((d) => isoOfWeekday(d) <= todayIsoJst);
+  }, [staffViewMode, staffTimelineDay, isoOfWeekday, todayIsoJst]);
+
+  /** バッジ / コース帯クリック → 提案ポップオーバーを開く。 */
+  const handleSuggestCourse = useCallback(
+    (courseId: string, weekday: number, anchorEl: HTMLElement) => {
+      if (isoOfWeekday(weekday) <= todayIsoJst) {
+        // L5: 提案を見せても割り当てられない (BE も 422)。理由を言って開かない。
+        toast.warning('当日以前は担当を付け替えられません（明日以降の予定のみ）');
+        return;
+      }
+      const band = unassignedBandsFor(weekday).find((b) => b.courseId === courseId);
+      setHighlightStaffId(null);
+      setSuggestApplying(false);
+      setSuggestCourse({ courseId, weekday, label: band?.label ?? 'このコース', anchorEl });
+    },
+    [unassignedBandsFor, isoOfWeekday, todayIsoJst],
+  );
+
+  /** ポップオーバーに出す対象コースの内訳 (件数・時間帯・訪問)。 */
+  const suggestBand = useMemo(
+    () =>
+      suggestCourse
+        ? (unassignedBandsFor(suggestCourse.weekday).find(
+            (b) => b.courseId === suggestCourse.courseId,
+          ) ?? null)
+        : null,
+    [suggestCourse, unassignedBandsFor],
+  );
+
+  /**
+   * ◎ の [このコースを割り当てる]。訪問ごとに `visit-assign-staff-week` を
+   * 同一 op_group_id で流し (§3)、**完了後に** `PATCH /courses` で
+   * `assigned_staff_id` を合わせる (表示の正典・コース経路だけでは付替えない)。
+   */
+  const handleAssignCourseSuggestion = async (toStaffId: string) => {
+    const sel = suggestCourse;
+    const band = suggestBand;
+    if (!sel || !band || suggestApplying) return;
+    const staffName = staffNameById.get(toStaffId) ?? 'この方';
+    /** 早期 return も必ずハイライトを消す (M3: 候補行の hover が残らないように)。 */
+    const bail = (): void => setHighlightStaffId(null);
+    if (isoOfWeekday(sel.weekday) <= todayIsoJst) {
+      // L5: BE も 422 で弾く。押せてしまう経路が残っていても最後にここで止める。
+      toast.warning('当日以前は担当を付け替えられません（明日以降の予定のみ）');
+      bail();
+      return;
+    }
+    if (staffMap.get(toStaffId)?.is_trainee === true) {
+      toast.error('新人はコース担当にできません（同行で割り当ててください）');
+      bail();
+      return;
+    }
+    const pinned = band.visits.filter((v) => v.week_pinned === true).length;
+    if (pinned > 0) {
+      toast.warning(
+        `青ピン（今週だけ固定）の予定が ${pinned}件あります。先に解除してから割り当ててください`,
+      );
+      bail();
+      return;
+    }
+    if (band.visits.length === 0) {
+      setSuggestCourse(null);
+      toast.info('割り当てる予定がありません');
+      bail();
+      return;
+    }
+    const opGroupId = crypto.randomUUID();
+    const queue: AssignQueueItem[] = band.visits.map((v) => ({ visitId: v.id, toStaffId }));
+    // L4: 「動いた件数」は BE の `changed` ではなく**送った件数**で数える。
+    // 既に同じ担当が入っていた訪問 (changed=false) も、この操作の対象として
+    // 引き受けたことに変わりはない。0件と出して「効かなかった」と誤読させない。
+    const total = queue.length;
+    const undoAction = { cancel: { label: '元に戻す', onClick: () => void handleUndo() } };
+    setSuggestApplying(true);
+    await runAssignQueue(queue, opGroupId, ({ applied, failed, aborted, acknowledged }) => {
+      void (async () => {
+        // 訪問が全部通ったときだけコース担当も合わせる (片側だけ動く事故を作らない)。
+        // L4: `changed` が全部 false (既に同担当) でも、表示の正典である
+        // courses.assigned_staff_id がズレている可能性があるので整合させる。
+        const allApplied = !aborted && failed === 0;
+        if (allApplied) {
+          try {
+            await updateCourseMut.mutateAsync({
+              id: sel.courseId,
+              patch: {
+                assigned_staff_id: toStaffId,
+                // 「戻る」1 回で訪問もコースもまとめて戻る。
+                op_group_id: opGroupId,
+                // M2: 直前の訪問付け替えで**実際に確認を通したときだけ**引き継ぐ。
+                // 無条件に true にすると、まだ聞いていない警告 (コース経路でしか
+                // 出ないもの) を黙って握り潰すことになる。
+                ...(acknowledged ? { acknowledge_constraint_warnings: true } : {}),
+              },
+            });
+          } catch (err) {
+            toast.warning(
+              `コース担当の反映に失敗しました（訪問の付け替えは済んでいます）: ${formatErr(err)}`,
+            );
+          }
+        }
+        setSuggestApplying(false);
+        setSuggestCourse(null);
+        setHighlightStaffId(null);
+        // 提案キャッシュとバッジの破棄は invalidateCockpitBoard に畳んである。
+        invalidateCockpitBoard();
+        if (aborted) {
+          toast.warning(
+            applied > 0
+              ? `割り当てを中止しました（${applied}件は反映済み・「戻る」で戻せます）`
+              : '割り当てを中止しました',
+            applied > 0 ? undoAction : undefined,
+          );
+          return;
+        }
+        if (failed > 0) {
+          toast.error(
+            applied > 0
+              ? `${band.label} の割り当ては ${failed}件失敗しました（${applied}件は反映済み・「戻る」で戻せます）`
+              : `${band.label} の割り当てに失敗しました（${failed}件）`,
+            applied > 0 ? undoAction : undefined,
+          );
+          return;
+        }
+        toast.success(
+          `${band.label} ${total}件 を ${staffName}さんへ（今週だけ・戻るで復元）`,
+          undoAction,
+        );
+      })();
+    });
+  };
+
+  /** 「1件ずつ分けて入れる」= ポップオーバーを閉じて最初の訪問のメニューを開く。 */
+  const handleSplitSuggestion = () => {
+    const first = suggestBand?.visits[0] ?? null;
+    setSuggestCourse(null);
+    setHighlightStaffId(null);
+    if (first) setTimelineMenuVisit(first);
   };
 
   // ─── スタッフ入れ替え (氏名 ⠿ DnD / PO 要望 2026-08-22) ───────────────
@@ -5112,6 +5477,25 @@ export function CourseDayTablePanel({
                   >
                     ＋イベント
                   </Button>
+                  {/* 「担当なし」からの投入提案 (Phase 2-B)。保留プールの
+                      「効果を表示」と同じ on-demand — 押したときだけ調べる。 */}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={!canEdit || suggestDaysAllPast}
+                    onClick={() => void handleSeeSuggestions()}
+                    data-testid="staff-tab-see-suggestions"
+                    title={
+                      suggestDaysAllPast
+                        ? '当日以前は担当を付け替えられないため、提案は出せません（明日以降の予定のみ）'
+                        : staffViewMode === 'timeline'
+                          ? 'この日の「担当なし」コースを引き受けられる人を調べます'
+                          : 'この週の「担当なし」コースを引き受けられる人を調べます'
+                    }
+                  >
+                    ◎ 提案を見る
+                  </Button>
                   {/* 「⇩ カイポケ取込」「⇧ カイポケ送信」(イベント専用の旧ダイアログ) は
                       同期ストリップ (SyncBar) に集約したためツールバーから撤去
                       (2026-08-23・方向性A)。ダイアログ自体は当面残置 (未使用)。 */}
@@ -5393,6 +5777,11 @@ export function CourseDayTablePanel({
                     isPast={isoOfWeekday(staffTimelineDay) <= todayIsoJst}
                     assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
                     alwaysShowUnassignedRow
+                    // 「担当なし」からの投入提案 (Phase 2-B/2-D)。
+                    courseIdByTemplateWeekday={courseIdByTemplateWeekday}
+                    suggestionBadges={suggestionBadges}
+                    onSuggestCourse={canEdit ? handleSuggestCourse : undefined}
+                    highlightStaffId={highlightStaffId}
                     onVisitClick={(visit) => setTimelineMenuVisit(visit)}
                     onVisitMove={(payload) => void handleTimelineVisitMove(payload)}
                     onEventClick={
@@ -5480,6 +5869,10 @@ export function CourseDayTablePanel({
                     // パレット (コースの表) は PO 判断で撤去 (2026-08-21)。
                     // 未割当の置き場と戻し先は「（担当なし）」行が担う。
                     alwaysShowUnassignedRow
+                    // 「担当なし」からの投入提案 (Phase 2-B/2-D)。
+                    suggestionBadges={suggestionBadges}
+                    onSuggestCourse={canEdit ? handleSuggestCourse : undefined}
+                    highlightStaffId={highlightStaffId}
                     onCourseUnassignDrop={canEdit ? handleCourseUnassignDrop : undefined}
                     onVisitUnassignDrop={canEdit ? handleVisitUnassignDrop : undefined}
                     reconcileMarkersByCell={cockpitMarkersByCell}
@@ -5508,9 +5901,40 @@ export function CourseDayTablePanel({
                   />
                 )}
 
+                {/* コース提案 (Phase 2-B): 「担当なし」のコースを誰に入れるか。 */}
+                {suggestCourse && canEdit ? (
+                  <AssignSuggestionPopover
+                    key={`${suggestCourse.courseId}:${suggestCourse.weekday}`}
+                    date={isoOfWeekday(suggestCourse.weekday)}
+                    // M1: 評価対象は「（担当なし）行に見えている訪問」そのもの。
+                    visitIds={suggestBand?.visits.map((v) => v.id) ?? []}
+                    courseLabel={suggestCourse.label}
+                    visits={{
+                      count: suggestBand?.visits.length ?? 0,
+                      startTime: (suggestBand?.visits[0]?.start_time ?? '').slice(0, 5) || null,
+                      endTime:
+                        (suggestBand?.visits[suggestBand.visits.length - 1]?.end_time ?? '').slice(
+                          0,
+                          5,
+                        ) || null,
+                    }}
+                    anchorEl={suggestCourse.anchorEl}
+                    canEdit={canEdit}
+                    submitting={suggestApplying}
+                    onHoverCandidate={setHighlightStaffId}
+                    onAssignCourse={(toStaffId) => void handleAssignCourseSuggestion(toStaffId)}
+                    onSplit={handleSplitSuggestion}
+                    onClose={() => {
+                      setSuggestCourse(null);
+                      setHighlightStaffId(null);
+                    }}
+                  />
+                ) : null}
+
                 {/* タイムラインで選んだ訪問のメニュー (バーは絶対配置のため
-                    トリガーをここに置く)。盤面 (リスト) は行が直接トリガー。 */}
-                {staffViewMode === 'timeline' && timelineMenuVisit && canEdit ? (
+                    トリガーをここに置く)。リスト盤面でも「1件ずつ分けて入れる」
+                    (2-B → 2-C) の受け皿として同じチップを使う。 */}
+                {timelineMenuVisit && canEdit ? (
                   <div
                     // 別の訪問を選び直したらメニューを開き直す (defaultOpen は
                     // 初回マウントにしか効かないので key で作り直す)。

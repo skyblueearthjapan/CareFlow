@@ -49,6 +49,11 @@ import {
 
 import type { WeekOverviewVisit } from '../CourseWeekOverview';
 import { UNASSIGNED_ROW_KEY } from '../courseDnd';
+import {
+  suggestionBadgeClass,
+  suggestionBadgeView,
+  type SuggestionBadgeMap,
+} from './suggestionBadge';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { SyncedHScroll } from '@/components/ui/synced-h-scroll';
@@ -209,6 +214,18 @@ export interface StaffTimelineViewProps {
   onMarkOff?: (staffId: string, day: number, anchorEl: HTMLElement) => void;
   onAddVisit?: (staffId: string, day: number, anchorEl: HTMLElement) => void;
   onAddEvent?: (staffId: string, day: number) => void;
+  // ─── 「担当なし」からの投入提案 (Phase 2-B・unassigned-suggestions-design.md) ───
+  /** `${templateId}:${weekday}` → course_id。提案バッジの course_id 解決に使う。 */
+  courseIdByTemplateWeekday?: Map<string, string>;
+  /**
+   * `${templateId}:${weekday}` → `'calc'`(問い合わせ中) / `{ok:n}`(引受可の人数)。
+   * 未登録は「提案を見る」のまま (自動計算はしない = プールの「効果を表示」と同じ)。
+   */
+  suggestionBadges?: SuggestionBadgeMap;
+  /** バッジのクリック → コース提案ポップオーバー (親が開く)。 */
+  onSuggestCourse?: (courseId: string, weekday: number, anchorEl: HTMLElement) => void;
+  /** 2-D: 提案の候補行を hover 中のスタッフ。その行を薄くブランド色にする。 */
+  highlightStaffId?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -437,6 +454,10 @@ export function StaffTimelineView({
   onMarkOff,
   onAddVisit,
   onAddEvent,
+  courseIdByTemplateWeekday,
+  suggestionBadges,
+  onSuggestCourse,
+  highlightStaffId,
 }: StaffTimelineViewProps) {
   const dayIso = React.useMemo(
     () => format(addDays(weekStart, day), 'yyyy-MM-dd'),
@@ -508,6 +529,53 @@ export function StaffTimelineView({
     (key: string): string => (rowKeySet.has(key) ? key : UNASSIGNED_ROW_KEY),
     [rowKeySet],
   );
+
+  /**
+   * 「（担当なし）」行のコース帯 (Phase 2-B の提案バッジの単位)。
+   *
+   * タイムラインには帯という描画物が無いので、氏名セルの下にコースごとの
+   * バッジを並べる (リスト盤面の帯右端と同じ役目)。`course_id` が引けない帯
+   * (臨時テンプレ等) は `assign-candidates` の対象が作れないので出さない —
+   * その場合は訪問クリックの「1件ずつ」提案 (2-C) が受け皿になる。
+   */
+  const unassignedBands = React.useMemo(() => {
+    if (!onSuggestCourse) return [];
+    const seen = new Map<
+      string,
+      { key: string; templateId: string; courseId: string; label: string; count: number }
+    >();
+    for (const v of dayVisits) {
+      if (
+        normalizeKey(resolveVisitRowKey(v, assignedStaffByTemplateWeekday)) !== UNASSIGNED_ROW_KEY
+      )
+        continue;
+      // 付け替えの対象は planned だけ (BE と同じ規則・件数も揃える)。
+      if ((v.status ?? 'planned') !== 'planned') continue;
+      const key = `${v.course_template_id}:${day}`;
+      const cur = seen.get(key);
+      if (cur) {
+        cur.count += 1;
+        continue;
+      }
+      const courseId = courseIdByTemplateWeekday?.get(key);
+      if (!courseId) continue;
+      seen.set(key, {
+        key,
+        templateId: v.course_template_id,
+        courseId,
+        label: v.course_label ?? '',
+        count: 1,
+      });
+    }
+    return [...seen.values()].sort((a, b) => a.label.localeCompare(b.label, 'ja'));
+  }, [
+    onSuggestCourse,
+    dayVisits,
+    normalizeKey,
+    assignedStaffByTemplateWeekday,
+    courseIdByTemplateWeekday,
+    day,
+  ]);
 
   // ── スタッフ入れ替え DnD (氏名列の ⠿) ─────────────────────────────────
   /**
@@ -1042,12 +1110,16 @@ export function StaffTimelineView({
             /** 掴んでいる最中の、落とせる他の行 = 受け皿表示。 */
             const isSwapTarget = swappable && swapFrom !== null && !isSwapSource;
             const isSwapOver = isSwapTarget && swapOver === row.staffId;
+            /** 2-D: コース提案の候補行を hover 中 = この行を薄くブランド色に。 */
+            const isHighlighted = highlightStaffId === row.staffId;
             return (
               <div
                 key={row.staffId}
                 className="grid border-b"
                 style={{ gridTemplateColumns: gridColumns, borderColor: 'var(--border-default)' }}
                 data-lane-key={row.staffId}
+                // 2-D: 提案の候補行を hover 中 = 「この人の 1 日」を光らせる。
+                data-highlight={highlightStaffId === row.staffId ? 'true' : undefined}
                 data-testid={`tl-lane-${row.staffId}`}
               >
                 <div
@@ -1063,7 +1135,11 @@ export function StaffTimelineView({
                   style={{
                     borderColor: 'var(--border-default)',
                     color: 'var(--text-primary)',
-                    background: isSwapOver ? 'var(--bg-muted)' : 'var(--bg-base)',
+                    background: isSwapOver
+                      ? 'var(--bg-muted)'
+                      : isHighlighted
+                        ? 'rgba(225,90,127,0.12)'
+                        : 'var(--bg-base)',
                     ...(isSwapSource ? { transform: 'translateY(-1px) scale(1.02)' } : null),
                     ...(isSwapOver
                       ? { outline: `2px solid ${SWAP_BRAND}`, outlineOffset: -2 }
@@ -1104,6 +1180,31 @@ export function StaffTimelineView({
                       </small>
                     </span>
                   </span>
+                  {row.staffId === UNASSIGNED_ROW_KEY && unassignedBands.length > 0 ? (
+                    // 「担当なし」= 誰に入れられるかの提案 (Phase 2-B)。
+                    <span
+                      className="mt-1 flex flex-wrap items-center gap-1"
+                      data-testid="tl-suggest-bands"
+                    >
+                      {unassignedBands.map((b) => {
+                        const view = suggestionBadgeView(suggestionBadges?.get(b.key));
+                        return (
+                          <button
+                            key={b.key}
+                            type="button"
+                            disabled={view.busy}
+                            className={suggestionBadgeClass(view.tone)}
+                            onClick={(e) => onSuggestCourse?.(b.courseId, day, e.currentTarget)}
+                            title={`${b.label || 'このコース'} ${b.count}件 を引き受けられる人を調べる（今週だけ・型は変わりません）`}
+                            data-testid={`tl-suggest-${b.templateId}`}
+                          >
+                            <span className="mr-1 font-normal">{b.label}</span>
+                            {view.label}
+                          </button>
+                        );
+                      })}
+                    </span>
+                  ) : null}
                   {showRowActions && isRealStaffRow(row.staffId) ? (
                     // PO 要望 2026-08-23: hover 待ちをやめて常時表示。氏名の下に
                     // アイコン + 短いラベルのボタンを 1 行だけ置く (title は長文のまま)。
@@ -1183,6 +1284,9 @@ export function StaffTimelineView({
                         }
                       : null),
                     ...(isDropTarget ? { backgroundColor: 'var(--info-bg)' } : null),
+                    ...(isHighlighted && !isDropTarget
+                      ? { backgroundColor: 'rgba(225,90,127,0.08)' }
+                      : null),
                   }}
                 >
                   {bars.map(({ item, top }) => (
