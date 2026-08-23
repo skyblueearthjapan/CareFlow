@@ -710,8 +710,9 @@ export function SyncBar({
       className="ml-auto h-7 px-2 text-[12px] text-text-muted"
       data-testid="sync-panel-close"
       onClick={() => setOpenPanel(null)}
+      title="パネルをたたみます（結果は残ります。ボタンでいつでも開けます）"
     >
-      ✕ 閉じる
+      ▴ たたむ
     </Button>
   );
 
@@ -806,8 +807,13 @@ export function SyncBar({
               : 'カイポケの当週データを読んで、らく助と突き合わせます（2〜3分）'
           }
           onClick={() => {
-            setOpenPanel('check');
-            void rec.runFetch();
+            // 折りたたみ: 結果があれば開閉だけ (再実行はパネル内の「再確認」)。
+            // 未実行 (idle/error) のときだけ、開くと同時に実行する。
+            const next = openPanel === 'check' ? null : 'check';
+            setOpenPanel(next);
+            if (next === 'check' && (rec.phase === 'idle' || rec.phase === 'error')) {
+              void rec.runFetch();
+            }
           }}
         >
           🔄 同期確認
@@ -1019,6 +1025,20 @@ export function SyncBar({
             🔄 同期確認
             {checkedAt ? (
               <small className="text-[12px] font-normal text-text-muted">{checkedAt} に確認</small>
+            ) : null}
+            {!running ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="ml-auto h-7 px-2 text-[12px]"
+                disabled={!canEdit || rec.rpaRunning}
+                data-testid="sync-check-rerun"
+                title="カイポケの当週データを読み直して突き合わせます（2〜3分）"
+                onClick={() => void rec.runFetch()}
+              >
+                🔄 再確認
+              </Button>
             ) : null}
             {closeButton}
           </h3>

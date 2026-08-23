@@ -633,6 +633,22 @@ describe('SyncBar — ⇧ カイポケへ送る', () => {
 });
 
 describe('SyncBar — 🔄 同期確認', () => {
+  it('結果がある状態では 🔄同期確認 は再実行せず開閉だけ (たたんでも結果は残る)。再実行は「再確認」', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    reconcileStub.phase = 'ready';
+    renderBar();
+    await openCheckPanel();
+    expect(reconcileStub.runFetch).not.toHaveBeenCalled();
+    // たたむ → 再び開いても再実行しない
+    fireEvent.click(screen.getByTestId('sync-panel-close'));
+    expect(screen.queryByTestId('sync-panel-check')).not.toBeInTheDocument();
+    await openCheckPanel();
+    expect(reconcileStub.runFetch).not.toHaveBeenCalled();
+    // 再確認ボタンで実行
+    fireEvent.click(screen.getByTestId('sync-check-rerun'));
+    expect(reconcileStub.runFetch).toHaveBeenCalledTimes(1);
+  });
+
   it('押すと実行し、作業中はらく助の演出と進捗チップを出す', async () => {
     unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
     const { refresh } = renderBar();
