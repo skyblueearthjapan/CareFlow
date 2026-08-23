@@ -1,7 +1,7 @@
 # セッション引き継ぎ 2026-08-22〜23（運転席 Phase E 本番化・同期ストリップ刷新・カイポケ サービス内容・休みの1操作化）
 
 **次のエージェントへ: まずこのファイルを読むこと。**
-本番 HEAD = `3a4e2cc`（全コミットデプロイ済み・healthz 健全・DB = **mig 0078**）。RPA リポ（VPS `/root/PlaywrightTest1`・コンテナ `kaipoke-api`）HEAD = `4c5303c`。
+本番 HEAD = `11152e3`（全コミットデプロイ済み・healthz 健全・DB = **mig 0078**）。RPA リポ（VPS `/root/PlaywrightTest1`・コンテナ `kaipoke-api`）HEAD = `4c5303c`。
 バックアップ = `/opt/carelink/backups/pre-deploy-20260823-*.sql.gz` ほか（UTC 表示注意）。デプロイ手順は従来どおり（migration 含む時は `build --no-cache` + `alembic upgrade head`）。
 
 ---
@@ -17,8 +17,8 @@
 4. 削除済み患者（近藤 菜穂・8/21 削除）の fixed-visits 404 参照を掃除。
 **完了済み**(レビュー2回・HIGH4/MED5 是正・BE 17+FE 13 テスト)。参考の検証コマンド: `python -m pytest tests/test_staff_off_week.py tests/test_op_log_u3.py tests/test_visit_cancel_week.py -q` / tsc / `pnpm vitest run components/schedule/v2` → コミット → デプロイ（migration 無しの見込み）。
 
-### Phase 2「担当なし」からの投入提案 — **実装中（PO 承認 2026-08-23 夜・一気通貫指示）**
-設計 = `unassigned-suggestions-design.md` / モック = `docs/mockups/unassigned-suggestions-mock.html`。並行: BE 2-A(`POST /schedule/v2/assign-candidates`・build_candidates_for_visits に分離・whole_ok_staff_ids) / FE 2-B コース提案ポップオーバー+担当なし行バッジ+「提案を見る」+割当(runAssignQueue+useUpdateCourse) / 2-C VisitActionMenu 提案セクション / 2-D 候補ホバーで行ハイライト。中断時: `git status` で差分確認→executor(opus) に設計書を渡して続行(git/stash 禁止)→レビュー→テスト→コミット→デプロイ(migration 無し)。
+### Phase 2「担当なし」からの投入提案 — ✅ **完了・本番 `11152e3`**（2-A/2-B/2-C/2-D 簡易・レビュー2回是正済み）
+設計 = `unassigned-suggestions-design.md` / モック = `docs/mockups/unassigned-suggestions-mock.html`。並行: BE 2-A(`POST /schedule/v2/assign-candidates`・build_candidates_for_visits に分離・whole_ok_staff_ids) / FE 2-B コース提案ポップオーバー+担当なし行バッジ+「提案を見る」+割当(runAssignQueue+useUpdateCourse) / 2-C VisitActionMenu 提案セクション / 2-D 候補ホバーで行ハイライト。バックログ: 提案キャッシュの指紋は visits 軸のみ(イベント変更は拾わない)/ undo 直後の破棄は指紋経由。
 
 ---
 
