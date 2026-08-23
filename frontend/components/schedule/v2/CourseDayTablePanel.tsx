@@ -53,6 +53,10 @@ import { useQueries, useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { format } from 'date-fns';
 import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
   HeartPulse,
   ListChecks,
   Loader2,
@@ -61,6 +65,7 @@ import {
   Route,
   Undo2,
   UserCheck,
+  Wrench,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -76,7 +81,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
-import { addDays } from '@/components/schedule/WeekSelector';
+import { addDays, toWeekStart } from '@/components/schedule/WeekSelector';
 import { ApiError } from '@/lib/api-client';
 import { fetcher } from '@/lib/api/fetcher';
 import {
@@ -229,6 +234,7 @@ import {
 } from '@/lib/scheduling/accompanimentFulfillment';
 import { PartnerCourseDialog } from './PartnerCourseDialog';
 import { cn } from '@/lib/utils';
+import { useUIStore } from '@/lib/stores/ui';
 import { type TimelineRowMeta } from './CourseMoveTimeline';
 import { PatientCard, type PatientCardData } from './PatientCard';
 import { PatientScheduleDetailDialog } from './PatientScheduleDetailDialog';
@@ -403,14 +409,39 @@ export interface CourseDayTablePanelProps {
   /** null = 全拠点モード, それ以外は単一拠点フィルタ. */
   officeId: string | null;
   canEdit: boolean;
+  /**
+   * 上部折りたたみ時のコンパクト行に「週の切替」を出すためのハンドラ (2026-08-23)。
+   * 未指定なら週切替は描画しない (= 上部 Card が出ている前提の従来利用)。
+   */
+  onWeekChange?: (weekStart: Date) => void;
+  /**
+   * 上部折りたたみ時のコンパクト行に「拠点フィルタ」を出すためのハンドラ (2026-08-23)。
+   * 未指定なら拠点フィルタは描画しない。
+   */
+  onOfficeChange?: (officeId: string | null) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
 // Main component
 // ─────────────────────────────────────────────────────────────────────────
 
-export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayTablePanelProps) {
+export function CourseDayTablePanel({
+  weekStart,
+  officeId,
+  canEdit,
+  onWeekChange,
+  onOfficeChange,
+}: CourseDayTablePanelProps) {
   const { isoYear, isoWeek } = useMemo(() => isoWeekFromLocalDate(weekStart), [weekStart]);
+
+  // ─── 上部折りたたみ (PO 要望 2026-08-23: 盤面を広く見せたい) ─────────
+  // headerCollapsed = 見出し / 週セレクタ Card / ツールバー Row1・Row2 を隠し、
+  // 週切替・曜日タブ・表示切替・戻る/進む・拠点フィルタを 1 行に集約する。
+  // 全タブ共通・localStorage ('carelink-ui') に永続。
+  const headerCollapsed = useUIStore((s) => s.scheduleHeaderCollapsed);
+  const setHeaderCollapsed = useUIStore((s) => s.setScheduleHeaderCollapsed);
+  // 畳んだままでも Row1/Row2 のボタン群をその場で一時展開する (「ツール」).
+  const [compactToolsOpen, setCompactToolsOpen] = useState(false);
 
   // ─── 曜日タブ state (Wave 18 Phase B-6: 'week' = 週間ビュー) ─────
   // デフォルトは週ビュー ('week'). 曜日別 (月-土) は各タブで切替.
@@ -430,6 +461,12 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   // 'staff' = スタッフ別 (カイポケ職員スケジュール同等・案B・PO要望 2026-07-26)。
   // 旧 'staff' サブモードはトップレベルタブ「職員スケジュール」へ昇格済み (2026-08-20)。
   const [weekViewMode, setWeekViewMode] = useState<'overview' | 'timeline'>('overview');
+
+  // 一時展開した「ツール」はタブ/週を切り替えたら畳む (2026-08-23)。
+  // 盤面のドラッグ開始でも畳む (handleDragStart)。
+  useEffect(() => {
+    setCompactToolsOpen(false);
+  }, [activeTab, weekStart]);
 
   // ─── Master data ────────────────────────────────────────────────────
   const officesQuery = useOffices({ limit: 50 });
@@ -1937,6 +1974,8 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   };
 
   const handleDragStart = (e: DragStartEvent) => {
+    // 盤面操作を始めたら一時展開した「ツール」は畳む (2026-08-23)。
+    setCompactToolsOpen(false);
     const id = String(e.active.id);
     setActivePatientId(parsePatientDraggableId(id));
     // プールカード: 表示中と同一のデータでカード実寸ゴーストを出す (情報を落とさない)。
@@ -4522,6 +4561,52 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
   }
 
   const isoWeekLabel = `${isoYear}-W${String(isoWeek).padStart(2, '0')}`;
+  // 畳んだ 1 行に出す短い週ラベル (例: 8/17(月) 〜 8/22(土) / W34).
+  const compactWeekRangeLabel = `${format(weekStart, 'M/d')}(${WEEKDAY_LABELS[0]}) 〜 ${format(
+    addDays(weekStart, 5),
+    'M/d',
+  )}(${WEEKDAY_LABELS[5]})`;
+  const compactWeekNoLabel = `W${String(isoWeek).padStart(2, '0')}`;
+
+  // ─── 戻る/進む (Wave U-3) ───────────────────────────────────────────
+  // 展開時は Row 2 の左、折りたたみ時はコンパクト行の右に置くため JSX を共有する
+  // (2 箇所に実体を持つと data-testid が重複するため必ず片方だけを描画する)。
+  const undoRedoButtons = (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        onClick={() => void handleUndo()}
+        disabled={!canEdit || !opLogState?.can_undo || undoRedoPending}
+        title={opLogState?.undo_label != null ? `戻す: ${opLogState.undo_label}` : '戻す'}
+        data-testid="schedule-undo-button"
+      >
+        {undoRedoPending ? (
+          <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+        ) : (
+          <Undo2 className="mr-1 h-4 w-4" aria-hidden />
+        )}
+        戻る
+      </Button>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        onClick={() => void handleRedo()}
+        disabled={!canEdit || !opLogState?.can_redo || undoRedoPending}
+        title={opLogState?.redo_label != null ? `進む: ${opLogState.redo_label}` : '進む'}
+        data-testid="schedule-redo-button"
+      >
+        {undoRedoPending ? (
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+        ) : (
+          <Redo2 className="mr-1 h-4 w-4" aria-hidden />
+        )}
+        進む
+      </Button>
+    </div>
+  );
 
   return (
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
@@ -4547,7 +4632,7 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
         */}
         {/* 上部ツールバーは常時固定 (親がページ非スクロールの flex 列のため sticky 不要。
             PO指摘 2026-07-08: sticky の「張り付くまで一瞬上がる」挙動を根絶)。 */}
-        <Card className="p-3 lg:shrink-0">
+        <Card className={cn('p-3 lg:shrink-0', headerCollapsed && 'flex flex-col')}>
           {/* Row 1: 両端配置 toolbar (canEdit のみ).
               W-9b: justify-between で左右グループに分割。
                 左グループ = [週を生成][週次ガイド] (週次操作の入口ペアを曜日タブ真上・左端に配置).
@@ -4556,155 +4641,213 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
           {/* RB (PO決定 2026-07-08): 全ロール同一表示・操作は権限どおり。
               旧: canEdit で Row1 丸ごと非表示 → staff だけ画面構成が変わっていた。
               以後は常時表示し、編集系ボタンだけ disabled にする (BE RBAC は不変)。 */}
-          {
+          {/* 2026-08-23: 上部折りたたみ時は Row 1 / Row 2 を隠す。
+              「ツール」ボタンでその場だけ一時展開する (order-2 で曜日タブ行の下に出す)。 */}
+          {!headerCollapsed || compactToolsOpen ? (
             <div
-              className="flex flex-wrap items-center justify-between gap-2"
-              role="toolbar"
-              aria-label="スケジュール主要操作"
-              data-testid="schedule-main-action-toolbar"
+              className={cn(
+                headerCollapsed &&
+                  'order-2 mt-2 rounded border border-border-default bg-bg-muted/40 p-2',
+              )}
+              data-testid={headerCollapsed ? 'schedule-compact-tools-popover' : undefined}
             >
-              {/* 左グループ: 週次操作の起点ペア (W-9b PO 指示). */}
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={handleGenerateWeek}
-                  disabled={!canEdit || generateWeekMut.isPending}
-                  data-testid="generate-week-button"
-                >
-                  {generateWeekMut.isPending ? (
-                    <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-                  ) : (
-                    <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
-                  )}
-                  週を生成
-                </Button>
-                {/* PO 指示 (W-9): 「週次ガイド」を「週を生成」の右隣に配置。
+              <div
+                className="flex flex-wrap items-center justify-between gap-2"
+                role="toolbar"
+                aria-label="スケジュール主要操作"
+                data-testid="schedule-main-action-toolbar"
+              >
+                {/* 左グループ: 週次操作の起点ペア (W-9b PO 指示). */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={handleGenerateWeek}
+                    disabled={!canEdit || generateWeekMut.isPending}
+                    data-testid="generate-week-button"
+                  >
+                    {generateWeekMut.isPending ? (
+                      <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                    ) : (
+                      <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
+                    )}
+                    週を生成
+                  </Button>
+                  {/* PO 指示 (W-9): 「週次ガイド」を「週を生成」の右隣に配置。
                     週次操作の入口とその手順書を対のペアとして隣接。
                     P3-⑥: 案内のみ・variant=ghost で目立たせすぎない. */}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setWeeklyRitualGuideOpen(true)}
-                  data-testid="weekly-ritual-guide-button"
-                >
-                  <ListChecks className="mr-1 h-4 w-4" aria-hidden />
-                  週次ガイド
-                </Button>
-              </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setWeeklyRitualGuideOpen(true)}
+                    data-testid="weekly-ritual-guide-button"
+                  >
+                    <ListChecks className="mr-1 h-4 w-4" aria-hidden />
+                    週次ガイド
+                  </Button>
+                </div>
 
-              {/* 右グループ: その他操作 + 書き戻し系. */}
-              <div className="flex flex-wrap items-center gap-2">
-                {/* PO 指示 2026-07-03: 「プール投入」ボタンは削除。保留プールの
+                {/* 右グループ: その他操作 + 書き戻し系. */}
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* PO 指示 2026-07-03: 「プール投入」ボタンは削除。保留プールの
                     「効果を表示」ボタン (PoolOverviewPane) が入口として十分なため。 */}
-                {/* W-4 (D-4): 旧「＋新規提案」を「＋新規患者登録」に置換。患者マスタの
+                  {/* W-4 (D-4): 旧「＋新規提案」を「＋新規患者登録」に置換。患者マスタの
                     登録フォームを再利用し、登録→希望登録→プール流入の入口を一本化する。 */}
-                <RegisterPatientButton disabled={!canEdit || isProcessing} />
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setScheduleHealthOpen(true)}
-                  disabled={!canEdit}
-                  data-testid="schedule-health-button"
-                >
-                  <HeartPulse className="mr-1 h-4 w-4" aria-hidden />
-                  スケジュール診断
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setScopeOptimizeInitialScope(null); // ツールバーからは手動選択で開く.
-                    setScopeOptimizeInitialOfficeId(null);
-                    setScopeOptimizeOpen(true);
-                  }}
-                  disabled={!canEdit}
-                  data-testid="scope-optimize-button"
-                >
-                  <Route className="mr-1 h-4 w-4" aria-hidden />
-                  スケジュール最適化
-                </Button>
+                  <RegisterPatientButton disabled={!canEdit || isProcessing} />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setScheduleHealthOpen(true)}
+                    disabled={!canEdit}
+                    data-testid="schedule-health-button"
+                  >
+                    <HeartPulse className="mr-1 h-4 w-4" aria-hidden />
+                    スケジュール診断
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setScopeOptimizeInitialScope(null); // ツールバーからは手動選択で開く.
+                      setScopeOptimizeInitialOfficeId(null);
+                      setScopeOptimizeOpen(true);
+                    }}
+                    disabled={!canEdit}
+                    data-testid="scope-optimize-button"
+                  >
+                    <Route className="mr-1 h-4 w-4" aria-hidden />
+                    スケジュール最適化
+                  </Button>
 
-                {/* 主要ボタン群と「固定枠戻 / 全件保存」 の区切り線. */}
-                <span
-                  aria-hidden
-                  className="h-5 w-px bg-border-default"
-                  data-testid="course-day-button-divider"
-                />
+                  {/* 主要ボタン群と「固定枠戻 / 全件保存」 の区切り線. */}
+                  <span
+                    aria-hidden
+                    className="h-5 w-px bg-border-default"
+                    data-testid="course-day-button-divider"
+                  />
 
-                {/* 固定枠戻 + 全件保存 (= データ書き戻し系). */}
-                <ResetToFixedButton
-                  isoYear={isoYear}
-                  isoWeek={isoWeek}
-                  officeId={officeId}
-                  disabled={!canEdit || isProcessing}
-                />
-                <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
+                  {/* 固定枠戻 + 全件保存 (= データ書き戻し系). */}
+                  <ResetToFixedButton
+                    isoYear={isoYear}
+                    isoWeek={isoWeek}
+                    officeId={officeId}
+                    disabled={!canEdit || isProcessing}
+                  />
+                  <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
+                </div>
               </div>
-            </div>
-          }
 
-          {/* Row 2 (中段): 左=戻る/進む (Wave U-3・PO指示 2026-08-21: 空いていた
+              {/* Row 2 (中段): 左=戻る/進む (Wave U-3・PO指示 2026-08-21: 空いていた
               この行へ移設し、タブ行を 2 行に収める) / 右=青ピン一括 (PO 決定 2026-08-09)。
               赤の一括 (全件ピン留め/解除) は統合により廃止 — 完全固定は患者マスタの
               固定訪問スケジュールで設定する (週全体 / 曜日ごと)。 */}
-          <div
-            className="mt-2 flex flex-wrap items-center justify-between gap-1.5"
-            data-testid="course-day-bulk-pin-row"
-          >
-            {/* 戻る/進む (Wave U-3): 曜日/週/職員スケジュールの全タブ共通のため
-                タブ行より上の共通段に置く。 */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => void handleUndo()}
-                disabled={!canEdit || !opLogState?.can_undo || undoRedoPending}
-                title={opLogState?.undo_label != null ? `戻す: ${opLogState.undo_label}` : '戻す'}
-                data-testid="schedule-undo-button"
+              <div
+                className="mt-2 flex flex-wrap items-center justify-between gap-1.5"
+                data-testid="course-day-bulk-pin-row"
               >
-                {undoRedoPending ? (
-                  <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-                ) : (
-                  <Undo2 className="mr-1 h-4 w-4" aria-hidden />
-                )}
-                戻る
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => void handleRedo()}
-                disabled={!canEdit || !opLogState?.can_redo || undoRedoPending}
-                title={opLogState?.redo_label != null ? `進む: ${opLogState.redo_label}` : '進む'}
-                data-testid="schedule-redo-button"
-              >
-                {undoRedoPending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                ) : (
-                  <Redo2 className="mr-1 h-4 w-4" aria-hidden />
-                )}
-                進む
-              </Button>
+                {/* 戻る/進む (Wave U-3): 曜日/週/職員スケジュールの全タブ共通のため
+                タブ行より上の共通段に置く。
+                2026-08-23: 折りたたみ時はコンパクト行側に出すためここでは描画しない
+                (data-testid の重複を避ける)。 */}
+                {headerCollapsed ? <span /> : undoRedoButtons}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {/* 何に対する一括かをグループ見出しで明示する (PO 指摘 2026-08-09)。 */}
+                  <span className="text-[11px] font-semibold text-text-muted">今週の配置:</span>
+                  <BulkWeekPinAllButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
+                </div>
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              {/* 何に対する一括かをグループ見出しで明示する (PO 指摘 2026-08-09)。 */}
-              <span className="text-[11px] font-semibold text-text-muted">今週の配置:</span>
-              <BulkWeekPinAllButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
-            </div>
-          </div>
+          ) : null}
 
           {/* Row 3: 曜日タブ (左) + 表示切替・二次操作 (右寄せ).
-              中段 (一括ピン群) との間に border-t + mt-3 pt-3 で水平区切り線 + 余白. */}
+              中段 (一括ピン群) との間に border-t + mt-3 pt-3 で水平区切り線 + 余白.
+              2026-08-23 折りたたみ時: 唯一の行になるため区切り線と上余白を落とし、
+              order-1 で一時展開した「ツール」パネルより上に出す. */}
           <div
-            className="mt-3 flex flex-wrap items-center gap-2 border-t border-border-default pt-3"
+            className={cn(
+              'flex flex-wrap items-center gap-2',
+              headerCollapsed ? 'order-1' : 'mt-3 border-t border-border-default pt-3',
+            )}
             data-testid="course-day-tab-row"
           >
+            {/* 折りたたみ時のみ: [ツール] + 週切替 をタブの前に置く (2026-08-23)。 */}
+            {headerCollapsed ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setCompactToolsOpen((v) => !v)}
+                  aria-expanded={compactToolsOpen}
+                  aria-label={compactToolsOpen ? 'ツールを閉じる' : 'ツールを開く'}
+                  title={
+                    compactToolsOpen
+                      ? 'ツールを閉じる'
+                      : '週を生成 / 週次ガイド / 新規患者登録 / 診断 / 最適化 などを一時的に開く'
+                  }
+                  data-testid="schedule-compact-tools-button"
+                >
+                  {compactToolsOpen ? (
+                    <ChevronDown className="mr-1 h-4 w-4" aria-hidden />
+                  ) : (
+                    <Wrench className="mr-1 h-4 w-4" aria-hidden />
+                  )}
+                  ツール
+                </Button>
+
+                {onWeekChange ? (
+                  <div
+                    className="flex flex-wrap items-center gap-1"
+                    data-testid="schedule-compact-week-nav"
+                  >
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="outline"
+                      onClick={() => onWeekChange(addDays(weekStart, -7))}
+                      aria-label="前週"
+                      title="前週"
+                      data-testid="schedule-compact-week-prev"
+                    >
+                      <ChevronLeft className="h-4 w-4" aria-hidden />
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onWeekChange(toWeekStart(new Date()))}
+                      title="今週へ"
+                      data-testid="schedule-compact-week-today"
+                    >
+                      今週
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="outline"
+                      onClick={() => onWeekChange(addDays(weekStart, 7))}
+                      aria-label="次週"
+                      title="次週"
+                      data-testid="schedule-compact-week-next"
+                    >
+                      <ChevronRight className="h-4 w-4" aria-hidden />
+                    </Button>
+                    <span
+                      className="tnum text-xs text-text-secondary"
+                      data-testid="schedule-compact-week-label"
+                    >
+                      {compactWeekRangeLabel}
+                    </span>
+                    <span className="tnum text-[11px] text-text-muted">{compactWeekNoLabel}</span>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             {/* 曜日タブ */}
             <div
               role="tablist"
@@ -4814,7 +4957,10 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
               </button>
             </div>
 
-            <span className="tnum text-[11px] text-text-muted">{isoWeekLabel}</span>
+            {/* 折りたたみ時はコンパクト行の週グループが W## を持つため二重表示を避ける。 */}
+            {headerCollapsed ? null : (
+              <span className="tnum text-[11px] text-text-muted">{isoWeekLabel}</span>
+            )}
 
             {/* Row 2 右半: 表示モード + 二次操作 を 3 グループ (α/γ/δ) に分けて
                 縦区切り線で分離. ml-auto を持つ最初の見える要素で右寄せを担保 (= α が出ていれば α、
@@ -5077,6 +5223,65 @@ export function CourseDayTablePanel({ weekStart, officeId, canEdit }: CourseDayT
                   </div>
                 </>
               }
+
+              {/* 折りたたみ時のみ: 戻る/進む (Row 2 から移設) + 拠点フィルタ (ページ上部 Card から移設). */}
+              {headerCollapsed ? (
+                <>
+                  <span
+                    aria-hidden
+                    className="h-5 w-px bg-border-default"
+                    data-testid="course-day-button-divider"
+                  />
+                  {undoRedoButtons}
+                  {onOfficeChange ? (
+                    <label className="flex items-center gap-1 text-xs text-text-secondary">
+                      拠点
+                      <select
+                        value={officeId ?? ''}
+                        onChange={(e) =>
+                          onOfficeChange(e.target.value === '' ? null : e.target.value)
+                        }
+                        className="rounded border border-border-default bg-bg-base px-1.5 py-1 text-xs"
+                        aria-label="拠点フィルタ"
+                        data-testid="schedule-compact-office-select"
+                      >
+                        <option value="">全拠点</option>
+                        {offices.map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                </>
+              ) : null}
+
+              {/* 上部折りたたみトグル (PO 要望 2026-08-23)。ツールバー右端に常設。 */}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setCompactToolsOpen(false);
+                  setHeaderCollapsed(!headerCollapsed);
+                }}
+                aria-pressed={headerCollapsed}
+                aria-label={headerCollapsed ? '上部を表示' : 'コンパクト表示にする'}
+                title={
+                  headerCollapsed
+                    ? '見出しと週セレクタを表示します'
+                    : '上部を 1 行にまとめて盤面を広く使います'
+                }
+                data-testid="schedule-header-collapse-toggle"
+              >
+                {headerCollapsed ? (
+                  <ChevronDown className="mr-1 h-4 w-4" aria-hidden />
+                ) : (
+                  <ChevronUp className="mr-1 h-4 w-4" aria-hidden />
+                )}
+                {headerCollapsed ? '上部を表示' : 'コンパクト表示'}
+              </Button>
             </div>
           </div>
         </Card>
