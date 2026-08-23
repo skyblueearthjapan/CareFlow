@@ -1,21 +1,21 @@
 # セッション引き継ぎ 2026-08-22〜23（運転席 Phase E 本番化・同期ストリップ刷新・カイポケ サービス内容・休みの1操作化）
 
 **次のエージェントへ: まずこのファイルを読むこと。**
-本番 HEAD = `e473b09`（全コミットデプロイ済み・healthz 健全・DB = **mig 0078**）。RPA リポ（VPS `/root/PlaywrightTest1`・コンテナ `kaipoke-api`）HEAD = `4c5303c`。
+本番 HEAD = `3a4e2cc`（全コミットデプロイ済み・healthz 健全・DB = **mig 0078**）。RPA リポ（VPS `/root/PlaywrightTest1`・コンテナ `kaipoke-api`）HEAD = `4c5303c`。
 バックアップ = `/opt/carelink/backups/pre-deploy-20260823-*.sql.gz` ほか（UTC 表示注意）。デプロイ手順は従来どおり（migration 含む時は `build --no-cache` + `alembic upgrade head`）。
 
 ---
 
 ## 0. 進行中の作業（5h制限で中断され得る）
 
-### 「休みにする」の1操作化（Phase 1）— **実装済み・レビュー是正中・未コミット**
+### 「休みにする」の1操作化（Phase 1）— ✅ **完了・本番 `3a4e2cc`（2026-08-23 夜）**
 作業ツリーに BE+FE 変更あり(schedule_v2.py / visits.py / auto_schedule_v2.py / op_log_service.py / test_staff_off_week.py / SubstitutePanel.tsx / CourseDayTablePanel.tsx / cockpit.ts 他)。レビュー(2026-08-23 夕)の是正指示: H1 NG/性別の一括検査+acknowledge / H2 2名体制 VSA は本人行だけ差替(相方を残す・undo 可) / H3 FE サマリを planned のみに(status を契約に追加) / H4 読み込み中は実行不可 / M1 record_op strict / M2 op_log 並び決定性 / M3 skipped_visit_ids / M4 引受先が休みなら 422 / M5 redo 枝 DELETE 1 回。
 仕様（PO 決定 2026-08-23）:
 1. 新API `POST /schedule/v2/staff-off-week {staff_id, date, to_staff_id|null, op_group_id?, reason?}` = 休み登録(override upsert) + その日の担当訪問を全件付替(既定は担当なし) + コース担当 を **1トランザクション・同一 op_group_id**（新 op `set_staff_off` + set_visit_staff + set_course_staff）→「戻る」1回で休みごと戻る。青ピン/過去日/新人/同一人物は 422。
 2. FE `SubstitutePanel` を **モーダル**に: 「○○さんを M/D 休みにします。予定 N件（コース…）は担当なしに戻します」。**コース丸ごと引き受けられる ok スタッフがいる時だけ**「△△さんに割り当てる」(最大3名)。1人ずつの提案はしない。[担当なしに戻す](既定)/[やめる]。
 3. 「戻る」で戻すものが無い(400)→ toast.info「これ以上戻せません」。
 4. 削除済み患者（近藤 菜穂・8/21 削除）の fixed-visits 404 参照を掃除。
-**再開手順**: `git status` で BE 差分を確認 → 途中なら executor(opus) に上記仕様を渡して続行（「git 操作禁止・stash 禁止」を明記）→ レビュー → `python -m pytest tests/test_staff_off_week.py tests/test_op_log_u3.py tests/test_visit_cancel_week.py -q` / tsc / `pnpm vitest run components/schedule/v2` → コミット → デプロイ（migration 無しの見込み）。
+**完了済み**(レビュー2回・HIGH4/MED5 是正・BE 17+FE 13 テスト)。参考の検証コマンド: `python -m pytest tests/test_staff_off_week.py tests/test_op_log_u3.py tests/test_visit_cancel_week.py -q` / tsc / `pnpm vitest run components/schedule/v2` → コミット → デプロイ（migration 無しの見込み）。
 
 ### Phase 2（未着手・設計から）
 「担当なし」行の患者/コースからの **投入提案**（保留プールと同じ「ここに空きがあります/この方はここに入れそう」）。担当なしのコースを上に上げる or 患者単位提案。既存 propose-slots / pool 提案エンジンの流用を前提に設計。
