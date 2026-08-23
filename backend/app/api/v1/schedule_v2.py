@@ -27,8 +27,10 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as time_cls
+from functools import partial
 from typing import Annotated, Any, NoReturn
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete as sa_delete
@@ -44,7 +46,7 @@ from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
-from app.models.staff import Staff
+from app.models.staff import Staff, StaffWeeklyOverride
 from app.models.suggestion_dismissal import SuggestionDismissal
 from app.models.user import User
 from app.models.visit import (
@@ -75,6 +77,8 @@ from app.schemas.v2.auto_schedule_v2 import (
     CourseMoveWeekdayWeekOnlyResponse,
     PfvCoursePresenceItem,
     PfvCoursePresenceResponse,
+    StaffOffWeekRequest,
+    StaffOffWeekResponse,
     UnassignedPatient,
     UpdateFixedTimeMasterRequest,
     UpdateFixedTimeMasterResponse,
@@ -202,6 +206,7 @@ from app.services.constraint_override_notify import (
     collect_constraint_warnings_for_patients,
     collect_constraint_warnings_for_staff,
     constraint_confirmation_detail,
+    notify_constraint_override,
     notify_constraint_override_for_course,
     resolve_week_course_for_template,
 )
@@ -212,9 +217,13 @@ from app.services.geocoding.client import (
 from app.services.office_assigner import OfficeAssigner
 from app.services.op_log_service import (
     check_cancel_visit_allowed,
+    clear_redo_branch,
     fmt_time,
     fmt_weekday,
     record_op,
+    set_staff_override,
+    set_visit_staff_slot,
+    visit_staff_ids,
 )
 from app.services.scheduling.auto_allocator_v2 import (
     _COURSE_CODES_MAX,
@@ -304,6 +313,12 @@ from app.services.scheduling.unblock_search import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# 「当日 / 過去日」の判定は JST 基準 (サーバは UTC・日付境界がずれないように)。
+_JST = ZoneInfo("Asia/Tokyo")
+
+# staff_weekly_overrides.override_type の「休み」コード (schemas/staff_overrides.py と同値)。
+STAFF_OVERRIDE_TYPE_OFF = "off"
 
 
 # ---------------------------------------------------------------------------
@@ -1756,6 +1771,381 @@ async def visit_assign_staff_week(
     await db.commit()
 
     return VisitAssignStaffWeekResponse(visit_id=visit.id, staff_id=payload.staff_id, changed=True)
+
+
+@router.post(
+    "/v2/staff-off-week",
+    response_model=StaffOffWeekResponse,
+    status_code=status.HTTP_200_OK,
+    summary="🛌 休みにする: 休みの登録 + その日の担当の引き受けを 1 手で (PO 決定 2026-08-23)",
+)
+async def staff_off_week(
+    payload: StaffOffWeekRequest,
+    db: DbDep,
+    current_user: Annotated[User, Depends(require_role("admin"))],
+) -> StaffOffWeekResponse:
+    """「○○さんを M/D 休みにする」を **1 トランザクション** で完結させる.
+
+    これまでは FE が ①休みの登録 (``POST /staff/{id}/overrides``) →
+    ②訪問ごとの付替 (``visit-assign-staff-week``) の 2 段階で呼んでいたが、
+    ①が op_log の対象外だったため「戻る」で②だけ戻り **休みだけ残る**
+    半端な状態が起きていた (PO 報告 2026-08-23)。ここでまとめて書き、
+    ①②③すべてを **同一 op_group_id** で記録する = 「戻る」1 回で全部戻る。
+
+    **対象になる訪問** (その日・soft-delete 除外) は、次のいずれかで当該スタッフが
+    載っている ``status='planned'`` の訪問だけ:
+      1. ``visits.primary_staff_id`` = 本人
+      2. ``primary_staff_id`` が NULL で、コース担当 (``courses.assigned_staff_id``)
+         が本人 (= 盤面の行決定と同じ規則)
+      3. ``visit_staff_assignments`` に本人が居る (2 名体制の 2 人目 / 相方枠)
+    打刻済み・実施中・完了・取消済みは **据え置き** (``skipped_visit_ids`` で返す)。
+
+    書くもの (すべて今週だけ・PFV / テンプレートは不変):
+      a. ``staff_weekly_overrides`` に ``override_type='off'`` を upsert
+         (同 staff × iso 週 × weekday の行があれば流用 = 2 回押しても 1 件)
+      b. 対象訪問の **本人の担当枠だけ**を ``to_staff_id`` へ差し替え
+         (2 名体制の相方は残す。primary は本人が持っていた場合のみ書き換える)
+      c. その日のコース (``courses.assigned_staff_id``) を ``to_staff_id`` へ
+      d. op_log: ``set_staff_off`` / ``set_visit_staff_slot`` / ``set_course_staff``
+
+    ガード: 青ピン (今週固定) の訪問があれば 422 (件数と患者名) /
+    引き受け先が新人・退職・本人・その日が休み なら 422 / 過去日 (JST) は 422 /
+    引き受け先が対象患者の NG スタッフ・性別制限に触れるなら
+    ``constraint_confirmation_required`` 422 → ``acknowledge_constraint_warnings``
+    付きで再送 (通した事実は管理者へお知らせ・§7-2 の全経路共通の作法)。
+    """
+    staff = await db.scalar(
+        select(Staff).where(Staff.id == payload.staff_id, Staff.deleted_at.is_(None))
+    )
+    if staff is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Staff not found")
+
+    # 過去日は触らせない (実績のある日を後から「休み」にしない)。当日は可。
+    today_jst = datetime.now(UTC).astimezone(_JST).date()
+    if payload.date < today_jst:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="過去の日は休みにできません（今日以降の日を選んでください）",
+        )
+
+    _iso = payload.date.isocalendar()
+    iso_year, iso_week, weekday = _iso.year, _iso.week, payload.date.weekday()
+
+    to_staff: Staff | None = None
+    if payload.to_staff_id is not None:
+        if payload.to_staff_id == payload.staff_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="休む本人には引き受けられません",
+            )
+        to_staff = await db.scalar(
+            select(Staff).where(Staff.id == payload.to_staff_id, Staff.deleted_at.is_(None))
+        )
+        if to_staff is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Staff not found")
+        if to_staff.is_trainee:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="新人は担当にできません（同行で割り当ててください）",
+            )
+        if to_staff.status != "active":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="退職された方には引き受けられません",
+            )
+        # 引き受け先自身がその日休みなら渡さない (休みの人に仕事が積まれる事故)。
+        to_staff_off = await db.scalar(
+            select(StaffWeeklyOverride.id).where(
+                StaffWeeklyOverride.staff_id == payload.to_staff_id,
+                StaffWeeklyOverride.iso_year == iso_year,
+                StaffWeeklyOverride.iso_week == iso_week,
+                StaffWeeklyOverride.weekday == weekday,
+                StaffWeeklyOverride.override_type == STAFF_OVERRIDE_TYPE_OFF,
+            )
+        )
+        if to_staff_off is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{to_staff.name}さんはこの日休みのため引き受けられません",
+            )
+
+    # ---- その日の訪問 (盤面の行決定と同じ規則で「本人が載っている」ものを拾う) ----
+    # primary_staff_id が正。NULL のときだけコース担当に落ちる (= substitute_candidates
+    # ._owner_of と同じ)。加えて 2 名体制の 2 人目 (VSA だけに居る) も対象にする。
+    day_rows = (
+        await db.execute(
+            select(Visit, Course)
+            .outerjoin(Course, (Course.id == Visit.course_id) & (Course.deleted_at.is_(None)))
+            .where(Visit.visit_date == payload.date, Visit.deleted_at.is_(None))
+        )
+    ).all()
+    _day_visit_ids = [visit.id for visit, _c in day_rows]
+    _vsa_visit_ids: set[UUID] = set()
+    if _day_visit_ids:
+        _vsa_visit_ids = set(
+            (
+                await db.scalars(
+                    select(VisitStaffAssignment.visit_id).where(
+                        VisitStaffAssignment.visit_id.in_(_day_visit_ids),
+                        VisitStaffAssignment.staff_id == payload.staff_id,
+                    )
+                )
+            ).all()
+        )
+
+    def _owns_primary(visit: Visit, course: Course | None) -> bool:
+        """primary の枠を本人が握っているか (盤面の行決定と同じ規則)."""
+        if visit.primary_staff_id is not None:
+            return visit.primary_staff_id == payload.staff_id
+        return course is not None and course.assigned_staff_id == payload.staff_id
+
+    target_visits: list[tuple[Visit, bool]] = []  # (visit, primary を書くか)
+    skipped: list[Visit] = []
+    for visit, course in day_rows:
+        on_primary = _owns_primary(visit, course)
+        if not on_primary and visit.id not in _vsa_visit_ids:
+            continue
+        if visit.status != VISIT_STATUS_PLANNED:
+            # 打刻済み・実施中・完了・取消済みは実績。担当を書き換えない。
+            skipped.append(visit)
+            continue
+        target_visits.append((visit, on_primary))
+    # 応答と op_log の並びを決定的に (時刻順)。DB の返却順に依存させない。
+    target_visits.sort(key=lambda item: (item[0].start_time, str(item[0].id)))
+    skipped.sort(key=lambda v: (v.start_time, str(v.id)))
+    skipped_visit_ids = [v.id for v in skipped]
+
+    # 青ピン (蓋) は「今週はこの位置・この人のまま」の宣言。解除してから。
+    pinned = [v for v, _p in target_visits if bool(v.week_pinned)]
+    if pinned:
+        _names = (
+            await db.scalars(
+                select(Patient.name)
+                .where(Patient.id.in_([v.patient_id for v in pinned]), Patient.deleted_at.is_(None))
+                .order_by(Patient.name, Patient.id)
+            )
+        ).all()
+        _label = "・".join(f"{n}様" for n in _names) if _names else ""
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"今週固定（青ピン）の訪問が {len(pinned)} 件あります"
+                + (f"（{_label}）" if _label else "")
+                + "。解除してから休みにしてください"
+            ),
+        )
+
+    # NG スタッフ / 性別制限 (§7-2): 引き受け先 × 対象患者を **一括**で検査する。
+    # 1 件ずつ 422 を返すと確認ダイアログが件数分出るため、まとめて 1 回で聞く。
+    _cw: list[ConstraintWarning] = []
+    if to_staff is not None and target_visits:
+        _cw = await collect_constraint_warnings_for_staff(
+            db,
+            staff_id=to_staff.id,
+            patient_ids=list({v.patient_id for v, _p in target_visits}),
+        )
+        if _cw and not payload.acknowledge_constraint_warnings:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=constraint_confirmation_detail(_cw),
+            )
+
+    # ---- その日のコース (曜日一致・当該スタッフが担当) ----
+    target_courses = list(
+        (
+            await db.scalars(
+                select(Course).where(
+                    Course.iso_year == iso_year,
+                    Course.iso_week == iso_week,
+                    Course.weekday == weekday,
+                    Course.assigned_staff_id == payload.staff_id,
+                    Course.deleted_at.is_(None),
+                )
+            )
+        ).all()
+    )
+
+    op_group_id = payload.op_group_id or uuid.uuid4()
+    staff_label = (to_staff.name if to_staff is not None else None) or "担当なし"
+    date_label = f"{payload.date.month}/{payload.date.day}({fmt_weekday(weekday)})"
+    new_manual = payload.to_staff_id is not None
+
+    try:
+        # 「戻る」で戻せることが前提の操作なので、ジャーナルは strict = 失敗したら
+        # 本体ごとロールバックする。redo 枝のクリアはループ前に 1 回だけ。
+        await clear_redo_branch(db, user_id=current_user.id, iso_year=iso_year, iso_week=iso_week)
+        _journal = partial(
+            record_op,
+            db,
+            user_id=current_user.id,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            op_group_id=op_group_id,
+            strict=True,
+            clear_redo=False,
+        )
+
+        # (a) 休みの登録。既存行があれば流用する (2 回押しても 1 件のまま)。
+        prev_override = await db.scalar(
+            select(StaffWeeklyOverride).where(
+                StaffWeeklyOverride.staff_id == payload.staff_id,
+                StaffWeeklyOverride.iso_year == iso_year,
+                StaffWeeklyOverride.iso_week == iso_week,
+                StaffWeeklyOverride.weekday == weekday,
+            )
+        )
+        # undo で戻す先 (行が無かったなら type=None = 行ごと削除する)。
+        # 元が「時間変更」「午前休」等でも、その型・時刻・理由ごと復元できるように控える。
+        inverse_override: dict[str, Any] = {
+            "op": "set_staff_off",
+            "staff_id": str(payload.staff_id),
+            "iso_year": iso_year,
+            "iso_week": iso_week,
+            "weekday": weekday,
+            "type": prev_override.override_type if prev_override is not None else None,
+            "reason": prev_override.reason if prev_override is not None else None,
+            "start_time": (
+                fmt_time(prev_override.start_time)
+                if prev_override is not None and prev_override.start_time is not None
+                else None
+            ),
+            "end_time": (
+                fmt_time(prev_override.end_time)
+                if prev_override is not None and prev_override.end_time is not None
+                else None
+            ),
+        }
+        override_id = await set_staff_override(
+            db,
+            staff_id=payload.staff_id,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            weekday=weekday,
+            override_type=STAFF_OVERRIDE_TYPE_OFF,
+        )
+        if override_id is None:  # pragma: no cover (set_staff_override の契約上ありえない)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="休みの登録に失敗しました",
+            )
+        forward_override = {
+            **inverse_override,
+            "type": STAFF_OVERRIDE_TYPE_OFF,
+            "reason": None,
+            "start_time": None,
+            "end_time": None,
+            "override_id": str(override_id),
+        }
+        inverse_override["override_id"] = str(override_id)
+        await _journal(
+            op_kind="set_staff_off",
+            label=f"{staff.name}さんを{date_label}休みに",
+            forward_payload=forward_override,
+            inverse_payload=inverse_override,
+        )
+
+        # (b) 対象訪問の「本人の担当枠だけ」を引き受け先へ (相方は残す)。
+        moved_visit_ids: list[UUID] = []
+        for visit, on_primary in target_visits:
+            old_primary = visit.primary_staff_id
+            old_manual = bool(visit.manual_staff_override)
+            current_vsa = await visit_staff_ids(db, visit.id)
+            vsa_remove = [payload.staff_id] if payload.staff_id in current_vsa else []
+            vsa_add = (
+                [payload.to_staff_id]
+                if payload.to_staff_id is not None and payload.to_staff_id not in current_vsa
+                else []
+            )
+            await set_visit_staff_slot(
+                db,
+                visit_id=visit.id,
+                set_primary=on_primary,
+                primary_staff_id=payload.to_staff_id,
+                manual=new_manual,
+                vsa_add=vsa_add,
+                vsa_remove=vsa_remove,
+            )
+            moved_visit_ids.append(visit.id)
+            await _journal(
+                op_kind="set_visit_staff_slot",
+                label=f"{date_label}の訪問担当を{staff_label}に変更",
+                forward_payload={
+                    "op": "set_visit_staff_slot",
+                    "visit_id": str(visit.id),
+                    "set_primary": on_primary,
+                    "primary_staff_id": (str(payload.to_staff_id) if payload.to_staff_id else None),
+                    "manual": new_manual,
+                    "vsa_add": [str(s) for s in vsa_add],
+                    "vsa_remove": [str(s) for s in vsa_remove],
+                },
+                inverse_payload={
+                    "op": "set_visit_staff_slot",
+                    "visit_id": str(visit.id),
+                    "set_primary": on_primary,
+                    "primary_staff_id": str(old_primary) if old_primary else None,
+                    "manual": old_manual,
+                    # 追加した行だけを外し、外した行だけを戻す (相方には触れない)。
+                    "vsa_add": [str(s) for s in vsa_remove],
+                    "vsa_remove": [str(s) for s in vsa_add],
+                },
+            )
+
+        # (c) その日のコース担当も引き受け先へ (盤面の行が丸ごと移る)。
+        moved_course_ids: list[UUID] = []
+        for course in target_courses:
+            old_course_staff = course.assigned_staff_id
+            course.assigned_staff_id = payload.to_staff_id
+            moved_course_ids.append(course.id)
+            await _journal(
+                op_kind="set_course_staff",
+                label=f"コース{course.code}の担当を{staff_label}に変更",
+                forward_payload={
+                    "op": "set_course_staff",
+                    "course_id": str(course.id),
+                    "staff_id": str(payload.to_staff_id) if payload.to_staff_id else None,
+                },
+                inverse_payload={
+                    "op": "set_course_staff",
+                    "course_id": str(course.id),
+                    "staff_id": str(old_course_staff) if old_course_staff else None,
+                },
+            )
+
+        # §7-3: acknowledge で通した事実を管理者へお知らせ (同一 TX)。対象は複数
+        # コースに跨りうるので course=None (通知は週/コース行を省いて必ず出す)。
+        if _cw and to_staff is not None:
+            await notify_constraint_override(
+                db,
+                kind_summary={w.kind for w in _cw},
+                course=None,
+                staff=to_staff,
+                patient_warnings=_cw,
+                actor=current_user,
+                op_group_id=op_group_id,
+            )
+
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="他のユーザーが同じ週を処理中です。もう一度実行してください。",
+        ) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    return StaffOffWeekResponse(
+        override_id=override_id,
+        moved_visit_ids=moved_visit_ids,
+        moved_course_ids=moved_course_ids,
+        skipped_visit_ids=skipped_visit_ids,
+        to_staff_id=payload.to_staff_id,
+        op_group_id=op_group_id,
+    )
 
 
 @router.post(

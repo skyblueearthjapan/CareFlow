@@ -3,7 +3,7 @@
  *
  * カバーするシナリオ:
  *   (a) 訪問行クリックでメニューが開き、「今週だけ取消」が visit-cancel-week を呼ぶ
- *   (b) セルの「🛌 休みにする」→ 代替候補で付け替え = override → assign の順で呼ぶ
+ *   (b) セルの「🛌 休みにする」→ staff-off-week を 1 回だけ呼ぶ (据え置き件数 / NG 422 の確認も)
  *   (c) 表示切替 [リスト|タイムライン]
  *   (d) 同期バーで選んだ**訪問**差分が盤面ゴースト (青点線=今ここ / 紫実線=こう変わる) になる
  *   (g) スタッフ入れ替え (氏名 ⠿ DnD → 確認ダイアログ) が
@@ -153,14 +153,19 @@ const mockVisitServiceOverride = vi
   .fn()
   .mockResolvedValue({ id: 'v1', kaipoke_service_override: '基本療養費Ⅰ・准看' });
 /**
- * 休み登録は「遅い API」として振る舞わせる。付け替えを await せずに走らせると
- * 順序が逆転するため、遅延を入れて**本当に待っているか**を検証する (M-12)。
+ * 🛌 休みにする (PO 決定 2026-08-23) は **1 リクエスト**。休みの登録と付け替えを
+ * BE が 1 トランザクションで行うので、FE 側の呼び出し順の心配が要らなくなった。
  */
-const mockCreateOverride = vi.fn().mockImplementation(async (payload: unknown) => {
-  callOrder.push('override:start');
-  await new Promise((r) => setTimeout(r, 20));
-  callOrder.push('override:done');
-  return payload;
+const mockStaffOffWeek = vi.fn().mockImplementation(async (payload: { to_staff_id: unknown }) => {
+  callOrder.push('staff-off-week');
+  return {
+    override_id: '00000000-0000-4000-8000-0000000000aa',
+    moved_visit_ids: ['v1'],
+    moved_course_ids: [],
+    skipped_visit_ids: [],
+    to_staff_id: payload.to_staff_id ?? null,
+    op_group_id: '00000000-0000-4000-8000-0000000000bb',
+  };
 });
 const mockAssignStaffWeek = vi.fn().mockImplementation(async () => {
   callOrder.push('assign');
@@ -291,13 +296,13 @@ vi.mock('@/lib/api/patientSync', () => {
 });
 vi.mock('@/lib/queries/staff-overrides', () => ({
   useWeekStaffOverrides: () => ({ data: [], isLoading: false }),
-  useCreateOverride: () => ({ mutateAsync: mockCreateOverride, isPending: false }),
 }));
 // 運転席の新 API (契約書 §2)。代替候補は 1 グループ (コース無し = 訪問1件) を返す。
 vi.mock('@/lib/queries/cockpit', () => ({
   useVisitCancelWeek: () => ({ mutateAsync: mockVisitCancelWeek, isPending: false }),
   useVisitServiceOverride: () => ({ mutateAsync: mockVisitServiceOverride, isPending: false }),
   useEventCancelWeek: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useStaffOffWeek: () => ({ mutateAsync: mockStaffOffWeek, isPending: false }),
   useUnsentSummary: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useReverseSheet: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSubstituteCandidates: () => ({
@@ -317,6 +322,7 @@ vi.mock('@/lib/queries/cockpit', () => ({
               start_time: '09:00',
               end_time: '10:00',
               week_pinned: false,
+              status: 'planned',
             },
           ],
           candidates: [
@@ -532,11 +538,16 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
       callOrder.push('assign');
       return { changed: true };
     });
-    mockCreateOverride.mockImplementation(async (payload: unknown) => {
-      callOrder.push('override:start');
-      await new Promise((r) => setTimeout(r, 20));
-      callOrder.push('override:done');
-      return payload;
+    mockStaffOffWeek.mockImplementation(async (payload: { to_staff_id: unknown }) => {
+      callOrder.push('staff-off-week');
+      return {
+        override_id: '00000000-0000-4000-8000-0000000000aa',
+        moved_visit_ids: ['v1'],
+        moved_course_ids: [],
+        skipped_visit_ids: [],
+        to_staff_id: payload.to_staff_id ?? null,
+        op_group_id: '00000000-0000-4000-8000-0000000000bb',
+      };
     });
     mockUpdateCourse.mockResolvedValue({ id: 'course-A-mon' });
   });
@@ -556,47 +567,118 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     });
   });
 
-  it('(b) 「🛌 休みにする」→ 代替候補の適用は 休み登録 → 担当付け替え の順', async () => {
+  it('(b) 「🛌 休みにする」→ 休みと付け替えは staff-off-week 1 回で終わる', async () => {
     setupHooks();
     renderStaffTab();
 
     fireEvent.click(screen.getByTestId(`staff-week-off-action-${STAFF_1}-0`));
     expect(await screen.findByTestId('substitute-panel')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId(`substitute-cand-__none__0-${STAFF_2}`));
+    fireEvent.click(screen.getByTestId(`substitute-cand-${STAFF_2}`));
 
-    // 休みの登録が**完了してから**付け替える (遅延 mock で順序を実証)。
-    await vi.waitFor(() =>
-      expect(callOrder).toEqual(['override:start', 'override:done', 'assign']),
-    );
-    // 休みは 1 回だけ (複数コースを渡しても override は 1 件)。
-    expect(mockCreateOverride).toHaveBeenCalledTimes(1);
-    expect(mockCreateOverride.mock.calls[0]?.[0]).toMatchObject({
-      type: '休み',
+    // 旧実装の 2 段階 (override → assign を訪問ごと) は廃止。1 リクエストのみ。
+    await vi.waitFor(() => expect(callOrder).toEqual(['staff-off-week']));
+    expect(mockStaffOffWeek).toHaveBeenCalledTimes(1);
+    expect(mockStaffOffWeek.mock.calls[0]?.[0]).toMatchObject({
+      staff_id: STAFF_1,
       date: MONDAY_ISO,
+      to_staff_id: STAFF_2,
     });
-    expect(mockAssignStaffWeek.mock.calls[0]?.[0]).toMatchObject({
-      visit_id: 'v1',
-      staff_id: STAFF_2,
-    });
+    expect(mockAssignStaffWeek).not.toHaveBeenCalled();
   });
 
-  it('(b2) 休み登録の成功で週の休み一覧 (staff-overrides-week) が失効する', async () => {
+  it('(b2) 休みの成功で週の休み一覧 (staff-overrides-week) が失効する', async () => {
     setupHooks();
     renderStaffTab();
 
     fireEvent.click(screen.getByTestId(`staff-week-off-action-${STAFF_1}-0`));
     expect(await screen.findByTestId('substitute-panel')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId(`substitute-cand-__none__0-${STAFF_2}`));
+    fireEvent.click(screen.getByTestId('substitute-unassign'));
 
-    await vi.waitFor(() => expect(mockCreateOverride).toHaveBeenCalled());
-    // useCreateOverride は ['staff-overrides', staffId] しか失効させないため、
+    await vi.waitFor(() => expect(mockStaffOffWeek).toHaveBeenCalled());
+    expect(mockStaffOffWeek.mock.calls[0]?.[0]).toMatchObject({ to_staff_id: null });
     // 盤面の網掛け (週一括キー) が古いまま残る回帰を防ぐ。
     await vi.waitFor(() =>
       expect(invalidatedKeys.some((k) => Array.isArray(k) && k[0] === 'staff-overrides-week')).toBe(
         true,
       ),
     );
+  });
+
+  it('(b3) 休みの成功トーストは 件数 + 「戻るで復元」を伝える', async () => {
+    setupHooks();
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId(`staff-week-off-action-${STAFF_1}-0`));
+    expect(await screen.findByTestId('substitute-panel')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('substitute-unassign'));
+
+    await vi.waitFor(() => expect(mockToast.success).toHaveBeenCalled());
+    const msg = String(mockToast.success.mock.calls[0]?.[0]);
+    expect(msg).toContain('休みに');
+    expect(msg).toContain('予定 1件');
+    expect(msg).toContain('戻るで復元');
+    // 実行後はモーダルを閉じる。
+    await vi.waitFor(() => expect(screen.queryByTestId('substitute-panel')).toBeNull());
+  });
+
+  it('(b4) 据え置き (打刻済み・完了) があればトーストで件数を伝える', async () => {
+    setupHooks();
+    mockStaffOffWeek.mockImplementation(async (payload: { to_staff_id: unknown }) => {
+      callOrder.push('staff-off-week');
+      return {
+        override_id: '00000000-0000-4000-8000-0000000000aa',
+        moved_visit_ids: ['v1'],
+        moved_course_ids: [],
+        skipped_visit_ids: ['v9', 'v10'],
+        to_staff_id: payload.to_staff_id ?? null,
+        op_group_id: '00000000-0000-4000-8000-0000000000bb',
+      };
+    });
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId(`staff-week-off-action-${STAFF_1}-0`));
+    expect(await screen.findByTestId('substitute-panel')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('substitute-unassign'));
+
+    await vi.waitFor(() => expect(mockToast.success).toHaveBeenCalled());
+    expect(String(mockToast.success.mock.calls[0]?.[0])).toContain(
+      '2件は打刻済み・完了のため据え置き',
+    );
+  });
+
+  it('(b5) NG/性別 422 → 確認 → ack 付きで再送 (同一 op_group_id)', async () => {
+    setupHooks();
+    mockStaffOffWeek.mockImplementation(async (payload: Record<string, unknown>) => {
+      callOrder.push('staff-off-week');
+      if (payload.acknowledge_constraint_warnings !== true) throw constraintError();
+      return {
+        override_id: '00000000-0000-4000-8000-0000000000aa',
+        moved_visit_ids: ['v1'],
+        moved_course_ids: [],
+        skipped_visit_ids: [],
+        to_staff_id: payload.to_staff_id ?? null,
+        op_group_id: '00000000-0000-4000-8000-0000000000bb',
+      };
+    });
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId(`staff-week-off-action-${STAFF_1}-0`));
+    expect(await screen.findByTestId('substitute-panel')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId(`substitute-cand-${STAFF_2}`));
+
+    // 422 は確認ダイアログへ (エラートーストにしない)。
+    expect(await screen.findByTestId('constraint-override-confirm')).toBeInTheDocument();
+    expect(mockToast.error).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('constraint-override-ok'));
+
+    await vi.waitFor(() => expect(mockStaffOffWeek).toHaveBeenCalledTimes(2));
+    const calls = mockStaffOffWeek.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    expect(calls[1]).toMatchObject({ acknowledge_constraint_warnings: true });
+    // 確認をまたいでも op_group_id は同じ (「戻る」1 回で戻せる 1 手)。
+    expect(new Set(calls.map((c) => c.op_group_id)).size).toBe(1);
+    await vi.waitFor(() => expect(mockToast.success).toHaveBeenCalled());
   });
 
   it('(c) 表示切替 [リスト|タイムライン] が効く', () => {
@@ -860,24 +942,23 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     expect(mockAssignStaffWeek).toHaveBeenCalledTimes(2);
   });
 
-  it('(g11) 急な休みの付替: 失敗したら入れ替えと同じ形で toast.error になる', async () => {
+  it('(g11) 休みが失敗したら toast.error のみ (成功文言は出さない)', async () => {
     setupHooks();
-    mockAssignStaffWeek.mockImplementation(async () => {
-      callOrder.push('assign');
+    mockStaffOffWeek.mockImplementation(async () => {
+      callOrder.push('staff-off-week');
       throw new Error('boom');
     });
     renderStaffTab();
 
     fireEvent.click(screen.getByTestId(`staff-week-off-action-${STAFF_1}-0`));
     expect(await screen.findByTestId('substitute-panel')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId(`substitute-cand-__none__0-${STAFF_2}`));
+    fireEvent.click(screen.getByTestId(`substitute-cand-${STAFF_2}`));
 
     await vi.waitFor(() => expect(mockToast.error).toHaveBeenCalled());
-    expect(String(mockToast.error.mock.calls[0]?.[0])).toContain('1 件の付け替えに失敗しました');
-    // 休み登録そのものの成功トーストは出るが、**付け替えの成功**は出さない
-    // (従来は失敗しても成功文言が出ていた = 非対称の解消)。
+    expect(String(mockToast.error.mock.calls[0]?.[0])).toContain('休みにできませんでした');
+    // BE が 1 トランザクションで弾いた = 何も書かれていない。成功文言は出さない。
     const successMsgs = mockToast.success.mock.calls.map((c) => String(c[0]));
-    expect(successMsgs.some((m) => m.includes('曜を休みに。'))).toBe(false);
+    expect(successMsgs.some((m) => m.includes('休みに'))).toBe(false);
   });
 
   it('(h) タイムラインの行アクション「🛌 休みにする」で SubstitutePanel が開く', async () => {

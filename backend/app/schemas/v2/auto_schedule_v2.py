@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date as date_cls
 from datetime import time as time_cls
 from typing import Literal
 
@@ -693,6 +694,43 @@ class VisitAssignStaffWeekResponse(BaseModel):
     visit_id: uuid.UUID
     staff_id: uuid.UUID | None
     changed: bool = Field(description="False = 既に同じ担当 (no-op)")
+
+
+class StaffOffWeekRequest(BaseModel):
+    """``POST /api/v1/schedule/v2/staff-off-week`` request (PO 決定 2026-08-23).
+
+    「○○さんをこの日休みにする」を **1 トランザクション 1 リクエスト** で行う。
+    休みの登録 (staff_weekly_overrides) と、その日の担当訪問 / コースの付け替えを
+    まとめて 1 つの ``op_group_id`` に記録するので、「戻る」1 回で全部戻る。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    staff_id: uuid.UUID = Field(description="休む (= 抜ける) スタッフ")
+    date: date_cls = Field(description="対象日 (YYYY-MM-DD)")
+    to_staff_id: uuid.UUID | None = Field(
+        default=None, description="引き受け先。None = その日の担当を全部「担当なし」へ戻す"
+    )
+    # NG スタッフ / 性別制限 (§7-2): 確認ダイアログで通したときだけ true で再送。
+    acknowledge_constraint_warnings: bool = False
+    # Wave U-3: 1 ユーザー操作 = 1 UUID (undo グループ化)。省略時は BE が採番する。
+    op_group_id: uuid.UUID | None = None
+
+
+class StaffOffWeekResponse(BaseModel):
+    """``POST /api/v1/schedule/v2/staff-off-week`` response (PO 決定 2026-08-23)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    override_id: uuid.UUID = Field(description="作成 / 流用した staff_weekly_overrides の id")
+    moved_visit_ids: list[uuid.UUID] = Field(default_factory=list)
+    moved_course_ids: list[uuid.UUID] = Field(default_factory=list)
+    skipped_visit_ids: list[uuid.UUID] = Field(
+        default_factory=list,
+        description="打刻済み・完了・取消済みのため据え置いた訪問 (担当はそのまま)",
+    )
+    to_staff_id: uuid.UUID | None = None
+    op_group_id: uuid.UUID = Field(description="「戻る」1 回で全部戻すためのグループ id")
 
 
 class CourseMoveWeekdayWeekOnlyRequest(BaseModel):

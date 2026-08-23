@@ -113,11 +113,7 @@ import {
   useUpdateEventForDrag,
   useWeekStaffEvents,
 } from '@/lib/queries/staff-events';
-import {
-  useCreateOverride,
-  useWeekStaffOverrides,
-  type WeekOverrideRead,
-} from '@/lib/queries/staff-overrides';
+import { useWeekStaffOverrides, type WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import { useVisitAssignStaffWeek } from '@/lib/queries/visitAssignStaffWeek';
 import { useCourseMoveWeekdayWeekOnly } from '@/lib/queries/courseMoveWeekday';
 import type { EventRead } from '@/lib/schemas/staff-events';
@@ -195,6 +191,7 @@ import {
   type VisitMovePayload,
 } from './cockpit/StaffTimelineView';
 import {
+  parseIsoDate,
   toMarkersByCell,
   unsentEventKey,
   unsentVisitKey,
@@ -204,10 +201,11 @@ import {
 } from './cockpit/reconcileMarkers';
 import {
   useEventCancelWeek,
+  useStaffOffWeek,
   useVisitCancelWeek,
   useVisitServiceOverride,
 } from '@/lib/queries/cockpit';
-import type { CockpitEventRead, SubstituteApplyPayload } from '@/lib/schemas/v2/cockpit';
+import type { CockpitEventRead } from '@/lib/schemas/v2/cockpit';
 import { ChangeScopeChoice } from '@/components/schedule/v2/ChangeScopeChoice';
 import {
   parseTlColDroppableId,
@@ -297,6 +295,13 @@ const PLACE_CONSTRAINT_TEXT = {
   title: 'それでも配置しますか？',
   description: 'この配置先の担当者は、次の制約に抵触します',
   confirmLabel: '配置する',
+} as const;
+/** 🛌 休みにする (staff-off-week) の 422 確認文言。その日の予定をまとめて渡す。 */
+const OFF_CONSTRAINT_TEXT = {
+  title: '確認して引き受けてもらいますか？',
+  description:
+    'この日の予定に、引き受ける方の NG スタッフ / 性別制限に該当する患者様が含まれます。内容を確認のうえ、この日の分だけ引き受けてもらいます。',
+  confirmLabel: '引き受けてもらう',
 } as const;
 /** 訪問 1 件の担当付け替え (visit-assign-staff-week) の 422 確認文言。 */
 const ASSIGN_CONSTRAINT_TEXT = {
@@ -1645,9 +1650,13 @@ export function CourseDayTablePanel({
       await undoMut.mutateAsync({ iso_year: isoYear, iso_week: isoWeek });
     } catch (err) {
       // 409 は useUndoOpLog の onError で toast.warning を表示済みなのでスキップ
-      if (!(err instanceof ApiError && err.status === 409)) {
-        toast.error(`操作の取り消しに失敗しました: ${formatErr(err)}`);
+      if (err instanceof ApiError && err.status === 409) return;
+      // 400 = 戻す操作が無い (スタックの先頭)。失敗ではないので赤くしない。
+      if (err instanceof ApiError && err.status === 400) {
+        toast.info('これ以上戻せません');
+        return;
       }
+      toast.error(`操作の取り消しに失敗しました: ${formatErr(err)}`);
     }
   }, [undoMut, isoYear, isoWeek]);
 
@@ -1655,9 +1664,13 @@ export function CourseDayTablePanel({
     try {
       await redoMut.mutateAsync({ iso_year: isoYear, iso_week: isoWeek });
     } catch (err) {
-      if (!(err instanceof ApiError && err.status === 409)) {
-        toast.error(`操作のやり直しに失敗しました: ${formatErr(err)}`);
+      if (err instanceof ApiError && err.status === 409) return;
+      // 400 = やり直す操作が無い (戻した先が無い)。同じくお知らせ扱い。
+      if (err instanceof ApiError && err.status === 400) {
+        toast.info('これ以上やり直せません');
+        return;
       }
+      toast.error(`操作のやり直しに失敗しました: ${formatErr(err)}`);
     }
   }, [redoMut, isoYear, isoWeek]);
 
@@ -3291,9 +3304,9 @@ export function CourseDayTablePanel({
   const visitServiceOverrideMut = useVisitServiceOverride();
   const eventCancelWeekMut = useEventCancelWeek();
   const createVisitMut = useCreateVisit();
-  // useCreateOverride は staffId をフック引数に取る。代替候補パネルで
-  // 選択中のスタッフを渡す (未選択のときは呼ばれない)。
-  const createOverrideMut = useCreateOverride(offPanel?.staffId ?? '');
+  // 🛌 休みにする: 休みの登録 + その日の担当の引き受けを 1 リクエストで
+  // (PO 決定 2026-08-23 — 「戻る」1 回で全部戻すため)。
+  const staffOffWeekMut = useStaffOffWeek();
 
   const weekStartIso = useMemo(() => format(weekStart, 'yyyy-MM-dd'), [weekStart]);
 
@@ -3678,19 +3691,63 @@ export function CourseDayTablePanel({
     [eventCancelWeekMut, invalidateCockpitBoard, staffEventsByStaff, staffNameById],
   );
 
-  /** 急な休み: 「休みにする」= staff_weekly_override を 1 件作る (§D8)。 */
-  const handleSubstituteMarkOff = useCallback(async () => {
+  /**
+   * 🛌 休みにする (PO 決定 2026-08-23)。
+   *
+   * 休みの登録とその日の担当の引き受けを **新 API 1 回**で行う。旧実装は
+   * ①overrides → ②visit-assign を訪問ごとに呼ぶ 2 段階で、①が op_log の対象外
+   * だったため「戻る」で②だけ戻り **休みだけ残る** 半端な状態になっていた。
+   * BE が 1 トランザクション + 同一 op_group_id で書くので「戻る」1 回で全部戻る。
+   */
+  const handleStaffOffWeek = async (
+    toStaffId: string | null,
+    opts: { opGroupId?: string; acknowledge?: boolean } = {},
+  ): Promise<void> => {
     if (!offPanel) return;
-    const name = staffNameById.get(offPanel.staffId) ?? 'このスタッフ';
+    const { opGroupId = crypto.randomUUID(), acknowledge = false } = opts;
+    const target = offPanel;
+    const name = staffNameById.get(target.staffId) ?? 'このスタッフ';
+    const d = parseIsoDate(target.date);
+    const dateLabel = `${d.getMonth() + 1}/${d.getDate()}`;
+    const toName = toStaffId ? (staffNameById.get(toStaffId) ?? '別のスタッフ') : '担当なし';
     try {
-      await createOverrideMut.mutateAsync({ type: '休み', date: offPanel.date });
-      // 週一括の休み一覧 (盤面の網掛け) を失効させる。
+      const res = await staffOffWeekMut.mutateAsync({
+        staff_id: target.staffId,
+        date: target.date,
+        to_staff_id: toStaffId,
+        op_group_id: opGroupId,
+        ...ackFlag(acknowledge),
+      });
+      setOffPanel(null);
       invalidateCockpitBoard();
-      toast.success(`${name} を ${offPanel.date} の休みにしました`);
+      const moved = res.moved_visit_ids.length;
+      const skipped = res.skipped_visit_ids.length;
+      // 据え置き分は必ず伝える (「渡したつもり」で実績分が本人に残るのを防ぐ)。
+      const skippedNote = skipped > 0 ? `。うち ${skipped}件は打刻済み・完了のため据え置き` : '';
+      toast.success(
+        moved > 0
+          ? `${name}さん ${dateLabel} を休みに。予定 ${moved}件を${toName}へ（今週だけ・戻るで復元）${skippedNote}`
+          : `${name}さん ${dateLabel} を休みにしました（今週だけ・戻るで復元）${skippedNote}`,
+        { cancel: { label: '元に戻す', onClick: () => void handleUndo() } },
+      );
     } catch (err) {
-      toast.error(`休みの登録に失敗しました: ${formatErr(err)}`);
+      // NG スタッフ / 性別制限 (§7-2): 確認して通す → **同じ op_group_id** で再送
+      // (「戻る」1 回で戻せる 1 手として扱う)。acknowledge 済みでは再捕捉しない。
+      if (
+        !acknowledge &&
+        placementConstraintConfirm.capture(
+          err,
+          async () => {
+            await handleStaffOffWeek(toStaffId, { opGroupId, acknowledge: true });
+          },
+          OFF_CONSTRAINT_TEXT,
+        )
+      ) {
+        return;
+      }
+      toast.error(`休みにできませんでした: ${formatErr(err)}`);
     }
-  }, [offPanel, createOverrideMut, staffNameById, invalidateCockpitBoard]);
+  };
 
   // ─── 訪問単位の担当付け替えランナー (急な休み / スタッフ入れ替え 共通) ───
   //
@@ -3779,62 +3836,6 @@ export function CourseDayTablePanel({
       }
     }
     done({ applied, failed, aborted: false });
-  };
-
-  /**
-   * 急な休み: 代替候補の適用 (§D8)。
-   * コース単位ではなく**訪問 1 件ずつ** (上記ランナー) で付け替える。
-   * 1 回の付け替えは 1 op_group =「戻る」1 回でまとめて戻る。
-   */
-  const handleSubstituteApply = async (payload: SubstituteApplyPayload) => {
-    const opGroupId = crypto.randomUUID();
-    const absentName = offPanel ? (staffNameById.get(offPanel.staffId) ?? '') : '';
-    const wdLabel = offPanel ? (WEEKDAY_LABELS[weekdayOfIso(offPanel.date)] ?? '') : '';
-    const toName = payload.toStaffId
-      ? (staffNameById.get(payload.toStaffId) ?? '別のスタッフ')
-      : '（担当なし）';
-    const labels = payload.groups.map((g) => {
-      const course = g.courseId ? courses.find((c) => c.id === g.courseId) : undefined;
-      return course ? `コース${course.code}` : '臨時';
-    });
-    const queue: AssignQueueItem[] = payload.groups.flatMap((g) =>
-      g.visitIds.map((visitId) => ({ visitId, toStaffId: payload.toStaffId })),
-    );
-    if (queue.length === 0) {
-      toast.info('付け替える訪問がありません');
-      return;
-    }
-    const undoAction = { cancel: { label: '元に戻す', onClick: () => void handleUndo() } };
-    await runAssignQueue(queue, opGroupId, ({ applied, failed, aborted }) => {
-      invalidateCockpitBoard();
-      // 入れ替え側と同じ締め方 (中止 / 失敗 / 変化なし / 成功) に揃える。
-      if (aborted) {
-        toast.warning(
-          applied > 0
-            ? `付け替えを中止しました（${applied} 件は反映済み・「戻る」で戻せます）`
-            : '付け替えを中止しました',
-          applied > 0 ? undoAction : undefined,
-        );
-        return;
-      }
-      if (failed > 0) {
-        toast.error(
-          applied > 0
-            ? `${failed} 件の付け替えに失敗しました（${applied} 件は反映済み・「戻る」で戻せます）`
-            : `${failed} 件の付け替えに失敗しました`,
-          applied > 0 ? undoAction : undefined,
-        );
-        return;
-      }
-      if (applied === 0) {
-        toast.info('付け替えられる訪問がありませんでした');
-        return;
-      }
-      toast.success(
-        `${absentName} ${wdLabel}曜を休みに。${labels.join('・')}→${toName}（今週だけ）`,
-        undoAction,
-      );
-    });
   };
 
   // ─── スタッフ入れ替え (氏名 ⠿ DnD / PO 要望 2026-08-22) ───────────────
@@ -5361,7 +5362,7 @@ export function CourseDayTablePanel({
                   }
                 />
 
-                {/* 急な休み: 代替候補パネル (盤面の上に出す)。 */}
+                {/* 🛌 休みにする: 確認モーダル (実行は staff-off-week 1 回)。 */}
                 {offPanel ? (
                   <SubstitutePanel
                     staff={{
@@ -5370,11 +5371,9 @@ export function CourseDayTablePanel({
                     }}
                     date={offPanel.date}
                     canEdit={canEdit}
+                    submitting={staffOffWeekMut.isPending}
                     onClose={() => setOffPanel(null)}
-                    // Promise を返す = パネルが「休みの登録が終わってから」
-                    // 付け替えを実行する (void で潰すと順序が逆転する)。
-                    onMarkOff={() => handleSubstituteMarkOff()}
-                    onApply={(payload) => void handleSubstituteApply(payload)}
+                    onApply={(toStaffId) => void handleStaffOffWeek(toStaffId)}
                   />
                 ) : null}
 

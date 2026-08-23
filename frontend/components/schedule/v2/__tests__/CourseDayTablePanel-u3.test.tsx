@@ -617,6 +617,28 @@ describe('CourseDayTablePanel — Wave U-3 戻る/進みボタン・キーボー
       expect(mockToast.error).not.toHaveBeenCalled();
     });
 
+    it('U3-7b. 戻す操作が無い (400) ときは toast.info「これ以上戻せません」', async () => {
+      mockOpLogStore.state = {
+        can_undo: true,
+        can_redo: false,
+        undo_label: null,
+        redo_label: null,
+      };
+      mockUndoMutateAsync.mockRejectedValue(new ApiError('undo 対象がありません', 400, null));
+      setupHooks({
+        templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      });
+      renderWithClient(
+        <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />,
+      );
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('schedule-undo-button'));
+      });
+      // 失敗ではなく「もう無い」だけ — 赤いエラーにしない (PO 指摘 2026-08-23)。
+      expect(mockToast.error).not.toHaveBeenCalled();
+      expect(mockToast.info).toHaveBeenCalledWith('これ以上戻せません');
+    });
+
     it('U3-8. mutateAsync が汎用エラーを投げると toast.error が呼ばれる', async () => {
       mockOpLogStore.state = {
         can_undo: true,

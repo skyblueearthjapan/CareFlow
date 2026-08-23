@@ -367,7 +367,12 @@ async def list_visits(
 
     stmt = (
         select(Visit)
-        .where(Visit.deleted_at.is_(None))
+        # 削除済み (soft-delete) 患者の訪問は返さない。患者を消しても visits は
+        # 残るため、盤面 / プールが死んだ patient_id を掴み続け、その id で
+        # ``GET /patients/{id}/fixed-visits`` を撃って 404 が量産されていた
+        # (PO 報告 2026-08-23)。入口 (この一覧) で塞ぐのが単一ソース。
+        .join(Patient, Patient.id == Visit.patient_id)
+        .where(Visit.deleted_at.is_(None), Patient.deleted_at.is_(None))
         .options(
             selectinload(Visit.patient),
             selectinload(Visit.primary_staff),

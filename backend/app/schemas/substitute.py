@@ -68,6 +68,13 @@ class SubstituteVisit(BaseModel):
     start_time: str = Field(description="HH:MM")
     end_time: str = Field(description="HH:MM")
     week_pinned: bool
+    status: str = Field(
+        description=(
+            "訪問の状態 (planned / in_progress / completed)。"
+            "付替の対象になるのは planned だけ — FE の件数表示と青ピン判定も "
+            "planned で数えて BE (staff-off-week) の対象集合と一致させる"
+        )
+    )
 
 
 class SubstituteReason(BaseModel):

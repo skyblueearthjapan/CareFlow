@@ -29,6 +29,16 @@
     "set_visit_service_override"
                            — visit 1 件の kaipoke_service_override を設定 / 解除する
                               (カイポケのサービス内容に合わせる。inverse は旧値)
+    "set_visit_staff_slot" — visit 1 件の **担当枠 1 つ分**を差し替える。
+                              primary を書くかどうか (set_primary) と、
+                              visit_staff_assignments の add / remove を持つので、
+                              2 名体制の **相方を巻き込まずに** 1 人だけ入れ替えられる
+                              (「🛌 休みにする」の付替。inverse は add/remove を反転)
+    "set_staff_off"        — staff_weekly_overrides を (staff, iso週, weekday) 単位で
+                              設定 / 削除する (``type`` が null = 行を削除)。
+                              「🛌 休みにする」の休み本体。訪問 / コースの付替
+                              (set_visit_staff / set_course_staff) と同一 op_group で
+                              記録するので「戻る」1 回で休みごと元へ戻る
 """
 
 from __future__ import annotations
@@ -45,6 +55,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.course import Course
 from app.models.schedule_op_log import ScheduleOpLog
+from app.models.staff import StaffWeeklyOverride
 from app.models.visit import (
     VISIT_SOURCE_MANUAL_CANCEL,
     VISIT_SOURCE_MANUAL_WEEK,
@@ -114,6 +125,25 @@ class OpLogConflictError(Exception):
 # ---------------------------------------------------------------------------
 
 
+async def clear_redo_branch(
+    db: AsyncSession, *, user_id: UUID, iso_year: int, iso_week: int
+) -> None:
+    """その週の自分の redo 枝 (undone=True 行) を消す (Excel 同等).
+
+    通常は ``record_op`` が毎回呼ぶ。1 操作で複数行を記録する API
+    (「🛌 休みにする」など) は **ループ前に 1 回**これを呼び、各 record_op へ
+    ``clear_redo=False`` を渡す (同じ DELETE を件数分流さない)。
+    """
+    await db.execute(
+        delete(ScheduleOpLog).where(
+            ScheduleOpLog.user_id == user_id,
+            ScheduleOpLog.iso_year == iso_year,
+            ScheduleOpLog.iso_week == iso_week,
+            ScheduleOpLog.undone.is_(True),
+        )
+    )
+
+
 async def record_op(
     db: AsyncSession,
     *,
@@ -125,24 +155,27 @@ async def record_op(
     label: str,
     forward_payload: dict[str, Any],
     inverse_payload: dict[str, Any],
+    strict: bool = False,
+    clear_redo: bool = True,
 ) -> None:
-    """操作を記録する（ベストエフォート）.
+    """操作を記録する（既定はベストエフォート）.
 
     新操作記録時: その週の自分の undone=True 行（redo 枝）を削除する（Excel 同等）。
     記録失敗は logger.warning のみ — 本体処理を失敗させない。
+
+    Args:
+        strict: True なら記録失敗を **握り潰さず** 送出する。「戻る」で元に
+            戻せることが機能の前提になっている操作 (休み + 付替をまとめて書く
+            ``staff-off-week`` 等) で使う: ジャーナルだけ欠けると「戻せない
+            変更」が残ってしまうため、本体ごとロールバックさせる。
+        clear_redo: False なら redo 枝の削除を行わない (呼び出し側が
+            ``clear_redo_branch`` で 1 回だけ済ませている場合)。
     """
     try:
         effective_group_id = op_group_id or uuid.uuid4()
 
-        # Excel 同等: 新操作記録で redo 枝をクリア
-        await db.execute(
-            delete(ScheduleOpLog).where(
-                ScheduleOpLog.user_id == user_id,
-                ScheduleOpLog.iso_year == iso_year,
-                ScheduleOpLog.iso_week == iso_week,
-                ScheduleOpLog.undone.is_(True),
-            )
-        )
+        if clear_redo:
+            await clear_redo_branch(db, user_id=user_id, iso_year=iso_year, iso_week=iso_week)
 
         row = ScheduleOpLog(
             user_id=user_id,
@@ -158,6 +191,8 @@ async def record_op(
         db.add(row)
         await db.flush()
     except Exception as exc:
+        if strict:
+            raise
         logger.warning(
             "op_log record_op failed (best-effort, ignoring): user_id=%s op_kind=%s error=%r",
             user_id,
@@ -183,7 +218,7 @@ async def get_state(
             ScheduleOpLog.iso_week == iso_week,
             ScheduleOpLog.undone.is_(False),
         )
-        .order_by(ScheduleOpLog.created_at.desc())
+        .order_by(ScheduleOpLog.created_at.desc(), ScheduleOpLog.id.desc())
         .limit(1)
     )
 
@@ -196,7 +231,7 @@ async def get_state(
             ScheduleOpLog.iso_week == iso_week,
             ScheduleOpLog.undone.is_(True),
         )
-        .order_by(ScheduleOpLog.created_at.asc())
+        .order_by(ScheduleOpLog.created_at.asc(), ScheduleOpLog.id.asc())
         .limit(1)
     )
 
@@ -212,7 +247,7 @@ async def get_state(
                 ScheduleOpLog.op_group_id == undo_row.op_group_id,
                 ScheduleOpLog.undone.is_(False),
             )
-            .order_by(ScheduleOpLog.created_at.desc())
+            .order_by(ScheduleOpLog.created_at.desc(), ScheduleOpLog.id.desc())
             .limit(1)
         )
         undo_label = latest_in_group.label if latest_in_group else undo_row.label
@@ -226,7 +261,7 @@ async def get_state(
                 ScheduleOpLog.op_group_id == redo_row.op_group_id,
                 ScheduleOpLog.undone.is_(True),
             )
-            .order_by(ScheduleOpLog.created_at.asc())
+            .order_by(ScheduleOpLog.created_at.asc(), ScheduleOpLog.id.asc())
             .limit(1)
         )
         redo_label = first_in_group.label if first_in_group else redo_row.label
@@ -261,7 +296,7 @@ async def execute_undo(
             ScheduleOpLog.iso_week == iso_week,
             ScheduleOpLog.undone.is_(False),
         )
-        .order_by(ScheduleOpLog.created_at.desc())
+        .order_by(ScheduleOpLog.created_at.desc(), ScheduleOpLog.id.desc())
         .limit(1)
     )
     if latest_row is None:
@@ -278,7 +313,7 @@ async def execute_undo(
             ScheduleOpLog.user_id == user_id,
             ScheduleOpLog.undone.is_(False),
         )
-        .order_by(ScheduleOpLog.created_at.desc())
+        .order_by(ScheduleOpLog.created_at.desc(), ScheduleOpLog.id.desc())
     )
     rows = list(rows_result.all())
 
@@ -313,7 +348,7 @@ async def execute_redo(
             ScheduleOpLog.iso_week == iso_week,
             ScheduleOpLog.undone.is_(True),
         )
-        .order_by(ScheduleOpLog.created_at.asc())
+        .order_by(ScheduleOpLog.created_at.asc(), ScheduleOpLog.id.asc())
         .limit(1)
     )
     if oldest_row is None:
@@ -330,7 +365,7 @@ async def execute_redo(
             ScheduleOpLog.user_id == user_id,
             ScheduleOpLog.undone.is_(True),
         )
-        .order_by(ScheduleOpLog.created_at.asc())
+        .order_by(ScheduleOpLog.created_at.asc(), ScheduleOpLog.id.asc())
     )
     rows = list(rows_result.all())
 
@@ -406,6 +441,14 @@ async def _verify_forward_state(db: AsyncSession, row: ScheduleOpLog) -> None:
         # forward result = visit.kaipoke_service_override == fp["service_content"]
         await _assert_visit_service_override(db, UUID(fp["visit_id"]), fp.get("service_content"))
 
+    elif op_name == "set_visit_staff_slot":
+        # forward result = primary (書いたなら) と VSA の add/remove が反映済み
+        await _assert_visit_staff_slot(db, fp)
+
+    elif op_name == "set_staff_off":
+        # forward result = 休みの行が fp["type"] のまま存在する (null なら不在)
+        await _assert_staff_override(db, fp, fp.get("type"))
+
     # 他 op_name は検証なしで通過（将来拡張用）
 
 
@@ -467,6 +510,14 @@ async def _verify_inverse_state(db: AsyncSession, row: ScheduleOpLog) -> None:
         # inverse result = visit.kaipoke_service_override == ip["service_content"]
         await _assert_visit_service_override(db, UUID(ip["visit_id"]), ip.get("service_content"))
 
+    elif op_name == "set_visit_staff_slot":
+        # inverse result = primary (書いたなら) と VSA の add/remove が反映済み
+        await _assert_visit_staff_slot(db, ip)
+
+    elif op_name == "set_staff_off":
+        # inverse result = 休みの行が ip["type"] のまま (null なら不在)
+        await _assert_staff_override(db, ip, ip.get("type"))
+
 
 async def _execute_payload(db: AsyncSession, payload: dict[str, Any]) -> None:
     """payload の op に応じて DB 更新を実行する."""
@@ -527,6 +578,12 @@ async def _execute_payload(db: AsyncSession, payload: dict[str, Any]) -> None:
         await _set_visit_service_override(
             db, UUID(payload["visit_id"]), payload.get("service_content")
         )
+
+    elif op_name == "set_visit_staff_slot":
+        await _set_visit_staff_slot(db, payload)
+
+    elif op_name == "set_staff_off":
+        await _set_staff_override(db, payload)
 
     else:
         logger.warning("op_log_service: 未知の op_name=%r — スキップ", op_name)
@@ -696,6 +753,227 @@ async def _set_visit_staff(
     if staff_id is not None:
         db.add(VisitStaffAssignment(visit_id=visit_id, staff_id=staff_id))
     await db.flush()
+
+
+async def visit_staff_ids(db: AsyncSession, visit_id: UUID) -> set[UUID]:
+    """その訪問に紐づくスタッフ id 集合 (visit_staff_assignments)."""
+    rows = await db.scalars(
+        select(VisitStaffAssignment.staff_id).where(VisitStaffAssignment.visit_id == visit_id)
+    )
+    return set(rows.all())
+
+
+async def _assert_visit_staff_slot(db: AsyncSession, payload: dict[str, Any]) -> None:
+    """set_visit_staff_slot の undo/redo 前検証.
+
+    「この payload を実行した直後の状態」がいま保たれているかを見る:
+    primary を書く payload なら primary が一致し、``vsa_add`` が全員居て
+    ``vsa_remove`` が誰も居ないこと。相方 (この操作が触っていない VSA 行) は
+    検証対象にしない = 相方だけ他の人が入れ替えても衝突にしない。
+    """
+    visit_id = UUID(payload["visit_id"])
+    visit = await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
+    if visit is None:
+        raise OpLogConflictError("他の変更があったため戻せません (対象の訪問が見つかりません)")
+    if payload.get("set_primary"):
+        raw = payload.get("primary_staff_id")
+        expected: UUID | None = UUID(raw) if raw else None
+        if visit.primary_staff_id != expected:
+            raise OpLogConflictError(
+                "他の変更があったため戻せません (訪問の担当が既に変更されています)"
+            )
+    current = await visit_staff_ids(db, visit_id)
+    for raw_id in payload.get("vsa_add") or []:
+        if UUID(raw_id) not in current:
+            raise OpLogConflictError(
+                "他の変更があったため戻せません (訪問の担当が既に変更されています)"
+            )
+    for raw_id in payload.get("vsa_remove") or []:
+        if UUID(raw_id) in current:
+            raise OpLogConflictError(
+                "他の変更があったため戻せません (訪問の担当が既に変更されています)"
+            )
+
+
+async def set_visit_staff_slot(
+    db: AsyncSession,
+    *,
+    visit_id: UUID,
+    set_primary: bool,
+    primary_staff_id: UUID | None,
+    manual: bool,
+    vsa_add: list[UUID],
+    vsa_remove: list[UUID],
+) -> None:
+    """訪問 1 件の **担当枠 1 つ分**を差し替える (エンドポイントと undo の単一ソース).
+
+    ``visit-assign-staff-week`` の「VSA 全消し + 1 人だけ入れ直し」は 2 名体制の
+    **相方まで消してしまう**ため、こちらは *抜ける人の行だけ* を外し、引き受け先の
+    行だけを足す。``set_primary=False`` なら primary は触らない
+    (= 抜ける人が 2 人目としてだけ入っている訪問)。
+
+    Raises:
+        OpLogConflictError: 対象の訪問が見つからない (undo/redo 経路の楽観ロック)。
+    """
+    visit = await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
+    if visit is None:
+        raise OpLogConflictError("他の変更があったため戻せません (対象の訪問が見つかりません)")
+    if set_primary:
+        visit.primary_staff_id = primary_staff_id
+        visit.manual_staff_override = manual
+    if vsa_remove:
+        # ORM 経由 + 先 flush: bulk delete は同一セッションに残る旧行と同一 PK の
+        # 再 INSERT が flush 順序 (INSERT→DELETE) で相殺される罠がある。
+        rows = (
+            await db.scalars(
+                select(VisitStaffAssignment).where(
+                    VisitStaffAssignment.visit_id == visit_id,
+                    VisitStaffAssignment.staff_id.in_(vsa_remove),
+                )
+            )
+        ).all()
+        for row in rows:
+            await db.delete(row)
+        await db.flush()
+    if vsa_add:
+        current = await visit_staff_ids(db, visit_id)
+        for staff_id in vsa_add:
+            # (visit_id, staff_id) は複合 PK。既に居るなら足さない (二重登録は 500)。
+            if staff_id not in current:
+                db.add(VisitStaffAssignment(visit_id=visit_id, staff_id=staff_id))
+    await db.flush()
+
+
+async def _set_visit_staff_slot(db: AsyncSession, payload: dict[str, Any]) -> None:
+    """``set_visit_staff_slot`` の payload を実行する (undo/redo 経路)."""
+    raw_primary = payload.get("primary_staff_id")
+    await set_visit_staff_slot(
+        db,
+        visit_id=UUID(payload["visit_id"]),
+        set_primary=bool(payload.get("set_primary")),
+        primary_staff_id=UUID(raw_primary) if raw_primary else None,
+        manual=bool(payload.get("manual", False)),
+        vsa_add=[UUID(v) for v in payload.get("vsa_add") or []],
+        vsa_remove=[UUID(v) for v in payload.get("vsa_remove") or []],
+    )
+
+
+async def _load_staff_override(
+    db: AsyncSession, staff_id: UUID, iso_year: int, iso_week: int, weekday: int
+) -> StaffWeeklyOverride | None:
+    """(staff, iso 週, weekday) の休み / 時間変更の行を 1 件引く (無ければ None)."""
+    return await db.scalar(
+        select(StaffWeeklyOverride).where(
+            StaffWeeklyOverride.staff_id == staff_id,
+            StaffWeeklyOverride.iso_year == iso_year,
+            StaffWeeklyOverride.iso_week == iso_week,
+            StaffWeeklyOverride.weekday == weekday,
+        )
+    )
+
+
+async def _assert_staff_override(
+    db: AsyncSession, payload: dict[str, Any], expected_type: str | None
+) -> None:
+    """set_staff_off の undo/redo 前検証: 休みの行が期待どおりか.
+
+    ``expected_type`` が None なら「行が無いこと」を、そうでなければ
+    「その ``override_type`` の行があること」を要求する。
+    """
+    row = await _load_staff_override(
+        db,
+        UUID(payload["staff_id"]),
+        int(payload["iso_year"]),
+        int(payload["iso_week"]),
+        int(payload["weekday"]),
+    )
+    if expected_type is None:
+        if row is not None:
+            raise OpLogConflictError(
+                "他の変更があったため戻せません (この日の休みが既に登録されています)"
+            )
+        return
+    if row is None:
+        raise OpLogConflictError("他の変更があったため戻せません (この日の休みが見つかりません)")
+    if row.override_type != expected_type:
+        raise OpLogConflictError(
+            "他の変更があったため戻せません (この日の休みが既に変更されています)"
+        )
+
+
+async def set_staff_override(
+    db: AsyncSession,
+    *,
+    staff_id: UUID,
+    iso_year: int,
+    iso_week: int,
+    weekday: int,
+    override_type: str | None,
+    override_id: UUID | None = None,
+    reason: str | None = None,
+    start_time: str | None = None,
+    end_time: str | None = None,
+) -> UUID | None:
+    """休み / 時間変更の行を upsert / 削除する (エンドポイントと undo の単一ソース).
+
+    ``staff_weekly_overrides`` は (staff, iso 年, iso 週, weekday) で一意なので、
+    既存行があれば **流用** する (同じ日を 2 回「休みにする」しても 1 件のまま)。
+
+    Args:
+        override_type: ``'off'`` / ``'custom_time'``。``None`` = 行を削除する
+            (= 「休みにする」の undo)。
+        override_id: 新規作成するときの id。省略時は採番。
+
+    Returns:
+        書いた行の id。削除したときは ``None``。
+    """
+    existing = await _load_staff_override(db, staff_id, iso_year, iso_week, weekday)
+    if override_type is None:
+        if existing is not None:
+            await db.delete(existing)
+            await db.flush()
+        return None
+
+    if existing is not None:
+        existing.override_type = override_type
+        existing.reason = reason
+        existing.start_time = _parse_time(start_time) if start_time else None
+        existing.end_time = _parse_time(end_time) if end_time else None
+        await db.flush()
+        return existing.id
+
+    row = StaffWeeklyOverride(
+        staff_id=staff_id,
+        iso_year=iso_year,
+        iso_week=iso_week,
+        weekday=weekday,
+        override_type=override_type,
+        start_time=_parse_time(start_time) if start_time else None,
+        end_time=_parse_time(end_time) if end_time else None,
+        reason=reason,
+    )
+    if override_id is not None:
+        row.id = override_id
+    db.add(row)
+    await db.flush()
+    return row.id
+
+
+async def _set_staff_override(db: AsyncSession, payload: dict[str, Any]) -> None:
+    """``set_staff_off`` の payload を実行する (undo/redo 経路)."""
+    raw_id = payload.get("override_id")
+    await set_staff_override(
+        db,
+        staff_id=UUID(payload["staff_id"]),
+        iso_year=int(payload["iso_year"]),
+        iso_week=int(payload["iso_week"]),
+        weekday=int(payload["weekday"]),
+        override_type=payload.get("type"),
+        override_id=UUID(raw_id) if raw_id else None,
+        reason=payload.get("reason"),
+        start_time=payload.get("start_time"),
+        end_time=payload.get("end_time"),
+    )
 
 
 async def _assert_course_staff(db: AsyncSession, course_id: UUID, expected: UUID | None) -> None:

@@ -267,7 +267,8 @@ async def build_substitute_candidates(
     day_rows = (
         await db.execute(
             select(Visit, Course, Patient)
-            .join(Patient, Patient.id == Visit.patient_id)
+            # 削除済み (soft-delete) 患者の訪問は候補計算にも表示にも含めない。
+            .join(Patient, (Patient.id == Visit.patient_id) & (Patient.deleted_at.is_(None)))
             .outerjoin(
                 Course,
                 (Course.id == Visit.course_id) & (Course.deleted_at.is_(None)),
@@ -608,6 +609,7 @@ async def build_substitute_candidates(
                         start_time=_hhmm(v.start_time),
                         end_time=_hhmm(v.end_time),
                         week_pinned=bool(v.week_pinned),
+                        status=v.status,
                     )
                     for v, _c, p in rows
                 ],

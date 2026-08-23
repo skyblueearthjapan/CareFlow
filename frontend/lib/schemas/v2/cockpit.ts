@@ -80,6 +80,12 @@ export const substituteGroupVisitSchema = z.object({
   start_time: hhmmSchema,
   end_time: hhmmSchema,
   week_pinned: z.boolean().default(false),
+  /**
+   * 訪問の状態。付替の対象になるのは planned だけ (BE staff-off-week と同じ規則)
+   * なので、件数表示・青ピン判定も planned で数えて **対象集合を一致させる**。
+   * 旧 BE (status 未返却) 互換のため既定は 'planned'。
+   */
+  status: z.string().default('planned').catch('planned'),
 });
 export type SubstituteGroupVisit = z.infer<typeof substituteGroupVisitSchema>;
 
@@ -109,12 +115,36 @@ export const substituteCandidatesReadSchema = z.object({
 });
 export type SubstituteCandidatesRead = z.infer<typeof substituteCandidatesReadSchema>;
 
-/** SubstitutePanel → 親へ渡す付け替え指示 (契約書 D8: 実行は既存 API)。 */
-export interface SubstituteApplyPayload {
-  /** 付け替え先。null = （担当なし）へ戻す。 */
-  toStaffId: string | null;
-  groups: { courseId: string | null; visitIds: string[] }[];
-}
+// ───────────────────────────────────────────────────────────────────────────
+// 🛌 休みにする (PO 決定 2026-08-23) — POST /schedule/v2/staff-off-week
+//
+// 休みの登録 + その日の担当 (訪問 / コース) の引き受けを **1 リクエスト**で行う。
+// 旧実装は ①overrides → ②visit-assign を訪問ごとに呼ぶ 2 段階で、①が op_log の
+// 対象外だったため「戻る」で②だけ戻り **休みだけ残る** 事故が起きていた。
+// ───────────────────────────────────────────────────────────────────────────
+
+export const staffOffWeekRequestSchema = z.object({
+  staff_id: z.string().uuid(),
+  date: isoDateSchema,
+  /** 引き受け先。null = その日の予定を「担当なし」へ戻す。 */
+  to_staff_id: z.string().uuid().nullable(),
+  /** NG/性別 422 を確認ダイアログで通したときだけ true で再送。 */
+  acknowledge_constraint_warnings: z.boolean().optional(),
+  /** Wave U-3: 1 ユーザー操作 = 1 UUID (省略時は BE が採番)。 */
+  op_group_id: z.string().uuid().nullish(),
+});
+export type StaffOffWeekRequest = z.input<typeof staffOffWeekRequestSchema>;
+
+export const staffOffWeekResponseSchema = z.object({
+  override_id: z.string().uuid(),
+  moved_visit_ids: z.array(z.string().uuid()).default([]),
+  moved_course_ids: z.array(z.string().uuid()).default([]),
+  /** 打刻済み・完了・取消済みのため据え置いた訪問 (担当はそのまま)。 */
+  skipped_visit_ids: z.array(z.string().uuid()).default([]),
+  to_staff_id: z.string().uuid().nullable(),
+  op_group_id: z.string().uuid(),
+});
+export type StaffOffWeekResponse = z.infer<typeof staffOffWeekResponseSchema>;
 
 // ───────────────────────────────────────────────────────────────────────────
 // §2-2 今週だけ取消 (訪問)

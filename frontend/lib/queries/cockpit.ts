@@ -5,6 +5,7 @@
  * `docs/plans/week-cockpit-design.md` §2 / §3。
  *
  *   useSubstituteCandidates — 代替候補 (read-only・POST 検索)
+ *   useStaffOffWeek         — 🛌 休みにする (休みの登録 + その日の担当の引き受け)
  *   useVisitCancelWeek      — 訪問の「今週だけ取消 / 取消をやめる」
  *   useEventCancelWeek      — 固定イベントの「今週だけ外す / 戻す」
  *   useUnsentSummary        — ●未送信サマリ (RPA を呼ばない・週指定)
@@ -30,6 +31,8 @@ import {
   cockpitEventReadSchema,
   eventCancelWeekRequestSchema,
   reverseSheetResponseSchema,
+  staffOffWeekRequestSchema,
+  staffOffWeekResponseSchema,
   substituteCandidatesReadSchema,
   substituteCandidatesRequestSchema,
   unsentSummaryReadSchema,
@@ -40,6 +43,8 @@ import {
   type EventCancelWeekRequest,
   type ReverseSheetRequest,
   type ReverseSheetResponse,
+  type StaffOffWeekRequest,
+  type StaffOffWeekResponse,
   type SubstituteCandidatesRead,
   type SubstituteCandidatesRequest,
   type UnsentSummaryRead,
@@ -56,6 +61,7 @@ const SUBSTITUTE_CANDIDATES_PATH = '/api/v1/schedule/v2/substitute-candidates';
 const VISIT_CANCEL_WEEK_PATH = '/api/v1/schedule/v2/visit-cancel-week';
 const VISIT_SERVICE_OVERRIDE_PATH = '/api/v1/schedule/v2/visit-service-override';
 const UNSENT_SUMMARY_PATH = '/api/v1/integrations/unsent-summary';
+const STAFF_OFF_WEEK_PATH = '/api/v1/schedule/v2/staff-off-week';
 
 /** TanStack Query キー prefix (代替候補)。 */
 export const SUBSTITUTE_CANDIDATES_KEY = 'substitute-candidates' as const;
@@ -110,6 +116,49 @@ export function useSubstituteCandidates(
     },
     enabled: status === 'authenticated' && enabled && params != null,
     staleTime: 30_000,
+  });
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// 🛌 休みにする (PO 決定 2026-08-23)
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * 「○○さんをこの日休みにする」を **1 リクエスト** で実行する。
+ *
+ * BE が 1 トランザクションで ①休みの登録 (staff_weekly_overrides) ②その日の
+ * 担当訪問の付替 ③その日のコース担当の付替 を行い、すべてを同一 op_group_id で
+ * op_log に記録する = ツールバーの「戻る」1 回で休みごと元に戻る。
+ * (旧実装は ①と②を別々に呼んでいたため、「戻る」で②だけ戻り休みが残った)
+ *
+ * 青ピンの訪問がある / 引き受け先が新人・退職・本人 / 過去日 は BE が 422。
+ */
+export function useStaffOffWeek(): UseMutationResult<
+  StaffOffWeekResponse,
+  Error,
+  StaffOffWeekRequest
+> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<StaffOffWeekResponse, Error, StaffOffWeekRequest>({
+    mutationFn: async (raw) => {
+      const payload = staffOffWeekRequestSchema.parse(raw);
+      const result = await fetcher<unknown>(STAFF_OFF_WEEK_PATH, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      });
+      return staffOffWeekResponseSchema.parse(result);
+    },
+    onSuccess: () => {
+      invalidateBoard(qc);
+      // 盤面の休み網掛け (週一括キー) と、代替候補の再計算。
+      void qc.invalidateQueries({ queryKey: ['staff-overrides-week'] });
+      void qc.invalidateQueries({ queryKey: [SUBSTITUTE_CANDIDATES_KEY] });
+    },
   });
 }
 
