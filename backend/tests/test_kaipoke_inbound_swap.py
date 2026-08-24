@@ -72,7 +72,15 @@ async def _seed(db) -> dict[str, Any]:
     return {"office": office, "staff": staff, "patient": patient, "other": other, "sheet": sheet}
 
 
-async def _visit(db, seeded, d: date, start: time, *, patient: Patient | None = None) -> Visit:
+async def _visit(
+    db,
+    seeded,
+    d: date,
+    start: time,
+    *,
+    patient: Patient | None = None,
+    group_id: uuid.UUID | None = None,
+) -> Visit:
     v = Visit(
         patient_id=(patient or seeded["patient"]).id,
         visit_date=d,
@@ -83,10 +91,29 @@ async def _visit(db, seeded, d: date, start: time, *, patient: Patient | None = 
         source="auto",
         required_staff_count=1,
         primary_staff_id=seeded["staff"].id,
+        visit_group_id=group_id,
     )
     db.add(v)
     await db.flush()
     return v
+
+
+async def _create_partial_unique_index(db) -> None:
+    """本番と同じ部分UNIQUE (migration 0027 ``uq_visits_pds_group_active``) を張る。
+
+    テスト用 SQLite はモデル定義のみでテーブルを作るため migration 由来の index が
+    無い = 索引ズレや退避漏れがあっても DB は素通ししてしまう。本番と同じ制約下で
+    検証したいケースだけ明示的に作る。
+    """
+    await db.flush()
+    await db.execute(
+        text(
+            "CREATE UNIQUE INDEX uq_visits_pds_group_active "
+            "ON visits (patient_id, visit_date, start_time, "
+            "COALESCE(visit_group_id, '00000000-0000-0000-0000-000000000000')) "
+            "WHERE deleted_at IS NULL"
+        )
+    )
 
 
 def _hhmm(t: time) -> str:
@@ -182,22 +209,13 @@ async def test_mutual_swap_both_updated(db) -> None:
 async def test_mutual_swap_under_partial_unique_index(db) -> None:
     """本番と同じ partial UNIQUE がある状態でも入れ替えが通る (一時退避の検証)。
 
-    テスト用 SQLite はモデル定義のみでテーブルを作るため migration 0027 の
-    ``uq_visits_pds_group_active`` が無い = 一時退避無しでも DB は通ってしまう。
-    ここだけ本番と同じ index を張り、マイクロ秒退避が本当に効いていることを固定する。
+    退避を外すと ``UNIQUE constraint failed: index 'uq_visits_pds_group_active'``
+    で落ちる = マイクロ秒退避が load-bearing であることの固定。
     """
     seeded = await _seed(db)
     a = await _visit(db, seeded, date(2026, 8, 10), time(13, 0))
     b = await _visit(db, seeded, date(2026, 8, 13), time(13, 0))
-    await db.flush()
-    await db.execute(
-        text(
-            "CREATE UNIQUE INDEX uq_visits_pds_group_active "
-            "ON visits (patient_id, visit_date, start_time, "
-            "COALESCE(visit_group_id, '00000000-0000-0000-0000-000000000000')) "
-            "WHERE deleted_at IS NULL"
-        )
-    )
+    await _create_partial_unique_index(db)
     items = [
         _move_item(seeded, a, to_date=date(2026, 8, 13), to_start=time(13, 0)),
         _move_item(seeded, b, to_date=date(2026, 8, 10), to_start=time(13, 0)),
@@ -209,6 +227,178 @@ async def test_mutual_swap_under_partial_unique_index(db) -> None:
     assert (summary.updated, summary.failed) == (2, 0), [r.__dict__ for r in summary.results]
     assert (a.visit_date, a.start_time) == (date(2026, 8, 13), time(13, 0))
     assert (b.visit_date, b.start_time) == (date(2026, 8, 10), time(13, 0))
+
+
+@pytest.mark.asyncio
+async def test_swap_with_paired_visit_moves_partner_too(db) -> None:
+    """ペア訪問 (visit_group_id あり) を含むスワップ — 本体もパートナーも動く。
+
+    ``_group_partners`` が拾う相方は item に現れないが、退避も確定も同じ扱いで
+    連れて行く必要がある (片割れだけ残さない・仮値も残さない)。
+    """
+    seeded = await _seed(db)
+    group_id = uuid.uuid4()
+    # 同住所ペア: 別患者・同時刻の 2 行が同じ visit_group_id で結ばれている。
+    a = await _visit(db, seeded, date(2026, 8, 10), time(13, 0), group_id=group_id)
+    a_partner = await _visit(
+        db,
+        seeded,
+        date(2026, 8, 10),
+        time(13, 0),
+        patient=seeded["other"],
+        group_id=group_id,
+    )
+    b = await _visit(db, seeded, date(2026, 8, 13), time(13, 0))
+    await _create_partial_unique_index(db)
+    items = [
+        _move_item(seeded, a, to_date=date(2026, 8, 13), to_start=time(13, 0)),
+        _move_item(seeded, b, to_date=date(2026, 8, 10), to_start=time(13, 0)),
+    ]
+
+    summary = await _apply(db, items)
+    await db.flush()
+
+    assert (summary.updated, summary.failed) == (2, 0), [r.__dict__ for r in summary.results]
+    assert (a.visit_date, a.start_time) == (date(2026, 8, 13), time(13, 0))
+    # パートナーも一緒に移動している (片割れが 8/10 に取り残されない)。
+    assert (a_partner.visit_date, a_partner.start_time) == (date(2026, 8, 13), time(13, 0))
+    assert a_partner.visit_group_id == group_id
+    assert (b.visit_date, b.start_time) == (date(2026, 8, 10), time(13, 0))
+    for v in (a, a_partner, b):
+        assert v.start_time.microsecond == 0, v.id
+
+
+@pytest.mark.asyncio
+async def test_paired_swap_does_not_collide_with_ungrouped_neighbour(db) -> None:
+    """ペア相方の移動先に **group 無し** の別患者訪問が居ても衝突しない。
+
+    ``uq_visits_pds_group_active`` は COALESCE(visit_group_id, NIL) を含む 4 列
+    なので、group 付きの相方と group 無しの隣人はキーが別物になる (migration
+    0027 が意図した挙動)。in-memory の占有チェックが ``item.patient_id`` しか
+    見ないことによる「相方の衝突」は、相方が常にグループごと一緒に動く以上
+    実際には起こらない — savepoint 解放時の IntegrityError 捕捉
+    (``_cycle_close``) は同時実行や将来の制約変更に対する保険として残している。
+    """
+    seeded = await _seed(db)
+    group_id = uuid.uuid4()
+    a = await _visit(db, seeded, date(2026, 8, 10), time(13, 0), group_id=group_id)
+    a_partner = await _visit(
+        db,
+        seeded,
+        date(2026, 8, 10),
+        time(13, 0),
+        patient=seeded["other"],
+        group_id=group_id,
+    )
+    b = await _visit(db, seeded, date(2026, 8, 13), time(13, 0))
+    neighbour = await _visit(db, seeded, date(2026, 8, 13), time(13, 0), patient=seeded["other"])
+    await _create_partial_unique_index(db)
+    items = [
+        _move_item(seeded, a, to_date=date(2026, 8, 13), to_start=time(13, 0)),
+        _move_item(seeded, b, to_date=date(2026, 8, 10), to_start=time(13, 0)),
+    ]
+
+    summary = await _apply(db, items)
+    await db.flush()
+
+    assert (summary.updated, summary.failed) == (2, 0), [r.__dict__ for r in summary.results]
+    assert (a.visit_date, a.start_time) == (date(2026, 8, 13), time(13, 0))
+    assert (a_partner.visit_date, a_partner.start_time) == (date(2026, 8, 13), time(13, 0))
+    assert (b.visit_date, b.start_time) == (date(2026, 8, 10), time(13, 0))
+    assert (neighbour.visit_date, neighbour.start_time) == (date(2026, 8, 13), time(13, 0))
+    for v in (a, a_partner, b, neighbour):
+        assert v.start_time.microsecond == 0, v.id
+
+
+@pytest.mark.asyncio
+async def test_index_is_consistent_after_successful_swap(db) -> None:
+    """スワップ確定後も索引が実位置と一致する (2026-08-24 レビュー HIGH の回帰)。
+
+    同一患者の相互スワップでは 2 番目のメンバーの「退避前キー」が 1 番目の
+    **確定後キー**と一致するため、素直に pop すると先に確定した訪問が索引から
+    消える。消えたまま同バッチの後続 item がその枠を狙うと占有チェックをすり抜け、
+    flush で IntegrityError = 500 になる。ここでは本番同等の partial UNIQUE を
+    張ったうえで、後続の date_change が **500 ではなく item 単位の failed** で
+    止まることを固定する。
+    """
+    seeded = await _seed(db)
+    a = await _visit(db, seeded, date(2026, 8, 10), time(13, 0))
+    b = await _visit(db, seeded, date(2026, 8, 13), time(13, 0))
+    # 確定後に A が座る枠 (8/13 13:00) を後から狙う訪問。
+    intruder = await _visit(db, seeded, date(2026, 8, 11), time(10, 0))
+    await _create_partial_unique_index(db)
+    items = [
+        _move_item(seeded, a, to_date=date(2026, 8, 13), to_start=time(13, 0)),
+        _move_item(seeded, b, to_date=date(2026, 8, 10), to_start=time(13, 0)),
+        _move_item(seeded, intruder, to_date=date(2026, 8, 13), to_start=time(13, 0)),
+    ]
+
+    summary = await _apply(db, items)
+    await db.flush()
+
+    assert summary.updated == 2
+    assert summary.failed == 1
+    by_item = {uuid.UUID(r.item_id): r for r in summary.results}
+    assert by_item[items[0].id].outcome == "updated"
+    assert by_item[items[1].id].outcome == "updated"
+    blocked = by_item[items[2].id]
+    assert blocked.outcome == "failed"
+    assert "別の予定があります" in blocked.detail
+    # スワップは確定・侵入者は据え置き。
+    assert (a.visit_date, a.start_time) == (date(2026, 8, 13), time(13, 0))
+    assert (b.visit_date, b.start_time) == (date(2026, 8, 10), time(13, 0))
+    assert (intruder.visit_date, intruder.start_time) == (date(2026, 8, 11), time(10, 0))
+
+
+@pytest.mark.asyncio
+async def test_date_only_swap_without_after_start_time(db) -> None:
+    """after に start_time が無い「日付だけ」のスワップでも仮値が残らない。
+
+    確定は ``time_changed`` に依存せず、退避中の visit へ最終 start_time を必ず
+    書き戻す実装になっていることの固定。
+    """
+    seeded = await _seed(db)
+    a = await _visit(db, seeded, date(2026, 8, 10), time(13, 0))
+    b = await _visit(db, seeded, date(2026, 8, 13), time(13, 0))
+    await _create_partial_unique_index(db)
+
+    def _date_only(visit: Visit, to_day: int) -> CorrectionSheetItem:
+        return CorrectionSheetItem(
+            sheet_id=seeded["sheet"].id,
+            patient_id=visit.patient_id,
+            visit_id=visit.id,
+            action="date_change",
+            before={
+                "user_name": PATIENT_NAME,
+                "date": str(visit.visit_date.day),
+                "start_time": _hhmm(visit.start_time),
+                "end_time": _hhmm(visit.end_time),
+                "staff1": STAFF_NAME,
+                "staff2": "",
+            },
+            # start_time / end_time を落とす (日付だけの差分)。
+            after={
+                "user_name": PATIENT_NAME,
+                "date": str(to_day),
+                "staff1": STAFF_NAME,
+                "staff2": "",
+            },
+            include=True,
+        )
+
+    items = [_date_only(a, 13), _date_only(b, 10)]
+
+    summary = await _apply(db, items)
+    await db.flush()
+
+    assert (summary.updated, summary.failed) == (2, 0), [r.__dict__ for r in summary.results]
+    assert (a.visit_date, a.start_time) == (date(2026, 8, 13), time(13, 0))
+    assert (b.visit_date, b.start_time) == (date(2026, 8, 10), time(13, 0))
+    assert a.start_time.microsecond == 0
+    assert b.start_time.microsecond == 0
+    # 時刻は変わっていないので detail に偽の時刻変更が混ざらない。
+    details = " / ".join(r.detail for r in summary.results)
+    assert "13:00→" not in details
 
 
 @pytest.mark.asyncio

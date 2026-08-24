@@ -150,8 +150,11 @@ def parse_hhmm(value: str | None) -> time | None:
 def parked_start_time(base: time, seq: int) -> time:
     """循環スワップの一時退避用 start_time (実スロットと絶対に衝突しない仮値)。
 
-    visits には部分UNIQUE ``uq_visits_pds_active``
-    (patient_id, visit_date, start_time) WHERE deleted_at IS NULL があるため、
+    visits の現行の部分UNIQUE は ``uq_visits_pds_group_active`` (migration 0027 で
+    0026 の ``uq_visits_pds_active`` を置換) = (patient_id, visit_date, start_time,
+    COALESCE(visit_group_id, NIL)) WHERE deleted_at IS NULL の 4 列構成。**4 列でも
+    start_time を含む**ため、start_time をずらせば必ずキー全体が別物になる =
+    退避は有効に働く (ペア訪問で visit_group_id が同じでも衝突しない)。
     互いに相手の枠へ移る 2 件 (8/10 13:00 ↔ 8/13 13:00 など) は「両方を一旦
     どかしてから確定する」以外に適用手段がない。実データの start_time は分単位
     (秒=0・マイクロ秒=0) なので、マイクロ秒に連番を載せた値は実在スロットと
@@ -723,6 +726,27 @@ async def apply_inbound_items(
             courses=courses,
         )
 
+    def _resync_index(members: list[Visit]) -> None:
+        """循環メンバーの索引キーを **今の実位置** へ張り直す (成功/巻き戻し共通)。
+
+        グループ内では各 item が ``old_index_keys`` (= 自分の退避前キー) を pop して
+        新位置を登録するが、同一患者の相互スワップでは 2 番目の member の退避前キーが
+        **1 番目が確定した新位置キー**と一致するため、素直に pop すると先に確定した
+        member が索引から消える (2026-08-24 レビュー HIGH)。消えたまま後続の
+        edit/date_change がその枠を狙うと占有チェックをすり抜け、flush で
+        IntegrityError = 500 になる。グループを閉じる時点で全メンバーを実位置へ
+        張り直せば、鎖・循環・ペアのどの形でも索引が実体と一致する。
+
+        item 側で「退避中の visit は old_index_keys を空にする」案は採らなかった:
+        それだけでは *パートナー* (visit_group_id で一緒に動く行) のキーが古いまま
+        残り、しかも 3 件以上の循環で中間状態の索引が実体とずれたままになる。
+        ここで一括に張り直す方が形に依存せず確実。
+        """
+        for v in members:
+            for k in [key for key, vv in index.items() if vv.id == v.id]:
+                index.pop(k, None)
+            index[(v.patient_id, v.visit_date, v.start_time)] = v
+
     async def _cycle_close() -> None:
         g = cycle_ctx["group"]
         if g is None:
@@ -734,9 +758,32 @@ async def apply_inbound_items(
         # 仮値が残っている = どこかで確定に至らなかった (skipped 等) → 巻き戻す。
         stuck = (not dry_run) and any(v.start_time.microsecond != 0 for v in members)
         broken = stuck or any(r.outcome == "failed" for r in group_results)
+        commit_failed = False
+        if not broken and sp is not None:
+            # 成功パス: savepoint の解放は flush を伴う。in-memory の占有チェックは
+            # ``item.patient_id`` の枠しか見ない (= ペア訪問の相方や、索引ロード後に
+            # 他セッションが差し込んだ行は視界の外) ため、UNIQUE 衝突がここで初めて
+            # 表面化し得る。最後の砦として捕まえて巻き戻しパスへ落とし、仮値のまま /
+            # 半端な配置のまま commit されることを防ぐ。
+            # ※ 相方は常にグループごと一緒に動き、``uq_visits_pds_group_active`` は
+            #   COALESCE(visit_group_id, NIL) を含む 4 列なので、相方由来の衝突は
+            #   実際には起こらない (テスト
+            #   ``test_paired_swap_does_not_collide_with_ungrouped_neighbour``)。
+            #   ここは同時実行・将来の制約変更に対する保険。
+            try:
+                await sp.commit()
+            except IntegrityError:
+                commit_failed = True
+                broken = True
+                try:
+                    await sp.rollback()
+                except SQLAlchemyError:
+                    # commit の内部で既に savepoint まで巻き戻っている場合がある。
+                    pass
         if broken:
             if sp is not None:
-                await sp.rollback()
+                if not commit_failed:
+                    await sp.rollback()
                 # savepoint rollback は変更済みオブジェクトを expire する。async では
                 # 期限切れ属性の遅延ロードが MissingGreenlet になるため読み直す。
                 for obj in list(db.identity_map.values()):
@@ -767,12 +814,8 @@ async def apply_inbound_items(
             if not dry_run:
                 for it in cycle_items.get(g, []):
                     it.comment = f"failed: {detail}"
-            for v in members:
-                for k in [key for key, vv in index.items() if vv.id == v.id]:
-                    index.pop(k, None)
-                index[(v.patient_id, v.visit_date, v.start_time)] = v
-        elif sp is not None:
-            await sp.commit()
+        # 成功なら確定位置・巻き戻しなら元位置へ索引を揃える (どちらも実体と一致)。
+        _resync_index(members)
         for v in members:
             parked_start.pop(v.id, None)
         cycle_ctx.update(group=None, sp=None, visits=[], courses=None)
@@ -1128,8 +1171,11 @@ async def apply_inbound_items(
         weekday = final_date.weekday()
 
         # --- 移動先の占有チェック (先に立ちはだかる枠があれば failed で継続) ---
-        # visits には partial UNIQUE ``uq_visits_pds_active``
-        # (patient_id, visit_date, start_time) WHERE deleted_at IS NULL がある。
+        # visits には partial UNIQUE ``uq_visits_pds_group_active`` (migration 0027・
+        # 0026 の ``uq_visits_pds_active`` を置換) = (patient_id, visit_date,
+        # start_time, COALESCE(visit_group_id, NIL)) WHERE deleted_at IS NULL がある。
+        # ここの索引キーは (patient_id, visit_date, start_time) の 3 列止まりなので
+        # 判定はやや厳しめ (ペア訪問も衝突扱い) = 安全側に倒れる。
         # 移動先が別の visit に既に取られていると flush 時に IntegrityError =
         # 500 (残りの item も巻き添え) になるため、ここで item 単位の failed に
         # 落として続行する。索引は cancelled 行も持つ ⇒ 「今週だけ取消」した枠へ
@@ -1347,6 +1393,10 @@ async def apply_inbound_items(
             # 二重 INSERT」は上の集合更新 (``_remember_accompaniment``) で予防している。
             # savepoint で包むと、まとめて 1 TX にしている呼び出し側の境界を細切れにする
             # 割に得るものが無い。
+            # **例外 = 循環スワップのメンバー** (2026-08-24): 循環グループの item は
+            # ``_cycle_open`` が開いた savepoint の**内側**で実行されるため、この
+            # ``db.add`` もグループ巻き戻し時には一緒に取り消される (グループ単位の
+            # 原子性は保たれる = 個別に包まなくても仮値もリンクも残らない)。
             if accompaniment_sid2 is not None:
                 db.add(
                     Accompaniment(
