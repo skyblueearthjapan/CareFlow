@@ -95,6 +95,10 @@ class EventCreate(BaseModel):
     end_time: str
     type: Annotated[str, Field(min_length=1, max_length=32)]
     note: str | None = Field(default=None, max_length=500)
+    # 🔒絶対に潰せないイベント。ひな形 (event_templates.blocking) から作った
+    # イベントが 🔒 を引き継ぐために作成時点で受け取る
+    # (staff-event-history-design.md §2 Phase 2)。省略時 False = 従来どおり。
+    blocking: bool = False
 
     @field_validator("type")
     @classmethod

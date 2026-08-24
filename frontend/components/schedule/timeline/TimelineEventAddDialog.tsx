@@ -12,9 +12,17 @@
  * - 登録は選択スタッフごとに POST (useCreateEventForStaff)。部分失敗時は
  *   成功済みスタッフをチェックから外してダイアログを維持 (再送で二重登録しない)
  * - イベントは staff_events。カイポケへの反映は職員スケジュールタブの送信 (Phase 3)
+ *
+ * Wave 2-D (staff-event-history-design.md §2 Phase 2/3 ・
+ * docs/mockups/event-add-dialog-mock.html):
+ *   - 最上部に 📋 ひな形プルダウン (共通 + 個人)。選ぶとフォームが埋まる
+ *   - フッター上に ☆ひな形に保存 / 📌毎週の固定イベントにする
+ * 🔒(blocking) はひな形経由でのみ入る。独立したチェックボックスは置かない
+ * (フォームを複雑にしないための判断)。反映時に「🔒付き」と分かる小表示を出す。
  */
 import * as React from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { useSession } from 'next-auth/react';
 import { useForm, type Resolver } from 'react-hook-form';
 import { toast } from 'sonner';
 
@@ -45,7 +53,19 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  EventDialogOptions,
+  EventTemplateBar,
+  eventTypeToTemplateType,
+  initialOptionsValue,
+  templateTypeToEventType,
+  weekdayFromIsoDate,
+  type EventDialogOptionsValue,
+} from '@/components/events/EventDialogExtras';
+import { useCreateEventTemplate } from '@/lib/queries/event-templates';
+import { useBulkCreateEventDefaults } from '@/lib/queries/staff-event-defaults';
 import { useCreateEventForStaff } from '@/lib/queries/staff-events';
+import { isAdminRole } from '@/lib/rbac';
 import { eventCreateSchema, type EventCreate } from '@/lib/schemas/staff-events';
 
 export interface TimelineEventStaffOption {
@@ -83,10 +103,20 @@ export function TimelineEventAddDialog({
   defaultEnd,
 }: TimelineEventAddDialogProps) {
   const createForStaff = useCreateEventForStaff();
+  const createTemplate = useCreateEventTemplate();
+  const bulkCreateDefaults = useBulkCreateEventDefaults();
+  const { data: session } = useSession();
+  const canEditMasters = isAdminRole(session?.user?.role);
+
   const [selected, setSelected] = React.useState<Set<string>>(new Set(defaultStaffIds ?? []));
   const [staffError, setStaffError] = React.useState<string | null>(null);
   const [filter, setFilter] = React.useState('');
   const [submitting, setSubmitting] = React.useState(false);
+  const [options, setOptions] = React.useState<EventDialogOptionsValue>(() =>
+    initialOptionsValue(defaultDate),
+  );
+  // 部分失敗の再送で ☆/📌 が二重に走らないようにする (後続処理は初回のみ)。
+  const extrasDoneRef = React.useRef(false);
 
   const form = useForm<EventCreate>({
     resolver: zodResolver(eventCreateSchema) as Resolver<EventCreate>,
@@ -97,6 +127,7 @@ export function TimelineEventAddDialog({
       end_time: defaultEnd ?? '17:00',
       type: 'イベント',
       note: '',
+      blocking: false,
     },
   });
 
@@ -110,13 +141,45 @@ export function TimelineEventAddDialog({
         end_time: defaultEnd ?? '17:00',
         type: 'イベント',
         note: '',
+        blocking: false,
       });
       setSelected(new Set(defaultStaffIds ?? []));
       setStaffError(null);
       setFilter('');
+      setOptions(initialOptionsValue(defaultDate));
+      extrasDoneRef.current = false;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, defaultDate, defaultStart, defaultEnd, (defaultStaffIds ?? []).join(',')]);
+
+  /**
+   * 個人ひな形を出す対象。**選択中スタッフがちょうど 1 名のときだけ**。
+   * モック③は「選択中スタッフの個人」を常に見せているが、複数名選択中は
+   * 「誰の個人ひな形か」が一意に決まらず混乱する。ここは単純化して
+   * 1 名選択時のみ個人グループ / 個人保存先を出す (モックとの意図的な差分)。
+   */
+  const singleStaffId = selected.size === 1 ? [...selected][0]! : null;
+  const singleStaffName = singleStaffId
+    ? (staffOptions.find((s) => s.id === singleStaffId)?.name ?? null)
+    : null;
+
+  // 個人ひな形の保存先が消えた (複数選択に戻った) ら共通へ落とす。
+  React.useEffect(() => {
+    if (!singleStaffId) {
+      setOptions((prev) =>
+        prev.templateScope === 'personal' ? { ...prev, templateScope: 'shared' } : prev,
+      );
+    }
+  }, [singleStaffId]);
+
+  const handleOptionsChange = (next: EventDialogOptionsValue) => {
+    // 📌 を ON にした瞬間の既定曜日 = いま入力中の日付の曜日。
+    if (next.fixWeekly && !options.fixWeekly) {
+      setOptions({ ...next, weekdays: [weekdayFromIsoDate(form.getValues('date'))] });
+      return;
+    }
+    setOptions(next);
+  };
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -131,6 +194,47 @@ export function TimelineEventAddDialog({
   const filtered = filter.trim()
     ? staffOptions.filter((s) => s.name.includes(filter.trim()))
     : staffOptions;
+
+  /**
+   * ☆ひな形保存 / 📌固定イベント。イベント本体が 1 件も作れなかった時は呼ばれない。
+   * 失敗しても本体の登録結果は覆さず toast で知らせるだけにする。
+   */
+  const runExtras = async (values: EventCreate, staffIds: string[]) => {
+    if (options.saveTemplate) {
+      try {
+        await createTemplate.mutateAsync({
+          staff_id: options.templateScope === 'personal' ? singleStaffId : null,
+          title: values.title,
+          event_type: eventTypeToTemplateType(values.type),
+          start_time: values.start_time,
+          end_time: values.end_time,
+          blocking: values.blocking ?? false,
+          note: values.note && values.note.trim() !== '' ? values.note.trim() : null,
+        });
+        toast.success('ひな形に保存しました');
+      } catch {
+        toast.error('ひな形の保存に失敗しました');
+      }
+    }
+    if (options.fixWeekly && options.weekdays.length > 0 && staffIds.length > 0) {
+      try {
+        const res = await bulkCreateDefaults.mutateAsync({
+          staff_ids: staffIds,
+          weekdays: options.weekdays,
+          start_time: values.start_time,
+          end_time: values.end_time,
+          title: values.title,
+          blocking: values.blocking ?? false,
+        });
+        toast.success(
+          `固定イベントを ${res.created}件 登録しました` +
+            (res.skipped > 0 ? `（${res.skipped}件は登録済みのためスキップ）` : ''),
+        );
+      } catch {
+        toast.error('固定イベントの登録に失敗しました');
+      }
+    }
+  };
 
   const onSubmit = async (values: EventCreate) => {
     const targets = staffOptions.filter((s) => selected.has(s.id));
@@ -154,6 +258,15 @@ export function TimelineEventAddDialog({
       } catch {
         ngIds.push(s.id);
       }
+    }
+    // 後続処理 (☆/📌) — 本体が 1 件も成功していなければ行わない。
+    // 部分失敗の再送では 2 回目以降を走らせない (extrasDoneRef)。
+    if (okIds.length > 0 && !extrasDoneRef.current) {
+      extrasDoneRef.current = true;
+      await runExtras(
+        payload,
+        targets.map((s) => s.id),
+      );
     }
     setSubmitting(false);
     if (ngIds.length === 0) {
@@ -189,6 +302,22 @@ export function TimelineEventAddDialog({
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="grid gap-3 py-1">
+            {/* 📋 ひな形バー (共通 + 1名選択時のみ個人)。ひな形が 0 件なら描かない。 */}
+            <EventTemplateBar
+              staffId={singleStaffId}
+              staffName={singleStaffName}
+              testIdPrefix="tl-event"
+              onApply={(t) => {
+                form.setValue('title', t.title, { shouldValidate: true });
+                form.setValue('type', templateTypeToEventType(t));
+                // ひな形の時刻が null (=その場で入力) なら現在値を保持する。
+                if (t.start_time) form.setValue('start_time', t.start_time.slice(0, 5));
+                if (t.end_time) form.setValue('end_time', t.end_time.slice(0, 5));
+                form.setValue('note', t.note ?? '');
+                form.setValue('blocking', t.blocking);
+              }}
+            />
+
             {/* 参加スタッフ (複数選択・全スタッフ = 他コース担当/管理職含む) */}
             <div>
               <div className="mb-1 flex items-baseline justify-between">
@@ -331,6 +460,15 @@ export function TimelineEventAddDialog({
                   <FormMessage />
                 </FormItem>
               )}
+            />
+
+            <EventDialogOptions
+              value={options}
+              onChange={handleOptionsChange}
+              canEdit={canEditMasters}
+              personalScopeLabel={singleStaffName ? `${singleStaffName}さんの個人ひな形` : null}
+              fixWeeklyTargetLabel="選択スタッフ全員"
+              testIdPrefix="tl-event"
             />
 
             <DialogFooter>

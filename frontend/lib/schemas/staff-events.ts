@@ -35,6 +35,13 @@ export const eventCreateSchema = z
     end_time: timeSchema,
     type: eventTypeSchema,
     note: z.string().max(500).optional().nullable(),
+    /**
+     * 🔒絶対に潰せないイベント。ひな形 (event_templates.blocking) から作った
+     * イベントに 🔒 を引き継ぐため作成時に送る
+     * (staff-event-history-design.md §2 Phase 2)。
+     * 省略時 undefined = 送らない → BE 既定 false で従来どおり。
+     */
+    blocking: z.boolean().optional(),
   })
   .refine((v) => v.start_time < v.end_time, {
     message: '開始時刻は終了時刻より前にしてください',

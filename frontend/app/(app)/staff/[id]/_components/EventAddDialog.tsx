@@ -6,9 +6,15 @@
  * Hooks: `useCreateEvent(staffId)` (POST /api/v1/staff/:id/events)
  * Validation: `eventCreateSchema` zod refine — start_time < end_time;
  *   title 1-100 chars enforced inline by react-hook-form via zodResolver.
+ *
+ * Wave 2-D (staff-event-history-design.md §2 Phase 2/3 ・
+ * docs/mockups/event-add-dialog-mock.html): 最上部に 📋 ひな形プルダウン
+ * (共通 + このスタッフの個人)、フッター上に ☆ひな形に保存 / 📌毎週固定化。
+ * 🔒(blocking) はひな形経由でのみ入る (独立チェックボックスは置かない)。
  */
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { useSession } from 'next-auth/react';
 import { useForm, type Resolver } from 'react-hook-form';
 import { toast } from 'sonner';
 
@@ -38,7 +44,19 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  EventDialogOptions,
+  EventTemplateBar,
+  eventTypeToTemplateType,
+  initialOptionsValue,
+  templateTypeToEventType,
+  weekdayFromIsoDate,
+  type EventDialogOptionsValue,
+} from '@/components/events/EventDialogExtras';
+import { useCreateEventTemplate } from '@/lib/queries/event-templates';
+import { useBulkCreateEventDefaults } from '@/lib/queries/staff-event-defaults';
 import { useCreateEvent } from '@/lib/queries/staff-events';
+import { isAdminRole } from '@/lib/rbac';
 import { eventCreateSchema, type EventCreate } from '@/lib/schemas/staff-events';
 
 interface EventAddDialogProps {
@@ -69,6 +87,17 @@ export function EventAddDialog({
   defaultEnd,
 }: EventAddDialogProps) {
   const create = useCreateEvent(staffId);
+  const createTemplate = useCreateEventTemplate();
+  const bulkCreateDefaults = useBulkCreateEventDefaults();
+  const { data: session } = useSession();
+  const canEditMasters = isAdminRole(session?.user?.role);
+
+  const [options, setOptions] = useState<EventDialogOptionsValue>(() =>
+    initialOptionsValue(defaultDate),
+  );
+  // 再送で ☆/📌 が二重に走らないようにする (後続処理は初回の成功時のみ)。
+  const extrasDoneRef = useRef(false);
+  const [extrasRunning, setExtrasRunning] = useState(false);
 
   const form = useForm<EventCreate>({
     // ZodEffects (from `.refine`) doesn't infer cleanly through zodResolver;
@@ -81,6 +110,7 @@ export function EventAddDialog({
       end_time: defaultEnd ?? '17:00',
       type: '研修',
       note: '',
+      blocking: false,
     },
   });
 
@@ -94,25 +124,85 @@ export function EventAddDialog({
         end_time: defaultEnd ?? '17:00',
         type: '研修',
         note: '',
+        blocking: false,
       });
+      setOptions(initialOptionsValue(defaultDate));
+      extrasDoneRef.current = false;
     }
   }, [open, defaultDate, defaultStart, defaultEnd, form]);
 
-  const onSubmit = async (values: EventCreate) => {
-    try {
-      const payload: EventCreate = {
-        ...values,
-        note: values.note && values.note.trim() !== '' ? values.note.trim() : null,
-      };
-      await create.mutateAsync(payload);
-      toast.success('イベントを追加しました');
-      onOpenChange(false);
-    } catch (err) {
-      toast.error(`追加に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`);
+  const handleOptionsChange = (next: EventDialogOptionsValue) => {
+    // 📌 を ON にした瞬間の既定曜日 = いま入力中の日付の曜日。
+    if (next.fixWeekly && !options.fixWeekly) {
+      setOptions({ ...next, weekdays: [weekdayFromIsoDate(form.getValues('date'))] });
+      return;
+    }
+    setOptions(next);
+  };
+
+  /**
+   * ☆ひな形保存 / 📌固定イベント (対象はこのスタッフのみ)。
+   * イベント本体が作れなかった時は呼ばれない。失敗しても本体は覆さず toast のみ。
+   */
+  const runExtras = async (values: EventCreate) => {
+    if (options.saveTemplate) {
+      try {
+        await createTemplate.mutateAsync({
+          staff_id: options.templateScope === 'personal' ? staffId : null,
+          title: values.title,
+          event_type: eventTypeToTemplateType(values.type),
+          start_time: values.start_time,
+          end_time: values.end_time,
+          blocking: values.blocking ?? false,
+          note: values.note && values.note.trim() !== '' ? values.note.trim() : null,
+        });
+        toast.success('ひな形に保存しました');
+      } catch {
+        toast.error('ひな形の保存に失敗しました');
+      }
+    }
+    if (options.fixWeekly && options.weekdays.length > 0) {
+      try {
+        const res = await bulkCreateDefaults.mutateAsync({
+          staff_ids: [staffId],
+          weekdays: options.weekdays,
+          start_time: values.start_time,
+          end_time: values.end_time,
+          title: values.title,
+          blocking: values.blocking ?? false,
+        });
+        toast.success(
+          `固定イベントを ${res.created}件 登録しました` +
+            (res.skipped > 0 ? `（${res.skipped}件は登録済みのためスキップ）` : ''),
+        );
+      } catch {
+        toast.error('固定イベントの登録に失敗しました');
+      }
     }
   };
 
-  const isBusy = create.isPending;
+  const onSubmit = async (values: EventCreate) => {
+    const payload: EventCreate = {
+      ...values,
+      note: values.note && values.note.trim() !== '' ? values.note.trim() : null,
+    };
+    try {
+      await create.mutateAsync(payload);
+    } catch (err) {
+      toast.error(`追加に失敗しました: ${err instanceof Error ? err.message : '不明なエラー'}`);
+      return;
+    }
+    toast.success('イベントを追加しました');
+    if (!extrasDoneRef.current) {
+      extrasDoneRef.current = true;
+      setExtrasRunning(true);
+      await runExtras(payload);
+      setExtrasRunning(false);
+    }
+    onOpenChange(false);
+  };
+
+  const isBusy = create.isPending || extrasRunning;
 
   return (
     <Dialog
@@ -130,6 +220,22 @@ export function EventAddDialog({
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="grid gap-4 py-2">
+            {/* 📋 ひな形バー (共通 + このスタッフの個人)。ひな形 0 件なら描かない。 */}
+            <EventTemplateBar
+              staffId={staffId}
+              staffName={null}
+              testIdPrefix="staff-event"
+              onApply={(t) => {
+                form.setValue('title', t.title, { shouldValidate: true });
+                form.setValue('type', templateTypeToEventType(t));
+                // ひな形の時刻が null (=その場で入力) なら現在値を保持する。
+                if (t.start_time) form.setValue('start_time', t.start_time.slice(0, 5));
+                if (t.end_time) form.setValue('end_time', t.end_time.slice(0, 5));
+                form.setValue('note', t.note ?? '');
+                form.setValue('blocking', t.blocking);
+              }}
+            />
+
             <FormField
               control={form.control}
               name="date"
@@ -221,6 +327,15 @@ export function EventAddDialog({
                   <FormMessage />
                 </FormItem>
               )}
+            />
+
+            <EventDialogOptions
+              value={options}
+              onChange={handleOptionsChange}
+              canEdit={canEditMasters}
+              personalScopeLabel="このスタッフの個人ひな形"
+              fixWeeklyTargetLabel="このスタッフ"
+              testIdPrefix="staff-event"
             />
 
             <DialogFooter>

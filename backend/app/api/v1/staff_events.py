@@ -152,6 +152,8 @@ async def create_event(
         ends_at=_combine(payload.date, payload.end_time),
         title=payload.title,
         note=payload.note,
+        # 🔒 は作成時にも受け取る (ひな形からの引き継ぎ)。省略時 False。
+        blocking=payload.blocking,
     )
     db.add(row)
     await _commit_or_422(db)
