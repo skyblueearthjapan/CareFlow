@@ -95,6 +95,53 @@ export function useCreateEventDefault(staffId: string, options: CreateOptions = 
   });
 }
 
+/**
+ * 一括登録 (Phase 3 / staff-event-history-design.md §2)。
+ * POST /api/v1/staff-event-defaults/bulk — staff_ids × weekdays の全組を 1TX で
+ * 作成。完全一致 (staff, weekday, start, end, title) の既存は skip。
+ * created + skipped = 名数 × 曜日数 (プレビュー件数と一致する)。
+ */
+export const eventDefaultBulkCreateSchema = z.object({
+  staff_ids: z.array(z.string().uuid()).min(1),
+  weekdays: z.array(z.number().int().min(0).max(5)).min(1),
+  start_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  end_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  title: z.string().trim().min(1).max(255),
+  blocking: z.boolean().optional(),
+  note: z.string().max(500).nullable().optional(),
+});
+export type EventDefaultBulkCreate = z.infer<typeof eventDefaultBulkCreateSchema>;
+
+export interface EventDefaultBulkResult {
+  created: number;
+  skipped: number;
+}
+
+type BulkOptions = UseMutationOptions<EventDefaultBulkResult, Error, EventDefaultBulkCreate>;
+
+export function useBulkCreateEventDefaults(options: BulkOptions = {}) {
+  const qc = useQueryClient();
+  const { accessToken, refreshToken } = useAuthTokens();
+
+  return useMutation<EventDefaultBulkResult, Error, EventDefaultBulkCreate>({
+    mutationFn: (payload) =>
+      fetcher<EventDefaultBulkResult>('/api/v1/staff-event-defaults/bulk', {
+        method: 'POST',
+        body: JSON.stringify(eventDefaultBulkCreateSchema.parse(payload)),
+        accessToken,
+        refreshToken,
+      }),
+    ...options,
+    onSuccess: (data, variables, onMutateResult, context) => {
+      // 対象スタッフ全員の既定一覧を失効させる (per-staff キー)。
+      for (const sid of variables.staff_ids) {
+        void qc.invalidateQueries({ queryKey: eventDefaultsKey(sid) });
+      }
+      options.onSuccess?.(data, variables, onMutateResult, context);
+    },
+  });
+}
+
 type DeleteOptions = UseMutationOptions<void, Error, string>;
 
 export function useDeleteEventDefault(staffId: string, options: DeleteOptions = {}) {
