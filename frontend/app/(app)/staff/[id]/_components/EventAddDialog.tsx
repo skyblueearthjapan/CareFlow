@@ -50,7 +50,7 @@ import {
   eventTypeToTemplateType,
   initialOptionsValue,
   templateTypeToEventType,
-  weekdayFromIsoDate,
+  defaultWeekdaysFor,
   type EventDialogOptionsValue,
 } from '@/components/events/EventDialogExtras';
 import { useCreateEventTemplate } from '@/lib/queries/event-templates';
@@ -134,7 +134,7 @@ export function EventAddDialog({
   const handleOptionsChange = (next: EventDialogOptionsValue) => {
     // 📌 を ON にした瞬間の既定曜日 = いま入力中の日付の曜日。
     if (next.fixWeekly && !options.fixWeekly) {
-      setOptions({ ...next, weekdays: [weekdayFromIsoDate(form.getValues('date'))] });
+      setOptions({ ...next, weekdays: defaultWeekdaysFor(form.getValues('date')) });
       return;
     }
     setOptions(next);

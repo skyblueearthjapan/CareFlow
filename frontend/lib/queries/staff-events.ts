@@ -233,6 +233,8 @@ export function useCreateEvent(staffId: string): UseMutationResult<EventRead, Er
       void qc.invalidateQueries({
         queryKey: [...STAFF_EVENTS_KEY, staffId],
       });
+      // 履歴からのひな形候補は staff_events から集約される (最終レビュー指摘)。
+      void qc.invalidateQueries({ queryKey: ['event-template-history-suggestions'] });
     },
   });
 }
@@ -265,6 +267,8 @@ export function useCreateEventForStaff(): UseMutationResult<
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: STAFF_EVENTS_KEY });
+      // 履歴からのひな形候補は staff_events から集約される (最終レビュー指摘)。
+      void qc.invalidateQueries({ queryKey: ['event-template-history-suggestions'] });
     },
   });
 }

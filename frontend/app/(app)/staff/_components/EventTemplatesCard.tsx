@@ -348,7 +348,7 @@ function HistoryPanel({ scope, canEdit }: { scope: EventTemplateScope; canEdit: 
         start_time: both ? s.last_start_time : null,
         end_time: both ? s.last_end_time : null,
       });
-      setAdded((prev) => [...prev, s.title]);
+      setAdded((prev) => [...prev, `${s.event_type}/${s.title}`]);
     } catch (e) {
       toast.error('ひな形の追加に失敗しました', {
         description: e instanceof Error ? e.message : String(e),
@@ -380,7 +380,7 @@ function HistoryPanel({ scope, canEdit }: { scope: EventTemplateScope; canEdit: 
       {data && data.length > 0 && (
         <ul>
           {data.map((s) => {
-            const done = added.includes(s.title);
+            const done = added.includes(`${s.event_type}/${s.title}`);
             const times =
               s.last_start_time && s.last_end_time
                 ? ` ${s.last_start_time}〜${s.last_end_time}`

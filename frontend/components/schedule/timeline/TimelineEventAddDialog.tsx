@@ -59,7 +59,7 @@ import {
   eventTypeToTemplateType,
   initialOptionsValue,
   templateTypeToEventType,
-  weekdayFromIsoDate,
+  defaultWeekdaysFor,
   type EventDialogOptionsValue,
 } from '@/components/events/EventDialogExtras';
 import { useCreateEventTemplate } from '@/lib/queries/event-templates';
@@ -175,7 +175,7 @@ export function TimelineEventAddDialog({
   const handleOptionsChange = (next: EventDialogOptionsValue) => {
     // 📌 を ON にした瞬間の既定曜日 = いま入力中の日付の曜日。
     if (next.fixWeekly && !options.fixWeekly) {
-      setOptions({ ...next, weekdays: [weekdayFromIsoDate(form.getValues('date'))] });
+      setOptions({ ...next, weekdays: defaultWeekdaysFor(form.getValues('date')) });
       return;
     }
     setOptions(next);
@@ -263,6 +263,10 @@ export function TimelineEventAddDialog({
     // 部分失敗の再送では 2 回目以降を走らせない (extrasDoneRef)。
     if (okIds.length > 0 && !extrasDoneRef.current) {
       extrasDoneRef.current = true;
+      // 📌固定化は okIds でなく **選択スタッフ全員** に登録する (意図的・最終レビューで確認):
+      // チェックのラベルは「選択スタッフ全員」で、固定既定は今日のイベント成否とは
+      // 独立に来週以降へ効く型。部分失敗の再送で extras は再実行されないため、
+      // ここで全員分を登録しないと失敗組の既定が二度と作られない。
       await runExtras(
         payload,
         targets.map((s) => s.id),

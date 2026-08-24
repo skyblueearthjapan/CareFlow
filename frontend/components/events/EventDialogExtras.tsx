@@ -31,11 +31,22 @@ export const ALL_WEEKDAYS = [0, 1, 2, 3, 4, 5];
  * `yyyy-MM-dd` → 0=月 … 5=土。日曜と不正値は月曜 (0) にフォールバックする
  * (固定イベントは月〜土のみ。既定値なので利用者はチップで直せる)。
  */
-export function weekdayFromIsoDate(iso: string | undefined | null): number {
-  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return 0;
+/**
+ * ISO 日付 → 固定イベント曜日 (0=月…5=土)。日曜・不正値は **null**
+ * (固定イベントは日曜を定義できないため既定選択なし。レビュー指摘:
+ * ⋯メニューの toEventDefaultWeekday と同じ規約に統一)。
+ */
+export function weekdayFromIsoDate(iso: string | undefined | null): number | null {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
   const [y, m, d] = iso.split('-').map(Number);
   const day = new Date(y!, m! - 1, d!).getDay(); // 0=日 … 6=土
-  return day === 0 ? 0 : day - 1;
+  return day === 0 ? null : day - 1;
+}
+
+/** weekdayFromIsoDate の結果を既定選択配列へ (null=選択なし)。 */
+export function defaultWeekdaysFor(iso: string | undefined | null): number[] {
+  const w = weekdayFromIsoDate(iso);
+  return w === null ? [] : [w];
 }
 
 /** ひな形の `event_type` → ダイアログの種別 (研修 / イベント)。 */
@@ -172,7 +183,7 @@ export function initialOptionsValue(date: string | undefined): EventDialogOption
     saveTemplate: false,
     templateScope: 'shared',
     fixWeekly: false,
-    weekdays: [weekdayFromIsoDate(date)],
+    weekdays: defaultWeekdaysFor(date),
   };
 }
 
@@ -294,6 +305,14 @@ export function EventDialogOptions({
               毎日(月〜土)
             </button>
           </div>
+        ) : null}
+        {value.fixWeekly && value.weekdays.length === 0 ? (
+          <p
+            className="text-xs font-medium text-warning-strong"
+            data-testid={`${testIdPrefix}-weekday-warning`}
+          >
+            曜日を1つ以上選んでください（未選択のままだと固定イベントは登録されません）
+          </p>
         ) : null}
       </div>
     </div>

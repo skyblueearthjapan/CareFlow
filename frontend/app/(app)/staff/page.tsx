@@ -64,7 +64,9 @@ export default function StaffPage() {
   const { data: session } = useSession();
   const role = session?.user?.role;
   const canCreate = isAdminRole(role);
-  const isAdmin = role === 'admin';
+  // 旧 'manager' トークンは admin の別名 (lib/rbac.ts)。生比較だと一覧側の
+  // ひな形/一括登録だけ無効になる不整合が出る (最終レビュー指摘)。
+  const isAdmin = isAdminRole(role);
 
   const [search, setSearch] = useState('');
   const [sexFilter, setSexFilter] = useState<SexFilter>('all');
