@@ -20,7 +20,7 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { useMemo, useState } from 'react';
-import { ArrowLeft, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -66,7 +66,15 @@ import { ShiftsEditDialog } from './_components/ShiftsEditDialog';
 import { StaffNgPatientsSummary } from './_components/StaffNgPatientsSummary';
 import { AccompanimentSummary } from './_components/AccompanimentSummary';
 import { isAdminRole } from '@/lib/rbac';
-import { EventDefaultsCard } from './_components/EventDefaultsCard';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { EventDefaultAddDialog, EventDefaultsCard } from './_components/EventDefaultsCard';
+import {
+  EventTemplateFormDialog,
+  EventTemplatesCard,
+  SHARED_TEMPLATE_SCOPE,
+  type EventTemplateFormInitial,
+} from '../_components/EventTemplatesCard';
+import { toEventDefaultWeekday } from '../_components/WeekdayPicker';
 
 /** Overrides default window: today through +90 days. */
 const OVERRIDES_RANGE_DAYS_FORWARD = 90;
@@ -230,6 +238,14 @@ export default function StaffDetailPage() {
 
       {/* 毎週の固定イベント (朝会など・Phase 2)。週生成のたびに自動展開される。 */}
       <EventDefaultsCard staffId={data.id} canEdit={canEdit} />
+
+      {/* このスタッフ個人のイベントひな形 (Phase 2・staff-event-history-design.md §2)。
+          共通ひな形の管理はスタッフ一覧ページ上部。 */}
+      <EventTemplatesCard
+        scope={data.id}
+        canEdit={canEdit}
+        heading={`${data.name}さんのひな形（個人）`}
+      />
 
       {/* 同行サマリ — 新人 or 同行リンク/既定が 1 件でもあれば表示 (§4 一般化) */}
       <AccompanimentCard staffId={data.id} isTrainee={data.is_trainee === true} canEdit={canEdit} />
@@ -511,10 +527,98 @@ function EventBadge({ source, type }: { source: string; type: string }) {
   );
 }
 
+/**
+ * イベント行の「⋯」メニュー (docs/mockups/event-history-filter-mock.html)。
+ * Phase 2/3 への入口 — ☆ ひな形に保存 / 📌 毎週固定にする。
+ */
+function EventRowMenu({
+  event,
+  onSaveTemplate,
+  onPin,
+}: {
+  event: EventRead;
+  onSaveTemplate: (e: EventRead) => void;
+  onPin: (e: EventRead) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-8 w-8 shrink-0 p-0 text-text-muted"
+          aria-label={`${event.title} の操作メニュー`}
+          data-testid={`event-row-menu-${event.id}`}
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-56 p-1">
+        <button
+          type="button"
+          className="w-full rounded-md px-3 py-2 text-left text-sm hover:bg-bg-muted"
+          onClick={() => {
+            setOpen(false);
+            onSaveTemplate(event);
+          }}
+          data-testid={`event-row-save-template-${event.id}`}
+        >
+          ☆ ひな形に保存…
+        </button>
+        <button
+          type="button"
+          className="w-full rounded-md px-3 py-2 text-left text-sm hover:bg-bg-muted"
+          onClick={() => {
+            setOpen(false);
+            onPin(event);
+          }}
+          data-testid={`event-row-pin-${event.id}`}
+        >
+          📌 毎週固定にする…
+        </button>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function EventsCard({ staffId, canEdit }: { staffId: string; canEdit: boolean }) {
   const [filter, setFilter] = useState<EventsFilterState>(DEFAULT_EVENTS_FILTER);
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<EventRead | null>(null);
+  // 行の「⋯」メニューからの 2 つの入口。
+  const [templateFrom, setTemplateFrom] = useState<EventRead | null>(null);
+  const [pinFrom, setPinFrom] = useState<EventRead | null>(null);
+
+  // ダイアログ側の初期化 effect が毎レンダー走らないよう参照を固定する。
+  const templateInitial = useMemo<EventTemplateFormInitial | undefined>(
+    () =>
+      templateFrom
+        ? {
+            title: templateFrom.title,
+            event_type: templateFrom.type === '研修' ? 'training' : 'event',
+            start_time: templateFrom.start_time,
+            end_time: templateFrom.end_time,
+            blocking: templateFrom.blocking,
+            note: templateFrom.note ?? null,
+          }
+        : undefined,
+    [templateFrom],
+  );
+  const pinInitial = useMemo(() => {
+    if (!pinFrom) return undefined;
+    // 「そのイベントの曜日」を既定に。日曜は固定イベントの対象外なので空選択。
+    const [y, m, d] = pinFrom.date.split('-').map(Number);
+    const weekday = toEventDefaultWeekday(new Date(y!, m! - 1, d!).getDay());
+    return {
+      title: pinFrom.title,
+      start_time: pinFrom.start_time,
+      end_time: pinFrom.end_time,
+      blocking: pinFrom.blocking,
+      weekdays: weekday === null ? [] : [weekday],
+    };
+  }, [pinFrom]);
 
   // 期間タブ → from/to + 並び順。日付は 1 レンダー内で固定 (跨日の揺らぎ回避)。
   const { range, order } = useMemo(() => {
@@ -616,6 +720,9 @@ function EventsCard({ staffId, canEdit }: { staffId: string; canEdit: boolean })
                   <Pencil className="h-4 w-4" />
                   編集
                 </Button>
+                {canEdit && (
+                  <EventRowMenu event={e} onSaveTemplate={setTemplateFrom} onPin={setPinFrom} />
+                )}
               </li>
             ))}
           </ul>
@@ -632,6 +739,25 @@ function EventsCard({ staffId, canEdit }: { staffId: string; canEdit: boolean })
             onOpenChange={(next) => {
               if (!next) setEditing(null);
             }}
+          />
+          {/* ☆ ひな形に保存 — 保存先 (共通 / このスタッフの個人) を選べる。 */}
+          <EventTemplateFormDialog
+            open={templateFrom !== null}
+            onOpenChange={(next) => {
+              if (!next) setTemplateFrom(null);
+            }}
+            scope={SHARED_TEMPLATE_SCOPE}
+            scopeChoice={{ staffId }}
+            initial={templateInitial}
+          />
+          {/* 📌 毎週固定にする — タイトル・時刻・曜日を引き継ぐ。 */}
+          <EventDefaultAddDialog
+            staffId={staffId}
+            open={pinFrom !== null}
+            onOpenChange={(next) => {
+              if (!next) setPinFrom(null);
+            }}
+            initial={pinInitial}
           />
         </>
       )}

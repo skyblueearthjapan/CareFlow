@@ -9,6 +9,7 @@
  */
 import {
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
   type UseMutationOptions,
@@ -46,6 +47,37 @@ export function useStaffShifts(staffId: string | null | undefined) {
     },
     enabled: isAuthenticated && !!staffId,
   });
+}
+
+/**
+ * 複数スタッフの週間シフトを並列取得する
+ * (固定イベント一括登録の「☀ 9:00出勤の全員を選択」用 —
+ *  staff-event-history-design.md §2 Phase 3)。
+ *
+ * BE に一括取得 API が無いため useQueries でまとめる。対象は事業所の active
+ * スタッフ (数名〜十数名) 規模を想定。キャッシュキーは `useStaffShifts` と
+ * 共通なので、詳細ページで開いた分はそのまま再利用される。
+ */
+export function useManyStaffShifts(staffIds: readonly string[]) {
+  const { accessToken, refreshToken, isAuthenticated } = useAuthTokens();
+
+  const results = useQueries({
+    queries: staffIds.map((id) => ({
+      queryKey: staffShiftsKey(id),
+      queryFn: () =>
+        fetcher<ShiftsResponse>(`${STAFF_BASE}/${id}/shifts`, { accessToken, refreshToken }),
+      enabled: isAuthenticated,
+      staleTime: 5 * 60 * 1000,
+    })),
+  });
+
+  const byStaffId = new Map<string, StaffShiftItem[]>();
+  staffIds.forEach((id, i) => {
+    const shifts = results[i]?.data?.shifts;
+    if (shifts) byStaffId.set(id, shifts);
+  });
+
+  return { byStaffId, isLoading: results.some((r) => r.isLoading) };
 }
 
 interface UpdateShiftsContext {

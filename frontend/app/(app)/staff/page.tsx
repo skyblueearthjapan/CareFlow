@@ -13,8 +13,8 @@
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
 import { useSession } from 'next-auth/react';
-import { useMemo, useState } from 'react';
-import { Plus, Search } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronRight, Pin, Plus, Search } from 'lucide-react';
 
 import { StaffExcelButtons } from '@/components/staff/StaffExcelButtons';
 import { StaffReplaceAllButton } from '@/components/staff/StaffReplaceAllButton';
@@ -36,9 +36,17 @@ import {
   type StaffRead,
 } from '@/lib/schemas/staff';
 
+import { BulkEventDefaultsDialog } from './_components/BulkEventDefaultsDialog';
+import {
+  EventTemplatesCard,
+  SHARED_TEMPLATE_SCOPE,
+} from './_components/EventTemplatesCard';
 import { QualificationBadge } from './_components/QualificationBadge';
 
 const PAGE_SIZE = 20;
+
+/** イベント設定セクションの開閉を憶えておく localStorage キー。 */
+const EVENT_SETTINGS_OPEN_KEY = 'carelink-staff-event-settings-open';
 
 type SexFilter = 'all' | (typeof STAFF_SEX_VALUES)[number];
 
@@ -168,6 +176,10 @@ export default function StaffPage() {
           </AlertDescription>
         </Alert>
       )}
+
+      {/* イベント設定 (共通ひな形 + 固定イベント一括登録・Phase 2/3)。
+          既定は畳んだ状態 — 一覧の邪魔をしない (開閉は localStorage に永続)。 */}
+      <EventSettingsSection isAdmin={isAdmin} />
 
       <Card className="p-4">
         <div className="flex flex-wrap items-center gap-3">
@@ -361,5 +373,79 @@ export default function StaffPage() {
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * イベント設定セクション (staff-event-history-design.md §2 Phase 2/3・PO決定 Q2)。
+ *
+ * 事業所共通のひな形カードと「固定イベントを一括登録」の入口。一覧の主役は
+ * スタッフ表なので **既定は畳んだ状態**、開閉は localStorage に憶える。
+ */
+function EventSettingsSection({ isAdmin }: { isAdmin: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
+
+  // localStorage の読み出しはマウント後 (SSR と初期 HTML を食い違わせない)。
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(EVENT_SETTINGS_OPEN_KEY) === '1') setOpen(true);
+    } catch {
+      /* プライベートモード等で localStorage が使えない場合は既定 (畳む) のまま */
+    }
+  }, []);
+
+  const toggle = () => {
+    setOpen((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(EVENT_SETTINGS_OPEN_KEY, next ? '1' : '0');
+      } catch {
+        /* 永続できなくても開閉自体は動く */
+      }
+      return next;
+    });
+  };
+
+  return (
+    <div className="space-y-3" data-testid="staff-event-settings">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={open}
+        data-testid="staff-event-settings-toggle"
+        className="inline-flex items-center gap-1.5 rounded-md border border-border-default bg-bg-base px-3 py-2 text-sm text-text-secondary hover:bg-bg-muted"
+      >
+        {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        イベント設定（ひな形・固定イベント）
+      </button>
+
+      {open && (
+        <>
+          <EventTemplatesCard
+            scope={SHARED_TEMPLATE_SCOPE}
+            canEdit={isAdmin}
+            heading="イベントひな形（共通）"
+          />
+          {isAdmin && (
+            <div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setBulkOpen(true)}
+                data-testid="staff-bulk-event-defaults-button"
+              >
+                <Pin className="h-4 w-4" />
+                固定イベントを一括登録
+              </Button>
+              <p className="mt-1 text-xs text-text-muted">
+                朝会など毎週決まったイベントを、スタッフ × 曜日まとめて登録します。
+              </p>
+              <BulkEventDefaultsDialog open={bulkOpen} onOpenChange={setBulkOpen} />
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }

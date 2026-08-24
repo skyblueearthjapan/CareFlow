@@ -82,7 +82,8 @@ function refineTimePair<T extends z.ZodTypeAny>(schema: T) {
 export const eventTemplateCreateSchema = refineTimePair(eventTemplateBaseSchema);
 export type EventTemplateCreate = z.infer<typeof eventTemplateBaseSchema>;
 
-const eventTemplateUpdateBase = eventTemplateBaseSchema.omit({ staff_id: true });
+// PATCH は部分更新 (BE は全フィールド任意)。title も省略可 — 指定時のみ検証。
+const eventTemplateUpdateBase = eventTemplateBaseSchema.omit({ staff_id: true }).partial();
 export const eventTemplateUpdateSchema = refineTimePair(eventTemplateUpdateBase);
 export type EventTemplateUpdate = z.infer<typeof eventTemplateUpdateBase>;
 
