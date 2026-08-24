@@ -1,4 +1,5 @@
 import NextAuth from 'next-auth';
+import type { JWT } from 'next-auth/jwt';
 import Credentials from 'next-auth/providers/credentials';
 import { z } from 'zod';
 import { env } from '@/lib/config/env';
@@ -136,13 +137,43 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
               refresh_token?: string;
             };
             if (data.access_token && data.refresh_token) {
-              return {
+              const refreshed: JWT = {
                 ...token,
                 accessToken: data.access_token,
                 refreshToken: data.refresh_token,
                 accessTokenExpires: Date.now() + 55 * 60 * 1000,
                 error: undefined,
               };
+              // ロール再同期 (2026-08-24): role はサインイン時にしか JWT へ
+              // 書かれず、管理画面で昇格/降格しても再ログインまで反映されない
+              // (降格が効かないのはセキュリティ的にも弱い)。リフレッシュ成功時
+              // (約55分ごと) に /me から取り直して JWT を更新する。
+              // /me が落ちても既存値で継続 (フェイルオープン・セッションは壊さない)。
+              try {
+                const meRes = await fetch(`${env.BACKEND_API_BASE_URL}/api/v1/auth/me`, {
+                  headers: { Authorization: `Bearer ${data.access_token}` },
+                  cache: 'no-store',
+                });
+                if (meRes.ok) {
+                  const me = (await meRes.json()) as {
+                    role?: string;
+                    staff_id?: string | null;
+                    must_change_password?: boolean;
+                  };
+                  if (me.role === 'admin' || me.role === 'manager' || me.role === 'staff') {
+                    refreshed.role = me.role;
+                  }
+                  if (me.staff_id !== undefined) {
+                    refreshed.staffId = me.staff_id ?? null;
+                  }
+                  if (typeof me.must_change_password === 'boolean') {
+                    refreshed.mustChangePassword = me.must_change_password;
+                  }
+                }
+              } catch {
+                // ネットワーク一過性エラー等は無視して既存ロールのまま返す。
+              }
+              return refreshed;
             }
           }
         } catch (err) {

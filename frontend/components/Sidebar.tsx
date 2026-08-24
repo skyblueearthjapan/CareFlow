@@ -16,6 +16,7 @@ import {
   MapPin,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { isAdminRole } from '@/lib/rbac';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -62,10 +63,12 @@ export function Sidebar({ collapsed }: SidebarProps) {
   const width = collapsed ? 'w-[72px]' : 'w-[232px]';
 
   const items = NAV_ITEMS.filter((item) => {
-    // strictAdmin items are visible only to `admin`. Other adminOnly items
-    // remain visible to admin + manager (the long-standing convention).
+    // strictAdmin = 管理者のみ表示。ロール二軸(mig 0069)以降アカウント権限は
+    // admin/staff の2値で、旧セッション JWT に残る 'manager' は admin の別名
+    // (lib/rbac.ts) — 生比較だと旧トークン保持者からメニューが消えるため
+    // isAdminRole() で判定する (2026-08-24)。
     if ('strictAdmin' in item && item.strictAdmin) {
-      return role === 'admin';
+      return isAdminRole(role);
     }
     if ('adminOnly' in item && item.adminOnly) {
       return role !== 'staff';
