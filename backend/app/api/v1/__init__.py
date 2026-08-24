@@ -18,6 +18,7 @@ from app.api.v1 import (
     courses,
     dashboard,
     diff,
+    event_templates,
     geocoding,
     health,
     integrations,
@@ -108,7 +109,19 @@ api_router.include_router(
 api_router.include_router(
     staff_event_defaults.router, prefix="/staff", tags=["staff-event-defaults"]
 )
+# 一括登録 (staff-event-history-design.md §2 Phase 3): staff スコープを持たないため
+# /staff-event-defaults/* として別に登録する。
+api_router.include_router(
+    staff_event_defaults.bulk_router,
+    prefix="/staff-event-defaults",
+    tags=["staff-event-defaults"],
+)
 api_router.include_router(staff_events.router, prefix="/staff", tags=["staff-events"])
+# イベントひな形 (staff-event-history-design.md §2 Phase 2). 共通 + 個人の 1 リソース
+# なので /staff 配下ではなくトップレベル (/event-templates) に置く。
+api_router.include_router(
+    event_templates.router, prefix="/event-templates", tags=["event-templates"]
+)
 # Wave 4-D: shift-request sub-resource (/staff/{id}/shift-requests).
 api_router.include_router(shift_requests.router, prefix="/staff", tags=["shift-requests"])
 # NG スタッフ逆引き (/staff/{id}/ng-patients). 実装は patient_ng_staff.py に同居

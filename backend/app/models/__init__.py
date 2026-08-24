@@ -34,6 +34,7 @@ from app.models.shift_request import ShiftRequest
 from app.models.special_visit import SpecialVisitMark, SpecialVisitPeriod
 from app.models.special_week import SpecialWeek, SpecialWeekItem
 from app.models.staff import (
+    EventTemplate,
     Staff,
     StaffEvent,
     StaffSecondaryOffice,
@@ -63,6 +64,7 @@ __all__ = [
     "KaipokeCsvSnapshot",
     "Course",
     "CourseTemplate",
+    "EventTemplate",
     "GeocodingCache",
     "InboundSnapshot",
     "KaipokeJob",

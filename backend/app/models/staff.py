@@ -266,3 +266,50 @@ class StaffShiftConfirmation(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("staff_id", "month", name="uq_staff_shift_confirmation_month"),
     )
+
+
+class EventTemplate(Base, TimestampMixin):
+    """イベントひな形 (staff-event-history-design.md §2 Phase 2・mig 0079).
+
+    「よく使うイベント」の型。イベント追加ダイアログのプルダウンに出て、
+    選ぶと タイトル / 種別 / 時刻 / blocking / 備考 が埋まる (以後の手直しは自由)。
+
+    * ``staff_id IS NULL`` = 事業所共通 (全スタッフのプルダウン) /
+      値あり = そのスタッフ個人 (対象スタッフ選択時だけ)。
+    * ``start_time`` / ``end_time`` は両方 NULL 可 (=「時間はその場で入力」)。
+      片方だけ NULL は API 層で 422 (DB CHECK は貼らない)。
+    * 実イベント (staff_events) とは FK で繋がない。ひな形の後の変更は
+      作成済みイベントに波及しない (型であってリンクではない)。
+    """
+
+    __tablename__ = "event_templates"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    staff_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("staff.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    # 'event' (イベント) / 'training' (研修) — staff_events.event_type と同じ語彙。
+    event_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="event", default="event"
+    )
+    start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    blocking: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # スコープ (共通 / 各スタッフ) 内の表示順。
+    sort_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0"), default=0
+    )
+    # false = 無効化 (プルダウンから消えるが行は残す)。物理削除は DELETE API。
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+
+    __table_args__ = (Index("ix_event_templates_staff", "staff_id"),)
