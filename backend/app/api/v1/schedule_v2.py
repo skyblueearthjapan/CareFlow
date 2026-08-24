@@ -2191,6 +2191,7 @@ async def staff_off_week(
         moved_visit_ids=moved_visit_ids,
         moved_course_ids=moved_course_ids,
         skipped_visit_ids=skipped_visit_ids,
+        cancelled_event_ids=cancelled_event_ids,
         to_staff_id=payload.to_staff_id,
         op_group_id=op_group_id,
     )

@@ -234,7 +234,20 @@ class StaffEventDefault(Base, TimestampMixin):
     )
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    __table_args__ = (Index("ix_staff_event_defaults_staff", "staff_id", "weekday"),)
+    __table_args__ = (
+        Index("ix_staff_event_defaults_staff", "staff_id", "weekday"),
+        # 完全一致の重複既定を DB でも防ぐ (mig 0080)。アプリ層 (bulk / 単票)
+        # のスキップキーと同一タプル。同時リクエスト競合の最後の砦。
+        Index(
+            "uq_staff_event_defaults_content",
+            "staff_id",
+            "weekday",
+            "start_time",
+            "end_time",
+            "title",
+            unique=True,
+        ),
+    )
 
 
 class StaffShiftConfirmation(Base, TimestampMixin):

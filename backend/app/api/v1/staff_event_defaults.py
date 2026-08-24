@@ -24,6 +24,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.staff import Staff, StaffEventDefault
@@ -162,7 +163,17 @@ async def bulk_create_event_defaults(
             existing_keys.add(key)  # 同一 payload 内の重複も 1 件に畳む
             created += 1
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # uq_staff_event_defaults_content (mig 0080): 同一内容の同時リクエスト。
+        # 相手側が先に作った = こちらは実質スキップ。安全側で 409 を返し
+        # 再読み込みしてもらう (半端な部分作成は rollback で残らない)。
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="同じ固定イベントが同時に登録されました。画面を更新して確認してください",
+        ) from exc
     return EventDefaultBulkResult(created=created, skipped=skipped)
 
 
@@ -211,7 +222,15 @@ async def create_event_default(
         note=payload.note,
     )
     db.add(row)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # uq_staff_event_defaults_content (mig 0080): 完全一致の既定が既にある。
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="同じ内容の固定イベントが既に登録されています",
+        ) from exc
     await db.refresh(row)
     return _to_read(row)
 

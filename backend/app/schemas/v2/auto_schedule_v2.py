@@ -729,6 +729,10 @@ class StaffOffWeekResponse(BaseModel):
         default_factory=list,
         description="打刻済み・完了・取消済みのため据え置いた訪問 (担当はそのまま)",
     )
+    cancelled_event_ids: list[uuid.UUID] = Field(
+        default_factory=list,
+        description="休みに伴い自動で取消印を付けた固定イベント (source='fixed'・Phase 3)",
+    )
     to_staff_id: uuid.UUID | None = None
     op_group_id: uuid.UUID = Field(description="「戻る」1 回で全部戻すためのグループ id")
 
