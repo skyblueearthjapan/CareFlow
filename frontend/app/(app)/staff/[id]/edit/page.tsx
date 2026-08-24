@@ -34,7 +34,6 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
 import { RecordNavigator, type NavigatorRecord } from '@/components/RecordNavigator';
-import { useStaffEvents } from '@/lib/queries/staff-events';
 import { useStaffOverrides, type OverrideRange } from '@/lib/queries/staff-overrides';
 import { useStaffShifts } from '@/lib/queries/staff-shifts';
 import {
@@ -59,12 +58,10 @@ import {
   type StaffUpdate,
 } from '@/lib/schemas/staff';
 import type { StaffShiftItem } from '@/lib/schemas/staff-shifts';
-import type { EventRead } from '@/lib/schemas/staff-events';
 
 import { DeleteConfirmModal } from '../../_components/DeleteConfirmModal';
 import { StaffFormFields, type StaffFormState } from '../../_components/StaffFormFields';
-import { EventAddDialog } from '../_components/EventAddDialog';
-import { EventEditDialog } from '../_components/EventEditDialog';
+import { EventsCard } from '../_components/EventsCard';
 import { OverrideAddDialog } from '../_components/OverrideAddDialog';
 import { OverrideEditDialog } from '../_components/OverrideEditDialog';
 import { ShiftsEditDialog } from '../_components/ShiftsEditDialog';
@@ -75,8 +72,6 @@ import { isAdminRole } from '@/lib/rbac';
 // ---------------------------------------------------------------------------
 
 const OVERRIDES_RANGE_DAYS_FORWARD = 90;
-const EVENTS_RANGE_DAYS_BACK = 30;
-const EVENTS_RANGE_DAYS_FORWARD = 180;
 
 function isoDateOffset(days: number): string {
   const d = new Date();
@@ -389,7 +384,7 @@ export default function StaffEditPage() {
       <OverridesCardInline staffId={id} canEdit={isPrivileged} />
 
       {/* ④ 研修日 / イベント */}
-      <EventsCardInline staffId={id} canEdit={isPrivileged} />
+      <EventsCard staffId={id} canEdit={isPrivileged} />
 
       {/* 削除確認ダイアログ */}
       {data && (
@@ -592,93 +587,6 @@ function OverridesCardInline({ staffId, canEdit }: { staffId: string; canEdit: b
           <OverrideEditDialog
             staffId={staffId}
             override={editing}
-            open={!!editing}
-            onOpenChange={(next: boolean) => {
-              if (!next) setEditing(null);
-            }}
-          />
-        </>
-      )}
-    </Card>
-  );
-}
-
-function EventsCardInline({ staffId, canEdit }: { staffId: string; canEdit: boolean }) {
-  const range = useMemo(
-    () => ({
-      from: isoDateOffset(-EVENTS_RANGE_DAYS_BACK),
-      to: isoDateOffset(EVENTS_RANGE_DAYS_FORWARD),
-    }),
-    [],
-  );
-
-  const { data, isLoading, isError, error } = useStaffEvents(staffId, range);
-  const [addOpen, setAddOpen] = useState(false);
-  const [editing, setEditing] = useState<EventRead | null>(null);
-
-  return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>研修日 / イベント</CardTitle>
-        {canEdit && (
-          <Button type="button" variant="outline" size="sm" onClick={() => setAddOpen(true)}>
-            <Plus className="h-4 w-4" />
-            追加
-          </Button>
-        )}
-      </CardHeader>
-      <CardContent>
-        {isLoading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-12 w-full" />
-            <Skeleton className="h-12 w-full" />
-          </div>
-        ) : isError ? (
-          <Alert variant="destructive">
-            <AlertTitle>取得に失敗しました</AlertTitle>
-            <AlertDescription>
-              {error instanceof Error ? error.message : '不明なエラー'}
-            </AlertDescription>
-          </Alert>
-        ) : !data || data.length === 0 ? (
-          <p className="text-sm text-text-muted">登録された研修・イベントはありません</p>
-        ) : (
-          <ul className="space-y-2 text-sm">
-            {data.map((e) => (
-              <li
-                key={e.id}
-                className="flex items-center justify-between gap-3 rounded border border-border-default p-3"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="inline-flex items-center rounded-full border border-border-default bg-bg-muted px-2 py-0.5 text-xs text-text-secondary">
-                      {e.type}
-                    </span>
-                    <span className="font-medium text-text-primary">{e.title}</span>
-                  </div>
-                  <div className="tnum text-text-secondary">
-                    {e.date}　{e.start_time} 〜 {e.end_time}
-                  </div>
-                  {e.note && <div className="text-xs text-text-muted">{e.note}</div>}
-                </div>
-                {canEdit && (
-                  <Button type="button" variant="outline" size="sm" onClick={() => setEditing(e)}>
-                    <Pencil className="h-4 w-4" />
-                    編集
-                  </Button>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </CardContent>
-
-      {canEdit && (
-        <>
-          <EventAddDialog staffId={staffId} open={addOpen} onOpenChange={setAddOpen} />
-          <EventEditDialog
-            staffId={staffId}
-            event={editing}
             open={!!editing}
             onOpenChange={(next: boolean) => {
               if (!next) setEditing(null);

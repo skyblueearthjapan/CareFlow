@@ -6,6 +6,11 @@
  * Hooks: `useUpdateEvent` (PATCH) + `useDeleteEvent` (DELETE).
  * Delete is gated behind a nested `<DeleteConfirmModal>` (AlertDialog
  * equivalent) so an accidental tap can't drop the row.
+ *
+ * 「☆ ひな形にする」(PO 2026-08-25): フッター左の 1 ボタンで、**いま入力欄に
+ * ある内容** (保存前の手直し込み) を `EventTemplateFormDialog` へ引き継いで
+ * ひな形化する。保存先 (共通 / このスタッフの個人) はそのダイアログで選ぶ。
+ * イベント本体の保存とは独立 (ひな形にしてもイベントは更新されない)。
  */
 import { useEffect, useState } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -43,6 +48,11 @@ import { useDeleteEvent, useUpdateEvent } from '@/lib/queries/staff-events';
 import { eventCreateSchema, type EventCreate, type EventRead } from '@/lib/schemas/staff-events';
 
 import { DeleteConfirmModal } from '../../_components/DeleteConfirmModal';
+import {
+  EventTemplateFormDialog,
+  SHARED_TEMPLATE_SCOPE,
+  type EventTemplateFormInitial,
+} from '../../_components/EventTemplatesCard';
 
 interface EventEditDialogProps {
   staffId: string;
@@ -58,6 +68,13 @@ export function EventEditDialog({ staffId, event, open, onOpenChange }: EventEdi
   // 🔒絶対に潰せないイベント (2段階提案): ON なら提案エンジンのフォールバック
   // (イベント無視の再算出) でも占有として扱われ、衝突提案が出ない。
   const [blocking, setBlocking] = useState(false);
+  // ☆ ひな形にする — 押した瞬間の入力欄の内容をスナップショットして渡す
+  // (null = ひな形ダイアログは閉じている)。
+  const [templateInitial, setTemplateInitial] = useState<EventTemplateFormInitial | null>(null);
+  // 親ダイアログが閉じたらひな形ダイアログも必ず閉じる (取り残し・次回の古い値の再利用を防ぐ)。
+  useEffect(() => {
+    if (!open) setTemplateInitial(null);
+  }, [open]);
 
   // Re-use the create schema for edits — every field is required when
   // present in the form, and the API accepts the full body for PATCH too.
@@ -239,8 +256,8 @@ export function EventEditDialog({ staffId, event, open, onOpenChange }: EventEdi
                     🔒 この時間は絶対に空けておく
                   </p>
                   <p className="text-xs text-text-muted">
-                    ONにすると、空き枠がない場合でもこのイベントに重ねた配置提案は出ません。
-                    （OFF: 空き枠がないときだけ「イベントを動かす前提」の提案が出ます）
+                    ONにすると、空き枠がない場合でもこのイベントに重ねた配置提案は出ません。 （OFF:
+                    空き枠がないときだけ「イベントを動かす前提」の提案が出ます）
                   </p>
                 </div>
                 <Switch
@@ -252,14 +269,36 @@ export function EventEditDialog({ staffId, event, open, onOpenChange }: EventEdi
               </div>
 
               <DialogFooter className="sm:justify-between">
-                <Button
-                  type="button"
-                  variant="destructive"
-                  onClick={() => setConfirmDelete(true)}
-                  disabled={isBusy}
-                >
-                  削除
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    onClick={() => setConfirmDelete(true)}
+                    disabled={isBusy}
+                  >
+                    削除
+                  </Button>
+                  {/* ☆ ひな形にする — いま入力欄にある内容 (保存前の手直し込み) を引き継ぐ */}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={isBusy}
+                    data-testid="event-edit-save-template"
+                    onClick={() => {
+                      const v = form.getValues();
+                      setTemplateInitial({
+                        title: v.title,
+                        event_type: v.type === '研修' ? 'training' : 'event',
+                        start_time: v.start_time,
+                        end_time: v.end_time,
+                        blocking,
+                        note: v.note && v.note.trim() !== '' ? v.note.trim() : null,
+                      });
+                    }}
+                  >
+                    ☆ ひな形にする
+                  </Button>
+                </div>
                 <div className="flex gap-2">
                   <Button
                     type="button"
@@ -286,6 +325,17 @@ export function EventEditDialog({ staffId, event, open, onOpenChange }: EventEdi
         confirming={remove.isPending}
         onCancel={() => setConfirmDelete(false)}
         onConfirm={onDelete}
+      />
+
+      {/* ☆ ひな形にする — 保存先 (共通 / このスタッフの個人) を選んで登録 */}
+      <EventTemplateFormDialog
+        open={templateInitial !== null}
+        onOpenChange={(next) => {
+          if (!next) setTemplateInitial(null);
+        }}
+        scope={SHARED_TEMPLATE_SCOPE}
+        scopeChoice={{ staffId }}
+        initial={templateInitial ?? undefined}
       />
     </>
   );

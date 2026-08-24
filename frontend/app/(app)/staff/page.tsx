@@ -13,7 +13,7 @@
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
 import { useSession } from 'next-auth/react';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, Pin, Plus, Search } from 'lucide-react';
 
 import { StaffExcelButtons } from '@/components/staff/StaffExcelButtons';
@@ -37,16 +37,10 @@ import {
 } from '@/lib/schemas/staff';
 
 import { BulkEventDefaultsDialog } from './_components/BulkEventDefaultsDialog';
-import {
-  EventTemplatesCard,
-  SHARED_TEMPLATE_SCOPE,
-} from './_components/EventTemplatesCard';
+import { EventTemplatesCard, SHARED_TEMPLATE_SCOPE } from './_components/EventTemplatesCard';
 import { QualificationBadge } from './_components/QualificationBadge';
 
 const PAGE_SIZE = 20;
-
-/** イベント設定セクションの開閉を憶えておく localStorage キー。 */
-const EVENT_SETTINGS_OPEN_KEY = 'carelink-staff-event-settings-open';
 
 type SexFilter = 'all' | (typeof STAFF_SEX_VALUES)[number];
 
@@ -180,7 +174,7 @@ export default function StaffPage() {
       )}
 
       {/* イベント設定 (共通ひな形 + 固定イベント一括登録・Phase 2/3)。
-          既定は畳んだ状態 — 一覧の邪魔をしない (開閉は localStorage に永続)。 */}
+          開くたびに必ず畳んだ状態で始める — 一覧の邪魔をしない (PO 2026-08-25)。 */}
       <EventSettingsSection isAdmin={isAdmin} />
 
       <Card className="p-4">
@@ -382,32 +376,15 @@ export default function StaffPage() {
  * イベント設定セクション (staff-event-history-design.md §2 Phase 2/3・PO決定 Q2)。
  *
  * 事業所共通のひな形カードと「固定イベントを一括登録」の入口。一覧の主役は
- * スタッフ表なので **既定は畳んだ状態**、開閉は localStorage に憶える。
+ * スタッフ表なので **開くたびに必ず畳んだ状態** で始める (PO 2026-08-25:
+ * ひな形が一覧の面積を占有しないよう「設定」として隠しておく。以前は開閉を
+ * localStorage に憶えていたため、一度開くと以後ずっと開いたままになっていた)。
  */
 function EventSettingsSection({ isAdmin }: { isAdmin: boolean }) {
   const [open, setOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
 
-  // localStorage の読み出しはマウント後 (SSR と初期 HTML を食い違わせない)。
-  useEffect(() => {
-    try {
-      if (window.localStorage.getItem(EVENT_SETTINGS_OPEN_KEY) === '1') setOpen(true);
-    } catch {
-      /* プライベートモード等で localStorage が使えない場合は既定 (畳む) のまま */
-    }
-  }, []);
-
-  const toggle = () => {
-    setOpen((prev) => {
-      const next = !prev;
-      try {
-        window.localStorage.setItem(EVENT_SETTINGS_OPEN_KEY, next ? '1' : '0');
-      } catch {
-        /* 永続できなくても開閉自体は動く */
-      }
-      return next;
-    });
-  };
+  const toggle = () => setOpen((prev) => !prev);
 
   return (
     <div className="space-y-3" data-testid="staff-event-settings">

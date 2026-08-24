@@ -162,3 +162,51 @@ Phase 1 → 2 → 3 の順 (各 Phase 独立デプロイ可)。Phase 3 の休み
 staff-off-week (op_group/undo) と絡むため回帰テスト必須:
 `test_staff_off_week*` / `staff_event_defaults` の展開テスト / FE は EventsCard・
 ダイアログの vitest。既知ベースライン fail は増減のみ監視 (session-2026-08-23-HANDOFF §4-4)。
+
+---
+
+## 7. 2026-08-25 追補 (PO フィードバック + 本番初回登録で判明した不具合)
+
+### 7-a. 本番不具合 2 件 (固定イベントが初めて本番登録されて顕在化・mig 0081)
+
+PO が朝会をひな形化 → 一括登録 (7名 × 月〜土 = 42 件) した直後の調査。
+**staff_event_defaults / event_templates は正常 (重複なし)**。ただし週生成が
+走る前に、本番 Postgres で展開を rollback 付きで空打ちして以下を実測:
+
+| # | 事象 | 真因 | 影響 | 修正 |
+|---|---|---|---|---|
+| 1 | 展開の INSERT が `value too long for type character varying(40)` で落ちる | 冪等キー `"{default_id(UUID36)}:{YYYY-MM-DD}"` = 47 文字 > `staff_events.external_id varchar(40)` (mig 0062・取込キー想定)。SQLite は長さを検査しないためテスト未検出 | 週生成 (schedule.py) / 固定枠に戻す・個別提案適用 (auto_allocator_v2) は展開を同一 TX で呼ぶため **500** に。割付のみ (assign-staff-only) は best-effort で黙って展開されない | **mig 0081** で varchar(64) へ拡張 + `fixed_external_id()` 関数化 + 列幅を縛る回帰テスト |
+| 2 | 内容一致の重複吸収が本番だけ効かない | `starts_at` は `DateTime(timezone=True)` → asyncpg は tz-aware(UTC) を返す。展開側は naive な `datetime.combine`。Python の `aware == naive` は常に False | (1) が直ると、既存の朝会 (manual/kaipoke) の上に fixed 行が **二重生成** される | `content_key()` で naive UTC に正規化してから比較 + aware/naive 混在の回帰テスト |
+
+教訓: **`DateTime(timezone=True)` 列の Python 側比較は必ず正規化する**。SQLite ベースの
+テストは (a) VARCHAR 長さ (b) tz-aware 戻り値 の 2 点で Postgres と挙動が違う。
+新しい external_id 形式やイベント突合を足す時はこの 2 点を疑うこと。
+
+補足 (レビュー指摘):
+- 内容一致は **完全一致** (staff × 開始 × 終了 × タイトル strip)。既存の朝会が 1 分でも
+  1 文字でも違えば (例: 9:00-9:30 / 「朝礼」) fixed 行が別に立つ。2026-08-25 時点の本番は
+  全件 09:00-09:15「朝会」で一致確認済み。デプロイ後の初回週生成前に rollback 空打ちで
+  「作られる件数 = 既存朝会の無い (staff, 日) の数」を確認する (handoff §3 の手口)。
+- naive 比較の前提 = **backend コンテナが UTC** (`backend/Dockerfile` に `ENV TZ=UTC` を
+  明示・変更禁止)。postgres 側の `TZ=Asia/Tokyo` は psql の表示だけで無関係。
+
+### 7-b. PO 決定の変更・UI 追補
+
+- **Q4 変更**: 一覧の既定タブは「今後」→ **「今週」** (先頭タブ)。開いた瞬間に見たいのは今週。
+- **編集ページ (`staff/[id]/edit`) に同じカードを**: 旧 `EventsCardInline` (絞り込み無し・
+  -30〜+180日羅列) を撤去し、`_components/EventsCard.tsx` (詳細ページから切り出し) を
+  両ページで共有。機能差ゼロ。
+- **「☆ ひな形にする」を 1 クリックに**: 行の直接ボタン (⋯ メニューには 📌 だけ残す) +
+  **編集モーダルのフッター左** (いま入力欄にある内容をそのまま引き継ぐ)。
+- **ひな形カードは「設定」として隠す**: スタッフ一覧の「イベント設定」は開閉を
+  localStorage に憶えるのをやめ **開くたびに畳む**。スタッフ詳細の個人ひな形カードも
+  同じトグル (`PersonalTemplatesSection`) で既定畳み。固定イベントカードは従来どおり表示。
+
+### 7-c. 「朝会は特別扱いか」の調査結果 (PO 質問への回答)
+
+コード上に朝会固有の分岐は **無い** (grep 結果はコメント・placeholder・テスト名のみ)。
+朝会は (a) `event_templates` の共通ひな形 1 件 (b) `staff_event_defaults` の 42 行、
+という **データ** としてだけ存在する。ひな形と固定イベントは FK で繋がらない独立した
+2 テーブルで、一括登録ダイアログの「ひな形から選ぶ」は入力補助 (値のコピー) にすぎない。
+`hide_regular` (定例を隠す) と履歴候補の除外は `staff_event_defaults.title` 駆動なので、
+他のイベントを固定登録すればそれも同じく「定例」扱いになる = 汎用。

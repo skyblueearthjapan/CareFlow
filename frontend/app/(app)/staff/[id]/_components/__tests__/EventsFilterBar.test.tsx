@@ -3,7 +3,7 @@
  * docs/mockups/event-history-filter-mock.html)。
  *
  * カバーするシナリオ:
- *   1. 期間タブ — 既定は「今後」・切替で tab が親に返る
+ *   1. 期間タブ — 既定は「今週」(先頭タブ)・切替で tab が親に返る
  *   2. eventPeriodRange — 今後/今週/過去/すべて の from/to と並び順
  *   3. 検索 — 300ms デバウンス後に 1 回だけ親へ流れる
  *   4. チップ — 定例を隠す / 出所の排他トグル / 研修のみ
@@ -38,9 +38,14 @@ function setup(overrides: Partial<EventsFilterState> = {}, counts = { count: 3, 
 }
 
 describe('EventsFilterBar — 期間タブ', () => {
-  it('1. 既定は「今後」が選択されており、他タブを押すと tab が返る', () => {
+  it('1. 既定は「今週」が選択されており、他タブを押すと tab が返る', () => {
+    // PO 2026-08-25: 開いた瞬間は「今週」(当初の「今後」から変更)。タブ順も今週が先頭。
     const { onChange } = setup();
-    expect(screen.getByRole('tab', { name: '今後' })).toHaveAttribute('aria-selected', 'true');
+    expect(DEFAULT_EVENTS_FILTER.tab).toBe('week');
+    const tabs = screen.getAllByRole('tab').map((t) => t.textContent);
+    expect(tabs).toEqual(['今週', '今後', '過去', 'すべて']);
+    expect(screen.getByRole('tab', { name: '今週' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: '今後' })).toHaveAttribute('aria-selected', 'false');
     expect(screen.getByRole('tab', { name: '過去' })).toHaveAttribute('aria-selected', 'false');
 
     fireEvent.click(screen.getByRole('tab', { name: '過去' }));

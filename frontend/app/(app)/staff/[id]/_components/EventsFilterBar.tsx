@@ -16,12 +16,15 @@ import { FilterChip } from '@/components/ui/filter-chip';
 import { Input } from '@/components/ui/input';
 import type { PartialDateRange, StaffEventFilters } from '@/lib/queries/staff-events';
 
-/** 期間タブ。既定は「今後」(PO決定 Q4: 近い順)。 */
+/**
+ * 期間タブ。既定は「今週」(PO 2026-08-25: 開いた瞬間に見たいのは今週の予定。
+ * 当初の Q4 回答「今後」から変更)。「今後」は 2 番目のタブとして残す。
+ */
 export type EventPeriodTab = 'future' | 'week' | 'past' | 'all';
 
 export const EVENT_PERIOD_TABS: ReadonlyArray<{ key: EventPeriodTab; label: string }> = [
-  { key: 'future', label: '今後' },
   { key: 'week', label: '今週' },
+  { key: 'future', label: '今後' },
   { key: 'past', label: '過去' },
   { key: 'all', label: 'すべて' },
 ];
@@ -39,7 +42,7 @@ export interface EventsFilterState {
 }
 
 export const DEFAULT_EVENTS_FILTER: EventsFilterState = {
-  tab: 'future',
+  tab: 'week',
   q: '',
   hideRegular: false,
   source: null,
