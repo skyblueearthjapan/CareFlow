@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>④固定イベントの実用化 試案</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --brand:#e15a7f; --brand-light:#ffd6e0; --brand-50:#fff5f8; --leaf:#3f9d5a; --leaf-bg:#eaf7ed; --upd:#c97a12; --upd-bg:#fdf3e2; --del:#2f7fd1; --del-bg:#e8f1fb;
+    --cream:#faf7f2; --panel:#fff; --line:#e5e7eb; --line-soft:#f1ece6; --ink:#1f2937; --ink2:#5f5a55; --ink3:#8f877f;
+    --sans:"Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic UI","Meiryo",system-ui,sans-serif; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --cream:#1c1a19; --panel:#262321; --line:#3a3632; --line-soft:#302c29; --ink:#f1ece6; --ink2:#c6bdb3; --brand-50:#3a242b; --brand-light:#5a3140; --leaf-bg:#243a2b; --upd-bg:#3d2e16; --del-bg:#1d2d40; } }
+  :root[data-theme="dark"] { --cream:#1c1a19; --panel:#262321; --line:#3a3632; --line-soft:#302c29; --ink:#f1ece6; --ink2:#c6bdb3; --brand-50:#3a242b; --brand-light:#5a3140; --leaf-bg:#243a2b; --upd-bg:#3d2e16; --del-bg:#1d2d40; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--cream); color:var(--ink); font-family:var(--sans); font-size:14px; line-height:1.5; }
+  button { font-family:inherit; cursor:pointer; border:1px solid var(--line); background:var(--panel); color:inherit; border-radius:8px; padding:5px 11px; font-size:13px; }
+  button:hover { background:var(--line-soft); }
+  button.primary { background:var(--brand); border-color:var(--brand); color:#fff; font-weight:700; }
+  input, select { font-family:inherit; font-size:13px; border:1px solid var(--line); border-radius:8px; padding:6px 9px; background:var(--panel); color:inherit; }
+  label.fl { display:block; font-size:12px; font-weight:700; color:var(--ink2); margin-bottom:3px; }
+  .mast { max-width:900px; margin:0 auto; padding:24px 20px 8px; }
+  .mast h1 { font-size:20px; margin:0 0 4px; } .mast h1 em { font-style:normal; color:var(--brand); }
+  .mast p { margin:0; color:var(--ink2); font-size:13px; max-width:84ch; }
+  .frame { max-width:900px; margin:16px auto 8px; padding:0 20px; }
+  .where { font-size:12px; font-weight:700; color:var(--ink3); margin:18px 0 6px; letter-spacing:.04em; }
+  .where b { color:var(--brand); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 28px rgba(31,41,55,.08); }
+  .card-h { display:flex; align-items:center; justify-content:space-between; padding:14px 18px 0; gap:8px; }
+  .card-h h2 { margin:0; font-size:16px; }
+  .card-b { padding:12px 18px 16px; }
+  .hint { font-size:12px; color:var(--ink3); margin:0 0 10px; }
+  .df { display:flex; align-items:center; gap:10px; border:1px solid var(--line); border-radius:10px; padding:8px 12px; margin-bottom:7px; }
+  .df .wd { display:inline-flex; gap:3px; }
+  .df .wd b { background:var(--brand-50); border:1px solid var(--brand-light); color:var(--brand); border-radius:5px; padding:0 5px; font-size:11.5px; }
+  .df .tm { color:var(--ink2); font-size:12.5px; font-variant-numeric:tabular-nums; }
+  .df .ti { font-weight:700; }
+  .df .sp { flex:1; }
+  /* 一括登録ダイアログ */
+  .dlg { background:var(--panel); border:1px solid var(--line); border-radius:14px; box-shadow:0 18px 48px rgba(31,41,55,.18); max-width:520px; margin:0 auto; padding:18px 20px; }
+  .dlg h2 { margin:0 0 2px; font-size:16px; }
+  .dlg .sub { font-size:12px; color:var(--ink3); margin-bottom:12px; }
+  .fld { margin-bottom:11px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .wdchips { display:flex; gap:5px; flex-wrap:wrap; }
+  .wdchips button { padding:4px 12px; border-radius:999px; }
+  .wdchips button.on { background:var(--brand); border-color:var(--brand); color:#fff; font-weight:700; }
+  .shortcut { display:flex; gap:6px; margin-top:6px; }
+  .shortcut button { font-size:12px; padding:3px 10px; color:var(--ink2); }
+  .staffgrid { display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; border:1px solid var(--line); border-radius:9px; padding:7px 9px; }
+  .staffgrid label { display:flex; gap:7px; align-items:center; font-size:13px; padding:2px 4px; cursor:pointer; border-radius:5px; }
+  .staffgrid label:hover { background:var(--line-soft); }
+  .staffgrid small { color:var(--ink3); font-size:11px; }
+  .selline { display:flex; gap:6px; margin-top:6px; align-items:center; flex-wrap:wrap; }
+  .selline button { font-size:12px; padding:3px 10px; color:var(--ink2); }
+  .preview { background:var(--leaf-bg); border:1px solid var(--leaf); color:var(--leaf); border-radius:9px; padding:8px 12px; font-size:13px; font-weight:700; margin-top:4px; }
+  .foot { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
+  /* 週の見え方 */
+  .wk { border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .wk table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  .wk th, .wk td { border-bottom:1px solid var(--line-soft); border-right:1px solid var(--line-soft); padding:5px 8px; text-align:left; }
+  .wk th { background:var(--line-soft); font-size:12px; }
+  .evb { display:inline-block; background:var(--leaf-bg); border:1px solid var(--leaf); color:var(--leaf); border-radius:5px; padding:0 6px; font-size:11.5px; font-weight:700; }
+  .evb.cancel { background:var(--line-soft); border-color:var(--line); color:var(--ink3); text-decoration:line-through; }
+  .off { color:var(--ink3); font-size:11.5px; }
+  .notes { max-width:900px; margin:20px auto 40px; padding:0 20px; display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; }
+  .note { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:13px; line-height:1.6; }
+  .note h3 { margin:0 0 6px; font-size:13px; color:var(--brand); } .note ul { margin:0; padding-left:18px; }
+</style>
+<div class="mast">
+  <h1>④ 固定イベントの<em>実用化</em> 試案 — 一括登録と休みの自動不参加</h1>
+  <p>「毎週の固定イベント」機能は既にあるが、1回の登録=1名×1曜日のため朝会（全員×月〜土）は42回操作となり使われていない。<b>曜日の複数選択+複数スタッフ一括登録</b>で1回の操作にする。朝会はコード上の特別扱いをせず、<b>この汎用ダイアログから普通に登録する1件</b>にすぎない。</p>
+</div>
+
+<div class="frame">
+  <div class="where">📍 変更A: <b>一括登録ダイアログ</b>（スタッフ一覧の「固定イベントを一括登録」ボタンから。試しに操作できます）</div>
+  <div class="dlg">
+    <h2>固定イベントを一括登録</h2>
+    <div class="sub">選んだスタッフ × 曜日のぶんだけ「毎週の固定イベント」を作成します。週生成のたびに自動で予定に入ります。</div>
+
+    <div class="fld">
+      <label class="fl">📋 ひな形から選ぶ / 手入力</label>
+      <select id="tpl" style="width:100%">
+        <option value="">— 手入力 —</option>
+        <option value="asakai" selected>朝会（9:00〜9:15）</option>
+        <option value="conf">カンファレンス（13:00〜14:00）</option>
+      </select>
+    </div>
+
+    <div class="fld"><label class="fl">タイトル</label><input id="f-title" value="朝会" style="width:100%"></div>
+    <div class="grid2 fld">
+      <div><label class="fl">開始</label><input type="time" id="f-s" value="09:00" style="width:100%"></div>
+      <div><label class="fl">終了</label><input type="time" id="f-e" value="09:15" style="width:100%"></div>
+    </div>
+
+    <div class="fld">
+      <label class="fl">曜日（複数選択）</label>
+      <div class="wdchips" id="wd">
+        <button class="on">月</button><button class="on">火</button><button class="on">水</button><button class="on">木</button><button class="on">金</button><button class="on">土</button>
+      </div>
+      <div class="shortcut">
+        <button id="sc-all">毎日(月〜土)</button>
+        <button id="sc-wk">月〜金</button>
+        <button id="sc-clear">クリア</button>
+      </div>
+    </div>
+
+    <div class="fld">
+      <label class="fl">対象スタッフ（複数選択）</label>
+      <div class="staffgrid" id="sg">
+        <label><input type="checkbox" checked> 川名　千恵 <small>9:00出勤</small></label>
+        <label><input type="checkbox" checked> 熊澤　妙子 <small>9:00出勤</small></label>
+        <label><input type="checkbox" checked> 高岡　真由美 <small>9:00出勤</small></label>
+        <label><input type="checkbox" checked> 本名　大 <small>9:00出勤</small></label>
+        <label><input type="checkbox" checked> 宇田川　優莉 <small>9:00出勤</small></label>
+        <label><input type="checkbox" checked> 髙梨　桂子 <small>9:00出勤</small></label>
+        <label><input type="checkbox" checked> 小西　彩稀 <small>9:00出勤</small></label>
+      </div>
+      <div class="selline">
+        <button id="sel-9">☀ 9:00出勤の全員を選択</button>
+        <button id="sel-all">全員</button>
+        <button id="sel-none">解除</button>
+        <label style="display:flex;gap:6px;align-items:center;font-size:12.5px;margin-left:auto"><input type="checkbox"> 🔒 絶対に潰せないイベントにする</label>
+      </div>
+    </div>
+
+    <div class="preview" id="pv">7名 × 6曜日 = 42件の固定イベントを登録します（既に同じ登録がある分は自動でスキップ）</div>
+
+    <div class="foot">
+      <button>キャンセル</button>
+      <button class="primary">一括登録する</button>
+    </div>
+  </div>
+
+  <div class="where" style="margin-top:26px">📍 変更B: スタッフ詳細の<b>「毎週の固定イベント」カード</b> — 曜日をまとめて表示</div>
+  <div class="card">
+    <div class="card-h"><h2>毎週の固定イベント</h2><button>＋ 追加</button></div>
+    <div class="card-b">
+      <p class="hint">同じタイトル・時刻は曜日をまとめて1行で表示（従来は曜日ごとに1行）。追加ダイアログも上と同じ曜日複数選択式に。</p>
+      <div class="df"><span class="wd"><b>月</b><b>火</b><b>水</b><b>木</b><b>金</b><b>土</b></span><span class="tm">09:00〜09:15</span><span class="ti">朝会</span><span class="sp"></span><button>✎</button><button>🗑</button></div>
+      <div class="df"><span class="wd"><b>水</b></span><span class="tm">13:00〜14:00</span><span class="ti">カンファレンス</span><span class="sp"></span><span title="提案エンジンでも潰されない">🔒</span><button>✎</button><button>🗑</button></div>
+    </div>
+  </div>
+
+  <div class="where" style="margin-top:26px">📍 変更C: <b>休みの日は自動で不参加</b>（週の予定での見え方・例: 髙梨さん）</div>
+  <div class="card"><div class="card-b" style="padding-top:16px">
+    <div class="wk"><table>
+      <tr><th style="width:90px"></th><th>8/24 (月)</th><th>8/25 (火)</th><th>8/26 (水)</th><th>8/27 (木)</th><th>8/28 (金)</th><th>8/29 (土)</th></tr>
+      <tr><td style="font-weight:700">髙梨　桂子</td>
+        <td><span class="evb">朝会 9:00</span></td>
+        <td><span class="evb">朝会 9:00</span></td>
+        <td><span class="off">休み</span><br><span class="evb cancel">朝会 9:00</span></td>
+        <td><span class="evb">朝会 9:00</span></td>
+        <td><span class="evb cancel">朝会 9:00</span><br><span style="font-size:11px;color:var(--ink3)">↖ 手動「今週だけ外す」<br>（8:30〜 患者対応のため）</span></td>
+        <td><span class="evb">朝会 9:00</span></td></tr>
+    </table></div>
+    <p class="hint" style="margin-top:10px">水曜: 「休みにする」操作をした時点で、その日の固定イベントに<b>自動で取消印</b>（打ち消し表示・カイポケへは送らない・エンジンからも除外）。金曜: 早出の患者対応など休み以外の理由は、従来どおり手動の「今週だけ外す」。</p>
+  </div></div>
+</div>
+
+<div class="notes">
+  <div class="note"><h3>一括登録のしくみ（汎用）</h3><ul>
+    <li>スタッフ×曜日の組をまとめて1回で登録（例: 朝会=7名×6曜日=42件が1操作）</li>
+    <li>「☀ 9:00出勤の全員」は週間シフトから自動選択する補助ボタン</li>
+    <li>既に同じ登録がある組は自動スキップ（二重登録なし）。<b>朝会専用の処理は作らない</b> — どのイベントでも同じ操作</li></ul></div>
+  <div class="note"><h3>休みとの連携（自動不参加）</h3><ul>
+    <li>週生成時: その日に休みが入っているスタッフへは展開しない</li>
+    <li>後から「休みにする」: その日の固定イベントに自動で取消印（元に戻すと復活）</li>
+    <li>展開済みの行を消さないので、週生成をやり直しても二重にならない（既存のしくみを流用）</li></ul></div>
+  <div class="note"><h3>運用イメージ</h3><ul>
+    <li>実装後、この画面から朝会を一括登録 → 以後は毎週自動。手入力もカイポケ取込との二重も解消</li>
+    <li>時間変更・廃止はカードの ✎ / 🗑（次の週生成から反映）</li></ul></div>
+</div>
+
+<script>
+  const $=s=>document.querySelector(s);
+  function pv(){
+    const w=document.querySelectorAll('#wd button.on').length;
+    const s=document.querySelectorAll('#sg input:checked').length;
+    $('#pv').textContent = (w&&s) ? `${s}名 × ${w}曜日 = ${s*w}件の固定イベントを登録します（既に同じ登録がある分は自動でスキップ）`
+      : '曜日とスタッフを選んでください';
+  }
+  document.querySelectorAll('#wd button').forEach(b=>b.addEventListener('click',()=>{b.classList.toggle('on');pv();}));
+  $('#sc-all').addEventListener('click',()=>{document.querySelectorAll('#wd button').forEach(b=>b.classList.add('on'));pv();});
+  $('#sc-wk').addEventListener('click',()=>{document.querySelectorAll('#wd button').forEach((b,i)=>b.classList.toggle('on',i<5));pv();});
+  $('#sc-clear').addEventListener('click',()=>{document.querySelectorAll('#wd button').forEach(b=>b.classList.remove('on'));pv();});
+  $('#sg').addEventListener('change',pv);
+  $('#sel-9').addEventListener('click',()=>{document.querySelectorAll('#sg input').forEach(c=>c.checked=true);pv();});
+  $('#sel-all').addEventListener('click',()=>{document.querySelectorAll('#sg input').forEach(c=>c.checked=true);pv();});
+  $('#sel-none').addEventListener('click',()=>{document.querySelectorAll('#sg input').forEach(c=>c.checked=false);pv();});
+  $('#tpl').addEventListener('change',e=>{
+    if(e.target.value==='asakai'){$('#f-title').value='朝会';$('#f-s').value='09:00';$('#f-e').value='09:15';}
+    if(e.target.value==='conf'){$('#f-title').value='カンファレンス';$('#f-s').value='13:00';$('#f-e').value='14:00';}
+  });
+  pv();
+</script>
+</html>

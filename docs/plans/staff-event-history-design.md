@@ -140,7 +140,18 @@ sort_order int / is_active bool default true
 - イベントのカテゴリタグ列 (会議/面談/新規契約/患者対応… タイトル接頭辞の正規化)
 - 固定イベントの「隔週」「毎月第N曜」対応 (現要望は毎日/毎週のみ)
 
-## 5. 実装順序とテスト方針
+## 5. UIモック (2026-08-24・PO確認用)
+
+ピクセルの正典。各モックはタブ・検索・プルダウン等を実際に操作できる。
+
+| # | ファイル | 対象箇所 |
+|---|---|---|
+| ① | `docs/mockups/event-history-filter-mock.html` | スタッフ詳細「研修日 / イベント」カード: 期間タブ(既定=今後)+検索+チップ+行の⋯メニュー(☆/📌) |
+| ② | `docs/mockups/event-templates-mock.html` | ひな形管理: スタッフ一覧上部(共通)+スタッフ詳細(個人)+履歴から追加 |
+| ③ | `docs/mockups/event-add-dialog-mock.html` | イベント追加ダイアログ: ひな形プルダウン(共通/個人)+☆保存+📌毎週固定化 |
+| ④ | `docs/mockups/event-defaults-bulk-mock.html` | 固定イベント: 一括登録ダイアログ(N名×N曜日プレビュー・9:00出勤全員選択)+カード曜日まとめ表示+休み自動不参加の見え方 |
+
+## 6. 実装順序とテスト方針
 
 Phase 1 → 2 → 3 の順 (各 Phase 独立デプロイ可)。Phase 3 の休み連携のみ
 staff-off-week (op_group/undo) と絡むため回帰テスト必須:

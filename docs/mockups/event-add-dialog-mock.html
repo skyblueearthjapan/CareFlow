@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>③イベント追加ダイアログ 試案</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --brand:#e15a7f; --brand-light:#ffd6e0; --brand-50:#fff5f8; --leaf:#3f9d5a; --leaf-bg:#eaf7ed; --upd:#c97a12; --upd-bg:#fdf3e2; --del:#2f7fd1; --del-bg:#e8f1fb;
+    --cream:#faf7f2; --panel:#fff; --line:#e5e7eb; --line-soft:#f1ece6; --ink:#1f2937; --ink2:#5f5a55; --ink3:#8f877f;
+    --sans:"Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic UI","Meiryo",system-ui,sans-serif; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --cream:#1c1a19; --panel:#262321; --line:#3a3632; --line-soft:#302c29; --ink:#f1ece6; --ink2:#c6bdb3; --brand-50:#3a242b; --brand-light:#5a3140; --leaf-bg:#243a2b; --upd-bg:#3d2e16; --del-bg:#1d2d40; } }
+  :root[data-theme="dark"] { --cream:#1c1a19; --panel:#262321; --line:#3a3632; --line-soft:#302c29; --ink:#f1ece6; --ink2:#c6bdb3; --brand-50:#3a242b; --brand-light:#5a3140; --leaf-bg:#243a2b; --upd-bg:#3d2e16; --del-bg:#1d2d40; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--cream); color:var(--ink); font-family:var(--sans); font-size:14px; line-height:1.5; }
+  button { font-family:inherit; cursor:pointer; border:1px solid var(--line); background:var(--panel); color:inherit; border-radius:8px; padding:5px 11px; font-size:13px; }
+  button:hover { background:var(--line-soft); }
+  button.primary { background:var(--brand); border-color:var(--brand); color:#fff; font-weight:700; }
+  input, select, textarea { font-family:inherit; font-size:13px; border:1px solid var(--line); border-radius:8px; padding:6px 9px; background:var(--panel); color:inherit; width:100%; }
+  label.fl { display:block; font-size:12px; font-weight:700; color:var(--ink2); margin-bottom:3px; }
+  .mast { max-width:860px; margin:0 auto; padding:24px 20px 8px; }
+  .mast h1 { font-size:20px; margin:0 0 4px; } .mast h1 em { font-style:normal; color:var(--brand); }
+  .mast p { margin:0; color:var(--ink2); font-size:13px; max-width:80ch; }
+  .frame { max-width:860px; margin:16px auto 8px; padding:0 20px; display:flex; justify-content:center; }
+  .dlg { background:var(--panel); border:1px solid var(--line); border-radius:14px; box-shadow:0 18px 48px rgba(31,41,55,.18); width:460px; max-width:100%; padding:18px 20px; }
+  .dlg h2 { margin:0 0 2px; font-size:16px; }
+  .dlg .sub { font-size:12px; color:var(--ink3); margin-bottom:12px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .fld { margin-bottom:10px; }
+  /* ひな形バー */
+  .tplbar { background:var(--brand-50); border:1px solid var(--brand-light); border-radius:10px; padding:9px 11px; margin-bottom:12px; }
+  .tplbar .fl { color:var(--brand); }
+  .tplbar select { border-color:var(--brand-light); }
+  .tplnote { font-size:11.5px; color:var(--ink3); margin-top:4px; display:none; }
+  .tplnote.show { display:block; color:var(--leaf); font-weight:700; }
+  /* スタッフ選択 */
+  .staffbox { border:1px solid var(--line); border-radius:9px; max-height:120px; overflow:auto; padding:4px; }
+  .staffbox label { display:flex; gap:8px; align-items:center; padding:3px 7px; border-radius:6px; font-size:13px; cursor:pointer; }
+  .staffbox label:hover { background:var(--line-soft); }
+  .cntline { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:3px; }
+  .cntline .n { font-size:11.5px; color:var(--ink3); font-variant-numeric:tabular-nums; }
+  /* 下部オプション */
+  .opts { border-top:1px dashed var(--line); margin-top:12px; padding-top:10px; display:grid; gap:8px; }
+  .opt { display:flex; gap:8px; align-items:flex-start; font-size:13px; }
+  .opt input[type=checkbox] { width:auto; margin-top:2px; }
+  .opt .d { font-size:11.5px; color:var(--ink3); }
+  .opt .extra { margin-top:6px; display:none; gap:6px; align-items:center; flex-wrap:wrap; font-size:12.5px; }
+  .opt .extra.show { display:flex; }
+  .opt .extra select { width:auto; }
+  .wdchips { display:inline-flex; gap:4px; }
+  .wdchips button { padding:2px 8px; border-radius:999px; font-size:12px; }
+  .wdchips button.on { background:var(--brand); border-color:var(--brand); color:#fff; font-weight:700; }
+  .foot { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
+  .notes { max-width:860px; margin:20px auto 40px; padding:0 20px; display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; }
+  .note { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:13px; line-height:1.6; }
+  .note h3 { margin:0 0 6px; font-size:13px; color:var(--brand); } .note ul { margin:0; padding-left:18px; }
+</style>
+<div class="mast">
+  <h1>③ イベント追加ダイアログ 試案 — <em>ひな形プルダウン</em> + ☆保存 + 📌固定化</h1>
+  <p>スケジュール画面の「＋イベント」（複数スタッフ一括）とスタッフマスタの「追加」の両方に同じ改修を入れる。<b>上部のひな形プルダウンで選ぶと下のフォームが埋まり</b>、あとは登録を押すだけ。試しにプルダウンから選んでみてください。</p>
+</div>
+
+<div class="frame">
+  <div class="dlg">
+    <h2>スタッフの打合せ・イベントを追加</h2>
+    <div class="sub">参加するスタッフを選んで登録します（複数選択可）。</div>
+
+    <!-- 新設: ひな形プルダウン -->
+    <div class="tplbar">
+      <label class="fl" for="tpl">📋 ひな形から選ぶ（任意）</label>
+      <select id="tpl">
+        <option value="">— ひな形を使わず手入力 —</option>
+        <optgroup label="共通">
+          <option value="conf">カンファレンス（13:00〜14:00）</option>
+          <option value="tanto">サービス担当者会議 🔒（時間はその場で）</option>
+          <option value="kenshu">社内研修（Zoom）（研修・14:00〜15:30）</option>
+        </optgroup>
+        <optgroup label="髙梨さんの個人ひな形">
+          <option value="mendan">面談 松岡（14:00〜15:00）</option>
+        </optgroup>
+      </select>
+      <div class="tplnote" id="tplnote">✓ ひな形の内容をフォームに反映しました（手直しできます）</div>
+    </div>
+
+    <div class="fld">
+      <div class="cntline"><label class="fl" style="margin:0">参加スタッフ</label><span class="n" id="scount">1 名選択中</span></div>
+      <input placeholder="名前で絞り込み" style="margin-bottom:5px">
+      <div class="staffbox" id="staffbox">
+        <label><input type="checkbox" checked> 川名　千恵</label>
+        <label><input type="checkbox"> 熊澤　妙子</label>
+        <label><input type="checkbox"> 高岡　真由美</label>
+        <label><input type="checkbox"> 本名　大</label>
+        <label><input type="checkbox"> 宇田川　優莉</label>
+        <label><input type="checkbox" checked> 髙梨　桂子</label>
+        <label><input type="checkbox"> 小西　彩稀</label>
+      </div>
+    </div>
+
+    <div class="grid2 fld">
+      <div><label class="fl">日付</label><input type="date" id="f-date" value="2026-08-26"></div>
+      <div><label class="fl">種別</label><select id="f-type"><option>イベント</option><option>研修</option></select></div>
+    </div>
+    <div class="fld"><label class="fl">タイトル</label><input id="f-title" placeholder="例: 週次打合せ"></div>
+    <div class="grid2 fld">
+      <div><label class="fl">開始時刻</label><input type="time" id="f-start" value="09:00"></div>
+      <div><label class="fl">終了時刻</label><input type="time" id="f-end" value="17:00"></div>
+    </div>
+    <div class="fld"><label class="fl">備考</label><textarea rows="2" id="f-note"></textarea></div>
+
+    <!-- 新設: 保存オプション -->
+    <div class="opts">
+      <label class="opt">
+        <input type="checkbox" id="saveTpl">
+        <span>☆ この内容をひな形に保存する
+          <span class="extra" id="saveTplX">保存先:
+            <select><option>共通（全員のプルダウンに出す）</option><option>選択中スタッフの個人ひな形</option></select>
+          </span>
+        </span>
+      </label>
+      <label class="opt">
+        <input type="checkbox" id="fixWk">
+        <span>📌 毎週の固定イベントにする（選択スタッフ全員）
+          <span class="d">— 週生成のたびに自動でこの予定が入ります</span>
+          <span class="extra" id="fixWkX">曜日:
+            <span class="wdchips" id="wdchips">
+              <button type="button">月</button><button type="button">火</button><button type="button" class="on">水</button><button type="button">木</button><button type="button">金</button><button type="button">土</button>
+            </span>
+            <button type="button" id="daily">毎日(月〜土)</button>
+          </span>
+        </span>
+      </label>
+    </div>
+
+    <div class="foot">
+      <button>キャンセル</button>
+      <button class="primary" id="submit">この内容で登録（2 名）</button>
+    </div>
+  </div>
+</div>
+
+<div class="notes">
+  <div class="note"><h3>ひな形プルダウン</h3><ul>
+    <li>「共通」→「選択中スタッフの個人」の順で表示（モック②で登録したもの）</li>
+    <li>選ぶとタイトル・種別・時刻・🔒・備考が埋まる。<b>その後の手直しは自由</b></li>
+    <li>プルダウンは入力補助であり、選ばず従来どおり手入力も可能</li></ul></div>
+  <div class="note"><h3>☆ ひな形に保存</h3><ul>
+    <li>今入力した内容を次回から使えるようにする（管理カードに行が増える）</li>
+    <li>保存先は共通 / 個人を選択</li></ul></div>
+  <div class="note"><h3>📌 毎週固定にする</h3><ul>
+    <li>チェックすると曜日選択が出る。既定=入力中の日付の曜日。「毎日(月〜土)」ボタンで全曜日ON</li>
+    <li>登録時に、この予定（今週分）+ 選択スタッフ×選択曜日の固定イベント既定を同時に作成</li>
+    <li>以後は週生成のたびに自動で入る。外したい週は従来の「今週だけ外す」（モック④で休みは自動不参加）</li></ul></div>
+</div>
+
+<script>
+  const TPL = {
+    conf:   {title:'カンファレンス', type:'イベント', s:'13:00', e:'14:00', note:''},
+    tanto:  {title:'サービス担当者会議', type:'イベント', s:'', e:'', note:'🔒 絶対に潰せないイベント'},
+    kenshu: {title:'社内研修（Zoom）', type:'研修', s:'14:00', e:'15:30', note:''},
+    mendan: {title:'面談 松岡', type:'イベント', s:'14:00', e:'15:00', note:''},
+  };
+  const $=s=>document.querySelector(s);
+  $('#tpl').addEventListener('change', e=>{
+    const t = TPL[e.target.value];
+    $('#tplnote').classList.toggle('show', !!t);
+    if (!t) return;
+    $('#f-title').value=t.title; $('#f-type').value=t.type;
+    if(t.s) $('#f-start').value=t.s; if(t.e) $('#f-end').value=t.e;
+    $('#f-note').value=t.note;
+  });
+  $('#saveTpl').addEventListener('change', e=>$('#saveTplX').classList.toggle('show', e.target.checked));
+  $('#fixWk').addEventListener('change', e=>$('#fixWkX').classList.toggle('show', e.target.checked));
+  document.querySelectorAll('#wdchips button').forEach(b=>b.addEventListener('click',()=>b.classList.toggle('on')));
+  $('#daily').addEventListener('click',()=>document.querySelectorAll('#wdchips button').forEach(b=>b.classList.add('on')));
+  const box=$('#staffbox');
+  box.addEventListener('change',()=>{
+    const n=box.querySelectorAll('input:checked').length;
+    $('#scount').textContent=`${n} 名選択中`;
+    $('#submit').textContent=`この内容で登録（${n} 名）`;
+  });
+</script>
+</html>

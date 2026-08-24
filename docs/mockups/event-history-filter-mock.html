@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>①イベント一覧の絞り込み・検索 試案</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --brand:#e15a7f; --brand-light:#ffd6e0; --brand-50:#fff5f8; --leaf:#3f9d5a; --leaf-bg:#eaf7ed; --upd:#c97a12; --upd-bg:#fdf3e2; --del:#2f7fd1; --del-bg:#e8f1fb;
+    --cream:#faf7f2; --panel:#fff; --line:#e5e7eb; --line-soft:#f1ece6; --ink:#1f2937; --ink2:#5f5a55; --ink3:#8f877f;
+    --sans:"Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic UI","Meiryo",system-ui,sans-serif; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --cream:#1c1a19; --panel:#262321; --line:#3a3632; --line-soft:#302c29; --ink:#f1ece6; --ink2:#c6bdb3; --ink3:#8f877f; --brand-50:#3a242b; --brand-light:#5a3140; --leaf-bg:#243a2b; --upd-bg:#3d2e16; --del-bg:#1d2d40; } }
+  :root[data-theme="dark"] { --cream:#1c1a19; --panel:#262321; --line:#3a3632; --line-soft:#302c29; --ink:#f1ece6; --ink2:#c6bdb3; --ink3:#8f877f; --brand-50:#3a242b; --brand-light:#5a3140; --leaf-bg:#243a2b; --upd-bg:#3d2e16; --del-bg:#1d2d40; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--cream); color:var(--ink); font-family:var(--sans); font-size:14px; line-height:1.5; }
+  button { font-family:inherit; cursor:pointer; border:1px solid var(--line); background:var(--panel); color:inherit; border-radius:8px; padding:5px 11px; font-size:13px; }
+  button:hover { background:var(--line-soft); }
+  .mast { max-width:860px; margin:0 auto; padding:24px 20px 8px; }
+  .mast h1 { font-size:20px; margin:0 0 4px; } .mast h1 em { font-style:normal; color:var(--brand); }
+  .mast p { margin:0; color:var(--ink2); font-size:13px; max-width:80ch; }
+  .frame { max-width:860px; margin:16px auto 20px; padding:0 20px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 28px rgba(31,41,55,.08); }
+  .card-h { display:flex; align-items:center; justify-content:space-between; padding:14px 18px 0; }
+  .card-h h2 { margin:0; font-size:16px; }
+  .card-b { padding:12px 18px 16px; }
+  /* --- 新設: フィルタバー --- */
+  .fbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }
+  .tabs { display:inline-flex; border:1px solid var(--line); border-radius:9px; overflow:hidden; }
+  .tabs button { border:none; border-radius:0; padding:5px 13px; background:var(--panel); }
+  .tabs button + button { border-left:1px solid var(--line); }
+  .tabs button.on { background:var(--brand); color:#fff; font-weight:700; }
+  .search { flex:1; min-width:180px; position:relative; }
+  .search input { width:100%; height:32px; border:1px solid var(--line); border-radius:8px; padding:0 10px 0 30px; font:inherit; font-size:13px; background:var(--panel); color:inherit; }
+  .search::before { content:"🔍"; position:absolute; left:8px; top:6px; font-size:13px; opacity:.6; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { border-radius:999px; padding:3px 11px; font-size:12px; }
+  .chip.on { background:var(--ink); color:var(--cream); border-color:var(--ink); font-weight:700; }
+  .cnt { width:100%; font-size:12px; color:var(--ink3); display:flex; gap:8px; align-items:center; }
+  .cnt .clear { color:var(--brand); cursor:pointer; text-decoration:underline; }
+  /* --- 一覧 (現行の意匠を踏襲) --- */
+  .ev { display:flex; align-items:center; justify-content:space-between; gap:12px; border:1px solid var(--line); border-radius:10px; padding:9px 12px; margin-bottom:8px; }
+  .ev .pill { display:inline-block; border:1px solid var(--line); background:var(--line-soft); border-radius:999px; padding:1px 9px; font-size:11px; color:var(--ink2); margin-right:8px; }
+  .ev .pill.kaipoke { background:var(--del-bg); border-color:var(--del); color:var(--del); }
+  .ev .pill.fixed { background:var(--leaf-bg); border-color:var(--leaf); color:var(--leaf); }
+  .ev .pill.training { background:var(--upd-bg); border-color:var(--upd); color:var(--upd); }
+  .ev .ti { font-weight:700; }
+  .ev .dt { color:var(--ink2); font-size:12.5px; font-variant-numeric:tabular-nums; margin-top:1px; }
+  .ev.today { border-color:var(--brand); background:var(--brand-50); }
+  .ev .acts { display:flex; gap:6px; align-items:center; flex-shrink:0; }
+  .ev .menu { position:relative; }
+  .menu-pop { position:absolute; right:0; top:34px; z-index:5; background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 28px rgba(31,41,55,.18); padding:5px; width:220px; display:none; }
+  .menu-pop.open { display:block; }
+  .menu-pop button { display:block; width:100%; text-align:left; border:none; border-radius:7px; padding:7px 10px; }
+  .empty { color:var(--ink3); font-size:13px; padding:16px 4px; text-align:center; }
+  .notes { max-width:860px; margin:0 auto 40px; padding:0 20px; display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; }
+  .note { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:13px; line-height:1.6; }
+  .note h3 { margin:0 0 6px; font-size:13px; color:var(--brand); } .note ul { margin:0; padding-left:18px; }
+</style>
+<div class="mast">
+  <h1>① イベント一覧の<em>絞り込み・検索</em> 試案 — スタッフ詳細「研修日 / イベント」カード</h1>
+  <p>既定は<b>「今後」の予定を近い順</b>。増える一方だった箇条書きを、期間タブ + 検索 + 種類チップで絞り込める。実際に触って動きを確認できます（データは本番の実例を模したダミー・今日=8/24(月) の想定）。</p>
+</div>
+
+<div class="frame">
+  <div class="card">
+    <div class="card-h">
+      <h2>研修日 / イベント</h2>
+      <button>＋ 追加</button>
+    </div>
+    <div class="card-b">
+      <div class="fbar">
+        <div class="tabs" id="tabs">
+          <button data-tab="future" class="on">今後</button>
+          <button data-tab="week">今週</button>
+          <button data-tab="past">過去</button>
+          <button data-tab="all">すべて</button>
+        </div>
+        <div class="search"><input id="q" placeholder="タイトル・備考で検索（患者名・会議名など）"></div>
+        <div class="chips">
+          <button class="chip" id="chip-regular">定例を隠す</button>
+          <button class="chip" data-src="kaipoke">カイポケ取込</button>
+          <button class="chip" data-src="manual">手動</button>
+          <button class="chip" id="chip-training">研修のみ</button>
+        </div>
+        <div class="cnt"><span id="cnt"></span><span class="clear" id="clear" style="display:none">絞り込みを解除</span></div>
+      </div>
+      <div id="list"></div>
+    </div>
+  </div>
+</div>
+
+<div class="notes">
+  <div class="note"><h3>期間タブ</h3><ul>
+    <li><b>今後</b>（既定）= 今日以降を近い順。今日の行は薄桃色で強調</li>
+    <li><b>今週</b> = 月〜日 / <b>過去</b> = 昨日以前を新しい順（遡り）</li>
+    <li><b>すべて</b> = 全期間を古い順（現状と同じ並び）</li></ul></div>
+  <div class="note"><h3>検索とチップ</h3><ul>
+    <li>検索はタイトル+備考の部分一致。「患者さん別」「会議別」はここで拾う（例:「鈴木」「面談」で試せます）</li>
+    <li><b>定例を隠す</b> = 朝会・休みなどの毎回同じものを除外（実データの66%が朝会のため）</li>
+    <li>出所チップ（カイポケ取込/手動）は排他、研修のみは種別絞り込み</li></ul></div>
+  <div class="note"><h3>行の「⋯」メニュー（Phase 2/3 への入口）</h3><ul>
+    <li><b>☆ ひな形に保存</b> → プルダウン用の定型に登録（モック③）</li>
+    <li><b>📌 毎週固定にする</b> → タイトル・時刻を引き継いで固定イベント化（モック④）</li>
+    <li>過去の履歴を「資産」として再利用する導線をここに置く</li></ul></div>
+</div>
+
+<script>
+  // 今日 = 2026-08-24 (月) 想定のダミーデータ
+  const TODAY = '2026-08-24';
+  const WEEK_START = '2026-08-24', WEEK_END = '2026-08-30';
+  const EV = [];
+  // 朝会 (定例): 8/10〜9/5 の月〜土
+  for (const d of ['08-10','08-11','08-12','08-13','08-14','08-15','08-17','08-18','08-19','08-20','08-21','08-22','08-24','08-25','08-26','08-27','08-28','08-29','08-31','09-01','09-02','09-03','09-04','09-05']) {
+    EV.push({date:'2026-'+d, s:'09:00', e:'09:15', title:'朝会', type:'event', src: d<'08-24'?'kaipoke':'fixed', regular:true});
+  }
+  EV.push(
+    {date:'2026-08-12', s:'13:00', e:'14:00', title:'カンファレンス', type:'event', src:'kaipoke'},
+    {date:'2026-08-14', s:'15:00', e:'16:00', title:'面談 松岡', type:'event', src:'manual'},
+    {date:'2026-08-18', s:'10:30', e:'11:30', title:'新規契約：いちのせゆりあ様', type:'event', src:'manual', note:'ご自宅にて'},
+    {date:'2026-08-19', s:'14:00', e:'15:30', title:'研修：利用者様に安心を届ける基本マナー（Zoom）', type:'training', src:'manual'},
+    {date:'2026-08-21', s:'16:00', e:'17:00', title:'鈴木乃愛様 担当者会議 草野中学校', type:'event', src:'manual'},
+    {date:'2026-08-22', s:'09:30', e:'10:00', title:'休み', type:'event', src:'kaipoke', regular:true},
+    {date:'2026-08-25', s:'13:30', e:'14:30', title:'カンファレンス', type:'event', src:'kaipoke'},
+    {date:'2026-08-26', s:'11:00', e:'12:00', title:'打合せ：川名', type:'event', src:'manual'},
+    {date:'2026-08-27', s:'15:00', e:'16:00', title:'意見交換会（磯辺中学校）', type:'event', src:'manual'},
+    {date:'2026-08-28', s:'10:00', e:'10:30', title:'清水政憲様：歯科薬お渡し', type:'event', src:'manual'},
+    {date:'2026-09-01', s:'14:00', e:'15:00', title:'面談 松岡', type:'event', src:'manual'},
+    {date:'2026-09-03', s:'13:00', e:'15:00', title:'新入職研修', type:'training', src:'manual', note:'小西さん向け'},
+    {date:'2026-09-08', s:'16:00', e:'17:00', title:'鈴木乃愛様 担当者会議 草野中学校', type:'event', src:'manual'},
+  );
+  const WD = ['日','月','火','水','木','金','土'];
+  let tab='future', q='', hideReg=false, src=null, trainOnly=false;
+  const $=s=>document.querySelector(s);
+  function srcPill(s){ return s==='kaipoke' ? '<span class="pill kaipoke">カイポケ</span>' : s==='fixed' ? '<span class="pill fixed">固定</span>' : ''; }
+  function render(){
+    let rows = EV.slice();
+    if (tab==='future') rows = rows.filter(r=>r.date>=TODAY).sort((a,b)=>(a.date+a.s).localeCompare(b.date+b.s));
+    if (tab==='week')   rows = rows.filter(r=>r.date>=WEEK_START&&r.date<=WEEK_END).sort((a,b)=>(a.date+a.s).localeCompare(b.date+b.s));
+    if (tab==='past')   rows = rows.filter(r=>r.date<TODAY).sort((a,b)=>(b.date+b.s).localeCompare(a.date+a.s));
+    if (tab==='all')    rows = rows.sort((a,b)=>(a.date+a.s).localeCompare(b.date+b.s));
+    const total = rows.length;
+    if (hideReg) rows = rows.filter(r=>!r.regular);
+    if (src) rows = rows.filter(r=>r.src===src || (src==='manual'&&r.src==='fixed'));
+    if (trainOnly) rows = rows.filter(r=>r.type==='training');
+    if (q) rows = rows.filter(r=>(r.title+(r.note||'')).includes(q));
+    const filtered = hideReg||src||trainOnly||q;
+    $('#cnt').textContent = filtered ? `${rows.length}件を表示中（全${total}件から絞り込み）` : `${rows.length}件`;
+    $('#clear').style.display = filtered ? '' : 'none';
+    $('#list').innerHTML = rows.length===0 ? '<div class="empty">該当するイベントがありません</div>' :
+      rows.map((r,i)=>{
+        const d = new Date(r.date+'T00:00:00');
+        return `<div class="ev${r.date===TODAY?' today':''}">
+          <div style="min-width:0">
+            <div><span class="pill${r.src==='kaipoke'?' kaipoke':r.src==='fixed'?' fixed':''}${r.type==='training'?' training':''}">${r.type==='training'?'研修':r.src==='kaipoke'?'カイポケ':r.src==='fixed'?'固定':'イベント'}</span><span class="ti">${r.title}</span></div>
+            <div class="dt">${r.date.slice(5).replace('-','/')} (${WD[d.getDay()]})　${r.s} 〜 ${r.e}${r.note?`　<span style="color:var(--ink3)">${r.note}</span>`:''}</div>
+          </div>
+          <div class="acts">
+            <button>✎ 編集</button>
+            <div class="menu"><button onclick="toggleMenu(event,${i})">⋯</button>
+              <div class="menu-pop" id="mp-${i}">
+                <button>☆ ひな形に保存…</button>
+                <button>📌 毎週固定にする…</button>
+              </div></div>
+          </div></div>`;
+      }).join('');
+  }
+  window.toggleMenu = (e,i)=>{ e.stopPropagation(); document.querySelectorAll('.menu-pop').forEach(m=>{ if(m.id!=='mp-'+i) m.classList.remove('open'); }); $('#mp-'+i).classList.toggle('open'); };
+  document.addEventListener('click',()=>document.querySelectorAll('.menu-pop').forEach(m=>m.classList.remove('open')));
+  $('#tabs').addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b)return; tab=b.dataset.tab; document.querySelectorAll('#tabs button').forEach(x=>x.classList.toggle('on',x===b)); render(); });
+  $('#q').addEventListener('input',e=>{ q=e.target.value.trim(); render(); });
+  $('#chip-regular').addEventListener('click',e=>{ hideReg=!hideReg; e.target.classList.toggle('on',hideReg); render(); });
+  document.querySelectorAll('.chip[data-src]').forEach(c=>c.addEventListener('click',()=>{ src = src===c.dataset.src?null:c.dataset.src; document.querySelectorAll('.chip[data-src]').forEach(x=>x.classList.toggle('on',x.dataset.src===src)); render(); }));
+  $('#chip-training').addEventListener('click',e=>{ trainOnly=!trainOnly; e.target.classList.toggle('on',trainOnly); render(); });
+  $('#clear').addEventListener('click',()=>{ q='';hideReg=false;src=null;trainOnly=false;$('#q').value=''; document.querySelectorAll('.chip').forEach(c=>c.classList.remove('on')); render(); });
+  render();
+</script>
+</html>
