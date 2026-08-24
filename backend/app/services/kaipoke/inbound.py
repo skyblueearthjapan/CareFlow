@@ -32,7 +32,8 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.models.accompaniment import Accompaniment
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
@@ -144,6 +145,22 @@ def parse_hhmm(value: str | None) -> time | None:
         return time(int(h), int(m))
     except (ValueError, AttributeError):
         return None
+
+
+def parked_start_time(base: time, seq: int) -> time:
+    """循環スワップの一時退避用 start_time (実スロットと絶対に衝突しない仮値)。
+
+    visits には部分UNIQUE ``uq_visits_pds_active``
+    (patient_id, visit_date, start_time) WHERE deleted_at IS NULL があるため、
+    互いに相手の枠へ移る 2 件 (8/10 13:00 ↔ 8/13 13:00 など) は「両方を一旦
+    どかしてから確定する」以外に適用手段がない。実データの start_time は分単位
+    (秒=0・マイクロ秒=0) なので、マイクロ秒に連番を載せた値は実在スロットと
+    衝突しない。``strftime('%H:%M')`` 表示も変わらないため、途中で detail 文言に
+    紛れ込んでも見た目は壊れない (それでも比較は退避前の値で行う)。
+
+    seq は 1..999999 へ丸める (同一実行内の退避同士も別値にするための連番)。
+    """
+    return time(base.hour, base.minute, base.second, (seq % 999_999) + 1)
 
 
 async def load_week_visit_index(
@@ -444,7 +461,14 @@ async def apply_inbound_items(
             p.id: p.primary_office_id for p in prows.all() if p.primary_office_id is not None
         }
 
+    # 事前パスで解決した visit のキャッシュ。循環スワップの一時退避中は
+    # ``index`` のキーが動くため、退避後に index 経由で引き直すと見失う。
+    resolved_cache: dict[uuid.UUID, Visit] = {}
+
     async def _resolve_visit(item: CorrectionSheetItem, target_date: date) -> Visit | None:
+        cached = resolved_cache.get(item.id)
+        if cached is not None and cached.deleted_at is None:
+            return cached
         b = item.before or {}
         st = parse_hhmm(str(b.get("start_time") or ""))
         visit: Visit | None = None
@@ -510,17 +534,259 @@ async def apply_inbound_items(
             if pid is not None:
                 ng_pairs.append((pid, takeover_sid, takeover_date, takeover_code))
 
+    # --- 移動グラフの事前パス (スワップ/玉突き対応・2026-08-24 本番障害の根治) ---
+    # 事故: 井川様の訪問 2 件が 8/10 ↔ 8/13 (同時刻 13:00) の日付入れ替えとして
+    # date_change に出た際、移動先の占有チェックが **両方を failed** にした
+    # (どちらを先に処理しても相手が枠に居座る恒久デッドロック)。
+    #
+    # 対策: 移動系 item の「移動元キー → 移動先キー」を先に洗い出し、
+    #   * 玉突き (A→B, B→C)  … 依存の深い順に並べ替えるだけで自然に解ける
+    #   * 循環  (A↔B / A→B→C→A) … 循環メンバーを一旦マイクロ秒付きの仮枠へ退避して
+    #     から順に確定する (savepoint で循環単位を原子化・``_cycle_open/_cycle_close``)
+    # 移動先を塞ぐのが **バッチ外** の訪問なら従来どおり item 単位 failed のまま。
+    #
+    # 各ノードの出次数は高々 1 (移動先キーを占有する mover は多くて 1 件) の
+    # 関数グラフなので、単純な追跡で鎖と循環を分類できる。
+    move_visit_of_item: dict[uuid.UUID, uuid.UUID] = {}
+    move_visit_obj: dict[uuid.UUID, Visit] = {}
+    move_dst: dict[uuid.UUID, tuple[uuid.UUID, date, time]] = {}
+    move_by_src: dict[tuple[uuid.UUID, date, time], uuid.UUID] = {}
+    for it in items:
+        if it.action not in ("edit", "date_change") or it.patient_id is None:
+            continue
+        b, a = it.before or {}, it.after or {}
+        try:
+            d = int(str(b.get("date") or a.get("date")))
+        except (TypeError, ValueError):
+            continue
+        td = day_to_date(d, week_start, week_end)
+        if td is None or (day_set is not None and td not in day_set):
+            continue
+        mv = await _resolve_visit(it, td)
+        if mv is None:
+            continue
+        resolved_cache[it.id] = mv
+        if mv.status == VISIT_STATUS_CANCELLED or mv.id in move_visit_obj:
+            continue
+        s_after = parse_hhmm(str(a.get("start_time") or ""))
+        e_after = parse_hhmm(str(a.get("end_time") or ""))
+        nd: date | None = None
+        if it.action == "date_change":
+            try:
+                nd = day_to_date(int(str(a.get("date"))), week_start, week_end)
+            except (TypeError, ValueError):
+                nd = None
+        moved_time = (s_after is not None and s_after != mv.start_time) or (
+            e_after is not None and e_after != mv.end_time
+        )
+        moved_date = nd is not None and nd != mv.visit_date
+        if not (moved_time or moved_date):
+            continue
+        src_key = (mv.patient_id, mv.visit_date, mv.start_time)
+        dst_key = (
+            it.patient_id,
+            nd if (moved_date and nd is not None) else td,
+            s_after if s_after is not None else mv.start_time,
+        )
+        if src_key == dst_key:
+            continue
+        move_visit_of_item[it.id] = mv.id
+        move_visit_obj[mv.id] = mv
+        move_dst[mv.id] = dst_key
+        move_by_src.setdefault(src_key, mv.id)
+
+    def _blocked_by(vid: uuid.UUID) -> uuid.UUID | None:
+        """vid の移動先を塞いでいる「バッチ内でこれから移動する訪問」。"""
+        nxt = move_by_src.get(move_dst[vid])
+        return nxt if nxt is not None and nxt != vid else None
+
+    cycle_group_of_visit: dict[uuid.UUID, int] = {}
+    tail_group_of_visit: dict[uuid.UUID, int | None] = {}
+    depth_of_visit: dict[uuid.UUID, int] = {}
+    cycle_members: dict[int, list[Visit]] = {}
+    next_group = 0
+    for start_vid in list(move_visit_obj):
+        if start_vid in depth_of_visit:
+            continue
+        path: list[uuid.UUID] = []
+        pos: dict[uuid.UUID, int] = {}
+        cur: uuid.UUID | None = start_vid
+        tail_group: int | None = None
+        start_depth = 0
+        while cur is not None:
+            if cur in pos:  # 循環を検出 — path[pos[cur]:] が循環メンバー
+                g = next_group
+                next_group += 1
+                cycle_members[g] = []
+                for m in path[pos[cur] :]:
+                    cycle_group_of_visit[m] = g
+                    tail_group_of_visit[m] = g
+                    depth_of_visit[m] = 0
+                    cycle_members[g].append(move_visit_obj[m])
+                tail_group = g
+                start_depth = 1
+                path = path[: pos[cur]]
+                break
+            if cur in depth_of_visit:  # 既に分類済みの鎖へ合流
+                tail_group = tail_group_of_visit.get(cur)
+                start_depth = depth_of_visit[cur] + 1
+                break
+            pos[cur] = len(path)
+            path.append(cur)
+            cur = _blocked_by(cur)
+        for i, m in enumerate(reversed(path)):
+            depth_of_visit[m] = start_depth + i
+            tail_group_of_visit[m] = tail_group
+
+    cycle_group_of_item: dict[uuid.UUID, int] = {}
+    cycle_items: dict[int, list[CorrectionSheetItem]] = {}
+    order_meta: dict[uuid.UUID, tuple[int, int]] = {}
+    for it in items:
+        mvid = move_visit_of_item.get(it.id)
+        if mvid is None:
+            continue
+        tg = tail_group_of_visit.get(mvid)
+        # phase: 0 = 循環と無関係 / g+1 = 循環グループ g とその後続。
+        # depth: 0 = 依存なし (従来位置) / n = n 件の移動を待つ。
+        order_meta[it.id] = (0 if tg is None else tg + 1, depth_of_visit.get(mvid, 0))
+        cg = cycle_group_of_visit.get(mvid)
+        if cg is not None:
+            cycle_group_of_item[it.id] = cg
+            cycle_items.setdefault(cg, []).append(it)
+
     # 適用順序: キャンセル/変更 → 追加 (設計 §8 共通原則)。delete で空いた同時刻の
     # 枠へ add が入る玉突きケースを確実に成立させるため明示ソートする (安定ソート
     # なので同アクション内の相対順序は保たれる)。2026-07-26 まではシート挿入順に
     # 依存しており、同時刻の delete+add ペアが順序次第で失敗していた。
-    items = sorted(items, key=lambda it: it.action == "add")
+    # 2026-08-24 追加: 移動系は上で求めた (phase, depth) で並べ替える。依存の無い
+    # item は (0, 0) = 従来位置のままなので、既存の並びは実質変わらない。
+    items = sorted(items, key=lambda it: (it.action == "add", *order_meta.get(it.id, (0, 0))))
     # この実行で「キャンセルされる予定」の visit id 集合。dry-run では status を
     # 書き換えないため、add 側の復活判定 (下記) の予測に使う (dry-run の結果が
     # 実適用と一致するように)。
     pending_cancelled: set[uuid.UUID] = set()
 
+    # --- 循環スワップの一時退避 (savepoint で循環単位を原子化) ----------------
+    # 循環グループの item は上のソートで**連続**して並ぶので、グループの入り口で
+    # 退避 (+savepoint)・出口で確定 (commit) または巻き戻し (rollback) する。
+    # 巻き戻し時は循環メンバー全員を failed に統一する — 半端に仮値 (マイクロ秒付き
+    # start_time) のまま commit されることが絶対にないようにするため。
+    parked_start: dict[uuid.UUID, time] = {}
+    park_seq = 0
+    cycle_ctx: dict[str, Any] = {
+        "group": None,
+        "sp": None,
+        "visits": [],
+        "result_start": 0,
+        "counts": None,
+        "courses": None,
+    }
+
+    async def _cycle_open(g: int) -> None:
+        nonlocal park_seq
+        by_id: dict[uuid.UUID, Visit] = {}
+        for m in cycle_members.get(g, []):
+            for pv in await _group_partners(db, m):
+                by_id[pv.id] = pv
+        members = list(by_id.values())
+        sp = None
+        courses = None
+        if not dry_run:
+            # savepoint より前の未 flush 変更が rollback で失われないように先に流す。
+            await db.flush()
+            sp = await db.begin_nested()
+            courses = (
+                dict(course_idx.by_id),
+                dict(course_idx.by_staff),
+                {k: set(v) for k, v in course_idx.codes_in_use.items()},
+            )
+        for v in members:
+            parked_start[v.id] = v.start_time
+            index.pop((v.patient_id, v.visit_date, v.start_time), None)
+        if not dry_run:
+            for v in members:
+                park_seq += 1
+                v.start_time = parked_start_time(parked_start[v.id], park_seq)
+            await db.flush()
+        cycle_ctx.update(
+            group=g,
+            sp=sp,
+            visits=members,
+            result_start=len(summary.results),
+            counts=(
+                summary.cancelled,
+                summary.updated,
+                summary.added,
+                summary.skipped,
+                summary.failed,
+            ),
+            courses=courses,
+        )
+
+    async def _cycle_close() -> None:
+        g = cycle_ctx["group"]
+        if g is None:
+            return
+        sp = cycle_ctx["sp"]
+        members: list[Visit] = cycle_ctx["visits"]
+        start: int = cycle_ctx["result_start"]
+        group_results = summary.results[start:]
+        # 仮値が残っている = どこかで確定に至らなかった (skipped 等) → 巻き戻す。
+        stuck = (not dry_run) and any(v.start_time.microsecond != 0 for v in members)
+        broken = stuck or any(r.outcome == "failed" for r in group_results)
+        if broken:
+            if sp is not None:
+                await sp.rollback()
+                # savepoint rollback は変更済みオブジェクトを expire する。async では
+                # 期限切れ属性の遅延ロードが MissingGreenlet になるため読み直す。
+                for obj in list(db.identity_map.values()):
+                    state = sa_inspect(obj, raiseerr=False)
+                    if state is not None and state.persistent and state.expired:
+                        try:
+                            await db.refresh(obj)
+                        except SQLAlchemyError:  # 行ごと巻き戻っていれば捨てる
+                            db.expunge(obj)
+                by_id, by_staff, codes = cycle_ctx["courses"]
+                course_idx.by_id = by_id
+                course_idx.by_staff = by_staff
+                course_idx.codes_in_use = codes
+            del summary.results[start:]
+            (
+                summary.cancelled,
+                summary.updated,
+                summary.added,
+                summary.skipped,
+                summary.failed,
+            ) = cycle_ctx["counts"]
+            detail = "入れ替え（スワップ）の一括適用に失敗しました（差分を取り直してください）"
+            for r in group_results:
+                r.outcome = "failed"
+                r.detail = detail
+                summary.results.append(r)
+                summary.failed += 1
+            if not dry_run:
+                for it in cycle_items.get(g, []):
+                    it.comment = f"failed: {detail}"
+            for v in members:
+                for k in [key for key, vv in index.items() if vv.id == v.id]:
+                    index.pop(k, None)
+                index[(v.patient_id, v.visit_date, v.start_time)] = v
+        elif sp is not None:
+            await sp.commit()
+        for v in members:
+            parked_start.pop(v.id, None)
+        cycle_ctx.update(group=None, sp=None, visits=[], courses=None)
+
+    async def _cycle_sync(item: CorrectionSheetItem | None) -> None:
+        """循環グループの境界を追従する (グループ外の item に移ったら閉じる)。"""
+        g = cycle_group_of_item.get(item.id) if item is not None else None
+        if cycle_ctx["group"] is not None and cycle_ctx["group"] != g:
+            await _cycle_close()
+        if g is not None and cycle_ctx["group"] is None:
+            await _cycle_open(g)
+
     for item in items:
+        await _cycle_sync(item)
         before = item.before or {}
         after = item.after or {}
         patient_name = str(before.get("user_name") or after.get("user_name") or "")
@@ -820,6 +1086,9 @@ async def apply_inbound_items(
             continue
 
         partners = await _group_partners(db, visit)
+        # 循環スワップで一時退避中なら、比較・表示は**退避前**の start_time で行う
+        # (退避はマイクロ秒だけの仮値なので %H:%M は同じだが等値比較がずれる)。
+        cur_start = parked_start.get(visit.id, visit.start_time)
 
         # --- delete → キャンセル ---------------------------------------------
         if item.action == "delete":
@@ -851,7 +1120,7 @@ async def apply_inbound_items(
                 )
                 continue
 
-        time_changed = (start_after is not None and start_after != visit.start_time) or (
+        time_changed = (start_after is not None and start_after != cur_start) or (
             end_after is not None and end_after != visit.end_time
         )
         date_changed = new_date is not None and new_date != visit.visit_date
@@ -865,8 +1134,11 @@ async def apply_inbound_items(
         # 500 (残りの item も巻き添え) になるため、ここで item 単位の failed に
         # 落として続行する。索引は cancelled 行も持つ ⇒ 「今週だけ取消」した枠へ
         # 別訪問を滑り込ませることも防げる (week-cockpit-design.md D1)。
+        # なお 2026-08-24 以降、「移動先を塞いでいるのが**同じバッチ内でこれから
+        # 別の場所へ移る訪問**」の場合は事前パスが順序替え/一時退避で解消するため、
+        # ここへ来るのは本当にバッチ外の訪問に塞がれているときだけになる。
         if time_changed or date_changed:
-            final_start = start_after if start_after is not None else visit.start_time
+            final_start = start_after if start_after is not None else cur_start
             occupant = index.get((item.patient_id, final_date, final_start))
             if occupant is not None and occupant.id not in {v.id for v in partners}:
                 _finish(
@@ -878,7 +1150,9 @@ async def apply_inbound_items(
                 )
                 continue
             # 移動前のキーを控える (書込後は visit の値が変わるので後から引けない)。
-            old_index_keys = [(v.patient_id, v.visit_date, v.start_time) for v in partners]
+            old_index_keys = [
+                (v.patient_id, v.visit_date, parked_start.get(v.id, v.start_time)) for v in partners
+            ]
 
         # --- スタッフ変更の解決 (R-3a: 「コースの変更」として扱う・設計 §8-1) --
         staff1_before_name = str(before.get("staff1") or "")
@@ -955,7 +1229,7 @@ async def apply_inbound_items(
                 f"{visit.visit_date.month}/{visit.visit_date.day}→{new_date.month}/{new_date.day}"
             )
         if time_changed and start_after is not None:
-            changes.append(f"{visit.start_time.strftime('%H:%M')}→{start_after.strftime('%H:%M')}")
+            changes.append(f"{cur_start.strftime('%H:%M')}→{start_after.strftime('%H:%M')}")
 
         # コース解決: 丸ごと交代 / 既存コースへ移動 / 臨時コース新設。
         course_takeover = False
@@ -1042,6 +1316,10 @@ async def apply_inbound_items(
                         v.start_time = start_after
                     if end_after is not None:
                         v.end_time = end_after
+                if v.id in parked_start:
+                    # 循環スワップの一時退避 (仮 start_time) から最終位置へ確定。
+                    # after に start_time が無い日付だけの入れ替えでも必ず戻す。
+                    v.start_time = start_after if start_after is not None else parked_start[v.id]
                 if new_sid is not None:
                     if target_course is not None and not course_takeover:
                         v.course_id = target_course.id
@@ -1085,11 +1363,14 @@ async def apply_inbound_items(
         # 占有済みと誤判定したり、空いた枠へ二重に移動して 500 になるのを防ぐ)。
         # dry-run でも張り替える = 予測と実適用の結果を一致させる。
         if time_changed or date_changed:
-            _final_start = start_after if start_after is not None else visit.start_time
+            _final_start = start_after if start_after is not None else cur_start
             for key in old_index_keys:
                 index.pop(key, None)
             index[(item.patient_id, final_date, _final_start)] = visit
         _finish("updated", detail, target_date)
+
+    # 最後の循環グループを確定 (または巻き戻し) する。
+    await _cycle_sync(None)
 
     if dry_run:
         summary.ng_conflicts = await collect_ng_conflicts(db, ng_pairs)

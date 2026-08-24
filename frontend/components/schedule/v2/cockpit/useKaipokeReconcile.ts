@@ -23,6 +23,7 @@
 import * as React from 'react';
 import { toast } from 'sonner';
 
+import { ApiError } from '@/lib/api-client';
 import {
   useApplyEventsInbound,
   useApplyInbound,
@@ -79,6 +80,21 @@ const STALE_MS = 15 * 60_000; // §7-3 鮮度
 
 const msg = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
+/**
+ * apply-inbound の 409 (BE detail='sheet already applied')。
+ *
+ * シートは 1 回の適用で applied になるため、失敗行が画面に残ったまま「取り込む」を
+ * 再押下すると必ずこれになる。生の `API 409 (...)` を見せても手の打ちようがないので、
+ * 「🔄 同期確認 をやり直す」へ誘導する文言に翻訳する (2026-08-24 本番の実録)。
+ */
+export const SHEET_APPLIED_MESSAGE =
+  'この差分は既に取り込み済みです。🔄 同期確認 をもう一度実行して最新の差分を取得してください';
+
+const isSheetAlreadyApplied = (err: unknown): boolean =>
+  err instanceof ApiError &&
+  err.status === 409 &&
+  (err.body as { detail?: unknown } | null)?.detail === 'sheet already applied';
+
 export function useKaipokeReconcile({
   weekStartIso,
   canEdit,
@@ -95,6 +111,8 @@ export function useKaipokeReconcile({
   const [appliedItemIds, setAppliedItemIds] = React.useState<Set<string>>(new Set());
   const [inSheetId, setInSheetId] = React.useState<string | null>(null);
   const [busyKey, setBusyKey] = React.useState<string | null>(null);
+  /** true = 表示中の取込差分シートは既に applied (⇩ は 409 になる → 再突合が必要)。 */
+  const [sheetApplied, setSheetApplied] = React.useState(false);
 
   const live = useKaipokeLive();
   const rpaRunning = live.data?.running === true;
@@ -131,6 +149,7 @@ export function useKaipokeReconcile({
         });
         setInSheetId(res.sheetId);
         setAppliedItemIds(new Set());
+        setSheetApplied(false);
         if (!silent) toast.success(`取込差分を計算しました（${res.summary.total ?? 0} 件）`);
         return res.sheetId;
       } catch (err) {
@@ -155,6 +174,7 @@ export function useKaipokeReconcile({
     setAppliedEventIds(new Set());
     setAppliedItemIds(new Set());
     setInSheetId(null);
+    setSheetApplied(false);
     try {
       setPhase('events');
       const ev = await eventsPreviewMut.mutateAsync({ weekStart: weekStartIso });
@@ -258,6 +278,12 @@ export function useKaipokeReconcile({
   const applyVisitItems = async (items: CockpitCorrectionItem[], key: string) => {
     const sheetId = effectiveVisitSheetId;
     if (!sheetId || items.length === 0) return;
+    if (sheetApplied) {
+      // 適用済みシートへの再押下 = 確実に 409。無駄打ちさせず案内だけ出す。
+      setError(SHEET_APPLIED_MESSAGE);
+      toast.error(SHEET_APPLIED_MESSAGE);
+      return;
+    }
     const targetIds = items.map((it) => it.id);
     const days = [
       ...new Set(
@@ -309,8 +335,16 @@ export function useKaipokeReconcile({
         });
       }
     } catch (err) {
-      setError(`取込に失敗しました: ${msg(err)}`);
-      toast.error(`取込に失敗しました: ${msg(err)}`);
+      if (isSheetAlreadyApplied(err)) {
+        // シートは適用済み = この差分表は既に古い。⇩ を押させ続けても永遠に 409 に
+        // なるので、行ボタンを止めて再突合へ誘導する。
+        setSheetApplied(true);
+        setError(SHEET_APPLIED_MESSAGE);
+        toast.error(SHEET_APPLIED_MESSAGE);
+      } else {
+        setError(`取込に失敗しました: ${msg(err)}`);
+        toast.error(`取込に失敗しました: ${msg(err)}`);
+      }
     } finally {
       setBusyKey(null);
     }
@@ -402,6 +436,8 @@ export function useKaipokeReconcile({
     stale,
     rpaRunning,
     busyKey,
+    /** true = 取込差分シートが適用済み (⇩ は無効・🔄 同期確認 のやり直しが必要)。 */
+    sheetApplied,
     diffs,
     eventChanges: remainingChanges,
     visitItems: pendingVisitItems,

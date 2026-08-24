@@ -861,6 +861,30 @@ export function SyncBar({
             {closeButton}
           </h3>
 
+          {rec.sheetApplied ? (
+            // 適用済みシートに ⇩ を押すと BE が 409 を返す。押させ続けても直らないので
+            // ここで止めて再突合へ誘導する (2026-08-24 本番の実録)。
+            <div
+              className="mt-2 flex flex-wrap items-center gap-2 rounded-md bg-warning-bg px-2.5 py-2 text-[13px] text-warning-strong"
+              data-testid="sync-in-sheet-applied"
+            >
+              <span>
+                この差分は既に取り込み済みです。🔄 同期確認 をもう一度実行して最新の差分を取得してください
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-7 px-2.5 text-[12px]"
+                disabled={!canEdit || running || rec.rpaRunning}
+                data-testid="sync-in-refetch"
+                onClick={() => void rec.runFetch()}
+              >
+                🔄 同期確認をやり直す
+              </Button>
+            </div>
+          ) : null}
+
           {running && rec.diffs.length === 0 ? (
             workingBlock
           ) : rec.diffs.length === 0 ? (
@@ -876,6 +900,8 @@ export function SyncBar({
                 const desc = describeMarker(d.marker, staffNameById);
                 const dateIso = markerDateIso(d.marker);
                 const selected = selectedDiff?.id === d.id;
+                // 訪問差分は取込差分シート経由のため、シート適用済みなら押せない。
+                const inDisabled = actionsDisabled || (d.kind === 'visit' && rec.sheetApplied);
                 return (
                   <SyncStripRow
                     key={d.id}
@@ -892,7 +918,7 @@ export function SyncBar({
                       {
                         label: '取り込む',
                         primary: true,
-                        disabled: actionsDisabled,
+                        disabled: inDisabled,
                         testId: 'sync-in-apply',
                         title: 'らく助をカイポケに合わせます',
                         onClick: () => void rec.applyDiff(d),

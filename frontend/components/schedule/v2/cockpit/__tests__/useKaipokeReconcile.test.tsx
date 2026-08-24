@@ -9,6 +9,7 @@
  * ⑤ 失敗 (例外) は phase='error' + error に出る (握り潰さない)
  * ⑥ res.failed>0 は「一部の取込に失敗しました」+ 失敗項目は適用済みにしない
  * ⑦ ⇧上書きは reverse → apply の順で、訪問差分のみ
+ * ⑧ 409 (sheet already applied) は「取り込み済み・再突合を」の案内へ翻訳する
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
@@ -61,7 +62,9 @@ vi.mock('sonner', () => ({
   },
 }));
 
-import { useKaipokeReconcile } from '../useKaipokeReconcile';
+import { ApiError } from '@/lib/api-client';
+
+import { SHEET_APPLIED_MESSAGE, useKaipokeReconcile } from '../useKaipokeReconcile';
 
 // 過去日フィルタが実時計基準のため、対象週は常に「来週」を使う。
 const today = new Date();
@@ -296,6 +299,75 @@ describe('useKaipokeReconcile', () => {
     expect(reverseSheetMutateAsync.mock.invocationCallOrder[0]!).toBeLessThan(
       startApplyMutateAsync.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it('409 sheet already applied は「取り込み済み・再突合を」の案内に翻訳される', async () => {
+    applyInboundMutateAsync.mockRejectedValue(
+      new ApiError('API 409 Conflict (/api/v1/integrations/apply-inbound)', 409, {
+        detail: 'sheet already applied',
+      }),
+    );
+    const h = await renderReady();
+    const diff = h.result.current.diffs.find((d) => d.id === ITEM_1)!;
+    await act(async () => {
+      await h.result.current.applyDiff(diff);
+    });
+    expect(h.result.current.error).toBe(SHEET_APPLIED_MESSAGE);
+    expect(h.result.current.error).not.toContain('409');
+    expect(toastError).toHaveBeenCalledWith(SHEET_APPLIED_MESSAGE);
+    // 行ボタンを止めるためのフラグが立ち、差分は残る (再突合で取り直す)。
+    expect(h.result.current.sheetApplied).toBe(true);
+    expect(h.result.current.diffs.some((d) => d.id === ITEM_1)).toBe(true);
+    expect(h.result.current.busyKey).toBeNull();
+  });
+
+  it('409 後の再押下は API を叩かずに案内だけ出す', async () => {
+    applyInboundMutateAsync.mockRejectedValue(
+      new ApiError('API 409 Conflict', 409, { detail: 'sheet already applied' }),
+    );
+    const h = await renderReady();
+    const diff = h.result.current.diffs.find((d) => d.id === ITEM_1)!;
+    await act(async () => {
+      await h.result.current.applyDiff(diff);
+    });
+    expect(applyInboundMutateAsync).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await h.result.current.applyDiff(diff);
+    });
+    // 2 回目は無駄打ちしない (include 更新すら走らない)。
+    expect(applyInboundMutateAsync).toHaveBeenCalledTimes(1);
+    expect(h.result.current.error).toBe(SHEET_APPLIED_MESSAGE);
+  });
+
+  it('sheetApplied は 🔄 同期確認 のやり直しで解除される', async () => {
+    applyInboundMutateAsync.mockRejectedValue(
+      new ApiError('API 409 Conflict', 409, { detail: 'sheet already applied' }),
+    );
+    const h = await renderReady();
+    const diff = h.result.current.diffs.find((d) => d.id === ITEM_1)!;
+    await act(async () => {
+      await h.result.current.applyDiff(diff);
+    });
+    expect(h.result.current.sheetApplied).toBe(true);
+
+    await act(async () => {
+      await h.result.current.runFetch();
+    });
+    await waitFor(() => expect(h.result.current.sheetApplied).toBe(false));
+  });
+
+  it('409 でも detail が別物なら従来どおり「取込に失敗しました」', async () => {
+    applyInboundMutateAsync.mockRejectedValue(
+      new ApiError('API 409 Conflict', 409, { detail: 'Conflict: duplicate value' }),
+    );
+    const h = await renderReady();
+    const diff = h.result.current.diffs.find((d) => d.id === ITEM_1)!;
+    await act(async () => {
+      await h.result.current.applyDiff(diff);
+    });
+    expect(h.result.current.error).toContain('取込に失敗しました');
+    expect(h.result.current.sheetApplied).toBe(false);
   });
 
   it('RPA 実行中は rpaRunning が立つ', () => {
