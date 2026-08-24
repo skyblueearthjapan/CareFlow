@@ -20,8 +20,13 @@ RUN pip install --prefix=/install -r requirements.txt
 # ---------- runtime ----------
 FROM python:3.12-slim AS runtime
 
+# TZ=UTC は **アプリの前提** (変更禁止): asyncpg は naive datetime を「システム
+# ローカル時刻」として timestamptz へ書くため、backend が JST になると既存行と 9h
+# ずれ、staff_event_defaults の内容一致 (_key_dt) も壊れる。postgres 側の
+# TZ=Asia/Tokyo (compose) は psql 表示だけの話で、ここには影響しない。
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    TZ=UTC \
     PATH="/usr/local/bin:${PATH}"
 
 # Non-root user

@@ -11,6 +11,12 @@
      カイポケへ送信すると fixed 行は source='kaipoke' へ昇格し fixed キーが
      空くため、キーだけで判定すると再展開で二重になる。取込で同内容が
      入ってくるケースも同様にこれで吸収する。
+     **時刻は `_key_dt` で naive UTC に正規化してから比べる** — `starts_at` は
+     `DateTime(timezone=True)` で、Postgres(asyncpg) からは tz-aware(UTC) で
+     返る一方、展開側は naive な `datetime.combine` を作る。Python では
+     aware と naive の `==` は常に False なので、正規化しないと本番だけ
+     内容一致が効かず二重生成になる (SQLite は naive を返すため未検出だった・
+     2026-08-25 本番で実測)。
 
 休み連携 (staff-event-history-design.md §2 Phase 3・PO Q3「自動で不参加」):
 その (スタッフ × 対象日) が休みなら展開しない。休みの定義は盤面 / Layer3 /
@@ -24,7 +30,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, time, timedelta
+from collections.abc import Iterable
+from datetime import UTC, date, datetime, time, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,6 +52,47 @@ STAFF_OVERRIDE_TYPE_OFF = "off"
 
 def _week_monday(iso_year: int, iso_week: int) -> date:
     return date.fromisocalendar(iso_year, iso_week, 1)
+
+
+def fixed_external_id(default_id: uuid.UUID, target: date) -> str:
+    """固定イベント展開行の冪等キー ``"{default_id}:{YYYY-MM-DD}"`` (47 文字).
+
+    staff_events.external_id の列幅 (mig 0081 で 64) に収まることは
+    `test_staff_event_defaults.test_fixed_external_id_fits_column` が縛る。
+    """
+    return f"{default_id}:{target.isoformat()}"
+
+
+def _key_dt(value: datetime) -> datetime:
+    """内容一致キー用に datetime を **naive UTC** へ正規化する.
+
+    * tz-aware (Postgres/asyncpg が返す) → UTC に直して tzinfo を落とす
+    * naive (SQLite の戻り値・`datetime.combine` の生成値) → そのまま
+
+    展開側の naive 値は asyncpg が「システムローカル時刻」として書き込むので、
+    backend コンテナが UTC であること (backend/Dockerfile の ``ENV TZ=UTC``・変更禁止)
+    を前提に、UTC に揃えた naive 同士で比べれば書いた値と読んだ値が一致する。
+    """
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def content_key(
+    staff_id: uuid.UUID, starts_at: datetime, ends_at: datetime, title: str | None
+) -> tuple[uuid.UUID, datetime, datetime, str]:
+    """内容一致キー (staff × 開始 × 終了 × 正規化タイトル)。source 不問。"""
+    return (staff_id, _key_dt(starts_at), _key_dt(ends_at), (title or "").strip())
+
+
+def content_keys_from(rows: Iterable[StaffEvent]) -> set[tuple]:
+    """既存 staff_events 行 → 内容一致キー集合 (展開の呼び出し地点が使う唯一の経路).
+
+    行の `starts_at` / `ends_at` は DB ドライバ次第で aware (asyncpg) にも naive
+    (SQLite) にもなる。ここを通さずに生 tuple を組むと本番だけ一致しなくなるので、
+    `test_content_keys_from_normalizes_aware_rows` がこの関数を直接縛る。
+    """
+    return {content_key(e.staff_id, e.starts_at, e.ends_at, e.title) for e in rows}
 
 
 async def _load_off_keys(
@@ -131,10 +179,9 @@ async def expand_staff_event_defaults(db: AsyncSession, iso_year: int, iso_week:
     existing_keys: set[str] = {
         e.external_id for e in existing if e.source == EVENT_SOURCE_FIXED and e.external_id
     }
-    # 内容一致キー (source 不問): staff × 開始 × 終了 × 正規化タイトル
-    content_keys: set[tuple] = {
-        (e.staff_id, e.starts_at, e.ends_at, (e.title or "").strip()) for e in existing
-    }
+    # 内容一致キー (source 不問): staff × 開始 × 終了 × 正規化タイトル。
+    # 時刻は content_key 内で naive UTC に揃える (aware/naive 混在対策・冒頭 docstring)。
+    content_keys: set[tuple] = content_keys_from(existing)
 
     created = 0
     for d in defaults:
@@ -143,12 +190,12 @@ async def expand_staff_event_defaults(db: AsyncSession, iso_year: int, iso_week:
         if (d.staff_id, d.weekday) in off_keys:
             continue  # その日は休み → 展開しない (Phase 3 休み連携)
         target = monday + timedelta(days=d.weekday)
-        key = f"{d.id}:{target.isoformat()}"
+        key = fixed_external_id(d.id, target)
         if key in existing_keys:
             continue
         starts_at = datetime.combine(target, d.start_time)
         ends_at = datetime.combine(target, d.end_time)
-        if (d.staff_id, starts_at, ends_at, d.title.strip()) in content_keys:
+        if content_key(d.staff_id, starts_at, ends_at, d.title) in content_keys:
             continue  # 昇格済み/取込済みの同内容が既に居る
         db.add(
             StaffEvent(
@@ -164,7 +211,7 @@ async def expand_staff_event_defaults(db: AsyncSession, iso_year: int, iso_week:
             )
         )
         existing_keys.add(key)
-        content_keys.add((d.staff_id, starts_at, ends_at, d.title.strip()))
+        content_keys.add(content_key(d.staff_id, starts_at, ends_at, d.title))
         created += 1
 
     if created:

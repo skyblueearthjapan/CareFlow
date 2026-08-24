@@ -178,7 +178,10 @@ class StaffEvent(Base, TimestampMixin):
     source: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default="manual", default="manual"
     )
-    external_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # 長さ 64 (mig 0081): 固定イベントの冪等キー "{default_id(UUID36)}:{YYYY-MM-DD}" は
+    # 47 文字で、旧 40 では Postgres が INSERT を拒否していた (SQLite は長さを検査
+    # しないためテストで漏れた・2026-08-25 本番実測)。
+    external_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # 🔒絶対に潰せないイベント (mig 0063): 提案エンジンの2段階フォールバック
     # (パスB=ソフトイベント無視) でも占有として扱い、衝突提案を出さない。
     # 既定 false。カイポケ再取り込みの update はこの列に触れない (保持される)。
