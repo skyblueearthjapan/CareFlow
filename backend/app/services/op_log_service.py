@@ -39,6 +39,12 @@
                               「🛌 休みにする」の休み本体。訪問 / コースの付替
                               (set_visit_staff / set_course_staff) と同一 op_group で
                               記録するので「戻る」1 回で休みごと元へ戻る
+    "cancel_staff_event"   — staff_events の ``cancelled_at`` を掛ける / 外す
+                              (``cancel``: true=取消印, false=解除)。**行は消さない**
+                              (消すと固定イベントの冪等キーが空いて再展開される)。
+                              「🛌 休みにする」が休みの日の固定イベント
+                              (source='fixed') に自動で取消印を付けるのに使う
+                              (staff-event-history-design.md §2 Phase 3)
 """
 
 from __future__ import annotations
@@ -55,7 +61,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.course import Course
 from app.models.schedule_op_log import ScheduleOpLog
-from app.models.staff import StaffWeeklyOverride
+from app.models.staff import StaffEvent, StaffWeeklyOverride
 from app.models.visit import (
     VISIT_SOURCE_MANUAL_CANCEL,
     VISIT_SOURCE_MANUAL_WEEK,
@@ -449,6 +455,14 @@ async def _verify_forward_state(db: AsyncSession, row: ScheduleOpLog) -> None:
         # forward result = 休みの行が fp["type"] のまま存在する (null なら不在)
         await _assert_staff_override(db, fp, fp.get("type"))
 
+    elif op_name == "cancel_staff_event":
+        # forward result = 対象イベントの取消印が forward の結果値のまま
+        await _assert_staff_events_cancelled(
+            db,
+            [UUID(v) for v in fp.get("event_ids", [])],
+            bool(fp.get("cancel", False)),
+        )
+
     # 他 op_name は検証なしで通過（将来拡張用）
 
 
@@ -518,6 +532,14 @@ async def _verify_inverse_state(db: AsyncSession, row: ScheduleOpLog) -> None:
         # inverse result = 休みの行が ip["type"] のまま (null なら不在)
         await _assert_staff_override(db, ip, ip.get("type"))
 
+    elif op_name == "cancel_staff_event":
+        # inverse result = 対象イベントの取消印が inverse の結果値のまま
+        await _assert_staff_events_cancelled(
+            db,
+            [UUID(v) for v in ip.get("event_ids", [])],
+            bool(ip.get("cancel", False)),
+        )
+
 
 async def _execute_payload(db: AsyncSession, payload: dict[str, Any]) -> None:
     """payload の op に応じて DB 更新を実行する."""
@@ -584,6 +606,13 @@ async def _execute_payload(db: AsyncSession, payload: dict[str, Any]) -> None:
 
     elif op_name == "set_staff_off":
         await _set_staff_override(db, payload)
+
+    elif op_name == "cancel_staff_event":
+        await set_staff_events_cancelled(
+            db,
+            [UUID(v) for v in payload.get("event_ids", [])],
+            bool(payload.get("cancel", False)),
+        )
 
     else:
         logger.warning("op_log_service: 未知の op_name=%r — スキップ", op_name)
@@ -974,6 +1003,43 @@ async def _set_staff_override(db: AsyncSession, payload: dict[str, Any]) -> None
         start_time=payload.get("start_time"),
         end_time=payload.get("end_time"),
     )
+
+
+async def _assert_staff_events_cancelled(
+    db: AsyncSession, event_ids: list[UUID], expected_cancelled: bool
+) -> None:
+    """cancel_staff_event の undo/redo 前検証: 取消印が期待どおりか."""
+    if not event_ids:
+        return
+    rows = list((await db.scalars(select(StaffEvent).where(StaffEvent.id.in_(event_ids)))).all())
+    if len(rows) != len(set(event_ids)):
+        raise OpLogConflictError("他の変更があったため戻せません (対象のイベントが見つかりません)")
+    for row in rows:
+        if (row.cancelled_at is not None) != expected_cancelled:
+            raise OpLogConflictError(
+                "他の変更があったため戻せません (イベントの取消状態が既に変更されています)"
+            )
+
+
+async def set_staff_events_cancelled(db: AsyncSession, event_ids: list[UUID], cancel: bool) -> None:
+    """staff_events の取消印を掛ける / 外す (エンドポイントと undo の単一ソース).
+
+    書込は ``staff_events.cancel-week`` (「今週だけ外す」) と同一 —
+    ``cancelled_at`` に印を付けるだけで **行は消さない**。行を消すと
+    ``expand_staff_event_defaults`` の冪等キーが空いて次の週生成で復活する。
+    冪等: 既に同じ状態の行は触らない。
+    """
+    if not event_ids:
+        return
+    rows = list((await db.scalars(select(StaffEvent).where(StaffEvent.id.in_(event_ids)))).all())
+    now = datetime.now(UTC)
+    for row in rows:
+        if cancel:
+            if row.cancelled_at is None:
+                row.cancelled_at = now
+        else:
+            row.cancelled_at = None
+    await db.flush()
 
 
 async def _assert_course_staff(db: AsyncSession, course_id: UUID, expected: UUID | None) -> None:

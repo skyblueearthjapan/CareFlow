@@ -46,7 +46,7 @@ from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
-from app.models.staff import Staff, StaffWeeklyOverride
+from app.models.staff import Staff, StaffEvent, StaffWeeklyOverride
 from app.models.suggestion_dismissal import SuggestionDismissal
 from app.models.user import User
 from app.models.visit import (
@@ -221,6 +221,7 @@ from app.services.op_log_service import (
     fmt_time,
     fmt_weekday,
     record_op,
+    set_staff_events_cancelled,
     set_staff_override,
     set_visit_staff_slot,
     visit_staff_ids,
@@ -309,6 +310,7 @@ from app.services.scheduling.unblock_search import (
     compute_plan_id,
     search_unblock_plans,
 )
+from app.services.staff_event_defaults import EVENT_SOURCE_FIXED
 
 logger = logging.getLogger(__name__)
 
@@ -1806,7 +1808,12 @@ async def staff_off_week(
       b. 対象訪問の **本人の担当枠だけ**を ``to_staff_id`` へ差し替え
          (2 名体制の相方は残す。primary は本人が持っていた場合のみ書き換える)
       c. その日のコース (``courses.assigned_staff_id``) を ``to_staff_id`` へ
-      d. op_log: ``set_staff_off`` / ``set_visit_staff_slot`` / ``set_course_staff``
+      d. その日の**固定イベント** (``staff_events.source='fixed'``) に
+         ``cancelled_at`` = 取消印 (行は消さない・手動/取込イベントには触れない。
+         staff-event-history-design.md §2 Phase 3「休みの日は自動で不参加」)
+      e. op_log: ``set_staff_off`` / ``set_visit_staff_slot`` / ``set_course_staff``
+         / ``cancel_staff_event`` — すべて同一 op_group なので「戻る」1 回で
+         取消印も外れる
 
     ガード: 青ピン (今週固定) の訪問があれば 422 (件数と患者名) /
     引き受け先が新人・退職・本人・その日が休み なら 422 / 過去日 (JST) は 422 /
@@ -2108,6 +2115,47 @@ async def staff_off_week(
                     "op": "set_course_staff",
                     "course_id": str(course.id),
                     "staff_id": str(old_course_staff) if old_course_staff else None,
+                },
+            )
+
+        # (d) その日の固定イベントに取消印 (staff-event-history-design.md §2 Phase 3・
+        # PO Q3「休みの日は自動で不参加」)。**行は消さない**: 消すと
+        # expand_staff_event_defaults の冪等キーが空いて次の週生成で復活する。
+        # 対象は source='fixed' (毎週の固定イベント既定から展開された行) のみ —
+        # 手入力 (manual) やカイポケ取込 (kaipoke) のイベントには触れない
+        # (休みでも残す用事がありうる。外すなら手動の「今週だけ外す」)。
+        _day_start = datetime.combine(payload.date, time_cls.min)
+        _fixed_events = list(
+            (
+                await db.scalars(
+                    select(StaffEvent)
+                    .where(
+                        StaffEvent.staff_id == payload.staff_id,
+                        StaffEvent.starts_at >= _day_start,
+                        StaffEvent.starts_at < _day_start + timedelta(days=1),
+                        StaffEvent.source == EVENT_SOURCE_FIXED,
+                        StaffEvent.cancelled_at.is_(None),
+                    )
+                    .order_by(StaffEvent.starts_at, StaffEvent.id)
+                )
+            ).all()
+        )
+        cancelled_event_ids = [e.id for e in _fixed_events]
+        if cancelled_event_ids:
+            await set_staff_events_cancelled(db, cancelled_event_ids, True)
+            _event_ids_json = [str(i) for i in cancelled_event_ids]
+            await _journal(
+                op_kind="cancel_staff_event",
+                label=f"{date_label}の固定イベント{len(cancelled_event_ids)}件を取消",
+                forward_payload={
+                    "op": "cancel_staff_event",
+                    "event_ids": _event_ids_json,
+                    "cancel": True,
+                },
+                inverse_payload={
+                    "op": "cancel_staff_event",
+                    "event_ids": _event_ids_json,
+                    "cancel": False,
                 },
             )
 
