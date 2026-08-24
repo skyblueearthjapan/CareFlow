@@ -51,29 +51,80 @@ export interface DateRange {
   to: string; // YYYY-MM-DD inclusive
 }
 
-function buildListUrl(staffId: string, range?: DateRange): string {
-  if (!range) return staffEventsBase(staffId);
-  const qs = new URLSearchParams();
-  qs.set('from', range.from);
-  qs.set('to', range.to);
-  return `${staffEventsBase(staffId)}?${qs.toString()}`;
+/**
+ * 片側だけの期間指定 (「過去」タブ = to のみ)。BE は from/to をそれぞれ
+ * 独立した任意パラメータとして扱う。
+ */
+export type PartialDateRange = Partial<DateRange>;
+
+/**
+ * 一覧の絞り込みパラメータ (staff-event-history-design.md §2 Phase 1)。
+ * **絞り込みは BE で行う** — limit 200 の窓を FE 側で削ると「過去」が
+ * 取り切れないため。値が空/既定のキーは URL にもクエリキーにも載せない。
+ */
+export interface StaffEventFilters {
+  /** title / note の部分一致 (ILIKE)。 */
+  q?: string;
+  /** 出所の完全一致。 */
+  source?: 'manual' | 'kaipoke' | 'fixed' | null;
+  /** event_type の完全一致 ('training' = 研修のみ)。 */
+  type?: 'event' | 'training' | null;
+  /** starts_at の並び順。既定 'asc'。 */
+  order?: 'asc' | 'desc';
+  /** 定例 (source='fixed' + 固定イベント既定のタイトル) を除外する。 */
+  hideRegular?: boolean;
 }
 
-/** GET .../events — list (optionally filtered by date range). */
+/**
+ * 空値を落として安定した形に正規化する。無指定と「空文字/false 指定」が
+ * 同一のクエリキーになるので、絞り込み解除時に余計な再取得が起きない。
+ */
+function normalizeFilters(filters?: StaffEventFilters): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!filters) return out;
+  const q = filters.q?.trim();
+  if (q) out.q = q;
+  if (filters.source) out.source = filters.source;
+  if (filters.type) out.type = filters.type;
+  if (filters.order === 'desc') out.order = 'desc';
+  if (filters.hideRegular) out.hide_regular = 'true';
+  return out;
+}
+
+/**
+ * GET .../events の URL を組み立てる (テストから直接検証できるよう export)。
+ * 絞り込みは全てここでクエリパラメータに載る = **BE 側で絞る** の実装点。
+ */
+export function buildListUrl(
+  staffId: string,
+  range?: PartialDateRange,
+  filters?: StaffEventFilters,
+): string {
+  const qs = new URLSearchParams();
+  if (range?.from) qs.set('from', range.from);
+  if (range?.to) qs.set('to', range.to);
+  for (const [k, v] of Object.entries(normalizeFilters(filters))) qs.set(k, v);
+  const suffix = qs.toString();
+  return suffix ? `${staffEventsBase(staffId)}?${suffix}` : staffEventsBase(staffId);
+}
+
+/** GET .../events — list (optionally filtered by date range / search / source). */
 export function useStaffEvents(
   staffId: string | null | undefined,
-  range?: DateRange,
+  range?: PartialDateRange,
+  filters?: StaffEventFilters,
 ): UseQueryResult<EventRead[], Error> {
   const { data: session, status } = useSession();
   const { accessToken, refreshToken } = authPair(session);
   const normalizedId = staffId ?? '__none__';
+  const filterKey = normalizeFilters(filters);
 
   return useQuery<EventRead[], Error>({
-    queryKey: [...STAFF_EVENTS_KEY, normalizedId, range ?? null],
+    queryKey: [...STAFF_EVENTS_KEY, normalizedId, range ?? null, filterKey],
     enabled: status === 'authenticated' && !!staffId,
     queryFn: () => {
       if (!staffId) throw new Error('staff id is required');
-      return fetcher<EventRead[]>(buildListUrl(staffId, range), {
+      return fetcher<EventRead[]>(buildListUrl(staffId, range, filters), {
         accessToken,
         refreshToken,
       });

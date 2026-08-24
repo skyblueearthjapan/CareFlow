@@ -89,6 +89,16 @@ export const eventReadSchema = z.object({
   note: z.string().nullable().optional(),
   // 🔒絶対に潰せないイベント (旧BE未送出 → false の寛容パース).
   blocking: z.boolean().catch(false),
+  /**
+   * 出所 ('manual' | 'kaipoke' | 'fixed')。スタッフ詳細のイベント一覧が
+   * 「カイポケ / 固定」バッジと出所チップの絞り込みに使う
+   * (staff-event-history-design.md §2 Phase 1)。旧 BE 互換の既定は 'manual'。
+   */
+  source: z.string().default('manual'),
+  /** 「今週だけ外す」の取消印。非 null の行は打消線で描く。 */
+  cancelled_at: z.string().nullable().optional(),
+  /** カイポケ個別業務 / 固定イベント展開の冪等キー。未同期は null。 */
+  external_id: z.string().nullable().optional(),
 });
 
 export type EventCreate = z.infer<typeof eventCreateSchema>;

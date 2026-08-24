@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, time
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
-from app.models.staff import Staff, StaffEvent
+from app.models.staff import Staff, StaffEvent, StaffEventDefault
 from app.models.user import User, normalize_user_role
 from app.schemas.staff_events import (
     EventCancelWeekRequest,
@@ -62,7 +62,7 @@ async def _commit_or_422(db) -> None:
 @router.get(
     "/{staff_id}/events",
     response_model=list[EventRead],
-    summary="List events for a staff (optional datetime range)",
+    summary="List events for a staff (range / search / source / order filters)",
 )
 async def list_events(
     staff_id: UUID,
@@ -71,7 +71,27 @@ async def list_events(
     date_from: Annotated[date | None, Query(alias="from")] = None,
     date_to: Annotated[date | None, Query(alias="to")] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    q: Annotated[str | None, Query(max_length=100)] = None,
+    source: Annotated[str | None, Query(max_length=16)] = None,
+    event_type: Annotated[str | None, Query(alias="type", max_length=16)] = None,
+    order: Annotated[Literal["asc", "desc"], Query()] = "asc",
+    hide_regular: Annotated[bool, Query()] = False,
 ) -> list[StaffEvent]:
+    """イベント一覧 (staff-event-history-design.md §2 Phase 1).
+
+    既定の挙動 (パラメータ無し) は従来どおり **starts_at 昇順・全件**。追加の
+    絞り込みは全て任意で、後方互換を壊さない。
+
+    - ``q``            : title / note の部分一致 (ILIKE ``%q%``)
+    - ``source``       : 'manual' | 'kaipoke' | 'fixed' の完全一致
+    - ``type``         : ``event_type`` の完全一致 ('event' | 'training' ほか)
+    - ``order``        : starts_at の並び順 ('asc' 既定 / 'desc' = 過去タブの遡り)
+    - ``hide_regular`` : 定例 (朝会など) を隠す。判定は **データ駆動** —
+      ``source='fixed'`` か、``staff_event_defaults`` に登録済みのタイトルと
+      一致する行を除外する。特定タイトルをコードに書かない (PO決定 Q5:
+      朝会はデータであってコードではない)。
+    """
     _check_read_access(user, staff_id)
     await _ensure_staff_exists(db, staff_id)
 
@@ -80,7 +100,34 @@ async def list_events(
         stmt = stmt.where(StaffEvent.ends_at >= datetime.combine(date_from, time.min))
     if date_to is not None:
         stmt = stmt.where(StaffEvent.starts_at <= datetime.combine(date_to, time.max))
-    stmt = stmt.order_by(StaffEvent.starts_at).limit(limit)
+
+    if q and q.strip():
+        # LIKE ワイルドカード (% / _) は文字として検索させる (レビュー指摘)。
+        q_esc = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        needle = f"%{q_esc}%"
+        stmt = stmt.where(
+            or_(
+                StaffEvent.title.ilike(needle, escape="\\"),
+                StaffEvent.note.ilike(needle, escape="\\"),
+            )
+        )
+    if source:
+        stmt = stmt.where(StaffEvent.source == source)
+    if event_type:
+        stmt = stmt.where(StaffEvent.event_type == event_type)
+
+    if hide_regular:
+        regular_titles = select(StaffEventDefault.title).distinct().scalar_subquery()
+        stmt = stmt.where(StaffEvent.source != "fixed")
+        stmt = stmt.where(
+            or_(
+                StaffEvent.title.is_(None),
+                StaffEvent.title.not_in(regular_titles),
+            )
+        )
+
+    ordering = StaffEvent.starts_at.desc() if order == "desc" else StaffEvent.starts_at.asc()
+    stmt = stmt.order_by(ordering).offset(offset).limit(limit)
     rows = (await db.scalars(stmt)).all()
     return list(rows)
 
