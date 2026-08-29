@@ -57,6 +57,9 @@ import {
   TL_SHOW_ADDR_PX,
   TL_SHOW_PILLS_PX,
   TL_SHOW_SVC_PX,
+  TL_TWOLINE_ADDR_PX,
+  TL_TWOLINE_PILLS_PX,
+  TL_TWOLINE_SVC_PX,
   timelineHeightPx,
 } from '@/lib/scheduling/timeline';
 import { cn } from '@/lib/utils';
@@ -571,6 +574,14 @@ function VisitCard({
           right: 'auto' as const,
         }
       : { left: '3px', right: '3px' };
+  // 重なりで列を等分されたカードは幅が半分以下になる (1440px の mac で ≈80px)。
+  // 高さに余裕があれば氏名を 2 行まで折り返し、時刻/住所行は高さがさらにある時だけ出す
+  // (mac-ui-crossplatform-design.md §2-B1)。単独カード (lanes=1) は従来どおり。
+  // キャンセル済みは 2 行化しない (時刻行の「キャンセル」表示を必ず出すため)。
+  const nameTwoLine = lanes > 1 && height >= TL_SHOW_SVC_PX && !isCancelled;
+  const showSvcLine = height >= TL_SHOW_SVC_PX && (!nameTwoLine || height >= TL_TWOLINE_SVC_PX);
+  const showAddrLine = height >= TL_SHOW_ADDR_PX && (!nameTwoLine || height >= TL_TWOLINE_ADDR_PX);
+  const showPills = height >= TL_SHOW_PILLS_PX && (!nameTwoLine || height >= TL_TWOLINE_PILLS_PX);
 
   const pills: string[] = [];
   if (visit.patient_sex_restriction_label) pills.push(visit.patient_sex_restriction_label);
@@ -637,7 +648,8 @@ function VisitCard({
       }
       className={cn(
         // group: × ボタンを hover / focus-within で出すため (G2)。
-        'group absolute z-[2] flex flex-col gap-px rounded-lg border border-l-[3px] px-2 py-[3px] text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
+        'group absolute z-[2] flex flex-col gap-px rounded-lg border border-l-[3px] py-[3px] text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
+        lanes > 1 ? 'px-1.5' : 'px-2',
         drag && !drag.disabled && 'cursor-grab touch-none active:cursor-grabbing',
         drag?.isDragging && 'opacity-40',
         shake && 'tl-shake',
@@ -708,7 +720,10 @@ function VisitCard({
         <MovabilityMark visit={visit} visitId={visit.id} />
         <span
           className={cn(
-            'truncate text-[13px] font-bold leading-tight',
+            'font-bold leading-tight',
+            // 等分カードは字を一段小さく (2 lanes=12px / 3 lanes 以上=11px)。
+            lanes >= 3 ? 'text-[11px]' : lanes === 2 ? 'text-[12px]' : 'text-[13px]',
+            nameTwoLine ? 'min-w-0 line-clamp-2 break-words' : 'truncate',
             isCancelled && 'line-through',
           )}
         >
@@ -729,7 +744,7 @@ function VisitCard({
         )}
       </span>
       {/* 2行目: 時刻・所要分 ＋ サービス種別 (高さがあるとき)。住所は常に3行目 (重複させない)。 */}
-      {height >= TL_SHOW_SVC_PX && (
+      {showSvcLine && (
         <span className="flex min-w-0 items-center gap-1.5 text-[10px] opacity-80">
           <span className="tnum shrink-0 font-semibold">
             {(visit.start_time ?? '').slice(0, 5)}・{durMin}分
@@ -745,14 +760,17 @@ function VisitCard({
               {masterTimeSuffix(visit)}
             </span>
           ) : null}
-          <span className="truncate">
-            {isCancelled ? 'キャンセル' : (visit.patient_time_type ?? '')}
-          </span>
+          {/* 3 等分以上のカードでは種別を省略して時刻を優先 (幅が無い)。キャンセルは常に出す。 */}
+          {(lanes < 3 || isCancelled) && (
+            <span className="truncate">
+              {isCancelled ? 'キャンセル' : (visit.patient_time_type ?? '')}
+            </span>
+          )}
         </span>
       )}
       {/* 3行目: 住所 (30分カードから表示・PO要望。極小カードは title ツールチップで補完)。
           30分カード(49px)は3行でほぼ満杯のため 9px + leading-tight で見切れを防ぐ。 */}
-      {visit.patient_address && height >= TL_SHOW_ADDR_PX && (
+      {visit.patient_address && showAddrLine && (
         <span className="flex min-w-0 items-center gap-0.5 text-[9px] leading-tight opacity-75">
           <span className="shrink-0">📍</span>
           <span className="truncate">{visit.patient_address}</span>
@@ -761,7 +779,7 @@ function VisitCard({
       {/* 相方の現在地 (旧テーブルの「相方: 本店-A 15:00」注記を移設)。
           プール残存 = 片側しか配置できていない運用エラーなので警告色で出す。
           小さいカードは title ツールチップ側で補完する。 */}
-      {partner.text && height >= TL_SHOW_ADDR_PX && (
+      {partner.text && showAddrLine && (
         <span
           data-testid={`tl-partner-note-${visit.id}`}
           className={cn(
@@ -773,7 +791,7 @@ function VisitCard({
           <span className="truncate">{partner.text}</span>
         </span>
       )}
-      {(pills.length > 0 || isWeekOnly) && height >= TL_SHOW_PILLS_PX && (
+      {(pills.length > 0 || isWeekOnly) && showPills && (
         <span className="mt-auto flex flex-wrap items-center gap-[3px] pb-px">
           {/* G3: 「今週のみ」= この週だけの配置。クリックで毎週の型へ昇格 (confirm あり)。 */}
           {isWeekOnly && <WeekOnlyChip visit={visit} onPromoteWeekOnly={onPromoteWeekOnly} />}
@@ -1086,10 +1104,13 @@ function PairMemberRowView({
   onDeleteVisit,
   onPromoteWeekOnly,
   accompaniment,
+  lanes = 1,
 }: {
   v: CourseGridVisit;
   onPatientClick?: (patientId: string) => void;
   drag?: DragBindings;
+  /** 重なりレーン数 (≥2 なら箱の幅が等分されている・mac-ui-crossplatform-design.md §2-B1)。 */
+  lanes?: number;
   /** G2: ペア行からも訪問削除できる (テーブルの × と同じ機能パリティ)。 */
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   /** G3: ペア行の「今週のみ」チップ。 */
@@ -1177,7 +1198,7 @@ function PairMemberRowView({
           data-testid={`tl-accompaniment-badge-${v.id}`}
           title={`同行: ${accBadge}`}
         >
-          👥{accBadge}
+          👥{lanes === 1 ? accBadge : ''}
         </span>
       )}
       {v.is_pinned && <CornerPushPin />}
@@ -1219,16 +1240,24 @@ function PairMemberRowView({
       <span
         className={cn(
           'flex min-w-0 items-center gap-1',
-          accBadge && (v.is_pinned ? 'pr-[64px]' : 'pr-[50px]'),
+          // 等分 (lanes ≥ 2) では右上バッジの逃がし余白と時刻バッジを捨てて氏名に幅を渡す (§2-B1)。
+          lanes === 1 && accBadge && (v.is_pinned ? 'pr-[64px]' : 'pr-[50px]'),
         )}
       >
-        <span className="truncate text-[12px] font-bold leading-tight">
+        <span
+          className={cn(
+            'font-bold leading-tight',
+            lanes > 1 ? 'min-w-0 line-clamp-2 break-words text-[11px]' : 'truncate text-[12px]',
+          )}
+        >
           {v.patient_name ?? '—'}
         </span>
-        <span className="tnum ml-auto shrink-0 text-[9px] opacity-75">
-          {(v.start_time ?? '').slice(0, 5)}
-          {dm !== null ? `・${dm}分` : ''}
-        </span>
+        {lanes === 1 && (
+          <span className="tnum ml-auto shrink-0 text-[9px] opacity-75">
+            {(v.start_time ?? '').slice(0, 5)}
+            {dm !== null ? `・${dm}分` : ''}
+          </span>
+        )}
       </span>
       {/* 2行目: 📍住所 (通常カードと同じ配置。同住所なので2行とも同じ住所・PO要望)。 */}
       {v.patient_address && (
@@ -1267,8 +1296,10 @@ function DraggablePairMemberRow({
   onDeleteVisit,
   onPromoteWeekOnly,
   accompaniment,
+  lanes = 1,
 }: {
   v: CourseGridVisit;
+  lanes?: number;
   onPatientClick?: (patientId: string) => void;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
@@ -1297,6 +1328,7 @@ function DraggablePairMemberRow({
       onDeleteVisit={onDeleteVisit}
       onPromoteWeekOnly={onPromoteWeekOnly}
       accompaniment={accompaniment}
+      lanes={lanes}
     />
   );
 }
@@ -1395,6 +1427,7 @@ function PairBox({
             <DraggablePairMemberRow
               key={v.id}
               v={v}
+              lanes={lanes}
               onPatientClick={onPatientClick}
               onDeleteVisit={onDeleteVisit}
               onPromoteWeekOnly={onPromoteWeekOnly}
@@ -1404,6 +1437,7 @@ function PairBox({
             <PairMemberRowView
               key={v.id}
               v={v}
+              lanes={lanes}
               onPatientClick={onPatientClick}
               onDeleteVisit={onDeleteVisit}
               onPromoteWeekOnly={onPromoteWeekOnly}

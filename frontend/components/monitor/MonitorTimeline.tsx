@@ -235,8 +235,7 @@ export function MonitorTimeline({
         const visitStaffIds = row.staff_ids ?? [];
         const staffMismatch =
           row.course_staff_id != null &&
-          (visitStaffIds.length === 0 ||
-            visitStaffIds.some((sid) => sid !== row.course_staff_id));
+          (visitStaffIds.length === 0 || visitStaffIds.some((sid) => sid !== row.course_staff_id));
         // 同行 (§7.3): 行内の訪問から同行スタッフ名を重複無しで収集。
         // 1 訪問に複数名ありうる (確定#5) ため配列を優先し、無ければ単数へ落とす。
         // ⚠ 担当乖離とは別の情報系ラベルなので混同しないよう独立して描画する。
@@ -340,9 +339,7 @@ export function MonitorTimeline({
                       {/* 担当 = スケジュールのコース担当を優先表示 (無ければ実訪問の担当)。 */}
                       {[
                         row.office_name,
-                        row.course_label
-                          ? (scheduleStaff ?? row.staff_name ?? '担当未設定')
-                          : null,
+                        row.course_label ? (scheduleStaff ?? row.staff_name ?? '担当未設定') : null,
                       ]
                         .filter(Boolean)
                         .join(' ・ ') || '—'}
@@ -408,48 +405,48 @@ export function MonitorTimeline({
               )
                 .flatMap((sid) => eventsByStaffId?.get(sid) ?? [])
                 .map((ev) => {
-                    const es = hmToMinutes(ev.start_time.slice(0, 5));
-                    const ee = hmToMinutes(ev.end_time.slice(0, 5));
-                    if (ee <= TL_START_MIN || es >= TL_END_MIN || ee <= es) return null;
-                    const eL = minutesToPct(es);
-                    const eW = Math.max(minutesToPct(ee) - eL, 1.5);
-                    return (
-                      <div
-                        key={`ev-${ev.id}`}
-                        data-testid={`monitor-event-${ev.id}`}
-                        className="pointer-events-none absolute z-[1] flex items-center gap-1 overflow-hidden rounded-md border border-l-[3px] px-1.5"
-                        style={{
-                          left: `${eL}%`,
-                          width: `${eW}%`,
-                          top: 4,
-                          height: rowLaneCount * LANE_H_PX - 9,
-                          background: 'var(--sched-event-bg)',
-                          borderColor: 'var(--sched-event-ln)',
-                          borderLeftColor: 'var(--sched-event-bar)',
-                        }}
-                        title={`${ev.type}${ev.title ? `: ${ev.title}` : ''}（${ev.start_time.slice(0, 5)}〜${ev.end_time.slice(0, 5)}・カイポケ反映外）`}
+                  const es = hmToMinutes(ev.start_time.slice(0, 5));
+                  const ee = hmToMinutes(ev.end_time.slice(0, 5));
+                  if (ee <= TL_START_MIN || es >= TL_END_MIN || ee <= es) return null;
+                  const eL = minutesToPct(es);
+                  const eW = Math.max(minutesToPct(ee) - eL, 1.5);
+                  return (
+                    <div
+                      key={`ev-${ev.id}`}
+                      data-testid={`monitor-event-${ev.id}`}
+                      className="pointer-events-none absolute z-[1] flex items-center gap-1 overflow-hidden rounded-md border border-l-[3px] px-1.5"
+                      style={{
+                        left: `${eL}%`,
+                        width: `${eW}%`,
+                        top: 4,
+                        height: rowLaneCount * LANE_H_PX - 9,
+                        background: 'var(--sched-event-bg)',
+                        borderColor: 'var(--sched-event-ln)',
+                        borderLeftColor: 'var(--sched-event-bar)',
+                      }}
+                      title={`${ev.type}${ev.title ? `: ${ev.title}` : ''}（${ev.start_time.slice(0, 5)}〜${ev.end_time.slice(0, 5)}・カイポケ反映外）`}
+                    >
+                      <span
+                        className="shrink-0 text-[11px]"
+                        style={{ color: 'var(--sched-event-bar)' }}
                       >
-                        <span
-                          className="shrink-0 text-[11px]"
-                          style={{ color: 'var(--sched-event-bar)' }}
-                        >
-                          👥
-                        </span>
-                        <span
-                          className="min-w-0 truncate text-[10px] font-bold"
-                          style={{ color: 'var(--sched-event-ink)' }}
-                        >
-                          {ev.title && ev.title.trim() !== '' ? ev.title : ev.type}
-                        </span>
-                        <span
-                          className="tnum shrink-0 text-[9px] opacity-75"
-                          style={{ color: 'var(--sched-event-ink)' }}
-                        >
-                          {ev.start_time.slice(0, 5)}〜
-                        </span>
-                      </div>
-                    );
-                  })}
+                        👥
+                      </span>
+                      <span
+                        className="min-w-0 truncate text-[10px] font-bold"
+                        style={{ color: 'var(--sched-event-ink)' }}
+                      >
+                        {ev.title && ev.title.trim() !== '' ? ev.title : ev.type}
+                      </span>
+                      <span
+                        className="tnum shrink-0 text-[9px] opacity-75"
+                        style={{ color: 'var(--sched-event-ink)' }}
+                      >
+                        {ev.start_time.slice(0, 5)}〜
+                      </span>
+                    </div>
+                  );
+                })}
               {row.visits.map((v) => {
                 const li = laneMap.get(v.visit_id) ?? { lane: 0, laneCount: 1 };
                 return (
@@ -658,7 +655,7 @@ function VisitBars({
             onSelect(visit.visit_id);
           }}
           className={cn(
-            'absolute z-[2] flex items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-[5px] px-1.5 text-[10px] font-semibold text-white',
+            'absolute z-[2] flex items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-[5px] px-1.5 text-[10px] font-semibold leading-none text-white',
             isSelected ? 'outline outline-2 outline-offset-1 outline-text-primary' : '',
             status === 'inprogress'
               ? '[background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.25),rgba(255,255,255,.25)_4px,transparent_4px,transparent_8px)]'
@@ -706,7 +703,7 @@ function VisitBars({
             onSelect(visit.visit_id);
           }}
           title={`ペア待ち（同住所の相方を対応中）${visit.patient_name ?? ''}`}
-          className="absolute flex items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-[5px] border border-border-default bg-bg-muted px-1.5 text-[10px] font-semibold text-text-secondary"
+          className="absolute flex items-center gap-0.5 overflow-hidden whitespace-nowrap rounded-[5px] border border-border-default bg-bg-muted px-1.5 text-[10px] font-semibold leading-none text-text-secondary"
           style={{ left: `${pL}%`, width: `${pW}%`, top: pos.actTop, height: pos.actH }}
         >
           ペア待ち

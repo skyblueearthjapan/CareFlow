@@ -5694,7 +5694,9 @@ export function CourseDayTablePanel({
         <div
           // lg:grid-rows-[minmax(0,1fr)]: 行トラックを内容高でなくコンテナ高に固定する
           // (これが無いと行が内容ぶん伸びて下端がはみ出し、内部スクロールが効かない)。
-          className="grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[1fr_320px] lg:grid-rows-[minmax(0,1fr)]"
+          // プール列は 320px 固定 → clamp(248px, 22vw, 320px): 1280〜1440px の画面で盤面に
+          // 幅を回す (mac-ui-crossplatform-design.md §2-B3)。1456px 以上では従来どおり 320px。
+          className="grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[1fr_clamp(248px,22vw,320px)] lg:grid-rows-[minmax(0,1fr)]"
           data-testid="course-day-two-pane"
         >
           {/* 左ペイン: 当該曜日の盤面 (lg 以上はこの中だけ縦スクロール)。

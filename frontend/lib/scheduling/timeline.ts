@@ -208,6 +208,15 @@ export const TL_SHOW_ADDR_PX = 46;
 export const TL_SHOW_SVC_PX = 46;
 export const TL_SHOW_PILLS_PX = 74;
 
+/**
+ * 重なり (lanes ≥ 2) で氏名を 2 行にしたカードの段階しきい (px)。氏名 1 行ぶん (+16px)
+ * 上乗せした高さで 時刻行 / 住所行 / ピル行 を順に解禁する — 2 行化で増えた分を
+ * 下の行が食って隣のカードへ溢れないため (mac-ui-crossplatform-design.md §2-B1)。
+ */
+export const TL_TWOLINE_SVC_PX = TL_SHOW_SVC_PX + 16;
+export const TL_TWOLINE_ADDR_PX = TL_SHOW_PILLS_PX;
+export const TL_TWOLINE_PILLS_PX = TL_SHOW_PILLS_PX + 16;
+
 // ─────────────────────────────────────────────────────────────────────────
 // 「今週の運転席」横タイムライン (week-cockpit-design.md §3 StaffTimelineView)
 // ─────────────────────────────────────────────────────────────────────────

@@ -10,7 +10,13 @@ type UIState = {
    * 全タブ共通 (曜日 / 週 / 職員スケジュール)。既定は false = 展開。
    */
   scheduleHeaderCollapsed: boolean;
+  /**
+   * 狭い画面 (1400px 未満) の初回表示でサイドバーを自動で畳んだか
+   * (mac-ui-crossplatform-design.md §2-B2)。一度適用したら以後は利用者の開閉を尊重する。
+   */
+  sidebarAutoCollapsedApplied: boolean;
   setSidebarCollapsed: (v: boolean) => void;
+  applySidebarAutoCollapse: () => void;
   setDensity: (v: 'compact' | 'comfortable') => void;
   setScheduleHeaderCollapsed: (v: boolean) => void;
 };
@@ -21,7 +27,14 @@ export const useUIStore = create<UIState>()(
       sidebarCollapsed: false,
       density: 'comfortable',
       scheduleHeaderCollapsed: false,
+      sidebarAutoCollapsedApplied: false,
       setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
+      applySidebarAutoCollapse: () =>
+        set((s) =>
+          s.sidebarAutoCollapsedApplied
+            ? s
+            : { sidebarAutoCollapsedApplied: true, sidebarCollapsed: true },
+        ),
       setDensity: (v) => set({ density: v }),
       setScheduleHeaderCollapsed: (v) => set({ scheduleHeaderCollapsed: v }),
     }),
@@ -31,6 +44,7 @@ export const useUIStore = create<UIState>()(
         sidebarCollapsed: s.sidebarCollapsed,
         density: s.density,
         scheduleHeaderCollapsed: s.scheduleHeaderCollapsed,
+        sidebarAutoCollapsedApplied: s.sidebarAutoCollapsedApplied,
       }),
     },
   ),

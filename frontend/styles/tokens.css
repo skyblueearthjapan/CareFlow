@@ -128,7 +128,9 @@
   --sched-now: #d2683c;
 
   /* === Typography === */
-  --font-sans: 'Inter', 'Hiragino Sans', 'Noto Sans JP', -apple-system, system-ui, sans-serif;
+  /* Noto Sans JP を全 OS で先頭に (app/layout.tsx で読込・mac-ui-crossplatform-design.md §2-A)。
+   * 読込前/オフライン時のフォールバックは OS 標準の和文ゴシック。 */
+  --font-sans: 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic UI', 'Meiryo', system-ui, sans-serif;
   --font-serif: 'Noto Serif JP', 'Hiragino Mincho ProN', serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 

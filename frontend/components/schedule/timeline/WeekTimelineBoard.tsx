@@ -36,6 +36,9 @@ import {
   TL_SHOW_ADDR_PX,
   TL_SHOW_PILLS_PX,
   TL_SHOW_SVC_PX,
+  TL_TWOLINE_ADDR_PX,
+  TL_TWOLINE_PILLS_PX,
+  TL_TWOLINE_SVC_PX,
   TL_WEEK_ROW_PX,
 } from '@/lib/scheduling/timeline';
 import { cn } from '@/lib/utils';
@@ -153,6 +156,12 @@ function WeekCard({
           right: 'auto' as const,
         }
       : { left: '2px', right: '2px' };
+  // 重なりで等分されたカードは氏名を 2 行まで折り返す (日ビューと同じ規則・
+  // mac-ui-crossplatform-design.md §2-B1)。
+  const nameTwoLine = lanes > 1 && h >= TL_SHOW_SVC_PX;
+  const showSvcLine = h >= TL_SHOW_SVC_PX && (!nameTwoLine || h >= TL_TWOLINE_SVC_PX);
+  const showAddrLine = h >= TL_SHOW_ADDR_PX && (!nameTwoLine || h >= TL_TWOLINE_ADDR_PX);
+  const showPills = h >= TL_SHOW_PILLS_PX && (!nameTwoLine || h >= TL_TWOLINE_PILLS_PX);
   // 同行モード中はカードクリック=選択トグル (選択済みコース内は個別トグル不可)。
   // 「コース(曜日)単位」に絞っている間は患者カードを受け付けない (確定#2)。
   const effectiveOnClick = accActive
@@ -174,7 +183,8 @@ function WeekCard({
             : (v.patient_address ?? undefined)
       }
       className={cn(
-        'absolute flex flex-col gap-px rounded-md border border-l-[3px] px-1.5 py-0.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
+        'absolute flex flex-col gap-px rounded-md border border-l-[3px] py-0.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:z-[4] hover:shadow-[var(--shadow-md)] focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
+        lanes > 1 ? 'px-1' : 'px-1.5',
         accOverlap && 'z-[3] ring-2 ring-error',
         accSelected && !accOverlap && 'z-[3] ring-2 ring-brand-primary',
       )}
@@ -230,12 +240,18 @@ function WeekCard({
         )}
         {/* 可動域 (2026-08-07 / PO 要望): 日タイムラインと同じ判定・同じ淡さ。 */}
         <MovabilityMark visit={v} visitId={v.id} testIdPrefix="wtl" />
-        <span className="truncate text-[12px] font-bold leading-tight">
+        <span
+          className={cn(
+            'font-bold leading-tight',
+            lanes >= 3 ? 'text-[10.5px]' : lanes === 2 ? 'text-[11px]' : 'text-[12px]',
+            nameTwoLine ? 'min-w-0 line-clamp-2 break-words' : 'truncate',
+          )}
+        >
           {v.patient_name ?? '—'}
         </span>
       </span>
       {/* 2行目: 時刻・所要分 (日ビューと同じ構成)。 */}
-      {h >= TL_SHOW_SVC_PX && (
+      {showSvcLine && (
         <span className="tnum flex min-w-0 items-center gap-1 text-[9.5px] font-semibold opacity-75">
           <span className="shrink-0">
             {(v.start_time ?? '').slice(0, 5)}・{durMin}分
@@ -253,14 +269,14 @@ function WeekCard({
         </span>
       )}
       {/* 3行目: 📍住所 (日ビューと情報統一・30分カードから表示)。 */}
-      {v.patient_address && h >= TL_SHOW_ADDR_PX && (
+      {v.patient_address && showAddrLine && (
         <span className="flex min-w-0 items-center gap-0.5 text-[9px] opacity-75">
           <span className="shrink-0">📍</span>
           <span className="truncate">{v.patient_address}</span>
         </span>
       )}
       {/* 条件ピル (性別制限 / 2名・日ビューと同じ)。 */}
-      {pills.length > 0 && h >= TL_SHOW_PILLS_PX && (
+      {pills.length > 0 && showPills && (
         <span className="mt-auto flex flex-wrap gap-[3px] pb-px">
           {pills.map((p) => (
             <span
@@ -431,24 +447,34 @@ function WeekPairBox({
                   data-testid={`wtl-accompaniment-badge-${v.id}`}
                   title={`同行: ${accBadge}`}
                 >
-                  👥{accBadge}
+                  👥{lanes === 1 ? accBadge : ''}
                 </span>
               )}
               {v.is_pinned && <CornerPushPin className="h-4 w-4" />}
-              {/* 1行目: 右端の時刻が右上バッジと重ならないよう、バッジ有り時は右パディングで逃がす。 */}
+              {/* 1行目: 右端の時刻が右上バッジと重ならないよう、バッジ有り時は右パディングで逃がす。
+                  等分 (lanes ≥ 2) では余白も時刻も捨てて氏名を 2 行で読ませる (§2-B1)。 */}
               <span
                 className={cn(
                   'flex min-w-0 items-center gap-1',
-                  accBadge && (v.is_pinned ? 'pr-[64px]' : 'pr-[50px]'),
+                  lanes === 1 && accBadge && (v.is_pinned ? 'pr-[64px]' : 'pr-[50px]'),
                 )}
               >
-                <span className="truncate text-[11px] font-bold leading-tight">
+                <span
+                  className={cn(
+                    'font-bold leading-tight',
+                    lanes > 1
+                      ? 'min-w-0 line-clamp-2 break-words text-[10.5px]'
+                      : 'truncate text-[11px]',
+                  )}
+                >
                   {v.patient_name ?? '—'}
                 </span>
-                <span className="tnum ml-auto shrink-0 text-[8.5px] opacity-75">
-                  {(v.start_time ?? '').slice(0, 5)}
-                  {dm !== null ? `・${dm}分` : ''}
-                </span>
+                {lanes === 1 && (
+                  <span className="tnum ml-auto shrink-0 text-[8.5px] opacity-75">
+                    {(v.start_time ?? '').slice(0, 5)}
+                    {dm !== null ? `・${dm}分` : ''}
+                  </span>
+                )}
               </span>
               {/* 2行目: 📍住所 (通常カードと同じ配置。同住所なので2行とも同じ住所・PO要望)。 */}
               {v.patient_address && (
