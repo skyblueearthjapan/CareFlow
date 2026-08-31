@@ -19,6 +19,7 @@ from app.api.v1 import (
     dashboard,
     diff,
     event_templates,
+    feasibility,
     geocoding,
     health,
     integrations,
@@ -189,6 +190,8 @@ api_router.include_router(schedule.router, prefix="/schedule", tags=["schedule"]
 # v1 (``/schedule/auto-allocate`` 等) は schedule.router にそのまま残し、UI 完成後の
 # 別 PR で削除する.
 api_router.include_router(schedule_v2.router, prefix="/schedule", tags=["schedule-v2"])
+# 実現性チェック (移動/重なり/バッファ/同住所ルール・read-only・2026-08-31)
+api_router.include_router(feasibility.router, prefix="/schedule", tags=["schedule-v2"])
 # Phase E (週空間 運転席) BE-1: 急休の代替候補 (/schedule/v2/substitute-candidates) と
 # Phase 2-A: 「担当なし」への投入提案 (/schedule/v2/assign-candidates). 判定は同一エンジン。
 api_router.include_router(substitute_candidates.router, prefix="/schedule", tags=["schedule-v2"])

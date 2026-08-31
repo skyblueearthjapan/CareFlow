@@ -26,6 +26,10 @@ vi.mock('@/components/schedule/v2/CourseDayTablePanel', () => ({
   },
 }));
 
+// 実現性チェックボタンは react-query の mutation を使う (Provider 不要にするため stub)。
+vi.mock('@/components/schedule/FeasibilityCheckButton', () => ({
+  FeasibilityCheckButton: () => <div data-testid="feasibility-check-stub" />,
+}));
 vi.mock('@/components/brand/Rakusuke', () => ({
   RakusukeTitle: ({ title }: { title: string }) => <h1>{title}</h1>,
 }));

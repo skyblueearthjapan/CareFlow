@@ -38,7 +38,7 @@
  *   - admin / manager: 編集可 (ドロップ + 担当変更 + 主要 4 + 二次操作 + 個別 reset)
  *   - staff: 閲覧のみ
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -425,6 +425,12 @@ export interface CourseDayTablePanelProps {
    */
   onWeekChange?: (weekStart: Date) => void;
   /**
+   * 上部折りたたみ時のコンパクト行 (週切替の右) に置く追加ツール
+   * (例: 実現性チェックボタン・2026-08-31)。展開時はページ側のカードが同じものを描くため、
+   * ここではコンパクト行にだけ出す。
+   */
+  compactExtra?: ReactNode;
+  /**
    * 上部折りたたみ時のコンパクト行に「拠点フィルタ」を出すためのハンドラ (2026-08-23)。
    * 未指定なら拠点フィルタは描画しない。
    */
@@ -440,6 +446,7 @@ export function CourseDayTablePanel({
   officeId,
   canEdit,
   onWeekChange,
+  compactExtra,
   onOfficeChange,
 }: CourseDayTablePanelProps) {
   const { isoYear, isoWeek } = useMemo(() => isoWeekFromLocalDate(weekStart), [weekStart]);
@@ -5221,6 +5228,7 @@ export function CourseDayTablePanel({
                       {compactWeekRangeLabel}
                     </span>
                     <span className="tnum text-[11px] text-text-muted">{compactWeekNoLabel}</span>
+                    {compactExtra}
                   </div>
                 ) : null}
               </div>

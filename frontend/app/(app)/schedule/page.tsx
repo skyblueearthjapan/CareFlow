@@ -27,6 +27,7 @@ import { useMemo, useState } from 'react';
 
 import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { CourseDayTablePanel } from '@/components/schedule/v2/CourseDayTablePanel';
+import { FeasibilityCheckButton } from '@/components/schedule/FeasibilityCheckButton';
 import { WeekSelector, toWeekStart } from '@/components/schedule/WeekSelector';
 import { Card } from '@/components/ui/card';
 import { useOffices } from '@/lib/queries/offices';
@@ -93,6 +94,13 @@ export default function SchedulePage() {
 
           {/* ml-auto で右端に拠点フィルタを寄せる. */}
           <div className="ml-auto flex flex-wrap items-center gap-3">
+            {/* 実現性チェック (read-only): 移動/重なり/バッファ/同住所ルールを判定して A4 レポートを開く. */}
+            <FeasibilityCheckButton
+              isoYear={isoYear}
+              isoWeek={isoWeek}
+              officeId={officeId}
+              canEdit={canEdit}
+            />
             {/* 拠点フィルタ */}
             <label className="flex items-center gap-1 text-xs text-text-secondary">
               拠点
@@ -124,6 +132,16 @@ export default function SchedulePage() {
         canEdit={canEdit}
         onWeekChange={setWeekStart}
         onOfficeChange={setOfficeId}
+        compactExtra={
+          headerCollapsed ? (
+            <FeasibilityCheckButton
+              isoYear={isoYear}
+              isoWeek={isoWeek}
+              officeId={officeId}
+              canEdit={canEdit}
+            />
+          ) : null
+        }
       />
     </section>
   );
