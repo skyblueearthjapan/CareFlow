@@ -118,3 +118,59 @@ async def test_staff_code_autonumber_skips_deleted_and_gaps(client, db) -> None:
     )
     assert res.status_code == 201, res.text
     assert res.json()["code"] == "S011"
+
+
+@pytest.mark.asyncio
+async def test_staff_list_and_get_include_qualification(client, db) -> None:
+    """一覧/詳細 (v1 StaffRead) に資格を含める (2026-08-31: 全員「資格未設定」表示の是正)。"""
+    s = Staff(name="准看 太郎", qualification="准看護師")
+    db.add(s)
+    await db.commit()
+    await db.refresh(s)
+    admin = await _make_user(db, "s-admin-q@example.com", "admin")
+    res = await client.get("/api/v1/staff", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    row = next(x for x in res.json() if x["id"] == str(s.id))
+    assert row["qualification"] == "准看護師"
+    res2 = await client.get(f"/api/v1/staff/{s.id}", headers=_bearer(admin))
+    assert res2.status_code == 200 and res2.json()["qualification"] == "准看護師"
+
+
+@pytest.mark.asyncio
+async def test_staff_patch_accepts_qualification(client, db) -> None:
+    """編集フォームが送る qualification を PATCH が受理・保存する (2026-08-31: 422 extra_forbidden の是正)。"""
+    s = Staff(name="小西 テスト", is_trainee=True)
+    db.add(s)
+    await db.commit()
+    await db.refresh(s)
+    admin = await _make_user(db, "s-admin-q2@example.com", "admin")
+    res = await client.patch(
+        f"/api/v1/staff/{s.id}",
+        headers=_bearer(admin),
+        json={"qualification": "看護師", "note": None},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["qualification"] == "看護師"
+    await db.refresh(s)
+    assert s.qualification == "看護師"
+    # 未知の値は弾く / null で未設定に戻せる
+    bad = await client.patch(
+        f"/api/v1/staff/{s.id}", headers=_bearer(admin), json={"qualification": "医師"}
+    )
+    assert bad.status_code == 422
+    clr = await client.patch(
+        f"/api/v1/staff/{s.id}", headers=_bearer(admin), json={"qualification": None}
+    )
+    assert clr.status_code == 200 and clr.json()["qualification"] is None
+
+
+@pytest.mark.asyncio
+async def test_staff_create_accepts_qualification(client, db) -> None:
+    admin = await _make_user(db, "s-admin-q3@example.com", "admin")
+    res = await client.post(
+        "/api/v1/staff",
+        headers=_bearer(admin),
+        json={"name": "准看 花子", "qualification": "准看護師"},
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["qualification"] == "准看護師"

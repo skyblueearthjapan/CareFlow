@@ -38,6 +38,11 @@ StaffStatusV2 = Literal["active", "on_leave", "retired"]
 # 性別: 患者の性別制限とマッチング用
 SexV2 = Literal["male", "female", "unknown"]
 
+# 資格 (K-1b カイポケ「職種」列)。`app.schemas.v2.staff.QualificationV2` と同一定義。
+# S1 (42bf03e) で FE の編集フォームが送るようになったが v1 schema (extra="forbid") に
+# 無く、スタッフ編集ページの保存が 422 extra_forbidden で全滅していた (2026-08-31 是正)。
+QualificationV2 = Literal["看護師", "准看護師", "理学療法士", "作業療法士", "言語聴覚士"]
+
 
 class StaffBase(BaseModel):
     """スタッフマスタ v2 基底スキーマ (§4.2 残す 9 項目)."""
@@ -68,6 +73,9 @@ class StaffBase(BaseModel):
         default=False,
         description="新人フラグ。True の場合は同行スタッフ (companion) と一緒に訪問",
     )
+    qualification: QualificationV2 | None = Field(
+        default=None, description="資格 (看護師 / 准看護師 / PT / OT / ST)。請求区分の判定に使う"
+    )
 
 
 class StaffCreate(StaffBase):
@@ -88,6 +96,7 @@ class StaffUpdate(BaseModel):
     primary_office_id: UUID | None = None
     note: str | None = None
     is_trainee: bool | None = None
+    qualification: QualificationV2 | None = None
 
 
 class StaffRead(StaffBase):
@@ -99,6 +108,10 @@ class StaffRead(StaffBase):
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None
+    # 資格: DB には入っているのに v1 の一覧/詳細応答に含まれておらず、スタッフ一覧が全員
+    # 「資格未設定」と表示されていた (2026-08-31 PO 指摘)。応答側は旧データを落とさないよう
+    # 文字列のまま返す (入力側は StaffBase / StaffUpdate の Literal で検証)。
+    qualification: str | None = Field(default=None, description="資格")  # type: ignore[assignment]
     # 同行のライフサイクル (docs/plans/general-accompaniment-design.md §3-7):
     # status を active から外した PATCH が畳んだ同行リンク / 既定の件数。
     # ORM に対応する属性は無く、``PATCH`` が model_copy で載せるときだけ非ゼロ
