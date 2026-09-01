@@ -13,6 +13,7 @@ import { useCallback, useState } from 'react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
+import { useStartDiffLocal } from '@/lib/queries/integrations';
 import { useReconcileReport, type ReconcileReport } from '@/lib/queries/reconcileReport';
 
 export interface ReconcileReportButtonProps {
@@ -98,6 +99,81 @@ export function ReconcileReportButton({
           {ngCount > 0 ? `相違 ${ngCount}` : '全一致'}
         </span>
       ) : null}
+    </span>
+  );
+}
+
+/** 「差分最新化」— カイポケから最新 CSV を取得してスナップショットを更新する
+ * (連携ページの「この週の差分を計算」と同一処理・約1分・RPA 使用)。
+ * PO 要望 (2026-09-01): 最新化 → 突合レポート の流れにしたい。 */
+export function ReconcileRefreshButton({
+  weekStart,
+  canEdit,
+  size = 'sm',
+}: {
+  weekStart: string;
+  canEdit: boolean;
+  size?: 'sm' | 'md';
+}) {
+  const diffLocal = useStartDiffLocal();
+
+  const run = useCallback(async () => {
+    try {
+      const start = new Date(`${weekStart}T00:00:00`);
+      const end = new Date(start);
+      end.setDate(end.getDate() + 6);
+      const ymd = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+          d.getDate(),
+        ).padStart(2, '0')}`;
+      const res = await diffLocal.mutateAsync({
+        month: weekStart.slice(0, 7),
+        weekStart,
+        weekEnd: ymd(end),
+      });
+      const s = (res.summary ?? {}) as Record<string, number>;
+      const total = s.total ?? 0;
+      toast.success(
+        `差分最新化が完了しました（差分 ${total} 件）。「🔍 突合レポート」で最新の突合を開けます。`,
+      );
+    } catch (e) {
+      toast.error(
+        `差分最新化に失敗しました: ${e instanceof Error ? e.message : '不明なエラー'}`,
+      );
+    }
+  }, [diffLocal, weekStart]);
+
+  if (!canEdit) return null;
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size={size}
+      onClick={run}
+      disabled={diffLocal.isPending}
+      title="カイポケから最新CSVを取得してスナップショットを更新します（約1分・連携ページの差分計算と同じ）"
+      data-testid="reconcile-refresh-button"
+    >
+      {diffLocal.isPending ? 'カイポケ取得中…約1分' : '🔄 差分最新化'}
+    </Button>
+  );
+}
+
+/** 「差分最新化 → 突合レポート」の 2 ボタンを並べたツールバー (盤面用)。 */
+export function ReconcileToolbar({
+  weekStart,
+  canEdit,
+  size = 'sm',
+}: {
+  weekStart: string;
+  canEdit: boolean;
+  size?: 'sm' | 'md';
+}) {
+  if (!canEdit) return null;
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <ReconcileRefreshButton weekStart={weekStart} canEdit={canEdit} size={size} />
+      <ReconcileReportButton weekStart={weekStart} canEdit={canEdit} size={size} />
     </span>
   );
 }

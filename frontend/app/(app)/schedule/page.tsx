@@ -28,7 +28,7 @@ import { useMemo, useState } from 'react';
 import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { CourseDayTablePanel } from '@/components/schedule/v2/CourseDayTablePanel';
 import { FeasibilityCheckButton } from '@/components/schedule/FeasibilityCheckButton';
-import { ReconcileReportButton } from '@/components/integrations/ReconcileReportButton';
+import { ReconcileToolbar } from '@/components/integrations/ReconcileReportButton';
 import { WeekSelector, toWeekStart } from '@/components/schedule/WeekSelector';
 import { Card } from '@/components/ui/card';
 import { useOffices } from '@/lib/queries/offices';
@@ -110,8 +110,8 @@ export default function SchedulePage() {
               officeId={officeId}
               canEdit={canEdit}
             />
-            {/* らく助×カイポケ 突合レポート (read-only・スナップショット比較) */}
-            <ReconcileReportButton weekStart={weekStartYmd} canEdit={canEdit} />
+            {/* らく助×カイポケ: 差分最新化 → 突合レポート (PO 要望の流れ) */}
+            <ReconcileToolbar weekStart={weekStartYmd} canEdit={canEdit} />
             {/* 拠点フィルタ */}
             <label className="flex items-center gap-1 text-xs text-text-secondary">
               拠点
@@ -152,7 +152,7 @@ export default function SchedulePage() {
                 officeId={officeId}
                 canEdit={canEdit}
               />
-              <ReconcileReportButton weekStart={weekStartYmd} canEdit={canEdit} />
+              <ReconcileToolbar weekStart={weekStartYmd} canEdit={canEdit} />
             </>
           ) : null
         }
