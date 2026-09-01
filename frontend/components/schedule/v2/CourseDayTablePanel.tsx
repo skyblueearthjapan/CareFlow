@@ -5234,7 +5234,21 @@ export function CourseDayTablePanel({
               </div>
             ) : null}
 
-            {/* 曜日タブ */}
+            {/* 折りたたみ時: 1 段目は [ツール/週切替/実現性/差分最新化/突合] + 右端に診断/最適化。
+                ここで行を区切り、曜日タブ群は 2 段目の左に置く (PO 要望 2026-09-01 ボタン配置変更)。 */}
+            {headerCollapsed ? (
+              <>
+                <div
+                  className="ml-auto flex items-center gap-2"
+                  data-testid="schedule-compact-top-right"
+                >
+                  {healthAndOptimizeButtons}
+                </div>
+                <div className="basis-full" aria-hidden />
+              </>
+            ) : null}
+
+            {/* 曜日タブ (折りたたみ時は 2 段目の左) */}
             <div
               role="tablist"
               aria-label="曜日タブ"
@@ -5347,20 +5361,6 @@ export function CourseDayTablePanel({
             {headerCollapsed ? null : (
               <span className="tnum text-[11px] text-text-muted">{isoWeekLabel}</span>
             )}
-
-            {/* 診断/最適化 は畳んでも 1 段目の右端(タブの右の空き)に常設 (PO 要望 2026-08-23)。
-                2 段目(表示切替・自動割当・戻る/進む・拠点)とは別行になるよう、ここで行を区切る。 */}
-            {headerCollapsed ? (
-              <>
-                <div
-                  className="ml-auto flex items-center gap-2"
-                  data-testid="schedule-compact-top-right"
-                >
-                  {healthAndOptimizeButtons}
-                </div>
-                <div className="basis-full" aria-hidden />
-              </>
-            ) : null}
 
             {/* Row 2 右半: 表示モード + 二次操作 を 3 グループ (α/γ/δ) に分けて
                 縦区切り線で分離. ml-auto を持つ最初の見える要素で右寄せを担保 (= α が出ていれば α、
