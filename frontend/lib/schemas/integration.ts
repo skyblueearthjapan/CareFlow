@@ -457,6 +457,8 @@ export const EventsInboundPreviewSchema = z.object({
   deletes: z.number().int().default(0),
   changes: z.array(EventsInboundChangeSchema).default([]),
   unmatched: z.array(EventsInboundUnmatchedSchema).default([]),
+  // 月跨ぎ週で RPA の表示週に含まれなかった対象日 (追加/削除の判定対象外・2026-09-01)
+  uncoveredDays: z.array(z.string()).default([]),
   conflicts: z.array(EventsInboundConflictSchema).default([]),
 });
 export type EventsInboundPreview = z.infer<typeof EventsInboundPreviewSchema>;

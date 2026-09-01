@@ -85,6 +85,9 @@ class EventsPlan:
     unmatched: dict[str, int] = field(default_factory=dict)
     sunday_skipped: int = 0
     fetched_total: int = 0
+    # RPA の表示週に含まれなかった対象日 (月跨ぎ週の月初側で前月末日が出ないケース・
+    # 2026-09-01 実測)。この日は追加も削除判定もしない (現状維持) — UI で明示する。
+    uncovered_days: list[date] = field(default_factory=list)
 
     @property
     def memo_count(self) -> int:
@@ -255,10 +258,22 @@ async def build_events_plan(
     *,
     week_start: date,
     tasks: list[dict[str, Any]],
+    covered_dates: set[date] | None = None,
 ) -> EventsPlan:
-    """RPA の tasks と staff_events(source='kaipoke') を突合して差分計画を作る。"""
+    """RPA の tasks と staff_events(source='kaipoke') を突合して差分計画を作る。
+
+    ``covered_dates`` = RPA が実際に表示できた週の日付集合 (result["week_dates"])。
+    月跨ぎ週では要求週の一部 (例: 8/31) が表示されないことがあり、その日は
+    「カイポケに無い」と誤認して delete を出さないよう判定から除外する。
+    """
     mon, sat = week_range_mon_sat(week_start)
     plan = EventsPlan(week_start=mon, week_end=sat, fetched_total=len(tasks))
+    if covered_dates is not None:
+        plan.uncovered_days = [
+            mon + timedelta(days=i)
+            for i in range((sat - mon).days + 1)
+            if (mon + timedelta(days=i)) not in covered_dates
+        ]
 
     name_index, staff_map = await load_staff_name_index(db)
     id_by_str = {str(sid): sid for sid in staff_map}
@@ -328,8 +343,12 @@ async def build_events_plan(
             change.before_title = row.title
             plan.changes.append(change)
 
+    uncovered = set(plan.uncovered_days)
     for external_id, row in existing.items():
         if external_id not in desired:
+            # 表示週に含まれなかった日は「取得できていない」だけ — 削除しない。
+            if row.starts_at.date() in uncovered:
+                continue
             # staff_map (名寄せ用に全スタッフをロード済み) を流用して N+1 を避ける
             staff_row = staff_map.get(row.staff_id)
             plan.changes.append(

@@ -849,3 +849,47 @@ async def test_async_status_premature_close_result_lost(client, db, stub_kaipoke
     body = res.json()
     assert body["status"] == "failed"
     assert "再実行" in (body["error"] or "")
+
+
+@pytest.mark.asyncio
+async def test_build_plan_uncovered_day_suppresses_delete(db) -> None:
+    """月跨ぎ週: RPA 表示週に含まれない日 (covered_dates 外) は削除判定から除外し、
+    uncovered_days として応答に明示する (2026-09-01 実測 8/31 対策)。"""
+    from datetime import datetime, timedelta
+
+    from app.services.kaipoke.events_inbound import build_events_plan
+
+    staff_map = await _seed_staff(db)
+    sid = staff_map["a"].id
+    mon = WEEK_START
+    # 月曜に取り込み済みイベントが 1 件ある
+    ev = StaffEvent(
+        staff_id=sid,
+        event_type="event",
+        title="朝会",
+        starts_at=datetime.combine(mon, time(9, 0)),
+        ends_at=datetime.combine(mon, time(9, 15)),
+        source="kaipoke",
+        external_id=f"1:1:{mon.isoformat()}",
+    )
+    db.add(ev)
+    await db.commit()
+
+    covered = {mon + timedelta(days=i) for i in range(1, 7)}  # 月曜だけ表示週外
+    plan = await build_events_plan(db, week_start=mon, tasks=[], covered_dates=covered)
+    assert plan.uncovered_days == [mon]
+    assert [c for c in plan.changes if c.action == "delete"] == []
+
+    # covered 指定なし (全日カバー) なら従来どおり delete が出る
+    plan2 = await build_events_plan(db, week_start=mon, tasks=[], covered_dates=None)
+    assert plan2.uncovered_days == []
+    assert [c.action for c in plan2.changes] == ["delete"]
+
+
+def test_events_covered_dates_parses_week_dates() -> None:
+    from app.api.v1.integrations import _events_covered_dates
+
+    assert _events_covered_dates({}) is None
+    assert _events_covered_dates({"week_dates": []}) is None
+    got = _events_covered_dates({"week_dates": ["2026-09-01", "bad", "2026-09-02"]})
+    assert got == {date(2026, 9, 1), date(2026, 9, 2)}

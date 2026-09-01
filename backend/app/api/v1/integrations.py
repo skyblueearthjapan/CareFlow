@@ -2817,6 +2817,20 @@ def _hhmm(t) -> str:
     return f"{t.hour:02d}:{t.minute:02d}"
 
 
+def _events_covered_dates(result: dict[str, Any]) -> set[date] | None:
+    """RPA result の week_dates → date 集合 (無ければ None = 全日カバー扱い)。"""
+    raw = result.get("week_dates")
+    if not isinstance(raw, list):
+        return None
+    out: set[date] = set()
+    for x in raw:
+        try:
+            out.add(date.fromisoformat(str(x)))
+        except ValueError:
+            continue
+    return out or None
+
+
 def _events_plan_to_read(plan, conflicts=None) -> EventsInboundPreviewRead:
     """EventsPlan → API 応答スキーマ (同期版・非同期 status 共用)。"""
     adds = sum(1 for c in plan.changes if c.action == "add")
@@ -2828,6 +2842,7 @@ def _events_plan_to_read(plan, conflicts=None) -> EventsInboundPreviewRead:
         fetched_total=plan.fetched_total,
         sunday_skipped=plan.sunday_skipped,
         memo_count=plan.memo_count,
+        uncovered_days=list(getattr(plan, "uncovered_days", []) or []),
         adds=adds,
         updates=updates,
         deletes=deletes,
@@ -2960,7 +2975,12 @@ async def events_inbound_preview(
         await _commit_or_409(db)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
-    plan = await build_events_plan(db, week_start=payload.week_start, tasks=result["tasks"])
+    plan = await build_events_plan(
+        db,
+        week_start=payload.week_start,
+        tasks=result["tasks"],
+        covered_dates=_events_covered_dates(result),
+    )
 
     from app.services.kaipoke.events_inbound import find_event_visit_conflicts
 
@@ -3101,7 +3121,12 @@ async def events_inbound_preview_status(
                 and _result.get("success")
                 and isinstance(_result.get("tasks"), list)
             ):
-                plan = await _bep(db, week_start=job.week_start, tasks=_result["tasks"])
+                plan = await _bep(
+                    db,
+                    week_start=job.week_start,
+                    tasks=_result["tasks"],
+                    covered_dates=_events_covered_dates(_result),
+                )
                 conflicts = await _fevc(db, job.week_start, _plan_conflict_items(plan))
                 preview = _events_plan_to_read(plan, conflicts)
                 job.result_summary = {

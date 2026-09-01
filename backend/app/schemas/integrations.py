@@ -535,6 +535,8 @@ class EventsInboundPreviewRead(BaseModel):
     fetched_total: int = Field(alias="fetchedTotal")
     sunday_skipped: int = Field(alias="sundaySkipped")
     memo_count: int = Field(alias="memoCount")
+    # 月跨ぎ週で RPA の表示週に含まれなかった対象日 (追加/削除の判定対象外・UI で明示)
+    uncovered_days: list[date] = Field(default_factory=list, alias="uncoveredDays")
     adds: int = 0
     updates: int = 0
     deletes: int = 0

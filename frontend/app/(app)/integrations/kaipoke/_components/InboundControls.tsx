@@ -391,6 +391,15 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                   </span>
                 </span>
               )}
+              {eventsPlan && (eventsPlan.uncoveredDays?.length ?? 0) > 0 && (
+                <span
+                  className="block font-medium text-warning-strong"
+                  data-testid="confirm-event-uncovered"
+                >
+                  ⚠ {eventsPlan.uncoveredDays.map((d) => d.slice(5).replace('-', '/')).join('・')}{' '}
+                  はカイポケの表示週に含まれないため、イベントは対象外です（追加・削除しません）
+                </span>
+              )}
               {hasEventChanges && eventsPlan && (eventsPlan.conflicts?.length ?? 0) > 0 && (
                 <span className="block font-medium text-warning-strong" data-testid="confirm-event-conflicts">
                   ⚠ 訪問と重なるイベントが {eventsPlan.conflicts?.length} 件あります
