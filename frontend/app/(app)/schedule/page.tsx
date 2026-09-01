@@ -28,6 +28,7 @@ import { useMemo, useState } from 'react';
 import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { CourseDayTablePanel } from '@/components/schedule/v2/CourseDayTablePanel';
 import { FeasibilityCheckButton } from '@/components/schedule/FeasibilityCheckButton';
+import { ReconcileReportButton } from '@/components/integrations/ReconcileReportButton';
 import { WeekSelector, toWeekStart } from '@/components/schedule/WeekSelector';
 import { Card } from '@/components/ui/card';
 import { useOffices } from '@/lib/queries/offices';
@@ -48,6 +49,14 @@ export default function SchedulePage() {
   // 週 state.
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
   const { isoYear, isoWeek } = useMemo(() => isoWeekFromLocalDate(weekStart), [weekStart]);
+  // 突合レポート用 (ローカル日付の YYYY-MM-DD。toISOString は UTC ずれするので使わない)
+  const weekStartYmd = useMemo(
+    () =>
+      `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}-${String(
+        weekStart.getDate(),
+      ).padStart(2, '0')}`,
+    [weekStart],
+  );
 
   // 拠点フィルタ. null = 全拠点.
   const [officeId, setOfficeId] = useState<string | null>(null);
@@ -101,6 +110,8 @@ export default function SchedulePage() {
               officeId={officeId}
               canEdit={canEdit}
             />
+            {/* らく助×カイポケ 突合レポート (read-only・スナップショット比較) */}
+            <ReconcileReportButton weekStart={weekStartYmd} canEdit={canEdit} />
             {/* 拠点フィルタ */}
             <label className="flex items-center gap-1 text-xs text-text-secondary">
               拠点
@@ -134,12 +145,15 @@ export default function SchedulePage() {
         onOfficeChange={setOfficeId}
         compactExtra={
           headerCollapsed ? (
-            <FeasibilityCheckButton
-              isoYear={isoYear}
-              isoWeek={isoWeek}
-              officeId={officeId}
-              canEdit={canEdit}
-            />
+            <>
+              <FeasibilityCheckButton
+                isoYear={isoYear}
+                isoWeek={isoWeek}
+                officeId={officeId}
+                canEdit={canEdit}
+              />
+              <ReconcileReportButton weekStart={weekStartYmd} canEdit={canEdit} />
+            </>
           ) : null
         }
       />

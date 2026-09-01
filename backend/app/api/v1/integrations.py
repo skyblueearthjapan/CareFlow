@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, date, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import HTMLResponse
 from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
@@ -74,6 +75,7 @@ from app.schemas.integrations import (
     MasterReconcileRead,
     MasterReconcileRequest,
     NgConflictRead,
+    ReconcileReportRead,
     ReplaceInboundRequest,
     ReplaceInboundResult,
     ReplaceInboundSkipRead,
@@ -680,6 +682,54 @@ async def reconcile_jobs(
     job = await _reconcile_latest_job(db, kaipoke_idle=not running, result_payload=result_payload)
     settled = job is not None and job.status not in _ACTIVE_JOB_STATUSES
     return {"reachable": True, "running": running, "settled": settled}
+
+
+@router.get(
+    "/reconcile-report",
+    response_model=ReconcileReportRead,
+    responses={200: {"content": {"text/html": {}}}},
+    summary="らく助×カイポケ 週突合レポート (印刷用 HTML 同梱・read-only・admin)",
+)
+async def get_reconcile_report(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    week_start: Annotated[date, Query(alias="weekStart")],
+    days: Annotated[int, Query(ge=1, le=7)] = 7,
+    fmt: Annotated[Literal["json", "html"], Query(alias="format")] = "json",
+    include_html: Annotated[bool, Query()] = True,
+):
+    """差分確認/突き合わせ用の見やすい HTML (PO 要望 2026-09-01)。
+
+    カイポケ側は保存済み最新スナップショット (RPA は回さない・鮮度は応答に明示)。
+    らく助側は送信 CSV と同一ロジック (`csv_builder`)。DB 書込なし。
+    """
+    from app.services.kaipoke.reconcile_report_html import (
+        build_reconcile_report,
+        render_reconcile_html,
+    )
+
+    report = await build_reconcile_report(db, week_start=week_start, days=days)
+    html_text = render_reconcile_html(report)
+    if fmt == "html":
+        return HTMLResponse(html_text)
+    payload = {
+        "week_start": report.week_start,
+        "week_end": report.week_end,
+        "generated_at": report.generated_at,
+        "total": len(report.pairs),
+        "counts": report.counts,
+        "snapshots": [
+            {
+                "month": s.month,
+                "fetched_at": s.fetched_at,
+                "row_count": s.row_count,
+                "source_op": s.source_op,
+            }
+            for s in report.snapshots
+        ],
+        "html": html_text if include_html else None,
+    }
+    return ReconcileReportRead.model_validate(payload)
 
 
 @router.get(

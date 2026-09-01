@@ -30,6 +30,10 @@ vi.mock('@/components/schedule/v2/CourseDayTablePanel', () => ({
 vi.mock('@/components/schedule/FeasibilityCheckButton', () => ({
   FeasibilityCheckButton: () => <div data-testid="feasibility-check-stub" />,
 }));
+// 突合レポートボタンも同様に stub (react-query mutation を使うため)。
+vi.mock('@/components/integrations/ReconcileReportButton', () => ({
+  ReconcileReportButton: () => <div data-testid="reconcile-report-stub" />,
+}));
 vi.mock('@/components/brand/Rakusuke', () => ({
   RakusukeTitle: ({ title }: { title: string }) => <h1>{title}</h1>,
 }));

@@ -22,6 +22,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 
 import { WeekDiffView } from './WeekDiffView';
+import { ReconcileReportButton } from '@/components/integrations/ReconcileReportButton';
 import { type WeeklyApplyVm, nextWeekMonday } from './useWeeklyApply';
 
 export function WeeklyApplyControls({ vm }: { vm: WeeklyApplyVm }) {
@@ -145,6 +146,11 @@ export function WeeklyApplyControls({ vm }: { vm: WeeklyApplyVm }) {
                 ? 'カイポケ現況を取得して計算中…（約1分）'
                 : 'この週の差分を計算'}
             </Button>
+            {/* 突合レポート (PO 要望 2026-09-01): 差分確認のついでに A4 HTML を開ける */}
+            <ReconcileReportButton
+              weekStart={`${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}-${String(weekStart.getDate()).padStart(2, '0')}`}
+              canEdit
+            />
             {sheetId && (
               <div className="flex flex-wrap items-center gap-1.5 text-sm">
                 <Chip label="追加" value={summary?.add ?? 0} tone="success" />

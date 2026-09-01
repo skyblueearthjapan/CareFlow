@@ -165,6 +165,25 @@ class WeekScheduleRead(BaseModel):
     rows: list[WeekScheduleRow] = Field(default_factory=list)
 
 
+class ReconcileSnapshotInfoRead(BaseModel):
+    month: str
+    fetched_at: datetime | None = None
+    row_count: int = 0
+    source_op: str = ""
+
+
+class ReconcileReportRead(BaseModel):
+    """らく助×カイポケ 週突合レポート (reconcile-report・read-only)。"""
+
+    week_start: date
+    week_end: date
+    generated_at: datetime
+    total: int
+    counts: dict[str, int]
+    snapshots: list[ReconcileSnapshotInfoRead]
+    html: str | None = None
+
+
 class GeneratedCsvRead(BaseModel):
     """CareFlow visits から生成したカイポケ18列CSV (K-2a)。
 
