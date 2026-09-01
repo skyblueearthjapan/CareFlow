@@ -133,7 +133,8 @@ PO 指摘: 1 人の同日に複数コース（稲毛A×2＋稲毛B＋都賀A 等
 PO 要望「差分確認/突き合わせの際に HTML が出てくるとらく」→ 実装・本番稼働。
 - BE: `GET /api/v1/integrations/reconcile-report?weekStart[&days≤7][&format=json|html]`（admin・read-only）。らく助側 = `csv_builder.resolve_month_rows`（送信 CSV と同一ロジック・イベント行は除外）／カイポケ側 = `kaipoke_csv_snapshots` の最新（**RPA は回さない**・鮮度をレポート冒頭に明示・月跨ぎ週対応）。(日,利用者) ペアリング＋時刻前ゼロ正規化。実装 = `services/kaipoke/reconcile_report_html.py`。
 - FE: `ReconcileReportButton`（新タブ Blob HTML・FeasibilityCheckButton と同方式・一致/相違バッジ＋トースト）を **スケジュール盤面ヘッダ（実現性チェックの隣）・折りたたみ時・連携ページ「差分を計算」の行** の 3 箇所に配置。
-- 運用: カイポケの「今」と比べたいときは先に差分計算（🔄突合）でスナップショットを更新してからボタン。テスト = BE 4 件・page.test スタブ。デプロイ = backend+frontend・healthz 200。現場 Ctrl+Shift+R。
+- 運用: カイポケの「今」と比べたいときは先に差分計算（🔄突合）でスナップショットを更新してからボタン。テスト = BE 5 件・page.test スタブ。デプロイ = backend+frontend・healthz 200。現場 Ctrl+Shift+R。
+- **初回実測での是正（同日）**: 職員2 の空白ゆれ（小西彩稀 vs 小西　彩稀）・二重空白の患者名・サービス内容の接尾伸びが偽の相違 24 件に化けた → 照合キーを `normalize_name_key`（NFKC+空白全除去+異体字）に、サービスは diff エンジンと同じ双方向前方一致に統一（表示は元の表記のまま）。**今週 (8/31 週) は 8 月側スナップショットが 8/24 のままなので 8/31 の行は相違だらけに見える**（9 月snapshot は最新・9/7 週からは単月で問題なし）— レポート冒頭の取得時刻表示が根拠。
 
 ## 5-f. 残タスク ⑩: カイポケ「予定×実績」比較レポート（連携ページ・将来）— 前提 = RPA の実績 CSV 出力が未実装
 PO 要望（2026-09-01 昼）: 連携ページで、カイポケ上の**予定と実績の比較**レポート（8 月実績合わせで手作りした突合一覧の形）を出せるとよい。
