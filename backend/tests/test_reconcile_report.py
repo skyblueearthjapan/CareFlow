@@ -157,3 +157,31 @@ def test_render_html_escapes_and_contains_summary():
     assert "<script>x</script>" not in html_text
     assert "&lt;script&gt;" in html_text
     assert "らく助のみ" in html_text
+
+
+def test_pair_group_absorbs_name_spacing_and_service_suffix():
+    """空白/異体字ゆれの担当名・接尾が伸びたサービス内容は一致扱い (エンジンと同じ)。"""
+    day = WEEK_START
+    pairs = _pair_group(
+        day,
+        "山田 太郎",
+        [
+            ReconRow(
+                start="09:00",
+                end="09:35",
+                staff1="小西彩稀",
+                staff2="",
+                service="精神基本療養費Ⅰ・正看",
+            )
+        ],
+        [
+            ReconRow(
+                start="09:00",
+                end="09:35",
+                staff1="小西　彩稀",
+                staff2="",
+                service="精神基本療養費Ⅰ・正看・複数名",
+            )
+        ],
+    )
+    assert [p.category for p in pairs] == ["一致"]

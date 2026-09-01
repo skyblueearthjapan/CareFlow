@@ -25,12 +25,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.kaipoke.csv_builder import BuildOptions, KaipokeCsvRow, resolve_month_rows
 from app.services.kaipoke.csv_snapshot import get_latest
+from app.services.kaipoke.name_match import normalize_name_key
 
 WEEKDAY_JA = ["月", "火", "水", "木", "金", "土", "日"]
 
 
 def _norm_name(s: str) -> str:
+    """表示用の軽い正規化 (全角スペース→半角)。照合キーは normalize_name_key を使う。"""
     return (s or "").replace("　", " ").strip()
+
+
+def _service_matches(a: str, b: str) -> bool:
+    """サービス内容の一致判定 — diff エンジンと同じ「完全一致 or 双方向の前方一致」。
+
+    接尾が伸びただけ (例: 加算表記) は同一扱い。空文字は完全一致のみ (C-9 の穴対策)。
+    """
+    if a == b:
+        return True
+    if not a or not b:
+        return False
+    return a.startswith(b) or b.startswith(a)
 
 
 def _norm_time(s: str) -> str:
@@ -168,11 +182,12 @@ def _pair_group(
         diffs: list[str] = []
         if lo.start != rm.start or lo.end != rm.end:
             diffs.append("時刻")
-        if lo.staff1 != rm.staff1:
+        # 氏名は表記ゆれ (空白の有無・異体字 髙/高 等) を吸収して比較する。
+        if normalize_name_key(lo.staff1) != normalize_name_key(rm.staff1):
             diffs.append("担当")
-        if lo.staff2 != rm.staff2:
+        if normalize_name_key(lo.staff2) != normalize_name_key(rm.staff2):
             diffs.append("職員2")
-        if lo.service != rm.service:
+        if not _service_matches(lo.service, rm.service):
             diffs.append("サービス")
         pairs.append(ReconPair(day=day, patient=patient, local=lo, remote=rm, diffs=diffs))
     for j, rm in enumerate(remotes):
@@ -191,8 +206,9 @@ async def build_reconcile_report(
         {(d.year, d.month) for d in (week_start + timedelta(days=i) for i in range(days))}
     )
 
-    # らく助側 (送信 CSV と同一ロジック)
+    # らく助側 (送信 CSV と同一ロジック)。キーは正規化名・表示名は別に控える。
     local_by_key: dict[tuple[date, str], list[ReconRow]] = {}
+    display_names: dict[tuple[date, str], str] = {}
     for y, m in months:
         for r in await resolve_month_rows(db, BuildOptions(year=y, month=m)):
             if not (week_start <= r.visit_date <= week_end):
@@ -200,7 +216,8 @@ async def build_reconcile_report(
             # イベント行 (業務種別がイベント名) は突合対象外 — 訪問だけを見る。
             if r.business_type not in ("医療保険", "介護保険"):
                 continue
-            key = (r.visit_date, _norm_name(r.patient_name))
+            key = (r.visit_date, normalize_name_key(r.patient_name))
+            display_names.setdefault(key, _norm_name(r.patient_name))
             local_by_key.setdefault(key, []).append(_local_row(r))
 
     # カイポケ側 (最新スナップショット)
@@ -228,12 +245,15 @@ async def build_reconcile_report(
             except ValueError:
                 continue
             if week_start <= d <= week_end:
-                remote_by_key.setdefault((d, patient), []).append(row)
+                key = (d, normalize_name_key(patient))
+                display_names.setdefault(key, patient)
+                remote_by_key.setdefault(key, []).append(row)
 
     pairs: list[ReconPair] = []
     for key in sorted(set(local_by_key) | set(remote_by_key)):
-        d, patient = key
-        pairs.extend(_pair_group(d, patient, local_by_key.get(key, []), remote_by_key.get(key, [])))
+        d, _norm_key = key
+        display = display_names.get(key, _norm_key)
+        pairs.extend(_pair_group(d, display, local_by_key.get(key, []), remote_by_key.get(key, [])))
 
     def _sort_key(p: ReconPair) -> tuple[date, str, str]:
         anchor = p.local or p.remote
