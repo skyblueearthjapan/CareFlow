@@ -723,4 +723,39 @@ describe('StaffWeekBoard', () => {
     );
     expect(screen.getByTestId(`staff-week-row-${STAFF_1}`)).not.toHaveAttribute('data-highlight');
   });
+
+  it('セル内のコース塊は「最も早い訪問の開始時刻」順に並ぶ (PO 要望 2026-09-01)', () => {
+    // 同じスタッフ・同じ日に A(14:00) と B(09:00) → ラベル順なら A が先だが
+    // 時間順で B が先に描画される。
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={[
+          visit({ id: 'ta1', patient_name: '午後　花子', weekday: 0, start_time: '14:00' }),
+          visit({
+            id: 'tb1',
+            patient_name: '朝一　太郎',
+            weekday: 0,
+            start_time: '09:00',
+            course_template_id: TPL_B,
+          }),
+        ]}
+        assignedStaffByTemplateWeekday={
+          new Map([
+            [`${TPL_A}:0`, STAFF_1],
+            [`${TPL_B}:0`, STAFF_1],
+          ])
+        }
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        onPatientClick={vi.fn()}
+      />,
+    );
+    const chipB = screen.getByTestId(`staff-week-course-chip-${TPL_B}-0`);
+    const chipA = screen.getByTestId(`staff-week-course-chip-${TPL_A}-0`);
+    // B が A より前 (DOM 順)
+    expect(chipB.compareDocumentPosition(chipA) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 });

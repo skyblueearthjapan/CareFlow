@@ -372,9 +372,23 @@ export function StaffWeekBoard({
                 </td>
                 {WEEKDAY_LABELS.map((_, wd) => {
                   const byTpl = cellMap.get(`${rowKey}:${wd}`);
+                  // コース塊は「最も早い訪問の開始時刻」順に並べる (PO 要望 2026-09-01:
+                  // 複数コースを 1 人の同日に割り当てるとラベル順が優先されて時間順に
+                  // ならず読みにくい)。塊内の訪問は下の <ul> で時間順ソート済み。
+                  // 開始時刻が同じ塊はラベル順で安定させる。
+                  const earliestStart = (cc: CellCourse): string => {
+                    let min = '';
+                    for (const vv of cc.visits) {
+                      const t = vv.start_time ?? '';
+                      if (t && (min === '' || t < min)) min = t;
+                    }
+                    return min || '99:99';
+                  };
                   const courses = byTpl
-                    ? Array.from(byTpl.values()).sort((a, b) =>
-                        a.label.localeCompare(b.label, 'ja'),
+                    ? Array.from(byTpl.values()).sort(
+                        (a, b) =>
+                          earliestStart(a).localeCompare(earliestStart(b)) ||
+                          a.label.localeCompare(b.label, 'ja'),
                       )
                     : [];
                   // 曜日一致で判定 (CourseWeekOverview と同じ呼び方)。
