@@ -24,7 +24,8 @@
 - 前提はすべて既存の単一ソース: `scheduling/config.py`（設定行 or 既定 20km/h・8 分・11:30〜13:30・60 分）、
   `constants.SAME_ADDRESS_TOLERANCE`、`auto_allocator.SAME_ADDRESS_MAX`、`auto_allocator_v2.SAME_ADDRESS_PAIR_MIN_OCCUPANCY / haversine_minutes`。
   独自値は道路係数 1.3（`ROAD_FACTOR`）と朝会の出発地扱い（`OFFICE_EVENT_TITLES`）だけ。
-- 担当の解決は盤面（`board_service`）と同じ **コース担当 → `primary_staff_id` フォールバック**。同行は旧列
+- 担当の解決は **`visits.primary_staff_id`（訪問自身の担当・手動変更を正）→ コース担当フォールバック**
+  （2026-09-01 是正。csv_builder と同じ。旧仕様「コース担当優先」は盤面手直し週に実担当と食い違うため撤回）。同行は旧列
   （secondary/mentor）＋ `accompaniments`（visit 単位）。2 名体制の 2 行や相互参照で同じ職員に同じ訪問が
   2 回来る場合は 1 つにまとめる。同住所ペアは **別患者** のみ（同一患者の分割訪問はペアにしない）、
   同住所 3 名以上は **同時刻** のみ ❗（連続で 3 名を回るのは成立する）。座標のない患者は「座標なし」として
@@ -49,7 +50,7 @@
 - `window.open` の features に `noopener` を付けない（仕様上 null が返り、レポートが開かない）。
   タブは blob: URL へ静的遷移し、遷移後に `opener = null`。blob: はアプリと同一オリジンなので、
   backend の `html.escape` が安全境界（renderer にエスケープ無しの補間を足さない）。
-- コース結合は盤面と同じガード（未削除・同 ISO 週）。合わないコースは無視して `primary_staff_id` へ。
+- コース結合は盤面と同じガード（未削除・同 ISO 週）。コースは担当フォールバックと拠点フィルタに使う。
 - 同行は accompaniments の visit 単位とコース単位（週の既定展開）を両方拾う。
 - 拠点フィルタ: 訪問はコース拠点（コース無しは患者拠点）、イベントは職員の所属拠点（受容した差）。
 - 日曜は既定で判定しない（`days=6`・FE は送らない）。必要なら `days=7`。

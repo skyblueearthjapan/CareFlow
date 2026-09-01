@@ -240,7 +240,8 @@ def test_missing_coordinates_are_reported_not_silently_ok():
 @pytest.mark.asyncio
 async def test_loader_dedupes_two_staff_visit_and_resolves_course_staff(db):
     """2 名体制 (同一患者・同時刻の 2 行・secondary が相互参照) は各職員 1 件・重なり無し。
-    コースに担当が付いていれば primary_staff_id よりコース担当を優先する (盤面と同じ)。"""
+    担当は訪問自身の primary_staff_id を正とし、コース担当は未設定時のフォールバック
+    (2026-09-01 是正: 盤面で担当を手直しした週に実担当へ一致させる)。"""
     import uuid
     from datetime import time as _time
 
@@ -286,7 +287,8 @@ async def test_loader_dedupes_two_staff_visit_and_resolves_course_staff(db):
             ),
         ]
     )
-    # コース担当 = Z だが visits.primary_staff_id = X のまま (ミラーずれ) → 盤面同様 Z を正にする
+    # コース担当 = Z / visits.primary_staff_id = X (手動変更) → 実担当 X を正にする。
+    # 担当未設定 (primary_staff_id=None) の訪問だけコース担当 Z へフォールバック。
     course = Course(
         iso_year=2026,
         iso_week=36,
@@ -310,6 +312,19 @@ async def test_loader_dedupes_two_staff_visit_and_resolves_course_staff(db):
             course_id=course.id,
         )
     )
+    # 担当未設定の訪問 → コース担当 Z へフォールバック
+    db.add(
+        Visit(
+            patient_id=pat.id,
+            visit_date=date(2026, 9, 2),
+            start_time=_time(16, 0),
+            end_time=_time(16, 35),
+            type="regular",
+            status="planned",
+            primary_staff_id=None,
+            course_id=course.id,
+        )
+    )
     await db.commit()
 
     report = await build_feasibility_report(db, iso_year=2026, iso_week=36)
@@ -320,9 +335,16 @@ async def test_loader_dedupes_two_staff_visit_and_resolves_course_staff(db):
         f.kind not in (KIND_OVERLAP, KIND_PAIR_SHORT, KIND_PAIR_NOT_SAME_START)
         for f in report.findings
     )
-    assert ("看護Z", date(2026, 9, 2)) in by and ("看護X", date(2026, 9, 2)) not in by
-    # 2 名体制 (2 行) は 1 件と数える (レビュー NEW-3) → 2 名体制 1 + 9/2 の 1 = 2
-    assert report.visit_count == 2
+    # 9/2 14:00 (primary=X・コース担当=Z) は実担当 X の行に載る (コース担当は使わない)
+    x2 = by[("看護X", date(2026, 9, 2))]
+    assert any(i.start_min == 14 * 60 for i in x2.items)
+    z2 = by.get(("看護Z", date(2026, 9, 2)))
+    assert z2 is None or not any(i.start_min == 14 * 60 for i in z2.items)
+    # 担当未設定の 16:00 はコース担当 Z の行に載る (フォールバック)
+    assert ("看護Z", date(2026, 9, 2)) in by
+    assert any(i.start_min == 16 * 60 for i in by[("看護Z", date(2026, 9, 2))].items)
+    # 2 名体制 (2 行) は 1 件と数える (レビュー NEW-3) → 2 名体制 1 + 9/2 の 2 = 3
+    assert report.visit_count == 3
 
 
 def test_missing_coordinates_reported_once_per_patient():

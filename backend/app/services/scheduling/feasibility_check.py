@@ -18,8 +18,10 @@ PO 要望 (2026-08-31): 手で並べ替えた週の予定について「物理�
       エンジンを本レポートに合わせて変えないこと (レビュー LOW-5・2026-08-31)。
   * 同住所同時刻の上限 = ``SAME_ADDRESS_MAX``=2 名 (``auto_allocator`` と同じく **同時刻** のみ判定)
   * 参考: 実走行想定 = 直線 × ``ROAD_FACTOR`` (1.3・レポート専用の目安)
-  * 担当の解決 = 盤面 (``board_service``) と同じく **コースの担当 (courses.assigned_staff_id) を正**、
-    コース無し/未割当なら ``visits.primary_staff_id`` にフォールバック
+  * 担当の解決 = **訪問自身の担当 (``visits.primary_staff_id``・手動変更を正とする) を優先**、
+    未設定ならコースの担当 (``courses.assigned_staff_id``) にフォールバック。
+    カイポケ CSV (``csv_builder``) と同じ解決順 (2026-09-01 是正: コース優先だと
+    盤面で担当を手直しした週に実担当と食い違う — PO 指摘 8/31)
   * 同行 = ``visits.secondary_staff_id / mentor_staff_id`` (旧) + ``accompaniments`` (正典・visit 単位)
 
 判定の種類 (``Finding.kind``):
@@ -549,8 +551,8 @@ async def load_week_items(
     Returns ``(items_by_(staff_key, day), staff_names)``。staff_key = staff.id の文字列
     (担当未定は ``UNASSIGNED_STAFF_KEY``)。
 
-    * 担当 = コースの担当 (``courses.assigned_staff_id``) を正、無ければ ``primary_staff_id``
-      (盤面 ``board_service`` と同じ解決順)。
+    * 担当 = 訪問自身の ``primary_staff_id`` を正 (手動変更 = 今週の実担当)、無ければ
+      コースの担当 (``courses.assigned_staff_id``) にフォールバック (csv_builder と同じ)。
     * 同行 = ``secondary_staff_id`` / ``mentor_staff_id`` (旧) と ``accompaniments`` (visit 単位)
       をその職員の時間軸に「同行」として載せる。
     * 2 名体制 (同一患者・同時刻の 2 行) や旧列の相互参照で同じ職員に同じ訪問が 2 回来る場合は
@@ -570,8 +572,8 @@ async def load_week_items(
         if o.lat is not None and o.lng is not None
     }
 
-    # コースは盤面 (board_service) と同じガード付きで結合: 未削除・同 ISO 週。
-    # 条件に合わないコース (削除済み / 別週の残骸) は無いものとして primary_staff_id へ落とす。
+    # コースは盤面 (board_service) と同じガード付きで結合: 未削除・同 ISO 週
+    # (担当のフォールバックと拠点フィルタに使う)。
     iso_year, iso_week, _ = week_start.isocalendar()
     course_on = and_(
         Course.id == Visit.course_id,
@@ -634,9 +636,8 @@ async def load_week_items(
     for v, p, c in rows:
         pos = (float(p.lat), float(p.lng)) if p.lat is not None and p.lng is not None else None
         pname = (p.name or "").replace("　", " ").strip()
-        primary_sid = (c.assigned_staff_id if c is not None and c.assigned_staff_id else None) or (
-            v.primary_staff_id
-        )
+        # 訪問自身の担当が正 (手動変更 manual_staff_override 込み)。無い時だけコース担当。
+        primary_sid = v.primary_staff_id or (c.assigned_staff_id if c is not None else None)
         primary_key = str(primary_sid) if primary_sid and str(primary_sid) in staff_names else None
         who: dict[str, str] = {}
         who[primary_key or UNASSIGNED_STAFF_KEY] = ROLE_PRIMARY
