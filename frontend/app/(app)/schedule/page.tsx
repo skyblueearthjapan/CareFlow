@@ -29,6 +29,7 @@ import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { CourseDayTablePanel } from '@/components/schedule/v2/CourseDayTablePanel';
 import { FeasibilityCheckButton } from '@/components/schedule/FeasibilityCheckButton';
 import { ReconcileToolbar } from '@/components/integrations/ReconcileReportButton';
+import { useDragAutoScroll } from '@/lib/hooks/useDragAutoScroll';
 import { WeekSelector, toWeekStart } from '@/components/schedule/WeekSelector';
 import { Card } from '@/components/ui/card';
 import { useOffices } from '@/lib/queries/offices';
@@ -47,6 +48,8 @@ export default function SchedulePage() {
   const canEdit = isAdminRole(role);
 
   // 週 state.
+  // ドラッグ中のエッジ自動スクロール (全 DnD 面共通・PO 報告 2026-09-02)。
+  useDragAutoScroll();
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
   const { isoYear, isoWeek } = useMemo(() => isoWeekFromLocalDate(weekStart), [weekStart]);
   // 突合レポート用 (ローカル日付の YYYY-MM-DD。toISOString は UTC ずれするので使わない)
