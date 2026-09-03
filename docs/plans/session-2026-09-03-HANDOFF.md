@@ -1,14 +1,22 @@
-# セッション引き継ぎ 2026-09-03（9/7 週 らく助→カイポケ反映の失敗解析と根治）
+# セッション引き継ぎ 2026-09-03（9/7 週 らく助→カイポケ反映の失敗解析・根治・復旧・連携結果レポート実装）
 
 **次のエージェントへ: まずこのファイルを読むこと。** 前セッション総括は `session-2026-08-31-HANDOFF.md`。
 
+## ★ 最初の 5 分（これだけ読めば迷わない）
+1. **状態**: 作業ツリークリーン・進行中の実装なし。本番は下表の HEAD。9/7 週（W37）はらく助とカイポケが **一致 132 / 相違 0 / 片側のみ 0**（残 = 都賀A 9/10 の担当なし 4 件のみ・PO 判断待ち）。
+2. **今日入れたもの（全部本番稼働・レビュー承認済み）**: ①担当なし(-)送信ガード ②コース担当→訪問主担当のミラー是正＋CSV フォールバック ③RPA auto_apply の耐性強化（待機ポーリング・職員名で行特定・追加→削除順・ロールバック・失敗理由） ④**連携結果レポート**（完了履歴の 📄 ボタン → A4 縦 HTML）。
+3. **PO が「ボタンが見えない」と言ったら**: PWA キャッシュ。Ctrl+Shift+R か全タブ閉じ。表示条件 = ジョブが 完了/失敗 かつ 実書込 6 op（差分計算・export の行には出ない）。「内容」列が日本語ラベルなら新版。
+4. **残タスク**は §6。最優先は「running のまま残った古い push ジョブの決着」（レポートが 422 になる）。
+5. **道具**: `docs/tools/kaipoke-ops/`（README あり）。API 直叩き = `admin_call.py`、RPA ログ分類 = `classify.py`、export 行確認 = `csvrows.py`、カイポケ利用者一覧検索 = `dropdown.py`。
+
 | 項目 | 値 |
 |---|---|
-| 本番 HEAD | 連携結果レポート一式まで（0466752/dda4f38/35e03d5 + JST 修正・migration 無し・23:2x JST デプロイ）。それ以前 = f90ee71（2ae1809 送信ガード + ミラー是正・20:10 JST） |
-| RPA (PlaywrightTest1) | `06fdcae`（auto_apply 耐性強化・VPS 反映済み・`docker restart kaipoke-api` 済み・旧版 `commands/auto_apply.py.bak-20260903`） |
-| 本番バックアップ | `/opt/carelink/backups/pre-deploy-20260903-2005.sql.gz` |
+| 本番 HEAD（らく助） | `07eedb2`（+docs 7f37d9d 以降）。内訳: 2ae1809 送信ガード / f90ee71 ミラー是正 / 0466752 明細保存 / dda4f38 レポート API+HTML / 35e03d5 履歴ボタン / 07eedb2 JST 修正。migration 無し。最終デプロイ 23:2x JST（backend のみ再作成）・healthz 200/200 |
+| RPA (PlaywrightTest1) | `06fdcae`（auto_apply 耐性強化・VPS `/root/PlaywrightTest1` に pull 済み・`docker restart kaipoke-api` 済み・旧版 `commands/auto_apply.py.bak-20260903`・origin/main も同一） |
+| 本番バックアップ | `/opt/carelink/backups/pre-deploy-20260903-2005.sql.gz`（改修前）/ `pre-deploy-20260903-2300.sql.gz`（レポート実装前） |
 | 修復 SQL | `repair-2026-09-03-w37-primary-mirror.sql` を **実行済み**（W37 稲毛A 9/9 の 5 訪問 primary→宇田川・残 0） |
-| 残差シート | `d454f8df`（diff-local 21:12 JST・**4 件 = 都賀A 9/10 担当なし 4 のみ**・突合 一致 132 / 相違 0 / 片側のみ 0） |
+| 残差シート | `d454f8df`（diff-local 21:12 JST・**4 件 = 都賀A 9/10 担当なし 4 のみ**） |
+| 未追跡ファイル | `docs/reports/2026-09-03-w37-kaipoke-sync-report.html`（お客様向け完了報告書・患者名を含むため意図的にコミットしない）ほか従来分 |
 
 ## 0. 何が起きたか（確定した事実）
 9/7〜9/13 週の送信（ジョブ `57a70c9c`・17:05〜18:25・178 件）が **成功 155 / 失敗 22 / スキップ 1**。差分最新化で残差 29。カイポケ側の被害:
@@ -19,7 +27,7 @@
 | 担当なし(-)で登録され export に映らない「隠れ行」 | 8 | 山岡・清水・井川・菅原 9/9、林・森田・松戸・石川 9/10（**カイポケ上に実在**・dry-run で確認） |
 | 旧内容のまま | 11 | 加藤 9/7・9/10、園田 9/8、三浦 9/9、吉川 9/9、唐鎌 9/9・9/11、安永 9/11、並木 9/11、井川 9/11、久須見 9/10 |
 | 二重（旧行削除失敗＋新行追加成功） | 1 | 木村 9/7 16:45（熊澤 旧 + 高岡 新） |
-| 未登録 | 5 | 久須見 9/8・9/12、唐鎌 9/8、井川 9/10、麻生 9/9（カイポケに利用者未登録） |
+| 未登録 | 5 | 久須見 9/8・9/12、唐鎌 9/8、井川 9/10、麻生 9/9（→ 後に漢字違いと判明・§2-4） |
 
 ### 根因 3 系統
 1. **らく助が担当なし(-)を送った（9 件）**: `csv_builder` は `visits.primary_staff_id` しか見ない。稲毛A 9/9 の 5 件は 15:57 のプール一括投入（`reset_visits_to_fixed`）がコース担当を宇田川に書いたのに既存 auto 訪問の primary を NULL のまま放置（ミラー欠落）。都賀A 9/10 の 4 件は本当に担当未設定。**カイポケの職員別 export は担当なし行を出さない**ため、送った後は「無い」ように見え、次の diff で add が再出現 → 再送すると二重登録になる地雷。
@@ -46,35 +54,55 @@ W37 の週生成が 15:43 に 2 回走っているが、2 回目が 1 回目を�
 - 失敗理由 `reason` を結果 details に付与（`GAS_APPLY_COMPLETION_SPEC.md` に一覧）。要注目 = `old_row_remains_duplicate`（二重・手動削除）/ `add_may_have_registered` / `add_failed_row_lost`（手動復元）。
 - dry-run 実績: 残差 20 件 → 19 成功・失敗 0（麻生のみ利用者未検出）。木村 9/7 は「熊澤妙子(重複)」の行を職員名で特定、並木 9/11 は追加→削除順で動作確認済み。
 
-## 2. 復旧 実施済み（PO 承認 20:15 JST → 21:00 完了）
+## 2. 復旧 実施済み（PO 承認 20:15 JST → 21:12 完了）
 1. **隠れ行 8 件を RPA で削除**（20:17〜20:20・8/8 削除検証 OK・ジョブ直叩き）。
-2. **らく助から送信**: diff-local（シート `d9f0f31c`・29 件）→ `POST /integrations/apply dryRun:false`（ジョブ `47423f5f`・20:24〜20:39）= **成功 24 / 失敗 0 / スキップ 1（麻生・利用者未登録）・`skipped_unassigned` 4** = 新ガードが都賀A 9/10 の 4 件を自動除外。
-3. **export で確定**: 直後の export 2 回は「スケジュール表のクリック失敗 Timeout」で古い CSV（既知の罠・md5 不変）→ 3 回目で `CSV出力完了`（md5 変化）。**残差 5 = 都賀A 9/10 担当なし 4（林・森田・松戸・石川）+ 麻生 9/9**。突合レポート（20:58 snapshot）= **一致 131 / 相違 0 / らく助のみ 1（麻生）/ カイポケのみ 0**。消えていた 5 行は復元、木村 9/7 の二重も解消（高岡のみ）。
-4. **麻生様（21:06〜21:12・PO 指示「カイポケ側に合わせて」）**: 「カイポケ未登録」は誤り。実体は **漢字違い**（らく助 `麻生　真理奈` / カイポケ `麻生 真里奈`・dry-run が保存した画面 HTML の利用者ドロップダウン 109 名から確定）。RPA の name_matches は理≠里 を吸収しない。`PATCH /patients/{P112}` で らく助側を `真里奈` に変更 → diff-local → apply 1 件 成功 → export で 9/9 13:35 宇田川 を確認。**突合 一致 132 / 相違 0 / 片側のみ 0**。
+2. **らく助から送信**: diff-local（シート `d9f0f31c`・29 件）→ `POST /integrations/apply dryRun:false`（ジョブ `47423f5f`・20:24〜20:39）= **成功 24 / 失敗 0 / スキップ 1（麻生）・`skipped_unassigned` 4** = 新ガードが都賀A 9/10 の 4 件を自動除外。
+3. **export で確定**: 直後の export 2 回は「スケジュール表のクリック失敗 Timeout」で古い CSV（既知の罠・md5 不変）→ 3 回目で `CSV出力完了`（md5 変化）。突合（20:58）= 一致 131 / 相違 0 / らく助のみ 1（麻生）。消えていた 5 行は復元、木村 9/7 の二重も解消。
+4. **麻生様（21:06〜21:12・PO 指示「カイポケ側に合わせて」）**: 「カイポケ未登録」は誤りで、実体は **漢字違い**（らく助 `麻生　真理奈` / カイポケ `麻生 真里奈`・dry-run が保存した画面 HTML の利用者ドロップダウン 109 名から確定）。RPA の name_matches は理≠里 を吸収しない。`PATCH /patients/{P112}` でらく助側を `真里奈` に変更 → diff-local → apply 1 件成功（ジョブ `f6259be7`）→ export で 9/9 13:35 宇田川 を確認。**最終突合 一致 132 / 相違 0 / 片側のみ 0**。
 5. **PO 判断が残るもの**: 都賀A 9/10 の担当 4 件（林・森田・松戸・石川。らく助で付ければ次の 🔄→⇧ で add される・ガードで送信前に「担当なし」表示）。
 
-### 2-b. 手順の記録（次回同種の事故で使う）
-- 隠れ行 payload: VPS `/tmp/hidden_delete_live.json`（`staff1_from` 空 = 時刻のみで特定・dry-run で「1 件のエントリを発見」を全件確認してから実行）。
-- 成否は必ず export の `CSV出力完了` ログ + md5 変化で確認。連続失敗時は 20 秒待って再試行（3 回目で通った）。
+### 2-b. 同種の事故のときの手順
+1. 差分最新化（diff-local）で残差を出し、`docs/tools/kaipoke-ops/xref.sql` で失敗ジョブの明細と突き合わせる（新しいジョブは `kaipoke_job_items` に明細があるので不要になっていく）。
+2. RPA ログを `classify.py` で項目ごとに分類（削除OK→追加失敗 = 行消失、削除検証NG = 実は消えている可能性）。
+3. 「隠れ行」（担当なし登録）は export に映らない。RPA `/api/apply` の **dry-run delete** で実在確認 → 実削除 → 差分最新化 → 送信。payload の作り方は `build_payload.py`（担当なし除外）。
+4. 成否は必ず export の `CSV出力完了` ログ + md5 変化で確認。連続失敗時は 20 秒待って再試行（3 回目で通った）。
 
 ## 3. 教訓（本日）
-1. カイポケ export（スケジュール表）は **担当なし行を含まない**。隠れ行の実在は RPA dry-run の delete（登録しない・クリックで発見）で確かめる。
-2. RPA の失敗は時刻依存が大半。失敗 22 件の当日 dry-run 再実行は 19/20 成功。夜 17〜18 時台は避ける。
+1. カイポケ export（スケジュール表）は **担当なし行を含まない**。隠れ行の実在は RPA dry-run の delete で確かめる。
+2. RPA の失敗は時刻依存が大半。失敗 22 件の当日 dry-run 再実行は 19/20 成功。夕方 17〜18 時台は避ける。
 3. 「削除→追加」の順序は消失事故の設計欠陥。順序を変えられないケースはロールバックを持つ。
-4. 同時刻 2 行のときは職員名で行を特定しないと別行を消す。RPA 結果の details に `reason` が入ったので、以後は原因分類をログではなく結果から読める。
+4. 同時刻 2 行のときは職員名で行を特定しないと別行を消す。RPA 結果の details に `reason` が入ったので、原因分類はログではなく結果から読める。
 5. 週の重複調査では `deleted_at IS NULL` を忘れない（週生成の再実行は旧行を論理削除して残す）。
-6. **新規患者を登録した日は連携ページ 👥 マスタ突合を回す**（氏名の漢字違いは送信で「利用者が見つかりません」になり、原因が分からない）。RPA 保存の debug HTML には利用者ドロップダウン全件が入っているので、疑わしいときはそこで検索する（`scratchpad/dropdown.py` の手口）。
-7. 既存 pytest 失敗は 33 件（manager ロール廃止追随漏れ・audit middleware・Python 3.14×SQLAlchemy UUID 等）で全て改修前 HEAD と同一。`test_pfv_sub_office` は順序依存で単体では通る。FE は e2e spec 8 本＋middleware/KaipokeConsole の 4 件が既存失敗。
+6. **新規患者を登録した日は連携ページ 👥 マスタ突合を回す**（氏名の漢字違いは送信で「利用者が見つかりません」になる）。RPA 保存の debug HTML には利用者ドロップダウン全件が入っている（`dropdown.py`）。
+7. 既存 pytest 失敗は 33 件（manager ロール廃止追随漏れ・audit middleware・Python 3.14×SQLAlchemy UUID 等）で全て改修前 HEAD と同一。`test_pfv_sub_office` は順序依存で単体では通る。FE は e2e spec（vitest が拾う Playwright spec）8 本 + middleware の 1 件が既存失敗（KaipokeConsole の 3 件は今回解消）。
+8. レビュアー（opus）の API が 500/529 を連発する区間があった。その場合は自分で要点（トランザクション・突合キー・DB 制約）を直接確認して進める。
+9. 報告書の時刻は必ず JST に変換する（コンテナは UTC）。
 
-## 5. 連携結果レポート（PO 構想 → 同日実装・本番稼働）
-正典 = `docs/plans/sync-result-report-design.md`（§0 決定・§1 章構成・§2 明細契約・§4 印刷規則・フッタ静的の理由）。PO 決定: 改修前のジョブは「明細なし版」を出す／置換取込は日単位＋スキップ理由／Phase 1＋2 を一括。
-- **コミット**: e3860ed 設計書 / 0466752 明細保存 (`kaipoke_job_items`・6 op・`report_meta`・events-outbound の op 名バグ修正・先取りクローズ/失敗時も pending→結果不明) / dda4f38 レポート API `GET /integrations/kaipoke/jobs/{id}/report?format=json|html&includeHtml&verify` + A4 HTML / 35e03d5 履歴ボタン（ジョブ履歴・ジョブ詳細・直近の取り込み・稼働状況カード）/ JST 修正 1 件。**本番デプロイ済み（23:0x〜23:2x JST）**。
-- **レビュー**: 3 レーンとも別レビュアーで承認（RPA 結果無し行を「全件成功」に見せる HIGH を是正 = 緑は success==total かつ 要対応 0 かつ 結果不明 0 のときだけ）。レビュアーの API が 500/529 を連発した区間はレーン①を私が直接確認（トランザクション・突合キー・DB 制約なし）。
-- **印刷検証**: ヘッドレス Edge で A4 PDF 化 → PyMuPDF で PNG 化して目視（合成 96 行 = 6 ページ・実ジョブ 57a70c9c = 7 ページ）。表紙 1 ページ・行の途中で切れない・見出し行の繰り返し・14 行以下の日は塊・補足は塊で末尾。**fixed フッタは Chrome で本文と重なるため不採用**（静的 2 箇所）。手口 = scratchpad の `msedge --headless=new --print-to-pdf` + `pymupdf`（`pip install --target` で一時導入）。
-- **実機確認**: 57a70c9c（失敗 22）→ 178/155/22/1・赤・明細なし版／47423f5f（成功 24）→ 25/24/0/1・黄（スキップ 1 = 麻生）。数字は手作り報告書と一致。**f6259be7（麻生 1 件）は status=running のまま → 422**: `_reconcile_latest_job` が最新ジョブしか決着させない既知の穴（8/31 教訓 5）で、RPA の結果も既に失われている。次回以降の apply は詳細版が出る（明細は送信時に保存）。
-- **残**: ① running 残骸ジョブの決着（古い push を result_unknown で閉じる掃除 or reconcile の対象拡大）→ レポートが出せるように。② Phase 3（送信直後に差分最新化を自動 1 回・通知にレポートリンク）。③ 突合レポート/実現性チェックの CSS を `report_css.py` へ寄せる（設計 §4 の共有は未着手）。
+## 4. 連携結果レポート（PO 構想 → 同日実装・本番稼働）
+正典 = `docs/plans/sync-result-report-design.md`（§0 決定・§1 章構成・§2 明細契約・§4 印刷規則・フッタ静的の理由）。PO 決定: 完了履歴のボタンで開く／改修前のジョブは「明細なし版」／置換取込は日単位＋スキップ理由／患者名は実名／Phase 1＋2 を一括。
+- **コミット**: e3860ed 設計書 / 0466752 明細保存 (`kaipoke_job_items`・6 op・`report_meta`・events-outbound の op 名バグ修正・先取りクローズ/失敗時も pending→結果不明) / dda4f38 レポート API `GET /integrations/kaipoke/jobs/{id}/report?format=json|html&includeHtml&verify` + A4 HTML / 35e03d5 履歴ボタン（ジョブ履歴・ジョブ詳細・直近の取り込み・稼働状況カード）/ 07eedb2 JST 修正。
+- **ボタンの場所と条件**: 連携 → カイポケ → 最下部「ジョブ履歴」の操作列（「詳細」の隣）。`status ∈ {completed, failed}` かつ `params.op ∈ {apply, events-outbound, apply-inbound, smart-apply, replace-inbound, apply-events}`。FE の判定は `lib/kaipokeOps.ts::isReportableJob`。
+- **信頼性の原則**: 緑「全件成功」は success==total かつ 要対応 0 かつ 結果不明 0 のときだけ。RPA から結果が返らなかった行は `outcome="unknown"`（要目視）。送信の除外行も `excluded` で保存。
+- **レビュー**: 3 レーンとも別レビュアーで承認。レビュアー API 障害区間はレーン①（明細保存）を私が直接確認し、2 つの穴（30 分超で先取りクローズされたイベント送信・失敗経路）で pending 明細を結果不明へ倒す修正を入れた。
+- **印刷検証**: ヘッドレス Edge で A4 PDF 化 → PyMuPDF で PNG 化して目視（合成 96 行 = 6 ページ・実ジョブ 57a70c9c = 7 ページ）。表紙 1 ページ・行の途中で切れない・見出し行の繰り返し・14 行以下の日は塊・補足は塊で末尾。**fixed フッタは Chrome で本文と重なるため不採用**（静的 2 箇所）。手口 = `msedge --headless=new --disable-gpu --no-pdf-header-footer --print-to-pdf=out.pdf file:///report.html` → `pip install --target <tmp> pymupdf` → `pymupdf.open(pdf)[i].get_pixmap(dpi=80).save(png)`。
+- **実機確認**: 57a70c9c（失敗 22）→ 178/155/22/1・赤・明細なし版／47423f5f（成功 24）→ 25/24/0/1・黄。数字は手作り報告書と一致。**f6259be7（麻生 1 件）は status=running のまま → 422**（§6-1）。
 
-## 4. 参照
-- ジョブ結果: `kaipoke_jobs` `57a70c9c`（失敗 22 の details）・RPA ログ `/var/log/supervisor/api.log`（17:05〜18:25）・失敗時 PNG `artifacts/debug_add_failed_20260903_17*.png` / `delete_verify_ng_*`。
-- お客様向け完了報告書（A4 縦 HTML・患者名を含むため未追跡）: `docs/reports/2026-09-03-w37-kaipoke-sync-report.html`。PO 構想 = 連携（送信/取込）のたびに同様式の結果報告書を自動生成（設計書は未着手・`sync-result-report-design.md` 予定）。
-- 直叩き: `tools/admin_call.py`（`docker exec -w /app -e PYTHONPATH=/app carelink-backend python /tmp/admin_call.py METHOD PATH JSON`）。RPA は `curl -H "Authorization: Bearer $KAIPOKE_API_TOKEN" http://127.0.0.1:5000/api/apply`。
+## 5. お客様向け完了報告書（今日の手作り版）
+`docs/reports/2026-09-03-w37-kaipoke-sync-report.html`（A4 縦・印刷ボタン付き・未追跡）。§4 のレポートの様式の手本。内容 = 経緯／発生していた問題／原因／対策／現在の状態とお願い（都賀A 4 件）／今後の運用のお願い。
+
+## 6. 残タスク（優先順）
+1. **running 残骸ジョブの決着**: `_reconcile_latest_job` は最新ジョブしか settle しないため、古い push（例 `f6259be7`）が running のまま残りレポートが 422。RPA の結果は最新 1 件しか保持されないので、古い running を `result_unknown` で閉じる掃除（明細は `finalize_apply_items(db, job, [])` で結果不明へ）＋ reconcile の対象を「running の push 全部」に広げる。8/31 教訓 5 と同根。
+2. **都賀A 9/10 の担当 4 件**（PO 判断）→ 付いたら 🔄差分最新化 → ⇧送信 → 🔍突合レポートで 0 を確認。
+3. **レポート Phase 3**: 送信直後に差分最新化を自動 1 回回して「送信後の確認」を確定／完了通知（ベル）にレポートへのリンク／突合レポート・実現性チェックの CSS を `report_css.py` へ寄せる。
+4. **ミラー未対応の書き手 3 箇所**（`backlog-2026-09-03-course-staff-mirror-gaps.md`）。
+5. 前セッションからの残（`session-2026-08-31-HANDOFF.md`）: 患者ステータス非表示①・提案系の今週基準④・プール強制配置⑤・同行重なり緩和⑥・正看優先ルール⑦・コース 1 名制⑨・予実比較⑩。
+
+## 7. 道具（`docs/tools/kaipoke-ops/`・README あり）
+- `admin_call.py`: backend コンテナ内で今泉アカウントとして API を 1 回叩く（`docker cp` → `docker exec -w /app -e PYTHONPATH=/app carelink-backend python /tmp/admin_call.py METHOD PATH [JSON]`）。
+- `classify.py` / `blocks.py`: RPA `api.log` の 1 実行分（`/tmp/run.log`）を項目ごとに分類・抽出。`csvrows.py`: export CSV の (日,利用者) 行を確認。`dropdown.py`: debug HTML の利用者ドロップダウン全件検索。`build_payload.py`: シート → RPA payload（担当なし除外）。SQL: `xref.sql`（残差×前シート）、`live.sql`（担当なし訪問）、`audit2.sql`（週生成の実行履歴）、`dups.sql`（重複調査）。
+- RPA 直叩き: `TOK=$(docker exec carelink-backend printenv KAIPOKE_API_TOKEN); curl -H "Authorization: Bearer $TOK" http://127.0.0.1:5000/api/apply`（dry_run:true は登録しない）。結果は `/api/apply/result` をポーリング。
+
+## 8. 参照
+- ジョブ: `57a70c9c`（初回・失敗 22）/ `47423f5f`（再送・成功 24）/ `f6259be7`（麻生 1 件・running 残骸）。RPA ログ `/var/log/supervisor/api.log`・失敗 PNG `artifacts/debug_add_failed_20260903_17*.png` / `delete_verify_ng_*`。
+- 設計書: `sync-result-report-design.md`・`backlog-2026-09-03-course-staff-mirror-gaps.md`・`repair-2026-09-03-w37-primary-mirror.sql`。
+- メモリ: `careflow-kaipoke-unassigned-export-trap` / `careflow-rpa-timing-failures` / `careflow-sync-result-report`。
