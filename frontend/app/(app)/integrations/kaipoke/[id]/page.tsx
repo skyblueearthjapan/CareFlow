@@ -8,6 +8,8 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { SyncReportButton } from '@/components/integrations/SyncReportButton';
+import { isReportableJob } from '@/lib/kaipokeOps';
 import { useCancelKaipokeJob, useKaipokeJob } from '@/lib/queries/integrations';
 
 export default function KaipokeJobDetailPage() {
@@ -31,6 +33,8 @@ export default function KaipokeJobDetailPage() {
           <Button variant="outline" asChild>
             <Link href="/integrations/kaipoke">一覧へ戻る</Link>
           </Button>
+          {/* 完了した実書込ジョブは A4 の結果報告書を開ける */}
+          {job && isReportableJob(job) && <SyncReportButton jobId={job.id} size="md" />}
           {isAdmin && id && canCancel && (
             <Button
               variant="destructive"

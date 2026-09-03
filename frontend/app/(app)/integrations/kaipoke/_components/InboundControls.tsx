@@ -23,6 +23,7 @@ import type {
   SmartInboundPreview,
 } from '@/lib/schemas/integration';
 
+import { SyncReportButton } from '@/components/integrations/SyncReportButton';
 import { EventVisitConflictNotice } from '@/components/schedule/v2/EventVisitConflictNotice';
 import { type InboundVm, fmtDayLabel, fmtRelativeWeek, fmtWeekLabel } from './useInbound';
 
@@ -343,6 +344,10 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                   >
                     {h.status === 'completed' ? '成功' : h.status === 'failed' ? '失敗' : h.status}
                   </span>
+                  {/* 取り込み結果を A4 の報告書で開く (完了ジョブのみ) */}
+                  {h.reportable && (
+                    <SyncReportButton jobId={h.id} className="h-6 shrink-0 px-2 text-[11px]" />
+                  )}
                 </li>
               );
             })}

@@ -15,6 +15,8 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { SyncReportButton } from '@/components/integrations/SyncReportButton';
+import { CONSOLE_OP_LABELS, isReportableJob, jobOpLabel } from '@/lib/kaipokeOps';
 import type { KaipokeJob, LiveSnapshot } from '@/lib/schemas/integration';
 import { useKaipokeJobs } from '@/lib/queries/integrations';
 import type { useStopJob } from '@/lib/queries/integrations';
@@ -30,21 +32,11 @@ import { WeeklyApplyControls } from './WeeklyApplyControls';
 import { useInbound } from './useInbound';
 import { useWeeklyApply } from './useWeeklyApply';
 
-/** 直近ジョブ履歴の 1 行ラベル: params.op → 現場の言葉。未知の op は job_type で表示。 */
-const JOB_OP_LABELS: Record<string, string> = {
-  expand: '①スケジュール展開',
-  diff: '②差分を計算',
-  apply: '④カイポケへ反映',
-  'diff-inbound': '取り込み差分の計算',
-  'apply-inbound': '取り込み適用（差分）',
-  'replace-inbound': '置換取り込み',
-  'smart-apply': 'カイポケから取り込み',
-  'events-inbound': 'イベント取り込み',
-};
-
+/** 直近ジョブ履歴の 1 行ラベル: params.op → 現場の言葉 (辞書は lib/kaipokeOps.ts に一本化)。
+ *  上の手順カードの Step 番号に合わせた丸数字は CONSOLE_OP_LABELS で上書きする。
+ *  op が無いジョブは job_type で表示。 */
 function jobLabel(job: KaipokeJob): string {
-  const op = typeof job.params?.op === 'string' ? (job.params.op as string) : null;
-  return (op && JOB_OP_LABELS[op]) || (op ?? (job.job_type === 'push' ? '送信' : '取得'));
+  return jobOpLabel(job, CONSOLE_OP_LABELS) ?? (job.job_type === 'push' ? '送信' : '取得');
 }
 
 function jobTimeLabel(job: KaipokeJob): string {
@@ -168,6 +160,13 @@ export function KaipokeConsole({
                               {jobLabel(job)}
                             </span>
                             <span className={meta.cls}>{meta.label}</span>
+                            {/* 完了した実書込ジョブだけ結果レポートを開ける (compact) */}
+                            {isReportableJob(job) && (
+                              <SyncReportButton
+                                jobId={job.id}
+                                className="h-6 shrink-0 px-2 text-[11px]"
+                              />
+                            )}
                           </li>
                         );
                       })}

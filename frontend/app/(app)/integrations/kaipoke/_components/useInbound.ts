@@ -22,6 +22,7 @@ import {
   useRestoreInboundSnapshot,
   useSmartInboundPreview,
 } from '@/lib/queries/integrations';
+import { INBOUND_HISTORY_OP_LABELS, isReportableJob, opLabel } from '@/lib/kaipokeOps';
 import type { EventsInboundPreview, SmartInboundPreview } from '@/lib/schemas/integration';
 
 // ──────────────────────────── 定数 ────────────────────────────
@@ -55,12 +56,14 @@ export function fmtDayLabel(iso: string): string {
 }
 
 /** 週オフセット (0=今週) の相対ラベル。過去は「n週前」。 */
-/** 取り込みの実適用として履歴に出す op → 表示ラベル (dry-run はジョブ記録なし)。 */
-export const INBOUND_APPLY_OP_LABELS: Record<string, string> = {
-  'smart-apply': '取り込み（自動判別）',
-  'replace-inbound': '取り込み（置換）',
-  'apply-inbound': '取り込み（差分）',
-};
+/** 取り込みの実適用として履歴に出す op (dry-run はジョブ記録なし)。
+ *  ラベルは lib/kaipokeOps.ts の辞書に一本化し、この画面の言い回しは
+ *  INBOUND_HISTORY_OP_LABELS で上書きする (表示文言は従来どおり)。 */
+export const INBOUND_APPLY_OPS = ['smart-apply', 'replace-inbound', 'apply-inbound'] as const;
+
+export const INBOUND_APPLY_OP_LABELS: Record<string, string> = Object.fromEntries(
+  INBOUND_APPLY_OPS.map((op) => [op, opLabel(op, INBOUND_HISTORY_OP_LABELS)!]),
+);
 
 /** 直近の取り込み履歴の 1 行。 */
 export interface InboundHistoryRow {
@@ -69,6 +72,8 @@ export interface InboundHistoryRow {
   opLabel: string;
   status: string;
   at: string;
+  /** 連携結果レポート (📄) を開けるか = 完了済み × 対象 op。 */
+  reportable: boolean;
 }
 
 export function fmtRelativeWeek(offset: number): string {
@@ -133,7 +138,8 @@ export function useInbound({
     () =>
       (jobsQuery.data?.items ?? [])
         .filter(
-          (j) => typeof j.params?.op === 'string' && String(j.params.op) in INBOUND_APPLY_OP_LABELS,
+          (j) =>
+            typeof j.params?.op === 'string' && Object.hasOwn(INBOUND_APPLY_OP_LABELS, j.params.op),
         )
         .slice(0, 5)
         .map((j) => ({
@@ -142,6 +148,7 @@ export function useInbound({
           opLabel: INBOUND_APPLY_OP_LABELS[String(j.params.op)]!,
           status: j.status,
           at: j.completed_at ?? j.created_at,
+          reportable: isReportableJob(j),
         })),
     [jobsQuery.data],
   );

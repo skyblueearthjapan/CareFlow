@@ -16,6 +16,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { SyncReportButton } from '@/components/integrations/SyncReportButton';
+import { isReportableJob, jobOpLabel } from '@/lib/kaipokeOps';
 import {
   KAIPOKE_JOB_STATUSES,
   KAIPOKE_JOB_TYPES,
@@ -140,7 +142,7 @@ export function KaipokeJobsList() {
             <table className="w-full text-sm">
               <thead className="border-b border-border-default text-left text-text-secondary">
                 <tr>
-                  <th className="px-3 py-2 font-medium">種類</th>
+                  <th className="px-3 py-2 font-medium">内容</th>
                   <th className="px-3 py-2 font-medium">週</th>
                   <th className="px-3 py-2 font-medium">状態</th>
                   <th className="px-3 py-2 font-medium">開始</th>
@@ -151,18 +153,28 @@ export function KaipokeJobsList() {
               <tbody>
                 {jobs.map((job) => (
                   <tr key={job.id} className="border-b border-border-default last:border-0">
-                    <td className="px-3 py-2">{job.job_type}</td>
+                    <td className="px-3 py-2">
+                      {jobOpLabel(job) ?? job.job_type}
+                      {/* 「種類」フィルタ (fetch/push) との対応が分かるよう小さく添える */}
+                      <span className="ml-1.5 text-xs text-text-muted">
+                        （{job.job_type === 'push' ? '送信' : '取得'}）
+                      </span>
+                    </td>
                     <td className="px-3 py-2 tnum">{job.week_start}</td>
                     <td className="px-3 py-2">{job.status}</td>
                     <td className="px-3 py-2 text-text-secondary">{job.started_at ?? '--'}</td>
                     <td className="px-3 py-2 text-text-secondary">{job.completed_at ?? '--'}</td>
                     <td className="px-3 py-2">
-                      <Link
-                        href={`/integrations/kaipoke/${job.id}`}
-                        className="text-brand-primary hover:underline"
-                      >
-                        詳細
-                      </Link>
+                      <span className="inline-flex items-center gap-3">
+                        <Link
+                          href={`/integrations/kaipoke/${job.id}`}
+                          className="text-brand-primary hover:underline"
+                        >
+                          詳細
+                        </Link>
+                        {/* 完了した実書込ジョブは A4 の結果報告書を開ける */}
+                        {isReportableJob(job) && <SyncReportButton jobId={job.id} />}
+                      </span>
                     </td>
                   </tr>
                 ))}
