@@ -19,7 +19,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 KaipokeJobType = Literal["fetch", "push"]
 KaipokeJobStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
-KaipokeJobItemStatus = Literal["pending", "running", "completed", "failed", "skipped"]
+# 連携結果レポート (設計 sync-result-report-design.md §2) の明細で使う outcome を
+# 追加: success (成功) / excluded (送らなかった) / unknown (RPA から結果が返らず要目視)。
+KaipokeJobItemStatus = Literal[
+    "pending",
+    "running",
+    "completed",
+    "failed",
+    "skipped",
+    "success",
+    "excluded",
+    "unknown",
+]
 
 
 class KaipokeJobBase(BaseModel):

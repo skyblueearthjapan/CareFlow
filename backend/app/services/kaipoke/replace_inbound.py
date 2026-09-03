@@ -112,6 +112,10 @@ class ReplaceResult:
     # ⛔ NG スタッフ (patient_ng_staff) に該当する組み合わせ (dry-run のみ集計)。
     # カイポケが「正」なので取り込みはブロックしない — 警告として可視化するだけ。
     ng_conflicts: list[NgConflict] = field(default_factory=list)
+    # 日ごとの内訳 {日付: {"wiped": n, "inserted": n}} — 連携結果レポートの
+    # 明細 (kind='day') の材料。置換対象になった日は 0 件でもキーを持つ
+    # (「その日は置換した・結果 0 件だった」と「触っていない」を区別する)。
+    per_day: dict[date, dict[str, int]] = field(default_factory=dict)
 
 
 async def _count_week_achievements(db: AsyncSession, visit_ids: list[uuid.UUID]) -> int:
@@ -206,6 +210,20 @@ async def replace_week_from_kaipoke(
             raise ReplaceBlockedError(_msg)
         wipe_rows = [v for v in wipe_rows if v.visit_date not in blocked_days]
         result.wiped = len(wipe_rows)
+
+    # --- 日ごとの内訳 (レポート明細 kind='day') -------------------------------
+    # 置換の対象になった日を 0 件で先に並べ、白紙化した訪問を日別に数える
+    # (挿入は Phase 3 で加算)。blocked_days は触らないので含めない。
+    _scope_days = (
+        sorted(target_days)
+        if target_days is not None
+        else [week_start + timedelta(days=i) for i in range(6)]
+    )
+    for _d in _scope_days:
+        if _d not in blocked_days:
+            result.per_day.setdefault(_d, {"wiped": 0, "inserted": 0})
+    for _v in wipe_rows:
+        result.per_day.setdefault(_v.visit_date, {"wiped": 0, "inserted": 0})["wiped"] += 1
 
     # --- 実績ガード ----------------------------------------------------------
     achievements = await _count_week_achievements(db, [v.id for v in wipe_rows])
@@ -493,6 +511,7 @@ async def replace_week_from_kaipoke(
                 if staff_id is not None:
                     ng_pairs.append((r.patient.id, staff_id, d, course_code))
             result.inserted += 1
+            result.per_day.setdefault(d, {"wiped": 0, "inserted": 0})["inserted"] += 1
             continue
 
         if course is None:
@@ -542,6 +561,7 @@ async def replace_week_from_kaipoke(
             _skip("UNIQUE衝突（想定外・要確認）", e, d)
             continue
         result.inserted += 1
+        result.per_day.setdefault(d, {"wiped": 0, "inserted": 0})["inserted"] += 1
 
     if dry_run:
         result.ng_conflicts = await collect_ng_conflicts(db, ng_pairs)

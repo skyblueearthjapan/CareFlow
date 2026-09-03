@@ -476,15 +476,19 @@ async def _reconcile_latest_job(
     if not kaipoke_idle:
         return job
 
-    # 週空間C1修正 (2026-08-21): events-preview / events-outbound-apply は自前の
+    # 週空間C1修正 (2026-08-21): events-preview / events-outbound は自前の
     # status エンドポイントが RPA の個別 result ストア (individual_tasks_result) から
     # 決着させる**自己完結型**。ここに来る汎用 result には結果が載らないため、
     # 先取りクローズすると「result_unknown の completed」になり status 側が
     # プランを構築できない (突合パネルの live 2秒ポーリングで顕在化した 409)。
     # → 新しいうちは閉じずに任せる。放置残骸 (ブラウザ閉鎖等・FEのポーリング上限
     # 8分を大きく超えた 30 分超) は従来どおりここで閉じる。
+    # ⚠ op 名は **params に実際に書かれる値** (= "events-outbound") で照合する。
+    # 2026-09-03 まで "events-outbound-apply" (エンドポイントのパス名) と書かれて
+    # おり除外が効かず、イベント送信が result_unknown の completed で先取りクローズ
+    # されて結果を失っていた (設計書 §2 の「併せて直す既知の穴」)。
     _op = (job.params or {}).get("op")
-    if _op in ("events-preview", "events-outbound-apply"):
+    if _op in ("events-preview", "events-outbound"):
         _created = job.created_at
         if _created is not None and _created.tzinfo is None:
             _created = _created.replace(tzinfo=UTC)
@@ -529,6 +533,24 @@ async def _reconcile_latest_job(
                     from app.services.kaipoke.csv_snapshot import drop_snapshots
 
                     await drop_snapshots(db, month=sheet.target_month, week_start=sheet.week_start)
+        # 連携結果レポートの明細を確定させる (設計 §2): 送信時に pending で書いた
+        # 行を RPA の details[] と (日, 利用者, action) で突き合わせて成否を入れる。
+        # details が無い実行 (旧 RPA・result_unknown) でも **必ず呼ぶ** — 全 pending
+        # 行が outcome='unknown'「RPA から結果が返らなかった（要目視）」に倒れる。
+        # 決着したジョブに pending 行を残すと「実行中」と見分けが付かない。
+        from app.services.kaipoke.sync_report_items import finalize_apply_items
+
+        _details = ((job.result_summary or {}).get("result") or {}).get("details")
+        await finalize_apply_items(db, job, _details if isinstance(_details, list) else [])
+    elif params.get("op") == "events-outbound":
+        # 30 分超で放置されたイベント送信を先取りクローズした場合、status ポーリングは
+        # もう来ない。pending のまま残る明細を「結果不明（要目視）」に倒しておく。
+        from app.services.kaipoke.sync_report_items import finalize_event_items
+
+        _results = (job.result_summary or {}).get("results")
+        await finalize_event_items(db, job, _results if isinstance(_results, list) else [])
+
+    if params.get("op") == "apply" and not params.get("dry_run"):
         # 失敗/スキップがあれば実行管理者(admin/manager)へ通知を残す。反映後の
         # 失敗/スキップを見逃して放置しないための恒久的な気づき (トーストと違い消えない)。
         await _notify_apply_result(db, job)
@@ -1550,6 +1572,9 @@ async def trigger_apply(
     # 過去日〜当日を対象外にする。カイポケ側は当日以前に実績が入力されている
     # ことがあり、実績の付いた行は予定画面から動かせない/動かすべきでない
     # (「⇧送信は未来の予定のみ」の原則)。月次シート (week_start 無し) は従来どおり。
+    # 除外した行はレポート明細 (kind='row' / outcome='excluded') に残すため、
+    # 件数だけでなく **item そのもの** を理由付きで持ち回る (設計 §2)。
+    excluded_items: list[tuple[Any, str]] = []
     skipped_past = 0
     if sheet.week_start is not None:
         _today_jst = jst_today()
@@ -1559,6 +1584,7 @@ async def trigger_apply(
             _d = resolve_item_date(it.action, it.before, it.after, sheet.week_start)
             if _d is not None and _d <= _today_jst:
                 skipped_past += 1
+                excluded_items.append((it, "past"))
             else:
                 _kept.append(it)
         selected = _kept
@@ -1592,6 +1618,7 @@ async def trigger_apply(
     # selected の中に相方の add が居ないとペアだと気付けず、カイポケの行だけが
     # 消える (unsent-summary も同じくシート全体で計算しているので表示とも揃う)。
     _rpa_skip_ids = rpa_unsupported_item_ids(sheet.items)
+    excluded_items.extend((it, "rpa_unsupported") for it in selected if it.id in _rpa_skip_ids)
     skipped_rpa_unsupported = sum(1 for it in selected if it.id in _rpa_skip_ids)
     selected = [it for it in selected if it.id not in _rpa_skip_ids]
     if not selected:
@@ -1613,6 +1640,7 @@ async def trigger_apply(
     # らく助=担当なし」は delete + add に割れる。add だけ落とすとカイポケから予定が
     # 消える (RPA 未対応ガードと同じ理屈)。判定は rpa_capability に一本化する。
     _unassigned_ids = unassigned_item_ids(sheet.items)
+    excluded_items.extend((it, "unassigned") for it in selected if it.id in _unassigned_ids)
     skipped_unassigned = sum(1 for it in selected if it.id in _unassigned_ids)
     selected = [it for it in selected if it.id not in _unassigned_ids]
     if not selected:
@@ -1644,6 +1672,35 @@ async def trigger_apply(
     )
     db.add(job)
     await db.flush()
+
+    # --- 連携結果レポートの明細 (設計 §2) -----------------------------------
+    # 除外行は「なぜ送らなかったか」つきで確定 (excluded)、送る行は pending で置き、
+    # RPA の決着時に _reconcile_latest_job → finalize_apply_items が成否を入れる。
+    from app.services.kaipoke.sync_report_items import (
+        build_report_meta,
+        row_content_from_sheet_item,
+        write_job_items,
+    )
+
+    _item_contents = [
+        row_content_from_sheet_item(
+            it,
+            direction="outbound",
+            resolved_date=resolve_item_date(it.action, it.before, it.after, sheet.week_start),
+            outcome="excluded",
+            reason=_reason,
+        )
+        for (it, _reason) in excluded_items
+    ] + [
+        row_content_from_sheet_item(
+            it,
+            direction="outbound",
+            resolved_date=resolve_item_date(it.action, it.before, it.after, sheet.week_start),
+            outcome="pending",
+        )
+        for it in selected
+    ]
+    await write_job_items(db, job.id, _item_contents)
 
     # CorrectionSheetItem(before/after dict) → カイポケ /api/apply の平坦 Correction 形式。
     # カイポケ側は Correction(**item) で復元するためキーを厳密一致させる (item_to_kaipoke_correction)。
@@ -1691,6 +1748,8 @@ async def trigger_apply(
         "skipped_unassigned": skipped_unassigned,
         "skipped_unassigned_reason": UNASSIGNED_REASON,
         "dry_run": payload.dry_run,
+        # レポート表紙 (向き・op ラベル・実行者)。
+        "report_meta": build_report_meta("apply", user=user),
     }
     if not payload.dry_run and not payload.item_ids:
         # 非同期のため投入時は中間状態。実際の完了は _reconcile_latest_job が
@@ -2214,8 +2273,29 @@ async def trigger_apply_inbound(
             completed_at=now,
             created_by_user_id=user.id,
         )
-        job.result_summary = {k: v for k, v in summary.as_dict().items() if k != "results"}
+        from app.services.kaipoke.sync_report_items import (
+            build_report_meta,
+            row_content_from_inbound_result,
+            write_job_items,
+        )
+
+        job.result_summary = {
+            **{k: v for k, v in summary.as_dict().items() if k != "results"},
+            "report_meta": build_report_meta("apply-inbound", user=user),
+        }
         db.add(job)
+        await db.flush()
+        # 連携結果レポートの明細 (設計 §2): results はレスポンスにしか残らないため
+        # ここで行単位に保存する。before/after は元の sheet item から引く。
+        _by_id = {str(it.id): it for it in selected}
+        await write_job_items(
+            db,
+            job.id,
+            [
+                row_content_from_inbound_result(r, _by_id.get(str(r.item_id)))
+                for r in summary.results
+            ],
+        )
         sheet.status = "applied"
         # 失敗を含む決着は恒久通知も残す (実行者以外の管理者への周知・監査)。
         # 同期実行のため実行者は画面で結果を見るが、outbound apply と同じ基盤に揃える。
@@ -3335,9 +3415,28 @@ async def events_inbound_apply(
             completed_at=now,
             created_by_user_id=user.id,
         )
-        job.result_summary = summary.as_dict()
+        from app.services.kaipoke.sync_report_items import (
+            build_report_meta,
+            event_content_from_apply_result,
+            write_job_items,
+        )
+
+        job.result_summary = {
+            **summary.as_dict(),
+            "report_meta": build_report_meta("apply-events", user=user),
+        }
         db.add(job)
         await db.flush()
+        # 連携結果レポートの明細 (設計 §2)。summary.results は入力 changes と 1:1 で
+        # 並ぶため zip で時刻を補える (EventApplyResult は start/end を持たない)。
+        await write_job_items(
+            db,
+            job.id,
+            [
+                event_content_from_apply_result(r, c)
+                for r, c in zip(summary.results, payload.changes, strict=False)
+            ],
+        )
         if summary.failed > 0:
             from app.services.checkin.notify import (
                 _active_admin_manager_users,
@@ -3460,6 +3559,11 @@ async def events_outbound_apply_start(
 ) -> EventsOutboundStartRead:
     """イベント送信を非同期起動する (202 即返し・job_id で status をポーリング)。"""
     from app.services.kaipoke.events_outbound import build_outbound_plan, to_rpa_items
+    from app.services.kaipoke.sync_report_items import (
+        build_report_meta,
+        event_content_from_outbound_item,
+        write_job_items,
+    )
 
     if payload.week_start.weekday() != 0:
         raise HTTPException(
@@ -3471,7 +3575,10 @@ async def events_outbound_apply_start(
     if payload.event_ids is not None:
         wanted = set(payload.event_ids)
         selected = [i for i in selected if i.event_id in wanted]
-    items = to_rpa_items(selected)
+    # RPA へ渡す行と、レポート明細に残す行を同じ集合から作る (to_rpa_items の
+    # フィルタと二重管理にしない — 件数がズレると明細と結果が突合できない)。
+    sent_items = [i for i in selected if i.sendable and i.staff_internal_id]
+    items = to_rpa_items(sent_items)
     if not items:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -3492,8 +3599,12 @@ async def events_outbound_apply_start(
         started_at=datetime.now(UTC),
         created_by_user_id=user.id,
     )
+    job.result_summary = {"report_meta": build_report_meta("events-outbound", user=user)}
     db.add(job)
     await db.flush()
+    # 連携結果レポートの明細 (設計 §2): 送った行を pending で置き、RPA の結果が
+    # 届いた時点 (status ポーリング) で finalize_event_items が成否を入れる。
+    await write_job_items(db, job.id, [event_content_from_outbound_item(i) for i in sent_items])
 
     body: dict[str, Any] = {"items": items, "async": True, "job_id": str(job.id)}
     _attach_credentials(body, credentials)
@@ -3523,7 +3634,12 @@ async def events_outbound_apply_start(
 async def _fail_outbound_job(db, job: KaipokeJob, error: str) -> EventsOutboundStatusRead:
     job.status = "failed"
     job.completed_at = datetime.now(UTC)
-    job.result_summary = {"error": error}
+    # report_meta (起動時に格納) は残す — レポートの表紙が使う。
+    job.result_summary = {**(job.result_summary or {}), "error": error}
+    # 送った明細は結果が返らないまま失敗した = pending を「結果不明（要目視）」へ。
+    from app.services.kaipoke.sync_report_items import finalize_event_items
+
+    await finalize_event_items(db, job, [])
     await _commit_or_409(db)
     return EventsOutboundStatusRead(status="failed", error=error)
 
@@ -3590,7 +3706,12 @@ async def events_outbound_apply_status(
     }
     job.status = "completed"
     job.completed_at = datetime.now(UTC)
-    job.result_summary = {"summary": summary, "results": results}
+    # report_meta は起動時に入れてある — 上書きせず残す (レポートの表紙が使う)。
+    job.result_summary = {**(job.result_summary or {}), "summary": summary, "results": results}
+    # 連携結果レポートの明細を確定 (external_ref で突合)。
+    from app.services.kaipoke.sync_report_items import finalize_event_items
+
+    await finalize_event_items(db, job, results)
     await _commit_or_409(db)
     return EventsOutboundStatusRead(status="completed", summary=summary, results=results)
 
@@ -3713,6 +3834,12 @@ async def replace_inbound(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
+    from app.services.kaipoke.sync_report_items import (
+        build_report_meta,
+        replace_contents,
+        write_job_items,
+    )
+
     job.status = "completed"
     job.completed_at = datetime.now(UTC)
     job.result_summary = {
@@ -3724,7 +3851,10 @@ async def replace_inbound(
         "temp_courses": result.temp_courses,
         "courses_reassigned": result.courses_reassigned,
         "courses_created": result.courses_created,
+        "report_meta": build_report_meta("replace-inbound", user=user),
     }
+    # 連携結果レポートの明細 (設計 §2): 日ごとの消した/入れた + 対象外 + 新人単独。
+    await write_job_items(db, job.id, replace_contents(result))
 
     job_id: UUID | None = None
     if payload.dry_run:
@@ -4014,6 +4144,12 @@ async def smart_inbound_apply(
         ReplaceBlockedError,
         replace_week_from_kaipoke,
     )
+    from app.services.kaipoke.sync_report_items import (
+        build_report_meta,
+        replace_contents,
+        row_content_from_inbound_result,
+        write_job_items,
+    )
 
     week_start = payload.week_start
     if week_start.weekday() != 0:
@@ -4072,6 +4208,10 @@ async def smart_inbound_apply(
 
     # 差分パート (打刻あり日・シートの include 項目を日で絞って適用)
     diff_result = None
+    # レポート明細 (設計 §2) の材料: InboundItemResult と、その before/after を
+    # 引くための sheet item。差分パートはブロック内スコープのため外へ持ち出す。
+    diff_item_results: list[Any] = []
+    diff_items_by_id: dict[str, Any] = {}
     if payload.sheet_id is not None and protected_days:
         sheet = await db.scalar(
             select(CorrectionSheet)
@@ -4101,6 +4241,8 @@ async def smart_inbound_apply(
             )
             if not payload.dry_run:
                 sheet.status = "applied"
+            diff_item_results = list(summary.results)
+            diff_items_by_id = {str(it.id): it for it in selected}
             diff_result = InboundApplyResult(
                 job_id=None,
                 dry_run=payload.dry_run,
@@ -4125,6 +4267,7 @@ async def smart_inbound_apply(
 
     # 置換パート (打刻なし日)
     replace_read = None
+    replace_plan = None  # レポート明細 (日ごとの内訳/対象外/新人単独) の材料
     if replace_days and entries is not None:
         try:
             plan = await replace_week_from_kaipoke(
@@ -4140,6 +4283,7 @@ async def smart_inbound_apply(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
             ) from exc
+        replace_plan = plan
         replace_read = _replace_result_read(plan, None)
 
     job_id: UUID | None = None
@@ -4177,9 +4321,21 @@ async def smart_inbound_apply(
             )
             if replace_read
             else None,
+            "report_meta": build_report_meta("smart-apply", user=user),
         }
         db.add(job)
         await db.flush()
+        # 連携結果レポートの明細 (設計 §2): 差分側は行単位、置換側は日単位
+        # (+ 対象外・新人単独) — 1 ジョブに両方の kind が混ざる。
+        await write_job_items(
+            db,
+            job.id,
+            [
+                row_content_from_inbound_result(r, diff_items_by_id.get(str(r.item_id)))
+                for r in diff_item_results
+            ]
+            + (replace_contents(replace_plan) if replace_plan is not None else []),
+        )
         # 要確認 (対象外/新人単独/差分失敗) は管理者へ恒久通知
         n_skipped = len(replace_read.skipped) if replace_read else 0
         n_trainee = sum(t.count for t in replace_read.trainee_solo) if replace_read else 0

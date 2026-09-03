@@ -28,7 +28,19 @@ from app.db.base import Base, TimestampMixin
 # Allowed enum values (validated at the Pydantic layer; stored as strings).
 KAIPOKE_JOB_TYPES = ("fetch", "push")
 KAIPOKE_JOB_STATUSES = ("pending", "running", "completed", "failed", "cancelled")
-KAIPOKE_JOB_ITEM_STATUSES = ("pending", "running", "completed", "failed", "skipped")
+# 連携結果レポートの明細 (sync_report_items.py) は行の outcome をそのまま status に
+# 入れる: success / excluded (送信前に除外) / unknown (RPA から結果が返らず要目視)。
+# DB は String(16) のままなので migration 不要 (CHECK 制約は無い)。
+KAIPOKE_JOB_ITEM_STATUSES = (
+    "pending",
+    "running",
+    "completed",
+    "failed",
+    "skipped",
+    "success",
+    "excluded",
+    "unknown",
+)
 
 
 class KaipokeJob(Base, TimestampMixin):
