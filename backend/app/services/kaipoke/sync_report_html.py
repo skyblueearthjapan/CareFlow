@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import html
+from datetime import UTC
+from zoneinfo import ZoneInfo
 
 from app.services.kaipoke.report_css import REPORT_CSS
 from app.services.kaipoke.sync_report import (
@@ -27,16 +29,27 @@ def _tag(label: str, kind: str) -> str:
     return f'<span class="tag {_e(kind)}">{_e(label)}</span>'
 
 
+#: 報告書の時刻は常に日本時間。コンテナは UTC で動いているので ``astimezone()``
+#: (= プロセスのローカル TZ) に任せると 9 時間ずれる (2026-09-03 本番初出力で発覚)。
+_JST = ZoneInfo("Asia/Tokyo")
+
+
+def _to_jst(dt):
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(_JST)
+
+
 def _fmt_dt(dt) -> str:
     if dt is None:
         return "—"
-    return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+    return _to_jst(dt).strftime("%Y-%m-%d %H:%M")
 
 
 def _fmt_time(dt) -> str:
     if dt is None:
         return "—"
-    return dt.astimezone().strftime("%H:%M")
+    return _to_jst(dt).strftime("%H:%M")
 
 
 def _fmt_duration(sec: int | None) -> str:

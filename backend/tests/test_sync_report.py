@@ -154,6 +154,14 @@ def test_render_titles_by_direction():
     assert "取込後の確認" in inb
 
 
+def test_render_times_are_japan_standard_time():
+    """コンテナが UTC でも報告書の時刻は JST (started 08:00Z → 17:00, generated 09:00Z → 18:00)。"""
+    out = render_sync_report_html(_report(direction="outbound"))
+    assert "2026-09-07 17:00 〜 17:12" in out
+    assert "作成 2026-09-07 18:00" in out
+    assert "08:00" not in out.split("実行:")[1][:40]
+
+
 def test_render_print_rules_cover_break_and_thead():
     out = render_sync_report_html(_report())
     # 表紙は単独ページ (break-after) + 明細の先頭で改ページ
