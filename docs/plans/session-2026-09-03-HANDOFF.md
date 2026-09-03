@@ -8,7 +8,7 @@
 | RPA (PlaywrightTest1) | `06fdcae`（auto_apply 耐性強化・VPS 反映済み・`docker restart kaipoke-api` 済み・旧版 `commands/auto_apply.py.bak-20260903`） |
 | 本番バックアップ | `/opt/carelink/backups/pre-deploy-20260903-2005.sql.gz` |
 | 修復 SQL | `repair-2026-09-03-w37-primary-mirror.sql` を **実行済み**（W37 稲毛A 9/9 の 5 訪問 primary→宇田川・残 0） |
-| 残差シート | `ffb03017`（diff-local 20:58 JST・**5 件 = 都賀A 9/10 担当なし 4 + 麻生**） |
+| 残差シート | `d454f8df`（diff-local 21:12 JST・**4 件 = 都賀A 9/10 担当なし 4 のみ**・突合 一致 132 / 相違 0 / 片側のみ 0） |
 
 ## 0. 何が起きたか（確定した事実）
 9/7〜9/13 週の送信（ジョブ `57a70c9c`・17:05〜18:25・178 件）が **成功 155 / 失敗 22 / スキップ 1**。差分最新化で残差 29。カイポケ側の被害:
@@ -50,7 +50,8 @@ W37 の週生成が 15:43 に 2 回走っているが、2 回目が 1 回目を�
 1. **隠れ行 8 件を RPA で削除**（20:17〜20:20・8/8 削除検証 OK・ジョブ直叩き）。
 2. **らく助から送信**: diff-local（シート `d9f0f31c`・29 件）→ `POST /integrations/apply dryRun:false`（ジョブ `47423f5f`・20:24〜20:39）= **成功 24 / 失敗 0 / スキップ 1（麻生・利用者未登録）・`skipped_unassigned` 4** = 新ガードが都賀A 9/10 の 4 件を自動除外。
 3. **export で確定**: 直後の export 2 回は「スケジュール表のクリック失敗 Timeout」で古い CSV（既知の罠・md5 不変）→ 3 回目で `CSV出力完了`（md5 変化）。**残差 5 = 都賀A 9/10 担当なし 4（林・森田・松戸・石川）+ 麻生 9/9**。突合レポート（20:58 snapshot）= **一致 131 / 相違 0 / らく助のみ 1（麻生）/ カイポケのみ 0**。消えていた 5 行は復元、木村 9/7 の二重も解消（高岡のみ）。
-4. **PO 判断が残るもの**: 都賀A 9/10 の担当 4 件（らく助で付ければ次の 🔄→⇧ で add される・ガードで送信前に「担当なし」表示）／麻生様のカイポケ利用者登録。
+4. **麻生様（21:06〜21:12・PO 指示「カイポケ側に合わせて」）**: 「カイポケ未登録」は誤り。実体は **漢字違い**（らく助 `麻生　真理奈` / カイポケ `麻生 真里奈`・dry-run が保存した画面 HTML の利用者ドロップダウン 109 名から確定）。RPA の name_matches は理≠里 を吸収しない。`PATCH /patients/{P112}` で らく助側を `真里奈` に変更 → diff-local → apply 1 件 成功 → export で 9/9 13:35 宇田川 を確認。**突合 一致 132 / 相違 0 / 片側のみ 0**。
+5. **PO 判断が残るもの**: 都賀A 9/10 の担当 4 件（林・森田・松戸・石川。らく助で付ければ次の 🔄→⇧ で add される・ガードで送信前に「担当なし」表示）。
 
 ### 2-b. 手順の記録（次回同種の事故で使う）
 - 隠れ行 payload: VPS `/tmp/hidden_delete_live.json`（`staff1_from` 空 = 時刻のみで特定・dry-run で「1 件のエントリを発見」を全件確認してから実行）。
@@ -62,8 +63,10 @@ W37 の週生成が 15:43 に 2 回走っているが、2 回目が 1 回目を�
 3. 「削除→追加」の順序は消失事故の設計欠陥。順序を変えられないケースはロールバックを持つ。
 4. 同時刻 2 行のときは職員名で行を特定しないと別行を消す。RPA 結果の details に `reason` が入ったので、以後は原因分類をログではなく結果から読める。
 5. 週の重複調査では `deleted_at IS NULL` を忘れない（週生成の再実行は旧行を論理削除して残す）。
-6. 既存 pytest 失敗は 33 件（manager ロール廃止追随漏れ・audit middleware・Python 3.14×SQLAlchemy UUID 等）で全て改修前 HEAD と同一。`test_pfv_sub_office` は順序依存で単体では通る。FE は e2e spec 8 本＋middleware/KaipokeConsole の 4 件が既存失敗。
+6. **新規患者を登録した日は連携ページ 👥 マスタ突合を回す**（氏名の漢字違いは送信で「利用者が見つかりません」になり、原因が分からない）。RPA 保存の debug HTML には利用者ドロップダウン全件が入っているので、疑わしいときはそこで検索する（`scratchpad/dropdown.py` の手口）。
+7. 既存 pytest 失敗は 33 件（manager ロール廃止追随漏れ・audit middleware・Python 3.14×SQLAlchemy UUID 等）で全て改修前 HEAD と同一。`test_pfv_sub_office` は順序依存で単体では通る。FE は e2e spec 8 本＋middleware/KaipokeConsole の 4 件が既存失敗。
 
 ## 4. 参照
 - ジョブ結果: `kaipoke_jobs` `57a70c9c`（失敗 22 の details）・RPA ログ `/var/log/supervisor/api.log`（17:05〜18:25）・失敗時 PNG `artifacts/debug_add_failed_20260903_17*.png` / `delete_verify_ng_*`。
+- お客様向け完了報告書（A4 縦 HTML・患者名を含むため未追跡）: `docs/reports/2026-09-03-w37-kaipoke-sync-report.html`。PO 構想 = 連携（送信/取込）のたびに同様式の結果報告書を自動生成（設計書は未着手・`sync-result-report-design.md` 予定）。
 - 直叩き: `tools/admin_call.py`（`docker exec -w /app -e PYTHONPATH=/app carelink-backend python /tmp/admin_call.py METHOD PATH JSON`）。RPA は `curl -H "Authorization: Bearer $KAIPOKE_API_TOKEN" http://127.0.0.1:5000/api/apply`。
