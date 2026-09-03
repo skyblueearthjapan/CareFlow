@@ -156,3 +156,78 @@ def rpa_unsupported_item_ids(items: Iterable[Any]) -> set[Any]:
             if key is not None and key in blocked_keys:
                 skip.add(it.id)
     return skip
+
+
+# --- 担当なしガード (2026-09-03 本番事故) -----------------------------------
+
+# 除外した理由 (job.result_summary / FE の注記で同じ文言を使う)。
+UNASSIGNED_REASON = "担当なしの予定はカイポケへ送れません（先に担当を付けてください）"
+
+
+def is_unassigned_item(action: str, after: dict[str, Any] | None) -> bool:
+    """この修正項目は「担当なし」= カイポケへ送ってはいけないか。
+
+    True = 送信対象から除外すべき。判定は ``action`` が add/edit/date_change
+    (= カイポケに職員1を書き込む操作) かつ ``after.staff1`` が空 / ``'-'`` のとき。
+    ``delete`` は職員を書かない (行を消すだけ) ので常に False。
+
+    ## なぜ止めるのか (2026-09-03 W37 の送信で 9 件発生)
+
+    らく助の差分エンジンは ``include_unassigned=True`` で担当なしの訪問も
+    ``staff1='-'`` の行として差分に含める。これを RPA へ送ると:
+
+    * RPA は「成功」を返す。カイポケにも担当なしの行として実際に入る。
+    * ところがカイポケの「スケジュール表」CSV export は **職員別** で、
+      職員未割当の行を 1 行も含まない。
+    * = らく助から見ると送ったはずの行が現況CSVに出てこない → 次の差分で
+      再び ``add`` として現れる → 送るたびに担当なしの行が増える (二重登録)。
+    * さらに ``edit`` で送った分は、カイポケに入っていた実在の職員 (熊澤)
+      を ``'-'`` で上書きしてしまう = 予定から担当が消える。
+
+    「送っても確認できず、送るほど壊れる」ので、担当が付くまで送らない。
+    """
+    if action not in ("add", "edit", "date_change"):
+        return False
+    return str((after or {}).get("staff1") or "").strip() in ("", "-")
+
+
+def unassigned_item_ids(items: Iterable[Any]) -> set[Any]:
+    """送信対象から外すべき「担当なし」item の id 集合 (**ペアを巻き込んで** 外す)。
+
+    ## なぜ delete まで外すのか
+
+    担当なしは 1 項目で完結する、とは限らない。差分エンジンは **サービス内容も
+    突合キーに含める** ため、同じ訪問でも「カイポケ側は准看で担当あり / らく助側は
+    担当なし ('-' → 職員 None なので正看)」のようにサービス内容がズレると、
+    edit ではなく **delete (カイポケの行) + add (らく助の行)** の 2 行に割れる
+    (``rpa_unsupported_item_ids`` と同じ構図・設計 §3-1)。
+
+    ここで add だけを落として delete を送ると **カイポケから予定が丸ごと消えて
+    作り直されない** = 担当なしで送るより悪い事故になる。そこで、除外する
+    担当なし項目と同じ ``pair_key`` を持つ delete も道連れに外す。
+
+    Args:
+        items: ``id`` / ``action`` / ``before`` / ``after`` を持つオブジェクト
+            (``CorrectionSheetItem`` を想定)。
+
+    Returns:
+        除外対象の ``item.id`` 集合。
+    """
+    rows = list(items)
+    skip: set[Any] = set()
+    blocked_keys: set[str] = set()
+    for it in rows:
+        if is_unassigned_item(it.action, it.after):
+            skip.add(it.id)
+            key = pair_key(it.action, it.before, it.after)
+            if key is not None:
+                blocked_keys.add(key)
+
+    if blocked_keys:
+        for it in rows:
+            if it.id in skip or it.action != "delete":
+                continue
+            key = pair_key(it.action, it.before, it.after)
+            if key is not None and key in blocked_keys:
+                skip.add(it.id)
+    return skip

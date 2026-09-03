@@ -324,6 +324,8 @@ export type EventCancelWeekRequest = z.input<typeof eventCancelWeekRequestSchema
 export const cockpitCorrectionItemSchema = CorrectionItemReadSchema.extend({
   date_iso: z.string().nullable().optional(),
   rpa_unsupported: z.boolean().default(false),
+  /** 担当なし (職員1が空/'-') = カイポケへ送れない行。BE 判定・旧応答では既定 false。 */
+  unassigned: z.boolean().default(false),
 });
 export type CockpitCorrectionItem = z.infer<typeof cockpitCorrectionItemSchema>;
 
@@ -369,6 +371,12 @@ export const unsentSummaryReadSchema = z.object({
    * 旧 BE 応答では欠けるので既定 0。
    */
   rpa_unsupported_count: z.number().int().default(0),
+  /**
+   * 担当なしで送れない件数。past / rpa_unsupported とも二重に数えないので
+   * `sendable = items+events - past_count - rpa_unsupported_count - unassigned_count`。
+   * 旧 BE 応答では欠けるので既定 0。
+   */
+  unassigned_count: z.number().int().default(0),
 });
 export type UnsentSummaryRead = z.infer<typeof unsentSummaryReadSchema>;
 

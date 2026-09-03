@@ -1583,7 +1583,9 @@ async def trigger_apply(
     # rpa_capability に一本化する (unsent-summary の「送れる」件数と必ず一致させる)。
     from app.services.kaipoke.rpa_capability import (
         RPA_UNSUPPORTED_REASON,
+        UNASSIGNED_REASON,
         rpa_unsupported_item_ids,
+        unassigned_item_ids,
     )
 
     # 判定は **シート全体** で行う: 部分適用で delete 側だけを指定されたとき、
@@ -1602,6 +1604,23 @@ async def trigger_apply(
             ),
         )
 
+    # 担当なしガード (2026-09-03 本番事故): 職員1が空/'-' の add/edit を送ると
+    # カイポケには担当なしの行として入るが、スケジュール表CSV(職員別)は未割当行を
+    # 出さない = らく助からは「送れていない」ように見えて add を繰り返す (二重登録)。
+    # edit に至っては実在の職員を '-' で上書きして担当を消す。担当が付くまで送らない。
+    #
+    # **ペアも道連れに外す**: サービス内容も突合キーなので「カイポケ=准看で担当あり /
+    # らく助=担当なし」は delete + add に割れる。add だけ落とすとカイポケから予定が
+    # 消える (RPA 未対応ガードと同じ理屈)。判定は rpa_capability に一本化する。
+    _unassigned_ids = unassigned_item_ids(sheet.items)
+    skipped_unassigned = sum(1 for it in selected if it.id in _unassigned_ids)
+    selected = [it for it in selected if it.id not in _unassigned_ids]
+    if not selected:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"選択された修正はすべて送信対象外です（{UNASSIGNED_REASON}）",
+        )
+
     from app.services.kaipoke.local_diff import item_to_kaipoke_correction
 
     job = KaipokeJob(
@@ -1616,6 +1635,7 @@ async def trigger_apply(
             "partial": bool(payload.item_ids),
             "skipped_past": skipped_past,
             "skipped_rpa_unsupported": skipped_rpa_unsupported,
+            "skipped_unassigned": skipped_unassigned,
             # apply実績ゲート (逆反映・real_apply_record) の判定キー。
             "week_start": sheet.week_start.isoformat() if sheet.week_start else None,
         },
@@ -1630,7 +1650,9 @@ async def trigger_apply(
     correction_data = [
         item_to_kaipoke_correction(it.action, it.before, it.after) for it in selected
     ]
-    # 安全: 職員1が空/'-'(未割当)の修正数を数え、監査に残す (カイポケでは '-' 登録になる)。
+    # 安全: 職員1が空/'-'(未割当)の修正数を数え、監査に残す。
+    # 担当なしガード (上) が上流で全て外すので常に 0 のはず — 0 でなければ
+    # ガードの穴なので、監査ログから気付けるように数え続ける。
     unassigned = sum(
         1 for c in correction_data if c["staff1_to"] in ("", "-") and c["action"] != "delete"
     )
@@ -1665,6 +1687,9 @@ async def trigger_apply(
         # = 「ガードが効いている」ことを監査ログから追えるようにする。
         "skipped_rpa_unsupported": skipped_rpa_unsupported,
         "skipped_rpa_unsupported_reason": RPA_UNSUPPORTED_REASON,
+        # 担当なしで送らなかった件数と理由 (2026-09-03 の事故を追えるように常に返す)。
+        "skipped_unassigned": skipped_unassigned,
+        "skipped_unassigned_reason": UNASSIGNED_REASON,
         "dry_run": payload.dry_run,
     }
     if not payload.dry_run and not payload.item_ids:
@@ -2538,7 +2563,7 @@ async def unsent_summary(
     from app.services.kaipoke.csv_snapshot import get_latest
     from app.services.kaipoke.local_diff import build_local_diff, correction_before_after
     from app.services.kaipoke.name_match import build_name_index, match_name
-    from app.services.kaipoke.rpa_capability import rpa_unsupported_item_ids
+    from app.services.kaipoke.rpa_capability import rpa_unsupported_item_ids, unassigned_item_ids
 
     week_start = payload.week_start
     if week_start.weekday() != 0:
@@ -2563,6 +2588,8 @@ async def unsent_summary(
             past_count=sum(1 for e in events if e.date <= today),
             # イベントはサービス内容を持たない = RPA 未対応ガードの対象外。
             rpa_unsupported_count=0,
+            # イベントは職員に紐づく = 担当なしになりようがない。
+            unassigned_count=0,
             warnings=warnings,
         )
 
@@ -2649,6 +2676,8 @@ async def unsent_summary(
         # ずれない (過去日ガードと同じ設計)。ペアの delete にもフラグが立つので、
         # FE は自前でサービス内容を見ずにこのフラグへ従えばよい。
         rpa_skip_ids = rpa_unsupported_item_ids(rows)
+        # 担当なし (職員1が空/'-') も apply と同じ関数で判定する。
+        unassigned_ids = unassigned_item_ids(rows)
         for r in rows:
             base = CorrectionItemRead.model_validate(r).model_dump()
             items_read.append(
@@ -2656,6 +2685,7 @@ async def unsent_summary(
                     **base,
                     date_iso=resolve_item_date(r.action, r.before, r.after, week_start),
                     rpa_unsupported=r.id in rpa_skip_ids,
+                    unassigned=r.id in unassigned_ids,
                 )
             )
 
@@ -2668,6 +2698,15 @@ async def unsent_summary(
         1
         for it in items_read
         if it.rpa_unsupported and not (it.date_iso is not None and it.date_iso <= today)
+    )
+    # 担当なしも「過去日でも RPA 未対応でもないのに送れない」件数だけ数える
+    # (past / rpa_unsupported と足し合わせても sendable が負にならないように)。
+    unassigned_count = sum(
+        1
+        for it in items_read
+        if it.unassigned
+        and not it.rpa_unsupported
+        and not (it.date_iso is not None and it.date_iso <= today)
     )
     # 送信対象から黙って外したことに気付けるよう admin へお知らせを 1 通落とす
     # (週 × 件数で冪等 = 同期バーを開くたびに増えない・§3-2)。通知の失敗で
@@ -2686,6 +2725,20 @@ async def unsent_summary(
             await db.rollback()
             logger.warning("unsent-summary: RPA未対応通知の作成に失敗 (無視): %r", exc)
 
+    # 担当なしも同じ作法でお知らせを 1 通。⇧上書き/連携ページの「全件送る」は
+    # BE が黙って外すため、画面上は「送れる 0 件」で平穏に見えてしまう。
+    if unassigned_count > 0:
+        from app.services.kaipoke.rpa_unsupported_notify import notify_unassigned_candidates
+
+        try:
+            if await notify_unassigned_candidates(
+                db, week_start=week_start, count=unassigned_count
+            ):
+                await db.commit()
+        except Exception as exc:  # pragma: no cover (防御)
+            await db.rollback()
+            logger.warning("unsent-summary: 担当なし通知の作成に失敗 (無視): %r", exc)
+
     return UnsentSummaryRead(
         week_start=week_start,
         snapshot=UnsentSnapshotRead(
@@ -2694,9 +2747,10 @@ async def unsent_summary(
         sheet_id=sheet_id,
         items=items_read,
         events=events,
-        sendable_count=len(due) - past_count - rpa_unsupported_count,
+        sendable_count=len(due) - past_count - rpa_unsupported_count - unassigned_count,
         past_count=past_count,
         rpa_unsupported_count=rpa_unsupported_count,
+        unassigned_count=unassigned_count,
         warnings=[],
     )
 

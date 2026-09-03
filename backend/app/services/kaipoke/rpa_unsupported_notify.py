@@ -2,6 +2,12 @@
 
 正典 = ``docs/plans/kaipoke-service-content-design.md`` §3-2 / §4。
 
+producer は 2 本。冪等・upsert の作法は共通 (``_upsert_for_admins``) で、
+**reference_type だけ分ける** — 理由が違えば対処も違うため:
+
+  * ``notify_rpa_unsupported_candidates`` — 准看/一般で RPA が登録できない。
+  * ``notify_unassigned_candidates`` — 担当なし ('-') で送れない (2026-09-03)。
+
 ## なぜ要るか
 
 ``rpa_capability`` は准看/一般の新規 (とその対になる取消) を送信対象から
@@ -40,6 +46,11 @@ from app.models.user import User
 
 NOTIFY_RPA_UNSUPPORTED: Final = "rpa_unsupported"
 
+# 担当なし (職員1が空/'-') で送れない予定のお知らせ (2026-09-03 の事故)。
+# 上と同じ冪等・同じ作法だが **別の reference_type** にする — 混ぜると
+# 「准看で送れない」と「担当が無くて送れない」が 1 通に潰れて対処が分からない。
+NOTIFY_UNASSIGNED: Final = "unassigned_unsent"
+
 # uuid5 の名前空間 (この producer 専用の固定 UUID)。週から決定的に
 # reference_id を作るために使う。値そのものに意味は無いが **変えないこと** —
 # 変えると過去に送った通知と突き合わなくなり、全部もう一度届く。
@@ -49,6 +60,11 @@ _NAMESPACE: Final = uuid.UUID("6f1d2c48-6a2f-5b31-9d4a-7c0e8b5a1f30")
 def dedup_reference_id(week_start: date) -> uuid.UUID:
     """週 → 冪等キー (決定的 UUID)。件数は含めない (同じ週は 1 通に保つ)。"""
     return uuid.uuid5(_NAMESPACE, f"rpa-unsupported:{week_start.isoformat()}")
+
+
+def unassigned_dedup_reference_id(week_start: date) -> uuid.UUID:
+    """担当なしのお知らせの冪等キー。接頭辞が違う = RPA 未対応とは別の 1 通。"""
+    return uuid.uuid5(_NAMESPACE, f"unassigned-unsent:{week_start.isoformat()}")
 
 
 def _title(count: int) -> str:
@@ -64,20 +80,33 @@ def _body(week_start: date, count: int) -> str:
     )
 
 
-async def notify_rpa_unsupported_candidates(
-    db: AsyncSession, *, week_start: date, count: int
+def _unassigned_title(count: int) -> str:
+    return f"担当なしでカイポケへ送れない予定が {count} 件あります"
+
+
+def _unassigned_body(week_start: date, count: int) -> str:
+    return (
+        f"担当なしの予定が {count} 件あり、カイポケへ送れません"
+        "（先に担当を付けてください）。\n"
+        f"対象週: {week_start.year}年{week_start.month}月{week_start.day}日の週\n"
+        "カイポケのスケジュール表は職員未割当の予定を持てないため、"
+        "担当が決まるまで自動送信の対象から外しています。"
+    )
+
+
+async def _upsert_for_admins(
+    db: AsyncSession,
+    *,
+    reference_type: str,
+    reference_id: uuid.UUID,
+    title: str,
+    body: str,
 ) -> int:
-    """自動送信できない予定があることを active な admin へ通知する。
+    """active な admin 全員に 1 通ずつ upsert する (冪等キーは reference_id)。
 
-    **commit しない**。同じ週の通知は 1 ユーザー 1 通で、件数が変わったときは
-    本文を書き換えて未読に戻す。
-
-    Returns:
-        作成 **または更新** した通知の件数 (0 = 変化なし / 対象 admin なし)。
+    **commit しない** — 呼び出し側のトランザクション境界に乗せる。
+    件数が変わった (= 本文が変わった) ときだけ書き換えて未読に戻す。
     """
-    if count <= 0:
-        return 0
-
     users = list(
         (
             await db.scalars(
@@ -94,21 +123,17 @@ async def notify_rpa_unsupported_candidates(
     if not users:
         return 0
 
-    reference_id = dedup_reference_id(week_start)
     existing = {
         n.user_id: n
         for n in (
             await db.scalars(
                 select(Notification).where(
-                    Notification.reference_type == NOTIFY_RPA_UNSUPPORTED,
+                    Notification.reference_type == reference_type,
                     Notification.reference_id == reference_id,
                 )
             )
         ).all()
     }
-
-    title = _title(count)
-    body = _body(week_start, count)
 
     touched = 0
     for u in users:
@@ -117,10 +142,10 @@ async def notify_rpa_unsupported_candidates(
             db.add(
                 Notification(
                     user_id=u.id,
-                    type=NOTIFY_RPA_UNSUPPORTED,
+                    type=reference_type,
                     title=title,
                     body=body,
-                    reference_type=NOTIFY_RPA_UNSUPPORTED,
+                    reference_type=reference_type,
                     reference_id=reference_id,
                 )
             )
@@ -135,3 +160,48 @@ async def notify_rpa_unsupported_candidates(
         current.read_at = None
         touched += 1
     return touched
+
+
+async def notify_rpa_unsupported_candidates(
+    db: AsyncSession, *, week_start: date, count: int
+) -> int:
+    """自動送信できない予定 (准看/一般) があることを active な admin へ通知する。
+
+    **commit しない**。同じ週の通知は 1 ユーザー 1 通で、件数が変わったときは
+    本文を書き換えて未読に戻す。
+
+    Returns:
+        作成 **または更新** した通知の件数 (0 = 変化なし / 対象 admin なし)。
+    """
+    if count <= 0:
+        return 0
+    return await _upsert_for_admins(
+        db,
+        reference_type=NOTIFY_RPA_UNSUPPORTED,
+        reference_id=dedup_reference_id(week_start),
+        title=_title(count),
+        body=_body(week_start, count),
+    )
+
+
+async def notify_unassigned_candidates(db: AsyncSession, *, week_start: date, count: int) -> int:
+    """担当なしで送れない予定があることを active な admin へ通知する。
+
+    ⇧上書き / 連携ページの「全件送る」は BE が担当なしを黙って外すため、
+    画面上は「送れる 0 件」で平穏に見えてしまう。外したことに気付けるよう
+    週ごとに 1 通落とす (RPA 未対応のお知らせと同じ冪等・別の reference_type)。
+
+    **commit しない**。
+
+    Returns:
+        作成 **または更新** した通知の件数 (0 = 変化なし / 対象 admin なし)。
+    """
+    if count <= 0:
+        return 0
+    return await _upsert_for_admins(
+        db,
+        reference_type=NOTIFY_UNASSIGNED,
+        reference_id=unassigned_dedup_reference_id(week_start),
+        title=_unassigned_title(count),
+        body=_unassigned_body(week_start, count),
+    )

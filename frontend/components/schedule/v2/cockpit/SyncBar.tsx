@@ -98,6 +98,13 @@ const OUT_NOTE: Record<DiffAction, string> = {
 const RPA_UNSUPPORTED_NOTE =
   '准看護師／一般の登録はRPAが未対応です。カイポケで直接登録してください';
 
+/**
+ * 担当なしの行に付ける理由 (2026-09-03 の事故)。カイポケのスケジュール表CSVは
+ * 職員未割当の行を出さないため、送っても確認できず add を繰り返す。
+ * 判定そのものは BE (`unassigned`) が持ち、FE は表示だけ。
+ */
+const UNASSIGNED_NOTE = '担当が付いていない予定はカイポケへ送れません。先に担当を付けてください';
+
 /** BE の差分 action → 表示上の 3 種別。 */
 function diffAction(action: string): DiffAction {
   if (action === 'add') return 'add';
@@ -145,6 +152,11 @@ interface UnsentRow {
    * true の間は送信対象から外す。
    */
   rpaUnsupported: boolean;
+  /**
+   * 担当が付いていない行 (職員1が空/'-'・BE 判定)。
+   * カイポケへ送っても現況CSVに出てこないため送信対象から外す。
+   */
+  unassigned: boolean;
 }
 
 /**
@@ -389,6 +401,7 @@ export function SyncBar({
         matchKey: dateIso && startTime ? unsentVisitKey(dateIso, startTime, who) : null,
         marker,
         rpaUnsupported: it.rpa_unsupported === true,
+        unassigned: it.unassigned === true,
         headline: `${who} 様 ${startTime}`.trim(),
         change: desc?.change || (staff ? `担当 ${staff}` : ''),
       });
@@ -404,6 +417,8 @@ export function SyncBar({
         marker: unsentEventToMarker(ev),
         // イベントはサービス内容を持たない = RPA 未対応ガードの対象外。
         rpaUnsupported: false,
+        // イベントは職員に紐づく = 担当なしになりようがない。
+        unassigned: false,
         headline: `${ev.staff_name} ${ev.start_time} ${ev.title}`.trim(),
         change: '',
       });
@@ -537,10 +552,10 @@ export function SyncBar({
   };
 
   /** BE の sendable 判定と同じ式 (date 不明は送信可・past = 当日以前のみ)。
-   *  RPA 未対応 (准看/一般) の行は BE が apply でも弾くのでここでも外す
+   *  RPA 未対応 (准看/一般) と担当なしの行は BE が apply でも弾くのでここでも外す
    *  = 「送れると見えたのに BE がスキップした」ズレを作らない。 */
   const isSendable = (r: UnsentRow) =>
-    !r.rpaUnsupported && (r.dateIso == null || r.dateIso > todayIso);
+    !r.rpaUnsupported && !r.unassigned && (r.dateIso == null || r.dateIso > todayIso);
   const sendableRows = unsentRows.filter(isSendable);
   /** 当日以前は実績保護のため一覧に出さない (件数だけ注記する)。 */
   const pastRows = unsentRows.filter((r) => r.dateIso != null && r.dateIso <= todayIso);
@@ -1008,19 +1023,27 @@ export function SyncBar({
                     tag={
                       r.rpaUnsupported
                         ? { label: '自動送信不可', tone: 'na' }
-                        : ACTION_TAG[r.action]
+                        : r.unassigned
+                          ? { label: '担当なし', tone: 'na' }
+                          : ACTION_TAG[r.action]
                     }
                     headline={r.headline}
                     change={r.change}
-                    note={r.rpaUnsupported ? RPA_UNSUPPORTED_NOTE : OUT_NOTE[r.action]}
-                    muted={r.rpaUnsupported}
+                    note={
+                      r.rpaUnsupported
+                        ? RPA_UNSUPPORTED_NOTE
+                        : r.unassigned
+                          ? UNASSIGNED_NOTE
+                          : OUT_NOTE[r.action]
+                    }
+                    muted={r.rpaUnsupported || r.unassigned}
                     selected={selected}
                     onSelect={() => setUnsentId(selected ? null : r.id)}
                     actions={[
                       {
                         label: '送る',
                         primary: true,
-                        disabled: actionsDisabled || r.rpaUnsupported,
+                        disabled: actionsDisabled || r.rpaUnsupported || r.unassigned,
                         testId: 'sync-out-send',
                         onClick: () => void sendUnsent([r], r.id),
                       },

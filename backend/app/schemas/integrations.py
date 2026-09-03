@@ -763,10 +763,15 @@ class UnsentItemRead(CorrectionItemRead):
     できない行」の印 (S3 完了まで・kaipoke-service-content-design.md §3)。
     **判定は BE だけが持つ** — FE がサービス内容の文字列を自前で判定すると、
     S3 で門を開けたときに片方だけ古いルールのまま残る。
+
+    ``unassigned`` は「らく助側で担当が付いていない行」の印 (職員1が空/'-')。
+    カイポケのスケジュール表CSVは職員未割当の行を出さないため、送っても
+    らく助からは確認できず add を繰り返す (2026-09-03 の事故)。
     """
 
     date_iso: date | None = None
     rpa_unsupported: bool = False
+    unassigned: bool = False
 
 
 class UnsentEventRead(BaseModel):
@@ -800,6 +805,9 @@ class UnsentSummaryRead(BaseModel):
     # だけを数える。これで sendable = 全体 - past - rpa_unsupported が常に成立し、
     # FE が引き算で負数を出さない。
     rpa_unsupported_count: int = 0
+    # 担当なし (職員1が空/'-') で送れない件数。past / rpa_unsupported とも
+    # 二重に数えない = sendable = 全体 - past - rpa_unsupported - unassigned。
+    unassigned_count: int = 0
     # 未送信を算出できなかった/信用できない理由 (FE がバーに出す)。
     warnings: list[str] = Field(default_factory=list)
 

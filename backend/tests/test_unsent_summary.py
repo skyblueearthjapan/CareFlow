@@ -1646,3 +1646,432 @@ def test_dedup_reference_id_is_stable_per_week() -> None:
     week = date(2026, 8, 24)
     assert dedup_reference_id(week) == dedup_reference_id(week)
     assert dedup_reference_id(week) != dedup_reference_id(week + timedelta(days=7))
+
+
+# ===========================================================================
+# 担当なしガード (2026-09-03 本番事故)
+#
+# 職員1が空/'-' の add/edit を RPA へ送ると、カイポケには担当なしの行として
+# 入るが、スケジュール表CSV(職員別)は未割当行を出さない = らく助からは
+# 「送れていない」ように見えて add を繰り返す (二重登録)。edit は実在の職員を
+# '-' で上書きして担当を消す。担当が付くまで送らない。
+# ===========================================================================
+
+
+async def _seed_unassigned_outbound_sheet(db, user: User, week_start: date) -> CorrectionSheet:
+    """担当なしの add / edit と、担当が付いた add を 1 枚に混ぜた outbound シート。"""
+    sheet = CorrectionSheet(
+        target_month=_month_of(week_start),
+        status="ready",
+        direction="outbound",
+        origin="cached",
+        week_start=week_start,
+        week_end=week_start + timedelta(days=6),
+        created_by_user_id=user.id,
+    )
+    db.add(sheet)
+    await db.flush()
+
+    def _side(offset: int, start: str, staff1: str) -> dict[str, Any]:
+        return {
+            "user_name": PATIENT_NAME,
+            "date": str((week_start + timedelta(days=offset)).day),
+            "start_time": start,
+            "end_time": "10:35",
+            "staff1": staff1,
+            "staff2": "",
+            "service_type": "精神基本療養費Ⅰ・正看",
+            "business_type": "医療保険",
+            "remarks": "",
+        }
+
+    def _empty() -> dict[str, Any]:
+        blank = {k: "" for k in _side(0, "", "")}
+        blank["user_name"] = PATIENT_NAME
+        return blank
+
+    db.add_all(
+        [
+            # 担当なしの新規 (らく助のプール行) → 送らない
+            CorrectionSheetItem(
+                sheet_id=sheet.id, action="add", before=_empty(), after=_side(0, "10:00", "-")
+            ),
+            # 担当を消す変更 (カイポケの熊澤を '-' で上書き) → 送らない
+            CorrectionSheetItem(
+                sheet_id=sheet.id,
+                action="edit",
+                before=_side(1, "11:00", STAFF_NAME),
+                after=_side(1, "11:00", "-"),
+            ),
+            # 担当が付いた新規 → これだけ送る
+            CorrectionSheetItem(
+                sheet_id=sheet.id,
+                action="add",
+                before=_empty(),
+                after=_side(2, "13:00", STAFF_NAME),
+            ),
+        ]
+    )
+    await db.commit()
+    await db.refresh(sheet)
+    return sheet
+
+
+@pytest.mark.asyncio
+async def test_apply_skips_unassigned_and_sends_the_rest(client, db, stub_kaipoke) -> None:
+    """担当なしの add/edit は送らず、担当が付いた 1 件だけカイポケへ渡す。"""
+    from app.models.kaipoke_job import KaipokeJob
+
+    admin = await _make_user(db, "unsent-na-a@example.com")
+    week_start = _future_monday()
+    sheet = await _seed_unassigned_outbound_sheet(db, admin, week_start)
+
+    stub_kaipoke.responses["apply"] = {"jobId": "job-unassigned"}
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        json={"sheetId": str(sheet.id), "dryRun": False},
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 202, res.text
+
+    apply_calls = [payload for name, payload in stub_kaipoke.calls if name == "apply"]
+    assert len(apply_calls) == 1
+    sent = apply_calls[0]["correction_data"]
+    assert len(sent) == 1
+    assert sent[0]["staff1_to"] == STAFF_NAME
+
+    job = await db.scalar(select(KaipokeJob).where(KaipokeJob.id == UUID(res.json()["jobId"])))
+    assert job is not None
+    assert job.result_summary["skipped_unassigned"] == 2
+    assert "担当なし" in job.result_summary["skipped_unassigned_reason"]
+    assert job.result_summary["correction_count"] == 1
+    # 監査カウンタは上流ガードで常に 0 になる。
+    assert job.result_summary["unassigned_staff"] == 0
+    assert job.params["skipped_unassigned"] == 2
+
+
+@pytest.mark.asyncio
+async def test_apply_rejects_when_all_items_unassigned(client, db, stub_kaipoke) -> None:
+    """選んだのが担当なしだけなら 422 で止める (RPA は呼ばない)。"""
+    admin = await _make_user(db, "unsent-na-b@example.com")
+    week_start = _future_monday()
+    sheet = await _seed_unassigned_outbound_sheet(db, admin, week_start)
+    items = (
+        await db.scalars(
+            select(CorrectionSheetItem).where(CorrectionSheetItem.sheet_id == sheet.id)
+        )
+    ).all()
+    unassigned_ids = [
+        str(it.id) for it in items if str((it.after or {}).get("staff1") or "").strip() in ("", "-")
+    ]
+    assert len(unassigned_ids) == 2
+
+    stub_kaipoke.responses["apply"] = {"jobId": "job-unassigned-all"}
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        json={"sheetId": str(sheet.id), "itemIds": unassigned_ids, "dryRun": False},
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 422, res.text
+    assert "担当なし" in res.json()["detail"]
+    assert [name for name, _ in stub_kaipoke.calls if name == "apply"] == []
+
+    # dry-run でも同じ 422 = 「試しに送る」でも RPA には触れない。
+    dry = await client.post(
+        "/api/v1/integrations/apply",
+        json={"sheetId": str(sheet.id), "itemIds": unassigned_ids, "dryRun": True},
+        headers=_bearer(admin),
+    )
+    assert dry.status_code == 422, dry.text
+    assert [name for name, _ in stub_kaipoke.calls if name == "apply"] == []
+
+
+async def _seed_unassigned_pair_sheet(db, user: User, week_start: date) -> CorrectionSheet:
+    """担当なし add + 同じ訪問を指す delete のペア (レビュー HIGH の再現)。
+
+    差分エンジンはサービス内容も突合キーに含めるため、「カイポケ=准看で担当あり /
+    らく助=担当なし ('-' → 正看)」は edit ではなく delete + add に割れる。
+    """
+    sheet = CorrectionSheet(
+        target_month=_month_of(week_start),
+        status="ready",
+        direction="outbound",
+        origin="cached",
+        week_start=week_start,
+        week_end=week_start + timedelta(days=6),
+        created_by_user_id=user.id,
+    )
+    db.add(sheet)
+    await db.flush()
+
+    day = str((week_start + timedelta(days=1)).day)
+
+    def _side(staff1: str, service: str) -> dict[str, Any]:
+        return {
+            "user_name": PATIENT_NAME,
+            "date": day,
+            "start_time": "10:00",
+            "end_time": "10:35",
+            "staff1": staff1,
+            "staff2": "",
+            "service_type": service,
+            "business_type": "医療保険",
+            "remarks": "",
+        }
+
+    blank = {k: "" for k in _side("", "")}
+    blank["user_name"] = PATIENT_NAME
+
+    db.add_all(
+        [
+            # らく助の担当なし行 (職員 None なので正看)
+            CorrectionSheetItem(
+                sheet_id=sheet.id,
+                action="add",
+                before=dict(blank),
+                after=_side("-", "精神基本療養費Ⅰ・正看"),
+            ),
+            # カイポケに入っている同じ訪問 (准看で担当あり)
+            CorrectionSheetItem(
+                sheet_id=sheet.id,
+                action="delete",
+                before=_side(STAFF_NAME, "精神基本療養費Ⅰ・准看"),
+                after=dict(blank),
+            ),
+        ]
+    )
+    await db.commit()
+    await db.refresh(sheet)
+    return sheet
+
+
+@pytest.mark.asyncio
+async def test_apply_refuses_unassigned_paired_delete_even_when_selected_alone(
+    client, db, stub_kaipoke
+) -> None:
+    """担当なし add の相方 delete だけを部分適用しても送らない。
+
+    片肺で送るとカイポケから予定が丸ごと消えて作り直されない (レビュー HIGH)。
+    """
+    admin = await _make_user(db, "unsent-na-pair-a@example.com")
+    week_start = _future_monday()
+    sheet = await _seed_unassigned_pair_sheet(db, admin, week_start)
+    items = (
+        await db.scalars(
+            select(CorrectionSheetItem).where(CorrectionSheetItem.sheet_id == sheet.id)
+        )
+    ).all()
+    delete_id = next(str(it.id) for it in items if it.action == "delete")
+
+    stub_kaipoke.responses["apply"] = {"jobId": "job-na-pair"}
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        json={"sheetId": str(sheet.id), "itemIds": [delete_id], "dryRun": False},
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 422, res.text
+    assert [name for name, _ in stub_kaipoke.calls if name == "apply"] == []
+
+
+@pytest.mark.asyncio
+async def test_apply_all_skips_the_whole_unassigned_pair(client, db, stub_kaipoke) -> None:
+    """全件送信でもペアごと外す (delete だけがカイポケへ渡らない)。"""
+    admin = await _make_user(db, "unsent-na-pair-b@example.com")
+    week_start = _future_monday()
+    sheet = await _seed_unassigned_pair_sheet(db, admin, week_start)
+
+    stub_kaipoke.responses["apply"] = {"jobId": "job-na-pair-all"}
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        json={"sheetId": str(sheet.id), "dryRun": False},
+        headers=_bearer(admin),
+    )
+    # 送るものが残らない = 422。カイポケには一切触れない。
+    assert res.status_code == 422, res.text
+    assert "担当なし" in res.json()["detail"]
+    assert [name for name, _ in stub_kaipoke.calls if name == "apply"] == []
+
+
+@pytest.mark.asyncio
+async def test_unsent_summary_flags_unassigned_visit(client, db, stub_kaipoke) -> None:
+    """担当なしの訪問は unassigned=True・sendable から外れる。"""
+    admin = await _make_user(db, "unsent-na-c@example.com")
+    seeded = await _seed_master(db)
+    week_start = _future_monday()
+    db.add(
+        Visit(
+            patient_id=seeded["patient"].id,
+            visit_date=week_start,
+            start_time=time(10, 0),
+            end_time=time(10, 35),
+            type="regular",
+            status="planned",
+            source="auto",
+            required_staff_count=1,
+            primary_staff_id=None,
+        )
+    )
+    await db.commit()
+    await _save_empty_snapshot(db, week_start)
+
+    res = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(body["items"]) == 1
+    assert body["items"][0]["after"]["staff1"] == "-"
+    assert body["items"][0]["unassigned"] is True
+    assert body["unassigned_count"] == 1
+    assert body["sendable_count"] == 0
+
+
+async def _add_unassigned_visit(db, seeded, d: date, start: time = time(10, 0)) -> None:
+    """担当なしの訪問 (らく助のプール行)。差分では staff1='-' の add になる。"""
+    db.add(
+        Visit(
+            patient_id=seeded["patient"].id,
+            visit_date=d,
+            start_time=start,
+            end_time=time(start.hour, 35),
+            type="regular",
+            status="planned",
+            source="auto",
+            required_staff_count=1,
+            primary_staff_id=None,
+        )
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_unsent_summary_notifies_admin_once_per_week_for_unassigned(
+    client, db, stub_kaipoke
+) -> None:
+    """担当なしが残っていれば admin へ 1 通。同じ週で件数も同じなら増えない。
+
+    ⇧上書き/連携ページの「全件送る」は BE が黙って外すため、通知が無いと
+    「送れる 0 件」で平穏に見えたまま予定が登録されない。
+    """
+    from app.models.notification import Notification
+
+    admin = await _make_user(db, "unsent-na-notify-a@example.com")
+    other_admin = await _make_user(db, "unsent-na-notify-a2@example.com")
+    staff_user = await _make_user(db, "unsent-na-notify-a3@example.com", role="staff")
+    seeded = await _seed_master(db)
+    week_start = _future_monday()
+    await _add_unassigned_visit(db, seeded, week_start + timedelta(days=1))
+    await _save_empty_snapshot(db, week_start)
+
+    for _ in range(2):
+        res = await client.post(
+            UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["unassigned_count"] == 1
+
+    rows = list(
+        (
+            await db.scalars(
+                select(Notification).where(Notification.reference_type == "unassigned_unsent")
+            )
+        ).all()
+    )
+    # admin 2 名ぶんだけ (同期バーを 2 回開いても増えない)。staff には出さない。
+    assert {r.user_id for r in rows} == {admin.id, other_admin.id}
+    assert staff_user.id not in {r.user_id for r in rows}
+    assert all(r.title == "担当なしでカイポケへ送れない予定が 1 件あります" for r in rows)
+    for r in rows:
+        assert "担当なしの予定が 1 件あり、カイポケへ送れません" in (r.body or "")
+        assert "先に担当を付けてください" in (r.body or "")
+    # RPA 未対応のお知らせとは別枠 (理由が違えば対処も違う)。
+    assert (
+        await db.scalars(
+            select(Notification).where(Notification.reference_type == "rpa_unsupported")
+        )
+    ).all() == []
+
+
+@pytest.mark.asyncio
+async def test_unsent_summary_updates_unassigned_notification_when_count_changes(
+    client, db, stub_kaipoke
+) -> None:
+    """件数が変わったら本文を書き換えて未読に戻す (古い数字の通知を溜めない)。"""
+    from app.models.notification import Notification
+
+    admin = await _make_user(db, "unsent-na-notify-b@example.com")
+    seeded = await _seed_master(db)
+    week_start = _future_monday()
+    await _add_unassigned_visit(db, seeded, week_start + timedelta(days=1))
+    await _save_empty_snapshot(db, week_start)
+
+    res = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    assert res.json()["unassigned_count"] == 1
+
+    row = await db.scalar(
+        select(Notification).where(Notification.reference_type == "unassigned_unsent")
+    )
+    assert row is not None
+    row.read_at = datetime.now(ZoneInfo("Asia/Tokyo"))
+    await db.commit()
+
+    await _add_unassigned_visit(db, seeded, week_start + timedelta(days=2), start=time(13, 0))
+    res = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    assert res.json()["unassigned_count"] == 2
+
+    # API は別セッションで UPDATE している。テスト側の identity map に残る
+    # 古い属性を捨ててから読み直す (expire_on_commit=False のため)。
+    db.expire_all()
+    rows = list(
+        (
+            await db.scalars(
+                select(Notification).where(Notification.reference_type == "unassigned_unsent")
+            )
+        ).all()
+    )
+    # 週ごとに 1 通のまま (件数ごとに増やさない)。
+    assert len(rows) == 1
+    assert rows[0].title == "担当なしでカイポケへ送れない予定が 2 件あります"
+    assert rows[0].read_at is None
+
+
+@pytest.mark.asyncio
+async def test_unsent_summary_does_not_notify_when_no_unassigned(client, db, stub_kaipoke) -> None:
+    """担当なしが 0 件なら通知しない。"""
+    from app.models.notification import Notification
+
+    admin = await _make_user(db, "unsent-na-notify-c@example.com")
+    seeded = await _seed_master(db)
+    week_start = _future_monday()
+    await _add_visit(db, seeded, week_start + timedelta(days=1))
+    await _save_empty_snapshot(db, week_start)
+
+    res = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    assert res.json()["unassigned_count"] == 0
+    rows = (
+        await db.scalars(
+            select(Notification).where(Notification.reference_type == "unassigned_unsent")
+        )
+    ).all()
+    assert list(rows) == []
+
+
+def test_unassigned_dedup_reference_id_is_stable_and_distinct() -> None:
+    """冪等キーは週の決定的 UUID。RPA 未対応のキーとは必ず別 (1 通に潰さない)。"""
+    from app.services.kaipoke.rpa_unsupported_notify import (
+        dedup_reference_id,
+        unassigned_dedup_reference_id,
+    )
+
+    week = date(2026, 8, 24)
+    assert unassigned_dedup_reference_id(week) == unassigned_dedup_reference_id(week)
+    assert unassigned_dedup_reference_id(week) != unassigned_dedup_reference_id(
+        week + timedelta(days=7)
+    )
+    assert unassigned_dedup_reference_id(week) != dedup_reference_id(week)

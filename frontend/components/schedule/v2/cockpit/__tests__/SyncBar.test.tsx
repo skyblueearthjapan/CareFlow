@@ -70,6 +70,7 @@ const SHEET_ID = '00000000-0000-4000-8000-00000000beef';
 const ITEM_FUTURE = '00000000-0000-4000-8000-00000000a001';
 const ITEM_PAST = '00000000-0000-4000-8000-00000000a002';
 const ITEM_RPA = '00000000-0000-4000-8000-00000000a003';
+const ITEM_NA = '00000000-0000-4000-8000-00000000a006';
 const ITEM_SVC_ADD = '00000000-0000-4000-8000-00000000a004';
 const ITEM_SVC_DELETE = '00000000-0000-4000-8000-00000000a005';
 const STAFF_MISSING = '00000000-0000-4000-8000-0000000000c3';
@@ -153,6 +154,17 @@ function rpaUnsupportedItem(id: string, dateIso: string) {
     before: _empty({ service_type: '基本療養費Ⅰ・正看' }),
     after,
     rpa_unsupported: true,
+  };
+}
+
+/** 担当が付いていない add (職員1 = '-')。BE が unassigned を立てる。 */
+function unassignedItem(id: string, dateIso: string) {
+  return {
+    ...item(id, dateIso),
+    action: 'add',
+    before: _empty(),
+    after: _filled(dateIso, { staff1: '-' }),
+    unassigned: true,
   };
 }
 
@@ -550,6 +562,62 @@ describe('SyncBar — ⇧ カイポケへ送る', () => {
     expect(within(blocked).getByTestId('sync-out-send')).toBeDisabled();
     const ok = rows.find((r) => r !== blocked)!;
     expect(within(ok).getByTestId('sync-out-send')).toBeEnabled();
+  });
+
+  it('担当なしの行は薄く出して送れない (2026-09-03 の二重登録事故)', async () => {
+    unsentMutateAsync.mockResolvedValue({
+      ...EMPTY_SUMMARY,
+      items: [item(ITEM_FUTURE, FUTURE_DAY), unassignedItem(ITEM_NA, FUTURE_DAY)],
+      sendable_count: 1,
+      unassigned_count: 1,
+    });
+    renderBar();
+    await openOutPanel();
+
+    // 「らく助から」は送れる分だけ数える
+    expect(screen.getByTestId('sync-counts')).toHaveTextContent('らく助から 1');
+    const rows = screen.getAllByTestId('sync-out-row');
+    expect(rows).toHaveLength(2);
+    const blocked = rows.find((r) => r.textContent?.includes('担当なし'))!;
+    expect(blocked).toHaveTextContent('担当が付いていない予定はカイポケへ送れません');
+    expect(within(blocked).getByTestId('sync-out-send')).toBeDisabled();
+    const ok = rows.find((r) => r !== blocked)!;
+    expect(within(ok).getByTestId('sync-out-send')).toBeEnabled();
+  });
+
+  it('「全件送る」は担当なしを外して送る (混在時)', async () => {
+    unsentMutateAsync.mockResolvedValue({
+      ...EMPTY_SUMMARY,
+      items: [item(ITEM_FUTURE, FUTURE_DAY), unassignedItem(ITEM_NA, FUTURE_DAY)],
+      sendable_count: 1,
+      unassigned_count: 1,
+    });
+    renderBar();
+    await openOutPanel();
+
+    const all = screen.getByTestId('sync-unsent-send-all');
+    expect(all).toHaveTextContent('⇧ 1件すべて送る');
+    fireEvent.click(all);
+    fireEvent.click(all);
+    await waitFor(() =>
+      expect(startApplyMutateAsync).toHaveBeenCalledWith({
+        sheetId: SHEET_ID,
+        dryRun: false,
+        itemIds: [ITEM_FUTURE],
+      }),
+    );
+  });
+
+  it('担当なししか無ければ「全件送る」も押せない', async () => {
+    unsentMutateAsync.mockResolvedValue({
+      ...EMPTY_SUMMARY,
+      items: [unassignedItem(ITEM_NA, FUTURE_DAY)],
+      sendable_count: 0,
+      unassigned_count: 1,
+    });
+    renderBar();
+    await openOutPanel();
+    expect(screen.getByTestId('sync-unsent-send-all')).toBeDisabled();
   });
 
   it('RPA 未対応しか無ければ「全件送る」も押せない', async () => {
