@@ -48,6 +48,7 @@ from app.api.v1 import (
     staff_shift_confirmations,
     staff_shifts,
     substitute_candidates,
+    sync_report,
     visit_monitor,
     visit_photos,
     visit_review,
@@ -159,6 +160,10 @@ api_router.include_router(diff.router, prefix="/diff", tags=["diff"])
 api_router.include_router(allocate.router, prefix="/allocate", tags=["allocate"])
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_router.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
+# 連携結果レポート (sync-result-report-design.md §3): read-only の派生機能なので
+# 巨大な integrations.router とは別ファイル。同じ prefix に乗せて最終パスを
+# /api/v1/integrations/kaipoke/jobs/{id}/report にする。
+api_router.include_router(sync_report.router, prefix="/integrations", tags=["integrations"])
 # Geocoding relay: POST /geocode + GET /geocoding/cache (Wave 4-C).
 api_router.include_router(geocoding.router, tags=["geocoding"])
 # W6-MIG2: /special-weeks API は廃止（special_weekly_pattern を patients に統合済）.
