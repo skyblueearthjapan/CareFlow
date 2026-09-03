@@ -4,7 +4,7 @@
 
 | 項目 | 値 |
 |---|---|
-| 本番 HEAD | `f90ee71`（2ae1809 送信ガード + f90ee71 ミラー是正・migration 無し・20:10 JST デプロイ・healthz 200/200） |
+| 本番 HEAD | 連携結果レポート一式まで（0466752/dda4f38/35e03d5 + JST 修正・migration 無し・23:2x JST デプロイ）。それ以前 = f90ee71（2ae1809 送信ガード + ミラー是正・20:10 JST） |
 | RPA (PlaywrightTest1) | `06fdcae`（auto_apply 耐性強化・VPS 反映済み・`docker restart kaipoke-api` 済み・旧版 `commands/auto_apply.py.bak-20260903`） |
 | 本番バックアップ | `/opt/carelink/backups/pre-deploy-20260903-2005.sql.gz` |
 | 修復 SQL | `repair-2026-09-03-w37-primary-mirror.sql` を **実行済み**（W37 稲毛A 9/9 の 5 訪問 primary→宇田川・残 0） |
@@ -65,6 +65,14 @@ W37 の週生成が 15:43 に 2 回走っているが、2 回目が 1 回目を�
 5. 週の重複調査では `deleted_at IS NULL` を忘れない（週生成の再実行は旧行を論理削除して残す）。
 6. **新規患者を登録した日は連携ページ 👥 マスタ突合を回す**（氏名の漢字違いは送信で「利用者が見つかりません」になり、原因が分からない）。RPA 保存の debug HTML には利用者ドロップダウン全件が入っているので、疑わしいときはそこで検索する（`scratchpad/dropdown.py` の手口）。
 7. 既存 pytest 失敗は 33 件（manager ロール廃止追随漏れ・audit middleware・Python 3.14×SQLAlchemy UUID 等）で全て改修前 HEAD と同一。`test_pfv_sub_office` は順序依存で単体では通る。FE は e2e spec 8 本＋middleware/KaipokeConsole の 4 件が既存失敗。
+
+## 5. 連携結果レポート（PO 構想 → 同日実装・本番稼働）
+正典 = `docs/plans/sync-result-report-design.md`（§0 決定・§1 章構成・§2 明細契約・§4 印刷規則・フッタ静的の理由）。PO 決定: 改修前のジョブは「明細なし版」を出す／置換取込は日単位＋スキップ理由／Phase 1＋2 を一括。
+- **コミット**: e3860ed 設計書 / 0466752 明細保存 (`kaipoke_job_items`・6 op・`report_meta`・events-outbound の op 名バグ修正・先取りクローズ/失敗時も pending→結果不明) / dda4f38 レポート API `GET /integrations/kaipoke/jobs/{id}/report?format=json|html&includeHtml&verify` + A4 HTML / 35e03d5 履歴ボタン（ジョブ履歴・ジョブ詳細・直近の取り込み・稼働状況カード）/ JST 修正 1 件。**本番デプロイ済み（23:0x〜23:2x JST）**。
+- **レビュー**: 3 レーンとも別レビュアーで承認（RPA 結果無し行を「全件成功」に見せる HIGH を是正 = 緑は success==total かつ 要対応 0 かつ 結果不明 0 のときだけ）。レビュアーの API が 500/529 を連発した区間はレーン①を私が直接確認（トランザクション・突合キー・DB 制約なし）。
+- **印刷検証**: ヘッドレス Edge で A4 PDF 化 → PyMuPDF で PNG 化して目視（合成 96 行 = 6 ページ・実ジョブ 57a70c9c = 7 ページ）。表紙 1 ページ・行の途中で切れない・見出し行の繰り返し・14 行以下の日は塊・補足は塊で末尾。**fixed フッタは Chrome で本文と重なるため不採用**（静的 2 箇所）。手口 = scratchpad の `msedge --headless=new --print-to-pdf` + `pymupdf`（`pip install --target` で一時導入）。
+- **実機確認**: 57a70c9c（失敗 22）→ 178/155/22/1・赤・明細なし版／47423f5f（成功 24）→ 25/24/0/1・黄（スキップ 1 = 麻生）。数字は手作り報告書と一致。**f6259be7（麻生 1 件）は status=running のまま → 422**: `_reconcile_latest_job` が最新ジョブしか決着させない既知の穴（8/31 教訓 5）で、RPA の結果も既に失われている。次回以降の apply は詳細版が出る（明細は送信時に保存）。
+- **残**: ① running 残骸ジョブの決着（古い push を result_unknown で閉じる掃除 or reconcile の対象拡大）→ レポートが出せるように。② Phase 3（送信直後に差分最新化を自動 1 回・通知にレポートリンク）。③ 突合レポート/実現性チェックの CSS を `report_css.py` へ寄せる（設計 §4 の共有は未着手）。
 
 ## 4. 参照
 - ジョブ結果: `kaipoke_jobs` `57a70c9c`（失敗 22 の details）・RPA ログ `/var/log/supervisor/api.log`（17:05〜18:25）・失敗時 PNG `artifacts/debug_add_failed_20260903_17*.png` / `delete_verify_ng_*`。
