@@ -80,6 +80,7 @@ from app.services.scheduling.constants import (
     MAX_PATIENTS_PER_COURSE,
     SAME_ADDRESS_TOLERANCE,
 )
+from app.services.scheduling.course_staff_mirror import mirror_course_staff_to_visits
 
 # Phase G-21: feature flag canary 切替キー.
 # OfficeFeatureFlag.feature_key が ``g21_new_algorithm`` で enabled_at IS NOT NULL の
@@ -10088,7 +10089,19 @@ async def reset_visits_to_fixed(
             if course is not None and staff_id is not None and not dry_run:
                 # course_cache により同一コースの後続 PFV も同じ担当に揃う。
                 # 無効担当 (退職残置) もここで有効なローテーション結果に修復される。
+                _old_course_staff = course.assigned_staff_id
                 course.assigned_staff_id = staff_id
+                # 2026-09-03 W37 根治: コース担当を書き換えたら、そのコースに既に
+                # ある **他患者の** visits へも担当を伝播する (courses.py PATCH と
+                # 同じ鏡)。ここを抜くと「盤面はコース担当を表示 / カイポケCSV は
+                # visits.primary_staff_id を見て '-' (担当なし)」の食い違いになり、
+                # 週次差分でカイポケ側の担当を消してしまう (稲毛A 9/9 の 5 件)。
+                await mirror_course_staff_to_visits(
+                    db,
+                    course_id=course.id,
+                    old_staff_id=_old_course_staff,
+                    new_staff_id=staff_id,
+                )
         course_code_str = course.code if course is not None else "M"
         # V2Visit 構築. lat/lng None patient は補正対象外として metadata だけ蓄積.
         if patient.lat is None or patient.lng is None:

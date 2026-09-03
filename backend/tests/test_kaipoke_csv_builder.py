@@ -9,6 +9,7 @@ from datetime import date, time
 
 import pytest
 
+from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.staff import Staff
@@ -357,3 +358,118 @@ async def test_row_service_content_visit_override_wins(db) -> None:
 
     rows = await resolve_month_rows(db, BuildOptions(year=2026, month=7))
     assert [r.service_content for r in rows] == ["基本療養費Ⅰ・准看"]
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-03 W37: 職員1 のコース担当フォールバック (安全網)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_course(db, office: Office, staff: Staff | None, *, code: str = "A") -> Course:
+    """TUE (2026-07-07 = 2026-W28 火) のコース。"""
+    c = Course(
+        iso_year=2026,
+        iso_week=28,
+        weekday=1,
+        code=code,
+        course_status=COURSE_STATUS_STAFF_ASSIGNED,
+        assigned_staff_id=staff.id if staff is not None else None,
+        office_id=office.id,
+    )
+    db.add(c)
+    await db.flush()
+    return c
+
+
+async def _seed_unassigned_visit(
+    db, patient: Patient, *, course: Course | None = None, manual_override: bool = False
+) -> Visit:
+    v = Visit(
+        patient_id=patient.id,
+        visit_date=TUE,
+        start_time=time(10, 0),
+        end_time=time(10, 35),
+        type="regular",
+        status="planned",
+        source="auto",
+        required_staff_count=1,
+        course_id=course.id if course is not None else None,
+        manual_staff_override=manual_override,
+    )
+    db.add(v)
+    await db.flush()
+    return v
+
+
+@pytest.mark.asyncio
+async def test_row_falls_back_to_course_staff_when_primary_null(db) -> None:
+    """primary_staff_id が NULL でもコース担当が居れば職員名1 はコース担当。
+
+    2026-09-03 W37 の実害 (プール一括投入がコース担当だけ書き、既存訪問の
+    primary_staff_id を NULL のまま残した → CSV が '-' で出てカイポケの担当を消した)
+    の安全網。資格 (サービス内容) もコース担当基準になる。
+    """
+    office = await _seed_office(db)
+    assistant = await _seed_staff(db, "准看花子", office, qualification="准看護師")
+    course = await _seed_course(db, office, assistant)
+    patient = await _seed_patient(db, "宙ぶらりん様", office)
+    await _seed_unassigned_visit(db, patient, course=course)
+    await db.commit()
+
+    rows = await resolve_month_rows(db, BuildOptions(year=2026, month=7, include_unassigned=True))
+    assert len(rows) == 1
+    assert rows[0].primary.name == "准看花子"
+    assert rows[0].service_content == "精神基本療養費Ⅰ・准看"
+
+
+@pytest.mark.asyncio
+async def test_row_course_fallback_skipped_on_manual_override(db) -> None:
+    """manual_staff_override=True は「この訪問だけ担当を外した」意思なのでフォールバックしない。"""
+    office = await _seed_office(db)
+    nurse = await _seed_staff(db, "看護太郎", office)
+    course = await _seed_course(db, office, nurse)
+    patient = await _seed_patient(db, "手動様", office)
+    await _seed_unassigned_visit(db, patient, course=course, manual_override=True)
+    await db.commit()
+
+    rows = await resolve_month_rows(db, BuildOptions(year=2026, month=7, include_unassigned=True))
+    assert len(rows) == 1
+    assert rows[0].primary.name == "-"
+
+
+@pytest.mark.asyncio
+async def test_row_course_fallback_skips_inactive_staff(db) -> None:
+    """コース担当が退職・削除済みならフォールバックしない ('-' のまま)。
+
+    退職者をカイポケへ押し込まないための絞り込み (JOIN staff で status='active')。
+    """
+    office = await _seed_office(db)
+    retired = await _seed_staff(db, "退職太郎", office)
+    retired.status = "inactive"
+    course = await _seed_course(db, office, retired)
+    patient = await _seed_patient(db, "退職担当様", office)
+    await _seed_unassigned_visit(db, patient, course=course)
+    await db.commit()
+
+    rows = await resolve_month_rows(db, BuildOptions(year=2026, month=7, include_unassigned=True))
+    assert len(rows) == 1
+    assert rows[0].primary.name == "-"
+
+    # include_unassigned=False なら従来どおり行ごと落ちる (カイポケは職員必須)。
+    rows_strict = await resolve_month_rows(db, BuildOptions(year=2026, month=7))
+    assert rows_strict == []
+
+
+@pytest.mark.asyncio
+async def test_row_unassigned_when_course_has_no_staff(db) -> None:
+    """コースにも担当が居なければ従来どおり '-' (include_unassigned=True)。"""
+    office = await _seed_office(db)
+    course = await _seed_course(db, office, None)
+    patient = await _seed_patient(db, "担当なし様", office, visit_category="general")
+    await _seed_unassigned_visit(db, patient, course=course)
+    await db.commit()
+
+    rows = await resolve_month_rows(db, BuildOptions(year=2026, month=7, include_unassigned=True))
+    assert len(rows) == 1
+    assert rows[0].primary.name == "-"
+    assert rows[0].service_content == "基本療養費Ⅰ・正看"

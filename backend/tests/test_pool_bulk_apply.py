@@ -28,9 +28,10 @@ from app.core.security import create_access_token, hash_password
 from app.models import Office, Patient, User
 from app.models.audit_log import AuditLog
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
+from app.models.course_template import CourseTemplate
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.schedule_op_log import ScheduleOpLog
-from app.models.staff import Staff
+from app.models.staff import Staff, StaffShift
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.services.scheduling.pool_bulk_inserter import compute_bulk_state_token
 
@@ -595,3 +596,159 @@ async def test_apply_preserves_existing_pfv_union(client, db) -> None:
     fri_pfv = next(pfv for pfv in pfvs if pfv.weekday == 4)
     assert fri_pfv.start_time == existing_start, fri_pfv.start_time
     assert fri_pfv.duration_min == existing_duration, fri_pfv.duration_min
+
+
+# ---------------------------------------------------------------------------
+# 8. コース担当 → 既存 visits へのミラー (2026-09-03 W37 根治)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_mirrors_new_course_staff_to_existing_visits(client, db) -> None:
+    """apply がコース担当を決めたら、そのコースの **既存訪問** の担当も揃う.
+
+    2026-09-03 W37 の実害: 稲毛A 9/9 へプール一括投入した際、コース担当だけが
+    書かれて既存 5 件の ``primary_staff_id`` が NULL のまま残り、カイポケ月次CSV が
+    職員名1='-' (担当なし) で送信されてカイポケ側の担当を消した.
+
+    期待:
+      * 担当なしコースに apply → ローテーションでコース担当が決まる.
+      * 同コースの既存 visit (primary NULL / manual_staff_override=False) が
+        新担当へ揃う.
+      * ``manual_staff_override=True`` の visit は自分の担当 (NULL 含む) を保つ.
+    """
+    admin = await _make_user(db, email="pba-admin8@example.com", role="admin")
+    office, staff = await _seed_office_staff(db, name="稲MIR", code="MIROFF")
+    # ローテーションの母集団 = StaffShift(is_on) がある曜日のみ.
+    db.add(StaffShift(staff_id=staff.id, weekday=0, is_on=True))
+    # PFV → Course 解決は template 経由なので、拠点に template を 1 本置く
+    # (label 先頭文字 'A' = コース code).
+    db.add(CourseTemplate(office_id=office.id, label="A"))
+
+    # 担当未割当のコース + 既存訪問 2 件 (どちらも primary NULL).
+    course = await _seed_course(db, office=office, staff=None, weekday=0, code="A")
+    anchor = await _seed_patient(
+        db, office=office, code="MIRANC", lat=NEAR[0], lng=NEAR[1], name="既存様"
+    )
+    kept = await _seed_patient(
+        db, office=office, code="MIRKEEP", lat=NEAR[0], lng=NEAR[1], name="手動様"
+    )
+    auto_visit = await _seed_visit(
+        db, patient=anchor, course=course, start=time(9, 30), end=time(10, 0)
+    )
+    manual_visit = await _seed_visit(
+        db, patient=kept, course=course, start=time(10, 30), end=time(11, 0)
+    )
+    manual_visit.manual_staff_override = True
+
+    p = await _seed_patient(
+        db, office=office, code="MIRP", lat=BASE[0], lng=BASE[1], weekly_pattern=_pool_wp()
+    )
+    await db.commit()
+
+    assert course.assigned_staff_id is None
+    assert auto_visit.primary_staff_id is None
+    course_id = course.id
+    staff_id = staff.id
+    auto_visit_id = auto_visit.id
+    manual_visit_id = manual_visit.id
+
+    token = await compute_bulk_state_token(
+        db, iso_year=ISO_YEAR, iso_week=ISO_WEEK, office_id=office.id
+    )
+    placements = [
+        _placement(p, office, weekday=0, seq=1, start_time="09:00:00", service_minutes=30)
+    ]
+    res = await client.post(
+        APPLY_URL, headers=_bearer(admin), json=_apply_payload(office, placements, token)
+    )
+    assert res.status_code == 200, res.text
+
+    db.expire_all()
+    course_after = await db.get(Course, course_id)
+    assert course_after is not None
+    assert course_after.assigned_staff_id == staff_id, "apply でコース担当が決まるはず"
+
+    auto_after = await db.get(Visit, auto_visit_id)
+    assert auto_after is not None
+    assert auto_after.primary_staff_id == staff_id, "既存訪問の担当がコース担当へ揃うこと"
+
+    manual_after = await db.get(Visit, manual_visit_id)
+    assert manual_after is not None
+    assert manual_after.primary_staff_id is None, "手動上書き訪問は触らない"
+
+
+@pytest.mark.asyncio
+async def test_apply_mirror_protects_completed_and_pinned_visits(client, db) -> None:
+    """ミラーは自動経路が作り直さない訪問 (打刻済み / 青ピン) を書き換えない.
+
+    事故シナリオ: 退職者がコース担当のまま月・火は打刻済み → 水曜にプール一括投入で
+    コース担当がローテーションで変わる → 実績付きの訪問の担当まで書き換わり、
+    カイポケ週次差分が実績行に編集を出す。``status`` と ``week_pinned`` の絞り込みで防ぐ。
+    """
+    admin = await _make_user(db, email="pba-admin9@example.com", role="admin")
+    office, staff = await _seed_office_staff(db, name="稲PRO", code="PROOFF")
+    db.add(StaffShift(staff_id=staff.id, weekday=0, is_on=True))
+    db.add(CourseTemplate(office_id=office.id, label="A"))
+
+    # 退職者 (rotation の母集団にも valid 集合にも入らない) がコース担当のまま。
+    retired = Staff(
+        name="退職看護師",
+        role="staff",
+        is_trainee=False,
+        primary_office_id=office.id,
+        status="inactive",
+    )
+    db.add(retired)
+    await db.flush()
+    course = await _seed_course(db, office=office, staff=retired, weekday=0, code="A")
+
+    done_patient = await _seed_patient(
+        db, office=office, code="PRODONE", lat=NEAR[0], lng=NEAR[1], name="打刻済様"
+    )
+    pinned_patient = await _seed_patient(
+        db, office=office, code="PROPIN", lat=NEAR[0], lng=NEAR[1], name="青ピン様"
+    )
+    done_visit = await _seed_visit(
+        db, patient=done_patient, course=course, start=time(9, 30), end=time(10, 0)
+    )
+    done_visit.status = "completed"
+    pinned_visit = await _seed_visit(
+        db, patient=pinned_patient, course=course, start=time(10, 30), end=time(11, 0)
+    )
+    pinned_visit.week_pinned = True
+
+    p = await _seed_patient(
+        db, office=office, code="PROP", lat=BASE[0], lng=BASE[1], weekly_pattern=_pool_wp()
+    )
+    await db.commit()
+
+    course_id = course.id
+    staff_id = staff.id
+    retired_id = retired.id
+    done_visit_id = done_visit.id
+    pinned_visit_id = pinned_visit.id
+
+    token = await compute_bulk_state_token(
+        db, iso_year=ISO_YEAR, iso_week=ISO_WEEK, office_id=office.id
+    )
+    placements = [
+        _placement(p, office, weekday=0, seq=1, start_time="09:00:00", service_minutes=30)
+    ]
+    res = await client.post(
+        APPLY_URL, headers=_bearer(admin), json=_apply_payload(office, placements, token)
+    )
+    assert res.status_code == 200, res.text
+
+    db.expire_all()
+    course_after = await db.get(Course, course_id)
+    assert course_after is not None
+    assert course_after.assigned_staff_id == staff_id, "退職者の担当はローテーションで修復される"
+
+    done_after = await db.get(Visit, done_visit_id)
+    assert done_after is not None
+    assert done_after.primary_staff_id == retired_id, "打刻済み訪問の担当は書き換えない"
+
+    pinned_after = await db.get(Visit, pinned_visit_id)
+    assert pinned_after is not None
+    assert pinned_after.primary_staff_id == retired_id, "青ピン訪問の担当は書き換えない"

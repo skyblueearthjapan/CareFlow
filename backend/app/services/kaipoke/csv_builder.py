@@ -264,12 +264,35 @@ async def build_month_csv(
 
 
 async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[KaipokeCsvRow]:
-    """対象月の visits を ``KaipokeCsvRow`` のリストへ解決する。"""
+    """対象月の visits を ``KaipokeCsvRow`` のリストへ解決する。
+
+    職員1 (= 職員名1・サービス内容の資格判定) の解決順:
+
+        ``visits.primary_staff_id`` → (NULL かつ ``manual_staff_override`` が False なら)
+        その訪問のコースの **在籍中の** 担当 ``courses.assigned_staff_id``
+        → それでも無ければ未割当。
+
+    コース担当へのフォールバックを入れた理由 (2026-09-03 W37 の実害):
+    プール一括投入がコース担当 (``courses.assigned_staff_id``) だけを書き、そのコースに
+    既にあった 5 件の訪問の ``primary_staff_id`` を NULL のまま残した。盤面はコース担当を
+    表示するのに、この CSV は ``primary_staff_id`` しか見ていなかったため 職員名1='-'
+    (担当なし) で出力され、週次差分がカイポケ側の担当を消した。ミラー自体は
+    ``services/scheduling/course_staff_mirror.py`` で根治済みだが、過去データや別経路の
+    取りこぼしに対する **安全網** としてここでも同じ正典 (コース担当) を見る
+    (``feasibility_check`` の担当解決と同じ規則)。
+
+    ``manual_staff_override=True`` の訪問は「この訪問だけ担当を外した/変えた」意思表示
+    なのでフォールバックしない。コース担当が退職・削除済み (``staff.status != 'active'``
+    / ``staff.deleted_at``) の場合もフォールバックしない (辞めた職員をカイポケへ押し込まない)。
+    フォールバック後も担当が無い訪問は従来どおり ``include_unassigned`` に従って
+    '-' 行にするか、除外する。
+    """
     from calendar import monthrange
 
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
 
+    from app.models.course import Course
     from app.models.office import Office
     from app.models.staff import Staff
     from app.models.visit import VISIT_STATUS_CANCELLED, Visit
@@ -310,11 +333,44 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
     # 揃っているのは同行者どうしの順序であって、slot への割り付けではない。
     accompaniment_by_visit = await resolve_accompaniment_by_visit(db, visits)
 
+    # 職員1 の安全網: primary_staff_id が NULL の訪問について、そのコースの担当
+    # (courses.assigned_staff_id = 表示の正典) を一括ロードする (N+1 禁止・docstring 参照)。
+    # **在籍中のスタッフに限る** (JOIN staff): 退職・削除済みが担当のまま残置された
+    # コースをフォールバックに使うと、辞めた職員をカイポケへ押し込むことになる。
+    # その場合は従来どおり未割当扱い ('-' or 除外) にして人手の判断に委ねる。
+    fallback_course_ids = {
+        v.course_id for v in visits if v.primary_staff_id is None and not v.manual_staff_override
+    }
+    fallback_course_ids.discard(None)
+    course_staff_by_id: dict[uuid.UUID, uuid.UUID] = {}
+    if fallback_course_ids:
+        crows = (
+            await db.execute(
+                select(Course.id, Course.assigned_staff_id)
+                .join(Staff, Staff.id == Course.assigned_staff_id)
+                .where(
+                    Course.id.in_(fallback_course_ids),
+                    Course.deleted_at.is_(None),
+                    Staff.deleted_at.is_(None),
+                    Staff.status == "active",
+                )
+            )
+        ).all()
+        course_staff_by_id = {cid: sid for cid, sid in crows if sid is not None}
+
+    def _primary_staff_id(v: Visit) -> uuid.UUID | None:
+        """職員1 の staff_id (訪問の担当 → コース担当フォールバック)。"""
+        if v.primary_staff_id is not None:
+            return v.primary_staff_id
+        if v.manual_staff_override:
+            return None
+        return course_staff_by_id.get(v.course_id) if v.course_id else None
+
     # スタッフを一括ロード (name/qualification 解決用)。同行スタッフも qualification
     # 解決のため staff_ids に含める。
     staff_ids = set()
     for v in visits:
-        for sid in (v.primary_staff_id, v.secondary_staff_id, v.mentor_staff_id):
+        for sid in (_primary_staff_id(v), v.secondary_staff_id, v.mentor_staff_id):
             if sid:
                 staff_ids.add(sid)
     for entries in accompaniment_by_visit.values():
@@ -350,7 +406,8 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
         office = office_map.get(patient.primary_office_id)
         office_name = (office.kaipoke_name or office.name) if office else ""
 
-        primary = _cell(v.primary_staff_id, companion=False)
+        primary_sid = _primary_staff_id(v)
+        primary = _cell(primary_sid, companion=False)
         if primary is None:
             if not opts.include_unassigned:
                 # 主担当未確定の訪問は転記対象外 (カイポケには職員必須)。
@@ -362,7 +419,7 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
         # 未割当 ('-') は職員 None → 患者ベース + 正看。同行 (職員2/3) は無関係。
         service_content = resolve_service_content(
             patient,
-            staff_map.get(v.primary_staff_id) if v.primary_staff_id else None,
+            staff_map.get(primary_sid) if primary_sid else None,
             v,
         )
         secondary = _cell(v.secondary_staff_id, companion=False)
@@ -383,7 +440,7 @@ async def resolve_month_rows(db: AsyncSession, opts: BuildOptions) -> list[Kaipo
         # 3名同行が運用上ほぼ無い一方で失敗させると月次CSV 全体が出せなくなるため。
         # 順序が決定的なので「誰が落ちるか」は実行のたびに変わらず再現する。
         candidates: list[StaffCell] = []
-        seen_ids = {v.primary_staff_id}
+        seen_ids = {primary_sid}
         pairs: list[tuple[uuid.UUID | None, StaffCell | None]] = [(v.secondary_staff_id, secondary)]
         pairs += [(e.staff_id, _cell(e.staff_id, companion=False)) for e in accomp_entries]
         pairs.append((v.mentor_staff_id, mentor))
