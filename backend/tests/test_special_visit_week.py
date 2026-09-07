@@ -1280,6 +1280,261 @@ async def test_place_rejects_past_date_and_allows_today(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# ⑥-c place の weekday 上書き (DnD 異曜日ドロップ = dnd-all-views 設計 §2-3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_place_with_weekday_override_moves_mark(client, db) -> None:
+    """weekday 上書き: ○ を同じ週の別曜日へ移してから配置する (単一 TX・週合計不変)."""
+    admin, office, staff, template, _patient, period, mark = await _place_mark_setup(
+        db, email="svw-place-wd@example.com", code="SVW-WD", label="A"
+    )
+    # 週を「生成済み」にしておく (未生成週の PFV 投影が混ざると週合計の比較がぶれる).
+    await _seed_course(db, office=office, staff=staff, weekday=2, template=template)
+    await db.commit()
+
+    cal_before = await client.get(
+        f"/api/v1/special-visit-periods/{period.id}/calendar", headers=_bearer(admin)
+    )
+    assert cal_before.status_code == 200, cal_before.text
+    total_before = cal_before.json()["weeks"][0]["total"]
+
+    res = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"course_template_id": str(template.id), "start_time": "14:00", "weekday": 4},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["mark"]["weekday"] == 4
+    assert body["mark"]["status"] == "placed"
+
+    # カレンダー: ○ は水曜から金曜へ移る・週合計は不変.
+    cal_after = await client.get(
+        f"/api/v1/special-visit-periods/{period.id}/calendar", headers=_bearer(admin)
+    )
+    week_after = cal_after.json()["weeks"][0]
+    assert week_after["days"][2]["extra_mark"] is None
+    assert week_after["days"][4]["extra_mark"]["status"] == "placed"
+    assert week_after["total"] == total_before
+
+    row = await db.get(SpecialVisitMark, mark.id)
+    await db.refresh(row)
+    assert row.weekday == 4
+    visit = await db.scalar(select(Visit).where(Visit.id == UUID(body["visit_id"])))
+    assert visit is not None
+    assert visit.visit_date == WEEK_MONDAY + timedelta(days=4)
+    assert visit.start_time == time(14, 0)
+
+
+@pytest.mark.asyncio
+async def test_place_weekday_override_conflict_is_409(client, db) -> None:
+    """移動先に生きた ○ がある → 409 (FE が既存 ○ へ聞き直すための構造化 detail)."""
+    admin, _office, _staff, template, patient, period, mark = await _place_mark_setup(
+        db, email="svw-place-wd-dup@example.com", code="SVW-WD-DUP", label="A"
+    )
+    existing = SpecialVisitMark(
+        period_id=period.id,
+        patient_id=patient.id,
+        iso_year=ISO_YEAR,
+        iso_week=ISO_WEEK,
+        weekday=4,
+        kind="extra",
+        status="pool",
+    )
+    db.add(existing)
+    await db.flush()
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"course_template_id": str(template.id), "start_time": "14:00", "weekday": 4},
+    )
+    assert res.status_code == 409, res.text
+    detail = res.json()["detail"]
+    assert detail["code"] == "special_mark_cell_conflict"
+    assert detail["message"] == "この曜日には既に追加枠があります"
+    assert detail["existing_mark_id"] == str(existing.id)
+    assert detail["weekday"] == 4
+
+    # ○ は動かず配置もされない (移動は配置と同一 TX).
+    row = await db.get(SpecialVisitMark, mark.id)
+    await db.refresh(row)
+    assert row.weekday == 2
+    assert row.status == "pool"
+    assert row.placed_visit_id is None
+
+
+@pytest.mark.asyncio
+async def test_place_weekday_override_rejects_displaced_mark(client, db) -> None:
+    admin, _office, _staff, template, _patient, _period, mark = await _place_mark_setup(
+        db, email="svw-place-wd-disp@example.com", code="SVW-WD-DISP", label="A"
+    )
+    mark.kind = "displaced"
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"course_template_id": str(template.id), "start_time": "14:00", "weekday": 4},
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"] == "退避枠は曜日を変えられません"
+
+    row = await db.get(SpecialVisitMark, mark.id)
+    await db.refresh(row)
+    assert row.weekday == 2
+
+
+@pytest.mark.asyncio
+async def test_place_weekday_override_out_of_period_is_422(client, db) -> None:
+    """期間範囲は create_extra_mark と同じ **週粒度** (○ の週が期間外なら 422)."""
+    admin, _office, _staff, template, _patient, period, mark = await _place_mark_setup(
+        db, email="svw-place-wd-range@example.com", code="SVW-WD-RANGE", label="A"
+    )
+    # 期間を翌週だけに縮める → ○ のある週 (ISO_WEEK) が範囲外になる.
+    period.start_date = NEXT_MONDAY
+    period.end_date = NEXT_MONDAY + timedelta(days=5)
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"course_template_id": str(template.id), "start_time": "14:00", "weekday": 4},
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"] == "指定曜日は期間の範囲外です"
+
+    row = await db.get(SpecialVisitMark, mark.id)
+    await db.refresh(row)
+    assert row.weekday == 2
+    assert row.status == "pool"
+
+    # 週粒度なので「水曜始まりの期間の月曜へ戻す」は通る (create_extra_mark と同じ).
+    period.start_date = WEEK_MONDAY + timedelta(days=2)
+    period.end_date = WEEK_MONDAY + timedelta(days=5)
+    await db.commit()
+
+    ok = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"course_template_id": str(template.id), "start_time": "14:00", "weekday": 0},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["mark"]["weekday"] == 0
+
+
+@pytest.mark.asyncio
+async def test_place_with_same_weekday_behaves_like_no_override(client, db) -> None:
+    """同じ曜日を渡しても no-op (移動判定・衝突検査を通さない)."""
+    admin, _office, _staff, template, _patient, _period, mark = await _place_mark_setup(
+        db, email="svw-place-wd-same@example.com", code="SVW-WD-SAME", label="A"
+    )
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"course_template_id": str(template.id), "start_time": "14:00", "weekday": 2},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["mark"]["weekday"] == 2
+
+    visit = await db.scalar(select(Visit).where(Visit.id == UUID(body["visit_id"])))
+    assert visit is not None
+    assert visit.visit_date == WEEK_MONDAY + timedelta(days=2)
+
+
+@pytest.mark.asyncio
+async def test_place_by_course_code_with_weekday_override(client, db) -> None:
+    """既存モード (office_id + course_code) も weekday 上書きの対象.
+
+    コース実体は「移動後の曜日」で引くため、その曜日に Course が無ければ 404。
+    """
+    admin, office, staff, template, _patient, _period, mark = await _place_mark_setup(
+        db, email="svw-place-wd-code@example.com", code="SVW-WD-CODE", label="A"
+    )
+    # 金曜 (weekday=4) にだけ A コースを置く (水曜には無い).
+    friday_course = await _seed_course(db, office=office, staff=staff, weekday=4, template=template)
+    await db.commit()
+
+    # ① 移動先 (木) に Course が無ければ 404・○ は動かない.
+    missing = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={
+            "office_id": str(office.id),
+            "course_code": "A",
+            "start_time": "13:00",
+            "weekday": 3,
+        },
+    )
+    assert missing.status_code == 404, missing.text
+    assert missing.json()["detail"] == "Course not found"
+
+    row = await db.get(SpecialVisitMark, mark.id)
+    await db.refresh(row)
+    assert row.weekday == 2
+    assert row.status == "pool"
+    await db.commit()  # 読み取り TX を閉じる.
+
+    # ② 移動先 (金) に Course があれば配置できる.
+    ok = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={
+            "office_id": str(office.id),
+            "course_code": "A",
+            "start_time": "13:00",
+            "weekday": 4,
+        },
+    )
+    assert ok.status_code == 200, ok.text
+    body = ok.json()
+    assert body["mark"]["weekday"] == 4
+    visit = await db.scalar(select(Visit).where(Visit.id == UUID(body["visit_id"])))
+    assert visit is not None
+    assert visit.course_id == friday_course.id
+    assert visit.visit_date == WEEK_MONDAY + timedelta(days=4)
+
+
+@pytest.mark.asyncio
+async def test_place_link_with_weekday_override_matches_new_date(client, db) -> None:
+    """visit_id モード: 移動後の曜日の日付にある訪問ならリンクできる."""
+    admin, office, staff, template, patient, _period, mark = await _place_mark_setup(
+        db, email="svw-place-wd-link@example.com", code="SVW-WD-LINK", label="A"
+    )
+    course = await _seed_course(db, office=office, staff=staff, weekday=3, template=template)
+    visit = await _seed_visit(
+        db,
+        patient=patient,
+        course=course,
+        visit_date=WEEK_MONDAY + timedelta(days=3),
+        start=time(16, 0),
+        source=VISIT_SOURCE_MANUAL_WEEK,
+    )
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"visit_id": str(visit.id), "weekday": 3},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["visit_id"] == str(visit.id)
+    assert body["mark"]["weekday"] == 3
+    assert body["mark"]["status"] == "placed"
+
+    row = await db.get(SpecialVisitMark, mark.id)
+    await db.refresh(row)
+    assert row.weekday == 3
+
+
+# ---------------------------------------------------------------------------
 # ⑦ プール一覧 + 自己回復
 # ---------------------------------------------------------------------------
 

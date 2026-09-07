@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, tuple_
+from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
 from app.models.course import Course
@@ -1017,6 +1018,11 @@ async def place_mark(
     ``course_id`` / (``office_id`` + ``course_code``) / ``course_template_id``
     (当該週の Course が無ければ作る = 2026-08-31 案 F-2 の担当なし M 受け皿) /
     ``visit_id`` (既存訪問へのリンク = 訪問は作らない)。
+
+    ``weekday`` (任意・0〜5) を渡すと「○ をこの週の別曜日へ移してから配置する」を
+    **同一トランザクション**で行う (DnD の異曜日ドロップ = dnd-all-views 設計 §2-3)。
+    移動は下流の配置処理と同じ commit に相乗りするため、以降の検査で弾かれれば ○ は
+    元の曜日に残る。○ の位置が変わるだけなのでカレンダーの週合計は不変。
     """
     mark = await _get_mark(db, mark_id)
     if mark.status == MARK_STATUS_CANCELLED:
@@ -1025,6 +1031,71 @@ async def place_mark(
         # 自己回復: 訪問が生きている場合のみ二重配置として弾く.
         if await _visit_is_alive(db, mark.placed_visit_id) is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="既に配置済みです")
+
+    # ---- weekday 上書き = 「○ を動かしてから置く」(単一 TX) -------------------
+    # mark_date より **前** に反映するので、過去日ガード・course の曜日一致・
+    # visit_id モードの訪問日一致まで、以降の検査はすべて新しい曜日で行われる。
+    if payload.weekday is not None and payload.weekday != mark.weekday:
+        if mark.kind == MARK_KIND_DISPLACED:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="退避枠は曜日を変えられません",
+            )
+        period = await _get_period(db, mark.period_id)
+        # 期間範囲は **週粒度** で見る (create_extra_mark と同じ `_iso_weeks_between`)。
+        # 日粒度にすると「水曜始まりの期間の月曜に立てた ○」を create では作れるのに
+        # move では戻せない、という非対称が生まれる。両者は常に同じ判定に保つこと。
+        if (mark.iso_year, mark.iso_week) not in set(
+            _iso_weeks_between(period.start_date, period.end_date)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="指定曜日は期間の範囲外です",
+            )
+        # 移動先セルに生きた ○ があれば 409 (uq_svm_extra_cell と同じ条件)。
+        # FE はこの existing_mark_id を使って「そちらを配置しますか？」と聞き直す。
+        conflict_id = await db.scalar(
+            select(SpecialVisitMark.id).where(
+                SpecialVisitMark.period_id == mark.period_id,
+                SpecialVisitMark.iso_year == mark.iso_year,
+                SpecialVisitMark.iso_week == mark.iso_week,
+                SpecialVisitMark.weekday == payload.weekday,
+                SpecialVisitMark.kind == MARK_KIND_EXTRA,
+                SpecialVisitMark.status != MARK_STATUS_CANCELLED,
+                SpecialVisitMark.id != mark.id,
+            )
+        )
+        if conflict_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "special_mark_cell_conflict",
+                    "message": "この曜日には既に追加枠があります",
+                    "existing_mark_id": str(conflict_id),
+                    "weekday": payload.weekday,
+                },
+            )
+        # 単独 commit はしない (配置と一括・失敗すれば ○ は元の曜日のまま)。
+        mark.weekday = payload.weekday
+        # ただし flush だけはここで **savepoint の外** に出す。session は
+        # autoflush=False なので、放置すると保留 UPDATE の最初の flush が
+        # `_get_or_create_course_for_template_week` の begin_nested() の中で走り、
+        # その savepoint が IntegrityError 回復で rollback されると曜日移動だけが
+        # 黙って捨てられる (訪問は新曜日・○ は旧曜日に残る) 。
+        # except は上の SELECT をすり抜けた競合 (uq_svm_extra_cell) の受け皿。
+        try:
+            await db.flush()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "special_mark_cell_conflict",
+                    "message": "この曜日には既に追加枠があります",
+                    "existing_mark_id": None,
+                    "weekday": payload.weekday,
+                },
+            ) from exc
 
     mark_date = _week_monday(mark.iso_year, mark.iso_week) + timedelta(days=mark.weekday)
 

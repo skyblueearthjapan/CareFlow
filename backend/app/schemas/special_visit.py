@@ -138,6 +138,9 @@ class PlaceRequest(BaseModel):
        訪問にマークをリンクする (訪問は新規作成しない)。
 
     ``start_time`` は 1〜3 (訪問を作る経路) で必須、4 では無視される。
+
+    ``weekday`` (任意・0〜5) を渡すと「この週の別曜日へ ○ を移してから配置」を
+    同一トランザクションで行う (設計 dnd-all-views §2-3)。週合計は不変。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -150,6 +153,8 @@ class PlaceRequest(BaseModel):
     # 既存訪問へのリンク専用モード (訪問は作らない)。
     visit_id: UUID | None = None
     start_time: str | None = None
+    # 配置と同時に ○ を同じ週の別曜日へ移す (DnD の異曜日ドロップ)。None = 移動なし。
+    weekday: int | None = Field(default=None, ge=0, le=5)
     # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
     # 既定 False = 従来どおり。違反があれば 422 (code=constraint_confirmation_required)。
     acknowledge_constraint_warnings: bool = False
