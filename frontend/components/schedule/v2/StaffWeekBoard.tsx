@@ -20,6 +20,7 @@
  */
 import * as React from 'react';
 import { addDays, format } from 'date-fns';
+import { useDroppable } from '@dnd-kit/core';
 
 import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
@@ -32,6 +33,7 @@ import { genderPalette } from '@/lib/scheduling/timeline';
 import { getStaffEventsForWeekday } from './courseGrid';
 import {
   applyCourseDragImage,
+  buildStaffWeekCellDroppableId,
   COURSE_DND_MIME,
   readCourseDragPayload,
   readVisitDragPayload,
@@ -189,6 +191,80 @@ interface CellCourse {
   templateId: string;
   label: string; // 例: "稲毛A"
   visits: TimelineVisit[];
+}
+
+interface StaffWeekDropCellProps {
+  /** staffId または `UNASSIGNED_ROW_KEY`。 */
+  rowKey: string;
+  weekday: number;
+  /** 休み網掛け。 */
+  off: boolean;
+  /** ブラウザ標準 DnD のドラッグ中 = 候補セル (淡い破線)。 */
+  dropHighlight: boolean;
+  /** ブラウザ標準 DnD で今このセルに重なっている。 */
+  dragOverHere: boolean;
+  /** ブラウザ標準 DnD (コース帯/訪問帯) を受け付けるか。 */
+  nativeDroppable: boolean;
+  onNativeDragOver?: React.DragEventHandler<HTMLTableCellElement>;
+  onNativeDragLeave?: React.DragEventHandler<HTMLTableCellElement>;
+  onNativeDrop?: React.DragEventHandler<HTMLTableCellElement>;
+  children: React.ReactNode;
+}
+
+/**
+ * 職員スケジュールの 1 セル (`docs/plans/dnd-all-views-design-2026-09-08.md` §2-1)。
+ *
+ * 2 種類の DnD が同居する:
+ *   - **ブラウザ標準 DnD** (コース帯・訪問帯の付け替え) — 従来どおり
+ *     `onDragOver`/`onDrop` で受ける。標準 drag は dnd-kit の active を作らないので
+ *     両者は衝突しない。
+ *   - **dnd-kit** (⭐/プールカードの配置) — `sw-cell:{rowKey}:{weekday}` の droppable。
+ *     盤面 (`CourseDayTablePanel`) の `DndContext` 内に置かれているときだけ実際に
+ *     drop が起きる (外側では isOver が立たない = 無害)。
+ */
+function StaffWeekDropCell({
+  rowKey,
+  weekday,
+  off,
+  dropHighlight,
+  dragOverHere,
+  nativeDroppable,
+  onNativeDragOver,
+  onNativeDragLeave,
+  onNativeDrop,
+  children,
+}: StaffWeekDropCellProps) {
+  const { isOver, setNodeRef } = useDroppable({
+    id: buildStaffWeekCellDroppableId(rowKey, weekday),
+    data: { rowKey, weekday },
+  });
+  // 重なり中の強調は標準 DnD と dnd-kit で同じ意匠にする (どちらで掴んでも同じ見え方)。
+  const highlightStrong = dragOverHere || isOver;
+  return (
+    <td
+      ref={setNodeRef}
+      className={[
+        'group/cell border-r border-border-subtle px-2 py-1.5 transition-colors',
+        off ? 'bg-amber-50' : '',
+        // 候補セル (同じ曜日の列) は淡い破線、重なり中は強く光らせる。
+        dropHighlight && !highlightStrong
+          ? 'bg-brand-primary/5 outline-dashed outline-1 -outline-offset-2 outline-brand-primary/40'
+          : '',
+        highlightStrong
+          ? 'bg-brand-primary/15 outline outline-2 -outline-offset-2 outline-brand-primary'
+          : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      data-testid={`staff-week-cell-${rowKey}-${weekday}`}
+      data-dnd-over={isOver ? 'true' : 'false'}
+      onDragOver={nativeDroppable ? onNativeDragOver : undefined}
+      onDragLeave={nativeDroppable ? onNativeDragLeave : undefined}
+      onDrop={nativeDroppable ? onNativeDrop : undefined}
+    >
+      {children}
+    </td>
+  );
 }
 
 export function StaffWeekBoard({
@@ -446,23 +522,15 @@ export function StaffWeekBoard({
                   const cellKey = `${rowKey}:${wd}`;
                   const dragOverHere = dropHighlight && dragOverCell === cellKey;
                   return (
-                    <td
+                    <StaffWeekDropCell
                       key={wd}
-                      className={[
-                        'group/cell border-r border-border-subtle px-2 py-1.5 transition-colors',
-                        off ? 'bg-amber-50' : '',
-                        // 候補セル (同じ曜日の列) は淡い破線、重なり中は強く光らせる。
-                        dropHighlight && !dragOverHere
-                          ? 'bg-brand-primary/5 outline-dashed outline-1 -outline-offset-2 outline-brand-primary/40'
-                          : '',
-                        dragOverHere
-                          ? 'bg-brand-primary/15 outline outline-2 -outline-offset-2 outline-brand-primary'
-                          : '',
-                      ]
-                        .filter(Boolean)
-                        .join(' ')}
-                      data-testid={`staff-week-cell-${rowKey}-${wd}`}
-                      onDragOver={
+                      rowKey={rowKey}
+                      weekday={wd}
+                      off={!!off}
+                      dropHighlight={dropHighlight}
+                      dragOverHere={dragOverHere}
+                      nativeDroppable={droppable}
+                      onNativeDragOver={
                         droppable
                           ? (e) => {
                               if (
@@ -476,14 +544,14 @@ export function StaffWeekBoard({
                             }
                           : undefined
                       }
-                      onDragLeave={
+                      onNativeDragLeave={
                         droppable
                           ? () => {
                               setDragOverCell((cur) => (cur === cellKey ? null : cur));
                             }
                           : undefined
                       }
-                      onDrop={
+                      onNativeDrop={
                         droppable
                           ? (e) => {
                               setDragOverCell(null);
@@ -1002,7 +1070,7 @@ export function StaffWeekBoard({
                           </div>
                         ) : null}
                       </div>
-                    </td>
+                    </StaffWeekDropCell>
                   );
                 })}
               </tr>

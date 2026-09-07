@@ -28,9 +28,12 @@
  * 2026-09-08 (PO 指摘「⭐ だけドラッグできない」・
  * `docs/plans/special-ticket-dnd-design-2026-09-08.md`):
  *   カードを `SpecialTicketCard` に切り出して dnd-kit の `useDraggable` を付けた。
- *   掴めるのは**表示中の曜日タブと同じ曜日**のチケットだけ (BE の place は
- *   mark.weekday でコースを解決するため、別曜日タブに落とすと画面と違う日に入る)。
  *   クリック (= 従来のポップアップ) との判別は `PatientCard` と同じ 6px 判定。
+ *
+ * 2026-09-08 後段 (`docs/plans/dnd-all-views-design-2026-09-08.md` §2-4): PO 指示
+ *   「どこでも掴める / 置く瞬間に案内」に従い、初版の曜日ゲート (表示中の曜日タブと
+ *   同じチケットしか掴めない) を撤去した。掴めないのは閲覧専用のときだけで、
+ *   曜日が違う場所へ落としたときは盤面の「配置の確認」モーダルが問い直す。
  */
 import * as React from 'react';
 import { useDraggable } from '@dnd-kit/core';
@@ -45,25 +48,18 @@ import { genderPalette } from '@/lib/scheduling/timeline';
 import type { SpecialPoolTicket } from '@/lib/schemas/specialVisitWeek';
 import { cn } from '@/lib/utils';
 
-import { buildSpecialTicketDraggableId, parseSpecialTicketDraggableId } from './courseDnd';
+import {
+  buildSpecialTicketDraggableId,
+  parseSpecialTicketDraggableId,
+  specialTicketWeekdayLabel,
+} from './courseDnd';
 import { PatientScheduleDetailDialog } from './PatientScheduleDetailDialog';
 import type { PoolCandidateSpecialTicket } from './PoolCandidateList';
 import { SpecialVisitWeekDialog } from './SpecialVisitWeekDialog';
 
-// id helper は courseDnd.ts が単一ソース。⭐ を扱う呼び出し元 (盤面) が
+// id helper / 曜日ラベルは courseDnd.ts が単一ソース。⭐ を扱う呼び出し元 (盤面) が
 // 「チケットのことは SpecialTicketPlacePanel から」で済むよう re-export する。
-export { buildSpecialTicketDraggableId, parseSpecialTicketDraggableId };
-
-/** 0=月..5=土 (日曜は対象外だが 7 要素持つ)。 */
-const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
-
-/**
- * ⭐チケットの曜日ラベル (0=月..6=日)。盤面の 6 要素 (月〜土) と違い日曜まで持ち、
- * 範囲外は '?' に落とす (トーストやカードから曜日が消えないようにする単一ソース)。
- */
-export function specialTicketWeekdayLabel(weekday: number): string {
-  return WEEKDAY_LABELS[weekday] ?? '?';
-}
+export { buildSpecialTicketDraggableId, parseSpecialTicketDraggableId, specialTicketWeekdayLabel };
 
 /** チケット → PoolCandidateList の特別モード指定. */
 function toSpecialTicketMode(t: SpecialPoolTicket): PoolCandidateSpecialTicket {
@@ -89,7 +85,7 @@ export interface SpecialTicketCardProps {
    */
   onCardClick?: () => void;
   /**
-   * ドラッグ禁止 (他曜日タブ表示中 / 閲覧専用)。クリック導線は残す。
+   * ドラッグ禁止 (閲覧専用)。クリック導線は残す。
    */
   dragDisabled?: boolean;
   /** `dragDisabled` のときに出す説明 (title 属性)。 */
@@ -168,7 +164,7 @@ export function SpecialTicketCard({
         ghost
           ? 'h-full w-full cursor-grabbing shadow-[var(--shadow-md)]'
           : dragDisabled
-            ? // 他曜日タブ: 掴めないことを控えめに示す (クリックは効く)。
+            ? // 閲覧専用: 掴めないことを控えめに示す (クリックは効く)。
               'cursor-pointer opacity-70'
             : 'cursor-grab active:cursor-grabbing',
       )}
@@ -256,13 +252,6 @@ export interface SpecialVisitPoolSectionProps {
   officeId: string | null;
   /** 配置ボタンを出すか (RBAC; admin/manager のみ)。 */
   canEdit: boolean;
-  /**
-   * 盤面で表示中の曜日タブ (0=月..5=土)。DnD 可否の判定に使う:
-   * BE の place は `mark.weekday` でコースを解決するため、表示中の曜日と違う
-   * チケットを掴めてしまうと画面と違う日に入る (設計 §1「曜日の罠」)。
-   * null = 曜日タブが無い文脈 (= 全チケット ドラッグ不可)。
-   */
-  activeWeekday: number | null;
 }
 
 export function SpecialVisitPoolSection({
@@ -270,7 +259,6 @@ export function SpecialVisitPoolSection({
   isoWeek,
   officeId,
   canEdit,
-  activeWeekday,
 }: SpecialVisitPoolSectionProps) {
   const poolQuery = useSpecialVisitPool(isoYear, isoWeek, officeId);
   const tickets = poolQuery.data ?? [];
@@ -296,17 +284,11 @@ export function SpecialVisitPoolSection({
       </div>
       <ul className="space-y-1">
         {tickets.map((t) => {
-          // 掴めるのは「表示中の曜日タブ = チケットの曜日」かつ編集権限ありのときだけ
-          // (設計 §2)。他曜日は掴めない代わりに、どのタブへ行けばよいかを title で示す。
-          const wd = specialTicketWeekdayLabel(t.mark.weekday);
-          const dragDisabled = !canEdit || activeWeekday !== t.mark.weekday;
-          // 曜日タブ (日タイムライン) を開いていないときは「どこに落とすか」が
-          // 画面に無いので、切替先ではなく開き方を案内する。
-          const disabledTitle = !canEdit
-            ? undefined
-            : activeWeekday === null
-              ? '曜日タブ（日タイムライン）を開くと配置できます'
-              : `${wd}曜のカードです。${wd}曜タブに切り替えてください`;
+          // 2026-09-08 (`dnd-all-views-design-2026-09-08.md` §2-4): 曜日ゲートを撤去。
+          // どの曜日のチケットでもどのビューへでも掴んで運べる。曜日が違う場所へ
+          // 落としたときは盤面が「配置の確認」モーダルで問い直す (唯一の砦)。
+          const dragDisabled = !canEdit;
+          const disabledTitle = dragDisabled ? '編集権限がありません' : undefined;
           return (
             <li
               key={t.mark.id}

@@ -172,7 +172,18 @@ import {
 import { CourseWeekOverview, type WeekOverviewVisit } from './CourseWeekOverview';
 import { StaffWeekBoard } from './StaffWeekBoard';
 import { compareByStaffCode } from '@/lib/kana-sort';
-import { UNASSIGNED_ROW_KEY, type BoardDragState } from './courseDnd';
+import {
+  resolveDropTarget,
+  UNASSIGNED_ROW_KEY,
+  type BoardDragState,
+  type ResolvedDropTarget,
+} from './courseDnd';
+import {
+  PlacementConfirmDialog,
+  PlacementConflictConfirmDialog,
+  type PlacementConfirmDialogProps,
+  type PlacementCourseOption,
+} from './PlacementConfirmDialog';
 // ─── 週空間 Phase E「今週の運転席」(docs/plans/week-cockpit-design.md §3) ───
 // 部品は FE-A/FE-B が作成済み。ここ (FE-C) は結線だけを行う。
 import { SyncBar } from './cockpit/SyncBar';
@@ -265,7 +276,11 @@ import {
   parseSpecialTicketDraggableId,
   specialTicketWeekdayLabel,
 } from './SpecialTicketPlacePanel';
-import { useSpecialVisitPool, usePlaceSpecialMark } from '@/lib/queries/specialVisitWeek';
+import {
+  useSpecialVisitPool,
+  usePlaceSpecialMark,
+  SPECIAL_VISIT_KEY,
+} from '@/lib/queries/specialVisitWeek';
 import type { SpecialPoolTicket } from '@/lib/schemas/specialVisitWeek';
 import type { Movability, SlotIndex } from '@/lib/schemas/v2/patient_fixed_visit';
 // Phase G-44: 「希望訪問パターン」 vs 「実 visit 数」 の共通 utility.
@@ -373,6 +388,28 @@ function formatErr(err: unknown): string {
   if (err instanceof ApiError) return `${err.status} ${err.message}`;
   if (err instanceof Error) return err.message;
   return '不明なエラー';
+}
+
+/**
+ * ⭐ の曜日移動が衝突したときの 409 を読む
+ * (`dnd-all-views-design-2026-09-08.md` §2-3)。BE の body:
+ *   `{"detail": {"code": "special_mark_cell_conflict", "existing_mark_id": "..", ..}}`
+ * `existing_mark_id` は競合の取りこぼし対策で **null のことがある** (BE 明示)。
+ * その場合は「そちらを配置しますか？」を出せないので、呼び出し側が最新化を促す。
+ * それ以外のエラーは null (= 通常のエラー処理へ)。
+ */
+function parseSpecialMarkCellConflict(err: unknown): { existingMarkId: string | null } | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  const body = err.body;
+  if (typeof body !== 'object' || body === null) return null;
+  const detail = (body as { detail?: unknown }).detail;
+  if (typeof detail !== 'object' || detail === null) return null;
+  const d = detail as { code?: unknown; existing_mark_id?: unknown };
+  if (d.code !== 'special_mark_cell_conflict') return null;
+  return {
+    existingMarkId:
+      typeof d.existing_mark_id === 'string' && d.existing_mark_id ? d.existing_mark_id : null,
+  };
 }
 
 /** Wave 39: 通算分 (= H*60+M) → "HH:MM". 範囲外チェックはしない (clamp は呼出側). */
@@ -2042,6 +2079,237 @@ export function CourseDayTablePanel({
     setTimeout(() => setPartnerDialogState(null), 200);
   };
 
+  // ─── 2026-09-08: 「配置の確認」モーダル (dnd-all-views §2-2) ──────────────
+  // 時間軸のないビュー (職員スケジュール) へ落としたとき / ⭐ を別曜日へ落としたときに
+  // 開く。曜日ゲートを外した以上ここが唯一の砦なので、閉じたら place は飛ばさない。
+  const [placementConfirm, setPlacementConfirm] = useState<
+    | ({
+        open: boolean;
+        /** ⭐ の元チケット (プールカードなら null)。 */
+        ticket: SpecialPoolTicket | null;
+        patientId: string;
+        durationMin: number;
+      } & Pick<PlacementConfirmDialogProps, 'subject' | 'target' | 'defaultStart'>)
+    | null
+  >(null);
+
+  /**
+   * ⭐ の曜日移動が 409 で衝突したときの二段目の確認 (§2-3)。
+   * 「そちらを配置しますか？」は Radix ダイアログで出す (window.confirm は使わない)。
+   */
+  const [placementConflict, setPlacementConflict] = useState<{
+    open: boolean;
+    weekdayLabel: string;
+    existingMarkId: string;
+    ticket: SpecialPoolTicket;
+    courseTemplateId: string;
+    startTime: string;
+  } | null>(null);
+
+  // モーダルの完全クリアは閉じるアニメーション後 (200ms)。連打・週切替で
+  // タイマーが積もらないよう ref で 1 本だけ持ち、次を張る前に必ず捨てる。
+  const placementConfirmCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (placementConfirmCloseTimer.current !== null) {
+        clearTimeout(placementConfirmCloseTimer.current);
+      }
+    },
+    [],
+  );
+
+  const closePlacementConfirm = () => {
+    setPlacementConfirm((prev) => (prev ? { ...prev, open: false } : null));
+    if (placementConfirmCloseTimer.current !== null) {
+      clearTimeout(placementConfirmCloseTimer.current);
+    }
+    placementConfirmCloseTimer.current = setTimeout(() => {
+      placementConfirmCloseTimer.current = null;
+      setPlacementConfirm(null);
+    }, 200);
+  };
+
+  /**
+   * ドロップ先 (曜日 × 行スタッフ) で選べるコース候補 (設計 §2-2)。
+   *   - 列から確定しているビュー → その 1 件のみ (表示だけ)。
+   *   - 職員スケジュール → staffId × weekday の担当コースを逆引き。
+   *   - 0 件 (担当なし行 / その曜日にコースが無い職員) → その拠点の M を受け皿に。
+   * 拠点跨ぎは候補から除外する (患者の主担当拠点、無ければ表示中の拠点で絞る)。
+   * 「別拠点だったから外した」ときは `crossOfficeExcluded` で理由を返す
+   * (黙って M に落とすと「なぜ M なのか」が読めない)。
+   */
+  const buildPlacementCourseOptions = (
+    target: ResolvedDropTarget,
+    primaryOfficeId: string | null,
+  ): { options: PlacementCourseOption[]; crossOfficeExcluded: boolean } => {
+    const officeName = (oid: string) => offices.find((o) => o.id === oid)?.name ?? '';
+    const toOption = (t: CourseTemplateRead, label?: string): PlacementCourseOption => ({
+      templateId: t.id,
+      label: label ?? t.label,
+      officeName: officeName(t.office_id),
+    });
+    if (target.courseTemplateId) {
+      const tpl = templates.find((t) => t.id === target.courseTemplateId);
+      return { options: tpl ? [toOption(tpl)] : [], crossOfficeExcluded: false };
+    }
+    const staffOfficeId = target.staffId
+      ? (staffMap.get(target.staffId)?.primary_office_id ?? null)
+      : null;
+    const officeFilter = primaryOfficeId ?? officeId ?? null;
+    const inOffice = (t: CourseTemplateRead) =>
+      officeFilter == null || t.office_id === officeFilter;
+    let crossOfficeExcluded = false;
+    if (target.staffId) {
+      const all = templates.filter(
+        (t) => assignedStaffByTemplateWeekday.get(`${t.id}:${target.weekday}`) === target.staffId,
+      );
+      const mine = all.filter(inOffice);
+      if (mine.length > 0) {
+        return { options: mine.map((t) => toOption(t)), crossOfficeExcluded: false };
+      }
+      // その曜日のコースはあるが、患者/表示中の拠点と違うので候補にできない。
+      crossOfficeExcluded = all.length > 0;
+    }
+    // M (受け皿) は 患者の主担当拠点 → 落とした職員の拠点 → 表示中の拠点 の順に探す。
+    const isM = (t: CourseTemplateRead) => (t.label || '').trim().toUpperCase() === 'M';
+    const mTpl =
+      [primaryOfficeId, staffOfficeId, officeId]
+        .filter((oid): oid is string => !!oid)
+        .map((oid) => templates.find((t) => t.office_id === oid && isM(t)))
+        .find((t) => t != null) ?? templates.find(isM);
+    return {
+      options: mTpl ? [toOption(mTpl, `${mTpl.label}（担当なし枠）`)] : [],
+      crossOfficeExcluded,
+    };
+  };
+
+  /** 患者の希望開始 ("HH:MM")。未登録なら null。 */
+  const preferredStartOf = (patientId: string): string | null => {
+    const p = patientById.get(patientId);
+    const wp = (p?.weekly_pattern ?? null) as { preferred_start?: string | null } | null;
+    return wp?.preferred_start ?? null;
+  };
+
+  /** ⭐ / プールカードのドロップを「配置の確認」モーダルに載せる。 */
+  function openPlacementConfirm(
+    args:
+      | { kind: 'special'; ticket: SpecialPoolTicket; target: ResolvedDropTarget }
+      | { kind: 'pool'; patientId: string; target: ResolvedDropTarget },
+  ) {
+    const target = args.target;
+    const staffName = target.staffId ? (staffMap.get(target.staffId)?.name ?? null) : null;
+    const isSpecial = args.kind === 'special';
+    const patient = isSpecial ? null : patientById.get(args.patientId);
+    const primaryOfficeId = isSpecial
+      ? (args.ticket.patient.primary_office_id ?? null)
+      : ((patient as { primary_office_id?: string | null } | undefined)?.primary_office_id ?? null);
+    const { options, crossOfficeExcluded } = buildPlacementCourseOptions(target, primaryOfficeId);
+    const wp = isSpecial
+      ? null
+      : ((patient?.weekly_pattern ?? null) as { service_minutes?: number } | null);
+    const durationMin = isSpecial
+      ? Math.max(1, Number(args.ticket.service_minutes ?? 60))
+      : Math.max(1, Number(wp?.service_minutes ?? 60));
+    const patientId = isSpecial ? args.ticket.patient.id : args.patientId;
+    setPlacementConfirm({
+      open: true,
+      ticket: isSpecial ? args.ticket : null,
+      patientId,
+      durationMin,
+      subject: isSpecial
+        ? {
+            kind: 'special',
+            patientName: args.ticket.patient.name,
+            patientId,
+            markId: args.ticket.mark.id,
+            ticketWeekday: args.ticket.mark.weekday,
+            serviceMinutes: durationMin,
+            requiresMultipleStaff: args.ticket.patient.requires_multiple_staff === true,
+          }
+        : {
+            kind: 'pool',
+            patientName: patient?.name ?? patientId,
+            patientId,
+            serviceMinutes: durationMin,
+            requiresMultipleStaff:
+              (patient as { requires_multiple_staff?: boolean | null } | undefined)
+                ?.requires_multiple_staff === true,
+          },
+      target: {
+        weekday: target.weekday,
+        staffName,
+        courseOptions: options,
+        defaultTemplateId:
+          target.courseTemplateId ?? (options.length === 1 ? options[0]!.templateId : null),
+        crossOfficeExcluded,
+      },
+      defaultStart: {
+        lastPlacement: isSpecial ? (args.ticket.last_placement?.start_time ?? null) : null,
+        preferred: preferredStartOf(patientId),
+      },
+    });
+  }
+
+  /** 「配置する」= モーダルで決めたコース/時刻で実際に配置する。 */
+  async function handlePlacementConfirm(args: { courseTemplateId: string; startHM: string }) {
+    const st = placementConfirm;
+    if (!st) return;
+    // 営業時間ガードはタイムラインと同じ規則で盤面が単一ソース (モーダル経由でも
+    // 枠からはみ出す組み合わせは通さない)。**モーダルは開いたまま**にして選び直させる。
+    const startMin = toMinutes(args.startHM);
+    if (
+      startMin == null ||
+      startMin < TL_DAY_START_MIN ||
+      startMin + st.durationMin > TL_DAY_END_MIN
+    ) {
+      toast.warning('この位置には置けません（9:00〜18:00 の範囲に収まるように配置してください）');
+      return;
+    }
+    closePlacementConfirm();
+    const weekday = st.target.weekday;
+    if (st.ticket) {
+      await applySpecialTicketDrop(st.ticket, args.courseTemplateId, args.startHM, { weekday });
+      return;
+    }
+    const cell: DropCell = {
+      weekday,
+      courseTemplateId: args.courseTemplateId,
+      time: args.startHM,
+    };
+    if (st.subject.requiresMultipleStaff) {
+      // 2 名体制のプール患者はタイムラインと同じ相方コース選択へ渡す。
+      const primaryTemplate = templates.find((t) => t.id === cell.courseTemplateId);
+      if (!primaryTemplate) {
+        toast.error('drop 先のコーステンプレートが見つかりません');
+        return;
+      }
+      const candidates = templates.filter(
+        (t) =>
+          t.id !== primaryTemplate.id &&
+          t.office_id === primaryTemplate.office_id &&
+          effectiveCapacity(
+            t,
+            cell.weekday,
+            staffCountFor(primaryTemplate.office_id, cell.weekday),
+            courseCodesMax,
+          ) > 0,
+      );
+      setPartnerDialogState({
+        open: true,
+        patientId: st.patientId,
+        primaryTemplate,
+        candidateTemplates: candidates,
+        primaryOfficeName: offices.find((o) => o.id === primaryTemplate.office_id)?.name ?? '',
+        weekday: cell.weekday,
+        time: cell.time,
+        durationMin: st.durationMin,
+        contextLabel: `${specialTicketWeekdayLabel(cell.weekday)} ${cell.time}`,
+      });
+      return;
+    }
+    await applyPoolDrop(st.patientId, cell, st.durationMin);
+  }
+
   const handleDragStart = (e: DragStartEvent) => {
     // 盤面操作を始めたら一時展開した「ツール」は畳む (2026-08-23)。
     setCompactToolsOpen(false);
@@ -2379,29 +2647,6 @@ export function CourseDayTablePanel({
       }
       // プール本体へ戻すのは noop (掴んだ場所に戻しただけ)。
       if (isPoolDrop) return;
-      // 盤面の WEEKDAY_LABELS は月〜土の 6 要素なので、日曜/範囲外で文言から曜日が
-      // 消えないようチケット用の 7 要素ヘルパーを使う。
-      const wdLabel = specialTicketWeekdayLabel(ticket.mark.weekday);
-      // 曜日の罠 (設計 §1): BE の place は mark.weekday でコースを解決するため、
-      // 表示中の曜日タブと違うチケットは画面と違う日に入ってしまう。
-      if (ticket.mark.weekday !== activeWeekday) {
-        toast.warning(`${wdLabel}曜のカードは ${wdLabel}曜タブでのみ配置できます`);
-        return;
-      }
-      const colKey = parseTlColDroppableId(overId);
-      const toCol = colKey ? timelineColumns.find((c) => c.key === colKey) : undefined;
-      const translatedTop = active.rect.current.translated?.top ?? null;
-      const overTop = over.rect?.top ?? null;
-      if (!toCol || translatedTop === null || overTop === null) {
-        toast.warning('列の上で離してください（コースの列にカードを重ねると配置できます）');
-        return;
-      }
-      const startMin = snapYOffsetToMinutes(translatedTop - overTop);
-      const durationMin = Math.max(1, Number(ticket.service_minutes ?? 60));
-      if (startMin < TL_DAY_START_MIN || startMin + durationMin > TL_DAY_END_MIN) {
-        toast.warning('この位置には置けません（9:00〜18:00 の範囲に収まるように配置してください）');
-        return;
-      }
       // 2 名体制: place は 1 名分しか作らないため DnD を塞ぎ、従来の導線へ誘導する。
       if (ticket.patient.requires_multiple_staff) {
         toast.warning(
@@ -2409,7 +2654,35 @@ export function CourseDayTablePanel({
         );
         return;
       }
-      await applySpecialTicketDrop(ticket, toCol.template.id, formatHHMM(startMin));
+      // 設計 (dnd-all-views §2-1): ドロップ先を 1 つの形に解決してから分岐する。
+      const target = resolveDropTarget(
+        overId,
+        active.rect.current.translated ?? null,
+        over.rect ?? null,
+      );
+      if (!target) {
+        toast.warning('列の上で離してください（コースの列にカードを重ねると配置できます）');
+        return;
+      }
+      const durationMin = Math.max(1, Number(ticket.service_minutes ?? 60));
+      // 時間軸のある列 × チケットと同じ曜日 = 迷いようがないので従来どおり即配置。
+      if (
+        target.time !== null &&
+        target.courseTemplateId &&
+        target.weekday === ticket.mark.weekday
+      ) {
+        const startMin = toMinutes(target.time) ?? 0;
+        if (startMin < TL_DAY_START_MIN || startMin + durationMin > TL_DAY_END_MIN) {
+          toast.warning(
+            'この位置には置けません（9:00〜18:00 の範囲に収まるように配置してください）',
+          );
+          return;
+        }
+        await applySpecialTicketDrop(ticket, target.courseTemplateId, target.time);
+        return;
+      }
+      // 時刻が決まらない (職員スケジュール) / 曜日が違う → 「配置の確認」モーダル (§2-2)。
+      openPlacementConfirm({ kind: 'special', ticket, target });
       return;
     }
 
@@ -2422,29 +2695,27 @@ export function CourseDayTablePanel({
     // スナップ位置から仮想セル {weekday, courseTemplateId, time} を合成して下の分岐へ流す。
     // これで 2名体制=相方コース選択ダイアログ / 通常=この週だけ place-and-fix +
     // 昇格トースト + undo、が旧テーブルと同一挙動になる。
+    // 2026-09-08: 列 (時刻あり) と職員スケジュールのセル (時刻なし) を共通リゾルバで
+    // 解決する。時刻が決まらないドロップは下の「配置の確認」モーダルへ回す (§2-2)。
     let poolCell: DropCell | null = null;
-    if (patientId) {
-      const colKey = parseTlColDroppableId(overId);
-      const toCol = colKey ? timelineColumns.find((c) => c.key === colKey) : undefined;
-      const translatedTop = active.rect.current.translated?.top ?? null;
-      const overTop = over.rect?.top ?? null;
-      if (toCol && translatedTop !== null && overTop !== null) {
-        const startMin = snapYOffsetToMinutes(translatedTop - overTop);
-        const patient = patientById.get(patientId);
-        const wp = (patient?.weekly_pattern ?? null) as { service_minutes?: number } | null;
-        const durationMin = Math.max(1, Number(wp?.service_minutes ?? 60));
-        if (startMin < TL_DAY_START_MIN || startMin + durationMin > TL_DAY_END_MIN) {
-          toast.warning(
-            'この位置には置けません（9:00〜18:00 の範囲に収まるように配置してください）',
-          );
-          return;
-        }
-        poolCell = {
-          weekday: activeWeekday,
-          courseTemplateId: toCol.template.id,
-          time: formatHHMM(startMin),
-        };
+    const poolTarget =
+      patientId && !isPoolDrop
+        ? resolveDropTarget(overId, active.rect.current.translated ?? null, over.rect ?? null)
+        : null;
+    if (patientId && poolTarget && poolTarget.time !== null && poolTarget.courseTemplateId) {
+      const startMin = toMinutes(poolTarget.time) ?? 0;
+      const patient = patientById.get(patientId);
+      const wp = (patient?.weekly_pattern ?? null) as { service_minutes?: number } | null;
+      const durationMin = Math.max(1, Number(wp?.service_minutes ?? 60));
+      if (startMin < TL_DAY_START_MIN || startMin + durationMin > TL_DAY_END_MIN) {
+        toast.warning('この位置には置けません（9:00〜18:00 の範囲に収まるように配置してください）');
+        return;
       }
+      poolCell = {
+        weekday: poolTarget.weekday,
+        courseTemplateId: poolTarget.courseTemplateId,
+        time: poolTarget.time,
+      };
     }
 
     if (patientId && poolCell) {
@@ -2495,6 +2766,13 @@ export function CourseDayTablePanel({
       // 通常患者 (1 名体制): Wave U-2 D-2 既定B = この週だけ配置 (fix_pattern=false)。
       // 型は変えず source=manual_week で今週のみ置く。トーストで昇格導線を出す。
       await applyPoolDrop(patientId, cell, durationMin);
+      return;
+    }
+
+    // 時間軸のないビュー (職員スケジュールのセル) → 「配置の確認」モーダルで
+    // コースと開始時刻を決めてから配置する (§2-2)。
+    if (patientId && poolTarget && !poolCell) {
+      openPlacementConfirm({ kind: 'pool', patientId, target: poolTarget });
       return;
     }
 
@@ -2562,8 +2840,99 @@ export function CourseDayTablePanel({
    *   - place は op-log を書かないので undo も約束しない (取消はカレンダーの●メニュー)。
    *   - invalidate は mutation フック側 (special-visit / visits / courses / field-board)。
    * acknowledge=true は NG スタッフ / 性別制限の確認ダイアログで OK した再送 (§7-2)。
+   *
+   * 2026-09-08 (`dnd-all-views-design-2026-09-08.md` §2-3): `weekday` を渡すと BE が
+   * 同一トランザクションで ○ を その曜日へ移してから配置する。移動先に既に追加枠が
+   * あると 409 `special_mark_cell_conflict` が返るので、「そちらを配置しますか？」と
+   * 聞いてから **既存の mark へ** (weekday なしで) 配置し直す。
    */
   async function applySpecialTicketDrop(
+    ticket: SpecialPoolTicket,
+    courseTemplateId: string,
+    startTime: string,
+    opts: { weekday?: number; acknowledge?: boolean } = {},
+  ) {
+    const acknowledge = opts.acknowledge === true;
+    // 同じ曜日なら weekday を送らない (BE の no-op 経路に触れない = 余計な差分を作らない)。
+    const movedWeekday =
+      opts.weekday != null && opts.weekday !== ticket.mark.weekday ? opts.weekday : null;
+    try {
+      await placeSpecialMut.mutateAsync({
+        markId: ticket.mark.id,
+        payload: {
+          course_template_id: courseTemplateId,
+          start_time: startTime,
+          ...(movedWeekday != null ? { weekday: movedWeekday } : {}),
+          ...ackFlag(acknowledge),
+        },
+      });
+      const fromLabel = specialTicketWeekdayLabel(ticket.mark.weekday);
+      if (movedWeekday != null) {
+        // 曜日を動かしたことを隠さない (設計 §5-1: カレンダーの ○ の位置が変わる)。
+        toast.success(
+          `${ticket.patient.name} 様の ${fromLabel}曜の追加枠を ${specialTicketWeekdayLabel(movedWeekday)}曜 ${startTime} に配置しました（この週のみ）`,
+        );
+      } else {
+        toast.success(
+          `${ticket.patient.name} 様を ${fromLabel}曜 ${startTime} に配置しました（この週のみ・固定化しません）`,
+        );
+      }
+    } catch (err) {
+      // 409: 移動先の曜日に既に追加枠 (○) がある → そちらを配置するか聞く (§2-3)。
+      const conflict = movedWeekday != null ? parseSpecialMarkCellConflict(err) : null;
+      if (conflict) {
+        const toLabel = specialTicketWeekdayLabel(movedWeekday!);
+        if (conflict.existingMarkId == null) {
+          // BE の取りこぼし対策 (どの ○ かが特定できない)。配置先を勝手に選ばず
+          // 最新化を促す (プール/カレンダーを引き直せば正しい状態が見える)。
+          void queryClient.invalidateQueries({ queryKey: SPECIAL_VISIT_KEY });
+          toast.warning(`${toLabel}曜には既に追加枠があります。画面を更新して確認してください`);
+          return;
+        }
+        // BE が返す既存 ○ は「未配置」とは限らない (除外しているのは cancelled のみ)。
+        // プール一覧 = 未配置のチケットなので、そこに居ないなら既に ● になっている
+        // → 二重配置を誘わず最新化を促す。
+        if (!specialTicketByMarkId.has(conflict.existingMarkId)) {
+          void queryClient.invalidateQueries({ queryKey: SPECIAL_VISIT_KEY });
+          toast.warning(
+            `${toLabel}曜には既に配置済みの追加枠があります。画面を更新して確認してください`,
+          );
+          return;
+        }
+        setPlacementConflict({
+          open: true,
+          weekdayLabel: toLabel,
+          existingMarkId: conflict.existingMarkId,
+          ticket,
+          courseTemplateId,
+          startTime,
+        });
+        return;
+      }
+      if (
+        !acknowledge &&
+        placementConstraintConfirm.capture(
+          err,
+          () =>
+            applySpecialTicketDrop(ticket, courseTemplateId, startTime, {
+              ...opts,
+              acknowledge: true,
+            }),
+          PLACE_CONSTRAINT_TEXT,
+        )
+      ) {
+        return;
+      }
+      toast.error(`配置に失敗しました: ${formatErr(err)}`);
+    }
+  }
+
+  /**
+   * 409 で案内された **移動先に既にある追加枠** をそのまま配置する (§2-3)。
+   * 元のチケットは触らない (曜日移動を諦めただけ) ので weekday は送らない。
+   */
+  async function applyExistingSpecialMarkPlace(
+    existingMarkId: string,
     ticket: SpecialPoolTicket,
     courseTemplateId: string,
     startTime: string,
@@ -2571,23 +2940,29 @@ export function CourseDayTablePanel({
   ) {
     try {
       await placeSpecialMut.mutateAsync({
-        markId: ticket.mark.id,
+        markId: existingMarkId,
         payload: {
           course_template_id: courseTemplateId,
           start_time: startTime,
           ...ackFlag(acknowledge),
         },
       });
-      const wdLabel = specialTicketWeekdayLabel(ticket.mark.weekday);
       toast.success(
-        `${ticket.patient.name} 様を ${wdLabel}曜 ${startTime} に配置しました（この週のみ・固定化しません）`,
+        `${ticket.patient.name} 様を ${startTime} に配置しました（この週のみ・固定化しません）`,
       );
     } catch (err) {
       if (
         !acknowledge &&
         placementConstraintConfirm.capture(
           err,
-          () => applySpecialTicketDrop(ticket, courseTemplateId, startTime, true),
+          () =>
+            applyExistingSpecialMarkPlace(
+              existingMarkId,
+              ticket,
+              courseTemplateId,
+              startTime,
+              true,
+            ),
           PLACE_CONSTRAINT_TEXT,
         )
       ) {
@@ -6654,18 +7029,10 @@ export function CourseDayTablePanel({
               officeId={officeId}
               onBulkInsert={canEdit ? () => setBulkPoolInsertOpen(true) : undefined}
               /*
-               * ⭐ セクションの DnD 可否判定。落とせる先 (日タイムラインの列) が
-               * 実際に画面にあるときだけ曜日を渡す = 週/職員タブ・日リスト表示・
-               * 閲覧専用・同行モード中は null (掴めない) にする。
+               * ⭐ の曜日ゲートは撤去 (`dnd-all-views-design-2026-09-08.md` §2-4)。
+               * どのビュー・どの曜日でも掴め、落とした先が違う曜日なら
+               * 「配置の確認」モーダルが問い直す。掴めるか否かは canEdit のみ。
                */
-              activeWeekday={
-                typeof activeTab === 'number' &&
-                weekdayViewMode === 'timeline' &&
-                canEdit &&
-                !accompaniment.active
-                  ? activeWeekday
-                  : null
-              }
               unregisteredPatients={unregisteredActivePatients}
               onClickUnregisteredPatient={handleOpenPoolPatientDetail}
               renderCard={(p, slotInfo) => {
@@ -7058,6 +7425,41 @@ export function CourseDayTablePanel({
           onConfirm={(scope) => void handleTlMoveConfirm(scope)}
           onClose={() => setTlMoveState(null)}
         />
+
+        {/* 2026-09-08: 配置の確認モーダル (時間軸のないビュー / ⭐ の曜日移動) */}
+        {placementConfirm ? (
+          <PlacementConfirmDialog
+            open={placementConfirm.open}
+            onOpenChange={(o) => {
+              if (!o) closePlacementConfirm();
+            }}
+            subject={placementConfirm.subject}
+            target={placementConfirm.target}
+            defaultStart={placementConfirm.defaultStart}
+            onConfirm={(args) => void handlePlacementConfirm(args)}
+          />
+        ) : null}
+
+        {/* 409: 移動先の曜日に既に追加枠 (○) があるときの二段目の確認 (§2-3) */}
+        {placementConflict ? (
+          <PlacementConflictConfirmDialog
+            open={placementConflict.open}
+            weekdayLabel={placementConflict.weekdayLabel}
+            onOpenChange={(o) => {
+              if (!o) setPlacementConflict(null);
+            }}
+            onConfirm={() => {
+              const c = placementConflict;
+              setPlacementConflict(null);
+              void applyExistingSpecialMarkPlace(
+                c.existingMarkId,
+                c.ticket,
+                c.courseTemplateId,
+                c.startTime,
+              );
+            }}
+          />
+        ) : null}
 
         {/* Wave 37 Phase 3-C: 相方コース選択ダイアログ */}
         {partnerDialogState ? (

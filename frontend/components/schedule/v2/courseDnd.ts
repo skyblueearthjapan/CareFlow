@@ -4,7 +4,13 @@
  * 旧 WeekCoursePalette.tsx (コースの表) から独立させたもの。パレットは
  * PO 判断で撤去 (2026-08-21)。未割当コースの置き場は盤面の「（担当なし）」行、
  * 担当解除は帯の「×」または「（担当なし）」行へのドラッグで行う。
+ *
+ * 2026-09-08 (`docs/plans/dnd-all-views-design-2026-09-08.md` §2-1): ⭐/プールカードを
+ * 全ビューへ落とせるようにするため、ここが **droppable 名前空間と共通リゾルバ**の
+ * 単一ソースになった (盤面の `handleDragEnd` は先頭で 1 回 `resolveDropTarget` を
+ * 呼ぶだけでよい)。
  */
+import { snapYOffsetToMinutes, TL_DAY_START_MIN } from '@/lib/scheduling/timeline';
 
 /**
  * 「（担当なし）」行のキー (盤面 = StaffWeekBoard / タイムライン =
@@ -33,6 +39,143 @@ export function parseSpecialTicketDraggableId(id: string): string | null {
   if (!id.startsWith(SPECIAL_TICKET_DND_PREFIX)) return null;
   const markId = id.slice(SPECIAL_TICKET_DND_PREFIX.length);
   return markId.length > 0 ? markId : null;
+}
+
+/** 0=月..6=日 (⭐/確認モーダルは日曜まで持つ)。盤面の 6 要素 (月〜土) とは別物。 */
+const SPECIAL_WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
+
+/**
+ * ⭐チケット / 配置の確認モーダルの曜日ラベル (0=月..6=日)。範囲外は '?'。
+ * トーストやカードから曜日が消えないようにするための**単一ソース**
+ * (`SpecialTicketPlacePanel` は互換のためここを re-export する)。
+ */
+export function specialTicketWeekdayLabel(weekday: number): string {
+  return SPECIAL_WEEKDAY_LABELS[weekday] ?? '?';
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// droppable 名前空間 + 共通リゾルバ (設計 §2-1)
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * 職員スケジュール (`StaffWeekBoard`) のセル droppable id 接頭辞。
+ * `sw-cell:{rowKey}:{weekday}` — rowKey = staffId または `UNASSIGNED_ROW_KEY`。
+ * 時間軸を持たない盤面なので、ここへ落ちたドロップは **時刻なし** で解決され、
+ * 呼び出し側が「配置の確認」モーダルで時刻を決める (設計 §2-2)。
+ */
+export const SW_CELL_DND_PREFIX = 'sw-cell:';
+
+/**
+ * 日タイムラインの列 droppable id 接頭辞 (`tl-col:{templateId}:{weekday}`)。
+ * id を作るのは `TimelineDayBoard.tlColDroppableId` だが、リゾルバのために
+ * courseDnd → TimelineDayBoard の import を張ると DnD の土台が重いコンポーネントに
+ * 依存してしまうため、接頭辞だけ写している (値は同一)。
+ */
+const TL_COL_DND_PREFIX = 'tl-col:';
+
+/** rowKey + weekday → 職員スケジュールのセル droppable id。 */
+export function buildStaffWeekCellDroppableId(rowKey: string, weekday: number): string {
+  return `${SW_CELL_DND_PREFIX}${rowKey}:${weekday}`;
+}
+
+/**
+ * `sw-cell:` id → `{ rowKey, weekday }`。それ以外の id / 壊れた id は null。
+ * rowKey (staffId = UUID) に `:` は含まれないが、末尾の weekday から切ることで
+ * 将来 rowKey が複合キーになっても壊れないようにする。
+ * 職員スケジュールの列は月〜土の 6 本なので weekday は 0..5 に限る。
+ */
+export function parseStaffWeekCellDroppableId(
+  id: string,
+): { rowKey: string; weekday: number } | null {
+  if (!id.startsWith(SW_CELL_DND_PREFIX)) return null;
+  const rest = id.slice(SW_CELL_DND_PREFIX.length);
+  const sep = rest.lastIndexOf(':');
+  if (sep <= 0 || sep >= rest.length - 1) return null;
+  const rowKey = rest.slice(0, sep);
+  const weekday = Number(rest.slice(sep + 1));
+  if (!Number.isInteger(weekday) || weekday < 0 || weekday > 5) return null;
+  return { rowKey, weekday };
+}
+
+/** リゾルバに渡す矩形 (dnd-kit の `ClientRect` の必要な部分だけ)。 */
+export interface DropRectLike {
+  top: number;
+}
+
+/** リゾルバの調整値 (既定は日タイムラインと同じ 15 分スナップ / 9:00 起点)。 */
+export interface ResolveDropTargetContext {
+  snapMin?: number;
+  dayStartMin?: number;
+}
+
+/** ドロップ先の正規形。`time === null` = 時間軸のないビュー (= 確認モーダル行き)。 */
+export interface ResolvedDropTarget {
+  kind: 'tl-col' | 'sw-cell';
+  weekday: number;
+  /** コースが確定している場合のみ (職員スケジュールのセルは null)。 */
+  courseTemplateId: string | null;
+  /** 職員スケジュールの行スタッフ。「（担当なし）」行と時間軸ビューは null。 */
+  staffId: string | null;
+  /** "HH:MM"。時間軸のないビューでは null。 */
+  time: string | null;
+}
+
+/** 分 → "HH:MM"。 */
+function formatHM(totalMinutes: number): string {
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+/**
+ * ドロップ先 id (+ ドラッグ中カードと列の矩形) を 1 つの形に解決する (設計 §2-1)。
+ *
+ * - `sw-cell:` → 時刻なし・行スタッフあり (`UNASSIGNED_ROW_KEY` は staffId=null)。
+ * - `tl-col:`  → 既存のスナップ計算 (`snapYOffsetToMinutes`) で時刻あり。矩形が
+ *   取れないときは「列の上で離せていない」とみなし null を返す (従来の案内と同じ)。
+ * - それ以外の droppable (プール等) は null (呼び出し側が個別に処理する)。
+ *
+ * id は**画面に描かれている droppable が自分で作ったもの**しか来ない前提で解く
+ * (template / staff の実在チェックは呼び出し側の候補作成が担う)。
+ */
+export function resolveDropTarget(
+  overId: string,
+  activeRect: DropRectLike | null | undefined,
+  overRect: DropRectLike | null | undefined,
+  ctx: ResolveDropTargetContext = {},
+): ResolvedDropTarget | null {
+  const cell = parseStaffWeekCellDroppableId(overId);
+  if (cell) {
+    return {
+      kind: 'sw-cell',
+      weekday: cell.weekday,
+      courseTemplateId: null,
+      staffId: cell.rowKey === UNASSIGNED_ROW_KEY ? null : cell.rowKey,
+      time: null,
+    };
+  }
+  if (overId.startsWith(TL_COL_DND_PREFIX)) {
+    const rest = overId.slice(TL_COL_DND_PREFIX.length);
+    const sep = rest.lastIndexOf(':');
+    if (sep <= 0 || sep >= rest.length - 1) return null;
+    const courseTemplateId = rest.slice(0, sep);
+    const weekday = Number(rest.slice(sep + 1));
+    if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) return null;
+    if (activeRect == null || overRect == null) return null;
+    const startMin = snapYOffsetToMinutes(
+      activeRect.top - overRect.top,
+      ctx.snapMin ?? 15,
+      ctx.dayStartMin ?? TL_DAY_START_MIN,
+    );
+    return {
+      kind: 'tl-col',
+      weekday,
+      courseTemplateId,
+      staffId: null,
+      time: formatHM(startMin),
+    };
+  }
+  return null;
 }
 
 /** コース帯の DnD payload MIME。 */

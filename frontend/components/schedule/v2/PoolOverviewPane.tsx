@@ -132,11 +132,6 @@ export interface PoolOverviewPaneProps extends Omit<PoolGroupedByWeekdayProps, '
    * handleOpenPoolPatientDetail と同じ導線 (patient_id を渡す)。
    */
   onClickUnregisteredPatient?: (patientId: string) => void;
-  /**
-   * 盤面で表示中の曜日タブ (0=月..5=土)。⭐ セクションへ素通しする
-   * (`special-ticket-dnd-design-2026-09-08.md` §2: 同じ曜日のチケットだけ掴める)。
-   */
-  activeWeekday?: number | null;
 }
 
 /**
@@ -166,7 +161,6 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
       onBulkInsert,
       unregisteredPatients = [],
       onClickUnregisteredPatient,
-      activeWeekday = null,
     }: PoolOverviewPaneProps,
     ref,
   ) {
@@ -361,7 +355,6 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
             isoWeek={isoWeek}
             officeId={officeId}
             canEdit={!disabled}
-            activeWeekday={activeWeekday}
           />
         }
       />

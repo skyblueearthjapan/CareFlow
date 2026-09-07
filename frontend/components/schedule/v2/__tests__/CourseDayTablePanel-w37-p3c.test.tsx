@@ -824,10 +824,18 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
   const MARK_ID = '55555555-5555-4555-8555-555555555555';
 
   /** ⭐ チケット 1 枚 (プール API の戻り相当). */
-  function makeTicket(over: { weekday?: number; requiresMulti?: boolean } = {}) {
+  function makeTicket(
+    over: {
+      weekday?: number;
+      requiresMulti?: boolean;
+      /** 別 mark を並べたいとき (409 の「既存 ○」がプールに居るケース)。 */
+      markId?: string;
+      serviceMinutes?: number | null;
+    } = {},
+  ) {
     return {
       mark: {
-        id: MARK_ID,
+        id: over.markId ?? MARK_ID,
         period_id: 'period-1',
         patient_id: PATIENT_UUID,
         iso_year: 2026,
@@ -851,7 +859,7 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
       },
       period: { id: 'period-1', weekly_target: 5, end_date: '2026-05-30' },
       last_placement: null,
-      service_minutes: 45,
+      service_minutes: over.serviceMinutes === undefined ? 45 : over.serviceMinutes,
     };
   }
 
@@ -905,13 +913,18 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
     );
   });
 
-  it('ST-3. 表示中の曜日タブと違う曜日のチケットは警告のみ (曜日の罠ガード)', async () => {
-    setupTicket({ weekday: 3 }); // 木曜のチケットを月曜タブで離す
+  // 2026-09-08 (`dnd-all-views-design-2026-09-08.md` §2-4): 曜日ゲートは撤去され、
+  // 曜日違いは「警告して捨てる」から「確認モーダルで問い直す」に置き換わった。
+  it('ST-3. 曜日の違うチケットを列に落としたら確認モーダルを開く (即 place しない)', async () => {
+    setupTicket({ weekday: 3 }); // 木曜のチケットを月曜の列で離す
     await act(async () => {
       await dndState.capturedHandlers.onDragEnd!(dropTicketOnColumn('tpl-A', 0, '10:15'));
     });
     expect(specialState.place).not.toHaveBeenCalled();
-    expect(mockToast.warning).toHaveBeenCalledWith('木曜のカードは 木曜タブでのみ配置できます');
+    const warn = await screen.findByTestId('pcd-warning');
+    expect(warn.textContent).toContain(
+      'これは木曜日の予定ですが、月曜日に配置して本当によろしいですか？',
+    );
   });
 
   it('ST-4. 2 名体制の患者はドラッグ配置を塞ぎ、クリック導線へ誘導する', async () => {
@@ -993,6 +1006,376 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         start_time: '10:15',
         acknowledge_constraint_warnings: true,
       },
+    });
+  });
+
+  // ── 2026-09-08: 職員スケジュールのセル (`sw-cell:`) への配置 ─────────────
+  // 設計 `docs/plans/dnd-all-views-design-2026-09-08.md` §2-1/§2-2/§4。
+  // 時間軸が無いので必ず「配置の確認」モーダルを通り、そこでコースと時刻を決める。
+
+  const SW_STAFF = '77777777-7777-4777-8777-777777777777';
+
+  /** 職員スケジュールのセルへのドロップ引数 (`sw-cell:{rowKey}:{weekday}`)。 */
+  function dropOnStaffWeekCell(activeId: string, rowKey: string, weekday: number) {
+    return {
+      active: { id: activeId, rect: { current: { translated: null } } },
+      over: { id: `sw-cell:${rowKey}:${weekday}`, rect: null },
+    };
+  }
+
+  /** 月(0)・木(3) に A コースを持つ職員 1 名 + M 受け皿テンプレート。 */
+  function setupStaffWeek(opts: {
+    tickets?: unknown[];
+    patients?: Array<Record<string, unknown>>;
+  }) {
+    specialState.tickets = opts.tickets ?? [];
+    setupHooks({
+      templates: [
+        { id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl },
+        { id: 'tpl-M', office_id: 'office-honten', label: 'M', ...baseTpl },
+      ],
+      staff: [
+        { id: SW_STAFF, name: '宇田川 優莉', primary_office_id: 'office-honten', status: 'active' },
+      ],
+      courses: [
+        {
+          id: 'course-A-mon',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 0,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: SW_STAFF,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+        {
+          id: 'course-A-thu',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 3,
+          code: 'A',
+          office_id: 'office-honten',
+          assigned_staff_id: SW_STAFF,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+      patients: opts.patients ?? [],
+    });
+    renderPanel();
+  }
+
+  it('SW-1. ⭐ をセルへ落とすと確認モーダルが開き、確定で place が weekday つきで 1 回だけ飛ぶ', async () => {
+    specialState.place.mockResolvedValue({ mark: {}, visit_id: 'v-1' });
+    setupStaffWeek({ tickets: [makeTicket({ weekday: 0 })] }); // 月曜のチケット
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnStaffWeekCell(`special-ticket:${MARK_ID}`, SW_STAFF, 3), // 木曜のセルへ
+      );
+    });
+    // 開いただけでは飛ばさない (曜日ゲートを外した以上ここが唯一の砦)。
+    expect(specialState.place).not.toHaveBeenCalled();
+    expect(screen.getByTestId('pcd-warning').textContent).toContain(
+      'これは月曜日の予定ですが、木曜日に配置して本当によろしいですか？',
+    );
+    // 木曜に持つコースは A の 1 件 → セレクトは出ずテキスト表示。
+    expect(screen.getByTestId('pcd-course-text').textContent).toContain('A');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-confirm'));
+    });
+    expect(specialState.place).toHaveBeenCalledOnce();
+    expect(specialState.place.mock.calls[0][0]).toEqual({
+      markId: MARK_ID,
+      payload: { course_template_id: 'tpl-A', start_time: '09:00', weekday: 3 },
+    });
+    expect(mockToast.success).toHaveBeenCalledWith(
+      '中尾 要太 様の 月曜の追加枠を 木曜 09:00 に配置しました（この週のみ）',
+    );
+  });
+
+  it('SW-2. 同じ曜日のセルなら weekday を送らない (○ を動かさない)', async () => {
+    specialState.place.mockResolvedValue({ mark: {}, visit_id: 'v-1' });
+    setupStaffWeek({ tickets: [makeTicket({ weekday: 0 })] });
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnStaffWeekCell(`special-ticket:${MARK_ID}`, SW_STAFF, 0),
+      );
+    });
+    expect(screen.queryByTestId('pcd-warning')).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-confirm'));
+    });
+    expect(specialState.place.mock.calls[0][0]).toEqual({
+      markId: MARK_ID,
+      payload: { course_template_id: 'tpl-A', start_time: '09:00' },
+    });
+  });
+
+  it('SW-3. 409 special_mark_cell_conflict → 確認ダイアログ → 既存の追加枠へ配置し直す', async () => {
+    const EXISTING = '66666666-6666-4666-8666-666666666666';
+    specialState.place
+      .mockRejectedValueOnce(
+        new ApiError('Conflict', 409, {
+          detail: {
+            code: 'special_mark_cell_conflict',
+            message: 'この曜日には既に追加枠があります',
+            existing_mark_id: EXISTING,
+            weekday: 3,
+          },
+        }),
+      )
+      .mockResolvedValueOnce({ mark: {}, visit_id: 'v-2' });
+    // 既存 ○ は **プールに居る = 未配置** のときだけ選択肢に出す。
+    setupStaffWeek({
+      tickets: [makeTicket({ weekday: 0 }), makeTicket({ weekday: 3, markId: EXISTING })],
+    });
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnStaffWeekCell(`special-ticket:${MARK_ID}`, SW_STAFF, 3),
+      );
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-confirm'));
+    });
+    expect(screen.getByTestId('pcd-conflict').textContent).toContain(
+      '木曜には既に追加枠（○）があります。そちらを配置しますか？',
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-conflict-ok'));
+    });
+    expect(specialState.place).toHaveBeenCalledTimes(2);
+    // 2 回目は既存 mark へ・weekday は送らない (元のチケットは触らない)。
+    expect(specialState.place.mock.calls[1][0]).toEqual({
+      markId: EXISTING,
+      payload: { course_template_id: 'tpl-A', start_time: '09:00' },
+    });
+  });
+
+  it('SW-3b. 409 の確認で「やめる」を選んだら何も配置しない', async () => {
+    const EXISTING = '66666666-6666-4666-8666-666666666666';
+    specialState.place.mockRejectedValueOnce(
+      new ApiError('Conflict', 409, {
+        detail: { code: 'special_mark_cell_conflict', existing_mark_id: EXISTING, weekday: 3 },
+      }),
+    );
+    setupStaffWeek({
+      tickets: [makeTicket({ weekday: 0 }), makeTicket({ weekday: 3, markId: EXISTING })],
+    });
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnStaffWeekCell(`special-ticket:${MARK_ID}`, SW_STAFF, 3),
+      );
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-confirm'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-conflict-cancel'));
+    });
+    expect(specialState.place).toHaveBeenCalledOnce();
+    expect(mockToast.error).not.toHaveBeenCalled();
+  });
+
+  // BE の取りこぼし対策: どの ○ と衝突したか特定できない 409 は選択肢を出さない。
+  it('SW-3c. existing_mark_id が null の 409 は最新化を促すだけ', async () => {
+    specialState.place.mockRejectedValueOnce(
+      new ApiError('Conflict', 409, {
+        detail: {
+          code: 'special_mark_cell_conflict',
+          message: 'この曜日には既に追加枠があります',
+          existing_mark_id: null,
+          weekday: 3,
+        },
+      }),
+    );
+    setupStaffWeek({ tickets: [makeTicket({ weekday: 0 })] });
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnStaffWeekCell(`special-ticket:${MARK_ID}`, SW_STAFF, 3),
+      );
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-confirm'));
+    });
+    expect(screen.queryByTestId('pcd-conflict')).toBeNull();
+    expect(specialState.place).toHaveBeenCalledOnce();
+    expect(mockToast.warning).toHaveBeenCalledWith(
+      '木曜には既に追加枠があります。画面を更新して確認してください',
+    );
+  });
+
+  // 既存 ○ が既に配置済み (●) なら二重配置を誘わない。BE は cancelled しか除外しない。
+  it('SW-3d. 既存 ○ がプールに居ない (= 配置済み) 409 は最新化を促すだけ', async () => {
+    specialState.place.mockRejectedValueOnce(
+      new ApiError('Conflict', 409, {
+        detail: {
+          code: 'special_mark_cell_conflict',
+          existing_mark_id: '66666666-6666-4666-8666-666666666666',
+          weekday: 3,
+        },
+      }),
+    );
+    setupStaffWeek({ tickets: [makeTicket({ weekday: 0 })] }); // 既存 ○ はプールに無い
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnStaffWeekCell(`special-ticket:${MARK_ID}`, SW_STAFF, 3),
+      );
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-confirm'));
+    });
+    expect(screen.queryByTestId('pcd-conflict')).toBeNull();
+    expect(specialState.place).toHaveBeenCalledOnce();
+    expect(mockToast.warning).toHaveBeenCalledWith(
+      '木曜には既に配置済みの追加枠があります。画面を更新して確認してください',
+    );
+  });
+
+  it('SW-4. プールカードをセルへ落とすと、そのセルの曜日で place-and-fix する', async () => {
+    mockPlaceAndFix.mockResolvedValue({
+      visit: {},
+      fixed_visit: null,
+      visits: [],
+      fixed_visits: [],
+      visit_group_id: null,
+    });
+    setupStaffWeek({
+      patients: [
+        {
+          id: PATIENT_UUID_2,
+          name: '鈴木 花子',
+          kana: null,
+          status: 'active',
+          primary_office_id: 'office-honten',
+          weekly_pattern: { service_minutes: 45, preferred_start: '13:30' },
+          requires_multiple_staff: false,
+        },
+      ],
+    });
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnStaffWeekCell(`pool-patient:${PATIENT_UUID_2}`, SW_STAFF, 3),
+      );
+    });
+    expect(mockPlaceAndFix).not.toHaveBeenCalled();
+    // ⭐ ではないので曜日の警告は出ない。既定時刻は患者の希望開始。
+    expect(screen.queryByTestId('pcd-warning')).toBeNull();
+    expect((screen.getByTestId('pcd-time-select') as HTMLSelectElement).value).toBe('13:30');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-confirm'));
+    });
+    expect(mockPlaceAndFix).toHaveBeenCalledOnce();
+    const arg = mockPlaceAndFix.mock.calls[0][0];
+    expect(arg.weekday).toBe(3);
+    expect(arg.course_template_id).toBe('tpl-A');
+    expect(arg.start_time).toBe('13:30');
+    expect(arg.duration_min).toBe(45);
+    expect(arg.staff_count).toBe(1);
+    expect(arg.fix_pattern).toBe(false);
+  });
+
+  it('SW-5. 「やめる」で閉じたら place は飛ばない (唯一の砦)', async () => {
+    setupStaffWeek({ tickets: [makeTicket({ weekday: 0 })] });
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnStaffWeekCell(`special-ticket:${MARK_ID}`, SW_STAFF, 3),
+      );
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-cancel'));
+    });
+    expect(specialState.place).not.toHaveBeenCalled();
+    expect(mockPlaceAndFix).not.toHaveBeenCalled();
+  });
+
+  // 営業時間ガードは盤面が単一ソース。モーダル経由でも枠外は通さない。
+  it('SW-7. 18:00 開始 × 所要 60 分は警告のみ (place を呼ばず、モーダルも閉じない)', async () => {
+    setupStaffWeek({ tickets: [makeTicket({ weekday: 0, serviceMinutes: 60 })] });
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnStaffWeekCell(`special-ticket:${MARK_ID}`, SW_STAFF, 0),
+      );
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('pcd-time-select'), { target: { value: '18:00' } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-confirm'));
+    });
+    expect(specialState.place).not.toHaveBeenCalled();
+    expect(mockToast.warning).toHaveBeenCalledWith(
+      'この位置には置けません（9:00〜18:00 の範囲に収まるように配置してください）',
+    );
+    // 選び直せるようにモーダルは開いたまま。
+    expect(screen.getByTestId('pcd-root')).toBeInTheDocument();
+  });
+
+  // 拠点跨ぎ: その職員はその曜日にコースを持つが別拠点 → 候補外にした理由を見せる。
+  it('SW-8. 別拠点のコースしか無い職員のセルは理由を出して M に入る', async () => {
+    specialState.place.mockResolvedValue({ mark: {}, visit_id: 'v-1' });
+    specialState.tickets = [makeTicket({ weekday: 3 })];
+    setupHooks({
+      offices: [
+        { id: 'office-honten', name: '本店' },
+        { id: 'office-b', name: '別拠点' },
+      ],
+      templates: [
+        { id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl },
+        { id: 'tpl-M', office_id: 'office-honten', label: 'M', ...baseTpl },
+        { id: 'tpl-B2', office_id: 'office-b', label: 'B', ...baseTpl },
+      ],
+      staff: [
+        { id: SW_STAFF, name: '宇田川 優莉', primary_office_id: 'office-honten', status: 'active' },
+      ],
+      courses: [
+        {
+          id: 'course-b-thu',
+          iso_year: 2026,
+          iso_week: 19,
+          weekday: 3,
+          code: 'B',
+          office_id: 'office-b',
+          assigned_staff_id: SW_STAFF,
+          course_status: 'course_fixed',
+          deleted_at: null,
+        },
+      ],
+      patients: [],
+    });
+    renderPanel();
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnStaffWeekCell(`special-ticket:${MARK_ID}`, SW_STAFF, 3),
+      );
+    });
+    expect(screen.getByTestId('pcd-cross-office').textContent).toContain(
+      'この職員の木曜のコースは別拠点のため候補外です。担当なし枠(M)に入ります',
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-confirm'));
+    });
+    expect(specialState.place.mock.calls[0][0]).toEqual({
+      markId: MARK_ID,
+      payload: { course_template_id: 'tpl-M', start_time: '09:00' },
+    });
+  });
+
+  it('SW-6. 「（担当なし）」行へ落とすと拠点の M が受け皿になる', async () => {
+    specialState.place.mockResolvedValue({ mark: {}, visit_id: 'v-1' });
+    setupStaffWeek({ tickets: [makeTicket({ weekday: 3 })] });
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnStaffWeekCell(`special-ticket:${MARK_ID}`, '__unassigned__', 3),
+      );
+    });
+    expect(screen.getByTestId('pcd-course-text').textContent).toContain('M（担当なし枠）');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-confirm'));
+    });
+    expect(specialState.place.mock.calls[0][0]).toEqual({
+      markId: MARK_ID,
+      payload: { course_template_id: 'tpl-M', start_time: '09:00' },
     });
   });
 

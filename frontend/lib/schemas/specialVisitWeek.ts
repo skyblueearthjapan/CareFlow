@@ -296,6 +296,14 @@ export const specialVisitPlaceSchema = z
       .regex(/^\d{2}:\d{2}$/, '時刻は HH:MM 形式で入力してください')
       .optional(),
     /**
+     * 2026-09-08 追加 (`docs/plans/dnd-all-views-design-2026-09-08.md` §2-3):
+     * この週だけ ○ を別曜日へ移してから配置する。`mark.weekday` と同じ値なら BE は no-op。
+     * 移動先に既に追加枠があると 409
+     * `{"detail": {"code": "special_mark_cell_conflict", "existing_mark_id": ..}}`、
+     * 退避枠 (kind='displaced') / 期間外は 422。
+     */
+    weekday: z.number().int().min(0).max(5).optional(),
+    /**
      * NG スタッフ / 性別制限 (patient-ng-staff-design.md §7-2): 422
      * `constraint_confirmation_required` を確認ダイアログで通したときだけ true で
      * 再送する。省略時 BE default=false。
