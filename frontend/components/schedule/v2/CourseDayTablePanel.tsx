@@ -2995,6 +2995,18 @@ export function CourseDayTablePanel({
     staffId: string | null;
     date: string;
   } | null>(null);
+  /**
+   * 曜日移動の事前確認: 移動先曜日に同じコースが無いとき
+   * (BE が担当なしのコースを新規に作るため、黙って担当なしになる)。
+   * `null` = 確認不要 / 確認中でない。
+   */
+  const [moveDestConfirm, setMoveDestConfirm] = useState<{
+    visit: TimelineVisit;
+    toWeekday: number;
+    toStartHM: string;
+    opGroupId: string;
+    courseLabel: string;
+  } | null>(null);
   /** 「📐 型も変える…」= ChangeScopeChoice の 2 択ダイアログ。 */
   const [masterScopeVisit, setMasterScopeVisit] = useState<TimelineVisit | null>(null);
   const [masterScope, setMasterScope] = useState<ChangeScopeValue>('pattern');
@@ -3658,11 +3670,33 @@ export function CourseDayTablePanel({
       toStartHM: string,
       opGroupId: string,
       acknowledge = false,
+      destConfirmed = false,
     ): Promise<boolean> => {
       const oldStart = (visit.start_time ?? '').slice(0, 5);
       if (!oldStart) {
         toast.error('この訪問の開始時刻が不明なため移動できません');
         return false;
+      }
+      // 曜日を跨ぐときは移動先曜日の「同じコード」のコースへ付け替える
+      // (add-visit-anywhere-design.md §1 欠陥 3 / §3-4 C の暫定対応)。
+      // BE は new_course_template_id 省略時にコースを据え置くため、これが無いと
+      // 訪問が旧曜日のコース ID のまま残り、盤面の旧曜日タブに出てしまう。
+      const crossWeekday = toWeekday !== visit.weekday;
+      // TimelineVisit は course_id を持たず course_template_id を持つ
+      // (= courseTemplateByCourseId で逆引き済みの値)。そのまま使うのが最小修正。
+      const newCourseTemplateId = crossWeekday ? visit.course_template_id : null;
+      const courseLabel = cockpitCourseLabel(visit.course_template_id) ?? 'このコース';
+      if (crossWeekday && !destConfirmed) {
+        // 移動先曜日に同じコースが**今週まだ無い**場合、BE は担当のいない
+        // コースを新規に作る = 訪問が黙って担当なしになる。事前に断りを入れる。
+        const tpl = templates.find((t) => t.id === visit.course_template_id) ?? null;
+        const destCourse = tpl
+          ? findCourseForTemplate({ template: tpl, weekday: toWeekday, isoYear, isoWeek, courses })
+          : null;
+        if (!destCourse) {
+          setMoveDestConfirm({ visit, toWeekday, toStartHM, opGroupId, courseLabel });
+          return false;
+        }
       }
       try {
         const res = await visitMoveWeekOnlyMut.mutateAsync({
@@ -3673,6 +3707,7 @@ export function CourseDayTablePanel({
           old_start_time: oldStart,
           new_weekday: toWeekday,
           new_start_time: toStartHM,
+          ...(newCourseTemplateId ? { new_course_template_id: newCourseTemplateId } : {}),
           op_group_id: opGroupId,
           ...ackFlag(acknowledge),
         });
@@ -3682,8 +3717,12 @@ export function CourseDayTablePanel({
           return false;
         }
         const wdLabel = WEEKDAY_LABELS[toWeekday] ?? '';
+        // 曜日跨ぎは担当が移動先コースの担当に変わる (BE 既存動作)。黙って変えない。
+        const suffix = crossWeekday
+          ? `（今週のみ・担当は移動先の ${courseLabel} の担当になります）`
+          : '（今週のみ）';
         toast.success(
-          `${visit.patient_name ?? 'この訪問'} を ${wdLabel}曜 ${toStartHM} へ移動しました（今週のみ）`,
+          `${visit.patient_name ?? 'この訪問'} を ${wdLabel}曜 ${toStartHM} へ移動しました${suffix}`,
           { cancel: { label: '元に戻す', onClick: () => void handleUndo() } },
         );
         return true;
@@ -3693,7 +3732,8 @@ export function CourseDayTablePanel({
           placementConstraintConfirm.capture(
             err,
             async () => {
-              await moveVisitWeekOnly(visit, toWeekday, toStartHM, opGroupId, true);
+              // 移動先コースの確認は済んでいるので二度は聞かない。
+              await moveVisitWeekOnly(visit, toWeekday, toStartHM, opGroupId, true, true);
             },
             MOVE_CONSTRAINT_TEXT,
           )
@@ -3711,6 +3751,9 @@ export function CourseDayTablePanel({
       invalidateCockpitBoard,
       placementConstraintConfirm,
       handleUndo,
+      templates,
+      courses,
+      cockpitCourseLabel,
     ],
   );
 
@@ -5908,6 +5951,8 @@ export function CourseDayTablePanel({
                             setAddVisitState({ staffId, date: isoOfWeekday(weekday) })
                         : undefined
                     }
+                    // 過去日 (今日を含む) はセルアクションを出さない (タイムラインと同じ規則)。
+                    todayIso={todayIsoJst}
                   />
                 )}
 
@@ -6406,11 +6451,16 @@ export function CourseDayTablePanel({
                 : null
             }
             date={addVisitState.date}
-            poolCandidates={poolPatients.map((p) => ({
-              patient_id: p.id,
-              patient_name: p.name,
-              hint: formatPreferredTimeLabel(coerceWeeklyPattern(p.weekly_pattern)) || null,
-            }))}
+            poolCandidates={poolPatients.map((p) => {
+              const wp = coerceWeeklyPattern(p.weekly_pattern);
+              return {
+                patient_id: p.id,
+                patient_name: p.name,
+                hint: formatPreferredTimeLabel(wp) || null,
+                // 患者の基本時間 = 所要時間の初期値 (add-visit-anywhere-design.md §3-3 ③)。
+                service_minutes: wp.service_minutes,
+              };
+            })}
             courseOptions={courses
               .filter((c) => c.weekday === weekdayOfIso(addVisitState.date) && !c.deleted_at)
               .map((c) => ({
@@ -6701,6 +6751,59 @@ export function CourseDayTablePanel({
           open={weeklyRitualGuideOpen}
           onClose={() => setWeeklyRitualGuideOpen(false)}
         />
+
+        {/* 曜日移動の事前確認 (add-visit-anywhere-design.md §1 欠陥 3)。
+            移動先曜日に同じコースが無いと BE が担当なしのコースを新規に作るため、
+            「担当なしになる」ことを先に伝えてから実行する。 */}
+        <Dialog
+          open={moveDestConfirm != null}
+          onOpenChange={(o) => {
+            if (!o && !visitMoveWeekOnlyMut.isPending) setMoveDestConfirm(null);
+          }}
+        >
+          <DialogContent className="max-w-md" data-testid="move-dest-confirm">
+            <DialogHeader>
+              <DialogTitle className="text-sm">移動先にコースがありません</DialogTitle>
+              <DialogDescription className="text-[12px]">
+                移動先の {WEEKDAY_LABELS[moveDestConfirm?.toWeekday ?? 0] ?? ''}曜には{' '}
+                {moveDestConfirm?.courseLabel ?? 'このコース'}{' '}
+                がありません。移動すると担当なしになります。移動しますか？
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setMoveDestConfirm(null)}
+                disabled={visitMoveWeekOnlyMut.isPending}
+                data-testid="move-dest-confirm-cancel"
+              >
+                やめる
+              </Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  const st = moveDestConfirm;
+                  setMoveDestConfirm(null);
+                  if (st) {
+                    void moveVisitWeekOnly(
+                      st.visit,
+                      st.toWeekday,
+                      st.toStartHM,
+                      st.opGroupId,
+                      false,
+                      true,
+                    );
+                  }
+                }}
+                disabled={visitMoveWeekOnlyMut.isPending}
+                data-testid="move-dest-confirm-ok"
+              >
+                移動する
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* PO 2026-07-10: 生成済みの週への「週を生成」再実行の誤操作対策。
             当週に訪問が実在する場合のみ表示 (訪問 0 件は即実行で挙動不変)。 */}

@@ -88,8 +88,18 @@ export interface StaffWeekBoardProps {
   ) => React.ReactNode;
   /** セルの「🛌 休みにする」→ 代替候補パネル (急な休み)。 */
   onMarkOff?: (staffId: string, weekday: number) => void;
-  /** セルの「＋訪問」→ 今週だけの訪問追加ダイアログ。 */
-  onAddVisit?: (staffId: string, weekday: number) => void;
+  /**
+   * セルの「＋訪問」→ 今週だけの訪問追加ダイアログ。
+   * `staffId` は「（担当なし）」行では **null**
+   * (`UNASSIGNED_KEY` を親へ漏らさない / add-visit-anywhere-design.md §3-4 D)。
+   */
+  onAddVisit?: (staffId: string | null, weekday: number) => void;
+  /**
+   * JST の「今日」(YYYY-MM-DD)。渡すと**その日以前**のセルではセルアクション
+   * (🛌休み / ＋訪問 / ＋イベント) を出さない (`StaffTimelineView` の `isPast`
+   * と同じ規則)。省略時は日付で絞らない (従来どおり)。
+   */
+  todayIso?: string;
   /**
    * ●未送信 (カイポケへまだ送っていない) の訪問 id / イベント id。
    * `null` = 同期バーがまだ数えていない (ドットを出さない = 断定しない)。
@@ -207,6 +217,7 @@ export function StaffWeekBoard({
   renderVisitMenu,
   onMarkOff,
   onAddVisit,
+  todayIso,
   unsentVisitIds,
   unsentEventIds,
   suggestionBadges,
@@ -418,6 +429,18 @@ export function StaffWeekBoard({
                   const unassignDroppable =
                     rowKey === UNASSIGNED_KEY && (!!onCourseUnassignDrop || !!onVisitUnassignDrop);
                   const droppable = assignDroppable || unassignDroppable;
+                  // セルアクション (🛌休み / ＋訪問 / ＋イベント) を出すか。
+                  //   - 過去日 (今日を含む) では出さない (StaffTimelineView の isPast と同じ規則。
+                  //     `todayIso` 未指定なら従来どおり日付で絞らない)。
+                  //   - 「（担当なし）」行は人ではないので ＋訪問 だけ。
+                  // 下の「—」プレースホルダとこのフラグを共有し、両者が食い違わないようにする。
+                  const isPastCell =
+                    todayIso != null && format(addDays(weekStart, wd), 'yyyy-MM-dd') <= todayIso;
+                  const hasCellActions =
+                    !isPastCell &&
+                    (rowKey === UNASSIGNED_KEY
+                      ? !!onAddVisit
+                      : !!(onAddEvent || onMarkOff || onAddVisit));
                   // A2後段: 曜日跨ぎ移動に対応したため全曜日のセルがドロップ先。
                   const dropHighlight = droppable && activeCourseDrag != null;
                   const cellKey = `${rowKey}:${wd}`;
@@ -925,20 +948,21 @@ export function StaffWeekBoard({
                             </div>
                           );
                         })}
-                        {courses.length === 0 &&
-                          events.length === 0 &&
-                          !(onAddEvent && rowKey !== UNASSIGNED_KEY) && (
-                            <span className="text-[10px] text-text-muted">—</span>
-                          )}
+                        {courses.length === 0 && events.length === 0 && !hasCellActions && (
+                          <span className="text-[10px] text-text-muted">—</span>
+                        )}
                         {/* セルのアクション (運転席): 🛌休みにする / ＋訪問 / ＋イベント。
                             常時出すと盤面が賑やかになるため、hover / フォーカス時のみ
                             濃く出す (DOM には常にあるのでキーボードでも届く)。 */}
-                        {rowKey !== UNASSIGNED_KEY && (onAddEvent || onMarkOff || onAddVisit) ? (
+                        {/* 「（担当なし）」行は人ではないので 🛌休み / ＋イベントは出さない。
+                            ＋訪問だけ出し、担当なしのまま今週だけの訪問を足せるようにする
+                            (add-visit-anywhere-design.md §3-4 D)。 */}
+                        {hasCellActions ? (
                           <div
                             className="flex flex-wrap gap-1 opacity-40 transition-opacity focus-within:opacity-100 group-hover/cell:opacity-100"
                             data-testid={`staff-week-cell-actions-${rowKey}-${wd}`}
                           >
-                            {onMarkOff ? (
+                            {onMarkOff && rowKey !== UNASSIGNED_KEY ? (
                               <button
                                 type="button"
                                 onClick={() => onMarkOff(rowKey, wd)}
@@ -953,16 +977,18 @@ export function StaffWeekBoard({
                             {onAddVisit ? (
                               <button
                                 type="button"
-                                onClick={() => onAddVisit(rowKey, wd)}
+                                onClick={() =>
+                                  onAddVisit(rowKey === UNASSIGNED_KEY ? null : rowKey, wd)
+                                }
                                 className="rounded border border-dashed border-border-default px-1 py-0.5 text-[10px] text-text-muted/80 transition-colors hover:border-brand-primary hover:text-brand-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
                                 title="今週だけの訪問を追加します（毎週の型は変わりません）"
-                                aria-label={`${staff?.name ?? ''} ${format(addDays(weekStart, wd), 'M/d')} に訪問を追加`}
+                                aria-label={`${staff?.name ?? '（担当なし）'} ${format(addDays(weekStart, wd), 'M/d')} に訪問を追加`}
                                 data-testid={`staff-week-add-visit-${rowKey}-${wd}`}
                               >
                                 ＋訪問
                               </button>
                             ) : null}
-                            {onAddEvent ? (
+                            {onAddEvent && rowKey !== UNASSIGNED_KEY ? (
                               <button
                                 type="button"
                                 onClick={() => onAddEvent(rowKey, addDays(weekStart, wd))}

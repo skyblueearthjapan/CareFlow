@@ -25,8 +25,11 @@ import { Label } from '@/components/ui/label';
 import { parseIsoDate } from './reconcileMarkers';
 import { TIME_OPTIONS } from './VisitActionMenu';
 
-/** 所要時間の選択肢 (モックと同じ)。 */
-export const DURATION_OPTIONS = [30, 45, 60, 90] as const;
+/**
+ * 所要時間の選択肢 (add-visit-anywhere-design.md §3-3 ③ / PO 決定 12)。
+ * 5 分刻み・15〜120 分。35 分などの患者の基本時間をそのまま選べるようにする。
+ */
+export const DURATION_OPTIONS: readonly number[] = Array.from({ length: 22 }, (_, i) => 15 + i * 5);
 
 const WD_JA = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
@@ -35,6 +38,11 @@ export interface AddVisitCandidate {
   patient_name: string;
   /** 「月曜希望 / 60分 / 稲毛」などの補足 (保留プールの見出し)。 */
   hint?: string | null;
+  /**
+   * 患者の基本時間 (`patients.weekly_pattern.service_minutes`)。
+   * 選ぶと所要時間の初期値になる (PO 決定 5-B: 基本時間・35 分)。
+   */
+  service_minutes?: number | null;
 }
 
 export interface AddVisitPayload {
@@ -104,6 +112,19 @@ export function AddVisitDialog({
   const [minutes, setMinutes] = React.useState<number>(defaultMinutes);
   const [courseId, setCourseId] = React.useState('');
 
+  /**
+   * 既定のコース。「（担当なし）」行 (`staff == null`) から開いたときは、
+   * その拠点の **M（担当なしの受け皿）** を初期選択にする
+   * (add-visit-anywhere-design.md §3-4 D)。臨（コースなし）は盤面の
+   * `visitsByCourse` に載らず訪問が見えなくなるため、既定にはしない。
+   * 戻り値は文字列なので、`courseOptions` の同一性が毎レンダー変わっても
+   * 下のリセット effect は再実行されない。
+   */
+  const defaultCourseId = React.useMemo(() => {
+    if (staff != null) return '';
+    return courseOptions.find((o) => /(^|\s)M\d*$/.test(o.label))?.id ?? '';
+  }, [staff, courseOptions]);
+
   // ダイアログを開き直したら入力をリセットする。
   React.useEffect(() => {
     if (!open) return;
@@ -111,14 +132,30 @@ export function AddVisitDialog({
     setPatientId('');
     setStart(defaultStart);
     setMinutes(defaultMinutes);
-    setCourseId('');
-  }, [open, defaultStart, defaultMinutes]);
+    setCourseId(defaultCourseId);
+  }, [open, defaultStart, defaultMinutes, defaultCourseId]);
 
   const filtered = React.useMemo(() => {
     const kw = keyword.trim();
     if (!kw) return poolCandidates;
     return poolCandidates.filter((c) => c.patient_name.includes(kw) || (c.hint ?? '').includes(kw));
   }, [poolCandidates, keyword]);
+
+  /**
+   * 所要時間の選択肢。患者の基本時間が 5 分刻みの外 (例: 32 分) のときは
+   * 選べなくならないよう、その値を選択肢に足す (設計 §3-3 ③)。
+   */
+  const minutesOptions = React.useMemo(() => {
+    if (DURATION_OPTIONS.includes(minutes)) return DURATION_OPTIONS;
+    return [...DURATION_OPTIONS, minutes].sort((a, b) => a - b);
+  }, [minutes]);
+
+  /** 患者を選んだら所要時間をその患者の基本時間へ揃える (PO 決定 5-B)。 */
+  const handlePatientChange = (nextPatientId: string) => {
+    setPatientId(nextPatientId);
+    const cand = poolCandidates.find((c) => c.patient_id === nextPatientId);
+    setMinutes(cand?.service_minutes ?? defaultMinutes);
+  };
 
   const buildPayload = (): AddVisitPayload | null => {
     if (!patientId) return null;
@@ -158,7 +195,7 @@ export function AddVisitDialog({
             <select
               className={selectCls}
               value={patientId}
-              onChange={(e) => setPatientId(e.target.value)}
+              onChange={(e) => handlePatientChange(e.target.value)}
               disabled={submitting}
               data-testid="add-visit-patient"
               aria-label="患者"
@@ -206,7 +243,7 @@ export function AddVisitDialog({
                 data-testid="add-visit-minutes"
                 aria-label="時間"
               >
-                {DURATION_OPTIONS.map((d) => (
+                {minutesOptions.map((d) => (
                   <option key={d} value={d}>
                     {d}分
                   </option>

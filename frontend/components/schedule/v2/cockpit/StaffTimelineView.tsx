@@ -212,7 +212,11 @@ export interface StaffTimelineViewProps {
    * `canEdit=false` と過去日では出さない (盤面と同じ扱い)。
    */
   onMarkOff?: (staffId: string, day: number, anchorEl: HTMLElement) => void;
-  onAddVisit?: (staffId: string, day: number, anchorEl: HTMLElement) => void;
+  /**
+   * ＋訪問。`staffId` は「（担当なし）」行では **null**
+   * (`UNASSIGNED_ROW_KEY` を親へ漏らさない / add-visit-anywhere-design.md §3-4 D)。
+   */
+  onAddVisit?: (staffId: string | null, day: number, anchorEl: HTMLElement) => void;
   onAddEvent?: (staffId: string, day: number) => void;
   // ─── 「担当なし」からの投入提案 (Phase 2-B・unassigned-suggestions-design.md) ───
   /** `${templateId}:${weekday}` → course_id。提案バッジの course_id 解決に使う。 */
@@ -1205,14 +1209,18 @@ export function StaffTimelineView({
                       })}
                     </span>
                   ) : null}
-                  {showRowActions && isRealStaffRow(row.staffId) ? (
+                  {showRowActions &&
+                  (isRealStaffRow(row.staffId) ||
+                    (row.staffId === UNASSIGNED_ROW_KEY && onAddVisit != null)) ? (
                     // PO 要望 2026-08-23: hover 待ちをやめて常時表示。氏名の下に
                     // アイコン + 短いラベルのボタンを 1 行だけ置く (title は長文のまま)。
                     <span
                       className="mt-1 flex flex-wrap items-center gap-1"
                       data-testid={`tl-row-actions-${row.staffId}`}
                     >
-                      {onMarkOff ? (
+                      {/* 「（担当なし）」行は人ではないので 🛌休み / ＋イベントは出さない。
+                          ＋訪問だけ出し、担当なしのまま今週だけの訪問を足せるようにする。 */}
+                      {onMarkOff && row.staffId !== UNASSIGNED_ROW_KEY ? (
                         <Button
                           type="button"
                           variant="outline"
@@ -1231,7 +1239,13 @@ export function StaffTimelineView({
                           type="button"
                           variant="outline"
                           size="sm"
-                          onClick={(e) => onAddVisit(row.staffId, day, e.currentTarget)}
+                          onClick={(e) =>
+                            onAddVisit(
+                              row.staffId === UNASSIGNED_ROW_KEY ? null : row.staffId,
+                              day,
+                              e.currentTarget,
+                            )
+                          }
                           className={ROW_ACTION_CLASS}
                           title={`${row.name} ${dayLabel} に今週だけの訪問を追加（毎週の型は変わりません）`}
                           aria-label={`${row.name} ${dayLabel} に訪問を追加`}
@@ -1240,7 +1254,7 @@ export function StaffTimelineView({
                           <span aria-hidden="true">👤</span>＋訪問
                         </Button>
                       ) : null}
-                      {onAddEvent ? (
+                      {onAddEvent && row.staffId !== UNASSIGNED_ROW_KEY ? (
                         <Button
                           type="button"
                           variant="outline"

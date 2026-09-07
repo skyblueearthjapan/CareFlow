@@ -775,10 +775,27 @@ describe('StaffTimelineView — 行アクション (🛌休みにする / ＋訪
     expect(addVisit.getAttribute('title')).toContain('毎週の型は変わりません');
   });
 
-  it('「（担当なし）」行と不明スタッフ行には出さない', () => {
+  it('不明スタッフ行には出さない', () => {
     renderWithActions({ visits: [visit({ id: 'vx', primary_staff_id: STAFF_X })] });
-    expect(screen.queryByTestId(`tl-row-actions-${UNASSIGNED_ROW_KEY}`)).not.toBeInTheDocument();
     expect(screen.queryByTestId(`tl-row-actions-${STAFF_X}`)).not.toBeInTheDocument();
+  });
+
+  it('「（担当なし）」行は ＋訪問 だけ出し、staffId は null で飛ぶ', () => {
+    // add-visit-anywhere-design.md §1 欠陥 4 / §3-4 D:
+    // 担当なし行にも今週だけの訪問を足せる。ただし人ではないので休み/イベントは出さない。
+    const { onAddVisit } = renderWithActions({ day: 2 });
+    const actions = screen.getByTestId(`tl-row-actions-${UNASSIGNED_ROW_KEY}`);
+    expect(actions).toBeInTheDocument();
+    expect(screen.queryByTestId(`tl-off-action-${UNASSIGNED_ROW_KEY}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`tl-add-event-${UNASSIGNED_ROW_KEY}`)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId(`tl-add-visit-${UNASSIGNED_ROW_KEY}`));
+    expect(onAddVisit.mock.calls[0]?.slice(0, 2)).toEqual([null, 2]);
+  });
+
+  it('onAddVisit 未指定なら「（担当なし）」行に行アクションを出さない', () => {
+    renderView({ onMarkOff: vi.fn(), onAddEvent: vi.fn() });
+    expect(screen.queryByTestId(`tl-row-actions-${UNASSIGNED_ROW_KEY}`)).not.toBeInTheDocument();
   });
 
   it('過去日 / 閲覧のみでは出さない', () => {

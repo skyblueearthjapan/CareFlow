@@ -176,6 +176,8 @@ const mockUpdateCourse = vi.fn().mockImplementation(async () => {
   callOrder.push('update-course');
   return { id: 'course-A-mon' };
 });
+/** POST visit-move-week-only (時刻変更 / 曜日移動)。payload を検証する。 */
+const mockVisitMoveWeekOnly = vi.fn().mockResolvedValue({ visits_moved: 1 });
 
 /**
  * 「担当なし」からの投入提案 (Phase 2-B)。ツールバー「◎ 提案を見る」が
@@ -300,7 +302,7 @@ vi.mock('@/lib/queries/opLog', () => ({
   OP_LOG_STATE_KEY: 'op-log-state',
 }));
 vi.mock('@/lib/queries/visitMoveWeekOnly', () => ({
-  useVisitMoveWeekOnly: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useVisitMoveWeekOnly: () => ({ mutateAsync: mockVisitMoveWeekOnly, isPending: false }),
 }));
 vi.mock('@/lib/queries/visitAssignStaffWeek', () => ({
   useVisitAssignStaffWeek: () => ({ mutateAsync: mockAssignStaffWeek, isPending: false }),
@@ -383,6 +385,7 @@ vi.mock('@/lib/queries/cockpit', () => ({
 // ─── Subject under test ─────────────────────────────────────────────────────
 
 import { ApiError } from '@/lib/api-client';
+import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 
 import { CourseDayTablePanel } from '../CourseDayTablePanel';
 
@@ -400,6 +403,26 @@ function nextMonday(): Date {
 }
 const WEEK_START = nextMonday();
 const MONDAY_ISO = `${WEEK_START.getFullYear()}-${String(WEEK_START.getMonth() + 1).padStart(2, '0')}-${String(WEEK_START.getDate()).padStart(2, '0')}`;
+
+/** 当週の ISO 年週。`findCourseForTemplate` は iso 一致を要求するため必須。 */
+const { isoYear: ISO_YEAR, isoWeek: ISO_WEEK } = isoWeekFromLocalDate(WEEK_START);
+
+/**
+ * tpl-A のコースを指定曜日に置く (iso 一致つき = 移動先として解決できる)。
+ * 曜日移動の「移動先にコースがある/ない」を作り分けるために使う。
+ */
+function coursesOnWeekdays(weekdays: number[]): Array<Record<string, unknown>> {
+  return weekdays.map((wd) => ({
+    id: wd === 0 ? 'course-A-mon' : `course-A-wd${wd}`,
+    office_id: 'office-honten',
+    code: 'A',
+    weekday: wd,
+    iso_year: ISO_YEAR,
+    iso_week: ISO_WEEK,
+    assigned_staff_id: STAFF_1,
+    deleted_at: null,
+  }));
+}
 
 const baseTpl = {
   capacity_mon: 6,
@@ -663,6 +686,7 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
       callOrder.push('update-course');
       return { id: 'course-A-mon' };
     });
+    mockVisitMoveWeekOnly.mockResolvedValue({ visits_moved: 1 });
     ASSIGN_CANDIDATES_RESULT.groups = [];
     ASSIGN_CANDIDATES_RESULT.whole_ok_staff_ids = [];
     ASSIGN_CANDIDATES_RESULT.whole_ok_by_course = {};
@@ -690,6 +714,89 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
       visit_id: 'v1',
       cancel: true,
     });
+  });
+
+  // ─── 曜日移動 / 時刻変更の payload (add-visit-anywhere-design.md §1 欠陥 3) ───
+  //
+  // BE は `new_course_template_id` 省略時にコースを据え置くため、曜日跨ぎでは
+  // 必ず付ける (付けないと訪問が旧曜日のコース ID のまま残る)。同じ曜日の
+  // 時刻変更では付けない (コースを変える理由がない)。
+
+  it('(j) 📅曜日移動: 移動先曜日のコースがあれば new_course_template_id 付きで送る', async () => {
+    setupHooks();
+    // 月 (元) と水 (移動先) の両方に A コースがある週。
+    mockCourses.mockReturnValue({ data: coursesOnWeekdays([0, 2]), isLoading: false });
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId('staff-week-visit-v1'));
+    expect(await screen.findByTestId('visit-action-menu')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('visit-action-weekday'), { target: { value: '2' } });
+
+    await vi.waitFor(() => expect(mockVisitMoveWeekOnly).toHaveBeenCalledTimes(1));
+    expect(mockVisitMoveWeekOnly.mock.calls[0]?.[0]).toMatchObject({
+      patient_id: 'p1',
+      old_weekday: 0,
+      old_start_time: '09:00',
+      new_weekday: 2,
+      new_course_template_id: 'tpl-A',
+    });
+    // 移動先にコースがあるので事前確認は出さない。
+    expect(screen.queryByTestId('move-dest-confirm')).not.toBeInTheDocument();
+  });
+
+  it('(j2) 🕘時刻変更 (同じ曜日) は new_course_template_id を送らない', async () => {
+    setupHooks();
+    mockCourses.mockReturnValue({ data: coursesOnWeekdays([0, 2]), isLoading: false });
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId('staff-week-visit-v1'));
+    expect(await screen.findByTestId('visit-action-menu')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('visit-action-time'), { target: { value: '10:00' } });
+
+    await vi.waitFor(() => expect(mockVisitMoveWeekOnly).toHaveBeenCalledTimes(1));
+    const payload = mockVisitMoveWeekOnly.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(payload).toMatchObject({ old_weekday: 0, new_weekday: 0, new_start_time: '10:00' });
+    expect(payload).not.toHaveProperty('new_course_template_id');
+  });
+
+  it('(j3) 移動先曜日にコースが無ければ「担当なしになる」確認を挟んでから送る', async () => {
+    setupHooks();
+    // 月にしか A コースが無い週 → 水へ動かすと BE が担当なしのコースを作る。
+    mockCourses.mockReturnValue({ data: coursesOnWeekdays([0]), isLoading: false });
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId('staff-week-visit-v1'));
+    expect(await screen.findByTestId('visit-action-menu')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('visit-action-weekday'), { target: { value: '2' } });
+
+    // 確認が出るまでは 1 度も送らない。
+    const confirm = await screen.findByTestId('move-dest-confirm');
+    expect(confirm).toHaveTextContent('水曜');
+    expect(confirm).toHaveTextContent('担当なしになります');
+    expect(mockVisitMoveWeekOnly).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('move-dest-confirm-ok'));
+    await vi.waitFor(() => expect(mockVisitMoveWeekOnly).toHaveBeenCalledTimes(1));
+    expect(mockVisitMoveWeekOnly.mock.calls[0]?.[0]).toMatchObject({
+      new_weekday: 2,
+      new_course_template_id: 'tpl-A',
+    });
+  });
+
+  it('(j4) 確認を「やめる」と送らない', async () => {
+    setupHooks();
+    mockCourses.mockReturnValue({ data: coursesOnWeekdays([0]), isLoading: false });
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId('staff-week-visit-v1'));
+    expect(await screen.findByTestId('visit-action-menu')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('visit-action-weekday'), { target: { value: '2' } });
+
+    expect(await screen.findByTestId('move-dest-confirm')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('move-dest-confirm-cancel'));
+    expect(mockVisitMoveWeekOnly).not.toHaveBeenCalled();
   });
 
   it('(b) 「🛌 休みにする」→ 休みと付け替えは staff-off-week 1 回で終わる', async () => {

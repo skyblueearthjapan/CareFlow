@@ -644,8 +644,79 @@ describe('StaffWeekBoard', () => {
     expect(onMarkOff).toHaveBeenCalledWith(STAFF_1, 0);
     fireEvent.click(screen.getByTestId(`staff-week-add-visit-${STAFF_1}-3`));
     expect(onAddVisit).toHaveBeenCalledWith(STAFF_1, 3);
-    // 「（担当なし）」行にはセルアクションを出さない。
+    // 「（担当なし）」行に 🛌休み は出さない (人ではないので意味が無い)。
     expect(screen.queryByTestId('staff-week-off-action-__unassigned__-0')).not.toBeInTheDocument();
+  });
+
+  it('⑳-b 「（担当なし）」行は ＋訪問 だけ出し、staffId は null で飛ぶ', () => {
+    // add-visit-anywhere-design.md §1 欠陥 4 / §3-4 D:
+    // 担当なし行にも今週だけの訪問を足せる。ただし 🛌休み / ＋イベントは出さない。
+    const onAddVisit = vi.fn();
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        alwaysShowUnassignedRow
+        onMarkOff={vi.fn()}
+        onAddEvent={vi.fn()}
+        onAddVisit={onAddVisit}
+      />,
+    );
+    expect(screen.getByTestId('staff-week-add-visit-__unassigned__-2')).toBeInTheDocument();
+    expect(screen.queryByTestId('staff-week-off-action-__unassigned__-2')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('staff-week-add-__unassigned__-2')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('staff-week-add-visit-__unassigned__-2'));
+    expect(onAddVisit).toHaveBeenCalledWith(null, 2);
+  });
+
+  it('⑳-c onAddVisit 未指定なら「（担当なし）」行にセルアクションを出さない', () => {
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        alwaysShowUnassignedRow
+        onMarkOff={vi.fn()}
+        onAddEvent={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByTestId('staff-week-cell-actions-__unassigned__-2'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('⑳-d todayIso を渡すと当日以前のセルにはアクションを出さない', () => {
+    // WEEK_START = 2026-07-20(月)。水 (7/22) を「今日」にすると 月〜水は出ない。
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={visits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        alwaysShowUnassignedRow
+        todayIso="2026-07-22"
+        onMarkOff={vi.fn()}
+        onAddVisit={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId(`staff-week-add-visit-${STAFF_1}-0`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`staff-week-add-visit-${STAFF_1}-2`)).not.toBeInTheDocument();
+    expect(screen.getByTestId(`staff-week-add-visit-${STAFF_1}-3`)).toBeInTheDocument();
+    expect(screen.queryByTestId('staff-week-add-visit-__unassigned__-2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('staff-week-add-visit-__unassigned__-3')).toBeInTheDocument();
   });
 
   // ─── 「担当なし」からの投入提案 (Phase 2-B・unassigned-suggestions-design.md) ──
