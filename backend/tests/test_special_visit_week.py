@@ -16,7 +16,8 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, time, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
@@ -31,11 +32,14 @@ from app.models.staff import Staff
 from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, VISIT_STATUS_PLANNED, Visit
 from app.services.scheduling.layer1_expander import Layer1Expander
 
-ISO_YEAR = 2026
-ISO_WEEK = 20
-NEXT_ISO_WEEK = 21
-WEEK_MONDAY = date.fromisocalendar(ISO_YEAR, ISO_WEEK, 1)  # 2026-05-11 (Mon)
-NEXT_MONDAY = date.fromisocalendar(ISO_YEAR, NEXT_ISO_WEEK, 1)  # 2026-05-18 (Mon)
+# place の新モード (course_template_id / visit_id) には「過去日 (JST) には配置できない」
+# ガードがあるため、基準週は固定日付ではなく **常に次の月曜から始まる未来週** にする
+# (固定日付だと時間経過でテストが落ちる)。
+TODAY_JST = datetime.now(UTC).astimezone(ZoneInfo("Asia/Tokyo")).date()
+WEEK_MONDAY = TODAY_JST + timedelta(days=7 - TODAY_JST.weekday())
+NEXT_MONDAY = WEEK_MONDAY + timedelta(days=7)
+ISO_YEAR, ISO_WEEK, _ = WEEK_MONDAY.isocalendar()
+NEXT_ISO_YEAR, NEXT_ISO_WEEK, _ = NEXT_MONDAY.isocalendar()
 
 # 2 週間 (ISO 週 20 + 21) を覆う期間.
 PERIOD_START = WEEK_MONDAY
@@ -153,6 +157,9 @@ async def _seed_visit(
     visit_date: date,
     start: time,
     duration_min: int = 30,
+    source: str = "auto",
+    visit_group_id: UUID | None = None,
+    required_staff_count: int = 1,
 ) -> Visit:
     end_total = start.hour * 60 + start.minute + duration_min
     visit = Visit(
@@ -162,10 +169,11 @@ async def _seed_visit(
         end_time=time(end_total // 60, end_total % 60),
         type="regular",
         status=VISIT_STATUS_PLANNED,
-        source="auto",
-        required_staff_count=1,
+        source=source,
+        required_staff_count=required_staff_count,
         course_id=course.id,
         primary_staff_id=course.assigned_staff_id,
+        visit_group_id=visit_group_id,
     )
     db.add(visit)
     await db.flush()
@@ -329,7 +337,7 @@ async def test_calendar_generated_and_ungenerated_weeks(client, db) -> None:
 
     # --- 週 21 = 未生成: PFV の投影 (visit_id=None / generated=False) ---
     w21 = body["weeks"][1]
-    assert (w21["iso_year"], w21["iso_week"]) == (ISO_YEAR, NEXT_ISO_WEEK)
+    assert (w21["iso_year"], w21["iso_week"]) == (NEXT_ISO_YEAR, NEXT_ISO_WEEK)
     assert w21["week_monday"] == NEXT_MONDAY.isoformat()
     w21_mon = w21["days"][0]
     assert len(w21_mon["fixed_visits"]) == 1
@@ -731,6 +739,547 @@ async def test_place_creates_manual_week_visit(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
+# ⑥-b place の追加モード (course_template_id = 案 F-2 / visit_id = リンク)
+# ---------------------------------------------------------------------------
+
+
+async def _place_mark_setup(db, *, email: str, code: str, label: str = "M"):
+    """place の追加モード用: admin / 拠点 / テンプレート / 患者 / 期間 / ○ マーク.
+
+    **API を一切叩かず DB だけで組む**。app 側 session はレスポンス後に共有
+    コネクション (in-memory SQLite) へ ROLLBACK を出すことがあり、API 呼び出しを
+    挟んでから ORM で seed すると未 commit の行が巻き添えで消えて flaky になる。
+    テストは「DB seed をすべて済ませて commit → その後に API」の順で書くこと。
+    """
+    admin = await _make_user(db, email=email)
+    office, staff = await _seed_office_staff(db)
+    template = await _seed_template(db, office=office, label=label)
+    patient = await _seed_patient(db, office=office, code=code)
+    await _seed_pfv(db, patient=patient, weekday=0, start=time(9, 30), duration_min=45)
+    period = SpecialVisitPeriod(
+        patient_id=patient.id,
+        start_date=PERIOD_START,
+        end_date=PERIOD_END,
+        weekly_target=3,
+        status="active",
+    )
+    db.add(period)
+    await db.flush()
+    mark = SpecialVisitMark(
+        period_id=period.id,
+        patient_id=patient.id,
+        iso_year=ISO_YEAR,
+        iso_week=ISO_WEEK,
+        weekday=2,
+        kind="extra",
+        status="pool",
+    )
+    db.add(mark)
+    await db.flush()
+    return admin, office, staff, template, patient, period, mark
+
+
+@pytest.mark.asyncio
+async def test_place_by_course_template_creates_missing_course(client, db) -> None:
+    """案 F-2: 当該週の Course が無くても M テンプレート指定で配置できる."""
+    admin, office, _staff, template, patient, _period, mark = await _place_mark_setup(
+        db, email="svw-place-tpl@example.com", code="SVW-TPL"
+    )
+    await db.commit()
+    # 当該週・曜日の Course はまだ存在しない.
+    assert (
+        await db.scalar(
+            select(Course).where(
+                Course.template_id == template.id,
+                Course.iso_year == ISO_YEAR,
+                Course.iso_week == ISO_WEEK,
+                Course.weekday == 2,
+            )
+        )
+    ) is None
+    await db.commit()  # 読み取り TX を閉じる (同上).
+
+    res = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"course_template_id": str(template.id), "start_time": "14:00"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["mark"]["status"] == "placed"
+    assert body["mark"]["placed_visit_id"] == body["visit_id"]
+    assert body["mark"]["placed_summary"] == {"start_time": "14:00", "course_label": "稲M"}
+
+    course = await db.scalar(
+        select(Course).where(
+            Course.template_id == template.id,
+            Course.iso_year == ISO_YEAR,
+            Course.iso_week == ISO_WEEK,
+            Course.weekday == 2,
+        )
+    )
+    assert course is not None
+    assert course.code == "M"
+    assert course.office_id == office.id
+    # 担当なし (assigned_staff_id=None) でも配置できる.
+    assert course.assigned_staff_id is None
+
+    visit = await db.scalar(select(Visit).where(Visit.id == UUID(body["visit_id"])))
+    assert visit is not None
+    assert visit.source == VISIT_SOURCE_MANUAL_WEEK
+    assert visit.course_id == course.id
+    assert visit.primary_staff_id is None
+    assert visit.visit_date == WEEK_MONDAY + timedelta(days=2)
+    assert visit.start_time == time(14, 0)
+    assert visit.end_time == time(14, 45)
+    assert visit.patient_id == patient.id
+
+
+@pytest.mark.asyncio
+async def test_place_by_course_template_office_mismatch_is_422(client, db) -> None:
+    admin, _office, _staff, _template, _patient, _period, mark = await _place_mark_setup(
+        db, email="svw-place-tpl-ng@example.com", code="SVW-TPL-NG"
+    )
+    other_office = Office(name="都賀", code="TSUGA")
+    db.add(other_office)
+    await db.flush()
+    other_template = await _seed_template(db, office=other_office, label="M")
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"course_template_id": str(other_template.id), "start_time": "14:00"},
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"] == "拠点が一致しません"
+
+
+@pytest.mark.asyncio
+async def test_place_links_existing_visit_without_creating_one(client, db) -> None:
+    """visit_id モード: place-and-fix で作られた訪問にマークをリンクするだけ."""
+    admin, office, staff, template, patient, period, mark = await _place_mark_setup(
+        db, email="svw-place-link@example.com", code="SVW-LINK", label="A"
+    )
+    course = await _seed_course(db, office=office, staff=staff, weekday=2, template=template)
+    visit = await _seed_visit(
+        db,
+        patient=patient,
+        course=course,
+        visit_date=WEEK_MONDAY + timedelta(days=2),
+        start=time(16, 0),
+        source=VISIT_SOURCE_MANUAL_WEEK,
+    )
+    await db.commit()
+
+    before = len((await db.scalars(select(Visit))).all())
+    # 読み取りで開いた TX を閉じてから API を叩く (テスト session と app session は
+    # in-memory SQLite の同一コネクションを共有するため、開きっぱなしだと app 側の
+    # 参照がぶれる — test_constraint_confirm_paths._refresh_session と同じ事情).
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"visit_id": str(visit.id)},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["visit_id"] == str(visit.id)
+    assert body["mark"]["status"] == "placed"
+    assert body["mark"]["placed_visit_id"] == str(visit.id)
+    assert body["mark"]["placed_summary"] == {"start_time": "16:00", "course_label": "稲A"}
+
+    # 訪問は新規作成されない.
+    assert len((await db.scalars(select(Visit))).all()) == before
+
+    # カレンダーでも ● 扱い (fixed_visits には二重計上されない).
+    cal = await client.get(
+        f"/api/v1/special-visit-periods/{period.id}/calendar", headers=_bearer(admin)
+    )
+    w20 = cal.json()["weeks"][0]
+    assert w20["days"][2]["fixed_visits"] == []
+    assert w20["days"][2]["extra_mark"]["status"] == "placed"
+    assert w20["days"][2]["extra_mark"]["placed_summary"]["start_time"] == "16:00"
+
+
+@pytest.mark.asyncio
+async def test_place_link_rejects_wrong_date_other_patient_and_cancelled(client, db) -> None:
+    admin, office, staff, template, patient, _period, mark = await _place_mark_setup(
+        db, email="svw-place-link-ng@example.com", code="SVW-LINK-NG", label="A"
+    )
+    course = await _seed_course(db, office=office, staff=staff, weekday=2, template=template)
+    # ① 日付違い (mark は weekday=2 = 水曜).
+    wrong_date = await _seed_visit(
+        db,
+        patient=patient,
+        course=course,
+        visit_date=WEEK_MONDAY + timedelta(days=3),
+        start=time(16, 0),
+        source=VISIT_SOURCE_MANUAL_WEEK,
+    )
+    # ② 別患者.
+    other_patient = await _seed_patient(db, office=office, code="SVW-LINK-OTHER")
+    other_visit = await _seed_visit(
+        db,
+        patient=other_patient,
+        course=course,
+        visit_date=WEEK_MONDAY + timedelta(days=2),
+        start=time(17, 0),
+        source=VISIT_SOURCE_MANUAL_WEEK,
+    )
+    # ③ 取消済み訪問.
+    cancelled = await _seed_visit(
+        db,
+        patient=patient,
+        course=course,
+        visit_date=WEEK_MONDAY + timedelta(days=2),
+        start=time(18, 0),
+        source=VISIT_SOURCE_MANUAL_WEEK,
+    )
+    cancelled.status = "cancelled"
+    # ④ 固定訪問 (source='auto') はリンク対象外.
+    auto_visit = await _seed_visit(
+        db,
+        patient=patient,
+        course=course,
+        visit_date=WEEK_MONDAY + timedelta(days=2),
+        start=time(19, 0),
+    )
+    await db.commit()
+
+    for visit_id, expected in (
+        (wrong_date.id, "訪問日が対象週・曜日と一致しません"),
+        (other_visit.id, "訪問の利用者がチケットと一致しません"),
+        (cancelled.id, "予定 (planned) の訪問のみリンクできます"),
+        (auto_visit.id, "この訪問はリンクできません（追加枠として作られた訪問のみ）"),
+    ):
+        res = await client.post(
+            f"/api/v1/special-visit-marks/{mark.id}/place",
+            headers=_bearer(admin),
+            json={"visit_id": str(visit_id)},
+        )
+        assert res.status_code == 422, res.text
+        assert res.json()["detail"] == expected
+
+    # 存在しない訪問は 404.
+    missing = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"visit_id": "00000000-0000-0000-0000-000000000001"},
+    )
+    assert missing.status_code == 404, missing.text
+
+    # マークは未配置のまま.
+    row = await db.get(SpecialVisitMark, mark.id)
+    await db.refresh(row)
+    assert row.status == "pool"
+    assert row.placed_visit_id is None
+
+
+@pytest.mark.asyncio
+async def test_place_requires_exactly_one_selector(client, db) -> None:
+    admin, office, _staff, template, _patient, _period, mark = await _place_mark_setup(
+        db, email="svw-place-selector@example.com", code="SVW-SEL", label="A"
+    )
+    await db.commit()
+
+    # ① 2 つ同時指定 → 422.
+    two = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={
+            "course_template_id": str(template.id),
+            "office_id": str(office.id),
+            "course_code": "A",
+            "start_time": "14:00",
+        },
+    )
+    assert two.status_code == 422, two.text
+
+    # ② 1 つも指定しない → 422.
+    none_given = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"start_time": "14:00"},
+    )
+    assert none_given.status_code == 422, none_given.text
+
+    # ③ 訪問を作る経路で start_time 欠落 → 422.
+    no_time = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"course_template_id": str(template.id)},
+    )
+    assert no_time.status_code == 422, no_time.text
+
+
+@pytest.mark.asyncio
+async def test_place_by_office_and_course_code_still_works(client, db) -> None:
+    """既存の (office_id + course_code) 経路 (PoolCandidateList) は不変."""
+    admin, office, staff, template, _patient, _period, mark = await _place_mark_setup(
+        db, email="svw-place-code@example.com", code="SVW-CODE", label="A"
+    )
+    course = await _seed_course(db, office=office, staff=staff, weekday=2, template=template)
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"office_id": str(office.id), "course_code": "A", "start_time": "13:00"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    visit = await db.scalar(select(Visit).where(Visit.id == UUID(body["visit_id"])))
+    assert visit is not None
+    assert visit.course_id == course.id
+    assert visit.primary_staff_id == staff.id
+
+
+@pytest.mark.asyncio
+async def test_place_by_course_template_reuses_existing_course(client, db) -> None:
+    """course_template_id モード: 当該週の Course が既にあれば作らず再利用する."""
+    admin, office, staff, template, _patient, _period, mark = await _place_mark_setup(
+        db, email="svw-place-tpl-reuse@example.com", code="SVW-TPL-RE", label="A"
+    )
+    existing = await _seed_course(db, office=office, staff=staff, weekday=2, template=template)
+    await db.commit()
+    before = len((await db.scalars(select(Course))).all())
+    await db.commit()  # 読み取り TX を閉じる (同上).
+
+    res = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"course_template_id": str(template.id), "start_time": "14:00"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    # Course は増えない (helper の SELECT 分岐).
+    assert len((await db.scalars(select(Course))).all()) == before
+    visit = await db.scalar(select(Visit).where(Visit.id == UUID(body["visit_id"])))
+    assert visit is not None
+    assert visit.course_id == existing.id
+    assert visit.primary_staff_id == staff.id
+
+
+@pytest.mark.asyncio
+async def test_place_link_rejects_visit_already_linked_to_another_mark(client, db) -> None:
+    admin, office, staff, template, patient, period, mark = await _place_mark_setup(
+        db, email="svw-place-dup@example.com", code="SVW-DUP", label="A"
+    )
+    course = await _seed_course(db, office=office, staff=staff, weekday=2, template=template)
+    visit = await _seed_visit(
+        db,
+        patient=patient,
+        course=course,
+        visit_date=WEEK_MONDAY + timedelta(days=2),
+        start=time(16, 0),
+        source=VISIT_SOURCE_MANUAL_WEEK,
+    )
+    # 同一期間の同一セルには ○ を 2 つ置けない (UNIQUE) ので、終了済みの別期間に
+    # 同じセルの ○ を作って「別マークが同じ訪問を指す」状況だけを再現する.
+    other_period = SpecialVisitPeriod(
+        patient_id=patient.id,
+        start_date=PERIOD_START,
+        end_date=PERIOD_END,
+        weekly_target=3,
+        status="ended",
+    )
+    db.add(other_period)
+    await db.flush()
+    dup_mark = SpecialVisitMark(
+        period_id=other_period.id,
+        patient_id=patient.id,
+        iso_year=ISO_YEAR,
+        iso_week=ISO_WEEK,
+        weekday=2,
+        kind="extra",
+        status="pool",
+    )
+    # 日付違いの ○ (weekday=3): 409 ではなく 422 のままであることの対照.
+    other_mark = SpecialVisitMark(
+        period_id=period.id,
+        patient_id=patient.id,
+        iso_year=ISO_YEAR,
+        iso_week=ISO_WEEK,
+        weekday=3,
+        kind="extra",
+        status="pool",
+    )
+    db.add_all([dup_mark, other_mark])
+    await db.commit()
+
+    first = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"visit_id": str(visit.id)},
+    )
+    assert first.status_code == 200, first.text
+
+    res = await client.post(
+        f"/api/v1/special-visit-marks/{dup_mark.id}/place",
+        headers=_bearer(admin),
+        json={"visit_id": str(visit.id)},
+    )
+    assert res.status_code == 409, res.text
+    assert res.json()["detail"] == "この訪問は既に別の追加枠に紐づいています"
+
+    # weekday=3 のマークは日付違いのまま (409 ではなく 422).
+    wrong_day = await client.post(
+        f"/api/v1/special-visit-marks/{other_mark.id}/place",
+        headers=_bearer(admin),
+        json={"visit_id": str(visit.id)},
+    )
+    assert wrong_day.status_code == 422, wrong_day.text
+
+
+@pytest.mark.asyncio
+async def test_place_link_is_visit_group_aware(client, db) -> None:
+    """2 名体制 (visit_group_id): 片方をリンクしても相方まで一体で扱う."""
+    admin, office, staff, template, patient, period, mark = await _place_mark_setup(
+        db, email="svw-place-group@example.com", code="SVW-GRP", label="A"
+    )
+    course = await _seed_course(db, office=office, staff=staff, weekday=2, template=template)
+    group_id = uuid4()
+    kwargs = {
+        "visit_date": WEEK_MONDAY + timedelta(days=2),
+        "start": time(16, 0),
+        "source": VISIT_SOURCE_MANUAL_WEEK,
+        "visit_group_id": group_id,
+        "required_staff_count": 2,
+    }
+    v1 = await _seed_visit(db, patient=patient, course=course, **kwargs)
+    v2 = await _seed_visit(db, patient=patient, course=course, **kwargs)
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/special-visit-marks/{mark.id}/place",
+        headers=_bearer(admin),
+        json={"visit_id": str(v1.id)},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["mark"]["placed_visit_id"] == str(v1.id)
+
+    # カレンダー: どちらも固定訪問として出ない・週合計は ○ 1 件ぶんだけ.
+    cal = await client.get(
+        f"/api/v1/special-visit-periods/{period.id}/calendar", headers=_bearer(admin)
+    )
+    w20 = cal.json()["weeks"][0]
+    assert w20["days"][2]["fixed_visits"] == []
+    assert w20["days"][2]["extra_mark"]["status"] == "placed"
+    assert w20["total"] == 1
+
+    # force 取消でグループ全体が soft-delete される.
+    delete = await client.delete(
+        f"/api/v1/special-visit-marks/{mark.id}?force=true", headers=_bearer(admin)
+    )
+    assert delete.status_code == 204, delete.text
+    for row in (v1, v2):
+        await db.refresh(row)
+        assert row.deleted_at is not None, f"visit {row.id} not soft-deleted"
+
+
+@pytest.mark.asyncio
+async def test_place_rejects_past_date_and_allows_today(client, db) -> None:
+    """過去日 (JST) ガードは **新モード限定**・当日は可.
+
+    course_template_id / visit_id は 422、既存の course_id / (office_id +
+    course_code) 経路 (プール ⭐) は PO 判断が出るまで従来どおり過去日も通す。
+    """
+    admin = await _make_user(db, email="svw-place-past@example.com")
+    office, staff = await _seed_office_staff(db)
+    template = await _seed_template(db, office=office, label="A")
+    patient = await _seed_patient(db, office=office, code="SVW-PAST")
+
+    # 直近の過去日 (日曜はマーク対象外なので月〜土まで遡る).
+    past = TODAY_JST - timedelta(days=1)
+    while past.weekday() > 5:
+        past -= timedelta(days=1)
+
+    period = SpecialVisitPeriod(
+        patient_id=patient.id,
+        start_date=past - timedelta(days=7),
+        end_date=TODAY_JST + timedelta(days=7),
+        weekly_target=3,
+        status="active",
+    )
+    db.add(period)
+    await db.flush()
+
+    async def _cell(day: date) -> tuple[SpecialVisitMark, Course]:
+        iso = day.isocalendar()
+        mark = SpecialVisitMark(
+            period_id=period.id,
+            patient_id=patient.id,
+            iso_year=iso.year,
+            iso_week=iso.week,
+            weekday=day.weekday(),
+            kind="extra",
+            status="pool",
+        )
+        course = Course(
+            iso_year=iso.year,
+            iso_week=iso.week,
+            weekday=day.weekday(),
+            code="A",
+            course_status=COURSE_STATUS_STAFF_ASSIGNED,
+            assigned_staff_id=staff.id,
+            office_id=office.id,
+            template_id=template.id,
+        )
+        db.add_all([mark, course])
+        await db.flush()
+        return mark, course
+
+    past_mark, past_course = await _cell(past)
+    past_visit = await _seed_visit(
+        db,
+        patient=patient,
+        course=past_course,
+        visit_date=past,
+        start=time(16, 0),
+        source=VISIT_SOURCE_MANUAL_WEEK,
+    )
+    today_cell = await _cell(TODAY_JST) if TODAY_JST.weekday() <= 5 else None
+    await db.commit()
+
+    url = f"/api/v1/special-visit-marks/{past_mark.id}/place"
+
+    # ① course_template_id モード → 422.
+    tpl = await client.post(
+        url,
+        headers=_bearer(admin),
+        json={"course_template_id": str(template.id), "start_time": "14:00"},
+    )
+    assert tpl.status_code == 422, tpl.text
+    assert tpl.json()["detail"] == "過去日には配置できません"
+
+    # ② visit_id モード → 422.
+    link = await client.post(url, headers=_bearer(admin), json={"visit_id": str(past_visit.id)})
+    assert link.status_code == 422, link.text
+    assert link.json()["detail"] == "過去日には配置できません"
+
+    # ③ 既存モード (office_id + course_code) は過去日ガードに掛からない (従来動作).
+    legacy = await client.post(
+        url,
+        headers=_bearer(admin),
+        json={"office_id": str(office.id), "course_code": "A", "start_time": "14:00"},
+    )
+    assert legacy.status_code == 200, legacy.text
+
+    # ④ 当日は新モードでも配置できる (日曜に走ったときはマーク対象外なので skip).
+    if today_cell is not None:
+        today_mark, _today_course = today_cell
+        ok = await client.post(
+            f"/api/v1/special-visit-marks/{today_mark.id}/place",
+            headers=_bearer(admin),
+            json={"course_template_id": str(template.id), "start_time": "14:00"},
+        )
+        assert ok.status_code == 200, ok.text
+
+
+# ---------------------------------------------------------------------------
 # ⑦ プール一覧 + 自己回復
 # ---------------------------------------------------------------------------
 
@@ -863,7 +1412,7 @@ async def test_layer1_skips_displaced_weekday(db) -> None:
     assert rows[0].visit_date == WEEK_MONDAY + timedelta(days=2)
 
     # 別週 (21) は退避マークが無いので通常どおり 2 件.
-    result_next = await expander.expand_week(db, iso_year=ISO_YEAR, iso_week=NEXT_ISO_WEEK)
+    result_next = await expander.expand_week(db, iso_year=NEXT_ISO_YEAR, iso_week=NEXT_ISO_WEEK)
     await db.commit()
     assert result_next.visits_created_count == 2
 

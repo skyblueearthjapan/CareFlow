@@ -17,6 +17,7 @@
   P2  place-and-fix: acknowledge → 200 + 通知 (op_group_id で冪等)
   P3  place-and-fix: 違反なし → 素通り・通知なし
   S1  special-visit place: 性別違反 → 422 → acknowledge → 200 + 通知
+  S2  special-visit place (visit_id リンクモード): 同じ検査 + 通知を通す
   F1  PUT fixed-visits pattern_and_week: NG 違反 → 422 / PFV は無傷
   F2  PUT fixed-visits pattern_and_week: acknowledge → 200 + 通知
   F3  PUT fixed-visits pattern_only: 週が特定できないためスキップ
@@ -28,7 +29,8 @@ Backend で APP_ENV=test ガード済み (conftest.py). 本番 DB 禁止 (ロー
 
 from __future__ import annotations
 
-from datetime import date, time, timedelta
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
@@ -47,10 +49,11 @@ from app.models.user import User
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 
-# ISO 2026 W20 = 2026-05-11 (Mon) .. 2026-05-17 (Sun)
-ISO_YEAR = 2026
-ISO_WEEK = 20
-MON = date.fromisocalendar(ISO_YEAR, ISO_WEEK, 1)
+# 基準週 = **常に次の月曜から始まる未来週**。special-visit place には
+# 「過去日 (JST) には配置できない」ガードがあるため、固定日付だと時間経過で落ちる。
+_TODAY_JST = datetime.now(UTC).astimezone(ZoneInfo("Asia/Tokyo")).date()
+MON = _TODAY_JST + timedelta(days=7 - _TODAY_JST.weekday())
+ISO_YEAR, ISO_WEEK, _ = MON.isocalendar()
 
 _MOVE_URL = "/api/v1/schedule/v2/visit-move-week-only"
 _PLACE_FIX_URL = "/api/v1/schedule/place-and-fix"
@@ -169,7 +172,15 @@ async def _seed(
 
 
 async def _make_visit(
-    db, *, patient_id, weekday: int, start: time, end: time, course_id=None, staff_id=None
+    db,
+    *,
+    patient_id,
+    weekday: int,
+    start: time,
+    end: time,
+    course_id=None,
+    staff_id=None,
+    source: str = "auto",
 ) -> Visit:
     v = Visit(
         patient_id=patient_id,
@@ -178,7 +189,7 @@ async def _make_visit(
         end_time=end,
         type="regular",
         status=VISIT_STATUS_PLANNED,
-        source="auto",
+        source=source,
         required_staff_count=1,
         course_id=course_id,
         primary_staff_id=staff_id,
@@ -586,6 +597,75 @@ async def test_s1_special_visit_place_gender_violation(client, db) -> None:
     visits = await _active_visits(db, seed["patient_id"])
     assert len(visits) == 1
     assert visits[0].primary_staff_id == seed["staff_id"]
+
+    rows = await _notifications(db)
+    assert len(rows) == 1
+    assert "性別制限外の割当を承認" in rows[0].title
+
+
+@pytest.mark.asyncio
+async def test_s2_special_visit_link_existing_visit_runs_same_check(client, db) -> None:
+    """visit_id リンクモードも create 経路と同じ NG/性別チェック + 通知を通す."""
+    admin = await _make_user(db, "cc-svw-2@example.com")
+    headers = _bearer(admin)
+    seed = await _seed(
+        db, prefix="CC-SVW2", staff_sex="male", sex_restriction="female_only", weekday=2
+    )
+
+    period = SpecialVisitPeriod(
+        patient_id=seed["patient_id"],
+        start_date=MON,
+        end_date=MON + timedelta(days=13),
+        weekly_target=3,
+        status="active",
+    )
+    db.add(period)
+    await db.flush()
+    mark = SpecialVisitMark(
+        period_id=period.id,
+        patient_id=seed["patient_id"],
+        iso_year=ISO_YEAR,
+        iso_week=ISO_WEEK,
+        weekday=2,
+        kind="extra",
+        status="pool",
+    )
+    db.add(mark)
+    await db.commit()
+    mark_id = mark.id
+
+    # place-and-fix 相当で先に作られた追加枠訪問 (source='manual_week').
+    visit = await _make_visit(
+        db,
+        patient_id=seed["patient_id"],
+        weekday=2,
+        start=time(14, 0),
+        end=time(14, 30),
+        course_id=seed["course_id"],
+        staff_id=seed["staff_id"],
+        source="manual_week",
+    )
+    visit_id = visit.id  # _refresh_session の expire_all 後に触れないよう先に確定.
+
+    url = f"/api/v1/special-visit-marks/{mark_id}/place"
+    res = await client.post(url, headers=headers, json={"visit_id": str(visit_id)})
+    assert res.status_code == 422, res.text
+    _assert_detail_shape(res.json()["detail"], seed, "gender", note=None)
+    await _refresh_session(db)
+    still_pool = await db.scalar(select(SpecialVisitMark).where(SpecialVisitMark.id == mark_id))
+    assert still_pool is not None
+    assert still_pool.status == "pool"
+
+    res = await client.post(
+        url,
+        headers=headers,
+        json={"visit_id": str(visit_id), "acknowledge_constraint_warnings": True},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["mark"]["placed_visit_id"] == str(visit_id)
+
+    # 訪問は増えない (リンクのみ).
+    assert len(await _active_visits(db, seed["patient_id"])) == 1
 
     rows = await _notifications(db)
     assert len(rows) == 1

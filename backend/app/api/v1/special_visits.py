@@ -17,6 +17,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, tuple_
@@ -76,6 +77,9 @@ _FIXED_VISIT_TYPE = "regular"
 _FIXED_VISIT_SOURCE = "auto"
 # 配置 (place) 時に duration が全く解決できない場合の最終フォールバック (分).
 _DEFAULT_SERVICE_MINUTES = 30
+# 「当日 / 過去日」の判定は JST 基準 (サーバは UTC・日付境界がずれないように)。
+# schedule_v2.py の過去日ガードと同じ規約。
+_JST = ZoneInfo("Asia/Tokyo")
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +213,42 @@ async def _visit_is_alive(db, visit_id: UUID | None) -> Visit | None:
     if visit_id is None:
         return None
     return await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
+
+
+async def _group_expanded_visit_ids(db, visit_ids: set[UUID]) -> set[UUID]:
+    """2 名体制 (``visit_group_id``) の相方まで広げた「一体で扱う訪問」の id 集合.
+
+    place-and-fix は ``required_staff_count>=2`` の患者に対し **同じ
+    ``visit_group_id`` を持つ visit を 2 行** 作る (models/visit.py 冒頭)。
+    マークがリンクするのは片方だけなので、カレンダーの二重計上除外や
+    force 取消は「グループ全体」を見ないと相方が取り残される。
+    ``visit_group_id`` が NULL の訪問はそのまま自分だけを返す。
+    """
+    if not visit_ids:
+        return set()
+    group_ids = {
+        gid
+        for gid in (
+            await db.scalars(
+                select(Visit.visit_group_id).where(
+                    Visit.id.in_(visit_ids), Visit.visit_group_id.is_not(None)
+                )
+            )
+        ).all()
+        if gid is not None
+    }
+    expanded = set(visit_ids)
+    if group_ids:
+        expanded |= set(
+            (
+                await db.scalars(
+                    select(Visit.id).where(
+                        Visit.visit_group_id.in_(group_ids), Visit.deleted_at.is_(None)
+                    )
+                )
+            ).all()
+        )
+    return expanded
 
 
 async def _placed_summary_for(db, visit_id: UUID | None) -> PlacedSummary | None:
@@ -378,6 +418,9 @@ async def get_calendar(period_id: UUID, db: DbDep, _user: AdminManager) -> Calen
         if mark.placed_visit_id is not None:
             placed_visit_ids.add(mark.placed_visit_id)
 
+    # 2 名体制 (visit_group_id) の相方も「配置済み ○ の訪問」として扱う (二重計上防止).
+    placed_group_visit_ids = await _group_expanded_visit_ids(db, placed_visit_ids)
+
     # ---- 生成済み週 (= その週の Course 行が存在するか) --------------------
     generated: set[tuple[int, int]] = set()
     if week_keys:
@@ -473,7 +516,8 @@ async def get_calendar(period_id: UUID, db: DbDep, _user: AdminManager) -> Calen
             if is_generated:
                 for visit, course, office in visits_by_date.get(day_date, []):
                     # 配置済み ○ の訪問は「固定訪問の残数」ではないので除外 (二重計上防止).
-                    if visit.id in placed_visit_ids:
+                    # 2 名体制はグループ全体 (相方も) を除外する。
+                    if visit.id in placed_group_visit_ids:
                         continue
                     resolved = (course.assigned_staff_id if course is not None else None) or (
                         visit.primary_staff_id
@@ -639,7 +683,12 @@ async def delete_mark(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="配置済みです。force=true で配置先訪問も削除します",
                 )
-            placed.deleted_at = datetime.now(UTC)
+            # 2 名体制 (visit_group_id) はグループ全体を落とす (相方の取り残し防止).
+            now = datetime.now(UTC)
+            for target_id in await _group_expanded_visit_ids(db, {placed.id}):
+                target = await _visit_is_alive(db, target_id)
+                if target is not None:
+                    target.deleted_at = now
 
     mark.status = MARK_STATUS_CANCELLED
     mark.placed_visit_id = None
@@ -963,6 +1012,11 @@ async def place_mark(
     配置経路のため、無警告で NG スタッフに紐づく穴が最も大きかった。
     違反があれば ``code=constraint_confirmation_required`` の 422、
     ``acknowledge_constraint_warnings=true`` の再送で続行 + 管理者へお知らせ。
+
+    配置先の指定は 4 通り (schema 側で「いずれか 1 つ」を強制):
+    ``course_id`` / (``office_id`` + ``course_code``) / ``course_template_id``
+    (当該週の Course が無ければ作る = 2026-08-31 案 F-2 の担当なし M 受け皿) /
+    ``visit_id`` (既存訪問へのリンク = 訪問は作らない)。
     """
     mark = await _get_mark(db, mark_id)
     if mark.status == MARK_STATUS_CANCELLED:
@@ -972,7 +1026,132 @@ async def place_mark(
         if await _visit_is_alive(db, mark.placed_visit_id) is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="既に配置済みです")
 
-    if payload.course_id is not None:
+    mark_date = _week_monday(mark.iso_year, mark.iso_week) + timedelta(days=mark.weekday)
+
+    # 過去日には配置しない (実績のある日を後から動かさない)。当日は可。
+    # **スコープ = 新モード (course_template_id / visit_id) のみ**。既存の
+    # course_id / (office_id + course_code) 経路 (プール ⭐ の PoolCandidateList) は
+    # 過去日も通す従来動作を保つ — 塞ぐかどうかは PO 判断待ちのため、この改修では
+    # 挙動を変えない。FE は意図的にもっと厳しく「当日」も配置させない。
+    if payload.course_template_id is not None or payload.visit_id is not None:
+        today_jst = datetime.now(UTC).astimezone(_JST).date()
+        if mark_date < today_jst:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="過去日には配置できません"
+            )
+
+    # ---- visit_id モード: 別経路で作られた訪問にリンクするだけ -----------------
+    if payload.visit_id is not None:
+        linked = await db.scalar(
+            select(Visit).where(Visit.id == payload.visit_id, Visit.deleted_at.is_(None))
+        )
+        if linked is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Visit not found")
+        if linked.patient_id != mark.patient_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="訪問の利用者がチケットと一致しません",
+            )
+        if linked.status != VISIT_STATUS_PLANNED:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="予定 (planned) の訪問のみリンクできます",
+            )
+        if linked.visit_date != mark_date:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="訪問日が対象週・曜日と一致しません",
+            )
+        # 追加枠として作られた訪問だけをリンク対象にする。固定訪問 (source='auto')
+        # を ● に化けさせると「固定を退避したのか追加したのか」が判別不能になり、
+        # force 取消で本来の固定訪問まで消えてしまう。
+        if linked.source not in (VISIT_SOURCE_MANUAL_WEEK, "manual"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="この訪問はリンクできません（追加枠として作られた訪問のみ）",
+            )
+        # 二重リンク防止: 同じ訪問を複数の ○ が指すと週合計が狂う.
+        dup = await db.scalar(
+            select(SpecialVisitMark).where(
+                SpecialVisitMark.placed_visit_id == linked.id,
+                SpecialVisitMark.status != MARK_STATUS_CANCELLED,
+                SpecialVisitMark.id != mark.id,
+            )
+        )
+        if dup is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="この訪問は既に別の追加枠に紐づいています",
+            )
+        # NG スタッフ / 性別制限 (§7-2): 不変条件 = **この API から患者が担当に
+        # 紐づくすべての経路で検査する**。リンクは訪問を作らないが、その訪問の
+        # コース担当が患者の NG / 性別制限に触れていれば「特別枠として承認した」
+        # 事実は create 経路と同じ重みを持つため、同じ確認フロー + 通知を通す。
+        linked_course = (
+            await db.scalar(
+                select(Course).where(Course.id == linked.course_id, Course.deleted_at.is_(None))
+            )
+            if linked.course_id is not None
+            else None
+        )
+        link_warnings: list = []
+        if linked_course is not None:
+            link_warnings = await collect_constraint_warnings_for_patients(
+                db, course=linked_course, patient_ids=[mark.patient_id]
+            )
+            if link_warnings and not payload.acknowledge_constraint_warnings:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=constraint_confirmation_detail(link_warnings),
+                )
+
+        mark.status = MARK_STATUS_PLACED
+        mark.placed_visit_id = linked.id
+        if linked_course is not None:
+            await notify_constraint_override_for_course(
+                db,
+                course=linked_course,
+                warnings=link_warnings,
+                actor=current_user,
+                op_group_id=None,
+            )
+        await db.commit()
+        await db.refresh(mark)
+        summary = await _placed_summary_for(db, mark.placed_visit_id)
+        return PlaceResponse(mark=_mark_read(mark, summary), visit_id=linked.id)
+
+    patient = await db.get(Patient, mark.patient_id)
+    if patient is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+
+    if payload.course_template_id is not None:
+        # 循環 import を避けるため関数内 import (schedule.py は special_visits を
+        # import しない・schedule_v2.py と同じ手口).
+        from app.api.v1.schedule import _get_or_create_course_for_template_week
+
+        template = await db.scalar(
+            select(CourseTemplate).where(
+                CourseTemplate.id == payload.course_template_id,
+                CourseTemplate.deleted_at.is_(None),
+            )
+        )
+        if template is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="CourseTemplate not found"
+            )
+        if template.office_id != patient.primary_office_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="拠点が一致しません"
+            )
+        # 当該週の Course が無ければ proposed で作る (案 F-2 = M への受け皿).
+        course = await _get_or_create_course_for_template_week(
+            db,
+            course_template_id=payload.course_template_id,
+            iso_year=mark.iso_year,
+            iso_week=mark.iso_week,
+            weekday=mark.weekday,
+        )
+    elif payload.course_id is not None:
         course = await db.scalar(
             select(Course).where(Course.id == payload.course_id, Course.deleted_at.is_(None))
         )
@@ -1002,10 +1181,6 @@ async def place_mark(
             detail="course が対象週・曜日と一致しません",
         )
 
-    patient = await db.get(Patient, mark.patient_id)
-    if patient is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
-
     # NG スタッフ / 性別制限の確認フロー (§7-2). Visit 生成前に検査する。
     _cw = await collect_constraint_warnings_for_patients(
         db, course=course, patient_ids=[mark.patient_id]
@@ -1016,18 +1191,17 @@ async def place_mark(
             detail=constraint_confirmation_detail(_cw),
         )
 
-    start_t = _parse_hhmm(payload.start_time)
+    start_t = _parse_hhmm(payload.start_time) if payload.start_time else None
     if start_t is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid start_time"
         )
     service_minutes = await _resolve_service_minutes(db, patient)
     end_t = _add_minutes(start_t, service_minutes)
-    visit_date = _week_monday(mark.iso_year, mark.iso_week) + timedelta(days=mark.weekday)
 
     visit = Visit(
         patient_id=mark.patient_id,
-        visit_date=visit_date,
+        visit_date=mark_date,
         start_time=start_t,
         end_time=end_t,
         type=_FIXED_VISIT_TYPE,

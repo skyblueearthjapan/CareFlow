@@ -127,8 +127,17 @@ class MarkRead(BaseModel):
 class PlaceRequest(BaseModel):
     """POST /special-visit-marks/{id}/place のリクエスト.
 
-    配置先コースは ``course_id`` 直指定か、propose-slots の候補が持つ
-    ``(office_id, course_code)`` のどちらかで指定する (週・曜日は mark 側が正)。
+    配置先の指定方法は次の 4 通り (**いずれか 1 つだけ**・週・曜日は mark 側が正):
+
+    1. ``course_id`` — 週次 Course の直指定 (従来).
+    2. ``office_id`` + ``course_code`` — propose-slots の候補は course_id を
+       持たないため、拠点 + コード + mark の週・曜日で実体を解決する (従来).
+    3. ``course_template_id`` — コーステンプレート指定。当該週の Course が
+       まだ無ければ作る (2026-08-31 案 F-2 = 担当なし M への受け皿)。
+    4. ``visit_id`` — 別経路 (place-and-fix / ＋訪問モーダル) で既に作成済みの
+       訪問にマークをリンクする (訪問は新規作成しない)。
+
+    ``start_time`` は 1〜3 (訪問を作る経路) で必須、4 では無視される。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -136,20 +145,45 @@ class PlaceRequest(BaseModel):
     course_id: UUID | None = None
     office_id: UUID | None = None
     course_code: str | None = None
-    start_time: str
+    # 案 F-2: Course 未生成でもテンプレート (M 含む) を指定して配置できる。
+    course_template_id: UUID | None = None
+    # 既存訪問へのリンク専用モード (訪問は作らない)。
+    visit_id: UUID | None = None
+    start_time: str | None = None
     # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
     # 既定 False = 従来どおり。違反があれば 422 (code=constraint_confirmation_required)。
     acknowledge_constraint_warnings: bool = False
 
     @model_validator(mode="after")
     def _check_course_ref(self) -> PlaceRequest:
-        if self.course_id is None and (self.office_id is None or self.course_code is None):
-            raise ValueError("course_id か (office_id + course_code) のどちらかが必要です")
+        selectors = (
+            self.course_id is not None,
+            self.office_id is not None or self.course_code is not None,
+            self.course_template_id is not None,
+            self.visit_id is not None,
+        )
+        chosen = sum(1 for used in selectors if used)
+        if chosen == 0:
+            raise ValueError(
+                "course_id / (office_id + course_code) / course_template_id / visit_id "
+                "のいずれか 1 つが必要です"
+            )
+        if chosen > 1:
+            raise ValueError(
+                "course_id / (office_id + course_code) / course_template_id / visit_id "
+                "は同時に指定できません (いずれか 1 つだけ指定してください)"
+            )
+        if selectors[1] and (self.office_id is None or self.course_code is None):
+            raise ValueError("office_id と course_code は両方必要です")
+        if self.visit_id is None and self.start_time is None:
+            raise ValueError("start_time が必要です")
         return self
 
     @field_validator("start_time")
     @classmethod
-    def _check_hhmm(cls, v: str) -> str:
+    def _check_hhmm(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
         return _validate_hhmm(v)
 
 
