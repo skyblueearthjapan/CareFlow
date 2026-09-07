@@ -139,7 +139,7 @@ import {
   normalizePatientSexRestriction,
   type PatientRead,
 } from '@/lib/schemas/patient';
-import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
+import { isoWeekFromLocalDate, mondayOfIsoWeek } from '@/lib/format/isoWeek';
 
 import {
   buildSameAddressKey,
@@ -179,7 +179,23 @@ import { SyncBar } from './cockpit/SyncBar';
 import { FixedEventRow } from './cockpit/FixedEventRow';
 import { VisitActionMenu } from './cockpit/VisitActionMenu';
 import { SubstitutePanel } from './cockpit/SubstitutePanel';
-import { AddVisitDialog, type AddVisitPayload } from './cockpit/AddVisitDialog';
+// ＋訪問（任意日付の訪問追加）— docs/plans/add-visit-anywhere-design.md Phase 1/3/4。
+// 旧 `AddVisitDialog`（その日 1 件だけ・プール患者のみ）はこのモーダルに置き換えた。
+import {
+  AddVisitAnywhereDialog,
+  type AddVisitAnywhereInitial,
+  type AddVisitPatientOption,
+} from './cockpit/AddVisitAnywhereDialog';
+import {
+  AddVisitResultDialog,
+  buildAddVisitResultRows,
+  type AddVisitResultRow,
+} from './cockpit/AddVisitResultDialog';
+import { executeAddVisitPlan, type AddVisitExecDone } from '@/lib/scheduling/addVisitExecutor';
+import type { AddVisitPlan, VisitLite } from '@/lib/scheduling/addVisitPlan';
+import { useProposeSlots } from '@/lib/queries/fieldBoard';
+import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
+import type { VisitRead } from '@/lib/schemas/visit';
 import { ServiceContentDialog } from './cockpit/ServiceContentDialog';
 import {
   resolveVisitRowKey,
@@ -1759,26 +1775,35 @@ export function CourseDayTablePanel({
     [slotNgPatientsQuery.data],
   );
 
-  // 配置候補 = プール患者 (不足あり)。2名体制はプールDnD (相方コース選択) に委譲。
+  // 配置候補 = active 患者全員。**プール (不足あり) を先頭**に並べる
+  // (add-visit-anywhere-design.md §1 欠陥 1 / §7 Phase 1「候補を全患者に広げる」)。
+  // 2名体制はプールDnD (相方コース選択) に委譲するので従来どおり除外する。
   const slotPatientOptions = useMemo<SlotPatientOption[]>(() => {
     if (!slotRegState) return [];
-    return poolPatients
-      .filter(
-        (p) => (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff !== true,
-      )
-      .map((p) => {
-        const wp = (p.weekly_pattern ?? null) as { service_minutes?: number } | null;
-        return {
-          id: p.id,
-          name: p.name,
-          // 基本の訪問時間 35 分にフォールバック (PO 決定 2026-08-09。旧 60 分)。
-          defaultDurationMin: Math.max(1, Number(wp?.service_minutes ?? 35)),
-          shortage: patientShortageById.get(p.id)?.shortage ?? 0,
-          // この枠の担当をこの患者が NG 指定しているか (⛔ 注記 + 警告帯の材料)。
-          ngWithSlotStaff: slotNgPatientIds.has(p.id),
-        };
-      });
-  }, [slotRegState, poolPatients, patientShortageById, slotNgPatientIds]);
+    const poolIds = new Set(poolPatients.map((p) => p.id));
+    return (
+      allPatients
+        .filter((p) => p.status === 'active')
+        .filter(
+          (p) =>
+            (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff !== true,
+        )
+        // プール患者を先頭へ (安定ソート = 元の並びを崩さない)。
+        .sort((a, b) => Number(poolIds.has(b.id)) - Number(poolIds.has(a.id)))
+        .map((p) => {
+          const wp = (p.weekly_pattern ?? null) as { service_minutes?: number } | null;
+          return {
+            id: p.id,
+            name: p.name,
+            // 基本の訪問時間 35 分にフォールバック (PO 決定 2026-08-09。旧 60 分)。
+            defaultDurationMin: Math.max(1, Number(wp?.service_minutes ?? 35)),
+            shortage: patientShortageById.get(p.id)?.shortage ?? 0,
+            // この枠の担当をこの患者が NG 指定しているか (⛔ 注記 + 警告帯の材料)。
+            ngWithSlotStaff: slotNgPatientIds.has(p.id),
+          };
+        })
+    );
+  }, [slotRegState, allPatients, poolPatients, patientShortageById, slotNgPatientIds]);
 
   // acknowledge=true は「NG スタッフ / 性別制限の確認ダイアログで OK した再送」(§7-2)。
   // 自己参照するため関数宣言で書く (useCallback だと自分を呼べない)。
@@ -2990,23 +3015,22 @@ export function CourseDayTablePanel({
   const staffSwapRunningRef = useRef(false);
   /** 急な休み: 代替候補パネル (スタッフ × 日)。 */
   const [offPanel, setOffPanel] = useState<{ staffId: string; date: string } | null>(null);
-  /** ＋訪問 (今週だけ) ダイアログ。 */
-  const [addVisitState, setAddVisitState] = useState<{
-    staffId: string | null;
-    date: string;
-  } | null>(null);
   /**
-   * 曜日移動の事前確認: 移動先曜日に同じコースが無いとき
-   * (BE が担当なしのコースを新規に作るため、黙って担当なしになる)。
-   * `null` = 確認不要 / 確認中でない。
+   * ＋訪問（任意日付の訪問追加）モーダル。`null` = 閉じている。
+   * `initial` は開いた入口ごとの初期値（ツールバーからは空・行ボタンからは日付＋担当・
+   * 曜日移動メニューからは「その週を変える」固定）。
    */
-  const [moveDestConfirm, setMoveDestConfirm] = useState<{
-    visit: TimelineVisit;
-    toWeekday: number;
-    toStartHM: string;
-    opGroupId: string;
-    courseLabel: string;
+  const [addVisitState, setAddVisitState] = useState<{
+    initial?: AddVisitAnywhereInitial;
   } | null>(null);
+  /** ＋訪問の結果画面 (§3-3 ⑤ 部分失敗の列挙)。 */
+  const [addVisitResult, setAddVisitResult] = useState<{
+    patientName: string;
+    rows: AddVisitResultRow[];
+    /** 「元に戻す」で undo する週 (op-log は週ごとのスタック・H4)。 */
+    undoWeeks: { isoYear: number; isoWeek: number }[];
+  } | null>(null);
+  const [addVisitSubmitting, setAddVisitSubmitting] = useState(false);
   /** 「📐 型も変える…」= ChangeScopeChoice の 2 択ダイアログ。 */
   const [masterScopeVisit, setMasterScopeVisit] = useState<TimelineVisit | null>(null);
   const [masterScope, setMasterScope] = useState<ChangeScopeValue>('pattern');
@@ -3351,6 +3375,9 @@ export function CourseDayTablePanel({
   const visitServiceOverrideMut = useVisitServiceOverride();
   const eventCancelWeekMut = useEventCancelWeek();
   const createVisitMut = useCreateVisit();
+  // ＋訪問（任意日付）: 提案 = propose-slots / 型の保存 = 患者を実行時に渡せる版。
+  const proposeSlotsMut = useProposeSlots();
+  const confirmFixedVisitsMut = useConfirmFixedVisits();
   // 🛌 休みにする: 休みの登録 + その日の担当の引き受けを 1 リクエストで
   // (PO 決定 2026-08-23 — 「戻る」1 回で全部戻すため)。
   const staffOffWeekMut = useStaffOffWeek();
@@ -3366,6 +3393,7 @@ export function CourseDayTablePanel({
     setOffPanel(null);
     setTimelineMenuVisit(null);
     setAddVisitState(null);
+    setAddVisitResult(null);
     setMasterScopeVisit(null);
     setCockpitMarker(null);
     setUnsentKeys(null);
@@ -3660,43 +3688,24 @@ export function CourseDayTablePanel({
   );
 
   /**
-   * 訪問 1 件を今週だけ動かす (時刻変更 / 曜日移動 = 同じ API)。
+   * 訪問 1 件の **開始時刻** を今週だけ動かす (visit-move-week-only)。
+   *
+   * 曜日跨ぎの移動はこの経路から外した (2026-09-07 レビュー L2)。移動先コースを
+   * 決めないまま曜日を跨ぐと旧曜日のコース ID が残る (§1 欠陥 3) ため、曜日移動は
+   * ＋訪問モーダル（提案でコースを決める）に一本化してある (§3-4 C)。
    * 担当も変える場合は呼び出し側が同じ op_group_id で assign を続けて呼ぶ。
    */
   const moveVisitWeekOnly = useCallback(
     async (
       visit: TimelineVisit,
-      toWeekday: number,
       toStartHM: string,
       opGroupId: string,
       acknowledge = false,
-      destConfirmed = false,
     ): Promise<boolean> => {
       const oldStart = (visit.start_time ?? '').slice(0, 5);
       if (!oldStart) {
         toast.error('この訪問の開始時刻が不明なため移動できません');
         return false;
-      }
-      // 曜日を跨ぐときは移動先曜日の「同じコード」のコースへ付け替える
-      // (add-visit-anywhere-design.md §1 欠陥 3 / §3-4 C の暫定対応)。
-      // BE は new_course_template_id 省略時にコースを据え置くため、これが無いと
-      // 訪問が旧曜日のコース ID のまま残り、盤面の旧曜日タブに出てしまう。
-      const crossWeekday = toWeekday !== visit.weekday;
-      // TimelineVisit は course_id を持たず course_template_id を持つ
-      // (= courseTemplateByCourseId で逆引き済みの値)。そのまま使うのが最小修正。
-      const newCourseTemplateId = crossWeekday ? visit.course_template_id : null;
-      const courseLabel = cockpitCourseLabel(visit.course_template_id) ?? 'このコース';
-      if (crossWeekday && !destConfirmed) {
-        // 移動先曜日に同じコースが**今週まだ無い**場合、BE は担当のいない
-        // コースを新規に作る = 訪問が黙って担当なしになる。事前に断りを入れる。
-        const tpl = templates.find((t) => t.id === visit.course_template_id) ?? null;
-        const destCourse = tpl
-          ? findCourseForTemplate({ template: tpl, weekday: toWeekday, isoYear, isoWeek, courses })
-          : null;
-        if (!destCourse) {
-          setMoveDestConfirm({ visit, toWeekday, toStartHM, opGroupId, courseLabel });
-          return false;
-        }
       }
       try {
         const res = await visitMoveWeekOnlyMut.mutateAsync({
@@ -3705,9 +3714,8 @@ export function CourseDayTablePanel({
           patient_id: visit.patient_id,
           old_weekday: visit.weekday,
           old_start_time: oldStart,
-          new_weekday: toWeekday,
+          new_weekday: visit.weekday,
           new_start_time: toStartHM,
-          ...(newCourseTemplateId ? { new_course_template_id: newCourseTemplateId } : {}),
           op_group_id: opGroupId,
           ...ackFlag(acknowledge),
         });
@@ -3716,13 +3724,8 @@ export function CourseDayTablePanel({
           toast.warning('移動対象の訪問が見つかりませんでした');
           return false;
         }
-        const wdLabel = WEEKDAY_LABELS[toWeekday] ?? '';
-        // 曜日跨ぎは担当が移動先コースの担当に変わる (BE 既存動作)。黙って変えない。
-        const suffix = crossWeekday
-          ? `（今週のみ・担当は移動先の ${courseLabel} の担当になります）`
-          : '（今週のみ）';
         toast.success(
-          `${visit.patient_name ?? 'この訪問'} を ${wdLabel}曜 ${toStartHM} へ移動しました${suffix}`,
+          `${visit.patient_name ?? 'この訪問'} を ${toStartHM} へ移動しました（今週のみ）`,
           { cancel: { label: '元に戻す', onClick: () => void handleUndo() } },
         );
         return true;
@@ -3732,8 +3735,7 @@ export function CourseDayTablePanel({
           placementConstraintConfirm.capture(
             err,
             async () => {
-              // 移動先コースの確認は済んでいるので二度は聞かない。
-              await moveVisitWeekOnly(visit, toWeekday, toStartHM, opGroupId, true, true);
+              await moveVisitWeekOnly(visit, toStartHM, opGroupId, true);
             },
             MOVE_CONSTRAINT_TEXT,
           )
@@ -3751,9 +3753,6 @@ export function CourseDayTablePanel({
       invalidateCockpitBoard,
       placementConstraintConfirm,
       handleUndo,
-      templates,
-      courses,
-      cockpitCourseLabel,
     ],
   );
 
@@ -3766,7 +3765,7 @@ export function CourseDayTablePanel({
     const { visit, toStart, toStaffId } = payload;
     const opGroupId = crypto.randomUUID();
     if (toStart != null) {
-      const ok = await moveVisitWeekOnly(visit, visit.weekday, toStart, opGroupId);
+      const ok = await moveVisitWeekOnly(visit, toStart, opGroupId);
       if (!ok) return;
     }
     if (toStaffId !== undefined) {
@@ -4528,11 +4527,32 @@ export function CourseDayTablePanel({
           defaultOpen={defaultOpen}
           onCancelToggle={(cancel) => void handleVisitCancelWeek(visit, cancel)}
           onChangeStaff={(staffId) => void doAssignVisitStaff(visit.id, staffId)}
-          onChangeTime={(start) =>
-            void moveVisitWeekOnly(visit, visit.weekday, start, crypto.randomUUID())
-          }
-          onMoveWeekday={(toWeekday) =>
-            void moveVisitWeekOnly(visit, toWeekday, startHM, crypto.randomUUID())
+          onChangeTime={(start) => void moveVisitWeekOnly(visit, start, crypto.randomUUID())}
+          // §3-4 C: 曜日移動は「日付 → 提案 → 移動先コース」まで決めるモーダルへ。
+          // 反映先は「その週を変える」で固定し、動かす元を**押した訪問に固定**する
+          // (H1)。日付と希望担当はモーダル側で選ばせるので渡さない。
+          onOpenMoveDialog={() =>
+            setAddVisitState({
+              initial: {
+                patientId: visit.patient_id,
+                lockedScope: 'week',
+                sourceVisit: {
+                  id: visit.id,
+                  visit_date: dateIso,
+                  start_time: startHM,
+                  end_time: (visit.end_time ?? '').slice(0, 5),
+                  primary_staff_id: visit.primary_staff_id ?? null,
+                  staff_name: visit.primary_staff_id
+                    ? (staffNameById.get(visit.primary_staff_id) ?? null)
+                    : null,
+                  course_id: null,
+                  course_label: visit.course_label ?? null,
+                  week_pinned: visit.week_pinned === true,
+                  status: visit.status ?? 'planned',
+                  source: visit.source ?? 'auto',
+                },
+              },
+            })
           }
           onChangeMaster={() => {
             setMasterScope('pattern');
@@ -4546,35 +4566,274 @@ export function CourseDayTablePanel({
     }
   };
 
-  /** ＋訪問 (D6): 既存 POST /visits に source='manual_week' で今週だけ追加。 */
-  const handleAddVisitSubmit = useCallback(
-    async (payload: AddVisitPayload) => {
-      const name = allPatients.find((p) => p.id === payload.patient_id)?.name ?? '患者';
-      try {
-        await createVisitMut.mutateAsync({
-          patient_id: payload.patient_id,
-          primary_staff_id: payload.staff_id,
-          visit_date: payload.date,
-          start_time: payload.start_time,
-          end_time: payload.end_time,
-          type: 'regular',
-          status: 'planned',
-          // D6: 今週だけの追加 (PFV 不変・週生成でも保護される)。
-          source: 'manual_week',
-          course_id: payload.course_id,
-        });
-        invalidateCockpitBoard();
-        setAddVisitState(null);
-        toast.success(
-          `${name} の訪問を今週だけ追加しました（毎週の型は変わりません）` +
-            (payload.course_id ? '' : '。コース未所属のため盤面には出ません（臨時扱い）'),
-        );
-      } catch (err) {
-        toast.error(`訪問の追加に失敗しました: ${formatErr(err)}`);
-      }
-    },
-    [createVisitMut, invalidateCockpitBoard, allPatients],
+  // ─── ＋訪問（任意日付の訪問追加）— add-visit-anywhere-design.md §3 ──────────
+
+  /** モーダルの患者候補 = active 全員（保留プールは先頭・バッジは呼ばれた側で付く）。 */
+  const addVisitPatients = useMemo<AddVisitPatientOption[]>(
+    () =>
+      allPatients
+        .filter((p) => p.status === 'active')
+        .map((p) => {
+          const wp = coerceWeeklyPattern(p.weekly_pattern);
+          return {
+            id: p.id,
+            name: p.name,
+            status: p.status,
+            primary_office_id: p.primary_office_id ?? null,
+            lat: p.lat ?? null,
+            lng: p.lng ?? null,
+            // 基本の訪問時間 = 所要の初期値 (§3-3 ③・base-visit-minutes-design.md)。
+            service_minutes: wp.service_minutes ?? null,
+            hint: formatPreferredTimeLabel(wp) || null,
+            sex_restriction: normalizePatientSexRestriction(p.sex_restriction),
+            requires_multiple_staff:
+              (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff === true,
+          };
+        }),
+    [allPatients],
   );
+
+  /** 保留プール（不足あり）の患者 id。候補の先頭に出すための印。 */
+  const addVisitPoolIds = useMemo(() => new Set(poolPatients.map((p) => p.id)), [poolPatients]);
+
+  /** モーダルに渡すコーステンプレート（M の解決は呼ばれた側が label で行う）。 */
+  const addVisitCourseTemplates = useMemo(
+    () => templates.map((t) => ({ id: t.id, label: t.label, office_id: t.office_id })),
+    [templates],
+  );
+
+  /**
+   * (b)「その週を変える」の動かす元候補 = その患者のその週の訪問。
+   * 絞り込み（planned・青ピン・当日以前）はモーダル側が `isMovableSourceVisit` で行う。
+   */
+  const loadPatientWeekVisits = useCallback(
+    async (
+      patientId: string,
+      targetIsoYear: number,
+      targetIsoWeek: number,
+    ): Promise<VisitLite[]> => {
+      const monday = mondayOfIsoWeek(targetIsoYear, targetIsoWeek);
+      const isoOf = (offset: number) => {
+        const d = new Date(monday);
+        d.setUTCDate(monday.getUTCDate() + offset);
+        return d.toISOString().slice(0, 10);
+      };
+      const qs = new URLSearchParams({
+        limit: '500',
+        offset: '0',
+        week_start: isoOf(0),
+        week_end: isoOf(6),
+        patient_id: patientId,
+      });
+      const items = await fetcher<VisitRead[]>(`/api/v1/visits?${qs.toString()}`, {
+        accessToken,
+        refreshToken,
+      });
+      return (items ?? []).map((v) => {
+        const courseId = v.course_id ?? null;
+        const tplId = courseId ? (courseTemplateByCourseId.get(courseId) ?? null) : null;
+        return {
+          id: v.id,
+          visit_date: v.visit_date,
+          start_time: (v.start_time ?? '').slice(0, 5),
+          end_time: (v.end_time ?? '').slice(0, 5),
+          primary_staff_id: v.primary_staff_id ?? null,
+          staff_name: v.primary_staff_id ? (staffNameById.get(v.primary_staff_id) ?? null) : null,
+          course_id: courseId,
+          course_label: tplId ? cockpitCourseLabel(tplId) : null,
+          week_pinned: v.week_pinned === true,
+          status: v.status ?? 'planned',
+          source: v.source ?? 'auto',
+        };
+      });
+    },
+    [accessToken, refreshToken, courseTemplateByCourseId, staffNameById, cockpitCourseLabel],
+  );
+
+  /**
+   * 段階的緩和 2 段目の対象拠点 (PO 決定 11)。
+   * 患者の通常の固定訪問行の `sub_office_id` のうち主担当拠点以外。
+   */
+  const loadPatientSubOfficeIds = useCallback(
+    async (patientId: string): Promise<string[]> => {
+      const rows = await fetcher<PatientFixedVisitV2Read[]>(
+        `/api/v1/patients/${patientId}/fixed-visits?mode=normal`,
+        { accessToken, refreshToken },
+      );
+      const primary = allPatients.find((p) => p.id === patientId)?.primary_office_id ?? null;
+      const out = new Set<string>();
+      for (const row of rows ?? []) {
+        const sub = row.sub_office_id ?? null;
+        if (sub && sub !== primary) out.add(sub);
+      }
+      return Array.from(out);
+    },
+    [accessToken, refreshToken, allPatients],
+  );
+
+  /**
+   * H4: 「＋訪問」の「元に戻す」— op-log は **(ユーザー × 週)** ごとのスタックなので、
+   * 複数週にまたがる登録は週ごとに undo を投げる（新しい週から）。
+   * 400 = その週にはもう戻す操作が無い = ここでは正常（他の週へ進む）。
+   */
+  const handleUndoWeeks = useCallback(
+    async (weeks: { isoYear: number; isoWeek: number }[]) => {
+      if (weeks.length === 0) return;
+      const ordered = [...weeks].sort((a, b) => b.isoYear - a.isoYear || b.isoWeek - a.isoWeek);
+      let undone = 0;
+      for (const w of ordered) {
+        try {
+          await undoMut.mutateAsync({ iso_year: w.isoYear, iso_week: w.isoWeek });
+          undone += 1;
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 400) continue;
+          if (err instanceof ApiError && err.status === 409) return;
+          toast.error(`操作の取り消しに失敗しました: ${formatErr(err)}`);
+          return;
+        }
+      }
+      if (undone === 0) toast.info('これ以上戻せません');
+      invalidateCockpitBoard();
+    },
+    [undoMut, invalidateCockpitBoard],
+  );
+
+  /** op-log で戻せる週 (place-and-fix / 移動のみ。型と臨は載らない・H4)。 */
+  function undoableWeeksOf(done: AddVisitExecDone[]): { isoYear: number; isoWeek: number }[] {
+    const seen = new Set<string>();
+    const out: { isoYear: number; isoWeek: number }[] = [];
+    for (const d of done) {
+      if (d.kind !== 'new' && d.kind !== 'week') continue;
+      const key = `${d.item.isoYear}-${d.item.isoWeek}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ isoYear: d.item.isoYear, isoWeek: d.item.isoWeek });
+    }
+    return out;
+  }
+
+  /** 患者名（結果画面・トーストの見出し）。 */
+  const addVisitPatientName = useCallback(
+    (patientId: string): string => allPatients.find((p) => p.id === patientId)?.name ?? '患者',
+    [allPatients],
+  );
+
+  /**
+   * 計画の実行 (§3-3 ⑤)。日付順に 1 件ずつ・最初の失敗で止め、結果画面に列挙する。
+   *
+   * NG スタッフ / 性別制限の 422 は確認ダイアログを通し、**止まった 1 件だけ**を
+   * acknowledge して再開する（後続の別の日まで黙って通さない・M1）。
+   * 自己参照するため関数宣言で書く（useCallback だと自分を呼べない）。
+   */
+  async function runAddVisitPlan(
+    plan: AddVisitPlan,
+    opGroupId: string,
+    carried: AddVisitResultRow[],
+    carriedDone: AddVisitExecDone[],
+    startIndex: number,
+    acknowledgeIndex: number | undefined,
+  ): Promise<void> {
+    const result = await executeAddVisitPlan(
+      plan,
+      {
+        placeAndFix: (req) => placeAndFixMut.mutateAsync(req),
+        moveWeekOnly: (req) => visitMoveWeekOnlyMut.mutateAsync(req),
+        putFixedVisits: (patientId, body) => confirmFixedVisitsMut.mutateAsync({ patientId, body }),
+        getFixedVisits: (patientId) =>
+          fetcher<PatientFixedVisitV2Read[]>(
+            `/api/v1/patients/${patientId}/fixed-visits?mode=normal`,
+            { accessToken, refreshToken },
+          ),
+        createVisit: (body) => createVisitMut.mutateAsync(body),
+        // note だけの PATCH。専用フックを足すと既存テストのモックを総取り替えに
+        // なるため、他の 1 回きりの読み書きと同じく fetcher を直接使う。
+        patchVisitNote: (visitId, note) =>
+          fetcher(`/api/v1/visits/${visitId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ note }),
+            accessToken,
+            refreshToken,
+          }),
+      },
+      { opGroupId, acknowledgeIndex, startIndex },
+    );
+
+    // 盤面・op-log を最新化 (成功が 1 件でもあれば盤面は変わっている)。
+    invalidateCockpitBoard();
+    invalidateOpLog(isoYear, isoWeek);
+
+    // 前回までの行に今回の結果を重ねる (再開時に成功済みの日を塗り潰さない)。
+    const fresh = buildAddVisitResultRows(result);
+    const byKey = new Map(carried.map((r) => [`${r.date}|${r.startHM}`, r]));
+    for (const row of fresh) {
+      const key = `${row.date}|${row.startHM}`;
+      const prev = byKey.get(key);
+      if (prev && row.status === 'skipped' && prev.status !== 'skipped') continue;
+      byKey.set(key, row);
+    }
+    const merged: AddVisitResultRow[] = result.ordered.map(
+      (item) =>
+        byKey.get(`${item.date}|${item.startHM}`) ?? {
+          date: item.date,
+          startHM: item.startHM,
+          minutes: item.minutes,
+          courseLabel: item.courseLabel,
+          status: 'skipped' as const,
+        },
+    );
+    const allDone = [...carriedDone, ...result.done];
+    // 「元に戻す」= op-log の undo。**週ごとのスタック**なので、成功した週を
+    // 全部たどる (H4)。型 (pattern) と臨 (new_manual) は op-log に載らない。
+    const undoWeeks = undoableWeeksOf(allDone);
+    const patientName = addVisitPatientName(plan.patientId);
+
+    const failed = result.failed;
+    if (failed && failed.kind === 'constraint') {
+      // 確認 → 止まった日だけ acknowledge して再開 (§3-3 NG/性別・M1)。
+      const captured = placementConstraintConfirm.capture(
+        failed.error,
+        async () => {
+          await runAddVisitPlan(plan, opGroupId, merged, allDone, failed.index, failed.index);
+        },
+        PLACE_CONSTRAINT_TEXT,
+        // 「やめる」= ここまでの結果を出して終わる。
+        () => setAddVisitResult({ patientName, rows: merged, undoWeeks }),
+      );
+      if (captured) return;
+    }
+
+    const successCount = merged.filter(
+      (r) =>
+        r.status === 'new' ||
+        r.status === 'new_manual' ||
+        r.status === 'week' ||
+        r.status === 'pattern',
+    ).length;
+    if (failed) {
+      toast.error(`${successCount} 件まで登録し、途中で止まりました: ${failed.message}`);
+    } else if (successCount > 0) {
+      const weekOnly = merged.every((r) => r.status !== 'pattern');
+      toast.success(
+        weekOnly
+          ? `${successCount} 件を登録しました（今週のみ）`
+          : `${successCount} 件を登録しました（型も変更しました）`,
+        undoWeeks.length > 0
+          ? { cancel: { label: '元に戻す', onClick: () => void handleUndoWeeks(undoWeeks) } }
+          : undefined,
+      );
+    }
+    setAddVisitResult({ patientName, rows: merged, undoWeeks });
+  }
+
+  /** モーダルの「N 件を登録する」。解決するとモーダルが閉じ、結果画面が出る。 */
+  const handleAddVisitExecute = async (plan: AddVisitPlan): Promise<void> => {
+    setAddVisitSubmitting(true);
+    try {
+      await runAddVisitPlan(plan, crypto.randomUUID(), [], [], 0, undefined);
+    } finally {
+      setAddVisitSubmitting(false);
+    }
+  };
 
   // ─── 2026-W20: 月-土タブ「リスト表示」用 — Before/After 形式の CourseListItem[] ──
   // 視覚言語を全面最適化の Before/After と統一. 当該曜日に対応するコース群を
@@ -5137,6 +5396,18 @@ export function CourseDayTablePanel({
                   >
                     <ListChecks className="mr-1 h-4 w-4" aria-hidden />
                     週次ガイド
+                  </Button>
+                  {/* ＋訪問（任意日付の訪問追加）— 患者/日付は空で開く (§3-1 ①)。
+                      行ボタンの＋訪問と同じモーダル。 */}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setAddVisitState({})}
+                    disabled={!canEdit}
+                    data-testid="add-visit-anywhere-button"
+                  >
+                    ＋訪問
                   </Button>
                 </div>
 
@@ -5858,7 +6129,9 @@ export function CourseDayTablePanel({
                     onAddVisit={
                       canEdit
                         ? (staffId, dayIdx) =>
-                            setAddVisitState({ staffId, date: isoOfWeekday(dayIdx) })
+                            setAddVisitState({
+                              initial: { dates: [isoOfWeekday(dayIdx)], staffId },
+                            })
                         : undefined
                     }
                     onAddEvent={
@@ -5948,7 +6221,9 @@ export function CourseDayTablePanel({
                     onAddVisit={
                       canEdit
                         ? (staffId, weekday) =>
-                            setAddVisitState({ staffId, date: isoOfWeekday(weekday) })
+                            setAddVisitState({
+                              initial: { dates: [isoOfWeekday(weekday)], staffId },
+                            })
                         : undefined
                     }
                     // 過去日 (今日を含む) はセルアクションを出さない (タイムラインと同じ規則)。
@@ -6435,40 +6710,44 @@ export function CourseDayTablePanel({
           weekStartIso={format(weekStart, 'yyyy-MM-dd')}
         />
         {/* T-2 ②-b: カード DnD 後の二択 (この週だけ / 固定パターン) */}
-        {/* 週空間 Phase E: ＋訪問 (今週だけ・D6)。 */}
+        {/* ＋訪問（任意日付の訪問追加）— 患者/日付(複数)/時刻/所要 → 提案 → 反映先。 */}
         {addVisitState ? (
-          <AddVisitDialog
+          <AddVisitAnywhereDialog
             open
             onOpenChange={(o) => {
               if (!o) setAddVisitState(null);
             }}
-            staff={
-              addVisitState.staffId
-                ? {
-                    id: addVisitState.staffId,
-                    name: staffNameById.get(addVisitState.staffId) ?? '（不明）',
-                  }
-                : null
+            isoYear={isoYear}
+            isoWeek={isoWeek}
+            patients={addVisitPatients}
+            poolPatientIds={addVisitPoolIds}
+            staffOptions={cockpitStaffOptions}
+            offices={offices}
+            courseTemplates={addVisitCourseTemplates}
+            initial={addVisitState.initial}
+            todayIso={todayIsoJst}
+            proposeSlots={(req) => proposeSlotsMut.mutateAsync(req)}
+            loadPatientWeekVisits={loadPatientWeekVisits}
+            loadPatientSubOfficeIds={loadPatientSubOfficeIds}
+            onExecute={handleAddVisitExecute}
+            submitting={addVisitSubmitting}
+          />
+        ) : null}
+
+        {/* ＋訪問の結果画面 (§3-3 ⑤ / Phase 4)。部分失敗を日付ごとに列挙する。 */}
+        {addVisitResult ? (
+          <AddVisitResultDialog
+            open
+            onOpenChange={(o) => {
+              if (!o) setAddVisitResult(null);
+            }}
+            patientName={addVisitResult.patientName}
+            rows={addVisitResult.rows}
+            onUndo={
+              addVisitResult.undoWeeks.length > 0
+                ? () => void handleUndoWeeks(addVisitResult.undoWeeks)
+                : undefined
             }
-            date={addVisitState.date}
-            poolCandidates={poolPatients.map((p) => {
-              const wp = coerceWeeklyPattern(p.weekly_pattern);
-              return {
-                patient_id: p.id,
-                patient_name: p.name,
-                hint: formatPreferredTimeLabel(wp) || null,
-                // 患者の基本時間 = 所要時間の初期値 (add-visit-anywhere-design.md §3-3 ③)。
-                service_minutes: wp.service_minutes,
-              };
-            })}
-            courseOptions={courses
-              .filter((c) => c.weekday === weekdayOfIso(addVisitState.date) && !c.deleted_at)
-              .map((c) => ({
-                id: c.id,
-                label: `${officeNameById.get(c.office_id) ?? ''} ${c.code}`.trim(),
-              }))}
-            submitting={createVisitMut.isPending}
-            onSubmit={(payload) => void handleAddVisitSubmit(payload)}
           />
         ) : null}
 
@@ -6751,59 +7030,6 @@ export function CourseDayTablePanel({
           open={weeklyRitualGuideOpen}
           onClose={() => setWeeklyRitualGuideOpen(false)}
         />
-
-        {/* 曜日移動の事前確認 (add-visit-anywhere-design.md §1 欠陥 3)。
-            移動先曜日に同じコースが無いと BE が担当なしのコースを新規に作るため、
-            「担当なしになる」ことを先に伝えてから実行する。 */}
-        <Dialog
-          open={moveDestConfirm != null}
-          onOpenChange={(o) => {
-            if (!o && !visitMoveWeekOnlyMut.isPending) setMoveDestConfirm(null);
-          }}
-        >
-          <DialogContent className="max-w-md" data-testid="move-dest-confirm">
-            <DialogHeader>
-              <DialogTitle className="text-sm">移動先にコースがありません</DialogTitle>
-              <DialogDescription className="text-[12px]">
-                移動先の {WEEKDAY_LABELS[moveDestConfirm?.toWeekday ?? 0] ?? ''}曜には{' '}
-                {moveDestConfirm?.courseLabel ?? 'このコース'}{' '}
-                がありません。移動すると担当なしになります。移動しますか？
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setMoveDestConfirm(null)}
-                disabled={visitMoveWeekOnlyMut.isPending}
-                data-testid="move-dest-confirm-cancel"
-              >
-                やめる
-              </Button>
-              <Button
-                type="button"
-                onClick={() => {
-                  const st = moveDestConfirm;
-                  setMoveDestConfirm(null);
-                  if (st) {
-                    void moveVisitWeekOnly(
-                      st.visit,
-                      st.toWeekday,
-                      st.toStartHM,
-                      st.opGroupId,
-                      false,
-                      true,
-                    );
-                  }
-                }}
-                disabled={visitMoveWeekOnlyMut.isPending}
-                data-testid="move-dest-confirm-ok"
-              >
-                移動する
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
 
         {/* PO 2026-07-10: 生成済みの週への「週を生成」再実行の誤操作対策。
             当週に訪問が実在する場合のみ表示 (訪問 0 件は即実行で挙動不変)。 */}

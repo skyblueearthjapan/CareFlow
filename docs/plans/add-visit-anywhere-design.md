@@ -193,6 +193,10 @@ API 直叩きでは 5 操作で入った依頼が、画面では次の 6 か所�
 
 残る未決事項: なし。実装は §7 の Phase 0 と E から着手可。
 
+### 追跡事項（BE 緩和の候補・2026-09-07 Phase 3 実装レビュー）
+- **2 名体制 × M（担当なし）は現状作れない**: `place-and-fix` は `requires_multiple_staff` の患者に `staff_count=2` を要求し、`staff_count=2` では**異なる 2 テンプレート**を要求するため、同じ M を 2 つ渡せない（`backend/app/api/v1/schedule.py`）。FE は当面この組み合わせを ＋訪問モーダルで塞ぐ（「2名体制の患者は担当なし(M)へ入れられません。候補コースを選ぶか、プールから配置してください」）。BE 側で「M への 2 名配置は 1 コースに 2 visit」を許すか、`M` と `M2` のような別テンプレートを受け皿にするかは別途 PO 判断。
+- **他拠点（要確認）× (c) 新しく 1 件追加も現状作れない**: `place-and-fix` は患者の主担当拠点以外のテンプレートを 422 で拒む（同上）。FE は反映先が (c) のとき他拠点候補を選択不可にし、(b)「その週を変える」/(a)「型も変える」でのみ選べるようにしている。
+
 ## 11. 参照
 - 調査報告: `docs/reports/2026-09-07-ito-irregular-schedule-report.html`
 - 関連設計: `week-cockpit-design.md`（＋訪問 D6・今週だけ操作）・`change-scope-unification-design.md`（反映先 A/B）・`pin-and-movability-spec.md`（青ピン）・`patient-ng-staff-design.md` §7-2（制約確認フロー）・`pool-placement-blockers-investigation-2026-08-31.md`（M 受け皿）・`base-visit-minutes-design.md`（基本時間）

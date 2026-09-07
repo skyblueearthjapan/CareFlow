@@ -85,12 +85,14 @@ export interface AddVisitPlanItem {
   staffCount: 1 | 2;
   /** 2 名体制のときの相方コース (`slot.partner_course_template_id`)。 */
   partnerCourseTemplateId: string | null;
-  /**
-   * 2 名体制の患者を M（担当なし）へ入れるとき true。`place-and-fix` は staff_count=2 に
-   * 異なる 2 テンプレートを要求する (同一 M ×2 は 422) ため、M では 1 名分だけ登録し
-   * もう 1 名は盤面/プールで手当てしてもらう (レビュー指摘 2026-09-07)。
+  /*
+   * NOTE (2026-09-07 レビュー H2): 2 名体制 × M（担当なし）は **作れない**。
+   * BE `place-and-fix` は `requires_multiple_staff` の患者に staff_count=2 を要求し
+   * (`schedule.py`)、staff_count=2 では異なる 2 テンプレートを要求する = 同一の M を
+   * 2 つ渡せない。以前はここに `mSingleStaffFallback`（1 名分だけ登録する）を置いて
+   * いたが、実行できない組み合わせなのでモーダル側で入口を塞ぐことにした
+   * (`AddVisitAnywhereDialog.rowError`)。BE 緩和は設計書 §10 の追跡事項。
    */
-  mSingleStaffFallback: boolean;
   /** M 配置理由（任意入力・PO 決定 10）。空欄は null。 */
   reason: string | null;
   scope: AddVisitScope;

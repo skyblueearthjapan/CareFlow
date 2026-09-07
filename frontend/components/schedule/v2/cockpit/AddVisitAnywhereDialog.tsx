@@ -148,6 +148,25 @@ export interface AddVisitAnywhereDialogProps {
 /** `buildProposeRequest` が送る `limit`。返却数がこれに達したら打ち切り (M2)。 */
 const PROPOSE_LIMIT = 50;
 
+/**
+ * 2 名体制 × M（担当なし）は作れない (H2)。BE `place-and-fix` は
+ * `requires_multiple_staff` の患者に staff_count=2 を要求し、staff_count=2 では
+ * **異なる 2 テンプレート**を要求する = 同じ M を 2 つ渡せない。
+ * BE 緩和は設計書 §10 の追跡事項。
+ */
+const MULTI_STAFF_ON_M_ERROR =
+  '2名体制の患者は担当なし(M)へ入れられません。候補コースを選ぶか、プールから配置してください';
+
+/** 他拠点候補 × (c) 新規追加は BE が拒む (H3)。 */
+const OTHER_OFFICE_ON_NEW_NOTE =
+  '新規追加では他拠点へ入れられません（「その週を変える」または「型も変える」なら可）';
+
+/** 📅 曜日移動から開いたのに、その訪問が動かせないとき (H1)。 */
+const PINNED_SOURCE_IMMOVABLE_ERROR = 'この予定は動かせません（当日以前/固定/予定外）';
+
+/** 移動 (b) はコースを必ず付け替える。M テンプレートすら無い拠点では送れない (M4)。 */
+const MOVE_COURSE_UNRESOLVED_ERROR = '移動先のコースを特定できません';
+
 function toIso(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
@@ -240,6 +259,13 @@ export function AddVisitAnywhereDialog({
   const [busy, setBusy] = React.useState(false);
 
   const subOfficeCache = React.useRef(new Map<string, Promise<string[]>>());
+  /**
+   * 📅「曜日を移動…」で開いたときの **動かす元** (H1)。
+   * 日付を後から選ぶ導線なので、開いた瞬間の訪問を ref に留め、その訪問の
+   * ISO 週で選んだ日付の既定にする（`loadPatientWeekVisits` の結果に含まれて
+   * いなくても選べるよう、候補にも必ず混ぜる）。
+   */
+  const pinnedSourceRef = React.useRef<VisitLite | null>(null);
 
   const patient = React.useMemo(
     () => patients.find((p) => p.id === patientId) ?? null,
@@ -275,10 +301,8 @@ export function AddVisitAnywhereDialog({
     setBusy(false);
     setScope(initial?.lockedScope === 'week' ? 'week' : 'new');
     setWeekVisits({});
-    const src = initial?.sourceVisit;
-    setSourceSel(
-      src && initDates.length > 0 ? Object.fromEntries(initDates.map((d) => [d, src.id])) : {},
-    );
+    pinnedSourceRef.current = initial?.sourceVisit ?? null;
+    setSourceSel({});
     // initial はダイアログを開く瞬間の値だけを見る (開いている間の再生成で入力を壊さない)。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -499,10 +523,28 @@ export function AddVisitAnywhereDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, scope, patient, datesKey]);
 
-  /** その日付の週で「動かす元」に選べる訪問 (planned・青ピン以外・未来日)。 */
+  /** 📅 曜日移動で指定された「動かす元」が、その日付と同じ ISO 週にあるか (H1)。 */
+  function pinnedSourceFor(date: string): VisitLite | null {
+    const pinned = pinnedSourceRef.current;
+    if (!pinned) return null;
+    const a = isoWeekOfDate(date);
+    const b = isoWeekOfDate(pinned.visit_date);
+    return a.isoYear === b.isoYear && a.isoWeek === b.isoWeek ? pinned : null;
+  }
+
+  /**
+   * その日付の週で「動かす元」に選べる訪問 (planned・青ピン以外・未来日)。
+   *
+   * 📅 曜日移動で指定された訪問は、週の読み込みが済んでいなくても・絞り込みで
+   * 落ちても **必ず候補に入れる**（押した予定を動かすのがこの導線の目的・H1）。
+   * 動かせない訪問なら `rowError` が登録を止める。
+   */
   function movableVisits(date: string): VisitLite[] {
     const { isoYear: y, isoWeek: w } = isoWeekOfDate(date);
-    return (weekVisits[`${y}-${w}`] ?? []).filter((v) => isMovableSourceVisit(v, todayIso));
+    const list = (weekVisits[`${y}-${w}`] ?? []).filter((v) => isMovableSourceVisit(v, todayIso));
+    const pinned = pinnedSourceFor(date);
+    if (!pinned || list.some((v) => v.id === pinned.id)) return list;
+    return [pinned, ...list];
   }
 
   // (a) は日付 1 つのときだけ。日付が増えたら黙って (c) 扱いにする (取り残し防止)。
@@ -516,10 +558,17 @@ export function AddVisitAnywhereDialog({
    */
   const sourceAssignment = React.useMemo(() => {
     if (effectiveScope !== 'week') return new Map<string, VisitLite | null>();
+    // 📅 曜日移動で開いたときは、その訪問の週に入る日付の **既定** を pinned にする。
+    // 手で選び直した日 (`sourceSel`) が優先。1 訪問 = 1 日付は assignSourceVisits が守る。
+    const pinnedDefaults: Record<string, string> = {};
+    for (const d of dates) {
+      const pinned = pinnedSourceFor(d);
+      if (pinned) pinnedDefaults[d] = pinned.id;
+    }
     return assignSourceVisits({
       dates,
       candidatesByDate: movableVisits,
-      overrides: sourceSel,
+      overrides: { ...pinnedDefaults, ...sourceSel },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveScope, datesKey, weekVisits, sourceSel, todayIso]);
@@ -529,6 +578,39 @@ export function AddVisitAnywhereDialog({
     for (const [date, visit] of sourceAssignment) if (visit) map.set(date, visit.id);
     return map;
   }, [sourceAssignment]);
+
+  /**
+   * その日付が **実際に**どの API を叩くか。反映先が (b) でもその週に動かす元が
+   * 無い日は (c) 新規追加に落ちる (§3-3 ⑤)。他拠点の可否はこちらで判定する。
+   */
+  function itemScopeOf(date: string): AddVisitScope {
+    if (effectiveScope !== 'week') return effectiveScope;
+    return sourceAssignment.get(date) == null ? 'new' : 'week';
+  }
+
+  /**
+   * H3: 実行が (c) 新規追加になる日は、選んでいた他拠点候補を既定へ戻す。
+   * `place-and-fix` は拠点跨ぎのテンプレートを 422 で拒むため、選べない選択を
+   * 画面に残さない（登録ボタンだけ死んでいる状態を作らない）。
+   */
+  const staleOtherDates = dates.filter(
+    (d) => (selection[d] ?? '').startsWith('o') && proposals?.[d] && itemScopeOf(d) === 'new',
+  );
+  const staleOtherKey = staleOtherDates.join(',');
+  React.useEffect(() => {
+    if (staleOtherDates.length === 0) return;
+    setSelection((cur) => {
+      const next = { ...cur };
+      for (const date of staleOtherDates) {
+        const p = proposals?.[date];
+        if (p) next[date] = defaultKeyFor(p);
+      }
+      return next;
+    });
+    setOtherOk({});
+    // 日付の集合が変わったときだけ走らせる (setSelection の結果で再入しない)。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [staleOtherKey]);
 
   // ── 決定の解決
   function entryOf(date: string, key: string): CandidateEntry | null {
@@ -546,12 +628,34 @@ export function AddVisitAnywhereDialog({
     return matchCourseTemplate(courseTemplates, slot.office_id, slot.course_code)?.id ?? null;
   }
 
+  /** その日の選択が M（担当なし）か (テンプレートが無い「臨」も含む)。 */
+  function isMSelectedOn(date: string): boolean {
+    const key = selectedKey(date);
+    if (key === M_KEY) return true;
+    const slot = entryOf(date, key)?.slot ?? null;
+    return slot == null || isMCourseCode(slot.course_code);
+  }
+
   /** この日の選択が登録できない理由 (あれば登録ボタンを止める)。 */
   function rowError(date: string): string | null {
+    // H1: 押した予定が動かせない (当日以前 / 青ピン / planned でない)。
+    const pinned = pinnedSourceFor(date);
+    if (pinned && !isMovableSourceVisit(pinned, todayIso)) {
+      return PINNED_SOURCE_IMMOVABLE_ERROR;
+    }
     const key = selectedKey(date);
+    const isM = isMSelectedOn(date);
+    // H2: 2 名体制 × M は BE が実行できない組み合わせ。入口で塞ぐ。
+    if (isM && patient?.requires_multiple_staff) return MULTI_STAFF_ON_M_ERROR;
+    // M4: 移動 (b) はコースを必ず付け替える。M テンプレートすら無い拠点では送れない。
+    if (itemScopeOf(date) === 'week' && isM && mTemplate == null) {
+      return MOVE_COURSE_UNRESOLVED_ERROR;
+    }
     if (key === M_KEY) return null;
     const slot = entryOf(date, key)?.slot ?? null;
     if (!slot) return null;
+    // H3: 他拠点候補 × (c) 新規追加は place-and-fix が拒む。
+    if (key.startsWith('o') && itemScopeOf(date) === 'new') return OTHER_OFFICE_ON_NEW_NOTE;
     if (!templateIdOf(slot)) return `コースを特定できません（${slot.course_label}）`;
     if (patient?.requires_multiple_staff && !slot.partner_course_template_id) {
       return '2名体制の相方コースが特定できません（別の候補を選んでください）';
@@ -570,8 +674,7 @@ export function AddVisitAnywhereDialog({
     const itemScope: AddVisitScope =
       effectiveScope === 'week' && source == null ? 'new' : effectiveScope;
     const reason = reasons[date]?.trim() ?? '';
-    // 2 名体制 × M: place-and-fix は staff_count=2 に異なる 2 テンプレートを要求する
-    // (同一 M ×2 は 422)。M は担当なしの受け皿なので 1 名分だけ登録し警告する。
+    // 2 名体制は候補コース（相方つき）でのみ登録できる。M は `rowError` が塞ぐ (H2)。
     const twoStaff = patient?.requires_multiple_staff === true;
     return {
       date,
@@ -587,7 +690,6 @@ export function AddVisitAnywhereDialog({
       isOtherOffice,
       staffCount: twoStaff && !isM ? 2 : 1,
       partnerCourseTemplateId: isM ? null : (slot?.partner_course_template_id ?? null),
-      mSingleStaffFallback: twoStaff && isM,
       reason: isM && reason !== '' ? reason : null,
       scope: itemScope,
       sourceVisit: source,
@@ -846,8 +948,8 @@ export function AddVisitAnywhereDialog({
                   proposal={p}
                   selectedKey={key}
                   mLabel={mLabel}
-                  isMSelected={key === M_KEY || isMCourseCode(entryOf(date, key)?.slot.course_code)}
-                  multiStaffOnM={patient?.requires_multiple_staff === true}
+                  isMSelected={isMSelectedOn(date)}
+                  otherDisabledNote={itemScopeOf(date) === 'new' ? OTHER_OFFICE_ON_NEW_NOTE : null}
                   otherOk={otherOk[date] ?? false}
                   reason={reasons[date] ?? ''}
                   error={rowError(date)}

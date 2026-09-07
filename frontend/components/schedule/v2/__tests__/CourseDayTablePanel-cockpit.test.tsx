@@ -26,6 +26,104 @@ const { mockToast, callOrder, invalidatedKeys } = vi.hoisted(() => ({
   invalidatedKeys: [] as unknown[],
 }));
 
+/**
+ * ＋訪問（任意日付の訪問追加）の結線 (add-visit-anywhere-design.md Phase 1/3/4)。
+ * モーダル本体は別テストで担保するので、ここでは **props を記録するだけ**の
+ * 浅いスタブに置き換え、親が渡す initial / onExecute の結線だけを見る。
+ */
+const { addVisitDialogProps, mockPlaceAndFix, mockUndoOpLog } = vi.hoisted(() => ({
+  addVisitDialogProps: [] as Record<string, unknown>[],
+  mockUndoOpLog: vi.fn(async () => ({})),
+  mockPlaceAndFix: vi.fn(async () => ({
+    visit: { id: 'v-new-1' },
+    fixed_visit: null,
+    visits: [{ id: 'v-new-1' }],
+    fixed_visits: [],
+    visit_group_id: null,
+  })),
+}));
+
+/** スタブが `onExecute` に流す 1 件の計画 (scope='new')。 */
+const STUB_ADD_VISIT_PLAN = {
+  patientId: 'p1',
+  items: [
+    {
+      date: '',
+      isoYear: 0,
+      isoWeek: 0,
+      weekday: 2,
+      startHM: '12:00',
+      minutes: 35,
+      officeId: 'office-honten',
+      courseTemplateId: 'tpl-A',
+      courseLabel: '本店 A',
+      isM: false,
+      isOtherOffice: false,
+      staffCount: 1 as const,
+      partnerCourseTemplateId: null,
+      reason: null,
+      scope: 'new' as const,
+      sourceVisit: null,
+      noCandidateReason: null,
+    },
+  ],
+};
+
+vi.mock('../cockpit/AddVisitAnywhereDialog', () => ({
+  AddVisitAnywhereDialog: (props: Record<string, unknown>) => {
+    addVisitDialogProps.push(props);
+    return (
+      <div data-testid="add-visit-anywhere-dialog">
+        <button
+          type="button"
+          data-testid="stub-add-visit-execute"
+          onClick={() => {
+            const plan = {
+              ...STUB_ADD_VISIT_PLAN,
+              items: STUB_ADD_VISIT_PLAN.items.map((it) => ({
+                ...it,
+                date: ADD_VISIT_STUB_DATE,
+                isoYear: ISO_YEAR,
+                isoWeek: ISO_WEEK,
+              })),
+            };
+            void (props.onExecute as (p: unknown) => Promise<void>)(plan);
+          }}
+        >
+          実行
+        </button>
+        <button
+          type="button"
+          data-testid="stub-add-visit-execute-2weeks"
+          onClick={() => {
+            const [base] = STUB_ADD_VISIT_PLAN.items;
+            const plan = {
+              ...STUB_ADD_VISIT_PLAN,
+              items: [
+                { ...base, date: ADD_VISIT_STUB_DATE, isoYear: ISO_YEAR, isoWeek: ISO_WEEK },
+                {
+                  ...base,
+                  date: ADD_VISIT_STUB_DATE_NEXT_WEEK,
+                  isoYear: ISO_YEAR,
+                  isoWeek: ISO_WEEK + 1,
+                },
+              ],
+            };
+            void (props.onExecute as (p: unknown) => Promise<void>)(plan);
+          }}
+        >
+          2週ぶん実行
+        </button>
+      </div>
+    );
+  },
+}));
+
+/** モーダルに渡った最新の props。 */
+function lastAddVisitProps(): Record<string, unknown> {
+  return addVisitDialogProps[addVisitDialogProps.length - 1] ?? {};
+}
+
 vi.mock('@dnd-kit/core', () => ({
   useDroppable: () => ({ isOver: false, setNodeRef: vi.fn() }),
   useDraggable: () => ({
@@ -257,7 +355,7 @@ vi.mock('@/lib/queries/courses', () => ({
   useUpdateCourse: () => ({ mutateAsync: mockUpdateCourse, isPending: false }),
 }));
 vi.mock('@/lib/queries/place_and_fix', () => ({
-  usePlaceAndFix: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  usePlaceAndFix: () => ({ mutateAsync: mockPlaceAndFix, isPending: false }),
 }));
 vi.mock('@/lib/queries/generate_week', () => ({
   useGenerateWeek: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -296,7 +394,7 @@ vi.mock('@/lib/queries/staff-events', () => ({
 }));
 vi.mock('@/lib/queries/opLog', () => ({
   useOpLogState: () => ({ data: undefined, isLoading: false }),
-  useUndoOpLog: () => ({ mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false }),
+  useUndoOpLog: () => ({ mutateAsync: mockUndoOpLog, isPending: false }),
   useRedoOpLog: () => ({ mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false }),
   useInvalidateOpLog: () => vi.fn(),
   OP_LOG_STATE_KEY: 'op-log-state',
@@ -406,6 +504,20 @@ const MONDAY_ISO = `${WEEK_START.getFullYear()}-${String(WEEK_START.getMonth() +
 
 /** 当週の ISO 年週。`findCourseForTemplate` は iso 一致を要求するため必須。 */
 const { isoYear: ISO_YEAR, isoWeek: ISO_WEEK } = isoWeekFromLocalDate(WEEK_START);
+
+/** ＋訪問スタブが流す日付 = 翌週の水曜 (H4: 週をまたぐ undo の検証用)。 */
+const ADD_VISIT_STUB_DATE_NEXT_WEEK = (() => {
+  const d = new Date(WEEK_START);
+  d.setDate(d.getDate() + 9);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+})();
+
+/** ＋訪問スタブが流す日付 = その週の水曜 (weekday=2)。 */
+const ADD_VISIT_STUB_DATE = (() => {
+  const d = new Date(WEEK_START);
+  d.setDate(d.getDate() + 2);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+})();
 
 /**
  * tpl-A のコースを指定曜日に置く (iso 一致つき = 移動先として解決できる)。
@@ -666,6 +778,15 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     vi.clearAllMocks();
     callOrder.length = 0;
     invalidatedKeys.length = 0;
+    addVisitDialogProps.length = 0;
+    mockUndoOpLog.mockResolvedValue({});
+    mockPlaceAndFix.mockResolvedValue({
+      visit: { id: 'v-new-1' },
+      fixed_visit: null,
+      visits: [{ id: 'v-new-1' }],
+      fixed_visits: [],
+      visit_group_id: null,
+    });
     mockVisitCancelWeek.mockResolvedValue({ id: 'v1', status: 'cancelled' });
     mockAssignStaffWeek.mockImplementation(async () => {
       callOrder.push('assign');
@@ -716,33 +837,36 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     });
   });
 
-  // ─── 曜日移動 / 時刻変更の payload (add-visit-anywhere-design.md §1 欠陥 3) ───
+  // ─── 曜日移動 / 時刻変更 (add-visit-anywhere-design.md §1 欠陥 3 / §3-4 C) ───
   //
-  // BE は `new_course_template_id` 省略時にコースを据え置くため、曜日跨ぎでは
-  // 必ず付ける (付けないと訪問が旧曜日のコース ID のまま残る)。同じ曜日の
-  // 時刻変更では付けない (コースを変える理由がない)。
+  // Phase 3 で「📅 曜日移動」の曜日セレクトは廃止し、＋訪問モーダルを
+  // 「その週を変える」固定で開く経路に置き換えた（移動先コースが必ず決まる）。
+  // セレクト直行の旧経路 (`onMoveWeekday`) は VisitActionMenu 側のテストで担保する。
 
-  it('(j) 📅曜日移動: 移動先曜日のコースがあれば new_course_template_id 付きで送る', async () => {
+  it('(j) 📅曜日を移動… は ＋訪問モーダルを「その週を変える」固定で開く', async () => {
     setupHooks();
-    // 月 (元) と水 (移動先) の両方に A コースがある週。
     mockCourses.mockReturnValue({ data: coursesOnWeekdays([0, 2]), isLoading: false });
     renderStaffTab();
 
     fireEvent.click(screen.getByTestId('staff-week-visit-v1'));
     expect(await screen.findByTestId('visit-action-menu')).toBeInTheDocument();
 
-    fireEvent.change(screen.getByTestId('visit-action-weekday'), { target: { value: '2' } });
+    // 旧セレクトは出さない (コースが決まらない移動を塞ぐ)。
+    expect(screen.queryByTestId('visit-action-weekday')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('visit-action-weekday-dialog'));
 
-    await vi.waitFor(() => expect(mockVisitMoveWeekOnly).toHaveBeenCalledTimes(1));
-    expect(mockVisitMoveWeekOnly.mock.calls[0]?.[0]).toMatchObject({
-      patient_id: 'p1',
-      old_weekday: 0,
-      old_start_time: '09:00',
-      new_weekday: 2,
-      new_course_template_id: 'tpl-A',
-    });
-    // 移動先にコースがあるので事前確認は出さない。
-    expect(screen.queryByTestId('move-dest-confirm')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('add-visit-anywhere-dialog')).toBeInTheDocument();
+    const initial = lastAddVisitProps().initial as Record<string, unknown>;
+    expect(initial.lockedScope).toBe('week');
+    expect(initial.patientId).toBe('p1');
+    expect((initial.sourceVisit as Record<string, unknown>).id).toBe('v1');
+    expect((initial.sourceVisit as Record<string, unknown>).visit_date).toBe(MONDAY_ISO);
+    expect((initial.sourceVisit as Record<string, unknown>).start_time).toBe('09:00');
+    // 曜日移動から開いたときは日付も希望担当も渡さない (モーダルで選ばせる・H1)。
+    expect(initial.dates).toBeUndefined();
+    expect(initial.staffId).toBeUndefined();
+    // 直接の visit-move-week-only は走らない (モーダルの登録まで待つ)。
+    expect(mockVisitMoveWeekOnly).not.toHaveBeenCalled();
   });
 
   it('(j2) 🕘時刻変更 (同じ曜日) は new_course_template_id を送らない', async () => {
@@ -761,42 +885,80 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     expect(payload).not.toHaveProperty('new_course_template_id');
   });
 
-  it('(j3) 移動先曜日にコースが無ければ「担当なしになる」確認を挟んでから送る', async () => {
+  // ─── ＋訪問（任意日付の訪問追加）の入口 (§3-1) ────────────────────────────
+
+  it('(k) ツールバーの「＋訪問」は患者・日付を空でモーダルを開く', async () => {
     setupHooks();
-    // 月にしか A コースが無い週 → 水へ動かすと BE が担当なしのコースを作る。
-    mockCourses.mockReturnValue({ data: coursesOnWeekdays([0]), isLoading: false });
     renderStaffTab();
 
-    fireEvent.click(screen.getByTestId('staff-week-visit-v1'));
-    expect(await screen.findByTestId('visit-action-menu')).toBeInTheDocument();
-    fireEvent.change(screen.getByTestId('visit-action-weekday'), { target: { value: '2' } });
+    expect(screen.queryByTestId('add-visit-anywhere-dialog')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('add-visit-anywhere-button'));
 
-    // 確認が出るまでは 1 度も送らない。
-    const confirm = await screen.findByTestId('move-dest-confirm');
-    expect(confirm).toHaveTextContent('水曜');
-    expect(confirm).toHaveTextContent('担当なしになります');
-    expect(mockVisitMoveWeekOnly).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByTestId('move-dest-confirm-ok'));
-    await vi.waitFor(() => expect(mockVisitMoveWeekOnly).toHaveBeenCalledTimes(1));
-    expect(mockVisitMoveWeekOnly.mock.calls[0]?.[0]).toMatchObject({
-      new_weekday: 2,
-      new_course_template_id: 'tpl-A',
-    });
+    expect(await screen.findByTestId('add-visit-anywhere-dialog')).toBeInTheDocument();
+    expect(lastAddVisitProps().initial).toBeUndefined();
   });
 
-  it('(j4) 確認を「やめる」と送らない', async () => {
+  it('(k2) 「（担当なし）」行の＋訪問は日付だけ埋めて担当なしで開く (§1 欠陥 4)', async () => {
+    setupUnassignedHooks();
+    renderStaffTab();
+    fireEvent.click(screen.getByTestId('staff-tab-mode-timeline'));
+
+    fireEvent.click(screen.getByTestId('tl-add-visit-__unassigned__'));
+
+    expect(await screen.findByTestId('add-visit-anywhere-dialog')).toBeInTheDocument();
+    const initial = lastAddVisitProps().initial as Record<string, unknown>;
+    expect(initial.dates).toEqual([MONDAY_ISO]);
+    expect(initial.staffId).toBeNull();
+  });
+
+  it('(k3) 登録を実行すると place-and-fix が fix_pattern=false で走り結果画面が出る', async () => {
     setupHooks();
-    mockCourses.mockReturnValue({ data: coursesOnWeekdays([0]), isLoading: false });
     renderStaffTab();
 
-    fireEvent.click(screen.getByTestId('staff-week-visit-v1'));
-    expect(await screen.findByTestId('visit-action-menu')).toBeInTheDocument();
-    fireEvent.change(screen.getByTestId('visit-action-weekday'), { target: { value: '2' } });
+    fireEvent.click(screen.getByTestId('add-visit-anywhere-button'));
+    expect(await screen.findByTestId('add-visit-anywhere-dialog')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('stub-add-visit-execute'));
 
-    expect(await screen.findByTestId('move-dest-confirm')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('move-dest-confirm-cancel'));
-    expect(mockVisitMoveWeekOnly).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mockPlaceAndFix).toHaveBeenCalledTimes(1));
+    expect(mockPlaceAndFix.mock.calls[0]?.[0]).toMatchObject({
+      patient_id: 'p1',
+      course_template_id: 'tpl-A',
+      weekday: 2,
+      start_time: '12:00',
+      duration_min: 35,
+      staff_count: 1,
+      fix_pattern: false,
+    });
+
+    // 結果画面 (日付ごとの成否) が出る。
+    const row = await screen.findByTestId(`avr-row-${ADD_VISIT_STUB_DATE}`);
+    expect(row).toHaveTextContent('✓ 登録');
+    await vi.waitFor(() =>
+      expect(
+        mockToast.success.mock.calls.some((c) => String(c[0]).includes('1 件を登録しました')),
+      ).toBe(true),
+    );
+  });
+
+  it('(k4) H4: 週をまたいだ登録の「元に戻す」は週ごとに undo を投げる', async () => {
+    setupHooks();
+    renderStaffTab();
+
+    fireEvent.click(screen.getByTestId('add-visit-anywhere-button'));
+    expect(await screen.findByTestId('add-visit-anywhere-dialog')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('stub-add-visit-execute-2weeks'));
+
+    await vi.waitFor(() => expect(mockPlaceAndFix).toHaveBeenCalledTimes(2));
+    await screen.findByTestId('avr-undo');
+    mockUndoOpLog.mockClear();
+    fireEvent.click(screen.getByTestId('avr-undo'));
+
+    // op-log は (ユーザー × 週) のスタック。新しい週から 1 回ずつ。
+    await vi.waitFor(() => expect(mockUndoOpLog).toHaveBeenCalledTimes(2));
+    expect(mockUndoOpLog.mock.calls.map((c) => (c[0] as { iso_week: number }).iso_week)).toEqual([
+      ISO_WEEK + 1,
+      ISO_WEEK,
+    ]);
   });
 
   it('(b) 「🛌 休みにする」→ 休みと付け替えは staff-off-week 1 回で終わる', async () => {
@@ -1203,13 +1365,16 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     expect(await screen.findByTestId('substitute-panel')).toBeInTheDocument();
   });
 
-  it('(h2) タイムラインの「＋訪問」で今週だけの訪問ダイアログが開く', async () => {
+  it('(h2) タイムラインの「＋訪問」は日付と担当を埋めて＋訪問モーダルを開く', async () => {
     setupHooks();
     renderStaffTab();
     fireEvent.click(screen.getByTestId('staff-tab-mode-timeline'));
 
     fireEvent.click(screen.getByTestId(`tl-add-visit-${STAFF_2}`));
-    expect(await screen.findByTestId('add-visit-dialog')).toBeInTheDocument();
+    expect(await screen.findByTestId('add-visit-anywhere-dialog')).toBeInTheDocument();
+    const initial = lastAddVisitProps().initial as Record<string, unknown>;
+    expect(initial.dates).toEqual([MONDAY_ISO]);
+    expect(initial.staffId).toBe(STAFF_2);
   });
 
   it('(f) 訪問メニューの同期表示は 未計測=「同期バーで確認」/ 報告後=「●未送信」', async () => {

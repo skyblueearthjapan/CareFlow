@@ -234,6 +234,14 @@ describe('AddVisitAnywhereDialog', () => {
     expect(row).toHaveTextContent('主担当拠点に空きがありません（理由: 定員いっぱい）');
     expect(row).toHaveTextContent('他拠点（要確認）');
 
+    // H3: 反映先が (c) 新規追加のあいだは他拠点そのものが選べない
+    expect(screen.getByTestId('ava-other-blocked-2026-09-14')).toHaveTextContent(
+      '新規追加では他拠点へ入れられません',
+    );
+    expect(screen.getByTestId('ava-cand-2026-09-14-o0')).toBeDisabled();
+    // (a) 型も変える に切り替えると「拠点跨ぎを承知で入れる」が出る
+    fireEvent.click(screen.getByTestId('ava-scope-pattern'));
+
     // チェックするまで他拠点の候補は選べない
     const cand = screen.getByTestId('ava-cand-2026-09-14-o0');
     expect(cand).toBeDisabled();
@@ -336,7 +344,6 @@ describe('AddVisitAnywhereDialog', () => {
           isOtherOffice: false,
           staffCount: 1,
           partnerCourseTemplateId: null,
-          mSingleStaffFallback: false,
           reason: null,
           scope: 'new',
           sourceVisit: null,
@@ -345,6 +352,97 @@ describe('AddVisitAnywhereDialog', () => {
       ],
     });
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
+  // ─── H1: 📅「曜日を移動…」で押した予定を動かす元に固定する ────────────────
+
+  it('H1 押した予定が「動かす元」の既定になる (同曜日ルールより優先・週の一覧に無くても選べる)', async () => {
+    // 押した予定 = 火曜 09:00。移動先は水曜で、その週には水曜の予定も既にある
+    // (同曜日ルールだけなら水曜が既定になってしまう)。
+    const clicked = visit({ id: 'v-clicked', visit_date: '2026-09-15', start_time: '09:00' });
+    const loadPatientWeekVisits = vi.fn(async () => [
+      visit({ id: 'v-wed', visit_date: '2026-09-16', start_time: '10:00' }),
+    ]);
+    const proposeSlots = vi.fn(async () => response({ slots: [slot({ weekday: 2 })] }));
+    const { onExecute } = renderDialog({
+      loadPatientWeekVisits,
+      proposeSlots: proposeSlots as unknown as AddVisitAnywhereDialogProps['proposeSlots'],
+      initial: {
+        patientId: PATIENT_ID,
+        lockedScope: 'week',
+        sourceVisit: clicked,
+        dates: ['2026-09-16'],
+      },
+    });
+
+    await waitFor(() => expect(loadPatientWeekVisits).toHaveBeenCalled());
+    const select = (await screen.findByTestId('ava-source-2026-09-16')) as HTMLSelectElement;
+    // 週の一覧に無くても候補に入り、既定になる。
+    expect(Array.from(select.options).map((o) => o.value)).toContain('v-clicked');
+    expect(select.value).toBe('v-clicked');
+
+    fireEvent.click(screen.getByTestId('ava-propose'));
+    await screen.findByTestId('ava-row-2026-09-16');
+    fireEvent.click(screen.getByTestId('ava-submit'));
+    await waitFor(() => expect(onExecute).toHaveBeenCalled());
+    const plan = onExecute.mock.calls[0]?.[0] as AddVisitPlan;
+    expect(plan.items[0]?.scope).toBe('week');
+    expect(plan.items[0]?.sourceVisit?.id).toBe('v-clicked');
+    expect(plan.items[0]?.sourceVisit?.start_time).toBe('09:00');
+  });
+
+  it('H1 押した予定が動かせない (青ピン) ときは行エラーで登録を止める', async () => {
+    const clicked = visit({
+      id: 'v-pinned',
+      visit_date: '2026-09-15',
+      start_time: '09:00',
+      week_pinned: true,
+    });
+    const proposeSlots = vi.fn(async () => response({ slots: [slot({ weekday: 2 })] }));
+    renderDialog({
+      proposeSlots: proposeSlots as unknown as AddVisitAnywhereDialogProps['proposeSlots'],
+      initial: {
+        patientId: PATIENT_ID,
+        lockedScope: 'week',
+        sourceVisit: clicked,
+        dates: ['2026-09-16'],
+      },
+    });
+
+    fireEvent.click(screen.getByTestId('ava-propose'));
+    await screen.findByTestId('ava-row-2026-09-16');
+    expect(screen.getByTestId('ava-row-error-2026-09-16')).toHaveTextContent(
+      'この予定は動かせません（当日以前/固定/予定外）',
+    );
+    expect(screen.getByTestId('ava-submit')).toBeDisabled();
+  });
+
+  // ─── H2: 2 名体制 × M（担当なし）は作れない ──────────────────────────────
+
+  it('H2 2 名体制の患者を M へ入れようとすると行エラーで止まる', async () => {
+    const twoStaff: AddVisitPatientOption = {
+      ...ITO,
+      id: PAIR_ID,
+      name: '2名体制',
+      requires_multiple_staff: true,
+    };
+    const proposeSlots = vi.fn(async () =>
+      response({ excluded_summary: [{ reason: 'no_pair_slot', count: 1, weekday: 0 }] }),
+    );
+    renderDialog({
+      patients: [ITO, twoStaff],
+      proposeSlots: proposeSlots as unknown as AddVisitAnywhereDialogProps['proposeSlots'],
+      initial: { patientId: PAIR_ID, dates: ['2026-09-14'] },
+    });
+
+    fireEvent.click(screen.getByTestId('ava-propose'));
+    await screen.findByTestId('ava-row-2026-09-14');
+    // 0 件なので M が既定選択 → そのままでは登録できない。
+    expect(screen.getByTestId('ava-cand-2026-09-14-__M__')).toBeChecked();
+    expect(screen.getByTestId('ava-row-error-2026-09-14')).toHaveTextContent(
+      '2名体制の患者は担当なし(M)へ入れられません',
+    );
+    expect(screen.getByTestId('ava-submit')).toBeDisabled();
   });
 
   // ── レビュー指摘の回帰 ───────────────────────────────────────────────
@@ -649,6 +747,8 @@ describe('AddVisitAnywhereDialog', () => {
     fireEvent.click(screen.getByTestId('ava-propose'));
     await waitFor(() => expect(screen.getByTestId('ava-cand-2026-09-14-o0')).toBeInTheDocument());
 
+    // 他拠点は (c) 新規追加では選べない (H3)。型も変える へ切り替える。
+    fireEvent.click(screen.getByTestId('ava-scope-pattern'));
     fireEvent.click(screen.getByTestId('ava-other-office-2026-09-14'));
     fireEvent.click(screen.getByTestId('ava-cand-2026-09-14-o0'));
     expect(screen.getByTestId('ava-cand-2026-09-14-o0')).toBeChecked();

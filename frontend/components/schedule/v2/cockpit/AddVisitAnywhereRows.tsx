@@ -100,7 +100,7 @@ export function DateProposalRow({
   selectedKey,
   mLabel,
   isMSelected,
-  multiStaffOnM = false,
+  otherDisabledNote = null,
   otherOk,
   reason,
   error,
@@ -117,8 +117,12 @@ export function DateProposalRow({
   selectedKey: string;
   mLabel: string;
   isMSelected: boolean;
-  /** 2 名体制の患者か。M 選択時は「1 名分のみ登録」の警告を出す。 */
-  multiStaffOnM?: boolean;
+  /**
+   * 他拠点（要確認）の候補を選べない理由 (H3)。反映先が「新しく 1 件追加」の
+   * ときは `place-and-fix` が拠点跨ぎのテンプレートを 422 で拒むため塞ぐ。
+   * null = 選べる。
+   */
+  otherDisabledNote?: string | null;
   otherOk: boolean;
   reason: string;
   /** この日の選択が登録できない理由 (コース未解決・相方未解決)。 */
@@ -172,22 +176,28 @@ export function DateProposalRow({
       {proposal && proposal.other.length > 0 ? (
         <div className="mt-1 rounded bg-bg-muted p-1">
           <p className="font-semibold">他拠点（要確認）</p>
-          <label className="flex items-center gap-1">
-            <input
-              type="checkbox"
-              checked={otherOk}
-              onChange={(ev) => onToggleOther(ev.target.checked)}
-              data-testid={`ava-other-office-${date}`}
-            />
-            拠点跨ぎを承知で入れる
-          </label>
+          {otherDisabledNote ? (
+            <p className="text-warning-strong" data-testid={`ava-other-blocked-${date}`}>
+              {otherDisabledNote}
+            </p>
+          ) : (
+            <label className="flex items-center gap-1">
+              <input
+                type="checkbox"
+                checked={otherOk}
+                onChange={(ev) => onToggleOther(ev.target.checked)}
+                data-testid={`ava-other-office-${date}`}
+              />
+              拠点跨ぎを承知で入れる
+            </label>
+          )}
           {orderCandidates(proposal.other).map((e) => (
             <CandidateOption
               key={e.key}
               date={date}
               entry={e}
               checked={selectedKey === e.key}
-              disabled={disabled || !otherOk}
+              disabled={disabled || otherDisabledNote != null || !otherOk}
               onSelect={() => onSelect(e.key)}
             />
           ))}
@@ -205,12 +215,6 @@ export function DateProposalRow({
         />
         {mLabel}
       </label>
-
-      {isMSelected && multiStaffOnM ? (
-        <p className="mt-1 text-warning" data-testid={`ava-m-single-staff-${date}`}>
-          2名体制ですが担当なし(M)には1名分のみ登録します。もう1名は盤面/プールで手当てしてください
-        </p>
-      ) : null}
 
       {isMSelected ? (
         <Input

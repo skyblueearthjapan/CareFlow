@@ -59,7 +59,7 @@ function renderMenu(overrides: Partial<React.ComponentProps<typeof VisitActionMe
     onCancelToggle: vi.fn(),
     onChangeStaff: vi.fn(),
     onChangeTime: vi.fn(),
-    onMoveWeekday: vi.fn(),
+    onOpenMoveDialog: vi.fn(),
     onChangeMaster: vi.fn(),
     onChangeServiceContent: vi.fn(),
   };
@@ -88,7 +88,7 @@ describe('VisitActionMenu', () => {
     expect(screen.getByTestId('visit-action-cancel')).toHaveTextContent('今週だけ取消');
     expect(screen.getByLabelText('担当変更')).toBeInTheDocument();
     expect(screen.getByLabelText('時刻変更')).toBeInTheDocument();
-    expect(screen.getByLabelText('曜日移動')).toBeInTheDocument();
+    expect(screen.getByTestId('visit-action-weekday-dialog')).toHaveTextContent('曜日を移動');
     expect(screen.getByTestId('visit-action-master')).toHaveTextContent('型も変える');
     // 出所・同期の表示 (モックの sub 行)
     expect(screen.getByTestId('visit-action-footer')).toHaveTextContent('今週だけ');
@@ -122,8 +122,6 @@ describe('VisitActionMenu', () => {
     expect(time.value).toBe('07:20');
     expect([...time.options].some((o) => o.value === '07:20')).toBe(true);
     expect((screen.getByLabelText('担当変更') as HTMLSelectElement).value).toBe(STAFF_A);
-    // 火曜の訪問なので曜日は 1 が既定
-    expect((screen.getByLabelText('曜日移動') as HTMLSelectElement).value).toBe('1');
   });
 
   // 各操作はメニューを閉じるため 1 テスト 1 操作で確認する。
@@ -145,10 +143,23 @@ describe('VisitActionMenu', () => {
     expect(h.onChangeTime).toHaveBeenCalledWith('10:30');
   });
 
-  it('曜日移動が親へ通知される', () => {
+  // ─── 📅 曜日を移動… (add-visit-anywhere-design.md §3-4 C) ────────────────
+  //
+  // 曜日セレクトの直接移動は「移動先コースが決まらないまま曜日を跨ぐ」欠陥 3 を
+  // 抱えていたため撤去した。曜日移動は必ず ＋訪問モーダル経由で行う。
+
+  it('曜日セレクトは無く、「曜日を移動…」ボタンが親へ通知する', () => {
     const h = renderMenu();
-    fireEvent.change(screen.getByLabelText('曜日移動'), { target: { value: '3' } });
-    expect(h.onMoveWeekday).toHaveBeenCalledWith(3);
+    expect(screen.queryByLabelText('曜日移動')).toBeNull();
+    expect(screen.queryByTestId('visit-action-weekday')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('visit-action-weekday-dialog'));
+    expect(h.onOpenMoveDialog).toHaveBeenCalledTimes(1);
+  });
+
+  it('青ピンでは「曜日を移動…」も押せない', () => {
+    renderMenu({ visit: { ...BASE_VISIT, week_pinned: true } });
+    expect(screen.getByTestId('visit-action-weekday-dialog')).toBeDisabled();
   });
 
   it('型も変える… が親へ通知される', () => {

@@ -9,7 +9,7 @@
  *   🗑 今週だけ取消 / ↶ 取消をやめる  … visits.status planned↔cancelled
  *   👤 担当変更                       … visit-assign-staff-week
  *   🕘 時刻変更 (15分)                … visit-move-week-only
- *   📅 曜日移動                       … visit-move-week-only (曜日跨ぎ)
+ *   📅 曜日を移動…                    … ＋訪問モーダル (§3-4 C・移動先コースを決める)
  *   📐 型も変える…                    … ChangeScopeChoice へ委譲 (マスタ昇格)
  *   🧾 カイポケのサービス内容に合わせる… … visit-service-override (この訪問だけ)
  *
@@ -23,12 +23,7 @@ import { useAssignCandidates } from '@/lib/queries/cockpit';
 import { SUBSTITUTE_STATUS_MARK } from '@/lib/schemas/v2/cockpit';
 import { cn } from '@/lib/utils';
 import { summarizeAssignCandidates } from './AssignSuggestionPopover';
-import { fmtMd, weekdayOfIso } from './reconcileMarkers';
-
-/** 曜日ラベルは reconcileMarkers.fmtMd と同じ 7 要素 (日曜が空文字にならないように)。 */
-const WD_JA = ['月', '火', '水', '木', '金', '土', '日'] as const;
-/** 「曜日移動」の行き先は盤面と同じ 月〜土 のみ。 */
-const MOVE_WEEKDAYS = WD_JA.slice(0, 6);
+import { fmtMd } from './reconcileMarkers';
 
 /** 8:00〜18:45 の 15 分刻み (モックと同じ 44 個)。 */
 export const TIME_OPTIONS: string[] = Array.from({ length: 44 }, (_, i) => {
@@ -95,8 +90,15 @@ export interface VisitActionMenuProps {
   onChangeStaff: (staffId: string | null) => void;
   /** 開始時刻 'HH:MM' (所要時間は据え置き)。 */
   onChangeTime: (start: string) => void;
-  /** 0=月 .. 5=土。 */
-  onMoveWeekday: (weekday: number) => void;
+  /**
+   * 「📅 曜日を移動…」= ＋訪問モーダル (`AddVisitAnywhereDialog`) を
+   * 「その週を変える」固定で親が開く (add-visit-anywhere-design.md §3-4 C)。
+   *
+   * 曜日セレクトの直接移動 (`onMoveWeekday`) は「移動先コースが決まらないまま
+   * 曜日を跨ぐ」欠陥 3 を抱えていたため 2026-09-07 に撤去した。曜日移動は
+   * 必ずこのモーダル経由で行う。
+   */
+  onOpenMoveDialog: () => void;
   /** 「📐 型も変える…」= ChangeScopeChoice ダイアログを親が開く。 */
   onChangeMaster: () => void;
   /**
@@ -202,10 +204,6 @@ function VisitSuggestions({
   );
 }
 
-function weekdayOf(dateIso: string): number {
-  return weekdayOfIso(dateIso);
-}
-
 /** 見出しの日付表記は盤面/差分カードと同じ `fmtMd` に統一する。 */
 const fmtHead = fmtMd;
 
@@ -223,7 +221,7 @@ export function VisitActionMenu({
   onCancelToggle,
   onChangeStaff,
   onChangeTime,
-  onMoveWeekday,
+  onOpenMoveDialog,
   onChangeMaster,
   onChangeServiceContent,
   showSuggestions = true,
@@ -232,7 +230,6 @@ export function VisitActionMenu({
   const cancelled = visit.status === 'cancelled';
   const locked = visit.week_pinned;
   const disabled = !canEdit || locked;
-  const curWeekday = weekdayOf(visit.date);
   // 当日以前は実績が付いている可能性があるため取消できない (BE も 422)。
   const cancelDisabled = disabled || (!cancelled && isPast);
   const curStaffValue = visit.staff_id ?? '__none__';
@@ -374,29 +371,23 @@ export function VisitActionMenu({
             </select>
           </div>
 
-          <div className="flex items-center gap-1.5">
-            <span className={rowLabel}>📅 曜日移動</span>
-            <select
-              className={selectCls}
-              disabled={disabled}
-              defaultValue={String(curWeekday)}
-              data-testid="visit-action-weekday"
-              aria-label="曜日移動"
-              onChange={(e) => {
-                const v = e.target.value;
-                if (v === '' || Number.parseInt(v, 10) === curWeekday) return;
-                onMoveWeekday(Number.parseInt(v, 10));
-                close();
-              }}
-            >
-              {MOVE_WEEKDAYS.map((w, i) => (
-                <option key={w} value={i}>
-                  {w}
-                  {i === curWeekday ? '（現在）' : ''}
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* §3-4 C: モーダルで「日付 → 提案 → 移動先コース」まで決めてから動かす。
+              セレクトの直接移動はコースが決まらず旧曜日タブに残る (欠陥 3)。 */}
+          <button
+            type="button"
+            disabled={disabled}
+            data-testid="visit-action-weekday-dialog"
+            onClick={() => {
+              onOpenMoveDialog();
+              close();
+            }}
+            className="w-full rounded border border-border-default px-2 py-1.5 text-left text-[12px] hover:border-brand-primary/50 disabled:opacity-50"
+          >
+            📅 曜日を移動…
+            <span className="mt-0.5 block text-[10px] leading-snug text-text-muted">
+              移動先の日付と入れるコースを選びます（今週のみ）
+            </span>
+          </button>
 
           <button
             type="button"

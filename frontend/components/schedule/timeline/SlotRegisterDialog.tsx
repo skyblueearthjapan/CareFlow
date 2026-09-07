@@ -172,7 +172,9 @@ export function SlotRegisterDialog({
           {patients.length > 0 ? (
             <>
               <label className="flex flex-col gap-1 text-sm">
-                <span className="font-semibold text-text-primary">利用者（プールの不足患者）</span>
+                <span className="font-semibold text-text-primary">
+                  利用者（プールの不足患者を先頭に表示）
+                </span>
                 <select
                   value={patientId}
                   onChange={(e) => handleSelectPatient(e.target.value)}
