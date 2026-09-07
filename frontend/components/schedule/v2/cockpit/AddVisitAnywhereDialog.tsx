@@ -167,6 +167,10 @@ const PINNED_SOURCE_IMMOVABLE_ERROR = 'この予定は動かせません（当�
 /** 移動 (b) はコースを必ず付け替える。M テンプレートすら無い拠点では送れない (M4)。 */
 const MOVE_COURSE_UNRESOLVED_ERROR = '移動先のコースを特定できません';
 
+/** ⑤ 反映先のラジオ 1 行。ラベル全体がクリック領域 (設計 §3-5)。 */
+const scopeRowCls =
+  'flex cursor-pointer items-start gap-2 rounded border border-border-default px-3 py-2 hover:bg-bg-muted has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60';
+
 function toIso(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
@@ -748,296 +752,334 @@ export function AddVisitAnywhereDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl" data-testid="ava-dialog">
+      <DialogContent className="flex max-w-5xl flex-col overflow-hidden" data-testid="ava-dialog">
         <DialogHeader>
-          <DialogTitle className="text-sm">＋ 訪問を追加</DialogTitle>
-          <DialogDescription className="text-[11px]">
+          <DialogTitle>＋ 訪問を追加</DialogTitle>
+          <DialogDescription>
             患者・日付（複数可）・時刻を決めると、その週のスケジュールを見て入れられるコースを提案します。
           </DialogDescription>
         </DialogHeader>
 
-        <div className="max-h-[68vh] space-y-3 overflow-y-auto pr-1">
-          {/* ① 患者 */}
-          <section className="space-y-1">
-            <Label className="text-xs font-semibold">① 患者</Label>
-            <Input
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              placeholder="名前で絞り込む"
-              className="h-7 text-xs"
-              data-testid="ava-patient-search"
-              aria-label="患者を検索"
-            />
-            <select
-              className={selectCls}
-              value={patientId}
-              onChange={(e) => handlePatientChange(e.target.value)}
-              disabled={submitting || busy}
-              data-testid="ava-patient"
-              aria-label="患者"
-            >
-              <option value="">選ぶ…</option>
-              {patientOptions.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                  {poolPatientIds.has(p.id) ? '（不足あり）' : ''}
-                </option>
-              ))}
-            </select>
-            {patient ? (
-              <p className="text-[11px] text-text-muted" data-testid="ava-patient-hint">
-                基本 {patient.service_minutes ?? '—'} 分{patient.hint ? `・${patient.hint}` : ''}
-                {patient.primary_office_id
-                  ? `・${offices.find((o) => o.id === patient.primary_office_id)?.name ?? ''}`
-                  : ''}
-                {patient.requires_multiple_staff ? '・2名体制' : ''}
-              </p>
-            ) : null}
-            {patient && !hasCoords ? (
-              <p className="text-[11px] text-warning-strong" data-testid="ava-no-coords">
-                住所の座標が無いため提案できません（M へは入れられます）
-              </p>
-            ) : null}
-            {patient && !hasOffice ? (
-              <p className="text-[11px] text-warning-strong" data-testid="ava-no-office">
-                主担当拠点が未設定のため提案できません
-              </p>
-            ) : null}
-          </section>
-
-          {/* ② 日付 */}
-          <section className="space-y-1">
-            <Label className="text-xs font-semibold">② 日付</Label>
-            <div className="rounded border border-border-default" data-testid="ava-calendar">
-              <Calendar
-                mode="multiple"
-                selected={selectedDays}
-                onSelect={handleDatesChange}
-                defaultMonth={defaultMonth}
-                disabled={[{ before: todayDate }, { dayOfWeek: [0] }, todayDate]}
-                className="mx-auto w-fit"
+        {/*
+          設計 §3-5: 2 列 (左 = ①②③ / 右 = ④⑤)。狭い画面では 1 列に落ちる。
+          DOM 順 = 左列 → 右列 なので、フォーカス順も ①→②→③→④→⑤→フッタ。
+        */}
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto pr-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
+          <div className="space-y-5">
+            {/* ① 患者 */}
+            <section className="space-y-2">
+              <Label className="text-base font-semibold">① 患者</Label>
+              <Input
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                placeholder="名前で絞り込む"
+                className="h-9"
+                data-testid="ava-patient-search"
+                aria-label="患者を検索"
               />
-            </div>
-            <div className="flex items-start gap-2">
-              <p className="flex-1 text-[11px]" data-testid="ava-selected-dates">
-                {dates.length === 0
-                  ? '日付を選んでください（日曜と当日以前は選べません）'
-                  : `選択中: ${dates.map(formatDateLabel).join(' ')}`}
-              </p>
-              {dates.length > 0 ? (
+              <select
+                className={selectCls}
+                value={patientId}
+                onChange={(e) => handlePatientChange(e.target.value)}
+                disabled={submitting || busy}
+                data-testid="ava-patient"
+                aria-label="患者"
+              >
+                <option value="">選ぶ…</option>
+                {patientOptions.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                    {poolPatientIds.has(p.id) ? '（不足あり）' : ''}
+                  </option>
+                ))}
+              </select>
+              {patient ? (
+                <p className="text-xs text-text-muted" data-testid="ava-patient-hint">
+                  基本 {patient.service_minutes ?? '—'} 分{patient.hint ? `・${patient.hint}` : ''}
+                  {patient.primary_office_id
+                    ? `・${offices.find((o) => o.id === patient.primary_office_id)?.name ?? ''}`
+                    : ''}
+                  {patient.requires_multiple_staff ? '・2名体制' : ''}
+                </p>
+              ) : null}
+              {patient && !hasCoords ? (
+                <p className="text-sm text-warning-strong" data-testid="ava-no-coords">
+                  住所の座標が無いため提案できません（M へは入れられます）
+                </p>
+              ) : null}
+              {patient && !hasOffice ? (
+                <p className="text-sm text-warning-strong" data-testid="ava-no-office">
+                  主担当拠点が未設定のため提案できません
+                </p>
+              ) : null}
+            </section>
+
+            {/* ② 日付 */}
+            <section className="space-y-2">
+              <Label className="text-base font-semibold">② 日付</Label>
+              <div className="rounded border border-border-default" data-testid="ava-calendar">
+                <Calendar
+                  mode="multiple"
+                  selected={selectedDays}
+                  onSelect={handleDatesChange}
+                  defaultMonth={defaultMonth}
+                  disabled={[{ before: todayDate }, { dayOfWeek: [0] }, todayDate]}
+                  className="mx-auto w-fit"
+                />
+              </div>
+              <div className="flex items-start gap-2">
+                <div
+                  className="flex flex-1 flex-wrap items-center gap-1.5 text-sm"
+                  data-testid="ava-selected-dates"
+                >
+                  {dates.length === 0 ? (
+                    <span className="text-text-muted">
+                      日付を選んでください（日曜と当日以前は選べません）
+                    </span>
+                  ) : (
+                    <>
+                      <span className="text-text-muted">{'選択中: '}</span>
+                      {dates.map((d) => (
+                        <span key={d} className="rounded-full bg-bg-muted px-2 py-0.5 text-sm">
+                          {formatDateLabel(d)}
+                        </span>
+                      ))}
+                    </>
+                  )}
+                </div>
+                {dates.length > 0 ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => handleDatesChange([])}
+                    data-testid="ava-clear-dates"
+                  >
+                    クリア
+                  </Button>
+                ) : null}
+              </div>
+            </section>
+
+            {/* ③ 時刻・所要・希望担当 */}
+            <section className="space-y-2">
+              <Label className="text-base font-semibold">③ 時刻・所要・希望担当</Label>
+              <div className="flex gap-3">
+                <div className="min-w-0 flex-1 space-y-1">
+                  <Label className="text-xs text-text-muted">開始</Label>
+                  <select
+                    className={selectCls}
+                    value={startHM}
+                    onChange={(e) => setStartHM(e.target.value)}
+                    disabled={submitting || busy}
+                    data-testid="ava-start"
+                    aria-label="開始"
+                  >
+                    {(TIME_OPTIONS.includes(startHM)
+                      ? TIME_OPTIONS
+                      : [...TIME_OPTIONS, startHM].sort()
+                    ).map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="min-w-0 flex-1 space-y-1">
+                  <Label className="text-xs text-text-muted">所要</Label>
+                  <select
+                    className={selectCls}
+                    value={String(minutes)}
+                    onChange={(e) => setMinutes(Number.parseInt(e.target.value, 10))}
+                    disabled={submitting || busy}
+                    data-testid="ava-minutes"
+                    aria-label="所要"
+                  >
+                    {minutesOptions.map((m) => (
+                      <option key={m} value={m}>
+                        {m}分
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="min-w-0 flex-1 space-y-1">
+                  <Label className="text-xs text-text-muted">希望担当</Label>
+                  <select
+                    className={selectCls}
+                    value={staffId}
+                    onChange={(e) => setStaffId(e.target.value)}
+                    disabled={submitting || busy}
+                    data-testid="ava-staff"
+                    aria-label="希望担当"
+                  >
+                    <option value="">（指定なし）</option>
+                    {staffOptions.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          {/* 右列は候補が多いと長くなるので独立してスクロールさせる (設計 §3-5)。 */}
+          <div className="space-y-5 lg:pr-2">
+            {/* ④ 提案 */}
+            <section className="space-y-2">
+              <div className="flex flex-wrap items-center gap-3">
+                <Label className="text-base font-semibold">④ 提案</Label>
                 <Button
                   type="button"
                   variant="outline"
-                  size="sm"
-                  className="h-6 text-[11px]"
-                  onClick={() => handleDatesChange([])}
-                  data-testid="ava-clear-dates"
+                  disabled={
+                    !patient || dates.length === 0 || searching || busy || !hasCoords || !hasOffice
+                  }
+                  onClick={() => void handlePropose()}
+                  data-testid="ava-propose"
                 >
-                  クリア
+                  🔍 入れる場所を探す
                 </Button>
-              ) : null}
-            </div>
-          </section>
-
-          {/* ③ 時刻・所要・希望担当 */}
-          <section className="space-y-1">
-            <Label className="text-xs font-semibold">③ 時刻・所要・希望担当</Label>
-            <div className="flex gap-2">
-              <div className="flex-1">
-                <Label className="text-[11px]">開始</Label>
-                <select
-                  className={selectCls}
-                  value={startHM}
-                  onChange={(e) => setStartHM(e.target.value)}
-                  disabled={submitting || busy}
-                  data-testid="ava-start"
-                  aria-label="開始"
-                >
-                  {(TIME_OPTIONS.includes(startHM)
-                    ? TIME_OPTIONS
-                    : [...TIME_OPTIONS, startHM].sort()
-                  ).map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex-1">
-                <Label className="text-[11px]">所要</Label>
-                <select
-                  className={selectCls}
-                  value={String(minutes)}
-                  onChange={(e) => setMinutes(Number.parseInt(e.target.value, 10))}
-                  disabled={submitting || busy}
-                  data-testid="ava-minutes"
-                  aria-label="所要"
-                >
-                  {minutesOptions.map((m) => (
-                    <option key={m} value={m}>
-                      {m}分
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex-1">
-                <Label className="text-[11px]">希望担当</Label>
-                <select
-                  className={selectCls}
-                  value={staffId}
-                  onChange={(e) => setStaffId(e.target.value)}
-                  disabled={submitting || busy}
-                  data-testid="ava-staff"
-                  aria-label="希望担当"
-                >
-                  <option value="">（指定なし）</option>
-                  {staffOptions.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </section>
-
-          {/* ④ 提案 */}
-          <section className="space-y-1">
-            <div className="flex items-center gap-2">
-              <Label className="text-xs font-semibold">④ 提案</Label>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-6 text-[11px]"
-                disabled={
-                  !patient || dates.length === 0 || searching || busy || !hasCoords || !hasOffice
-                }
-                onClick={() => void handlePropose()}
-                data-testid="ava-propose"
-              >
-                🔍 入れる場所を探す
-              </Button>
-              {searching ? (
-                <span className="text-[11px] text-text-muted" data-testid="ava-progress">
-                  探しています…（{progress.done}/{progress.total} 週）
-                </span>
-              ) : null}
-              {proposals && !proposalsValid && !searching ? (
-                <span className="text-[11px] text-warning-strong" data-testid="ava-stale">
-                  条件が変わりました。もう一度探してください
-                </span>
-              ) : null}
-            </div>
-
-            {error ? (
-              <p className="text-[11px] text-error" data-testid="ava-error">
-                {error}
-              </p>
-            ) : null}
-
-            {dates.map((date) => {
-              const p = proposalsValid ? (proposals?.[date] ?? null) : null;
-              if (!p && hasCoords) return null;
-              const key = selectedKey(date);
-              return (
-                <DateProposalRow
-                  key={date}
-                  date={date}
-                  startHM={startHM}
-                  proposal={p}
-                  selectedKey={key}
-                  mLabel={mLabel}
-                  isMSelected={isMSelectedOn(date)}
-                  otherDisabledNote={itemScopeOf(date) === 'new' ? OTHER_OFFICE_ON_NEW_NOTE : null}
-                  otherOk={otherOk[date] ?? false}
-                  reason={reasons[date] ?? ''}
-                  error={rowError(date)}
-                  disabled={submitting || busy}
-                  orderCandidates={orderCandidates}
-                  onSelect={(next) => setSelection((s) => ({ ...s, [date]: next }))}
-                  onToggleOther={(next) => {
-                    setOtherOk((s) => ({ ...s, [date]: next }));
-                    // 承知チェックを外したら他拠点の選択も戻す (宙ぶらりんにしない)。
-                    if (!next && p) {
-                      setSelection((s) =>
-                        s[date]?.startsWith('o') ? { ...s, [date]: defaultKeyFor(p) } : s,
-                      );
-                    }
-                  }}
-                  onReasonChange={(next) => setReasons((s) => ({ ...s, [date]: next }))}
-                />
-              );
-            })}
-          </section>
-
-          {/* ⑤ 反映先 */}
-          <section className="space-y-1">
-            <Label className="text-xs font-semibold">⑤ 反映先</Label>
-            <div className="space-y-0.5 text-[11px]">
-              <label className="flex items-center gap-1">
-                <input
-                  type="radio"
-                  name="ava-scope"
-                  checked={effectiveScope === 'pattern'}
-                  disabled={!patternAllowed || scopeLocked || submitting || busy}
-                  onChange={() => setScope('pattern')}
-                  data-testid="ava-scope-pattern"
-                />
-                固定訪問スケジュール（型）も変える
-                {!patternAllowed ? (
-                  <span className="text-text-muted">※ 日付が 1 つのときだけ選べます</span>
+                {searching ? (
+                  <span className="text-sm text-text-muted" data-testid="ava-progress">
+                    探しています…（{progress.done}/{progress.total} 週）
+                  </span>
                 ) : null}
-              </label>
-              <label className="flex items-center gap-1">
-                <input
-                  type="radio"
-                  name="ava-scope"
-                  checked={effectiveScope === 'week'}
-                  disabled={scopeLocked || submitting || busy}
-                  onChange={() => setScope('week')}
-                  data-testid="ava-scope-week"
-                />
-                その週のスケジュールを変える（既存の予定を動かす・型は変えない）
-              </label>
-              <label className="flex items-center gap-1">
-                <input
-                  type="radio"
-                  name="ava-scope"
-                  checked={effectiveScope === 'new'}
-                  disabled={scopeLocked || submitting || busy}
-                  onChange={() => setScope('new')}
-                  data-testid="ava-scope-new"
-                />
-                新しく 1 件追加する（既存の予定はそのまま・型は変えない）
-              </label>
-            </div>
+                {proposals && !proposalsValid && !searching ? (
+                  <span className="text-sm text-warning-strong" data-testid="ava-stale">
+                    条件が変わりました。もう一度探してください
+                  </span>
+                ) : null}
+              </div>
 
-            {effectiveScope === 'week'
-              ? dates.map((date) => {
-                  const mine = usedSourceIds.get(date) ?? '';
-                  const used = new Set(
-                    [...usedSourceIds.entries()].filter(([d]) => d !== date).map(([, id]) => id),
-                  );
-                  return (
-                    <WeekSourceRow
-                      key={date}
-                      date={date}
-                      candidates={movableVisits(date)}
-                      selectedId={mine}
-                      usedByOtherDates={used}
-                      disabled={submitting || busy}
-                      onChange={(visitId) => setSourceSel((s) => ({ ...s, [date]: visitId }))}
-                    />
-                  );
-                })
-              : null}
-          </section>
+              {error ? (
+                <p className="text-sm text-error" data-testid="ava-error">
+                  {error}
+                </p>
+              ) : null}
+
+              {dates.map((date) => {
+                const p = proposalsValid ? (proposals?.[date] ?? null) : null;
+                if (!p && hasCoords) return null;
+                const key = selectedKey(date);
+                return (
+                  <DateProposalRow
+                    key={date}
+                    date={date}
+                    startHM={startHM}
+                    proposal={p}
+                    selectedKey={key}
+                    mLabel={mLabel}
+                    isMSelected={isMSelectedOn(date)}
+                    otherDisabledNote={
+                      itemScopeOf(date) === 'new' ? OTHER_OFFICE_ON_NEW_NOTE : null
+                    }
+                    otherOk={otherOk[date] ?? false}
+                    reason={reasons[date] ?? ''}
+                    error={rowError(date)}
+                    disabled={submitting || busy}
+                    orderCandidates={orderCandidates}
+                    onSelect={(next) => setSelection((s) => ({ ...s, [date]: next }))}
+                    onToggleOther={(next) => {
+                      setOtherOk((s) => ({ ...s, [date]: next }));
+                      // 承知チェックを外したら他拠点の選択も戻す (宙ぶらりんにしない)。
+                      if (!next && p) {
+                        setSelection((s) =>
+                          s[date]?.startsWith('o') ? { ...s, [date]: defaultKeyFor(p) } : s,
+                        );
+                      }
+                    }}
+                    onReasonChange={(next) => setReasons((s) => ({ ...s, [date]: next }))}
+                  />
+                );
+              })}
+            </section>
+
+            {/* ⑤ 反映先 */}
+            <section className="space-y-2">
+              <Label className="text-base font-semibold">⑤ 反映先</Label>
+              <div className="space-y-1.5">
+                <label className={scopeRowCls}>
+                  <input
+                    type="radio"
+                    className="mt-0.5 h-4 w-4"
+                    name="ava-scope"
+                    checked={effectiveScope === 'pattern'}
+                    disabled={!patternAllowed || scopeLocked || submitting || busy}
+                    onChange={() => setScope('pattern')}
+                    data-testid="ava-scope-pattern"
+                  />
+                  <span className="text-sm">
+                    固定訪問スケジュール（型）も変える
+                    {!patternAllowed ? (
+                      <span className="block text-xs text-text-muted">
+                        ※ 日付が 1 つのときだけ選べます
+                      </span>
+                    ) : null}
+                  </span>
+                </label>
+                <label className={scopeRowCls}>
+                  <input
+                    type="radio"
+                    className="mt-0.5 h-4 w-4"
+                    name="ava-scope"
+                    checked={effectiveScope === 'week'}
+                    disabled={scopeLocked || submitting || busy}
+                    onChange={() => setScope('week')}
+                    data-testid="ava-scope-week"
+                  />
+                  <span className="text-sm">
+                    その週のスケジュールを変える
+                    <span className="block text-xs text-text-muted">
+                      既存の予定を動かす・型は変えない
+                    </span>
+                  </span>
+                </label>
+                <label className={scopeRowCls}>
+                  <input
+                    type="radio"
+                    className="mt-0.5 h-4 w-4"
+                    name="ava-scope"
+                    checked={effectiveScope === 'new'}
+                    disabled={scopeLocked || submitting || busy}
+                    onChange={() => setScope('new')}
+                    data-testid="ava-scope-new"
+                  />
+                  <span className="text-sm">
+                    新しく 1 件追加する
+                    <span className="block text-xs text-text-muted">
+                      既存の予定はそのまま・型は変えない
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              {effectiveScope === 'week'
+                ? dates.map((date) => {
+                    const mine = usedSourceIds.get(date) ?? '';
+                    const used = new Set(
+                      [...usedSourceIds.entries()].filter(([d]) => d !== date).map(([, id]) => id),
+                    );
+                    return (
+                      <WeekSourceRow
+                        key={date}
+                        date={date}
+                        candidates={movableVisits(date)}
+                        selectedId={mine}
+                        usedByOtherDates={used}
+                        disabled={submitting || busy}
+                        onChange={(visitId) => setSourceSel((s) => ({ ...s, [date]: visitId }))}
+                      />
+                    );
+                  })
+                : null}
+            </section>
+          </div>
         </div>
 
         <DialogFooter>
           {otherUnconfirmed ? (
-            <span className="mr-auto text-[11px] text-warning-strong" data-testid="ava-blocked">
+            <span className="mr-auto text-sm text-warning-strong" data-testid="ava-blocked">
               他拠点の候補を選ぶには「拠点跨ぎを承知で入れる」のチェックが要ります
             </span>
           ) : null}

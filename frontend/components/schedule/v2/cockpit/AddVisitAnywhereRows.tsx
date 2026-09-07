@@ -44,8 +44,16 @@ export const M_KEY = '__M__';
 /** その拠点に M テンプレートが無いときの表示。 */
 export const M_FALLBACK_LABEL = '臨（コースなし）';
 
+/**
+ * ダイアログ内の `<select>` 共通クラス (設計 §3-5: 高さ 36px・文字 14px)。
+ * `Input` の既定サイズ (h-10 text-sm) と同じ読み味に揃えるための単一ソース。
+ */
 export const selectCls =
-  'block w-full rounded border border-border-default bg-bg-base px-2 py-1 text-xs disabled:opacity-50';
+  'block h-9 w-full rounded border border-border-default bg-bg-base px-3 text-sm disabled:opacity-50';
+
+/** 候補・M の 1 行。ラベル全体がクリック領域 (設計 §3-5「ラジオ・チェック」)。 */
+const optionRowCls =
+  'flex cursor-pointer flex-wrap items-center gap-2 rounded px-2 py-1.5 hover:bg-bg-muted';
 
 export function CandidateOption({
   date,
@@ -62,30 +70,33 @@ export function CandidateOption({
 }) {
   const { slot } = entry;
   return (
-    <label className="flex flex-wrap items-center gap-1">
+    <label className={optionRowCls}>
       <input
         type="radio"
+        className="h-4 w-4"
         name={`ava-cand-${date}`}
         checked={checked}
         disabled={disabled}
         onChange={onSelect}
         data-testid={`ava-cand-${date}-${entry.key}`}
       />
-      <span>
+      <span className="text-sm font-semibold">
         {slot.course_label}
         {slot.staff_name ? `（${slot.staff_name}）` : '（担当なし）'}
       </span>
       {slot.partner_course_label ? (
-        <span className="rounded bg-bg-muted px-1 text-[10px]">
+        <span className="rounded bg-bg-muted px-1.5 py-0.5 text-xs">
           相方 {slot.partner_course_label}
           {slot.partner_staff_name ? `（${slot.partner_staff_name}）` : ''}
         </span>
       ) : null}
       {slot.overcapacity ? (
-        <span className="rounded bg-warning-bg px-1 text-[10px] text-warning-strong">定員超</span>
+        <span className="rounded bg-warning-bg px-1.5 py-0.5 text-xs text-warning-strong">
+          定員超
+        </span>
       ) : null}
       {slot.warnings.map((w) => (
-        <span key={w} className="rounded bg-bg-muted px-1 text-[10px] text-text-muted">
+        <span key={w} className="rounded bg-bg-muted px-1.5 py-0.5 text-xs text-text-muted">
           ⚠ {proposeWarningLabel(w)}
         </span>
       ))}
@@ -136,21 +147,21 @@ export function DateProposalRow({
 }) {
   return (
     <div
-      className="rounded border border-border-default p-2 text-[11px]"
+      className="space-y-2 rounded-lg border border-border-default p-3 text-sm"
       data-testid={`ava-row-${date}`}
     >
-      <div className="font-semibold">
+      <div className="text-base font-semibold">
         {formatDateLabel(date)} {startHM}
       </div>
 
       {proposal && proposal.truncated ? (
-        <p className="text-warning-strong" data-testid={`ava-truncated-${date}`}>
+        <p className="text-sm text-warning-strong" data-testid={`ava-truncated-${date}`}>
           候補が上限に達したため、この週は一部しか見えていません（日付を減らして探し直してください）
         </p>
       ) : null}
 
       {proposal && proposal.primary.length === 0 && !proposal.truncated ? (
-        <p className="text-text-muted">
+        <p className="text-sm text-text-muted">
           主担当拠点に空きがありません
           {proposal.reasonUnavailable
             ? '（理由は取得できませんでした）'
@@ -160,8 +171,9 @@ export function DateProposalRow({
         </p>
       ) : null}
 
-      {proposal
-        ? orderCandidates(proposal.primary).map((e) => (
+      {proposal ? (
+        <div className="space-y-0.5">
+          {orderCandidates(proposal.primary).map((e) => (
             <CandidateOption
               key={e.key}
               date={date}
@@ -170,20 +182,22 @@ export function DateProposalRow({
               disabled={disabled}
               onSelect={() => onSelect(e.key)}
             />
-          ))
-        : null}
+          ))}
+        </div>
+      ) : null}
 
       {proposal && proposal.other.length > 0 ? (
-        <div className="mt-1 rounded bg-bg-muted p-1">
-          <p className="font-semibold">他拠点（要確認）</p>
+        <div className="space-y-1 rounded-md bg-bg-muted p-2">
+          <p className="text-sm font-semibold">他拠点（要確認）</p>
           {otherDisabledNote ? (
-            <p className="text-warning-strong" data-testid={`ava-other-blocked-${date}`}>
+            <p className="text-sm text-warning-strong" data-testid={`ava-other-blocked-${date}`}>
               {otherDisabledNote}
             </p>
           ) : (
-            <label className="flex items-center gap-1">
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
               <input
                 type="checkbox"
+                className="h-4 w-4"
                 checked={otherOk}
                 onChange={(ev) => onToggleOther(ev.target.checked)}
                 data-testid={`ava-other-office-${date}`}
@@ -191,29 +205,32 @@ export function DateProposalRow({
               拠点跨ぎを承知で入れる
             </label>
           )}
-          {orderCandidates(proposal.other).map((e) => (
-            <CandidateOption
-              key={e.key}
-              date={date}
-              entry={e}
-              checked={selectedKey === e.key}
-              disabled={disabled || otherDisabledNote != null || !otherOk}
-              onSelect={() => onSelect(e.key)}
-            />
-          ))}
+          <div className="space-y-0.5">
+            {orderCandidates(proposal.other).map((e) => (
+              <CandidateOption
+                key={e.key}
+                date={date}
+                entry={e}
+                checked={selectedKey === e.key}
+                disabled={disabled || otherDisabledNote != null || !otherOk}
+                onSelect={() => onSelect(e.key)}
+              />
+            ))}
+          </div>
         </div>
       ) : null}
 
-      <label className="flex items-center gap-1">
+      <label className={optionRowCls}>
         <input
           type="radio"
+          className="h-4 w-4"
           name={`ava-cand-${date}`}
           checked={selectedKey === M_KEY}
           onChange={() => onSelect(M_KEY)}
           disabled={disabled}
           data-testid={`ava-cand-${date}-${M_KEY}`}
         />
-        {mLabel}
+        <span className="text-sm font-semibold">{mLabel}</span>
       </label>
 
       {isMSelected ? (
@@ -221,14 +238,14 @@ export function DateProposalRow({
           value={reason}
           onChange={(ev) => onReasonChange(ev.target.value)}
           placeholder="理由（任意）"
-          className="mt-1 h-6 text-[11px]"
+          className="h-9 text-sm"
           data-testid={`ava-reason-${date}`}
           aria-label={`${formatDateLabel(date)} の M 配置理由`}
         />
       ) : null}
 
       {error ? (
-        <p className="mt-1 text-error" data-testid={`ava-row-error-${date}`}>
+        <p className="text-sm text-error" data-testid={`ava-row-error-${date}`}>
           {error}
         </p>
       ) : null}
@@ -255,8 +272,8 @@ export function WeekSourceRow({
   onChange: (visitId: string) => void;
 }) {
   return (
-    <div className="text-[11px]" data-testid={`ava-source-row-${date}`}>
-      <span className="mr-1">{formatDateLabel(date)} に動かす元:</span>
+    <div className="space-y-1 text-sm" data-testid={`ava-source-row-${date}`}>
+      <span>{formatDateLabel(date)} に動かす元:</span>
       {candidates.length === 0 ? (
         <span className="text-warning-strong">
           この週に動かせる予定が無いため、新規追加として登録します

@@ -146,25 +146,23 @@ export function AddVisitResultDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg" data-testid="add-visit-result-dialog">
+      <DialogContent className="max-w-3xl" data-testid="add-visit-result-dialog">
         <DialogHeader>
-          <DialogTitle className="text-sm">
-            {failed ? '途中で止まりました' : '登録しました'}
-          </DialogTitle>
-          <DialogDescription className="text-[11px]">
+          <DialogTitle>{failed ? '途中で止まりました' : '登録しました'}</DialogTitle>
+          <DialogDescription>
             {patientName}様 — {successCount} 件を処理しました
             {failed ? '（失敗した日で止めています。残りは実行していません）' : ''}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="max-h-[50vh] overflow-y-auto rounded border border-border-default">
-          <table className="w-full text-[11px]">
+        <div className="max-h-[60vh] overflow-y-auto rounded border border-border-default">
+          <table className="w-full text-sm">
             <thead className="bg-bg-muted/60 text-text-muted">
               <tr>
-                <th className="px-2 py-1 text-left font-normal">日付</th>
-                <th className="px-2 py-1 text-left font-normal">時刻</th>
-                <th className="px-2 py-1 text-left font-normal">コース</th>
-                <th className="px-2 py-1 text-left font-normal">結果</th>
+                <th className="px-3 py-2 text-left font-normal">日付</th>
+                <th className="px-3 py-2 text-left font-normal">時刻</th>
+                <th className="px-3 py-2 text-left font-normal">コース</th>
+                <th className="px-3 py-2 text-left font-normal">結果</th>
               </tr>
             </thead>
             <tbody>
@@ -174,21 +172,21 @@ export function AddVisitResultDialog({
                   className="border-t border-border-default align-top"
                   data-testid={`avr-row-${row.date}`}
                 >
-                  <td className="whitespace-nowrap px-2 py-1">{formatDateLabel(row.date)}</td>
-                  <td className="whitespace-nowrap px-2 py-1">
+                  <td className="whitespace-nowrap px-3 py-2">{formatDateLabel(row.date)}</td>
+                  <td className="whitespace-nowrap px-3 py-2">
                     {row.startHM}
                     <span className="text-text-muted">（{row.minutes}分）</span>
                   </td>
-                  <td className="px-2 py-1">{row.courseLabel}</td>
-                  <td className={`px-2 py-1 ${STATUS_CLASS[row.status]}`}>
+                  <td className="px-3 py-2">{row.courseLabel}</td>
+                  <td className={`px-3 py-2 ${STATUS_CLASS[row.status]}`}>
                     {STATUS_LABEL[row.status]}
                     {row.status === 'failed' && row.message ? `: ${row.message}` : ''}
                     {row.note ? (
-                      <div className="mt-0.5 text-[10px] text-text-muted">{row.note}</div>
+                      <div className="mt-1 text-xs text-text-muted">{row.note}</div>
                     ) : null}
                     {row.warn ? (
                       <div
-                        className="mt-0.5 text-[10px] text-warning-strong"
+                        className="mt-1 text-xs text-warning-strong"
                         data-testid={`avr-warn-${row.date}`}
                       >
                         ⚠ {row.warn}
@@ -199,7 +197,7 @@ export function AddVisitResultDialog({
               ))}
               {rows.length === 0 ? (
                 <tr>
-                  <td className="px-2 py-2 text-text-muted" colSpan={4}>
+                  <td className="px-3 py-3 text-text-muted" colSpan={4}>
                     実行した予定はありません
                   </td>
                 </tr>
@@ -212,7 +210,6 @@ export function AddVisitResultDialog({
           {canUndo ? (
             <Button
               type="button"
-              size="sm"
               variant="outline"
               data-testid="avr-undo"
               onClick={() => {
@@ -223,12 +220,7 @@ export function AddVisitResultDialog({
               元に戻す
             </Button>
           ) : null}
-          <Button
-            type="button"
-            size="sm"
-            data-testid="avr-close"
-            onClick={() => onOpenChange(false)}
-          >
+          <Button type="button" data-testid="avr-close" onClick={() => onOpenChange(false)}>
             閉じる
           </Button>
         </DialogFooter>

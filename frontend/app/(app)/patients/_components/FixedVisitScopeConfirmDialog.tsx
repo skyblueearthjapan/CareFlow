@@ -232,6 +232,10 @@ function formatVisitLine(v: VisitRead, dates: string[]): string {
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
+/** 反映先ラジオの 1 行。ラベル全体がクリック領域 (設計 §3-5)。 */
+const scopeRowCls =
+  'flex cursor-pointer items-start gap-2 rounded border border-border-default px-3 py-2 text-sm hover:bg-bg-muted';
+
 export function FixedVisitScopeConfirmDialog({
   open,
   patientId,
@@ -333,7 +337,7 @@ export function FixedVisitScopeConfirmDialog({
         if (!o) onCancel();
       }}
     >
-      <DialogContent aria-describedby="pfv-scope-confirm-desc" className="max-w-xl">
+      <DialogContent aria-describedby="pfv-scope-confirm-desc" className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>固定訪問スケジュールを保存します</DialogTitle>
         </DialogHeader>
@@ -341,9 +345,9 @@ export function FixedVisitScopeConfirmDialog({
         <div id="pfv-scope-confirm-desc" className="space-y-4 text-sm text-text-primary">
           {/* ── 変更内容 ───────────────────────────────────────────── */}
           <section data-testid="pfv-scope-diff">
-            <p className="text-xs font-medium text-text-secondary">変更内容</p>
+            <p className="text-sm font-semibold text-text-secondary">変更内容</p>
             {diff.length === 0 ? (
-              <p className="text-xs text-text-muted">
+              <p className="text-sm text-text-muted">
                 曜日・開始時刻・所要時間の変更はありません（コース・完全固定などの変更のみ）
               </p>
             ) : (
@@ -359,14 +363,14 @@ export function FixedVisitScopeConfirmDialog({
 
           {/* ── 反映先 ─────────────────────────────────────────────── */}
           <fieldset className="space-y-2">
-            <legend className="text-xs font-medium text-text-secondary">反映先</legend>
+            <legend className="text-sm font-semibold text-text-secondary">反映先</legend>
 
-            <label className="flex items-start gap-2">
+            <label className={scopeRowCls}>
               <input
                 type="radio"
                 name="pfv-scope"
                 value="pattern_only"
-                className="mt-1"
+                className="mt-0.5 h-4 w-4"
                 checked={scope === 'pattern_only'}
                 onChange={() => setScope('pattern_only')}
                 data-testid="pfv-scope-pattern-only"
@@ -374,12 +378,12 @@ export function FixedVisitScopeConfirmDialog({
               <span>型だけ変える（今後生成する週から反映。既にある週の予定は触らない）</span>
             </label>
 
-            <label className="flex items-start gap-2">
+            <label className={scopeRowCls}>
               <input
                 type="radio"
                 name="pfv-scope"
                 value="pattern_and_week"
-                className="mt-1"
+                className="mt-0.5 h-4 w-4"
                 checked={scope === 'pattern_and_week'}
                 onChange={() => setScope('pattern_and_week')}
                 data-testid="pfv-scope-pattern-and-week"
@@ -390,11 +394,11 @@ export function FixedVisitScopeConfirmDialog({
             {/* 週文脈が無いときだけ対象週を選ばせる (今日の週 / 来週)。 */}
             {!weekContext ? (
               <div className="flex items-center gap-2 pl-6">
-                <span className="text-xs text-text-muted">作り直す週</span>
+                <span className="text-sm text-text-muted">作り直す週</span>
                 <select
                   value={weekSel}
                   onChange={(e) => setWeekSel(e.target.value === 'next' ? 'next' : 'this')}
-                  className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:border-brand-primary focus:outline-none"
+                  className="h-9 rounded border border-border-default bg-bg-base px-3 text-sm text-text-primary focus:border-brand-primary focus:outline-none"
                   aria-label="作り直す週"
                   data-testid="pfv-scope-week-select"
                 >
@@ -411,7 +415,7 @@ export function FixedVisitScopeConfirmDialog({
             {/* ── (B) の影響プレビュー ──────────────────────────────── */}
             {scope === 'pattern_and_week' ? (
               <div
-                className="space-y-2 rounded-md border border-border-default bg-bg-muted/40 px-3 py-2 text-xs"
+                className="space-y-2 rounded-md border border-border-default bg-bg-muted/40 px-3 py-2 text-sm"
                 data-testid="pfv-scope-impact"
               >
                 {visitsQuery.isLoading ? (
@@ -465,7 +469,7 @@ export function FixedVisitScopeConfirmDialog({
                           ))}
                         </ul>
                       ) : null}
-                      <p className="text-text-muted">
+                      <p className="text-xs text-text-muted">
                         ※ 拠点の非稼働日・在籍外の患者は作られません
                       </p>
                     </div>
