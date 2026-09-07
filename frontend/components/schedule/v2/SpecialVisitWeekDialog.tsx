@@ -15,9 +15,10 @@
  *
  * セルの見せ方 (2026-09-08 PO 指示 — HANDOFF §8 8-1):
  *   1 セルは上下 2 段。**上段「予定」** = 既に盤面にある訪問 (時刻・コース・担当)
- *   を 14px のカードで出す (無ければ「予定なし」)。**下段「追加枠」** = ○/● の
- *   状態を言葉で書く。用語は次の 4 つだけに揃える:
- *     予定あり / プール待ち（この日に 1 回追加・時間未定） /
+ *   を 14px のカードで出す (無ければ「予定なし」/ 退避中の日は「プールへ退避中
+ *   （この週は盤面に無し）」)。**下段「追加枠」** = ○/● の状態を言葉で書く。
+ *   用語は次の 4 つだけに揃える (凡例も同じ言葉):
+ *     予定 / プール待ち（この日に 1 回追加・時間未定） /
  *     配置済み HH:MM コース / 空き
  *   ○ は「システムの提案」ではなく「人がその日の保留プールに積んだ 1 回分
  *   (時間は未定)」であることを、文言でそのまま表す。
@@ -166,28 +167,24 @@ function daysByWeekday(week: SpecialCalendarWeek): Map<number, SpecialCalendarDa
 /**
  * 行末に添える内訳 (PO 指示 2026-09-08) —「固定 N ＋ プール待ち M」。
  *
- * - N = その週に**盤面で生きている**固定訪問の数 (退避した日の分は数えない)。
+ * - N = その週の固定訪問の残数 (退避した日は BE が `fixed_visits: []` を返すので
+ *       自然に 0 になる)。
  * - M = 追加枠 (○ プール待ち ＋ ● 配置済み) ＋ 退避チケット。
  *
- * 合計は BE の `week.total` が正なので、ここでは合計を返さない (呼び出し側が
- * `week.total` を出す)。期間外の日はセルと同じ規則で除外する。
+ * **数え方は BE (`special_visits.py` の calendar) と 1:1 に揃える**: BE は週の
+ * 月〜土 6 日を期間の内外に関わらず合計するため、ここでも**期間外の日を外さない**
+ * (外すと開始日が週の途中の週で「N ＋ M ＝ T」の式が目に見えて破綻する)。
+ * セル側の期間外グレーアウトは表示だけの話なので別扱いで良い。
+ *
+ * 合計そのものは BE の `week.total` が正なので、ここでは返さない。
  */
-function weekBreakdown(
-  week: SpecialCalendarWeek,
-  period: SpecialVisitPeriod,
-): { fixed: number; pooled: number } {
+function weekBreakdown(week: SpecialCalendarWeek): { fixed: number; pooled: number } {
   let fixed = 0;
   let pooled = 0;
   for (const d of week.days) {
-    if (d.date < period.start_date || d.date > period.end_date) continue;
-    const displaced = liveMark(d.displaced_mark);
-    if (displaced) {
-      // 退避した日の固定訪問は盤面から外れ、プールのチケット 1 枚になる。
-      pooled += 1;
-    } else {
-      fixed += d.fixed_visits.length;
-    }
+    fixed += d.fixed_visits.length;
     if (liveMark(d.extra_mark)) pooled += 1;
+    if (liveMark(d.displaced_mark)) pooled += 1;
   }
   return { fixed, pooled };
 }
@@ -633,7 +630,7 @@ function PeriodCalendar({ period, weeks, isLoading, isError }: PeriodCalendarPro
       {/* 凡例と次の一手 (§3-2 3): 何をすればよいかを常時出す。 */}
       <div className="space-y-1" data-testid="svw-legend">
         <p className="text-sm text-text-secondary">
-          予定あり ＝ 既に盤面にある訪問　○ プール待ち（時間未定）　● 配置済み　空き ＝
+          予定 ＝ 既に盤面にある訪問　○ プール待ち（時間未定）　● 配置済み　空き ＝
           予定も追加枠もない日
         </p>
         <p className="text-sm font-medium text-text-primary" data-testid="svw-pool-count">
@@ -678,7 +675,7 @@ function PeriodCalendar({ period, weeks, isLoading, isError }: PeriodCalendarPro
 
             {weeks.map((week, wi) => {
               const byWd = daysByWeekday(week);
-              const breakdown = weekBreakdown(week, period);
+              const breakdown = weekBreakdown(week);
               // 合計は BE が正 (内訳と食い違っても week.total を出す)。
               const totalState: 'below' | 'met' | 'over' =
                 week.total < period.weekly_target
@@ -969,7 +966,7 @@ function PeriodControls({ period }: { period: SpecialVisitPeriod }) {
         <ConfirmDialog
           spec={{
             title: '期間を終了しますか？',
-            body: '未配置の追加枠はプールから消えます。',
+            body: 'プール待ちの追加枠は保留プールから消えます。',
             confirmLabel: '終了する',
             onConfirm: handleEnd,
           }}
@@ -1041,7 +1038,10 @@ function CalendarCell({
   const hasPreferred = day.preferred.length > 0;
   const placed = extra?.status === 'placed';
   const hasFixed = day.fixed_visits.length > 0;
-  /** 予定も追加枠も無い日 = 「空き」。淡い緑で「まだ何も無い」と分かるようにする。 */
+  /**
+   * 予定も追加枠も無い日 = 「空き」。
+   * 色は付けず文言だけで表す (緑にすると週合計の「目標達成」の緑と意味がぶつかる)。
+   */
   const isFree = !hasFixed && !extra && !displaced;
   const dayLabel = formatDayLabel(day.date, weekday);
   /**
@@ -1071,7 +1071,7 @@ function CalendarCell({
   return (
     <div
       className={`flex min-h-[7rem] flex-col rounded border border-border-default ${
-        hasPreferred ? 'bg-brand-primary-50' : isFree ? 'bg-success-bg' : 'bg-bg-base'
+        hasPreferred ? 'bg-brand-primary-50' : 'bg-bg-base'
       }`}
       data-testid={testIdBase}
       data-out-of-range="false"
@@ -1117,6 +1117,21 @@ function CalendarCell({
                     {fv.staff_name ? <span className="ml-1">{fv.staff_name}</span> : null}
                   </span>
                 ))
+              ) : displaced ? (
+                /*
+                 * 退避した日は BE が `fixed_visits: []` を返す (生成済み週は訪問を
+                 * 論理削除・未生成週は PFV の投影自体を止める — `special_visits.py`
+                 * の calendar)。つまり「何が退避されたか」は今の API では分からない
+                 * ので、「予定なし」と嘘をつかずに退避中であることだけを書く。
+                 * 恒久対応は calendar API の `displaced_mark` に退避元のスナップ
+                 * ショット (時刻・コース・担当) を載せること。
+                 */
+                <span
+                  className="rounded bg-warning-bg px-1.5 py-0.5 text-sm leading-tight text-warning"
+                  data-testid={`svw-displaced-note-${weekIndex}-${weekday}`}
+                >
+                  プールへ退避中（この週は盤面に無し）
+                </span>
               ) : (
                 <span
                   className="text-sm leading-tight text-text-muted"
@@ -1155,7 +1170,7 @@ function CalendarCell({
                 {extra ? (placed ? '配置済みの追加枠' : 'プール待ちの追加枠') : '追加枠なし'}
               </span>
               <span
-                className="text-center text-xs leading-tight text-text-secondary"
+                className="text-center text-sm leading-tight text-text-secondary"
                 data-testid={`svw-caption-${weekIndex}-${weekday}`}
               >
                 {caption}
