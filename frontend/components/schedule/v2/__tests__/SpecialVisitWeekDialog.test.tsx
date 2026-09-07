@@ -6,9 +6,11 @@
  *      POST /special-visit-periods 相当の mutation が呼ばれる.
  *   ② 期間あり → カレンダーが描かれる (固定訪問カード / ○ / ● / 週合計の
  *      達成・未達の出し分け。判定は data-testid + data-* 属性で行う).
- *   ③ 空きセルクリック → POST marks 相当の mutation が呼ばれる.
+ *   ③ セルクリック = **メニュー** (即実行しない)。追加 / 取消 (確認あり) /
+ *      「配置先を決める…」→ 配置モーダル。
  *   ④ 退避トグル → POST displace。配置済みの退避解除は確認ダイアログ後に
  *      force=true 付きで restore が呼ばれる.
+ *   ⑤ 凡例 + 未配置件数 / 期間終了は「…」メニュー + 確認.
  *
  * モックの流儀は KaipokeConsole.test.tsx を踏襲 (vi.mock でクエリモジュールを
  * まるごと差し替え)。BE は並行実装中なので通信は一切行わない。
@@ -54,6 +56,42 @@ vi.mock('@/components/ui/dialog', () => ({
   DialogTitle: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogDescription: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogFooter: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+}));
+
+// 配置モーダル (＋訪問) は API を張るので、この画面のテストでは薄く差し替える。
+// JST の今日も同じモジュールから来る = 過去日判定を固定できる (週0の月曜)。
+vi.mock('../SpecialVisitPlaceLauncher', () => ({
+  todayIsoJst: () => '2026-08-03',
+  SpecialVisitPlaceLauncher: (props: {
+    markId: string | null;
+    replacingMarkId?: string | null;
+    replacingVisitId?: string | null;
+    replacingStartHM?: string | null;
+    date: string;
+    isoYear: number;
+    isoWeek: number;
+    weekday: number;
+    onOpenChange: (open: boolean) => void;
+  }) => (
+    <div
+      data-testid="svw-place-launcher"
+      data-mark-id={props.markId ?? ''}
+      data-replacing-mark-id={props.replacingMarkId ?? ''}
+      data-replacing-visit-id={props.replacingVisitId ?? ''}
+      data-replacing-start={props.replacingStartHM ?? ''}
+      data-date={props.date}
+      data-iso-week={props.isoWeek}
+      data-weekday={props.weekday}
+    >
+      <button
+        type="button"
+        data-testid="svw-place-launcher-close"
+        onClick={() => props.onOpenChange(false)}
+      >
+        閉じる
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('@/lib/queries/specialVisitWeek', () => ({
@@ -314,16 +352,19 @@ describe('SpecialVisitWeekDialog — ② カレンダー表示', () => {
   });
 });
 
-describe('SpecialVisitWeekDialog — ③ ○ の追加 / 取消', () => {
+describe('SpecialVisitWeekDialog — ③ セルメニュー (追加 / 取消 / 配置)', () => {
   beforeEach(() => {
     mocks.periods = [PERIOD];
     mocks.weeks = makeWeeks();
   });
 
-  it('空きセルクリックで marks の作成 mutation が呼ばれる', () => {
+  it('空きセルはメニューの「この日に追加枠を付ける（○）」で作成 mutation が呼ばれる', () => {
     renderDialog();
 
     fireEvent.click(screen.getByTestId('svw-empty-0-3'));
+    expect(mocks.createMark).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('svw-menu-add-0-3'));
 
     expect(mocks.createMark).toHaveBeenCalledTimes(1);
     expect(mocks.createMark.mock.calls[0]![0]).toEqual({
@@ -332,24 +373,123 @@ describe('SpecialVisitWeekDialog — ③ ○ の追加 / 取消', () => {
     });
   });
 
-  it('未配置 ○ のクリックは確認なしで削除 (force なし)', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('○ のクリックはメニューを開くだけで、取消は走らない', () => {
     renderDialog();
 
     fireEvent.click(screen.getByTestId('svw-mark-0-1'));
 
-    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(screen.getByTestId('svw-menu-0-1')).toBeInTheDocument();
+    expect(screen.getByTestId('svw-menu-place-0-1')).toHaveTextContent('この日の配置先を決める');
+    expect(mocks.deleteMark).not.toHaveBeenCalled();
+  });
+
+  it('「追加枠を取り消す」は確認ダイアログを挟み、force なしで削除する', () => {
+    renderDialog();
+
+    fireEvent.click(screen.getByTestId('svw-mark-0-1'));
+    fireEvent.click(screen.getByTestId('svw-menu-cancel-0-1'));
+
+    // 確認を出すまでは削除しない。
+    expect(mocks.deleteMark).not.toHaveBeenCalled();
+    expect(screen.getByTestId('svw-confirm')).toHaveTextContent('追加枠を取り消しますか？');
+    expect(screen.getByTestId('svw-confirm')).toHaveTextContent('プールからも消えます');
+
+    fireEvent.click(screen.getByTestId('svw-confirm-ok'));
+
     expect(mocks.deleteMark.mock.calls[0]![0]).toEqual({ markId: 'mark-pool', force: false });
   });
 
-  it('配置済み ● のクリックは確認後に force=true で削除', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('確認ダイアログで「やめる」を押したら削除しない', () => {
+    renderDialog();
+
+    fireEvent.click(screen.getByTestId('svw-mark-0-1'));
+    fireEvent.click(screen.getByTestId('svw-menu-cancel-0-1'));
+    fireEvent.click(screen.getByTestId('svw-confirm-cancel'));
+
+    expect(mocks.deleteMark).not.toHaveBeenCalled();
+  });
+
+  it('● の「配置を取り消す（訪問も削除）」は確認後に force=true で削除', () => {
     renderDialog();
 
     fireEvent.click(screen.getByTestId('svw-mark-0-2'));
+    expect(screen.getByTestId('svw-menu-cancel-0-2')).toHaveTextContent('配置を取り消す');
+    fireEvent.click(screen.getByTestId('svw-menu-cancel-0-2'));
 
-    expect(confirmSpy).toHaveBeenCalled();
+    expect(mocks.deleteMark).not.toHaveBeenCalled();
+    expect(screen.getByTestId('svw-confirm')).toHaveTextContent('配置を取り消しますか？');
+
+    fireEvent.click(screen.getByTestId('svw-confirm-ok'));
+
     expect(mocks.deleteMark.mock.calls[0]![0]).toEqual({ markId: 'mark-placed', force: true });
+  });
+
+  it('「この日の配置先を決める…」で配置モーダルがその日・そのマークで開く', () => {
+    renderDialog();
+
+    expect(screen.queryByTestId('svw-place-launcher')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('svw-mark-0-1'));
+    fireEvent.click(screen.getByTestId('svw-menu-place-0-1'));
+
+    const launcher = screen.getByTestId('svw-place-launcher');
+    expect(launcher.getAttribute('data-mark-id')).toBe('mark-pool');
+    expect(launcher.getAttribute('data-replacing-mark-id')).toBe('');
+    expect(launcher.getAttribute('data-date')).toBe('2026-08-04');
+    expect(launcher.getAttribute('data-iso-week')).toBe('32');
+    expect(launcher.getAttribute('data-weekday')).toBe('1');
+  });
+
+  it('● の「配置を変更する…」は確認のうえ、先に壊さず入れ替えモードで開く', () => {
+    renderDialog();
+
+    fireEvent.click(screen.getByTestId('svw-mark-0-2'));
+    expect(screen.getByTestId('svw-menu-place-0-2')).toHaveTextContent('配置を変更する');
+    fireEvent.click(screen.getByTestId('svw-menu-place-0-2'));
+
+    expect(screen.getByTestId('svw-confirm')).toHaveTextContent('配置を決め直しますか？');
+    expect(screen.getByTestId('svw-confirm')).toHaveTextContent(
+      '新しい配置を決めてから、いまの訪問を入れ替えます',
+    );
+    fireEvent.click(screen.getByTestId('svw-confirm-ok'));
+
+    const launcher = screen.getByTestId('svw-place-launcher');
+    expect(launcher.getAttribute('data-mark-id')).toBe('');
+    expect(launcher.getAttribute('data-replacing-mark-id')).toBe('mark-placed');
+    expect(launcher.getAttribute('data-replacing-visit-id')).toBe('visit-9');
+    // 同時刻での入れ替えを止めるため、いまの開始時刻も渡す。
+    expect(launcher.getAttribute('data-replacing-start')).toBe('14:00');
+    // 今の配置はまだ触らない (新しい訪問ができるまで壊さない)。
+    expect(mocks.deleteMark).not.toHaveBeenCalled();
+    expect(mocks.createMark).not.toHaveBeenCalled();
+  });
+
+  it('入れ替えを途中でやめても、いまの配置は消えない', () => {
+    renderDialog();
+
+    fireEvent.click(screen.getByTestId('svw-mark-0-2'));
+    fireEvent.click(screen.getByTestId('svw-menu-place-0-2'));
+    fireEvent.click(screen.getByTestId('svw-confirm-ok'));
+    fireEvent.click(screen.getByTestId('svw-place-launcher-close'));
+
+    expect(screen.queryByTestId('svw-place-launcher')).toBeNull();
+    expect(mocks.deleteMark).not.toHaveBeenCalled();
+    expect(mocks.createMark).not.toHaveBeenCalled();
+  });
+
+  it('当日以前の日は「配置先を決める…」を押せない', () => {
+    // JST の今日 = 2026-08-03 (モック)。週0の月曜に未配置の ○ を置く。
+    const weeks = makeWeeks();
+    weeks[0]!.days[0]!.extra_mark = mark({ id: 'mark-past', weekday: 0 });
+    mocks.weeks = weeks;
+    renderDialog();
+
+    fireEvent.click(screen.getByTestId('svw-mark-0-0'));
+
+    expect(screen.getByTestId('svw-menu-place-0-0')).toBeDisabled();
+    expect(screen.getByTestId('svw-menu-past-0-0')).toHaveTextContent('過去日は配置できません');
+    // 取消はできる (過去日でも枠は片付けられる)。
+    expect(screen.getByTestId('svw-menu-cancel-0-0')).toBeEnabled();
   });
 });
 
@@ -359,12 +499,13 @@ describe('SpecialVisitWeekDialog — ④ 退避トグル', () => {
     mocks.weeks = makeWeeks();
   });
 
-  it('「この日はプールへ退避」で displace mutation が呼ばれる', () => {
+  it('「この日の固定訪問をプールへ退避」で displace mutation が呼ばれる', () => {
     renderDialog();
 
+    fireEvent.click(screen.getByTestId('svw-empty-0-0'));
     const toggle = screen.getByTestId('svw-displace-toggle-0-0');
     expect(toggle.getAttribute('data-displaced')).toBe('false');
-    expect(toggle.textContent).toContain('この日はプールへ退避');
+    expect(toggle.textContent).toContain('プールへ退避');
 
     fireEvent.click(toggle);
 
@@ -376,16 +517,20 @@ describe('SpecialVisitWeekDialog — ④ 退避トグル', () => {
   });
 
   it('配置済み退避の解除は確認ダイアログ → force=true で restore', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderDialog();
 
+    fireEvent.click(screen.getByTestId('svw-empty-0-4'));
     const toggle = screen.getByTestId('svw-displace-toggle-0-4');
     expect(toggle.getAttribute('data-displaced')).toBe('true');
     expect(toggle.textContent).toContain('固定どおりに戻す');
 
     fireEvent.click(toggle);
 
-    expect(confirmSpy).toHaveBeenCalled();
+    expect(mocks.restore).not.toHaveBeenCalled();
+    expect(screen.getByTestId('svw-confirm')).toHaveTextContent('固定どおりに戻しますか？');
+
+    fireEvent.click(screen.getByTestId('svw-confirm-ok'));
+
     expect(mocks.restore).toHaveBeenCalledTimes(1);
     expect(mocks.restore.mock.calls[0]![0]).toEqual({
       markId: 'mark-displaced-placed',
@@ -394,11 +539,49 @@ describe('SpecialVisitWeekDialog — ④ 退避トグル', () => {
   });
 
   it('確認ダイアログでキャンセルしたら restore は呼ばれない', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
     renderDialog();
 
+    fireEvent.click(screen.getByTestId('svw-empty-0-4'));
     fireEvent.click(screen.getByTestId('svw-displace-toggle-0-4'));
+    fireEvent.click(screen.getByTestId('svw-confirm-cancel'));
 
     expect(mocks.restore).not.toHaveBeenCalled();
+  });
+});
+
+describe('SpecialVisitWeekDialog — ⑤ 凡例 / 期間の終了', () => {
+  beforeEach(() => {
+    mocks.periods = [PERIOD];
+    mocks.weeks = makeWeeks();
+  });
+
+  it('凡例と未配置の追加枠の件数を出す', () => {
+    renderDialog();
+
+    expect(screen.getByTestId('svw-legend')).toHaveTextContent(
+      '○ 未配置（クリックで配置先を決める）',
+    );
+    // 週0 火の ○ 1 件のみ (● と退避チケットは数えない)。
+    expect(screen.getByTestId('svw-pool-count')).toHaveTextContent('未配置の追加枠 1 件');
+  });
+
+  it('期間の終了は「…」メニューの中にあり、確認してから実行される', () => {
+    renderDialog();
+
+    // 常時表示はしない (誤操作の重い操作)。
+    expect(screen.queryByTestId('svw-period-end')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('svw-period-more'));
+    fireEvent.click(screen.getByTestId('svw-period-end'));
+
+    expect(mocks.updatePeriod).not.toHaveBeenCalled();
+    expect(screen.getByTestId('svw-confirm')).toHaveTextContent('期間を終了しますか？');
+
+    fireEvent.click(screen.getByTestId('svw-confirm-ok'));
+
+    expect(mocks.updatePeriod.mock.calls[0]![0]).toEqual({
+      periodId: 'period-1',
+      payload: { status: 'ended' },
+    });
   });
 });

@@ -80,3 +80,14 @@ DELETE→POST の往復で、W37 火・W44 火・W45 火の ○ は**同じ状�
 ## 5. 参照
 - 現行設計: `special-visit-week-design.md`／プール行き止まり調査: `pool-placement-blockers-investigation-2026-08-31.md`（F-1〜F-6）／＋訪問: `add-visit-anywhere-design.md`
 - コード: `frontend/components/schedule/v2/SpecialVisitWeekDialog.tsx`（セル = `CalendarCell`・○ = `svw-mark-*`・＋ = `svw-empty-*`）／`SpecialTicketPlacePanel.tsx`／`backend/app/api/v1/special_visits.py`（marks POST/DELETE・displace/restore・pool・place）
+
+## 6. 実装記録（2026-09-07 夜・ディレクター方式）
+- **BE** `POST /special-visit-marks/{id}/place`: `course_template_id`（Course 未生成なら生成・主担当拠点のみ）と `visit_id`（既存訪問の紐付け: 患者一致・planned・同日・source は manual_week/manual のみ・二重紐付け 409・NG/性別検査あり・2 名体制グループ対応=カレンダー除外/force 削除が兄弟も対象）。過去日 422 は **新 2 モードのみ**（既存の course_id / course_code 経路は従来どおり・PO 判断待ち）。
+- **FE プール**（F-1/F-2）: 候補 0 件で「担当なし（M）へ入れる」（曜日・9:00〜18:00 の開始時刻・通常=place-and-fix 今週のみ／⭐=place course_template_id）・列外ドロップの案内。
+- **FE ダイアログ**: セル＝メニュー（追加枠を付ける／配置先を決める…／取り消す(確認)／退避・戻す(確認)）・「配置先を決める…」= `SpecialVisitPlaceLauncher` が ＋訪問モーダルを患者/日付固定・新規追加固定で開き、登録後に `place {visit_id}` で紐付け・NG/性別 422 は確認→再送・過去日（当日含む）は配置不可・「配置を変更する…」は新配置を決めてから旧を削除→○再作成→紐付け・期間終了は「…」メニュー＋確認・凡例と未配置件数。
+
+### 追跡事項
+1. **入替の 1 トランザクション化（BE）**: 「配置を変更する…」は新訪問を作ってから旧を消すため、**同じ時刻のまま**の入替は一意制約で失敗する（FE で事前案内: 時刻を変えるか取り消してから）。BE `place` に「既配置マークへの visit_id 指定＝旧訪問を削除して差し替え」を 1 トランザクションで実装すれば解消。
+2. **過去日ガードの適用範囲（PO 判断）**: 新 2 モードのみ適用中。既存のプール ⭐ 経路（course_code）と place-and-fix には過去日ガードが無い。過去週の入力運用（実績合わせ等）を踏まえて統一方針を決める。
+3. **実機確認**: モーダル Dialog の中の Popover メニュー（Radix の入れ子）はテストでは Dialog をモックしているため、本番でクリック/フォーカスを 1 度確認する。
+4. F-2 の拠点跨ぎ対称化・`override_reason` は未着手（8/31 調査 §4 F-2/F-4）。

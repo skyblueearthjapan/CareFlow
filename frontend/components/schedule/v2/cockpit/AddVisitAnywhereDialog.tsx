@@ -95,9 +95,22 @@ export interface AddVisitAnywhereInitial {
   patientId?: string;
   dates?: string[];
   staffId?: string | null;
-  /** 「📅 曜日移動」から開いたとき = その週を変える固定 (§3-4 C)。 */
-  lockedScope?: 'week';
+  /**
+   * 反映先を固定して開く。
+   *   'week' = 「📅 曜日移動」から開いたとき (§3-4 C)。
+   *   'new'  = 特別訪問週間の「配置先を決める…」から開いたとき
+   *            (追加枠は必ず「新しく 1 件追加」・型は変えない)。
+   */
+  lockedScope?: 'week' | 'new';
   sourceVisit?: VisitLite;
+  /**
+   * 日付を固定して開く (呼出元が日を決めている導線)。
+   * カレンダー ② は出さず、`dates` をそのまま使う。
+   *
+   * 当日以前の除外もしない = **過去日を弾くのは呼出元の責任**
+   * (BE の登録系は過去日をエラーにしない)。
+   */
+  lockedDates?: boolean;
 }
 
 export interface AddVisitAnywhereDialogProps {
@@ -283,8 +296,11 @@ export function AddVisitAnywhereDialog({
     const initPatient = initial?.patientId ?? '';
     const found = patients.find((p) => p.id === initPatient) ?? null;
     // 過去日・日曜が initial に混ざっていても盤面の規則で落とす。
+    // ただし日付固定 (lockedDates) の導線は呼出元の日付が正なので落とさない
+    // (過去日を出さないのは呼出元の責任 — BE は過去日を弾かない)。
+    const datesFixed = initial?.lockedDates === true;
     const initDates = Array.from(new Set(initial?.dates ?? []))
-      .filter((d) => isSelectableDate(d, todayIso))
+      .filter((d) => datesFixed || isSelectableDate(d, todayIso))
       .sort();
     const initStaff = initial?.staffId ?? '';
     setKeyword('');
@@ -553,7 +569,9 @@ export function AddVisitAnywhereDialog({
 
   // (a) は日付 1 つのときだけ。日付が増えたら黙って (c) 扱いにする (取り残し防止)。
   const patternAllowed = canChoosePatternScope(dates);
-  const scopeLocked = initial?.lockedScope === 'week';
+  const scopeLocked = initial?.lockedScope != null;
+  /** 日付固定で開いたか (カレンダー ② を出さない)。 */
+  const datesLocked = initial?.lockedDates === true;
   const effectiveScope: AddVisitScope = scope === 'pattern' && !patternAllowed ? 'new' : scope;
 
   /**
@@ -817,16 +835,22 @@ export function AddVisitAnywhereDialog({
             {/* ② 日付 */}
             <section className="space-y-2">
               <Label className="text-base font-semibold">② 日付</Label>
-              <div className="rounded border border-border-default" data-testid="ava-calendar">
-                <Calendar
-                  mode="multiple"
-                  selected={selectedDays}
-                  onSelect={handleDatesChange}
-                  defaultMonth={defaultMonth}
-                  disabled={[{ before: todayDate }, { dayOfWeek: [0] }, todayDate]}
-                  className="mx-auto w-fit"
-                />
-              </div>
+              {datesLocked ? (
+                <p className="text-sm text-text-secondary" data-testid="ava-dates-locked">
+                  日付は決まっています（この日に入れます）
+                </p>
+              ) : (
+                <div className="rounded border border-border-default" data-testid="ava-calendar">
+                  <Calendar
+                    mode="multiple"
+                    selected={selectedDays}
+                    onSelect={handleDatesChange}
+                    defaultMonth={defaultMonth}
+                    disabled={[{ before: todayDate }, { dayOfWeek: [0] }, todayDate]}
+                    className="mx-auto w-fit"
+                  />
+                </div>
+              )}
               <div className="flex items-start gap-2">
                 <div
                   className="flex flex-1 flex-wrap items-center gap-1.5 text-sm"
@@ -847,7 +871,7 @@ export function AddVisitAnywhereDialog({
                     </>
                   )}
                 </div>
-                {dates.length > 0 ? (
+                {dates.length > 0 && !datesLocked ? (
                   <Button
                     type="button"
                     variant="outline"
@@ -998,6 +1022,11 @@ export function AddVisitAnywhereDialog({
             {/* ⑤ 反映先 */}
             <section className="space-y-2">
               <Label className="text-base font-semibold">⑤ 反映先</Label>
+              {initial?.lockedScope === 'new' ? (
+                <p className="text-sm text-text-secondary" data-testid="ava-scope-locked-note">
+                  特別訪問週間の追加枠として登録します（型は変えません）
+                </p>
+              ) : null}
               <div className="space-y-1.5">
                 <label className={scopeRowCls}>
                   <input

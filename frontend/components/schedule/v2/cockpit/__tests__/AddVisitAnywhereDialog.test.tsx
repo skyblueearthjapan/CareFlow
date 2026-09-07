@@ -808,4 +808,43 @@ describe('AddVisitAnywhereDialog', () => {
     expect(screen.getByTestId('ava-stale')).toBeInTheDocument();
     expect(screen.getByTestId('ava-submit')).toBeDisabled();
   });
+
+  it('特別訪問週間から開くと反映先は「新しく 1 件追加」に固定・日付も動かせない', () => {
+    renderDialog({
+      initial: {
+        patientId: PATIENT_ID,
+        dates: ['2026-09-14'],
+        lockedScope: 'new',
+        lockedDates: true,
+      },
+    });
+
+    // ⑤ 反映先は 3 つとも触れず、new のまま。
+    expect(screen.getByTestId('ava-scope-new')).toBeChecked();
+    expect(screen.getByTestId('ava-scope-new')).toBeDisabled();
+    expect(screen.getByTestId('ava-scope-week')).toBeDisabled();
+    expect(screen.getByTestId('ava-scope-pattern')).toBeDisabled();
+    expect(screen.getByTestId('ava-scope-locked-note')).toHaveTextContent(
+      '特別訪問週間の追加枠として登録します（型は変えません）',
+    );
+
+    // ② 日付はカレンダーを出さず、渡された 1 日だけ。
+    expect(screen.queryByTestId('ava-calendar')).toBeNull();
+    expect(screen.queryByTestId('ava-clear-dates')).toBeNull();
+    expect(screen.getByTestId('ava-dates-locked')).toBeInTheDocument();
+    expect(screen.getByTestId('ava-selected-dates')).toHaveTextContent('選択中: 9/14(月)');
+  });
+
+  it('日付固定なら当日以前でも呼出元の日付をそのまま使う', () => {
+    renderDialog({
+      initial: {
+        patientId: PATIENT_ID,
+        dates: ['2026-09-01'], // todayIso=2026-09-07 より前
+        lockedScope: 'new',
+        lockedDates: true,
+      },
+    });
+
+    expect(screen.getByTestId('ava-selected-dates')).toHaveTextContent('9/1');
+  });
 });
