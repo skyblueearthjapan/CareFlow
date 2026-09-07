@@ -3,7 +3,7 @@
 **次のエージェントへ: まずこのファイルを読むこと。** 前セッション総括は `session-2026-09-03-HANDOFF.md`。
 
 ## ★ 最初の 5 分
-1. **状態**: **本番デプロイ済み HEAD `fa53523`**（2026-09-07 15:2x JST・frontend のみ再作成・backup `pre-deploy-20260907-0619.sql.gz`・healthz 200/200）。push 済み。本番 DB への書込は §1-3 の 5 件のみ（伊藤様の W38〜W40 訪問・バックアップ `pre-ito-placement-20260907-0344.sql.gz`）。
+1. **状態**: **本番デプロイ済み HEAD `f5cbae9`**（2026-09-07 2 回目・可読性改修・frontend のみ再作成・healthz 200/200。1 回目 = fa53523 15:2x JST・backup `pre-deploy-20260907-0619.sql.gz`）。push 済み。本番 DB への書込は §1-3 の 5 件のみ（伊藤様の W38〜W40 訪問・バックアップ `pre-ito-placement-20260907-0344.sql.gz`）。
 2. **お客様案件**: 松岡様依頼「伊藤夢華様 9/14・17・19・22・25・28 12:00」→ 現状調査 → らく助のみへ展開完了（担当なし=M・35 分・固定訪問不変・カイポケ未送信）。報告書 = `docs/reports/2026-09-07-ito-irregular-schedule-report.html`（患者名を含むため未追跡）。
 3. **改修**: 「＋訪問（任意日付の訪問追加）」と「固定訪問保存の反映先確認 (E)」。設計 = `docs/plans/add-visit-anywhere-design.md`（PO 決定 12 点）。実装はディレクター方式（Opus executor 並行 + 別レーン code-reviewer で Phase 毎に承認）。
 4. **PO が「今週の伊藤様が変わっている」と言ったら**: 松岡様が 9/7 11:31 に固定訪問を月木 12:00 で保存 → 今週 W37 だけ再生成（9/7 09:30→12:00・9/10 12:00 新規）。設計の欠陥 6 = E で是正済み（本番稼働）。
@@ -39,13 +39,15 @@ PFV（月木 12:00 locked）不変・今週 9/7/9/10 据え置き。同期バー
 ## 2. 画面経路の欠陥（調査で確定・設計書 §1）
 1. ＋訪問／空き枠登録の候補が保留プール患者のみ 2. ＋訪問の所要時間に 35 分なし 3. 曜日移動がコースを移動先曜日に付け替えない（盤面は course_id 基準・旧曜日タブに残る見込み・本番実行履歴 0） 4. 担当なし行に＋訪問が無い／内部キーを担当 ID として送る 5. M 列が普段非表示 6. 固定訪問保存が無確認で今日の週を再生成。
 
-## 3. 本日のコミット（develop・push 済み・**本番デプロイ済み fa53523**）
+## 3. 本日のコミット（develop・push 済み・**本番デプロイ済み f5cbae9**）
 | コミット | 内容 | レビュー |
 |---|---|---|
 | `5874e7e` | **Phase E** 固定訪問保存の反映先確認: 型だけ／型＋対象週。消える/保護/作られる件数（BE `reset_visits_to_fixed` の許可リスト auto 系 source × planned/proposed を鏡写し・manual_week/import/青ピンは再生成抑止として別軸）。患者画面既定=型だけ、盤面の患者詳細=表示週（PatientEditDialog→Panel へ iso 伝播） | 承認（HIGH 2 是正後） |
 | `bb48c27` | **Phase 0** 所要 15〜120/5 分・基本時間初期値／曜日移動で同コースへ付け替え+移動先に無ければ確認／担当なし行の＋訪問（M 既定）／StaffWeekBoard todayIso | 承認（HIGH 1 是正後） |
 | `cf2b7d5` | **Phase 1+2 部品** `AddVisitAnywhereDialog`/`AddVisitAnywhereRows`/`lib/scheduling/addVisitPlan.ts`/`courseTemplateMatch.ts`。propose-slots を `time_type='固定'` で週ごとに呼ぶ・API 順位保持・定員超は既定にしない・主担当拠点→サブ拠点(PFV sub_office_id)「要確認」→M・元訪問の一括割当・型は単一日付のみ | 承認（HIGH 6 是正後） |
 | `ed9738f` | **Phase 3+4 結線**: ツールバー「＋訪問」・行ボタン（担当なし行含む）・「📅 曜日を移動…」→新モーダル。`lib/scheduling/addVisitExecutor.ts`（日付順・最初の失敗で停止・422 は該当項目のみ acknowledge・`visits_moved=0` は失敗・型置換は movability 引継ぎ・臨は POST /visits+note）。`AddVisitResultDialog`（✓登録/✓移動/✓型を更新/✓登録(臨時)/✗失敗/—未実行・週ごとの元に戻す）。画面ガード: 2名体制×M 不可・他拠点×新規追加 不可・移動先コース未解決は送らない・📅の訪問を元に固定。盤面の曜日跨ぎ移動コードと move-dest-confirm は削除。SlotRegister 候補を全 active 患者に | 承認（C1/H1〜H4/M1〜M4/L1〜L4 是正後） |
+
+| `f5cbae9` | **可読性・操作性改修**（PO 本番初見「文字が小さく操作性が悪い」）: 幅 1024px・2 列（左=患者/日付/時刻、右=提案/反映先）・本文 14px/見出し 16px・入力/select 36〜40px・ラジオ/候補は行全体クリック・フッタ固定（共通部品の 90dvh を生かす）・結果ダイアログと E 確認モーダルも同基準。設計書 §3-5 に基準を追記。ロジック/props/test-id 不変 | 承認（MEDIUM 2 是正後） |
 
 テスト: `pnpm vitest run lib/scheduling components/schedule/v2 components/schedule/timeline` = 87 files / 1138 passed・`pnpm tsc --noEmit` = 0 error・全体 = 既知失敗（e2e spec 9 本・middleware 1・BulkPoolInsertDialog 並列フレーク）のみ。
 
