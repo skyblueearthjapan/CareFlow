@@ -3,7 +3,7 @@
 **次のエージェントへ: まずこのファイルを読むこと。** 前セッション総括は `session-2026-09-03-HANDOFF.md`。
 
 ## ★ 最初の 5 分
-1. **状態**: **本番デプロイ済み HEAD `f5cbae9`**（2026-09-07 2 回目・可読性改修・frontend のみ再作成・healthz 200/200。1 回目 = fa53523 15:2x JST・backup `pre-deploy-20260907-0619.sql.gz`）。push 済み。本番 DB への書込は §1-3 の 5 件のみ（伊藤様の W38〜W40 訪問・バックアップ `pre-ito-placement-20260907-0344.sql.gz`）。
+1. **状態**: **本番デプロイ済み HEAD `0337525`**（2026-09-07 3 回目・22:xx JST・backend+frontend 再作成・healthz 200/200・migration 無し。2 回目 = f5cbae9 可読性改修 / 1 回目 = fa53523 15:2x JST・backup `pre-deploy-20260907-0619.sql.gz` ほか同日分）。push 済み。本番 DB への書込は §1-3 の 5 件のみ（伊藤様の W38〜W40 訪問・バックアップ `pre-ito-placement-20260907-0344.sql.gz`）。
 2. **お客様案件**: 松岡様依頼「伊藤夢華様 9/14・17・19・22・25・28 12:00」→ 現状調査 → らく助のみへ展開完了（担当なし=M・35 分・固定訪問不変・カイポケ未送信）。報告書 = `docs/reports/2026-09-07-ito-irregular-schedule-report.html`（患者名を含むため未追跡）。
 3. **改修**: 「＋訪問（任意日付の訪問追加）」と「固定訪問保存の反映先確認 (E)」。設計 = `docs/plans/add-visit-anywhere-design.md`（PO 決定 12 点）。実装はディレクター方式（Opus executor 並行 + 別レーン code-reviewer で Phase 毎に承認）。
 4. **PO が「今週の伊藤様が変わっている」と言ったら**: 松岡様が 9/7 11:31 に固定訪問を月木 12:00 で保存 → 今週 W37 だけ再生成（9/7 09:30→12:00・9/10 12:00 新規）。設計の欠陥 6 = E で是正済み（本番稼働）。
@@ -77,3 +77,14 @@ PFV（月木 12:00 locked）不変・今週 9/7/9/10 据え置き。同期バー
 - 設計: `docs/plans/add-visit-anywhere-design.md`／報告書: `docs/reports/2026-09-07-ito-irregular-schedule-report.html`
 - メモリ: `careflow-ito-yumeka-irregular-request`／`careflow-ui-adhoc-visit-gaps`
 - 本番 DB 調査 SQL の要点: 監査ログ `audit_logs`（`actor_user_id`→users.email、`request_body`）で操作再現、`patient_fixed_visits` は履歴を持たない（validate の初期値から復元）。
+
+## 7. 夜の追加対応（松岡様 9/4 報告 2 件・PO 指示「並行的に実装」）
+正典 = `docs/plans/special-visit-week-ux-investigation-2026-09-07.md`（§1 状態モデル・§2 原因・§3 案・§6 実装記録と追跡事項）。
+| コミット | 内容 | レビュー |
+|---|---|---|
+| `a3a230e` | 調査メモ: ○＝取消ボタン（確認なし）／配置はプール⭐からのみ／候補 0 件の出口なし（F-1/F-2 未実装）。PO 自身の 21:09 テストで ○→削除を再現（唐鎌様データは元通り） | — |
+| `1ca0dec` | **プール出口 F-1/F-2**: 候補 0 件で「担当なし（M）へ入れる」（通常=place-and-fix 今週のみ／⭐=place course_template_id）・列外ドロップの案内・place スキーマに course_template_id/visit_id | COMMENT→是正済み |
+| `5109978` | **特別訪問週間ダイアログ**: セル＝メニュー（配置先を決める…／取消は確認）・`SpecialVisitPlaceLauncher` が ＋訪問モーダルを流用し place{visit_id} で紐付け・NG/性別 422 確認→再送・過去日不可・配置変更は新→旧の順・期間終了は「…」＋確認・凡例 | REQUEST CHANGES×1→APPROVE |
+| `0337525` | **BE place 拡張**: course_template_id（Course 生成・主担当拠点のみ）/ visit_id（紐付け: source 制限・二重 409・NG 検査・2名体制グループ対応）・過去日 422 は新 2 モードのみ | REQUEST CHANGES×1→APPROVE WITH NITS |
+実機確認（要）: (a) 患者画面の特別訪問週間で ○ をクリック → メニューが出て消えない (b) 「配置先を決める…」→ ＋訪問モーダル（日付固定）→ 提案 → 登録 → ● になる (c) 入れ子 Popover のクリック/フォーカス (d) プールで候補 0 件 → 「担当なし（M）へ入れる」→ M 列に出る (e) プールカードを列の外で離す → 案内トースト。
+PO 判断待ち: 過去日ガードを既存のプール ⭐ 経路にも適用するか（§6 追跡事項 2）。
