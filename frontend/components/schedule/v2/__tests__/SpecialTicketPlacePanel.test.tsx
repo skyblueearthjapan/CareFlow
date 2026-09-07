@@ -168,6 +168,23 @@ describe('SpecialVisitPoolSection', () => {
     );
   });
 
+  // PO 指示 2026-09-08: ⭐ が何のチケットで時間が未定であることをカードに書く。
+  it('追加枠チケットは「特別訪問週間の追加枠・時間未定」を氏名の下に出す', () => {
+    mocks.poolTickets = [makeTicket()];
+    renderSection();
+    expect(screen.getByTestId(`special-visit-ticket-note-${MARK_ID}`).textContent).toBe(
+      '特別訪問週間の追加枠・時間未定',
+    );
+  });
+
+  it('固定退避チケットは「固定退避・時間未定」を氏名の下に出す', () => {
+    mocks.poolTickets = [makeTicket({ mark: { ...makeTicket().mark, kind: 'displaced' } })];
+    renderSection();
+    expect(screen.getByTestId(`special-visit-ticket-note-${MARK_ID}`).textContent).toBe(
+      '固定退避・時間未定',
+    );
+  });
+
   it('カードクリックで患者スケジュール詳細ダイアログを特別モードで開く', () => {
     mocks.poolTickets = [
       makeTicket({

@@ -133,6 +133,16 @@ export function SpecialVisitPoolSection({
                     <span className="truncate text-[10px] opacity-70">({t.patient.code})</span>
                   ) : null}
                 </div>
+                {/* PO 指示 2026-09-08: ⭐ が何のチケットで、時間が未定であることを
+                    カードの言葉で明示する (○ の意味をプール側でも揃える)。 */}
+                <div
+                  className="pl-4 text-[10px] opacity-80"
+                  data-testid={`special-visit-ticket-note-${t.mark.id}`}
+                >
+                  {t.mark.kind === 'displaced'
+                    ? '固定退避・時間未定'
+                    : '特別訪問週間の追加枠・時間未定'}
+                </div>
                 <div className="flex flex-wrap items-center gap-1 pl-4">
                   <Badge
                     variant={t.mark.kind === 'displaced' ? 'warning' : 'info'}

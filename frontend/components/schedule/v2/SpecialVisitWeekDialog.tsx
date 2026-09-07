@@ -13,12 +13,22 @@
  *   - 期間未設定 → 作成フォーム (開始日 / 期間チップ / 目標回数 / メモ)
  *   - 期間あり   → カレンダー (行=期間内の各 ISO 週・列=月〜土)
  *
+ * セルの見せ方 (2026-09-08 PO 指示 — HANDOFF §8 8-1):
+ *   1 セルは上下 2 段。**上段「予定」** = 既に盤面にある訪問 (時刻・コース・担当)
+ *   を 14px のカードで出す (無ければ「予定なし」)。**下段「追加枠」** = ○/● の
+ *   状態を言葉で書く。用語は次の 4 つだけに揃える:
+ *     予定あり / プール待ち（この日に 1 回追加・時間未定） /
+ *     配置済み HH:MM コース / 空き
+ *   ○ は「システムの提案」ではなく「人がその日の保留プールに積んだ 1 回分
+ *   (時間は未定)」であることを、文言でそのまま表す。
+ *
  * カレンダーの操作 (2026-09-07 改訂 —
  * `special-visit-week-ux-investigation-2026-09-07.md` §3-2):
  *   セルのクリックは **即実行しない**。その日をどうするかのメニューを開く。
- *   - 追加枠なし → 「この日に追加枠を付ける（○）」(POST marks)
- *   - ○ (未配置) → 「この日の配置先を決める…」(＋訪問モーダル → place)
- *                  「追加枠を取り消す」(確認 → DELETE marks/{id})
+ *   - 追加枠なし → 「この日を保留プールに追加する」(POST marks)。
+ *                  既に予定がある日は「同じ日に 2 回目を追加しますか？」の確認を挟む。
+ *   - ○ (プール待ち) → 「この日の配置先を決める…（プールから盤面へ）」
+ *                      「プールから外す」(確認 → DELETE marks/{id})
  *   - ● (配置済み) → 「配置を変更する…」(新しい配置を決めてから入れ替える)
  *                    「配置を取り消す（訪問も削除）」(確認 → force=true)
  *   取り消し系は必ず確認ダイアログを挟む (`window.confirm` は使わない)。
@@ -28,8 +38,10 @@
  *                              配置済み退避の解除は確認 → force=true)
  *
  * 週合計 (設計書 §3): 固定訪問の残数 + extra ○ (pool/placed 両方) + displaced
- * チケット数。BE が `week.total` / `week.target_met` として返すので FE は
- * 再計算しない (= 判定ロジックの二重持ちを避ける)。
+ * チケット数。**合計値は BE の `week.total` が正**で FE は再計算しない
+ * (= 判定ロジックの二重持ちを避ける)。行末には内訳
+ * 「固定 N ＋ プール待ち M ＝ T 回（目標 X）」を添えるが、T は常に BE の値を出す
+ * (内訳と食い違っても BE を優先する)。
  *
  * 意匠は既存トークンのみ (bg-bg-base / border-border-default / text-text-* /
  * brand-primary / success-bg / error-bg)。固定訪問カードは性別情報が calendar API
@@ -151,6 +163,35 @@ function daysByWeekday(week: SpecialCalendarWeek): Map<number, SpecialCalendarDa
   return m;
 }
 
+/**
+ * 行末に添える内訳 (PO 指示 2026-09-08) —「固定 N ＋ プール待ち M」。
+ *
+ * - N = その週に**盤面で生きている**固定訪問の数 (退避した日の分は数えない)。
+ * - M = 追加枠 (○ プール待ち ＋ ● 配置済み) ＋ 退避チケット。
+ *
+ * 合計は BE の `week.total` が正なので、ここでは合計を返さない (呼び出し側が
+ * `week.total` を出す)。期間外の日はセルと同じ規則で除外する。
+ */
+function weekBreakdown(
+  week: SpecialCalendarWeek,
+  period: SpecialVisitPeriod,
+): { fixed: number; pooled: number } {
+  let fixed = 0;
+  let pooled = 0;
+  for (const d of week.days) {
+    if (d.date < period.start_date || d.date > period.end_date) continue;
+    const displaced = liveMark(d.displaced_mark);
+    if (displaced) {
+      // 退避した日の固定訪問は盤面から外れ、プールのチケット 1 枚になる。
+      pooled += 1;
+    } else {
+      fixed += d.fixed_visits.length;
+    }
+    if (liveMark(d.extra_mark)) pooled += 1;
+  }
+  return { fixed, pooled };
+}
+
 function weekRowLabel(week: SpecialCalendarWeek): string {
   const monday = parseISODate(week.week_monday);
   if (!monday) return `W${week.iso_week}`;
@@ -211,7 +252,7 @@ export function SpecialVisitWeekDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-w-5xl"
+        className="max-w-6xl"
         aria-describedby="special-visit-week-description"
         data-testid="special-visit-week-dialog"
       >
@@ -221,8 +262,8 @@ export function SpecialVisitWeekDialog({
             <span className="ml-2 text-sm font-normal text-text-secondary">{patientName}</span>
           </DialogTitle>
           <DialogDescription id="special-visit-week-description">
-            期間と週の目標回数を決めて、カレンダーに ○ を付けると追加の訪問枠がプールに積まれます。
-            基本の固定訪問はそのまま生きています。
+            期間と週の目標回数を決め、追加したい日を保留プールに積みます（○＝プール待ち・時間未定）。
+            配置先はこのカレンダーの ○ から決められます。基本の固定訪問はそのまま生きています。
           </DialogDescription>
         </DialogHeader>
 
@@ -454,17 +495,36 @@ function PeriodCalendar({ period, weeks, isLoading, isError }: PeriodCalendarPro
     [weeks, period.start_date, period.end_date, period.status],
   );
 
+  /**
+   * 「この日を保留プールに追加する」。
+   *
+   * 既に予定がある日は **2 回目の訪問**になるので確認を挟む (PO 指示 2026-09-08)。
+   * 予定が無い日は従来どおり即作成する (1 操作で済ませる)。
+   */
   const handleAddMark = React.useCallback(
     (week: SpecialCalendarWeek, day: SpecialCalendarDay) => {
-      createMark.mutate(
-        {
-          periodId: period.id,
-          payload: { iso_year: week.iso_year, iso_week: week.iso_week, weekday: day.weekday },
-        },
-        {
-          onError: (err) => toast.error(`追加できませんでした: ${errorMessage(err)}`),
-        },
-      );
+      const create = () =>
+        createMark.mutate(
+          {
+            periodId: period.id,
+            payload: { iso_year: week.iso_year, iso_week: week.iso_week, weekday: day.weekday },
+          },
+          {
+            onError: (err) => toast.error(`追加できませんでした: ${errorMessage(err)}`),
+          },
+        );
+
+      if (day.fixed_visits.length > 0) {
+        const times = day.fixed_visits.map((fv) => trimSeconds(fv.start_time)).join('・');
+        setConfirm({
+          title: '同じ日に 2 回目を追加しますか？',
+          body: `この日は ${times} の予定があります。保留プールにもう 1 回分を追加します。`,
+          confirmLabel: '追加する',
+          onConfirm: create,
+        });
+        return;
+      }
+      create();
     },
     [createMark, period.id],
   );
@@ -475,11 +535,11 @@ function PeriodCalendar({ period, weeks, isLoading, isError }: PeriodCalendarPro
       const placed = mark.status === 'placed';
       const label = formatDayLabel(day.date, day.weekday);
       setConfirm({
-        title: placed ? '配置を取り消しますか？' : '追加枠を取り消しますか？',
+        title: placed ? '配置を取り消しますか？' : 'プールから外しますか？',
         body: placed
           ? `${label}の配置済みの追加枠を取り消します。配置した訪問も削除されます。`
-          : `${label}の未配置の追加枠を取り消します。プールからも消えます。`,
-        confirmLabel: '取り消す',
+          : `${label}のプール待ちの追加枠を保留プールから外します。`,
+        confirmLabel: placed ? '取り消す' : '外す',
         onConfirm: () =>
           deleteMark.mutate(
             { markId: mark.id, force: placed },
@@ -573,10 +633,11 @@ function PeriodCalendar({ period, weeks, isLoading, isError }: PeriodCalendarPro
       {/* 凡例と次の一手 (§3-2 3): 何をすればよいかを常時出す。 */}
       <div className="space-y-1" data-testid="svw-legend">
         <p className="text-sm text-text-secondary">
-          ＋ 追加枠なし　○ 未配置（クリックで配置先を決める）　● 配置済み
+          予定あり ＝ 既に盤面にある訪問　○ プール待ち（時間未定）　● 配置済み　空き ＝
+          予定も追加枠もない日
         </p>
         <p className="text-sm font-medium text-text-primary" data-testid="svw-pool-count">
-          未配置の追加枠 {poolCount} 件 — このカレンダーから配置できます
+          保留プールに {poolCount} 件あります（時間未定）
         </p>
       </div>
 
@@ -603,9 +664,9 @@ function PeriodCalendar({ period, weeks, isLoading, isError }: PeriodCalendarPro
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <div className="min-w-[52rem]">
+          <div className="min-w-[62rem]">
             {/* ヘッダ行 */}
-            <div className="grid grid-cols-[5rem_repeat(6,1fr)_7rem] gap-1 pb-1">
+            <div className="grid grid-cols-[5rem_repeat(6,1fr)_12rem] gap-1 pb-1">
               <div />
               {WEEKDAY_LABELS.map((label) => (
                 <div key={label} className="px-1 text-center text-sm font-semibold text-text-muted">
@@ -617,10 +678,18 @@ function PeriodCalendar({ period, weeks, isLoading, isError }: PeriodCalendarPro
 
             {weeks.map((week, wi) => {
               const byWd = daysByWeekday(week);
+              const breakdown = weekBreakdown(week, period);
+              // 合計は BE が正 (内訳と食い違っても week.total を出す)。
+              const totalState: 'below' | 'met' | 'over' =
+                week.total < period.weekly_target
+                  ? 'below'
+                  : week.total === period.weekly_target
+                    ? 'met'
+                    : 'over';
               return (
                 <div
                   key={`${week.iso_year}-${week.iso_week}`}
-                  className="grid grid-cols-[5rem_repeat(6,1fr)_7rem] items-stretch gap-1 py-1"
+                  className="grid grid-cols-[5rem_repeat(6,1fr)_12rem] items-stretch gap-1 py-1"
                   data-testid={`svw-week-row-${wi}`}
                 >
                   <div className="tnum flex flex-col justify-center px-1 text-sm text-text-secondary">
@@ -650,25 +719,32 @@ function PeriodCalendar({ period, weeks, isLoading, isError }: PeriodCalendarPro
                     );
                   })}
 
-                  <div className="flex items-center justify-center">
-                    {week.target_met ? (
+                  {/* 行末 = 週合計の内訳 (PO 指示 2026-09-08)。未達=赤・一致=緑✓・超過=橙。 */}
+                  <div className="flex flex-col items-center justify-center gap-1 px-1">
+                    <div
+                      data-testid={`svw-total-${wi}`}
+                      data-met={week.target_met ? 'true' : 'false'}
+                      data-state={totalState}
+                      className={`tnum w-full rounded-md px-2 py-1 text-center text-xs leading-snug ${
+                        totalState === 'below'
+                          ? 'bg-error-bg text-error'
+                          : totalState === 'met'
+                            ? 'bg-success-bg text-success'
+                            : 'bg-warning-bg text-warning'
+                      }`}
+                    >
+                      固定 {breakdown.fixed} ＋ プール待ち {breakdown.pooled} ＝ {week.total}{' '}
+                      回（目標 {period.weekly_target}）{totalState === 'met' ? ' ✓' : ''}
+                    </div>
+                    {totalState === 'over' ? (
                       <Badge
-                        variant="success"
-                        data-testid={`svw-total-${wi}`}
-                        data-met="true"
-                        className="tnum"
+                        variant="warning"
+                        className="px-1.5 py-0 text-xs"
+                        data-testid={`svw-total-over-${wi}`}
                       >
-                        {week.total}回 ✓
+                        目標超
                       </Badge>
-                    ) : (
-                      <Badge
-                        data-testid={`svw-total-${wi}`}
-                        data-met="false"
-                        className="border-transparent bg-error-bg text-error tnum"
-                      >
-                        {week.total}回 / 目標{period.weekly_target}
-                      </Badge>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               );
@@ -678,8 +754,8 @@ function PeriodCalendar({ period, weeks, isLoading, isError }: PeriodCalendarPro
       )}
 
       <p className="text-sm text-text-muted">
-        セルをクリックすると、その日にできることが出ます。追加枠 (○)
-        は「この日の配置先を決める…」でこの画面から配置できます。固定訪問は「この日はプールへ退避」で一時的に外せます
+        セルをクリックすると、その日にできることが出ます。プール待ち (○)
+        は「この日の配置先を決める…（プールから盤面へ）」でこの画面から盤面に入れられます。固定訪問は「この日の固定訪問をプールへ退避」で一時的に外せます
         (恒久パターンは変わりません)。
       </p>
 
@@ -953,7 +1029,7 @@ function CalendarCell({
   if (!day || outOfRange) {
     return (
       <div
-        className="min-h-[5rem] rounded border border-border-subtle bg-bg-muted/60 opacity-50"
+        className="min-h-[7rem] rounded border border-border-subtle bg-bg-muted/60 opacity-50"
         data-testid={testIdBase}
         data-out-of-range="true"
       />
@@ -964,6 +1040,9 @@ function CalendarCell({
   const displaced = liveMark(day.displaced_mark);
   const hasPreferred = day.preferred.length > 0;
   const placed = extra?.status === 'placed';
+  const hasFixed = day.fixed_visits.length > 0;
+  /** 予定も追加枠も無い日 = 「空き」。淡い緑で「まだ何も無い」と分かるようにする。 */
+  const isFree = !hasFixed && !extra && !displaced;
   const dayLabel = formatDayLabel(day.date, weekday);
   /**
    * 当日以前は配置できない (＋訪問の登録系と同じ規則)。
@@ -971,12 +1050,17 @@ function CalendarCell({
    */
   const isPast = day.date <= todayIso;
 
-  /** ○/● の下に出す一行の状態説明 (§3-2 1)。 */
+  /**
+   * 下段「追加枠」の一行説明 (PO 指示 2026-09-08 の言葉づかいに固定)。
+   * ○ は提案ではなく「人が保留プールに積んだ 1 回分・時間未定」。
+   */
   const caption = extra
     ? placed
       ? `配置済み ${placedSummaryLabel(extra)}`.trim()
-      : '未配置 — クリックで操作'
-    : 'クリックで操作';
+      : 'プール待ち（この日に 1 回追加・時間未定）'
+    : isFree
+      ? '空き'
+      : '＋ 保留プールに追加';
 
   /** メニューから選んだら閉じてから実行する (1 操作 = 1 選択)。 */
   const pick = (run: () => void) => {
@@ -986,12 +1070,13 @@ function CalendarCell({
 
   return (
     <div
-      className={`flex min-h-[5rem] flex-col rounded border border-border-default ${
-        hasPreferred ? 'bg-brand-primary-50' : 'bg-bg-base'
+      className={`flex min-h-[7rem] flex-col rounded border border-border-default ${
+        hasPreferred ? 'bg-brand-primary-50' : isFree ? 'bg-success-bg' : 'bg-bg-base'
       }`}
       data-testid={testIdBase}
       data-out-of-range="false"
       data-preferred={hasPreferred ? 'true' : 'false'}
+      data-free={isFree ? 'true' : 'false'}
     >
       <Popover open={menuOpen} onOpenChange={setMenuOpen}>
         <PopoverTrigger asChild>
@@ -1003,7 +1088,7 @@ function CalendarCell({
             }
             data-status={extra ? extra.status : 'none'}
             aria-label={`${dayLabel} の操作`}
-            className="flex min-h-[5rem] flex-1 flex-col gap-1 rounded p-1.5 text-left hover:bg-bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary-light disabled:opacity-50"
+            className="flex min-h-[7rem] flex-1 flex-col gap-1 rounded p-1.5 text-left hover:bg-bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary-light disabled:opacity-50"
           >
             <span className="flex items-center justify-between text-xs">
               <span className="tnum text-text-muted">{day.date.slice(5)}</span>
@@ -1014,31 +1099,46 @@ function CalendarCell({
               ) : null}
             </span>
 
-            {/* 固定訪問カード (密なので 10px のまま). 退避中は打ち消し線 + バッジ. */}
-            {day.fixed_visits.map((fv, i) => (
-              <span
-                key={`${fv.visit_id ?? 'pfv'}-${i}`}
-                className={`block rounded border border-border-subtle bg-bg-muted px-1 py-0.5 text-[10px] leading-tight text-text-primary ${
-                  displaced ? 'line-through opacity-60' : ''
-                }`}
-                data-testid={`svw-fixed-${weekIndex}-${weekday}-${i}`}
-                data-displaced={displaced ? 'true' : 'false'}
-              >
-                <span className="tnum">{trimSeconds(fv.start_time)}</span>
-                {fv.course_label ? <span className="ml-1">{fv.course_label}</span> : null}
-              </span>
-            ))}
+            {/* ── 上段「予定」= 既に盤面にある訪問 (時刻・コース・担当)。 ── */}
+            <span className="flex flex-col gap-0.5">
+              <span className="text-xs font-semibold text-text-muted">予定</span>
+              {hasFixed ? (
+                day.fixed_visits.map((fv, i) => (
+                  <span
+                    key={`${fv.visit_id ?? 'pfv'}-${i}`}
+                    className={`block rounded border border-border-subtle bg-bg-muted px-1.5 py-0.5 text-sm leading-tight text-text-primary ${
+                      displaced ? 'line-through opacity-60' : ''
+                    }`}
+                    data-testid={`svw-fixed-${weekIndex}-${weekday}-${i}`}
+                    data-displaced={displaced ? 'true' : 'false'}
+                  >
+                    <span className="tnum">{trimSeconds(fv.start_time)}</span>
+                    {fv.course_label ? <span className="ml-1">{fv.course_label}</span> : null}
+                    {fv.staff_name ? <span className="ml-1">{fv.staff_name}</span> : null}
+                  </span>
+                ))
+              ) : (
+                <span
+                  className="text-sm leading-tight text-text-muted"
+                  data-testid={`svw-no-visit-${weekIndex}-${weekday}`}
+                >
+                  予定なし
+                </span>
+              )}
 
-            {displaced ? (
-              <Badge
-                className="w-fit border-transparent bg-warning-bg px-1.5 py-0 text-[10px] text-warning"
-                data-testid={`svw-displaced-badge-${weekIndex}-${weekday}`}
-              >
-                プールへ退避中
-              </Badge>
-            ) : null}
+              {displaced ? (
+                <Badge
+                  className="w-fit border-transparent bg-warning-bg px-1.5 py-0 text-xs text-warning"
+                  data-testid={`svw-displaced-badge-${weekIndex}-${weekday}`}
+                >
+                  プールへ退避中
+                </Badge>
+              ) : null}
+            </span>
 
-            <span className="mt-auto flex flex-col items-center gap-0.5">
+            {/* ── 下段「追加枠」= ○ (プール待ち) / ● (配置済み) / 空き。 ── */}
+            <span className="mt-auto flex flex-col items-center gap-0.5 border-t border-border-subtle pt-1">
+              <span className="w-full text-left text-xs font-semibold text-text-muted">追加枠</span>
               <span
                 aria-hidden="true"
                 className={
@@ -1052,7 +1152,7 @@ function CalendarCell({
                 {extra ? (placed ? '●' : '○') : '＋'}
               </span>
               <span className="sr-only">
-                {extra ? (placed ? '配置済みの追加枠' : '未配置の追加枠') : '追加枠なし'}
+                {extra ? (placed ? '配置済みの追加枠' : 'プール待ちの追加枠') : '追加枠なし'}
               </span>
               <span
                 className="text-center text-xs leading-tight text-text-secondary"
@@ -1085,7 +1185,7 @@ function CalendarCell({
                 data-testid={`svw-menu-place-${weekIndex}-${weekday}`}
                 className={menuItemCls}
               >
-                {placed ? '配置を変更する…' : 'この日の配置先を決める…'}
+                {placed ? '配置を変更する…' : 'この日の配置先を決める…（プールから盤面へ）'}
               </button>
               {isPast ? (
                 <p
@@ -1103,7 +1203,7 @@ function CalendarCell({
                 data-testid={`svw-menu-cancel-${weekIndex}-${weekday}`}
                 className={menuItemCls}
               >
-                {placed ? '配置を取り消す（訪問も削除）' : '追加枠を取り消す'}
+                {placed ? '配置を取り消す（訪問も削除）' : 'プールから外す'}
               </button>
             </>
           ) : (
@@ -1115,7 +1215,7 @@ function CalendarCell({
               data-testid={`svw-menu-add-${weekIndex}-${weekday}`}
               className={menuItemCls}
             >
-              この日に追加枠を付ける（○）
+              この日を保留プールに追加する
             </button>
           )}
 

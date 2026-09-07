@@ -4,10 +4,12 @@
  * 検証:
  *   ① 期間未設定 → 作成フォームが出る。期間チップで end_date が計算され
  *      POST /special-visit-periods 相当の mutation が呼ばれる.
- *   ② 期間あり → カレンダーが描かれる (固定訪問カード / ○ / ● / 週合計の
- *      達成・未達の出し分け。判定は data-testid + data-* 属性で行う).
- *   ③ セルクリック = **メニュー** (即実行しない)。追加 / 取消 (確認あり) /
- *      「配置先を決める…」→ 配置モーダル。
+ *   ② 期間あり → カレンダーが上下 2 段のセルで描かれる (上段=予定・下段=追加枠。
+ *      「プール待ち」「配置済み HH:MM コース」「空き」「予定なし」の文言と、
+ *      週合計の内訳「固定 N ＋ プール待ち M ＝ T 回（目標 X）」の未達/一致/超過).
+ *   ③ セルクリック = **メニュー** (即実行しない)。保留プールへ追加 (予定がある日は
+ *      2 回目の確認あり) / プールから外す (確認あり) /
+ *      「配置先を決める…（プールから盤面へ）」→ 配置モーダル。
  *   ④ 退避トグル → POST displace。配置済みの退避解除は確認ダイアログ後に
  *      force=true 付きで restore が呼ばれる.
  *   ⑤ 凡例 + 未配置件数 / 期間終了は「…」メニュー + 確認.
@@ -158,32 +160,38 @@ function emptyDay(weekday: number, date: string) {
   };
 }
 
+function fixedVisit(
+  over: Partial<SpecialCalendarWeek['days'][number]['fixed_visits'][number]> = {},
+) {
+  return {
+    visit_id: 'visit-x',
+    start_time: '10:00',
+    end_time: '11:00',
+    course_label: '稲毛A',
+    staff_name: '佐藤',
+    generated: true,
+    ...over,
+  };
+}
+
 /**
- * 週 0 (2026-W32):
- *   月 = 固定訪問あり (退避なし) / 火 = ○未配置 / 水 = ●配置済み /
+ * 週 0 (2026-W32): 目標未達 (固定1 ＋ プール待ち3 ＝ 4回 / 目標5)
+ *   月 = 固定訪問あり (退避なし) / 火 = ○プール待ち / 水 = ●配置済み /
  *   木 = 空き / 金 = 固定訪問 + 配置済みの退避チケット / 土 = 空き
- * 週 1 (2026-W33): すべて空き・未達 (4回 / 目標5)
+ * 週 1 (2026-W33): 目標ちょうど (固定5 ＝ 5回 / 目標5)。土だけ空き。
+ * 週 2 (2026-W34): 目標超 (固定6 ＝ 6回 / 目標5)。
  */
 function makeWeeks(): SpecialCalendarWeek[] {
   const week0: SpecialCalendarWeek = {
     iso_year: 2026,
     iso_week: 32,
     week_monday: '2026-08-03',
-    total: 5,
-    target_met: true,
+    total: 4,
+    target_met: false,
     days: [
       {
         ...emptyDay(0, '2026-08-03'),
-        fixed_visits: [
-          {
-            visit_id: 'visit-1',
-            start_time: '10:00',
-            end_time: '11:00',
-            course_label: '稲毛A',
-            staff_name: '佐藤',
-            generated: true,
-          },
-        ],
+        fixed_visits: [fixedVisit({ visit_id: 'visit-1' })],
       },
       { ...emptyDay(1, '2026-08-04'), extra_mark: mark({ id: 'mark-pool', weekday: 1 }) },
       {
@@ -200,14 +208,13 @@ function makeWeeks(): SpecialCalendarWeek[] {
       {
         ...emptyDay(4, '2026-08-07'),
         fixed_visits: [
-          {
+          fixedVisit({
             visit_id: 'visit-2',
             start_time: '09:30',
             end_time: '10:30',
             course_label: '稲毛B',
             staff_name: null,
-            generated: true,
-          },
+          }),
         ],
         displaced_mark: mark({
           id: 'mark-displaced-placed',
@@ -220,18 +227,33 @@ function makeWeeks(): SpecialCalendarWeek[] {
     ],
   };
 
+  // 目標ちょうど (固定 5 件・土だけ空き)。
   const week1: SpecialCalendarWeek = {
     iso_year: 2026,
     iso_week: 33,
     week_monday: '2026-08-10',
-    total: 4,
-    target_met: false,
-    days: [0, 1, 2, 3, 4, 5].map((wd) =>
-      emptyDay(wd, `2026-08-${String(10 + wd).padStart(2, '0')}`),
-    ),
+    total: 5,
+    target_met: true,
+    days: [0, 1, 2, 3, 4, 5].map((wd) => {
+      const day = emptyDay(wd, `2026-08-${String(10 + wd).padStart(2, '0')}`);
+      return wd === 5 ? day : { ...day, fixed_visits: [fixedVisit({ visit_id: `w1-${wd}` })] };
+    }),
   };
 
-  return [week0, week1];
+  // 目標超 (固定 6 件)。
+  const week2: SpecialCalendarWeek = {
+    iso_year: 2026,
+    iso_week: 34,
+    week_monday: '2026-08-17',
+    total: 6,
+    target_met: true,
+    days: [0, 1, 2, 3, 4, 5].map((wd) => ({
+      ...emptyDay(wd, `2026-08-${String(17 + wd).padStart(2, '0')}`),
+      fixed_visits: [fixedVisit({ visit_id: `w2-${wd}` })],
+    })),
+  };
+
+  return [week0, week1, week2];
 }
 
 function renderDialog() {
@@ -300,18 +322,21 @@ describe('SpecialVisitWeekDialog — ② カレンダー表示', () => {
     mocks.weeks = makeWeeks();
   });
 
-  it('固定訪問カード・○・● が描かれる', () => {
+  it('上段「予定」に時刻・コース・担当が出る (○・● は下段)', () => {
     renderDialog();
 
     expect(screen.getByTestId('svw-calendar')).toBeInTheDocument();
 
-    // 月曜: 固定訪問カード (時刻 + コースラベル)
+    // 月曜: 上段の予定カード (時刻 + コースラベル + 担当)
     const fixed = screen.getByTestId('svw-fixed-0-0-0');
     expect(fixed.textContent).toContain('10:00');
     expect(fixed.textContent).toContain('稲毛A');
+    expect(fixed.textContent).toContain('佐藤');
     expect(fixed.getAttribute('data-displaced')).toBe('false');
+    // 上段は 14px (§3-5: 11px 以下は使わない)。
+    expect(fixed.className).toContain('text-sm');
 
-    // 火曜: ○ (未配置)
+    // 火曜: ○ (プール待ち)
     const poolMark = screen.getByTestId('svw-mark-0-1');
     expect(poolMark.getAttribute('data-status')).toBe('pool');
     expect(poolMark.textContent).toContain('○');
@@ -327,19 +352,69 @@ describe('SpecialVisitWeekDialog — ② カレンダー表示', () => {
     expect(screen.getByTestId('svw-empty-0-3')).toBeInTheDocument();
   });
 
-  it('週合計は達成/未達で出し分けられる', () => {
+  it('下段の文言は「プール待ち」「配置済み HH:MM コース」「空き」に揃う', () => {
     renderDialog();
 
-    const met = screen.getByTestId('svw-total-0');
-    expect(met.getAttribute('data-met')).toBe('true');
-    expect(met.textContent).toContain('5回');
+    expect(screen.getByTestId('svw-caption-0-1').textContent).toBe(
+      'プール待ち（この日に 1 回追加・時間未定）',
+    );
+    expect(screen.getByTestId('svw-caption-0-2').textContent).toBe('配置済み 14:00 都賀B');
+    // 木曜 = 予定も追加枠も無い → 「空き」・淡い緑
+    expect(screen.getByTestId('svw-caption-0-3').textContent).toBe('空き');
+    const freeCell = screen.getByTestId('svw-cell-0-3');
+    expect(freeCell.getAttribute('data-free')).toBe('true');
+    expect(freeCell.className).toContain('bg-success-bg');
+    // 予定がある日は「空き」ではなく保留プールへの誘導
+    expect(screen.getByTestId('svw-caption-0-0').textContent).toBe('＋ 保留プールに追加');
+    expect(screen.getByTestId('svw-cell-0-0').getAttribute('data-free')).toBe('false');
+  });
+
+  it('予定が無い日の上段は「予定なし」、ある日は出さない', () => {
+    renderDialog();
+
+    expect(screen.getByTestId('svw-no-visit-0-3').textContent).toBe('予定なし');
+    expect(screen.getByTestId('svw-no-visit-0-1').textContent).toBe('予定なし');
+    // 月曜は固定訪問があるので「予定なし」は出ない。
+    expect(screen.queryByTestId('svw-no-visit-0-0')).toBeNull();
+  });
+
+  it('週合計は「固定 N ＋ プール待ち M ＝ T 回（目標 X）」の内訳で、未達/一致/超過を色で分ける', () => {
+    renderDialog();
+
+    // 週0: 固定1 (金は退避なので数えない) ＋ プール待ち3 (○ + ● + 退避) = 4 / 目標5 → 未達
+    const below = screen.getByTestId('svw-total-0');
+    expect(below.getAttribute('data-state')).toBe('below');
+    expect(below.getAttribute('data-met')).toBe('false');
+    expect(below.textContent).toContain('固定 1 ＋ プール待ち 3 ＝ 4 回（目標 5）');
+    expect(below.className).toContain('bg-error-bg');
+    expect(screen.queryByTestId('svw-total-over-0')).toBeNull();
+
+    // 週1: 固定5 = 5 / 目標5 → ちょうど (✓)
+    const met = screen.getByTestId('svw-total-1');
+    expect(met.getAttribute('data-state')).toBe('met');
+    expect(met.textContent).toContain('固定 5 ＋ プール待ち 0 ＝ 5 回（目標 5）');
+    expect(met.textContent).toContain('✓');
     expect(met.className).toContain('bg-success-bg');
 
-    const notMet = screen.getByTestId('svw-total-1');
-    expect(notMet.getAttribute('data-met')).toBe('false');
-    expect(notMet.textContent).toContain('4回');
-    expect(notMet.textContent).toContain('目標5');
-    expect(notMet.className).toContain('bg-error-bg');
+    // 週2: 固定6 = 6 / 目標5 → 目標超
+    const over = screen.getByTestId('svw-total-2');
+    expect(over.getAttribute('data-state')).toBe('over');
+    expect(over.textContent).toContain('固定 6 ＋ プール待ち 0 ＝ 6 回（目標 5）');
+    expect(over.className).toContain('bg-warning-bg');
+    expect(screen.getByTestId('svw-total-over-2').textContent).toContain('目標超');
+  });
+
+  it('内訳と BE の週合計が食い違うときは BE の合計を出す', () => {
+    const weeks = makeWeeks();
+    // BE が 9 回と言えば 9 回 (FE の内訳は参考にとどめる)。
+    weeks[0]!.total = 9;
+    weeks[0]!.target_met = true;
+    mocks.weeks = weeks;
+    renderDialog();
+
+    const total = screen.getByTestId('svw-total-0');
+    expect(total.textContent).toContain('固定 1 ＋ プール待ち 3 ＝ 9 回（目標 5）');
+    expect(total.getAttribute('data-state')).toBe('over');
   });
 
   it('退避中の固定訪問は打ち消し線 + 「プールへ退避中」バッジになる', () => {
@@ -358,19 +433,58 @@ describe('SpecialVisitWeekDialog — ③ セルメニュー (追加 / 取消 / �
     mocks.weeks = makeWeeks();
   });
 
-  it('空きセルはメニューの「この日に追加枠を付ける（○）」で作成 mutation が呼ばれる', () => {
+  it('予定が無い日はメニューの「この日を保留プールに追加する」で即作成される', () => {
     renderDialog();
 
     fireEvent.click(screen.getByTestId('svw-empty-0-3'));
     expect(mocks.createMark).not.toHaveBeenCalled();
 
+    expect(screen.getByTestId('svw-menu-add-0-3')).toHaveTextContent(
+      'この日を保留プールに追加する',
+    );
     fireEvent.click(screen.getByTestId('svw-menu-add-0-3'));
 
+    // 予定が無い日は確認を挟まない (1 操作で済ませる)。
+    expect(screen.queryByTestId('svw-confirm')).toBeNull();
     expect(mocks.createMark).toHaveBeenCalledTimes(1);
     expect(mocks.createMark.mock.calls[0]![0]).toEqual({
       periodId: 'period-1',
       payload: { iso_year: 2026, iso_week: 32, weekday: 3 },
     });
+  });
+
+  it('既に予定がある日は「同じ日に 2 回目を追加しますか？」の確認を挟んでから作成する', () => {
+    renderDialog();
+
+    // 月曜 = 10:00 の固定訪問あり。
+    fireEvent.click(screen.getByTestId('svw-empty-0-0'));
+    fireEvent.click(screen.getByTestId('svw-menu-add-0-0'));
+
+    expect(mocks.createMark).not.toHaveBeenCalled();
+    const confirmEl = screen.getByTestId('svw-confirm');
+    expect(confirmEl).toHaveTextContent('同じ日に 2 回目を追加しますか？');
+    expect(confirmEl).toHaveTextContent('この日は 10:00 の予定があります');
+    expect(confirmEl).toHaveTextContent('保留プールにもう 1 回分を追加します');
+    expect(screen.getByTestId('svw-confirm-cancel')).toHaveTextContent('やめる');
+    expect(screen.getByTestId('svw-confirm-ok')).toHaveTextContent('追加する');
+
+    fireEvent.click(screen.getByTestId('svw-confirm-ok'));
+
+    expect(mocks.createMark).toHaveBeenCalledTimes(1);
+    expect(mocks.createMark.mock.calls[0]![0]).toEqual({
+      periodId: 'period-1',
+      payload: { iso_year: 2026, iso_week: 32, weekday: 0 },
+    });
+  });
+
+  it('2 回目の確認で「やめる」を押したら追加しない', () => {
+    renderDialog();
+
+    fireEvent.click(screen.getByTestId('svw-empty-0-0'));
+    fireEvent.click(screen.getByTestId('svw-menu-add-0-0'));
+    fireEvent.click(screen.getByTestId('svw-confirm-cancel'));
+
+    expect(mocks.createMark).not.toHaveBeenCalled();
   });
 
   it('○ のクリックはメニューを開くだけで、取消は走らない', () => {
@@ -383,16 +497,17 @@ describe('SpecialVisitWeekDialog — ③ セルメニュー (追加 / 取消 / �
     expect(mocks.deleteMark).not.toHaveBeenCalled();
   });
 
-  it('「追加枠を取り消す」は確認ダイアログを挟み、force なしで削除する', () => {
+  it('「プールから外す」は確認ダイアログを挟み、force なしで削除する', () => {
     renderDialog();
 
     fireEvent.click(screen.getByTestId('svw-mark-0-1'));
+    expect(screen.getByTestId('svw-menu-cancel-0-1')).toHaveTextContent('プールから外す');
     fireEvent.click(screen.getByTestId('svw-menu-cancel-0-1'));
 
     // 確認を出すまでは削除しない。
     expect(mocks.deleteMark).not.toHaveBeenCalled();
-    expect(screen.getByTestId('svw-confirm')).toHaveTextContent('追加枠を取り消しますか？');
-    expect(screen.getByTestId('svw-confirm')).toHaveTextContent('プールからも消えます');
+    expect(screen.getByTestId('svw-confirm')).toHaveTextContent('プールから外しますか？');
+    expect(screen.getByTestId('svw-confirm')).toHaveTextContent('保留プールから外します');
 
     fireEvent.click(screen.getByTestId('svw-confirm-ok'));
 
@@ -558,11 +673,15 @@ describe('SpecialVisitWeekDialog — ⑤ 凡例 / 期間の終了', () => {
   it('凡例と未配置の追加枠の件数を出す', () => {
     renderDialog();
 
-    expect(screen.getByTestId('svw-legend')).toHaveTextContent(
-      '○ 未配置（クリックで配置先を決める）',
-    );
+    const legend = screen.getByTestId('svw-legend');
+    expect(legend).toHaveTextContent('予定あり ＝ 既に盤面にある訪問');
+    expect(legend).toHaveTextContent('○ プール待ち（時間未定）');
+    expect(legend).toHaveTextContent('● 配置済み');
+    expect(legend).toHaveTextContent('空き ＝ 予定も追加枠もない日');
     // 週0 火の ○ 1 件のみ (● と退避チケットは数えない)。
-    expect(screen.getByTestId('svw-pool-count')).toHaveTextContent('未配置の追加枠 1 件');
+    expect(screen.getByTestId('svw-pool-count')).toHaveTextContent(
+      '保留プールに 1 件あります（時間未定）',
+    );
   });
 
   it('期間の終了は「…」メニューの中にあり、確認してから実行される', () => {
