@@ -726,6 +726,66 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
     expect(serialized).not.toContain(`${PATIENT_UUID_2}:1`);
   });
 
+  // ── 2026-09-07: 列の外で離したときの案内 (プール配置の行き止まり対策) ──────
+  // 黙って戻すと「壊れている」と読まれるので、どこで離せばよいかを伝える。
+
+  /** 案内テスト用の最小セットアップ (通常患者 1 名 + template 1 件)。 */
+  function setupPlainPatient() {
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      patients: [
+        {
+          id: PATIENT_UUID,
+          name: '鈴木 花子',
+          kana: null,
+          status: 'active',
+          weekly_pattern: { service_minutes: 60 },
+          requires_multiple_staff: false,
+        },
+      ],
+    });
+    renderPanel();
+  }
+
+  it('プールカードを over なし (列の外) で離したら案内トーストを出す', async () => {
+    setupPlainPatient();
+    await dndState.capturedHandlers.onDragEnd!({
+      active: { id: `pool-patient:${PATIENT_UUID}`, rect: { current: { translated: null } } },
+      over: null,
+    });
+    expect(mockToast.warning).toHaveBeenCalledWith(
+      '列の上で離してください（コースの列にカードを重ねると配置できます）',
+    );
+    expect(mockPlaceAndFix).not.toHaveBeenCalled();
+  });
+
+  it('プールカードを列以外の droppable で離しても案内トーストを出す', async () => {
+    setupPlainPatient();
+    await dndState.capturedHandlers.onDragEnd!({
+      active: {
+        id: `pool-patient:${PATIENT_UUID}`,
+        rect: { current: { translated: { top: 100 } } },
+      },
+      over: { id: 'not-a-timeline-column', rect: { top: 10 } },
+    });
+    expect(mockToast.warning).toHaveBeenCalledWith(
+      '列の上で離してください（コースの列にカードを重ねると配置できます）',
+    );
+    expect(mockPlaceAndFix).not.toHaveBeenCalled();
+  });
+
+  it('プールカードをプール自身へ戻したときは案内を出さない (正規の操作)', async () => {
+    setupPlainPatient();
+    await dndState.capturedHandlers.onDragEnd!({
+      active: {
+        id: `pool-patient:${PATIENT_UUID}`,
+        rect: { current: { translated: { top: 100 } } },
+      },
+      over: { id: 'pool', rect: { top: 10 } },
+    });
+    expect(mockToast.warning).not.toHaveBeenCalled();
+  });
+
   // Phase 2 (日テーブル撤去) で削除したテスト:
   //   P3C-8 / P3C-9 / M3 : `course-occupant-multi-*` セル DOM (①/② バッジ・
   //     「複数 ① のみ」警告色) の描画検証。テーブル固有の表示で、タイムライン /

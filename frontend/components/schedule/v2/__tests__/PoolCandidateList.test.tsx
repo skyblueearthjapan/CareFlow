@@ -31,6 +31,9 @@ const { mockToast, mocks } = vi.hoisted(() => ({
     unblockApplyPending: false,
     // 特別訪問週間 (⭐) モードの確定経路 (POST /special-visit-marks/{id}/place)。
     placeSpecialMutate: vi.fn(),
+    // F-1/F-2: 出口 (担当なし M) は mutateAsync 経路を使う。
+    placeAndFixMutateAsync: vi.fn(),
+    placeSpecialMutateAsync: vi.fn(),
   },
 }));
 
@@ -108,11 +111,19 @@ vi.mock('@/lib/queries/unblock', () => ({
 }));
 
 vi.mock('@/lib/queries/place_and_fix', () => ({
-  usePlaceAndFix: () => ({ mutate: mocks.placeAndFixMutate, isPending: false }),
+  usePlaceAndFix: () => ({
+    mutate: mocks.placeAndFixMutate,
+    mutateAsync: mocks.placeAndFixMutateAsync,
+    isPending: false,
+  }),
 }));
 
 vi.mock('@/lib/queries/specialVisitWeek', () => ({
-  usePlaceSpecialMark: () => ({ mutate: mocks.placeSpecialMutate, isPending: false }),
+  usePlaceSpecialMark: () => ({
+    mutate: mocks.placeSpecialMutate,
+    mutateAsync: mocks.placeSpecialMutateAsync,
+    isPending: false,
+  }),
 }));
 
 vi.mock('@/components/ui/alert', () => ({
@@ -1773,5 +1784,260 @@ describe('NG スタッフ / 性別制限の確認フロー (§7-2)', () => {
 
     await waitFor(() => expect(mockToast.error).toHaveBeenCalledWith('採用に失敗しました'));
     expect(screen.queryByTestId('constraint-override-confirm')).not.toBeInTheDocument();
+  });
+});
+
+// ── F-1 / F-2: 候補 0 件の出口「担当なし（M）へ入れる」 ───────────────────────
+// 正典: docs/plans/pool-placement-blockers-investigation-2026-08-31.md §4 F-1/F-2。
+// PO 決定: 受け皿は**患者の自拠点**の M コース (拠点跨ぎの M へは入れない)。
+
+describe('F-1/F-2: 候補 0 件の出口 (担当なし M)', () => {
+  const OFFICE_ID = '11111111-1111-4111-8111-111111111111';
+  const M_TEMPLATE_ID = '99999999-9999-4999-8999-999999999999';
+
+  /** 自拠点 (OFFICE_ID) の A / M テンプレ. resolver は office_id + label で引く. */
+  const TEMPLATES = [
+    {
+      data: [
+        { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', office_id: OFFICE_ID, label: 'A' },
+        { id: M_TEMPLATE_ID, office_id: OFFICE_ID, label: 'M' },
+      ],
+      isLoading: false,
+      status: 'success',
+      dataUpdatedAt: 1,
+    },
+  ] as unknown[];
+
+  const EXIT_PATIENT = {
+    ...(PATIENT as unknown as Record<string, unknown>),
+    primary_office_id: OFFICE_ID,
+  } as unknown as Parameters<typeof PoolCandidateList>[0]['patient'];
+
+  const SPECIAL = {
+    markId: '55555555-5555-4555-8555-555555555555',
+    weekday: 3,
+    isoYear: 2026,
+    isoWeek: 31,
+    serviceMinutes: 45,
+    lastPlacement: null,
+  };
+
+  function constraintError() {
+    return new ApiError('Unprocessable Entity', 422, {
+      detail: {
+        code: 'constraint_confirmation_required',
+        warnings: [
+          {
+            kind: 'ng_staff',
+            patient_id: PATIENT.id,
+            patient_name: '中尾 要太',
+            staff_id: '77777777-7777-4777-8777-777777777777',
+            staff_name: '山田',
+            note: null,
+          },
+        ],
+      },
+    });
+  }
+
+  beforeEach(() => {
+    mocks.proposeMutate.mockReset();
+    mocks.placeAndFixMutateAsync.mockReset();
+    mocks.placeAndFixMutateAsync.mockResolvedValue({});
+    mocks.placeSpecialMutateAsync.mockReset();
+    mocks.placeSpecialMutateAsync.mockResolvedValue({});
+    // 通常候補 0 件 (除外理由も無い = フォールバック文言のケース).
+    mocks.proposeData = { slots: [], message: null };
+    mocks.existingFixedVisits = [];
+    mocks.templatesQueries = TEMPLATES;
+    mockToast.success.mockReset();
+    mockToast.error.mockReset();
+    mockToast.warning.mockReset();
+  });
+
+  it('候補 0 件のとき出口が出る (空状態の文言の後ろ)', () => {
+    render(<PoolCandidateList {...COMMON} patient={EXIT_PATIENT} primary />);
+    expect(screen.getByTestId('pool-candidate-empty')).toBeInTheDocument();
+    expect(screen.getByTestId('pool-candidate-m-exit')).toBeInTheDocument();
+    expect(
+      screen.getByText('入れる枠が見つからないときは、担当なし（M）へ入れておけます'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('pool-candidate-m-exit-apply')).not.toBeDisabled();
+    // 希望曜日が 1 つ (Tue) なので曜日セレクトは出さない。
+    expect(screen.queryByTestId('pool-candidate-m-exit-weekday')).not.toBeInTheDocument();
+    // 開始時刻の既定は患者の希望開始 (16:00).
+    expect((screen.getByTestId('pool-candidate-m-exit-start') as HTMLSelectElement).value).toBe(
+      '16:00',
+    );
+  });
+
+  it('候補が 1 件でもあれば出口は出さない', () => {
+    mocks.proposeData = { slots: [makeSlot()], message: null };
+    render(<PoolCandidateList {...COMMON} patient={EXIT_PATIENT} primary />);
+    expect(screen.queryByTestId('pool-candidate-m-exit')).not.toBeInTheDocument();
+  });
+
+  it('押すと自拠点の M テンプレで place-and-fix (fix_pattern=false) を呼ぶ', async () => {
+    const onAdopted = vi.fn();
+    render(<PoolCandidateList {...COMMON} patient={EXIT_PATIENT} primary onAdopted={onAdopted} />);
+    fireEvent.click(screen.getByTestId('pool-candidate-m-exit-apply'));
+
+    await waitFor(() => expect(mocks.placeAndFixMutateAsync).toHaveBeenCalledTimes(1));
+    const req = mocks.placeAndFixMutateAsync.mock.calls[0][0];
+    expect(req.patient_id).toBe(PATIENT.id);
+    expect(req.course_template_id).toBe(M_TEMPLATE_ID);
+    expect(req.fix_pattern).toBe(false);
+    expect(req.staff_count).toBe(1);
+    expect(req.iso_year).toBe(2026);
+    expect(req.iso_week).toBe(24);
+    // 希望曜日 Tue = 1 / 希望開始 16:00 / service_minutes 35.
+    expect(req.weekday).toBe(1);
+    expect(req.start_time).toBe('16:00');
+    expect(req.duration_min).toBe(35);
+    expect(typeof req.op_group_id).toBe('string');
+    await waitFor(() =>
+      expect(mockToast.success).toHaveBeenCalledWith(
+        `${PATIENT.name} 様を M（担当なし）に入れました（今週のみ）。担当は盤面で付けてください`,
+      ),
+    );
+    expect(onAdopted).toHaveBeenCalled();
+  });
+
+  it('開始時刻セレクトの選択が place-and-fix に乗る', async () => {
+    render(<PoolCandidateList {...COMMON} patient={EXIT_PATIENT} primary />);
+    fireEvent.change(screen.getByTestId('pool-candidate-m-exit-start'), {
+      target: { value: '10:30' },
+    });
+    fireEvent.click(screen.getByTestId('pool-candidate-m-exit-apply'));
+    await waitFor(() => expect(mocks.placeAndFixMutateAsync).toHaveBeenCalledTimes(1));
+    expect(mocks.placeAndFixMutateAsync.mock.calls[0][0].start_time).toBe('10:30');
+  });
+
+  it('⭐ 特別モードでは place を course_template_id で呼ぶ (course_code は送らない)', async () => {
+    const onAdopted = vi.fn();
+    render(
+      <PoolCandidateList
+        {...COMMON}
+        patient={EXIT_PATIENT}
+        primary
+        specialTicket={SPECIAL}
+        onAdopted={onAdopted}
+      />,
+    );
+    expect(screen.getByTestId('pool-candidate-m-exit')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('pool-candidate-m-exit-apply'));
+
+    await waitFor(() => expect(mocks.placeSpecialMutateAsync).toHaveBeenCalledTimes(1));
+    const arg = mocks.placeSpecialMutateAsync.mock.calls[0][0];
+    expect(arg.markId).toBe(SPECIAL.markId);
+    expect(arg.payload.course_template_id).toBe(M_TEMPLATE_ID);
+    expect(arg.payload.start_time).toBe('16:00');
+    expect(arg.payload.course_code).toBeUndefined();
+    expect(arg.payload.office_id).toBeUndefined();
+    await waitFor(() =>
+      expect(mockToast.success).toHaveBeenCalledWith(
+        `${PATIENT.name} 様の追加枠を M（担当なし）に配置しました（この週のみ）`,
+      ),
+    );
+    expect(onAdopted).toHaveBeenCalled();
+  });
+
+  it('2名体制の患者は出口を出さず理由を出す', () => {
+    const multi = {
+      ...(EXIT_PATIENT as unknown as Record<string, unknown>),
+      requires_multiple_staff: true,
+    } as unknown as Parameters<typeof PoolCandidateList>[0]['patient'];
+    render(<PoolCandidateList {...COMMON} patient={multi} primary />);
+    expect(screen.queryByTestId('pool-candidate-m-exit-apply')).not.toBeInTheDocument();
+    expect(
+      screen.getByText('2名体制の患者は担当なしへ入れられません（相方コースの選択が必要です）'),
+    ).toBeInTheDocument();
+  });
+
+  it('自拠点に M コースが無ければボタンを無効化して作成依頼を案内する', () => {
+    mocks.templatesQueries = [
+      {
+        data: [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', office_id: OFFICE_ID, label: 'A' }],
+        isLoading: false,
+        isError: false,
+        status: 'success',
+        dataUpdatedAt: 2,
+      },
+    ] as unknown[];
+    render(<PoolCandidateList {...COMMON} patient={EXIT_PATIENT} primary />);
+    expect(screen.getByTestId('pool-candidate-m-exit-apply')).toBeDisabled();
+    expect(screen.getByTestId('pool-candidate-m-exit-no-template')).toHaveTextContent(
+      'この拠点には担当なし（M）コースがありません。盤面の列へ直接ドラッグするか、管理者に M 枠の作成を依頼してください',
+    );
+    // 読み込み中 / 取得失敗とは混同しない。
+    expect(screen.queryByTestId('pool-candidate-m-exit-templates-loading')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pool-candidate-m-exit-templates-error')).not.toBeInTheDocument();
+  });
+
+  it('course-templates 取得中は「M コースを確認中…」でボタンを無効化する', () => {
+    mocks.templatesQueries = [
+      { data: undefined, isLoading: true, isError: false, status: 'pending', dataUpdatedAt: 0 },
+    ] as unknown[];
+    render(<PoolCandidateList {...COMMON} patient={EXIT_PATIENT} primary />);
+    expect(screen.getByTestId('pool-candidate-m-exit-apply')).toBeDisabled();
+    expect(screen.getByTestId('pool-candidate-m-exit-templates-loading')).toHaveTextContent(
+      'M コースを確認中…',
+    );
+    expect(screen.queryByTestId('pool-candidate-m-exit-no-template')).not.toBeInTheDocument();
+  });
+
+  it('course-templates 取得に失敗したら「コース情報を取得できませんでした」を出す', () => {
+    mocks.templatesQueries = [
+      { data: undefined, isLoading: false, isError: true, status: 'error', dataUpdatedAt: 0 },
+    ] as unknown[];
+    render(<PoolCandidateList {...COMMON} patient={EXIT_PATIENT} primary />);
+    expect(screen.getByTestId('pool-candidate-m-exit-apply')).toBeDisabled();
+    expect(screen.getByTestId('pool-candidate-m-exit-templates-error')).toHaveTextContent(
+      'コース情報を取得できませんでした',
+    );
+    expect(screen.queryByTestId('pool-candidate-m-exit-no-template')).not.toBeInTheDocument();
+  });
+
+  it('開始時刻の選択肢は 9:00〜18:00 に収まる (盤面の配置可能レンジと一致)', () => {
+    render(<PoolCandidateList {...COMMON} patient={EXIT_PATIENT} primary />);
+    const sel = screen.getByTestId('pool-candidate-m-exit-start') as HTMLSelectElement;
+    const values = Array.from(sel.options).map((o) => o.value);
+    expect(values[0]).toBe('09:00');
+    expect(values[values.length - 1]).toBe('18:00');
+    expect(values).not.toContain('08:00');
+    expect(values).not.toContain('18:15');
+  });
+
+  it('18:00 を過ぎて終わる開始時刻はヒントを出すが配置は止めない', async () => {
+    render(<PoolCandidateList {...COMMON} patient={EXIT_PATIENT} primary />);
+    // service_minutes=35 なので 17:45 開始 → 18:20 終了 (レンジ超過)。
+    fireEvent.change(screen.getByTestId('pool-candidate-m-exit-start'), {
+      target: { value: '17:45' },
+    });
+    expect(screen.getByTestId('pool-candidate-m-exit-overflow')).toHaveTextContent(
+      '9:00〜18:00 の範囲に収まるように',
+    );
+    // ヒントであってブロックではない (ボタンは押せて place-and-fix が走る)。
+    expect(screen.getByTestId('pool-candidate-m-exit-apply')).not.toBeDisabled();
+    fireEvent.click(screen.getByTestId('pool-candidate-m-exit-apply'));
+    await waitFor(() => expect(mocks.placeAndFixMutateAsync).toHaveBeenCalledTimes(1));
+    expect(mocks.placeAndFixMutateAsync.mock.calls[0][0].start_time).toBe('17:45');
+  });
+
+  it('NG スタッフ / 性別制限の 422 は確認 → acknowledge 再送で通す (§7-2)', async () => {
+    mocks.placeAndFixMutateAsync.mockRejectedValueOnce(constraintError()).mockResolvedValueOnce({});
+    render(<PoolCandidateList {...COMMON} patient={EXIT_PATIENT} primary />);
+    fireEvent.click(screen.getByTestId('pool-candidate-m-exit-apply'));
+
+    await screen.findByTestId('constraint-override-confirm');
+    fireEvent.click(screen.getByTestId('constraint-override-ok'));
+
+    await waitFor(() => expect(mocks.placeAndFixMutateAsync).toHaveBeenCalledTimes(2));
+    expect(
+      mocks.placeAndFixMutateAsync.mock.calls[0][0].acknowledge_constraint_warnings,
+    ).toBeUndefined();
+    expect(mocks.placeAndFixMutateAsync.mock.calls[1][0].acknowledge_constraint_warnings).toBe(
+      true,
+    );
   });
 });

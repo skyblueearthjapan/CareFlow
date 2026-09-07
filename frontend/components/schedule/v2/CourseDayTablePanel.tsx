@@ -2077,8 +2077,15 @@ export function CourseDayTablePanel({
     setActiveTlPairVisits(null);
     setActivePoolCard(null);
     const { active, over } = e;
-    if (!over) return;
     const activeId = String(active.id);
+    if (!over) {
+      // 列の外で離した: プールカードだけは黙って戻さず「どこで離すか」を案内する
+      // (何も起きないと「壊れている」と読まれるため)。
+      if (canEdit && parsePatientDraggableId(activeId)) {
+        toast.warning('列の上で離してください（コースの列にカードを重ねると配置できます）');
+      }
+      return;
+    }
     const overId = String(over.id);
 
     if (!canEdit) {
@@ -2414,6 +2421,13 @@ export function CourseDayTablePanel({
       // 型は変えず source=manual_week で今週のみ置く。トーストで昇格導線を出す。
       await applyPoolDrop(patientId, cell, durationMin);
       return;
+    }
+
+    // プールカードだがタイムライン列を特定できなかった (列の外で離した)。
+    // 黙って戻すと「壊れている」と読まれるので、離す場所を案内する
+    // (プールへ戻すドロップは正規の操作なので除外)。
+    if (patientId && !poolCell && !isPoolDrop) {
+      toast.warning('列の上で離してください（コースの列にカードを重ねると配置できます）');
     }
   };
 

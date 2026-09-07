@@ -79,6 +79,7 @@ import {
   type TimelineRow,
   type TimelineRowMeta,
 } from './CourseMoveTimeline';
+import { TIME_OPTIONS } from './cockpit/VisitActionMenu';
 import { ackFlag, useConstraintConfirmRetry } from './useConstraintConfirmRetry';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
@@ -331,6 +332,20 @@ function isTwoStaffPairSlot(s: ProposeSlotItem): boolean {
 function trimSeconds(t: string | null | undefined): string {
   if (!t) return '';
   return t.length >= 5 ? t.slice(0, 5) : t;
+}
+
+/**
+ * F-1/F-2 の出口が使う配置可能レンジ (盤面タイムラインの 9:00〜18:00 と同一)。
+ * `CourseDayTablePanel` の TL_DAY_START_MIN / TL_DAY_END_MIN に合わせる。
+ */
+const EXIT_DAY_START_MIN = 9 * 60;
+const EXIT_DAY_END_MIN = 18 * 60;
+
+/** "HH:MM" → 分。パース不能は null。 */
+function hhmmToMinutes(t: string | null | undefined): number | null {
+  const m = /^(\d{1,2}):(\d{2})/.exec(t ?? '');
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
 }
 
 /** 性別制限の名前色 (通常リスト WeekdayScheduleCard と同じ #dc2626 / #2563eb). */
@@ -1159,12 +1174,18 @@ export function PoolCandidateList({
   const showOvercapacityCallout =
     !specialTicket && !overcapacityRequested && (result?.overcapacity_available_count ?? 0) >= 1;
 
+  // F-1/F-2: 「担当なし（M）へ入れる」出口は患者の主担当拠点の M コースが受け皿
+  // (PO 決定 2026-08-31: 拠点跨ぎの M へは入れない)。
+  const patientOfficeId = patient.primary_office_id ?? null;
+
   // 採用枠 → course_template_id 解決のため、 候補に出現する拠点の course-templates を取得.
+  // 候補 0 件でも出口 (M) を出せるよう、患者の主担当拠点は常に含める。
   const slotOfficeIds = React.useMemo(() => {
     const s = new Set<string>();
     for (const sl of slots) s.add(sl.office_id);
+    if (patientOfficeId) s.add(patientOfficeId);
     return Array.from(s).sort();
-  }, [slots]);
+  }, [slots, patientOfficeId]);
   const templatesQueries = useQueries({
     queries: slotOfficeIds.map((oid) => ({
       queryKey: ['course-templates', 'list', oid] as const,
@@ -1183,6 +1204,149 @@ export function PoolCandidateList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [templatesDepKey],
   );
+
+  // ───────────────────────────────────────────────────────────────────
+  // F-1 / F-2: 候補 0 件の「出口」— 担当なし（M）へ入れる
+  //
+  // 正典: docs/plans/pool-placement-blockers-investigation-2026-08-31.md §4 F-1/F-2。
+  // 「実現可能な空き枠が見つかりませんでした」で行き止まりにせず、患者の**自拠点**の
+  // M コース（担当なし）へ今週だけ置ける出口を出す。担当は盤面 (assign-candidates) で
+  // 後から付ける前提なので、ここでは固定化しない (fix_pattern=false)。
+  // ───────────────────────────────────────────────────────────────────
+  /** 出口の開始時刻。null = 既定値 (患者の希望開始 or 09:00) を使う。 */
+  const [exitStartChoice, setExitStartChoice] = React.useState<string | null>(null);
+  /** 出口の曜日。null = 既定値 (希望曜日の先頭) を使う。 */
+  const [exitWeekdayChoice, setExitWeekdayChoice] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    setExitStartChoice(null);
+    setExitWeekdayChoice(null);
+  }, [patient.id, specialTicket?.markId]);
+
+  const exitPattern = React.useMemo(
+    () => coerceWeeklyPattern(patient.weekly_pattern),
+    [patient.weekly_pattern],
+  );
+  /**
+   * 盤面 (タイムライン) と同じ配置可能レンジ 9:00〜18:00 に揃える。
+   * TIME_OPTIONS は 8:00〜18:45 なので、ここで clamp してから選択肢にする。
+   */
+  const exitStartRaw = trimSeconds(exitPattern.preferred_start);
+  const exitDefaultStart =
+    exitStartRaw &&
+    hhmmToMinutes(exitStartRaw) !== null &&
+    hhmmToMinutes(exitStartRaw)! >= EXIT_DAY_START_MIN &&
+    hhmmToMinutes(exitStartRaw)! <= EXIT_DAY_END_MIN
+      ? exitStartRaw
+      : '09:00';
+  const exitStart = exitStartChoice ?? exitDefaultStart;
+  /**
+   * 9:00〜18:00 の 15 分刻み。既定値が刻みから外れていてもレンジ内なら選べるようにする
+   * (VisitActionMenu と同じ作法。レンジ外の希望開始は上で 09:00 に落としている)。
+   */
+  const exitTimeOptions = React.useMemo(() => {
+    const inRange = TIME_OPTIONS.filter((t) => {
+      const m = hhmmToMinutes(t);
+      return m !== null && m >= EXIT_DAY_START_MIN && m <= EXIT_DAY_END_MIN;
+    });
+    return inRange.includes(exitDefaultStart) ? inRange : [...inRange, exitDefaultStart].sort();
+  }, [exitDefaultStart]);
+  /**
+   * 18:00 を過ぎて終わる開始時刻か (BE にガードが無いので**止めはしない**が、盤面の
+   * ドロップ警告と同じ言い回しで注意だけ出す)。
+   */
+  const exitEndsAfterDay = (() => {
+    const startMin = hhmmToMinutes(exitStart);
+    if (startMin === null) return false;
+    return startMin + (exitPattern.service_minutes ?? 60) > EXIT_DAY_END_MIN;
+  })();
+  /** 選べる曜日。特別モードはチケットの曜日 1 つ・通常は希望曜日 (無ければ全曜日)。 */
+  const exitWeekdayOptions = React.useMemo<number[]>(() => {
+    if (specialTicket) return [specialTicket.weekday];
+    const idx = (exitPattern.preferred_weekdays ?? [])
+      .map((w) => (WEEKDAY_CODES as readonly string[]).indexOf(w))
+      .filter((i) => i >= 0);
+    return idx.length > 0 ? idx : [0, 1, 2, 3, 4, 5, 6];
+  }, [specialTicket, exitPattern.preferred_weekdays]);
+  const exitWeekday = exitWeekdayChoice ?? exitWeekdayOptions[0] ?? 0;
+  /** 自拠点の M コーステンプレート (無ければ出口を無効化して理由を出す)。 */
+  const exitMTemplateId = patientOfficeId ? resolveCourseTemplateId(patientOfficeId, 'M') : null;
+  /**
+   * M テンプレが引けない理由を切り分ける (「読み込み中」と「本当に無い」を混同しない)。
+   *   'loading' — course-templates 取得中
+   *   'error'   — 取得に失敗 (M の有無が判定できない)
+   *   'missing' — 取得済みだが自拠点に有効な label='M' が無い
+   */
+  const exitMTemplateState: 'ready' | 'loading' | 'error' | 'missing' = exitMTemplateId
+    ? 'ready'
+    : templatesQueries.some((q) => q.isLoading)
+      ? 'loading'
+      : templatesQueries.some((q) => q.isError)
+        ? 'error'
+        : 'missing';
+  const exitRequiresMultiStaff =
+    (patient as { requires_multiple_staff?: boolean | null }).requires_multiple_staff === true;
+
+  /**
+   * 出口の実処理。acknowledge=true は NG スタッフ / 性別制限の確認ダイアログ経由の再送 (§7-2)。
+   * 特別モード = POST /special-visit-marks/{id}/place (course_template_id で BE が週コースを解決)。
+   * 通常モード = POST /schedule/place-and-fix (fix_pattern=false = 今週のみ)。
+   */
+  async function applyMExit(acknowledge = false) {
+    if (!exitMTemplateId) return;
+    if (specialTicket) {
+      try {
+        await placeSpecialMut.mutateAsync({
+          markId: specialTicket.markId,
+          payload: {
+            course_template_id: exitMTemplateId,
+            start_time: exitStart,
+            ...ackFlag(acknowledge),
+          },
+        });
+        toast.success(`${patient.name} 様の追加枠を M（担当なし）に配置しました（この週のみ）`);
+        setPending(null);
+        onAdopted?.();
+      } catch (err) {
+        if (
+          !acknowledge &&
+          constraintConfirm.capture(err, () => applyMExit(true), ADOPT_CONSTRAINT_TEXT)
+        ) {
+          return;
+        }
+        toast.error(apiErrorDetail(err) ?? '配置に失敗しました');
+      }
+      return;
+    }
+    try {
+      await placeAndFixMut.mutateAsync({
+        patient_id: patient.id,
+        course_template_id: exitMTemplateId,
+        iso_year: isoYear,
+        iso_week: isoWeek,
+        weekday: exitWeekday,
+        start_time: exitStart,
+        duration_min: exitPattern.service_minutes ?? 60,
+        staff_count: 1,
+        // 担当なしへの「置き場」なので毎週の型は変えない (F-1)。
+        fix_pattern: false,
+        op_group_id: crypto.randomUUID(),
+        ...ackFlag(acknowledge),
+      });
+      toast.success(
+        `${patient.name} 様を M（担当なし）に入れました（今週のみ）。担当は盤面で付けてください`,
+      );
+      setPending(null);
+      onAdopted?.();
+    } catch (err) {
+      if (
+        !acknowledge &&
+        constraintConfirm.capture(err, () => applyMExit(true), ADOPT_CONSTRAINT_TEXT)
+      ) {
+        return;
+      }
+      toast.error(apiErrorDetail(err) ?? '配置に失敗しました');
+    }
+  }
 
   const handleRun = React.useCallback(
     (includeOvercapacity = false) => {
@@ -1454,6 +1618,11 @@ export function PoolCandidateList({
   /** 採用確認パネルの確定処理中か (特別モードは place ミューテーション)。 */
   const adoptPending =
     confirmMut.isPending || placeAndFixMut.isPending || placeSpecialMut.isPending;
+  /**
+   * F-1/F-2: 出口 (担当なし M) を出すか。通常候補 0 件で propose が返っているときだけ。
+   * 効率代替 / 定員超過セクションの**後ろ**に置き、最後の逃げ道として見せる。
+   */
+  const showMExit = canEdit && !proposeMut.isPending && result != null && normalSlots.length === 0;
 
   // ─── Render ───────────────────────────────────────────────────────
   // primary (主提案) は自動実行のためボタン待ち state を出さない. 併設 (on-demand) は
@@ -2007,6 +2176,113 @@ export function PoolCandidateList({
               </li>
             ))}
           </ul>
+        </div>
+      ) : null}
+
+      {/* F-1/F-2: 候補 0 件の出口 — 担当なし（M）へ入れる (自拠点の M コースが受け皿)。 */}
+      {showMExit ? (
+        <div
+          className="mt-2 rounded border border-border-default bg-bg-muted/30 p-2.5"
+          data-testid="pool-candidate-m-exit"
+        >
+          {exitRequiresMultiStaff ? (
+            /* 2名体制は相方コースの選択が要るのでこの出口は使えない (盤面の DnD へ誘導)。 */
+            <p
+              className="text-sm text-text-secondary"
+              data-testid="pool-candidate-m-exit-multi-staff"
+            >
+              2名体制の患者は担当なしへ入れられません（相方コースの選択が必要です）
+            </p>
+          ) : (
+            <>
+              <p className="text-sm text-text-primary">
+                入れる枠が見つからないときは、担当なし（M）へ入れておけます
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                {exitWeekdayOptions.length > 1 ? (
+                  <label className="flex items-center gap-1 text-sm text-text-secondary">
+                    曜日
+                    <select
+                      className="h-9 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary"
+                      value={String(exitWeekday)}
+                      onChange={(e) => setExitWeekdayChoice(Number(e.target.value))}
+                      disabled={adoptPending}
+                      data-testid="pool-candidate-m-exit-weekday"
+                      aria-label="担当なし（M）へ入れる曜日"
+                    >
+                      {exitWeekdayOptions.map((w) => (
+                        <option key={w} value={w}>
+                          {WEEKDAY_LABELS[w] ?? '?'}曜
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+                <label className="flex items-center gap-1 text-sm text-text-secondary">
+                  開始
+                  <select
+                    className="h-9 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary"
+                    value={exitStart}
+                    onChange={(e) => setExitStartChoice(e.target.value)}
+                    disabled={adoptPending}
+                    data-testid="pool-candidate-m-exit-start"
+                    aria-label="担当なし（M）へ入れる開始時刻"
+                  >
+                    {exitTimeOptions.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <Button
+                  type="button"
+                  onClick={() => void applyMExit(false)}
+                  disabled={adoptPending || !exitMTemplateId}
+                  data-testid="pool-candidate-m-exit-apply"
+                >
+                  {adoptPending ? (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                  ) : null}
+                  担当なし（M）へ入れる
+                </Button>
+              </div>
+              {/* 18:00 を過ぎて終わる開始時刻のヒント (盤面のドロップ警告と同じ言い回し)。
+                  BE にガードが無いので**止めない** — 気づけるようにするだけ。 */}
+              {exitMTemplateState === 'ready' && exitEndsAfterDay ? (
+                <p
+                  className="mt-1.5 text-xs text-warning-strong"
+                  data-testid="pool-candidate-m-exit-overflow"
+                >
+                  この開始時刻だと 18:00 を過ぎて終わります（9:00〜18:00
+                  の範囲に収まるようにご確認ください）。このまま入れることもできます。
+                </p>
+              ) : null}
+              {exitMTemplateState === 'loading' ? (
+                <p
+                  className="mt-1.5 text-xs text-text-muted"
+                  data-testid="pool-candidate-m-exit-templates-loading"
+                >
+                  M コースを確認中…
+                </p>
+              ) : exitMTemplateState === 'error' ? (
+                <p
+                  className="mt-1.5 text-xs text-warning-strong"
+                  data-testid="pool-candidate-m-exit-templates-error"
+                >
+                  コース情報を取得できませんでした
+                </p>
+              ) : exitMTemplateState === 'missing' ? (
+                <p
+                  className="mt-1.5 text-xs text-warning-strong"
+                  data-testid="pool-candidate-m-exit-no-template"
+                >
+                  この拠点には担当なし（M）コースがありません。盤面の列へ直接ドラッグするか、管理者に
+                  M 枠の作成を依頼してください
+                </p>
+              ) : null}
+            </>
+          )}
         </div>
       ) : null}
 

@@ -282,8 +282,19 @@ export const specialVisitPlaceSchema = z
     course_id: z.string().min(1).optional(),
     office_id: z.string().min(1).optional(),
     course_code: z.string().min(1).optional(),
-    /** "HH:MM". */
-    start_time: z.string().regex(/^\d{2}:\d{2}$/, '時刻は HH:MM 形式で入力してください'),
+    /**
+     * 2026-09-07 追加 (F-2 / 特別枠のダイアログ内配置):
+     *   - `course_template_id` — BE がその週・曜日の Course を解決/生成する (M 受け皿を含む)。
+     *   - `visit_id` — place-and-fix 等で作った既存訪問をマークに紐付けるだけ (訪問は作らない)。
+     * 指定は course_id / (office_id+course_code) / course_template_id / visit_id のいずれか 1 つ。
+     */
+    course_template_id: z.string().min(1).optional(),
+    visit_id: z.string().min(1).optional(),
+    /** "HH:MM". visit_id モードでは不要。 */
+    start_time: z
+      .string()
+      .regex(/^\d{2}:\d{2}$/, '時刻は HH:MM 形式で入力してください')
+      .optional(),
     /**
      * NG スタッフ / 性別制限 (patient-ng-staff-design.md §7-2): 422
      * `constraint_confirmation_required` を確認ダイアログで通したときだけ true で
@@ -291,9 +302,23 @@ export const specialVisitPlaceSchema = z
      */
     acknowledge_constraint_warnings: z.boolean().optional(),
   })
-  .refine((v) => v.course_id != null || (v.office_id != null && v.course_code != null), {
-    message: 'コースは course_id か (office_id + course_code) で指定してください',
-    path: ['course_id'],
+  .refine(
+    (v) =>
+      [
+        v.course_id != null,
+        v.office_id != null && v.course_code != null,
+        v.course_template_id != null,
+        v.visit_id != null,
+      ].filter(Boolean).length === 1,
+    {
+      message:
+        'コースは course_id / (office_id + course_code) / course_template_id / visit_id のいずれか 1 つで指定してください',
+      path: ['course_id'],
+    },
+  )
+  .refine((v) => v.visit_id != null || v.start_time != null, {
+    message: '開始時刻を指定してください',
+    path: ['start_time'],
   });
 export type SpecialVisitPlace = z.input<typeof specialVisitPlaceSchema>;
 
