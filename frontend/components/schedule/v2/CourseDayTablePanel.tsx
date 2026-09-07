@@ -259,6 +259,14 @@ import { PatientCard, type PatientCardData } from './PatientCard';
 import { PatientScheduleDetailDialog } from './PatientScheduleDetailDialog';
 import { POOL_DROPPABLE_ID, buildPoolDraggableId, parsePoolDraggableId } from './PoolPanel';
 import { PoolOverviewPane } from './PoolOverviewPane';
+// ⭐特別訪問週間チケットの DnD (`special-ticket-dnd-design-2026-09-08.md`)。
+import {
+  SpecialTicketCard,
+  parseSpecialTicketDraggableId,
+  specialTicketWeekdayLabel,
+} from './SpecialTicketPlacePanel';
+import { useSpecialVisitPool, usePlaceSpecialMark } from '@/lib/queries/specialVisitWeek';
+import type { SpecialPoolTicket } from '@/lib/schemas/specialVisitWeek';
 import type { Movability, SlotIndex } from '@/lib/schemas/v2/patient_fixed_visit';
 // Phase G-44: 「希望訪問パターン」 vs 「実 visit 数」 の共通 utility.
 import { countWeekVisits, getDesiredWeeklyVisitCount } from '@/lib/scheduling/preferred-visits';
@@ -1602,6 +1610,17 @@ export function CourseDayTablePanel({
   // 完全に同じ情報でゴーストを出す。ref への書込は冪等でレンダーに影響しない)。
   const poolCardDataRef = useRef(new Map<string, PatientCardData>());
   const [activePoolCard, setActivePoolCard] = useState<PatientCardData | null>(null);
+  // ⭐特別訪問週間チケットの DnD (設計 §2)。プール側セクション (SpecialVisitPoolSection)
+  // と同じ引数で呼ぶことで React Query のキャッシュを共有する (追加リクエストにならない)。
+  const specialPoolQuery = useSpecialVisitPool(isoYear, isoWeek, officeId);
+  const specialTicketByMarkId = useMemo(() => {
+    const m = new Map<string, SpecialPoolTicket>();
+    for (const t of specialPoolQuery.data ?? []) m.set(t.mark.id, t);
+    return m;
+  }, [specialPoolQuery.data]);
+  /** ドラッグ中の⭐チケット (DragOverlay のゴースト用)。 */
+  const [activeSpecialTicket, setActiveSpecialTicket] = useState<SpecialPoolTicket | null>(null);
+  const placeSpecialMut = usePlaceSpecialMark();
   const placeAndFixMut = usePlaceAndFix();
   const deleteVisitMut = useDeleteVisit();
   // ─── Wave U-3: 戻る/進む (undo/redo) ────────────────────────────────────
@@ -2030,6 +2049,11 @@ export function CourseDayTablePanel({
     setActivePatientId(parsePatientDraggableId(id));
     // プールカード: 表示中と同一のデータでカード実寸ゴーストを出す (情報を落とさない)。
     setActivePoolCard(poolCardDataRef.current.get(id) ?? null);
+    // ⭐チケット: プールのキャッシュから引いてカード実寸ゴーストを出す。
+    const specialMarkId = parseSpecialTicketDraggableId(id);
+    setActiveSpecialTicket(
+      specialMarkId ? (specialTicketByMarkId.get(specialMarkId) ?? null) : null,
+    );
     // T-2 ②-b改: タイムラインカードはカード実寸ゴースト (TlVisitDragGhost) を出すため
     // visit オブジェクトごと保持する (時間=面積のままドラッグ・A-1 PO要望)。
     const tlId = parseTlVisitDraggableId(id);
@@ -2076,12 +2100,16 @@ export function CourseDayTablePanel({
     setActiveTlVisit(null);
     setActiveTlPairVisits(null);
     setActivePoolCard(null);
+    setActiveSpecialTicket(null);
     const { active, over } = e;
     const activeId = String(active.id);
     if (!over) {
-      // 列の外で離した: プールカードだけは黙って戻さず「どこで離すか」を案内する
+      // 列の外で離した: プール / ⭐ カードだけは黙って戻さず「どこで離すか」を案内する
       // (何も起きないと「壊れている」と読まれるため)。
-      if (canEdit && parsePatientDraggableId(activeId)) {
+      if (
+        canEdit &&
+        (parsePatientDraggableId(activeId) || parseSpecialTicketDraggableId(activeId))
+      ) {
         toast.warning('列の上で離してください（コースの列にカードを重ねると配置できます）');
       }
       return;
@@ -2338,6 +2366,53 @@ export function CourseDayTablePanel({
       return;
     }
 
+    // ─── ⭐特別訪問週間チケット → タイムライン列 ─────────────────────────
+    // `docs/plans/special-ticket-dnd-design-2026-09-08.md` §2。
+    // プール患者と違い place は PFV を作らない (この週のみ) ため、成功トーストに
+    // 昇格導線も undo も出さない (place は op-log を書かない = 取消はカレンダーの●)。
+    const specialMarkId = parseSpecialTicketDraggableId(activeId);
+    if (specialMarkId) {
+      const ticket = specialTicketByMarkId.get(specialMarkId);
+      if (!ticket) {
+        toast.error('チケットが見つかりません。画面を更新してからやり直してください');
+        return;
+      }
+      // プール本体へ戻すのは noop (掴んだ場所に戻しただけ)。
+      if (isPoolDrop) return;
+      // 盤面の WEEKDAY_LABELS は月〜土の 6 要素なので、日曜/範囲外で文言から曜日が
+      // 消えないようチケット用の 7 要素ヘルパーを使う。
+      const wdLabel = specialTicketWeekdayLabel(ticket.mark.weekday);
+      // 曜日の罠 (設計 §1): BE の place は mark.weekday でコースを解決するため、
+      // 表示中の曜日タブと違うチケットは画面と違う日に入ってしまう。
+      if (ticket.mark.weekday !== activeWeekday) {
+        toast.warning(`${wdLabel}曜のカードは ${wdLabel}曜タブでのみ配置できます`);
+        return;
+      }
+      const colKey = parseTlColDroppableId(overId);
+      const toCol = colKey ? timelineColumns.find((c) => c.key === colKey) : undefined;
+      const translatedTop = active.rect.current.translated?.top ?? null;
+      const overTop = over.rect?.top ?? null;
+      if (!toCol || translatedTop === null || overTop === null) {
+        toast.warning('列の上で離してください（コースの列にカードを重ねると配置できます）');
+        return;
+      }
+      const startMin = snapYOffsetToMinutes(translatedTop - overTop);
+      const durationMin = Math.max(1, Number(ticket.service_minutes ?? 60));
+      if (startMin < TL_DAY_START_MIN || startMin + durationMin > TL_DAY_END_MIN) {
+        toast.warning('この位置には置けません（9:00〜18:00 の範囲に収まるように配置してください）');
+        return;
+      }
+      // 2 名体制: place は 1 名分しか作らないため DnD を塞ぎ、従来の導線へ誘導する。
+      if (ticket.patient.requires_multiple_staff) {
+        toast.warning(
+          '2名体制の患者はドラッグでは配置できません。カードをクリックして「配置先を決める」から入れてください',
+        );
+        return;
+      }
+      await applySpecialTicketDrop(ticket, toCol.template.id, formatHHMM(startMin));
+      return;
+    }
+
     // ─── プール患者 → タイムライン列 ───────────────────────────────
     // Wave 37 Phase 3-C: patient.requires_multiple_staff=true なら相方コース
     //   選択ダイアログを開き、確定後に staff_count=2 で place-and-fix を呼ぶ。
@@ -2471,6 +2546,48 @@ export function CourseDayTablePanel({
         placementConstraintConfirm.capture(
           err,
           () => applyPoolDrop(patientId, cell, durationMin, true),
+          PLACE_CONSTRAINT_TEXT,
+        )
+      ) {
+        return;
+      }
+      toast.error(`配置に失敗しました: ${formatErr(err)}`);
+    }
+  }
+
+  /**
+   * ⭐チケット → 列 の配置 (`POST /special-visit-marks/{id}/place`)。
+   * `applyPoolDrop` と同じ作法だが:
+   *   - PFV は作らない (この週のみ) ので昇格アクションを出さない。
+   *   - place は op-log を書かないので undo も約束しない (取消はカレンダーの●メニュー)。
+   *   - invalidate は mutation フック側 (special-visit / visits / courses / field-board)。
+   * acknowledge=true は NG スタッフ / 性別制限の確認ダイアログで OK した再送 (§7-2)。
+   */
+  async function applySpecialTicketDrop(
+    ticket: SpecialPoolTicket,
+    courseTemplateId: string,
+    startTime: string,
+    acknowledge = false,
+  ) {
+    try {
+      await placeSpecialMut.mutateAsync({
+        markId: ticket.mark.id,
+        payload: {
+          course_template_id: courseTemplateId,
+          start_time: startTime,
+          ...ackFlag(acknowledge),
+        },
+      });
+      const wdLabel = specialTicketWeekdayLabel(ticket.mark.weekday);
+      toast.success(
+        `${ticket.patient.name} 様を ${wdLabel}曜 ${startTime} に配置しました（この週のみ・固定化しません）`,
+      );
+    } catch (err) {
+      if (
+        !acknowledge &&
+        placementConstraintConfirm.capture(
+          err,
+          () => applySpecialTicketDrop(ticket, courseTemplateId, startTime, true),
           PLACE_CONSTRAINT_TEXT,
         )
       ) {
@@ -6536,6 +6653,19 @@ export function CourseDayTablePanel({
               isoWeek={isoWeek}
               officeId={officeId}
               onBulkInsert={canEdit ? () => setBulkPoolInsertOpen(true) : undefined}
+              /*
+               * ⭐ セクションの DnD 可否判定。落とせる先 (日タイムラインの列) が
+               * 実際に画面にあるときだけ曜日を渡す = 週/職員タブ・日リスト表示・
+               * 閲覧専用・同行モード中は null (掴めない) にする。
+               */
+              activeWeekday={
+                typeof activeTab === 'number' &&
+                weekdayViewMode === 'timeline' &&
+                canEdit &&
+                !accompaniment.active
+                  ? activeWeekday
+                  : null
+              }
               unregisteredPatients={unregisteredActivePatients}
               onClickUnregisteredPatient={handleOpenPoolPatientDetail}
               renderCard={(p, slotInfo) => {
@@ -6632,6 +6762,8 @@ export function CourseDayTablePanel({
           {activeTlVisit ? <TlVisitDragGhost visit={activeTlVisit} /> : null}
           {/* 同住所ペア: 2名セットのままペアボックス実寸ゴースト。 */}
           {activeTlPairVisits ? <TlPairDragGhost visits={activeTlPairVisits} /> : null}
+          {/* ⭐チケット: プールで見えているカードと同じ内容のゴースト。 */}
+          {activeSpecialTicket ? <SpecialTicketCard ghost ticket={activeSpecialTicket} /> : null}
           {activePoolCard ? (
             // プールカード: 表示中と同一情報のカード実寸ゴースト (PatientCard 流用)。
             <PatientCard

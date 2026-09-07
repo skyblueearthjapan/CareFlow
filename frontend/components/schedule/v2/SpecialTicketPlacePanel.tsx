@@ -22,10 +22,19 @@
  *   - チケット 0 件のときはセクション自体を描画しない (通常のプールを邪魔しない)。
  *   - `last_placement` は**参考ヒント**。候補リストの先頭に出すだけで強制はしない。
  *
- * カードに `PatientCard` を直接使わないのは、`PatientCard` が dnd-kit の draggable
- * である一方、チケットはドラッグ配置に対応していないため (見た目だけを合わせる)。
+ * カードに `PatientCard` を直接使わないのは、患者プールカードとは載せる情報
+ * (⭐ / 種別 / 曜日 / 週N回以上) が違うため (見た目だけを合わせる)。
+ *
+ * 2026-09-08 (PO 指摘「⭐ だけドラッグできない」・
+ * `docs/plans/special-ticket-dnd-design-2026-09-08.md`):
+ *   カードを `SpecialTicketCard` に切り出して dnd-kit の `useDraggable` を付けた。
+ *   掴めるのは**表示中の曜日タブと同じ曜日**のチケットだけ (BE の place は
+ *   mark.weekday でコースを解決するため、別曜日タブに落とすと画面と違う日に入る)。
+ *   クリック (= 従来のポップアップ) との判別は `PatientCard` と同じ 6px 判定。
  */
 import * as React from 'react';
+import { useDraggable } from '@dnd-kit/core';
+import { CSS } from '@dnd-kit/utilities';
 import { CalendarDays, Star } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
@@ -34,15 +43,25 @@ import { Button } from '@/components/ui/button';
 import { useSpecialVisitPool } from '@/lib/queries/specialVisitWeek';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import type { SpecialPoolTicket } from '@/lib/schemas/specialVisitWeek';
+import { cn } from '@/lib/utils';
 
+import { buildSpecialTicketDraggableId, parseSpecialTicketDraggableId } from './courseDnd';
 import { PatientScheduleDetailDialog } from './PatientScheduleDetailDialog';
 import type { PoolCandidateSpecialTicket } from './PoolCandidateList';
 import { SpecialVisitWeekDialog } from './SpecialVisitWeekDialog';
 
+// id helper は courseDnd.ts が単一ソース。⭐ を扱う呼び出し元 (盤面) が
+// 「チケットのことは SpecialTicketPlacePanel から」で済むよう re-export する。
+export { buildSpecialTicketDraggableId, parseSpecialTicketDraggableId };
+
 /** 0=月..5=土 (日曜は対象外だが 7 要素持つ)。 */
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
-function weekdayLabel(weekday: number): string {
+/**
+ * ⭐チケットの曜日ラベル (0=月..6=日)。盤面の 6 要素 (月〜土) と違い日曜まで持ち、
+ * 範囲外は '?' に落とす (トーストやカードから曜日が消えないようにする単一ソース)。
+ */
+export function specialTicketWeekdayLabel(weekday: number): string {
   return WEEKDAY_LABELS[weekday] ?? '?';
 }
 
@@ -59,6 +78,174 @@ function toSpecialTicketMode(t: SpecialPoolTicket): PoolCandidateSpecialTicket {
 }
 
 // ---------------------------------------------------------------------------
+// SpecialTicketCard — ⭐チケット 1 枚 (ドラッグ可能 + クリックでポップアップ)
+// ---------------------------------------------------------------------------
+
+export interface SpecialTicketCardProps {
+  ticket: SpecialPoolTicket;
+  /**
+   * カード本体クリック (= ドラッグではない単純クリック) のハンドラ。
+   * 従来の配置ポップアップ導線。ドラッグ不可のチケットでも押せる (唯一の配置手段)。
+   */
+  onCardClick?: () => void;
+  /**
+   * ドラッグ禁止 (他曜日タブ表示中 / 閲覧専用)。クリック導線は残す。
+   */
+  dragDisabled?: boolean;
+  /** `dragDisabled` のときに出す説明 (title 属性)。 */
+  disabledTitle?: string;
+  /**
+   * DragOverlay 用ゴーストモード。draggable として登録せず (ghost- 接頭辞 + disabled)、
+   * 掴んだカードと同じ内容を描く。
+   */
+  ghost?: boolean;
+}
+
+/**
+ * ⭐チケットカード本体。`PatientCard` と同じ視覚言語 (性別ウォッシュ地 + 左色帯) に、
+ * ⭐ / 種別 / 曜日 / 週N回以上 のバッジを載せる。
+ */
+export function SpecialTicketCard({
+  ticket,
+  onCardClick,
+  dragDisabled = false,
+  disabledTitle,
+  ghost = false,
+}: SpecialTicketCardProps) {
+  const markId = ticket.mark.id;
+  const draggableId = buildSpecialTicketDraggableId(markId);
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    // ghost は DragOverlay 内の描画専用 (実 draggable と id が衝突しないよう接頭辞)。
+    id: ghost ? `ghost-overlay:${draggableId}` : draggableId,
+    disabled: dragDisabled || ghost,
+    data: { kind: 'special-ticket', markId },
+  });
+
+  // クリック / ドラッグ判別は PatientCard と同じ規則 (移植):
+  //  (1) pointerdown からの移動量が PointerSensor の activationConstraint (6px) を
+  //      超えていたらドラッグ扱いで click を無視する。
+  //  (2) TouchSensor は長押し (250ms) 起点なので移動量が小さくてもドラッグが成立する。
+  //      isDragging を ref に記憶して直後の click を握りつぶす。
+  const pointerDownPos = React.useRef<{ x: number; y: number } | null>(null);
+  const draggedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (isDragging) draggedRef.current = true;
+  }, [isDragging]);
+  const handleClick = React.useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!onCardClick) return;
+      if (draggedRef.current) {
+        draggedRef.current = false;
+        pointerDownPos.current = null;
+        return;
+      }
+      const start = pointerDownPos.current;
+      pointerDownPos.current = null;
+      if (start && (Math.abs(e.clientX - start.x) > 6 || Math.abs(e.clientY - start.y) > 6)) {
+        return; // ポインタ移動がしきい値超 = ドラッグ
+      }
+      onCardClick();
+    },
+    [onCardClick],
+  );
+
+  // 通常プールカードと同じ性別ウォッシュ (PatientCard の pal 分岐と同一トークン)。
+  const pal = genderPalette(ticket.patient.sex);
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: ghost ? undefined : CSS.Translate.toString(transform),
+        opacity: !ghost && isDragging ? 0.4 : 1,
+        background: pal.bg,
+        borderColor: pal.ln,
+        borderLeftColor: pal.bar,
+        color: pal.ink,
+      }}
+      className={cn(
+        'group flex min-w-0 flex-1 select-none touch-none flex-col gap-0.5 rounded-lg border border-l-[3px] px-2 py-1 text-left text-xs shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-md)]',
+        ghost
+          ? 'h-full w-full cursor-grabbing shadow-[var(--shadow-md)]'
+          : dragDisabled
+            ? // 他曜日タブ: 掴めないことを控えめに示す (クリックは効く)。
+              'cursor-pointer opacity-70'
+            : 'cursor-grab active:cursor-grabbing',
+      )}
+      title={
+        dragDisabled && disabledTitle ? disabledTitle : `${ticket.patient.name} 様の配置先を探す`
+      }
+      data-testid={`special-visit-ticket-card-${markId}`}
+      /** ドラッグ可否はテスト / スタイル用の明示フラグ (a11y の aria-disabled とは別物)。 */
+      data-drag-disabled={dragDisabled || ghost ? 'true' : 'false'}
+      {...listeners}
+      {...attributes}
+      /*
+       * dnd-kit の attributes は「掴めない = aria-disabled: true」を付けるが、
+       * このカードはドラッグできなくてもクリック / Enter で配置ポップアップを
+       * 開ける (他曜日タブでの唯一の導線)。支援技術に「使えない」と読ませないよう
+       * spread の後で打ち消す。
+       */
+      aria-disabled={onCardClick ? undefined : (attributes['aria-disabled'] ?? undefined)}
+      onPointerDownCapture={(e) => {
+        pointerDownPos.current = { x: e.clientX, y: e.clientY };
+      }}
+      onClick={onCardClick ? handleClick : undefined}
+      /*
+       * キーボード操作: dnd-kit の attributes が role="button" / tabIndex=0 を付けるので、
+       * Enter / Space でクリックと同じ導線を開けるようにする (盤面は KeyboardSensor を
+       * 使っていないため listeners の onKeyDown とは衝突しない)。
+       */
+      onKeyDown={
+        onCardClick
+          ? (e) => {
+              if (e.key !== 'Enter' && e.key !== ' ') return;
+              e.preventDefault();
+              onCardClick();
+            }
+          : undefined
+      }
+    >
+      <div className="flex items-center gap-1">
+        <span className="shrink-0 text-[10px]" aria-hidden>
+          ⭐
+        </span>
+        <span className="truncate font-bold" title={ticket.patient.name}>
+          {ticket.patient.name}
+        </span>
+        {ticket.patient.code ? (
+          <span className="truncate text-[10px] opacity-70">({ticket.patient.code})</span>
+        ) : null}
+      </div>
+      {/* PO 指示 2026-09-08: ⭐ が何のチケットで、時間が未定であることを
+          カードの言葉で明示する (○ の意味をプール側でも揃える)。 */}
+      <div className="pl-4 text-xs" data-testid={`special-visit-ticket-note-${markId}`}>
+        {ticket.mark.kind === 'displaced' ? '固定退避・時間未定' : '特別訪問週間の追加枠・時間未定'}
+      </div>
+      <div className="flex flex-wrap items-center gap-1 pl-4">
+        <Badge
+          variant={ticket.mark.kind === 'displaced' ? 'warning' : 'info'}
+          className="h-4 px-1 text-[10px]"
+          data-testid={`special-visit-ticket-kind-${markId}`}
+        >
+          {ticket.mark.kind === 'displaced' ? '固定退避' : '追加枠'}
+        </Badge>
+        <Badge
+          variant="secondary"
+          className="h-4 px-1 text-[10px]"
+          data-testid={`special-visit-ticket-weekday-${markId}`}
+        >
+          {specialTicketWeekdayLabel(ticket.mark.weekday)}曜
+        </Badge>
+        <Badge variant="secondary" className="h-4 px-1 text-[10px]">
+          週{ticket.period.weekly_target}回以上
+        </Badge>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // SpecialVisitPoolSection — 保留プール最上段の専用セクション
 // ---------------------------------------------------------------------------
 
@@ -69,6 +256,13 @@ export interface SpecialVisitPoolSectionProps {
   officeId: string | null;
   /** 配置ボタンを出すか (RBAC; admin/manager のみ)。 */
   canEdit: boolean;
+  /**
+   * 盤面で表示中の曜日タブ (0=月..5=土)。DnD 可否の判定に使う:
+   * BE の place は `mark.weekday` でコースを解決するため、表示中の曜日と違う
+   * チケットを掴めてしまうと画面と違う日に入る (設計 §1「曜日の罠」)。
+   * null = 曜日タブが無い文脈 (= 全チケット ドラッグ不可)。
+   */
+  activeWeekday: number | null;
 }
 
 export function SpecialVisitPoolSection({
@@ -76,6 +270,7 @@ export function SpecialVisitPoolSection({
   isoWeek,
   officeId,
   canEdit,
+  activeWeekday,
 }: SpecialVisitPoolSectionProps) {
   const poolQuery = useSpecialVisitPool(isoYear, isoWeek, officeId);
   const tickets = poolQuery.data ?? [];
@@ -101,68 +296,29 @@ export function SpecialVisitPoolSection({
       </div>
       <ul className="space-y-1">
         {tickets.map((t) => {
-          // 通常プールカードと同じ性別ウォッシュ (PatientCard の pal 分岐と同一トークン)。
-          const pal = genderPalette(t.patient.sex);
+          // 掴めるのは「表示中の曜日タブ = チケットの曜日」かつ編集権限ありのときだけ
+          // (設計 §2)。他曜日は掴めない代わりに、どのタブへ行けばよいかを title で示す。
+          const wd = specialTicketWeekdayLabel(t.mark.weekday);
+          const dragDisabled = !canEdit || activeWeekday !== t.mark.weekday;
+          // 曜日タブ (日タイムライン) を開いていないときは「どこに落とすか」が
+          // 画面に無いので、切替先ではなく開き方を案内する。
+          const disabledTitle = !canEdit
+            ? undefined
+            : activeWeekday === null
+              ? '曜日タブ（日タイムライン）を開くと配置できます'
+              : `${wd}曜のカードです。${wd}曜タブに切り替えてください`;
           return (
             <li
               key={t.mark.id}
               className="flex items-start gap-1"
               data-testid={`special-visit-ticket-${t.mark.id}`}
             >
-              <button
-                type="button"
-                onClick={() => setDetailTicket(t)}
-                style={{
-                  background: pal.bg,
-                  borderColor: pal.ln,
-                  borderLeftColor: pal.bar,
-                  color: pal.ink,
-                }}
-                className="group flex min-w-0 flex-1 flex-col gap-0.5 rounded-lg border border-l-[3px] px-2 py-1 text-left text-xs shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-md)]"
-                title={`${t.patient.name} 様の配置先を探す`}
-                data-testid={`special-visit-ticket-card-${t.mark.id}`}
-              >
-                <div className="flex items-center gap-1">
-                  <span className="shrink-0 text-[10px]" aria-hidden>
-                    ⭐
-                  </span>
-                  <span className="truncate font-bold" title={t.patient.name}>
-                    {t.patient.name}
-                  </span>
-                  {t.patient.code ? (
-                    <span className="truncate text-[10px] opacity-70">({t.patient.code})</span>
-                  ) : null}
-                </div>
-                {/* PO 指示 2026-09-08: ⭐ が何のチケットで、時間が未定であることを
-                    カードの言葉で明示する (○ の意味をプール側でも揃える)。 */}
-                <div
-                  className="pl-4 text-[10px] opacity-80"
-                  data-testid={`special-visit-ticket-note-${t.mark.id}`}
-                >
-                  {t.mark.kind === 'displaced'
-                    ? '固定退避・時間未定'
-                    : '特別訪問週間の追加枠・時間未定'}
-                </div>
-                <div className="flex flex-wrap items-center gap-1 pl-4">
-                  <Badge
-                    variant={t.mark.kind === 'displaced' ? 'warning' : 'info'}
-                    className="h-4 px-1 text-[10px]"
-                    data-testid={`special-visit-ticket-kind-${t.mark.id}`}
-                  >
-                    {t.mark.kind === 'displaced' ? '固定退避' : '追加枠'}
-                  </Badge>
-                  <Badge
-                    variant="secondary"
-                    className="h-4 px-1 text-[10px]"
-                    data-testid={`special-visit-ticket-weekday-${t.mark.id}`}
-                  >
-                    {weekdayLabel(t.mark.weekday)}曜
-                  </Badge>
-                  <Badge variant="secondary" className="h-4 px-1 text-[10px]">
-                    週{t.period.weekly_target}回以上
-                  </Badge>
-                </div>
-              </button>
+              <SpecialTicketCard
+                ticket={t}
+                onCardClick={() => setDetailTicket(t)}
+                dragDisabled={dragDisabled}
+                disabledTitle={disabledTitle}
+              />
               <Button
                 type="button"
                 size="sm"

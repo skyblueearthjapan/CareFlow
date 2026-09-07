@@ -23,9 +23,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
+import { ApiError } from '@/lib/api-client';
 import { timeToY } from '@/lib/scheduling/timeline';
 
 // ─── モック (CourseDayTablePanel.test.tsx と同じ構成) ────────────────────────
+
+const { specialState } = vi.hoisted(() => ({
+  specialState: {
+    /** GET /special-visit-marks/pool の戻り (⭐ チケット). */
+    tickets: [] as unknown[],
+    /** POST /special-visit-marks/{id}/place. */
+    place: vi.fn(),
+  },
+}));
 
 const { dndState, mockToast } = vi.hoisted(() => ({
   dndState: {
@@ -322,6 +332,23 @@ vi.mock('@/lib/queries/schedulingSettings', () => ({
   useUpdateSchedulingSettings: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
+// ⭐特別訪問週間 (`special-ticket-dnd-design-2026-09-08.md`): プールのチケット取得と
+// place だけ差し替える (他のフックは実物のままで良い = プール側セクションが使う)。
+vi.mock('@/lib/queries/specialVisitWeek', async (importOriginal) => {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
+  type Mod = typeof import('@/lib/queries/specialVisitWeek');
+  const actual = await importOriginal<Mod>();
+  return {
+    ...actual,
+    useSpecialVisitPool: () => ({
+      data: specialState.tickets,
+      isLoading: false,
+      isError: false,
+    }),
+    usePlaceSpecialMark: () => ({ mutateAsync: specialState.place, isPending: false }),
+  };
+});
+
 vi.mock('@/lib/queries/visitMoveWeekOnly', () => ({
   useVisitMoveWeekOnly: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
@@ -457,6 +484,9 @@ function dropPatientOnColumn(patientId: string, templateId: string, weekday: num
 describe('CourseDayTablePanel — W37 Phase 3-C', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // ⭐ チケットは既定で 0 件 (= 既存テストに影響しない)。
+    specialState.tickets = [];
+    specialState.place.mockReset();
   });
 
   it('P3C-1. 通常患者 (requires_multiple_staff=false) の D&D → staff_count=1 + course_template_id (単数) で呼出 (regression)', async () => {
@@ -784,6 +814,186 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
       over: { id: 'pool', rect: { top: 10 } },
     });
     expect(mockToast.warning).not.toHaveBeenCalled();
+  });
+
+  // ── 2026-09-08: ⭐特別訪問週間チケットの DnD ────────────────────────────
+  // 設計 `docs/plans/special-ticket-dnd-design-2026-09-08.md` §4。
+  // 盤面の曜日タブ既定は 'week' → activeWeekday=0 (月) なので、weekday=0 の
+  // チケットが「表示中の曜日と同じ = 掴める」ケースになる。
+
+  const MARK_ID = '55555555-5555-4555-8555-555555555555';
+
+  /** ⭐ チケット 1 枚 (プール API の戻り相当). */
+  function makeTicket(over: { weekday?: number; requiresMulti?: boolean } = {}) {
+    return {
+      mark: {
+        id: MARK_ID,
+        period_id: 'period-1',
+        patient_id: PATIENT_UUID,
+        iso_year: 2026,
+        iso_week: 19,
+        weekday: over.weekday ?? 0,
+        kind: 'extra',
+        status: 'pool',
+        placed_visit_id: null,
+        placed_summary: null,
+      },
+      patient: {
+        id: PATIENT_UUID,
+        name: '中尾 要太',
+        code: 'P-001',
+        sex: 'male',
+        sex_restriction: null,
+        requires_multiple_staff: over.requiresMulti ?? false,
+        lat: null,
+        lng: null,
+        primary_office_id: 'office-honten',
+      },
+      period: { id: 'period-1', weekly_target: 5, end_date: '2026-05-30' },
+      last_placement: null,
+      service_minutes: 45,
+    };
+  }
+
+  /** ⭐ チケット → タイムライン列のドロップ引数 (`special-ticket:{markId}`). */
+  function dropTicketOnColumn(templateId: string, weekday: number, hm: string) {
+    const overTop = 10;
+    return {
+      active: {
+        id: `special-ticket:${MARK_ID}`,
+        rect: { current: { translated: { top: overTop + (timeToY(hm) ?? 0) } } },
+      },
+      over: { id: `tl-col:${templateId}:${weekday}`, rect: { top: overTop } },
+    };
+  }
+
+  /** ⭐ テスト用の最小セットアップ (template 1 件 + チケット 1 枚). */
+  function setupTicket(over: { weekday?: number; requiresMulti?: boolean } = {}) {
+    specialState.tickets = [makeTicket(over)];
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      patients: [],
+    });
+    renderPanel();
+  }
+
+  it('ST-1. ⭐ チケットを列にドロップ → place を {course_template_id, start_time} で 1 回だけ呼ぶ', async () => {
+    specialState.place.mockResolvedValue({ mark: {}, visit_id: 'v-1' });
+    setupTicket();
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(dropTicketOnColumn('tpl-A', 0, '10:15'));
+    });
+    expect(specialState.place).toHaveBeenCalledOnce();
+    expect(specialState.place.mock.calls[0][0]).toEqual({
+      markId: MARK_ID,
+      payload: { course_template_id: 'tpl-A', start_time: '10:15' },
+    });
+    expect(mockToast.success).toHaveBeenCalledWith(
+      '中尾 要太 様を 月曜 10:15 に配置しました（この週のみ・固定化しません）',
+    );
+  });
+
+  it('ST-2. 9:00〜18:00 の外にドロップしたら警告のみ (place を呼ばない)', async () => {
+    setupTicket();
+    await act(async () => {
+      // 所要 45 分なので 17:30 開始は 18:15 終わり = 範囲外。
+      await dndState.capturedHandlers.onDragEnd!(dropTicketOnColumn('tpl-A', 0, '17:30'));
+    });
+    expect(specialState.place).not.toHaveBeenCalled();
+    expect(mockToast.warning).toHaveBeenCalledWith(
+      'この位置には置けません（9:00〜18:00 の範囲に収まるように配置してください）',
+    );
+  });
+
+  it('ST-3. 表示中の曜日タブと違う曜日のチケットは警告のみ (曜日の罠ガード)', async () => {
+    setupTicket({ weekday: 3 }); // 木曜のチケットを月曜タブで離す
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(dropTicketOnColumn('tpl-A', 0, '10:15'));
+    });
+    expect(specialState.place).not.toHaveBeenCalled();
+    expect(mockToast.warning).toHaveBeenCalledWith('木曜のカードは 木曜タブでのみ配置できます');
+  });
+
+  it('ST-4. 2 名体制の患者はドラッグ配置を塞ぎ、クリック導線へ誘導する', async () => {
+    setupTicket({ requiresMulti: true });
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(dropTicketOnColumn('tpl-A', 0, '10:15'));
+    });
+    expect(specialState.place).not.toHaveBeenCalled();
+    expect(mockToast.warning).toHaveBeenCalledWith(
+      '2名体制の患者はドラッグでは配置できません。カードをクリックして「配置先を決める」から入れてください',
+    );
+  });
+
+  it('ST-4b. ⭐ チケットをプール自身へ戻したときは何も起きない (noop)', async () => {
+    setupTicket();
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!({
+        active: {
+          id: `special-ticket:${MARK_ID}`,
+          rect: { current: { translated: { top: 100 } } },
+        },
+        over: { id: 'pool', rect: { top: 10 } },
+      });
+    });
+    expect(specialState.place).not.toHaveBeenCalled();
+    expect(mockToast.warning).not.toHaveBeenCalled();
+    expect(mockToast.error).not.toHaveBeenCalled();
+  });
+
+  it('ST-4c. ⭐ チケットを over なし (列の外) で離したら案内トーストを出す', async () => {
+    setupTicket();
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!({
+        active: { id: `special-ticket:${MARK_ID}`, rect: { current: { translated: null } } },
+        over: null,
+      });
+    });
+    expect(specialState.place).not.toHaveBeenCalled();
+    expect(mockToast.warning).toHaveBeenCalledWith(
+      '列の上で離してください（コースの列にカードを重ねると配置できます）',
+    );
+  });
+
+  it('ST-5. 422 constraint_confirmation_required → 確認ダイアログ → acknowledge 付きで再送', async () => {
+    specialState.place
+      .mockRejectedValueOnce(
+        new ApiError('Unprocessable Entity', 422, {
+          detail: {
+            code: 'constraint_confirmation_required',
+            warnings: [
+              {
+                kind: 'ng_staff',
+                patient_id: PATIENT_UUID,
+                patient_name: '中尾 要太',
+                staff_id: '77777777-7777-4777-8777-777777777777',
+                staff_name: '熊澤 妙子',
+                note: null,
+              },
+            ],
+          },
+        }),
+      )
+      .mockResolvedValueOnce({ mark: {}, visit_id: 'v-1' });
+    setupTicket();
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(dropTicketOnColumn('tpl-A', 0, '10:15'));
+    });
+    const dialog = await screen.findByTestId('constraint-override-confirm');
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByTestId('constraint-override-ok')).toHaveTextContent('配置する');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('constraint-override-ok'));
+    });
+    expect(specialState.place).toHaveBeenCalledTimes(2);
+    expect(specialState.place.mock.calls[1][0]).toEqual({
+      markId: MARK_ID,
+      payload: {
+        course_template_id: 'tpl-A',
+        start_time: '10:15',
+        acknowledge_constraint_warnings: true,
+      },
+    });
   });
 
   // Phase 2 (日テーブル撤去) で削除したテスト:

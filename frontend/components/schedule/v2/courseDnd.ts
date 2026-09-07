@@ -14,6 +14,27 @@
  */
 export const UNASSIGNED_ROW_KEY = '__unassigned__';
 
+/**
+ * ⭐特別訪問週間チケットの dnd-kit draggable id 接頭辞
+ * (`docs/plans/special-ticket-dnd-design-2026-09-08.md` §2)。
+ * プール患者 (`pool-patient:`) / 訪問 (`tl-visit:`) と衝突しない専用の名前空間。
+ * 盤面 (CourseDayTablePanel) とプール側カード (SpecialTicketPlacePanel) の
+ * **単一ソース** なのでここに置く (UNASSIGNED_ROW_KEY と同じ理由)。
+ */
+export const SPECIAL_TICKET_DND_PREFIX = 'special-ticket:';
+
+/** markId → draggable id (`special-ticket:{markId}`)。 */
+export function buildSpecialTicketDraggableId(markId: string): string {
+  return `${SPECIAL_TICKET_DND_PREFIX}${markId}`;
+}
+
+/** draggable id → markId。⭐チケット以外の id は null。 */
+export function parseSpecialTicketDraggableId(id: string): string | null {
+  if (!id.startsWith(SPECIAL_TICKET_DND_PREFIX)) return null;
+  const markId = id.slice(SPECIAL_TICKET_DND_PREFIX.length);
+  return markId.length > 0 ? markId : null;
+}
+
 /** コース帯の DnD payload MIME。 */
 export const COURSE_DND_MIME = 'application/x-rakusuke-course';
 /** 訪問 1 件 (患者個別) のドラッグ用 MIME (週空間 A2)。 */

@@ -10,6 +10,9 @@
  *   2. ⭐ / 種別 (追加枠・固定退避) / 曜日のバッジは維持される
  *   3. カードクリックで PatientScheduleDetailDialog が特別モード props つきで開く
  *   4. 「カレンダー」ボタンは設定モーダルを開く (カードのクリックとは別導線)
+ *   5. DnD 化 (`special-ticket-dnd-design-2026-09-08.md` §4):
+ *      表示中の曜日タブと同じチケットだけ掴める / 他曜日は disabled + 案内 title /
+ *      クリック (0px) は従来どおりポップアップを開く (回帰の本命)
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -123,10 +126,27 @@ function makeTicket(over: Record<string, unknown> = {}) {
   };
 }
 
-function renderSection(canEdit = true) {
+/**
+ * 既定の `activeWeekday` は makeTicket と同じ 3 (木曜) = 「表示中の曜日タブと同じ
+ * チケット」= ドラッグ可能な状態。他曜日タブの検証はここを変えて呼ぶ。
+ */
+function renderSection(canEdit = true, activeWeekday: number | null = 3) {
   return render(
-    <SpecialVisitPoolSection isoYear={2026} isoWeek={31} officeId={OFFICE_ID} canEdit={canEdit} />,
+    <SpecialVisitPoolSection
+      isoYear={2026}
+      isoWeek={31}
+      officeId={OFFICE_ID}
+      canEdit={canEdit}
+      activeWeekday={activeWeekday}
+    />,
   );
+}
+
+/** jsdom は PointerEvent を持たないので、素の Event に座標を載せて飛ばす。 */
+function firePointerDown(el: Element, clientX: number, clientY: number) {
+  const ev = new Event('pointerdown', { bubbles: true, cancelable: true });
+  Object.assign(ev, { clientX, clientY, pointerId: 1, button: 0, isPrimary: true });
+  fireEvent(el, ev);
 }
 
 beforeEach(() => {
@@ -236,6 +256,69 @@ describe('SpecialVisitPoolSection', () => {
     renderSection(false);
     fireEvent.click(screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`));
     expect(mocks.detailProps?.canEdit).toBe(false);
+  });
+
+  // ── DnD 化 (2026-09-08) ────────────────────────────────────────────────
+
+  it('表示中の曜日タブと同じチケットは draggable (掴める)', () => {
+    mocks.poolTickets = [makeTicket()]; // weekday=3 (木)
+    renderSection(true, 3);
+    const card = screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`);
+    expect(card.getAttribute('aria-roledescription')).toBe('draggable');
+    expect(card.getAttribute('data-drag-disabled')).toBe('false');
+    expect(card.getAttribute('title')).toBe('中尾 要太 様の配置先を探す');
+  });
+
+  it('他曜日タブ表示中のチケットは掴めず、切り替え先を title で案内する', () => {
+    mocks.poolTickets = [makeTicket()]; // weekday=3 (木)
+    renderSection(true, 0); // 月曜タブ
+    const card = screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`);
+    expect(card.getAttribute('data-drag-disabled')).toBe('true');
+    expect(card.getAttribute('title')).toBe('木曜のカードです。木曜タブに切り替えてください');
+    // クリック導線は残るので「操作できない」とは読ませない (a11y)。
+    expect(card.getAttribute('aria-disabled')).toBeNull();
+  });
+
+  it('曜日タブ (日タイムライン) が開いていないときは開き方を案内する', () => {
+    mocks.poolTickets = [makeTicket()];
+    renderSection(true, null);
+    const card = screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`);
+    expect(card.getAttribute('data-drag-disabled')).toBe('true');
+    expect(card.getAttribute('title')).toBe('曜日タブ（日タイムライン）を開くと配置できます');
+  });
+
+  it('canEdit=false のチケットも掴めない (閲覧専用)', () => {
+    mocks.poolTickets = [makeTicket()];
+    renderSection(false, 3);
+    expect(
+      screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`).getAttribute('data-drag-disabled'),
+    ).toBe('true');
+  });
+
+  it('Enter キーでも従来のポップアップが開く (キーボード操作)', () => {
+    mocks.poolTickets = [makeTicket()];
+    renderSection(true, 3);
+    fireEvent.keyDown(screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`), { key: 'Enter' });
+    expect(screen.getByTestId('patient-detail-stub')).toBeTruthy();
+  });
+
+  // 回帰の本命: draggable 化してもクリック (移動 0px) は従来のポップアップを開く。
+  it('draggable なカードでも 0px クリックなら従来のポップアップが開く', () => {
+    mocks.poolTickets = [makeTicket()];
+    renderSection(true, 3);
+    const card = screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`);
+    firePointerDown(card, 100, 100);
+    fireEvent.click(card, { clientX: 100, clientY: 100 });
+    expect(screen.getByTestId('patient-detail-stub')).toBeTruthy();
+  });
+
+  it('ドラッグ相当 (6px 超の移動) のクリックではポップアップを開かない', () => {
+    mocks.poolTickets = [makeTicket()];
+    renderSection(true, 3);
+    const card = screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`);
+    firePointerDown(card, 100, 100);
+    fireEvent.click(card, { clientX: 140, clientY: 100 });
+    expect(screen.queryByTestId('patient-detail-stub')).toBeNull();
   });
 
   it('「カレンダー」ボタンで設定モーダルを開く (提案ポップアップは開かない)', () => {
