@@ -131,8 +131,14 @@ vi.mock('@/app/(app)/patients/_components/PatientForm', () => ({
 }));
 
 vi.mock('@/app/(app)/patients/_components/PatientFixedVisitsPanel', () => ({
-  PatientFixedVisitsPanel: (props: { patientId: string }) => (
-    <div data-testid="mock-pfv-panel" data-patient-id={props.patientId}>
+  PatientFixedVisitsPanel: (props: { patientId: string; isoYear?: number; isoWeek?: number }) => (
+    <div
+      data-testid="mock-pfv-panel"
+      data-patient-id={props.patientId}
+      // Phase E: 週文脈 (盤面から開いたときの表示週) の素通しを検証する。
+      data-iso-year={props.isoYear ?? ''}
+      data-iso-week={props.isoWeek ?? ''}
+    >
       mock-pfv
     </div>
   ),
@@ -171,6 +177,13 @@ describe('PatientEditDialog — Phase G-20', () => {
   it('1. open=false → ダイアログが描画されない', () => {
     setup({ open: false });
     expect(screen.queryByTestId('patient-edit-dialog')).not.toBeInTheDocument();
+  });
+
+  it('1b. (Phase E) isoYear/isoWeek を PatientFixedVisitsPanel へ素通しする', () => {
+    setup({ isoYear: 2026, isoWeek: 38 });
+    const panel = screen.getByTestId('mock-pfv-panel');
+    expect(panel).toHaveAttribute('data-iso-year', '2026');
+    expect(panel).toHaveAttribute('data-iso-week', '38');
   });
 
   it('2. open=true / canEdit=true → タイトル + PatientForm + PFV パネルが描画される', () => {

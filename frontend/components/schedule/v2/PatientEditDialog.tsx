@@ -54,6 +54,13 @@ export interface PatientEditDialogProps {
   onClose: () => void;
   /** admin / manager 以外は閲覧専用 (= 編集フォームを描画しない). */
   canEdit?: boolean;
+  /**
+   * Phase E (add-visit-anywhere-design.md §6): 表示中の週 (= 週文脈).
+   * PatientFixedVisitsPanel へ素通しし、固定枠保存の反映先確認の既定を
+   * 「型と この週も作り直す」にする。省略時は「型だけ変える」。
+   */
+  isoYear?: number;
+  isoWeek?: number;
 }
 
 export function PatientEditDialog({
@@ -61,6 +68,8 @@ export function PatientEditDialog({
   open,
   onClose,
   canEdit = true,
+  isoYear,
+  isoWeek,
 }: PatientEditDialogProps) {
   const qc = useQueryClient();
 
@@ -203,6 +212,8 @@ export function PatientEditDialog({
                 weeklyPattern={patient.weekly_pattern as WeeklyPattern | null | undefined}
                 primaryOfficeId={patient.primary_office_id}
                 requiresMultipleStaff={patient.requires_multiple_staff === true}
+                isoYear={isoYear}
+                isoWeek={isoWeek}
               />
 
               {updateMutation.isPending ? (

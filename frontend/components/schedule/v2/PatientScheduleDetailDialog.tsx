@@ -757,6 +757,10 @@ export function PatientScheduleDetailDialog({
           open={editOpen}
           onClose={() => setEditOpen(false)}
           canEdit={canEdit}
+          // Phase E: 盤面から開いたときは表示中の週を週文脈として渡す
+          // (固定枠保存の反映先確認の既定が「型と この週」になる)。
+          isoYear={isoYear}
+          isoWeek={isoWeek}
         />
       ) : null}
 

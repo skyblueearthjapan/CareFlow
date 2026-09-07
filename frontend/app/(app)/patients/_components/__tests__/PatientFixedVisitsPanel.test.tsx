@@ -55,6 +55,13 @@ vi.mock('@/lib/queries/offices', () => ({
   useOffices: vi.fn(),
 }));
 
+// ─── Mock visits query (Phase E / 反映先確認の影響プレビュー) ─────────────────
+// FixedVisitScopeConfirmDialog が GET /visits (対象週 × 患者) を読む。
+// 本 suite は QueryClientProvider を張らないため hook をモックする。
+vi.mock('@/lib/queries/visits', () => ({
+  useVisits: vi.fn(),
+}));
+
 // ─── Mock @tanstack/react-query useQueries (Phase E-5) ────────────────────────
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 type TanstackQueryModule = typeof import('@tanstack/react-query');
@@ -87,8 +94,10 @@ import {
 } from '@/lib/queries/patient_fixed_visits';
 import { useCourseTemplates } from '@/lib/queries/course_templates';
 import { useOffices } from '@/lib/queries/offices';
+import { useVisits } from '@/lib/queries/visits';
 import { useTogglePfvPin } from '@/lib/queries/g21';
 import { toast } from '@/components/ui/sonner';
+import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 
 import { PatientFixedVisitsPanel } from '../PatientFixedVisitsPanel';
 
@@ -129,6 +138,8 @@ function setupMocks(
     courseTemplates?: { id: string; label: string; office_id: string }[];
     offices?: { id: string; name: string; code?: string | null }[];
     subOfficeCourseTemplates?: { id: string; label: string; office_id: string }[];
+    /** Phase E: 反映先確認ダイアログが読む対象週の訪問一覧。 */
+    visits?: unknown[];
   } = {},
 ) {
   const role = opts.role ?? 'admin';
@@ -163,6 +174,22 @@ function setupMocks(
   (useQueries as Mock).mockImplementation((options: { queries: { queryKey: unknown[] }[] }) =>
     options.queries.map(() => ({ data: opts.subOfficeCourseTemplates ?? [] })),
   );
+  // Phase E: 反映先確認ダイアログの影響プレビュー (既定は 0 件)。
+  (useVisits as Mock).mockReturnValue({
+    data: { items: opts.visits ?? [], truncated: false },
+    isLoading: false,
+    isError: false,
+    error: null,
+  });
+}
+
+/**
+ * Phase E (設計 §6-2): 保存は必ず「反映先」確認ダイアログを挟むようになった。
+ * 既定の選択のまま「保存する」を押して、従来の「保存 → PUT」に相当する操作にする。
+ */
+async function saveAndConfirmScope() {
+  await userEvent.click(screen.getByRole('button', { name: '保存' }));
+  await userEvent.click(await screen.findByTestId('pfv-scope-submit'));
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -202,8 +229,7 @@ describe('PatientFixedVisitsPanel', () => {
     fireEvent.change(durationSelects[0], { target: { value: '30' } });
 
     // 保存ボタンをクリック
-    const saveBtn = screen.getByRole('button', { name: '保存' });
-    await userEvent.click(saveBtn);
+    await saveAndConfirmScope();
 
     await waitFor(() => {
       expect(updateFn).toHaveBeenCalledTimes(1);
@@ -220,10 +246,11 @@ describe('PatientFixedVisitsPanel', () => {
     expect(call.items).toHaveLength(1);
     expect((call.items[0] as { weekday: number; start_time: string }).weekday).toBe(0);
     expect((call.items[0] as { weekday: number; start_time: string }).start_time).toBe('14:00');
-    // Wave U-2 (設計 §2.1): normal 固定枠編集は既定 A = 型 + 今週即反映.
-    expect(call.change_scope).toBe('pattern_and_week');
-    expect(typeof call.iso_year).toBe('number');
-    expect(typeof call.iso_week).toBe('number');
+    // Phase E (設計 §6・PO 決定 8): 週文脈なしの既定は「型だけ変える」。
+    // 旧 Wave U-2 の「常に今週も作り直す」は欠陥 6 として撤回された。
+    expect(call.change_scope).toBe('pattern_only');
+    expect(call.iso_year).toBeUndefined();
+    expect(call.iso_week).toBeUndefined();
   });
 
   it('3. 重複 weekday → zod エラーが表示される', async () => {
@@ -409,8 +436,7 @@ describe('PatientFixedVisitsPanel', () => {
     fireEvent.change(courseSelect, { target: { value: 'aaaaaaaa-0000-0000-0000-000000000001' } });
 
     // 保存
-    const saveBtn = screen.getByRole('button', { name: '保存' });
-    await userEvent.click(saveBtn);
+    await saveAndConfirmScope();
 
     await waitFor(() => {
       expect(updateFn).toHaveBeenCalledTimes(1);
@@ -457,8 +483,7 @@ describe('PatientFixedVisitsPanel', () => {
     fireEvent.change(courseSelect, { target: { value: '' } });
 
     // 保存
-    const saveBtn = screen.getByRole('button', { name: '保存' });
-    await userEvent.click(saveBtn);
+    await saveAndConfirmScope();
 
     await waitFor(() => {
       expect(updateFn).toHaveBeenCalledTimes(1);
@@ -582,10 +607,11 @@ describe('PatientFixedVisitsPanel', () => {
       expect(screen.getByText('異なるコースを選択してください')).toBeInTheDocument();
     });
 
-    // 保存ボタンを押しても updateFn は呼ばれない
-    const saveBtn = screen.getByRole('button', { name: '保存' });
-    await userEvent.click(saveBtn);
+    // 保存ボタンを押しても updateFn は呼ばれない。
+    // Phase E: 入力エラーの段階で止まるため、反映先ダイアログも出ない。
+    await userEvent.click(screen.getByRole('button', { name: '保存' }));
 
+    expect(screen.queryByTestId('pfv-scope-submit')).toBeNull();
     expect(updateFn).not.toHaveBeenCalled();
   });
 
@@ -614,8 +640,7 @@ describe('PatientFixedVisitsPanel', () => {
     });
 
     // 保存ボタンクリック → 通る
-    const saveBtn = screen.getByRole('button', { name: '保存' });
-    await userEvent.click(saveBtn);
+    await saveAndConfirmScope();
 
     await waitFor(() => {
       expect(updateFn).toHaveBeenCalledTimes(1);
@@ -654,8 +679,7 @@ describe('PatientFixedVisitsPanel', () => {
     fireEvent.change(course2, { target: { value: 'bbbbbbbb-0000-0000-0000-000000000002' } });
 
     // 保存
-    const saveBtn = screen.getByRole('button', { name: '保存' });
-    await userEvent.click(saveBtn);
+    await saveAndConfirmScope();
 
     await waitFor(() => {
       expect(updateFn).toHaveBeenCalledTimes(1);
@@ -707,8 +731,7 @@ describe('PatientFixedVisitsPanel', () => {
     await userEvent.click(checkboxes[0]);
 
     // 保存
-    const saveBtn = screen.getByRole('button', { name: '保存' });
-    await userEvent.click(saveBtn);
+    await saveAndConfirmScope();
 
     await waitFor(() => {
       expect(updateFn).toHaveBeenCalledTimes(1);
@@ -821,8 +844,7 @@ describe('PatientFixedVisitsPanel', () => {
     fireEvent.change(course2, { target: { value: 'bbbbbbbb-0000-0000-0000-000000000002' } });
 
     // 保存
-    const saveBtn = screen.getByRole('button', { name: '保存' });
-    await userEvent.click(saveBtn);
+    await saveAndConfirmScope();
 
     await waitFor(() => {
       expect(updateFn).toHaveBeenCalledTimes(1);
@@ -901,8 +923,7 @@ describe('PatientFixedVisitsPanel', () => {
       fireEvent.change(subSelect, { target: { value: TSUGA_ID } });
 
       // 保存
-      const saveBtn = screen.getByRole('button', { name: '保存' });
-      await userEvent.click(saveBtn);
+      await saveAndConfirmScope();
 
       await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
       const call = updateFn.mock.calls[0][0] as {
@@ -919,8 +940,7 @@ describe('PatientFixedVisitsPanel', () => {
       const checkboxes = screen.getAllByRole('checkbox');
       await userEvent.click(checkboxes[0]);
 
-      const saveBtn = screen.getByRole('button', { name: '保存' });
-      await userEvent.click(saveBtn);
+      await saveAndConfirmScope();
 
       await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
       const call = updateFn.mock.calls[0][0] as {
@@ -1024,7 +1044,7 @@ describe('PatientFixedVisitsPanel', () => {
       render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
 
       await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
-      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+      await saveAndConfirmScope();
 
       // PUT はまだ呼ばれず、確認ダイアログが出る
       const submit = await screen.findByTestId('pfv-save-confirm-submit');
@@ -1081,7 +1101,7 @@ describe('PatientFixedVisitsPanel', () => {
       render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
 
       await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
-      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+      await saveAndConfirmScope();
       await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
       expect(screen.queryByTestId('pfv-save-confirm-submit')).toBeNull();
     });
@@ -1253,7 +1273,7 @@ describe('PatientFixedVisitsPanel', () => {
 
       await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
       await userEvent.click(screen.getByTestId('pfv-locked-checkbox-0'));
-      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+      await saveAndConfirmScope();
 
       await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
       const call = updateFn.mock.calls[0][0] as {
@@ -1349,7 +1369,7 @@ describe('PatientFixedVisitsPanel', () => {
       // 旧 PATCH /pin フローは廃止 — 即時反映しない。
       expect(togglePinFn).not.toHaveBeenCalled();
 
-      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+      await saveAndConfirmScope();
       await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
       const call = updateFn.mock.calls[0][0] as {
         items: { movability?: string; is_pinned?: boolean }[];
@@ -1400,7 +1420,7 @@ describe('PatientFixedVisitsPanel', () => {
       expect(screen.getByTestId('pfv-locked-checkbox-0')).toBeChecked();
       expect(screen.getByTestId('pfv-locked-checkbox-2')).toBeChecked();
 
-      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+      await saveAndConfirmScope();
       await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
       const call = updateFn.mock.calls[0][0] as {
         items: { weekday: number; movability?: string; is_pinned?: boolean }[];
@@ -1438,7 +1458,7 @@ describe('PatientFixedVisitsPanel', () => {
       await userEvent.click(await screen.findByTestId('pfv-unlock-all-button'));
       expect(screen.getByTestId('pfv-locked-checkbox-0')).not.toBeChecked();
 
-      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+      await saveAndConfirmScope();
       await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
       const call = updateFn.mock.calls[0][0] as {
         items: { movability?: string; is_pinned?: boolean }[];
@@ -1511,7 +1531,7 @@ describe('PatientFixedVisitsPanel', () => {
       render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
 
       await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
-      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+      await saveAndConfirmScope();
 
       await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
       const err = await screen.findByTestId('pfv-form-error');
@@ -1520,6 +1540,270 @@ describe('PatientFixedVisitsPanel', () => {
       expect(toast.error).toHaveBeenCalledWith(
         expect.stringContaining('月曜 枠0 のサブ拠点が主担当拠点と重複しています。'),
       );
+    });
+  });
+
+  // ─── Phase E: 反映先の事前確認 (add-visit-anywhere-design.md §6) ────────────
+  // 欠陥 6 の根治: 保存は無確認で「今日の週」を作り直していた。
+  // 既定は PO 決定 8 に従い、週文脈なし = 型だけ / 週文脈あり = 型 + その週。
+  describe('Phase E: 反映先の事前確認', () => {
+    // 2026 年 ISO 第 38 週 = 9/14(月)〜9/20(日)。今日 (9/7 週) を含まない週を使い、
+    // 「対象週に今日が含まれます」の警告と切り分ける。
+    const ISO_YEAR = 2026;
+    const ISO_WEEK = 38;
+
+    function makeVisit(over: Record<string, unknown>) {
+      return {
+        id: '00000000-0000-0000-0000-0000000000aa',
+        patient_id: PATIENT_ID,
+        visit_date: '2026-09-14',
+        start_time: '09:30:00',
+        end_time: '10:05:00',
+        type: 'regular',
+        status: 'planned',
+        // BE の許可リスト (_RESET_DELETABLE_SOURCES) に含まれる = 作り直しで消える側.
+        source: 'auto',
+        week_pinned: false,
+        staff_name: '高岡',
+        created_at: '2026-09-01T00:00:00',
+        updated_at: '2026-09-01T00:00:00',
+        ...over,
+      };
+    }
+
+    it('E-1. 週文脈なし → 既定は「型だけ変える」・PUT は pattern_only (iso なし)', async () => {
+      const updateFn = vi.fn().mockResolvedValue({ items: [], warnings: [] });
+      setupMocks({ reads: [], updateFn });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+
+      // 既定の選択 = (A) 型だけ
+      expect(await screen.findByTestId('pfv-scope-pattern-only')).toBeChecked();
+      expect(screen.getByTestId('pfv-scope-pattern-and-week')).not.toBeChecked();
+      // (A) では影響プレビューを出さない
+      expect(screen.queryByTestId('pfv-scope-impact')).toBeNull();
+
+      await userEvent.click(screen.getByTestId('pfv-scope-submit'));
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as {
+        change_scope?: string;
+        iso_year?: number;
+        iso_week?: number;
+      };
+      expect(call.change_scope).toBe('pattern_only');
+      expect(call.iso_year).toBeUndefined();
+      expect(call.iso_week).toBeUndefined();
+      expect(toast.success).toHaveBeenCalledWith(
+        '固定枠を保存しました（既存の週の予定は変えていません）',
+      );
+    });
+
+    it('E-2. 週文脈あり → 既定は「型 + その週」・PUT に iso_year/iso_week が乗る', async () => {
+      const updateFn = vi.fn().mockResolvedValue({
+        items: [],
+        warnings: [],
+        week_sync: { visits_regenerated: 2, visits_soft_deleted: 1 },
+      });
+      setupMocks({ reads: [], updateFn, visits: [makeVisit({})] });
+      render(
+        <PatientFixedVisitsPanel patientId={PATIENT_ID} isoYear={ISO_YEAR} isoWeek={ISO_WEEK} />,
+      );
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+
+      expect(await screen.findByTestId('pfv-scope-pattern-and-week')).toBeChecked();
+      // 週文脈がある = 対象週は固定なので週セレクトは出さない
+      expect(screen.queryByTestId('pfv-scope-week-select')).toBeNull();
+      // 対象週の日付範囲を明記する (9/14〜9/20)
+      expect(screen.getByText('型と 9/14 週（9/14〜9/20） の予定も作り直す')).toBeInTheDocument();
+
+      await userEvent.click(screen.getByTestId('pfv-scope-submit'));
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as {
+        change_scope?: string;
+        iso_year?: number;
+        iso_week?: number;
+      };
+      expect(call.change_scope).toBe('pattern_and_week');
+      expect(call.iso_year).toBe(ISO_YEAR);
+      expect(call.iso_week).toBe(ISO_WEEK);
+      expect(toast.success).toHaveBeenCalledWith(
+        expect.stringContaining('の予定を作り直しました（消 1・作 2）'),
+      );
+    });
+
+    it('E-3. (B) の影響プレビュー: 保護なし = 消える / week_pinned・manual_week = 保護', async () => {
+      setupMocks({
+        reads: [],
+        visits: [
+          makeVisit({ id: '00000000-0000-0000-0000-0000000000a1', staff_name: '高岡' }),
+          makeVisit({
+            id: '00000000-0000-0000-0000-0000000000a2',
+            visit_date: '2026-09-15',
+            week_pinned: true,
+            staff_name: '熊澤',
+          }),
+          makeVisit({
+            id: '00000000-0000-0000-0000-0000000000a3',
+            visit_date: '2026-09-16',
+            source: 'manual_week',
+            staff_name: '髙梨',
+          }),
+        ],
+      });
+      render(
+        <PatientFixedVisitsPanel patientId={PATIENT_ID} isoYear={ISO_YEAR} isoWeek={ISO_WEEK} />,
+      );
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+
+      const removed = await screen.findByTestId('pfv-scope-removed');
+      expect(removed).toHaveTextContent('消える予定 1 件');
+      expect(screen.getByTestId('pfv-scope-removed-list')).toHaveTextContent('9/14(月) 09:30 高岡');
+
+      const prot = screen.getByTestId('pfv-scope-protected');
+      expect(prot).toHaveTextContent('保護される予定 2 件');
+      expect(prot).toHaveTextContent('今週固定・今週のみ・取込・実施済み/手動');
+      const protList = screen.getByTestId('pfv-scope-protected-list');
+      expect(protList).toHaveTextContent('熊澤');
+      expect(protList).toHaveTextContent('髙梨');
+
+      // 型は月曜 1 件のみ。月曜 (9/14) は保護日ではないので作られる。
+      expect(screen.getByTestId('pfv-scope-created')).toHaveTextContent('作られる予定 1 件');
+      // 対象週 (9/14〜9/20) に今日 (9/7 週) は含まれない
+      expect(screen.queryByTestId('pfv-scope-warn-today')).toBeNull();
+    });
+
+    it('E-4. 「やめる」で閉じ、PUT は走らない', async () => {
+      const updateFn = vi.fn().mockResolvedValue({ items: [], warnings: [] });
+      setupMocks({ reads: [], updateFn });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+      await userEvent.click(await screen.findByTestId('pfv-scope-cancel'));
+
+      await waitFor(() => expect(screen.queryByTestId('pfv-scope-submit')).toBeNull());
+      expect(updateFn).not.toHaveBeenCalled();
+    });
+
+    it('E-5. 変更内容の差分が 追加 / 変更 / 削除 で出る', async () => {
+      setupMocks({
+        reads: [
+          {
+            id: 'e-diff-mon',
+            patient_id: PATIENT_ID,
+            weekday: 0,
+            start_time: '09:30:00',
+            duration_min: 35,
+            mode: 'normal',
+            course_template_id: null,
+            slot_index: 0,
+            is_pinned: false,
+            movability: 'unknown',
+            created_at: '2026-01-01T00:00:00',
+            updated_at: '2026-01-01T00:00:00',
+          },
+        ],
+      });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      // 月曜の開始時刻を 12:00 に変更 + 木曜を追加
+      fireEvent.change(await screen.findByLabelText('月 開始時刻'), {
+        target: { value: '12:00' },
+      });
+      await userEvent.click(screen.getByLabelText('木曜日 訪問あり'));
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+
+      const diff = await screen.findByTestId('pfv-scope-diff');
+      expect(diff).toHaveTextContent('月 09:30(35分) → 12:00(35分) に変更');
+      expect(diff).toHaveTextContent('木');
+      expect(diff).toHaveTextContent('を追加');
+    });
+
+    it('E-6. 週文脈なしで「来週」を選ぶ → PUT に来週の iso_year/iso_week が乗る', async () => {
+      const updateFn = vi.fn().mockResolvedValue({
+        items: [],
+        warnings: [],
+        week_sync: { visits_regenerated: 1, visits_soft_deleted: 0 },
+      });
+      setupMocks({ reads: [], updateFn });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+
+      // (B) を選び、対象週を「来週」に切り替える
+      await userEvent.click(await screen.findByTestId('pfv-scope-pattern-and-week'));
+      fireEvent.change(screen.getByTestId('pfv-scope-week-select'), { target: { value: 'next' } });
+      await userEvent.click(screen.getByTestId('pfv-scope-submit'));
+
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as { iso_year?: number; iso_week?: number };
+      const now = new Date();
+      const expected = isoWeekFromLocalDate(
+        new Date(now.getFullYear(), now.getMonth(), now.getDate() + 7),
+      );
+      expect(call.iso_year).toBe(expected.isoYear);
+      expect(call.iso_week).toBe(expected.isoWeek);
+    });
+
+    it('E-7. mode=special は反映先ダイアログを出さず、change_scope 無しで保存する', async () => {
+      const updateFn = vi.fn().mockResolvedValue({ items: [], warnings: [] });
+      setupMocks({ reads: [], updateFn });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(screen.getByRole('tab', { name: '特別週' }));
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      expect(screen.queryByTestId('pfv-scope-submit')).toBeNull();
+      const call = updateFn.mock.calls[0][0] as {
+        mode: string;
+        change_scope?: string;
+        iso_year?: number;
+      };
+      expect(call.mode).toBe('special');
+      expect(call.change_scope).toBeUndefined();
+      expect(call.iso_year).toBeUndefined();
+    });
+
+    it('E-8. 対象週に今日が含まれる / 打刻済みがある → それぞれ ⚠ が出る', async () => {
+      const now = new Date();
+      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+        now.getDate(),
+      ).padStart(2, '0')}`;
+      setupMocks({
+        reads: [],
+        visits: [
+          // 打刻して completed になった訪問 (status で事前フィルタすると消えて見えなくなる)
+          makeVisit({
+            id: '00000000-0000-0000-0000-0000000000b1',
+            visit_date: todayStr,
+            status: 'completed',
+            latest_checkin: { id: '00000000-0000-0000-0000-0000000000c1' },
+          }),
+        ],
+      });
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+      // 既定 (A) から (B) へ切り替える (対象週の既定 = 今日の週)
+      await userEvent.click(await screen.findByTestId('pfv-scope-pattern-and-week'));
+
+      expect(await screen.findByTestId('pfv-scope-warn-today')).toHaveTextContent(
+        '対象週に今日が含まれます',
+      );
+      expect(screen.getByTestId('pfv-scope-warn-checkin')).toHaveTextContent('打刻済みの予定');
+      // completed は許可リスト外 = 消えない
+      expect(screen.getByTestId('pfv-scope-removed')).toHaveTextContent('消える予定 0 件');
+      expect(screen.getByTestId('pfv-scope-protected')).toHaveTextContent('保護される予定 1 件');
     });
   });
 });

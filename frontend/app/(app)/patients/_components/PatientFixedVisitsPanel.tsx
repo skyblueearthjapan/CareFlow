@@ -75,8 +75,12 @@ import {
   DEFAULT_SERVICE_MINUTES,
   type WeeklyPattern,
 } from '@/lib/schemas/patient';
-import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 import { isAdminRole } from '@/lib/rbac';
+import {
+  FixedVisitScopeConfirmDialog,
+  type FixedVisitScopeChoice,
+  type PfvSlotSummary,
+} from './FixedVisitScopeConfirmDialog';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -878,8 +882,10 @@ interface ModePanelProps {
   weeklyPattern?: WeeklyPattern | null;
   readonly?: boolean;
   /**
-   * Wave U-2: 保存時に今週へ即反映する対象 ISO 週 (change_scope='pattern_and_week').
-   * 週文脈が無い呼び出し (患者マスタ直) では現在の ISO 週を算出して使う。
+   * Phase E (設計 §6): 週を表示中の画面から開かれたときの ISO 週 (= 週文脈).
+   * 反映先確認ダイアログの既定が「型と この週も作り直す」になる (PO 決定 8)。
+   * 省略 (患者マスタ直) のときは既定が「型だけ変える」になり、作り直す週は
+   * ダイアログ内で「今日の週 / 来週」から選ぶ。
    */
   isoYear?: number;
   isoWeek?: number;
@@ -926,12 +932,28 @@ function ModePanel({
   const [liveWarnings, setLiveWarnings] = React.useState<PatientFixedVisitWarning[]>([]);
   const [liveChecking, setLiveChecking] = React.useState(false);
   // 案Z: 警告があるままの保存は確認ダイアログ必須。
+  // Phase E (設計 §6): 反映先の選択結果を持ち回り、2 周目の保存でも同じ scope を使う。
   const [saveConfirm, setSaveConfirm] = React.useState<{
     warnings: PatientFixedVisitWarning[];
+    choice: FixedVisitScopeChoice | null;
+  } | null>(null);
+  // Phase E (設計 §6-2): 保存ボタン押下 → まず反映先の確認 (案Z 警告確認より前)。
+  const [scopeConfirm, setScopeConfirm] = React.useState<{
+    items: PatientFixedVisitV2Base[];
   } | null>(null);
 
   // サーバー状態そのままの DayRows. 未保存編集の有無 (isDirty) 判定に使う.
   const serverRows = React.useMemo(() => readsToDayRows(reads, baseMinutes), [reads, baseMinutes]);
+  // Phase E: 反映先確認ダイアログの「変更内容」差分の左辺 (= 保存前のサーバー状態).
+  const serverSlots = React.useMemo<PfvSlotSummary[]>(
+    () =>
+      reads.map((r) => ({
+        weekday: r.weekday,
+        start_time: r.start_time.slice(0, 5),
+        duration_min: r.duration_min,
+      })),
+    [reads],
+  );
   // DayRow はプリミティブと文字列配列のみで構成されるため JSON 比較で十分.
   const isDirty = React.useMemo(
     () => JSON.stringify(rows) !== JSON.stringify(serverRows),
@@ -1071,8 +1093,29 @@ function ModePanel({
   };
 
   // ── 保存 ─────────────────────────────────────────────────────────────
-  // skipWarningConfirm: 確認ダイアログで「このまま保存」を選んだ 2 周目。
-  const handleSave = async (skipWarningConfirm = false) => {
+  // Phase E (設計 §6-2): 保存ボタンは「反映先の確認」を必ず挟む (normal のみ)。
+  // 'special' は今週が特別週とは限らないため今週反映の対象外 = 従来どおり即保存フロー。
+  const handleSaveClick = () => {
+    setFieldErrors({});
+    setFormError(null);
+
+    // W37 Phase 3-A: 同一コースエラーがあれば保存ブロック
+    if (Object.keys(rowErrors).length > 0) {
+      setFieldErrors(rowErrors);
+      setFormError('入力エラーがあります。コース 1 と コース 2 は異なるコースを選択してください。');
+      return;
+    }
+
+    if (mode !== 'normal') {
+      void handleSave(null);
+      return;
+    }
+    setScopeConfirm({ items: dayRowsToItems(rows, requiresMultipleStaff) });
+  };
+
+  // choice: 反映先の確認結果。null = 'special' モード (change_scope を送らない従来ボディ)。
+  // skipWarningConfirm: 案Z の確認ダイアログで「このまま保存」を選んだ 2 周目。
+  const handleSave = async (choice: FixedVisitScopeChoice | null, skipWarningConfirm = false) => {
     setFieldErrors({});
     setFormError(null);
 
@@ -1084,24 +1127,22 @@ function ModePanel({
     }
 
     const items = dayRowsToItems(rows, requiresMultipleStaff);
-    // Wave U-2 (設計 §2.1): 固定枠編集の既定は A (型 + 今週即反映)。choice UI は出さない
-    //   (編集画面の文脈上、型を編集する意図が明確なため)。
-    //   週文脈が無い呼び出し (患者マスタ直) では現在の ISO 週を算出して使う。
-    //   'special' モードは今週が特別週とは限らないため今週反映は付けない (normal のみ)。
-    const applyToWeek = mode === 'normal';
-    const cur = isoWeekFromLocalDate(new Date());
-    const effIsoYear = isoYear ?? cur.isoYear;
-    const effIsoWeek = isoWeek ?? cur.isoWeek;
+    // Phase E (設計 §6・PO 決定 8): 反映先はユーザーの明示選択。既定は「型だけ」で、
+    // 週を作り直すのは (B) を選んだときだけ。対象週も確認ダイアログで決まった値を使う
+    // (旧実装が無確認で「今日の週」を作り直していた欠陥 6 の根治)。
+    const applyToWeek = choice?.changeScope === 'pattern_and_week';
     const result = patientFixedVisitsBulkPutSchema.safeParse(
-      applyToWeek
-        ? {
-            mode,
-            items,
-            change_scope: 'pattern_and_week',
-            iso_year: effIsoYear,
-            iso_week: effIsoWeek,
-          }
-        : { mode, items },
+      choice === null
+        ? { mode, items }
+        : applyToWeek
+          ? {
+              mode,
+              items,
+              change_scope: 'pattern_and_week',
+              iso_year: choice.isoYear,
+              iso_week: choice.isoWeek,
+            }
+          : { mode, items, change_scope: 'pattern_only' },
     );
 
     if (!result.success) {
@@ -1130,7 +1171,7 @@ function ModePanel({
         const check = await validateMut.mutateAsync({ mode, items });
         if (check.warnings.length > 0) {
           setLiveWarnings(check.warnings);
-          setSaveConfirm({ warnings: check.warnings });
+          setSaveConfirm({ warnings: check.warnings, choice });
           return;
         }
       } catch {
@@ -1140,16 +1181,21 @@ function ModePanel({
 
     try {
       const res = await updateMut.mutateAsync(result.data);
-      // Wave U-2: A 経路 (normal) は今週にも反映。week_sync 欠落時は U-1 と同じ警告。
+      // Phase E (設計 §6-2): 事後トーストは「どの週を・何件」作り直したかを明示する。
       if (applyToWeek) {
         if (res?.week_sync == null) {
           toast.warning(
-            '固定枠を保存しましたが、今週のスケジュールへの反映は行われませんでした。' +
-              '「週を生成」を再実行すると反映されます',
+            `固定枠を保存しましたが、${choice?.weekLabel ?? '対象週'}のスケジュールへの` +
+              '反映は行われませんでした。「週を生成」を再実行すると反映されます',
           );
         } else {
-          toast.success('固定枠を保存し、今週のスケジュールにも反映しました');
+          toast.success(
+            `固定枠を保存し、${choice?.weekLabel ?? '対象週'}の予定を作り直しました` +
+              `（消 ${res.week_sync.visits_soft_deleted}・作 ${res.week_sync.visits_regenerated}）`,
+          );
         }
+      } else if (choice !== null) {
+        toast.success('固定枠を保存しました（既存の週の予定は変えていません）');
       } else {
         toast.success('固定枠を保存しました');
       }
@@ -1375,13 +1421,36 @@ function ModePanel({
           <Button
             type="button"
             size="sm"
-            onClick={() => void handleSave()}
-            disabled={isBusy || isLoading}
+            onClick={handleSaveClick}
+            // 保存直前の dry-run 検査 (validate) の実行中も二重押しを止める。
+            disabled={isBusy || isLoading || validateMut.isPending}
           >
             {updateMut.isPending ? '保存中...' : '保存'}
           </Button>
         </div>
       )}
+
+      {/* Phase E (設計 §6-2): 反映先の事前確認。順序 = 反映先確認 → 案Z 警告確認 → PUT。 */}
+      {scopeConfirm ? (
+        <FixedVisitScopeConfirmDialog
+          open
+          patientId={patientId}
+          beforeSlots={serverSlots}
+          afterSlots={scopeConfirm.items.map((it) => ({
+            weekday: it.weekday,
+            start_time: it.start_time,
+            duration_min: it.duration_min,
+          }))}
+          weekContext={isoYear !== undefined && isoWeek !== undefined ? { isoYear, isoWeek } : null}
+          // 検査 → PUT が終わるまでダイアログは開いたままにし、ボタンだけ止める
+          // (押しっぱなしの二重送信と「押したのに何も起きない」を同時に防ぐ)。
+          submitting={updateMut.isPending || validateMut.isPending}
+          onCancel={() => setScopeConfirm(null)}
+          onConfirm={(choice) => {
+            void handleSave(choice).finally(() => setScopeConfirm(null));
+          }}
+        />
+      ) : null}
 
       {/* 案Z: 警告があるままの保存の確認 (必須)。 */}
       <Dialog open={saveConfirm !== null} onOpenChange={(open) => !open && setSaveConfirm(null)}>
@@ -1415,8 +1484,10 @@ function ModePanel({
               variant="destructive"
               disabled={updateMut.isPending}
               onClick={() => {
+                // 反映先の選択は 1 周目で確定済み。2 周目もその scope を引き継ぐ。
+                const choice = saveConfirm?.choice ?? null;
                 setSaveConfirm(null);
-                void handleSave(true);
+                void handleSave(choice, true);
               }}
               data-testid="pfv-save-confirm-submit"
             >
@@ -1515,9 +1586,10 @@ export interface PatientFixedVisitsPanelProps {
    */
   requiresMultipleStaff?: boolean;
   /**
-   * Wave U-2: 保存時に今週へ即反映する対象 ISO 週 (change_scope='pattern_and_week').
-   * 週を表示中のダイアログ (PatientScheduleDetailDialog) 経由では表示中の週を配線する。
-   * 患者マスタ直の呼び出しでは省略 (ModePanel が現在の ISO 週を算出する)。
+   * Phase E (設計 §6・PO 決定 8): 週を表示中の画面から開かれたときの ISO 週。
+   * 渡すと保存時の反映先確認ダイアログの既定が「型と この週も作り直す」になる。
+   * 患者マスタ直の呼び出しでは省略 = 既定は「型だけ変える」(今日の週を勝手に
+   * 作り直さない)。
    */
   isoYear?: number;
   isoWeek?: number;
