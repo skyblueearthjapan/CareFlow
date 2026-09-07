@@ -193,7 +193,9 @@ export function PlacementConfirmDialog({
 
   // 候補が 1 件だけならセレクトを出さずテキストで見せる (選ぶ余地がない)。
   const singleOption = options.length === 1 ? options[0]! : null;
-  const canConfirm = templateId !== '' && startHM !== '';
+  // 候補が 0 件 (拠点に M すら無い等) のときは templateId が空のままなので押させない。
+  // options を明示的に見ておくことで「押せるのに飛ばない」状態を作らない。
+  const canConfirm = options.length > 0 && templateId !== '' && startHM !== '';
 
   // 選択肢は 9:00〜18:00 で固定 (枠からはみ出す選択は盤面のガードが警告する)。
   const timeOptions = START_TIME_OPTIONS;

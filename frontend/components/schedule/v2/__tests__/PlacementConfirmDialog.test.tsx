@@ -210,6 +210,23 @@ describe('PlacementConfirmDialog — コース候補 0 / 1 / 2 件', () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
+  // 週ビューは列でコースが確定するので defaultTemplateId が入るが、その template が
+  // 手元の一覧から消えている (再読込前など) と候補は 0 件になる。候補に無い id で
+  // 「配置する」が押せてしまうと、選べないコースへ飛ばすことになる。
+  it('0 件: defaultTemplateId があっても候補が空なら配置不可', () => {
+    const { onConfirm } = renderDialog({
+      target: {
+        weekday: 3,
+        staffName: null,
+        courseOptions: [],
+        defaultTemplateId: TPL_A, // 列から来た id (一覧には無い)
+      },
+    });
+    expect(screen.getByTestId('pcd-confirm')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('pcd-confirm'));
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
   it('別拠点で候補外になったときは理由を出す (M に入ることを明示)', () => {
     renderDialog({
       target: {

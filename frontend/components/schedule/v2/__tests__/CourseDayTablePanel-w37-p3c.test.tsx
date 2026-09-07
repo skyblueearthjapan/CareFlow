@@ -39,7 +39,10 @@ const { specialState } = vi.hoisted(() => ({
 
 const { dndState, mockToast } = vi.hoisted(() => ({
   dndState: {
-    capturedHandlers: { onDragEnd: undefined as undefined | ((e: unknown) => Promise<void>) },
+    capturedHandlers: {
+      onDragEnd: undefined as undefined | ((e: unknown) => Promise<void>),
+      onDragStart: undefined as undefined | ((e: unknown) => void),
+    },
   },
   mockToast: {
     warning: vi.fn(),
@@ -61,11 +64,14 @@ vi.mock('@dnd-kit/core', () => ({
   DndContext: ({
     children,
     onDragEnd,
+    onDragStart,
   }: {
     children: React.ReactNode;
     onDragEnd?: (e: unknown) => Promise<void>;
+    onDragStart?: (e: unknown) => void;
   }) => {
     dndState.capturedHandlers.onDragEnd = onDragEnd;
+    dndState.capturedHandlers.onDragStart = onDragStart;
     return <>{children}</>;
   },
   DragOverlay: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -456,11 +462,15 @@ vi.mock('@/lib/api/patientSync', () => ({
 }));
 
 /** 全テスト共通: QueryClientProvider 配下で panel を描画する. */
-function renderPanel() {
+function renderPanel({ canEdit = true }: { canEdit?: boolean } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <CourseDayTablePanel weekStart={monday(2026, 5, 4)} officeId="office-honten" canEdit={true} />
+      <CourseDayTablePanel
+        weekStart={monday(2026, 5, 4)}
+        officeId="office-honten"
+        canEdit={canEdit}
+      />
     </QueryClientProvider>,
   );
 }
@@ -1377,6 +1387,298 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
       markId: MARK_ID,
       payload: { course_template_id: 'tpl-M', start_time: '09:00' },
     });
+  });
+
+  // ── 2026-09-08 Phase 2: 週タイムライン (`wtl-col:`) / 週リスト (`cwo-cell:`) ──
+  // 設計 `docs/plans/dnd-all-views-design-2026-09-08.md` §2-1 / §3 Phase 2 / §4。
+  // 週タイムラインは時間軸あり (同曜日なら即配置)・週リストは時間軸なし (必ずモーダル)。
+
+  /**
+   * 週タイムラインの列へのドロップ引数 (`wtl-col:{templateId}:{weekday}`)。
+   * `open=false` = 休の列 (droppable が data.open に載せる本番と同じ形)。
+   */
+  function dropOnWeekTimelineCol(
+    activeId: string,
+    templateId: string,
+    weekday: number,
+    hm: string,
+    open = true,
+  ) {
+    const overTop = 10;
+    return {
+      active: {
+        id: activeId,
+        rect: { current: { translated: { top: overTop + (timeToY(hm) ?? 0) } } },
+      },
+      over: {
+        id: `wtl-col:${templateId}:${weekday}`,
+        rect: { top: overTop },
+        data: { current: { templateId, weekday, open } },
+      },
+    };
+  }
+
+  /** 週リストのセルへのドロップ引数 (`cwo-cell:{templateId}:{weekday}`)。 */
+  function dropOnWeekOverviewCell(
+    activeId: string,
+    templateId: string,
+    weekday: number,
+    open = true,
+  ) {
+    return {
+      active: { id: activeId, rect: { current: { translated: null } } },
+      over: {
+        id: `cwo-cell:${templateId}:${weekday}`,
+        rect: null,
+        data: { current: { templateId, weekday, open } },
+      },
+    };
+  }
+
+  it('WTL-1. ⭐ を同じ曜日の週タイムライン列へ落とすと、モーダルなしでスナップ時刻に配置する', async () => {
+    specialState.place.mockResolvedValue({ mark: {}, visit_id: 'v-1' });
+    setupTicket({ weekday: 0 }); // 月曜のチケット
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnWeekTimelineCol(`special-ticket:${MARK_ID}`, 'tpl-A', 0, '10:15'),
+      );
+    });
+    // 日タイムラインと同じ即配置 (週だけ確認を挟むと操作感が割れる)。
+    expect(screen.queryByTestId('pcd-root')).toBeNull();
+    expect(specialState.place).toHaveBeenCalledOnce();
+    expect(specialState.place.mock.calls[0][0]).toEqual({
+      markId: MARK_ID,
+      payload: { course_template_id: 'tpl-A', start_time: '10:15' },
+    });
+  });
+
+  it('WTL-2. ⭐ を別曜日の週タイムライン列へ落とすと確認モーダル → 確定で weekday つきの place', async () => {
+    specialState.place.mockResolvedValue({ mark: {}, visit_id: 'v-1' });
+    setupTicket({ weekday: 0 }); // 月曜のチケットを木曜の列へ
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnWeekTimelineCol(`special-ticket:${MARK_ID}`, 'tpl-A', 3, '10:15'),
+      );
+    });
+    expect(specialState.place).not.toHaveBeenCalled();
+    expect(screen.getByTestId('pcd-warning').textContent).toContain(
+      'これは月曜日の予定ですが、木曜日に配置して本当によろしいですか？',
+    );
+    // コースは列で確定しているので選ばせない (表示のみ)。
+    expect(screen.getByTestId('pcd-course-text').textContent).toContain('A');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-confirm'));
+    });
+    expect(specialState.place).toHaveBeenCalledOnce();
+    expect(specialState.place.mock.calls[0][0]).toEqual({
+      markId: MARK_ID,
+      payload: { course_template_id: 'tpl-A', start_time: '09:00', weekday: 3 },
+    });
+  });
+
+  it('WTL-3. プールカードを週タイムライン列へ落とすと、その列の曜日・スナップ時刻で place-and-fix する', async () => {
+    mockPlaceAndFix.mockResolvedValue({
+      visit: {},
+      fixed_visit: null,
+      visits: [],
+      fixed_visits: [],
+      visit_group_id: null,
+    });
+    specialState.tickets = [];
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      patients: [
+        {
+          id: PATIENT_UUID_2,
+          name: '鈴木 花子',
+          kana: null,
+          status: 'active',
+          primary_office_id: 'office-honten',
+          weekly_pattern: { service_minutes: 45 },
+          requires_multiple_staff: false,
+        },
+      ],
+    });
+    renderPanel();
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnWeekTimelineCol(`pool-patient:${PATIENT_UUID_2}`, 'tpl-A', 2, '11:00'),
+      );
+    });
+    // 時刻が決まる列なのでモーダルは挟まない (日タイムラインと同じ)。
+    expect(screen.queryByTestId('pcd-root')).toBeNull();
+    expect(mockPlaceAndFix).toHaveBeenCalledOnce();
+    const arg = mockPlaceAndFix.mock.calls[0][0];
+    expect(arg.weekday).toBe(2);
+    expect(arg.course_template_id).toBe('tpl-A');
+    expect(arg.start_time).toBe('11:00');
+    expect(arg.duration_min).toBe(45);
+    expect(arg.fix_pattern).toBe(false);
+  });
+
+  it('WTL-4. 週タイムライン列でも 18:00 をはみ出す位置は警告のみ (place を呼ばない)', async () => {
+    setupTicket({ weekday: 0, serviceMinutes: 60 });
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnWeekTimelineCol(`special-ticket:${MARK_ID}`, 'tpl-A', 0, '17:45'),
+      );
+    });
+    expect(specialState.place).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('pcd-root')).toBeNull();
+    expect(mockToast.warning).toHaveBeenCalledWith(
+      'この位置には置けません（9:00〜18:00 の範囲に収まるように配置してください）',
+    );
+  });
+
+  it('CWO-1. ⭐ を週リストのセルへ落とすと、同じ曜日でも必ず確認モーダルを通る', async () => {
+    specialState.place.mockResolvedValue({ mark: {}, visit_id: 'v-1' });
+    setupTicket({ weekday: 0 });
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnWeekOverviewCell(`special-ticket:${MARK_ID}`, 'tpl-A', 0),
+      );
+    });
+    // 時間軸が無いので時刻を決めさせる。曜日は同じなので警告は出さない。
+    expect(specialState.place).not.toHaveBeenCalled();
+    expect(screen.getByTestId('pcd-root')).toBeInTheDocument();
+    expect(screen.queryByTestId('pcd-warning')).toBeNull();
+    // コースは列で確定 → select ではなくテキスト表示。
+    expect(screen.getByTestId('pcd-course-text').textContent).toContain('A');
+    expect(screen.queryByTestId('pcd-course-select')).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-confirm'));
+    });
+    expect(specialState.place).toHaveBeenCalledOnce();
+    expect(specialState.place.mock.calls[0][0]).toEqual({
+      markId: MARK_ID,
+      payload: { course_template_id: 'tpl-A', start_time: '09:00' },
+    });
+  });
+
+  it('CWO-2. 週リストのセルへ落とした ⭐ も、別曜日なら警告つきで weekday を送る', async () => {
+    specialState.place.mockResolvedValue({ mark: {}, visit_id: 'v-1' });
+    setupTicket({ weekday: 0 });
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnWeekOverviewCell(`special-ticket:${MARK_ID}`, 'tpl-A', 4),
+      );
+    });
+    expect(screen.getByTestId('pcd-warning').textContent).toContain(
+      'これは月曜日の予定ですが、金曜日に配置して本当によろしいですか？',
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('pcd-confirm'));
+    });
+    expect(specialState.place.mock.calls[0][0]).toEqual({
+      markId: MARK_ID,
+      payload: { course_template_id: 'tpl-A', start_time: '09:00', weekday: 4 },
+    });
+  });
+
+  // 週タブでも掴んでいるものが見えていないと「消えた」と読まれる。DragOverlay は
+  // DndContext 直下 (タブの外) にあるので、週ビュー表示中でもゴーストが出る。
+  it('WTL-5. 週タブ表示中でも DragOverlay のゴーストが出る', async () => {
+    setupTicket({ weekday: 0 });
+    // 盤面の既定タブは「週」 (= 週タイムライン / 週リストを見ている状態)。
+    expect(screen.getByTestId('course-week-overview-panel')).toBeInTheDocument();
+    expect(screen.getAllByTestId(`special-visit-ticket-card-${MARK_ID}`)).toHaveLength(1);
+    await act(async () => {
+      dndState.capturedHandlers.onDragStart!({ active: { id: `special-ticket:${MARK_ID}` } });
+    });
+    // プールの実カード + DragOverlay のゴースト = 2 枚。
+    expect(screen.getAllByTestId(`special-visit-ticket-card-${MARK_ID}`)).toHaveLength(2);
+  });
+
+  // ── 休 (未開講) の列/セルへのドロップ ────────────────────────────────
+  // BE の place / place-and-fix は定員 0 の曜日でも Course を作ってしまう
+  // (`_get_or_create_course_for_template_week`) ため、止められるのは FE だけ。
+  // 「モーダルすら出さない」ことまで固定する (開いてから断るのは二度手間)。
+
+  const CLOSED_WARNING = 'この曜日は開講していません（休）。開いている曜日・コースへ置いてください';
+
+  it('WTL-6. 休の週タイムライン列へ ⭐ を落とすと警告のみ (place もモーダルも無し)', async () => {
+    setupTicket({ weekday: 0 });
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnWeekTimelineCol(`special-ticket:${MARK_ID}`, 'tpl-A', 0, '10:15', false),
+      );
+    });
+    expect(specialState.place).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('pcd-root')).toBeNull();
+    expect(mockToast.warning).toHaveBeenCalledWith(CLOSED_WARNING);
+  });
+
+  it('WTL-7. 休の週タイムライン列へプールカードを落としても place-and-fix しない', async () => {
+    specialState.tickets = [];
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      patients: [
+        {
+          id: PATIENT_UUID_2,
+          name: '鈴木 花子',
+          kana: null,
+          status: 'active',
+          primary_office_id: 'office-honten',
+          weekly_pattern: { service_minutes: 45 },
+          requires_multiple_staff: false,
+        },
+      ],
+    });
+    renderPanel();
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnWeekTimelineCol(`pool-patient:${PATIENT_UUID_2}`, 'tpl-A', 2, '11:00', false),
+      );
+    });
+    expect(mockPlaceAndFix).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('pcd-root')).toBeNull();
+    expect(mockToast.warning).toHaveBeenCalledWith(CLOSED_WARNING);
+  });
+
+  it('CWO-3. 休の週リストのセルへ ⭐ を落とすと警告のみ (確認モーダルも開かない)', async () => {
+    setupTicket({ weekday: 0 });
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnWeekOverviewCell(`special-ticket:${MARK_ID}`, 'tpl-A', 0, false),
+      );
+    });
+    expect(specialState.place).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('pcd-root')).toBeNull();
+    expect(mockToast.warning).toHaveBeenCalledWith(CLOSED_WARNING);
+  });
+
+  // 週ビューは列でコースが確定している = その曜日の担当も決まっている。
+  // 行スタッフを持たない (staffId=null) からと「（担当なし）」と出すのは事実と違う。
+  it('WTL-8. 週ビューのドロップでも、確認モーダルはその曜日の担当者名を出す', async () => {
+    setupStaffWeek({ tickets: [makeTicket({ weekday: 0 })] }); // tpl-A の木(3) は 宇田川
+    await act(async () => {
+      await dndState.capturedHandlers.onDragEnd!(
+        dropOnWeekTimelineCol(`special-ticket:${MARK_ID}`, 'tpl-A', 3, '10:15'),
+      );
+    });
+    expect(screen.getByTestId('pcd-target').textContent).toContain('宇田川 優莉');
+  });
+
+  it('WTL-9. canEdit=false では週ビューに droppable のレイヤを 1 つも描かない', () => {
+    specialState.tickets = [];
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      patients: [],
+    });
+    renderPanel({ canEdit: false });
+    expect(screen.getByTestId('course-week-overview-panel')).toBeInTheDocument();
+    expect(screen.queryAllByTestId(/^(wtl-col-drop|cwo-cell-drop)-/)).toHaveLength(0);
+  });
+
+  // 上の負の検証が「そもそも週ビューに受け皿が無いだけ」で通らないことを示す対。
+  it('WTL-9b. canEdit=true なら同じ画面に droppable のレイヤが出る', () => {
+    specialState.tickets = [];
+    setupHooks({
+      templates: [{ id: 'tpl-A', office_id: 'office-honten', label: 'A', ...baseTpl }],
+      patients: [],
+    });
+    renderPanel({ canEdit: true });
+    expect(screen.queryAllByTestId(/^(wtl-col-drop|cwo-cell-drop)-/).length).toBeGreaterThan(0);
   });
 
   // Phase 2 (日テーブル撤去) で削除したテスト:

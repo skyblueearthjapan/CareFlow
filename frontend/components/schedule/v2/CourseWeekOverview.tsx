@@ -13,6 +13,7 @@
  *   - クリックで `onJumpToDay(weekday)` を呼ぶ → 親側で曜日タブに切替できる。
  */
 import * as React from 'react';
+import { useDroppable } from '@dnd-kit/core';
 
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
@@ -31,6 +32,7 @@ import { PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { haversineKm } from '../WeekdayScheduleCard';
 import { formatEventLabelLines, getStaffEventsForWeekday } from './courseGrid';
 import { PinScopeMenu, type PinScope } from './PinScopeMenu';
+import { buildWeekOverviewCellDroppableId } from './courseDnd';
 import type { AccompanimentBinding } from '../timeline/accompaniment/types';
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
@@ -211,6 +213,55 @@ export interface CourseWeekOverviewProps {
    * 親 (CourseDayTablePanel) が accompaniment.binding を渡す。他利用箇所は未指定で無影響。
    */
   accompaniment?: AccompanimentBinding;
+  /**
+   * ⭐/プールカードのドロップ先として (コース × 曜日) セルを droppable にする
+   * (`docs/plans/dnd-all-views-design-2026-09-08.md` §2-1 Phase 2)。
+   * 既定 false = 読み取り専用のまま (他の呼び出し元の挙動を変えない)。時間軸が
+   * 無いビューなので、ドロップは必ず「配置の確認」モーダルを通る (§2-2)。
+   */
+  dndEnabled?: boolean;
+}
+
+/**
+ * セル全体を 1 つの droppable にする透明レイヤ (設計 §2-1 Phase 2)。
+ * タイムラインの `ColumnDropLayer` と同じ作り: セルの中身 (患者リストのクリックや
+ * ピン留め) を邪魔しないよう pointer-events は持たせない。
+ */
+function CellDropLayer({
+  templateId,
+  weekday,
+  open,
+}: {
+  templateId: string;
+  weekday: number;
+  /**
+   * そのセルが開講しているか (`!isRest`)。**BE は定員 0 の曜日でも Course を作る**
+   * (`_get_or_create_course_for_template_week`) ので、休への配置を止められるのは FE。
+   * droppable は残して盤面が warning で理由を出す (無反応だと壊れて見える)。
+   */
+  open: boolean;
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: buildWeekOverviewCellDroppableId(templateId, weekday),
+    data: { templateId, weekday, open },
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        'pointer-events-none absolute inset-0 z-[1] transition-colors',
+        isOver &&
+          (open
+            ? 'bg-brand-primary/10 outline outline-2 -outline-offset-2 outline-brand-primary'
+            : // 休: 受け皿ではないので光らせない (期待させない)。
+              'bg-text-muted/10 outline outline-2 -outline-offset-2 outline-border-default'),
+      )}
+      data-testid={`cwo-cell-drop-${templateId}-${weekday}`}
+      data-dnd-over={isOver ? 'true' : 'false'}
+      data-drop-open={open ? 'true' : 'false'}
+      aria-hidden="true"
+    />
+  );
 }
 
 export function CourseWeekOverview({
@@ -233,6 +284,7 @@ export function CourseWeekOverview({
   freeGapsByCell,
   officeLatLngById,
   accompaniment,
+  dndEnabled = false,
 }: CourseWeekOverviewProps) {
   // 新人同行 (§7.2): 選択UIはタイムライン専用のため、週リストは inactive バッジのみ出す。
   const accInactive = accompaniment != null && !accompaniment.active;
@@ -640,13 +692,20 @@ export function CourseWeekOverview({
                     <div
                       key={`c-${tpl.id}-${wd}`}
                       className={cn(
-                        'border-b border-r border-border-default px-2 py-1 align-top',
+                        'relative border-b border-r border-border-default px-2 py-1 align-top',
                         isRest ? 'bg-bg-muted/40' : 'bg-bg-base',
                       )}
                       data-testid={`course-week-overview-cell-${tpl.id}-${wd}`}
                       data-capacity={cap}
                       data-occupant-count={visitList.length}
                     >
+                      {/* 設計 §2-1 Phase 2: DnD 有効時のみ ⭐/プールカードの受け皿にする。
+                          休 (isRest) のセルも droppable のままにして、盤面が「開講して
+                          いません」と説明する (BE は定員 0 でも Course を作るため、
+                          止めるのは FE の役目)。 */}
+                      {dndEnabled ? (
+                        <CellDropLayer templateId={tpl.id} weekday={wd} open={!isRest} />
+                      ) : null}
                       {isRest ? (
                         <span className="text-[10px] text-text-muted">休</span>
                       ) : (

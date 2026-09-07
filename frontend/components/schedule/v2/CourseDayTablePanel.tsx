@@ -2197,7 +2197,16 @@ export function CourseDayTablePanel({
       | { kind: 'pool'; patientId: string; target: ResolvedDropTarget },
   ) {
     const target = args.target;
-    const staffName = target.staffId ? (staffMap.get(target.staffId)?.name ?? null) : null;
+    // 行スタッフ (職員スケジュール) が無くても、週ビューは列でコースが確定している =
+    // その曜日の担当も決まっている。staffId が null だからと「（担当なし）」と出すと
+    // 実在の担当者が読めないので、コース×曜日から逆引きする。
+    const targetStaffId =
+      target.staffId ??
+      (target.courseTemplateId
+        ? (assignedStaffByTemplateWeekday.get(`${target.courseTemplateId}:${target.weekday}`) ??
+          null)
+        : null);
+    const staffName = targetStaffId ? (staffMap.get(targetStaffId)?.name ?? null) : null;
     const isSpecial = args.kind === 'special';
     const patient = isSpecial ? null : patientById.get(args.patientId);
     const primaryOfficeId = isSpecial
@@ -2392,6 +2401,23 @@ export function CourseDayTablePanel({
     const patientId = parsePatientDraggableId(activeId);
     const eventId = parseEventDraggableId(activeId);
     const isPoolDrop = overId === POOL_DROPPABLE_ID;
+
+    /**
+     * 週ビュー (週タイムライン / 週リスト) の「休」列・セルへのドロップを止める。
+     *
+     * BE の `place` / `place-and-fix` は定員 0 の曜日でも
+     * `_get_or_create_course_for_template_week` で proposed な Course を作ってしまう
+     * (= 422 では止まらない) ため、**開講していない曜日の砦は FE にしかない**。
+     * droppable 側が `data.open` を載せるので、ここで理由つきに断る。
+     * `open` を持たない droppable (日タイムライン `tl-col:` / 職員スケジュール
+     * `sw-cell:`) は従来どおり素通しする。
+     */
+    const isClosedWeekDrop = (target: ResolvedDropTarget): boolean => {
+      if (target.kind !== 'wtl-col' && target.kind !== 'cwo-cell') return false;
+      return (over.data?.current as { open?: boolean } | undefined)?.open === false;
+    };
+    const CLOSED_DROP_WARNING =
+      'この曜日は開講していません（休）。開いている曜日・コースへ置いてください';
 
     // ─── T-2 ②-b: タイムラインカード → 列 (連続時間軸の15分スナップ移動) ───
     // ドロップ位置 = カードの translated top − 列 rect top → snapYOffsetToMinutes。
@@ -2664,8 +2690,14 @@ export function CourseDayTablePanel({
         toast.warning('列の上で離してください（コースの列にカードを重ねると配置できます）');
         return;
       }
+      // 休の列/セルは place も確認モーダルも通さない (BE は止めてくれない)。
+      if (isClosedWeekDrop(target)) {
+        toast.warning(CLOSED_DROP_WARNING);
+        return;
+      }
       const durationMin = Math.max(1, Number(ticket.service_minutes ?? 60));
-      // 時間軸のある列 × チケットと同じ曜日 = 迷いようがないので従来どおり即配置。
+      // 時間軸のある列 (日 `tl-col:` / 週 `wtl-col:`) × チケットと同じ曜日 =
+      // 迷いようがないので従来どおり即配置 (週タイムラインも同じ 15 分スナップ)。
       if (
         target.time !== null &&
         target.courseTemplateId &&
@@ -2681,7 +2713,8 @@ export function CourseDayTablePanel({
         await applySpecialTicketDrop(ticket, target.courseTemplateId, target.time);
         return;
       }
-      // 時刻が決まらない (職員スケジュール) / 曜日が違う → 「配置の確認」モーダル (§2-2)。
+      // 時刻が決まらない (職員スケジュール `sw-cell:` / 週リスト `cwo-cell:`) /
+      // 曜日が違う → 「配置の確認」モーダル (§2-2)。
       openPlacementConfirm({ kind: 'special', ticket, target });
       return;
     }
@@ -2695,13 +2728,19 @@ export function CourseDayTablePanel({
     // スナップ位置から仮想セル {weekday, courseTemplateId, time} を合成して下の分岐へ流す。
     // これで 2名体制=相方コース選択ダイアログ / 通常=この週だけ place-and-fix +
     // 昇格トースト + undo、が旧テーブルと同一挙動になる。
-    // 2026-09-08: 列 (時刻あり) と職員スケジュールのセル (時刻なし) を共通リゾルバで
-    // 解決する。時刻が決まらないドロップは下の「配置の確認」モーダルへ回す (§2-2)。
+    // 2026-09-08: 列 (日/週タイムライン = 時刻あり) と セル (職員スケジュール /
+    // 週リスト = 時刻なし) を共通リゾルバで解決する。時刻が決まらないドロップは
+    // 下の「配置の確認」モーダルへ回す (§2-2)。
     let poolCell: DropCell | null = null;
     const poolTarget =
       patientId && !isPoolDrop
         ? resolveDropTarget(overId, active.rect.current.translated ?? null, over.rect ?? null)
         : null;
+    // 休の列/セルは place-and-fix も確認モーダルも通さない (⭐ と同じ砦)。
+    if (poolTarget && isClosedWeekDrop(poolTarget)) {
+      toast.warning(CLOSED_DROP_WARNING);
+      return;
+    }
     if (patientId && poolTarget && poolTarget.time !== null && poolTarget.courseTemplateId) {
       const startMin = toMinutes(poolTarget.time) ?? 0;
       const patient = patientById.get(patientId);
@@ -2769,8 +2808,9 @@ export function CourseDayTablePanel({
       return;
     }
 
-    // 時間軸のないビュー (職員スケジュールのセル) → 「配置の確認」モーダルで
-    // コースと開始時刻を決めてから配置する (§2-2)。
+    // 時間軸のないビュー (職員スケジュール / 週リストのセル) → 「配置の確認」
+    // モーダルでコースと開始時刻を決めてから配置する (§2-2)。週リストはコースが
+    // 列で確定しているので、モーダルではコース名を表示するだけになる。
     if (patientId && poolTarget && !poolCell) {
       openPlacementConfirm({ kind: 'pool', patientId, target: poolTarget });
       return;
@@ -5603,6 +5643,16 @@ export function CourseDayTablePanel({
     [templates, staffCountFor, courseCodesMax],
   );
 
+  // 週タイムライン: そのコース×曜日が開講しているか (週リストの「休」と同じ和集合)。
+  // BE は定員 0 の曜日でも Course を作ってしまうので、休へのドロップを断る材料を
+  // 列の droppable に載せるために使う (設計 §2-1 Phase 2)。
+  const weekTimelineCourseOpen = useCallback(
+    (templateId: string, weekday: number): boolean =>
+      weekTimelineCapacityByWeekday(templateId, weekday) > 0 ||
+      pfvCountFor(templateId, weekday) > 0,
+    [weekTimelineCapacityByWeekday, pfvCountFor],
+  );
+
   // 週タイムライン: コース×曜日の担当スタッフ (曜日ごとに担当が異なり得る)。
   // 日ビューヘッダと同じ性別色アバターを出すため name + sex を返す。
   const weekTimelineStaffByWeekday = useCallback(
@@ -6837,6 +6887,10 @@ export function CourseDayTablePanel({
                     capacityByWeekday={weekTimelineCapacityByWeekday}
                     staffByWeekday={weekTimelineStaffByWeekday}
                     accompaniment={accompaniment.binding}
+                    // 設計 §2-1 Phase 2: 週タイムラインの列も ⭐/プールカードの受け皿に。
+                    // 同曜日なら 15分スナップで即配置・別曜日は「配置の確認」モーダル。
+                    courseOpenByWeekday={weekTimelineCourseOpen}
+                    dndEnabled={canEdit && !accompaniment.active}
                   />
                 ) : (
                   <CourseWeekOverview
@@ -6860,6 +6914,9 @@ export function CourseDayTablePanel({
                     freeGapsByCell={freeGapsByCell}
                     officeLatLngById={officeLatLngById}
                     accompaniment={accompaniment.binding}
+                    // 設計 §2-1 Phase 2: 週リストのセルも受け皿に。時間軸が無いので
+                    // 必ず「配置の確認」モーダルでコース(表示のみ)と時刻を決める。
+                    dndEnabled={canEdit && !accompaniment.active}
                   />
                 )}
               </div>

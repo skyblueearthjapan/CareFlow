@@ -3,19 +3,24 @@
  * (`docs/plans/dnd-all-views-design-2026-09-08.md` §2-1 / §4)。
  *
  * 検証:
- *   1. `sw-cell:` id の組み立て / 解析 (担当なし行を含む)
- *   2. `resolveDropTarget` が 3 種類の drop 先を 1 つの形に落とす
- *      - `sw-cell:` → 時刻なし・行スタッフあり (担当なし行は staffId=null)
- *      - `tl-col:`  → 既存のスナップ計算で時刻あり
+ *   1. `sw-cell:` / `wtl-col:` / `cwo-cell:` id の組み立て / 解析
+ *   2. `resolveDropTarget` が 4 種類の drop 先を 1 つの形に落とす
+ *      - `sw-cell:`  → 時刻なし・行スタッフあり (担当なし行は staffId=null)
+ *      - `cwo-cell:` → 時刻なし・コースは列から確定 (週リスト)
+ *      - `tl-col:` / `wtl-col:` → 既存のスナップ計算で時刻あり
  *      - それ以外 (プール等) → null
  */
 import { describe, it, expect } from 'vitest';
 
-import { timeToY } from '@/lib/scheduling/timeline';
+import { timeToY, TL_ROW_PX, TL_WEEK_ROW_PX } from '@/lib/scheduling/timeline';
 
 import {
   buildStaffWeekCellDroppableId,
+  buildWeekOverviewCellDroppableId,
+  buildWeekTimelineColDroppableId,
   parseStaffWeekCellDroppableId,
+  parseWeekOverviewCellDroppableId,
+  parseWeekTimelineColDroppableId,
   resolveDropTarget,
   UNASSIGNED_ROW_KEY,
 } from '../courseDnd';
@@ -44,6 +49,38 @@ describe('sw-cell droppable id', () => {
     // 職員スケジュールは月〜土の 6 列だけ (日曜の列は無い)。
     expect(parseStaffWeekCellDroppableId(`sw-cell:${STAFF_ID}:6`)).toBeNull();
     expect(parseStaffWeekCellDroppableId(`sw-cell:${STAFF_ID}:9`)).toBeNull();
+  });
+});
+
+describe('wtl-col / cwo-cell droppable id (Phase 2)', () => {
+  it('templateId × weekday を往復できる', () => {
+    expect(buildWeekTimelineColDroppableId(TPL_ID, 4)).toBe(`wtl-col:${TPL_ID}:4`);
+    expect(parseWeekTimelineColDroppableId(`wtl-col:${TPL_ID}:4`)).toEqual({
+      templateId: TPL_ID,
+      weekday: 4,
+    });
+    expect(buildWeekOverviewCellDroppableId(TPL_ID, 0)).toBe(`cwo-cell:${TPL_ID}:0`);
+    expect(parseWeekOverviewCellDroppableId(`cwo-cell:${TPL_ID}:0`)).toEqual({
+      templateId: TPL_ID,
+      weekday: 0,
+    });
+  });
+
+  it('他の名前空間 / 壊れた id / 範囲外の曜日は null', () => {
+    // 週ビューは月〜土の 6 列 (日曜の列は無い)。
+    expect(parseWeekTimelineColDroppableId(`wtl-col:${TPL_ID}:6`)).toBeNull();
+    expect(parseWeekOverviewCellDroppableId(`cwo-cell:${TPL_ID}:6`)).toBeNull();
+    expect(parseWeekTimelineColDroppableId(`tl-col:${TPL_ID}:0`)).toBeNull();
+    expect(parseWeekOverviewCellDroppableId(`wtl-col:${TPL_ID}:0`)).toBeNull();
+    expect(parseWeekTimelineColDroppableId(`wtl-col:${TPL_ID}`)).toBeNull();
+    expect(parseWeekTimelineColDroppableId('wtl-col:')).toBeNull();
+    expect(parseWeekOverviewCellDroppableId(`cwo-cell:${TPL_ID}:x`)).toBeNull();
+  });
+
+  // 週タイムラインは日タイムラインと同じ行高だからこそ同じスナップ算法を使い回せる。
+  // ここが崩れると週だけ時刻がズレるので定数で固定する (設計 §2-1)。
+  it('週タイムラインの行高は日タイムラインと同じ (スナップ算法の共有条件)', () => {
+    expect(TL_WEEK_ROW_PX).toBe(TL_ROW_PX);
   });
 });
 
@@ -90,6 +127,53 @@ describe('resolveDropTarget', () => {
   it('tl-col: で矩形が取れないときは null (列の上で離せていない)', () => {
     expect(resolveDropTarget(`tl-col:${TPL_ID}:0`, null, { top: 0 })).toBeNull();
     expect(resolveDropTarget(`tl-col:${TPL_ID}:0`, { top: 0 }, null)).toBeNull();
+  });
+
+  it('wtl-col: は日タイムラインと同じスナップ計算で時刻を決める', () => {
+    const overTop = 10;
+    const r = resolveDropTarget(
+      buildWeekTimelineColDroppableId(TPL_ID, 4),
+      { top: overTop + (timeToY('13:45') ?? 0) },
+      { top: overTop },
+    );
+    expect(r).toEqual({
+      kind: 'wtl-col',
+      weekday: 4,
+      courseTemplateId: TPL_ID,
+      staffId: null,
+      time: '13:45',
+    });
+  });
+
+  it('wtl-col: も 15 分にスナップし、矩形が取れなければ null', () => {
+    const r = resolveDropTarget(
+      buildWeekTimelineColDroppableId(TPL_ID, 0),
+      { top: timeToY('10:20') ?? 0 },
+      { top: 0 },
+    );
+    expect(r?.time).toBe('10:15');
+    expect(
+      resolveDropTarget(buildWeekTimelineColDroppableId(TPL_ID, 0), null, { top: 0 }),
+    ).toBeNull();
+    expect(
+      resolveDropTarget(buildWeekTimelineColDroppableId(TPL_ID, 0), { top: 0 }, null),
+    ).toBeNull();
+  });
+
+  it('cwo-cell: は時刻なし・コースは列から確定する', () => {
+    // 週リストには時間軸が無いので、矩形が取れても時刻は決めない (モーダル行き)。
+    const r = resolveDropTarget(
+      buildWeekOverviewCellDroppableId(TPL_ID, 2),
+      { top: 500 },
+      { top: 10 },
+    );
+    expect(r).toEqual({
+      kind: 'cwo-cell',
+      weekday: 2,
+      courseTemplateId: TPL_ID,
+      staffId: null,
+      time: null,
+    });
   });
 
   it('プールなど他の droppable は null', () => {

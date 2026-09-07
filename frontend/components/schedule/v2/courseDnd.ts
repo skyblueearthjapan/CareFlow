@@ -73,6 +73,67 @@ export const SW_CELL_DND_PREFIX = 'sw-cell:';
  */
 const TL_COL_DND_PREFIX = 'tl-col:';
 
+/**
+ * 週タイムライン (`WeekTimelineBoard`) の列 droppable id 接頭辞。
+ * `wtl-col:{templateId}:{weekday}` — 列は (コース × 曜日) で 1 本 (月〜土)。
+ * 行高が日タイムラインと同じ (`TL_WEEK_ROW_PX === TL_ROW_PX`) ため、時刻のスナップは
+ * `tl-col:` と**同じ** `snapYOffsetToMinutes` をそのまま使える。2 つの定数が食い違うと
+ * 週だけ時刻がズレるので `courseDnd-resolve.test.ts` で等価を固定している (設計 §2-1)。
+ */
+export const WTL_COL_DND_PREFIX = 'wtl-col:';
+
+/**
+ * 週リスト (`CourseWeekOverview`) のセル droppable id 接頭辞。
+ * `cwo-cell:{templateId}:{weekday}` — 時間軸を持たないビューなので **時刻なし** で
+ * 解決し、呼び出し側が「配置の確認」モーダルで時刻を決める (設計 §2-2)。
+ * コースは列から確定しているのでモーダルでは選ばせず表示だけになる。
+ */
+export const CWO_CELL_DND_PREFIX = 'cwo-cell:';
+
+/**
+ * `{prefix}{templateId}:{weekday}` 形式の droppable id を解く共通処理。
+ * templateId (UUID) に `:` は含まれないが、末尾の weekday から切ることで将来
+ * templateId が複合キーになっても壊れないようにする (sw-cell と同じ作法)。
+ */
+function parseTemplateWeekdayId(
+  id: string,
+  prefix: string,
+  maxWeekday: number,
+): { templateId: string; weekday: number } | null {
+  if (!id.startsWith(prefix)) return null;
+  const rest = id.slice(prefix.length);
+  const sep = rest.lastIndexOf(':');
+  if (sep <= 0 || sep >= rest.length - 1) return null;
+  const templateId = rest.slice(0, sep);
+  const weekday = Number(rest.slice(sep + 1));
+  if (!Number.isInteger(weekday) || weekday < 0 || weekday > maxWeekday) return null;
+  return { templateId, weekday };
+}
+
+/** templateId + weekday → 週タイムラインの列 droppable id。 */
+export function buildWeekTimelineColDroppableId(templateId: string, weekday: number): string {
+  return `${WTL_COL_DND_PREFIX}${templateId}:${weekday}`;
+}
+
+/** `wtl-col:` id → `{ templateId, weekday }`。それ以外 / 壊れた id は null。 */
+export function parseWeekTimelineColDroppableId(
+  id: string,
+): { templateId: string; weekday: number } | null {
+  return parseTemplateWeekdayId(id, WTL_COL_DND_PREFIX, 5);
+}
+
+/** templateId + weekday → 週リストのセル droppable id。 */
+export function buildWeekOverviewCellDroppableId(templateId: string, weekday: number): string {
+  return `${CWO_CELL_DND_PREFIX}${templateId}:${weekday}`;
+}
+
+/** `cwo-cell:` id → `{ templateId, weekday }`。それ以外 / 壊れた id は null。 */
+export function parseWeekOverviewCellDroppableId(
+  id: string,
+): { templateId: string; weekday: number } | null {
+  return parseTemplateWeekdayId(id, CWO_CELL_DND_PREFIX, 5);
+}
+
 /** rowKey + weekday → 職員スケジュールのセル droppable id。 */
 export function buildStaffWeekCellDroppableId(rowKey: string, weekday: number): string {
   return `${SW_CELL_DND_PREFIX}${rowKey}:${weekday}`;
@@ -110,7 +171,7 @@ export interface ResolveDropTargetContext {
 
 /** ドロップ先の正規形。`time === null` = 時間軸のないビュー (= 確認モーダル行き)。 */
 export interface ResolvedDropTarget {
-  kind: 'tl-col' | 'sw-cell';
+  kind: 'tl-col' | 'wtl-col' | 'sw-cell' | 'cwo-cell';
   weekday: number;
   /** コースが確定している場合のみ (職員スケジュールのセルは null)。 */
   courseTemplateId: string | null;
@@ -130,9 +191,10 @@ function formatHM(totalMinutes: number): string {
 /**
  * ドロップ先 id (+ ドラッグ中カードと列の矩形) を 1 つの形に解決する (設計 §2-1)。
  *
- * - `sw-cell:` → 時刻なし・行スタッフあり (`UNASSIGNED_ROW_KEY` は staffId=null)。
- * - `tl-col:`  → 既存のスナップ計算 (`snapYOffsetToMinutes`) で時刻あり。矩形が
- *   取れないときは「列の上で離せていない」とみなし null を返す (従来の案内と同じ)。
+ * - `sw-cell:`  → 時刻なし・行スタッフあり (`UNASSIGNED_ROW_KEY` は staffId=null)。
+ * - `cwo-cell:` → 時刻なし・コースは列から確定 (週リスト)。
+ * - `tl-col:` / `wtl-col:` → 既存のスナップ計算 (`snapYOffsetToMinutes`) で時刻あり。
+ *   矩形が取れないときは「列の上で離せていない」とみなし null を返す (従来の案内と同じ)。
  * - それ以外の droppable (プール等) は null (呼び出し側が個別に処理する)。
  *
  * id は**画面に描かれている droppable が自分で作ったもの**しか来ない前提で解く
@@ -154,13 +216,21 @@ export function resolveDropTarget(
       time: null,
     };
   }
-  if (overId.startsWith(TL_COL_DND_PREFIX)) {
-    const rest = overId.slice(TL_COL_DND_PREFIX.length);
-    const sep = rest.lastIndexOf(':');
-    if (sep <= 0 || sep >= rest.length - 1) return null;
-    const courseTemplateId = rest.slice(0, sep);
-    const weekday = Number(rest.slice(sep + 1));
-    if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) return null;
+  const overviewCell = parseWeekOverviewCellDroppableId(overId);
+  if (overviewCell) {
+    return {
+      kind: 'cwo-cell',
+      weekday: overviewCell.weekday,
+      courseTemplateId: overviewCell.templateId,
+      staffId: null,
+      time: null,
+    };
+  }
+  // 時間軸のある列 (日 = tl-col: / 週 = wtl-col:)。列上端 = 9:00 で行高も同じなので
+  // スナップ計算は共通 (週タイムラインは TL_WEEK_ROW_PX = TL_ROW_PX)。
+  const column =
+    parseWeekTimelineColDroppableId(overId) ?? parseTemplateWeekdayId(overId, TL_COL_DND_PREFIX, 6);
+  if (column) {
     if (activeRect == null || overRect == null) return null;
     const startMin = snapYOffsetToMinutes(
       activeRect.top - overRect.top,
@@ -168,9 +238,9 @@ export function resolveDropTarget(
       ctx.dayStartMin ?? TL_DAY_START_MIN,
     );
     return {
-      kind: 'tl-col',
-      weekday,
-      courseTemplateId,
+      kind: overId.startsWith(WTL_COL_DND_PREFIX) ? 'wtl-col' : 'tl-col',
+      weekday: column.weekday,
+      courseTemplateId: column.templateId,
       staffId: null,
       time: formatHM(startMin),
     };

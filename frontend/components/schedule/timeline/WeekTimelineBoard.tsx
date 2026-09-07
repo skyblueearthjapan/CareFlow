@@ -14,7 +14,9 @@
  */
 
 import { useMemo } from 'react';
+import { useDroppable } from '@dnd-kit/core';
 
+import { buildWeekTimelineColDroppableId } from '@/components/schedule/v2/courseDnd';
 import type { WeekOverviewVisit } from '@/components/schedule/v2/CourseWeekOverview';
 import { CornerPushPin, CornerWeekPushPin } from '@/components/ui/push-pin';
 import { MovabilityMark } from './MovabilityMark';
@@ -88,6 +90,20 @@ export interface WeekTimelineBoardProps {
    * (通常クリックは親が抑止)、inactive なら常時表示バッジを描く。
    */
   accompaniment?: AccompanimentBinding;
+  /**
+   * その (コース × 曜日) が開講しているか (週リストの「休」と同じ判定 = 実効定員 or
+   * 型 (PFV) があるか)。`dndEnabled` のとき、休の列へ落とすのを盤面が止めるために使う。
+   * 省略時は全て開講扱い (表示専用の呼び出し元は影響なし)。訪問が既にある列は
+   * この関数に依らず開講扱いにする (既存の訪問を不可視/不可触にしない)。
+   */
+  courseOpenByWeekday?: (templateId: string, weekday: number) => boolean;
+  /**
+   * ⭐/プールカードのドロップ先として列を droppable にする
+   * (`docs/plans/dnd-all-views-design-2026-09-08.md` §2-1 Phase 2)。
+   * 既定 false = 読み取り専用のまま (他の呼び出し元の挙動を変えない)。親の
+   * `DndContext` 内で `canEdit` のときだけ true にする。
+   */
+  dndEnabled?: boolean;
 }
 
 function PersonMark() {
@@ -101,6 +117,53 @@ function PersonMark() {
 
 function height(): number {
   return ((TL_DAY_END_MIN - TL_DAY_START_MIN) / 30) * ROW_PX;
+}
+
+/**
+ * 列 (コース × 曜日) 全体を 1 つの droppable にする透明レイヤ
+ * (`docs/plans/dnd-all-views-design-2026-09-08.md` §2-1 Phase 2)。
+ *
+ * 日タイムラインの `ColumnDropLayer` と**同じ作り**: 列上端 = 9:00・行高も同じなので、
+ * 盤面 (`CourseDayTablePanel`) 側は「カードの translated top − 列 rect top」を
+ * `resolveDropTarget` に渡すだけで日ビューと同じ 15 分スナップの時刻が得られる。
+ * pointer-events は不要 (dnd-kit の衝突判定は rect ベース)。
+ */
+function WeekColumnDropLayer({
+  templateId,
+  weekday,
+  open,
+}: {
+  templateId: string;
+  weekday: number;
+  /**
+   * その曜日にコースが開講しているか (定員 0 = 休 なら false)。**BE は定員 0 の曜日でも
+   * Course を作ってしまう** (`_get_or_create_course_for_template_week`) ので、休への
+   * 配置を止められるのは FE だけ。droppable 自体は残して「なぜ置けないのか」を
+   * 盤面が warning で説明する (無反応だと壊れて見える)。
+   */
+  open: boolean;
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: buildWeekTimelineColDroppableId(templateId, weekday),
+    data: { templateId, weekday, open },
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        'pointer-events-none absolute inset-0 z-[1] rounded transition-colors',
+        isOver &&
+          (open
+            ? 'bg-brand-primary/5 ring-2 ring-inset ring-brand-primary/60'
+            : // 休: 受け皿ではないので光らせない (期待させない)。
+              'bg-text-muted/10 ring-2 ring-inset ring-border-default'),
+      )}
+      data-testid={`wtl-col-drop-${templateId}-${weekday}`}
+      data-dnd-over={isOver ? 'true' : 'false'}
+      data-drop-open={open ? 'true' : 'false'}
+      aria-hidden="true"
+    />
+  );
 }
 
 interface CardLane {
@@ -515,6 +578,8 @@ export function WeekTimelineBoard({
   capacityByWeekday,
   staffByWeekday,
   accompaniment,
+  courseOpenByWeekday,
+  dndEnabled = false,
 }: WeekTimelineBoardProps) {
   if (options.length === 0) {
     return (
@@ -602,6 +667,8 @@ export function WeekTimelineBoard({
           capacityByWeekday={capacityByWeekday}
           staffByWeekday={staffByWeekday}
           accompaniment={accompaniment}
+          courseOpenByWeekday={courseOpenByWeekday}
+          dndEnabled={dndEnabled}
         />
       ))}
     </div>
@@ -617,6 +684,8 @@ function CourseWeekSection({
   capacityByWeekday,
   staffByWeekday,
   accompaniment,
+  courseOpenByWeekday,
+  dndEnabled,
 }: {
   option: WeekTimelineOption;
   visits: WeekOverviewVisit[];
@@ -628,6 +697,8 @@ function CourseWeekSection({
     weekday: number,
   ) => { name: string; sex?: string | null } | null;
   accompaniment?: AccompanimentBinding;
+  courseOpenByWeekday?: (templateId: string, weekday: number) => boolean;
+  dndEnabled: boolean;
 }) {
   const accActive = accompaniment?.active === true;
   const H = height();
@@ -794,6 +865,20 @@ function CourseWeekSection({
               style={{ flex: 1, minWidth: COL_MIN_W }}
               data-testid={`wtl-col-${option.templateId}-${wd}`}
             >
+              {/* 設計 §2-1 Phase 2: DnD 有効時のみ列全体を droppable にする
+                  (isOver ハイライト付き・日タイムラインの ColumnDropLayer と同意匠)。
+                  開講判定は週リストの「休」と同じ和集合 (訪問 ∪ 型/定員) にする —
+                  既に訪問がある列を「休」と言って触らせないのは事実と食い違う。 */}
+              {dndEnabled ? (
+                <WeekColumnDropLayer
+                  templateId={option.templateId}
+                  weekday={wd}
+                  open={
+                    (byWeekday.get(wd)?.length ?? 0) > 0 ||
+                    (courseOpenByWeekday?.(option.templateId, wd) ?? true)
+                  }
+                />
+              ) : null}
               {rows.map((m) => (
                 <div
                   key={m}
