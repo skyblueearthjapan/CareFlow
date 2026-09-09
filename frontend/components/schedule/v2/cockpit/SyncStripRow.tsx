@@ -14,13 +14,15 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
 /** 種別タグの色 (DiffDetailCard と同じ配色: 新規=ブランド / 変更=注意 / 取消=情報)。 */
-export type SyncRowTone = 'add' | 'update' | 'delete' | 'na';
+export type SyncRowTone = 'add' | 'update' | 'delete' | 'na' | 'inactive';
 
 const TONE_CLS: Record<SyncRowTone, string> = {
   add: 'bg-brand-primary-50 text-brand-primary-hover',
   update: 'bg-warning-bg text-warning-strong',
   delete: 'bg-info-bg text-info-strong',
   na: 'bg-bg-muted text-text-muted',
+  // 非稼働患者の行 (患者ステータス連動・design 2026-09-09 §3-5)。削除候補の合図。
+  inactive: 'bg-warning-bg text-warning-strong',
 };
 
 export interface SyncRowAction {
@@ -39,6 +41,11 @@ export interface SyncStripRowProps {
   /** 訪問 / イベント / スタッフ など。 */
   kindLabel: string;
   tag: { label: string; tone: SyncRowTone };
+  /**
+   * 種別タグの右に足す補助バッジ (例「非稼働患者（削除候補）」)。
+   * 種別 (新規/変更/取消) は **置き換えない** — どちら向きの差分かが消えるため。
+   */
+  extraTag?: { label: string; tone: SyncRowTone; title?: string; testId?: string };
   /** 「久須見 様 10:00」のような主語 + 時刻。 */
   headline: string;
   /** 「担当 熊澤 → 佐藤」のような変化点 (無ければ省く)。 */
@@ -59,6 +66,7 @@ export function SyncStripRow({
   dateLabel,
   kindLabel,
   tag,
+  extraTag,
   headline,
   change,
   note,
@@ -99,6 +107,18 @@ export function SyncStripRow({
             >
               {tag.label}
             </span>
+            {extraTag ? (
+              <span
+                className={cn(
+                  'mr-1.5 inline-block rounded-full px-1.5 py-px text-[11px] font-bold',
+                  TONE_CLS[extraTag.tone],
+                )}
+                title={extraTag.title}
+                data-testid={extraTag.testId}
+              >
+                {extraTag.label}
+              </span>
+            ) : null}
             <b className="text-[14px] text-text-primary">{headline}</b>
             {change ? (
               <span className="ml-1.5 text-[13px] font-bold text-warning-strong">{change}</span>

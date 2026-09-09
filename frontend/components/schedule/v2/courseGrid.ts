@@ -250,6 +250,12 @@ export interface CourseGridVisit {
    */
   status?: string | null;
   /**
+   * 患者マスタの `patients.status` (表示の保険・design 2026-09-09 §3-4)。
+   * 非稼働 (入院中等) のまま予定が残っていたら「入院中」バッジ + 薄色で見せる。
+   * 欠落は「分からない」= 従来表示 (寛容)。
+   */
+  patient_status?: string | null;
+  /**
    * T-1 縦タイムライン用 (schedule-timeline-redesign-design.md)。タイムラインは
    * 時間比例のため実時刻が要る。いずれも省略可 (欠落時はその訪問を描かない)。
    */

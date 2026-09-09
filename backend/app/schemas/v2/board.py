@@ -60,6 +60,14 @@ class BoardVisit(BaseModel):
     mode: BoardVisitMode = Field(default="normal")
     slot_index: int = Field(..., ge=0, description="コース内 start 昇順での 0 始まり連番")
     status: str = Field(default="planned", description="planned / cancelled")
+    # 患者ステータス連動 Phase 3 §3-4「表示の保険」(非破壊追加・既定 None)。
+    # ``source`` は取消の出所 (``status_cancel`` = ステータス連動の取消 → 非表示)。
+    source: str | None = Field(
+        default=None, description="visits.source (status_cancel / manual_cancel / auto ...)"
+    )
+    patient_status: str | None = Field(
+        default=None, description="患者ステータス (active 以外の planned は不整合バッジ)"
+    )
 
 
 class BoardCapacity(BaseModel):

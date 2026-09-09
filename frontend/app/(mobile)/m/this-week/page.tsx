@@ -8,7 +8,8 @@ import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { cn } from '@/lib/utils';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { currentWeekStartIso, useMyVisits, type MyVisit } from '@/lib/queries/me';
-import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
+import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
+import { classifyVisitDisplay, VISIT_DISPLAY_CLASS } from '@/lib/schedule/visitVisibility';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
@@ -18,7 +19,7 @@ function groupByDate(visits: MyVisit[]): Array<{ date: string; items: MyVisit[] 
   for (const v of visits) {
     // 患者ステータス連動の取消 (source='status_cancel') は一覧から消す
     // (design 2026-09-09 §7-4)。「今週だけ取消」= manual_cancel は打ち消し線で残す。
-    if (isStatusCancelledVisit(v)) continue;
+    if (classifyVisitDisplay(v) === 'hidden') continue;
     const list = map.get(v.visit_date) ?? [];
     list.push(v);
     map.set(v.visit_date, list);
@@ -103,6 +104,8 @@ export default function MobileThisWeekPage() {
                   className={cn(
                     'flex items-center gap-1.5 rounded-md border border-l-[3px] px-1.5 py-1',
                     v.status === 'cancelled' && 'opacity-50',
+                    // 非稼働患者の残骸 (§3-4)。
+                    VISIT_DISPLAY_CLASS[classifyVisitDisplay(v, { showInactive: true })],
                   )}
                   style={(() => {
                     const pal = genderPalette(v.patient_sex ?? null);
@@ -125,6 +128,12 @@ export default function MobileThisWeekPage() {
                   >
                     {v.patient_name ?? '—'}
                   </span>
+                  {/* 非稼働患者のバッジ (「入院中」等・§3-4)。 */}
+                  <InactiveVisitBadge
+                    visit={v}
+                    kind={classifyVisitDisplay(v, { showInactive: true })}
+                    testId={`this-week-inactive-badge-${v.id}`}
+                  />
                   {/* R-9d (PO要望): 縦1列化で空いた右側に住所 (名前より小さいフォント)。 */}
                   {v.patient_address && (
                     <span className="min-w-0 flex-1 truncate text-[10px] opacity-75">

@@ -58,6 +58,7 @@ import {
   normalizePatientInsurance,
   normalizePatientSexRestriction,
   normalizePatientStatus,
+  inactiveStatusLabel,
   isPlaceablePatientStatus,
   patientReadToFormValues,
   emptyPatientFormValues,
@@ -2293,6 +2294,25 @@ function PatientLinkPanel({
                   <span style={{ fontSize: 10.5, color: _INK3, fontWeight: 600, marginLeft: 7 }}>
                     {p.code}
                   </span>
+                  {/* 非稼働 (入院中・一時休止・解約済み・開始前) の印
+                      (design 2026-09-09 §3-4)。ラベルの出所は inactiveStatusLabel 1 本。 */}
+                  {inactiveStatusLabel(p.status) && (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: '#92400e',
+                        background: '#fef3c7',
+                        borderRadius: 4,
+                        padding: '1px 5px',
+                        marginLeft: 6,
+                      }}
+                      title="稼働中でない患者様です（予定に入れるには稼働中に戻してください）"
+                      data-testid={`patient-picker-inactive-${p.id}`}
+                    >
+                      {inactiveStatusLabel(p.status)}
+                    </span>
+                  )}
                 </span>
                 {(p.kana || p.address) && (
                   <span

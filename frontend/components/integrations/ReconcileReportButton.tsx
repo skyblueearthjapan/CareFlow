@@ -16,6 +16,12 @@ import { Button } from '@/components/ui/button';
 import { useStartDiffLocal } from '@/lib/queries/integrations';
 import { useReconcileReport, type ReconcileReport } from '@/lib/queries/reconcileReport';
 
+/**
+ * 突合レポートの区分キー「非稼働患者」(BE `reconcile_report_html` と同じ文字列)。
+ * らく助側が稼働中でない患者に対応するカイポケの行 = 削除候補 (§3-5)。
+ */
+const INACTIVE_PATIENT_KEY = '非稼働患者';
+
 export interface ReconcileReportButtonProps {
   /** 週の月曜 (YYYY-MM-DD)。 */
   weekStart: string;
@@ -55,8 +61,12 @@ export function ReconcileReportButton({
       }
       const ng =
         (r.counts['相違'] ?? 0) + (r.counts['らく助のみ'] ?? 0) + (r.counts['カイポケのみ'] ?? 0);
-      toast[ng > 0 ? 'warning' : 'success'](
-        `突合レポート: 一致 ${r.counts['一致'] ?? 0} / 相違系 ${ng} 件（全 ${r.total} 件）`,
+      // 非稼働患者の行 (患者ステータス連動・design 2026-09-09 §3-5)。
+      // らく助が稼働中でない患者に対応するカイポケの行 = 削除候補。
+      const inactive = r.counts[INACTIVE_PATIENT_KEY] ?? 0;
+      toast[ng > 0 || inactive > 0 ? 'warning' : 'success'](
+        `突合レポート: 一致 ${r.counts['一致'] ?? 0} / 相違系 ${ng} 件（全 ${r.total} 件）` +
+          (inactive > 0 ? ` ／ ${INACTIVE_PATIENT_KEY}の行 ${inactive} 件（削除候補）` : ''),
       );
     } catch (e) {
       win?.close();
@@ -73,6 +83,7 @@ export function ReconcileReportButton({
       (last.counts['らく助のみ'] ?? 0) +
       (last.counts['カイポケのみ'] ?? 0)
     : null;
+  const inactiveCount = last ? (last.counts[INACTIVE_PATIENT_KEY] ?? 0) : 0;
 
   return (
     <span className="inline-flex items-center gap-1.5">
@@ -97,6 +108,15 @@ export function ReconcileReportButton({
           data-testid="reconcile-report-badge"
         >
           {ngCount > 0 ? `相違 ${ngCount}` : '全一致'}
+        </span>
+      ) : null}
+      {inactiveCount > 0 ? (
+        <span
+          className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800"
+          title="らく助では稼働中でない患者様の行です（カイポケ側の削除候補）"
+          data-testid="reconcile-report-inactive-badge"
+        >
+          {INACTIVE_PATIENT_KEY} {inactiveCount}
         </span>
       ) : null}
     </span>
@@ -137,9 +157,7 @@ export function ReconcileRefreshButton({
         `差分最新化が完了しました（差分 ${total} 件）。「🔍 突合レポート」で最新の突合を開けます。`,
       );
     } catch (e) {
-      toast.error(
-        `差分最新化に失敗しました: ${e instanceof Error ? e.message : '不明なエラー'}`,
-      );
+      toast.error(`差分最新化に失敗しました: ${e instanceof Error ? e.message : '不明なエラー'}`);
     }
   }, [diffLocal, weekStart]);
 

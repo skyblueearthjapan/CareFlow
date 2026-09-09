@@ -61,7 +61,7 @@ function makeVisit(over: Partial<WeekOverviewVisit> & { id: string }): WeekOverv
 /** A-E を全開講させる十分なスタッフ数 (=5) を返すスタブ. */
 const fullStaff = () => 5;
 
-function renderWith(visits: WeekOverviewVisit[]) {
+function renderWith(visits: WeekOverviewVisit[], showInactive = false) {
   return render(
     <CourseWeekOverview
       templates={[makeTemplate('tpl-A', 'A', 'o1')]}
@@ -69,6 +69,7 @@ function renderWith(visits: WeekOverviewVisit[]) {
       visits={visits}
       onJumpToDay={vi.fn()}
       staffCountFor={fullStaff}
+      showInactive={showInactive}
     />,
   );
 }
@@ -83,6 +84,53 @@ describe('CourseWeekOverview — status_cancel は非表示', () => {
     expect(screen.getByTestId('course-week-overview-name-plain')).toBeInTheDocument();
     expect(screen.getByTestId('course-week-overview-name-manual')).toBeInTheDocument();
     expect(screen.queryByTestId('course-week-overview-name-status')).not.toBeInTheDocument();
+  });
+
+  it('showInactive=true なら連動取消も打ち消し線つきで出す (残骸点検・§3-4)', () => {
+    renderWith(
+      [
+        makeVisit({
+          id: 'status',
+          source: 'status_cancel',
+          status: 'cancelled',
+          patient_status: 'admitted',
+        }),
+      ],
+      true,
+    );
+    const row = screen.getByTestId('course-week-overview-name-status');
+    expect(row.className).toContain('line-through');
+    expect(screen.getByTestId('course-week-overview-inactive-status')).toHaveTextContent(
+      '取消（連動）',
+    );
+  });
+
+  it('非稼働患者の予定が残っていたらバッジ + 薄色で見せる (トグル OFF でも・§3-4)', () => {
+    renderWith([
+      makeVisit({ id: 'residue', source: 'auto', status: 'planned', patient_status: 'admitted' }),
+    ]);
+    const row = screen.getByTestId('course-week-overview-name-residue');
+    expect(row.className).toContain('opacity-60');
+    expect(screen.getByTestId('course-week-overview-inactive-residue')).toHaveTextContent('入院中');
+  });
+
+  it('トグル ON でも件数バッジは変わらない (枠の埋まり具合は取消を数えない)', () => {
+    const visits = [
+      makeVisit({ id: 'plain', source: 'auto', status: 'planned' }),
+      makeVisit({
+        id: 'status',
+        source: 'status_cancel',
+        status: 'cancelled',
+        patient_status: 'admitted',
+      }),
+    ];
+    renderWith(visits, true);
+    // 取消も打ち消し線つきで見えているが…
+    expect(screen.getByTestId('course-week-overview-name-status')).toBeInTheDocument();
+    // …定員バッジは 1 名のまま (残骸点検のトグルで枠が埋まって見えない)。
+    expect(screen.getByTestId('course-week-overview-capacity-tpl-A-0')).toHaveTextContent(
+      '1 名 / 上限 6',
+    );
   });
 
   it('件数バッジからも status_cancel が外れる', () => {

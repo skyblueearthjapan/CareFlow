@@ -47,7 +47,7 @@ import { useFixedVisits } from '@/lib/queries/patient_fixed_visits';
 import { useNgStaffList } from '@/lib/queries/patient_ng_staff';
 import { formatNgStaffNames } from '@/lib/schemas/patient_ng_staff';
 import { normalizePatientStatus, STATUS_LABEL } from '@/lib/schemas/patient';
-import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
+import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
 import { useVisits } from '@/lib/queries/visits';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
 import type { VisitRead } from '@/lib/schemas/visit';
@@ -334,8 +334,12 @@ export function PatientScheduleDetailDialog({
   // 患者ステータス連動の取消 (source='status_cancel') は型⇄今週の比較からも外す
   // (design 2026-09-09 §7-4)。盤面で消えている訪問が比較表にだけ残ると、
   // 「今週の予定を型へ反映」が消えたはずの枠を型へ書き戻してしまう。
+  // ここは **トグル「非稼働を表示」に従わない** (design 2026-09-09 §3-4 の但し書き)。
+  // この表は「今週の予定を型へ反映」の入力そのもので、BE の反映は連動取消を
+  // 必ず除外する。トグル ON のときだけ比較表に取消が現れると、消えたはずの枠を
+  // 型へ書き戻す事故になる。常に showInactive:false で判定する。
   const weekRows = (visitsQuery.data?.items ?? []).filter(
-    (v) => !v.deleted_at && !isStatusCancelledVisit(v),
+    (v) => !v.deleted_at && classifyVisitDisplay(v, { showInactive: false }) !== 'hidden',
   );
 
   const fixedByWd = React.useMemo(() => groupByWeekday(fixedRows.map(pfvToCell)), [fixedRows]);

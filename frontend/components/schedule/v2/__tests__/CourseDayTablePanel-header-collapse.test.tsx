@@ -13,6 +13,12 @@
  *  HC-6  畳んだ状態でも週切替 (前週 / 今週 / 次週) が動く
  *  HC-7  畳んだ状態の拠点フィルタが onOfficeChange を呼ぶ
  *  HC-8  a11y — トグルは button で aria-label / aria-pressed を持つ
+ *
+ * 併せてツールバー右端のもう 1 つのトグル「非稼働を表示」も見る
+ * (患者ステータス連動 Phase 3・design 2026-09-09 §3-4):
+ *  SI-1  既定は OFF (aria-pressed=false・ラベル「非稼働を表示」)
+ *  SI-2  押下で ON になり localStorage ('carelink-ui') に永続する
+ *  SI-3  畳んだ (コンパクト) 状態でも押せる
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -346,7 +352,7 @@ describe('CourseDayTablePanel — 上部折りたたみ (コンパクト表示)'
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
-    useUIStore.setState({ scheduleHeaderCollapsed: false });
+    useUIStore.setState({ scheduleHeaderCollapsed: false, showInactiveVisits: false });
     setupHooks();
   });
 
@@ -516,5 +522,52 @@ describe('CourseDayTablePanel — 上部折りたたみ (コンパクト表示)'
       'aria-expanded',
       'true',
     );
+  });
+});
+
+// ─── 「非稼働を表示」トグル (患者ステータス連動 Phase 3・design §3-4) ───────
+
+describe('CourseDayTablePanel — トグル「非稼働を表示」', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    useUIStore.setState({ scheduleHeaderCollapsed: false, showInactiveVisits: false });
+    setupHooks();
+  });
+
+  it('SI-1. 既定は OFF (連動取消は隠れたまま = Phase 1/2 と同じ見え方)', () => {
+    renderPanel();
+
+    const toggle = screen.getByTestId('schedule-show-inactive-toggle');
+    expect(toggle.tagName).toBe('BUTTON');
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(toggle).toHaveTextContent('非稼働を表示');
+    expect(useUIStore.getState().showInactiveVisits).toBe(false);
+  });
+
+  it('SI-2. 押下で ON になり localStorage (carelink-ui) に永続する', () => {
+    renderPanel();
+
+    fireEvent.click(screen.getByTestId('schedule-show-inactive-toggle'));
+
+    expect(useUIStore.getState().showInactiveVisits).toBe(true);
+    const toggle = screen.getByTestId('schedule-show-inactive-toggle');
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(toggle).toHaveTextContent('非稼働を表示中');
+
+    const raw = window.localStorage.getItem('carelink-ui');
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw as string).state.showInactiveVisits).toBe(true);
+
+    // もう一度押すと OFF に戻る。
+    fireEvent.click(screen.getByTestId('schedule-show-inactive-toggle'));
+    expect(useUIStore.getState().showInactiveVisits).toBe(false);
+  });
+
+  it('SI-3. 畳んだ (コンパクト) 状態でもトグルは残る', () => {
+    renderPanel();
+    collapse();
+
+    expect(screen.getAllByTestId('schedule-show-inactive-toggle')).toHaveLength(1);
   });
 });

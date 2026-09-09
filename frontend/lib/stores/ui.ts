@@ -15,10 +15,18 @@ type UIState = {
    * (mac-ui-crossplatform-design.md §2-B2)。一度適用したら以後は利用者の開閉を尊重する。
    */
   sidebarAutoCollapsedApplied: boolean;
+  /**
+   * スケジュール画面のトグル「非稼働を表示」(患者ステータス連動 Phase 3・
+   * design 2026-09-09 §3-4)。既定は false = 連動取消 (status_cancel) を隠す。
+   * ON にすると残骸点検用に打ち消し線つきで出す。非稼働患者の**残っている予定**は
+   * このトグルに関係なく常にバッジ付きで出る (隠さない = 原則⑥)。
+   */
+  showInactiveVisits: boolean;
   setSidebarCollapsed: (v: boolean) => void;
   applySidebarAutoCollapse: () => void;
   setDensity: (v: 'compact' | 'comfortable') => void;
   setScheduleHeaderCollapsed: (v: boolean) => void;
+  setShowInactiveVisits: (v: boolean) => void;
 };
 
 export const useUIStore = create<UIState>()(
@@ -28,6 +36,7 @@ export const useUIStore = create<UIState>()(
       density: 'comfortable',
       scheduleHeaderCollapsed: false,
       sidebarAutoCollapsedApplied: false,
+      showInactiveVisits: false,
       setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
       applySidebarAutoCollapse: () =>
         set((s) =>
@@ -37,6 +46,7 @@ export const useUIStore = create<UIState>()(
         ),
       setDensity: (v) => set({ density: v }),
       setScheduleHeaderCollapsed: (v) => set({ scheduleHeaderCollapsed: v }),
+      setShowInactiveVisits: (v) => set({ showInactiveVisits: v }),
     }),
     {
       name: 'carelink-ui',
@@ -45,6 +55,7 @@ export const useUIStore = create<UIState>()(
         density: s.density,
         scheduleHeaderCollapsed: s.scheduleHeaderCollapsed,
         sidebarAutoCollapsedApplied: s.sidebarAutoCollapsedApplied,
+        showInactiveVisits: s.showInactiveVisits,
       }),
     },
   ),

@@ -88,6 +88,12 @@ class MonitorVisit(BaseModel):
     patient_code: str | None = None
     patient_lat: float | None = None
     patient_lng: float | None = None
+    # 患者ステータス連動 Phase 3 §3-4「表示の保険」(非破壊追加・既定 None)。
+    # モニターは cancelled を最初から落とすので ``source`` は基本 planned の出所だが、
+    # 残骸点検のため visits.source をそのまま載せる。``patient_status`` が active
+    # 以外なら不整合 (バッジ表示)。
+    source: str | None = None
+    patient_status: str | None = None
     # 予定 (JST 壁時計の "HH:MM").
     start_time: str
     end_time: str

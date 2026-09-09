@@ -18,6 +18,8 @@ import { cn } from '@/lib/utils';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import { genderPalette } from '@/lib/scheduling/timeline';
+import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
+import { classifyVisitDisplay, type VisitDisplayKind } from '@/lib/schedule/visitVisibility';
 
 import {
   MISSING_BAR_BG,
@@ -469,6 +471,22 @@ export function MonitorTimeline({
   );
 }
 
+/**
+ * 実績が確定した phase (訪問済み / 不在 / 取消)。ここには「入院中」バッジを出さない
+ * — 過去の実績に「稼働中でない」と書くのは嘘になる (design 2026-09-09 §3-4)。
+ * MonitorVisit は `visits.status` を持たない (phase が時間進捗の唯一の情報源)。
+ */
+const MONITOR_SETTLED_PHASES = new Set(['done', 'no_show', 'cancelled']);
+
+/**
+ * モニターのバーに出す表示区分。まだ訪問前 / 訪問中 (future / awaiting /
+ * inprogress / missing) の予定にだけ非稼働バッジを出す。
+ */
+function inactiveKind(visit: MonitorVisit): VisitDisplayKind {
+  if (MONITOR_SETTLED_PHASES.has(visit.phase)) return 'normal';
+  return classifyVisitDisplay(visit, { showInactive: true });
+}
+
 function VisitBars({
   visit,
   lane,
@@ -607,6 +625,14 @@ function VisitBars({
           <span className="min-w-0 truncate text-[11px] font-bold leading-tight">
             {visit.patient_name ?? '—'}
           </span>
+          {/* 非稼働患者のバッジ (「入院中」等・design 2026-09-09 §3-4)。
+              連動取消はモニターに来ない (BE + クエリ層で除外済み)。 */}
+          <InactiveVisitBadge
+            visit={visit}
+            kind={inactiveKind(visit)}
+            className="rounded-full py-px text-[9px]"
+            testId={`monitor-bar-inactive-${visit.visit_id}`}
+          />
           {/* 代行バッジ (§6 #7): 行レベルの ⚠ (スケジュール担当≠visit 予定担当・amber) とは
               別物なので、色 (teal) とラベルの両方で区別する。意匠は「2名」バッジと同じ
               淡色地×濃色文字 (--info-bg × --info-strong = 6.7:1・WCAG AA)。 */}

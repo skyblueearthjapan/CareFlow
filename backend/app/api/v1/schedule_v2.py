@@ -4470,6 +4470,9 @@ def _board_course_to_schema(
             mode=bv.mode,  # type: ignore[arg-type]
             slot_index=bv.slot_index,
             status=bv.status,
+            # 患者ステータス連動 Phase 3 §3-4 (非破壊追加)。
+            source=bv.source,
+            patient_status=bv.patient_status,
         )
         for bv in course.visits
     ]

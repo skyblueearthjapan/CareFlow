@@ -342,6 +342,28 @@ export const unsentEventSchema = z.object({
 });
 export type UnsentEvent = z.infer<typeof unsentEventSchema>;
 
+/**
+ * 非稼働患者ごとの取消まとめ (患者ステータス連動 Phase 3・design 2026-09-09 §3-5)。
+ * ●未送信を「◯◯様 入院中の取消 N 件」の 1 行に束ねて見せるために BE が返す。
+ */
+export const unsentInactiveGroupSchema = z.object({
+  /** 要素ごとに寛容にする (1 件の型崩れでグループ全体を捨てないため)。 */
+  patient_id: z.string().catch(''),
+  patient_name: z.string().catch(''),
+  /** 生のステータス値 ('admitted' 等)。表示は `status_label` / ラベル関数を使う。 */
+  status: z.string().nullish().catch(null),
+  /** BE が付ける表示ラベル (「入院中」)。欠けたら FE 側でラベルを引き直す。 */
+  status_label: z.string().nullish().catch(null),
+  /** 取消の総件数 (過去日を含む)。 */
+  count: z.number().int().catch(0),
+  /**
+   * そのうち **送信できる** 件数 (明日以降)。過去日は実績保護で送れないため
+   * `count` と食い違うことがある。旧 BE 応答では欠けるので既定 0。
+   */
+  sendable_count: z.number().int().catch(0),
+});
+export type UnsentInactiveGroup = z.infer<typeof unsentInactiveGroupSchema>;
+
 export const unsentSnapshotSchema = z.object({
   fetched_at: z.string().nullable(),
   month: z.string(),
@@ -377,6 +399,16 @@ export const unsentSummaryReadSchema = z.object({
    * 旧 BE 応答では欠けるので既定 0。
    */
   unassigned_count: z.number().int().default(0),
+  /**
+   * 非稼働患者ごとの取消まとめ (§3-5)。旧 BE 応答では欠けるので既定 []。
+   * 「◯◯様 入院中の取消 N 件」の 1 行に束ねて出す。
+   */
+  inactive_groups: z.array(unsentInactiveGroupSchema).catch(() => []),
+  /**
+   * 非稼働患者の予定が **まだ残っている** 件数 (取消漏れ = 不整合)。
+   * 0 でない間は「要確認」の警告を出す。旧 BE 応答では欠けるので既定 0。
+   */
+  inactive_residue: z.number().int().catch(0),
 });
 export type UnsentSummaryRead = z.infer<typeof unsentSummaryReadSchema>;
 

@@ -37,3 +37,26 @@ describe('useUIStore — sidebar auto collapse', () => {
     expect(persisted.state.sidebarCollapsed).toBe(true);
   });
 });
+
+/**
+ * トグル「非稼働を表示」(患者ステータス連動 Phase 3・design 2026-09-09 §3-4)。
+ * 既定 OFF (= Phase 1/2 と同じ見え方) で、切り替えは localStorage に永続する。
+ */
+describe('useUIStore — showInactiveVisits', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    useUIStore.setState({ showInactiveVisits: false });
+  });
+
+  it('既定は OFF', () => {
+    expect(useUIStore.getState().showInactiveVisits).toBe(false);
+  });
+
+  it('ON にすると localStorage (carelink-ui) に永続される', () => {
+    useUIStore.getState().setShowInactiveVisits(true);
+    expect(useUIStore.getState().showInactiveVisits).toBe(true);
+    const raw = window.localStorage.getItem('carelink-ui');
+    const persisted = JSON.parse(raw!) as { state: Record<string, unknown> };
+    expect(persisted.state.showInactiveVisits).toBe(true);
+  });
+});

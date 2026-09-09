@@ -44,6 +44,47 @@ describe('WeekTimelineBoard — status_cancel は非表示', () => {
     expect(screen.queryByTestId('wtl-visit-status')).not.toBeInTheDocument();
   });
 
+  it('showInactive=true なら連動取消も打ち消し線つきで描く (残骸点検・§3-4)', () => {
+    render(
+      <WeekTimelineBoard
+        showInactive
+        options={OPTIONS}
+        visits={[
+          wv({
+            id: 'status',
+            weekday: 2,
+            source: 'status_cancel',
+            status: 'cancelled',
+            patient_status: 'admitted',
+          }),
+        ]}
+      />,
+    );
+    const card = screen.getByTestId('wtl-visit-status');
+    expect(card.className).toContain('line-through');
+    expect(screen.getByTestId('wtl-inactive-badge-status')).toHaveTextContent('取消（連動）');
+  });
+
+  it('非稼働患者の予定が残っていたらバッジ + 薄色で見せる (トグル OFF でも・§3-4)', () => {
+    render(
+      <WeekTimelineBoard
+        options={OPTIONS}
+        visits={[
+          wv({
+            id: 'residue',
+            weekday: 0,
+            source: 'auto',
+            status: 'planned',
+            patient_status: 'suspended',
+          }),
+        ]}
+      />,
+    );
+    const card = screen.getByTestId('wtl-visit-residue');
+    expect(card.className).toContain('opacity-60');
+    expect(screen.getByTestId('wtl-inactive-badge-residue')).toHaveTextContent('一時休止');
+  });
+
   it('status が欠落していれば描く (source だけでは取り消し扱いにしない)', () => {
     render(
       <WeekTimelineBoard

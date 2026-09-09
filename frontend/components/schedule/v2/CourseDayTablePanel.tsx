@@ -125,7 +125,7 @@ import { apiErrorMessage } from '@/lib/api/errorMessage';
 // Phase G-47: PinScope 型 (= 個別 🔒 toggle のスコープ '曜日のみ' / '全曜日').
 import type { PinScope } from './PinScopeMenu';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
-import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
+import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
 import {
   courseCodeIndex,
   effectiveCapacity,
@@ -521,6 +521,11 @@ export function CourseDayTablePanel({
   // 全タブ共通・localStorage ('carelink-ui') に永続。
   const headerCollapsed = useUIStore((s) => s.scheduleHeaderCollapsed);
   const setHeaderCollapsed = useUIStore((s) => s.setScheduleHeaderCollapsed);
+  // ─── トグル「非稼働を表示」(患者ステータス連動 Phase 3・design §3-4) ─────
+  // 既定 OFF = 連動取消 (status_cancel) を隠す (= Phase 1/2 と同じ見え方)。
+  // ON にすると残骸点検用に打ち消し線つきで出す。localStorage ('carelink-ui') に永続。
+  const showInactive = useUIStore((s) => s.showInactiveVisits);
+  const setShowInactive = useUIStore((s) => s.setShowInactiveVisits);
   // 畳んだままでも Row1/Row2 のボタン群をその場で一時展開する (「ツール」).
   const [compactToolsOpen, setCompactToolsOpen] = useState(false);
 
@@ -1104,6 +1109,32 @@ export function CourseDayTablePanel({
     return m;
   }, [allPatients]);
 
+  /**
+   * 訪問 1 件の患者ステータス (表示の保険・design 2026-09-09 §3-4)。
+   * BE が訪問 DTO に載せた値を優先し、旧応答では患者マスタから補う
+   * (どちらも無ければ null = 「分からない」→ 従来表示)。
+   */
+  const patientStatusOfVisit = useCallback(
+    (v: { patient_id: string; patient_status?: string | null }): string | null =>
+      v.patient_status ?? (patientById.get(v.patient_id)?.status as string | null) ?? null,
+    [patientById],
+  );
+
+  /** 盤面に載せる前の表示区分 (hidden = 描かない)。 */
+  const visitDisplayOf = useCallback(
+    (v: {
+      patient_id: string;
+      patient_status?: string | null;
+      source?: string | null;
+      status?: string | null;
+    }) =>
+      classifyVisitDisplay(
+        { source: v.source, status: v.status, patient_status: patientStatusOfVisit(v) },
+        { showInactive },
+      ),
+    [patientStatusOfVisit, showInactive],
+  );
+
   // ─── visits を (course_id, slot) → CourseGridVisit[] にバケット化 ──
   // course_id 経由で template に逆引きする (BE Layer 1 が visits.course_id を埋める前提)。
   const visitsByCourse = useMemo(() => {
@@ -1112,7 +1143,8 @@ export function CourseDayTablePanel({
       // 患者ステータス連動の取消 (source='status_cancel') は盤面から消す
       // (design 2026-09-09 §7-4)。日ビュー (表 / タイムライン / リスト) はすべて
       // このバケットが入口。「今週だけ取消」= manual_cancel は打ち消し線で残す。
-      if (isStatusCancelledVisit(v)) continue;
+      // トグル「非稼働を表示」が ON のときだけ残骸点検用に通す (Phase 3 §3-4)。
+      if (visitDisplayOf(v) === 'hidden') continue;
       const cid = v.course_id ?? null;
       if (!cid) continue;
       const slot = floorToCourseSlot(v.start_time ?? '');
@@ -1274,6 +1306,8 @@ export function CourseDayTablePanel({
         week_pinned: (v as { week_pinned?: boolean | null }).week_pinned ?? null,
         // R-2: キャンセル表示 ('cancelled' のとき grey + 打消し線 + バッジ).
         status: (v as { status?: string | null }).status ?? null,
+        // 表示の保険 (§3-4): 非稼働患者の残骸バッジ / 連動取消の判定に使う。
+        patient_status: patientStatusOfVisit(v),
         // T-1 縦タイムライン: 実時刻 (時間比例描画) + 患者性別 (カード地色).
         start_time: v.start_time ?? null,
         end_time: v.end_time ?? null,
@@ -1285,6 +1319,8 @@ export function CourseDayTablePanel({
   }, [
     weekVisits,
     patientById,
+    patientStatusOfVisit,
+    visitDisplayOf,
     visitsByGroupId,
     courseTemplateByCourseId,
     templates,
@@ -1465,7 +1501,8 @@ export function CourseDayTablePanel({
       // 日ビューと同じく、患者ステータス連動の取消は週ビュー系にも出さない
       // (design 2026-09-09 §7-4)。受け手 (CourseWeekOverview / WeekTimelineBoard /
       // StaffWeekBoard / StaffTimelineView) 側にも同じ門があるが、入口で落とす。
-      if (isStatusCancelledVisit(v)) continue;
+      // トグル「非稼働を表示」が ON のときだけ残骸点検用に通す (Phase 3 §3-4)。
+      if (visitDisplayOf(v) === 'hidden') continue;
       const cid = v.course_id ?? null;
       if (!cid) continue;
       const templateId = courseTemplateByCourseId.get(cid);
@@ -1526,8 +1563,10 @@ export function CourseDayTablePanel({
         // 週のピン (青) の表示根拠。source と week_pinned の両方を運ぶ (2026-08-09)。
         source: (v as { source?: string | null }).source ?? null,
         // 取消の判定に source と status の両方が要る (2026-09-09)。status を落とすと
-        // 受け手 (WeekTimelineBoard) の isStatusCancelledVisit が永久に偽になる。
+        // 受け手 (WeekTimelineBoard) の classifyVisitDisplay が永久に 'normal' になる。
         status: (v as { status?: string | null }).status ?? null,
+        // 表示の保険 (§3-4): 非稼働患者の残骸バッジ / 連動取消の判定に使う。
+        patient_status: patientStatusOfVisit(v),
         week_pinned: (v as { week_pinned?: boolean | null }).week_pinned ?? null,
         // 週ビューの距離算出用 (コース合計 + 次までの距離).
         lat: (patient as { lat?: number | null } | undefined)?.lat ?? null,
@@ -1557,6 +1596,8 @@ export function CourseDayTablePanel({
     pfvByPatientWeekdaySlot,
     visitsByGroupId,
     sameAddressKeyByPatientId,
+    patientStatusOfVisit,
+    visitDisplayOf,
   ]);
 
   const officeNameById = useMemo(() => {
@@ -6544,6 +6585,25 @@ export function CourseDayTablePanel({
                 </>
               ) : null}
 
+              {/* 非稼働を表示 (患者ステータス連動 Phase 3・design §3-4)。
+                  ON にすると連動取消 (status_cancel) を打ち消し線つきで出す
+                  = 残骸点検用。非稼働のまま残っている予定は OFF でもバッジ付きで出る。 */}
+              <Button
+                type="button"
+                size="sm"
+                variant={showInactive ? 'default' : 'ghost'}
+                onClick={() => setShowInactive(!showInactive)}
+                aria-pressed={showInactive}
+                title={
+                  showInactive
+                    ? '非稼働（入院中など）の患者様の取消済み予定も表示しています'
+                    : '非稼働（入院中など）の患者様の取消済み予定も表示します'
+                }
+                data-testid="schedule-show-inactive-toggle"
+              >
+                {showInactive ? '非稼働を表示中' : '非稼働を表示'}
+              </Button>
+
               {/* 上部折りたたみトグル (PO 要望 2026-08-23)。ツールバー右端に常設。 */}
               <Button
                 type="button"
@@ -6660,6 +6720,7 @@ export function CourseDayTablePanel({
 
                 {staffViewMode === 'timeline' ? (
                   <StaffTimelineView
+                    showInactive={showInactive}
                     weekStart={weekStart}
                     day={staffTimelineDay}
                     onDayChange={setStaffTimelineDay}
@@ -6721,6 +6782,7 @@ export function CourseDayTablePanel({
                   />
                 ) : (
                   <StaffWeekBoard
+                    showInactive={showInactive}
                     templates={templates}
                     officeNameById={officeNameById}
                     visits={cockpitVisits}
@@ -6895,6 +6957,7 @@ export function CourseDayTablePanel({
                 {weekViewMode === 'timeline' ? (
                   /* T-3改: 週タイムライン (全コース縦積み・縦スクロールで一元閲覧). */
                   <WeekTimelineBoard
+                    showInactive={showInactive}
                     options={weekTimelineOptions}
                     visits={overviewVisits}
                     eventFramesByWeekday={staffEventFramesByWeekday}
@@ -6911,6 +6974,7 @@ export function CourseDayTablePanel({
                   />
                 ) : (
                   <CourseWeekOverview
+                    showInactive={showInactive}
                     templates={templates}
                     officeNameById={officeNameById}
                     eventFramesByWeekday={staffEventFramesByWeekday}
@@ -6978,6 +7042,7 @@ export function CourseDayTablePanel({
                   /* T-1: 縦タイムライン (時間比例カード・読み取り専用). */
                   <div data-testid="course-day-timeline-view" className="lg:min-h-0 lg:flex-1">
                     <TimelineDayBoard
+                      showInactive={showInactive}
                       columns={timelineColumns}
                       // スタッフ枠 (PO確定 2026-07-26): コース無し・イベントありの
                       // スタッフを盤面の列として編み込む (休みの人もスケジュールの一員)。

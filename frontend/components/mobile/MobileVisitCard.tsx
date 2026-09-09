@@ -8,6 +8,8 @@ import { cn } from '@/lib/utils';
 import { displayVisitNote } from '@/lib/visit-note';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { visitAccompaniments } from '@/lib/schemas/trainee_accompaniment';
+import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
+import { classifyVisitDisplay, VISIT_DISPLAY_CLASS } from '@/lib/schedule/visitVisibility';
 import type { MyVisit } from '@/lib/queries/me';
 
 /** Map backend `status` → Japanese label + Badge variant. */
@@ -46,6 +48,8 @@ interface MobileVisitCardProps {
 
 export function MobileVisitCard({ visit, address }: MobileVisitCardProps) {
   const meta = statusMeta(visit.status);
+  // 表示の保険 (design 2026-09-09 §3-4): 一覧に来ている = 描くと決まった訪問。
+  const displayKind = classifyVisitDisplay(visit, { showInactive: true });
   // 内部メタデータ (Layer1: 等) は現場に見せない。
   const note = displayVisitNote(visit.note);
   // R-9 (PO要望 2026-07-10): PC版スケジュール/モニターと同じカード視覚言語へ統一。
@@ -71,6 +75,8 @@ export function MobileVisitCard({ visit, address }: MobileVisitCardProps) {
         className={cn(
           'flex items-center gap-3 rounded-md border border-l-4 p-4 shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-sm)]',
           visit.status === 'cancelled' && 'opacity-60',
+          // 非稼働患者の残骸 (§3-4)。稼働中に戻すまで訪問できない予定と分かるように。
+          VISIT_DISPLAY_CLASS[displayKind],
         )}
         style={{
           // 左帯は常に性別色 (PC版踏襲・PO要望 2026-07-10)。未訪問の区別はバッジが担う。
@@ -93,6 +99,12 @@ export function MobileVisitCard({ visit, address }: MobileVisitCardProps) {
             />
             <p className="truncate font-bold">{visit.patient_name ?? '(患者名未設定)'}</p>
             <Badge variant={meta.variant}>{meta.label}</Badge>
+            {/* 非稼働患者のバッジ (「入院中」等・§3-4)。 */}
+            <InactiveVisitBadge
+              visit={visit}
+              kind={displayKind}
+              testId="mobile-visit-inactive-badge"
+            />
             {isTrainee && (
               <Badge variant="info" data-testid="mobile-visit-accompaniment">
                 同行

@@ -160,6 +160,10 @@ class VisitRead(VisitBase):
     # モバイル訪問カードの性別ウォッシュ/📍住所用 (R-9・非破壊追加)。
     patient_sex: str | None = None
     patient_address: str | None = None
+    # 患者ステータス (患者ステータス連動 Phase 3 §3-4「表示の保険」・非破壊追加)。
+    # ``active`` 以外の患者の予定が残っていたら不整合 = FE がバッジ/薄色で見せる
+    # (``source='status_cancel'`` は非表示)。patient 未ロードは None。
+    patient_status: str | None = None
     # visit_staff_assignments 経由の割当スタッフ一覧 (§4.5)
     # 1 visit あたり 1 or 2 行 (required_staff_count による)
     staff_assignments: list[VisitStaffAssignmentRead] = Field(default_factory=list)

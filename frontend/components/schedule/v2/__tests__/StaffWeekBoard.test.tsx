@@ -830,3 +830,84 @@ describe('StaffWeekBoard', () => {
     expect(chipB.compareDocumentPosition(chipA) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
+
+// ─── 非稼働患者 (患者ステータス連動 Phase 3・design 2026-09-09 §3-4) ─────────
+
+describe('StaffWeekBoard — 非稼働患者', () => {
+  function renderWith(vs: WeekOverviewVisit[], showInactive = false) {
+    return render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={vs}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        onPatientClick={vi.fn()}
+        showInactive={showInactive}
+      />,
+    );
+  }
+
+  it('連動取消は既定で出さず、showInactive=true で打ち消し線つきで出す', () => {
+    const statusCancel = visit({
+      id: 'sc1',
+      patient_name: '小湊　太郎',
+      source: 'status_cancel',
+      status: 'cancelled',
+      patient_status: 'admitted',
+    });
+    renderWith([statusCancel]);
+    expect(screen.queryByText(/小湊/)).not.toBeInTheDocument();
+
+    cleanup();
+    renderWith([statusCancel], true);
+    expect(screen.getByText(/小湊/)).toBeInTheDocument();
+    expect(screen.getByTestId('staff-week-visit-inactive-sc1')).toHaveTextContent('取消（連動）');
+  });
+
+  it('連動取消の行には操作メニューを出さない (もう無い予定なので触らせない)', () => {
+    const renderVisitMenu = vi.fn((_v, _wd, trigger: React.ReactNode) => trigger);
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={[
+          visit({ id: 'v1', patient_name: '朝倉　美夢', weekday: 0, start_time: '09:00' }),
+          visit({
+            id: 'sc1',
+            patient_name: '小湊　太郎',
+            source: 'status_cancel',
+            status: 'cancelled',
+            patient_status: 'admitted',
+          }),
+        ]}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        renderVisitMenu={renderVisitMenu}
+        showInactive
+      />,
+    );
+    // 通常の訪問はメニューのトリガーになる。
+    expect(screen.getByTestId('staff-week-visit-v1')).toHaveAttribute('role', 'button');
+    // 連動取消は行としては見えるが、renderVisitMenu には渡さない。
+    expect(screen.getByTestId('staff-week-visit-sc1')).not.toHaveAttribute('role', 'button');
+    expect(renderVisitMenu.mock.calls.map((c) => (c[0] as { id: string }).id)).toEqual(['v1']);
+  });
+
+  it('非稼働患者の予定が残っていたらバッジで見せる (トグル OFF でも)', () => {
+    renderWith([
+      visit({
+        id: 'res1',
+        patient_name: '藤原　花子',
+        source: 'auto',
+        status: 'planned',
+        patient_status: 'suspended',
+      }),
+    ]);
+    expect(screen.getByTestId('staff-week-visit-inactive-res1')).toHaveTextContent('一時休止');
+  });
+});

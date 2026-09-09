@@ -14,7 +14,7 @@ import { MobileVisitCard } from '@/components/mobile/MobileVisitCard';
 import { QrScanner } from '@/components/mobile/QrScanner';
 import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { extractQrToken } from '@/lib/qr-token';
-import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
+import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
 import { useCheckinFlush } from '@/lib/queries/checkinFlush';
 import { todayIso, useMyVisits, type MyVisit } from '@/lib/queries/me';
 
@@ -37,7 +37,7 @@ export default function MobileTodayPage() {
   // 患者ステータス連動の取消 (source='status_cancel') は一覧から消す
   // (design 2026-09-09 §7-4)。「今週だけ取消」= manual_cancel は従来どおり残す。
   const sorted = (visits ?? [])
-    .filter((v) => !isStatusCancelledVisit(v))
+    .filter((v) => classifyVisitDisplay(v) !== 'hidden')
     .sort((a, b) => a.start_time.localeCompare(b.start_time));
 
   // 圏外で退避した打刻 (訪問詳細の到着/退出・/q の予定外) をここで再送する。

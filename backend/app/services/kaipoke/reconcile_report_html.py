@@ -21,11 +21,14 @@ import io
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.patient import Patient
 from app.services.kaipoke.csv_builder import BuildOptions, KaipokeCsvRow, resolve_month_rows
 from app.services.kaipoke.csv_snapshot import get_latest
 from app.services.kaipoke.name_match import normalize_name_key
+from app.services.patient_status_sync import is_schedulable_status, status_label, today_jst
 
 WEEKDAY_JA = ["月", "火", "水", "木", "金", "土", "日"]
 
@@ -65,6 +68,10 @@ class ReconRow:
     service: str
 
 
+#: 非稼働患者の行のカテゴリ表記 (設計 §3-5「非稼働患者の行」= 削除候補)。
+CATEGORY_INACTIVE = "非稼働患者"
+
+
 @dataclass
 class ReconPair:
     day: date
@@ -72,14 +79,45 @@ class ReconPair:
     local: ReconRow | None  # らく助
     remote: ReconRow | None  # カイポケ
     diffs: list[str] = field(default_factory=list)  # 空 = 一致
+    # 患者ステータス連動 Phase 3 §3-5: らく助側の患者が非稼働 (入院中/解約済み等)。
+    patient_status: str | None = None
 
     @property
-    def category(self) -> str:
+    def inactive_patient(self) -> bool:
+        """らく助側の患者が非稼働か (**事実だけ**。削除候補かどうかは別判定)。"""
+        return self.patient_status is not None and not is_schedulable_status(self.patient_status)
+
+    @property
+    def structural_category(self) -> str:
+        """行の構造だけで決まる従来どおりの判定 (一致/相違/片側のみ)。
+
+        非稼働の重ね合わせを **含まない**。日別見出しの「相違 N」など、Phase 3 の
+        前後で数え方が変わってはいけない集計はこちらを使う。
+        """
         if self.local is None:
             return "カイポケのみ"
         if self.remote is None:
             return "らく助のみ"
         return "一致" if not self.diffs else "+".join(self.diffs)
+
+    @property
+    def is_delete_candidate(self) -> bool:
+        """「非稼働患者の削除候補」= カイポケにだけ残った今日以降の行 (§3-5)。
+
+        3 条件すべてを満たすときだけ True (レビュー決定):
+
+        * ``local is None`` — らく助に対応する行が無い (= カイポケのみ)。
+          一致 / 相違の行は **らく助にも実体がある** ので、消すのではなく直す話。
+        * ``day >= 今日 (JST)`` — 過去日はカイポケ側の **実績**。消したら記録が飛ぶ。
+        * 患者が非稼働。
+        """
+        return self.local is None and self.inactive_patient and self.day >= today_jst()
+
+    @property
+    def category(self) -> str:
+        if self.is_delete_candidate:
+            return CATEGORY_INACTIVE
+        return self.structural_category
 
 
 @dataclass
@@ -100,7 +138,14 @@ class ReconcileReport:
 
     @property
     def counts(self) -> dict[str, int]:
-        c = {"一致": 0, "相違": 0, "らく助のみ": 0, "カイポケのみ": 0}
+        """判定別の件数。
+
+        既存 4 キー (一致/相違/らく助のみ/カイポケのみ) は **行の構造だけ** で数える
+        (合計 = 全件が常に成立する)。``非稼働患者`` はその上に重ねる **内数**
+        (設計 §3-5)。行の ``category`` 表示は削除候補を優先するが、集計は内数のまま
+        にして「全 N 件 = 4 キーの和」という読み方を壊さない。
+        """
+        c = {"一致": 0, "相違": 0, "らく助のみ": 0, "カイポケのみ": 0, CATEGORY_INACTIVE: 0}
         for p in self.pairs:
             if p.local is None:
                 c["カイポケのみ"] += 1
@@ -110,7 +155,14 @@ class ReconcileReport:
                 c["相違"] += 1
             else:
                 c["一致"] += 1
+            if p.is_delete_candidate:
+                c[CATEGORY_INACTIVE] += 1
         return c
+
+    @property
+    def inactive_pairs(self) -> list[ReconPair]:
+        """削除候補 (非稼働 × カイポケのみ × 今日以降) だけを返す (専用セクション用)。"""
+        return [p for p in self.pairs if p.is_delete_candidate]
 
 
 def _local_row(r: KaipokeCsvRow) -> ReconRow:
@@ -249,11 +301,32 @@ async def build_reconcile_report(
                 display_names.setdefault(key, patient)
                 remote_by_key.setdefault(key, []).append(row)
 
+    # 患者ステータス (設計 §3-5)。突合キーと同じ正規化名で 1 クエリだけ引く。
+    # らく助側が非稼働の患者に対応するカイポケ行は「削除候補」として出す。
+    status_by_name_key: dict[str, str] = {}
+    prows = (
+        await db.execute(select(Patient.name, Patient.status).where(Patient.deleted_at.is_(None)))
+    ).all()
+    for pname, pstatus in prows:
+        nk = normalize_name_key(pname or "")
+        if not nk:
+            continue
+        # 同名 (正規化後) が複数居たら「稼働中が 1 人でも居れば稼働中」に倒す
+        # (突合行がどちらの患者のものか区別できないため、削除候補に誤って積むより
+        #  保守的に扱う)。
+        if nk in status_by_name_key and is_schedulable_status(status_by_name_key[nk]):
+            continue
+        status_by_name_key[nk] = pstatus
+
     pairs: list[ReconPair] = []
     for key in sorted(set(local_by_key) | set(remote_by_key)):
         d, _norm_key = key
         display = display_names.get(key, _norm_key)
-        pairs.extend(_pair_group(d, display, local_by_key.get(key, []), remote_by_key.get(key, [])))
+        group = _pair_group(d, display, local_by_key.get(key, []), remote_by_key.get(key, []))
+        pstatus = status_by_name_key.get(_norm_key)
+        for pair in group:
+            pair.patient_status = pstatus
+        pairs.extend(group)
 
     def _sort_key(p: ReconPair) -> tuple[date, str, str]:
         anchor = p.local or p.remote
@@ -286,6 +359,46 @@ def _cell(r: ReconRow | None) -> str:
     )
 
 
+def _row_class(p: ReconPair) -> str:
+    """行の色 (削除候補 > 相違 > 一致)。"""
+    if p.is_delete_candidate:
+        return "inact"
+    return "ok" if p.structural_category == "一致" else "ng"
+
+
+def _inactive_badge(p: ReconPair) -> str:
+    """利用者名の横に付ける「入院中」等のバッジ (削除候補のときだけ)。
+
+    過去日や一致行の非稼働患者には出さない — そこは実績であって削除候補ではなく、
+    バッジを出すと「消していい行」に見えてしまう。
+    """
+    if not p.is_delete_candidate:
+        return ""
+    return f'<span class="badge">{_esc(status_label(p.patient_status))}</span>'
+
+
+def _inactive_section(report: ReconcileReport) -> str:
+    """「非稼働患者の行（削除候補）」セクション (設計 §3-5)。0 件なら出さない。"""
+    rows = report.inactive_pairs
+    if not rows:
+        return ""
+    body = "".join(
+        f'<tr class="inact"><td>{p.day.month}/{p.day.day}</td>'
+        f"<td>{_esc(p.patient)}{_inactive_badge(p)}</td>"
+        f"{_cell(p.local)}{_cell(p.remote)}</tr>"
+        for p in rows
+    )
+    return (
+        f'<h2>非稼働患者の行（削除候補）<span class="cnt">{len(rows)}件</span></h2>'
+        '<div class="warn">らく助側で「稼働中」以外になっている利用者の、'
+        "<b>今日以降のカイポケのみの行</b>です（⇧送信の delete 差分＝削除候補）。"
+        "過去日や、らく助にも予定がある行（一致／相違）は実績・要調整なのでここには出しません。"
+        "カイポケの<b>週間パターンを停止</b>しないと翌月の展開でまた復活します。</div>"
+        '<table><thead><tr><th>日付</th><th>利用者</th><th colspan="3">らく助</th>'
+        f'<th colspan="3">カイポケ</th></tr></thead><tbody>{body}</tbody></table>'
+    )
+
+
 def render_reconcile_html(report: ReconcileReport) -> str:
     counts = report.counts
     by_day: dict[date, list[ReconPair]] = {}
@@ -294,10 +407,11 @@ def render_reconcile_html(report: ReconcileReport) -> str:
     sections: list[str] = []
     for d in sorted(by_day):
         rows = by_day[d]
-        ng = sum(1 for p in rows if p.category != "一致")
+        # 見出しの「相違 N」は **構造判定** で数える (Phase 3 の前後で数が動かない)。
+        ng = sum(1 for p in rows if p.structural_category != "一致")
         body = "".join(
-            f'<tr class="{"ok" if p.category == "一致" else "ng"}">'
-            f"<td>{_esc(p.patient)}</td>{_cell(p.local)}{_cell(p.remote)}"
+            f'<tr class="{_row_class(p)}">'
+            f"<td>{_esc(p.patient)}{_inactive_badge(p)}</td>{_cell(p.local)}{_cell(p.remote)}"
             f'<td class="cat">{"✓" if p.category == "一致" else _esc(p.category)}</td></tr>'
             for p in rows
         )
@@ -326,7 +440,7 @@ def render_reconcile_html(report: ReconcileReport) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>らく助×カイポケ 突合 {report.week_start.month}/{report.week_start.day}週</title>
 <style>
-:root{{--ink:#1e2a33;--soft:#55656f;--rule:#d7dde2;--rule2:#9aa7b0;--tint:#f3f6f8;--ok-t:#f4faf7;--ng:#a8392f;--ng-t:#fbebe9}}
+:root{{--ink:#1e2a33;--soft:#55656f;--rule:#d7dde2;--rule2:#9aa7b0;--tint:#f3f6f8;--ok-t:#f4faf7;--ng:#a8392f;--ng-t:#fbebe9;--in:#8a5a12;--in-t:#fdf4e3}}
 html{{color-scheme:light}}
 body{{margin:0;background:#e9ecef;color:var(--ink);font-family:"BIZ UDPGothic","Noto Sans JP","Hiragino Sans","Yu Gothic UI",Meiryo,sans-serif;font-size:8.6pt;line-height:1.45;font-feature-settings:"palt"}}
 .sheet{{background:#fff;width:210mm;margin:8mm auto;padding:12mm;box-sizing:border-box;box-shadow:0 2px 14px rgba(20,30,40,.12)}}
@@ -343,6 +457,9 @@ td{{border-bottom:1px solid var(--rule);padding:1mm 1.5mm;vertical-align:top}}
 td.t{{white-space:nowrap}} td.svc{{color:var(--soft)}} td.none{{color:var(--rule2);text-align:center}}
 tr.ok{{background:var(--ok-t)}} tr.ok td.cat{{color:#2f7d5b}}
 tr.ng{{background:var(--ng-t)}} tr.ng td.cat{{color:var(--ng);font-weight:700;white-space:nowrap}}
+tr.inact{{background:var(--in-t)}} tr.inact td:not(.none):not(.svc){{color:var(--in)}}
+tr.inact td.cat{{color:var(--in);font-weight:700;white-space:nowrap}}
+.badge{{display:inline-block;margin-left:1.5mm;padding:0 1.5mm;border:1px solid var(--in);border-radius:1mm;color:var(--in);font-size:7pt;white-space:nowrap}}
 .toolbar{{width:210mm;margin:8mm auto 0;display:flex;justify-content:flex-end}}
 .toolbar button{{font:inherit;font-size:10pt;padding:5px 14px;border:1px solid var(--rule2);background:#fff;border-radius:3px;cursor:pointer}}
 @media print{{body{{background:#fff}}.sheet{{margin:0;box-shadow:none;width:auto}}.toolbar{{display:none}} h2{{break-after:avoid}}}}
@@ -354,7 +471,8 @@ tr.ng{{background:var(--ng-t)}} tr.ng td.cat{{color:var(--ng);font-weight:700;wh
 <h1>らく助 × カイポケ 突合一覧</h1>
 <div class="meta">対象週: {report.week_start.isoformat()} 〜 {report.week_end.isoformat()} / 作成: {generated}</div>
 <div class="warn">カイポケ側 = 保存済みの最新スナップショット（{_esc(snap_meta)}）。カイポケの「今」と比べたい場合は、先に差分確認（🔄突合）を実行してから開き直してください。</div>
-<div class="sum"><span>全 <b>{total}</b> 件</span><span>一致 <b style="color:#2f7d5b">{counts["一致"]}</b></span><span>相違 <b style="color:#a8392f">{counts["相違"]}</b></span><span>らく助のみ <b>{counts["らく助のみ"]}</b></span><span>カイポケのみ <b>{counts["カイポケのみ"]}</b></span></div>
+<div class="sum"><span>全 <b>{total}</b> 件</span><span>一致 <b style="color:#2f7d5b">{counts["一致"]}</b></span><span>相違 <b style="color:#a8392f">{counts["相違"]}</b></span><span>らく助のみ <b>{counts["らく助のみ"]}</b></span><span>カイポケのみ <b>{counts["カイポケのみ"]}</b></span><span>非稼働患者 <b style="color:#8a5a12">{counts[CATEGORY_INACTIVE]}</b><small>（内数）</small></span></div>
+{_inactive_section(report)}
 {"".join(sections)}
 </div>
 </body>

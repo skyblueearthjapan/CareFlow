@@ -13,6 +13,7 @@
 import * as React from 'react';
 
 import { cn } from '@/lib/utils';
+import { inactiveStatusLabel } from '@/lib/schemas/patient';
 import {
   fmtMd,
   type CockpitMarker,
@@ -130,6 +131,16 @@ export function DiffDetailCard({
           {marker.kind === 'visit' ? '訪問' : 'イベント'}｜{marker.patient_name ?? marker.title}
           {marker.kind === 'event' && marker.title ? `・${marker.title}` : ''}
         </b>
+        {/* 非稼働患者の行 (§3-5): らく助側のステータスをバッジで添える。 */}
+        {marker.inactive_patient ? (
+          <span
+            className="rounded bg-warning-bg px-1.5 py-0.5 text-[11px] font-bold text-warning-strong"
+            data-testid="diff-detail-inactive"
+            title="らく助では稼働中でない患者様です（カイポケ側の行は削除候補）"
+          >
+            {inactiveStatusLabel(marker.patient_status) ?? '非稼働'}
+          </span>
+        ) : null}
         <span className="text-[11px] text-text-secondary" data-testid="diff-detail-head">
           {HEAD_JA[direction][marker.action]}
         </span>

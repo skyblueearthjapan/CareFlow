@@ -717,6 +717,12 @@ async def build_monitor(
                     patient_id=v.patient_id,
                     patient_name=getattr(patient, "name", None) if patient is not None else None,
                     patient_code=getattr(patient, "code", None) if patient is not None else None,
+                    # 患者ステータス連動 Phase 3 §3-4 (非破壊追加)。patient は
+                    # selectinload 済みなので追加クエリは発生しない。
+                    source=v.source,
+                    patient_status=(
+                        getattr(patient, "status", None) if patient is not None else None
+                    ),
                     patient_lat=(
                         float(patient.lat)
                         if patient is not None and patient.lat is not None

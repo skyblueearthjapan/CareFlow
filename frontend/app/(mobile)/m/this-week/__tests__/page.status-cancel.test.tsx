@@ -69,6 +69,16 @@ describe('今週の予定 — status_cancel は非表示', () => {
     expect(screen.getByText('2件')).toBeInTheDocument();
   });
 
+  it('非稼働患者の予定が残っていたらバッジ + 薄色で見せる (§3-4)', () => {
+    renderWith([makeVisit({ id: 'residue', patient_status: 'admitted' })]);
+    expect(screen.getByTestId('this-week-inactive-badge-residue')).toHaveTextContent('入院中');
+  });
+
+  it('稼働中の予定にはバッジを出さない', () => {
+    renderWith([makeVisit({ id: 'plain', patient_status: 'active' })]);
+    expect(screen.queryByTestId('this-week-inactive-badge-plain')).not.toBeInTheDocument();
+  });
+
   it('その日が status_cancel だけなら日付グループごと消える', () => {
     renderWith([
       makeVisit({

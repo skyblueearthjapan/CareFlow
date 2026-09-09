@@ -27,7 +27,12 @@ import type { EventRead } from '@/lib/schemas/staff-events';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
 import type { Movability } from '@/lib/schemas/v2/patient_fixed_visit';
-import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
+import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
+import {
+  classifyVisitDisplay,
+  VISIT_DISPLAY_CLASS,
+  type VisitDisplayKind,
+} from '@/lib/schedule/visitVisibility';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { haversineKm } from '../WeekdayScheduleCard';
@@ -108,6 +113,11 @@ export interface WeekOverviewVisit {
    * 欠落は「取消していない」扱い (寛容)。
    */
   status?: string | null;
+  /**
+   * 患者マスタの `patients.status` (表示の保険・design 2026-09-09 §3-4)。
+   * 非稼働 (入院中等) のまま予定が残っていたら「入院中」バッジ + 薄色で見せる。
+   */
+  patient_status?: string | null;
   /**
    * 訪問の担当スタッフ (visit.primary_staff_id)。スタッフ別ビューの行帰属に使う
    * (2026-07-26: 臨時テンプレは複数スタッフの臨Nコースを束ねるため、コース担当
@@ -221,6 +231,11 @@ export interface CourseWeekOverviewProps {
    * 無いビューなので、ドロップは必ず「配置の確認」モーダルを通る (§2-2)。
    */
   dndEnabled?: boolean;
+  /**
+   * トグル「非稼働を表示」(患者ステータス連動 Phase 3・design 2026-09-09 §3-4)。
+   * true = 連動取消 (source='status_cancel') も打ち消し線つきで描く。既定 false。
+   */
+  showInactive?: boolean;
 }
 
 /**
@@ -286,6 +301,7 @@ export function CourseWeekOverview({
   officeLatLngById,
   accompaniment,
   dndEnabled = false,
+  showInactive = false,
 }: CourseWeekOverviewProps) {
   // 新人同行 (§7.2): 選択UIはタイムライン専用のため、週リストは inactive バッジのみ出す。
   const accInactive = accompaniment != null && !accompaniment.active;
@@ -293,9 +309,24 @@ export function CourseWeekOverview({
   // (design 2026-09-09 §7-4)。件数集計もこの段で落とす = 週リストの n件から外れる。
   // 「今週だけ取消」= manual_cancel は従来どおり打ち消し線で残す。
   const visits = React.useMemo(
-    () => visitsProp.filter((v) => !isStatusCancelledVisit(v)),
-    [visitsProp],
+    () => visitsProp.filter((v) => classifyVisitDisplay(v, { showInactive }) !== 'hidden'),
+    [visitsProp, showInactive],
   );
+  /**
+   * **件数の集計だけはトグルに従わない** (design 2026-09-09 §3-4 の但し書き)。
+   * 「n 名 / 上限 N」「残N枠」「拠点別 患者数」は枠の埋まり具合そのものなので、
+   * 残骸点検のためにトグルを ON にしただけで定員が埋まって見えてはいけない。
+   * 常に showInactive:false = 連動取消を除いた集合で数える。
+   */
+  const countedByCell = React.useMemo(() => {
+    const m = new Map<string, number>();
+    for (const v of visitsProp) {
+      if (classifyVisitDisplay(v, { showInactive: false }) === 'hidden') continue;
+      const key = `${v.course_template_id}:${v.weekday}`;
+      m.set(key, (m.get(key) ?? 0) + 1);
+    }
+    return m;
+  }, [visitsProp]);
   // (template_id, weekday) → visits[] (start_time 昇順)
   const cellMap = React.useMemo(() => {
     const m = new Map<string, WeekOverviewVisit[]>();
@@ -319,11 +350,13 @@ export function CourseWeekOverview({
   // なる. 同住所ペアも各 1 件 (= 実患者数) として数える (= visit 1 行 = 1 名).
   const patientTotalByWeekday = React.useMemo(() => {
     const m = new Map<number, number>();
-    for (const v of visits) {
+    for (const v of visitsProp) {
+      // 件数はトグルに依らない (上の countedByCell と同じ理由)。
+      if (classifyVisitDisplay(v, { showInactive: false }) === 'hidden') continue;
       m.set(v.weekday, (m.get(v.weekday) ?? 0) + 1);
     }
     return m;
-  }, [visits]);
+  }, [visitsProp]);
 
   // 表示順: officeName -> label
   const sortedTemplates = React.useMemo(() => {
@@ -485,6 +518,8 @@ export function CourseWeekOverview({
                     ? effectiveCapacity(tpl, wd, staffCountFor(tpl.office_id, wd), courseCodesMax)
                     : capacityForWeekday(tpl, wd);
                   const visitList = cellMap.get(`${tpl.id}:${wd}`) ?? [];
+                  // 枠の埋まり具合 (定員バッジ / 残N枠 / 休判定) はトグルに依らない件数。
+                  const occupantCount = countedByCell.get(`${tpl.id}:${wd}`) ?? 0;
                   // 新人同行 (§7.2): このセル (template×weekday) がコース丸ごと同行の
                   // 対象なら、上部に極小 👥 を出す (名前は title のみ・高さ/幅は増やさない)。
                   const courseAccName = accInactive
@@ -496,7 +531,7 @@ export function CourseWeekOverview({
                   // セルは「休」で隠さず内容を表示する (既存訪問を管理画面から不可視に
                   // しない和集合)。isRest=true のときのみ「休」表示にする。
                   const pfvPresent = pfvCountFor ? pfvCountFor(tpl.id, wd) > 0 : false;
-                  const isRest = cap === 0 && !pfvPresent && visitList.length === 0;
+                  const isRest = cap === 0 && !pfvPresent && occupantCount === 0;
 
                   // 距離: 各 visit に「そこに来るまでの移動距離」(前の患者から) を割当てる.
                   //   - 1 人目 = 拠点 → 最初の患者 (officeLatLngById があるとき).
@@ -592,6 +627,10 @@ export function CourseWeekOverview({
                         patientSex: string | null;
                         /** 今週だけ取消 (visits.status='cancelled')。打消線で見せる。 */
                         cancelled: boolean;
+                        /** 表示の保険 (§3-4): 非稼働患者の残骸 / 連動取消の区分。 */
+                        display: VisitDisplayKind;
+                        /** バッジ文言の解決に使う患者ステータス。 */
+                        patientStatus: string | null;
                       }
                     | {
                         kind: 'event';
@@ -610,7 +649,7 @@ export function CourseWeekOverview({
                         startMin: number;
                       };
                   // Phase G-55: 頭数ゲート — cap - 配置済 <= 0 (満員) なら gap を出さない。
-                  const remainingForGaps = Math.max(0, cap - visitList.length);
+                  const remainingForGaps = Math.max(0, cap - occupantCount);
                   const cellGaps =
                     remainingForGaps > 0 ? (freeGapsByCell?.get(`${tpl.id}:${wd}`) ?? []) : [];
                   const items: OverviewItem[] = [
@@ -633,6 +672,9 @@ export function CourseWeekOverview({
                         masterStartTime: v.master_start_time ?? null,
                         patientSex: v.patient_sex ?? null,
                         cancelled: v.status === 'cancelled',
+                        // 描くと決まった訪問なので showInactive:true で区分だけ求める。
+                        display: classifyVisitDisplay(v, { showInactive: true }),
+                        patientStatus: v.patient_status ?? null,
                       };
                     }),
                     ...staffDayEvents.map((e) => {
@@ -705,7 +747,7 @@ export function CourseWeekOverview({
                       )}
                       data-testid={`course-week-overview-cell-${tpl.id}-${wd}`}
                       data-capacity={cap}
-                      data-occupant-count={visitList.length}
+                      data-occupant-count={occupantCount}
                     >
                       {/* 設計 §2-1 Phase 2: DnD 有効時のみ ⭐/プールカードの受け皿にする。
                           休 (isRest) のセルも droppable のままにして、盤面が「開講して
@@ -750,13 +792,13 @@ export function CourseWeekOverview({
                             <span
                               className={cn(
                                 'rounded px-1 text-[10px] tnum',
-                                visitList.length >= cap
+                                occupantCount >= cap
                                   ? 'bg-warning/20 text-warning'
                                   : 'bg-bg-muted text-text-muted',
                               )}
                               data-testid={`course-week-overview-capacity-${tpl.id}-${wd}`}
                             >
-                              {visitList.length} 名 / 上限 6
+                              {occupantCount} 名 / 上限 6
                             </span>
                             <span className="flex shrink-0 items-center gap-1">
                               {/* 新人同行のコース表示はスタッフ名行へ移設 (PO要望 2026-07-12)。 */}
@@ -775,7 +817,7 @@ export function CourseWeekOverview({
                                   「残N枠」小バッジを teal 系で出す。満員 (<=0) は出さない
                                   (= 上の容量バッジが warning 色になり満員を示す)。 */}
                               {(() => {
-                                const remaining = Math.max(0, cap - visitList.length);
+                                const remaining = Math.max(0, cap - occupantCount);
                                 return remaining > 0 ? (
                                   <span
                                     className="rounded bg-brand-primary/10 px-1 text-[10px] font-semibold tnum text-brand-primary"
@@ -841,6 +883,8 @@ export function CourseWeekOverview({
                                         'flex items-center gap-1 rounded border border-l-[3px] px-1 py-0.5 text-[10px] text-text-primary',
                                         // 今週だけ取消 (D1): 消さずに打消線で残す。
                                         item.cancelled ? 'line-through opacity-60' : '',
+                                        // 非稼働患者の残骸 / 連動取消 (§3-4)。
+                                        VISIT_DISPLAY_CLASS[item.display],
                                       ]
                                         .filter(Boolean)
                                         .join(' ')}
@@ -926,6 +970,12 @@ export function CourseWeekOverview({
                                           取消
                                         </span>
                                       ) : null}
+                                      {/* 非稼働患者のバッジ (「入院中」/「取消（連動）」・§3-4)。 */}
+                                      <InactiveVisitBadge
+                                        visit={{ patient_status: item.patientStatus }}
+                                        kind={item.display}
+                                        testId={`course-week-overview-inactive-${item.id}`}
+                                      />
                                       {/* ここに来るまでの移動距離 (前の患者/拠点から). 行末右端. */}
                                       {distByVisitId.get(item.id) != null ? (
                                         <span

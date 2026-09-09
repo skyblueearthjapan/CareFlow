@@ -88,6 +88,11 @@ export interface MyVisit {
   patient_sex?: string | null;
   patient_address?: string | null;
   /**
+   * 患者マスタの `patients.status` (表示の保険・design 2026-09-09 §3-4)。
+   * 非稼働 (入院中等) の予定が残っていたらバッジで見せる。旧デプロイは undefined。
+   */
+  patient_status?: string | null;
+  /**
    * Latest checkin projection. Optional / nullable so older deployments that
    * don't yet send it (or list endpoints that omit it) keep type-checking.
    */

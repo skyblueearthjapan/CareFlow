@@ -123,6 +123,7 @@ vi.mock('../PoolCandidateList', () => ({
 }));
 
 import { PatientScheduleDetailDialog } from '../PatientScheduleDetailDialog';
+import { useUIStore } from '@/lib/stores/ui';
 
 const COMMON_PROPS = {
   patientId: PATIENT_ID,
@@ -152,6 +153,7 @@ function makeVisit(over: Partial<VisitRead> & { id: string }): VisitRead {
 beforeEach(() => {
   state.patientStatus = 'active';
   state.visits = [];
+  useUIStore.setState({ showInactiveVisits: false });
 });
 
 describe('PatientScheduleDetailDialog — 型⇄今週 比較表', () => {
@@ -166,6 +168,15 @@ describe('PatientScheduleDetailDialog — 型⇄今週 比較表', () => {
     render(<PatientScheduleDetailDialog {...COMMON_PROPS} />);
     expect(screen.queryByTestId('patient-schedule-week-cell-0')).not.toBeInTheDocument();
     expect(screen.getByText('この週には固定枠も今週 visit もありません。')).toBeInTheDocument();
+  });
+
+  it('「非稼働を表示」トグルの影響を受けない (型へ反映の入力なので常に除外)', () => {
+    // トグルは盤面の見え方だけを変える。この比較表は BE の「型へ反映」の入力
+    // そのもので、BE は連動取消を必ず除外する (design §3-4)。
+    state.visits = [makeVisit({ id: 'v-status', status: 'cancelled', source: 'status_cancel' })];
+    useUIStore.setState({ showInactiveVisits: true });
+    render(<PatientScheduleDetailDialog {...COMMON_PROPS} />);
+    expect(screen.queryByTestId('patient-schedule-week-cell-0')).not.toBeInTheDocument();
   });
 
   it('通常訪問と混在しても status_cancel の曜日だけ落ちる', () => {

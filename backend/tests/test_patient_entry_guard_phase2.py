@@ -342,15 +342,14 @@ async def test_patch_visit_allows_same_patient_update_when_non_active(client, db
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source", ["status_cancel", "manual_cancel"])
-async def test_patch_visit_rejects_reviving_local_cancel(client, db, source: str) -> None:
-    """らく助側の意思による取消を PATCH で planned に戻させない."""
-    admin = await _make_user(db, email=f"g-pv3-{source}@example.com")
+async def test_patch_visit_rejects_reviving_status_cancel(client, db) -> None:
+    """ステータス連動の取消を PATCH で planned に戻させない."""
+    admin = await _make_user(db, email="g-pv3@example.com")
     office = await _make_office(db)
-    patient = await _make_patient(db, code=f"G-PV3-{source}", status=INACTIVE, office=office)
+    patient = await _make_patient(db, code="G-PV3", status=INACTIVE, office=office)
     visit = await _make_visit(db, patient)
     visit.status = "cancelled"
-    visit.source = source
+    visit.source = "status_cancel"
     await db.commit()
 
     res = await client.patch(
@@ -365,14 +364,20 @@ async def test_patch_visit_rejects_reviving_local_cancel(client, db, source: str
 
 
 @pytest.mark.asyncio
-async def test_patch_visit_allows_reviving_inbound_cancel(client, db) -> None:
-    """取込 delete 由来の cancelled は従来どおり戻せる (ガードの対象外)."""
-    admin = await _make_user(db, email="g-pv4@example.com")
+@pytest.mark.parametrize("source", ["manual_cancel", "import"])
+async def test_patch_visit_allows_reviving_other_cancels(client, db, source: str) -> None:
+    """ガードの対象は status_cancel **だけ**.
+
+    - ``manual_cancel`` (今週だけ取消) は元に戻す正規手段があり (cancel-visit の
+      cancel=false / undo)、患者ステータスとは無関係な通常操作。
+    - 取込 delete 由来の cancelled も従来どおり戻せる。
+    """
+    admin = await _make_user(db, email=f"g-pv4-{source}@example.com")
     office = await _make_office(db)
-    patient = await _make_patient(db, code="G-PV4", status="active", office=office)
+    patient = await _make_patient(db, code=f"G-PV4-{source}", status="active", office=office)
     visit = await _make_visit(db, patient)
     visit.status = "cancelled"
-    visit.source = "import"
+    visit.source = source
     await db.commit()
 
     res = await client.patch(

@@ -28,6 +28,27 @@ import {
 
 const MONITOR_KEY = ['monitor'] as const;
 
+/**
+ * 患者ステータス連動の取消 (source='status_cancel') をモニターから落とす
+ * (design 2026-09-09 §3-4)。BE は取消をそもそも返さないが、旧デプロイと
+ * 二重の安全網にする。非稼働患者の**残っている予定**は落とさない
+ * (バッジで見せる = 原則⑥)。
+ *
+ * ここだけ `classifyVisitDisplay` を使わず `source` 単独で判定する:
+ * MonitorVisit は `visits.status` を持たず **phase (時間進捗)** しか返さないため、
+ * `source` と `status` の両方を見る共通判定では永久に偽になる。
+ * モニターに来る訪問は BE が取消を除いた集合なので、`source` だけで十分。
+ */
+export function hideStatusCancelled(res: MonitorResponse): MonitorResponse {
+  return {
+    ...res,
+    staff: res.staff.map((row) => ({
+      ...row,
+      visits: row.visits.filter((v) => v.source !== 'status_cancel'),
+    })),
+  };
+}
+
 /** 今日 (JST) の YYYY-MM-DD。 */
 function todayJst(): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo' }).format(new Date());
@@ -74,7 +95,7 @@ export function useMonitor(params: UseMonitorParams): UseQueryResult<MonitorResp
         accessToken,
         refreshToken,
       });
-      return monitorResponseSchema.parse(raw);
+      return hideStatusCancelled(monitorResponseSchema.parse(raw));
     },
   });
 }

@@ -26,7 +26,8 @@ import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { CockpitEventRead } from '@/lib/schemas/v2/cockpit';
-import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
+import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
+import { classifyVisitDisplay, VISIT_DISPLAY_CLASS } from '@/lib/schedule/visitVisibility';
 
 import { compareByStaffCode } from '@/lib/kana-sort';
 import { genderPalette } from '@/lib/scheduling/timeline';
@@ -161,6 +162,11 @@ export interface StaffWeekBoardProps {
   onSuggestCourse?: (courseId: string, weekday: number, anchorEl: HTMLElement) => void;
   /** 2-D: 提案の候補行を hover 中のスタッフ。その行を薄くブランド色にする。 */
   highlightStaffId?: string | null;
+  /**
+   * トグル「非稼働を表示」(患者ステータス連動 Phase 3・design 2026-09-09 §3-4)。
+   * true = 連動取消 (source='status_cancel') も打ち消し線つきで描く。既定 false。
+   */
+  showInactive?: boolean;
 }
 
 /** 「（担当なし）」行のキー (courseDnd の単一ソース)。 */
@@ -300,6 +306,7 @@ export function StaffWeekBoard({
   suggestionBadges,
   onSuggestCourse,
   highlightStaffId,
+  showInactive = false,
 }: StaffWeekBoardProps) {
   // ドラッグ中に実際に重なっているセル (`${rowKey}:${wd}`)。候補セルの
   // 淡い破線に対し、重なり中のセルだけ強く光らせる (PO指摘 2026-08-21)。
@@ -327,8 +334,8 @@ export function StaffWeekBoard({
   // 患者ステータス連動の取消 (source='status_cancel') は盤面から消す
   // (design 2026-09-09 §7-4)。「今週だけ取消」= manual_cancel は従来どおり残す。
   const visits = React.useMemo(
-    () => visitsProp.filter((v) => !isStatusCancelledVisit(v)),
-    [visitsProp],
+    () => visitsProp.filter((v) => classifyVisitDisplay(v, { showInactive }) !== 'hidden'),
+    [visitsProp, showInactive],
   );
 
   // (rowKey, weekday) → CellCourse[]。rowKey = staffId or UNASSIGNED_KEY。
@@ -900,6 +907,11 @@ export function StaffWeekBoard({
                                     // (患者個別の貼り替え・今週のみ)。
                                     // 今週だけ取消 (D1) はドラッグ不可・打消線 + 「取消」バッジ。
                                     const cancelled = v.status === 'cancelled';
+                                    // 表示の保険 (§3-4)。連動取消はトグル ON のときだけ
+                                    // ここに来る = 「もう無い予定」なので、操作させない。
+                                    const displayKind = classifyVisitDisplay(v, {
+                                      showInactive: true,
+                                    });
                                     const visitDraggable = !!onVisitDrop && !cancelled;
                                     const row = (
                                       <li
@@ -913,6 +925,8 @@ export function StaffWeekBoard({
                                             ? 'cursor-pointer'
                                             : '',
                                           cancelled ? 'line-through opacity-60' : '',
+                                          // 非稼働患者の残骸 / 連動取消 (§3-4)。
+                                          VISIT_DISPLAY_CLASS[displayKind],
                                           activeCourseDrag?.visitId === v.id ? 'opacity-40' : '',
                                         ]
                                           .filter(Boolean)
@@ -954,7 +968,8 @@ export function StaffWeekBoard({
                                         data-testid={`staff-week-visit-${v.id}`}
                                         // 運転席: 行そのものがメニューのトリガー。
                                         // キーボードでも開けるようボタン相当にする。
-                                        {...(renderVisitMenu
+                                        // 連動取消 (残骸点検で見えているだけ) は操作させない。
+                                        {...(renderVisitMenu && displayKind !== 'status_cancel'
                                           ? { role: 'button', tabIndex: 0 }
                                           : {})}
                                       >
@@ -1008,11 +1023,18 @@ export function StaffWeekBoard({
                                             取消
                                           </span>
                                         ) : null}
+                                        {/* 非稼働患者のバッジ (「入院中」/「取消（連動）」・§3-4)。 */}
+                                        <InactiveVisitBadge
+                                          visit={v}
+                                          kind={displayKind}
+                                          testId={`staff-week-visit-inactive-${v.id}`}
+                                        />
                                       </li>
                                     );
                                     // 運転席: 行そのものが VisitActionMenu のトリガー。
                                     // 患者名リンク (onPatientClick) は行内の別ボタンとして共存する。
-                                    return renderVisitMenu ? (
+                                    // 連動取消 (残骸点検で見えているだけ) はメニューを出さない。
+                                    return renderVisitMenu && displayKind !== 'status_cancel' ? (
                                       <React.Fragment key={v.id}>
                                         {renderVisitMenu(v, wd, row)}
                                       </React.Fragment>

@@ -1,6 +1,6 @@
 /** タイムライン描画テスト (患者名 / 実績バーの状態色 / 行クリック)。 */
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 
 import type { EventRead } from '@/lib/schemas/staff-events';
 
@@ -277,7 +277,9 @@ describe('MonitorTimeline', () => {
     // ⚠ 乖離警告
     expect(screen.getByText('⚠')).toBeTruthy();
     // ＋◯◯（同行）ラベル (別要素として共存)
-    const accompanimentLabel = screen.getByTestId(`monitor-row-accompaniment-${monitorRowKey(row)}`);
+    const accompanimentLabel = screen.getByTestId(
+      `monitor-row-accompaniment-${monitorRowKey(row)}`,
+    );
     expect(accompanimentLabel.textContent).toContain('＋新人 花子（同行）');
   });
 
@@ -537,5 +539,52 @@ describe('MonitorTimeline', () => {
       />,
     );
     expect(screen.getByTestId('monitor-event-00000000-0000-0000-0000-0000000000e1')).toBeTruthy();
+  });
+});
+
+// ─── 非稼働患者 (患者ステータス連動 Phase 3・design 2026-09-09 §3-4) ─────────
+
+describe('MonitorTimeline — 非稼働患者のバッジ', () => {
+  function renderWith(visit: ReturnType<typeof makeVisit>) {
+    render(
+      <MonitorTimeline
+        rows={[makeRow({ visits: [visit] })]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={13 * 60 + 30}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+  }
+
+  it('非稼働 (入院中) の予定にはバッジを出す', () => {
+    const v = makeVisit({ phase: 'awaiting', patient_status: 'admitted' });
+    renderWith(v);
+    expect(screen.getByTestId(`monitor-bar-inactive-${v.visit_id}`)).toHaveTextContent('入院中');
+  });
+
+  it('稼働中 / ステータス不明にはバッジを出さない', () => {
+    const active = makeVisit({ phase: 'awaiting', patient_status: 'active' });
+    renderWith(active);
+    expect(screen.queryByTestId(`monitor-bar-inactive-${active.visit_id}`)).not.toBeInTheDocument();
+  });
+
+  it('訪問前 / 訪問中 (future・awaiting・inprogress・missing) にはバッジを出す', () => {
+    for (const phase of ['future', 'awaiting', 'inprogress', 'missing']) {
+      const v = makeVisit({ phase, patient_status: 'admitted' });
+      renderWith(v);
+      expect(screen.getByTestId(`monitor-bar-inactive-${v.visit_id}`)).toHaveTextContent('入院中');
+      cleanup();
+    }
+  });
+
+  it('実績が確定した phase (done・no_show・cancelled) にはバッジを出さない', () => {
+    for (const phase of ['done', 'no_show', 'cancelled']) {
+      const v = makeVisit({ phase, patient_status: 'admitted' });
+      renderWith(v);
+      expect(screen.queryByTestId(`monitor-bar-inactive-${v.visit_id}`)).not.toBeInTheDocument();
+      cleanup();
+    }
   });
 });

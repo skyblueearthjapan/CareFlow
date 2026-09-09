@@ -31,7 +31,7 @@ from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User, normalize_user_role
 from app.models.visit import (
-    VISIT_SOURCES_LOCAL_CANCEL,
+    VISIT_SOURCE_STATUS_CANCEL,
     VISIT_STATUS_CANCELLED,
     VISIT_STATUS_COMPLETED,
     VISIT_STATUS_IN_PROGRESS,
@@ -280,6 +280,12 @@ def _serialize_visit(
         "patient_sex": getattr(visit.patient, "sex", None) if visit.patient is not None else None,
         "patient_address": (
             getattr(visit.patient, "address", None) if visit.patient is not None else None
+        ),
+        # 患者ステータス (Phase 3 §3-4)。**手書き dict の罠**: week_pinned と同じ位置
+        # づけで、ここに足し忘れると VisitRead の default None で潰れる。値は既に
+        # eager-load 済みの Patient から取る (追加クエリを増やさない)。
+        "patient_status": (
+            getattr(visit.patient, "status", None) if visit.patient is not None else None
         ),
         "staff_assignments": assignments or [],
         # QR チェックイン (Phase 1) の最新打刻. 既存呼出は None のまま (非破壊).
@@ -711,11 +717,16 @@ async def update_visit(
     if changes.get("patient_id") is not None and changes["patient_id"] != visit.patient_id:
         await ensure_patient_schedulable(db, changes["patient_id"])
 
-    # その 2: **らく助側の意思による取消を PATCH で planned へ戻させない**
-    # ('status_cancel' ステータス連動 / 'manual_cancel' 今週だけ取消)。
+    # その 2: **ステータス連動の取消を PATCH で planned へ戻させない**。
     # 正しい戻し方はステータスを稼働中にすること (型から再生成される)。
+    #
+    # 対象は 'status_cancel' **だけ**。'manual_cancel' (今週だけ取消) は除く:
+    #   - 元に戻す正規手段が既にある (cancel-visit の cancel=false → 'manual_week' /
+    #     ツールバーの undo) 通常操作で、患者ステータスとは無関係。
+    #   - 下のメッセージ (「ステータス連動で取消された」) が事実に反する。
+    #   - 本 Phase の関心外 (week-cockpit D1 の挙動を変えてしまう)。
     if (
-        visit.source in VISIT_SOURCES_LOCAL_CANCEL
+        visit.source == VISIT_SOURCE_STATUS_CANCEL
         and changes.get("status") == VISIT_STATUS_PLANNED
         and visit.status != VISIT_STATUS_PLANNED
     ):

@@ -972,3 +972,163 @@ describe('SyncBar — 🔄 同期確認', () => {
     expect(screen.queryByTestId('sync-master-qual-missing')).toBeNull();
   });
 });
+
+// ─── 非稼働患者 (患者ステータス連動 Phase 3・design 2026-09-09 §3-5) ─────────
+
+describe('SyncBar — 非稼働患者', () => {
+  /**
+   * 非稼働患者の行 (BE が inactive_patient を立てる)。**同じフラグが向きの違う
+   * 2 種類の行に立つ**: delete = カイポケに残っている行 (削除候補) /
+   * add = らく助で取り消した行をカイポケが持っている (取り込むと復活する)。
+   */
+  function inactiveItem(id: string, dateIso: string, action: 'add' | 'delete' = 'delete') {
+    return {
+      ...item(id, dateIso),
+      action,
+      before: action === 'delete' ? _filled(dateIso) : _empty(),
+      after: action === 'delete' ? _empty() : _filled(dateIso),
+      inactive_patient: true,
+      patient_status: 'admitted',
+    };
+  }
+
+  it('●未送信の非稼働患者 (delete) は種別タグを保ったまま「削除候補」を足す', async () => {
+    unsentMutateAsync.mockResolvedValue({
+      ...EMPTY_SUMMARY,
+      items: [inactiveItem(ITEM_FUTURE, FUTURE_DAY)],
+      sendable_count: 1,
+    });
+    renderBar();
+    await openOutPanel();
+
+    const row = screen.getByTestId('sync-out-row');
+    // 種別 (取消) は置き換えない = どちら向きの差分かが読み取れる。
+    expect(row).toHaveTextContent('取消');
+    expect(screen.getByTestId('sync-out-inactive-tag')).toHaveTextContent('非稼働患者（削除候補）');
+    expect(row).toHaveTextContent('非稼働患者の行（削除候補）');
+  });
+
+  it('未送信サマリの inactive_groups は送信できる件数で束ねて出す', async () => {
+    unsentMutateAsync.mockResolvedValue({
+      ...EMPTY_SUMMARY,
+      inactive_groups: [
+        {
+          patient_id: 'p1',
+          patient_name: '小湊',
+          status: 'admitted',
+          status_label: '入院中',
+          count: 4,
+          sendable_count: 4,
+        },
+      ],
+      inactive_residue: 0,
+    });
+    renderBar();
+    await openOutPanel();
+
+    const line = screen.getByTestId('sync-out-inactive-group');
+    expect(line).toHaveTextContent('小湊 様 入院中の取消 4 件');
+    expect(line).not.toHaveTextContent('送信対象外');
+    expect(screen.queryByTestId('sync-out-inactive-residue')).toBeNull();
+  });
+
+  it('過去日を含むときは「（うち過去 M 件は送信対象外）」を添える', async () => {
+    unsentMutateAsync.mockResolvedValue({
+      ...EMPTY_SUMMARY,
+      inactive_groups: [
+        {
+          patient_id: 'p1',
+          patient_name: '小湊',
+          status: 'admitted',
+          status_label: '入院中',
+          count: 4,
+          sendable_count: 1,
+        },
+      ],
+      inactive_residue: 0,
+    });
+    renderBar();
+    await openOutPanel();
+
+    const line = screen.getByTestId('sync-out-inactive-group');
+    expect(line).toHaveTextContent('小湊 様 入院中の取消 1 件');
+    expect(line).toHaveTextContent('（うち過去 3 件は送信対象外）');
+  });
+
+  it('inactive_residue > 0 なら「非稼働患者の予定が N 件残っています（要確認）」を出す', async () => {
+    unsentMutateAsync.mockResolvedValue({
+      ...EMPTY_SUMMARY,
+      inactive_groups: [],
+      inactive_residue: 3,
+    });
+    renderBar();
+    await openOutPanel();
+
+    const warn = screen.getByTestId('sync-out-inactive-residue');
+    expect(warn).toHaveTextContent('非稼働患者の予定が 3 件残っています（要確認）');
+    expect(warn).toHaveAttribute('role', 'alert');
+  });
+
+  it('inactive_groups / inactive_residue が無い旧 BE 応答でも何も出さない', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    renderBar();
+    await openOutPanel();
+
+    expect(screen.queryByTestId('sync-out-inactive')).toBeNull();
+  });
+
+  it('⇩ 取込差分 (delete) は「非稼働患者（削除候補）」を種別タグの隣に足す', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    const diff = visitDiff();
+    reconcileStub.diffs = [
+      {
+        ...diff,
+        marker: {
+          ...diff.marker,
+          action: 'delete',
+          inactive_patient: true,
+          patient_status: 'admitted',
+        },
+      },
+    ];
+    reconcileStub.phase = 'ready';
+    renderBar();
+    await openInPanel();
+
+    const row = screen.getByTestId('sync-in-row');
+    expect(row).toHaveTextContent('取消');
+    expect(screen.getByTestId('sync-in-inactive-tag')).toHaveTextContent('非稼働患者（削除候補）');
+    expect(row).toHaveTextContent('非稼働患者の行（削除候補）');
+
+    // 行を選ぶと詳細カードにステータスのバッジが出る。
+    fireEvent.click(within(row).getByText(/久須見/));
+    expect(screen.getByTestId('diff-detail-inactive')).toHaveTextContent('入院中');
+  });
+
+  it('⇩ 取込差分 (add) は「非稼働患者（取り込まない）」= 復活させない案内にする', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    const diff = visitDiff();
+    reconcileStub.diffs = [
+      {
+        ...diff,
+        marker: {
+          ...diff.marker,
+          action: 'add',
+          inactive_patient: true,
+          patient_status: 'admitted',
+        },
+      },
+    ];
+    reconcileStub.phase = 'ready';
+    renderBar();
+    await openInPanel();
+
+    const row = screen.getByTestId('sync-in-row');
+    // 種別は「新規」のまま (取込方向が読める)。
+    expect(row).toHaveTextContent('新規');
+    expect(screen.getByTestId('sync-in-inactive-tag')).toHaveTextContent(
+      '非稼働患者（取り込まない）',
+    );
+    expect(row).toHaveTextContent('非稼働患者の行（取り込むと予定が復活します）');
+  });
+});

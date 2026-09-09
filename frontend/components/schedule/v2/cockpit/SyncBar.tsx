@@ -39,6 +39,7 @@ import { useUnsentSummary, useVisitServiceOverride } from '@/lib/queries/cockpit
 import { useUpdateStaff } from '@/lib/queries/staff';
 import type { MasterReconcileQualification } from '@/lib/schemas/integration';
 import { STAFF_QUALIFICATION_VALUES, type StaffQualification } from '@/lib/schemas/staff';
+import { inactiveStatusLabel } from '@/lib/schemas/patient';
 import type { CockpitCorrectionItem, UnsentSummaryRead } from '@/lib/schemas/v2/cockpit';
 import { DiffDetailCard } from './DiffDetailCard';
 import {
@@ -105,6 +106,37 @@ const RPA_UNSUPPORTED_NOTE =
  */
 const UNASSIGNED_NOTE = '担当が付いていない予定はカイポケへ送れません。先に担当を付けてください';
 
+/**
+ * 非稼働患者の行 (患者ステータス連動・design 2026-09-09 §3-5)。判定は BE
+ * (`correction_items.inactive_patient`) が持ち、FE は表示だけ。
+ *
+ * **同じフラグが向きの違う 2 種類の行に立つ**ので、action で読み替える:
+ *   delete … カイポケに残っている非稼働患者の行 = 削除候補 (送れば消える)
+ *   add    … らく助に無い (= 取り消した) 行をカイポケが持っている
+ *            → 取り込むと復活してしまうので **取り込まない**
+ * 種別タグ (新規/変更/取消) は置き換えず、その右に補助バッジとして足す。
+ */
+const INACTIVE_PATIENT_TAG: Record<'add' | 'delete' | 'update', string> = {
+  delete: '非稼働患者（削除候補）',
+  add: '非稼働患者（取り込まない）',
+  update: '非稼働患者',
+};
+const INACTIVE_PATIENT_NOTE: Record<'add' | 'delete' | 'update', string> = {
+  delete: '非稼働患者の行（削除候補）',
+  add: '非稼働患者の行（取り込むと予定が復活します）',
+  update: '非稼働患者の行',
+};
+
+/** 非稼働患者の補助バッジ (種別タグの右)。 */
+function inactivePatientTag(action: DiffAction, testId: string) {
+  return {
+    label: INACTIVE_PATIENT_TAG[action],
+    tone: 'inactive' as SyncRowTone,
+    title: 'らく助では稼働中でない患者様の行です',
+    testId,
+  };
+}
+
 /** BE の差分 action → 表示上の 3 種別。 */
 function diffAction(action: string): DiffAction {
   if (action === 'add') return 'add';
@@ -157,6 +189,10 @@ interface UnsentRow {
    * カイポケへ送っても現況CSVに出てこないため送信対象から外す。
    */
   unassigned: boolean;
+  /** 非稼働患者の行 (§3-5・BE 判定)。カイポケ側の削除候補として色分けする。 */
+  inactivePatient: boolean;
+  /** らく助側の患者ステータス ('admitted' 等)。バッジのラベル解決に使う。 */
+  patientStatus: string | null;
 }
 
 /**
@@ -402,6 +438,8 @@ export function SyncBar({
         marker,
         rpaUnsupported: it.rpa_unsupported === true,
         unassigned: it.unassigned === true,
+        inactivePatient: it.inactive_patient === true,
+        patientStatus: it.patient_status ?? null,
         headline: `${who} 様 ${startTime}`.trim(),
         change: desc?.change || (staff ? `担当 ${staff}` : ''),
       });
@@ -419,6 +457,9 @@ export function SyncBar({
         rpaUnsupported: false,
         // イベントは職員に紐づく = 担当なしになりようがない。
         unassigned: false,
+        // イベントは患者に紐づかない = 非稼働患者の行にはならない。
+        inactivePatient: false,
+        patientStatus: null,
         headline: `${ev.staff_name} ${ev.start_time} ${ev.title}`.trim(),
         change: '',
       });
@@ -684,6 +725,9 @@ export function SyncBar({
     qualificationMismatches.length +
     qualificationMissing.length +
     qualificationAmbiguous.length;
+  // 非稼働患者の取消まとめ / 残骸 (§3-5)。旧 BE 応答では欠けるので既定値に倒す。
+  const inactiveGroups = summary?.inactive_groups ?? [];
+  const inactiveResidue = summary?.inactive_residue ?? 0;
   const noSnapshot = summary != null && summary.snapshot == null;
   const checkedAt = rec.fetchedAt
     ? `${rec.fetchedAt.getHours()}:${String(rec.fetchedAt.getMinutes()).padStart(2, '0')}`
@@ -884,7 +928,8 @@ export function SyncBar({
               data-testid="sync-in-sheet-applied"
             >
               <span>
-                この差分は既に取り込み済みです。🔄 同期確認 をもう一度実行して最新の差分を取得してください
+                この差分は既に取り込み済みです。🔄 同期確認
+                をもう一度実行して最新の差分を取得してください
               </span>
               <Button
                 type="button"
@@ -924,9 +969,14 @@ export function SyncBar({
                     dateLabel={dateIso ? fmtMd(dateIso) : '日付不明'}
                     kindLabel={d.kind === 'visit' ? '訪問' : 'イベント'}
                     tag={ACTION_TAG[act]}
+                    extraTag={
+                      d.marker.inactive_patient
+                        ? inactivePatientTag(act, 'sync-in-inactive-tag')
+                        : undefined
+                    }
                     headline={desc.headline}
                     change={desc.change}
-                    note={IN_NOTE[act]}
+                    note={d.marker.inactive_patient ? INACTIVE_PATIENT_NOTE[act] : IN_NOTE[act]}
                     selected={selected}
                     onSelect={() => setInId(selected ? null : d.id)}
                     actions={[
@@ -1002,6 +1052,38 @@ export function SyncBar({
             {closeButton}
           </h3>
 
+          {/* 非稼働患者の取消まとめ (§3-5)。1 患者 1 行に束ねて「なぜ大量の取消が
+              出ているのか」を先に伝える。残骸 (取消漏れ) があれば警告も出す。 */}
+          {inactiveGroups.length > 0 || inactiveResidue > 0 ? (
+            <div className="mt-2 space-y-1" data-testid="sync-out-inactive">
+              {inactiveGroups.map((g) => (
+                <p
+                  key={g.patient_id}
+                  className="text-[13px] text-text-secondary"
+                  data-testid="sync-out-inactive-group"
+                >
+                  {g.patient_name} 様 {g.status_label ?? inactiveStatusLabel(g.status) ?? '非稼働'}
+                  の取消 {g.sendable_count} 件
+                  {/* 過去日は実績保護で送れない (§3-5)。総数との差をそのまま書く。 */}
+                  {g.count > g.sendable_count ? (
+                    <small className="ml-1 text-[12px] text-text-muted">
+                      （うち過去 {g.count - g.sendable_count} 件は送信対象外）
+                    </small>
+                  ) : null}
+                </p>
+              ))}
+              {inactiveResidue > 0 ? (
+                <p
+                  className="rounded bg-warning-bg px-2 py-1 text-[13px] font-bold text-warning-strong"
+                  role="alert"
+                  data-testid="sync-out-inactive-residue"
+                >
+                  非稼働患者の予定が {inactiveResidue} 件残っています（要確認）
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
           {running && outRows.length === 0 ? (
             workingBlock
           ) : outRows.length === 0 ? (
@@ -1027,6 +1109,11 @@ export function SyncBar({
                           ? { label: '担当なし', tone: 'na' }
                           : ACTION_TAG[r.action]
                     }
+                    extraTag={
+                      r.inactivePatient
+                        ? inactivePatientTag(r.action, 'sync-out-inactive-tag')
+                        : undefined
+                    }
                     headline={r.headline}
                     change={r.change}
                     note={
@@ -1034,7 +1121,9 @@ export function SyncBar({
                         ? RPA_UNSUPPORTED_NOTE
                         : r.unassigned
                           ? UNASSIGNED_NOTE
-                          : OUT_NOTE[r.action]
+                          : r.inactivePatient
+                            ? INACTIVE_PATIENT_NOTE[r.action]
+                            : OUT_NOTE[r.action]
                     }
                     muted={r.rpaUnsupported || r.unassigned}
                     selected={selected}

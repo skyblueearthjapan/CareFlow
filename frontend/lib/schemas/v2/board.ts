@@ -39,6 +39,13 @@ export const boardVisitSchema = z.object({
   mode: boardVisitModeSchema.default('normal'),
   slot_index: z.number().int().nonnegative(),
   status: z.string().default('planned'),
+  /**
+   * 入力チャネル (`visits.source`)。'status_cancel' = 患者ステータス連動の取消
+   * → 現場ボードから消す (design 2026-09-09 §3-4)。旧 BE 応答では欠ける。
+   */
+  source: z.string().nullish().catch(null),
+  /** 患者マスタの `patients.status`。非稼働なら「入院中」バッジを出す (同 §3-4)。 */
+  patient_status: z.string().nullish().catch(null),
 });
 export type BoardVisit = z.infer<typeof boardVisitSchema>;
 

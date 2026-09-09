@@ -50,6 +50,11 @@ export const monitorVisitSchema = z.object({
   patient_id: z.string().uuid(),
   patient_name: z.string().nullable().optional(),
   patient_code: z.string().nullable().optional(),
+  // 入力チャネル (`visits.source`)。'status_cancel' = 患者ステータス連動の取消。
+  // BE は取消をモニターに出さないが、表示側でも落とす (二重の安全網・§3-4)。
+  source: z.string().nullish().catch(null),
+  // 患者マスタの `patients.status`。非稼働のまま予定が残っていたらバッジで見せる。
+  patient_status: z.string().nullish().catch(null),
   patient_lat: z.number().nullable().optional(),
   patient_lng: z.number().nullable().optional(),
   start_time: z.string(),

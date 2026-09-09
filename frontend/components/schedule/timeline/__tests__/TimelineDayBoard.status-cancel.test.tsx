@@ -84,6 +84,60 @@ describe('TimelineDayBoard — status_cancel は非表示', () => {
     expect(screen.queryByText('患者status')).not.toBeInTheDocument();
   });
 
+  it('showInactive=true なら連動取消も打ち消し線つきで描く (残骸点検・§3-4)', () => {
+    render(
+      <TimelineDayBoard
+        showInactive
+        columns={[
+          column([
+            visit({
+              id: 'status',
+              source: 'status_cancel',
+              status: 'cancelled',
+              patient_status: 'admitted',
+            }),
+          ]),
+        ]}
+        weekdayLabel="月"
+      />,
+    );
+    const card = screen.getByTestId('tl-visit-status');
+    expect(card).toBeInTheDocument();
+    expect(card.className).toContain('line-through');
+    expect(screen.getByTestId('tl-inactive-badge-status')).toHaveTextContent('取消（連動）');
+  });
+
+  it('非稼働患者の予定が残っていたらバッジ + 薄色で見せる (トグル OFF でも・§3-4)', () => {
+    render(
+      <TimelineDayBoard
+        columns={[
+          column([
+            visit({ id: 'residue', source: 'auto', status: 'planned', patient_status: 'admitted' }),
+          ]),
+        ]}
+        weekdayLabel="月"
+      />,
+    );
+    const card = screen.getByTestId('tl-visit-residue');
+    expect(card).toBeInTheDocument();
+    expect(card.className).toContain('opacity-60');
+    expect(screen.getByTestId('tl-inactive-badge-residue')).toHaveTextContent('入院中');
+  });
+
+  it('稼働中の予定にはバッジを出さない', () => {
+    render(
+      <TimelineDayBoard
+        columns={[
+          column([
+            visit({ id: 'plain', source: 'auto', status: 'planned', patient_status: 'active' }),
+          ]),
+        ]}
+        weekdayLabel="月"
+      />,
+    );
+    expect(screen.queryByTestId('tl-inactive-badge-plain')).not.toBeInTheDocument();
+  });
+
   it('source=status_cancel でも status が cancelled でなければ描く (寛容判定)', () => {
     render(
       <TimelineDayBoard

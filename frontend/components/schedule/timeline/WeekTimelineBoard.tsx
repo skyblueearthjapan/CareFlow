@@ -18,7 +18,8 @@ import { useDroppable } from '@dnd-kit/core';
 
 import { buildWeekTimelineColDroppableId } from '@/components/schedule/v2/courseDnd';
 import type { WeekOverviewVisit } from '@/components/schedule/v2/CourseWeekOverview';
-import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
+import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
+import { classifyVisitDisplay, VISIT_DISPLAY_CLASS } from '@/lib/schedule/visitVisibility';
 import { CornerPushPin, CornerWeekPushPin } from '@/components/ui/push-pin';
 import { MovabilityMark } from './MovabilityMark';
 import {
@@ -105,6 +106,11 @@ export interface WeekTimelineBoardProps {
    * `DndContext` 内で `canEdit` のときだけ true にする。
    */
   dndEnabled?: boolean;
+  /**
+   * トグル「非稼働を表示」(患者ステータス連動 Phase 3・design 2026-09-09 §3-4)。
+   * true = 連動取消 (source='status_cancel') も打ち消し線つきで描く。既定 false。
+   */
+  showInactive?: boolean;
 }
 
 function PersonMark() {
@@ -251,6 +257,8 @@ function WeekCard({
         lanes > 1 ? 'px-1' : 'px-1.5',
         accOverlap && 'z-[3] ring-2 ring-error',
         accSelected && !accOverlap && 'z-[3] ring-2 ring-brand-primary',
+        // 非稼働患者の残骸 / 連動取消 (§3-4)。
+        VISIT_DISPLAY_CLASS[classifyVisitDisplay(v, { showInactive: true })],
       )}
       style={{
         top,
@@ -313,6 +321,12 @@ function WeekCard({
         >
           {v.patient_name ?? '—'}
         </span>
+        {/* 非稼働患者のバッジ (「入院中」/「取消（連動）」・§3-4)。 */}
+        <InactiveVisitBadge
+          visit={v}
+          kind={classifyVisitDisplay(v, { showInactive: true })}
+          testId={`wtl-inactive-badge-${v.id}`}
+        />
       </span>
       {/* 2行目: 時刻・所要分 (日ビューと同じ構成)。 */}
       {showSvcLine && (
@@ -533,6 +547,12 @@ function WeekPairBox({
                 >
                   {v.patient_name ?? '—'}
                 </span>
+                {/* 非稼働患者のバッジ (§3-4)。 */}
+                <InactiveVisitBadge
+                  visit={v}
+                  kind={classifyVisitDisplay(v, { showInactive: true })}
+                  testId={`wtl-inactive-badge-${v.id}`}
+                />
                 {lanes === 1 && (
                   <span className="tnum ml-auto shrink-0 text-[8.5px] opacity-75">
                     {(v.start_time ?? '').slice(0, 5)}
@@ -581,6 +601,7 @@ export function WeekTimelineBoard({
   accompaniment,
   courseOpenByWeekday,
   dndEnabled = false,
+  showInactive = false,
 }: WeekTimelineBoardProps) {
   if (options.length === 0) {
     return (
@@ -670,6 +691,7 @@ export function WeekTimelineBoard({
           accompaniment={accompaniment}
           courseOpenByWeekday={courseOpenByWeekday}
           dndEnabled={dndEnabled}
+          showInactive={showInactive}
         />
       ))}
     </div>
@@ -687,6 +709,7 @@ function CourseWeekSection({
   accompaniment,
   courseOpenByWeekday,
   dndEnabled,
+  showInactive,
 }: {
   option: WeekTimelineOption;
   visits: WeekOverviewVisit[];
@@ -700,6 +723,8 @@ function CourseWeekSection({
   accompaniment?: AccompanimentBinding;
   courseOpenByWeekday?: (templateId: string, weekday: number) => boolean;
   dndEnabled: boolean;
+  /** トグル「非稼働を表示」(§3-4)。 */
+  showInactive: boolean;
 }) {
   const accActive = accompaniment?.active === true;
   const H = height();
@@ -713,13 +738,14 @@ function CourseWeekSection({
     const map = new Map<number, WeekOverviewVisit[]>();
     for (let wd = 0; wd < 6; wd++) map.set(wd, []);
     for (const v of visits) {
-      if (isStatusCancelledVisit(v)) continue;
+      // トグル ON のときだけ連動取消も残す (残骸点検・§3-4)。
+      if (classifyVisitDisplay(v, { showInactive }) === 'hidden') continue;
       if (v.course_template_id !== option.templateId) continue;
       if (v.weekday < 0 || v.weekday > 5) continue;
       map.get(v.weekday)!.push(v);
     }
     return map;
-  }, [visits, option.templateId]);
+  }, [visits, option.templateId, showInactive]);
 
   const rows: number[] = [];
   for (let m = TL_DAY_START_MIN; m < TL_DAY_END_MIN; m += 60) rows.push(m);

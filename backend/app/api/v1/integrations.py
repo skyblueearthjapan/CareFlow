@@ -53,6 +53,7 @@ from app.schemas.integrations import (
     ExpandStatusRead,
     GeneratedCsvRead,
     GeocodingCacheRead,
+    InactiveGroup,
     InboundApplyRequest,
     InboundApplyResult,
     InboundEligibilityRead,
@@ -103,9 +104,13 @@ from app.services.kaipoke_client import (
     KaipokeClient,
     get_kaipoke_client,
 )
-from app.services.patient_status_sync import is_schedulable_status
+from app.services.patient_status_sync import is_schedulable_status, status_label
 
 logger = logging.getLogger(__name__)
+
+#: ``inactive_patient`` の印を付ける action (Phase 3 §3-5)。
+#: add = 復活させてはいけない行 / delete = カイポケに残った残骸 = 削除候補。
+INACTIVE_FLAGGED_ACTIONS: frozenset[str] = frozenset({"add", "delete"})
 
 router = APIRouter()
 
@@ -1965,9 +1970,8 @@ async def _build_inbound_sheet(
         # 非稼働患者への add 行 (Phase 2 §7-3(d)): 取り込むと「入院中なのに予定が
         # 復活」するので **自動選択しない** (人が明示的に ON にすれば apply 側で
         # skip される = 二重の蓋)。cancel/edit は残骸掃除なのでそのまま通す。
-        inactive_add = c.action == "add" and (
-            pid is not None and not is_schedulable_status(status_by_patient.get(pid))
-        )
+        inactive_patient = pid is not None and not is_schedulable_status(status_by_patient.get(pid))
+        inactive_add = c.action == "add" and inactive_patient
         if c.action == "add":
             include = (
                 pid is not None
@@ -1976,7 +1980,10 @@ async def _build_inbound_sheet(
             )
         else:
             include = c.action in ("delete", "edit", "date_change") and visit_id is not None
-        if inactive_add:
+        # Phase 3 §3-5: 「非稼働患者に関わる行」の件数 = add (復活させない) と
+        # delete (カイポケに残った残骸 = 削除候補) の合計。``_read_correction_items``
+        # の ``inactive_patient`` と同じ集合を数える (表示と件数がズレない)。
+        if inactive_patient and c.action in INACTIVE_FLAGGED_ACTIONS:
             summary["inactive_patient"] += 1
         items.append(
             CorrectionSheetItem(
@@ -2478,8 +2485,23 @@ async def _read_correction_items(
 
     ``patient_status`` / ``inactive_patient`` は DB 列ではなく **読み出し時に
     patients から引く** (取込シートは長生きするので、保存時点の状態を焼き付けると
-    「その後入院した」患者を見落とす)。``inactive_patient`` は add 行のみ True
-    = 取り込むと予定が復活してしまう行 (適用側でも skip する)。
+    「その後入院した」患者を見落とす)。
+
+    ``inactive_patient`` = 「非稼働患者に関わる行」の印 (Phase 3 §3-5)。
+    意味は **シートの向き (direction) と action** で決まる。どれも FE の同じバッジで
+    見えるが、人が取るべき行動は逆になるので混同しないこと:
+
+    * ``inbound`` (カイポケ → らく助)
+        - ``add``    — 取り込むと「入院中なのに予定が復活」する行。自動選択せず、
+          適用側でも skip する (二重の蓋)。
+        - ``delete`` — らく助にだけ残っている非稼働患者の行 = **らく助側を取消**
+          すべき残骸。通してよい (むしろ通したい) 行。
+    * ``outbound`` (らく助 → カイポケ)
+        - ``delete`` — カイポケに残った非稼働患者の行 = **カイポケ側の削除候補**。
+          ⇧送信でそのまま消せる。
+
+    ``edit`` / ``date_change`` は「残骸を直す」行なので印を付けない (人の判断を
+    迷わせない)。印が変えるのは表示だけで、``include`` や適用の挙動は不変。
     """
     reads = [CorrectionItemRead.model_validate(r, from_attributes=True) for r in rows]
     pids = {r.patient_id for r in reads if r.patient_id is not None}
@@ -2494,7 +2516,9 @@ async def _read_correction_items(
             continue
         st = status_by_id.get(read.patient_id)
         read.patient_status = st
-        read.inactive_patient = read.action == "add" and not is_schedulable_status(st)
+        read.inactive_patient = (
+            read.action in INACTIVE_FLAGGED_ACTIONS and not is_schedulable_status(st)
+        )
     return reads
 
 
@@ -2693,10 +2717,13 @@ async def unsent_summary(
     行ってから items をマージすればよい。まずは誤情報を出さないことを優先する。
     """
     from app.models.patient import Patient
+    from app.models.special_visit import MARK_STATUS_PLACED, SpecialVisitMark
+    from app.models.visit import VISIT_STATUS_PLANNED, Visit
     from app.services.kaipoke.csv_snapshot import get_latest
     from app.services.kaipoke.local_diff import build_local_diff, correction_before_after
     from app.services.kaipoke.name_match import build_name_index, match_name
     from app.services.kaipoke.rpa_capability import rpa_unsupported_item_ids, unassigned_item_ids
+    from app.services.patient_status_sync import PATIENT_STATUS_ACTIVE
 
     week_start = payload.week_start
     if week_start.weekday() != 0:
@@ -2723,6 +2750,9 @@ async def unsent_summary(
             rpa_unsupported_count=0,
             # イベントは職員に紐づく = 担当なしになりようがない。
             unassigned_count=0,
+            # 現況CSVが無い / 月跨ぎ = 未送信そのものが出せない状態。残骸の点検も
+            # 「カイポケ現況と突き合わせた上で」意味を持つので 0 のまま返す
+            # (既定値。数字だけ独り歩きさせない)。
             warnings=warnings,
         )
 
@@ -2734,6 +2764,40 @@ async def unsent_summary(
     snapshot = await get_latest(db, month=month, week_start=week_start)
     if snapshot is None:
         return _events_only([])
+
+    # 残骸 (Phase 3 §3-5): 対象週に **まだ planned で残っている** 非稼働患者の訪問数。
+    # Phase 1 の連動が効いていれば 0 で、> 0 は取りこぼしのサイン。
+    #
+    # 数えるものを絞る理由 (レビュー決定):
+    #   * ``visit_date >= 今日`` — 過去日は実績。連動は当日以降しか触らないので、
+    #     過去を数えると永久に 0 にならないアラームになる。
+    #   * ⭐ 配置 (``special_visit_marks.placed_visit_id``) は除外 — PO が「特別訪問
+    #     週間は残す」と選んだケースがそのまま残骸として鳴り続けるのを防ぐ。
+    #     判定式は Phase 1 (``patient_status_sync``) の placed 判定と同一。
+    #   * 拠点スコープ — 現況CSVが拠点で絞られているなら残骸も同じ範囲で数える
+    #     (「見ている範囲」と「数えている範囲」を一致させる)。
+    # 1 クエリだけ (件数のみ・行は引かない)。
+    placed_visit_ids = select(SpecialVisitMark.placed_visit_id).where(
+        SpecialVisitMark.status == MARK_STATUS_PLACED,
+        SpecialVisitMark.placed_visit_id.is_not(None),
+    )
+    residue_stmt = (
+        select(func.count())
+        .select_from(Visit)
+        .join(Patient, Patient.id == Visit.patient_id)
+        .where(
+            Visit.deleted_at.is_(None),
+            Visit.status == VISIT_STATUS_PLANNED,
+            Visit.visit_date >= max(week_start, today),
+            Visit.visit_date <= week_end,
+            Visit.id.not_in(placed_visit_ids),
+            Patient.deleted_at.is_(None),
+            Patient.status != PATIENT_STATUS_ACTIVE,
+        )
+    )
+    if snapshot.office_id is not None:
+        residue_stmt = residue_stmt.where(Patient.primary_office_id == snapshot.office_id)
+    inactive_residue = int((await db.scalar(residue_stmt)) or 0)
 
     corrections, _meta = await build_local_diff(
         db,
@@ -2770,10 +2834,18 @@ async def unsent_summary(
         await db.execute(delete(CorrectionSheet).where(CorrectionSheet.id.in_(stale_ids)))
 
     items_read: list[UnsentItemRead] = []
+    inactive_groups: list[InactiveGroup] = []
     sheet_id: UUID | None = None
     if corrections:
-        patients = (await db.scalars(select(Patient).where(Patient.deleted_at.is_(None)))).all()
-        pindex = build_name_index({str(p.id): p.name for p in patients})
+        # 名寄せ (id→氏名) と 非稼働まとめ (§3-5) の両方をこの 1 クエリで賄う。
+        # ORM エンティティは要らないので列だけ引く (全患者ぶんの hydrate を避ける)。
+        patients = (
+            await db.execute(
+                select(Patient.id, Patient.name, Patient.status).where(Patient.deleted_at.is_(None))
+            )
+        ).all()
+        pindex = build_name_index({str(pid): pname for pid, pname, _st in patients})
+        patient_by_id = {pid: (pname, pstatus) for pid, pname, pstatus in patients}
 
         sheet = CorrectionSheet(
             target_month=month,
@@ -2813,6 +2885,21 @@ async def unsent_summary(
         unassigned_ids = unassigned_item_ids(rows)
         for r in rows:
             base = CorrectionItemRead.model_validate(r).model_dump()
+            # 患者ステータス (Phase 3 §3-5) は ``_read_correction_items`` と **同じ規則**
+            # でここでも載せる。未送信の行だけ印が付かないと、同じ delete 行がシート
+            # 一覧では「入院中」バッジ付き・同期バーでは無印という食い違いになる。
+            # status は既にロード済みの patient_by_id から引く (追加クエリ無し)。
+            row_status = (
+                patient_by_id.get(r.patient_id, (None, None))[1]
+                if r.patient_id is not None
+                else None
+            )
+            base["patient_status"] = row_status
+            base["inactive_patient"] = (
+                r.patient_id is not None
+                and r.action in INACTIVE_FLAGGED_ACTIONS
+                and not is_schedulable_status(row_status)
+            )
             items_read.append(
                 UnsentItemRead(
                     **base,
@@ -2821,6 +2908,41 @@ async def unsent_summary(
                     unassigned=r.id in unassigned_ids,
                 )
             )
+
+        # 「◯◯様 入院中の取消 N 件」(§3-5)。未送信 **delete** のうち、らく助側の
+        # 患者が非稼働のものを患者単位で束ねる。``count`` は総数、``sendable_count``
+        # は今すぐ送れる分 (日付 > 当日 JST = トップレベルの sendable と同じ規則)。
+        # 並びは「送れる件数が多い順」→ 総数 → 氏名で決定的に。
+        counts_by_pid: dict[UUID, int] = {}
+        sendable_by_pid: dict[UUID, int] = {}
+        for it in items_read:
+            if it.action != "delete" or it.patient_id is None:
+                continue
+            p = patient_by_id.get(it.patient_id)
+            if p is None or is_schedulable_status(p[1]):
+                continue
+            counts_by_pid[it.patient_id] = counts_by_pid.get(it.patient_id, 0) + 1
+            if it.date_iso is not None and it.date_iso > today:
+                sendable_by_pid[it.patient_id] = sendable_by_pid.get(it.patient_id, 0) + 1
+        inactive_groups = [
+            InactiveGroup(
+                patient_id=str(pid),
+                patient_name=patient_by_id[pid][0],
+                status=patient_by_id[pid][1],
+                status_label=status_label(patient_by_id[pid][1]),
+                count=n,
+                sendable_count=sendable_by_pid.get(pid, 0),
+            )
+            for pid, n in sorted(
+                counts_by_pid.items(),
+                key=lambda kv: (
+                    -sendable_by_pid.get(kv[0], 0),
+                    -kv[1],
+                    patient_by_id[kv[0]][0],
+                    str(kv[0]),
+                ),
+            )
+        ]
 
     await _commit_or_409(db)
 
@@ -2884,6 +3006,8 @@ async def unsent_summary(
         past_count=past_count,
         rpa_unsupported_count=rpa_unsupported_count,
         unassigned_count=unassigned_count,
+        inactive_groups=inactive_groups,
+        inactive_residue=inactive_residue,
         warnings=[],
     )
 

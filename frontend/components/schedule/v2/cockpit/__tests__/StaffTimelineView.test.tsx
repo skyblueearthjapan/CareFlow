@@ -13,7 +13,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 import {
   snapXOffsetToMinutes,
@@ -882,5 +882,38 @@ describe('snapXOffsetToMinutes', () => {
 
   it('幅が測れないときは動かさない', () => {
     expect(snapXOffsetToMinutes(120, 0, 600, 30)).toBe(600);
+  });
+});
+
+// ─── 非稼働患者 (患者ステータス連動 Phase 3・design 2026-09-09 §3-4) ─────────
+
+describe('StaffTimelineView — 非稼働患者', () => {
+  it('連動取消は既定で描かず、showInactive=true なら打ち消し線つきで描く', () => {
+    const statusCancel = visit({
+      id: 'sc1',
+      source: 'status_cancel',
+      status: 'cancelled',
+      patient_status: 'admitted',
+    });
+    renderView({ visits: [statusCancel] });
+    expect(screen.queryByTestId('tl-bar-sc1')).not.toBeInTheDocument();
+
+    cleanup();
+    renderView({ visits: [statusCancel], showInactive: true });
+    const bar = screen.getByTestId('tl-bar-sc1');
+    expect(bar).toBeInTheDocument();
+    expect(bar.style.textDecoration).toBe('line-through');
+    expect(screen.getByTestId('tl-inactive-badge-sc1')).toHaveTextContent('取消（連動）');
+  });
+
+  it('非稼働患者の予定が残っていたらバッジ + 薄色で描く (トグル OFF でも)', () => {
+    renderView({
+      visits: [
+        visit({ id: 'res1', source: 'auto', status: 'planned', patient_status: 'admitted' }),
+      ],
+    });
+    const bar = screen.getByTestId('tl-bar-res1');
+    expect(bar.style.opacity).toBe('0.6');
+    expect(screen.getByTestId('tl-inactive-badge-res1')).toHaveTextContent('入院中');
   });
 });

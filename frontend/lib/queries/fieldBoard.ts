@@ -20,6 +20,7 @@ import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
 import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
+import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
 import { boardResponseSchema, type BoardResponse, type WeekdayCode } from '@/lib/schemas/v2/board';
 import {
   proposeSlotsRequestSchema,
@@ -92,6 +93,24 @@ export interface UseFieldBoardParams {
 }
 
 /**
+ * 患者ステータス連動の取消 (source='status_cancel') を現場ボードから落とす
+ * (design 2026-09-09 §3-4)。BE 側でも除外するが、旧デプロイと二重の安全網にする。
+ * 非稼働患者の**残っている予定**は落とさない (バッジで見せる = 原則⑥)。
+ */
+export function hideStatusCancelled(board: BoardResponse): BoardResponse {
+  return {
+    ...board,
+    board: board.board.map((cell) => ({
+      ...cell,
+      courses: cell.courses.map((course) => ({
+        ...course,
+        visits: course.visits.filter((v) => classifyVisitDisplay(v) !== 'hidden'),
+      })),
+    })),
+  };
+}
+
+/**
  * GET /api/v1/schedule/v2/board — 対象週 × 拠点の実 Visit を
  * office × weekday × course 構造で取得する。
  *
@@ -116,7 +135,7 @@ export function useFieldBoard(params: UseFieldBoardParams): UseQueryResult<Board
         accessToken,
         refreshToken,
       });
-      return boardResponseSchema.parse(raw);
+      return hideStatusCancelled(boardResponseSchema.parse(raw));
     },
   });
 }

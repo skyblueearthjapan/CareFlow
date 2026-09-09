@@ -34,6 +34,14 @@ export type CockpitMarker = ReconcileMarker & {
   course_label?: string;
   before?: CockpitMarkerSide;
   after?: CockpitMarkerSide;
+  /**
+   * 非稼働患者の行 (患者ステータス連動・design 2026-09-09 §3-5)。BE 判定
+   * (`correction_items.inactive_patient`)。カイポケ側に残っている行は
+   * 「非稼働患者の行（削除候補）」として専用カテゴリで見せる。
+   */
+  inactive_patient?: boolean;
+  /** らく助側の患者ステータス ('admitted' 等)。バッジのラベル解決に使う。 */
+  patient_status?: string | null;
 };
 
 export type CockpitMarkersByCell = Map<string, CockpitMarker[]>;
@@ -180,6 +188,9 @@ export function correctionItemToMarker(
     title: itemField(item, 'user_name') || '（患者不明）',
     patient_name: itemField(item, 'user_name') || undefined,
     course_label: itemField(item, 'service_type') || undefined,
+    // 非稼働患者の行 (§3-5)。判定は BE (`inactive_patient`)・FE は運ぶだけ。
+    inactive_patient: item.inactive_patient === true,
+    patient_status: item.patient_status ?? null,
     start: anchor.start,
     end: anchor.end,
     beforeStart: before?.start ?? null,

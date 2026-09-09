@@ -100,6 +100,12 @@ STATUS_LABELS: dict[str, str] = {
 }
 
 
+#: 予定を持てる唯一のステータス。SQL の where 句で `Patient.status == ...` と
+#: 書きたい箇所 (行をロードする前に絞る = N+1 回避) 用の単一ソース。
+#: Python 側で判定できるなら ``is_schedulable_status`` を使うこと。
+PATIENT_STATUS_ACTIVE: str = "active"
+
+
 def status_label(s: str | None) -> str:
     """ステータスの日本語ラベル (未知の値はそのまま返す)."""
     if not s:
@@ -113,7 +119,7 @@ def is_schedulable_status(s: str | None) -> bool:
     非稼働の列挙 (suspended / admitted / pending / cancelled / 旧 inactive) は
     増減しうるので **active かどうか**の 1 点だけで判定する (設計 §7-1)。
     """
-    return s == "active"
+    return s == PATIENT_STATUS_ACTIVE
 
 
 def direction_for(current: str | None, to: str | None) -> str:
@@ -1138,6 +1144,7 @@ __all__ = [
     "AUTO_REJECT_REASON",
     "build_patient_read",
     "NOTIFY_TYPE_PATIENT_STATUS_SYNC",
+    "PATIENT_STATUS_ACTIVE",
     "STATUS_LABELS",
     "apply_status_change",
     "compute_impact",

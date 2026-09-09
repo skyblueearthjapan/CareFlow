@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.services.patient_status_sync import is_schedulable_status
 from app.services.scheduling.auto_allocator_v2 import NOON_HOUR, V2Visit
 from app.services.scheduling.config import SchedulingConfig
 
@@ -490,6 +491,17 @@ async def simulate_pool_bulk_insert(
     for pid in unique_ids:
         patient = patient_by_id.get(pid)
         if patient is None:
+            continue
+        # 患者ステータス連動 Phase 3: 非稼働 (入院中/解約済み等) の患者は配置しない。
+        # API 層のガード (``split_schedulable_patient_ids``) が既に ``excluded_patients[]``
+        # へ落としているので通常ここには来ないが、直接呼び出し経路でも「入院中なのに
+        # 配置された」が起きないようにする。**黙って落とさず理由を残す** (原則③ ズレは
+        # 隠さない) — 削除済み患者のような無言の除外にすると、なぜ入らなかったのかが
+        # 画面から辿れなくなる。
+        if not is_schedulable_status(patient.status):
+            result.unplaced.append(
+                BulkUnplaced(patient_id=pid, patient_name=patient.name, reason="patient_not_active")
+            )
             continue
         # W-6: 患者×拠点フィルタ (座標チェックより先). 主担当拠点が未設定/他拠点の患者は
         # 週次生成から除外されるか本拠点のコース対象外なので、配置計算から除外する.

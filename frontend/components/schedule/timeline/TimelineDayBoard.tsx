@@ -34,7 +34,8 @@ import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
-import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
+import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
+import { classifyVisitDisplay, VISIT_DISPLAY_CLASS } from '@/lib/schedule/visitVisibility';
 import { CornerPushPin, CornerWeekPushPin, PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { PinScopeMenu, type PinScope } from '@/components/schedule/v2/PinScopeMenu';
 import { MovabilityMark } from './MovabilityMark';
@@ -213,6 +214,13 @@ export interface TimelineDayBoardProps {
    * 型と一致する訪問でのみ操作可 (§1.3)。スコープは PinScopeMenu (曜日のみ/全曜日)。
    */
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
+  /**
+   * トグル「非稼働を表示」(患者ステータス連動 Phase 3・design 2026-09-09 §3-4)。
+   * true = 連動取消 (source='status_cancel') も打ち消し線つきで描く (残骸点検)。
+   * 既定 false = 従来どおり消す。非稼働患者の**残っている予定**はどちらでも
+   * バッジ付きで出る。
+   */
+  showInactive?: boolean;
   /**
    * 新人同行 (§7.1/§7.2)。active なら列ヘッダ/カードが選択トグル (通常操作は親が抑止)、
    * inactive なら常時表示バッジを描く。
@@ -551,6 +559,10 @@ function VisitCard({
   const endMin = parseHM(visit.end_time);
   if (startMin === null || endMin === null || endMin <= startMin) return null;
   const isCancelled = visit.status === 'cancelled';
+  // 表示の保険 (design 2026-09-09 §3-4)。ここに来ている = 既に描くと決まった訪問
+  // なので showInactive:true で区分だけ求める (非稼働の残骸=薄色+バッジ /
+  // 連動取消=打ち消し線+「取消（連動）」)。
+  const displayKind = classifyVisitDisplay(visit, { showInactive: true });
   const pal = genderPalette(visit.patient_sex);
   // 範囲外 (9:00前/18:00後) はカードを軸内にクランプして隠れ・はみ出しを防ぐ (LOW-4)。
   const clampedStart = Math.max(startMin, TL_DAY_START_MIN);
@@ -658,6 +670,8 @@ function VisitCard({
         accActive && !accInCourse && accompaniment!.isVisitArmed && 'cursor-pointer',
         accOverlap && 'z-[4] ring-2 ring-error',
         accSelected && !accOverlap && 'z-[4] ring-2 ring-brand-primary',
+        // 非稼働患者の残骸 / 連動取消 (§3-4)。
+        VISIT_DISPLAY_CLASS[displayKind],
       )}
       style={{
         top,
@@ -730,6 +744,12 @@ function VisitCard({
         >
           {visit.patient_name ?? '—'}
         </span>
+        {/* 非稼働患者のバッジ (「入院中」/「取消（連動）」・§3-4)。 */}
+        <InactiveVisitBadge
+          visit={visit}
+          kind={displayKind}
+          testId={`tl-inactive-badge-${visit.id}`}
+        />
         {/* ①/② = 2名体制の slot (旧テーブルから移設)。相方未配置なら警告色。 */}
         {partner.slotMark && (
           <span
@@ -1053,9 +1073,12 @@ type RenderItem =
  * (design 2026-09-09 §7-4: 非稼働患者の取消は盤面から消す。「今週だけ取消」
  * = manual_cancel は従来どおり打ち消し線で残す)。
  */
-function buildRenderItems(visits: ReadonlyArray<CourseGridVisit>): RenderItem[] {
+function buildRenderItems(
+  visits: ReadonlyArray<CourseGridVisit>,
+  showInactive = false,
+): RenderItem[] {
   const sorted = visits
-    .filter((v) => !isStatusCancelledVisit(v))
+    .filter((v) => classifyVisitDisplay(v, { showInactive }) !== 'hidden')
     .sort((a, b) => (parseHM(a.start_time) ?? 0) - (parseHM(b.start_time) ?? 0));
   const used = new Set<string>();
   const items: RenderItem[] = [];
@@ -1257,6 +1280,12 @@ function PairMemberRowView({
         >
           {v.patient_name ?? '—'}
         </span>
+        {/* 非稼働患者のバッジ (§3-4)。同住所ペアの各行にも出す。 */}
+        <InactiveVisitBadge
+          visit={v}
+          kind={classifyVisitDisplay(v, { showInactive: true })}
+          testId={`tl-inactive-badge-${v.id}`}
+        />
         {lanes === 1 && (
           <span className="tnum ml-auto shrink-0 text-[9px] opacity-75">
             {(v.start_time ?? '').slice(0, 5)}
@@ -1657,6 +1686,7 @@ function TimelineColumn({
   onToggleWeekPin,
   onTogglePin,
   accompaniment,
+  showInactive,
 }: {
   col: TimelineCourseColumn;
   onPatientClick?: (patientId: string) => void;
@@ -1673,6 +1703,8 @@ function TimelineColumn({
    */
   onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   accompaniment?: AccompanimentBinding;
+  /** トグル「非稼働を表示」(design 2026-09-09 §3-4)。連動取消も描くかどうか。 */
+  showInactive?: boolean;
 }) {
   const height = timelineHeightPx();
   // 勤務外バンド: スタッフイベント以外に、コース未生成/担当なしを表す薄いハッチは出さない
@@ -1681,7 +1713,7 @@ function TimelineColumn({
   for (let m = TL_DAY_START_MIN; m < TL_DAY_END_MIN; m += 30) rows.push(m);
 
   // 同住所・同時刻の2名は 90分占有ペアに束ね、それ以外は単独として描画単位化。
-  const items = buildRenderItems(col.visits);
+  const items = buildRenderItems(col.visits, showInactive);
   // 描画単位 (単独 or ペアボックス) 同士で時間帯が重なる場合のみ左右レーンに分割 (MED-1)。
   const lanes = assignLanes(
     items.map((it) => ({ id: it.id, startMin: it.startMin, endMin: it.endMin })),
@@ -1843,6 +1875,7 @@ export function TimelineDayBoard({
   onTogglePin,
   accompaniment,
   accompanimentWeekday,
+  showInactive = false,
 }: TimelineDayBoardProps) {
   const accActive = accompaniment?.active === true;
   const height = timelineHeightPx();
@@ -2111,6 +2144,7 @@ export function TimelineDayBoard({
             onToggleWeekPin={onToggleWeekPin}
             onTogglePin={onTogglePin}
             accompaniment={accompaniment}
+            showInactive={showInactive}
           />
         ))}
 

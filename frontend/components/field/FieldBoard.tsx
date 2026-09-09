@@ -32,6 +32,8 @@ import { useFieldBoard, toWeekStart, toIsoYearWeek } from '@/lib/queries/fieldBo
 import { useOffices } from '@/lib/queries/offices';
 import { usePendingRequests } from '@/lib/queries/pending_requests';
 import type { BoardCell, BoardCourse, BoardOffice, BoardVisit } from '@/lib/schemas/v2/board';
+import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
+import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
 import {
   computeFreeGaps,
   businessBlocksFromHours,
@@ -803,6 +805,12 @@ function PatientCard({
   const k = cc(courseCode);
   const timeLabel = startOverride ?? visitTimeLabel(visit);
   const isCancelled = visit.status === 'cancelled';
+  // 表示の保険 (design 2026-09-09 §3-4): 非稼働 (入院中等) の患者様の**予定が
+  // 残っている**ときだけバッジで見せる。共通判定を使うので、今週だけ取消・
+  // 訪問済みの行には出ない (過去の実績に「入院中」と書かない)。
+  // 連動取消はここに来る前 (クエリ層) で落としてある。
+  const displayKind = classifyVisitDisplay(visit, { showInactive: true });
+  const isInactiveResidue = displayKind === 'inactive';
   return (
     <button
       onClick={() => onKarte(visit)}
@@ -818,7 +826,7 @@ function PatientCard({
         gap: 2,
         position: 'relative',
         boxShadow: '0 1px 2px rgba(28,25,23,0.05)',
-        opacity: isCancelled ? 0.7 : 1,
+        opacity: isCancelled ? 0.7 : isInactiveResidue ? 0.6 : 1,
       }}
     >
       {/* R-2: キャンセル badge */}
@@ -877,6 +885,13 @@ function PatientCard({
         }}
       >
         {visit.patient_name}
+        {/* 非稼働患者のバッジ (「入院中」等・§3-4)。文言も配色も共通部品に委ねる。 */}
+        <InactiveVisitBadge
+          visit={visit}
+          kind={displayKind}
+          className="ml-1 align-middle"
+          testId={`field-board-inactive-${visit.visit_id}`}
+        />
       </div>
       <div
         style={{

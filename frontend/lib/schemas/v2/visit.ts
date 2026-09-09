@@ -136,6 +136,12 @@ export const visitV2ReadSchema = visitV2BaseSchema.extend({
   // 表示用の denormalized 名 (v1 と同じ)
   patient_name: z.string().nullable().optional(),
   staff_name: z.string().nullable().optional(),
+  /**
+   * 患者マスタの `patients.status` (表示の保険・design 2026-09-09 §3-4)。
+   * 非稼働 (入院中等) の予定が残っていたらバッジで見せるために使う。
+   * 旧 BE 応答では欠けるので nullish + `.catch(null)` で寛容にパースする。
+   */
+  patient_status: z.string().nullish().catch(null),
   // visit_staff_assignments 経由で割り当てられたスタッフ全員 (§4.5)
   staff_assignments: z.array(visitStaffAssignmentV2ReadSchema).default([]),
 });

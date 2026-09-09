@@ -256,6 +256,11 @@ async def load_day_rows(db: AsyncSession, target_date: date_cls) -> list[_DayRow
     """その日の全訪問を Course / Patient 付きで返す (cancelled / deleted は対象外).
 
     削除済み (soft-delete) 患者の訪問は候補計算にも表示にも含めない。
+
+    **非稼働 (``status != 'active'``) 患者の訪問は含める** (Phase 3 レビュー決定)。
+    取消されずに残っている planned は ⭐ 配置 (PO が「残す」と決めたもの) か
+    カイポケ側にまだ生きている行であり、**実際に人が動く枠を占有している**。
+    ここで落とすと重なりが見えなくなり二重予約を許してしまう。
     """
     rows = (
         await db.execute(

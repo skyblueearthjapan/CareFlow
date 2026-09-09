@@ -38,7 +38,8 @@ import { addDays, format } from 'date-fns';
 
 import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { EventRead } from '@/lib/schemas/staff-events';
-import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
+import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
+import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
 import { parseHM } from '@/lib/scheduling/freeGaps';
 import {
   assignLanes,
@@ -231,6 +232,11 @@ export interface StaffTimelineViewProps {
   onSuggestCourse?: (courseId: string, weekday: number, anchorEl: HTMLElement) => void;
   /** 2-D: 提案の候補行を hover 中のスタッフ。その行を薄くブランド色にする。 */
   highlightStaffId?: string | null;
+  /**
+   * トグル「非稼働を表示」(患者ステータス連動 Phase 3・design 2026-09-09 §3-4)。
+   * true = 連動取消 (source='status_cancel') も打ち消し線つきで描く。既定 false。
+   */
+  showInactive?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -463,6 +469,7 @@ export function StaffTimelineView({
   suggestionBadges,
   onSuggestCourse,
   highlightStaffId,
+  showInactive = false,
 }: StaffTimelineViewProps) {
   const dayIso = React.useMemo(
     () => format(addDays(weekStart, day), 'yyyy-MM-dd'),
@@ -487,8 +494,11 @@ export function StaffTimelineView({
   // 患者ステータス連動の取消 (source='status_cancel') は盤面から消す
   // (design 2026-09-09 §7-4)。「今週だけ取消」= manual_cancel は打ち消し線で残す。
   const dayVisits = React.useMemo(
-    () => visits.filter((v) => v.weekday === day && !isStatusCancelledVisit(v)),
-    [visits, day],
+    () =>
+      visits.filter(
+        (v) => v.weekday === day && classifyVisitDisplay(v, { showInactive }) !== 'hidden',
+      ),
+    [visits, day, showInactive],
   );
 
   const visibleMarkers = React.useMemo(
@@ -1560,6 +1570,10 @@ const Bar = React.memo(function Bar({
         ln: 'var(--sched-event-ln)',
       };
 
+  // 表示の保険 (§3-4)。ここに来ている = 描くと決まったバーなので区分だけ求める。
+  const displayKind = isVisit
+    ? classifyVisitDisplay(item.visit, { showInactive: true })
+    : ('normal' as const);
   const title = isVisit ? (item.visit.patient_name ?? '訪問') : item.event.title;
   const sub = isVisit ? (item.visit.course_label ?? '') : 'イベント';
   const timeLabel = `${hhmm(startMin)}〜${hhmm(endMin)}`;
@@ -1604,8 +1618,8 @@ const Bar = React.memo(function Bar({
         background: palette.bg,
         borderLeft: `3px solid ${palette.bar}`,
         color: palette.ink,
-        textDecoration: cancelled ? 'line-through' : undefined,
-        opacity: cancelled ? 0.55 : undefined,
+        textDecoration: cancelled || displayKind === 'status_cancel' ? 'line-through' : undefined,
+        opacity: cancelled ? 0.55 : displayKind === 'normal' ? undefined : 0.6,
         touchAction: 'none',
       }}
     >
@@ -1631,6 +1645,15 @@ const Bar = React.memo(function Bar({
           </span>
         ) : null}
         {title}
+        {/* 非稼働患者のバッジ (「入院中」/「取消（連動）」・§3-4)。 */}
+        {isVisit ? (
+          <InactiveVisitBadge
+            visit={item.visit}
+            kind={displayKind}
+            className="ml-1 align-middle"
+            testId={`tl-inactive-badge-${item.id}`}
+          />
+        ) : null}
       </span>
     </button>
   );

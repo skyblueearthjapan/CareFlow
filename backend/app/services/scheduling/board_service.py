@@ -92,6 +92,11 @@ class BoardVisitData:
     status: str = VISIT_STATUS_PLANNED  # planned / cancelled
     same_address_group_id: str | None = None
     slot_index: int = 0
+    # 患者ステータス連動 Phase 3 §3-4 (非破壊追加・既定 None)。
+    # ``source`` = visits.source (``status_cancel`` は FE で非表示),
+    # ``patient_status`` = 既にロード済みの Patient から (追加クエリ無し)。
+    source: str | None = None
+    patient_status: str | None = None
 
 
 @dataclass
@@ -215,6 +220,8 @@ async def load_board_buckets(
                 lng=float(patient.lng) if patient.lng is not None else None,
                 mode="normal" if v.type == "regular" else "special",
                 status=v.status,
+                source=v.source,
+                patient_status=patient.status,
             )
         )
 

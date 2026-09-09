@@ -463,8 +463,13 @@ class CorrectionItemRead(BaseModel):
     # 患者ステータス連動 Phase 2 (設計 §7-3(d)): 非稼働患者の行を可視化する。
     # DB 列ではなく **読み出し時に patients から補完** する (常に最新)。
     patient_status: str | None = None
-    # 非稼働患者への add 行 = 取り込むと「入院中なのに予定が復活」する行。
-    # 既定 include=False (自動選択しない) で作られ、適用時も skip される。
+    # 非稼働患者に関わる行 (Phase 3 §3-5 で delete まで拡張)。向き × action で意味が
+    # 変わる (人が取るべき行動は逆になる):
+    #   inbound  add    — 取り込むと「入院中なのに予定が復活」する行。既定
+    #                     include=False (自動選択しない) で作られ、適用時も skip。
+    #   inbound  delete — らく助にだけ残った残骸 → **らく助側を取消**する行。通す。
+    #   outbound delete — カイポケに残った行 → **カイポケ側の削除候補**。⇧送信で消す。
+    # edit / date_change には立てない (「残骸を直す」行なので判断を迷わせない)。
     inactive_patient: bool = False
 
 
@@ -811,6 +816,32 @@ class UnsentEventRead(BaseModel):
     kind: Literal["add", "delete"] = "add"
 
 
+class InactiveGroup(BaseModel):
+    """非稼働患者ごとの未送信取消のまとめ (「◯◯様 入院中の取消 N 件」・§3-5)。
+
+    未送信 delete のうち、らく助側の患者が ``active`` 以外のものを患者単位で束ねる。
+    FE は同期バーの ● に 1 行ずつ出し、「カイポケの週間パターンを停止してください」の
+    案内へ繋ぐ。
+
+    件数が 2 つあるのは、過去日は送れないため:
+
+    * ``count``          — その患者の未送信 delete の **総数** (過去日を含む)。
+    * ``sendable_count`` — うち **今すぐ送れる** 件数 (日付 > 当日 JST)。
+      判定は ``UnsentSummaryRead.sendable_count`` と同じ規則。
+
+    ``sendable_count == 0`` なら「残ってはいるが今回は送れない」= 案内の出し方が
+    変わるため、FE は必ずこちらを見て文言を決める。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    patient_id: str
+    patient_name: str
+    status: str
+    status_label: str
+    count: int
+    sendable_count: int = 0
+
+
 class UnsentSummaryRead(BaseModel):
     """●未送信サマリ (RPA を一切呼ばずに算出する・§2-4)。"""
 
@@ -831,6 +862,14 @@ class UnsentSummaryRead(BaseModel):
     # 担当なし (職員1が空/'-') で送れない件数。past / rpa_unsupported とも
     # 二重に数えない = sendable = 全体 - past - rpa_unsupported - unassigned。
     unassigned_count: int = 0
+    # 患者ステータス連動 Phase 3 §3-5 (非破壊追加・既定 空/0)。
+    # ``inactive_groups`` = 未送信 delete のうち非稼働患者ぶんを患者単位でまとめた
+    # もの (「◯◯様 入院中の取消 N 件」)。sendable_count 等の既存の数え方は変えない
+    # (= 内数。送れる件数の意味を動かさない)。
+    inactive_groups: list[InactiveGroup] = Field(default_factory=list)
+    # ``inactive_residue`` = 対象週に **まだ planned で残っている** 非稼働患者の
+    # 訪問数 (残骸)。Phase 1 の連動が効いていれば 0。> 0 なら取りこぼしのサイン。
+    inactive_residue: int = 0
     # 未送信を算出できなかった/信用できない理由 (FE がバーに出す)。
     warnings: list[str] = Field(default_factory=list)
 
