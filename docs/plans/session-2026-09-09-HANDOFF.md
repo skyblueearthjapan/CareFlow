@@ -3,7 +3,8 @@
 **次のエージェントへ: まずこのファイル → `patient-status-schedule-design-2026-09-09.md` §6-C（確定事項）と §7（実装計画）を読むこと。** 前セッション総括 = `session-2026-09-08-HANDOFF.md`（本番 203a5c1・実機確認 (a)〜(h)・PO 判断 5 件は未消化のまま）。
 
 ## ★ 最初の 5 分
-1. **状態（2026-09-09 21:00 JST）**: 本番 HEAD `203a5c1`（コードは前セッションのまま・今日はコード変更なし）。ローカル develop = origin = `7e9d80a`（docs のみ先行）。**未コミット**: `docs/plans/patient-status-schedule-design-2026-09-09.md`（新規）・`docs/plans/session-2026-09-09-HANDOFF.md`（本書）・`docs/reports/2026-09-09-patient-status-cleanup-report.html`（顧客報告・患者名あり・未追跡のまま）。
+0. **Phase 1 実装済み・ローカルコミット済み・未 push・未デプロイ（2026-09-10 00:30 JST）**: `d0110fa`（土台: 定数・列・mig 0082・pydantic・zod）→ `efd98b0`（本体: BE サービス/API/掃除/取込保護/ガード helper・FE ダイアログ/ゲート/非表示）。4 レーン並行 → code-reviewer 2 本（REQUEST CHANGES）→ 是正 → 検証: backend 対象 15 ファイル緑（失敗 6 件は既存: reset ペア整列 2・patients_v2 の NULL 列/manager 4）・frontend tsc 緑・vitest 2236 通過（失敗 1 = 既知 middleware）・prettier/ruff 緑。**次 = push → 本番バックアップ → デプロイ（mig 0082 あり＝`build --no-cache`）→ 実機確認（設計書 §7-7）。** デプロイは PO 確認後。実装時の確定事項（undo 禁止など）は設計書 §7 冒頭の囲み。
+1. **状態（2026-09-09 21:00 JST 時点）**: 本番 HEAD `203a5c1`。docs 未追跡: `docs/reports/2026-09-09-patient-status-cleanup-report.html`（顧客報告・患者名あり・未追跡のまま）。
 2. **本番データ変更あり（Phase 0）**: 19:45 に非稼働 8 名の未来 planned(auto) **21 件**を `POST /schedule/v2/visit-cancel-week`（source=manual_cancel・reason 付き・週ごと op_group 4 組）で取消。藤原様の特別訪問週間（期間・○ 25・配置済み 5・うち未来 2 件）は **PO 指示で不変**。バックアップ `/opt/carelink/backups/pre-status-cleanup-20260909-1044.sql.gz`。**カイポケ送信は PO 指示で保留**（次の突合で delete 差分 21 件が出る）。事務がカイポケ週間パターンを止める（9 名）。
 3. **PO 決定は設計書 §6-C に全部ある**（取消して非表示／当日から・明日から／効果日なし／復帰は確認→型から再生成／⭐ は必ず確認・既定「残す」／入口は止めるが「稼働中にして続ける」で復帰フローを丸ごと実行／残骸はバッジ／pending も非稼働／型は残す／申請は自動却下）。
 4. **次の一手 = Phase 1 実装**（設計書 §7-8 の 5 手）。共有ファイル（定数・列・mig 0082・pydantic・FE 型）をコーディネータが先に編集 → BE-A/BE-B/FE-A を並行投入。
