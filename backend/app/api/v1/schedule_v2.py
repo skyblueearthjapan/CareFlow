@@ -52,6 +52,7 @@ from app.models.user import User
 from app.models.visit import (
     VISIT_SOURCE_MANUAL_CANCEL,
     VISIT_SOURCE_MANUAL_WEEK,
+    VISIT_SOURCE_STATUS_CANCEL,
     VISIT_STATUS_CANCELLED,
     VISIT_STATUS_PLANNED,
     Visit,
@@ -6572,6 +6573,17 @@ async def visit_cancel_week(
     _deny = await check_cancel_visit_allowed(db, targets, cancel=payload.cancel)
     if _deny is not None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=_deny)
+
+    # 患者ステータス連動 (入院中等) の取消は、この画面からは戻せない
+    # (patient-status-schedule-design-2026-09-09.md §7-3)。ここで戻すと
+    # 出所が manual_week になり、稼働中へ戻したときの再生成と二重になる。
+    if not payload.cancel and any(v.source == VISIT_SOURCE_STATUS_CANCEL for v in targets):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "ステータス連動で取り消された訪問です。患者様のステータスを稼働中に戻してください"
+            ),
+        )
 
     new_status = VISIT_STATUS_CANCELLED if payload.cancel else VISIT_STATUS_PLANNED
     # ``reason`` は **visits.note に書かない** (現場向けの申し送りを汚さない /

@@ -14,7 +14,7 @@
  * Wave 20: プールカードに名前・希望時間・条件バッジを表示。
  *   - 名前 (太字)
  *   - 希望時間 (formatPreferredTimeLabel + service_minutes)
- *   - バッジ: 女性のみ / 男性のみ / 複数 / 新規 (before_start)
+ *   - バッジ: 女性のみ / 男性のみ / 複数 / 開始前 (status='pending')
  */
 import * as React from 'react';
 import { useDraggable } from '@dnd-kit/core';
@@ -58,8 +58,11 @@ export interface PatientCardData {
    */
   requiresMultipleStaff?: boolean | null;
   /**
-   * Wave 20: 患者ステータス.
-   * 'before_start' → 「新規」バッジ.
+   * Wave 20: 患者ステータス (patients.status の生値).
+   * 'pending' (開始前) → 「開始前」バッジ.
+   *
+   * 2026-09-09: 旧実装は存在しない値 'before_start' を見ていて常に出なかった
+   * (patient schema の STATUS_OPTIONS は active/suspended/admitted/pending/cancelled)。
    */
   patientStatus?: string | null;
   /**
@@ -231,7 +234,7 @@ export function PatientCard({
   const femaleOnly = patient.sexRestriction === 'female_only';
   const maleOnly = patient.sexRestriction === 'male_only';
   const multi = patient.requiresMultipleStaff === true;
-  const isNew = patient.patientStatus === 'before_start';
+  const isNew = patient.patientStatus === 'pending';
   // NG スタッフあり (§8-2 Phase 2). 件数は出さず「あり/なし」だけを示す。
   const hasNgStaff = (patient.ngStaffCount ?? 0) > 0;
   const hasBadges = femaleOnly || maleOnly || multi || isNew || hasNgStaff;
@@ -363,7 +366,7 @@ export function PatientCard({
                 className="h-4 px-1 text-[10px]"
                 data-testid={`patient-card-badge-new-${patient.id}`}
               >
-                新規
+                開始前
               </Badge>
             )}
             {hasNgStaff && (

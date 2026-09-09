@@ -23,7 +23,8 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from datetime import date
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -39,8 +40,19 @@ from app.models.visit import Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.patient import PatientCreate, PatientRead, PatientUpdate
 from app.schemas.patient_same_address_link import SameAddressCandidate
+from app.schemas.patient_status import (
+    StatusChangeRequest,
+    StatusChangeResult,
+    StatusImpact,
+)
+from app.schemas.v2.patient import PatientStatusV2
 from app.services.geocoding.hash import normalize_address
 from app.services.patient_code import generate_next_patient_code
+from app.services.patient_status_sync import (
+    apply_status_change,
+    build_patient_read,
+    compute_impact,
+)
 from app.services.scheduling.auto_allocator_v2 import SAME_ADDRESS_TOLERANCE, _address_bucket
 
 # Phase G-86: 自動採番した code が UNIQUE 衝突したときの再採番上限。
@@ -277,12 +289,109 @@ async def update_patient(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
     data = _model_dump_for_orm(payload, partial=True)
+
+    # ステータス連動の安全網 (design 2026-09-09 §7-3): API 直叩き・Excel 取込など
+    # ダイアログを通らない経路でも、status が変わるなら必ずサービスを通す
+    # (既定値: 今日から・特別訪問週間は残す・型から作り直す)。
+    # FE は POST /status-change を使うので、ここは「素の PATCH」だけが通る道。
+    new_status = data.pop("status", None) if "status" in data else None
+    status_changes = new_status is not None and new_status != patient.status
+
     for field, value in data.items():
         setattr(patient, field, value)
+
+    if status_changes:
+        await apply_status_change(
+            db,
+            patient,
+            to_status=new_status,
+            actor_user_id=_user.id,
+        )
     await _commit_or_409(db)
     await db.refresh(patient)
     # refresh で動的属性が落ちるため、返す直前に載せ直す。
     return await _attach_ng_staff_count(db, patient)
+
+
+@router.get(
+    "/{patient_id}/status-impact",
+    response_model=StatusImpact,
+    summary="ステータス変更の影響件数 (admin・read-only)",
+)
+async def get_patient_status_impact(
+    patient_id: UUID,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    to: Annotated[PatientStatusV2, Query(description="変更後のステータス")],
+    from_date: Annotated[
+        date | None, Query(description="取消/再生成の起点 (JST・既定=今日)")
+    ] = None,
+    special_period_action: Annotated[
+        Literal["keep", "end"],
+        Query(description="非稼働化時の特別訪問週間の扱い (既定 keep=残す)"),
+    ] = "keep",
+) -> StatusImpact:
+    """確認ダイアログ用の影響件数 (design 2026-09-09 §7-3 (a)).
+
+    実行と同じ selector / 再生成関数を通す (表示と実行のズレを構造的に無くす)。
+    ``special_period_action='end'`` なら ⭐ 配置分も ``visits.total`` に含む
+    (FE はラジオを変えたら取り直す)。DB は変更しない — 復帰の見込み件数は
+    試走 + rollback で求める。
+    """
+    patient = await db.scalar(
+        select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
+    )
+    if patient is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    impact = await compute_impact(
+        db,
+        patient,
+        to_status=to,
+        from_date=from_date,
+        special_period_action=special_period_action,
+    )
+    # 読み取り専用の保証: 試走で書いた分を確実に捨てる (commit しない)。
+    await db.rollback()
+    return impact
+
+
+@router.post(
+    "/{patient_id}/status-change",
+    response_model=StatusChangeResult,
+    summary="ステータス変更 + 予定の連動 (admin)",
+)
+async def change_patient_status(
+    patient_id: UUID,
+    payload: StatusChangeRequest,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+) -> StatusChangeResult:
+    """ステータスを変え、予定を連動させる (design 2026-09-09 §7-3 (b))."""
+    patient = await db.scalar(
+        select(Patient).where(Patient.id == patient_id, Patient.deleted_at.is_(None))
+    )
+    if patient is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    result = await apply_status_change(
+        db,
+        patient,
+        to_status=payload.status,
+        from_date=payload.from_date,
+        special_period_action=payload.special_period_action,
+        regenerate=payload.regenerate,
+        actor_user_id=_user.id,
+        note=payload.note,
+    )
+    await _commit_or_409(db)
+    await db.refresh(patient)
+    # DTO を先に組み、そのあとで派生値 (ng_staff_count) を載せる
+    # (build_patient_read の refresh で動的属性が落ちる順序事故を避ける)。
+    read = await build_patient_read(db, patient)
+    read.ng_staff_count = (await _attach_ng_staff_count(db, patient)).ng_staff_count
+    result.patient = read
+    return result
 
 
 @router.delete(

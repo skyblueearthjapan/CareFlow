@@ -25,6 +25,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
 import { downloadPatientKarte, triggerBlobDownload } from '@/lib/api/patientsExcel';
+import { formatStatusSince } from '@/lib/format/patientStatus';
 import { RecordNavigator, type NavigatorRecord } from '@/components/RecordNavigator';
 import { useDeletePatient, usePatient, usePatients } from '@/lib/queries/patients';
 import { useNgStaffList } from '@/lib/queries/patient_ng_staff';
@@ -255,7 +256,9 @@ export default function PatientDetailPage() {
               ['氏名', data.name],
               ['カナ', data.kana ?? '--'],
               ['性別', sexNorm ? SEX_LABEL[sexNorm] : '--'],
-              ['状態', STATUS_LABEL[statusNorm]],
+              // 「入院中（9/8〜）」— いつからその状態かが分からないと、残った予定が
+              // 変更前のものか変更漏れかを判断できない (設計 §7-4)。
+              ['状態', `${STATUS_LABEL[statusNorm]}${formatStatusSince(data.status_changed_at)}`],
             ];
           })()}
         />

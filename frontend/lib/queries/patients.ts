@@ -26,6 +26,7 @@ import {
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
+import { invalidateScheduleAll } from '@/lib/queries/invalidateSchedule';
 import {
   normalizePatientInsurance,
   normalizePatientStatus,
@@ -34,8 +35,17 @@ import {
   type PatientCreate,
   type PatientFormValues,
   type PatientRead,
+  type PatientStatus,
   type PatientUpdate,
 } from '@/lib/schemas/patient';
+import {
+  statusChangeRequestSchema,
+  statusChangeResultSchema,
+  statusImpactSchema,
+  type StatusChangeRequest,
+  type StatusChangeResult,
+  type StatusImpact,
+} from '@/lib/schemas/patientStatus';
 import { compareByKana } from '@/lib/kana-sort';
 
 export interface PatientsListParams {
@@ -112,6 +122,19 @@ function dropUndefined(payload: Record<string, unknown>): Record<string, unknown
   return out;
 }
 
+export interface PrepareFormPayloadOptions {
+  /**
+   * `true` のとき payload から `status` を落とす
+   * (`docs/plans/patient-status-schedule-design-2026-09-09.md` §7-4)。
+   *
+   * ステータスの変更は `POST /patients/{id}/status-change`（連動処理つき）が担当する。
+   * その直後に PATCH が `status` を再送すると、**変更前の値で上書きして巻き戻す**か、
+   * 連動処理の無い経路で二重にステータスを書くことになる。ゲート
+   * (`usePatientStatusGate`) を通った保存だけがこのフラグを立てる。
+   */
+  omitStatus?: boolean;
+}
+
 /**
  * Pre-process raw form values into a shape that matches the zod schemas:
  *
@@ -137,6 +160,7 @@ function dropUndefined(payload: Record<string, unknown>): Record<string, unknown
 export function prepareFormPayload(
   values: PatientFormValues,
   initial?: PatientFormValues,
+  options?: PrepareFormPayloadOptions,
 ): Record<string, unknown> {
   // `special_week` (boolean) は `special_weekly_pattern` (JSONB) に変換するので
   // wire 上には含めない。`kaipoke_service_content` は下で差分判定して足す。
@@ -171,7 +195,14 @@ export function prepareFormPayload(
     kaipoke_service_content = nextOverride === '' ? null : nextOverride;
   }
 
-  return { ...rest, weekly_pattern, special_weekly_pattern, kaipoke_service_content };
+  const payload: Record<string, unknown> = {
+    ...rest,
+    weekly_pattern,
+    special_weekly_pattern,
+    kaipoke_service_content,
+  };
+  if (options?.omitStatus) delete payload.status;
+  return payload;
 }
 
 /** GET /api/v1/patients — list (with client-side search/pagination wrapper). */
@@ -275,6 +306,16 @@ export function useCreatePatient(): UseMutationResult<PatientRead, Error, Patien
   });
 }
 
+/**
+ * `useUpdatePatient` の mutation 変数。
+ *
+ * 素の `PatientFormValues` をそのまま渡す既存呼び出しはそのまま動く
+ * (`__omitStatus` は任意)。ステータス変更ゲート
+ * (`lib/hooks/usePatientStatusGate.ts`) を通った保存だけが `__omitStatus: true`
+ * を足し、PATCH の payload から `status` を落とす。
+ */
+export type PatientUpdateInput = PatientFormValues & { __omitStatus?: boolean };
+
 /** PATCH /api/v1/patients/{id} — update.
  *
  * Pass `initial` (the form values derived from the loaded record) so we can
@@ -284,14 +325,17 @@ export function useCreatePatient(): UseMutationResult<PatientRead, Error, Patien
 export function useUpdatePatient(
   id: string,
   initial?: PatientFormValues,
-): UseMutationResult<PatientRead, Error, PatientFormValues> {
+): UseMutationResult<PatientRead, Error, PatientUpdateInput> {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const { accessToken, refreshToken } = authPair(session);
 
-  return useMutation<PatientRead, Error, PatientFormValues>({
-    mutationFn: async (values) => {
-      const prepared = prepareFormPayload(values, initial);
+  return useMutation<PatientRead, Error, PatientUpdateInput>({
+    mutationFn: async (input) => {
+      const { __omitStatus, ...values } = input as PatientUpdateInput;
+      const prepared = prepareFormPayload(values as PatientFormValues, initial, {
+        omitStatus: __omitStatus === true,
+      });
       const parsed: PatientUpdate = patientUpdateSchema.parse(prepared);
       const body = dropUndefined(parsed as unknown as Record<string, unknown>);
       return fetcher<PatientRead>(`/api/v1/patients/${id}`, {
@@ -304,6 +348,119 @@ export function useUpdatePatient(
     onSuccess: (data) => {
       void qc.invalidateQueries({ queryKey: PATIENTS_KEY });
       qc.setQueryData([...PATIENTS_KEY, id], data);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// ステータス連動 (docs/plans/patient-status-schedule-design-2026-09-09.md §7-3/§7-4)
+// ---------------------------------------------------------------------------
+
+/**
+ * 特別訪問週間の扱い。zod (`statusChangeRequestSchema`) から導出してドリフトを防ぐ。
+ */
+export type SpecialPeriodAction = NonNullable<StatusChangeRequest['special_period_action']>;
+
+/**
+ * `usePatientStatusImpact` の query キー (テスト・手動 invalidate 用)。
+ *
+ * **`['patients']` の下に置かない**: status-change 成功時に `['patients']` を
+ * invalidate するため、その配下だと確認ダイアログを開いたまま影響 GET が
+ * 再発火して「変更後の 0 件」に書き換わってしまう。
+ */
+export const PATIENT_STATUS_IMPACT_KEY = ['patient-status-impact'] as const;
+
+export function patientStatusImpactKey(
+  id: string | null | undefined,
+  to: string | null | undefined,
+  fromDate: string | null | undefined,
+  specialPeriodAction: string | null | undefined,
+): unknown[] {
+  return [
+    ...PATIENT_STATUS_IMPACT_KEY,
+    id ?? '__none__',
+    to ?? null,
+    fromDate ?? null,
+    specialPeriodAction ?? null,
+  ];
+}
+
+/**
+ * GET /api/v1/patients/{id}/status-impact?to=&from_date=&special_period_action=
+ *
+ * 「このステータスにしたら何件消える / 何件作られるか」を **実行と同じ関数の
+ * dry-run** で返す read-only API（設計 §7-3 (a)）。表示と実行がズレないのが要点。
+ *
+ * `special_period_action`（既定 `keep`）まで含めて BE が数えるので、`end` を選んだ
+ * ときの `visits.total` は ⭐ 配置分を **含んだ** 数字になる。FE 側で
+ * `placed_future_visits` を足してはいけない（二重計上・実行結果とのズレの元）。
+ * ラジオを切り替えるとキーが変わり、自動で数え直しに行く。
+ *
+ * `to` / `fromDate` が未確定の間、または `opts.enabled === false` の間は取得しない
+ * （＝ダイアログが閉じている間は 1 度も飛ばさない）。
+ */
+export function usePatientStatusImpact(
+  id: string | null | undefined,
+  to: PatientStatus | null | undefined,
+  fromDate: string | null | undefined,
+  opts?: { enabled?: boolean; specialPeriodAction?: SpecialPeriodAction },
+): UseQueryResult<StatusImpact, Error> {
+  const { data: session, status } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+  const gate = opts?.enabled ?? true;
+  const specialPeriodAction: SpecialPeriodAction = opts?.specialPeriodAction ?? 'keep';
+
+  return useQuery<StatusImpact, Error>({
+    queryKey: patientStatusImpactKey(id, to, fromDate, specialPeriodAction),
+    enabled: status === 'authenticated' && !!id && !!to && !!fromDate && gate,
+    queryFn: async () => {
+      const qs = new URLSearchParams({
+        to: to ?? '',
+        from_date: fromDate ?? '',
+        special_period_action: specialPeriodAction,
+      });
+      const raw = await fetcher<unknown>(`/api/v1/patients/${id}/status-impact?${qs.toString()}`, {
+        accessToken,
+        refreshToken,
+      });
+      return statusImpactSchema.parse(raw);
+    },
+  });
+}
+
+/**
+ * POST /api/v1/patients/{id}/status-change — ステータス変更 + 予定の連動処理（設計 §7-3 (b)）。
+ *
+ * 1 回で「未来の planned の取消 / 特別訪問期間の終了 / 未処理申請の却下 /
+ * 復帰時の型からの再生成」まで起きるため、成功時は患者マスタに加えて
+ * **スケジュール系のキャッシュを全部**失効させる（`invalidateScheduleAll`）。
+ *
+ * FE は必ずこの API を使う（PATCH に status を載せない）。PATCH 側の連動は
+ * API 直叩き・Excel 取込・申請適用のための安全網。
+ */
+export function useChangePatientStatus(
+  id: string,
+): UseMutationResult<StatusChangeResult, Error, StatusChangeRequest> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<StatusChangeResult, Error, StatusChangeRequest>({
+    mutationFn: async (values) => {
+      const body = statusChangeRequestSchema.parse(values);
+      const raw = await fetcher<unknown>(`/api/v1/patients/${id}/status-change`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        accessToken,
+        refreshToken,
+      });
+      return statusChangeResultSchema.parse(raw);
+    },
+    onSuccess: () => {
+      // setQueryData で patient を書き込むと、直後の invalidate による再取得と
+      // 二重の真実になる。invalidate 1 本に寄せる（サーバーが正）。
+      void qc.invalidateQueries({ queryKey: PATIENTS_KEY });
+      invalidateScheduleAll(qc);
     },
   });
 }

@@ -26,6 +26,7 @@ from app.models.patient import Patient
 from app.models.staff import Staff
 from app.models.visit import (
     VISIT_SOURCE_MANUAL_CANCEL,
+    VISIT_SOURCE_STATUS_CANCEL,
     VISIT_STATUS_CANCELLED,
     Visit,
 )
@@ -145,7 +146,7 @@ async def test_add_does_not_revive_manual_cancel_visit(db, dry_run: bool) -> Non
     assert summary.added == 0
     assert summary.failed == 1
     if not dry_run:
-        assert "今週だけ取消済み" in (items[0].comment or "")
+        assert "らく助側で取消済み" in (items[0].comment or "")
         assert "⇧送信" in (items[0].comment or "")
 
     # 取消は取消のまま・二重挿入もしない
@@ -165,6 +166,56 @@ async def test_add_does_not_revive_manual_cancel_visit(db, dry_run: bool) -> Non
     assert len(rows) == 1
     assert rows[0].id == visit.id
     assert rows[0].status == VISIT_STATUS_CANCELLED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_add_does_not_revive_status_cancel_visit(db, dry_run: bool) -> None:
+    """患者ステータス連動の取消 (source='status_cancel') も復活させない.
+
+    正典 = docs/plans/patient-status-schedule-design-2026-09-09.md §7-3(d)。
+    ``manual_cancel`` と同じ「らく助側の意思による取消」なので、取込の add で
+    黙って復活させてはいけない (入院中の患者の訪問が戻ってしまう)。
+    """
+    seeded = await _seed(db, status=VISIT_STATUS_CANCELLED, source=VISIT_SOURCE_STATUS_CANCEL)
+    patient = seeded["patient"]
+    visit = seeded["visit"]
+    items = await _sheet_with(db, [_add_spec(patient)])
+
+    summary = await apply_inbound_items(
+        db,
+        items=items,
+        week_start=WEEK_START,
+        week_end=WEEK_END,
+        days=None,
+        dry_run=dry_run,
+        now=datetime.now(UTC),
+    )
+    await db.commit()
+
+    assert summary.added == 0
+    assert summary.failed == 1
+    if not dry_run:
+        assert "らく助側で取消済み" in (items[0].comment or "")
+        assert "⇧送信" in (items[0].comment or "")
+
+    rows = list(
+        (
+            await db.scalars(
+                select(Visit)
+                .where(
+                    Visit.patient_id == patient.id,
+                    Visit.visit_date == TUE,
+                    Visit.deleted_at.is_(None),
+                )
+                .execution_options(populate_existing=True)
+            )
+        ).all()
+    )
+    assert len(rows) == 1
+    assert rows[0].id == visit.id
+    assert rows[0].status == VISIT_STATUS_CANCELLED
+    assert rows[0].source == VISIT_SOURCE_STATUS_CANCEL
 
 
 # ---------------------------------------------------------------------------

@@ -48,7 +48,10 @@ export const VISIT_SOURCE_V2_VALUES = [
 ] as const;
 
 /** 患者ステータス連動で取り消された訪問 (盤面・タイムライン・モバイルで非表示にする)。 */
-export function isStatusCancelledVisit(v: { source?: string | null; status?: string | null }): boolean {
+export function isStatusCancelledVisit(v: {
+  source?: string | null;
+  status?: string | null;
+}): boolean {
   return v.source === 'status_cancel' && v.status === 'cancelled';
 }
 export const visitSourceV2Enum = z.enum(VISIT_SOURCE_V2_VALUES);

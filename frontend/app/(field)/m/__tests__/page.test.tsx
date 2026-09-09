@@ -58,6 +58,15 @@ vi.mock('@/lib/queries/patients', () => ({
   usePatients: vi.fn(),
   useUpdatePatient: vi.fn(),
   useCreatePatient: vi.fn(),
+  // ステータス変更ゲート (usePatientStatusGate → PatientStatusChangeDialog) が
+  // カルテ編集シートに常駐する。open=false でも hook は呼ばれるので実体が要る。
+  usePatientStatusImpact: () => ({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    error: null,
+  }),
+  useChangePatientStatus: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 // KarteSheet の「NGスタッフ」行 (patient-ng-staff-design.md §8-2 Phase 2)。

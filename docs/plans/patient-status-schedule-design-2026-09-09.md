@@ -217,6 +217,14 @@ Phase 1 だけで「今後の変更」は漏れなくなる。Phase 2 は「非�
 
 > §3 の記述と食い違う点は **本章が正**（例: op-log は独自 op_kind ではなく既存 `cancel_visit` を再利用・特別訪問週間の既定は「残す」・pending も非稼働）。
 
+> **実装済み（2026-09-10 未明・コミット済み・未デプロイ）。実装時の確定事項（レビュー是正で決めたもの・本節の記述より優先）:**
+> - **op-log の undo/redo はステータス連動の取消には効かせない**（`cancel_source=status_cancel` の forward/inverse とも `OpLogConflictError`「稼働中に戻してください」）。undo で source を戻すと週生成の掃除で消える／復帰の再生成と二重になるため、戻し方は「ステータスを稼働中に戻す」に一本化。行は監査のため記録する。「今週だけ取消」画面の「取消をやめる」も `status_cancel` は 422。
+> - `GET /status-impact` は `special_period_action=keep|end` を受け、`visits.total` はその選択込みの件数（FE は足し算しない・ラジオ切替で再取得）。
+> - `WeekCount` のキーは `count`（本節の `expected` は誤記）。
+> - 復帰の再生成は from_date の週 + 7 週（最大 8 週）。from_date の週は reset 前に `visit_staff_assignments` をスナップショットし、from_date より前の既存訪問と担当を復元する。
+> - 通知は `reference_id=None` で毎回 insert（部分ユニーク索引の衝突回避）。申請の自動却下通知は変更後のステータス名を使う。
+> - **Phase 3 へ送ったもの**: 現場ボード（`/schedule/v2/board`）とモニターの DTO に `source` が無く `status_cancel` を隠せない（BE で `source` を載せる）。週タイムラインは `manual_cancel` の打ち消し線自体が未実装。週生成ダイアログの「既に N 件」は `status_cancel` を含む（安全側）。
+
 **Phase 1 の範囲**: ステータス変更の連動処理（非稼働化＝取消／復帰＝型から再生成）＋確認ダイアログ（影響件数・当日/明日・特別訪問週間の選択）＋`status_changed_at`＋op-log undo＋通知＋申請自動却下。**Phase 2**（入口ガード 422 と「稼働中にして続ける」上書き導線・取込除外・FE ピッカー）は契約だけ先に固定し、Phase 1 完了後に着手。**Phase 3** は表示 DTO と突合カテゴリ。
 
 ### 7-1. 用語・定数

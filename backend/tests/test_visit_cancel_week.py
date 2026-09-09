@@ -650,3 +650,27 @@ async def test_undo_restores_original_source(client, db) -> None:
     rows = await _all_visits(db, patient)
     assert rows[0].status == "planned"
     assert rows[0].source == "import"
+
+
+@pytest.mark.asyncio
+async def test_restore_rejects_status_cancelled_visit(client, db) -> None:
+    """患者ステータス連動の取消 (source='status_cancel') はこの画面から戻せない.
+
+    正典 = patient-status-schedule-design-2026-09-09.md §7-3。ここで戻すと出所が
+    ``manual_week`` になり、稼働中へ戻したときの型からの再生成と二重になる。
+    """
+    admin = await _make_user(db, email="vcw-status@example.com", role="admin")
+    patient = await _make_patient(db, code="VCW-STATUS")
+    visit = await _make_visit(db, patient=patient)
+    visit.status = "cancelled"
+    visit.source = "status_cancel"
+    await db.commit()
+
+    res = await client.post(
+        _URL, headers=_bearer(admin), json={"visit_id": str(visit.id), "cancel": False}
+    )
+    assert res.status_code == 422, res.text
+    assert "稼働中に戻して" in res.json()["detail"]
+    await db.refresh(visit)
+    assert visit.status == "cancelled"
+    assert visit.source == "status_cancel"

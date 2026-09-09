@@ -26,6 +26,9 @@
                               to_weekday へ移動 (週空間 A2後段: コース丸ごと曜日移動)
     "cancel_visit"         — visit_ids の status を cancelled / planned へ切り替える
                               (週空間 Phase E: 今週だけ取消。inverse は逆フラグ)
+                              ``cancel_source='status_cancel'`` (患者ステータス連動)
+                              の行は記録だけ残し、undo / redo は **どちらも 409**
+                              (戻し方は「ステータスを稼働中に戻す」1 本に絞る)
     "set_visit_service_override"
                            — visit 1 件の kaipoke_service_override を設定 / 解除する
                               (カイポケのサービス内容に合わせる。inverse は旧値)
@@ -65,6 +68,7 @@ from app.models.staff import StaffEvent, StaffWeeklyOverride
 from app.models.visit import (
     VISIT_SOURCE_MANUAL_CANCEL,
     VISIT_SOURCE_MANUAL_WEEK,
+    VISIT_SOURCE_STATUS_CANCEL,
     VISIT_STATUS_CANCELLED,
     VISIT_STATUS_PLANNED,
     Visit,
@@ -589,11 +593,21 @@ async def _execute_payload(db: AsyncSession, payload: dict[str, Any]) -> None:
         )
 
     elif op_name == "cancel_visit":
+        # 患者ステータス連動の取消は「戻る」で往復させない (どちらの向きも 409)。
+        # 戻すと出所が元 (auto) に戻って次の週生成でまた消える / manual_week に
+        # 戻ると復帰 (稼働中に戻す) の再生成と二重になるため。記録自体は残す
+        # (監査)。正しい戻し方は「患者様のステータスを稼働中に戻す」。
+        if payload.get("cancel_source") == VISIT_SOURCE_STATUS_CANCEL:
+            raise OpLogConflictError(
+                "ステータス連動の取消は「戻る」では戻せません。"
+                "患者様のステータスを稼働中に戻してください"
+            )
         await _set_visits_cancelled(
             db,
             [UUID(v) for v in payload.get("visit_ids", [])],
             bool(payload.get("cancel", False)),
             sources=payload.get("sources") or {},
+            cancel_source=payload.get("cancel_source") or VISIT_SOURCE_MANUAL_CANCEL,
         )
 
     elif op_name == "set_visit_service_override":
@@ -678,6 +692,7 @@ async def _set_visits_cancelled(
     cancel: bool,
     *,
     sources: dict[str, str] | None = None,
+    cancel_source: str = VISIT_SOURCE_MANUAL_CANCEL,
 ) -> None:
     """visit_ids の status を cancelled / planned へ切り替える (週空間 Phase E).
 
@@ -689,6 +704,11 @@ async def _set_visits_cancelled(
     Args:
         sources: 取消前の出所 ``{visit_id: source}``。戻す (cancel=False) ときに
             使う。無ければ ``manual_week`` (週生成・固定枠戻しから保護される値)。
+        cancel_source: 取消時に刻む出所。既定は手動取消 (``manual_cancel``)。
+            payload の ``cancel_source`` から渡す
+            (patient-status-schedule-design-2026-09-09.md §7-3)。なお患者
+            ステータス連動 (``status_cancel``) は ``_execute_payload`` の手前で
+            弾かれるため、ここには来ない (往復させない)。
     """
     if not visit_ids:
         return
@@ -709,9 +729,7 @@ async def _set_visits_cancelled(
     for v in rows:
         v.status = target
         v.source = (
-            VISIT_SOURCE_MANUAL_CANCEL
-            if cancel
-            else (_sources.get(str(v.id)) or VISIT_SOURCE_MANUAL_WEEK)
+            cancel_source if cancel else (_sources.get(str(v.id)) or VISIT_SOURCE_MANUAL_WEEK)
         )
     await db.flush()
 

@@ -86,7 +86,10 @@ export const statusChangeResultSchema = z.object({
   rejected_requests: z.number().int().nonnegative().default(0),
   op_groups: z.array(opGroupRefSchema).default([]),
   regenerated: z
-    .object({ created: z.number().int().nonnegative(), weeks: z.array(weekCountSchema).default([]) })
+    .object({
+      created: z.number().int().nonnegative(),
+      weeks: z.array(weekCountSchema).default([]),
+    })
     .nullish(),
   notification_count: z.number().int().nonnegative().default(0),
 });

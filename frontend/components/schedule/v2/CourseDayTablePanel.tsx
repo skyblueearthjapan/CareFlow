@@ -125,6 +125,7 @@ import { apiErrorMessage } from '@/lib/api/errorMessage';
 // Phase G-47: PinScope 型 (= 個別 🔒 toggle のスコープ '曜日のみ' / '全曜日').
 import type { PinScope } from './PinScopeMenu';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
+import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
 import {
   courseCodeIndex,
   effectiveCapacity,
@@ -1106,6 +1107,10 @@ export function CourseDayTablePanel({
   const visitsByCourse = useMemo(() => {
     const m = new Map<string, CourseGridVisit[]>();
     for (const v of weekVisits) {
+      // 患者ステータス連動の取消 (source='status_cancel') は盤面から消す
+      // (design 2026-09-09 §7-4)。日ビュー (表 / タイムライン / リスト) はすべて
+      // このバケットが入口。「今週だけ取消」= manual_cancel は打ち消し線で残す。
+      if (isStatusCancelledVisit(v)) continue;
       const cid = v.course_id ?? null;
       if (!cid) continue;
       const slot = floorToCourseSlot(v.start_time ?? '');
@@ -1453,6 +1458,10 @@ export function CourseDayTablePanel({
   const overviewVisits = useMemo<WeekOverviewVisit[]>(() => {
     const out: WeekOverviewVisit[] = [];
     for (const v of weekVisits) {
+      // 日ビューと同じく、患者ステータス連動の取消は週ビュー系にも出さない
+      // (design 2026-09-09 §7-4)。受け手 (CourseWeekOverview / WeekTimelineBoard /
+      // StaffWeekBoard / StaffTimelineView) 側にも同じ門があるが、入口で落とす。
+      if (isStatusCancelledVisit(v)) continue;
       const cid = v.course_id ?? null;
       if (!cid) continue;
       const templateId = courseTemplateByCourseId.get(cid);
@@ -1512,6 +1521,9 @@ export function CourseDayTablePanel({
         master_start_time: masterStartTime,
         // 週のピン (青) の表示根拠。source と week_pinned の両方を運ぶ (2026-08-09)。
         source: (v as { source?: string | null }).source ?? null,
+        // 取消の判定に source と status の両方が要る (2026-09-09)。status を落とすと
+        // 受け手 (WeekTimelineBoard) の isStatusCancelledVisit が永久に偽になる。
+        status: (v as { status?: string | null }).status ?? null,
         week_pinned: (v as { week_pinned?: boolean | null }).week_pinned ?? null,
         // 週ビューの距離算出用 (コース合計 + 次までの距離).
         lat: (patient as { lat?: number | null } | undefined)?.lat ?? null,

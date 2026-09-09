@@ -8,6 +8,7 @@ import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { cn } from '@/lib/utils';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { currentWeekStartIso, useMyVisits, type MyVisit } from '@/lib/queries/me';
+import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
 
@@ -15,6 +16,9 @@ const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as cons
 function groupByDate(visits: MyVisit[]): Array<{ date: string; items: MyVisit[] }> {
   const map = new Map<string, MyVisit[]>();
   for (const v of visits) {
+    // 患者ステータス連動の取消 (source='status_cancel') は一覧から消す
+    // (design 2026-09-09 §7-4)。「今週だけ取消」= manual_cancel は打ち消し線で残す。
+    if (isStatusCancelledVisit(v)) continue;
     const list = map.get(v.visit_date) ?? [];
     list.push(v);
     map.set(v.visit_date, list);

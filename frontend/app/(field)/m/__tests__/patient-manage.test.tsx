@@ -28,6 +28,15 @@ vi.mock('@/lib/queries/patients', () => ({
   usePatient: vi.fn(),
   useCreatePatient: vi.fn(),
   useUpdatePatient: vi.fn(),
+  // ステータス変更ゲート (usePatientStatusGate → PatientStatusChangeDialog) が
+  // カルテ編集シートに常駐する。open=false でも hook は呼ばれるので実体が要る。
+  usePatientStatusImpact: () => ({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    error: null,
+  }),
+  useChangePatientStatus: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 vi.mock('@/lib/queries/geocoding', () => ({

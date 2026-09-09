@@ -136,13 +136,19 @@ describe('PatientCard — Wave 20 (名前・希望時間・条件バッジ)', ()
     expect(screen.getByTestId('patient-card-badge-multi-test-patient-1')).toHaveTextContent('複数');
   });
 
-  it('patientStatus=before_start → 「新規」バッジ表示', () => {
-    renderCard({ patientStatus: 'before_start' });
-    expect(screen.getByTestId('patient-card-badge-new-test-patient-1')).toHaveTextContent('新規');
+  it('patientStatus=pending → 「開始前」バッジ表示', () => {
+    renderCard({ patientStatus: 'pending' });
+    expect(screen.getByTestId('patient-card-badge-new-test-patient-1')).toHaveTextContent('開始前');
   });
 
-  it('patientStatus=active → 「新規」バッジ非表示', () => {
+  it('patientStatus=active → 「開始前」バッジ非表示', () => {
     renderCard({ patientStatus: 'active' });
+    expect(screen.queryByTestId('patient-card-badge-new-test-patient-1')).not.toBeInTheDocument();
+  });
+
+  // 2026-09-09: 旧実装は存在しない値 'before_start' を見ていて常に出なかった。
+  it("patientStatus='before_start' (存在しない旧値) → バッジ非表示", () => {
+    renderCard({ patientStatus: 'before_start' });
     expect(screen.queryByTestId('patient-card-badge-new-test-patient-1')).not.toBeInTheDocument();
   });
 
@@ -166,11 +172,11 @@ describe('PatientCard — Wave 20 (名前・希望時間・条件バッジ)', ()
     expect(screen.queryByTestId('patient-card-badges-test-patient-1')).not.toBeInTheDocument();
   });
 
-  it('複数バッジが同時に表示される (女性のみ + 複数 + 新規)', () => {
+  it('複数バッジが同時に表示される (女性のみ + 複数 + 開始前)', () => {
     renderCard({
       sexRestriction: 'female_only',
       requiresMultipleStaff: true,
-      patientStatus: 'before_start',
+      patientStatus: 'pending',
     });
     expect(screen.getByTestId('patient-card-badge-female-only-test-patient-1')).toBeInTheDocument();
     expect(screen.getByTestId('patient-card-badge-multi-test-patient-1')).toBeInTheDocument();

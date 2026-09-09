@@ -70,6 +70,8 @@ import {
   usePatients,
   useUpdatePatient,
 } from '@/lib/queries/patients';
+import { PatientStatusChangeDialog } from '@/components/patients/PatientStatusChangeDialog';
+import { usePatientStatusGate } from '@/lib/hooks/usePatientStatusGate';
 import { useNgStaffList } from '@/lib/queries/patient_ng_staff';
 import { formatNgStaffNames } from '@/lib/schemas/patient_ng_staff';
 import { useCreatePendingRequest } from '@/lib/queries/pending_requests';
@@ -614,9 +616,52 @@ function KarteEditSheet({
   // (create では update を呼ばず、edit では create を呼ばない)。
   const updateMut = useUpdatePatient(patient?.id ?? '', initial);
   const createMut = useCreatePatient();
+  // 保存中フラグの参照専用 (mutate は下の分岐でそれぞれ呼ぶ)。
   const saveMut = isCreate ? createMut : updateMut;
   const geocodeMut = useGeocode();
   const resolveMut = useResolveOffice();
+
+  // ステータス変更 (稼働中 ⇄ 非稼働) は保存前に確認ダイアログを挟む
+  // (docs/plans/patient-status-schedule-design-2026-09-09.md §7-4)。
+  //
+  // 現場ボードのトーストは 1 枠しかない (後から出したものが前を消す)。
+  // ステータス変更の直後に PATCH 完了トーストを出すと前者が読まれずに消えるため、
+  // 文言をここで溜めて **保存完了時に 1 本にまとめて** 出す。
+  const statusToastRef = useRef<string | null>(null);
+  const statusGate = usePatientStatusGate({
+    patientId: patient?.id ?? '',
+    patientName: patient?.name ?? initial.name,
+    initialStatus: initial.status,
+    onStatusChanged: (message) => {
+      statusToastRef.current = message;
+    },
+  });
+
+  const gatedSave = statusGate.wrapSubmit(
+    (values, { omitStatus }) =>
+      new Promise<void>((resolve) => {
+        updateMut.mutate(omitStatus ? { ...values, __omitStatus: true } : values, {
+          onSuccess: () => {
+            const parts = [statusToastRef.current, 'カルテを更新しました'].filter(Boolean);
+            statusToastRef.current = null;
+            onToast?.(`✓ ${parts.join(' / ')}`);
+            onSaved();
+            resolve();
+          },
+          onError: () => {
+            // ステータスは変わっている (status-change は成功済み) ので必ず伝える。
+            const statusMsg = statusToastRef.current;
+            statusToastRef.current = null;
+            onToast?.(
+              statusMsg
+                ? `${statusMsg} / カルテの更新に失敗しました`
+                : 'カルテの更新に失敗しました',
+            );
+            resolve();
+          },
+        });
+      }),
+  );
 
   // 時間タイプが「固定」「時間帯」のときのみ希望時刻欄を表示 (PatientForm/SuggestSheet と同条件)。
   const showTimeRange = timeType === '固定' || timeType === '時間帯';
@@ -691,14 +736,20 @@ function KarteEditSheet({
       special_week: initial.special_week,
     };
 
-    saveMut.mutate(values, {
-      onSuccess: () => {
-        onToast?.(isCreate ? '✓ 患者を登録しました' : '✓ カルテを更新しました');
-        onSaved();
-      },
-      onError: () =>
-        onToast?.(isCreate ? '患者の登録に失敗しました' : 'カルテの更新に失敗しました'),
-    });
+    if (isCreate) {
+      createMut.mutate(values, {
+        onSuccess: () => {
+          onToast?.('✓ 患者を登録しました');
+          onSaved();
+        },
+        onError: () => onToast?.('患者の登録に失敗しました'),
+      });
+      return;
+    }
+
+    // edit: ステータスが 稼働中 ⇄ 非稼働 で変わるなら確認ダイアログを挟み、
+    // 確定後に status を除いた PATCH を流す。
+    await gatedSave(values);
   };
 
   return (
@@ -1120,6 +1171,9 @@ function KarteEditSheet({
         </div>
         <div style={{ height: 12 }} />
       </div>
+
+      {/* ステータス変更の確認 (保存の直前に挟まる・閉じたら API は飛ばない)。 */}
+      {!isCreate ? <PatientStatusChangeDialog {...statusGate.dialogProps} /> : null}
     </SlideSheet>
   );
 }

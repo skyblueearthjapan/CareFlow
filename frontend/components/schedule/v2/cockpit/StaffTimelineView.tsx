@@ -38,6 +38,7 @@ import { addDays, format } from 'date-fns';
 
 import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { EventRead } from '@/lib/schemas/staff-events';
+import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
 import { parseHM } from '@/lib/scheduling/freeGaps';
 import {
   assignLanes,
@@ -483,7 +484,12 @@ export function StaffTimelineView({
   // ── 行 (足りなければ「（担当なし）」を自動で足す = ズレは隠さない) ──────────
   const rowKeys = React.useMemo(() => new Set(staffRows.map((r) => r.staffId)), [staffRows]);
 
-  const dayVisits = React.useMemo(() => visits.filter((v) => v.weekday === day), [visits, day]);
+  // 患者ステータス連動の取消 (source='status_cancel') は盤面から消す
+  // (design 2026-09-09 §7-4)。「今週だけ取消」= manual_cancel は打ち消し線で残す。
+  const dayVisits = React.useMemo(
+    () => visits.filter((v) => v.weekday === day && !isStatusCancelledVisit(v)),
+    [visits, day],
+  );
 
   const visibleMarkers = React.useMemo(
     () => (markers ?? []).filter((m) => m.weekday == null || m.weekday === day),

@@ -18,6 +18,7 @@ import { useDroppable } from '@dnd-kit/core';
 
 import { buildWeekTimelineColDroppableId } from '@/components/schedule/v2/courseDnd';
 import type { WeekOverviewVisit } from '@/components/schedule/v2/CourseWeekOverview';
+import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
 import { CornerPushPin, CornerWeekPushPin } from '@/components/ui/push-pin';
 import { MovabilityMark } from './MovabilityMark';
 import {
@@ -706,10 +707,13 @@ function CourseWeekSection({
   for (let m = TL_DAY_START_MIN; m <= TL_DAY_END_MIN; m += 120) hours.push(m);
 
   // このコースの visits を曜日ごとに束ねる。
+  // 患者ステータス連動の取消 (source='status_cancel') はここで落とす
+  // (design 2026-09-09 §7-4)。「今週だけ取消」= manual_cancel は従来どおり残す。
   const byWeekday = useMemo(() => {
     const map = new Map<number, WeekOverviewVisit[]>();
     for (let wd = 0; wd < 6; wd++) map.set(wd, []);
     for (const v of visits) {
+      if (isStatusCancelledVisit(v)) continue;
       if (v.course_template_id !== option.templateId) continue;
       if (v.weekday < 0 || v.weekday > 5) continue;
       map.get(v.weekday)!.push(v);

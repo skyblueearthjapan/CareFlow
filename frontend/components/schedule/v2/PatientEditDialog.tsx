@@ -41,6 +41,8 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { PatientForm } from '@/app/(app)/patients/_components/PatientForm';
 import { PatientFixedVisitsPanel } from '@/app/(app)/patients/_components/PatientFixedVisitsPanel';
+import { PatientStatusChangeDialog } from '@/components/patients/PatientStatusChangeDialog';
+import { usePatientStatusGate } from '@/lib/hooks/usePatientStatusGate';
 import { usePatient, useUpdatePatient } from '@/lib/queries/patients';
 import {
   patientReadToFormValues,
@@ -95,12 +97,20 @@ export function PatientEditDialog({
     }
   }, [open]);
 
-  const handleSubmit = React.useCallback(
-    async (values: PatientFormValues) => {
+  // ステータス変更 (稼働中 ⇄ 非稼働) は保存前に確認ダイアログを挟む
+  // (docs/plans/patient-status-schedule-design-2026-09-09.md §7-4)。
+  const statusGate = usePatientStatusGate({
+    patientId: patientId ?? '',
+    patientName: patient?.name ?? '',
+    initialStatus: patient?.status as string | null | undefined,
+  });
+
+  const rawSubmit = React.useCallback(
+    async (values: PatientFormValues, { omitStatus }: { omitStatus: boolean }) => {
       if (!patientId) return;
       setErrorMessage(null);
       try {
-        await updateMutation.mutateAsync(values);
+        await updateMutation.mutateAsync(omitStatus ? { ...values, __omitStatus: true } : values);
         // スケジュール画面に即時反映するため、関連 query を一括 invalidate.
         // - patients/fixed-visits は ['patients'] prefix で useUpdatePatient 内で
         //   既に invalidate 済 (FIXED_VISITS_KEY = ['patients', id, 'fixed-visits', ...])
@@ -116,6 +126,11 @@ export function PatientEditDialog({
       }
     },
     [patientId, updateMutation, qc, onClose],
+  );
+
+  const handleSubmit = React.useMemo(
+    () => statusGate.wrapSubmit(rawSubmit),
+    [statusGate, rawSubmit],
   );
 
   const handleDialogOpenChange = React.useCallback(
@@ -147,88 +162,93 @@ export function PatientEditDialog({
   const isError = patientQuery.isError;
 
   return (
-    <Dialog open={open} onOpenChange={handleDialogOpenChange}>
-      <DialogContent
-        className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col"
-        aria-describedby="patient-edit-dialog-description"
-        data-testid="patient-edit-dialog"
-      >
-        <DialogHeader>
-          <DialogTitle>
-            患者情報を編集
-            {patient ? (
-              <span className="ml-2 text-sm font-normal text-text-secondary">
-                {patient.name}
-                {patient.code ? ` (${patient.code})` : null}
-              </span>
-            ) : null}
-          </DialogTitle>
-          <DialogDescription id="patient-edit-dialog-description">
-            基本情報・訪問条件 (NGスタッフ /
-            同住所紐付けを含む)・希望訪問パターン・固定訪問パターンを編集できます。保存後すぐにスケジュールに反映されます。
-          </DialogDescription>
-        </DialogHeader>
-
-        {/* 中央の scroll 可能エリア */}
-        <div className="flex-1 overflow-y-auto pr-1" data-testid="patient-edit-dialog-body">
-          {!canEdit ? (
-            <Alert variant="destructive">
-              <AlertTitle>権限がありません</AlertTitle>
-              <AlertDescription>
-                患者の編集は管理者またはマネージャーのみ実行できます。
-              </AlertDescription>
-            </Alert>
-          ) : !patientId ? null : isLoading ? (
-            <div className="space-y-3">
-              <Skeleton className="h-8 w-1/3" />
-              <Skeleton className="h-64 w-full" />
-            </div>
-          ) : isError || !patient || !initialFormValues ? (
-            <Alert variant="destructive">
-              <AlertTitle>取得に失敗しました</AlertTitle>
-              <AlertDescription>
-                {patientQuery.error instanceof Error
-                  ? patientQuery.error.message
-                  : '患者情報を読み込めませんでした'}
-              </AlertDescription>
-            </Alert>
-          ) : (
-            <div className="space-y-6">
-              <PatientForm
-                // patientId を渡さないと PatientForm 内の「訪問条件」セクション
-                // (NGスタッフ / 同住所紐付け / 特別訪問週間) が一切描画されない。
-                patientId={patientId}
-                defaultValues={initialFormValues}
-                onSubmit={handleSubmit}
-                onCancel={handleCancel}
-                submitting={updateMutation.isPending}
-                errorMessage={errorMessage}
-                submitLabel="更新"
-                onDirtyChange={setIsFormDirty}
-              />
-
-              <PatientFixedVisitsPanel
-                patientId={patientId}
-                weeklyPattern={patient.weekly_pattern as WeeklyPattern | null | undefined}
-                primaryOfficeId={patient.primary_office_id}
-                requiresMultipleStaff={patient.requires_multiple_staff === true}
-                isoYear={isoYear}
-                isoWeek={isoWeek}
-              />
-
-              {updateMutation.isPending ? (
-                <div
-                  className="flex items-center gap-2 py-2 text-sm text-text-secondary"
-                  data-testid="patient-edit-dialog-saving"
-                >
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  保存中…
-                </div>
+    <>
+      <Dialog open={open} onOpenChange={handleDialogOpenChange}>
+        <DialogContent
+          className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col"
+          aria-describedby="patient-edit-dialog-description"
+          data-testid="patient-edit-dialog"
+        >
+          <DialogHeader>
+            <DialogTitle>
+              患者情報を編集
+              {patient ? (
+                <span className="ml-2 text-sm font-normal text-text-secondary">
+                  {patient.name}
+                  {patient.code ? ` (${patient.code})` : null}
+                </span>
               ) : null}
-            </div>
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
+            </DialogTitle>
+            <DialogDescription id="patient-edit-dialog-description">
+              基本情報・訪問条件 (NGスタッフ /
+              同住所紐付けを含む)・希望訪問パターン・固定訪問パターンを編集できます。保存後すぐにスケジュールに反映されます。
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* 中央の scroll 可能エリア */}
+          <div className="flex-1 overflow-y-auto pr-1" data-testid="patient-edit-dialog-body">
+            {!canEdit ? (
+              <Alert variant="destructive">
+                <AlertTitle>権限がありません</AlertTitle>
+                <AlertDescription>
+                  患者の編集は管理者またはマネージャーのみ実行できます。
+                </AlertDescription>
+              </Alert>
+            ) : !patientId ? null : isLoading ? (
+              <div className="space-y-3">
+                <Skeleton className="h-8 w-1/3" />
+                <Skeleton className="h-64 w-full" />
+              </div>
+            ) : isError || !patient || !initialFormValues ? (
+              <Alert variant="destructive">
+                <AlertTitle>取得に失敗しました</AlertTitle>
+                <AlertDescription>
+                  {patientQuery.error instanceof Error
+                    ? patientQuery.error.message
+                    : '患者情報を読み込めませんでした'}
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <div className="space-y-6">
+                <PatientForm
+                  // patientId を渡さないと PatientForm 内の「訪問条件」セクション
+                  // (NGスタッフ / 同住所紐付け / 特別訪問週間) が一切描画されない。
+                  patientId={patientId}
+                  defaultValues={initialFormValues}
+                  onSubmit={handleSubmit}
+                  onCancel={handleCancel}
+                  submitting={updateMutation.isPending}
+                  errorMessage={errorMessage}
+                  submitLabel="更新"
+                  onDirtyChange={setIsFormDirty}
+                />
+
+                <PatientFixedVisitsPanel
+                  patientId={patientId}
+                  weeklyPattern={patient.weekly_pattern as WeeklyPattern | null | undefined}
+                  primaryOfficeId={patient.primary_office_id}
+                  requiresMultipleStaff={patient.requires_multiple_staff === true}
+                  isoYear={isoYear}
+                  isoWeek={isoWeek}
+                />
+
+                {updateMutation.isPending ? (
+                  <div
+                    className="flex items-center gap-2 py-2 text-sm text-text-secondary"
+                    data-testid="patient-edit-dialog-saving"
+                  >
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    保存中…
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ステータス変更の確認 (保存の直前に挟まる・閉じたら API は飛ばない)。 */}
+      <PatientStatusChangeDialog {...statusGate.dialogProps} />
+    </>
   );
 }

@@ -1510,6 +1510,35 @@ async def _load_visit_delete_target_patient_ids(
     return set(primary_rows.all())
 
 
+async def _load_inactive_patient_ids(
+    db: AsyncSession,
+    *,
+    office_ids: list[UUID],
+) -> set[UUID]:
+    """対象 office の **非稼働** 患者 ID 集合 (status != 'active' / deleted_at IS NULL).
+
+    ``_load_visit_delete_target_patient_ids`` (status 不問) から active を除いたもの。
+    office 範囲の解釈も同じ (``Patient.primary_office_id`` ∈ office_ids) で、
+    再生成スコープと対称に保つ。
+
+    用途 (patient-status-schedule-design-2026-09-09.md §7-3(d)):
+        ``apply_week_only`` の visit 削除対象は P1 修正で ``plan_patient_ids`` に
+        限定されている (= plan に出てこない **稼働中** 患者の旧 visit を守る)。
+        しかしその限定は「稼働中でなくなった患者の残骸」まで守ってしまうため、
+        非稼働患者だけを削除対象に union して掃除する。
+    """
+    if not office_ids:
+        return set()
+    rows = await db.scalars(
+        select(Patient.id).where(
+            Patient.deleted_at.is_(None),
+            Patient.status != "active",
+            Patient.primary_office_id.in_(office_ids),
+        )
+    )
+    return set(rows.all())
+
+
 async def _load_patients_with_fixed(
     db: AsyncSession,
     *,
@@ -9179,7 +9208,13 @@ async def apply_week_only(
     from datetime import datetime as _dt
 
     visits_to_delete: list[Visit] = []
-    if plan_patient_ids:
+    # 非稼働患者 (status != 'active') の残骸は plan に出てこないため、P1 の限定
+    # (plan_patient_ids) だけでは掃除されない. 削除対象にだけ union する
+    # (patient-status-schedule-design-2026-09-09.md §7-3(d) / Phase G-13).
+    # 生成側は従来どおり active 患者の plan のみ = 非稼働患者は再生成されない.
+    _inactive_delete_ids = await _load_inactive_patient_ids(db, office_ids=office_ids)
+    delete_patient_ids: list[UUID] = list({*plan_patient_ids, *_inactive_delete_ids})
+    if delete_patient_ids:
         week_sunday = date.fromordinal(week_monday.toordinal() + 6)
         stmt = (
             select(Visit)
@@ -9187,7 +9222,9 @@ async def apply_week_only(
                 # P1: DELETE 対象を plan_patient_ids に限定. 旧実装は patient_ids
                 # (= active 全員) を指定していたため、unassigned 患者の visit も
                 # 一緒に soft-delete される本質バグがあった.
-                Visit.patient_id.in_(plan_patient_ids),
+                # ただし **非稼働患者** (上の union) は plan に載らないだけで守る
+                # 理由がないので、掃除対象として明示的に足す.
+                Visit.patient_id.in_(delete_patient_ids),
                 Visit.deleted_at.is_(None),
                 Visit.visit_date >= week_monday,
                 Visit.visit_date <= week_sunday,

@@ -27,6 +27,7 @@ import type { EventRead } from '@/lib/schemas/staff-events';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
 import type { Movability } from '@/lib/schemas/v2/patient_fixed_visit';
+import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { haversineKm } from '../WeekdayScheduleCard';
@@ -268,7 +269,7 @@ export function CourseWeekOverview({
   templates,
   officeNameById,
   eventFramesByWeekday,
-  visits,
+  visits: visitsProp,
   onJumpToDay,
   staffEventsByStaff,
   assignedStaffByTemplateWeekday,
@@ -288,6 +289,13 @@ export function CourseWeekOverview({
 }: CourseWeekOverviewProps) {
   // 新人同行 (§7.2): 選択UIはタイムライン専用のため、週リストは inactive バッジのみ出す。
   const accInactive = accompaniment != null && !accompaniment.active;
+  // 患者ステータス連動の取消 (source='status_cancel') は盤面から消す
+  // (design 2026-09-09 §7-4)。件数集計もこの段で落とす = 週リストの n件から外れる。
+  // 「今週だけ取消」= manual_cancel は従来どおり打ち消し線で残す。
+  const visits = React.useMemo(
+    () => visitsProp.filter((v) => !isStatusCancelledVisit(v)),
+    [visitsProp],
+  );
   // (template_id, weekday) → visits[] (start_time 昇順)
   const cellMap = React.useMemo(() => {
     const m = new Map<string, WeekOverviewVisit[]>();

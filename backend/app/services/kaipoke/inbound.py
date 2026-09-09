@@ -12,13 +12,14 @@
   * キャンセルは ``status='cancelled'`` (soft-delete しない・履歴が残る)。
   * 2名体制の防御 — 対象 visit が visit_group_id を持つ場合はグループ全行に同じ
     操作を適用する (片割れだけ残さない)。※本番データは現状グループ0件。
-  * 「今週だけ取消」(週空間 Phase E / week-cockpit-design.md D1) の尊重 —
-    らく助側の取消は ``status='cancelled'`` + ``source='manual_cancel'`` で刻まれる。
-    add がその枠に当たったら復活させず failed にする (⇧送信でカイポケへ delete を
-    反映させてから取込)。**取込 delete 由来**の cancelled (source は元のまま) は
-    従来どおり復活させる — 同一実行内の delete+add ペア (名寄せ差) の収束に要る。
+  * 「らく助側の意思による取消」の尊重 — ``status='cancelled'`` + ``source`` が
+    ``VISIT_SOURCES_LOCAL_CANCEL`` (= ``manual_cancel`` 「今週だけ取消」/
+    ``status_cancel`` 患者ステータス連動の取消) で刻まれる。add がその枠に当たったら
+    復活させず failed にする (⇧送信でカイポケへ delete を反映させてから取込)。
+    **取込 delete 由来**の cancelled (source は元のまま) は従来どおり復活させる —
+    同一実行内の delete+add ペア (名寄せ差) の収束に要る。
   * 置換モード (``replace_inbound.replace_week_from_kaipoke``) も同じ考え方で
-    **日単位**に止める: 白紙化対象日に ``manual_cancel`` の visit が居れば、
+    **日単位**に止める: 白紙化対象日にその出所の visit が居れば、
     実適用は ReplaceBlockedError (呼び出し側で 422)、プレビューはその日を対象から
     外して ``skipped`` に理由付きで積む。
 """
@@ -42,7 +43,7 @@ from app.models.kaipoke_job import KaipokeJob
 from app.models.patient import Patient
 from app.models.staff import Staff
 from app.models.visit import (
-    VISIT_SOURCE_MANUAL_CANCEL,
+    VISIT_SOURCES_LOCAL_CANCEL,
     VISIT_STATUS_CANCELLED,
     Visit,
 )
@@ -898,15 +899,17 @@ async def apply_inbound_items(
                 # 氏名の空白違い等で同一訪問が分解されるケース) が安全に収束する。
                 # dry-run では delete が status を書かないため pending_cancelled で予測。
                 #
-                # 例外 = **らく助側の「今週だけ取消」** (source='manual_cancel' /
-                # 週空間 Phase E・week-cockpit-design.md D1)。まだ⇧送信していない
-                # だけなので、取込で黙って復活させると利用者の意思に反して訪問が
-                # 戻る。⇧送信で delete をカイポケへ反映してから取り込ませる。
+                # 例外 = **らく助側の意思による取消** (VISIT_SOURCES_LOCAL_CANCEL =
+                # 'manual_cancel' 今週だけ取消 (週空間 Phase E・week-cockpit-design.md
+                # D1) / 'status_cancel' 患者ステータス連動の取消
+                # (patient-status-schedule-design-2026-09-09.md §7-3(d)))。まだ⇧送信
+                # していないだけなので、取込で黙って復活させると利用者の意思に反して
+                # 訪問が戻る。⇧送信で delete をカイポケへ反映してから取り込ませる。
                 # 取込 delete 由来の cancelled は従来どおり復活してよい。
-                if existing.source == VISIT_SOURCE_MANUAL_CANCEL:
+                if existing.source in VISIT_SOURCES_LOCAL_CANCEL:
                     _finish(
                         "failed",
-                        "らく助側で今週だけ取消済みです。"
+                        "らく助側で取消済みです（今週だけ取消／ステータス連動）。"
                         "⇧送信でカイポケへ反映してから取り込んでください",
                         target_date,
                     )

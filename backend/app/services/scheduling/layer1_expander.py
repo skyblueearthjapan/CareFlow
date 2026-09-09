@@ -668,19 +668,31 @@ class Layer1Expander:
         patients = list(patients_rows.all())
         result.patients_processed = len(patients)
 
+        # ----- 既存の自動生成 visit を当該週で削除 (冪等性) -----
+        # status=completed / cancelled / source != auto は保護対象なので除外。
+        # W16 codex fix 重大 2: office_id 指定時は patients も既に絞り込まれているため、
+        # 削除スコープも自動的に当該拠点の patient だけになる (別拠点の visit は触らない)。
+        #
+        # 非稼働患者の掃除 (patient-status-schedule-design-2026-09-09.md §7-3(d)):
+        # 週生成後に status が active 以外 (入院中/一時休止/解約済み/開始前) になった
+        # 患者の ``source='auto'`` 行は、上の active スコープに載らないため週を作り直しても
+        # 残り続けていた。**削除対象の患者 ID にだけ** 非稼働患者を足して掃除する
+        # (展開対象は従来どおり active のみ)。削除条件 (source=auto / status=planned /
+        # week_pinned=False / deleted_at IS NULL) は不変なので、manual_week・
+        # manual_cancel・status_cancel・打刻済みの行は従来どおり守られる。
+        # active 患者が 0 人の拠点でも掃除は要るため、早期 return より **前** に置く。
+        inactive_patient_ids = await self._fetch_inactive_patient_ids(db, office_id=office_id)
+        await self._delete_existing_auto_visits(
+            db,
+            week_monday=week_monday,
+            patient_ids=[p.id for p in patients] + inactive_patient_ids,
+        )
+
         if not patients:
             # 患者ゼロでも manager 用 M course は生成が必要なため早期 return しない
             await _ensure_manager_courses_for_week(db, iso_year, iso_week, office_id=office_id)
             await db.flush()
             return result
-
-        # ----- 既存の自動生成 visit を当該週で削除 (冪等性) -----
-        # status=completed / cancelled / source != auto は保護対象なので除外。
-        # W16 codex fix 重大 2: office_id 指定時は patients も既に絞り込まれているため、
-        # 削除スコープも自動的に当該拠点の patient だけになる (別拠点の visit は触らない)。
-        await self._delete_existing_auto_visits(
-            db, week_monday=week_monday, patient_ids=[p.id for p in patients]
-        )
 
         # ----- 拠点ごとの default template を resolve するキャッシュ -----
         # patient ごとに primary_office_id を見て、その拠点の最初の course_template を選ぶ。
@@ -1209,6 +1221,28 @@ class Layer1Expander:
                 )
 
         return created
+
+    async def _fetch_inactive_patient_ids(
+        self,
+        db: AsyncSession,
+        *,
+        office_id: UUID | None,
+    ) -> list[UUID]:
+        """当該スコープの **非稼働** 患者 ID (status != 'active' / 未削除).
+
+        週生成の冪等削除で「稼働中でなくなった患者の auto 行」も掃除するために使う
+        (patient-status-schedule-design-2026-09-09.md §7-3(d))。
+        スコープの取り方は active 患者の読み込みと同じ (office_id 指定時は
+        primary_office_id 一致のみ)。
+        """
+        where = [
+            Patient.status != "active",
+            Patient.deleted_at.is_(None),
+        ]
+        if office_id is not None:
+            where.append(Patient.primary_office_id == office_id)
+        rows = await db.scalars(select(Patient.id).where(*where))
+        return list(rows.all())
 
     async def _delete_existing_auto_visits(
         self,

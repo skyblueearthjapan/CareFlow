@@ -46,6 +46,8 @@ import { usePatient } from '@/lib/queries/patients';
 import { useFixedVisits } from '@/lib/queries/patient_fixed_visits';
 import { useNgStaffList } from '@/lib/queries/patient_ng_staff';
 import { formatNgStaffNames } from '@/lib/schemas/patient_ng_staff';
+import { normalizePatientStatus, STATUS_LABEL } from '@/lib/schemas/patient';
+import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
 import { useVisits } from '@/lib/queries/visits';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
 import type { VisitRead } from '@/lib/schemas/visit';
@@ -329,7 +331,12 @@ export function PatientScheduleDetailDialog({
   const ngStaffQuery = useNgStaffList(open ? patientId : null);
 
   const fixedRows = (pfvQuery.data ?? []).filter((p) => p.mode === 'normal');
-  const weekRows = (visitsQuery.data?.items ?? []).filter((v) => !v.deleted_at);
+  // 患者ステータス連動の取消 (source='status_cancel') は型⇄今週の比較からも外す
+  // (design 2026-09-09 §7-4)。盤面で消えている訪問が比較表にだけ残ると、
+  // 「今週の予定を型へ反映」が消えたはずの枠を型へ書き戻してしまう。
+  const weekRows = (visitsQuery.data?.items ?? []).filter(
+    (v) => !v.deleted_at && !isStatusCancelledVisit(v),
+  );
 
   const fixedByWd = React.useMemo(() => groupByWeekday(fixedRows.map(pfvToCell)), [fixedRows]);
   const weekByWd = React.useMemo(() => groupByWeekday(weekRows.map(visitToCell)), [weekRows]);
@@ -490,7 +497,10 @@ export function PatientScheduleDetailDialog({
                 </div>
                 <div>
                   <dt className="text-text-muted">ステータス</dt>
-                  <dd className="font-medium">{patient?.status ?? '—'}</dd>
+                  {/* 生値 ('admitted' 等) ではなく日本語ラベルで出す (2026-09-09)。 */}
+                  <dd className="font-medium">
+                    {patient ? STATUS_LABEL[normalizePatientStatus(patient.status)] : '—'}
+                  </dd>
                 </div>
                 <div className="col-span-2 sm:col-span-1">
                   <dt className="text-text-muted">性別制限</dt>

@@ -21,6 +21,7 @@ from sqlalchemy import select
 
 from app.models.visit import (
     VISIT_SOURCE_MANUAL_CANCEL,
+    VISIT_SOURCE_STATUS_CANCEL,
     VISIT_STATUS_CANCELLED,
     Visit,
 )
@@ -116,7 +117,7 @@ async def test_replace_real_apply_blocked_by_cancelled_visit(db) -> None:
             now=datetime.now(UTC),
         )
     msg = str(exc.value)
-    assert "今週だけ取消済み" in msg
+    assert "らく助側で取消済み" in msg
     assert "⇧送信" in msg
     assert TUE.isoformat() in msg
 
@@ -134,7 +135,7 @@ async def test_replace_endpoint_returns_422_when_cancelled_exists(client, db, st
 
     res = await _post_replace(client, admin, week_start=WEEK_START, dry_run=False)
     assert res.status_code == 422, res.text
-    assert "今週だけ取消済み" in res.json()["detail"]
+    assert "らく助側で取消済み" in res.json()["detail"]
 
     # 何も消えていない・取消も取消のまま
     rows = list(
@@ -172,7 +173,7 @@ async def test_replace_dry_run_skips_blocked_day_and_reports_reason(db) -> None:
     assert plan.wiped == 2
     reasons = [s.reason for s in plan.skipped if s.date == TUE.isoformat()]
     assert reasons, plan.skipped
-    assert "今週だけ取消済み" in reasons[0]
+    assert "らく助側で取消済み" in reasons[0]
     assert "⇧送信" in reasons[0]
     # 金曜のカイポケ行は通常どおり計画に乗る
     assert plan.inserted >= 1
@@ -191,7 +192,7 @@ async def test_replace_dry_run_is_normal_without_cancelled(db) -> None:
         now=datetime.now(UTC),
     )
     assert plan.wiped == 3
-    assert not [s for s in plan.skipped if "今週だけ取消済み" in s.reason]
+    assert not [s for s in plan.skipped if "らく助側で取消済み" in s.reason]
 
 
 @pytest.mark.asyncio
@@ -211,4 +212,44 @@ async def test_replace_allows_inbound_delete_cancelled(db) -> None:
         now=datetime.now(UTC),
     )
     assert plan.wiped == 3  # 火曜も白紙化対象
-    assert not [s for s in plan.skipped if "今週だけ取消済み" in s.reason]
+    assert not [s for s in plan.skipped if "らく助側で取消済み" in s.reason]
+
+
+@pytest.mark.asyncio
+async def test_replace_real_apply_blocked_by_status_cancel(db) -> None:
+    """患者ステータス連動の取消 (source='status_cancel') も日単位で置換を止める.
+
+    正典 = docs/plans/patient-status-schedule-design-2026-09-09.md §7-3(d)。
+    """
+    seeded = await _seed_week(db)
+    await _cancel(db, seeded["tue"], source=VISIT_SOURCE_STATUS_CANCEL)
+
+    with pytest.raises(ReplaceBlockedError) as exc:
+        await replace_week_from_kaipoke(
+            db,
+            week_start=WEEK_START,
+            entries=_entries(),
+            dry_run=False,
+            now=datetime.now(UTC),
+        )
+    msg = str(exc.value)
+    assert "らく助側で取消済み" in msg
+    assert TUE.isoformat() in msg
+
+
+@pytest.mark.asyncio
+async def test_replace_dry_run_skips_status_cancel_day(db) -> None:
+    seeded = await _seed_week(db)
+    await _cancel(db, seeded["tue"], source=VISIT_SOURCE_STATUS_CANCEL)
+
+    plan = await replace_week_from_kaipoke(
+        db,
+        week_start=WEEK_START,
+        entries=_entries(),
+        dry_run=True,
+        now=datetime.now(UTC),
+    )
+    assert plan.wiped == 2
+    reasons = [s.reason for s in plan.skipped if s.date == TUE.isoformat()]
+    assert reasons, plan.skipped
+    assert "らく助側で取消済み" in reasons[0]

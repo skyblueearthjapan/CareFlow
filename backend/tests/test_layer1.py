@@ -27,6 +27,10 @@ from app.core.security import create_access_token, hash_password
 from app.models import Patient, User, Visit
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.visit import (
+    VISIT_SOURCE_MANUAL_CANCEL,
+    VISIT_SOURCE_MANUAL_WEEK,
+    VISIT_SOURCE_STATUS_CANCEL,
+    VISIT_STATUS_CANCELLED,
     VISIT_STATUS_COMPLETED,
     VISIT_STATUS_PLANNED,
 )
@@ -1161,3 +1165,110 @@ async def test_w35_no_manual_conflict_auto_inserted_normally(db) -> None:
     assert len(active_rows) == 2
     sources = sorted(v.source for v in active_rows)
     assert sources == ["auto", "manual"]
+
+
+# ---------------------------------------------------------------------------
+# 10) 非稼働患者の auto 残骸の掃除
+#     (docs/plans/patient-status-schedule-design-2026-09-09.md §7-3(d))
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_expand_week_sweeps_auto_visits_of_non_active_patient(db) -> None:
+    """週生成後に非稼働になった患者の ``source='auto'`` 行を掃除する.
+
+    週を作った後に status が suspended へ変わると、その患者は展開スコープ
+    (active) から外れるため、旧実装では auto 行が残り続けた (残骸)。
+    削除対象の患者 ID にだけ非稼働患者を足して掃除する。
+    **manual_week / manual_cancel / status_cancel は従来どおり触らない。**
+    """
+    expander = Layer1Expander()
+    pattern = _pattern(_entry("Mon", "09:00", "10:00"))
+    active_patient = await _make_patient(db, code="L1-SWEEP-A", weekly_pattern=pattern)
+    stale_patient = await _make_patient(
+        db, code="L1-SWEEP-B", status="suspended", weekly_pattern=pattern
+    )
+
+    def _visit(start: time, source: str, status: str = VISIT_STATUS_PLANNED) -> Visit:
+        return Visit(
+            patient_id=stale_patient.id,
+            visit_date=TEST_WEEK_MONDAY,
+            start_time=start,
+            end_time=time(start.hour + 1, start.minute),
+            type="regular",
+            status=status,
+            source=source,
+            required_staff_count=1,
+        )
+
+    auto_stale = _visit(time(9, 0), LAYER1_VISIT_SOURCE)
+    manual_week = _visit(time(10, 0), VISIT_SOURCE_MANUAL_WEEK)
+    manual_cancel = _visit(time(11, 0), VISIT_SOURCE_MANUAL_CANCEL, VISIT_STATUS_CANCELLED)
+    status_cancel = _visit(time(12, 0), VISIT_SOURCE_STATUS_CANCEL, VISIT_STATUS_CANCELLED)
+    db.add_all([auto_stale, manual_week, manual_cancel, status_cancel])
+    await db.commit()
+
+    result = await expander.expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    # 展開対象は active 患者だけ (非稼働患者は再生成されない).
+    assert result.patients_processed == 1
+    assert all(v.patient_id == active_patient.id for v in result.visits_created)
+
+    for v in (auto_stale, manual_week, manual_cancel, status_cancel):
+        await db.refresh(v)
+
+    assert auto_stale.deleted_at is not None, (
+        "非稼働患者の source='auto' 残骸が週生成で掃除されていない"
+    )
+    assert manual_week.deleted_at is None, "manual_week を消してはいけない"
+    assert manual_cancel.deleted_at is None, "manual_cancel を消してはいけない"
+    assert status_cancel.deleted_at is None, "status_cancel を消してはいけない"
+
+
+@pytest.mark.asyncio
+async def test_expand_week_sweep_respects_office_scope(db) -> None:
+    """office_id 指定時、掃除対象の非稼働患者も同じ拠点スコープに閉じる."""
+    from app.models import Office
+
+    office_a = Office(name="l1-sweep-office-a")
+    office_b = Office(name="l1-sweep-office-b")
+    db.add_all([office_a, office_b])
+    await db.flush()
+
+    pattern = _pattern(_entry("Mon", "09:00", "10:00"))
+    inside = await _make_patient(db, code="L1-SWEEP-IN", status="admitted", weekly_pattern=pattern)
+    outside = await _make_patient(
+        db, code="L1-SWEEP-OUT", status="admitted", weekly_pattern=pattern
+    )
+    inside.primary_office_id = office_a.id
+    outside.primary_office_id = office_b.id
+    await db.commit()
+
+    def _auto_visit(patient_id: UUID) -> Visit:
+        return Visit(
+            patient_id=patient_id,
+            visit_date=TEST_WEEK_MONDAY,
+            start_time=time(9, 0),
+            end_time=time(10, 0),
+            type="regular",
+            status=VISIT_STATUS_PLANNED,
+            source=LAYER1_VISIT_SOURCE,
+            required_staff_count=1,
+        )
+
+    v_in = _auto_visit(inside.id)
+    v_out = _auto_visit(outside.id)
+    db.add_all([v_in, v_out])
+    await db.commit()
+
+    expander = Layer1Expander()
+    await expander.expand_week(
+        db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK, office_id=office_a.id
+    )
+    await db.commit()
+
+    await db.refresh(v_in)
+    await db.refresh(v_out)
+    assert v_in.deleted_at is not None, "同一拠点の非稼働患者の auto 残骸は掃除される"
+    assert v_out.deleted_at is None, "別拠点の visit には触らない"

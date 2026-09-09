@@ -60,9 +60,23 @@ vi.mock('@tanstack/react-query', () => ({
 vi.mock('@/lib/queries/patients', () => ({
   usePatient: () => hooks.usePatientResult,
   useUpdatePatient: () => ({ mutateAsync: mockUpdate, isPending: false }),
+  // ステータス変更ゲート (usePatientStatusGate → PatientStatusChangeDialog) が
+  // 常駐する。open=false でも hook は呼ばれるので実体が要る。
+  usePatientStatusImpact: () => ({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    error: null,
+  }),
+  useChangePatientStatus: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
-vi.mock('@/lib/schemas/patient', () => ({
+// patientReadToFormValues だけ shallow に差し替え、STATUS_LABEL /
+// statusChangeDirection / normalizePatientStatus 等は実体を使う (ゲートが読む)。
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+type PatientSchemaModule = typeof import('@/lib/schemas/patient');
+vi.mock('@/lib/schemas/patient', async (importOriginal) => ({
+  ...(await importOriginal<PatientSchemaModule>()),
   patientReadToFormValues: (p: { name?: string; code?: string }) => ({
     code: p.code ?? '',
     name: p.name ?? '',

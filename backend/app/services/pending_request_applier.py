@@ -1113,7 +1113,29 @@ async def _apply_patient_status_update(
             f"patient_status_update: patient {patient_id} not found",
             http_status=404,
         )
-    patient.status = new_status
+    # ステータス連動 (design 2026-09-09 §7-3): 申請適用も必ずサービスを通す。
+    # 既定値 = 今日から・特別訪問週間は残す・復帰は型から作り直す。
+    # 操作者は承認者 (approved_by) → 申請者の順で解決する (op-log / 通知の宛先)。
+    from fastapi import HTTPException
+
+    from app.services.patient_status_sync import apply_status_change
+
+    try:
+        await apply_status_change(
+            db,
+            patient,
+            to_status=new_status,
+            actor_user_id=request.approved_by or request.requester_user_id,
+            # 適用中のこの申請自身はまだ pending — 自動却下の対象から外す。
+            exclude_pending_request_id=request.id,
+        )
+    except HTTPException as exc:
+        # サービスの 422 / 409 を applier の例外形へ揃える (呼び出し側が
+        # PendingRequestApplyError だけを見ればよいようにする)。
+        raise PendingRequestApplyError(
+            f"patient_status_update: {exc.detail}",
+            http_status=exc.status_code,
+        ) from exc
     await db.flush()
 
 

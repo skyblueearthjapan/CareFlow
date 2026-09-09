@@ -34,6 +34,7 @@ import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
+import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
 import { CornerPushPin, CornerWeekPushPin, PushPin, PushPinOff } from '@/components/ui/push-pin';
 import { PinScopeMenu, type PinScope } from '@/components/schedule/v2/PinScopeMenu';
 import { MovabilityMark } from './MovabilityMark';
@@ -1047,11 +1048,15 @@ type RenderItem =
  * 「90分占有ペア」にまとめる。1 スタッフが連続で回るため実占有は 90 分
  * (SAME_ADDRESS_PAIR_MIN_OCCUPANCY)。タイムライン上でも 90 分ぶんの高さで描く。
  * それ以外は単独訪問。開始時刻が不正/範囲外の訪問は除外 (カード側でも null)。
+ *
+ * 患者ステータス連動の取消 (source='status_cancel') はここで落とす
+ * (design 2026-09-09 §7-4: 非稼働患者の取消は盤面から消す。「今週だけ取消」
+ * = manual_cancel は従来どおり打ち消し線で残す)。
  */
 function buildRenderItems(visits: ReadonlyArray<CourseGridVisit>): RenderItem[] {
-  const sorted = [...visits].sort(
-    (a, b) => (parseHM(a.start_time) ?? 0) - (parseHM(b.start_time) ?? 0),
-  );
+  const sorted = visits
+    .filter((v) => !isStatusCancelledVisit(v))
+    .sort((a, b) => (parseHM(a.start_time) ?? 0) - (parseHM(b.start_time) ?? 0));
   const used = new Set<string>();
   const items: RenderItem[] = [];
   for (const v of sorted) {

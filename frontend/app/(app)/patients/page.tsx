@@ -29,6 +29,7 @@ import {
   normalizePatientSex,
   normalizePatientStatus,
 } from '@/lib/schemas/patient';
+import { formatStatusSince } from '@/lib/format/patientStatus';
 import { usePatients } from '@/lib/queries/patients';
 import { useOffices } from '@/lib/queries/offices';
 import { PatientsExcelButtons } from '@/components/patients/PatientsExcelButtons';
@@ -364,7 +365,19 @@ export default function PatientsPage() {
                           : '--'}
                       </td>
                       <td className="px-3 py-2 text-text-secondary">
-                        {p.deleted_at ? '削除済' : STATUS_LABEL[statusNorm]}
+                        {p.deleted_at ? (
+                          '削除済'
+                        ) : (
+                          <>
+                            {STATUS_LABEL[statusNorm]}
+                            {/* 「入院中（9/8〜）」— いつからその状態かを小さく添える (設計 §7-4)。 */}
+                            {p.status_changed_at ? (
+                              <span className="ml-1 text-xs text-text-muted">
+                                {formatStatusSince(p.status_changed_at)}
+                              </span>
+                            ) : null}
+                          </>
+                        )}
                       </td>
                       <td className="px-3 py-2">
                         <div className="flex gap-2">

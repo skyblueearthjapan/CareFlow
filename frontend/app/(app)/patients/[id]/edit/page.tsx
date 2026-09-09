@@ -27,6 +27,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
 import { EditPageStickyBar } from '@/components/EditPageStickyBar';
 import { RecordNavigator, type NavigatorRecord } from '@/components/RecordNavigator';
+import { PatientStatusChangeDialog } from '@/components/patients/PatientStatusChangeDialog';
+import { usePatientStatusGate } from '@/lib/hooks/usePatientStatusGate';
 import {
   useDeletePatient,
   usePatient,
@@ -94,20 +96,29 @@ export default function EditPatientPage() {
     }
   };
 
+  // ステータス変更 (稼働中 ⇄ 非稼働) は保存前に確認ダイアログを挟み、
+  // status-change API (予定の取消 / 型からの再生成) を先に走らせる。
+  const statusGate = usePatientStatusGate({
+    patientId: id,
+    patientName: patient?.name ?? '',
+    initialStatus: patient?.status as string | null | undefined,
+  });
+
   const handleSubmit = useMemo(
-    () => async (values: PatientFormValues) => {
-      setErrorMessage(null);
-      try {
-        await updateMutation.mutateAsync(values);
-        toast.success('患者情報を更新しました');
-        router.push(`/patients/${id}`);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : '不明なエラー';
-        setErrorMessage(msg);
-        toast.error(`更新に失敗しました: ${msg}`);
-      }
-    },
-    [updateMutation, router, id],
+    () =>
+      statusGate.wrapSubmit(async (values: PatientFormValues, { omitStatus }) => {
+        setErrorMessage(null);
+        try {
+          await updateMutation.mutateAsync(omitStatus ? { ...values, __omitStatus: true } : values);
+          toast.success('患者情報を更新しました');
+          router.push(`/patients/${id}`);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : '不明なエラー';
+          setErrorMessage(msg);
+          toast.error(`更新に失敗しました: ${msg}`);
+        }
+      }),
+    [statusGate, updateMutation, router, id],
   );
 
   if (status === 'loading' || isLoading) {
@@ -200,6 +211,8 @@ export default function EditPatientPage() {
         primaryOfficeId={patient.primary_office_id}
         requiresMultipleStaff={patient.requires_multiple_staff === true}
       />
+
+      <PatientStatusChangeDialog {...statusGate.dialogProps} />
 
       <EditPageStickyBar
         isDirty={isFormDirty}

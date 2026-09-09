@@ -26,6 +26,7 @@ import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { CourseTemplateRead } from '@/lib/schemas/v2/course_template';
 import type { StaffRead } from '@/lib/schemas/staff';
 import type { CockpitEventRead } from '@/lib/schemas/v2/cockpit';
+import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
 
 import { compareByStaffCode } from '@/lib/kana-sort';
 import { genderPalette } from '@/lib/scheduling/timeline';
@@ -270,7 +271,7 @@ function StaffWeekDropCell({
 export function StaffWeekBoard({
   templates,
   officeNameById,
-  visits,
+  visits: visitsProp,
   assignedStaffByTemplateWeekday,
   staffMap,
   staffEventsByStaff,
@@ -321,6 +322,13 @@ export function StaffWeekBoard({
       return `${office} ${tpl.label}`;
     },
     [templateById, officeNameById],
+  );
+
+  // 患者ステータス連動の取消 (source='status_cancel') は盤面から消す
+  // (design 2026-09-09 §7-4)。「今週だけ取消」= manual_cancel は従来どおり残す。
+  const visits = React.useMemo(
+    () => visitsProp.filter((v) => !isStatusCancelledVisit(v)),
+    [visitsProp],
   );
 
   // (rowKey, weekday) → CellCourse[]。rowKey = staffId or UNASSIGNED_KEY。
