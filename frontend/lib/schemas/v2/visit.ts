@@ -42,7 +42,15 @@ export const VISIT_SOURCE_V2_VALUES = [
   'ai',
   'manual_week',
   'manual_cancel',
+  // 患者ステータス連動の取消 (design 2026-09-09 §7-1)。manual_cancel と同じ保護規則。
+  // 表示層では「非稼働患者の取消」として **非表示** にする (今週だけ取消は打ち消し線)。
+  'status_cancel',
 ] as const;
+
+/** 患者ステータス連動で取り消された訪問 (盤面・タイムライン・モバイルで非表示にする)。 */
+export function isStatusCancelledVisit(v: { source?: string | null; status?: string | null }): boolean {
+  return v.source === 'status_cancel' && v.status === 'cancelled';
+}
 export const visitSourceV2Enum = z.enum(VISIT_SOURCE_V2_VALUES);
 export type VisitSourceV2 = z.infer<typeof visitSourceV2Enum>;
 

@@ -119,6 +119,18 @@ class Patient(Base, TimestampMixin):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # ステータス連動 (docs/plans/patient-status-schedule-design-2026-09-09.md §7-2 / mig 0082)。
+    # ``status`` が最後に変わった時刻と操作者。効果日 (未来予約) は持たない (PO 決定 Q9)。
+    # 既存行は NULL (= 不明)。表示は「入院中（9/8〜）」の形に使う。
+    status_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    status_changed_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     # ---- QR 訪問チェックイン (Phase 1, migration 0041) -----------------------
     # 患者宅に固定掲示する QR の識別トークン (推測不能な乱数 ``token_urlsafe(16)``).
     # NULL = 未発行 (遅延発行 / 一括スクリプトで採番). 部分 UNIQUE で非 NULL の

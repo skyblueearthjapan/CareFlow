@@ -78,6 +78,23 @@ VISIT_SOURCE_MANUAL_WEEK: str = "manual_week"
 # 長さは ``Visit.source`` の String(16) に収まる (= 13 文字)。
 VISIT_SOURCE_MANUAL_CANCEL: str = "manual_cancel"
 
+# 患者ステータス連動の取消 (docs/plans/patient-status-schedule-design-2026-09-09.md §7-1)。
+# 患者が稼働中以外 (admitted/suspended/cancelled/pending) になった瞬間に、当日以降の
+# planned をこの出所で ``status='cancelled'`` にする。保護規則は ``manual_cancel`` と
+# 完全に同じ (取込 add で復活させない / 置換取込はその日を止める / 週生成・固定枠
+# 戻しの削除対象外)。``manual_cancel`` と分ける理由:
+#   - 稼働中へ戻したとき、この出所の行だけを soft-delete して型から作り直す
+#     (人の「今週だけ取消」は復帰後も尊重して残す)。
+#   - 表示層で「非稼働患者の取消」だけを非表示にする (今週だけ取消は打ち消し線)。
+# 長さは ``Visit.source`` の String(16) に収まる (= 13 文字)。
+VISIT_SOURCE_STATUS_CANCEL: str = "status_cancel"
+
+# 「らく助側の意思による取消」= 取込の add で復活させてはいけない出所の集合。
+# inbound / replace_inbound はこの集合で判定する (単一ソース)。
+VISIT_SOURCES_LOCAL_CANCEL: frozenset[str] = frozenset(
+    {VISIT_SOURCE_MANUAL_CANCEL, VISIT_SOURCE_STATUS_CANCEL}
+)
+
 
 class Visit(Base, TimestampMixin):
     __tablename__ = "visits"

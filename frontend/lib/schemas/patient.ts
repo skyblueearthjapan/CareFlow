@@ -83,6 +83,30 @@ export const STATUS_LABEL: Record<(typeof STATUS_OPTIONS)[number], string> = {
   cancelled: '解約済み',
 };
 
+export type PatientStatus = (typeof STATUS_OPTIONS)[number];
+
+/**
+ * 予定に入れてよいステータスか (design 2026-09-09 §7-1)。
+ * 「稼働中」だけが true。開始前 (pending) も非稼働として扱う (PO 決定)。
+ * 判定は列挙ではなく `=== 'active'` (旧値 `inactive` 等が混じっても非稼働側に倒れる)。
+ */
+export function isSchedulableStatus(s: string | null | undefined): boolean {
+  return s === 'active';
+}
+
+/** ステータス変更の向き (BE `StatusDirection` と同値)。 */
+export type StatusDirection = 'deactivate' | 'reactivate' | 'none';
+
+export function statusChangeDirection(
+  from: string | null | undefined,
+  to: string | null | undefined,
+): StatusDirection {
+  const a = isSchedulableStatus(from);
+  const b = isSchedulableStatus(to);
+  if (a === b) return 'none';
+  return b ? 'reactivate' : 'deactivate';
+}
+
 /** HH:MM (24h) — backend stores `time` (Python). */
 const timeStringSchema = z
   .string()
@@ -399,6 +423,9 @@ export const patientReadSchema = patientBaseSchema.extend({
   created_at: z.string(),
   updated_at: z.string(),
   deleted_at: z.string().nullable().optional(),
+  /** ステータス連動 (mig 0082)。最後に status が変わった時刻。旧 BE では欠ける (nullish)。 */
+  status_changed_at: z.string().nullish(),
+  status_changed_by: z.string().uuid().nullish(),
   /**
    * NG スタッフ登録件数 (派生値・`docs/plans/patient-ng-staff-design.md` §8-2 Phase 2)。
    * プールカードの「NGあり」バッジ判定に使う。正典は

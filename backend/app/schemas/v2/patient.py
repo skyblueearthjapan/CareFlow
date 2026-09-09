@@ -335,6 +335,11 @@ class PatientV2Read(PatientV2Base):
     updated_at: datetime
     deleted_at: datetime | None = None
 
+    # ステータス連動 (mig 0082 / design 2026-09-09 §7-2)。最後に status が変わった
+    # 時刻と操作者。既存行は None (= 不明)。書込みは API では受けない (サービスが刻む)。
+    status_changed_at: datetime | None = None
+    status_changed_by: UUID | None = None
+
     # asymmetric: 書込みは構造化 schema、読込は dict のまま
     weekly_pattern: dict | None = None  # type: ignore[assignment]
     special_weekly_pattern: dict | None = None  # type: ignore[assignment]
