@@ -26,6 +26,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useUpdateFixedTimeMasterMutation } from '@/lib/queries/autoScheduleV2';
+import { useGuardedMutation } from '@/components/schedule/v2/patientNotActiveGateContext';
 import type { PendingFixedTimeEdit, V2Warning } from '@/lib/schemas/v2/autoScheduleV2';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
@@ -65,7 +66,8 @@ export function FixedTimeEditModal({
   onPendingEdit,
   warning,
 }: FixedTimeEditModalProps) {
-  const masterMut = useUpdateFixedTimeMasterMutation();
+  // 非稼働患者の入口ガード (422 patient_not_active → 「稼働中にして続ける」導線)。
+  const masterMut = useGuardedMutation(useUpdateFixedTimeMasterMutation());
 
   // 初期値: 集約したかった時刻があれば、そちらを優先 (UX: ユーザーは「集約したい」が動機).
   const initialStart = trimSeconds(warning.suggested_time ?? warning.current_time ?? '09:30');

@@ -45,6 +45,7 @@ import { Button } from '@/components/ui/button';
 
 import { useSpecialVisitPool } from '@/lib/queries/specialVisitWeek';
 import { genderPalette } from '@/lib/scheduling/timeline';
+import { inactiveStatusLabel } from '@/lib/schemas/patient';
 import type { SpecialPoolTicket } from '@/lib/schemas/specialVisitWeek';
 import { cn } from '@/lib/utils';
 
@@ -148,12 +149,16 @@ export function SpecialTicketCard({
   // 通常プールカードと同じ性別ウォッシュ (PatientCard の pal 分岐と同一トークン)。
   const pal = genderPalette(ticket.patient.sex);
 
+  // 非稼働バッジ (Phase 2 / PO 決定 Q⭐)。プールからは除外せず、入院中などは
+  // バッジ + 薄色で「このままでは置けない」ことを見せる (置こうとすれば入口ガードが問い直す)。
+  const inactiveLabel = inactiveStatusLabel(ticket.patient.patient_status);
+
   return (
     <div
       ref={setNodeRef}
       style={{
         transform: ghost ? undefined : CSS.Translate.toString(transform),
-        opacity: !ghost && isDragging ? 0.4 : 1,
+        opacity: !ghost && isDragging ? 0.4 : inactiveLabel ? 0.65 : 1,
         background: pal.bg,
         borderColor: pal.ln,
         borderLeftColor: pal.bar,
@@ -236,6 +241,16 @@ export function SpecialTicketCard({
         <Badge variant="secondary" className="h-4 px-1 text-[10px]">
           週{ticket.period.weekly_target}回以上
         </Badge>
+        {inactiveLabel ? (
+          <Badge
+            variant="warning"
+            className="h-4 px-1 text-[10px]"
+            data-testid={`special-visit-ticket-inactive-${markId}`}
+            title={`${ticket.patient.name} 様は${inactiveLabel}のため予定に入れられません`}
+          >
+            {inactiveLabel}
+          </Badge>
+        ) : null}
       </div>
     </div>
   );

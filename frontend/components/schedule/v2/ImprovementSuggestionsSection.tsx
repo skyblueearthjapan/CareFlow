@@ -43,6 +43,7 @@ import {
 } from '@/lib/queries/improvementSuggestions';
 import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
 import { useVisitMoveWeekOnly } from '@/lib/queries/visitMoveWeekOnly';
+import { useGuardedMutation } from '@/components/schedule/v2/patientNotActiveGateContext';
 import { OP_LOG_STATE_KEY } from '@/lib/queries/opLog';
 import { useFixedVisits, toastFixedVisitWarnings } from '@/lib/queries/patient_fixed_visits';
 import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
@@ -136,8 +137,9 @@ export function ImprovementSuggestionsSection({
 
   const suggestionsQuery = useImprovementSuggestions(patient.id, isoYear, isoWeek);
   const confirmMut = useConfirmFixedVisits();
-  const applySwapMut = useApplySwap();
-  const visitMoveWeekOnlyMut = useVisitMoveWeekOnly();
+  // 非稼働患者の入口ガード (422 patient_not_active → 「稼働中にして続ける」導線)。
+  const applySwapMut = useGuardedMutation(useApplySwap());
+  const visitMoveWeekOnlyMut = useGuardedMutation(useVisitMoveWeekOnly());
   // NG スタッフ / 性別制限 (§7-2): 422 を確認ダイアログ → acknowledge 再送で通す.
   const constraintConfirm = useConstraintConfirmRetry();
   // マージ確定用に既存 normal 固定枠を取得 (採用しなかった曜日を保持するため).

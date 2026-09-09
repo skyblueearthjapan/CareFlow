@@ -309,6 +309,32 @@ describe('SpecialVisitPoolSection', () => {
     expect(screen.queryByTestId('patient-detail-stub')).toBeNull();
   });
 
+  // ── Phase 2 (入口ガード): 非稼働バッジ ──────────────────────
+
+  it('patient_status が非稼働なら状態バッジ (入院中) を出す', () => {
+    mocks.poolTickets = [
+      makeTicket({ patient: { ...makeTicket().patient, patient_status: 'admitted' } }),
+    ];
+    renderSection();
+    expect(screen.getByTestId(`special-visit-ticket-inactive-${MARK_ID}`).textContent).toContain(
+      '入院中',
+    );
+  });
+
+  it('patient_status が active / 未提供ならバッジを出さない', () => {
+    mocks.poolTickets = [
+      makeTicket({ patient: { ...makeTicket().patient, patient_status: 'active' } }),
+    ];
+    const { unmount } = renderSection();
+    expect(screen.queryByTestId(`special-visit-ticket-inactive-${MARK_ID}`)).toBeNull();
+    unmount();
+
+    // 旧 BE (patient_status 無し) も従来どおりバッジなし。
+    mocks.poolTickets = [makeTicket()];
+    renderSection();
+    expect(screen.queryByTestId(`special-visit-ticket-inactive-${MARK_ID}`)).toBeNull();
+  });
+
   it('「カレンダー」ボタンで設定モーダルを開く (提案ポップアップは開かない)', () => {
     mocks.poolTickets = [makeTicket()];
     renderSection();

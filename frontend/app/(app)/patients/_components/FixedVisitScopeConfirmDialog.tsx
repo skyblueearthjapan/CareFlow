@@ -77,6 +77,13 @@ export interface FixedVisitScopeConfirmDialogProps {
   weekContext?: { isoYear: number; isoWeek: number } | null;
   /** 保存 (検査 → PUT) の実行中。true の間はダイアログを開いたままボタンを止める。 */
   submitting?: boolean;
+  /**
+   * 患者が非稼働のときの状態ラベル (例「入院中」)。稼働中 / 不明は null。
+   *
+   * 設定されていると反映先を「型だけ」に固定する (設計 §3-3: 型の編集は復帰に備えて
+   * 許可し、週への反映だけを拒む)。BE も change_scope=pattern_and_week を 422 で止める。
+   */
+  patientStatusLabel?: string | null;
   onCancel: () => void;
   onConfirm: (choice: FixedVisitScopeChoice) => void;
 }
@@ -243,13 +250,17 @@ export function FixedVisitScopeConfirmDialog({
   afterSlots,
   weekContext,
   submitting,
+  patientStatusLabel,
   onCancel,
   onConfirm,
 }: FixedVisitScopeConfirmDialogProps) {
+  // 非稼働の患者様は「型だけ」に固定 (週への反映は稼働中に戻してから)。
+  const lockedToPatternOnly = Boolean(patientStatusLabel);
   // 既定 (PO 決定 8): 週文脈があれば (B)、無ければ (A)。
-  const [scope, setScope] = React.useState<'pattern_only' | 'pattern_and_week'>(
+  const [scopeState, setScope] = React.useState<'pattern_only' | 'pattern_and_week'>(
     weekContext ? 'pattern_and_week' : 'pattern_only',
   );
+  const scope = lockedToPatternOnly ? 'pattern_only' : scopeState;
   const [weekSel, setWeekSel] = React.useState<'this' | 'next'>('this');
 
   const diff = React.useMemo(
@@ -365,6 +376,16 @@ export function FixedVisitScopeConfirmDialog({
           <fieldset className="space-y-2">
             <legend className="text-sm font-semibold text-text-secondary">反映先</legend>
 
+            {lockedToPatternOnly ? (
+              <p
+                className="rounded-md border border-amber-400 bg-amber-50/60 px-3 py-2 text-sm text-amber-900"
+                data-testid="pfv-scope-inactive-note"
+              >
+                {patientStatusLabel}
+                のため「型だけ」に固定します。週への反映は稼働中に戻してから行ってください。
+              </p>
+            ) : null}
+
             <label className={scopeRowCls}>
               <input
                 type="radio"
@@ -386,13 +407,14 @@ export function FixedVisitScopeConfirmDialog({
                 className="mt-0.5 h-4 w-4"
                 checked={scope === 'pattern_and_week'}
                 onChange={() => setScope('pattern_and_week')}
+                disabled={lockedToPatternOnly}
                 data-testid="pfv-scope-pattern-and-week"
               />
               <span>型と {weekLabel} の予定も作り直す</span>
             </label>
 
             {/* 週文脈が無いときだけ対象週を選ばせる (今日の週 / 来週)。 */}
-            {!weekContext ? (
+            {!weekContext && !lockedToPatternOnly ? (
               <div className="flex items-center gap-2 pl-6">
                 <span className="text-sm text-text-muted">作り直す週</span>
                 <select

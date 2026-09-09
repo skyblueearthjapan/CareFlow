@@ -37,6 +37,7 @@ import {
   usePlaceSpecialMark,
 } from '@/lib/queries/specialVisitWeek';
 import { useCreateVisit } from '@/lib/queries/visits';
+import { useGuardedMutation } from '@/components/schedule/v2/patientNotActiveGateContext';
 import {
   coerceWeeklyPattern,
   formatPreferredTimeLabel,
@@ -155,12 +156,13 @@ export function SpecialVisitPlaceLauncher({
   const patientQuery = usePatient(open ? patientId : null);
   const { offices } = useOffices();
   const staffQuery = useStaffList({ limit: 200 });
-  const proposeSlotsMut = useProposeSlots();
-  const placeAndFixMut = usePlaceAndFix();
-  const createVisitMut = useCreateVisit();
-  const placeMarkMut = usePlaceSpecialMark();
+  // 非稼働患者の入口ガード (422 patient_not_active → 「稼働中にして続ける」導線)。
+  const proposeSlotsMut = useGuardedMutation(useProposeSlots());
+  const placeAndFixMut = useGuardedMutation(usePlaceAndFix());
+  const createVisitMut = useGuardedMutation(useCreateVisit());
+  const placeMarkMut = useGuardedMutation(usePlaceSpecialMark());
   const deleteMarkMut = useDeleteSpecialVisitMark();
-  const createMarkMut = useCreateSpecialVisitMark();
+  const createMarkMut = useGuardedMutation(useCreateSpecialVisitMark());
   /** NG スタッフ / 性別制限の 422 は確認してから acknowledge 再送する (盤面と同じ)。 */
   const constraintConfirm = useConstraintConfirmRetry();
   // 途中で失敗したときは mutation の onSuccess が走らないので、ここで失効させる。

@@ -49,6 +49,7 @@ import {
   type VisitLite,
 } from '@/lib/scheduling/addVisitPlan';
 import { matchCourseTemplate } from '@/lib/scheduling/courseTemplateMatch';
+import { isPlaceablePatientStatus } from '@/lib/schemas/patient';
 import type {
   ProposeSlotItem,
   ProposeSlotsRequest,
@@ -354,8 +355,12 @@ export function AddVisitAnywhereDialog({
   // ── 患者リスト (プール優先・キーワード絞り込み)
   const patientOptions = React.useMemo(() => {
     const kw = keyword.trim();
+    // 非稼働 (入院中・一時休止・解約済み・開始前) は予定に入れられないので候補に出さない
+    // (判定は共通ヘルパ。コンポーネントで値を列挙しない)。
     const actives = patients.filter(
-      (p) => p.status === 'active' && (!kw || p.name.includes(kw) || (p.hint ?? '').includes(kw)),
+      (p) =>
+        isPlaceablePatientStatus(p.status) &&
+        (!kw || p.name.includes(kw) || (p.hint ?? '').includes(kw)),
     );
     const pool = actives.filter((p) => poolPatientIds.has(p.id));
     const rest = actives.filter((p) => !poolPatientIds.has(p.id));

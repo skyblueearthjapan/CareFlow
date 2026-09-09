@@ -94,6 +94,29 @@ export function isSchedulableStatus(s: string | null | undefined): boolean {
   return s === 'active';
 }
 
+/**
+ * 非稼働のときだけ表示ラベルを返す (稼働中 / 不明は null)。
+ * バッジの単一ソース (設計 §3-4)。コンポーネント側で値を列挙しないために使う。
+ * 既知外の値は `normalizePatientStatus` が 'active' に倒すので null (偽バッジを出さない)。
+ */
+export function inactiveStatusLabel(s: string | null | undefined): string | null {
+  if (isSchedulableStatus(s)) return null;
+  if (s === null || s === undefined || s === '') return null;
+  const normalized = normalizePatientStatus(s);
+  return normalized === 'active' ? null : STATUS_LABEL[normalized];
+}
+
+/**
+ * 予定のピッカー (提案・配置・＋訪問) に出してよい患者か (設計 §3-3)。
+ *
+ * `isSchedulableStatus` との違いは **未提供 / 未知の値を除外しない** こと。
+ * status を返さない旧 BE / 部分的な DTO で候補が全滅する事故を防ぐ。
+ * 本当に非稼働なら BE が 422 で止める (入口ガード) ので二重の安全網になる。
+ */
+export function isPlaceablePatientStatus(s: string | null | undefined): boolean {
+  return inactiveStatusLabel(s) === null;
+}
+
 /** ステータス変更の向き (BE `StatusDirection` と同値)。 */
 export type StatusDirection = 'deactivate' | 'reactivate' | 'none';
 

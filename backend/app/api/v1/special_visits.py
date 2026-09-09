@@ -67,7 +67,12 @@ from app.services.constraint_override_notify import (
     notify_constraint_override_for_course,
 )
 from app.services.patient_excel.schema import OFFICE_CODE_TO_SHORT
+from app.services.patient_status_sync import is_schedulable_status
 from app.services.scheduling.auto_allocator_v2 import _extract_weekly_entries, _parse_hhmm
+from app.services.scheduling.guards import (
+    ensure_patient_schedulable,
+    patient_not_active_detail,
+)
 
 router = APIRouter()
 
@@ -290,6 +295,15 @@ async def create_period(payload: PeriodCreate, db: DbDep, _user: AdminManager) -
     )
     if patient is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+
+    # 入口ガード (Phase 2・設計 §7-3(d)): 非稼働患者は 422 `patient_not_active`.
+    # FE は「稼働中にして続ける」導線 (can_override) を出す (PO 決定 Q16)。
+    # 直上で読んだ行をそのまま使う (再 SELECT しない)。
+    if not is_schedulable_status(patient.status):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=patient_not_active_detail(patient),
+        )
 
     # 同一患者で active な期間は同時に 1 本のみ (設計 §1・アプリ層で担保).
     existing = await db.scalar(
@@ -595,7 +609,15 @@ async def get_calendar(period_id: UUID, db: DbDep, _user: AdminManager) -> Calen
             )
         )
 
-    return CalendarRead(period=PeriodRead.model_validate(period), weeks=weeks_out)
+    # Phase 2 (設計 §7-3(d)): 非稼働でもカレンダーは出す (○ は「残す」既定) ので、
+    # 除外の代わりに患者の状態を載せる (FE のバッジ / バナー用).
+    patient_status = await db.scalar(select(Patient.status).where(Patient.id == period.patient_id))
+
+    return CalendarRead(
+        period=PeriodRead.model_validate(period),
+        weeks=weeks_out,
+        patient_status=patient_status,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -613,6 +635,9 @@ async def create_extra_mark(
     period_id: UUID, payload: MarkCreate, db: DbDep, _user: AdminManager
 ) -> MarkRead:
     period = await _get_period(db, period_id)
+
+    # 入口ガード (Phase 2・設計 §7-3(d)): 非稼働患者に新しい ○ は立てない.
+    await ensure_patient_schedulable(db, period.patient_id)
 
     # 期間範囲ガード (レビュー補強): FE はグレーアウトで防ぐが、API 直叩きで
     # 期間外の週に○を立てると週合計が水増しされるため 422 で防ぐ。
@@ -712,6 +737,10 @@ async def displace_fixed_visit(
     period_id: UUID, payload: MarkCreate, db: DbDep, _user: AdminManager
 ) -> MarkRead:
     period = await _get_period(db, period_id)
+
+    # 入口ガード (Phase 2・設計 §7-3(d)): 退避は「後で戻す」前提の配置操作なので
+    # 非稼働患者では 422 (非稼働化の連動処理で予定側が取消されている).
+    await ensure_patient_schedulable(db, period.patient_id)
 
     dup = await db.scalar(
         select(SpecialVisitMark.id).where(
@@ -842,6 +871,9 @@ async def restore_mark(
     if mark.status == MARK_STATUS_CANCELLED:
         # 既に解除済み (トグルの二度押し) は冪等に成功扱い.
         return _mark_read(mark)
+
+    # 入口ガード (Phase 2・設計 §7-3(d)): 復元は訪問を作り直す = 予定に入れる操作.
+    await ensure_patient_schedulable(db, mark.patient_id)
 
     if mark.status == MARK_STATUS_PLACED:
         placed = await _visit_is_alive(db, mark.placed_visit_id)
@@ -1031,6 +1063,12 @@ async def place_mark(
         # 自己回復: 訪問が生きている場合のみ二重配置として弾く.
         if await _visit_is_alive(db, mark.placed_visit_id) is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="既に配置済みです")
+
+    # 入口ガード (Phase 2・設計 §7-3(d)): 配置は 4 モード共通でここを通る
+    # (course_id / office+code / course_template_id / visit_id)。DB 書き込みの前。
+    # **競合チェックの後**に置く: 取消済み / 配置済みのチケットは 409 が正しく、
+    # 422 の「稼働中にして続ける」導線を出しても行き止まりになる (restore と同じ順序)。
+    await ensure_patient_schedulable(db, mark.patient_id)
 
     # ---- weekday 上書き = 「○ を動かしてから置く」(単一 TX) -------------------
     # mark_date より **前** に反映するので、過去日ガード・course の曜日一致・

@@ -1806,4 +1806,59 @@ describe('PatientFixedVisitsPanel', () => {
       expect(screen.getByTestId('pfv-scope-protected')).toHaveTextContent('保護される予定 1 件');
     });
   });
+  // ─── Phase 2 (入口ガード): 非稼働患者は型だけ編集 ──────────────
+  // 設計 = docs/plans/patient-status-schedule-design-2026-09-09.md §3-3
+  describe('非稼働患者 (patientStatus)', () => {
+    it('バナーを出し、反映先を「型だけ」に固定して pattern_only で保存する', async () => {
+      const updateFn = vi.fn().mockResolvedValue([]);
+      setupMocks({ reads: [], updateFn });
+
+      render(
+        <PatientFixedVisitsPanel
+          patientId={PATIENT_ID}
+          patientStatus="admitted"
+          isoYear={2026}
+          isoWeek={38}
+        />,
+      );
+
+      // バナー (通常 / 特別週の両タブに出るので getAllBy)
+      expect((await screen.findAllByTestId('pfv-inactive-banner'))[0]).toHaveTextContent(
+        '入院中: 型のみ編集できます',
+      );
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+
+      // 週文脈ありでも (B) は選べない = 固定の注記が出る。
+      expect(await screen.findByTestId('pfv-scope-inactive-note')).toHaveTextContent(
+        '入院中のため「型だけ」に固定します',
+      );
+      expect(screen.getByTestId('pfv-scope-pattern-and-week')).toBeDisabled();
+
+      await userEvent.click(screen.getByTestId('pfv-scope-submit'));
+
+      await waitFor(() => expect(updateFn).toHaveBeenCalledTimes(1));
+      const call = updateFn.mock.calls[0][0] as { change_scope?: string; iso_week?: number };
+      expect(call.change_scope).toBe('pattern_only');
+      expect(call.iso_week).toBeUndefined();
+    });
+
+    it('稼働中 / 未指定ならバナーを出さず (B) も選べる', async () => {
+      setupMocks({ reads: [] });
+      const { unmount } = render(
+        <PatientFixedVisitsPanel patientId={PATIENT_ID} patientStatus="active" />,
+      );
+      expect(screen.queryByTestId('pfv-inactive-banner')).toBeNull();
+
+      await userEvent.click(await screen.findByLabelText('月曜日 訪問あり'));
+      await userEvent.click(screen.getByRole('button', { name: '保存' }));
+      expect(await screen.findByTestId('pfv-scope-pattern-and-week')).not.toBeDisabled();
+      expect(screen.queryByTestId('pfv-scope-inactive-note')).toBeNull();
+      unmount();
+
+      render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
+      expect(screen.queryByTestId('pfv-inactive-banner')).toBeNull();
+    });
+  });
 });

@@ -105,8 +105,9 @@
 |---|---|
 | `propose-slots` / `pool-overview` / `pool-bulk-simulate` / `pool-bulk-apply` / `apply-individual` | 422（対象患者に非稼働が混じれば全体拒否ではなく **その患者だけ除外して warnings に載せる**） |
 | `place-and-fix` / `POST /visits` / `visit-move-week-only` / `fix-or-pattern` / `update-fixed-time-master` / `apply-swap` | 422 |
-| ⭐ `POST /special-visit-periods` / `place`（全モード）/ `restore` | 422。`GET /special-visit-marks/pool` と calendar は `Patient.status='active'` を join に追加 |
-| `PUT /patients/{id}/fixed-visits` | **型の編集は許可**（復帰に備える）。`change_scope=pattern_and_week` の週反映だけ拒否 → 確認ダイアログ E に「非稼働のため型だけ」を固定表示 |
+| ⭐ `POST /special-visit-periods` / `place`（全モード）/ `restore` / `marks`（○追加）/ `displace` | 422。`GET /special-visit-marks/pool` と calendar は **除外しない**・`patient_status` を載せてバッジ表示（Q⭐「残す」）|
+| `PUT /patients/{id}/fixed-visits` ／ `apply-individual` | **型の編集は許可**（復帰に備える）。`change_scope=pattern_and_week` の週反映だけ拒否（422 に `allowed_scope="pattern_only"` を添える）→ 確認ダイアログ E に「非稼働のため型だけ」を固定表示。**両者は同じ契約**にする |
+| `sync-fixed-to-week` ／ `PATCH /visits/{id}` | 422。前者は型から今週を作り直す＝`pattern_and_week` と同じ扱い。後者は**患者の付け替え先**が非稼働なら 422（同一患者への更新は通す）＋ `status_cancel`/`manual_cancel` の予定を `planned` へ戻す変更を 422 で拒否（「ステータス連動で取消された予定は稼働中に戻してください」）|
 | カイポケ取込（diff/replace/smart） | 非稼働患者の行は **add しない**。プレビューで「非稼働患者（らく助側）」の分類を新設し、削除候補として突合へ（§3-5） |
 | 週生成の冪等削除 `layer1_expander.py:680` | 削除対象を「拠点内の全患者（status 不問）」に広げ、source=auto の残骸を掃除（reset と同じ思想）。`apply_week_only` の退行も同じ修正で直す（既存テストが緑になる） |
 | FE | ⭐ チケット・現場シートの患者検索・`PatientCombobox`（未使用）・PatientFixedVisitsPanel（バナー「入院中: 型のみ編集可」）・PatientCard の死んだ `before_start` バッジを `pending` に直す |
@@ -295,9 +296,15 @@ async def _plan_reactivation(db, patient, from_date) -> list[(iso_year, iso_week
 **(d) ガード（Phase 2 契約・先に固定）**
 - `ensure_patient_schedulable(db, patient_id) -> Patient`：非稼働なら
   `HTTPException(422, detail={"code":"patient_not_active","patient_id":..,"status":"admitted","status_label":"入院中","can_override":true,"message":"入院中のため予定に入れられません"})`。
-- 適用先: `place-and-fix`・`POST /visits`・`visit-move-week-only`・`fix-or-pattern`・`update-fixed-time-master`・`apply-swap`・`apply-individual`・`pool-bulk-apply`（対象に混在→その患者を除外して `warnings[]`）・`propose-slots`（existing_patient_id）・`POST /special-visit-periods`・`place`（全モード）・`restore`・`PUT fixed-visits?change_scope=pattern_and_week`（型だけは許可）。
+- 適用先: `place-and-fix`・`POST /visits`・`PATCH /visits/{id}`（患者の付け替え・取消の巻き戻し）・`visit-move-week-only`・`fix-or-pattern`・`update-fixed-time-master`・`apply-swap`（両患者）・`sync-fixed-to-week`・`pool-overview`／`pool-bulk-simulate`／`pool-bulk-apply`（対象に混在→その患者を除外して `excluded_patients[]`＋`warnings[]`。全員除外でも 200）・`propose-slots`（`existing_patient_id` 指定時のみ）・`POST /special-visit-periods`・`place`（全モード）・`restore`・`marks`・`displace`。
+- **スコープ対称**: `PUT fixed-visits` と `apply-individual` はどちらも `change_scope="pattern_only"` を非稼働でも許可し、`pattern_and_week` のときだけ 422（detail に `allowed_scope="pattern_only"` を添える）。
+- ⭐ `place` のガードは**競合チェック（取消済み 409 / 配置済み 409）の後**に置く。先に置くと取消済みチケットに「稼働中にして続ける」導線が出て行き止まりになる（`restore` と同じ順序）。
 - `GET /special-visit-marks/pool` と calendar は Phase 2 では **除外せず** `patient_status` を載せる（Q⭐「残す」を尊重し、バッジ表示にする）。
-- 取込（diff/replace/smart）: 非稼働患者の add はスキップし `skipped_inactive[]` としてプレビューに出す。`status_cancel` は `manual_cancel` と同じ扱い（`inbound.py:906`・`replace_inbound.py:200` に `or source == STATUS_CANCEL`）。
+- 取込（diff/replace/smart）: 非稼働患者の add はスキップする。**実装した形**（`skipped_inactive[]` は作らず既存の行／結果構造へ追加のみ）:
+  - プレビュー行 `CorrectionItemRead` に `patient_status`（str|null）と `inactive_patient`（bool・add 行のみ true）を追加。DB 列ではなく**読み出し時に patients から補完**する（シートは長生きするので保存時点の状態を焼き付けない）。該当行は `include=False`（自動選択しない）で作る。
+  - サマリに `summary.inactive_patient = <件数>`（0 件でもキーを出す）。
+  - 適用（diff/smart）は `InboundItemResultRead.reason = "inactive_patient"`・`outcome="skipped"`。置換は `ReplaceInboundSkipRead.code = "inactive_patient"`（`reason` は従来どおり日本語文言）。いずれも例外は投げない。
+  - `status_cancel` は `manual_cancel` と同じ扱い（`inbound.py:906`・`replace_inbound.py:200` に `or source == STATUS_CANCEL`）＝**既存のまま**。
 - 週生成の冪等削除（`layer1_expander.py:680`）と `apply_week_only`（`auto_allocator_v2.py:9182`）の削除対象に「拠点内の非稼働患者の source=auto」を union（既存 failing テストが緑になる）。
 
 ### 7-4. FE 契約

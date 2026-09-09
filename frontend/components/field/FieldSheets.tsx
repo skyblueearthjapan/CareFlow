@@ -58,6 +58,7 @@ import {
   normalizePatientInsurance,
   normalizePatientSexRestriction,
   normalizePatientStatus,
+  isPlaceablePatientStatus,
   patientReadToFormValues,
   emptyPatientFormValues,
   type WeekdayKey,
@@ -72,6 +73,7 @@ import {
 } from '@/lib/queries/patients';
 import { PatientStatusChangeDialog } from '@/components/patients/PatientStatusChangeDialog';
 import { usePatientStatusGate } from '@/lib/hooks/usePatientStatusGate';
+import { useGuardedMutation } from '@/components/schedule/v2/patientNotActiveGateContext';
 import { useNgStaffList } from '@/lib/queries/patient_ng_staff';
 import { formatNgStaffNames } from '@/lib/schemas/patient_ng_staff';
 import { useCreatePendingRequest } from '@/lib/queries/pending_requests';
@@ -1494,7 +1496,8 @@ export function SuggestSheet({
   // 同じ曜日を再タップすると採用解除 (toggle)。
   const [adopted, setAdopted] = useState<Map<WeekdayKey, ProposeSlotItem>>(() => new Map());
 
-  const proposeMut = useProposeSlots();
+  // 非稼働患者の入口ガード (422 patient_not_active → 「稼働中にして続ける」導線)。
+  const proposeMut = useGuardedMutation(useProposeSlots());
   const createPendingMut = useCreatePendingRequest();
 
   // existing モードでの患者検索 (氏名 / カナ / コードで部分一致・client-side)。
@@ -1504,7 +1507,11 @@ export function SuggestSheet({
   // StageA MEDIUM 対処: 患者一覧 (最大 500 件) は既存モードのときだけ取得する。
   // 新規モードでは enabled:false で fetch を抑止し、無駄な取得を防ぐ。
   const patientsQuery = usePatients({ search: trimmedQuery, limit: 8, enabled: isExisting });
-  const candidates = isExisting && trimmedQuery ? (patientsQuery.data?.items ?? []) : [];
+  // 非稼働 (入院中・一時休止・解約済み・開始前) の患者様は提案の対象外なので候補に出さない
+  // (設計 §3-3 FE ピッカー除外)。ステータスを直す入口は「患者の登録・編集」シート。
+  const candidates = (isExisting && trimmedQuery ? (patientsQuery.data?.items ?? []) : []).filter(
+    (p) => isPlaceablePatientStatus(p.status),
+  );
 
   // 選択した患者から提案フォームをプリフィルする。プリフィル後もユーザーが調整可。
   const linkPatient = (p: PatientRead) => {
@@ -3181,7 +3188,10 @@ export function PlacementSheet({
 
   const trimmedQuery = patientQuery.trim();
   const patientsQuery = usePatients({ search: trimmedQuery, limit: 8, enabled: isExisting });
-  const candidates = isExisting && trimmedQuery ? (patientsQuery.data?.items ?? []) : [];
+  // 非稼働の患者様は配置できないので候補に出さない (設計 §3-3 FE ピッカー除外)。
+  const candidates = (isExisting && trimmedQuery ? (patientsQuery.data?.items ?? []) : []).filter(
+    (p) => isPlaceablePatientStatus(p.status),
+  );
 
   const travelMut = useTravelEstimate();
   const createPendingMut = useCreatePendingRequest();

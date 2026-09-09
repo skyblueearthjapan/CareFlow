@@ -227,6 +227,7 @@ from app.services.op_log_service import (
     set_visit_staff_slot,
     visit_staff_ids,
 )
+from app.services.patient_status_sync import is_schedulable_status
 from app.services.scheduling.auto_allocator_v2 import (
     _COURSE_CODES_MAX,
     # Wave 3 (#WAVE3): API 境界の H10 (lunch overlap) ガードは
@@ -269,6 +270,11 @@ from app.services.scheduling.board_service import (
     _office_short as _board_office_short,
 )
 from app.services.scheduling.config import SchedulingConfig, load_scheduling_config
+from app.services.scheduling.guards import (
+    ensure_patient_schedulable,
+    patient_not_active_detail,
+    split_schedulable_patient_ids,
+)
 from app.services.scheduling.improvement_engine import (
     ImprovementCandidateData,
     find_improvement_candidates,
@@ -987,6 +993,27 @@ async def apply_individual_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="patient_id is required",
         )
+    # 入口ガード (Phase 2・設計 §7-3(d)): **PUT fixed-visits と対称**にする。
+    # 型だけの更新 (pattern_only) は復帰に備えて非稼働でも許可し、週へ反映する
+    # pattern_and_week だけ 422 (+`allowed_scope`)。
+    _patient_row = await db.scalar(
+        select(Patient).where(
+            Patient.id == payload.patient_id,
+            Patient.deleted_at.is_(None),
+        )
+    )
+    if _patient_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"patient_id={payload.patient_id} が見つかりません",
+        )
+    if payload.change_scope == "pattern_and_week" and not is_schedulable_status(
+        _patient_row.status
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=patient_not_active_detail(_patient_row, allowed_scope="pattern_only"),
+        )
     if not payload.visit_plans:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1374,6 +1401,14 @@ async def sync_fixed_to_week_endpoint(
             detail=f"patient_id={payload.patient_id} が見つかりません",
         )
 
+    # 入口ガード (Phase 2・設計 §7-3(d)): 型から今週の visits を作り直す操作なので
+    # PUT fixed-visits の pattern_and_week と同じ扱い = 非稼働なら 422。
+    if not is_schedulable_status(patient.status):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=patient_not_active_detail(patient),
+        )
+
     # office_ids を患者から導出する. reset_visits_to_fixed は serving office
     # (sub_office / course_template office) を内部で解決するが、staff プールと
     # active 患者ロードは office_ids に依存するため、primary + PFV.sub_office を含める.
@@ -1478,6 +1513,14 @@ async def visit_move_week_only_endpoint(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"patient_id={payload.patient_id} が見つかりません",
+        )
+
+    # 入口ガード (Phase 2・設計 §7-3(d)): 非稼働患者は 422 `patient_not_active`.
+    # 直上で読んだ行をそのまま使う (再 SELECT しない)。
+    if not is_schedulable_status(patient.status):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=patient_not_active_detail(patient),
         )
 
     # PO 決定 (2026-08-09): 旧 pinned (=完全固定) の人手ブロックは撤廃 — 人手の
@@ -2876,6 +2919,14 @@ async def update_fixed_time_master_endpoint(
                 detail=f"patient_id={payload.patient_id} が見つかりません",
             )
 
+        # 入口ガード (Phase 2・設計 §7-3(d)): 非稼働患者は 422 `patient_not_active`.
+        # FOR UPDATE で掴んだ行をそのまま使う (再 SELECT するとロック外の値を読む)。
+        if not is_schedulable_status(patient_row.status):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=patient_not_active_detail(patient_row),
+            )
+
         # PFV の取得 (FOR UPDATE) — 無い場合は新規 INSERT
         pfv_row = await db.scalar(
             select(PatientFixedVisit)
@@ -3525,6 +3576,11 @@ async def propose_slots_endpoint(
     実現不能な時刻は一切返さない (距離 / 移動 / バッファー / 昼休み / 18:00 /
     容量 / time_type / 同住所を Stage1 純ソルバが自動割当と同手法で判定).
     """
+    # 0. 入口ガード (Phase 2・設計 §7-3(d)): 既存患者を指定したときだけ検査する.
+    #    新規候補 (existing_patient_id=None) は患者行がまだ無いので対象外.
+    if payload.existing_patient_id is not None:
+        await ensure_patient_schedulable(db, payload.existing_patient_id)
+
     # 1. 候補座標 (+ 住所判定拠点) を確定.
     cand_lat, cand_lng, resolved_office_id = await _resolve_candidate_coords(db, payload)
 
@@ -3831,6 +3887,14 @@ async def pool_overview_endpoint(
     if not payload.patient_ids:
         return PoolOverviewResponse(items=[])
 
+    # 入口ガード (Phase 2・設計 §3-3): 一括系は **拒否ではなく除外**.
+    # 全員が非稼働でも 200 (items=[] + excluded_patients) を返す.
+    schedulable_ids, excluded_patients = await split_schedulable_patient_ids(
+        db, payload.patient_ids
+    )
+    if not schedulable_ids:
+        return PoolOverviewResponse(items=[], excluded_patients=excluded_patients)
+
     office_ids: list[UUID] = [payload.office_id] if payload.office_id is not None else []
 
     # 週バケット (実 Visit + スタッフ実態) を 1 回だけロード (propose-slots と同じローダ).
@@ -3848,7 +3912,8 @@ async def pool_overview_endpoint(
     config = await load_scheduling_config(db)
 
     # プール患者をまとめて 1 クエリでロード (存在するものだけ処理; 重複 id は 1 回に集約).
-    unique_ids = list(dict.fromkeys(payload.patient_ids))
+    # split_schedulable_patient_ids が入力順の dedup 済み稼働中 id を返す.
+    unique_ids = schedulable_ids
     patient_rows = (
         await db.scalars(
             select(Patient).where(
@@ -3923,7 +3988,7 @@ async def pool_overview_endpoint(
             )
         )
 
-    return PoolOverviewResponse(items=items)
+    return PoolOverviewResponse(items=items, excluded_patients=excluded_patients)
 
 
 # ---------------------------------------------------------------------------
@@ -3953,13 +4018,20 @@ async def pool_bulk_simulate_endpoint(
     """
     config = await load_scheduling_config(db)
 
+    # 入口ガード (Phase 2・設計 §3-3): 一括系は **拒否ではなく除外**.
+    # 全員が非稼働でも 200 (placements=[] + excluded_patients) を返す
+    # (simulate は空 patient_ids でも state_token / kpi を返せる).
+    schedulable_ids, excluded_patients = await split_schedulable_patient_ids(
+        db, payload.patient_ids
+    )
+
     try:
         result = await simulate_pool_bulk_insert(
             db,
             iso_year=payload.iso_year,
             iso_week=payload.iso_week,
             office_id=payload.office_id,
-            patient_ids=payload.patient_ids,
+            patient_ids=schedulable_ids,
             config=config,
             candidate_of=_patient_to_pool_candidate,
         )
@@ -4019,6 +4091,7 @@ async def pool_bulk_simulate_endpoint(
             travel_km_after=result.travel_km_after,
         ),
         state_token=result.state_token,
+        excluded_patients=excluded_patients,
     )
 
 
@@ -4094,10 +4167,26 @@ async def pool_bulk_apply_endpoint(
         # 適用対象なし (空 placements). read-only ではないが no-op で 200 を返す.
         return PoolBulkApplyResponse(applied_patients=0, applied_slots=0, warnings=[])
 
+    # 1-b. 入口ガード (Phase 2・設計 §3-3): 一括系は **拒否ではなく除外**.
+    # 非稼働患者の placements だけ落とし、残りはそのまま適用する (全員除外でも 200).
+    schedulable_ids, excluded_patients = await split_schedulable_patient_ids(
+        db, [pl.patient_id for pl in payload.placements]
+    )
+    guard_warnings = [f"{e.message} (一括投入から除外しました)" for e in excluded_patients]
+    schedulable_set = set(schedulable_ids)
+    target_placements = [pl for pl in payload.placements if pl.patient_id in schedulable_set]
+    if not target_placements:
+        return PoolBulkApplyResponse(
+            applied_patients=0,
+            applied_slots=0,
+            warnings=guard_warnings,
+            excluded_patients=excluded_patients,
+        )
+
     # 2. placements を患者ごとにまとめる (入力順を保持した決定的グルーピング).
     by_patient: dict[UUID, list[PoolBulkPlacement]] = {}
     name_by_patient: dict[UUID, str] = {}
-    for pl in payload.placements:
+    for pl in target_placements:
         by_patient.setdefault(pl.patient_id, []).append(pl)
         name_by_patient.setdefault(pl.patient_id, pl.patient_name)
 
@@ -4111,7 +4200,7 @@ async def pool_bulk_apply_endpoint(
     # 一括解決する (N+1 禁止)。
     _cw: list[ConstraintWarning] = []
     _cw_by_course: list[tuple[Course, list[ConstraintWarning]]] = []
-    _pl_keys = {(pl.office_id, pl.course_code, pl.weekday) for pl in payload.placements}
+    _pl_keys = {(pl.office_id, pl.course_code, pl.weekday) for pl in target_placements}
     _week_courses = list(
         (
             await db.scalars(
@@ -4126,7 +4215,7 @@ async def pool_bulk_apply_endpoint(
     )
     _course_by_key = {(c.office_id, c.code, c.weekday): c for c in _week_courses}
     _patients_by_course: dict[UUID, tuple[Course, list[UUID]]] = {}
-    for pl in payload.placements:
+    for pl in target_placements:
         _c = _course_by_key.get((pl.office_id, pl.course_code, pl.weekday))
         if _c is None:
             continue  # その週にコース実体が無い = 担当も居ない (fail-open)
@@ -4144,7 +4233,7 @@ async def pool_bulk_apply_endpoint(
             detail=constraint_confirmation_detail(_cw),
         )
 
-    warnings: list[str] = []
+    warnings: list[str] = list(guard_warnings)
     applied_patients = 0
     applied_slots = 0
 
@@ -4260,6 +4349,7 @@ async def pool_bulk_apply_endpoint(
         applied_patients=applied_patients,
         applied_slots=applied_slots,
         warnings=warnings,
+        excluded_patients=excluded_patients,
     )
 
 
@@ -4918,6 +5008,16 @@ async def improvement_apply_swap_endpoint(
     )
     if pa is None or pb is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+
+    # 入口ガード (Phase 2・設計 §7-3(d)): 入れ替えは 2 人とも新しい枠に入るので
+    # **両方**を検査する. 非稼働なら 422 `patient_not_active` (書き込み前)。
+    # 直上で読んだ行をそのまま使う (再 SELECT しない)。
+    for _p in (pa, pb):
+        if not is_schedulable_status(_p.status):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=patient_not_active_detail(_p),
+            )
 
     # 各患者の旧枠曜日は相手の新枠曜日から導出する (swap 不変量).
     a_old_weekday = payload.b_new.weekday

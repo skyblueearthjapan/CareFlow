@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { isPlaceablePatientStatus } from '@/lib/schemas/patient';
 import { parseIsoDate } from './reconcileMarkers';
 import { TIME_OPTIONS } from './VisitActionMenu';
 
@@ -43,6 +44,11 @@ export interface AddVisitCandidate {
    * 選ぶと所要時間の初期値になる (PO 決定 5-B: 基本時間・35 分)。
    */
   service_minutes?: number | null;
+  /**
+   * 患者ステータス (`patients.status`)。非稼働 (入院中等) は候補に出さない
+   * (設計 §3-3 FE ピッカー除外)。未指定は従来どおり稼働中扱い。
+   */
+  patient_status?: string | null;
 }
 
 export interface AddVisitPayload {
@@ -137,8 +143,10 @@ export function AddVisitDialog({
 
   const filtered = React.useMemo(() => {
     const kw = keyword.trim();
-    if (!kw) return poolCandidates;
-    return poolCandidates.filter((c) => c.patient_name.includes(kw) || (c.hint ?? '').includes(kw));
+    // 非稼働の患者様は予定に入れられない (BE も 422 で止める)。
+    const schedulable = poolCandidates.filter((c) => isPlaceablePatientStatus(c.patient_status));
+    if (!kw) return schedulable;
+    return schedulable.filter((c) => c.patient_name.includes(kw) || (c.hint ?? '').includes(kw));
   }, [poolCandidates, keyword]);
 
   /**

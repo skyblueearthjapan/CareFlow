@@ -312,3 +312,36 @@ describe('PatientCard — selected (同行モード選択ハイライト)', () =
     expect(card.className).not.toContain('ring-2');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 2 (入口ガード): 非稼働ステータスのバッジ
+//   設計 = docs/plans/patient-status-schedule-design-2026-09-09.md §3-4
+//   連動が効いていれば盤面には出ないはずなので、出ていたら不整合として見せる。
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('PatientCard — 非稼働バッジ', () => {
+  it.each([
+    ['admitted', '入院中'],
+    ['suspended', '一時休止'],
+    ['cancelled', '解約済み'],
+  ])('patientStatus=%s → 「%s」バッジ表示', (status, label) => {
+    renderCard({ patientStatus: status });
+    expect(screen.getByTestId('patient-card-badge-inactive-test-patient-1')).toHaveTextContent(
+      label,
+    );
+  });
+
+  it('patientStatus=active / 未指定 → 非稼働バッジは出ない', () => {
+    const { unmount } = renderCard({ patientStatus: 'active' });
+    expect(screen.queryByTestId('patient-card-badge-inactive-test-patient-1')).toBeNull();
+    unmount();
+    renderCard();
+    expect(screen.queryByTestId('patient-card-badge-inactive-test-patient-1')).toBeNull();
+  });
+
+  it('patientStatus=pending は従来の「開始前」バッジのみ (二重に出さない)', () => {
+    renderCard({ patientStatus: 'pending' });
+    expect(screen.getByTestId('patient-card-badge-new-test-patient-1')).toHaveTextContent('開始前');
+    expect(screen.queryByTestId('patient-card-badge-inactive-test-patient-1')).toBeNull();
+  });
+});

@@ -56,6 +56,7 @@ from app.services.accompaniment import (
 )
 from app.services.kaipoke.name_match import build_name_index, match_name
 from app.services.kaipoke.ng_conflicts import NgConflict, NgPair, collect_ng_conflicts
+from app.services.patient_status_sync import is_schedulable_status, status_label
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -341,6 +342,9 @@ class InboundItemResult:
     detail: str = ""
     patient_name: str = ""
     date: str = ""
+    # 機械可読な理由コード (FE の分類用・既定は空文字 = 従来どおり detail のみ)。
+    # 患者ステータス連動 Phase 2 では 'inactive_patient' を使う。
+    reason: str = ""
 
 
 @dataclass
@@ -459,11 +463,14 @@ async def apply_inbound_items(
     # 患者 → 拠点 (コース解決に使う)。
     pids = {it.patient_id for it in items if it.patient_id is not None}
     patient_office: dict[uuid.UUID, uuid.UUID] = {}
+    # 患者ステータス連動 Phase 2 (設計 §7-3(d)): 非稼働患者は **add しない**。
+    patient_status: dict[uuid.UUID, str | None] = {}
     if pids:
-        prows = await db.scalars(select(Patient).where(Patient.id.in_(pids)))
+        prows = (await db.scalars(select(Patient).where(Patient.id.in_(pids)))).all()
         patient_office = {
-            p.id: p.primary_office_id for p in prows.all() if p.primary_office_id is not None
+            p.id: p.primary_office_id for p in prows if p.primary_office_id is not None
         }
+        patient_status = {p.id: p.status for p in prows}
 
     # 事前パスで解決した visit のキャッシュ。循環スワップの一時退避中は
     # ``index`` のキーが動くため、退避後に index 経由で引き直すと見失う。
@@ -840,6 +847,7 @@ async def apply_inbound_items(
             detail: str,
             target_date: date | None,
             *,
+            reason: str = "",
             _item=item,
             _pname=patient_name,
         ) -> None:
@@ -851,6 +859,7 @@ async def apply_inbound_items(
                     detail=detail,
                     patient_name=_pname,
                     date=target_date.isoformat() if target_date else "",
+                    reason=reason,
                 )
             )
             if outcome == "cancelled":
@@ -884,6 +893,17 @@ async def apply_inbound_items(
         if item.action == "add":
             if item.patient_id is None:
                 _finish("failed", "利用者名を CareFlow 患者に解決できませんでした", target_date)
+                continue
+            # 患者ステータス連動 Phase 2 (設計 §7-3(d)): 非稼働患者の予定を
+            # カイポケから復活させない。落とすだけで例外は投げない。
+            if not is_schedulable_status(patient_status.get(item.patient_id)):
+                _finish(
+                    "skipped",
+                    f"{status_label(patient_status.get(item.patient_id))}のため追加しません"
+                    "（カイポケの週間パターンを停止してください）",
+                    target_date,
+                    reason="inactive_patient",
+                )
                 continue
             start_new = parse_hhmm(str(after.get("start_time") or ""))
             end_new = parse_hhmm(str(after.get("end_time") or ""))

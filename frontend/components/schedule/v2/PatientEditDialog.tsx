@@ -230,6 +230,7 @@ export function PatientEditDialog({
                   requiresMultipleStaff={patient.requires_multiple_staff === true}
                   isoYear={isoYear}
                   isoWeek={isoWeek}
+                  patientStatus={patient.status}
                 />
 
                 {updateMutation.isPending ? (

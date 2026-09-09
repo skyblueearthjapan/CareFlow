@@ -8,6 +8,7 @@
  */
 import { Skeleton } from '@/components/ui/skeleton';
 import type { CorrectionItem } from '@/lib/schemas/integration';
+import { inactiveStatusLabel } from '@/lib/schemas/patient';
 import { genderPalette } from '@/lib/scheduling/timeline';
 
 import { type InboundVm, WEEKDAYS, field } from './useInbound';
@@ -104,6 +105,11 @@ function InboundCard({ item, sex }: { item: CorrectionItem; sex?: string | null 
   const timeBefore = field(item.before, 'start_time');
   const isEdit = item.action === 'edit' || item.action === 'update';
   const isExcluded = !item.include;
+  // 入口ガード Phase 2: 非稼働患者の行は BE が include=false で返す。
+  // 「なぜ対象外なのか」が分かるよう状態ラベル (入院中など) を出す。
+  const inactiveLabel = item.inactive_patient
+    ? (inactiveStatusLabel(item.patient_status) ?? '非稼働')
+    : null;
   // カード地は本体スケジュールと同じ性別ウォッシュ。ただし「取り込み対象外」の
   // グレーアウトはウォッシュより優先の情報なので薄グレーのまま (性別色は当てない)。
   const pal = genderPalette(sex);
@@ -128,11 +134,19 @@ function InboundCard({ item, sex }: { item: CorrectionItem; sex?: string | null 
         >
           {meta.label}
         </span>
-        {isExcluded && (
+        {inactiveLabel ? (
+          <span
+            className="inline-flex items-center rounded bg-warning-bg px-1.5 py-0.5 text-[10px] font-medium text-warning-strong"
+            title={`${name}様は${inactiveLabel}のため取り込みません`}
+            data-testid={`inbound-item-inactive-${item.id}`}
+          >
+            {inactiveLabel}
+          </span>
+        ) : isExcluded ? (
           <span className="text-[10px] text-text-muted" title="名寄せ未解決などで自動的に除外">
             取り込み対象外
           </span>
-        )}
+        ) : null}
       </div>
       <div
         className={[

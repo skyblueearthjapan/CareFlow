@@ -52,6 +52,7 @@ from app.services.kaipoke.inbound import (
 )
 from app.services.kaipoke.name_match import build_name_index, match_name
 from app.services.kaipoke.ng_conflicts import NgConflict, NgPair, collect_ng_conflicts
+from app.services.patient_status_sync import is_schedulable_status, status_label
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,6 +87,9 @@ class ReplaceSkip:
     staff_name: str
     date: str
     start: str
+    # 機械可読な理由コード (追加のみ・既定 "" = 従来どおり reason 文言だけ)。
+    # 患者ステータス連動 Phase 2 の非稼働スキップは "inactive_patient"。
+    code: str = ""
 
 
 @dataclass
@@ -293,7 +297,7 @@ async def replace_week_from_kaipoke(
     # --- Phase 1: 行の解決 (名寄せ・重複・日曜除外) ---------------------------
     seen_keys: set[tuple[str, date, str]] = set()
 
-    def _skip(reason: str, e: ScheduleEntry, d: date | None) -> None:
+    def _skip(reason: str, e: ScheduleEntry, d: date | None, *, code: str = "") -> None:
         result.skipped.append(
             ReplaceSkip(
                 reason=reason,
@@ -301,6 +305,7 @@ async def replace_week_from_kaipoke(
                 staff_name=e.staff1_name,
                 date=d.isoformat() if d else str(e.date),
                 start=e.start_time,
+                code=code,
             )
         )
 
@@ -337,6 +342,18 @@ async def replace_week_from_kaipoke(
         pid_str = match_name(e.user_name, pindex)
         if pid_str is None:
             _skip("患者を名寄せできません（らく助未登録の可能性）", e, d)
+            continue
+        # 患者ステータス連動 Phase 2 (設計 §7-3(d)): 非稼働患者の行は挿入しない。
+        # 例外は投げず skipped に積んで可視化する (置換は隠さないのが原則)。
+        _p_status = getattr(patient_by_id.get(pid_str), "status", None)
+        if not is_schedulable_status(_p_status):
+            _skip(
+                f"{status_label(_p_status)}のため取り込みません"
+                "（カイポケの週間パターンを停止してください）",
+                e,
+                d,
+                code="inactive_patient",
+            )
             continue
         patient = patient_by_id[pid_str]
 

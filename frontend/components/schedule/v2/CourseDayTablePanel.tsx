@@ -137,6 +137,7 @@ import {
   SEX_RESTRICTION_LABEL,
   coerceWeeklyPattern,
   formatPreferredTimeLabel,
+  isSchedulableStatus,
   normalizePatientSexRestriction,
   type PatientRead,
 } from '@/lib/schemas/patient';
@@ -305,6 +306,7 @@ import {
 } from '@/lib/scheduling/timeline';
 import { TimelineMoveDialog } from '@/components/schedule/timeline/TimelineMoveDialog';
 import { useVisitMoveWeekOnly } from '@/lib/queries/visitMoveWeekOnly';
+import { useGuardedMutation } from '@/components/schedule/v2/patientNotActiveGateContext';
 import type { ChangeScopeValue } from '@/components/schedule/v2/ChangeScopeChoice';
 // T-2 ②-a: 空き枠クリック → 登録モーダル (訪問=place-and-fix / イベント=複数スタッフ一括登録).
 import {
@@ -1443,7 +1445,9 @@ export function CourseDayTablePanel({
   // W-3: 希望未登録 active 患者 (weekly_pattern 未設定 / frequency_per_week<=0)。
   // プールには載らないが存在する患者を可視化するための安全網。
   const unregisteredActivePatients = useMemo(() => {
-    return allPatients.filter((p) => p.status === 'active' && getDesiredWeeklyVisitCount(p) === 0);
+    return allPatients.filter(
+      (p) => isSchedulableStatus(p.status) && getDesiredWeeklyVisitCount(p) === 0,
+    );
   }, [allPatients]);
 
   // ─── visit lookup (Wave 18 Phase B-5: 配置済みドラッグ用) ──────────
@@ -1669,8 +1673,9 @@ export function CourseDayTablePanel({
   }, [specialPoolQuery.data]);
   /** ドラッグ中の⭐チケット (DragOverlay のゴースト用)。 */
   const [activeSpecialTicket, setActiveSpecialTicket] = useState<SpecialPoolTicket | null>(null);
-  const placeSpecialMut = usePlaceSpecialMark();
-  const placeAndFixMut = usePlaceAndFix();
+  // 非稼働患者の入口ガード: 422 patient_not_active を捕まえて「稼働中にして続ける」導線へ。
+  const placeSpecialMut = useGuardedMutation(usePlaceSpecialMark());
+  const placeAndFixMut = useGuardedMutation(usePlaceAndFix());
   const deleteVisitMut = useDeleteVisit();
   // ─── Wave U-3: 戻る/進む (undo/redo) ────────────────────────────────────
   const opLogStateQuery = useOpLogState(isoYear, isoWeek);
@@ -1851,7 +1856,7 @@ export function CourseDayTablePanel({
     const poolIds = new Set(poolPatients.map((p) => p.id));
     return (
       allPatients
-        .filter((p) => p.status === 'active')
+        .filter((p) => isSchedulableStatus(p.status))
         .filter(
           (p) =>
             (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff !== true,
@@ -1971,7 +1976,7 @@ export function CourseDayTablePanel({
   // ─── T-2 ②-b: タイムラインカード DnD → 二択 (この週だけ / 固定パターン) ──
   // week = 既存 visit-move-week-only をそのまま叩く (PFV 不変・op-log 記録・BE ピン422)。
   // pattern = 同じ移動 + 週→型同期 (promoteWeekToFixed = 既存トースト昇格と同義)。
-  const visitMoveWeekOnlyMut = useVisitMoveWeekOnly();
+  const visitMoveWeekOnlyMut = useGuardedMutation(useVisitMoveWeekOnly());
   // visits は 1 件 (単独カード) or 2 件 (同住所ペア = 2名セット移動)。
   const [tlMoveState, setTlMoveState] = useState<{
     visits: CourseGridVisit[];
@@ -3932,9 +3937,9 @@ export function CourseDayTablePanel({
   const visitCancelWeekMut = useVisitCancelWeek();
   const visitServiceOverrideMut = useVisitServiceOverride();
   const eventCancelWeekMut = useEventCancelWeek();
-  const createVisitMut = useCreateVisit();
+  const createVisitMut = useGuardedMutation(useCreateVisit());
   // ＋訪問（任意日付）: 提案 = propose-slots / 型の保存 = 患者を実行時に渡せる版。
-  const proposeSlotsMut = useProposeSlots();
+  const proposeSlotsMut = useGuardedMutation(useProposeSlots());
   const confirmFixedVisitsMut = useConfirmFixedVisits();
   // 🛌 休みにする: 休みの登録 + その日の担当の引き受けを 1 リクエストで
   // (PO 決定 2026-08-23 — 「戻る」1 回で全部戻すため)。
@@ -5130,7 +5135,7 @@ export function CourseDayTablePanel({
   const addVisitPatients = useMemo<AddVisitPatientOption[]>(
     () =>
       allPatients
-        .filter((p) => p.status === 'active')
+        .filter((p) => isSchedulableStatus(p.status))
         .map((p) => {
           const wp = coerceWeeklyPattern(p.weekly_pattern);
           return {

@@ -69,7 +69,23 @@ export type PoolOverviewItem = z.infer<typeof poolOverviewItemSchema>;
  *
  * items 欠落 → [] にフォールバック (寛容パース規約)。
  */
+/**
+ * 入口ガード Phase 2 (設計 §3-3)。非稼働のため計算対象から外した患者。
+ * 一括系 (pool-overview / pool-bulk-simulate / pool-bulk-apply) は全体を 422 で拒まず、
+ * その患者だけを除外してここに載せる。旧 BE は返さないので default []。
+ */
+export const excludedPatientSchema = z.object({
+  patient_id: z.string(),
+  status: z.string().catch(''),
+  status_label: z.string().catch(''),
+  message: z.string().catch(''),
+  /** 氏名 (BE が載せてくれれば使う。無ければ message から拾う)。 */
+  patient_name: z.string().nullable().catch(null),
+});
+export type ExcludedPatient = z.infer<typeof excludedPatientSchema>;
+
 export const poolOverviewResponseSchema = z.object({
   items: z.array(poolOverviewItemSchema).default([]),
+  excluded_patients: z.array(excludedPatientSchema).catch([]).default([]),
 });
 export type PoolOverviewResponse = z.infer<typeof poolOverviewResponseSchema>;

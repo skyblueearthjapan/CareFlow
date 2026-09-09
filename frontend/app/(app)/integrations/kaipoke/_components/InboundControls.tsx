@@ -406,13 +406,19 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                 </span>
               )}
               {hasEventChanges && eventsPlan && (eventsPlan.conflicts?.length ?? 0) > 0 && (
-                <span className="block font-medium text-warning-strong" data-testid="confirm-event-conflicts">
+                <span
+                  className="block font-medium text-warning-strong"
+                  data-testid="confirm-event-conflicts"
+                >
                   ⚠ 訪問と重なるイベントが {eventsPlan.conflicts?.length} 件あります
                   （取り込み後に警告一覧をご確認ください）
                 </span>
               )}
               {eventsOnly && (
-                <span className="block font-medium text-text-primary" data-testid="confirm-events-only">
+                <span
+                  className="block font-medium text-text-primary"
+                  data-testid="confirm-events-only"
+                >
                   イベントのみを取り込みます。訪問の予定には一切触れません。
                 </span>
               )}
@@ -488,6 +494,16 @@ function SmartPlanPanel({ plan }: { plan: SmartInboundPreview }) {
           <SummaryChip label="カイポケのみ" value={diff.add ?? 0} tone="success" />
           {(diff.unresolved_patient ?? 0) > 0 && (
             <SummaryChip label="要確認" value={diff.unresolved_patient ?? 0} tone="warning" />
+          )}
+          {/* 入口ガード Phase 2 (設計 §3-3): 非稼働患者の行は取り込まない
+              (既定でチェックを外して返る)。何件外れたかをサマリに出して隠さない。 */}
+          {(diff.inactive_patient ?? 0) > 0 && (
+            <SummaryChip
+              label="非稼働患者"
+              value={diff.inactive_patient ?? 0}
+              tone="warning"
+              testId="inbound-summary-inactive-patient"
+            />
           )}
         </div>
       )}
@@ -675,10 +691,12 @@ function SummaryChip({
   label,
   value,
   tone,
+  testId,
 }: {
   label: string;
   value: number;
   tone: 'success' | 'warning' | 'error';
+  testId?: string;
 }) {
   const cls =
     tone === 'success'
@@ -687,7 +705,10 @@ function SummaryChip({
         ? 'bg-error-bg text-error'
         : 'bg-warning-bg text-warning-strong';
   return (
-    <span className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs ${cls}`}>
+    <span
+      className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs ${cls}`}
+      data-testid={testId}
+    >
       {label} <span className="font-mono font-bold tabular-nums">{value}</span>
     </span>
   );

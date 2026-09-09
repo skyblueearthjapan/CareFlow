@@ -161,6 +161,11 @@ export type SpecialCalendarWeek = z.infer<typeof specialCalendarWeekSchema>;
 export const specialVisitCalendarSchema = z.object({
   period: specialVisitPeriodSchema,
   weeks: z.array(specialCalendarWeekSchema).catch([]),
+  /**
+   * 患者ステータス (Phase 2 ・設計 §3-3)。PO 決定 Q⭐「残す」を尊重し
+   * カレンダーは閉ざず、非稼働は見出しのバッジで見える化する。旧 BE は返さないので nullable。
+   */
+  patient_status: z.string().nullable().catch(null),
 });
 export type SpecialVisitCalendar = z.infer<typeof specialVisitCalendarSchema>;
 
@@ -179,6 +184,11 @@ export const specialPoolPatientSchema = z.object({
   lat: z.number().nullable().default(null),
   lng: z.number().nullable().default(null),
   primary_office_id: z.string().nullable().default(null),
+  /**
+   * 患者ステータス (Phase 2 ・設計 §7-3 (d))。PO 決定 Q⭐「残す」を尊重し
+   * プールは除外せず、非稼働はバッジ (入院中等) で見える化する。旧 BE では欠けるので nullable。
+   */
+  patient_status: z.string().nullable().default(null).catch(null),
 });
 export type SpecialPoolPatient = z.infer<typeof specialPoolPatientSchema>;
 

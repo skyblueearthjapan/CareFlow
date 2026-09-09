@@ -36,6 +36,8 @@ const { mocks, mockToast } = vi.hoisted(() => ({
     periodsLoading: false,
     periodsError: false,
     weeks: [] as unknown[],
+    /** 入口ガード Phase 2: カレンダーに乗る患者ステータス。 */
+    patientStatus: null as string | null,
     createPeriod: vi.fn(),
     updatePeriod: vi.fn(),
     createMark: vi.fn(),
@@ -103,7 +105,11 @@ vi.mock('@/lib/queries/specialVisitWeek', () => ({
     isError: mocks.periodsError,
   }),
   useSpecialVisitCalendar: () => ({
-    data: { period: mocks.periods[0] ?? null, weeks: mocks.weeks },
+    data: {
+      period: mocks.periods[0] ?? null,
+      weeks: mocks.weeks,
+      patient_status: mocks.patientStatus,
+    },
     isLoading: false,
     isError: false,
   }),
@@ -273,6 +279,7 @@ beforeEach(() => {
   mocks.periodsLoading = false;
   mocks.periodsError = false;
   mocks.weeks = [];
+  mocks.patientStatus = null;
 });
 
 afterEach(() => {
@@ -725,6 +732,32 @@ describe('SpecialVisitWeekDialog — ⑤ 凡例 / 期間の終了', () => {
     expect(mocks.updatePeriod.mock.calls[0]![0]).toEqual({
       periodId: 'period-1',
       payload: { status: 'ended' },
+    });
+  });
+  // ── 入口ガード Phase 2 (設計 §3-3 / PO 決定 Q⭐) ───────────────
+  // 期間は閉ざない (残す) が、非稼働は見出しのバッジで見える化する。
+  describe('非稼働患者のバッジ', () => {
+    it('patient_status が非稼働なら見出しに状態バッジを出す', () => {
+      mocks.periods = [PERIOD];
+      mocks.weeks = makeWeeks();
+      mocks.patientStatus = 'admitted';
+      renderDialog();
+      expect(screen.getByTestId('svw-patient-inactive').textContent).toContain('入院中');
+      // カレンダー自体は従来どおり見えている。
+      expect(screen.getByTestId('svw-period-controls')).toBeTruthy();
+    });
+
+    it('patient_status が active / 未提供ならバッジを出さない', () => {
+      mocks.periods = [PERIOD];
+      mocks.weeks = makeWeeks();
+      mocks.patientStatus = 'active';
+      const { unmount } = renderDialog();
+      expect(screen.queryByTestId('svw-patient-inactive')).toBeNull();
+      unmount();
+
+      mocks.patientStatus = null;
+      renderDialog();
+      expect(screen.queryByTestId('svw-patient-inactive')).toBeNull();
     });
   });
 });

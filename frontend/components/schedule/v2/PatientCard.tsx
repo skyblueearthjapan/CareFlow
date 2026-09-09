@@ -22,6 +22,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { Plus, User, Users, X } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
+import { inactiveStatusLabel } from '@/lib/schemas/patient';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { cn } from '@/lib/utils';
 
@@ -235,9 +236,15 @@ export function PatientCard({
   const maleOnly = patient.sexRestriction === 'male_only';
   const multi = patient.requiresMultipleStaff === true;
   const isNew = patient.patientStatus === 'pending';
+  /**
+   * 非稼働バッジ (設計 §3-4 / Phase 2)。入院中・一時休止・解約済みを見える化する
+   * (連動が効いていれば盤面には出ないはずで、出ていたら不整合)。
+   * 開始前 (pending) は従来の「開始前」バッジのままなので重複させない。
+   */
+  const inactiveLabel = isNew ? null : inactiveStatusLabel(patient.patientStatus);
   // NG スタッフあり (§8-2 Phase 2). 件数は出さず「あり/なし」だけを示す。
   const hasNgStaff = (patient.ngStaffCount ?? 0) > 0;
-  const hasBadges = femaleOnly || maleOnly || multi || isNew || hasNgStaff;
+  const hasBadges = femaleOnly || maleOnly || multi || isNew || hasNgStaff || !!inactiveLabel;
 
   // W37 Phase 3-B: 複数スタッフ対応のスロット表示
   // slotIndex が 0/1 のときのみ ①/② バッジ + 左ボーダー強調を出す。
@@ -377,6 +384,16 @@ export function PatientCard({
                 title="この患者には NG スタッフが設定されています（患者マスタで確認）"
               >
                 NGあり
+              </Badge>
+            )}
+            {inactiveLabel && (
+              <Badge
+                variant="warning"
+                className="h-4 px-1 text-[10px]"
+                data-testid={`patient-card-badge-inactive-${patient.id}`}
+                title={`この患者様は${inactiveLabel}のため予定に入れられません`}
+              >
+                {inactiveLabel}
               </Badge>
             )}
           </div>

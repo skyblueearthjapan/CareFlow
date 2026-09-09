@@ -334,6 +334,9 @@ class InboundItemResultRead(BaseModel):
     detail: str = ""
     patient_name: str = Field(default="", alias="patientName")
     date: str = ""
+    # 機械可読な理由コード (追加のみ・既定 "")。患者ステータス連動 Phase 2 の
+    # 非稼働スキップは "inactive_patient"。
+    reason: str = ""
 
 
 class NgConflictRead(BaseModel):
@@ -457,6 +460,12 @@ class CorrectionItemRead(BaseModel):
     comment: str | None = None
     created_at: datetime
     updated_at: datetime
+    # 患者ステータス連動 Phase 2 (設計 §7-3(d)): 非稼働患者の行を可視化する。
+    # DB 列ではなく **読み出し時に patients から補完** する (常に最新)。
+    patient_status: str | None = None
+    # 非稼働患者への add 行 = 取り込むと「入院中なのに予定が復活」する行。
+    # 既定 include=False (自動選択しない) で作られ、適用時も skip される。
+    inactive_patient: bool = False
 
 
 class CorrectionSheetRead(BaseModel):
@@ -675,6 +684,9 @@ class ReplaceInboundSkipRead(BaseModel):
     staff_name: str = Field(alias="staffName")
     target_date: str = Field(alias="date")
     start: str = ""
+    # 機械可読な理由コード (追加のみ・既定 "")。患者ステータス連動 Phase 2 の
+    # 非稼働スキップは "inactive_patient"。
+    code: str = ""
 
 
 class ReplaceInboundTraineeSoloRead(BaseModel):

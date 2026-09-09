@@ -9,6 +9,7 @@ import { getQueryClient } from '@/lib/query-client';
 import { Toaster } from '@/components/ui/sonner';
 import { SessionErrorGuard } from '@/components/SessionErrorGuard';
 import { CloudflareAccessBanner } from '@/components/CloudflareAccessBanner';
+import { PatientNotActiveGateProvider } from '@/components/schedule/v2/PatientNotActiveGate';
 
 interface ProvidersProps {
   children: React.ReactNode;
@@ -25,7 +26,9 @@ export function Providers({ children }: ProvidersProps) {
         <QueryClientProvider client={queryClient}>
           {/* Cloudflare Access 切れの再ログイン導線 — 全 UI (PC/現場ボード/モバイル) 共通 */}
           <CloudflareAccessBanner />
-          {children}
+          {/* 非稼働患者の入口ガード (422 patient_not_active → 稼働中にして続ける)。
+              PC / 現場ボード / モバイルの 3 UI は本 Providers を共有するのでここに 1 回だけ置く。 */}
+          <PatientNotActiveGateProvider>{children}</PatientNotActiveGateProvider>
           {process.env.NODE_ENV === 'development' && (
             <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />
           )}

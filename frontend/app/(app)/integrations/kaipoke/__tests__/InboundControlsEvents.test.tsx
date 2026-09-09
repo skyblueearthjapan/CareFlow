@@ -379,4 +379,35 @@ describe('InboundControls — smart-inbound', () => {
     expect(screen.queryByText(/行を残したまま差分を反映します/)).not.toBeInTheDocument();
     expect(screen.getAllByText(/すべて削除される可能性がございます/).length).toBeGreaterThan(0);
   });
+  // ─── Phase 2 (入口ガード): 非稼働患者の行は取り込まない ─────────
+  // 設計 = docs/plans/patient-status-schedule-design-2026-09-09.md §3-3
+  it('⑥ diffSummary.inactive_patient > 0 → 「非稼働患者 N」チップを要確認の隣に出す', () => {
+    const plan: SmartInboundPreview = {
+      ...SMART_PLAN,
+      diffSummary: { ...SMART_PLAN.diffSummary, unresolved_patient: 1, inactive_patient: 3 },
+    };
+    render(<InboundControls vm={makeVm({ smartPlan: plan, canApply: true })} />);
+    const chip = screen.getByTestId('inbound-summary-inactive-patient');
+    expect(chip).toHaveTextContent('非稼働患者');
+    expect(chip).toHaveTextContent('3');
+  });
+
+  it('⑥b inactive_patient が 0 / 未提供ならチップを出さない', () => {
+    const { unmount } = render(
+      <InboundControls
+        vm={makeVm({
+          smartPlan: {
+            ...SMART_PLAN,
+            diffSummary: { ...SMART_PLAN.diffSummary, inactive_patient: 0 },
+          },
+          canApply: true,
+        })}
+      />,
+    );
+    expect(screen.queryByTestId('inbound-summary-inactive-patient')).toBeNull();
+    unmount();
+
+    render(<InboundControls vm={makeVm({ smartPlan: SMART_PLAN, canApply: true })} />);
+    expect(screen.queryByTestId('inbound-summary-inactive-patient')).toBeNull();
+  });
 });

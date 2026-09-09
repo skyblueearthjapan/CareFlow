@@ -210,6 +210,7 @@ export default function EditPatientPage() {
         weeklyPattern={patient.weekly_pattern as WeeklyPattern | null | undefined}
         primaryOfficeId={patient.primary_office_id}
         requiresMultipleStaff={patient.requires_multiple_staff === true}
+        patientStatus={patient.status}
       />
 
       <PatientStatusChangeDialog {...statusGate.dialogProps} />

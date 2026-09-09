@@ -73,6 +73,7 @@ import type { Office } from '@/lib/schemas/office';
 import {
   SERVICE_MINUTES_OPTIONS,
   DEFAULT_SERVICE_MINUTES,
+  inactiveStatusLabel,
   type WeeklyPattern,
 } from '@/lib/schemas/patient';
 import { isAdminRole } from '@/lib/rbac';
@@ -874,6 +875,18 @@ function WeekGrid({
   );
 }
 
+/**
+ * 422 の detail が `allowed_scope: 'pattern_only'`（非稼働患者の型編集は許可・週反映は拒否）か。
+ * 設計 = `patient-status-schedule-design-2026-09-09.md` §3-3 / §7-3 (d)。
+ */
+function allowedScopeIsPatternOnly(err: unknown): boolean {
+  const body = (err as { body?: unknown } | null)?.body;
+  if (!body || typeof body !== 'object') return false;
+  const detail = (body as { detail?: unknown }).detail;
+  if (!detail || typeof detail !== 'object') return false;
+  return (detail as { allowed_scope?: unknown }).allowed_scope === 'pattern_only';
+}
+
 // ─── Sub-component: ModePanel ─────────────────────────────────────────────────
 
 interface ModePanelProps {
@@ -899,6 +912,11 @@ interface ModePanelProps {
   primaryOfficeId: string | null | undefined;
   /** Phase E-5: sub_office_id → course_templates の lookup */
   getSubOfficeCourseTemplates: (subOfficeId: string | null) => CourseTemplateRead[];
+  /**
+   * Phase 2 (設計 §3-3): 患者ステータス (`patients.status`)。
+   * 非稼働ならバナーを出し、反映先を「型だけ」に固定する。
+   */
+  patientStatus?: string | null;
 }
 
 function ModePanel({
@@ -913,7 +931,10 @@ function ModePanel({
   offices,
   primaryOfficeId,
   getSubOfficeCourseTemplates,
+  patientStatus,
 }: ModePanelProps) {
+  // 非稼働 (入院中・一時休止・解約済み・開始前) のときの表示ラベル。null = 稼働中。
+  const inactiveLabel = inactiveStatusLabel(patientStatus);
   const { data: reads = [], isLoading } = useFixedVisits(patientId, mode);
   const updateMut = useUpdateFixedVisits(patientId);
   const deleteMut = useDeleteFixedVisits(patientId);
@@ -1130,7 +1151,8 @@ function ModePanel({
     // Phase E (設計 §6・PO 決定 8): 反映先はユーザーの明示選択。既定は「型だけ」で、
     // 週を作り直すのは (B) を選んだときだけ。対象週も確認ダイアログで決まった値を使う
     // (旧実装が無確認で「今日の週」を作り直していた欠陥 6 の根治)。
-    const applyToWeek = choice?.changeScope === 'pattern_and_week';
+    // 非稼働のあいだは週への反映を送らない (ダイアログ側でも固定済みだが、BE 422 と二重の安全網)。
+    const applyToWeek = choice?.changeScope === 'pattern_and_week' && inactiveLabel === null;
     const result = patientFixedVisitsBulkPutSchema.safeParse(
       choice === null
         ? { mode, items }
@@ -1207,8 +1229,14 @@ function ModePanel({
       // 理由 (pinned 保護 / サブ拠点不一致 など) はすべて body 側にある。
       // apiErrorMessage で detail を展開しないと現場は原因を判断できない。
       const msg = apiErrorMessage(e, '保存に失敗しました');
-      setFormError(msg);
-      toast.error(`保存に失敗しました: ${msg}`);
+      // 入口ガード (設計 §3-3): 非稼働患者の週反映は 422 + allowed_scope='pattern_only'。
+      // 画面側でも固定しているので通常は到達しないが、到達したときにやることを伝える。
+      const patternOnly = allowedScopeIsPatternOnly(e);
+      const shown = patternOnly
+        ? `${msg}（型だけの保存にしてください。週への反映は稼働中に戻してから）`
+        : msg;
+      setFormError(shown);
+      toast.error(`保存に失敗しました: ${shown}`);
     }
   };
 
@@ -1231,6 +1259,17 @@ function ModePanel({
 
   return (
     <div className="space-y-4">
+      {/* Phase 2 (設計 §3-3): 非稼働の間は型だけ編集できる。復帰に備えて直しておけるが、
+          週への反映は稼働中に戻してから (BE も 422 で止める)。 */}
+      {inactiveLabel ? (
+        <div
+          className="rounded-md border border-amber-400 bg-amber-50/60 px-3 py-2 text-sm text-amber-900"
+          data-testid="pfv-inactive-banner"
+        >
+          {inactiveLabel}: 型のみ編集できます（週への反映は稼働中に戻してから）
+        </div>
+      ) : null}
+
       {/* W37 Phase 3-A: フラグ ON 時のみヘルプ表示 */}
       {requiresMultipleStaff && !readonly ? (
         <Alert>
@@ -1445,6 +1484,7 @@ function ModePanel({
           // 検査 → PUT が終わるまでダイアログは開いたままにし、ボタンだけ止める
           // (押しっぱなしの二重送信と「押したのに何も起きない」を同時に防ぐ)。
           submitting={updateMut.isPending || validateMut.isPending}
+          patientStatusLabel={inactiveLabel}
           onCancel={() => setScopeConfirm(null)}
           onConfirm={(choice) => {
             void handleSave(choice).finally(() => setScopeConfirm(null));
@@ -1593,6 +1633,12 @@ export interface PatientFixedVisitsPanelProps {
    */
   isoYear?: number;
   isoWeek?: number;
+  /**
+   * Phase 2 (設計 §3-3): 患者ステータス (`patients.status`)。
+   * 非稼働なら「型のみ編集できます」のバナーを出し、
+   * 保存の反映先を「型だけ」に固定する (BE も 422 で止める)。
+   */
+  patientStatus?: string | null;
 }
 
 export function PatientFixedVisitsPanel({
@@ -1603,6 +1649,7 @@ export function PatientFixedVisitsPanel({
   requiresMultipleStaff = false,
   isoYear,
   isoWeek,
+  patientStatus,
 }: PatientFixedVisitsPanelProps) {
   const { data: session } = useSession();
   const role = session?.user?.role;
@@ -1665,6 +1712,7 @@ export function PatientFixedVisitsPanel({
               offices={offices}
               primaryOfficeId={primaryOfficeId ?? null}
               getSubOfficeCourseTemplates={getSubOfficeCourseTemplates}
+              patientStatus={patientStatus}
             />
           </TabsContent>
         ))}

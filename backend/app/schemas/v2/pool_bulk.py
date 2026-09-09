@@ -24,6 +24,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.v2.auto_schedule_v2 import V2WeekdayBeforeAfter
+from app.schemas.v2.patient_guard import ExcludedPatient
 
 # 単一ソースはエンジン. スキーマは再エクスポートのみ (二重定義排除).
 from app.services.scheduling.pool_bulk_inserter import POOL_BULK_MAX_PATIENTS
@@ -153,6 +154,11 @@ class PoolBulkSimulateResponse(BaseModel):
     kpi: PoolBulkKpi
     # 楽観ロック用指紋 (apply=W-2 で再計算し不一致なら 409).
     state_token: str
+    # 入口ガード (Phase 2 §3-3): 非稼働患者は拒否ではなく **除外**して知らせる.
+    excluded_patients: list[ExcludedPatient] = Field(
+        default_factory=list,
+        description="非稼働 / 不存在のためシミュレーション対象から外した患者",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -201,10 +207,16 @@ class PoolBulkApplyResponse(BaseModel):
         default_factory=list,
         description="pfv_validator V3-V5 (衝突/昼休み/容量) の warning 文言 (ブロックしない)",
     )
+    # 入口ガード (Phase 2 §3-3): 非稼働患者は拒否ではなく **除外**して知らせる.
+    excluded_patients: list[ExcludedPatient] = Field(
+        default_factory=list,
+        description="非稼働 / 不存在のため適用対象から外した患者 (warnings にも 1 行載る)",
+    )
 
 
 __all__ = [
     "POOL_BULK_MAX_PATIENTS",
+    "ExcludedPatient",
     "PoolBulkApplyRequest",
     "PoolBulkApplyResponse",
     "PoolBulkKpi",

@@ -9,6 +9,7 @@ relay endpoints to the existing kaipoke-api (Flask + Playwright) so the
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Literal
 from uuid import UUID
@@ -17,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
@@ -24,6 +26,7 @@ from app.core.deps import DbDep, require_role
 from app.models.correction_sheet import CorrectionSheet, CorrectionSheetItem
 from app.models.geocoding_cache import GeocodingCache
 from app.models.kaipoke_job import KaipokeJob, KaipokeJobItem
+from app.models.patient import Patient
 from app.models.user import User
 from app.schemas._pagination import Paginated
 from app.schemas.integrations import (
@@ -100,6 +103,7 @@ from app.services.kaipoke_client import (
     KaipokeClient,
     get_kaipoke_client,
 )
+from app.services.patient_status_sync import is_schedulable_status
 
 logger = logging.getLogger(__name__)
 
@@ -1915,6 +1919,9 @@ async def _build_inbound_sheet(
     # 利用者名 → patient_id、担当名 → staff_id、(patient, date, start) → visit_id の解決。
     patients = (await db.scalars(select(Patient).where(Patient.deleted_at.is_(None)))).all()
     pindex = build_name_index({str(p.id): p.name for p in patients})
+    # 患者ステータス連動 Phase 2 (設計 §7-3(d)): 非稼働患者はカイポケ側から
+    # **add し直さない**。ここで判定して自動選択から外し、summary で件数を出す。
+    status_by_patient: dict[UUID, str | None] = {p.id: p.status for p in patients}
     sindex, _smap = await load_staff_name_index(db)
     visit_index = await load_week_visit_index(db, week_start, week_end)
 
@@ -1955,12 +1962,22 @@ async def _build_inbound_sheet(
         # 既定 include (設計 §8): キャンセル/変更 = 対象 visit まで特定できたもの。
         # add = 患者と担当が名寄せ解決できたもの (コースは臨時新設で常に解決可能)。
         # 未解決は OFF で可視化 (人が判断)。
+        # 非稼働患者への add 行 (Phase 2 §7-3(d)): 取り込むと「入院中なのに予定が
+        # 復活」するので **自動選択しない** (人が明示的に ON にすれば apply 側で
+        # skip される = 二重の蓋)。cancel/edit は残骸掃除なのでそのまま通す。
+        inactive_add = c.action == "add" and (
+            pid is not None and not is_schedulable_status(status_by_patient.get(pid))
+        )
         if c.action == "add":
-            include = pid is not None and bool(
-                match_name(str((after or {}).get("staff1") or ""), sindex)
+            include = (
+                pid is not None
+                and not inactive_add
+                and bool(match_name(str((after or {}).get("staff1") or ""), sindex))
             )
         else:
             include = c.action in ("delete", "edit", "date_change") and visit_id is not None
+        if inactive_add:
+            summary["inactive_patient"] += 1
         items.append(
             CorrectionSheetItem(
                 sheet_id=sheet.id,
@@ -1976,6 +1993,8 @@ async def _build_inbound_sheet(
     summary["total"] = len(items)
     summary["unresolved_patient"] = unresolved
     summary["auto_selected"] = sum(1 for it in items if it.include)
+    # 0 件でもキーを出す (FE が「非稼働 0 件」を表示できるように)。
+    summary["inactive_patient"] = summary.get("inactive_patient", 0)
     db.add_all(items)
     return sheet, summary
 
@@ -2451,6 +2470,34 @@ async def patch_job_item(
 # --- Wave 4-A: correction sheets / items (Phase C) -------------------------
 
 
+async def _read_correction_items(
+    db: AsyncSession,
+    rows: Sequence[CorrectionSheetItem],
+) -> list[CorrectionItemRead]:
+    """行を ``CorrectionItemRead`` にし、患者ステータス (Phase 2) を補完する.
+
+    ``patient_status`` / ``inactive_patient`` は DB 列ではなく **読み出し時に
+    patients から引く** (取込シートは長生きするので、保存時点の状態を焼き付けると
+    「その後入院した」患者を見落とす)。``inactive_patient`` は add 行のみ True
+    = 取り込むと予定が復活してしまう行 (適用側でも skip する)。
+    """
+    reads = [CorrectionItemRead.model_validate(r, from_attributes=True) for r in rows]
+    pids = {r.patient_id for r in reads if r.patient_id is not None}
+    if not pids:
+        return reads
+    status_rows = (
+        await db.execute(select(Patient.id, Patient.status).where(Patient.id.in_(pids)))
+    ).all()
+    status_by_id = {pid: st for pid, st in status_rows}
+    for read in reads:
+        if read.patient_id is None:
+            continue
+        st = status_by_id.get(read.patient_id)
+        read.patient_status = st
+        read.inactive_patient = read.action == "add" and not is_schedulable_status(st)
+    return reads
+
+
 @router.get(
     "/correction-sheets/latest",
     response_model=CorrectionSheetRead,
@@ -2468,7 +2515,10 @@ async def get_latest_correction_sheet(
     sheet = await db.scalar(stmt)
     if sheet is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No sheet found")
-    return CorrectionSheetRead.model_validate(sheet, from_attributes=True)
+    out = CorrectionSheetRead.model_validate(sheet, from_attributes=True)
+    # Phase 2: 患者ステータスを読み出し時に補完する (items も同じ形で返す)。
+    out.items = await _read_correction_items(db, list(sheet.items))
+    return out
 
 
 @router.get(
@@ -2504,7 +2554,7 @@ async def list_correction_items(
     ).all()
     total = (await db.scalar(count_stmt)) or 0
     return Paginated[CorrectionItemRead](
-        items=[CorrectionItemRead.model_validate(r, from_attributes=True) for r in rows],
+        items=await _read_correction_items(db, rows),
         total=int(total),
         limit=limit,
         offset=offset,
@@ -2530,7 +2580,10 @@ async def update_correction_item(
     if payload.comment is not None:
         item.comment = payload.comment
     await _commit_or_409(db)
-    return CorrectionItemRead.model_validate(item, from_attributes=True)
+    # commit で ORM オブジェクトが expire するため、属性アクセスの前に明示 refresh
+    # する (非同期セッションでは lazy な再読込が MissingGreenlet になる)。
+    await db.refresh(item)
+    return (await _read_correction_items(db, [item]))[0]
 
 
 @router.post(
@@ -3923,6 +3976,7 @@ async def replace_inbound(
                 staff_name=s.staff_name,
                 target_date=s.date,
                 start=s.start,
+                code=s.code,
             )
             for s in result.skipped
         ],
@@ -3960,6 +4014,7 @@ def _replace_result_read(result, job_id) -> ReplaceInboundResult:
                 staff_name=s.staff_name,
                 target_date=s.date,
                 start=s.start,
+                code=s.code,
             )
             for s in result.skipped
         ],
@@ -4259,6 +4314,7 @@ async def smart_inbound_apply(
                         detail=r.detail,
                         patient_name=r.patient_name,
                         date=r.date,
+                        reason=r.reason,
                     )
                     for r in summary.results
                 ],

@@ -27,6 +27,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { usePoolOverviewMutation } from '@/lib/queries/poolOverview';
+import { patientNameFromMessage } from '@/components/schedule/v2/patientNotActiveGateContext';
 import { EXCLUDED_REASON_LABEL } from './PoolCandidateList';
 import { SpecialVisitPoolSection } from './SpecialTicketPlacePanel';
 import {
@@ -35,10 +36,23 @@ import {
   type PoolCardSlotInfo,
 } from './PoolPanel';
 import type { PatientRead } from '@/lib/schemas/patient';
-import type { PoolOverviewItem } from '@/lib/schemas/v2/poolOverview';
+import type { ExcludedPatient, PoolOverviewItem } from '@/lib/schemas/v2/poolOverview';
 
 /** pool-overview API 上限 */
 const POOL_OVERVIEW_LIMIT = 50;
+
+/**
+ * 入口ガード Phase 2 (設計 §3-3): 非稼働で計算から外れた患者を 1 行で知らせる。
+ * 黙って減っているのが一番悪いので、何名・誰が外れたかを必ず出す。
+ */
+export function excludedPatientsMessage(excluded: readonly ExcludedPatient[]): string | null {
+  if (excluded.length === 0) return null;
+  const first = excluded[0]!;
+  const name = first.patient_name ?? patientNameFromMessage(first.message) ?? '対象の患者';
+  const label = first.status_label || '稼働中以外';
+  const head = `${name}様は${label}のため除外しました`;
+  return excluded.length === 1 ? head : `${head}（ほか ${excluded.length - 1} 名）`;
+}
 
 /** pool-overview 除外理由の日本語ラベル (EXCLUDED_REASON_LABEL 共用) */
 function overviewExcludedLabel(reason: string | null | undefined): string {
@@ -198,12 +212,15 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
           patient_ids: targetIds,
         },
         {
-          onSuccess: () => {
+          onSuccess: (res) => {
             if (truncated) {
               toast.warning(
                 `プール患者が ${ids.length} 名います。先頭 ${POOL_OVERVIEW_LIMIT} 名のみ計算しました。`,
               );
             }
+            // zod 側で default [] だが、旧 BE / 部分モックで欠けても落ちないようにする。
+            const excludedMsg = excludedPatientsMessage(res?.excluded_patients ?? []);
+            if (excludedMsg) toast.warning(excludedMsg);
           },
           onError: () => {
             toast.error('効果計算に失敗しました');

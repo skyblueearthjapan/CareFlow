@@ -320,6 +320,7 @@ export default function PatientDetailPage() {
         primaryOfficeId={data.primary_office_id ?? null}
         readOnly={true}
         requiresMultipleStaff={data.requires_multiple_staff === true}
+        patientStatus={data.status}
       />
 
       <Card className="p-5 space-y-3">

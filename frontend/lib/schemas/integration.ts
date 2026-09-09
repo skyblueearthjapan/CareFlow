@@ -264,6 +264,13 @@ export const CorrectionItemReadSchema = z.object({
   comment: z.string().nullable().optional(),
   created_at: z.string(),
   updated_at: z.string(),
+  /**
+   * 入口ガード Phase 2 (設計 §3-3 / §7-3 (d))。らく助側の患者ステータスと
+   * 「非稼働患者の行」判定。非稼働の add は BE が include=false で返す
+   * (既定で取り込まない)。旧 BE は返さないので任意・既定 false。
+   */
+  patient_status: z.string().nullable().catch(null),
+  inactive_patient: z.boolean().catch(false),
 });
 export type CorrectionItem = z.infer<typeof CorrectionItemReadSchema>;
 

@@ -38,6 +38,7 @@ import { useProposeSlots, proposeWarningLabel } from '@/lib/queries/fieldBoard';
 import { usePlaceAndFix } from '@/lib/queries/place_and_fix';
 import { useConfirmFixedVisits } from '@/lib/queries/propose_confirm';
 import { usePlaceSpecialMark } from '@/lib/queries/specialVisitWeek';
+import { useGuardedMutation } from '@/components/schedule/v2/patientNotActiveGateContext';
 import { useFixedVisits, toastFixedVisitWarnings } from '@/lib/queries/patient_fixed_visits';
 import { useProposeUnblockMutation, useUnblockApplyMutation } from '@/lib/queries/unblock';
 import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
@@ -135,12 +136,19 @@ export interface PoolCandidateSpecialTicket {
   } | null;
 }
 
-/** ApiError 由来の detail 文字列を取り出す (409「既に配置済みです」等をそのまま出す)。 */
+/**
+ * ApiError 由来の detail 文字列を取り出す (409「既に配置済みです」等をそのまま出す)。
+ * detail がオブジェクトの 422 (入口ガードの patient_not_active など) は `message` を使う。
+ */
 function apiErrorDetail(err: unknown): string | null {
   const body = (err as { body?: unknown } | null)?.body;
   if (body && typeof body === 'object') {
     const detail = (body as { detail?: unknown }).detail;
     if (typeof detail === 'string' && detail) return detail;
+    if (detail && typeof detail === 'object') {
+      const message = (detail as { message?: unknown }).message;
+      if (typeof message === 'string' && message) return message;
+    }
   }
   return null;
 }
@@ -1134,11 +1142,12 @@ export function PoolCandidateList({
   // 方式b: 超過候補採用時の管理者判断理由 (確認モーダルの必須テキストエリア)。
   const [overcapacityReason, setOvercapacityReason] = React.useState('');
 
-  const proposeMut = useProposeSlots();
-  const confirmMut = useConfirmFixedVisits();
-  const placeAndFixMut = usePlaceAndFix();
+  // 非稼働患者の入口ガード (422 patient_not_active → 「稼働中にして続ける」導線)。
+  const proposeMut = useGuardedMutation(useProposeSlots());
+  const confirmMut = useGuardedMutation(useConfirmFixedVisits());
+  const placeAndFixMut = useGuardedMutation(usePlaceAndFix());
   // 特別モードの確定経路 (PFV を作らずその週の visit だけを増やす)。
-  const placeSpecialMut = usePlaceSpecialMark();
+  const placeSpecialMut = useGuardedMutation(usePlaceSpecialMark());
   // NG スタッフ / 性別制限 (§7-2): 422 を確認ダイアログ → acknowledge 再送で通す.
   const constraintConfirm = useConstraintConfirmRetry();
   // マージ確定用に既存 normal 固定枠を取得 (採用しなかった曜日を保持するため).
@@ -1390,7 +1399,7 @@ export function PoolCandidateList({
           include_efficiency_alternatives: !specialTicket,
           include_overcapacity: includeOvercapacity,
         },
-        { onError: () => toast.error('候補の取得に失敗しました') },
+        { onError: (err) => toast.error(apiErrorDetail(err) ?? '候補の取得に失敗しました') },
       );
     },
     [patient, isoYear, isoWeek, officeId, proposeMut, specialTicket],
@@ -1554,7 +1563,7 @@ export function PoolCandidateList({
             ) {
               return;
             }
-            toast.error('採用に失敗しました');
+            toast.error(apiErrorDetail(err) ?? '採用に失敗しました');
           },
         },
       );
@@ -1599,7 +1608,7 @@ export function PoolCandidateList({
             ) {
               return;
             }
-            toast.error('配置に失敗しました');
+            toast.error(apiErrorDetail(err) ?? '配置に失敗しました');
           },
         },
       );

@@ -268,6 +268,9 @@ class CalendarRead(BaseModel):
 
     period: PeriodRead
     weeks: list[CalendarWeek] = []
+    # Phase 2 (設計 §7-3(d)): カレンダーは非稼働でも出す (○ は「残す」既定) ので、
+    # 除外の代わりに患者の状態を載せて FE でバッジ / バナー表示する.
+    patient_status: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +292,9 @@ class PoolPatient(BaseModel):
     lat: float | None = None
     lng: float | None = None
     primary_office_id: UUID | None = None
+    # Phase 2 (設計 §7-3(d)): 特別訪問週間の ○ は非稼働でも **残す** (PO 決定 Q12/Q⭐)
+    # ため、プールから除外はせず状態だけ載せて FE でバッジ表示する.
+    patient_status: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -306,6 +312,7 @@ class PoolPatient(BaseModel):
             "lat": float(data.lat) if data.lat is not None else None,
             "lng": float(data.lng) if data.lng is not None else None,
             "primary_office_id": data.primary_office_id,
+            "patient_status": getattr(data, "status", None),
         }
 
 

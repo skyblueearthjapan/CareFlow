@@ -74,6 +74,8 @@ import {
   useSpecialVisitPeriods,
   useUpdateSpecialVisitPeriod,
 } from '@/lib/queries/specialVisitWeek';
+import { useGuardedMutation } from '@/components/schedule/v2/patientNotActiveGateContext';
+import { inactiveStatusLabel } from '@/lib/schemas/patient';
 import type {
   SpecialCalendarDay,
   SpecialCalendarWeek,
@@ -245,6 +247,9 @@ export function SpecialVisitWeekDialog({
     periods.find((p) => p.status === 'active') ?? null;
 
   const calendarQuery = useSpecialVisitCalendar(open ? (activePeriod?.id ?? null) : null);
+  // 非稼働 (入院中など) なら見出しにバッジを出す (Phase 2 ・設計 §3-3)。
+  // 期間は残す方針 (PO 決定 Q⭐) なので閉ざないが、配置しようとすれば入口ガードが問い直す。
+  const patientInactiveLabel = inactiveStatusLabel(calendarQuery.data?.patient_status);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -257,6 +262,16 @@ export function SpecialVisitWeekDialog({
           <DialogTitle>
             特別訪問週間
             <span className="ml-2 text-sm font-normal text-text-secondary">{patientName}</span>
+            {patientInactiveLabel ? (
+              <Badge
+                variant="warning"
+                className="ml-2 h-5 px-1.5 text-[11px] align-middle"
+                data-testid="svw-patient-inactive"
+                title={`${patientName}様は${patientInactiveLabel}のため予定に入れられません`}
+              >
+                {patientInactiveLabel}
+              </Badge>
+            ) : null}
           </DialogTitle>
           <DialogDescription id="special-visit-week-description">
             期間と週の目標回数を決め、追加したい日を保留プールに積みます（○＝プール待ち・時間未定）。
@@ -313,7 +328,8 @@ function PeriodCreateForm({ patientId }: { patientId: string }) {
   const [weeklyTarget, setWeeklyTarget] = React.useState<number>(5);
   const [note, setNote] = React.useState<string>('');
 
-  const createMut = useCreateSpecialVisitPeriod();
+  // 非稼働患者の入口ガード (PO 決定 Q⭐: 特別訪問週間も確認して稼働中にしてから登録)。
+  const createMut = useGuardedMutation(useCreateSpecialVisitPeriod());
 
   const preset = PERIOD_PRESETS.find((p) => p.label === presetLabel) ?? PERIOD_PRESETS[0]!;
   const endDate = computeEndDate(startDate, preset);
@@ -455,10 +471,10 @@ interface PlaceTarget {
 }
 
 function PeriodCalendar({ period, weeks, isLoading, isError }: PeriodCalendarProps) {
-  const createMark = useCreateSpecialVisitMark();
+  const createMark = useGuardedMutation(useCreateSpecialVisitMark());
   const deleteMark = useDeleteSpecialVisitMark();
-  const displaceMut = useDisplaceSpecialVisit();
-  const restoreMut = useRestoreSpecialVisitMark();
+  const displaceMut = useGuardedMutation(useDisplaceSpecialVisit());
+  const restoreMut = useGuardedMutation(useRestoreSpecialVisitMark());
 
   /** 確認ダイアログ (○ の取消 / ● の取消 / 配置の決め直し)。 */
   const [confirm, setConfirm] = React.useState<ConfirmSpec | null>(null);

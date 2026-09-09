@@ -60,12 +60,14 @@ from app.services.constraint_override_notify import (
     notify_constraint_override_for_course,
     resolve_week_course_for_template,
 )
+from app.services.patient_status_sync import is_schedulable_status
 from app.services.scheduling.auto_allocator_v2 import (
     COURSE_MAX_MINUTES,
     reset_visits_to_fixed,
     resolve_reset_office_ids,
 )
 from app.services.scheduling.config import load_scheduling_config
+from app.services.scheduling.guards import patient_not_active_detail
 from app.services.scheduling.layer1_expander import _is_special_week_active
 from app.services.scheduling.pfv_validator import validate_pfv_changes
 
@@ -549,7 +551,16 @@ async def put_fixed_visits(
     違反があれば ``code=constraint_confirmation_required`` の 422、
     ``acknowledge_constraint_warnings=true`` の再送で続行 + 管理者へお知らせ。
     """
-    await _ensure_patient_exists(db, patient_id)
+    patient = await _ensure_patient_exists(db, patient_id)
+
+    # 入口ガード (Phase 2・設計 §7-3(d)): **型の編集は非稼働でも許可**する
+    # (復帰時に型から作り直すため・§3-3)。週へ反映する pattern_and_week だけ 422。
+    # detail は単一ソース (guards.patient_not_active_detail) に `allowed_scope` を足す。
+    if body.change_scope == "pattern_and_week" and not is_schedulable_status(patient.status):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=patient_not_active_detail(patient, allowed_scope="pattern_only"),
+        )
 
     # 定員超過の管理者相談プロセス (方式b): 採用時の理由記録 (監査はミドルウェア任せ).
     # 値があれば info ログに残すだけで、検証や挙動変更はしない (容量チェックは warning-only).

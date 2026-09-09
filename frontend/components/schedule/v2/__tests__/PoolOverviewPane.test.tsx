@@ -20,7 +20,17 @@ const { mockToast, mockMutationState } = vi.hoisted(() => ({
   mockMutationState: {
     isPending: false,
     isSuccess: false,
-    data: undefined as { items: Array<{ patient_id: string; best_delta_minutes: number | null; candidate_count: number; top_excluded_reason: string | null; best_slot: null }> } | undefined,
+    data: undefined as
+      | {
+          items: Array<{
+            patient_id: string;
+            best_delta_minutes: number | null;
+            candidate_count: number;
+            top_excluded_reason: string | null;
+            best_slot: null;
+          }>;
+        }
+      | undefined,
     mutate: vi.fn(),
   },
 }));
@@ -30,7 +40,10 @@ const { mockToast, mockMutationState } = vi.hoisted(() => ({
 vi.mock('sonner', () => ({ toast: mockToast }));
 
 vi.mock('next-auth/react', () => ({
-  useSession: () => ({ data: { accessToken: 'tok', refreshToken: 'ref' }, status: 'authenticated' }),
+  useSession: () => ({
+    data: { accessToken: 'tok', refreshToken: 'ref' },
+    status: 'authenticated',
+  }),
 }));
 
 vi.mock('@/lib/queries/poolOverview', () => ({
@@ -184,9 +197,7 @@ describe('PoolOverviewPane', () => {
   // ── 1. 計算ボタン ─────────────────────────────────────────────────────────
 
   it('計算ボタンが表示される', () => {
-    render(
-      <PoolOverviewPane {...BASE_PROPS} patients={[makePatient('p1', '田中')]} />,
-    );
+    render(<PoolOverviewPane {...BASE_PROPS} patients={[makePatient('p1', '田中')]} />);
     expect(screen.getByTestId('pool-overview-compute-button')).toBeInTheDocument();
   });
 
@@ -312,13 +323,37 @@ describe('PoolOverviewPane', () => {
     mockMutationState.data = {
       items: [
         // p3: delta=null (末尾寄り)
-        { patient_id: 'p3', best_delta_minutes: null, candidate_count: 2, top_excluded_reason: null, best_slot: null },
+        {
+          patient_id: 'p3',
+          best_delta_minutes: null,
+          candidate_count: 2,
+          top_excluded_reason: null,
+          best_slot: null,
+        },
         // p4: candidate_count=0 (最後尾)
-        { patient_id: 'p4', best_delta_minutes: null, candidate_count: 0, top_excluded_reason: null, best_slot: null },
+        {
+          patient_id: 'p4',
+          best_delta_minutes: null,
+          candidate_count: 0,
+          top_excluded_reason: null,
+          best_slot: null,
+        },
         // p1: delta=5
-        { patient_id: 'p1', best_delta_minutes: 5, candidate_count: 1, top_excluded_reason: null, best_slot: null },
+        {
+          patient_id: 'p1',
+          best_delta_minutes: 5,
+          candidate_count: 1,
+          top_excluded_reason: null,
+          best_slot: null,
+        },
         // p2: delta=10
-        { patient_id: 'p2', best_delta_minutes: 10, candidate_count: 1, top_excluded_reason: null, best_slot: null },
+        {
+          patient_id: 'p2',
+          best_delta_minutes: 10,
+          candidate_count: 1,
+          top_excluded_reason: null,
+          best_slot: null,
+        },
       ],
     };
 
@@ -346,9 +381,7 @@ describe('PoolOverviewPane', () => {
   // ── 5. 50 件超過 ─────────────────────────────────────────────────────────
 
   it('patients > 50 件のとき先頭 50 件のみ送信し toast.warning を出す', async () => {
-    const patients = Array.from({ length: 55 }, (_, i) =>
-      makePatient(`p${i}`, `患者${i}`),
-    );
+    const patients = Array.from({ length: 55 }, (_, i) => makePatient(`p${i}`, `患者${i}`));
 
     // mutate の onSuccess を即時実行するよう mock
     mockMutationState.mutate = vi.fn((_payload, options?: { onSuccess?: () => void }) => {
@@ -362,9 +395,7 @@ describe('PoolOverviewPane', () => {
     expect(payload.patient_ids).toHaveLength(50);
     expect(payload.patient_ids[0]).toBe('p0');
     expect(payload.patient_ids[49]).toBe('p49');
-    expect(mockToast.warning).toHaveBeenCalledWith(
-      expect.stringContaining('55 名'),
-    );
+    expect(mockToast.warning).toHaveBeenCalledWith(expect.stringContaining('55 名'));
   });
 
   // ── 6. Stage P-3: 外部トリガー (forwardRef / triggerCompute) ──────────────
@@ -435,5 +466,58 @@ describe('PoolOverviewPane', () => {
       />,
     );
     expect(screen.queryByTestId('pool-unregistered-chip')).not.toBeInTheDocument();
+  });
+  // ── 7. 入口ガード Phase 2: 非稼働で除外された患者を黙って減らさない ───
+
+  it('excluded_patients があれば 1 行の toast.warning で知らせる', () => {
+    mockMutationState.mutate = vi.fn(
+      (
+        _payload,
+        options?: { onSuccess?: (res: { items: unknown[]; excluded_patients: unknown[] }) => void },
+      ) => {
+        options?.onSuccess?.({
+          items: [],
+          excluded_patients: [
+            {
+              patient_id: 'p1',
+              status: 'admitted',
+              status_label: '入院中',
+              message: '小湊 花子様は入院中のため予定に入れられません',
+              patient_name: null,
+            },
+            {
+              patient_id: 'p2',
+              status: 'suspended',
+              status_label: '一時休止',
+              message: '藤原 太郎様は一時休止のため予定に入れられません',
+              patient_name: null,
+            },
+          ],
+        });
+      },
+    );
+
+    render(<PoolOverviewPane {...BASE_PROPS} patients={[makePatient('p1', '小湊')]} />);
+    fireEvent.click(screen.getByTestId('pool-overview-compute-button'));
+
+    expect(mockToast.warning).toHaveBeenCalledWith(
+      '小湊 花子様は入院中のため除外しました（ほか 1 名）',
+    );
+  });
+
+  it('excluded_patients が空なら除外の toast は出さない', () => {
+    mockMutationState.mutate = vi.fn(
+      (
+        _payload,
+        options?: { onSuccess?: (res: { items: unknown[]; excluded_patients: unknown[] }) => void },
+      ) => {
+        options?.onSuccess?.({ items: [], excluded_patients: [] });
+      },
+    );
+
+    render(<PoolOverviewPane {...BASE_PROPS} patients={[makePatient('p1', '小湊')]} />);
+    fireEvent.click(screen.getByTestId('pool-overview-compute-button'));
+
+    expect(mockToast.warning).not.toHaveBeenCalled();
   });
 });

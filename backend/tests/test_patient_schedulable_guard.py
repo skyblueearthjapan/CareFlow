@@ -140,11 +140,14 @@ async def test_split_separates_active_and_non_active(db) -> None:
 
     # 入力順を保ち、重複は 1 回だけ
     assert ok == [active.id, active2.id]
-    assert [e["patient_id"] for e in excluded] == [str(admitted.id), str(missing)]
-    assert excluded[0]["status"] == "admitted"
-    assert excluded[0]["status_label"] == "入院中"
-    assert excluded[0]["message"] == "山田様は入院中のため予定に入れられません"
-    assert excluded[1]["status"] is None
+    # Phase 2: 除外は **型付き** (ExcludedPatient) で返る — レスポンス組み立て側が
+    # dict を splat しなくて済むようにするため (extra="forbid" 対策)。
+    assert [e.patient_id for e in excluded] == [str(admitted.id), str(missing)]
+    assert excluded[0].status == "admitted"
+    assert excluded[0].status_label == "入院中"
+    assert excluded[0].message == "山田様は入院中のため予定に入れられません"
+    assert excluded[1].status is None
+    assert excluded[1].status_label == "不明"
 
 
 @pytest.mark.asyncio

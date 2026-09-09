@@ -31,6 +31,7 @@ from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.user import User, normalize_user_role
 from app.models.visit import (
+    VISIT_SOURCES_LOCAL_CANCEL,
     VISIT_STATUS_CANCELLED,
     VISIT_STATUS_COMPLETED,
     VISIT_STATUS_IN_PROGRESS,
@@ -65,6 +66,7 @@ from app.services.constraint_override_notify import (
     constraint_confirmation_detail,
 )
 from app.services.op_log_service import fmt_time, fmt_weekday, record_op
+from app.services.scheduling.guards import ensure_patient_schedulable
 from app.utils.db import try_advisory_xact_lock
 
 router = APIRouter()
@@ -639,6 +641,8 @@ async def create_visit(
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> dict:
+    # 入口ガード (Phase 2・設計 §7-3(d)): 非稼働患者は 422 `patient_not_active`.
+    await ensure_patient_schedulable(db, payload.patient_id)
     # NG スタッフ / 性別制限 (§7-2): 作成時に担当 / コースが指定されていれば検査する。
     await _guard_constraint_violations(
         db,
@@ -699,6 +703,25 @@ async def update_visit(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="今週固定（青ピン）されています。解除してから時刻・日付を変更してください",
+        )
+
+    # 入口ガード (Phase 2・設計 §7-3(d)) その 1: **患者の付け替え**は「その患者を
+    # 予定に入れる」操作なので、移す先が非稼働なら 422。同一患者への PATCH
+    # (担当変更・メモ等) は非稼働でも通す — 残骸の手当てを塞がないため。
+    if changes.get("patient_id") is not None and changes["patient_id"] != visit.patient_id:
+        await ensure_patient_schedulable(db, changes["patient_id"])
+
+    # その 2: **らく助側の意思による取消を PATCH で planned へ戻させない**
+    # ('status_cancel' ステータス連動 / 'manual_cancel' 今週だけ取消)。
+    # 正しい戻し方はステータスを稼働中にすること (型から再生成される)。
+    if (
+        visit.source in VISIT_SOURCES_LOCAL_CANCEL
+        and changes.get("status") == VISIT_STATUS_PLANNED
+        and visit.status != VISIT_STATUS_PLANNED
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="ステータス連動で取消された予定は稼働中に戻してください",
         )
 
     # NG スタッフ / 性別制限 (§7-2): 担当 (primary_staff_id) かコース (course_id) が

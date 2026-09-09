@@ -21,6 +21,8 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.v2.patient_guard import ExcludedPatient
+
 # サイズガード: 1 リクエストで扱えるプール患者数の上限.
 # 患者ごとに全コース × 希望曜日でソルバを回すため、暴発 (患者数 × コース数 × フルロード)
 # を避ける. 20 名で数秒以内が目安 (設計書 Stage P-2).
@@ -100,10 +102,16 @@ class PoolOverviewResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[PoolOverviewItem] = Field(default_factory=list)
+    # 入口ガード (Phase 2 §3-3): 非稼働患者は拒否ではなく **除外**して知らせる.
+    excluded_patients: list[ExcludedPatient] = Field(
+        default_factory=list,
+        description="非稼働 / 不存在のため俯瞰対象から外した患者 (items には出ない)",
+    )
 
 
 __all__ = [
     "POOL_OVERVIEW_MAX_PATIENTS",
+    "ExcludedPatient",
     "PoolOverviewBestSlot",
     "PoolOverviewItem",
     "PoolOverviewRequest",

@@ -96,6 +96,7 @@ from app.services.scheduling import (
     PoolEntry,
     VisitCreated,
 )
+from app.services.scheduling.guards import ensure_patient_schedulable
 from app.services.scheduling.layer1_expander import (
     LAYER1_VISIT_SOURCE,
     UnplacedMultiStaffEntry,
@@ -349,6 +350,18 @@ async def fix_or_pattern(
                     ScheduleFixService.update_visit_layout 経由で更新する。
     pattern_change: patient_fixed_visits を更新し、当該週 visit も更新する。
     """
+    # ----- 入口ガード (Phase 2・設計 §7-3(d)) -----
+    # 対象 visit の患者が非稼働なら 422 `patient_not_active` (DB 書き込みの前).
+    # visit が存在しない場合はガードを飛ばし、既存の 404 経路に委ねる.
+    target_patient_id = await db.scalar(
+        select(Visit.patient_id).where(
+            Visit.id == body.visit_id,
+            Visit.deleted_at.is_(None),
+        )
+    )
+    if target_patient_id is not None:
+        await ensure_patient_schedulable(db, target_patient_id)
+
     service = ScheduleFixService()
 
     updated_visit: VisitV2Read | None = None
@@ -903,18 +916,10 @@ async def place_and_fix(
     template_ids = body.resolved_template_ids()
 
     try:
-        # ----- patient 取得 (存在チェック) -----
-        patient = await db.scalar(
-            select(Patient).where(
-                Patient.id == body.patient_id,
-                Patient.deleted_at.is_(None),
-            )
-        )
-        if patient is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Patient not found",
-            )
+        # ----- patient 取得 (存在チェック + 入口ガード) -----
+        # Phase 2 (設計 §7-3(d)): 非稼働患者は 422 `patient_not_active`.
+        # DB 書き込みの前に必ず通す.
+        patient = await ensure_patient_schedulable(db, body.patient_id)
 
         # ----- W37 Phase 2-A: requires_multiple_staff フラグとの整合チェック (案 X) -----
         # 「requires_multiple_staff=True フラグ ON → 2 コース必須」(BE 側で守る).

@@ -1774,7 +1774,9 @@ describe('NG スタッフ / 性別制限の確認フロー (§7-2)', () => {
     );
   });
 
-  it('422 でない失敗は従来どおり toast.error のみ (確認ダイアログを出さない)', async () => {
+  // 2026-09-10 (Phase 2 レビュー⑧): 失敗トーストは BE の detail をそのまま見せる。
+  // 汎用文言だけだと「既に配置済み」「入院中のため」が現場に届かない。
+  it('422 でない失敗は確認ダイアログを出さず、BE の detail を toast.error に出す', async () => {
     mocks.confirmMutate.mockImplementationOnce(
       (_v: unknown, o: { onError?: (e: unknown) => void }) =>
         o.onError?.(new ApiError('Conflict', 409, { detail: '既に配置済みです' })),
@@ -1782,8 +1784,19 @@ describe('NG スタッフ / 性別制限の確認フロー (§7-2)', () => {
     adoptFirstSlot(makeSlot());
     fireEvent.click(screen.getByTestId('pool-candidate-confirm-apply'));
 
-    await waitFor(() => expect(mockToast.error).toHaveBeenCalledWith('採用に失敗しました'));
+    await waitFor(() => expect(mockToast.error).toHaveBeenCalledWith('既に配置済みです'));
     expect(screen.queryByTestId('constraint-override-confirm')).not.toBeInTheDocument();
+  });
+
+  it('detail が無い失敗は従来どおり汎用文言に落ちる', async () => {
+    mocks.confirmMutate.mockImplementationOnce(
+      (_v: unknown, o: { onError?: (e: unknown) => void }) =>
+        o.onError?.(new ApiError('Server Error', 500, null)),
+    );
+    adoptFirstSlot(makeSlot());
+    fireEvent.click(screen.getByTestId('pool-candidate-confirm-apply'));
+
+    await waitFor(() => expect(mockToast.error).toHaveBeenCalledWith('採用に失敗しました'));
   });
 });
 
