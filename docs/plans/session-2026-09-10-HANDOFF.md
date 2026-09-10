@@ -55,3 +55,8 @@
 - 設計: `docs/plans/patient-status-schedule-design-2026-09-09.md`
 - 前セッション: `docs/plans/session-2026-09-09-HANDOFF.md`
 - デプロイ: memory `careflow-deploy`（migration 手動適用を追記済み）/ `docs/deployment/runbook.md`
+
+## 7. 9/10 午後の不具合連絡 3 件（松岡さん・Slack）
+1. **藤原朋夏様を稼働中に戻せない** → BE は 15:14:32 の 1 回目で完了（status=active・W37〜W42 を型から再生成・⭐配置 5 件維持・以後 4 回の再押下は direction=none の no-op）。原因は FE の `statusChangeResultSchema.patient` がフォーム用 `patientReadSchema`（sex_restriction/note の null 不可）だったこと。**是正 32c9b09（v2 read スキーマ + 「すでに稼働中です」表示）・本番デプロイ済み**。
+2. **患者マスタ API 404（篠原千晶様 P104）** → 不具合ではない。15:18:44 に松岡さん自身の admin アカウントから `DELETE /patients/{id}`（論理削除）。復元は PO 指示待ち（`deleted_at=NULL` に戻すだけ・予定/型なし）。
+3. **8 月レセプトで本名さんの実績が重複** → らく助起因ではないと判断（証拠: RPA は予定側 '01' のみ操作・実績側は読まない/書かない=`auto_apply.py:141,531`。8/31 22:30 の実績 CSV に重複 0。「未・予定外」行の時刻＝当時の予定（週間パターン or 8/24 時点の予定）の時刻・職員＝本名）。仕組み: 予定→実績反映で作られた未確定行が残ったまま、本名さんの実際の実績（記録Ⅱ付き・時刻が 5〜15 分ずれる）が別行で登録され、9/1 の実績合わせで予定を実績側に寄せた結果、未確定行が「予定外」に変わって目立つようになった。本名さんの 8 月実績 96 行中 60 行はパターン時刻と不一致＝重複候補。対処＝カイポケ 職員別›本名›実績の「未・予定外」行を削除（純正）。将来は RPA の実績 export（`planAchievementsDivision02`）で予実比較レポートを出せば機械的に検出できる（残タスク⑩）。
