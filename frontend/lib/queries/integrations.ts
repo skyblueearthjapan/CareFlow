@@ -43,6 +43,7 @@ import type {
   KaipokeJob,
   KaipokeJobCreate,
   ExpandStatus,
+  PlanActualCompareRequest,
   KaipokeStatus,
   LiveSnapshot,
   MasterReconcile,
@@ -66,6 +67,11 @@ export interface UseKaipokeJobsParams {
   type?: string;
   limit?: number;
   offset?: number;
+  /**
+   * 実行中のジョブを追いかけたい画面だけポーリングする (既定 false = 従来どおり
+   * 手動更新)。ジョブは BE 側で非同期に進むため、完了を待つ画面はここに ms を渡す。
+   */
+  refetchInterval?: number | false;
 }
 
 export function useKaipokeJobs(params: UseKaipokeJobsParams = {}) {
@@ -73,7 +79,14 @@ export function useKaipokeJobs(params: UseKaipokeJobsParams = {}) {
   const accessToken = session?.accessToken ?? null;
   const refreshToken = session?.refreshToken ?? null;
 
-  const { weekStart, status: jobStatus, type, limit = 50, offset = 0 } = params;
+  const {
+    weekStart,
+    status: jobStatus,
+    type,
+    limit = 50,
+    offset = 0,
+    refetchInterval = false,
+  } = params;
 
   return useQuery<Paginated<KaipokeJob>>({
     queryKey: [
@@ -97,6 +110,7 @@ export function useKaipokeJobs(params: UseKaipokeJobsParams = {}) {
       });
     },
     enabled: status === 'authenticated',
+    refetchInterval,
   });
 }
 
@@ -265,6 +279,15 @@ export function useStartDiff() {
 
 export function useStartDiffLocal() {
   return useRelayMutation<DiffLocalRequest, DiffAccepted>('diff-local');
+}
+
+/**
+ * 予実比較 (月) の開始 — カイポケから当月の実績を RPA で取得し、らく助の予定と突合する
+ * (約3分)。RPA が他ジョブで塞がっていれば BE が 409 を返す (呼び出し側でトースト)。
+ * 結果は `params.op = 'plan-actual-compare'` のジョブとして履歴に出る。
+ */
+export function useStartPlanActualCompare() {
+  return useRelayMutation<PlanActualCompareRequest, JobAccepted>('plan-actual-compare');
 }
 
 /** 対象月の展開状況 (展開は月1回・2回目ブロック判定用)。 */

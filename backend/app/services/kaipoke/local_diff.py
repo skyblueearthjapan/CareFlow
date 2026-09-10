@@ -32,6 +32,7 @@ from sqlalchemy import select
 from app.models.office import Office
 from app.services.diff.engine import Correction, compare_schedules_from_content
 from app.services.kaipoke.csv_builder import BuildOptions, build_month_csv
+from app.services.kaipoke.export_guard import ensure_export_ok
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -109,8 +110,10 @@ async def build_local_diff(
             # アプリ内設定の認証情報 (C-1)。HTTP body のみに載せ、永続化はしない。
             export_payload["credentials"] = credentials
         resp = await kaipoke.export(export_payload, timeout=_SYNC_EXPORT_TIMEOUT)
-        result = resp.get("result") or {}
-        current_csv = result.get("csv_content") or ""
+        # export の失敗 (success=False / 本文なし) を「カイポケが空」と読み違えない。
+        # 空のまま進むと、らく助の全訪問が add 差分に化けて二重登録を招き、
+        # 空CSVが「最後に見た姿」として保存されて ●未送信 も全滅表示になる。
+        current_csv = ensure_export_ok(resp.get("result"))
 
     # office_id 指定時: optimized は当該拠点のみ生成されるため、current も同じ拠点に
     # 絞る (揃えないと他拠点が全て delete 差分になり非対称化する)。
@@ -224,7 +227,8 @@ async def export_current_week_csv(
         if credentials:
             payload["credentials"] = credentials
         resp = await kaipoke.export(payload, timeout=_SYNC_EXPORT_TIMEOUT)
-        content = (resp.get("result") or {}).get("csv_content") or ""
+        # 失敗を空CSVとして飲み込むと「対象週に予定が無い」置換計画になる (全消し)。
+        content = ensure_export_ok(resp.get("result"))
         rows = list(csv.reader(io.StringIO(content)))
         if not rows:
             continue

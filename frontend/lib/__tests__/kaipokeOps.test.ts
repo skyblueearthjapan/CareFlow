@@ -4,8 +4,11 @@ import {
   CONSOLE_OP_LABELS,
   INBOUND_HISTORY_OP_LABELS,
   KAIPOKE_OP_LABELS,
+  PLAN_ACTUAL_OP,
   REPORTABLE_OPS,
+  isPlanActualJob,
   isReportableJob,
+  jobMonth,
   jobOp,
   jobOpLabel,
   opLabel,
@@ -61,6 +64,35 @@ describe('kaipokeOps', () => {
       expect(REPORTABLE_OPS.has(op)).toBe(false);
       expect(KAIPOKE_OP_LABELS[op]).toBeTruthy(); // ラベルは持つ
     }
+  });
+
+  it('予実比較のラベルは正典・コンソールとも「予実比較（月）」', () => {
+    expect(jobOpLabel({ params: { op: PLAN_ACTUAL_OP } })).toBe('予実比較（月）');
+    expect(jobOpLabel({ params: { op: PLAN_ACTUAL_OP } }, CONSOLE_OP_LABELS)).toBe(
+      '予実比較（月）',
+    );
+  });
+
+  it('予実比較は専用エンドポイントなので REPORTABLE_OPS に入れない', () => {
+    expect(REPORTABLE_OPS.has(PLAN_ACTUAL_OP)).toBe(false);
+    expect(isReportableJob({ status: 'completed', params: { op: PLAN_ACTUAL_OP } })).toBe(false);
+  });
+
+  it('isPlanActualJob は op だけで判定する (状態は呼び出し側)', () => {
+    expect(isPlanActualJob({ status: 'completed', params: { op: PLAN_ACTUAL_OP } })).toBe(true);
+    expect(isPlanActualJob({ status: 'running', params: { op: PLAN_ACTUAL_OP } })).toBe(true);
+    expect(isPlanActualJob({ status: 'completed', params: { op: 'apply' } })).toBe(false);
+    expect(isPlanActualJob(null)).toBe(false);
+  });
+
+  it('jobMonth は params.month (YYYY-MM) だけを返す', () => {
+    expect(jobMonth({ params: { month: '2026-08' } })).toBe('2026-08');
+    expect(jobMonth({ params: { month: '2026-08-01' } })).toBeNull();
+    expect(
+      jobMonth({ params: { month: 202608 } as unknown as Record<string, unknown> }),
+    ).toBeNull();
+    expect(jobMonth({ params: {} })).toBeNull();
+    expect(jobMonth(null)).toBeNull();
   });
 
   it('isReportableJob は completed / failed かつ対象 op のときだけ true', () => {

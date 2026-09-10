@@ -56,6 +56,9 @@ td.n{text-align:right;white-space:nowrap}
 td.k{white-space:nowrap;font-weight:700}
 td.t{white-space:nowrap}
 td.res{white-space:nowrap}
+/* サービス内容: 添え物なので一段落として扱い、長い名称は折り返させる
+   (nowrap にすると 1 行が横にはみ出し、A4 の表が崩れる)。 */
+td.svc{color:var(--soft);font-size:8pt}
 /* 変更内容: 「16:00 熊澤 → 17:15 髙梨」を矢印の前後でだけ折り返す
    (項目の途中で折り返すと全行が 2 行になり、明細が倍のページ数になる)。 */
 td.chg{color:var(--soft);white-space:normal;word-break:keep-all}

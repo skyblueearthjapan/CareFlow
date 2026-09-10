@@ -642,3 +642,72 @@ export const SmartInboundApplyResultSchema = z.object({
   replace: ReplaceInboundResultSchema.nullable(),
 });
 export type SmartInboundApplyResult = z.infer<typeof SmartInboundApplyResultSchema>;
+
+// --- 予実比較レポート (月) — カイポケの予定 × 実績 --------------------------
+//
+// RPA で当月の実績 CSV を取得し、らく助の予定と突合する (op = 'plan-actual-compare')。
+// BE は章立て・区分を増やす可能性があるため、スキーマは全面的に寛容にする:
+//   - 件数キーは全て任意 + `.catch(0)` (欠落・型違いでも画面を落とさない)
+//   - `.passthrough()` で未知のキーを捨てない (後から増えた区分も素通しする)
+
+/** 突合区分の表示順 (BE の `counts` キーと同じ文字列)。 */
+export const PLAN_ACTUAL_COUNT_KEYS = [
+  '一致',
+  '時刻ズレ',
+  '担当違い',
+  '相違',
+  '予定のみ',
+  '実績のみ',
+  '重複',
+] as const;
+export type PlanActualCountKey = (typeof PLAN_ACTUAL_COUNT_KEYS)[number];
+
+/** 件数 1 個ぶん: 数値でなければ 0、欠けていれば undefined。 */
+const planActualCount = z.number().catch(0).optional();
+
+export const PlanActualCountsSchema = z
+  .object({
+    一致: planActualCount,
+    時刻ズレ: planActualCount,
+    担当違い: planActualCount,
+    相違: planActualCount,
+    予定のみ: planActualCount,
+    実績のみ: planActualCount,
+    重複: planActualCount,
+    /** 突合から外したイベント行 (訪問ではないので区分に混ぜない)。 */
+    events_skipped: planActualCount,
+  })
+  .passthrough();
+export type PlanActualCounts = z.infer<typeof PlanActualCountsSchema>;
+
+/** スタッフ 1 名ぶんの内訳。件数は `counts` の中 (BE 契約)。 */
+export const PlanActualByStaffSchema = z
+  .object({
+    staff: z.string().catch(''),
+    counts: PlanActualCountsSchema.default({}).catch({}),
+    duplicates: z.number().catch(0).optional(),
+    total: z.number().catch(0).optional(),
+  })
+  .passthrough();
+export type PlanActualByStaff = z.infer<typeof PlanActualByStaffSchema>;
+
+/**
+ * ジョブの `result_summary` / レポート API (format=json) の中身。
+ * 失敗したジョブは `error` に理由が入る (counts は空)。
+ */
+export const PlanActualSummarySchema = z
+  .object({
+    month: z.string().catch(''),
+    plan_rows: z.number().catch(0).optional(),
+    actual_rows: z.number().catch(0).optional(),
+    counts: PlanActualCountsSchema.default({}).catch({}),
+    by_staff: z.array(PlanActualByStaffSchema).default([]).catch([]),
+    error: z.string().nullish(),
+  })
+  .passthrough();
+export type PlanActualSummary = z.infer<typeof PlanActualSummarySchema>;
+
+export const PlanActualCompareRequestSchema = z.object({
+  month: z.string().regex(/^\d{4}-\d{2}$/, 'YYYY-MM で入力してください'),
+});
+export type PlanActualCompareRequest = z.infer<typeof PlanActualCompareRequestSchema>;

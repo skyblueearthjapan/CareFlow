@@ -195,6 +195,14 @@ class ReconcileReportRead(BaseModel):
     html: str | None = None
 
 
+class PlanActualCompareRequest(BaseModel):
+    """月次 予実比較: カイポケの 予定CSV / 実績CSV を取り直す (read-only・RPA は export のみ)。"""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+
+
 class GeneratedCsvRead(BaseModel):
     """CareFlow visits から生成したカイポケ18列CSV (K-2a)。
 

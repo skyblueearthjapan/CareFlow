@@ -30,6 +30,7 @@ export const KAIPOKE_OP_LABELS: Readonly<Record<string, string>> = {
   expand: '月間展開',
   diff: '差分計算(RPA)',
   'login-test': '接続テスト',
+  'plan-actual-compare': '予実比較（月）',
 };
 
 /** 連携コンソール「直近のジョブ履歴」用の言い回し。
@@ -39,6 +40,8 @@ export const CONSOLE_OP_LABELS: Readonly<Record<string, string>> = {
   expand: '①スケジュール展開',
   diff: '②差分を計算',
   apply: '④カイポケへ反映',
+  // 手順①〜④とは別立ての月次オペなので丸数字は付けない (正典と同じ言い回し)。
+  'plan-actual-compare': '予実比較（月）',
 };
 
 /** 「直近の取り込み」行の言い回し (取り込みカード内なので「取り込み（…）」で足りる)。 */
@@ -86,6 +89,21 @@ export function jobOpLabel(
   overrides?: Readonly<Record<string, string>>,
 ): string | null {
   return opLabel(jobOp(job), overrides);
+}
+
+/** 予実比較 (月) の op。レポートは専用エンドポイント (…/plan-actual-report) を持つため
+ *  REPORTABLE_OPS (jobs/{id}/report) には入れない。 */
+export const PLAN_ACTUAL_OP = 'plan-actual-compare';
+
+/** 予実比較ジョブか (状態は見ない — 呼び出し側で completed 等を判定する)。 */
+export function isPlanActualJob(job: KaipokeJobLike | null | undefined): boolean {
+  return jobOp(job) === PLAN_ACTUAL_OP;
+}
+
+/** params.month (YYYY-MM) を安全に取り出す。形が違えば null。 */
+export function jobMonth(job: KaipokeJobLike | null | undefined): string | null {
+  const month = job?.params?.month;
+  return typeof month === 'string' && /^\d{4}-\d{2}$/.test(month) ? month : null;
 }
 
 /** レポートボタンを出すか = 完了済み (成功/失敗) かつ対象 op。 */

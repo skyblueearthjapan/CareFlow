@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -79,6 +79,7 @@ from app.schemas.integrations import (
     MasterReconcileRead,
     MasterReconcileRequest,
     NgConflictRead,
+    PlanActualCompareRequest,
     ReconcileReportRead,
     ReplaceInboundRequest,
     ReplaceInboundResult,
@@ -111,6 +112,10 @@ logger = logging.getLogger(__name__)
 #: ``inactive_patient`` の印を付ける action (Phase 3 §3-5)。
 #: add = 復活させてはいけない行 / delete = カイポケに残った残骸 = 削除候補。
 INACTIVE_FLAGGED_ACTIONS: frozenset[str] = frozenset({"add", "delete"})
+
+#: 予実比較ジョブがこの分数を超えて running なら残骸 (実行は ~100s)。
+#: バックグラウンドはプロセスに紐づくため、再起動で決着しないまま残ることがある。
+_PLAN_ACTUAL_STALE_MINUTES = 10
 
 router = APIRouter()
 
@@ -496,8 +501,11 @@ async def _reconcile_latest_job(
     # 2026-09-03 まで "events-outbound-apply" (エンドポイントのパス名) と書かれて
     # おり除外が効かず、イベント送信が result_unknown の completed で先取りクローズ
     # されて結果を失っていた (設計書 §2 の「併せて直す既知の穴」)。
+    # plan-actual-compare も同種: 決着させるのはバックグラウンドタスク自身であり、
+    # ここで先取りクローズすると result_unknown の completed になって集計が消える。
+    # export 2 本の合間は RPA が一瞬 idle に見えるので、この除外が無いと実際に起きる。
     _op = (job.params or {}).get("op")
-    if _op in ("events-preview", "events-outbound"):
+    if _op in ("events-preview", "events-outbound", "plan-actual-compare"):
         _created = job.created_at
         if _created is not None and _created.tzinfo is None:
             _created = _created.replace(tzinfo=UTC)
@@ -761,6 +769,112 @@ async def get_reconcile_report(
         "html": html_text if include_html else None,
     }
     return ReconcileReportRead.model_validate(payload)
+
+
+async def _plan_actual_snapshots(db, *, month: str):
+    """レポートに使う (予定, 実績) スナップショットを選ぶ。
+
+    1. その月の **完了した予実比較ジョブのうち最新** が記録した snapshot_id を引く。
+       ジョブが「この 2 本を突き合わせた」と言っている組が一番信用できる。
+    2. 行が消えている / ジョブが無いなら、**月まるごと** (``week_start IS NULL``)
+       の最新へ退避する。週限定CSV を掴まないことがここでの肝。
+    """
+    from app.models.kaipoke_csv_snapshot import KaipokeCsvSnapshot
+    from app.services.kaipoke.csv_snapshot import get_latest
+    from app.services.kaipoke.plan_actual_job import OP
+
+    recorded: dict[str, UUID] = {}
+    jobs = (
+        await db.scalars(
+            select(KaipokeJob)
+            .where(KaipokeJob.status == "completed", KaipokeJob.job_type == "fetch")
+            .order_by(KaipokeJob.created_at.desc())
+            .limit(50)
+        )
+    ).all()
+    for job in jobs:
+        params = job.params or {}
+        if params.get("op") != OP or params.get("month") != month:
+            continue
+        summary = job.result_summary or {}
+        for key, division in (("plan_snapshot_id", "plan"), ("actual_snapshot_id", "actual")):
+            snapshot_id = _safe_uuid(summary.get(key))
+            if snapshot_id is not None:
+                recorded[division] = snapshot_id
+        break  # 最新の 1 件だけを見る
+
+    picked: dict[str, Any] = {}
+    for division in ("plan", "actual"):
+        snapshot = None
+        if division in recorded:
+            snapshot = await db.scalar(
+                select(KaipokeCsvSnapshot).where(KaipokeCsvSnapshot.id == recorded[division])
+            )
+        if snapshot is None:
+            snapshot = await get_latest(db, month=month, division=division, month_only=True)
+        picked[division] = snapshot
+    return picked["plan"], picked["actual"]
+
+
+@router.get(
+    "/plan-actual-report",
+    responses={200: {"content": {"text/html": {}, "application/json": {}}}},
+    summary="カイポケ 予定×実績 月次突合レポート (印刷用 HTML 同梱・read-only・admin)",
+)
+async def get_plan_actual_report(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    month: Annotated[str, Query(pattern=r"^\d{4}-\d{2}$")],
+    fmt: Annotated[Literal["json", "html"], Query(alias="format")] = "json",
+):
+    """保存済みの 予定CSV / 実績CSV スナップショット 2 本から突合レポートを組む。
+
+    RPA は呼ばない・DB にも書かない (取得は POST /plan-actual-compare の責務)。
+    どちらかのスナップショットが無ければ、足りない区分を名指しして 404。
+    事業所のスコープは reconcile-report と同じ (拠点を問わず最新・単一事業所運用)。
+
+    使うスナップショットは **その月の予実比較ジョブが実際に保存した 2 本** を最優先
+    (``result_summary`` の id で直接引く)。取れなければ「月まるごと」の最新へ退避する。
+    素の「最新」だけに頼ると、あとから置換取り込み等が保存した **週限定CSV**
+    (対象週の行しか持たない) を掴んで、月の大半が抜けたレポートが出てしまう。
+    """
+    from dataclasses import asdict
+
+    from app.models.office import Office
+    from app.services.kaipoke.plan_actual_compare import (
+        build_plan_actual_report,
+        render_plan_actual_html,
+    )
+
+    plan, actual = await _plan_actual_snapshots(db, month=month)
+    if plan is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{month} の予定CSVが取得されていません。先に「予実比較の取得」を実行してください。",
+        )
+    if actual is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{month} の実績CSVが取得されていません。先に「予実比較の取得」を実行してください。",
+        )
+
+    office_name = ""
+    if plan.office_id is not None:
+        office = await db.scalar(select(Office).where(Office.id == plan.office_id))
+        if office is not None:
+            office_name = office.kaipoke_name or office.name
+
+    report = build_plan_actual_report(
+        month=month,
+        plan_csv_text=plan.csv_text,
+        actual_csv_text=actual.csv_text,
+        plan_fetched_at=plan.fetched_at,
+        actual_fetched_at=actual.fetched_at,
+        office_name=office_name,
+    )
+    if fmt == "html":
+        return HTMLResponse(render_plan_actual_html(report))
+    return asdict(report)
 
 
 @router.get(
@@ -1407,6 +1521,125 @@ async def trigger_diff_local(
 
 
 @router.post(
+    "/plan-actual-compare",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="カイポケ 予定CSV / 実績CSV を取り直して月次 予実比較を作る (read-only・admin)",
+)
+async def trigger_plan_actual_compare(
+    payload: PlanActualCompareRequest,
+    background: BackgroundTasks,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> JobAccepted:
+    """RPA に export を 2 回 (予定 → 実績) 頼み、スナップショットとして保存する。
+
+    **非破壊**: 書き込みは ``kaipoke_csv_snapshots`` の 2 行と監査用の ``KaipokeJob``
+    だけ。業務データ (訪問/イベント/マスタ) にも、差分/反映/取り込みの挙動にも触らない。
+
+    同期 export を 2 本直列に回すため実体は ~100s かかる (RPA は単一スロットなので
+    並列不可)。Cloudflare の ~100s 制限に当たるため **ジョブを立ててすぐ 202 を返し**、
+    実行はバックグラウンド (``run_plan_actual_job``) に回す。進捗は
+    ``GET /integrations/jobs`` の ``status`` / ``result_summary`` で拾う。
+    レポート本体は ``GET /integrations/plan-actual-report`` が保存済み
+    スナップショットから描く。
+    """
+    from app.services.kaipoke.plan_actual_job import OP, run_plan_actual_job
+
+    # (a) 事前チェック: RPA が塞がっていれば起動しない。ここで弾かないと、
+    # 202 を返した直後にバックグラウンドが 409 で落ちる (ユーザーには失敗ジョブ
+    # としてしか見えない) ため、同期的に 409 を返せるうちに返す。
+    try:
+        raw = await kaipoke.status()
+    except KaipokeApiError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    if bool((raw.get("current_task") or {}).get("running")):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy")
+
+    # 同種ジョブの二重起動も止める (export を 2 本ずつ奪い合って両方失敗するのを防ぐ)。
+    # params は JSONB のため DB 側で絞らず Python で判定する (SQLite テストとも共通)。
+    active = (
+        await db.scalars(
+            select(KaipokeJob)
+            .where(KaipokeJob.status.in_(_ACTIVE_JOB_STATUSES))
+            .order_by(KaipokeJob.created_at.desc())
+            .limit(20)
+        )
+    ).all()
+    mine = [j for j in active if (j.params or {}).get("op") == OP]
+
+    # バックグラウンド実行はプロセスに紐づく — デプロイや再起動で消えると
+    # ジョブが running のまま残り、**以後ずっと 409 で起動できなくなる**。
+    # 実行は ~100s なので、10 分を超えて動いているものは残骸とみなして掃除する。
+    now = datetime.now(UTC)
+    stale_cutoff = now - timedelta(minutes=_PLAN_ACTUAL_STALE_MINUTES)
+    blocking = []
+    for job_row in mine:
+        started = job_row.started_at or job_row.created_at
+        if started is not None and started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        if started is not None and started < stale_cutoff:
+            job_row.status = "failed"
+            job_row.completed_at = now
+            job_row.result_summary = {
+                **(job_row.result_summary or {}),
+                "error": (
+                    "前回の実行が中断されました（プロセス再起動の可能性）。再実行してください"
+                ),
+            }
+        else:
+            blocking.append(job_row)
+    if mine and not blocking:
+        await _commit_or_409(db)  # 残骸を掃除したので、このまま新規実行へ進む
+
+    if blocking:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "予実比較が既に実行中です。完了してからもう一度お試しください"
+                f"（{_PLAN_ACTUAL_STALE_MINUTES} 分以上終わらない場合は、連携画面で"
+                "実行中のジョブを取消してください）。"
+            ),
+        )
+
+    # 拠点は指定しない (単一事業所運用・reconcile-report と同じスコープ)。
+    office_id: UUID | None = None
+    credentials = await _kaipoke_credentials(db)
+
+    # (b) running でコミットしてから 202。バックグラウンドは自前のセッションで
+    # このジョブ行を読むので、**先にコミットしておかないと見えない**。
+    job = KaipokeJob(
+        job_type="fetch",
+        week_start=_month_to_week_start(payload.month),
+        params={"op": OP, "month": payload.month},
+        status="running",
+        started_at=datetime.now(UTC),
+        created_by_user_id=user.id,
+    )
+    db.add(job)
+    await _commit_or_409(db)
+    job_id = job.id
+
+    # (c) 実体は応答を返した後に走らせる。``asyncio.create_task`` ではなく
+    # BackgroundTasks を使うのは **DB セッションの寿命** のため: FastAPI は
+    # yield 依存 (DbDep) を応答送出の前に閉じ、バックグラウンドはその後に走る。
+    # create_task だとリクエストのセッションと自前セッションが同時に生きる瞬間が
+    # でき、コネクションを共有する構成 (テストの SQLite StaticPool 等) では
+    # 片方の後始末がもう片方のトランザクションを巻き込む。
+    background.add_task(
+        run_plan_actual_job,
+        job_id=job_id,
+        month=payload.month,
+        office_id=office_id,
+        client=kaipoke,
+        credentials=credentials,
+    )
+
+    return JobAccepted(job_id=job_id, kaipoke_job_id=None, status="running")
+
+
+@router.post(
     "/master-reconcile",
     response_model=MasterReconcileRead,
     summary=(
@@ -1434,6 +1667,7 @@ async def master_reconcile(
     """
     from app.models.patient import Patient
     from app.models.staff import Staff as StaffModel
+    from app.services.kaipoke.export_guard import ensure_export_ok
     from app.services.kaipoke.master_reconcile import (
         extract_names_from_kaipoke_csv,
         extract_staff_qualifications_from_kaipoke_csv,
@@ -1445,11 +1679,13 @@ async def master_reconcile(
     _attach_credentials(export_payload, await _kaipoke_credentials(db))
     try:
         resp = await kaipoke.export(export_payload, timeout=90.0)
+        # export の失敗を「カイポケ名簿が空」と読み違えると、全員が「らく助のみ」に化ける。
+        # KaipokeExportError は KaipokeApiError の派生なので下の 502 節で決着する。
+        csv_content = ensure_export_ok(resp.get("result"))
     except KaipokeBusyError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
     except KaipokeApiError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-    csv_content = (resp.get("result") or {}).get("csv_content") or ""
 
     # 突合そのものは read-only だが、せっかく取得した現況CSVは「最後に見た姿」として
     # 保存する (●未送信の土台・week-cockpit §1 D3)。業務データには一切触れない

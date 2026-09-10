@@ -16,8 +16,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { PlanActualReportButton } from '@/components/integrations/PlanActualReportButton';
 import { SyncReportButton } from '@/components/integrations/SyncReportButton';
-import { isReportableJob, jobOpLabel } from '@/lib/kaipokeOps';
+import { isPlanActualJob, isReportableJob, jobMonth, jobOpLabel } from '@/lib/kaipokeOps';
 import {
   KAIPOKE_JOB_STATUSES,
   KAIPOKE_JOB_TYPES,
@@ -151,33 +152,39 @@ export function KaipokeJobsList() {
                 </tr>
               </thead>
               <tbody>
-                {jobs.map((job) => (
-                  <tr key={job.id} className="border-b border-border-default last:border-0">
-                    <td className="px-3 py-2">
-                      {jobOpLabel(job) ?? job.job_type}
-                      {/* 「種類」フィルタ (fetch/push) との対応が分かるよう小さく添える */}
-                      <span className="ml-1.5 text-xs text-text-muted">
-                        （{job.job_type === 'push' ? '送信' : '取得'}）
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 tnum">{job.week_start}</td>
-                    <td className="px-3 py-2">{job.status}</td>
-                    <td className="px-3 py-2 text-text-secondary">{job.started_at ?? '--'}</td>
-                    <td className="px-3 py-2 text-text-secondary">{job.completed_at ?? '--'}</td>
-                    <td className="px-3 py-2">
-                      <span className="inline-flex items-center gap-3">
-                        <Link
-                          href={`/integrations/kaipoke/${job.id}`}
-                          className="text-brand-primary hover:underline"
-                        >
-                          詳細
-                        </Link>
-                        {/* 完了した実書込ジョブは A4 の結果報告書を開ける */}
-                        {isReportableJob(job) && <SyncReportButton jobId={job.id} />}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {jobs.map((job) => {
+                  // 予実比較は月単位の専用レポート (jobs/{id}/report ではない)。
+                  const planActualMonth =
+                    isPlanActualJob(job) && job.status === 'completed' ? jobMonth(job) : null;
+                  return (
+                    <tr key={job.id} className="border-b border-border-default last:border-0">
+                      <td className="px-3 py-2">
+                        {jobOpLabel(job) ?? job.job_type}
+                        {/* 「種類」フィルタ (fetch/push) との対応が分かるよう小さく添える */}
+                        <span className="ml-1.5 text-xs text-text-muted">
+                          （{job.job_type === 'push' ? '送信' : '取得'}）
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 tnum">{job.week_start}</td>
+                      <td className="px-3 py-2">{job.status}</td>
+                      <td className="px-3 py-2 text-text-secondary">{job.started_at ?? '--'}</td>
+                      <td className="px-3 py-2 text-text-secondary">{job.completed_at ?? '--'}</td>
+                      <td className="px-3 py-2">
+                        <span className="inline-flex items-center gap-3">
+                          <Link
+                            href={`/integrations/kaipoke/${job.id}`}
+                            className="text-brand-primary hover:underline"
+                          >
+                            詳細
+                          </Link>
+                          {/* 完了した実書込ジョブは A4 の結果報告書を開ける */}
+                          {isReportableJob(job) && <SyncReportButton jobId={job.id} />}
+                          {planActualMonth && <PlanActualReportButton month={planActualMonth} />}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

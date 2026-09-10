@@ -47,5 +47,14 @@ class KaipokeCsvSnapshot(Base):
     row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # どの経路の export か (diff-local / diff-inbound / smart-preview / ...)。
     source_op: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 'plan' = 予定 (従来の現況CSV・既定) / 'actual' = 実績 (予実比較 mig 0083)。
+    # 実績CSVは「最後に見たカイポケの姿」ではないので、予定と同じ (office_id, month)
+    # キーで潰し合わせてはいけない → upsert キー / 検索キーの一部に入れる。
+    # 既定 'plan' により既存の呼び出し側の挙動は 1 文字も変わらない。
+    division: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="plan", server_default="plan"
+    )
 
-    __table_args__ = (Index("ix_kaipoke_csv_snapshots_office_month", "office_id", "month"),)
+    __table_args__ = (
+        Index("ix_kaipoke_csv_snapshots_office_month", "office_id", "month", "division"),
+    )

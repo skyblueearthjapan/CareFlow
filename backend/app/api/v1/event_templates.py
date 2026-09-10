@@ -109,9 +109,7 @@ async def list_event_templates(
     if staff_id is None:
         stmt = stmt.where(EventTemplate.staff_id.is_(None))
     else:
-        stmt = stmt.where(
-            (EventTemplate.staff_id.is_(None)) | (EventTemplate.staff_id == staff_id)
-        )
+        stmt = stmt.where((EventTemplate.staff_id.is_(None)) | (EventTemplate.staff_id == staff_id))
     if not include_inactive:
         stmt = stmt.where(EventTemplate.is_active.is_(True))
     stmt = stmt.order_by(EventTemplate.sort_order, EventTemplate.created_at)

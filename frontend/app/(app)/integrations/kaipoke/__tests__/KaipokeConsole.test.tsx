@@ -37,6 +37,9 @@ vi.mock('@/lib/queries/integrations', () => ({
     ...idleQuery,
     data: { items: recent.items, total: recent.items.length, limit: 5, offset: 0 },
   }),
+  // 予実比較カード (PlanActualReportCard) が使う 2 本。
+  useKaipokeLive: () => ({ ...idleQuery, data: { running: false, reachable: true, logs: [] } }),
+  useStartPlanActualCompare: () => ({ ...idleMutation }),
   useRestoreInboundSnapshot: () => ({ ...idleMutation }),
   useSmartInboundPreview: () => ({ ...idleMutation, error: null }),
   useApplySmartInbound: () => ({ ...idleMutation, error: null }),
@@ -138,5 +141,36 @@ describe('KaipokeConsole', () => {
     expect(list.getByText('カイポケから取込（自動判別）')).toBeInTheDocument();
     // 完了ジョブの 1 件だけ (実行中には出さない)
     expect(list.getAllByTestId('sync-report-button')).toHaveLength(1);
+  });
+
+  it('⑤ 予実比較ジョブには月単位の 📄 予実レポートが出る (sync 版は出ない)', () => {
+    recent.items = [
+      {
+        id: 'job-pa',
+        job_type: 'fetch',
+        status: 'completed',
+        week_start: '2026-09-07',
+        params: { op: 'plan-actual-compare', month: '2026-09' },
+        created_at: '2026-09-10T00:00:00Z',
+        completed_at: '2026-09-10T00:03:00Z',
+        items: [],
+      },
+      {
+        id: 'job-pa-running',
+        job_type: 'fetch',
+        status: 'running',
+        week_start: '2026-09-07',
+        params: { op: 'plan-actual-compare', month: '2026-09' },
+        created_at: '2026-09-10T00:10:00Z',
+        completed_at: null,
+        items: [],
+      },
+    ];
+    renderConsole(baseProps);
+    const list = within(screen.getByTestId('recent-jobs-list'));
+    expect(list.getAllByText('予実比較（月）')).toHaveLength(2);
+    // 完了した 1 件だけ・専用エンドポイントなので sync 版のボタンは出さない
+    expect(list.getAllByTestId('plan-actual-report-button')).toHaveLength(1);
+    expect(list.queryByTestId('sync-report-button')).toBeNull();
   });
 });

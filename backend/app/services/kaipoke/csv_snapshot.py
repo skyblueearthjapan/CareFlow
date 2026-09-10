@@ -60,14 +60,20 @@ async def save_snapshot(
     week_start: date | None,
     csv_text: str,
     source_op: str,
+    division: str = "plan",
 ) -> KaipokeCsvSnapshot | None:
-    """現況CSVを保存する (同 ``(office_id, month, week_start)`` は最新 1 件に置換)。
+    """現況CSVを保存する (同 ``(office_id, month, week_start, division)`` は最新 1 件に置換)。
 
     upsert キーに ``week_start`` を含めるのは、**月まるごとの export と週限定の
     週マージ export を共存させる** ため。片方が片方を消すと、
     「7/27〜8/2 の週CSVを保存したせいで 7 月の月CSVが消え、7月の他の週の
     未送信が出せなくなる」という取りこぼしが起きる。どれを使うかは
     ``get_latest`` の週カバー判定に選ばせる。
+
+    ``division`` (mig 0083) は ``'plan'``=予定 (従来の現況CSV・既定) /
+    ``'actual'``=実績CSV。upsert キーに含めるので、実績を保存しても同月の予定
+    スナップショット (= 未送信計算の土台) は消えない。既定が ``'plan'`` のため
+    既存の呼び出し側は挙動が変わらない。
 
     ``csv_text`` が空 (取得失敗/0件) の場合は **保存しない** — 空を「最後に見た姿」
     にすると、次の未送信計算でらく助側の全訪問が add に化ける (週全滅の見た目)。
@@ -87,7 +93,12 @@ async def save_snapshot(
         else KaipokeCsvSnapshot.week_start == week_start
     )
     await db.execute(
-        delete(KaipokeCsvSnapshot).where(office_cond, week_cond, KaipokeCsvSnapshot.month == month)
+        delete(KaipokeCsvSnapshot).where(
+            office_cond,
+            week_cond,
+            KaipokeCsvSnapshot.month == month,
+            KaipokeCsvSnapshot.division == division,
+        )
     )
 
     row = KaipokeCsvSnapshot(
@@ -98,6 +109,7 @@ async def save_snapshot(
         csv_text=csv_text,
         row_count=count_csv_rows(csv_text),
         source_op=source_op[:32],
+        division=division,
     )
     db.add(row)
     await db.flush()
@@ -110,23 +122,35 @@ async def get_latest(
     month: str,
     office_id: uuid.UUID | None | Any = ANY_OFFICE,
     week_start: date | None = None,
+    division: str = "plan",
+    month_only: bool = False,
 ) -> KaipokeCsvSnapshot | None:
     """対象月の最新スナップショットを返す。
 
     * ``office_id`` — UUID: その事業所 / ``None``: 拠点無指定 (NULL) の行 /
       既定 ``ANY_OFFICE``: 事業所を問わず最新 (単一事業所運用の実態に合わせた既定)。
+    * ``division`` — ``'plan'`` (既定・従来の現況CSV) / ``'actual'`` (実績CSV)。
+      既定が ``'plan'`` なので既存の呼び出し側は実績行を拾わない。
     * ``week_start`` — 指定時は「その週をカバーし得る」行だけに絞る。すなわち
       月まるごと (``week_start IS NULL``) か、**同じ週** の週マージCSV。別の週の
       週マージCSVを現況として使うと、対象週が丸ごと空 (= 全 add) に見えてしまう。
+    * ``month_only`` — True なら **月まるごとの行 (``week_start IS NULL``) だけ**
+      を対象にする。月次レポートのように「その月の全体像」が要る用途は、置換
+      取り込み等が保存した週限定CSV (対象週の行しか持たない) を掴むと月の大半が
+      欠けたレポートになるため、これで締め出す (``week_start`` とは排他)。
     """
-    stmt = select(KaipokeCsvSnapshot).where(KaipokeCsvSnapshot.month == month)
+    stmt = select(KaipokeCsvSnapshot).where(
+        KaipokeCsvSnapshot.month == month, KaipokeCsvSnapshot.division == division
+    )
     if not isinstance(office_id, _AnyOffice):
         stmt = stmt.where(
             KaipokeCsvSnapshot.office_id.is_(None)
             if office_id is None
             else KaipokeCsvSnapshot.office_id == office_id
         )
-    if week_start is not None:
+    if month_only:
+        stmt = stmt.where(KaipokeCsvSnapshot.week_start.is_(None))
+    elif week_start is not None:
         stmt = stmt.where(
             (KaipokeCsvSnapshot.week_start.is_(None))
             | (KaipokeCsvSnapshot.week_start == week_start)
@@ -135,15 +159,22 @@ async def get_latest(
     return await db.scalar(stmt)
 
 
-async def drop_snapshots(db: AsyncSession, *, month: str, week_start: date | None = None) -> int:
+async def drop_snapshots(
+    db: AsyncSession, *, month: str, week_start: date | None = None, division: str = "plan"
+) -> int:
     """対象月 (と週) のスナップショットを捨てる = 「要🔄突合」へフェイルクローズ。
 
     カイポケへ送信した直後は、保存CSV(送信前の姿)ともう一致しない。残したまま
     未送信を計算すると **送ったばかりの変更がもう一度未送信に見える** ので、
     送信の決着時に捨てて「🔄突合でカイポケ現況を取り直してください」に倒す。
+
+    ``division`` 既定 ``'plan'`` — 捨てるのは予定 (現況) だけ。実績スナップショット
+    (予実比較用) は送信の成否と無関係なので巻き添えにしない。
     Returns 削除件数。commit は呼び出し側。
     """
-    stmt = delete(KaipokeCsvSnapshot).where(KaipokeCsvSnapshot.month == month)
+    stmt = delete(KaipokeCsvSnapshot).where(
+        KaipokeCsvSnapshot.month == month, KaipokeCsvSnapshot.division == division
+    )
     if week_start is not None:
         stmt = stmt.where(
             (KaipokeCsvSnapshot.week_start.is_(None))

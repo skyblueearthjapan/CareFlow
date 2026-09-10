@@ -15,8 +15,16 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { PlanActualReportButton } from '@/components/integrations/PlanActualReportButton';
+import { PlanActualReportCard } from '@/components/integrations/PlanActualReportCard';
 import { SyncReportButton } from '@/components/integrations/SyncReportButton';
-import { CONSOLE_OP_LABELS, isReportableJob, jobOpLabel } from '@/lib/kaipokeOps';
+import {
+  CONSOLE_OP_LABELS,
+  isPlanActualJob,
+  isReportableJob,
+  jobMonth,
+  jobOpLabel,
+} from '@/lib/kaipokeOps';
 import type { KaipokeJob, LiveSnapshot } from '@/lib/schemas/integration';
 import { useKaipokeJobs } from '@/lib/queries/integrations';
 import type { useStopJob } from '@/lib/queries/integrations';
@@ -148,6 +156,9 @@ export function KaipokeConsole({
                           label: job.status,
                           cls: 'text-text-muted',
                         };
+                        // 予実比較は月単位の専用レポート (jobs/{id}/report ではない)。
+                        const planActualMonth =
+                          isPlanActualJob(job) && job.status === 'completed' ? jobMonth(job) : null;
                         return (
                           <li
                             key={job.id}
@@ -164,6 +175,12 @@ export function KaipokeConsole({
                             {isReportableJob(job) && (
                               <SyncReportButton
                                 jobId={job.id}
+                                className="h-6 shrink-0 px-2 text-[11px]"
+                              />
+                            )}
+                            {planActualMonth && (
+                              <PlanActualReportButton
+                                month={planActualMonth}
                                 className="h-6 shrink-0 px-2 text-[11px]"
                               />
                             )}
@@ -201,6 +218,11 @@ export function KaipokeConsole({
           {/* 週次反映ワークフロー — 操作 */}
           <Card className="p-5">
             <WeeklyApplyControls vm={weekly} />
+          </Card>
+
+          {/* 予実比較（月）— 週次の手順とは別立ての月次オペ */}
+          <Card className="p-5">
+            <PlanActualReportCard credentialsConfigured={credentialsConfigured} />
           </Card>
 
           {/* カイポケから取り込む — 操作 (余白を許容して下辺を稼働状況カードに揃える) */}
