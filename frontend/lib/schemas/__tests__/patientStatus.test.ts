@@ -24,6 +24,32 @@ import {
 const PID = '00000000-0000-0000-0000-000000000001';
 const SPID = '00000000-0000-0000-0000-0000000000a1';
 
+describe('statusChangeResultSchema は BE の PatientV2Read (null あり) を受ける', () => {
+  it('sex_restriction / note / kana が null でもパースできる (2026-09-10 本番不具合の再発防止)', () => {
+    const parsed = statusChangeResultSchema.parse({
+      patient: {
+        id: PID,
+        code: 'P027',
+        name: '藤原',
+        kana: null,
+        sex: 'female',
+        status: 'active',
+        sex_restriction: null,
+        note: null,
+        address: null,
+        created_at: '2026-09-01T00:00:00',
+        updated_at: '2026-09-10T06:14:32',
+        status_changed_at: '2026-09-10T06:14:32',
+      },
+      direction: 'reactivate',
+      regenerated: { created: 20, weeks: [] },
+    });
+    expect(parsed.patient.status).toBe('active');
+    expect(parsed.patient.sex_restriction).toBeNull();
+    expect(parsed.regenerated?.created).toBe(20);
+  });
+});
+
 describe('statusChangeDirection', () => {
   it('稼働中 → 非稼働 は deactivate、逆は reactivate', () => {
     for (const s of ['suspended', 'admitted', 'pending', 'cancelled'] as const) {

@@ -192,6 +192,11 @@ export function PatientStatusChangeDialog({
               {STATUS_LABEL[fromStatus]} から {STATUS_LABEL[toStatus]}{' '}
               に変更します。予定への影響はありません。
             </p>
+          ) : impact?.direction === 'none' ? (
+            <p data-testid="patient-status-already">
+              {patientName}様はすでに{STATUS_LABEL[toStatus]}
+              です（画面の表示が古い可能性があります）。 変更はありません。
+            </p>
           ) : (
             <>
               {/* ── いつから ─────────────────────────────────────────── */}

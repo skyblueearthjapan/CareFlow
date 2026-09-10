@@ -7,7 +7,8 @@
  */
 import { z } from 'zod';
 
-import { patientReadSchema, statusEnum } from './patient';
+import { statusEnum } from './patient';
+import { patientV2ReadSchema } from './v2/patient';
 
 export const statusDirectionEnum = z.enum(['deactivate', 'reactivate', 'none']);
 export const specialPeriodActionEnum = z.enum(['keep', 'end']);
@@ -72,7 +73,14 @@ export const opGroupRefSchema = z.object({
 });
 
 export const statusChangeResultSchema = z.object({
-  patient: patientReadSchema,
+  // BE は PatientV2Read (null を含む) を返す。フォーム用 patientReadSchema は
+  // sex_restriction/note の null を受けないため、2026-09-10 に本番で
+  // 「稼働中に戻す」が ZodError で失敗した (BE は 200 で完了済み)。読取専用の
+  // v2 スキーマで受け、表示に不要な差異でユーザー操作を失敗扱いにしない。
+  patient: patientV2ReadSchema.extend({
+    status_changed_at: z.string().nullish(),
+    status_changed_by: z.string().uuid().nullish(),
+  }),
   direction: statusDirectionEnum,
   cancelled_visit_ids: z.array(z.string().uuid()).default([]),
   cancelled_count: z.number().int().nonnegative().default(0),
