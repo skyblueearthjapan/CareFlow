@@ -46,6 +46,8 @@ export const boardVisitSchema = z.object({
   source: z.string().nullish().catch(null),
   /** 患者マスタの `patients.status`。非稼働なら「入院中」バッジを出す (同 §3-4)。 */
   patient_status: z.string().nullish().catch(null),
+  /** ステータスが今の値になった日 (JST `YYYY-MM-DD`)。この日以降だけバッジを出す。 */
+  patient_status_since: z.string().nullish().catch(null),
 });
 export type BoardVisit = z.infer<typeof boardVisitSchema>;
 

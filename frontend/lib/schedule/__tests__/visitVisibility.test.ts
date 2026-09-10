@@ -16,6 +16,7 @@ import {
   classifyVisitDisplay,
   isInactivePatientVisit,
   isVisitVisible,
+  todayJstIso,
   visitDisplayBadgeLabel,
   STATUS_CANCEL_BADGE_LABEL,
   VISIT_DISPLAY_CLASS,
@@ -119,6 +120,99 @@ describe('現場ボード / モニターのバッジ条件 (§3-4 の回帰ガ�
         { showInactive: true },
       ),
     ).toBe('inactive');
+  });
+});
+
+/**
+ * PO フィードバック 2026-09-10: 「入院中」バッジはステータスを変えた日以降の
+ * 予定にだけ出す。それ以前 = 実際に訪問した日なので従来表示のまま。
+ */
+describe('バッジの日付条件 (patient_status_since)', () => {
+  const TODAY = '2026-09-10';
+  const admitted = {
+    source: 'auto',
+    status: 'planned',
+    patient_status: 'admitted',
+  } as const;
+
+  it('起点日より前の予定にはバッジを出さない (normal)', () => {
+    expect(
+      classifyVisitDisplay(
+        { ...admitted, visit_date: '2026-09-07', patient_status_since: '2026-09-08' },
+        { today: TODAY },
+      ),
+    ).toBe('normal');
+  });
+
+  it('起点日当日・以降の予定にはバッジを出す (inactive)', () => {
+    for (const day of ['2026-09-08', '2026-09-09', '2026-09-30']) {
+      expect(
+        classifyVisitDisplay(
+          { ...admitted, visit_date: day, patient_status_since: '2026-09-08' },
+          { today: TODAY },
+        ),
+      ).toBe('inactive');
+    }
+  });
+
+  it('起点日が無い (mig 0082 以前) なら今日を起点にする', () => {
+    expect(
+      classifyVisitDisplay(
+        { ...admitted, visit_date: '2026-09-09', patient_status_since: null },
+        { today: TODAY },
+      ),
+    ).toBe('normal');
+    expect(classifyVisitDisplay({ ...admitted, visit_date: TODAY }, { today: TODAY })).toBe(
+      'inactive',
+    );
+    expect(classifyVisitDisplay({ ...admitted, visit_date: '2026-09-11' }, { today: TODAY })).toBe(
+      'inactive',
+    );
+  });
+
+  it('visit_date が無い入力は従来どおり (日付条件を課さない)', () => {
+    expect(classifyVisitDisplay(admitted, { today: TODAY })).toBe('inactive');
+    expect(classifyVisitDisplay({ ...admitted, visit_date: null }, { today: TODAY })).toBe(
+      'inactive',
+    );
+    // 解釈できない値も「日付不明」= 従来どおり。
+    expect(classifyVisitDisplay({ ...admitted, visit_date: 'unknown' }, { today: TODAY })).toBe(
+      'inactive',
+    );
+  });
+
+  it('ISO 日時が来ても先頭 10 文字 (日付) で比較する', () => {
+    expect(
+      classifyVisitDisplay(
+        {
+          ...admitted,
+          visit_date: '2026-09-07T10:00:00',
+          patient_status_since: '2026-09-08T00:00:00',
+        },
+        { today: TODAY },
+      ),
+    ).toBe('normal');
+  });
+
+  it('日付条件は連動取消 (hidden / status_cancel) の判定を変えない', () => {
+    const cancelled = {
+      source: 'status_cancel',
+      status: 'cancelled',
+      patient_status: 'admitted',
+      visit_date: '2026-09-01',
+      patient_status_since: '2026-09-08',
+    };
+    expect(classifyVisitDisplay(cancelled, { today: TODAY })).toBe('hidden');
+    expect(classifyVisitDisplay(cancelled, { today: TODAY, showInactive: true })).toBe(
+      'status_cancel',
+    );
+  });
+
+  it('today 未指定なら JST の今日を使う', () => {
+    expect(todayJstIso(new Date('2026-09-09T23:00:00Z'))).toBe('2026-09-10'); // JST +9h
+    // 明後日の予定は起点 (= 今日) より後なので必ず inactive。
+    const future = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
+    expect(classifyVisitDisplay({ ...admitted, visit_date: future })).toBe('inactive');
   });
 });
 

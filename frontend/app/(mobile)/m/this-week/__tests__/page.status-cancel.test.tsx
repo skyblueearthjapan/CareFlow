@@ -70,8 +70,21 @@ describe('今週の予定 — status_cancel は非表示', () => {
   });
 
   it('非稼働患者の予定が残っていたらバッジ + 薄色で見せる (§3-4)', () => {
-    renderWith([makeVisit({ id: 'residue', patient_status: 'admitted' })]);
+    // バッジはステータスを変えた日以降にだけ出す (PO 2026-09-10)。この訪問日 (9/7) と
+    // 同日に入院中へ変えた前提。
+    renderWith([
+      makeVisit({ id: 'residue', patient_status: 'admitted', patient_status_since: '2026-09-07' }),
+    ]);
     expect(screen.getByTestId('this-week-inactive-badge-residue')).toHaveTextContent('入院中');
+  });
+
+  it('ステータス変更日より前の予定にはバッジを出さない (PO 2026-09-10)', () => {
+    // 9/8 に入院中へ変えたなら、9/7 は実際に訪問した日なので従来表示のまま。
+    renderWith([
+      makeVisit({ id: 'past', patient_status: 'admitted', patient_status_since: '2026-09-08' }),
+    ]);
+    expect(screen.getByText('患者past')).toBeInTheDocument();
+    expect(screen.queryByTestId('this-week-inactive-badge-past')).not.toBeInTheDocument();
   });
 
   it('稼働中の予定にはバッジを出さない', () => {

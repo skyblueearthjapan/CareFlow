@@ -49,6 +49,7 @@ from app.schemas.visit_monitor import (
 )
 from app.services.accompaniment import resolve_accompaniment_by_visit
 from app.services.checkin.judge import load_thresholds
+from app.services.patient_status_sync import status_since_date
 from app.utils.geo import haversine_m
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -722,6 +723,9 @@ async def build_monitor(
                     source=v.source,
                     patient_status=(
                         getattr(patient, "status", None) if patient is not None else None
+                    ),
+                    patient_status_since=(
+                        status_since_date(patient) if patient is not None else None
                     ),
                     patient_lat=(
                         float(patient.lat)

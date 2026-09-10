@@ -32,6 +32,7 @@ from app.models.patient import Patient
 from app.models.staff import Staff
 from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
 from app.services.patient_excel.schema import OFFICE_CODE_TO_SHORT
+from app.services.patient_status_sync import status_since_date
 from app.services.scheduling.auto_allocator_v2 import (
     MAX_PATIENTS_PER_COURSE,
     _address_bucket,
@@ -97,6 +98,9 @@ class BoardVisitData:
     # ``patient_status`` = 既にロード済みの Patient から (追加クエリ無し)。
     source: str | None = None
     patient_status: str | None = None
+    # ステータスが今の値になった日 (JST)。FE はこの日以降の予定にだけバッジを出す
+    # (PO フィードバック 2026-09-10)。未記録 (mig 0082 以前) は None。
+    patient_status_since: date | None = None
 
 
 @dataclass
@@ -222,6 +226,7 @@ async def load_board_buckets(
                 status=v.status,
                 source=v.source,
                 patient_status=patient.status,
+                patient_status_since=status_since_date(patient),
             )
         )
 

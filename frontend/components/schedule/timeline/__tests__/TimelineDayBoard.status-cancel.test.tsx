@@ -124,6 +124,52 @@ describe('TimelineDayBoard — status_cancel は非表示', () => {
     expect(screen.getByTestId('tl-inactive-badge-residue')).toHaveTextContent('入院中');
   });
 
+  it('ステータス変更日より前の予定にはバッジを出さない (PO 2026-09-10)', () => {
+    render(
+      <TimelineDayBoard
+        columns={[
+          column([
+            visit({
+              id: 'past',
+              source: 'auto',
+              status: 'planned',
+              patient_status: 'admitted',
+              // 入院中にしたのは 9/8。9/7 の予定は実際に訪問した日なので従来表示。
+              patient_status_since: '2026-09-08',
+              visit_date: '2026-09-07',
+            }),
+          ]),
+        ]}
+        weekdayLabel="月"
+      />,
+    );
+    const card = screen.getByTestId('tl-visit-past');
+    expect(card).toBeInTheDocument();
+    expect(card.className).not.toContain('opacity-60');
+    expect(screen.queryByTestId('tl-inactive-badge-past')).not.toBeInTheDocument();
+  });
+
+  it('ステータス変更日以降の予定にはバッジを出す (PO 2026-09-10)', () => {
+    render(
+      <TimelineDayBoard
+        columns={[
+          column([
+            visit({
+              id: 'after',
+              source: 'auto',
+              status: 'planned',
+              patient_status: 'admitted',
+              patient_status_since: '2026-09-08',
+              visit_date: '2026-09-08',
+            }),
+          ]),
+        ]}
+        weekdayLabel="月"
+      />,
+    );
+    expect(screen.getByTestId('tl-inactive-badge-after')).toHaveTextContent('入院中');
+  });
+
   it('稼働中の予定にはバッジを出さない', () => {
     render(
       <TimelineDayBoard

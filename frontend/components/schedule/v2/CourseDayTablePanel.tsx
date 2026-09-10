@@ -126,6 +126,7 @@ import { apiErrorMessage } from '@/lib/api/errorMessage';
 import type { PinScope } from './PinScopeMenu';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
 import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
+import { jstDateOf } from '@/lib/format/patientStatus';
 import {
   courseCodeIndex,
   effectiveCapacity,
@@ -1120,19 +1121,41 @@ export function CourseDayTablePanel({
     [patientById],
   );
 
+  /**
+   * ステータスが今の値になった日 (JST `YYYY-MM-DD`)。BE が訪問 DTO に載せた
+   * `patient_status_since` を優先し、旧応答では患者マスタの `status_changed_at`
+   * (timestamp) から JST 日付を作る。どちらも無ければ null (= 今日を起点)。
+   */
+  const patientStatusSinceOfVisit = useCallback(
+    (v: { patient_id: string; patient_status_since?: string | null }): string | null =>
+      v.patient_status_since ??
+      jstDateOf(patientById.get(v.patient_id)?.status_changed_at as string | null | undefined) ??
+      null,
+    [patientById],
+  );
+
   /** 盤面に載せる前の表示区分 (hidden = 描かない)。 */
   const visitDisplayOf = useCallback(
     (v: {
       patient_id: string;
       patient_status?: string | null;
+      patient_status_since?: string | null;
+      visit_date?: string | null;
       source?: string | null;
       status?: string | null;
     }) =>
       classifyVisitDisplay(
-        { source: v.source, status: v.status, patient_status: patientStatusOfVisit(v) },
+        {
+          source: v.source,
+          status: v.status,
+          patient_status: patientStatusOfVisit(v),
+          // 「入院中」バッジはステータスを変えた日以降の予定にだけ (2026-09-10)。
+          visit_date: v.visit_date ?? null,
+          patient_status_since: patientStatusSinceOfVisit(v),
+        },
         { showInactive },
       ),
-    [patientStatusOfVisit, showInactive],
+    [patientStatusOfVisit, patientStatusSinceOfVisit, showInactive],
   );
 
   // ─── visits を (course_id, slot) → CourseGridVisit[] にバケット化 ──
@@ -1308,6 +1331,9 @@ export function CourseDayTablePanel({
         status: (v as { status?: string | null }).status ?? null,
         // 表示の保険 (§3-4): 非稼働患者の残骸バッジ / 連動取消の判定に使う。
         patient_status: patientStatusOfVisit(v),
+        // バッジの日付条件 (2026-09-10): 起点日 + 訪問日をカードまで運ぶ。
+        patient_status_since: patientStatusSinceOfVisit(v),
+        visit_date: v.visit_date ?? null,
         // T-1 縦タイムライン: 実時刻 (時間比例描画) + 患者性別 (カード地色).
         start_time: v.start_time ?? null,
         end_time: v.end_time ?? null,
@@ -1320,6 +1346,7 @@ export function CourseDayTablePanel({
     weekVisits,
     patientById,
     patientStatusOfVisit,
+    patientStatusSinceOfVisit,
     visitDisplayOf,
     visitsByGroupId,
     courseTemplateByCourseId,
@@ -1567,6 +1594,9 @@ export function CourseDayTablePanel({
         status: (v as { status?: string | null }).status ?? null,
         // 表示の保険 (§3-4): 非稼働患者の残骸バッジ / 連動取消の判定に使う。
         patient_status: patientStatusOfVisit(v),
+        // バッジの日付条件 (2026-09-10): 起点日 + 訪問日を週ビューまで運ぶ。
+        patient_status_since: patientStatusSinceOfVisit(v),
+        visit_date: v.visit_date ?? null,
         week_pinned: (v as { week_pinned?: boolean | null }).week_pinned ?? null,
         // 週ビューの距離算出用 (コース合計 + 次までの距離).
         lat: (patient as { lat?: number | null } | undefined)?.lat ?? null,
@@ -1597,6 +1627,7 @@ export function CourseDayTablePanel({
     visitsByGroupId,
     sameAddressKeyByPatientId,
     patientStatusOfVisit,
+    patientStatusSinceOfVisit,
     visitDisplayOf,
   ]);
 

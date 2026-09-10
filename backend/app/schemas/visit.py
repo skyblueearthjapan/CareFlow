@@ -164,6 +164,11 @@ class VisitRead(VisitBase):
     # ``active`` 以外の患者の予定が残っていたら不整合 = FE がバッジ/薄色で見せる
     # (``source='status_cancel'`` は非表示)。patient 未ロードは None。
     patient_status: str | None = None
+    # 患者ステータスが今の値になった日 (JST・``patients.status_changed_at`` 由来)。
+    # FE は **この日以降** の予定にだけ「入院中」バッジを出す (PO フィードバック
+    # 2026-09-10: 変更前の過去日 = 実際に訪問した日にバッジを出さない)。
+    # mig 0082 より前に変更された行は None → FE は「今日 (JST)」へ倒す。
+    patient_status_since: date | None = None
     # visit_staff_assignments 経由の割当スタッフ一覧 (§4.5)
     # 1 visit あたり 1 or 2 行 (required_staff_count による)
     staff_assignments: list[VisitStaffAssignmentRead] = Field(default_factory=list)

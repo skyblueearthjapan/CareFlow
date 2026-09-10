@@ -93,6 +93,11 @@ export interface MyVisit {
    */
   patient_status?: string | null;
   /**
+   * ステータスが今の値になった日 `YYYY-MM-DD` (JST)。この日以降の予定にだけ
+   * バッジを出す (PO フィードバック 2026-09-10)。旧デプロイは undefined。
+   */
+  patient_status_since?: string | null;
+  /**
    * Latest checkin projection. Optional / nullable so older deployments that
    * don't yet send it (or list endpoints that omit it) keep type-checking.
    */

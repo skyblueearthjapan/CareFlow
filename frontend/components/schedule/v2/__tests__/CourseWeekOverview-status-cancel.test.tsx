@@ -114,6 +114,37 @@ describe('CourseWeekOverview — status_cancel は非表示', () => {
     expect(screen.getByTestId('course-week-overview-inactive-residue')).toHaveTextContent('入院中');
   });
 
+  it('ステータス変更日より前の予定にはバッジを出さない (PO 2026-09-10)', () => {
+    renderWith([
+      makeVisit({
+        id: 'past',
+        source: 'auto',
+        status: 'planned',
+        patient_status: 'admitted',
+        // 入院中にしたのは 9/8。9/7 は実際に訪問した日なので従来表示のまま。
+        patient_status_since: '2026-09-08',
+        visit_date: '2026-09-07',
+      }),
+    ]);
+    const row = screen.getByTestId('course-week-overview-name-past');
+    expect(row.className).not.toContain('opacity-60');
+    expect(screen.queryByTestId('course-week-overview-inactive-past')).not.toBeInTheDocument();
+  });
+
+  it('ステータス変更日以降の予定にはバッジを出す (PO 2026-09-10)', () => {
+    renderWith([
+      makeVisit({
+        id: 'after',
+        source: 'auto',
+        status: 'planned',
+        patient_status: 'admitted',
+        patient_status_since: '2026-09-08',
+        visit_date: '2026-09-08',
+      }),
+    ]);
+    expect(screen.getByTestId('course-week-overview-inactive-after')).toHaveTextContent('入院中');
+  });
+
   it('トグル ON でも件数バッジは変わらない (枠の埋まり具合は取消を数えない)', () => {
     const visits = [
       makeVisit({ id: 'plain', source: 'auto', status: 'planned' }),

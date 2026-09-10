@@ -545,7 +545,7 @@ describe('MonitorTimeline', () => {
 // ─── 非稼働患者 (患者ステータス連動 Phase 3・design 2026-09-09 §3-4) ─────────
 
 describe('MonitorTimeline — 非稼働患者のバッジ', () => {
-  function renderWith(visit: ReturnType<typeof makeVisit>) {
+  function renderWith(visit: ReturnType<typeof makeVisit>, dateIso?: string | null) {
     render(
       <MonitorTimeline
         rows={[makeRow({ visits: [visit] })]}
@@ -554,6 +554,7 @@ describe('MonitorTimeline — 非稼働患者のバッジ', () => {
         nowMinutes={13 * 60 + 30}
         onSelectRow={vi.fn()}
         onSelectVisit={vi.fn()}
+        dateIso={dateIso}
       />,
     );
   }
@@ -577,6 +578,21 @@ describe('MonitorTimeline — 非稼働患者のバッジ', () => {
       expect(screen.getByTestId(`monitor-bar-inactive-${v.visit_id}`)).toHaveTextContent('入院中');
       cleanup();
     }
+  });
+
+  it('ステータス変更日より前の日を見ているときはバッジを出さない (PO 2026-09-10)', () => {
+    const v = makeVisit({
+      phase: 'awaiting',
+      patient_status: 'admitted',
+      patient_status_since: '2026-09-08',
+    });
+    // 9/7 のモニターを見ている = 実際に訪問した日なのでバッジは出さない。
+    renderWith(v, '2026-09-07');
+    expect(screen.queryByTestId(`monitor-bar-inactive-${v.visit_id}`)).not.toBeInTheDocument();
+    cleanup();
+    // 9/8 以降はバッジを出す。
+    renderWith(v, '2026-09-08');
+    expect(screen.getByTestId(`monitor-bar-inactive-${v.visit_id}`)).toHaveTextContent('入院中');
   });
 
   it('実績が確定した phase (done・no_show・cancelled) にはバッジを出さない', () => {

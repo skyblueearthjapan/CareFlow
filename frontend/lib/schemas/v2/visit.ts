@@ -142,6 +142,11 @@ export const visitV2ReadSchema = visitV2BaseSchema.extend({
    * 旧 BE 応答では欠けるので nullish + `.catch(null)` で寛容にパースする。
    */
   patient_status: z.string().nullish().catch(null),
+  /**
+   * ステータスが今の値になった日 `YYYY-MM-DD` (JST)。この日以降の予定にだけ
+   * バッジを出す (PO フィードバック 2026-09-10)。旧 BE 応答では欠ける。
+   */
+  patient_status_since: z.string().nullish().catch(null),
   // visit_staff_assignments 経由で割り当てられたスタッフ全員 (§4.5)
   staff_assignments: z.array(visitStaffAssignmentV2ReadSchema).default([]),
 });

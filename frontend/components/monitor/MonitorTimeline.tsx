@@ -77,6 +77,12 @@ interface MonitorTimelineProps {
   staffSexById?: ReadonlyMap<string, string | null | undefined>;
   /** M-4b: スタッフ ID → 当日のイベント (藤色帯・表示専用・カイポケ反映外)。 */
   eventsByStaffId?: ReadonlyMap<string, EventRead[]>;
+  /**
+   * 表示中の日付 (YYYY-MM-DD)。`MonitorVisit` は日付を持たない (モニターは 1 日単位)
+   * ので、「入院中」バッジの日付条件 (ステータス変更日以降のみ) に使うため受け取る。
+   * 未指定なら日付条件を課さない (従来どおり)。
+   */
+  dateIso?: string | null;
 }
 
 const HOURS = Array.from({ length: (TL_END_MIN - TL_START_MIN) / 60 + 1 }, (_, i) => 8 + i);
@@ -126,6 +132,7 @@ export function MonitorTimeline({
   patientMetaById,
   staffSexById,
   eventsByStaffId,
+  dateIso = null,
 }: MonitorTimelineProps) {
   const hasSelection = selectedRowKey !== null;
   // M-4c: 初回表示時に「今」を画面中央へ (横スクロール化に伴う迷子防止・当日のみ)。
@@ -460,6 +467,7 @@ export function MonitorTimeline({
                     isSelected={v.visit_id === selectedVisitId}
                     onSelect={onSelectVisit}
                     meta={patientMetaById?.get(v.patient_id)}
+                    dateIso={dateIso}
                   />
                 );
               })}
@@ -482,9 +490,11 @@ const MONITOR_SETTLED_PHASES = new Set(['done', 'no_show', 'cancelled']);
  * モニターのバーに出す表示区分。まだ訪問前 / 訪問中 (future / awaiting /
  * inprogress / missing) の予定にだけ非稼働バッジを出す。
  */
-function inactiveKind(visit: MonitorVisit): VisitDisplayKind {
+function inactiveKind(visit: MonitorVisit, dateIso: string | null): VisitDisplayKind {
   if (MONITOR_SETTLED_PHASES.has(visit.phase)) return 'normal';
-  return classifyVisitDisplay(visit, { showInactive: true });
+  // 日付条件 (2026-09-10): ステータスを変えた日より前の予定にはバッジを出さない。
+  // MonitorVisit は日付を持たない (モニターは 1 日単位) ので親から流す。
+  return classifyVisitDisplay({ ...visit, visit_date: dateIso }, { showInactive: true });
 }
 
 function VisitBars({
@@ -494,6 +504,7 @@ function VisitBars({
   isSelected,
   onSelect,
   meta,
+  dateIso,
 }: {
   visit: MonitorVisit;
   lane: number;
@@ -502,6 +513,8 @@ function VisitBars({
   onSelect: (visitId: string) => void;
   /** M-4a: 性別ウォッシュ・📍住所 (未指定=中立色)。 */
   meta?: MonitorPatientMeta;
+  /** 表示中の日付 (YYYY-MM-DD)。「入院中」バッジの日付条件に使う。 */
+  dateIso: string | null;
 }) {
   const pos = lanePos(lane);
   const ps = hmToMinutes(visit.start_time);
@@ -629,7 +642,7 @@ function VisitBars({
               連動取消はモニターに来ない (BE + クエリ層で除外済み)。 */}
           <InactiveVisitBadge
             visit={visit}
-            kind={inactiveKind(visit)}
+            kind={inactiveKind(visit, dateIso)}
             className="rounded-full py-px text-[9px]"
             testId={`monitor-bar-inactive-${visit.visit_id}`}
           />

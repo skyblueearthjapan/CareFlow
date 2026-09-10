@@ -142,6 +142,24 @@ def today_jst() -> date:
     return datetime.now(UTC).astimezone(_JST).date()
 
 
+def status_since_date(patient: Any) -> date | None:
+    """患者ステータスが今の値になった日 (JST)。
+
+    「入院中」バッジは **この日以降** の予定にだけ出す (PO フィードバック 2026-09-10:
+    ステータスを変える前の過去日 = 実際には訪問した日に「入院中」と書かない)。
+
+    ``status_changed_at`` は mig 0082 で足したので、それ以前に変更された行は NULL。
+    その場合は **None** を返し、呼び出し側 (FE) が「今日 (JST)」へ倒す
+    (= 過去日にはバッジを出さない・今日以降にだけ出す)。
+    """
+    changed_at = getattr(patient, "status_changed_at", None)
+    if changed_at is None:
+        return None
+    if changed_at.tzinfo is None:
+        changed_at = changed_at.replace(tzinfo=UTC)
+    return changed_at.astimezone(_JST).date()
+
+
 def _week_label(iso_year: int, iso_week: int) -> str:
     """'9/14週' (その週の月曜日)."""
     monday = date.fromisocalendar(iso_year, iso_week, 1)
@@ -1151,5 +1169,6 @@ __all__ = [
     "direction_for",
     "is_schedulable_status",
     "status_label",
+    "status_since_date",
     "today_jst",
 ]

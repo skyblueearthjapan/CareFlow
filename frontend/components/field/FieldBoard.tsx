@@ -414,6 +414,9 @@ export function FieldBoard() {
           <AgendaBoard
             dayCourses={dayCourses}
             weekday={dayIdx}
+            // 「入院中」バッジの日付条件 (2026-09-10)。BoardVisit は日付を持たない
+            // (office × weekday 構造) ので、選択日の ISO 日付をここから流す。
+            dateIso={board?.weekdays[dayIdx]?.date ?? null}
             sameAddressGroups={sameAddressGroups}
             businessBlocks={businessBlocks}
             shortLabelByName={shortLabelByName}
@@ -790,11 +793,17 @@ function DayStepper({
 function PatientCard({
   visit,
   courseCode,
+  dateIso,
   inPair,
   startOverride,
   onKarte,
 }: {
   visit: BoardVisit;
+  /**
+   * この日の ISO 日付 (YYYY-MM-DD)。BoardVisit は日付を持たない (office × weekday
+   * 構造) ので親から流す。「入院中」バッジをステータス変更日以降にだけ出すのに使う。
+   */
+  dateIso: string | null;
   /** 所属コードの course_code (色解決用。BoardCourse から明示的に渡す)。 */
   courseCode: string;
   inPair?: boolean;
@@ -809,7 +818,11 @@ function PatientCard({
   // 残っている**ときだけバッジで見せる。共通判定を使うので、今週だけ取消・
   // 訪問済みの行には出ない (過去の実績に「入院中」と書かない)。
   // 連動取消はここに来る前 (クエリ層) で落としてある。
-  const displayKind = classifyVisitDisplay(visit, { showInactive: true });
+  // 日付条件 (2026-09-10): ステータスを変えた日より前の予定にはバッジを出さない。
+  const displayKind = classifyVisitDisplay(
+    { ...visit, visit_date: dateIso },
+    { showInactive: true },
+  );
   const isInactiveResidue = displayKind === 'inactive';
   return (
     <button
@@ -1005,11 +1018,14 @@ function EmptySlot({ gap, onEmpty }: { gap: FreeGap; onEmpty: () => void }) {
 function PairWrap({
   visits,
   courseCode,
+  dateIso,
   onKarte,
 }: {
   visits: BoardVisit[];
   /** 連結バンド内カードの色解決用 course_code (BoardCourse から明示的に渡す)。 */
   courseCode: string;
+  /** 選択日の ISO 日付。「入院中」バッジの日付条件に使う。 */
+  dateIso: string | null;
   onKarte: (v: BoardVisit) => void;
 }) {
   // 同住所連結バンドの所要 = 先頭 start 〜 末尾 end。
@@ -1062,7 +1078,13 @@ function PairWrap({
       </div>
       {visits.map((v, i) => (
         <div key={v.visit_id}>
-          <PatientCard visit={v} courseCode={courseCode} inPair onKarte={onKarte} />
+          <PatientCard
+            visit={v}
+            courseCode={courseCode}
+            dateIso={dateIso}
+            inPair
+            onKarte={onKarte}
+          />
           {i < visits.length - 1 && (
             <div
               style={{
@@ -1101,6 +1123,7 @@ function CourseSlots({
   officeId,
   officeName,
   weekday,
+  dateIso,
   sameAddressGroups,
   businessBlocks,
   shortLabelByName,
@@ -1112,6 +1135,8 @@ function CourseSlots({
   officeId: string;
   officeName: string;
   weekday: number;
+  /** 選択日の ISO 日付 (YYYY-MM-DD)。「入院中」バッジの日付条件に使う。 */
+  dateIso: string | null;
   sameAddressGroups: SameAddressGroups;
   /** Phase G-88: 営業設定から算出した営業枠 (空き帯算出用)。 */
   businessBlocks: ReadonlyArray<readonly [number, number]>;
@@ -1152,6 +1177,7 @@ function CourseSlots({
               key={'pair' + pairKey}
               visits={members}
               courseCode={co.course_code}
+              dateIso={dateIso}
               onKarte={onKarte}
             />
           ),
@@ -1163,7 +1189,13 @@ function CourseSlots({
       sortKey: startKey,
       seq: seq++,
       node: (
-        <PatientCard key={v.visit_id} visit={v} courseCode={co.course_code} onKarte={onKarte} />
+        <PatientCard
+          key={v.visit_id}
+          visit={v}
+          courseCode={co.course_code}
+          dateIso={dateIso}
+          onKarte={onKarte}
+        />
       ),
     });
   }
@@ -1238,6 +1270,7 @@ function CourseSlots({
 function AgendaBoard({
   dayCourses,
   weekday,
+  dateIso,
   sameAddressGroups,
   businessBlocks,
   shortLabelByName,
@@ -1248,6 +1281,8 @@ function AgendaBoard({
   dayCourses: BoardCourseWithOffice[];
   /** 選択日の曜日 (0=Mon..6=Sun)。直接配置の枠コンテキスト用。 */
   weekday: number;
+  /** 選択日の ISO 日付 (YYYY-MM-DD)。「入院中」バッジの日付条件に使う。 */
+  dateIso: string | null;
   sameAddressGroups: SameAddressGroups;
   /** Phase G-88: 営業設定から算出した営業枠 (空き帯算出用)。 */
   businessBlocks: ReadonlyArray<readonly [number, number]>;
@@ -1368,6 +1403,7 @@ function AgendaBoard({
                   officeId={dc.officeId}
                   officeName={dc.officeName}
                   weekday={weekday}
+                  dateIso={dateIso}
                   sameAddressGroups={sameAddressGroups}
                   businessBlocks={businessBlocks}
                   shortLabelByName={shortLabelByName}

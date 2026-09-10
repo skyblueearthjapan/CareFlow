@@ -113,6 +113,7 @@ async def _seed_patient(
     lng: float = BASE[1],
     name: str | None = None,
     deleted: bool = False,
+    status_changed_at: datetime | None = None,
 ) -> Patient:
     p = Patient(
         code=code,
@@ -122,6 +123,7 @@ async def _seed_patient(
         lat=lat,
         lng=lng,
         primary_office_id=office.id if office is not None else None,
+        status_changed_at=status_changed_at,
     )
     if deleted:
         p.deleted_at = datetime.now(ZoneInfo("UTC")).replace(tzinfo=None)
@@ -296,6 +298,117 @@ async def test_monitor_dto_carries_source_and_patient_status(db) -> None:
     assert seen[str(active.id)].patient_status == "active"
     assert seen[str(admitted.id)].patient_status == INACTIVE
     assert seen[str(admitted.id)].source == "manual_week"
+
+
+# ---------------------------------------------------------------------------
+# A-2. DTO に patient_status_since (ステータスを変えた日・JST) が載る
+#      PO フィードバック 2026-09-10: 「入院中」バッジはこの日以降の予定にだけ。
+# ---------------------------------------------------------------------------
+
+#: UTC 23:00 = JST 翌日 08:00。日付境界を跨ぐ値で「JST 日付である」ことを示す。
+CHANGED_AT_UTC = datetime(2026, 9, 7, 23, 0, tzinfo=ZoneInfo("UTC"))
+CHANGED_AT_JST_DATE = date(2026, 9, 8)
+
+
+@pytest.mark.asyncio
+async def test_visits_list_dto_carries_patient_status_since(client, db) -> None:
+    admin = await _make_user(db, email="p3-since-visits@example.com")
+    office = await _seed_office(db)
+    staff = await _seed_staff(db, office=office)
+    known = await _seed_patient(
+        db,
+        office=office,
+        code="P3S-A",
+        status=INACTIVE,
+        status_changed_at=CHANGED_AT_UTC,
+    )
+    # mig 0082 以前に変えられた行 = 起点日が分からない (FE は「今日」に倒す)。
+    legacy = await _seed_patient(db, office=office, code="P3S-B", status=INACTIVE)
+    await _seed_visit(db, patient=known, staff=staff, start=time(9, 0), end=time(9, 35))
+    await _seed_visit(db, patient=legacy, staff=staff, start=time(11, 0), end=time(11, 35))
+    await db.commit()
+
+    res = await client.get(
+        "/api/v1/visits",
+        headers=_bearer(admin),
+        params={"date_from": WEEK_MONDAY.isoformat(), "date_to": WEEK_MONDAY.isoformat()},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    items = body["items"] if isinstance(body, dict) else body
+    by_patient = {it["patient_id"]: it for it in items}
+    assert by_patient[str(known.id)]["patient_status_since"] == CHANGED_AT_JST_DATE.isoformat()
+    assert by_patient[str(legacy.id)]["patient_status_since"] is None
+
+
+@pytest.mark.asyncio
+async def test_board_dto_carries_patient_status_since(client, db) -> None:
+    admin = await _make_user(db, email="p3-since-board@example.com")
+    office = await _seed_office(db)
+    staff = await _seed_staff(db, office=office)
+    course = await _seed_course(db, office=office, staff=staff)
+    known = await _seed_patient(
+        db,
+        office=office,
+        code="P3SB-A",
+        status=INACTIVE,
+        status_changed_at=CHANGED_AT_UTC,
+    )
+    legacy = await _seed_patient(
+        db, office=office, code="P3SB-B", status=INACTIVE, lat=NEAR[0], lng=NEAR[1]
+    )
+    await _seed_visit(db, patient=known, course=course, start=time(9, 0), end=time(9, 35))
+    await _seed_visit(db, patient=legacy, course=course, start=time(11, 0), end=time(11, 35))
+    await db.commit()
+
+    res = await client.get(
+        "/api/v1/schedule/v2/board",
+        headers=_bearer(admin),
+        params={"iso_year": ISO_YEAR, "iso_week": ISO_WEEK, "office_id": str(office.id)},
+    )
+    assert res.status_code == 200, res.text
+    cell = _find_cell(res.json(), str(office.id), 0)
+    by_patient = {v["patient_id"]: v for v in cell["courses"][0]["visits"]}
+    assert by_patient[str(known.id)]["patient_status_since"] == CHANGED_AT_JST_DATE.isoformat()
+    assert by_patient[str(legacy.id)]["patient_status_since"] is None
+
+
+@pytest.mark.asyncio
+async def test_monitor_dto_carries_patient_status_since(db) -> None:
+    from app.services.checkin.monitor import build_monitor
+
+    office = await _seed_office(db, name="都賀", code="TSUGA")
+    staff = await _seed_staff(db, office=office, name="看護M")
+    known = await _seed_patient(
+        db,
+        office=office,
+        code="P3SM-A",
+        status=INACTIVE,
+        status_changed_at=CHANGED_AT_UTC,
+    )
+    legacy = await _seed_patient(db, office=office, code="P3SM-B", status=INACTIVE)
+    await _seed_visit(db, patient=known, staff=staff, start=time(9, 0), end=time(9, 35))
+    await _seed_visit(db, patient=legacy, staff=staff, start=time(11, 0), end=time(11, 35))
+    await db.commit()
+
+    resp = await build_monitor(db, WEEK_MONDAY)
+    seen = {str(mv.patient_id): mv for row in resp.staff for mv in row.visits}
+    assert seen[str(known.id)].patient_status_since == CHANGED_AT_JST_DATE
+    assert seen[str(legacy.id)].patient_status_since is None
+
+
+def test_status_since_date_converts_to_jst_and_tolerates_naive() -> None:
+    """``status_since_date`` は UTC → JST の **日付**。naive は UTC とみなす。"""
+    from app.services.patient_status_sync import status_since_date
+
+    class _P:
+        def __init__(self, value: datetime | None) -> None:
+            self.status_changed_at = value
+
+    assert status_since_date(_P(CHANGED_AT_UTC)) == CHANGED_AT_JST_DATE
+    # naive (SQLite が返す形) も UTC とみなして JST へ寄せる。
+    assert status_since_date(_P(CHANGED_AT_UTC.replace(tzinfo=None))) == CHANGED_AT_JST_DATE
+    assert status_since_date(_P(None)) is None
 
 
 # ---------------------------------------------------------------------------

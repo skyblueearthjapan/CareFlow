@@ -8,10 +8,17 @@
  *   - 連動で取り消した予定 (source='status_cancel') は既に「消えたもの」なので
  *     既定では出さない。トグル「非稼働を表示」で残骸点検用に打ち消し線つきで出せる。
  *
+ * **日付条件 (PO フィードバック 2026-09-10)**: 「入院中」バッジはステータスを変えた日
+ * (`patient_status_since` = `patients.status_changed_at` の JST 日付) **以降** の予定に
+ * だけ出す。それ以前の日 = 実際に訪問した日なので従来表示 (`normal`)。`since` が
+ * 未記録 (mig 0082 以前) なら **今日 (JST)** を起点にする。`visit_date` を渡さない
+ * 呼び出しは従来どおり (日付条件なし) になるので、呼び出し側は必ず訪問日を詰める。
+ *
  * 盤面 (日/週タイムライン・週リスト・職員スケジュール・盤面セル)・モニター・
  * モバイル・現場ボードが **同じ関数** を使うための単一ソース。コンポーネント側で
  * ステータス値を列挙しない (ラベルは `inactiveStatusLabel` が唯一の出所)。
  */
+import { jstDateString } from '@/lib/format/patientStatus';
 import { inactiveStatusLabel } from '@/lib/schemas/patient';
 import { isStatusCancelledVisit } from '@/lib/schemas/v2/visit';
 
@@ -21,6 +28,31 @@ export interface VisitVisibilityInput {
   status?: string | null;
   /** 患者マスタの `patients.status` (BE が訪問 DTO に載せる・旧応答では欠落)。 */
   patient_status?: string | null;
+  /**
+   * 訪問日 `YYYY-MM-DD` (ISO 日時も可 = 先頭 10 文字を見る)。
+   * **欠落したら従来どおり** (日付条件を課さない = バッジを出す)。呼び出し側は
+   * DTO のフィールド名がまちまち (`visit_date` / `date` / `visitDate`) なので
+   * ここへ詰め替える責任を持つ。
+   */
+  visit_date?: string | null;
+  /**
+   * 患者ステータスが今の値になった日 `YYYY-MM-DD` (JST・BE の
+   * `patient_status_since` = `patients.status_changed_at`)。
+   * 未記録 (mig 0082 以前) は null → 「今日 (JST)」に倒す。
+   */
+  patient_status_since?: string | null;
+}
+
+/** JST の今日 (`YYYY-MM-DD`)。BE の `today_jst` と同じ基準。 */
+export function todayJstIso(now: Date = new Date()): string {
+  return jstDateString(0, now);
+}
+
+/** `YYYY-MM-DD` / ISO 日時 → `YYYY-MM-DD` (比較用)。空・不正は null。 */
+function isoDay(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const day = value.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null;
 }
 
 /**
@@ -59,9 +91,25 @@ function isPlannedLike(status: string | null | undefined): boolean {
   return status == null || status === '' || status === 'planned';
 }
 
+/**
+ * バッジの起点日 **以降** の訪問か (PO フィードバック 2026-09-10)。
+ *
+ * 起点 = `patient_status_since` (ステータスを変えた日・JST)。未記録なら **今日**
+ * (mig 0082 以前に変えた行。過去日に遡って「入院中」と書かないための保守的な既定)。
+ * `visit_date` が無い入力は **従来どおり** true (日付条件を課さない)。
+ */
+function isOnOrAfterStatusSince(v: VisitVisibilityInput, today: string): boolean {
+  const visitDay = isoDay(v.visit_date);
+  if (visitDay === null) return true;
+  const since = isoDay(v.patient_status_since) ?? today;
+  return visitDay >= since;
+}
+
 export interface ClassifyVisitDisplayOptions {
   /** トグル「非稼働を表示」。true = 連動取消も残骸点検のために描く。 */
   showInactive?: boolean;
+  /** 今日 (JST・`YYYY-MM-DD`)。テスト用の注入口。既定は `todayJstIso()`。 */
+  today?: string;
 }
 
 /**
@@ -70,10 +118,16 @@ export interface ClassifyVisitDisplayOptions {
  */
 export function classifyVisitDisplay(
   v: VisitVisibilityInput,
-  { showInactive = false }: ClassifyVisitDisplayOptions = {},
+  { showInactive = false, today }: ClassifyVisitDisplayOptions = {},
 ): VisitDisplayKind {
   if (isStatusCancelledVisit(v)) return showInactive ? 'status_cancel' : 'hidden';
-  if (isInactivePatientVisit(v) && isPlannedLike(v.status)) return 'inactive';
+  if (
+    isInactivePatientVisit(v) &&
+    isPlannedLike(v.status) &&
+    isOnOrAfterStatusSince(v, today ?? todayJstIso())
+  ) {
+    return 'inactive';
+  }
   return 'normal';
 }
 

@@ -55,6 +55,8 @@ export const monitorVisitSchema = z.object({
   source: z.string().nullish().catch(null),
   // 患者マスタの `patients.status`。非稼働のまま予定が残っていたらバッジで見せる。
   patient_status: z.string().nullish().catch(null),
+  // ステータスが今の値になった日 (JST `YYYY-MM-DD`)。この日以降だけバッジを出す。
+  patient_status_since: z.string().nullish().catch(null),
   patient_lat: z.number().nullable().optional(),
   patient_lng: z.number().nullable().optional(),
   start_time: z.string(),

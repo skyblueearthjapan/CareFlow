@@ -66,6 +66,7 @@ from app.services.constraint_override_notify import (
     constraint_confirmation_detail,
 )
 from app.services.op_log_service import fmt_time, fmt_weekday, record_op
+from app.services.patient_status_sync import status_since_date
 from app.services.scheduling.guards import ensure_patient_schedulable
 from app.utils.db import try_advisory_xact_lock
 
@@ -286,6 +287,10 @@ def _serialize_visit(
         # eager-load 済みの Patient から取る (追加クエリを増やさない)。
         "patient_status": (
             getattr(visit.patient, "status", None) if visit.patient is not None else None
+        ),
+        # ステータスが今の値になった日 (JST)。FE はこの日以降の予定にだけバッジを出す。
+        "patient_status_since": (
+            status_since_date(visit.patient) if visit.patient is not None else None
         ),
         "staff_assignments": assignments or [],
         # QR チェックイン (Phase 1) の最新打刻. 既存呼出は None のまま (非破壊).

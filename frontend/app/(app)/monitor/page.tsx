@@ -406,6 +406,8 @@ export default function MonitorPage() {
                 patientMetaById={patientMetaById}
                 staffSexById={staffSexById}
                 eventsByStaffId={eventsByStaffId}
+                // 「入院中」バッジの日付条件 (2026-09-10)。
+                dateIso={date}
               />
             )}
           </div>

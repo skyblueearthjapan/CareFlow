@@ -94,6 +94,9 @@ class MonitorVisit(BaseModel):
     # 以外なら不整合 (バッジ表示)。
     source: str | None = None
     patient_status: str | None = None
+    # 患者ステータスが今の値になった日 (JST)。FE はこの日以降の予定にだけバッジを
+    # 出す (PO フィードバック 2026-09-10)。未記録 (mig 0082 以前) は None。
+    patient_status_since: date | None = None
     # 予定 (JST 壁時計の "HH:MM").
     start_time: str
     end_time: str

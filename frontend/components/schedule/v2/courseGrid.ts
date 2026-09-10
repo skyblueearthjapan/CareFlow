@@ -256,6 +256,17 @@ export interface CourseGridVisit {
    */
   patient_status?: string | null;
   /**
+   * 患者ステータスが今の値になった日 `YYYY-MM-DD` (JST・BE の `patient_status_since`)。
+   * `visit_date` がこの日以降の予定にだけ「入院中」バッジを出す
+   * (PO フィードバック 2026-09-10)。欠落は「今日」を起点にする。
+   */
+  patient_status_since?: string | null;
+  /**
+   * 訪問日 `YYYY-MM-DD`。バッジの日付条件 (上記) に使う。日ビューは曜日で束ねるので
+   * 表示自体には使わないが、`classifyVisitDisplay` に渡す必要がある。
+   */
+  visit_date?: string | null;
+  /**
    * T-1 縦タイムライン用 (schedule-timeline-redesign-design.md)。タイムラインは
    * 時間比例のため実時刻が要る。いずれも省略可 (欠落時はその訪問を描かない)。
    */

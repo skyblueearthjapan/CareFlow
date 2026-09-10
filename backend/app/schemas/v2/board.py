@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -67,6 +68,13 @@ class BoardVisit(BaseModel):
     )
     patient_status: str | None = Field(
         default=None, description="患者ステータス (active 以外の planned は不整合バッジ)"
+    )
+    patient_status_since: date | None = Field(
+        default=None,
+        description=(
+            "患者ステータスが今の値になった日 (JST)。FE はこの日以降の予定にだけ"
+            "バッジを出す。未記録 (mig 0082 以前) は None → FE は今日へ倒す"
+        ),
     )
 
 

@@ -104,6 +104,8 @@ export function hideStatusCancelled(board: BoardResponse): BoardResponse {
       ...cell,
       courses: cell.courses.map((course) => ({
         ...course,
+        // `hidden` 判定は source/status だけで決まる (バッジの日付条件が効くのは
+        // 'inactive' のみ) ので、ここでは訪問日を渡さなくてよい。
         visits: course.visits.filter((v) => classifyVisitDisplay(v) !== 'hidden'),
       })),
     })),

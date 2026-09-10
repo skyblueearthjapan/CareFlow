@@ -119,6 +119,14 @@ export interface WeekOverviewVisit {
    */
   patient_status?: string | null;
   /**
+   * 患者ステータスが今の値になった日 `YYYY-MM-DD` (JST・BE の `patient_status_since`)。
+   * `visit_date` がこの日以降の予定にだけ「入院中」バッジを出す
+   * (PO フィードバック 2026-09-10)。欠落は「今日」を起点にする。
+   */
+  patient_status_since?: string | null;
+  /** 訪問日 `YYYY-MM-DD`。上のバッジ日付条件に使う (週ビューは weekday で並べる)。 */
+  visit_date?: string | null;
+  /**
    * 訪問の担当スタッフ (visit.primary_staff_id)。スタッフ別ビューの行帰属に使う
    * (2026-07-26: 臨時テンプレは複数スタッフの臨Nコースを束ねるため、コース担当
    * 経由の帰属では他人の訪問が混ざる — 訪問自身の primary が正)。

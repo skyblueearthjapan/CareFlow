@@ -4473,6 +4473,7 @@ def _board_course_to_schema(
             # 患者ステータス連動 Phase 3 §3-4 (非破壊追加)。
             source=bv.source,
             patient_status=bv.patient_status,
+            patient_status_since=bv.patient_status_since,
         )
         for bv in course.visits
     ]

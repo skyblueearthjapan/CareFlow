@@ -32,6 +32,20 @@ export function formatJstMonthDay(value: string | null | undefined): string | nu
 }
 
 /**
+ * ISO 文字列 / `YYYY-MM-DD` を JST の `YYYY-MM-DD` にする。解釈できない値は `null`。
+ *
+ * 「入院中」バッジの起点日（`patient_status_since`）を患者マスタの
+ * `status_changed_at`（timestamp）から作るときに使う。BE の `status_since_date`
+ * と同じ変換（UTC → Asia/Tokyo → date）。
+ */
+export function jstDateOf(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo' }).format(d);
+}
+
+/**
  * 「（9/8〜）」。`status_changed_at` が無い（旧データ / 旧 BE）なら空文字。
  * 呼び出し側は `{STATUS_LABEL[st]}{formatStatusSince(p.status_changed_at)}` で使う。
  */
