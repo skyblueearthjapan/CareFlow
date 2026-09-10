@@ -35,6 +35,10 @@ DB も書かない (取得は ``plan_actual_fetch`` の責務)。
 * ``同行違い`` — 主担当は合っているのに同行者 (職員名2) が食い違う
 * ``重複（予定側/実績側）`` — 同キー内に **担当も時刻も同じ** 行が 2 本以上
   (担当だけをキーにすると「同じ人が午前と午後に 2 回訪問」まで重複に化ける)
+* ``職種未設定`` — 職員名1 が入っているのに 職種1 が空の行 (カイポケ画面の赤い「未」)。
+  RPA / 手入力で作られた行に出やすく、二重登録の片割れであることが多い
+* ``同日複数`` — 同キー内で **同じ担当が別々の時刻に 2 行以上**。正当な 1 日 2 回訪問も
+  含むので判定にはせず目印だけ置く (片方が職種未設定なら削除候補)
 
 **タグは判定カテゴリではない (内数)** — 一致/時刻ズレ/…の 6 カテゴリだけで
 全行がちょうど 1 回数えられる、という読み方を壊さないため。
@@ -86,6 +90,10 @@ TAG_DUP_PLAN = "重複（予定側）"
 TAG_DUP_ACTUAL = "重複（実績側）"
 TAG_SERVICE = "サービス違い"
 TAG_ACCOMPANY = "同行違い"
+#: 職員名1 があるのに 職種1 が空の行 (カイポケ画面の赤い「未」バッジ)。
+TAG_UNTYPED = "職種未設定"
+#: 同キー内で同じ担当が別々の時刻に 2 行以上 (二重登録の温床・正当な 2 回訪問も含む)。
+TAG_MULTI_SAME_DAY = "同日複数"
 
 #: 集計キー「重複」に数えるタグ。
 _DUP_TAGS = (TAG_DUP_PLAN, TAG_DUP_ACTUAL)
@@ -102,14 +110,23 @@ _ADVICE_DUP_ACTUAL = "実績側の重複。記録Ⅱの無い方を削除"
 _ADVICE_DUP_PLAN = "予定側の重複。不要な方の予定を取消"
 _ADVICE_SERVICE = "サービス内容も相違。請求区分を確認"
 _ADVICE_ACCOMPANY = "同行者（職員2）が一致しません。実績側を確認"
+_ADVICE_UNTYPED_ACTUAL = (
+    "職種が未設定の実績行。RPA/手入力で作られた可能性が高い。正の行があれば削除候補"
+)
+_ADVICE_UNTYPED_PLAN = "予定側の職種が未設定。担当設定を確認"
+_ADVICE_MULTI_SAME_DAY = (
+    "同じ担当が同日に複数行。片方が職種未設定なら削除候補、両方正なら実際に 2 回訪問したか確認"
+)
 
 #: 担当が空欄のときの表示 (カイポケの「-」行 = 担当なし)。
 NO_STAFF = "（担当なし）"
 
-#: 実績CSVの既知の制約 (PO へ必ず伝える)。
+#: 実績CSVの既知の性質 (PO へ必ず伝える)。
+#: 2026-07 の実データで、職種1 が空の実績行が CSV に **含まれる** ことを確認した
+#: (カイポケ画面では赤い「未」バッジ)。以前の「CSV に出ない」という注意書きは誤り。
 CAVEAT = (
-    "未確定（未）の実績はカイポケの CSV 出力に含まれないため本レポートに出ません。"
-    "未確定行は月間スケジュール管理の実績側で直接確認してください"
+    "職種が未設定（画面で「未」）の実績行は CSV に含まれます。"
+    "本レポートでは「職種未設定」タグで示します"
 )
 
 #: 同行者の扱いの限界 (CAVEAT と並べて出す)。
@@ -132,10 +149,19 @@ _HEADER_COLUMNS: dict[str, str] = {
     "end": "終了時間",
 }
 
+#: 職種列。ヘッダ判定の必須には入れない (この列を持たない CSV でも突合自体は成立する)。
+#: 無ければ空扱い = 職種未設定タグは付かない (「読めなかった」を「未設定」に化けさせない)。
+_OPTIONAL_HEADER_COLUMNS: dict[str, str] = {
+    "job1": "職種１",
+    "job2": "職種２",
+}
+
 #: ヘッダ名で引けなかったときの列位置 (diff/engine._parse_kaipoke_rows と同じ)。
 _INDEX_COLUMNS: dict[str, int] = {
     "staff1": 0,
+    "job1": 1,
     "staff2": 2,
+    "job2": 3,
     "day": 9,
     "patient": 11,
     "business": 12,
@@ -212,6 +238,23 @@ class PARow:
     end: str
     service: str
     business: str = ""
+    #: 職種1 / 職種2 (カイポケ画面の「未」= 空欄)。
+    job1: str = ""
+    job2: str = ""
+    #: 職種列そのものが CSV に無かった (= 判断材料が無い)。空欄とは区別する。
+    job_unknown: bool = False
+
+    @property
+    def is_untyped(self) -> bool:
+        """職員名1 があるのに 職種1 が空か (= カイポケ画面の赤い「未」)。
+
+        担当なし (空欄 / ``-``) の行は「職種も空で当たり前」なので数えない —
+        そこまで拾うと担当なし行が丸ごと「職種未設定」に化けて目印にならない。
+        職種列を持たない CSV も同様に数えない (読めなかっただけで未設定ではない)。
+        """
+        if self.job_unknown or self.staff_key == _NO_STAFF_KEY:
+            return False
+        return not self.job1.strip()
 
     @property
     def is_visit(self) -> bool:
@@ -269,6 +312,9 @@ def parse_rows_with_stats(csv_text: str) -> tuple[list[PARow], int]:
     header = {name.strip().lstrip("﻿"): k for k, name in enumerate(rows[0])}
     if all(name in header for name in _HEADER_COLUMNS.values()):
         cols = {key: header[name] for key, name in _HEADER_COLUMNS.items()}
+        for key, name in _OPTIONAL_HEADER_COLUMNS.items():
+            if name in header:
+                cols[key] = header[name]
         body = rows[1:]
     else:
         # ヘッダ名で引けない CSV (列名が変わった/ヘッダ無し) は列位置で読む。
@@ -277,6 +323,13 @@ def parse_rows_with_stats(csv_text: str) -> tuple[list[PARow], int]:
         body = rows
 
     highest = max(cols.values())
+    job_unknown = "job1" not in cols
+
+    def _cell(r: list[str], key: str) -> str:
+        """任意列の取り出し (列が無ければ空)。職種列を持たない CSV でも落ちない。"""
+        i = cols.get(key)
+        return r[i] if i is not None and i < len(r) else ""
+
     out: list[PARow] = []
     malformed = 0
     for r in body:
@@ -296,6 +349,9 @@ def parse_rows_with_stats(csv_text: str) -> tuple[list[PARow], int]:
                 end=_norm_time(r[cols["end"]]),
                 service=(r[cols["service"]] or "").strip(),
                 business=(r[cols["business"]] or "").strip(),
+                job1=_cell(r, "job1").strip(),
+                job2=_cell(r, "job2").strip(),
+                job_unknown=job_unknown,
             )
         )
     return out, malformed
@@ -325,6 +381,14 @@ class PlanActualEntry:
     def is_duplicate(self) -> bool:
         return any(t in _DUP_TAGS for t in self.tags)
 
+    @property
+    def is_untyped(self) -> bool:
+        return TAG_UNTYPED in self.tags
+
+    @property
+    def is_multi_same_day(self) -> bool:
+        return TAG_MULTI_SAME_DAY in self.tags
+
 
 @dataclass
 class PlanActualDay:
@@ -340,6 +404,10 @@ class StaffSummary:
     staff: str
     counts: dict[str, int] = field(default_factory=dict)
     duplicates: int = 0
+    #: 職種未設定タグの数 (内数)。
+    untyped: int = 0
+    #: 同日複数タグの数 (内数)。
+    multi_same_day: int = 0
     total: int = 0
 
 
@@ -361,6 +429,16 @@ class PlanActualReport:
     days: list[PlanActualDay]
 
     @property
+    def untyped_rows(self) -> int:
+        """職種未設定タグの付いた行数 (両側合計・内数)。"""
+        return self.counts.get(TAG_UNTYPED, 0)
+
+    @property
+    def multi_same_day(self) -> int:
+        """同日複数タグの付いた行数 (両側合計・内数)。"""
+        return self.counts.get(TAG_MULTI_SAME_DAY, 0)
+
+    @property
     def row_counts_diverge(self) -> bool:
         """予定と実績の行数が大きく食い違うか (取得範囲を疑う材料)。
 
@@ -373,17 +451,27 @@ class PlanActualReport:
         return abs(self.plan_rows - self.actual_rows) / bigger > _ROW_COUNT_DIVERGENCE
 
 
-def _advice_for(category: str, tags: list[str]) -> str:
-    """推奨対処。重複タグは判定より強い (まず重複を潰さないと他の判定が読めない)。"""
+def _advice_for(category: str, tags: list[str], *, untyped_actual: bool = False) -> str:
+    """推奨対処。重複タグは判定より強い (まず重複を潰さないと他の判定が読めない)。
+
+    職種未設定 / 同日複数 は「どの行を消すか」の決め手になるので、重複で
+    打ち切らずに必ず後ろへ足す (この 2 つが揃った行こそ二重登録の片割れ)。
+    """
     if TAG_DUP_ACTUAL in tags:
-        return _ADVICE_DUP_ACTUAL
-    if TAG_DUP_PLAN in tags:
-        return _ADVICE_DUP_PLAN
-    parts = [p for p in (_ADVICE.get(category, ""),) if p]
-    if TAG_ACCOMPANY in tags:
-        parts.append(_ADVICE_ACCOMPANY)
-    if TAG_SERVICE in tags:
-        parts.append(_ADVICE_SERVICE)
+        parts = [_ADVICE_DUP_ACTUAL]
+    elif TAG_DUP_PLAN in tags:
+        parts = [_ADVICE_DUP_PLAN]
+    else:
+        parts = [p for p in (_ADVICE.get(category, ""),) if p]
+        if TAG_ACCOMPANY in tags:
+            parts.append(_ADVICE_ACCOMPANY)
+        if TAG_SERVICE in tags:
+            parts.append(_ADVICE_SERVICE)
+    if TAG_UNTYPED in tags:
+        # 掃除するのは原則カイポケの実績側なので、実績側が空なら実績側の言い方を優先。
+        parts.append(_ADVICE_UNTYPED_ACTUAL if untyped_actual else _ADVICE_UNTYPED_PLAN)
+    if TAG_MULTI_SAME_DAY in tags:
+        parts.append(_ADVICE_MULTI_SAME_DAY)
     return "／".join(parts)
 
 
@@ -404,6 +492,30 @@ def _duplicate_indices(rows: list[PARow]) -> set[int]:
     return dup
 
 
+def _multi_same_day_indices(rows: list[PARow]) -> set[int]:
+    """同じ担当が **別々の時刻に** 2 行以上 → その全部を「同日複数」として返す。
+
+    重複 (担当も時刻も同じ) の一歩手前の形。2026-07 の実データでは、正の行と
+    職種未設定の行が「同じ日・同じ担当・違う時刻」で並ぶ二重登録が実在した
+    (7/29 小俣様: 16:25-17:00 の正 + 16:00-16:35 の職種未設定)。時刻が違うので
+    重複には掛からず、これまでは片方が「実績のみ」として無印で埋もれていた。
+
+    1 日 2 回訪問という正当な運用も同じ形になるため、判定ではなく **目印** に
+    留める (どちらかは推奨対処の文面で人が決める)。担当なしの行は「同じ担当」と
+    言えないので束ねない。
+    """
+    by_staff: dict[str, list[int]] = defaultdict(list)
+    for i, r in enumerate(rows):
+        if r.staff_key == _NO_STAFF_KEY:
+            continue
+        by_staff[r.staff_key].append(i)
+    multi: set[int] = set()
+    for idxs in by_staff.values():
+        if len(idxs) >= 2 and len({rows[i].time_key for i in idxs}) >= 2:
+            multi.update(idxs)
+    return multi
+
+
 def _pair_group(
     day: int, patient: str, plans: list[PARow], actuals: list[PARow]
 ) -> list[PlanActualEntry]:
@@ -412,6 +524,8 @@ def _pair_group(
     actuals = sorted(actuals, key=lambda r: (r.start, r.staff1))
     dup_plan = _duplicate_indices(plans)
     dup_actual = _duplicate_indices(actuals)
+    multi_plan = _multi_same_day_indices(plans)
+    multi_actual = _multi_same_day_indices(actuals)
 
     used_p: set[int] = set()
     used_a: set[int] = set()
@@ -456,6 +570,13 @@ def _pair_group(
                 tags.append(TAG_ACCOMPANY)
             if not _service_matches(p.service, a.service):
                 tags.append(TAG_SERVICE)
+        # 職種未設定 / 同日複数 は片側だけで立つ性質。どちらの側で立っても同じタグを
+        # 1 回だけ付け、言い方 (推奨対処) だけを実績側優先で選ぶ。
+        untyped_actual = a is not None and a.is_untyped
+        if untyped_actual or (p is not None and p.is_untyped):
+            tags.append(TAG_UNTYPED)
+        if (pi is not None and pi in multi_plan) or (ai is not None and ai in multi_actual):
+            tags.append(TAG_MULTI_SAME_DAY)
         anchor = a or p
         entries.append(
             PlanActualEntry(
@@ -463,7 +584,7 @@ def _pair_group(
                 patient=patient,
                 category=category,
                 tags=tags,
-                advice=_advice_for(category, tags),
+                advice=_advice_for(category, tags, untyped_actual=untyped_actual),
                 # 集計は主担当 (職員名1) のバケツに入れる — 同行者まで数えると
                 # 「1 訪問が 2 件」に見えて担当者別の件数が実態とずれる。
                 staff=(anchor.staff_label if anchor else NO_STAFF),
@@ -549,12 +670,18 @@ def build_plan_actual_report(
 
     counts: dict[str, int] = dict.fromkeys(CATEGORIES, 0)
     counts["重複"] = 0
+    counts[TAG_UNTYPED] = 0
+    counts[TAG_MULTI_SAME_DAY] = 0
     staff_acc: dict[str, StaffSummary] = {}
     for pday in days:
         for e in pday.entries:
             counts[e.category] += 1
             if e.is_duplicate:
                 counts["重複"] += 1
+            if e.is_untyped:
+                counts[TAG_UNTYPED] += 1
+            if e.is_multi_same_day:
+                counts[TAG_MULTI_SAME_DAY] += 1
             summary = staff_acc.get(e.staff)
             if summary is None:
                 summary = StaffSummary(staff=e.staff, counts=dict.fromkeys(CATEGORIES, 0))
@@ -563,6 +690,10 @@ def build_plan_actual_report(
             summary.total += 1
             if e.is_duplicate:
                 summary.duplicates += 1
+            if e.is_untyped:
+                summary.untyped += 1
+            if e.is_multi_same_day:
+                summary.multi_same_day += 1
     # plan_rows / actual_rows は **突合した訪問行の数** (イベント除外後)。
     # events_skipped はその外側で落とした行数 = 内数ではなく「対象外」の内訳。
     counts["plan_rows"] = len(plan_rows)
@@ -661,11 +792,16 @@ def _by_staff_table(report: PlanActualReport) -> str:
     body = "".join(
         f'<tr><td class="k">{_esc(s.staff)}</td>'
         + "".join(f'<td class="n">{s.counts.get(c, 0) or ""}</td>' for c in CATEGORIES)
-        + f'<td class="n">{s.duplicates or ""}</td><td class="n">{s.total}</td></tr>'
+        + f'<td class="n">{s.duplicates or ""}</td>'
+        + f'<td class="n">{s.untyped or ""}</td>'
+        + f'<td class="n">{s.multi_same_day or ""}</td>'
+        + f'<td class="n">{s.total}</td></tr>'
         for s in report.by_staff
     )
     return (
-        f"<table><thead><tr><th>担当</th>{head}<th>重複</th><th>計</th></tr></thead>"
+        f"<table><thead><tr><th>担当</th>{head}<th>重複</th>"
+        f"<th>{_esc(TAG_UNTYPED)}</th><th>{_esc(TAG_MULTI_SAME_DAY)}</th>"
+        "<th>計</th></tr></thead>"
         f"<tbody>{body}</tbody></table>"
     )
 
@@ -705,6 +841,8 @@ def render_plan_actual_html(report: PlanActualReport) -> str:
         else f"要確認 <b>{need}</b> 件（うち予定のみ {c.get(CAT_PLAN_ONLY, 0)} 件・"
         f"実績のみ {c.get(CAT_ACTUAL_ONLY, 0)} 件）。請求前にカイポケの実績側を整えてください。"
     )
+    untyped = c.get(TAG_UNTYPED, 0)
+    multi = c.get(TAG_MULTI_SAME_DAY, 0)
     title = f"カイポケ 予定×実績 突合 {report.month}"
     office = f" / 事業所: {_esc(report.office_name)}" if report.office_name else ""
     chips = "".join(
@@ -733,6 +871,10 @@ def render_plan_actual_html(report: PlanActualReport) -> str:
         f'<div class="lead {lead_class}">{lead}</div>\n'
         f'<div class="kpi">{chips}'
         f'<span>重複 <b class="warn">{c.get("重複", 0)}</b><small>（内数）</small></span>'
+        f"<span>{_esc(TAG_UNTYPED)} "
+        f'<b class="{"warn" if untyped else ""}">{untyped}</b><small>（内数）</small></span>'
+        f"<span>{_esc(TAG_MULTI_SAME_DAY)} "
+        f'<b class="{"warn" if multi else ""}">{multi}</b><small>（内数）</small></span>'
         f"<span>イベント除外 <b>{report.events_skipped}</b>"
         "<small>（対象外）</small></span></div>\n"
         "<h2>担当者別の内訳</h2>\n"
@@ -747,8 +889,14 @@ def render_plan_actual_html(report: PlanActualReport) -> str:
         "<li><b>予定のみ</b> … 実績が入っていない。実施したなら実績を登録、"
         "未実施なら予定を取り消す。</li>"
         "<li><b>実績のみ（予定外）</b> … 予定に無い実績。誤登録なら実績側を削除する。</li>"
-        "<li><b>重複（内数）</b> … 同じ日・同じ利用者・同じ担当の行が 2 本以上ある。"
-        "まずこれを潰さないと他の判定が読めない。</li>"
+        "<li><b>重複（内数）</b> … 同じ日・同じ利用者・同じ担当・<b>同じ時刻</b>の行が"
+        "2 本以上ある。まずこれを潰さないと他の判定が読めない。</li>"
+        "<li><b>職種未設定（内数・タグ）</b> … 担当は入っているのに職種が空の行"
+        "（カイポケ画面の赤い「未」）。RPA / 手入力で作られた行に出やすく、"
+        "正の行が別にあるなら削除候補。</li>"
+        "<li><b>同日複数（内数・タグ）</b> … 同じ日・同じ利用者・同じ担当の行が"
+        "<b>違う時刻で</b>2 本以上ある。片方が職種未設定なら二重登録の疑いが濃い。"
+        "両方とも職種があるなら、実際に 2 回訪問したかを確認する。</li>"
         "<li><b>同行違い（タグ）</b> … 主担当は合っているが同行者（職員名2）が"
         "食い違う行。</li>"
         "<li><b>イベント除外（対象外）</b> … 業務種別が 医療保険／介護保険 でない行"

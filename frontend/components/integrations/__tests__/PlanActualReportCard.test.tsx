@@ -141,6 +141,13 @@ describe('planActualMonthOptions / 表示ヘルパ', () => {
     expect(formatCountsLine({})).toBe('');
   });
 
+  it('内数のタグ (職種未設定・同日複数) は区分の後ろに足す (0 件なら出さない)', () => {
+    expect(formatCountsLine({ 一致: 100, 実績のみ: 1, 職種未設定: 1, 同日複数: 2 })).toBe(
+      '一致 100・実績のみ 1・職種未設定 1・同日複数 2',
+    );
+    expect(formatCountsLine({ 一致: 100, 職種未設定: 0, 同日複数: 0 })).toBe('一致 100');
+  });
+
   it('イベント除外は区分に混ぜず末尾に添える (0 件なら出さない)', () => {
     expect(formatCountsLine({ 一致: 10, events_skipped: 4 })).toBe('一致 10（イベント除外 4）');
     expect(formatCountsLine({ 一致: 10, events_skipped: 0 })).toBe('一致 10');
@@ -374,8 +381,8 @@ describe('PlanActualReportCard', () => {
     const line = await screen.findByTestId('plan-actual-summary');
     expect(line.textContent).toContain('一致 480・時刻ズレ 12・実績のみ 3・重複 2');
     expect(line.textContent).not.toContain('担当違い');
-    // 未確定実績の注意書きは常設
-    expect(screen.getByTestId('plan-actual-note').textContent).toContain('未確定（未）の実績');
+    // 職種未設定（未）の注意書きは常設
+    expect(screen.getByTestId('plan-actual-note').textContent).toContain('職種未設定');
   });
 
   it('選択月に完了ジョブが無ければサマリは出さない', async () => {

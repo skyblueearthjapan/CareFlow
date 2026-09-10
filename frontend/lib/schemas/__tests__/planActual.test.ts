@@ -83,6 +83,26 @@ describe('予実比較スキーマ (寛容さ)', () => {
     expect(r.duplicates).toBe(0);
   });
 
+  it('内数のタグ (職種未設定・同日複数) も件数として読める', () => {
+    const r = PlanActualCountsSchema.parse({ 一致: 3, 職種未設定: 1, 同日複数: 2 });
+    expect(r['職種未設定']).toBe(1);
+    expect(r['同日複数']).toBe(2);
+  });
+
+  it('by_staff の untyped / multi_same_day も読む (古い BE では欠ける)', () => {
+    const r = PlanActualByStaffSchema.parse({
+      staff: '唐鎌',
+      counts: { 一致: 1, 実績のみ: 1 },
+      duplicates: 0,
+      untyped: 1,
+      multi_same_day: 2,
+      total: 2,
+    });
+    expect(r.untyped).toBe(1);
+    expect(r.multi_same_day).toBe(2);
+    expect(PlanActualByStaffSchema.parse({ staff: '熊澤' }).untyped).toBeUndefined();
+  });
+
   it('events_skipped も件数として読める', () => {
     const r = PlanActualCountsSchema.parse({ 一致: 3, events_skipped: 5 });
     expect(r.events_skipped).toBe(5);

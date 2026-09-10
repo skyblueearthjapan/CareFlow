@@ -26,7 +26,9 @@ from app.services.kaipoke.plan_actual_compare import (
     CAVEAT_ACCOMPANY,
     TAG_ACCOMPANY,
     TAG_DUP_ACTUAL,
+    TAG_MULTI_SAME_DAY,
     TAG_SERVICE,
+    TAG_UNTYPED,
     build_plan_actual_report,
     render_plan_actual_html,
 )
@@ -52,9 +54,11 @@ def _row(
     staff2: str = "",
     office: str = "よりより",
     business: str = "医療保険",
+    job1: str = "看護師",
 ) -> str:
+    """CSV 1 行。``job1=""`` はカイポケ画面の赤い「未」(職種未設定) を再現する。"""
     return (
-        f"{staff1},看護師,{staff2},,,,,,{office},{day},月,{patient},{business},{service},"
+        f"{staff1},{job1},{staff2},,,,,,{office},{day},月,{patient},{business},{service},"
         f"{start},{end},35,"
     )
 
@@ -153,7 +157,8 @@ def test_same_staff_twice_a_day_at_different_times_is_not_a_duplicate() -> None:
     entries = [e for d in report.days for e in d.entries]
     assert len(entries) == 2
     assert all(e.category == CAT_MATCH for e in entries)
-    assert all(e.tags == [] for e in entries)
+    # 目印 (同日複数) は付くが、重複ではない = 消す対象ではない。
+    assert all(e.tags == [TAG_MULTI_SAME_DAY] for e in entries)
     assert report.counts["重複"] == 0
 
 
@@ -171,6 +176,124 @@ def test_duplicate_flag_on_actual_side() -> None:
     # 重複は「内数」— カテゴリ集計 (一致 + 実績のみ) は 2 件のまま。
     assert report.counts["重複"] == 2
     assert report.counts[CAT_MATCH] + report.counts[CAT_ACTUAL_ONLY] == 2
+
+
+# --- 2a. 職種未設定 / 同日複数 ---------------------------------------------
+
+
+def _omata_case():
+    """2026-07-29 小俣様の実データ形: 正の実績 + 職種未設定の実績 (時刻違い)。"""
+    plan = _csv(_row(staff1="看護A", day=29, patient="小俣 本名", start="16:25", end="17:00"))
+    actual = _csv(
+        _row(staff1="看護A", day=29, patient="小俣 本名", start="16:25", end="17:00"),
+        _row(staff1="看護A", day=29, patient="小俣 本名", start="16:00", end="16:35", job1=""),
+    )
+    return _report(plan, actual)
+
+
+def test_untyped_actual_row_is_tagged_and_both_rows_are_multi_same_day() -> None:
+    """職種が空の実績行 = 画面の赤い「未」。時刻が違うので重複には掛からない。"""
+    report = _omata_case()
+    entries = {e.category: e for d in report.days for e in d.entries}
+    assert set(entries) == {CAT_MATCH, CAT_ACTUAL_ONLY}
+
+    # 職種未設定は「職種が空の実績行」だけ。正の行には付けない。
+    assert TAG_UNTYPED in entries[CAT_ACTUAL_ONLY].tags
+    assert TAG_UNTYPED not in entries[CAT_MATCH].tags
+    # 同日複数は同じ担当の実績 2 行の両方に付く (どちらを消すかは人が決める)。
+    assert all(TAG_MULTI_SAME_DAY in e.tags for e in entries.values())
+    # 重複 (担当も時刻も同じ) には掛からない — これまで無印で埋もれていた形。
+    assert report.counts["重複"] == 0
+
+    assert report.counts[TAG_UNTYPED] == 1
+    assert report.counts[TAG_MULTI_SAME_DAY] == 2
+    assert report.untyped_rows == 1
+    assert report.multi_same_day == 2
+    # 内数なので 6 カテゴリの合計 (= 全行) は変わらない。
+    assert report.counts[CAT_MATCH] + report.counts[CAT_ACTUAL_ONLY] == 2
+
+    advice = entries[CAT_ACTUAL_ONLY].advice
+    assert "職種が未設定の実績行" in advice
+    assert "削除候補" in advice
+    assert "同じ担当が同日に複数行" in advice
+
+
+def test_untyped_and_multi_are_counted_per_staff() -> None:
+    report = _omata_case()
+    assert [s.staff for s in report.by_staff] == ["看護A"]
+    s = report.by_staff[0]
+    assert s.untyped == 1
+    assert s.multi_same_day == 2
+    assert s.duplicates == 0
+    assert s.total == 2
+
+
+def test_untyped_plan_row_gets_the_plan_side_advice() -> None:
+    """予定側の職種が空 → タグは同じ・言い方だけ予定側 (掃除対象は実績側なので)。"""
+    plan = _csv(
+        _row(staff1="看護A", day=3, patient="山田 太郎", start="09:00", end="09:35", job1="")
+    )
+    actual = _csv(_row(staff1="看護A", day=3, patient="山田 太郎", start="09:00", end="09:35"))
+    entry = _only(_report(plan, actual))
+    assert entry.category == CAT_MATCH
+    assert entry.tags == [TAG_UNTYPED]
+    assert entry.advice == "予定側の職種が未設定。担当設定を確認"
+
+
+def test_two_legit_visits_are_multi_same_day_without_untyped() -> None:
+    """両方とも職種があるなら「実際に 2 回訪問したか」を確認させる (削除候補にしない)。"""
+    rows = (
+        _row(staff1="看護A", day=3, patient="山田 太郎", start="09:00", end="09:35"),
+        _row(staff1="看護A", day=3, patient="山田 太郎", start="15:00", end="15:35"),
+    )
+    report = _report(_csv(*rows), _csv(*rows))
+    entries = [e for d in report.days for e in d.entries]
+    assert all(e.tags == [TAG_MULTI_SAME_DAY] for e in entries)
+    assert report.counts[TAG_UNTYPED] == 0
+    assert report.counts[TAG_MULTI_SAME_DAY] == 2
+    assert all("実際に 2 回訪問したか確認" in e.advice for e in entries)
+
+
+def test_identical_staff_and_time_stays_a_duplicate_not_multi_same_day() -> None:
+    """担当も時刻も同じ = 従来どおり重複 (同日複数は「時刻が違う」ときだけ)。"""
+    row = _row(staff1="看護A", day=3, patient="山田 太郎", start="09:00", end="09:35")
+    report = _report(_csv(row), _csv(row, row))
+    entries = [e for d in report.days for e in d.entries]
+    assert all(TAG_DUP_ACTUAL in e.tags for e in entries)
+    assert all(TAG_MULTI_SAME_DAY not in e.tags for e in entries)
+    assert report.counts["重複"] == 2
+    assert report.counts[TAG_MULTI_SAME_DAY] == 0
+
+
+def test_no_staff_rows_are_not_flagged_as_untyped_or_multi() -> None:
+    """担当なし (-) の行は職種も空で当たり前・「同じ担当」とも言えない。"""
+    rows = (
+        _row(staff1="-", day=3, patient="山田 太郎", start="09:00", end="09:35", job1=""),
+        _row(staff1="-", day=3, patient="山田 太郎", start="15:00", end="15:35", job1=""),
+    )
+    report = _report(_csv(*rows), _csv(*rows))
+    assert report.counts[TAG_UNTYPED] == 0
+    assert report.counts[TAG_MULTI_SAME_DAY] == 0
+
+
+def test_csv_without_the_job_column_is_not_reported_as_untyped() -> None:
+    """職種列を持たない CSV は「読めなかった」だけ — 全行を未設定に化けさせない。"""
+    header = HEADER.replace("職種１", "予備１").replace("職種２", "予備２")
+    row = _row(staff1="看護A", day=3, patient="山田 太郎", start="09:00", end="09:35", job1="")
+    csv_text = header + "\n" + row + "\n"
+    report = _report(csv_text, csv_text)
+    assert _only(report).category == CAT_MATCH
+    assert report.counts[TAG_UNTYPED] == 0
+
+
+def test_html_shows_the_new_chips_and_the_updated_caveat() -> None:
+    html_text = render_plan_actual_html(_omata_case())
+    assert "職種未設定" in html_text
+    assert "同日複数" in html_text
+    assert "職種が未設定（画面で「未」）の実績行は CSV に含まれます" in html_text
+    # 「未確定はCSVに出ない」という旧注意書きは実データで否定された (2026-07)。
+    assert "CSV 出力に含まれないため" not in html_text
+    assert CAVEAT_ACCOMPANY in html_text
 
 
 # --- 2b. 同行者 (職員名2) ---------------------------------------------------

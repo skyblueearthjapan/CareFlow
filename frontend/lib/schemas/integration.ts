@@ -674,6 +674,10 @@ export const PlanActualCountsSchema = z
     予定のみ: planActualCount,
     実績のみ: planActualCount,
     重複: planActualCount,
+    /** 職員名1 があるのに職種が空の行 (カイポケ画面の赤い「未」)。区分ではなく内数。 */
+    職種未設定: planActualCount,
+    /** 同じ担当が同じ日に別々の時刻で複数行 (二重登録の疑い)。区分ではなく内数。 */
+    同日複数: planActualCount,
     /** 突合から外したイベント行 (訪問ではないので区分に混ぜない)。 */
     events_skipped: planActualCount,
   })
@@ -686,6 +690,9 @@ export const PlanActualByStaffSchema = z
     staff: z.string().catch(''),
     counts: PlanActualCountsSchema.default({}).catch({}),
     duplicates: z.number().catch(0).optional(),
+    /** 職種未設定 / 同日複数 の内数 (重複と同じ扱い・BE が古ければ欠ける)。 */
+    untyped: z.number().catch(0).optional(),
+    multi_same_day: z.number().catch(0).optional(),
     total: z.number().catch(0).optional(),
   })
   .passthrough();

@@ -92,7 +92,15 @@ def build_result_summary(
         "malformed_rows": report.malformed_rows,
         "counts": report.counts,
         "by_staff": [
-            {"staff": s.staff, "counts": s.counts, "duplicates": s.duplicates, "total": s.total}
+            {
+                "staff": s.staff,
+                "counts": s.counts,
+                "duplicates": s.duplicates,
+                # 職種未設定 / 同日複数 も担当ごとの内数 (重複と同じ扱い)。
+                "untyped": s.untyped,
+                "multi_same_day": s.multi_same_day,
+                "total": s.total,
+            }
             for s in report.by_staff
         ],
     }

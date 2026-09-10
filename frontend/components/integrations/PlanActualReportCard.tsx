@@ -35,7 +35,7 @@ import { PlanActualReportButton } from './PlanActualReportButton';
 
 /** 未確定実績の扱い (カイポケの CSV 仕様) — PO へ毎回口頭で説明していた注意書き。 */
 const UNCONFIRMED_NOTE =
-  '未確定（未）の実績は CSV に含まれないため、月間スケジュール画面で別途確認してください';
+  '職種が未設定（画面で「未」）の実績行は「職種未設定」として一覧に出ます。同じ担当の同日複数行とあわせて実績側を確認してください';
 
 /** 応答が返らなかったとき (5xx / 524 / ネットワーク断) の案内。ジョブは走っている可能性が高い。 */
 const AMBIGUOUS_START_NOTE =
@@ -74,7 +74,14 @@ export function planActualDefaultMonth(current = jstDateString().slice(0, 7)): s
 }
 
 /**
+ * 区分ではなく「内数」のタグ (BE の counts に同じキーで入る)。0 件なら出さない。
+ * 区分キー (PLAN_ACTUAL_COUNT_KEYS) に混ぜると「合計が合わない」表示になるため分ける。
+ */
+const PLAN_ACTUAL_TAG_KEYS = ['職種未設定', '同日複数'] as const;
+
+/**
  * 件数の 1 行表示。0 件の区分は畳んで「一致 480・相違 3」のように短く出す。
+ * 内数のタグ (職種未設定・同日複数) は 0 件なら出さず、区分の後ろに足す。
  * 訪問ではないイベント行 (events_skipped) は区分に混ぜず、末尾に添える。
  */
 export function formatCountsLine(counts: Record<string, unknown>): string {
@@ -85,6 +92,10 @@ export function formatCountsLine(counts: Record<string, unknown>): string {
     // 一致は 0 でも出す (「全部ズレている」ことが分かるように)。
     if (v === 0 && key !== '一致') continue;
     parts.push(`${key} ${v}`);
+  }
+  for (const key of PLAN_ACTUAL_TAG_KEYS) {
+    const v = counts[key];
+    if (typeof v === 'number' && v > 0) parts.push(`${key} ${v}`);
   }
   const skipped = counts['events_skipped'];
   const suffix = typeof skipped === 'number' && skipped > 0 ? `（イベント除外 ${skipped}）` : '';
