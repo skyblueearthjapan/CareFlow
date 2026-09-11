@@ -479,6 +479,15 @@ class CorrectionItemRead(BaseModel):
     #   outbound delete — カイポケに残った行 → **カイポケ側の削除候補**。⇧送信で消す。
     # edit / date_change には立てない (「残骸を直す」行なので判断を迷わせない)。
     inactive_patient: bool = False
+    # 請求区分 (正看/准看) が変わる行 (2026-09-11)。差分エンジンが立てた印を
+    # before/after に載せて運び、読み出し時に写す (DB 列は増やさない)。
+    # RPA にとっては「削除 → 再追加」の経路指定。**FE の「請求区分変更」バッジは
+    # 未実装** (このフィールドは先に出しておくだけ・zod が不明キーを落とすので
+    # 旧 FE でも安全) — バッジ表示は後続タスク。
+    grade_change: bool = False
+    # その行の変更前 (カイポケ現況) のサービス内容。RPA が再追加に失敗したときの
+    # 復旧用。印の無い行では None。
+    service_type_from: str | None = None
 
 
 class CorrectionSheetRead(BaseModel):

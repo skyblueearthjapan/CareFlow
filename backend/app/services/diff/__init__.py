@@ -15,6 +15,7 @@ from app.services.diff.engine import (
     parse_csv_from_content,
     parse_kaipoke_csv,
     parse_optimized_csv,
+    service_grade,
     validate_correction_data,
 )
 
@@ -28,5 +29,6 @@ __all__ = [
     "parse_csv_from_content",
     "parse_kaipoke_csv",
     "parse_optimized_csv",
+    "service_grade",
     "validate_correction_data",
 ]

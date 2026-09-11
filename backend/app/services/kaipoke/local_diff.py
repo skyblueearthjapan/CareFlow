@@ -33,6 +33,7 @@ from app.models.office import Office
 from app.services.diff.engine import Correction, compare_schedules_from_content
 from app.services.kaipoke.csv_builder import BuildOptions, build_month_csv
 from app.services.kaipoke.export_guard import ensure_export_ok
+from app.services.kaipoke.rpa_capability import service_branch_enabled
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -174,6 +175,15 @@ async def build_local_diff(
         # Correction.user_name の表示は現況(カイポケ)側の原文が優先されるため、
         # RPA の利用者選択 (name_matches = 正規化包含) はそのまま成立する。
         normalize_names=True,
+        # 請求区分 (正看/准看) が変わる行に印を立て、サービス内容を **らく助側の値**
+        # に差し替えるのは **outbound かつ RPA がサービス内容の分岐に対応済み**
+        # (S3 完了 = kaipoke_rpa_service_branch_enabled) のときだけ。
+        # カイポケの編集ダイアログはサービス内容を直せないので、RPA はこの印の行を
+        # 「削除 → 再追加」で処理し、そのときこの値を書く (2026-09-03 W37 で edit が
+        # 6 件・請求に影響)。門が閉じている間に印を立てても RPA は既定値
+        # (精神科 × 看護師等) で再追加するだけなので、従来どおりの出方に倒す。
+        # inbound はらく助に訪問ごとのサービス内容が無いので印も差し替えもしない。
+        flag_grade_change=(direction != "inbound" and service_branch_enabled()),
     )
 
     meta = {
@@ -267,8 +277,11 @@ async def export_current_week_csv(
     return merged_csv
 
 
-def correction_before_after(c: Correction) -> tuple[dict[str, str], dict[str, str]]:
-    """Correction を before/after の dict へ (CorrectionSheetItem 用)。"""
+def correction_before_after(c: Correction) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Correction を before/after の dict へ (CorrectionSheetItem 用)。
+
+    値は文字列が主体だが ``grade_change`` だけ bool なので ``dict[str, Any]``。
+    """
     # user_name/remarks を含める: patient_id 未解決(name_match失敗)でも管理画面で
     # どの利用者の修正か特定でき、イベント系のイベント名(remarks)も保持される。
     before = {
@@ -281,6 +294,11 @@ def correction_before_after(c: Correction) -> tuple[dict[str, str], dict[str, st
         "service_type": c.service_type,
         "business_type": c.business_type,
         "remarks": c.remarks,
+        # 請求区分 (正看/准看) が変わる行の印と、変更前 (カイポケ現況) の
+        # サービス内容。DB 列を増やさずシートまで運ぶため before/after の両側に
+        # 載せる (RPA へ渡す平坦形式は item_to_kaipoke_correction が組み立てる)。
+        "grade_change": c.grade_change,
+        "service_type_from": c.service_type_from,
     }
     after = {
         "user_name": c.user_name,
@@ -292,6 +310,8 @@ def correction_before_after(c: Correction) -> tuple[dict[str, str], dict[str, st
         "service_type": c.service_type,
         "business_type": c.business_type,
         "remarks": c.remarks,
+        "grade_change": c.grade_change,
+        "service_type_from": c.service_type_from,
     }
     return before, after
 
@@ -300,12 +320,22 @@ def correction_before_after(c: Correction) -> tuple[dict[str, str], dict[str, st
 # correction_before_after() の逆変換。apply でカイポケへ送る平坦形式を作る。
 def item_to_kaipoke_correction(
     action: str, before: dict[str, Any] | None, after: dict[str, Any] | None
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """CorrectionSheetItem(before/after dict) → カイポケ /api/apply の Correction dict。
 
     カイポケ側は ``Correction(**item)`` で復元するため、キーは Correction dataclass の
     フィールド名 (user_name / date_from / date_to / *_from / *_to / action /
-    business_type / service_type / remarks) と厳密一致させる。
+    business_type / service_type / remarks / grade_change / service_type_from) と
+    厳密一致させる。
+
+    ``grade_change`` (bool) は **請求区分 (正看/准看) が変わる行** の印で、RPA への
+    経路指定でもある: カイポケの編集ダイアログはサービス内容を変更できないので、
+    RPA はこの印の付いた edit / date_change を「削除 → 再追加」で処理し、再追加時に
+    ``service_type`` (= らく助側の値) を書く。``service_type_from`` は変更前
+    (カイポケ現況) の値で、再追加が失敗したとき RPA が元の行を復旧するのに使う。
+    RPA 側の ``Correction`` は ``Correction(**item)`` で復元するため、**この 2 つの
+    キーを受ける RPA を先にデプロイ** してから らく助 を出すこと (キーは値に
+    関わらず常に送る = 挙動がシートの中身で変わらない)。
     """
     b = before or {}
     a = after or {}
@@ -333,4 +363,8 @@ def item_to_kaipoke_correction(
         "action": action,
         "business_type": pick("business_type"),
         "remarks": pick("remarks"),
+        # RPA の経路指定 (削除→再追加)。before/after のどちらに載っていても拾う。
+        "grade_change": bool(a.get("grade_change") or b.get("grade_change")),
+        # 再追加に失敗したとき RPA が元の行を復旧するための現況値。
+        "service_type_from": str(a.get("service_type_from") or b.get("service_type_from") or ""),
     }

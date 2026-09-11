@@ -47,6 +47,9 @@ REASON_LABELS: dict[str, str] = {
     "add_failed_nothing_deleted": "追加に失敗（旧行は無傷）",
     "old_row_remains_duplicate": "追加成功・旧行の削除失敗（二重・要手動削除）",
     "add_failed_rolled_back": "追加失敗・元の予定を再追加済み",
+    # 請求区分変更 (正看⇄准看) の行は RPA が「削除 → 再追加」で処理する。その
+    # 再追加が失敗し、変更前のサービス内容 (service_type_from) で元に戻した場合。
+    "grade_change_rollback": "請求区分変更の再追加に失敗・元の予定を再追加済み",
     "add_failed_row_lost": "追加失敗・元の予定も消失（要手動復元）",
     "add_may_have_registered": "追加が登録済みの可能性（要目視）",
     "add_failed_old_row_intact": "追加失敗・旧行は残存",

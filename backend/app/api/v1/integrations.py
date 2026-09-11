@@ -99,6 +99,7 @@ from app.schemas.integrations import (
     WeekScheduleRead,
     WeekScheduleRow,
 )
+from app.services.diff.engine import service_grade
 from app.services.kaipoke_client import (
     KaipokeApiError,
     KaipokeBusyError,
@@ -1366,6 +1367,30 @@ def jst_today() -> date:
     from zoneinfo import ZoneInfo
 
     return datetime.now(ZoneInfo("Asia/Tokyo")).date()
+
+
+def item_grade_change(before: dict[str, Any] | None, after: dict[str, Any] | None) -> bool:
+    """この修正項目は請求区分 (正看⇄准看) が変わる行か。
+
+    印は DB 列ではなく ``before``/``after`` の JSONB に載って運ばれる
+    (``local_diff.correction_before_after``)。読み出す場所が 3 つある
+    (シート一覧 / ●未送信 / RPA 送信) ので判定はここ 1 箇所に置く —
+    片方だけ印が付かないと、同じ行がシートでは「請求区分変更」・同期バーでは
+    無印という食い違いになる。
+    """
+    return bool((after or {}).get("grade_change") or (before or {}).get("grade_change"))
+
+
+def item_service_type_from(
+    before: dict[str, Any] | None, after: dict[str, Any] | None
+) -> str | None:
+    """``grade_change`` の行の変更前 (カイポケ現況) のサービス内容 (無ければ None)。
+
+    RPA が「削除 → 再追加」に失敗したとき、元の行を復旧するのに使う値。
+    ``item_grade_change`` と同じく before/after の JSONB に載って運ばれる。
+    """
+    raw = (after or {}).get("service_type_from") or (before or {}).get("service_type_from")
+    return str(raw) if raw else None
 
 
 def resolve_item_date(
@@ -2740,6 +2765,11 @@ async def _read_correction_items(
     迷わせない)。印が変えるのは表示だけで、``include`` や適用の挙動は不変。
     """
     reads = [CorrectionItemRead.model_validate(r, from_attributes=True) for r in rows]
+    # 請求区分変更 (正看⇄准看) の印。DB 列ではなく before/after に載せて運んでいる
+    # (correction_before_after) ので、読み出しのここで写す。
+    for read, row in zip(reads, rows, strict=True):
+        read.grade_change = item_grade_change(row.before, row.after)
+        read.service_type_from = item_service_type_from(row.before, row.after)
     pids = {r.patient_id for r in reads if r.patient_id is not None}
     if not pids:
         return reads
@@ -2890,6 +2920,47 @@ async def bulk_update_correction_items(
 
 
 _REVERSE_ACTION = {"add": "delete", "delete": "add"}
+
+
+def _apply_grade_change_to_reversed(
+    action: str, before: dict[str, Any], after: dict[str, Any]
+) -> None:
+    """⇧上書き (反転シート) の 1 行に請求区分変更の印を立てる (M1)。
+
+    反転後の ``before`` = カイポケの姿 / ``after`` = らく助の姿。両者のサービス内容
+    の請求区分 (正看/准看) が食い違うなら、送るべきは **らく助側の値** であり、
+    カイポケの編集ダイアログでは直せないので RPA に「削除 → 再追加」を指示する
+    印 (``grade_change``) が要る — 差分エンジン (outbound) と同じ扱いに揃える。
+
+    ``add`` / ``delete`` には立てない (行ごと作る/消すのでサービス内容は add 側の
+    値がそのまま使われる)。両辞書を **その場で** 書き換える。
+
+    RPA がサービス内容の分岐に未対応のあいだ (``kaipoke_rpa_service_branch_enabled
+    = False``) は何もしない — 印を立てても RPA は既定値 (精神科 × 看護師等) で
+    再追加するだけで、差分エンジン (outbound) 側の門と同じ扱いに揃える。
+    """
+    from app.services.kaipoke.rpa_capability import service_branch_enabled
+
+    if not service_branch_enabled():
+        return
+    if action not in ("edit", "date_change"):
+        return
+    cur_svc = str(before.get("service_type") or "")
+    opt_svc = str(after.get("service_type") or "")
+    cur_grade = service_grade(cur_svc)
+    opt_grade = service_grade(opt_svc)
+    if cur_grade is None or opt_grade is None or cur_grade == opt_grade:
+        return
+    # 送る値はらく助側 = after に入れる (``item_to_kaipoke_correction`` は after を
+    # 優先して service_type を拾う)。**before はカイポケ現況のまま残す** — 監査で
+    # 「何がどう変わるのか」を読む値なので、送信用の値で塗り潰さない。
+    # 変更前の値は service_type_from にも入れる = 再追加に失敗しても RPA が戻せる。
+    after["service_type"] = opt_svc
+    before["grade_change"] = True
+    after["grade_change"] = True
+    before["service_type_from"] = cur_svc
+    after["service_type_from"] = cur_svc
+
 
 # ●未送信の cached シートを掃除するとき、消してはいけないシート状態。
 # applied/applying = 送信の記録そのもの / partial = 一部だけ送った記録。
@@ -3136,6 +3207,10 @@ async def unsent_summary(
                 and r.action in INACTIVE_FLAGGED_ACTIONS
                 and not is_schedulable_status(row_status)
             )
+            # 請求区分変更の印も ``_read_correction_items`` と同じ helper で載せる
+            # (シート一覧と同期バーで同じ行に同じ印が付く)。
+            base["grade_change"] = item_grade_change(r.before, r.after)
+            base["service_type_from"] = item_service_type_from(r.before, r.after)
             items_read.append(
                 UnsentItemRead(
                     **base,
@@ -3335,15 +3410,22 @@ async def reverse_correction_sheet(
     await db.flush()
 
     for it in selected:
+        action = _REVERSE_ACTION.get(it.action, it.action)
+        # 反転: 取り込みシートの after (カイポケの姿) が送信側の before になる。
+        # dict はコピーする — 元の inbound シートの行と同じオブジェクトを共有した
+        # まま下で書き換えると、取り込み側の記録まで書き換わってしまう。
+        before = dict(it.after or {})
+        after = dict(it.before or {})
+        _apply_grade_change_to_reversed(action, before, after)
         db.add(
             CorrectionSheetItem(
                 sheet_id=new_sheet.id,
                 patient_id=it.patient_id,
                 # visit_id は取り込み側 (らく助の行) の識別子。送信には使わない。
                 visit_id=None,
-                action=_REVERSE_ACTION.get(it.action, it.action),
-                before=it.after,
-                after=it.before,
+                action=action,
+                before=before,
+                after=after,
                 include=True,
             )
         )

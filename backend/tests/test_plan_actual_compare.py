@@ -26,6 +26,7 @@ from app.services.kaipoke.plan_actual_compare import (
     CAVEAT_ACCOMPANY,
     TAG_ACCOMPANY,
     TAG_DUP_ACTUAL,
+    TAG_GRADE,
     TAG_MULTI_SAME_DAY,
     TAG_SERVICE,
     TAG_UNTYPED,
@@ -55,10 +56,11 @@ def _row(
     office: str = "よりより",
     business: str = "医療保険",
     job1: str = "看護師",
+    job2: str = "",
 ) -> str:
     """CSV 1 行。``job1=""`` はカイポケ画面の赤い「未」(職種未設定) を再現する。"""
     return (
-        f"{staff1},{job1},{staff2},,,,,,{office},{day},月,{patient},{business},{service},"
+        f"{staff1},{job1},{staff2},{job2},,,,,{office},{day},月,{patient},{business},{service},"
         f"{start},{end},35,"
     )
 
@@ -339,6 +341,122 @@ def test_html_states_the_staff2_limitation() -> None:
     plan = _csv(_row(staff1="看護A", day=3, patient="山田 太郎", start="09:00", end="09:35"))
     html_text = render_plan_actual_html(_report(plan, plan))
     assert CAVEAT_ACCOMPANY in html_text
+
+
+# --- 2c. 資格不整合 (2026-09-11) -------------------------------------------
+#
+# PO ルール: 正看が 1 人でも関われば 正看 / 准看だけなら 准看。
+# サービス内容の請求区分がこれと食い違う行は請求額が狂うので必ず印を付ける。
+
+SVC_NURSE = "精神基本療養費Ⅰ・正看"
+SVC_ASSISTANT = "精神基本療養費Ⅰ・准看"
+
+
+def _grade_case(**kwargs: Any):
+    """同じ行を予定・実績の両方に置いた 1 件のレポート (判定は一致)。"""
+    row = _row(day=3, patient="山田 太郎", start="09:00", end="09:35", **kwargs)
+    return _report(_csv(row), _csv(row))
+
+
+def test_assistant_nurse_with_nurse_service_is_tagged() -> None:
+    """高岡(准看護師) の行にサービス内容「…・正看」→ 資格不整合."""
+    report = _grade_case(staff1="高岡 真由美", job1="准看護師", service=SVC_NURSE)
+    entry = _only(report)
+    assert TAG_GRADE in entry.tags
+    assert "サービス内容が担当者の資格と合っていません" in entry.advice
+    # タグは内数 (判定カテゴリは一致のまま)
+    assert entry.category == CAT_MATCH
+    assert report.counts[TAG_GRADE] == 1
+    assert report.grade_mismatch_rows == 1
+    assert report.by_staff[0].grade_mismatch == 1
+
+
+def test_nurse_with_assistant_service_is_tagged() -> None:
+    """髙梨(看護師) の行にサービス内容「…・准看」→ 資格不整合."""
+    entry = _only(_grade_case(staff1="髙梨 桂子", job1="看護師", service=SVC_ASSISTANT))
+    assert TAG_GRADE in entry.tags
+
+
+def test_assistant_nurse_alone_with_assistant_service_is_not_tagged() -> None:
+    """准看 1 名だけ × 「…・准看」は正しい組み合わせ → タグなし."""
+    entry = _only(_grade_case(staff1="高岡 真由美", job1="准看護師", service=SVC_ASSISTANT))
+    assert TAG_GRADE not in entry.tags
+    assert entry.tags == []
+
+
+def test_nurse_with_assistant_accompanying_and_nurse_service_is_not_tagged() -> None:
+    """正看(職員1) + 准看(職員2) × 「…・正看」→ 正看が関わるので正しい."""
+    entry = _only(
+        _grade_case(
+            staff1="髙梨 桂子",
+            job1="看護師",
+            staff2="高岡 真由美",
+            job2="准看護師",
+            service=SVC_NURSE,
+        )
+    )
+    assert TAG_GRADE not in entry.tags
+
+
+def test_assistant_primary_with_nurse_accompanying_and_assistant_service_is_tagged() -> None:
+    """准看(職員1) + 正看(職員2) × 「…・准看」→ 正看が関わるので 正看 が正 → タグ."""
+    entry = _only(
+        _grade_case(
+            staff1="高岡 真由美",
+            job1="准看護師",
+            staff2="髙梨 桂子",
+            job2="看護師",
+            service=SVC_ASSISTANT,
+        )
+    )
+    assert TAG_GRADE in entry.tags
+
+
+def test_unknown_job_is_not_tagged() -> None:
+    """職種が空 / 看護師でも准看護師でもない (PT 等) → 判断材料が無いのでタグなし."""
+    untyped = _only(_grade_case(staff1="高岡 真由美", job1="", service=SVC_ASSISTANT))
+    assert TAG_GRADE not in untyped.tags
+    pt = _only(_grade_case(staff1="理学 太郎", job1="理学療法士", service=SVC_ASSISTANT))
+    assert TAG_GRADE not in pt.tags
+
+
+def test_grade_mismatch_on_plan_only_row_is_tagged() -> None:
+    """片側 (予定のみ) の行でも立つ = 予定・実績の両方を見ている."""
+    plan = _csv(
+        _row(
+            staff1="高岡 真由美",
+            job1="准看護師",
+            day=3,
+            patient="山田 太郎",
+            start="09:00",
+            end="09:35",
+            service=SVC_NURSE,
+        )
+    )
+    entry = _only(_report(plan, _csv()))
+    assert entry.category == CAT_PLAN_ONLY
+    assert TAG_GRADE in entry.tags
+    assert "請求前にカイポケ側を修正" in entry.advice
+
+
+def test_long_term_care_rows_are_not_grade_tagged() -> None:
+    """(m4) 介護保険の行は対象外 — 正看/准看の区分は医療保険の話."""
+    entry = _only(
+        _grade_case(staff1="高岡 真由美", job1="准看護師", service=SVC_NURSE, business="介護保険")
+    )
+    assert TAG_GRADE not in entry.tags
+
+
+def test_html_shows_the_grade_mismatch_chip_and_column() -> None:
+    html_text = render_plan_actual_html(
+        _grade_case(staff1="高岡 真由美", job1="准看護師", service=SVC_NURSE)
+    )
+    assert TAG_GRADE in html_text
+    assert "サービス内容の請求区分（正看／准看）が" in html_text  # 読み方の項目
+    assert "請求前にカイポケ側を修正" in html_text  # 推奨対処
+    # (m3) 同行者と、らく助側ルール⑦未実装の断り書き
+    assert "同行者（職員2）に看護師がいる場合は正看が期待値です" in html_text
+    assert "らく助側の生成ルール⑦は未実装のため" in html_text
 
 
 # --- 3. 正規化 -------------------------------------------------------------

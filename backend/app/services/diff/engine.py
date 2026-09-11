@@ -88,6 +88,15 @@ class Correction:
     action: str  # "edit" or "delete" or "add" or "date_change"
     business_type: str = ""  # 業務種別（"医療保険", "介護保険", or イベント名）
     remarks: str = ""  # 備考（イベント名等）
+    # 請求区分 (正看/准看) が変わる行の印 (2026-09-11)。**RPA への経路指定**:
+    # 印の付いた edit / date_change は、カイポケの編集ダイアログでは直せない
+    # サービス内容を書き換えるため、RPA 側で「削除 → 再追加」として処理される
+    # (そのとき書かれるのが下の service_type = らく助側の値)。画面では
+    # 「請求区分変更」バッジ。もともと delete/add の行には表示用の印として付く。
+    grade_change: bool = False
+    # ``grade_change`` の行の **変更前 (カイポケ現況) のサービス内容**。RPA は
+    # 削除→再追加に失敗したとき、この値で元の行を復旧する。印の無い行では空。
+    service_type_from: str = ""
 
     def has_date_change(self) -> bool:
         return self.date_from != self.date_to
@@ -359,6 +368,7 @@ def compare_schedules(
     target_users: list[str] | None = None,
     target_week_start: int | None = None,
     target_week_end: int | None = None,
+    flag_grade_change: bool = True,
 ) -> list[Correction]:
     """2つのCSVを比較して差分（修正リスト）を生成.
 
@@ -373,6 +383,8 @@ def compare_schedules(
         target_users: 対象利用者のリスト（Noneの場合は全員）
         target_week_start: 対象週の開始日（1-31）
         target_week_end: 対象週の終了日（1-31）
+        flag_grade_change: 請求区分 (正看/准看) が変わる行に印を立て、
+            サービス内容を最適化側の値にするか (既定 True = らく助→カイポケ向き)。
 
     Returns:
         list[Correction]: 修正リスト
@@ -390,6 +402,7 @@ def compare_schedules(
         target_users=target_users,
         target_week_start=target_week_start,
         target_week_end=target_week_end,
+        flag_grade_change=flag_grade_change,
     )
 
 
@@ -433,6 +446,38 @@ def _service_matches(cur_svc: str, opt_svc: str) -> bool:
     return cur_svc.startswith(opt_svc) or opt_svc.startswith(cur_svc)
 
 
+def service_grade(service_type: str) -> str | None:
+    """サービス内容から **請求区分** (正看 / 准看) を取り出す。
+
+    カイポケのサービス内容は「(精神)基本療養費Ⅰ・正看 / ・准看」の形
+    (csv_builder.SERVICE_CONTENT_PRESETS)。区分を決めるのは職員1の資格で、
+    ここが違うと請求額が変わる。
+
+    * 「准看」を含む → ``"准看"``
+    * それ以外の非空文字列 → ``"正看"`` (資格の接尾が無い旧表記
+      「精神基本療養費Ⅰ」も、カイポケ既定の正看として扱う)
+    * 空 / 空白のみ → ``None`` (イベント行など。判断材料が無い)
+    """
+    s = (service_type or "").strip()
+    if not s:
+        return None
+    return "准看" if "准看" in s else "正看"
+
+
+def _grade_differs(cur_svc: str, opt_svc: str) -> bool:
+    """現況 (カイポケ) と最適化 (らく助) で請求区分が変わるか。
+
+    どちらかが ``None`` (サービス内容が空) のときは **変わらない扱い**。
+    判断材料が無い行 (イベント等) まで delete+add に開くと、送らなくてよい
+    取消が大量に出てしまうため。
+    """
+    cur_grade = service_grade(cur_svc)
+    opt_grade = service_grade(opt_svc)
+    if cur_grade is None or opt_grade is None:
+        return False
+    return cur_grade != opt_grade
+
+
 def _compare_entries(
     current_entries: list[ScheduleEntry],
     optimized_entries: list[ScheduleEntry],
@@ -440,12 +485,29 @@ def _compare_entries(
     target_week_start: int | None = None,
     target_week_end: int | None = None,
     normalize_names: bool = False,
+    flag_grade_change: bool = True,
 ) -> list[Correction]:
     """ScheduleEntry リスト同士を比較して差分を生成 (内部実装).
 
     元の ``compare_schedules`` のマッチング部分を切り出した内部関数。
     パスからの読み込みと、テキストコンテンツからの読み込み（StringIO経由）
     の両方が共有する。
+
+    ``flag_grade_change`` (既定 True・らく助→カイポケ向き):
+    請求区分 (正看/准看) が変わる ``edit`` / ``date_change`` に
+    ``grade_change=True`` を立て、``service_type`` を **最適化 (らく助) 側の値**
+    にする。カイポケの編集ダイアログではサービス内容を変更できない
+    (設計 ``kaipoke-service-content-design.md`` §3-1) ので、RPA はこの印の
+    付いた行を内部で「削除 → 再追加」として処理し、再追加時にこの
+    ``service_type`` を書く。現況 (カイポケ) 側の値のままだと **古い資格で
+    再追加される** = 請求が狂ったまま (2026-09-03 W37 送信で 6 件発生)。
+    差分を delete+add に **割らない**: RPA は 1 件ずつ独立に処理し、ペアも
+    ロールバックも無いので、add だけ失敗すると予定が消えたまま残る。逆に、
+    もともと対になっていない delete+add に落ちていた「同じ日・同じ開始時刻で
+    区分だけ違う」組は Pass 3.5 で 1 件の ``edit`` に束ねる (同じ理由)。
+    呼び出し側 (``local_diff``) は inbound と、RPA がサービス内容の分岐に
+    未対応のあいだ (``kaipoke_rpa_service_branch_enabled=False``) は False を
+    渡す — 印を立てても RPA が正しい値を書けないため。
     """
     logger.debug("  現在のエントリ数: %d", len(current_entries))
     logger.debug("  最適化エントリ数: %d", len(optimized_entries))
@@ -532,6 +594,68 @@ def _compare_entries(
         if not normalize_names:
             return a != b
         return _normalize_user_name(a or "") != _normalize_user_name(b or "")
+
+    def _emit_change(
+        user: str, cur_entry: ScheduleEntry, opt_entry: ScheduleEntry, action: str
+    ) -> None:
+        """``edit`` / ``date_change`` を 1 件積む。**唯一の判断点**。
+
+        請求区分 (正看/准看) が変わる行は **1 件のまま** (delete+add に割らない)
+        で出し、代わりに 2 つの手当てをする:
+
+        1. ``service_type`` を **最適化 (らく助) 側の値** にする。カイポケの
+           編集ダイアログはサービス内容を変更できないので、RPA は
+           ``grade_change`` の行を内部で「削除 → 再追加」として処理し、再追加時
+           に ``fill_medical_insurance_fields(service_type)`` でこの値を書く。
+           現況 (カイポケ) 側の値を載せると **古い資格のまま再追加される** =
+           請求が狂ったままになる (2026-09-03 W37 で 6 件)。
+        2. ``grade_change=True`` を立てる。これが RPA への経路指定 (削除→再追加)
+           であり、画面の「請求区分変更」バッジでもある。
+        3. ``service_type_from`` に **変更前 (カイポケ現況) の値** を残す。RPA は
+           再追加に失敗したとき、この値で元の行を復旧する。
+
+        **割らない理由**: RPA は差分 1 件ずつを独立に処理し、delete と add の
+        ペアもロールバックも持たない。ここで 2 行に割ると、add だけ失敗した
+        ときに **予定が消えたまま作り直されない** (8/31 の欠落と同じ形)。
+        1 件で送れば、失敗しても現況がそのまま残る。
+        """
+        grade_diff = flag_grade_change and _grade_differs(
+            cur_entry.service_type, opt_entry.service_type
+        )
+        # 請求区分が変わるなら、送るのは **らく助側** のサービス内容。
+        service_type = opt_entry.service_type if grade_diff else cur_entry.service_type
+        if grade_diff:
+            logger.debug(
+                "  請求区分変更 (%s): 利用者=%s %s日 %s '%s' → '%s'",
+                action,
+                user,
+                cur_entry.date,
+                cur_entry.start_time,
+                cur_entry.service_type,
+                opt_entry.service_type,
+            )
+        corrections.append(
+            Correction(
+                user_name=user,
+                date_from=cur_entry.date,
+                date_to=opt_entry.date,
+                start_time_from=cur_entry.start_time,
+                start_time_to=opt_entry.start_time,
+                end_time_from=cur_entry.end_time,
+                end_time_to=opt_entry.end_time,
+                staff1_from=cur_entry.staff1_name,
+                staff1_to=opt_entry.staff1_name,
+                staff2_from=cur_entry.staff2_name,
+                staff2_to=opt_entry.staff2_name,
+                service_type=service_type,
+                action=action,
+                business_type=cur_entry.business_type,
+                remarks=opt_entry.remarks,
+                grade_change=grade_diff,
+                # 失敗時に元へ戻すための現況値 (印の無い行では空)。
+                service_type_from=cur_entry.service_type if grade_diff else "",
+            )
+        )
 
     display_by_key: dict[str, str] = {}
     for e in current_entries + optimized_entries:
@@ -649,25 +773,7 @@ def _compare_entries(
                             or _staff_differs(cur_entry.staff2_name, opt_entry.staff2_name)
                         )
                         if has_diff:
-                            corrections.append(
-                                Correction(
-                                    user_name=user,
-                                    date_from=cur_entry.date,
-                                    date_to=opt_entry.date,
-                                    start_time_from=cur_entry.start_time,
-                                    start_time_to=opt_entry.start_time,
-                                    end_time_from=cur_entry.end_time,
-                                    end_time_to=opt_entry.end_time,
-                                    staff1_from=cur_entry.staff1_name,
-                                    staff1_to=opt_entry.staff1_name,
-                                    staff2_from=cur_entry.staff2_name,
-                                    staff2_to=opt_entry.staff2_name,
-                                    service_type=cur_entry.service_type,
-                                    action="edit",
-                                    business_type=cur_entry.business_type,
-                                    remarks=opt_entry.remarks,
-                                )
-                            )
+                            _emit_change(user, cur_entry, opt_entry, "edit")
                         matched_current_local.add(cur_idx)
                         matched_optimized_local.add(opt_idx)
                         all_matched_current.add(cur_idx)
@@ -704,25 +810,7 @@ def _compare_entries(
                             or _staff_differs(cur_entry.staff2_name, opt_entry.staff2_name)
                         )
                         if has_diff:
-                            corrections.append(
-                                Correction(
-                                    user_name=user,
-                                    date_from=cur_entry.date,
-                                    date_to=opt_entry.date,
-                                    start_time_from=cur_entry.start_time,
-                                    start_time_to=opt_entry.start_time,
-                                    end_time_from=cur_entry.end_time,
-                                    end_time_to=opt_entry.end_time,
-                                    staff1_from=cur_entry.staff1_name,
-                                    staff1_to=opt_entry.staff1_name,
-                                    staff2_from=cur_entry.staff2_name,
-                                    staff2_to=opt_entry.staff2_name,
-                                    service_type=cur_entry.service_type,
-                                    action="edit",
-                                    business_type=cur_entry.business_type,
-                                    remarks=opt_entry.remarks,
-                                )
-                            )
+                            _emit_change(user, cur_entry, opt_entry, "edit")
                         matched_current_local.add(cur_idx)
                         matched_optimized_local.add(opt_idx)
                         all_matched_current.add(cur_idx)
@@ -772,27 +860,44 @@ def _compare_entries(
                     best = (score, opt_idx, opt_entry)
             if best is not None:
                 _, opt_idx, opt_entry = best
-                corrections.append(
-                    Correction(
-                        user_name=user,
-                        date_from=cur_entry.date,
-                        date_to=opt_entry.date,
-                        start_time_from=cur_entry.start_time,
-                        start_time_to=opt_entry.start_time,
-                        end_time_from=cur_entry.end_time,
-                        end_time_to=opt_entry.end_time,
-                        staff1_from=cur_entry.staff1_name,
-                        staff1_to=opt_entry.staff1_name,
-                        staff2_from=cur_entry.staff2_name,
-                        staff2_to=opt_entry.staff2_name,
-                        service_type=cur_entry.service_type,
-                        action="date_change",
-                        business_type=cur_entry.business_type,
-                        remarks=opt_entry.remarks,
-                    )
-                )
+                _emit_change(user, cur_entry, opt_entry, "date_change")
                 all_matched_current.add(cur_idx)
                 all_matched_optimized.add(opt_idx)
+
+        # Pass 3.5: 請求区分 (正看/准看) だけが違う行の突合 (2026-09-11)。
+        #
+        # 双方が資格まで書かれている (「…・正看」vs「…・准看」) と前方一致もしないので
+        # Pass1-3 では結ばれず、**同じ訪問が対になっていない delete + add** に落ちる。
+        # RPA はこの 2 行を独立に処理する (ペアもロールバックも無い) ので、add だけ
+        # 失敗すると予定が消えたまま残る = 8/31 の欠落と同じ形。9/7 週の本番 21 件は
+        # まさにこの形だった。
+        #
+        # そこで **同じ日・同じ利用者・同じ開始時刻** で区分だけが違う残り物は、
+        # 1 件の ``edit`` に束ねる (終了時刻や担当は違ってよい = 一緒に直る)。
+        # 開始時刻まで違う組は「同じ訪問」と言い切れないので束ねない (従来どおり
+        # delete+add のまま・印だけ付く)。
+        if flag_grade_change:
+            leftover_current = [
+                (i, e) for i, e in enumerate(user_current) if i not in all_matched_current
+            ]
+            leftover_optimized = [
+                (i, e) for i, e in enumerate(user_optimized) if i not in all_matched_optimized
+            ]
+            for cur_idx, cur_entry in leftover_current:
+                cur_day = _date_key(cur_entry.date)
+                for opt_idx, opt_entry in leftover_optimized:
+                    if opt_idx in all_matched_optimized:
+                        continue
+                    if _date_key(opt_entry.date) != cur_day:
+                        continue
+                    if cur_entry.start_time != opt_entry.start_time:
+                        continue
+                    if not _grade_differs(cur_entry.service_type, opt_entry.service_type):
+                        continue
+                    _emit_change(user, cur_entry, opt_entry, "edit")
+                    all_matched_current.add(cur_idx)
+                    all_matched_optimized.add(opt_idx)
+                    break
 
         # Pass 4: 削除の検出（currentにのみ存在するエントリ）
         final_unmatched_current = [
@@ -806,6 +911,31 @@ def _compare_entries(
             len(final_unmatched_current),
             len(final_unmatched_optimized_pre),
         )
+
+        # 請求区分変更の印 (表示用)。サービス内容が「…・正看」/「…・准看」と
+        # 最後まで書かれている行は前方一致もしないので、Pass2/3 で結ばれず
+        # **もともと delete + add** に落ちる (= 送信の形は正しい)。ただし人が見て
+        # 「なぜ作り直すのか」が分かるよう、相手側に *同じ日・同じ開始時刻で
+        # 区分だけ違う* 行が居る場合は同じ ``grade_change`` の印を付ける。
+        # 差分の出方 (action) はここでは一切変えない。
+        def _slot_grades(rows: list[tuple[int, ScheduleEntry]]) -> dict[tuple, str]:
+            out: dict[tuple, str] = {}
+            for _i, e in rows:
+                grade = service_grade(e.service_type)
+                if grade is not None:
+                    out.setdefault((_date_key(e.date), e.start_time), grade)
+            return out
+
+        def _peer_grade_differs(slots: dict[tuple, str], entry: ScheduleEntry) -> bool:
+            if not flag_grade_change:
+                return False
+            mine = service_grade(entry.service_type)
+            peer = slots.get((_date_key(entry.date), entry.start_time))
+            return mine is not None and peer is not None and mine != peer
+
+        opt_slot_grades = _slot_grades(final_unmatched_optimized_pre)
+        cur_slot_grades = _slot_grades(final_unmatched_current)
+
         for cur_idx, cur_entry in final_unmatched_current:  # noqa: B007
             corrections.append(
                 Correction(
@@ -824,6 +954,7 @@ def _compare_entries(
                     action="delete",
                     business_type=cur_entry.business_type,
                     remarks=cur_entry.remarks,
+                    grade_change=_peer_grade_differs(opt_slot_grades, cur_entry),
                 )
             )
 
@@ -849,6 +980,7 @@ def _compare_entries(
                     action="add",
                     business_type=opt_entry.business_type,
                     remarks=opt_entry.remarks,
+                    grade_change=_peer_grade_differs(cur_slot_grades, opt_entry),
                 )
             )
 
@@ -1007,6 +1139,7 @@ def compare_schedules_from_content(
     target_week_start: int | None = None,
     target_week_end: int | None = None,
     normalize_names: bool = False,
+    flag_grade_change: bool = True,
 ) -> list[Correction]:
     """CSVテキスト文字列を直接比較して差分を生成.
 
@@ -1016,6 +1149,9 @@ def compare_schedules_from_content(
         target_users: 対象利用者
         target_week_start: 対象週の開始日
         target_week_end: 対象週の終了日
+        normalize_names: 氏名の空白/異体字を正規化して同一人物に束ねるか
+        flag_grade_change: 請求区分 (正看/准看) が変わる行に印を立て、
+            サービス内容を最適化側の値にするか (既定 True。inbound は False)
 
     Returns:
         list[Correction]: 修正リスト
@@ -1041,6 +1177,7 @@ def compare_schedules_from_content(
         target_week_start=target_week_start,
         target_week_end=target_week_end,
         normalize_names=normalize_names,
+        flag_grade_change=flag_grade_change,
     )
 
 

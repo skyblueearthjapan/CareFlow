@@ -68,6 +68,9 @@ class DiffEdit(BaseModel):
     action: DiffAction
     business_type: str = ""
     remarks: str = ""
+    # 請求区分 (正看/准看) が変わる行の印と、変更前 (カイポケ現況) のサービス内容。
+    grade_change: bool = False
+    service_type_from: str = ""
 
 
 class DiffSummary(BaseModel):

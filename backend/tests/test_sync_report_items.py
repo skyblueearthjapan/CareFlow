@@ -100,6 +100,11 @@ def test_reason_label_known_unknown_and_empty() -> None:
         sri.reason_label("old_row_remains_duplicate")
         == "追加成功・旧行の削除失敗（二重・要手動削除）"
     )
+    # 請求区分変更 (2026-09-11): RPA の「削除 → 再追加」が失敗して元へ戻した行。
+    assert (
+        sri.reason_label("grade_change_rollback")
+        == "請求区分変更の再追加に失敗・元の予定を再追加済み"
+    )
     # 未知コードは原文をそのまま返す (情報を捨てない)
     assert sri.reason_label("brand_new_code") == "brand_new_code"
     assert sri.reason_label(None) is None

@@ -2075,3 +2075,338 @@ def test_unassigned_dedup_reference_id_is_stable_and_distinct() -> None:
         week + timedelta(days=7)
     )
     assert unassigned_dedup_reference_id(week) != dedup_reference_id(week)
+
+
+# --- 9. 請求区分変更 (正看⇄准看) の印 — 2026-09-11 ---------------------------
+#
+# カイポケの編集ダイアログはサービス内容を変更できない (設計 §3-1)。区分が変わる
+# 行は 1 件のまま送り、``grade_change`` (= RPA へ「削除 → 再追加」の指示) と
+# ``service_type_from`` (= 失敗時の復旧用の現況値) を載せる。
+# ここで守るのは「印が 3 つの出口 (シート一覧 / ●未送信 / RPA 送信) に等しく出る」こと。
+
+PSY_NURSE_SVC = "精神基本療養費Ⅰ・正看"
+PSY_ASSISTANT_SVC = "精神基本療養費Ⅰ・准看"
+PSY_BARE_SVC = "精神基本療養費Ⅰ"
+
+
+def _kaipoke_csv_row(
+    *,
+    day: int,
+    staff1: str,
+    service: str,
+    start: str = "10:00",
+    end: str = "10:35",
+    job1: str = "看護師",
+) -> str:
+    """カイポケ18列CSV の 1 行 (現況スナップショット用)。"""
+    return (
+        f"{staff1},{job1},,,,,,,{OFFICE_NAME},{day},月,{PATIENT_NAME},医療保険,{service},"
+        f"{start},{end},35,"
+    )
+
+
+@pytest.mark.asyncio
+async def test_unsent_item_carries_grade_change_and_service_type_from(
+    client, db, stub_kaipoke, monkeypatch
+) -> None:
+    """●未送信の行にも印と復旧用の現況値が載る (シート一覧と同じ helper)。
+
+    らく助=准看 (担当が准看護師) / カイポケ=旧表記 (正看扱い) + 別担当 →
+    前方一致で edit に結ばれ、請求区分が変わる行として印が立つ。
+    """
+    _open_rpa_gate(monkeypatch, enabled=True)  # S3 完了後の状態
+    admin = await _make_user(db, "unsent-grade@example.com")
+    seeded = await _seed_master(db)
+    seeded["staff"].qualification = "准看護師"  # らく助側の生成が「・准看」になる
+    week_start = _future_monday()
+    await _add_visit(db, seeded, week_start)
+    await save_snapshot(
+        db,
+        office_id=None,
+        month=_month_of(week_start),
+        week_start=None,
+        csv_text=(
+            ",".join(HEADER)
+            + "\r\n"
+            + _kaipoke_csv_row(day=week_start.day, staff1="高岡　真由美", service=PSY_BARE_SVC)
+            + "\r\n"
+        ),
+        source_op="test",
+    )
+    await db.commit()
+
+    res = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    assert res.status_code == 200, res.text
+    items = res.json()["items"]
+    edits = [i for i in items if i["action"] == "edit"]
+    assert len(edits) == 1, items
+    assert edits[0]["grade_change"] is True
+    assert edits[0]["service_type_from"] == PSY_BARE_SVC
+    assert edits[0]["after"]["service_type"] == PSY_ASSISTANT_SVC
+
+    # シート一覧 (別の出口) でも同じ印が出る。
+    sheet_id = res.json()["sheet_id"]
+    listed = await client.get(
+        f"/api/v1/integrations/correction-sheets/{sheet_id}/items", headers=_bearer(admin)
+    )
+    assert listed.status_code == 200, listed.text
+    rows = [r for r in listed.json()["items"] if r["action"] == "edit"]
+    assert rows and rows[0]["grade_change"] is True
+    assert rows[0]["service_type_from"] == PSY_BARE_SVC
+
+    # RPA へ渡す平坦形式にも両方のキーが載る。
+    item = await db.scalar(
+        select(CorrectionSheetItem).where(
+            CorrectionSheetItem.sheet_id == UUID(sheet_id),
+            CorrectionSheetItem.action == "edit",
+        )
+    )
+    assert item is not None
+    payload = item_to_kaipoke_correction(item.action, item.before, item.after)
+    assert payload["grade_change"] is True
+    assert payload["service_type"] == PSY_ASSISTANT_SVC
+    assert payload["service_type_from"] == PSY_BARE_SVC
+
+
+@pytest.mark.asyncio
+async def test_unsent_item_without_grade_change_has_empty_marks(
+    client, db, stub_kaipoke, monkeypatch
+) -> None:
+    """区分が変わらない行は印なし / 復旧用の値も無い (偽陽性を出さない)。"""
+    _open_rpa_gate(monkeypatch, enabled=True)
+    admin = await _make_user(db, "unsent-nograde@example.com")
+    seeded = await _seed_master(db)
+    week_start = _future_monday()
+    await _add_visit(db, seeded, week_start)
+    await save_snapshot(
+        db,
+        office_id=None,
+        month=_month_of(week_start),
+        week_start=None,
+        csv_text=(
+            ",".join(HEADER)
+            + "\r\n"
+            + _kaipoke_csv_row(day=week_start.day, staff1="高岡　真由美", service=PSY_NURSE_SVC)
+            + "\r\n"
+        ),
+        source_op="test",
+    )
+    await db.commit()
+
+    res = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    assert res.status_code == 200, res.text
+    edits = [i for i in res.json()["items"] if i["action"] == "edit"]
+    assert len(edits) == 1
+    assert edits[0]["grade_change"] is False
+    assert edits[0]["service_type_from"] is None
+
+
+@pytest.mark.asyncio
+async def test_reverse_sheet_flags_grade_change_and_sends_rakusuke_service(
+    client, db, stub_kaipoke, monkeypatch
+) -> None:
+    """⇧上書き: らく助=准看 / カイポケ=正看 の edit は印付き・らく助の値で送る (M1)。"""
+    _open_rpa_gate(monkeypatch, enabled=True)
+    admin = await _make_user(db, "reverse-grade@example.com")
+    week_start = _future_monday()
+    sheet = CorrectionSheet(
+        target_month=_month_of(week_start),
+        status="ready",
+        direction="inbound",
+        week_start=week_start,
+        week_end=week_start + timedelta(days=6),
+        created_by_user_id=admin.id,
+    )
+    db.add(sheet)
+    await db.flush()
+
+    def _side(service: str, staff1: str) -> dict[str, Any]:
+        return {
+            "user_name": PATIENT_NAME,
+            "date": str(week_start.day),
+            "start_time": "10:00",
+            "end_time": "10:35",
+            "staff1": staff1,
+            "staff2": "",
+            "service_type": service,
+            "business_type": "医療保険",
+            "remarks": "",
+        }
+
+    # inbound: before=らく助 (准看) / after=カイポケ (正看)
+    inbound_before = _side(PSY_ASSISTANT_SVC, "高岡　真由美")
+    inbound_after = _side(PSY_NURSE_SVC, STAFF_NAME)
+    db.add(
+        CorrectionSheetItem(
+            sheet_id=sheet.id,
+            action="edit",
+            before=inbound_before,
+            after=inbound_after,
+            include=True,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/integrations/correction-sheets/{sheet.id}/reverse", headers=_bearer(admin)
+    )
+    assert res.status_code == 200, res.text
+
+    item = await db.scalar(
+        select(CorrectionSheetItem).where(
+            CorrectionSheetItem.sheet_id == UUID(res.json()["sheet_id"])
+        )
+    )
+    assert item is not None
+    assert item.action == "edit"
+    # 送るサービス内容はらく助側 (准看) = after。before は監査用にカイポケ現況のまま。
+    assert item.before["service_type"] == PSY_NURSE_SVC
+    assert item.after["service_type"] == PSY_ASSISTANT_SVC
+    assert item.before["grade_change"] is True
+    assert item.after["service_type_from"] == PSY_NURSE_SVC
+
+    payload = item_to_kaipoke_correction(item.action, item.before, item.after)
+    assert payload["grade_change"] is True
+    assert payload["service_type"] == PSY_ASSISTANT_SVC
+    assert payload["service_type_from"] == PSY_NURSE_SVC
+
+    # 元の inbound シートの行は書き換えない (取り込みの記録はそのまま)。
+    origin = await db.scalar(
+        select(CorrectionSheetItem).where(CorrectionSheetItem.sheet_id == sheet.id)
+    )
+    assert origin is not None
+    assert origin.before["service_type"] == PSY_ASSISTANT_SVC
+    assert origin.after["service_type"] == PSY_NURSE_SVC
+    assert "grade_change" not in origin.after
+
+
+@pytest.mark.asyncio
+async def test_reverse_sheet_leaves_same_grade_rows_untouched(client, db, stub_kaipoke) -> None:
+    """区分が同じ edit は反転時に何も足さない (印も復旧値も付かない)。"""
+    admin = await _make_user(db, "reverse-nograde@example.com")
+    week_start = _future_monday()
+    sheet = await _seed_inbound_sheet(db, admin, week_start)
+
+    res = await client.post(
+        f"/api/v1/integrations/correction-sheets/{sheet.id}/reverse", headers=_bearer(admin)
+    )
+    assert res.status_code == 200, res.text
+    items = (
+        await db.scalars(
+            select(CorrectionSheetItem).where(
+                CorrectionSheetItem.sheet_id == UUID(res.json()["sheet_id"])
+            )
+        )
+    ).all()
+    assert items
+    for it in items:
+        assert not (it.before or {}).get("grade_change")
+        assert not (it.after or {}).get("grade_change")
+
+
+@pytest.mark.asyncio
+async def test_unsent_item_not_flagged_while_rpa_gate_is_closed(
+    client, db, stub_kaipoke, monkeypatch
+) -> None:
+    """S3 の門が閉じている間は印を立てない (RPA が正しい値を書けないため)。
+
+    印を立てても RPA は既定値 (精神科 × 看護師等) で再追加するだけなので、
+    従来どおりの出方 (印なし・現況のサービス内容) に倒す。
+    """
+    _open_rpa_gate(monkeypatch, enabled=False)
+    admin = await _make_user(db, "unsent-gate-closed@example.com")
+    seeded = await _seed_master(db)
+    seeded["staff"].qualification = "准看護師"
+    week_start = _future_monday()
+    await _add_visit(db, seeded, week_start)
+    await save_snapshot(
+        db,
+        office_id=None,
+        month=_month_of(week_start),
+        week_start=None,
+        csv_text=(
+            ",".join(HEADER)
+            + "\r\n"
+            + _kaipoke_csv_row(day=week_start.day, staff1="高岡　真由美", service=PSY_BARE_SVC)
+            + "\r\n"
+        ),
+        source_op="test",
+    )
+    await db.commit()
+
+    res = await client.post(
+        UNSENT_URL, json={"week_start": week_start.isoformat()}, headers=_bearer(admin)
+    )
+    assert res.status_code == 200, res.text
+    edits = [i for i in res.json()["items"] if i["action"] == "edit"]
+    assert len(edits) == 1
+    assert edits[0]["grade_change"] is False
+    assert edits[0]["service_type_from"] is None
+    assert edits[0]["after"]["service_type"] == PSY_BARE_SVC  # 現況のまま
+
+
+@pytest.mark.asyncio
+async def test_reverse_sheet_not_flagged_while_rpa_gate_is_closed(
+    client, db, stub_kaipoke, monkeypatch
+) -> None:
+    """⇧上書きも同じ門で同期する (差分エンジン側と扱いを揃える)。"""
+    _open_rpa_gate(monkeypatch, enabled=False)
+    admin = await _make_user(db, "reverse-gate-closed@example.com")
+    week_start = _future_monday()
+    sheet = CorrectionSheet(
+        target_month=_month_of(week_start),
+        status="ready",
+        direction="inbound",
+        week_start=week_start,
+        week_end=week_start + timedelta(days=6),
+        created_by_user_id=admin.id,
+    )
+    db.add(sheet)
+    await db.flush()
+    db.add(
+        CorrectionSheetItem(
+            sheet_id=sheet.id,
+            action="edit",
+            before={
+                "user_name": PATIENT_NAME,
+                "date": str(week_start.day),
+                "start_time": "10:00",
+                "end_time": "10:35",
+                "staff1": "高岡　真由美",
+                "staff2": "",
+                "service_type": PSY_ASSISTANT_SVC,
+                "business_type": "医療保険",
+                "remarks": "",
+            },
+            after={
+                "user_name": PATIENT_NAME,
+                "date": str(week_start.day),
+                "start_time": "10:00",
+                "end_time": "10:35",
+                "staff1": STAFF_NAME,
+                "staff2": "",
+                "service_type": PSY_NURSE_SVC,
+                "business_type": "医療保険",
+                "remarks": "",
+            },
+            include=True,
+        )
+    )
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/integrations/correction-sheets/{sheet.id}/reverse", headers=_bearer(admin)
+    )
+    assert res.status_code == 200, res.text
+    item = await db.scalar(
+        select(CorrectionSheetItem).where(
+            CorrectionSheetItem.sheet_id == UUID(res.json()["sheet_id"])
+        )
+    )
+    assert item is not None
+    assert not item.after.get("grade_change")
+    assert item.after["service_type"] == PSY_ASSISTANT_SVC  # 入替のみ (書き換えなし)

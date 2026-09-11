@@ -22,13 +22,27 @@ S2 でサービス内容の自動判定 (患者の訪問看護区分 × 職員1�
 (option 文言の採取 → 分岐実装 → 実機 1 件テスト) が終わったら
 ``settings.kaipoke_rpa_service_branch_enabled = True`` で門を開ける。
 
-## 対象は add だけ
+## 門が閉じている間、対象は add だけ
 
-カイポケの edit ではサービス内容を変更できない (設計 §3)。差分エンジンの
-``correction_before_after`` も before/after 双方に同じ ``service_type`` を
-入れるため、サービス内容の違いは常に **delete + add** として現れる。
-つまり「RPA が登録できない値」が実際に書き込まれる経路は add のみ。
+カイポケの edit ダイアログではサービス内容を変更できない (設計 §3)。門が閉じて
+いる間 (``service_branch_enabled() == False``) は差分エンジンも
+``correction_before_after`` も before/after 双方に同じ ``service_type`` を入れる
+ため、サービス内容の違いは **delete + add** としてしか現れない。つまり
+「RPA が登録できない値」が実際に書き込まれる経路は add のみで、
 delete / edit / date_change は既存行を動かすだけなので素通しでよい。
+
+## 門が開いた後: grade_change の edit も書き込み経路になる (2026-09-11)
+
+S3 完了後は、請求区分 (正看/准看) が変わる行に差分エンジンが
+``grade_change=True`` を立て、``service_type`` をらく助側の値にする
+(``service_type_from`` に変更前の値を残す)。RPA はこの印の付いた
+edit / date_change を内部で「削除 → 再追加」として処理し、再追加時に
+``service_type`` を書く = **edit も書き込み経路になる**。
+この印は ``local_diff`` / ``_apply_grade_change_to_reversed`` が
+``service_branch_enabled()`` で門と同期させており、**門が閉じている間は
+そもそも立たない** (立てても RPA は既定値で再追加するだけなので)。
+したがって下の除外判定 (add だけを見る) は門が閉じている間の話として正しく、
+門が開けば ``is_rpa_unsupported`` は常に False になり除外自体が無くなる。
 
 ## ただし delete は「ペアなら」道連れに止める
 

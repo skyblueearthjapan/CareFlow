@@ -39,6 +39,11 @@ DB も書かない (取得は ``plan_actual_fetch`` の責務)。
   RPA / 手入力で作られた行に出やすく、二重登録の片割れであることが多い
 * ``同日複数`` — 同キー内で **同じ担当が別々の時刻に 2 行以上**。正当な 1 日 2 回訪問も
   含むので判定にはせず目印だけ置く (片方が職種未設定なら削除候補)
+* ``資格不整合`` — サービス内容の請求区分 (正看/准看) が 職種1/職種2 の資格と合わない行
+  (PO ルール: 正看が 1 人でも関われば正看 / 准看だけなら准看)。**医療保険の行だけ**を
+  見る。予定・実績のどちらの側でも立つ。**請求額が変わる**ので請求前にカイポケ側を直す。
+  らく助側の生成ルール⑦ (正看同行なら正看へ昇格・設計 §4) が未実装のため、らく助が
+  作った准看行もここに出る
 
 **タグは判定カテゴリではない (内数)** — 一致/時刻ズレ/…の 6 カテゴリだけで
 全行がちょうど 1 回数えられる、という読み方を壊さないため。
@@ -53,6 +58,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
+from app.services.diff.engine import service_grade
 from app.services.kaipoke.name_match import normalize_name_key
 from app.services.kaipoke.report_css import REPORT_CSS
 
@@ -94,6 +100,9 @@ TAG_ACCOMPANY = "同行違い"
 TAG_UNTYPED = "職種未設定"
 #: 同キー内で同じ担当が別々の時刻に 2 行以上 (二重登録の温床・正当な 2 回訪問も含む)。
 TAG_MULTI_SAME_DAY = "同日複数"
+#: サービス内容の請求区分 (正看/准看) が 職種1/職種2 の資格と食い違う行。
+#: 片側だけで立つ性質 (予定・実績のどちらでも同じタグ)。請求額が変わるので最優先。
+TAG_GRADE = "資格不整合"
 
 #: 集計キー「重複」に数えるタグ。
 _DUP_TAGS = (TAG_DUP_PLAN, TAG_DUP_ACTUAL)
@@ -117,6 +126,7 @@ _ADVICE_UNTYPED_PLAN = "予定側の職種が未設定。担当設定を確認"
 _ADVICE_MULTI_SAME_DAY = (
     "同じ担当が同日に複数行。片方が職種未設定なら削除候補、両方正なら実際に 2 回訪問したか確認"
 )
+_ADVICE_GRADE = "サービス内容が担当者の資格と合っていません。請求前にカイポケ側を修正"
 
 #: 担当が空欄のときの表示 (カイポケの「-」行 = 担当なし)。
 NO_STAFF = "（担当なし）"
@@ -130,7 +140,10 @@ CAVEAT = (
 )
 
 #: 同行者の扱いの限界 (CAVEAT と並べて出す)。
-CAVEAT_ACCOMPANY = "同行者（職員名2）は一致／同行違いの判定にのみ使い、請求区分の正誤は判定しません"
+CAVEAT_ACCOMPANY = (
+    "同行者（職員名2）は一致／同行違いの判定と、資格不整合タグ"
+    "（正看が同行していれば正看が正）にのみ使います"
+)
 
 #: 予定と実績の行数がこの比率以上ずれていたら、CSV の取得範囲を疑う警告を出す。
 _ROW_COUNT_DIVERGENCE = 0.30
@@ -255,6 +268,51 @@ class PARow:
         if self.job_unknown or self.staff_key == _NO_STAFF_KEY:
             return False
         return not self.job1.strip()
+
+    @property
+    def implied_grade(self) -> str | None:
+        """職種1 / 職種2 から決まる **あるべき請求区分** (PO ルール・設計 §4)。
+
+        * 正看 (看護師) が 1 人でも関われば → ``"正看"`` (同行でも正看が正)
+        * 准看護師だけ → ``"准看"``
+        * 看護師でも准看護師でもない職種 (PT/OT/ST) や 職種が空 → ``None``
+          = 判断材料が無いのでタグを付けない (黙って誤判定するより出さない)
+
+        「准看護師」は「看護師」を含む文字列なので、**准看を先に**見る。
+        """
+        if self.job_unknown:
+            return None
+        grades = []
+        for job in (self.job1, self.job2):
+            j = (job or "").strip()
+            if not j:
+                continue
+            if "准看" in j:
+                grades.append("准看")
+            elif "看護師" in j:
+                grades.append("正看")
+        if "正看" in grades:
+            return "正看"
+        if "准看" in grades:
+            return "准看"
+        return None
+
+    @property
+    def has_grade_mismatch(self) -> bool:
+        """サービス内容の請求区分が 職種 (資格) と食い違うか。
+
+        判定するのは **医療保険の行だけ**。正看/准看の区分は医療保険の訪問看護
+        療養費の話であり、介護保険やイベントのサービス内容に同じ言葉が出ても
+        意味が違う (誤タグになる)。
+        どちらかが判断不能 (サービス内容が空 / 職種が空・対象外資格) なら False。
+        """
+        if self.business != "医療保険":
+            return False
+        svc_grade = service_grade(self.service)
+        implied = self.implied_grade
+        if svc_grade is None or implied is None:
+            return False
+        return svc_grade != implied
 
     @property
     def is_visit(self) -> bool:
@@ -389,6 +447,10 @@ class PlanActualEntry:
     def is_multi_same_day(self) -> bool:
         return TAG_MULTI_SAME_DAY in self.tags
 
+    @property
+    def is_grade_mismatch(self) -> bool:
+        return TAG_GRADE in self.tags
+
 
 @dataclass
 class PlanActualDay:
@@ -408,6 +470,8 @@ class StaffSummary:
     untyped: int = 0
     #: 同日複数タグの数 (内数)。
     multi_same_day: int = 0
+    #: 資格不整合タグの数 (内数)。
+    grade_mismatch: int = 0
     total: int = 0
 
 
@@ -437,6 +501,11 @@ class PlanActualReport:
     def multi_same_day(self) -> int:
         """同日複数タグの付いた行数 (両側合計・内数)。"""
         return self.counts.get(TAG_MULTI_SAME_DAY, 0)
+
+    @property
+    def grade_mismatch_rows(self) -> int:
+        """資格不整合タグの付いた行数 (両側合計・内数)。"""
+        return self.counts.get(TAG_GRADE, 0)
 
     @property
     def row_counts_diverge(self) -> bool:
@@ -472,6 +541,9 @@ def _advice_for(category: str, tags: list[str], *, untyped_actual: bool = False)
         parts.append(_ADVICE_UNTYPED_ACTUAL if untyped_actual else _ADVICE_UNTYPED_PLAN)
     if TAG_MULTI_SAME_DAY in tags:
         parts.append(_ADVICE_MULTI_SAME_DAY)
+    if TAG_GRADE in tags:
+        # 請求額が変わるので、重複で打ち切らずに必ず足す。
+        parts.append(_ADVICE_GRADE)
     return "／".join(parts)
 
 
@@ -577,6 +649,9 @@ def _pair_group(
             tags.append(TAG_UNTYPED)
         if (pi is not None and pi in multi_plan) or (ai is not None and ai in multi_actual):
             tags.append(TAG_MULTI_SAME_DAY)
+        # 資格不整合も片側だけで立つ (予定・実績のどちらの行でも同じタグ 1 回)。
+        if (a is not None and a.has_grade_mismatch) or (p is not None and p.has_grade_mismatch):
+            tags.append(TAG_GRADE)
         anchor = a or p
         entries.append(
             PlanActualEntry(
@@ -672,6 +747,7 @@ def build_plan_actual_report(
     counts["重複"] = 0
     counts[TAG_UNTYPED] = 0
     counts[TAG_MULTI_SAME_DAY] = 0
+    counts[TAG_GRADE] = 0
     staff_acc: dict[str, StaffSummary] = {}
     for pday in days:
         for e in pday.entries:
@@ -682,6 +758,8 @@ def build_plan_actual_report(
                 counts[TAG_UNTYPED] += 1
             if e.is_multi_same_day:
                 counts[TAG_MULTI_SAME_DAY] += 1
+            if e.is_grade_mismatch:
+                counts[TAG_GRADE] += 1
             summary = staff_acc.get(e.staff)
             if summary is None:
                 summary = StaffSummary(staff=e.staff, counts=dict.fromkeys(CATEGORIES, 0))
@@ -694,6 +772,8 @@ def build_plan_actual_report(
                 summary.untyped += 1
             if e.is_multi_same_day:
                 summary.multi_same_day += 1
+            if e.is_grade_mismatch:
+                summary.grade_mismatch += 1
     # plan_rows / actual_rows は **突合した訪問行の数** (イベント除外後)。
     # events_skipped はその外側で落とした行数 = 内数ではなく「対象外」の内訳。
     counts["plan_rows"] = len(plan_rows)
@@ -753,7 +833,11 @@ def _side_cells(row: PARow | None) -> str:
 
 
 def _tag_html(entry: PlanActualEntry) -> str:
-    return "".join(f'<span class="tag warn">{_esc(t)}</span>' for t in entry.tags)
+    """タグのチップ。資格不整合だけ赤 (ng) — 請求額が変わるので他の目印より強い。"""
+    return "".join(
+        f'<span class="tag {"ng" if t == TAG_GRADE else "warn"}">{_esc(t)}</span>'
+        for t in entry.tags
+    )
 
 
 def _day_sections(report: PlanActualReport) -> str:
@@ -795,12 +879,14 @@ def _by_staff_table(report: PlanActualReport) -> str:
         + f'<td class="n">{s.duplicates or ""}</td>'
         + f'<td class="n">{s.untyped or ""}</td>'
         + f'<td class="n">{s.multi_same_day or ""}</td>'
+        + f'<td class="n">{s.grade_mismatch or ""}</td>'
         + f'<td class="n">{s.total}</td></tr>'
         for s in report.by_staff
     )
     return (
         f"<table><thead><tr><th>担当</th>{head}<th>重複</th>"
         f"<th>{_esc(TAG_UNTYPED)}</th><th>{_esc(TAG_MULTI_SAME_DAY)}</th>"
+        f"<th>{_esc(TAG_GRADE)}</th>"
         "<th>計</th></tr></thead>"
         f"<tbody>{body}</tbody></table>"
     )
@@ -843,6 +929,7 @@ def render_plan_actual_html(report: PlanActualReport) -> str:
     )
     untyped = c.get(TAG_UNTYPED, 0)
     multi = c.get(TAG_MULTI_SAME_DAY, 0)
+    grade = c.get(TAG_GRADE, 0)
     title = f"カイポケ 予定×実績 突合 {report.month}"
     office = f" / 事業所: {_esc(report.office_name)}" if report.office_name else ""
     chips = "".join(
@@ -875,6 +962,8 @@ def render_plan_actual_html(report: PlanActualReport) -> str:
         f'<b class="{"warn" if untyped else ""}">{untyped}</b><small>（内数）</small></span>'
         f"<span>{_esc(TAG_MULTI_SAME_DAY)} "
         f'<b class="{"warn" if multi else ""}">{multi}</b><small>（内数）</small></span>'
+        f"<span>{_esc(TAG_GRADE)} "
+        f'<b class="{"ng" if grade else ""}">{grade}</b><small>（内数）</small></span>'
         f"<span>イベント除外 <b>{report.events_skipped}</b>"
         "<small>（対象外）</small></span></div>\n"
         "<h2>担当者別の内訳</h2>\n"
@@ -897,6 +986,14 @@ def render_plan_actual_html(report: PlanActualReport) -> str:
         "<li><b>同日複数（内数・タグ）</b> … 同じ日・同じ利用者・同じ担当の行が"
         "<b>違う時刻で</b>2 本以上ある。片方が職種未設定なら二重登録の疑いが濃い。"
         "両方とも職種があるなら、実際に 2 回訪問したかを確認する。</li>"
+        "<li><b>資格不整合（内数・タグ）</b> … サービス内容の請求区分（正看／准看）が"
+        "担当者の職種と合っていない行（例: 職種が准看護師なのにサービス内容が"
+        "「…・正看」）。正看が 1 人でも関われば正看、准看だけなら准看が正しい。"
+        "医療保険の行だけを見ます。"
+        "<b>請求額が変わるので、請求前にカイポケ側を直すこと。</b><br>"
+        "同行者（職員2）に看護師がいる場合は正看が期待値です"
+        "（らく助側の生成ルール⑦は未実装のため、らく助が作った准看行も対象になります）。"
+        "</li>"
         "<li><b>同行違い（タグ）</b> … 主担当は合っているが同行者（職員名2）が"
         "食い違う行。</li>"
         "<li><b>イベント除外（対象外）</b> … 業務種別が 医療保険／介護保険 でない行"
