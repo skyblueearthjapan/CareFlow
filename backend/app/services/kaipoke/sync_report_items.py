@@ -36,6 +36,7 @@ REASON_LABELS: dict[str, str] = {
     "past": "過去日（実績保護のため送信対象外）",
     "unassigned": "担当なし（先に担当を付ける）",
     "rpa_unsupported": "RPA が准看/一般の登録に未対応",
+    "month_boundary": "月境界をまたぐ日付変更（カイポケで手動対応）",
     # RPA が返す失敗理由 (GAS_APPLY_COMPLETION_SPEC.md)
     "user_not_found": "カイポケに利用者が見つからない（氏名表記の違い等）",
     "entry_not_found": "カイポケ上で対象の予定が見つからない",

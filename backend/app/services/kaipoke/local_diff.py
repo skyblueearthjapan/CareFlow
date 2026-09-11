@@ -31,7 +31,7 @@ from sqlalchemy import select
 
 from app.models.office import Office
 from app.services.diff.engine import Correction, compare_schedules_from_content
-from app.services.kaipoke.csv_builder import BuildOptions, build_month_csv
+from app.services.kaipoke.csv_builder import HEADER, BuildOptions, build_month_csv
 from app.services.kaipoke.export_guard import ensure_export_ok
 from app.services.kaipoke.rpa_capability import service_branch_enabled
 
@@ -45,6 +45,67 @@ _SYNC_EXPORT_TIMEOUT = 90.0
 
 # カイポケ18列CSV の「事業所名」列インデックス。
 _OFFICE_COL = 8
+
+# カイポケ18列CSV の「日付」列インデックス (値は「日」1-31 のみ・年月を持たない)。
+# csv_builder.HEADER / diff/engine._parse_kaipoke_rows と同じ列位置に依存する。
+_DATE_COL = 9
+
+
+def _rows_to_csv(header: list[str], rows: list[list[str]]) -> str:
+    """ヘッダー1行 + 明細行を CSV テキストへ (カイポケ互換の CRLF)。"""
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\r\n")
+    writer.writerow(header)
+    writer.writerows(rows)
+    return buf.getvalue()
+
+
+def _keep_week_rows(
+    csv_text: str, allowed_days: set[int]
+) -> tuple[list[str] | None, list[list[str]]]:
+    """CSVから「日付」列が ``allowed_days`` に含まれる行だけを残す (ヘッダーは別返し)。
+
+    カイポケCSVの日付列は「日」(1-31) しか持たないため、**月をまたぐ週では
+    月ごとに許可日集合で絞らないと 10/1 の週に 9/1 の行が混ざる**。
+    この 1 箇所を ``export_current_week_csv`` (カイポケ側) と
+    ``build_local_diff`` の らく助側生成で共有する (2026-09-11)。
+
+    Returns:
+        ``(header, kept_rows)``。空CSVなら ``(None, [])``。
+    """
+    rows = list(csv.reader(io.StringIO(csv_text)))
+    if not rows:
+        return None, []
+    header, body = rows[0], rows[1:]
+    kept: list[list[str]] = []
+    for r in body:
+        if len(r) <= _DATE_COL:
+            continue
+        try:
+            day = int(r[_DATE_COL].strip())
+        except ValueError:
+            continue
+        if day in allowed_days:
+            kept.append(r)
+    return header, kept
+
+
+def _week_days(week_start: date, week_end: date) -> list[date]:
+    """週の日付リスト (両端含む)。"""
+    span = (week_end - week_start).days
+    if span < 0:
+        return [week_start]
+    return [week_start + timedelta(days=i) for i in range(span + 1)]
+
+
+def _months_of(days: list[date]) -> list[tuple[int, int]]:
+    """日付リストが跨ぐ (year, month) を出現順で返す。"""
+    months: list[tuple[int, int]] = []
+    for d in days:
+        key = (d.year, d.month)
+        if key not in months:
+            months.append(key)
+    return months
 
 
 def _filter_current_by_office(current_csv: str, office_name: str) -> str:
@@ -85,6 +146,20 @@ async def build_local_diff(
     集合から消え、delete 差分にならない** (旧GASの週次運用と同じ安全設計)。
     週外を消さないための核心はこの両側フィルタ (diff/engine が target_week_* で実施)。
 
+    **月を跨ぐ週 (例: 2026-09-28〜10-04) は両側とも月ごとに絞ってから渡す**
+    (2026-09-11 の根治)。diff/engine の週フィルタは「日」(1-31) しか見ず、
+    start>end の折返しを ``day>=28 or day<=4`` と解釈するため、らく助側を
+    ``month`` 1 か月ぶんだけ生成して渡すと **9/1〜9/4 の行が 10/1〜10/4 として
+    比較に混ざり**、偽の edit/delete/add を生む。さらに ``current_csv`` 未指定時は
+    カイポケ側に翌月分がそもそも入らず非対称になる。そこでこの関数は
+      * らく助側 = 週が跨ぐ各月を ``build_month_csv`` し ``_keep_week_rows`` で絞って結合
+      * カイポケ側 = ``export_current_week_csv`` (同じ絞り方で週結合)
+    を行う。非跨ぎの週と月スコープの経路は従来どおり (CSVはバイト同値)。
+    **副作用の注意**: 月跨ぎ週の 🔄突合 が保存するスナップショットは週スコープ
+    (``week_start`` 付き) だけで、**月スコープの行は更新されない**。そのため同月の
+    他の週の ●未送信 は、より古い月スコープ行を土台に計算され続ける
+    (週限定CSVを月スコープに書くと、その月の他の週が丸ごと空に見えるため意図的)。
+
     direction:
       * "outbound" (既定) — current=カイポケ現況 / optimized=CareFlow。
         Correction は「カイポケを CareFlow 確定形へ寄せる修正」(= /apply で押す内容)。
@@ -99,22 +174,52 @@ async def build_local_diff(
     """
     year, mon = int(month[:4]), int(month[5:7])
 
+    # 週スコープの確定を export より前に済ませる: 月跨ぎ判定が
+    # カイポケ側 export の取り方 (月まるごと / 週結合) を分けるため。
+    if week_start and not week_end:
+        week_end = week_start + timedelta(days=6)  # 月曜起点の7日 (旧GAS getWeekRange_ 相当)
+    week_days = _week_days(week_start, week_end) if week_start and week_end else []
+    week_months = _months_of(week_days)
+    # 月跨ぎの週 = 週の開始と終了で (年,月) が違う (例: 2026-09-28〜10-04)。
+    spanning = len(week_months) > 1
+
     # current_csv 注入 (2026-07-26 smart-inbound): ハイブリッド取り込みは export を
     # 1回だけ実行し、その結果を差分計算と置換計画の両方に渡す。未指定なら従来どおり
     # ここで export する。
-    did_export = current_csv is None
+    did_export = False
+    did_week_export = False
     if current_csv is None:
         if kaipoke is None:
             raise ValueError("build_local_diff requires either `kaipoke` or `current_csv`")
-        export_payload: dict[str, Any] = {"month": month, "async": False}
-        if credentials:
-            # アプリ内設定の認証情報 (C-1)。HTTP body のみに載せ、永続化はしない。
-            export_payload["credentials"] = credentials
-        resp = await kaipoke.export(export_payload, timeout=_SYNC_EXPORT_TIMEOUT)
-        # export の失敗 (success=False / 本文なし) を「カイポケが空」と読み違えない。
-        # 空のまま進むと、らく助の全訪問が add 差分に化けて二重登録を招き、
-        # 空CSVが「最後に見た姿」として保存されて ●未送信 も全滅表示になる。
-        current_csv = ensure_export_ok(resp.get("result"))
+        if spanning:
+            # 月跨ぎの週は 1 か月の export では翌月分が欠ける (= 偽 add/delete)。
+            # export_current_week_csv が両月を取って週内の行だけを結合する。
+            # 保存は **こちらで** 行う (``db=None``) — export_current_week_csv の
+            # 保存は _filter_current_by_office より前に走るので、office_id を
+            # キーに持ちながら中身は全拠点、という嘘のスナップショットになる。
+            # ここで week_start=None の月スコープ保存を重ねると ●未送信 の
+            # month_only スナップショット検索が週限定CSVを掴んで全滅表示になるため、
+            # did_export は False のままにする (2026-09-11)。
+            current_csv = await export_current_week_csv(
+                kaipoke=kaipoke,
+                week_start=week_start,  # type: ignore[arg-type]
+                credentials=credentials,
+                db=None,
+                office_id=office_id,
+                source_op=source_op,
+            )
+            did_week_export = True
+        else:
+            export_payload: dict[str, Any] = {"month": month, "async": False}
+            if credentials:
+                # アプリ内設定の認証情報 (C-1)。HTTP body のみに載せ、永続化はしない。
+                export_payload["credentials"] = credentials
+            resp = await kaipoke.export(export_payload, timeout=_SYNC_EXPORT_TIMEOUT)
+            # export の失敗 (success=False / 本文なし) を「カイポケが空」と読み違えない。
+            # 空のまま進むと、らく助の全訪問が add 差分に化けて二重登録を招き、
+            # 空CSVが「最後に見た姿」として保存されて ●未送信 も全滅表示になる。
+            current_csv = ensure_export_ok(resp.get("result"))
+            did_export = True
 
     # office_id 指定時: optimized は当該拠点のみ生成されるため、current も同じ拠点に
     # 絞る (揃えないと他拠点が全て delete 差分になり非対称化する)。
@@ -138,23 +243,59 @@ async def build_local_diff(
             csv_text=current_csv,
             source_op=source_op,
         )
+    elif did_week_export and week_start is not None:
+        # 月跨ぎ週の週結合 export。保存は **拠点フィルタ後** に、**週スコープ**
+        # (week_start 付き) で行う。本文行が 1 行も無ければ保存しない
+        # (export_current_week_csv の ``if db is not None and merged`` と同じ規則) —
+        # 空を「最後に見た姿」にすると次の未送信で全訪問が add に化ける。
+        from app.services.kaipoke.csv_snapshot import count_csv_rows, save_snapshot
 
-    optimized_bytes = await build_month_csv(
-        db,
-        # include_unassigned=True: 差分計算では未割当訪問も '-' 行として比較に含める。
-        # 除外すると「らく助側が空」に見えてカイポケ全行が偽 delete になる
-        # (2026-08-21 C2実機テストの実障害・BuildOptions docstring 参照)。
-        BuildOptions(year=year, month=mon, office_id=office_id, include_unassigned=True),
-        encoding="utf-8-sig",
-    )
-    optimized_csv = optimized_bytes.decode("utf-8-sig")
+        if count_csv_rows(current_csv) > 0:
+            await save_snapshot(
+                db,
+                office_id=office_id,
+                month=f"{week_start.year:04d}-{week_start.month:02d}",
+                week_start=week_start,
+                csv_text=current_csv,
+                source_op=source_op,
+            )
+
+    # include_unassigned=True: 差分計算では未割当訪問も '-' 行として比較に含める。
+    # 除外すると「らく助側が空」に見えてカイポケ全行が偽 delete になる
+    # (2026-08-21 C2実機テストの実障害・BuildOptions docstring 参照)。
+    if spanning:
+        # 月跨ぎの週: 週が触れる各月を生成し、**その月に属する週内の日**だけ残して結合。
+        # 1 か月ぶんだけ渡すと diff/engine の折返しフィルタが 9/1〜9/4 を
+        # 10/1〜10/4 と同一視して偽差分を作る (2026-09-11 の根治・docstring 参照)。
+        merged_header: list[str] | None = None
+        merged_rows: list[list[str]] = []
+        for y, m in week_months:
+            allowed_days = {d.day for d in week_days if (d.year, d.month) == (y, m)}
+            part_bytes = await build_month_csv(
+                db,
+                BuildOptions(year=y, month=m, office_id=office_id, include_unassigned=True),
+                encoding="utf-8-sig",
+            )
+            part_header, part_rows = _keep_week_rows(part_bytes.decode("utf-8-sig"), allowed_days)
+            if merged_header is None and part_header is not None:
+                merged_header = part_header
+            merged_rows.extend(part_rows)
+        optimized_csv = _rows_to_csv(merged_header or HEADER, merged_rows)
+    else:
+        optimized_bytes = await build_month_csv(
+            db,
+            BuildOptions(year=year, month=mon, office_id=office_id, include_unassigned=True),
+            encoding="utf-8-sig",
+        )
+        optimized_csv = optimized_bytes.decode("utf-8-sig")
 
     # 週スコープ: 対象週の「日」(1-31) を diff/engine の週フィルタへ渡す。
     # diff/engine は current/optimized の両方をこのレンジに絞り、月境界の折返し
     # (start>end) も処理する。CSVの日付列が「日のみ」の設計なので day 比較で成立。
+    # 月跨ぎの週では **両側とも既に月ごとに絞ってある** ので、この折返しフィルタは
+    # 素通し (何も落とさない) になり無害 — 絞り込みの正は上の月別フィルタ側にある
+    # (2026-09-11)。
     week_start_day = week_start.day if week_start else None
-    if week_start and not week_end:
-        week_end = week_start + timedelta(days=6)  # 月曜起点の7日 (旧GAS getWeekRange_ 相当)
     week_end_day = week_end.day if week_end else None
 
     # inbound は current/optimized を入れ替える (「正」がカイポケ側に移った週の取り込み)。
@@ -186,12 +327,14 @@ async def build_local_diff(
         flag_grade_change=(direction != "inbound" and service_branch_enabled()),
     )
 
-    meta = {
+    meta: dict[str, Any] = {
         "current_row_count": max(0, current_csv.count("\n") - 1),
         "optimized_row_count": max(0, optimized_csv.count("\n") - 1),
         "correction_count": len(corrections),
         "scope": "week" if week_start else "month",
         "direction": direction,
+        # 比較集合がどの月にまたがっているか (月跨ぎ週の切り分け用・2026-09-11)。
+        "months": [f"{y:04d}-{m:02d}" for y, m in week_months] or [month],
     }
     if week_start:
         meta["week_start"] = week_start.isoformat()
@@ -222,45 +365,29 @@ async def export_current_week_csv(
     ``office_id`` は既定 None — 置換/smart 取り込みは拠点で絞らず export する
     (単一事業所運用。呼び出し側に拠点の文脈が無い) ため。
     """
-    week_days = [week_start + timedelta(days=i) for i in range(7)]
-    months: list[str] = []
-    for d in week_days:
-        m = f"{d.year:04d}-{d.month:02d}"
-        if m not in months:
-            months.append(m)
+    week_days = _week_days(week_start, week_start + timedelta(days=6))
 
     header: list[str] | None = None
     merged: list[list[str]] = []
-    for month in months:
-        allowed_days = {d.day for d in week_days if f"{d.year:04d}-{d.month:02d}" == month}
+    for y, m in _months_of(week_days):
+        month = f"{y:04d}-{m:02d}"
+        allowed_days = {d.day for d in week_days if (d.year, d.month) == (y, m)}
         payload: dict[str, Any] = {"month": month, "async": False}
         if credentials:
             payload["credentials"] = credentials
         resp = await kaipoke.export(payload, timeout=_SYNC_EXPORT_TIMEOUT)
         # 失敗を空CSVとして飲み込むと「対象週に予定が無い」置換計画になる (全消し)。
         content = ensure_export_ok(resp.get("result"))
-        rows = list(csv.reader(io.StringIO(content)))
-        if not rows:
-            continue
-        if header is None:
-            header = rows[0]
-        for r in rows[1:]:
-            # r[9] = 「日付」列 (カイポケ18列フォーマット。csv_builder.HEADER /
-            # engine._parse_kaipoke_rows と同じ列位置に依存)。
-            if len(r) <= 9:
-                continue
-            try:
-                day = int(r[9].strip())
-            except ValueError:
-                continue
-            if day in allowed_days:
-                merged.append(r)
+        # 月ごとの許可日フィルタは build_local_diff (らく助側) と同じ 1 箇所を使う。
+        part_header, part_rows = _keep_week_rows(content, allowed_days)
+        if header is None and part_header is not None:
+            header = part_header
+        merged.extend(part_rows)
 
-    buf = io.StringIO()
-    writer = csv.writer(buf, lineterminator="\r\n")
-    writer.writerow(header or [])
-    writer.writerows(merged)
-    merged_csv = buf.getvalue()
+    # 両月とも空でヘッダーが拾えなかった場合は csv_builder.HEADER で補う。
+    # 空ヘッダー行を返すと下流パーサ (diff/engine・count_csv_rows) が見る列数が
+    # 経路によって変わるため、build_local_diff のらく助側結合と同じ既定に揃える。
+    merged_csv = _rows_to_csv(header or HEADER, merged)
 
     if db is not None and merged:
         from app.services.kaipoke.csv_snapshot import save_snapshot

@@ -9,7 +9,7 @@ docs/plans/kaipoke-reverse-sync-design.md:
 
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -18,7 +18,7 @@ from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
 from app.models import User
-from app.models.correction_sheet import CorrectionSheet
+from app.models.correction_sheet import CorrectionSheet, CorrectionSheetItem
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.course_template import CourseTemplate
 from app.models.kaipoke_job import KaipokeJob
@@ -65,6 +65,9 @@ class StubKaipokeClient:
 
     async def status(self) -> dict[str, Any]:
         return self._dispatch("status", None)
+
+    async def apply(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._dispatch("apply", dict(payload))
 
 
 @pytest.fixture
@@ -391,6 +394,194 @@ async def test_apply_inbound_day_filter(client, db, stub_kaipoke) -> None:
     await db.refresh(seeded["wed"])
     assert seeded["tue"].start_time == time(10, 0)  # 火曜は選択外 → 据え置き。
     assert seeded["wed"].status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_apply_inbound_day_filter_keeps_before_side_only(client, db, stub_kaipoke) -> None:
+    """手動 apply-inbound の日絞り込みは **before 側 (現在地)** だけで判定する。
+
+    選択外の日から選択日へ移ってくる date_change は適用しない (2026-09-11
+    レビュー指摘): 曜日チップで「その日だけを直す」操作なので、選択外の日に
+    居る訪問が動くのは驚き最小の原則に反する。after 側への拡張は smart-inbound
+    (後段に置換パートがあり、落とすと訪問が消える) 専用。
+    """
+    seeded = await _seed_week(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+    # カイポケ現況: 木 9:00 の訪問が水 9:00 へ移動 (火・水は不変)。
+    stub_kaipoke.responses["export"] = {
+        "result": {
+            "csv_content": _kaipoke_csv(
+                _kp_row(date(2026, 7, 7), time(10, 0), time(10, 35)),
+                _kp_row(date(2026, 7, 8), time(9, 0), time(9, 35)),
+                _kp_row(date(2026, 7, 8), time(11, 0), time(11, 35)),
+            )
+        }
+    }
+    res = await client.post(
+        "/api/v1/integrations/diff-inbound",
+        headers=_bearer(admin),
+        json={"month": MONTH, "weekStart": WEEK_START.isoformat()},
+    )
+    assert res.status_code == 202, res.text
+    body = res.json()
+    assert body["summary"].get("date_change", 0) >= 1
+
+    # 選択日は移動**先**の水曜だけ (移動元の木曜は選択外) → 何も動かない。
+    res2 = await client.post(
+        "/api/v1/integrations/apply-inbound",
+        headers=_bearer(admin),
+        json={"sheetId": body["sheetId"], "dryRun": False, "days": ["2026-07-08"]},
+    )
+    assert res2.status_code == 200, res2.text
+    out = res2.json()
+    assert out["updated"] == 0 and out["failed"] == 0
+
+    await db.refresh(seeded["thu"])
+    assert seeded["thu"].visit_date == date(2026, 7, 9)  # 木のまま
+    assert seeded["thu"].start_time == time(9, 0)
+
+
+@pytest.mark.asyncio
+async def test_apply_inbound_day_scope_edit_after_date_is_not_extended(db) -> None:
+    """after 側への拡張は date_change 限定 — edit の after 日付では在圏にしない。
+
+    フラグ (allow_incoming_date_change) を立てても、action が edit なら
+    before 側 (現在地) が選択日でない限り対象外のままであること。
+    """
+    from app.services.kaipoke.inbound import apply_inbound_items
+
+    seeded = await _seed_week(db)
+    week_end = WEEK_START + timedelta(days=6)
+    sheet = CorrectionSheet(
+        target_month=MONTH,
+        status="ready",
+        direction="inbound",
+        week_start=WEEK_START,
+        week_end=week_end,
+    )
+    db.add(sheet)
+    await db.flush()
+    item = CorrectionSheetItem(
+        sheet_id=sheet.id,
+        patient_id=seeded["patient"].id,
+        visit_id=seeded["thu"].id,
+        action="edit",  # ← date_change ではない
+        before={"date": "9", "start_time": "09:00", "user_name": PATIENT_NAME},
+        after={"date": "8", "start_time": "09:00", "user_name": PATIENT_NAME},
+        include=True,
+    )
+    db.add(item)
+    await db.flush()
+
+    summary = await apply_inbound_items(
+        db,
+        items=[item],
+        week_start=WEEK_START,
+        week_end=week_end,
+        days=[date(2026, 7, 8)],  # 水曜だけ = after 側の日
+        dry_run=True,
+        now=datetime(2026, 7, 6, tzinfo=UTC),
+        allow_incoming_date_change=True,
+    )
+    assert summary.results == []  # 対象外 (結果にも数えない)
+    assert (summary.updated, summary.failed, summary.skipped) == (0, 0, 0)
+
+
+# --- 月跨ぎ週の送信月 (2026-09-11 レビュー指摘) --------------------------------
+
+
+def _month_spanning_week_start() -> date:
+    """今日より先にある「月をまたぐ週」の月曜を返す。"""
+    from app.api.v1.integrations import jst_today
+
+    d = jst_today() + timedelta(days=7)
+    d -= timedelta(days=d.weekday())  # その週の月曜
+    for _ in range(60):
+        if (d + timedelta(days=6)).month != d.month:
+            return d
+        d += timedelta(days=7)
+    raise AssertionError("月跨ぎ週が見つかりません")
+
+
+async def _outbound_week_sheet(db, admin, week_start: date, days: list[int]) -> CorrectionSheet:
+    """指定の「日」を持つ delete item だけの outbound 週シートを作る。"""
+    sheet = CorrectionSheet(
+        target_month=f"{week_start.year:04d}-{week_start.month:02d}",
+        status="ready",
+        direction="outbound",
+        week_start=week_start,
+        created_by_user_id=admin.id,
+    )
+    db.add(sheet)
+    await db.flush()
+    db.add_all(
+        [
+            CorrectionSheetItem(
+                sheet_id=sheet.id,
+                action="delete",
+                before={"date": str(d), "start_time": "08:00", "user_name": PATIENT_NAME},
+                after=None,
+                include=True,
+            )
+            for d in days
+        ]
+    )
+    await db.flush()
+    return sheet
+
+
+@pytest.mark.asyncio
+async def test_apply_rejects_month_spanning_selection(client, db, stub_kaipoke) -> None:
+    """月をまたぐ選択は 422 — カイポケの画面は月単位なので分けて送らせる。"""
+    admin = await _make_admin(db)
+    week_start = _month_spanning_week_start()
+    next_month_day = next(
+        (week_start + timedelta(days=i)).day
+        for i in range(7)
+        if (week_start + timedelta(days=i)).month != week_start.month
+    )
+    sheet = await _outbound_week_sheet(db, admin, week_start, [week_start.day, next_month_day])
+
+    stub_kaipoke.responses["apply"] = {"async": True}
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": str(sheet.id), "dryRun": False},
+    )
+    assert res.status_code == 422, res.text
+    assert "月をまたぐ週です" in res.json()["detail"]
+    assert not [c for c in stub_kaipoke.calls if c[0] == "apply"]  # RPA を呼んでいない
+
+
+@pytest.mark.asyncio
+async def test_apply_uses_item_month_not_sheet_target_month(client, db, stub_kaipoke) -> None:
+    """翌月分だけを選ぶと、RPA には **翌月** の月画面を開かせる。
+
+    sheet.target_month は週開始の月なので、そのまま送ると 10/1〜10/4 の修正が
+    9 月の画面に当たって 9/1〜9/4 を書き換えてしまう。
+    """
+    admin = await _make_admin(db)
+    week_start = _month_spanning_week_start()
+    next_days = [
+        week_start + timedelta(days=i)
+        for i in range(7)
+        if (week_start + timedelta(days=i)).month != week_start.month
+    ]
+    sheet = await _outbound_week_sheet(db, admin, week_start, [d.day for d in next_days])
+
+    stub_kaipoke.responses["apply"] = {"async": True}
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": str(sheet.id), "dryRun": False},
+    )
+    assert res.status_code == 202, res.text
+    sent = [c for c in stub_kaipoke.calls if c[0] == "apply"]
+    assert len(sent) == 1
+    expected = f"{next_days[0].year:04d}-{next_days[0].month:02d}"
+    assert sent[0][1]["month"] == expected
+    assert expected != sheet.target_month  # 週開始の月とは違う = 上書きが効いている
 
 
 @pytest.mark.asyncio
@@ -784,3 +975,47 @@ async def test_same_slot_delete_add_pair_revives_cancelled_visit(client, db) -> 
         )
     ).all()
     assert len(active) == 1  # 二重挿入しない
+
+
+@pytest.mark.asyncio
+async def test_apply_excludes_date_change_across_month_boundary(client, db, stub_kaipoke) -> None:
+    """月境界をまたぐ date_change (9/30→10/1) は除外して残りを送る (before 側の月で
+    送ると翌月 1 日の行を当月 1 日に書いてしまう)。"""
+    admin = await _make_admin(db)
+    week_start = _month_spanning_week_start()
+    days = [week_start + timedelta(days=i) for i in range(7)]
+    last_of_month = max(d for d in days if d.month == week_start.month)
+    first_of_next = min(d for d in days if d.month != week_start.month)
+    sheet = await _outbound_week_sheet(db, admin, week_start, [last_of_month.day])
+    db.add(
+        CorrectionSheetItem(
+            sheet_id=sheet.id,
+            action="date_change",
+            before={
+                "date": str(last_of_month.day),
+                "start_time": "08:00",
+                "user_name": PATIENT_NAME,
+                "staff1": "看護 花子",
+            },
+            after={
+                "date": str(first_of_next.day),
+                "start_time": "08:00",
+                "user_name": PATIENT_NAME,
+                "staff1": "看護 花子",
+            },
+            include=True,
+        )
+    )
+    await db.flush()
+
+    stub_kaipoke.responses["apply"] = {"async": True}
+    res = await client.post(
+        "/api/v1/integrations/apply",
+        headers=_bearer(admin),
+        json={"sheetId": str(sheet.id), "dryRun": False},
+    )
+    assert res.status_code == 202, res.text
+    sent = [c for c in stub_kaipoke.calls if c[0] == "apply"]
+    assert len(sent) == 1
+    assert sent[0][1]["month"] == sheet.target_month
+    assert [c["action"] for c in sent[0][1]["correction_data"]] == ["delete"]

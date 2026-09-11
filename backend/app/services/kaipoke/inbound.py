@@ -22,6 +22,14 @@
     **日単位**に止める: 白紙化対象日にその出所の visit が居れば、
     実適用は ReplaceBlockedError (呼び出し側で 422)、プレビューはその日を対象から
     外して ``skipped`` に理由付きで積む。
+  * 日絞り込み (``days``) の在圏ルール (2026-09-11・久須見様の事故の根治):
+    既定は **before 側 (CareFlow の現在地) が対象日なら在圏** だけ。
+    ``allow_incoming_date_change=True`` のときに限り **date_change は after 側
+    (カイポケの移動先) が対象日でも在圏** に広げる。smart-inbound で
+    「置換日 → 打刻日」へ動く item が落ちると、置換パートが移動元の日を白紙化して
+    訪問がそのまま消えるため (移動先は打刻日なので置換は触らない)。
+    手動の ``/integrations/apply-inbound`` (曜日チップ) は置換パートを伴わないので
+    従来どおり before 側だけで判定する = 選んだ日以外の訪問は動かさない。
 """
 
 from __future__ import annotations
@@ -380,10 +388,15 @@ async def apply_inbound_items(
     days: list[date] | None,
     dry_run: bool,
     now: datetime,
+    allow_incoming_date_change: bool = False,
 ) -> InboundApplySummary:
     """inbound CorrectionSheetItem を CareFlow visits へ適用する (同期・ローカル)。
 
     days 指定時はその日付の item だけを対象にする (曜日チップの複数選択)。
+    在圏の既定は **before 側 (CareFlow の現在地) が days に入っていること** —
+    選んだ日以外に居る訪問は動かさない。``allow_incoming_date_change=True``
+    (smart-inbound 専用) のときだけ、**date_change に限り** after 側 (移動先) が
+    days に入っていても在圏に加える (下の ``_in_day_scope`` 参照)。
     dry_run=True では一切 mutate せず、予定される結果だけを返す。
 
     対応 (R-2/R-3):
@@ -400,6 +413,32 @@ async def apply_inbound_items(
     course_idx = await load_week_course_index(db, week_start)
     today = now.date()
     day_set = set(days) if days else None
+
+    def _in_day_scope(item: CorrectionSheetItem, before_date: date) -> bool:
+        """``day_set`` 絞り込みの在圏判定 (2026-09-11 久須見様の事故の根治)。
+
+        before 側 (= CareFlow の現在地) が対象日なら在圏 — これが既定の全部。
+        ``allow_incoming_date_change=True`` (smart-inbound の差分パート) のときだけ
+        **date_change に限り** after 側 (= カイポケの移動先) が対象日でも在圏とする。
+        これを入れないと smart-inbound で「置換日 → 打刻日」へ動く item が黙って
+        落ち、置換パートが移動元の日を白紙化して訪問が消える。
+
+        手動の apply-inbound には広げない (2026-09-11 レビュー指摘): 曜日チップで
+        選んだ日「だけ」を直すつもりの操作で、選択外の日に居る訪問が動くのは
+        驚き最小の原則に反する (置換パートが無いので消える危険も無い)。
+        """
+        if day_set is None:
+            return True
+        if before_date in day_set:
+            return True
+        if not allow_incoming_date_change or item.action != "date_change":
+            return False
+        try:
+            after_day = int(str((item.after or {}).get("date")))
+        except (TypeError, ValueError):
+            return False
+        after_date = day_to_date(after_day, week_start, week_end)
+        return after_date is not None and after_date in day_set
 
     # 同行由来 staff2 のラウンドトリップ汚染防止 (設計 §9 / 一般化 §3-5): CareFlow が
     # 職員名2 としてカイポケへ送った同行スタッフが逆取込で staff2 として返ってきたとき、
@@ -511,7 +550,7 @@ async def apply_inbound_items(
         except (TypeError, ValueError):
             continue
         td = day_to_date(d, week_start, week_end)
-        if td is None or (day_set is not None and td not in day_set):
+        if td is None or not _in_day_scope(it, td):
             continue
         vv = await _resolve_visit(it, td)
         if vv is None or vv.course_id is None:
@@ -571,7 +610,7 @@ async def apply_inbound_items(
         except (TypeError, ValueError):
             continue
         td = day_to_date(d, week_start, week_end)
-        if td is None or (day_set is not None and td not in day_set):
+        if td is None or not _in_day_scope(it, td):
             continue
         mv = await _resolve_visit(it, td)
         if mv is None:
@@ -886,7 +925,7 @@ async def apply_inbound_items(
         if target_date is None:
             _finish("failed", f"日付 {day} が週レンジ外です", None)
             continue
-        if day_set is not None and target_date not in day_set:
+        if not _in_day_scope(item, target_date):
             continue  # 選択外の曜日 — 結果にも数えない (対象外)。
 
         # --- add: カイポケにのみ存在する予定 → visit INSERT (R-3b) -----------

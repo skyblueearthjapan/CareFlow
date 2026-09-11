@@ -1919,6 +1919,56 @@ async def trigger_apply(
             detail=f"選択された修正はすべて送信対象外です（{UNASSIGNED_REASON}）",
         )
 
+    # 月跨ぎ週ガード / 送信月の決定 (2026-09-11 レビュー指摘) -------------------
+    # correction は「日」(1-31) しか持たず、RPA は body["month"] の月画面を開いて
+    # その日で行を探す。``sheet.target_month`` は **週開始の月** なので、
+    # 2026-09-28〜10-04 のような月跨ぎ週では 10/1〜10/4 の修正が 9 月の画面に当たり
+    # 9/1〜9/4 を書き換えてしまう。
+    #   * item の実日付の月が 1 つ → **それ** を正とする (target_month は使わない)
+    #   * 2 つ以上 → 1 回の送信では表現できないので送らせない (月ごとに分けて送信)
+    #   * 全て解決不能 (日が週内で一意に決まらない等) → 従来どおり target_month
+    # 判定は除外ガードを全て通った **最終 selected** = 実際に送る行だけで行う。
+    apply_month = sheet.target_month
+    skipped_month_boundary = 0
+    if sheet.week_start is not None:
+        # 月境界をまたぐ date_change (例 9/30→10/1) は 1 つの月画面では表現できない
+        # (削除は 9 月画面・追加は 10 月画面)。before 側の月で送ると 10/1 の行が
+        # 9/1 に書かれるので、行ごと除外して理由付きで明細に残す (人手で対応)。
+        _kept_m: list = []
+        for it in selected:
+            if it.action == "date_change":
+                _b = resolve_item_date("date_change", it.before, it.after, sheet.week_start)
+                _a = resolve_item_date("add", it.before, it.after, sheet.week_start)
+                if _b is not None and _a is not None and (_b.year, _b.month) != (_a.year, _a.month):
+                    skipped_month_boundary += 1
+                    excluded_items.append((it, "month_boundary"))
+                    continue
+            _kept_m.append(it)
+        selected = _kept_m
+        if not selected:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "選択された修正はすべて月境界をまたぐ日付変更です"
+                    "（カイポケで手動対応してください）"
+                ),
+            )
+        _resolved = {
+            resolve_item_date(it.action, it.before, it.after, sheet.week_start) for it in selected
+        }
+        _months = sorted({f"{d.year:04d}-{d.month:02d}" for d in _resolved if d is not None})
+        if len(_months) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "月をまたぐ週です。カイポケの画面は月単位のため、"
+                    f"先に {_months[0]} 分だけを選択して送信し、"
+                    f"次に {_months[-1]} 分を選択して送信してください"
+                ),
+            )
+        if _months:
+            apply_month = _months[0]
+
     from app.services.kaipoke.local_diff import item_to_kaipoke_correction
 
     job = KaipokeJob(
@@ -1933,6 +1983,7 @@ async def trigger_apply(
             "partial": bool(payload.item_ids),
             "skipped_past": skipped_past,
             "skipped_rpa_unsupported": skipped_rpa_unsupported,
+            "skipped_month_boundary": skipped_month_boundary,
             "skipped_unassigned": skipped_unassigned,
             # apply実績ゲート (逆反映・real_apply_record) の判定キー。
             "week_start": sheet.week_start.isoformat() if sheet.week_start else None,
@@ -1986,7 +2037,9 @@ async def trigger_apply(
 
     body = {
         "correction_data": correction_data,
-        "month": sheet.target_month,
+        # RPA は月画面を開くので item の実日付の月を正とする
+        # (2026-09-11 レビュー指摘・月跨ぎ週ガードを参照)。
+        "month": apply_month,
         "dry_run": payload.dry_run,
         "headed": True,
     }
@@ -2014,6 +2067,7 @@ async def trigger_apply(
         # = 「ガードが効いている」ことを監査ログから追えるようにする。
         "skipped_rpa_unsupported": skipped_rpa_unsupported,
         "skipped_rpa_unsupported_reason": RPA_UNSUPPORTED_REASON,
+        "skipped_month_boundary": skipped_month_boundary,
         # 担当なしで送らなかった件数と理由 (2026-09-03 の事故を追えるように常に返す)。
         "skipped_unassigned": skipped_unassigned,
         "skipped_unassigned_reason": UNASSIGNED_REASON,
@@ -2491,7 +2545,11 @@ async def trigger_apply_inbound(
 
     dry_run=True (既定) は一切書き込まず予定される結果だけ返す。
     実適用はキャンセル (status='cancelled') と時刻/日付変更 (source='manual_week') のみ。
-    days 指定で曜日チップの複数選択 (指定日以外は対象外)。
+    days 指定で曜日チップの複数選択 — 在圏は **before 側 (らく助の現在地) が
+    その日にあること** で判定する。選択外の日に居る訪問は、カイポケ側でその日へ
+    移ってくる date_change であっても動かさない (2026-09-11 レビュー指摘:
+    「選んだ日だけを直す」操作で選択外が動くのは驚き最小の原則に反する。
+    後段の置換が無いので落としても訪問が消えることは無い)。
     """
     from app.services.kaipoke.inbound import apply_inbound_items
 
@@ -4480,6 +4538,74 @@ async def _smart_classify(db, week_start: date) -> tuple[list[date], list[date]]
     )
 
 
+def _smart_held_replace_days(
+    sheet_items: list[Any],
+    *,
+    week_start: date,
+    replace_days: list[date],
+    protected_days: list[date],
+    outcome_by_item: dict[str, str] | None,
+) -> set[date]:
+    """置換パートが白紙化してはいけない日 (= 未適用の跨ぎ date_change の移動元)。
+
+    2026-09-11 レビュー指摘: 未適用/未選択の跨ぎ移動は元日を白紙化すると訪問が消える。
+    差分シートは **週全体** で作られるため、date_change の移動元が置換担当日
+    (打刻なし) に居ることがある。その item が実際に適用されていれば訪問は移動先に
+    居るので元日を白紙化して構わない。しかし
+
+      * 操作者が include を外した (移動を採らない判断)
+      * 移動先が打刻日でも置換日でもない (日曜) / 週外 / 解決不能で結果行が出ない
+      * 適用したが failed / skipped だった
+
+    のいずれかだと訪問は **元日に残ったまま** で、置換が白紙化すると消えてしまう
+    (カイポケ現況では別の日へ動いているので挿入もされない)。そういう日は置換の
+    対象から外す = 「見送る」。
+
+    **例外**: 移動先も置換担当日なら守らない。置換が元日を白紙化して移動先へ
+    作り直す = それだけで完結しており、守ると元日の訪問と移動先への挿入で二重になる。
+
+    ``outcome_by_item`` は差分パートの結果 (item_id → outcome)。プレビュー
+    (差分を実行しない) では None を渡す — その場合は「移動先が打刻日なら適用される
+    見込み」と見なし、実適用と同じ日集合を先に見せる (失敗は先読みできない)。
+    """
+    from app.services.kaipoke.inbound import day_to_date
+
+    replace_set = set(replace_days)
+    protected_set = set(protected_days)
+    week_end = week_start + timedelta(days=6)
+    held: set[date] = set()
+    for it in sheet_items:
+        if getattr(it, "action", None) != "date_change":
+            continue
+        try:
+            before_day = int(str((it.before or {}).get("date")))
+        except (TypeError, ValueError):
+            continue
+        before_date = day_to_date(before_day, week_start, week_end)
+        if before_date is None or before_date not in replace_set:
+            continue
+        try:
+            after_day = int(str((it.after or {}).get("date")))
+        except (TypeError, ValueError):
+            after_date = None
+        else:
+            after_date = day_to_date(after_day, week_start, week_end)
+        if after_date is not None and after_date in replace_set:
+            # 移動元も移動先も置換担当 = 置換パートだけで完結する (元日を白紙化し、
+            # カイポケ現況から移動先へ作り直す)。ここで守ると二重になるので守らない。
+            continue
+        if not it.include:
+            held.add(before_date)  # 操作者が外した = 移動しない → 元日を守る
+            continue
+        if outcome_by_item is not None:
+            if outcome_by_item.get(str(it.id)) != "updated":
+                held.add(before_date)
+            continue
+        if after_date is None or after_date not in protected_set:
+            held.add(before_date)
+    return held
+
+
 @router.post(
     "/smart-inbound-preview",
     response_model=SmartInboundPreviewRead,
@@ -4562,6 +4688,7 @@ async def smart_inbound_preview(
 
     # 差分パート (打刻あり日) — シートは週全体で作り、適用時に日で絞る
     sheet = None
+    sheet_items: list[Any] = []
     diff_summary: dict[str, int] = {}
     if protected_days:
         month = f"{week_start.year:04d}-{week_start.month:02d}"
@@ -4582,6 +4709,26 @@ async def smart_inbound_preview(
             week_end=week_start + timedelta(days=6),
             user_id=user.id,
         )
+        await db.flush()  # items の id/include を確定させてから held 判定に使う
+        sheet_items = list(
+            (
+                await db.scalars(
+                    select(CorrectionSheetItem).where(CorrectionSheetItem.sheet_id == sheet.id)
+                )
+            ).all()
+        )
+
+    # 未適用の跨ぎ date_change の移動元は白紙化しない (2026-09-11 レビュー指摘)。
+    # 実適用と同じ規則で先に間引く = プレビューの wiped と実適用の wiped が一致する。
+    # ※ レスポンス schema (SmartInboundPreviewRead) は変えない (FE 改修が要るため)。
+    #   見送った日は replace.perDay に出ない = 白紙化 0 件として見える。
+    held_days = _smart_held_replace_days(
+        sheet_items,
+        week_start=week_start,
+        replace_days=replace_days,
+        protected_days=protected_days,
+        outcome_by_item=None,
+    )
 
     # 置換パート (打刻なし日) — dry-run で計画のみ
     replace_read = None
@@ -4592,7 +4739,7 @@ async def smart_inbound_preview(
             entries=entries,
             dry_run=True,
             now=now,
-            target_days=set(replace_days),
+            target_days=set(replace_days) - held_days,
         )
         replace_read = _replace_result_read(plan, None)
 
@@ -4709,6 +4856,8 @@ async def smart_inbound_apply(
     # 引くための sheet item。差分パートはブロック内スコープのため外へ持ち出す。
     diff_item_results: list[Any] = []
     diff_items_by_id: dict[str, Any] = {}
+    # held 判定 (下) は **include=False も含めた** シート全体を見る必要がある。
+    diff_sheet_items: list[Any] = []
     if payload.sheet_id is not None and protected_days:
         sheet = await db.scalar(
             select(CorrectionSheet)
@@ -4725,6 +4874,7 @@ async def smart_inbound_apply(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail="sheet already applied"
             )
+        diff_sheet_items = list(sheet.items)
         selected = [it for it in sheet.items if it.include]
         if selected:
             summary = await apply_inbound_items(
@@ -4735,6 +4885,9 @@ async def smart_inbound_apply(
                 days=protected_days,
                 dry_run=payload.dry_run,
                 now=now,
+                # 「置換日 → 打刻日」へ動く date_change を差分パートで拾う
+                # (smart 専用・手動 apply-inbound は従来どおり before 側だけ)。
+                allow_incoming_date_change=True,
             )
             if not payload.dry_run:
                 sheet.status = "applied"
@@ -4763,6 +4916,42 @@ async def smart_inbound_apply(
                 ng_conflicts=_ng_conflicts_read(summary.ng_conflicts),
             )
 
+    # 差分パートの書込を DB へ送り出してから置換パートへ入る (2026-09-11)。
+    # セッションは autoflush=False のため、flush しないと置換の白紙化 SELECT が
+    # 差分パートで動いた visit を DB 上の**移動前の日**で見てしまう:
+    #   * 打刻日 → 置換日 の移動: 移動先の日で拾えず、同じ枠へカイポケ行を INSERT
+    #     → UNIQUE (uq_visits_pds_group_active) 違反 → 409 で取込が丸ごとロールバック
+    #   * 置換日 → 打刻日 の移動: 移動元の日で拾ってしまい (identity map が返すのは
+    #     移動後のオブジェクト)、動かしたばかりの visit を白紙化で消す
+    # dry_run では差分パートが何も書かないので不要。
+    if not payload.dry_run and diff_result is not None and replace_days:
+        try:
+            await db.flush()
+        except IntegrityError as exc:
+            # 差分パートの書込が UNIQUE 等に触れた場合 (uq_visits_pds_group_active など)。
+            # ここで握らないと置換パートの SELECT 時に同じ例外が出て 500 になる。
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "取り込みの差分反映が既存の予定と衝突しました"
+                    "（同じ利用者・同じ日時の枠が重複）。"
+                    "プレビューを取り直してから再実行してください"
+                ),
+            ) from exc
+
+    # 未適用/未選択の跨ぎ date_change は移動元の日を白紙化しない (2026-09-11
+    # レビュー指摘)。移動が採られなかった訪問は元日に残っているため、置換が
+    # その日を白紙化すると訪問がそのまま消える (カイポケ現況では別の日へ動いて
+    # いるので挿入もされない)。該当日は置換の対象から外して「見送る」。
+    held_days = _smart_held_replace_days(
+        diff_sheet_items,
+        week_start=week_start,
+        replace_days=replace_days,
+        protected_days=protected_days,
+        outcome_by_item={str(r.item_id): r.outcome for r in diff_item_results},
+    )
+
     # 置換パート (打刻なし日)
     replace_read = None
     replace_plan = None  # レポート明細 (日ごとの内訳/対象外/新人単独) の材料
@@ -4774,7 +4963,7 @@ async def smart_inbound_apply(
                 entries=entries,
                 dry_run=payload.dry_run,
                 now=now,
-                target_days=set(replace_days),
+                target_days=set(replace_days) - held_days,
             )
         except ReplaceBlockedError as exc:
             await db.rollback()
@@ -4796,6 +4985,8 @@ async def smart_inbound_apply(
                 "week_start": week_start.isoformat(),
                 "protected_days": [d.isoformat() for d in protected_days],
                 "replace_days": [d.isoformat() for d in replace_days],
+                # 跨ぎ date_change が未適用のため置換を見送った日 (監査用)。
+                "held_days": [d.isoformat() for d in sorted(held_days)],
             },
             status="completed",
             started_at=now,
@@ -4838,6 +5029,13 @@ async def smart_inbound_apply(
         n_skipped = len(replace_read.skipped) if replace_read else 0
         n_trainee = sum(t.count for t in replace_read.trainee_solo) if replace_read else 0
         n_failed = diff_result.failed if diff_result else 0
+        # 置換を見送った日は通知本文にも出す (2026-09-11 レビュー指摘)。
+        _held_note = (
+            "\n日付変更が未適用のため置換を見送った日: "
+            + "/".join(f"{d.month}/{d.day}" for d in sorted(held_days))
+            if held_days
+            else ""
+        )
         if n_skipped or n_trainee or n_failed:
             from app.services.checkin.notify import (
                 _active_admin_manager_users,
@@ -4856,7 +5054,7 @@ async def smart_inbound_apply(
                 ),
                 body=(
                     f"週 {week_start.isoformat()} のハイブリッド取り込みに要確認項目があります。"
-                    "連携画面で内訳を確認してください。"
+                    "連携画面で内訳を確認してください。" + _held_note
                 ),
             )
         await _commit_or_409(db)
