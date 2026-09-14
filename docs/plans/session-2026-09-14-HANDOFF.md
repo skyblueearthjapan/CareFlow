@@ -22,6 +22,20 @@
 - NextAuth 経由: 偽 ID 6 回目で `Location=/login?error=CredentialsSignin&code=rate_limited`（5 回目までは `code=credentials`）。直叩き 12 回の後でも FE 経由の別 ID は通る＝識別子スコープが効いている。
 - S002 実ログイン（FE 経由）→ 302・session に `username=s002 role=staff`。`/login?identifier=S002` は 200。
 
+## 2-b. テスト結果（HEAD 4b9dd28・ローカル）
+- backend 全体: fail 30 件 = 既知ベースライン（`session-2026-09-10-HANDOFF.md` §5: 既知 29 + フレーク 3）の範囲内・**新規退行なし**。内訳は RBAC drift（例 `test_generated_csv_requires_admin` manager が 403 でなく 200）・audit・patients_v2 ほか従来どおり。
+- `tests/test_auth.py` + `tests/test_password_change.py`: 新規 5 件を含め緑。fail は既知 2 件のみ（下記）。
+- frontend: `pnpm tsc --noEmit` 0 エラー・`pnpm lint` 新規警告なし・`pnpm vitest run` 全緑・prettier 適用済み。
+- code-reviewer（Opus）: REQUEST CHANGES（CRITICAL 1/HIGH 2/MEDIUM 3）→ 全件是正 → **APPROVE**。
+
+## 2-c. このセッションのコミット（すべて origin/develop に push 済み）
+| コミット | 内容 |
+|---|---|
+| `fe049e5` | fix(auth): レートリミット 1 バケット問題の根治（BE 二段リミット・FE ヘッダ転送・429/423 文言・`?identifier=` 事前入力・tests 5 件） |
+| `4b9dd28` | fix(auth): IP 上限を 100/15min に（事業所 NAT 対策・レビュー follow-up）← **本番稼働中のコード実体** |
+| `23ffc4d` | docs(handoff): 本ファイル新規作成 |
+| （本コミット） | docs(handoff): テスト結果・コミット一覧を追記 |
+
 ## 3. 残タスク・注意
 - 既知の既存 fail（本変更と無関係）: `test_login_locks_after_5_failed_attempts`（SQLite naive datetime 比較）・`test_admin_create_user_defaults_must_change_password_true`（staff の username 必須化に未追随）。
 - リミッタはインプロセスのメモリストア（uvicorn 単一ワーカーなので正確・デプロイでリセット）。複数ワーカー化するなら Redis ストレージへ。
