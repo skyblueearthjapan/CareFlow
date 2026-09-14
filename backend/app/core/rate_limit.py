@@ -39,9 +39,10 @@ LOGIN_IDENTIFIER_HEADER = "x-login-identifier"
 
 # /auth/login: brute force on one account from one place.
 LOGIN_LIMIT_PER_IDENTIFIER = "5/15minutes"
-# /auth/login: flood / lockout-DoS ceiling per client IP (an office NAT with
-# ~8 staff logging in at once needs comfortably more than 5).
-LOGIN_LIMIT_PER_IP = "30/15minutes"
+# /auth/login: flood valve per client IP. The whole office shares one NAT IP,
+# so this must stay far above "all staff × a few retries"; brute force on an
+# account is already capped by the per-identifier limit + the account lockout.
+LOGIN_LIMIT_PER_IP = "100/15minutes"
 
 
 def client_ip(request: Request) -> str:
