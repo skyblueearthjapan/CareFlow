@@ -1,4 +1,5 @@
 import NextAuth from 'next-auth';
+import { CredentialsSignin } from 'next-auth';
 import type { JWT } from 'next-auth/jwt';
 import Credentials from 'next-auth/providers/credentials';
 import { z } from 'zod';
@@ -34,6 +35,26 @@ const loginResponseSchema = z.object({
   }),
 });
 
+/** Login was shed by the backend rate limiter (HTTP 429). */
+export class LoginThrottled extends CredentialsSignin {
+  override code = 'rate_limited';
+}
+
+/** Account is temporarily locked after repeated wrong passwords (HTTP 423). */
+export class AccountLocked extends CredentialsSignin {
+  override code = 'locked';
+}
+
+/**
+ * Real client IP as asserted by the Cloudflare edge. Only `cf-connecting-ip`
+ * is trusted: Cloudflare overwrites it on every tunnelled request, whereas
+ * `x-forwarded-for` / `x-real-ip` can carry client-supplied values.
+ */
+export function getClientIp(request: Request | undefined): string | null {
+  const cf = request?.headers?.get('cf-connecting-ip')?.trim();
+  return cf || null;
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   session: { strategy: 'jwt' },
   trustHost: true,
@@ -47,18 +68,42 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         identifier: { label: 'Email or Staff ID', type: 'text' },
         password: { label: 'Password', type: 'password' },
       },
-      async authorize(raw) {
+      async authorize(raw, request) {
         const parsed = credentialsSchema.safeParse(raw);
         if (!parsed.success) return null;
         const { identifier, password } = parsed.data;
 
+        // 2026-09-14: the backend rate-limits /auth/login per (client IP,
+        // identifier). This fetch is server-to-server, so without these
+        // headers every user shares the Next.js container's IP and one
+        // 5/15min bucket (monthly-meeting outage). Forward the edge-asserted
+        // client IP (cf-connecting-ip) and the identifier so the backend can
+        // key the limit correctly. The backend rejects a header that does not
+        // match the body identifier.
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'X-Login-Identifier': identifier.trim().toLowerCase(),
+        };
+        const clientIp = getClientIp(request);
+        if (clientIp) headers['CF-Connecting-IP'] = clientIp;
+
+        let res: Response;
         try {
-          const res = await fetch(`${env.BACKEND_API_BASE_URL}/api/v1/auth/login`, {
+          res = await fetch(`${env.BACKEND_API_BASE_URL}/api/v1/auth/login`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({ identifier, password }),
             cache: 'no-store',
           });
+        } catch {
+          return null;
+        }
+        // Surface "not your password" outcomes to the login form via
+        // `code` (signIn({ redirect: false }) returns it) so the user is not
+        // told their password is wrong when they were merely throttled.
+        if (res.status === 429) throw new LoginThrottled();
+        if (res.status === 423) throw new AccountLocked();
+        try {
           if (res.status !== 200) return null;
           const json: unknown = await res.json();
           const payload = loginResponseSchema.safeParse(json);

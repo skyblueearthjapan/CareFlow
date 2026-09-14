@@ -296,3 +296,125 @@ async def test_empty_identifier_returns_422(client) -> None:
         json={"identifier": "", "password": "secret-pass-01"},
     )
     assert res.status_code == 422, res.text
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-14: login limiter is keyed by (client IP, X-Login-Identifier) so that
+# colleagues behind one proxy / NAT do not share a single 5/15min bucket.
+# Isolation between these tests relies on `limiter.reset()` in the `client`
+# fixture (tests/conftest.py).
+# ---------------------------------------------------------------------------
+
+
+def _per_ip_budget() -> int:
+    from app.core.rate_limit import LOGIN_LIMIT_PER_IP
+
+    return int(LOGIN_LIMIT_PER_IP.split("/")[0])
+
+
+@pytest.mark.asyncio
+async def test_login_rate_limit_is_scoped_per_identifier(client, test_user) -> None:
+    # 5 failed attempts for identifier A from one IP exhaust A's window…
+    for _ in range(5):
+        res = await client.post(
+            "/api/v1/auth/login",
+            json={"identifier": "nobody-a@example.com", "password": "WRONG"},
+            headers={"X-Login-Identifier": "nobody-a@example.com"},
+        )
+        assert res.status_code == 401, res.text
+    res = await client.post(
+        "/api/v1/auth/login",
+        json={"identifier": "nobody-a@example.com", "password": "WRONG"},
+        headers={"X-Login-Identifier": "nobody-a@example.com"},
+    )
+    assert res.status_code == 429, res.text
+
+    # …but a colleague logging in from the same IP with another identifier
+    # must still get through (the monthly-meeting failure mode).
+    res = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "admin@example.com", "password": "secret-pass-01"},
+        headers={"X-Login-Identifier": "admin@example.com"},
+    )
+    assert res.status_code == 200, res.text
+
+
+@pytest.mark.asyncio
+async def test_login_rate_limit_uses_cf_connecting_ip(client, test_user) -> None:
+    # Exhaust the window for identifier A as seen from client 10.0.0.1.
+    hdr_a = {"X-Login-Identifier": "nobody@example.com", "CF-Connecting-IP": "10.0.0.1"}
+    for _ in range(5):
+        await client.post(
+            "/api/v1/auth/login",
+            json={"identifier": "nobody@example.com", "password": "WRONG"},
+            headers=hdr_a,
+        )
+    res = await client.post(
+        "/api/v1/auth/login",
+        json={"identifier": "nobody@example.com", "password": "WRONG"},
+        headers=hdr_a,
+    )
+    assert res.status_code == 429, res.text
+
+    # Same identifier from a different edge-asserted client IP is a separate key.
+    res = await client.post(
+        "/api/v1/auth/login",
+        json={"identifier": "nobody@example.com", "password": "WRONG"},
+        headers={"X-Login-Identifier": "nobody@example.com", "CF-Connecting-IP": "10.0.0.2"},
+    )
+    assert res.status_code == 401, res.text
+
+
+@pytest.mark.asyncio
+async def test_login_rate_limit_ignores_client_supplied_xff_first_hop(client, test_user) -> None:
+    # Without CF-Connecting-IP only the rightmost X-Forwarded-For hop (the one
+    # appended by the trusted proxy) counts, so rotating the leftmost value
+    # must NOT mint fresh buckets.
+    last = None
+    for i in range(6):
+        last = await client.post(
+            "/api/v1/auth/login",
+            json={"identifier": "nobody@example.com", "password": "WRONG"},
+            headers={
+                "X-Login-Identifier": "nobody@example.com",
+                "X-Forwarded-For": f"1.2.3.{i}, 203.0.113.9",
+            },
+        )
+    assert last is not None and last.status_code == 429, last.text
+
+
+@pytest.mark.asyncio
+async def test_login_rejects_identifier_header_mismatch(client, test_user) -> None:
+    # A rotating header with a fixed victim in the body must not be accepted:
+    # the header may only narrow the bucket, never widen it.
+    res = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "admin@example.com", "password": "secret-pass-01"},
+        headers={"X-Login-Identifier": "someone-else@example.com"},
+    )
+    assert res.status_code == 400, res.text
+
+    # Case/whitespace differences are normalised before comparison.
+    res = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "admin@example.com", "password": "secret-pass-01"},
+        headers={"X-Login-Identifier": "  Admin@Example.com "},
+    )
+    assert res.status_code == 200, res.text
+
+
+@pytest.mark.asyncio
+async def test_login_per_ip_flood_ceiling_still_applies(client, test_user) -> None:
+    # Rotating the identifier (header and body together) must not bypass the
+    # per-IP ceiling: the request after the budget is shed regardless.
+    budget = _per_ip_budget()
+    last = None
+    for i in range(budget + 1):
+        last = await client.post(
+            "/api/v1/auth/login",
+            json={"identifier": f"user{i}@example.com", "password": "WRONG"},
+            headers={"X-Login-Identifier": f"user{i}@example.com"},
+        )
+        if i < budget:
+            assert last.status_code == 401, (i, last.text)
+    assert last is not None and last.status_code == 429, last.text

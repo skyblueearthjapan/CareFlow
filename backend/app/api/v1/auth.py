@@ -9,7 +9,14 @@ from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import func, or_, select
 
 from app.core.deps import CurrentUser, DbDep
-from app.core.rate_limit import limiter
+from app.core.rate_limit import (
+    LOGIN_LIMIT_PER_IDENTIFIER,
+    LOGIN_LIMIT_PER_IP,
+    client_ip,
+    limiter,
+    login_key,
+    normalized_login_identifier,
+)
 from app.core.security import (
     JWTError,
     create_access_token,
@@ -47,12 +54,17 @@ def _build_token_pair(user: User) -> TokenPair:
 @router.post(
     "/login", response_model=LoginResponse, summary="Login with staff ID or email + password"
 )
-@limiter.limit("5/15minutes")
+@limiter.limit(LOGIN_LIMIT_PER_IDENTIFIER, key_func=login_key)
+@limiter.limit(LOGIN_LIMIT_PER_IP, key_func=client_ip)
 async def login(request: Request, payload: LoginRequest, db: DbDep) -> LoginResponse:
-    # `request` is required by slowapi to extract the client IP for the
-    # per-IP 5/15min ceiling. The 6th attempt within the window returns 429
-    # before we ever touch the DB, which keeps both account-enumeration and
-    # lockout-driven DoS in check (Codex G2 followup).
+    # `request` is required by slowapi to build the rate-limit keys.
+    # Two ceilings (2026-09-14, see app.core.rate_limit):
+    #   * LOGIN_LIMIT_PER_IDENTIFIER per (client IP + X-Login-Identifier) —
+    #     brute force on one account from one place is shed before we touch
+    #     the DB, while colleagues sharing the office NAT / the Next.js proxy
+    #     IP are not counted against each other.
+    #   * LOGIN_LIMIT_PER_IP per client IP — flood / lockout-DoS ceiling.
+    # The next attempt after a key's budget is spent returns 429.
     #
     # P1b: the login identifier may be either a username (staff code, S001…) or
     # an email. During the migration window the schema accepts both `identifier`
@@ -74,6 +86,17 @@ async def login(request: Request, payload: LoginRequest, db: DbDep) -> LoginResp
         else (str(payload.email) if payload.email else "")
     )
     norm = raw.strip().lower()
+
+    # The rate-limit key was derived from X-Login-Identifier before the body
+    # was parsed. Refuse a header that does not match the body so a caller can
+    # only ever narrow their bucket (add the header) — never rotate it to
+    # widen the per-identifier budget against one account.
+    header_ident = normalized_login_identifier(request)
+    if header_ident is not None and header_ident != norm:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-Login-Identifier does not match identifier",
+        )
     user = await db.scalar(
         select(User).where(
             or_(func.lower(User.username) == norm, func.lower(User.email) == norm),

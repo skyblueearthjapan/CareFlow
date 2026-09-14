@@ -6,13 +6,16 @@ import { signIn } from 'next-auth/react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
+import { loginErrorMessage } from '@/lib/login-messages';
 
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get('callbackUrl') ?? '/dashboard';
+  // ログインカードの QR コード (?identifier=S002) からスタッフ ID を事前入力する。
+  const presetIdentifier = searchParams.get('identifier')?.trim() ?? '';
 
-  const [identifier, setIdentifier] = useState('');
+  const [identifier, setIdentifier] = useState(presetIdentifier);
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,7 +32,7 @@ function LoginForm() {
         callbackUrl,
       });
       if (!result || result.error) {
-        setError('メール／スタッフIDまたはパスワードが正しくありません');
+        setError(loginErrorMessage(result?.code));
         return;
       }
       router.replace(result.url ?? callbackUrl);
@@ -90,12 +93,7 @@ export default function LoginPage() {
       <Card className="w-full max-w-sm p-8 pt-6">
         <div className="mb-6 text-center">
           {/* eslint-disable-next-line @next/next/no-img-element -- 静的ブランド画像 */}
-          <img
-            src="/brand/rakusuke-main.png"
-            alt=""
-            className="mx-auto h-32 w-auto"
-            aria-hidden
-          />
+          <img src="/brand/rakusuke-main.png" alt="" className="mx-auto h-32 w-auto" aria-hidden />
           <h1 className="sr-only">らく助 — 訪問看護 楽々スケジュール</h1>
           {/* eslint-disable-next-line @next/next/no-img-element -- 静的ブランド画像 */}
           <img
