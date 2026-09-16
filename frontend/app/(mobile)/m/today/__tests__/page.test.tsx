@@ -64,13 +64,16 @@ vi.mock('@/components/ui/sonner', () => ({
 
 vi.mock('@/lib/queries/me', () => ({
   useMyVisits: vi.fn(() => ({ data: [], isLoading: false, isError: false, error: null })),
+  // 職員イベント / 休み・時間変更 (design 2026-09-16 §3 C-1)。既定は 0 件。
+  useMyStaffEvents: vi.fn(() => ({ data: [], isLoading: false, isError: false, error: null })),
+  useMyOverrides: vi.fn(() => ({ data: [], isLoading: false, isError: false, error: null })),
   todayIso: () => '2026-08-16',
 }));
 
 import { fetcher } from '@/lib/api/fetcher';
 import { toast } from '@/components/ui/sonner';
 import { enqueuePending } from '@/lib/checkin-queue';
-import { useMyVisits, type MyVisit } from '@/lib/queries/me';
+import { useMyOverrides, useMyStaffEvents, useMyVisits, type MyVisit } from '@/lib/queries/me';
 import MobileTodayPage from '../page';
 
 const asMock = (fn: unknown) => fn as unknown as ReturnType<typeof vi.fn>;
@@ -90,6 +93,8 @@ beforeEach(() => {
   // clearAllMocks は implementation を消さないため、訪問ありに差し替えたテストの
   // 影響が後続へ漏れないよう毎回「0 件」へ戻す (既存の防衛パターン)。
   asMock(useMyVisits).mockImplementation(() => NO_VISITS);
+  asMock(useMyStaffEvents).mockImplementation(() => NO_VISITS);
+  asMock(useMyOverrides).mockImplementation(() => NO_VISITS);
   window.localStorage.clear();
 });
 
@@ -129,7 +134,7 @@ describe('今日の訪問 — 未送信の再送', () => {
   it('保留が無ければバナーを出さない', async () => {
     asMock(fetcher).mockResolvedValue({});
     render(<MobileTodayPage />);
-    await waitFor(() => expect(screen.getByText('本日の訪問はありません')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('本日の患者訪問はありません')).toBeInTheDocument());
     expect(screen.queryByTestId('today-pending-banner')).not.toBeInTheDocument();
   });
 });
@@ -165,7 +170,7 @@ async function renderToday() {
 describe('今日の訪問 — QR読取の入口', () => {
   it('訪問が0件でも訪問があってもボタンが出る', async () => {
     const { unmount } = await renderToday();
-    expect(screen.getByText('本日の訪問はありません')).toBeInTheDocument();
+    expect(screen.getByText('本日の患者訪問はありません')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'QRを読み取る' })).toBeInTheDocument();
     unmount();
 
@@ -207,5 +212,111 @@ describe('今日の訪問 — QR読取の入口', () => {
     fireEvent.click(screen.getByText('__scan-other__'));
     expect(routerPush).not.toHaveBeenCalled();
     expect(asMock(toast.error)).toHaveBeenCalledWith('らく助のQRではありません', expect.anything());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 職員イベント / 休み・時間変更の混在表示 (design 2026-09-16 §3 C-3)
+// ---------------------------------------------------------------------------
+function makeEvent(over: Record<string, unknown> & { id: string }) {
+  return {
+    staff_id: 'staff-1',
+    date: '2026-08-16',
+    title: '朝会',
+    start_time: '08:30',
+    end_time: '09:00',
+    type: 'イベント',
+    source: 'manual',
+    blocking: false,
+    cancelled_at: null,
+    ...over,
+  };
+}
+
+function withData(data: unknown[]) {
+  return { data, isLoading: false, isError: false, error: null };
+}
+
+describe('今日の訪問 — 職員イベントの混在', () => {
+  it('訪問カードとイベントチップを開始時刻順に混ぜる (件数は訪問のまま)', async () => {
+    asMock(useMyVisits).mockImplementation(() => withData([makeVisit()])); // 09:00
+    asMock(useMyStaffEvents).mockImplementation(() =>
+      withData([makeEvent({ id: 'ev1', start_time: '08:00', end_time: '08:30' })]),
+    );
+    await renderToday();
+
+    const chip = screen.getByTestId('mobile-event-chip-ev1');
+    expect(chip).toHaveTextContent('朝会');
+    // 08:00 のイベントが 09:00 の訪問より前に並ぶ。
+    expect(chip.compareDocumentPosition(screen.getByText('山田 花子'))).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    // subtitle の件数は訪問件数のまま (イベントは数えない)。
+    expect(screen.getByText('2026-08-16 ・ 1件')).toBeInTheDocument();
+  });
+
+  it('二重登録のイベントは 1 件に畳む (カイポケ優先)', async () => {
+    asMock(useMyStaffEvents).mockImplementation(() =>
+      withData([
+        makeEvent({ id: 'manual-row', source: 'manual' }),
+        makeEvent({ id: 'kaipoke-row', source: 'kaipoke' }),
+      ]),
+    );
+    await renderToday();
+    expect(screen.getByTestId('mobile-event-chip-kaipoke-row')).toBeInTheDocument();
+    expect(screen.queryByTestId('mobile-event-chip-manual-row')).not.toBeInTheDocument();
+  });
+
+  it('cancelled_at のイベントは「今週除外」バッジつきで描く', async () => {
+    asMock(useMyStaffEvents).mockImplementation(() =>
+      withData([makeEvent({ id: 'off', cancelled_at: '2026-08-15T00:00:00Z' })]),
+    );
+    await renderToday();
+    const chip = screen.getByTestId('mobile-event-chip-off');
+    expect(chip).toHaveTextContent('今週除外');
+    expect(chip.querySelector('.line-through')).not.toBeNull();
+  });
+
+  it('休みは見出しの右にバッジを出す', async () => {
+    asMock(useMyOverrides).mockImplementation(() =>
+      withData([{ id: 'o1', date: '2026-08-16', type: '休み' }]),
+    );
+    await renderToday();
+    expect(screen.getByTestId('today-override-badge')).toHaveTextContent('🛌休み');
+  });
+
+  it('訪問 0 件でもイベントがあれば空カードを出さない (2026-09-16 MEDIUM-9)', async () => {
+    asMock(useMyStaffEvents).mockImplementation(() => withData([makeEvent({ id: 'ev-only' })]));
+    await renderToday();
+    expect(screen.getByTestId('mobile-event-chip-ev-only')).toBeInTheDocument();
+    expect(screen.queryByText('本日の患者訪問はありません')).not.toBeInTheDocument();
+  });
+
+  it('時刻が欠けたイベント行が混ざっても訪問と正常なイベントは描かれる', async () => {
+    asMock(useMyVisits).mockImplementation(() => withData([makeVisit()]));
+    asMock(useMyStaffEvents).mockImplementation(() =>
+      withData([
+        // BE / 旧デプロイ由来の壊れた行 (start_time 欠損)。me.ts の safeParse で
+        // 本来は落ちるが、素通りしても画面を道連れにしないことをここで担保する。
+        makeEvent({ id: 'broken', start_time: undefined, title: '壊れた行' }),
+        makeEvent({ id: 'ok', start_time: '08:00', end_time: '08:30' }),
+      ]),
+    );
+    await renderToday();
+    expect(screen.getByText('山田 花子')).toBeInTheDocument();
+    expect(screen.getByTestId('mobile-event-chip-ok')).toHaveTextContent('朝会');
+  });
+
+  it('イベント取得に失敗しても Alert を出さず訪問だけ描く', async () => {
+    asMock(useMyVisits).mockImplementation(() => withData([makeVisit()]));
+    asMock(useMyStaffEvents).mockImplementation(() => ({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error('boom'),
+    }));
+    await renderToday();
+    expect(screen.getByText('山田 花子')).toBeInTheDocument();
+    expect(screen.queryByText('取得に失敗しました')).not.toBeInTheDocument();
   });
 });

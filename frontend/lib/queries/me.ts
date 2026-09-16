@@ -35,7 +35,10 @@ import { useSession } from 'next-auth/react';
 import { ApiError } from '@/lib/api-client';
 import { fetcher } from '@/lib/api/fetcher';
 import { ADHOC_CHECKIN_PATH } from '@/lib/checkin-flush';
+import { buildListUrl, parseWeekEvents } from '@/lib/queries/staff-events';
 import type { StaffRead, StaffShift } from '@/lib/schemas/staff';
+import type { EventRead } from '@/lib/schemas/staff-events';
+import { overrideReadSchema, type OverrideRead } from '@/lib/schemas/staff-overrides';
 
 /** Server-side judgement of the position match (QR checkin Phase 1). */
 export type CheckinMatchStatus = 'match' | 'review' | 'mismatch' | 'no_gps';
@@ -310,6 +313,96 @@ export function useMyShifts(_weekday?: number): UseQueryResult<UseMyShiftsResult
         refreshToken,
       });
       return { staff, shifts: [] };
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 職員イベント / 休み・時間変更 (mobile-staff-schedule-design-2026-09-16.md §3 C-1)
+//
+// PC の「職員スケジュール」タブがそのスタッフの行に出すもの (患者訪問 + 職員
+// イベント + 休み/時間変更) と同じ集合をスマホにも映すための自分専用ラッパ。
+// 帰属の規則は BE 側 (`staff_events.py` / `staff_overrides.py` の
+// `_check_read_access` は staff 本人の自己参照を許可済み) にあり、ここは
+// セッションの staffId を埋めて投げるだけ。
+// ---------------------------------------------------------------------------
+
+/** 取得窓 (inclusive)。BE のクエリ名は `from` / `to`・形式は `YYYY-MM-DD`。 */
+export interface MyRangeParams {
+  from: string;
+  to: string;
+}
+
+/**
+ * GET /api/v1/staff/{staffId}/events?from=&to=
+ *
+ * URL の組み立ては `lib/queries/staff-events.ts` の `buildListUrl` を再利用
+ * (クエリ名 `from` / `to` の単一ソース)。queryKey は訪問と同じ `['me', …]`
+ * 名前空間に置くので、打刻ミューテーションの `invalidateQueries(['me'])` で
+ * 一緒に最新化される。
+ *
+ * 応答は **行単位で検証する** (`parseWeekEvents` = PC 週盤面と同じ規則・同じ
+ * スキーマ)。BE の項目欠落 1 行でスマホの当日画面が丸ごと落ちるのは割に合わない
+ * ので、読めない行だけ warn して捨てる。
+ */
+export function useMyStaffEvents(range: MyRangeParams): UseQueryResult<EventRead[], Error> {
+  const { data: session, status } = useSession();
+  const { accessToken, refreshToken, staffId } = authPair(session);
+
+  return useQuery<EventRead[], Error>({
+    queryKey: [...ME_KEY, 'events', { staffId, from: range.from, to: range.to }],
+    enabled: status === 'authenticated' && !!staffId,
+    queryFn: async () => {
+      if (!staffId) throw new Error('staffId is required');
+      const raw = await fetcher<unknown>(
+        buildListUrl(staffId, { from: range.from, to: range.to }),
+        { accessToken, refreshToken },
+      );
+      return parseWeekEvents(raw, staffId);
+    },
+  });
+}
+
+/**
+ * 休み / 時間変更の寛容パース。`parseWeekEvents` と同じ形 — 配列でない応答は
+ * 空配列、読めない行は warn して捨てる。
+ */
+export function parseMyOverrides(raw: unknown, staffId?: string): OverrideRead[] {
+  if (!Array.isArray(raw)) {
+    console.warn('[me] 休み/時間変更の応答が配列ではありません', { staffId });
+    return [];
+  }
+  const out: OverrideRead[] = [];
+  for (const row of raw) {
+    const parsed = overrideReadSchema.safeParse(row);
+    if (parsed.success) {
+      out.push(parsed.data);
+    } else {
+      console.warn('[me] 読めない休み/時間変更の行を無視しました', {
+        staffId,
+        issues: parsed.error.issues,
+      });
+    }
+  }
+  return out;
+}
+
+/** GET /api/v1/staff/{staffId}/overrides?from=&to= — 自分の休み / 時間変更。 */
+export function useMyOverrides(range: MyRangeParams): UseQueryResult<OverrideRead[], Error> {
+  const { data: session, status } = useSession();
+  const { accessToken, refreshToken, staffId } = authPair(session);
+
+  return useQuery<OverrideRead[], Error>({
+    queryKey: [...ME_KEY, 'overrides', { staffId, from: range.from, to: range.to }],
+    enabled: status === 'authenticated' && !!staffId,
+    queryFn: async () => {
+      if (!staffId) throw new Error('staffId is required');
+      const qs = new URLSearchParams({ from: range.from, to: range.to });
+      const raw = await fetcher<unknown>(`/api/v1/staff/${staffId}/overrides?${qs.toString()}`, {
+        accessToken,
+        refreshToken,
+      });
+      return parseMyOverrides(raw, staffId);
     },
   });
 }

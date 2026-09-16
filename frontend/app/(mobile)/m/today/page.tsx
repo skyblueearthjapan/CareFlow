@@ -9,17 +9,37 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { toast } from '@/components/ui/sonner';
 import { CheckInButton } from '@/components/mobile/CheckInButton';
+import { MobileEventChip, MobileOverrideBadge } from '@/components/mobile/MobileEventChip';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import { MobileVisitCard } from '@/components/mobile/MobileVisitCard';
 import { QrScanner } from '@/components/mobile/QrScanner';
 import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { extractQrToken } from '@/lib/qr-token';
 import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
+import { foldStaffEvents } from '@/lib/schedule/foldStaffEvents';
 import { useCheckinFlush } from '@/lib/queries/checkinFlush';
-import { todayIso, useMyVisits, type MyVisit } from '@/lib/queries/me';
+import {
+  todayIso,
+  useMyOverrides,
+  useMyStaffEvents,
+  useMyVisits,
+  type MyVisit,
+} from '@/lib/queries/me';
+import type { EventRead } from '@/lib/schemas/staff-events';
 
 function isUnvisited(v: MyVisit): boolean {
   return v.status === 'planned' || v.status === '';
+}
+
+/** 今日の 1 行 = 訪問カード or イベントチップ (design §3 C-3)。 */
+type TodayRow =
+  | { kind: 'visit'; at: string; visit: MyVisit }
+  | { kind: 'event'; at: string; event: EventRead };
+
+/** "HH:MM:SS" も "HH:MM" も HH:MM に揃える (時刻欠落の行でも落ちない)。 */
+function sortKey(t: string | null | undefined): string {
+  if (typeof t !== 'string') return '';
+  return t.length >= 5 ? t.slice(0, 5) : t;
 }
 
 export default function MobileTodayPage() {
@@ -39,6 +59,25 @@ export default function MobileTodayPage() {
   const sorted = (visits ?? [])
     .filter((v) => classifyVisitDisplay(v) !== 'hidden')
     .sort((a, b) => a.start_time.localeCompare(b.start_time));
+
+  // 職員イベント / 休み・時間変更も当日分を取る。**補助情報**なので取得に失敗
+  // しても Alert は出さず、訪問だけ静かに描く (design §3 C-3)。
+  const range = { from: today, to: today };
+  const { data: events } = useMyStaffEvents(range);
+  const { data: overrides } = useMyOverrides(range);
+  const todayOverride = (overrides ?? []).find((o) => o.date === today) ?? null;
+
+  // 訪問とイベントを開始時刻順に混ぜる (同時刻なら訪問が先 = 現場の主役)。
+  const rows: TodayRow[] = [
+    ...sorted.map((v) => ({ kind: 'visit' as const, at: sortKey(v.start_time), visit: v })),
+    ...foldStaffEvents(events ?? []).map((e) => ({
+      kind: 'event' as const,
+      at: sortKey(e.start_time),
+      event: e,
+    })),
+  ].sort(
+    (a, b) => a.at.localeCompare(b.at) || (a.kind === b.kind ? 0 : a.kind === 'visit' ? -1 : 1),
+  );
 
   // 圏外で退避した打刻 (訪問詳細の到着/退出・/q の予定外) をここで再送する。
   // 一覧は退避後に必ず戻ってくる場所なので、「電波が戻り次第、自動で送信します」の
@@ -80,7 +119,17 @@ export default function MobileTodayPage() {
   }
 
   return (
-    <MobileSection pose="visit" title="今日の訪問" subtitle={`${today} ・ ${sorted.length}件`}>
+    <MobileSection
+      pose="visit"
+      title="今日の訪問"
+      subtitle={`${today} ・ ${sorted.length}件`}
+      /* 休み / 時間変更は見出しの右へ (design §3 C-3)。 */
+      action={
+        todayOverride ? (
+          <MobileOverrideBadge override={todayOverride} testId="today-override-badge" />
+        ) : undefined
+      }
+    >
       {pendingCount > 0 && (
         <div
           className="flex items-center gap-2 rounded-md bg-warning/10 px-3 py-2 text-xs text-warning"
@@ -92,7 +141,7 @@ export default function MobileTodayPage() {
       )}
 
       {/* 一覧の状態 (読込中/エラー/0件) に関わらず常に出す — 予定に無い訪問こそ
-          「本日の訪問はありません」の画面から入ることが多い。 */}
+          「本日の患者訪問はありません」の画面から入ることが多い。 */}
       <div className="space-y-1.5">
         <CheckInButton tone="outline" onClick={() => setScanning(true)}>
           <QrCode className="h-5 w-5" />
@@ -120,20 +169,31 @@ export default function MobileTodayPage() {
         </Alert>
       )}
 
-      {!isLoading && !isError && sorted.length === 0 && (
+      {/* 空表示は「訪問もイベントも無い」ときだけ (2026-09-16 MEDIUM-9)。
+          訪問 0 件でも研修・会議があれば、その日は働く日 —
+          「本日の訪問はありません」の下にイベントが並ぶのは矛盾した画面。 */}
+      {!isLoading && !isError && rows.length === 0 && (
         <Card className="p-6">
           <RakusukeNote
             pose="joy"
-            title="本日の訪問はありません"
+            title="本日の患者訪問はありません"
             comment="おつかれさまでした！ゆっくり休んでくださいね"
           />
         </Card>
       )}
 
       <div className="space-y-2">
-        {sorted.map((v) => (
-          <MobileVisitCard key={v.id} visit={v} highlight={isUnvisited(v)} />
-        ))}
+        {rows.map((row) =>
+          row.kind === 'event' ? (
+            <MobileEventChip key={`ev-${row.event.id}`} event={row.event} />
+          ) : (
+            <MobileVisitCard
+              key={row.visit.id}
+              visit={row.visit}
+              highlight={isUnvisited(row.visit)}
+            />
+          ),
+        )}
       </div>
     </MobileSection>
   );
