@@ -44,7 +44,7 @@ from sqlalchemy import delete, select
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from app.models.accompaniment import Accompaniment
+from app.models.accompaniment import ACCOMPANIMENT_SOURCE_IMPORT, Accompaniment
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.course_template import CourseTemplate
 from app.models.kaipoke_job import KaipokeJob
@@ -1107,7 +1107,7 @@ async def apply_inbound_items(
                                         accompanying_staff_id=accompaniment_sid2,
                                         target_type="visit",
                                         visit_id=revive.id,
-                                        source="manual",
+                                        source=ACCOMPANIMENT_SOURCE_IMPORT,
                                         kind=resolve_accompaniment_kind(
                                             staff_map[accompaniment_sid2]
                                         ),
@@ -1150,9 +1150,10 @@ async def apply_inbound_items(
                             db, new_visit, [s for s in (sid, sid2) if s is not None]
                         )
                         # 案B②: 新人 staff2 を同行リンク (visit 直リンク) として自動作成。
-                        # flush 後 = new_visit.id が確定してから。source='inbound' 値は
-                        # 追加せず 'manual' を刻む (CHECK 制約 migration を避ける・既定の
-                        # 再展開が上書きしない挙動は 'manual' で正しい)。UNIQUE(staff,
+                        # flush 後 = new_visit.id が確定してから。source は 'import'
+                        # (mig 0084 で CHECK を 3 値へ拡張・2026-09-16)。画面から人が
+                        # 張ったリンクと取込が機械的に張ったリンクを後から区別するため。
+                        # 既定の再展開が上書きしない挙動は 'manual' と同じ。UNIQUE(staff,
                         # visit_id) が冪等を担保 (新設 visit の id は毎回新規のため衝突なし)。
                         if accompaniment_sid2 is not None:
                             db.add(
@@ -1160,7 +1161,7 @@ async def apply_inbound_items(
                                     accompanying_staff_id=accompaniment_sid2,
                                     target_type="visit",
                                     visit_id=new_visit.id,
-                                    source="manual",
+                                    source=ACCOMPANIMENT_SOURCE_IMPORT,
                                     kind=resolve_accompaniment_kind(staff_map[accompaniment_sid2]),
                                     created_by=None,
                                 )
@@ -1445,7 +1446,7 @@ async def apply_inbound_items(
                         db, v, [s for s in (primary, secondary) if s is not None]
                     )
             # 案B②: 新人 staff2 を同行リンク (visit 直リンク) として自動作成 (対象 visit へ)。
-            # source='inbound' 値は追加せず 'manual' を刻む (CHECK 制約 migration を避ける)。
+            # source='import' を刻む (mig 0084・2026-09-16。取込由来を後から追うため)。
             # 同一実行内の item 重複でも二重に張らないよう、作成後は突合集合へ反映して
             # 以降は判定 ① (スキップ) に落ちるようにする。UNIQUE(staff, visit_id) も冪等
             # を担保 (別実行の二重取込は再ロードされた突合集合で判定 ① に落ちる)。
@@ -1465,7 +1466,7 @@ async def apply_inbound_items(
                         accompanying_staff_id=accompaniment_sid2,
                         target_type="visit",
                         visit_id=visit.id,
-                        source="manual",
+                        source=ACCOMPANIMENT_SOURCE_IMPORT,
                         kind=resolve_accompaniment_kind(staff_map[accompaniment_sid2]),
                         created_by=None,
                     )

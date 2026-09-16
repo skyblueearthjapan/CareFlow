@@ -43,6 +43,12 @@ from app.db.base import Base, TimestampMixin
 ACCOMPANIMENT_KIND_TRAINEE = "trainee"
 ACCOMPANIMENT_KIND_SUPPORT = "support"
 
+# source の値 (§5.2 / mig 0084): 'default' = 既定展開由来・'manual' = 画面からの手動追加・
+# 'import' = カイポケ取込 (差分/置換) の自動生成。取込由来を後から追えるように分けてある。
+# 定数にしてあるのは取込側 (kaipoke/inbound.py・replace_inbound.py) から参照する
+# 'import' だけ ('default'/'manual' は生成箇所が 1 つずつしかない)。
+ACCOMPANIMENT_SOURCE_IMPORT = "import"
+
 _KIND_COMMENT = (
     "同行の種別。'trainee' = 新人同行 (staff.is_trainee=true)、"
     "'support' = 一般スタッフの同行。サーバが自動判定する。"
@@ -112,7 +118,10 @@ class Accompaniment(Base, TimestampMixin):
       追加/移動されても自動で同行対象に含まれる (物質化コピーしない)。
     - 個別リンク (``target_type='visit'``) は visit へ直接。
     - ``source='default'`` = 週生成時の既定展開由来、``'manual'`` = 画面からの手動追加
-      (既定の再展開で上書きしない判定に使う。§5.2)。
+      (既定の再展開で上書きしない判定に使う。§5.2)、``'import'`` = カイポケ取込
+      (差分/置換) が職員名2 の新人から自動生成したリンク (mig 0084)。
+      ``'import'`` も ``'manual'`` と同じく「既定の再展開で上書きしない」側。
+      由来が追えるよう値を分けてある (2026-09-16)。
     - ``kind`` = 'trainee' / 'support' (一般化 §2)。1 訪問に複数スタッフの同行を
       認めるため (決定#5)、UNIQUE はスタッフ×対象の単位のままにしてある。
     """
@@ -147,7 +156,7 @@ class Accompaniment(Base, TimestampMixin):
         nullable=False,
         default="manual",
         server_default="manual",
-        comment="'default' (既定展開由来) / 'manual' (手動追加)",
+        comment="'default' (既定展開由来) / 'manual' (手動追加) / 'import' (カイポケ取込由来)",
     )
     kind: Mapped[str] = mapped_column(
         String(8),
@@ -177,7 +186,7 @@ class Accompaniment(Base, TimestampMixin):
             name="ck_acc_visit_presence",
         ),
         CheckConstraint(
-            "source IN ('default', 'manual')",
+            "source IN ('default', 'manual', 'import')",
             name="ck_acc_source",
         ),
         CheckConstraint(

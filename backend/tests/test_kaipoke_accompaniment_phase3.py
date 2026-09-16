@@ -459,7 +459,7 @@ async def test_inbound_edit_trainee_staff2_auto_accompaniment(db) -> None:
     )
     assert link is not None
     assert link.target_type == "visit"
-    assert link.source == "manual"  # 'inbound' 値は追加しない (CHECK 制約 migration 回避)。
+    assert link.source == "import"  # 取込由来 (mig 0084・手動リンクと区別する)。
 
 
 @pytest.mark.asyncio
@@ -599,7 +599,7 @@ async def test_inbound_add_trainee_staff2_auto_accompaniment(db) -> None:
     )
     assert link is not None
     assert link.target_type == "visit"
-    assert link.source == "manual"
+    assert link.source == "import"  # 取込由来 (mig 0084)。
 
 
 @pytest.mark.asyncio

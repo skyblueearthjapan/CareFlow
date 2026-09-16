@@ -46,6 +46,30 @@ describe('traineeAccompanimentsResponseSchema', () => {
   });
 });
 
+describe('source の追随 (取込由来 / 未知値)', () => {
+  const item = (source: unknown) => ({
+    id: UUID,
+    trainee_staff_id: UUID,
+    trainee_staff_name: '髙梨',
+    target_type: 'visit' as const,
+    source,
+    visit: { id: UUID, date: '2026-09-16' },
+  });
+
+  it("カイポケ取込由来の source='import' をパースできる", () => {
+    const parsed = traineeAccompanimentsResponseSchema.parse({ items: [item('import')] });
+    expect(parsed.items[0]!.source).toBe('import');
+  });
+
+  it('未知の source でも配列ごと落とさず manual に倒す (BE 先行デプロイ耐性)', () => {
+    const parsed = traineeAccompanimentsResponseSchema.parse({
+      items: [item('mystery'), item('default'), item(null)],
+    });
+    expect(parsed.items).toHaveLength(3);
+    expect(parsed.items.map((i) => i.source)).toEqual(['manual', 'default', 'manual']);
+  });
+});
+
 describe('parseOverlapDetail', () => {
   it('422 の { detail: { message, overlaps } } を取り出す', () => {
     const detail = parseOverlapDetail({

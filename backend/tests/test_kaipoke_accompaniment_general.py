@@ -281,7 +281,7 @@ async def test_inbound_add_revive_unlinked_trainee_auto_accompaniment(db) -> Non
     )
     assert link is not None
     assert link.target_type == "visit"
-    assert link.source == "manual"
+    assert link.source == "import"  # 取込由来 (mig 0084・手動リンクと区別する)。
     assert link.kind == ACCOMPANIMENT_KIND_TRAINEE  # kind は staff.is_trainee から自動判定。
 
 
@@ -373,6 +373,7 @@ async def test_inbound_edit_unlinked_trainee_still_auto_accompaniment(db) -> Non
     )
     assert link is not None
     assert link.kind == ACCOMPANIMENT_KIND_TRAINEE  # 判定② は新人限定 = 常に trainee。
+    assert link.source == "import"  # 取込由来 (mig 0084)。
 
 
 # --- C. csv_builder — 職員名2/3 の決定的配分 (決定#6) --------------------------
@@ -595,6 +596,7 @@ async def test_replace_unlinked_trainee_auto_accompaniment_kept(db) -> None:
     )
     assert link is not None
     assert link.kind == ACCOMPANIMENT_KIND_TRAINEE
+    assert link.source == "import"  # 置換取込も取込由来 (mig 0084)。
 
 
 # --- E. ラウンドトリップ (CSV 送出 → 逆取込) の閉ループ -----------------------

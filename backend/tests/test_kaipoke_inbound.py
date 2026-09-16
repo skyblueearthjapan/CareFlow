@@ -824,6 +824,161 @@ async def test_add_inserts_visit_with_temp_course(client, db, stub_kaipoke) -> N
 
 
 @pytest.mark.asyncio
+async def test_temp_course_shared_across_items_in_one_run(client, db, stub_kaipoke) -> None:
+    """D-1 調査結果の特性テスト: `ensure_temp_course` は同一 (曜日・拠点・担当) では
+    1 本を再利用する。
+
+    本番 9/15 に盤面へ「臨」が 2 本並んだ件は **拠点違い (稲毛 / 都賀)** による
+    正規動作だった (バグではない)。相乗りの条件が 3 つ揃ったときだけであることを
+    ここで固定し、拠点が違えば 2 本になることは
+    `test_temp_course_split_by_office` が縛る。
+    """
+    seeded = await _seed_week(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+    sato = await _seed_second_staff(db, seeded["office"])
+
+    p2 = Patient(
+        code="PT-INB-TMP",
+        name="鈴木　一郎",
+        status="active",
+        insurance="medical",
+        primary_office_id=seeded["office"].id,
+    )
+    db.add(p2)
+    await db.commit()
+
+    state = _kaipoke_csv(
+        # 火曜: 既存訪問の担当を佐藤へ変更 (edit → 臨時コース新設)。
+        _kp_row(date(2026, 7, 7), time(10, 0), time(10, 35), staff_name="佐藤　次郎"),
+        # 同じ火曜に佐藤の新規訪問 (add → 上で作った臨時コースへ相乗りするはず)。
+        _kp_row(
+            date(2026, 7, 7),
+            time(13, 0),
+            time(13, 35),
+            patient_name="鈴木　一郎",
+            staff_name="佐藤　次郎",
+        ),
+        _kp_row(date(2026, 7, 8), time(11, 0), time(11, 35)),
+        _kp_row(date(2026, 7, 9), time(9, 0), time(9, 35)),
+    )
+    body = await _diff_with_state(client, stub_kaipoke, admin, state)
+    assert body["summary"]["edit"] == 1
+    assert body["summary"]["add"] == 1
+
+    res = await client.post(
+        "/api/v1/integrations/apply-inbound",
+        headers=_bearer(admin),
+        json={"sheetId": body["sheetId"], "dryRun": False},
+    )
+    assert res.status_code == 200, res.text
+    out = res.json()
+    assert out["failed"] == 0, out
+
+    temps = (
+        await db.scalars(
+            select(Course).where(
+                Course.code.like("臨%"),
+                Course.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(temps) == 1, [c.code for c in temps]
+    assert temps[0].code == "臨"
+    assert temps[0].assigned_staff_id == sato.id
+    assert temps[0].weekday == 1  # 火曜
+
+    await db.refresh(seeded["tue"])
+    added = await db.scalar(
+        select(Visit).where(Visit.patient_id == p2.id, Visit.visit_date == date(2026, 7, 7))
+    )
+    assert added is not None
+    assert seeded["tue"].course_id == temps[0].id
+    assert added.course_id == temps[0].id
+
+
+@pytest.mark.asyncio
+async def test_temp_course_split_by_office(client, db, stub_kaipoke) -> None:
+    """特性テスト: 臨時コースは **拠点ごとに 1 本** 立つ (拠点が違えば相乗りしない)。
+
+    本番 2026-09-15 に盤面へ「臨」が 2 本並んだのは、同一職員・同一曜日でも
+    患者の主担当拠点が稲毛 / 都賀で違ったためであり、正規動作である (バグではない)。
+    `ensure_temp_course` の相乗り条件と `codes_in_use` はどちらも (曜日, 拠点) 単位の
+    ため、2 本目は「臨2」ではなく拠点ごとに独立した「臨」になる。ここを固定する。
+    相乗りする側 (拠点も同じ場合) は `test_temp_course_shared_across_items_in_one_run`。
+    """
+    seeded = await _seed_week(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+    sato = await _seed_second_staff(db, seeded["office"])
+
+    office2 = Office(name="都賀", code="TSUGA")
+    db.add(office2)
+    await db.flush()
+    p2 = Patient(
+        code="PT-INB-TMP2",
+        name="鈴木　一郎",
+        status="active",
+        insurance="medical",
+        primary_office_id=office2.id,  # 稲毛ではなく都賀の患者。
+    )
+    db.add(p2)
+    await db.commit()
+    await db.refresh(office2)
+
+    state = _kaipoke_csv(
+        # 火曜: 稲毛の患者の担当を佐藤へ変更 (edit → 稲毛に臨時コース新設)。
+        _kp_row(date(2026, 7, 7), time(10, 0), time(10, 35), staff_name="佐藤　次郎"),
+        # 同じ火曜・同じ佐藤だが患者は都賀 (add → 都賀に別の臨時コースが立つ)。
+        _kp_row(
+            date(2026, 7, 7),
+            time(13, 0),
+            time(13, 35),
+            patient_name="鈴木　一郎",
+            staff_name="佐藤　次郎",
+        ),
+        _kp_row(date(2026, 7, 8), time(11, 0), time(11, 35)),
+        _kp_row(date(2026, 7, 9), time(9, 0), time(9, 35)),
+    )
+    body = await _diff_with_state(client, stub_kaipoke, admin, state)
+    assert body["summary"]["edit"] == 1
+    assert body["summary"]["add"] == 1
+
+    res = await client.post(
+        "/api/v1/integrations/apply-inbound",
+        headers=_bearer(admin),
+        json={"sheetId": body["sheetId"], "dryRun": False},
+    )
+    assert res.status_code == 200, res.text
+    out = res.json()
+    assert out["failed"] == 0, out
+
+    temps = (
+        await db.scalars(
+            select(Course).where(
+                Course.code.like("臨%"),
+                Course.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(temps) == 2, [(c.code, str(c.office_id)) for c in temps]
+    # 拠点ごとに codes_in_use が別なので「臨2」にはならず、両方「臨」。
+    assert sorted(c.code for c in temps) == ["臨", "臨"]
+    assert {c.office_id for c in temps} == {seeded["office"].id, office2.id}
+    assert {c.weekday for c in temps} == {1}  # どちらも火曜
+    assert {c.assigned_staff_id for c in temps} == {sato.id}
+
+    by_office = {c.office_id: c for c in temps}
+    await db.refresh(seeded["tue"])
+    added = await db.scalar(
+        select(Visit).where(Visit.patient_id == p2.id, Visit.visit_date == date(2026, 7, 7))
+    )
+    assert added is not None
+    assert seeded["tue"].course_id == by_office[seeded["office"].id].id
+    assert added.course_id == by_office[office2.id].id
+
+
+@pytest.mark.asyncio
 async def test_add_with_unresolved_staff_defaults_off(client, db, stub_kaipoke) -> None:
     """担当が名寄せできない add は既定OFF (取り込み対象外) のまま可視化。"""
     await _seed_week(db)

@@ -11,7 +11,9 @@
  *     (種別は BE が自動判定・FE からは送らない)。
  *   - 紐付けは週単位。target_type='course' (日単位コースインスタンス全体) or
  *     'visit' (患者個別) の 2 種を同一週で混在できる。
- *   - source='default' = 毎週の既定 (テンプレ層) 由来、'manual' = 画面からの手動追加。
+ *   - source='default' = 毎週の既定 (テンプレ層) 由来、'manual' = 画面からの手動追加、
+ *     'import' = カイポケ取込 (職員2名の行) が作った同行リンク。
+ *     BE が将来さらに値を増やしても一覧が全滅しないよう、未知値は 'manual' に倒す。
  *
  * 互換: リクエスト/レスポンスのフィールド名は `trainee_staff_id` /
  * `trainee_staff_name` のまま (BE 契約が現行維持)。一覧の各行には `kind` と
@@ -28,7 +30,7 @@ import { WEEKDAY_LABELS } from '@/lib/schemas/staff';
 export const TRAINEE_ACCOMPANIMENT_TARGET_TYPES = ['course', 'visit'] as const;
 export type TraineeAccompanimentTargetType = (typeof TRAINEE_ACCOMPANIMENT_TARGET_TYPES)[number];
 
-export const TRAINEE_ACCOMPANIMENT_SOURCES = ['default', 'manual'] as const;
+export const TRAINEE_ACCOMPANIMENT_SOURCES = ['default', 'manual', 'import'] as const;
 export type TraineeAccompanimentSource = (typeof TRAINEE_ACCOMPANIMENT_SOURCES)[number];
 
 /** 同行の種別 (BE が staff.is_trainee から自動判定・FE は表示のみ)。 */
@@ -67,7 +69,8 @@ export const traineeAccompanimentItemSchema = z.object({
   /** 一般化後の種別。旧デプロイでは undefined → 'trainee' 相当として扱う。 */
   kind: z.enum(ACCOMPANIMENT_KINDS).nullable().optional(),
   target_type: z.enum(TRAINEE_ACCOMPANIMENT_TARGET_TYPES),
-  source: z.enum(TRAINEE_ACCOMPANIMENT_SOURCES),
+  /** 未知の source (BE 先行デプロイ) でも配列ごと落とさず 'manual' に倒す。 */
+  source: z.enum(TRAINEE_ACCOMPANIMENT_SOURCES).catch('manual'),
   course: traineeAccompanimentCourseSchema.nullable().optional(),
   visit: traineeAccompanimentVisitSchema.nullable().optional(),
 });

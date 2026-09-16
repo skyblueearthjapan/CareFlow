@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from app.models.accompaniment import Accompaniment
+from app.models.accompaniment import ACCOMPANIMENT_SOURCE_IMPORT, Accompaniment
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.course_template import CourseTemplate
 from app.models.patient import Patient
@@ -630,12 +630,14 @@ async def replace_week_from_kaipoke(
                 await db.flush()
                 await _replace_assignments(db, new_visit, [s for s in (sid, sid2) if s is not None])
                 if accompaniment_sid2 is not None:
+                    # source='import' = 取込由来 (mig 0084・2026-09-16)。画面から人が
+                    # 張ったリンク ('manual') と区別できるようにする。
                     db.add(
                         Accompaniment(
                             accompanying_staff_id=accompaniment_sid2,
                             target_type="visit",
                             visit_id=new_visit.id,
-                            source="manual",
+                            source=ACCOMPANIMENT_SOURCE_IMPORT,
                             kind=resolve_accompaniment_kind(staff_map[accompaniment_sid2]),
                             created_by=None,
                         )
