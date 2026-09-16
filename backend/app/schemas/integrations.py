@@ -532,10 +532,11 @@ class EventsInboundChange(BaseModel):
 
     apply は upsert 意味論 (add=既存なら update / update=消えていれば add /
     delete=消えていれば skip) のため、プレビュー後にカイポケ側が動いても安全。
+    absorb = 同内容の手入力 (manual) / 固定展開 (fixed) 行を引き継ぐ (行は増えない)。
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
-    action: Literal["add", "update", "delete"]
+    action: Literal["add", "update", "absorb", "delete"]
     external_id: str = Field(alias="externalId", max_length=40)
     staff_id: UUID = Field(alias="staffId")
     staff_name: str = Field(default="", alias="staffName")
@@ -582,6 +583,8 @@ class EventsInboundPreviewRead(BaseModel):
     adds: int = 0
     updates: int = 0
     deletes: int = 0
+    # 手入力/固定展開の同内容行を引き継ぐ件数 (新規行は作らない・2026-09-16)
+    absorbs: int = 0
     changes: list[EventsInboundChange] = Field(default_factory=list)
     unmatched: list[EventsInboundUnmatchedRead] = Field(default_factory=list)
     # 訪問との時間重なり (取り込みは行う・隠さず警告 = 案A)
@@ -671,7 +674,7 @@ class EventsInboundApplyItemRead(BaseModel):
     staff_name: str = Field(alias="staffName")
     target_date: str = Field(alias="date")
     title: str = ""
-    outcome: Literal["added", "updated", "deleted", "skipped", "failed"]
+    outcome: Literal["added", "updated", "absorbed", "deleted", "skipped", "failed"]
     detail: str = ""
 
 
@@ -681,6 +684,7 @@ class EventsInboundApplyResult(BaseModel):
     dry_run: bool = Field(alias="dryRun")
     added: int = 0
     updated: int = 0
+    absorbed: int = 0
     deleted: int = 0
     skipped: int = 0
     failed: int = 0

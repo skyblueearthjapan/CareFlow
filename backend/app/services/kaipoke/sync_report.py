@@ -70,6 +70,8 @@ ACTION_LABELS = {
     "date_change": "日付変更",
     "cancel": "取消",
     "update": "更新",
+    # イベント取込: 手入力の同じ予定を引き継いだ行 (新規行は作っていない)
+    "absorb": "引き継ぎ",
 }
 
 OUTCOME_META = {

@@ -21,10 +21,7 @@ import {
 } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/sonner';
 import { EventVisitConflictNotice } from './EventVisitConflictNotice';
-import {
-  useApplyEventsInbound,
-  useEventsInboundPreview,
-} from '@/lib/queries/integrations';
+import { useApplyEventsInbound, useEventsInboundPreview } from '@/lib/queries/integrations';
 import type { EventsInboundPreview } from '@/lib/schemas/integration';
 
 const WEEKDAYS_JP = ['日', '月', '火', '水', '木', '金', '土'] as const;
@@ -37,6 +34,8 @@ function fmtJp(iso: string): string {
 const ACTION_META: Record<string, { label: string; cls: string }> = {
   add: { label: '追加', cls: 'bg-info-bg text-info' },
   update: { label: '変更', cls: 'bg-warning-bg text-warning-strong' },
+  // 同内容の手入力イベントを引き継ぐ (新しい行は作らない・2026-09-16)
+  absorb: { label: '引き継ぎ', cls: 'bg-bg-muted text-text-secondary' },
   delete: { label: '削除', cls: 'bg-error-bg text-error' },
 };
 
@@ -84,6 +83,7 @@ export function ImportEventsFromKaipokeDialog({
       setApplied(true);
       toast.success(
         `イベントを取り込みました — 追加 ${res.added} / 変更 ${res.updated} / 削除 ${res.deleted}` +
+          (res.absorbed > 0 ? ` / 引き継ぎ ${res.absorbed}` : '') +
           (res.failed > 0 ? ` / 失敗 ${res.failed}` : ''),
       );
     } catch (e) {
@@ -144,10 +144,11 @@ export function ImportEventsFromKaipokeDialog({
                 {plan.changes.map((c) => {
                   const meta = ACTION_META[c.action] ?? ACTION_META.add!;
                   return (
-                    <li key={`${c.action}-${c.externalId}`} className="flex min-w-0 items-center gap-2 text-xs">
-                      <span
-                        className={`shrink-0 rounded px-1.5 py-0.5 font-medium ${meta.cls}`}
-                      >
+                    <li
+                      key={`${c.action}-${c.externalId}`}
+                      className="flex min-w-0 items-center gap-2 text-xs"
+                    >
+                      <span className={`shrink-0 rounded px-1.5 py-0.5 font-medium ${meta.cls}`}>
                         {meta.label}
                       </span>
                       <span className="tnum text-text-muted">

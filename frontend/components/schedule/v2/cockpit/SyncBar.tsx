@@ -718,7 +718,10 @@ export function SyncBar({
               : 'らく助がカイポケに入力しています';
 
   // ─── ストリップの状態バッジ・件数 ───
-  const inCount = rec.diffs.length;
+  // absorb (引き継ぎ) は盤面の見た目が変わらないためゴースト行にしないが、取り込む
+  // 対象ではあるので件数には載せる (載せないと ⇩ が無効のままになる)。
+  const absorbOnlyCount = rec.absorbOnlyCount;
+  const inCount = rec.diffs.length + absorbOnlyCount;
   const outCount = sendableRows.length;
   const needsCheckCount =
     serviceMismatches.length +
@@ -945,15 +948,23 @@ export function SyncBar({
             </div>
           ) : null}
 
-          {running && rec.diffs.length === 0 ? (
+          {/* 引き継ぎ (absorb) は行にしない = 盤面の見た目が変わらないため。
+              ただし「何も出ていないのに件数がある」と見えないよう 1 行で伝える。 */}
+          {absorbOnlyCount > 0 ? (
+            <p className="mt-2 text-[13px] text-text-secondary" data-testid="sync-in-absorb-note">
+              引き継ぎ {absorbOnlyCount} 件（盤面の見た目は変わりません）
+            </p>
+          ) : null}
+
+          {running && inCount === 0 ? (
             workingBlock
-          ) : rec.diffs.length === 0 ? (
+          ) : inCount === 0 ? (
             <p className="mt-2 text-[13px] text-text-muted" data-testid="sync-in-empty">
               {rec.phase === 'ready'
                 ? 'カイポケ側で変わっている予定はありません。'
                 : '🔄 同期確認を実行すると、カイポケ側の変更がここに並びます。'}
             </p>
-          ) : (
+          ) : rec.diffs.length === 0 ? null : (
             <ul className="mt-2 space-y-1.5">
               {rec.diffs.map((d) => {
                 const act = d.marker.action;
@@ -1025,14 +1036,14 @@ export function SyncBar({
               size="sm"
               variant={armedKey === '__in_all__' ? 'default' : 'outline'}
               className="h-8 px-3 text-[13px]"
-              disabled={actionsDisabled || rec.diffs.length === 0}
+              disabled={actionsDisabled || inCount === 0}
               data-testid="sync-in-apply-all"
               title="差分をすべてらく助へ取り込む（カイポケが正）"
               onClick={() => arm('__in_all__', () => void rec.applyAllDiffs())}
             >
               {armedKey === '__in_all__'
-                ? `${rec.diffs.length}件すべて取り込む？もう一度押す`
-                : `⇩ ${rec.diffs.length}件すべて取り込む`}
+                ? `${inCount}件すべて取り込む？もう一度押す`
+                : `⇩ ${inCount}件すべて取り込む`}
             </Button>
           </div>
         </div>

@@ -30,6 +30,8 @@ import { type InboundVm, fmtDayLabel, fmtRelativeWeek, fmtWeekLabel } from './us
 const EVENT_ACTION_META: Record<string, { label: string; cls: string }> = {
   add: { label: '追加', cls: 'bg-info-bg text-info' },
   update: { label: '変更', cls: 'bg-warning-bg text-warning-strong' },
+  // 同内容の手入力イベントを引き継ぐ (新しい行は作らない = 二重表示にならない)
+  absorb: { label: '引き継ぎ', cls: 'bg-bg-muted text-text-secondary' },
   delete: { label: '削除', cls: 'bg-error-bg text-error' },
 };
 
@@ -416,6 +418,7 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                   イベント:{' '}
                   <span className="font-medium text-text-primary">
                     追加 {eventsPlan.adds} / 変更 {eventsPlan.updates} / 削除 {eventsPlan.deletes}
+                    {eventsPlan.absorbs > 0 ? ` / 引き継ぎ ${eventsPlan.absorbs}` : ''}
                     （週全体）
                   </span>
                 </span>
@@ -640,6 +643,16 @@ function EventsPlanSection({ plan }: { plan: EventsInboundPreview }) {
         <SummaryChip label="追加" value={plan.adds} tone="success" />
         <SummaryChip label="変更" value={plan.updates} tone="warning" />
         <SummaryChip label="削除" value={plan.deletes} tone="error" />
+        {/* 引き継ぎ = 手入力済みの同じ予定をカイポケ管理へ移す (行は増えない)。
+            二重表示 (手入力 + 取込) の根治・2026-09-16 */}
+        {plan.absorbs > 0 && (
+          <SummaryChip
+            label="引き継ぎ"
+            value={plan.absorbs}
+            tone="muted"
+            testId="events-summary-absorbs"
+          />
+        )}
         {plan.memoCount > 0 && (
           <span className="inline-flex items-center gap-1 rounded bg-bg-muted px-2 py-1 text-xs text-text-secondary">
             📝 メモ <span className="font-mono font-bold tabular-nums">{plan.memoCount}</span>
@@ -719,7 +732,7 @@ function SummaryChip({
 }: {
   label: string;
   value: number;
-  tone: 'success' | 'warning' | 'error';
+  tone: 'success' | 'warning' | 'error' | 'muted';
   testId?: string;
 }) {
   const cls =
@@ -727,7 +740,9 @@ function SummaryChip({
       ? 'bg-success-bg text-success'
       : tone === 'error'
         ? 'bg-error-bg text-error'
-        : 'bg-warning-bg text-warning-strong';
+        : tone === 'muted'
+          ? 'bg-bg-muted text-text-secondary'
+          : 'bg-warning-bg text-warning-strong';
   return (
     <span
       className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs ${cls}`}

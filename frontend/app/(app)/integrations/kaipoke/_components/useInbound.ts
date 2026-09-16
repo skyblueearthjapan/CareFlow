@@ -303,6 +303,7 @@ export function useInbound({
         });
         parts.push(
           `イベント: 追加 ${res.added} / 更新 ${res.updated} / 削除 ${res.deleted}` +
+            (res.absorbed > 0 ? ` / 引き継ぎ ${res.absorbed}` : '') +
             (res.failed > 0 ? ` / 失敗 ${res.failed}` : ''),
         );
       } catch (e) {

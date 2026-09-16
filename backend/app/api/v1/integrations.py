@@ -3523,6 +3523,7 @@ def _events_plan_to_read(plan, conflicts=None) -> EventsInboundPreviewRead:
     adds = sum(1 for c in plan.changes if c.action == "add")
     updates = sum(1 for c in plan.changes if c.action == "update")
     deletes = sum(1 for c in plan.changes if c.action == "delete")
+    absorbs = sum(1 for c in plan.changes if c.action == "absorb")
     return EventsInboundPreviewRead(
         week_start=plan.week_start,
         week_end=plan.week_end,
@@ -3533,6 +3534,7 @@ def _events_plan_to_read(plan, conflicts=None) -> EventsInboundPreviewRead:
         adds=adds,
         updates=updates,
         deletes=deletes,
+        absorbs=absorbs,
         changes=[
             EventsInboundChange(
                 action=c.action,
@@ -3572,11 +3574,11 @@ def _conflict_to_read(c) -> EventsInboundConflictRead:
 
 
 def _plan_conflict_items(plan):
-    """衝突判定の入力 = add/update のイベント (メモ系 start==end は除外)。"""
+    """衝突判定の入力 = add/update/absorb のイベント (メモ系 start==end は除外)。"""
     return [
         (c.staff_id, c.date, c.start, c.end, c.title)
         for c in plan.changes
-        if c.action in ("add", "update") and c.start != c.end
+        if c.action in ("add", "update", "absorb") and c.start != c.end
     ]
 
 
@@ -3587,6 +3589,7 @@ def _events_result_summary(preview: EventsInboundPreviewRead, plan) -> dict[str,
         "adds": preview.adds,
         "updates": preview.updates,
         "deletes": preview.deletes,
+        "absorbs": preview.absorbs,
         "unmatched": sum(plan.unmatched.values()),
         "sunday_skipped": preview.sunday_skipped,
     }
@@ -4024,7 +4027,7 @@ async def events_inbound_apply(
     conflict_items = [
         (c.staff_id, c.target_date, _t(c.start), _t(c.end), c.title)
         for c in payload.changes
-        if c.action in ("add", "update") and c.start != c.end
+        if c.action in ("add", "update", "absorb") and c.start != c.end
     ]
     conflicts = await find_event_visit_conflicts(db, payload.week_start, conflict_items)
 
@@ -4033,6 +4036,7 @@ async def events_inbound_apply(
         dry_run=payload.dry_run,
         added=summary.added,
         updated=summary.updated,
+        absorbed=summary.absorbed,
         deleted=summary.deleted,
         skipped=summary.skipped,
         failed=summary.failed,

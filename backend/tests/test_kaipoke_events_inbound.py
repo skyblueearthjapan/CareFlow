@@ -893,3 +893,251 @@ def test_events_covered_dates_parses_week_dates() -> None:
     assert _events_covered_dates({"week_dates": []}) is None
     got = _events_covered_dates({"week_dates": ["2026-09-01", "bad", "2026-09-02"]})
     assert got == {date(2026, 9, 1), date(2026, 9, 2)}
+
+
+# --- 7. 吸収 (absorb) — 手入力の同じ予定を引き継ぐ (2026-09-16) ---------------
+# 8/24 に UI 入力した「朝会」と 9/11 取込の「朝会」がほぼ全職員で二重に並んだ
+# 本番事象の根治。突合キー = 同一スタッフ × 同一開始日時 × 正規化タイトル。
+
+# _default_tasks の「ケア会議」と同じ枠 (火 09:30〜10:30)
+CARE_MEETING_DAY = date(2026, 7, 21)
+CARE_MEETING_KEY = f"695430472:4465191:{CARE_MEETING_DAY.isoformat()}"
+
+
+async def _seed_local_event(
+    db,
+    staff_id,
+    *,
+    title: str,
+    start_h: int = 9,
+    start_m: int = 30,
+    end_h: int = 10,
+    end_m: int = 30,
+    source: str = "manual",
+    cancelled: bool = False,
+    event_type: str = "event",
+    external_id: str | None = None,
+) -> StaffEvent:
+    """取込が管理しない行 (手入力 manual / 固定展開 fixed) を 1 件置く。"""
+    from datetime import datetime
+
+    row = StaffEvent(
+        staff_id=staff_id,
+        event_type=event_type,
+        external_id=external_id,
+        starts_at=datetime(2026, 7, 21, start_h, start_m),
+        ends_at=datetime(2026, 7, 21, end_h, end_m),
+        title=title,
+        source=source,
+        cancelled_at=datetime(2026, 7, 20, 8, 0) if cancelled else None,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+async def _all_events(db) -> list[StaffEvent]:
+    rows = await db.scalars(select(StaffEvent).order_by(StaffEvent.starts_at))
+    return list(rows.all())
+
+
+@pytest.mark.asyncio
+async def test_absorb_manual_event_keeps_single_row(client, db, stub_kaipoke) -> None:
+    """同内容の手入力行があるとき: 行を増やさず source/external_id を引き継ぐ。
+
+    タイトルは全角スペース入りでも一致する (NFKC + 空白全除去の正規化)。
+    """
+    seeded = await _seed_staff(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+    manual = await _seed_local_event(db, seeded["b"].id, title="ケア　会議：青栁あい様")
+
+    stub_kaipoke.tasks = _default_tasks()
+    body = await _preview(client, admin)
+    assert body["adds"] == 2
+    assert body["absorbs"] == 1
+    assert body["updates"] == 0
+    assert body["deletes"] == 0  # 手入力行は delete 候補にならない
+    absorbed = next(c for c in body["changes"] if c["action"] == "absorb")
+    assert absorbed["externalId"] == CARE_MEETING_KEY
+    assert absorbed["beforeTitle"] == "ケア　会議：青栁あい様"
+
+    result = await _apply(client, admin, body["changes"], dry_run=False)
+    assert result["absorbed"] == 1
+    assert result["added"] == 2
+    assert [r["outcome"] for r in result["results"] if r["action"] == "absorb"] == ["absorbed"]
+
+    # 行は増えていない (手入力 1 + 新規 2 = 3)
+    assert len(await _all_events(db)) == 3
+    await db.refresh(manual)
+    assert manual.source == "kaipoke"
+    assert manual.external_id == CARE_MEETING_KEY
+    assert manual.title == "ケア会議：青栁あい様"  # カイポケ表記で上書き (収束のため)
+    assert manual.event_type == "event"
+
+    # 収束: 2 回目のプレビューで差分ゼロ
+    body2 = await _preview(client, admin)
+    assert (body2["adds"], body2["updates"], body2["deletes"], body2["absorbs"]) == (0, 0, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_absorb_skipped_when_title_differs(client, db, stub_kaipoke) -> None:
+    """同じ時刻でもタイトルが違えば別の予定 — 吸収せず従来どおり add。"""
+    seeded = await _seed_staff(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+    other = await _seed_local_event(db, seeded["b"].id, title="別件の打合せ")
+
+    stub_kaipoke.tasks = _default_tasks()
+    body = await _preview(client, admin)
+    assert body["adds"] == 3
+    assert body["absorbs"] == 0
+
+    result = await _apply(client, admin, body["changes"], dry_run=False)
+    assert result["added"] == 3
+    assert result["absorbed"] == 0
+    await db.refresh(other)
+    assert other.source == "manual"
+    assert other.external_id is None
+    assert len(await _all_events(db)) == 4
+
+
+@pytest.mark.asyncio
+async def test_absorb_preserves_cancelled_at(client, db, stub_kaipoke) -> None:
+    """「今週だけ外す」の取消印は吸収しても残す (行を消さないのと同じ理由)。"""
+    seeded = await _seed_staff(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+    manual = await _seed_local_event(
+        db, seeded["b"].id, title="ケア会議：青栁あい様", cancelled=True
+    )
+    before_cancelled = manual.cancelled_at
+
+    stub_kaipoke.tasks = _default_tasks()
+    body = await _preview(client, admin)
+    assert body["absorbs"] == 1
+    await _apply(client, admin, body["changes"], dry_run=False)
+
+    await db.refresh(manual)
+    assert manual.source == "kaipoke"
+    assert manual.cancelled_at is not None
+    assert manual.cancelled_at.replace(tzinfo=None) == before_cancelled.replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_fixed_row_is_not_an_absorb_candidate(db) -> None:
+    """固定展開 (fixed) 行は吸収候補に入らない (二重の封鎖)。
+
+    1. `expand_staff_event_defaults` は必ず external_id "{default_id}:{日付}" を
+       刻むので、`load_absorbable_events` の external_id IS NULL 条件で落ちる。
+    2. `ABSORBABLE_SOURCES` からも 'fixed' を外してある。
+
+    吸収が fixed 行の内容 (staff×開始×終了×名称 = `content_key`) を書き換えると、
+    次の週生成で既定がもう一度展開され結局 2 行に戻るため。
+    """
+    import uuid as _uuid
+
+    from app.services.kaipoke.events_inbound import (
+        ABSORBABLE_SOURCES,
+        load_absorbable_events,
+    )
+    from app.services.staff_event_defaults import fixed_external_id
+
+    seeded = await _seed_staff(db)
+    await _seed_local_event(
+        db,
+        seeded["b"].id,
+        title="ケア会議：青栁あい様",
+        source="fixed",
+        external_id=fixed_external_id(_uuid.uuid4(), CARE_MEETING_DAY),
+    )
+
+    assert "fixed" not in ABSORBABLE_SOURCES
+    assert await load_absorbable_events(db, WEEK_START) == {}
+
+
+@pytest.mark.asyncio
+async def test_absorb_skipped_when_end_differs(client, db, stub_kaipoke) -> None:
+    """開始・名称が同じでも終了が違えば別の予定 — 吸収せず add する。
+
+    終了をカイポケ値で書き換えると `staff_event_defaults.content_key` の
+    冪等判定が外れ、次の週生成で fixed 行が再展開されて二重に戻る。
+    """
+    seeded = await _seed_staff(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+    manual = await _seed_local_event(db, seeded["b"].id, title="ケア会議：青栁あい様", end_h=11)
+
+    stub_kaipoke.tasks = _default_tasks()
+    body = await _preview(client, admin)
+    assert body["absorbs"] == 0
+    assert body["adds"] == 3
+
+    await _apply(client, admin, body["changes"], dry_run=False)
+    await db.refresh(manual)
+    assert manual.source == "manual"
+    assert manual.external_id is None
+    assert len(await _all_events(db)) == 4
+
+
+@pytest.mark.asyncio
+async def test_absorb_preserves_event_type(client, db, stub_kaipoke) -> None:
+    """手入力の event_type ('training' など) は吸収しても上書きしない。
+
+    カイポケ側は種別を持たない。取込の 'event' で潰すと人が入れた意味が消える。
+    """
+    seeded = await _seed_staff(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+    manual = await _seed_local_event(
+        db, seeded["b"].id, title="ケア会議：青栁あい様", event_type="training"
+    )
+
+    stub_kaipoke.tasks = _default_tasks()
+    body = await _preview(client, admin)
+    assert body["absorbs"] == 1
+    await _apply(client, admin, body["changes"], dry_run=False)
+
+    await db.refresh(manual)
+    assert manual.source == "kaipoke"
+    assert manual.event_type == "training"
+
+
+def test_naive_utc_matches_staff_event_defaults_key_dt() -> None:
+    """`_naive_utc` と `staff_event_defaults._key_dt` は同一規則であること。
+
+    ここがズレると、吸収は成立するのに固定イベント展開の `content_key` が
+    一致しなくなる (= 二重展開) ため、同一性をテストで縛る。
+    """
+    from datetime import UTC, datetime, timedelta, timezone
+
+    from app.services.kaipoke.events_inbound import _naive_utc
+    from app.services.staff_event_defaults import _key_dt
+
+    jst = timezone(timedelta(hours=9))
+    for value in (
+        datetime(2026, 7, 21, 9, 30),
+        datetime(2026, 7, 21, 9, 30, tzinfo=UTC),
+        datetime(2026, 7, 21, 18, 30, tzinfo=jst),
+    ):
+        assert _naive_utc(value) == _key_dt(value)
+
+
+@pytest.mark.asyncio
+async def test_absorb_dry_run_writes_nothing(client, db, stub_kaipoke) -> None:
+    seeded = await _seed_staff(db)
+    await _seed_real_apply(db)
+    admin = await _make_admin(db)
+    manual = await _seed_local_event(db, seeded["b"].id, title="ケア会議：青栁あい様")
+
+    stub_kaipoke.tasks = _default_tasks()
+    body = await _preview(client, admin)
+    result = await _apply(client, admin, body["changes"], dry_run=True)
+    assert result["absorbed"] == 1
+    assert result["jobId"] is None
+
+    await db.refresh(manual)
+    assert manual.source == "manual"
+    assert manual.external_id is None
+    assert await _kaipoke_rows(db) == []

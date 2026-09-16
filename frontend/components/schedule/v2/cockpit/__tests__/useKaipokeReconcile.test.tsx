@@ -92,6 +92,13 @@ const CHANGE_ADD = {
   beforeTitle: null,
 };
 
+/** absorb = 手入力済みの同じ予定をカイポケ管理へ引き継ぐだけ (盤面の見た目は不変)。 */
+const CHANGE_ABSORB = {
+  ...CHANGE_ADD,
+  action: 'absorb' as const,
+  externalId: `111:33:${DAY2_ISO}`,
+};
+
 const EVENTS_PLAN = { weekStart: WEEK_START, changes: [CHANGE_ADD], conflicts: [], unmatched: [] };
 const VISITS_PLAN = {
   weekStart: WEEK_START,
@@ -368,6 +375,71 @@ describe('useKaipokeReconcile', () => {
     });
     expect(h.result.current.error).toContain('取込に失敗しました');
     expect(h.result.current.sheetApplied).toBe(false);
+  });
+
+  it('absorb はゴーストにせず absorbOnlyCount で数える (取込対象からは外さない)', async () => {
+    correctionItems = [];
+    eventsPreviewMutateAsync.mockResolvedValue({
+      ...EVENTS_PLAN,
+      changes: [CHANGE_ADD, CHANGE_ABSORB],
+    });
+    const h = await renderReady();
+    // ゴーストは add の 1 件だけ、引き継ぎは件数にだけ出る。
+    expect(h.result.current.diffs).toHaveLength(1);
+    expect(h.result.current.absorbOnlyCount).toBe(1);
+    // 「全部取り込む」は absorb も一緒に送る。
+    await act(async () => {
+      await h.result.current.applyAllDiffs();
+    });
+    expect(applyEventsMutateAsync).toHaveBeenCalledWith({
+      weekStart: WEEK_START,
+      dryRun: false,
+      changes: [CHANGE_ADD, CHANGE_ABSORB],
+    });
+    await waitFor(() => expect(h.result.current.absorbOnlyCount).toBe(0));
+  });
+
+  it('absorb が無ければ absorbOnlyCount は 0', async () => {
+    const h = await renderReady();
+    expect(h.result.current.absorbOnlyCount).toBe(0);
+  });
+
+  it('イベント取込の成功トーストに引き継ぎ (absorbed) を含める', async () => {
+    applyEventsMutateAsync.mockResolvedValue({
+      added: 1,
+      updated: 0,
+      absorbed: 2,
+      deleted: 0,
+      skipped: 0,
+      failed: 0,
+      results: [{ action: 'add', externalId: CHANGE_ADD.externalId, outcome: 'added' }],
+    });
+    const h = await renderReady();
+    const diff = h.result.current.diffs.find((d) => d.kind === 'event')!;
+    await act(async () => {
+      await h.result.current.applyDiff(diff);
+    });
+    expect(toastSuccess).toHaveBeenCalledWith(
+      'イベントを取り込みました（追加1・更新0・削除0・引き継ぎ2）',
+    );
+  });
+
+  it('failed>0 の成功件数にも absorbed を含める', async () => {
+    applyEventsMutateAsync.mockResolvedValue({
+      added: 0,
+      updated: 0,
+      absorbed: 3,
+      deleted: 0,
+      skipped: 0,
+      failed: 1,
+      results: [{ action: 'add', externalId: CHANGE_ADD.externalId, outcome: 'failed' }],
+    });
+    const h = await renderReady();
+    const diff = h.result.current.diffs.find((d) => d.kind === 'event')!;
+    await act(async () => {
+      await h.result.current.applyDiff(diff);
+    });
+    expect(h.result.current.error).toBe('一部の取込に失敗しました（成功 3 / 失敗 1）');
   });
 
   it('RPA 実行中は rpaRunning が立つ', () => {

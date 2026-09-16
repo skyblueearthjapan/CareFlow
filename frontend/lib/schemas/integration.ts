@@ -416,7 +416,8 @@ export type TestKaipokeCredentialsResult = z.infer<typeof TestKaipokeCredentials
 
 // --- イベント取り込み (個別業務・kaipoke-event-inbound-design.md E-2) -------
 
-export const EVENTS_INBOUND_ACTIONS = ['add', 'update', 'delete'] as const;
+// absorb = 同内容の手入力 (manual) / 固定展開 (fixed) 行を引き継ぐ (行は増えない・2026-09-16)
+export const EVENTS_INBOUND_ACTIONS = ['add', 'update', 'absorb', 'delete'] as const;
 
 export const EventsInboundChangeSchema = z.object({
   action: z.enum(EVENTS_INBOUND_ACTIONS),
@@ -462,6 +463,7 @@ export const EventsInboundPreviewSchema = z.object({
   adds: z.number().int().default(0),
   updates: z.number().int().default(0),
   deletes: z.number().int().default(0),
+  absorbs: z.number().int().default(0),
   changes: z.array(EventsInboundChangeSchema).default([]),
   unmatched: z.array(EventsInboundUnmatchedSchema).default([]),
   // 月跨ぎ週で RPA の表示週に含まれなかった対象日 (追加/削除の判定対象外・2026-09-01)
@@ -538,6 +540,7 @@ export type EventsInboundApplyRequest = z.infer<typeof EventsInboundApplyRequest
 export const EVENTS_INBOUND_OUTCOMES = [
   'added',
   'updated',
+  'absorbed',
   'deleted',
   'skipped',
   'failed',
@@ -559,6 +562,7 @@ export const EventsInboundApplyResultSchema = z.object({
   dryRun: z.boolean(),
   added: z.number().int().default(0),
   updated: z.number().int().default(0),
+  absorbed: z.number().int().default(0),
   deleted: z.number().int().default(0),
   skipped: z.number().int().default(0),
   failed: z.number().int().default(0),

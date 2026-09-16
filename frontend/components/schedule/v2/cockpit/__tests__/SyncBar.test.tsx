@@ -26,6 +26,7 @@ const reconcileStub = {
   rpaRunning: false,
   busyKey: null as string | null,
   diffs: [] as unknown[],
+  absorbOnlyCount: 0,
   eventChanges: [] as unknown[],
   visitItems: [] as unknown[],
   visitSheetId: null as string | null,
@@ -493,6 +494,40 @@ describe('SyncBar — ⇩ カイポケから取り込む', () => {
     expect(screen.getByTestId('sync-in-empty')).toHaveTextContent(
       'カイポケ側で変わっている予定はありません',
     );
+  });
+
+  it('引き継ぎ (absorb) だけの週も「差分なし」にせず、件数と ⇩ を出す', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    reconcileStub.phase = 'ready';
+    reconcileStub.diffs = [];
+    reconcileStub.absorbOnlyCount = 2;
+    renderBar();
+    await openInPanel();
+
+    // ゴースト行は出さないが「無い」ことにもしない。
+    expect(screen.queryByTestId('sync-in-empty')).toBeNull();
+    expect(screen.queryAllByTestId('sync-in-row')).toHaveLength(0);
+    expect(screen.getByTestId('sync-in-absorb-note')).toHaveTextContent(
+      '引き継ぎ 2 件（盤面の見た目は変わりません）',
+    );
+
+    const all = screen.getByTestId('sync-in-apply-all');
+    expect(all).toBeEnabled();
+    expect(all).toHaveTextContent('⇩ 2件すべて取り込む');
+    expect(screen.getByTestId('sync-open-in')).toHaveTextContent('2');
+  });
+
+  it('ゴースト行 + 引き継ぎ が混在する週は両方を合算して数える', async () => {
+    unsentMutateAsync.mockResolvedValue(EMPTY_SUMMARY);
+    reconcileStub.phase = 'ready';
+    reconcileStub.diffs = [visitDiff(), eventDiff()];
+    reconcileStub.absorbOnlyCount = 1;
+    renderBar();
+    await openInPanel();
+
+    expect(screen.getAllByTestId('sync-in-row')).toHaveLength(2);
+    expect(screen.getByTestId('sync-in-absorb-note')).toHaveTextContent('引き継ぎ 1 件');
+    expect(screen.getByTestId('sync-in-apply-all')).toHaveTextContent('⇩ 3件すべて取り込む');
   });
 });
 

@@ -342,6 +342,7 @@ def replace_contents(result: Any) -> list[dict[str, Any]]:
 _EVENT_OUTCOME: dict[str, str] = {
     "added": "success",
     "updated": "success",
+    "absorbed": "success",
     "deleted": "success",
     "skipped": "skipped",
     "failed": "failed",

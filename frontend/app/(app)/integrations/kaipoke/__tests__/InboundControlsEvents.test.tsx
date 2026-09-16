@@ -167,6 +167,41 @@ describe('InboundControls — smart-inbound', () => {
     expect(screen.getByText(/頼子（2件）/)).toBeInTheDocument();
   });
 
+  it('①b 吸収 (absorb) は「引き継ぎ」ラベルと集計チップで見える', () => {
+    // 手入力済みの同じ予定をカイポケ管理へ引き継ぐ行 (行は増えない・2026-09-16)
+    const planWithAbsorb: EventsInboundPreview = {
+      ...EVENTS_PLAN,
+      adds: 1,
+      absorbs: 1,
+      changes: [
+        ...EVENTS_PLAN.changes.slice(1),
+        {
+          action: 'absorb',
+          externalId: '690499216:4601519:2026-07-20',
+          staffId: '11111111-1111-4111-8111-111111111111',
+          staffName: '宇田川　優莉',
+          date: '2026-07-20',
+          start: '09:00',
+          end: '09:15',
+          title: '朝会',
+          isMemo: false,
+          beforeStart: '09:00',
+          beforeEnd: '09:15',
+          beforeTitle: '朝会',
+        },
+      ],
+    };
+    render(
+      <InboundControls
+        vm={makeVm({ eventsPlan: planWithAbsorb, hasEventChanges: true, canApply: true })}
+      />,
+    );
+    // 集計チップ「引き継ぎ 1」 + 行の action ラベル「引き継ぎ」の 2 箇所
+    expect(screen.getByTestId('events-summary-absorbs')).toHaveTextContent(/引き継ぎ\s*1/);
+    expect(screen.getAllByText('引き継ぎ')).toHaveLength(2);
+    expect(screen.getByText('朝会')).toBeInTheDocument();
+  });
+
   it('② イベント差分のみでも ❸「取り込む」が押せる', () => {
     render(
       <InboundControls

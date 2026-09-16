@@ -218,7 +218,14 @@ export function useKaipokeReconcile({
 
   const diffs = React.useMemo<CockpitDiff[]>(() => {
     const out: CockpitDiff[] = [];
-    for (const c of remainingChanges) {
+    // absorb = 手入力済みの同じ予定をカイポケ管理へ引き継ぐだけ。盤面の見た目は
+    // 変わらない (既にその枠に予定が居る) ためゴーストは出さない。取り込み自体は
+    // 「全部取り込む」に含まれる (remainingChanges 側はそのまま渡す)。
+    const ghostChanges = remainingChanges.filter(
+      (c): c is EventsInboundChange & { action: 'add' | 'update' | 'delete' } =>
+        c.action !== 'absorb',
+    );
+    for (const c of ghostChanges) {
       out.push({ id: c.externalId, kind: 'event', marker: eventChangeToMarker(c), change: c });
     }
     for (const it of pendingVisitItems) {
@@ -227,6 +234,18 @@ export function useKaipokeReconcile({
     }
     return out;
   }, [remainingChanges, pendingVisitItems, weekStartIso, staffIdByName]);
+
+  /**
+   * ゴーストを出さない absorb (引き継ぎ) の残件数。
+   *
+   * absorb だけの週は `diffs` が空になるため、件数まで 0 にすると「カイポケ側で
+   * 変わっている予定はありません」と出て ⇩ が押せず、引き継ぎを永久に取り込めない。
+   * 盤面の見た目は変えないまま件数にだけ載せる (2026-09-16)。
+   */
+  const absorbOnlyCount = React.useMemo(
+    () => remainingChanges.filter((c) => c.action === 'absorb').length,
+    [remainingChanges],
+  );
 
   // ─── ⇩ 取込 ───
   const applyEventChanges = async (changes: EventsInboundChange[], key: string) => {
@@ -238,7 +257,8 @@ export function useKaipokeReconcile({
         dryRun: false,
         changes,
       });
-      const ok = res.added + res.updated + res.deleted;
+      const absorbed = res.absorbed ?? 0;
+      const ok = res.added + res.updated + res.deleted + absorbed;
       // 失敗した項目は「適用済み」にしない (リストに残して再試行できるように)。
       const failedIds = new Set(
         res.results.filter((r) => r.outcome === 'failed').map((r) => r.externalId),
@@ -256,7 +276,8 @@ export function useKaipokeReconcile({
       } else {
         setError(null);
         toast.success(
-          `イベントを取り込みました（追加${res.added}・更新${res.updated}・削除${res.deleted}）`,
+          `イベントを取り込みました（追加${res.added}・更新${res.updated}・削除${res.deleted}・` +
+            `引き継ぎ${absorbed}）`,
         );
       }
       if (doneIds.length > 0) {
@@ -439,6 +460,8 @@ export function useKaipokeReconcile({
     /** true = 取込差分シートが適用済み (⇩ は無効・🔄 同期確認 のやり直しが必要)。 */
     sheetApplied,
     diffs,
+    /** ゴーストを出さない absorb (引き継ぎ) の残件数。件数/活性判定は diffs と合算する。 */
+    absorbOnlyCount,
     eventChanges: remainingChanges,
     visitItems: pendingVisitItems,
     visitSheetId: effectiveVisitSheetId,
