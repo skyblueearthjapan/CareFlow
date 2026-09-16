@@ -77,10 +77,14 @@ KIND_PAIR_NOT_SAME_START = "同住所ペア:同時刻でない"
 KIND_PAIR_OVER = "同住所3名以上"
 KIND_NO_LUNCH = "昼休みなし"
 KIND_NO_COORD = "座標なし"
+# コース担当は居るのに訪問の主担当が NULL (ミラー漏れ)。スマホ盤・カイポケ送信・突合
+# から落ちるため、物理的には成立していても「直すべき」指摘として △ に載せる
+# (2026-09-16 / 調査 `mobile-staff-schedule-mismatch-investigation-2026-09-16.md` §6)。
+KIND_STAFF_NOT_MIRRORED = "主担当なし(コース担当あり)"
 # 「成立しない」(❗) と「余裕がない/ルール逸脱」(△)。それ以外 (昼休み・座標なし) は参考。
 HARD_KINDS: frozenset[str] = frozenset({KIND_OVERLAP, KIND_IMPOSSIBLE, KIND_PAIR_OVER})
 SOFT_KINDS: frozenset[str] = frozenset(
-    {KIND_TIGHT, KIND_WATCH, KIND_PAIR_SHORT, KIND_PAIR_NOT_SAME_START}
+    {KIND_TIGHT, KIND_WATCH, KIND_PAIR_SHORT, KIND_PAIR_NOT_SAME_START, KIND_STAFF_NOT_MIRRORED}
 )
 # item.level → (❗/△/参考, ラベル)。HTML 側の表示にも使う。
 LEVEL_HARD: frozenset[str] = frozenset({"overlap", "impossible", "pair_over"})
@@ -714,6 +718,76 @@ async def load_week_items(
     return items, staff_names
 
 
+async def load_unmirrored_staff_findings(
+    db: AsyncSession,
+    *,
+    week_start: date,
+    week_end: date,
+    office_id: uuid.UUID | None = None,
+) -> list[Finding]:
+    """「コース担当は居るのに訪問の主担当が NULL」を指摘として拾う (SELECT のみ).
+
+    調査 ``mobile-staff-schedule-mismatch-investigation-2026-09-16.md`` §6 の再発検出。
+    週生成 → コース担当の後付け (``reset_visits_to_fixed`` のローテーション) の順で
+    起きたミラー漏れは、盤面では「コース担当の行」に見えるので気づけない一方、
+    スマホ盤 (``visits.py`` の可視性) とカイポケ送信 CSV からは落ちる。
+
+    対象は ``status='planned'`` の未削除訪問のみ (実績・取消は直す対象ではない)。
+    帰属はコース担当 (= ``load_week_items`` のフォールバック先) なので、その職員の
+    行に △ として並ぶ。
+    """
+    iso_year, iso_week, _ = week_start.isocalendar()
+    stmt = (
+        select(Visit, Patient, Course, Staff)
+        .join(Patient, and_(Patient.id == Visit.patient_id, Patient.deleted_at.is_(None)))
+        .join(
+            Course,
+            and_(
+                Course.id == Visit.course_id,
+                Course.deleted_at.is_(None),
+                Course.iso_year == iso_year,
+                Course.iso_week == iso_week,
+            ),
+        )
+        .join(Staff, Staff.id == Course.assigned_staff_id)
+        .where(
+            Visit.deleted_at.is_(None),
+            Visit.status == "planned",
+            Visit.primary_staff_id.is_(None),
+            # 手動で担当を外した訪問はミラー対象外 (visits.py / csv_builder と同規則)
+            Visit.manual_staff_override.is_(False),
+            Visit.visit_date >= week_start,
+            Visit.visit_date <= week_end,
+            # 退職・削除済みのコース担当は指摘しない (辞めた職員を担当にしないのが
+            # 送信 CSV / スマホ盤の規則なので、そこへ「ミラーせよ」と言わない)。
+            Staff.deleted_at.is_(None),
+            Staff.status == "active",
+        )
+    )
+    if office_id is not None:
+        stmt = stmt.where(Course.office_id == office_id)
+    rows = (await db.execute(stmt)).all()
+    findings: list[Finding] = []
+    for v, p, _c, s in rows:
+        sname = (s.name or "").replace("　", " ").strip()
+        findings.append(
+            Finding(
+                staff=sname,
+                day=v.visit_date,
+                kind=KIND_STAFF_NOT_MIRRORED,
+                at=fmt_hm(_to_min(v.start_time)),
+                to=(p.name or "").replace("　", " ").strip(),
+                frm=(
+                    f"コース担当（{sname}）が訪問の担当に反映されていません"
+                    "（スマホ盤・送信に出ません）"
+                ),
+                staff_key=str(s.id),
+            )
+        )
+    findings.sort(key=lambda f: (f.day, f.at, f.staff, f.to))
+    return findings
+
+
 async def build_feasibility_report(
     db: AsyncSession,
     *,
@@ -729,7 +803,7 @@ async def build_feasibility_report(
     items, names = await load_week_items(
         db, week_start=week_start, week_end=week_end, office_id=office_id
     )
-    return evaluate_week(
+    report = evaluate_week(
         items,
         config,
         iso_year=iso_year,
@@ -738,6 +812,13 @@ async def build_feasibility_report(
         week_end=week_end,
         staff_names=names,
     )
+    # 時間軸の判定 (純粋関数) では拾えない「データの不整合」を後付けで足す。
+    report.findings.extend(
+        await load_unmirrored_staff_findings(
+            db, week_start=week_start, week_end=week_end, office_id=office_id
+        )
+    )
+    return report
 
 
 def report_to_dict(report: FeasibilityReport) -> dict[str, Any]:

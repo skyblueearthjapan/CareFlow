@@ -20,8 +20,9 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -29,6 +30,7 @@ from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.course import Course
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.models.staff import Staff
 from app.models.user import User, normalize_user_role
 from app.models.visit import (
     VISIT_SOURCE_STATUS_CANCEL,
@@ -73,11 +75,47 @@ from app.utils.db import try_advisory_xact_lock
 router = APIRouter()
 
 
+def _course_fallback_condition(staff_id: UUID):
+    """「主担当が空で、そのコースの担当が自分」= 自分の訪問とみなす条件 (2026-09-16).
+
+    PC の職員スケジュールタブは primary → コース担当の順で帰属を決めるのに、スマホ
+    (この router) は primary 系しか見ていなかったため、``primary_staff_id`` が NULL の
+    まま作られた訪問が本人の「今日/今週」から丸ごと消えていた (調査 §7)。帰属規則を
+    PC と揃えるためのフォールバック。
+
+    **緩む方向は「自分がコース担当の訪問」だけ**: primary が入っている訪問には一切
+    効かないので、他人の訪問が見えるようにはならない。
+
+    条件は送信 CSV (``services/kaipoke/csv_builder.py``) の職員1 フォールバックと
+    同じ規則に揃える (画面と送信で担当が食い違わないようにする):
+      * ``manual_staff_override=True`` の訪問は「この訪問だけ担当を外した/変えた」
+        意思表示なのでフォールバックしない
+      * 退職・削除済み (``staff.status != 'active'`` / ``staff.deleted_at``) の
+        コース担当はフォールバックに使わない (辞めた職員を担当にしない)
+    """
+    return and_(
+        Visit.primary_staff_id.is_(None),
+        Visit.manual_staff_override.is_(False),
+        Visit.course_id.in_(
+            select(Course.id)
+            .join(Staff, Staff.id == Course.assigned_staff_id)
+            .where(
+                Course.assigned_staff_id == staff_id,
+                Course.deleted_at.is_(None),
+                Staff.deleted_at.is_(None),
+                Staff.status == "active",
+            )
+        ),
+    )
+
+
 def _staff_visibility_filter(staff_id: UUID):
     """Visit が当該スタッフに見える条件 (primary/secondary/mentor または assignments).
 
     新人同行 (§6.4 C-1): 新人本人の「今日の訪問」「今週の予定」に同行訪問が出るよう、
     同行リンク条件 (visit 直リンク OR course リンク・live JOIN) を OR で足す。
+
+    コース担当フォールバック (2026-09-16): ``_course_fallback_condition`` 参照。
     """
     # Note: visit_staff_assignments のサブクエリでも該当する visit を含める
     assignments_subq = select(VisitStaffAssignment.visit_id).where(
@@ -89,7 +127,80 @@ def _staff_visibility_filter(staff_id: UUID):
         Visit.mentor_staff_id == staff_id,
         Visit.id.in_(assignments_subq),
         accompaniment_visibility_condition(staff_id),
+        _course_fallback_condition(staff_id),
     )
+
+
+async def _course_fallback_staff_ids(db: AsyncSession, visit: Visit) -> set[UUID]:
+    """``visit`` をコース担当フォールバックで見られるスタッフ id の集合 (0 or 1 件).
+
+    一覧 (``_staff_visibility_filter``) と詳細 / 打刻の可視性判定を同じ規則に保つための
+    共通ヘルパ。一覧に出るのに詳細が 404 / 打刻が 404 になる食い違いを防ぐ。
+    主担当が入っている / ``manual_staff_override`` / コース未所属なら空集合
+    (追加クエリも撃たない)。在籍中のスタッフに限るのも一覧と同じ。
+    """
+    if (
+        visit is None
+        or visit.primary_staff_id is not None
+        or visit.manual_staff_override
+        or visit.course_id is None
+    ):
+        return set()
+    sid = await db.scalar(
+        select(Course.assigned_staff_id)
+        .join(Staff, Staff.id == Course.assigned_staff_id)
+        .where(
+            Course.id == visit.course_id,
+            Course.deleted_at.is_(None),
+            Course.assigned_staff_id.is_not(None),
+            Staff.deleted_at.is_(None),
+            Staff.status == "active",
+        )
+    )
+    return {sid} if sid is not None else set()
+
+
+async def _course_staff_names(db: AsyncSession, visits: list[Visit]) -> dict[UUID, str]:
+    """主担当 NULL の訪問のコース担当名を ``course_id -> 担当者名`` で一括解決する.
+
+    ``_serialize_visit`` の ``staff_name`` フォールバック用。一覧でも 1 クエリで済ませる
+    (visit ごとにコース → スタッフを引くと N+1 になる)。該当が無ければクエリを撃たない。
+    可視性 (``_course_fallback_condition``) と同じ規則 (``manual_staff_override`` 除外・
+    在籍中のスタッフのみ) にする — 見えているのに名前が出ない/その逆を作らない。
+    """
+    course_ids = {
+        v.course_id
+        for v in visits
+        if v is not None
+        and v.primary_staff_id is None
+        and not v.manual_staff_override
+        and v.course_id is not None
+    }
+    if not course_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(Course.id, Staff.name)
+            .join(Staff, Staff.id == Course.assigned_staff_id)
+            .where(
+                Course.id.in_(course_ids),
+                Course.deleted_at.is_(None),
+                Staff.deleted_at.is_(None),
+                Staff.status == "active",
+            )
+        )
+    ).all()
+    return {cid: name for cid, name in rows if name is not None}
+
+
+async def _course_staff_name_for(db: AsyncSession, visit: Visit) -> str | None:
+    """単一 visit のコース担当名 (``_course_staff_names`` の 1 件版).
+
+    単票レスポンス (詳細 / 作成 / 更新 / 打刻) で同じ式を書き写さないための薄いラッパ。
+    """
+    if visit is None or visit.course_id is None:
+        return None
+    return (await _course_staff_names(db, [visit])).get(visit.course_id)
 
 
 async def _guard_constraint_violations(
@@ -224,10 +335,15 @@ def _serialize_visit(
     assignments: list[dict] | None = None,
     latest_checkin: dict | None = None,
     accompaniments: list[dict] | None = None,
+    course_staff_name: str | None = None,
 ) -> dict:
     """Project a Visit (with optional eager-loaded patient/primary_staff) into
     the VisitRead shape, including denormalized `patient_name`/`staff_name`
     and v2 ``staff_assignments`` (visit_staff_assignments).
+
+    ``course_staff_name`` (2026-09-16): 主担当が NULL のときに表示する **コース担当名**
+    (``_course_staff_names`` が一括解決したもの)。``staff_name`` の意味は「表示すべき
+    担当名」であり、``primary_staff_id`` は NULL のまま返す (非破壊: DB の値を偽らない)。
     """
     data = {
         "id": visit.id,
@@ -262,8 +378,18 @@ def _serialize_visit(
         "updated_at": visit.updated_at,
         "deleted_at": visit.deleted_at,
         "patient_name": getattr(visit.patient, "name", None) if visit.patient is not None else None,
+        # 主担当が入っていればその名前。NULL のときだけコース担当名 (表示のみ) へ
+        # フォールバックする。``primary_staff_id`` を見て分岐するのは、``primary_staff``
+        # が eager-load されていない呼出 (lazy="noload" → 常に None) でコース担当名が
+        # 誤って入り込まないようにするため。
         "staff_name": (
-            getattr(visit.primary_staff, "name", None) if visit.primary_staff is not None else None
+            course_staff_name
+            if visit.primary_staff_id is None
+            else (
+                getattr(visit.primary_staff, "name", None)
+                if visit.primary_staff is not None
+                else None
+            )
         ),
         # 患者ジオコード (Numeric → float). モバイル QR チェックインの距離プレビュー
         # 用に非破壊で公開する. patient 未ロード / 未ジオコードは None.
@@ -434,12 +560,15 @@ async def list_visits(
     latest_by_visit = await _load_latest_checkins_bulk(db, visit_ids)
     # 新人同行 (§6.4): 訪問群の同行者を 1 度に解決し、各 visit に非破壊で載せる。
     accompaniment_by_visit = await resolve_accompaniment_by_visit(db, list(rows))
+    # 主担当 NULL の訪問の表示担当名 (コース担当) を 1 クエリで解決する (N+1 回避)。
+    course_staff_names = await _course_staff_names(db, list(rows))
     return [
         _serialize_visit(
             v,
             assignments=assignments_by_visit.get(v.id, []),
             latest_checkin=latest_by_visit.get(v.id),
             accompaniments=_accompaniment_payload(accompaniment_by_visit.get(v.id)),
+            course_staff_name=course_staff_names.get(v.course_id),
         )
         for v in rows
     ]
@@ -513,6 +642,10 @@ async def resolve_qr_visits(
             ).all()
         )
 
+    # 予定スタッフ名も一覧 / 詳細と同じ規則にする: 主担当 NULL の訪問はコース担当名を
+    # 出す (出さないと「予定 未割当」に見え、現地で代行打刻を選ばせてしまう)。
+    course_staff_names = await _course_staff_names(db, list(rows))
+
     return {
         "patient_name": patient.name,
         "candidates": [
@@ -522,7 +655,9 @@ async def resolve_qr_visits(
                 "end_time": v.end_time,
                 "status": v.status,
                 "planned_staff_name": (
-                    getattr(v.primary_staff, "name", None) if v.primary_staff is not None else None
+                    getattr(v.primary_staff, "name", None)
+                    if v.primary_staff is not None
+                    else course_staff_names.get(v.course_id)
                 ),
                 "is_mine": v.id in mine,
                 "is_unplanned": v.is_unplanned,
@@ -613,6 +748,10 @@ async def get_visit(
             visible = await is_accompaniment_visit_for_staff(
                 db, visit_id=visit.id, course_id=visit.course_id, staff_id=user.staff_id
             )
+        # コース担当フォールバック (2026-09-16): 一覧 (_staff_visibility_filter) と
+        # 同じ規則。ここに足さないとカードには出るのにタップで 404 になる。
+        if not visible:
+            visible = user.staff_id in await _course_fallback_staff_ids(db, visit)
         # QR capability (§4-2): 現地 QR を持っていれば担当外でも詳細を返す。
         # 解決失敗 (別患者 409 / 失効 410) は **GET に限り 404 へ丸める**: 元々
         # 見えない visit なので、エラーコードの差から存在を推測させない。
@@ -635,6 +774,7 @@ async def get_visit(
         assignments=assignments,
         latest_checkin=latest_checkin,
         accompaniments=_accompaniment_payload(accompaniment_by_visit.get(visit.id)),
+        course_staff_name=await _course_staff_name_for(db, visit),
     )
     if via_qr_capability:
         payload = _restrict_to_qr_capability(payload)
@@ -686,7 +826,11 @@ async def create_visit(
         )
     )
     assignments = await _load_assignments(db, visit.id)
-    return _serialize_visit(visit, assignments=assignments)
+    return _serialize_visit(
+        visit,
+        assignments=assignments,
+        course_staff_name=await _course_staff_name_for(db, visit),
+    )
 
 
 @router.patch("/{visit_id}", response_model=VisitRead, summary="Update visit")
@@ -786,7 +930,11 @@ async def update_visit(
         )
     )
     assignments = await _load_assignments(db, visit.id)
-    return _serialize_visit(visit, assignments=assignments)
+    return _serialize_visit(
+        visit,
+        assignments=assignments,
+        course_staff_name=await _course_staff_name_for(db, visit),
+    )
 
 
 @router.delete(
@@ -975,7 +1123,11 @@ async def add_visit_staff(
         ) from exc
 
     assignments = await _load_assignments(db, visit_id)
-    return _serialize_visit(visit, assignments=assignments)
+    return _serialize_visit(
+        visit,
+        assignments=assignments,
+        course_staff_name=await _course_staff_name_for(db, visit),
+    )
 
 
 @router.delete(
@@ -1106,6 +1258,10 @@ async def _load_visit_for_checkin(
         visible = await is_accompaniment_visit_for_staff(
             db, visit_id=visit.id, course_id=visit.course_id, staff_id=staff_id
         )
+    # コース担当フォールバック (2026-09-16): 一覧・詳細と同じ規則。ここに足さないと
+    # 「スマホに出るのに打刻だけ 404」になる。
+    if not visible:
+        visible = staff_id in await _course_fallback_staff_ids(db, visit)
     # 代行打刻 (§4-2): 担当外でも現地 QR を持っていれば通す。
     if not visible:
         visible = await _qr_capability_allows(db, visit, qr_token)
@@ -1133,6 +1289,7 @@ async def _checkin_response(db, visit_id: UUID) -> dict:
         assignments=assignments,
         latest_checkin=latest_checkin,
         accompaniments=_accompaniment_payload(accompaniment_by_visit.get(visit_id)),
+        course_staff_name=await _course_staff_name_for(db, visit),
     )
 
 

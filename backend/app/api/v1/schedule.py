@@ -1040,6 +1040,13 @@ async def place_and_fix(
                 source=visit_source,
                 required_staff_count=body.staff_count,
                 course_id=course.id,
+                # 主担当はコース担当のミラー (2026-09-16 是正)。ここを空のまま作ると
+                # 担当ありコースに置いても訪問の担当が NULL になり、スマホ盤・カイポケ
+                # 送信・突合から漏れる (調査 §6 の「別経路 1 件」)。担当なし (M) コース
+                # は assigned_staff_id が None なのでそのまま NULL = 従来どおり。
+                # ``manual_staff_override`` は立てない (人が名指ししたのではなく
+                # コース担当のミラーなので、コース担当の変更に追随してよい)。
+                primary_staff_id=course.assigned_staff_id,
                 visit_group_id=shared_visit_group_id,
             )
             db.add(v)

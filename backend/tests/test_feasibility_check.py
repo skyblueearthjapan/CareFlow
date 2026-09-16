@@ -380,3 +380,196 @@ def test_homonym_staff_keep_separate_rows_in_html():
     html_out = render_feasibility_html(rep)
     assert html_out.count("<tr><th>山田 花子</th>") == 2
     assert rep.visit_count == 2 and not [f for f in rep.findings if f.kind == KIND_OVERLAP]
+
+
+# ---------------------------------------------------------------------------
+# B-3 (2026-09-16): 「コース担当あり × 訪問の主担当 NULL」を検出する
+#   正典 = docs/plans/mobile-staff-schedule-design-2026-09-16.md §2 B-3
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unmirrored_course_staff_is_reported(db):
+    """主担当 NULL でコース担当ありの planned 訪問が △ の finding になる.
+
+    主担当が入っている訪問・取消の訪問では出ないことも同時に縛る。
+    """
+    from datetime import time as _time
+
+    from app.models.course import Course
+    from app.models.office import Office
+    from app.models.patient import Patient
+    from app.models.staff import Staff
+    from app.models.visit import Visit
+    from app.services.scheduling.feasibility_check import (
+        KIND_STAFF_NOT_MIRRORED,
+        build_feasibility_report,
+    )
+
+    office = Office(name="稲毛B", lat=35.63, lng=140.09)
+    s = Staff(name="看護ミラー")
+    pat_ng = Patient(code="P-MIR-1", name="未反映 太郎", lat=A[0], lng=A[1])
+    pat_ok = Patient(code="P-MIR-2", name="反映済 花子", lat=A[0], lng=A[1])
+    db.add_all([office, s, pat_ng, pat_ok])
+    await db.flush()
+    course = Course(
+        iso_year=2026,
+        iso_week=36,
+        weekday=2,
+        code="A",
+        office_id=office.id,
+        assigned_staff_id=s.id,
+        course_status="staff_assigned",
+    )
+    db.add(course)
+    await db.flush()
+    day = date(2026, 9, 2)  # 2026-W36 水曜
+    db.add_all(
+        [
+            # 検出対象: 主担当 NULL × コース担当あり
+            Visit(
+                patient_id=pat_ng.id,
+                visit_date=day,
+                start_time=_time(9, 0),
+                end_time=_time(9, 35),
+                type="regular",
+                status="planned",
+                primary_staff_id=None,
+                course_id=course.id,
+            ),
+            # 対象外: 主担当が入っている
+            Visit(
+                patient_id=pat_ok.id,
+                visit_date=day,
+                start_time=_time(13, 0),
+                end_time=_time(13, 35),
+                type="regular",
+                status="planned",
+                primary_staff_id=s.id,
+                course_id=course.id,
+            ),
+            # 対象外: 取消 (直す対象ではない)
+            Visit(
+                patient_id=pat_ok.id,
+                visit_date=day,
+                start_time=_time(16, 0),
+                end_time=_time(16, 35),
+                type="regular",
+                status="cancelled",
+                primary_staff_id=None,
+                course_id=course.id,
+            ),
+        ]
+    )
+    await db.commit()
+
+    report = await build_feasibility_report(db, iso_year=2026, iso_week=36)
+    fs = [f for f in report.findings if f.kind == KIND_STAFF_NOT_MIRRORED]
+    assert len(fs) == 1
+    assert fs[0].staff == "看護ミラー"
+    assert fs[0].staff_key == str(s.id)
+    assert fs[0].day == day
+    assert fs[0].at == "09:00"
+    assert fs[0].to == "未反映 太郎"
+    assert "コース担当（看護ミラー）が訪問の担当に反映されていません" in fs[0].frm
+    assert fs[0].severity == "soft"
+
+
+@pytest.mark.asyncio
+async def test_unmirrored_finding_absent_for_retired_course_staff(db):
+    """退職済み (status != 'active') のコース担当では指摘を出さない.
+
+    送信 CSV (``csv_builder``) もスマホ盤 (``visits.py``) も「辞めた職員は担当にしない」
+    ため、そこへ「ミラーせよ」と促すのは誤り (人手で担当を付け替えるのが正)。
+    """
+    from datetime import time as _time
+
+    from app.models.course import Course
+    from app.models.office import Office
+    from app.models.patient import Patient
+    from app.models.staff import Staff
+    from app.models.visit import Visit
+    from app.services.scheduling.feasibility_check import (
+        KIND_STAFF_NOT_MIRRORED,
+        build_feasibility_report,
+    )
+
+    office = Office(name="稲毛B2", lat=35.63, lng=140.09)
+    s = Staff(name="看護退職", status="retired")
+    pat = Patient(code="P-MIR-4", name="退職担当 三郎", lat=A[0], lng=A[1])
+    db.add_all([office, s, pat])
+    await db.flush()
+    course = Course(
+        iso_year=2026,
+        iso_week=36,
+        weekday=2,
+        code="A",
+        office_id=office.id,
+        assigned_staff_id=s.id,
+        course_status="staff_assigned",
+    )
+    db.add(course)
+    await db.flush()
+    db.add(
+        Visit(
+            patient_id=pat.id,
+            visit_date=date(2026, 9, 2),
+            start_time=_time(9, 0),
+            end_time=_time(9, 35),
+            type="regular",
+            status="planned",
+            primary_staff_id=None,
+            course_id=course.id,
+        )
+    )
+    await db.commit()
+
+    report = await build_feasibility_report(db, iso_year=2026, iso_week=36)
+    assert [f for f in report.findings if f.kind == KIND_STAFF_NOT_MIRRORED] == []
+
+
+@pytest.mark.asyncio
+async def test_unmirrored_finding_absent_without_course_staff(db):
+    """コース担当も居ない (担当なし M) 訪問では指摘を出さない (それは別の話)."""
+    from datetime import time as _time
+
+    from app.models.course import Course
+    from app.models.office import Office
+    from app.models.patient import Patient
+    from app.models.visit import Visit
+    from app.services.scheduling.feasibility_check import (
+        KIND_STAFF_NOT_MIRRORED,
+        build_feasibility_report,
+    )
+
+    office = Office(name="稲毛C", lat=35.63, lng=140.09)
+    pat = Patient(code="P-MIR-3", name="担当なし 次郎", lat=A[0], lng=A[1])
+    db.add_all([office, pat])
+    await db.flush()
+    course = Course(
+        iso_year=2026,
+        iso_week=36,
+        weekday=2,
+        code="M",
+        office_id=office.id,
+        assigned_staff_id=None,
+        course_status="proposed",
+    )
+    db.add(course)
+    await db.flush()
+    db.add(
+        Visit(
+            patient_id=pat.id,
+            visit_date=date(2026, 9, 2),
+            start_time=_time(9, 0),
+            end_time=_time(9, 35),
+            type="regular",
+            status="planned",
+            primary_staff_id=None,
+            course_id=course.id,
+        )
+    )
+    await db.commit()
+
+    report = await build_feasibility_report(db, iso_year=2026, iso_week=36)
+    assert [f for f in report.findings if f.kind == KIND_STAFF_NOT_MIRRORED] == []

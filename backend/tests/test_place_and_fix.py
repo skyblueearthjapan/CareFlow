@@ -1061,3 +1061,83 @@ async def test_place_and_fix_no_pattern_does_not_save_course_template_id(client,
         )
     ).all()
     assert len(fvs) == 0
+
+
+# ---------------------------------------------------------------------------
+# B-1 (2026-09-16): 担当ありコースへ置いたら訪問の主担当もコース担当で埋まる
+#   正典 = docs/plans/mobile-staff-schedule-design-2026-09-16.md §2 B-1
+#   回帰 = 主担当 NULL のまま作るとスマホ盤・カイポケ送信・突合から落ちる
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_place_and_fix_mirrors_course_assigned_staff(client, db) -> None:
+    """担当ありコースへ place-and-fix → visit.primary_staff_id にコース担当が入る."""
+    admin = await _make_user(db, "paf-mirror-1@example.com", "admin")
+    patient = await _make_patient(db, "PAF-MIR-1")
+    office = await _make_office(db, "事業所MIR1")
+    tpl = await _make_template(db, office.id, label="A")
+    staff = await _make_staff(db, "看護ミラー")
+    patient.primary_office_id = office.id
+    # 週次 Course を担当付きで先に用意する (place-and-fix はこれを find して使う)
+    course = Course(
+        iso_year=TEST_ISO_YEAR,
+        iso_week=TEST_ISO_WEEK,
+        weekday=2,
+        code="A",
+        office_id=office.id,
+        template_id=tpl.id,
+        assigned_staff_id=staff.id,
+        course_status="staff_assigned",
+    )
+    db.add(course)
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/place-and-fix",
+        headers=_bearer(admin),
+        json=_payload(
+            patient.id,
+            course_template_id=tpl.id,
+            weekday=2,
+            start_time="11:00:00",
+            duration_min=35,
+        ),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["visit"]["primary_staff_id"] == str(staff.id)
+
+    visits = (await db.scalars(select(Visit).where(Visit.patient_id == patient.id))).all()
+    assert len(visits) == 1
+    assert visits[0].primary_staff_id == staff.id
+    assert visits[0].course_id == course.id
+    # コース担当のミラーなので「人が名指しした」印は立てない (コース担当変更に追随させる)
+    assert visits[0].manual_staff_override is False
+
+
+@pytest.mark.asyncio
+async def test_place_and_fix_keeps_primary_null_for_unassigned_course(client, db) -> None:
+    """担当なしコース (M 等) へ置いた場合は従来どおり主担当 NULL のまま."""
+    admin = await _make_user(db, "paf-mirror-2@example.com", "admin")
+    patient = await _make_patient(db, "PAF-MIR-2")
+    office = await _make_office(db, "事業所MIR2")
+    tpl = await _make_template(db, office.id, label="M")
+    patient.primary_office_id = office.id
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/place-and-fix",
+        headers=_bearer(admin),
+        json=_payload(
+            patient.id,
+            course_template_id=tpl.id,
+            weekday=3,
+            start_time="13:00:00",
+            duration_min=30,
+        ),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["visit"]["primary_staff_id"] is None
+
+    visits = (await db.scalars(select(Visit).where(Visit.patient_id == patient.id))).all()
+    assert len(visits) == 1 and visits[0].primary_staff_id is None
