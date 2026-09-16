@@ -79,3 +79,8 @@ backend/scripts/~$*
 staff-login-cards*.html
 *-login-cards*.html
 _secrets/
+
+# 患者名・実績を含む未追跡データ (コミット禁止)
+/docs/reports/
+/スケジュールデータ/
+/CareLink-handoff.zip
