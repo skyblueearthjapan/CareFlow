@@ -122,6 +122,49 @@ class ReplaceResult:
     per_day: dict[date, dict[str, int]] = field(default_factory=dict)
 
 
+def _hhmm(value: time) -> time:
+    """時刻を分単位へ丸める (カイポケ CSV は分単位・退避値は μs を持つ)。"""
+    return time(value.hour, value.minute)
+
+
+def _kaipoke_slot_keys(
+    entries: list[ScheduleEntry],
+    patient_index: dict[str, list[str]],
+    patient_by_id: dict[str, Patient],
+    week_start: date,
+    week_end: date,
+) -> set[tuple[str, date, time]]:
+    """カイポケ現況 entries を (患者ID, 実日付, 開始時刻) の集合へ落とす。
+
+    「らく助側の取消」ガードが「その枠がカイポケにまだ有るか」を判定するための索引。
+    名寄せできない行・日付や時刻が解釈できない行は **含めない** (= 一致なし扱い)。
+    ブロックは「取消が実際に復活する時」だけに絞るのが設計方針 (§1 A-1)。
+
+    **非稼働患者 (``is_schedulable_status`` でない) の行も含めない**: その行は下の
+    Phase 1 で ``inactive_patient`` として挿入されない (= 置換しても取消は復活しない)
+    ため、ブロックする理由がない。集合の意味を「実際に復活し得る枠」に揃える。
+    """
+    keys: set[tuple[str, date, time]] = set()
+    for e in entries:
+        try:
+            day_num = int(str(e.date).strip())
+        except (TypeError, ValueError):
+            continue
+        d = day_to_date(day_num, week_start, week_end)
+        if d is None:
+            continue
+        start_t = parse_hhmm(e.start_time)
+        if start_t is None:
+            continue
+        pid_str = match_name(e.user_name, patient_index)
+        if pid_str is None:
+            continue
+        if not is_schedulable_status(getattr(patient_by_id.get(pid_str), "status", None)):
+            continue
+        keys.add((pid_str, d, _hhmm(start_t)))
+    return keys
+
+
 async def _count_week_achievements(db: AsyncSession, visit_ids: list[uuid.UUID]) -> int:
     """対象訪問に紐づく実績 (打刻) の件数。写真/レビューは checkin 起点のため
     checkin の存在確認で実績週を検出できる。"""
@@ -189,6 +232,13 @@ async def replace_week_from_kaipoke(
     wipe_rows = list((await db.scalars(wipe_stmt)).all())
     result.wiped = len(wipe_rows)
 
+    # --- 患者の名寄せ索引 ----------------------------------------------------
+    # 「らく助側の取消」ガード (下) がカイポケ現況との突合に使うため、Phase 1 より
+    # 前に作る (Phase 1 でもそのまま使い回す)。
+    patients = (await db.scalars(select(Patient).where(Patient.deleted_at.is_(None)))).all()
+    patient_index = build_name_index({str(p.id): p.name for p in patients})
+    patient_by_id = {str(p.id): p for p in patients}
+
     # --- 「らく助側の取消」ガード (week-cockpit-design.md D1) -----------------
     # 置換は対象日の visit を cancelled 含めて白紙化しカイポケ現況で作り直す。
     # らく助側で取消した枠 (= まだ⇧送信していない) がそこに居ると、
@@ -201,11 +251,27 @@ async def replace_week_from_kaipoke(
     # ・patient-status-schedule-design-2026-09-09.md §7-3(d)) = らく助側の意思に
     # よる取消だけ。**取込 delete 由来**の cancelled は元々カイポケに無い予定なので
     # 置換して構わない。
-    blocked_days: set[date] = {
-        v.visit_date
+    #
+    # さらに 2026-09-16 (mobile-staff-schedule-design §1 A-1): 取消が **カイポケ現況に
+    # まだ残っている場合だけ**ブロックする。事務がカイポケ側で既に消していれば
+    # (= entries に同じ 患者・日付・開始時刻 の行が無い)、置換しても取消は復活しない
+    # ので止める理由がない。実データ 2026-09-15 の W38/W39 はこれで 422 になり、
+    # 訪問の取込だけが丸ごと落ちていた (調査 §5)。
+    cancel_rows = [
+        v
         for v in wipe_rows
         if v.status == VISIT_STATUS_CANCELLED and v.source in VISIT_SOURCES_LOCAL_CANCEL
-    }
+    ]
+    blocked_days: set[date] = set()
+    if cancel_rows:
+        _kaipoke_keys = _kaipoke_slot_keys(
+            entries, patient_index, patient_by_id, week_start, week_sun
+        )
+        blocked_days = {
+            v.visit_date
+            for v in cancel_rows
+            if (str(v.patient_id), v.visit_date, _hhmm(v.start_time)) in _kaipoke_keys
+        }
     if blocked_days:
         _days = "/".join(d.isoformat() for d in sorted(blocked_days))
         _msg = (
@@ -241,10 +307,7 @@ async def replace_week_from_kaipoke(
         )
 
     # --- 名寄せ・コース索引 --------------------------------------------------
-    patients = (await db.scalars(select(Patient).where(Patient.deleted_at.is_(None)))).all()
-    pindex = build_name_index({str(p.id): p.name for p in patients})
-    patient_by_id = {str(p.id): p for p in patients}
-
+    # 患者索引 (patient_index / patient_by_id) は白紙化の直後で作成済み。
     staff_index_raw, staff_map = await load_staff_name_index(db)
     trainee_ids = {
         s.id for s in staff_map.values() if getattr(s, "is_trainee", False) and s.status == "active"
@@ -339,7 +402,7 @@ async def replace_week_from_kaipoke(
             _skip("時刻が解釈できません", e, d)
             continue
 
-        pid_str = match_name(e.user_name, pindex)
+        pid_str = match_name(e.user_name, patient_index)
         if pid_str is None:
             _skip("患者を名寄せできません（らく助未登録の可能性）", e, d)
             continue

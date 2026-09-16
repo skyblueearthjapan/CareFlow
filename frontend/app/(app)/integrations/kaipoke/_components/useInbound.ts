@@ -22,6 +22,7 @@ import {
   useRestoreInboundSnapshot,
   useSmartInboundPreview,
 } from '@/lib/queries/integrations';
+import { apiErrorMessage } from '@/lib/api/errorMessage';
 import { INBOUND_HISTORY_OP_LABELS, isReportableJob, opLabel } from '@/lib/kaipokeOps';
 import type { EventsInboundPreview, SmartInboundPreview } from '@/lib/schemas/integration';
 
@@ -74,6 +75,8 @@ export interface InboundHistoryRow {
   at: string;
   /** 連携結果レポート (📄) を開けるか = 完了済み × 対象 op。 */
   reportable: boolean;
+  /** 失敗ジョブの理由 (params.error・2026-09-16 A-2)。成功時は空。 */
+  error: string;
 }
 
 export function fmtRelativeWeek(offset: number): string {
@@ -123,6 +126,10 @@ export function useInbound({
   // イベント (個別業務) — smart と同じ❶❸ボタンに相乗り
   const [eventsPlan, setEventsPlan] = useState<EventsInboundPreview | null>(null);
   const [eventsError, setEventsError] = useState<string | null>(null);
+  // ❸取り込みの失敗内容 (画面に残す Alert・2026-09-16 A-3)。toast だけだと
+  // 「訪問は失敗・イベントは成功」の部分失敗が数秒で消えて成功に見えてしまう
+  // (本番 9/15 の W38/W39 取込が丸ごと落ちたのに気付けなかった原因)。
+  const [applyError, setApplyError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
   // 取り込み対象 (kaipoke-event-two-way-design.md §3-③): false = 訪問＋イベント (従来) /
   // true = イベントのみ (訪問には一切触れない・RPA 1オペで所要も約半分)
@@ -149,6 +156,7 @@ export function useInbound({
           status: j.status,
           at: j.completed_at ?? j.created_at,
           reportable: isReportableJob(j),
+          error: field(j.params, 'error'),
         })),
     [jobsQuery.data],
   );
@@ -190,6 +198,7 @@ export function useInbound({
     setSmartPlan(null);
     setEventsPlan(null);
     setEventsError(null);
+    setApplyError(null);
   };
 
   // モード切替時は取得済みプランを破棄する (「訪問＋イベント」で取得したプランを
@@ -245,6 +254,7 @@ export function useInbound({
     const hasEventTarget = (eventsPlan?.changes.length ?? 0) > 0;
     if (!hasVisitTarget && !hasEventTarget) return;
     setConfirm(false);
+    setApplyError(null);
     const parts: string[] = [];
     let failed = false;
 
@@ -270,8 +280,17 @@ export function useInbound({
         }
       } catch (e) {
         failed = true;
-        toast.error(e instanceof Error ? e.message : '取り込みに失敗しました');
+        // `e.message` は "API 422 Unprocessable Entity (/api/v1/...)" という機械向け
+        // 文字列で、理由 (BE の detail) は body 側にある。現場が読めるのは detail の方。
+        setApplyError(apiErrorMessage(e, '取り込みに失敗しました'));
       }
+    }
+
+    // 訪問 apply が失敗したらイベント apply へ進まない (2026-09-16 A-3)。
+    // 訪問だけ落ちてイベントだけ入る「部分適用」を作らない — カイポケとらく助の
+    // 週が中途半端にズレ、成功トーストで気付けなくなる (調査 §5)。
+    if (failed) {
+      return;
     }
 
     // イベント (週丸ごと・プレビューの changes をエコーバック)
@@ -288,11 +307,18 @@ export function useInbound({
         );
       } catch (e) {
         failed = true;
-        toast.error(e instanceof Error ? e.message : 'イベントの取り込みに失敗しました');
+        // 訪問は既に適用済み = 取り消せない。何が入ったかを Alert 本文に含めないと
+        // 「全部失敗した」と誤読され、二重取り込みを誘発する (2026-09-16 A-3)。
+        const applied = parts.length > 0 ? `訪問は適用済み（${parts.join(' ｜ ')}）。` : '';
+        setApplyError(
+          `${applied}イベントの取込に失敗: ${apiErrorMessage(e, 'イベントの取り込みに失敗しました')}`,
+        );
       }
     }
 
-    if (parts.length > 0) {
+    // 部分失敗で成功トーストを出さない — 数秒で消える成功表示が、画面に残る
+    // Alert より先に目に入ると「取り込めた」と誤認される (2026-09-16 A-3)。
+    if (!failed && parts.length > 0) {
       toast.success(`取り込み完了 — ${parts.join(' ｜ ')}`);
     }
     if (!failed) {
@@ -327,6 +353,7 @@ export function useInbound({
     applyEvents,
     eventsPlan,
     eventsError,
+    applyError,
     hasEventChanges,
     // 取り込み対象モード (③イベントのみ取込)
     eventsOnly,

@@ -485,3 +485,46 @@ async def test_smart_case_b_with_checkin_on_moved_visit_is_blocked(
         date(2026, 7, 8),
         date(2026, 7, 9),
     ]
+
+
+@pytest.mark.asyncio
+async def test_smart_apply_failure_is_recorded_as_failed_job(client, db, stub_kaipoke) -> None:
+    """422 で終わった取込は履歴に failed で残る (A-2 / 2026-09-16).
+
+    従来は例外でジョブを作らずに抜けていたため、訪問の取込が丸ごと落ちても
+    履歴には「イベント取込 完了」しか残らなかった (調査 §2-4)。
+    """
+    from app.models.kaipoke_job import KaipokeJob
+
+    await _seed_week(db)
+    admin = await _make_admin(db)
+    stub_kaipoke.by_month[MONTH] = ""  # カイポケ現況 0 件 → 空CSV拒否
+
+    res = await _apply(client, admin, sheet_id=None, dry_run=False)
+    assert res.status_code == 422, res.text
+    assert "0件" in res.json()["detail"]
+
+    jobs = list(
+        (await db.scalars(select(KaipokeJob).where(KaipokeJob.week_start == WEEK_START))).all()
+    )
+    assert len(jobs) == 1, jobs
+    job = jobs[0]
+    assert job.status == "failed"
+    assert job.params["op"] == "smart-apply"
+    assert "0件" in job.params["error"]
+    assert "0件" in (job.result_summary or {})["error"]
+    assert job.created_by_user_id == admin.id
+
+
+@pytest.mark.asyncio
+async def test_smart_apply_dry_run_failure_writes_nothing(client, db, stub_kaipoke) -> None:
+    """dry-run の失敗はジョブを作らない (「一切書き込まない」約束)。"""
+    from app.models.kaipoke_job import KaipokeJob
+
+    await _seed_week(db)
+    admin = await _make_admin(db)
+    stub_kaipoke.by_month[MONTH] = ""
+
+    res = await _apply(client, admin, sheet_id=None, dry_run=True)
+    assert res.status_code == 422, res.text
+    assert (await db.scalars(select(KaipokeJob))).all() == []

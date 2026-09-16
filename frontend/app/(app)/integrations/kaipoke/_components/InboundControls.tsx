@@ -48,6 +48,7 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
     smartPlan,
     eventsPlan,
     eventsError,
+    applyError,
     hasEventChanges,
     eventsOnly,
     setEventsOnly,
@@ -299,7 +300,7 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                 variant="destructive"
                 size="sm"
                 onClick={() => setConfirm(true)}
-                disabled={!credentialsConfigured || !canApply || applying || busy}
+                disabled={!credentialsConfigured || !canApply || applying || busy || !!applyError}
                 data-testid="smart-apply-button"
               >
                 {applying ? '実行中…' : '❸ らく助へ取り込む'}
@@ -308,6 +309,19 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                 <span className="text-xs text-text-muted">取り込む対象がありません</span>
               )}
             </div>
+            {/* 取り込みの失敗は toast ではなく画面に残す (2026-09-16 A-3)。
+                訪問が失敗した時点でイベントの取り込みも実行していない。
+                失敗後は❸を押せなくする — 古いプレビュー (sheetId / changes) のまま
+                再実行すると、カイポケ側が既に動いている場合に二重適用になる。 */}
+            {applyError && (
+              <Alert variant="destructive" data-testid="smart-apply-error">
+                <AlertTitle>取り込みに失敗しました</AlertTitle>
+                <AlertDescription>
+                  {applyError}
+                  {' — ❶ プレビューを取り直してから再実行してください'}
+                </AlertDescription>
+              </Alert>
+            )}
           </div>
         )}
       </div>
@@ -344,6 +358,16 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                   >
                     {h.status === 'completed' ? '成功' : h.status === 'failed' ? '失敗' : h.status}
                   </span>
+                  {/* 失敗の理由 (2026-09-16 A-2: 422 も履歴に残るようになった) */}
+                  {h.status === 'failed' && h.error && (
+                    <span
+                      className="w-full truncate text-text-secondary"
+                      title={h.error}
+                      data-testid="inbound-history-error"
+                    >
+                      {h.error}
+                    </span>
+                  )}
                   {/* 取り込み結果を A4 の報告書で開く (完了ジョブのみ) */}
                   {h.reportable && (
                     <SyncReportButton jobId={h.id} className="h-6 shrink-0 px-2 text-[11px]" />

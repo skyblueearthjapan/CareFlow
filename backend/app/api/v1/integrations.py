@@ -17,7 +17,7 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy import and_, delete, func, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -4765,6 +4765,50 @@ async def smart_inbound_preview(
     )
 
 
+async def _fail_smart_apply(
+    db: AsyncSession,
+    *,
+    week_start: date,
+    user: User,
+    detail: str,
+    now: datetime,
+    dry_run: bool,
+) -> HTTPException:
+    """smart-apply の 422 を **失敗ジョブとして履歴に残し**、返す例外を作る。
+
+    2026-09-16 (mobile-staff-schedule-design §1 A-2): 従来は例外でジョブを作らずに
+    抜けていたため、訪問の取込が丸ごと落ちても履歴には「イベント取込 完了」しか
+    残らなかった (調査 §2-4)。メインの書込は rollback し、**別トランザクション**で
+    failed 行だけを commit する。dry-run は「一切書き込まない」約束のため記録しない。
+    """
+    # rollback で ORM 属性が expire されるため、先に値を取り出しておく
+    # (expire 後の user.id は同期コンテキストで再読込され MissingGreenlet になる)。
+    user_id = user.id
+    await db.rollback()
+    if not dry_run:
+        job = KaipokeJob(
+            job_type="fetch",
+            week_start=week_start,
+            params={
+                "op": "smart-apply",
+                "week_start": week_start.isoformat(),
+                "error": detail,
+            },
+            status="failed",
+            started_at=now,
+            completed_at=datetime.now(UTC),
+            created_by_user_id=user_id,
+        )
+        job.result_summary = {"error": detail}
+        db.add(job)
+        try:
+            await db.commit()
+        except SQLAlchemyError:  # pragma: no cover - 履歴記録の失敗で 422 を潰さない
+            logger.exception("failed to record smart-apply failure job")
+            await db.rollback()
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+
+
 @router.post(
     "/smart-inbound-apply",
     response_model=SmartInboundApplyResult,
@@ -4841,9 +4885,12 @@ async def smart_inbound_apply(
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
         entries = parse_csv_from_content(csv_content, "kaipoke")
         if not entries:
-            await db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            raise await _fail_smart_apply(
+                db,
+                week_start=week_start,
+                user=user,
+                now=now,
+                dry_run=payload.dry_run,
                 detail=(
                     "カイポケの現況が0件でした。カイポケにこの週のスケジュールが"
                     "入力されているか確認してください（0件での置換は安全のため拒否します）"
@@ -4866,8 +4913,12 @@ async def smart_inbound_apply(
             .with_for_update(of=CorrectionSheet)
         )
         if sheet is None or sheet.direction != "inbound":
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            raise await _fail_smart_apply(
+                db,
+                week_start=week_start,
+                user=user,
+                now=now,
+                dry_run=payload.dry_run,
                 detail="差分シートが見つかりません（プレビューを取り直してください）",
             )
         if sheet.status == "applied":
@@ -4966,9 +5017,13 @@ async def smart_inbound_apply(
                 target_days=set(replace_days) - held_days,
             )
         except ReplaceBlockedError as exc:
-            await db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            raise await _fail_smart_apply(
+                db,
+                week_start=week_start,
+                user=user,
+                now=now,
+                dry_run=payload.dry_run,
+                detail=str(exc),
             ) from exc
         replace_plan = plan
         replace_read = _replace_result_read(plan, None)
