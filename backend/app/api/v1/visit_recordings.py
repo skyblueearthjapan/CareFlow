@@ -56,7 +56,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -78,10 +78,12 @@ from app.models.visit_recording import (
 from app.schemas.visit_recording import (
     VisitRecordingList,
     VisitRecordingRead,
+    VisitRecordingReportRead,
     VisitRecordingUpdate,
 )
 from app.services.checkin.judge import JST
 from app.services.voice.jobs import reap_stale_jobs_standalone, run_transcribe_job
+from app.services.voice.record_report_html import render_visit_record_html
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +131,9 @@ _CONTENT_LENGTH_SLACK = 64 * 1024
 
 # 413 の文言に出す「約 N 分」の換算レート (FE の録音設定と同じ 32kbps)。
 _AUDIO_BITRATE_BPS = 32_000
+
+# 音声本体と印刷レポートは個人情報そのもの。中間キャッシュにも端末にも残さない。
+_NO_STORE: dict[str, str] = {"Cache-Control": "no-store"}
 
 
 # ---------------------------------------------------------------------------
@@ -715,6 +720,49 @@ async def get_visit_recording(
     return await _serialize_one(db, row)
 
 
+async def _audit_read(
+    db: AsyncSession,
+    request: Request,
+    user: User,
+    row: VisitRecording,
+    *,
+    action: str,
+    suffix: str,
+) -> None:
+    """個人情報そのものを返す GET を ``audit_logs`` に明示記録する (設計 §2-6)。
+
+    監査ミドルウェアは GET を記録しない (読み取りの量が桁違いのため)。音声本体
+    (``audio_read``) と印刷レポート (``report_read``) は会話の中身がそのまま
+    出ていくので、**この 2 本だけ** 例外として自分で 1 行書く。記録に失敗しても
+    **配信は止めない** — 監査の都合で現場の閲覧を落とす方が害が大きい。
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    ip_address = (
+        forwarded.split(",", 1)[0].strip()[:64]
+        if forwarded
+        else (request.client.host[:64] if request.client else None)
+    )
+    db.add(
+        AuditLog(
+            actor_user_id=user.id,
+            role=normalize_user_role(user.role),
+            action=action,
+            target_table="visit_recordings",
+            target_id=str(row.id)[:64],
+            method="GET",
+            path=f"/api/v1/visit-recordings/{row.id}{suffix}"[:255],
+            status_code=200,
+            ip_address=ip_address,
+            user_agent=(request.headers.get("user-agent") or None),
+        )
+    )
+    try:
+        await db.commit()
+    except Exception:  # noqa: BLE001 — 監査の失敗で閲覧を落とさない
+        logger.exception("voice: %s audit insert failed (swallowed)", action)
+        await db.rollback()
+
+
 @router.get(
     "/{recording_id}/audio",
     response_class=FileResponse,
@@ -735,40 +783,68 @@ async def get_visit_recording_audio(
     if not file_path.exists():
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="音声ファイルがありません")
 
-    # 監査ミドルウェアは GET を記録しない (読み取りの量が桁違いのため)。音声は
-    # 個人情報そのものなので、**この 1 本だけ** 例外として明示的に記録する
-    # (設計 §2-6「読み取り監査の例外」)。失敗しても配信は止めない。
-    forwarded = request.headers.get("x-forwarded-for")
-    ip_address = (
-        forwarded.split(",", 1)[0].strip()[:64]
-        if forwarded
-        else (request.client.host[:64] if request.client else None)
-    )
-    db.add(
-        AuditLog(
-            actor_user_id=user.id,
-            role=normalize_user_role(user.role),
-            action="audio_read",
-            target_table="visit_recordings",
-            target_id=str(row.id)[:64],
-            method="GET",
-            path=f"/api/v1/visit-recordings/{row.id}/audio"[:255],
-            status_code=200,
-            ip_address=ip_address,
-            user_agent=(request.headers.get("user-agent") or None),
-        )
-    )
-    try:
-        await db.commit()
-    except Exception:  # noqa: BLE001 — 監査の失敗で音声配信を落とさない
-        logger.exception("voice: audio_read audit insert failed (swallowed)")
-        await db.rollback()
+    # 配信に要る値は **監査より前に素の値へ退避する**。``_audit_read`` は commit し、
+    # 失敗すれば rollback する — rollback すると ORM の属性は expire 済みになり、
+    # そこへ触った瞬間に遅延ロードが走って async では MissingGreenlet で 500 に
+    # なる。「監査に失敗しても配信は止めない」という約束が、属性アクセス 1 つで
+    # 破れないようにしておく。
+    media_type = row.audio_mime or "application/octet-stream"
+    filename = file_path.name
+
+    await _audit_read(db, request, user, row, action="audio_read", suffix="/audio")
 
     return FileResponse(
         path=str(file_path),
-        media_type=row.audio_mime or "application/octet-stream",
-        filename=file_path.name,
-        headers={"Accept-Ranges": "bytes"},
+        media_type=media_type,
+        filename=filename,
+        headers={"Accept-Ranges": "bytes", **_NO_STORE},
+    )
+
+
+@router.get(
+    "/{recording_id}/report",
+    response_model=VisitRecordingReportRead,
+    responses={200: {"content": {"text/html": {}}}},
+    summary="訪問記録の印刷レポート (A4 縦 HTML・audit_logs に読み取りを明示記録)",
+)
+async def get_visit_recording_report(
+    recording_id: uuid.UUID,
+    request: Request,
+    response: Response,
+    db: DbDep,
+    user: CurrentActiveUser,
+    fmt: Annotated[Literal["json", "html"], Query(alias="format")] = "json",
+) -> HTMLResponse | VisitRecordingReportRead:
+    """音声記録 1 件を A4 縦の訪問記録にして返す (read-only・設計 §11-3)。
+
+    可視性は詳細と同じ (``_load_recording_or_404`` = admin と録音した本人だけ。
+    他人の録音は 404 で存在ごと秘匿)。中身は要約と会話の全文そのものなので、
+    ``audit_logs`` に ``action='report_read'`` を 1 行残し (``audio_read`` と同型)、
+    応答には ``Cache-Control: no-store`` を付ける。
+
+    ``format=json`` の ``recording`` は **全文 (``transcript`` /
+    ``transcript_json``) を省く** — 同じ本文が ``html`` に入っているので、
+    1 応答に会話を 2 回載せない (一覧が全文を返さないのと同じ作法)。全文が要る
+    画面は ``html`` を使うか、詳細 (``GET /visit-recordings/{id}``) を叩く。
+    """
+    row = await _load_recording_or_404(db, recording_id, user)
+    payload = await _serialize_one(db, row)
+    generated_at = datetime.now(UTC)
+    html_doc = render_visit_record_html({**payload, "generated_at": generated_at})
+
+    await _audit_read(db, request, user, row, action="report_read", suffix="/report")
+
+    if fmt == "html":
+        return HTMLResponse(html_doc, headers=_NO_STORE)
+
+    # ``_serialize_one(..., include_transcript=False)`` と同じ中身。名前解決
+    # (患者 / スタッフ / 拠点) を 2 度引かないために dict を複製して落とす。
+    recording = {**payload, "transcript": None, "transcript_json": None}
+    response.headers["Cache-Control"] = _NO_STORE["Cache-Control"]
+    return VisitRecordingReportRead(
+        recording=VisitRecordingRead.model_validate(recording),
+        html=html_doc,
+        generated_at=generated_at,
     )
 
 

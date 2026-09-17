@@ -25,6 +25,13 @@ else
   fail "free disk on / = ${disk_free_mb} MB (need >= ${required_mb})"
 fi
 
+# 1b. Voice recordings bind mount (informational; ~2 GB/month at 400 visits).
+# Never a FAIL -- on a first deploy the directory does not exist yet.
+# See docs/plans/visit-voice-record-design-2026-09-17.md 11-3 (disk monitoring).
+audio_dir="/opt/carelink/data/visit_audio"
+audio_size=$([ -d "${audio_dir}" ] && du -sh "${audio_dir}" 2>/dev/null | awk '{print $1}' || echo "absent")
+ok "visit_audio (${audio_dir}) = ${audio_size:-unknown}"
+
 # 2. Memory (>=1 GB available)
 hdr "memory"
 mem_avail_mb=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)

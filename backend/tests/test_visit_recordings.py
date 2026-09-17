@@ -1617,3 +1617,310 @@ def test_migration_0087_chain_and_columns() -> None:
     # モデル側にも生えていること (テストの DB は create_all で作られるため)。
     assert "summary_edited_by" in VisitRecording.__table__.columns
     assert "summary_edited_at" in VisitRecording.__table__.columns
+
+
+# ---------------------------------------------------------------------------
+# 印刷レポート (GET /{id}/report) — 設計 §11-3
+
+
+@pytest.mark.asyncio
+async def test_report_html_and_json(client, db, audio_dir, staff_user) -> None:
+    """format=html は text/html、既定の json は記録 + html を同梱して返す."""
+    staff, user = staff_user
+    row = await _seed_recording(
+        db,
+        staff.id,
+        status="summarized",
+        summary={"主訴・様子": ["膝の痛み"], "バイタル": {"血圧": "128/76"}},
+        summary_text="【主訴・様子】\n・膝の痛み",
+        transcript="看護師: こんにちは。",
+    )
+
+    res = await client.get(
+        f"/api/v1/visit-recordings/{row.id}/report",
+        headers=_bearer(user),
+        params={"format": "html"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.headers["content-type"].startswith("text/html")
+    assert res.text.startswith("<!doctype html>")
+    assert "膝の痛み" in res.text
+    assert "看護師: こんにちは。" in res.text
+
+    res = await client.get(f"/api/v1/visit-recordings/{row.id}/report", headers=_bearer(user))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["recording"]["id"] == str(row.id)
+    # 全文は html に入っているので JSON 側では省く (1 応答に会話を 2 回載せない)。
+    assert body["recording"]["transcript"] is None
+    assert body["recording"]["transcript_json"] is None
+    assert body["html"].startswith("<!doctype html>")
+    assert "看護師: こんにちは。" in body["html"]
+    assert body["generated_at"]
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_report_is_never_cached(client, db, audio_dir, staff_user) -> None:
+    """レポートも音声も個人情報そのもの → Cache-Control: no-store."""
+    staff, user = staff_user
+    row = await _seed_recording(db, staff.id, status="summarized", transcript="全文")
+
+    for params in ({"format": "html"}, {}):
+        res = await client.get(
+            f"/api/v1/visit-recordings/{row.id}/report", headers=_bearer(user), params=params
+        )
+        assert res.status_code == 200, res.text
+        assert res.headers["cache-control"] == "no-store"
+
+    created = (await _post_recording(client, user)).json()
+    res = await client.get(f"/api/v1/visit-recordings/{created['id']}/audio", headers=_bearer(user))
+    assert res.status_code == 200, res.text
+    assert res.headers["cache-control"] == "no-store"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_report_rejects_unknown_format(client, db, audio_dir, staff_user) -> None:
+    """format は html / json だけ (pdf は 422 = 黙って json を返さない)."""
+    staff, user = staff_user
+    row = await _seed_recording(db, staff.id, status="summarized")
+
+    res = await client.get(
+        f"/api/v1/visit-recordings/{row.id}/report",
+        headers=_bearer(user),
+        params={"format": "pdf"},
+    )
+    assert res.status_code == 422, res.text
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_audio_survives_audit_commit_failure(
+    client, db, audio_dir, staff_user, monkeypatch
+) -> None:
+    """監査の commit が落ちても音声は 200 で返る (rollback 後の属性に触らない).
+
+    ``_audit_read`` は失敗時に rollback する。rollback すると ORM の属性は
+    expire 済みになり、そこへ触ると遅延ロードが走って async では
+    MissingGreenlet で 500 になる — 配信に要る値は監査より前に退避してある。
+    """
+    _staff, user = staff_user
+    created = (await _post_recording(client, user)).json()
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    async def _boom(self, *args, **kwargs):
+        raise RuntimeError("audit commit failed")
+
+    monkeypatch.setattr(AsyncSession, "commit", _boom)
+
+    res = await client.get(f"/api/v1/visit-recordings/{created['id']}/audio", headers=_bearer(user))
+    assert res.status_code == 200, res.text
+    assert res.content == b"fake-audio-bytes"
+    assert res.headers["cache-control"] == "no-store"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_report_writes_audit_row(client, db, audio_dir, staff_user) -> None:
+    """レポートは会話の全文そのものなので audit_logs に report_read を残す."""
+    staff, user = staff_user
+    row = await _seed_recording(db, staff.id, status="summarized", transcript="全文")
+
+    res = await client.get(
+        f"/api/v1/visit-recordings/{row.id}/report",
+        headers=_bearer(user),
+        params={"format": "html"},
+    )
+    assert res.status_code == 200, res.text
+
+    rows = (await db.scalars(select(AuditLog).where(AuditLog.action == "report_read"))).all()
+    assert len(rows) == 1
+    assert rows[0].target_table == "visit_recordings"
+    assert rows[0].target_id == str(row.id)
+    assert rows[0].method == "GET"
+    assert rows[0].path.endswith(f"/visit-recordings/{row.id}/report")
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_report_of_foreign_recording_returns_404(client, db, audio_dir, staff_user) -> None:
+    """他人の録音は詳細と同じく 404 (存在ごと秘匿)."""
+    _staff, user = staff_user
+    other = Staff(name="他人 太郎")
+    db.add(other)
+    await db.commit()
+    await db.refresh(other)
+    row = await _seed_recording(db, other.id, status="summarized", transcript="他人の会話")
+
+    res = await client.get(f"/api/v1/visit-recordings/{row.id}/report", headers=_bearer(user))
+    assert res.status_code == 404, res.text
+    # 秘匿した以上、監査にも「読んだ」行は残らない。
+    assert (await db.scalar(select(AuditLog).where(AuditLog.action == "report_read"))) is None
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_report_of_foreign_recording_allowed_for_admin(
+    client, db, audio_dir, staff_user, admin_user
+) -> None:
+    staff, _user = staff_user
+    row = await _seed_recording(db, staff.id, status="summarized", transcript="全文")
+
+    res = await client.get(f"/api/v1/visit-recordings/{row.id}/report", headers=_bearer(admin_user))
+    assert res.status_code == 200, res.text
+    await db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# 利用状況 (GET /admin/visit-recordings/usage) — 設計 §11-3
+
+
+def _jst_month_utc(year: int, month: int, day: int, hour: int, minute: int = 0) -> datetime:
+    """JST の壁掛け時計を UTC の aware datetime に直す (created_at を置くため)。"""
+    return datetime(year, month, day, hour, minute, tzinfo=JST).astimezone(UTC)
+
+
+@pytest.mark.asyncio
+async def test_usage_aggregates_month_in_jst(client, db, audio_dir, staff_user, admin_user) -> None:
+    """月の境界は JST。9/30 23:00 JST は 9 月、10/1 00:30 JST は 10 月."""
+    staff, _user = staff_user
+
+    inside_first = await _seed_recording(
+        db, staff.id, status="summarized", duration_sec=600, tokens_in=100, tokens_out=20
+    )
+    inside_last = await _seed_recording(
+        db, staff.id, status="failed", duration_sec=300, tokens_in=50, tokens_out=5
+    )
+    outside = await _seed_recording(db, staff.id, status="summarized", duration_sec=900)
+    deleted = await _seed_recording(db, staff.id, status="summarized", duration_sec=1200)
+
+    # created_at (サーバー受領時刻) を JST の境界ぎりぎりに置く。
+    inside_first.created_at = _jst_month_utc(2026, 9, 1, 0, 30)
+    inside_first.cost_usd = Decimal("0.0020")
+    inside_last.created_at = _jst_month_utc(2026, 9, 30, 23, 0)
+    inside_last.cost_usd = Decimal("0.0010")
+    # UTC では 9 月 30 日のままだが JST では 10 月 1 日 = 対象外。
+    outside.created_at = _jst_month_utc(2026, 10, 1, 0, 30)
+    outside.cost_usd = Decimal("9.9999")
+    # 消した録音は数えない。
+    deleted.created_at = _jst_month_utc(2026, 9, 15, 12, 0)
+    deleted.cost_usd = Decimal("5.0000")
+    deleted.deleted_at = datetime.now(UTC)
+    await db.commit()
+
+    res = await client.get(
+        "/api/v1/admin/visit-recordings/usage",
+        headers=_bearer(admin_user),
+        params={"month": "2026-09"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["month"] == "2026-09"
+    assert body["recordings"] == 2
+    assert body["minutes_total"] == 15.0
+    assert body["tokens_in"] == 150
+    assert body["tokens_out"] == 25
+    assert body["cost_usd"] == pytest.approx(0.003)
+    assert body["failed"] == 1
+    assert body["by_status"]["summarized"] == 1
+    assert body["by_status"]["failed"] == 1
+    # 0 件の status も 0 で埋める (画面のバッジが月によって消えない)。
+    assert body["by_status"]["unlinked"] == 0
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_usage_by_staff(client, db, audio_dir, staff_user, admin_user) -> None:
+    staff, _user = staff_user
+    other = Staff(name="他人 太郎")
+    db.add(other)
+    await db.commit()
+    await db.refresh(other)
+
+    mine_1 = await _seed_recording(db, staff.id, status="summarized", duration_sec=600)
+    mine_2 = await _seed_recording(db, staff.id, status="summarized", duration_sec=300)
+    theirs = await _seed_recording(db, other.id, status="summarized", duration_sec=120)
+    for row, cost in ((mine_1, "0.0020"), (mine_2, "0.0010"), (theirs, "0.0005")):
+        row.created_at = _jst_month_utc(2026, 9, 10, 12, 0)
+        row.cost_usd = Decimal(cost)
+    await db.commit()
+
+    res = await client.get(
+        "/api/v1/admin/visit-recordings/usage",
+        headers=_bearer(admin_user),
+        params={"month": "2026-09"},
+    )
+    assert res.status_code == 200, res.text
+    by_staff = res.json()["by_staff"]
+    assert len(by_staff) == 2
+    # 件数の多い順。
+    assert by_staff[0]["staff_id"] == str(staff.id)
+    assert by_staff[0]["staff_name"] == "録音 花子"
+    assert by_staff[0]["recordings"] == 2
+    assert by_staff[0]["minutes"] == 15.0
+    assert by_staff[0]["cost_usd"] == pytest.approx(0.003)
+    assert by_staff[1]["staff_name"] == "他人 太郎"
+    assert by_staff[1]["recordings"] == 1
+
+    # 総計は内訳の合計。画面の行を足して総計に合わないことがあってはならない。
+    body = res.json()
+    assert body["minutes_total"] == round(sum(s["minutes"] for s in by_staff), 1)
+    assert body["cost_usd"] == round(sum(s["cost_usd"] for s in by_staff), 6)
+    assert body["recordings"] == sum(s["recordings"] for s in by_staff)
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_usage_empty_month_is_all_zero(client, db, audio_dir, admin_user) -> None:
+    """1 件も無い月は総計 0 (by_staff が空でも落ちない)."""
+    res = await client.get(
+        "/api/v1/admin/visit-recordings/usage",
+        headers=_bearer(admin_user),
+        params={"month": "2020-01"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["recordings"] == 0
+    assert body["minutes_total"] == 0
+    assert body["cost_usd"] == 0
+    assert body["by_staff"] == []
+    assert body["failed"] == 0
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_usage_rejects_bad_month_and_staff(client, db, audio_dir, staff_user, admin_user):
+    """形式違いの month は 422、staff ロールは 403 (admin 専用)."""
+    _staff, user = staff_user
+
+    res = await client.get(
+        "/api/v1/admin/visit-recordings/usage",
+        headers=_bearer(admin_user),
+        params={"month": "2026-13"},
+    )
+    assert res.status_code == 422, res.text
+
+    res = await client.get(
+        "/api/v1/admin/visit-recordings/usage",
+        headers=_bearer(user),
+        params={"month": "2026-09"},
+    )
+    assert res.status_code == 403, res.text
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_usage_defaults_to_current_month(client, db, audio_dir, staff_user, admin_user):
+    """month 省略は JST の今月 (受領したばかりの録音が 1 件数えられる)."""
+    _staff, user = staff_user
+    await _post_recording(client, user)
+
+    res = await client.get("/api/v1/admin/visit-recordings/usage", headers=_bearer(admin_user))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["month"] == datetime.now(UTC).astimezone(JST).strftime("%Y-%m")
+    assert body["recordings"] == 1
+    assert body["cost_usd"] == 0.0
+    await db.rollback()

@@ -14,6 +14,12 @@
 #     a sibling 'visit_photos/' directory under BACKUP_DIR (size-bounded
 #     incremental copy; large datasets should switch to a dedicated object
 #     store later -- see runbook).
+#   - VisitRecording audio (/opt/carelink/data/visit_audio) is deliberately NOT
+#     backed up. It grows ~2 GB/month, it is purged after
+#     VISIT_AUDIO_RETENTION_DAYS anyway, and the durable part of a recording
+#     (transcript + summary) lives in the DB dump above. Copying it here would
+#     also keep audio alive past its retention date, which defeats the purge.
+#     See docs/plans/visit-voice-record-design-2026-09-17.md 11-3.
 #   - All output appended to /var/log/carelink/backup.log.
 #
 # Exit codes:

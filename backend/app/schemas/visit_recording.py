@@ -102,3 +102,59 @@ class VisitRecordingUpdate(BaseModel):
     note_append: str | None = Field(default=None, max_length=2000)
     # 要約の人手修正 (admin または録音した本人)。空文字 / null は「要約を消す」。
     summary_text: str | None = Field(default=None, max_length=20000)
+
+
+class VisitRecordingReportRead(BaseModel):
+    """A4 印刷レポート (``GET /visit-recordings/{id}/report``・設計 §11-3)。
+
+    ``format=html`` では HTML そのもの (``text/html``) を返し、既定の
+    ``format=json`` ではこの形で **記録のメタと HTML を同梱** する
+    (``sync_report`` と同じ作法 — 画面がメタも HTML も 1 回で取れるように)。
+
+    ``recording`` は **全文 (``transcript`` / ``transcript_json``) を含まない**
+    (一覧と同じ作法)。同じ会話が ``html`` に入っているので 1 応答に 2 回載せない。
+    全文が要る画面は ``html`` を使うか詳細 (``GET /visit-recordings/{id}``) を叩く。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    recording: VisitRecordingRead
+    html: str
+    generated_at: datetime
+
+
+class VisitRecordingUsageByStaff(BaseModel):
+    """費用ダッシュボードのスタッフ別内訳 (設計 §11-3)。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    staff_id: UUID
+    staff_name: str | None = None
+    recordings: int
+    minutes: float
+    cost_usd: float
+
+
+class VisitRecordingUsage(BaseModel):
+    """``GET /admin/visit-recordings/usage?month=YYYY-MM`` の月次集計。
+
+    対象は ``deleted_at IS NULL`` の行のみ、月の境界は **JST** で数える
+    (``created_at`` = サーバー受領時刻。UTC で切ると月末の夕方以降が隣の月に入る)。
+    ``cost_usd`` は DB では ``Numeric(12,6)`` なので float へ落として返す。
+
+    ``minutes_total`` / ``cost_usd`` は **``by_staff`` の合計** (丸め済みの内訳を
+    足した値)。画面のスタッフ別の行を足すと必ず総計に一致する。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    month: str
+    recordings: int
+    minutes_total: float
+    tokens_in: int
+    tokens_out: int
+    cost_usd: float
+    by_staff: list[VisitRecordingUsageByStaff]
+    # status → 件数 (0 件の status も 0 で埋める = 画面が欠けない)。
+    by_status: dict[str, int]
+    failed: int
