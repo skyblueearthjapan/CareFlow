@@ -37,9 +37,12 @@ from app.services.voice.pricing import estimate_cost_usd, output_tokens, split_p
 try:  # pragma: no cover - import guard
     from google.auth.transport.requests import Request as GoogleAuthRequest
     from google.oauth2 import service_account
-except ImportError:  # pragma: no cover - google-auth 未導入の環境
+except ImportError as _exc:  # pragma: no cover - google-auth / requests 未導入の環境
     GoogleAuthRequest = None  # type: ignore[assignment]
     service_account = None  # type: ignore[assignment]
+    _GOOGLE_AUTH_IMPORT_ERROR: str = str(_exc)
+else:
+    _GOOGLE_AUTH_IMPORT_ERROR = ""
 
 DEFAULT_LOCATION = "asia-northeast1"
 DEFAULT_MODEL = "gemini-2.5-flash"
@@ -261,7 +264,9 @@ class VertexVoiceClient:
     def _load_token(path: str) -> tuple[str, float]:
         """Blocking credential load/refresh (call through asyncio.to_thread)."""
         if service_account is None or GoogleAuthRequest is None:
-            raise VoiceAiError("auth", "google-auth is not installed")
+            raise VoiceAiError(
+                "auth", f"google-auth import failed: {_GOOGLE_AUTH_IMPORT_ERROR or 'unknown'}"
+            )
         try:
             creds = service_account.Credentials.from_service_account_file(path, scopes=_SCOPES)
             creds.refresh(GoogleAuthRequest())

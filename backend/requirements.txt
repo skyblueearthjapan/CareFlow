@@ -16,6 +16,7 @@ python-jose[cryptography]>=3.3,<4.0
 httpx>=0.27,<1.0
 # Vertex AI (訪問の音声記録) のサービスアカウント認証。
 google-auth>=2.30,<3.0
+requests>=2.31,<3.0  # google.auth.transport.requests が要求 (本番 2026-09-17 で発覚)
 email-validator>=2.1,<3.0
 python-multipart>=0.0.9
 structlog>=24.1,<25.0
