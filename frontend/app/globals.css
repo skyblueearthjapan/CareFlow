@@ -119,6 +119,29 @@
   animation: rakusuke-blink 1.2s ease-in-out infinite;
 }
 
+/* 録音中の簡易波形 (訪問の音声記録 §2-2)。実音量ではなく「録れている」ことの表示。 */
+@keyframes voice-wave {
+  0%,
+  100% {
+    height: 6px;
+  }
+  50% {
+    height: 26px;
+  }
+}
+.voice-wave-bar {
+  display: inline-block;
+  width: 4px;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--error);
+  opacity: 0.55;
+}
+.voice-wave-bar--on {
+  animation: voice-wave 0.9s ease-in-out infinite;
+  opacity: 1;
+}
+
 /* 横スクロールバーを上の1本に統一するため、本体側のブラウザ既定バーを隠す (案A 2026-08-23)。
    スクロール自体(横スワイプ/Shift+ホイール/プログラム)は従来どおり効く。 */
 .scrollbar-none {

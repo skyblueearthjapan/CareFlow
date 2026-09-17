@@ -95,3 +95,18 @@ describe('MobileVisitCard 新人同行表示', () => {
     );
   });
 });
+
+describe('MobileVisitCard 音声記録マーク', () => {
+  it('hasRecording のとき 🎙 マークを出す', () => {
+    setSession('staff-senior-1');
+    render(<MobileVisitCard visit={makeVisit()} hasRecording />);
+    expect(screen.getByTestId('mobile-visit-recording-mark')).toBeInTheDocument();
+    expect(screen.getByLabelText('音声記録あり')).toBeInTheDocument();
+  });
+
+  it('録音が無ければ出さない', () => {
+    setSession('staff-senior-1');
+    render(<MobileVisitCard visit={makeVisit()} />);
+    expect(screen.queryByTestId('mobile-visit-recording-mark')).toBeNull();
+  });
+});

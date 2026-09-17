@@ -1,5 +1,9 @@
 'use client';
 
+import { useEffect } from 'react';
+import { useSession } from 'next-auth/react';
+import { Mic } from 'lucide-react';
+
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -16,6 +20,7 @@ import {
   useMyVisits,
   type MyVisit,
 } from '@/lib/queries/me';
+import { useVisitRecordings } from '@/lib/queries/visit-recordings';
 import { foldStaffEvents } from '@/lib/schedule/foldStaffEvents';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import type { OverrideRead } from '@/lib/schemas/staff-overrides';
@@ -107,7 +112,7 @@ function shortTime(t: string): string {
  * しないもの = manual_cancel) は、打消線に加えて赤「取消」バッジを出す
  * (design §3 C-3 — 薄いだけだと現場が見落とす)。
  */
-function VisitChip({ visit: v }: { visit: MyVisit }) {
+function VisitChip({ visit: v, hasRecording }: { visit: MyVisit; hasRecording?: boolean }) {
   const cancelled = v.status === 'cancelled';
   const pal = genderPalette(v.patient_sex ?? null);
   return (
@@ -148,6 +153,14 @@ function VisitChip({ visit: v }: { visit: MyVisit }) {
         kind={classifyVisitDisplay(v, { showInactive: true })}
         testId={`this-week-inactive-badge-${v.id}`}
       />
+      {/* 音声記録あり (訪問の音声記録 §2-3)。 */}
+      {hasRecording && (
+        <Mic
+          className="h-3.5 w-3.5 shrink-0 opacity-70"
+          aria-label="音声記録あり"
+          data-testid={`this-week-recording-mark-${v.id}`}
+        />
+      )}
       {/* R-9d (PO要望): 縦1列化で空いた右側に住所 (名前より小さいフォント)。 */}
       {v.patient_address && (
         <span className="min-w-0 flex-1 truncate text-[10px] opacity-75">
@@ -176,6 +189,31 @@ export default function MobileThisWeekPage() {
   const { data: overrides } = useMyOverrides(range);
 
   const groups = groupByDate(visits ?? [], foldStaffEvents(events ?? []), overrides ?? []);
+
+  // 🎙 マーク用。今週ぶんの音声記録を 1 回だけ引き、visit_id の集合で判定する
+  // (`recordings_count` は API に無い・設計 §10-5)。1 週間ぶんを取り切れるよう
+  // 200 件で引き (レビュー M-1)、足りなければ警告だけ出す (`fields=` は BE 未対応)。
+  const { data: session } = useSession();
+  const staffId = session?.user?.staffId ?? null;
+  const { data: recordingList } = useVisitRecordings({
+    staffId,
+    from: range.from,
+    to: range.to,
+    limit: 200,
+  });
+  const recordedVisitIds = new Set(
+    (recordingList?.items ?? []).map((r) => r.visit_id).filter((id): id is string => !!id),
+  );
+  const recordingTotal = recordingList?.total ?? 0;
+  const recordingLoaded = recordingList?.items.length ?? 0;
+  useEffect(() => {
+    if (recordingTotal > recordingLoaded) {
+      console.warn('[visit-recordings] 🎙 マークが一部欠けます (取得上限)', {
+        total: recordingTotal,
+        loaded: recordingLoaded,
+      });
+    }
+  }, [recordingTotal, recordingLoaded]);
 
   return (
     <MobileSection pose="calendar" title="今週の予定" subtitle={`${weekStart} 週`}>
@@ -233,7 +271,11 @@ export default function MobileThisWeekPage() {
                 row.kind === 'event' ? (
                   <MobileEventChip key={`ev-${row.event.id}`} event={row.event} />
                 ) : (
-                  <VisitChip key={row.visit.id} visit={row.visit} />
+                  <VisitChip
+                    key={row.visit.id}
+                    visit={row.visit}
+                    hasRecording={recordedVisitIds.has(row.visit.id)}
+                  />
                 ),
               )}
             </div>

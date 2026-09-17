@@ -62,6 +62,23 @@ vi.mock('@/components/ui/sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
 
+// 音声記録 (設計 2026-09-17): 🎙 マーク用の一覧。既定は 0 件。
+vi.mock('@/lib/queries/visit-recordings', () => ({
+  useVisitRecordings: vi.fn(() => ({ data: { items: [], total: 0 } })),
+}));
+
+// 音声の未送信 / 送れなかった録音 (レビュー C-3)。件数はテストごとに差し替える。
+const voiceFlushStub = {
+  pendingCount: 0,
+  failedCount: 0,
+  flushNow: vi.fn(async () => undefined),
+  refreshPending: vi.fn(async () => undefined),
+};
+vi.mock('@/lib/voice/queue', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/voice/queue')>();
+  return { ...actual, useVoiceFlush: () => voiceFlushStub };
+});
+
 vi.mock('@/lib/queries/me', () => ({
   useMyVisits: vi.fn(() => ({ data: [], isLoading: false, isError: false, error: null })),
   // 職員イベント / 休み・時間変更 (design 2026-09-16 §3 C-1)。既定は 0 件。
@@ -96,6 +113,8 @@ beforeEach(() => {
   asMock(useMyStaffEvents).mockImplementation(() => NO_VISITS);
   asMock(useMyOverrides).mockImplementation(() => NO_VISITS);
   window.localStorage.clear();
+  voiceFlushStub.pendingCount = 0;
+  voiceFlushStub.failedCount = 0;
 });
 
 describe('今日の訪問 — 未送信の再送', () => {
@@ -318,5 +337,25 @@ describe('今日の訪問 — 職員イベントの混在', () => {
     await renderToday();
     expect(screen.getByText('山田 花子')).toBeInTheDocument();
     expect(screen.queryByText('取得に失敗しました')).not.toBeInTheDocument();
+  });
+});
+
+describe('今日の訪問 — 送れなかった録音 (C-3)', () => {
+  it('0 件のときはバナーを出さない', () => {
+    render(<MobileTodayPage />);
+
+    expect(screen.queryByTestId('today-voice-failed-banner')).not.toBeInTheDocument();
+  });
+
+  it('件数を出し、タップで一覧を開ける', async () => {
+    voiceFlushStub.failedCount = 2;
+    render(<MobileTodayPage />);
+
+    const banner = screen.getByTestId('today-voice-failed-banner');
+    expect(banner).toHaveTextContent('送れなかった録音 2 件');
+
+    fireEvent.click(banner);
+
+    expect(await screen.findByTestId('voice-failed-sheet')).toBeInTheDocument();
   });
 });

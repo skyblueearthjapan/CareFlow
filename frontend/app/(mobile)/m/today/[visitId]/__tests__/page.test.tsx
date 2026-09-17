@@ -33,6 +33,8 @@ vi.mock('next/navigation', () => ({
   useParams: () => ({ visitId: 'visit-1' }),
   useSearchParams: () => ({ get: searchParamsGet }),
   useRouter: () => ({ replace: routerReplace, push: routerPush }),
+  // 録音セッションの救出はパス変更でも走る (レビュー H-C)。
+  usePathname: () => '/m/today/visit-1',
 }));
 
 // Stable QueryClient stub so the page's useQueryClient() works without a provider.
@@ -82,6 +84,35 @@ vi.mock('@/lib/queries/me', () => ({
 vi.mock('@/lib/queries/visit-photos', () => ({
   useVisitPhotos: vi.fn(),
   useUploadPhoto: vi.fn(),
+}));
+
+// 音声記録 (設計 2026-09-17)。ここでは打刻フローの回帰だけを見るので、
+// 一覧は 0 件・録音パネル / 記録カードは差し替える (MediaRecorder は jsdom に無い)。
+vi.mock('@/lib/queries/visit-recordings', () => ({
+  useVisitRecordings: vi.fn(() => ({ data: { items: [], total: 0 } })),
+}));
+vi.mock('@/lib/voice/queue', () => ({
+  useVoiceFlush: () => ({ pendingCount: 0, flushNow: vi.fn(), refreshPending: vi.fn() }),
+}));
+// 録音はセッションが持つ (レビュー H-C)。ここでは「ページ離脱で救出が走るか」だけ見る。
+const rescueVoiceSessions = vi.hoisted(() => vi.fn(async () => 0));
+vi.mock('@/lib/voice/session', () => ({ rescueVoiceSessions }));
+// 録音パネルは到着打刻を跨いで**同じインスタンスのまま**でなければならない
+// (レビュー H-C)。mount / unmount を数えて、打刻で作り直されないことを縛る。
+const voicePanel = vi.hoisted(() => ({ mounts: 0, unmounts: 0 }));
+vi.mock('@/components/mobile/VoiceRecorderPanel', () => ({
+  VoiceRecorderPanel: ({ heading }: { heading?: string }) => {
+    React.useEffect(() => {
+      voicePanel.mounts += 1;
+      return () => {
+        voicePanel.unmounts += 1;
+      };
+    }, []);
+    return <div data-testid="voice-recorder-panel">{heading}</div>;
+  },
+}));
+vi.mock('@/components/mobile/VisitRecordCard', () => ({
+  VisitRecordCard: () => <div data-testid="visit-record-card" />,
 }));
 
 // 距離プレビューの public しきい値取得 (Phase 4)。既定では 100/300/50 を返す。
@@ -180,6 +211,8 @@ function mockGeolocation(mode: 'ok' | 'deny' = 'ok') {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  voicePanel.mounts = 0;
+  voicePanel.unmounts = 0;
   // clearAllMocks は implementation を消さないため、ディープリンク系テストで
   // 差し替えた searchParamsGet を毎回「?qr= 無し」へ戻す (漏れると後続の
   // スキャナ系テストが全部プレビュー直行になる)。
@@ -218,6 +251,100 @@ describe('QR チェックイン モバイル — 基本表示', () => {
     render(<MobileVisitDetailPage />);
     expect(screen.getByText('QRで到着を記録')).toBeInTheDocument();
     expect(screen.getByText('訪問できなかった（理由を記録）')).toBeInTheDocument();
+  });
+});
+
+/**
+ * 到着前と訪問中で録音パネルを別々に置くと、到着打刻の瞬間に片方が unmount され、
+ * 「到着前に録音 → 停止 → review（保存前）」の音声が巻き添えで消える。1 箇所に
+ * 置いて見出しだけ変える（レビュー H-C）。
+ */
+describe('音声記録パネルは到着打刻を跨いで生き残る (H-C)', () => {
+  it('到着前 / 訪問中で 1 つだけ・打刻で作り直さない', () => {
+    const { rerender } = render(<MobileVisitDetailPage />);
+
+    // 到着前 — 1 つだけ出る（見出しで「到着前でも録音できる」と伝える）。
+    expect(screen.getAllByTestId('voice-recorder-panel')).toHaveLength(1);
+    expect(screen.getByTestId('voice-recorder-panel')).toHaveTextContent(
+      '音声記録（到着前でも録音できます）',
+    );
+    expect(voicePanel.mounts).toBe(1);
+
+    // 到着を記録 → 訪問中へ（同じ位置・同じインスタンスのまま）。
+    asMock(useMyVisit).mockReturnValue({
+      data: makeVisit('in_progress'),
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    rerender(<MobileVisitDetailPage />);
+
+    expect(screen.getAllByTestId('voice-recorder-panel')).toHaveLength(1);
+    expect(screen.getByTestId('voice-recorder-panel')).toHaveTextContent('音声記録');
+    expect(screen.getByText('QRで退出を記録')).toBeInTheDocument();
+    // ここが要点 — unmount されていない = 保存前の録音が消えない。
+    expect(voicePanel.unmounts).toBe(0);
+    expect(voicePanel.mounts).toBe(1);
+  });
+
+  it('ページを離れるとき（unmount）に録音セッションを救出する', () => {
+    const { unmount } = render(<MobileVisitDetailPage />);
+    // 画面にいる間は止めない（スキャナ往復で録音が切れないのはこのため）。
+    expect(rescueVoiceSessions).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(rescueVoiceSessions).toHaveBeenCalledWith('staff-1');
+  });
+
+  it('タブを閉じる / 背面に回る (pagehide) でも救出する', () => {
+    render(<MobileVisitDetailPage />);
+
+    window.dispatchEvent(new Event('pagehide'));
+
+    expect(rescueVoiceSessions).toHaveBeenCalledWith('staff-1');
+  });
+
+  it('画面が隠れた (visibilitychange → hidden) ときも救出する (N-1)', () => {
+    render(<MobileVisitDetailPage />);
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    // まだ見えている = 救出しない (タブを切り替えて戻っただけで畳まない)。
+    expect(rescueVoiceSessions).not.toHaveBeenCalled();
+
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    expect(rescueVoiceSessions).toHaveBeenCalledWith('staff-1');
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+  });
+
+  /**
+   * `pagehide` と `beforeunload` は実機でほぼ同時に飛ぶ。`beforeunload` で保存すると
+   * 同じ録音に対して停止と投入が 2 本走るので、**保存は `pagehide` 側だけ**にする
+   * (`beforeunload` は録音中の離脱確認プロンプト専用・レビュー N-1)。
+   */
+  it('pagehide と beforeunload が同時に飛んでも救出は 1 回 (N-1)', () => {
+    render(<MobileVisitDetailPage />);
+
+    window.dispatchEvent(new Event('pagehide'));
+    window.dispatchEvent(new Event('beforeunload'));
+
+    expect(rescueVoiceSessions).toHaveBeenCalledTimes(1);
+    expect(rescueVoiceSessions).toHaveBeenCalledWith('staff-1');
+  });
+
+  it('訪問完了では出さない', () => {
+    asMock(useMyVisit).mockReturnValue({
+      data: makeVisit('completed'),
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    render(<MobileVisitDetailPage />);
+
+    expect(screen.queryByTestId('voice-recorder-panel')).toBeNull();
   });
 });
 

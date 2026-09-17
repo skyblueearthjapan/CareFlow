@@ -11,6 +11,18 @@ import { render, screen } from '@testing-library/react';
 
 const EMPTY_QUERY = { data: [], isLoading: false, isError: false, error: null };
 
+vi.mock('next-auth/react', () => ({
+  useSession: () => ({
+    data: { user: { staffId: 'staff-1' }, accessToken: 'a', refreshToken: 'r' },
+    status: 'authenticated',
+  }),
+}));
+
+// 音声記録 (設計 2026-09-17): 🎙 マーク用の一覧。既定は 0 件。
+vi.mock('@/lib/queries/visit-recordings', () => ({
+  useVisitRecordings: vi.fn(() => ({ data: { items: [], total: 0 } })),
+}));
+
 vi.mock('@/lib/queries/me', () => ({
   useMyVisits: vi.fn(() => ({ data: [], isLoading: false, isError: false, error: null })),
   // 職員イベント / 休み・時間変更 (design 2026-09-16 §3 C-1)。既定は 0 件で、

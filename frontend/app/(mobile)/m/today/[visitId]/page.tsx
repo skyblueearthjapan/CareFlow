@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import {
   AlertTriangle,
@@ -44,6 +44,8 @@ import { MobileSection } from '@/components/mobile/MobileSection';
 import { Rakusuke } from '@/components/brand/Rakusuke';
 import { QrScanner } from '@/components/mobile/QrScanner';
 import { AuthedPhoto } from '@/components/mobile/AuthedPhoto';
+import { VisitRecordCard } from '@/components/mobile/VisitRecordCard';
+import { VoiceRecorderPanel } from '@/components/mobile/VoiceRecorderPanel';
 import { displayVisitNote } from '@/lib/visit-note';
 import {
   useCheckIn,
@@ -55,7 +57,10 @@ import {
   type MyVisit,
 } from '@/lib/queries/me';
 import { useUploadPhoto, useVisitPhotos } from '@/lib/queries/visit-photos';
+import { useVisitRecordings } from '@/lib/queries/visit-recordings';
 import { useCheckinFlush } from '@/lib/queries/checkinFlush';
+import { useVoiceFlush } from '@/lib/voice/queue';
+import { rescueVoiceSessions } from '@/lib/voice/session';
 import { useCheckinSettingsPublic } from '@/lib/queries/checkinSettings';
 import { CHECKIN_PUBLIC_FALLBACK } from '@/lib/schemas/checkinSettings';
 
@@ -187,6 +192,11 @@ function isCompleted(visit: MyVisit | undefined): boolean {
   return visit.status === 'done' || visit.status === 'completed' || visit.status === 'checked_out';
 }
 
+/** 救出は best-effort — 失敗しても画面の邪魔をしない。 */
+function ignoreRescueError(): void {
+  /* noop */
+}
+
 function memoKey(staffId: string, visitId: string): string {
   return `visit-memo:${staffId}:${visitId}`;
 }
@@ -213,6 +223,7 @@ function MobileVisitDetailPageInner() {
   const visitId = params?.visitId ?? '';
   const router = useRouter();
   const searchParams = useSearchParams();
+  const pathname = usePathname();
   const { data: session } = useSession();
   const staffId = session?.user?.staffId ?? '';
   // 写真の認証付き表示にだけ使う (再送は useCheckinFlush が担う)。
@@ -284,11 +295,57 @@ function MobileVisitDetailPageInner() {
   // Guards a no-show submit across the (awaited) GPS fetch (二重送信防止).
   const [noShowSubmitting, setNoShowSubmitting] = useState(false);
   // 未送信の再送 (マウント時 / online 時) + 残件数。通知は共通フック側で行う。
-  const { pendingCount, refreshPending } = useCheckinFlush();
+  const { pendingCount: checkinPending, refreshPending } = useCheckinFlush();
+  // 未送信の音声も同じ場所で再送し、バナーの件数に合算する (設計 §10-5)。
+  const { pendingCount: voicePending, refreshPending: refreshVoicePending } = useVoiceFlush();
+  const pendingCount = checkinPending + voicePending;
+
+  /**
+   * 録音セッションの救出 (レビュー H-C)。
+   *
+   * 録音は `VoiceRecorderPanel` ではなく `lib/voice/session.ts` が持つ。パネルは
+   * QR スキャナを出しただけで unmount されるので、そこで止めると「録音中に QR を
+   * 読んだら録音が切れる」ことになる。止めて未送信キューへ積むのは**ページを
+   * 離れるとき**だけ: この effect の cleanup (ページ unmount / パス変更) と、
+   * `pagehide` / `visibilitychange`(hidden)。
+   *
+   * **`beforeunload` では保存しない**(レビュー N-1)。iOS Safari / PWA では発火しない
+   * ことがあり、発火しても非同期の保存を最後まで走らせる保証が無い。ここで頼ると
+   * 「保存したつもり」を作る。`beforeunload` は録音中の離脱確認プロンプト専用で、
+   * それは `VoiceRecorderPanel` が出す。同時に飛ぶ `pagehide` と
+   * `visibilitychange` の二重実行は `rescueVoiceSessions` 側のガードが畳む。
+   */
+  const staffIdRef = useRef(staffId);
+  staffIdRef.current = staffId;
+  useEffect(() => {
+    const rescue = () => {
+      void rescueVoiceSessions(staffIdRef.current).then((saved) => {
+        if (saved > 0) {
+          toast.success(`録音 ${saved} 件を保存しました（画面を離れたため自動保存）`);
+          void refreshVoicePending();
+        }
+      }, ignoreRescueError);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') rescue();
+    };
+    window.addEventListener('pagehide', rescue);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', rescue);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      rescue();
+    };
+    // `pathname` が変わる = 別の画面へ移った (同じコンポーネントが使い回される
+    // 訪問間の遷移でも cleanup が走る)。
+  }, [pathname, refreshVoicePending]);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { data: photos } = useVisitPhotos(visitId);
   const uploadPhoto = useUploadPhoto(visitId);
+  // この訪問の音声記録 (要約カード)。録音を積んだ直後は onSaved で数え直す。
+  const { data: recordingList } = useVisitRecordings({ visitId });
+  const recordings = recordingList?.items ?? [];
   // 写真の拡大表示 (認証付き blob の objectURL)。
   const [photoViewerUrl, setPhotoViewerUrl] = useState<string | null>(null);
 
@@ -830,41 +887,56 @@ function MobileVisitDetailPageInner() {
               )}
 
               {visit.status !== 'cancelled' && effectiveCheckedIn && !effectiveCompleted && (
-                <>
-                  <Card className="space-y-3 p-4">
-                    <div className="text-center">
-                      <p className="font-serif text-3xl font-bold tnum text-brand-primary-hover">
-                        {arrivalIso ? fmtElapsed(nowTs - new Date(arrivalIso).getTime()) : '--:--'}
-                      </p>
-                      <p className="text-xs text-text-muted">
-                        経過時間
-                        {arrivalIso
-                          ? `（到着 ${shortTime(new Date(arrivalIso).toTimeString())}〜）`
-                          : ''}
-                      </p>
-                    </div>
-                    <div>
-                      <label
-                        htmlFor="visit-memo"
-                        className="text-xs font-semibold text-text-secondary"
-                      >
-                        サービスメモ（下書き・端末内）
-                      </label>
-                      <Textarea
-                        id="visit-memo"
-                        rows={3}
-                        className="mt-1.5"
-                        placeholder="実施内容・申し送り"
-                        value={memo}
-                        onChange={(e) => persistMemo(e.target.value)}
-                      />
-                    </div>
-                  </Card>
-                  <CheckInButton onClick={() => startScan('departure')}>
-                    <QrCode className="h-5 w-5" />
-                    QRで退出を記録
-                  </CheckInButton>
-                </>
+                <Card className="space-y-3 p-4">
+                  <div className="text-center">
+                    <p className="font-serif text-3xl font-bold tnum text-brand-primary-hover">
+                      {arrivalIso ? fmtElapsed(nowTs - new Date(arrivalIso).getTime()) : '--:--'}
+                    </p>
+                    <p className="text-xs text-text-muted">
+                      経過時間
+                      {arrivalIso
+                        ? `（到着 ${shortTime(new Date(arrivalIso).toTimeString())}〜）`
+                        : ''}
+                    </p>
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="visit-memo"
+                      className="text-xs font-semibold text-text-secondary"
+                    >
+                      サービスメモ（下書き・端末内）
+                    </label>
+                    <Textarea
+                      id="visit-memo"
+                      rows={3}
+                      className="mt-1.5"
+                      placeholder="実施内容・申し送り"
+                      value={memo}
+                      onChange={(e) => persistMemo(e.target.value)}
+                    />
+                  </div>
+                </Card>
+              )}
+
+              {/* ---- 音声記録 (設計 §2-1 導線 A / §10-5) ------------------
+                  到着前でも訪問中でも**同じ 1 つ**を置く。分岐して別々に置くと
+                  到着打刻の瞬間に片方が unmount され、停止したまま保存前だった
+                  録音が巻き添えで消える (レビュー H-C)。見出しだけ出し分ける。 */}
+              {visit.status !== 'cancelled' && !effectiveCompleted && (
+                <VoiceRecorderPanel
+                  visitId={visitId}
+                  patientId={visit.patient_id}
+                  patientName={patientName}
+                  heading={effectiveCheckedIn ? '音声記録' : '音声記録（到着前でも録音できます）'}
+                  onSaved={() => void refreshVoicePending()}
+                />
+              )}
+
+              {visit.status !== 'cancelled' && effectiveCheckedIn && !effectiveCompleted && (
+                <CheckInButton onClick={() => startScan('departure')}>
+                  <QrCode className="h-5 w-5" />
+                  QRで退出を記録
+                </CheckInButton>
               )}
 
               {visit.status !== 'cancelled' && effectiveCompleted && (
@@ -918,6 +990,16 @@ function MobileVisitDetailPageInner() {
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* ---- 訪問記録 (要約が主役・設計 §2-3) ------------------------ */}
+          {recordings.length > 0 && (
+            <div className="space-y-2" data-testid="visit-records">
+              <h2 className="text-sm font-bold text-text-secondary">訪問記録</h2>
+              {recordings.map((r) => (
+                <VisitRecordCard key={r.id} recording={r} />
+              ))}
             </div>
           )}
 

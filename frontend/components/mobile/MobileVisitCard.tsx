@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { ChevronRight, MapPin } from 'lucide-react';
+import { ChevronRight, MapPin, Mic } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 
 import { Badge } from '@/components/ui/badge';
@@ -44,9 +44,11 @@ interface MobileVisitCardProps {
   address?: string | null;
   /** When true, render with extra emphasis (used on /m/today for unvisited). */
   highlight?: boolean;
+  /** 音声記録あり → 🎙 マーク (訪問の音声記録 §2-3)。 */
+  hasRecording?: boolean;
 }
 
-export function MobileVisitCard({ visit, address }: MobileVisitCardProps) {
+export function MobileVisitCard({ visit, address, hasRecording }: MobileVisitCardProps) {
   const meta = statusMeta(visit.status);
   // 表示の保険 (design 2026-09-09 §3-4): 一覧に来ている = 描くと決まった訪問。
   const displayKind = classifyVisitDisplay(visit, { showInactive: true });
@@ -109,6 +111,13 @@ export function MobileVisitCard({ visit, address }: MobileVisitCardProps) {
               <Badge variant="info" data-testid="mobile-visit-accompaniment">
                 同行
               </Badge>
+            )}
+            {hasRecording && (
+              <Mic
+                className="h-4 w-4 shrink-0 opacity-70"
+                aria-label="音声記録あり"
+                data-testid="mobile-visit-recording-mark"
+              />
             )}
           </div>
           {accompanimentNames.length > 0 && (

@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Clock, QrCode } from 'lucide-react';
+import { useSession } from 'next-auth/react';
+import { AlertTriangle, Clock, QrCode } from 'lucide-react';
 
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -13,11 +14,14 @@ import { MobileEventChip, MobileOverrideBadge } from '@/components/mobile/Mobile
 import { MobileSection } from '@/components/mobile/MobileSection';
 import { MobileVisitCard } from '@/components/mobile/MobileVisitCard';
 import { QrScanner } from '@/components/mobile/QrScanner';
+import { VoiceFailedSheet } from '@/components/mobile/VoiceFailedSheet';
 import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { extractQrToken } from '@/lib/qr-token';
 import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
 import { foldStaffEvents } from '@/lib/schedule/foldStaffEvents';
 import { useCheckinFlush } from '@/lib/queries/checkinFlush';
+import { useVisitRecordings } from '@/lib/queries/visit-recordings';
+import { useVoiceFlush } from '@/lib/voice/queue';
 import {
   todayIso,
   useMyOverrides,
@@ -82,7 +86,41 @@ export default function MobileTodayPage() {
   // 圏外で退避した打刻 (訪問詳細の到着/退出・/q の予定外) をここで再送する。
   // 一覧は退避後に必ず戻ってくる場所なので、「電波が戻り次第、自動で送信します」の
   // 主トリガーになる (マウント時 + online イベント)。
-  const { pendingCount } = useCheckinFlush();
+  const { pendingCount: checkinPending } = useCheckinFlush();
+  // 音声も同じ場所で再送し、バナーの件数に合算する (設計 §10-5)。
+  // 送れなかった録音 (4xx) は別バナー — 自動では直らないので本人の判断が要る。
+  const {
+    pendingCount: voicePending,
+    failedCount: voiceFailed,
+    refreshPending: refreshVoicePending,
+  } = useVoiceFlush();
+  const pendingCount = checkinPending + voicePending;
+  const [failedOpen, setFailedOpen] = useState(false);
+
+  // 🎙 マーク用。`recordings_count` は API に無いので、今日ぶんの記録を 1 回引いて
+  // visit_id の集合で判定する。1 日の訪問数を十分に超える 200 件で引き
+  // (レビュー M-1)、取り切れないときは警告だけ出す (`fields=` は BE 未対応)。
+  const { data: session } = useSession();
+  const staffId = session?.user?.staffId ?? null;
+  const { data: recordingList } = useVisitRecordings({
+    staffId,
+    from: today,
+    to: today,
+    limit: 200,
+  });
+  const recordedVisitIds = new Set(
+    (recordingList?.items ?? []).map((r) => r.visit_id).filter((id): id is string => !!id),
+  );
+  const recordingTotal = recordingList?.total ?? 0;
+  const recordingLoaded = recordingList?.items.length ?? 0;
+  useEffect(() => {
+    if (recordingTotal > recordingLoaded) {
+      console.warn('[visit-recordings] 🎙 マークが一部欠けます (取得上限)', {
+        total: recordingTotal,
+        loaded: recordingLoaded,
+      });
+    }
+  }, [recordingTotal, recordingLoaded]);
 
   // 本日の担当訪問が無い患者 (担当外・予定外) の QR を読むための独立入口。
   // 読み取ったら振り分けは既存の `/q/{token}` に全部任せる (担当 visit 直行 /
@@ -140,6 +178,25 @@ export default function MobileTodayPage() {
         </div>
       )}
 
+      {/* 送れなかった録音 (4xx) — 自動では送られない。音声は端末に残っている。 */}
+      {voiceFailed > 0 && (
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 rounded-md bg-error-bg px-3 py-2 text-left text-xs text-error"
+          data-testid="today-voice-failed-banner"
+          onClick={() => setFailedOpen(true)}
+        >
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          送れなかった録音 {voiceFailed} 件・タップして確認
+        </button>
+      )}
+
+      <VoiceFailedSheet
+        open={failedOpen}
+        onOpenChange={setFailedOpen}
+        onChanged={() => void refreshVoicePending()}
+      />
+
       {/* 一覧の状態 (読込中/エラー/0件) に関わらず常に出す — 予定に無い訪問こそ
           「本日の患者訪問はありません」の画面から入ることが多い。 */}
       <div className="space-y-1.5">
@@ -191,6 +248,7 @@ export default function MobileTodayPage() {
               key={row.visit.id}
               visit={row.visit}
               highlight={isUnvisited(row.visit)}
+              hasRecording={recordedVisitIds.has(row.visit.id)}
             />
           ),
         )}
