@@ -94,5 +94,5 @@
   - 本番検証: healthz 200（local/公開）・usage 2026-09 → 200（0 件・by_status 5 キー）・`month=2026-9` → 422・report 削除済み ID → 404「録音が見つかりません」・`format=pdf` → 422・レンダラを本番コンテナで合成データ描画（`<b>` がエスケープされ患者名/バイタルが出る）。本番の録音は Phase 1 検証分 1 件のみで削除済みのため、**実データでの A4 出力は実機確認項目**。
   - デプロイの罠: 本番 `/opt/carelink` で `preflight-check.sh` が chmod +x されていて（5 月・内容差分なし）`git pull --ff-only` が「local changes」で拒否され、1 回目のビルドは旧コードで走った（`git pull | tail` でエラーが握られる）。`git config core.fileMode false` を本番に設定して解消。**以後の pull は `git pull --ff-only origin develop && git rev-parse --short HEAD` で HEAD を必ず目視**。
   - 未実施: 要約テンプレ v2（PO フィードバック待ち）・`/records` ヘッダへの A4 入口（詳細ダイアログのみ）。
-  - 後片付け: ローカルの SA 鍵コピー（scratchpad・C:	mp\gsa・一時 gcloud config）は削除済み。鍵は VPS `/opt/carelink/secrets/rakusuke-voice-sa.json` のみ。
+  - 後片付け: ローカルの SA 鍵コピー（scratchpad・C:/tmp/gsa・一時 gcloud config）は削除済み。鍵は VPS `/opt/carelink/secrets/rakusuke-voice-sa.json` のみ。
 - **実機確認（未実施・累積）**: Phase 1 の 6 項目 + `/m/record/new` の一連（録音→患者選択→訪問詳細へ遷移）・`/records` の音声再生（位置保持・1.5×）・要約編集→モバイルの表示追随・**Phase 3: 詳細ダイアログ「A4 で出力」→ 新タブに A4 が開き印刷プレビューで 1 枚に収まる（ポップアップブロック時の toast も）・連携ページ末尾の利用状況カードで当月の件数/費用が出る（月を戻せる・未来は不可）**。
