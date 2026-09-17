@@ -71,3 +71,13 @@
 - **取込後の未送信サマリ**: W38 資格不整合 13（前述）／W39 **資格不整合 25（全件 高岡=准看護師 なのにカイポケ「正看」）+ 削除 2（石塚様）**／W40 0（非稼働 9 件は W40 の差分に出ない = 要観察）。イベント未送信 41/34/40 = 手入力の朝会等（dedupe --apply は OK 待ち）。
 - 臨時コース: W39 4 本（稲毛 1・都賀 3）、W40 7 本（都賀のみ・臨2 まで）。都賀の枠不足が主因（§7）。
 - 観察: カイポケ側で 9/21 に **新人の小西さんが職員1・高岡さんが職員2** の行が 4 件（麻生/清水/野口/並木）。取込は職員1=主担当として忠実に反映（請求区分は職員1 の資格 = 看護師で正看）。意図どおりか PO 確認。
+
+## 9. 追補（9/18 未明）: 訪問の音声記録 Phase 1 本番稼働（案 A: Vertex AI 東京・gemini-2.5-flash）
+- **本番**: らく助 `c7bec58`（mig 0086 適用・backend/frontend 再作成・healthz 200）。コミット: `c2dae44` BE / `6c322ac` FE / `e064d95` docs / `c7bec58` requests 依存修正。バックアップ `pre-deploy-voice-phase1-20260917-1624.sql.gz`。
+- **GCP**: project `rakusuke-voice`・SA `rakusuke-voice-sa`（鍵は VPS `/opt/carelink/secrets`）・予算 5,000 円/月・`.env` に VOICE_AI_PROVIDER=vertex ほか 11 行（バックアップ `.env.bak.pre-voice-*`）。gcloud はローカルに導入済み（PATH 未反映・フルパス）。
+- **初回 AI 実行（本番・合成音声 44 秒）**: 1 回目は `requests` 未導入で `auth` 失敗（google.auth.transport.requests が要求・テストは認証をモックしていて検出不能）→ `c7bec58` で修正・再処理で成功: tokens 1,649/659・**$0.0027**・構造化要約・話者付き逐語・本人通知 `voice_summary`。検証レコードは削除済み（soft delete・音声 unlink）。検証用 staff `S009 らく助 検証用（音声）`（retired）を作成し今泉 admin に紐付け（**残置**。盤面には出ない）。
+- **cron**: 毎日 03:30 `purge-audio`（`docs/runbook/voice_recording_cron.md`）。疎通確認 `{"locked":false,"purged":0}`。
+- **レビュー**: BE 3 ラウンド（最終 APPROVE）・FE 4 ラウンド（最終 APPROVE）。設計変更 2 点: ①紐付け用の予定外訪問は**生成しない**（既存訪問の再利用のみ・visit 無しを正）②非稼働患者にも紐付け可。CSP `media-src` は撤回（FE に文書 CSP 無し→PO 確認事項 §8-9）。
+- **テスト**: backend 全体 fail 34 = ベースライン 29 + 既知フレーク 2（単独で通過）+ **日付依存の既存失敗 3**（`test_patient_status_sync` の `ck_svm_weekday`・HEAD の別 worktree でも同じく失敗＝退行ではない）。frontend 既知 2 のみ・tsc 0・lint 0。
+- **実機確認が必要（未実施）**: iPhone/Android で「録音→停止→保存→要約表示」「録音中に QR で到着」「録音中に画面ロック→復帰（残骸復元）」「圏外→復帰の自動再送」「ボイスメモ取り込み」「音声再生 1.5×」。PWA は初回ハードリロード。
+- **Phase 2 進行中**: 2-A 導線 C（`/m/record/new`・患者選択・要紐付けバナー）／2-B BE（一覧 office_id/q/order/reviewed・summary_text 編集・mig 0087）／2-B FE（PC `/records`・詳細ダイアログ・患者/スタッフ詳細カード・モニターリンク・サイドバー）。
