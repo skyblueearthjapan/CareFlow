@@ -8,7 +8,7 @@
  *
  *   左 = 要約（`summary` JSON を見出し付きで整形・admin / 本人は本文を直せる）＋ メタ
  *   右 = 音声プレーヤー ＋ 文字起こし全文（話者ラベル色分け・タイムスタンプ）
- *   フッタ = 紐付けを変更 / 再処理（admin）/ 削除（admin）… 右に「確認済み」
+ *   フッタ = 紐付けを変更 / 再処理（admin）/ 削除（admin）/ A4 で出力 … 右に「確認済み」
  *
  * RBAC は PO 決定どおり「全ロール同一表示・権限外は disabled」。隠さずに理由を
  * `title` で出す（何ができないのかが分からない画面にしない）。
@@ -27,6 +27,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui/sonner';
 import { PatientCombobox } from '@/components/master/PatientCombobox';
 import { AuthedAudioPlayer } from '@/components/records/AuthedAudioPlayer';
+import { RecordReportButton } from '@/components/records/RecordReportButton';
 import {
   formatDurationSec,
   formatOffset,
@@ -165,6 +166,9 @@ export function RecordDetailDialog({
 
   const isOwner = !!rec?.staff_id && !!myStaffId && rec.staff_id === myStaffId;
   const canEditSummary = isAdmin || isOwner;
+  // A4 出力の可否は「今は編集と同じ条件」だが、書き換え（編集）と持ち出し（印刷）は
+  // 別の権限なので判定も分けておく（片方だけ動かしたくなったときに巻き添えにしない）。
+  const canExportReport = isAdmin || isOwner;
   const reviewed = !!rec?.reviewed_at;
 
   const summaryEntries = useMemo(
@@ -553,6 +557,12 @@ export function RecordDetailDialog({
               <Trash2 className="h-4 w-4" />
               削除
             </Button>
+            {/* A4 出力（設計 §11-3）。管理者と本人のみ。 */}
+            <RecordReportButton
+              recordingId={recordingId ?? ''}
+              disabled={!rec || !canExportReport}
+              title={canExportReport ? undefined : 'A4 出力は管理者と本人だけです'}
+            />
           </div>
           <Button
             type="button"

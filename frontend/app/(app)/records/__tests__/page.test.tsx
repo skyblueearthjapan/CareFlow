@@ -48,14 +48,16 @@ vi.mock('@/components/ui/sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
 }));
 
-vi.mock('@/lib/queries/visit-recordings', () => ({
-  useVisitRecordings: (...a: unknown[]) => mockUseVisitRecordings(...a),
-  useVisitRecording: () => ({ data: null, isLoading: false }),
-  useUpdateRecording: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useRetryRecording: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useDeleteRecording: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  recordingAudioUrl: (id: string) => `/api/v1/visit-recordings/${id}/audio`,
-}));
+// 実モジュールを土台に、フックだけ差し替える（共有ファクトリ・レビュー H-1）。
+// 一覧は内側で RecordDetailDialog を開くので、ダイアログが使うフックも要る。
+vi.mock('@/lib/queries/visit-recordings', async (importOriginal) => {
+  const { visitRecordingsMock } = await import(
+    '@/components/records/__tests__/visitRecordingsMock'
+  );
+  return visitRecordingsMock(importOriginal, {
+    useVisitRecordings: (...a: unknown[]) => mockUseVisitRecordings(...a),
+  });
+});
 
 vi.mock('@/lib/queries/offices', () => ({
   useOffices: () => ({ offices: [{ id: 'of-1', name: '都賀' }], allOffices: [] }),

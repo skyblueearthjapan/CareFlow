@@ -372,6 +372,96 @@ export function useRetryRecording(id: string): UseMutationResult<VisitRecordingR
   });
 }
 
+/**
+ * 記録 1 件の A4 レポート応答（設計 §11-3）。BE は `{recording, html, generated_at}` を返す。
+ *
+ * FE が使うのは `html` だけ。BE 側で章立てが増えても落ちないよう `.passthrough()` で
+ * 余剰キーを許す（`useSyncReport` と同じ流儀）。
+ */
+export const recordReportSchema = z.object({ html: z.string() }).passthrough();
+
+export type RecordReport = z.infer<typeof recordReportSchema>;
+
+/**
+ * GET /visit-recordings/{id}/report?format=json — A4 縦の自己完結 HTML（設計 §11-3）。
+ *
+ * `format=html` で生の HTML も取れるが、**JSON で受けて `html` を取り出す**
+ * （`fetcher` の「JSON にできなければ文字列を返す」フォールバックに寄りかからない・
+ * `useSyncReport` と同方式）。本文が空なら BE 契約違反として弾く。
+ */
+export function useRecordReport(): UseMutationResult<string, Error, { recordingId: string }> {
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<string, Error, { recordingId: string }>({
+    mutationFn: async ({ recordingId }) => {
+      const raw = await fetcher<unknown>(
+        `${VISIT_RECORDINGS_PATH}/${encodeURIComponent(recordingId)}/report?format=json`,
+        { accessToken, refreshToken },
+      );
+      const { html } = recordReportSchema.parse(raw);
+      if (html.trim() === '') throw new Error('レポートの本文が空でした');
+      return html;
+    },
+  });
+}
+
+/** 費用ダッシュボード（admin 専用・staff は 403）。 */
+export const VOICE_USAGE_PATH = '/api/v1/admin/visit-recordings/usage';
+
+export const voiceUsageStaffSchema = z.object({
+  staff_id: z.string().nullable().optional(),
+  staff_name: z.string().nullable().optional(),
+  recordings: z.number().nullable().optional(),
+  minutes: z.union([z.number(), z.string()]).nullable().optional(),
+  cost_usd: z.union([z.number(), z.string()]).nullable().optional(),
+});
+
+export type VoiceUsageStaff = z.infer<typeof voiceUsageStaffSchema>;
+
+/**
+ * 月次集計（BE 契約 §11-3）。項目が増えても落ちないよう `by_status` は自由な連想、
+ * 数値は Decimal 文字列も許す（`cost_usd` と同じ事情）。
+ */
+export const voiceUsageSchema = z.object({
+  month: z.string(),
+  recordings: z.number().nullable().optional(),
+  minutes_total: z.union([z.number(), z.string()]).nullable().optional(),
+  tokens_in: z.number().nullable().optional(),
+  tokens_out: z.number().nullable().optional(),
+  cost_usd: z.union([z.number(), z.string()]).nullable().optional(),
+  by_staff: z.array(voiceUsageStaffSchema).nullable().optional(),
+  // 状態別の内訳（表示では未使用）。BE が件数を文字列で返しても落とさない。
+  by_status: z.record(z.union([z.number(), z.string()])).nullish(),
+  failed: z.number().nullable().optional(),
+});
+
+export type VoiceUsage = z.infer<typeof voiceUsageSchema>;
+
+/**
+ * GET /admin/visit-recordings/usage?month=YYYY-MM — 件数・音声分・トークン・費用。
+ *
+ * 403（一般ロール）は再試行しない — 権限は待っても変わらないので、カード側が
+ * 「管理者のみ表示できます」を出すための即時の答えとして扱う。
+ */
+export function useVoiceUsage(month: string | null | undefined): UseQueryResult<VoiceUsage, Error> {
+  const { data: session, status } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useQuery<VoiceUsage, Error>({
+    queryKey: ['visit-recordings', 'usage', month ?? null],
+    enabled: status === 'authenticated' && !!month,
+    retry: false,
+    queryFn: async () => {
+      const raw = await fetcher<unknown>(
+        `${VOICE_USAGE_PATH}?month=${encodeURIComponent(month ?? '')}`,
+        { accessToken, refreshToken },
+      );
+      return voiceUsageSchema.parse(raw);
+    },
+  });
+}
+
 /** DELETE /visit-recordings/{id} — 論理削除 ＋ 音声破棄（admin）。 */
 export function useDeleteRecording(id: string): UseMutationResult<void, Error, void> {
   const qc = useQueryClient();

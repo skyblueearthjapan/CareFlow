@@ -6,12 +6,13 @@
  * 構成:
  *   - 操作コンソール (KaipokeConsole): ライブモニター + 稼働状況(圧縮) + 週次反映/取り込みの操作
  *     + 下段タブ切替の大きなカレンダー枠
- *   - 実行ログ / 直近結果 / ジョブ履歴 / Geocoding 導線
+ *   - 実行ログ / 直近結果 / ジョブ履歴 / 音声記録の利用状況 / Geocoding 導線
  */
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 
 import { RakusukeTitle } from '@/components/brand/Rakusuke';
+import { VoiceUsageCard } from '@/components/records/VoiceUsageCard';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useKaipokeLive, useKaipokeCredentials, useStopJob } from '@/lib/queries/integrations';
 
@@ -92,6 +93,9 @@ export default function KaipokeIntegrationPage() {
 
       {/* ジョブ履歴 */}
       <KaipokeJobsList />
+
+      {/* 音声記録の利用状況（設計 §11-3・費用ダッシュボード） */}
+      <VoiceUsageCard />
 
       {/* 管理ユーティリティへの導線 */}
       <p className="text-xs text-text-muted">
