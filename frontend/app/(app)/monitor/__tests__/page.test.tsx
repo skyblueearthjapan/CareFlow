@@ -39,6 +39,15 @@ vi.mock('@/lib/queries/patients', () => ({
 vi.mock('@/lib/queries/staff', () => ({
   useStaffList: () => ({ data: [], isLoading: false }),
 }));
+// 「🎙 記録を見る」(詳細パネル) が引く音声記録。ここでは記録なしに固定する。
+vi.mock('@/lib/queries/visit-recordings', () => ({
+  useVisitRecordings: () => ({ data: { items: [], total: 0 }, isLoading: false }),
+  useVisitRecording: () => ({ data: null, isLoading: false }),
+  useUpdateRecording: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useRetryRecording: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useDeleteRecording: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  recordingAudioUrl: (id: string) => `/api/v1/visit-recordings/${id}/audio`,
+}));
 vi.mock('@/lib/queries/staff-events', () => ({
   useWeekStaffEvents: () => ({ data: [], isLoading: false }),
   buildStaffEventsMap: () => new Map(),

@@ -118,6 +118,35 @@ describe('flushVoiceQueue', () => {
     expect(form.get('client_id')).toBeTruthy();
   });
 
+  it('送信できた行はサーバ上の録音 id を持ち帰る (2026-09-18 是正)', async () => {
+    const entry = await enqueueOne();
+    mockFetch(202, JSON.stringify({ id: 'rec-1', recorded_at: '2026-09-17T14:08:00Z' }));
+
+    const res = await flushVoiceQueue(STAFF, { accessToken: 'token' });
+
+    // 「未紐付け一覧のいちばん新しい行」を推測させないための対応表。
+    expect(res.sentEntries).toEqual([{ entryId: entry!.id, recordingId: 'rec-1' }]);
+  });
+
+  it('id を読めない応答でも送信は成功、recordingId は null', async () => {
+    await enqueueOne();
+    mockFetch(202, '');
+
+    const res = await flushVoiceQueue(STAFF, { accessToken: 'token' });
+
+    expect(res.sent).toBe(1);
+    expect(res.sentEntries[0]!.recordingId).toBeNull();
+  });
+
+  it('409 で BE が既存行を返せばその id を使う', async () => {
+    await enqueueOne();
+    mockFetch(409, JSON.stringify({ id: 'rec-existing' }));
+
+    const res = await flushVoiceQueue(STAFF, { accessToken: 'token' });
+
+    expect(res.sentEntries[0]!.recordingId).toBe('rec-existing');
+  });
+
   it('409 (client_id 重複) は「既に登録済み」として成功扱いにする (H-4)', async () => {
     await enqueueOne();
     mockFetch(409, JSON.stringify({ detail: 'already registered' }));

@@ -19,6 +19,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
 import { AuthedAudio } from '@/components/mobile/AuthedAudio';
 import { RakusukeWorking } from '@/components/brand/Rakusuke';
+import { summaryDisplayMode } from '@/components/records/recordFormat';
 import { formatElapsed } from '@/lib/voice/recorder';
 import { useUpdateRecording, type VisitRecordingRead } from '@/lib/queries/visit-recordings';
 
@@ -119,6 +120,7 @@ export function VisitRecordCard({ recording }: VisitRecordCardProps) {
 
   const meta = statusMeta(recording.status);
   const summaryEntries = recording.summary ? Object.entries(recording.summary) : [];
+  const summaryMode = summaryDisplayMode(recording);
   const reviewed = !!recording.reviewed_at;
 
   async function markReviewed() {
@@ -167,17 +169,25 @@ export function VisitRecordCard({ recording }: VisitRecordCardProps) {
         </div>
       )}
 
-      {summaryEntries.length > 0 ? (
+      {/* 描き方の規則は PC の詳細ダイアログと 1 本化（`summaryDisplayMode`）。
+          手修正済み（`summary_edited_at`）なら本文、未編集なら JSON の構造表示。
+          片方だけ規則を変えると「PC では直した要約・モバイルでは古い要約」になる。 */}
+      {summaryMode === 'text' ? (
+        <div className="space-y-1">
+          <p className="whitespace-pre-wrap text-sm text-text-primary">{recording.summary_text}</p>
+          {recording.summary_edited_at && (
+            <p className="text-xs text-text-muted" data-testid="visit-record-summary-edited">
+              手修正あり（{fmtDateTime(recording.summary_edited_at)}）
+            </p>
+          )}
+        </div>
+      ) : summaryMode === 'json' ? (
         <div className="space-y-3">
           {summaryEntries.map(([key, value]) => (
             <SummarySection key={key} label={sectionLabel(key)} value={value} />
           ))}
         </div>
-      ) : (
-        recording.summary_text && (
-          <p className="whitespace-pre-wrap text-sm text-text-primary">{recording.summary_text}</p>
-        )
-      )}
+      ) : null}
 
       <div className="flex flex-wrap gap-2">
         <Button

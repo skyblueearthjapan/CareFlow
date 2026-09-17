@@ -62,9 +62,20 @@ vi.mock('@/components/ui/sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
 
-// 音声記録 (設計 2026-09-17): 🎙 マーク用の一覧。既定は 0 件。
+// 音声記録 (設計 2026-09-17): 🎙 マーク用の一覧と、要紐付けの一覧。既定は 0 件。
 vi.mock('@/lib/queries/visit-recordings', () => ({
   useVisitRecordings: vi.fn(() => ({ data: { items: [], total: 0 } })),
+  useUpdateRecording: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+}));
+
+// 患者選択は専用テスト (PatientPickerSheet.test.tsx) が担保する。ここでは
+// 「選んだら PATCH が飛ぶ」ことだけ見たいのでスタブに差し替える。
+vi.mock('@/components/mobile/PatientPickerSheet', () => ({
+  PatientPickerSheet: ({ onPick }: { onPick: (p: { id: string; name: string }) => void }) => (
+    <button data-testid="patient-picker" onClick={() => onPick({ id: 'p-1', name: '山田 花子' })}>
+      __pick__
+    </button>
+  ),
 }));
 
 // 音声の未送信 / 送れなかった録音 (レビュー C-3)。件数はテストごとに差し替える。
@@ -85,9 +96,20 @@ vi.mock('@/lib/queries/me', () => ({
   useMyStaffEvents: vi.fn(() => ({ data: [], isLoading: false, isError: false, error: null })),
   useMyOverrides: vi.fn(() => ({ data: [], isLoading: false, isError: false, error: null })),
   todayIso: () => '2026-08-16',
+  // 要紐付けバナーの遡り (直近 14 日) が使う。実物と同じ「ローカル日付だけで
+  // 計算する」流儀 (toISOString を使わない) をここでも守る。
+  addDays: (iso: string, days: number) => {
+    const [y, m, d] = iso.split('-').map(Number);
+    const dt = new Date(y ?? 1970, (m ?? 1) - 1, d ?? 1);
+    dt.setDate(dt.getDate() + days);
+    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(
+      dt.getDate(),
+    ).padStart(2, '0')}`;
+  },
 }));
 
 import { fetcher } from '@/lib/api/fetcher';
+import { useUpdateRecording, useVisitRecordings } from '@/lib/queries/visit-recordings';
 import { toast } from '@/components/ui/sonner';
 import { enqueuePending } from '@/lib/checkin-queue';
 import { useMyOverrides, useMyStaffEvents, useMyVisits, type MyVisit } from '@/lib/queries/me';
@@ -357,5 +379,83 @@ describe('今日の訪問 — 送れなかった録音 (C-3)', () => {
     fireEvent.click(banner);
 
     expect(await screen.findByTestId('voice-failed-sheet')).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 予定に無い訪問を記録 (設計 §2-1 導線 C・§11-1) — 第 2 ボタンと要紐付けバナー。
+// ---------------------------------------------------------------------------
+const UNLINKED = [
+  {
+    id: 'rec-1',
+    recorded_at: '2026-08-16T03:48:00Z',
+    duration_sec: 960,
+    status: 'unlinked',
+    summary_text: 'バイタル安定・次回は来週水曜',
+  },
+  { id: 'rec-2', recorded_at: '2026-08-16T05:10:00Z', duration_sec: 120, status: 'unlinked' },
+];
+
+function mockRecordings(unlinked: Array<Record<string, unknown>>) {
+  asMock(useVisitRecordings).mockImplementation((params: { status?: string } = {}) =>
+    params.status === 'unlinked'
+      ? { data: { items: unlinked, total: unlinked.length } }
+      : { data: { items: [], total: 0 } },
+  );
+}
+
+describe('今日の訪問 — 予定に無い訪問を記録', () => {
+  beforeEach(() => {
+    mockRecordings([]);
+    asMock(useUpdateRecording).mockImplementation(() => ({ mutate: vi.fn(), isPending: false }));
+  });
+
+  it('QR の下に第 2 ボタンがあり、録音ページへ飛ぶ', async () => {
+    await renderToday();
+
+    fireEvent.click(screen.getByTestId('today-record-new'));
+    expect(routerPush).toHaveBeenCalledWith('/m/record/new');
+  });
+
+  it('要紐付けが 0 件ならバナーを出さない', async () => {
+    await renderToday();
+    expect(screen.queryByTestId('today-unlinked-banner')).not.toBeInTheDocument();
+  });
+
+  it('要紐付けは直近 14 日ぶんだけ引き、古い分は管理者と注記する (L-6)', async () => {
+    mockRecordings(UNLINKED);
+    await renderToday();
+
+    // todayIso() = 2026-08-16 → from = 2026-08-02。
+    const unlinkedCall = asMock(useVisitRecordings).mock.calls.find(
+      (c) => (c[0] as { status?: string } | undefined)?.status === 'unlinked',
+    );
+    expect(unlinkedCall?.[0]).toMatchObject({ status: 'unlinked', from: '2026-08-02' });
+    expect(screen.getByTestId('today-unlinked-banner')).toHaveTextContent(
+      '古い分は管理者が対応します',
+    );
+  });
+
+  it('件数を出し、タップで一覧 → 患者を選ぶと PATCH する', async () => {
+    const mutate = vi.fn();
+    asMock(useUpdateRecording).mockImplementation(() => ({ mutate, isPending: false }));
+    mockRecordings(UNLINKED);
+    await renderToday();
+
+    const banner = screen.getByTestId('today-unlinked-banner');
+    expect(banner).toHaveTextContent('要紐付け 2 件');
+
+    fireEvent.click(banner);
+    expect(await screen.findByTestId('unlinked-row-rec-1')).toHaveTextContent(
+      'バイタル安定・次回は来週水曜',
+    );
+    // 要約がまだ無い行は状態の言葉に落とす。
+    expect(screen.getByTestId('unlinked-row-rec-2')).toHaveTextContent('らく助が文字起こし中です');
+
+    fireEvent.click(screen.getAllByRole('button', { name: '患者を選ぶ' })[0]!);
+    fireEvent.click(await screen.findByTestId('patient-picker'));
+
+    expect(useUpdateRecording).toHaveBeenCalledWith('rec-1');
+    expect(mutate).toHaveBeenCalledWith({ patient_id: 'p-1' }, expect.anything());
   });
 });

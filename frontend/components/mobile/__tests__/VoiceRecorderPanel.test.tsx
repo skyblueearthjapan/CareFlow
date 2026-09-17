@@ -45,7 +45,13 @@ vi.mock('@/lib/voice/queue', async () => {
   return {
     ...actual,
     enqueueVoice: vi.fn(async (entry: unknown) => entry),
-    flushVoiceQueue: vi.fn(async () => ({ sent: 1, remaining: 0, dropped: [], failed: 0 })),
+    flushVoiceQueue: vi.fn(async () => ({
+      sent: 1,
+      remaining: 0,
+      dropped: [],
+      failed: 0,
+      sentEntries: [],
+    })),
   };
 });
 
@@ -82,6 +88,9 @@ const asMock = (fn: unknown) => fn as unknown as ReturnType<typeof vi.fn>;
 
 /** RFC4122 v4（`client_id` の形・M-C）。 */
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/** キューの行 id（`enqueueVoice` が付ける値のモック）。 */
+const ENTRY_ID = 'entry-1';
 
 const instances: FakeMediaRecorder[] = [];
 
@@ -153,14 +162,20 @@ beforeEach(() => {
   instances.length = 0;
   window.localStorage.clear();
   installRecorderStubs(true);
-  asMock(enqueueVoice).mockImplementation(async (entry: unknown) => entry);
+  // 実物は必ず行 id を付ける（`client_id` か端末キー）。保存後の `onSaved` は
+  // この id で「自分の行が送れたか」を見るので、モックでも付ける。
+  asMock(enqueueVoice).mockImplementation(async (entry: Record<string, unknown>) => ({
+    ...entry,
+    id: ENTRY_ID,
+  }));
   asMock(flushVoiceQueue).mockImplementation(async () => ({
     sent: 1,
     remaining: 0,
     dropped: [],
     failed: 0,
+    sentEntries: [{ entryId: ENTRY_ID, recordingId: 'rec-1' }],
   }));
-  uploadStub.mutateAsync = vi.fn(async () => ({}));
+  uploadStub.mutateAsync = vi.fn(async () => ({ id: 'rec-direct' }));
   uploadStub.isPending = false;
   asMock(listOrphanChunkSessions).mockImplementation(async () => []);
   asMock(buildOrphanRecording).mockImplementation(async () => null);
@@ -226,6 +241,59 @@ describe('VoiceRecorderPanel', () => {
     );
   });
 
+  it('保存できたら onSaved に録音 id を渡す (2026-09-18 是正)', async () => {
+    const onSaved = vi.fn();
+    window.localStorage.setItem('rakusuke:voice-consent-seen', '1');
+    render(
+      <VoiceRecorderPanel
+        visitId="visit-1"
+        patientId="pat-1"
+        patientName="山田 花子"
+        onSaved={onSaved}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('患者様に録音の了承を得ています'));
+    fireEvent.click(screen.getByRole('button', { name: /録音を始める/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /停止・保存/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /保存して文字起こしへ/ }));
+
+    await waitFor(() =>
+      expect(onSaved).toHaveBeenCalledWith(
+        expect.objectContaining({ recordingId: 'rec-1', queued: false }),
+      ),
+    );
+  });
+
+  it('送れずキューに残ったら onSaved は queued を立てる', async () => {
+    asMock(flushVoiceQueue).mockImplementation(async () => ({
+      sent: 0,
+      remaining: 1,
+      dropped: [],
+      failed: 0,
+      sentEntries: [],
+    }));
+    const onSaved = vi.fn();
+    window.localStorage.setItem('rakusuke:voice-consent-seen', '1');
+    render(
+      <VoiceRecorderPanel
+        visitId="visit-1"
+        patientId="pat-1"
+        patientName="山田 花子"
+        onSaved={onSaved}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('患者様に録音の了承を得ています'));
+    fireEvent.click(screen.getByRole('button', { name: /録音を始める/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /停止・保存/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /保存して文字起こしへ/ }));
+
+    await waitFor(() =>
+      expect(onSaved).toHaveBeenCalledWith(
+        expect.objectContaining({ recordingId: null, queued: true }),
+      ),
+    );
+  });
+
   it('保存のあとは同意チェックが外れる (M-5)', async () => {
     await recordAndStop();
     fireEvent.click(await screen.findByRole('button', { name: /保存して文字起こしへ/ }));
@@ -240,6 +308,7 @@ describe('VoiceRecorderPanel', () => {
       remaining: 1,
       dropped: [],
       failed: 0,
+      sentEntries: [],
     }));
     await recordAndStop();
     fireEvent.click(await screen.findByRole('button', { name: /保存して文字起こしへ/ }));

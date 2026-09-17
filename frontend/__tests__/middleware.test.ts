@@ -128,6 +128,17 @@ describe('decideRoute', () => {
     });
   });
 
+  // 訪問記録 /records は admin / staff の共通ページ (visit-voice-record-design §11-2)。
+  // staff も開ける — 自分の分だけ見えるのは BE が staff_id を強制するため。
+  it('lets admin and staff access /records', () => {
+    expect(decideRoute({ pathname: '/records', session: adminSession })).toEqual({
+      kind: 'next',
+    });
+    expect(decideRoute({ pathname: '/records', session: staffSession })).toEqual({
+      kind: 'next',
+    });
+  });
+
   it('lets admin access the patients page', () => {
     expect(decideRoute({ pathname: '/patients/abc', session: adminSession })).toEqual({
       kind: 'next',

@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { VisitRecordingLink } from '@/components/records/VisitRecordingLink';
 import { cn } from '@/lib/utils';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 
@@ -202,7 +203,11 @@ function VisitDetail({
   const dist = visit.arrival?.distance_m;
   const acc = visit.arrival?.accuracy_m;
   const distColor =
-    st === 'mismatch' ? 'var(--error)' : st === 'review' ? 'var(--warning)' : 'var(--brand-primary-hover)';
+    st === 'mismatch'
+      ? 'var(--error)'
+      : st === 'review'
+        ? 'var(--warning)'
+        : 'var(--brand-primary-hover)';
 
   const judgeClass: Record<string, string> = {
     match: 'bg-brand-primary-50 text-brand-primary-hover',
@@ -235,9 +240,13 @@ function VisitDetail({
           .join(' ／ ')}
       </div>
 
+      {/* 🎙 記録を見る (音声記録がある訪問だけ・visit-voice-record-design §11-2)。 */}
+      <div className="mb-3">
+        <VisitRecordingLink visitId={visit.visit_id} />
+      </div>
+
       {/* 同行 (§7.3): 担当乖離とは別枠の情報表示 (複数名対応・確定#5)。 */}
-      {(visit.accompaniment_staff_names?.length ?? 0) > 0 ||
-      visit.accompaniment_staff_name ? (
+      {(visit.accompaniment_staff_names?.length ?? 0) > 0 || visit.accompaniment_staff_name ? (
         <div
           className="mb-3 text-xs font-medium text-info"
           data-testid="monitor-detail-accompaniment"
@@ -353,7 +362,9 @@ function VisitDetail({
         <div
           className={cn(
             'mb-3 rounded border p-3 text-[13px] leading-relaxed',
-            st === 'mismatch' ? 'border-border-error bg-error-bg' : 'border-border-warning bg-warning-bg',
+            st === 'mismatch'
+              ? 'border-border-error bg-error-bg'
+              : 'border-border-warning bg-warning-bg',
           )}
         >
           <span className="mb-1 block text-[11px] font-bold text-text-secondary">

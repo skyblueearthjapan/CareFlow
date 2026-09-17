@@ -73,6 +73,48 @@ describe('VisitRecordCard', () => {
     expect(screen.queryByText('その他')).not.toBeInTheDocument();
   });
 
+  // ── 要約の描き方は PC (`RecordDetailDialog`) と同じ 1 規則 (`summaryDisplayMode`) ──
+  // 片方だけ規則を変えると「PC では直した要約・モバイルでは古い要約」になる。
+
+  it('手修正あり (summary_edited_at) は summary_text を平文で出し、JSON は出さない', () => {
+    render(
+      <VisitRecordCard
+        recording={makeRecording({
+          summary_text: '手で直した要約です。',
+          summary_edited_at: '2026-09-18T01:00:00.000Z',
+        })}
+      />,
+    );
+
+    expect(screen.getByText('手で直した要約です。')).toBeInTheDocument();
+    expect(screen.getByTestId('visit-record-summary-edited')).toHaveTextContent('手修正あり');
+    expect(screen.queryByText('主訴・様子')).not.toBeInTheDocument();
+    expect(screen.queryByText('132/84 mmHg')).not.toBeInTheDocument();
+  });
+
+  it('手修正なしなら summary_text があっても JSON の構造表示を出す', () => {
+    render(
+      <VisitRecordCard
+        recording={makeRecording({ summary_text: 'AI が書いた平文。', summary_edited_at: null })}
+      />,
+    );
+
+    expect(screen.getByText('主訴・様子')).toBeInTheDocument();
+    expect(screen.getByText('132/84 mmHg')).toBeInTheDocument();
+    expect(screen.queryByText('AI が書いた平文。')).not.toBeInTheDocument();
+  });
+
+  it('JSON が無ければ summary_text を平文で出す', () => {
+    render(
+      <VisitRecordCard
+        recording={makeRecording({ summary: null, summary_text: '本文しかありません。' })}
+      />,
+    );
+
+    expect(screen.getByText('本文しかありません。')).toBeInTheDocument();
+    expect(screen.queryByText('主訴・様子')).not.toBeInTheDocument();
+  });
+
   it('文字起こし中: スケルトンとらく助の一言を出す', () => {
     render(
       <VisitRecordCard recording={makeRecording({ status: 'transcribing', summary: null })} />,

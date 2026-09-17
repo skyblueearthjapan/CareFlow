@@ -7,7 +7,7 @@
 
 const PUBLIC_PATHS = ['/login'];
 const ADMIN_PREFIX = '/admin';
-const COMMON_PREFIXES = ['/dashboard', '/patients', '/staff', '/schedule'];
+const COMMON_PREFIXES = ['/dashboard', '/patients', '/staff', '/schedule', '/records'];
 
 /**
  * Path of the forced-password-change screen. The middleware is the only

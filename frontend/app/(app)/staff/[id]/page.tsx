@@ -48,6 +48,7 @@ import type { StaffShiftItem } from '@/lib/schemas/staff-shifts';
 
 import { DeleteConfirmModal } from '../_components/DeleteConfirmModal';
 import { QualificationBadge } from '../_components/QualificationBadge';
+import { VisitRecordsCard } from '@/components/records/VisitRecordsCard';
 import { EventsCard } from './_components/EventsCard';
 import { OverrideAddDialog } from './_components/OverrideAddDialog';
 import { OverrideEditDialog } from './_components/OverrideEditDialog';
@@ -217,6 +218,9 @@ export default function StaffDetailPage() {
       <OverridesCard staffId={data.id} canEdit={canEdit} />
 
       <EventsCard staffId={data.id} canEdit={canEdit} />
+
+      {/* 訪問記録 (音声記録・直近 5 件 → /records?staff=)。 */}
+      <VisitRecordsCard staffId={data.id} />
 
       {/* 毎週の固定イベント (朝会など・Phase 2)。週生成のたびに自動展開される。 */}
       <EventDefaultsCard staffId={data.id} canEdit={canEdit} />

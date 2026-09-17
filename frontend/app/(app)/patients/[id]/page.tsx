@@ -14,6 +14,7 @@ import { useSession } from 'next-auth/react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { VisitRecordsCard } from '@/components/records/VisitRecordsCard';
 import {
   Dialog,
   DialogContent,
@@ -322,6 +323,9 @@ export default function PatientDetailPage() {
         requiresMultipleStaff={data.requires_multiple_staff === true}
         patientStatus={data.status}
       />
+
+      {/* 訪問記録 (音声記録・直近 5 件 → /records?patient=)。 */}
+      <VisitRecordsCard patientId={data.id} />
 
       <Card className="p-5 space-y-3">
         <h2 className="font-serif text-lg font-bold text-text-primary">備考</h2>

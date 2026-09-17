@@ -14,6 +14,7 @@ import {
   ScrollText,
   Inbox,
   MapPin,
+  Mic,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { isAdminRole } from '@/lib/rbac';
@@ -29,6 +30,9 @@ const NAV_ITEMS = [
   // RB (PO決定 2026-07-08): PC版は全ロール同一表示。モニターは閲覧を staff にも開放
   // (BE GET も staff 許可済み。確認済み操作等の書込みは admin/manager のまま)。
   { href: '/monitor', label: '訪問モニター', icon: MapPin },
+  // 訪問記録 (音声記録の要約・文字起こし)。全ロール同一表示 — staff は BE が
+  // `staff_id` を強制するので自分の分だけが見える (visit-voice-record-design §11-2)。
+  { href: '/records', label: '訪問記録', icon: Mic },
   // 現場ボード (/m) は PC 盤(親機サイドバー)では不要のため非表示。
   // モバイル現場ビュー自体は /m に存在し、モバイル導線 (MobileShell) から開ける。
   { href: '/offices', label: '拠点', icon: Building2 },

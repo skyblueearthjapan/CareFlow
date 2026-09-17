@@ -91,8 +91,28 @@ interface VoiceRecorderPanelProps {
    * 置く代わりにここを変える（分岐して置くと打刻の瞬間に unmount して録音が飛ぶ）。
    */
   heading?: string;
-  /** 保存（キュー投入）が終わったとき。一覧の再取得などに使う。 */
-  onSaved?: () => void;
+  /**
+   * 保存（キュー投入）が終わったとき。一覧の再取得などに使う。
+   *
+   * 引数は**保存した録音の身元**（2026-09-18 是正）。患者未確定で録った音声を
+   * 後から紐付ける画面は、これが無いと「未紐付け一覧のいちばん新しい行」を
+   * 今の録音だと決め打ちするしかない（2 本続けて録ると取り違える）。
+   * 引数を読まない既存の呼び出し（`() => void`）はそのまま動く。
+   */
+  onSaved?: (saved: VoiceSavedInfo) => void;
+}
+
+/** {@link VoiceRecorderPanelProps.onSaved} が受け取る、保存した録音の身元。 */
+export interface VoiceSavedInfo {
+  /**
+   * 端末側の一意キー。UUID を作れない端末では null（レビュー M-C）— その端末は
+   * `client_id` を送らないので、サーバ側の重複判定にも使われない。
+   */
+  clientId: string | null;
+  /** サーバ上の録音 id。まだ送れていない / 応答から読めないときは null。 */
+  recordingId: string | null;
+  /** true = 端末のキューに残っている（圏外など）。サーバにはまだ無い。 */
+  queued: boolean;
 }
 
 /** キュー投入 1 回分の入力（引数が増えたので名前付きにする）。 */
@@ -482,6 +502,9 @@ export function VoiceRecorderPanel({
         { accessToken, refreshToken },
         { interactive: true },
       );
+      // この録音が届いたか（届いたならサーバ上の id）。他の未送信も一緒に流れるので
+      // **この entry の行**だけを見る。
+      const mine = flushed.sentEntries.find((s) => s.entryId === entry.id) ?? null;
       if (flushed.dropped.length > 0) {
         toast.error('音声を送信できませんでした', {
           description: `${flushed.dropped[0]?.reason ?? '送信できないため'}・「送れなかった録音」から再送できます`,
@@ -493,7 +516,7 @@ export function VoiceRecorderPanel({
       }
       void qc.invalidateQueries({ queryKey: ['visit-recordings'] });
       resetAfterSave();
-      onSaved?.();
+      onSaved?.({ clientId: cid, recordingId: mine?.recordingId ?? null, queued: !mine });
     },
     [staffId, voice, accessToken, refreshToken, qc, resetAfterSave, onSaved],
   );
@@ -504,7 +527,7 @@ export function VoiceRecorderPanel({
     const link = resultLink ?? voice.link;
     setUploadRatio(0);
     try {
-      await upload.mutateAsync({
+      const saved = await upload.mutateAsync({
         audio: result.blob,
         visitId: link.visitId,
         patientId: link.patientId,
@@ -520,7 +543,8 @@ export function VoiceRecorderPanel({
       await discardChunkSession(result.sessionId);
       toast.success('らく助が文字起こし中です（数分）');
       resetAfterSave();
-      onSaved?.();
+      // 直接送信は応答そのものが録音（キューを通らないので queued は常に false）。
+      onSaved?.({ clientId, recordingId: saved?.id ?? null, queued: false });
     } catch (err) {
       setUploadRatio(null);
       toast.error('直接送信できませんでした', {

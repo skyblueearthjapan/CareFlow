@@ -2,6 +2,17 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 
+// 「🎙 記録を見る」は音声記録の一覧を引く (visit-voice-record-design §11-2)。
+// このパネルの単体テストでは記録なし = リンクを出さない状態に固定する。
+vi.mock('@/lib/queries/visit-recordings', () => ({
+  useVisitRecordings: () => ({ data: { items: [], total: 0 }, isLoading: false }),
+  useVisitRecording: () => ({ data: null, isLoading: false }),
+  useUpdateRecording: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useRetryRecording: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useDeleteRecording: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  recordingAudioUrl: (id: string) => `/api/v1/visit-recordings/${id}/audio`,
+}));
+
 import { MonitorDetailPanel } from '../MonitorDetailPanel';
 import { makeRow, makeVisit } from './fixtures';
 

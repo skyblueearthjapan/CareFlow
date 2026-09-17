@@ -70,6 +70,24 @@ export interface DroppedVoice {
   reason: string;
 }
 
+/**
+ * 送信できた 1 件（キューの行 → サーバ上の録音）。
+ *
+ * **「いま保存したのはどれか」を推測させないため**の対応表（2026-09-18 是正）。
+ * これが無いと、保存直後の画面は「自分の未紐付け一覧のいちばん新しい行」を
+ * 今しがたの録音だと決め打ちするしかなく、2 本続けて録ると取り違える。
+ *
+ * `recordingId` は 202 の `VisitRecordingRead.id`。409（`client_id` 重複＝前回の
+ * 送信が届いていた）でも BE が既存行を返せばその id が入る。id を読めない応答
+ * （古い BE・本文なし）では null — 呼び出し側は「送れたが id は不明」として扱う。
+ */
+export interface SentVoice {
+  /** キューの行 id（`PendingVoice.id`＝`client_id`）。 */
+  entryId: string;
+  /** サーバ上の録音 id（読めなければ null）。 */
+  recordingId: string | null;
+}
+
 export interface VoiceFlushResult {
   /** 送信できた件数。 */
   sent: number;
@@ -79,6 +97,8 @@ export interface VoiceFlushResult {
   dropped: DroppedVoice[];
   /** 退避された録音の総数（バナー表示用）。 */
   failed: number;
+  /** 送信できた行とサーバ上の録音 id の対応（送信順）。 */
+  sentEntries: SentVoice[];
 }
 
 export interface VoiceAuth {
@@ -374,11 +394,26 @@ function buildForm(entry: PendingVoice): FormData {
   return form;
 }
 
-/** 送信結果: 送れた / 残す（理由つき） / 退避（理由つき）。 */
+/** 送信結果: 送れた（サーバ上の id つき） / 残す（理由つき） / 退避（理由つき）。 */
 type PostOutcome =
-  | { kind: 'sent' }
+  | { kind: 'sent'; recordingId: string | null }
   | { kind: 'keep'; reason: string }
   | { kind: 'drop'; reason: string };
+
+/** 応答本文から `VisitRecordingRead.id` を拾う（読めなければ null）。 */
+function recordingIdOf(text: string | null): string | null {
+  if (!text) return null;
+  try {
+    const body: unknown = JSON.parse(text);
+    if (body && typeof body === 'object') {
+      const id = (body as Record<string, unknown>).id;
+      if (typeof id === 'string' && id) return id;
+    }
+  } catch {
+    /* JSON ではない（HTML・空） */
+  }
+  return null;
+}
 
 async function postVoice(entry: PendingVoice, auth: VoiceAuth): Promise<PostOutcome> {
   const url = `${resolveBaseUrl()}${VISIT_RECORDINGS_PATH}`;
@@ -396,9 +431,14 @@ async function postVoice(entry: PendingVoice, auth: VoiceAuth): Promise<PostOutc
     } catch (err) {
       return { kind: 'keep', reason: err instanceof Error ? err.message : 'ネットワーク障害' };
     }
-    if (res.ok) return { kind: 'sent' };
+    // 202 の本文は `VisitRecordingRead`。id を持ち帰ると、保存した画面が
+    // 「どれが今の録音か」を推測せずに紐付けられる（2026-09-18 是正）。
+    if (res.ok) return { kind: 'sent', recordingId: recordingIdOf((await readBody(res)).text) };
     // `client_id` の重複 = 前回の送信が届いていた（レビュー H-4）。成功扱いで取り除く。
-    if (res.status === 409) return { kind: 'sent' };
+    // BE が既存行を返すならその id を使う（返さなければ null）。
+    if (res.status === 409) {
+      return { kind: 'sent', recordingId: recordingIdOf((await readBody(res)).text) };
+    }
     if (res.status === 401 && attempt === 0 && auth.refreshToken) {
       const fresh = await refreshAccessToken(auth.refreshToken);
       if (fresh) {
@@ -461,12 +501,14 @@ function withVoiceLock<T>(staffId: string, fn: () => Promise<T>, interactive = f
 async function runFlush(staffId: string, auth: VoiceAuth): Promise<VoiceFlushResult> {
   const entries = await listVoice(staffId);
   const dropped: DroppedVoice[] = [];
+  const sentEntries: SentVoice[] = [];
   let sent = 0;
   for (const entry of entries) {
     const outcome = await postVoice(entry, auth);
     if (outcome.kind === 'sent') {
       await removeVoice(entry.id);
       sent += 1;
+      sentEntries.push({ entryId: entry.id, recordingId: outcome.recordingId });
       continue;
     }
     const attempts = entry.attempts + 1;
@@ -493,6 +535,7 @@ async function runFlush(staffId: string, auth: VoiceAuth): Promise<VoiceFlushRes
     remaining: await countVoice(staffId),
     dropped,
     failed: await countFailedVoice(staffId),
+    sentEntries,
   };
 }
 
@@ -508,7 +551,7 @@ export function flushVoiceQueue(
   options: VoiceFlushOptions = {},
 ): Promise<VoiceFlushResult> {
   if (typeof window === 'undefined' || !staffId) {
-    return Promise.resolve({ sent: 0, remaining: 0, dropped: [], failed: 0 });
+    return Promise.resolve({ sent: 0, remaining: 0, dropped: [], failed: 0, sentEntries: [] });
   }
   const prev = inFlight.get(staffId);
   const next = (prev ? prev.then(noop, noop) : Promise.resolve()).then(() =>

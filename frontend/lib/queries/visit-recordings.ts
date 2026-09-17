@@ -55,6 +55,7 @@ export const visitRecordingReadSchema = z.object({
   staff_id: z.string().nullable().optional(),
   staff_name: z.string().nullable().optional(),
   office_id: z.string().nullable().optional(),
+  office_name: z.string().nullable().optional(),
   recorded_at: z.string(),
   ended_at: z.string().nullable().optional(),
   duration_sec: z.number().nullable().optional(),
@@ -67,6 +68,9 @@ export const visitRecordingReadSchema = z.object({
   transcript_json: z.unknown().nullable().optional(),
   summary: visitRecordingSummarySchema.nullable().optional(),
   summary_text: z.string().nullable().optional(),
+  // 人手で要約を直した痕跡（0087 で追加・PC の `/records` だけが書き込む）。
+  summary_edited_by: z.string().nullable().optional(),
+  summary_edited_at: z.string().nullable().optional(),
   provider: z.string().nullable().optional(),
   model: z.string().nullable().optional(),
   prompt_version: z.string().nullable().optional(),
@@ -132,26 +136,56 @@ function resolveBaseUrl(): string {
   );
 }
 
+/** 並び順（BE 契約 §11-2）。既定は新しい順。 */
+export type VisitRecordingOrder = 'recorded_at_desc' | 'recorded_at_asc';
+
 export interface UseVisitRecordingsParams {
   visitId?: string | null;
   patientId?: string | null;
   staffId?: string | null;
+  officeId?: string | null;
   /** `YYYY-MM-DD`（inclusive）。 */
   from?: string | null;
   to?: string | null;
   status?: string | null;
+  /** 確認済みの有無。null / undefined = 指定なし。 */
+  reviewed?: boolean | null;
+  /** 患者名・スタッフ名・要約の部分一致（BE 側で絞る）。 */
+  q?: string | null;
+  order?: VisitRecordingOrder | null;
   limit?: number;
   offset?: number;
+  /**
+   * 訪問 / 患者 / スタッフのいずれも指定せずに問い合わせることを許す。
+   *
+   * 既定では絞り込みの無い問い合わせを投げない（訪問詳細などに貼った
+   * フックが全件を引く事故を防ぐため）。一覧が仕事そのものである
+   * `/records` だけがこの蓋を開ける（期間とページングで窓を絞る）。
+   */
+  unscoped?: boolean;
 }
 
-function buildListQuery(params: UseVisitRecordingsParams): string {
+/**
+ * 検索語の下限 (文字)。1 文字の部分一致は全件に近い結果を BE に作らせるだけなので
+ * 送らない。UI 側 (`RecordsFilterBar`) でも抑止しているが、フックを直接叩く
+ * 呼び出しもあるので**ここでも守る**（レビュー N-4）。
+ */
+const SEARCH_MIN_LEN = 2;
+
+/** 一覧のクエリ文字列（純関数・テストから直接縛る）。 */
+export function buildListQuery(params: UseVisitRecordingsParams): string {
   const qs = new URLSearchParams();
   if (params.visitId) qs.set('visit_id', params.visitId);
   if (params.patientId) qs.set('patient_id', params.patientId);
   if (params.staffId) qs.set('staff_id', params.staffId);
+  if (params.officeId) qs.set('office_id', params.officeId);
   if (params.from) qs.set('from', params.from);
   if (params.to) qs.set('to', params.to);
   if (params.status) qs.set('status', params.status);
+  if (typeof params.reviewed === 'boolean') qs.set('reviewed', String(params.reviewed));
+  const q = params.q?.trim() ?? '';
+  if (q.length >= SEARCH_MIN_LEN) qs.set('q', q);
+  if (params.order) qs.set('order', params.order);
   qs.set('limit', String(params.limit ?? 50));
   qs.set('offset', String(params.offset ?? 0));
   return qs.toString();
@@ -164,7 +198,8 @@ export function useVisitRecordings(
   const { data: session, status } = useSession();
   const { accessToken, refreshToken } = authPair(session);
   // 絞り込みが 1 つも無い問い合わせは投げない（全件取得の事故防止）。
-  const hasScope = !!(params.visitId || params.patientId || params.staffId);
+  // `unscoped` を明示した呼び出し（`/records`）だけが例外。
+  const hasScope = !!(params.visitId || params.patientId || params.staffId || params.unscoped);
 
   return useQuery<VisitRecordingList, Error>({
     queryKey: ['visit-recordings', 'list', params],
@@ -288,6 +323,8 @@ export interface UpdateRecordingPayload {
   visit_id?: string;
   reviewed?: boolean;
   note_append?: string;
+  /** 人手で直した要約本文（PC `/records` の「編集」・admin / 本人のみ）。 */
+  summary_text?: string;
 }
 
 /** PATCH /visit-recordings/{id} — 確認済み / 紐付け変更 / 追記。 */
@@ -307,6 +344,47 @@ export function useUpdateRecording(
         refreshToken,
       });
       return visitRecordingReadSchema.parse(raw);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['visit-recordings'] });
+    },
+  });
+}
+
+/** POST /visit-recordings/{id}/retry — 失敗した文字起こし・要約をやり直す（admin）。 */
+export function useRetryRecording(id: string): UseMutationResult<VisitRecordingRead, Error, void> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<VisitRecordingRead, Error, void>({
+    mutationFn: async () => {
+      const raw = await fetcher<unknown>(`${VISIT_RECORDINGS_PATH}/${id}/retry`, {
+        method: 'POST',
+        accessToken,
+        refreshToken,
+      });
+      return visitRecordingReadSchema.parse(raw);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['visit-recordings'] });
+    },
+  });
+}
+
+/** DELETE /visit-recordings/{id} — 論理削除 ＋ 音声破棄（admin）。 */
+export function useDeleteRecording(id: string): UseMutationResult<void, Error, void> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<void, Error, void>({
+    mutationFn: async () => {
+      await fetcher<unknown>(`${VISIT_RECORDINGS_PATH}/${id}`, {
+        method: 'DELETE',
+        accessToken,
+        refreshToken,
+      });
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['visit-recordings'] });

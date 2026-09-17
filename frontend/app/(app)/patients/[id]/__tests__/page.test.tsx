@@ -73,6 +73,36 @@ vi.mock('@/lib/queries/offices', () => ({
   useOffices: vi.fn(),
 }));
 
+// ─── Mock 訪問記録 (音声記録) の read hook ────────────────────────────────────
+// 患者詳細に「訪問記録」カード (直近 5 件) が乗る (visit-voice-record-design §11-2)。
+vi.mock('@/lib/queries/visit-recordings', () => ({
+  useVisitRecordings: vi.fn(() => ({
+    data: {
+      items: [
+        {
+          id: 'rec-1',
+          patient_id: 'patient-0001',
+          patient_name: '山田 花子',
+          staff_id: 'st-1',
+          staff_name: '川名 幸子',
+          recorded_at: '2026-09-17T05:08:00Z',
+          status: 'summarized',
+          summary_text: '「足が重い」との訴え。',
+          has_audio: true,
+          reviewed_at: null,
+        },
+      ],
+      total: 3,
+    },
+    isLoading: false,
+  })),
+  useVisitRecording: vi.fn(() => ({ data: null, isLoading: false })),
+  useUpdateRecording: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useRetryRecording: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useDeleteRecording: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  recordingAudioUrl: (id: string) => `/api/v1/visit-recordings/${id}/audio`,
+}));
+
 // ─── Mock NGスタッフ / 同住所紐付け の read hook ───────────────────────────────
 // (訪問条件 Card の 2 行。他 export は実物のまま = PatientFixedVisitsPanel が使う)
 vi.mock('@/lib/queries/patient_ng_staff', () => ({
@@ -419,5 +449,19 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
 
     // readOnly=true のため保存ボタンは表示されない
     expect(screen.queryByRole('button', { name: '保存' })).not.toBeInTheDocument();
+  });
+
+  it('11. 「訪問記録」カードが直近の記録と /records?patient= への導線を出す', () => {
+    setupMocks({ role: 'admin' });
+
+    renderPage();
+
+    expect(screen.getByTestId('visit-records-card')).toBeInTheDocument();
+    expect(screen.getByText('「足が重い」との訴え。')).toBeInTheDocument();
+    // next/link はこのテストで素の <a> に差し替えられている (data-testid は落ちる)。
+    expect(screen.getByRole('link', { name: /すべて見る/ })).toHaveAttribute(
+      'href',
+      '/records?patient=patient-0001',
+    );
   });
 });

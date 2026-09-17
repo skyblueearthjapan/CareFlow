@@ -3,16 +3,25 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { AlertTriangle, Clock, QrCode } from 'lucide-react';
+import { AlertTriangle, Clock, Link2, Mic, QrCode } from 'lucide-react';
 
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { toast } from '@/components/ui/sonner';
 import { CheckInButton } from '@/components/mobile/CheckInButton';
 import { MobileEventChip, MobileOverrideBadge } from '@/components/mobile/MobileEventChip';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import { MobileVisitCard } from '@/components/mobile/MobileVisitCard';
+import { PatientPickerSheet } from '@/components/mobile/PatientPickerSheet';
 import { QrScanner } from '@/components/mobile/QrScanner';
 import { VoiceFailedSheet } from '@/components/mobile/VoiceFailedSheet';
 import { RakusukeNote } from '@/components/brand/Rakusuke';
@@ -20,9 +29,16 @@ import { extractQrToken } from '@/lib/qr-token';
 import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
 import { foldStaffEvents } from '@/lib/schedule/foldStaffEvents';
 import { useCheckinFlush } from '@/lib/queries/checkinFlush';
-import { useVisitRecordings } from '@/lib/queries/visit-recordings';
-import { useVoiceFlush } from '@/lib/voice/queue';
 import {
+  useUpdateRecording,
+  useVisitRecordings,
+  type VisitRecordingRead,
+} from '@/lib/queries/visit-recordings';
+import { formatElapsed } from '@/lib/voice/recorder';
+import { useVoiceFlush } from '@/lib/voice/queue';
+import type { PatientRead } from '@/lib/schemas/patient';
+import {
+  addDays,
   todayIso,
   useMyOverrides,
   useMyStaffEvents,
@@ -35,6 +51,14 @@ function isUnvisited(v: MyVisit): boolean {
   return v.status === 'planned' || v.status === '';
 }
 
+/**
+ * 要紐付けバナーの遡り幅 (日・レビュー L-6)。
+ *
+ * 本人に出すのは「まだ覚えている」範囲だけ。これより古い未紐付けは admin が
+ * `/records` の「要紐付け」で片付ける (設計 §2-1: 24 時間紐付け無しは admin 画面へ)。
+ */
+const UNLINKED_LOOKBACK_DAYS = 14;
+
 /** 今日の 1 行 = 訪問カード or イベントチップ (design §3 C-3)。 */
 type TodayRow =
   | { kind: 'visit'; at: string; visit: MyVisit }
@@ -46,8 +70,120 @@ function sortKey(t: string | null | undefined): string {
   return t.length >= 5 ? t.slice(0, 5) : t;
 }
 
+/** ISO 日時 → `M/D HH:MM` (端末ローカル)。 */
+function fmtDateTime(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+}
+
+/** 要約の 1 行目 (まだ無ければ状態の言葉)。 */
+function summaryLine(r: VisitRecordingRead): string {
+  const text = (r.summary_text ?? '').trim();
+  if (text) return text.split('\n')[0] ?? '';
+  return r.status === 'failed' ? '要約に失敗しました' : 'らく助が文字起こし中です';
+}
+
+/**
+ * 要紐付けの録音を並べ、その場で患者を選ぶシート (設計 §11-1)。
+ *
+ * 「予定に無い訪問を記録」で患者を選ばずに保存した録音の受け皿。行を選ぶと
+ * `PatientPickerSheet` に切り替わり、選んだ患者で
+ * `PATCH /visit-recordings/{id} {patient_id}` を投げる。**訪問は作らない**
+ * (2026-09-18 決定・設計 §10-3)。
+ */
+function UnlinkedRecordingsSheet({
+  open,
+  onOpenChange,
+  rows,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  rows: VisitRecordingRead[];
+}) {
+  const [picking, setPicking] = useState<VisitRecordingRead | null>(null);
+  const update = useUpdateRecording(picking?.id ?? '');
+
+  // 閉じたら選択中の行を忘れる (次に開いたら一覧から始める)。
+  const change = (next: boolean) => {
+    if (!next) setPicking(null);
+    onOpenChange(next);
+  };
+
+  const handlePick = (patient: PatientRead) => {
+    if (!picking || update.isPending) return;
+    update.mutate(
+      { patient_id: patient.id },
+      {
+        onSuccess: () => {
+          toast.success(`${patient.name}様の記録として保存しました`);
+          setPicking(null);
+          onOpenChange(false);
+        },
+        onError: (err) => {
+          toast.error('患者を紐付けできませんでした', {
+            description: err instanceof Error ? err.message : String(err),
+          });
+        },
+      },
+    );
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={change}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>
+            {picking ? 'この記録はどなたの訪問ですか？' : '患者の紐付けが済んでいない録音'}
+          </DialogTitle>
+          <DialogDescription>
+            {picking
+              ? `録音 ${fmtDateTime(picking.recorded_at)}${
+                  picking.duration_sec ? `（${formatElapsed(picking.duration_sec)}）` : ''
+                }`
+              : '録音した記録に患者を紐付けてください。'}
+          </DialogDescription>
+        </DialogHeader>
+
+        {picking ? (
+          <PatientPickerSheet onPick={handlePick} disabled={update.isPending} />
+        ) : (
+          <div className="space-y-2">
+            {rows.length === 0 && (
+              <p className="text-sm text-text-secondary">要紐付けの録音はありません。</p>
+            )}
+            {rows.map((r) => (
+              <div
+                key={r.id}
+                className="flex items-center gap-2 rounded-md border border-border-default p-3"
+                data-testid={`unlinked-row-${r.id}`}
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-bold text-text-primary">
+                    {fmtDateTime(r.recorded_at)}
+                    {r.duration_sec ? `・${formatElapsed(r.duration_sec)}` : ''}
+                  </p>
+                  <p className="truncate text-xs text-text-secondary">{summaryLine(r)}</p>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={() => setPicking(r)}>
+                  患者を選ぶ
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function MobileTodayPage() {
   const today = todayIso();
+  // 要紐付けバナーの遡り幅 (日)。
+  const unlinkedFrom = addDays(today, -UNLINKED_LOOKBACK_DAYS);
   const router = useRouter();
   const {
     data: visits,
@@ -111,6 +247,20 @@ export default function MobileTodayPage() {
   const recordedVisitIds = new Set(
     (recordingList?.items ?? []).map((r) => r.visit_id).filter((id): id is string => !!id),
   );
+  // 患者を選ばずに保存した録音 (設計 §11-1)。バナー → シートで患者を選ぶ。
+  // **直近 14 日ぶんだけ**を本人に出す (レビュー L-6): 現場の記憶が残っている
+  // うちが紐付けの勝負どころで、それより古い分は admin が /records で対処する
+  // (24 時間紐付け無しは admin 画面に出る)。古い残骸をいつまでも本人に見せると、
+  // バナーが常設化して「今日ぶん」の気づきが埋もれる。
+  const { data: unlinkedList } = useVisitRecordings({
+    staffId,
+    status: 'unlinked',
+    from: unlinkedFrom,
+    limit: 50,
+  });
+  const unlinkedRows = unlinkedList?.items ?? [];
+  const [unlinkedOpen, setUnlinkedOpen] = useState(false);
+
   const recordingTotal = recordingList?.total ?? 0;
   const recordingLoaded = recordingList?.items.length ?? 0;
   useEffect(() => {
@@ -191,10 +341,34 @@ export default function MobileTodayPage() {
         </button>
       )}
 
+      {/* 患者の紐付け待ち — 録音した本人にしか分からないので、その日のうちに。 */}
+      {unlinkedRows.length > 0 && (
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 rounded-md bg-warning-bg px-3 py-2 text-left text-xs text-warning"
+          data-testid="today-unlinked-banner"
+          onClick={() => setUnlinkedOpen(true)}
+        >
+          <Link2 className="h-3.5 w-3.5 shrink-0" />
+          <span>
+            要紐付け {unlinkedRows.length} 件・タップして患者を選ぶ
+            <span className="block opacity-80">
+              直近 {UNLINKED_LOOKBACK_DAYS} 日ぶんです。古い分は管理者が対応します。
+            </span>
+          </span>
+        </button>
+      )}
+
       <VoiceFailedSheet
         open={failedOpen}
         onOpenChange={setFailedOpen}
         onChanged={() => void refreshVoicePending()}
+      />
+
+      <UnlinkedRecordingsSheet
+        open={unlinkedOpen}
+        onOpenChange={setUnlinkedOpen}
+        rows={unlinkedRows}
       />
 
       {/* 一覧の状態 (読込中/エラー/0件) に関わらず常に出す — 予定に無い訪問こそ
@@ -207,6 +381,15 @@ export default function MobileTodayPage() {
         <p className="text-center text-xs text-text-muted">
           予定に無い訪問・担当外の訪問はこちらから
         </p>
+        {/* QR が無い予定外訪問 (設計 §2-1 導線 C)。先に録音し、患者は後で選ぶ。 */}
+        <CheckInButton
+          tone="outline"
+          data-testid="today-record-new"
+          onClick={() => router.push('/m/record/new')}
+        >
+          <Mic className="h-5 w-5" />
+          予定に無い訪問を記録
+        </CheckInButton>
       </div>
 
       {isLoading && (
