@@ -1,0 +1,879 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>訪問の音声記録 UX 試案</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* ━━━ Design tokens (実アプリ tokens.css と同値) ━━━ */
+:root {
+  --brand:#e15a7f; --brand-hover:#c94a6e; --brand-light:#ffd6e0; --brand-50:#fff5f8;
+  --leaf:#059669; --leaf-bg:#d1fae5; --leaf-border:#a7f3d0;
+  --upd:#d97706; --upd-bg:#fef3c7; --upd-border:#fde68a;
+  --err:#dc2626; --err-bg:#fee2e2; --err-border:#fecaca;
+  --info:#0d9488; --info-bg:#ccfbf1; --info-border:#99f6e4;
+  --cream:#faf7f2; --panel:#fff; --line:#e7e5e4; --line-soft:#f0ede8;
+  --ink:#1c1917; --ink2:#57534e; --ink3:#a8a29e;
+  --shadow-md:0 4px 12px rgba(28,25,23,.06),0 2px 4px rgba(28,25,23,.04);
+  --shadow-lg:0 12px 24px rgba(28,25,23,.08),0 4px 8px rgba(28,25,23,.04);
+  --sans:'Noto Sans JP','Hiragino Sans','Yu Gothic UI','Meiryo',system-ui,sans-serif;
+  --serif:'Noto Serif JP','Hiragino Mincho ProN',serif;
+  --r:10px; --r-lg:16px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --cream:#1c1a19; --panel:#262321; --line:#3a3632; --line-soft:#302c29;
+    --ink:#f1ece6; --ink2:#c6bdb3; --ink3:#8f877f;
+    --brand-50:#3a242b; --brand-light:#5a3140;
+    --leaf-bg:#064e3b; --leaf-border:#065f46;
+    --upd-bg:#3d2e16; --upd-border:#78350f;
+    --err-bg:#450a0a; --err-border:#7f1d1d;
+    --info-bg:#042f2e; --info-border:#115e59;
+  }
+}
+:root[data-theme="dark"] {
+  --cream:#1c1a19; --panel:#262321; --line:#3a3632; --line-soft:#302c29;
+  --ink:#f1ece6; --ink2:#c6bdb3; --ink3:#8f877f;
+  --brand-50:#3a242b; --brand-light:#5a3140;
+  --leaf-bg:#064e3b; --upd-bg:#3d2e16; --err-bg:#450a0a; --info-bg:#042f2e;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--cream);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.5;}
+button{font-family:var(--sans);cursor:pointer;}
+
+/* ━━━ Masthead ━━━ */
+.mast{max-width:1200px;margin:0 auto;padding:28px 20px 10px;}
+.mast h1{font-family:var(--serif);font-size:21px;margin:0 0 5px;font-weight:700;}
+.mast h1 em{font-style:normal;color:var(--brand);}
+.mast p{margin:0;color:var(--ink2);font-size:13px;max-width:90ch;}
+
+/* Section headers */
+.sec{max-width:1200px;margin:28px auto 12px;padding:0 20px;}
+.sec h2{font-family:var(--serif);font-size:16px;font-weight:700;margin:0 0 3px;border-left:3px solid var(--brand);padding-left:10px;}
+.sec p{font-size:12.5px;color:var(--ink3);margin:0;padding-left:13px;}
+
+/* ━━━ Mobile frame layout ━━━ */
+.mob-row{max-width:1200px;margin:0 auto 8px;padding:0 20px;display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start;}
+.phone{width:390px;flex-shrink:0;}
+.phone-shell{background:var(--panel);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow-lg);overflow:hidden;}
+.status-bar{background:var(--cream);height:44px;display:flex;align-items:center;justify-content:space-between;padding:10px 20px 4px;font-size:15px;color:var(--ink);}
+.status-bar .t{font-weight:700;}
+.status-bar .icons{display:flex;gap:4px;font-size:11px;color:var(--ink3);}
+.phone-note{font-size:12px;color:var(--ink3);text-align:center;margin-top:7px;line-height:1.4;}
+
+/* PC frame */
+.pc-wrap{max-width:1200px;margin:0 auto 8px;padding:0 20px;}
+.pc-shell{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow-lg);overflow:hidden;}
+.pc-note{font-size:12px;color:var(--ink3);margin-top:7px;line-height:1.4;}
+
+/* ━━━ Shared primitives ━━━ */
+.badge{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700;line-height:1.4;}
+.b-ok{background:var(--leaf-bg);color:var(--leaf);border:1px solid var(--leaf-border);}
+.b-wait{background:var(--upd-bg);color:var(--upd);border:1px solid var(--upd-border);}
+.b-err{background:var(--err-bg);color:var(--err);border:1px solid var(--err-border);}
+.b-info{background:var(--info-bg);color:var(--info);border:1px solid var(--info-border);}
+.b-muted{background:var(--line-soft);color:var(--ink3);border:1px solid var(--line);}
+.b-brand{background:var(--brand);color:#fff;border:1px solid var(--brand);}
+
+/* Notes at bottom */
+.notes{max-width:1200px;margin:24px auto 48px;padding:0 20px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;}
+.note{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 16px;font-size:13px;line-height:1.6;}
+.note h3{margin:0 0 6px;font-size:13px;color:var(--brand);font-weight:700;}
+.note ul{margin:0;padding-left:18px;}
+.note li{margin-bottom:3px;}
+
+/* ━━━ Screen 1: 訪問中パネル ━━━ */
+.nav-bar{background:var(--cream);padding:10px 16px 8px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;}
+.nav-back{color:var(--brand);font-size:14px;display:flex;align-items:center;gap:3px;background:none;border:none;padding:0;}
+.nav-title{font-weight:700;font-size:15px;flex:1;}
+.nav-more{width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:none;border:none;color:var(--ink3);font-size:18px;}
+
+.visit-head{padding:12px 16px 10px;background:var(--brand-50);border-bottom:1px solid var(--brand-light);}
+.visit-patient{font-family:var(--serif);font-size:18px;font-weight:700;margin:0 0 2px;}
+.visit-meta{font-size:12px;color:var(--ink2);display:flex;gap:12px;}
+.visit-chips{display:flex;align-items:center;gap:8px;margin-top:7px;}
+.elapsed{background:var(--brand-50);border:1px solid var(--brand-light);border-radius:999px;padding:2px 10px;font-size:12px;font-variant-numeric:tabular-nums;color:var(--brand);font-weight:700;}
+.inprog{background:var(--brand);color:#fff;border-radius:999px;padding:2px 10px;font-size:11px;font-weight:700;}
+
+.panel-sec{padding:12px 16px;border-bottom:1px solid var(--line-soft);}
+.panel-sec:last-child{border-bottom:none;}
+.panel-lbl{font-size:11px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;}
+
+.consent-box{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:var(--upd-bg);border:1px solid var(--upd-border);border-radius:10px;margin-bottom:12px;}
+.consent-box input[type=checkbox]{width:18px;height:18px;margin-top:1px;flex-shrink:0;accent-color:var(--brand);cursor:pointer;}
+.consent-box label{font-size:13px;color:var(--ink);cursor:pointer;line-height:1.4;}
+
+.btn-primary-mob{width:100%;height:48px;background:var(--brand);color:#fff;border:none;border-radius:14px;font-size:15px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 4px 14px rgba(225,90,127,.28);letter-spacing:.01em;}
+.btn-primary-mob:hover{background:var(--brand-hover);}
+.btn-ghost-mob{width:100%;height:44px;background:var(--panel);color:var(--ink2);border:1.5px solid var(--line);border-radius:12px;font-size:14px;font-weight:500;display:flex;align-items:center;justify-content:center;gap:7px;margin-top:10px;}
+.voice-alt{text-align:center;padding-top:8px;}
+.voice-alt a{font-size:12.5px;color:var(--info);text-decoration:none;border-bottom:1px dotted var(--info);}
+
+/* ━━━ Screen 2: 録音中 ━━━ */
+.rec-warn{background:#78350f;color:#fef3c7;padding:9px 16px;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:8px;line-height:1.35;}
+.rec-body{padding:18px 16px;display:flex;flex-direction:column;align-items:center;gap:14px;background:var(--panel);}
+.rec-patient{font-size:13px;color:var(--ink3);text-align:center;}
+.rec-patient strong{display:block;color:var(--ink);font-size:15px;font-weight:700;margin-top:2px;}
+.rec-dot-wrap{position:relative;display:flex;align-items:center;justify-content:center;}
+.rec-ring{position:absolute;width:100px;height:100px;border-radius:50%;border:2px solid var(--err-border);animation:ring-pulse 1.4s ease-in-out infinite;}
+@keyframes ring-pulse{0%,100%{transform:scale(1);opacity:.7;}60%{transform:scale(1.35);opacity:0;}}
+.rec-dot{width:72px;height:72px;border-radius:50%;background:var(--err);display:flex;align-items:center;justify-content:center;position:relative;z-index:1;}
+.rec-timer{font-size:34px;font-variant-numeric:tabular-nums;font-weight:700;letter-spacing:.04em;font-family:var(--sans);}
+.waveform{display:flex;gap:3px;align-items:center;height:40px;}
+.wb{width:4px;border-radius:2px;background:var(--brand);animation:wv .9s ease-in-out infinite;}
+.wb:nth-child(1){height:8px;animation-delay:0s;}
+.wb:nth-child(2){height:18px;animation-delay:.08s;}
+.wb:nth-child(3){height:30px;animation-delay:.16s;}
+.wb:nth-child(4){height:22px;animation-delay:.24s;}
+.wb:nth-child(5){height:36px;animation-delay:.12s;}
+.wb:nth-child(6){height:16px;animation-delay:.32s;}
+.wb:nth-child(7){height:26px;animation-delay:.04s;}
+.wb:nth-child(8){height:10px;animation-delay:.28s;}
+.wb:nth-child(9){height:32px;animation-delay:.2s;}
+.wb:nth-child(10){height:20px;animation-delay:.36s;}
+.wb:nth-child(11){height:6px;animation-delay:.44s;}
+.wb:nth-child(12){height:28px;animation-delay:.1s;}
+@keyframes wv{0%,100%{transform:scaleY(1);opacity:.85;}50%{transform:scaleY(.3);opacity:.35;}}
+.rec-btns{display:flex;gap:12px;width:100%;}
+.btn-pause{flex:1;height:48px;background:var(--panel);border:1.5px solid var(--line);border-radius:14px;font-size:14px;font-weight:600;color:var(--ink2);display:flex;align-items:center;justify-content:center;gap:7px;}
+.btn-stop{flex:1;height:48px;background:var(--err-bg);border:1.5px solid var(--err-border);border-radius:14px;font-size:14px;font-weight:600;color:var(--err);display:flex;align-items:center;justify-content:center;gap:7px;}
+
+/* ━━━ Screen 3: 要約カード ━━━ */
+.rcard-head{padding:12px 16px 6px;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;}
+.rcard-meta{font-size:12px;color:var(--ink3);margin-top:4px;display:flex;gap:10px;flex-wrap:wrap;}
+.sum-body{padding:0 16px 10px;}
+.sum-sec{margin-bottom:10px;}
+.sum-lbl{font-size:11px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;}
+.sum-item{font-size:14px;color:var(--ink);line-height:1.55;padding-left:1.1em;position:relative;margin-bottom:2px;}
+.sum-item::before{content:"•";position:absolute;left:0;color:var(--brand);font-weight:700;}
+.vitals{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:10px;}
+.vcell{background:var(--line-soft);border-radius:8px;padding:5px 10px;}
+.vcell .vk{font-size:11px;color:var(--ink3);}
+.vcell .vv{font-size:13.5px;font-weight:700;color:var(--ink);}
+.fold-bar{border-top:1px solid var(--line-soft);padding:8px 16px;display:flex;gap:16px;}
+.fold-btn{background:none;border:none;padding:0;font-size:13px;color:var(--info);display:flex;align-items:center;gap:4px;font-family:var(--sans);}
+.rcard-actions{padding:8px 16px 14px;display:flex;flex-direction:column;gap:8px;}
+.btn-confirm{width:100%;height:44px;background:var(--leaf);color:#fff;border:none;border-radius:12px;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:7px;font-family:var(--sans);}
+
+/* Skeleton variant */
+.skel{height:14px;border-radius:6px;background:linear-gradient(90deg,var(--line) 25%,var(--line-soft) 50%,var(--line) 75%);background-size:200% 100%;animation:shim 1.6s infinite;margin-bottom:9px;}
+@keyframes shim{0%{background-position:200% 0;}100%{background-position:-200% 0;}}
+.skel.s{width:55%;}
+.skel.m{width:75%;}
+.skel.l{width:90%;}
+.mascot-tip{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--brand-50);border-radius:12px;margin:6px 16px 12px;}
+.mascot-tip img{width:44px;height:44px;object-fit:contain;flex-shrink:0;}
+.mascot-tip p{margin:0;font-size:13px;color:var(--ink2);line-height:1.45;}
+
+/* ━━━ Screen 4: 患者選択 ━━━ */
+.ps-head{padding:12px 16px 10px;background:var(--brand-50);border-bottom:1px solid var(--brand-light);}
+.ps-head h2{font-family:var(--serif);font-size:16px;font-weight:700;margin:0 0 2px;}
+.ps-head p{font-size:12.5px;color:var(--ink2);margin:0;}
+.ps-body{padding:14px 16px;}
+.ps-lbl{font-size:11px;font-weight:700;color:var(--ink3);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px;}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;}
+.chip{border-radius:999px;padding:5px 14px;font-size:13px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;font-family:var(--sans);}
+.chip.on{background:var(--brand);color:#fff;border-color:var(--brand);font-weight:700;}
+.sbox{position:relative;margin-bottom:12px;}
+.sbox input{width:100%;height:40px;border:1.5px solid var(--line);border-radius:var(--r);padding:0 12px 0 36px;font:inherit;font-size:13.5px;background:var(--panel);color:var(--ink);}
+.sbox input:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-50);}
+.sbox .si{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--ink3);}
+.ps-list{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;margin-bottom:12px;}
+.ps-alpha{padding:3px 14px;background:var(--cream);border-bottom:1px solid var(--line);font-size:11px;color:var(--ink3);font-weight:700;}
+.ps-row{padding:10px 14px;border-bottom:1px solid var(--line-soft);cursor:pointer;display:flex;align-items:center;justify-content:space-between;}
+.ps-row:last-child{border-bottom:none;}
+.ps-row:hover{background:var(--brand-50);}
+.ps-row .nm{font-weight:700;font-size:14px;}
+.ps-row .kn{font-size:11.5px;color:var(--ink3);}
+.ps-row .cd{font-size:11.5px;color:var(--ink3);}
+.ps-skip{text-align:center;padding-bottom:4px;}
+.ps-skip a{font-size:13px;color:var(--ink3);text-decoration:none;border-bottom:1px dotted var(--ink3);}
+
+/* ━━━ PC: 訪問記録一覧 ━━━ */
+.pc-topbar{padding:20px 28px 0;display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+.pc-title{font-family:var(--serif);font-size:22px;font-weight:700;margin:0;display:flex;align-items:center;gap:10px;}
+.pc-title .mic-icon{color:var(--brand);}
+.pc-title small{font-family:var(--sans);font-size:13px;color:var(--ink3);font-weight:400;}
+.pc-tabs{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;}
+.pc-tabs button{border:none;border-radius:0;padding:7px 18px;font-family:var(--sans);font-size:13.5px;font-weight:500;background:var(--panel);color:var(--ink2);cursor:pointer;}
+.pc-tabs button+button{border-left:1px solid var(--line);}
+.pc-tabs button.on{background:var(--brand);color:#fff;font-weight:700;}
+.pc-fbar{padding:12px 28px 10px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;border-bottom:1px solid var(--line-soft);}
+.fsel{height:34px;border:1px solid var(--line);border-radius:8px;padding:0 10px;font:inherit;font-size:13px;background:var(--panel);color:var(--ink);min-width:100px;}
+.fsrch-wrap{position:relative;flex:1;min-width:160px;}
+.fsrch-wrap input{width:100%;height:34px;border:1px solid var(--line);border-radius:8px;padding:0 10px 0 30px;font:inherit;font-size:13px;background:var(--panel);color:var(--ink);}
+.fsrch-wrap .si{position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--ink3);font-size:13px;}
+.pc-cnt{padding:6px 28px 8px;font-size:12.5px;color:var(--ink3);}
+.pc-tbl{width:100%;border-collapse:collapse;}
+.pc-tbl th{padding:10px 14px;text-align:left;font-size:12px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.05em;border-bottom:2px solid var(--line);background:var(--cream);}
+.pc-tbl td{padding:11px 14px;border-bottom:1px solid var(--line-soft);font-size:14px;vertical-align:middle;}
+.pc-tbl tr:hover td{background:var(--brand-50);cursor:pointer;}
+.pc-tbl tr:last-child td{border-bottom:none;}
+.pc-tbl .sum1{color:var(--ink2);font-size:13px;max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.pc-tbl .staff-nm{font-size:13px;color:var(--ink2);}
+.pc-tbl .dt-col{font-variant-numeric:tabular-nums;white-space:nowrap;font-size:13px;}
+.pc-tbl .mc{text-align:center;}
+.tbl-wrap{padding-bottom:4px;}
+
+/* Empty state */
+.empty-st{display:flex;flex-direction:column;align-items:center;gap:12px;padding:44px 20px 48px;}
+.empty-st img{width:80px;height:80px;object-fit:contain;opacity:.85;}
+.empty-st p{font-size:14px;color:var(--ink3);text-align:center;margin:0;}
+
+/* ━━━ PC: 詳細ダイアログ ━━━ */
+.dlg-backdrop{background:rgba(28,25,23,.45);padding:24px;display:flex;align-items:flex-start;justify-content:center;border-radius:0 0 var(--r-lg) var(--r-lg);}
+.dlg{background:var(--panel);border-radius:var(--r-lg);width:100%;max-width:1024px;display:flex;flex-direction:column;box-shadow:var(--shadow-lg);overflow:hidden;}
+.dlg-hd{padding:18px 22px 14px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+.dlg-hd h2{font-family:var(--serif);font-size:17px;margin:0 0 3px;font-weight:700;}
+.dlg-hd-meta{font-size:12.5px;color:var(--ink3);display:flex;gap:14px;flex-wrap:wrap;}
+.dlg-hd-meta a{color:var(--info);text-decoration:none;}
+.dlg-x{width:32px;height:32px;border-radius:8px;border:1px solid var(--line);background:var(--panel);cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--ink3);flex-shrink:0;}
+.dlg-body{display:grid;grid-template-columns:1fr 1fr;gap:0;overflow:hidden;}
+.dlg-l{padding:18px 20px 20px;overflow-y:auto;border-right:1px solid var(--line-soft);max-height:520px;}
+.dlg-r{padding:18px 20px 20px;overflow-y:auto;display:flex;flex-direction:column;gap:14px;max-height:520px;}
+.dlg-stitle{font-size:11px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;padding-bottom:5px;border-bottom:1px solid var(--line-soft);}
+.dlg-sum-sec{margin-bottom:11px;}
+.dlg-sum-lbl{font-size:12px;font-weight:700;color:var(--ink2);margin-bottom:4px;}
+.dlg-sum-item{font-size:14px;color:var(--ink);line-height:1.6;padding-left:1.1em;position:relative;margin-bottom:2px;}
+.dlg-sum-item::before{content:"•";position:absolute;left:0;color:var(--brand);}
+.dlg-vitals{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px;}
+.dv{background:var(--line-soft);border-radius:8px;padding:6px 10px;}
+.dv .k{font-size:11px;color:var(--ink3);}
+.dv .v{font-size:13.5px;font-weight:700;color:var(--ink);}
+.meta-links{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
+.meta-link{font-size:13px;color:var(--info);text-decoration:none;display:inline-flex;align-items:center;gap:4px;border:1px solid var(--info-border);background:var(--info-bg);border-radius:8px;padding:4px 10px;}
+
+/* Audio player */
+.aplayer{background:var(--cream);border:1px solid var(--line);border-radius:var(--r-lg);padding:14px 16px;}
+.ap-head{font-size:11px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;}
+.ap-ctrl{display:flex;align-items:center;gap:10px;margin-bottom:8px;}
+.ap-play{width:40px;height:40px;border-radius:50%;background:var(--brand);border:none;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.ap-time{font-size:12px;font-variant-numeric:tabular-nums;color:var(--ink3);white-space:nowrap;}
+.ap-seek{flex:1;appearance:none;height:4px;border-radius:2px;background:var(--brand-light);cursor:pointer;outline:none;}
+.ap-seek::-webkit-slider-thumb{appearance:none;width:14px;height:14px;border-radius:50%;background:var(--brand);}
+.ap-speed{font-size:12px;font-weight:700;color:var(--brand);border:1px solid var(--brand-light);background:var(--brand-50);border-radius:6px;padding:3px 8px;cursor:pointer;white-space:nowrap;font-family:var(--sans);}
+.ap-meta{font-size:12px;color:var(--ink3);}
+
+/* Transcript */
+.ts-seg{margin-bottom:13px;}
+.ts-meta{font-size:11.5px;color:var(--ink3);margin-bottom:2px;display:flex;gap:10px;align-items:center;}
+.ts-sp{font-weight:700;font-size:11.5px;}
+.ts-sp.nurse{color:var(--brand);}
+.ts-sp.patient{color:var(--info);}
+.ts-txt{font-size:14px;color:var(--ink);line-height:1.7;}
+
+/* Dialog footer */
+.dlg-ft{padding:12px 22px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.dlg-ft-l{display:flex;gap:8px;}
+.dlg-ft-r{display:flex;gap:8px;}
+.btn-sm{height:36px;border-radius:8px;font-family:var(--sans);font-size:13px;font-weight:600;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:0 14px;cursor:pointer;display:flex;align-items:center;gap:5px;}
+.btn-sm-danger{height:36px;border-radius:8px;font-family:var(--sans);font-size:13px;font-weight:600;border:1px solid var(--err-border);background:var(--err-bg);color:var(--err);padding:0 14px;cursor:pointer;display:flex;align-items:center;gap:5px;}
+.btn-sm-ok{height:36px;border-radius:8px;font-family:var(--sans);font-size:13px;font-weight:700;border:none;background:var(--leaf);color:#fff;padding:0 16px;cursor:pointer;display:flex;align-items:center;gap:5px;}
+
+/* SVG icon helper */
+.ic{display:inline-block;vertical-align:middle;}
+svg.ic{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+svg.ic.lg{width:20px;height:20px;}
+svg.ic.sm{width:14px;height:14px;}
+</style>
+
+<!-- ═══════════════════════════ MASTHEAD ═══════════════════════════ -->
+<div class="mast">
+  <h1>訪問の<em>音声記録</em> UX 試案 — モバイル録音・文字起こし・要約・PC 一覧</h1>
+  <p>設計書 §2-1〜§2-3 に基づく画面片。モバイル 4 枠（390px）＋ PC 2 枠（1100px）。ダミーデータはすべて架空（山田 花子など）。今日 = 2026-09-17 想定。</p>
+</div>
+
+<!-- ═══════════════════════════ SECTION 1: モバイル ═══════════════ -->
+<div class="sec"><h2>モバイル画面</h2><p>iOS 390px 相当。各枠はアプリの 1 画面を再現。</p></div>
+<div class="mob-row">
+
+<!-- ▌Screen 1: 訪問中パネル ▌-->
+<div class="phone">
+  <div class="phone-shell">
+    <div class="status-bar"><span class="t">14:08</span><span class="icons">▲ ● 82%</span></div>
+
+    <div class="nav-bar">
+      <button class="nav-back">
+        <svg class="ic sm" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+        今日
+      </button>
+      <span class="nav-title">訪問詳細</span>
+      <button class="nav-more">⋯</button>
+    </div>
+
+    <div class="visit-head">
+      <div class="visit-patient">山田 花子 様</div>
+      <div class="visit-meta"><span>午後 2:00〜2:30</span><span>30分</span><span>訪問看護 Ⅰ</span></div>
+      <div class="visit-chips">
+        <span class="inprog">訪問中</span>
+        <span class="elapsed">経過 00:08:42</span>
+      </div>
+    </div>
+
+    <!-- 録音パネル -->
+    <div class="panel-sec">
+      <div class="panel-lbl">
+        <svg class="ic sm" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+        音声記録
+      </div>
+      <div class="consent-box">
+        <input type="checkbox" id="c1" checked>
+        <label for="c1">患者様に録音の了承を得ています</label>
+      </div>
+      <button class="btn-primary-mob">
+        <svg class="ic lg" viewBox="0 0 24 24" style="stroke:#fff"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+        録音を始める
+      </button>
+      <div class="voice-alt" style="padding-top:10px">
+        <a href="#">ボイスメモから取り込む</a>
+      </div>
+    </div>
+
+    <!-- 他のアクション（参考表示） -->
+    <div class="panel-sec" style="padding:10px 16px;">
+      <button class="btn-ghost-mob" style="margin-top:0;">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+        写真を撮る
+      </button>
+    </div>
+
+    <div class="panel-sec" style="padding:10px 16px 14px;">
+      <button class="btn-primary-mob" style="background:var(--ink);box-shadow:none;">
+        退室する
+      </button>
+    </div>
+  </div>
+  <div class="phone-note">①&nbsp;訪問中パネル。同意チェックは初回のみ説明ダイアログ・以後 1 タップ。「ボイスメモから取り込む」は端末アプリで録った音声を選ぶ保険の導線（画面ロック中も録れる）。</div>
+</div><!-- /phone 1 -->
+
+<!-- ▌Screen 2: 録音中 ▌-->
+<div class="phone">
+  <div class="phone-shell">
+    <div class="status-bar" style="background:#450a0a;color:#fca5a5;"><span class="t" style="color:#fef2f2;">14:09</span><span class="icons" style="color:#fca5a5;">▲ ● 80%</span></div>
+
+    <div class="rec-warn">
+      <svg class="ic sm" viewBox="0 0 24 24" style="stroke:#fef3c7"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      録音中は画面を点けたままにしてください（iOS 制約）
+    </div>
+
+    <div class="rec-body">
+      <div class="rec-patient">
+        録音中の訪問先
+        <strong>山田 花子 様</strong>
+      </div>
+
+      <div class="rec-dot-wrap">
+        <div class="rec-ring"></div>
+        <div class="rec-dot">
+          <svg width="28" height="28" viewBox="0 0 24 24" style="fill:#fff;stroke:none"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path stroke="#fff" stroke-width="2" fill="none" d="M19 10v2a7 7 0 0 1-14 0v-2"/><line stroke="#fff" stroke-width="2" x1="12" y1="19" x2="12" y2="22"/></svg>
+        </div>
+      </div>
+
+      <div class="rec-timer">00:12:34</div>
+
+      <div class="waveform">
+        <div class="wb"></div><div class="wb"></div><div class="wb"></div><div class="wb"></div>
+        <div class="wb"></div><div class="wb"></div><div class="wb"></div><div class="wb"></div>
+        <div class="wb"></div><div class="wb"></div><div class="wb"></div><div class="wb"></div>
+      </div>
+
+      <div class="rec-btns">
+        <button class="btn-pause">
+          <svg class="ic" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+          一時停止
+        </button>
+        <button class="btn-stop">
+          <svg class="ic" viewBox="0 0 24 24" style="stroke:var(--err)"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+          停止・保存
+        </button>
+      </div>
+
+      <div style="font-size:12px;color:var(--ink3);text-align:center;padding-top:4px;">上限 60 分 · 55 分で警告</div>
+    </div>
+  </div>
+  <div class="phone-note">②&nbsp;録音中。iOS は画面ロックで MediaRecorder が止まるため Wake Lock を取得し警告帯を常時表示。患者名を固定表示して誤録音を防ぐ。波形バーはリアルタイムに動く（CSS アニメーション）。</div>
+</div><!-- /phone 2 -->
+
+<!-- ▌Screen 3: 要約カード（2バリアント縦積み） ▌-->
+<div class="phone">
+  <div class="phone-shell">
+    <div class="status-bar"><span class="t">14:40</span><span class="icons">▲ ● 77%</span></div>
+    <div class="nav-bar">
+      <button class="nav-back"><svg class="ic sm" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>今日</button>
+      <span class="nav-title">訪問詳細</span>
+      <button class="nav-more">⋯</button>
+    </div>
+
+    <!-- 3-A: 要約済み -->
+    <div style="padding:10px 16px 4px;background:var(--cream);border-bottom:1px solid var(--line);">
+      <div style="font-size:11px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em;">訪問記録</div>
+    </div>
+    <div class="rcard-head">
+      <div>
+        <span class="badge b-ok">
+          <svg class="ic sm" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+          要約済み
+        </span>
+        <div class="rcard-meta"><span>山田 花子</span><span>14:08〜14:36</span><span>28分</span></div>
+      </div>
+    </div>
+
+    <div class="sum-body">
+      <div class="sum-sec">
+        <div class="sum-lbl">主訴・様子</div>
+        <div class="sum-item">「最近足が重い」とのご本人の訴え</div>
+        <div class="sum-item">顔色良好、応答明瞭、疲労感なし</div>
+      </div>
+      <div class="sum-sec">
+        <div class="sum-lbl">バイタル</div>
+        <div class="vitals">
+          <div class="vcell"><div class="vk">血圧</div><div class="vv">132/84 mmHg</div></div>
+          <div class="vcell"><div class="vk">体温</div><div class="vv">36.4 ℃</div></div>
+          <div class="vcell"><div class="vk">SpO₂</div><div class="vv">98%</div></div>
+          <div class="vcell"><div class="vk">脈拍</div><div class="vv">78 bpm</div></div>
+        </div>
+      </div>
+      <div class="sum-sec">
+        <div class="sum-lbl">処置・ケア</div>
+        <div class="sum-item">左足関節の浮腫確認・マッサージ実施</div>
+        <div class="sum-item">内服確認 OK（昨日は1錠飲み忘れ）</div>
+      </div>
+      <div class="sum-sec">
+        <div class="sum-lbl">申し送り</div>
+        <div class="sum-item">足浮腫の継続観察を次回担当へ申し送り</div>
+      </div>
+    </div>
+
+    <div class="fold-bar">
+      <button class="fold-btn">
+        <svg class="ic sm" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+        音声を聞く
+      </button>
+      <button class="fold-btn">
+        <svg class="ic sm" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        全文を見る
+      </button>
+    </div>
+
+    <div class="rcard-actions">
+      <button class="btn-confirm">
+        <svg class="ic" viewBox="0 0 24 24" style="stroke:#fff"><polyline points="20 6 9 17 4 12"/></svg>
+        確認済みにする
+      </button>
+    </div>
+
+    <!-- 3-B: 文字起こし中バリアント -->
+    <div style="border-top:3px dashed var(--line);margin-top:4px;"></div>
+    <div style="padding:8px 16px 4px;background:var(--cream);">
+      <div style="font-size:11px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em;">バリアント: 文字起こし中</div>
+    </div>
+    <div class="rcard-head">
+      <div>
+        <span class="badge b-wait">
+          <svg class="ic sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          文字起こし中
+        </span>
+        <div class="rcard-meta"><span>田中 次郎</span><span>13:10〜13:38</span></div>
+      </div>
+    </div>
+    <div style="padding:0 16px 10px;">
+      <div class="skel l"></div>
+      <div class="skel m"></div>
+      <div class="skel s"></div>
+      <div class="skel l" style="margin-top:10px;"></div>
+      <div class="skel m"></div>
+    </div>
+    <div class="mascot-tip">
+      <img src="../../frontend/public/brand/rakusuke-pose-think.png" alt="">
+      <p>らく助が文字起こし中です。数分でお知らせします。</p>
+    </div>
+  </div>
+  <div class="phone-note">③&nbsp;訪問記録カード。上段=要約済み（要約が主役・バイタルはグリッドチップ）。下段=文字起こし中バリアント（スケルトン＋マスコット）。「確認済み」は誤りの責任をスタッフに移す重要アクション。</div>
+</div><!-- /phone 3 -->
+
+<!-- ▌Screen 4: QR なし患者選択 ▌-->
+<div class="phone">
+  <div class="phone-shell">
+    <div class="status-bar"><span class="t">13:05</span><span class="icons">▲ ● 85%</span></div>
+
+    <div class="ps-head">
+      <h2>この記録はどなたの訪問ですか？</h2>
+      <p>録音 12:48〜13:04（16分）<br>先に紐付け先を選んでください</p>
+    </div>
+
+    <div class="ps-body">
+      <div class="ps-lbl">今日の担当</div>
+      <div class="chips">
+        <button class="chip on">山田 花子</button>
+        <button class="chip">田中 次郎</button>
+        <button class="chip">佐藤 幸子</button>
+        <button class="chip">鈴木 健一</button>
+      </div>
+
+      <div class="ps-lbl" style="margin-top:4px;">氏名 / カナ / 患者コード で検索</div>
+      <div class="sbox">
+        <svg class="si ic sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" placeholder="例: やまだ / P-0042">
+      </div>
+
+      <div class="ps-list">
+        <div class="ps-alpha">あ</div>
+        <div class="ps-row">
+          <div><div class="nm">青木 美咲</div><div class="kn">アオキ ミサキ</div></div>
+          <span class="cd">P-0015</span>
+        </div>
+        <div class="ps-row" style="background:var(--brand-50);">
+          <div><div class="nm" style="color:var(--brand);">山田 花子</div><div class="kn">ヤマダ ハナコ</div></div>
+          <span class="cd">P-0042</span>
+        </div>
+        <div class="ps-alpha">さ</div>
+        <div class="ps-row">
+          <div><div class="nm">佐藤 幸子</div><div class="kn">サトウ サチコ</div></div>
+          <span class="cd">P-0018</span>
+        </div>
+        <div class="ps-alpha">た</div>
+        <div class="ps-row">
+          <div><div class="nm">田中 次郎</div><div class="kn">タナカ ジロウ</div></div>
+          <span class="cd">P-0031</span>
+        </div>
+      </div>
+
+      <div class="ps-skip"><a href="#">あとで紐付ける（管理者が確認）</a></div>
+    </div>
+  </div>
+  <div class="phone-note">④&nbsp;QR なし導線 C。録音を先に終えてから患者を選ぶ（現場で探す操作が録音開始を遅らせないため）。チップは今日の担当・その下にあいうえお順リスト・「あとで紐付ける」で24時間以内に admin が対応。</div>
+</div><!-- /phone 4 -->
+
+</div><!-- /mob-row -->
+
+<!-- ═══════════════════════════ SECTION 2: PC ═══════════════════════ -->
+<div class="sec"><h2>PC 画面</h2><p>1100px 幅。新ページ <code>/records</code> 訪問記録一覧と詳細ダイアログ。</p></div>
+
+<!-- ▌Screen 5: 訪問記録一覧 ▌-->
+<div class="pc-wrap">
+  <div class="pc-shell">
+    <div class="pc-topbar">
+      <h1 class="pc-title">
+        <span class="mic-icon"><svg class="ic lg" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg></span>
+        訪問記録
+        <small>音声・文字起こし・要約</small>
+      </h1>
+      <div class="pc-tabs">
+        <button class="on">今週</button>
+        <button>今月</button>
+        <button>過去</button>
+        <button>すべて</button>
+      </div>
+    </div>
+
+    <div class="pc-fbar">
+      <select class="fsel"><option>患者: すべて</option><option>山田 花子</option><option>田中 次郎</option></select>
+      <select class="fsel"><option>スタッフ: すべて</option><option>川名 看護師</option></select>
+      <select class="fsel"><option>拠点: すべて</option></select>
+      <select class="fsel"><option>状態: すべて</option><option>要約済み</option><option>文字起こし中</option><option>要確認</option><option>失敗</option></select>
+      <div class="fsrch-wrap">
+        <span class="si">🔍</span>
+        <input type="text" placeholder="要約・患者名・スタッフ名で検索">
+      </div>
+    </div>
+
+    <div class="pc-cnt">6 件を表示中</div>
+
+    <div class="tbl-wrap">
+      <table class="pc-tbl">
+        <thead>
+          <tr>
+            <th>日付</th><th>時刻</th><th>患者</th><th>スタッフ</th><th>要約（1行目）</th><th>状態</th><th class="mc">🎙</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="dt-col">9/17 (水)</td>
+            <td class="dt-col">14:08</td>
+            <td><strong>山田 花子</strong></td>
+            <td class="staff-nm">川名 幸子</td>
+            <td class="sum1">「足が重い」とのご本人の訴え。顔色良好、応答明瞭。左足関節の浮腫…</td>
+            <td><span class="badge b-ok">要約済み</span></td>
+            <td class="mc"><svg class="ic sm" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg></td>
+          </tr>
+          <tr>
+            <td class="dt-col">9/17 (水)</td>
+            <td class="dt-col">13:10</td>
+            <td><strong>田中 次郎</strong></td>
+            <td class="staff-nm">熊澤 理恵</td>
+            <td class="sum1" style="color:var(--upd);">文字起こし中...</td>
+            <td><span class="badge b-wait">文字起こし中</span></td>
+            <td class="mc"><svg class="ic sm" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg></td>
+          </tr>
+          <tr>
+            <td class="dt-col">9/16 (火)</td>
+            <td class="dt-col">10:30</td>
+            <td><strong>佐藤 幸子</strong></td>
+            <td class="staff-nm">川名 幸子</td>
+            <td class="sum1">全身状態安定。血圧 128/80。褥瘡の処置（仙骨部 DESIGN-R 6）を実施。次回…</td>
+            <td><span class="badge b-ok">確認済み</span></td>
+            <td class="mc"><svg class="ic sm" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg></td>
+          </tr>
+          <tr>
+            <td class="dt-col">9/16 (火)</td>
+            <td class="dt-col">09:15</td>
+            <td><strong>—</strong></td>
+            <td class="staff-nm">鈴木 一郎</td>
+            <td class="sum1" style="color:var(--err);">患者未紐付け（録音後に選択が必要）</td>
+            <td><span class="badge b-err">要紐付け</span></td>
+            <td class="mc"><svg class="ic sm" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg></td>
+          </tr>
+          <tr>
+            <td class="dt-col">9/15 (月)</td>
+            <td class="dt-col">15:00</td>
+            <td><strong>鈴木 健一</strong></td>
+            <td class="staff-nm">熊澤 理恵</td>
+            <td class="sum1">会話良好。リハビリ継続中。転倒なし。内服確認済み。次回 9/18 継続…</td>
+            <td><span class="badge b-ok">確認済み</span></td>
+            <td class="mc"><svg class="ic sm" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg></td>
+          </tr>
+          <tr>
+            <td class="dt-col">9/15 (月)</td>
+            <td class="dt-col">11:20</td>
+            <td><strong>青木 美咲</strong></td>
+            <td class="staff-nm">川名 幸子</td>
+            <td class="sum1" style="color:var(--err);">処理に失敗しました。再処理してください。</td>
+            <td><span class="badge b-err">失敗</span></td>
+            <td class="mc"><svg class="ic sm" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="pc-note">⑤&nbsp;訪問記録一覧 <code>/records</code>。期間タブ・患者/スタッフ/拠点/状態フィルタ・全文検索。行クリックで⑥の詳細ダイアログ。「要紐付け」行は admin が患者と訪問を付け替え可。空状態は think マスコット（下記の空状態バリアントを参照）。</div>
+</div><!-- /screen 5 -->
+
+<!-- 空状態バリアント -->
+<div class="pc-wrap" style="margin-top:8px;">
+  <div class="pc-shell" style="padding:0;">
+    <div style="padding:10px 28px 0;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;">
+      <span style="font-size:12px;font-weight:700;color:var(--ink3);">バリアント: 空状態</span>
+    </div>
+    <div class="empty-st">
+      <img src="../../frontend/public/brand/rakusuke-pose-think.png" alt="らく助">
+      <p>この期間に訪問記録はありません。<br>モバイルの録音ボタンから記録を作成できます。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ▌Screen 6: 詳細ダイアログ ▌-->
+<div class="pc-wrap" style="margin-top:16px;">
+  <div class="pc-shell">
+    <!-- ダイアログが乗る一覧（薄くぼかして背景に） -->
+    <div style="padding:14px 28px 10px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;opacity:.35;pointer-events:none;user-select:none;">
+      <h1 class="pc-title" style="font-size:18px;margin:0;">
+        <svg class="ic" viewBox="0 0 24 24" style="color:var(--brand)"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+        訪問記録
+      </h1>
+    </div>
+
+    <!-- オーバーレイ背景 -->
+    <div class="dlg-backdrop">
+      <div class="dlg">
+        <!-- Dialog header -->
+        <div class="dlg-hd">
+          <div>
+            <h2>山田 花子 様の訪問記録</h2>
+            <div class="dlg-hd-meta">
+              <span>2026-09-17（水）14:08〜14:36（28分）</span>
+              <a href="#">訪問 #V-2026-1203 を開く</a>
+              <a href="#">打刻ログ</a>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span class="badge b-ok">
+              <svg class="ic sm" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+              確認済み
+            </span>
+            <button class="dlg-x">
+              <svg class="ic sm" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Dialog body: 2 columns -->
+        <div class="dlg-body">
+
+          <!-- Left: summary + meta -->
+          <div class="dlg-l">
+            <div class="dlg-stitle">要約</div>
+
+            <div class="dlg-sum-sec">
+              <div class="dlg-sum-lbl">主訴・様子</div>
+              <div class="dlg-sum-item">「最近足が重い」とのご本人の訴え</div>
+              <div class="dlg-sum-item">顔色良好、応答明瞭、疲労感なし</div>
+              <div class="dlg-sum-item">室内の整理整頓はできている</div>
+            </div>
+
+            <div class="dlg-stitle" style="margin-top:4px;">バイタル</div>
+            <div class="dlg-vitals">
+              <div class="dv"><div class="k">血圧</div><div class="v">132/84 mmHg</div></div>
+              <div class="dv"><div class="k">体温</div><div class="v">36.4 ℃</div></div>
+              <div class="dv"><div class="k">SpO₂</div><div class="v">98%</div></div>
+              <div class="dv"><div class="k">脈拍</div><div class="v">78 bpm</div></div>
+              <div class="dv"><div class="k">体重</div><div class="v">52.3 kg</div></div>
+              <div class="dv"><div class="k">呼吸数</div><div class="v">16 回/分</div></div>
+            </div>
+
+            <div class="dlg-sum-sec">
+              <div class="dlg-sum-lbl">処置・ケア</div>
+              <div class="dlg-sum-item">左足関節の浮腫確認・マッサージ実施（15分）</div>
+              <div class="dlg-sum-item">内服確認 OK（昨日は1錠飲み忘れあり）</div>
+              <div class="dlg-sum-item">清拭・更衣介助</div>
+            </div>
+
+            <div class="dlg-sum-sec">
+              <div class="dlg-sum-lbl">申し送り</div>
+              <div class="dlg-sum-item">足浮腫の継続観察を次回担当へ申し送り</div>
+              <div class="dlg-sum-item">飲み忘れが続く場合は薬剤師へ相談を検討</div>
+            </div>
+
+            <div class="dlg-sum-sec">
+              <div class="dlg-sum-lbl">次回</div>
+              <div class="dlg-sum-item">2026-09-19（金）同内容で継続</div>
+            </div>
+
+            <div class="dlg-stitle" style="margin-top:10px;">関連リンク</div>
+            <div class="meta-links">
+              <a class="meta-link" href="#">
+                <svg class="ic sm" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                訪問詳細
+              </a>
+              <a class="meta-link" href="#">
+                <svg class="ic sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                打刻ログ
+              </a>
+              <a class="meta-link" href="#">
+                <svg class="ic sm" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                写真 2枚
+              </a>
+            </div>
+          </div><!-- /dlg-l -->
+
+          <!-- Right: audio player + transcript -->
+          <div class="dlg-r">
+            <div>
+              <div class="dlg-stitle">音声</div>
+              <div class="aplayer">
+                <div class="ap-head">録音ファイル — 28:14</div>
+                <div class="ap-ctrl">
+                  <button class="ap-play">
+                    <svg width="14" height="14" viewBox="0 0 24 24" style="fill:#fff;stroke:none"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                  </button>
+                  <input type="range" class="ap-seek" value="18" min="0" max="100">
+                  <span class="ap-time">05:08 / 28:14</span>
+                  <button class="ap-speed">1.5×</button>
+                </div>
+                <div class="ap-meta">AAC · 8.2 MB · 2026-09-17 取得</div>
+              </div>
+            </div>
+
+            <div style="flex:1;min-height:0;">
+              <div class="dlg-stitle">文字起こし全文</div>
+              <div class="transcript" style="max-height:280px;overflow-y:auto;padding-right:4px;">
+                <div class="ts-seg">
+                  <div class="ts-meta"><span class="ts-sp nurse">川名 看護師</span><span>00:00</span></div>
+                  <div class="ts-txt">山田さん、こんにちは。今日の具合はいかがですか？</div>
+                </div>
+                <div class="ts-seg">
+                  <div class="ts-meta"><span class="ts-sp patient">山田 花子</span><span>00:06</span></div>
+                  <div class="ts-txt">あ、来てくれたんですね。最近ね、足が重くてね。朝起きるのが大変で。</div>
+                </div>
+                <div class="ts-seg">
+                  <div class="ts-meta"><span class="ts-sp nurse">川名 看護師</span><span>00:15</span></div>
+                  <div class="ts-txt">そうでしたか。昨日から続いていますか？ちょっと足を見せてもらってもいいですか。</div>
+                </div>
+                <div class="ts-seg">
+                  <div class="ts-meta"><span class="ts-sp patient">山田 花子</span><span>00:22</span></div>
+                  <div class="ts-txt">はい、どうぞ。昨日の夕方ぐらいからかな、むくんでる感じがして。</div>
+                </div>
+                <div class="ts-seg">
+                  <div class="ts-meta"><span class="ts-sp nurse">川名 看護師</span><span>00:30</span></div>
+                  <div class="ts-txt">左足関節に少し浮腫がありますね。今日はマッサージをしましょう。それから血圧を測りますね。</div>
+                </div>
+                <div class="ts-seg">
+                  <div class="ts-meta"><span class="ts-sp nurse">川名 看護師</span><span>02:10</span></div>
+                  <div class="ts-txt">血圧は 132 の 84 でした。体温は 36 度 4 分、SpO₂ は 98 パーセント、問題ありません。</div>
+                </div>
+                <div class="ts-seg">
+                  <div class="ts-meta"><span class="ts-sp patient">山田 花子</span><span>02:24</span></div>
+                  <div class="ts-txt">安心しました。昨日ね、薬を1錠飲み忘れちゃって。</div>
+                </div>
+                <div class="ts-seg">
+                  <div class="ts-meta"><span class="ts-sp nurse">川名 看護師</span><span>02:30</span></div>
+                  <div class="ts-txt">そうでしたか。今日は大丈夫そうですね。続くようであれば薬剤師の先生に相談してみましょう。</div>
+                </div>
+              </div>
+            </div>
+          </div><!-- /dlg-r -->
+        </div><!-- /dlg-body -->
+
+        <!-- Dialog footer -->
+        <div class="dlg-ft">
+          <div class="dlg-ft-l">
+            <button class="btn-sm">
+              <svg class="ic sm" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              紐付けを変更
+            </button>
+            <button class="btn-sm">
+              <svg class="ic sm" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/></svg>
+              再処理
+            </button>
+            <button class="btn-sm-danger">
+              <svg class="ic sm" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+              削除（admin）
+            </button>
+          </div>
+          <div class="dlg-ft-r">
+            <button class="btn-sm-ok">
+              <svg class="ic sm" viewBox="0 0 24 24" style="stroke:#fff"><polyline points="20 6 9 17 4 12"/></svg>
+              確認済みにする
+            </button>
+          </div>
+        </div>
+      </div><!-- /dlg -->
+    </div><!-- /backdrop -->
+  </div>
+  <div class="pc-note">⑥&nbsp;詳細ダイアログ（max-w-5xl・2列）。左=要約（14px・セクション見出し付き）＋バイタルグリッド＋関連リンク。右=音声プレーヤー（再生/シーク/1.5×速）＋文字起こし全文（話者ラベル 看護師=ピンク/患者=ティール・タイムスタンプ）。フッタ左に「紐付けを変更」「再処理」「削除（admin）」・右に「確認済み」。</div>
+</div><!-- /screen 6 -->
+
+<!-- ═══════════════════════════ NOTES ═══════════════════════════════ -->
+<div class="notes">
+  <div class="note"><h3>導線 A・B（予定あり）</h3><ul>
+    <li>訪問詳細の訪問中パネルに「録音を始める」ボタンを追加（CheckInButton と同意匠・48px）</li>
+    <li>到着打刻の前後にかかわらず録音可。QR 代行・予定外（導線 B）も同じ詳細画面を使う</li>
+    <li>患者名を画面に固定表示して誤録音を防ぐ</li>
+  </ul></div>
+  <div class="note"><h3>導線 C（QR なし・先に録音）</h3><ul>
+    <li>現場で患者を探す操作が録音開始を遅らせないよう「先に録音・後で患者選択」を許容</li>
+    <li>24 時間紐付けなしは admin 画面に「要紐付け」として出す</li>
+    <li>誤紐付けは admin が変更可（監査ログ）。本人は紐付け後 24 時間以内に変更可</li>
+  </ul></div>
+  <div class="note"><h3>iOS Wake Lock（重要）</h3><ul>
+    <li>iOS Safari PWA は画面ロック・バックグラウンドで MediaRecorder が停止する</li>
+    <li>Wake Lock API で消灯を防ぎ「録音中は画面を点けたまま」警告帯を常時表示</li>
+    <li>着信で止まる可能性あり。「ボイスメモから取り込む」リンクを保険として配置</li>
+  </ul></div>
+  <div class="note"><h3>要約の構成</h3><ul>
+    <li>主訴・様子 / バイタル / 処置・ケア / 申し送り / 次回 の 5 セクション</li>
+    <li>Vertex AI Gemini 2.5 Flash 1 コール（文字起こし＋要約）推奨。月400件≈$32</li>
+    <li>要約はスタッフが「確認済み」にする（誤りの責任とトレーサビリティ）</li>
+  </ul></div>
+  <div class="note"><h3>音声・データの保持</h3><ul>
+    <li>音声: 既定 90 日で削除（設定可・下限 30 日）。cron で purge-gps 型パージ</li>
+    <li>文字起こし・要約: 訪問データと同じ寿命</li>
+    <li>アップロード失敗時は IndexedDB に残し電波復帰で自動再送（打刻キューと同 UX）</li>
+  </ul></div>
+  <div class="note"><h3>デザイン規約準拠</h3><ul>
+    <li>本文 14px・バイタルチップ 13px・メタ情報 12px（11px 以下は使用禁止）</li>
+    <li>モーダルは 1024px・2列・max-h 90vh（add-visit-anywhere §3-5 基準）</li>
+    <li>マスコットは「状態の瞬間」だけ（文字起こし中・空状態）・一覧に常駐させない</li>
+    <li>アイコンは lucide 風インライン SVG。絵文字は 🎙 のみ</li>
+  </ul></div>
+</div>
+
+</html>
