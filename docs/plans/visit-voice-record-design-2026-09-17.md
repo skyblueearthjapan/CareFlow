@@ -288,6 +288,16 @@
 - 要約テンプレ v2: PO フィードバック反映（項目の増減）・`prompt_version` 更新・admin の「再処理」で再生成。
 - 運用: cron `purge-audio`（`docs/runbook/voice_recording_cron.md`）・バックアップ除外（`scripts/backup-carelink-db.sh` に visit_audio を含めない旨）・ディスク監視（preflight に visit_audio サイズ表示）。
 
+### 11-5. Phase 3 実装での決定（2026-09-18・レビュー反映後）
+- **A4 レポート**: `GET /visit-recordings/{id}/report` は `format=html`（text/html）と `format=json`（`{recording, html, generated_at}`・`recording` は transcript を省く＝同じ全文を二重に返さない）。可視性は録音本体と同じ（admin/本人・他人は 404 で監査行も残さない）。監査 `report_read` は html/json どちらでも 1 行。**`Cache-Control: no-store`** を `/report` と `/audio` に付与（共有 PC の「戻る」やディスクキャッシュに PHI を残さない）。
+- **要約の出し分け**は Phase 2 の規則をそのまま紙にも適用: `summary_edited_at` あり → `summary_text` が正（**空なら「要約は削除されています。」**、AI の旧 JSON には落とさない）／無し → JSON 構造（バイタル 0 件は見出しごと省略・スキーマ外キーも見出しとして拾う・入れ子は文字列化）／JSON 無し → `summary_text`。`previous_manual` は印刷しない。
+- **レンダラは純関数**（DB・時刻に触れず `generated_at` を受ける）。印刷ボタンの inline onclick は backend CSP の `'unsafe-inline'` 前提（nonce 化するときは要対応）。
+- **利用状況** `GET /admin/visit-recordings/usage?month=YYYY-MM`: `deleted_at IS NULL`・`created_at` の JST 月境界・month 省略は JST 今月・形式違いは 422。**総計（minutes_total / cost_usd）＝スタッフ別内訳の合計**（丸めドリフトで「内訳を足しても総計にならない」を作らない）。`by_status` は全ステータスを 0 埋め。
+- **FE**: 「A4 で出力」は `SyncReportButton` と同方式（同期 `window.open` → blob → 60 秒後 revoke・失敗は空タブ close）・`format=json` で受ける。表示可否は `canExportReport = isAdmin || isOwner`（要約編集可否とは別名で保持）。利用状況カードは連携ページ末尾・**USD_JPY=150 固定の概算**（`lib/voice-usage-rate.ts` の 1 箇所・変更は PO 合意）・月合計は 2 桁/明細は 4 桁・非 admin は API を叩かない。
+- **/audio の既存不具合を同時是正**: 監査 commit 失敗→rollback 後に `row.audio_mime` を参照して `MissingGreenlet`（500）になっていた（Phase 1 から）。素の値へ退避してから監査する形に。
+- **運用**: preflight に `visit_audio` サイズ表示（未作成は absent・FAIL にしない）。DB バックアップは音声を対象外（保持期限を跨いで音声が生き残るとパージの意味が消える）。
+- **未実施（PO 判断待ち）**: 要約テンプレ v2（項目の増減は PO フィードバック後・`prompt_version` 更新＋再処理で反映）。
+
 ### 11-4. レビューと検証の型（全 Phase 共通）
 - 各 Phase: executor（Opus・ファイル分離）→ code-reviewer（Opus）→ 是正 → 対象テスト＋全体テスト（backend は分割実行・既知 fail ベースラインと比較）→ コミット（レーン別）→ デプロイ（pg_dump → pull → build → recreate → alembic upgrade head → heads 単一 → healthz）→ 本番での読み取り検証（API 応答・ジョブ状態）→ 実機確認項目を handoff に明記。
 - 本番で AI を実際に呼ぶ初回は、私が合成音声 1 件を本番 API 経由で流して費用と状態遷移を確認してから、現場に開放する。
