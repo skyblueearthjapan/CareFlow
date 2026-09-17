@@ -217,3 +217,51 @@
 ## 9. 参照
 - 調査（本セッション・エージェント報告）: モバイル構造／保存基盤／PC 画面・デザイン／ブラウザ録音（WebKit・MDN・W3C・firt.dev）／API 比較（OpenAI・Google・AWS 公式料金・Gemini API 利用規約）。
 - 関連: `docs/design/09-global-ai-input.md`（旧 AI 入力 UI・参考）、`docs/design/10-mobile.md §マイク`、`docs/plans/ai-removal-mobile-hardening-HANDOFF.md`、`docs/plans/sync-result-report-design.md`（A4）、`docs/plans/add-visit-anywhere-design.md §3-5`（可読性基準）。
+
+---
+
+## 10. Phase 1 実装契約（2026-09-17 承認・案 A: 東京リージョン ＋ Gemini 2.5 Flash）
+
+### 10-1. 設定（backend `app/core/config.py` ＋ `.env.example` ＋ `docs/deployment/env-template.md`）
+| 名前 | 既定 | 意味 |
+|---|---|---|
+| `VISIT_AUDIO_DIR` | `/opt/carelink/data/visit_audio` | 音声保存先（bind-mount・`chown 999:999`） |
+| `VISIT_AUDIO_MAX_BYTES` | 52428800（50 MiB） | 受領上限（超過は 413） |
+| `VISIT_AUDIO_RETENTION_DAYS` | 90（下限 30） | 音声の保持日数（文字起こし・要約は残す） |
+| `VOICE_AI_PROVIDER` | `vertex` | `vertex` / `none`（none = 受領のみ・処理しない） |
+| `VERTEX_PROJECT_ID` | `rakusuke-voice` | |
+| `VERTEX_LOCATION` | `asia-northeast1` | 東京固定（global は使わない） |
+| `VERTEX_MODEL_TRANSCRIBE` | `gemini-2.5-flash` | 3.x が東京提供になれば差し替え |
+| `VERTEX_MODEL_SUMMARY` | `gemini-2.5-flash` | 同上（文字起こし＋要約は 1 コール。将来 2 段に分けられる構造） |
+| `GOOGLE_APPLICATION_CREDENTIALS` | `/opt/carelink/secrets/rakusuke-voice-sa.json` | SA キー（bind-mount・0400） |
+| `VOICE_AI_TIMEOUT_SECONDS` | 240 | 1 コールのタイムアウト |
+| `VOICE_JOB_STALE_MINUTES` | 15 | `transcribing` のまま放置 → failed |
+
+### 10-2. テーブル `visit_recordings`（migration 0086）
+§2-4 のとおり。追加: `device_mime`（受領時の MIME）、`upload_ip` は持たない（監査は audit_logs）。index: `(staff_id, recorded_at desc)`、`(patient_id, recorded_at desc)`、`(status)`、partial `(visit_id) where deleted_at is null`。`status` の値: `uploaded | transcribing | summarized | failed | unlinked`（`unlinked` は patient_id null の間の表示用・処理は uploaded と同じに進む）。
+
+### 10-3. API 契約（`/api/v1/visit-recordings`）
+- `POST /visit-recordings` multipart: `audio`（file）, `visit_id?`, `patient_id?`, `recorded_at`（ISO, 端末時刻）, `duration_sec`（int）, `consent`（"true"）, `device_mime?`。**ストリーミング受領**（`UploadFile.read(chunk)` ループ・累積超過で 413・`.part`→`os.replace`）。監査ミドルウェアは `path.startswith('/api/v1/visit-recordings') and method == 'POST' and content-type multipart` のとき body を読まない（メタのみ記録）。応答 202 `VisitRecordingRead`。
+- `GET /visit-recordings?patient_id&staff_id&visit_id&from&to&status&q&limit=50&offset` → `{items: VisitRecordingRead[], total}`。staff は自分の録音のみ（`staff_id` 強制）、admin は任意。
+- `GET /visit-recordings/{id}` → `VisitRecordingRead`（`transcript`・`summary` を含む）。
+- `GET /visit-recordings/{id}/audio` → 音声本体（`FileResponse`・`Accept-Ranges`・Bearer）。音声削除済みは 410。**audit_logs に read を明示記録**（`action='audio_read'`）。
+- `PATCH /visit-recordings/{id}` body: `{patient_id?, visit_id?, reviewed?: bool, note_append?: str}`。紐付け変更は staff 本人（24h 以内）or admin。`patient_id` を付けて `visit_id` が無い場合は **予定外訪問（is_unplanned・source='manual'・打刻なし）を生成**して紐付け。
+- `POST /visit-recordings/{id}/retry`（admin）→ 再処理。
+- `DELETE /visit-recordings/{id}`（admin）→ soft delete ＋ 音声 unlink。
+- `POST /admin/visit-recordings/purge-audio`（admin token・advisory lock・冪等）→ `{purged: n}`。
+- `VisitRecordingRead`: `{id, visit_id, patient_id, patient_name, staff_id, staff_name, office_id, recorded_at, ended_at, duration_sec, status, has_audio, audio_mime, audio_bytes, transcript, transcript_json, summary, summary_text, provider, model, prompt_version, tokens_in, tokens_out, cost_usd, error_message, consent_confirmed, reviewed_by, reviewed_at, created_at, updated_at}`（一覧では `transcript`/`transcript_json` を省略）。
+
+### 10-4. AI 呼び出し（`app/services/voice/`）
+- `vertex_client.py`: `google-auth` で SA から token → `POST https://{loc}-aiplatform.googleapis.com/v1/projects/{p}/locations/{loc}/publishers/google/models/{m}:generateContent`（httpx・`Expect` ヘッダ無し・timeout）。`inlineData` は 20 MB まで（超過は将来 GCS 経由）。`responseMimeType=application/json`・`thinkingBudget=0`。`set_test_client()` シーム。usage から `tokens_in/out`・`cost_usd`（音声 $1.00/1M・文字 $0.30/1M・出力 $2.50/1M を定数化）。
+- `prompts.py`: `PROMPT_VERSION="v1"`。看護記録テンプレ（主訴・様子／バイタル／処置・ケア／申し送り／次回／free）＋用語辞書（初版 30 語）＋「推測しない・不明は［不明］・話者は 看護師/患者/家族/不明」。
+- `jobs.py`: `run_transcribe_job(recording_id)`（BackgroundTasks から呼ぶ・自前セッション・status 遷移・失敗は error_message・通知「要約ができました」を本人へ）。`reap_stale_jobs()` を POST 受領時と purge 時に実行。
+
+### 10-5. モバイル（frontend）
+- `lib/voice/recorder.ts`: MediaRecorder ラッパ（MIME 判定・`start(10000)`・chunks→IndexedDB `voice-chunks`・Wake Lock・`visibilitychange` で stop・60 分自動停止・55 分警告）。
+- `lib/voice/queue.ts`: IndexedDB `voice-pending`（録音メタ＋Blob）。online/mount で `flushVoiceQueue()`（打刻キューと同じ直列化・4xx は破棄＋toast）。
+- `lib/queries/visit-recordings.ts`: `useVisitRecordings({visitId|patientId|staffId, from, to})`, `useVisitRecording(id)`, `useUploadRecording()`（素の fetch・進捗）, `useUpdateRecording()`.
+- `components/mobile/VoiceRecorderPanel.tsx`（同意チェック・開始/一時停止/停止・タイマー・波形・注意帯・ボイスメモ取り込み）、`components/mobile/VisitRecordCard.tsx`（状態バッジ・要約・確認済み・音声＝`AuthedAudio`・全文折りたたみ）、`components/mobile/AuthedAudio.tsx`。
+- 組み込み: `/m/today/[visitId]` の訪問中パネルと到着前ブロックに録音パネル、下に記録カード。`/m/today`・`/m/this-week` のカードに 🎙。未送信バナーに音声件数を合算。
+- CSP: `media-src 'self' blob:` を `security_headers.py` に追加（BE-1）。
+
+### 10-6. 導線 C（QR なし）は Phase 2。Phase 1 は A（訪問詳細）と B（QR→adhoc visit→詳細）のみ。
