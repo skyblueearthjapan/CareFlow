@@ -27,11 +27,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
+from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import select
 
 from app.core.config import get_settings
@@ -40,7 +43,8 @@ from app.middleware.audit import _skips_body_buffering
 from app.models import AuditLog, Office, Patient, Staff, User, Visit
 from app.models.visit_recording import VisitRecording
 from app.services.checkin.judge import JST
-from app.services.voice.jobs import STALE_ERROR_MESSAGE, reap_stale_jobs
+from app.services.voice.jobs import STALE_ERROR_MESSAGE, _save_result, reap_stale_jobs
+from app.services.voice.vertex_client import VoiceAiResult
 
 
 def _bearer(user: User) -> dict[str, str]:
@@ -1134,3 +1138,482 @@ async def test_patch_and_audio_of_other_staff_recording_are_404(
     res = await client.get(f"/api/v1/visit-recordings/{row.id}/audio", headers=_bearer(user))
     assert res.status_code == 404, res.text
     await db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2-B (PC /records): 一覧の絞り込み追加 (office_id / q / order / reviewed) と
+# 要約の人手修正 (summary_text + summary_edited_by/at・migration 0087)。
+# 正典: docs/plans/visit-voice-record-design-2026-09-17.md §11-2。
+
+
+async def _seed_recording(db, staff_id, **overrides) -> VisitRecording:
+    """API を通さずに 1 行置く (他人の録音・要約付きの行を作るため)。"""
+    fields = {
+        "staff_id": staff_id,
+        "recorded_at": datetime.now(UTC),
+        "duration_sec": 30,
+        "status": "unlinked",
+        "consent_confirmed": True,
+    }
+    fields.update(overrides)
+    row = VisitRecording(**fields)
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+@pytest.mark.asyncio
+async def test_list_filters_by_office_id(client, db, audio_dir, staff_user, admin_user) -> None:
+    """office_id は「行の拠点」と「録音者の主担当拠点」の **どちらか** で当たる."""
+    staff, user = staff_user
+    office_a = Office(name="稲毛")
+    office_b = Office(name="都賀")
+    db.add_all([office_a, office_b])
+    await db.commit()
+    await db.refresh(office_a)
+    await db.refresh(office_b)
+
+    # 録音者は稲毛所属・患者は都賀 → 行の office_id は患者側 (都賀) が勝つ。
+    staff.primary_office_id = office_a.id
+    patient = await _make_patient(db, "VR-OF", primary_office_id=office_b.id)
+    visit = await _make_visit(db, patient.id, staff.id)
+    created = (await _post_recording(client, user, visit_id=str(visit.id))).json()
+    assert created["office_id"] == str(office_b.id)
+    assert created["office_name"] == "都賀"
+
+    # どちらの拠点にも属さない録音 (絞り込みから落ちること)。
+    far_staff = Staff(name="遠隔 三郎")
+    db.add(far_staff)
+    await db.commit()
+    await db.refresh(far_staff)
+    await _seed_recording(db, far_staff.id)
+
+    async def _ids(office_id) -> list[str]:
+        res = await client.get(
+            "/api/v1/visit-recordings",
+            headers=_bearer(admin_user),
+            params={"office_id": str(office_id)},
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        # total は絞り込み後。
+        assert body["total"] == len(body["items"])
+        return [i["id"] for i in body["items"]]
+
+    # 行の office_id で当たる。
+    assert await _ids(office_b.id) == [created["id"]]
+    # 録音者の主担当拠点でも当たる (行の office_id は都賀のまま)。
+    assert await _ids(office_a.id) == [created["id"]]
+    # 無関係な拠点では 0 件 (遠隔 三郎の行は拠点が無い)。
+    other = Office(name="幕張")
+    db.add(other)
+    await db.commit()
+    await db.refresh(other)
+    assert await _ids(other.id) == []
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_list_q_matches_patient_staff_summary_and_transcript(
+    client, db, audio_dir, staff_user, admin_user
+) -> None:
+    """q は 患者名 / スタッフ名 / summary_text / transcript の部分一致 (ilike)."""
+    staff, user = staff_user  # name = "録音 花子"
+    patient = await _make_patient(db, "VR-Q")  # name = "利用者VR-Q"
+    visit = await _make_visit(db, patient.id, staff.id)
+    linked = (await _post_recording(client, user, visit_id=str(visit.id))).json()
+    unlinked = (await _post_recording(client, user)).json()
+
+    row = await db.scalar(select(VisitRecording).where(VisitRecording.id == UUID(unlinked["id"])))
+    row.summary_text = "褥瘡の処置を実施"
+    row.transcript = "看護師: 包交しました"
+    await db.commit()
+
+    async def _ids(actor, q) -> list[str]:
+        res = await client.get("/api/v1/visit-recordings", headers=_bearer(actor), params={"q": q})
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["total"] == len(body["items"])
+        return sorted(i["id"] for i in body["items"])
+
+    # 患者名 → 紐付いた 1 件だけ。
+    assert await _ids(admin_user, "利用者VR-Q") == [linked["id"]]
+    # スタッフ名 → 録音者が同じなので 2 件とも。
+    assert await _ids(admin_user, "花子") == sorted([linked["id"], unlinked["id"]])
+    # 要約 / 文字起こし。
+    assert await _ids(admin_user, "褥瘡") == [unlinked["id"]]
+    assert await _ids(admin_user, "包交") == [unlinked["id"]]
+
+    # staff は q を使っても自分の分だけ (他人の一致行は出ない)。
+    other_staff = Staff(name="他人 太郎")
+    db.add(other_staff)
+    await db.commit()
+    await db.refresh(other_staff)
+    await _seed_recording(db, other_staff.id, summary_text="褥瘡の処置を実施")
+    assert await _ids(user, "褥瘡") == [unlinked["id"]]
+    assert len(await _ids(admin_user, "褥瘡")) == 2
+
+    # staff が他人の名前で引いても 0 件 (q はスタッフ名にも当たるが強制絞り込みが先)。
+    assert await _ids(user, "他人 太郎") == []
+    assert await _ids(user, "太郎") == []
+    assert len(await _ids(admin_user, "太郎")) == 1
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_list_q_requires_two_characters(client, db, audio_dir, staff_user) -> None:
+    """1 文字の q は 422 (全文にほぼ必ず当たり、絞り込みにならない)."""
+    _staff, user = staff_user
+    await _post_recording(client, user)
+
+    res = await client.get("/api/v1/visit-recordings", headers=_bearer(user), params={"q": "花"})
+    assert res.status_code == 422, res.text
+    res = await client.get("/api/v1/visit-recordings", headers=_bearer(user), params={"q": "花子"})
+    assert res.status_code == 200, res.text
+    assert res.json()["total"] == 1
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_list_office_id_still_scoped_to_own_recordings_for_staff(
+    client, db, audio_dir, staff_user
+) -> None:
+    """staff は office_id を指定しても自分の録音だけ (拠点の同僚の分は出ない)."""
+    staff, user = staff_user
+    office = Office(name="稲毛")
+    db.add(office)
+    await db.commit()
+    await db.refresh(office)
+
+    staff.primary_office_id = office.id
+    colleague = Staff(name="同僚 次郎", primary_office_id=office.id)
+    db.add(colleague)
+    await db.commit()
+    await db.refresh(colleague)
+    # 同じ拠点の同僚の録音 (office_id でも当たる行)。
+    await _seed_recording(db, colleague.id, office_id=office.id)
+    mine = (await _post_recording(client, user)).json()
+
+    res = await client.get(
+        "/api/v1/visit-recordings",
+        headers=_bearer(user),
+        params={"office_id": str(office.id)},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total"] == 1
+    assert [i["id"] for i in body["items"]] == [mine["id"]]
+    assert body["items"][0]["office_name"] == "稲毛"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_list_order_recorded_at_asc(client, db, audio_dir, staff_user) -> None:
+    """order=recorded_at_asc で古い順・既定 (desc) は新しい順."""
+    _staff, user = staff_user
+    now = datetime.now(UTC)
+    older = (
+        await _post_recording(client, user, recorded_at=(now - timedelta(hours=3)).isoformat())
+    ).json()
+    newer = (await _post_recording(client, user, recorded_at=now.isoformat())).json()
+
+    async def _ids(params) -> list[str]:
+        res = await client.get("/api/v1/visit-recordings", headers=_bearer(user), params=params)
+        assert res.status_code == 200, res.text
+        return [i["id"] for i in res.json()["items"]]
+
+    assert await _ids({}) == [newer["id"], older["id"]]
+    assert await _ids({"order": "recorded_at_desc"}) == [newer["id"], older["id"]]
+    assert await _ids({"order": "recorded_at_asc"}) == [older["id"], newer["id"]]
+
+    # 知らない並び順は 422 (静かに既定へ倒さない)。
+    res = await client.get(
+        "/api/v1/visit-recordings", headers=_bearer(user), params={"order": "cost_desc"}
+    )
+    assert res.status_code == 422, res.text
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_list_filters_by_reviewed(client, db, audio_dir, staff_user) -> None:
+    """reviewed=true/false は reviewed_at の有無で切る."""
+    _staff, user = staff_user
+    done = (await _post_recording(client, user)).json()
+    todo = (await _post_recording(client, user)).json()
+
+    res = await client.patch(
+        f"/api/v1/visit-recordings/{done['id']}", headers=_bearer(user), json={"reviewed": True}
+    )
+    assert res.status_code == 200, res.text
+
+    async def _ids(reviewed) -> list[str]:
+        res = await client.get(
+            "/api/v1/visit-recordings", headers=_bearer(user), params={"reviewed": reviewed}
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["total"] == len(body["items"])
+        return [i["id"] for i in body["items"]]
+
+    assert await _ids("true") == [done["id"]]
+    assert await _ids("false") == [todo["id"]]
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_patch_summary_text_records_editor(client, db, audio_dir, staff_user) -> None:
+    """要約の人手修正は本人 OK・丸ごと差し替え・誰がいつ直したかを残す."""
+    _staff, user = staff_user
+    created = (await _post_recording(client, user)).json()
+    assert created["summary_edited_by"] is None
+    assert created["summary_edited_at"] is None
+
+    res = await client.patch(
+        f"/api/v1/visit-recordings/{created['id']}",
+        headers=_bearer(user),
+        json={"summary_text": "血圧 120/80。意識 清明。"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary_text"] == "血圧 120/80。意識 清明。"
+    assert body["summary_edited_by"] == str(user.id)
+    assert body["summary_edited_at"] is not None
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_patch_summary_text_of_other_staff_is_404(client, db, audio_dir, staff_user) -> None:
+    """他人の録音の要約は直せない (存在ごと秘匿の 404)."""
+    _staff, user = staff_user
+    other_staff = Staff(name="他人 太郎")
+    db.add(other_staff)
+    await db.commit()
+    await db.refresh(other_staff)
+    row = await _seed_recording(db, other_staff.id, summary_text="AI の要約")
+
+    res = await client.patch(
+        f"/api/v1/visit-recordings/{row.id}",
+        headers=_bearer(user),
+        json={"summary_text": "書き換え"},
+    )
+    assert res.status_code == 404, res.text
+    await db.refresh(row)
+    assert row.summary_text == "AI の要約"
+    assert row.summary_edited_by is None
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_patch_note_append_with_summary_text_is_422(
+    client, db, audio_dir, staff_user
+) -> None:
+    """追記と人手修正は同じ列を奪い合うので同時指定は 422 (黙って片方を勝たせない)."""
+    _staff, user = staff_user
+    created = (await _post_recording(client, user)).json()
+
+    res = await client.patch(
+        f"/api/v1/visit-recordings/{created['id']}",
+        headers=_bearer(user),
+        json={"note_append": "追記", "summary_text": "差し替え"},
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"] == "note_append と summary_text は同時に指定できません"
+
+    row = await db.scalar(select(VisitRecording).where(VisitRecording.id == UUID(created["id"])))
+    await db.refresh(row)
+    assert row.summary_text is None
+    assert row.summary_edited_at is None
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_patch_summary_text_clears_reviewed(client, db, audio_dir, staff_user) -> None:
+    """「確認済み」= 内容の承認。本文を直したら承認は失効する (同時 reviewed で立て直せる)."""
+    _staff, user = staff_user
+    created = (await _post_recording(client, user)).json()
+
+    res = await client.patch(
+        f"/api/v1/visit-recordings/{created['id']}",
+        headers=_bearer(user),
+        json={"reviewed": True},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["reviewed_at"] is not None
+
+    # 承認済みの文を書き換える → 承認は失効。
+    res = await client.patch(
+        f"/api/v1/visit-recordings/{created['id']}",
+        headers=_bearer(user),
+        json={"summary_text": "直した要約"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary_text"] == "直した要約"
+    assert body["reviewed_by"] is None
+    assert body["reviewed_at"] is None
+
+    # 直しながらその場で承認する (同じ PATCH の reviewed:true が後に効く)。
+    res = await client.patch(
+        f"/api/v1/visit-recordings/{created['id']}",
+        headers=_bearer(user),
+        json={"summary_text": "直して承認", "reviewed": True},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary_text"] == "直して承認"
+    assert body["reviewed_by"] == str(user.id)
+    assert body["reviewed_at"] is not None
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_retry_does_not_touch_manual_summary(
+    client, db, audio_dir, staff_user, admin_user
+) -> None:
+    """再処理を頼んだだけでは人手修正に触らない (ジョブが失敗しても出所が壊れない)."""
+    _staff, user = staff_user
+    created = (await _post_recording(client, user)).json()
+
+    res = await client.patch(
+        f"/api/v1/visit-recordings/{created['id']}",
+        headers=_bearer(user),
+        json={"summary_text": "人が直した要約"},
+    )
+    assert res.status_code == 200, res.text
+
+    # VOICE_AI_PROVIDER='none' なのでジョブは何もしない (= 失敗して終わったのと同じ)。
+    res = await client.post(
+        f"/api/v1/visit-recordings/{created['id']}/retry", headers=_bearer(admin_user)
+    )
+    assert res.status_code == 202, res.text
+    body = res.json()
+    assert body["status"] == "uploaded"
+    assert body["error_message"] is None
+    # 人手修正も痕跡もそのまま (ここでクリアすると「人が直した文なのに AI 由来」に見える)。
+    assert body["summary_text"] == "人が直した要約"
+    assert body["summary_edited_by"] == str(user.id)
+    assert body["summary_edited_at"] is not None
+    assert (body["summary"] or {}).get("previous_manual") is None
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_save_result_stashes_manual_summary(db, audio_dir, staff_user) -> None:
+    """AI が書き直す瞬間 (``_save_result``) に人手修正を previous_manual へ退避する.
+
+    「文字起こし中に PATCH された」行 = ``summary_edited_at`` 付きで
+    ``_save_result`` に入ってくる行なので、その形を直接作って当てる。
+    """
+    staff, user = staff_user
+    edited_at = datetime.now(UTC) - timedelta(minutes=3)
+    row = await _seed_recording(
+        db,
+        staff.id,
+        status="transcribing",
+        summary={"free": "AI の初回要約"},
+        summary_text="人が直した要約",
+        summary_edited_by=user.id,
+        summary_edited_at=edited_at,
+    )
+
+    result = VoiceAiResult(
+        transcript="看護師: 体調はいかがですか。",
+        transcript_segments=[{"speaker": "看護師", "start_sec": 0, "text": "体調は?"}],
+        # AI が previous_manual というキーを返してきても退避が勝つこと。
+        summary={"free": "AI の書き直し", "previous_manual": "AI の嘘"},
+        summary_text="【主訴・様子】\n・変化なし",
+        tokens_in=100,
+        tokens_out=20,
+        cost_usd=Decimal("0.0001"),
+        model="gemini-2.5-flash",
+        prompt_version="v1",
+    )
+    row.reviewed_by = user.id
+    row.reviewed_at = datetime.now(UTC)
+    await db.commit()
+    await _save_result(db, row, result)
+    await db.refresh(row)
+
+    # AI の結果で上書きされる。
+    assert row.summary_text == "【主訴・様子】\n・変化なし"
+    assert row.summary["free"] == "AI の書き直し"
+    # 痕跡はここで初めて消える。
+    assert row.summary_edited_by is None
+    assert row.summary_edited_at is None
+    # 消えた人手修正は残る (AI の同名キーより退避が勝つ)。
+    previous = row.summary["previous_manual"]
+    assert previous["summary_text"] == "人が直した要約"
+    assert previous["edited_by"] == str(user.id)
+    assert previous["edited_at"].startswith(edited_at.strftime("%Y-%m-%dT%H:%M"))
+    assert previous["replaced_at"] is not None
+
+    # 2 度目の書き直しは 1 度目の退避を「その時点の summary_text」で置き換える
+    # (溜め込まない = 直近 1 件のみ)。
+    row.summary_text = "2 回目の人手修正"
+    row.summary_edited_by = user.id
+    row.summary_edited_at = datetime.now(UTC)
+    await db.commit()
+    await _save_result(db, row, result)
+    await db.refresh(row)
+    assert row.summary["previous_manual"]["summary_text"] == "2 回目の人手修正"
+    await db.rollback()
+    # AI が書き直したので「確認済み」は失効する (N-2)。
+    await db.refresh(row)
+    assert row.reviewed_by is None and row.reviewed_at is None
+
+
+@pytest.mark.asyncio
+async def test_save_result_without_manual_edit_has_no_previous(db, audio_dir, staff_user) -> None:
+    """人手修正が無い行では previous_manual を作らない."""
+    staff, _user = staff_user
+    row = await _seed_recording(db, staff.id, status="transcribing")
+    await _save_result(
+        db,
+        row,
+        VoiceAiResult(
+            transcript="a",
+            transcript_segments=[],
+            summary={"free": "AI"},
+            summary_text="AI",
+            tokens_in=1,
+            tokens_out=1,
+            cost_usd=Decimal("0.0001"),
+            model="m",
+            prompt_version="v1",
+        ),
+    )
+    await db.refresh(row)
+    assert "previous_manual" not in (row.summary or {})
+    await db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# migration 0087 (summary_edited_by / summary_edited_at)
+
+
+def test_migration_0087_chain_and_columns() -> None:
+    """0087 が 0086 から派生し、単一 head で、2 列を add/drop する."""
+    backend_root = Path(__file__).resolve().parent.parent
+    cfg = Config(str(backend_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(backend_root / "alembic"))
+    script = ScriptDirectory.from_config(cfg)
+
+    rev = script.get_revision("0087_visit_recordings_summary_edit")
+    assert rev is not None
+    assert rev.down_revision == "0086_visit_recordings"
+    heads = list(script.get_heads())
+    assert heads == ["0087_visit_recordings_summary_edit"], f"heads は単一のはず: {heads}"
+
+    src = (
+        backend_root / "alembic" / "versions" / "0087_visit_recordings_summary_edit.py"
+    ).read_text(encoding="utf-8")
+    upgrade_src = src[src.find("def upgrade()") : src.find("def downgrade()")]
+    downgrade_src = src[src.find("def downgrade()") :]
+    for column in ("summary_edited_by", "summary_edited_at"):
+        assert "add_column" in upgrade_src and f'"{column}"' in upgrade_src
+        assert f'drop_column(_TABLE, "{column}")' in downgrade_src
+
+    # モデル側にも生えていること (テストの DB は create_all で作られるため)。
+    assert "summary_edited_by" in VisitRecording.__table__.columns
+    assert "summary_edited_at" in VisitRecording.__table__.columns

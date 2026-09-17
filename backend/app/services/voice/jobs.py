@@ -252,10 +252,43 @@ async def _context_for(
 
 
 async def _save_result(db: AsyncSession, row: VisitRecording, result: VoiceAiResult) -> None:
-    """成功した結果を書き戻す (患者未紐付けなら ``unlinked`` のまま要約だけ残す)。"""
+    """成功した結果を書き戻す (患者未紐付けなら ``unlinked`` のまま要約だけ残す)。
+
+    人手修正 (``summary_edited_at`` が立っている行) はここで踏み潰されるので、
+    上書きする直前に ``summary['previous_manual']`` へ退避する (設計 §11-2)。
+
+    * 退避と ``summary_edited_*`` のクリアは **この関数でだけ** 行う。再処理を
+      頼んだ時点 (``POST /{id}/retry``) でクリアすると、ジョブが失敗したときに
+      人が直した文だけが残って出所が AI に見える行が出来る。失敗経路
+      (``_mark_failed``) は要約に触らないので、その場合は人手修正が痕跡ごと残る。
+    * 残すのは **直近 1 件のみ**。世代を溜める場所ではない (履歴が要るなら
+      audit_logs 側の仕事)。2 度目の書き直しは 1 度目の ``previous_manual`` を
+      その時点の ``summary_text`` で置き換える。
+    * マージ順は ``{**result, **kept}``。AI が ``previous_manual`` というキーを
+      返してきても人手修正の退避が勝つ (構造的に守る)。
+    """
+    # 既に退避済みのぶん (前回の書き直しで入った previous_manual) も引き継ぐ。
+    kept: dict = {k: v for k, v in (row.summary or {}).items() if k == "previous_manual"}
+    if row.summary_edited_at is not None:
+        edited_at = row.summary_edited_at
+        if edited_at.tzinfo is None:
+            edited_at = edited_at.replace(tzinfo=UTC)
+        kept["previous_manual"] = {
+            "summary_text": row.summary_text,
+            "edited_by": str(row.summary_edited_by) if row.summary_edited_by else None,
+            "edited_at": edited_at.isoformat(),
+            "replaced_at": datetime.now(UTC).isoformat(),
+        }
+        row.summary_edited_by = None
+        row.summary_edited_at = None
+    # AI が本文を書き直した以上、以前の「確認済み」は別の文に対する承認なので外す
+    # (PATCH summary_text と同じ原則。note_append=現場の追記 は承認を維持する)。
+    row.reviewed_by = None
+    row.reviewed_at = None
+
     row.transcript = result.transcript or None
     row.transcript_json = result.transcript_segments or []
-    row.summary = result.summary or {}
+    row.summary = {**(result.summary or {}), **kept}
     row.summary_text = result.summary_text or None
     row.provider = "vertex"
     row.model = result.model

@@ -6,7 +6,7 @@
   * ``GET    /visit-recordings``            一覧 (BE 絞り込み + ページング)
   * ``GET    /visit-recordings/{id}``       詳細 (文字起こし・要約を含む)
   * ``GET    /visit-recordings/{id}/audio`` 音声本体 (Bearer・Range 可)
-  * ``PATCH  /visit-recordings/{id}``       紐付け / 確認済み / 要約の追記
+  * ``PATCH  /visit-recordings/{id}``       紐付け / 確認済み / 要約の追記・人手修正
   * ``POST   /visit-recordings/{id}/retry`` 再処理 (admin)
   * ``DELETE /visit-recordings/{id}``       soft delete + 音声削除 (admin)
 
@@ -41,7 +41,7 @@ import re
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import (
     APIRouter,
@@ -65,6 +65,7 @@ from app.api.v1.visits import _staff_visibility_filter
 from app.core.config import get_settings
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.audit_log import AuditLog
+from app.models.office import Office
 from app.models.patient import Patient
 from app.models.staff import Staff
 from app.models.user import User, normalize_user_role
@@ -192,12 +193,18 @@ def _too_large_detail(max_bytes: int) -> str:
 
 async def _names_for(
     db: AsyncSession, rows: list[VisitRecording]
-) -> tuple[dict[uuid.UUID, str], dict[uuid.UUID, str]]:
-    """患者名 / スタッフ名を 2 クエリでまとめて解決する (N+1 回避)。"""
+) -> tuple[dict[uuid.UUID, str], dict[uuid.UUID, str], dict[uuid.UUID, str]]:
+    """患者名 / スタッフ名 / 拠点名を 3 クエリでまとめて解決する (N+1 回避)。
+
+    一覧は 1 ページ 50 行まで返すので、行ごとに名前を引くと 150 クエリになる。
+    id を集めてから ``IN`` で 1 回ずつ引く (件数に依らずクエリ数は 3 本)。
+    """
     patient_ids = {r.patient_id for r in rows if r.patient_id is not None}
     staff_ids = {r.staff_id for r in rows if r.staff_id is not None}
+    office_ids = {r.office_id for r in rows if r.office_id is not None}
     patients: dict[uuid.UUID, str] = {}
     staff: dict[uuid.UUID, str] = {}
+    offices: dict[uuid.UUID, str] = {}
     if patient_ids:
         for pid, name in (
             await db.execute(select(Patient.id, Patient.name).where(Patient.id.in_(patient_ids)))
@@ -208,7 +215,12 @@ async def _names_for(
             await db.execute(select(Staff.id, Staff.name).where(Staff.id.in_(staff_ids)))
         ).all():
             staff[sid] = name
-    return patients, staff
+    if office_ids:
+        for oid, name in (
+            await db.execute(select(Office.id, Office.name).where(Office.id.in_(office_ids)))
+        ).all():
+            offices[oid] = name
+    return patients, staff, offices
 
 
 def _serialize(
@@ -216,6 +228,7 @@ def _serialize(
     *,
     patient_name: str | None = None,
     staff_name: str | None = None,
+    office_name: str | None = None,
     include_transcript: bool = True,
 ) -> dict[str, Any]:
     """``VisitRecordingRead`` の中身 (手書き dict — 列を足したらここにも足す)。"""
@@ -227,6 +240,7 @@ def _serialize(
         "staff_id": row.staff_id,
         "staff_name": staff_name,
         "office_id": row.office_id,
+        "office_name": office_name,
         "recorded_at": row.recorded_at,
         "ended_at": row.ended_at,
         "duration_sec": row.duration_sec,
@@ -239,6 +253,8 @@ def _serialize(
         "transcript_json": row.transcript_json if include_transcript else None,
         "summary": row.summary,
         "summary_text": row.summary_text,
+        "summary_edited_by": row.summary_edited_by,
+        "summary_edited_at": row.summary_edited_at,
         "provider": row.provider,
         "model": row.model,
         "prompt_version": row.prompt_version,
@@ -259,11 +275,12 @@ def _serialize(
 async def _serialize_one(
     db: AsyncSession, row: VisitRecording, *, include_transcript: bool = True
 ) -> dict[str, Any]:
-    patients, staff = await _names_for(db, [row])
+    patients, staff, offices = await _names_for(db, [row])
     return _serialize(
         row,
         patient_name=patients.get(row.patient_id) if row.patient_id else None,
         staff_name=staff.get(row.staff_id),
+        office_name=offices.get(row.office_id) if row.office_id else None,
         include_transcript=include_transcript,
     )
 
@@ -570,10 +587,15 @@ async def list_visit_recordings(
     patient_id: Annotated[uuid.UUID | None, Query()] = None,
     staff_id: Annotated[uuid.UUID | None, Query()] = None,
     visit_id: Annotated[uuid.UUID | None, Query()] = None,
+    office_id: Annotated[uuid.UUID | None, Query()] = None,
     from_: Annotated[date | None, Query(alias="from")] = None,
     to: Annotated[date | None, Query()] = None,
     status_filter: Annotated[str | None, Query(alias="status")] = None,
-    q: Annotated[str | None, Query(max_length=100)] = None,
+    reviewed: Annotated[bool | None, Query()] = None,
+    # 1 文字の検索は文字起こし全文にほぼ必ず当たり、絞り込みとして無意味な上に
+    # 全件 ilike のスキャンだけ走る。2 文字から受ける。
+    q: Annotated[str | None, Query(min_length=2, max_length=100)] = None,
+    order: Annotated[Literal["recorded_at_desc", "recorded_at_asc"], Query()] = "recorded_at_desc",
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> dict[str, Any]:
@@ -590,8 +612,34 @@ async def list_visit_recordings(
         conditions.append(VisitRecording.patient_id == patient_id)
     if visit_id is not None:
         conditions.append(VisitRecording.visit_id == visit_id)
+    if office_id is not None:
+        # 拠点は 2 通りで当たる: 行に載っている表示スコープ (患者の主担当拠点 →
+        # 無ければ録音者の主担当拠点) と、**録音者の今の所属**。前者だけで絞ると、
+        # 他拠点の患者を応援で回った録音が担当拠点の一覧から消え、後者だけだと
+        # 「その拠点の利用者の記録」が録音者の異動で見えなくなる。
+        #
+        # 第 2 レグは ``staff.primary_office_id`` = **現在の**所属を見るので、
+        # 録音者が異動すると **過去の録音まで新しい拠点の一覧へ移る** (行の
+        # office_id は動かないので、患者が付いた録音は旧拠点でも引ける)。
+        # 「異動前の記録は旧拠点に残す」のが正なら、録音時の所属を行に持つか
+        # 第 2 レグを落とす必要がある — PO 判断待ち (設計 §8-11)。
+        conditions.append(
+            or_(
+                VisitRecording.office_id == office_id,
+                VisitRecording.staff_id.in_(
+                    select(Staff.id).where(Staff.primary_office_id == office_id)
+                ),
+            )
+        )
     if status_filter:
         conditions.append(VisitRecording.status == status_filter)
+    if reviewed is not None:
+        # 「確認済み」の正は reviewed_at (reviewed_by は利用者削除で SET NULL)。
+        conditions.append(
+            VisitRecording.reviewed_at.is_not(None)
+            if reviewed
+            else VisitRecording.reviewed_at.is_(None)
+        )
     # 日付の境界は JST で切り、**必ず UTC へ直してから** 比較する。
     # SQLite は timestamptz のオフセットを落として保存するため、JST のまま
     # 渡すと 9 時間ずれた範囲を引く (PG では正しいので気付きにくい)。
@@ -600,35 +648,50 @@ async def list_visit_recordings(
     if to is not None:
         conditions.append(VisitRecording.recorded_at < _jst_day_start_utc(to + timedelta(days=1)))
     if q:
+        # 画面の検索窓は 1 本しか無いので、人が打ちそうな 4 つを同時に見る:
+        # 患者名・スタッフ名・要約・文字起こし全文。名前は別テーブルなので
+        # join ではなく ``IN (subquery)`` にする — join を足すと ``total`` の
+        # count で行が増える (1 録音が複数行に化ける) 事故が起きる。
         pattern = f"%{q}%"
         conditions.append(
             or_(
                 VisitRecording.summary_text.ilike(pattern),
                 VisitRecording.transcript.ilike(pattern),
+                VisitRecording.patient_id.in_(
+                    select(Patient.id).where(Patient.name.ilike(pattern))
+                ),
+                VisitRecording.staff_id.in_(select(Staff.id).where(Staff.name.ilike(pattern))),
             )
         )
 
     total = int(
         await db.scalar(select(func.count()).select_from(VisitRecording).where(*conditions)) or 0
     )
+    # 同じ秒の録音が複数あってもページングがぶれないよう id で決着を付ける
+    # (tie-break が無いと offset をまたいだ行が重複 / 欠落する)。並び替えても
+    # tie-break の向きを本体に合わせる。
+    order_by = (
+        (VisitRecording.recorded_at.asc(), VisitRecording.id.asc())
+        if order == "recorded_at_asc"
+        else (VisitRecording.recorded_at.desc(), VisitRecording.id.desc())
+    )
     rows = (
         await db.scalars(
             select(VisitRecording)
             .where(*conditions)
-            # 同じ秒の録音が複数あってもページングがぶれないよう id で決着を付ける
-            # (tie-break が無いと offset をまたいだ行が重複 / 欠落する)。
-            .order_by(VisitRecording.recorded_at.desc(), VisitRecording.id.desc())
+            .order_by(*order_by)
             .limit(limit)
             .offset(offset)
         )
     ).all()
-    patients, staff = await _names_for(db, list(rows))
+    patients, staff, offices = await _names_for(db, list(rows))
     return {
         "items": [
             _serialize(
                 r,
                 patient_name=patients.get(r.patient_id) if r.patient_id else None,
                 staff_name=staff.get(r.staff_id),
+                office_name=offices.get(r.office_id) if r.office_id else None,
                 # 一覧では全文を返さない (設計 §10-3)。
                 include_transcript=False,
             )
@@ -774,7 +837,7 @@ async def _reusable_visit_id_for(
 @router.patch(
     "/{recording_id}",
     response_model=VisitRecordingRead,
-    summary="紐付け (患者 / 訪問) ・確認済み・要約の追記",
+    summary="紐付け (患者 / 訪問) ・確認済み・要約の追記 / 人手修正",
 )
 async def update_visit_recording(
     recording_id: uuid.UUID,
@@ -785,6 +848,15 @@ async def update_visit_recording(
     row = await _load_recording_or_404(db, recording_id, user)
     fields = payload.model_fields_set
     changing_link = "patient_id" in fields or "visit_id" in fields
+
+    # 追記 (末尾に足す) と人手修正 (丸ごと差し替える) は同じ列を奪い合う。
+    # 両方来たら適用順で結果が変わる = FE が順序を暗黙に当てにすることになるので、
+    # 黙ってどちらかを勝たせず断る。
+    if payload.note_append is not None and "summary_text" in fields:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="note_append と summary_text は同時に指定できません",
+        )
 
     # 紐付けの付け替えは「録音した本人が 24h 以内」か admin だけ (設計 §10-3)。
     if changing_link and not _is_admin(user):
@@ -850,6 +922,30 @@ async def update_visit_recording(
         elif row.patient_id is None and row.status == RECORDING_STATUS_UPLOADED:
             row.status = RECORDING_STATUS_UNLINKED
 
+    # note_append は現場の追記であって書き直しではないので「確認済み」は維持する
+    # (AI の書き直し / summary_text の置換は失効させる)。
+    if payload.note_append:
+        # 「要約の追記」= 画面用の整形済みテキストの末尾に足す (設計 §2-5)。
+        note = payload.note_append.strip()
+        if note:
+            row.summary_text = f"{row.summary_text}\n{note}" if row.summary_text else note
+
+    if "summary_text" in fields:
+        # 要約の人手修正 (PC 詳細ダイアログ・設計 §11-2)。可視性は
+        # ``_load_recording_or_404`` が既に絞っている (staff は自分の録音だけ・
+        # 他人の録音は 404) ので、ここで足すべき条件は無い。追記と違い **丸ごと
+        # 差し替える** ので、「誰がいつ直したか」を必ず残す。
+        new_text = (payload.summary_text or "").strip() or None
+        row.summary_text = new_text
+        row.summary_edited_by = user.id
+        row.summary_edited_at = datetime.now(UTC)
+        # 「確認済み」は **その内容を承認した** という意味なので、本文が変われば
+        # 承認は一度失効させる (承認した文とは別の文が残る状態を作らない)。
+        # 同じ PATCH で ``reviewed: true`` が来ていれば、下で立て直す = 直した
+        # 本人がその場で承認したことになる。
+        row.reviewed_by = None
+        row.reviewed_at = None
+
     if payload.reviewed is not None:
         if payload.reviewed:
             row.reviewed_by = user.id
@@ -857,12 +953,6 @@ async def update_visit_recording(
         else:
             row.reviewed_by = None
             row.reviewed_at = None
-
-    if payload.note_append:
-        # 「要約の追記」= 画面用の整形済みテキストの末尾に足す (設計 §2-5)。
-        note = payload.note_append.strip()
-        if note:
-            row.summary_text = f"{row.summary_text}\n{note}" if row.summary_text else note
 
     await db.commit()
     await db.refresh(row)
@@ -891,6 +981,11 @@ async def retry_visit_recording(
             status_code=status.HTTP_410_GONE,
             detail="音声が残っていないため再処理できません",
         )
+    # 人手修正の退避 (``summary['previous_manual']``) と ``summary_edited_*`` の
+    # クリアは **ここではやらない**。再処理を頼んだだけでは要約はまだ変わらず、
+    # ジョブが失敗すれば人手修正の文がそのまま残る — ここでクリアすると
+    # 「人が直した文なのに出所が AI に見える」行ができる。実際に上書きする
+    # ``jobs._save_result`` の冒頭でだけ動かす (設計 §11-2)。
     row.status = RECORDING_STATUS_UPLOADED
     row.error_message = None
     row.error_kind = None

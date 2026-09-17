@@ -28,6 +28,7 @@ class VisitRecordingRead(BaseModel):
     staff_id: UUID
     staff_name: str | None = None
     office_id: UUID | None = None
+    office_name: str | None = None
 
     recorded_at: datetime
     ended_at: datetime | None = None
@@ -44,6 +45,9 @@ class VisitRecordingRead(BaseModel):
 
     summary: dict[str, Any] | None = None
     summary_text: str | None = None
+    # 要約の人手修正の痕跡 (0087)。NULL = AI のまま (画面の「修正済み」表示用)。
+    summary_edited_by: UUID | None = None
+    summary_edited_at: datetime | None = None
 
     provider: str | None = None
     model: str | None = None
@@ -75,10 +79,19 @@ class VisitRecordingList(BaseModel):
 
 
 class VisitRecordingUpdate(BaseModel):
-    """紐付け・確認済み・要約の追記 (設計 §10-3 PATCH)。
+    """紐付け・確認済み・要約の追記 / 人手修正 (設計 §10-3 PATCH ＋ §11-2)。
 
     ``patient_id`` / ``visit_id`` は **明示的な null** で紐付けを外せるよう
     ``model_fields_set`` で「送られたか」を見分ける (既定値 None と区別する)。
+
+    ``note_append`` (末尾に足す) と ``summary_text`` (丸ごと差し替える) は別物。
+    前者は現場の追記、後者は PC の詳細ダイアログでの人手修正で、後者は
+    ``summary_edited_by`` / ``summary_edited_at`` を立てる。同じ列を奪い合うので
+    **同時指定は 422** (API 層で弾く)。
+
+    ``summary_text`` を変えると「確認済み」(``reviewed_*``) は失効する — 承認は
+    その内容に対するものなので、別の文が承認済みのまま残る状態を作らない。同じ
+    PATCH に ``reviewed: true`` を添えれば、直した本人がその場で承認できる。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -87,3 +100,5 @@ class VisitRecordingUpdate(BaseModel):
     visit_id: UUID | None = None
     reviewed: bool | None = None
     note_append: str | None = Field(default=None, max_length=2000)
+    # 要約の人手修正 (admin または録音した本人)。空文字 / null は「要約を消す」。
+    summary_text: str | None = Field(default=None, max_length=20000)

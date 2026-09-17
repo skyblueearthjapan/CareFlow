@@ -118,6 +118,19 @@ class VisitRecording(Base, TimestampMixin):
     summary: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
     summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # 要約の人手修正の痕跡 (migration 0087)。``summary_text`` は AI が書いた文でも
+    # 人が直した文でもあるので、「誰がいつ直したか」を併せて持つ。再処理で AI が
+    # 書き直したらこの 2 本はクリアし、消える人手修正は
+    # ``summary['previous_manual']`` へ退避する (設計 §11-2)。
+    summary_edited_by: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    summary_edited_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # 監査・再実行のための出所 (どのモデル・どのプロンプトで作ったか)。
     provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     model: Mapped[str | None] = mapped_column(String(64), nullable=True)
