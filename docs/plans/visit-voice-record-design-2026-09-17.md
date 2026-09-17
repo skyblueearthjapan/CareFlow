@@ -103,7 +103,7 @@
 |---|---|---|
 | A. 予定のある訪問 | 訪問詳細（`/m/today/[visitId]`）の訪問中パネルに「🎙 録音」 | visit_id 確定。到着打刻の有無に関係なく録音可（打刻前でも可） |
 | B. QR を読んだ予定外／代行 | 既存 `/q/[token]` → adhoc visit or 代行 visit → その詳細画面で A と同じ | 既存フローをそのまま利用。QR 所持＝現地証明 |
-| C. QR なしの予定外 | `/m/today` の「予定に無い訪問を記録」→ **先に録音を開始できる**（患者未確定）→ 停止後に患者を選ぶ（今日/今週の担当患者 → 拠点の稼働患者 あいうえお順 → 検索） | `visit_recordings.patient_id` を **nullable** にし「紐付け待ち」を許す。紐付け時に **予定外訪問（is_unplanned）を生成**して visit_id も付ける（打刻は付けない＝`checkin` は無し）。24 時間紐付け無しは admin 画面に「要紐付け」として出す |
+| C. QR なしの予定外 | `/m/today` の「予定に無い訪問を記録」→ **先に録音を開始できる**（患者未確定）→ 停止後に患者を選ぶ（今日/今週の担当患者 → 拠点の稼働患者 あいうえお順 → 検索） | `visit_recordings.patient_id` を **nullable** にし「紐付け待ち」を許す。紐付け時は **既存の訪問（同患者・同 JST 日・本人が担当）があればそれに紐付け、無ければ visit_id は空のまま**（**訪問は生成しない**＝2026-09-18 決定・§10-3 参照）。24 時間紐付け無しは admin 画面に「要紐付け」として出す |
 - C を「先に録音」にする理由: 現場で患者を探す操作が録音開始を遅らせる。紐付けは後からで良い（要約が出れば患者名の手掛かりにもなる）。
 - 誤紐付けの訂正: admin は患者・訪問の付け替え可（監査ログ）。staff 本人は紐付け後 24 時間以内なら変更可。
 
@@ -213,6 +213,8 @@
 6. **要約テンプレの項目**（主訴/観察/バイタル/処置/申し送り/次回 で良いか）。
 7. **予算**: 月 $10〜40（400 件）＋ストレージ。
 8. QR なし導線 C で「先に録音・後で患者選択」を許すか（誤紐付けリスクとの兼ね合い）。
+9. （本機能とは独立）Next.js 側に文書 CSP が無い。導入するか（`next.config.js` の headers）。
+10. ~~紐付け用の予定外訪問（voice_link）~~ → **撤回（2026-09-18）**: 訪問は生成しない。患者のみの紐付け（visit 無し）を正とする。
 
 ## 9. 参照
 - 調査（本セッション・エージェント報告）: モバイル構造／保存基盤／PC 画面・デザイン／ブラウザ録音（WebKit・MDN・W3C・firt.dev）／API 比較（OpenAI・Google・AWS 公式料金・Gemini API 利用規約）。
@@ -245,7 +247,7 @@
 - `GET /visit-recordings?patient_id&staff_id&visit_id&from&to&status&q&limit=50&offset` → `{items: VisitRecordingRead[], total}`。staff は自分の録音のみ（`staff_id` 強制）、admin は任意。
 - `GET /visit-recordings/{id}` → `VisitRecordingRead`（`transcript`・`summary` を含む）。
 - `GET /visit-recordings/{id}/audio` → 音声本体（`FileResponse`・`Accept-Ranges`・Bearer）。音声削除済みは 410。**audit_logs に read を明示記録**（`action='audio_read'`）。
-- `PATCH /visit-recordings/{id}` body: `{patient_id?, visit_id?, reviewed?: bool, note_append?: str}`。紐付け変更は staff 本人（24h 以内）or admin。`patient_id` を付けて `visit_id` が無い場合は **予定外訪問（is_unplanned・source='manual'・打刻なし）を生成**して紐付け。
+- `PATCH /visit-recordings/{id}` body: `{patient_id?, visit_id?, reviewed?: bool, note_append?: str}`。紐付け変更は staff 本人（24h 以内）or admin。**2026-09-18 決定: 紐付け用の訪問は生成しない。** `patient_id` 指定時は既存訪問（同患者・`recorded_at` の JST 日・`_staff_visibility_filter` で本人帰属・cancelled 以外）があれば再利用、無ければ `visit_id=None`。`visit_id: null` は常に許可（解除・訪問には触らない）。`visit_id` と `patient_id` 不一致は 422。**非稼働（入院中等）の患者にも紐付け可**（録音は予定ではなく事実の記録・2026-09-18 決定。存在しない患者のみ 404）。理由: 生成方式（voice_link）はモニター/未訪問通知/プール判定/代替候補/実現性/Layer1 の 8 箇所超に除外が必要で漏れの温床になる（レビュー NEW-1〜6）。
 - `POST /visit-recordings/{id}/retry`（admin）→ 再処理。
 - `DELETE /visit-recordings/{id}`（admin）→ soft delete ＋ 音声 unlink。
 - `POST /admin/visit-recordings/purge-audio`（admin token・advisory lock・冪等）→ `{purged: n}`。
@@ -262,7 +264,7 @@
 - `lib/queries/visit-recordings.ts`: `useVisitRecordings({visitId|patientId|staffId, from, to})`, `useVisitRecording(id)`, `useUploadRecording()`（素の fetch・進捗）, `useUpdateRecording()`.
 - `components/mobile/VoiceRecorderPanel.tsx`（同意チェック・開始/一時停止/停止・タイマー・波形・注意帯・ボイスメモ取り込み）、`components/mobile/VisitRecordCard.tsx`（状態バッジ・要約・確認済み・音声＝`AuthedAudio`・全文折りたたみ）、`components/mobile/AuthedAudio.tsx`。
 - 組み込み: `/m/today/[visitId]` の訪問中パネルと到着前ブロックに録音パネル、下に記録カード。`/m/today`・`/m/this-week` のカードに 🎙。未送信バナーに音声件数を合算。
-- CSP: `media-src 'self' blob:` を `security_headers.py` に追加（BE-1）。
+- CSP: 当初 `security_headers.py` に `media-src 'self' blob:` を足したが、**レビューで無効と判明し撤回**（この CSP は FastAPI 応答にしか付かず、`<audio>` を持つ Next.js ページには CSP が一切無い）。blob 再生は現状そのまま動く。**フロントに文書 CSP が無いこと自体は既存の強化課題**として PO 確認事項に追加（§8-9）。
 
 ### 10-6. 導線 C（QR なし）は Phase 2。Phase 1 は A（訪問詳細）と B（QR→adhoc visit→詳細）のみ。
 
