@@ -53,6 +53,23 @@
 - 学習利用: いずれも API 有料版は学習に使わない。3 省 2 ガイドラインへの「認定」は存在せず、委託先管理（DPA）と院内規程で担保する。
 - **推奨**: 第一候補 = Vertex AI 経由 Gemini 2.5 Flash（1 コール・安価・日本リージョン・用語辞書をプロンプトで渡せる）。第二候補 = OpenAI（API キーだけで始められる・PoC 向き）。要約だけ別モデルにする 2 段構成は、文字起こしを監査用に独立保存したい場合に採る。
 
+### 1-f. 提供経路の比較対照（2026-09-17・PO 判断用）
+| 観点 | Gemini API（AI Studio） | Gemini（Vertex AI） | OpenAI 直（API） | OpenAI（AWS Bedrock・GPT-5.6 Luna 等） | AWS Transcribe ＋ 要約モデル |
+|---|---|---|---|---|---|
+| 音声→文字起こし | ○ 2.5 Flash/Flash-Lite が音声を直接入力（9.5 h・m4a/webm 可） | ○ 同左 | ○ gpt-4o(-mini)-transcribe / whisper-1（25 MB 上限） | × Luna/Sol/Terra は音声非対応（Bedrock の OpenAI モデルは文字起こし不可） | ○ ja-JP・話者分離・医療語彙（Custom Vocabulary） |
+| 要約 | ○ 同じモデルで 1 コール | ○ 同左 | ○ gpt-4o-mini / GPT-5.6 Luna（$0.20/$1.20） | ○ Luna（In-Region $0.22/$1.32・Global $0.20/$1.20） | 別途（gpt-4o-mini / Luna / Gemini / Claude） |
+| 月 400 件（30 分）目安 | Flash ≈ $32 / Flash-Lite ≈ $8 | 同左（Vertex は同価格・課金は GCP） | mini-transcribe ＋ Luna ≈ $37 | 文字起こしを別途要するため Luna 単独では成立せず | ≈ $73 |
+| 日本語精度・話者分離 | 高／プロンプト任せ（保証なし） | 同左 | 高／diarize モデルあり | — | 良／話者分離 ○（保証あり） |
+| 医療用途の規約 | **臨床利用を規約で禁止（不可）** | 可（GCP CDPA・HIPAA 対象サービス） | 可（学習不使用。BAA は Enterprise） | 可（AWS HIPAA 適格・第三者モデル規約） | 可（HIPAA 適格） |
+| データの所在（推論処理） | 米国等（指定不可） | **東京 asia-northeast1 で処理可**（機能により許可リスト） | 推論は米国。**保存データのみ日本レジデンシー可**（2025-05〜・対象顧客が API Project で国選択） | 東京は Global 横断のみ（米国で処理）。国内 In-Region 無し | **東京 ap-northeast-1 で処理・保存** |
+| 学習への利用 | 有料版は不使用 | 不使用 | 不使用（オプトイン制） | 不使用 | 不使用 |
+| 保持・ゼロ保持 | 明記なし | GCP DPA・設定で最小化 | 30 日（ZDR は審査/Enterprise） | S3 等は自社管理 | S3 ライフサイクルで自社管理 |
+| 導入の手軽さ | API キーのみ（最も簡単・**ただし医療不可**） | GCP プロジェクト・請求・IAM・サービスアカウント | API キーのみ（簡単） | AWS アカウント・Bedrock API キー | AWS アカウント・S3・IAM |
+| 100 秒制限との相性 | 非同期ジョブ前提（同じ） | 同左 | 同左 | 同左 | バッチ API があり相性良 |
+| 当社設計での役割 | PoC の精度確認にも使わない（規約） | **本命**（1 コール・国内処理・安価） | **PoC 最短ルート**／国内処理不要なら本番も可 | 要約のみ。既に AWS を使う場合の選択肢 | 話者分離・語彙登録を厳密にしたい場合の上位案 |
+- 結論: 国内処理を要件にするなら Vertex AI（Gemini 2.5 Flash）一択。要件にしないなら OpenAI 直（gpt-4o-mini-transcribe ＋ Luna）が最短で費用も同水準。AI Studio 版の Gemini は無料枠があっても医療用途では使わない。
+- 出典: OpenAI モデル/料金ページ、Gemini API 料金・規約、Vertex AI データレジデンシー、AWS Bedrock モデルカード（GPT-5.6 Luna）、AWS Transcribe 料金/HIPAA、OpenAI「Introducing data residency in Asia」。
+
 ---
 
 ## 2. 設計案
