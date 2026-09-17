@@ -47,6 +47,7 @@
 | **Gemini 2.5 Flash（Vertex AI）音声→文字起こし＋要約を 1 コール** | ≈ $0.08 | **≈ $32** | 9.5 時間まで・m4a/webm 可・日本リージョン可・GCP の DPA。**AI Studio 版は規約で臨床利用禁止 → 必ず Vertex AI** |
 | Gemini 2.5 Flash-Lite（同上） | ≈ $0.02 | ≈ $8 | 最安。雑音下の精度は Flash に劣る可能性 |
 | OpenAI gpt-4o-mini-transcribe ＋ gpt-4o-mini 要約 | ≈ $0.09 | ≈ $37 | 25 MB 上限（AAC 30 分 ≈ 14 MB で可）。話者分離は diarize モデル。BAA は Enterprise |
+| OpenAI gpt-4o-mini-transcribe ＋ **GPT-5.6 Luna** 要約（$0.20/$1.20 per 1M・effort=low・構造化出力） | ≈ $0.09 | ≈ $37 | Luna は音声入力・Transcription 非対応（要約専用）。要約 1 件 ≈ $0.0036。Bedrock 提供あり（東京は global 横断のみ・国内 In-Region 無し）。Intelligence Index 38 |
 | AWS Transcribe（ja-JP・話者分離・医療語彙）＋ gpt-4o-mini | ≈ $0.18 | ≈ $73 | HIPAA 適格・東京リージョン・S3 保持制御が明確 |
 | Google Cloud STT / Azure | ≈ $0.5 | ≈ $200 | 高い |
 - 学習利用: いずれも API 有料版は学習に使わない。3 省 2 ガイドラインへの「認定」は存在せず、委託先管理（DPA）と院内規程で担保する。
