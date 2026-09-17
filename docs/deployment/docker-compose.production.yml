@@ -76,6 +76,11 @@ services:
       # ホスト側は `mkdir -p /opt/carelink/data/visit_photos && chown -R 999:999
       # /opt/carelink/data/visit_photos` で所有者を合わせること。
       - /opt/carelink/data/visit_photos:/opt/carelink/data/visit_photos
+      # 訪問の音声記録 (2026-09-17 Phase 1)。音声本体は VISIT_AUDIO_DIR、
+      # Vertex AI のサービスアカウント鍵は /opt/carelink/secrets (ホスト側 0400・
+      # chown 999:999)。どちらも mount 漏れは 500 になるので写真と同じ扱い。
+      - /opt/carelink/data/visit_audio:/opt/carelink/data/visit_audio
+      - /opt/carelink/secrets:/opt/carelink/secrets:ro
     depends_on:
       postgres:
         condition: service_healthy

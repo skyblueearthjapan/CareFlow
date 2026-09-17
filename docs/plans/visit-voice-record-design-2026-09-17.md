@@ -265,3 +265,26 @@
 - CSP: `media-src 'self' blob:` を `security_headers.py` に追加（BE-1）。
 
 ### 10-6. 導線 C（QR なし）は Phase 2。Phase 1 は A（訪問詳細）と B（QR→adhoc visit→詳細）のみ。
+
+## 11. Phase 2 / 3 実装契約（2026-09-17 承認済み・Phase 1 着地後に着手）
+
+### 11-1. Phase 2-A: 導線 C（QR なし・先に録音→後で患者選択）モバイル
+- `/m/today` の「QR を読み取る」の隣に「予定に無い訪問を記録」→ `/m/record/new`（新ページ）。`VoiceRecorderPanel` を `visitId/patientId` 無しで使う（画面上部に赤字「患者未確定」）。停止後 → 患者選択画面（同ページ内ステップ）: ① 今日/今週の自分の担当患者チップ（`useMyVisits` の患者を重複排除）② 検索（氏名/カナ/コード・`usePatients` のクライアント検索を流用・非稼働は除外）③ あいうえお順リスト（`compareByKana`）④ 「あとで紐付ける」（`unlinked` のまま保存）。選択で `PATCH /visit-recordings/{id} {patient_id}` → BE が予定外訪問を生成。
+- 未紐付け一覧: `/m/today` に「要紐付け n 件」バナー（`useVisitRecordings({staffId, status:'unlinked'})`）→ 同ページのステップ②へ。
+
+### 11-2. Phase 2-B: PC 訪問記録ページ `/records`
+- ルート `app/(app)/records/page.tsx`。サイドバー `NAV_ITEMS` に「訪問記録」（lucide `Mic`）。middleware の COMMON_PREFIXES に `/records` を追加（admin/staff）。
+- 構成（モック ⑤⑥ 準拠）: `RakusukeTitle pose="visit"`「訪問記録」／`EventsFilterBar` を流用した期間タブ（今週/今月/過去/すべて）＋ 患者・スタッフ・拠点・状態のセレクト＋検索（300ms デバウンス・全て BE パラメータ）／テーブル（日付・時刻・患者・スタッフ・要約 1 行目・状態バッジ・🎙）／空状態 `RakusukeNote pose="think"`。staff ロールは自分の分だけ（BE 強制）。
+- 詳細ダイアログ `components/records/RecordDetailDialog.tsx`（`max-w-5xl max-h-[90vh]`・2 列・本文 14px）: 左=要約（編集可・admin/本人）＋メタ（訪問リンク `/schedule`・打刻・写真）、右=`AuthedAudio`（PC 版に流用）＋文字起こし全文（話者ラベル色分け・タイムスタンプ）。フッタ: 確認済み／紐付けを変更（患者コンボボックス `PatientCombobox`）／再処理（admin）／削除（admin・確認）。
+- BE 追加: `GET /visit-recordings` に `office_id`・`q`（患者名/要約の部分一致）・`order`。`PATCH` に `summary_text`（人手修正・`summary_edited_by/at` 列を 0087 で追加）。
+- 患者詳細 `app/(app)/patients/[id]/page.tsx` に「訪問記録」カード（直近 5 件・「すべて見る」→ `/records?patient=`）、スタッフ詳細 `app/(app)/staff/[id]` に同カード（`EventsCard` 意匠）。訪問モニター `MonitorDetailPanel` に「🎙 記録を見る」リンク（該当 visit に記録がある場合のみ）。
+
+### 11-3. Phase 3
+- A4 出力: BE `services/voice/record_report_html.py`（`REPORT_CSS`・1 件 1 枚: ヘッダ（患者/日時/担当）・要約・バイタル表・文字起こし全文・フッタ）＋ `GET /visit-recordings/{id}/report?format=html`。FE は `SyncReportButton` の複製。
+- 費用ダッシュボード: `GET /admin/visit-recordings/usage?month=` → 件数・音声分・トークン・cost_usd の月次集計。連携コンソールの隣に「音声記録の利用状況」カード（月額円換算は固定レート設定）。
+- 要約テンプレ v2: PO フィードバック反映（項目の増減）・`prompt_version` 更新・admin の「再処理」で再生成。
+- 運用: cron `purge-audio`（`docs/runbook/voice_recording_cron.md`）・バックアップ除外（`scripts/backup-carelink-db.sh` に visit_audio を含めない旨）・ディスク監視（preflight に visit_audio サイズ表示）。
+
+### 11-4. レビューと検証の型（全 Phase 共通）
+- 各 Phase: executor（Opus・ファイル分離）→ code-reviewer（Opus）→ 是正 → 対象テスト＋全体テスト（backend は分割実行・既知 fail ベースラインと比較）→ コミット（レーン別）→ デプロイ（pg_dump → pull → build → recreate → alembic upgrade head → heads 単一 → healthz）→ 本番での読み取り検証（API 応答・ジョブ状態）→ 実機確認項目を handoff に明記。
+- 本番で AI を実際に呼ぶ初回は、私が合成音声 1 件を本番 API 経由で流して費用と状態遷移を確認してから、現場に開放する。
