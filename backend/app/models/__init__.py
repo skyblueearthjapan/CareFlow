@@ -47,6 +47,7 @@ from app.models.user import User
 from app.models.visit import Visit
 from app.models.visit_checkin import VisitCheckin
 from app.models.visit_photo import VisitPhoto
+from app.models.visit_recording import VisitRecording
 from app.models.visit_review import VisitReview
 from app.models.visit_staff_assignment import VisitStaffAssignment
 
@@ -99,6 +100,7 @@ __all__ = [
     "Visit",
     "VisitCheckin",
     "VisitPhoto",
+    "VisitRecording",
     "VisitReview",
     "VisitStaffAssignment",
 ]

@@ -9,6 +9,7 @@ from app.api.v1 import (
     admin,
     admin_checkin,
     admin_geocoding,
+    admin_visit_recordings,
     allocate,
     audit_logs,
     auth,
@@ -51,6 +52,7 @@ from app.api.v1 import (
     sync_report,
     visit_monitor,
     visit_photos,
+    visit_recordings,
     visit_review,
     visits,
 )
@@ -63,6 +65,8 @@ api_router.include_router(admin.router)
 api_router.include_router(admin_geocoding.router)
 # QR チェックイン Phase 5-2 / 5-6: 未訪問通知 + GPS パージ (定期 cron 用 admin endpoint).
 api_router.include_router(admin_checkin.router)
+# 訪問の音声記録 Phase 1: 保持期間パージ (定期 cron 用 admin endpoint).
+api_router.include_router(admin_visit_recordings.router)
 # W41+ patient master Excel import / export. Must be registered BEFORE
 # patients.router so /patients/import-export/* paths are matched before the
 # /patients/{patient_id} catch-all.
@@ -138,6 +142,10 @@ api_router.include_router(visit_photos.router, prefix="/visits", tags=["visit-ph
 # /visits/{visit_id}/review (確認済み) — visits.router の前に登録 (Phase 5-3)。
 api_router.include_router(visit_review.router, prefix="/visits", tags=["visit-review"])
 api_router.include_router(visits.router, prefix="/visits", tags=["visits"])
+# 訪問の音声記録 (visit-voice-record-design-2026-09-17 §10-3)。router 自身が
+# prefix "/visit-recordings" を持つのでここでは付けない。/visits/... とは
+# パスが分かれているため visits.router との登録順には依存しない。
+api_router.include_router(visit_recordings.router)
 # QR 訪問チェックイン Phase 3: PC 訪問モニター集計 (admin/manager, read-only).
 api_router.include_router(visit_monitor.router, prefix="/monitor", tags=["visit-monitor"])
 # W2-BE4: Course CRUD (generate / fix / assign-staff は Wave 4 で追加).

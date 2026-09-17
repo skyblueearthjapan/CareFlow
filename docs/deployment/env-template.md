@@ -78,6 +78,31 @@ KAIPOKE_EXPORT_TTL_SECONDS=1800
 # --- Visit photo storage (Wave 4-D) ---
 VISIT_PHOTOS_DIR=/opt/carelink/data/visit_photos
 
+# --- 訪問の音声記録 (visit-voice-record-design-2026-09-17 §10-1) ---
+# 音声は bind-mount のディレクトリに置く (VISIT_PHOTOS_DIR と同じ作法・
+# 事前に mkdir + chown 999:999)。保持日数は下限 30 (purge がガード)。
+VISIT_AUDIO_DIR=/opt/carelink/data/visit_audio
+# 20 MiB = Vertex の inlineData 上限と同値 (32kbps で約 87 分)。超過は受領時に 413。
+VISIT_AUDIO_MAX_BYTES=20971520
+VISIT_AUDIO_RETENTION_DAYS=90
+
+# --- 音声 AI (Vertex AI 東京リージョン asia-northeast1) ---
+# none = 受領のみ (AI 呼び出しをしない) / vertex = Vertex AI へ送る。
+# **コード既定は none** (置き忘れた環境が黙って外部へ音声を送らないため)。
+# 本番はここで vertex を明示する。none のままだと録音は保存されるが
+# 文字起こし・要約が一切生成されない。
+# SA キーは 0400 で bind-mount し、GOOGLE_APPLICATION_CREDENTIALS で指す。
+VOICE_AI_PROVIDER=vertex
+VERTEX_PROJECT_ID=rakusuke-voice
+VERTEX_LOCATION=asia-northeast1
+VERTEX_MODEL_TRANSCRIBE=gemini-2.5-flash
+# 予約・現在未使用 (文字起こしと要約は 1 コールで行うため実際に使われない)。
+VERTEX_MODEL_SUMMARY=gemini-2.5-flash
+GOOGLE_APPLICATION_CREDENTIALS=/opt/carelink/secrets/rakusuke-voice-sa.json
+VOICE_AI_TIMEOUT_SECONDS=240
+# 1 コール 240 秒 + 再試行より長く取る (短いと走っているジョブを failed に倒す)。
+VOICE_JOB_STALE_MINUTES=20
+
 # --- NextAuth (frontend) ---
 NEXTAUTH_URL=https://carelink.kaipoke-api.net
 NEXTAUTH_SECRET=__REPLACE_WITH_OPENSSL_RAND_BASE64_32__

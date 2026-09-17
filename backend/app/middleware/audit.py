@@ -51,6 +51,31 @@ logger = logging.getLogger(__name__)
 
 _AUDITED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
+# Paths whose multipart POSTs must NOT be body-buffered.
+#
+# The buffering below reads the whole request into RAM so downstream handlers
+# can re-read it. That is fine for JSON mutations (<16 KiB in practice) but
+# fatal for audio uploads: `/visit-recordings` accepts up to 20 MiB and the
+# production VPS runs with swap 0 and an OOM killer
+# (docs/plans/visit-voice-record-design-2026-09-17.md §1-b). For these we skip
+# buffering entirely and record metadata only — the row still carries actor /
+# method / path / status / latency, with `{"_multipart": true}` as the body
+# marker so an auditor can tell "not captured" from "empty body".
+_MULTIPART_BODY_SKIP_PREFIXES = ("/api/v1/visit-recordings",)
+
+# Body placeholder persisted for the skipped uploads above.
+_MULTIPART_BODY_MARKER: dict[str, Any] = {"_multipart": True}
+
+# Second, path-independent guard: any audited request that *declares* more than
+# this many bytes is never buffered, whatever its content-type. The prefix list
+# above only protects the routes we know about today; this backstop keeps a
+# future large-upload endpoint (or a hostile client sending a huge JSON body)
+# from pulling the whole request into RAM on a swap-0 VPS.
+_MAX_BUFFERED_BODY_BYTES = 1024 * 1024
+
+# Body placeholder persisted for the requests skipped by the size guard.
+_LARGE_BODY_MARKER: dict[str, Any] = {"_large_body": True}
+
 # Body keys whose VALUES must be fully scrubbed regardless of nesting.
 _REDACT_FULL = {
     "password",
@@ -156,6 +181,38 @@ def redact(value: Any, *, _depth: int = 0) -> Any:
     return value
 
 
+def _skips_body_buffering(
+    method: str, path: str, content_type: str, content_length: str | None = None
+) -> dict[str, Any] | None:
+    """Return the body marker to persist when this body must NOT be buffered.
+
+    ``None`` means "buffer as usual". Two independent rules, either of which
+    skips buffering:
+
+    1. A known streaming upload route (``_MULTIPART_BODY_SKIP_PREFIXES``) posted
+       as ``multipart/form-data`` → ``{"_multipart": true}``.
+    2. **Any** audited request declaring more than ``_MAX_BUFFERED_BODY_BYTES``
+       via ``Content-Length``, whatever its content-type →
+       ``{"_large_body": true}``.
+
+    Module level (not a method) so tests can pin the rule without driving a
+    20 MiB upload through the whole stack.
+    """
+    if (
+        method == "POST"
+        and path.startswith(_MULTIPART_BODY_SKIP_PREFIXES)
+        and content_type.lower().startswith("multipart/form-data")
+    ):
+        return dict(_MULTIPART_BODY_MARKER)
+    try:
+        declared = int(content_length) if content_length else 0
+    except (TypeError, ValueError):
+        declared = 0
+    if declared > _MAX_BUFFERED_BODY_BYTES:
+        return dict(_LARGE_BODY_MARKER)
+    return None
+
+
 def _decode_actor(authorization: str | None) -> tuple[UUID | None, str | None]:
     """Best-effort decode of the bearer JWT → (user_id, role)."""
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -256,17 +313,27 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # ---- buffer body so handlers can re-read it ----
+        # ...unless this is a streaming upload or an oversized body, in which
+        # case we leave the ASGI stream untouched so the handler can consume it
+        # in chunks and only a marker lands in the audit row.
         body_bytes = b""
-        try:
-            body_bytes = await request.body()
-        except Exception:  # pragma: no cover - defensive
-            body_bytes = b""
+        body_override = _skips_body_buffering(
+            method,
+            path,
+            request.headers.get("content-type", ""),
+            request.headers.get("content-length"),
+        )
+        if body_override is None:
+            try:
+                body_bytes = await request.body()
+            except Exception:  # pragma: no cover - defensive
+                body_bytes = b""
 
-        async def _receive():
-            return {"type": "http.request", "body": body_bytes, "more_body": False}
+            async def _receive():
+                return {"type": "http.request", "body": body_bytes, "more_body": False}
 
-        # Re-inject the buffered body into the ASGI scope.
-        request._receive = _receive  # type: ignore[attr-defined]
+            # Re-inject the buffered body into the ASGI scope.
+            request._receive = _receive  # type: ignore[attr-defined]
 
         started = time.perf_counter()
         try:
@@ -281,6 +348,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 body_bytes=body_bytes,
                 status_code=500,
                 latency_ms=elapsed_ms,
+                body_override=body_override,
             )
             raise
 
@@ -292,6 +360,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
             body_bytes=body_bytes,
             status_code=response.status_code,
             latency_ms=elapsed_ms,
+            body_override=body_override,
         )
         return response
 
@@ -305,10 +374,11 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
         body_bytes: bytes,
         status_code: int,
         latency_ms: int,
+        body_override: dict[str, Any] | None = None,
     ) -> None:
         actor_id, role = _decode_actor(request.headers.get("authorization"))
-        body_redacted: dict[str, Any] | None = None
-        if body_bytes:
+        body_redacted: dict[str, Any] | None = body_override
+        if body_override is None and body_bytes:
             try:
                 raw = body_bytes[:_MAX_BODY_BYTES]
                 parsed = json.loads(raw.decode("utf-8", errors="replace"))

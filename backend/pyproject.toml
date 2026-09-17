@@ -20,6 +20,7 @@ dependencies = [
     "bcrypt>=3.2,<4.0",  # passlib 1.7.4 incompat with bcrypt 4.x detect_wrap_bug
     "python-jose[cryptography]>=3.3,<4.0",
     "httpx>=0.27,<1.0",
+    "google-auth>=2.30,<3.0",  # Vertex AI (visit voice) のサービスアカウント認証
     "email-validator>=2.1,<3.0",
     "python-multipart>=0.0.9",
     "structlog>=24.1,<25.0",

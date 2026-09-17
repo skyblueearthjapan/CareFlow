@@ -70,6 +70,45 @@ class Settings(BaseSettings):
     # S3 (option 文言の採取 → 分岐実装 → 実機 1 件テスト) が終わったら True。
     kaipoke_rpa_service_branch_enabled: bool = Field(default=False)
 
+    # --- 訪問の音声記録 (docs/plans/visit-voice-record-design-2026-09-17.md §10-1) ---
+    # 音声バイナリは DB ではなくファイルシステム (bind-mount) に置く。写真
+    # (VISIT_PHOTOS_DIR) と同じ作法で、本番はホスト側を `chown 999:999` すること。
+    # レイアウトは ``{VISIT_AUDIO_DIR}/{yyyy}/{mm}/{recording_id}.{ext}``。
+    visit_audio_dir: str = Field(default="/opt/carelink/data/visit_audio")
+    # 受領上限 (超過は 413)。既定 20 MiB = Vertex の inlineData 上限
+    # (``vertex_client.MAX_INLINE_AUDIO_BYTES``) と同じ値に揃える。ここを超える
+    # 音声は受け取れても AI に送れず ``too_large`` で failed になるだけなので、
+    # 受領の時点で 413 にして端末に伝える。32kbps 換算で約 87 分。
+    visit_audio_max_bytes: int = Field(default=20_971_520)
+    # 音声の保持日数 (文字起こし・要約は訪問と同じ寿命で残す)。
+    # 下限 30 日は purge 側でガードする (誤設定で証跡を焼かないため)。
+    visit_audio_retention_days: int = Field(default=90)
+
+    # AI プロバイダ。``none`` = 受領のみ (文字起こし・要約を行わない)。
+    # **コード既定は ``none``**: 環境変数を置き忘れた環境 (ローカル・CI・新しい
+    # VPS) が黙って Vertex へ患者の音声を送るより、受領だけして止まる方が安全。
+    # 本番は ``docs/deployment/env-template.md`` が ``vertex`` を明示する。
+    voice_ai_provider: str = Field(default="none")
+    vertex_project_id: str = Field(default="rakusuke-voice")
+    # 東京固定 (global は使わない = 国内処理の前提。設計 §1-i)。
+    vertex_location: str = Field(default="asia-northeast1")
+    vertex_model_transcribe: str = Field(default="gemini-2.5-flash")
+    # 予約 (現在未使用)。文字起こしと要約は 1 コールで行うため、実際に使うのは
+    # ``vertex_model_transcribe`` だけ。要約を別モデルへ分ける日まで据え置き。
+    vertex_model_summary: str = Field(default="gemini-2.5-flash")
+    # SA キー (bind-mount・0400)。google-auth が読む標準の環境変数名と同じ。
+    google_application_credentials: str = Field(
+        default="/opt/carelink/secrets/rakusuke-voice-sa.json"
+    )
+    # AI 1 コールのタイムアウト (秒)。
+    voice_ai_timeout_seconds: int = Field(default=240)
+    # ``transcribing`` のまま放置された録音を failed 化するまでの分数。
+    # 専用のジョブテーブルは作らず status + updated_at で判定する (設計 §2-4)。
+    # 1 コールのタイムアウト (240 秒) + jobs 側の再試行 (429 の 5 秒待ち込みで
+    # 最悪もう 1 回) より確実に長く取る。短いと **走っているジョブ** を
+    # failed に倒してしまう。
+    voice_job_stale_minutes: int = Field(default=20)
+
     @field_validator("cors_origins")
     @classmethod
     def _normalize_origins(cls, value: str) -> str:
