@@ -70,6 +70,11 @@
 - 結論: 国内処理を要件にするなら Vertex AI（Gemini 2.5 Flash）一択。要件にしないなら OpenAI 直（gpt-4o-mini-transcribe ＋ Luna）が最短で費用も同水準。AI Studio 版の Gemini は無料枠があっても医療用途では使わない。
 - 出典: OpenAI モデル/料金ページ、Gemini API 料金・規約、Vertex AI データレジデンシー、AWS Bedrock モデルカード（GPT-5.6 Luna）、AWS Transcribe 料金/HIPAA、OpenAI「Introducing data residency in Asia」。
 
+### 1-g. 訂正（同日）: Gemini の世代
+- 2026-09 時点の Flash 系は **Gemini 3.8 Flash（最新・stable）／3.5 Flash（legacy 扱い）／3.5 Flash-Lite（3.5 系の最安）**。2.5 Flash は「販売継続・価格性能重視」枠、2.5 Flash-Lite は 2026-10-16 提供終了。§1-e/1-f の「2.5 Flash 推奨」は調査時に価格表の旧世代行を拾ったもので、**推奨は 3.5 Flash-Lite（音声入力 $0.30/出力 $2.50 = 2.5 Flash と同額で新世代）を既定、3.8 Flash（$0.75/$3.75 の期間価格・2027-01 から $1.50/$7.50）を精度が要る場合の上位**に改める。
+- 30 分 1 件の目安: 3.5 Flash-Lite ≈ $0.04（音声 57,600×$0.30 ＋ 出力 8,500×$2.50）／3.8 Flash ≈ $0.075（期間価格）→ 2027 年以降 ≈ $0.15。月 400 件（30 分）で Flash-Lite ≈ $15、3.8 Flash ≈ $30（期間価格）。
+- PoC で実測すること: 3.5 Flash-Lite と 3.8 Flash の日本語会話の文字起こし精度・要約品質・思考トークン量。**3.x 系が Vertex AI の東京リージョン（asia-northeast1）で提供されているか**（新世代はまず global のみのことがある）。
+
 ---
 
 ## 2. 設計案
