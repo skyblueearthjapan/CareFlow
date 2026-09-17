@@ -81,3 +81,11 @@
 - **テスト**: backend 全体 fail 34 = ベースライン 29 + 既知フレーク 2（単独で通過）+ **日付依存の既存失敗 3**（`test_patient_status_sync` の `ck_svm_weekday`・HEAD の別 worktree でも同じく失敗＝退行ではない）。frontend 既知 2 のみ・tsc 0・lint 0。
 - **実機確認が必要（未実施）**: iPhone/Android で「録音→停止→保存→要約表示」「録音中に QR で到着」「録音中に画面ロック→復帰（残骸復元）」「圏外→復帰の自動再送」「ボイスメモ取り込み」「音声再生 1.5×」。PWA は初回ハードリロード。
 - **Phase 2 進行中**: 2-A 導線 C（`/m/record/new`・患者選択・要紐付けバナー）／2-B BE（一覧 office_id/q/order/reviewed・summary_text 編集・mig 0087）／2-B FE（PC `/records`・詳細ダイアログ・患者/スタッフ詳細カード・モニターリンク・サイドバー）。
+
+## 10. 追補（9/18 02:30）: 音声記録 Phase 2 本番稼働（QR なし導線・PC 訪問記録ページ）
+- **本番**: らく助 `640003f`（mig 0087 適用・backend/frontend 再作成・healthz 200・`/records` 307=要ログイン・一覧の `order/reviewed/q` 動作・`q` 1 文字は 422）。バックアップ `pre-deploy-voice-phase2-20260917-1730.sql.gz`。コミット: `09eceea` BE / `351486e` FE / `640003f` docs。
+- **入ったもの**: `/m/record/new`（先に録音→患者選択・保存応答 ID で紐付け・圏外時は選択を出さない・離脱救出）、`/m/today` の第 2 ボタンと要紐付けバナー（直近 14 日）、`PatientPickerSheet`、PC `/records`（フィルタ・ページング・URL パラメータ UUID 検証・エラー表示・staff はスタッフ/拠点セレクト disabled）、`RecordDetailDialog`（要約表示規則「手修正あり→summary_text／無し→JSON 構造／JSON 無し→summary_text」を PC/モバイル共通化・要約編集で確認済み失効・紐付け変更・再処理/削除）、患者/スタッフ詳細カード、モニターの「記録を見る」、サイドバー、middleware。BE: 一覧 office_id/q(2〜100 文字)/order/reviewed・PATCH summary_text・previous_manual 退避は `_save_result` で・AI 書き直しで reviewed 失効・note_append は承認維持。
+- **レビュー**: BE 2 ラウンド・FE 3 ラウンド → 全件是正（残 LOW のみ）。backend 全体 fail 32（ベースライン 29 + 既知 3・新規 0）、frontend 既知 2 のみ。
+- **PO 確認事項 追加**: §8-11 `office_id` の第 2 レグ（現在の所属＝異動で過去記録が拠点間を移る）。
+- **Phase 3 進行中**: A4 出力（`record_report_html`＋`/report`）・利用状況（`/admin/visit-recordings/usage`＋カード）・preflight に visit_audio サイズ。
+- **実機確認（未実施・累積）**: Phase 1 の 6 項目 + `/m/record/new` の一連（録音→患者選択→訪問詳細へ遷移）・`/records` の音声再生（位置保持・1.5×）・要約編集→モバイルの表示追随。
