@@ -392,6 +392,52 @@ async def test_get_visit_via_qr_capability_hides_checkin_reason(client, db) -> N
 
 
 @pytest.mark.asyncio
+async def test_get_visit_via_qr_capability_keeps_actual_times(client, db) -> None:
+    """capability GET は実績時刻を残す (BE レビュー MEDIUM-1 の判断を固定).
+
+    ``actual_arrival_at`` / ``actual_departure_at`` は ``latest_checkin.scanned_at`` と
+    同質の構造情報で、代行が「もう到着打刻済み / 未退出」を判断する導線に要るので
+    担当外にも残す。落とすのは業務メモ (``note``) と打刻理由 (自由記述) だけ。
+    """
+    owner, _ = await _make_staff_user(db, "get-8-owner@example.com")
+    _, me = await _make_staff_user(db, "get-8-me@example.com")
+    p = await _make_patient(db, "GET-8", qr_token="get-tok-8")
+    target = _today_jst()
+    visit = await _make_visit(db, p.id, owner.id, visit_date=target)
+    visit.note = "申し送りメモ"
+    db.add(
+        VisitCheckin(
+            visit_id=visit.id,
+            patient_id=p.id,
+            staff_id=owner.id,
+            kind="arrival",
+            scanned_at=datetime.combine(target, time(9, 3), tzinfo=JST).astimezone(UTC),
+            match_status="match",
+            reason="玄関先で待機",
+            threshold_snapshot={"v": 1},
+        )
+    )
+    await db.commit()
+
+    res = await client.get(
+        f"/api/v1/visits/{visit.id}", headers={**_bearer(me), "X-QR-Token": "get-tok-8"}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # 残す: 到着の実績時刻 (退出はまだ打っていないので None)。
+    assert body["actual_arrival_at"] is not None
+    arrival = datetime.fromisoformat(body["actual_arrival_at"])
+    if arrival.tzinfo is None:  # テストの SQLite は tz を落として返す (保存は UTC)。
+        arrival = arrival.replace(tzinfo=UTC)
+    assert arrival.astimezone(JST).strftime("%H:%M") == "09:03"
+    assert body["actual_departure_at"] is None
+    # 落とす: 業務メモと打刻理由 (自由記述)。
+    assert body["note"] is None
+    assert body["latest_checkin"]["reason"] is None
+    await db.rollback()
+
+
+@pytest.mark.asyncio
 async def test_get_visit_for_assigned_staff_keeps_full_payload(client, db) -> None:
     """担当者本人の GET は従来どおり全量 (絞り込みは capability 経由だけ)."""
     mine, me = await _make_staff_user(db, "get-4-me@example.com")

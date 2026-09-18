@@ -291,43 +291,72 @@ def _project_latest_checkin(row: VisitCheckin) -> dict:
     }
 
 
+def _project_checkins(rows_desc: list[VisitCheckin]) -> dict:
+    """1 visit の打刻行 (``scanned_at DESC``・**非空**) を latest_checkin 形へ射影する。
+
+    ``latest_checkin`` (最新 1 件・kind 問わず) に加えて、実績時刻 (最新の arrival /
+    departure の ``scanned_at``) を ``_arrival_at`` / ``_departure_at`` として同梱する。
+    アンダースコア付きの同梱キーにするのは、``latest_checkin`` を渡している全経路へ
+    自動的に実績時刻も届くようにするため (呼出側の渡し忘れによるドリフト防止)。
+    クライアントへ出す直前に ``_public_checkin`` が落とす。
+    """
+    arrival = next((r for r in rows_desc if r.kind == "arrival"), None)
+    departure = next((r for r in rows_desc if r.kind == "departure"), None)
+    return {
+        **_project_latest_checkin(rows_desc[0]),
+        "_arrival_at": arrival.scanned_at if arrival is not None else None,
+        "_departure_at": departure.scanned_at if departure is not None else None,
+    }
+
+
+def _public_checkin(latest_checkin: dict | None) -> dict | None:
+    """同梱キー (``_arrival_at`` / ``_departure_at``) を落とした CheckinRead 形。"""
+    if latest_checkin is None:
+        return None
+    return {k: v for k, v in latest_checkin.items() if not k.startswith("_")}
+
+
 async def _load_latest_checkin(db, visit_id: UUID) -> dict | None:
     """Load the most recent visit_checkins row (any kind) for a visit.
 
-    Append-only テーブルから ``scanned_at DESC LIMIT 1`` で最新の打刻を採用する。
-    VisitRead.latest_checkin に非破壊で載せる射影 (CheckinRead 形)。
+    Append-only テーブルから ``scanned_at DESC`` で打刻を読み、先頭 (= 最新) を採用する。
+    VisitRead.latest_checkin に非破壊で載せる射影 (CheckinRead 形) + 実績時刻の同梱
+    (``_project_checkins``)。1 visit の打刻は数行なので全行取得で足りる。
     """
-    row = await db.scalar(
-        select(VisitCheckin)
-        .where(VisitCheckin.visit_id == visit_id)
-        .order_by(VisitCheckin.scanned_at.desc())
-        .limit(1)
-    )
-    if row is None:
+    rows = (
+        await db.scalars(
+            select(VisitCheckin)
+            .where(VisitCheckin.visit_id == visit_id)
+            # 第 2 キー (id DESC) は同一 scanned_at が並んだときの順序を決定化する。
+            .order_by(VisitCheckin.scanned_at.desc(), VisitCheckin.id.desc())
+        )
+    ).all()
+    if not rows:
         return None
-    return _project_latest_checkin(row)
+    return _project_checkins(list(rows))
 
 
 async def _load_latest_checkins_bulk(db, visit_ids: list[UUID]) -> dict[UUID, dict]:
     """対象 visit 群の最新打刻 (any kind) を 1 クエリでバッチ取得する。
 
     一覧 (list_visits) の N+1 を避けるため、monitor の latest-per-kind 取得と同様に
-    ``scanned_at DESC`` で全行を取得し visit_id ごと最初に出た行 (= 最新) を採用する。
+    ``scanned_at DESC`` で全行を取得し visit_id ごとにまとめる (先頭 = 最新)。
+    実績時刻 (最新 arrival / departure) も同じ 1 クエリの走査から拾う。
     """
-    latest: dict[UUID, dict] = {}
     if not visit_ids:
-        return latest
+        return {}
     rows = (
         await db.scalars(
             select(VisitCheckin)
             .where(VisitCheckin.visit_id.in_(visit_ids))
-            .order_by(VisitCheckin.scanned_at.desc())
+            # 第 2 キー (id DESC) は同一 scanned_at が並んだときの順序を決定化する。
+            .order_by(VisitCheckin.scanned_at.desc(), VisitCheckin.id.desc())
         )
     ).all()
+    by_visit: dict[UUID, list[VisitCheckin]] = {}
     for r in rows:
-        if r.visit_id not in latest:  # DESC 並びなので最初に出た = 最新。
-            latest[r.visit_id] = _project_latest_checkin(r)
-    return latest
+        by_visit.setdefault(r.visit_id, []).append(r)  # DESC 並びを保つ。
+    return {vid: _project_checkins(rs) for vid, rs in by_visit.items()}
 
 
 def _serialize_visit(
@@ -420,7 +449,13 @@ def _serialize_visit(
         ),
         "staff_assignments": assignments or [],
         # QR チェックイン (Phase 1) の最新打刻. 既存呼出は None のまま (非破壊).
-        "latest_checkin": latest_checkin,
+        "latest_checkin": _public_checkin(latest_checkin),
+        # QR 打刻の実時刻 (実績)。``latest_checkin`` に同梱された最新 arrival /
+        # departure の scanned_at を取り出す。**手書き dict の罠**: week_pinned と
+        # 同じ位置づけで、ここに足し忘れると VisitRead の default None で潰れる。
+        # 打刻なし / 該当 kind なしは None (no_show は実績時刻に採らない)。
+        "actual_arrival_at": (latest_checkin or {}).get("_arrival_at"),
+        "actual_departure_at": (latest_checkin or {}).get("_departure_at"),
         # 同行 (非破壊追加). 一般化 決定#5 で複数名対応。``accompaniments`` が全件
         # (決定的順序)、``accompaniment`` は後方互換の先頭要素。
         # **手書き dict の罠**: week_pinned / is_unplanned と同じ位置づけで、ここに
@@ -445,6 +480,8 @@ def _restrict_to_qr_capability(data: dict) -> dict:
       あって**自分の打刻とは限らない**。担当スタッフが書いた場所違い / 未訪問の
       理由 (自由記述) は業務メモと同質なので落とす。退出導線の判断に要る構造情報
       (``kind`` / ``scanned_at`` / ``match_status`` 等) は残す。
+    * 実績時刻 (``actual_arrival_at`` / ``actual_departure_at``) は ``latest_checkin.scanned_at``
+      と同質の構造情報なので **残す** (代行が「もう到着打刻済み / 未退出」を判断する導線に要る)。
 
     担当者本人の GET (通常の可視性で通った場合) は従来どおり全量を返す。
     """

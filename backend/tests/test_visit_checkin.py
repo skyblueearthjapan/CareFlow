@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -656,3 +656,219 @@ async def test_checkin_does_not_regress_completed_status(client, db) -> None:
     assert body["status"] == "completed"
     # 打刻行は据置せず記録される。
     assert body["latest_checkin"]["kind"] == "arrival"
+
+
+# ---------------------------------------------------------------------------
+# 実績時刻 (actual_arrival_at / actual_departure_at) — 予定と実績を並べる契約
+# ---------------------------------------------------------------------------
+
+
+def _utc_today(h: int, mi: int) -> datetime:
+    """JST 壁時計 (今日の h:mi) を UTC aware に変換する (DB 保存は UTC 前提)."""
+    return datetime.combine(_today_jst(), time(h, mi), tzinfo=JST).astimezone(UTC)
+
+
+def _to_utc(value: str) -> datetime:
+    """JSON の時刻を UTC aware へ正規化する.
+
+    テストの SQLite は timestamptz の tz を落として (UTC の naive で) 返すため、
+    同じ時刻でも「ORM に載ったままの応答 = aware」と「読み直した応答 = naive」で
+    文字列が一致しない。保存値は UTC なので naive は UTC とみなす (本番 Postgres は
+    常に aware なのでこの分岐を通らない)。
+    """
+    dt = datetime.fromisoformat(value)
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+
+def _hhmm_jst(value: str) -> str:
+    return _to_utc(value).astimezone(JST).strftime("%H:%M")
+
+
+async def _insert_checkin(db, visit, staff, kind: str, scanned_at: datetime) -> VisitCheckin:
+    """打刻行を直接入れる (scanned_at を明示したいテスト用・API 経路は判定が付く)."""
+    row = VisitCheckin(
+        visit_id=visit.id,
+        patient_id=visit.patient_id,
+        staff_id=staff.id,
+        kind=kind,
+        scanned_at=scanned_at,
+        match_status="match",
+        threshold_snapshot={"v": 1},
+        is_override=False,
+        checkin_source="qr",
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+@pytest.mark.asyncio
+async def test_actual_times_arrival_only(client, db) -> None:
+    """到着だけ打刻 → actual_arrival_at あり / actual_departure_at は None."""
+    staff, user = await _make_staff_user(db, "act-arr@example.com")
+    p = await _make_patient(db, "ACT-ARR", lat=35.0, lng=139.0)
+    visit = await _make_visit(db, p.id, staff.id)
+
+    res = await client.post(
+        f"/api/v1/visits/{visit.id}/checkin",
+        headers=_bearer(user),
+        json={"lat": 35.0, "lng": 139.0},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["actual_arrival_at"] is not None
+    assert body["actual_departure_at"] is None
+    # 実績時刻 = その kind の最新打刻の scanned_at (ここでは latest_checkin と同一行)。
+    assert _to_utc(body["actual_arrival_at"]) == _to_utc(body["latest_checkin"]["scanned_at"])
+
+    # GET /visits/{id} でも同じ値 (単体経路)。
+    res_get = await client.get(f"/api/v1/visits/{visit.id}", headers=_bearer(user))
+    assert res_get.status_code == 200, res_get.text
+    assert _to_utc(res_get.json()["actual_arrival_at"]) == _to_utc(body["actual_arrival_at"])
+    assert res_get.json()["actual_departure_at"] is None
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_actual_times_arrival_and_departure(client, db) -> None:
+    """到着 → 退出 → 両方入る。no_show を後から打っても実績時刻は変わらない."""
+    staff, user = await _make_staff_user(db, "act-dep@example.com")
+    p = await _make_patient(db, "ACT-DEP", lat=35.0, lng=139.0)
+    visit = await _make_visit(db, p.id, staff.id)
+
+    res_in = await client.post(
+        f"/api/v1/visits/{visit.id}/checkin",
+        headers=_bearer(user),
+        json={"lat": 35.0, "lng": 139.0},
+    )
+    assert res_in.status_code == 200, res_in.text
+    arrival_at = _to_utc(res_in.json()["actual_arrival_at"])
+
+    res_out = await client.post(
+        f"/api/v1/visits/{visit.id}/checkout",
+        headers=_bearer(user),
+        json={"lat": 35.0, "lng": 139.0},
+    )
+    assert res_out.status_code == 200, res_out.text
+    body = res_out.json()
+    assert _to_utc(body["actual_arrival_at"]) == arrival_at
+    assert body["actual_departure_at"] is not None
+    # 退出は到着以降。latest_checkin (kind 問わず最新) は departure 行。
+    assert _to_utc(body["actual_departure_at"]) >= arrival_at
+    assert body["latest_checkin"]["kind"] == "departure"
+    assert _to_utc(body["actual_departure_at"]) == _to_utc(body["latest_checkin"]["scanned_at"])
+    departure_at = _to_utc(body["actual_departure_at"])
+
+    # no_show (未訪問) は実績時刻に採らない — arrival/departure だけを見る。
+    await _insert_checkin(db, visit, staff, "no_show", _utc_today(23, 59))
+    res_get = await client.get(f"/api/v1/visits/{visit.id}", headers=_bearer(user))
+    assert res_get.status_code == 200, res_get.text
+    after = res_get.json()
+    assert _to_utc(after["actual_arrival_at"]) == arrival_at
+    assert _to_utc(after["actual_departure_at"]) == departure_at
+    # 既存挙動不変: latest_checkin は kind 問わず最新 = no_show 行。
+    assert after["latest_checkin"]["kind"] == "no_show"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_actual_arrival_at_takes_the_newest_arrival(client, db) -> None:
+    """到着を打ち直したら actual_arrival_at は最新の arrival になる (append-only)."""
+    staff, user = await _make_staff_user(db, "act-redo@example.com")
+    p = await _make_patient(db, "ACT-REDO", lat=35.0, lng=139.0)
+    visit = await _make_visit(db, p.id, staff.id)
+    await _insert_checkin(db, visit, staff, "arrival", _utc_today(8, 56))
+    await _insert_checkin(db, visit, staff, "arrival", _utc_today(9, 12))
+
+    res = await client.get(f"/api/v1/visits/{visit.id}", headers=_bearer(user))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert _hhmm_jst(body["actual_arrival_at"]) == "09:12"
+    assert body["actual_departure_at"] is None
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_actual_departure_at_takes_the_newest_departure(client, db) -> None:
+    """退出を打ち直したら actual_departure_at は最新の departure になる (append-only)."""
+    staff, user = await _make_staff_user(db, "act-redo-dep@example.com")
+    p = await _make_patient(db, "ACT-REDO-DEP", lat=35.0, lng=139.0)
+    visit = await _make_visit(db, p.id, staff.id)
+    await _insert_checkin(db, visit, staff, "arrival", _utc_today(12, 56))
+    await _insert_checkin(db, visit, staff, "departure", _utc_today(13, 31))
+    await _insert_checkin(db, visit, staff, "departure", _utc_today(13, 40))
+
+    res = await client.get(f"/api/v1/visits/{visit.id}", headers=_bearer(user))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert _hhmm_jst(body["actual_arrival_at"]) == "12:56"
+    assert _hhmm_jst(body["actual_departure_at"]) == "13:40"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_actual_times_in_list_visits_bulk_path(client, db) -> None:
+    """一覧 (GET /visits?staff_id=) でも同じ実績時刻が入る (bulk 経路・N+1 回避)."""
+    staff, user = await _make_staff_user(db, "act-list@example.com")
+    p = await _make_patient(db, "ACT-LIST", lat=35.0, lng=139.0)
+    visit = await _make_visit(db, p.id, staff.id)
+    await _insert_checkin(db, visit, staff, "arrival", _utc_today(12, 56))
+    await _insert_checkin(db, visit, staff, "departure", _utc_today(13, 40))
+
+    res = await client.get(f"/api/v1/visits?staff_id={staff.id}", headers=_bearer(user))
+    assert res.status_code == 200, res.text
+    target = next((v for v in res.json() if v["id"] == str(visit.id)), None)
+    assert target is not None
+    assert _hhmm_jst(target["actual_arrival_at"]) == "12:56"
+    assert _hhmm_jst(target["actual_departure_at"]) == "13:40"
+    # 既存挙動不変: latest_checkin は最新 1 件 (= departure) のまま。
+    assert target["latest_checkin"]["kind"] == "departure"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_actual_times_are_none_without_checkins(client, db) -> None:
+    """打刻なしの visit は単体 / 一覧のどちらも None / None."""
+    staff, user = await _make_staff_user(db, "act-none@example.com")
+    p = await _make_patient(db, "ACT-NONE", lat=35.0, lng=139.0)
+    visit = await _make_visit(db, p.id, staff.id)
+
+    res = await client.get(f"/api/v1/visits/{visit.id}", headers=_bearer(user))
+    assert res.status_code == 200, res.text
+    assert res.json()["actual_arrival_at"] is None
+    assert res.json()["actual_departure_at"] is None
+    assert res.json()["latest_checkin"] is None
+
+    res_list = await client.get(f"/api/v1/visits?staff_id={staff.id}", headers=_bearer(user))
+    assert res_list.status_code == 200, res_list.text
+    target = next((v for v in res_list.json() if v["id"] == str(visit.id)), None)
+    assert target is not None
+    assert target["actual_arrival_at"] is None
+    assert target["actual_departure_at"] is None
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_latest_checkin_has_no_private_sidecar_keys(client, db) -> None:
+    """latest_checkin の形は不変 (実績時刻の同梱キーは外へ出さない)."""
+    staff, user = await _make_staff_user(db, "act-shape@example.com")
+    p = await _make_patient(db, "ACT-SHAPE", lat=35.0, lng=139.0)
+    visit = await _make_visit(db, p.id, staff.id)
+    await _insert_checkin(db, visit, staff, "arrival", _utc_today(9, 0))
+
+    res = await client.get(f"/api/v1/visits/{visit.id}", headers=_bearer(user))
+    assert res.status_code == 200, res.text
+    lc = res.json()["latest_checkin"]
+    assert set(lc) == {
+        "id",
+        "kind",
+        "match_status",
+        "distance_m",
+        "accuracy_m",
+        "scanned_at",
+        "checkin_source",
+        "reason",
+        "is_override",
+    }
+    await db.rollback()
