@@ -30,7 +30,9 @@ import {
   haversineMeters,
   type GeoFix as Geo,
 } from '@/lib/geo';
+import { actualTimeParts } from '@/lib/format/actualTime';
 import { extractQrToken } from '@/lib/qr-token';
+import { cn } from '@/lib/utils';
 import { visitAccompaniments } from '@/lib/schemas/trainee_accompaniment';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -685,6 +687,16 @@ function MobileVisitDetailPageInner() {
 
   const patientName = visit?.patient_name ?? '(患者名未設定)';
 
+  // 打刻の実時刻 (お客様要望 2026-09-18)。サーバに届いた打刻だけを出す — 退避中の
+  // ローカル打刻は「経過時間」カードが受け持つので、ここで混ぜると完了後に
+  // 「到着のみ」と出て誤読を生む。
+  // 未訪問 (no_show) は抑止する: 「未訪問」と「到着 12:56」を並べない (BE レビュー
+  // 申し送り 2026-09-18)。打刻自体は BE に残る。
+  const actualParts =
+    visit?.status === 'no_show'
+      ? null
+      : actualTimeParts(visit?.actual_arrival_at, visit?.actual_departure_at);
+
   // ---- Full-screen scanner overlay -----------------------------------------
   if (flow.step === 'scanning') {
     return (
@@ -763,9 +775,29 @@ function MobileVisitDetailPageInner() {
               <div className="flex items-center gap-2 text-text-secondary">
                 <Clock className="h-4 w-4 shrink-0" />
                 <span className="tnum">
-                  {shortTime(visit.start_time)} - {shortTime(visit.end_time)}
+                  予定 {shortTime(visit.start_time)} - {shortTime(visit.end_time)}
                 </span>
               </div>
+              {/* 打刻の実績 (お客様要望 2026-09-18)。予定は書き換えず直下に並べる。
+                  完了 (checked_out) でも見えるので、後から実時間を確認できる。 */}
+              {actualParts && (
+                <div
+                  className={cn(
+                    'flex items-center gap-2 font-medium',
+                    actualParts.done ? 'text-success' : 'text-brand-primary',
+                  )}
+                  data-testid="mobile-detail-actual"
+                >
+                  {actualParts.done ? (
+                    <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  ) : (
+                    <Clock className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  )}
+                  <span className="tnum">
+                    {actualParts.done ? `実績 ${actualParts.range}` : `到着 ${actualParts.range}`}
+                  </span>
+                </div>
+              )}
               {displayVisitNote(visit.note) && (
                 <div className="flex items-start gap-2 text-text-secondary">
                   <StickyNote className="h-4 w-4 shrink-0 mt-0.5" />

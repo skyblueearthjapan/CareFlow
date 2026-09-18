@@ -110,3 +110,71 @@ describe('MobileVisitCard 音声記録マーク', () => {
     expect(screen.queryByTestId('mobile-visit-recording-mark')).toBeNull();
   });
 });
+
+describe('MobileVisitCard 打刻の実績時刻', () => {
+  it('打刻なし: 実績行を出さない (従来の見え方のまま)', () => {
+    setSession('staff-senior-1');
+    render(<MobileVisitCard visit={makeVisit()} />);
+    expect(screen.queryByTestId('mobile-visit-actual')).toBeNull();
+  });
+
+  it('到着のみ: 「到着 12:56 〜（訪問中）」', () => {
+    setSession('staff-senior-1');
+    const visit = makeVisit({
+      status: 'in_progress',
+      actual_arrival_at: '2026-09-18T03:56:00Z',
+      actual_departure_at: null,
+    });
+    render(<MobileVisitCard visit={visit} />);
+    expect(screen.getByTestId('mobile-visit-actual').textContent).toContain(
+      '到着 12:56 〜（訪問中）',
+    );
+  });
+
+  it('到着+退出: 「実績 12:56 – 13:40」', () => {
+    setSession('staff-senior-1');
+    const visit = makeVisit({
+      status: 'completed',
+      actual_arrival_at: '2026-09-18T03:56:00Z',
+      actual_departure_at: '2026-09-18T04:40:00Z',
+    });
+    render(<MobileVisitCard visit={visit} />);
+    expect(screen.getByTestId('mobile-visit-actual').textContent).toContain('実績 12:56 – 13:40');
+  });
+
+  it('実績が並んでも左の時刻カラムは予定のまま', () => {
+    setSession('staff-senior-1');
+    const visit = makeVisit({
+      status: 'completed',
+      actual_arrival_at: '2026-09-18T03:56:00Z',
+      actual_departure_at: '2026-09-18T04:40:00Z',
+    });
+    render(<MobileVisitCard visit={visit} />);
+    expect(screen.getByText('09:30')).toBeInTheDocument();
+    expect(screen.getByText('10:30')).toBeInTheDocument();
+  });
+
+  it('訪問中でない状態で到着だけ届いているときは「（訪問中）」と書かない', () => {
+    setSession('staff-senior-1');
+    const visit = makeVisit({
+      status: 'completed',
+      actual_arrival_at: '2026-09-18T03:56:00Z',
+      actual_departure_at: null,
+    });
+    render(<MobileVisitCard visit={visit} />);
+    const el = screen.getByTestId('mobile-visit-actual');
+    expect(el.textContent).toContain('到着 12:56 〜');
+    expect(el.textContent).not.toContain('訪問中');
+  });
+
+  it('未訪問 (no_show) は到着打刻があっても実績行を出さない', () => {
+    setSession('staff-senior-1');
+    const visit = makeVisit({
+      status: 'no_show',
+      actual_arrival_at: '2026-09-18T03:56:00Z',
+      actual_departure_at: null,
+    });
+    render(<MobileVisitCard visit={visit} />);
+    expect(screen.queryByTestId('mobile-visit-actual')).toBeNull();
+  });
+});

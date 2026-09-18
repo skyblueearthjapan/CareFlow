@@ -688,3 +688,63 @@ describe('QR チェックイン モバイル — ネットワーク障害 / 5xx 
     expect(window.localStorage.getItem('checkin-pending:staff-1')).toBeTruthy();
   });
 });
+
+/**
+ * 打刻の実時刻 (お客様要望 2026-09-18)。予定はそのまま残し、打刻があれば
+ * 直下に実績を並べる。完了後 (checked_out) でも実時間が読めることが要点。
+ */
+describe('訪問詳細 — 予定 + 実績の 2 行', () => {
+  it('打刻なし: 「予定 09:30 - 10:30」だけで実績行は出さない', () => {
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByText('予定 09:30 - 10:30')).toBeInTheDocument();
+    expect(screen.queryByTestId('mobile-detail-actual')).toBeNull();
+  });
+
+  it('完了後: 予定の直下に「実績 12:56 – 13:40」', () => {
+    asMock(useMyVisit).mockReturnValue({
+      data: {
+        ...makeVisit('completed'),
+        // JST 12:56 到着 / 13:40 退出。
+        actual_arrival_at: '2026-06-30T03:56:00Z',
+        actual_departure_at: '2026-06-30T04:40:00Z',
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByText('予定 09:30 - 10:30')).toBeInTheDocument();
+    expect(screen.getByTestId('mobile-detail-actual').textContent).toContain('実績 12:56 – 13:40');
+  });
+
+  it('訪問中 (到着のみ): 「到着 12:56 〜」', () => {
+    asMock(useMyVisit).mockReturnValue({
+      data: {
+        ...makeVisit('in_progress'),
+        actual_arrival_at: '2026-06-30T03:56:00Z',
+        actual_departure_at: null,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByTestId('mobile-detail-actual').textContent).toContain('到着 12:56 〜');
+  });
+
+  it('未訪問 (no_show): 到着打刻があっても実績行は出さない', () => {
+    asMock(useMyVisit).mockReturnValue({
+      data: {
+        ...makeVisit('no_show'),
+        actual_arrival_at: '2026-06-30T03:56:00Z',
+        actual_departure_at: null,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByText('予定 09:30 - 10:30')).toBeInTheDocument();
+    expect(screen.queryByTestId('mobile-detail-actual')).toBeNull();
+  });
+});

@@ -1,9 +1,10 @@
 import Link from 'next/link';
-import { ChevronRight, MapPin, Mic } from 'lucide-react';
+import { CheckCircle2, ChevronRight, Clock, MapPin, Mic } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
+import { actualTimeParts } from '@/lib/format/actualTime';
 import { cn } from '@/lib/utils';
 import { displayVisitNote } from '@/lib/visit-note';
 import { genderPalette } from '@/lib/scheduling/timeline';
@@ -67,6 +68,18 @@ export function MobileVisitCard({ visit, address, hasRecording }: MobileVisitCar
   const accompanimentNames = accompaniments
     .filter((a) => a.staff_id !== myStaffId)
     .map((a) => a.staff_name ?? '同行スタッフ');
+  // 打刻の実時刻 (お客様要望 2026-09-18)。左の時刻カラムは**予定のまま**で、本文に
+  // 「実績 / 到着」と明記した行を並べる (どちらが予定かは文脈で伝わる)。
+  // 未訪問 (no_show) は抑止する: 到着打刻の後に未訪問を記録した訪問で「未訪問」
+  // バッジと「到着 12:56」が並ぶと読み手が混乱する。BE はデータを残す (正直に返す)
+  // ので、表示側だけで消す (BE レビュー申し送り 2026-09-18)。
+  const actual =
+    visit.status === 'no_show'
+      ? null
+      : actualTimeParts(visit.actual_arrival_at, visit.actual_departure_at);
+  // 「（訪問中）」は状態が本当に訪問中のときだけ。退出打刻が届いていないだけの
+  // 完了/取消に付けると、バッジと矛盾した文言になる。
+  const inProgress = visit.status === 'checked_in' || visit.status === 'in_progress';
   return (
     <Link
       href={`/m/today/${visit.id}`}
@@ -120,6 +133,28 @@ export function MobileVisitCard({ visit, address, hasRecording }: MobileVisitCar
               />
             )}
           </div>
+          {/* 打刻の実績 (お客様要望 2026-09-18)。退出まであれば確定した実績レンジ、
+              到着だけなら訪問中。色はステータスバッジと同系 (完了=success・訪問中=brand)。 */}
+          {actual && (
+            <p
+              className={cn(
+                'mt-1 flex items-center gap-1 truncate text-xs font-medium',
+                actual.done ? 'text-success' : 'text-brand-primary',
+              )}
+              data-testid="mobile-visit-actual"
+            >
+              {actual.done ? (
+                <CheckCircle2 className="h-3 w-3 shrink-0" aria-hidden="true" />
+              ) : (
+                <Clock className="h-3 w-3 shrink-0" aria-hidden="true" />
+              )}
+              <span className="truncate tnum">
+                {actual.done
+                  ? `実績 ${actual.range}`
+                  : `到着 ${actual.range}${inProgress ? '（訪問中）' : ''}`}
+              </span>
+            </p>
+          )}
           {accompanimentNames.length > 0 && (
             <p
               className="mt-1 truncate text-xs font-medium text-info"

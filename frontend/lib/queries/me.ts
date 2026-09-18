@@ -106,6 +106,14 @@ export interface MyVisit {
    */
   latest_checkin?: LatestCheckin | null;
   /**
+   * 打刻の実時刻 (お客様要望 2026-09-18)。最新の到着打刻 / 最新の退出打刻の
+   * 時刻 (ISO 8601・tz 付き)。打刻が無ければ null。予定 (`start_time` /
+   * `end_time`) は書き換えず、画面はこれを**並べて**出す。
+   * 非破壊追加なので旧デプロイでは undefined (表示しないだけ)。
+   */
+  actual_arrival_at?: string | null;
+  actual_departure_at?: string | null;
+  /**
    * 同行 (§7.4): この訪問に同行するスタッフ (単数・後方互換)。null = 同行なし。
    * 複数名いる場合は `accompaniments` の先頭 1 名。新規実装は `accompaniments` を
    * 優先し、これは旧デプロイ向けのフォールバックに使う。

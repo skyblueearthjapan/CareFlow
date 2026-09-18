@@ -604,3 +604,105 @@ describe('MonitorTimeline — 非稼働患者のバッジ', () => {
     }
   });
 });
+
+describe('MonitorTimeline — 打刻の実時刻の併記 (お客様要望 2026-09-18)', () => {
+  function renderVisit(visit: ReturnType<typeof makeVisit>) {
+    render(
+      <MonitorTimeline
+        rows={[makeRow({ visits: [visit] })]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={13 * 60 + 30}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+  }
+
+  /** JST 12:56 到着 / 13:40 退出。 */
+  const ARRIVAL = '2026-09-18T03:56:00Z';
+  const DEPARTURE = '2026-09-18T04:40:00Z';
+
+  it('打刻なし: 2 行目は予定だけ・ツールチップにも実績を足さない', () => {
+    const v = makeVisit({ phase: 'awaiting', arrival: null, departure: null });
+    renderVisit(v);
+    expect(screen.queryByTestId(`monitor-bar-actual-time-${v.visit_id}`)).not.toBeInTheDocument();
+    const card = screen.getByTestId(`monitor-bar-plan-${v.visit_id}`);
+    expect(card.getAttribute('title')).not.toContain('打刻:');
+  });
+
+  it('到着+退出: 2 行目に「✓12:56–13:40」・ツールチップに「｜打刻: 12:56–13:40」', () => {
+    const v = makeVisit({
+      phase: 'done',
+      arrival: {
+        kind: 'arrival',
+        scanned_at: ARRIVAL,
+        match_status: 'match',
+        distance_m: 10,
+        is_override: false,
+      },
+      departure: {
+        kind: 'departure',
+        scanned_at: DEPARTURE,
+        match_status: 'match',
+        is_override: false,
+      },
+    });
+    renderVisit(v);
+    expect(screen.getByTestId(`monitor-bar-actual-time-${v.visit_id}`).textContent).toBe(
+      '✓12:56–13:40',
+    );
+    // 予定はそのまま残る (バーの位置・幅と同じく書き換えない)。
+    const card = screen.getByTestId(`monitor-bar-plan-${v.visit_id}`);
+    expect(card.textContent).toContain('09:00–10:00');
+    expect(card.getAttribute('title')).toContain('｜打刻: 12:56–13:40');
+  });
+
+  it('到着のみ: 2 行目に「▶12:56〜」・ツールチップに「｜打刻: 12:56〜」', () => {
+    const v = makeVisit({
+      phase: 'inprogress',
+      arrival: {
+        kind: 'arrival',
+        scanned_at: ARRIVAL,
+        match_status: 'match',
+        distance_m: 10,
+        is_override: false,
+      },
+      departure: null,
+    });
+    renderVisit(v);
+    const timeEl = screen.getByTestId(`monitor-bar-actual-time-${v.visit_id}`);
+    expect(timeEl.textContent).toBe('▶12:56〜');
+    // 時刻は途中で切り詰めない (詰まるのは氏名・住所側だけ)。
+    expect(timeEl.className).toContain('shrink-0');
+    expect(timeEl.className).not.toContain('truncate');
+    expect(screen.getByTestId(`monitor-bar-plan-${v.visit_id}`).getAttribute('title')).toContain(
+      '｜打刻: 12:56〜',
+    );
+  });
+
+  it('未訪問 (no_show) は到着打刻があっても併記しない', () => {
+    const v = makeVisit({
+      phase: 'no_show',
+      arrival: {
+        kind: 'arrival',
+        scanned_at: ARRIVAL,
+        match_status: 'match',
+        distance_m: 10,
+        is_override: false,
+      },
+      departure: null,
+      no_show: {
+        kind: 'no_show',
+        scanned_at: DEPARTURE,
+        match_status: 'match',
+        is_override: false,
+      },
+    });
+    renderVisit(v);
+    expect(screen.queryByTestId(`monitor-bar-actual-time-${v.visit_id}`)).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId(`monitor-bar-plan-${v.visit_id}`).getAttribute('title'),
+    ).not.toContain('打刻:');
+  });
+});

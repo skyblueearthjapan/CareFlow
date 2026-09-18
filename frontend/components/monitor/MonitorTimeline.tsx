@@ -17,6 +17,7 @@ import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react
 import { cn } from '@/lib/utils';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 import type { EventRead } from '@/lib/schemas/staff-events';
+import { actualTimeParts } from '@/lib/format/actualTime';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
 import { classifyVisitDisplay, type VisitDisplayKind } from '@/lib/schedule/visitVisibility';
@@ -572,6 +573,15 @@ function VisitBars({
     : visit.is_unplanned
       ? (visit.actual_staff_name ?? null)
       : null;
+  // 打刻の実時刻 (お客様要望 2026-09-18)。予定カードのバー位置・幅は**変えず**、
+  // 2 行目とツールチップに「✓12:56–13:40 / ▶12:56〜」を併記する。時刻は shrink-0 で
+  // 途中切れさせない (狭いカードで詰まるのは氏名・住所側だけ)。
+  // 未訪問 (no_show) は抑止する: モバイルと同じ理由 — 「未訪問」と到着時刻を
+  // 並べない (BE レビュー申し送り 2026-09-18)。詳細パネルには従来どおり出る。
+  const actual =
+    visit.phase === 'no_show' || visit.no_show != null
+      ? null
+      : actualTimeParts(visit.arrival?.scanned_at, visit.departure?.scanned_at);
 
   return (
     <>
@@ -619,6 +629,9 @@ function VisitBars({
           visit.is_substitute ? `｜${substituteTitle(visit)}` : ''
         }${
           visit.is_unplanned && visit.actual_staff_name ? `｜実績: ${visit.actual_staff_name}` : ''
+        }${
+          // 時刻側は「打刻」の 1 本に統一する (既存の「実績: 打刻者名」と混ざらない)。
+          actual ? `｜打刻: ${actual.compactRange}` : ''
         }${meta?.address ? `｜📍${meta.address}` : ''}`}
         className="absolute z-[2] flex flex-col justify-center gap-px overflow-hidden rounded-md border border-l-[3px] px-1.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-sm)]"
         style={{
@@ -668,6 +681,17 @@ function VisitBars({
           <span className="tnum shrink-0 font-semibold">
             {visit.start_time}–{visit.end_time}
           </span>
+          {/* 打刻の実時刻。予定の後ろに併記する (予定は書き換えない)。
+              ✓=退出まで確定 / ▶=到着のみ (訪問中)。 */}
+          {actual ? (
+            <span
+              data-testid={`monitor-bar-actual-time-${visit.visit_id}`}
+              className="tnum shrink-0 font-semibold"
+            >
+              {actual.done ? '✓' : '▶'}
+              {actual.compactRange}
+            </span>
+          ) : null}
           {/* 行った人 (代行者 / 予定外の実績スタッフ)。予定担当は書き換えず並記する。
               名前が無い応答ではバッジのみとし、誤った名前を出さない。 */}
           {trailingName ? (
