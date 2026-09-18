@@ -1,0 +1,83 @@
+{
+ "date": "2026-09-18",
+ "staff_id": "9361eb66-ea2a-4dbc-9557-a984c21c60d8",
+ "patients": [
+  {
+   "id": "3f00aa83-8fe1-4282-ab8b-63e2aa312150",
+   "code": "P120",
+   "name": "【検証】佐藤 花子"
+  },
+  {
+   "id": "7b38fe8c-5db2-4b78-a967-5dc295909854",
+   "code": "P121",
+   "name": "【検証】鈴木 一郎"
+  },
+  {
+   "id": "1f57f2cc-f83a-462e-91d4-8a07515a3a2f",
+   "code": "P122",
+   "name": "【検証】高橋 幸子"
+  },
+  {
+   "id": "abbceabb-72ac-48ad-af63-b00b18938f30",
+   "code": "P123",
+   "name": "【検証】田中 健二"
+  },
+  {
+   "id": "87fd9fb0-6e50-449f-be2f-b798008d08f2",
+   "code": "P124",
+   "name": "【検証】伊藤 美咲"
+  },
+  {
+   "id": "0a284259-2cf4-415f-99f7-a7fbcd4d2d0d",
+   "code": "P125",
+   "name": "【検証】渡辺 正雄"
+  },
+  {
+   "id": "edba8eec-00e7-445d-9b9f-70f867de6acc",
+   "code": "P126",
+   "name": "【検証】山本 律子"
+  },
+  {
+   "id": "bc63b930-6957-476a-95ec-518d6c0a3b8d",
+   "code": "P127",
+   "name": "【検証】中村 大輔"
+  }
+ ],
+ "visits": [
+  {
+   "id": "93d7ce11-28aa-4abc-89b2-ec66b4581159",
+   "patient": "【検証】佐藤 花子",
+   "time": "09:00-09:30"
+  },
+  {
+   "id": "447bd4d5-a634-41cb-9cc3-b3fb496b34e1",
+   "patient": "【検証】鈴木 一郎",
+   "time": "10:00-10:30"
+  },
+  {
+   "id": "f7c81304-1aec-4d91-be80-67c7ff3742b6",
+   "patient": "【検証】高橋 幸子",
+   "time": "11:00-11:30"
+  },
+  {
+   "id": "b9911fab-bf69-4be1-80e9-c0b16bf4af1d",
+   "patient": "【検証】田中 健二",
+   "time": "13:00-13:30"
+  },
+  {
+   "id": "bba3ae69-20a2-494c-a30f-f9b7dda196ba",
+   "patient": "【検証】伊藤 美咲",
+   "time": "14:00-14:30"
+  },
+  {
+   "id": "74281b28-faa7-4125-b514-93e4627df812",
+   "patient": "【検証】渡辺 正雄",
+   "time": "15:00-15:30"
+  }
+ ],
+ "staff_before": {
+  "status": "retired",
+  "primary_office_id": null,
+  "qualification": null
+ }
+}
