@@ -1,19 +1,23 @@
 'use client';
 
 /**
- * /patients/qr-print — 患者 QR 印刷ビュー (Phase 5-1)。
+ * /patients/qr-print — 患者 QR 印刷ビュー。
  *
- * `docs/mockups/qr-checkin/qr-print.html` の本実装。1 名 1 枚・二つ折り A4。
- *   - 個別モード (`?mode=single&patient={id}`): 患者 1 名 (A4 1 枚)。
- *   - 一括モード (`?mode=bulk`): 拠点で絞り込み + チェックで選択し各 A4 1 枚。
+ * `docs/mockups/qr-checkin/qr-print.html` の本実装。
+ * A4 縦 1 枚 = **A5 横カード 2 面**（2026-09-18 お客様要望）。カードは
+ * ご利用者様宅に貼るパウチ物なので、1 面に 氏名 / QR / お問い合わせ先 / ロゴ を収める。
+ *   - 個別モード (`?mode=single&patient={id}`): シート 1 枚・上半分にカード 1 面。
+ *   - 一括モード (`?mode=bulk`): 選択済みを 2 名ずつ 1 シートにまとめ、未選択は
+ *     コンパクト行 (QR を取りに行かない) で後ろに並べる。
  *
- * 上半分 = 掲示面 (患者名 / コード / 拠点 / 大 QR / 案内)、折り線 (物理中央 top:50%)、
- * 下半分 = 説明面 (ご家族向け説明 / 注意 / 発行日 + qr_version 印字)。
+ * カード = 左カラム (ロゴ / 患者名 / コード / 拠点 / お問い合わせ先) +
+ * 右カラム (大 QR / 読み取りの案内) + foot (個人情報なしの注記 / 発行日・コード・qr_version)。
+ * 切り取り線は A4 物理中央 (top:50%) に固定。
  * QR は `qrcode.react` で `${origin}/q/${token}` を符号化。
  * admin / manager のみ (非該当は /dashboard リダイレクト)。
  */
 
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
@@ -24,6 +28,7 @@ import { usePatients } from '@/lib/queries/patients';
 import { STATUS_LABEL, normalizePatientStatus } from '@/lib/schemas/patient';
 import { useOffices } from '@/lib/queries/offices';
 import { usePatientQr } from '@/lib/queries/patientQr';
+import { STATION_DAYS, STATION_HOURS, STATION_NAME, STATION_TEL } from '@/lib/qr-print-contact';
 import type { PatientRead } from '@/lib/schemas/patient';
 
 import './qr-print.css';
@@ -37,6 +42,16 @@ type Mode = 'single' | 'bulk';
  * 絞り込みを促す警告を出す。
  */
 const BULK_PRINT_LIMIT = 60;
+
+/** A4 1 枚に載る A5 カードの面数。 */
+const CARDS_PER_SHEET = 2;
+
+/** 配列を size ごとに切り出す (一括印刷を「2 名 = 1 シート」にまとめるため)。 */
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
 
 /**
  * ステータス絞り込み (PO 要望 2026-08-10): 患者マスタのステータスタブと同じ
@@ -106,6 +121,12 @@ function QrPrintPageInner() {
   const [statusTab, setStatusTab] = useState<QrStatusValue>(initialStatus);
   const [selectedPatientId, setSelectedPatientId] = useState<string>(urlPatientId);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  /**
+   * 一括モードの「初期全選択」を 1 度だけ走らせるためのフラグ。
+   * 選択数 (size > 0) で判定すると、全解除した状態で shownPatients が差し替わった
+   * とたんに全選択が復活してしまう (意図せず全員ぶん刷れてしまう)。
+   */
+  const [bulkInitialized, setBulkInitialized] = useState(false);
 
   const { data: patientsData, isLoading } = usePatients({ limit: 500 });
   const { offices } = useOffices({ limit: 500 });
@@ -164,14 +185,13 @@ function QrPrintPageInner() {
   }, [mode, selectedPatientId, allPatients]);
 
   // 一括モードに入った時点で表示中の患者を全選択 (初期状態)。上限までに頭打ち。
+  // 以後は bulkInitialized が立つので、ユーザーの選択 (全解除含む) を上書きしない。
   useEffect(() => {
-    if (mode === 'bulk') {
-      setSelected((prev) => {
-        if (prev.size > 0) return prev;
-        return new Set(shownPatients.slice(0, BULK_PRINT_LIMIT).map((p) => p.id));
-      });
+    if (mode === 'bulk' && !bulkInitialized && shownPatients.length > 0) {
+      setSelected(new Set(shownPatients.slice(0, BULK_PRINT_LIMIT).map((p) => p.id)));
+      setBulkInitialized(true);
     }
-  }, [mode, shownPatients]);
+  }, [mode, bulkInitialized, shownPatients]);
 
   // ステータス/拠点の切替時は選択を作り直す (別ステータスの残留選択で
   // 「稼働中だけのはずが解約済みも刷れた」を防ぐ)。
@@ -210,6 +230,10 @@ function QrPrintPageInner() {
 
   const singlePatient = allPatients.find((p) => p.id === selectedPatientId) ?? null;
   const bulkSelectedPatients = shownPatients.filter((p) => selected.has(p.id));
+  const bulkUnselectedPatients = shownPatients.filter((p) => !selected.has(p.id));
+  // 2 名 = A4 1 枚。端数は 1 枚に 1 面だけ載る (下半分は白紙)。
+  const bulkSheets = chunk(bulkSelectedPatients, CARDS_PER_SHEET);
+  const bulkSheetCount = bulkSheets.length;
   // 表示数が上限を超える = 全員ぶんは刷れない。絞り込みを促す。
   const overLimit = mode === 'bulk' && shownPatients.length > BULK_PRINT_LIMIT;
 
@@ -284,30 +308,36 @@ function QrPrintPageInner() {
             <span className="qrprint-chips">
               {/* ステータス絞り込み (患者マスタのタブと同じ区分・PO 要望 2026-08-10)。 */}
               {QR_STATUS_TABS.map((t) => (
-                <span
+                <button
                   key={t.value}
+                  type="button"
                   className={`qrprint-chip${statusTab === t.value ? ' on' : ''}`}
                   data-testid={`qrprint-status-${t.value}`}
+                  aria-pressed={statusTab === t.value}
                   onClick={() => setStatusTab(t.value)}
                 >
                   {t.label} {statusCounts[t.value] ?? 0}
-                </span>
+                </button>
               ))}
               <span className="qrprint-sep" />
-              <span
+              <button
+                type="button"
                 className={`qrprint-chip${office === 'all' ? ' on' : ''}`}
+                aria-pressed={office === 'all'}
                 onClick={() => setOffice('all')}
               >
                 全拠点
-              </span>
+              </button>
               {officeChips.map((o) => (
-                <span
+                <button
                   key={o.id}
+                  type="button"
                   className={`qrprint-chip${office === o.id ? ' on' : ''}`}
+                  aria-pressed={office === o.id}
                   onClick={() => setOffice(o.id)}
                 >
                   {o.name}
-                </span>
+                </button>
               ))}
             </span>
           )}
@@ -318,7 +348,7 @@ function QrPrintPageInner() {
             <span className="qrprint-count">
               {mode === 'single'
                 ? '印刷 1枚'
-                : `表示 ${shownPatients.length}名 / 印刷 ${bulkSelectedPatients.length}枚`}
+                : `表示 ${shownPatients.length}名 / 印刷 ${bulkSelectedPatients.length}名（A4 ${bulkSheetCount}枚）`}
             </span>
             {mode === 'bulk' ? (
               <>
@@ -340,7 +370,14 @@ function QrPrintPageInner() {
                 </button>
               </>
             ) : null}
-            <button type="button" className="qrprint-btn brand" onClick={() => window.print()}>
+            {/* 全解除 (= 刷る中身が無い) のまま押すと白紙が出るだけなので塞ぐ。 */}
+            <button
+              type="button"
+              className="qrprint-btn brand"
+              data-testid="qrprint-print"
+              disabled={mode === 'bulk' && bulkSelectedPatients.length === 0}
+              onClick={() => window.print()}
+            >
               🖨 印刷
             </button>
           </span>
@@ -348,8 +385,8 @@ function QrPrintPageInner() {
       </div>
       <div className="qrprint-hint">
         {mode === 'single'
-          ? '💡 個別モード：選んだ患者 1 名分（A4 1 枚）を印刷・再発行します。'
-          : '💡 一括モード：拠点で絞り込み、チェックで対象を選び 全員分を各 A4 1 枚ずつ 印刷します。'}
+          ? '💡 個別モード：選んだ患者 1 名分を A4 上半分の A5 カード 1 面に印刷します（切り取ってパウチ）。'
+          : '💡 一括モード：拠点・ステータスで絞り込み、チェックで対象を選びます。A4 1 枚に A5 カード 2 面（2 名分）をまとめて印刷します。'}
       </div>
 
       {overLimit ? (
@@ -366,141 +403,154 @@ function QrPrintPageInner() {
       <div id="qr-print-area" className="qrprint-pages" data-testid="qrprint-pages">
         {mode === 'single' ? (
           singlePatient ? (
-            <QrSheet
-              key={singlePatient.id}
-              patient={singlePatient}
-              officeName={
-                singlePatient.primary_office_id
-                  ? (officeNameMap.get(singlePatient.primary_office_id) ?? null)
-                  : null
-              }
-              issued={issued}
-              showCheckbox={false}
-              checked
-              onToggle={() => {}}
-            />
+            // 個別: シート 1 枚・上半分にカード 1 面 (下半分は白紙・切り取り線は出す)。
+            <QrSheet>
+              <QrCard
+                key={singlePatient.id}
+                patient={singlePatient}
+                issued={issued}
+                showCheckbox={false}
+                onToggle={() => {}}
+              />
+            </QrSheet>
           ) : (
             <p className="qrprint-empty">対象の患者がいません。</p>
           )
         ) : shownPatients.length === 0 ? (
           <p className="qrprint-empty">対象の患者がいません。</p>
         ) : (
-          // 一括: 選択済みのみ「全 A4 シート」を描画 (= GET も描画量も選択数に比例)。
-          // 未選択は氏名＋チェックのみのコンパクト行に留め、重 DOM と GET 殺到を防ぐ。
-          shownPatients.map((p) => {
-            const officeName = p.primary_office_id
-              ? (officeNameMap.get(p.primary_office_id) ?? null)
-              : null;
-            return selected.has(p.id) ? (
-              <QrSheet
-                key={p.id}
-                patient={p}
-                officeName={officeName}
-                issued={issued}
-                showCheckbox
-                checked
-                onToggle={(next) => toggleSelected(p.id, next)}
-              />
-            ) : (
+          <>
+            {/* 一括: 選択済みを 2 名ずつ 1 シートに詰める (= GET も描画量も選択数に比例)。
+                チェックを外すと後ろのコンパクト行へ移り、残りが再ペアされる。 */}
+            {bulkSheets.map((pair) => (
+              <QrSheet key={pair.map((p) => p.id).join('+')}>
+                {pair.map((p) => (
+                  <QrCard
+                    key={p.id}
+                    patient={p}
+                    issued={issued}
+                    showCheckbox
+                    onToggle={(next) => toggleSelected(p.id, next)}
+                  />
+                ))}
+              </QrSheet>
+            ))}
+            {/* 未選択は氏名＋チェックのみのコンパクト行。QR は取りに行かない。 */}
+            {bulkUnselectedPatients.map((p) => (
               <QrSelectRow
                 key={p.id}
                 patient={p}
-                officeName={officeName}
+                officeName={
+                  p.primary_office_id ? (officeNameMap.get(p.primary_office_id) ?? null) : null
+                }
                 onToggle={(next) => toggleSelected(p.id, next)}
               />
-            );
-          })
+            ))}
+          </>
         )}
       </div>
     </div>
   );
 }
 
-interface QrSheetProps {
+/**
+ * A4 シート 1 枚。中に A5 横カードを最大 2 面。切り取り線は物理中央 (top:50%) に固定なので
+ * カードが 1 面だけ (個別モード / 一括の端数) でも同じ位置に出る。
+ */
+function QrSheet({ children }: { children: ReactNode }) {
+  return (
+    <div className="qrprint-sheet" data-testid="qrprint-sheet">
+      {children}
+      <div className="qrprint-fold">
+        <span>✂ ここで切り取り（A5・パウチ用）</span>
+      </div>
+    </div>
+  );
+}
+
+interface QrCardProps {
   patient: PatientRead;
-  officeName: string | null;
   issued: string;
   showCheckbox: boolean;
-  checked: boolean;
   onToggle: (next: boolean) => void;
 }
 
-/** 患者 1 名分の A4 シート (二つ折り)。QR は遅延発行 API から取得する。 */
-function QrSheet({ patient, officeName, issued, showCheckbox, checked, onToggle }: QrSheetProps) {
-  // チェックが外れている (印刷対象外) シートは QR をフェッチしない。
-  const { data: qr, isLoading, isError } = usePatientQr(patient.id, { enabled: checked });
+/**
+ * 患者 1 名分の A5 横カード (210mm × 148.25mm)。
+ * ご利用者様宅に貼るパウチ物なので、氏名・QR・お問い合わせ先・ロゴをこの 1 面に収める。
+ * 拠点名は社内の区分でご利用者様には意味がないため、カードには載せない (PO 判断 2026-09-18)。
+ * QR は遅延発行 API から取得する (カードは印刷対象のときしか描画しない)。
+ */
+function QrCard({ patient, issued, showCheckbox, onToggle }: QrCardProps) {
+  const { data: qr, isLoading, isError } = usePatientQr(patient.id);
 
   return (
-    <div
-      className={`qrprint-sheet${checked ? '' : ' off'}`}
-      data-testid="qrprint-sheet"
-      data-patient-id={patient.id}
-    >
+    <div className="qrprint-card" data-testid="qrprint-card" data-patient-id={patient.id}>
       {showCheckbox ? (
         <input
           type="checkbox"
           className="qrprint-chk"
-          checked={checked}
+          checked
           aria-label={`${patient.name} を印刷対象にする`}
           onChange={(e) => onToggle(e.target.checked)}
         />
       ) : null}
 
-      {/* 掲示面 (上半分) */}
-      <div className="qrprint-panel front">
-        {officeName ? <span className="qrprint-office">{officeName}拠点</span> : null}
-        <div className="qrprint-pname">{patient.name} 様</div>
-        <div className="qrprint-pcode">{patient.code}</div>
-        <div className="qrprint-qrbox">
-          {qr ? (
-            <QRCodeSVG
-              value={qrUrl(qr.token)}
-              size={190}
-              level="M"
-              fgColor="#1c1917"
-              bgColor="#ffffff"
-              data-testid="qrprint-qr"
-            />
-          ) : isError ? (
-            <div className="qrprint-qr-placeholder">QR取得失敗</div>
-          ) : (
-            <div className="qrprint-qr-placeholder">{isLoading ? 'QR生成中…' : '—'}</div>
-          )}
+      <div className="qrprint-card-body">
+        {/* 左: ロゴ / 氏名 / コード / 拠点 … 下端に お問い合わせ先 */}
+        <div className="qrprint-col-left">
+          {/* 直下の連絡先ブロックにステーション名がテキストで入るので、ロゴは装飾扱い (alt="")。
+              読み上げが「訪問看護ステーション よりより」を二度繰り返すのを避ける。 */}
+          {/* eslint-disable-next-line @next/next/no-img-element -- 静的ブランド画像 (印刷物なので next/image の最適化は不要) */}
+          <img
+            className="qrprint-logo"
+            src="/brand/yoriyori-logo-h.svg"
+            alt=""
+            width={160}
+            height={45}
+          />
+          <div className="qrprint-pname">{patient.name} 様</div>
+          <div className="qrprint-pcode">{patient.code}</div>
+
+          <div className="qrprint-contactbox">
+            <div className="qrprint-contact-h">お問い合わせ先</div>
+            <div className="qrprint-contact-tel">TEL {STATION_TEL}</div>
+            <div className="qrprint-contact-row">対応時間 {STATION_HOURS}</div>
+            <div className="qrprint-contact-row">対応日 {STATION_DAYS}</div>
+            <div className="qrprint-contact-station">{STATION_NAME}</div>
+          </div>
         </div>
-        <div className="qrprint-lead">
-          訪問のたびに、このQRコードを
-          <br />
-          スタッフが読み取って記録します
+
+        {/* 右: 大 QR + 読み取りの案内 1 行 */}
+        <div className="qrprint-col-right">
+          <div className="qrprint-qrbox">
+            {qr ? (
+              <QRCodeSVG
+                value={qrUrl(qr.token)}
+                size={190}
+                level="M"
+                fgColor="#1c1917"
+                bgColor="#ffffff"
+                data-testid="qrprint-qr"
+              />
+            ) : isError ? (
+              <div className="qrprint-qr-placeholder">QR取得失敗</div>
+            ) : (
+              <div className="qrprint-qr-placeholder">{isLoading ? 'QR生成中…' : '—'}</div>
+            )}
+          </div>
+          <div className="qrprint-lead">
+            訪問のたびに、スタッフがこのQRコードを読み取って到着・退出を記録します
+          </div>
         </div>
-        <div className="qrprint-brand">♥ CareFlow 訪問チェックイン</div>
       </div>
 
-      {/* 折り線 (物理中央 top:50%) */}
-      <div className="qrprint-fold">
-        <span>✂ ここで半分に折ってお渡し／掲示できます</span>
-      </div>
-
-      {/* 説明面 (下半分) */}
-      <div className="qrprint-panel inside">
-        <h2>このQRコードについて</h2>
-        <p>
-          訪問介護スタッフが訪問のたびにこのQRコードを読み取り、到着・退出の時刻を記録します。記録を正確に行うため、下記にご協力をお願いいたします。
-        </p>
-        <ul>
-          <li>玄関の内側など、雨の当たらない見やすい場所に掲示してください。</li>
-          <li>QRがはがれた・汚れて読めない場合は事業所へご連絡ください（無料で再発行します）。</li>
-          <li>このQRコードに、お名前や住所などの個人情報は含まれていません。</li>
-        </ul>
-        <div className="qrprint-contact">
-          お問い合わせ：<b>{officeName ? `${officeName} 訪問介護事業所` : '訪問介護事業所'}</b>
-        </div>
-        <div className="qrprint-foot">
-          <span>CareFlow 訪問チェックイン</span>
-          <span>
-            発行日 {issued}　/　{patient.code}
-            {qr ? `　/　QR v${qr.version}` : ''}
-          </span>
-        </div>
+      <div className="qrprint-foot">
+        <span>このQRにお名前・住所などの個人情報は含まれていません</span>
+        <span>
+          発行日 {issued}　/　{patient.code}
+          {qr ? `　/　QR v${qr.version}` : ''}
+        </span>
       </div>
     </div>
   );
