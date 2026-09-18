@@ -96,3 +96,10 @@
   - 未実施: 要約テンプレ v2（PO フィードバック待ち）・`/records` ヘッダへの A4 入口（詳細ダイアログのみ）。
   - 後片付け: ローカルの SA 鍵コピー（scratchpad・C:/tmp/gsa・一時 gcloud config）は削除済み。鍵は VPS `/opt/carelink/secrets/rakusuke-voice-sa.json` のみ。
 - **実機確認（未実施・累積）**: Phase 1 の 6 項目 + `/m/record/new` の一連（録音→患者選択→訪問詳細へ遷移）・`/records` の音声再生（位置保持・1.5×）・要約編集→モバイルの表示追随・**Phase 3: 詳細ダイアログ「A4 で出力」→ 新タブに A4 が開き印刷プレビューで 1 枚に収まる（ポップアップブロック時の toast も）・連携ページ末尾の利用状況カードで当月の件数/費用が出る（月を戻せる・未来は不可）**。
+
+## 11. 追補（9/18 午前）: QR カード A5 化・実績時刻の並記・音声テストデータ
+- **患者 QR 印刷を A5 カード化（本番 05a5250・フロントのみ）**: 訪問看護ステーション よりより の要望（氏名・QR・連絡先・ロゴを A4 半分・パウチ）。A4 1 枚 = A5 横 2 面（中央に切り取り線）。連絡先は `frontend/lib/qr-print-contact.ts` の 1 箇所（TEL 043-215-8991／9:00〜18:00／日曜・年末年始休暇を除く）。ロゴは公式サイト yoriyori.care のベクター SVG（`frontend/public/brand/yoriyori-logo-h.svg`・モックにもコピー）。旧説明面・拠点チップ・CareFlow 表記・「訪問介護」を撤去。一括は 2 名/枚・0 名は印刷不可。プレビュー=docs/reports/2026-09-18-qr-card-preview.{pdf,png}。レビュー APPROVE（LOW のみ・是正済み）。実機確認: 実プリンタで切って A5 2 枚／パウチ越しに iPhone で読める／一括で末尾白紙なし。
+- **QR 打刻の実時刻を予定と並記（本番 40a1070・BE e140160 + FE 40a1070・migration なし）**: 川名様「QR 読み取り時に実時間を表記できるか」＝打刻は秒単位で記録済みだが画面が予定時刻しか出さない問題。BE: `VisitRead.actual_arrival_at / actual_departure_at`（最新 arrival/departure の scanned_at・UTC・no_show は採らない・担当外 QR capability GET でも残す）。FE: モバイル一覧カードと訪問詳細に「実績 12:56 – 13:40」「到着 12:56 〜」、PC モニターの 2 行目に「✓12:56–13:40」とツールチップ「打刻:」、`lib/format/actualTime.ts`（tz 無し値は JST 解釈）。本番検証: 9/15 13:00 の訪問が actual 03:56Z/04:40Z（JST 12:56/13:40）を返す＝川名様の例と一致。**次段（PO 判断）**: ②日別スタッフ別の実績リスト ③カイポケ実績への自動反映（加算算定に実時間が必要・RPA は予定画面しか触っていない）。
+- **既知 fail の追記**: `tests/test_visits.py::test_visits_delete_manager_returns_204` は HEAD 単体でも落ちる（aiosqlite「SQL statements in progress」）＝ベースライン扱い。
+- **音声テスト用データ（本番・要後片付け）**: S009 を稼働中/稲毛/看護師に変更（元 retired・拠点なし・資格なし）、架空患者 P120〜P127「【検証】…」8 名、9/18 の S009 訪問 6 件（09:00〜15:00・manual・コースなし）。manifest=scratchpad `voice_test_manifest.json`（後片付け `cleanup_voice_test.py` で録音→訪問→患者削除・S009 を retired に戻す）。テスト中はカイポケ送信と週生成を押さない。
+- **ログイン後の飛び先**: ログイン画面を直接開くと端末に関係なく /dashboard（PC）。`/` だけ UA で /m/home に振る。改修候補（callbackUrl 既定を UA で分ける）。
