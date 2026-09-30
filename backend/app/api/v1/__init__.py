@@ -15,6 +15,7 @@ from app.api.v1 import (
     auth,
     checkin_settings,
     cities,
+    copy_week,
     course_templates,
     courses,
     dashboard,
@@ -212,6 +213,9 @@ api_router.include_router(feasibility.router, prefix="/schedule", tags=["schedul
 # Phase E (週空間 運転席) BE-1: 急休の代替候補 (/schedule/v2/substitute-candidates) と
 # Phase 2-A: 「担当なし」への投入提案 (/schedule/v2/assign-candidates). 判定は同一エンジン。
 api_router.include_router(substitute_candidates.router, prefix="/schedule", tags=["schedule-v2"])
+# 前の週をコピーして週を作る (/schedule/v2/copy-week[/preview|/sources])
+# docs/plans/copy-week-design-2026-09-30.md
+api_router.include_router(copy_week.router, prefix="/schedule", tags=["schedule-v2"])
 # Wave U-3: 操作ジャーナル undo/redo エンドポイント (/schedule/v2/op-log/*)
 api_router.include_router(op_log.router, prefix="/schedule", tags=["op-log"])
 # Phase G-21 T2: 同住所紐付け CRUD (blocked / required の link 行管理).

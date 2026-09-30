@@ -57,6 +57,10 @@ _VISIT_FIELDS: tuple[str, ...] = (
     "required_staff_count",
     "visit_group_id",
     "manual_staff_override",
+    # 週のコピー (copy-week-design-2026-09-30.md) で保存する盤面にも同じ復元を使うため、
+    # 訪問単位のサービス内容上書きと予定外の印も戻す (旧スナップショットは無い = 既定値)。
+    "kaipoke_service_override",
+    "is_unplanned",
 )
 
 _COURSE_FIELDS: tuple[str, ...] = (
@@ -235,7 +239,7 @@ async def restore_snapshot(
         if checkin is not None:
             raise SnapshotRestoreBlockedError(
                 "この週には打刻（訪問実績）が記録されています。実績の紐付け先を守るため、"
-                "取り込み前への復元はできません"
+                "保存した時点への復元はできません"
             )
 
     result = RestoreResult(wiped=len(current))
@@ -307,6 +311,8 @@ async def restore_snapshot(
             required_staff_count=int(vdata.get("required_staff_count") or 1),
             visit_group_id=_load_uuid(vdata.get("visit_group_id")),
             manual_staff_override=bool(vdata.get("manual_staff_override")),
+            kaipoke_service_override=vdata.get("kaipoke_service_override"),
+            is_unplanned=bool(vdata.get("is_unplanned")),
         )
         db.add(v)
         new_visits.append(v)
