@@ -28,6 +28,7 @@ vi.mock('next-auth/react', () => ({ useSession: vi.fn() }));
 vi.mock('@/lib/queries/patients', () => ({ usePatients: vi.fn() }));
 vi.mock('@/lib/queries/offices', () => ({ useOffices: vi.fn() }));
 vi.mock('@/lib/queries/patientQr', () => ({ usePatientQr: vi.fn() }));
+vi.mock('@/lib/queries/businessProfile', () => ({ useBusinessProfile: vi.fn() }));
 
 // ─── Mock qrcode.react (本物の SVG 生成は不要) ─────────────────────────────────
 vi.mock('qrcode.react', () => ({
@@ -38,10 +39,23 @@ import { useSession } from 'next-auth/react';
 import { usePatients } from '@/lib/queries/patients';
 import { useOffices } from '@/lib/queries/offices';
 import { usePatientQr } from '@/lib/queries/patientQr';
+import { useBusinessProfile } from '@/lib/queries/businessProfile';
 
 import QrPrintPage from '../page';
 
 const OFFICE_ID = '00000000-0000-0000-0000-000000000010';
+
+/**
+ * mig 0089 が よりより様の DB に入れる事業所の情報 (以前 lib/qr-print-contact.ts と
+ * page.tsx に直接書いていた値と同じ)。カードの見た目が変わらないことをこの値で確かめる。
+ */
+const SEEDED_PROFILE = {
+  station_name: '訪問看護ステーション よりより',
+  contact_tel: '043-215-8991',
+  contact_hours: '9:00〜18:00',
+  contact_days: '日曜・年末年始休暇を除く',
+  logo_url: '/brand/yoriyori-logo-h.svg',
+};
 
 function makePatient(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -74,8 +88,10 @@ function setupCommon(
     mode?: 'single' | 'bulk';
     patientId?: string;
     patients?: unknown[];
+    profile?: typeof SEEDED_PROFILE | Record<string, null>;
   } = {},
 ) {
+  (useBusinessProfile as Mock).mockReturnValue({ data: opts.profile ?? SEEDED_PROFILE });
   const role = opts.role ?? 'admin';
   (useSession as Mock).mockReturnValue({
     data: { user: { role }, accessToken: 't', refreshToken: 'r' },
@@ -184,6 +200,38 @@ describe('QrPrintPage — Phase 5-1', () => {
     // 「訪問介護」→「訪問看護」に統一済み。CareFlow 表記も撤去。
     expect(container.textContent).not.toContain('訪問介護');
     expect(container.textContent).not.toContain('CareFlow');
+  });
+
+  it('C2. 事業所の情報が未設定: ロゴもお問い合わせ先も載せない (別の事業所の初期状態)', async () => {
+    setupCommon({
+      mode: 'bulk',
+      patients: [makePatient()],
+      profile: {
+        station_name: null,
+        contact_tel: null,
+        contact_hours: null,
+        contact_days: null,
+        logo_url: null,
+      },
+    });
+    const { container } = render(<QrPrintPage />);
+
+    const card = await screen.findByTestId('qrprint-card');
+    expect(card.querySelector('img')).toBeNull();
+    expect(card.textContent).not.toContain('お問い合わせ先');
+    expect(card.textContent).not.toContain('TEL');
+    expect(container.textContent).not.toContain('よりより');
+  });
+
+  it('C3. お問い合わせ先の設定画面へ行ける', async () => {
+    setupCommon({ mode: 'bulk', patients: [makePatient()] });
+    render(<QrPrintPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId('qrprint-contact-settings')).toHaveAttribute(
+        'href',
+        '/settings/business',
+      );
+    });
   });
 
   it('P. カード: 拠点名は載せない (PO 判断 2026-09-18・ご利用者様には社内区分は不要)', async () => {

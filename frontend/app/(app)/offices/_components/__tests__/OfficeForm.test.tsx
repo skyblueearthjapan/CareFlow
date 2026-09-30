@@ -145,3 +145,55 @@ describe('OfficeForm (Phase G-45)', () => {
     expect(onDirtyChange).toHaveBeenLastCalledWith(false);
   });
 });
+
+describe('OfficeForm — 略称・並び順・カイポケ上の事業所名 (別の事業所へ提供する準備 #4)', () => {
+  it('既存の値をそのまま送り返す (編集しても今の値は変わらない)', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <OfficeForm
+        initial={{
+          name: '都賀',
+          code: 'TSUGA',
+          short_label: '津',
+          sort_order: 2,
+          kaipoke_name: '(ST)よりより都賀支店',
+        }}
+        onSubmit={onSubmit}
+      />,
+    );
+    expect(screen.getByRole('textbox', { name: '略称' })).toHaveValue('津');
+    expect(screen.getByRole('spinbutton', { name: '並び順' })).toHaveValue(2);
+    expect(screen.getByRole('textbox', { name: 'カイポケ上の事業所名' })).toHaveValue(
+      '(ST)よりより都賀支店',
+    );
+
+    await act(async () => {
+      fireEvent.submit(screen.getByRole('button', { name: '作成' }).closest('form')!);
+    });
+    const arg = onSubmit.mock.calls[0]![0];
+    expect(arg.short_label).toBe('津');
+    expect(arg.sort_order).toBe(2);
+    expect(arg.kaipoke_name).toBe('(ST)よりより都賀支店');
+  });
+
+  it('空欄は null (略称は拠点名の 1 文字目・並び順は名前順・カイポケは拠点名に戻る)', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <OfficeForm
+        initial={{ name: '幕張', short_label: '幕', sort_order: 3 }}
+        onSubmit={onSubmit}
+      />,
+    );
+    fireEvent.change(screen.getByRole('textbox', { name: '略称' }), { target: { value: '' } });
+    fireEvent.change(screen.getByRole('spinbutton', { name: '並び順' }), {
+      target: { value: '' },
+    });
+    await act(async () => {
+      fireEvent.submit(screen.getByRole('button', { name: '作成' }).closest('form')!);
+    });
+    const arg = onSubmit.mock.calls[0]![0];
+    expect(arg.short_label).toBeNull();
+    expect(arg.sort_order).toBeNull();
+    expect(arg.kaipoke_name).toBeNull();
+  });
+});

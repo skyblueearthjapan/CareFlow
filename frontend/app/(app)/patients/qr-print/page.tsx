@@ -14,6 +14,8 @@
  * 右カラム (大 QR / 読み取りの案内) + foot (個人情報なしの注記 / 発行日・コード・qr_version)。
  * 切り取り線は A4 物理中央 (top:50%) に固定。
  * QR は `qrcode.react` で `${origin}/q/${token}` を符号化。
+ * お問い合わせ先とロゴは「事業所の情報」(/settings/business・GET /business-profile) から取る
+ * (以前は lib/qr-print-contact.ts にお客様の値を直接書いていた)。未設定の項目は載せない。
  * admin / manager のみ (非該当は /dashboard リダイレクト)。
  */
 
@@ -28,7 +30,8 @@ import { usePatients } from '@/lib/queries/patients';
 import { STATUS_LABEL, normalizePatientStatus } from '@/lib/schemas/patient';
 import { useOffices } from '@/lib/queries/offices';
 import { usePatientQr } from '@/lib/queries/patientQr';
-import { STATION_DAYS, STATION_HOURS, STATION_NAME, STATION_TEL } from '@/lib/qr-print-contact';
+import { useBusinessProfile } from '@/lib/queries/businessProfile';
+import type { BusinessProfile } from '@/lib/schemas/businessProfile';
 import type { PatientRead } from '@/lib/schemas/patient';
 
 import './qr-print.css';
@@ -130,6 +133,7 @@ function QrPrintPageInner() {
 
   const { data: patientsData, isLoading } = usePatients({ limit: 500 });
   const { offices } = useOffices({ limit: 500 });
+  const { data: profile } = useBusinessProfile();
 
   const officeNameMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -370,6 +374,13 @@ function QrPrintPageInner() {
                 </button>
               </>
             ) : null}
+            <Link
+              href="/settings/business"
+              className="qrprint-btn"
+              data-testid="qrprint-contact-settings"
+            >
+              お問い合わせ先の設定
+            </Link>
             {/* 全解除 (= 刷る中身が無い) のまま押すと白紙が出るだけなので塞ぐ。 */}
             <button
               type="button"
@@ -409,6 +420,7 @@ function QrPrintPageInner() {
                 key={singlePatient.id}
                 patient={singlePatient}
                 issued={issued}
+                profile={profile}
                 showCheckbox={false}
                 onToggle={() => {}}
               />
@@ -429,6 +441,7 @@ function QrPrintPageInner() {
                     key={p.id}
                     patient={p}
                     issued={issued}
+                    profile={profile}
                     showCheckbox
                     onToggle={(next) => toggleSelected(p.id, next)}
                   />
@@ -471,6 +484,8 @@ function QrSheet({ children }: { children: ReactNode }) {
 interface QrCardProps {
   patient: PatientRead;
   issued: string;
+  /** 事業所の情報 (読み込み中は undefined = お問い合わせ先とロゴを出さない)。 */
+  profile: BusinessProfile | undefined;
   showCheckbox: boolean;
   onToggle: (next: boolean) => void;
 }
@@ -481,7 +496,7 @@ interface QrCardProps {
  * 拠点名は社内の区分でご利用者様には意味がないため、カードには載せない (PO 判断 2026-09-18)。
  * QR は遅延発行 API から取得する (カードは印刷対象のときしか描画しない)。
  */
-function QrCard({ patient, issued, showCheckbox, onToggle }: QrCardProps) {
+function QrCard({ patient, issued, profile, showCheckbox, onToggle }: QrCardProps) {
   const { data: qr, isLoading, isError } = usePatientQr(patient.id);
 
   return (
@@ -499,26 +514,36 @@ function QrCard({ patient, issued, showCheckbox, onToggle }: QrCardProps) {
       <div className="qrprint-card-body">
         {/* 左: ロゴ / 氏名 / コード / 拠点 … 下端に お問い合わせ先 */}
         <div className="qrprint-col-left">
-          {/* 直下の連絡先ブロックにステーション名がテキストで入るので、ロゴは装飾扱い (alt="")。
-              読み上げが「訪問看護ステーション よりより」を二度繰り返すのを避ける。 */}
-          {/* eslint-disable-next-line @next/next/no-img-element -- 静的ブランド画像 (印刷物なので next/image の最適化は不要) */}
-          <img
-            className="qrprint-logo"
-            src="/brand/yoriyori-logo-h.svg"
-            alt=""
-            width={160}
-            height={45}
-          />
+          {/* 直下の連絡先ブロックに事業所名がテキストで入るので、ロゴは装飾扱い (alt="")。
+              読み上げが事業所名を二度繰り返すのを避ける。ロゴが未設定なら出さない。 */}
+          {profile?.logo_url ? (
+            // eslint-disable-next-line @next/next/no-img-element -- 設定したブランド画像 (印刷物なので next/image の最適化は不要)
+            <img className="qrprint-logo" src={profile.logo_url} alt="" width={160} height={45} />
+          ) : null}
           <div className="qrprint-pname">{patient.name} 様</div>
           <div className="qrprint-pcode">{patient.code}</div>
 
-          <div className="qrprint-contactbox">
-            <div className="qrprint-contact-h">お問い合わせ先</div>
-            <div className="qrprint-contact-tel">TEL {STATION_TEL}</div>
-            <div className="qrprint-contact-row">対応時間 {STATION_HOURS}</div>
-            <div className="qrprint-contact-row">対応日 {STATION_DAYS}</div>
-            <div className="qrprint-contact-station">{STATION_NAME}</div>
-          </div>
+          {profile &&
+          (profile.contact_tel ||
+            profile.contact_hours ||
+            profile.contact_days ||
+            profile.station_name) ? (
+            <div className="qrprint-contactbox">
+              <div className="qrprint-contact-h">お問い合わせ先</div>
+              {profile.contact_tel ? (
+                <div className="qrprint-contact-tel">TEL {profile.contact_tel}</div>
+              ) : null}
+              {profile.contact_hours ? (
+                <div className="qrprint-contact-row">対応時間 {profile.contact_hours}</div>
+              ) : null}
+              {profile.contact_days ? (
+                <div className="qrprint-contact-row">対応日 {profile.contact_days}</div>
+              ) : null}
+              {profile.station_name ? (
+                <div className="qrprint-contact-station">{profile.station_name}</div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         {/* 右: 大 QR + 読み取りの案内 1 行 */}

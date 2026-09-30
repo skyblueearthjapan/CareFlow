@@ -86,6 +86,10 @@ vi.mock('@/lib/queries/staff', () => ({
 vi.mock('@/lib/queries/patients', () => ({
   usePatients: () => ({ data: { items: [] }, isLoading: false }),
 }));
+// 詳細ダイアログが読む、実績の時刻を合わせる上限 (未取得 = 既定)。
+vi.mock('@/lib/queries/checkinSettings', () => ({
+  useCheckinSettingsPublic: () => ({ data: undefined }),
+}));
 
 import RecordsPage from '../page';
 

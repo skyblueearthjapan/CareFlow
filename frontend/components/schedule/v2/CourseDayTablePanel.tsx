@@ -1648,16 +1648,15 @@ export function CourseDayTablePanel({
     return m;
   }, [offices]);
 
-  // Phase G-53: 週ビュー曜日ヘッダーの「拠点別 S/M」表示用. (office.code or name)
-  // から短縮ラベルを作る (INAGE→稲 / TSUGA→津, それ以外は name 先頭 1 文字).
+  // Phase G-53: 週ビュー曜日ヘッダーの「拠点別 S/M」表示用. 略称は拠点マスタの
+  // short_label (未設定なら name 先頭 1 文字 = BE office_labels.office_short と同じ規則).
   // 表示順は offices の並び (= 拠点マスタ順) をそのまま使う.
   const staffSummaryOffices = useMemo(() => {
-    const shortLabel = (o: (typeof offices)[number]): string => {
-      const code = (o.code ?? '').toUpperCase();
-      if (code === 'INAGE') return '稲';
-      if (code === 'TSUGA') return '津';
-      return (o.name ?? '').slice(0, 1) || code.slice(0, 1) || '?';
-    };
+    const shortLabel = (o: (typeof offices)[number]): string =>
+      (o.short_label ?? '').trim() ||
+      (o.name ?? '').slice(0, 1) ||
+      (o.code ?? '').slice(0, 1) ||
+      '?';
     return offices.map((o) => ({ id: o.id, label: shortLabel(o) }));
   }, [offices]);
 

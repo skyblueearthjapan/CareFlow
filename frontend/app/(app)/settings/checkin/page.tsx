@@ -11,6 +11,9 @@
  *   📍 距離のルール … ① 一致 (match_m) / ② 要確認 (review_m) / ③ GPS精度許容 (accuracy_m)
  *                      + 距離プレビュー (クライアントで距離→判定の概算を再現)
  *   ⏱ 時間のルール … ④ 未訪問の猶予 / ⑤ 遅延 / ⑥ 退出忘れ (長時間訪問中)
+ *   🕘 実績の時刻を合わせるルール (mig 0089) … ⑦ 到着をさかのぼれる時間 /
+ *      ⑧ 退出を後ろへ合わせられる時間 / ⑨ スタッフが合わせられる期間 /
+ *      ⑩ 予定外訪問の仮の所要時間
  *
  * 保存で PUT → monitor を invalidate して反映。review_m >= match_m を UI でも検証
  * (BE も 422 で弾く)。時間系の変更は「翌日/新規visitから」運用の注意書きを添える。
@@ -18,7 +21,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
-import { MapPin, Clock, Info, RotateCcw } from 'lucide-react';
+import { MapPin, Clock, History, Info, RotateCcw } from 'lucide-react';
 
 import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -299,6 +302,70 @@ export default function CheckinSettingsPage() {
                 時間のルールはモニターが現在値で都度評価します。日中の変更は当日分の判定にも
                 即時反映されるため、運用上は翌日/新規の訪問から変えるのが安全です。
               </p>
+            </CardContent>
+          </Card>
+
+          {/* ───────────── 🕘 実績の時刻を合わせるルール (mig 0089) ───────────── */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <History className="h-5 w-5 text-brand-primary" strokeWidth={1.75} />
+                実績の時刻を合わせるルール
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <SliderField
+                id="arrival-max-back"
+                label="到着をさかのぼれる時間"
+                description="QR を読み取った時刻から、この分数前まで到着の時刻を合わせられます（管理者が打刻履歴から合わせるときは制限しません）。"
+                value={draft.arrival_max_back_min}
+                min={CHECKIN_RANGES.arrival_max_back_min.min}
+                max={CHECKIN_RANGES.arrival_max_back_min.max}
+                step={CHECKIN_RANGES.arrival_max_back_min.step}
+                unit="分"
+                isDefault={isDefault?.arrival_max_back_min}
+                onChange={(n) => patch('arrival_max_back_min', n)}
+                disabled={!canEdit || updateMutation.isPending}
+              />
+              <SliderField
+                id="departure-max-ahead"
+                label="退出を後ろへ合わせられる時間"
+                description="退出の QR を読み取った時刻から、この分数後まで退出の時刻を合わせられます。"
+                value={draft.departure_max_ahead_min}
+                min={CHECKIN_RANGES.departure_max_ahead_min.min}
+                max={CHECKIN_RANGES.departure_max_ahead_min.max}
+                step={CHECKIN_RANGES.departure_max_ahead_min.step}
+                unit="分"
+                isDefault={isDefault?.departure_max_ahead_min}
+                onChange={(n) => patch('departure_max_ahead_min', n)}
+                disabled={!canEdit || updateMutation.isPending}
+              />
+              <SliderField
+                id="staff-adjust-window"
+                label="スタッフが合わせられる期間"
+                description="スタッフは、今日からこの日数前までの訪問の時刻を合わせられます。それより前は管理者に依頼します。"
+                value={draft.staff_adjust_window_days}
+                min={CHECKIN_RANGES.staff_adjust_window_days.min}
+                max={CHECKIN_RANGES.staff_adjust_window_days.max}
+                step={CHECKIN_RANGES.staff_adjust_window_days.step}
+                unit="日"
+                isDefault={isDefault?.staff_adjust_window_days}
+                onChange={(n) => patch('staff_adjust_window_days', n)}
+                disabled={!canEdit || updateMutation.isPending}
+              />
+              <SliderField
+                id="unplanned-default"
+                label="予定外訪問の仮の所要時間"
+                description="予定に無い訪問を QR で記録したとき、患者さまの基本の訪問時間が無ければこの長さで仮に置きます（退出を記録すると実際の時刻になります）。"
+                value={draft.unplanned_default_minutes}
+                min={CHECKIN_RANGES.unplanned_default_minutes.min}
+                max={CHECKIN_RANGES.unplanned_default_minutes.max}
+                step={CHECKIN_RANGES.unplanned_default_minutes.step}
+                unit="分"
+                isDefault={isDefault?.unplanned_default_minutes}
+                onChange={(n) => patch('unplanned_default_minutes', n)}
+                disabled={!canEdit || updateMutation.isPending}
+              />
             </CardContent>
           </Card>
         </>

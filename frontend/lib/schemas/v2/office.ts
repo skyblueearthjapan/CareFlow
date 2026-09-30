@@ -46,6 +46,16 @@ export const officeV2BaseSchema = z.object({
   note: z.string().nullable().optional(),
   /** Phase G-45: 拠点稼働曜日 (0=月..6=日 の int 配列). default = 月-土. */
   operating_weekdays: operatingWeekdaysSchema.default([...DEFAULT_OPERATING_WEEKDAYS]),
+  /**
+   * 0059: 拠点マスタ駆動化 (PO決定「コードが事業所を特定しない」)。拠点の編集画面から変える。
+   *  - sort_order: 表示順 (現場ボード・Excel の拠点の並び)。NULL は名前順で末尾.
+   *  - short_label: 略称 (札・コース表・提案・Excel のコース表記の 1 文字目。例 稲/津)。
+   *    NULL は name 先頭 1 文字.
+   *  - kaipoke_name: カイポケ上の事業所名 (カイポケ CSV「事業所名」列)。NULL は name.
+   */
+  sort_order: z.number().int().nullish(),
+  short_label: z.string().max(8, '略称は 8 文字以内で入力してください').nullish(),
+  kaipoke_name: z.string().max(120, 'カイポケ上の事業所名は 120 文字以内です').nullish(),
 });
 export type OfficeV2Base = z.infer<typeof officeV2BaseSchema>;
 
@@ -72,6 +82,9 @@ export const officeV2UpdateSchema = z.object({
   note: z.string().nullable().optional(),
   /** Phase G-45: PATCH では未指定 (undefined) で「触らない」. */
   operating_weekdays: operatingWeekdaysSchema.optional(),
+  sort_order: z.number().int().nullish(),
+  short_label: z.string().max(8).nullish(),
+  kaipoke_name: z.string().max(120).nullish(),
   allowed_cities: z.array(z.string().uuid()).nullable().optional(),
 });
 export type OfficeV2Update = z.infer<typeof officeV2UpdateSchema>;
@@ -83,13 +96,6 @@ export const officeV2ReadSchema = officeV2BaseSchema.extend({
   updated_at: z.string(),
   deleted_at: z.string().nullable().optional(),
   allowed_cities: z.array(z.string().uuid()).default([]),
-  /**
-   * 0059: 拠点マスタ駆動化 (PO決定「コードが事業所を特定しない」).
-   *  - sort_order: 現場ボード等の表示順. NULL は名前順で末尾.
-   *  - short_label: 短縮バッジ (例 稲/津). NULL は name 先頭 1 文字.
-   */
-  sort_order: z.number().int().nullish(),
-  short_label: z.string().nullish(),
 });
 export type OfficeV2Read = z.infer<typeof officeV2ReadSchema>;
 

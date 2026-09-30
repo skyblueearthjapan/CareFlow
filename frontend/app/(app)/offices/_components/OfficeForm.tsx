@@ -41,6 +41,10 @@ export function OfficeForm({
   const [lng, setLng] = useState<string>(initial?.lng?.toString() ?? '');
   const [prefecture, setPrefecture] = useState(initial?.prefecture ?? '');
   const [note, setNote] = useState(initial?.note ?? '');
+  // 0059 の拠点マスタ駆動化: 略称・並び順・カイポケ上の事業所名 (以前は API でしか変えられなかった)。
+  const [shortLabel, setShortLabel] = useState(initial?.short_label ?? '');
+  const [sortOrder, setSortOrder] = useState<string>(initial?.sort_order?.toString() ?? '');
+  const [kaipokeName, setKaipokeName] = useState(initial?.kaipoke_name ?? '');
   const [allowed, setAllowed] = useState<string[]>(initial?.allowed_cities ?? []);
   const [cityFilter, setCityFilter] = useState('');
   const [validationMsg, setValidationMsg] = useState<string | null>(null);
@@ -62,6 +66,9 @@ export function OfficeForm({
       lng: initial?.lng?.toString() ?? '',
       prefecture: initial?.prefecture ?? '',
       note: initial?.note ?? '',
+      shortLabel: initial?.short_label ?? '',
+      sortOrder: initial?.sort_order?.toString() ?? '',
+      kaipokeName: initial?.kaipoke_name ?? '',
       allowed: initial?.allowed_cities ?? [],
       operatingWeekdays: initial?.operating_weekdays ?? [...DEFAULT_OPERATING_WEEKDAYS],
     }),
@@ -76,11 +83,27 @@ export function OfficeForm({
       lng,
       prefecture,
       note,
+      shortLabel,
+      sortOrder,
+      kaipokeName,
       allowed,
       operatingWeekdays,
     });
     return current !== initialSnapshotRef.current;
-  }, [name, code, address, lat, lng, prefecture, note, allowed, operatingWeekdays]);
+  }, [
+    name,
+    code,
+    address,
+    lat,
+    lng,
+    prefecture,
+    note,
+    shortLabel,
+    sortOrder,
+    kaipokeName,
+    allowed,
+    operatingWeekdays,
+  ]);
 
   useEffect(() => {
     onDirtyChange?.(isDirty);
@@ -128,6 +151,12 @@ export function OfficeForm({
     e.preventDefault();
     setValidationMsg(null);
 
+    const sortOrderTrimmed = sortOrder.trim();
+    if (sortOrderTrimmed !== '' && !/^-?\d+$/.test(sortOrderTrimmed)) {
+      setValidationMsg('並び順は整数で入力してください');
+      return;
+    }
+
     const payload: OfficeCreate = {
       name,
       code: code || null,
@@ -136,6 +165,9 @@ export function OfficeForm({
       lng: lng === '' ? null : Number(lng),
       prefecture: prefecture || null,
       note: note || null,
+      short_label: shortLabel.trim() || null,
+      sort_order: sortOrderTrimmed === '' ? null : Number(sortOrderTrimmed),
+      kaipoke_name: kaipokeName.trim() || null,
       allowed_cities: allowed,
       // Phase G-45: 稼働曜日.
       operating_weekdays: operatingWeekdays,
@@ -171,6 +203,48 @@ export function OfficeForm({
             ))}
           </datalist>
         </Field>
+        <div>
+          <Field label="略称">
+            <Input
+              value={shortLabel}
+              onChange={(e) => setShortLabel(e.target.value)}
+              maxLength={8}
+              placeholder="例: 本"
+            />
+          </Field>
+          <p className="mt-1 text-xs text-text-muted">
+            札・コース表・Excel のコース表記（例「本A」）に使う短い名前です。空欄なら拠点名の 1
+            文字目を使います。Excel
+            の取り込みはこの略称で拠点を見分けるので、使い始めたあとは変えないでください。
+          </p>
+        </div>
+        <div>
+          <Field label="並び順">
+            <Input
+              type="number"
+              inputMode="numeric"
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value)}
+              placeholder="例: 1"
+            />
+          </Field>
+          <p className="mt-1 text-xs text-text-muted">
+            画面や Excel で拠点を並べる順です（小さい順）。空欄の拠点は名前順で後ろに並びます。
+          </p>
+        </div>
+        <div>
+          <Field label="カイポケ上の事業所名">
+            <Input
+              value={kaipokeName}
+              onChange={(e) => setKaipokeName(e.target.value)}
+              maxLength={120}
+              placeholder="例: 訪問看護ステーション ○○"
+            />
+          </Field>
+          <p className="mt-1 text-xs text-text-muted">
+            カイポケに送る予定の「事業所名」です。空欄なら拠点名を使います。
+          </p>
+        </div>
       </div>
 
       <AddressGeocodeField

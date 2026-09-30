@@ -82,7 +82,7 @@ import { useCheckinFlush } from '@/lib/queries/checkinFlush';
 import { useVoiceFlush } from '@/lib/voice/queue';
 import { rescueVoiceSessions } from '@/lib/voice/session';
 import { useCheckinSettingsPublic } from '@/lib/queries/checkinSettings';
-import { CHECKIN_PUBLIC_FALLBACK } from '@/lib/schemas/checkinSettings';
+import { CHECKIN_PUBLIC_FALLBACK, actualTimeLimitsFrom } from '@/lib/schemas/checkinSettings';
 
 type ScanMode = 'arrival' | 'departure';
 
@@ -1523,6 +1523,7 @@ function MobileVisitDetailPageInner() {
           arrival={sheetModel.arrival}
           departure={sheetModel.departure}
           isToday={isToday}
+          limits={actualTimeLimitsFrom(publicThresholds)}
           departureDisabled={sheetModel.queued}
           departureManual={!sheetModel.queued && !!visit.actual_departure_manual}
           onCancelManualDeparture={cancelManualDeparture}
