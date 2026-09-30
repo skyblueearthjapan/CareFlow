@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>スマホ — 実績の時刻を合わせる 試案</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* ━━━ Design tokens (frontend/styles/tokens.css と同値) ━━━ */
+:root{
+  --brand:#e15a7f; --brand-hover:#c94a6e; --brand-light:#ffd6e0; --brand-50:#fff5f8;
+  --bg-base:#fff; --bg-app:#faf7f2; --bg-muted:#f5f1ea;
+  --line:#e7e5e4; --line-strong:#d6d3d1;
+  --ink:#1c1917; --ink2:#57534e; --ink3:#a8a29e;
+  --ok:#059669; --ok-bg:#d1fae5;
+  --warn:#d97706; --warn-bg:#fef3c7; --warn-strong:#92400e;
+  --err:#dc2626; --info:#0d9488; --info-bg:#ccfbf1; --info-strong:#115e59;
+  --m-bg:#f3f8fc; --m-bar:#6d9ec9; --m-ink:#31597e; --m-ln:#e2edf6;
+  --f-bg:#fdf5f7; --f-bar:#d48ba0; --f-ink:#96475e; --f-ln:#f4e2e8;
+  --sans:'Noto Sans JP','Hiragino Sans','Yu Gothic UI','Meiryo',system-ui,sans-serif;
+  --serif:'Noto Serif JP','Hiragino Mincho ProN','Yu Mincho',serif;
+}
+html{color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;background:#ece7de;color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.5}
+button{font-family:var(--sans);cursor:pointer}
+.tnum{font-variant-numeric:tabular-nums}
+svg.i{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+svg.i.s{width:16px;height:16px}
+
+/* ━━━ 全体レイアウト: 左にスマホ、右に説明 ━━━ */
+.stage{max-width:1180px;margin:0 auto;padding:24px 20px 40px;display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap}
+.phone{width:390px;height:800px;flex-shrink:0;background:var(--bg-app);border-radius:34px;border:10px solid #1c1917;box-shadow:0 24px 48px rgba(28,25,23,.22);overflow:hidden;position:relative;display:flex;flex-direction:column}
+.side{flex:1;min-width:320px;display:flex;flex-direction:column;gap:14px}
+.side h1{font-family:var(--serif);font-size:21px;margin:0}
+.side h1 em{font-style:normal;color:var(--brand)}
+.side p.lead{margin:0;color:var(--ink2);font-size:13.5px}
+.box{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.box h2{font-size:13px;margin:0 0 8px;color:var(--brand-hover)}
+.box ul,.box ol{margin:0;padding-left:20px;font-size:13.5px}
+.box li{margin-bottom:4px}
+.jump{display:flex;flex-wrap:wrap;gap:6px}
+.jump button,.vsw button{border:1px solid var(--line-strong);background:#fff;border-radius:8px;padding:7px 12px;font-size:13px;color:var(--ink)}
+.jump button:hover,.vsw button:hover{background:var(--bg-muted)}
+.vsw{display:inline-flex;gap:0;border:1px solid var(--line-strong);border-radius:8px;overflow:hidden}
+.vsw button{border:none;border-radius:0}
+.vsw button+button{border-left:1px solid var(--line-strong)}
+.vsw button.on{background:var(--brand);color:#fff;font-weight:700}
+.now-state{font-size:12.5px;color:var(--ink2)}
+
+/* ━━━ アプリ内 (MobileShell) ━━━ */
+.sw{display:flex;gap:6px;padding:8px 12px;background:var(--bg-base);border-bottom:1px solid var(--line)}
+.sw span{border-radius:999px;padding:4px 12px;font-size:12px;color:var(--ink2);border:1px solid var(--line)}
+.sw span.on{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
+.sw .clock{margin-left:auto;border:none;color:var(--ink3);padding:4px 0}
+main{flex:1;overflow-y:auto;padding:16px 16px 84px;display:flex;flex-direction:column;gap:12px}
+.nav{position:absolute;left:0;right:0;bottom:0;height:64px;background:var(--bg-base);border-top:1px solid var(--line);display:flex;z-index:5}
+.nav button{flex:1;border:none;background:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:12px;color:var(--ink3)}
+.nav button.on{color:var(--brand)}
+.sec-h{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.sec-h .t{display:flex;align-items:center;gap:10px}
+.sec-h img{height:40px}
+.sec-h h1{font-family:var(--serif);font-size:20px;margin:0;line-height:1.25}
+.sec-h p{margin:0;font-size:12px;color:var(--ink2)}
+.back{height:40px;border-radius:999px;border:1px solid var(--brand-light);background:var(--brand-50);color:var(--brand);font-size:12px;font-weight:500;padding:0 12px;display:inline-flex;align-items:center;gap:5px;flex-shrink:0}
+.card{background:var(--bg-base);border:1px solid var(--line);border-radius:10px;padding:16px;box-shadow:0 1px 2px rgba(28,25,23,.04)}
+.btn{width:100%;height:48px;border-radius:8px;border:1px solid var(--brand);background:var(--brand);color:#fff;font-size:16px;font-weight:500;display:flex;align-items:center;justify-content:center;gap:8px}
+.btn.out{background:var(--bg-base);color:var(--ink);border-color:var(--line-strong)}
+.btn.ghost{background:none;border-color:transparent;color:var(--ink2);height:44px;font-size:14px;text-decoration:underline}
+.btn.err{background:var(--bg-base);border-color:var(--line-strong);color:var(--err);height:40px;font-size:14px}
+.hint{text-align:center;font-size:12px;color:var(--ink3);margin:-6px 0 0}
+.bd{display:inline-flex;align-items:center;border-radius:999px;padding:1px 9px;font-size:12px;font-weight:600;white-space:nowrap}
+.bd.warn{background:var(--warn-bg);color:var(--warn-strong)}
+.bd.info{background:var(--info-bg);color:var(--info-strong)}
+.bd.ok{background:var(--ok-bg);color:var(--ok)}
+.bd.fix{background:var(--brand-50);color:var(--brand-hover);border:1px solid var(--brand-light);font-size:11px}
+
+/* 訪問カード (MobileVisitCard) */
+.vc{display:flex;align-items:center;gap:12px;border:1px solid;border-left-width:4px;border-radius:8px;padding:14px 12px;width:100%;text-align:left;font-size:14px}
+.vc.f{background:var(--f-bg);border-color:var(--f-ln);border-left-color:var(--f-bar);color:var(--f-ink)}
+.vc.m{background:var(--m-bg);border-color:var(--m-ln);border-left-color:var(--m-bar);color:var(--m-ink)}
+.vc .tm{width:54px;flex-shrink:0;text-align:center}
+.vc .tm b{display:block;font-family:var(--serif);font-size:18px;line-height:1.2}
+.vc .tm span{font-size:11px;opacity:.7}
+.vc .bd1{flex:1;min-width:0}
+.vc .nm{display:flex;align-items:center;gap:8px;font-weight:700}
+.vc .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.vc.f .dot{background:var(--f-bar)} .vc.m .dot{background:var(--m-bar)}
+.vc .act{margin:4px 0 0;font-size:12px;font-weight:600;display:flex;align-items:center;gap:4px}
+.vc .act.done{color:var(--ok)} .vc .act.in{color:var(--brand)}
+.vc .ad{margin:4px 0 0;font-size:12px;opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* 訪問詳細 */
+.d-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.d-top .n{font-family:var(--serif);font-size:18px;font-weight:700;margin:0}
+.d-top .dt{font-size:12px;color:var(--ink3);margin:0}
+.rows{margin-top:12px;display:flex;flex-direction:column;gap:8px;font-size:14px}
+.rw{display:flex;align-items:center;gap:8px;color:var(--ink2)}
+.rw.actual{font-weight:600}
+.rw.actual.done{color:var(--ok)} .rw.actual.in{color:var(--brand)}
+.rw.mut{color:var(--ink3)}
+.fixbtn{margin-left:auto;height:36px;border-radius:999px;border:1px solid var(--brand);background:var(--bg-base);color:var(--brand-hover);font-size:13px;font-weight:700;padding:0 14px;display:inline-flex;align-items:center;gap:5px;flex-shrink:0}
+.subnote{font-size:12px;color:var(--ink2);margin:-2px 0 0 28px}
+.elapsed{text-align:center}
+.elapsed b{font-family:var(--serif);font-size:32px;color:var(--brand-hover)}
+.elapsed p{margin:0;font-size:12px;color:var(--ink3)}
+.memo{width:100%;margin-top:6px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;resize:none}
+.alert{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:var(--bg-base)}
+.alert img{height:48px}
+.alert b{display:block}
+.alert span{font-size:13px;color:var(--ink2)}
+.voice{display:flex;align-items:center;gap:10px;color:var(--ink2);font-size:13px}
+
+/* ★ 到着直後の「その場で合わせる」カード */
+.arr{border:2px solid var(--brand);background:var(--brand-50);border-radius:12px;padding:14px}
+.arr .hd{display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px;color:var(--brand-hover)}
+.arr .q{margin:4px 0 10px;font-size:13px;color:var(--ink2)}
+.q3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.q3 button{height:60px;border-radius:10px;border:1px solid var(--brand);background:var(--bg-base);color:var(--brand-hover);font-size:15px;font-weight:700;line-height:1.25}
+.q3 button small{display:block;font-size:12px;font-weight:500;color:var(--ink2)}
+.q2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.q2 button{height:44px;border-radius:10px;border:1px solid var(--line-strong);background:var(--bg-base);font-size:14px;color:var(--ink)}
+.q2 button.pri{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
+
+/* 今週 */
+.day h2{font-family:var(--serif);font-size:16px;margin:0 0 6px;display:flex;align-items:baseline;gap:8px}
+.day h2 small{font-family:var(--sans);font-size:11px;font-weight:400;color:var(--ink3)}
+.chipv{display:flex;align-items:center;gap:6px;border:1px solid;border-left-width:3px;border-radius:6px;padding:0 8px;min-height:44px;width:100%;text-align:left;margin-bottom:6px;font-size:12px}
+.chipv.f{background:var(--f-bg);border-color:var(--f-ln);border-left-color:var(--f-bar);color:var(--f-ink)}
+.chipv.m{background:var(--m-bg);border-color:var(--m-ln);border-left-color:var(--m-bar);color:var(--m-ink)}
+.chipv b{font-size:13px}
+.chipv .a{margin-left:auto;font-weight:600;color:var(--ok);white-space:nowrap}
+.chipv .a.no{color:var(--warn-strong)}
+.chipv:disabled{opacity:1;cursor:default}
+.tip{background:var(--brand-50);border:1px solid var(--brand-light);border-radius:8px;padding:8px 12px;font-size:12.5px;color:var(--brand-hover)}
+
+/* スキャナ (モック) */
+.scan{position:absolute;inset:0;background:#111;color:#fff;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;text-align:center}
+.scan .fr{width:230px;height:230px;border:3px solid #fff;border-radius:18px;position:relative;display:flex;align-items:center;justify-content:center;font-size:13px;color:#bbb}
+.scan .fr::after{content:"";position:absolute;left:12px;right:12px;height:2px;background:var(--brand);top:50%;animation:sc 1.6s ease-in-out infinite}
+@keyframes sc{0%,100%{transform:translateY(-90px)}50%{transform:translateY(90px)}}
+.scan .btn{max-width:280px}
+.scan .btn.out{background:transparent;color:#fff;border-color:#777}
+
+/* ★ 時刻を合わせるシート (ボトムシート) */
+.shade{position:absolute;inset:0;background:rgba(28,25,23,.45);z-index:30;display:flex;align-items:flex-end}
+.sheet{width:100%;background:var(--bg-base);border-radius:22px 22px 0 0;padding:10px 16px 18px;animation:up .22s ease-out}
+@keyframes up{from{transform:translateY(40px);opacity:.4}to{transform:none;opacity:1}}
+.grab{width:40px;height:4px;border-radius:2px;background:var(--line-strong);margin:0 auto 10px}
+.sh-h{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.sh-h b{font-size:16px}
+.sh-h span{display:block;font-size:12px;color:var(--ink2);font-weight:400}
+.x{width:40px;height:40px;border-radius:50%;border:1px solid var(--line);background:var(--bg-base);color:var(--ink2);font-size:16px}
+.segw{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line-strong);border-radius:10px;overflow:hidden;margin:10px 0}
+.segw button{height:44px;border:none;background:var(--bg-base);font-size:14px;color:var(--ink2)}
+.segw button+button{border-left:1px solid var(--line-strong)}
+.segw button.on{background:var(--brand);color:#fff;font-weight:700}
+.segw button:disabled{color:var(--ink3);cursor:not-allowed}
+.big{text-align:center;margin:6px 0 4px}
+.big b{font-size:52px;font-weight:700;line-height:1;letter-spacing:.01em}
+.big p{margin:6px 0 0;font-size:13px;color:var(--ink2)}
+.big p em{font-style:normal;font-weight:700;color:var(--brand-hover)}
+.qk{display:flex;gap:6px;overflow-x:auto;padding:8px 0 2px;scrollbar-width:none}
+.qk button{flex-shrink:0;height:44px;border-radius:999px;border:1px solid var(--line-strong);background:var(--bg-base);padding:0 14px;font-size:14px;color:var(--ink)}
+.qk button.on{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
+.st6{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin:10px 0 4px}
+.st6 button{height:54px;border-radius:12px;border:1px solid var(--line-strong);background:var(--bg-muted);font-size:16px;font-weight:700;color:var(--ink)}
+.st6 button.k10{background:var(--brand-50);border-color:var(--brand);color:var(--brand-hover)}
+.st6 button:disabled{opacity:.35;cursor:not-allowed}
+.st6 button small{display:block;font-size:10px;font-weight:500;color:var(--ink2)}
+.wheelw{position:relative;margin:8px 0 6px}
+.wheel{height:220px;overflow-y:auto;scroll-snap-type:y mandatory;border:1px solid var(--line);border-radius:16px;background:var(--bg-muted);scrollbar-width:none;padding:88px 0;position:relative;touch-action:pan-y;overscroll-behavior:contain}
+.wheel::-webkit-scrollbar{display:none}
+.wheel div{height:44px;scroll-snap-align:center;display:flex;align-items:center;justify-content:center;font-size:18px;color:var(--ink3)}
+.wheel div.ten{font-size:23px;font-weight:700;color:var(--ink2)}
+.wheel div.sel{color:var(--brand-hover);font-weight:700;font-size:30px}
+/* 中央の帯 = 今選んでいる時刻。上下は薄くして「回す」ものだと分かるようにする */
+.wheelw::before{content:"";position:absolute;left:1px;right:1px;top:89px;height:44px;border-top:2px solid var(--brand);border-bottom:2px solid var(--brand);background:rgba(225,90,127,.08);pointer-events:none;z-index:1}
+.wheelw::after{content:"";position:absolute;inset:1px;border-radius:15px;pointer-events:none;z-index:1;background:linear-gradient(to bottom,var(--bg-muted) 0,rgba(245,241,234,0) 34%,rgba(245,241,234,0) 66%,var(--bg-muted) 100%)}
+.wfine{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.wfine button{height:48px;border-radius:12px;border:1px solid var(--line-strong);background:var(--bg-base);font-size:15px;font-weight:700;color:var(--ink)}
+.wfine button:disabled{opacity:.35}
+.sum{text-align:center;font-size:13.5px;color:var(--ink2);margin:6px 0 2px}
+.sum b{color:var(--ink)}
+.sum .good{color:var(--ok);font-weight:700}
+.why{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin:8px 0 12px}
+.why button{height:40px;border-radius:999px;border:1px solid var(--line-strong);background:var(--bg-base);padding:0 14px;font-size:13px;color:var(--ink)}
+.why button.on{background:var(--ink);border-color:var(--ink);color:#fff}
+.toast{position:absolute;left:16px;right:16px;bottom:76px;background:#1c1917;color:#fff;border-radius:10px;padding:10px 14px;font-size:13px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:40;text-align:center}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="phone" id="phone"></div>
+
+  <div class="side">
+    <h1>スマホ — <em>実績の時刻を合わせる</em> 試案</h1>
+    <p class="lead">左のスマホは実際に操作できます。氏名と時刻はすべて架空で、今日は 2026/09/30（水）13:06 の想定です。予定は動かさず、実績の時刻だけを実際に合わせます。</p>
+
+    <div class="box">
+      <h2>そのまま試す</h2>
+      <ol>
+        <li>「坂本 トミ」13:00 の訪問を開く →「QRで到着を記録」→「読み取る」→「到着を記録する」</li>
+        <li>出てきたカードで「10分前」を押す（その場で合わせる）</li>
+        <li>「QRで退出を記録」まで進める → 完了後に「時刻を合わせる」で開く（後から合わせる）</li>
+        <li>下の「今週」タブから、昨日までの訪問を開いて合わせる</li>
+      </ol>
+    </div>
+
+    <div class="box">
+      <h2>場面へ飛ぶ</h2>
+      <div class="jump">
+        <button data-jump="list">今日の一覧</button>
+        <button data-jump="arrived">到着した直後</button>
+        <button data-jump="sheet">時刻を合わせるシート</button>
+        <button data-jump="done">完了した後</button>
+        <button data-jump="forgot">退出の読み取りがない訪問</button>
+        <button data-jump="week">今週（過去の訪問）</button>
+        <button data-jump="reset">最初からやり直す</button>
+      </div>
+    </div>
+
+    <div class="box">
+      <h2>時刻の合わせ方</h2>
+      <ul>
+        <li><b>回して選ぶ</b>: 時刻の列を指でくるくる回します。10 分ごとの時刻が太字の目盛りです。</li>
+        <li><b>ひと押しで飛ぶ</b>: 上の「5分前・10分前・15分前…」を押すと、その時刻まで回ります。</li>
+        <li><b>1 分ずつ詰める</b>: 下の「1 分 まえ」「1 分 あと」。</li>
+      </ul>
+    </div>
+
+    <div class="box">
+      <h2>今の画面から変わるところ</h2>
+      <ul>
+        <li><b>到着の時刻は QR を読んだ瞬間</b>で記録します。位置の取得や確認ボタンを押すまでの時間、圏外での後送りで遅れません。</li>
+        <li><b>到着した直後にカードが出て、1 回押すだけ</b>で 5・10・15 分前に合わせられます。何もしなければ読取時刻のままです。</li>
+        <li><b>実績の行に「時刻を合わせる」ボタン</b>が付き、訪問中も完了後も開けます。</li>
+        <li><b>退出を読み取っていない訪問は、退出時刻を後から入れられます</b>（「手入力」の印が付きます）。</li>
+        <li><b>今週の一覧から過去の訪問を開けます</b>（今はタップできません）。実績の時刻も一覧に出ます。</li>
+        <li>合わせても<b>読み取った時刻は消えず</b>、PC の訪問モニターと打刻履歴に「調整」の印と読取時刻が出ます。</li>
+      </ul>
+    </div>
+
+    <div class="box">
+      <h2>決めたい点（モックでは仮置き）</h2>
+      <ul>
+        <li>本人が合わせられる範囲: 仮に「今週の自分の訪問」。それより前と他人の分は管理者が PC から。</li>
+        <li>到着は読取時刻より後にはできない、さかのぼれるのは最大 90 分、という上限。</li>
+        <li>理由の選択: 仮に任意（初期値「インターホン待ち」）。</li>
+        <li>呼び方: 画面では「合わせる」「調整」に統一（「直す」「修正」は使わない）。</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ━━━ 小道具 ━━━ */
+const pad = n => String(n).padStart(2, '0');
+const hm = m => m == null ? '—' : `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+const I = {
+  qr: '<svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3M21 14v.01M14 21h.01M17 21h4v-4"/></svg>',
+  clock: '<svg class="i s" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  check: '<svg class="i s" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>',
+  pen: '<svg class="i s" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+  back: '<svg class="i s" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>',
+  pin: '<svg class="i s" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>',
+  mic: '<svg class="i" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></svg>',
+  home: '<svg class="i" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M9 22V12h6v10"/></svg>',
+  today: '<svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M9 16l2 2 4-4"/></svg>',
+  week: '<svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M17 14h-6M13 18H7"/></svg>',
+  user: '<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="10" r="3"/><path d="M7 20.7a5 5 0 0 1 10 0"/></svg>',
+};
+const IMG = '../../frontend/public/brand/';
+
+/* ━━━ 架空データ (自分 = 佐々木 美咲 の今週) ━━━ */
+const TODAY = '9/30 (水)';
+function seedVisits() {
+  const v = (id, day, name, sex, ps, dur, addr, x = {}) => ({ id, day, name, sex, ps, pe: ps + dur, addr, status: 'planned', arr: null, arrScan: null, dep: null, depScan: null, depManual: false, whyA: null, whyD: null, ...x });
+  const done = (arr, dep, x = {}) => ({ status: 'done', arr, arrScan: x.arrScan ?? arr, dep, depScan: dep, ...x });
+  return [
+    v(1, '9/28 (月)', '青木 一郎', 'm', 570, 35, '稲毛区小仲台', done(573, 608)),
+    v(2, '9/28 (月)', '菊地 ヨシ', 'f', 645, 40, '稲毛区園生町', done(641, 690, { arrScan: 651, whyA: 'インターホン待ち' })),
+    v(3, '9/28 (月)', '田村 清', 'm', 810, 60, '稲毛区天台', done(812, 871)),
+    v(4, '9/29 (火)', '野口 フミ', 'f', 555, 35, '稲毛区轟町', done(558, 592)),
+    v(5, '9/29 (火)', '柴田 勝', 'm', 660, 40, '稲毛区穴川', { status: 'in', arr: 668, arrScan: 668 }),
+    v(6, '9/29 (火)', '松本 静江', 'f', 840, 35, '稲毛区黒砂', done(843, 876)),
+    v(7, TODAY, '井上 和子', 'f', 570, 35, '稲毛区小仲台', done(573, 606)),
+    v(8, TODAY, '大野 正', 'm', 645, 35, '稲毛区稲毛東', { status: 'in', arr: 652, arrScan: 652 }),
+    v(9, TODAY, '坂本 トミ', 'f', 780, 35, '稲毛区園生町'),
+    v(10, TODAY, '近藤 茂', 'm', 870, 40, '稲毛区天台'),
+    v(11, TODAY, '平野 キヨ', 'f', 945, 35, '稲毛区轟町'),
+    v(12, '10/1 (木)', '橋本 勇', 'm', 600, 40, '稲毛区穴川'),
+    v(13, '10/1 (木)', '鈴木 ハナ', 'f', 810, 35, '稲毛区黒砂'),
+    v(14, '10/2 (金)', '三浦 昭', 'm', 570, 60, '稲毛区小仲台'),
+  ];
+}
+let V, S;
+function reset() {
+  V = seedVisits();
+  S = { tab: 'today', view: 'list', vid: null, from: 'today', scan: null, preview: null, justArr: false, sheet: null, variant: S ? S.variant : 'A', clock: 13 * 60 + 6, t0: Date.now() };
+}
+const nowF = () => S.clock + (Date.now() - S.t0) / 60000;      // モック内の現在時刻 (分・実時間で進む)
+const nowM = () => Math.floor(nowF());
+const setClock = m => { S.clock = m; S.t0 = Date.now(); };
+const vis = id => V.find(v => v.id === id);
+const isToday = v => v.day === TODAY;
+const isPast = v => ['9/28 (月)', '9/29 (火)'].includes(v.day);
+const fixedA = v => v.arr != null && v.arr !== v.arrScan;
+const fixedD = v => v.dep != null && (v.depManual || v.dep !== v.depScan);
+const stay = v => v.arr != null && v.dep != null ? v.dep - v.arr : null;
+const badge = v => v.status === 'done' ? '<span class="bd ok">完了</span>' : v.status === 'in' ? '<span class="bd info">訪問中</span>' : '<span class="bd warn">未訪問</span>';
+function actualText(v) {
+  if (v.arr == null) return null;
+  return v.dep != null ? `実績 ${hm(v.arr)} – ${hm(v.dep)}` : `到着 ${hm(v.arr)} 〜`;
+}
+
+/* ━━━ 画面 ━━━ */
+function shell(inner, overlay = '') {
+  return `<div class="sw"><span class="on">ホーム</span><span>ボード</span><span>受け入れ枠</span><span class="clock tnum" id="clk">${hm(nowM())}</span></div>
+  <main>${inner}</main>
+  <div class="nav">
+    <button data-act="nop">${I.home}<span>ホーム</span></button>
+    <button data-act="tab" data-tab="today" class="${S.tab === 'today' ? 'on' : ''}">${I.today}<span>今日</span></button>
+    <button data-act="tab" data-tab="week" class="${S.tab === 'week' ? 'on' : ''}">${I.week}<span>今週</span></button>
+    <button data-act="nop">${I.user}<span>マイページ</span></button>
+  </div>${overlay}<div class="toast" id="toast"></div>`;
+}
+function viewList() {
+  const list = V.filter(isToday);
+  return `<div class="sec-h"><div class="t"><img src="${IMG}rakusuke-pose-visit.png" alt=""><div><h1>今日の訪問</h1><p>2026-09-30 ・ ${list.length}件</p></div></div></div>
+  <button class="btn out" data-act="nop">${I.qr}QRを読み取る</button><p class="hint">予定に無い訪問・担当外の訪問はこちらから</p>
+  ${list.map(v => {
+    const a = actualText(v);
+    return `<button class="vc ${v.sex}" data-act="open" data-id="${v.id}" data-from="today">
+      <div class="tm tnum"><b>${hm(v.ps)}</b><span>${hm(v.pe)}</span></div>
+      <div class="bd1"><div class="nm"><i class="dot"></i>${v.name} ${badge(v)}</div>
+        ${a ? `<p class="act ${v.dep != null ? 'done' : 'in'} tnum">${v.dep != null ? I.check : I.clock}${a}${v.status === 'in' && v.dep == null ? '（訪問中）' : ''}${fixedA(v) || fixedD(v) ? ' <span class="bd fix">調整</span>' : ''}</p>` : ''}
+        <p class="ad">📍${v.addr}</p></div><span style="opacity:.6">›</span></button>`;
+  }).join('')}`;
+}
+function viewWeek() {
+  const days = [...new Set(V.map(v => v.day))];
+  return `<div class="sec-h"><div class="t"><img src="${IMG}rakusuke-pose-calendar.png" alt=""><div><h1>今週の予定</h1><p>2026-09-28 週</p></div></div></div>
+  <div class="tip">終わった訪問を押すと、実績の時刻を確認して合わせられます。</div>
+  ${days.map(d => {
+    const list = V.filter(v => v.day === d);
+    return `<section class="day"><h2>${d}${d === TODAY ? '<small>今日</small>' : ''}</h2>${list.map(v => {
+      const can = v.arr != null || isToday(v);
+      const a = v.arr == null ? '' : v.dep != null ? `<span class="a tnum">✓ ${hm(v.arr)}–${hm(v.dep)}${fixedA(v) || fixedD(v) ? ' ✎' : ''}</span>` : `<span class="a no tnum">到着 ${hm(v.arr)}・退出なし</span>`;
+      return `<button class="chipv ${v.sex}" ${can ? `data-act="open" data-id="${v.id}" data-from="week"` : 'disabled'}><span class="tnum" style="font-weight:600">${hm(v.ps)}</span><b>${v.name}</b>${a}</button>`;
+    }).join('')}</section>`;
+  }).join('')}`;
+}
+function arrivedCard(v) {
+  if (fixedA(v)) {
+    return `<div class="arr"><div class="hd">${I.check}到着を ${hm(v.arr)} に合わせました</div>
+      <p class="q">読み取った時刻は ${hm(v.arrScan)}（${v.arrScan - v.arr} 分前に到着）。読取時刻も記録に残ります。</p>
+      <div class="q2"><button data-act="undoArr">元に戻す</button><button class="pri" data-act="okArr">OK</button></div></div>`;
+  }
+  return `<div class="arr"><div class="hd">${I.check}到着 ${hm(v.arr)} を記録しました</div>
+    <p class="q">お宅に着いてから読み取るまでに時間があったら、着いた時刻に合わせられます。</p>
+    <div class="q3">${[5, 10, 15].map(n => `<button data-act="quick" data-n="${n}">${n}分前<small class="tnum">${hm(v.arrScan - n)}</small></button>`).join('')}</div>
+    <div class="q2"><button data-act="sheet" data-w="arr">細かく合わせる</button><button class="pri" data-act="okArr">このままでOK</button></div></div>`;
+}
+function viewDetail() {
+  const v = vis(S.vid), a = actualText(v), st = stay(v), el = nowF() - v.arr;
+  const notes = [];
+  if (fixedA(v)) notes.push(`到着を ${v.arrScan - v.arr} 分 調整（読取 ${hm(v.arrScan)}）`);
+  if (v.depManual) notes.push('退出は手入力'); else if (fixedD(v)) notes.push(`退出を調整（読取 ${hm(v.depScan)}）`);
+  let act = '';
+  if (v.status === 'planned') {
+    act = isToday(v) ? `<button class="btn" data-act="scan" data-m="arr">${I.qr}QRで到着を記録</button><button class="btn err" data-act="nop">訪問できなかった（理由を記録）</button>`
+      : `<div class="card" style="color:var(--ink2);font-size:13px">当日になると到着を記録できます。</div>`;
+  } else if (v.status === 'in') {
+    const live = isToday(v);
+    act = (S.justArr ? arrivedCard(v) : '') +
+      `<div class="card"><div class="elapsed"><b class="tnum" id="el">${live ? pad(Math.floor(el)) + ':' + pad(Math.floor((el % 1) * 60)) : '--:--'}</b><p>経過時間（到着 ${hm(v.arr)}〜）</p></div>
+        <label style="font-size:12px;font-weight:600;color:var(--ink2)">サービスメモ（下書き・端末内）</label><textarea class="memo" rows="2" placeholder="実施内容・申し送り"></textarea></div>
+       <div class="card voice">${I.mic}音声記録（録音ボタンは今のまま）</div>
+       <button class="btn" data-act="scan" data-m="dep">${I.qr}QRで退出を記録</button>
+       <button class="btn ghost" data-act="sheet" data-w="dep">退出の QR を読んでいないときは、退出時刻を入れる</button>`;
+  } else {
+    act = `<div class="alert"><img src="${IMG}rakusuke-pose-cheer.png" alt=""><div><b>訪問完了</b><span>おつかれさまでした！時刻は上の「時刻を合わせる」から調整できます。</span></div></div>`;
+  }
+  return `<div class="sec-h"><div class="t"><div><h1>訪問詳細</h1></div></div>
+    <button class="back" data-act="tab" data-tab="${S.from}">${I.back}${S.from === 'week' ? '今週の予定に戻る' : '今日の訪問に戻る'}</button></div>
+  <div class="card"><div class="d-top"><div><p class="n">${v.name}</p><p class="dt">2026 年 ${v.day}</p></div>${badge(v)}</div>
+    <div class="rows">
+      <div class="rw tnum">${I.clock}予定 ${hm(v.ps)} - ${hm(v.pe)}</div>
+      ${a ? `<div class="rw actual ${v.dep != null ? 'done' : 'in'} tnum">${v.dep != null ? I.check : I.clock}${a}<button class="fixbtn" data-act="sheet" data-w="arr">${I.clock}時刻を合わせる</button></div>` : ''}
+      ${a && (st != null || notes.length) ? `<p class="subnote tnum">${st != null ? `滞在 ${st} 分` : ''}${st != null && notes.length ? ' ・ ' : ''}${notes.join(' ・ ')}</p>` : ''}
+      <div class="rw mut">${I.pin}玄関の固定QRを読み取って打刻してください</div>
+    </div></div>${act}`;
+}
+function overlayScan() {
+  const v = vis(S.vid);
+  if (S.scan) return `<div class="scan"><p style="margin:0;font-size:15px">${v.name} / ${S.scan === 'arr' ? '到着' : '退出'}</p><div class="fr">QR を枠に合わせてください</div>
+    <button class="btn" data-act="scanned">読み取る（モック）</button><button class="btn out" data-act="cancelScan">閉じる</button></div>`;
+  if (S.preview) return `<div class="shade"><div class="sheet"><div class="grab"></div>
+    <div class="sh-h"><b>${S.preview.m === 'arr' ? '到着' : '退出'}を記録します<span>${v.name}</span></b></div>
+    <div class="big"><b class="tnum">${hm(S.preview.at)}</b><p>QR を読み取った時刻で記録します</p></div>
+    <p class="sum"><span class="bd ok">位置 一致</span>　利用者宅から 12 m</p>
+    <button class="btn" data-act="record" style="margin-top:12px">${S.preview.m === 'arr' ? '到着' : '退出'}を記録する</button>
+    <button class="btn ghost" data-act="cancelScan">やめる</button></div></div>`;
+  return '';
+}
+
+/* ━━━ 時刻を合わせるシート ━━━ */
+function sheetRange(v, w) {
+  if (w === 'arr') return [v.arrScan - 90, Math.min(v.arrScan, v.dep != null ? v.dep - 1 : v.arrScan)];
+  const cap = isToday(v) ? nowM() : 23 * 60 + 59;
+  return [v.arr + 1, v.depScan != null ? Math.min(cap, v.depScan + 30) : cap];
+}
+function openSheet(w) {
+  const v = vis(S.vid);
+  if (w === 'dep' && v.dep == null) {
+    const [lo, hi] = sheetRange(v, 'dep');
+    S.sheet = { w, draft: Math.max(lo, Math.min(hi, v.arr + (v.pe - v.ps))), why: '読み取りなし', manual: true };
+  } else S.sheet = { w, draft: w === 'arr' ? v.arr : v.dep, why: (w === 'arr' ? v.whyA : v.whyD) || (w === 'arr' ? 'インターホン待ち' : '読み取りなし'), manual: false };
+}
+function overlaySheet() {
+  if (!S.sheet) return '';
+  const v = vis(S.vid), sh = S.sheet, w = sh.w, [lo, hi] = sheetRange(v, w);
+  const scan = w === 'arr' ? v.arrScan : v.depScan, diff = scan != null ? sh.draft - scan : null;
+  const arr = w === 'arr' ? sh.draft : v.arr, dep = w === 'dep' ? sh.draft : v.dep, st = dep != null ? dep - arr : null, plan = v.pe - v.ps;
+  const sub = scan == null ? '退出の読み取りがありません（手入力）' : diff === 0 ? `読取 ${hm(scan)} のまま` : `読取 ${hm(scan)} ・ <em>${Math.abs(diff)} 分${diff < 0 ? '前' : '後'}</em>`;
+  const quick = w === 'arr'
+    ? [[0, '読取どおり'], [-5, '5分前'], [-10, '10分前'], [-15, '15分前'], [-20, '20分前'], [-30, '30分前']].map(([d, t]) => `<button data-act="setd" data-t="${scan + d}" class="${sh.draft === scan + d ? 'on' : ''}">${t}</button>`).join('')
+    : [[plan, `予定どおり ${plan}分`], [plan - 5, `${plan - 5}分`], [plan + 5, `${plan + 5}分`], [plan + 10, `${plan + 10}分`]].map(([d, t]) => `<button data-act="setd" data-t="${v.arr + d}" class="${sh.draft === v.arr + d ? 'on' : ''}">滞在 ${t}</button>`).join('');
+  let rows = ''; for (let m = lo; m <= hi; m++) rows += `<div class="tnum ${m % 10 === 0 ? 'ten' : ''} ${m === sh.draft ? 'sel' : ''}">${hm(m)}</div>`;
+  const fine = d => `<button data-act="step" data-d="${d}" ${sh.draft + d < lo || sh.draft + d > hi ? 'disabled' : ''}>${d > 0 ? '1 分 あと' : '1 分 まえ'}</button>`;
+  const ctl = `<div class="wheelw"><div class="wheel" id="wheel">${rows}</div></div><div class="wfine">${fine(-1)}${fine(1)}</div>`;
+  const whys = w === 'arr' ? ['インターホン待ち', '読み取りが後になった', 'その他'] : ['読み取りなし', 'その他'];
+  const changed = sh.manual || sh.draft !== (w === 'arr' ? v.arr : v.dep);
+  return `<div class="shade" data-act="closeSheetBg"><div class="sheet"><div class="grab"></div>
+    <div class="sh-h"><b>実績の時刻を合わせる<span>${v.name}　予定 ${hm(v.ps)}–${hm(v.pe)}</span></b><button class="x" data-act="closeSheet" aria-label="閉じる">✕</button></div>
+    <div class="segw"><button data-act="which" data-w="arr" class="${w === 'arr' ? 'on' : ''}">到着 ${hm(v.arr)}</button><button data-act="which" data-w="dep" class="${w === 'dep' ? 'on' : ''}">退出 ${v.dep != null ? hm(v.dep) : '（未記録）'}</button></div>
+    <div class="big"><b class="tnum">${hm(sh.draft)}</b><p class="tnum">${sub}</p></div>
+    <div class="qk">${quick}</div>
+    ${ctl}
+    <p class="sum tnum">${st != null ? `滞在 <b>${st} 分</b>（予定 ${plan} 分）${st === plan ? ' <span class="good">予定どおり</span>' : ''}` : `予定 ${hm(v.ps)}–${hm(v.pe)}（${plan} 分）`}</p>
+    <div class="why">${whys.map(y => `<button data-act="why" data-y="${y}" class="${sh.why === y ? 'on' : ''}">${y}</button>`).join('')}</div>
+    <button class="btn" data-act="save" ${changed ? '' : 'style="opacity:.45" disabled'}>${hm(sh.draft)} に合わせる</button></div></div>`;
+}
+
+/* ━━━ 描画 ━━━ */
+const phone = document.getElementById('phone');
+function render() {
+  const mainEl = phone.querySelector('main'), keep = mainEl ? mainEl.scrollTop : 0;
+  const inner = S.view === 'detail' ? viewDetail() : S.tab === 'week' ? viewWeek() : viewList();
+  phone.innerHTML = shell(inner, overlayScan() + overlaySheet());
+  phone.querySelector('main').scrollTop = keep;
+  const wheel = document.getElementById('wheel');
+  if (wheel) {
+    const [lo] = sheetRange(vis(S.vid), S.sheet.w);
+    wheel.scrollTop = (S.sheet.draft - lo) * 44;
+    let t; wheel.onscroll = () => { clearTimeout(t); t = setTimeout(() => {
+      const m = lo + Math.round(wheel.scrollTop / 44); if (S.sheet && m !== S.sheet.draft) { S.sheet.draft = m; render(); }
+    }, 90); };
+  }
+}
+let tt; function toast(m) { const t = document.getElementById('toast'); t.textContent = m; t.classList.add('show'); clearTimeout(tt); tt = setTimeout(() => { const x = document.getElementById('toast'); if (x) x.classList.remove('show'); }, 2400); S.lastToast = m; }
+setInterval(() => {                                                // 時計と経過時間だけ差し替える (全体は描き直さない)
+  const c = document.getElementById('clk'); if (c) c.textContent = hm(nowM());
+  const e = document.getElementById('el'), v = S.vid && vis(S.vid);
+  if (e && v && v.status === 'in' && isToday(v)) { const el = nowF() - v.arr; e.textContent = pad(Math.floor(el)) + ':' + pad(Math.floor((el % 1) * 60)); }
+}, 1000);
+
+/* ━━━ 操作 ━━━ */
+const ACT = {
+  nop() { toast('この画面はモックの対象外です'); },
+  tab(d) { S.tab = d.tab; S.view = 'list'; S.justArr = false; S.sheet = null; },
+  open(d) { S.vid = +d.id; S.from = d.from; S.view = 'detail'; S.justArr = false; },
+  scan(d) { S.scan = d.m; },
+  cancelScan() { S.scan = null; S.preview = null; },
+  scanned() {                                                     // 読み取った瞬間の時刻を控える
+    const v = vis(S.vid);
+    if (S.scan === 'dep' && nowM() < v.arr + 20) setClock(v.arrScan + 25);   // モックの都合: 退出は 25 分後に進める
+    S.preview = { m: S.scan, at: nowM() }; S.scan = null;
+    setClock(nowM() + 1);                                         // 位置の取得と確認で 1 分かかった想定
+  },
+  record() {
+    const v = vis(S.vid), p = S.preview; S.preview = null;
+    if (p.m === 'arr') { v.arr = v.arrScan = p.at; v.status = 'in'; S.justArr = true; }
+    else { v.dep = v.depScan = p.at; v.depManual = false; v.status = 'done'; S.justArr = false; setTimeout(() => toast('訪問を完了しました'), 0); }
+  },
+  quick(d) { const v = vis(S.vid); v.arr = v.arrScan - +d.n; v.whyA = 'インターホン待ち'; },
+  undoArr() { const v = vis(S.vid); v.arr = v.arrScan; v.whyA = null; },
+  okArr() { S.justArr = false; },
+  sheet(d) { openSheet(d.w); },
+  which(d) { openSheet(d.w); },
+  closeSheet() { S.sheet = null; },
+  setd(d) { const [lo, hi] = sheetRange(vis(S.vid), S.sheet.w); S.sheet.draft = Math.max(lo, Math.min(hi, +d.t)); },
+  step(d) { S.sheet.draft += +d.d; },
+  why(d) { S.sheet.why = d.y; },
+  save() {
+    const v = vis(S.vid), sh = S.sheet;
+    if (sh.w === 'arr') { v.arr = sh.draft; v.whyA = v.arr === v.arrScan ? null : sh.why; }
+    else { v.dep = sh.draft; v.whyD = sh.why; if (v.depScan == null) v.depManual = true; v.status = 'done'; }
+    S.sheet = null; S.justArr = false;
+    setTimeout(() => toast(`${sh.w === 'arr' ? '到着' : '退出'}を ${hm(sh.draft)} に合わせました`), 0);
+  },
+};
+phone.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]'); if (!el) return;
+  if (el.dataset.act === 'closeSheetBg') { if (e.target === el) { S.sheet = null; render(); } return; }
+  ACT[el.dataset.act](el.dataset); render();
+});
+function jump(k) {
+  reset();
+  const arrive = () => { const v = vis(9); v.arr = v.arrScan = 786; v.status = 'in'; S.vid = 9; S.view = 'detail'; setClock(787); };
+  if (k === 'arrived') { arrive(); S.justArr = true; }
+  if (k === 'sheet') { arrive(); openSheet('arr'); S.sheet.draft = 776; }
+  if (k === 'done') { arrive(); const v = vis(9); v.arr = 776; v.whyA = 'インターホン待ち'; v.dep = v.depScan = 811; v.status = 'done'; setClock(812); }
+  if (k === 'forgot') { S.vid = 8; S.view = 'detail'; openSheet('dep'); }
+  if (k === 'week') S.tab = 'week';
+  render();
+}
+document.querySelector('.jump').addEventListener('click', e => { if (e.target.dataset.jump) jump(e.target.dataset.jump); });
+
+reset(); render();
+/* 確認用: #arrived #sheet #done #forgot #week */
+const h = location.hash.slice(1);
+if (h) jump(h);
+</script>
+</body>
+</html>

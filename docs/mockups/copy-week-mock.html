@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>前の週をコピーして週を作る 試案</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  --brand:#e15a7f; --brand-hover:#c94a6e; --brand-light:#ffd6e0; --brand-50:#fff5f8;
+  --bg-base:#fff; --bg-app:#faf7f2; --bg-muted:#f5f1ea;
+  --line:#e7e5e4; --line-strong:#d6d3d1;
+  --ink:#1c1917; --ink2:#57534e; --ink3:#a8a29e;
+  --ok:#059669; --ok-bg:#d1fae5; --warn-bg:#fef3c7; --warn-strong:#92400e; --warn-line:#fde68a;
+  --info-bg:#ccfbf1; --info-strong:#115e59;
+  --m-bg:#f3f8fc; --m-bar:#6d9ec9; --m-ink:#31597e; --m-ln:#e2edf6;
+  --f-bg:#fdf5f7; --f-bar:#d48ba0; --f-ink:#96475e; --f-ln:#f4e2e8;
+  --sans:'Noto Sans JP','Hiragino Sans','Yu Gothic UI','Meiryo',system-ui,sans-serif;
+  --serif:'Noto Serif JP','Hiragino Mincho ProN','Yu Mincho',serif;
+}
+html{color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg-app);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.55}
+button{font-family:var(--sans);cursor:pointer}
+.tnum{font-variant-numeric:tabular-nums}
+.mockbar{background:#1c1917;color:#f5f1ea;font-size:12.5px;padding:8px 16px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.mockbar b{color:#ffd6e0}
+.mockbar button{border:1px solid #78716c;background:#292524;color:#f5f1ea;border-radius:8px;padding:5px 12px;font-size:12.5px}
+.page{padding:18px 22px 40px;max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+.ttl{display:flex;align-items:center;gap:12px}
+.ttl img{height:44px}
+.ttl h1{font-family:var(--serif);font-size:24px;margin:0}
+.ttl p{margin:2px 0 0;color:var(--ink2)}
+.card{background:var(--bg-base);border:1px solid var(--line);border-radius:10px;box-shadow:0 1px 2px rgba(28,25,23,.04),0 8px 24px rgba(28,25,23,.05)}
+.tool{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line)}
+.wk{font-weight:700;display:inline-flex;align-items:center;gap:8px}
+.wk i{width:26px;height:26px;border:1px solid var(--line);border-radius:6px;display:inline-flex;align-items:center;justify-content:center;font-style:normal;color:var(--ink2)}
+.tabs{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-left:8px}
+.tabs span{padding:4px 12px;font-size:13px;color:var(--ink2)}
+.tabs span+span{border-left:1px solid var(--line)}
+.tabs span.on{background:var(--brand);color:#fff;font-weight:700}
+.sp{flex:1}
+.btn{height:36px;border-radius:8px;border:1px solid var(--line-strong);background:var(--bg-base);color:var(--ink);font-size:14px;padding:0 14px;display:inline-flex;align-items:center;gap:6px}
+.btn:hover{background:var(--bg-muted)}
+.btn.pri{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
+.btn.pri:hover{background:var(--brand-hover)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.empty{padding:40px 20px;text-align:center}
+.empty img{height:90px}
+.empty h2{font-size:17px;margin:8px 0 4px}
+.empty p{margin:0 0 14px;color:var(--ink2)}
+.board{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:0}
+.col{border-right:1px solid var(--line);min-height:120px}
+.col:last-child{border-right:none}
+.col h3{margin:0;padding:8px 10px;font-size:13px;border-bottom:1px solid var(--line);background:var(--bg-muted);display:flex;justify-content:space-between}
+.col h3 small{font-weight:400;color:var(--ink2)}
+.v{display:flex;gap:6px;align-items:center;border:1px solid;border-left-width:3px;border-radius:6px;margin:5px 8px;padding:3px 7px;font-size:12px}
+.v.f{background:var(--f-bg);border-color:var(--f-ln);border-left-color:var(--f-bar);color:var(--f-ink)}
+.v.m{background:var(--m-bg);border-color:var(--m-ln);border-left-color:var(--m-bar);color:var(--m-ink)}
+.v b{font-weight:700}
+.v .st{margin-left:auto;font-size:11px;opacity:.85;white-space:nowrap}
+.more{font-size:12px;color:var(--ink3);padding:2px 10px 8px}
+
+/* ダイアログ (add-visit-anywhere §3-5 の可読性基準: 本文 14px・補足 12px 以上) */
+.ov{position:fixed;inset:0;background:rgba(28,25,23,.45);display:none;align-items:flex-start;justify-content:center;padding:36px 16px;overflow:auto;z-index:40}
+.ov.open{display:flex}
+.dlg{background:var(--bg-base);border-radius:16px;width:100%;max-width:880px;box-shadow:0 24px 48px rgba(28,25,23,.2);overflow:hidden}
+.dh{padding:18px 22px 12px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px}
+.dh h2{margin:0;font-family:var(--serif);font-size:19px}
+.dh p{margin:2px 0 0;color:var(--ink2);font-size:13.5px}
+.x{width:36px;height:36px;border-radius:8px;border:1px solid var(--line);background:var(--bg-base);color:var(--ink2);font-size:16px;flex-shrink:0}
+.steps{display:flex;gap:6px;padding:10px 22px;border-bottom:1px solid var(--line);font-size:13px;color:var(--ink3)}
+.steps span.on{color:var(--brand-hover);font-weight:700}
+.db{padding:16px 22px;display:flex;flex-direction:column;gap:14px}
+.df{padding:12px 22px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:10px;align-items:center}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.opt{border:2px solid var(--line);border-radius:12px;padding:16px;text-align:left;background:var(--bg-base)}
+.opt:hover{border-color:var(--brand-light)}
+.opt.on{border-color:var(--brand);background:var(--brand-50)}
+.opt h3{margin:0 0 4px;font-size:16px}
+.opt p{margin:0;color:var(--ink2);font-size:13.5px}
+.opt ul{margin:8px 0 0;padding-left:18px;font-size:13px;color:var(--ink2)}
+table.w{width:100%;border-collapse:collapse}
+table.w th{font-size:12px;color:var(--ink2);font-weight:500;text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
+table.w td{padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+table.w tr{cursor:pointer}
+table.w tr.on td{background:var(--brand-50)}
+table.w tr:hover td{background:var(--bg-muted)}
+.bd{display:inline-block;border-radius:999px;padding:1px 9px;font-size:12px;font-weight:700}
+.bd.ok{background:var(--ok-bg);color:var(--ok)} .bd.warn{background:var(--warn-bg);color:var(--warn-strong)} .bd.mut{background:var(--bg-muted);color:var(--ink2)}
+.sumrow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.sum{border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.sum .k{font-size:12.5px;color:var(--ink2)}
+.sum .n{font-size:26px;font-weight:700;line-height:1.25}
+.sum .n small{font-size:13px;font-weight:500;color:var(--ink2);margin-left:3px}
+.sum .s{font-size:12px;color:var(--ink2)}
+.sec{border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.sec h4{margin:0;padding:9px 14px;font-size:14px;background:var(--bg-muted);display:flex;justify-content:space-between;align-items:center;gap:10px}
+.sec h4 small{font-weight:400;color:var(--ink2);font-size:12.5px}
+.sec .in{padding:10px 14px;font-size:13.5px}
+.chk{display:flex;gap:10px;align-items:flex-start;padding:6px 0}
+.chk input{width:18px;height:18px;margin-top:2px;accent-color:var(--brand);flex-shrink:0}
+.chk span small{display:block;color:var(--ink2);font-size:12.5px}
+.list{max-height:190px;overflow:auto;border-top:1px solid var(--line);margin-top:6px}
+.li{display:flex;gap:10px;align-items:center;padding:6px 2px;border-bottom:1px solid var(--line);font-size:13.5px}
+.li input{width:18px;height:18px;accent-color:var(--brand)}
+.li .t{color:var(--ink2);min-width:150px}
+.warnbox{background:var(--warn-bg);border:1px solid var(--warn-line);color:var(--warn-strong);border-radius:8px;padding:8px 12px;font-size:13.5px}
+.okbox{background:var(--ok-bg);color:#065f46;border-radius:8px;padding:10px 12px;font-size:14px}
+.days{display:flex;gap:6px;flex-wrap:wrap}
+.days span{border:1px solid var(--line);border-radius:8px;padding:4px 10px;font-size:13px}
+.explain{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px}
+.box{padding:12px 16px;font-size:13.5px}
+.box h2{font-size:13px;margin:0 0 6px;color:var(--brand-hover)}
+.box ul{margin:0;padding-left:18px} .box li{margin-bottom:3px}
+</style>
+</head>
+<body>
+<div class="mockbar">
+  <span><b>モック</b>　新しい週を「前の週をコピー」で作る流れの試案。件数は本番の 9/28 の週を 10/5 の週へ写した場合の実数、氏名は架空です。</span>
+  <button id="again">最初からやり直す</button>
+</div>
+
+<div class="page">
+  <div class="ttl"><img src="../../frontend/public/brand/rakusuke-pose-calendar.png" alt=""><div><h1>スケジュール</h1><p>週ごとの訪問とスタッフの予定を組みます。</p></div></div>
+
+  <div class="card">
+    <div class="tool">
+      <span class="wk"><i>‹</i>2026/10/05 (月) 〜 10/10 (土)<i>›</i></span>
+      <span class="tabs"><span>コース</span><span class="on">職員スケジュール</span></span>
+      <span class="sp"></span>
+      <button class="btn" id="undo" style="display:none">↩ コピー前に戻す</button>
+      <button class="btn pri" id="open">＋ 週を作る</button>
+    </div>
+    <div id="body"></div>
+  </div>
+
+  <div class="explain">
+    <div class="card box"><h2>この機能の考え方</h2><ul>
+      <li><b>写すのは患者さんの予定</b>（曜日・開始時刻・長さ）です。時刻は、その週の予定として確定した時刻を使います（QR の実績時刻ではありません）。</li>
+      <li><b>担当は写しません。</b>写した後に「自動スタッフ割当」でローテーションを効かせて割り当てます（過去 4 週の担当を見て、同じ人が続かないようにします）。</li>
+      <li><b>固定訪問（マスタ）は一切変えません。</b>固定訪問への反映は、今までどおり別の操作です。</li>
+      <li>写す元の週は選べます。直前の週とは限りません（祝日のあった週を避けるなど）。</li>
+    </ul></div>
+    <div class="card box"><h2>写さないもの</h2><ul>
+      <li>取消した訪問、予定外の訪問（QR で記録しただけのもの）、特別訪問週間の追加分</li>
+      <li>入院中などで止まっている利用者の訪問（写す先の週の時点で判定）</li>
+      <li>担当、同行、会議・休みなどのイベント（イベントと同行は今までどおり既定から入ります）</li>
+      <li>青ピン（週の固定）、申し送りメモ</li>
+    </ul></div>
+    <div class="card box"><h2>安全のための作り</h2><ul>
+      <li>実行前に、写す先の週を保存します。「コピー前に戻す」で元に戻せます。</li>
+      <li>写す先に既に訪問がある場合は、打刻済み・カイポケ取込済み・青ピンの訪問を残し、それ以外を置き換えます。件数を確認画面に出します。</li>
+      <li>写した訪問はカイポケにはまだ送られていない状態（●未送信）になります。送るのは今までどおり連携画面からです。</li>
+    </ul></div>
+  </div>
+</div>
+
+<div class="ov" id="ov"><div class="dlg" id="dlg"></div></div>
+
+<script>
+/* 本番 (読み取り) の実数: 写す元の候補週。[月曜, 訪問, 取消, 予定外, 利用者, QR の到着件数, 注記] */
+const WEEKS = [
+  ['9/28', 147, 5, 1, 71, 43, ''], ['9/21', 128, 35, 6, 69, 41, '祝日あり（9/21・9/23）'], ['9/14', 137, 4, 0, 69, 28, ''],
+  ['9/7', 136, 7, 0, 71, 1, ''], ['8/31', 139, 12, 0, 75, 0, ''], ['8/24', 131, 0, 0, 67, 0, ''],
+];
+const BYDAY = { '9/28': [27, 26, 30, 26, 26, 12] };
+const PT = ['青木 一郎','井上 和子','大野 正','菊地 ヨシ','近藤 茂','坂本 トミ','柴田 勝','鈴木 ハナ','田村 清','野口 フミ','橋本 勇','平野 キヨ','福田 実','松本 静江','三浦 昭','吉川 ミツ','石井 タケ','上田 光男','岡田 サチ','金子 進'];
+const ST = ['佐々木 美咲','中村 彩','吉田 恵','加藤 由紀','木村 真央','斎藤 翔','小林 葵'];
+const WD = ['月','火','水','木','金','土'];
+const S = { step: 0, how: 'copy', src: 0, extras: true, fill: false, assign: true, done: false, assigned: false };
+const $ = id => document.getElementById(id);
+
+/* 盤面の見本 (各曜日の先頭 6 件だけ描く) */
+function sampleDay(d, n) {
+  const out = [];
+  for (let i = 0; i < Math.min(6, n); i++) {
+    const t = 9 * 60 + 30 + i * 70 + ((d * 7 + i * 3) % 4) * 5, p = PT[(d * 5 + i * 3) % PT.length];
+    out.push({ t: `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`, p, sex: (d + i) % 3 === 0 ? 'm' : 'f', st: ST[(d * 2 + i) % ST.length] });
+  }
+  return out;
+}
+function renderBody() {
+  if (!S.done) {
+    $('body').innerHTML = `<div class="empty"><img src="../../frontend/public/brand/rakusuke-pose-think.png" alt=""><h2>この週にはまだ訪問がありません</h2>
+      <p>「週を作る」から、固定訪問で生成するか、前の週をコピーするかを選べます。</p><button class="btn pri" id="open2">＋ 週を作る</button></div>`;
+    $('open2').onclick = openDlg; $('undo').style.display = 'none'; return;
+  }
+  const days = BYDAY['9/28'];
+  $('undo').style.display = '';
+  $('body').innerHTML = `<div style="padding:10px 16px" class="${S.assigned ? 'okbox' : 'warnbox'}">${S.assigned
+      ? '9/28 の週から 147 件を写し、担当を自動で割り当てました。担当は前の週とは変わっています（ローテーション）。'
+      : '9/28 の週から 147 件を写しました。担当はまだ入っていません。「自動スタッフ割当」で割り当ててください。'}</div>
+    <div class="board">${days.map((n, d) => `<div class="col"><h3>10/${5 + d} (${WD[d]})<small>${n} 件</small></h3>
+      ${sampleDay(d, n).map(v => `<div class="v ${v.sex}"><span class="tnum">${v.t}</span><b>${v.p}</b><span class="st">${S.assigned ? v.st : '担当なし'}</span></div>`).join('')}
+      ${n > 6 ? `<div class="more">ほか ${n - 6} 件</div>` : ''}</div>`).join('')}</div>`;
+}
+
+function dlgHtml() {
+  const w = WEEKS[S.src], head = (t, p) => `<div class="dh"><div><h2>${t}</h2><p>${p}</p></div><button class="x" data-a="close">✕</button></div>`;
+  const steps = n => `<div class="steps">${['1 作り方を選ぶ', '2 写す元の週を選ぶ', '3 内容を確かめる'].map((s, i) => `<span class="${i === n ? 'on' : ''}">${s}</span>${i < 2 ? '<span>›</span>' : ''}`).join('')}</div>`;
+  if (S.step === 0) return head('10/5 の週を作る', '2026/10/05 (月) 〜 10/10 (土)') + steps(0) + `<div class="db"><div class="two">
+      <button class="opt ${S.how === 'fixed' ? 'on' : ''}" data-a="how" data-h="fixed"><h3>固定訪問から生成</h3><p>固定訪問（マスタ）のとおりに作ります。今までの「週を生成」と同じです。</p><ul><li>時刻は固定訪問の時刻</li><li>148 件（利用者 79 名）</li></ul></button>
+      <button class="opt ${S.how === 'copy' ? 'on' : ''}" data-a="how" data-h="copy"><h3>前の週をコピー</h3><p>実際に回した週の予定を、そのまま次の週に写します。</p><ul><li>時刻はその週で確定した時刻</li><li>担当は写さず、ローテーションで割り当て直します</li></ul></button>
+    </div></div><div class="df"><span></span><button class="btn pri" data-a="next">${S.how === 'copy' ? '次へ' : '固定訪問から生成する'}</button></div>`;
+  if (S.step === 1) return head('写す元の週を選ぶ', '10/5 の週へ写します。直近の週が最初から選ばれています。') + steps(1) + `<div class="db">
+      <table class="w"><thead><tr><th></th><th>週</th><th>訪問</th><th>利用者</th><th>取消</th><th>予定外</th><th>QR の記録</th><th></th></tr></thead><tbody>
+      ${WEEKS.map((x, i) => `<tr class="${i === S.src ? 'on' : ''}" data-a="src" data-i="${i}"><td><input type="radio" ${i === S.src ? 'checked' : ''} style="accent-color:var(--brand);width:18px;height:18px"></td>
+        <td><b>${x[0]} の週</b>${i === 0 ? ' <span class="bd mut">直近</span>' : ''}</td><td class="tnum">${x[1]} 件</td><td class="tnum">${x[4]} 名</td><td class="tnum">${x[2]} 件</td><td class="tnum">${x[3]} 件</td>
+        <td>${x[5] ? `<span class="bd ok">到着 ${x[5]} 件</span>` : '<span class="bd mut">なし</span>'}</td><td>${x[6] ? `<span class="bd warn">${x[6]}</span>` : ''}</td></tr>`).join('')}
+      </tbody></table>
+      ${w[6] ? `<div class="warnbox">${w[0]} の週は${w[6]}。祝日の振替で普段と違う曜日・時刻になっている訪問が、そのまま写ります。</div>` : ''}
+    </div><div class="df"><button class="btn" data-a="back">戻る</button><button class="btn pri" data-a="next">次へ</button></div>`;
+  // step 2: 確認 (9/28 の週の実数。ほかの週を選んだ場合もモックでは同じ内訳を出す)
+  const extra = 28, missing = 30, copyN = w[1] - (S.extras ? 0 : extra) + (S.fill ? missing : 0);
+  return head('内容を確かめる', `${w[0]} の週 → 10/5 の週`) + steps(2) + `<div class="db">
+      <div class="sumrow">
+        <div class="sum"><div class="k">写す訪問</div><div class="n tnum">${copyN}<small>件</small></div><div class="s">利用者 ${w[4] + (S.fill ? 10 : 0)} 名</div></div>
+        <div class="sum"><div class="k">写さない</div><div class="n tnum">${w[2] + w[3]}<small>件</small></div><div class="s">取消 ${w[2]}・予定外 ${w[3]}</div></div>
+        <div class="sum"><div class="k">担当</div><div class="n" style="font-size:18px;padding-top:6px">写しません</div><div class="s">自動割当でローテーション</div></div>
+        <div class="sum"><div class="k">写す先の今の訪問</div><div class="n tnum">0<small>件</small></div><div class="s">置き換えはありません</div></div>
+      </div>
+      <div class="days">${BYDAY['9/28'].map((n, d) => `<span>10/${5 + d} (${WD[d]}) <b class="tnum">${n}</b> 件</span>`).join('')}</div>
+
+      <div class="sec"><h4>固定訪問に無い訪問<small>${extra} 件 ・ その週だけ追加・曜日を動かした可能性があります</small></h4><div class="in">
+        <label class="chk"><input type="checkbox" id="cExtras" ${S.extras ? 'checked' : ''}><span>これらも次の週へ写す<small>外すと、その訪問は次の週に入りません。1 件ずつ外すこともできます。</small></span></label>
+        <div class="list">${[0, 1, 2, 3, 4, 5, 6].map(i => `<label class="li"><input type="checkbox" ${S.extras ? 'checked' : ''}><span class="t tnum">${WD[i % 6]}曜 ${['11:30','16:40','13:45','10:15','17:00','09:50','14:20'][i]}–${['12:05','17:15','14:20','10:50','17:35','10:25','14:55'][i]}</span><span>${PT[(i * 3 + 1) % PT.length]}</span></label>`).join('')}<div class="more">ほか ${extra - 7} 件</div></div></div></div>
+
+      <div class="sec"><h4>写す元の週に無かった固定訪問<small>${missing} 件（うち 10 名は訪問が 1 件もありません）</small></h4><div class="in">
+        <label class="chk"><input type="checkbox" id="cFill" ${S.fill ? 'checked' : ''}><span>固定訪問から補う<small>入れないと、この ${missing} 件は次の週に入りません。新しく契約した利用者や、${w[0]} の週にお休みだった利用者が含まれます。固定訪問そのものは変えません。</small></span></label></div></div>
+
+      <div class="sec"><h4>担当の割り当て</h4><div class="in">
+        <label class="chk"><input type="checkbox" id="cAssign" ${S.assign ? 'checked' : ''}><span>写した後に続けて「自動スタッフ割当」を実行する<small>過去 4 週の担当を見て、同じ利用者に同じスタッフが続かないように割り当てます。外した場合は担当なしで始まります。</small></span></label></div></div>
+
+      <div class="warnbox">実行前に 10/5 の週を保存します。作った後でも「コピー前に戻す」で元に戻せます。固定訪問（マスタ）は変わりません。</div>
+    </div><div class="df"><button class="btn" data-a="back">戻る</button><button class="btn pri" data-a="run">${copyN} 件を 10/5 の週へ写す</button></div>`;
+}
+function openDlg() { S.step = 0; $('ov').classList.add('open'); $('dlg').innerHTML = dlgHtml(); }
+$('open').onclick = openDlg;
+$('dlg').onclick = e => {
+  const el = e.target.closest('[data-a]'); if (!el) return;
+  const a = el.dataset.a;
+  if (a === 'close') { $('ov').classList.remove('open'); return; }
+  if (a === 'how') S.how = el.dataset.h;
+  if (a === 'src') S.src = +el.dataset.i;
+  if (a === 'back') S.step = Math.max(0, S.step - 1);
+  if (a === 'next') { if (S.step === 0 && S.how === 'fixed') { alert('モックでは「前の週をコピー」の流れだけを作っています。'); return; } S.step++; }
+  if (a === 'run') { S.done = true; S.assigned = S.assign; $('ov').classList.remove('open'); renderBody(); return; }
+  $('dlg').innerHTML = dlgHtml();
+};
+$('dlg').onchange = e => {
+  if (e.target.id === 'cExtras') S.extras = e.target.checked;
+  else if (e.target.id === 'cFill') S.fill = e.target.checked;
+  else if (e.target.id === 'cAssign') S.assign = e.target.checked; else return;
+  $('dlg').innerHTML = dlgHtml();
+};
+$('undo').onclick = () => { S.done = false; S.assigned = false; renderBody(); };
+$('again').onclick = () => { Object.assign(S, { step: 0, how: 'copy', src: 0, extras: true, fill: false, assign: true, done: false, assigned: false }); $('ov').classList.remove('open'); renderBody(); };
+renderBody();
+/* 確認用: #s0 #s1 #s2 でダイアログの各段、#done で写した後 */
+const H = location.hash.slice(1);
+if (/^s[012]$/.test(H)) { openDlg(); S.step = +H[1]; $('dlg').innerHTML = dlgHtml(); }
+if (H === 'done') { S.done = true; S.assigned = true; renderBody(); }
+</script>
+</body>
+</html>
