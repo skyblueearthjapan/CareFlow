@@ -27,6 +27,9 @@ import {
   STATUS_COLOR,
   TL_END_MIN,
   TL_START_MIN,
+  actualArrivalIso,
+  actualDepartureIso,
+  adjustmentNotes,
   assignVisitLanes,
   displayStatus,
   formatDistance,
@@ -530,7 +533,11 @@ function VisitBars({
   const overflowLeft = ps < TL_START_MIN;
   const overflowRight = pe > TL_END_MIN;
 
-  const arrived = visit.arrival != null;
+  // 実績時刻 (調整後。無ければ読取時刻・設計 2026-09-30 §8-1)。バーの位置と幅・併記・
+  // ツールチップはすべてこの 2 つから描く (打刻の scanned_at を直接読まない)。
+  const arrivalIso = actualArrivalIso(visit);
+  const departureIso = actualDepartureIso(visit);
+  const arrived = arrivalIso != null;
   const hasActual = arrived || status === 'missing';
 
   // 実績バーの開始/幅。到着あり=到着〜(退出 or now)、未訪問=予定区間に赤ハッチ。
@@ -538,10 +545,8 @@ function VisitBars({
   let actWidth = Math.max(pW, 2.5);
   let actLabel = '';
   if (arrived) {
-    const arrMin = visit.arrival?.scanned_at ? isoToMinutesJst(visit.arrival.scanned_at) : ps;
-    const endMin = visit.departure?.scanned_at
-      ? isoToMinutesJst(visit.departure.scanned_at)
-      : nowMinutes;
+    const arrMin = arrivalIso ? isoToMinutesJst(arrivalIso) : ps;
+    const endMin = departureIso ? isoToMinutesJst(departureIso) : nowMinutes;
     actLeft = minutesToPct(arrMin);
     actWidth = Math.max(minutesToPct(endMin) - actLeft, 2.5);
     if (status === 'mismatch' && visit.arrival?.distance_m != null) {
@@ -581,7 +586,11 @@ function VisitBars({
   const actual =
     visit.phase === 'no_show' || visit.no_show != null
       ? null
-      : actualTimeParts(visit.arrival?.scanned_at, visit.departure?.scanned_at);
+      : actualTimeParts(arrivalIso, departureIso);
+  // 「調整」の印 (モニターは閲覧のみ — 合わせる操作は打刻履歴 / スマホから)。
+  // 実績を併記しない訪問 (未訪問) には出さない。
+  const adjustNotes = actual ? adjustmentNotes(visit) : [];
+  const adjustTitle = adjustNotes.map((n) => n.text).join(' / ');
 
   return (
     <>
@@ -632,6 +641,9 @@ function VisitBars({
         }${
           // 時刻側は「打刻」の 1 本に統一する (既存の「実績: 打刻者名」と混ざらない)。
           actual ? `｜打刻: ${actual.compactRange}` : ''
+        }${
+          // 調整のある訪問: 読取時刻・理由・誰がいつ合わせたか。
+          adjustTitle ? `｜調整: ${adjustTitle}` : ''
         }${meta?.address ? `｜📍${meta.address}` : ''}`}
         className="absolute z-[2] flex flex-col justify-center gap-px overflow-hidden rounded-md border border-l-[3px] px-1.5 text-left shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-sm)]"
         style={{
@@ -678,6 +690,19 @@ function VisitBars({
           )}
         </span>
         <span className="flex min-w-0 items-center gap-1 text-[9px] leading-tight opacity-80">
+          {/* 実績の時刻を合わせた訪問の印。2 行目の**先頭**に置く: 35 分枠のカードは
+              108〜126px しかなく、時刻の後ろに置くとカードの外へはみ出して見えない
+              (結合検証 2026-10-01)。詳細は title に出す。注意色にはしない
+              (遅れて記録されるのは看護師の誤りではない)。 */}
+          {adjustNotes.length > 0 ? (
+            <span
+              data-testid={`monitor-bar-adjusted-${visit.visit_id}`}
+              title={adjustTitle}
+              className="shrink-0 rounded-full bg-brand-primary-50 px-1 py-px font-bold text-brand-primary-hover"
+            >
+              {adjustNotes.every((n) => n.manual) ? '手入力' : '調整'}
+            </span>
+          ) : null}
           <span className="tnum shrink-0 font-semibold">
             {visit.start_time}–{visit.end_time}
           </span>
@@ -743,7 +768,9 @@ function VisitBars({
                   height: pos.actH,
                 }
           }
-          title={`${visit.patient_name ?? ''} ${actLabel}${visit.reviewed ? ' ✓確認済' : ''}`}
+          title={`${visit.patient_name ?? ''} ${actLabel}${visit.reviewed ? ' ✓確認済' : ''}${
+            adjustTitle ? ` ｜調整: ${adjustTitle}` : ''
+          }`}
         >
           {visit.reviewed && (
             <span data-testid={`monitor-bar-reviewed-${visit.visit_id}`} aria-label="確認済">

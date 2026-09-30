@@ -41,8 +41,24 @@ export interface PendingPayload {
   accuracy?: number;
   reason?: string;
   is_override?: boolean;
-  /** 端末時刻 (ISO 8601)。サーバは `device_time` として読む。 */
+  /**
+   * 端末時刻 (ISO 8601)。サーバは `device_time` として読む。QR を読み取った瞬間の
+   * 時刻で、再送時もそのまま送る (後送りで実績がずれない・設計 2026-09-30 §3)。
+   */
   at: string;
+  /**
+   * その場で合わせた時刻 (JST `HH:MM`・設計 2026-09-30 §6-2)。送信前の打刻に
+   * {@link setPendingAdjustment} が書き込む。サーバは打刻を記録したあとで調整を
+   * 1 行作る (検証に通らなければ調整だけ無視し、打刻は必ず記録する)。
+   */
+  adjusted_time?: string;
+  adjust_reason_code?: string;
+}
+
+/** 未送信の打刻に同梱する「その場で合わせた時刻」。 */
+export interface PendingAdjustment {
+  adjusted_time: string;
+  adjust_reason_code?: string;
 }
 
 export interface PendingEntry {
@@ -182,6 +198,73 @@ export function removePending(staffId: string, id: string): void {
   );
 }
 
+/** その visit の未送信の打刻 (指定 kind) のうち最新の 1 件。無ければ null。 */
+export function findPending(
+  staffId: string,
+  visitId: string,
+  kind: PendingKind,
+): PendingEntry | null {
+  if (!visitId) return null;
+  const hits = readAll(staffId).filter((e) => e.visit_id === visitId && e.kind === kind);
+  return hits[hits.length - 1] ?? null;
+}
+
+/**
+ * いま再送の POST が飛んでいる entry の id。
+ *
+ * {@link flushPending} は「控えを読む → POST → 控えを消す」の順に進む。POST の最中に
+ * 控えを書き換えても、送信済みの body にはもう載らない (そのうえ成功すれば控えごと
+ * 消える)。{@link setPendingAdjustment} はこの間の書き込みを成功扱いにしない。
+ * 同じ画面 (JS コンテキスト) の中だけの印で、端末には保存しない。
+ */
+const sendingIds = new Set<string>();
+
+/**
+ * {@link setPendingAdjustment} の結果。
+ *   - `written` … 控えに書き込んだ (再送のとき打刻と一緒に届く)。
+ *   - `sending` … その打刻はいま送信中。**何も書いていない**。呼び出し元は再送の完了を
+ *                 待ってから、もう一度これを呼ぶ (まだ控えがあれば書ける / 無ければ
+ *                 `missing` になるので調整 API を呼ぶ)。
+ *   - `missing` … 控えがもう無い (= 送信済み)。呼び出し元は調整 API を直接呼ぶ。
+ */
+export type PendingAdjustResult = 'written' | 'sending' | 'missing';
+
+/**
+ * 未送信の打刻に「その場で合わせた時刻」を書き込む / 外す (設計 2026-09-30 §7-2)。
+ *
+ * 圏外で退避された到着は、まだサーバに届いていないので調整 API を呼べない。
+ * 代わりに送信前の payload に `adjusted_time` を載せ、再送のときに一緒に届ける。
+ * `adjustment = null` は「元に戻す」(同梱をやめる)。
+ *
+ * 書き込めたのは `written` のときだけ。`sending` / `missing` では何も書かないので、
+ * 呼び出し元が {@link PendingAdjustResult} のとおりに後を引き受ける (調整を黙って
+ * 失わない)。
+ */
+export function setPendingAdjustment(
+  staffId: string,
+  visitId: string,
+  kind: PendingKind,
+  adjustment: PendingAdjustment | null,
+): PendingAdjustResult {
+  const target = findPending(staffId, visitId, kind);
+  if (!target) return 'missing';
+  if (sendingIds.has(target.id)) return 'sending';
+  const payload: PendingPayload = { ...target.payload };
+  delete payload.adjusted_time;
+  delete payload.adjust_reason_code;
+  if (adjustment) {
+    payload.adjusted_time = adjustment.adjusted_time;
+    if (adjustment.adjust_reason_code) {
+      payload.adjust_reason_code = adjustment.adjust_reason_code;
+    }
+  }
+  writeAll(
+    staffId,
+    readAll(staffId).map((e) => (e.id === target.id ? { ...e, payload } : e)),
+  );
+  return 'written';
+}
+
 /**
  * 保留分をベストエフォートで再送する。
  *   - `post` が解決 (成功) → 送信できたとみなしキューから取り除く。
@@ -197,7 +280,15 @@ export async function flushPending(
   if (typeof window === 'undefined' || !staffId) return { remaining: 0, dropped: [] };
   const all = readAll(staffId);
   const dropped: DroppedPending[] = [];
-  for (const entry of all) {
+  for (const queued of all) {
+    // 送る直前に読み直す。退避から再送までの間に「その場で合わせた時刻」が
+    // 書き込まれていることがあり ({@link setPendingAdjustment})、先頭で読んだ控えを
+    // 送るとそれを落としてしまう。読み直して無ければ別経路で取り除かれた分。
+    const entry = readAll(staffId).find((e) => e.id === queued.id);
+    if (!entry) continue;
+    // ここから POST が返るまで、この控えへの書き込みは body に載らない。読み直しと
+    // 同じ同期区間で印を付け、間に書き込みが割り込めないようにする。
+    sendingIds.add(entry.id);
     try {
       await post(entry);
       removePending(staffId, entry.id);
@@ -208,6 +299,8 @@ export async function flushPending(
         dropped.push({ entry, reason: err.reason });
       }
       // それ以外 (ネット障害 / 5xx): まだ届かない — 残して次回 (online / mount) に再試行。
+    } finally {
+      sendingIds.delete(entry.id);
     }
   }
   return { remaining: countPending(staffId), dropped };

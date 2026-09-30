@@ -44,6 +44,7 @@ from app.models.visit_checkin import VisitCheckin
 from app.models.visit_review import VisitReview
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.accompaniment import resolve_accompaniment_by_visit
+from app.services.checkin.actuals import checkin_read_at, load_actuals
 from app.services.checkin.judge import load_thresholds
 from app.services.checkin.monitor import compute_pair_effective_starts, visit_staff_id_set
 from app.services.constraint_override_notify import collect_constraint_warnings_for_staff
@@ -152,13 +153,17 @@ async def notify_checkin_mismatch(
 
     ``visit.patient`` は呼び出し側で eager-load 済みを前提とする。``match_status`` が
     mismatch 以外なら no-op。返却 = 新規に add した件数。
+
+    通知文の時刻は **読取時刻** (``actuals.checkin_read_at``。画面の実績と同じ時刻。
+    代行 / 予定外 / NG 交差の通知も同じ)。発行済みの通知本文は、後から実績の時刻を
+    合わせても書き換えない (その時点の事実)。
     """
     if checkin.match_status != "mismatch":
         return 0
     users = await _active_admin_manager_users(db)
     patient_name = getattr(visit.patient, "name", None) or "利用者"
     staff_name = await _resolve_staff_name(db, checkin.staff_id)
-    hhmm = _as_jst(checkin.scanned_at).strftime("%H:%M")
+    hhmm = _as_jst(checkin_read_at(checkin)).strftime("%H:%M")
     dist = f"{int(checkin.distance_m)}m" if checkin.distance_m is not None else "距離不明"
     title = "場所違いのチェックイン"
     body = f"{patient_name}（{staff_name}）{hhmm} 拠点から離れた場所で打刻（{dist}）"
@@ -235,7 +240,7 @@ async def notify_checkin_substitute(
     patient_name = await _resolve_patient_name(db, visit)
     staff_name = await _resolve_staff_name(db, checkin.staff_id)
     planned_name = await _resolve_staff_name(db, visit.primary_staff_id)
-    hhmm = _as_jst(checkin.scanned_at).strftime("%H:%M")
+    hhmm = _as_jst(checkin_read_at(checkin)).strftime("%H:%M")
     return await _create_idempotent(
         db,
         users=users,
@@ -263,7 +268,7 @@ async def notify_checkin_unplanned(
     users = await _active_admin_manager_users(db)
     patient_name = await _resolve_patient_name(db, visit)
     staff_name = await _resolve_staff_name(db, checkin.staff_id)
-    hhmm = _as_jst(checkin.scanned_at).strftime("%H:%M")
+    hhmm = _as_jst(checkin_read_at(checkin)).strftime("%H:%M")
     return await _create_idempotent(
         db,
         users=users,
@@ -298,7 +303,7 @@ async def notify_checkin_ng_staff(
     users = await _active_admin_manager_users(db)
     patient_name = await _resolve_patient_name(db, visit)
     staff_name = await _resolve_staff_name(db, checkin.staff_id)
-    hhmm = _as_jst(checkin.scanned_at).strftime("%H:%M")
+    hhmm = _as_jst(checkin_read_at(checkin)).strftime("%H:%M")
     kinds = {w.kind for w in warnings}
     if kinds == {"ng_staff"}:
         label = "NGスタッフ"
@@ -400,38 +405,22 @@ async def run_check_missing(
     scanned = len(visits)
     visit_ids = [v.id for v in visits]
 
-    arrived: set[UUID] = set()
     no_showed: set[UUID] = set()
     reviewed: set[UUID] = set()
-    # 同住所・同時刻ペア補正用: 到着/退出の最新 scanned_at マップ (JST)。
+    # 到着の有無と、同住所・同時刻ペア補正用の到着/退出の **実績時刻** (JST)。
+    # 訪問モニターと同じ単一ソース (``actuals.load_actuals``) から引く — モニターの
+    # 「未訪問」とここの通知が別々の時刻で判定しないようにする。
     arrival_at: dict[UUID, datetime] = {}
     departure_at: dict[UUID, datetime] = {}
+    for vid, actuals in (await load_actuals(db, visit_ids)).items():
+        if actuals.arrival is not None:
+            arrival_at[vid] = _as_jst(actuals.arrival.at)
+        if actuals.departure is not None:
+            departure_at[vid] = _as_jst(actuals.departure.at)
+        if actuals.no_show is not None:
+            no_showed.add(vid)
+    arrived = set(arrival_at.keys())
     if visit_ids:
-        arr_dep_rows = (
-            await db.scalars(
-                select(VisitCheckin)
-                .where(
-                    VisitCheckin.visit_id.in_(visit_ids),
-                    VisitCheckin.kind.in_(("arrival", "departure")),
-                )
-                .order_by(VisitCheckin.scanned_at.desc())
-            )
-        ).all()
-        for r in arr_dep_rows:
-            target = arrival_at if r.kind == "arrival" else departure_at
-            if r.visit_id not in target:  # DESC 並びなので最初に出た = 最新。
-                target[r.visit_id] = _as_jst(r.scanned_at)
-        arrived = set(arrival_at.keys())
-        no_showed = set(
-            (
-                await db.scalars(
-                    select(VisitCheckin.visit_id).where(
-                        VisitCheckin.visit_id.in_(visit_ids),
-                        VisitCheckin.kind == "no_show",
-                    )
-                )
-            ).all()
-        )
         reviewed = set(
             (
                 await db.scalars(

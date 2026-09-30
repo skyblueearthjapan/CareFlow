@@ -21,6 +21,20 @@ export const monitorCheckinSchema = z.object({
   is_override: z.boolean().default(false),
 });
 
+/**
+ * 効いている調整 1 件 (実績の時刻を合わせる・設計 2026-09-30 §6-3)。
+ * `kind` は `arrival` / `departure`。
+ */
+export const monitorAdjustmentSchema = z.object({
+  kind: z.string(),
+  // 理由コード (intercom_wait / read_later / no_read / other)。表示は `reason_label`。
+  reason_code: z.string().nullable().optional(),
+  reason_label: z.string().nullable().optional(),
+  reason_text: z.string().nullable().optional(),
+  by_name: z.string().nullable().optional(),
+  created_at: z.string().nullable().optional(),
+});
+
 export const monitorVisitSchema = z.object({
   visit_id: z.string().uuid(),
   // 訪問の担当 (= visits.primary_staff_id)。モバイル「今日の訪問」と同一ソース。
@@ -68,6 +82,21 @@ export const monitorVisitSchema = z.object({
   arrival: monitorCheckinSchema.nullable().optional(),
   departure: monitorCheckinSchema.nullable().optional(),
   no_show: monitorCheckinSchema.nullable().optional(),
+  // 実績時刻 (調整後。無ければ読取時刻・設計 2026-09-30 §6-3)。画面の時刻はこちらで
+  // 描く — `arrival` / `departure` (生の打刻) の `scanned_at` を直接読まない。
+  // 旧デプロイは undefined → `components/monitor/constants.ts` の `actualArrivalIso`
+  // などが打刻の `scanned_at` へ落とす。形が崩れていてもモニター全体は落とさない。
+  arrival_at: z.string().nullish().catch(null),
+  departure_at: z.string().nullish().catch(null),
+  // 読取時刻 (QR を読んだ時刻)。読み取りが無ければ null。
+  arrival_read_at: z.string().nullish().catch(null),
+  departure_read_at: z.string().nullish().catch(null),
+  arrival_adjusted: z.boolean().nullish().catch(null),
+  departure_adjusted: z.boolean().nullish().catch(null),
+  // 読み取りの無い退出 (手で入れた時刻)。`departure` は null のまま `departure_at` が入る。
+  departure_manual: z.boolean().nullish().catch(null),
+  adjustments: z.array(monitorAdjustmentSchema).nullish().catch(null),
+  // stay_minutes / arrival_delay_min / phase / alert_level は BE が実績時刻基準で出す。
   stay_minutes: z.number().nullable().optional(),
   arrival_delay_min: z.number().nullable().optional(),
   distance_to_next_m: z.number().nullable().optional(),
@@ -134,6 +163,7 @@ export const nearbyResponseSchema = z.object({
 });
 
 export type MonitorCheckin = z.infer<typeof monitorCheckinSchema>;
+export type MonitorAdjustment = z.infer<typeof monitorAdjustmentSchema>;
 export type MonitorVisit = z.infer<typeof monitorVisitSchema>;
 export type MonitorStaffRow = z.infer<typeof monitorStaffRowSchema>;
 export type MonitorOffice = z.infer<typeof monitorOfficeSchema>;

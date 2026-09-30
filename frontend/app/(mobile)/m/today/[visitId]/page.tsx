@@ -21,7 +21,13 @@ import {
 
 import { ApiError } from '@/lib/api-client';
 import { clearCheckin, loadCheckin, saveCheckin } from '@/lib/checkin-storage';
-import { enqueuePending, type PendingKind, type PendingPayload } from '@/lib/checkin-queue';
+import {
+  enqueuePending,
+  findPending,
+  setPendingAdjustment,
+  type PendingKind,
+  type PendingPayload,
+} from '@/lib/checkin-queue';
 import { detailOf, isServerUnreachable } from '@/lib/checkin-flush';
 import {
   coordsOf,
@@ -30,8 +36,14 @@ import {
   haversineMeters,
   type GeoFix as Geo,
 } from '@/lib/geo';
-import { actualTimeParts } from '@/lib/format/actualTime';
-import { extractQrToken } from '@/lib/qr-token';
+import {
+  actualTimeParts,
+  hmToMinutes,
+  jstHm,
+  jstMinutes,
+  minutesToHm,
+} from '@/lib/format/actualTime';
+import { QR_READ_AT_PARAM, extractQrToken, parseHandoffReadAt } from '@/lib/qr-token';
 import { cn } from '@/lib/utils';
 import { visitAccompaniments } from '@/lib/schemas/trainee_accompaniment';
 import { Card } from '@/components/ui/card';
@@ -41,6 +53,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui/sonner';
+import { ActualTimeSheet } from '@/components/mobile/ActualTimeSheet';
+import { ArrivedAdjustCard } from '@/components/mobile/ArrivedAdjustCard';
 import { CheckInButton } from '@/components/mobile/CheckInButton';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import { Rakusuke } from '@/components/brand/Rakusuke';
@@ -50,10 +64,15 @@ import { VisitRecordCard } from '@/components/mobile/VisitRecordCard';
 import { VoiceRecorderPanel } from '@/components/mobile/VoiceRecorderPanel';
 import { displayVisitNote } from '@/lib/visit-note';
 import {
+  todayIso,
+  useAdjustActualTime,
   useCheckIn,
   useCheckOut,
   useMyVisit,
   useNoShow,
+  useResetActualTime,
+  type ActualTimeKind,
+  type AdjustReasonCode,
   type CheckInPayload,
   type CheckinMatchStatus,
   type MyVisit,
@@ -75,6 +94,10 @@ type ScanMode = 'arrival' | 'departure';
  * `preview`(クライアント距離プレビュー + 不一致なら理由入力) を経て、ユーザーが
  * 「記録する」を押したときに **1 回だけ** POST する。これで途中離脱しても記録が
  * 残らず、旧実装の override 再送 (2 回目 POST) も無くなる。
+ *
+ * `readAt` は **QR を読み取った瞬間**の端末時刻 (設計 2026-09-30 §3)。打刻の `at`
+ * にはこれを載せる — 位置の取得や確認にかかった時間、「位置を再取得」、圏外での
+ * 後送りで実績の時刻が遅れないようにするため。
  */
 type Flow =
   | { step: 'none' }
@@ -87,12 +110,18 @@ type Flow =
       geo: Geo;
       distance: number | null;
       status: CheckinMatchStatus;
+      readAt: string;
     }
   | { step: 'submitting'; mode: ScanMode }
   // 読み取った QR が表示中 visit の患者と一致しない (409)。設計 §5 の
   // 「代行 / 予定外として記録しますか？」導線をここから出す。
   | { step: 'wrong_patient'; token: string }
   | { step: 'noshow' };
+
+/** 手で入れた退出の「元に戻す」つきトーストを出しておく時間 (ms)。 */
+const MANUAL_DEPARTURE_TOAST_MS = 12_000;
+/** トーストの操作ボタンを、親指で押せる 44px にする (sonner の既定は 24px)。 */
+const TOAST_ACTION_44PX = '!h-11 !px-4 !text-sm';
 
 /** Quick-pick chips for the no-show reason. */
 const NOSHOW_CHIPS = ['不在（応答なし）', '本人都合キャンセル', '入院／受診', '家族都合'] as const;
@@ -199,6 +228,24 @@ function ignoreRescueError(): void {
   /* noop */
 }
 
+/**
+ * 圏外で退避した到着 (まだサーバに届いていない)。到着した直後のカードは、この間は
+ * 調整 API を呼ばずに退避キューの控えへ時刻を書き込む (設計 2026-09-30 §7-2)。
+ */
+interface QueuedArrival {
+  /** QR を読み取った時刻 (ISO 8601)。 */
+  readAt: string;
+  /** その場で合わせた時刻 (JST "HH:MM")。読取時刻のままなら null。 */
+  adjustedTime: string | null;
+}
+
+function readQueuedArrival(staffId: string, visitId: string): QueuedArrival | null {
+  if (!staffId || !visitId) return null;
+  const entry = findPending(staffId, visitId, 'arrival');
+  if (!entry) return null;
+  return { readAt: entry.payload.at, adjustedTime: entry.payload.adjusted_time ?? null };
+}
+
 function memoKey(staffId: string, visitId: string): string {
   return `visit-memo:${staffId}:${visitId}`;
 }
@@ -242,12 +289,51 @@ function MobileVisitDetailPageInner() {
     return raw ? extractQrToken(raw) : null;
   });
   const [deepLinkToken, setDeepLinkToken] = useState<string | null>(readToken);
+  // ディープリンクで開いた時点 = 標準カメラが QR を読んだ瞬間 (設計 2026-09-30 §3)。
+  // 「記録する」を押すまでに時間が空いても、**到着の** `at` はこの時刻にする。
+  // `/q/{token}` を経由して来たときは、`/q` を開いた時刻が引き継がれる (候補の解決や
+  // 選択画面で止まっていた時間を含めない)。引き継いだ値は外から来るので検証し、
+  // 採れなければここを開いた時刻にする。
+  const [deepLinkReadAt] = useState(
+    () =>
+      (readToken ? parseHandoffReadAt(searchParams?.get(QR_READ_AT_PARAM), Date.now()) : null) ??
+      new Date().toISOString(),
+  );
+  // 今週の予定から開いたときは、戻るリンクも今週へ (設計 §7-8)。
+  const fromWeek = searchParams?.get('from') === 'week';
 
-  const { data: visit, isLoading, isError, error } = useMyVisit(visitId, readToken);
+  const { data: queryVisit, isLoading, isError, error } = useMyVisit(visitId, readToken);
+  // 打刻・時刻を合わせる API の応答 (どれも VisitRead)。['me'] の再取得が届くまでの
+  // 間、**状態と実績の項目だけ**をここから映し、押した直後に古い時刻が残って
+  // 見えないようにする。担当欄などは詳細 GET のものを使い続ける (代行モードの
+  // 判定を応答の形に左右させない)。
+  const [freshVisit, setFreshVisit] = useState<MyVisit | null>(null);
+  useEffect(() => {
+    setFreshVisit(null);
+  }, [queryVisit]);
+  const visit = useMemo<MyVisit | undefined>(() => {
+    if (!queryVisit || !freshVisit || freshVisit.id !== queryVisit.id) return queryVisit;
+    return {
+      ...queryVisit,
+      status: freshVisit.status,
+      latest_checkin: freshVisit.latest_checkin,
+      actual_arrival_at: freshVisit.actual_arrival_at,
+      actual_departure_at: freshVisit.actual_departure_at,
+      actual_arrival_read_at: freshVisit.actual_arrival_read_at,
+      actual_departure_read_at: freshVisit.actual_departure_read_at,
+      actual_arrival_adjusted: freshVisit.actual_arrival_adjusted,
+      actual_departure_adjusted: freshVisit.actual_departure_adjusted,
+      actual_departure_manual: freshVisit.actual_departure_manual,
+      actual_adjust_allowed: freshVisit.actual_adjust_allowed,
+    };
+  }, [queryVisit, freshVisit]);
 
   const checkIn = useCheckIn(visitId);
   const checkOut = useCheckOut(visitId);
   const noShow = useNoShow(visitId);
+  const adjustActual = useAdjustActualTime(visitId);
+  const resetActual = useResetActualTime(visitId);
+  const adjustMutating = adjustActual.isPending || resetActual.isPending;
 
   // 到着プレビューの距離しきい値 (管理者が設定した値に追随)。取得失敗時は既定へ
   // フォールバックする (100/300/50)。距離系のみの public エンドポイントを使う。
@@ -274,21 +360,31 @@ function MobileVisitDetailPageInner() {
     }
   }, [visitId, staffId]);
 
-  // 打刻用トークンは記録成功 / 無効判明 (404/409/410) で消費し、以後は通常の
-  // スキャンフローに戻す (退出時も現地で QR を読み直させる = 現地証明を弱めない)。
+  /** URL から 1 回きりのクエリだけを外す (他のクエリは保全)。無ければ何もしない。 */
+  const dropUrlParams = useCallback(
+    (names: readonly string[]) => {
+      if (typeof window === 'undefined') return;
+      const qs = new URLSearchParams(window.location.search);
+      if (!names.some((name) => qs.has(name))) return;
+      for (const name of names) qs.delete(name);
+      const rest = qs.toString();
+      router.replace(rest ? `${window.location.pathname}?${rest}` : window.location.pathname, {
+        scroll: false,
+      });
+    },
+    [router],
+  );
+
+  // 打刻用トークンは 1 記録で消費し (成功 / **圏外で退避** / 無効判明 404・409・410)、
+  // 以後は通常のスキャンフローに戻す (退出時も現地で QR を読み直させる = 現地証明を
+  // 弱めない)。退避でも消費するのは、残すと次の退出がスキャンを省略し、到着と同じ
+  // 読取時刻で記録されてしまうため。
   const clearDeepLinkToken = useCallback(() => {
     setDeepLinkToken(null);
-    // URL からも `qr` だけを外し (他のクエリは保全)、リロード時に再度スキャン
-    // 省略にならないようにする。
-    if (typeof window === 'undefined') return;
-    const qs = new URLSearchParams(window.location.search);
-    if (!qs.has('qr')) return;
-    qs.delete('qr');
-    const rest = qs.toString();
-    router.replace(rest ? `${window.location.pathname}?${rest}` : window.location.pathname, {
-      scroll: false,
-    });
-  }, [router]);
+    // URL からも外し、リロード時に再度スキャン省略にならないようにする。
+    // 引き継いだ読取時刻も同じ 1 回きりの値なので一緒に外す。
+    dropUrlParams(['qr', QR_READ_AT_PARAM]);
+  }, [dropUrlParams]);
 
   const [flow, setFlow] = useState<Flow>({ step: 'none' });
   // Reason drafts for the mismatch / no-show forms.
@@ -297,10 +393,32 @@ function MobileVisitDetailPageInner() {
   // Guards a no-show submit across the (awaited) GPS fetch (二重送信防止).
   const [noShowSubmitting, setNoShowSubmitting] = useState(false);
   // 未送信の再送 (マウント時 / online 時) + 残件数。通知は共通フック側で行う。
-  const { pendingCount: checkinPending, refreshPending } = useCheckinFlush();
+  const { pendingCount: checkinPending, refreshPending, flushNow } = useCheckinFlush();
   // 未送信の音声も同じ場所で再送し、バナーの件数に合算する (設計 §10-5)。
   const { pendingCount: voicePending, refreshPending: refreshVoicePending } = useVoiceFlush();
   const pendingCount = checkinPending + voicePending;
+
+  // ---- 実績の時刻を合わせる (設計 2026-09-30 §7) ---------------------------
+  // 到着した直後のカード。予定外訪問は `/q` で到着を記録してからここへ来るので、
+  // `?arrived=1` でも出す。
+  const [showArrivedCard, setShowArrivedCard] = useState(
+    () => searchParams?.get('arrived') === '1',
+  );
+  // `arrived=1` は「いま到着した」という 1 回きりの合図。URL に残すと、再読み込みの
+  // たびにカードが出直すので、受け取ったら外す。
+  useEffect(() => {
+    dropUrlParams(['arrived']);
+  }, [dropUrlParams]);
+  // 退避した到着の再送が終わるのを待っている (その間は二度押しさせない)。
+  const [waitingForResend, setWaitingForResend] = useState(false);
+  const adjustBusy = adjustMutating || waitingForResend;
+  // 圏外で退避した到着。未送信の件数が変わるたび (退避した / 送信できた) に読み直す。
+  const [queuedArrival, setQueuedArrival] = useState<QueuedArrival | null>(null);
+  useEffect(() => {
+    setQueuedArrival(readQueuedArrival(staffId, visitId));
+  }, [staffId, visitId, checkinPending]);
+  // 「実績の時刻を合わせる」シート。null = 閉じている。
+  const [sheetKind, setSheetKind] = useState<ActualTimeKind | null>(null);
 
   /**
    * 録音セッションの救出 (レビュー H-C)。
@@ -418,17 +536,32 @@ function MobileVisitDetailPageInner() {
     return () => clearInterval(t);
   }, [effectiveCheckedIn, effectiveCompleted]);
 
-  // Arrival timestamp for the elapsed timer: prefer the server's arrival
-  // checkin, fall back to the local record.
-  const arrivalIso = useMemo<string | null>(() => {
+  // 経過時間の起点 (epoch ms)。**実績の到着** (`actual_arrival_at` = 合わせた後の
+  // 時刻。無ければ読取時刻) を優先する (設計 2026-09-30 §7-6)。旧 BE は最新の到着
+  // 打刻、圏外で退避中は端末の控え (その場で合わせていればその時刻) を使う。
+  const arrivalMs = useMemo<number | null>(() => {
+    const valid = (ms: number): number | null => (Number.isNaN(ms) ? null : ms);
+    if (visit?.actual_arrival_at) return valid(new Date(visit.actual_arrival_at).getTime());
     const lc = visit?.latest_checkin;
-    if (lc && lc.kind === 'arrival') return lc.scanned_at;
+    if (lc && lc.kind === 'arrival') return valid(new Date(lc.scanned_at).getTime());
     const stored = staffId && visitId ? loadCheckin(staffId, visitId) : null;
-    if (stored?.status === 'checked_in') return stored.at;
-    return null;
+    if (stored?.status !== 'checked_in') return null;
+    const readMs = valid(new Date(stored.at).getTime());
+    const readMin = jstMinutes(queuedArrival?.readAt);
+    const adjustedMin = hmToMinutes(queuedArrival?.adjustedTime);
+    if (readMs == null || readMin == null || adjustedMin == null) return readMs;
+    // 合わせた時刻は分単位 (秒 0)。読取時刻を分に切り捨ててから差を引く。
+    return Math.floor(readMs / 60000) * 60000 - (readMin - adjustedMin) * 60000;
     // localStatus included so a fresh check-in re-derives the arrival time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visit?.latest_checkin, staffId, visitId, localStatus]);
+  }, [
+    visit?.actual_arrival_at,
+    visit?.latest_checkin,
+    staffId,
+    visitId,
+    localStatus,
+    queuedArrival,
+  ]);
 
   function startScan(mode: ScanMode) {
     if (!staffId || !visitId) {
@@ -440,7 +573,13 @@ function MobileVisitDetailPageInner() {
       // ディープリンク経由: トークンは URL から取得済みなのでスキャンを省略し、
       // GPS 取得 → プレビュー確認へ直行する (自動送信はしない — 「記録する」は
       // 必ず本人が押す)。トークンの真正性はサーバが検証する (別患者 = 409)。
-      void beginPreview(mode, deepLinkToken);
+      //
+      // 読み取った瞬間: 到着は、このページをディープリンクで開いた時点。
+      // **退出には使わない** — ディープリンクの読取時刻は 1 回の読み取りの時刻で、
+      // 到着に使った (使おうとした) 後に退出へ回すと、退出が到着と同じ時刻になり滞在が
+      // 0 分になる。退出は、退出のボタンを押した時点にする。
+      const readAt = mode === 'arrival' ? deepLinkReadAt : new Date().toISOString();
+      void beginPreview(mode, deepLinkToken, readAt);
       return;
     }
     setFlow({ step: 'scanning', mode });
@@ -458,8 +597,11 @@ function MobileVisitDetailPageInner() {
    * After a scan / manual pick: capture GPS, compute the client-side distance
    * preview, and show the confirm screen. NO POST happens here — recording is a
    * single POST triggered by the user pressing 「記録する」(`recordPreview`).
+   *
+   * `readAt` = QR を読み取った瞬間。ここでは作らず、呼び出し元が「読んだ時点」で
+   * 控えた値をそのまま運ぶ (GPS の取得を待った後の時刻にしない)。
    */
-  async function beginPreview(mode: ScanMode, token: string | undefined) {
+  async function beginPreview(mode: ScanMode, token: string | undefined, readAt: string) {
     setMismatchReason('');
     setFlow({ step: 'locating', mode });
     const geo = await getGeolocation();
@@ -471,27 +613,31 @@ function MobileVisitDetailPageInner() {
       geo,
       distance,
       status: previewStatusOf(distance, matchM, reviewM),
+      readAt,
     });
   }
 
   async function relocate() {
     if (flow.step !== 'preview') return;
-    const { mode, token } = flow;
-    await beginPreview(mode, token);
+    // 位置を取り直しても、読み取った瞬間は変えない。
+    const { mode, token, readAt } = flow;
+    await beginPreview(mode, token, readAt);
   }
 
   function handleScanned(token: string, mode: ScanMode) {
-    void beginPreview(mode, token);
+    // カメラが QR を読んだ時点。
+    void beginPreview(mode, token, new Date().toISOString());
   }
 
   function handleManual(mode: ScanMode) {
-    void beginPreview(mode, undefined);
+    // 「QRなしで記録」を押した時点。
+    void beginPreview(mode, undefined, new Date().toISOString());
   }
 
   /** Validate the preview form, then issue the single POST. */
   function recordPreview() {
     if (flow.step !== 'preview') return;
-    const { mode, token, geo, status } = flow;
+    const { mode, token, geo, status, readAt } = flow;
     // 担当外 (代行) は QR 必須 — トークン無しの記録は受け付けない (決定#6)。
     if (substituteMode && !token) {
       toast.error('QRの読み取りが必要です', {
@@ -507,7 +653,7 @@ function MobileVisitDetailPageInner() {
       toast.error('理由を入力してください', { description: '不一致のため理由が必要です' });
       return;
     }
-    void doRecord(mode, token, geo, {
+    void doRecord(mode, token, geo, readAt, {
       reason: reason || undefined,
       is_override: isMismatch,
     });
@@ -523,10 +669,12 @@ function MobileVisitDetailPageInner() {
     mode: ScanMode,
     qrToken: string | undefined,
     geo: Geo,
+    /** QR を読み取った瞬間 (ISO 8601)。打刻の `at` にそのまま載せる。 */
+    readAt: string,
     extra: { reason?: string; is_override?: boolean },
   ) {
     setFlow({ step: 'submitting', mode });
-    const at = new Date().toISOString();
+    const at = readAt;
     const coords = coordsOf(geo);
     const payload: CheckInPayload = {
       ...coords,
@@ -542,6 +690,9 @@ function MobileVisitDetailPageInner() {
       // ディープリンクのトークンは 1 記録で消費する (退出時は改めて現地で読む)。
       if (qrToken && qrToken === deepLinkToken) clearDeepLinkToken();
       setLocalStatus(mode === 'arrival' ? 'checked_in' : 'checked_out');
+      setFreshVisit(updated);
+      // 到着した直後は、その場で時刻を合わせるカードを出す (設計 §7-2)。
+      setShowArrivedCard(mode === 'arrival');
       setFlow({ step: 'none' });
       // Reflect the server's authoritative verdict.
       const serverStatus = updated.latest_checkin?.match_status;
@@ -597,8 +748,14 @@ function MobileVisitDetailPageInner() {
           ...(geo.lng !== undefined ? { lng: geo.lng } : {}),
         });
         enqueuePending(staffId, { visit_id: visitId, kind, payload: pending });
+        // 退避でもディープリンクのトークンは消費する (この 1 記録に使った)。残すと
+        // 次の退出がスキャンを省略し、現地で読み直さないまま記録されてしまう。
+        if (qrToken && qrToken === deepLinkToken) clearDeepLinkToken();
         setLocalStatus(mode === 'arrival' ? 'checked_in' : 'checked_out');
         refreshPending();
+        // 退避した到着にもカードを出す。合わせた時刻は送信前の控えに書き込む。
+        if (mode === 'arrival') setQueuedArrival({ readAt: at, adjustedTime: null });
+        setShowArrivedCard(mode === 'arrival');
         setFlow({ step: 'none' });
         toast.warning('未送信として保存しました', {
           description: '電波が戻り次第、自動で再送します',
@@ -610,6 +767,112 @@ function MobileVisitDetailPageInner() {
       });
       setFlow({ step: 'none' });
     }
+  }
+
+  /**
+   * 実績の時刻を合わせる。`time` は JST の "HH:MM"、**null は読取時刻に戻す**。
+   * 成功したら true。予定 (`start_time` / `end_time`) は動かない。
+   *
+   * 圏外で退避した到着はまだサーバに無いので、API を呼ばずに退避キューの控えへ
+   * `adjusted_time` を書き込む (再送のとき打刻と一緒に届く・設計 §6-2)。控えが
+   * もう無い (= たった今送信できた) ときは、そのまま API へ進む。
+   *
+   * **再送の POST がちょうど飛んでいる間**は控えに書いても body に載らない。書けた
+   * ことにせず、再送が終わるのを待ってから決める: 送れていれば API、まだ控えに
+   * 残っていれば (送信に失敗した) 控えへ書く。
+   */
+  async function applyActualTime(
+    kind: ActualTimeKind,
+    time: string | null,
+    reasonCode: AdjustReasonCode,
+  ): Promise<boolean> {
+    if (kind === 'arrival' && queuedArrival) {
+      const adjustment = time ? { adjusted_time: time, adjust_reason_code: reasonCode } : null;
+      let result = setPendingAdjustment(staffId, visitId, 'arrival', adjustment);
+      if (result === 'sending') {
+        setWaitingForResend(true);
+        try {
+          // 同じスタッフの再送は直列に走る。これが返る時点で、いま飛んでいる POST は
+          // 終わっている。
+          await flushNow();
+        } finally {
+          setWaitingForResend(false);
+        }
+        result = setPendingAdjustment(staffId, visitId, 'arrival', adjustment);
+      }
+      if (result === 'written') {
+        setQueuedArrival({ ...queuedArrival, adjustedTime: time });
+        return true;
+      }
+      if (result === 'sending') {
+        // 待っている間に次の再送が始まった。保存できていないことを必ず伝える。
+        toast.error('時刻を合わせられませんでした', {
+          description: '記録を送信しています。少し待ってから、もう一度お試しください',
+        });
+        return false;
+      }
+      setQueuedArrival(null);
+    }
+    try {
+      const updated = time
+        ? await adjustActual.mutateAsync({
+            kind,
+            time,
+            reason_code: reasonCode,
+            reason_text: null,
+          })
+        : await resetActual.mutateAsync(kind);
+      setFreshVisit(updated);
+      return true;
+    } catch (err) {
+      // 422 などの `detail` は、そのまま画面に出せる日本語 (設計 §6-1)。
+      toast.error('時刻を合わせられませんでした', {
+        description:
+          detailOf(err) ??
+          (isServerUnreachable(err)
+            ? '電波の良い場所で、もう一度お試しください'
+            : err instanceof Error
+              ? err.message
+              : String(err)),
+      });
+      return false;
+    }
+  }
+
+  /** シートの「HH:MM に合わせる」。 */
+  async function saveFromSheet(
+    kind: ActualTimeKind,
+    time: string | null,
+    reasonCode: AdjustReasonCode,
+  ): Promise<boolean> {
+    // 退出がまだ無い訪問に退出を入れる = 退出を新しく記録する (訪問が完了になる)。
+    const recordsDeparture = kind === 'departure' && sheetModel?.departure.at == null;
+    const ok = await applyActualTime(kind, time, reasonCode);
+    if (!ok) return false;
+    setShowArrivedCard(false);
+    if (recordsDeparture && time) {
+      // 完了になると QR の退出・音声記録・写真の入口が消える。押し間違いをその場で
+      // 取り消せるようにする (シートの退出側からも取り消せる)。
+      toast.success(`退出を ${time} で記録しました`, {
+        description: '訪問は完了になりました',
+        duration: MANUAL_DEPARTURE_TOAST_MS,
+        classNames: { actionButton: TOAST_ACTION_44PX },
+        action: { label: '元に戻す', onClick: () => void cancelManualDeparture() },
+      });
+      return true;
+    }
+    // `time = null` (読取時刻に戻す) のときは、読取時刻を見せる。
+    const readMin = kind === 'arrival' ? sheetModel?.arrival.readAt : sheetModel?.departure.readAt;
+    const shown = time ?? (readMin != null ? minutesToHm(readMin) : '読取時刻');
+    toast.success(`${kind === 'arrival' ? '到着' : '退出'}を ${shown} に合わせました`);
+    return true;
+  }
+
+  /** 手で入れた退出時刻を取り消す (退出が無くなり、訪問中に戻る)。 */
+  async function cancelManualDeparture(): Promise<boolean> {
+    const ok = await applyActualTime('departure', null, 'no_read');
+    if (ok) toast.success('入れた退出時刻を取り消しました');
+    return ok;
   }
 
   async function handleNoShowSubmit() {
@@ -697,6 +960,73 @@ function MobileVisitDetailPageInner() {
       ? null
       : actualTimeParts(visit?.actual_arrival_at, visit?.actual_departure_at);
 
+  // 打刻はサーバが当日以外を拒否する。過去 / 先の日の訪問では QR の打刻ボタンと
+  // 「訪問できなかった」を出さない (設計 2026-09-30 §7-8)。
+  const today = todayIso();
+  const isToday = visit?.visit_date === today;
+  const isFutureDay = !!visit && visit.visit_date > today;
+
+  /**
+   * 時刻を合わせる対象 (0 時からの分)。null = 合わせられない。
+   *
+   *   - 圏外で退避した到着があれば、その控え (退出はまだ合わせられない)。
+   *   - それ以外は、サーバが `actual_adjust_allowed` を立てた訪問だけ
+   *     (権限はサーバが判定・設計 §6-3)。到着の読み取りが必要。
+   */
+  const actualModel = (() => {
+    if (queuedArrival) {
+      const readAt = jstMinutes(queuedArrival.readAt);
+      if (readAt == null) return null;
+      return {
+        queued: true,
+        arrival: { at: hmToMinutes(queuedArrival.adjustedTime) ?? readAt, readAt },
+        departure: { at: null, readAt: null },
+      };
+    }
+    if (!visit?.actual_adjust_allowed || visit.status === 'no_show') return null;
+    const at = jstMinutes(visit.actual_arrival_at);
+    if (at == null) return null;
+    return {
+      queued: false,
+      arrival: { at, readAt: jstMinutes(visit.actual_arrival_read_at) ?? at },
+      departure: {
+        at: jstMinutes(visit.actual_departure_at),
+        readAt: jstMinutes(visit.actual_departure_read_at),
+      },
+    };
+  })();
+  /** サーバに届いた実績を合わせられる (= ボタンを出す)。 */
+  const canAdjustOnServer = !!actualModel && !actualModel.queued;
+
+  // シートに渡す対象。開いている間は、直前の値を持ち続ける。退避した到着の再送が
+  // 成功すると、控えが消えてから詳細の再取得が届くまで `actualModel` が一瞬 null に
+  // なる。そこでシートを外すと、選びかけの時刻ごと作り直しになってしまう。
+  // (保存の行き先は保存の時点で決め直すので、古い控えへ書き込むことは無い。)
+  const heldModelRef = useRef(actualModel);
+  if (actualModel) heldModelRef.current = actualModel;
+  const sheetModel = actualModel ?? (sheetKind != null ? heldModelRef.current : null);
+
+  // 実績の行の下の補足: 「滞在 35 分 ・ 到着を 10 分 調整（読取 13:06）」。
+  const actualNote = (() => {
+    if (!visit || !actualParts) return null;
+    const arr = jstMinutes(visit.actual_arrival_at);
+    const dep = jstMinutes(visit.actual_departure_at);
+    const parts: string[] = [];
+    if (arr != null && dep != null && dep >= arr) parts.push(`滞在 ${dep - arr} 分`);
+    const arrRead = jstHm(visit.actual_arrival_read_at);
+    if (visit.actual_arrival_adjusted && arrRead) {
+      const back = arr != null ? (hmToMinutes(arrRead) ?? arr) - arr : 0;
+      parts.push(
+        back > 0 ? `到着を ${back} 分 調整（読取 ${arrRead}）` : `到着を調整（読取 ${arrRead}）`,
+      );
+    }
+    const depRead = jstHm(visit.actual_departure_read_at);
+    if (visit.actual_departure_manual) parts.push('退出は手入力');
+    else if (visit.actual_departure_adjusted && depRead)
+      parts.push(`退出を調整（読取 ${depRead}）`);
+    return parts.length > 0 ? parts.join(' ・ ') : null;
+  })();
+
   // ---- Full-screen scanner overlay -----------------------------------------
   if (flow.step === 'scanning') {
     return (
@@ -716,12 +1046,12 @@ function MobileVisitDetailPageInner() {
       action={
         // 無言の矢印だけでは戻り先が分からない (PO要望 2026-07-10) → テキスト付きボタンへ
         <Link
-          href="/m/today"
+          href={fromWeek ? '/m/this-week' : '/m/today'}
           className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full border border-brand-primary-light bg-brand-primary-50 px-3 text-xs font-medium text-brand-primary hover:bg-brand-primary-light"
-          aria-label="今日の訪問に戻る"
+          aria-label={fromWeek ? '今週の予定に戻る' : '今日の訪問に戻る'}
         >
           <ArrowLeft className="h-4 w-4" />
-          今日の訪問に戻る
+          {fromWeek ? '今週の予定に戻る' : '今日の訪問に戻る'}
         </Link>
       }
     >
@@ -796,7 +1126,27 @@ function MobileVisitDetailPageInner() {
                   <span className="tnum">
                     {actualParts.done ? `実績 ${actualParts.range}` : `到着 ${actualParts.range}`}
                   </span>
+                  {/* 訪問中も完了後も開ける。出すかどうかはサーバの判定に従う。 */}
+                  {canAdjustOnServer && (
+                    <button
+                      type="button"
+                      onClick={() => setSheetKind('arrival')}
+                      className="ml-auto inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full border border-brand-primary bg-bg-base px-3.5 text-[13px] font-bold text-brand-primary-hover"
+                      data-testid="mobile-detail-adjust"
+                    >
+                      <Clock className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      時刻を合わせる
+                    </button>
+                  )}
                 </div>
+              )}
+              {actualNote && (
+                <p
+                  className="tnum ml-6 text-xs text-text-secondary"
+                  data-testid="mobile-detail-actual-note"
+                >
+                  {actualNote}
+                </p>
               )}
               {displayVisitNote(visit.note) && (
                 <div className="flex items-start gap-2 text-text-secondary">
@@ -840,6 +1190,7 @@ function MobileVisitDetailPageInner() {
               matchM={matchM}
               reviewM={reviewM}
               geoErrorCode={flow.geo.errorCode}
+              readAt={flow.readAt}
               mismatchReason={mismatchReason}
               onMismatchReasonChange={setMismatchReason}
               onRecord={recordPreview}
@@ -895,41 +1246,109 @@ function MobileVisitDetailPageInner() {
                   <AlertDescription>チェックインや写真の登録はできません。</AlertDescription>
                 </Alert>
               )}
-              {visit.status !== 'cancelled' && !effectiveCheckedIn && !effectiveCompleted && (
-                <>
-                  <CheckInButton onClick={() => startScan('arrival')}>
-                    <QrCode className="h-5 w-5" />
-                    QRで到着を記録
-                  </CheckInButton>
-                  {/* 未訪問 (no-show) は担当スタッフ専用 — 代行では出さない (設計 §2)。 */}
-                  {!substituteMode && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="w-full text-error"
-                      onClick={() => {
-                        setNoshowReason('');
-                        setFlow({ step: 'noshow' });
-                      }}
-                    >
-                      訪問できなかった（理由を記録）
-                    </Button>
-                  )}
-                </>
-              )}
+              {visit.status !== 'cancelled' &&
+                !effectiveCheckedIn &&
+                !effectiveCompleted &&
+                isFutureDay && (
+                  <Card className="p-4 text-[13px] text-text-secondary">
+                    当日になると到着を記録できます。
+                  </Card>
+                )}
+              {/* 過去の日で打刻の無い訪問。打刻ボタンを出せない (サーバが当日以外を
+                  拒否する) ので、何も出ない理由を一言添える。 */}
+              {visit.status !== 'cancelled' &&
+                visit.status !== 'no_show' &&
+                !effectiveCheckedIn &&
+                !effectiveCompleted &&
+                !isToday &&
+                !isFutureDay && (
+                  <Card
+                    className="p-4 text-[13px] text-text-secondary"
+                    data-testid="mobile-detail-past-no-record"
+                  >
+                    この日の記録はありません。必要な場合は管理者にお伝えください。
+                  </Card>
+                )}
+              {visit.status !== 'cancelled' &&
+                !effectiveCheckedIn &&
+                !effectiveCompleted &&
+                isToday && (
+                  <>
+                    <CheckInButton onClick={() => startScan('arrival')}>
+                      <QrCode className="h-5 w-5" />
+                      QRで到着を記録
+                    </CheckInButton>
+                    {/* 未訪問 (no-show) は担当スタッフ専用 — 代行では出さない (設計 §2)。 */}
+                    {!substituteMode && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full text-error"
+                        onClick={() => {
+                          setNoshowReason('');
+                          setFlow({ step: 'noshow' });
+                        }}
+                      >
+                        訪問できなかった（理由を記録）
+                      </Button>
+                    )}
+                  </>
+                )}
+
+              {/* ---- 到着した直後: その場で時刻を合わせる (設計 §7-2) -------- */}
+              {visit.status !== 'cancelled' &&
+                effectiveCheckedIn &&
+                !effectiveCompleted &&
+                showArrivedCard &&
+                actualModel && (
+                  <ArrivedAdjustCard
+                    readMin={actualModel.arrival.readAt}
+                    adjustedMin={
+                      actualModel.arrival.at !== actualModel.arrival.readAt
+                        ? actualModel.arrival.at
+                        : null
+                    }
+                    busy={adjustBusy}
+                    onQuick={(n) =>
+                      void applyActualTime(
+                        'arrival',
+                        minutesToHm(actualModel.arrival.readAt - n),
+                        'intercom_wait',
+                      )
+                    }
+                    onFine={() => setSheetKind('arrival')}
+                    onUndo={() => void applyActualTime('arrival', null, 'intercom_wait')}
+                    onDismiss={() => setShowArrivedCard(false)}
+                  />
+                )}
 
               {visit.status !== 'cancelled' && effectiveCheckedIn && !effectiveCompleted && (
                 <Card className="space-y-3 p-4">
                   <div className="text-center">
+                    {/* 過去の日の訪問 (退出の読み取りが無いまま) では時計を回さない。 */}
                     <p className="font-serif text-3xl font-bold tnum text-brand-primary-hover">
-                      {arrivalIso ? fmtElapsed(nowTs - new Date(arrivalIso).getTime()) : '--:--'}
+                      {arrivalMs != null && isToday ? fmtElapsed(nowTs - arrivalMs) : '--:--'}
                     </p>
-                    <p className="text-xs text-text-muted">
+                    <p className="text-xs text-text-muted" data-testid="mobile-detail-elapsed">
                       経過時間
-                      {arrivalIso
-                        ? `（到着 ${shortTime(new Date(arrivalIso).toTimeString())}〜）`
+                      {arrivalMs != null
+                        ? `（到着 ${jstHm(new Date(arrivalMs).toISOString())}〜）`
                         : ''}
                     </p>
+                    {/* 圏外で退避中の到着は、まだ実績の行 (「時刻を合わせる」) が出ない。
+                        到着直後のカードを閉じた後も、ここから合わせられるようにする
+                        (合わせた時刻は送信前の控えに書き込む)。 */}
+                    {actualModel?.queued && !showArrivedCard && (
+                      <button
+                        type="button"
+                        onClick={() => setSheetKind('arrival')}
+                        className="mt-2 inline-flex h-11 items-center gap-1.5 rounded-full border border-brand-primary bg-bg-base px-3.5 text-[13px] font-bold text-brand-primary-hover"
+                        data-testid="mobile-detail-adjust-queued"
+                      >
+                        <Clock className="h-4 w-4 shrink-0" aria-hidden="true" />
+                        到着の時刻を合わせる
+                      </button>
+                    )}
                   </div>
                   <div>
                     <label
@@ -964,12 +1383,30 @@ function MobileVisitDetailPageInner() {
                 />
               )}
 
-              {visit.status !== 'cancelled' && effectiveCheckedIn && !effectiveCompleted && (
-                <CheckInButton onClick={() => startScan('departure')}>
-                  <QrCode className="h-5 w-5" />
-                  QRで退出を記録
-                </CheckInButton>
-              )}
+              {visit.status !== 'cancelled' &&
+                effectiveCheckedIn &&
+                !effectiveCompleted &&
+                isToday && (
+                  <CheckInButton onClick={() => startScan('departure')}>
+                    <QrCode className="h-5 w-5" />
+                    QRで退出を記録
+                  </CheckInButton>
+                )}
+
+              {/* 退出の読み取りが無いとき: シートの退出側で時刻を入れる (設計 §7-5)。 */}
+              {visit.status !== 'cancelled' &&
+                effectiveCheckedIn &&
+                !effectiveCompleted &&
+                canAdjustOnServer && (
+                  <button
+                    type="button"
+                    onClick={() => setSheetKind('departure')}
+                    className="flex min-h-11 w-full items-center justify-center rounded-md px-3 text-sm text-text-secondary underline"
+                    data-testid="mobile-detail-manual-departure"
+                  >
+                    退出の QR を読んでいないときは、退出時刻を入れる
+                  </button>
+                )}
 
               {visit.status !== 'cancelled' && effectiveCompleted && (
                 <Alert className="flex items-center gap-3">
@@ -977,7 +1414,9 @@ function MobileVisitDetailPageInner() {
                   <div>
                     <AlertTitle>訪問完了</AlertTitle>
                     <AlertDescription>
-                      この訪問はチェックアウト済みです。おつかれさまでした！
+                      {canAdjustOnServer
+                        ? 'おつかれさまでした！時刻は上の「時刻を合わせる」から調整できます。'
+                        : 'この訪問はチェックアウト済みです。おつかれさまでした！'}
                     </AlertDescription>
                   </div>
                 </Alert>
@@ -1087,6 +1526,28 @@ function MobileVisitDetailPageInner() {
         </>
       )}
 
+      {/* ---- 実績の時刻を合わせるシート (設計 §7-4) --------------------- */}
+      {visit && sheetModel && (
+        <ActualTimeSheet
+          open={sheetKind != null}
+          onOpenChange={(next) => {
+            if (!next) setSheetKind(null);
+          }}
+          initialKind={sheetKind ?? 'arrival'}
+          patientName={patientName}
+          planStart={hmToMinutes(visit.start_time) ?? 0}
+          planEnd={hmToMinutes(visit.end_time) ?? 0}
+          arrival={sheetModel.arrival}
+          departure={sheetModel.departure}
+          isToday={isToday}
+          departureDisabled={sheetModel.queued}
+          departureManual={!sheetModel.queued && !!visit.actual_departure_manual}
+          onCancelManualDeparture={cancelManualDeparture}
+          saving={adjustBusy}
+          onSave={saveFromSheet}
+        />
+      )}
+
       {/* ---- 写真の拡大表示 (タップで閉じる) --------------------------- */}
       {photoViewerUrl && (
         <button
@@ -1121,6 +1582,8 @@ interface PreviewPanelProps {
   reviewM: number;
   /** 測位失敗時の GeolocationPositionError.code (成功時 undefined)。 */
   geoErrorCode?: number;
+  /** QR を読み取った瞬間 (ISO 8601)。この時刻で記録する。 */
+  readAt: string;
   mismatchReason: string;
   onMismatchReasonChange: (v: string) => void;
   onRecord: () => void;
@@ -1134,6 +1597,7 @@ function PreviewPanel({
   matchM,
   reviewM,
   geoErrorCode,
+  readAt,
   mismatchReason,
   onMismatchReasonChange,
   onRecord,
@@ -1154,6 +1618,14 @@ function PreviewPanel({
         <CheckCircle2 className="h-5 w-5 text-brand-primary" />
         <p className="font-semibold text-text-primary">{isArrival ? '到着の確認' : '退出の確認'}</p>
       </div>
+
+      {/* 記録されるのは「記録する」を押した時刻ではなく、読み取った時刻。 */}
+      <p
+        className="tnum rounded-lg bg-bg-muted px-3 py-2 text-center text-sm text-text-secondary"
+        data-testid="preview-read-time"
+      >
+        読み取った時刻 <b className="text-base text-text-primary">{jstHm(readAt)}</b> で記録します
+      </p>
 
       {/* Simple map thumbnail (装飾) — 距離/判定は下のカードが正。 */}
       <div className="relative h-24 overflow-hidden rounded-lg border border-border-default bg-gradient-to-br from-brand-primary-light/40 to-bg-muted">

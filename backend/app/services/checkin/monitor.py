@@ -48,6 +48,13 @@ from app.schemas.visit_monitor import (
     NearbyResponse,
 )
 from app.services.accompaniment import resolve_accompaniment_by_visit
+from app.services.checkin.actuals import (
+    VisitActuals,
+    adjustment_payloads,
+    load_actuals,
+    load_adjuster_names,
+    stay_minutes,
+)
 from app.services.checkin.judge import load_thresholds
 from app.services.patient_status_sync import status_since_date
 from app.utils.geo import haversine_m
@@ -312,29 +319,6 @@ def _project_checkin(row: VisitCheckin) -> MonitorCheckin:
     )
 
 
-def _effective_time(c: MonitorCheckin) -> datetime:
-    """滞在計算用の実効時刻 (device_time 優先、無ければ scanned_at)。JST aware."""
-    return _as_jst(c.device_time if c.device_time is not None else c.scanned_at)
-
-
-def _stay_minutes(
-    arrival: MonitorCheckin | None,
-    departure: MonitorCheckin | None,
-    now_jst: datetime,
-) -> int | None:
-    """滞在分 (到着〜退出、進行中は now 迄)。device_time 優先で逆転対策。"""
-    if arrival is None:
-        return None
-    arr = _effective_time(arrival)
-    if departure is not None:
-        dep = _effective_time(departure)
-    else:
-        dep = now_jst
-    minutes = (dep - arr).total_seconds() / 60.0
-    # オフライン同期で逆転 (dep < arr) した場合は 0 に丸める。
-    return max(0, round(minutes))
-
-
 def _course_label_first_code(label: str | None) -> str:
     """course_label ("Aコース" / "A/Bコース") から並べ替え用の先頭コースコードを取り出す。
 
@@ -353,8 +337,13 @@ async def build_monitor(
     *,
     office_id: UUID | None = None,
     now: datetime | None = None,
+    viewer_is_admin: bool = False,
 ) -> MonitorResponse:
     """指定日の訪問モニター集計を組み立てる (DB 読み取りのみ).
+
+    ``viewer_is_admin`` = 見ているユーザーが admin か。調整した人の名前
+    (``adjustments[].by_name``) の出し方だけに効く: スタッフ名の無い調整者は、admin には
+    email / username、それ以外には「管理者」と出す (既定は出さない側)。
 
     代行 / 実績スタッフの合成規則 (設計 ``qr-open-checkin-design.md`` §6):
 
@@ -397,34 +386,21 @@ async def build_monitor(
     # 全員を渡す (2 人目の同行者を代行と誤判定しないため)。
     accompaniment_by_visit = await resolve_accompaniment_by_visit(db, list(visits))
 
-    # 全 checkin を 1 クエリで取得し、(visit_id, kind) ごと最新を採用 (scanned_at DESC)。
-    latest: dict[tuple[UUID, str], VisitCheckin] = {}
-    # 代行判定は「最新」ではなく **到着・退出の全打刻者** を見る:
+    # 実績 (到着・退出の実績時刻 / 未訪問 / 打刻者) は単一ソース ``actuals.py`` から引く
+    # (設計 actual-time-adjust §5)。ここでは ``scanned_at`` を読まない — 実績時刻は
+    # 調整があれば調整後、無ければ読取時刻で、phase・遅延・滞在・退出忘れ・ペア補正が
+    # すべてこの時刻を基準にする。
+    # 代行判定は「最新」ではなく **到着・退出の全打刻者** (``checkin_staff_ids``) を見る:
     #   - 最新だけだと、先に打った代行の事実が担当本人の打ち直しで消える
     #     (通知条件とも食い違う)。
     #   - arrival だけだと「到着は担当本人・退出だけ代行」がモニターに出ない
     #     (通知側は退出でも代行を出すので、こちらだけ黙る不整合になる)。
-    # no_show は担当専用の記録なので集めない。
-    # 並びは scanned_at DESC を保った重複排除リスト = 先頭が新しい打刻者。
-    checkin_staff_ids: dict[UUID, list[UUID]] = defaultdict(list)
-    if visit_ids:
-        rows = (
-            await db.scalars(
-                select(VisitCheckin)
-                .where(VisitCheckin.visit_id.in_(visit_ids))
-                .order_by(VisitCheckin.scanned_at.desc())
-            )
-        ).all()
-        for r in rows:
-            key = (r.visit_id, r.kind)
-            if key not in latest:  # DESC 並びなので最初に出た = 最新。
-                latest[key] = r
-            if (
-                r.kind in ("arrival", "departure")
-                and r.staff_id is not None
-                and r.staff_id not in checkin_staff_ids[r.visit_id]
-            ):
-                checkin_staff_ids[r.visit_id].append(r.staff_id)
+    # no_show は担当専用の記録なので集めない。並びは新しい順 = 先頭が新しい打刻者。
+    actuals_by_visit = await load_actuals(db, visit_ids)
+    no_actuals = VisitActuals()
+    adjuster_names = await load_adjuster_names(
+        db, actuals_by_visit.values(), for_admin=viewer_is_admin
+    )
 
     # 代行検出 (設計 §6): visit の担当集合 (assignments + 同行込み) を 1 クエリで
     # 束ね、**いずれかの** 到着 / 退出打刻者がその外なら代行とみなす。
@@ -443,8 +419,8 @@ async def build_monitor(
     # あるため別引きする。実績 (actual_staff_*) と代行者 (substitute_staff_*) の
     # 両方がこの 1 マップを引く。
     checkin_staff_id_set: set[UUID] = set()
-    for ids in checkin_staff_ids.values():
-        checkin_staff_id_set |= set(ids)
+    for visit_actuals in actuals_by_visit.values():
+        checkin_staff_id_set |= set(visit_actuals.checkin_staff_ids)
     checkin_staff_names: dict[UUID, str] = {}
     if checkin_staff_id_set:
         for sid, sname in (
@@ -452,14 +428,14 @@ async def build_monitor(
         ).all():
             checkin_staff_names[sid] = sname
 
-    # 同住所・同時刻ペア補正: 到着/退出の実効時刻マップを組み、補正後起点を導出する。
+    # 同住所・同時刻ペア補正: 到着/退出の実績時刻マップを組み、補正後起点を導出する。
     arrival_at: dict[UUID, datetime] = {}
     departure_at: dict[UUID, datetime] = {}
-    for (vid, kind), row in latest.items():
-        if kind == "arrival":
-            arrival_at[vid] = _as_jst(row.scanned_at)
-        elif kind == "departure":
-            departure_at[vid] = _as_jst(row.scanned_at)
+    for vid, visit_actuals in actuals_by_visit.items():
+        if visit_actuals.arrival is not None:
+            arrival_at[vid] = _as_jst(visit_actuals.arrival.at)
+        if visit_actuals.departure is not None:
+            departure_at[vid] = _as_jst(visit_actuals.departure.at)
     pair_eff = compute_pair_effective_starts(visits, arrival_at, departure_at)
 
     # 「確認済み」(visit 単位の review) を 1 クエリで取得。確認者名は
@@ -603,9 +579,13 @@ async def build_monitor(
 
         mvisits: list[MonitorVisit] = []
         for v in staff_visits:
-            arrival = latest.get((v.id, "arrival"))
-            departure = latest.get((v.id, "departure"))
-            no_show = latest.get((v.id, "no_show"))
+            actuals = actuals_by_visit.get(v.id, no_actuals)
+            arrival_actual = actuals.arrival
+            departure_actual = actuals.departure
+            # 生の打刻 (位置判定・打刻者・理由)。読み取りの無い退出 (手入力) は None。
+            arrival = arrival_actual.checkin if arrival_actual is not None else None
+            departure = departure_actual.checkin if departure_actual is not None else None
+            no_show = actuals.no_show
             arr_p = _project_checkin(arrival) if arrival is not None else None
             dep_p = _project_checkin(departure) if departure is not None else None
             ns_p = _project_checkin(no_show) if no_show is not None else None
@@ -627,17 +607,16 @@ async def build_monitor(
                 assignment_staff_ids=assignments_by_visit.get(v.id, set()),
                 accompaniment_staff_ids=[e.staff_id for e in _acc_entries],
             )
-            # checkin_staff_ids は scanned_at DESC 順 = 先頭が最新の代行者。
-            _substitute_ids = [
-                sid for sid in checkin_staff_ids.get(v.id, []) if sid not in _assigned
-            ]
+            # checkin_staff_ids は新しい順 = 先頭が最新の代行者。
+            _substitute_ids = [sid for sid in actuals.checkin_staff_ids if sid not in _assigned]
             is_substitute = bool(_substitute_ids)
             substitute_staff_id = _substitute_ids[0] if _substitute_ids else None
             is_unplanned = v.is_unplanned
 
             start_dt = datetime.combine(v.visit_date, v.start_time, tzinfo=JST)
-            arr_scanned = _as_jst(arrival.scanned_at) if arrival is not None else None
-            dep_scanned = _as_jst(departure.scanned_at) if departure is not None else None
+            # 実績時刻 (JST)。読み取りの無い退出 (手入力) があれば phase は done になる。
+            arr_scanned = _as_jst(arrival_actual.at) if arrival_actual is not None else None
+            dep_scanned = _as_jst(departure_actual.at) if departure_actual is not None else None
             # 同住所・同時刻ペア補正後起点 (無ければ予定開始と同一)。
             effective_start = pair_eff.get(v.id)
 
@@ -650,7 +629,9 @@ async def build_monitor(
                 grace_min=thresholds["no_show_grace_min"],
                 effective_start_dt=effective_start,
             )
-            stay = _stay_minutes(arr_p, dep_p, now_jst)
+            # 滞在分は ``actuals.stay_minutes`` (到着・退出を分に切り捨ててからの差。
+            # 進行中は現在時刻まで)。打刻履歴・Excel・A4 と同じ値になる。
+            stay = stay_minutes(arr_scanned, dep_scanned, now=now_jst)
             review_entry = reviews.get(v.id)
             reviewed = review_entry is not None
             alert_level = compute_alert(
@@ -745,6 +726,19 @@ async def build_monitor(
                     arrival=arr_p,
                     departure=dep_p,
                     no_show=ns_p,
+                    # 実績時刻 (調整後。無ければ読取時刻) と読取時刻・調整の有無。
+                    arrival_at=arrival_actual.at if arrival_actual is not None else None,
+                    departure_at=departure_actual.at if departure_actual is not None else None,
+                    arrival_read_at=(
+                        arrival_actual.read_at if arrival_actual is not None else None
+                    ),
+                    departure_read_at=(
+                        departure_actual.read_at if departure_actual is not None else None
+                    ),
+                    arrival_adjusted=arrival_actual is not None and arrival_actual.adjusted,
+                    departure_adjusted=(departure_actual is not None and departure_actual.adjusted),
+                    departure_manual=departure_actual is not None and departure_actual.manual,
+                    adjustments=adjustment_payloads(actuals, adjuster_names),
                     stay_minutes=stay,
                     arrival_delay_min=arrival_delay_min,
                     reason=reason,

@@ -7,6 +7,11 @@
  *   3. 0 件は らく助 (think) の空状態
  *   4. ページング（50 件・total）で offset が動く
  *   5. `?patient=` で初期フィルタが決まる（期間で切らない）
+ *
+ * 2026-09-30: `/records` は「打刻履歴」「音声記録」の 2 タブになった
+ * （visit-history-design-2026-09-30 §4）。上の 1〜5 は音声記録タブの挙動なので、
+ * 名指しの無いテストは `?tab=voice` で開く。タブの既定・切り替えは末尾の
+ * `RecordsPage — タブ` で縛る。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent } from '@testing-library/react';
@@ -18,14 +23,19 @@ class ResizeObserverStub {
 }
 (globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver ??= ResizeObserverStub;
 
-const { mockUseVisitRecordings, mockSearchParams, mockRole, mockSessionStatus } = vi.hoisted(
-  () => ({
-    mockUseVisitRecordings: vi.fn(),
-    mockSearchParams: { value: new Map<string, string>() },
-    mockRole: { value: 'admin' as string },
-    mockSessionStatus: { value: 'authenticated' as string },
-  }),
-);
+const {
+  mockUseVisitRecordings,
+  mockUseVisitHistory,
+  mockSearchParams,
+  mockRole,
+  mockSessionStatus,
+} = vi.hoisted(() => ({
+  mockUseVisitRecordings: vi.fn(),
+  mockUseVisitHistory: vi.fn(),
+  mockSearchParams: { value: new Map<string, string>() },
+  mockRole: { value: 'admin' as string },
+  mockSessionStatus: { value: 'authenticated' as string },
+}));
 
 vi.mock('next/navigation', () => ({
   useSearchParams: () => ({ get: (k: string) => mockSearchParams.value.get(k) ?? null }),
@@ -58,6 +68,14 @@ vi.mock('@/lib/queries/visit-recordings', async (importOriginal) => {
     useVisitRecordings: (...a: unknown[]) => mockUseVisitRecordings(...a),
   });
 });
+
+// 打刻履歴タブ: 純関数は本物のまま、ネットワークを踏むフックだけ差し替える。
+vi.mock('@/lib/queries/visit-history', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  useVisitHistory: (...a: unknown[]) => mockUseVisitHistory(...a),
+  useVisitHistoryExport: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useVisitHistoryReport: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
 
 vi.mock('@/lib/queries/offices', () => ({
   useOffices: () => ({ offices: [{ id: 'of-1', name: '都賀' }], allOffices: [] }),
@@ -108,7 +126,8 @@ function lastParams(): Record<string, unknown> {
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(NOW);
-  mockSearchParams.value = new Map();
+  // 音声記録タブの挙動を縛るテストが大半なので、既定は `?tab=voice`。
+  mockSearchParams.value = new Map([['tab', 'voice']]);
   mockRole.value = 'admin';
   mockSessionStatus.value = 'authenticated';
   mockUseVisitRecordings.mockReset();
@@ -116,13 +135,23 @@ beforeEach(() => {
     data: { items: [makeRecording()], total: 1 },
     isLoading: false,
   });
+  mockUseVisitHistory.mockReset();
+  mockUseVisitHistory.mockReturnValue({
+    data: {
+      items: [],
+      total: 0,
+      summary: { visits: 0, with_arrival: 0, with_departure: 0, no_departure: 0, none: 0 },
+    },
+    isLoading: false,
+  });
+  window.history.replaceState(null, '', '/records');
 });
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('RecordsPage', () => {
+describe('RecordsPage — 音声記録タブ', () => {
   it('開いた瞬間は「今週」— BE へ今週の from/to と新しい順で問い合わせる', () => {
     render(<RecordsPage />);
     const p = lastParams();
@@ -304,5 +333,99 @@ describe('RecordsPage', () => {
     render(<RecordsPage />);
     expect(lastParams().visitId).toBe(VISIT_UUID);
     expect(screen.getByTestId('record-detail-dialog')).toBeInTheDocument();
+  });
+});
+
+describe('RecordsPage — タブ', () => {
+  // `?visit=` は詳細ダイアログが自動で開く（背面は aria-hidden）ので hidden も拾う。
+  const tab = (name: string) => screen.getByRole('tab', { name, hidden: true });
+
+  it('既定は打刻履歴 — 音声記録の一覧は描かず、問い合わせも飛ばさない', () => {
+    mockSearchParams.value = new Map();
+    render(<RecordsPage />);
+    expect(tab('打刻履歴')).toHaveAttribute('aria-selected', 'true');
+    expect(tab('音声記録')).toHaveAttribute('aria-selected', 'false');
+    expect(screen.getByTestId('history-tab')).toBeInTheDocument();
+    expect(screen.queryByTestId('records-filter-bar')).not.toBeInTheDocument();
+    expect(mockUseVisitHistory).toHaveBeenCalled();
+    expect(mockUseVisitRecordings).not.toHaveBeenCalled();
+  });
+
+  it('?tab=voice は音声記録、?tab=history は打刻履歴を開く', () => {
+    mockSearchParams.value = new Map([['tab', 'voice']]);
+    const voice = render(<RecordsPage />);
+    expect(tab('音声記録')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('records-filter-bar')).toBeInTheDocument();
+    expect(screen.queryByTestId('history-tab')).not.toBeInTheDocument();
+    expect(mockUseVisitHistory).not.toHaveBeenCalled();
+    voice.unmount();
+
+    mockSearchParams.value = new Map([['tab', 'history']]);
+    render(<RecordsPage />);
+    expect(tab('打刻履歴')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('history-tab')).toBeInTheDocument();
+  });
+
+  it('知らない ?tab= は既定（打刻履歴）に落とす', () => {
+    mockSearchParams.value = new Map([['tab', 'nope']]);
+    render(<RecordsPage />);
+    expect(tab('打刻履歴')).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it.each([
+    ['patient', PATIENT_UUID],
+    ['staff', STAFF_UUID],
+    ['visit', VISIT_UUID],
+  ])('既存の導線 ?%s= は従来どおり音声記録を開く', (key, value) => {
+    mockSearchParams.value = new Map([[key, value]]);
+    render(<RecordsPage />);
+    expect(tab('音声記録')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('records-filter-bar')).toBeInTheDocument();
+    expect(screen.queryByTestId('history-tab')).not.toBeInTheDocument();
+  });
+
+  it('?tab= の明示は導線のクエリより優先する', () => {
+    mockSearchParams.value = new Map([
+      ['patient', PATIENT_UUID],
+      ['tab', 'history'],
+    ]);
+    render(<RecordsPage />);
+    expect(tab('打刻履歴')).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('タブを押すと切り替わり、URL の ?tab= が他のクエリを残したまま変わる', () => {
+    mockSearchParams.value = new Map([['patient', PATIENT_UUID]]);
+    window.history.replaceState(null, '', `/records?patient=${PATIENT_UUID}`);
+    render(<RecordsPage />);
+
+    fireEvent.click(tab('打刻履歴'));
+    expect(tab('打刻履歴')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('history-tab')).toBeVisible();
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get('tab')).toBe('history');
+    expect(params.get('patient')).toBe(PATIENT_UUID);
+
+    fireEvent.click(tab('音声記録'));
+    expect(new URLSearchParams(window.location.search).get('tab')).toBe('voice');
+  });
+
+  it('タブを行き来しても、音声記録の絞り込みは残る（畳むだけで外さない）', () => {
+    render(<RecordsPage />);
+    fireEvent.change(screen.getByLabelText('状態'), { target: { value: 'failed' } });
+
+    fireEvent.click(tab('打刻履歴'));
+    expect(screen.getByTestId('records-filter-bar')).not.toBeVisible();
+
+    fireEvent.click(tab('音声記録'));
+    expect(screen.getByTestId('records-filter-bar')).toBeVisible();
+    expect(screen.getByLabelText('状態')).toHaveValue('failed');
+  });
+
+  it('見出しの説明文はタブに合わせて変わる', () => {
+    mockSearchParams.value = new Map();
+    render(<RecordsPage />);
+    expect(screen.getByText(/QR で読み取った到着・退出の時刻/)).toBeInTheDocument();
+    fireEvent.click(tab('音声記録'));
+    expect(screen.getByText(/現場で録音した音声の要約/)).toBeInTheDocument();
   });
 });

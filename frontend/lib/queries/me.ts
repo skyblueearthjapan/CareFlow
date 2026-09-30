@@ -114,6 +114,23 @@ export interface MyVisit {
   actual_arrival_at?: string | null;
   actual_departure_at?: string | null;
   /**
+   * 実績の時刻を合わせる (設計 2026-09-30 §6-3)。`actual_*_at` は**実績時刻**
+   * (調整後。無ければ読取時刻) で、下の項目がその内訳。すべて非破壊追加
+   * (旧デプロイは undefined = 調整の UI を出さない)。
+   *
+   * - `*_read_at`     … QR を読み取った時刻。読み取りが無ければ null。
+   * - `*_adjusted`    … 時刻を合わせてあるか。
+   * - `actual_departure_manual` … 読み取りの無い退出 (時刻を手で入れた)。
+   * - `actual_adjust_allowed`   … 今のユーザーがこの訪問の実績を合わせられるか
+   *   (権限はサーバが判定。画面はこれでボタンを出し分ける)。
+   */
+  actual_arrival_read_at?: string | null;
+  actual_departure_read_at?: string | null;
+  actual_arrival_adjusted?: boolean;
+  actual_departure_adjusted?: boolean;
+  actual_departure_manual?: boolean;
+  actual_adjust_allowed?: boolean;
+  /**
    * 同行 (§7.4): この訪問に同行するスタッフ (単数・後方互換)。null = 同行なし。
    * 複数名いる場合は `accompaniments` の先頭 1 名。新規実装は `accompaniments` を
    * 優先し、これは旧デプロイ向けのフォールバックに使う。
@@ -431,8 +448,86 @@ export interface CheckInPayload {
   reason?: string;
   /** Force-record despite a mismatch. */
   is_override?: boolean;
-  /** Client-side timestamp (ISO 8601). Backend reads it as `device_time`. */
+  /**
+   * Client-side timestamp (ISO 8601). Backend reads it as `device_time`.
+   * **QR を読み取った瞬間**の端末時刻を入れる (設計 2026-09-30 §3)。位置の取得や
+   * 確認の時間、圏外での後送りで実績が遅れないようにするため。
+   */
   at: string;
+  /**
+   * その場で合わせた時刻 (JST `HH:MM`・設計 §6-2)。圏外で退避した打刻に、到着
+   * 直後のカードで合わせた時刻を同梱するための項目。
+   */
+  adjusted_time?: string;
+  adjust_reason_code?: AdjustReasonCode;
+}
+
+/** 実績のどちらの時刻か (設計 2026-09-30 §6-1)。 */
+export type ActualTimeKind = 'arrival' | 'departure';
+
+/** 時刻を合わせた理由 (設計 §4)。表示名は画面側が持つ。 */
+export type AdjustReasonCode = 'intercom_wait' | 'read_later' | 'no_read' | 'other';
+
+/** `PUT /visits/{id}/actual-time` の body。 */
+export interface ActualTimeAdjustPayload {
+  kind: ActualTimeKind;
+  /** JST の `HH:MM`。日付はサーバが `visit_date` と組み合わせる。 */
+  time: string;
+  reason_code?: AdjustReasonCode | null;
+  reason_text?: string | null;
+}
+
+/** 調整の出どころ。サーバはこのヘッダで `source` (mobile / pc) を決める。 */
+const CLIENT_SURFACE_HEADER = { 'X-Client-Surface': 'mobile' } as const;
+
+/**
+ * PUT /api/v1/visits/{id}/actual-time — 実績の時刻を合わせる。
+ *
+ * 応答は打刻 API と同じ `VisitRead`。予定 (`start_time` / `end_time`) は動かない。
+ * 範囲外などの検証エラーは 422 で、`detail` がそのまま画面に出せる日本語。
+ */
+export function useAdjustActualTime(
+  visitId: string,
+): UseMutationResult<MyVisit, Error, ActualTimeAdjustPayload> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<MyVisit, Error, ActualTimeAdjustPayload>({
+    mutationFn: (payload) =>
+      fetcher<MyVisit>(`/api/v1/visits/${visitId}/actual-time`, {
+        method: 'PUT',
+        headers: CLIENT_SURFACE_HEADER,
+        body: JSON.stringify(payload),
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ME_KEY });
+    },
+  });
+}
+
+/** DELETE /api/v1/visits/{id}/actual-time?kind= — 読取時刻に戻す。応答は `VisitRead`。 */
+export function useResetActualTime(
+  visitId: string,
+): UseMutationResult<MyVisit, Error, ActualTimeKind> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<MyVisit, Error, ActualTimeKind>({
+    mutationFn: (kind) =>
+      fetcher<MyVisit>(`/api/v1/visits/${visitId}/actual-time?kind=${kind}`, {
+        method: 'DELETE',
+        headers: CLIENT_SURFACE_HEADER,
+        accessToken,
+        refreshToken,
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ME_KEY });
+    },
+  });
 }
 
 /**

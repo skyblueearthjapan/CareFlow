@@ -176,4 +176,107 @@ describe('MonitorDetailPanel', () => {
     expect(screen.queryByTestId('monitor-detail-substitute')).toBeNull();
     expect(screen.queryByTestId('monitor-detail-unplanned')).toBeNull();
   });
+
+  // --- 実績の時刻を合わせる (actual-time-adjust-design-2026-09-30 §8-1) ---
+
+  /** 値の行 (Kv) を「見出し → 値」で引く。 */
+  const kv = (label: string) => screen.getByText(label).parentElement?.textContent ?? '';
+
+  it('到着・退出は実績時刻 (arrival_at / departure_at) で出し、読取時刻・理由・誰がいつを添える', () => {
+    // 読取 13:06 (JST) → 12:56 に合わせた到着。退出は 13:31。
+    const v = makeVisit({
+      phase: 'done',
+      stay_minutes: 35,
+      arrival_delay_min: -4,
+      arrival: {
+        kind: 'arrival',
+        scanned_at: '2026-09-18T04:06:00Z',
+        match_status: 'match',
+        distance_m: 12,
+        is_override: false,
+      },
+      departure: {
+        kind: 'departure',
+        scanned_at: '2026-09-18T04:31:00Z',
+        match_status: 'match',
+        is_override: false,
+      },
+      arrival_at: '2026-09-18T03:56:00Z',
+      arrival_read_at: '2026-09-18T04:06:00Z',
+      arrival_adjusted: true,
+      departure_at: '2026-09-18T04:31:00Z',
+      departure_read_at: '2026-09-18T04:31:00Z',
+      departure_adjusted: false,
+      departure_manual: false,
+      adjustments: [
+        {
+          kind: 'arrival',
+          reason_label: 'インターホン待ち',
+          reason_text: null,
+          by_name: '川名 幸子',
+          created_at: '2026-09-18T04:10:00Z',
+        },
+      ],
+    });
+    render(<MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />);
+    expect(kv('到着（調整後）')).toContain('12:56');
+    expect(kv('到着の読取時刻')).toContain('13:06');
+    expect(kv('退出（QR/GPS）')).toContain('13:31');
+    expect(screen.queryByText('退出の読取時刻')).toBeNull();
+
+    const box = screen.getByTestId('monitor-detail-adjusted');
+    expect(box.textContent).toContain('時刻の調整');
+    expect(box.textContent).toContain('到着 12:56（読取 13:06）');
+    expect(box.textContent).toContain('理由: インターホン待ち');
+    expect(box.textContent).toContain('川名 幸子 9/18 13:10');
+    // 文言ルール (PO): 「直す」「修正」「補正」は使わない。モニターは閲覧のみ。
+    expect(screen.getByTestId('monitor-detail-visit').textContent).not.toMatch(/直す|修正|補正/);
+    expect(screen.queryByRole('button', { name: /保存|合わせる/ })).toBeNull();
+  });
+
+  it('読み取りの無い退出 (手入力) は「手入力」と分かり、滞在中とは出さない', () => {
+    const v = makeVisit({
+      phase: 'done',
+      arrival: {
+        kind: 'arrival',
+        scanned_at: '2026-09-18T04:06:00Z',
+        match_status: 'match',
+        is_override: false,
+      },
+      departure: null,
+      arrival_at: '2026-09-18T04:06:00Z',
+      departure_at: '2026-09-18T04:31:00Z',
+      departure_read_at: null,
+      departure_manual: true,
+      adjustments: [{ kind: 'departure', reason_label: '読み取りなし' }],
+    });
+    render(<MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />);
+    expect(kv('退出（手入力）')).toContain('13:31');
+    expect(kv('到着（QR/GPS）')).toContain('13:06');
+    expect(screen.getByTestId('monitor-detail-adjusted').textContent).toContain(
+      '退出 13:31（手入力・読み取りなし）',
+    );
+  });
+
+  it('新項目の無い応答 (古いバックエンド) は打刻の scanned_at で出し、調整の枠は出さない', () => {
+    const v = makeVisit({
+      phase: 'done',
+      arrival: {
+        kind: 'arrival',
+        scanned_at: '2026-06-30T00:05:00Z',
+        match_status: 'match',
+        is_override: false,
+      },
+      departure: {
+        kind: 'departure',
+        scanned_at: '2026-06-30T00:55:00Z',
+        match_status: 'match',
+        is_override: false,
+      },
+    });
+    render(<MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />);
+    expect(kv('到着（QR/GPS）')).toContain('09:05');
+    expect(kv('退出（QR/GPS）')).toContain('09:55');
+    expect(screen.queryByTestId('monitor-detail-adjusted')).toBeNull();
+  });
 });

@@ -246,6 +246,10 @@ async def judge_checkin(
         reason=payload.reason,
         is_override=payload.is_override,
         checkin_source=source,
+        # ``scanned_at`` と同じ時計で入れる。実績の時刻の調整 (``visit_time_adjustments``)
+        # が「この打刻より後に作られたか」を ``created_at`` で比べるため、DB の時計と
+        # アプリの時計を混ぜない (設計 actual-time-adjust §4)。
+        created_at=now,
     )
     db.add(checkin)
     return checkin

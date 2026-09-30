@@ -158,6 +158,112 @@ export function substituteTitle(
   return `予定: ${v.staff_name ?? '—'} / 代行: ${v.substitute_staff_name}`;
 }
 
+// ---------------------------------------------------------------------------
+// 実績時刻 (実績の時刻を合わせる・actual-time-adjust-design-2026-09-30.md §6-3 / §8-1)
+// ---------------------------------------------------------------------------
+
+type ActualTimeFields = Pick<
+  MonitorVisit,
+  | 'arrival'
+  | 'departure'
+  | 'arrival_at'
+  | 'departure_at'
+  | 'arrival_read_at'
+  | 'departure_read_at'
+  | 'arrival_adjusted'
+  | 'departure_adjusted'
+  | 'departure_manual'
+  | 'adjustments'
+>;
+
+/**
+ * 到着の実績時刻 (ISO)。調整があれば調整後、無ければ読取時刻。
+ *
+ * モニターの時刻 (実績バー・併記・ツールチップ・詳細パネル) は**必ずここを通す**。
+ * `arrival.scanned_at` (サーバ受信時刻) を直接読むと、合わせた時刻が画面に出ない。
+ * `arrival_at` の無い応答 (旧デプロイ) だけ、従来どおり打刻の `scanned_at` へ落とす。
+ */
+export function actualArrivalIso(
+  v: Pick<ActualTimeFields, 'arrival' | 'arrival_at'>,
+): string | null {
+  return v.arrival_at ?? v.arrival?.scanned_at ?? null;
+}
+
+/**
+ * 退出の実績時刻 (ISO)。読み取りの無い退出 (手入力) は `departure` が null のまま
+ * `departure_at` だけが入る。
+ */
+export function actualDepartureIso(
+  v: Pick<ActualTimeFields, 'departure' | 'departure_at'>,
+): string | null {
+  return v.departure_at ?? v.departure?.scanned_at ?? null;
+}
+
+/** 調整 1 件ぶんの表示部品 (ツールチップ / 詳細パネル共通)。 */
+export interface AdjustmentNote {
+  kind: 'arrival' | 'departure';
+  /** 「到着」/「退出」。 */
+  label: string;
+  /** 実績時刻 "HH:MM" (JST)。 */
+  at: string;
+  /** 読取時刻 "HH:MM" (JST)。読み取りの無い手入力は null。 */
+  readAt: string | null;
+  /** 読み取りの無い退出を手で入れた。 */
+  manual: boolean;
+  /** 理由 (表示名・自由記述があれば「・」で続ける)。無ければ null。 */
+  reason: string | null;
+  /** 誰がいつ合わせたか ("川名 幸子 9/30 13:10")。応答に無ければ null。 */
+  by: string | null;
+  /** 1 行にまとめた文 ("到着 12:56（読取 13:06）・インターホン待ち・川名 幸子 9/30 13:10")。 */
+  text: string;
+}
+
+/** 調整のある側 (到着 / 退出) ごとの表示部品。調整が無ければ空配列。 */
+export function adjustmentNotes(v: ActualTimeFields): AdjustmentNote[] {
+  const sides = [
+    {
+      kind: 'arrival' as const,
+      label: '到着',
+      on: !!v.arrival_adjusted,
+      manual: false,
+      at: actualArrivalIso(v),
+      readAt: v.arrival_read_at ?? null,
+    },
+    {
+      kind: 'departure' as const,
+      label: '退出',
+      on: !!v.departure_adjusted || !!v.departure_manual,
+      manual: !!v.departure_manual,
+      at: actualDepartureIso(v),
+      readAt: v.departure_read_at ?? null,
+    },
+  ];
+  const notes: AdjustmentNote[] = [];
+  for (const s of sides) {
+    if (!s.on || !s.at) continue;
+    const adj = (v.adjustments ?? []).find((a) => a.kind === s.kind);
+    const at = isoToHm(s.at);
+    const readAt = s.readAt ? isoToHm(s.readAt) : null;
+    const reason = [adj?.reason_label, adj?.reason_text].filter(Boolean).join('・') || null;
+    const by =
+      [adj?.by_name, adj?.created_at ? isoToYmdHm(adj.created_at) : null]
+        .filter(Boolean)
+        .join(' ') || null;
+    const source = s.manual ? '手入力・読み取りなし' : readAt ? `読取 ${readAt}` : '調整';
+    notes.push({
+      kind: s.kind,
+      label: s.label,
+      at,
+      readAt,
+      manual: s.manual,
+      reason,
+      by,
+      text: [`${s.label} ${at}（${source}）`, reason, by].filter(Boolean).join('・'),
+    });
+  }
+  return notes;
+}
+
 /**
  * 退出忘れ (長時間 inprogress) の表示しきい値 (分) の既定。BE の
  * checkin_settings.max_inprogress_min が無いときのフォールバック。

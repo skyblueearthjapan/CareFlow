@@ -11,7 +11,7 @@
  *   7. pickQrCandidate 単体 — is_mine + completed スキップの選択規則。
  */
 import * as React from 'react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -100,6 +100,17 @@ function mockApi(options: {
   });
 }
 
+/** 訪問詳細へのディープリンク。`?qr=` に読取時刻 (`read_at`) が付く。 */
+const deepLinkTo = (visitId: string) =>
+  expect.stringMatching(
+    new RegExp(`^/m/today/${visitId}\\?qr=TOK123&read_at=\\d{4}-\\d{2}-\\d{2}T[\\d%A.]+Z$`),
+  );
+
+afterEach(() => {
+  // 読取時刻を固定するテストが Date を差し替える。次のテストへ漏らさない。
+  vi.useRealTimers();
+});
+
 /** 測位モック (成功 / 拒否)。 */
 function mockGeolocation(mode: 'ok' | 'deny' = 'ok') {
   Object.defineProperty(global.navigator, 'geolocation', {
@@ -132,9 +143,23 @@ describe('/q/{token} ランディング — 自分の担当', () => {
       resolve: { patient_name: '田中 太郎', candidates: [cand('visit-9', { is_mine: true })] },
     });
     renderPage();
-    await waitFor(() => expect(routerReplace).toHaveBeenCalledWith('/m/today/visit-9?qr=TOK123'));
+    await waitFor(() => expect(routerReplace).toHaveBeenCalledWith(deepLinkTo('visit-9')));
     // API へはパス断片のトークンがそのまま渡る (extractQrToken 結線)。
     expect(asMock(fetcher).mock.calls[0][0]).toBe(RESOLVE_PATH);
+  });
+
+  it('読み取った時刻 (= ここを開いた時点) を read_at で引き継ぐ (L-7)', async () => {
+    vi.setSystemTime(new Date('2026-09-30T04:06:20Z'));
+    mockApi({
+      resolve: { patient_name: '田中 太郎', candidates: [cand('visit-9', { is_mine: true })] },
+    });
+    renderPage();
+    // 候補の解決に時間がかかっても、引き継ぐのは開いた時点の時刻。
+    vi.setSystemTime(new Date('2026-09-30T04:06:50Z'));
+    await waitFor(() => expect(routerReplace).toHaveBeenCalled());
+    expect(routerReplace).toHaveBeenCalledWith(
+      '/m/today/visit-9?qr=TOK123&read_at=2026-09-30T04%3A06%3A20.000Z',
+    );
   });
 });
 
@@ -160,7 +185,20 @@ describe('/q/{token} ランディング — 担当外 (代行 / 予定外の選�
     renderPage();
     await waitFor(() => expect(screen.getByTestId('qr-substitute-choice')).toBeInTheDocument());
     fireEvent.click(screen.getByText('この予定の代行として記録'));
-    expect(routerReplace).toHaveBeenCalledWith('/m/today/visit-1?qr=TOK123');
+    expect(routerReplace).toHaveBeenCalledWith(deepLinkTo('visit-1'));
+  });
+
+  it('選択画面で止まっていた時間は、引き継ぐ読取時刻に含めない (L-7)', async () => {
+    vi.setSystemTime(new Date('2026-09-30T04:06:20Z'));
+    mockApi({ resolve: { patient_name: '田中 太郎', candidates: [cand('visit-1')] } });
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('qr-substitute-choice')).toBeInTheDocument());
+    // 選ぶまでに 2 分かかった。
+    vi.setSystemTime(new Date('2026-09-30T04:08:20Z'));
+    fireEvent.click(screen.getByText('この予定の代行として記録'));
+    expect(routerReplace).toHaveBeenCalledWith(
+      '/m/today/visit-1?qr=TOK123&read_at=2026-09-30T04%3A06%3A20.000Z',
+    );
   });
 
   it('訪問中の予定外 visit には「退出の記録へ」を出す (再スキャン退出の一周)', async () => {
@@ -180,7 +218,7 @@ describe('/q/{token} ランディング — 担当外 (代行 / 予定外の選�
     await waitFor(() => expect(screen.getByText('退出の記録へ')).toBeInTheDocument());
     expect(screen.getByText('予定外の訪問（記録者: 鈴木 次郎）')).toBeInTheDocument();
     fireEvent.click(screen.getByText('退出の記録へ'));
-    expect(routerReplace).toHaveBeenCalledWith('/m/today/visit-u?qr=TOK123');
+    expect(routerReplace).toHaveBeenCalledWith(deepLinkTo('visit-u'));
   });
 
   it('当日予定ゼロでも予定外として記録できる案内を出す', async () => {
@@ -204,7 +242,7 @@ describe('/q/{token} ランディング — 旧BE (v1) 後方互換', () => {
       },
     });
     renderPage();
-    await waitFor(() => expect(routerReplace).toHaveBeenCalledWith('/m/today/visit-v1?qr=TOK123'));
+    await waitFor(() => expect(routerReplace).toHaveBeenCalledWith(deepLinkTo('visit-v1')));
   });
 
   it('v1 かつ候補ゼロは第1弾の案内へ退避する (代行/予定外は出さない)', async () => {
@@ -261,7 +299,9 @@ describe('/q/{token} ランディング — 予定外の記録', () => {
 
     // 「記録する」で単一 POST → 生成された visit へ。
     fireEvent.click(screen.getByText('予定外の訪問として記録する'));
-    await waitFor(() => expect(routerReplace).toHaveBeenCalledWith('/m/today/visit-adhoc-1'));
+    await waitFor(() =>
+      expect(routerReplace).toHaveBeenCalledWith('/m/today/visit-adhoc-1?arrived=1'),
+    );
     const call = asMock(fetcher).mock.calls.find((c) => c[0] === ADHOC_PATH);
     expect(call).toBeTruthy();
     const body = JSON.parse((call![1] as { body: string }).body) as Record<string, unknown>;
@@ -276,7 +316,9 @@ describe('/q/{token} ランディング — 予定外の記録', () => {
     fireEvent.click(screen.getByText('予定外の訪問として記録'));
     await waitFor(() => expect(screen.getByText('測位不良')).toBeInTheDocument());
     fireEvent.click(screen.getByText('予定外の訪問として記録する'));
-    await waitFor(() => expect(routerReplace).toHaveBeenCalledWith('/m/today/visit-adhoc-1'));
+    await waitFor(() =>
+      expect(routerReplace).toHaveBeenCalledWith('/m/today/visit-adhoc-1?arrived=1'),
+    );
     const call = asMock(fetcher).mock.calls.find((c) => c[0] === ADHOC_PATH);
     const body = JSON.parse((call![1] as { body: string }).body) as Record<string, unknown>;
     expect(body).not.toHaveProperty('lat');
@@ -405,5 +447,68 @@ describe('pickQrCandidate', () => {
     ).toBe('a');
     // 担当外が先に並んでいても、担当分だけを見る。
     expect(pickQrCandidate([cand('x'), cand('y', { is_mine: true })])?.visit_id).toBe('y');
+  });
+});
+
+/**
+ * 読取の瞬間を `at` に載せる (設計 2026-09-30 §3)。このページを開いた時点 =
+ * QR を読んだ瞬間。候補の確認・位置の取得・確認にかかった時間で遅らせない。
+ */
+describe('/q/{token} ランディング — 予定外の到着は読み取った時刻で記録する', () => {
+  async function openPreview() {
+    await waitFor(() => expect(screen.getByTestId('qr-substitute-choice')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('予定外の訪問として記録'));
+    await waitFor(() => expect(screen.getByTestId('qr-adhoc-preview')).toBeInTheDocument());
+  }
+
+  it('ページを開いた時点の時刻を送り、確認画面にその時刻を出す', async () => {
+    vi.setSystemTime(new Date('2026-08-16T04:06:20Z')); // JST 13:06:20 に読み取り
+    try {
+      renderPage();
+      // 候補を確かめて位置を取るまでに 2 分かかった想定。
+      vi.setSystemTime(new Date('2026-08-16T04:08:30Z'));
+      await openPreview();
+      expect(screen.getByTestId('qr-adhoc-read-time')).toHaveTextContent(
+        '読み取った時刻 13:06 で記録します',
+      );
+
+      // 「位置を再取得」しても読み取った瞬間は変えない。
+      vi.setSystemTime(new Date('2026-08-16T04:09:30Z'));
+      fireEvent.click(screen.getByText('位置を再取得'));
+      await waitFor(() => expect(screen.getByTestId('qr-adhoc-preview')).toBeInTheDocument());
+      expect(screen.getByTestId('qr-adhoc-read-time')).toHaveTextContent('13:06');
+
+      fireEvent.click(screen.getByText('予定外の訪問として記録する'));
+      // 到着した直後のカードを出すため `arrived=1` を付けて訪問詳細へ。
+      await waitFor(() =>
+        expect(routerReplace).toHaveBeenCalledWith('/m/today/visit-adhoc-1?arrived=1'),
+      );
+      const call = asMock(fetcher).mock.calls.find((c) => c[0] === ADHOC_PATH);
+      const body = JSON.parse((call![1] as { body: string }).body) as Record<string, unknown>;
+      expect(body.at).toBe('2026-08-16T04:06:20.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('圏外で退避した予定外の到着も、読み取った瞬間の at のまま控える', async () => {
+    mockApi({
+      resolve: { patient_name: '田中 太郎', candidates: [] },
+      adhocError: new TypeError('Failed to fetch'),
+    });
+    vi.setSystemTime(new Date('2026-08-16T04:06:20Z'));
+    try {
+      renderPage();
+      vi.setSystemTime(new Date('2026-08-16T04:08:30Z'));
+      await openPreview();
+      fireEvent.click(screen.getByText('予定外の訪問として記録する'));
+      await waitFor(() => expect(asMock(toast.warning)).toHaveBeenCalled());
+      const entries = JSON.parse(
+        window.localStorage.getItem('checkin-pending:staff-1') ?? '[]',
+      ) as Array<{ payload: { at: string } }>;
+      expect(entries[0]?.payload.at).toBe('2026-08-16T04:06:20.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

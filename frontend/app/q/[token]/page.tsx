@@ -29,8 +29,9 @@ import { ApiError } from '@/lib/api-client';
 import { enqueuePending, type PendingPayload } from '@/lib/checkin-queue';
 import { isServerUnreachable } from '@/lib/checkin-flush';
 import { useCheckinFlush } from '@/lib/queries/checkinFlush';
+import { jstHm } from '@/lib/format/actualTime';
 import { coordsOf, geoErrorHint, getGeolocation, type GeoFix } from '@/lib/geo';
-import { extractQrToken } from '@/lib/qr-token';
+import { extractQrToken, visitDeepLinkHref } from '@/lib/qr-token';
 import { useAdhocCheckin } from '@/lib/queries/me';
 import { pickQrCandidate, useResolveQr, type QrResolveCandidate } from '@/lib/queries/qrResolve';
 import { useCheckinSettingsPublic } from '@/lib/queries/checkinSettings';
@@ -123,6 +124,11 @@ export default function QrLandingPage() {
 
   const [flow, setFlow] = useState<AdhocFlow>({ step: 'none' });
 
+  // QR を読み取った瞬間 = このページを開いた時点 (標準カメラ / アプリ内スキャナの
+  // どちらから来ても、読んだ直後にここへ来る)。予定外の到着の `at` にはこれを載せる
+  // — 候補の確認・位置の取得・「位置を再取得」で遅らせない (設計 2026-09-30 §3)。
+  const [readAt] = useState(() => new Date().toISOString());
+
   // 未送信の打刻 (前回圏外で退避した分) を、QR を読んだこの機会に再送する。
   // 破棄分の通知も共通フックが行う (「黙って捨てない」契約)。
   const { refreshPending } = useCheckinFlush();
@@ -134,8 +140,9 @@ export default function QrLandingPage() {
   useEffect(() => {
     if (!picked || !token || navigatedRef.current) return;
     navigatedRef.current = true;
-    router.replace(`/m/today/${picked.visit_id}?qr=${encodeURIComponent(token)}`);
-  }, [picked, token, router]);
+    // 読み取った瞬間 (= ここを開いた時点) を添える。詳細がマウントされた時刻にしない。
+    router.replace(visitDeepLinkHref(picked.visit_id, token, readAt));
+  }, [picked, token, router, readAt]);
 
   /** 予定外記録: GPS を取ってプレビューへ (POST はまだしない)。 */
   const beginAdhoc = useCallback(async () => {
@@ -151,15 +158,16 @@ export default function QrLandingPage() {
       return;
     }
     setFlow({ step: 'submitting' });
-    const at = new Date().toISOString();
+    const at = readAt;
     const coords = coordsOf(geo);
     try {
       const visit = await adhocCheckin.mutateAsync({ qr_token: token, at, ...coords });
       setFlow({ step: 'none' });
       toast.success('予定外の訪問として到着を記録しました');
       // 生成された visit は自分の担当 — 以後は通常フロー (退出は再スキャン)。
+      // `arrived=1` で、到着した直後のカード (その場で時刻を合わせる) を出す。
       navigatedRef.current = true;
-      router.replace(`/m/today/${visit.id}`);
+      router.replace(`/m/today/${visit.id}?arrived=1`);
     } catch (err) {
       const status = err instanceof ApiError ? err.status : null;
       if (status === 410) {
@@ -201,6 +209,7 @@ export default function QrLandingPage() {
             patientName={data?.patient_name ?? ''}
             geo={flow.geo}
             matchM={matchM}
+            readAt={readAt}
             submitting={adhocCheckin.isPending}
             onRecord={() => void recordAdhoc(flow.geo)}
             onRelocate={() => void beginAdhoc()}
@@ -296,7 +305,8 @@ export default function QrLandingPage() {
         candidates={data.candidates}
         onPick={(visitId) => {
           navigatedRef.current = true;
-          router.replace(`/m/today/${visitId}?qr=${encodeURIComponent(token)}`);
+          // 選択画面で止まっていた時間を、読取時刻に含めない。
+          router.replace(visitDeepLinkHref(visitId, token, readAt));
         }}
         onAdhoc={() => void beginAdhoc()}
       />
@@ -404,6 +414,8 @@ interface AdhocPreviewCardProps {
   patientName: string;
   geo: GeoFix;
   matchM: number;
+  /** QR を読み取った瞬間 (ISO 8601)。この時刻で記録する。 */
+  readAt: string;
   /** POST 実行中 — 二度押しで visit を 2 件作らせない。 */
   submitting: boolean;
   onRecord: () => void;
@@ -415,6 +427,7 @@ function AdhocPreviewCard({
   patientName,
   geo,
   matchM,
+  readAt,
   submitting,
   onRecord,
   onRelocate,
@@ -429,6 +442,12 @@ function AdhocPreviewCard({
       </div>
       <p className="text-sm text-text-secondary">
         {patientName || '(利用者名未取得)'} さんの訪問を、予定外の記録として残します。
+      </p>
+      <p
+        className="tnum rounded-lg bg-bg-muted px-3 py-2 text-center text-sm text-text-secondary"
+        data-testid="qr-adhoc-read-time"
+      >
+        読み取った時刻 <b className="text-base text-text-primary">{jstHm(readAt)}</b> で記録します
       </p>
 
       <div

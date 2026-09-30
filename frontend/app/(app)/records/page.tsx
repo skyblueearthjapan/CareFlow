@@ -1,14 +1,19 @@
 'use client';
 
 /**
- * `/records` — PC 訪問記録一覧（設計 §11-2 / モック ⑤）。
+ * `/records` — PC 訪問記録。「打刻履歴」「音声記録」の 2 タブ
+ * （PO 決定 2026-09-30・`docs/plans/visit-history-design-2026-09-30.md` §4）。
  *
+ * タブは `?tab=history|voice`。既定は打刻履歴だが、`?patient=` / `?staff=` / `?visit=`
+ * の付いた既存の導線（患者詳細・スタッフ詳細の「すべて見る」、モニターの
+ * 「🎙 記録を見る」）は従来どおり音声記録を開く。
+ *
+ * 音声記録タブ（設計 visit-voice-record §11-2 / モック ⑤）:
  * モバイルで録った音声の要約を、事務所側が読み・直し・確認する画面。
- * `RakusukeTitle` ＋ コンソール箱（`/monitor` と同じ型）でフィルタ行と表を包む。
+ * コンソール箱（`/monitor` と同じ型）でフィルタ行と表を包む。
  *
  * 絞り込みは**すべて BE パラメータ**（1 ページ 50 件の窓なので FE で削らない）。
- * `?patient=` / `?staff=` / `?visit=` で初期フィルタが決まる（患者詳細・スタッフ
- * 詳細の「すべて見る」、モニターの「🎙 記録を見る」からの導線）。
+ * `?patient=` / `?staff=` / `?visit=` で初期フィルタが決まる。
  *
  * RBAC は PO 決定どおり「全ロール同一表示」。staff が自分の分しか見えないのは
  * BE が `staff_id` を強制するため（FE では出し分けない）。
@@ -17,7 +22,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Check, Mic } from 'lucide-react';
+import { Check, Clock, Mic } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -42,9 +47,43 @@ import {
   recordPeriodRange,
   type RecordsFilterState,
 } from './_components/RecordsFilterBar';
+import { VisitHistoryTab } from './_components/VisitHistoryTab';
 
 /** 1 ページの件数（設計 §11-2）。 */
 const PAGE_SIZE = 50;
+
+type RecordsTab = 'history' | 'voice';
+
+const RECORDS_TABS: ReadonlyArray<{
+  key: RecordsTab;
+  label: string;
+  icon: typeof Clock;
+  subtitle: string;
+}> = [
+  {
+    key: 'history',
+    label: '打刻履歴',
+    icon: Clock,
+    subtitle:
+      'QR で読み取った到着・退出の時刻を、日付・看護師・患者ごとに確認し、Excel や A4 で出力します。',
+  },
+  {
+    key: 'voice',
+    label: '音声記録',
+    icon: Mic,
+    subtitle: '現場で録音した音声の要約・文字起こしを読み、確認します。',
+  },
+];
+
+/**
+ * 開くタブ。`?tab=` の明示が最優先。無ければ、音声記録を名指す既存の導線
+ * （`?patient=` / `?staff=` / `?visit=`）のときだけ音声記録、それ以外は打刻履歴。
+ */
+function initialTab(params: { get: (key: string) => string | null }): RecordsTab {
+  const tab = params.get('tab');
+  if (tab === 'history' || tab === 'voice') return tab;
+  return params.get('patient') || params.get('staff') || params.get('visit') ? 'voice' : 'history';
+}
 
 export default function RecordsPage() {
   // useSearchParams は Suspense 境界が必須 (Next 15 の CSR bailout 対策)。
@@ -63,6 +102,80 @@ export default function RecordsPage() {
 }
 
 function RecordsPageInner() {
+  const searchParams = useSearchParams();
+  const [tab, setTab] = useState<RecordsTab>(() => initialTab(searchParams));
+  // 一度開いたタブは畳むだけで外さない（行き来しても期間・絞り込み・ページを失わない）。
+  // 開いていないタブは描かない = そのタブの問い合わせも飛ばない。
+  const [opened, setOpened] = useState<ReadonlySet<RecordsTab>>(() => new Set([tab]));
+
+  const selectTab = (next: RecordsTab) => {
+    setTab(next);
+    setOpened((prev) => (prev.has(next) ? prev : new Set(prev).add(next)));
+    // URL へ同期（ブックマーク・再読み込み用）。他のクエリは残す — `?visit=` などは
+    // 音声記録タブが読み続けている（`/patients` の `?status=` 同期と同じ流儀）。
+    const params = new URLSearchParams(window.location.search);
+    params.set('tab', next);
+    window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+  };
+
+  const current = RECORDS_TABS.find((t) => t.key === tab) ?? RECORDS_TABS[0];
+
+  return (
+    <section className="flex flex-col gap-3">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <RakusukeTitle pose="visit" title="訪問記録" subtitle={current?.subtitle} />
+      </header>
+
+      <div
+        role="tablist"
+        aria-label="訪問記録の種類"
+        className="flex gap-1 border-b border-border-default"
+      >
+        {RECORDS_TABS.map((t) => {
+          const Icon = t.icon;
+          const active = tab === t.key;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              role="tab"
+              id={`records-tab-${t.key}`}
+              aria-selected={active}
+              aria-controls={`records-panel-${t.key}`}
+              onClick={() => selectTab(t.key)}
+              className={[
+                '-mb-px flex items-center gap-1.5 border-b-[3px] px-4 pb-2.5 pt-2 text-sm',
+                active
+                  ? 'border-brand-primary font-bold text-brand-primary-hover'
+                  : 'border-transparent text-text-secondary hover:text-text-primary',
+              ].join(' ')}
+            >
+              <Icon className="h-4 w-4" strokeWidth={1.9} aria-hidden="true" />
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {RECORDS_TABS.map((t) =>
+        opened.has(t.key) ? (
+          <div
+            key={t.key}
+            role="tabpanel"
+            id={`records-panel-${t.key}`}
+            aria-labelledby={`records-tab-${t.key}`}
+            hidden={tab !== t.key}
+          >
+            {t.key === 'history' ? <VisitHistoryTab /> : <VoiceRecordsTab />}
+          </div>
+        ) : null,
+      )}
+    </section>
+  );
+}
+
+/** 「音声記録」タブ — タブ化する前の `/records` 一覧そのまま（挙動は変えていない）。 */
+function VoiceRecordsTab() {
   const searchParams = useSearchParams();
   const { data: session, status: sessionStatus } = useSession();
   // staff は BE が `staff_id` を自分に固定する。UI は同一表示のまま、効かない
@@ -127,15 +240,7 @@ function RecordsPageInner() {
   }, [visitId, items]);
 
   return (
-    <section className="flex flex-col gap-3">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <RakusukeTitle
-          pose="visit"
-          title="訪問記録"
-          subtitle="現場で録音した音声の要約・文字起こしを読み、確認します。"
-        />
-      </header>
-
+    <>
       {/* コンソール箱（/monitor と同じ型）。 */}
       <div className="flex flex-col overflow-hidden rounded-lg border border-border-default bg-bg-base shadow-outer-card">
         <div className="border-b border-border-default px-5 py-2.5">
@@ -286,6 +391,6 @@ function RecordsPageInner() {
         }}
         onDeleted={() => setSelectedId(null)}
       />
-    </section>
+    </>
   );
 }

@@ -37,3 +37,42 @@ export function extractQrToken(raw: string): string | null {
 
   return null;
 }
+
+/**
+ * 読取時刻の引き継ぎ (`/q/{token}` → 訪問詳細)。
+ *
+ * 標準カメラで QR を読むと、まず `/q/{token}` が開く。そこで候補を解決してから
+ * 訪問詳細 (`?qr=`) へ移るので、詳細がマウントされた時刻は読み取った瞬間より遅い
+ * (担当外の選択画面で止まれば、その分だけ遅れる)。`/q` を開いた時刻をこのクエリで
+ * 渡し、打刻の `at` に載せる (設計 2026-09-30 §3)。
+ */
+export const QR_READ_AT_PARAM = 'read_at';
+
+/**
+ * 引き継いだ読取時刻を受け入れる上限 (ms)。`/q` で止まっている時間はせいぜい数分。
+ * これより古い値は、開きっぱなしの URL の再読み込みなどなので採らない。
+ */
+const HANDOFF_READ_MAX_AGE_MS = 10 * 60 * 1000;
+
+/** `Date#toISOString()` の形 (UTC)。これ以外の書き方は受け付けない。 */
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
+
+/** 訪問詳細へのディープリンク (`?qr=` に読取時刻を添える)。 */
+export function visitDeepLinkHref(visitId: string, token: string, readAt: string): string {
+  return `/m/today/${visitId}?qr=${encodeURIComponent(token)}&${QR_READ_AT_PARAM}=${encodeURIComponent(readAt)}`;
+}
+
+/**
+ * 引き継いだ読取時刻 (URL のクエリ = 外から来る値) を検証する。採れる値なら ISO 8601、
+ * 採れない値は null (呼び出し元は現在時刻を使う)。
+ *
+ * 採らない値: 形が違う・日付として読めない・**未来**・古すぎる。URL は手で書き換え
+ * られるので、実績の時刻を好きな時刻にする抜け道にしない。
+ */
+export function parseHandoffReadAt(raw: string | null | undefined, nowMs: number): string | null {
+  if (!raw || !ISO_UTC.test(raw)) return null;
+  const ms = new Date(raw).getTime();
+  if (Number.isNaN(ms)) return null;
+  if (ms > nowMs || nowMs - ms > HANDOFF_READ_MAX_AGE_MS) return null;
+  return new Date(ms).toISOString();
+}

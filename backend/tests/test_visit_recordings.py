@@ -1602,8 +1602,10 @@ def test_migration_0087_chain_and_columns() -> None:
     rev = script.get_revision("0087_visit_recordings_summary_edit")
     assert rev is not None
     assert rev.down_revision == "0086_visit_recordings"
+    # head は単一 (線形 chain) であること。後続 migration (0088, ...) が増えても単一 head
+    # であれば良いため、特定リビジョン名には固定しない (test_migration_0043 と同じ)。
     heads = list(script.get_heads())
-    assert heads == ["0087_visit_recordings_summary_edit"], f"heads は単一のはず: {heads}"
+    assert len(heads) == 1, f"heads は単一のはず: {heads}"
 
     src = (
         backend_root / "alembic" / "versions" / "0087_visit_recordings_summary_edit.py"

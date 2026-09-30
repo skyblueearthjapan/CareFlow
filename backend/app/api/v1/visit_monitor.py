@@ -20,7 +20,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 
 from app.core.deps import DbDep, require_role
-from app.models.user import User
+from app.models.user import User, normalize_user_role
 from app.schemas.visit_monitor import MonitorResponse, NearbyResponse
 from app.services.checkin.monitor import build_monitor, find_nearby_patients
 
@@ -34,12 +34,18 @@ router = APIRouter()
 )
 async def get_monitor(
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin", "staff"))],
+    user: Annotated[User, Depends(require_role("admin", "staff"))],
     date: Annotated[date_cls, Query(description="対象日 (YYYY-MM-DD)")],
     office_id: Annotated[UUID | None, Query(description="拠点 ID (未指定なら全拠点)")] = None,
 ) -> MonitorResponse:
     """指定日の訪問モニター集計を返す (DB 書込なし)."""
-    return await build_monitor(db, date, office_id=office_id)
+    # staff には、スタッフ名の無い調整者 (スタッフ未紐付けの管理者) の email を出さない。
+    return await build_monitor(
+        db,
+        date,
+        office_id=office_id,
+        viewer_is_admin=normalize_user_role(user.role) == "admin",
+    )
 
 
 @router.get(

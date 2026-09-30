@@ -1,8 +1,13 @@
 /** 実効状態の派生ヘルパのユニットテスト。 */
 import { describe, it, expect } from 'vitest';
 
+import { monitorVisitSchema } from '@/lib/schemas/monitor';
+
 import type { VisitWithCoords } from '../constants';
 import {
+  actualArrivalIso,
+  actualDepartureIso,
+  adjustmentNotes,
   alertReasonChips,
   assignVisitLanes,
   displayStatus,
@@ -241,5 +246,109 @@ describe('代行 / 予定外 (qr-open-checkin-design.md §6)', () => {
     expect(
       substituteTitle(makeVisit({ staff_name: '担当 A', substitute_staff_name: null })),
     ).not.toContain('担当 A');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 実績時刻 (actual-time-adjust-design-2026-09-30 §6-3 / §8-1)
+// ---------------------------------------------------------------------------
+
+describe('実績時刻 (actualArrivalIso / actualDepartureIso / adjustmentNotes)', () => {
+  /** BE の応答 1 件ぶん (スキーマを通す前の生の形)。 */
+  const raw = (over: Record<string, unknown> = {}) => ({
+    visit_id: '00000000-0000-4000-8000-000000000001',
+    patient_id: '00000000-0000-4000-8000-000000000002',
+    start_time: '13:00',
+    end_time: '13:35',
+    phase: 'done',
+    alert_level: 'none',
+    arrival: { kind: 'arrival', scanned_at: '2026-09-18T04:06:00Z', match_status: 'match' },
+    departure: { kind: 'departure', scanned_at: '2026-09-18T04:31:00Z', match_status: 'match' },
+    ...over,
+  });
+
+  it('新項目があれば実績時刻 (arrival_at / departure_at) を使う', () => {
+    const v = monitorVisitSchema.parse(
+      raw({ arrival_at: '2026-09-18T03:56:00Z', departure_at: '2026-09-18T04:31:00Z' }),
+    );
+    expect(actualArrivalIso(v)).toBe('2026-09-18T03:56:00Z');
+    expect(actualDepartureIso(v)).toBe('2026-09-18T04:31:00Z');
+  });
+
+  it('新項目の無い応答 (古いバックエンド) は打刻の scanned_at へ落とし、調整なし扱い', () => {
+    const v = monitorVisitSchema.parse(raw());
+    expect(actualArrivalIso(v)).toBe('2026-09-18T04:06:00Z');
+    expect(actualDepartureIso(v)).toBe('2026-09-18T04:31:00Z');
+    expect(adjustmentNotes(v)).toEqual([]);
+  });
+
+  it('打刻も実績時刻も無ければ null', () => {
+    const v = monitorVisitSchema.parse(raw({ arrival: null, departure: null }));
+    expect(actualArrivalIso(v)).toBeNull();
+    expect(actualDepartureIso(v)).toBeNull();
+  });
+
+  it('新項目の形が崩れていてもモニターは落とさない (その項目だけ捨てる)', () => {
+    const v = monitorVisitSchema.parse(
+      raw({ arrival_at: 123, arrival_adjusted: 'yes', adjustments: [{ reason_label: 'x' }] }),
+    );
+    expect(v.arrival_at).toBeNull();
+    expect(v.adjustments).toBeNull();
+    expect(actualArrivalIso(v)).toBe('2026-09-18T04:06:00Z');
+  });
+
+  it('調整の内容: 読取時刻・理由 (自由記述つき)・誰がいつ', () => {
+    const v = monitorVisitSchema.parse(
+      raw({
+        arrival_at: '2026-09-18T03:56:00Z',
+        arrival_read_at: '2026-09-18T04:06:00Z',
+        arrival_adjusted: true,
+        adjustments: [
+          {
+            kind: 'arrival',
+            reason_label: 'その他',
+            reason_text: '駐車場が遠かった',
+            by_name: '川名 幸子',
+            created_at: '2026-09-18T04:10:00Z',
+          },
+        ],
+      }),
+    );
+    expect(adjustmentNotes(v)).toEqual([
+      {
+        kind: 'arrival',
+        label: '到着',
+        at: '12:56',
+        readAt: '13:06',
+        manual: false,
+        reason: 'その他・駐車場が遠かった',
+        by: '川名 幸子 9/18 13:10',
+        text: '到着 12:56（読取 13:06）・その他・駐車場が遠かった・川名 幸子 9/18 13:10',
+      },
+    ]);
+  });
+
+  it('調整の理由コード (reason_code) を読む。無い応答でも落とさない (L-11)', () => {
+    const v = monitorVisitSchema.parse(
+      raw({
+        adjustments: [
+          { kind: 'arrival', reason_code: 'intercom_wait', reason_label: 'インターホン待ち' },
+          { kind: 'departure', reason_label: '読み取りなし' },
+        ],
+      }),
+    );
+    expect(v.adjustments?.[0]?.reason_code).toBe('intercom_wait');
+    expect(v.adjustments?.[1]?.reason_code).toBeUndefined();
+  });
+
+  it('調整の内容 (adjustments) が無くても、フラグがあれば時刻だけで出す', () => {
+    const v = monitorVisitSchema.parse(
+      raw({
+        departure: null,
+        departure_at: '2026-09-18T04:31:00Z',
+        departure_manual: true,
+      }),
+    );
+    expect(adjustmentNotes(v).map((n) => n.text)).toEqual(['退出 13:31（手入力・読み取りなし）']);
   });
 });

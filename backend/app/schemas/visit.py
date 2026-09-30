@@ -175,13 +175,25 @@ class VisitRead(VisitBase):
     # QR チェックイン (Phase 1) の最新打刻 (非破壊追加). 未打刻なら None.
     # 既存クライアント (me.ts の MyVisit) は本フィールドを無視できる.
     latest_checkin: CheckinRead | None = None
-    # QR 打刻の実時刻 (実績・非破壊追加)。``latest_checkin`` が「最新 1 件 (kind 問わず)」
-    # なのに対し、こちらは kind ごとの最新打刻の ``scanned_at``:
-    #   ``actual_arrival_at`` = 最新の arrival / ``actual_departure_at`` = 最新の departure。
+    # 実績時刻 (非破壊追加)。``latest_checkin`` が「最新 1 件 (kind 問わず) の生の打刻」
+    # なのに対し、こちらは到着・退出それぞれの **実績時刻** = 調整があれば調整後、
+    # 無ければ読取時刻 (設計 ``actual-time-adjust-design-2026-09-30.md`` §6-3。
+    # 決めるのは ``services/checkin/actuals.py`` だけ)。
     # モバイルの一覧/詳細が「予定 13:00-13:40 ／ 実績 12:56-13:40」を並べるための値。
-    # 打刻なし / 該当 kind なしは None (``no_show`` は無視する)。
+    # 実績なしは None (``no_show`` は無視する)。
     actual_arrival_at: datetime | None = None
     actual_departure_at: datetime | None = None
+    # 読取時刻 (QR を読んだ時刻)。読み取りが無ければ None。
+    actual_arrival_read_at: datetime | None = None
+    actual_departure_read_at: datetime | None = None
+    # 実績の時刻を合わせてあるか。
+    actual_arrival_adjusted: bool = False
+    actual_departure_adjusted: bool = False
+    # 読み取りの無い退出 (手で入れた時刻)。
+    actual_departure_manual: bool = False
+    # 今のユーザーがこの訪問の実績を合わせられるか (権限はサーバが判定。画面は
+    # これでボタンを出し分ける)。
+    actual_adjust_allowed: bool = False
     # 同行 (非破壊追加・R-9 の patient_sex と同じ流儀). 同行リンクは accompaniments が
     # 唯一の正典で、読み出し時に JOIN 解決する (visits.*_staff_id には書かない)。
     #

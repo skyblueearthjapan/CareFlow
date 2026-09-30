@@ -80,6 +80,12 @@ export function MobileVisitCard({ visit, address, hasRecording }: MobileVisitCar
   // 「（訪問中）」は状態が本当に訪問中のときだけ。退出打刻が届いていないだけの
   // 完了/取消に付けると、バッジと矛盾した文言になる。
   const inProgress = visit.status === 'checked_in' || visit.status === 'in_progress';
+  // 実績の時刻を合わせてある訪問 (読み取りの無い退出を入れたものを含む) には
+  // 「調整」の印を付ける (設計 2026-09-30 §7-7)。
+  const adjusted =
+    !!visit.actual_arrival_adjusted ||
+    !!visit.actual_departure_adjusted ||
+    !!visit.actual_departure_manual;
   return (
     <Link
       href={`/m/today/${visit.id}`}
@@ -153,6 +159,14 @@ export function MobileVisitCard({ visit, address, hasRecording }: MobileVisitCar
                   ? `実績 ${actual.range}`
                   : `到着 ${actual.range}${inProgress ? '（訪問中）' : ''}`}
               </span>
+              {adjusted && (
+                <span
+                  className="shrink-0 rounded-full border border-brand-primary-light bg-brand-primary-50 px-2 text-[11px] font-semibold text-brand-primary-hover"
+                  data-testid="mobile-visit-adjusted"
+                >
+                  調整
+                </span>
+              )}
             </p>
           )}
           {accompanimentNames.length > 0 && (

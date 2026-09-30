@@ -178,3 +178,39 @@ describe('MobileVisitCard 打刻の実績時刻', () => {
     expect(screen.queryByTestId('mobile-visit-actual')).toBeNull();
   });
 });
+
+describe('MobileVisitCard 時刻の調整の印 (設計 2026-09-30 §7-7)', () => {
+  const done = {
+    status: 'completed',
+    actual_arrival_at: '2026-09-18T03:56:00Z',
+    actual_departure_at: '2026-09-18T04:40:00Z',
+  } as const;
+
+  it('到着を合わせてある訪問は、実績の行に「調整」を付ける', () => {
+    setSession('staff-senior-1');
+    render(<MobileVisitCard visit={makeVisit({ ...done, actual_arrival_adjusted: true })} />);
+    expect(screen.getByTestId('mobile-visit-adjusted')).toHaveTextContent('調整');
+    expect(screen.getByTestId('mobile-visit-actual').textContent).toContain('実績 12:56 – 13:40');
+  });
+
+  it('読み取りの無い退出を入れた訪問にも付ける', () => {
+    setSession('staff-senior-1');
+    render(<MobileVisitCard visit={makeVisit({ ...done, actual_departure_manual: true })} />);
+    expect(screen.getByTestId('mobile-visit-adjusted')).toBeInTheDocument();
+  });
+
+  it('読取時刻のままの訪問には付けない', () => {
+    setSession('staff-senior-1');
+    render(
+      <MobileVisitCard
+        visit={makeVisit({
+          ...done,
+          actual_arrival_adjusted: false,
+          actual_departure_adjusted: false,
+          actual_departure_manual: false,
+        })}
+      />,
+    );
+    expect(screen.queryByTestId('mobile-visit-adjusted')).toBeNull();
+  });
+});

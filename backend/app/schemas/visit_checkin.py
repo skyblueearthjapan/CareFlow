@@ -10,9 +10,10 @@
 from __future__ import annotations
 
 from datetime import datetime, time
+from typing import Literal
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 class CheckinCreate(BaseModel):
@@ -42,6 +43,49 @@ class CheckinCreate(BaseModel):
         default=False,
         description="不一致でも強行記録した旗",
     )
+    # その場で合わせた時刻の同梱 (設計 actual-time-adjust §6-2)。圏外で退避した打刻に、
+    # 到着直後のカードで合わせた時刻を載せて再送するための項目。
+    # **ここでは形を検証しない** (型も長さも縛らない): 退避キューの再送は 4xx で破棄
+    # されるため、調整の不備で打刻そのものを 422 にしない。検証は打刻を記録した後に
+    # 行い、通らなければ調整だけを黙って無視する。
+    adjusted_time: str | None = Field(default=None, description="合わせた時刻 (JST の HH:MM)")
+    adjust_reason_code: str | None = Field(default=None, description="合わせた理由のコード")
+
+    @field_validator("adjusted_time", "adjust_reason_code", mode="before")
+    @classmethod
+    def _ignore_non_string(cls, value: object) -> str | None:
+        return value if isinstance(value, str) else None
+
+
+#: 実績のどちらの時刻か / 時刻を合わせた理由 (設計 actual-time-adjust §4)。
+ActualTimeKind = Literal["arrival", "departure"]
+AdjustReasonCode = Literal["intercom_wait", "read_later", "no_read", "other"]
+
+
+class ActualTimeAdjustRequest(BaseModel):
+    """PUT /visits/{id}/actual-time リクエスト (設計 actual-time-adjust §6-1).
+
+    ``time`` は JST の ``HH:MM``。サーバが ``visit_date`` と組み合わせる (端末側で
+    タイムゾーン計算をさせない)。
+
+    **スキーマでは値を縛らない** (全項目が任意の文字列): 画面は 4xx の ``detail`` を
+    そのままトーストに出すので、Pydantic の配列形式の ``detail`` を返さない。値の
+    検証 (``kind`` / ``reason_code`` の語彙・``time`` の形と範囲) はサーバ側
+    (``services/checkin/adjust``) で行い、日本語の文字列の ``detail`` を返す。
+    語彙は ``ActualTimeKind`` / ``AdjustReasonCode``。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: str | None = None
+    time: str | None = None
+    reason_code: str | None = None
+    reason_text: str | None = None
+
+    @field_validator("kind", "time", "reason_code", "reason_text", mode="before")
+    @classmethod
+    def _ignore_non_string(cls, value: object) -> str | None:
+        return value if isinstance(value, str) else None
 
 
 class CheckinRead(BaseModel):
@@ -97,4 +141,12 @@ class QrResolveRead(BaseModel):
     candidates: list[QrResolveCandidate]
 
 
-__all__ = ["CheckinCreate", "CheckinRead", "QrResolveCandidate", "QrResolveRead"]
+__all__ = [
+    "ActualTimeAdjustRequest",
+    "ActualTimeKind",
+    "AdjustReasonCode",
+    "CheckinCreate",
+    "CheckinRead",
+    "QrResolveCandidate",
+    "QrResolveRead",
+]

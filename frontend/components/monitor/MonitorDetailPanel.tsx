@@ -32,6 +32,9 @@ import {
   STATUS_JUDGE,
   STATUS_LABEL,
   type DisplayStatus,
+  actualArrivalIso,
+  actualDepartureIso,
+  adjustmentNotes,
   displayStatus,
   formatDistance,
   isLongInprogress,
@@ -188,13 +191,19 @@ function VisitDetail({
   const st = displayStatus(visit);
   const txt = STATUS_JUDGE[st];
   const JudgeIcon = STATUS_ICON[st];
-  const arrive = isoToHm(visit.arrival?.scanned_at);
+  // 到着・退出は実績時刻 (調整後。無ければ読取時刻・設計 2026-09-30 §8-1)。
+  // 滞在・到着ズレは BE が同じ実績時刻から出している。
+  const departureIso = actualDepartureIso(visit);
+  const arrive = isoToHm(actualArrivalIso(visit));
   const depart =
-    visit.departure?.scanned_at != null
-      ? isoToHm(visit.departure.scanned_at)
+    departureIso != null
+      ? isoToHm(departureIso)
       : visit.phase === 'inprogress'
         ? '（滞在中）'
         : '—';
+  const adjustNotes = adjustmentNotes(visit);
+  const arrivalNote = adjustNotes.find((n) => n.kind === 'arrival');
+  const departureNote = adjustNotes.find((n) => n.kind === 'departure');
   const stay = visit.stay_minutes != null ? `${visit.stay_minutes}分` : '—';
   const delay =
     visit.arrival_delay_min != null
@@ -374,11 +383,49 @@ function VisitDetail({
         </div>
       )}
 
+      {/* 実績の時刻の調整 (閲覧のみ)。読取時刻・理由・誰がいつ合わせたかを出す。
+          注意色にしない — 遅れて記録されるのは看護師の誤りではない (PO 決定)。 */}
+      {adjustNotes.length > 0 && (
+        <div
+          className="mb-3 rounded border border-brand-primary-light bg-brand-primary-50 p-3 text-[13px] leading-relaxed text-text-primary"
+          data-testid="monitor-detail-adjusted"
+        >
+          <span className="mb-1 flex items-center gap-1 text-[11px] font-bold text-brand-primary-hover">
+            <Clock className="h-3.5 w-3.5" />
+            時刻の調整
+          </span>
+          {adjustNotes.map((n) => (
+            <div key={n.kind} className="mb-1 last:mb-0">
+              <div className="tabular-nums">
+                {n.label} {n.at}
+                {n.manual ? '（手入力・読み取りなし）' : n.readAt ? `（読取 ${n.readAt}）` : ''}
+              </div>
+              {(n.reason || n.by) && (
+                <div className="text-xs text-text-secondary">
+                  {[n.reason ? `理由: ${n.reason}` : null, n.by].filter(Boolean).join(' ／ ')}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {visit.phase !== 'missing' && (
         <div className="mb-3 rounded-md border border-border-default bg-bg-base px-3.5 py-1.5">
           <Kv k="予定時刻" v={`${visit.start_time} – ${visit.end_time}`} />
-          <Kv k="到着（QR/GPS）" v={arrive} />
-          <Kv k="退出（QR/GPS）" v={depart} />
+          <Kv k={arrivalNote ? '到着（調整後）' : '到着（QR/GPS）'} v={arrive} />
+          {arrivalNote?.readAt && <Kv k="到着の読取時刻" v={arrivalNote.readAt} />}
+          <Kv
+            k={
+              departureNote?.manual
+                ? '退出（手入力）'
+                : departureNote
+                  ? '退出（調整後）'
+                  : '退出（QR/GPS）'
+            }
+            v={depart}
+          />
+          {departureNote?.readAt && <Kv k="退出の読取時刻" v={departureNote.readAt} />}
           <Kv k="滞在時間" v={stay} />
           <Kv k="到着ズレ" v={delay} />
           {dist != null && (

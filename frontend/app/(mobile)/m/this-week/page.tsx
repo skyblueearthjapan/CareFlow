@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import { Mic } from 'lucide-react';
 
@@ -11,10 +12,12 @@ import { MobileSection } from '@/components/mobile/MobileSection';
 import { MobileEventChip, MobileOverrideBadge } from '@/components/mobile/MobileEventChip';
 import { RakusukeNote } from '@/components/brand/Rakusuke';
 import { cn } from '@/lib/utils';
+import { actualTimeParts } from '@/lib/format/actualTime';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import {
   addDays,
   currentWeekStartIso,
+  todayIso,
   useMyOverrides,
   useMyStaffEvents,
   useMyVisits,
@@ -111,29 +114,54 @@ function shortTime(t: string): string {
  * 「今週だけ取消」(`status='cancelled'` で `classifyVisitDisplay` が hidden に
  * しないもの = manual_cancel) は、打消線に加えて赤「取消」バッジを出す
  * (design §3 C-3 — 薄いだけだと現場が見落とす)。
+ *
+ * 実績のある訪問と今日の訪問は**押せる** (設計 2026-09-30 §7-8): 訪問詳細へ進み、
+ * 実績の時刻を確認して合わせられる。実績の時刻は右に出す
+ * (「✓ 09:33–10:08」「到着 11:08・訪問中」/ 過ぎた日は「到着 11:08・退出なし」)。それ以外 (先の日の予定など) は
+ * 従来どおり見るだけ。
  */
-function VisitChip({ visit: v, hasRecording }: { visit: MyVisit; hasRecording?: boolean }) {
+function VisitChip({
+  visit: v,
+  hasRecording,
+  today,
+}: {
+  visit: MyVisit;
+  hasRecording?: boolean;
+  today: string;
+}) {
   const cancelled = v.status === 'cancelled';
   const pal = genderPalette(v.patient_sex ?? null);
-  return (
-    <div
-      className={cn(
-        'flex items-center gap-1.5 rounded-md border border-l-[3px] px-1.5 py-1',
-        cancelled && 'opacity-50',
-        // 非稼働患者の残骸 (§3-4)。
-        VISIT_DISPLAY_CLASS[classifyVisitDisplay(v, { showInactive: true })],
-      )}
-      style={{
-        background: pal.bg,
-        borderColor: pal.ln,
-        borderLeftColor: pal.bar,
-        color: pal.ink,
-      }}
-    >
+  // 未訪問 (no_show) は実績を出さない (一覧カード・訪問詳細と同じ扱い)。
+  const actual =
+    v.status === 'no_show' ? null : actualTimeParts(v.actual_arrival_at, v.actual_departure_at);
+  const adjusted =
+    !!v.actual_arrival_adjusted || !!v.actual_departure_adjusted || !!v.actual_departure_manual;
+  const tappable = actual != null || v.visit_date === today;
+  // 到着だけの訪問: 今日なら「訪問中」。「退出なし」は、退出の読み取りが無いまま
+  // 過ぎた日だけ (今日の訪問中に警告色で出すと、読み忘れに見えてしまう)。
+  const inProgressToday = actual != null && !actual.done && v.visit_date === today;
+  const className = cn(
+    // 高さは 44px 以上 (親指で押せる大きさ)。押せないチップも同じ高さで揃える。
+    'flex min-h-11 items-center gap-1.5 rounded-md border border-l-[3px] px-2 py-1',
+    tappable && 'focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary',
+    cancelled && 'opacity-50',
+    // 非稼働患者の残骸 (§3-4)。
+    VISIT_DISPLAY_CLASS[classifyVisitDisplay(v, { showInactive: true })],
+  );
+  const style = {
+    background: pal.bg,
+    borderColor: pal.ln,
+    borderLeftColor: pal.bar,
+    color: pal.ink,
+  };
+  const body = (
+    <>
       <span className="tnum shrink-0 text-[11px] font-semibold">{shortTime(v.start_time)}</span>
       <span
         className={cn(
-          'max-w-[55%] shrink-0 truncate text-[12px] font-bold',
+          'truncate text-[12px] font-bold',
+          // 実績を右に出すときは、氏名の方を縮めて収める。
+          actual ? 'min-w-0' : 'max-w-[55%] shrink-0',
           cancelled && 'line-through',
         )}
       >
@@ -161,18 +189,53 @@ function VisitChip({ visit: v, hasRecording }: { visit: MyVisit; hasRecording?: 
           data-testid={`this-week-recording-mark-${v.id}`}
         />
       )}
-      {/* R-9d (PO要望): 縦1列化で空いた右側に住所 (名前より小さいフォント)。 */}
-      {v.patient_address && (
+      {/* R-9d (PO要望): 縦1列化で空いた右側に住所 (名前より小さいフォント)。
+          実績があるときは、その場所を実績の時刻に譲る。 */}
+      {!actual && v.patient_address && (
         <span className="min-w-0 flex-1 truncate text-[10px] opacity-75">
           📍{v.patient_address}
         </span>
       )}
-    </div>
+      {actual && (
+        <span
+          className={cn(
+            'tnum ml-auto shrink-0 whitespace-nowrap text-[12px] font-semibold',
+            // 今日の訪問中は注意ではない (これから退出する)。色はチップの文字色のまま。
+            actual.done ? 'text-success' : !inProgressToday && 'text-warning-strong',
+          )}
+          data-testid={`this-week-actual-${v.id}`}
+        >
+          {actual.done
+            ? `✓ ${actual.compactRange}${adjusted ? ' ✎' : ''}`
+            : `到着 ${actual.arrival}・${inProgressToday ? '訪問中' : '退出なし'}`}
+        </span>
+      )}
+    </>
+  );
+
+  if (!tappable) {
+    return (
+      <div className={className} style={style}>
+        {body}
+      </div>
+    );
+  }
+  return (
+    <Link
+      href={`/m/today/${v.id}?from=week`}
+      className={className}
+      style={style}
+      aria-label={`${v.patient_name ?? '患者'} の訪問詳細`}
+      data-testid={`this-week-visit-link-${v.id}`}
+    >
+      {body}
+    </Link>
   );
 }
 
 export default function MobileThisWeekPage() {
   const weekStart = currentWeekStartIso();
+  const today = todayIso();
   const {
     data: visits,
     isLoading,
@@ -243,9 +306,15 @@ export default function MobileThisWeekPage() {
         </Card>
       )}
 
+      {groups.length > 0 && (
+        <p className="rounded-md border border-brand-primary-light bg-brand-primary-50 px-3 py-2 text-xs text-brand-primary-hover">
+          終わった訪問を押すと、実績の時刻を確認して合わせられます。
+        </p>
+      )}
+
       <div className="space-y-4">
-        {/* R-9b (PO要望): 今週は「見渡す」画面 — タップ不可の高密度チップを2列で敷き詰める。
-            時刻+性別ドット相当の左帯+患者名のみ (住所/詳細は今日の訪問側の役割)。 */}
+        {/* R-9b (PO要望): 今週は「見渡す」画面 — 高密度チップを敷き詰める。
+            実績のある訪問と今日の訪問だけ押せる (設計 2026-09-30 §7-8)。 */}
         {groups.map((g) => (
           <section key={g.date}>
             <header className="mb-1.5 flex items-baseline justify-between gap-2">
@@ -275,6 +344,7 @@ export default function MobileThisWeekPage() {
                     key={row.visit.id}
                     visit={row.visit}
                     hasRecording={recordedVisitIds.has(row.visit.id)}
+                    today={today}
                   />
                 ),
               )}

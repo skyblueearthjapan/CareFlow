@@ -30,6 +30,8 @@ vi.mock('@/lib/queries/me', () => ({
   useMyStaffEvents: vi.fn(() => ({ data: [], isLoading: false, isError: false, error: null })),
   useMyOverrides: vi.fn(() => ({ data: [], isLoading: false, isError: false, error: null })),
   currentWeekStartIso: () => '2026-09-07',
+  // 今日の訪問はチップを押せる (設計 2026-09-30 §7-8)。週の水曜を「今日」にする。
+  todayIso: () => '2026-09-09',
   addDays: (iso: string, days: number) => {
     const [y, m, d] = iso.split('-').map(Number);
     const dt = new Date(y ?? 1970, (m ?? 1) - 1, d ?? 1);
@@ -218,5 +220,93 @@ describe('今週の予定 — 職員イベントの混在', () => {
   it('「今週だけ取消」には赤い取消バッジを出す', () => {
     renderWith([makeVisit({ id: 'manual', status: 'cancelled', source: 'manual_cancel' })]);
     expect(screen.getByTestId('this-week-cancelled-badge-manual')).toHaveTextContent('取消');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 実績の時刻を合わせる (設計 2026-09-30 §7-8): 実績のある訪問と今日の訪問は押せる
+// ---------------------------------------------------------------------------
+
+describe('今週の予定 — 実績の時刻とチップから訪問詳細へ', () => {
+  it('終わった訪問は押せて、実績の時刻を右に出す (戻り先を覚えるため ?from=week)', () => {
+    renderWith([
+      makeVisit({
+        id: 'done',
+        status: 'completed',
+        actual_arrival_at: '2026-09-07T00:33:00Z',
+        actual_departure_at: '2026-09-07T01:08:00Z',
+      }),
+    ]);
+    const link = screen.getByTestId('this-week-visit-link-done');
+    expect(link).toHaveAttribute('href', '/m/today/done?from=week');
+    expect(link.className).toContain('min-h-11');
+    expect(screen.getByTestId('this-week-actual-done')).toHaveTextContent('✓ 09:33–10:08');
+  });
+
+  it('時刻を合わせてある訪問には ✎ を付ける', () => {
+    renderWith([
+      makeVisit({
+        id: 'adj',
+        status: 'completed',
+        actual_arrival_at: '2026-09-07T00:33:00Z',
+        actual_departure_at: '2026-09-07T01:08:00Z',
+        actual_arrival_adjusted: true,
+      }),
+    ]);
+    expect(screen.getByTestId('this-week-actual-adj')).toHaveTextContent('✓ 09:33–10:08 ✎');
+  });
+
+  it('退出の読み取りが無いまま過ぎた日の訪問は「到着 11:08・退出なし」(警告色)', () => {
+    renderWith([
+      makeVisit({
+        id: 'nodep',
+        status: 'in_progress',
+        actual_arrival_at: '2026-09-07T02:08:00Z',
+        actual_departure_at: null,
+      }),
+    ]);
+    const chip = screen.getByTestId('this-week-actual-nodep');
+    expect(chip).toHaveTextContent('到着 11:08・退出なし');
+    expect(chip.className).toContain('text-warning-strong');
+    expect(screen.getByTestId('this-week-visit-link-nodep')).toBeInTheDocument();
+  });
+
+  it('今日の訪問中は「到着 11:08・訪問中」— 「退出なし」とも警告色とも出さない (L-10)', () => {
+    renderWith([
+      makeVisit({
+        id: 'now',
+        visit_date: '2026-09-09',
+        status: 'in_progress',
+        actual_arrival_at: '2026-09-09T02:08:00Z',
+        actual_departure_at: null,
+      }),
+    ]);
+    const chip = screen.getByTestId('this-week-actual-now');
+    expect(chip).toHaveTextContent('到着 11:08・訪問中');
+    expect(chip).not.toHaveTextContent('退出なし');
+    expect(chip.className).not.toContain('text-warning-strong');
+  });
+
+  it('今日の訪問は実績が無くても押せる', () => {
+    renderWith([makeVisit({ id: 'today', visit_date: '2026-09-09' })]);
+    expect(screen.getByTestId('this-week-visit-link-today')).toHaveAttribute(
+      'href',
+      '/m/today/today?from=week',
+    );
+    expect(screen.queryByTestId('this-week-actual-today')).toBeNull();
+  });
+
+  it('実績の無い、今日以外の予定は押せない (見るだけ)', () => {
+    renderWith([makeVisit({ id: 'future', visit_date: '2026-09-11' })]);
+    expect(screen.getByText('患者future')).toBeInTheDocument();
+    expect(screen.queryByTestId('this-week-visit-link-future')).toBeNull();
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('未訪問 (no_show) は到着の読み取りがあっても実績を出さない', () => {
+    renderWith([
+      makeVisit({ id: 'ns', status: 'no_show', actual_arrival_at: '2026-09-07T02:08:00Z' }),
+    ]);
+    expect(screen.queryByTestId('this-week-actual-ns')).toBeNull();
   });
 });

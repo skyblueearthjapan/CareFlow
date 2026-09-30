@@ -50,6 +50,7 @@ from app.api.v1 import (
     staff_shifts,
     substitute_candidates,
     sync_report,
+    visit_history,
     visit_monitor,
     visit_photos,
     visit_recordings,
@@ -146,6 +147,9 @@ api_router.include_router(visits.router, prefix="/visits", tags=["visits"])
 # prefix "/visit-recordings" を持つのでここでは付けない。/visits/... とは
 # パスが分かれているため visits.router との登録順には依存しない。
 api_router.include_router(visit_recordings.router)
+# 打刻履歴 (visit-history-design-2026-09-30 §3・read-only)。router 自身が prefix
+# "/visit-history" を持つ (visit_recordings と同じ作法)。
+api_router.include_router(visit_history.router)
 # QR 訪問チェックイン Phase 3: PC 訪問モニター集計 (admin/manager, read-only).
 api_router.include_router(visit_monitor.router, prefix="/monitor", tags=["visit-monitor"])
 # W2-BE4: Course CRUD (generate / fix / assign-staff は Wave 4 で追加).

@@ -73,9 +73,11 @@ class VisitCheckin(Base, TimestampMixin):
 
     # 'arrival' | 'departure' | 'no_show'
     kind: Mapped[str] = mapped_column(String(12), nullable=False)
-    # サーバ受信時刻 (JST 換算で「当日」判定・滞在計算に使用).
+    # サーバ受信時刻 (監査・並び順・GPS 保持期限の基準)。画面や集計が使う時刻は
+    # これを直接読まず ``services/checkin/actuals.py`` の実績時刻を使う。
     scanned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    # 端末時刻 (既存 ``at`` を写像 / オフライン同期で逆転した滞在計算に使用).
+    # 端末時刻 (既存 ``at`` を写像) = QR を読み取った瞬間。妥当ならこれが読取時刻になる
+    # (``actuals.resolve_read_time``)。
     device_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     lat: Mapped[Decimal | None] = mapped_column(Numeric(10, 7), nullable=True)

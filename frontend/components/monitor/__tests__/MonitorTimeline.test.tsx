@@ -705,4 +705,142 @@ describe('MonitorTimeline — 打刻の実時刻の併記 (お客様要望 2026-
       screen.getByTestId(`monitor-bar-plan-${v.visit_id}`).getAttribute('title'),
     ).not.toContain('打刻:');
   });
+
+  // ── 実績の時刻を合わせる (actual-time-adjust-design-2026-09-30 §8-1) ──
+  // 画面の時刻は MonitorVisit.arrival_at / departure_at (実績時刻) で描く。
+  // arrival / departure (生の打刻) の scanned_at は読まない。
+
+  /** 読取 13:06 (JST) → 10 分さかのぼって 12:56 に合わせた到着。退出は 13:31。 */
+  const READ_ARRIVAL = '2026-09-18T04:06:00Z';
+  const ADJ_DEPARTURE = '2026-09-18T04:31:00Z';
+  const adjustedVisit = (over: Parameters<typeof makeVisit>[0] = {}) =>
+    makeVisit({
+      phase: 'done',
+      start_time: '13:00',
+      end_time: '13:35',
+      arrival: {
+        kind: 'arrival',
+        scanned_at: READ_ARRIVAL,
+        match_status: 'match',
+        distance_m: 10,
+        is_override: false,
+      },
+      departure: {
+        kind: 'departure',
+        scanned_at: ADJ_DEPARTURE,
+        match_status: 'match',
+        is_override: false,
+      },
+      arrival_at: ARRIVAL,
+      arrival_read_at: READ_ARRIVAL,
+      arrival_adjusted: true,
+      departure_at: ADJ_DEPARTURE,
+      departure_read_at: ADJ_DEPARTURE,
+      departure_adjusted: false,
+      departure_manual: false,
+      adjustments: [
+        {
+          kind: 'arrival',
+          reason_label: 'インターホン待ち',
+          reason_text: null,
+          by_name: '川名 幸子',
+          created_at: '2026-09-18T04:10:00Z',
+        },
+      ],
+      ...over,
+    });
+
+  /** タイムライン (8–19h) 上の左 % 座標。 */
+  const pct = (hm: string) => {
+    const [h, m] = hm.split(':').map(Number);
+    return (((h ?? 0) * 60 + (m ?? 0) - 8 * 60) / (11 * 60)) * 100;
+  };
+
+  it('実績バーの位置と幅は実績時刻 (arrival_at) から描く — 読取時刻 (scanned_at) ではない', () => {
+    const v = adjustedVisit();
+    renderVisit(v);
+    const bar = screen.getByTestId(`monitor-bar-actual-${v.visit_id}`);
+    // 12:56 (合わせた後) 起点。読取の 13:06 起点ではない。
+    expect(parseFloat(bar.style.left)).toBeCloseTo(pct('12:56'), 4);
+    expect(parseFloat(bar.style.left)).not.toBeCloseTo(pct('13:06'), 1);
+    expect(parseFloat(bar.style.width)).toBeCloseTo(pct('13:31') - pct('12:56'), 4);
+  });
+
+  it('併記とツールチップも実績時刻。「調整」の印と、読取時刻・理由・誰がいつを出す', () => {
+    const v = adjustedVisit();
+    renderVisit(v);
+    expect(screen.getByTestId(`monitor-bar-actual-time-${v.visit_id}`).textContent).toBe(
+      '✓12:56–13:31',
+    );
+    const badge = screen.getByTestId(`monitor-bar-adjusted-${v.visit_id}`);
+    expect(badge.textContent).toBe('調整');
+    const detail = '到着 12:56（読取 13:06）・インターホン待ち・川名 幸子 9/18 13:10';
+    expect(badge.getAttribute('title')).toBe(detail);
+    const title = screen.getByTestId(`monitor-bar-plan-${v.visit_id}`).getAttribute('title');
+    expect(title).toContain('｜打刻: 12:56–13:31');
+    expect(title).toContain(`｜調整: ${detail}`);
+    expect(screen.getByTestId(`monitor-bar-actual-${v.visit_id}`).getAttribute('title')).toContain(
+      detail,
+    );
+    // 文言ルール (PO): 「直す」「修正」「補正」は使わない。
+    expect(title).not.toMatch(/直す|修正|補正/);
+  });
+
+  it('読み取りの無い退出 (手入力) は departure が null でも退出まで描き、「手入力」と分かる', () => {
+    const v = adjustedVisit({
+      arrival_at: READ_ARRIVAL,
+      arrival_adjusted: false,
+      departure: null,
+      departure_at: ADJ_DEPARTURE,
+      departure_read_at: null,
+      departure_manual: true,
+      adjustments: [{ kind: 'departure', reason_label: '読み取りなし', by_name: '管理 太郎' }],
+    });
+    renderVisit(v);
+    // nowMinutes (13:30) ではなく、手で入れた退出 13:31 まで。
+    const bar = screen.getByTestId(`monitor-bar-actual-${v.visit_id}`);
+    expect(parseFloat(bar.style.width)).toBeCloseTo(pct('13:31') - pct('13:06'), 4);
+    expect(screen.getByTestId(`monitor-bar-actual-time-${v.visit_id}`).textContent).toBe(
+      '✓13:06–13:31',
+    );
+    const badge = screen.getByTestId(`monitor-bar-adjusted-${v.visit_id}`);
+    expect(badge.textContent).toBe('手入力');
+    expect(badge.getAttribute('title')).toBe(
+      '退出 13:31（手入力・読み取りなし）・読み取りなし・管理 太郎',
+    );
+  });
+
+  it('調整の無い訪問には「調整」の印もツールチップの調整も出さない', () => {
+    const v = adjustedVisit({ arrival_at: READ_ARRIVAL, arrival_adjusted: false, adjustments: [] });
+    renderVisit(v);
+    expect(screen.queryByTestId(`monitor-bar-adjusted-${v.visit_id}`)).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId(`monitor-bar-plan-${v.visit_id}`).getAttribute('title'),
+    ).not.toContain('調整');
+  });
+
+  it('新項目の無い応答 (古いバックエンド) は打刻の scanned_at で描く (従来どおり)', () => {
+    const v = makeVisit({
+      phase: 'done',
+      arrival: {
+        kind: 'arrival',
+        scanned_at: ARRIVAL,
+        match_status: 'match',
+        distance_m: 10,
+        is_override: false,
+      },
+      departure: {
+        kind: 'departure',
+        scanned_at: DEPARTURE,
+        match_status: 'match',
+        is_override: false,
+      },
+    });
+    expect(v.arrival_at).toBeUndefined();
+    renderVisit(v);
+    const bar = screen.getByTestId(`monitor-bar-actual-${v.visit_id}`);
+    expect(parseFloat(bar.style.left)).toBeCloseTo(pct('12:56'), 4);
+    expect(parseFloat(bar.style.width)).toBeCloseTo(pct('13:40') - pct('12:56'), 4);
+    expect(screen.queryByTestId(`monitor-bar-adjusted-${v.visit_id}`)).not.toBeInTheDocument();
+  });
 });

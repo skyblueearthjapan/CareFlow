@@ -40,6 +40,35 @@ export function jstHm(iso: string | null | undefined): string | null {
   return JST_HM.format(d);
 }
 
+/**
+ * "HH:MM" (または "HH:MM:SS") → 0 時からの分。読めない値は null。
+ *
+ * 「実績の時刻を合わせる」(設計 2026-09-30) の分単位の計算用。時刻を合わせる
+ * 操作はすべて「その日の 0 時からの分」で扱い、API へは "HH:MM" で渡す
+ * (端末側でタイムゾーン計算をしない = 設計 §6-1)。
+ */
+export function hmToMinutes(hm: string | null | undefined): number | null {
+  if (!hm) return null;
+  const m = /^(\d{1,2}):(\d{2})/.exec(hm);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+
+/** 0 時からの分 → "HH:MM"。 */
+export function minutesToHm(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+/** ISO 8601 → JST の 0 時からの分 (秒は切り捨て)。null / 不正な値は null。 */
+export function jstMinutes(iso: string | null | undefined): number | null {
+  return hmToMinutes(jstHm(iso));
+}
+
 /** 実績時刻の部品。画面ごとに接頭辞 (実績 / 到着 / ✓ / ▶) を付けて使う。 */
 export interface ActualTimeParts {
   /** 到着打刻の "HH:MM" (JST)。 */

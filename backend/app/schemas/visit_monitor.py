@@ -47,6 +47,26 @@ class MonitorCheckin(BaseModel):
     is_override: bool = False
 
 
+class MonitorAdjustment(BaseModel):
+    """効いている調整 1 件 (実績の時刻を誰がいつ・なぜ合わせたか).
+
+    訪問モニターと打刻履歴 (``VisitHistoryItem.adjustments``) で同じ形。
+    """
+
+    # 'arrival' | 'departure'
+    kind: str
+    # 理由コード (intercom_wait / read_later / no_read / other) と、その表示名
+    # (インターホン待ち / 読み取りが後になった / 読み取りなし / その他)。理由なしは None。
+    reason_code: str | None = None
+    reason_label: str | None = None
+    reason_text: str | None = None
+    # 合わせた人 (スタッフ名。無ければ、admin への応答では利用者の email / username、
+    # staff への応答では「管理者」)。
+    by_name: str | None = None
+    # 合わせた日時 (UTC)。
+    created_at: datetime | None = None
+
+
 class MonitorVisit(BaseModel):
     """1 訪問の予定 + 実績 + 実効状態."""
 
@@ -107,12 +127,30 @@ class MonitorVisit(BaseModel):
     # ペア補正で awaiting に留まっている)。UI が「ペア待ち」バッジを出す。phase は
     # awaiting のまま (列挙は増やさない)。
     pair_waiting: bool = False
+    # 生の打刻 (位置判定・座標・理由)。実績の時刻を合わせても書き換わらない。
+    # 読み取りの無い退出 (手で入れた時刻) は ``departure`` が None のまま
+    # ``departure_at`` だけが入る。
     arrival: MonitorCheckin | None = None
     departure: MonitorCheckin | None = None
     no_show: MonitorCheckin | None = None
-    # 到着〜退出 (進行中は now 迄)。device_time 優先で逆転対策。
+    # 実績時刻 (調整があれば調整後、無ければ読取時刻。設計
+    # ``actual-time-adjust-design-2026-09-30.md`` §6-3)。バーの位置・時刻の表示は
+    # こちらを使う。``phase`` / ``alert_level`` / ``stay_minutes`` /
+    # ``arrival_delay_min`` もこの時刻が基準。
+    arrival_at: datetime | None = None
+    departure_at: datetime | None = None
+    # 読取時刻 (QR を読んだ時刻)。読み取りが無ければ None。
+    arrival_read_at: datetime | None = None
+    departure_read_at: datetime | None = None
+    arrival_adjusted: bool = False
+    departure_adjusted: bool = False
+    # 読み取りの無い退出 (手で入れた時刻)。
+    departure_manual: bool = False
+    # 効いている調整 (到着 → 退出の順)。無ければ空配列。
+    adjustments: list[MonitorAdjustment] = Field(default_factory=list)
+    # 到着〜退出 (進行中は now 迄)。実績時刻の差。
     stay_minutes: int | None = None
-    # 到着ズレ (到着 - 予定開始, 分。早着は負)。
+    # 到着ズレ (実績の到着 - 予定開始, 分。早着は負)。
     arrival_delay_min: int | None = None
     # 同スタッフ同日の次訪問までの直線距離 (m)。
     distance_to_next_m: float | None = None
@@ -185,6 +223,7 @@ class NearbyResponse(BaseModel):
 
 
 __all__ = [
+    "MonitorAdjustment",
     "MonitorCheckin",
     "MonitorOffice",
     "MonitorResponse",

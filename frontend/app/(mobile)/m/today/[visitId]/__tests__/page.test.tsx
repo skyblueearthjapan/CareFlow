@@ -12,7 +12,7 @@
  *   7. ネットワーク障害 / 5xx → localStorage + pending キューへ退避
  */
 import * as React from 'react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 import type * as ReactQueryModule from '@tanstack/react-query';
@@ -79,6 +79,11 @@ vi.mock('@/lib/queries/me', () => ({
   useCheckIn: vi.fn(),
   useCheckOut: vi.fn(),
   useNoShow: vi.fn(),
+  // 実績の時刻を合わせる (設計 2026-09-30)。
+  useAdjustActualTime: vi.fn(),
+  useResetActualTime: vi.fn(),
+  // 打刻ボタンは当日の訪問にだけ出す。fixture の visit_date と同じ日を「今日」にする。
+  todayIso: () => '2026-06-30',
 }));
 
 vi.mock('@/lib/queries/visit-photos', () => ({
@@ -121,7 +126,16 @@ vi.mock('@/lib/queries/checkinSettings', () => ({
 }));
 
 import { useSession } from 'next-auth/react';
-import { useMyVisit, useCheckIn, useCheckOut, useNoShow } from '@/lib/queries/me';
+import {
+  useMyVisit,
+  useCheckIn,
+  useCheckOut,
+  useNoShow,
+  useAdjustActualTime,
+  useResetActualTime,
+} from '@/lib/queries/me';
+import { listPending } from '@/lib/checkin-queue';
+import { fetcher } from '@/lib/api/fetcher';
 import { useVisitPhotos, useUploadPhoto } from '@/lib/queries/visit-photos';
 import { useCheckinSettingsPublic } from '@/lib/queries/checkinSettings';
 import { toast } from '@/components/ui/sonner';
@@ -179,6 +193,8 @@ let checkOutResult: MyVisit & { latest_checkin: LatestCheckin };
 const checkInMutate = vi.fn(async () => checkInResult);
 const checkOutMutate = vi.fn(async () => checkOutResult);
 const noShowMutate = vi.fn(async () => makeVisit());
+const adjustMutate = vi.fn(async (_payload: unknown): Promise<MyVisit> => makeVisit());
+const resetMutate = vi.fn(async (_kind: unknown): Promise<MyVisit> => makeVisit());
 
 function setSession() {
   asMock(useSession).mockReturnValue({
@@ -239,11 +255,20 @@ beforeEach(() => {
   asMock(useCheckIn).mockReturnValue({ mutateAsync: checkInMutate, isPending: false });
   asMock(useCheckOut).mockReturnValue({ mutateAsync: checkOutMutate, isPending: false });
   asMock(useNoShow).mockReturnValue({ mutateAsync: noShowMutate, isPending: false });
+  asMock(useAdjustActualTime).mockReturnValue({ mutateAsync: adjustMutate, isPending: false });
+  asMock(useResetActualTime).mockReturnValue({ mutateAsync: resetMutate, isPending: false });
   asMock(useVisitPhotos).mockReturnValue({ data: [] });
   asMock(useUploadPhoto).mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
   asMock(useCheckinSettingsPublic).mockReturnValue({
     data: { match_m: 100, review_m: 300, accuracy_m: 50 },
   });
+});
+
+afterEach(() => {
+  // 読取の瞬間を固定するテストが Date を差し替える。次のテストへ漏らさない。
+  vi.useRealTimers();
+  // URL のクエリを置くテストがある (1 回きりのクエリを外す挙動の確認)。
+  window.history.replaceState({}, '', '/');
 });
 
 describe('QR チェックイン モバイル — 基本表示', () => {
@@ -746,5 +771,874 @@ describe('訪問詳細 — 予定 + 実績の 2 行', () => {
     render(<MobileVisitDetailPage />);
     expect(screen.getByText('予定 09:30 - 10:30')).toBeInTheDocument();
     expect(screen.queryByTestId('mobile-detail-actual')).toBeNull();
+  });
+});
+
+// ===========================================================================
+// 実績の時刻を合わせる (設計 2026-09-30 §7)
+// ===========================================================================
+
+/** サーバが「合わせられる」と返した訪問 (JST 13:06 に読み取り)。 */
+function adjustableVisit(over: Partial<MyVisit> = {}): MyVisit {
+  return {
+    ...makeVisit('in_progress'),
+    start_time: '13:00:00',
+    end_time: '13:35:00',
+    actual_arrival_at: '2026-06-30T04:06:20Z',
+    actual_arrival_read_at: '2026-06-30T04:06:20Z',
+    actual_arrival_adjusted: false,
+    actual_departure_at: null,
+    actual_departure_read_at: null,
+    actual_departure_adjusted: false,
+    actual_departure_manual: false,
+    actual_adjust_allowed: true,
+    ...over,
+  };
+}
+
+function setVisit(visit: MyVisit) {
+  asMock(useMyVisit).mockReturnValue({
+    data: visit,
+    isLoading: false,
+    isError: false,
+    error: null,
+  });
+}
+
+/** 到着を 12:56 に合わせた後の応答。 */
+const ADJUSTED = adjustableVisit({
+  actual_arrival_at: '2026-06-30T03:56:00Z',
+  actual_arrival_adjusted: true,
+});
+
+describe('読取の瞬間を at に載せる (設計 §3)', () => {
+  it('カメラが読んだ時点の時刻を送り、確認画面にその時刻を出す (記録を押した時刻ではない)', async () => {
+    vi.setSystemTime(new Date('2026-06-30T04:06:20Z')); // JST 13:06:20 に読み取り
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    expect(screen.getByTestId('preview-read-time')).toHaveTextContent(
+      '読み取った時刻 13:06 で記録します',
+    );
+
+    // 位置の取得と確認で 2 分かかった想定。
+    vi.setSystemTime(new Date('2026-06-30T04:08:40Z'));
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(checkInMutate).toHaveBeenCalledTimes(1));
+    expect(checkInMutate.mock.calls[0][0]).toMatchObject({ at: '2026-06-30T04:06:20.000Z' });
+  });
+
+  it('「位置を再取得」しても読み取った瞬間は変えない', async () => {
+    vi.setSystemTime(new Date('2026-06-30T04:06:20Z'));
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+
+    vi.setSystemTime(new Date('2026-06-30T04:09:00Z'));
+    fireEvent.click(screen.getByText('位置を再取得'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    expect(screen.getByTestId('preview-read-time')).toHaveTextContent('13:06');
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(checkInMutate).toHaveBeenCalledTimes(1));
+    expect(checkInMutate.mock.calls[0][0]).toMatchObject({ at: '2026-06-30T04:06:20.000Z' });
+  });
+
+  it('「QRなしで記録」は押した時点の時刻', async () => {
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    vi.setSystemTime(new Date('2026-06-30T04:06:20Z'));
+    fireEvent.click(screen.getByText('__manual__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    vi.setSystemTime(new Date('2026-06-30T04:08:00Z'));
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(checkInMutate).toHaveBeenCalledTimes(1));
+    expect(checkInMutate.mock.calls[0][0]).toMatchObject({ at: '2026-06-30T04:06:20.000Z' });
+  });
+
+  it('ディープリンクは、ページを開いた時点の時刻', async () => {
+    searchParamsGet.mockImplementation((key: string) => (key === 'qr' ? 'DEEPTOKEN1' : null));
+    vi.setSystemTime(new Date('2026-06-30T04:06:20Z'));
+    render(<MobileVisitDetailPage />);
+    vi.setSystemTime(new Date('2026-06-30T04:07:30Z'));
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(checkInMutate).toHaveBeenCalledTimes(1));
+    expect(checkInMutate.mock.calls[0][0]).toMatchObject({ at: '2026-06-30T04:06:20.000Z' });
+  });
+
+  it('圏外で退避した打刻も、読み取った瞬間の at のまま控える', async () => {
+    checkInMutate.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    vi.setSystemTime(new Date('2026-06-30T04:06:20Z'));
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    vi.setSystemTime(new Date('2026-06-30T04:08:40Z'));
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(asMock(toast.warning)).toHaveBeenCalled());
+    expect(listPending('staff-1')[0]?.payload.at).toBe('2026-06-30T04:06:20.000Z');
+  });
+});
+
+describe('到着した直後のカード (設計 §7-2)', () => {
+  /** 到着を記録して、カードが出た状態にする。 */
+  async function arrive() {
+    checkInResult = { ...adjustableVisit(), latest_checkin: makeCheckin('arrival', 'match', 5) };
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(screen.getByTestId('arrived-adjust-card')).toBeInTheDocument());
+  }
+
+  it('到着を記録するとカードが出る (5・10・15 分前に、合わせた後の時刻を併記)', async () => {
+    await arrive();
+    const card = screen.getByTestId('arrived-adjust-card');
+    expect(card).toHaveTextContent('到着 13:06 を記録しました');
+    expect(card).toHaveTextContent(
+      'お宅に着いてから読み取るまでに時間があったら、着いた時刻に合わせられます。',
+    );
+    expect(screen.getByRole('button', { name: /^5分前/ })).toHaveTextContent('13:01');
+    expect(screen.getByRole('button', { name: /^10分前/ })).toHaveTextContent('12:56');
+    expect(screen.getByRole('button', { name: /^15分前/ })).toHaveTextContent('12:51');
+    expect(screen.getByText('細かく合わせる')).toBeInTheDocument();
+    expect(screen.getByText('このままでOK')).toBeInTheDocument();
+  });
+
+  it('「10分前」は 1 回押すだけで保存し、「元に戻す」で読取時刻に戻す', async () => {
+    adjustMutate.mockResolvedValueOnce(ADJUSTED);
+    resetMutate.mockResolvedValueOnce(adjustableVisit());
+    await arrive();
+
+    fireEvent.click(screen.getByRole('button', { name: /^10分前/ }));
+    await waitFor(() => expect(adjustMutate).toHaveBeenCalledTimes(1));
+    expect(adjustMutate).toHaveBeenCalledWith({
+      kind: 'arrival',
+      time: '12:56',
+      reason_code: 'intercom_wait',
+      reason_text: null,
+    });
+    const card = await screen.findByText('到着を 12:56 に合わせました');
+    expect(card).toBeInTheDocument();
+    expect(screen.getByTestId('arrived-adjust-card')).toHaveTextContent(
+      '読み取った時刻は 13:06（10 分前に到着）',
+    );
+    // 実績の行と経過時間の起点も、合わせた後の時刻になる。
+    expect(screen.getByTestId('mobile-detail-actual')).toHaveTextContent('到着 12:56 〜');
+    expect(screen.getByTestId('mobile-detail-elapsed')).toHaveTextContent('到着 12:56〜');
+    expect(screen.getByTestId('mobile-detail-actual-note')).toHaveTextContent(
+      '到着を 10 分 調整（読取 13:06）',
+    );
+
+    fireEvent.click(screen.getByText('元に戻す'));
+    await waitFor(() => expect(resetMutate).toHaveBeenCalledWith('arrival'));
+    expect(await screen.findByText('到着 13:06 を記録しました')).toBeInTheDocument();
+  });
+
+  it('「このままでOK」で閉じる (何も保存しない)', async () => {
+    await arrive();
+    fireEvent.click(screen.getByText('このままでOK'));
+    expect(screen.queryByTestId('arrived-adjust-card')).toBeNull();
+    expect(adjustMutate).not.toHaveBeenCalled();
+    expect(resetMutate).not.toHaveBeenCalled();
+  });
+
+  it('保存できなかったら、サーバの detail をそのまま出す', async () => {
+    adjustMutate.mockRejectedValueOnce(
+      new ApiError('unprocessable', 422, { detail: '到着は読み取りの 90 分前までです' }),
+    );
+    await arrive();
+    fireEvent.click(screen.getByRole('button', { name: /^5分前/ }));
+    await waitFor(() =>
+      expect(asMock(toast.error)).toHaveBeenCalledWith('時刻を合わせられませんでした', {
+        description: '到着は読み取りの 90 分前までです',
+      }),
+    );
+    expect(screen.getByTestId('arrived-adjust-card')).toHaveTextContent(
+      '到着 13:06 を記録しました',
+    );
+  });
+
+  it('圏外で退避した到着は API を呼ばず、退避キューの payload に書き込む', async () => {
+    checkInMutate.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    vi.setSystemTime(new Date('2026-06-30T04:06:20Z'));
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(screen.getByTestId('arrived-adjust-card')).toBeInTheDocument());
+    expect(screen.getByTestId('arrived-adjust-card')).toHaveTextContent(
+      '到着 13:06 を記録しました',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^10分前/ }));
+    expect(await screen.findByText('到着を 12:56 に合わせました')).toBeInTheDocument();
+    expect(adjustMutate).not.toHaveBeenCalled();
+    expect(listPending('staff-1')[0]?.payload).toMatchObject({
+      at: '2026-06-30T04:06:20.000Z',
+      adjusted_time: '12:56',
+      adjust_reason_code: 'intercom_wait',
+    });
+    // 経過時間の起点も合わせた時刻。
+    expect(screen.getByTestId('mobile-detail-elapsed')).toHaveTextContent('到着 12:56〜');
+
+    // 元に戻す → 同梱をやめる (打刻の控えそのものは残る)。
+    fireEvent.click(screen.getByText('元に戻す'));
+    expect(await screen.findByText('到着 13:06 を記録しました')).toBeInTheDocument();
+    const payload = listPending('staff-1')[0]?.payload;
+    expect(payload).not.toHaveProperty('adjusted_time');
+    expect(payload).not.toHaveProperty('adjust_reason_code');
+    expect(payload?.at).toBe('2026-06-30T04:06:20.000Z');
+    expect(resetMutate).not.toHaveBeenCalled();
+  });
+
+  it('合わせられない訪問 (actual_adjust_allowed なし) ではカードを出さない', async () => {
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(screen.getByText('QRで退出を記録')).toBeInTheDocument());
+    expect(screen.queryByTestId('arrived-adjust-card')).toBeNull();
+  });
+
+  it('予定外訪問 (/q から ?arrived=1 で来る) でもカードを出す', () => {
+    searchParamsGet.mockImplementation((key: string) => (key === 'arrived' ? '1' : null));
+    setVisit(adjustableVisit());
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByTestId('arrived-adjust-card')).toHaveTextContent(
+      '到着 13:06 を記録しました',
+    );
+  });
+});
+
+describe('実績の行の「時刻を合わせる」(設計 §7-3)', () => {
+  it('actual_adjust_allowed=true のときだけボタンを出す', () => {
+    setVisit(adjustableVisit());
+    const { unmount } = render(<MobileVisitDetailPage />);
+    expect(screen.getByTestId('mobile-detail-adjust')).toHaveTextContent('時刻を合わせる');
+    unmount();
+
+    setVisit(adjustableVisit({ actual_adjust_allowed: false }));
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByTestId('mobile-detail-actual')).toBeInTheDocument();
+    expect(screen.queryByTestId('mobile-detail-adjust')).toBeNull();
+    expect(screen.queryByTestId('mobile-detail-manual-departure')).toBeNull();
+  });
+
+  it('完了後: 「滞在 35 分 ・ 到着を 10 分 調整（読取 13:06）」', () => {
+    setVisit({
+      ...ADJUSTED,
+      status: 'completed',
+      actual_departure_at: '2026-06-30T04:31:00Z',
+      actual_departure_read_at: '2026-06-30T04:31:00Z',
+    });
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByTestId('mobile-detail-actual')).toHaveTextContent('実績 12:56 – 13:31');
+    expect(screen.getByTestId('mobile-detail-actual-note')).toHaveTextContent(
+      '滞在 35 分 ・ 到着を 10 分 調整（読取 13:06）',
+    );
+    expect(screen.getByTestId('mobile-detail-adjust')).toBeInTheDocument();
+    expect(
+      screen.getByText('おつかれさまでした！時刻は上の「時刻を合わせる」から調整できます。'),
+    ).toBeInTheDocument();
+  });
+
+  it('読み取りの無い退出は「退出は手入力」', () => {
+    setVisit(
+      adjustableVisit({
+        status: 'completed',
+        actual_departure_at: '2026-06-30T04:41:00Z',
+        actual_departure_read_at: null,
+        actual_departure_manual: true,
+      }),
+    );
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByTestId('mobile-detail-actual-note')).toHaveTextContent(
+      '滞在 35 分 ・ 退出は手入力',
+    );
+  });
+
+  it('ボタンからシートを開き、「10分前」→「12:56 に合わせる」で保存する', async () => {
+    adjustMutate.mockResolvedValueOnce(ADJUSTED);
+    setVisit(adjustableVisit());
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByTestId('mobile-detail-adjust'));
+    expect(await screen.findByText('実績の時刻を合わせる')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '10分前' }));
+    fireEvent.click(screen.getByRole('button', { name: '読み取りが後になった' }));
+    fireEvent.click(screen.getByRole('button', { name: '12:56 に合わせる' }));
+    await waitFor(() =>
+      expect(adjustMutate).toHaveBeenCalledWith({
+        kind: 'arrival',
+        time: '12:56',
+        reason_code: 'read_later',
+        reason_text: null,
+      }),
+    );
+    await waitFor(() =>
+      expect(asMock(toast.success)).toHaveBeenCalledWith('到着を 12:56 に合わせました'),
+    );
+    // 保存できたらシートを閉じる。
+    await waitFor(() => expect(screen.queryByTestId('actual-time-sheet')).toBeNull());
+  });
+});
+
+describe('退出の読み取りが無いとき (設計 §7-5)', () => {
+  it('訪問中の表示から退出時刻を入れる (理由の初期値は「読み取りなし」)', async () => {
+    // いま JST 14:00。到着 13:06・予定 35 分 → 最初の候補は 13:41。
+    vi.setSystemTime(new Date('2026-06-30T05:00:00Z'));
+    adjustMutate.mockResolvedValueOnce(
+      adjustableVisit({
+        status: 'completed',
+        actual_departure_at: '2026-06-30T04:41:00Z',
+        actual_departure_manual: true,
+      }),
+    );
+    setVisit(adjustableVisit());
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('退出の QR を読んでいないときは、退出時刻を入れる'));
+
+    expect(await screen.findByTestId('actual-time-draft')).toHaveTextContent('13:41');
+    expect(screen.getByTestId('actual-time-sub')).toHaveTextContent(
+      '退出の読み取りがありません（手入力）',
+    );
+    expect(screen.getByRole('button', { name: '読み取りなし' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    // 退出を新しく記録する操作なので、「合わせる」とは書かない (レビュー M-2)。
+    expect(screen.queryByRole('button', { name: '13:41 に合わせる' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '退出を 13:41 で記録する' }));
+    await waitFor(() =>
+      expect(adjustMutate).toHaveBeenCalledWith({
+        kind: 'departure',
+        time: '13:41',
+        reason_code: 'no_read',
+        reason_text: null,
+      }),
+    );
+    // 応答が completed なら、その場で「訪問完了」に変わる。
+    expect(await screen.findByText('訪問完了')).toBeInTheDocument();
+  });
+});
+
+describe('過去の日の訪問詳細 (設計 §7-8)', () => {
+  it('未訪問のまま過ぎた日: QR の打刻ボタンも「訪問できなかった」も出さない', () => {
+    setVisit({ ...makeVisit('planned'), visit_date: '2026-06-29' });
+    render(<MobileVisitDetailPage />);
+    expect(screen.queryByText('QRで到着を記録')).toBeNull();
+    expect(screen.queryByText('訪問できなかった（理由を記録）')).toBeNull();
+  });
+
+  it('退出の読み取りが無いまま過ぎた日: QR の退出ボタンは出さず、退出時刻は入れられる', () => {
+    setVisit(
+      adjustableVisit({
+        visit_date: '2026-06-29',
+        actual_arrival_at: '2026-06-29T04:06:20Z',
+        actual_arrival_read_at: '2026-06-29T04:06:20Z',
+      }),
+    );
+    render(<MobileVisitDetailPage />);
+    expect(screen.queryByText('QRで退出を記録')).toBeNull();
+    expect(screen.getByTestId('mobile-detail-manual-departure')).toBeInTheDocument();
+    expect(screen.getByTestId('mobile-detail-adjust')).toBeInTheDocument();
+  });
+
+  it('先の日の訪問: 「当日になると到着を記録できます。」', () => {
+    setVisit({ ...makeVisit('planned'), visit_date: '2026-07-01' });
+    render(<MobileVisitDetailPage />);
+    expect(screen.queryByText('QRで到着を記録')).toBeNull();
+    expect(screen.getByText('当日になると到着を記録できます。')).toBeInTheDocument();
+  });
+
+  it('今週の予定から開いたら、戻るリンクは「今週の予定に戻る」', () => {
+    searchParamsGet.mockImplementation((key: string) => (key === 'from' ? 'week' : null));
+    render(<MobileVisitDetailPage />);
+    const back = screen.getByRole('link', { name: '今週の予定に戻る' });
+    expect(back).toHaveAttribute('href', '/m/this-week');
+  });
+
+  it('通常は「今日の訪問に戻る」', () => {
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByRole('link', { name: '今日の訪問に戻る' })).toHaveAttribute(
+      'href',
+      '/m/today',
+    );
+  });
+});
+
+describe('経過時間の起点 (設計 §7-6)', () => {
+  it('実績の到着 (合わせた後の時刻) から数える', () => {
+    vi.setSystemTime(new Date('2026-06-30T04:16:00Z')); // JST 13:16
+    setVisit({ ...ADJUSTED, latest_checkin: makeCheckin('arrival', 'match', 5) });
+    render(<MobileVisitDetailPage />);
+    // 12:56 から 20 分 (読取 13:06 からなら 9 分 40 秒)。
+    expect(screen.getByText('20:00')).toBeInTheDocument();
+    expect(screen.getByTestId('mobile-detail-elapsed')).toHaveTextContent('到着 12:56〜');
+  });
+});
+
+// ===========================================================================
+// コードレビューの指摘 (2026-09-30)
+// ===========================================================================
+
+/** 圏外で到着を退避させ、到着した直後のカードが出た状態にする (JST 13:06:20 に読み取り)。 */
+async function arriveOffline() {
+  checkInMutate.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+  vi.setSystemTime(new Date('2026-06-30T04:06:20Z'));
+  render(<MobileVisitDetailPage />);
+  fireEvent.click(screen.getByText('QRで到着を記録'));
+  fireEvent.click(screen.getByText('__scan__'));
+  await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+  fireEvent.click(screen.getByText('到着を記録する'));
+  await waitFor(() => expect(screen.getByTestId('arrived-adjust-card')).toBeInTheDocument());
+}
+
+/** 再送の POST を途中で止める。`release` で成功、`fail` で通信失敗にする。 */
+function holdResend() {
+  let release!: () => void;
+  let fail!: () => void;
+  asMock(fetcher).mockImplementationOnce(
+    () =>
+      new Promise((resolve, reject) => {
+        release = () => resolve({});
+        fail = () => reject(new TypeError('Failed to fetch'));
+      }),
+  );
+  return { release: () => release(), fail: () => fail() };
+}
+
+/** 再送で送った body。 */
+function resentBody(call = 0): Record<string, unknown> {
+  const init = asMock(fetcher).mock.calls[call]?.[1] as { body: string };
+  return JSON.parse(init.body) as Record<string, unknown>;
+}
+
+describe('ディープリンクの到着が圏外で退避されたあとの退出 (H-1)', () => {
+  it('退避でもトークンを消費し、退出は現地で読み直す — 退出の at は到着の時刻にならない', async () => {
+    searchParamsGet.mockImplementation((key: string) => (key === 'qr' ? 'DEEPTOKEN1' : null));
+    window.history.replaceState({}, '', '/m/today/visit-1?qr=DEEPTOKEN1&from=week');
+    checkInMutate.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    vi.setSystemTime(new Date('2026-06-30T04:06:20Z')); // JST 13:06:20 にディープリンクで開いた
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(asMock(toast.warning)).toHaveBeenCalled());
+    expect(listPending('staff-1')[0]?.payload).toMatchObject({
+      at: '2026-06-30T04:06:20.000Z',
+      qr_token: 'DEEPTOKEN1',
+    });
+    // URL からも `qr` を外す (他のクエリは残す)。
+    expect(routerReplace).toHaveBeenCalledWith('/m/today/visit-1?from=week', { scroll: false });
+
+    // 35 分後に退出。トークンは到着で使ったので、スキャナが出る (現地で読み直す)。
+    vi.setSystemTime(new Date('2026-06-30T04:41:00Z'));
+    fireEvent.click(screen.getByText('QRで退出を記録'));
+    expect(screen.getByTestId('qr-scanner')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('退出の確認')).toBeInTheDocument());
+    expect(screen.getByTestId('preview-read-time')).toHaveTextContent('13:41');
+    fireEvent.click(screen.getByText('退出を記録する'));
+    await waitFor(() => expect(checkOutMutate).toHaveBeenCalledTimes(1));
+    const sent = checkOutMutate.mock.calls[0][0] as { at: string };
+    expect(sent).toMatchObject({ at: '2026-06-30T04:41:00.000Z', qr_token: 'TESTTOKEN' });
+    // ここが要点 — 到着の読取時刻 (滞在 0 分) になっていない。
+    expect(sent.at).not.toBe('2026-06-30T04:06:20.000Z');
+  });
+
+  it('退出にはディープリンクの読取時刻を使わない (退出を押した時点にする)', async () => {
+    // 訪問中の visit を ?qr= で開いた (`/q` の「退出の記録へ」)。トークンは残っている。
+    searchParamsGet.mockImplementation((key: string) => (key === 'qr' ? 'DEEPTOKEN1' : null));
+    setVisit(makeVisit('in_progress'));
+    vi.setSystemTime(new Date('2026-06-30T04:06:20Z'));
+    render(<MobileVisitDetailPage />);
+
+    vi.setSystemTime(new Date('2026-06-30T04:41:00Z'));
+    fireEvent.click(screen.getByText('QRで退出を記録'));
+    // スキャンは省略する (トークンは URL から取得済み)。
+    expect(screen.queryByTestId('qr-scanner')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('退出の確認')).toBeInTheDocument());
+    expect(screen.getByTestId('preview-read-time')).toHaveTextContent('13:41');
+    fireEvent.click(screen.getByText('退出を記録する'));
+    await waitFor(() => expect(checkOutMutate).toHaveBeenCalledTimes(1));
+    expect(checkOutMutate.mock.calls[0][0]).toMatchObject({
+      at: '2026-06-30T04:41:00.000Z',
+      qr_token: 'DEEPTOKEN1',
+    });
+  });
+});
+
+describe('/q から読取時刻を引き継ぐ (L-7)', () => {
+  /** `?qr=DEEPTOKEN1&read_at=...` で開く。 */
+  function openWithReadAt(readAt: string | null) {
+    searchParamsGet.mockImplementation((key: string) =>
+      key === 'qr' ? 'DEEPTOKEN1' : key === 'read_at' ? readAt : null,
+    );
+  }
+
+  /** 到着を記録して、送った `at` を返す。 */
+  async function recordArrival(): Promise<string> {
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(checkInMutate).toHaveBeenCalledTimes(1));
+    return (checkInMutate.mock.calls[0][0] as { at: string }).at;
+  }
+
+  it('/q を開いた時刻を到着の at にする (詳細を開いた時刻ではない)', async () => {
+    // 13:05:50 に QR を読み、選択画面を経て 13:06:20 に詳細が開いた。
+    openWithReadAt('2026-06-30T04:05:50.000Z');
+    vi.setSystemTime(new Date('2026-06-30T04:06:20Z'));
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    expect(screen.getByTestId('preview-read-time')).toHaveTextContent('13:05');
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(checkInMutate).toHaveBeenCalledTimes(1));
+    expect(checkInMutate.mock.calls[0][0]).toMatchObject({ at: '2026-06-30T04:05:50.000Z' });
+  });
+
+  it.each([
+    ['未来の時刻', '2026-06-30T04:30:00.000Z'],
+    ['古すぎる時刻 (開きっぱなしの URL)', '2026-06-30T03:00:00.000Z'],
+    ['別の日', '2026-06-29T04:05:50.000Z'],
+    ['形の違う値', '13:05'],
+    ['日付として読めない値', '2026-99-99T99:99:99.000Z'],
+    ['タイムゾーンの書き方が違う値', '2026-06-30T13:05:50+09:00'],
+  ])('%s は無視して、詳細を開いた時点の時刻にする', async (_label, readAt) => {
+    openWithReadAt(readAt);
+    vi.setSystemTime(new Date('2026-06-30T04:06:20Z'));
+    render(<MobileVisitDetailPage />);
+    expect(await recordArrival()).toBe('2026-06-30T04:06:20.000Z');
+  });
+
+  it('消費したら URL から qr と read_at を外す (再読み込みで古い時刻を使わない)', async () => {
+    openWithReadAt('2026-06-30T04:05:50.000Z');
+    window.history.replaceState(
+      {},
+      '',
+      '/m/today/visit-1?qr=DEEPTOKEN1&read_at=2026-06-30T04%3A05%3A50.000Z',
+    );
+    vi.setSystemTime(new Date('2026-06-30T04:06:20Z'));
+    render(<MobileVisitDetailPage />);
+    await recordArrival();
+    expect(routerReplace).toHaveBeenCalledWith('/m/today/visit-1', { scroll: false });
+  });
+});
+
+describe('再送の POST 中に到着の時刻を合わせる (M-1)', () => {
+  it('送信中は控えに書けたことにせず、送信が終わってから調整 API で届ける', async () => {
+    await arriveOffline();
+    const resend = holdResend();
+    window.dispatchEvent(new Event('online'));
+    await waitFor(() => expect(asMock(fetcher)).toHaveBeenCalledTimes(1));
+
+    // POST が飛んでいる最中に「10分前」を押した。
+    adjustMutate.mockResolvedValueOnce(ADJUSTED);
+    fireEvent.click(screen.getByRole('button', { name: /^10分前/ }));
+    // まだどこにも保存できていないので、「合わせました」とは出さない。
+    expect(screen.queryByText('到着を 12:56 に合わせました')).toBeNull();
+    expect(adjustMutate).not.toHaveBeenCalled();
+    expect(resentBody()).not.toHaveProperty('adjusted_time');
+
+    resend.release();
+    await waitFor(() =>
+      expect(adjustMutate).toHaveBeenCalledWith({
+        kind: 'arrival',
+        time: '12:56',
+        reason_code: 'intercom_wait',
+        reason_text: null,
+      }),
+    );
+    expect(listPending('staff-1')).toHaveLength(0);
+    expect(await screen.findByText('到着を 12:56 に合わせました')).toBeInTheDocument();
+  });
+
+  it('「元に戻す」も同じ — 送信が終わってから読取時刻に戻す', async () => {
+    await arriveOffline();
+    fireEvent.click(screen.getByRole('button', { name: /^10分前/ }));
+    expect(await screen.findByText('到着を 12:56 に合わせました')).toBeInTheDocument();
+
+    const resend = holdResend();
+    window.dispatchEvent(new Event('online'));
+    await waitFor(() => expect(asMock(fetcher)).toHaveBeenCalledTimes(1));
+    // 送った body には、合わせた時刻が載っている。
+    expect(resentBody()).toMatchObject({ adjusted_time: '12:56' });
+
+    fireEvent.click(screen.getByText('元に戻す'));
+    expect(resetMutate).not.toHaveBeenCalled();
+
+    resend.release();
+    await waitFor(() => expect(resetMutate).toHaveBeenCalledWith('arrival'));
+    expect(adjustMutate).not.toHaveBeenCalled();
+  });
+
+  it('送信に失敗して控えが残ったら、控えに書き込む (API は呼ばない)', async () => {
+    await arriveOffline();
+    const resend = holdResend();
+    // 待ち合わせの再送 (2 回目) も、まだ電波が無くて届かない。
+    asMock(fetcher).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    window.dispatchEvent(new Event('online'));
+    await waitFor(() => expect(asMock(fetcher)).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: /^10分前/ }));
+    resend.fail();
+
+    expect(await screen.findByText('到着を 12:56 に合わせました')).toBeInTheDocument();
+    expect(adjustMutate).not.toHaveBeenCalled();
+    expect(listPending('staff-1')[0]?.payload).toMatchObject({
+      at: '2026-06-30T04:06:20.000Z',
+      adjusted_time: '12:56',
+      adjust_reason_code: 'intercom_wait',
+    });
+  });
+
+  it('飛んでいた POST は失敗したが、待ち合わせの再送で届いた → 調整 API で届ける', async () => {
+    await arriveOffline();
+    const resend = holdResend();
+    window.dispatchEvent(new Event('online'));
+    await waitFor(() => expect(asMock(fetcher)).toHaveBeenCalledTimes(1));
+
+    adjustMutate.mockResolvedValueOnce(ADJUSTED);
+    fireEvent.click(screen.getByRole('button', { name: /^10分前/ }));
+    resend.fail();
+
+    await waitFor(() => expect(adjustMutate).toHaveBeenCalledTimes(1));
+    // 2 回目の POST で届いた。その body に合わせた時刻は無いので、API が届ける。
+    expect(asMock(fetcher)).toHaveBeenCalledTimes(2);
+    expect(resentBody(1)).not.toHaveProperty('adjusted_time');
+    expect(listPending('staff-1')).toHaveLength(0);
+  });
+
+  it('待っている間は二度押しできない', async () => {
+    await arriveOffline();
+    const resend = holdResend();
+    window.dispatchEvent(new Event('online'));
+    await waitFor(() => expect(asMock(fetcher)).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: /^10分前/ }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^5分前/ })).toBeDisabled());
+
+    adjustMutate.mockResolvedValueOnce(ADJUSTED);
+    resend.release();
+    await waitFor(() => expect(adjustMutate).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe('圏外で退避中の到着 — カードを閉じた後の入口とシート (L-1 / L-8)', () => {
+  it('カードを閉じても、経過時間の下から到着の時刻を合わせられる (控えに書く)', async () => {
+    await arriveOffline();
+    // カードが出ている間は、同じ入口を重ねて出さない。
+    expect(screen.queryByTestId('mobile-detail-adjust-queued')).toBeNull();
+
+    fireEvent.click(screen.getByText('このままでOK'));
+    expect(screen.queryByTestId('arrived-adjust-card')).toBeNull();
+    const entry = screen.getByTestId('mobile-detail-adjust-queued');
+    expect(entry).toHaveTextContent('到着の時刻を合わせる');
+    expect(entry.className).toContain('h-11');
+
+    fireEvent.click(entry);
+    expect(await screen.findByText('実績の時刻を合わせる')).toBeInTheDocument();
+    // 退避中は退出を合わせられない。
+    expect(screen.getByRole('button', { name: '退出 （未記録）' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '10分前' }));
+    fireEvent.click(screen.getByRole('button', { name: '12:56 に合わせる' }));
+
+    await waitFor(() =>
+      expect(listPending('staff-1')[0]?.payload).toMatchObject({
+        at: '2026-06-30T04:06:20.000Z',
+        adjusted_time: '12:56',
+      }),
+    );
+    expect(adjustMutate).not.toHaveBeenCalled();
+    expect(screen.getByTestId('mobile-detail-elapsed')).toHaveTextContent('到着 12:56〜');
+  });
+
+  it('サーバに届いた到着には出さない (実績の行の「時刻を合わせる」がある)', () => {
+    setVisit(adjustableVisit());
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByTestId('mobile-detail-adjust')).toBeInTheDocument();
+    expect(screen.queryByTestId('mobile-detail-adjust-queued')).toBeNull();
+  });
+
+  it('シートを開いている間に再送が成功しても、選びかけの時刻を保つ (L-8)', async () => {
+    await arriveOffline();
+    fireEvent.click(screen.getByText('細かく合わせる'));
+    expect(await screen.findByText('実績の時刻を合わせる')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '10分前' }));
+    expect(screen.getByTestId('actual-time-draft')).toHaveTextContent('12:56');
+
+    // 電波が戻り、退避した到着が送信された (詳細の再取得はまだ届いていない)。
+    window.dispatchEvent(new Event('online'));
+    await waitFor(() => expect(listPending('staff-1')).toHaveLength(0));
+    await waitFor(() => expect(qcStub.invalidateQueries).toHaveBeenCalled());
+
+    // シートは開いたまま、選びかけの時刻も残っている。
+    expect(screen.getByTestId('actual-time-sheet')).toBeInTheDocument();
+    expect(screen.getByTestId('actual-time-draft')).toHaveTextContent('12:56');
+
+    // 保存は、もう届いているので調整 API へ。
+    adjustMutate.mockResolvedValueOnce(ADJUSTED);
+    fireEvent.click(screen.getByRole('button', { name: '12:56 に合わせる' }));
+    await waitFor(() =>
+      expect(adjustMutate).toHaveBeenCalledWith({
+        kind: 'arrival',
+        time: '12:56',
+        reason_code: 'intercom_wait',
+        reason_text: null,
+      }),
+    );
+  });
+});
+
+describe('?arrived=1 は 1 回きり (L-6)', () => {
+  it('カードを出したら URL から外す (他のクエリは残す)', () => {
+    searchParamsGet.mockImplementation((key: string) =>
+      key === 'arrived' ? '1' : key === 'from' ? 'week' : null,
+    );
+    window.history.replaceState({}, '', '/m/today/visit-1?arrived=1&from=week');
+    setVisit(adjustableVisit());
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByTestId('arrived-adjust-card')).toBeInTheDocument();
+    expect(routerReplace).toHaveBeenCalledWith('/m/today/visit-1?from=week', { scroll: false });
+  });
+
+  it('arrived が無ければ URL に触らない', () => {
+    window.history.replaceState({}, '', '/m/today/visit-1?from=week');
+    render(<MobileVisitDetailPage />);
+    expect(routerReplace).not.toHaveBeenCalled();
+  });
+});
+
+describe('過去の日の未打刻の訪問 (L-9)', () => {
+  const NOTE = 'この日の記録はありません。必要な場合は管理者にお伝えください。';
+
+  it('ボタンが出ない理由を一言出す', () => {
+    setVisit({ ...makeVisit('planned'), visit_date: '2026-06-29' });
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByTestId('mobile-detail-past-no-record')).toHaveTextContent(NOTE);
+  });
+
+  it('今日・先の日・打刻のある過去の日・未訪問として記録済みの日には出さない', () => {
+    for (const visit of [
+      makeVisit('planned'),
+      { ...makeVisit('planned'), visit_date: '2026-07-01' },
+      adjustableVisit({
+        visit_date: '2026-06-29',
+        actual_arrival_at: '2026-06-29T04:06:20Z',
+        actual_arrival_read_at: '2026-06-29T04:06:20Z',
+      }),
+      { ...makeVisit('no_show'), visit_date: '2026-06-29' },
+      { ...makeVisit('cancelled'), visit_date: '2026-06-29' },
+    ]) {
+      setVisit(visit);
+      const { unmount } = render(<MobileVisitDetailPage />);
+      expect(screen.queryByTestId('mobile-detail-past-no-record')).toBeNull();
+      unmount();
+    }
+  });
+});
+
+describe('手で入れた退出を取り消せる (M-2)', () => {
+  /** 13:41 に手で入れた退出 (読み取りなし) で完了した訪問。 */
+  const MANUAL_DONE = adjustableVisit({
+    status: 'completed',
+    actual_departure_at: '2026-06-30T04:41:00Z',
+    actual_departure_read_at: null,
+    actual_departure_manual: true,
+  });
+
+  it('記録した直後のトーストに「元に戻す」が付き、押すと取り消す', async () => {
+    vi.setSystemTime(new Date('2026-06-30T05:00:00Z'));
+    adjustMutate.mockResolvedValueOnce(MANUAL_DONE);
+    resetMutate.mockResolvedValueOnce(adjustableVisit());
+    setVisit(adjustableVisit());
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('退出の QR を読んでいないときは、退出時刻を入れる'));
+    fireEvent.click(await screen.findByRole('button', { name: '退出を 13:41 で記録する' }));
+
+    await waitFor(() => expect(asMock(toast.success)).toHaveBeenCalled());
+    const [message, options] = asMock(toast.success).mock.calls[0] as [
+      string,
+      { action: { label: string; onClick: () => void }; classNames: { actionButton: string } },
+    ];
+    expect(message).toBe('退出を 13:41 で記録しました');
+    expect(options.action.label).toBe('元に戻す');
+    // 押す場所は 44px。
+    expect(options.classNames.actionButton).toContain('h-11');
+    expect(await screen.findByText('訪問完了')).toBeInTheDocument();
+
+    options.action.onClick();
+    await waitFor(() => expect(resetMutate).toHaveBeenCalledWith('departure'));
+    await waitFor(() =>
+      expect(asMock(toast.success)).toHaveBeenCalledWith('入れた退出時刻を取り消しました'),
+    );
+    // 訪問中に戻り、QR の退出ボタンが戻ってくる。
+    expect(await screen.findByText('QRで退出を記録')).toBeInTheDocument();
+  });
+
+  it('完了後も、シートの退出側から取り消せる', async () => {
+    vi.setSystemTime(new Date('2026-06-30T05:00:00Z'));
+    resetMutate.mockResolvedValueOnce(adjustableVisit());
+    setVisit(MANUAL_DONE);
+    render(<MobileVisitDetailPage />);
+    expect(screen.queryByText('QRで退出を記録')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('mobile-detail-adjust'));
+    fireEvent.click(await screen.findByRole('button', { name: '退出 13:41' }));
+    fireEvent.click(screen.getByRole('button', { name: '入れた退出時刻を取り消す' }));
+
+    await waitFor(() => expect(resetMutate).toHaveBeenCalledWith('departure'));
+    await waitFor(() =>
+      expect(asMock(toast.success)).toHaveBeenCalledWith('入れた退出時刻を取り消しました'),
+    );
+    await waitFor(() => expect(screen.queryByTestId('actual-time-sheet')).toBeNull());
+    expect(await screen.findByText('QRで退出を記録')).toBeInTheDocument();
+  });
+
+  it('読み取りのある退出には、取り消すボタンを出さない', async () => {
+    vi.setSystemTime(new Date('2026-06-30T05:00:00Z'));
+    setVisit(
+      adjustableVisit({
+        status: 'completed',
+        actual_departure_at: '2026-06-30T04:41:00Z',
+        actual_departure_read_at: '2026-06-30T04:41:00Z',
+      }),
+    );
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByTestId('mobile-detail-adjust'));
+    fireEvent.click(await screen.findByRole('button', { name: '退出 13:41' }));
+    expect(screen.queryByRole('button', { name: '入れた退出時刻を取り消す' })).toBeNull();
+    // 読み取りのある退出の理由は「読み取りが後になった」が初期値 (M-3)。
+    expect(screen.getByRole('button', { name: '読み取りが後になった' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+
+  it('取り消せなかったら、サーバの detail を出してシートは開いたまま', async () => {
+    vi.setSystemTime(new Date('2026-06-30T05:00:00Z'));
+    resetMutate.mockRejectedValueOnce(
+      new ApiError('conflict', 409, { detail: '削除された訪問の時刻は合わせられません' }),
+    );
+    setVisit(MANUAL_DONE);
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByTestId('mobile-detail-adjust'));
+    fireEvent.click(await screen.findByRole('button', { name: '退出 13:41' }));
+    fireEvent.click(screen.getByRole('button', { name: '入れた退出時刻を取り消す' }));
+    await waitFor(() =>
+      expect(asMock(toast.error)).toHaveBeenCalledWith('時刻を合わせられませんでした', {
+        description: '削除された訪問の時刻は合わせられません',
+      }),
+    );
+    expect(screen.getByTestId('actual-time-sheet')).toBeInTheDocument();
   });
 });

@@ -18,7 +18,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -43,12 +43,30 @@ from app.models.visit import (
 from app.models.visit_checkin import VisitCheckin
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.visit import VisitCreate, VisitRead, VisitUpdate
-from app.schemas.visit_checkin import CheckinCreate, QrResolveRead
+from app.schemas.visit_checkin import (
+    ActualTimeAdjustRequest,
+    CheckinCreate,
+    QrResolveRead,
+)
 from app.services.accompaniment import (
     AccompanimentEntry,
     accompaniment_visibility_condition,
     is_accompaniment_visit_for_staff,
     resolve_accompaniment_by_visit,
+)
+from app.services.checkin.actuals import (
+    VisitActuals,
+    checkin_read_at,
+    load_actuals,
+    resolve_read_time,
+)
+from app.services.checkin.adjust import (
+    DETAIL_FUTURE_VISIT,
+    DETAIL_OUT_OF_WINDOW,
+    adjust_actual_time,
+    apply_bundled_adjustment,
+    can_adjust_actual_time,
+    reset_actual_time,
 )
 from app.services.checkin.judge import (
     JST,
@@ -291,80 +309,41 @@ def _project_latest_checkin(row: VisitCheckin) -> dict:
     }
 
 
-def _project_checkins(rows_desc: list[VisitCheckin]) -> dict:
-    """1 visit の打刻行 (``scanned_at DESC``・**非空**) を latest_checkin 形へ射影する。
+def _today_jst() -> date:
+    return datetime.now(UTC).astimezone(JST).date()
 
-    ``latest_checkin`` (最新 1 件・kind 問わず) に加えて、実績時刻 (最新の arrival /
-    departure の ``scanned_at``) を ``_arrival_at`` / ``_departure_at`` として同梱する。
-    アンダースコア付きの同梱キーにするのは、``latest_checkin`` を渡している全経路へ
-    自動的に実績時刻も届くようにするため (呼出側の渡し忘れによるドリフト防止)。
-    クライアントへ出す直前に ``_public_checkin`` が落とす。
+
+def _actual_adjust_allowed(
+    user: User, visit: Visit, *, related: bool, actuals: VisitActuals | None
+) -> bool:
+    """``VisitRead.actual_adjust_allowed`` (設計 actual-time-adjust §6-1 の権限).
+
+    ``related`` = このユーザーがその訪問に関わっているか (担当集合に入る、または自分が
+    到着・退出を打刻した)。呼び出し側が自分の経路の可視性から決めて渡す。
+    ``actuals`` = その訪問の実績 (``load_actuals`` の 1 件)。到着の読み取りが無い訪問は
+    合わせる対象が無いので false。
     """
-    arrival = next((r for r in rows_desc if r.kind == "arrival"), None)
-    departure = next((r for r in rows_desc if r.kind == "departure"), None)
-    return {
-        **_project_latest_checkin(rows_desc[0]),
-        "_arrival_at": arrival.scanned_at if arrival is not None else None,
-        "_departure_at": departure.scanned_at if departure is not None else None,
-    }
-
-
-def _public_checkin(latest_checkin: dict | None) -> dict | None:
-    """同梱キー (``_arrival_at`` / ``_departure_at``) を落とした CheckinRead 形。"""
-    if latest_checkin is None:
-        return None
-    return {k: v for k, v in latest_checkin.items() if not k.startswith("_")}
-
-
-async def _load_latest_checkin(db, visit_id: UUID) -> dict | None:
-    """Load the most recent visit_checkins row (any kind) for a visit.
-
-    Append-only テーブルから ``scanned_at DESC`` で打刻を読み、先頭 (= 最新) を採用する。
-    VisitRead.latest_checkin に非破壊で載せる射影 (CheckinRead 形) + 実績時刻の同梱
-    (``_project_checkins``)。1 visit の打刻は数行なので全行取得で足りる。
-    """
-    rows = (
-        await db.scalars(
-            select(VisitCheckin)
-            .where(VisitCheckin.visit_id == visit_id)
-            # 第 2 キー (id DESC) は同一 scanned_at が並んだときの順序を決定化する。
-            .order_by(VisitCheckin.scanned_at.desc(), VisitCheckin.id.desc())
-        )
-    ).all()
-    if not rows:
-        return None
-    return _project_checkins(list(rows))
-
-
-async def _load_latest_checkins_bulk(db, visit_ids: list[UUID]) -> dict[UUID, dict]:
-    """対象 visit 群の最新打刻 (any kind) を 1 クエリでバッチ取得する。
-
-    一覧 (list_visits) の N+1 を避けるため、monitor の latest-per-kind 取得と同様に
-    ``scanned_at DESC`` で全行を取得し visit_id ごとにまとめる (先頭 = 最新)。
-    実績時刻 (最新 arrival / departure) も同じ 1 クエリの走査から拾う。
-    """
-    if not visit_ids:
-        return {}
-    rows = (
-        await db.scalars(
-            select(VisitCheckin)
-            .where(VisitCheckin.visit_id.in_(visit_ids))
-            # 第 2 キー (id DESC) は同一 scanned_at が並んだときの順序を決定化する。
-            .order_by(VisitCheckin.scanned_at.desc(), VisitCheckin.id.desc())
-        )
-    ).all()
-    by_visit: dict[UUID, list[VisitCheckin]] = {}
-    for r in rows:
-        by_visit.setdefault(r.visit_id, []).append(r)  # DESC 並びを保つ。
-    return {vid: _project_checkins(rs) for vid, rs in by_visit.items()}
+    return can_adjust_actual_time(
+        is_admin=normalize_user_role(user.role) == "admin",
+        visit_date=visit.visit_date,
+        deleted=visit.deleted_at is not None,
+        related=related,
+        today=_today_jst(),
+        has_arrival_read=(
+            actuals is not None
+            and actuals.arrival is not None
+            and actuals.arrival.checkin is not None
+        ),
+    )
 
 
 def _serialize_visit(
     visit: Visit,
     assignments: list[dict] | None = None,
-    latest_checkin: dict | None = None,
+    actuals: VisitActuals | None = None,
     accompaniments: list[dict] | None = None,
     course_staff_name: str | None = None,
+    adjust_allowed: bool = False,
 ) -> dict:
     """Project a Visit (with optional eager-loaded patient/primary_staff) into
     the VisitRead shape, including denormalized `patient_name`/`staff_name`
@@ -373,7 +352,15 @@ def _serialize_visit(
     ``course_staff_name`` (2026-09-16): 主担当が NULL のときに表示する **コース担当名**
     (``_course_staff_names`` が一括解決したもの)。``staff_name`` の意味は「表示すべき
     担当名」であり、``primary_staff_id`` は NULL のまま返す (非破壊: DB の値を偽らない)。
+
+    ``actuals`` (``services/checkin/actuals.load_actuals`` の 1 件): 最新の打刻
+    (``latest_checkin``・生の打刻のまま) と実績時刻 (``actual_*``) はここから出す。
+    実績時刻を決めるのは ``actuals.py`` だけで、ここでは ``scanned_at`` を読まない。
+    渡さない呼出 (打刻と無関係な更新系) は従来どおり None / false。
     """
+    latest_row = actuals.latest_checkin if actuals is not None else None
+    arrival = actuals.arrival if actuals is not None else None
+    departure = actuals.departure if actuals is not None else None
     data = {
         "id": visit.id,
         "patient_id": visit.patient_id,
@@ -449,13 +436,19 @@ def _serialize_visit(
         ),
         "staff_assignments": assignments or [],
         # QR チェックイン (Phase 1) の最新打刻. 既存呼出は None のまま (非破壊).
-        "latest_checkin": _public_checkin(latest_checkin),
-        # QR 打刻の実時刻 (実績)。``latest_checkin`` に同梱された最新 arrival /
-        # departure の scanned_at を取り出す。**手書き dict の罠**: week_pinned と
-        # 同じ位置づけで、ここに足し忘れると VisitRead の default None で潰れる。
-        # 打刻なし / 該当 kind なしは None (no_show は実績時刻に採らない)。
-        "actual_arrival_at": (latest_checkin or {}).get("_arrival_at"),
-        "actual_departure_at": (latest_checkin or {}).get("_departure_at"),
+        "latest_checkin": (_project_latest_checkin(latest_row) if latest_row is not None else None),
+        # 実績時刻 (調整後。無ければ読取時刻) と、その読取時刻・調整の有無。
+        # **手書き dict の罠**: week_pinned と同じ位置づけで、ここに足し忘れると
+        # VisitRead の default (None / false) で潰れる。実績なしは None
+        # (no_show は実績時刻に採らない)。
+        "actual_arrival_at": arrival.at if arrival is not None else None,
+        "actual_departure_at": departure.at if departure is not None else None,
+        "actual_arrival_read_at": arrival.read_at if arrival is not None else None,
+        "actual_departure_read_at": departure.read_at if departure is not None else None,
+        "actual_arrival_adjusted": arrival is not None and arrival.adjusted,
+        "actual_departure_adjusted": departure is not None and departure.adjusted,
+        "actual_departure_manual": departure is not None and departure.manual,
+        "actual_adjust_allowed": adjust_allowed,
         # 同行 (非破壊追加). 一般化 決定#5 で複数名対応。``accompaniments`` が全件
         # (決定的順序)、``accompaniment`` は後方互換の先頭要素。
         # **手書き dict の罠**: week_pinned / is_unplanned と同じ位置づけで、ここに
@@ -470,6 +463,10 @@ def _serialize_visit(
 def _restrict_to_qr_capability(data: dict) -> dict:
     """QR capability (担当外) の GET レスポンスを絞り込む (設計 §4-2 / ディレクター決定).
 
+    実績の時刻を合わせる API (``PUT`` / ``DELETE /visits/{id}/actual-time``) の応答にも
+    同じ絞り込みを掛ける: 担当集合の外で「自分が打刻しただけ」のスタッフは QR なしの
+    GET が 404 なので、調整 API の応答で全項目を読めてはいけない。
+
     「QR 所持 = 現地に居る」で正当化できるのは **その訪問を遂行するのに要る情報**
     まで。resolve v2 (§4-1) が既に開示している範囲 (患者氏名 / 時間帯 / status /
     予定担当名) と、現地判定に要る住所・座標・性別は残し、事業所の業務情報は落とす:
@@ -480,8 +477,10 @@ def _restrict_to_qr_capability(data: dict) -> dict:
       あって**自分の打刻とは限らない**。担当スタッフが書いた場所違い / 未訪問の
       理由 (自由記述) は業務メモと同質なので落とす。退出導線の判断に要る構造情報
       (``kind`` / ``scanned_at`` / ``match_status`` 等) は残す。
-    * 実績時刻 (``actual_arrival_at`` / ``actual_departure_at``) は ``latest_checkin.scanned_at``
-      と同質の構造情報なので **残す** (代行が「もう到着打刻済み / 未退出」を判断する導線に要る)。
+    * 実績時刻とその付随項目 (``actual_*``: 実績時刻・読取時刻・調整の有無・
+      ``actual_adjust_allowed``) は ``latest_checkin.scanned_at`` と同質の構造情報なので
+      **残す** (代行が「もう到着打刻済み / 未退出」を判断し、自分の打刻の時刻を合わせる
+      導線に要る)。調整の理由 (自由記述) は ``VisitRead`` に載せていない。
 
     担当者本人の GET (通常の可視性で通った場合) は従来どおり全量を返す。
     """
@@ -592,9 +591,11 @@ async def list_visits(
                     "assigned_at": a.created_at,
                 }
             )
-    # 最新打刻を 1 クエリでバッチ取得し (N+1 回避)、各 visit に紐付ける。GET /visits/{id}
-    # との契約対称性のため一覧でも latest_checkin を返す (QR チェックイン)。
-    latest_by_visit = await _load_latest_checkins_bulk(db, visit_ids)
+    # 実績 (最新打刻 + 実績時刻) をまとめて引き (N+1 回避)、各 visit に紐付ける。
+    # GET /visits/{id} との契約対称性のため一覧でも latest_checkin を返す (QR チェックイン)。
+    actuals_by_visit = await load_actuals(db, visit_ids)
+    # staff ロールの一覧は可視性 (= 担当集合) で絞ってあるので、どの行も「関わっている」。
+    # admin は ``related`` に依らず合わせられる。
     # 新人同行 (§6.4): 訪問群の同行者を 1 度に解決し、各 visit に非破壊で載せる。
     accompaniment_by_visit = await resolve_accompaniment_by_visit(db, list(rows))
     # 主担当 NULL の訪問の表示担当名 (コース担当) を 1 クエリで解決する (N+1 回避)。
@@ -603,9 +604,12 @@ async def list_visits(
         _serialize_visit(
             v,
             assignments=assignments_by_visit.get(v.id, []),
-            latest_checkin=latest_by_visit.get(v.id),
+            actuals=actuals_by_visit.get(v.id),
             accompaniments=_accompaniment_payload(accompaniment_by_visit.get(v.id)),
             course_staff_name=course_staff_names.get(v.course_id),
+            adjust_allowed=_actual_adjust_allowed(
+                user, v, related=True, actuals=actuals_by_visit.get(v.id)
+            ),
         )
         for v in rows
     ]
@@ -804,14 +808,19 @@ async def get_visit(
         if not visible:
             # Hide existence from non-assigned staff.
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    latest_checkin = await _load_latest_checkin(db, visit.id)
+    actuals = (await load_actuals(db, [visit.id])).get(visit.id)
     accompaniment_by_visit = await resolve_accompaniment_by_visit(db, [visit])
+    # QR capability だけで見えている担当外は、自分がこの訪問を打刻していれば合わせられる。
+    related = not via_qr_capability or (
+        actuals is not None and user.staff_id in actuals.checkin_staff_ids
+    )
     payload = _serialize_visit(
         visit,
         assignments=assignments,
-        latest_checkin=latest_checkin,
+        actuals=actuals,
         accompaniments=_accompaniment_payload(accompaniment_by_visit.get(visit.id)),
         course_staff_name=await _course_staff_name_for(db, visit),
+        adjust_allowed=_actual_adjust_allowed(user, visit, related=related, actuals=actuals),
     )
     if via_qr_capability:
         payload = _restrict_to_qr_capability(payload)
@@ -1308,8 +1317,17 @@ async def _load_visit_for_checkin(
     return visit, staff_id
 
 
-async def _checkin_response(db, visit_id: UUID) -> dict:
-    """打刻後の visit を GET /visits/{id} と同形で組み立てる (latest_checkin 付き)."""
+async def _checkin_response(db, visit_id: UUID, user: User, *, restricted: bool = False) -> dict:
+    """打刻後の visit を GET /visits/{id} と同形で組み立てる (latest_checkin 付き).
+
+    呼び出し元 (打刻・未訪問・実績の時刻を合わせる) はどれも、``user`` がその訪問に
+    関わっていること (担当集合 / 自分が打刻した / admin) を検証済みなので、
+    ``actual_adjust_allowed`` は ``related=True`` で判定する (残るのは期間の条件と
+    到着の読み取りの有無だけ)。
+
+    ``restricted=True`` は応答を ``_restrict_to_qr_capability`` で絞る (担当集合の外で
+    「自分が打刻しただけ」のスタッフが実績の時刻を合わせたとき)。
+    """
     visit = await db.scalar(
         select(Visit)
         .where(Visit.id == visit_id)
@@ -1319,15 +1337,17 @@ async def _checkin_response(db, visit_id: UUID) -> dict:
         )
     )
     assignments = await _load_assignments(db, visit_id)
-    latest_checkin = await _load_latest_checkin(db, visit_id)
+    actuals = (await load_actuals(db, [visit_id])).get(visit_id)
     accompaniment_by_visit = await resolve_accompaniment_by_visit(db, [visit])
-    return _serialize_visit(
+    payload = _serialize_visit(
         visit,
         assignments=assignments,
-        latest_checkin=latest_checkin,
+        actuals=actuals,
         accompaniments=_accompaniment_payload(accompaniment_by_visit.get(visit_id)),
         course_staff_name=await _course_staff_name_for(db, visit),
+        adjust_allowed=_actual_adjust_allowed(user, visit, related=True, actuals=actuals),
     )
+    return _restrict_to_qr_capability(payload) if restricted else payload
 
 
 @router.post(
@@ -1340,10 +1360,12 @@ async def checkin_visit(
     payload: CheckinCreate,
     db: DbDep,
     user: CurrentActiveUser,
+    request: Request,
 ) -> dict:
     # 代行打刻 (§4-2): 担当外でも現地 QR を持っていれば通す。
     visit, staff_id = await _load_visit_for_checkin(db, visit_id, user, qr_token=payload.qr_token)
-    checkin = await judge_checkin(db, visit, staff_id, payload, "arrival")
+    now = datetime.now(UTC)
+    checkin = await judge_checkin(db, visit, staff_id, payload, "arrival", now=now)
     # status 退行ガード: 既に completed の visit に再 checkin しても completed の
     # まま据え置く (in_progress へ巻き戻さない)。planned / in_progress のときのみ
     # in_progress へ進める。checkin 行 (append-only) は status に依らず記録される。
@@ -1358,8 +1380,19 @@ async def checkin_visit(
     # 遅刻→到着で cron 生成済みの「未訪問」通知が残らないよう、到着記録と同一
     # transaction で当該 visit の missing 通知を解消する (全ユーザー分削除)。
     await resolve_checkin_missing(db, visit.id)
+    # その場で合わせた時刻の同梱 (§6-2)。不備があっても打刻は必ず記録する。
+    await apply_bundled_adjustment(
+        db,
+        visit=visit,
+        kind="arrival",
+        adjusted_time=payload.adjusted_time,
+        reason_code=payload.adjust_reason_code,
+        actor=user,
+        now=now,
+        audit_meta=_adjust_audit_meta(request, user),
+    )
     await db.commit()
-    return await _checkin_response(db, visit_id)
+    return await _checkin_response(db, visit_id, user)
 
 
 @router.post(
@@ -1372,23 +1405,37 @@ async def checkout_visit(
     payload: CheckinCreate,
     db: DbDep,
     user: CurrentActiveUser,
+    request: Request,
 ) -> dict:
     # 代行の退出も QR 再スキャン (§4-2「退出は改めて現地で読む」) で通す。
     visit, staff_id = await _load_visit_for_checkin(db, visit_id, user, qr_token=payload.qr_token)
-    checkin = await judge_checkin(db, visit, staff_id, payload, "departure")
+    now = datetime.now(UTC)
+    checkin = await judge_checkin(db, visit, staff_id, payload, "departure", now=now)
     visit.status = VISIT_STATUS_COMPLETED
-    # 予定外訪問 (§3) の end_time は生成時の暫定値。退出打刻で実退出時刻へ更新する
-    # (滞在時間・モニターのバー長を実績に合わせる)。開始以前へ巻き戻る値は採らない。
+    # 予定外訪問 (§3) の end_time は生成時の暫定値。退出打刻で実退出時刻 (= 読取時刻・
+    # 設計 actual-time-adjust §3) へ更新する (滞在時間・モニターのバー長を実績に
+    # 合わせる)。開始以前へ巻き戻る値は採らない。
     if visit.is_unplanned:
-        actual_end = _as_jst_time(checkin.scanned_at)
+        actual_end = _as_jst_time(checkin_read_at(checkin))
         if actual_end > visit.start_time:
             visit.end_time = actual_end
     # 到着は担当本人・退出だけ代行が押した場合でも代行 / NG 交差に気づけるよう、
     # 退出経路でも通知する (reference_id = visit.id で冪等なので、到着時に通知済み
     # なら重複しない)。
     await notify_checkin_anomalies(db, visit=visit, checkin=checkin)
+    # その場で合わせた時刻の同梱 (§6-2)。不備があっても打刻は必ず記録する。
+    await apply_bundled_adjustment(
+        db,
+        visit=visit,
+        kind="departure",
+        adjusted_time=payload.adjusted_time,
+        reason_code=payload.adjust_reason_code,
+        actor=user,
+        now=now,
+        audit_meta=_adjust_audit_meta(request, user),
+    )
     await db.commit()
-    return await _checkin_response(db, visit_id)
+    return await _checkin_response(db, visit_id, user)
 
 
 # ---------------------------------------------------------------------------
@@ -1431,9 +1478,11 @@ def _adhoc_visit_moment(device_time: datetime | None, now: datetime) -> datetime
 
     圏外で退避された打刻はネットワーク復帰まで送信されない。サーバ受信時刻を
     基準にすると数時間後の再送で訪問時刻がずれ、日を跨ぐと日付ごと誤るため、
-    端末が記録した ``device_time`` を基準に採る (``scanned_at`` は従来どおり
-    サーバ時刻 = 受信の事実を保つ)。
+    **読取時刻** (``actuals.resolve_read_time``・設計 actual-time-adjust §3) を基準に
+    採る。打刻行の実績時刻と同じ規則なので、予定外 visit の開始と実績の到着が
+    食い違わない (``scanned_at`` は従来どおりサーバ時刻 = 受信の事実を保つ)。
 
+    * 妥当な ``device_time`` (サーバ時刻 + 120 秒以内・18 時間以内・同じ日) はそれを採る。
     * 未来の ``device_time`` は**無視**してサーバ時刻を使う (端末の時計ズレ対策。
       進んだ時計をそのまま採ると未来時刻の visit が生える)。
     * 当日 (JST) 外の ``device_time`` は 422。visit は ``visit_date`` 1 日で完結
@@ -1444,14 +1493,12 @@ def _adhoc_visit_moment(device_time: datetime | None, now: datetime) -> datetime
     if device_time is None:
         return now
     dt = device_time if device_time.tzinfo is not None else device_time.replace(tzinfo=UTC)
-    if dt > now:
-        return now
-    if dt.astimezone(JST).date() != now.astimezone(JST).date():
+    if dt <= now and dt.astimezone(JST).date() != now.astimezone(JST).date():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=ADHOC_STALE_DEVICE_TIME_DETAIL,
         )
-    return dt
+    return resolve_read_time(dt, now)
 
 
 def _weekly_pattern_service_minutes(patient: Patient) -> int | None:
@@ -1501,6 +1548,7 @@ async def adhoc_checkin(
     payload: CheckinCreate,
     db: DbDep,
     user: CurrentActiveUser,
+    request: Request,
 ) -> dict:
     """当日予定が無い患者宅の QR 打刻。visit 生成 + 到着打刻 + 通知を 1 TX で行う。
 
@@ -1594,8 +1642,20 @@ async def adhoc_checkin(
     checkin = await judge_checkin(db, visit, staff_id, payload, "arrival", now=now)
     await notify_checkin_mismatch(db, visit=visit, checkin=checkin)
     await notify_checkin_anomalies(db, visit=visit, checkin=checkin)
+    # その場で合わせた時刻の同梱 (§6-2)。不備があっても打刻は必ず記録する。
+    # 予定外訪問なので、通れば ``start_time`` も合わせた時刻へ追随する。
+    await apply_bundled_adjustment(
+        db,
+        visit=visit,
+        kind="arrival",
+        adjusted_time=payload.adjusted_time,
+        reason_code=payload.adjust_reason_code,
+        actor=user,
+        now=now,
+        audit_meta=_adjust_audit_meta(request, user),
+    )
     await db.commit()
-    return await _checkin_response(db, visit_id)
+    return await _checkin_response(db, visit_id, user)
 
 
 @router.post(
@@ -1619,4 +1679,189 @@ async def no_show_visit(
     # no_show は visit.status を据置 (planned のまま; モニターが時間ベースで判定)。
     await judge_checkin(db, visit, staff_id, payload, "no_show")
     await db.commit()
-    return await _checkin_response(db, visit_id)
+    return await _checkin_response(db, visit_id, user)
+
+
+# ---------------------------------------------------------------------------
+# 実績の時刻を合わせる (PUT / DELETE /visits/{visit_id}/actual-time)
+#
+# 正典設計書 ``docs/plans/actual-time-adjust-design-2026-09-30.md`` §6-1。
+# QR は家に入ってから読むので、記録上の到着が実際より遅くなる。スタッフ自身が
+# (その場でも後からでも) 実績の時刻を実際に合わせる。**予定は動かさない**
+# (予定外訪問だけは予定欄が実績の写しなので追随する・``services/checkin/adjust``)。
+# ---------------------------------------------------------------------------
+
+
+def _client_surface(value: str | None) -> str:
+    """``X-Client-Surface`` → 調整の ``source`` (``mobile`` / ``pc``。無ければ ``pc``)."""
+    return "mobile" if (value or "").strip().lower() == "mobile" else "pc"
+
+
+def _adjust_audit_meta(request: Request, user: User) -> dict[str, object]:
+    """調整の監査行 (``audit_logs``) に入れる、誰がどこから操作したかの項目。
+
+    ``services/checkin/adjust`` が before / after と一緒に 1 行書く。項目は打刻履歴の
+    Excel / A4 の監査行 (``visit_history._audit_output``) と揃える。
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    return {
+        "role": normalize_user_role(user.role),
+        "method": request.method,
+        "path": request.url.path[:255],
+        "status_code": status.HTTP_200_OK,
+        "ip_address": (
+            forwarded.split(",", 1)[0].strip()[:64]
+            if forwarded
+            else (request.client.host[:64] if request.client else None)
+        ),
+        "user_agent": (request.headers.get("user-agent") or "")[:255] or None,
+    }
+
+
+async def _load_visit_for_adjust(db, visit_id: UUID, user: User) -> tuple[Visit, bool]:
+    """実績の時刻を合わせる対象の visit をロードし、権限を検証する (設計 §6-1).
+
+    * admin: すべての訪問。
+    * staff: ``visit_date`` が今日から 7 日前まで (JST) で、かつ自分が担当集合
+      (primary / secondary / mentor / assignments / 同行 / コース担当フォールバック =
+      打刻と同じ可視性) に入るか、**自分がその訪問の到着または退出を打刻した**
+      (代行・予定外) 場合。
+    * 見えない訪問は 404 (存在を秘匿)、見えるが期間外で合わせられない場合は 403
+      (7 日より前 / まだ訪問日になっていない、で文言を分ける)。
+
+    削除済みの訪問もロードする (検証側が 409 を返す。打刻の ``_load_visit_for_checkin``
+    と同じく、見えない 404 と区別するため WHERE で弾かない)。到着の読み取りが無い
+    訪問もここでは通す (検証側が 409「到着の記録がありません」を返す)。
+
+    返り値は ``(visit, own_checkin_only)``。``own_checkin_only`` = 担当集合には入らず、
+    **自分が打刻したことだけ** で通った (代行・QR なしの GET では見えない訪問)。
+    呼び出し側はこのとき応答を ``_restrict_to_qr_capability`` で絞る。
+    """
+    visit = await db.scalar(
+        select(Visit)
+        .where(Visit.id == visit_id)
+        .options(
+            selectinload(Visit.patient),
+            selectinload(Visit.primary_staff),
+        )
+    )
+    if visit is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    if normalize_user_role(user.role) == "admin":
+        return visit, False
+
+    staff_id = user.staff_id
+    related = False
+    own_checkin_only = False
+    if staff_id is not None:
+        assigned_staff_ids = {a["staff_id"] for a in await _load_assignments(db, visit.id)}
+        related = staff_id in (
+            {visit.primary_staff_id, visit.secondary_staff_id, visit.mentor_staff_id}
+            | assigned_staff_ids
+        )
+        if not related:
+            related = await is_accompaniment_visit_for_staff(
+                db, visit_id=visit.id, course_id=visit.course_id, staff_id=staff_id
+            )
+        if not related:
+            related = staff_id in await _course_fallback_staff_ids(db, visit)
+        if not related:
+            # 自分が到着・退出を打刻した訪問 (代行・予定外)。
+            actuals = (await load_actuals(db, [visit.id])).get(visit.id)
+            related = own_checkin_only = (
+                actuals is not None and staff_id in actuals.checkin_staff_ids
+            )
+    if not related:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    # 期間の条件だけをここで見る (削除済み・到着の読み取りなしは検証側の 409)。
+    today = _today_jst()
+    if visit.deleted_at is None and not can_adjust_actual_time(
+        is_admin=False,
+        visit_date=visit.visit_date,
+        deleted=False,
+        related=True,
+        today=today,
+        has_arrival_read=True,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=DETAIL_FUTURE_VISIT if visit.visit_date > today else DETAIL_OUT_OF_WINDOW,
+        )
+    return visit, own_checkin_only
+
+
+@router.put(
+    "/{visit_id}/actual-time",
+    response_model=VisitRead,
+    summary="実績の時刻を合わせる (到着 / 退出) — admin / 自分の訪問の staff",
+)
+async def put_actual_time(
+    visit_id: UUID,
+    payload: ActualTimeAdjustRequest,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin", "staff"))],
+    request: Request,
+    x_client_surface: Annotated[
+        str | None,
+        Header(
+            alias="X-Client-Surface",
+            description="操作した画面 (mobile / pc)。調整の source になる。無ければ pc。",
+        ),
+    ] = None,
+) -> dict:
+    """実績の時刻 (到着または退出) を ``time`` (JST の ``HH:MM``) に合わせる。
+
+    予定 (``start_time`` / ``end_time``) は動かない。応答は打刻 API と同じ ``VisitRead``。
+    範囲外などの検証エラーは 422 / 409 で、``detail`` はそのまま画面に出せる日本語の
+    **文字列** (スマホはそのままトーストに出す。配列や dict にしない)。
+
+    担当集合の外で「自分が打刻しただけ」のスタッフへの応答は、QR capability の GET と
+    同じ範囲に絞る (``note`` / ``kaipoke_id`` / 担当者一覧 / 同行者 / 打刻理由を落とす)。
+    """
+    visit, own_checkin_only = await _load_visit_for_adjust(db, visit_id, user)
+    await adjust_actual_time(
+        db,
+        visit=visit,
+        kind=payload.kind,
+        hhmm=payload.time,
+        reason_code=payload.reason_code,
+        reason_text=payload.reason_text,
+        source=_client_surface(x_client_surface),
+        actor=user,
+        now=datetime.now(UTC),
+        audit_meta=_adjust_audit_meta(request, user),
+    )
+    await db.commit()
+    return await _checkin_response(db, visit_id, user, restricted=own_checkin_only)
+
+
+@router.delete(
+    "/{visit_id}/actual-time",
+    response_model=VisitRead,
+    summary="実績の時刻を読取時刻に戻す — admin / 自分の訪問の staff",
+)
+async def delete_actual_time(
+    visit_id: UUID,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin", "staff"))],
+    request: Request,
+    kind: Annotated[str | None, Query(description="arrival / departure")] = None,
+    x_client_surface: Annotated[str | None, Header(alias="X-Client-Surface")] = None,
+) -> dict:
+    """合わせた時刻を取り消し、読取時刻に戻す (``adjusted_at = NULL`` の行を追記)。
+
+    合わせていない時刻に対しては何もしない (冪等・200)。応答は ``VisitRead``
+    (絞り込みは ``PUT`` と同じ)。
+    """
+    visit, own_checkin_only = await _load_visit_for_adjust(db, visit_id, user)
+    await reset_actual_time(
+        db,
+        visit=visit,
+        kind=kind,
+        source=_client_surface(x_client_surface),
+        actor=user,
+        now=datetime.now(UTC),
+        audit_meta=_adjust_audit_meta(request, user),
+    )
+    await db.commit()
+    return await _checkin_response(db, visit_id, user, restricted=own_checkin_only)
