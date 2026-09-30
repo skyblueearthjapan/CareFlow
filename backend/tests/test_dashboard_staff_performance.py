@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
@@ -22,7 +23,7 @@ from app.core.security import create_access_token, hash_password
 from app.models import Patient, Staff, User, Visit
 from app.models.course import Course
 from app.models.office import Office
-from app.models.staff import StaffEvent
+from app.models.staff import StaffEvent, StaffShift, StaffWeeklyOverride
 from app.models.visit_checkin import VisitCheckin
 from app.models.visit_time_adjustment import VisitTimeAdjustment
 from app.services.dashboard_staff_performance import is_leave_event, week_ranges
@@ -312,7 +313,9 @@ async def test_meetings_are_separated_from_idle_time(client, db) -> None:
     m = _row(body, a)["period"]
     assert m["meeting_min_total"] == 70
     assert m["meeting_min_per_day"] == 70.0
-    assert m["idle_min_per_day"] == 50.0  # 120 − 0 − 70
+    # 合間から引くのは訪問と訪問の間 (10:00-12:00) に重なる会議だけ = 60 分。
+    # 朝会は訪問 (9:00-10:00) と重なる 10 分なので合間は減らさない。
+    assert m["idle_min_per_day"] == 60.0  # 120 − 0 − 60
     assert m["visit_min_per_day"] == 120.0
     speed = body["travel_speed_kmh"]
     assert speed == 20.0
@@ -320,13 +323,73 @@ async def test_meetings_are_separated_from_idle_time(client, db) -> None:
     assert m["travel_min_per_day"] == pytest.approx(km / speed * 60, abs=0.1)
 
 
-def test_leave_event_titles() -> None:
-    assert is_leave_event("休み")
-    assert is_leave_event("有休")
-    assert is_leave_event("午後休")
-    assert not is_leave_event("休憩")
-    assert not is_leave_event("朝会")
-    assert not is_leave_event(None)
+@pytest.mark.parametrize(
+    "title",
+    [
+        "休み",
+        "有給",
+        "有休",
+        "年休",
+        "公休",
+        "代休",
+        "欠勤",
+        "忌引",
+        "病欠",
+        "午前休",
+        "午後休",
+        "夏季休暇",
+        "休み（通院）",
+    ],
+)
+def test_leave_event_titles(title: str) -> None:
+    assert is_leave_event(title)
+
+
+@pytest.mark.parametrize(
+    "title", ["休憩", "休日出勤", "休日当番", "休薬の確認", "朝会", "カンファ", "研修", "", None]
+)
+def test_non_leave_event_titles(title: str | None) -> None:
+    assert not is_leave_event(title)
+
+
+@pytest.mark.asyncio
+async def test_leave_days_from_overrides_and_shifts_drop_events(client, db) -> None:
+    """休みの正典 (週だけの休み・週間シフトの休み) の日のイベントは会議・研修に数えない。"""
+    office = await _office(db)
+    a = await _staff(db, "Aさん", office)
+    p = await _patient(db, "PL-1", P1_LL)
+    tue, wed, thu = (MON + timedelta(days=i) for i in (1, 2, 3))
+    for d in (MON, tue, wed, thu):
+        await _visit(db, p, d, "09:00", "10:00", staff=a)
+        await _visit(db, p, d, "13:00", "14:00", staff=a)
+        # 件名では休みと分からない予定 (午前 60 分・午後 30 分)。
+        await _event(db, a, d, "10:30", "11:30", "カンファ")
+        await _event(db, a, d, "12:00", "12:30", "カンファ")
+    iso = MON.isocalendar()
+
+    def ov(weekday: int, kind: str) -> StaffWeeklyOverride:
+        return StaffWeeklyOverride(
+            staff_id=a.id,
+            iso_year=iso.year,
+            iso_week=iso.week,
+            weekday=weekday,
+            override_type=kind,
+        )
+
+    db.add_all(
+        [
+            ov(0, "off"),
+            ov(1, "am_off"),
+            ov(2, "pm_off"),
+            # 木曜は週間シフトの休み。
+            StaffShift(staff_id=a.id, weekday=3, is_on=False),
+        ]
+    )
+    await db.commit()
+
+    body = await _get(client, await _admin(db), MON, thu)
+    # 月 (終日休み) 0・火 (午前休) 30・水 (午後休) 60・木 (シフトの休み) 0。
+    assert _row(body, a)["period"]["meeting_min_total"] == 90
 
 
 # ---------- チーム平均・拠点・週 ------------------------------------------
@@ -427,3 +490,156 @@ async def test_period_validation(client, db) -> None:
     assert date.fromisoformat(body["date_from"]).weekday() == 0
     assert body["team"]["period"]["visits"] == 0
     assert body["team"]["period"]["per_day"] is None
+
+
+# ---------- 追加の境界 ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_staff_without_office(client, db) -> None:
+    """所属拠点の無い人: 並びは最後・拠点の札なし・行き帰りの区間は飛ばす・拠点で絞ると出ない。"""
+    office = await _office(db, "第一拠点", short="一")
+    a = await _staff(db, "Aさん", office)
+    nobody = await _staff(db, "拠点なし", None)
+    p1 = await _patient(db, "PN-1", P1_LL)
+    p2 = await _patient(db, "PN-2", P2_LL)
+    await _visit(db, p1, MON, "09:00", "09:30", staff=nobody)
+    await _visit(db, p2, MON, "10:00", "10:30", staff=nobody)
+    await _visit(db, p1, MON, "09:00", "09:30", staff=a)
+
+    headers = await _admin(db)
+    body = await _get(client, headers, MON, MON)
+    assert [r["name"] for r in body["staff"]] == ["Aさん", "拠点なし"]
+    row = _row(body, nobody)
+    assert row["office_id"] is None and row["office_short"] is None
+    assert row["period"]["skipped_legs"] == 2
+    assert row["period"]["km_total"] == pytest.approx(haversine_km(*P1_LL, *P2_LL), abs=0.01)
+
+    body = await _get(client, headers, MON, MON, office_id=str(office.id))
+    assert [r["name"] for r in body["staff"]] == ["Aさん"]
+
+
+@pytest.mark.asyncio
+async def test_two_person_visit_counts_once_per_owner(client, db) -> None:
+    """2 名訪問 (visit_group_id が同じ 2 行) は、それぞれの担当に 1 件ずつ数える。"""
+    office = await _office(db)
+    a = await _staff(db, "Aさん", office)
+    b = await _staff(db, "Bさん", office)
+    p = await _patient(db, "PG-1", P1_LL)
+    group = uuid.uuid4()
+    for s in (a, b):
+        await _visit(
+            db, p, MON, "09:00", "10:00", staff=s, visit_group_id=group, required_staff_count=2
+        )
+
+    body = await _get(client, await _admin(db), MON, MON)
+    assert _row(body, a)["period"]["visits"] == 1
+    assert _row(body, b)["period"]["visits"] == 1
+    assert body["team"]["period"]["visits"] == 2
+    assert body["team"]["period"]["staff_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_event_crossing_midnight_is_split_by_day(client, db) -> None:
+    office = await _office(db)
+    a = await _staff(db, "Aさん", office)
+    p = await _patient(db, "PX-1", P1_LL)
+    tue = MON + timedelta(days=1)
+    await _visit(db, p, tue, "09:00", "09:30", staff=a)
+    await _visit(db, p, tue, "11:00", "11:30", staff=a)
+    db.add(
+        StaffEvent(
+            staff_id=a.id,
+            event_type="event",
+            starts_at=datetime.combine(MON, time(22, 0)),
+            ends_at=datetime.combine(tue, time(10, 0)),
+            title="夜間待機",
+        )
+    )
+    await db.commit()
+
+    body = await _get(client, await _admin(db), MON, tue)
+    m = _row(body, a)["period"]
+    # 火曜の 0:00-10:00 のうち、訪問の時間帯 (9:00-11:30) に重なる 9:00-10:00 = 60 分。
+    assert m["meeting_min_total"] == 60
+    # 合間 (9:30-11:00 = 90 分) から引くのは 9:30-10:00 の 30 分だけ。
+    assert m["idle_min_per_day"] == 60.0
+
+
+@pytest.mark.asyncio
+async def test_deleted_course_is_not_used_as_owner(client, db) -> None:
+    office = await _office(db)
+    a = await _staff(db, "Aさん", office)
+    p = await _patient(db, "PC-1", P1_LL)
+    live = Course(
+        iso_year=2026, iso_week=37, weekday=0, code="A", office_id=office.id, assigned_staff_id=a.id
+    )
+    gone = Course(
+        iso_year=2026,
+        iso_week=37,
+        weekday=0,
+        code="B",
+        office_id=office.id,
+        assigned_staff_id=a.id,
+        deleted_at=datetime.now(UTC),
+    )
+    db.add_all([live, gone])
+    await db.commit()
+    await _visit(db, p, MON, "09:00", "09:30", course_id=live.id)
+    await _visit(db, p, MON, "10:00", "10:30", course_id=gone.id)
+
+    body = await _get(client, await _admin(db), MON, MON)
+    assert _row(body, a)["period"]["visits"] == 1
+
+
+@pytest.mark.asyncio
+async def test_last_month_has_five_partial_weeks(client, db) -> None:
+    """先月 (9/1〜9/30) は月曜はじまりの 5 週。両端の週は月に合わせて切る。"""
+    office = await _office(db)
+    a = await _staff(db, "Aさん", office)
+    p = await _patient(db, "PW-1", P1_LL)
+    await _visit(db, p, date(2026, 9, 1), "09:00", "09:30", staff=a)
+    await _visit(db, p, date(2026, 9, 30), "09:00", "09:30", staff=a)
+
+    body = await _get(client, await _admin(db), date(2026, 9, 1), date(2026, 9, 30))
+    assert body["weeks"] == [
+        {"start": "2026-09-01", "end": "2026-09-06"},
+        {"start": "2026-09-07", "end": "2026-09-13"},
+        {"start": "2026-09-14", "end": "2026-09-20"},
+        {"start": "2026-09-21", "end": "2026-09-27"},
+        {"start": "2026-09-28", "end": "2026-09-30"},
+    ]
+    assert [w["visits"] for w in _row(body, a)["weeks"]] == [1, 0, 0, 0, 1]
+
+
+@pytest.mark.asyncio
+async def test_future_is_not_counted_and_no_show_is_reported(client, db) -> None:
+    """期間の終わりは今日まで (先の予定は数えない)。未訪問は件数に数えたまま、数を返す。"""
+    from app.api.v1.dashboard import JST
+
+    today = datetime.now(JST).date()
+    office = await _office(db)
+    a = await _staff(db, "Aさん", office)
+    p = await _patient(db, "PFU-1", P1_LL)
+    v = await _visit(db, p, today, "00:00", "00:30", staff=a)
+    await _visit(db, p, today + timedelta(days=1), "09:00", "09:30", staff=a)
+    await _checkin(db, v, a, "no_show", _jst(today, 0, 10))
+
+    body = await _get(client, await _admin(db), today, today + timedelta(days=5))
+    assert body["date_to"] == today.isoformat()
+    m = _row(body, a)["period"]
+    assert m["visits"] == 1
+    assert m["no_show_count"] == 1
+    assert body["team"]["period"]["no_show_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_from_and_to_go_together(client, db) -> None:
+    headers = await _admin(db)
+    res = await client.get(URL, headers=headers, params={"from": "2026-09-01"})
+    assert res.status_code == 422
+    assert "両方" in res.json()["detail"]
+    res = await client.get(URL, headers=headers, params={"to": "2026-09-01"})
+    assert res.status_code == 422
+    res = await client.get(URL, headers=headers, params={"from": "2099-01-01", "to": "2099-01-02"})
+    assert res.status_code == 422

@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.course import Course
 from app.models.office import Office
 from app.models.patient import Patient
-from app.models.staff import Staff, StaffEvent
+from app.models.staff import Staff, StaffEvent, StaffShift, StaffWeeklyOverride
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.schemas.dashboard import (
     PerformanceMetrics,
@@ -54,19 +54,67 @@ MIN_ACTUAL_SAMPLES = 5
 MAX_PERIOD_DAYS = 93
 #: 業務ロールのうち「管理者」の札を付けるもの (``staff.role``・スケジュールエンジン用の軸)。
 _MANAGER_ROLES = frozenset({"manager", "admin"})
-#: 資格のうち「准看護師」の札を付けるもの。
-_QUALIFICATION_ASSISTANT_NURSE = "准看護師"
+#: 半日休みの境目 (分・12:00)。``allocation.engine`` の午前休 / 午後休と同じ。
+NOON_MIN = 12 * 60
+
+#: 休みの正典 (``staff_weekly_overrides.override_type``)。終日 / 午前 / 午後。
+OVERRIDE_OFF = "off"
+OVERRIDE_AM_OFF = "am_off"
+OVERRIDE_PM_OFF = "pm_off"
+_LEAVE_OVERRIDE_TYPES = (OVERRIDE_OFF, OVERRIDE_AM_OFF, OVERRIDE_PM_OFF)
+
+#: 件名から休みと見なす語 (休みの正典に載っていないイベントの予備の判定)。
+#: 最後の「休」は総称 (「夏季休暇」など) — 下の除外語を取り除いてから当てる。
+LEAVE_TITLE_KEYWORDS: tuple[str, ...] = (
+    "休み",
+    "有給",
+    "年休",
+    "公休",
+    "代休",
+    "欠勤",
+    "忌引",
+    "病欠",
+    "午前休",
+    "午後休",
+    "休",
+)
+#: 「休」を含むが休みではない語 (勤務・業務の予定)。
+LEAVE_TITLE_EXCLUSIONS: tuple[str, ...] = ("休憩", "休日出勤", "休日当番", "休薬")
 
 LatLng = tuple[float, float]
 
 
 def is_leave_event(title: str | None) -> bool:
-    """休み (休み・有休・公休・午前休 など) のイベントか。
+    """件名から休み (休み・有給・公休・欠勤・午前休 など) のイベントか (予備の判定)。
 
-    ``staff_events`` に休みの種別は無く、カイポケ取り込みの件名 (「休み」「有休」…) で
-    表れるため件名で判定する。「休憩」は休みに数えない (会議・研修などの側に入る)。
+    休みの正典は ``staff_weekly_overrides`` と ``staff_shifts.is_on`` (集計の側で見る)。
+    ただしカイポケ取り込みでは休みが件名 (「休み」「有給」…) だけで ``staff_events`` に
+    入ってくるため、件名でも除く。「休憩」「休日出勤」「休日当番」「休薬」は休みでは
+    ない (会議・研修などの側に入る)。
     """
-    return "休" in (title or "").replace("休憩", "")
+    text = title or ""
+    for word in LEAVE_TITLE_EXCLUSIONS:
+        text = text.replace(word, "")
+    return any(word in text for word in LEAVE_TITLE_KEYWORDS)
+
+
+def leave_window(kind: str | None) -> tuple[int, int] | None:
+    """休みの種別 → その日の休みの時間帯 (分)。休みでなければ None。"""
+    if kind == OVERRIDE_OFF:
+        return (0, 24 * 60)
+    if kind == OVERRIDE_AM_OFF:
+        return (0, NOON_MIN)
+    if kind == OVERRIDE_PM_OFF:
+        return (NOON_MIN, 24 * 60)
+    return None
+
+
+def _minus_window(start: int, end: int, window: tuple[int, int] | None) -> list[tuple[int, int]]:
+    """[start, end) から休みの時間帯を除いた残り。"""
+    if window is None or end <= window[0] or start >= window[1]:
+        return [(start, end)]
+    parts = [(start, min(end, window[0])), (max(start, window[1]), end)]
+    return [(s, e) for s, e in parts if e > s]
 
 
 def _minute_of_day(t: time) -> int:
@@ -102,6 +150,8 @@ class DayVisit:
     #: 到着・退出が揃っているときの滞在分 (実績)。
     actual_min: int | None = None
     arrival_only: bool = False
+    #: 未訪問 (no_show) の記録がある。件数には数えたまま、数だけ返す。
+    no_show: bool = False
 
 
 @dataclass
@@ -120,6 +170,7 @@ class DaySummary:
     travel_min: float
     meeting_min: int
     idle_min: float
+    no_show: int = 0
 
 
 def summarize_day(
@@ -147,15 +198,18 @@ def summarize_day(
         if 0 < i < last_leg:
             between_km += d  # 訪問と訪問の間の区間 (拠点との行き帰りは合間に入らない)
     # 訪問と訪問の間 (重なる訪問は重ねて 1 本の帯として扱う)。
-    gap = 0
+    gaps: list[tuple[int, int]] = []
     run_end = vs[0].end
     for v in vs[1:]:
         if v.start > run_end:
-            gap += v.start - run_end
+            gaps.append((run_end, v.start))
         run_end = max(run_end, v.end)
-    first_start = vs[0].start
-    meeting = _union_minutes(events, first_start, run_end)
-    idle = max(0.0, gap - between_km / speed_kmh * 60 - meeting)
+    gap = sum(e - s for s, e in gaps)
+    # 会議・研修など = 最初の訪問開始〜最後の訪問終了に重なる分 (設計 §5)。
+    meeting = _union_minutes(events, vs[0].start, run_end)
+    # 合間から引くのは、訪問と訪問の間に重なる分だけ (訪問と重なる朝会などは引かない)。
+    meeting_in_gaps = sum(_union_minutes(events, s, e) for s, e in gaps)
+    idle = max(0.0, gap - between_km / speed_kmh * 60 - meeting_in_gaps)
     actuals = [v.actual_min for v in vs if v.actual_min is not None]
     return DaySummary(
         day=day,
@@ -170,6 +224,7 @@ def summarize_day(
         travel_min=km / speed_kmh * 60,
         meeting_min=meeting,
         idle_min=idle,
+        no_show=sum(1 for v in vs if v.no_show),
     )
 
 
@@ -210,6 +265,7 @@ def metrics_of(days: list[DaySummary]) -> PerformanceMetrics:
         meeting_min_per_day=_r(_div(sum(d.meeting_min for d in days), n)),
         idle_min_per_day=_r(_div(sum(d.idle_min for d in days), n)),
         meeting_min_total=sum(d.meeting_min for d in days),
+        no_show_count=sum(d.no_show for d in days),
     )
 
 
@@ -334,6 +390,50 @@ async def build_staff_performance(
 
     actuals = await load_actuals(db, [r.id for _, r in owned])
 
+    # 休みの正典: 週だけの休み (staff_weekly_overrides) → 無ければ週間シフトの休み
+    # (staff_shifts.is_on = False)。``staff_event_defaults._load_off_keys`` と同じ正典で、
+    # 半休 (am_off / pm_off) はその半日だけを休みとして扱う。
+    leave_kind: dict[tuple[UUID, date], str] = {}
+    if staff_by_id:
+        staff_list = list(staff_by_id)
+        shift_off = {
+            (sid, wd)
+            for sid, wd in (
+                await db.execute(
+                    select(StaffShift.staff_id, StaffShift.weekday).where(
+                        StaffShift.staff_id.in_(staff_list), StaffShift.is_on.is_(False)
+                    )
+                )
+            ).all()
+        }
+        period_days = [date_from + timedelta(days=i) for i in range((date_to - date_from).days + 1)]
+        iso_weeks = {(d.isocalendar().year, d.isocalendar().week) for d in period_days}
+        overrides: dict[tuple[UUID, date], str] = {}
+        for sid, iy, iw, wd, kind in (
+            await db.execute(
+                select(
+                    StaffWeeklyOverride.staff_id,
+                    StaffWeeklyOverride.iso_year,
+                    StaffWeeklyOverride.iso_week,
+                    StaffWeeklyOverride.weekday,
+                    StaffWeeklyOverride.override_type,
+                ).where(
+                    StaffWeeklyOverride.staff_id.in_(staff_list),
+                    StaffWeeklyOverride.iso_year.in_({y for y, _ in iso_weeks}),
+                    StaffWeeklyOverride.iso_week.in_({w for _, w in iso_weeks}),
+                )
+            )
+        ).all():
+            if (iy, iw) in iso_weeks:
+                overrides[(sid, date.fromisocalendar(iy, iw, wd + 1))] = kind
+        for d in period_days:
+            for sid in staff_list:
+                kind = overrides.get((sid, d))
+                if kind is None and (sid, d.weekday()) in shift_off:
+                    kind = OVERRIDE_OFF
+                if kind in _LEAVE_OVERRIDE_TYPES:
+                    leave_kind[(sid, d)] = kind
+
     # 休み以外のイベント (取消を除く): (職員, 日) → [(開始分, 終了分)]。日を跨ぐものは日ごとに切る。
     events_by_day: dict[tuple[UUID, date], list[tuple[int, int]]] = defaultdict(list)
     if staff_by_id:
@@ -360,10 +460,11 @@ async def build_staff_performance(
                 lo = max(s, day_lo)
                 hi = min(e, day_lo + timedelta(days=1))
                 if hi > lo:
-                    events_by_day[(sid, d)].append(
-                        (
+                    events_by_day[(sid, d)].extend(
+                        _minus_window(
                             int((lo - day_lo).total_seconds() // 60),
                             int((hi - day_lo).total_seconds() // 60),
+                            leave_window(leave_kind.get((sid, d))),
                         )
                     )
                 d += timedelta(days=1)
@@ -374,6 +475,7 @@ async def build_staff_performance(
         a = actuals.get(r.id)
         actual_min: int | None = None
         arrival_only = False
+        no_show = a is not None and a.no_show is not None
         if a is not None and a.arrival is not None:
             if a.departure is not None:
                 actual_min = stay_minutes(a.arrival.at, a.departure.at)
@@ -387,6 +489,7 @@ async def build_staff_performance(
                 point=_point(r.lat, r.lng),
                 actual_min=actual_min,
                 arrival_only=arrival_only,
+                no_show=no_show,
             )
         )
 
@@ -466,6 +569,7 @@ __all__ = [
     "DaySummary",
     "build_staff_performance",
     "is_leave_event",
+    "leave_window",
     "metrics_of",
     "summarize_day",
     "team_metrics_of",

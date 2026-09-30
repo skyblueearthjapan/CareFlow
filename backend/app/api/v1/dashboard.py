@@ -265,16 +265,29 @@ async def get_staff_performance(
     date_to: Annotated[date | None, Query(alias="to")] = None,
     office_id: Annotated[UUID | None, Query()] = None,
 ) -> StaffPerformanceResponse:
-    """期間 (既定 = 今週) のスタッフ別の実績 (設計 dashboard-staff-performance §3 / §7)。"""
+    """期間 (既定 = 今週) のスタッフ別の実績 (設計 dashboard-staff-performance §3 / §7)。
+
+    実績の画面なので、期間の終わりは今日 (JST) までに切る (先の予定は数えない)。
+    """
+    if (date_from is None) != (date_to is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="期間は始めと終わりの両方を指定してください (両方省くと今週)",
+        )
+    today = datetime.now(JST).date()
     if date_from is None or date_to is None:
-        week_start, week_end = _iso_week_bounds(datetime.now(JST).date())
-        date_from = date_from or week_start
-        date_to = date_to or week_end
+        date_from, date_to = _iso_week_bounds(today)
     if date_from > date_to:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="期間の始めが終わりより後になっています",
         )
+    if date_from > today:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="期間の始めが今日より後になっています (実績は今日までを数えます)",
+        )
+    date_to = min(date_to, today)
     if (date_to - date_from).days + 1 > MAX_PERIOD_DAYS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

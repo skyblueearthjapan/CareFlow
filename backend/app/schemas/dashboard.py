@@ -91,6 +91,9 @@ class PerformanceMetrics(BaseModel):
     meeting_min_per_day: float | None = Field(None, description="1 日の内訳: 会議・研修など")
     idle_min_per_day: float | None = Field(None, description="1 日の内訳: 訪問の合間")
     meeting_min_total: int = Field(..., ge=0)
+    no_show_count: int = Field(
+        0, ge=0, description="未訪問 (no_show) の記録がある訪問の件数 (件数には数えたまま)"
+    )
     staff_count: int | None = Field(None, description="チーム平均のときだけ: 訪問のあった人数")
 
 
