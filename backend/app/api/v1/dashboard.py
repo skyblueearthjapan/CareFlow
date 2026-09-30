@@ -14,6 +14,9 @@ Implementation notes
 * The week aggregate is the ISO week containing today (Mon–Sun).
 * `cancelled` visits are excluded from every aggregate (today / week / trend)
   so they neither inflate visit totals nor drag down completion rates.
+* `/staff-performance` (スタッフ別の実績・管理者のみ) の集計は
+  ``services/dashboard_staff_performance.py`` (設計
+  ``docs/plans/dashboard-staff-performance-design-2026-09-30.md``)。
 """
 
 from __future__ import annotations
@@ -23,11 +26,11 @@ from typing import Annotated
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import case, func, or_, select
 
-from app.core.deps import CurrentActiveUser, DbDep
-from app.models.user import normalize_user_role
+from app.core.deps import CurrentActiveUser, DbDep, require_role
+from app.models.user import User, normalize_user_role
 from app.models.visit import (
     VISIT_STATUS_CANCELLED,
     VISIT_STATUS_COMPLETED,
@@ -37,7 +40,9 @@ from app.schemas.dashboard import (
     DashboardKpiResponse,
     DashboardTrendItem,
     DashboardTrendResponse,
+    StaffPerformanceResponse,
 )
+from app.services.dashboard_staff_performance import MAX_PERIOD_DAYS, build_staff_performance
 
 router = APIRouter()
 
@@ -246,3 +251,46 @@ async def get_trend(
         )
 
     return DashboardTrendResponse(items=items, days=days, start_date=start, end_date=end)
+
+
+@router.get(
+    "/staff-performance",
+    response_model=StaffPerformanceResponse,
+    summary="スタッフ別の訪問の実績 (管理者のみ)",
+)
+async def get_staff_performance(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    date_from: Annotated[date | None, Query(alias="from")] = None,
+    date_to: Annotated[date | None, Query(alias="to")] = None,
+    office_id: Annotated[UUID | None, Query()] = None,
+) -> StaffPerformanceResponse:
+    """期間 (既定 = 今週) のスタッフ別の実績 (設計 dashboard-staff-performance §3 / §7)。
+
+    実績の画面なので、期間の終わりは今日 (JST) までに切る (先の予定は数えない)。
+    """
+    if (date_from is None) != (date_to is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="期間は始めと終わりの両方を指定してください (両方省くと今週)",
+        )
+    today = datetime.now(JST).date()
+    if date_from is None or date_to is None:
+        date_from, date_to = _iso_week_bounds(today)
+    if date_from > date_to:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="期間の始めが終わりより後になっています",
+        )
+    if date_from > today:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="期間の始めが今日より後になっています (実績は今日までを数えます)",
+        )
+    date_to = min(date_to, today)
+    if (date_to - date_from).days + 1 > MAX_PERIOD_DAYS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"期間は {MAX_PERIOD_DAYS} 日以内で選んでください",
+        )
+    return await build_staff_performance(db, date_from, date_to, office_id=office_id)

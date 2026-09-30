@@ -127,6 +127,19 @@
   /* 現在時刻ライン (テラコッタ = --brand-accent と同系) */
   --sched-now: #d2683c;
 
+  /* === Chart (グラフの系列色・ダッシュボードのスタッフ別の実績) ===
+   * 系列色は状態色 (success/warning/error) と混ぜない。緑は「良い」と読まれるので使わない。
+   * 検証: dataviz validate_palette.js (light・白地) — 青/橙/紫 と 青/赤紫 は全項目 PASS。
+   * 中立色 (チーム平均・合間) は白地で 3:1 以上。 */
+  --chart-self: #2a78d6; /* この人・訪問 (主役) */
+  --chart-self-soft: #cde2fb;
+  --chart-travel: #eb6834; /* 移動 */
+  --chart-meeting: #4a3aa7; /* 会議・研修など */
+  --chart-actual: #c9457a; /* 実績 (QR) */
+  --chart-team: #6b665f; /* チーム平均 (破線・文脈の線) 5.7:1 */
+  --chart-idle: #8a847d; /* 訪問の合間 (中立) 3.7:1 */
+  --chart-grid: #efece7;
+
   /* === Typography === */
   /* Noto Sans JP を全 OS で先頭に (app/layout.tsx で読込・mac-ui-crossplatform-design.md §2-A)。
    * 読込前/オフライン時のフォールバックは OS 標準の和文ゴシック。 */
@@ -149,6 +162,22 @@
   --shadow-xl: 0 24px 48px rgba(28, 25, 23, 0.1);
   --shadow-outer-card: 0 1px 2px rgba(28, 25, 23, 0.04), 0 8px 24px rgba(28, 25, 23, 0.05);
   --shadow-fab: 0 8px 24px rgba(225, 90, 127, 0.4), 0 0 0 6px rgba(225, 90, 127, 0.1);
+}
+
+/* === Chart (暗い画面) ===
+ * らく助は今は明るい画面だけ。暗い画面を入れるときに data-theme='dark' で効く値を先に置く。
+ * 検証: validate_palette.js --mode dark (地 #1a1a19) — 青/橙/紫 (隣り合う組) と 青/赤紫 は PASS。
+ * 暗い紫は青と色覚の型によって近く見えるため、1 日の内訳の帯では青と隣り合わせない
+ * (訪問 → 移動 → 会議・研修など の順)。中立色は暗い地で 5:1 以上。 */
+[data-theme='dark'] {
+  --chart-self: #3987e5;
+  --chart-self-soft: #184f95;
+  --chart-travel: #d95926;
+  --chart-meeting: #9085e9;
+  --chart-actual: #d55181;
+  --chart-team: #a8a29e;
+  --chart-idle: #8f8a83;
+  --chart-grid: #2c2c2a;
 }
 
 /* === Density === */
