@@ -1,5 +1,7 @@
 'use client';
 
+import { useSession } from 'next-auth/react';
+
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -7,19 +9,96 @@ import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { EmptyState } from '@/components/dashboard/EmptyState';
 import { KpiCard } from '@/components/dashboard/KpiCard';
 import { TrendChart } from '@/components/dashboard/TrendChart';
-import { useDashboardKpi, useDashboardTrend } from '@/lib/queries/dashboard';
+import { StaffPerformanceSection } from '@/components/dashboard/performance/StaffPerformanceSection';
+import { useDashboardKpi, useDashboardTrend, type DashboardKpi } from '@/lib/queries/dashboard';
+import { isAdminRole } from '@/lib/rbac';
 
 function formatPercent(rate: number): string {
   return `${Math.round(rate * 1000) / 10}%`;
 }
 
+/**
+ * 管理者向け: 今日の運用の数字を小さく残す (設計 dashboard-staff-performance §5-6)。
+ */
+function OpsSummary({ kpi, isLoading }: { kpi: DashboardKpi | undefined; isLoading: boolean }) {
+  const items: { label: string; value: string; warn?: boolean }[] = [
+    { label: '今日の訪問', value: `${kpi?.today_visits ?? 0} 件` },
+    { label: '今日の完了', value: `${kpi?.today_completed ?? 0} 件` },
+    {
+      label: '未割当',
+      value: `${kpi?.today_unassigned ?? 0} 件`,
+      warn: (kpi?.today_unassigned ?? 0) > 0,
+    },
+    {
+      label: '重複',
+      value: `${kpi?.today_overlapping ?? 0} 件`,
+      warn: (kpi?.today_overlapping ?? 0) > 0,
+    },
+    { label: '今週合計', value: `${kpi?.this_week_visits ?? 0} 件` },
+    {
+      label: '今週完了率',
+      value: kpi ? formatPercent(kpi.this_week_completion_rate) : '--',
+    },
+  ];
+  return (
+    <Card className="px-4 py-3" data-testid="ops-summary">
+      <h2 className="mb-2 text-[13px] font-bold text-text-secondary">今日の運用</h2>
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-1 sm:grid-cols-3 lg:grid-cols-6">
+        {items.map((it) => (
+          <div key={it.label} className="flex items-baseline justify-between gap-2">
+            <dt className="text-xs text-text-muted">{it.label}</dt>
+            <dd
+              className={
+                it.warn
+                  ? 'text-sm font-bold tnum text-error'
+                  : 'text-sm font-bold tnum text-text-primary'
+              }
+            >
+              {isLoading ? <Skeleton className="h-4 w-10" /> : it.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </Card>
+  );
+}
+
 export default function DashboardPage() {
+  const { data: session } = useSession();
+  const isAdmin = isAdminRole(session?.user?.role);
   const kpi = useDashboardKpi();
   const trend = useDashboardTrend(7);
 
   const kpiLoading = kpi.isLoading;
   const trendItems = trend.data?.items ?? [];
   const trendHasData = trendItems.some((d) => d.total > 0);
+
+  const kpiError = kpi.isError ? (
+    <Alert variant="destructive">
+      <AlertTitle>KPI の取得に失敗しました</AlertTitle>
+      <AlertDescription>
+        {kpi.error instanceof Error ? kpi.error.message : '不明なエラー'}
+      </AlertDescription>
+    </Alert>
+  ) : null;
+
+  if (isAdmin) {
+    return (
+      <section className="space-y-5">
+        <header>
+          <RakusukeTitle
+            pose="wave"
+            title="ダッシュボード"
+            subtitle="スタッフごとの訪問の実績を、件数・時間・移動で見ます。"
+          />
+        </header>
+        {kpiError}
+        <StaffPerformanceSection
+          opsSummary={<OpsSummary kpi={kpi.data} isLoading={kpiLoading} />}
+        />
+      </section>
+    );
+  }
 
   return (
     <section className="space-y-6">
@@ -31,14 +110,7 @@ export default function DashboardPage() {
         />
       </header>
 
-      {kpi.isError ? (
-        <Alert variant="destructive">
-          <AlertTitle>KPI の取得に失敗しました</AlertTitle>
-          <AlertDescription>
-            {kpi.error instanceof Error ? kpi.error.message : '不明なエラー'}
-          </AlertDescription>
-        </Alert>
-      ) : null}
+      {kpiError}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <KpiCard

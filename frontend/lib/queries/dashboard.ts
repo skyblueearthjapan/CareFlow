@@ -15,6 +15,10 @@ import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
+import {
+  staffPerformanceResponseSchema,
+  type StaffPerformanceResponse,
+} from '@/lib/schemas/dashboard';
 
 export interface DashboardKpi {
   today_visits: number;
@@ -68,6 +72,43 @@ export function useDashboardKpi(): UseQueryResult<DashboardKpi, Error> {
     // each interval tick produces exactly one network request.
     refetchInterval: 60_000,
     queryFn: () => fetcher<DashboardKpi>('/api/v1/dashboard/kpi', { accessToken, refreshToken }),
+  });
+}
+
+export interface UseStaffPerformanceParams {
+  /** 期間の始め (YYYY-MM-DD)。 */
+  from: string;
+  /** 期間の終わり (YYYY-MM-DD)。 */
+  to: string;
+  /** 拠点 ID (未指定なら全拠点)。 */
+  officeId?: string | null;
+  /** false のときは呼ばない (staff ロールでは呼ばない)。 */
+  enabled?: boolean;
+}
+
+/**
+ * GET /api/v1/dashboard/staff-performance — スタッフ別の実績 (管理者のみ)。
+ * 過去の集計なのでポーリングしない。
+ */
+export function useStaffPerformance(
+  params: UseStaffPerformanceParams,
+): UseQueryResult<StaffPerformanceResponse, Error> {
+  const { data: session, status } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+  const { from, to, officeId = null, enabled = true } = params;
+
+  return useQuery<StaffPerformanceResponse, Error>({
+    queryKey: [...DASHBOARD_KEY, 'staff-performance', { from, to, officeId }],
+    enabled: enabled && status === 'authenticated' && Boolean(from && to),
+    queryFn: async () => {
+      const qs = new URLSearchParams({ from, to });
+      if (officeId) qs.set('office_id', officeId);
+      const raw = await fetcher<unknown>(`/api/v1/dashboard/staff-performance?${qs.toString()}`, {
+        accessToken,
+        refreshToken,
+      });
+      return staffPerformanceResponseSchema.parse(raw);
+    },
   });
 }
 
