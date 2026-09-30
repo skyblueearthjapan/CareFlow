@@ -2,7 +2,7 @@
  *
  * 設計: docs/plans/dashboard-staff-performance-design-2026-09-30.md §4〜§6。
  */
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 
 const useSession = vi.fn();
@@ -52,6 +52,7 @@ function metrics(over: Partial<PerformanceMetrics> = {}): PerformanceMetrics {
     meeting_min_per_day: 30,
     idle_min_per_day: 60,
     meeting_min_total: 120,
+    no_show_count: 0,
     staff_count: null,
     ...over,
   };
@@ -100,7 +101,7 @@ const PERF: StaffPerformanceResponse = {
       is_manager: false,
       is_trainee: true,
       qualification: '看護師',
-      period: metrics({ per_day: 4.5, arrival_only: 3 }),
+      period: metrics({ per_day: 4.5, arrival_only: 3, no_show_count: 2 }),
       weeks: [metrics({ per_day: 4 }), metrics({ days: 0, visits: 0, per_day: null })],
     },
   ],
@@ -139,7 +140,9 @@ describe('管理者', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('1 人 1 日あたり')).toBeInTheDocument();
     expect(screen.getByText('QR で時間が取れた訪問')).toBeInTheDocument();
-    expect(screen.getByText('2 人・のべ 8 日')).toBeInTheDocument();
+    expect(screen.getByText('2 人・のべ 8 日（2 名訪問はそれぞれに数えます）')).toBeInTheDocument();
+    // 管理者の画面では 7 日のトレンドを呼ばない。
+    expect(useDashboardTrend).toHaveBeenLastCalledWith(7, { enabled: false });
     expect(screen.getByRole('note')).toHaveTextContent('QR の到着と退出が揃った訪問（10%）');
     // 今日の運用は小さく残す。
     const ops = screen.getByTestId('ops-summary');
@@ -170,12 +173,33 @@ describe('管理者', () => {
     expect(second.getByText('新人')).toBeInTheDocument();
     expect(second.queryByText('准看護師')).not.toBeInTheDocument();
     expect(second.getByText('実績 —（到着のみ 3 件）')).toBeInTheDocument();
+    expect(second.getByText('未訪問の記録 2 件')).toBeInTheDocument();
+    expect(first.queryByText(/未訪問の記録/)).not.toBeInTheDocument();
+    // カードは article・押す所は名前付きのボタン。
+    expect(cards[0]!.tagName).toBe('ARTICLE');
+    expect(
+      screen.getByRole('button', { name: '佐藤 花子の実績をくわしく見る' }),
+    ).toBeInTheDocument();
+  });
+
+  it('チームの実績の時間は「全員の QR 記録の平均」と書く', () => {
+    asRole('admin');
+    useStaffPerformance.mockReturnValue({
+      data: {
+        ...PERF,
+        team: { ...PERF.team, period: { ...PERF.team.period, actual_min: 38, actual_samples: 9 } },
+      },
+      isLoading: false,
+      isError: false,
+    });
+    render(<DashboardPage />);
+    expect(screen.getByText('実績 38 分（全員の QR 記録の平均・9 件）')).toBeInTheDocument();
   });
 
   it('カードを押すと C (1 人を深く見る) が開き、戻れる', () => {
     asRole('admin');
     render(<DashboardPage />);
-    fireEvent.click(screen.getAllByTestId('perf-staff-card')[1]!);
+    fireEvent.click(screen.getByRole('button', { name: '鈴木 次郎の実績をくわしく見る' }));
     const deep = screen.getByTestId('perf-deep-view');
     expect(within(deep).getAllByTestId('perf-line-chart')).toHaveLength(4);
     expect(within(deep).getByText('1 日あたりの訪問件数')).toBeInTheDocument();
@@ -189,6 +213,8 @@ describe('管理者', () => {
     expect(breakdown).toHaveTextContent('会議・研修など 0:30');
     expect(breakdown).toHaveTextContent('訪問の合間 1:00');
     expect(breakdown).toHaveTextContent('時速 20km');
+    expect(deep).toHaveTextContent('未訪問の記録 2 件（件数には含めています）');
+    expect(within(deep).getByText('会議・研修など（週計）')).toBeInTheDocument();
     // 週ごとの表 (訪問の無い週は「—」)。
     const rows = within(screen.getByTestId('perf-week-table')).getAllByRole('row');
     expect(rows).toHaveLength(3);
@@ -200,17 +226,63 @@ describe('管理者', () => {
     expect(screen.getAllByTestId('perf-staff-card')).toHaveLength(2);
   });
 
-  it('期間と拠点を切り替えると、その条件で読み直す', () => {
+  describe('期間 (今日 = 2026-10-01 JST)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-10-01T03:00:00Z'));
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const last = () => useStaffPerformance.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+
+    it('今月は今日まで・先月は 9/1〜9/30・拠点で絞り込む', () => {
+      asRole('admin');
+      render(<DashboardPage />);
+      expect(last()).toMatchObject({ from: '2026-10-01', to: '2026-10-01', officeId: null });
+      fireEvent.click(screen.getByRole('button', { name: '第二ステーション' }));
+      expect(last().officeId).toBe(OFFICE_B);
+      fireEvent.click(screen.getByRole('button', { name: '先月' }));
+      expect(last()).toMatchObject({ from: '2026-09-01', to: '2026-09-30', enabled: true });
+      expect(screen.getByText('9/1〜9/30')).toBeInTheDocument();
+    });
+
+    it('任意は 93 日までにする', () => {
+      asRole('admin');
+      render(<DashboardPage />);
+      fireEvent.click(screen.getByRole('button', { name: '任意' }));
+      fireEvent.change(screen.getByLabelText('期間の始め'), { target: { value: '2026-05-01' } });
+      fireEvent.change(screen.getByLabelText('期間の終わり'), { target: { value: '2026-09-30' } });
+      expect(screen.getByText('期間は 93 日以内で選んでください。')).toBeInTheDocument();
+      expect(last().enabled).toBe(false);
+      fireEvent.change(screen.getByLabelText('期間の始め'), { target: { value: '2026-07-01' } });
+      expect(last()).toMatchObject({ from: '2026-07-01', to: '2026-09-30', enabled: true });
+    });
+  });
+
+  it('QR の割合が取れないときは % を付けない', () => {
     asRole('admin');
+    useStaffPerformance.mockReturnValue({
+      data: { ...PERF, team: { ...PERF.team, period: { ...PERF.team.period, qr_ratio: null } } },
+      isLoading: false,
+      isError: false,
+    });
     render(<DashboardPage />);
-    fireEvent.click(screen.getByRole('button', { name: '第二ステーション' }));
-    let params = useStaffPerformance.mock.calls.at(-1)?.[0] as Record<string, unknown>;
-    expect(params.officeId).toBe(OFFICE_B);
-    fireEvent.click(screen.getByRole('button', { name: '先月' }));
-    params = useStaffPerformance.mock.calls.at(-1)?.[0] as Record<string, unknown>;
-    expect(params.from).toMatch(/-01$/);
-    fireEvent.click(screen.getByRole('button', { name: '任意' }));
-    expect(screen.getByLabelText('期間の始め')).toBeInTheDocument();
+    const tile = screen.getByText('QR で時間が取れた訪問').parentElement!;
+    expect(tile).toHaveTextContent('—');
+    expect(tile).not.toHaveTextContent('%');
+  });
+});
+
+describe('権限が分かる前', () => {
+  it('枠だけ出し、staff の画面も実績も出さない', () => {
+    useSession.mockReturnValue({ data: null, status: 'loading' });
+    render(<DashboardPage />);
+    expect(screen.getByTestId('dashboard-loading')).toBeInTheDocument();
+    expect(screen.queryByText('今週完了率')).not.toBeInTheDocument();
+    expect(useStaffPerformance).not.toHaveBeenCalled();
+    expect(useDashboardTrend).toHaveBeenLastCalledWith(7, { enabled: false });
   });
 });
 
@@ -222,6 +294,7 @@ describe('staff ロール', () => {
     expect(screen.getByText('今週完了率')).toBeInTheDocument();
     expect(screen.getByText('訪問トレンド (直近 7 日)')).toBeInTheDocument();
     expect(useStaffPerformance).not.toHaveBeenCalled();
+    expect(useDashboardTrend).toHaveBeenLastCalledWith(7, { enabled: true });
     expect(screen.queryByTestId('perf-staff-card')).not.toBeInTheDocument();
     expect(screen.queryByTestId('perf-caveats')).not.toBeInTheDocument();
     expect(screen.queryByText('QR で時間が取れた訪問')).not.toBeInTheDocument();

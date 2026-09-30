@@ -104,18 +104,28 @@ export function StaffPerformanceCard({
   const perDayDiff = diff1(m.per_day, team.per_day);
   const kmDiff = diff1(m.km_per_day, team.km_per_day);
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(row.staff_id)}
+    // カード全体を押せるように、見出しのボタンを枠いっぱいに広げる (article の中に
+    // 見出し・表を置くため、ボタンで全体を包まない = HTML として正しい形)。
+    <article
       data-testid="perf-staff-card"
-      className="rounded-lg border border-border-default bg-bg-base px-4 py-3.5 text-left shadow-outer-card transition-colors hover:border-brand-primary-light focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-primary"
+      className="relative rounded-lg border border-border-default bg-bg-base px-4 py-3.5 shadow-outer-card transition-colors focus-within:border-brand-primary hover:border-brand-primary-light"
     >
-      <h3 className="text-base font-bold text-text-primary">{row.name}</h3>
+      <h3 className="text-base font-bold text-text-primary">
+        <button
+          type="button"
+          onClick={() => onOpen(row.staff_id)}
+          aria-label={`${row.name}の実績をくわしく見る`}
+          className="text-left after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:outline-none"
+        >
+          {row.name}
+        </button>
+      </h3>
       <div className="mt-0.5 flex flex-wrap gap-1">
         {roleTags(row).map((t) => (
           <Tag key={t}>{t}</Tag>
         ))}
         <Tag>出勤 {m.days} 日</Tag>
+        {m.no_show_count > 0 ? <Tag>未訪問の記録 {m.no_show_count} 件</Tag> : null}
       </div>
       <div className="my-2.5 grid grid-cols-2 gap-2">
         <Tile k="訪問" v={String(m.visits)} unit="件" d={`利用者 ${m.patients} 名`} />
@@ -147,6 +157,6 @@ export function StaffPerformanceCard({
           </span>
         ))}
       </div>
-    </button>
+    </article>
   );
 }

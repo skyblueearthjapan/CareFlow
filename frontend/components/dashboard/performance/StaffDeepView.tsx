@@ -118,6 +118,9 @@ export function StaffDeepView({ data, staffId, onSelect, onBack }: StaffDeepView
             出勤 {m.days} 日・訪問 {m.visits} 件・利用者 {m.patients} 名・1 日あたり {r1(m.per_day)}{' '}
             件・1 回あたり {r0(m.plan_min)} 分（予定）・
             {actualText(m, data.min_actual_samples)}
+            {m.no_show_count > 0
+              ? `・未訪問の記録 ${m.no_show_count} 件（件数には含めています）`
+              : ''}
           </p>
         </div>
       </Card>
@@ -186,7 +189,7 @@ export function StaffDeepView({ data, staffId, onSelect, onBack }: StaffDeepView
         {m.skipped_legs > 0 ? (
           <p className="text-xs text-text-secondary">
             住所の位置が登録されていないため、距離に入れていない区間が {m.skipped_legs}{' '}
-            か所あります。
+            か所あります。その区間の移動は引けないため、訪問の合間が長めに出ることがあります。
           </p>
         ) : null}
       </Card>
@@ -205,7 +208,7 @@ export function StaffDeepView({ data, staffId, onSelect, onBack }: StaffDeepView
                 '実績（QR）',
                 '移動 km/日',
                 'km/件',
-                '会議・研修など',
+                '会議・研修など（週計）',
                 '合間/日',
               ].map((h, i) => (
                 <th

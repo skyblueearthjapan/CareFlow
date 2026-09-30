@@ -113,7 +113,11 @@ export function useStaffPerformance(
 }
 
 /** GET /api/v1/dashboard/trend?days=N — daily trend, oldest → newest. */
-export function useDashboardTrend(days: number = 7): UseQueryResult<DashboardTrend, Error> {
+export function useDashboardTrend(
+  days: number = 7,
+  options: { enabled?: boolean } = {},
+): UseQueryResult<DashboardTrend, Error> {
+  const { enabled = true } = options;
   const { data: session, status } = useSession();
   const { accessToken, refreshToken } = authPair(session);
   const userId = session?.user?.id ?? null;
@@ -121,7 +125,7 @@ export function useDashboardTrend(days: number = 7): UseQueryResult<DashboardTre
 
   return useQuery<DashboardTrend, Error>({
     queryKey: [...DASHBOARD_KEY, 'trend', safeDays, userId],
-    enabled: status === 'authenticated',
+    enabled: enabled && status === 'authenticated',
     // 60s > global staleTime (30s) so each tick produces exactly one fetch.
     refetchInterval: 60_000,
     queryFn: () =>

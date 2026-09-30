@@ -14,8 +14,10 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/dashboard/EmptyState';
 import { KpiCard } from '@/components/dashboard/KpiCard';
 import {
+  MAX_PERIOD_DAYS,
   PERIOD_PRESETS,
   monthDay,
+  periodDays,
   presetRange,
   r0,
   r1,
@@ -75,15 +77,23 @@ export interface StaffPerformanceSectionProps {
 }
 
 export function StaffPerformanceSection({ opsSummary }: StaffPerformanceSectionProps) {
-  const today = React.useMemo(() => todayJst(), []);
+  // 毎回計算する (日付をまたいで開いたままでも「今週」「今月」が今日に追いつく)。
+  const today = todayJst();
   const [preset, setPreset] = React.useState<PeriodPreset>('this_month');
   const [custom, setCustom] = React.useState(() => presetRange('this_month', today));
   const [officeId, setOfficeId] = React.useState('');
   const [selected, setSelected] = React.useState<string | null>(null);
 
   const range = preset === 'custom' ? custom : presetRange(preset, today);
-  const customInvalid =
-    preset === 'custom' && (!custom.from || !custom.to || custom.from > custom.to);
+  const customMessage =
+    preset !== 'custom'
+      ? null
+      : !custom.from || !custom.to || custom.from > custom.to
+        ? '期間の始めと終わりを選んでください。'
+        : periodDays(custom.from, custom.to) > MAX_PERIOD_DAYS
+          ? `期間は ${MAX_PERIOD_DAYS} 日以内で選んでください。`
+          : null;
+  const customInvalid = customMessage != null;
   const query = useStaffPerformance({
     from: range.from,
     to: range.to,
@@ -121,6 +131,7 @@ export function StaffPerformanceSection({ opsSummary }: StaffPerformanceSectionP
             <input
               type="date"
               aria-label="期間の始め"
+              max={today}
               value={custom.from}
               onChange={(e) => setCustom((c) => ({ ...c, from: e.target.value }))}
               className="rounded-md border border-border-default bg-bg-base px-2 py-0.5"
@@ -129,6 +140,7 @@ export function StaffPerformanceSection({ opsSummary }: StaffPerformanceSectionP
             <input
               type="date"
               aria-label="期間の終わり"
+              max={today}
               value={custom.to}
               onChange={(e) => setCustom((c) => ({ ...c, to: e.target.value }))}
               className="rounded-md border border-border-default bg-bg-base px-2 py-0.5"
@@ -148,9 +160,7 @@ export function StaffPerformanceSection({ opsSummary }: StaffPerformanceSectionP
         />
       </div>
 
-      {customInvalid ? (
-        <p className="text-sm text-warning-strong">期間の始めと終わりを選んでください。</p>
-      ) : null}
+      {customMessage ? <p className="text-sm text-warning-strong">{customMessage}</p> : null}
 
       {query.isError ? (
         <Alert variant="destructive">
@@ -167,7 +177,11 @@ export function StaffPerformanceSection({ opsSummary }: StaffPerformanceSectionP
           value={team?.visits ?? 0}
           unit="件"
           isLoading={query.isLoading}
-          caption={team ? `${team.staff_count ?? 0} 人・のべ ${team.days} 日` : undefined}
+          caption={
+            team
+              ? `${team.staff_count ?? 0} 人・のべ ${team.days} 日（2 名訪問はそれぞれに数えます）`
+              : undefined
+          }
         />
         <KpiCard
           label="1 人 1 日あたり"
@@ -184,7 +198,7 @@ export function StaffPerformanceSection({ opsSummary }: StaffPerformanceSectionP
           caption={
             team
               ? team.actual_min != null
-                ? `実績 ${r0(team.actual_min)} 分（QR ${team.actual_samples} 件）`
+                ? `実績 ${r0(team.actual_min)} 分（全員の QR 記録の平均・${team.actual_samples} 件）`
                 : '実績は QR の記録が足りません'
               : undefined
           }
@@ -199,7 +213,7 @@ export function StaffPerformanceSection({ opsSummary }: StaffPerformanceSectionP
         <KpiCard
           label="QR で時間が取れた訪問"
           value={team?.qr_ratio != null ? Math.round(team.qr_ratio * 100) : '—'}
-          unit="%"
+          unit={team?.qr_ratio != null ? '%' : undefined}
           isLoading={query.isLoading}
           caption={
             team ? `${team.actual_samples} / ${team.visits} 件（到着と退出の両方）` : undefined

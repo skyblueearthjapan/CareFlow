@@ -64,6 +64,14 @@ export function presetRange(
   }
 }
 
+/** 1 回に選べる最長の期間 (日)。BE の MAX_PERIOD_DAYS と同じ。 */
+export const MAX_PERIOD_DAYS = 93;
+
+/** 期間の日数 (両端を含む)。 */
+export function periodDays(from: string, to: string): number {
+  return Math.round((parse(to).getTime() - parse(from).getTime()) / 86_400_000) + 1;
+}
+
 /** 'YYYY-MM-DD' → 'M/D'。 */
 export function monthDay(iso: string): string {
   const [, m, d] = iso.split('-');

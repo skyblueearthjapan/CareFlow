@@ -64,10 +64,12 @@ function OpsSummary({ kpi, isLoading }: { kpi: DashboardKpi | undefined; isLoadi
 }
 
 export default function DashboardPage() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const isAdmin = isAdminRole(session?.user?.role);
+  const sessionLoading = status === 'loading';
   const kpi = useDashboardKpi();
-  const trend = useDashboardTrend(7);
+  // トレンドは staff の画面だけで使う (管理者の画面では呼ばない)。
+  const trend = useDashboardTrend(7, { enabled: !sessionLoading && !isAdmin });
 
   const kpiLoading = kpi.isLoading;
   const trendItems = trend.data?.items ?? [];
@@ -81,6 +83,19 @@ export default function DashboardPage() {
       </AlertDescription>
     </Alert>
   ) : null;
+
+  // 権限が分かるまでは枠だけ出す (staff の画面が一瞬出てから切り替わるのを防ぐ)。
+  if (sessionLoading) {
+    return (
+      <section className="space-y-5" aria-busy="true" data-testid="dashboard-loading">
+        <header>
+          <RakusukeTitle pose="wave" title="ダッシュボード" />
+        </header>
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-72 w-full" />
+      </section>
+    );
+  }
 
   if (isAdmin) {
     return (
