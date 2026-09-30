@@ -2006,7 +2006,7 @@ export function TimelineDayBoard({
                       title={
                         col.course
                           ? '担当スタッフを変更します'
-                          : '「週を生成」を実行するとコースが作成され担当を変更できます'
+                          : '「週を作る」を実行するとコースが作成され担当を変更できます'
                       }
                       className={cn(
                         'min-w-0 flex-1 truncate rounded border bg-bg-base px-1 py-px text-[12px] font-bold disabled:cursor-not-allowed disabled:opacity-60',

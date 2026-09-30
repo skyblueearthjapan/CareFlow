@@ -360,7 +360,7 @@ function OfficeMatrixTable({
           ) : (
             <>
               ⚠ ○×を計算できません。この週のスケジュールが未生成です。スケジュール画面で
-              <span className="mx-1 font-bold">「週を生成」</span>
+              <span className="mx-1 font-bold">「週を作る」</span>
               を実行してください。
             </>
           )}

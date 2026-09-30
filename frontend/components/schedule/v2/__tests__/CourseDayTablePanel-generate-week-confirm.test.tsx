@@ -1,6 +1,10 @@
 /**
  * CourseDayTablePanel — 「週を生成」再実行の確認ダイアログ (PO 2026-07-10)。
  *
+ * 2026-10-01: ツールバーは「週を作る」になり、ダイアログで「固定訪問から生成」を選ぶと
+ * 従来の「週を生成」と同じ流れ (この確認ダイアログを含む) になる
+ * (copy-week-design-2026-09-30.md §4-1)。以下の「押す」は「週を作る → 固定訪問から生成」。
+ *
  * カバー:
  *   ① 当週に訪問がある状態で「週を生成」を押す → 確認ダイアログが出て mutation は未実行
  *      → 「再実行する」で mutation が実行される
@@ -28,6 +32,21 @@ const { mockToast } = vi.hoisted(() => ({
 const genState = vi.hoisted(() => ({
   mutateAsync: vi.fn(),
 }));
+
+// 「コピー前に戻す」: その週の保存一覧と復元 (連携画面の「取り込み前に戻す」と同じ API)。
+const snapState = vi.hoisted(() => ({
+  snapshots: [] as Array<Record<string, unknown>>,
+  restore: vi.fn(),
+}));
+vi.mock('@/lib/queries/integrations', async (importOriginal) => {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
+  const actual = await importOriginal<typeof import('@/lib/queries/integrations')>();
+  return {
+    ...actual,
+    useInboundSnapshots: () => ({ data: { snapshots: snapState.snapshots } }),
+    useRestoreInboundSnapshot: () => ({ mutateAsync: snapState.restore, isPending: false }),
+  };
+});
 
 vi.mock('@dnd-kit/core', () => ({
   useDroppable: () => ({ isOver: false, setNodeRef: vi.fn() }),
@@ -304,6 +323,14 @@ function renderPanel() {
 
 const CONFIRM_TITLE = 'この週は既に生成されています。再実行しますか？';
 
+/** 「週を作る」→「固定訪問から生成」→「固定訪問から生成する」(= 従来の「週を生成」)。 */
+function pressGenerateFromFixed() {
+  fireEvent.click(screen.getByTestId('generate-week-button'));
+  expect(screen.getByTestId('generate-week-button')).toHaveTextContent('週を作る');
+  fireEvent.click(screen.getByTestId('make-week-how-fixed'));
+  fireEvent.click(screen.getByText('固定訪問から生成する'));
+}
+
 const VISIT = {
   id: 'v1',
   course_id: 'course-C',
@@ -321,6 +348,8 @@ describe('CourseDayTablePanel — 「週を生成」再実行の確認ダイア�
     capState.staffCountFor = () => 5;
     capState.pfvCountFor = () => 0;
     genState.mutateAsync = vi.fn().mockResolvedValue({ visits_created: 0 });
+    snapState.snapshots = [];
+    snapState.restore = vi.fn().mockResolvedValue({ restored: 3, wiped: 5 });
   });
 
   it('① 訪問ありで押す → ダイアログが出て mutation 未実行 → 「再実行する」で実行', async () => {
@@ -330,7 +359,7 @@ describe('CourseDayTablePanel — 「週を生成」再実行の確認ダイア�
     // まだダイアログは出ていない。
     expect(screen.queryByText(CONFIRM_TITLE)).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('generate-week-button'));
+    pressGenerateFromFixed();
 
     // ダイアログが出る & mutation は未実行。
     expect(await screen.findByText(CONFIRM_TITLE)).toBeInTheDocument();
@@ -345,10 +374,62 @@ describe('CourseDayTablePanel — 「週を生成」再実行の確認ダイア�
     setupHooks({ visits: [] });
     renderPanel();
 
-    fireEvent.click(screen.getByTestId('generate-week-button'));
+    pressGenerateFromFixed();
 
     // ダイアログは出ず、即 mutation が走る。
     expect(screen.queryByText(CONFIRM_TITLE)).not.toBeInTheDocument();
     await waitFor(() => expect(genState.mutateAsync).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe('CourseDayTablePanel — 「コピー前に戻す」(copy-week-design-2026-09-30.md §4-6)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    snapState.snapshots = [];
+    snapState.restore = vi.fn().mockResolvedValue({ restored: 3, wiped: 5 });
+  });
+
+  it('一番新しい保存がコピー直前のときだけ出し、確認のうえ復元する', async () => {
+    setupHooks({ visits: [VISIT] });
+    snapState.snapshots = [
+      {
+        id: 'snap-copy',
+        weekStart: '2026-05-04',
+        kind: 'copy_week',
+        visitsCount: 5,
+        createdAt: '2026-05-01T01:00:00Z',
+      },
+    ];
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderPanel();
+    fireEvent.click(screen.getByTestId('undo-copy-week-button'));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(String(confirmSpy.mock.calls[0]?.[0])).toContain('5/4(月)〜5/10(日) の週');
+    await waitFor(() =>
+      expect(snapState.restore).toHaveBeenCalledWith({ snapshotId: 'snap-copy' }),
+    );
+    confirmSpy.mockRestore();
+  });
+
+  it('一番新しい保存が取り込み直前なら出さない', () => {
+    setupHooks({ visits: [VISIT] });
+    snapState.snapshots = [
+      {
+        id: 'snap-smart',
+        weekStart: '2026-05-04',
+        kind: 'smart',
+        visitsCount: 5,
+        createdAt: '2026-05-02T01:00:00Z',
+      },
+      {
+        id: 'snap-copy',
+        weekStart: '2026-05-04',
+        kind: 'copy_week',
+        visitsCount: 5,
+        createdAt: '2026-05-01T01:00:00Z',
+      },
+    ];
+    renderPanel();
+    expect(screen.queryByTestId('undo-copy-week-button')).not.toBeInTheDocument();
   });
 });

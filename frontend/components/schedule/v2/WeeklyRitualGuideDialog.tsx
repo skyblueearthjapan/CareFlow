@@ -44,10 +44,7 @@ interface StepCardProps {
 
 function StepCard({ step, title, description, faq }: StepCardProps) {
   return (
-    <li
-      className="flex gap-3"
-      data-testid={`weekly-ritual-step-${step}`}
-    >
+    <li className="flex gap-3" data-testid={`weekly-ritual-step-${step}`}>
       {/* ステップ番号バッジ */}
       <div
         aria-hidden
@@ -77,10 +74,7 @@ function StepCard({ step, title, description, faq }: StepCardProps) {
 export function WeeklyRitualGuideDialog({ open, onClose }: WeeklyRitualGuideDialogProps) {
   return (
     <Dialog open={open} onOpenChange={(o) => (!o ? onClose() : undefined)}>
-      <DialogContent
-        className="max-w-lg"
-        data-testid="weekly-ritual-guide-dialog"
-      >
+      <DialogContent className="max-w-lg" data-testid="weekly-ritual-guide-dialog">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Rakusuke pose="calendar" className="h-10" />
@@ -92,19 +86,16 @@ export function WeeklyRitualGuideDialog({ open, onClose }: WeeklyRitualGuideDial
         </DialogHeader>
 
         {/* 3ステップカード */}
-        <ol
-          className="space-y-3"
-          data-testid="weekly-ritual-steps"
-        >
+        <ol className="space-y-3" data-testid="weekly-ritual-steps">
           <StepCard
             step={1}
             title="今週の枠を生成する"
             description={
               <>
-                ツールバーの{' '}
-                <span className="font-medium text-text-primary">「週を生成」</span>（↻ アイコン）
-                ボタンをクリックします。固定訪問パターン（毎週の型・PFV）をもとに、今週の
-                実際の訪問予定が一括で作成されます。
+                ツールバーの <span className="font-medium text-text-primary">「週を作る」</span>
+                （↻
+                アイコン）を押し、「固定訪問から生成」を選びます。固定訪問パターン（毎週の型・PFV）をもとに、今週の
+                実際の訪問予定が一括で作成されます（前の週をコピーして作ることもできます）。
               </>
             }
             faq="手動で動かした訪問は消える？ → 「ピン留め」した訪問は保護されます。ピン留めなしの訪問は型から再生成されます。"
@@ -130,10 +121,14 @@ export function WeeklyRitualGuideDialog({ open, onClose }: WeeklyRitualGuideDial
             description={
               <>
                 割り当て後、要確認のコースは{' '}
-                <span className="font-medium text-text-primary">レビューダイアログ</span>に表示されます。
+                <span className="font-medium text-text-primary">レビューダイアログ</span>
+                に表示されます。
                 <br />
                 <span className="mt-1 inline-flex items-center gap-1">
-                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-yellow-400" aria-hidden />
+                  <span
+                    className="inline-block h-2.5 w-2.5 rounded-full bg-yellow-400"
+                    aria-hidden
+                  />
                   <span className="font-medium">連続（黄）</span>
                 </span>
                 ：直近の担当が同一スタッフになるコース。チェックボックスで承認。件数が多いときは
@@ -147,7 +142,8 @@ export function WeeklyRitualGuideDialog({ open, onClose }: WeeklyRitualGuideDial
                 <br />
                 確認後「選んだ内容で割り当て」で完了です。
                 <br />
-                スタッフ体制上避けられない連続（例: その曜日に勤務できるスタッフが 1 名のみ）は、理由つきで自動確定され、レビューでの承認は不要です。
+                スタッフ体制上避けられない連続（例: その曜日に勤務できるスタッフが 1
+                名のみ）は、理由つきで自動確定され、レビューでの承認は不要です。
               </>
             }
             faq="手動で差し替えた割り当ては消える？ → コースの担当変更で差し替えた分（手動確定済み）は保護されます。"

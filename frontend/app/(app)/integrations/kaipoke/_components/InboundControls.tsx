@@ -225,7 +225,11 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
               return (
                 <li key={sn.id} className="flex flex-wrap items-center gap-2 text-xs">
                   <span className="tnum font-medium text-text-primary">{label}</span>
-                  <span className="text-text-muted">取り込み直前・訪問 {sn.visitsCount} 件</span>
+                  <span className="text-text-muted">
+                    {/* 週のコピー (copy-week-design-2026-09-30.md) も同じ仕組みで保存する */}
+                    {sn.kind === 'copy_week' ? '週のコピー直前' : '取り込み直前'}・訪問{' '}
+                    {sn.visitsCount} 件
+                  </span>
                   <Button
                     variant="outline"
                     size="sm"

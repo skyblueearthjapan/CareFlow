@@ -1208,7 +1208,7 @@ function ModePanel({
         if (res?.week_sync == null) {
           toast.warning(
             `固定枠を保存しましたが、${choice?.weekLabel ?? '対象週'}のスケジュールへの` +
-              '反映は行われませんでした。「週を生成」を再実行すると反映されます',
+              '反映は行われませんでした。「週を作る」→「固定訪問から生成」をやり直すと反映されます',
           );
         } else {
           toast.success(
