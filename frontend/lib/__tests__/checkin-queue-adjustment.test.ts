@@ -2,7 +2,8 @@
  * 未送信の打刻に「その場で合わせた時刻」を同梱する (設計 2026-09-30 §6-2 / §7-2)。
  *
  * 圏外で退避した到着はまだサーバに無いので、到着した直後のカードは調整 API を
- * 呼ばずに、送信前の控えへ `adjusted_time` / `adjust_reason_code` を書き込む。
+ * 呼ばずに、送信前の控えへ `adjusted_time` を書き込む。理由は書かない
+ * (PO 決定 2026-10-01・設計 §12)。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -57,12 +58,9 @@ describe('findPending', () => {
 });
 
 describe('setPendingAdjustment', () => {
-  it('控えの payload に adjusted_time / adjust_reason_code を書き込む (at や座標はそのまま)', () => {
+  it('控えの payload に adjusted_time だけを書き込む (理由は付けない・at や座標はそのまま)', () => {
     enqueue('visit-1');
-    const ok = setPendingAdjustment(STAFF, 'visit-1', 'arrival', {
-      adjusted_time: '12:56',
-      adjust_reason_code: 'intercom_wait',
-    });
+    const ok = setPendingAdjustment(STAFF, 'visit-1', 'arrival', { adjusted_time: '12:56' });
     expect(ok).toBe('written');
     expect(listPending(STAFF)[0]?.payload).toEqual({
       at: READ_AT,
@@ -70,29 +68,29 @@ describe('setPendingAdjustment', () => {
       lat: 35.1,
       lng: 140.1,
       adjusted_time: '12:56',
-      adjust_reason_code: 'intercom_wait',
     });
   });
 
   it('押し直したら新しい時刻で上書きする', () => {
     enqueue('visit-1');
-    setPendingAdjustment(STAFF, 'visit-1', 'arrival', {
-      adjusted_time: '13:01',
-      adjust_reason_code: 'intercom_wait',
+    setPendingAdjustment(STAFF, 'visit-1', 'arrival', { adjusted_time: '13:01' });
+    setPendingAdjustment(STAFF, 'visit-1', 'arrival', { adjusted_time: '12:51' });
+    expect(listPending(STAFF)[0]?.payload.adjusted_time).toBe('12:51');
+  });
+
+  it('変更前に退避された控えに残っている理由は、書き直すときに外す', () => {
+    enqueuePending(STAFF, {
+      visit_id: 'visit-1',
+      kind: 'arrival',
+      payload: { at: READ_AT, adjusted_time: '13:01', adjust_reason_code: 'intercom_wait' },
     });
     setPendingAdjustment(STAFF, 'visit-1', 'arrival', { adjusted_time: '12:51' });
-    const payload = listPending(STAFF)[0]?.payload;
-    expect(payload?.adjusted_time).toBe('12:51');
-    // 理由を渡さなかったら、前の理由を引きずらない。
-    expect(payload).not.toHaveProperty('adjust_reason_code');
+    expect(listPending(STAFF)[0]?.payload).toEqual({ at: READ_AT, adjusted_time: '12:51' });
   });
 
   it('null は「元に戻す」— 同梱をやめ、打刻の控えそのものは残す', () => {
     enqueue('visit-1');
-    setPendingAdjustment(STAFF, 'visit-1', 'arrival', {
-      adjusted_time: '12:56',
-      adjust_reason_code: 'intercom_wait',
-    });
+    setPendingAdjustment(STAFF, 'visit-1', 'arrival', { adjusted_time: '12:56' });
     expect(setPendingAdjustment(STAFF, 'visit-1', 'arrival', null)).toBe('written');
     expect(listPending(STAFF)).toHaveLength(1);
     expect(listPending(STAFF)[0]?.payload).toEqual({
@@ -123,20 +121,14 @@ describe('setPendingAdjustment', () => {
 describe('flushPending — 合わせた時刻を一緒に送る', () => {
   it('再送の body に adjusted_time が載る', async () => {
     enqueue('visit-1');
-    setPendingAdjustment(STAFF, 'visit-1', 'arrival', {
-      adjusted_time: '12:56',
-      adjust_reason_code: 'intercom_wait',
-    });
+    setPendingAdjustment(STAFF, 'visit-1', 'arrival', { adjusted_time: '12:56' });
     const sent: PendingEntry[] = [];
     await flushPending(STAFF, async (entry) => {
       sent.push(entry);
     });
     expect(sent).toHaveLength(1);
-    expect(sent[0]?.payload).toMatchObject({
-      at: READ_AT,
-      adjusted_time: '12:56',
-      adjust_reason_code: 'intercom_wait',
-    });
+    expect(sent[0]?.payload).toMatchObject({ at: READ_AT, adjusted_time: '12:56' });
+    expect(sent[0]?.payload).not.toHaveProperty('adjust_reason_code');
     expect(listPending(STAFF)).toHaveLength(0);
   });
 

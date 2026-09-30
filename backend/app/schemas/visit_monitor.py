@@ -1,7 +1,7 @@
 """Visit monitor (PC 訪問モニター) 集計 API スキーマ — QR チェックイン Phase 3.
 
 ``GET /api/v1/monitor`` のレスポンス契約。その日の visits を visit_checkins と
-突き合わせ、スタッフ (= コース) ごとに予定 / 到着 / 退出 / 滞在 / 次距離 / 実効状態
+突き合わせ、職員ごとに予定 / 到着 / 退出 / 滞在 / 次距離 / 実効状態
 (phase + alert_level) を返す。判定アルゴリズムは ``app.services.checkin.monitor``。
 
 GPS 座標 (``MonitorCheckin.lat/lng``) は **位置違いの地図表示** (自宅↔実 GPS の赤破線)
@@ -101,8 +101,19 @@ class MonitorVisit(BaseModel):
     # 代行 = arrival 打刻者の**いずれか**が visit の担当集合 (primary/secondary/
     # mentor/assignments/新人同行) の外。UI はバーに「代行」バッジ + 代行者名を出す。
     is_substitute: bool = False
-    # 予定外訪問 (visits.is_unplanned)。専用行「📌予定外訪問」に集約される。
+    # 予定外訪問 (visits.is_unplanned)。読み取った本人 (= 主担当) の行に「予定外」の
+    # 札つきで入る (専用行は 2026-10-01 廃止・monitor-staff-rows-design §2)。
     is_unplanned: bool = False
+    # 訪問のコースと札 (行 = 職員単位にしたので、コースは訪問ごとの札になった)。
+    # 札 = 拠点名の 1 文字目 + コースコード (例「稲D」「都臨2」)。コース無し・予定外は None。
+    course_id: UUID | None = None
+    course_tag: str | None = None
+    # コースの拠点 (拠点の絞り込みと札の色に使う)。コース無しは患者の主担当拠点。
+    course_office_id: UUID | None = None
+    course_office_name: str | None = None
+    # コースの担当 (courses.assigned_staff_id) とこの訪問の担当が違う
+    # (手動の付け替え manual_staff_override を除く)。札に ⚠ を出す。
+    course_staff_mismatch: bool = False
     patient_id: UUID
     patient_name: str | None = None
     patient_code: str | None = None
@@ -164,34 +175,68 @@ class MonitorVisit(BaseModel):
     review_comment: str | None = None
 
 
-class MonitorStaffRow(BaseModel):
-    """行 = コース単位 (2026-07-10 PO要望でスタッフ単位から変更).
+class MonitorCourseTag(BaseModel):
+    """行ヘッダに並べるコースの札 1 つ (その人がこの日持つコース)."""
 
-    フィールド名は互換のため据え置き。``staff_id`` は行内の担当が 1 名のときのみ
-    その id (複数名の掛け持ち行は None)。``staff_name`` は「・」連結の表示用。
-    コース無し visit の行は従来どおり担当スタッフ単位で作る (course_id=None)。
-    """
-
-    course_id: UUID | None = None
-    # スケジュール側のコース担当 (= courses.assigned_staff_id。スケジュール画面と同一ソース)。
-    # 訪問側の担当 (staff_ids) と食い違う場合は UI が ⚠ を出す (原則③ ズレは隠さない)。
-    course_staff_id: UUID | None = None
-    course_staff_name: str | None = None
-    staff_id: UUID | None = None
-    staff_name: str | None = None
-    # 行内の担当スタッフ id 集合 (イベント帯・性別バッジ用)。
-    staff_ids: list[UUID] = []
+    # 拠点名の 1 文字目 + コースコード (例「稲D」)。
+    label: str
+    course_id: UUID
     office_id: UUID | None = None
     office_name: str | None = None
+
+
+class MonitorDayOverride(BaseModel):
+    """その日の休み・時間変更 (staff_weekly_overrides) — 行の帯と見出しに使う."""
+
+    # 'off' (休み) | 'custom_time' (時間変更)
+    kind: str
+    start_time: str | None = None
+    end_time: str | None = None
+    reason: str | None = None
+
+
+class MonitorStaffRow(BaseModel):
+    """行 = 職員単位 (2026-10-01・monitor-staff-rows-design-2026-09-30.md).
+
+    行キー = 訪問の担当 (``visits.primary_staff_id``。空ならコース担当へフォールバック)。
+    どちらも無い訪問は「担当なし」行 (``staff_id`` = None) に集まる。訪問が無くても、
+    その日にイベント・休み・時間変更がある在籍中の職員は行になる (``visits`` = [])。
+
+    名前は互換のため据え置き。``course_id`` / ``course_label`` / ``course_staff_id`` /
+    ``course_staff_name`` は項目だけ残して**常に None** (コースは訪問ごとの札になった)。
+    """
+
+    # 互換のため残す (常に None)。
+    course_id: UUID | None = None
+    course_staff_id: UUID | None = None
+    course_staff_name: str | None = None
+    # 行の職員。「担当なし」行は None。
+    staff_id: UUID | None = None
+    staff_name: str | None = None
+    # ``[staff_id]`` (互換。イベント帯の取得に使う)。「担当なし」行は []。
+    staff_ids: list[UUID] = []
+    # 職員の所属拠点 (staff.primary_office_id)。
+    office_id: UUID | None = None
+    office_name: str | None = None
+    # 互換のため残す (常に None)。
     course_label: str | None = None
+    # その人がこの日持つコースの札 (重複なし・初出順)。
+    course_tags: list[MonitorCourseTag] = Field(default_factory=list)
+    # 主担当の訪問 (時刻順)。
     visits: list[MonitorVisit]
+    # 同行・副担当として関わる訪問の id (主担当の行にある訪問)。画面は薄く描く。
+    companion_visit_ids: list[UUID] = Field(default_factory=list)
+    # その日の休み・時間変更 (無ければ None)。
+    day_override: MonitorDayOverride | None = None
 
 
 class MonitorOffice(BaseModel):
-    """フィルタチップ用の拠点 (当日 visits に登場する拠点のみ)."""
+    """フィルタチップ用の拠点 (当日の訪問のコース拠点 ∪ 行の職員の所属拠点)."""
 
     id: UUID
     name: str
+    # 拠点の略称 (札・凡例の 1 文字目)。offices.short_label、未設定なら拠点名の 1 文字目。
+    short_label: str | None = None
 
 
 class MonitorResponse(BaseModel):
@@ -202,6 +247,9 @@ class MonitorResponse(BaseModel):
     now: datetime
     thresholds: MonitorThresholds
     offices: list[MonitorOffice]
+    # 札の色の基準 = 拠点マスタの安定した順 (sort_order → 名前 → id)。その日の
+    # ``offices`` の並びだと、都賀しか出ない日に都賀が普段の稲毛の色になるため別に持つ。
+    office_order: list[UUID] = []
     staff: list[MonitorStaffRow]
 
 
@@ -225,6 +273,8 @@ class NearbyResponse(BaseModel):
 __all__ = [
     "MonitorAdjustment",
     "MonitorCheckin",
+    "MonitorCourseTag",
+    "MonitorDayOverride",
     "MonitorOffice",
     "MonitorResponse",
     "MonitorStaffRow",

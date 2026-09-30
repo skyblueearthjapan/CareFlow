@@ -1,7 +1,7 @@
 """訪問モニター集計 API — QR チェックイン Phase 3.
 
 GET /api/v1/monitor?date=YYYY-MM-DD&office_id=（任意）
-    その日の visits を visit_checkins と突き合わせ、スタッフ (= 1 日 1 コース) ごとに
+    その日の visits を visit_checkins と突き合わせ、職員ごと (行 = 職員) に
     予定 / 到着 / 退出 / 滞在 / 次距離 / 実効状態 (phase + alert_level) を返す。
 
 GET /api/v1/monitor/nearby?lat=&lng=&radius_m=（既定150）&limit=（既定5）
@@ -30,7 +30,7 @@ router = APIRouter()
 @router.get(
     "",
     response_model=MonitorResponse,
-    summary="訪問モニター集計 (スタッフ×コースの予定/実績/実効状態) — admin/manager",
+    summary="訪問モニター集計 (職員ごとの予定/実績/実効状態) — admin/manager",
 )
 async def get_monitor(
     db: DbDep,

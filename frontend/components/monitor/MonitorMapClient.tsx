@@ -6,11 +6,12 @@
  * SSR で ``window is not defined`` を出さないため、本ファイルは必ず
  * ``MonitorMap.tsx`` 経由で ``dynamic(import, { ssr:false })`` でのみ読み込む。
  *
- * 行 (コース) 選択でコース目的地ピン + 順路 + 区間距離を描画。場所違い (mismatch)
+ * 行 (職員) 選択でその人の 1 日の目的地ピン + 順路 + 区間距離を描画
+ * (同行・副担当の訪問は主担当の順路なので含めない)。場所違い (mismatch)
  * の選択 visit は 自宅↔実GPS を赤破線 + 距離 + しきい値円、(nearby があれば) 近隣
  * 候補「〇〇様宅？」を表示。ホイールズームは無効 (パネルスクロール優先)。
  */
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import L from 'leaflet';
 import { Circle, MapContainer, Marker, Polyline, Popup, TileLayer, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -90,18 +91,24 @@ const nearIcon = () =>
     html: `<div style="width:22px;height:22px;border-radius:50%;background:#fff;color:var(--text-secondary);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px dashed var(--text-muted)">？</div>`,
   });
 
-/** points が変わるたびに地図を fit する子コンポーネント。 */
-function FitBounds({ points }: { points: LatLng[] }) {
+/**
+ * ``fitKey`` が変わったときだけ地図を points に合わせる子コンポーネント。
+ * 60 秒ごとの更新 (points の作り直し) では合わせ直さない = 利用者の拡大・移動を保つ。
+ */
+function FitBounds({ points, fitKey }: { points: LatLng[]; fitKey: string }) {
   const map = useMap();
+  const pointsRef = useRef(points);
+  pointsRef.current = points;
   useEffect(() => {
-    if (points.length === 1 && points[0]) {
-      map.setView(points[0], 16);
-    } else if (points.length > 1) {
-      map.fitBounds(points, { padding: [40, 40], maxZoom: 16 });
+    const pts = pointsRef.current;
+    if (pts.length === 1 && pts[0]) {
+      map.setView(pts[0], 16);
+    } else if (pts.length > 1) {
+      map.fitBounds(pts, { padding: [40, 40], maxZoom: 16 });
     }
     const t = setTimeout(() => map.invalidateSize(), 80);
     return () => clearTimeout(t);
-  }, [map, points]);
+  }, [map, fitKey]);
   return null;
 }
 
@@ -133,8 +140,11 @@ export default function MonitorMapClient({
   }, [groups, selMismatch, selected, nearby]);
 
   // 順路ライン: グループ座標を結ぶ (同一座標間の 0m セグメントは生成しない)。
+  // 「担当なし」行は 1 人の順路ではないので線も区間距離も描かず、点だけにする。
+  const isUnassigned = row != null && row.staff_id == null;
   const segments = useMemo(() => {
     const segs: { a: LatLng; b: LatLng; mid: LatLng; dist: number }[] = [];
+    if (isUnassigned) return segs;
     for (let i = 0; i < groups.length - 1; i++) {
       const cur = groups[i];
       const nxt = groups[i + 1];
@@ -151,7 +161,7 @@ export default function MonitorMapClient({
       });
     }
     return segs;
-  }, [groups]);
+  }, [groups, isUnassigned]);
 
   const center: LatLng = points.length > 0 ? (points[0] as LatLng) : [35.61, 140.11];
 
@@ -164,7 +174,11 @@ export default function MonitorMapClient({
       style={{ height: 280, width: '100%' }}
     >
       <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" maxZoom={19} />
-      <FitBounds points={points} />
+      {/* 合わせ直すのは、開く行・選ぶ訪問が変わったときと、近隣候補が届いたときだけ。 */}
+      <FitBounds
+        points={points}
+        fitKey={`${row?.staff_id ?? 'unassigned'}|${selectedVisitId ?? ''}|${nearby.length > 0}`}
+      />
 
       {/* 順路ライン: 白の縁取り + 紺青の本線 (OSM の幹線道路ピンク/オレンジと同化しない配色)。
           旧 --brand-primary ピンクは高速道路の塗りと同化して不可視だった (PO報告 2026-07-13)。 */}
@@ -183,7 +197,7 @@ export default function MonitorMapClient({
         />
       ))}
 
-      {/* コース目的地ピン (同一座標は 1 グループ → ピルマーカー) */}
+      {/* 目的地ピン (同一座標は 1 グループ → ピルマーカー) */}
       {groups.map((g) => {
         const groupSelected = g.stops.some((v) => v.visit_id === selectedVisitId);
         const label = g.numbers.join('・');

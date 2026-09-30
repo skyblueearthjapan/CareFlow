@@ -52,13 +52,16 @@ export interface PendingPayload {
    * 1 行作る (検証に通らなければ調整だけ無視し、打刻は必ず記録する)。
    */
   adjusted_time?: string;
+  /**
+   * 合わせた理由。今は書かない (PO 決定 2026-10-01・設計 §12)。変更前に退避された
+   * 控えに残っていることがあるので、読めるように型だけ残す (再送ではそのまま送る)。
+   */
   adjust_reason_code?: string;
 }
 
-/** 未送信の打刻に同梱する「その場で合わせた時刻」。 */
+/** 未送信の打刻に同梱する「その場で合わせた時刻」。理由は付けない。 */
 export interface PendingAdjustment {
   adjusted_time: string;
-  adjust_reason_code?: string;
 }
 
 export interface PendingEntry {
@@ -251,13 +254,9 @@ export function setPendingAdjustment(
   if (sendingIds.has(target.id)) return 'sending';
   const payload: PendingPayload = { ...target.payload };
   delete payload.adjusted_time;
+  // 変更前の控えに残っている理由も、書き直すときに外す。
   delete payload.adjust_reason_code;
-  if (adjustment) {
-    payload.adjusted_time = adjustment.adjusted_time;
-    if (adjustment.adjust_reason_code) {
-      payload.adjust_reason_code = adjustment.adjust_reason_code;
-    }
-  }
+  if (adjustment) payload.adjusted_time = adjustment.adjusted_time;
   writeAll(
     staffId,
     readAll(staffId).map((e) => (e.id === target.id ? { ...e, payload } : e)),

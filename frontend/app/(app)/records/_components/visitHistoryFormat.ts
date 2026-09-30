@@ -6,12 +6,7 @@
  * （今月から ‹ で 1 つ戻れば「先月」が選択表示になる）。
  */
 
-import type {
-  ActualTimeKind,
-  AdjustReasonCode,
-  VisitHistoryAdjustment,
-  VisitHistoryRow,
-} from '@/lib/queries/visit-history';
+import type { ActualTimeKind, VisitHistoryRow } from '@/lib/queries/visit-history';
 
 export type HistoryPreset = 'week' | 'lastweek' | 'month' | 'lastmonth';
 export type HistoryUnit = 'week' | 'month' | 'custom';
@@ -216,44 +211,6 @@ export function isAdjustedRow(
   return !!row.arrival_adjusted || !!row.departure_adjusted || !!row.departure_manual;
 }
 
-/** 理由の表示名（設計 2026-09-30 §4）。 */
-export const ADJUST_REASON_LABEL: Record<AdjustReasonCode, string> = {
-  intercom_wait: 'インターホン待ち',
-  read_later: '読み取りが後になった',
-  no_read: '読み取りなし',
-  other: 'その他',
-};
-
-/** 到着・退出それぞれで選べる理由（先頭ほどよく使う）。 */
-export const ADJUST_REASON_OPTIONS: Record<ActualTimeKind, readonly AdjustReasonCode[]> = {
-  arrival: ['intercom_wait', 'read_later', 'other'],
-  departure: ['read_later', 'no_read', 'other'],
-};
-
-/** 表示名 → 理由コード（効いている調整の理由を選択欄の初期値にする）。無ければ null。 */
-export function reasonCodeOfLabel(label: string | null | undefined): AdjustReasonCode | null {
-  for (const code of Object.keys(ADJUST_REASON_LABEL) as AdjustReasonCode[]) {
-    if (ADJUST_REASON_LABEL[code] === label) return code;
-  }
-  return null;
-}
-
-/**
- * 効いている調整の理由コード（選択欄の初期値にする）。無ければ null。
- *
- * BE の `reason_code` をそのまま使う。`reason_code` の無い応答（古い BE）だけ、
- * 表示名から逆引きする（表示名を変えると初期値が黙って外れるので、逆引きは保険）。
- */
-export function reasonCodeOfAdjustment(
-  adjustment: Pick<VisitHistoryAdjustment, 'reason_code' | 'reason_label'> | null | undefined,
-): AdjustReasonCode | null {
-  const code = adjustment?.reason_code;
-  if (code != null && Object.prototype.hasOwnProperty.call(ADJUST_REASON_LABEL, code)) {
-    return code as AdjustReasonCode;
-  }
-  return reasonCodeOfLabel(adjustment?.reason_label);
-}
-
 /** 到着 / 退出の表示名。 */
 export const ACTUAL_KIND_LABEL: Record<ActualTimeKind, string> = {
   arrival: '到着',
@@ -274,14 +231,6 @@ export function formatAdjustedAt(iso: string | null | undefined): string {
   if (!iso) return '';
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '' : JST_MD_HM.format(d);
-}
-
-/** 行の、その側（到着 / 退出）に効いている調整。無ければ null。 */
-export function adjustmentOf(
-  row: Pick<VisitHistoryRow, 'adjustments'>,
-  kind: ActualTimeKind,
-): VisitHistoryAdjustment | null {
-  return (row.adjustments ?? []).find((a) => a.kind === kind) ?? null;
 }
 
 export interface HistoryGroup {

@@ -32,7 +32,7 @@ export function MonitorMap(props: MonitorMapProps) {
         <MonitorMapClient {...props} />
       ) : (
         <div className="flex h-full items-center justify-center bg-bg-muted text-xs text-text-muted">
-          行（コース）を選択すると地図を表示します。
+          職員の行を選ぶと、その人の 1 日の順路を地図に表示します。
         </div>
       )}
     </div>

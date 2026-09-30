@@ -1271,6 +1271,58 @@ async def test_history_rows_show_adjustments(client, db) -> None:
     await db.rollback()
 
 
+async def test_history_outputs_without_reason(client, db) -> None:
+    """理由の無い調整 (PO 決定 2026-10-01 で画面から理由を外した後の標準) の出し方。
+
+    Excel の備考は「時刻調整」だけ、A4 は読み取った時刻だけを添える。理由の欄は空。
+    """
+    day = _yesterday()
+    admin = await _user(db, "at-h6-admin@example.com", role="admin")
+    staff, user = await _nurse(db, "看護 理由なし", "at-h6@example.com")
+    adjusted = await _visit(
+        db, await _patient(db, "AT-H6", "理由なし調整"), staff, day, status="completed"
+    )
+    await _checkin(db, adjusted, staff, "arrival", _at(day, 13, 6, 40))
+    await _checkin(db, adjusted, staff, "departure", _at(day, 13, 31, 10))
+    manual = await _visit(
+        db,
+        await _patient(db, "AT-H7", "理由なし退出"),
+        staff,
+        day,
+        start=time(15, 0),
+        end=time(15, 30),
+    )
+    await _checkin(db, manual, staff, "arrival", _at(day, 15, 2))
+    assert (await _put(client, user, adjusted, "arrival", "12:56")).status_code == 200
+    assert (await _put(client, user, manual, "departure", "15:32")).status_code == 200
+    params = {"from": day.isoformat(), "to": day.isoformat()}
+
+    res = await client.get(HISTORY_URL, headers=_bearer(admin), params=params)
+    assert res.status_code == 200, res.text
+    rows = {item["patient_name"]: item for item in res.json()["items"]}
+    for name in ("理由なし調整", "理由なし退出"):
+        assert rows[name]["remarks"] == ["時刻調整"]
+        adjustment = rows[name]["adjustments"][0]
+        assert (
+            adjustment["reason_code"],
+            adjustment["reason_label"],
+            adjustment["reason_text"],
+        ) == (None, None, None)
+
+    res = await client.get(f"{HISTORY_URL}/export", headers=_bearer(admin), params=params)
+    assert res.status_code == 200, res.text
+    sheet = list(load_workbook(BytesIO(res.content))["QR読み取りあり"].iter_rows(values_only=True))
+    by_name = {line[3]: line for line in sheet[1:]}
+    assert by_name["理由なし調整"][13] == "時刻調整"
+    assert by_name["理由なし退出"][13] == "時刻調整"
+
+    res = await client.get(f"{HISTORY_URL}/report", headers=_bearer(admin), params=params)
+    assert res.status_code == 200, res.text
+    assert "調整（読取 13:06）" in res.text
+    assert "調整（退出は読み取りなし）" in res.text
+    await db.rollback()
+
+
 async def test_history_adjust_allowed_follows_the_permission(client, db) -> None:
     admin = await _user(db, "at-h2-admin@example.com", role="admin")
     _, recent_user, _recent = await _arrived_visit(db, "AT-H4", day=_yesterday())

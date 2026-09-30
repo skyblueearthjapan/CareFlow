@@ -151,27 +151,16 @@ describe('ActualTimeSheet — 到着', () => {
     expect(screen.queryByText('13:07')).toBeNull();
   });
 
-  it('理由は「インターホン待ち」が初期値。選んだ理由で保存し、成功したら閉じる', async () => {
+  it('理由は尋ねない。選んだ時刻だけで保存し、成功したら閉じる (PO 決定 2026-10-01)', async () => {
     const { onSave, onOpenChange } = renderSheet();
-    expect(screen.getByRole('button', { name: 'インターホン待ち' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-    expect(screen.getByRole('button', { name: '読み取りが後になった' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'その他' })).toBeInTheDocument();
+    for (const label of ['インターホン待ち', '読み取りが後になった', '読み取りなし', 'その他']) {
+      expect(screen.queryByRole('button', { name: label })).toBeNull();
+    }
 
     fireEvent.click(screen.getByRole('button', { name: '10分前' }));
     fireEvent.click(saveButton());
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith('arrival', '12:56', 'intercom_wait'));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('arrival', '12:56'));
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
-  });
-
-  it('理由を選び直せる', async () => {
-    const { onSave } = renderSheet();
-    fireEvent.click(screen.getByRole('button', { name: '5分前' }));
-    fireEvent.click(screen.getByRole('button', { name: 'その他' }));
-    fireEvent.click(saveButton());
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith('arrival', '13:01', 'other'));
   });
 
   it('保存できなかったら開いたまま', async () => {
@@ -191,7 +180,7 @@ describe('ActualTimeSheet — 到着', () => {
     fireEvent.click(screen.getByRole('button', { name: '読取どおり' }));
     expect(draft()).toBe('13:06');
     fireEvent.click(saveButton());
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith('arrival', null, 'intercom_wait'));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('arrival', null));
   });
 
   it('退出の実績があるときは滞在を出す (予定と同じなら「予定どおり」)', () => {
@@ -212,7 +201,7 @@ describe('ActualTimeSheet — 到着', () => {
 });
 
 describe('ActualTimeSheet — 退出', () => {
-  it('読み取りの無い退出: 「到着 + 予定の長さ」から始まり、理由の初期値は「読み取りなし」', async () => {
+  it('読み取りの無い退出: 「到着 + 予定の長さ」から始まり、時刻だけで記録する', async () => {
     vi.setSystemTime(new Date('2026-09-30T05:00:00Z')); // JST 14:00
     const { onSave } = renderSheet({ initialKind: 'departure' });
     expect(screen.getByRole('button', { name: '退出 （未記録）' })).toHaveAttribute(
@@ -226,17 +215,11 @@ describe('ActualTimeSheet — 退出', () => {
     expect(screen.getByTestId('actual-time-summary')).toHaveTextContent(
       '滞在 35 分（予定 35 分） 予定どおり',
     );
-    expect(screen.getByRole('button', { name: '読み取りなし' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-    expect(screen.queryByRole('button', { name: 'インターホン待ち' })).toBeNull();
-    // 読み取りが無いので「読み取りが後になった」は選択肢に出さない。
-    expect(screen.queryByRole('button', { name: '読み取りが後になった' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '読み取りなし' })).toBeNull();
     // まだ入れていないので、そのままでも保存できる。
     expect(saveButton()).toBeEnabled();
     fireEvent.click(saveButton());
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith('departure', '13:41', 'no_read'));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('departure', '13:41'));
   });
 
   it('未記録の退出は「合わせる」ではなく「退出を HH:MM で記録する」— 新しく記録する操作だと分かる (M-2)', () => {
@@ -257,35 +240,17 @@ describe('ActualTimeSheet — 退出', () => {
     expect(saveButton()).toHaveTextContent('退出を 13:36 で記録する');
   });
 
-  it('読み取りのある退出: 理由の初期値は「読み取りが後になった」(PC と同じ規則・M-3)', async () => {
+  it('読み取りのある退出: すでにある退出を動かすのは「合わせる」— 時刻だけで保存する', async () => {
     vi.setSystemTime(new Date('2026-09-30T05:00:00Z'));
     const { onSave } = renderSheet({
       initialKind: 'departure',
       departure: { at: hm(13, 31), readAt: hm(13, 31) },
     });
-    expect(screen.getByRole('button', { name: '読み取りが後になった' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-    expect(screen.getByRole('button', { name: '読み取りなし' })).toHaveAttribute(
-      'aria-pressed',
-      'false',
-    );
-    // すでにある退出を動かすのは「合わせる」。
+    expect(screen.queryByRole('button', { name: '読み取りが後になった' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '1 分 あと' }));
     expect(saveButton()).toHaveTextContent('13:32 に合わせる');
     fireEvent.click(saveButton());
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith('departure', '13:32', 'read_later'));
-  });
-
-  it('到着側から読み取りのある退出へ切り替えても、初期値は「読み取りが後になった」(M-3)', () => {
-    vi.setSystemTime(new Date('2026-09-30T05:00:00Z'));
-    renderSheet({ departure: { at: hm(13, 31), readAt: hm(13, 31) } });
-    fireEvent.click(screen.getByRole('button', { name: '退出 13:31' }));
-    expect(screen.getByRole('button', { name: '読み取りが後になった' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('departure', '13:32'));
   });
 
   it('ひと押しは滞在の長さで選ぶ', () => {
@@ -328,19 +293,17 @@ describe('ActualTimeSheet — 退出', () => {
     expect(saveButton()).toBeDisabled();
   });
 
-  it('到着 ⇄ 退出を切り替えると、その側の時刻と理由に変わる', () => {
+  it('到着 ⇄ 退出を切り替えると、その側の時刻に変わる', () => {
     vi.setSystemTime(new Date('2026-09-30T05:00:00Z'));
     renderSheet({ departure: { at: hm(13, 31), readAt: hm(13, 31) } });
     expect(draft()).toBe('13:06');
     fireEvent.click(screen.getByRole('button', { name: '退出 13:31' }));
     expect(draft()).toBe('13:31');
     expect(screen.getByTestId('actual-time-sub')).toHaveTextContent('読取 13:31 のまま');
-    expect(screen.getByRole('button', { name: '読み取りなし' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '1 分 あと' }));
     expect(screen.getByTestId('actual-time-sub')).toHaveTextContent('読取 13:31 ・ 1 分後');
     fireEvent.click(screen.getByRole('button', { name: '到着 13:06' }));
     expect(draft()).toBe('13:06');
-    expect(screen.getByRole('button', { name: 'インターホン待ち' })).toBeInTheDocument();
   });
 
   it('圏外で退避した到着を合わせている間は、退出側を選べない', () => {
@@ -373,12 +336,8 @@ describe('ActualTimeSheet — 手で入れた退出を取り消す (M-2)', () =>
     const cancel = screen.getByTestId('actual-time-cancel-manual');
     expect(cancel).toHaveTextContent('入れた退出時刻を取り消す');
     expect(cancel.className).toContain('h-11');
-    // すでに入っている退出を動かすのは「合わせる」。理由の初期値は「読み取りなし」。
+    // すでに入っている退出を動かすのは「合わせる」。
     expect(saveButton()).toHaveTextContent('13:41 に合わせる');
-    expect(screen.getByRole('button', { name: '読み取りなし' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
 
     fireEvent.click(cancel);
     await waitFor(() => expect(onCancelManualDeparture).toHaveBeenCalledTimes(1));

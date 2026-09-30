@@ -29,21 +29,16 @@ import {
   useAdjustVisitActualTime,
   useResetVisitActualTime,
   type ActualTimeKind,
-  type AdjustReasonCode,
   type VisitHistoryRow,
 } from '@/lib/queries/visit-history';
 
 import {
   ACTUAL_KIND_LABEL,
-  ADJUST_REASON_LABEL,
-  ADJUST_REASON_OPTIONS,
-  adjustmentOf,
   formatAdjustedAt,
   formatHistoryDateLong,
   isLocationReview,
   plannedMinutes,
   plannedRange,
-  reasonCodeOfAdjustment,
 } from './visitHistoryFormat';
 
 interface VisitHistoryDetailDialogProps {
@@ -55,9 +50,6 @@ interface VisitHistoryDetailDialogProps {
   /** 実績の時刻を合わせた / 戻した直後（一覧の取り直しが始まった時点）に呼ぶ。 */
   onAdjusted?: (visitId: string) => void;
 }
-
-/** 自由記述の上限（字）。BE の `reason_text` と同じ。 */
-const REASON_TEXT_MAX = 200;
 
 /**
  * 合わせられない訪問で、無効化した操作に添える理由。
@@ -75,9 +67,6 @@ function notAllowedReason(row: VisitHistoryRow, viewerIsAdmin: boolean): string 
 
 /** 無効でも title（理由）が出るようにする。既定の Button は無効時にポインタを切る。 */
 const disabledHintCls = 'disabled:pointer-events-auto disabled:cursor-not-allowed';
-
-const fieldCls =
-  'h-9 rounded-md border border-border-default bg-bg-base px-2 text-sm text-text-primary disabled:cursor-not-allowed disabled:opacity-50';
 
 function Tile({ label, value, note }: { label: string; value: ReactNode; note: string }) {
   return (
@@ -262,15 +251,10 @@ function AdjustBox({
   const allowed = row.adjust_allowed === true;
   const pending = adjust.isPending || reset.isPending;
 
-  const save = async (
-    kind: ActualTimeKind,
-    time: string,
-    reasonCode: AdjustReasonCode,
-    reasonText: string,
-  ) => {
+  const save = async (kind: ActualTimeKind, time: string) => {
     setError(null);
     try {
-      await adjust.mutateAsync({ visitId: row.visit_id, kind, time, reasonCode, reasonText });
+      await adjust.mutateAsync({ visitId: row.visit_id, kind, time });
       onAdjusted?.(row.visit_id);
       toast.success(`${ACTUAL_KIND_LABEL[kind]}を ${time} に合わせました`);
     } catch (e) {
@@ -353,48 +337,23 @@ function AdjustRow({
   allowed: boolean;
   naReason: string;
   pending: boolean;
-  onSave: (
-    kind: ActualTimeKind,
-    time: string,
-    reasonCode: AdjustReasonCode,
-    reasonText: string,
-  ) => void;
+  onSave: (kind: ActualTimeKind, time: string) => void;
   onReset: (kind: ActualTimeKind, manual: boolean) => void;
 }) {
   const label = ACTUAL_KIND_LABEL[kind];
   const { at, readAt, adjusted, manual } = sideOf(row, kind);
-  const current = adjustmentOf(row, kind);
-  const options = ADJUST_REASON_OPTIONS[kind];
-
-  // 理由の初期値: いまの調整の理由。無ければ到着は「インターホン待ち」、退出は読み取りの
-  // 有無で「読み取りが後になった」/「読み取りなし」。
-  const currentCode = reasonCodeOfAdjustment(current);
-  const initialReason: AdjustReasonCode =
-    currentCode && options.includes(currentCode)
-      ? currentCode
-      : kind === 'arrival'
-        ? 'intercom_wait'
-        : readAt
-          ? 'read_later'
-          : 'no_read';
-  const initialText = current?.reason_text ?? '';
 
   const [time, setTime] = useState(at ?? '');
-  const [reason, setReason] = useState<AdjustReasonCode>(initialReason);
-  const [text, setText] = useState(initialText);
 
   const hasAdjustment = adjusted || manual;
-  const timeChanged = time !== (at ?? '');
-  const reasonChanged = reason !== initialReason || text.trim() !== initialText.trim();
-  // 時刻が同じなら、いまの調整の理由を変えるときだけ保存できる。
-  const dirty = timeChanged || (hasAdjustment && reasonChanged);
+  const dirty = time !== (at ?? '');
   const valid = /^\d{2}:\d{2}$/.test(time);
   const disabledTitle = allowed ? undefined : naReason;
 
   const submit = () => {
     // 読取時刻と同じ時刻にするのは「読取時刻に戻す」と同じ（調整を残さない）。
     if (adjusted && readAt && time === readAt) onReset(kind, false);
-    else onSave(kind, time, reason, reason === 'other' ? text : '');
+    else onSave(kind, time);
   };
 
   return (
@@ -413,20 +372,6 @@ function AdjustRow({
           title={disabledTitle}
           onChange={(e) => setTime(e.target.value)}
         />
-        <select
-          aria-label={`${label}の理由`}
-          className={fieldCls}
-          value={reason}
-          disabled={!allowed || pending}
-          title={disabledTitle}
-          onChange={(e) => setReason(e.target.value as AdjustReasonCode)}
-        >
-          {options.map((code) => (
-            <option key={code} value={code}>
-              {ADJUST_REASON_LABEL[code]}
-            </option>
-          ))}
-        </select>
         <Button
           type="button"
           size="sm"
@@ -453,19 +398,6 @@ function AdjustRow({
           </Button>
         )}
       </div>
-      {reason === 'other' && (
-        <Input
-          type="text"
-          aria-label={`${label}の理由（自由記述）`}
-          placeholder={`理由（任意・${REASON_TEXT_MAX} 字まで）`}
-          maxLength={REASON_TEXT_MAX}
-          className="mt-2 h-9"
-          value={text}
-          disabled={!allowed || pending}
-          title={disabledTitle}
-          onChange={(e) => setText(e.target.value)}
-        />
-      )}
       <p
         className="tnum mt-1 pl-11 text-xs text-text-secondary"
         data-testid={`history-adjust-note-${kind}`}

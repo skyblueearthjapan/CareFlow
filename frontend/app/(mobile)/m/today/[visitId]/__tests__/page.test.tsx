@@ -916,12 +916,8 @@ describe('到着した直後のカード (設計 §7-2)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^10分前/ }));
     await waitFor(() => expect(adjustMutate).toHaveBeenCalledTimes(1));
-    expect(adjustMutate).toHaveBeenCalledWith({
-      kind: 'arrival',
-      time: '12:56',
-      reason_code: 'intercom_wait',
-      reason_text: null,
-    });
+    // 理由は付けない (PO 決定 2026-10-01)。
+    expect(adjustMutate).toHaveBeenCalledWith({ kind: 'arrival', time: '12:56' });
     const card = await screen.findByText('到着を 12:56 に合わせました');
     expect(card).toBeInTheDocument();
     expect(screen.getByTestId('arrived-adjust-card')).toHaveTextContent(
@@ -982,8 +978,8 @@ describe('到着した直後のカード (設計 §7-2)', () => {
     expect(listPending('staff-1')[0]?.payload).toMatchObject({
       at: '2026-06-30T04:06:20.000Z',
       adjusted_time: '12:56',
-      adjust_reason_code: 'intercom_wait',
     });
+    expect(listPending('staff-1')[0]?.payload).not.toHaveProperty('adjust_reason_code');
     // 経過時間の起点も合わせた時刻。
     expect(screen.getByTestId('mobile-detail-elapsed')).toHaveTextContent('到着 12:56〜');
 
@@ -1072,15 +1068,11 @@ describe('実績の行の「時刻を合わせる」(設計 §7-3)', () => {
     expect(await screen.findByText('実績の時刻を合わせる')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '10分前' }));
-    fireEvent.click(screen.getByRole('button', { name: '読み取りが後になった' }));
+    // 理由の選択は無い (PO 決定 2026-10-01)。
+    expect(screen.queryByRole('button', { name: '読み取りが後になった' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '12:56 に合わせる' }));
     await waitFor(() =>
-      expect(adjustMutate).toHaveBeenCalledWith({
-        kind: 'arrival',
-        time: '12:56',
-        reason_code: 'read_later',
-        reason_text: null,
-      }),
+      expect(adjustMutate).toHaveBeenCalledWith({ kind: 'arrival', time: '12:56' }),
     );
     await waitFor(() =>
       expect(asMock(toast.success)).toHaveBeenCalledWith('到着を 12:56 に合わせました'),
@@ -1091,7 +1083,7 @@ describe('実績の行の「時刻を合わせる」(設計 §7-3)', () => {
 });
 
 describe('退出の読み取りが無いとき (設計 §7-5)', () => {
-  it('訪問中の表示から退出時刻を入れる (理由の初期値は「読み取りなし」)', async () => {
+  it('訪問中の表示から退出時刻を入れる (時刻だけで記録する)', async () => {
     // いま JST 14:00。到着 13:06・予定 35 分 → 最初の候補は 13:41。
     vi.setSystemTime(new Date('2026-06-30T05:00:00Z'));
     adjustMutate.mockResolvedValueOnce(
@@ -1109,20 +1101,12 @@ describe('退出の読み取りが無いとき (設計 §7-5)', () => {
     expect(screen.getByTestId('actual-time-sub')).toHaveTextContent(
       '退出の読み取りがありません（手入力）',
     );
-    expect(screen.getByRole('button', { name: '読み取りなし' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    expect(screen.queryByRole('button', { name: '読み取りなし' })).toBeNull();
     // 退出を新しく記録する操作なので、「合わせる」とは書かない (レビュー M-2)。
     expect(screen.queryByRole('button', { name: '13:41 に合わせる' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '退出を 13:41 で記録する' }));
     await waitFor(() =>
-      expect(adjustMutate).toHaveBeenCalledWith({
-        kind: 'departure',
-        time: '13:41',
-        reason_code: 'no_read',
-        reason_text: null,
-      }),
+      expect(adjustMutate).toHaveBeenCalledWith({ kind: 'departure', time: '13:41' }),
     );
     // 応答が completed なら、その場で「訪問完了」に変わる。
     expect(await screen.findByText('訪問完了')).toBeInTheDocument();
@@ -1351,12 +1335,7 @@ describe('再送の POST 中に到着の時刻を合わせる (M-1)', () => {
 
     resend.release();
     await waitFor(() =>
-      expect(adjustMutate).toHaveBeenCalledWith({
-        kind: 'arrival',
-        time: '12:56',
-        reason_code: 'intercom_wait',
-        reason_text: null,
-      }),
+      expect(adjustMutate).toHaveBeenCalledWith({ kind: 'arrival', time: '12:56' }),
     );
     expect(listPending('staff-1')).toHaveLength(0);
     expect(await screen.findByText('到着を 12:56 に合わせました')).toBeInTheDocument();
@@ -1397,7 +1376,6 @@ describe('再送の POST 中に到着の時刻を合わせる (M-1)', () => {
     expect(listPending('staff-1')[0]?.payload).toMatchObject({
       at: '2026-06-30T04:06:20.000Z',
       adjusted_time: '12:56',
-      adjust_reason_code: 'intercom_wait',
     });
   });
 
@@ -1489,12 +1467,7 @@ describe('圏外で退避中の到着 — カードを閉じた後の入口と�
     adjustMutate.mockResolvedValueOnce(ADJUSTED);
     fireEvent.click(screen.getByRole('button', { name: '12:56 に合わせる' }));
     await waitFor(() =>
-      expect(adjustMutate).toHaveBeenCalledWith({
-        kind: 'arrival',
-        time: '12:56',
-        reason_code: 'intercom_wait',
-        reason_text: null,
-      }),
+      expect(adjustMutate).toHaveBeenCalledWith({ kind: 'arrival', time: '12:56' }),
     );
   });
 });
@@ -1617,11 +1590,9 @@ describe('手で入れた退出を取り消せる (M-2)', () => {
     fireEvent.click(screen.getByTestId('mobile-detail-adjust'));
     fireEvent.click(await screen.findByRole('button', { name: '退出 13:41' }));
     expect(screen.queryByRole('button', { name: '入れた退出時刻を取り消す' })).toBeNull();
-    // 読み取りのある退出の理由は「読み取りが後になった」が初期値 (M-3)。
-    expect(screen.getByRole('button', { name: '読み取りが後になった' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    // 読み取りのある退出は「合わせる」だけ (理由の選択は無い)。
+    expect(screen.getByRole('button', { name: '13:41 に合わせる' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '読み取りが後になった' })).toBeNull();
   });
 
   it('取り消せなかったら、サーバの detail を出してシートは開いたまま', async () => {

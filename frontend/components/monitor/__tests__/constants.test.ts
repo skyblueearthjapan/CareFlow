@@ -16,9 +16,11 @@ import {
   groupVisits,
   isAlert,
   isLongInprogress,
-  isUnplannedRow,
   minutesToPct,
+  officeTagTone,
+  rowMatchesOffice,
   substituteTitle,
+  visitOfficeId,
 } from '../constants';
 import { makeRow, makeVisit } from './fixtures';
 
@@ -213,15 +215,46 @@ describe('groupVisits (2 名体制の重複排除)', () => {
   });
 });
 
-describe('代行 / 予定外 (qr-open-checkin-design.md §6)', () => {
-  it('isUnplannedRow: 行内の全 visit が予定外なら専用行', () => {
-    expect(isUnplannedRow(makeRow({ visits: [makeVisit({ is_unplanned: true })] }))).toBe(true);
-    expect(
-      isUnplannedRow(makeRow({ visits: [makeVisit({ is_unplanned: true }), makeVisit()] })),
-    ).toBe(false);
-    expect(isUnplannedRow(makeRow({ visits: [] }))).toBe(false);
+// 行 = 職員 (monitor-staff-rows-design-2026-09-30.md)。予定外の専用行 (isUnplannedRow) は廃止。
+describe('行 = 職員: 拠点の絞り込みと札の色', () => {
+  const INAGE = '00000000-0000-0000-0000-00000000aaaa';
+  const TSUGA = '00000000-0000-0000-0000-00000000bbbb';
+
+  it('visitOfficeId: コースの拠点 → 無ければ行の職員の所属', () => {
+    const row = makeRow({ office_id: INAGE });
+    expect(visitOfficeId(makeVisit({ course_office_id: TSUGA }), row)).toBe(TSUGA);
+    expect(visitOfficeId(makeVisit({ course_office_id: null }), row)).toBe(INAGE);
+    expect(visitOfficeId(makeVisit(), makeRow({ office_id: null }))).toBeNull();
   });
 
+  it('rowMatchesOffice: その拠点の訪問を 1 件でも持つ人 / 訪問の無い人は所属', () => {
+    // 稲毛所属で都賀へ応援 → 都賀でも稲毛でも出る。
+    const helper = makeRow({
+      office_id: INAGE,
+      visits: [makeVisit({ course_office_id: INAGE }), makeVisit({ course_office_id: TSUGA })],
+    });
+    expect(rowMatchesOffice(helper, TSUGA)).toBe(true);
+    expect(rowMatchesOffice(helper, INAGE)).toBe(true);
+    // 都賀の訪問だけの稲毛所属 → 稲毛では出ない (所属ではなく訪問の拠点で判定)。
+    const away = makeRow({ office_id: INAGE, visits: [makeVisit({ course_office_id: TSUGA })] });
+    expect(rowMatchesOffice(away, INAGE)).toBe(false);
+    // 訪問なし (イベント・休みだけ) は所属。
+    expect(rowMatchesOffice(makeRow({ office_id: INAGE, visits: [] }), INAGE)).toBe(true);
+    expect(rowMatchesOffice(makeRow({ office_id: INAGE, visits: [] }), TSUGA)).toBe(false);
+  });
+
+  it('officeTagTone: 同じ拠点は同じ色・拠点ごとに別の色・不明は中立色', () => {
+    const ids = [INAGE, TSUGA];
+    expect(officeTagTone(INAGE, ids)).toEqual(officeTagTone(INAGE, ids));
+    expect(officeTagTone(INAGE, ids)).not.toEqual(officeTagTone(TSUGA, ids));
+    expect(officeTagTone(null, ids).background).toBe('var(--bg-muted)');
+    expect(officeTagTone('00000000-0000-0000-0000-00000000cccc', ids).background).toBe(
+      'var(--bg-muted)',
+    );
+  });
+});
+
+describe('代行 / 予定外 (qr-open-checkin-design.md §6)', () => {
   it('alertReasonChips: 予定外 → 代行 の順で返す', () => {
     expect(alertReasonChips(makeVisit())).toEqual([]);
     expect(alertReasonChips(makeVisit({ is_substitute: true }))).toEqual(['代行']);

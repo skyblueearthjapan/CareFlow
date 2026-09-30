@@ -22,14 +22,61 @@ describe('MonitorDetailPanel', () => {
     expect(screen.getByTestId('monitor-detail-empty')).toBeInTheDocument();
   });
 
-  it('コースのみ選択時は訪問一覧、stop クリックで onSelectVisit', () => {
+  // 行 = 職員 (2026-10-01): 行のみ選択時は「コースの訪問一覧」ではなく、その人の 1 日の順路。
+  it('行のみ選択時はその人の 1 日の順路、訪問クリックで onSelectVisit', () => {
     const v = makeVisit({ patient_name: '本田 武' });
     const row = makeRow({ visits: [v] });
     const onSelectVisit = vi.fn();
     render(<MonitorDetailPanel visit={null} row={row} onSelectVisit={onSelectVisit} />);
-    expect(screen.getByTestId('monitor-detail-course')).toBeInTheDocument();
+    expect(screen.getByTestId('monitor-detail-route')).toBeInTheDocument();
     fireEvent.click(screen.getByText(/本田 武/));
     expect(onSelectVisit).toHaveBeenCalledWith(v.visit_id);
+  });
+
+  it('順路は札つき・拠点をまたぐ所に「稲毛から都賀へ移動」を挟む', () => {
+    const INAGE = '00000000-0000-0000-0000-00000000aaaa';
+    const TSUGA = '00000000-0000-0000-0000-00000000bbbb';
+    const v1 = makeVisit({
+      course_tag: '稲D',
+      course_office_id: INAGE,
+      course_office_name: '稲毛',
+    });
+    const v2 = makeVisit({
+      course_tag: '都臨2',
+      course_office_id: TSUGA,
+      course_office_name: '都賀',
+      start_time: '17:00',
+      end_time: '17:35',
+    });
+    const v3 = makeVisit({ is_unplanned: true, start_time: '18:00', end_time: '18:30' });
+    render(
+      <MonitorDetailPanel
+        visit={null}
+        row={makeRow({ visits: [v1, v2, v3] })}
+        onSelectVisit={vi.fn()}
+        officeIds={[INAGE, TSUGA]}
+      />,
+    );
+    const route = screen.getByTestId('monitor-detail-route');
+    expect(route.textContent).toContain('稲D');
+    expect(route.textContent).toContain('都臨2');
+    expect(route.textContent).toContain('予定外');
+    expect(screen.getByTestId(`monitor-route-hop-${v2.visit_id}`).textContent).toBe(
+      '↓ 稲毛から都賀へ移動',
+    );
+    expect(screen.queryByTestId(`monitor-route-hop-${v1.visit_id}`)).toBeNull();
+  });
+
+  it('訪問の詳細にはコースの札と拠点を出す (行ではなく訪問ごと)', () => {
+    const v = makeVisit({
+      staff_name: '担当 A',
+      course_tag: '都臨2',
+      course_office_name: '都賀',
+    });
+    render(<MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />);
+    expect(screen.getByTestId('monitor-detail-visit').textContent).toContain(
+      '担当: 担当 A ／ コース 都臨2 ／ 都賀',
+    );
   });
 
   it('visit 選択時は予定/到着/滞在を表示', () => {

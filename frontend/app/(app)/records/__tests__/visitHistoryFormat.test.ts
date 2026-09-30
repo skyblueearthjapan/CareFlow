@@ -6,8 +6,6 @@
 import { describe, it, expect } from 'vitest';
 
 import {
-  ADJUST_REASON_LABEL,
-  adjustmentOf,
   formatAdjustedAt,
   formatRangeLabel,
   matchPreset,
@@ -15,8 +13,6 @@ import {
   plannedRange,
   presetRange,
   rangeDays,
-  reasonCodeOfAdjustment,
-  reasonCodeOfLabel,
   remarkBadges,
   shiftRange,
 } from '../_components/visitHistoryFormat';
@@ -161,58 +157,11 @@ describe('remarkBadges', () => {
   });
 });
 
-describe('理由の表示名・調整の日時', () => {
-  it('理由の表示名は PO 決定の 4 つ（「読み忘れ」「遅れた」とは書かない）', () => {
-    expect(ADJUST_REASON_LABEL).toEqual({
-      intercom_wait: 'インターホン待ち',
-      read_later: '読み取りが後になった',
-      no_read: '読み取りなし',
-      other: 'その他',
-    });
-  });
-
-  it('表示名から理由コードを引ける。知らない表示名は null', () => {
-    expect(reasonCodeOfLabel('読み取りなし')).toBe('no_read');
-    expect(reasonCodeOfLabel('別の理由')).toBeNull();
-    expect(reasonCodeOfLabel(null)).toBeNull();
-  });
-
-  it('調整の理由コードは BE の reason_code を使う (表示名から逆引きしない・L-11)', () => {
-    // 表示名が変わっても、コードがあればそれを採る。
-    expect(reasonCodeOfAdjustment({ reason_code: 'read_later', reason_label: '別の表示名' })).toBe(
-      'read_later',
-    );
-    // コードと表示名が食い違っていたら、コードが正。
-    expect(reasonCodeOfAdjustment({ reason_code: 'other', reason_label: 'インターホン待ち' })).toBe(
-      'other',
-    );
-  });
-
-  it('reason_code の無い応答 (古い BE)・知らないコードは、表示名からの逆引きに落とす', () => {
-    expect(reasonCodeOfAdjustment({ reason_label: '読み取りなし' })).toBe('no_read');
-    expect(reasonCodeOfAdjustment({ reason_code: null, reason_label: '読み取りなし' })).toBe(
-      'no_read',
-    );
-    expect(reasonCodeOfAdjustment({ reason_code: 'unknown', reason_label: 'その他' })).toBe(
-      'other',
-    );
-    // オブジェクトが元から持つ名前 (toString など) をコードと取り違えない。
-    expect(reasonCodeOfAdjustment({ reason_code: 'toString', reason_label: null })).toBeNull();
-    expect(reasonCodeOfAdjustment({ reason_code: 'unknown', reason_label: null })).toBeNull();
-    expect(reasonCodeOfAdjustment(null)).toBeNull();
-  });
-
+describe('調整の日時', () => {
   it('合わせた日時は JST の M/D HH:MM。読めない値は空文字', () => {
     // 15:10Z = JST 翌日 00:10。
     expect(formatAdjustedAt('2026-09-29T15:10:00Z')).toBe('9/30 00:10');
     expect(formatAdjustedAt('x')).toBe('');
     expect(formatAdjustedAt(null)).toBe('');
-  });
-
-  it('その側に効いている調整を引く', () => {
-    const adjustments = [{ kind: 'departure', reason_label: '読み取りなし' }];
-    expect(adjustmentOf({ adjustments }, 'departure')?.reason_label).toBe('読み取りなし');
-    expect(adjustmentOf({ adjustments }, 'arrival')).toBeNull();
-    expect(adjustmentOf({ adjustments: null }, 'arrival')).toBeNull();
   });
 });

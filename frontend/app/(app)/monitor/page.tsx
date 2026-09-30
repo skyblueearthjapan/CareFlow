@@ -4,12 +4,14 @@
  * /monitor — PC 訪問モニター (QR チェックイン Phase 3)。
  *
  * 当日の予定 vs 実績をリアルタイム (60s ポーリング) に把握する。タイムライン (ガント)
- * + 要対応アラートトレイ + 詳細パネル + 地図 (Leaflet)。
+ * + 要対応アラートトレイ。行 = 職員 (2026-10-01・monitor-staff-rows-design-2026-09-30.md)。
+ * 地図・順路・訪問の詳細は、選んだ行のすぐ下に開くパネル (``MonitorRowPanel``) に出す
+ * (右側の固定パネルは撤去し、タイムラインは常に全幅)。
  * RB (PO決定 2026-07-08): 閲覧は全ロール。確認済み等の書込みは admin/manager (canReview)。
  *
  * しきい値設定 (⚙) は専用ページ /settings/checkin へ遷移する (Phase 4)。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import { Settings, TriangleAlert } from 'lucide-react';
@@ -33,14 +35,16 @@ import {
   type MonitorPatientMeta,
 } from '@/components/monitor/MonitorTimeline';
 import { MonitorAlertTray } from '@/components/monitor/MonitorAlertTray';
-import { MonitorDetailPanel } from '@/components/monitor/MonitorDetailPanel';
-import { MonitorMap } from '@/components/monitor/MonitorMap';
+import { MonitorRowPanel } from '@/components/monitor/MonitorRowPanel';
 import {
   MISSING_BAR_BG,
   displayStatus,
   groupVisits,
   hmToMinutes,
   isoToHm,
+  officeTagTone,
+  rowMatchesOffice,
+  visitOfficeId,
 } from '@/components/monitor/constants';
 // M-4a/b: カード視覚言語 (性別ウォッシュ・イベント帯) 用の FE join。
 import { usePatients } from '@/lib/queries/patients';
@@ -90,7 +94,7 @@ export default function MonitorPage() {
   const [date, setDate] = useState<string>(todayJst);
   const [officeId, setOfficeId] = useState<string | null>(null);
   const [only, setOnly] = useState<OnlyFilter>(null);
-  // 行キー選択 (monitorRowKey)。担当未設定の行も選択してマップ表示できる (PO 報告 2026-07-03)。
+  // 行キー選択 (monitorRowKey = 職員 id / 担当なし)。選んだ行の下にパネルが開く (1 つだけ)。
   const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
   const [selectedVisitId, setSelectedVisitId] = useState<string | null>(null);
 
@@ -120,7 +124,7 @@ export default function MonitorPage() {
   }, [staffListQuery.data]);
 
   // ─── M-4b: 当日の会議・イベント帯 (藤色・カイポケ反映外・表示専用) ───
-  // 行=コース単位 (2026-07-10): 行内の全担当 (staff_ids) を集めて重複排除する。
+  // 行 = 職員 (staff_ids = [staff_id])。訪問の無いイベント・休みだけの行も含む。
   const monitorStaffIds = useMemo(() => {
     const ids = new Set<string>();
     for (const r of data?.staff ?? []) {
@@ -152,9 +156,11 @@ export default function MonitorPage() {
 
   // クライアント側フィルタ (拠点チップ / 異常のみ・未訪問のみ)。offices チップを
   // 常に全件出すため拠点フィルタもクライアントで行う (サーバ refetch なし)。
+  // 拠点: その拠点の訪問 (コースの拠点) を 1 件でも持つ人を出す (行の中身はその人の
+  // 1 日全部)。訪問の無い人は所属で判定 (BE の office_id フィルタと同じ規則)。
   const filteredRows = useMemo<MonitorStaffRow[]>(() => {
     if (!data) return [];
-    const rows = officeId ? data.staff.filter((r) => r.office_id === officeId) : data.staff;
+    const rows = officeId ? data.staff.filter((r) => rowMatchesOffice(r, officeId)) : data.staff;
     if (!only) return rows;
     return rows
       .map((r) => ({
@@ -170,18 +176,36 @@ export default function MonitorPage() {
       .filter((r) => r.visits.length > 0);
   }, [data, officeId, only]);
 
-  const selectedRow = useMemo(
-    () => filteredRows.find((r) => monitorRowKey(r) === selectedRowKey) ?? null,
-    [filteredRows, selectedRowKey],
+  // 集計 (KPI)・要対応トレイの範囲。拠点を絞ったときは、行に入っている他拠点の訪問
+  // (応援・拠点またぎ) を数えない = 「その拠点の訪問」を数える (数え方は行=コースの頃と同じ)。
+  const scopedRows = useMemo<MonitorStaffRow[]>(() => {
+    if (!officeId) return filteredRows;
+    return filteredRows.map((r) => ({
+      ...r,
+      visits: r.visits.filter((v) => visitOfficeId(v, r) === officeId),
+    }));
+  }, [filteredRows, officeId]);
+
+  // 同行・副担当の薄いカード用 (visit_id → 主担当の行にある訪問)。
+  const visitById = useMemo(() => {
+    const m = new Map<string, MonitorVisit>();
+    for (const r of filteredRows) for (const v of r.visits) m.set(v.visit_id, v);
+    return m;
+  }, [filteredRows]);
+  // 札の色の基準 = 拠点マスタの順 (office_order)。その日の offices の並びにすると、
+  // 都賀しか出ない日に都賀が普段の稲毛の色になる。古い応答 (項目なし) は offices の順。
+  const officeIds = useMemo(
+    () =>
+      data?.office_order && data.office_order.length > 0
+        ? data.office_order
+        : (data?.offices ?? []).map((o) => o.id),
+    [data?.office_order, data?.offices],
   );
-  const selectedVisit = useMemo<MonitorVisit | null>(() => {
-    if (!selectedVisitId) return null;
-    for (const r of filteredRows) {
-      const v = r.visits.find((x) => x.visit_id === selectedVisitId);
-      if (v) return v;
-    }
-    return null;
-  }, [filteredRows, selectedVisitId]);
+
+  const selectedVisit = useMemo<MonitorVisit | null>(
+    () => (selectedVisitId ? (visitById.get(selectedVisitId) ?? null) : null),
+    [visitById, selectedVisitId],
+  );
 
   // 場所違いで実 GPS 座標があれば近隣候補を取得。
   const isMismatch = selectedVisit != null && displayStatus(selectedVisit) === 'mismatch';
@@ -198,26 +222,54 @@ export default function MonitorPage() {
     reviewVisit.mutate({ visitId, comment });
   const onUnreview = (visitId: string) => unreviewVisit.mutate(visitId);
 
+  // 訪問を選ぶ = その訪問の主担当の行を開いて詳細を出す (同行者の行の薄いカード・
+  // 要対応トレイからも同じ。行が開いた位置へのスクロールはタイムラインが行う)。
   const onSelectVisit = (visitId: string) => {
-    for (const r of data?.staff ?? []) {
-      const v = r.visits.find((x) => x.visit_id === visitId);
-      if (v) {
+    for (const r of filteredRows) {
+      if (r.visits.some((x) => x.visit_id === visitId)) {
         setSelectedRowKey(monitorRowKey(r));
         setSelectedVisitId(visitId);
         return;
       }
     }
   };
+  const closePanel = () => {
+    setSelectedRowKey(null);
+    setSelectedVisitId(null);
+  };
+  // 日付を変えたらパネルは閉じる (別の日に同じ職員のパネルが開いたまま残らない)。
+  const changeDate = (days: number) => {
+    setDate((d) => addDays(d, days));
+    closePanel();
+  };
+  // 同じ行をもう一度押すと閉じる。別の行なら開き直す (開くのは 1 つだけ)。
   const onSelectRow = (rowKey: string) => {
+    if (rowKey === selectedRowKey) {
+      closePanel();
+      return;
+    }
     setSelectedRowKey(rowKey);
     setSelectedVisitId(null);
   };
+  // Esc で閉じる (入力中の理由欄などでは奪わない)。
+  useEffect(() => {
+    if (selectedRowKey == null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      setSelectedRowKey(null);
+      setSelectedVisitId(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedRowKey]);
 
   // KPI (表示中の論理訪問から算出)。2 名体制 (visit_group_id) は 1 件に重複排除し、
   // 各論理訪問を最重要バケットに 1 回だけ計上する (missing > review/mismatch >
   // 記録済(done/inprogress) > 予定/到着待ち)。合計 = 論理訪問数。
   const kpi = useMemo(() => {
-    const groups = groupVisits(filteredRows);
+    const groups = groupVisits(scopedRows);
     let recorded = 0;
     let review = 0;
     let missing = 0;
@@ -235,7 +287,7 @@ export default function MonitorPage() {
     }
     const avg = delays.length ? Math.round(delays.reduce((a, b) => a + b, 0) / delays.length) : 0;
     return { total: groups.length, recorded, review, missing, avg };
-  }, [filteredRows]);
+  }, [scopedRows]);
 
   const isToday = date === todayJst();
 
@@ -285,7 +337,7 @@ export default function MonitorPage() {
             <button
               type="button"
               aria-label="前日"
-              onClick={() => setDate((d) => addDays(d, -1))}
+              onClick={() => changeDate(-1)}
               className="h-6 w-6 rounded-md border border-border-default"
             >
               ‹
@@ -294,7 +346,7 @@ export default function MonitorPage() {
             <button
               type="button"
               aria-label="翌日"
-              onClick={() => setDate((d) => addDays(d, 1))}
+              onClick={() => changeDate(1)}
               className="h-6 w-6 rounded-md border border-border-default"
             >
               ›
@@ -337,7 +389,7 @@ export default function MonitorPage() {
         {/* アラートトレイ */}
         {data && (
           <MonitorAlertTray
-            rows={filteredRows}
+            rows={scopedRows}
             selectedVisitId={selectedVisitId}
             onSelectVisit={onSelectVisit}
             maxInprogressMin={data.thresholds.max_inprogress_min}
@@ -374,17 +426,44 @@ export default function MonitorPage() {
             </span>
             担当外スタッフが訪問
           </span>
-          <Legend swatch="var(--unplanned-bg)" label="📌予定外訪問（予定なし・実績のみ）" />
+          {/* コースの札 (行 = 職員・色 = 拠点)。拠点が 1 つも無い日は例の札を出さない。 */}
+          {officeIds.length > 0 && (
+            <span
+              className="inline-flex items-center gap-1.5"
+              data-testid="monitor-legend-course-tag"
+            >
+              <span className="inline-flex gap-0.5">
+                {(data?.offices ?? []).slice(0, 2).map((o) => (
+                  <span
+                    key={o.id}
+                    className="rounded px-1 text-[10px] font-bold leading-[1.55]"
+                    style={officeTagTone(o.id, officeIds)}
+                  >
+                    {o.short_label || o.name.slice(0, 1)}A
+                  </span>
+                ))}
+              </span>
+              コースの札（色＝拠点）
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1.5">
+            <span className="rounded border border-unplanned bg-unplanned-bg px-1 text-[10px] font-bold leading-[1.45] text-unplanned">
+              予定外
+            </span>
+            予定に無い訪問（QR打刻）
+          </span>
           <span className="text-text-muted">→1.2km 次までの距離</span>
         </div>
 
-        {/* 本体: タイムライン + 詳細/地図 */}
+        {/* 本体: タイムライン (全幅)。地図・順路・詳細は選んだ行の下に開く (設計 §4)。 */}
         <div className="flex min-h-0 flex-1">
           {/* M-4c改: self-start + max-h-full で高さを内容にフィットさせ、横スクロールバーが
             「最後のスタッフ行の直下」に来るようにする (旧: flex stretch で常に画面下端に
             張り付き、行から遠かった — PO指摘 2026-07-08)。行が多い日は max-h-full で
             従来どおり画面内に収まり、バーは可視行のすぐ下になる。 */}
-          <div className="max-h-full min-w-0 flex-1 self-start overflow-auto">
+          {/* overflow-anchor: none = 開け閉めの位置合わせはタイムラインの手書きの補正を正とする
+              (ブラウザの scroll anchoring と二重にかからないように)。 */}
+          <div className="max-h-full min-w-0 flex-1 self-start overflow-auto [overflow-anchor:none]">
             {monitorQuery.isLoading ? (
               <div className="space-y-2 p-5">
                 <Skeleton className="h-16 w-full" />
@@ -408,28 +487,30 @@ export default function MonitorPage() {
                 eventsByStaffId={eventsByStaffId}
                 // 「入院中」バッジの日付条件 (2026-09-10)。
                 dateIso={date}
+                officeIds={officeIds}
+                visitById={visitById}
+                renderRowPanel={(row) => (
+                  <MonitorRowPanel
+                    row={row}
+                    visit={
+                      selectedVisit && row.visits.some((v) => v.visit_id === selectedVisitId)
+                        ? selectedVisit
+                        : null
+                    }
+                    onSelectVisit={onSelectVisit}
+                    onClose={closePanel}
+                    matchM={data?.thresholds.match_m ?? 100}
+                    nearby={nearbyQuery.data?.items ?? EMPTY_NEARBY}
+                    officeIds={officeIds}
+                    maxInprogressMin={data?.thresholds.max_inprogress_min}
+                    onReview={canReview ? onReview : undefined}
+                    onUnreview={canReview ? onUnreview : undefined}
+                    reviewPending={reviewPending}
+                  />
+                )}
               />
             )}
           </div>
-
-          {/* 詳細パネル (地図も一緒にスクロール) */}
-          <aside className="w-[348px] shrink-0 overflow-y-auto border-l border-border-default bg-bg-muted">
-            <MonitorMap
-              row={selectedRow}
-              selectedVisitId={selectedVisitId}
-              matchM={data?.thresholds.match_m ?? 100}
-              nearby={nearbyQuery.data?.items ?? EMPTY_NEARBY}
-            />
-            <MonitorDetailPanel
-              visit={selectedVisit}
-              row={selectedRow}
-              onSelectVisit={onSelectVisit}
-              maxInprogressMin={data?.thresholds.max_inprogress_min}
-              onReview={canReview ? onReview : undefined}
-              onUnreview={canReview ? onUnreview : undefined}
-              reviewPending={reviewPending}
-            />
-          </aside>
         </div>
       </div>
     </section>

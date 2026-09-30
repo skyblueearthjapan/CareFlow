@@ -6,6 +6,7 @@
 - JST 境界 (深夜の当日判定)。
 - RBAC (staff は 403, admin/manager は 200)。
 - office_id フィルタ。
+- 行 = 職員 (monitor-staff-rows-design-2026-09-30.md §6)。
 - /monitor/nearby (近隣患者候補)。
 """
 
@@ -696,176 +697,485 @@ async def test_build_monitor_office_filter(db) -> None:
     assert _find(only_a, vb.id) is None
 
 
-@pytest.mark.asyncio
-async def test_build_monitor_unassigned_split_by_course(db) -> None:
-    """担当未設定の visits はコース別に行が分かれる (PO 報告 2026-07-03).
+# ---------------------------------------------------------------------------
+# 行 = 職員 (monitor-staff-rows-design-2026-09-30.md §2 / §6)
+# ---------------------------------------------------------------------------
 
-    従来は primary_staff_id=None を 1 行に集約していたため A-D コースの訪問が
-    混ざって「データが壊れた」ように見えた。コース別行 + コース無しは別 1 行。
-    """
-    from app.models import Course
 
-    office = Office(name="モニタ拠点")
+async def _office(db, name: str, sort_order: int | None = None) -> Office:
+    office = Office(name=name, sort_order=sort_order)
     db.add(office)
     await db.commit()
     await db.refresh(office)
+    return office
 
-    course_a = Course(
+
+async def _staff(db, name: str, *, office=None, code=None, status="active") -> Staff:
+    staff = Staff(
+        name=name,
+        code=code,
+        status=status,
+        primary_office_id=office.id if office is not None else None,
+    )
+    db.add(staff)
+    await db.commit()
+    await db.refresh(staff)
+    return staff
+
+
+async def _course(db, office, code: str, *, assigned=None):
+    from app.models import Course
+
+    course = Course(
         iso_year=2026,
         iso_week=27,
         weekday=1,  # TARGET=2026-06-30 (火)
-        code="A",
+        code=code,
         course_status="course_fixed",
         office_id=office.id,
+        assigned_staff_id=assigned.id if assigned is not None else None,
     )
-    course_b = Course(
-        iso_year=2026,
-        iso_week=27,
-        weekday=1,
-        code="B",
-        course_status="course_fixed",
-        office_id=office.id,
+    db.add(course)
+    await db.commit()
+    await db.refresh(course)
+    return course
+
+
+async def _visit(
+    db,
+    patient,
+    staff,
+    *,
+    course=None,
+    start=time(9, 0),
+    end=None,
+    secondary=None,
+    manual_override=False,
+) -> Visit:
+    v = Visit(
+        patient_id=patient.id,
+        primary_staff_id=staff.id if staff is not None else None,
+        secondary_staff_id=secondary.id if secondary is not None else None,
+        course_id=course.id if course is not None else None,
+        visit_date=TARGET,
+        start_time=start,
+        end_time=end or time(start.hour, 35),
+        type="regular",
+        status="planned",
+        manual_staff_override=manual_override,
     )
-    db.add_all([course_a, course_b])
+    db.add(v)
     await db.commit()
-    await db.refresh(course_a)
-    await db.refresh(course_b)
+    await db.refresh(v)
+    return v
 
-    pa = await _make_patient(db, "UN-A")
-    pb = await _make_patient(db, "UN-B")
-    pc = await _make_patient(db, "UN-NONE")
-    staff = await _make_staff(db, "担当あり", office_id=office.id)
-    pd = await _make_patient(db, "AS-D")
 
-    # 未割当 × コース A / B / コース無し + 担当ありの通常 visit。
-    for patient, course_id, start in (
-        (pa, course_a.id, time(9, 0)),
-        (pb, course_b.id, time(10, 0)),
-        (pc, None, time(11, 0)),
-    ):
-        db.add(
-            Visit(
-                patient_id=patient.id,
-                primary_staff_id=None,
-                course_id=course_id,
-                visit_date=TARGET,
-                start_time=start,
-                end_time=time(start.hour, 35),
-                type="regular",
-                status="planned",
-            )
-        )
-    await db.commit()
-    await _make_visit(db, pd, staff)
-
-    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
-
-    unassigned_rows = [r for r in resp.staff if r.staff_id is None]
-    # A / B / コース無し の 3 行に分かれる (従来は 1 行に集約されていた)。
-    assert len(unassigned_rows) == 3
-    labels = sorted((r.course_label or "") for r in unassigned_rows)
-    assert labels == ["", "Aコース", "Bコース"]
-    # 各行の visits は当該コースのみ。
-    for r in unassigned_rows:
-        assert len(r.visits) == 1
-    # 担当ありの行は従来どおり 1 行。
-    assigned_rows = [r for r in resp.staff if r.staff_id is not None]
-    assert len(assigned_rows) == 1
+def _row_of(resp, staff_id):
+    return next((r for r in resp.staff if r.staff_id == staff_id), None)
 
 
 @pytest.mark.asyncio
-async def test_build_monitor_rows_grouped_by_course(db) -> None:
-    """行 = コース単位 (PO要望 2026-07-10).
+async def test_rows_one_row_per_staff_across_courses(db) -> None:
+    """1 人が 2 コースを持つ日も 1 行。札は重複なし・初出順。行の拠点は所属."""
+    inage = await _office(db, "稲毛", 1)
+    tsuga = await _office(db, "都賀", 2)
+    course_d = await _course(db, inage, "D")
+    course_r = await _course(db, tsuga, "臨2")
+    staff = await _staff(db, "掛持 一号", office=inage, code="S1")
+    other = await _staff(db, "別人 二号", office=inage, code="S2")
+    p = [await _make_patient(db, f"ONE-{i}") for i in range(5)]
+    v1 = await _visit(db, p[0], staff, course=course_d, start=time(9, 0))
+    v2 = await _visit(db, p[1], staff, course=course_r, start=time(10, 0))
+    v3 = await _visit(db, p[2], staff, course=course_d, start=time(11, 0))
+    v4 = await _visit(db, p[3], staff, course=None, start=time(12, 0))
+    # 同じコースを別の人が回る訪問は、その人の行に入る (コース行に同居しない)。
+    v5 = await _visit(db, p[4], other, course=course_r, start=time(10, 0))
 
-    - 1 人が 2 コース掛け持ち → コースごとに 2 行に分かれる (旧: 1 行に集約)
-    - 1 コースを 2 名で回す → 1 行に集約され staff_ids に 2 名・staff_name は連結
-    - 行の拠点はコースの office_id 由来
-    - visit 単位の staff_name (= visits.primary_staff_id。モバイルと同一ソース) が入る
+    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
+    assert [r.staff_id for r in resp.staff] == [staff.id, other.id]
+    row = _row_of(resp, staff.id)
+    assert [mv.visit_id for mv in row.visits] == [v1.id, v2.id, v3.id, v4.id]
+    assert [t.label for t in row.course_tags] == ["稲D", "都臨2"]
+    assert [t.course_id for t in row.course_tags] == [course_d.id, course_r.id]
+    assert row.course_tags[1].office_id == tsuga.id
+    assert row.course_tags[1].office_name == "都賀"
+    assert row.staff_name == "掛持 一号"
+    assert row.staff_ids == [staff.id]
+    assert row.office_id == inage.id  # 行の拠点は所属 (コースの拠点ではない)
+    assert row.office_name == "稲毛"
+    # 互換の項目は残すが常に null。
+    assert row.course_id is None
+    assert row.course_label is None
+    assert row.course_staff_id is None
+    assert row.course_staff_name is None
+    # 訪問ごとの札と拠点。コース無しは札なし・拠点は患者の主担当拠点 (未設定なら None)。
+    mv2 = _find(resp, v2.id)
+    assert (mv2.course_id, mv2.course_tag) == (course_r.id, "都臨2")
+    assert (mv2.course_office_id, mv2.course_office_name) == (tsuga.id, "都賀")
+    mv4 = _find(resp, v4.id)
+    assert (mv4.course_id, mv4.course_tag, mv4.course_office_id) == (None, None, None)
+    assert [mv.visit_id for mv in _row_of(resp, other.id).visits] == [v5.id]
+    # 拠点チップ = 訪問のコース拠点 ∪ 所属 (sort_order 順)。
+    assert [o.name for o in resp.offices] == ["稲毛", "都賀"]
+
+
+@pytest.mark.asyncio
+async def test_rows_empty_primary_falls_back_to_course_staff(db) -> None:
+    """担当が空の訪問はコース担当の行へ。どちらも無い訪問は末尾の「担当なし」行."""
+    office = await _office(db, "稲毛", 1)
+    course_staff = await _staff(db, "コース 担当", office=office, code="S1")
+    course_a = await _course(db, office, "A", assigned=course_staff)
+    course_b = await _course(db, office, "B")  # コース担当なし
+    retired = await _staff(db, "退職 太郎", office=office, code="S0", status="retired")
+    course_c = await _course(db, office, "C", assigned=retired)
+    pa = await _make_patient(db, "FB-A")
+    pb = await _make_patient(db, "FB-B")
+    pc = await _make_patient(db, "FB-C")
+    pd = await _make_patient(db, "FB-D")
+    pm = await _make_patient(db, "FB-M")
+    va = await _visit(db, pa, None, course=course_a, start=time(9, 0))
+    vb = await _visit(db, pb, None, course=course_b, start=time(10, 0))
+    vc = await _visit(db, pc, None, course=course_c, start=time(11, 0))
+    vd = await _visit(db, pd, None, course=None, start=time(12, 0))
+    # 手動で担当を外した訪問 (manual_staff_override) はフォールバックしない。
+    vm = await _visit(db, pm, None, course=course_a, start=time(13, 0), manual_override=True)
+
+    resp = await build_monitor(db, TARGET, now=_utc(8, 0))
+    row = _row_of(resp, course_staff.id)
+    assert [mv.visit_id for mv in row.visits] == [va.id]
+    # 訪問の担当 (= visits.primary_staff_id) の意味は変えない: 空のまま。
+    assert row.visits[0].staff_id is None
+    # 「担当なし」行は末尾・1 本。
+    assert resp.staff[-1].staff_id is None
+    assert resp.staff[-1].staff_name is None
+    assert resp.staff[-1].staff_ids == []
+    assert [mv.visit_id for mv in resp.staff[-1].visits] == [vb.id, vc.id, vd.id, vm.id]
+    assert len([r for r in resp.staff if r.staff_id is None]) == 1
+    # 退職者の行は作らない (フォールバック先にもしない)。
+    assert _row_of(resp, retired.id) is None
+
+
+@pytest.mark.asyncio
+async def test_rows_unplanned_visit_is_in_reader_row(db) -> None:
+    """予定外の訪問は読み取った本人 (= 主担当) の行に入る (専用行は作らない)."""
+    office = await _office(db, "稲毛", 1)
+    staff = await _staff(db, "実績 太郎", office=office)
+    p1 = await _make_patient(db, "UP-1")
+    p2 = await _make_patient(db, "UP-2")
+    planned = await _visit(db, p1, staff, start=time(9, 0))
+    adhoc = await _visit(db, p2, staff, start=time(11, 0))
+    adhoc.is_unplanned = True
+    await db.commit()
+
+    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
+    assert len(resp.staff) == 1
+    assert [mv.visit_id for mv in resp.staff[0].visits] == [planned.id, adhoc.id]
+    mv = _find(resp, adhoc.id)
+    assert mv.is_unplanned is True
+    assert mv.course_tag is None
+
+
+@pytest.mark.asyncio
+async def test_rows_event_only_and_day_off_staff_get_rows(db) -> None:
+    """訪問が無くてもイベント (取消でない)・休み・時間変更がある在籍中の職員は行になる."""
+    from app.models.staff import StaffEvent, StaffWeeklyOverride
+
+    office = await _office(db, "稲毛", 1)
+    ev_staff = await _staff(db, "会議 一郎", office=office, code="S1")
+    off_staff = await _staff(db, "休み 二郎", office=office, code="S2")
+    custom_staff = await _staff(db, "時短 三郎", office=office, code="S3")
+    cancelled_staff = await _staff(db, "取消 四郎", office=office, code="S4")
+    other_day_staff = await _staff(db, "別日 五郎", office=office, code="S5")
+    retired = await _staff(db, "退職 六郎", office=office, code="S6", status="retired")
+    nothing = await _staff(db, "何も無し", office=office, code="S7")
+
+    def _ev(staff, d=TARGET, cancelled=False):
+        return StaffEvent(
+            staff_id=staff.id,
+            event_type="イベント",
+            starts_at=datetime.combine(d, time(9, 0)),
+            ends_at=datetime.combine(d, time(9, 30)),
+            title="朝会",
+            cancelled_at=datetime(2026, 6, 29, tzinfo=UTC) if cancelled else None,
+        )
+
+    iso = TARGET.isocalendar()
+    db.add_all(
+        [
+            _ev(ev_staff),
+            _ev(cancelled_staff, cancelled=True),
+            _ev(other_day_staff, d=date(2026, 7, 1)),
+            _ev(retired),
+            StaffWeeklyOverride(
+                staff_id=off_staff.id,
+                iso_year=iso.year,
+                iso_week=iso.week,
+                weekday=TARGET.weekday(),
+                override_type="off",
+                reason="有給",
+            ),
+            StaffWeeklyOverride(
+                staff_id=custom_staff.id,
+                iso_year=iso.year,
+                iso_week=iso.week,
+                weekday=TARGET.weekday(),
+                override_type="custom_time",
+                start_time=time(10, 0),
+                end_time=time(15, 0),
+            ),
+        ]
+    )
+    await db.commit()
+
+    resp = await build_monitor(db, TARGET, now=_utc(8, 0), viewer_is_admin=True)
+    assert [r.staff_id for r in resp.staff] == [ev_staff.id, off_staff.id, custom_staff.id]
+    for r in resp.staff:
+        assert r.visits == []
+        assert r.staff_ids == [r.staff_id]
+    assert _row_of(resp, ev_staff.id).day_override is None
+    off = _row_of(resp, off_staff.id).day_override
+    assert (off.kind, off.reason) == ("off", "有給")
+    # 休みの理由は admin だけ。staff が見るときは種別・時刻だけで理由は null。
+    as_staff = await build_monitor(db, TARGET, now=_utc(8, 0), viewer_is_admin=False)
+    staff_off = _row_of(as_staff, off_staff.id).day_override
+    assert (staff_off.kind, staff_off.reason) == ("off", None)
+    custom = _row_of(resp, custom_staff.id).day_override
+    assert (custom.kind, custom.start_time, custom.end_time) == ("custom_time", "10:00", "15:00")
+    for absent in (cancelled_staff, other_day_staff, retired, nothing):
+        assert _row_of(resp, absent.id) is None
+    # 拠点チップは所属からも立つ。
+    assert [o.name for o in resp.offices] == ["稲毛"]
+
+
+@pytest.mark.asyncio
+async def test_rows_sorted_by_office_sort_order_then_staff_code(db) -> None:
+    """並び = 所属拠点の sort_order → 職員コード (数字は数値順・コード無しは末尾)。担当なしは最後."""
+    first = await _office(db, "都賀", 1)  # 名前順なら後ろだが sort_order が先
+    second = await _office(db, "稲毛", 2)
+    s10 = await _staff(db, "十番", office=first, code="S10")
+    s2 = await _staff(db, "二番", office=first, code="S2")
+    nocode = await _staff(db, "コード無し", office=first)
+    s1_second = await _staff(db, "一番", office=second, code="S1")
+    no_office = await _staff(db, "所属無し", code="S0")
+    staffs = [s10, s2, nocode, s1_second, no_office]
+    for i, st in enumerate(staffs):
+        await _visit(db, await _make_patient(db, f"ORD-{i}"), st, start=time(9 + i, 0))
+    await _visit(db, await _make_patient(db, "ORD-NONE"), None, start=time(8, 0))
+
+    resp = await build_monitor(db, TARGET, now=_utc(8, 0))
+    assert [r.staff_name for r in resp.staff] == [
+        "二番",
+        "十番",
+        "コード無し",
+        "一番",
+        "所属無し",
+        None,
+    ]
+    assert [o.name for o in resp.offices] == ["都賀", "稲毛"]
+
+
+@pytest.mark.asyncio
+async def test_office_order_is_master_order_not_the_days_offices(db) -> None:
+    """札の色の基準 (office_order) は拠点マスタの順。その日に出る拠点だけの日でも変わらない."""
+    inage = await _office(db, "稲毛", 1)
+    tsuga = await _office(db, "都賀", 2)
+    no_sort = await _office(db, "未設定")
+    staff = await _staff(db, "都賀 だけ", office=tsuga, code="S1")
+    course = await _course(db, tsuga, "A")
+    await _visit(db, await _make_patient(db, "OO-1"), staff, course=course)
+
+    resp = await build_monitor(db, TARGET, now=_utc(8, 0))
+    # チップはその日の拠点だけ。
+    assert [o.id for o in resp.offices] == [tsuga.id]
+    # 色の基準はマスタ全体の順 (sort_order → sort_order 無しは末尾)。
+    assert resp.office_order == [inage.id, tsuga.id, no_sort.id]
+
+
+@pytest.mark.asyncio
+async def test_rows_distance_to_next_follows_the_staff_day(db) -> None:
+    """次の訪問までの距離は、コースをまたいでもその人の 1 日の時刻順で出す."""
+    office = await _office(db, "稲毛", 1)
+    course_a = await _course(db, office, "A")
+    course_b = await _course(db, office, "B")
+    staff = await _staff(db, "距離 太郎", office=office)
+    p1 = await _make_patient(db, "DS-1", lat=35.0000, lng=139.0000)
+    p2 = await _make_patient(db, "DS-2", lat=35.0100, lng=139.0000)
+    p3 = await _make_patient(db, "DS-3", lat=35.0200, lng=139.0000)
+    v1 = await _visit(db, p1, staff, course=course_a, start=time(9, 0))
+    v2 = await _visit(db, p2, staff, course=course_b, start=time(10, 0))
+    v3 = await _visit(db, p3, staff, course=course_a, start=time(11, 0))
+
+    resp = await build_monitor(db, TARGET, now=_utc(8, 0))
+    # A→B→A: コースごとの順 (旧: A の 9:00 → 11:00 = 2.2km) ではなく 1 日の順 (1.1km)。
+    assert 1000 < _find(resp, v1.id).distance_to_next_m < 1200
+    assert 1000 < _find(resp, v2.id).distance_to_next_m < 1200
+    assert _find(resp, v3.id).distance_to_next_m is None
+
+
+@pytest.mark.asyncio
+async def test_rows_companion_visit_ids(db) -> None:
+    """同行・副担当として関わる訪問は、その人の行の companion_visit_ids に入る."""
+    from app.models.accompaniment import Accompaniment
+
+    office = await _office(db, "稲毛", 1)
+    main = await _staff(db, "主担当", office=office, code="S1")
+    sub = await _staff(db, "副担当", office=office, code="S2")
+    trainee = await _staff(db, "新人", office=office, code="S3")
+    p1 = await _make_patient(db, "CP-1")
+    p2 = await _make_patient(db, "CP-2")
+    v1 = await _visit(db, p1, main, start=time(9, 0), secondary=sub)
+    v2 = await _visit(db, p2, main, start=time(10, 0))
+    db.add(
+        Accompaniment(
+            accompanying_staff_id=trainee.id,
+            target_type="visit",
+            visit_id=v2.id,
+            source="manual",
+            kind="support",
+        )
+    )
+    await db.commit()
+
+    resp = await build_monitor(db, TARGET, now=_utc(8, 0))
+    main_row = _row_of(resp, main.id)
+    assert [mv.visit_id for mv in main_row.visits] == [v1.id, v2.id]
+    assert main_row.companion_visit_ids == []
+    # 副担当・同行者の行は訪問を持たず、関わる訪問の id だけを持つ (訪問は主担当の行)。
+    sub_row = _row_of(resp, sub.id)
+    assert sub_row.visits == []
+    assert sub_row.companion_visit_ids == [v1.id]
+    trainee_row = _row_of(resp, trainee.id)
+    assert trainee_row.visits == []
+    assert trainee_row.companion_visit_ids == [v2.id]
+    # 訪問本体は 1 回だけ (集計が二重にならない)。
+    assert sum(len(r.visits) for r in resp.staff) == 2
+
+
+@pytest.mark.asyncio
+async def test_rows_two_person_group_is_not_companion_of_its_own_members(db) -> None:
+    """2 名体制 (Layer3: 組の両方に副担当) は、組の訪問を持つ人の行に同行として重ねない.
+
+    A = 主 X・副 Y、B = 主 Y・副 X (同じ visit_group_id)。X の行は A だけ、Y の行は B だけで、
+    どちらも companion は空。組の外の人が副担当なら、その人には同行として出す。
+    カイポケ取込の「1 訪問に主と副」(visit_group_id 無し) は従来どおり同行。
     """
-    from app.models import Course
+    import uuid
 
-    office = Office(name="コース行拠点")
-    db.add(office)
+    office = await _office(db, "稲毛", 1)
+    x = await _staff(db, "二名 エックス", office=office, code="S1")
+    y = await _staff(db, "二名 ワイ", office=office, code="S2")
+    z = await _staff(db, "取込 ゼット", office=office, code="S3")
+    p = await _make_patient(db, "TW-1")
+    group = uuid.uuid4()
+    va = await _visit(db, p, x, start=time(9, 0), secondary=y)
+    vb = await _visit(db, p, y, start=time(9, 0), secondary=x)
+    for v in (va, vb):
+        v.visit_group_id = group
+        v.required_staff_count = 2
+    # 組の無い「1 訪問に主と副」: X が主・Z が副。
+    vk = await _visit(db, await _make_patient(db, "TW-2"), x, start=time(11, 0), secondary=z)
+    # 組の訪問でも、その組の訪問を持たない人 (Z) が副担当なら同行に出す。
+    vz = await _visit(db, await _make_patient(db, "TW-3"), y, start=time(13, 0), secondary=z)
+    vz.visit_group_id = uuid.uuid4()
     await db.commit()
-    await db.refresh(office)
 
-    course_a = Course(
-        iso_year=2026,
-        iso_week=27,
-        weekday=1,  # TARGET=2026-06-30 (火)
-        code="A",
-        course_status="course_fixed",
-        office_id=office.id,
+    resp = await build_monitor(db, TARGET, now=_utc(8, 0))
+    x_row = _row_of(resp, x.id)
+    assert [mv.visit_id for mv in x_row.visits] == [va.id, vk.id]
+    assert x_row.companion_visit_ids == []
+    y_row = _row_of(resp, y.id)
+    assert [mv.visit_id for mv in y_row.visits] == [vb.id, vz.id]
+    assert y_row.companion_visit_ids == []
+    z_row = _row_of(resp, z.id)
+    assert z_row.visits == []
+    assert z_row.companion_visit_ids == [vk.id, vz.id]
+    # 訪問本体の担当 (primary_staff_id) の意味は変えない。
+    assert _find(resp, vb.id).staff_id == y.id
+
+
+@pytest.mark.asyncio
+async def test_rows_office_filter_uses_visit_course_office(db) -> None:
+    """拠点の絞り込み = その拠点の訪問を 1 件でも持つ人 (中身は 1 日全部)。訪問の無い人は所属."""
+    from app.models.staff import StaffWeeklyOverride
+
+    inage = await _office(db, "稲毛", 1)
+    tsuga = await _office(db, "都賀", 2)
+    course_i = await _course(db, inage, "A")
+    course_t = await _course(db, tsuga, "臨")
+    helper = await _staff(db, "応援 稲毛", office=inage, code="S1")
+    stay = await _staff(db, "稲毛 だけ", office=inage, code="S2")
+    tsuga_off = await _staff(db, "都賀 休み", office=tsuga, code="S3")
+    inage_off = await _staff(db, "稲毛 休み", office=inage, code="S4")
+    v_help_i = await _visit(db, await _make_patient(db, "OF-1"), helper, course=course_i)
+    v_help_t = await _visit(
+        db, await _make_patient(db, "OF-2"), helper, course=course_t, start=time(11, 0)
     )
-    course_b = Course(
-        iso_year=2026,
-        iso_week=27,
-        weekday=1,
-        code="B",
-        course_status="course_fixed",
-        office_id=office.id,
-    )
-    db.add_all([course_a, course_b])
-    await db.commit()
-    await db.refresh(course_a)
-    await db.refresh(course_b)
-
-    staff1 = await _make_staff(db, "掛持一号", office_id=office.id)
-    staff2 = await _make_staff(db, "応援二号", office_id=office.id)
-    p1 = await _make_patient(db, "CR-1")
-    p2 = await _make_patient(db, "CR-2")
-    p3 = await _make_patient(db, "CR-3")
-
-    # スケジュール側のコース担当 (courses.assigned_staff_id): A のみ staff1 を設定。
-    course_a.assigned_staff_id = staff1.id
-    db.add(course_a)
-    await db.commit()
-
-    # A コース: staff1 (9:00) + staff2 (10:00) の 2 名で回す。
-    # B コース: staff1 (11:00) が掛け持ち。
-    for patient, course_id, staff, start in (
-        (p1, course_a.id, staff1, time(9, 0)),
-        (p2, course_a.id, staff2, time(10, 0)),
-        (p3, course_b.id, staff1, time(11, 0)),
-    ):
+    await _visit(db, await _make_patient(db, "OF-3"), stay, course=course_i, start=time(10, 0))
+    iso = TARGET.isocalendar()
+    for st in (tsuga_off, inage_off):
         db.add(
-            Visit(
-                patient_id=patient.id,
-                primary_staff_id=staff.id,
-                course_id=course_id,
-                visit_date=TARGET,
-                start_time=start,
-                end_time=time(start.hour, 35),
-                type="regular",
-                status="planned",
+            StaffWeeklyOverride(
+                staff_id=st.id,
+                iso_year=iso.year,
+                iso_week=iso.week,
+                weekday=TARGET.weekday(),
+                override_type="off",
             )
         )
     await db.commit()
 
-    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
-    course_rows = [r for r in resp.staff if r.course_id is not None]
-    assert len(course_rows) == 2
+    only_tsuga = await build_monitor(db, TARGET, office_id=tsuga.id, now=_utc(8, 0))
+    # 稲毛所属の応援者は都賀の訪問を持つので出る。行の中身はその人の 1 日全部。
+    assert [r.staff_id for r in only_tsuga.staff] == [helper.id, tsuga_off.id]
+    assert [mv.visit_id for mv in _row_of(only_tsuga, helper.id).visits] == [
+        v_help_i.id,
+        v_help_t.id,
+    ]
 
-    row_a = next(r for r in course_rows if r.course_label == "Aコース")
-    assert len(row_a.visits) == 2
-    assert set(row_a.staff_ids) == {staff1.id, staff2.id}
-    assert row_a.staff_id is None  # 複数名の行は単一 staff_id を持たない
-    assert row_a.staff_name == "掛持一号・応援二号"
-    assert row_a.office_id == office.id  # 拠点はコース由来
-    # スケジュール側のコース担当 (visits に依存せず courses.assigned から引く)。
-    assert row_a.course_staff_id == staff1.id
-    assert row_a.course_staff_name == "掛持一号"
+    only_inage = await build_monitor(db, TARGET, office_id=inage.id, now=_utc(8, 0))
+    assert [r.staff_id for r in only_inage.staff] == [helper.id, stay.id, inage_off.id]
 
-    row_b = next(r for r in course_rows if r.course_label == "Bコース")
-    assert row_b.staff_id == staff1.id
-    assert row_b.staff_name == "掛持一号"
-    assert row_b.course_staff_id is None  # B は未割当のまま
 
-    # visit 単位の担当 (モバイル「今日の訪問」と同一ソース) が入る。
-    for r in course_rows:
-        for v in r.visits:
-            assert v.staff_id is not None
-            assert v.staff_name
+@pytest.mark.asyncio
+async def test_visit_course_staff_mismatch(db) -> None:
+    """コース担当と訪問の担当が違う訪問に印 (手動の付け替えは除く)."""
+    office = await _office(db, "稲毛", 1)
+    owner = await _staff(db, "コース 担当", office=office, code="S1")
+    other = await _staff(db, "別の 人", office=office, code="S2")
+    course = await _course(db, office, "A", assigned=owner)
+    same = await _visit(db, await _make_patient(db, "MM-1"), owner, course=course)
+    diff = await _visit(
+        db, await _make_patient(db, "MM-2"), other, course=course, start=time(10, 0)
+    )
+    manual = await _visit(
+        db,
+        await _make_patient(db, "MM-3"),
+        other,
+        course=course,
+        start=time(11, 0),
+        manual_override=True,
+    )
+
+    resp = await build_monitor(db, TARGET, now=_utc(8, 0))
+    assert _find(resp, same.id).course_staff_mismatch is False
+    assert _find(resp, diff.id).course_staff_mismatch is True
+    assert _find(resp, manual.id).course_staff_mismatch is False
+
+
+def test_staff_code_sort_key_matches_fe_compare_by_staff_code() -> None:
+    """FE ``compareByStaffCode`` と同じ並び (lib/__tests__/kana-sort.test.ts と同じ例)."""
+    from app.services.checkin.monitor import staff_code_sort_key
+
+    rows = [("S010", "い"), ("", "う"), ("S2", "え"), ("S001", "お"), ("", "あ"), ("S2", "あ")]
+    ordered = sorted(rows, key=lambda r: staff_code_sort_key(r[0], r[1]))
+    assert [f"{c or '-'}:{n}" for c, n in ordered] == [
+        "S001:お",
+        "S2:あ",
+        "S2:え",
+        "S010:い",
+        "-:あ",
+        "-:う",
+    ]
 
 
 @pytest.mark.asyncio
@@ -947,6 +1257,43 @@ async def test_monitor_api_returns_visit(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_monitor_api_day_override_reason_admin_only(client, db) -> None:
+    """休みの理由は admin への応答にだけ入る (staff には種別だけ)."""
+    from app.models.staff import StaffWeeklyOverride
+
+    off_staff = await _make_staff(db, "S-off-reason")
+    viewer = await _make_staff(db, "S-viewer")
+    admin = await _make_user(db, "mon-reason-admin@example.com", "admin")
+    staff_user = await _make_user(db, "mon-reason-staff@example.com", "staff", staff_id=viewer.id)
+    iso = TARGET.isocalendar()
+    db.add(
+        StaffWeeklyOverride(
+            staff_id=off_staff.id,
+            iso_year=iso.year,
+            iso_week=iso.week,
+            weekday=TARGET.weekday(),
+            override_type="off",
+            reason="通院",
+        )
+    )
+    await db.commit()
+
+    def _override(body):
+        row = next(r for r in body["staff"] if r["staff_id"] == str(off_staff.id))
+        return row["day_override"]
+
+    params = {"date": TARGET.isoformat()}
+    res_admin = await client.get("/api/v1/monitor", params=params, headers=_bearer(admin))
+    assert res_admin.status_code == 200, res_admin.text
+    assert _override(res_admin.json())["reason"] == "通院"
+    res_staff = await client.get("/api/v1/monitor", params=params, headers=_bearer(staff_user))
+    assert res_staff.status_code == 200, res_staff.text
+    staff_override = _override(res_staff.json())
+    assert staff_override["kind"] == "off"
+    assert staff_override["reason"] is None
+
+
+@pytest.mark.asyncio
 async def test_build_monitor_jst_midnight_same_day(db) -> None:
     """JST 00:30 (= 前日 UTC 15:30) でも当日 visit は当日として集計される."""
     staff = await _make_staff(db, "S-jst")
@@ -961,24 +1308,24 @@ async def test_build_monitor_jst_midnight_same_day(db) -> None:
     assert mv.phase == PHASE_MISSING
 
 
-# ---------------------------------------------------------------------------
-# 行の並び順 (PO要望 2026-07-10): 拠点 → コース (A,B,..) → スタッフ名。
-# スケジュール本体と同じ読み順にするためのソートキー関数の単体テスト。
-# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_course_tag_uses_office_short_label(db) -> None:
+    """札の略称は offices.short_label (PO 決定 2026-10-01)。未設定なら拠点名の 1 文字目."""
+    inage = await _office(db, "稲毛", 1)  # short_label 未設定 → 「稲」
+    tsuga = await _office(db, "都賀", 2)
+    tsuga.short_label = "津"
+    await db.commit()
+    course_d = await _course(db, inage, "D")
+    course_r = await _course(db, tsuga, "臨2")
+    staff = await _staff(db, "略称 一号", office=inage, code="S1")
+    p = [await _make_patient(db, f"SHORT-{i}") for i in range(2)]
+    v1 = await _visit(db, p[0], staff, course=course_d, start=time(9, 0))
+    v2 = await _visit(db, p[1], staff, course=course_r, start=time(10, 0))
 
-
-def test_course_label_first_code_ordering() -> None:
-    from app.services.checkin.monitor import _course_label_first_code
-
-    # 単一コース
-    assert _course_label_first_code("Aコース") == "A"
-    assert _course_label_first_code("Mコース") == "M"
-    # 複数コース持ちは先頭コードで整列
-    assert _course_label_first_code("A/Bコース") == "A"
-    # コース無し (担当未設定) は末尾へ
-    assert _course_label_first_code(None) == "￿"
-    assert _course_label_first_code("") == "￿"
-    # 並び確認: A → B → C → M → (無し)
-    labels = ["Mコース", None, "Cコース", "A/Bコース", "Bコース"]
-    ordered = sorted(labels, key=_course_label_first_code)
-    assert ordered == ["A/Bコース", "Bコース", "Cコース", "Mコース", None]
+    resp = await build_monitor(db, TARGET, now=_utc(13, 30))
+    row = _row_of(resp, staff.id)
+    assert [t.label for t in row.course_tags] == ["稲D", "津臨2"]
+    assert _find(resp, v1.id).course_tag == "稲D"
+    assert _find(resp, v2.id).course_tag == "津臨2"
+    # 凡例用に拠点チップへも略称を載せる (未設定は拠点名の 1 文字目)。
+    assert [(o.name, o.short_label) for o in resp.offices] == [("稲毛", "稲"), ("都賀", "津")]

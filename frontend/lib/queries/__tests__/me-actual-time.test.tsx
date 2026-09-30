@@ -2,7 +2,8 @@
  * 実績の時刻を合わせる API (設計 2026-09-30 §6-1) — リクエストの形を縛る。
  *
  * バックエンドと突き合わせる契約:
- *   PUT    /api/v1/visits/{id}/actual-time          body { kind, time, reason_code, reason_text }
+ *   PUT    /api/v1/visits/{id}/actual-time          body { kind, time }
+ *          (reason_code / reason_text は API の受け口として任意のまま。画面からは送らない)
  *   DELETE /api/v1/visits/{id}/actual-time?kind=…   (読取時刻に戻す)
  *   どちらもヘッダ `X-Client-Surface: mobile`・応答は VisitRead・成功後は ['me'] を無効化。
  */
@@ -57,17 +58,12 @@ beforeEach(() => {
 });
 
 describe('useAdjustActualTime', () => {
-  it('PUT /visits/{id}/actual-time に kind / time / reason を送り、X-Client-Surface: mobile を付ける', async () => {
+  it('PUT /visits/{id}/actual-time に kind / time を送り (理由は無し)、X-Client-Surface: mobile を付ける', async () => {
     (fetcher as Mock).mockResolvedValueOnce(VISIT);
     const invalidate = vi.spyOn(qc, 'invalidateQueries');
     const { result } = renderHook(() => useAdjustActualTime('visit-1'), { wrapper });
 
-    const updated = await result.current.mutateAsync({
-      kind: 'arrival',
-      time: '12:56',
-      reason_code: 'intercom_wait',
-      reason_text: null,
-    });
+    const updated = await result.current.mutateAsync({ kind: 'arrival', time: '12:56' });
 
     expect(updated).toEqual(VISIT);
     expect((fetcher as Mock).mock.calls).toHaveLength(1);
@@ -75,12 +71,7 @@ describe('useAdjustActualTime', () => {
     expect(path).toBe('/api/v1/visits/visit-1/actual-time');
     expect(init.method).toBe('PUT');
     expect(init.headers).toEqual({ 'X-Client-Surface': 'mobile' });
-    expect(JSON.parse(init.body ?? '')).toEqual({
-      kind: 'arrival',
-      time: '12:56',
-      reason_code: 'intercom_wait',
-      reason_text: null,
-    });
+    expect(JSON.parse(init.body ?? '')).toEqual({ kind: 'arrival', time: '12:56' });
     expect(init.accessToken).toBe('a');
     expect(init.refreshToken).toBe('r');
     // 一覧・詳細を取り直す (既存の打刻と同じ)。

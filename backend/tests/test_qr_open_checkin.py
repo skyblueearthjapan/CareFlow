@@ -9,7 +9,7 @@
   通知を 1 TX で行う。生成値・二重生成ガード・退出時の end_time 更新。
 * **通知 3 種** (§4-4): 代行 / 予定外 / NG 交差を admin へ冪等通知
   (reference_id = visit.id で非 NULL)。
-* **モニター合成** (§6): 実績スタッフ・代行判定・予定外専用行・アラート。
+* **モニター合成** (§6): 実績スタッフ・代行判定・予定外の行 (読み取った本人の行)・アラート。
 
 TX 後始末: 各テストの終端で ``await db.rollback()`` (aiosqlite 共有コネクションの
 順序依存フレーク対策 / 2026-08-11 引き継ぎ §5)。リクエスト間に test session から
@@ -44,7 +44,6 @@ from app.models import (
 from app.services.checkin.monitor import (
     ALERT_NONE,
     ALERT_REVIEW,
-    UNPLANNED_ROW_LABEL,
     build_monitor,
 )
 from app.services.checkin.notify import (
@@ -1126,7 +1125,7 @@ async def test_planned_visit_checkout_keeps_end_time(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §6 モニター合成 (実績スタッフ / 代行 / 予定外専用行)
+# §6 モニター合成 (実績スタッフ / 代行 / 予定外は読み取った本人の行)
 # ---------------------------------------------------------------------------
 
 
@@ -1242,8 +1241,12 @@ async def test_monitor_review_clears_substitute_alert(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_monitor_groups_unplanned_visits_into_dedicated_row(db) -> None:
-    """予定外 visit は専用行 (📌予定外訪問) に集まり、通常行には混ざらない (§6)."""
+async def test_monitor_unplanned_visit_is_in_reader_row(db) -> None:
+    """予定外 visit は読み取った本人 (= 主担当) の行に「予定外」として入る.
+
+    2026-10-01 に行を職員単位へ変えたため、専用行 (📌予定外訪問) は廃止
+    (monitor-staff-rows-design-2026-09-30.md §1・§2)。
+    """
     staff, _ = await _make_staff_user(db, "mon-4@example.com", staff_name="実績 太郎")
     p_planned = await _make_patient(db, "MON-4A")
     p_adhoc = await _make_patient(db, "MON-4B")
@@ -1275,18 +1278,18 @@ async def test_monitor_groups_unplanned_visits_into_dedicated_row(db) -> None:
     monitor = await build_monitor(
         db, target, now=datetime.combine(target, time(11, 30), tzinfo=JST).astimezone(UTC)
     )
-    unplanned_rows = [r for r in monitor.staff if r.course_label == UNPLANNED_ROW_LABEL]
-    assert len(unplanned_rows) == 1
-    assert [mv.visit_id for mv in unplanned_rows[0].visits] == [adhoc.id]
-    mv = unplanned_rows[0].visits[0]
+    # 専用行は無く、同じスタッフの 1 行に予定の訪問と時刻順で並ぶ。
+    assert len(monitor.staff) == 1
+    row = monitor.staff[0]
+    assert row.staff_id == staff.id
+    assert [mv.visit_id for mv in row.visits] == [planned.id, adhoc.id]
+    mv = row.visits[1]
     assert mv.is_unplanned is True
+    assert mv.course_tag is None  # 予定のコースは語らない (画面は「予定外」の札)。
     assert mv.is_substitute is False  # 担当 = 打刻者なので代行ではない。
     assert mv.actual_staff_name == "実績 太郎"
     assert mv.alert_level == ALERT_REVIEW  # 未 review の予定外はトレイに載せる。
-
-    # 同じスタッフの予定 visit は従来どおり通常行のまま。
-    planned_row, _ = _find_visit(monitor, planned.id)
-    assert planned_row.course_label != UNPLANNED_ROW_LABEL
+    assert row.visits[0].is_unplanned is False
     await db.rollback()
 
 
@@ -1431,12 +1434,12 @@ async def test_monitor_actual_staff_falls_back_to_departure(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_monitor_row_order_is_course_then_no_course_then_unplanned(db) -> None:
-    """行の並び = 拠点 → コースコード → コース無し → 予定外 (最終レビュー m-5).
+async def test_monitor_one_row_holds_courses_no_course_and_unplanned(db) -> None:
+    """コース A / B・コース無し・予定外の訪問は、1 人なら 1 行に時刻順で並ぶ.
 
-    旧実装はラベル先頭文字のコードポイント比較 ("📌" U+1F4CC > 番兵 "￿" U+FFFF)
-    という偶然に依存していた。行種別ランクへ置き換えても並びが変わらないことを
-    固定する。
+    旧: 行 = コース単位で「A → B → コース無し → 予定外 (専用行)」の 4 行だった。
+    2026-10-01 から行 = 職員 (monitor-staff-rows-design-2026-09-30.md §2) なので、
+    コースは訪問ごとの札 (拠点名 1 文字目 + コード) になり、予定外は札なしで同じ行に入る。
     """
     from app.models import Course
 
@@ -1496,18 +1499,23 @@ async def test_monitor_row_order_is_course_then_no_course_then_unplanned(db) -> 
     monitor = await build_monitor(
         db, target, now=datetime.combine(target, time(13, 0), tzinfo=JST).astimezone(UTC)
     )
-    assert [r.course_label for r in monitor.staff] == [
-        "Aコース",
-        "Bコース",
-        None,
-        UNPLANNED_ROW_LABEL,
-    ]
+    assert len(monitor.staff) == 1
+    row = monitor.staff[0]
+    assert row.staff_id == staff.id
+    assert [mv.patient_code for mv in row.visits] == ["ORD-A", "ORD-B", "ORD-N", "ORD-U"]
+    assert [mv.course_tag for mv in row.visits] == ["並A", "並B", None, None]
+    assert [mv.is_unplanned for mv in row.visits] == [False, False, False, True]
+    assert [t.label for t in row.course_tags] == ["並A", "並B"]
     await db.rollback()
 
 
 @pytest.mark.asyncio
-async def test_monitor_unplanned_rows_are_split_per_office(db) -> None:
-    """予定外専用行は拠点ごとに分かれ、拠点フィルタで当該拠点分だけ残る (§6)."""
+async def test_monitor_unplanned_visits_follow_reader_office_filter(db) -> None:
+    """予定外は読み取った本人の行に入り、拠点フィルタで当該拠点分だけ残る.
+
+    旧: 予定外専用行を拠点ごとに 1 本ずつ作っていた。行 = 職員になった今は本人の行に
+    入り、コース無しの訪問の拠点は (患者の主担当拠点が無ければ) 本人の所属で判定する。
+    """
     office_a = Office(name="拠点A")
     office_b = Office(name="拠点B")
     db.add_all([office_a, office_b])
@@ -1537,25 +1545,26 @@ async def test_monitor_unplanned_rows_are_split_per_office(db) -> None:
     await db.commit()
 
     now = datetime.combine(target, time(15, 0), tzinfo=JST).astimezone(UTC)
-    # フィルタ無し: 拠点ごとに 1 本ずつ = 2 本。
+    # フィルタ無し: 本人ごとに 1 行ずつ = 2 行。
     monitor = await build_monitor(db, target, now=now)
-    rows = [r for r in monitor.staff if r.course_label == UNPLANNED_ROW_LABEL]
-    assert len(rows) == 2
-    assert {r.office_id for r in rows} == {office_a.id, office_b.id}
+    assert {r.staff_id: [mv.visit_id for mv in r.visits] for r in monitor.staff} == {
+        staff_a.id: [adhoc_a.id],
+        staff_b.id: [adhoc_b.id],
+    }
+    assert {r.office_id for r in monitor.staff} == {office_a.id, office_b.id}
 
     # 拠点Aフィルタ: A の予定外だけが出る (行ごと消えない / B が混ざらない)。
     monitor_a = await build_monitor(db, target, office_id=office_a.id, now=now)
-    rows_a = [r for r in monitor_a.staff if r.course_label == UNPLANNED_ROW_LABEL]
-    assert len(rows_a) == 1
-    assert rows_a[0].office_id == office_a.id
-    assert [mv.visit_id for mv in rows_a[0].visits] == [adhoc_a.id]
+    assert [r.staff_id for r in monitor_a.staff] == [staff_a.id]
+    assert monitor_a.staff[0].office_id == office_a.id
+    assert [mv.visit_id for mv in monitor_a.staff[0].visits] == [adhoc_a.id]
     assert adhoc_b.id not in [mv.visit_id for r in monitor_a.staff for mv in r.visits]
     await db.rollback()
 
 
 @pytest.mark.asyncio
-async def test_monitor_unplanned_row_is_scoped_to_target_date(db) -> None:
-    """予定外専用行は当日 (JST) 発生分のみ (別日の予定外は出ない)."""
+async def test_monitor_unplanned_visit_is_scoped_to_target_date(db) -> None:
+    """予定外は当日 (JST) 発生分のみ (別日の予定外は出ない・その人の行も作らない)."""
     staff, _ = await _make_staff_user(db, "mon-5@example.com")
     p = await _make_patient(db, "MON-5")
     target = _today_jst()
@@ -1572,5 +1581,6 @@ async def test_monitor_unplanned_row_is_scoped_to_target_date(db) -> None:
     monitor = await build_monitor(
         db, target, now=datetime.combine(target, time(9, 0), tzinfo=JST).astimezone(UTC)
     )
-    assert [r for r in monitor.staff if r.course_label == UNPLANNED_ROW_LABEL] == []
+    assert [mv for r in monitor.staff for mv in r.visits if mv.is_unplanned] == []
+    assert [r for r in monitor.staff if r.staff_id == staff.id] == []
     await db.rollback()

@@ -1,7 +1,8 @@
 """訪問モニター集計 (実効状態の合成) — QR チェックイン Phase 3.
 
-その日の visits を visit_checkins と突き合わせ、コースごとに (2026-07-10 PO要望。
-旧: スタッフごと) 予定 / 到着 / 退出 / 滞在 / 次距離 / 実効状態を組み立てる。
+その日の visits を visit_checkins と突き合わせ、職員ごとに (2026-10-01・
+``docs/plans/monitor-staff-rows-design-2026-09-30.md``。2026-07-10〜09-30 はコースごと)
+予定 / 到着 / 退出 / 滞在 / 次距離 / 実効状態を組み立てる。コースは訪問ごとの札になる。
 
 実効状態は **集計時に合成** する (過去 checkin の位置判定 ``match_status`` は不変):
 
@@ -18,20 +19,21 @@
 from __future__ import annotations
 
 import math
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.course import Course
 from app.models.office import Office
 from app.models.patient import Patient
-from app.models.staff import Staff
+from app.models.staff import Staff, StaffEvent, StaffWeeklyOverride
 from app.models.user import User
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_checkin import VisitCheckin
@@ -39,6 +41,8 @@ from app.models.visit_review import VisitReview
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.visit_monitor import (
     MonitorCheckin,
+    MonitorCourseTag,
+    MonitorDayOverride,
     MonitorOffice,
     MonitorResponse,
     MonitorStaffRow,
@@ -79,23 +83,6 @@ ALERT_MISSING = "missing"
 # Phase 4 で checkin_settings (max_inprogress_min) 化済。この定数は設定が無い場合の
 # コード既定値 (= DEFAULT_THRESHOLDS["max_inprogress_min"]) として残す。
 MAX_INPROGRESS_MIN = 240
-
-# 予定外訪問 (visits.is_unplanned) の専用行 (設計
-# ``docs/plans/qr-open-checkin-design.md`` §6)。コース行のグルーピングからは除外
-# する (予定に無い実績をコース列に推定混載しない)。行は**拠点ごとに 1 本**
-# (行キー = (UNPLANNED_ROW_KEY, office_id)) — 全拠点を 1 本に混ぜると拠点フィルタ
-# で行ごと消えたり他拠点が紛れ込むため。ラベルはどの行も同じ。
-UNPLANNED_ROW_KEY = "unplanned"
-UNPLANNED_ROW_LABEL = "📌予定外訪問"
-
-# 行の並び順のうち **行種別** のランク (小さいほど上)。拠点ブロック内は
-# コース行 → コース無し行 → 予定外行 の順に並べる。
-# ラベル文字列のコードポイント比較 (旧実装: "📌" の U+1F4CC が番兵 "￿" = U+FFFF
-# より大きいという偶然) に依存すると、ラベルを変えた瞬間に並びが壊れるため、
-# 種別を明示のキーとして持つ。
-ROW_RANK_COURSE = 0
-ROW_RANK_NO_COURSE = 1
-ROW_RANK_UNPLANNED = 2
 
 
 def _as_jst(dt: datetime) -> datetime:
@@ -319,16 +306,43 @@ def _project_checkin(row: VisitCheckin) -> MonitorCheckin:
     )
 
 
-def _course_label_first_code(label: str | None) -> str:
-    """course_label ("Aコース" / "A/Bコース") から並べ替え用の先頭コースコードを取り出す。
+def staff_code_sort_key(code: str | None, name: str | None) -> tuple:
+    """職員コード順の並べ替えキー (FE ``lib/kana-sort.ts`` ``compareByStaffCode`` と同じ規則).
 
-    コース行どうしを A, B, C, ... の順に並べるためのキー。ラベル無しは "￿" を返す
-    (コース行以外の順序は ``ROW_RANK_*`` が決めるので、ここには依存しない)。
-    行の並び (拠点 → コース → スタッフ名) をスケジュール本体と揃えるためのキー。
+    - コードの数字部分は数値として比べる (S2 < S10)。英字部分は大文字小文字を区別しない。
+    - コード未設定は末尾。同順位は氏名。
+    職員スケジュールと同じ並びにするためのキー (monitor-staff-rows-design §1)。
     """
-    if not label:
-        return "￿"
-    return label.split("/", 1)[0].removesuffix("コース") or "￿"
+    c = (code or "").strip()
+    if not c:
+        return (1, (), name or "")
+    parts = tuple(
+        (0, int(p), "") if p.isdigit() else (1, 0, p.casefold()) for p in re.findall(r"\d+|\D+", c)
+    )
+    return (0, parts, name or "")
+
+
+def office_short(short_label: str | None, office_name: str | None) -> str:
+    """拠点の略称 = ``offices.short_label``。未設定なら拠点名の 1 文字目。
+
+    PO 決定 (2026-10-01): 札の略称は現場ボード・コース表・患者 Excel と同じ
+    ``short_label`` に揃える (本番: 稲毛=稲・都賀=津)。``short_label`` 自体を
+    書き換えると Excel の拠点の対応が崩れるため、表示側を揃える。
+    """
+    label = (short_label or "").strip()
+    return label or (office_name or "")[:1]
+
+
+def course_tag_label(short: str | None, code: str | None) -> str | None:
+    """コースの札 = 拠点の略称 (``office_short``) + コースコード (例「稲D」「津臨2」)。コード無しは None。"""
+    if not code:
+        return None
+    return f"{short or ''}{code}"
+
+
+def _office_sort_key(sort_order: int | None, name: str | None) -> tuple:
+    """拠点の並べ替えキー (``offices.sort_order`` → 名前。sort_order 無しは末尾)。"""
+    return (sort_order is None, sort_order or 0, name or "")
 
 
 async def build_monitor(
@@ -341,9 +355,10 @@ async def build_monitor(
 ) -> MonitorResponse:
     """指定日の訪問モニター集計を組み立てる (DB 読み取りのみ).
 
-    ``viewer_is_admin`` = 見ているユーザーが admin か。調整した人の名前
-    (``adjustments[].by_name``) の出し方だけに効く: スタッフ名の無い調整者は、admin には
-    email / username、それ以外には「管理者」と出す (既定は出さない側)。
+    ``viewer_is_admin`` = 見ているユーザーが admin か。効くのは 2 か所: 調整した人の名前
+    (``adjustments[].by_name``) — スタッフ名の無い調整者は、admin には email / username、
+    それ以外には「管理者」と出す — と、休み・時間変更の理由 (``day_override.reason``) —
+    admin 以外には null (既定は出さない側)。
 
     代行 / 実績スタッフの合成規則 (設計 ``qr-open-checkin-design.md`` §6):
 
@@ -352,6 +367,14 @@ async def build_monitor(
     * ``actual_staff_*`` = 最新 **arrival** の打刻者 (「到着した人」の表示)。
       arrival が 1 件も無く departure だけがある場合に限り、最新 departure へ
       フォールバックする (実績欄を空にするより打った人を出す)。
+
+    行の組み方 (``docs/plans/monitor-staff-rows-design-2026-09-30.md`` §2):
+
+    * 行 = 職員 (訪問の担当。空ならコース担当。どちらも無ければ末尾の「担当なし」行)。
+    * 訪問が無くても、その日のイベント (取消でないもの)・休み・時間変更がある在籍中の職員は行。
+    * 同行・副担当はその人の行に ``companion_visit_ids`` として載せる (訪問本体は主担当の行)。
+    * 並び = 所属拠点の ``sort_order`` → 職員コード。``office_id`` 指定時は、その拠点の
+      訪問を 1 件でも持つ人 (訪問の無い人は所属) だけを返す。
     """
     if now is None:
         now = datetime.now(UTC)
@@ -458,306 +481,370 @@ async def build_monitor(
             )
             reviews[review.visit_id] = (review, name)
 
-    # コース情報 (course_id → code / office_id / スケジュール側のコース担当)。
+    # コース情報 (course_id → code / office_id / コース担当 / 削除済みか)。
     course_ids = {v.course_id for v in visits if v.course_id is not None}
     course_code: dict[UUID, str] = {}
     course_office: dict[UUID, UUID] = {}
     course_assigned: dict[UUID, UUID] = {}
+    live_course_ids: set[UUID] = set()
     if course_ids:
-        for cid, code, coid, asid in (
+        for cid, code, coid, asid, cdeleted in (
             await db.execute(
-                select(Course.id, Course.code, Course.office_id, Course.assigned_staff_id).where(
-                    Course.id.in_(course_ids)
-                )
+                select(
+                    Course.id,
+                    Course.code,
+                    Course.office_id,
+                    Course.assigned_staff_id,
+                    Course.deleted_at,
+                ).where(Course.id.in_(course_ids))
             )
         ).all():
             course_code[cid] = code
             course_office[cid] = coid
             if asid is not None:
                 course_assigned[cid] = asid
+            if cdeleted is None:
+                live_course_ids.add(cid)
 
-    # コース担当のスタッフ名 (visits に登場しないスタッフでも表示できるよう別引き)。
-    course_staff_names: dict[UUID, str] = {}
-    if course_assigned:
-        for sid, sname in (
-            await db.execute(
-                select(Staff.id, Staff.name).where(Staff.id.in_(set(course_assigned.values())))
+    # その日のイベント (取消でないもの) と休み・時間変更。訪問が無くても、これがある
+    # 在籍中の職員は行にする (monitor-staff-rows-design §2)。イベントは壁時計 (JST) の
+    # naive で保存されている (``api/v1/staff_events._combine``) ので naive の 1 日で引く。
+    day_start = datetime.combine(target_date, time.min)
+    event_staff_ids = set(
+        (
+            await db.scalars(
+                select(StaffEvent.staff_id)
+                .where(
+                    StaffEvent.starts_at >= day_start,
+                    StaffEvent.starts_at < day_start + timedelta(days=1),
+                    StaffEvent.cancelled_at.is_(None),
+                )
+                .distinct()
             )
-        ).all():
-            course_staff_names[sid] = sname
-
-    # 行 = コース単位 (2026-07-10 PO要望。旧: スタッフ単位)。
-    # 1 人が複数コースを掛け持ちしてもコースごとに 1 行になり、
-    # スケジュール本体 (拠点→コース列) と同じ読み順で追える。
-    # コース無し visit は従来どおり担当スタッフ単位 (どちらも無ければ "" で 1 行)。
-    by_row: dict[tuple[str, UUID | str], list[Visit]] = defaultdict(list)
-    for v in visits:
-        if v.is_unplanned:
-            # 予定外訪問は「📌予定外訪問」行に集約する (設計 §6)。コース行へ推定
-            # 混載はしない (予定に無い実績を予定の列で語らない)。
-            # **拠点ごとに 1 本**にするのは拠点フィルタのため: 1 本に混ぜると
-            # 「先頭スタッフの拠点」で行ごと消えたり、他拠点の予定外が紛れ込む。
-            # 予定外 visit の primary_staff は打刻スタッフ本人 (§3) = 実績者なので、
-            # その主担当拠点を行の拠点とする。
-            group_key: tuple[str, UUID | str] = (
-                UNPLANNED_ROW_KEY,
-                (
-                    v.primary_staff.primary_office_id
-                    if v.primary_staff is not None and v.primary_staff.primary_office_id is not None
-                    else ""
-                ),
-            )
-        elif v.course_id is not None:
-            group_key = ("course", v.course_id)
-        elif v.primary_staff_id is not None:
-            group_key = ("staff", v.primary_staff_id)
-        else:
-            group_key = ("none", "")
-        by_row[group_key].append(v)
-
-    # 拠点名解決: コースの office_id ∪ スタッフの primary_office_id (フォールバック用)。
-    office_ids = set(course_office.values())
-    office_ids |= {
-        v.primary_staff.primary_office_id
-        for v in visits
-        if v.primary_staff is not None and v.primary_staff.primary_office_id is not None
-    }
-    office_name: dict[UUID, str] = {}
-    if office_ids:
-        for oid, name in (
-            await db.execute(select(Office.id, Office.name).where(Office.id.in_(office_ids)))
-        ).all():
-            office_name[oid] = name
-
-    # 行は (行種別ランク, 行) で保持する。ランクは並べ替え専用でレスポンスには出ない。
-    ranked_rows: list[tuple[int, MonitorStaffRow]] = []
-    for group_key, staff_visits in by_row.items():
-        kind, ident = group_key
-
-        # 時刻順 (next 距離計算のため)。
-        staff_visits = sorted(staff_visits, key=lambda v: (v.start_time, v.end_time))
-
-        # 行内の担当スタッフ (訪問の登場順で重複排除)。
-        # visits.primary_staff_id はモバイル「今日の訪問」と同一ソースのため、
-        # モニターの行に出る担当とスタッフ端末の表示は常に一致する。
-        row_staff: dict[UUID, Staff] = {}
-        for v in staff_visits:
-            if v.primary_staff_id is not None and v.primary_staff is not None:
-                row_staff.setdefault(v.primary_staff_id, v.primary_staff)
-
-        course_id: UUID | None = None
-        if kind == UNPLANNED_ROW_KEY:
-            # 予定外訪問の専用行 (§6)。行キーに拠点を含めてあるので、拠点は
-            # そこから確定する (拠点未設定スタッフの行は oid=None = 拠点フィルタ
-            # 指定時に出ない = コース無し行と同じ扱い)。
-            course_label = UNPLANNED_ROW_LABEL
-            oid = ident if isinstance(ident, UUID) else None
-            row_rank = ROW_RANK_UNPLANNED
-        elif kind == "course" and isinstance(ident, UUID):
-            course_id = ident
-            code = course_code.get(course_id)
-            course_label = f"{code}コース" if code else None
-            oid = course_office.get(course_id)
-            row_rank = ROW_RANK_COURSE
-        else:
-            codes = sorted(
-                {course_code[v.course_id] for v in staff_visits if v.course_id in course_code}
-            )
-            course_label = "/".join(f"{c}コース" for c in codes) if codes else None
-            first_staff = next(iter(row_staff.values()), None)
-            oid = first_staff.primary_office_id if first_staff is not None else None
-            row_rank = ROW_RANK_NO_COURSE
-
-        # 拠点フィルタ: 指定があれば一致行のみ残す。
-        if office_id is not None and oid != office_id:
-            continue
-
-        staff_ids = list(row_staff.keys())
-        staff_names = [s.name for s in row_staff.values() if s.name]
-        staff_id = staff_ids[0] if len(staff_ids) == 1 else None
-        staff_name = "・".join(staff_names) if staff_names else None
-
-        mvisits: list[MonitorVisit] = []
-        for v in staff_visits:
-            actuals = actuals_by_visit.get(v.id, no_actuals)
-            arrival_actual = actuals.arrival
-            departure_actual = actuals.departure
-            # 生の打刻 (位置判定・打刻者・理由)。読み取りの無い退出 (手入力) は None。
-            arrival = arrival_actual.checkin if arrival_actual is not None else None
-            departure = departure_actual.checkin if departure_actual is not None else None
-            no_show = actuals.no_show
-            arr_p = _project_checkin(arrival) if arrival is not None else None
-            dep_p = _project_checkin(departure) if departure is not None else None
-            ns_p = _project_checkin(no_show) if no_show is not None else None
-
-            # 実績スタッフ (最新 arrival の打刻者) と代行判定 (§6)。
-            # 代行は **いずれかの** 到着 / 退出打刻者が担当集合の外なら true にする
-            # (担当本人が後から打ち直しても代行の事実を消さない = 通知条件と一致)。
-            # ただし actual_staff_* は最新の打刻者なので、代行後に担当本人が打ち直すと
-            # 「代行バッジ + 担当本人名」の自己矛盾になる。誰が代行したかは
-            # substitute_staff_* (担当集合外の打刻者のうち最新 1 名) で別に返す。
-            # actual_staff_* は「到着した人」なので最新 arrival が正だが、arrival が
-            # 1 件も無い (退出だけ打たれた) ときは最新 departure にフォールバック
-            # する (実績欄が空になるより打った人を出す方が読める)。
-            actual_source = arrival if arrival is not None else departure
-            actual_staff_id = actual_source.staff_id if actual_source is not None else None
-            _acc_entries = accompaniment_by_visit.get(v.id, [])
-            _assigned = visit_staff_id_set(
-                v,
-                assignment_staff_ids=assignments_by_visit.get(v.id, set()),
-                accompaniment_staff_ids=[e.staff_id for e in _acc_entries],
-            )
-            # checkin_staff_ids は新しい順 = 先頭が最新の代行者。
-            _substitute_ids = [sid for sid in actuals.checkin_staff_ids if sid not in _assigned]
-            is_substitute = bool(_substitute_ids)
-            substitute_staff_id = _substitute_ids[0] if _substitute_ids else None
-            is_unplanned = v.is_unplanned
-
-            start_dt = datetime.combine(v.visit_date, v.start_time, tzinfo=JST)
-            # 実績時刻 (JST)。読み取りの無い退出 (手入力) があれば phase は done になる。
-            arr_scanned = _as_jst(arrival_actual.at) if arrival_actual is not None else None
-            dep_scanned = _as_jst(departure_actual.at) if departure_actual is not None else None
-            # 同住所・同時刻ペア補正後起点 (無ければ予定開始と同一)。
-            effective_start = pair_eff.get(v.id)
-
-            phase = compute_phase(
-                arrival_scanned=arr_scanned,
-                departure_scanned=dep_scanned,
-                has_no_show=no_show is not None,
-                start_dt=start_dt,
-                now=now_jst,
-                grace_min=thresholds["no_show_grace_min"],
-                effective_start_dt=effective_start,
-            )
-            # 滞在分は ``actuals.stay_minutes`` (到着・退出を分に切り捨ててからの差。
-            # 進行中は現在時刻まで)。打刻履歴・Excel・A4 と同じ値になる。
-            stay = stay_minutes(arr_scanned, dep_scanned, now=now_jst)
-            review_entry = reviews.get(v.id)
-            reviewed = review_entry is not None
-            alert_level = compute_alert(
-                phase=phase,
-                arrival_match_status=arrival.match_status if arrival is not None else None,
-                arrival_scanned=arr_scanned,
-                start_dt=start_dt,
-                late_min=thresholds["late_min"],
-                stay_minutes=stay,
-                max_inprogress_min=thresholds["max_inprogress_min"],
-                reviewed=reviewed,
-                effective_start_dt=effective_start,
-                is_substitute=is_substitute,
-                is_unplanned=is_unplanned,
-            )
-            # ペア待ち: 予定 + grace は過ぎたが、ペア補正で awaiting に留まっている間。
-            pair_waiting = (
-                phase == PHASE_AWAITING
-                and effective_start is not None
-                and now_jst >= start_dt + timedelta(minutes=thresholds["no_show_grace_min"])
-            )
-
-            arrival_delay_min = (
-                round((arr_scanned - start_dt).total_seconds() / 60.0)
-                if arr_scanned is not None
-                else None
-            )
-
-            # 表示用の理由: 未訪問の理由 ?? 到着の理由。
-            reason = (ns_p.reason if ns_p is not None else None) or (
-                arr_p.reason if arr_p is not None else None
-            )
-
-            patient = v.patient
-            mvisits.append(
-                MonitorVisit(
-                    visit_id=v.id,
-                    staff_id=v.primary_staff_id,
-                    staff_name=(
-                        getattr(v.primary_staff, "name", None)
-                        if v.primary_staff is not None
-                        else None
-                    ),
-                    accompaniment_staff_name=(_acc_entries[0].staff_name if _acc_entries else None),
-                    accompaniment_staff_names=[
-                        e.staff_name for e in _acc_entries if e.staff_name is not None
-                    ],
-                    # 実績 (打刻した人) と予定の乖離 (§6)。予定側の担当は書き換えない。
-                    actual_staff_id=actual_staff_id,
-                    actual_staff_name=(
-                        checkin_staff_names.get(actual_staff_id)
-                        if actual_staff_id is not None
-                        else None
-                    ),
-                    # 代行した人 (担当集合外の打刻者のうち最新)。is_substitute の根拠。
-                    substitute_staff_id=substitute_staff_id,
-                    substitute_staff_name=(
-                        checkin_staff_names.get(substitute_staff_id)
-                        if substitute_staff_id is not None
-                        else None
-                    ),
-                    is_substitute=is_substitute,
-                    is_unplanned=is_unplanned,
-                    visit_group_id=v.visit_group_id,
-                    patient_id=v.patient_id,
-                    patient_name=getattr(patient, "name", None) if patient is not None else None,
-                    patient_code=getattr(patient, "code", None) if patient is not None else None,
-                    # 患者ステータス連動 Phase 3 §3-4 (非破壊追加)。patient は
-                    # selectinload 済みなので追加クエリは発生しない。
-                    source=v.source,
-                    patient_status=(
-                        getattr(patient, "status", None) if patient is not None else None
-                    ),
-                    patient_status_since=(
-                        status_since_date(patient) if patient is not None else None
-                    ),
-                    patient_lat=(
-                        float(patient.lat)
-                        if patient is not None and patient.lat is not None
-                        else None
-                    ),
-                    patient_lng=(
-                        float(patient.lng)
-                        if patient is not None and patient.lng is not None
-                        else None
-                    ),
-                    start_time=_fmt_time(v.start_time),
-                    end_time=_fmt_time(v.end_time),
-                    phase=phase,
-                    alert_level=alert_level,
-                    pair_waiting=pair_waiting,
-                    arrival=arr_p,
-                    departure=dep_p,
-                    no_show=ns_p,
-                    # 実績時刻 (調整後。無ければ読取時刻) と読取時刻・調整の有無。
-                    arrival_at=arrival_actual.at if arrival_actual is not None else None,
-                    departure_at=departure_actual.at if departure_actual is not None else None,
-                    arrival_read_at=(
-                        arrival_actual.read_at if arrival_actual is not None else None
-                    ),
-                    departure_read_at=(
-                        departure_actual.read_at if departure_actual is not None else None
-                    ),
-                    arrival_adjusted=arrival_actual is not None and arrival_actual.adjusted,
-                    departure_adjusted=(departure_actual is not None and departure_actual.adjusted),
-                    departure_manual=departure_actual is not None and departure_actual.manual,
-                    adjustments=adjustment_payloads(actuals, adjuster_names),
-                    stay_minutes=stay,
-                    arrival_delay_min=arrival_delay_min,
-                    reason=reason,
-                    reviewed=reviewed,
-                    reviewed_by_name=review_entry[1] if review_entry is not None else None,
-                    reviewed_at=review_entry[0].reviewed_at if review_entry is not None else None,
-                    review_comment=review_entry[0].comment if review_entry is not None else None,
+        ).all()
+    )
+    iso = target_date.isocalendar()
+    day_overrides: dict[UUID, StaffWeeklyOverride] = {
+        o.staff_id: o
+        for o in (
+            await db.scalars(
+                select(StaffWeeklyOverride).where(
+                    StaffWeeklyOverride.iso_year == iso.year,
+                    StaffWeeklyOverride.iso_week == iso.week,
+                    StaffWeeklyOverride.weekday == target_date.weekday(),
                 )
             )
+        ).all()
+    }
 
-        # 次訪問までの距離 (時刻順で連続する患者宅間の haversine)。
-        # 行=コースでも従来の意味「同スタッフの次の訪問まで」を保つため、
-        # 行内を担当スタッフごとのチェーンに分けて計算する。
-        chains: dict[UUID | None, list[MonitorVisit]] = defaultdict(list)
-        for mv in mvisits:
-            chains[mv.staff_id].append(mv)
-        for chain in chains.values():
-            for i in range(len(chain) - 1):
-                cur, nxt = chain[i], chain[i + 1]
+    # 同行・副担当 (visit_id → 関わる職員)。主担当の行とは別に、その人の行へ薄く出す。
+    companion_staff_by_visit: dict[UUID, set[UUID]] = {}
+    for v in visits:
+        ids = {v.secondary_staff_id, v.mentor_staff_id}
+        ids.update(e.staff_id for e in accompaniment_by_visit.get(v.id, []))
+        ids.discard(None)
+        if ids:
+            companion_staff_by_visit[v.id] = {sid for sid in ids if sid is not None}
+
+    # 職員 (行の候補全員を 1 クエリで)。
+    candidate_staff_ids: set[UUID] = {
+        v.primary_staff_id for v in visits if v.primary_staff_id is not None
+    }
+    candidate_staff_ids |= set(course_assigned.values())
+    candidate_staff_ids |= event_staff_ids | set(day_overrides)
+    for sids in companion_staff_by_visit.values():
+        candidate_staff_ids |= sids
+    staff_by_id: dict[UUID, Staff] = {}
+    if candidate_staff_ids:
+        staff_by_id = {
+            s.id: s
+            for s in (
+                await db.scalars(select(Staff).where(Staff.id.in_(candidate_staff_ids)))
+            ).all()
+        }
+
+    def _is_active(sid: UUID) -> bool:
+        s = staff_by_id.get(sid)
+        return s is not None and s.deleted_at is None and s.status == "active"
+
+    def _row_staff_id(v: Visit) -> UUID | None:
+        """行の職員 = 訪問の担当。空ならコース担当 (スマホ「今日の訪問」と同じ規則).
+
+        ``api/v1/visits._course_fallback_staff_ids`` と同じ条件: 主担当 NULL・
+        ``manual_staff_override`` でない・コースが未削除・コース担当が在籍中。
+        """
+        if v.primary_staff_id is not None:
+            return v.primary_staff_id
+        if v.manual_staff_override or v.course_id is None or v.course_id not in live_course_ids:
+            return None
+        sid = course_assigned.get(v.course_id)
+        return sid if sid is not None and _is_active(sid) else None
+
+    # 拠点 (名前・並び順): コースの拠点 ∪ 職員の所属 ∪ 患者の主担当拠点 (コース無しの札の色)。
+    office_ids: set[UUID] = set(course_office.values())
+    office_ids |= {s.primary_office_id for s in staff_by_id.values() if s.primary_office_id}
+    office_ids |= {
+        v.patient.primary_office_id
+        for v in visits
+        if v.patient is not None and v.patient.primary_office_id is not None
+    }
+    office_name: dict[UUID, str] = {}
+    office_sort: dict[UUID, int | None] = {}
+    # 拠点の略称 (札の 1 文字目・凡例)。short_label 未設定は拠点名の 1 文字目。
+    office_short_label: dict[UUID, str] = {}
+    if office_ids:
+        for oid, name, sort_order, short_label in (
+            await db.execute(
+                select(Office.id, Office.name, Office.sort_order, Office.short_label).where(
+                    Office.id.in_(office_ids)
+                )
+            )
+        ).all():
+            office_name[oid] = name
+            office_sort[oid] = sort_order
+            office_short_label[oid] = office_short(short_label, name)
+
+    def _visit_office_id(v: Visit) -> UUID | None:
+        """訪問の拠点 = コースの拠点。コース無しは患者の主担当拠点."""
+        if v.course_id is not None and course_office.get(v.course_id) is not None:
+            return course_office[v.course_id]
+        return v.patient.primary_office_id if v.patient is not None else None
+
+    # 1 訪問の状態 (phase・alert・代行・ペア補正・確認済み・実績時刻) は行の組み方に
+    # 依らないので、先に全訪問ぶん作ってから行へ配る。
+    mvisit_by_id: dict[UUID, MonitorVisit] = {}
+    for v in visits:
+        actuals = actuals_by_visit.get(v.id, no_actuals)
+        arrival_actual = actuals.arrival
+        departure_actual = actuals.departure
+        # 生の打刻 (位置判定・打刻者・理由)。読み取りの無い退出 (手入力) は None。
+        arrival = arrival_actual.checkin if arrival_actual is not None else None
+        departure = departure_actual.checkin if departure_actual is not None else None
+        no_show = actuals.no_show
+        arr_p = _project_checkin(arrival) if arrival is not None else None
+        dep_p = _project_checkin(departure) if departure is not None else None
+        ns_p = _project_checkin(no_show) if no_show is not None else None
+
+        # 実績スタッフ (最新 arrival の打刻者) と代行判定 (§6)。
+        # 代行は **いずれかの** 到着 / 退出打刻者が担当集合の外なら true にする
+        # (担当本人が後から打ち直しても代行の事実を消さない = 通知条件と一致)。
+        # ただし actual_staff_* は最新の打刻者なので、代行後に担当本人が打ち直すと
+        # 「代行バッジ + 担当本人名」の自己矛盾になる。誰が代行したかは
+        # substitute_staff_* (担当集合外の打刻者のうち最新 1 名) で別に返す。
+        # actual_staff_* は「到着した人」なので最新 arrival が正だが、arrival が
+        # 1 件も無い (退出だけ打たれた) ときは最新 departure にフォールバック
+        # する (実績欄が空になるより打った人を出す方が読める)。
+        actual_source = arrival if arrival is not None else departure
+        actual_staff_id = actual_source.staff_id if actual_source is not None else None
+        _acc_entries = accompaniment_by_visit.get(v.id, [])
+        _assigned = visit_staff_id_set(
+            v,
+            assignment_staff_ids=assignments_by_visit.get(v.id, set()),
+            accompaniment_staff_ids=[e.staff_id for e in _acc_entries],
+        )
+        # checkin_staff_ids は新しい順 = 先頭が最新の代行者。
+        _substitute_ids = [sid for sid in actuals.checkin_staff_ids if sid not in _assigned]
+        is_substitute = bool(_substitute_ids)
+        substitute_staff_id = _substitute_ids[0] if _substitute_ids else None
+        is_unplanned = v.is_unplanned
+
+        start_dt = datetime.combine(v.visit_date, v.start_time, tzinfo=JST)
+        # 実績時刻 (JST)。読み取りの無い退出 (手入力) があれば phase は done になる。
+        arr_scanned = _as_jst(arrival_actual.at) if arrival_actual is not None else None
+        dep_scanned = _as_jst(departure_actual.at) if departure_actual is not None else None
+        # 同住所・同時刻ペア補正後起点 (無ければ予定開始と同一)。
+        effective_start = pair_eff.get(v.id)
+
+        phase = compute_phase(
+            arrival_scanned=arr_scanned,
+            departure_scanned=dep_scanned,
+            has_no_show=no_show is not None,
+            start_dt=start_dt,
+            now=now_jst,
+            grace_min=thresholds["no_show_grace_min"],
+            effective_start_dt=effective_start,
+        )
+        # 滞在分は ``actuals.stay_minutes`` (到着・退出を分に切り捨ててからの差。
+        # 進行中は現在時刻まで)。打刻履歴・Excel・A4 と同じ値になる。
+        stay = stay_minutes(arr_scanned, dep_scanned, now=now_jst)
+        review_entry = reviews.get(v.id)
+        reviewed = review_entry is not None
+        alert_level = compute_alert(
+            phase=phase,
+            arrival_match_status=arrival.match_status if arrival is not None else None,
+            arrival_scanned=arr_scanned,
+            start_dt=start_dt,
+            late_min=thresholds["late_min"],
+            stay_minutes=stay,
+            max_inprogress_min=thresholds["max_inprogress_min"],
+            reviewed=reviewed,
+            effective_start_dt=effective_start,
+            is_substitute=is_substitute,
+            is_unplanned=is_unplanned,
+        )
+        # ペア待ち: 予定 + grace は過ぎたが、ペア補正で awaiting に留まっている間。
+        pair_waiting = (
+            phase == PHASE_AWAITING
+            and effective_start is not None
+            and now_jst >= start_dt + timedelta(minutes=thresholds["no_show_grace_min"])
+        )
+
+        arrival_delay_min = (
+            round((arr_scanned - start_dt).total_seconds() / 60.0)
+            if arr_scanned is not None
+            else None
+        )
+
+        # 表示用の理由: 未訪問の理由 ?? 到着の理由。
+        reason = (ns_p.reason if ns_p is not None else None) or (
+            arr_p.reason if arr_p is not None else None
+        )
+
+        # コースの札・拠点・担当の食い違い (予定外は予定のコースを語らないので札なし)。
+        v_course_id = v.course_id if not is_unplanned else None
+        v_office_id = _visit_office_id(v)
+        v_course_staff = course_assigned.get(v.course_id) if v.course_id is not None else None
+        course_staff_mismatch = (
+            v.course_id is not None
+            and not v.manual_staff_override
+            and v.primary_staff_id is not None
+            and v_course_staff is not None
+            and v.primary_staff_id != v_course_staff
+        )
+
+        patient = v.patient
+        mvisit_by_id[v.id] = MonitorVisit(
+            visit_id=v.id,
+            staff_id=v.primary_staff_id,
+            staff_name=(
+                getattr(v.primary_staff, "name", None) if v.primary_staff is not None else None
+            ),
+            accompaniment_staff_name=(_acc_entries[0].staff_name if _acc_entries else None),
+            accompaniment_staff_names=[
+                e.staff_name for e in _acc_entries if e.staff_name is not None
+            ],
+            # 実績 (打刻した人) と予定の乖離 (§6)。予定側の担当は書き換えない。
+            actual_staff_id=actual_staff_id,
+            actual_staff_name=(
+                checkin_staff_names.get(actual_staff_id) if actual_staff_id is not None else None
+            ),
+            # 代行した人 (担当集合外の打刻者のうち最新)。is_substitute の根拠。
+            substitute_staff_id=substitute_staff_id,
+            substitute_staff_name=(
+                checkin_staff_names.get(substitute_staff_id)
+                if substitute_staff_id is not None
+                else None
+            ),
+            is_substitute=is_substitute,
+            is_unplanned=is_unplanned,
+            visit_group_id=v.visit_group_id,
+            patient_id=v.patient_id,
+            patient_name=getattr(patient, "name", None) if patient is not None else None,
+            patient_code=getattr(patient, "code", None) if patient is not None else None,
+            # 患者ステータス連動 Phase 3 §3-4 (非破壊追加)。patient は
+            # selectinload 済みなので追加クエリは発生しない。
+            source=v.source,
+            patient_status=(getattr(patient, "status", None) if patient is not None else None),
+            patient_status_since=(status_since_date(patient) if patient is not None else None),
+            patient_lat=(
+                float(patient.lat) if patient is not None and patient.lat is not None else None
+            ),
+            patient_lng=(
+                float(patient.lng) if patient is not None and patient.lng is not None else None
+            ),
+            start_time=_fmt_time(v.start_time),
+            end_time=_fmt_time(v.end_time),
+            phase=phase,
+            alert_level=alert_level,
+            pair_waiting=pair_waiting,
+            arrival=arr_p,
+            departure=dep_p,
+            no_show=ns_p,
+            # 実績時刻 (調整後。無ければ読取時刻) と読取時刻・調整の有無。
+            arrival_at=arrival_actual.at if arrival_actual is not None else None,
+            departure_at=departure_actual.at if departure_actual is not None else None,
+            arrival_read_at=(arrival_actual.read_at if arrival_actual is not None else None),
+            departure_read_at=(departure_actual.read_at if departure_actual is not None else None),
+            arrival_adjusted=arrival_actual is not None and arrival_actual.adjusted,
+            departure_adjusted=(departure_actual is not None and departure_actual.adjusted),
+            departure_manual=departure_actual is not None and departure_actual.manual,
+            adjustments=adjustment_payloads(actuals, adjuster_names),
+            stay_minutes=stay,
+            arrival_delay_min=arrival_delay_min,
+            reason=reason,
+            reviewed=reviewed,
+            reviewed_by_name=review_entry[1] if review_entry is not None else None,
+            reviewed_at=review_entry[0].reviewed_at if review_entry is not None else None,
+            review_comment=review_entry[0].comment if review_entry is not None else None,
+            course_id=v_course_id,
+            course_tag=(
+                course_tag_label(
+                    office_short_label.get(course_office[v_course_id])
+                    if course_office.get(v_course_id) is not None
+                    else None,
+                    course_code.get(v_course_id),
+                )
+                if v_course_id is not None
+                else None
+            ),
+            course_office_id=v_office_id,
+            course_office_name=office_name.get(v_office_id) if v_office_id else None,
+            course_staff_mismatch=course_staff_mismatch,
+        )
+
+    # ── 行 = 職員 (monitor-staff-rows-design §2) ──
+    # 行キー = 訪問の担当 (visits.primary_staff_id = スマホ「今日の訪問」と同じ源)。
+    # 空ならコース担当へフォールバック。どちらも無い訪問は「担当なし」行 (キー None)。
+    # MonitorVisit.staff_id は primary_staff_id のまま (意味を変えない)。
+    own_visits: dict[UUID | None, list[Visit]] = defaultdict(list)
+    for v in visits:
+        own_visits[_row_staff_id(v)].append(v)
+    # 2 名体制 (Layer3): 組 (visit_group_id) の両方の訪問に副担当が入る (A=主X・副Y、
+    # B=主Y・副X)。組の訪問を自分の行に持つ人には、その組を同行として重ねて出さない。
+    # カイポケ取込の「1 訪問に主と副」(visit_group_id 無し) は従来どおり同行に出す。
+    own_group_ids: dict[UUID, set[UUID]] = defaultdict(set)
+    for sid, vs in own_visits.items():
+        if sid is not None:
+            own_group_ids[sid] = {v.visit_group_id for v in vs if v.visit_group_id is not None}
+    companion_ids: dict[UUID, list[UUID]] = defaultdict(list)
+    for v in visits:
+        owner = _row_staff_id(v)
+        for sid in sorted(companion_staff_by_visit.get(v.id, set()), key=str):
+            s = staff_by_id.get(sid)
+            if sid == owner or s is None or s.deleted_at is not None:
+                continue
+            if v.visit_group_id is not None and v.visit_group_id in own_group_ids.get(sid, ()):
+                continue
+            companion_ids[sid].append(v.id)
+
+    row_staff_ids: set[UUID] = {sid for sid in own_visits if sid is not None}
+    row_staff_ids |= set(companion_ids)
+    # 訪問が無くてもイベント・休み・時間変更がある在籍中の職員。
+    row_staff_ids |= {sid for sid in event_staff_ids | set(day_overrides) if _is_active(sid)}
+    row_keys: list[UUID | None] = [sid for sid in row_staff_ids if sid in staff_by_id]
+    if None in own_visits:
+        row_keys.append(None)
+
+    staff_rows_with_key: list[tuple[tuple, MonitorStaffRow]] = []
+    for sid in row_keys:
+        staff = staff_by_id.get(sid) if sid is not None else None
+        row_office = staff.primary_office_id if staff is not None else None
+        mine = sorted(own_visits.get(sid, []), key=lambda v: (v.start_time, v.end_time))
+
+        # 拠点の絞り込み: その拠点の訪問を 1 件でも持つ人 (行の中身はその人の 1 日全部)。
+        # 訪問の無い人は所属で判定。
+        if office_id is not None:
+            if mine:
+                if not any((_visit_office_id(v) or row_office) == office_id for v in mine):
+                    continue
+            elif row_office != office_id:
+                continue
+
+        mvisits = [mvisit_by_id[v.id] for v in mine]
+
+        # 次訪問までの距離 = その人の 1 日の時刻順 (担当なし行は 1 人の順路ではないので出さない)。
+        if sid is not None:
+            for cur, nxt in zip(mvisits, mvisits[1:], strict=False):
                 if (
                     cur.patient_lat is not None
                     and cur.patient_lng is not None
@@ -771,55 +858,107 @@ async def build_monitor(
                         1,
                     )
 
-        course_staff_id = course_assigned.get(course_id) if course_id is not None else None
-        ranked_rows.append(
+        # コースの札 (重複なし・初出順)。
+        tags: list[MonitorCourseTag] = []
+        seen_courses: set[UUID] = set()
+        for mv in mvisits:
+            if mv.course_id is None or mv.course_tag is None or mv.course_id in seen_courses:
+                continue
+            seen_courses.add(mv.course_id)
+            tags.append(
+                MonitorCourseTag(
+                    label=mv.course_tag,
+                    course_id=mv.course_id,
+                    office_id=mv.course_office_id,
+                    office_name=mv.course_office_name,
+                )
+            )
+
+        override = day_overrides.get(sid) if sid is not None else None
+        row = MonitorStaffRow(
+            staff_id=sid,
+            staff_name=staff.name if staff is not None else None,
+            staff_ids=[sid] if sid is not None else [],
+            office_id=row_office,
+            office_name=office_name.get(row_office) if row_office is not None else None,
+            course_tags=tags,
+            visits=mvisits,
+            companion_visit_ids=companion_ids.get(sid, []) if sid is not None else [],
+            day_override=(
+                MonitorDayOverride(
+                    kind=override.override_type,
+                    start_time=_fmt_time(override.start_time) if override.start_time else None,
+                    end_time=_fmt_time(override.end_time) if override.end_time else None,
+                    # 休みの理由は admin だけに返す (他人の休みの一覧 overrides-week も
+                    # admin 専用。モニターは staff も見られる)。
+                    reason=override.reason if viewer_is_admin else None,
+                )
+                if override is not None
+                else None
+            ),
+        )
+        # 並び: 所属拠点の sort_order → 職員コード (職員スケジュールと同じ)。担当なしは末尾。
+        sort_key = (
             (
-                row_rank,
-                MonitorStaffRow(
-                    course_id=course_id,
-                    course_staff_id=course_staff_id,
-                    course_staff_name=(
-                        course_staff_names.get(course_staff_id)
-                        if course_staff_id is not None
-                        else None
-                    ),
-                    staff_id=staff_id,
-                    staff_name=staff_name,
-                    staff_ids=staff_ids,
-                    office_id=oid,
-                    office_name=office_name.get(oid) if oid is not None else None,
-                    course_label=course_label,
-                    visits=mvisits,
+                1,
+                (),
+                (),
+            )
+            if sid is None
+            else (
+                0,
+                (row_office is None,)
+                + _office_sort_key(
+                    office_sort.get(row_office) if row_office else None,
+                    office_name.get(row_office) if row_office else None,
                 ),
+                staff_code_sort_key(staff.code if staff else None, row.staff_name),
             )
         )
+        staff_rows_with_key.append((sort_key, row))
 
-    # 行の並び: 拠点名 → 行種別 (コース → コース無し → 予定外) → コース (A,B,..,M)
-    # → スタッフ名。スケジュール本体 (拠点 → コース順の列) と同じ読み順に揃える
-    # (PO要望 2026-07-10。旧: 拠点 → スタッフ名 順で、コースで見ると順不同・
-    # 両拠点の「A」が離れて見えた)。
-    ranked_rows.sort(
-        key=lambda item: (
-            item[1].office_name or "￿",
-            item[0],
-            _course_label_first_code(item[1].course_label),
-            item[1].staff_name or "￿",
+    staff_rows_with_key.sort(key=lambda item: item[0])
+    staff_rows = [row for _key, row in staff_rows_with_key]
+
+    # フィルタチップ用の拠点 = 当日の訪問のコース拠点 ∪ 行の職員の所属拠点。
+    chip_office_ids = {r.office_id for r in staff_rows if r.office_id is not None}
+    chip_office_ids |= {
+        mv.course_office_id for r in staff_rows for mv in r.visits if mv.course_office_id
+    }
+    monitor_offices = [
+        MonitorOffice(
+            id=oid,
+            name=office_name.get(oid, ""),
+            short_label=office_short_label.get(oid) or None,
         )
-    )
-    staff_rows = [row for _rank, row in ranked_rows]
+        for oid in sorted(
+            chip_office_ids,
+            key=lambda oid: _office_sort_key(office_sort.get(oid), office_name.get(oid)),
+        )
+    ]
 
-    # フィルタチップ用の拠点一覧 (当日 visits に登場する拠点)。
-    offices = sorted(
-        {(r.office_id, r.office_name) for r in staff_rows if r.office_id is not None},
-        key=lambda t: t[1] or "",
-    )
-    monitor_offices = [MonitorOffice(id=oid, name=name or "") for oid, name in offices]
+    # 札の色の基準 = 拠点マスタの順 (その日に出る拠点に依らない)。削除済みでも
+    # その日の訪問が指す拠点は含める (札が中立色に落ちないように)。
+    office_order = [
+        oid
+        for oid, _sort, _name in sorted(
+            (
+                await db.execute(
+                    select(Office.id, Office.sort_order, Office.name).where(
+                        or_(Office.deleted_at.is_(None), Office.id.in_(office_ids))
+                    )
+                )
+            ).all(),
+            key=lambda r: (*_office_sort_key(r[1], r[2]), str(r[0])),
+        )
+    ]
 
     return MonitorResponse(
         date=target_date,
         now=now,
         thresholds=MonitorThresholds(**thresholds),
         offices=monitor_offices,
+        office_order=office_order,
         staff=staff_rows,
     )
 

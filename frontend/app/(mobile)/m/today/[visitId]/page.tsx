@@ -72,7 +72,6 @@ import {
   useNoShow,
   useResetActualTime,
   type ActualTimeKind,
-  type AdjustReasonCode,
   type CheckInPayload,
   type CheckinMatchStatus,
   type MyVisit,
@@ -781,13 +780,10 @@ function MobileVisitDetailPageInner() {
    * ことにせず、再送が終わるのを待ってから決める: 送れていれば API、まだ控えに
    * 残っていれば (送信に失敗した) 控えへ書く。
    */
-  async function applyActualTime(
-    kind: ActualTimeKind,
-    time: string | null,
-    reasonCode: AdjustReasonCode,
-  ): Promise<boolean> {
+  async function applyActualTime(kind: ActualTimeKind, time: string | null): Promise<boolean> {
     if (kind === 'arrival' && queuedArrival) {
-      const adjustment = time ? { adjusted_time: time, adjust_reason_code: reasonCode } : null;
+      // 理由は付けない (PO 決定 2026-10-01・設計 §12)。
+      const adjustment = time ? { adjusted_time: time } : null;
       let result = setPendingAdjustment(staffId, visitId, 'arrival', adjustment);
       if (result === 'sending') {
         setWaitingForResend(true);
@@ -815,12 +811,7 @@ function MobileVisitDetailPageInner() {
     }
     try {
       const updated = time
-        ? await adjustActual.mutateAsync({
-            kind,
-            time,
-            reason_code: reasonCode,
-            reason_text: null,
-          })
+        ? await adjustActual.mutateAsync({ kind, time })
         : await resetActual.mutateAsync(kind);
       setFreshVisit(updated);
       return true;
@@ -840,14 +831,10 @@ function MobileVisitDetailPageInner() {
   }
 
   /** シートの「HH:MM に合わせる」。 */
-  async function saveFromSheet(
-    kind: ActualTimeKind,
-    time: string | null,
-    reasonCode: AdjustReasonCode,
-  ): Promise<boolean> {
+  async function saveFromSheet(kind: ActualTimeKind, time: string | null): Promise<boolean> {
     // 退出がまだ無い訪問に退出を入れる = 退出を新しく記録する (訪問が完了になる)。
     const recordsDeparture = kind === 'departure' && sheetModel?.departure.at == null;
-    const ok = await applyActualTime(kind, time, reasonCode);
+    const ok = await applyActualTime(kind, time);
     if (!ok) return false;
     setShowArrivedCard(false);
     if (recordsDeparture && time) {
@@ -870,7 +857,7 @@ function MobileVisitDetailPageInner() {
 
   /** 手で入れた退出時刻を取り消す (退出が無くなり、訪問中に戻る)。 */
   async function cancelManualDeparture(): Promise<boolean> {
-    const ok = await applyActualTime('departure', null, 'no_read');
+    const ok = await applyActualTime('departure', null);
     if (ok) toast.success('入れた退出時刻を取り消しました');
     return ok;
   }
@@ -1310,14 +1297,10 @@ function MobileVisitDetailPageInner() {
                     }
                     busy={adjustBusy}
                     onQuick={(n) =>
-                      void applyActualTime(
-                        'arrival',
-                        minutesToHm(actualModel.arrival.readAt - n),
-                        'intercom_wait',
-                      )
+                      void applyActualTime('arrival', minutesToHm(actualModel.arrival.readAt - n))
                     }
                     onFine={() => setSheetKind('arrival')}
-                    onUndo={() => void applyActualTime('arrival', null, 'intercom_wait')}
+                    onUndo={() => void applyActualTime('arrival', null)}
                     onDismiss={() => setShowArrivedCard(false)}
                   />
                 )}

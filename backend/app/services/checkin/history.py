@@ -513,17 +513,23 @@ def adjust_reason_labels(r: HistoryRow) -> list[str]:
 
 
 def xlsx_remarks(r: HistoryRow) -> str:
-    """Excel の備考。``時刻調整`` に理由を添える: 「時刻調整（インターホン待ち）」。"""
+    """Excel の備考。理由の無い調整は「時刻調整」だけ。
+
+    理由は 2026-10-01 の PO 決定で画面から尋ねなくなった。理由のある過去の調整だけ
+    添える: 「時刻調整（インターホン待ち）」。
+    """
     reasons = "・".join(adjust_reason_labels(r))
     adjusted = f"{REMARK_ADJUSTED}（{reasons}）" if reasons else REMARK_ADJUSTED
     return "、".join(adjusted if remark == REMARK_ADJUSTED else remark for remark in r.remarks)
 
 
 def report_remarks(r: HistoryRow) -> str:
-    """A4 の備考。``時刻調整`` を「調整（読取 13:06・インターホン待ち）」にする。
+    """A4 の備考。``時刻調整`` を「調整（読取 13:06）」にする。
 
     A4 には読取時刻の列が無いので、読み取った時刻を備考に出す。到着と退出の両方を
-    合わせてある場合は「／」で並べ、退出側には「退出の」を付ける。
+    合わせてある場合は「／」で並べ、退出側には「退出の」を付ける。理由のある過去の
+    調整だけ理由を添える: 「調整（読取 13:06・インターホン待ち）」(理由は 2026-10-01 の
+    PO 決定で画面から尋ねなくなった)。
     """
     parts: list[str] = []
     for adj in r.adjustments:

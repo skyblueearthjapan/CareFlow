@@ -42,6 +42,10 @@ export function makeVisit(overrides: Partial<MonitorVisit> = {}): MonitorVisit {
   };
 }
 
+/**
+ * 行 = 職員 (2026-10-01)。course_id / course_label / course_staff_* は互換のため
+ * 項目だけ残り常に null (BE と同じ)。
+ */
 export function makeRow(overrides: Partial<MonitorStaffRow> = {}): MonitorStaffRow {
   const staffId = overrides.staff_id !== undefined ? overrides.staff_id : uid();
   return {
@@ -53,8 +57,11 @@ export function makeRow(overrides: Partial<MonitorStaffRow> = {}): MonitorStaffR
     staff_ids: staffId ? [staffId] : [],
     office_id: uid(),
     office_name: '稲毛',
-    course_label: 'Aコース',
+    course_label: null,
+    course_tags: [],
     visits: [],
+    companion_visit_ids: [],
+    day_override: null,
     ...overrides,
   };
 }

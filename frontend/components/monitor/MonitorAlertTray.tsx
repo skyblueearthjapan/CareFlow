@@ -137,7 +137,7 @@ export function MonitorAlertTray({
           {alertTag(v)}
         </span>
         {/* 代行 / 予定外の理由ラベル (§6 #9)。優先順 (未訪問→場所違い→要確認) は不変で、
-            「要確認」の中の種別を補足するチップ。予定外=専用行と同じ --unplanned 系、
+            「要確認」の中の種別を補足するチップ。予定外=タイムラインの「予定外」の札と同じ --unplanned 系、
             代行=teal (行レベル ⚠ の amber と区別)。 */}
         {alertReasonChips(v).map((chip) => (
           <span

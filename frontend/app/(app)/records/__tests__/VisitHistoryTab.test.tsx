@@ -770,7 +770,7 @@ describe('VisitHistoryTab — 時刻の調整の表示', () => {
 });
 
 describe('VisitHistoryTab — 詳細から実績の時刻を合わせる', () => {
-  it('調整のある訪問は、読取時刻・調整の履歴・いまの理由を出す', () => {
+  it('調整のある訪問は、読取時刻・調整の履歴を出す（過去の調整に理由があれば出す）', () => {
     setData([makeAdjustedRow()]);
     render(<VisitHistoryTab />);
     const dlg = openDetail();
@@ -783,7 +783,6 @@ describe('VisitHistoryTab — 詳細から実績の時刻を合わせる', () =>
 
     expect(dlg.getByText('実績の時刻を合わせる')).toBeInTheDocument();
     expect(dlg.getByLabelText('到着の時刻')).toHaveValue('12:56');
-    expect(dlg.getByLabelText('到着の理由')).toHaveValue('intercom_wait');
     expect(dlg.getByLabelText('退出の時刻')).toHaveValue('13:40');
     expect(dlg.getByTestId('history-adjust-note-arrival')).toHaveTextContent('読取 13:06');
     // 退出は調整していないので「読取時刻に戻す」は出さない。
@@ -791,7 +790,7 @@ describe('VisitHistoryTab — 詳細から実績の時刻を合わせる', () =>
     expect(dlg.queryByTestId('history-adjust-reset-departure')).not.toBeInTheDocument();
   });
 
-  it('文言に「直す」「修正」「補正」を使わない。理由は決まった 4 つの表示名', () => {
+  it('文言に「直す」「修正」「補正」を使わない。理由の選択・自由記述は出さない', () => {
     setData([makeAdjustedRow()]);
     render(<VisitHistoryTab />);
     const dlg = openDetail();
@@ -799,15 +798,14 @@ describe('VisitHistoryTab — 詳細から実績の時刻を合わせる', () =>
     expect(text).not.toMatch(/直す|直し|修正|補正/);
     expect(screen.getByTestId('history-tab').textContent ?? '').not.toMatch(/直す|修正|補正/);
 
-    const labels = (name: string) =>
-      within(dlg.getByLabelText(name))
-        .getAllByRole('option')
-        .map((o) => o.textContent);
-    expect(labels('到着の理由')).toEqual(['インターホン待ち', '読み取りが後になった', 'その他']);
-    expect(labels('退出の理由')).toEqual(['読み取りが後になった', '読み取りなし', 'その他']);
+    // PO 決定 2026-10-01: 理由は尋ねない。
+    expect(dlg.queryByLabelText('到着の理由')).not.toBeInTheDocument();
+    expect(dlg.queryByLabelText('退出の理由')).not.toBeInTheDocument();
+    expect(dlg.queryByLabelText('到着の理由（自由記述）')).not.toBeInTheDocument();
+    expect(dlg.getByTestId('history-adjust-box').querySelector('select')).toBeNull();
   });
 
-  it('到着の時刻と理由を選んで保存すると、契約の項目で調整する', async () => {
+  it('到着の時刻を選んで保存すると、時刻だけで調整する（理由は送らない）', async () => {
     setData([makeRow({ adjust_allowed: true, arrival_read_at: '2026-09-29T03:56:00Z' })]);
     render(<VisitHistoryTab />);
     const dlg = openDetail();
@@ -816,40 +814,37 @@ describe('VisitHistoryTab — 詳細から実績の時刻を合わせる', () =>
     expect(save).toBeDisabled();
 
     fireEvent.change(dlg.getByLabelText('到着の時刻'), { target: { value: '12:46' } });
-    fireEvent.change(dlg.getByLabelText('到着の理由'), { target: { value: 'read_later' } });
     expect(save).not.toBeDisabled();
     fireEvent.click(save);
 
     await waitFor(() => expect(mockToast.success).toHaveBeenCalled());
-    expect(mockAdjust).toHaveBeenCalledWith({
-      visitId: 'v-1',
-      kind: 'arrival',
-      time: '12:46',
-      reasonCode: 'read_later',
-      reasonText: '',
-    });
+    expect(mockAdjust).toHaveBeenCalledWith({ visitId: 'v-1', kind: 'arrival', time: '12:46' });
     expect(mockToast.success.mock.calls[0]?.[0]).toBe('到着を 12:46 に合わせました');
     expect(mockReset).not.toHaveBeenCalled();
   });
 
-  it('「その他」は自由記述を添えて送る', async () => {
-    setData([makeRow({ adjust_allowed: true })]);
+  it('理由の無い調整の履歴には「理由:」を出さない', () => {
+    setData([
+      makeAdjustedRow({
+        adjustments: [
+          {
+            kind: 'arrival',
+            reason_code: null,
+            reason_label: null,
+            reason_text: null,
+            by_name: '川名 幸子',
+            created_at: '2026-09-29T04:10:00Z',
+          },
+        ],
+      }),
+    ]);
     render(<VisitHistoryTab />);
-    const dlg = openDetail();
-    expect(dlg.queryByLabelText('到着の理由（自由記述）')).not.toBeInTheDocument();
-    fireEvent.change(dlg.getByLabelText('到着の時刻'), { target: { value: '12:50' } });
-    fireEvent.change(dlg.getByLabelText('到着の理由'), { target: { value: 'other' } });
-    fireEvent.change(dlg.getByLabelText('到着の理由（自由記述）'), {
-      target: { value: '駐車場が遠かった' },
-    });
-    fireEvent.click(dlg.getByTestId('history-adjust-save-arrival'));
-    await waitFor(() => expect(mockAdjust).toHaveBeenCalled());
-    expect(mockAdjust).toHaveBeenCalledWith(
-      expect.objectContaining({ reasonCode: 'other', reasonText: '駐車場が遠かった' }),
-    );
+    const history = openDetail().getByTestId('history-detail-adjustments');
+    expect(history).toHaveTextContent('到着 読取 13:06 → 12:56');
+    expect(history).not.toHaveTextContent('理由');
   });
 
-  it('退出の読み取りが無い訪問には退出時刻を入れられる（理由の初期値は「読み取りなし」）', async () => {
+  it('退出の読み取りが無い訪問には退出時刻を入れられる（時刻だけで記録する）', async () => {
     setData([
       makeRow({
         adjust_allowed: true,
@@ -863,7 +858,6 @@ describe('VisitHistoryTab — 詳細から実績の時刻を合わせる', () =>
     render(<VisitHistoryTab />);
     const dlg = openDetail();
     expect(dlg.getByLabelText('退出の時刻')).toHaveValue('');
-    expect(dlg.getByLabelText('退出の理由')).toHaveValue('no_read');
     expect(dlg.getByTestId('history-adjust-note-departure')).toHaveTextContent(
       '読み取りなし ・ 退出時刻を入れられます',
     );
@@ -872,13 +866,7 @@ describe('VisitHistoryTab — 詳細から実績の時刻を合わせる', () =>
     fireEvent.change(dlg.getByLabelText('退出の時刻'), { target: { value: '13:35' } });
     fireEvent.click(dlg.getByTestId('history-adjust-save-departure'));
     await waitFor(() => expect(mockAdjust).toHaveBeenCalled());
-    expect(mockAdjust).toHaveBeenCalledWith({
-      visitId: 'v-1',
-      kind: 'departure',
-      time: '13:35',
-      reasonCode: 'no_read',
-      reasonText: '',
-    });
+    expect(mockAdjust).toHaveBeenCalledWith({ visitId: 'v-1', kind: 'departure', time: '13:35' });
   });
 
   it('手で入れた退出は「手入力」と分かり、消せる', async () => {
@@ -923,19 +911,16 @@ describe('VisitHistoryTab — 詳細から実績の時刻を合わせる', () =>
     expect(mockAdjust).not.toHaveBeenCalled();
   });
 
-  it('時刻が同じでも、いまの調整の理由を変えるなら保存できる', async () => {
+  it('合わせてある時刻と同じ時刻のままでは保存できない', () => {
     setData([makeAdjustedRow()]);
     render(<VisitHistoryTab />);
     const dlg = openDetail();
     const save = dlg.getByTestId('history-adjust-save-arrival');
     expect(save).toBeDisabled();
-    fireEvent.change(dlg.getByLabelText('到着の理由'), { target: { value: 'read_later' } });
+    fireEvent.change(dlg.getByLabelText('到着の時刻'), { target: { value: '12:50' } });
     expect(save).not.toBeDisabled();
-    fireEvent.click(save);
-    await waitFor(() => expect(mockAdjust).toHaveBeenCalled());
-    expect(mockAdjust).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'arrival', time: '12:56', reasonCode: 'read_later' }),
-    );
+    fireEvent.change(dlg.getByLabelText('到着の時刻'), { target: { value: '12:56' } });
+    expect(save).toBeDisabled();
   });
 
   it('サーバの 422 / 403 / 409 の detail はそのまま出し、成功のトーストは出さない', async () => {
@@ -968,7 +953,6 @@ describe('VisitHistoryTab — 詳細から実績の時刻を合わせる', () =>
     expect(dlg.getByTestId('history-adjust-na')).toHaveTextContent('合わせられません');
     for (const el of [
       dlg.getByLabelText('到着の時刻'),
-      dlg.getByLabelText('到着の理由'),
       dlg.getByLabelText('退出の時刻'),
       dlg.getByTestId('history-adjust-save-arrival'),
       dlg.getByTestId('history-adjust-save-departure'),
@@ -1105,32 +1089,6 @@ describe('VisitHistoryTab — 絞り込み中に合わせた行が一覧から�
     setData([]);
     view.rerender(<VisitHistoryTab />);
     expect(screen.getByTestId('history-detail-dialog')).toBeInTheDocument();
-  });
-});
-
-describe('VisitHistoryTab — 理由の初期値は reason_code から（L-11）', () => {
-  it('表示名が違っていても、reason_code で選択欄を合わせる', () => {
-    setData([
-      makeAdjustedRow({
-        adjustments: [
-          { kind: 'arrival', reason_code: 'read_later', reason_label: '表示名が変わった' },
-        ],
-      }),
-    ]);
-    render(<VisitHistoryTab />);
-    const dlg = openDetail();
-    expect(dlg.getByLabelText('到着の理由')).toHaveValue('read_later');
-  });
-
-  it('reason_code の無い応答は、表示名からの逆引きに落とす', () => {
-    setData([
-      makeAdjustedRow({
-        adjustments: [{ kind: 'arrival', reason_label: '読み取りが後になった' }],
-      }),
-    ]);
-    render(<VisitHistoryTab />);
-    const dlg = openDetail();
-    expect(dlg.getByLabelText('到着の理由')).toHaveValue('read_later');
   });
 });
 

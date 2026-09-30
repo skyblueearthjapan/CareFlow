@@ -111,22 +111,8 @@ export function isAlert(v: Pick<MonitorVisit, 'alert_level'>): boolean {
 // 代行 / 予定外訪問 (qr-open-checkin-design.md §6)
 // ---------------------------------------------------------------------------
 
-/**
- * 予定外訪問の専用行ラベル。BE ``monitor.py`` の ``UNPLANNED_ROW_LABEL`` のミラー。
- * 行は拠点ごとに 1 本作られるが、ラベルはどの行も同じ。
- */
-export const UNPLANNED_ROW_LABEL = '📌予定外訪問';
-
-/**
- * 予定外訪問の専用行か。
- *
- * BE は is_unplanned な visit だけを専用行に集約する (通常コース行への混載はしない)
- * ため、行内の全 visit が予定外なら専用行とみなす。ラベル文字列ではなくフラグで
- * 判定するのは、文言変更に表示が引きずられないようにするため。
- */
-export function isUnplannedRow(row: Pick<MonitorStaffRow, 'visits'>): boolean {
-  return row.visits.length > 0 && row.visits.every((v) => v.is_unplanned);
-}
+// 予定外訪問は読み取った本人の行に「予定外」の札つきで入る (専用行は 2026-10-01 廃止・
+// monitor-staff-rows-design-2026-09-30.md §2)。札の配色は --unplanned 系。
 
 /**
  * 代行 / 予定外の理由ラベル (トレイのチップ)。
@@ -345,6 +331,59 @@ export function groupVisits(rows: MonitorStaffRow[]): VisitGroup[] {
       isPair: members.length > 1 || representative.visit_group_id != null,
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// 行 = 職員 (monitor-staff-rows-design-2026-09-30.md)
+// ---------------------------------------------------------------------------
+
+/** 「担当なし」行 (staff_id=null) の行キー。 */
+export const UNASSIGNED_ROW_KEY = 'unassigned';
+
+/**
+ * 訪問の拠点 = コースの拠点 (コース無しは患者の主担当拠点)。どちらも無ければ行の職員の所属。
+ * 拠点の絞り込みと集計の範囲に使う (BE ``build_monitor`` の拠点フィルタと同じ規則)。
+ */
+export function visitOfficeId(
+  v: Pick<MonitorVisit, 'course_office_id'>,
+  row: Pick<MonitorStaffRow, 'office_id'>,
+): string | null {
+  return v.course_office_id ?? row.office_id ?? null;
+}
+
+/**
+ * 拠点の絞り込み: その拠点の訪問を 1 件でも持つ人を出す (行の中身はその人の 1 日全部)。
+ * 訪問の無い人 (イベント・休み・同行だけ) は所属で判定する。
+ */
+export function rowMatchesOffice(
+  row: Pick<MonitorStaffRow, 'office_id' | 'visits'>,
+  officeId: string,
+): boolean {
+  if (row.visits.length === 0) return row.office_id === officeId;
+  return row.visits.some((v) => visitOfficeId(v, row) === officeId);
+}
+
+/** コースの札の色 (拠点ごと)。既存トークンの淡色地 × 濃色文字 (いずれも 4.5:1 以上)。 */
+const OFFICE_TAG_TONES: readonly { background: string; color: string }[] = [
+  { background: 'var(--sched-ghost-before-bg)', color: 'var(--sched-male-ink)' },
+  { background: 'var(--warning-bg)', color: 'var(--warning-strong)' },
+  { background: 'var(--sched-ghost-after-bg)', color: 'var(--text-secondary)' },
+  { background: 'var(--info-bg)', color: 'var(--info-strong)' },
+];
+const NEUTRAL_TAG_TONE = { background: 'var(--bg-muted)', color: 'var(--text-secondary)' };
+
+/**
+ * 拠点 id → 札の色。``officeIds`` はモニター応答の ``office_order`` (= 拠点マスタの
+ * sort_order 順。その日に出る拠点に依らない)。
+ * 同じ拠点はどの行でも同じ色になる。拠点不明は中立色。
+ */
+export function officeTagTone(
+  officeId: string | null | undefined,
+  officeIds: readonly string[],
+): { background: string; color: string } {
+  const i = officeId ? officeIds.indexOf(officeId) : -1;
+  if (i < 0) return NEUTRAL_TAG_TONE;
+  return OFFICE_TAG_TONES[i % OFFICE_TAG_TONES.length] ?? NEUTRAL_TAG_TONE;
 }
 
 /** "HH:MM:SS" / "HH:MM" → 分 (タイムライン座標計算用)。 */

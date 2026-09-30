@@ -150,7 +150,8 @@ class Visit(Base, TimestampMixin):
     # 予定外訪問 (migration 0071 / 設計 ``docs/plans/qr-open-checkin-design.md`` §3)。
     # true = 当日予定が無い患者宅の QR 打刻 (POST /visits/adhoc-checkin) がその場で
     # 生成した訪問。course_id は NULL・primary_staff_id は打刻スタッフ・end_time は
-    # 退出打刻で実時刻へ更新される。モニターは専用行 (📌予定外訪問) へ集約する。
+    # 退出打刻で実時刻へ更新される。モニターは打刻スタッフ本人の行に「予定外」の札で出す
+    # (専用行は 2026-10-01 廃止・monitor-staff-rows-design-2026-09-30.md)。
     is_unplanned: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
     )

@@ -465,7 +465,10 @@ export interface CheckInPayload {
 /** 実績のどちらの時刻か (設計 2026-09-30 §6-1)。 */
 export type ActualTimeKind = 'arrival' | 'departure';
 
-/** 時刻を合わせた理由 (設計 §4)。表示名は画面側が持つ。 */
+/**
+ * 時刻を合わせた理由 (設計 §4)。API の受け口として残しているだけで、画面からは
+ * 送らない (PO 決定 2026-10-01・設計 §12)。
+ */
 export type AdjustReasonCode = 'intercom_wait' | 'read_later' | 'no_read' | 'other';
 
 /** `PUT /visits/{id}/actual-time` の body。 */
@@ -473,6 +476,7 @@ export interface ActualTimeAdjustPayload {
   kind: ActualTimeKind;
   /** JST の `HH:MM`。日付はサーバが `visit_date` と組み合わせる。 */
   time: string;
+  /** 任意。画面からは渡さない (上の `AdjustReasonCode` 参照)。 */
   reason_code?: AdjustReasonCode | null;
   reason_text?: string | null;
 }

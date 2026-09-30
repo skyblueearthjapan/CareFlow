@@ -43,7 +43,7 @@ export const monitorVisitSchema = z.object({
   // 2 名体制のグルーピングキー。同一値の visit が 2 行 (各スタッフ 1 行)。通常は null。
   visit_group_id: z.string().uuid().nullable().optional(),
   // 同行 (§7.3): この訪問に同行するスタッフ名 (単数・後方互換)。null=同行なし。
-  // 担当乖離 ⚠ (course_staff_name ≠ staff_name) とは別ラベル「＋◯◯（同行）」で表示する。
+  // コース担当との食い違い ⚠ (course_staff_mismatch) とは別ラベル「＋◯◯（同行）」で表示する。
   accompaniment_staff_name: z.string().nullable().optional(),
   // 同行スタッフ名の全件 (一般化・確定#5)。旧デプロイは undefined → 単数へ落とす。
   accompaniment_staff_names: z.array(z.string()).nullable().optional(),
@@ -59,8 +59,18 @@ export const monitorVisitSchema = z.object({
   substitute_staff_name: z.string().nullable().optional(),
   // 代行 = arrival 打刻者のいずれかが visit の担当集合の外。バーに「代行」バッジ+代行者名。
   is_substitute: z.boolean().default(false),
-  // 予定外訪問 (visits.is_unplanned)。BE が専用行「📌予定外訪問」に集約する。
+  // 予定外訪問 (visits.is_unplanned)。読み取った本人 (= 主担当) の行に「予定外」の札つきで入る
+  // (専用行は 2026-10-01 廃止・monitor-staff-rows-design-2026-09-30.md §2)。
   is_unplanned: z.boolean().default(false),
+  // 訪問のコースと札 (「稲D」= 拠点名の 1 文字目 + コースコード)。コース無し・予定外は null。
+  // 旧デプロイは undefined。形が崩れていてもモニター全体は落とさない。
+  course_id: z.string().uuid().nullish().catch(null),
+  course_tag: z.string().nullish().catch(null),
+  // コースの拠点 (拠点の絞り込みと札の色)。コース無しは患者の主担当拠点。
+  course_office_id: z.string().uuid().nullish().catch(null),
+  course_office_name: z.string().nullish().catch(null),
+  // コースの担当とこの訪問の担当が違う (手動の付け替えを除く)。札に ⚠。
+  course_staff_mismatch: z.boolean().nullish().catch(null),
   patient_id: z.string().uuid(),
   patient_name: z.string().nullable().optional(),
   patient_code: z.string().nullable().optional(),
@@ -109,12 +119,27 @@ export const monitorVisitSchema = z.object({
   review_comment: z.string().nullable().optional(),
 });
 
-// 行 = コース単位 (2026-07-10 PO要望。旧: スタッフ単位)。
-// staff_id は行内の担当が 1 名のときのみ。staff_name は「・」連結の表示用。
+/** 行ヘッダに並べるコースの札 1 つ (その人がこの日持つコース)。 */
+export const monitorCourseTagSchema = z.object({
+  label: z.string(),
+  course_id: z.string().uuid(),
+  office_id: z.string().uuid().nullable().optional(),
+  office_name: z.string().nullable().optional(),
+});
+
+/** その日の休み (`off`)・時間変更 (`custom_time`)。 */
+export const monitorDayOverrideSchema = z.object({
+  kind: z.string(),
+  start_time: z.string().nullable().optional(),
+  end_time: z.string().nullable().optional(),
+  reason: z.string().nullable().optional(),
+});
+
+// 行 = 職員単位 (2026-10-01・monitor-staff-rows-design-2026-09-30.md)。
+// staff_id = 行の職員 (「担当なし」行は null)。office_* = 職員の所属拠点。
+// course_id / course_label / course_staff_* は互換のため項目だけ残り、常に null。
 export const monitorStaffRowSchema = z.object({
   course_id: z.string().uuid().nullable().optional(),
-  // スケジュール側のコース担当 (= courses.assigned_staff_id)。訪問側 staff_ids と
-  // 食い違う場合は UI が ⚠ を出す (原則③ ズレは隠さない)。
   course_staff_id: z.string().uuid().nullable().optional(),
   course_staff_name: z.string().nullable().optional(),
   staff_id: z.string().uuid().nullable().optional(),
@@ -123,12 +148,21 @@ export const monitorStaffRowSchema = z.object({
   office_id: z.string().uuid().nullable().optional(),
   office_name: z.string().nullable().optional(),
   course_label: z.string().nullable().optional(),
+  // その人がこの日持つコースの札 (重複なし・初出順)。
+  course_tags: z.array(monitorCourseTagSchema).nullish().catch(null),
   visits: z.array(monitorVisitSchema),
+  // 同行・副担当として関わる訪問の id (訪問本体は主担当の行)。画面は薄く描く。
+  companion_visit_ids: z.array(z.string().uuid()).nullish().catch(null),
+  // その日の休み・時間変更 (無ければ null)。
+  day_override: monitorDayOverrideSchema.nullish().catch(null),
 });
 
 export const monitorOfficeSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
+  // 拠点の略称 (札と凡例の 1 文字目・PO 決定 2026-10-01 で short_label に揃える)。
+  // 無い応答 (古い BE) は拠点名の 1 文字目で代用する。
+  short_label: z.string().nullish().catch(null),
 });
 
 export const monitorThresholdsSchema = z.object({
@@ -146,6 +180,8 @@ export const monitorResponseSchema = z.object({
   now: z.string(),
   thresholds: monitorThresholdsSchema,
   offices: z.array(monitorOfficeSchema),
+  // 札の色の基準 = 拠点マスタの安定した順 (その日の offices の並びに依らない)。
+  office_order: z.array(z.string().uuid()).optional(),
   staff: z.array(monitorStaffRowSchema),
 });
 
@@ -166,6 +202,8 @@ export type MonitorCheckin = z.infer<typeof monitorCheckinSchema>;
 export type MonitorAdjustment = z.infer<typeof monitorAdjustmentSchema>;
 export type MonitorVisit = z.infer<typeof monitorVisitSchema>;
 export type MonitorStaffRow = z.infer<typeof monitorStaffRowSchema>;
+export type MonitorCourseTag = z.infer<typeof monitorCourseTagSchema>;
+export type MonitorDayOverride = z.infer<typeof monitorDayOverrideSchema>;
 export type MonitorOffice = z.infer<typeof monitorOfficeSchema>;
 export type MonitorThresholds = z.infer<typeof monitorThresholdsSchema>;
 export type MonitorResponse = z.infer<typeof monitorResponseSchema>;

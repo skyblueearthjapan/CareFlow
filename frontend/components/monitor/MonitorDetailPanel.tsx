@@ -2,8 +2,11 @@
 
 /**
  * 詳細パネル — 選択中の visit の予定/到着/退出/滞在/距離/GPS精度/理由/次距離。
- * 未訪問は即連絡ボックスを最上部に出す。visit 未選択でコースのみ選択時は訪問一覧
- * (stop list) を出す。
+ * 未訪問は即連絡ボックスを最上部に出す。visit 未選択で行 (職員) のみ選択時は
+ * その人の 1 日の順路 (``MonitorRouteList``) を出す。
+ *
+ * 行 = 職員 (2026-10-01) からは、行の下に開くパネル (``page.tsx``) が
+ * 「地図 / 順路 (MonitorRouteList) / この詳細」を横に並べて使う。
  */
 import { useState } from 'react';
 import {
@@ -26,8 +29,10 @@ import { VisitRecordingLink } from '@/components/records/VisitRecordingLink';
 import { cn } from '@/lib/utils';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 
+import { CourseTagChip, UnplannedChip } from './MonitorTimeline';
 import {
   LONG_INPROGRESS_REASON,
+  MAP_MARKER_COLOR,
   STATUS_COLOR,
   STATUS_JUDGE,
   STATUS_LABEL,
@@ -65,6 +70,8 @@ interface MonitorDetailPanelProps {
   onUnreview?: (visitId: string) => void;
   /** review/undo の実行中フラグ (ボタン無効化用)。 */
   reviewPending?: boolean;
+  /** 札の色を拠点で揃えるための拠点 id の並び (モニター応答の offices 順)。 */
+  officeIds?: readonly string[];
 }
 
 export function MonitorDetailPanel({
@@ -75,6 +82,7 @@ export function MonitorDetailPanel({
   onReview,
   onUnreview,
   reviewPending,
+  officeIds = [],
 }: MonitorDetailPanelProps) {
   if (visit) {
     return (
@@ -89,86 +97,123 @@ export function MonitorDetailPanel({
     );
   }
   if (row) {
-    return <CourseDetail row={row} onSelectVisit={onSelectVisit} />;
+    return (
+      <div className="p-4">
+        <h3 className="m-0 mb-1 text-[15px] font-bold text-text-primary">
+          {row.staff_name ?? '担当なし'}
+        </h3>
+        <MonitorRouteList row={row} onSelectVisit={onSelectVisit} officeIds={officeIds} />
+      </div>
+    );
   }
   return (
     <div
       className="flex min-h-[240px] items-center justify-center px-6 py-8 text-center text-[13px] text-text-muted"
       data-testid="monitor-detail-empty"
     >
-      行（コース）をクリックで地図に目的地を表示。
+      職員の行を押すと、その人の 1 日の順路と地図を表示。
       <br />
-      各訪問バー／上部の要対応カードをクリックで詳細。
+      各訪問のカード／上部の要対応カードを押すと詳細。
     </div>
   );
 }
 
-function CourseDetail({
+/**
+ * その人の 1 日の順路 (行 = 職員)。時刻順の訪問を番号つきで並べ、拠点をまたぐ所に
+ * 「稲毛から都賀へ移動」を挟む。訪問を押すと、その訪問の詳細を開く。
+ */
+export function MonitorRouteList({
   row,
   onSelectVisit,
+  selectedVisitId = null,
+  officeIds = [],
 }: {
   row: MonitorStaffRow;
   onSelectVisit: (visitId: string) => void;
+  selectedVisitId?: string | null;
+  officeIds?: readonly string[];
 }) {
+  const unassigned = row.staff_id == null;
   return (
-    <div className="p-4" data-testid="monitor-detail-course">
-      {/* 行=コース単位: 見出し=コース、担当は下段 (スケジュールのコース担当を優先)。 */}
-      <h3 className="m-0 text-[15px] font-bold text-text-primary">
-        {row.course_label ?? row.staff_name ?? '（担当未設定）'}
-      </h3>
-      <div className="mb-1 text-xs text-text-secondary">
-        {[row.office_name, row.course_staff_name ?? row.staff_name ?? '担当未設定']
-          .filter(Boolean)
-          .join(' ・ ')}{' '}
-        ／ 訪問 {row.visits.length}件
+    <div data-testid="monitor-detail-route">
+      <div className="mb-2 text-sm text-text-secondary">
+        {unassigned
+          ? `担当が決まっていない訪問 ${row.visits.length}件（1 人の順路ではありません）`
+          : `${row.office_name ?? '所属なし'} ・ 1 日の順路 ・ 訪問 ${row.visits.length}件`}
       </div>
-      {/* スケジュールの担当と実訪問の担当の食い違いは隠さず警告する (設計原則③)。 */}
-      {row.course_staff_id != null &&
-        ((row.staff_ids ?? []).length === 0 ||
-          (row.staff_ids ?? []).some((sid) => sid !== row.course_staff_id)) && (
-          <div className="mb-3 rounded-md border border-warning bg-warning-bg px-2 py-1.5 text-[11px] text-warning-strong">
-            ⚠ スケジュールの担当（{row.course_staff_name ?? '未設定'}）と実訪問の担当（
-            {row.staff_name ?? '未設定'}）が一致していません
-          </div>
-        )}
-      <ul className="m-0 list-none p-0">
-        {row.visits.map((v, i) => {
-          const st = displayStatus(v);
-          return (
-            <li key={v.visit_id}>
-              <button
-                type="button"
-                onClick={() => onSelectVisit(v.visit_id)}
-                className="flex w-full items-center gap-2 rounded-lg border-b border-border-default/40 px-1.5 py-2 text-left hover:bg-bg-muted"
-              >
-                <span
-                  className="h-2.5 w-2.5 shrink-0 rounded-full"
-                  style={{ backgroundColor: STATUS_COLOR[st] }}
-                />
-                <span className="w-10 shrink-0 text-xs tabular-nums text-text-secondary">
-                  {v.start_time}
-                </span>
-                <span className="flex-1 text-[13px] font-semibold text-text-primary">
-                  {i + 1}. {v.patient_name ?? '—'}
-                  {v.staff_name && (
-                    <span className="ml-1 text-[11px] font-normal text-text-muted">
-                      {v.staff_name}
-                    </span>
+      {row.visits.length === 0 ? (
+        <div className="rounded-md border border-border-default bg-bg-base px-3 py-2.5 text-sm text-text-secondary">
+          この日の訪問はありません。
+        </div>
+      ) : (
+        <ol className="m-0 flex list-none flex-col gap-1 p-0">
+          {row.visits.map((v, i) => {
+            const st = displayStatus(v);
+            const prev = i > 0 ? row.visits[i - 1] : undefined;
+            const hop =
+              prev &&
+              prev.course_office_id &&
+              v.course_office_id &&
+              prev.course_office_id !== v.course_office_id;
+            const sel = v.visit_id === selectedVisitId;
+            return (
+              <li key={v.visit_id}>
+                {hop && (
+                  <div
+                    className="px-1.5 pb-1 text-xs font-bold text-warning-strong"
+                    data-testid={`monitor-route-hop-${v.visit_id}`}
+                  >
+                    ↓ {prev.course_office_name ?? '—'}から{v.course_office_name ?? '—'}へ移動
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onSelectVisit(v.visit_id)}
+                  aria-pressed={sel}
+                  className={cn(
+                    'flex min-h-11 w-full items-center gap-2 rounded-md border px-2.5 py-1.5 text-left',
+                    sel
+                      ? 'border-brand-primary bg-brand-primary-50'
+                      : 'border-border-default bg-bg-base hover:bg-bg-muted',
                   )}
-                </span>
-                <span className="text-[11px]" style={{ color: STATUS_COLOR[st] }}>
-                  {STATUS_LABEL[st]}
-                </span>
-              </button>
-              {v.distance_to_next_m != null && (
-                <div className="pb-1.5 pl-[60px] text-[11px] text-text-muted">
-                  ↓ 次まで {formatDistance(v.distance_to_next_m)}
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+                >
+                  <span
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
+                    style={{ backgroundColor: MAP_MARKER_COLOR[st] }}
+                  >
+                    {i + 1}
+                  </span>
+                  <span className="w-11 shrink-0 text-sm tabular-nums text-text-secondary">
+                    {v.start_time}
+                  </span>
+                  {v.is_unplanned ? (
+                    <UnplannedChip className="text-xs" />
+                  ) : v.course_tag ? (
+                    <CourseTagChip
+                      label={v.course_tag}
+                      officeId={v.course_office_id}
+                      officeIds={officeIds}
+                      mismatch={!!v.course_staff_mismatch}
+                      className="text-xs"
+                    />
+                  ) : null}
+                  <span className="min-w-0 flex-1 truncate text-sm font-semibold text-text-primary">
+                    {v.patient_name ?? '—'}
+                  </span>
+                  <span className="shrink-0 text-xs" style={{ color: STATUS_COLOR[st] }}>
+                    {STATUS_LABEL[st]}
+                  </span>
+                </button>
+                {v.distance_to_next_m != null && (
+                  <div className="py-0.5 pl-[38px] text-xs text-text-muted">
+                    ↓ 次まで {formatDistance(v.distance_to_next_m)}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      )}
     </div>
   );
 }
@@ -239,11 +284,21 @@ function VisitDetail({
         )}
       </h3>
       <div className="mb-3 text-xs text-text-secondary">
-        {/* 訪問単位の担当 (= モバイル「今日の訪問」と同一ソース) を優先表示。 */}
+        {/* 訪問単位の担当 (= モバイル「今日の訪問」と同一ソース) を優先表示。
+            主担当が空でコース担当の行に入っている訪問は、その行の職員を出す。
+            コースは訪問ごとの札 (「稲D」) と拠点。 */}
         {[
-          visit.staff_name ? `担当: ${visit.staff_name}` : (row?.staff_name ?? null),
-          row?.office_name,
-          row?.course_label,
+          visit.staff_name
+            ? `担当: ${visit.staff_name}`
+            : row?.staff_name
+              ? `担当: ${row.staff_name}（コース担当）`
+              : '担当なし',
+          visit.is_unplanned
+            ? '予定外'
+            : visit.course_tag
+              ? `コース ${visit.course_tag}`
+              : null,
+          visit.course_office_name,
         ]
           .filter(Boolean)
           .join(' ／ ')}
@@ -267,7 +322,7 @@ function VisitDetail({
         </div>
       ) : null}
 
-      {/* 予定外訪問 (qr-open-checkin-design.md §6): 予定に無い実績。専用行と同じ配色。 */}
+      {/* 予定外訪問 (qr-open-checkin-design.md §6): 予定に無い実績。「予定外」の札と同じ配色。 */}
       {visit.is_unplanned && (
         <div
           className="mb-3 rounded border border-unplanned bg-unplanned-bg p-3 text-[13px] leading-relaxed text-unplanned"

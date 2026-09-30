@@ -45,14 +45,14 @@ export type VisitHistorySort = 'date' | 'staff' | 'patient';
 /** 実績のどちらの時刻か（設計 2026-09-30 §6-1）。 */
 export type ActualTimeKind = 'arrival' | 'departure';
 
-/** 時刻を合わせた理由（設計 §4）。表示名は画面側が持つ。 */
-export type AdjustReasonCode = 'intercom_wait' | 'read_later' | 'no_read' | 'other';
-
 /** 効いている調整 1 件（設計 §6-3 の `adjustments`）。 */
 export const visitHistoryAdjustmentSchema = z.object({
   /** `arrival` / `departure`。 */
   kind: z.string(),
-  /** 理由コード（`intercom_wait` など）。選択欄の初期値に使う。古い応答には無い。 */
+  /**
+   * 理由。画面からは尋ねなくなった（PO 決定 2026-10-01・設計 §12）が、過去の調整には
+   * 残っているので読む（あれば履歴に出す）。古い応答には無い。
+   */
   reason_code: z.string().nullable().optional(),
   reason_label: z.string().nullable().optional(),
   reason_text: z.string().nullable().optional(),
@@ -429,9 +429,6 @@ export interface AdjustActualTimeVariables {
   kind: ActualTimeKind;
   /** JST の `HH:MM`。日付はサーバが `visit_date` と組み合わせる。 */
   time: string;
-  reasonCode?: AdjustReasonCode | null;
-  /** 自由記述（200 字まで）。 */
-  reasonText?: string | null;
 }
 
 /**
@@ -440,6 +437,8 @@ export interface AdjustActualTimeVariables {
  * 予定（`start_time` / `end_time`）は動かない。範囲外は 422、期間外などは 403、
  * 読み取りが無い・削除済みは 409 で、どれも `detail` がそのまま画面に出せる日本語
  * （`apiErrorMessage` で取り出す）。応答の `VisitRead` は使わず、一覧を取り直す。
+ * 理由（`reason_code` / `reason_text`）は API では任意のまま受けるが、送らない
+ * （PO 決定 2026-10-01・設計 §12）。
  */
 export function useAdjustVisitActualTime(): UseMutationResult<
   unknown,
@@ -451,16 +450,11 @@ export function useAdjustVisitActualTime(): UseMutationResult<
   const { accessToken, refreshToken } = authPair(session);
 
   return useMutation<unknown, Error, AdjustActualTimeVariables>({
-    mutationFn: ({ visitId, kind, time, reasonCode, reasonText }) =>
+    mutationFn: ({ visitId, kind, time }) =>
       fetcher<unknown>(`/api/v1/visits/${encodeURIComponent(visitId)}/actual-time`, {
         method: 'PUT',
         headers: CLIENT_SURFACE_HEADER,
-        body: JSON.stringify({
-          kind,
-          time,
-          reason_code: reasonCode ?? null,
-          reason_text: reasonText?.trim() || null,
-        }),
+        body: JSON.stringify({ kind, time }),
         accessToken,
         refreshToken,
       }),

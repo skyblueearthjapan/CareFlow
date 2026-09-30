@@ -3,7 +3,7 @@
  * （契約 = `docs/plans/actual-time-adjust-design-2026-09-30.md` §6-1・§8-3）。
  *
  * 縛る挙動:
- *   1. PUT / DELETE の URL・メソッド・`X-Client-Surface: pc`・body の項目名
+ *   1. PUT / DELETE の URL・メソッド・`X-Client-Surface: pc`・body の項目名（時刻だけ）
  *   2. 成功後に打刻履歴・訪問モニター・訪問・スマホの自分の訪問を失効する
  *   3. 失敗したら失効しない
  */
@@ -52,15 +52,9 @@ beforeEach(() => {
 });
 
 describe('useAdjustVisitActualTime', () => {
-  it('PUT /visits/{id}/actual-time を X-Client-Surface: pc と契約の項目名で呼ぶ', async () => {
+  it('PUT /visits/{id}/actual-time を X-Client-Surface: pc と契約の項目名で呼ぶ (理由は送らない)', async () => {
     const { result } = renderHook(() => useAdjustVisitActualTime(), { wrapper });
-    result.current.mutate({
-      visitId: VISIT_ID,
-      kind: 'arrival',
-      time: '12:56',
-      reasonCode: 'intercom_wait',
-      reasonText: '  ',
-    });
+    result.current.mutate({ visitId: VISIT_ID, kind: 'arrival', time: '12:56' });
     await waitFor(() => expect(mockFetcher).toHaveBeenCalled());
 
     const [path, init] = mockFetcher.mock.calls[0] as [string, Record<string, unknown>];
@@ -68,31 +62,8 @@ describe('useAdjustVisitActualTime', () => {
     expect(init.method).toBe('PUT');
     expect(init.headers).toEqual({ 'X-Client-Surface': 'pc' });
     expect(init.accessToken).toBe('tok');
-    expect(JSON.parse(init.body as string)).toEqual({
-      kind: 'arrival',
-      time: '12:56',
-      reason_code: 'intercom_wait',
-      reason_text: null,
-    });
-  });
-
-  it('自由記述は前後の空白を落として送る', async () => {
-    const { result } = renderHook(() => useAdjustVisitActualTime(), { wrapper });
-    result.current.mutate({
-      visitId: VISIT_ID,
-      kind: 'departure',
-      time: '13:35',
-      reasonCode: 'other',
-      reasonText: ' 家族と話していた ',
-    });
-    await waitFor(() => expect(mockFetcher).toHaveBeenCalled());
-    const init = mockFetcher.mock.calls[0]?.[1] as { body: string };
-    expect(JSON.parse(init.body)).toEqual({
-      kind: 'departure',
-      time: '13:35',
-      reason_code: 'other',
-      reason_text: '家族と話していた',
-    });
+    // PO 決定 2026-10-01: 理由は尋ねない (API の受け口は任意のまま残る)。
+    expect(JSON.parse(init.body as string)).toEqual({ kind: 'arrival', time: '12:56' });
   });
 
   it('成功後に打刻履歴・モニター・訪問・自分の訪問を失効する', async () => {

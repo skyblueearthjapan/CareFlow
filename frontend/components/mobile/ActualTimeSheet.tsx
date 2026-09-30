@@ -31,7 +31,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { jstMinutes, minutesToHm } from '@/lib/format/actualTime';
-import type { ActualTimeKind, AdjustReasonCode } from '@/lib/queries/me';
+import type { ActualTimeKind } from '@/lib/queries/me';
 import { cn } from '@/lib/utils';
 
 /**
@@ -43,25 +43,6 @@ const ARRIVAL_BACK_LIMIT_MIN = 90;
 /** 退出を読取時刻より後にできる上限 (分)。サーバの検証と同じ値。 */
 const DEPARTURE_AFTER_READ_LIMIT_MIN = 30;
 const LAST_MINUTE_OF_DAY = 23 * 60 + 59;
-
-/** 理由の表示名 (設計 §4)。 */
-const REASON_LABEL: Record<AdjustReasonCode, string> = {
-  intercom_wait: 'インターホン待ち',
-  read_later: '読み取りが後になった',
-  no_read: '読み取りなし',
-  other: 'その他',
-};
-
-/**
- * 理由の選択肢。**先頭が初期値**。PC の打刻履歴 (`VisitHistoryDetailDialog`) と同じ規則:
- *   到着                 … インターホン待ち
- *   退出 (読み取りあり)  … 読み取りが後になった
- *   退出 (読み取りなし)  … 読み取りなし
- */
-function reasonCodes(kind: ActualTimeKind, departureHasRead: boolean): AdjustReasonCode[] {
-  if (kind === 'arrival') return ['intercom_wait', 'read_later', 'other'];
-  return departureHasRead ? ['read_later', 'no_read', 'other'] : ['no_read', 'other'];
-}
 
 /** 到着のひと押し (読取時刻からの差・分)。 */
 const ARRIVAL_QUICK: { delta: number; label: string }[] = [
@@ -144,12 +125,9 @@ export interface ActualTimeSheetProps {
   /**
    * 保存。`time` は JST の "HH:MM"。**null は「読取時刻に戻す」**(読取時刻と同じ
    * 時刻を選んで保存したとき)。成功したら true を返す (シートを閉じる)。
+   * 理由は尋ねない (PO 決定 2026-10-01・設計 §12)。
    */
-  onSave: (
-    kind: ActualTimeKind,
-    time: string | null,
-    reasonCode: AdjustReasonCode,
-  ) => Promise<boolean>;
+  onSave: (kind: ActualTimeKind, time: string | null) => Promise<boolean>;
 }
 
 export function ActualTimeSheet({ open, onOpenChange, ...body }: ActualTimeSheetProps) {
@@ -198,18 +176,13 @@ function SheetBody({
     return clamp(base, lo, Math.max(lo, hi));
   }
 
-  const departureHasRead = departure.readAt != null;
   const startKind: ActualTimeKind = departureDisabled ? 'arrival' : initialKind;
   const [kind, setKind] = useState<ActualTimeKind>(startKind);
   const [draft, setDraft] = useState(() => initialDraft(startKind));
-  const [reason, setReason] = useState<AdjustReasonCode>(
-    () => reasonCodes(startKind, departureHasRead)[0]!,
-  );
 
   function switchKind(next: ActualTimeKind) {
     setKind(next);
     setDraft(initialDraft(next));
-    setReason(reasonCodes(next, departureHasRead)[0]!);
   }
 
   const [lo, hi] = actualTimeRange(kind, times);
@@ -246,7 +219,7 @@ function SheetBody({
     if (!canSave || saving) return;
     // 読取時刻と同じ時刻 = 読取時刻に戻す (調整を残さない)。
     const time = readAt != null && draft === readAt ? null : minutesToHm(draft);
-    const ok = await onSave(kind, time, reason);
+    const ok = await onSave(kind, time);
     if (ok) onClose();
   }
 
@@ -391,7 +364,7 @@ function SheetBody({
       )}
 
       <p
-        className="tnum mb-0.5 mt-1.5 text-center text-[13px] text-text-secondary"
+        className="tnum mb-3 mt-1.5 text-center text-[13px] text-text-secondary"
         data-testid="actual-time-summary"
       >
         {stay != null ? (
@@ -403,29 +376,6 @@ function SheetBody({
           `予定 ${minutesToHm(planStart)}–${minutesToHm(planEnd)}（${plan} 分）`
         )}
       </p>
-
-      {/* 理由 (任意・初期値つき)。 */}
-      <div className="mb-3 mt-2 flex flex-wrap justify-center gap-1.5">
-        {reasonCodes(kind, departureHasRead).map((code) => {
-          const on = reason === code;
-          return (
-            <button
-              key={code}
-              type="button"
-              aria-pressed={on}
-              onClick={() => setReason(code)}
-              className={cn(
-                'h-11 rounded-full border px-3.5 text-[13px]',
-                on
-                  ? 'border-text-primary bg-text-primary text-white'
-                  : 'border-border-strong bg-bg-base text-text-primary',
-              )}
-            >
-              {REASON_LABEL[code]}
-            </button>
-          );
-        })}
-      </div>
 
       <Button
         type="button"
