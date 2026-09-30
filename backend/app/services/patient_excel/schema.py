@@ -98,7 +98,8 @@ SEX_RESTRICTION_JA_TO_EN: Final[dict[str, str]] = {
     ja: en for en, ja in SEX_RESTRICTION_EN_TO_JA.items()
 }
 
-OFFICE_CODE_VALUES: Final[tuple[str, ...]] = ("INAGE", "TSUGA")
+# 拠点コードの選択肢は offices マスタから作る (exporter が ``office_labels.ordered_office_codes``
+# で差し込む)。列定義の ``dropdown`` は None にしておく (別の事業所へ提供する準備 #3)。
 # Phase E-7: requires_multiple_staff (Patient W18 Phase A-1 列) を Excel で扱うため.
 BOOL_VALUES: Final[tuple[str, ...]] = ("TRUE", "FALSE")
 # Phase G-48: 複数スタッフ必須を「はい/いいえ」で表示. TRUE/FALSE も受理 (後方互換).
@@ -324,7 +325,7 @@ PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
     {"key": "address", "header": "住所", "width": 32, "dropdown": None},
     {"key": "lat", "header": "緯度", "width": 12, "dropdown": None},
     {"key": "lng", "header": "経度", "width": 12, "dropdown": None},
-    {"key": "office_code", "header": "拠点コード", "width": 12, "dropdown": OFFICE_CODE_VALUES},
+    {"key": "office_code", "header": "拠点コード", "width": 12, "dropdown": None},
     {
         "key": "sex_restriction",
         "header": "性別制限",
@@ -497,7 +498,7 @@ PFV_COLUMNS: Final[list[dict[str, object]]] = [
         "key": "sub_office_code",
         "header": "sub_office_code",
         "width": 16,
-        "dropdown": OFFICE_CODE_VALUES,
+        "dropdown": None,
     },
     {"key": "delete_flag", "header": "(削除フラグ)", "width": 14, "dropdown": DELETE_FLAG_VALUES},
 ]
@@ -523,34 +524,22 @@ PFV_REQUIRED: Final[tuple[str, ...]] = (
 # クロス拠点 (例 月=稲B・木=津A) を 1 患者行で表現できるよう、(office, label) を
 # 一意な文字列にエンコードし、import 時にパースして (office_code, label) へ戻す.
 #
-# office_code → 短縮名 (1 文字). INAGE→稲 (稲毛), TSUGA→津 (都賀).
-
-# 0059: 拠点マスタ駆動化 (PO決定「コードが事業所を特定しない」).
-#   短縮名 ↔ office_code の対応は本来 offices マスタ (short_label / code) が「正」。
-#   このモジュールは DB を持たない純粋パーサなので、対応表は呼び出し側 (DB を持つ層)
-#   が offices から ``build_office_code_short_maps`` で構築して注入する。
-#   以下の定数は「注入されなかった / マスタ short_label 未設定」時の legacy fallback
-#   (稲毛/都賀 の既知 2 拠点。backfill 前 DB やテストの後方互換用)。
-OFFICE_CODE_TO_SHORT: Final[dict[str, str]] = {
-    "INAGE": "稲",
-    "TSUGA": "津",
-}
-OFFICE_SHORT_TO_CODE: Final[dict[str, str]] = {
-    short: code for code, short in OFFICE_CODE_TO_SHORT.items()
-}
+# 短縮名 ↔ office_code の対応は offices マスタ (short_label / code) が「正」。
+# このモジュールは DB を持たない純粋パーサなので、対応表は呼び出し側 (DB を持つ層) が
+# offices から ``build_office_code_short_maps`` で構築して注入する (0059 / 別の事業所へ
+# 提供する準備 #4: 拠点コードや略称の決め打ちは持たない)。
 
 
 def build_office_code_short_maps(
     pairs: Iterable[tuple[str | None, str | None]],
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """offices の (code, short_label) ペア列 → (code_to_short, short_to_code).
+    """offices の (code, 略称) ペア列 → (code_to_short, short_to_code).
 
-    offices マスタ駆動 (PO決定「コードが事業所を特定しない」). legacy 既定
-    (OFFICE_CODE_TO_SHORT / OFFICE_SHORT_TO_CODE) を土台にし、マスタ値で上書きする
-    (short_label 未設定の既知拠点 稲毛/都賀 や backfill 前 DB でも解決できる後方互換)。
+    略称は ``office_labels.office_short`` (short_label、未設定なら拠点名の 1 文字目) を
+    渡す (``office_labels.office_code_short_pairs``)。code / 略称が空の組は無視する。
     """
-    code_to_short = dict(OFFICE_CODE_TO_SHORT)
-    short_to_code = dict(OFFICE_SHORT_TO_CODE)
+    code_to_short: dict[str, str] = {}
+    short_to_code: dict[str, str] = {}
     for code, short in pairs:
         if code and short:
             code_to_short[code] = short
@@ -565,8 +554,7 @@ def course_token(
 ) -> str | None:
     """(office_code, label) → 拠点付きコーストークン (例 "稲A").
 
-    ``code_to_short`` を渡すと offices マスタ駆動で短縮名を解決する。未指定時は
-    legacy 既定 (OFFICE_CODE_TO_SHORT) にフォールバック。
+    ``code_to_short`` は offices マスタから作った対応 (``build_office_code_short_maps``)。
     label が空の場合は None (= 書き出さない). 短縮名が無い拠点コードはそのまま
     コードを使う (例 "FOOA"; 解析時も後方互換で対応).
     """
@@ -574,7 +562,7 @@ def course_token(
         return None
     if not office_code:
         return None
-    mapping = OFFICE_CODE_TO_SHORT if code_to_short is None else code_to_short
+    mapping = code_to_short or {}
     short = mapping.get(office_code, office_code)
     return f"{short}{label}"
 
@@ -585,31 +573,25 @@ def parse_course_token(
 ) -> tuple[str, str] | None:
     """拠点付きコーストークン (例 "稲A") → (office_code, label).
 
-    先頭の短縮名 (稲/津 等) を office_code に、残りを label に分解する.
-    ``short_to_code`` を渡すと offices マスタ駆動で解決する。未指定時は legacy 既定
-    (OFFICE_SHORT_TO_CODE) にフォールバック。
+    先頭の略称 (稲/津 等) を office_code に、残りを label に分解する.
+    ``short_to_code`` は offices マスタから作った対応 (``build_office_code_short_maps``)。
     解析できない場合は None (= コース未解決として best-effort で扱う).
-    後方互換: 短縮名でなく office_code そのもの始まり ("INAGEA") も受理する.
+    後方互換: 略称でなく office_code そのもの始まり ("INAGEA") も受理する.
+    略称とコードのどちらにも当たるときは長いほうを採る (略称が 2 文字以上の拠点や、
+    略称が拠点名の 1 文字目になる英字名の拠点でも取り違えないため)。
     """
     if token is None:
         return None
     s = str(token).strip()
     if not s:
         return None
-    mapping = OFFICE_SHORT_TO_CODE if short_to_code is None else short_to_code
-    # 1 文字短縮名 (稲/津 等) 始まり.
-    head = s[0]
-    if head in mapping:
-        label = s[1:].strip()
-        if label:
-            return mapping[head], label
-        return None
-    # 後方互換: office_code そのもの始まり (例 "INAGEA").
-    for code in dict.fromkeys(mapping.values()):
-        if s.startswith(code):
-            label = s[len(code) :].strip()
-            if label:
-                return code, label
+    mapping = short_to_code or {}
+    prefixes: dict[str, str] = {code: code for code in mapping.values()}
+    prefixes.update(mapping)
+    for prefix in sorted(prefixes, key=len, reverse=True):
+        if s.startswith(prefix):
+            label = s[len(prefix) :].strip()
+            return (prefixes[prefix], label) if label else None
     return None
 
 
@@ -650,7 +632,7 @@ PFV_GRID_A1_COMMENT_TEXT: Final = (
 #   row3: サブ見出し [時間帯, 氏名, 住所, 複数, 条件] ×6
 #   row4〜row21: 09:30〜18:00 を 30 分刻み (18 スロット) の時刻 + その枠の患者
 #
-# 拠点表示順は 稲毛(INAGE) → 都賀(TSUGA), 各拠点内のコースは A,B,C,D,E,M 順.
+# 拠点表示順は offices.sort_order → 名前, 各拠点内のコースは A,B,C,D,E,M 順.
 
 # 1 日あたりの列数 [時間帯, 氏名, 住所, 複数, 条件].
 GRID_COLS_PER_DAY: Final = 5
@@ -675,11 +657,10 @@ GRID_TIME_SLOTS: Final[tuple[tuple[int, int], ...]] = tuple(
 # ブロック内の行構成: row1(曜日名) + row2(コース) + row3(サブ見出し) + 18 スロット = 21 行.
 # ブロック間に 1 行の空きを入れる (参照元同様).
 GRID_BLOCK_HEIGHT: Final = 3 + len(GRID_TIME_SLOTS)  # 21
-# 拠点グループ間にもう 1 行余分な空きを入れる (参照元: 稲毛群末尾 → 都賀群先頭).
+# 拠点グループ間にもう 1 行余分な空きを入れる (参照元: 1 拠点目の末尾 → 2 拠点目の先頭).
 GRID_OFFICE_GAP: Final = 1
 
-# 拠点表示順 (稲毛先). office_code → 並び順 index.
-GRID_OFFICE_ORDER: Final[tuple[str, ...]] = ("INAGE", "TSUGA")
+# 拠点の表示順は offices.sort_order → 名前 (``office_labels.ordered_office_codes``)。
 # 拠点内コース表示順.
 GRID_COURSE_ORDER: Final[tuple[str, ...]] = COURSE_TEMPLATE_CODES  # ("A","B","C","D","E","M")
 

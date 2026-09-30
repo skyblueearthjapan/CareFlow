@@ -49,6 +49,7 @@ from app.services.checkin.history import (
 )
 from app.services.checkin.history_report_html import render_history_report_html
 from app.services.checkin.history_xlsx import build_history_xlsx
+from app.services.checkin.judge import load_thresholds
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,7 @@ async def _history_query(
     # staff の行は可視範囲 (= 自分が関わった訪問) で絞ってあるので ``related`` は常に真。
     # 到着の読み取りが無い行は、合わせる対象が無いので偽。
     today = now.astimezone(JST).date()
+    window_days = (await load_thresholds(db))["staff_adjust_window_days"]
     for row in rows:
         row.adjust_allowed = can_adjust_actual_time(
             is_admin=is_admin,
@@ -140,6 +142,7 @@ async def _history_query(
             related=True,
             today=today,
             has_arrival_read=row.has_arrival_read,
+            window_days=window_days,
         )
     return _HistoryQuery(from_, to, sort_rows(rows, sort), scope_note, sort, user)
 

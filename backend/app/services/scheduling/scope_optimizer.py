@@ -273,6 +273,7 @@ def _copy_bucket(b: _CourseBucket) -> _CourseBucket:
         weekday=b.weekday,
         course_code=b.course_code,
         office_code=b.office_code,
+        office_short=b.office_short,
         staff_name=b.staff_name,
         assigned_staff_id=b.assigned_staff_id,
         staff_sex=b.staff_sex,
@@ -523,7 +524,7 @@ def _enumerate_step_candidates(
             marginal_min=cur_min,
             marginal_km=cur_km,
         )
-        current_course_label = _course_label(src_bucket.office_code, src_bucket.course_code)
+        current_course_label = _course_label(src_bucket.office_short, src_bucket.course_code)
 
         movability = pfv.movability  # 'unknown' | 'time_flexible' | 'day_flexible'
         day_flexible = movability == "day_flexible"
@@ -624,7 +625,7 @@ def _enumerate_step_candidates(
                         summary.dismissed += 1
                     continue
 
-                cand_label = _course_label(bucket.office_code, code)
+                cand_label = _course_label(bucket.office_short, code)
                 changes, unchanged = _build_changes(
                     current_weekday=wd_src,
                     current_start=src_visit.start_time,
@@ -1062,7 +1063,7 @@ async def simulate_scope_optimization(
     # H2: コース別 before (実行後見通しの比較元) とラベル/担当を控える.
     course_before = {key: _bucket_metrics(key, b, config=config) for key, b in sim.buckets.items()}
     course_meta = {
-        key: (_course_label(b.office_code, b.course_code), b.staff_name)
+        key: (_course_label(b.office_short, b.course_code), b.staff_name)
         for key, b in sim.buckets.items()
     }
 

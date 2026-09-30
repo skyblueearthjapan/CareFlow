@@ -170,7 +170,15 @@ async def test_public_allows_staff_and_returns_distance_only(client, db) -> None
     res = await client.get("/api/v1/checkin-settings/public", headers=_bearer(staff_user))
     assert res.status_code == 200, res.text
     body = res.json()
-    assert set(body.keys()) == {"match_m", "review_m", "accuracy_m"}
+    # 距離系 + 実績の時刻を合わせる上限 (mig 0089・スマホのシートの範囲に使う)。
+    assert set(body.keys()) == {
+        "match_m",
+        "review_m",
+        "accuracy_m",
+        "arrival_max_back_min",
+        "departure_max_ahead_min",
+        "staff_adjust_window_days",
+    }
     assert body["match_m"] == DEFAULT_THRESHOLDS["match_m"]
     # 時間系は露出しない。
     assert "no_show_grace_min" not in body

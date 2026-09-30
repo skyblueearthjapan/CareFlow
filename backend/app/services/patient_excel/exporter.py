@@ -33,6 +33,7 @@ from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.patient_ng_staff import PatientNgStaff
 from app.models.staff import Staff
+from app.services.office_labels import office_code_short_pairs, ordered_office_codes
 from app.services.patient_excel.schema import (
     COMMENT_AUTHOR,
     DEFAULT_TIME_TYPE,
@@ -41,7 +42,6 @@ from app.services.patient_excel.schema import (
     GRID_COURSE_ORDER,
     GRID_DAY_SUBHEADERS,
     GRID_OFFICE_GAP,
-    GRID_OFFICE_ORDER,
     GRID_TIME_SLOTS,
     GRID_WEEKDAY_FULL_LABELS,
     HEADER_FILL_COLOR,
@@ -100,11 +100,18 @@ def _attach_dropdowns(
     columns: list[dict[str, object]],
     *,
     max_data_rows: int = 1000,
+    office_codes: Sequence[str] = (),
 ) -> None:
-    """各列の dropdown を ``max_data_rows`` 行分まで設定."""
+    """各列の dropdown を ``max_data_rows`` 行分まで設定.
+
+    ``office_code`` 列の選択肢は offices マスタの拠点コード (``office_codes``・拠点の
+    並び順) から作る (拠点コードをコードに書かない)。空なら付けない。
+    """
     last_row = 1 + max_data_rows  # ヘッダー行を除外
     for col_idx, col_def in enumerate(columns, start=1):
         dropdown = col_def.get("dropdown")
+        if col_def.get("key") == "office_code":
+            dropdown = tuple(office_codes) or None
         if dropdown is None:
             continue
         # openpyxl の DataValidation list 値は "値1,値2,..." をダブルクォートで囲む.
@@ -462,21 +469,20 @@ def _course_token_dropdown_values(
     """course_templates (office×label) から拠点付きコーストークンの dropdown 値を作る.
 
     例 ["稲A", "稲B", ..., "稲M", "津A", "津M"]. Phase G-57: 並びは
-    GRID_OFFICE_ORDER (稲毛→都賀) → GRID_COURSE_ORDER (A,B,C,D,E,M) 順.
+    拠点の並び (offices.sort_order → 名前) → GRID_COURSE_ORDER (A,B,C,D,E,M) 順.
     単純な sorted() だと Unicode 順で「津」が「稲」より先に来てしまうため、
     グリッドのブロック順と同じ規則で明示的に並べる (= 稲毛 A から始まる).
     """
     office_code_by_id: dict[UUID, str] = {o.id: o.code for o in offices if o.code}
     # 0059: 拠点マスタ (offices.short_label) 駆動で短縮名を解決する.
-    code_to_short, _ = build_office_code_short_maps((o.code, o.short_label) for o in offices)
+    code_to_short, _ = build_office_code_short_maps(office_code_short_pairs(offices))
     by_office: dict[str, set[str]] = {}
     for ct in course_templates:
         code = office_code_by_id.get(ct.office_id)
         if not code or not ct.label:
             continue
         by_office.setdefault(code, set()).add(ct.label)
-    ordered_offices = [c for c in GRID_OFFICE_ORDER if c in by_office]
-    ordered_offices += sorted(c for c in by_office if c not in GRID_OFFICE_ORDER)
+    ordered_offices = [c for c in ordered_office_codes(offices) if c in by_office]
     out: list[str] = []
     for code in ordered_offices:
         labels = by_office[code]
@@ -577,7 +583,7 @@ def _build_grid_sheet(
     num_days = len(GRID_WEEKDAY_FULL_LABELS)  # 6 (月〜土)
 
     # ブロック順序を組み立てる: (office_code, course_label, course_template_id?).
-    # 拠点 = 稲毛→都賀 (GRID_OFFICE_ORDER), 各拠点内 = A,B,C,D,E,M (GRID_COURSE_ORDER) で
+    # 拠点 = offices.sort_order → 名前の順, 各拠点内 = A,B,C,D,E,M (GRID_COURSE_ORDER) で
     # 存在する course_template のみ. 順序外の office / label は末尾に安定追加する.
     by_office: dict[str, dict[str, UUID]] = {}
     for ct in course_templates:
@@ -586,8 +592,7 @@ def _build_grid_sheet(
             continue
         by_office.setdefault(code, {})[ct.label] = ct.id
 
-    ordered_offices = [c for c in GRID_OFFICE_ORDER if c in by_office]
-    ordered_offices += sorted(c for c in by_office if c not in GRID_OFFICE_ORDER)
+    ordered_offices = [c for c in ordered_office_codes(offices) if c in by_office]
 
     # (office_code, label, course_template_id) のブロック並び + 各拠点の先頭ブロック判定.
     blocks: list[tuple[str, str, UUID]] = []
@@ -763,7 +768,7 @@ def build_workbook(
     ws_p.title = SHEET_PATIENTS
 
     _set_header_row(ws_p, PATIENT_COLUMNS)
-    _attach_dropdowns(ws_p, PATIENT_COLUMNS)
+    _attach_dropdowns(ws_p, PATIENT_COLUMNS, office_codes=ordered_office_codes(offices))
     _attach_header_comment(ws_p, "patient_id", PATIENT_COLUMNS, text=PATIENT_ID_COMMENT_TEXT)
     # Phase G-48: 緯度/経度は住所からの自動算出 (派生列). 編集不要コメントを付与.
     _attach_header_comment(ws_p, "lat", PATIENT_COLUMNS, text=LATLNG_COMMENT_TEXT)
@@ -779,9 +784,7 @@ def build_workbook(
         if office.code  # コード未設定の拠点はスキップ
     }
     # 0059: 拠点マスタ (offices.short_label) 駆動の code→短縮名 map (PFV 編集用シート).
-    code_to_short, _ = build_office_code_short_maps(
-        (office.code, office.short_label) for office in offices
-    )
+    code_to_short, _ = build_office_code_short_maps(office_code_short_pairs(offices))
     for i, patient in enumerate(patients, start=2):
         _write_patient_row(
             ws_p,

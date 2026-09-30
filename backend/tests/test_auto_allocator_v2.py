@@ -2122,15 +2122,15 @@ def test_extract_area_label_none_and_empty() -> None:
 def test_extract_area_label_unparseable_returns_none() -> None:
     """住所として解釈できない文字列は None を返す.
 
-    現状の正規表現は千葉県/千葉市/△△市スコープなので、他都道府県や
-    そもそも住所形式でない文字列は None になる仕様 (CareFlow 千葉拠点想定).
+    別の事業所へ提供する準備 #9 で千葉以外の住所 (東京 23 区・郡など) も分解できるように
+    した。住所の形でない文字列は None のまま。
     """
     from app.services.scheduling.auto_allocator_v2 import _extract_area_label
 
     # 完全に住所形式でない場合
     assert _extract_area_label("住所未登録") is None
-    # 千葉市 / 〇〇市の形式でない場合 (本サービスは千葉エリア前提のため None で OK)
-    assert _extract_area_label("東京都新宿区西新宿2-8-1") is None
+    # 市の無い東京 23 区の住所も取れる (以前は千葉前提で None だった)。
+    assert _extract_area_label("東京都新宿区西新宿2-8-1") == "西新宿"
 
 
 # ---------------------------------------------------------------------------

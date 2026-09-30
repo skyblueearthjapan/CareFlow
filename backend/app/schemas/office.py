@@ -50,6 +50,8 @@ class OfficeBase(BaseModel):
     # short_label=短縮バッジ (NULL は name 先頭 1 文字).
     sort_order: int | None = None
     short_label: str | None = Field(default=None, max_length=8)
+    # K-1b: カイポケ CSV「事業所名」列の正式名 (NULL は name)。拠点の編集画面から変えられる。
+    kaipoke_name: str | None = Field(default=None, max_length=120)
     # Phase G-45: 稼働曜日 (0=月..6=日 の int 配列).
     operating_weekdays: list[int] = Field(default_factory=lambda: list(DEFAULT_OPERATING_WEEKDAYS))
 
@@ -78,6 +80,8 @@ class OfficeUpdate(BaseModel):
     # operating_weekdays (NOT NULL 列) と違い None ガードは意図的に置かない。
     sort_order: int | None = None
     short_label: str | None = Field(default=None, max_length=8)
+    # K-1b: カイポケ上の事業所名 (明示的な null で name に戻す)。
+    kaipoke_name: str | None = Field(default=None, max_length=120)
     # Phase G-45: 稼働曜日 — PATCH では未指定 (None) で「触らない」.
     operating_weekdays: list[int] | None = None
     allowed_cities: list[UUID] | None = None

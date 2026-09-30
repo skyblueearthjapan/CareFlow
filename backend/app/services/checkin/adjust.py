@@ -42,17 +42,15 @@ from app.models.visit_time_adjustment import (
     VisitTimeAdjustment,
 )
 from app.services.checkin.actuals import KindActual, VisitActuals, load_actuals
+from app.services.checkin.judge import load_thresholds
 
 logger = logging.getLogger(__name__)
 
 JST = ZoneInfo("Asia/Tokyo")
 
-#: 到着をさかのぼれる上限 (分)。管理者には適用しない。
-ARRIVAL_MAX_BACK_MIN = 90
-#: 退出を読取時刻より後ろへ動かせる上限 (分)。
-DEPARTURE_MAX_AHEAD_MIN = 30
-#: staff が合わせられるのは、今日からこの日数前までの訪問。
-STAFF_ADJUST_WINDOW_DAYS = 7
+# 上限 (到着をさかのぼれる分・退出を後ろへ動かせる分・スタッフが合わせられる日数) は
+# ``checkin_settings`` の設定 (mig 0089・無ければ ``judge.DEFAULT_THRESHOLDS`` の
+# 90 分 / 30 分 / 7 日) を ``load_thresholds`` で読む。
 #: 理由の自由記述の上限 (字)。
 REASON_TEXT_MAX = 200
 
@@ -66,9 +64,13 @@ DETAIL_BAD_TIME = "時刻は HH:MM の形で指定してください"
 DETAIL_BAD_KIND = "到着・退出のどちらの時刻かを指定してください"
 DETAIL_BAD_REASON = "理由の選択が正しくありません"
 DETAIL_REASON_TOO_LONG = f"理由は {REASON_TEXT_MAX} 字以内で入力してください"
-DETAIL_OUT_OF_WINDOW = (
-    f"合わせられるのは {STAFF_ADJUST_WINDOW_DAYS} 日前までの訪問です。管理者に依頼してください"
-)
+
+
+def out_of_window_detail(window_days: int) -> str:
+    """スタッフが合わせられる期間の外の訪問に返す文言 (403)。"""
+    return f"合わせられるのは {window_days} 日前までの訪問です。管理者に依頼してください"
+
+
 DETAIL_FUTURE_VISIT = "まだ訪問日になっていない訪問の時刻は合わせられません"
 
 _HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
@@ -82,10 +84,12 @@ def can_adjust_actual_time(
     related: bool,
     today: date,
     has_arrival_read: bool,
+    window_days: int,
 ) -> bool:
     """今のユーザーがこの訪問の実績を合わせられるか (設計 §6-1 の権限)。
 
-    admin はすべての訪問。staff は ``visit_date`` が今日から 7 日前まで (JST) で、
+    admin はすべての訪問。staff は ``visit_date`` が今日から ``window_days`` 日前まで
+    (JST・``checkin_settings.staff_adjust_window_days``、既定 7) で、
     かつ自分がその訪問に関わっている (``related`` = 担当集合に入る、または自分が
     到着・退出を打刻した) 場合。削除済みの訪問は誰も合わせられない。
 
@@ -96,7 +100,7 @@ def can_adjust_actual_time(
         return False
     if is_admin:
         return True
-    return related and today - timedelta(days=STAFF_ADJUST_WINDOW_DAYS) <= visit_date <= today
+    return related and today - timedelta(days=window_days) <= visit_date <= today
 
 
 def parse_hhmm(value: str | None) -> time:
@@ -208,6 +212,8 @@ async def adjust_actual_time(
     * 到着: 到着の読み取りが必要。``読取時刻 - 90 分 <= time <= 読取時刻`` (分に
       切り捨て)。退出の実績があればそれより前。admin は 90 分の下限なし。
     * 退出 (読み取りあり): ``到着の実績 < time <= 読取時刻 + 30 分``。
+    * 90 分 / 30 分は ``checkin_settings`` の ``arrival_max_back_min`` /
+      ``departure_max_ahead_min`` (既定の値)。
     * 退出 (読み取りなし = 手入力): 到着の読み取りが必要。``到着の実績 < time``。
     * 退出はどちらも、今日の訪問なら現在時刻まで。
     * 読み取った日 (JST) が ``visit_date`` と違う訪問は 409。
@@ -222,6 +228,9 @@ async def adjust_actual_time(
     if text is not None and len(text) > REASON_TEXT_MAX:
         raise _invalid(DETAIL_REASON_TOO_LONG)
     is_admin = normalize_user_role(actor.role) == "admin"
+    limits = await load_thresholds(db)
+    arrival_max_back_min = limits["arrival_max_back_min"]
+    departure_max_ahead_min = limits["departure_max_ahead_min"]
 
     actuals = await _current_actuals(db, visit)
     _require_read_on_visit_date(visit, actuals)
@@ -236,10 +245,10 @@ async def adjust_actual_time(
         read = _floor_jst(arrival.read_at)
         if target > read:
             raise _invalid(f"到着は読み取った時刻（{_hm(read)}）より後にはできません")
-        earliest = read - timedelta(minutes=ARRIVAL_MAX_BACK_MIN)
+        earliest = read - timedelta(minutes=arrival_max_back_min)
         if not is_admin and target < earliest:
             raise _invalid(
-                f"到着をさかのぼれるのは読み取った時刻の {ARRIVAL_MAX_BACK_MIN} 分前"
+                f"到着をさかのぼれるのは読み取った時刻の {arrival_max_back_min} 分前"
                 f"（{_hm(earliest)}）までです"
             )
         if departure is not None and target >= _floor_jst(departure.at):
@@ -252,10 +261,10 @@ async def adjust_actual_time(
         if arrival is not None and target <= _floor_jst(arrival.at):
             raise _invalid(f"退出は到着（{_hm(arrival.at)}）より後の時刻にしてください")
         if has_read:
-            latest = _floor_jst(departure.read_at) + timedelta(minutes=DEPARTURE_MAX_AHEAD_MIN)
+            latest = _floor_jst(departure.read_at) + timedelta(minutes=departure_max_ahead_min)
             if target > latest:
                 raise _invalid(
-                    f"退出は読み取った時刻の {DEPARTURE_MAX_AHEAD_MIN} 分後"
+                    f"退出は読み取った時刻の {departure_max_ahead_min} 分後"
                     f"（{_hm(latest)}）までです"
                 )
         if visit.visit_date >= now_jst.date() and target > now_jst:

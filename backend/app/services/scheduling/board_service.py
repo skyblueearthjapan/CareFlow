@@ -31,7 +31,7 @@ from app.models.office import Office
 from app.models.patient import Patient
 from app.models.staff import Staff
 from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
-from app.services.patient_excel.schema import OFFICE_CODE_TO_SHORT
+from app.services.office_labels import office_short
 from app.services.patient_status_sync import status_since_date
 from app.services.scheduling.auto_allocator_v2 import (
     MAX_PATIENTS_PER_COURSE,
@@ -60,18 +60,6 @@ def _normalize_insurance(value: str | None) -> str | None:
     if value is None:
         return None
     return _INSURANCE_TO_SHORT.get(value)
-
-
-def _office_short(office_code: str | None) -> str:
-    """拠点短縮 (course_label 用). office_code 基準の正準マッピング.
-
-    INAGE→稲 / TSUGA→津 (``patient_excel.schema.OFFICE_CODE_TO_SHORT``). 患者 Excel・
-    モバイルモック・グリッド集計と同一の短縮に統一する. マップに無い拠点コードは
-    コードそのものを返す (先頭 1 字ヒューリスティックで「都」等を出さない). office_code
-    が無い場合は空文字 (= ラベルは course_code のみ)."""
-    if not office_code:
-        return ""
-    return OFFICE_CODE_TO_SHORT.get(office_code, office_code)
 
 
 @dataclass
@@ -114,6 +102,9 @@ class BoardCourseData:
     course_id: UUID | None
     staff_name: str | None
     visits: list[BoardVisitData] = field(default_factory=list)
+    # course_label 用の拠点の略称 (``office_labels.office_short`` = offices.short_label、
+    # 未設定なら拠点名の 1 文字目)。
+    office_short: str = ""
 
 
 async def load_board_buckets(
@@ -132,8 +123,8 @@ async def load_board_buckets(
 
     Returns:
         ``({(office_id, weekday, course_code): BoardCourseData}, {office_id: name},
-        {office_id: code})``. ``code`` は course_label 用の正準短縮を引くために使う
-        (office_code 基準. name 先頭 1 字ヒューリスティックは廃止).
+        {office_id: code})``. course_label の略称は各コースの ``office_short``
+        (offices.short_label、未設定なら拠点名の 1 文字目)。
     """
     try:
         week_monday = date.fromisocalendar(iso_year, iso_week, 1)
@@ -178,15 +169,17 @@ async def load_board_buckets(
         patients_by_id = {p.id: p for p in prows.all()}
 
     # 拠点 name / code map (対象 office + バケットに出た office) を先に 1 回ロード.
-    # code は course_label の正準短縮 (OFFICE_CODE_TO_SHORT) を引くために course/cell へ持たせる.
+    # 略称 (offices.short_label → 無ければ拠点名の 1 文字目) は course_label 用に course へ持たせる.
     office_ids_in_use: set[UUID] = {course.office_id for (_v, course, _s) in rows} | set(office_ids)
     office_name_by_id: dict[UUID, str] = {}
     office_code_by_id: dict[UUID, str | None] = {}
+    office_short_by_id: dict[UUID, str] = {}
     if office_ids_in_use:
         orows = await db.scalars(select(Office).where(Office.id.in_(office_ids_in_use)))
         for o in orows.all():
             office_name_by_id[o.id] = o.name
             office_code_by_id[o.id] = o.code
+            office_short_by_id[o.id] = office_short(o.short_label, o.name)
 
     buckets: dict[tuple[UUID, int, str], BoardCourseData] = {}
     for v, course, staff in rows:
@@ -204,6 +197,7 @@ async def load_board_buckets(
                 course_code=code,
                 course_id=course.id,
                 staff_name=staff.name if staff is not None else None,
+                office_short=office_short_by_id.get(course.office_id, ""),
             )
             buckets[key] = bucket
         start_min = _time_to_min(v.start_time)
@@ -307,5 +301,4 @@ __all__ = [
     "load_board_buckets",
     "load_weekday_staff_counts",
     "_fmt_hhmm",
-    "_office_short",
 ]

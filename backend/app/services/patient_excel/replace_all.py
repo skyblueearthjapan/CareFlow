@@ -37,6 +37,7 @@ from app.schemas.v2.patient_excel import (
     PfvExcelImportRow,
 )
 from app.services.office_assigner import PreloadedOfficeCities, load_office_cities_index
+from app.services.office_labels import office_code_short_pairs
 
 # weekly_pattern parse ヘルパーは importer.py 側に実装済. 完全置換でも同じ
 # セマンティクスを使うため import して再利用.
@@ -1039,7 +1040,7 @@ def _resolve_pfv_course_replace(
         return None
     # 0059: 拠点マスタ (offices.short_label) 駆動で短縮名を解決する.
     _, short_to_code = build_office_code_short_maps(
-        (o.code, o.short_label) for o in offices_by_code.values()
+        office_code_short_pairs(offices_by_code.values())
     )
     parsed = parse_course_token(token, short_to_code)
     if parsed is None:

@@ -23,6 +23,10 @@ SETTING_FIELDS: tuple[str, ...] = (
     "no_show_grace_min",
     "late_min",
     "max_inprogress_min",
+    "arrival_max_back_min",
+    "departure_max_ahead_min",
+    "staff_adjust_window_days",
+    "unplanned_default_minutes",
 )
 
 
@@ -37,6 +41,14 @@ class CheckinSettingsValues(BaseModel):
     no_show_grace_min: int = Field(description="未訪問の猶予 (分). 0..240.")
     late_min: int = Field(description="遅延しきい値 (分). 0..240.")
     max_inprogress_min: int = Field(description="退出忘れしきい値 (分). 30..1440.")
+    arrival_max_back_min: int = Field(description="到着をさかのぼれる上限 (分). 10..240.")
+    departure_max_ahead_min: int = Field(
+        description="退出を読取時刻より後ろへ動かせる上限 (分). 0..180."
+    )
+    staff_adjust_window_days: int = Field(
+        description="スタッフが実績の時刻を合わせられる期間 (日). 0..31."
+    )
+    unplanned_default_minutes: int = Field(description="予定外訪問の仮の所要時間 (分). 10..240.")
 
 
 class CheckinSettingsDefaults(BaseModel):
@@ -54,6 +66,10 @@ class CheckinSettingsDefaults(BaseModel):
     no_show_grace_min: bool
     late_min: bool
     max_inprogress_min: bool
+    arrival_max_back_min: bool
+    departure_max_ahead_min: bool
+    staff_adjust_window_days: bool
+    unplanned_default_minutes: bool
 
 
 class CheckinSettingsRead(BaseModel):
@@ -85,6 +101,10 @@ class CheckinSettingsUpdate(BaseModel):
     no_show_grace_min: int | None = Field(default=None, ge=0, le=240)
     late_min: int | None = Field(default=None, ge=0, le=240)
     max_inprogress_min: int | None = Field(default=None, ge=30, le=1440)
+    arrival_max_back_min: int | None = Field(default=None, ge=10, le=240)
+    departure_max_ahead_min: int | None = Field(default=None, ge=0, le=180)
+    staff_adjust_window_days: int | None = Field(default=None, ge=0, le=31)
+    unplanned_default_minutes: int | None = Field(default=None, ge=10, le=240)
 
     @model_validator(mode="after")
     def _check_review_gte_match_within_payload(self) -> CheckinSettingsUpdate:
@@ -101,8 +121,9 @@ class CheckinSettingsUpdate(BaseModel):
 class CheckinSettingsPublic(BaseModel):
     """public レスポンス (staff も読める最小サブセット).
 
-    モバイル到着プレビューの概算しきい値同期用. 距離系のみ返し、時間系
-    (no_show_grace_min / late_min / max_inprogress_min) は出さない.
+    モバイル到着プレビューの概算しきい値同期用の距離系と、スマホで実績の時刻を合わせる
+    シートの範囲 (上限 3 項目) を返す. 判定の時間系 (no_show_grace_min / late_min /
+    max_inprogress_min) と予定外訪問の仮の所要時間は出さない.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -110,3 +131,8 @@ class CheckinSettingsPublic(BaseModel):
     match_m: int
     review_m: int
     accuracy_m: int
+    # 実績の時刻を合わせる上限 (スマホのシートが範囲を出すのに使う・mig 0089)。
+    # 古い応答との互換のため FE 側は無ければ既定を使う。
+    arrival_max_back_min: int
+    departure_max_ahead_min: int
+    staff_adjust_window_days: int

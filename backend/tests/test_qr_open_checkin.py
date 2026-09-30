@@ -773,6 +773,26 @@ async def test_adhoc_checkin_defaults_to_60_minutes(client, db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_adhoc_checkin_default_minutes_from_checkin_settings(client, db) -> None:
+    """既定の所要時間は checkin_settings.unplanned_default_minutes (mig 0089) から読む."""
+    from app.models.checkin_settings import CheckinSettings
+
+    db.add(CheckinSettings(is_singleton=True, unplanned_default_minutes=45))
+    await db.commit()
+    _, me = await _make_staff_user(db, "adh-2s@example.com")
+    await _make_patient(db, "ADH-2S", qr_token="adh-tok-2s")
+
+    res = await client.post(
+        "/api/v1/visits/adhoc-checkin", headers=_bearer(me), json={"qr_token": "adh-tok-2s"}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    start = time.fromisoformat(body["start_time"])
+    assert time.fromisoformat(body["end_time"]) == _expected_adhoc_end(_today_jst(), start, 45)
+    await db.rollback()
+
+
+@pytest.mark.asyncio
 async def test_adhoc_checkin_prefers_fixed_visit_duration(client, db) -> None:
     """所要時間の優先順位は配置系 (special_visits._resolve_service_minutes) と同順.
 

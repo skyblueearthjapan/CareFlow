@@ -60,6 +60,7 @@ from app.services.checkin.actuals import (
     stay_minutes,
 )
 from app.services.checkin.judge import load_thresholds
+from app.services.office_labels import office_short, office_sort_key
 from app.services.patient_status_sync import status_since_date
 from app.utils.geo import haversine_m
 
@@ -322,27 +323,11 @@ def staff_code_sort_key(code: str | None, name: str | None) -> tuple:
     return (0, parts, name or "")
 
 
-def office_short(short_label: str | None, office_name: str | None) -> str:
-    """拠点の略称 = ``offices.short_label``。未設定なら拠点名の 1 文字目。
-
-    PO 決定 (2026-10-01): 札の略称は現場ボード・コース表・患者 Excel と同じ
-    ``short_label`` に揃える (本番: 稲毛=稲・都賀=津)。``short_label`` 自体を
-    書き換えると Excel の拠点の対応が崩れるため、表示側を揃える。
-    """
-    label = (short_label or "").strip()
-    return label or (office_name or "")[:1]
-
-
 def course_tag_label(short: str | None, code: str | None) -> str | None:
     """コースの札 = 拠点の略称 (``office_short``) + コースコード (例「稲D」「津臨2」)。コード無しは None。"""
     if not code:
         return None
     return f"{short or ''}{code}"
-
-
-def _office_sort_key(sort_order: int | None, name: str | None) -> tuple:
-    """拠点の並べ替えキー (``offices.sort_order`` → 名前。sort_order 無しは末尾)。"""
-    return (sort_order is None, sort_order or 0, name or "")
 
 
 async def build_monitor(
@@ -908,7 +893,7 @@ async def build_monitor(
             else (
                 0,
                 (row_office is None,)
-                + _office_sort_key(
+                + office_sort_key(
                     office_sort.get(row_office) if row_office else None,
                     office_name.get(row_office) if row_office else None,
                 ),
@@ -933,7 +918,7 @@ async def build_monitor(
         )
         for oid in sorted(
             chip_office_ids,
-            key=lambda oid: _office_sort_key(office_sort.get(oid), office_name.get(oid)),
+            key=lambda oid: office_sort_key(office_sort.get(oid), office_name.get(oid)),
         )
     ]
 
@@ -949,7 +934,7 @@ async def build_monitor(
                     )
                 )
             ).all(),
-            key=lambda r: (*_office_sort_key(r[1], r[2]), str(r[0])),
+            key=lambda r: (*office_sort_key(r[1], r[2]), str(r[0])),
         )
     ]
 

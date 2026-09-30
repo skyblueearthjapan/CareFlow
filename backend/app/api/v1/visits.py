@@ -62,15 +62,16 @@ from app.services.checkin.actuals import (
 )
 from app.services.checkin.adjust import (
     DETAIL_FUTURE_VISIT,
-    DETAIL_OUT_OF_WINDOW,
     adjust_actual_time,
     apply_bundled_adjustment,
     can_adjust_actual_time,
+    out_of_window_detail,
     reset_actual_time,
 )
 from app.services.checkin.judge import (
     JST,
     judge_checkin,
+    load_thresholds,
     resolve_patient_for_visit,
     resolve_qr_patient,
 )
@@ -314,7 +315,12 @@ def _today_jst() -> date:
 
 
 def _actual_adjust_allowed(
-    user: User, visit: Visit, *, related: bool, actuals: VisitActuals | None
+    user: User,
+    visit: Visit,
+    *,
+    related: bool,
+    actuals: VisitActuals | None,
+    window_days: int,
 ) -> bool:
     """``VisitRead.actual_adjust_allowed`` (設計 actual-time-adjust §6-1 の権限).
 
@@ -322,6 +328,7 @@ def _actual_adjust_allowed(
     到着・退出を打刻した)。呼び出し側が自分の経路の可視性から決めて渡す。
     ``actuals`` = その訪問の実績 (``load_actuals`` の 1 件)。到着の読み取りが無い訪問は
     合わせる対象が無いので false。
+    ``window_days`` = スタッフが合わせられる期間 (``checkin_settings``・既定 7 日)。
     """
     return can_adjust_actual_time(
         is_admin=normalize_user_role(user.role) == "admin",
@@ -334,7 +341,13 @@ def _actual_adjust_allowed(
             and actuals.arrival is not None
             and actuals.arrival.checkin is not None
         ),
+        window_days=window_days,
     )
+
+
+async def _staff_adjust_window_days(db) -> int:
+    """スタッフが実績の時刻を合わせられる期間 (日・``checkin_settings``)."""
+    return (await load_thresholds(db))["staff_adjust_window_days"]
 
 
 def _serialize_visit(
@@ -600,6 +613,7 @@ async def list_visits(
     accompaniment_by_visit = await resolve_accompaniment_by_visit(db, list(rows))
     # 主担当 NULL の訪問の表示担当名 (コース担当) を 1 クエリで解決する (N+1 回避)。
     course_staff_names = await _course_staff_names(db, list(rows))
+    window_days = await _staff_adjust_window_days(db)
     return [
         _serialize_visit(
             v,
@@ -608,7 +622,11 @@ async def list_visits(
             accompaniments=_accompaniment_payload(accompaniment_by_visit.get(v.id)),
             course_staff_name=course_staff_names.get(v.course_id),
             adjust_allowed=_actual_adjust_allowed(
-                user, v, related=True, actuals=actuals_by_visit.get(v.id)
+                user,
+                v,
+                related=True,
+                actuals=actuals_by_visit.get(v.id),
+                window_days=window_days,
             ),
         )
         for v in rows
@@ -820,7 +838,13 @@ async def get_visit(
         actuals=actuals,
         accompaniments=_accompaniment_payload(accompaniment_by_visit.get(visit.id)),
         course_staff_name=await _course_staff_name_for(db, visit),
-        adjust_allowed=_actual_adjust_allowed(user, visit, related=related, actuals=actuals),
+        adjust_allowed=_actual_adjust_allowed(
+            user,
+            visit,
+            related=related,
+            actuals=actuals,
+            window_days=await _staff_adjust_window_days(db),
+        ),
     )
     if via_qr_capability:
         payload = _restrict_to_qr_capability(payload)
@@ -1345,7 +1369,13 @@ async def _checkin_response(db, visit_id: UUID, user: User, *, restricted: bool 
         actuals=actuals,
         accompaniments=_accompaniment_payload(accompaniment_by_visit.get(visit_id)),
         course_staff_name=await _course_staff_name_for(db, visit),
-        adjust_allowed=_actual_adjust_allowed(user, visit, related=True, actuals=actuals),
+        adjust_allowed=_actual_adjust_allowed(
+            user,
+            visit,
+            related=True,
+            actuals=actuals,
+            window_days=await _staff_adjust_window_days(db),
+        ),
     )
     return _restrict_to_qr_capability(payload) if restricted else payload
 
@@ -1442,9 +1472,8 @@ async def checkout_visit(
 # 予定外訪問の打刻 (POST /visits/adhoc-checkin) — 設計 §4-3
 # ---------------------------------------------------------------------------
 
-# 予定外訪問の暫定所要時間 (分)。患者の基本訪問時間が取れないときの既定
-# (PO 確認事項 §9-1: 60 分固定で良いか)。
-ADHOC_DEFAULT_SERVICE_MINUTES = 60
+# 予定外訪問の暫定所要時間 (分) は、患者の基本訪問時間が取れないときの既定。
+# ``checkin_settings.unplanned_default_minutes`` (mig 0089・既定 60 分)。
 
 
 def _adhoc_lock_key(patient_id: UUID, staff_id: UUID, day: date) -> int:
@@ -1517,7 +1546,7 @@ def _weekly_pattern_service_minutes(patient: Patient) -> int | None:
 
 
 async def _patient_service_minutes(db, patient: Patient) -> int:
-    """患者の基本訪問時間 (分)。①固定枠 PFV → ②希望パターン → ③既定 60 分.
+    """患者の基本訪問時間 (分)。①固定枠 PFV → ②希望パターン → ③既定 (設定・60 分).
 
     優先順位は配置系の既存解決 (``api/v1/special_visits.py`` の
     ``_resolve_service_minutes``) と**同順**に揃える (同じ患者の所要時間が経路に
@@ -1536,7 +1565,10 @@ async def _patient_service_minutes(db, patient: Patient) -> int:
     )
     if duration:
         return int(duration)
-    return _weekly_pattern_service_minutes(patient) or ADHOC_DEFAULT_SERVICE_MINUTES
+    return (
+        _weekly_pattern_service_minutes(patient)
+        or (await load_thresholds(db))["unplanned_default_minutes"]
+    )
 
 
 @router.post(
@@ -1722,7 +1754,8 @@ async def _load_visit_for_adjust(db, visit_id: UUID, user: User) -> tuple[Visit,
     """実績の時刻を合わせる対象の visit をロードし、権限を検証する (設計 §6-1).
 
     * admin: すべての訪問。
-    * staff: ``visit_date`` が今日から 7 日前まで (JST) で、かつ自分が担当集合
+    * staff: ``visit_date`` が今日から 7 日前まで (JST・日数は ``checkin_settings`` の
+      ``staff_adjust_window_days``) で、かつ自分が担当集合
       (primary / secondary / mentor / assignments / 同行 / コース担当フォールバック =
       打刻と同じ可視性) に入るか、**自分がその訪問の到着または退出を打刻した**
       (代行・予定外) 場合。
@@ -1775,6 +1808,7 @@ async def _load_visit_for_adjust(db, visit_id: UUID, user: User) -> tuple[Visit,
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     # 期間の条件だけをここで見る (削除済み・到着の読み取りなしは検証側の 409)。
     today = _today_jst()
+    window_days = await _staff_adjust_window_days(db)
     if visit.deleted_at is None and not can_adjust_actual_time(
         is_admin=False,
         visit_date=visit.visit_date,
@@ -1782,10 +1816,15 @@ async def _load_visit_for_adjust(db, visit_id: UUID, user: User) -> tuple[Visit,
         related=True,
         today=today,
         has_arrival_read=True,
+        window_days=window_days,
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=DETAIL_FUTURE_VISIT if visit.visit_date > today else DETAIL_OUT_OF_WINDOW,
+            detail=(
+                DETAIL_FUTURE_VISIT
+                if visit.visit_date > today
+                else out_of_window_detail(window_days)
+            ),
         )
     return visit, own_checkin_only
 

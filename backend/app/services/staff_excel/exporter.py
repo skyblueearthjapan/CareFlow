@@ -24,6 +24,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from app.models.office import Office
 from app.models.staff import Staff, StaffShift, StaffWeeklyOverride
+from app.services.office_labels import ordered_office_codes
 from app.services.staff_excel.schema import (
     HEADER_FILL_COLOR,
     HEADER_FONT_COLOR,
@@ -69,11 +70,18 @@ def _attach_dropdowns(
     columns: list[dict[str, object]],
     *,
     max_data_rows: int = 1000,
+    office_codes: Sequence[str] = (),
 ) -> None:
-    """各列の dropdown を ``max_data_rows`` 行分まで設定."""
+    """各列の dropdown を ``max_data_rows`` 行分まで設定.
+
+    ``office_code`` 列の選択肢は offices マスタの拠点コード (``office_codes``・拠点の
+    並び順) から作る (拠点コードをコードに書かない)。空なら付けない。
+    """
     last_row = 1 + max_data_rows  # ヘッダー行を除外
     for col_idx, col_def in enumerate(columns, start=1):
         dropdown = col_def.get("dropdown")
+        if col_def.get("key") == "office_code":
+            dropdown = tuple(office_codes) or None
         if dropdown is None:
             continue
         # openpyxl の DataValidation list 値は "値1,値2,..." をダブルクォートで囲む.
@@ -289,7 +297,7 @@ def build_workbook(
     ws_s.title = SHEET_STAFF
 
     _set_header_row(ws_s, STAFF_COLUMNS)
-    _attach_dropdowns(ws_s, STAFF_COLUMNS)
+    _attach_dropdowns(ws_s, STAFF_COLUMNS, office_codes=ordered_office_codes(offices))
 
     office_code_by_id: dict[UUID, str] = {
         office.id: (office.code or "")

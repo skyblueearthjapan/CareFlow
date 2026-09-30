@@ -50,6 +50,9 @@ SAME = (35.60005, 140.10005)
 # ---------------------------------------------------------------------------
 
 
+_PROD_SHORT_LABELS = {"INAGE": "稲", "TSUGA": "津"}
+
+
 async def _make_user(db, *, email: str, role: str) -> User:
     user = User(email=email, password_hash=hash_password("does-not-matter"), role=role)
     db.add(user)
@@ -66,7 +69,8 @@ def _bearer(user: User) -> dict[str, str]:
 async def _seed_office_staff(
     db, *, name: str = "稲", code: str | None = "INAGE"
 ) -> tuple[Office, Staff]:
-    office = Office(name=name, code=code)
+    # 本番の拠点と同じ略称 (mig 0059 / 0089 で INAGE=稲・TSUGA=津 が入っている)。
+    office = Office(name=name, code=code, short_label=_PROD_SHORT_LABELS.get(code or ""))
     db.add(office)
     await db.flush()
     staff = Staff(name="担当看護師", role="staff", is_trainee=False, primary_office_id=office.id)

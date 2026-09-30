@@ -2,7 +2,7 @@
 
 GET  /checkin-settings        有効値 (= DB 行 or 既定の合成) + 各値が既定か (admin/manager)
 PUT  /checkin-settings        部分更新 (範囲外 / review<match は 422) (admin/manager)
-GET  /checkin-settings/public 距離系のみ (match/review/accuracy) を返す (全ログインユーザ)
+GET  /checkin-settings/public 距離系 + 時刻を合わせる上限を返す (全ログインユーザ)
 
 * 全社一律 = DB 単位の単一行 (シングルトン). 行が無ければローダーが全既定を返す
   (lazy: 初回 PUT で行を作る). 既定値は ``judge.DEFAULT_THRESHOLDS``.
@@ -88,14 +88,18 @@ async def get_checkin_settings_public(
 ) -> CheckinSettingsPublic:
     """staff を含む全ログインユーザが読める距離系しきい値 (match/review/accuracy).
 
-    モバイルの到着プレビュー (概算) が管理者の設定変更に追随するための最小サブセット。
-    時間系 (猶予 / 遅延 / 退出忘れ) は露出しない。
+    モバイルの到着プレビュー (概算) と、実績の時刻を合わせるシートの範囲が管理者の
+    設定変更に追随するための最小サブセット。判定の時間系 (猶予 / 遅延 / 退出忘れ) は
+    露出しない。
     """
     row = await _load_singleton(db)
     return CheckinSettingsPublic(
         match_m=_effective(row, "match_m"),
         review_m=_effective(row, "review_m"),
         accuracy_m=_effective(row, "accuracy_m"),
+        arrival_max_back_min=_effective(row, "arrival_max_back_min"),
+        departure_max_ahead_min=_effective(row, "departure_max_ahead_min"),
+        staff_adjust_window_days=_effective(row, "staff_adjust_window_days"),
     )
 
 

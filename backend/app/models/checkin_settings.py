@@ -74,6 +74,15 @@ class CheckinSettings(Base):
     # 到着済・退出未記録のままこの分数を超えた訪問を monitor が review に上げる
     # (Phase 4 で定数 monitor.MAX_INPROGRESS_MIN を設定化)。
     max_inprogress_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 実績の時刻を合わせる上限 (mig 0089・別の事業所へ提供する準備 #7)。NULL = コード既定。
+    # 到着をさかのぼれる上限 (分)。既定 90。範囲 10..240。管理者には適用しない。
+    arrival_max_back_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 退出を読取時刻より後ろへ動かせる上限 (分)。既定 30。範囲 0..180。
+    departure_max_ahead_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # スタッフが合わせられる期間 (今日から何日前の訪問まで)。既定 7。範囲 0..31。
+    staff_adjust_window_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 予定外訪問の仮の所要時間 (分・患者の基本訪問時間が無いとき)。既定 60。範囲 10..240。
+    unplanned_default_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -113,6 +122,26 @@ class CheckinSettings(Base):
             "max_inprogress_min IS NULL OR "
             "(max_inprogress_min >= 30 AND max_inprogress_min <= 1440)",
             name="ck_checkin_settings_max_inprogress_range",
+        ),
+        CheckConstraint(
+            "arrival_max_back_min IS NULL OR "
+            "(arrival_max_back_min >= 10 AND arrival_max_back_min <= 240)",
+            name="ck_checkin_settings_arrival_max_back_range",
+        ),
+        CheckConstraint(
+            "departure_max_ahead_min IS NULL OR "
+            "(departure_max_ahead_min >= 0 AND departure_max_ahead_min <= 180)",
+            name="ck_checkin_settings_departure_max_ahead_range",
+        ),
+        CheckConstraint(
+            "staff_adjust_window_days IS NULL OR "
+            "(staff_adjust_window_days >= 0 AND staff_adjust_window_days <= 31)",
+            name="ck_checkin_settings_staff_adjust_window_range",
+        ),
+        CheckConstraint(
+            "unplanned_default_minutes IS NULL OR "
+            "(unplanned_default_minutes >= 10 AND unplanned_default_minutes <= 240)",
+            name="ck_checkin_settings_unplanned_default_range",
         ),
         # 交差 CHECK: review_m >= match_m (両方非 NULL 時のみ強制).
         CheckConstraint(

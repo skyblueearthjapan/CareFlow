@@ -65,6 +65,9 @@ from app.services.patient_excel.schema import (
 # ---------------------------------------------------------------------------
 
 
+_PROD_SHORT_LABELS = {"INAGE": "稲", "TSUGA": "津"}
+
+
 async def _make_user(db, email: str, role: str) -> User:
     user = User(email=email, password_hash=hash_password("pw"), role=role)
     db.add(user)
@@ -79,7 +82,8 @@ def _bearer(user: User) -> dict[str, str]:
 
 
 async def _make_office(db, code: str, name: str | None = None) -> Office:
-    o = Office(code=code, name=name or code)
+    # 本番の拠点と同じ略称 (mig 0059 / 0089 で INAGE=稲・TSUGA=津 が入っている)。
+    o = Office(code=code, name=name or code, short_label=_PROD_SHORT_LABELS.get(code))
     db.add(o)
     await db.commit()
     await db.refresh(o)
