@@ -55,6 +55,7 @@ from app.models.visit import (
     VISIT_STATUS_CANCELLED,
     Visit,
 )
+from app.models.visit_checkin import VisitCheckin
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.accompaniment import (
     resolve_accompaniment_kind,
@@ -191,6 +192,27 @@ async def load_week_visit_index(
         )
     )
     return {(v.patient_id, v.visit_date, v.start_time): v for v in rows.all()}
+
+
+async def load_checked_in_visit_ids(db: AsyncSession, visit_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+    """打刻 (visit_checkins) が 1 件でも付いている visit の id 集合。
+
+    取込は打刻済みの訪問を取り消さない (2026-10-01・9/23 藤原様の事故の根治):
+    取り消すと実績の付いた訪問がモニターから消え、訪問した事実が見えなくなる。
+    """
+    if not visit_ids:
+        return set()
+    rows = await db.scalars(
+        select(VisitCheckin.visit_id).where(VisitCheckin.visit_id.in_(visit_ids)).distinct()
+    )
+    return set(rows.all())
+
+
+# 打刻済みの訪問を取込で取り消さなかったときの文言・理由コード (結果とプレビューで共用)。
+CHECKED_IN_KEEP_DETAIL = (
+    "打刻済みのため取り消していません。カイポケの予定と実際の訪問をご確認ください"
+)
+CHECKED_IN_REASON = "checked_in"
 
 
 async def _group_partners(db: AsyncSession, visit: Visit) -> list[Visit]:
@@ -411,6 +433,8 @@ async def apply_inbound_items(
     index = await load_week_visit_index(db, week_start, week_end)
     staff_index, staff_map = await load_staff_name_index(db)
     course_idx = await load_week_course_index(db, week_start)
+    # 打刻済みの訪問 (取り消さない・移動先の枠としても退かさない)。
+    checked_in_ids = await load_checked_in_visit_ids(db, [v.id for v in index.values()])
     today = now.date()
     day_set = set(days) if days else None
 
@@ -1198,6 +1222,18 @@ async def apply_inbound_items(
 
         # --- delete → キャンセル ---------------------------------------------
         if item.action == "delete":
+            # 打刻済みの訪問は取り消さない (2026-10-01・9/23 藤原様の事故の根治)。
+            # 取り消すと訪問した事実がモニターから消える。カイポケとの食い違いは
+            # 人が判断するので failed (要確認) として結果と通知に残す。
+            if any(v.id in checked_in_ids for v in partners):
+                _finish(
+                    "failed",
+                    f"{target_date.month}/{target_date.day} "
+                    f"{before.get('start_time') or ''} は{CHECKED_IN_KEEP_DETAIL}",
+                    target_date,
+                    reason=CHECKED_IN_REASON,
+                )
+                continue
             for v in partners:
                 pending_cancelled.add(v.id)  # add 側の復活判定用 (dry-run でも記録)
                 if not dry_run:

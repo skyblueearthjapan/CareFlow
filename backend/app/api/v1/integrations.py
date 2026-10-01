@@ -2228,7 +2228,9 @@ async def _build_inbound_sheet(
 
     from app.models.patient import Patient
     from app.services.kaipoke.inbound import (
+        CHECKED_IN_KEEP_DETAIL,
         day_to_date,
+        load_checked_in_visit_ids,
         load_staff_name_index,
         load_week_visit_index,
         parse_hhmm,
@@ -2244,6 +2246,9 @@ async def _build_inbound_sheet(
     status_by_patient: dict[UUID, str | None] = {p.id: p.status for p in patients}
     sindex, _smap = await load_staff_name_index(db)
     visit_index = await load_week_visit_index(db, week_start, week_end)
+    # 打刻済みの訪問への delete は適用しても取り消さない (apply 側で failed=要確認)。
+    # プレビューの段階で印 (comment) と件数を出し、人が先に気付けるようにする。
+    checked_in_ids = await load_checked_in_visit_ids(db, [v.id for v in visit_index.values()])
 
     sheet = CorrectionSheet(
         target_month=month,
@@ -2300,6 +2305,12 @@ async def _build_inbound_sheet(
         # の ``inactive_patient`` と同じ集合を数える (表示と件数がズレない)。
         if inactive_patient and c.action in INACTIVE_FLAGGED_ACTIONS:
             summary["inactive_patient"] += 1
+        # 打刻済みの訪問への delete (2026-10-01): 選択は外さない — 適用すると
+        # 「取り消さずに要確認」として結果と通知に毎回残り、見落としを防げる。
+        comment = None
+        if c.action == "delete" and visit_id is not None and visit_id in checked_in_ids:
+            comment = CHECKED_IN_KEEP_DETAIL
+            summary["checked_in_delete"] += 1
         items.append(
             CorrectionSheetItem(
                 sheet_id=sheet.id,
@@ -2309,6 +2320,7 @@ async def _build_inbound_sheet(
                 before=before,
                 after=after,
                 include=include,
+                comment=comment,
             )
         )
         summary[c.action] += 1
@@ -5109,7 +5121,13 @@ async def smart_inbound_apply(
         # 要確認 (対象外/新人単独/差分失敗) は管理者へ恒久通知
         n_skipped = len(replace_read.skipped) if replace_read else 0
         n_trainee = sum(t.count for t in replace_read.trainee_solo) if replace_read else 0
-        n_failed = diff_result.failed if diff_result else 0
+        # 打刻済みのため取り消さなかった delete (2026-10-01) は「失敗」と分けて数える
+        # (取込の不具合ではなく、カイポケとの食い違いを人が確かめる項目のため)。
+        from app.services.kaipoke.inbound import CHECKED_IN_REASON
+
+        n_kept = sum(1 for r in diff_item_results if r.reason == CHECKED_IN_REASON)
+        n_failed = (diff_result.failed if diff_result else 0) - n_kept
+        _kept_label = f"・打刻済みのため取消なし{n_kept}" if n_kept else ""
         # 置換を見送った日は通知本文にも出す (2026-09-11 レビュー指摘)。
         _held_note = (
             "\n日付変更が未適用のため置換を見送った日: "
@@ -5117,7 +5135,7 @@ async def smart_inbound_apply(
             if held_days
             else ""
         )
-        if n_skipped or n_trainee or n_failed:
+        if n_skipped or n_trainee or n_failed or n_kept:
             from app.services.checkin.notify import (
                 _active_admin_manager_users,
                 _create_idempotent,
@@ -5131,7 +5149,8 @@ async def smart_inbound_apply(
                 reference_type="kaipoke_import",
                 reference_id=job.id,
                 title=(
-                    f"取り込みの要確認（対象外{n_skipped}・新人単独{n_trainee}・失敗{n_failed}）"
+                    f"取り込みの要確認（対象外{n_skipped}・新人単独{n_trainee}・失敗{n_failed}"
+                    f"{_kept_label}）"
                 ),
                 body=(
                     f"週 {week_start.isoformat()} のハイブリッド取り込みに要確認項目があります。"
