@@ -734,7 +734,19 @@ async def apply_inbound_items(
     # 依存しており、同時刻の delete+add ペアが順序次第で失敗していた。
     # 2026-08-24 追加: 移動系は上で求めた (phase, depth) で並べ替える。依存の無い
     # item は (0, 0) = 従来位置のままなので、既存の並びは実質変わらない。
-    items = sorted(items, key=lambda it: (it.action == "add", *order_meta.get(it.id, (0, 0))))
+    # 2026-10-01: delete を変更系より**先に**並べる。移動先の枠を同じ実行の delete が
+    # 取り消す場合 (9/24 の跨ぎ date_change と移動先 delete の同居)、先に取消を
+    # 済ませておかないと移動側の占有チェックがその枠を「生きた予定」と見て failed
+    # にする (下の release_occupant)。delete は他の item の移動先/移動元を変えない
+    # ので、変更系どうしの (phase, depth) の並びはそのまま保たれる。
+    items = sorted(
+        items,
+        key=lambda it: (
+            it.action == "add",
+            it.action != "delete",
+            *order_meta.get(it.id, (0, 0)),
+        ),
+    )
     # この実行で「キャンセルされる予定」の visit id 集合。dry-run では status を
     # 書き換えないため、add 側の復活判定 (下記) の予測に使う (dry-run の結果が
     # 実適用と一致するように)。
@@ -1282,9 +1294,26 @@ async def apply_inbound_items(
         # なお 2026-08-24 以降、「移動先を塞いでいるのが**同じバッチ内でこれから
         # 別の場所へ移る訪問**」の場合は事前パスが順序替え/一時退避で解消するため、
         # ここへ来るのは本当にバッチ外の訪問に塞がれているときだけになる。
+        # 2026-10-01 (9/24 取込の失敗 5 件の根治): 移動先を塞いでいるのが
+        # **この実行の delete で取り消す訪問** なら、その行を論理削除して枠を空ける。
+        # 取消行も UNIQUE 枠を占有するため、従来は「移動先に別の予定があります」で
+        # failed になり、smart では移動元の日の置換まで見送られていた。
+        # 以前から取り消されている枠 (今週だけ取消・以前の取込の取消など) は
+        # 従来どおり退かさない (failed)。打刻済み・2 名体制の行も退かさない。
+        release_occupant: Visit | None = None
         if time_changed or date_changed:
             final_start = start_after if start_after is not None else cur_start
             occupant = index.get((item.patient_id, final_date, final_start))
+            if (
+                occupant is not None
+                and occupant.id not in {v.id for v in partners}
+                and occupant.id in pending_cancelled
+                and occupant.source not in VISIT_SOURCES_LOCAL_CANCEL
+                and occupant.id not in checked_in_ids
+                and occupant.visit_group_id is None
+            ):
+                release_occupant = occupant
+                occupant = None
             if occupant is not None and occupant.id not in {v.id for v in partners}:
                 _finish(
                     "failed",
@@ -1375,6 +1404,8 @@ async def apply_inbound_items(
             )
         if time_changed and start_after is not None:
             changes.append(f"{cur_start.strftime('%H:%M')}→{start_after.strftime('%H:%M')}")
+        if release_occupant is not None:
+            changes.append("移動先の取り消し済みの枠を整理")
 
         # コース解決: 丸ごと交代 / 既存コースへ移動 / 臨時コース新設。
         course_takeover = False
@@ -1448,6 +1479,13 @@ async def apply_inbound_items(
                 if target_course is None:
                     _finish("failed", "臨時コース枠（臨〜臨9）が満杯です", target_date)
                     continue
+            if release_occupant is not None:
+                # 取消行を論理削除して UNIQUE 枠を空ける。移動より**先に** flush する
+                # (同じ flush に載せると UPDATE の順序次第で一意制約に当たる)。
+                release_occupant.status = VISIT_STATUS_CANCELLED
+                release_occupant.deleted_at = now
+                _stamp_note(release_occupant, "取り消し済みの枠を日付変更の移動先として整理", today)
+                await db.flush()
             if course_takeover and new_sid is not None and visit.course_id is not None:
                 course = course_idx.by_id.get(visit.course_id)
                 if course is not None and course.assigned_staff_id != new_sid:
