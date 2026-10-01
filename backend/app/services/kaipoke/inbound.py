@@ -55,6 +55,7 @@ from app.models.visit import (
     VISIT_STATUS_CANCELLED,
     Visit,
 )
+from app.models.visit_checkin import VisitCheckin
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.accompaniment import (
     resolve_accompaniment_kind,
@@ -74,6 +75,8 @@ if TYPE_CHECKING:
 # 取り込みの実績刻印 (visit.note に追記する行の接頭辞)。人間向け日本語のため
 # モバイルの内部note非表示 (lib/visit-note.ts) の対象外 = 現場にも表示される。
 NOTE_STAMP_PREFIX = "カイポケ取込"
+# 取込の delete で取り消した訪問に刻む文言 (付け替えスクリプトが「取込の取消」を見分ける印)。
+IMPORT_CANCEL_NOTE = "カイポケ側で削除されたためキャンセル"
 
 # ゲート判定の「今日」は JST 基準 (サーバは UTC・週境界の判定がずれないように)。
 JST = ZoneInfo("Asia/Tokyo")
@@ -84,6 +87,11 @@ JST = ZoneInfo("Asia/Tokyo")
 # 他の週には残らない。
 TEMP_COURSE_CODES: tuple[str, ...] = ("臨", "臨2", "臨3", "臨4", "臨5", "臨6", "臨7", "臨8", "臨9")
 TEMP_TEMPLATE_LABEL = "臨時"
+
+# 予定外訪問 (QR の予定外打刻) とカイポケ行を「同じ訪問」とみなす開始時刻の差の上限 (分)。
+# 予定外訪問の開始は打刻の時刻、カイポケ行は事務が後から入れた予定の時刻なので、
+# 少しずれるのが普通。同じ患者・同じ日で、これより離れていれば別の訪問として扱う。
+UNPLANNED_MATCH_MINUTES = 60
 
 
 async def real_apply_record(db: AsyncSession, week_start: date) -> KaipokeJob | None:
@@ -157,6 +165,11 @@ def parse_hhmm(value: str | None) -> time | None:
         return None
 
 
+def _minutes_between(a: time, b: time) -> int:
+    """2 つの時刻の差 (分・絶対値・秒は切り捨て)。"""
+    return abs((a.hour * 60 + a.minute) - (b.hour * 60 + b.minute))
+
+
 def parked_start_time(base: time, seq: int) -> time:
     """循環スワップの一時退避用 start_time (実スロットと絶対に衝突しない仮値)。
 
@@ -191,6 +204,42 @@ async def load_week_visit_index(
         )
     )
     return {(v.patient_id, v.visit_date, v.start_time): v for v in rows.all()}
+
+
+async def load_checked_in_visit_ids(db: AsyncSession, visit_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+    """打刻 (visit_checkins) が 1 件でも付いている visit の id 集合。
+
+    取込は打刻済みの訪問を取り消さない (2026-10-01・9/23 藤原様の事故の根治):
+    取り消すと実績の付いた訪問がモニターから消え、訪問した事実が見えなくなる。
+    """
+    if not visit_ids:
+        return set()
+    rows = await db.scalars(
+        select(VisitCheckin.visit_id).where(VisitCheckin.visit_id.in_(visit_ids)).distinct()
+    )
+    return set(rows.all())
+
+
+# 打刻済みの訪問を取込で取り消さなかったときの文言・理由コード (結果とプレビューで共用)。
+CHECKED_IN_KEEP_DETAIL = (
+    "打刻済みのため取り消していません。カイポケの予定と実際の訪問をご確認ください"
+)
+CHECKED_IN_MOVE_DETAIL = (
+    "打刻済みのため別の日へ移していません。カイポケの予定と実際の訪問をご確認ください"
+)
+CHECKED_IN_REASON = "checked_in"
+# 予定外訪問をカイポケ行で昇格させたときの理由コード (delete 側の結果に付ける)。
+UNPLANNED_PROMOTED_REASON = "unplanned_promoted"
+# 予定外訪問とカイポケ行の時刻/担当が合わず、合わせなかったときの理由コード。
+UNPLANNED_MISMATCH_REASON = "unplanned_mismatch"
+# 予定外訪問を昇格させた行の source。edit 経路・delete+add 経路のどちらも同じ値にする。
+# manual_week = 「既存の訪問をその週だけ直した」(edit 経路の他の変更と同じ意味)。
+# 昇格は取込が新しく作った行ではない (打刻の付いた既存の訪問を使い続ける) ので
+# 'import' にはしない。どちらの値も週再生成から保護される
+# (layer1_expander / auto_allocator_v2)。
+VISIT_SOURCE_PROMOTED = "manual_week"
+# プレビューで足す「予定外訪問の昇格」行の印 (CorrectionSheetItem.comment)。
+UNPLANNED_PROMOTE_COMMENT = "予定外の訪問がカイポケの予定と一致したため、予定として扱います"
 
 
 async def _group_partners(db: AsyncSession, visit: Visit) -> list[Visit]:
@@ -411,6 +460,28 @@ async def apply_inbound_items(
     index = await load_week_visit_index(db, week_start, week_end)
     staff_index, staff_map = await load_staff_name_index(db)
     course_idx = await load_week_course_index(db, week_start)
+    # 打刻済みの訪問 (取り消さない・移動先の枠としても退かさない)。
+    checked_in_ids = await load_checked_in_visit_ids(db, [v.id for v in index.values()])
+    # 予定外訪問を打刻した職員 (昇格の担当条件に使う・2026-10-01)。
+    unplanned_ids = [v.id for v in index.values() if v.is_unplanned]
+    checkin_staff_by_visit: dict[uuid.UUID, set[uuid.UUID]] = {}
+    if unplanned_ids:
+        for cvid, csid in (
+            await db.execute(
+                select(VisitCheckin.visit_id, VisitCheckin.staff_id).where(
+                    VisitCheckin.visit_id.in_(unplanned_ids)
+                )
+            )
+        ).all():
+            if csid is not None:
+                checkin_staff_by_visit.setdefault(cvid, set()).add(csid)
+
+    def _unplanned_staff_ok(uv: Visit, sid: uuid.UUID | None) -> bool:
+        """カイポケ行の担当1 が予定外訪問の担当 (primary) か打刻した職員か。"""
+        if sid is None:
+            return False
+        return sid == uv.primary_staff_id or sid in checkin_staff_by_visit.get(uv.id, set())
+
     today = now.date()
     day_set = set(days) if days else None
 
@@ -466,6 +537,24 @@ async def apply_inbound_items(
     accompaniment_by_course = await resolve_accompaniment_staff_by_course(
         db, list(course_idx.by_id.keys())
     )
+
+    # 取込由来 (source='import') の visit 直リンク: visit_id → {staff_id: [accompaniment.id]}。
+    # カイポケで担当2 が外れた/替わったとき、取込が張った同行だけを外すのに使う
+    # (2026-10-01・9/24 修復 #4 の根治)。画面で人が張った同行 ('manual'/'default') と
+    # コースリンクは外さない (人の判断を取込で黙って消さない)。
+    import_acc_by_visit: dict[uuid.UUID, dict[uuid.UUID, list[uuid.UUID]]] = {}
+    if index:
+        acc_rows = await db.execute(
+            select(
+                Accompaniment.id, Accompaniment.visit_id, Accompaniment.accompanying_staff_id
+            ).where(
+                Accompaniment.visit_id.in_([v.id for v in index.values()]),
+                Accompaniment.target_type == "visit",
+                Accompaniment.source == ACCOMPANIMENT_SOURCE_IMPORT,
+            )
+        )
+        for acc_id, acc_vid, acc_sid in acc_rows.all():
+            import_acc_by_visit.setdefault(acc_vid, {}).setdefault(acc_sid, []).append(acc_id)
 
     def _remember_accompaniment(visit_id: uuid.UUID, staff_id: uuid.UUID) -> None:
         """自動作成した同行リンクを突合集合へ反映する (同一実行内の二重 INSERT 予防).
@@ -632,6 +721,8 @@ async def apply_inbound_items(
         moved_date = nd is not None and nd != mv.visit_date
         if not (moved_time or moved_date):
             continue
+        if moved_date and mv.id in checked_in_ids:
+            continue  # 打刻済みは別の日へ動かさない (本体の分岐で failed) — 移動グラフに入れない
         src_key = (mv.patient_id, mv.visit_date, mv.start_time)
         dst_key = (
             it.patient_id,
@@ -710,11 +801,97 @@ async def apply_inbound_items(
     # 依存しており、同時刻の delete+add ペアが順序次第で失敗していた。
     # 2026-08-24 追加: 移動系は上で求めた (phase, depth) で並べ替える。依存の無い
     # item は (0, 0) = 従来位置のままなので、既存の並びは実質変わらない。
-    items = sorted(items, key=lambda it: (it.action == "add", *order_meta.get(it.id, (0, 0))))
+    # 2026-10-01: delete を変更系より**先に**並べる。移動先の枠を同じ実行の delete が
+    # 取り消す場合 (9/24 の跨ぎ date_change と移動先 delete の同居)、先に取消を
+    # 済ませておかないと移動側の占有チェックがその枠を「生きた予定」と見て failed
+    # にする (下の release_occupant)。delete は他の item の移動先/移動元を変えない
+    # ので、変更系どうしの (phase, depth) の並びはそのまま保たれる。
+    items = sorted(
+        items,
+        key=lambda it: (
+            it.action == "add",
+            it.action != "delete",
+            *order_meta.get(it.id, (0, 0)),
+        ),
+    )
     # この実行で「キャンセルされる予定」の visit id 集合。dry-run では status を
     # 書き換えないため、add 側の復活判定 (下記) の予測に使う (dry-run の結果が
     # 実適用と一致するように)。
     pending_cancelled: set[uuid.UUID] = set()
+
+    # --- 予定外訪問の昇格ペア (2026-10-01) ------------------------------------
+    # 予定外訪問 (is_unplanned) と、同じ患者・同じ日・近い時刻のカイポケ行が
+    # 「delete (予定外訪問) + add (カイポケ行)」に割れて出ることがある (サービス内容
+    # の違い等で突合されなかったとき)。そのまま適用すると予定外訪問は打刻済みで
+    # 残り (取り消さない)、カイポケ行が別の訪問として増えて二重になる。
+    # 組を先に見つけ、add は予定外訪問を昇格させる (新しい訪問を作らない)・
+    # delete は昇格に回す (結果の文言は add の成否が出てから確定する・ループ後)。
+    #
+    # 組み方 (2026-10-01 レビュー): 60 分以内の (add, 予定外訪問) の候補を**全部**
+    # 集めて差の小さい順に 1 対 1 で割り当てる (add の並び順で先着させない —
+    # 9:00 と 10:00 の add に 9:40 の打刻なら 10:00 と組む)。さらに add の担当1 が
+    # 予定外訪問の担当 (primary) か打刻した職員であることを条件にする。担当が違えば
+    # 昇格させず、add は通常どおり追加・delete は打刻済みのため残す (注記で人に渡す)。
+    promote_by_add: dict[uuid.UUID, Visit] = {}
+    promote_delete_of_add: dict[uuid.UUID, uuid.UUID] = {}
+    promote_delete_items: set[uuid.UUID] = set()
+    staff_mismatch_by_add: dict[uuid.UUID, Visit] = {}
+    promote_delete_result: dict[uuid.UUID, tuple[InboundItemResult, CorrectionSheetItem]] = {}
+    unplanned_deletes: list[tuple[CorrectionSheetItem, Visit]] = []
+    for it in items:
+        if it.action != "delete" or it.patient_id is None:
+            continue
+        try:
+            d = int(str((it.before or {}).get("date")))
+        except (TypeError, ValueError):
+            continue
+        td = day_to_date(d, week_start, week_end)
+        if td is None or not _in_day_scope(it, td):
+            continue
+        uv = await _resolve_visit(it, td)
+        if uv is not None and uv.is_unplanned and uv.status != VISIT_STATUS_CANCELLED:
+            unplanned_deletes.append((it, uv))
+    if unplanned_deletes:
+        candidates: list[tuple[int, int, CorrectionSheetItem, CorrectionSheetItem, Visit]] = []
+        seq = 0
+        for it in items:
+            if it.action != "add" or it.patient_id is None:
+                continue
+            a = it.after or {}
+            try:
+                td = day_to_date(int(str(a.get("date"))), week_start, week_end)
+            except (TypeError, ValueError):
+                continue
+            st = parse_hhmm(str(a.get("start_time") or ""))
+            if td is None or st is None or not _in_day_scope(it, td):
+                continue
+            occupant = index.get((it.patient_id, td, st))
+            sid_str = match_name(str(a.get("staff1") or ""), staff_index)
+            add_sid = uuid.UUID(sid_str) if sid_str else None
+            for del_it, uv in unplanned_deletes:
+                if uv.patient_id != it.patient_id or uv.visit_date != td:
+                    continue
+                if occupant is not None and occupant.id != uv.id:
+                    continue  # カイポケ行の枠に別の訪問が居る → 従来の add の判定に任せる
+                gap = _minutes_between(uv.start_time, st)
+                if gap > UNPLANNED_MATCH_MINUTES:
+                    continue
+                if not _unplanned_staff_ok(uv, add_sid):
+                    staff_mismatch_by_add.setdefault(it.id, uv)
+                    continue
+                seq += 1
+                candidates.append((gap, seq, it, del_it, uv))
+        for _gap, _seq, add_it, del_it, uv in sorted(candidates, key=lambda c: (c[0], c[1])):
+            if add_it.id in promote_by_add or del_it.id in promote_delete_items:
+                continue
+            promote_by_add[add_it.id] = uv
+            promote_delete_of_add[add_it.id] = del_it.id
+            promote_delete_items.add(del_it.id)
+        for add_id in list(staff_mismatch_by_add):
+            if add_id in promote_by_add or staff_mismatch_by_add[add_id].id in {
+                v.id for v in promote_by_add.values()
+            }:
+                staff_mismatch_by_add.pop(add_id)
 
     # --- 循環スワップの一時退避 (savepoint で循環単位を原子化) ----------------
     # 循環グループの item は上のソートで**連続**して並ぶので、グループの入り口で
@@ -951,6 +1128,10 @@ async def apply_inbound_items(
                 continue
             existing = index.get((item.patient_id, target_date, start_new))
             revive: Visit | None = None
+            # 予定外訪問の昇格 (事前パスで組にしたもの): 新しい訪問は作らない。
+            promote = promote_by_add.get(item.id)
+            if promote is not None and existing is not None and existing.id == promote.id:
+                existing = None
             if existing is not None:
                 # cancelled も UNIQUE 枠 (0026: deleted_at IS NULL) を占有するため
                 # INSERT できない。代わりに **キャンセル済みの枠を復活** させて
@@ -1036,6 +1217,8 @@ async def apply_inbound_items(
                     linked |= accompaniment_by_course.get(course.id, set())
                 if revive is not None:
                     linked |= accompaniment_direct_by_visit.get(revive.id, set())
+                if promote is not None:
+                    linked |= accompaniment_direct_by_visit.get(promote.id, set())
                 if sid2 in linked:
                     sid2 = None
                     staff2_note = "／担当2は同行のため未反映（要2名化しない）"
@@ -1060,6 +1243,78 @@ async def apply_inbound_items(
                 f"{target_date.month}/{target_date.day} {after.get('start_time')} を追加"
                 f"（担当 {staff1_name}・{course_note}{revive_note}）{staff2_note}{trainee_note}"
             )
+            if item.id in staff_mismatch_by_add:
+                detail += (
+                    "／近い時刻に担当の違う予定外の訪問があります（別の訪問として追加・要確認）"
+                )
+            if promote is not None:
+                detail = (
+                    f"{target_date.month}/{target_date.day} 予定外の訪問"
+                    f"（{promote.start_time.strftime('%H:%M')}）をカイポケの予定 "
+                    f"{after.get('start_time')} として扱います"
+                    f"（担当 {staff1_name}・{course_note}）{staff2_note}{trainee_note}"
+                )
+                if not dry_run:
+                    if course is None:
+                        course = await ensure_temp_course(
+                            db,
+                            course_idx,
+                            weekday=weekday,
+                            office_id=office_id,
+                            staff_id=sid,
+                            now=now,
+                        )
+                        if course is None:
+                            _finish("failed", "臨時コース枠（臨〜臨9）が満杯です", target_date)
+                            continue
+                    try:
+                        async with db.begin_nested():
+                            # 打刻の付いた予定外訪問の行をそのまま使う (status は
+                            # 訪問中/完了のまま)。予定欄はカイポケの予定で上書きする。
+                            promote.start_time = start_new
+                            promote.end_time = end_new
+                            promote.is_unplanned = False
+                            # source は edit 経路の昇格と同じ (VISIT_SOURCE_PROMOTED 参照)。
+                            promote.source = VISIT_SOURCE_PROMOTED
+                            promote.required_staff_count = 2 if sid2 is not None else 1
+                            promote.primary_staff_id = sid
+                            promote.secondary_staff_id = sid2
+                            promote.course_id = course.id
+                            _stamp_note(promote, "予定外の訪問をカイポケの予定として取込", today)
+                            await _replace_assignments(
+                                db, promote, [s for s in (sid, sid2) if s is not None]
+                            )
+                            if accompaniment_sid2 is not None and (
+                                accompaniment_sid2
+                                not in accompaniment_direct_by_visit.get(promote.id, set())
+                            ):
+                                db.add(
+                                    Accompaniment(
+                                        accompanying_staff_id=accompaniment_sid2,
+                                        target_type="visit",
+                                        visit_id=promote.id,
+                                        source=ACCOMPANIMENT_SOURCE_IMPORT,
+                                        kind=resolve_accompaniment_kind(
+                                            staff_map[accompaniment_sid2]
+                                        ),
+                                        created_by=None,
+                                    )
+                                )
+                                _remember_accompaniment(promote.id, accompaniment_sid2)
+                            await db.flush()
+                    except IntegrityError:
+                        _finish(
+                            "failed",
+                            "予定外の訪問の昇格で衝突しました（差分を取り直してください）",
+                            target_date,
+                        )
+                        continue
+                    item.visit_id = promote.id
+                for key in [k for k, vv in index.items() if vv.id == promote.id]:
+                    index.pop(key, None)
+                index[(item.patient_id, target_date, start_new)] = promote
+                _finish("updated", detail, target_date, reason=UNPLANNED_PROMOTED_REASON)
+                continue
             if not dry_run:
                 if course is None:
                     course = await ensure_temp_course(
@@ -1198,11 +1453,35 @@ async def apply_inbound_items(
 
         # --- delete → キャンセル ---------------------------------------------
         if item.action == "delete":
+            if item.id in promote_delete_items:
+                # 近い時刻のカイポケ行 (add) がこの予定外訪問を予定へ昇格させる予定。
+                # 文言と結果は add の成否が出てからループ後に確定する
+                # (add が失敗したら「打刻済みのため取り消していません」へ直す)。
+                _finish(
+                    "skipped",
+                    "予定外の訪問は取り消しません（近い時刻のカイポケの行で予定に合わせます）",
+                    target_date,
+                    reason=UNPLANNED_PROMOTED_REASON,
+                )
+                promote_delete_result[item.id] = (summary.results[-1], item)
+                continue
+            # 打刻済みの訪問は取り消さない (2026-10-01・9/23 藤原様の事故の根治)。
+            # 取り消すと訪問した事実がモニターから消える。カイポケとの食い違いは
+            # 人が判断するので failed (要確認) として結果と通知に残す。
+            if any(v.id in checked_in_ids for v in partners):
+                _finish(
+                    "failed",
+                    f"{target_date.month}/{target_date.day} "
+                    f"{before.get('start_time') or ''} は{CHECKED_IN_KEEP_DETAIL}",
+                    target_date,
+                    reason=CHECKED_IN_REASON,
+                )
+                continue
             for v in partners:
                 pending_cancelled.add(v.id)  # add 側の復活判定用 (dry-run でも記録)
                 if not dry_run:
                     v.status = VISIT_STATUS_CANCELLED
-                    _stamp_note(v, "カイポケ側で削除されたためキャンセル", today)
+                    _stamp_note(v, IMPORT_CANCEL_NOTE, today)
             _finish(
                 "cancelled",
                 f"{target_date.month}/{target_date.day} {before.get('start_time') or ''} をキャンセル",
@@ -1233,6 +1512,19 @@ async def apply_inbound_items(
         final_date = new_date if (date_changed and new_date is not None) else target_date
         weekday = final_date.weekday()
 
+        # 打刻済みの訪問 (2 名体制の相方を含む) は別の日へ動かさない (2026-10-01)。
+        # 打刻は「その日にその訪問があった」事実なので、日付ごと動かすと実績の日が
+        # ずれる (予定外訪問も同じ)。delete と同じく failed (要確認) で残す。
+        if date_changed and any(v.id in checked_in_ids for v in partners):
+            _finish(
+                "failed",
+                f"{target_date.month}/{target_date.day} "
+                f"{before.get('start_time') or ''} は{CHECKED_IN_MOVE_DETAIL}",
+                target_date,
+                reason=CHECKED_IN_REASON,
+            )
+            continue
+
         # --- 移動先の占有チェック (先に立ちはだかる枠があれば failed で継続) ---
         # visits には partial UNIQUE ``uq_visits_pds_group_active`` (migration 0027・
         # 0026 の ``uq_visits_pds_active`` を置換) = (patient_id, visit_date,
@@ -1246,9 +1538,26 @@ async def apply_inbound_items(
         # なお 2026-08-24 以降、「移動先を塞いでいるのが**同じバッチ内でこれから
         # 別の場所へ移る訪問**」の場合は事前パスが順序替え/一時退避で解消するため、
         # ここへ来るのは本当にバッチ外の訪問に塞がれているときだけになる。
+        # 2026-10-01 (9/24 取込の失敗 5 件の根治): 移動先を塞いでいるのが
+        # **この実行の delete で取り消す訪問** なら、その行を論理削除して枠を空ける。
+        # 取消行も UNIQUE 枠を占有するため、従来は「移動先に別の予定があります」で
+        # failed になり、smart では移動元の日の置換まで見送られていた。
+        # 以前から取り消されている枠 (今週だけ取消・以前の取込の取消など) は
+        # 従来どおり退かさない (failed)。打刻済み・2 名体制の行も退かさない。
+        release_occupant: Visit | None = None
         if time_changed or date_changed:
             final_start = start_after if start_after is not None else cur_start
             occupant = index.get((item.patient_id, final_date, final_start))
+            if (
+                occupant is not None
+                and occupant.id not in {v.id for v in partners}
+                and occupant.id in pending_cancelled
+                and occupant.source not in VISIT_SOURCES_LOCAL_CANCEL
+                and occupant.id not in checked_in_ids
+                and occupant.visit_group_id is None
+            ):
+                release_occupant = occupant
+                occupant = None
             if occupant is not None and occupant.id not in {v.id for v in partners}:
                 _finish(
                     "failed",
@@ -1322,12 +1631,65 @@ async def apply_inbound_items(
                 else:
                     notes.append(f"担当2「{staff2_after_name}」未解決（未反映）")
 
+        # 担当2 が外れた/別人に替わった (2026-10-01): 元の担当2 が**取込で張った同行**
+        # (visit 直リンク・source='import') なら同行も外す。従来は secondary と
+        # visit_staff_assignments だけ直し、同行が残って「担当2を解除」と記録しながら
+        # 盤面に同行者が出続けた (9/24 に 4 件を手で修復)。
+        # 人が画面で張った同行・コース単位の同行は外さず、要確認の注記だけ残す。
+        remove_acc_ids: list[uuid.UUID] = []
+        remove_acc_staff: uuid.UUID | None = None
+        if staff2_changed and staff2_before_name:
+            prev_sid_str = match_name(staff2_before_name, staff_index)
+            after_sid_str = (
+                match_name(staff2_after_name, staff_index) if staff2_after_name else None
+            )
+            if prev_sid_str and prev_sid_str != after_sid_str:
+                prev_sid2 = uuid.UUID(prev_sid_str)
+                remove_acc_ids = list(import_acc_by_visit.get(visit.id, {}).get(prev_sid2, []))
+                if remove_acc_ids:
+                    remove_acc_staff = prev_sid2
+                elif prev_sid2 in accompaniment_by_visit.get(visit.id, set()):
+                    notes.append(
+                        f"同行「{staff2_before_name}」はらく助で設定された同行のため残しています"
+                        "（要確認）"
+                    )
+
+        # 予定外訪問に同じ日のカイポケ行が結ばれた (edit) ときの確認 (2026-10-01):
+        # 開始の差が UNPLANNED_MATCH_MINUTES 以内で、カイポケの担当1 が予定外訪問の担当か
+        # 打刻した職員であること (delete+add の組と同じ条件)。満たさなければ別の訪問の
+        # 可能性があるので、時刻も動かさず昇格もさせず failed (要確認) で人に渡す。
+        if visit.is_unplanned and not date_changed:
+            kp_start = start_after if start_after is not None else cur_start
+            kp_staff_str = match_name(staff1_after_name, staff_index) if staff1_after_name else None
+            kp_staff = uuid.UUID(kp_staff_str) if kp_staff_str else None
+            if _minutes_between(cur_start, kp_start) > UNPLANNED_MATCH_MINUTES:
+                _finish(
+                    "failed",
+                    f"予定外の訪問（{cur_start.strftime('%H:%M')}）とカイポケの予定"
+                    f"（{kp_start.strftime('%H:%M')}）の開始が{UNPLANNED_MATCH_MINUTES}分を超えて"
+                    "離れているため、合わせていません。ご確認ください",
+                    target_date,
+                    reason=UNPLANNED_MISMATCH_REASON,
+                )
+                continue
+            if not _unplanned_staff_ok(visit, kp_staff):
+                _finish(
+                    "failed",
+                    f"予定外の訪問の担当とカイポケの担当（{staff1_after_name or '空欄'}）が"
+                    "違うため、合わせていません。ご確認ください",
+                    target_date,
+                    reason=UNPLANNED_MISMATCH_REASON,
+                )
+                continue
+
         if (
             not time_changed
             and not date_changed
             and new_sid is None
             and not staff2_update
             and accompaniment_sid2 is None
+            and not remove_acc_ids
+            and not visit.is_unplanned  # 予定外訪問は変更点が無くても昇格させる (下)
         ):
             _finish("skipped", "・".join(notes) or "変更点なし", target_date)
             continue
@@ -1337,8 +1699,12 @@ async def apply_inbound_items(
             changes.append(
                 f"{visit.visit_date.month}/{visit.visit_date.day}→{new_date.month}/{new_date.day}"
             )
+        # 秒だけの違い (予定外訪問の開始は打刻の秒まで持つ) は表示しない。
         if time_changed and start_after is not None:
-            changes.append(f"{cur_start.strftime('%H:%M')}→{start_after.strftime('%H:%M')}")
+            if cur_start.strftime("%H:%M") != start_after.strftime("%H:%M"):
+                changes.append(f"{cur_start.strftime('%H:%M')}→{start_after.strftime('%H:%M')}")
+        if release_occupant is not None:
+            changes.append("移動先の取り消し済みの枠を整理")
 
         # コース解決: 丸ごと交代 / 既存コースへ移動 / 臨時コース新設。
         course_takeover = False
@@ -1371,6 +1737,56 @@ async def apply_inbound_items(
                     changes.append(
                         f"担当 {staff1_before_name or '−'}→{staff1_after_name}（臨時コース新設）"
                     )
+        # --- 担当はそのままの日付変更: コースを移動先の日へ付け替える (2026-10-01) ---
+        # コースは週×曜日のインスタンスなので、日付だけ動かすと訪問が元の曜日の
+        # コースに残り、移動先の日のモニターに元曜日のコース行が出る (9/22 海老澤様・
+        # 帆足様)。add と同じ規則で、移動先の日にその担当が持つコース、無ければ臨時
+        # コースへ付け替える。担当変更を伴う場合は上の分岐が移動先の曜日で解決済み。
+        # 予定外訪問 (QR の予定外打刻で生まれた is_unplanned) にカイポケの同じ日の行が
+        # 結ばれた = カイポケの予定になった → 予定として昇格させる (2026-10-01・
+        # 9/23 川名さんの 6 件)。コースは無い (NULL) ので下の付け替えで担当の
+        # その日のコース (無ければ臨時) へ載せる。別の日への移動は昇格させない
+        # (打刻の付いた訪問を日ごと動かす判断は人に任せる)。
+        promote_unplanned = bool(visit.is_unplanned) and not date_changed
+        follow_course: Course | None = None
+        follow_staff: uuid.UUID | None = None
+        need_follow_temp = False
+        if new_sid is None and (
+            (date_changed and visit.course_id is not None) or promote_unplanned
+        ):
+            cur_course = course_idx.by_id.get(visit.course_id)
+            follow_staff = visit.primary_staff_id or (
+                cur_course.assigned_staff_id if cur_course is not None else None
+            )
+            office_id = patient_office.get(item.patient_id)
+            cur_code = cur_course.code if cur_course is not None else "−"
+            if office_id is None or follow_staff is None:
+                follow_staff = None
+                if promote_unplanned:
+                    # コースを決められないまま is_unplanned だけ外すと「コース無しの予定」が
+                    # できてしまう → 昇格させない (予定外のまま・要確認の注記)。
+                    promote_unplanned = False
+                    notes.append("コースを特定できないため予定外のままにしています（要確認）")
+                else:
+                    notes.append("移動先の日のコースを特定できません（コースは元のまま）")
+            else:
+                follow_course = course_idx.by_staff.get((weekday, office_id, follow_staff))
+                if follow_course is not None:
+                    changes.append(f"コース{cur_code}→{follow_course.code}")
+                else:
+                    need_follow_temp = True
+                    changes.append(f"コース{cur_code}→臨時コース新設")
+
+        if (
+            promote_unplanned
+            and new_sid is not None
+            and target_course is None
+            and not need_temp_course
+        ):
+            promote_unplanned = False  # 担当変更の分岐でコースが決まらなかった
+        if promote_unplanned:
+            changes.append("予定外の訪問をカイポケの予定として扱います")
+
         # ⛔ NG: 担当変更 (丸ごと交代 / 既存コースへ移動 / 臨時新設) 後の担当 × 患者。
         # 丸ごと交代は事前パスでも同組を積むが、collect_ng_conflicts が重複を畳む。
         if new_sid is not None or new_sid2 is not None:
@@ -1388,6 +1804,8 @@ async def apply_inbound_items(
         # (他に変更点が無くても skipped にしない)。
         if accompaniment_sid2 is not None:
             changes.append(f"担当2「{staff2_after_name}」は新人のため同行として取り込みました")
+        if remove_acc_ids:
+            changes.append(f"同行「{staff2_before_name}」を外しました")
 
         if not changes:
             _finish("skipped", "・".join(notes) or "変更点なし", target_date)
@@ -1412,6 +1830,27 @@ async def apply_inbound_items(
                 if target_course is None:
                     _finish("failed", "臨時コース枠（臨〜臨9）が満杯です", target_date)
                     continue
+            if need_follow_temp and follow_staff is not None:
+                office_id = patient_office.get(item.patient_id)
+                if office_id is not None:
+                    follow_course = await ensure_temp_course(
+                        db,
+                        course_idx,
+                        weekday=weekday,
+                        office_id=office_id,
+                        staff_id=follow_staff,
+                        now=now,
+                    )
+                if follow_course is None:
+                    _finish("failed", "臨時コース枠（臨〜臨9）が満杯です", target_date)
+                    continue
+            if release_occupant is not None:
+                # 取消行を論理削除して UNIQUE 枠を空ける。移動より**先に** flush する
+                # (同じ flush に載せると UPDATE の順序次第で一意制約に当たる)。
+                release_occupant.status = VISIT_STATUS_CANCELLED
+                release_occupant.deleted_at = now
+                _stamp_note(release_occupant, "取り消し済みの枠を日付変更の移動先として整理", today)
+                await db.flush()
             if course_takeover and new_sid is not None and visit.course_id is not None:
                 course = course_idx.by_id.get(visit.course_id)
                 if course is not None and course.assigned_staff_id != new_sid:
@@ -1429,6 +1868,20 @@ async def apply_inbound_items(
                     # 循環スワップの一時退避 (仮 start_time) から最終位置へ確定。
                     # after に start_time が無い日付だけの入れ替えでも必ず戻す。
                     v.start_time = start_after if start_after is not None else parked_start[v.id]
+                if follow_course is not None and new_sid is None:
+                    if v.id == visit.id or v.primary_staff_id == follow_staff:
+                        v.course_id = follow_course.id
+                    else:
+                        # 2 名体制の相方は相方自身の担当で移動先の日のコースを引く
+                        # (無ければ元のまま・臨時コースは作らない)。
+                        partner_office = patient_office.get(v.patient_id)
+                        partner_course = (
+                            course_idx.by_staff.get((weekday, partner_office, v.primary_staff_id))
+                            if partner_office is not None and v.primary_staff_id is not None
+                            else None
+                        )
+                        if partner_course is not None:
+                            v.course_id = partner_course.id
                 if new_sid is not None:
                     if target_course is not None and not course_takeover:
                         v.course_id = target_course.id
@@ -1436,10 +1889,12 @@ async def apply_inbound_items(
                 if staff2_update:
                     v.secondary_staff_id = new_sid2
                     v.required_staff_count = 2 if new_sid2 is not None else 1
+                if promote_unplanned:
+                    v.is_unplanned = False
                 # その週限りの変更として週再生成から保護する。
                 v.source = "manual_week"
                 _stamp_note(v, detail, today)
-                if new_sid is not None or staff2_update:
+                if new_sid is not None or staff2_update or promote_unplanned:
                     primary = new_sid if new_sid is not None else v.primary_staff_id
                     secondary = new_sid2 if staff2_update else v.secondary_staff_id
                     await _replace_assignments(
@@ -1472,6 +1927,14 @@ async def apply_inbound_items(
                     )
                 )
                 _remember_accompaniment(visit.id, accompaniment_sid2)
+            if remove_acc_ids and remove_acc_staff is not None:
+                await db.execute(delete(Accompaniment).where(Accompaniment.id.in_(remove_acc_ids)))
+                # 同一実行内の後続 item が外した同行を「まだ在る」と見ないよう突合集合も直す
+                # (コースリンク由来で同じスタッフが残る場合は by_visit から消さない)。
+                import_acc_by_visit.get(visit.id, {}).pop(remove_acc_staff, None)
+                accompaniment_direct_by_visit.get(visit.id, set()).discard(remove_acc_staff)
+                if remove_acc_staff not in accompaniment_by_course.get(visit.course_id, set()):
+                    accompaniment_by_visit.get(visit.id, set()).discard(remove_acc_staff)
         # 索引を移動後のキーへ張り替える (同一実行内の後続 item が旧キーを
         # 占有済みと誤判定したり、空いた枠へ二重に移動して 500 になるのを防ぐ)。
         # dry-run でも張り替える = 予測と実適用の結果を一致させる。
@@ -1484,6 +1947,30 @@ async def apply_inbound_items(
 
     # 最後の循環グループを確定 (または巻き戻し) する。
     await _cycle_sync(None)
+
+    # 昇格に回した delete の結果を、組になった add の成否で確定する (2026-10-01)。
+    add_result_by_item = {r.item_id: r for r in summary.results if r.action == "add"}
+    for add_id, del_id in promote_delete_of_add.items():
+        pending = promote_delete_result.get(del_id)
+        if pending is None:
+            continue
+        del_result, del_item = pending
+        add_r = add_result_by_item.get(str(add_id))
+        if (
+            add_r is not None
+            and add_r.outcome == "updated"
+            and add_r.reason == UNPLANNED_PROMOTED_REASON
+        ):
+            del_result.detail = "予定外の訪問は取り消さず、カイポケの予定に合わせました"
+        else:
+            # 昇格できなかった → 予定外訪問は打刻済みなので取り消さずに残す (要確認)。
+            del_result.outcome = "failed"
+            del_result.reason = CHECKED_IN_REASON
+            del_result.detail = f"予定外の訪問は{CHECKED_IN_KEEP_DETAIL}"
+            summary.skipped -= 1
+            summary.failed += 1
+        if not dry_run:
+            del_item.comment = f"{del_result.outcome}: {del_result.detail}"
 
     if dry_run:
         summary.ng_conflicts = await collect_ng_conflicts(db, ng_pairs)

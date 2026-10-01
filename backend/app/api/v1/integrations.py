@@ -2218,17 +2218,27 @@ async def _build_inbound_sheet(
     week_start: date,
     week_end: date,
     user_id: UUID | None,
+    kaipoke_csv: str | None = None,
 ):
     """inbound Correction 群を名寄せ解決して CorrectionSheet + items に永続化する。
 
     trigger_diff_inbound と smart-inbound-preview (2026-07-26) の共通部。
     Returns: (sheet, summary dict)。commit は呼び出し側の責務。
+
+    ``kaipoke_csv`` (カイポケ現況・smart-inbound-preview が渡す) があるときは、
+    **カイポケに同じ日・同じ開始時刻の行がある予定外訪問** (is_unplanned) を
+    昇格用の ``edit`` 行 (変更前=変更後) として足す (2026-10-01)。カイポケ側で
+    実時刻どおりに登録されると差分が 1 件も出ず、予定外のまま残るため
+    (9/23 川名さんの 6 件)。apply の edit 経路が予定外訪問を予定へ昇格させる。
     """
     from collections import defaultdict
 
     from app.models.patient import Patient
     from app.services.kaipoke.inbound import (
+        CHECKED_IN_KEEP_DETAIL,
+        CHECKED_IN_MOVE_DETAIL,
         day_to_date,
+        load_checked_in_visit_ids,
         load_staff_name_index,
         load_week_visit_index,
         parse_hhmm,
@@ -2244,6 +2254,13 @@ async def _build_inbound_sheet(
     status_by_patient: dict[UUID, str | None] = {p.id: p.status for p in patients}
     sindex, _smap = await load_staff_name_index(db)
     visit_index = await load_week_visit_index(db, week_start, week_end)
+    # 打刻済みの訪問への delete は適用しても取り消さない (apply 側で failed=要確認)。
+    # プレビューの段階で印 (comment) と件数を出し、人が先に気付けるようにする。
+    checked_in_ids = await load_checked_in_visit_ids(db, [v.id for v in visit_index.values()])
+    visit_group_of = {
+        v.id: v.visit_group_id for v in visit_index.values() if v.visit_group_id is not None
+    }
+    checked_in_groups = {visit_group_of[vid] for vid in checked_in_ids if vid in visit_group_of}
 
     sheet = CorrectionSheet(
         target_month=month,
@@ -2300,6 +2317,20 @@ async def _build_inbound_sheet(
         # の ``inactive_patient`` と同じ集合を数える (表示と件数がズレない)。
         if inactive_patient and c.action in INACTIVE_FLAGGED_ACTIONS:
             summary["inactive_patient"] += 1
+        # 打刻済みの訪問への delete (2026-10-01): 選択は外さない — 適用すると
+        # 「取り消さずに要確認」として結果と通知に毎回残り、見落としを防げる。
+        # 打刻済みの訪問を別の日へ動かす date_change も同じ扱い (適用で failed=要確認)。
+        # 2 名体制は相方の打刻も見る (apply の判定と同じ集合)。
+        comment = None
+        _checked = visit_id is not None and (
+            visit_id in checked_in_ids or visit_group_of.get(visit_id) in checked_in_groups
+        )
+        if c.action == "delete" and _checked:
+            comment = CHECKED_IN_KEEP_DETAIL
+            summary["checked_in_delete"] += 1
+        elif c.action == "date_change" and _checked:
+            comment = CHECKED_IN_MOVE_DETAIL
+            summary["checked_in_move"] += 1
         items.append(
             CorrectionSheetItem(
                 sheet_id=sheet.id,
@@ -2309,9 +2340,86 @@ async def _build_inbound_sheet(
                 before=before,
                 after=after,
                 include=include,
+                comment=comment,
             )
         )
         summary[c.action] += 1
+
+    if kaipoke_csv is not None:
+        from datetime import time as dt_time
+
+        from app.models.visit_checkin import VisitCheckin
+        from app.services.diff.engine import parse_csv_from_content
+        from app.services.kaipoke.inbound import UNPLANNED_PROMOTE_COMMENT
+
+        # カイポケ現況の (患者, 日付, 開始 HH:MM) → 担当1 (名寄せ済み staff_id と原文)。
+        # 名寄せできない行は含めない。
+        kp_slots: dict[tuple[UUID, date, dt_time], list[tuple[UUID | None, str]]] = {}
+        for e in parse_csv_from_content(kaipoke_csv, "kaipoke"):
+            kp_pid = match_name(e.user_name, pindex)
+            kp_start = parse_hhmm(e.start_time)
+            try:
+                kp_date = day_to_date(int(str(e.date).strip()), week_start, week_end)
+            except (TypeError, ValueError):
+                kp_date = None
+            if kp_pid and kp_start is not None and kp_date is not None:
+                kp_sid = match_name(e.staff1_name, sindex) if e.staff1_name else None
+                kp_slots.setdefault((UUID(kp_pid), kp_date, kp_start), []).append(
+                    (UUID(kp_sid) if kp_sid else None, e.staff1_name)
+                )
+        unplanned_ids = [v.id for v in visit_index.values() if v.is_unplanned]
+        checkin_staff: dict[UUID, set[UUID]] = {}
+        if unplanned_ids:
+            for cvid, csid in (
+                await db.execute(
+                    select(VisitCheckin.visit_id, VisitCheckin.staff_id).where(
+                        VisitCheckin.visit_id.in_(unplanned_ids)
+                    )
+                )
+            ).all():
+                if csid is not None:
+                    checkin_staff.setdefault(cvid, set()).add(csid)
+        targeted = {it.visit_id for it in items if it.visit_id is not None}
+        patient_name = {p.id: p.name for p in patients}
+        for v in visit_index.values():
+            if not v.is_unplanned or v.status == "cancelled" or v.id in targeted:
+                continue
+            start_hm = dt_time(v.start_time.hour, v.start_time.minute)
+            # 担当の条件は apply と同じ: カイポケの担当1 が予定外訪問の担当か打刻した職員。
+            ok_staff = {v.primary_staff_id, *checkin_staff.get(v.id, set())} - {None}
+            match = next(
+                (
+                    name
+                    for sid, name in kp_slots.get((v.patient_id, v.visit_date, start_hm), [])
+                    if sid in ok_staff
+                ),
+                None,
+            )
+            if match is None:
+                continue
+            primary = _smap.get(v.primary_staff_id) if v.primary_staff_id else None
+            side = {
+                "user_name": patient_name.get(v.patient_id, ""),
+                "date": str(v.visit_date.day),
+                "start_time": start_hm.strftime("%H:%M"),
+                "end_time": v.end_time.strftime("%H:%M"),
+                "staff1": primary.name if primary is not None else "",
+                "staff2": "",
+            }
+            items.append(
+                CorrectionSheetItem(
+                    sheet_id=sheet.id,
+                    patient_id=v.patient_id,
+                    visit_id=v.id,
+                    action="edit",
+                    before=side,
+                    after={**side, "staff1": match},
+                    include=True,
+                    comment=UNPLANNED_PROMOTE_COMMENT,
+                )
+            )
+            summary["unplanned_promote"] += 1
+
     summary["total"] = len(items)
     summary["unresolved_patient"] = unresolved
     summary["auto_selected"] = sum(1 for it in items if it.include)
@@ -2666,12 +2774,21 @@ async def trigger_apply_inbound(
         sheet.status = "applied"
         # 失敗を含む決着は恒久通知も残す (実行者以外の管理者への周知・監査)。
         # 同期実行のため実行者は画面で結果を見るが、outbound apply と同じ基盤に揃える。
+        # 打刻済みのため取消/移動を見送った item (2026-10-01) は「失敗」と分けて数える
+        # (smart-apply の通知と同じ数え方)。
+        from app.services.kaipoke.inbound import CHECKED_IN_REASON
+
+        n_kept = sum(1 for r in summary.results if r.reason == CHECKED_IN_REASON)
+        n_failed = summary.failed - n_kept
         if summary.failed > 0:
             from app.services.checkin.notify import (
                 _active_admin_manager_users,
                 _create_idempotent,
             )
 
+            _parts = [f"失敗{n_failed}件"] if n_failed else []
+            if n_kept:
+                _parts.append(f"打刻済みのため見送り{n_kept}件")
             users = await _active_admin_manager_users(db)
             await _create_idempotent(
                 db,
@@ -2679,10 +2796,10 @@ async def trigger_apply_inbound(
                 type_="kaipoke_import_result",
                 reference_type="kaipoke_import",
                 reference_id=job.id,
-                title=f"カイポケ取り込みに要確認（失敗{summary.failed}件）",
+                title=f"カイポケ取り込みに要確認（{'・'.join(_parts)}）",
                 body=(
                     f"{sheet.target_month} 週 {sheet.week_start.isoformat()} の取り込みで "
-                    f"失敗{summary.failed}件があります。カイポケ連携画面で内訳を確認してください。"
+                    f"{'・'.join(_parts)}があります。カイポケ連携画面で内訳を確認してください。"
                 ),
             )
         await _commit_or_409(db)
@@ -4734,6 +4851,7 @@ async def smart_inbound_preview(
             week_start=week_start,
             week_end=week_start + timedelta(days=6),
             user_id=user.id,
+            kaipoke_csv=csv_content,
         )
         await db.flush()  # items の id/include を確定させてから held 判定に使う
         sheet_items = list(
@@ -5109,7 +5227,13 @@ async def smart_inbound_apply(
         # 要確認 (対象外/新人単独/差分失敗) は管理者へ恒久通知
         n_skipped = len(replace_read.skipped) if replace_read else 0
         n_trainee = sum(t.count for t in replace_read.trainee_solo) if replace_read else 0
-        n_failed = diff_result.failed if diff_result else 0
+        # 打刻済みのため取消/移動を見送った item (2026-10-01) は「失敗」と分けて数える
+        # (取込の不具合ではなく、カイポケとの食い違いを人が確かめる項目のため)。
+        from app.services.kaipoke.inbound import CHECKED_IN_REASON
+
+        n_kept = sum(1 for r in diff_item_results if r.reason == CHECKED_IN_REASON)
+        n_failed = (diff_result.failed if diff_result else 0) - n_kept
+        _kept_label = f"・打刻済みのため見送り{n_kept}" if n_kept else ""
         # 置換を見送った日は通知本文にも出す (2026-09-11 レビュー指摘)。
         _held_note = (
             "\n日付変更が未適用のため置換を見送った日: "
@@ -5117,7 +5241,7 @@ async def smart_inbound_apply(
             if held_days
             else ""
         )
-        if n_skipped or n_trainee or n_failed:
+        if n_skipped or n_trainee or n_failed or n_kept:
             from app.services.checkin.notify import (
                 _active_admin_manager_users,
                 _create_idempotent,
@@ -5131,7 +5255,8 @@ async def smart_inbound_apply(
                 reference_type="kaipoke_import",
                 reference_id=job.id,
                 title=(
-                    f"取り込みの要確認（対象外{n_skipped}・新人単独{n_trainee}・失敗{n_failed}）"
+                    f"取り込みの要確認（対象外{n_skipped}・新人単独{n_trainee}・失敗{n_failed}"
+                    f"{_kept_label}）"
                 ),
                 body=(
                     f"週 {week_start.isoformat()} のハイブリッド取り込みに要確認項目があります。"

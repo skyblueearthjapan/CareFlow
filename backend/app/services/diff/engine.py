@@ -486,6 +486,7 @@ def _compare_entries(
     target_week_end: int | None = None,
     normalize_names: bool = False,
     flag_grade_change: bool = True,
+    prefer_same_slot: bool = False,
 ) -> list[Correction]:
     """ScheduleEntry リスト同士を比較して差分を生成 (内部実装).
 
@@ -508,6 +509,16 @@ def _compare_entries(
     呼び出し側 (``local_diff``) は inbound と、RPA がサービス内容の分岐に
     未対応のあいだ (``kaipoke_rpa_service_branch_enabled=False``) は False を
     渡す — 印を立てても RPA が正しい値を書けないため。
+
+    ``prefer_same_slot`` (既定 False・inbound 専用 2026-10-01):
+    サービス一致 (Pass 2)・日付変更 (Pass 3) を探す **前に**、同じ日・同じ開始時刻で残った組を
+    サービス内容に関わらず 1 件の ``edit`` に束ねる (Pass 1.5・Pass 2 より前)。
+    inbound ではらく助側のサービス内容は担当の資格から作った値にすぎず、
+    担当が替わると「…・正看」⇄「…・准看」で Pass 1/2 に乗らない。そのまま
+    Pass 3 へ進むと、別の日の訪問がこの枠へ「日付変更」で結ばれ、
+    この枠に居たらく助の訪問は ``delete`` に落ちる — 9/24 の取込で
+    「跨ぎ date_change 21→22 と移動先の同時刻 delete」が同居して失敗した形。
+    outbound は区分変更を delete+add / grade_change で送る必要があるため使わない。
     """
     logger.debug("  現在のエントリ数: %d", len(current_entries))
     logger.debug("  最適化エントリ数: %d", len(optimized_entries))
@@ -788,6 +799,33 @@ def _compare_entries(
                     len(optimized_on_date),
                     len(matched_current_local),
                 )
+
+            # Pass 1.5 (inbound 専用・2026-10-01): 同じ日・同じ開始時刻の残りは
+            # サービス内容に関わらず同じ訪問として結ぶ (docstring 参照)。
+            # Pass 2 (サービス一致・時刻違い) と Pass 3 (日付変更) より前に置くのが要点:
+            # 後にすると、区分違いの同時刻の組より先に、同じ区分の別の時刻の行や
+            # 別の日の行がこの枠の相手を取ってしまう。
+            if prefer_same_slot:
+                for cur_idx, cur_entry in current_on_date:
+                    if cur_idx in matched_current_local:
+                        continue
+                    for opt_idx, opt_entry in optimized_on_date:
+                        if opt_idx in matched_optimized_local:
+                            continue
+                        if cur_entry.start_time != opt_entry.start_time:
+                            continue
+                        has_diff = (
+                            cur_entry.end_time != opt_entry.end_time
+                            or _staff_differs(cur_entry.staff1_name, opt_entry.staff1_name)
+                            or _staff_differs(cur_entry.staff2_name, opt_entry.staff2_name)
+                        )
+                        if has_diff:
+                            _emit_change(user, cur_entry, opt_entry, "edit")
+                        matched_current_local.add(cur_idx)
+                        matched_optimized_local.add(opt_idx)
+                        all_matched_current.add(cur_idx)
+                        all_matched_optimized.add(opt_idx)
+                        break
 
             # Pass 2: サービス内容が一致（時間は異なる）
             for opt_idx, opt_entry in optimized_on_date:
@@ -1140,6 +1178,7 @@ def compare_schedules_from_content(
     target_week_end: int | None = None,
     normalize_names: bool = False,
     flag_grade_change: bool = True,
+    prefer_same_slot: bool = False,
 ) -> list[Correction]:
     """CSVテキスト文字列を直接比較して差分を生成.
 
@@ -1152,6 +1191,8 @@ def compare_schedules_from_content(
         normalize_names: 氏名の空白/異体字を正規化して同一人物に束ねるか
         flag_grade_change: 請求区分 (正看/准看) が変わる行に印を立て、
             サービス内容を最適化側の値にするか (既定 True。inbound は False)
+        prefer_same_slot: 同じ日・同じ開始時刻の残り物を日付変更より先に
+            edit へ束ねるか (既定 False。inbound は True・``_compare_entries`` 参照)
 
     Returns:
         list[Correction]: 修正リスト
@@ -1178,6 +1219,7 @@ def compare_schedules_from_content(
         target_week_end=target_week_end,
         normalize_names=normalize_names,
         flag_grade_change=flag_grade_change,
+        prefer_same_slot=prefer_same_slot,
     )
 
 

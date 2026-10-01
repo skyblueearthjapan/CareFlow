@@ -325,6 +325,10 @@ async def build_local_diff(
         # (精神科 × 看護師等) で再追加するだけなので、従来どおりの出方に倒す。
         # inbound はらく助に訪問ごとのサービス内容が無いので印も差し替えもしない。
         flag_grade_change=(direction != "inbound" and service_branch_enabled()),
+        # inbound は同じ日・同じ開始時刻の組を日付変更より先に結ぶ (2026-10-01)。
+        # 担当が替わってサービス内容 (資格) が違う枠を、別の日からの date_change と
+        # その枠の delete に割らない (9/24 取込の失敗 5 件の根治)。
+        prefer_same_slot=(direction == "inbound"),
     )
 
     meta: dict[str, Any] = {

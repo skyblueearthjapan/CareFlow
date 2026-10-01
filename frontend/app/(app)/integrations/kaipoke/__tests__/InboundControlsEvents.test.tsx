@@ -445,4 +445,30 @@ describe('InboundControls — smart-inbound', () => {
     render(<InboundControls vm={makeVm({ smartPlan: SMART_PLAN, canApply: true })} />);
     expect(screen.queryByTestId('inbound-summary-inactive-patient')).toBeNull();
   });
+
+  // ─── 取込の不具合 6 件の根治 (2026-10-01・docs/plans/inbound-fixes-2026-10-01.md) ───
+  it('⑦ 打刻済みのため取り消さない件数・予定外訪問の昇格件数をチップで出す', () => {
+    const plan: SmartInboundPreview = {
+      ...SMART_PLAN,
+      diffSummary: {
+        ...SMART_PLAN.diffSummary,
+        checked_in_delete: 1,
+        checked_in_move: 3,
+        unplanned_promote: 2,
+      },
+    };
+    render(<InboundControls vm={makeVm({ smartPlan: plan, canApply: true })} />);
+    const kept = screen.getByTestId('inbound-summary-checked-in-delete');
+    expect(kept).toHaveTextContent('打刻済みのため取り消しません（要確認）');
+    expect(kept).toHaveTextContent('1');
+    expect(screen.getByTestId('inbound-summary-checked-in-move')).toHaveTextContent('3');
+    expect(screen.getByTestId('inbound-summary-unplanned-promote')).toHaveTextContent('2');
+  });
+
+  it('⑦b 件数が無ければ新しいチップは出さない', () => {
+    render(<InboundControls vm={makeVm({ smartPlan: SMART_PLAN, canApply: true })} />);
+    expect(screen.queryByTestId('inbound-summary-checked-in-delete')).toBeNull();
+    expect(screen.queryByTestId('inbound-summary-checked-in-move')).toBeNull();
+    expect(screen.queryByTestId('inbound-summary-unplanned-promote')).toBeNull();
+  });
 });
