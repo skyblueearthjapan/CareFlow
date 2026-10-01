@@ -28,6 +28,7 @@ vi.mock('@/lib/queries/integrations', () => ({
   useInboundSnapshots: () => ({ ...idleQuery, data: { snapshots: [] } }),
   useKaipokeJobs: () => ({ ...idleQuery, data: { items: [], total: 0, limit: 50, offset: 0 } }),
   useRestoreInboundSnapshot: () => ({ ...idleMutation }),
+  useActiveSmartInboundPreview: () => ({ ...idleQuery, data: null }),
   useSmartInboundPreview: () => ({
     ...idleMutation,
     mutateAsync: smartPreviewMutateAsync,

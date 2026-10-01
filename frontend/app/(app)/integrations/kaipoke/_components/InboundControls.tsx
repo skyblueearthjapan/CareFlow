@@ -9,6 +9,7 @@
  */
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { apiErrorMessage } from '@/lib/api/errorMessage';
 import {
   Dialog,
   DialogContent,
@@ -47,6 +48,8 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
     changeWeek,
     goToThisWeek,
     smartPreview,
+    retrySmartPreview,
+    resumed,
     smartPlan,
     eventsPlan,
     eventsError,
@@ -267,17 +270,29 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                 : '❶ カイポケの現況を取得して差分を見る（訪問＋イベント）'}
           </Button>
           {fetching && (
-            <p className="text-xs text-text-muted">
-              {eventsOnly
-                ? 'カイポケからイベント（個別業務）を取得しています。約1分かかります。'
-                : 'カイポケから訪問とイベント（個別業務）を順番に取得しています。合計で約2分かかります。'}
+            <p className="text-xs text-text-muted" role="status">
+              {smartPreview.isPending
+                ? `${resumed ? '前回の読み込みを再開しました。' : ''}カイポケから予定を読み込んでいます（1〜2 分かかることがあります）。この画面を離れても読み込みは続きます。`
+                : 'カイポケからイベント（個別業務）を取得しています。約1分かかります。'}
             </p>
           )}
-          {smartPreview.isError && (
+          {smartPreview.isError && !smartPreview.isPending && (
             <Alert variant="destructive">
               <AlertTitle>訪問の取得に失敗しました</AlertTitle>
               <AlertDescription>
-                {smartPreview.error instanceof Error ? smartPreview.error.message : '不明なエラー'}
+                <span className="whitespace-pre-line">
+                  {apiErrorMessage(smartPreview.error, '不明なエラー')}
+                </span>
+                <div className="mt-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void retrySmartPreview()}
+                    disabled={!credentialsConfigured || !eligible || fetching || applying || busy}
+                  >
+                    もう一度読み込む
+                  </Button>
+                </div>
               </AlertDescription>
             </Alert>
           )}

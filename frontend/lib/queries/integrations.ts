@@ -7,10 +7,12 @@
  */
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
+import { SMART_PREVIEW_DETACHED } from '@/lib/kaipokeOps';
 import type {
   InboundSnapshotList,
   SnapshotRestoreResult,
@@ -53,6 +55,7 @@ import type {
   SmartInboundApplyRequest,
   SmartInboundApplyResult,
   SmartInboundPreview,
+  SmartInboundPreviewStatus,
   SaveKaipokeCredentialsBody,
   TestKaipokeCredentialsResult,
   WeekSchedule,
@@ -871,23 +874,122 @@ export function useReplaceInbound() {
 
 // --- smart-inbound (日単位ハイブリッド自動判別・2026-07-26 PO確定) -----------
 
+const SMART_PREVIEW_POLL_INTERVAL_MS = 3_000;
+// BE は 10 分を超えた running を残骸として failed に倒す。それより少し長く待つ。
+const SMART_PREVIEW_POLL_DEADLINE_MS = 12 * 60_000;
+// ポーリング1回の一時的な失敗 (電波・BE再起動等) をここまで連続で許容する
+const SMART_PREVIEW_POLL_MAX_CONSECUTIVE_ERRORS = 3;
+
+export interface SmartInboundPreviewVars {
+  weekStart: string;
+  /** 実行中のジョブを待ち受け直す (画面へ戻ったとき)。指定時は新しく開始しない。 */
+  resumeJobId?: string;
+}
+
+function detachedError(): Error {
+  const e = new Error('画面を離れたため、読み込みの待ち受けをやめました');
+  e.name = SMART_PREVIEW_DETACHED;
+  return e;
+}
+
 /**
- * 打刻あり日=差分・なし日=置換をシステムが自動判別する統合プレビュー (~90s)。
+ * 打刻あり日=差分・なし日=置換をシステムが自動判別する統合プレビュー。
+ *
+ * 2026-10-01 (smart-preview-async-2026-10-01.md): 月を跨ぐ週は RPA の export が
+ * 2 本 (~100s) になり、Cloudflare の ~100s 制限で 524 になるため、全ての週で
+ * 「start (202) → status を 3 秒ごとにポーリング」へ変更。mutateAsync が完成
+ * プレビューを返す外部インターフェースは従来と同一。
+ *
+ * `resumeJobId` を渡すと、既に動いているジョブの待ち受けだけを行う。
+ * 画面を離れる (アンマウント) と待ち受けをやめ、`SMART_PREVIEW_DETACHED` 名の
+ * エラーで終わる (ジョブはサーバー側で続く)。
  */
 export function useSmartInboundPreview() {
   const { data: session } = useSession();
   const accessToken = session?.accessToken ?? null;
   const refreshToken = session?.refreshToken ?? null;
 
-  return useMutation<SmartInboundPreview, Error, { weekStart: string }>({
-    mutationFn: (payload) =>
-      fetcher<SmartInboundPreview>('/api/v1/integrations/smart-inbound-preview', {
-        method: 'POST',
-        body: JSON.stringify(payload),
-        accessToken,
-        refreshToken,
-        signal: AbortSignal.timeout(240_000),
-      }),
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
+  return useMutation<SmartInboundPreview, Error, SmartInboundPreviewVars>({
+    mutationFn: async ({ weekStart, resumeJobId }) => {
+      let jobId = resumeJobId;
+      if (!jobId) {
+        const start = await fetcher<JobAccepted>(
+          '/api/v1/integrations/smart-inbound-preview/start',
+          {
+            method: 'POST',
+            body: JSON.stringify({ weekStart }),
+            accessToken,
+            refreshToken,
+            signal: AbortSignal.timeout(45_000),
+          },
+        );
+        jobId = start.jobId;
+      }
+
+      const deadline = Date.now() + SMART_PREVIEW_POLL_DEADLINE_MS;
+      let consecutiveErrors = 0;
+      for (;;) {
+        if (!aliveRef.current) throw detachedError();
+        let st: SmartInboundPreviewStatus;
+        try {
+          st = await fetcher<SmartInboundPreviewStatus>(
+            `/api/v1/integrations/smart-inbound-preview/status/${jobId}`,
+            { accessToken, refreshToken, signal: AbortSignal.timeout(30_000) },
+          );
+          consecutiveErrors = 0;
+        } catch (e) {
+          consecutiveErrors += 1;
+          if (consecutiveErrors >= SMART_PREVIEW_POLL_MAX_CONSECUTIVE_ERRORS) {
+            throw e instanceof Error ? e : new Error('訪問の読み込みの状態確認に失敗しました');
+          }
+          await sleep(SMART_PREVIEW_POLL_INTERVAL_MS);
+          continue;
+        }
+        if (st.status === 'completed' && st.preview) {
+          return st.preview;
+        }
+        if (st.status === 'failed' || st.status === 'completed') {
+          throw new Error(st.error || '訪問の読み込みに失敗しました');
+        }
+        if (Date.now() > deadline) {
+          throw new Error(
+            '訪問の読み込みが時間内に終わりませんでした（12分）。連携の実行状況を確認のうえ、もう一度お試しください',
+          );
+        }
+        await sleep(SMART_PREVIEW_POLL_INTERVAL_MS);
+      }
+    },
+  });
+}
+
+/**
+ * この週で実行中の統合プレビュー (画面へ戻ったときの再開用)。無ければ null。
+ * 画面を開いたとき・週を切り替えたときに 1 回だけ確かめる (ポーリングはしない)。
+ */
+export function useActiveSmartInboundPreview(weekStart: string | null) {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+
+  return useQuery<SmartInboundPreviewStatus | null>({
+    queryKey: ['integrations', 'smart-preview', 'active', weekStart],
+    queryFn: () =>
+      fetcher<SmartInboundPreviewStatus | null>(
+        `/api/v1/integrations/smart-inbound-preview/active?weekStart=${weekStart}`,
+        { accessToken, refreshToken },
+      ),
+    enabled: status === 'authenticated' && Boolean(weekStart),
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: false,
+    retry: false,
   });
 }
 

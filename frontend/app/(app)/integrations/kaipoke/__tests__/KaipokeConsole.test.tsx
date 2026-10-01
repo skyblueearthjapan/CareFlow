@@ -41,6 +41,7 @@ vi.mock('@/lib/queries/integrations', () => ({
   useKaipokeLive: () => ({ ...idleQuery, data: { running: false, reachable: true, logs: [] } }),
   useStartPlanActualCompare: () => ({ ...idleMutation }),
   useRestoreInboundSnapshot: () => ({ ...idleMutation }),
+  useActiveSmartInboundPreview: () => ({ ...idleQuery, data: null }),
   useSmartInboundPreview: () => ({ ...idleMutation, error: null }),
   useApplySmartInbound: () => ({ ...idleMutation, error: null }),
   useEventsInboundPreview: () => ({ ...idleMutation, error: null }),

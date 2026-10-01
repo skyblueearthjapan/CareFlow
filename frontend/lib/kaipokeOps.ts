@@ -100,6 +100,17 @@ export function isPlanActualJob(job: KaipokeJobLike | null | undefined): boolean
   return jobOp(job) === PLAN_ACTUAL_OP;
 }
 
+/**
+ * 画面を離れたので訪問の読み込みの待ち受け (ポーリング) をやめた、という印のエラー名。
+ * ジョブそのものはサーバー側で続いており、画面へ戻れば再開できる。
+ * 呼び出し側はこれを失敗として表示せず、後続の処理 (イベント取得など) も始めない。
+ */
+export const SMART_PREVIEW_DETACHED = 'SmartPreviewDetached';
+
+export function isSmartPreviewDetached(e: unknown): boolean {
+  return e instanceof Error && e.name === SMART_PREVIEW_DETACHED;
+}
+
 /** params.month (YYYY-MM) を安全に取り出す。形が違えば null。 */
 export function jobMonth(job: KaipokeJobLike | null | undefined): string | null {
   const month = job?.params?.month;

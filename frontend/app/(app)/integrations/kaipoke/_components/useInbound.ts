@@ -8,10 +8,11 @@
  * ❶取得 → ❷統合プレビュー確認 → ❸取り込む、の3ステップのみ。
  * イベント (個別業務) は従来どおり週全体を upsert (❶❸に相乗り)。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import {
+  useActiveSmartInboundPreview,
   useApplyEventsInbound,
   useApplySmartInbound,
   useCorrectionItems,
@@ -23,7 +24,12 @@ import {
   useSmartInboundPreview,
 } from '@/lib/queries/integrations';
 import { apiErrorMessage } from '@/lib/api/errorMessage';
-import { INBOUND_HISTORY_OP_LABELS, isReportableJob, opLabel } from '@/lib/kaipokeOps';
+import {
+  INBOUND_HISTORY_OP_LABELS,
+  isReportableJob,
+  isSmartPreviewDetached,
+  opLabel,
+} from '@/lib/kaipokeOps';
 import type { EventsInboundPreview, SmartInboundPreview } from '@/lib/schemas/integration';
 
 // ──────────────────────────── 定数 ────────────────────────────
@@ -189,6 +195,34 @@ export function useInbound({
   const eventsPreview = useEventsInboundPreview();
   const applyEvents = useApplyEventsInbound();
 
+  // 画面へ戻ったとき: この週の訪問の読み込みがサーバーで動いていれば、待ち受けを再開する
+  // (smart-preview-async-2026-10-01)。同じジョブを二重に待たないよう、再開した id を覚える。
+  const activePreview = useActiveSmartInboundPreview(weekStartStr);
+  const resumedJobIds = useRef<Set<string>>(new Set());
+  const [resumed, setResumed] = useState(false);
+  useEffect(() => {
+    const job = activePreview.data;
+    if (!job || job.status !== 'running') return;
+    if (smartPreview.isPending || resumedJobIds.current.has(job.jobId)) return;
+    resumedJobIds.current.add(job.jobId);
+    setResumed(true);
+    void (async () => {
+      try {
+        const plan = await smartPreview.mutateAsync({
+          weekStart: job.weekStart,
+          resumeJobId: job.jobId,
+        });
+        setSmartPlan(plan);
+      } catch {
+        // 失敗は Alert (smartPreview.isError) で表示する。離脱 (detached) は何もしない。
+      } finally {
+        setResumed(false);
+      }
+    })();
+    // mutation は毎レンダー新しい参照になるため依存に入れない (再開の判定は data の変化だけ)。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePreview.data]);
+
   // 取り込みプレビュータブ (InboundCalendar) 用の差分アイテム
   const sheetId = smartPlan?.sheetId ?? null;
   const itemsQuery = useCorrectionItems(sheetId ?? undefined, { limit: 500 });
@@ -231,7 +265,9 @@ export function useInbound({
         const plan = await smartPreview.mutateAsync({ weekStart: weekStartStr });
         setSmartPlan(plan);
         visitsOk = true;
-      } catch {
+      } catch (e) {
+        // 画面を離れた = この画面ではもう何も始めない (戻れば読み込みを再開できる)。
+        if (isSmartPreviewDetached(e)) return;
         // エラーは Alert で表示。イベント取得は続行する。
       }
     }
@@ -244,6 +280,17 @@ export function useInbound({
       if (visitsOk) {
         toast.warning('イベント（個別業務）の取得に失敗しました。訪問の差分のみ表示しています。');
       }
+    }
+  };
+
+  /** 訪問の読み込みだけをやり直す (失敗 Alert の「もう一度読み込む」)。イベントの結果は残す。 */
+  const retrySmartPreview = async () => {
+    setApplyError(null);
+    try {
+      const plan = await smartPreview.mutateAsync({ weekStart: weekStartStr });
+      setSmartPlan(plan);
+    } catch {
+      // エラーは Alert で表示する。
     }
   };
 
@@ -344,6 +391,9 @@ export function useInbound({
     goToThisWeek,
     // smart 取り込み
     smartPreview,
+    retrySmartPreview,
+    /** 画面へ戻って、実行中だった訪問の読み込みの待ち受けを再開している */
+    resumed,
     applySmart,
     smartPlan,
     sheetId,
