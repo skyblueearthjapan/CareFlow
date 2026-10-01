@@ -636,6 +636,21 @@ export const SmartInboundPreviewSchema = z.object({
 });
 export type SmartInboundPreview = z.infer<typeof SmartInboundPreviewSchema>;
 
+/**
+ * 統合プレビューのバックグラウンド実行の状況 (smart-preview-async-2026-10-01)。
+ * completed のとき preview に同期版と同じ SmartInboundPreview が入る。
+ */
+export const SmartInboundPreviewStatusSchema = z.object({
+  jobId: z.string().uuid(),
+  weekStart: z.string(),
+  status: z.enum(['running', 'completed', 'failed']),
+  error: z.string().nullable().optional(),
+  preview: SmartInboundPreviewSchema.nullable().optional(),
+  /** completed のときの完了時刻 (「HH:MM に読み込んだ結果です」に使う) */
+  completedAt: z.string().nullable().optional(),
+});
+export type SmartInboundPreviewStatus = z.infer<typeof SmartInboundPreviewStatusSchema>;
+
 export const SmartInboundApplyRequestSchema = z.object({
   weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   sheetId: z.string().uuid().nullable(),

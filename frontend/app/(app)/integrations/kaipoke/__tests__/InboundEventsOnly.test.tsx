@@ -21,6 +21,7 @@ vi.mock('@/lib/queries/integrations', () => ({
   useInboundSnapshots: () => ({ ...idleQuery, data: { snapshots: [] } }),
   useKaipokeJobs: () => ({ ...idleQuery, data: { items: [], total: 0, limit: 50, offset: 0 } }),
   useRestoreInboundSnapshot: () => ({ ...idleMutation }),
+  useActiveSmartInboundPreview: () => ({ ...idleQuery, data: null }),
   useSmartInboundPreview: () => ({
     ...idleMutation,
     mutateAsync: smartMutateAsync,
@@ -93,7 +94,9 @@ describe('InboundControls — 取り込む対象モード', () => {
     const user = userEvent.setup();
     render(<Harness />);
     await user.click(
-      screen.getByRole('button', { name: /❶ カイポケの現況を取得して差分を見る（訪問＋イベント）/ }),
+      screen.getByRole('button', {
+        name: /❶ カイポケの現況を取得して差分を見る（訪問＋イベント）/,
+      }),
     );
     await waitFor(() => expect(eventsMutateAsync).toHaveBeenCalledTimes(1));
     expect(smartMutateAsync).toHaveBeenCalledTimes(1);
@@ -116,9 +119,7 @@ describe('InboundControls — 取り込む対象モード', () => {
     const user = userEvent.setup();
     render(<Harness />);
     // 両方モードで取得 → ❸ボタンが出る
-    await user.click(
-      screen.getByRole('button', { name: /（訪問＋イベント）/ }),
-    );
+    await user.click(screen.getByRole('button', { name: /（訪問＋イベント）/ }));
     await waitFor(() => expect(screen.getByTestId('smart-apply-button')).toBeInTheDocument());
 
     // イベントのみへ切替 → プラン破棄で❸が消える

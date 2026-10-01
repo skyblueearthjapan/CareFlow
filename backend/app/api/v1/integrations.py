@@ -90,6 +90,7 @@ from app.schemas.integrations import (
     SmartInboundApplyResult,
     SmartInboundPreviewRead,
     SmartInboundPreviewRequest,
+    SmartInboundPreviewStatusRead,
     SnapshotRestoreResultRead,
     UnsentEventRead,
     UnsentItemRead,
@@ -107,6 +108,7 @@ from app.services.kaipoke_client import (
     get_kaipoke_client,
 )
 from app.services.patient_status_sync import is_schedulable_status, status_label
+from app.utils.db import try_advisory_xact_lock
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +119,10 @@ INACTIVE_FLAGGED_ACTIONS: frozenset[str] = frozenset({"add", "delete"})
 #: 予実比較ジョブがこの分数を超えて running なら残骸 (実行は ~100s)。
 #: バックグラウンドはプロセスに紐づくため、再起動で決着しないまま残ることがある。
 _PLAN_ACTUAL_STALE_MINUTES = 10
+
+#: 統合プレビュー (smart-preview) のバックグラウンド実行がこの分数を超えて running
+#: なら残骸。月を跨ぐ週でも export 2 本 (~100s) なので、10 分あれば必ず終わっている。
+_SMART_PREVIEW_STALE_MINUTES = 10
 
 router = APIRouter()
 
@@ -426,6 +432,47 @@ async def get_integration_status(
 _ACTIVE_JOB_STATUSES = ("pending", "running")
 
 
+async def _settle_stale_jobs(
+    db: AsyncSession, *, op: str, minutes: int, error: str
+) -> list[KaipokeJob]:
+    """``op`` の実行中ジョブのうち ``minutes`` 分を超えたものを failed に倒し、残りを返す。
+
+    バックグラウンド実行はプロセスに紐づく — デプロイや再起動で消えるとジョブが
+    running のまま残り、**以後ずっと 409 で起動できなくなる**。残骸を倒したら
+    その場でコミットする (後で 409 を返しても掃除が失われないように)。
+    戻り値 = まだ生きている (= 二重起動として弾くべき) ジョブ。
+    params は JSONB のため DB 側で絞らず Python で判定する (SQLite テストとも共通)。
+    """
+    active = (
+        await db.scalars(
+            select(KaipokeJob)
+            .where(KaipokeJob.status.in_(_ACTIVE_JOB_STATUSES))
+            .order_by(KaipokeJob.created_at.desc())
+            .limit(20)
+        )
+    ).all()
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(minutes=minutes)
+    alive: list[KaipokeJob] = []
+    settled = False
+    for job_row in active:
+        if (job_row.params or {}).get("op") != op:
+            continue
+        started = job_row.started_at or job_row.created_at
+        if started is not None and started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        if started is not None and started < cutoff:
+            job_row.status = "failed"
+            job_row.completed_at = now
+            job_row.result_summary = {**(job_row.result_summary or {}), "error": error}
+            settled = True
+        else:
+            alive.append(job_row)
+    if settled:
+        await _commit_or_409(db)
+    return alive
+
+
 async def _notify_apply_result(db, job: KaipokeJob) -> None:
     """apply(本番反映)が失敗/スキップを含んで決着したら管理者へ通知を残す。
 
@@ -506,11 +553,15 @@ async def _reconcile_latest_job(
     # ここで先取りクローズすると result_unknown の completed になって集計が消える。
     # export 2 本の合間は RPA が一瞬 idle に見えるので、この除外が無いと実際に起きる。
     _op = (job.params or {}).get("op")
-    if _op in ("events-preview", "events-outbound", "plan-actual-compare"):
+    # smart-preview (統合プレビュー) も 2026-10-01 からバックグラウンドで決着させる。
+    # 月を跨ぐ週は export 2 本の合間に RPA が idle に見えるので、同じく除外する。
+    # こちらは自前の残骸判定 (_SMART_PREVIEW_STALE_MINUTES = 10 分) に揃える。
+    if _op in ("events-preview", "events-outbound", "plan-actual-compare", "smart-preview"):
         _created = job.created_at
         if _created is not None and _created.tzinfo is None:
             _created = _created.replace(tzinfo=UTC)
-        if _created is not None and datetime.now(UTC) - _created < timedelta(minutes=30):
+        _hold = _SMART_PREVIEW_STALE_MINUTES if _op == "smart-preview" else 30
+        if _created is not None and datetime.now(UTC) - _created < timedelta(minutes=_hold):
             return job
 
     payload = result_payload or {}
@@ -1583,41 +1634,13 @@ async def trigger_plan_actual_compare(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy")
 
     # 同種ジョブの二重起動も止める (export を 2 本ずつ奪い合って両方失敗するのを防ぐ)。
-    # params は JSONB のため DB 側で絞らず Python で判定する (SQLite テストとも共通)。
-    active = (
-        await db.scalars(
-            select(KaipokeJob)
-            .where(KaipokeJob.status.in_(_ACTIVE_JOB_STATUSES))
-            .order_by(KaipokeJob.created_at.desc())
-            .limit(20)
-        )
-    ).all()
-    mine = [j for j in active if (j.params or {}).get("op") == OP]
-
-    # バックグラウンド実行はプロセスに紐づく — デプロイや再起動で消えると
-    # ジョブが running のまま残り、**以後ずっと 409 で起動できなくなる**。
     # 実行は ~100s なので、10 分を超えて動いているものは残骸とみなして掃除する。
-    now = datetime.now(UTC)
-    stale_cutoff = now - timedelta(minutes=_PLAN_ACTUAL_STALE_MINUTES)
-    blocking = []
-    for job_row in mine:
-        started = job_row.started_at or job_row.created_at
-        if started is not None and started.tzinfo is None:
-            started = started.replace(tzinfo=UTC)
-        if started is not None and started < stale_cutoff:
-            job_row.status = "failed"
-            job_row.completed_at = now
-            job_row.result_summary = {
-                **(job_row.result_summary or {}),
-                "error": (
-                    "前回の実行が中断されました（プロセス再起動の可能性）。再実行してください"
-                ),
-            }
-        else:
-            blocking.append(job_row)
-    if mine and not blocking:
-        await _commit_or_409(db)  # 残骸を掃除したので、このまま新規実行へ進む
-
+    blocking = await _settle_stale_jobs(
+        db,
+        op=OP,
+        minutes=_PLAN_ACTUAL_STALE_MINUTES,
+        error="前回の実行が中断されました（プロセス再起動の可能性）。再実行してください",
+    )
     if blocking:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -4749,24 +4772,25 @@ def _smart_held_replace_days(
     return held
 
 
-@router.post(
-    "/smart-inbound-preview",
-    response_model=SmartInboundPreviewRead,
-    summary="日単位ハイブリッド取り込みの統合プレビュー (admin)",
+_SMART_PREVIEW_EMPTY_DETAIL = (
+    "カイポケの現況が0件でした。カイポケにこの週のスケジュールが"
+    "入力されているか確認してください（0件での取り込みは安全のため拒否します）"
 )
-async def smart_inbound_preview(
-    payload: SmartInboundPreviewRequest,
-    db: DbDep,
-    user: Annotated[User, Depends(require_role("admin"))],
-    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
-) -> SmartInboundPreviewRead:
-    """打刻あり日=差分シート作成・なし日=置換dry-run、を1回のexportで実行する。"""
-    from app.services.diff.engine import parse_csv_from_content
-    from app.services.kaipoke.inbound import inbound_week_eligible
-    from app.services.kaipoke.local_diff import build_local_diff, export_current_week_csv
-    from app.services.kaipoke.replace_inbound import replace_week_from_kaipoke
 
-    week_start = payload.week_start
+_SMART_PREVIEW_BUSY_MESSAGE = (
+    "カイポケが別の処理を実行中のため、読み込みを中断しました。"
+    "実行中の処理が終わってから、もう一度お試しください。"
+)
+
+
+class _SmartPreviewEmptyError(Exception):
+    """カイポケの現況が 0 件 (0 件での取り込みは安全のため拒否する)。"""
+
+
+async def _smart_preview_gate(db, week_start: date) -> None:
+    """統合プレビューの入口チェック (月曜日・取り込みゲート)。同期版/非同期版で共通。"""
+    from app.services.kaipoke.inbound import inbound_week_eligible
+
     if week_start.weekday() != 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -4779,55 +4803,43 @@ async def smart_inbound_preview(
             detail=_EVENTS_GATE_DETAIL,
         )
 
-    protected_days, replace_days = await _smart_classify(db, week_start)
-    credentials = await _kaipoke_credentials(db)
-    now = datetime.now(UTC)
-    job = KaipokeJob(
-        job_type="fetch",
-        week_start=week_start,
-        params={
-            "op": "smart-preview",
-            "week_start": week_start.isoformat(),
-            "protected_days": [d.isoformat() for d in protected_days],
-        },
-        status="running",
-        started_at=now,
-        created_by_user_id=user.id,
-    )
-    db.add(job)
-    await db.flush()
 
-    try:
-        csv_content = await export_current_week_csv(
-            kaipoke=kaipoke,
-            week_start=week_start,
-            credentials=credentials,
-            db=db,
-            source_op="smart-preview",
-        )
-    except KaipokeBusyError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
-    except KaipokeApiError as exc:
-        job.status = "failed"
-        job.completed_at = datetime.now(UTC)
-        job.result_summary = {"error": str(exc)}
-        await _commit_or_409(db)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+async def _compute_smart_preview(
+    db: AsyncSession,
+    *,
+    kaipoke: KaipokeClient,
+    week_start: date,
+    protected_days: list[date],
+    replace_days: list[date],
+    credentials: dict[str, str] | None,
+    user_id: UUID | None,
+    now: datetime,
+) -> tuple[SmartInboundPreviewRead, dict[str, Any]]:
+    """統合プレビューの本体 (export → 差分シート作成 → 置換 dry-run)。
+
+    同期版 (``POST /smart-inbound-preview``) とバックグラウンド版
+    (``_run_smart_preview_job``) が同じ処理を通るように切り出したもの。
+    差分シートは ``db`` に書くだけでコミットはしない (呼び出し側がジョブと一緒に
+    コミットする)。export の失敗は ``KaipokeBusyError`` / ``KaipokeApiError`` の
+    まま、0 件は ``_SmartPreviewEmptyError`` で返す。
+
+    戻り値は (画面に返すプレビュー, ジョブの ``result_summary`` に入れる要約)。
+    """
+    from app.services.diff.engine import parse_csv_from_content
+    from app.services.kaipoke.local_diff import build_local_diff, export_current_week_csv
+    from app.services.kaipoke.replace_inbound import replace_week_from_kaipoke
+
+    csv_content = await export_current_week_csv(
+        kaipoke=kaipoke,
+        week_start=week_start,
+        credentials=credentials,
+        db=db,
+        source_op="smart-preview",
+    )
 
     entries = parse_csv_from_content(csv_content, "kaipoke")
     if not entries:
-        job.status = "failed"
-        job.completed_at = datetime.now(UTC)
-        job.result_summary = {"error": "empty kaipoke csv"}
-        await _commit_or_409(db)
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                "カイポケの現況が0件でした。カイポケにこの週のスケジュールが"
-                "入力されているか確認してください（0件での取り込みは安全のため拒否します）"
-            ),
-        )
+        raise _SmartPreviewEmptyError
 
     # 差分パート (打刻あり日) — シートは週全体で作り、適用時に日で絞る
     sheet = None
@@ -4850,7 +4862,7 @@ async def smart_inbound_preview(
             month=month,
             week_start=week_start,
             week_end=week_start + timedelta(days=6),
-            user_id=user.id,
+            user_id=user_id,
             kaipoke_csv=csv_content,
         )
         await db.flush()  # items の id/include を確定させてから held 判定に使う
@@ -4887,18 +4899,14 @@ async def smart_inbound_preview(
         )
         replace_read = _replace_result_read(plan, None)
 
-    job.status = "completed"
-    job.completed_at = datetime.now(UTC)
-    job.result_summary = {
+    summary: dict[str, Any] = {
         "protected_days": len(protected_days),
         "replace_days": len(replace_days),
         "diff_summary": diff_summary,
         "replace_wiped": replace_read.wiped if replace_read else 0,
         "replace_inserted": replace_read.inserted if replace_read else 0,
     }
-    await _commit_or_409(db)
-
-    return SmartInboundPreviewRead(
+    preview = SmartInboundPreviewRead(
         week_start=week_start,
         week_end=week_start + timedelta(days=5),
         protected_days=protected_days,
@@ -4907,6 +4915,466 @@ async def smart_inbound_preview(
         diff_summary=diff_summary,
         replace=replace_read,
     )
+    return preview, summary
+
+
+@router.post(
+    "/smart-inbound-preview",
+    response_model=SmartInboundPreviewRead,
+    summary="日単位ハイブリッド取り込みの統合プレビュー (admin)",
+)
+async def smart_inbound_preview(
+    payload: SmartInboundPreviewRequest,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> SmartInboundPreviewRead:
+    """打刻あり日=差分シート作成・なし日=置換dry-run、を1回のexportで実行する。
+
+    **旧画面との互換のために残している (2026-10-01)**。月を跨ぐ週は export を
+    2 本直列に回すため ~100s かかり、Cloudflare の ~100s 制限で 524 になる。
+    新しい画面は ``POST /smart-inbound-preview/start`` (202) →
+    ``GET /smart-inbound-preview/status/{job_id}`` のポーリングを使う。
+    """
+    week_start = payload.week_start
+    await _smart_preview_gate(db, week_start)
+
+    protected_days, replace_days = await _smart_classify(db, week_start)
+    credentials = await _kaipoke_credentials(db)
+    now = datetime.now(UTC)
+    job = KaipokeJob(
+        job_type="fetch",
+        week_start=week_start,
+        params={
+            "op": "smart-preview",
+            "week_start": week_start.isoformat(),
+            "protected_days": [d.isoformat() for d in protected_days],
+        },
+        status="running",
+        started_at=now,
+        created_by_user_id=user.id,
+    )
+    db.add(job)
+    await db.flush()
+
+    try:
+        preview, summary = await _compute_smart_preview(
+            db,
+            kaipoke=kaipoke,
+            week_start=week_start,
+            protected_days=protected_days,
+            replace_days=replace_days,
+            credentials=credentials,
+            user_id=user.id,
+            now=now,
+        )
+    except KaipokeBusyError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy") from exc
+    except KaipokeApiError as exc:
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": str(exc)}
+        await _commit_or_409(db)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except _SmartPreviewEmptyError as exc:
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {"error": "empty kaipoke csv"}
+        await _commit_or_409(db)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=_SMART_PREVIEW_EMPTY_DETAIL,
+        ) from exc
+
+    job.status = "completed"
+    job.completed_at = datetime.now(UTC)
+    job.result_summary = summary
+    await _commit_or_409(db)
+
+    return preview
+
+
+# --- 統合プレビューのバックグラウンド実行 (smart-preview-async-2026-10-01) -----
+
+
+def _is_smart_preview_async(job: KaipokeJob) -> bool:
+    params = job.params or {}
+    return params.get("op") == "smart-preview" and bool(params.get("async"))
+
+
+def _job_started_before(job: KaipokeJob, cutoff: datetime) -> bool:
+    started = job.started_at or job.created_at
+    if started is not None and started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    return started is not None and started < cutoff
+
+
+_SMART_PREVIEW_ORPHAN_ERROR = (
+    "前回の読み込みが中断されました（プロセス再起動の可能性）。もう一度読み込んでください"
+)
+
+_SMART_PREVIEW_CRASH_MESSAGE = (
+    "訪問の読み込み中に予期しないエラーが発生しました。"
+    "もう一度お試しいただき、続く場合は管理者にお知らせください"
+)
+
+_SMART_PREVIEW_START_BUSY_MESSAGE = (
+    "カイポケが別の処理を実行中です。実行中の処理が終わってから、もう一度お試しください"
+)
+
+#: 統合プレビューの「確認して開始」を直列にする advisory lock のキー ("SMRTPRVW")。
+_SMART_PREVIEW_START_LOCK_KEY = 0x534D5254_50525657
+
+#: 画面へ戻ったときに、完了済みの結果を見せる期間 (PO 決定 2026-10-01)。
+_SMART_PREVIEW_RESTORE_MINUTES = 30
+
+#: この週の結果を古くする「後から走った取り込み」の op (dry-run はジョブを残さない)。
+_INBOUND_APPLY_OPS = ("smart-apply", "replace-inbound", "apply-inbound")
+
+
+async def _settle_smart_preview_failed(db: AsyncSession, job_id: UUID, error: str) -> None:
+    """バックグラウンドのジョブを failed で決着させる (失敗した書込は捨ててから)。
+
+    取消済み (cancelled) のジョブはそのまま残す — 人が止めた事実を上書きしない。
+    """
+    await db.rollback()
+    job = await db.get(KaipokeJob, job_id)
+    if job is None or job.status not in _ACTIVE_JOB_STATUSES:
+        return
+    job.status = "failed"
+    job.completed_at = datetime.now(UTC)
+    job.result_summary = {**(job.result_summary or {}), "error": error}
+    await db.commit()
+
+
+async def _run_smart_preview_job(
+    *,
+    job_id: UUID,
+    week_start: date,
+    protected_days: list[date],
+    replace_days: list[date],
+    user_id: UUID | None,
+    client: KaipokeClient,
+    credentials: dict[str, str] | None,
+) -> None:
+    """統合プレビューを実行し、``job_id`` のジョブを completed/failed で決着させる。
+
+    plan-actual-compare (``run_plan_actual_job``) と同じ作り: リクエストのセッションは
+    応答時点で閉じているので自前のセッションで動き、どの経路で落ちても running の
+    まま残さない。完了時は ``result_summary.preview`` に同期版と同じ応答
+    (``SmartInboundPreviewRead``) を丸ごと入れる — 画面はそれをそのまま表示し、
+    ``sheetId`` を持って ❸取り込む (apply) へ進む。
+    """
+    from app.db.session import get_session_factory
+
+    factory = get_session_factory()
+    async with factory() as db:
+        try:
+            preview, summary = await _compute_smart_preview(
+                db,
+                kaipoke=client,
+                week_start=week_start,
+                protected_days=protected_days,
+                replace_days=replace_days,
+                credentials=credentials,
+                user_id=user_id,
+                now=datetime.now(UTC),
+            )
+            # 行を取り直してロックしてから決着させる (取消との競合を閉じる。
+            # PostgreSQL は FOR UPDATE・SQLite は無視される)。
+            job = await db.scalar(
+                select(KaipokeJob)
+                .where(KaipokeJob.id == job_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if job is None or job.status not in _ACTIVE_JOB_STATUSES:
+                # 実行中に取消された (または消えた) — 作った差分シートも
+                # 取得した現況CSVのスナップショットも残さない。
+                await db.rollback()
+                return
+            job.status = "completed"
+            job.completed_at = datetime.now(UTC)
+            job.result_summary = {
+                **summary,
+                "preview": preview.model_dump(mode="json", by_alias=True),
+            }
+            await db.commit()
+        except KaipokeBusyError:
+            logger.warning("smart-preview job %s aborted: kaipoke busy", job_id)
+            await _settle_smart_preview_failed(db, job_id, _SMART_PREVIEW_BUSY_MESSAGE)
+        except KaipokeApiError as exc:
+            logger.warning("smart-preview job %s failed: %s", job_id, exc)
+            await _settle_smart_preview_failed(
+                db, job_id, f"カイポケからの読み込みに失敗しました: {exc}"
+            )
+        except _SmartPreviewEmptyError:
+            await _settle_smart_preview_failed(db, job_id, _SMART_PREVIEW_EMPTY_DETAIL)
+        except HTTPException as exc:
+            await _settle_smart_preview_failed(db, job_id, str(exc.detail))
+        except Exception:  # noqa: BLE001 — 黙って死なせない (running が残る)
+            # 詳細はログ (スタックトレース) に残し、画面には決まった文言だけを出す。
+            logger.exception("smart-preview job %s crashed", job_id)
+            await _settle_smart_preview_failed(db, job_id, _SMART_PREVIEW_CRASH_MESSAGE)
+
+
+@router.post(
+    "/smart-inbound-preview/start",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="統合プレビューをバックグラウンドで開始する (202・admin)",
+)
+async def smart_inbound_preview_start(
+    payload: SmartInboundPreviewRequest,
+    background: BackgroundTasks,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> JobAccepted:
+    """統合プレビューのジョブを立ててすぐ 202 を返し、実体はバックグラウンドで走らせる。
+
+    月を跨ぐ週は export を 2 本直列に回すため ~100s かかり、同期版は Cloudflare の
+    ~100s 制限で 524 になる。そこで plan-actual-compare と同じく「起動 (202) →
+    ``GET /smart-inbound-preview/status/{job_id}`` のポーリング」に分ける。
+
+    守り (plan-actual-compare と同じ):
+      * 月曜日・取り込みゲートは同期で 422 を返す (202 の後に落とさない)。
+      * RPA が塞がっていれば 409 (kaipoke busy)。
+      * 統合プレビューが既に動いていれば 409 (export を奪い合って両方失敗するのを防ぐ)。
+      * 10 分を超えて running のものは残骸 (プロセス再起動) とみなし failed にして進む。
+    """
+    week_start = payload.week_start
+    await _smart_preview_gate(db, week_start)
+
+    try:
+        raw = await kaipoke.status()
+    except KaipokeApiError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    if bool((raw.get("current_task") or {}).get("running")):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=_SMART_PREVIEW_START_BUSY_MESSAGE
+        )
+
+    # 残骸の掃除 (コミット済み) → 二重起動の確認。
+    _raise_if_smart_preview_running(await _settle_smart_preview_stale(db))
+
+    # 「確認して開始」を直列にする: 2 人が同時に押しても 202 は 1 人だけ。
+    # transaction 単位の lock なので、下の commit で自動的に外れる。
+    if not await try_advisory_xact_lock(db, _SMART_PREVIEW_START_LOCK_KEY):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "ほかの方が訪問の読み込みを開始しています。少し待ってから、もう一度お試しください"
+            ),
+        )
+    _raise_if_smart_preview_running(await _settle_smart_preview_stale(db))
+
+    protected_days, replace_days = await _smart_classify(db, week_start)
+    credentials = await _kaipoke_credentials(db)
+
+    # running でコミットしてから 202 (バックグラウンドは自前のセッションで読む)。
+    job = KaipokeJob(
+        job_type="fetch",
+        week_start=week_start,
+        params={
+            "op": "smart-preview",
+            "week_start": week_start.isoformat(),
+            "protected_days": [d.isoformat() for d in protected_days],
+            "async": True,
+        },
+        status="running",
+        started_at=datetime.now(UTC),
+        created_by_user_id=user.id,
+    )
+    db.add(job)
+    await _commit_or_409(db)
+
+    # BackgroundTasks を使う理由は trigger_plan_actual_compare と同じ (セッションの寿命)。
+    background.add_task(
+        _run_smart_preview_job,
+        job_id=job.id,
+        week_start=week_start,
+        protected_days=protected_days,
+        replace_days=replace_days,
+        user_id=user.id,
+        client=kaipoke,
+        credentials=credentials,
+    )
+    return JobAccepted(job_id=job.id, kaipoke_job_id=None, status="running")
+
+
+async def _settle_smart_preview_stale(db: AsyncSession) -> list[KaipokeJob]:
+    return await _settle_stale_jobs(
+        db,
+        op="smart-preview",
+        minutes=_SMART_PREVIEW_STALE_MINUTES,
+        error=_SMART_PREVIEW_ORPHAN_ERROR,
+    )
+
+
+def _raise_if_smart_preview_running(alive: list[KaipokeJob]) -> None:
+    if not alive:
+        return
+    other = alive[0].week_start
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            f"訪問の読み込みが既に実行中です（{other.month}/{other.day} の週）。"
+            "完了してからもう一度お試しください"
+            f"（{_SMART_PREVIEW_STALE_MINUTES} 分以上終わらない場合は、連携画面で"
+            "実行中のジョブを取消してください）。"
+        ),
+    )
+
+
+async def _smart_preview_status_read(
+    db: AsyncSession, job: KaipokeJob
+) -> SmartInboundPreviewStatusRead:
+    """ジョブ行を画面向けの状況に読み替える (残骸の running はここでも failed に倒す)。"""
+    summary = job.result_summary or {}
+    if job.status in _ACTIVE_JOB_STATUSES:
+        cutoff = datetime.now(UTC) - timedelta(minutes=_SMART_PREVIEW_STALE_MINUTES)
+        if not _job_started_before(job, cutoff):
+            return SmartInboundPreviewStatusRead(
+                job_id=job.id, week_start=job.week_start, status="running"
+            )
+        # プロセス再起動でバックグラウンドが消えた — 画面を永遠に待たせない。
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        job.result_summary = {**summary, "error": _SMART_PREVIEW_ORPHAN_ERROR}
+        await _commit_or_409(db)
+        return SmartInboundPreviewStatusRead(
+            job_id=job.id,
+            week_start=job.week_start,
+            status="failed",
+            error=_SMART_PREVIEW_ORPHAN_ERROR,
+        )
+    stored = summary.get("preview")
+    if job.status == "completed" and isinstance(stored, dict):
+        return SmartInboundPreviewStatusRead(
+            job_id=job.id,
+            week_start=job.week_start,
+            status="completed",
+            preview=SmartInboundPreviewRead.model_validate(stored),
+            completed_at=job.completed_at,
+        )
+    if job.status == "cancelled":
+        error = "読み込みは取り消されました。もう一度読み込んでください"
+    elif job.status == "completed":
+        # preview 無しの completed = 汎用の後始末が先に閉じた等。結果は残っていない。
+        error = "読み込みの結果を確認できませんでした。もう一度読み込んでください"
+    else:
+        error = str(summary.get("error") or "訪問の読み込みに失敗しました")
+    return SmartInboundPreviewStatusRead(
+        job_id=job.id, week_start=job.week_start, status="failed", error=error
+    )
+
+
+@router.get(
+    "/smart-inbound-preview/status/{job_id}",
+    response_model=SmartInboundPreviewStatusRead,
+    summary="統合プレビューのバックグラウンド実行の状況 (admin)",
+)
+async def smart_inbound_preview_status(
+    job_id: UUID,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+) -> SmartInboundPreviewStatusRead:
+    """ポーリング用 (RPA には触らない・軽量)。completed なら preview を返す。"""
+    job = await db.scalar(select(KaipokeJob).where(KaipokeJob.id == job_id))
+    if job is None or not _is_smart_preview_async(job):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="訪問の読み込みジョブが見つかりません",
+        )
+    return await _smart_preview_status_read(db, job)
+
+
+async def _smart_preview_restorable(db: AsyncSession, job: KaipokeJob) -> bool:
+    """完了済みの結果を、画面へ戻ったときに見せてよいか (PO 決定 2026-10-01)。
+
+    * 完了から ``_SMART_PREVIEW_RESTORE_MINUTES`` 分以内
+    * 差分シートがまだ取り込まれていない (applied / applying でない)
+    * その後にこの週の取り込み (smart-apply 等) が走っていない
+    のすべてを満たすときだけ。❸取り込むは実行時に分類と取得をやり直すので、
+    古い結果を見せても適用内容は最新になる (表示は読み込んだ時刻を添える)。
+    """
+    stored = (job.result_summary or {}).get("preview")
+    completed = job.completed_at
+    if job.status != "completed" or not isinstance(stored, dict) or completed is None:
+        return False
+    if completed.tzinfo is None:
+        completed = completed.replace(tzinfo=UTC)
+    if datetime.now(UTC) - completed > timedelta(minutes=_SMART_PREVIEW_RESTORE_MINUTES):
+        return False
+    sheet_id = _safe_uuid(stored.get("sheetId"))
+    if sheet_id is not None:
+        sheet = await db.get(CorrectionSheet, sheet_id)
+        if sheet is None or sheet.status in ("applied", "applying"):
+            return False
+    # 時刻の比較は Python 側で行う (タイムゾーン有無・精度の差を DB に持ち込まない)。
+    applies = (
+        await db.scalars(
+            select(KaipokeJob)
+            .where(
+                KaipokeJob.week_start == job.week_start,
+                KaipokeJob.status == "completed",
+                KaipokeJob.id != job.id,
+            )
+            .order_by(KaipokeJob.created_at.desc())
+            .limit(50)
+        )
+    ).all()
+    for other in applies:
+        if (other.params or {}).get("op") not in _INBOUND_APPLY_OPS:
+            continue
+        other_at = other.completed_at or other.created_at
+        if other_at is not None and other_at.tzinfo is None:
+            other_at = other_at.replace(tzinfo=UTC)
+        if other_at is None or other_at >= completed:
+            return False
+    return True
+
+
+@router.get(
+    "/smart-inbound-preview/active",
+    response_model=SmartInboundPreviewStatusRead | None,
+    summary="指定週の統合プレビュー (実行中、または 30 分以内に完了したもの・admin)",
+)
+async def smart_inbound_preview_active(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    week_start: Annotated[date, Query(alias="weekStart")],
+) -> SmartInboundPreviewStatusRead | None:
+    """画面を離れて戻ってきたときに使う。
+
+    * 実行中のジョブがあれば running を返す (画面は待ち受けを再開する)。
+    * なければ、30 分以内に完了した最新の結果を completed で返す
+      (未取り込み・その後の取り込みなし、のときだけ)。画面は読み込んだ時刻を添えて表示する。
+    * どちらもなければ null (残骸の running は failed に倒したうえで null)。
+    """
+    rows = (
+        await db.scalars(
+            select(KaipokeJob)
+            .where(KaipokeJob.week_start == week_start)
+            .order_by(KaipokeJob.created_at.desc())
+            .limit(50)
+        )
+    ).all()
+    mine = [j for j in rows if _is_smart_preview_async(j)]
+    for job in mine:
+        if job.status not in _ACTIVE_JOB_STATUSES:
+            continue
+        read = await _smart_preview_status_read(db, job)
+        if read.status == "running":
+            return read
+    for job in mine:  # 新しい順 — 最新の完了だけを候補にする
+        if job.status == "completed":
+            if await _smart_preview_restorable(db, job):
+                return await _smart_preview_status_read(db, job)
+            return None
+    return None
 
 
 async def _fail_smart_apply(

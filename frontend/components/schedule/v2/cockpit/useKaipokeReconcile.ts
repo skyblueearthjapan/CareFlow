@@ -24,6 +24,7 @@ import * as React from 'react';
 import { toast } from 'sonner';
 
 import { ApiError } from '@/lib/api-client';
+import { isSmartPreviewDetached } from '@/lib/kaipokeOps';
 import {
   useApplyEventsInbound,
   useApplyInbound,
@@ -188,6 +189,8 @@ export function useKaipokeReconcile({
       await fetchInboundDiff(true);
       onReadyRef.current?.();
     } catch (err) {
+      // 画面を離れて訪問の読み込みの待ち受けをやめただけ = 失敗として出さない。
+      if (isSmartPreviewDetached(err)) return;
       setError(msg(err) || '突合の取得に失敗しました');
       toast.error(`突合の取得に失敗しました: ${msg(err)}`);
       setPhase('error');

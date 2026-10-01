@@ -9,6 +9,7 @@
  */
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { apiErrorMessage } from '@/lib/api/errorMessage';
 import {
   Dialog,
   DialogContent,
@@ -35,6 +36,14 @@ const EVENT_ACTION_META: Record<string, { label: string; cls: string }> = {
   delete: { label: '削除', cls: 'bg-error-bg text-error' },
 };
 
+/** ISO 日時 → 'HH:MM' (端末の時刻で表示)。読めなければ '--:--'。 */
+function fmtClock(iso: string): string {
+  // BE はタイムゾーン無しの UTC で返すことがあるので、無ければ UTC とみなす。
+  const d = new Date(/([zZ]|[+-]\d{2}:?\d{2})$/.test(iso) ? iso : `${iso}Z`);
+  if (Number.isNaN(d.getTime())) return '--:--';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 export function InboundControls({ vm }: { vm: InboundVm }) {
   const {
     busy,
@@ -47,6 +56,9 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
     changeWeek,
     goToThisWeek,
     smartPreview,
+    retrySmartPreview,
+    resumed,
+    restoredAt,
     smartPlan,
     eventsPlan,
     eventsError,
@@ -267,17 +279,29 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                 : '❶ カイポケの現況を取得して差分を見る（訪問＋イベント）'}
           </Button>
           {fetching && (
-            <p className="text-xs text-text-muted">
-              {eventsOnly
-                ? 'カイポケからイベント（個別業務）を取得しています。約1分かかります。'
-                : 'カイポケから訪問とイベント（個別業務）を順番に取得しています。合計で約2分かかります。'}
+            <p className="text-xs text-text-muted" role="status">
+              {smartPreview.isPending
+                ? `${resumed ? '前回の読み込みを再開しました。' : ''}カイポケから予定を読み込んでいます（1〜2 分かかることがあります）。この画面を離れても読み込みは続きます。`
+                : 'カイポケからイベント（個別業務）を取得しています。約1分かかります。'}
             </p>
           )}
-          {smartPreview.isError && (
+          {smartPreview.isError && !smartPreview.isPending && (
             <Alert variant="destructive">
               <AlertTitle>訪問の取得に失敗しました</AlertTitle>
               <AlertDescription>
-                {smartPreview.error instanceof Error ? smartPreview.error.message : '不明なエラー'}
+                <span className="whitespace-pre-line">
+                  {apiErrorMessage(smartPreview.error, '不明なエラー')}
+                </span>
+                <div className="mt-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void retrySmartPreview()}
+                    disabled={!credentialsConfigured || !eligible || fetching || applying || busy}
+                  >
+                    もう一度読み込む
+                  </Button>
+                </div>
               </AlertDescription>
             </Alert>
           )}
@@ -289,6 +313,24 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                 {smartPlan ? ' — 訪問の差分は取得済みのため、訪問だけ取り込めます。' : ''}
               </AlertDescription>
             </Alert>
+          )}
+
+          {/* 画面へ戻ったとき、離れている間に完了していた結果 (PO 決定 2026-10-01) */}
+          {smartPlan && restoredAt && (
+            <div
+              className="flex flex-wrap items-center gap-2 text-xs text-text-secondary"
+              data-testid="smart-restored-note"
+            >
+              <span>{fmtClock(restoredAt)} に読み込んだ結果です</span>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void runDiff()}
+                disabled={!credentialsConfigured || !eligible || fetching || applying || busy}
+              >
+                読み込み直す
+              </Button>
+            </div>
           )}
 
           {/* ❷ 統合プレビュー */}
