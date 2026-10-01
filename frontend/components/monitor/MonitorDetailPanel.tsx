@@ -27,6 +27,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { VisitRecordingLink } from '@/components/records/VisitRecordingLink';
 import { cn } from '@/lib/utils';
+import { lateDeliveryLabel } from '@/lib/format/actualTime';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 
 import { CourseTagChip, UnplannedChip } from './MonitorTimeline';
@@ -249,6 +250,10 @@ function VisitDetail({
   const adjustNotes = adjustmentNotes(visit);
   const arrivalNote = adjustNotes.find((n) => n.kind === 'arrival');
   const departureNote = adjustNotes.find((n) => n.kind === 'departure');
+  // 圏外で退避して後から届いた打刻 (設計 checkin-late-delivery-design-2026-10-01)。
+  // 注意色にしない — 電波の届かない場所で読んだだけで、看護師の誤りではない。
+  const arrivalLate = lateDeliveryLabel(visit.arrival_late_received_at);
+  const departureLate = lateDeliveryLabel(visit.departure_late_received_at);
   const stay = visit.stay_minutes != null ? `${visit.stay_minutes}分` : '—';
   const delay =
     visit.arrival_delay_min != null
@@ -293,11 +298,7 @@ function VisitDetail({
             : row?.staff_name
               ? `担当: ${row.staff_name}（コース担当）`
               : '担当なし',
-          visit.is_unplanned
-            ? '予定外'
-            : visit.course_tag
-              ? `コース ${visit.course_tag}`
-              : null,
+          visit.is_unplanned ? '予定外' : visit.course_tag ? `コース ${visit.course_tag}` : null,
           visit.course_office_name,
         ]
           .filter(Boolean)
@@ -470,6 +471,7 @@ function VisitDetail({
           <Kv k="予定時刻" v={`${visit.start_time} – ${visit.end_time}`} />
           <Kv k={arrivalNote ? '到着（調整後）' : '到着（QR/GPS）'} v={arrive} />
           {arrivalNote?.readAt && <Kv k="到着の読取時刻" v={arrivalNote.readAt} />}
+          {arrivalLate && <Kv k="到着の記録" v={arrivalLate} />}
           <Kv
             k={
               departureNote?.manual
@@ -481,6 +483,7 @@ function VisitDetail({
             v={depart}
           />
           {departureNote?.readAt && <Kv k="退出の読取時刻" v={departureNote.readAt} />}
+          {departureLate && <Kv k="退出の記録" v={departureLate} />}
           <Kv k="滞在時間" v={stay} />
           <Kv k="到着ズレ" v={delay} />
           {dist != null && (

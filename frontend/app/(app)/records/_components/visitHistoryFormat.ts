@@ -162,6 +162,9 @@ export function isLocationReview(matchStatus: string | null | undefined): boolea
 
 export type RemarkTone = 'success' | 'warning' | 'info' | 'muted' | 'unplanned' | 'adjust';
 
+/** BE の備考「遅れて届いた（10/2 8:30 受信）」の共通部分 (history.REMARK_LATE_DELIVERY)。 */
+export const LATE_DELIVERY_REMARK = '遅れて届いた';
+
 export interface RemarkBadge {
   /** 表の中で見せる短い文言。 */
   label: string;
@@ -195,6 +198,12 @@ export function remarkBadges(
     } else if (remark.startsWith('時刻調整')) {
       adjusted = true;
       out.push({ label: '調整', tone: 'adjust', full: remark });
+    } else if (remark.includes(LATE_DELIVERY_REMARK)) {
+      // 圏外で退避して後から届いた打刻。注意色にしない (看護師の誤りではない)。
+      // 到着・退出が別々に届いた 2 つの備考は 1 つの札にまとめ、全文は title に出す。
+      const late = out.find((b) => b.label === LATE_DELIVERY_REMARK);
+      if (late) late.full = `${late.full}、${remark}`;
+      else out.push({ label: LATE_DELIVERY_REMARK, tone: 'muted', full: remark });
     } else if (remark === 'QRなし') out.push({ label: remark, tone: 'muted' });
     else out.push({ label: remark, tone: 'warning' });
   }

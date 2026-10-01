@@ -19,6 +19,9 @@
  *     {@link flushPending} の戻り値 (`dropped`) で呼び出し元へ返し、トースト等で
  *     利用者へ通知できるようにする。ネット障害 / 5xx は従来どおり保持して再試行。
  *   - staff id で名前空間を分け、共有端末でのユーザ切替時に他人の記録を読まない。
+ *   - **日付をまたいでも捨てない**: サーバは読み取った瞬間 (`payload.at`) の日付の訪問に
+ *     付ける (読み取りから 72 時間まで・checkin-late-delivery-design-2026-10-01)。
+ *     期限を過ぎた記録はサーバが 4xx で理由を返すので、上の「4xx は破棄して通知」に乗る。
  */
 
 const PREFIX = 'checkin-pending:';
@@ -102,6 +105,11 @@ export interface FlushResult {
   remaining: number;
   /** 4xx で破棄した entry (理由付き)。呼び出し元が通知に使う。 */
   dropped: DroppedPending[];
+  /**
+   * 今回の再送で届いた entry (送信順)。前日など読み取りから時間が経って届いた記録を
+   * 呼び出し元が案内するのに使う (checkin-late-delivery-design-2026-10-01)。
+   */
+  sent: PendingEntry[];
 }
 
 function userKey(staffId: string): string {
@@ -276,9 +284,10 @@ export async function flushPending(
   staffId: string,
   post: (entry: PendingEntry) => Promise<unknown>,
 ): Promise<FlushResult> {
-  if (typeof window === 'undefined' || !staffId) return { remaining: 0, dropped: [] };
+  if (typeof window === 'undefined' || !staffId) return { remaining: 0, dropped: [], sent: [] };
   const all = readAll(staffId);
   const dropped: DroppedPending[] = [];
+  const sent: PendingEntry[] = [];
   for (const queued of all) {
     // 送る直前に読み直す。退避から再送までの間に「その場で合わせた時刻」が
     // 書き込まれていることがあり ({@link setPendingAdjustment})、先頭で読んだ控えを
@@ -291,6 +300,7 @@ export async function flushPending(
     try {
       await post(entry);
       removePending(staffId, entry.id);
+      sent.push(entry);
     } catch (err) {
       if (err instanceof DropPendingError) {
         // 再送不可の確定エラー — 取り除き、理由付きで呼び出し元へ返す。
@@ -302,5 +312,5 @@ export async function flushPending(
       sendingIds.delete(entry.id);
     }
   }
-  return { remaining: countPending(staffId), dropped };
+  return { remaining: countPending(staffId), dropped, sent };
 }

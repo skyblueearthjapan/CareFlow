@@ -157,6 +157,9 @@ class MonitorVisit(BaseModel):
     departure_adjusted: bool = False
     # 読み取りの無い退出 (手で入れた時刻)。
     departure_manual: bool = False
+    # 圏外で退避して遅れて届いた打刻なら、その受信時刻 (UTC)。遅れていなければ None。
+    arrival_late_received_at: datetime | None = None
+    departure_late_received_at: datetime | None = None
     # 効いている調整 (到着 → 退出の順)。無ければ空配列。
     adjustments: list[MonitorAdjustment] = Field(default_factory=list)
     # 到着〜退出 (進行中は now 迄)。実績時刻の差。

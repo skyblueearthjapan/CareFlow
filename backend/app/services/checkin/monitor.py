@@ -753,6 +753,12 @@ async def build_monitor(
             arrival_adjusted=arrival_actual is not None and arrival_actual.adjusted,
             departure_adjusted=(departure_actual is not None and departure_actual.adjusted),
             departure_manual=departure_actual is not None and departure_actual.manual,
+            arrival_late_received_at=(
+                arrival_actual.late_received_at if arrival_actual is not None else None
+            ),
+            departure_late_received_at=(
+                departure_actual.late_received_at if departure_actual is not None else None
+            ),
             adjustments=adjustment_payloads(actuals, adjuster_names),
             stay_minutes=stay,
             arrival_delay_min=arrival_delay_min,

@@ -44,7 +44,7 @@ from app.models.visit_checkin import VisitCheckin
 from app.models.visit_review import VisitReview
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.accompaniment import resolve_accompaniment_by_visit
-from app.services.checkin.actuals import checkin_read_at, load_actuals
+from app.services.checkin.actuals import checkin_late_received_at, checkin_read_at, load_actuals
 from app.services.checkin.judge import load_thresholds
 from app.services.checkin.monitor import compute_pair_effective_starts, visit_staff_id_set
 from app.services.constraint_override_notify import collect_constraint_warnings_for_staff
@@ -74,6 +74,19 @@ def _as_jst(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt.astimezone(JST)
+
+
+def _read_label(checkin: VisitCheckin, visit: Visit) -> str:
+    """通知文の時刻 = 読取時刻の ``HH:MM``。
+
+    遅れて届いた打刻 (``actuals.late_received_at``) は、読み取った日と「遅れて届いた」を
+    添える (例「9/30 18:45（遅れて届いた）」)。通知そのものは止めない — 場所違い・代行・
+    予定外・NG は後からでも管理者が知るべき事実なので (checkin-late-delivery-design §5)。
+    """
+    read = _as_jst(checkin_read_at(checkin, visit.visit_date))
+    if checkin_late_received_at(checkin, visit.visit_date) is None:
+        return read.strftime("%H:%M")
+    return f"{read.month}/{read.day} {read:%H:%M}（遅れて届いた）"
 
 
 async def _active_admin_manager_users(db: AsyncSession) -> list[User]:
@@ -163,7 +176,7 @@ async def notify_checkin_mismatch(
     users = await _active_admin_manager_users(db)
     patient_name = getattr(visit.patient, "name", None) or "利用者"
     staff_name = await _resolve_staff_name(db, checkin.staff_id)
-    hhmm = _as_jst(checkin_read_at(checkin)).strftime("%H:%M")
+    hhmm = _read_label(checkin, visit)
     dist = f"{int(checkin.distance_m)}m" if checkin.distance_m is not None else "距離不明"
     title = "場所違いのチェックイン"
     body = f"{patient_name}（{staff_name}）{hhmm} 拠点から離れた場所で打刻（{dist}）"
@@ -240,7 +253,7 @@ async def notify_checkin_substitute(
     patient_name = await _resolve_patient_name(db, visit)
     staff_name = await _resolve_staff_name(db, checkin.staff_id)
     planned_name = await _resolve_staff_name(db, visit.primary_staff_id)
-    hhmm = _as_jst(checkin_read_at(checkin)).strftime("%H:%M")
+    hhmm = _read_label(checkin, visit)
     return await _create_idempotent(
         db,
         users=users,
@@ -268,7 +281,7 @@ async def notify_checkin_unplanned(
     users = await _active_admin_manager_users(db)
     patient_name = await _resolve_patient_name(db, visit)
     staff_name = await _resolve_staff_name(db, checkin.staff_id)
-    hhmm = _as_jst(checkin_read_at(checkin)).strftime("%H:%M")
+    hhmm = _read_label(checkin, visit)
     return await _create_idempotent(
         db,
         users=users,
@@ -303,7 +316,7 @@ async def notify_checkin_ng_staff(
     users = await _active_admin_manager_users(db)
     patient_name = await _resolve_patient_name(db, visit)
     staff_name = await _resolve_staff_name(db, checkin.staff_id)
-    hhmm = _as_jst(checkin_read_at(checkin)).strftime("%H:%M")
+    hhmm = _read_label(checkin, visit)
     kinds = {w.kind for w in warnings}
     if kinds == {"ng_staff"}:
         label = "NGスタッフ"

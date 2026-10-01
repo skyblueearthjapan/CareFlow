@@ -12,6 +12,7 @@
  */
 import { ApiError } from '@/lib/api-client';
 import { fetcher } from '@/lib/api/fetcher';
+import { isLateDelivery, jstDayTime } from '@/lib/format/actualTime';
 import {
   DropPendingError,
   flushPending,
@@ -149,6 +150,27 @@ export function flushCheckinQueue(
     () => release(staffId, next),
   );
   return next;
+}
+
+/**
+ * 再送で届いた記録のうち「遅れて届いた」もの (読み取りから 30 分超・日付をまたいだ) の案内。
+ *
+ * 圏外で退避した記録は、読み取った日の訪問に付く (前日の訪問でも、読み取りから 72 時間
+ * まで・checkin-late-delivery-design-2026-10-01)。今日の一覧には出ない訪問のこともある
+ * ので、「どの読み取りが届いたか」を読み取った日時で伝える。該当が無ければ null。
+ */
+export function lateSentNotice(
+  sent: PendingEntry[],
+  now: Date,
+): { title: string; description: string } | null {
+  const late = sent.filter((e) => isLateDelivery(e.payload.at, now));
+  if (late.length === 0) return null;
+  const first = new Date(late[0]!.payload.at);
+  const more = late.length > 1 ? ` ほか ${late.length - 1} 件` : '';
+  return {
+    title: `遅れて届いた記録を${late.length}件送信しました`,
+    description: `${jstDayTime(first)} に読み取った記録${more}は、読み取った日の訪問に保存しました`,
+  };
 }
 
 function noop(): void {

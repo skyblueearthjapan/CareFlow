@@ -49,6 +49,9 @@ class VisitHistoryItem(BaseModel):
     departure_adjusted: bool = False
     # 読み取りの無い退出 (手で入れた時刻)。
     departure_manual: bool = False
+    # 圏外で退避して遅れて届いた打刻なら、その受信時刻 (UTC)。遅れていなければ null。
+    arrival_late_received_at: datetime | None = None
+    departure_late_received_at: datetime | None = None
     # 効いている調整 (訪問モニターと同じ形)。無ければ空配列。
     adjustments: list[MonitorAdjustment] = Field(default_factory=list)
     # 今のユーザーがこの訪問の実績を合わせられるか (権限はサーバが判定)。

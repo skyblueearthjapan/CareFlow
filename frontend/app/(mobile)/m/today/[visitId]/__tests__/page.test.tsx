@@ -1027,6 +1027,22 @@ describe('実績の行の「時刻を合わせる」(設計 §7-3)', () => {
     expect(screen.queryByTestId('mobile-detail-manual-departure')).toBeNull();
   });
 
+  it('遅れて届いた打刻は「遅れて届いた（受信日時）」を実績の下に添える', () => {
+    setVisit({
+      ...adjustableVisit(),
+      status: 'completed',
+      actual_departure_at: '2026-06-30T04:31:00Z',
+      actual_departure_read_at: '2026-06-30T04:31:00Z',
+      actual_arrival_late_received_at: '2026-06-30T23:30:00Z',
+      actual_departure_late_received_at: '2026-06-30T23:30:20Z',
+    });
+    render(<MobileVisitDetailPage />);
+    // 到着・退出が同じ分に届いたら 1 つにまとめる。
+    const note = screen.getByTestId('mobile-detail-actual-note');
+    expect(note).toHaveTextContent('遅れて届いた（7/1 8:30 受信）');
+    expect(note).not.toHaveTextContent('退出が');
+  });
+
   it('完了後: 「滞在 35 分 ・ 到着を 10 分 調整（読取 13:06）」', () => {
     setVisit({
       ...ADJUSTED,

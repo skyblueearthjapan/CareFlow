@@ -28,6 +28,7 @@ from app.models.revoked_qr_token import RevokedQrToken
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_checkin import VisitCheckin
 from app.schemas.visit_checkin import CheckinCreate
+from app.services.checkin.actuals import LATE_DELIVERY_MAX_AGE, as_utc, device_time_in_window
 from app.utils.geo import haversine_m
 
 # 「当日」判定は JST (Asia/Tokyo) で行う。scanned_at は timestamptz (UTC) なので
@@ -195,8 +196,27 @@ async def _resolve_patient(
 resolve_patient_for_visit = _resolve_patient
 
 
-def _guard_visit(visit: Visit, now: datetime) -> None:
-    """visit が打刻可能か (削除 / 取消 / 当日) を検証する (設計 §2-3, R4)."""
+#: 今日でも、読み取った日でもない訪問への打刻 (409)。
+DETAIL_NOT_TODAY = "この訪問は今日の予定ではないため記録できません"
+
+
+def late_delivery_expired_detail() -> str:
+    """読み取った日の訪問だが、受付の期限 (72 時間) を過ぎた打刻 (409)。"""
+    hours = int(LATE_DELIVERY_MAX_AGE.total_seconds() // 3600)
+    days = f"{hours // 24} 日" if hours % 24 == 0 else f"{hours} 時間"
+    return f"読み取りから {days}を過ぎたため送信できません。管理者に連絡してください"
+
+
+def _guard_visit(visit: Visit, now: datetime, device_time: datetime | None = None) -> None:
+    """visit が打刻可能か (削除 / 取消 / 打刻できる日) を検証する (設計 §2-3, R4).
+
+    打刻できる日 (``checkin-late-delivery-design-2026-10-01.md``):
+
+    * 受信した日 (JST) の訪問 — 従来どおり。``device_time`` が無い・おかしい場合もこれ。
+    * 読み取った日の訪問 — ``device_time`` (QR を読んだ瞬間) が受信の 72 時間前〜
+      120 秒後の範囲にあり、その JST の日付が ``visit_date`` と同じ。圏外で退避して
+      翌日以降に届いた打刻を、読み取った日の訪問に付ける。
+    """
     if visit.deleted_at is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -207,12 +227,21 @@ def _guard_visit(visit: Visit, now: datetime) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail="Visit is cancelled",
         )
-    today_jst = now.astimezone(JST).date()
-    if visit.visit_date != today_jst:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Visit is not scheduled for today (JST)",
-        )
+    if visit.visit_date == now.astimezone(JST).date():
+        return
+    if device_time_in_window(device_time, now):
+        if as_utc(device_time).astimezone(JST).date() == visit.visit_date:
+            return
+    elif device_time is not None and as_utc(device_time) < as_utc(now):
+        if as_utc(device_time).astimezone(JST).date() == visit.visit_date:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=late_delivery_expired_detail(),
+            )
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=DETAIL_NOT_TODAY,
+    )
 
 
 async def judge_checkin(
@@ -233,7 +262,7 @@ async def judge_checkin(
         now = datetime.now(UTC)
 
     patient, source = await _resolve_patient(db, visit, payload.qr_token)
-    _guard_visit(visit, now)
+    _guard_visit(visit, now, payload.device_time)
 
     thresholds = await load_thresholds(db)
     distance_m = compute_distance_m(patient, payload.lat, payload.lng)

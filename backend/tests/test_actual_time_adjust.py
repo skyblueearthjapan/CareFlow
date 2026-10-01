@@ -309,10 +309,20 @@ def test_read_time_falls_back_to_scanned_at() -> None:
     assert resolve_read_time(_at(day - timedelta(days=1), 23, 50), scanned) == scanned
     late = _at(day, 0, 1)
     assert resolve_read_time(_at(day - timedelta(days=1), 23, 59, 30), late) == late
-    # 同じ日でも 18 時間より古い → scanned_at。
+    # 別の日でも、訪問日 (= 読み取った日) と同じなら device_time (圏外で退避して翌日に
+    # 届いた打刻・checkin-late-delivery-design-2026-10-01)。
+    yesterday = day - timedelta(days=1)
+    assert resolve_read_time(_at(yesterday, 23, 50), scanned, yesterday) == _at(yesterday, 23, 50)
+    # 訪問日とも受信日とも違う日 → scanned_at。
+    assert resolve_read_time(_at(yesterday, 23, 50), scanned, day) == scanned
+    # 72 時間より古い → 訪問日が同じでも scanned_at (受付の期限)。2026-10-01 に 18 時間から
+    # 72 時間へ延ばした (同じ日の 18 時間超えは device_time を採る)。
     night = _at(day, 23, 0)
-    assert resolve_read_time(_at(day, 4, 59), night) == night
-    assert resolve_read_time(_at(day, 5, 0), night) == _at(day, 5, 0)
+    assert resolve_read_time(_at(day, 4, 59), night) == _at(day, 4, 59)
+    old = night - timedelta(hours=72, seconds=1)
+    assert resolve_read_time(old, night, old.astimezone(JST).date()) == night
+    edge = night - timedelta(hours=72)
+    assert resolve_read_time(edge, night, edge.astimezone(JST).date()) == edge
 
 
 async def test_visit_read_uses_read_time_and_keeps_latest_checkin_raw(client, db) -> None:

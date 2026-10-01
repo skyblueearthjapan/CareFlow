@@ -108,6 +108,29 @@ describe('MonitorDetailPanel', () => {
     expect(screen.getByText('50分')).toBeInTheDocument();
   });
 
+  it('遅れて届いた到着・退出は「遅れて届いた（受信日時）」を並べる', () => {
+    const v = makeVisit({
+      phase: 'done',
+      alert_level: 'none',
+      arrival_at: '2026-09-29T09:45:00Z',
+      departure_at: '2026-09-29T10:30:00Z',
+      arrival_late_received_at: '2026-09-29T23:30:00Z',
+      departure_late_received_at: '2026-09-29T23:31:00Z',
+    });
+    render(<MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />);
+    expect(screen.getByText('到着の記録')).toBeInTheDocument();
+    expect(screen.getByText('遅れて届いた（9/30 8:30 受信）')).toBeInTheDocument();
+    expect(screen.getByText('退出の記録')).toBeInTheDocument();
+    expect(screen.getByText('遅れて届いた（9/30 8:31 受信）')).toBeInTheDocument();
+  });
+
+  it('遅れていない訪問には出さない', () => {
+    const v = makeVisit({ phase: 'done', alert_level: 'none' });
+    render(<MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />);
+    expect(screen.queryByText('到着の記録')).toBeNull();
+    expect(screen.queryByText(/遅れて届いた/)).toBeNull();
+  });
+
   it('未訪問は即連絡ボックスを表示', () => {
     const v = makeVisit({ phase: 'missing', alert_level: 'missing', arrival: null });
     const row = makeRow({ visits: [v] });

@@ -7,6 +7,8 @@
 
 * **読取時刻** = QR を読んだ時刻。打刻 1 行から決まる (``checkin_read_at``)。
   ``device_time`` が妥当ならそれ、そうでなければ ``scanned_at`` (サーバ受信時刻)。
+  圏外で退避して後から届いた打刻は、読み取った日の訪問に付き、読取時刻は
+  ``device_time`` のまま (``checkin-late-delivery-design-2026-10-01.md``)。
 * **調整** = スタッフまたは管理者が実績の時刻を合わせた記録
   (``visit_time_adjustments`` の 1 行)。
 * **実績時刻** = 画面・集計・レポートが使う時刻。調整があれば調整後、無ければ読取時刻。
@@ -33,7 +35,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -42,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.staff import Staff
 from app.models.user import User
+from app.models.visit import Visit
 from app.models.visit_checkin import VisitCheckin
 from app.models.visit_time_adjustment import ADJUST_REASON_LABELS, VisitTimeAdjustment
 
@@ -52,8 +55,16 @@ ACTUAL_KINDS: tuple[str, ...] = ("arrival", "departure")
 
 #: 端末の時計がこれより進んでいる ``device_time`` は採らない (設計 §3)。
 DEVICE_TIME_FUTURE_TOLERANCE = timedelta(seconds=120)
-#: サーバ受信よりこれ以上古い ``device_time`` は採らない (設計 §3)。
-DEVICE_TIME_MAX_AGE = timedelta(hours=18)
+#: 圏外で退避した打刻を受け付ける期限 (読み取りから受信まで・PO 決定 2026-10-01)。
+#: これより古い ``device_time`` は採らず、前日以前の訪問への打刻も受け付けない
+#: (``checkin-late-delivery-design-2026-10-01.md``)。``checkin_settings`` に列が無いので
+#: 今はモジュール定数 (将来の設定候補)。
+LATE_DELIVERY_MAX_AGE = timedelta(hours=72)
+#: サーバ受信よりこれ以上古い ``device_time`` は採らない (設計 §3・遅れて届いた打刻の期限)。
+DEVICE_TIME_MAX_AGE = LATE_DELIVERY_MAX_AGE
+#: 「遅れて届いた」と表示する目安: 読み取りから受信までがこれを超えた打刻
+#: (日付をまたいだ打刻は時間の長さに依らず「遅れて届いた」)。
+LATE_DELIVERY_MARK_AFTER = timedelta(minutes=30)
 
 
 def as_utc(value: datetime) -> datetime:
@@ -63,29 +74,70 @@ def as_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
-def resolve_read_time(device_time: datetime | None, scanned_at: datetime) -> datetime:
+def device_time_in_window(device_time: datetime | None, scanned_at: datetime) -> bool:
+    """``device_time`` が受信時刻から見て採れる範囲にあるか (日付は問わない)。
+
+    ``scanned_at - 72 時間 <= device_time <= scanned_at + 120 秒``。端末の時計が進んで
+    いる場合と、72 時間より古い読み取りは採らない。
+    """
+    if device_time is None:
+        return False
+    scanned = as_utc(scanned_at)
+    device = as_utc(device_time)
+    return scanned - DEVICE_TIME_MAX_AGE <= device <= scanned + DEVICE_TIME_FUTURE_TOLERANCE
+
+
+def resolve_read_time(
+    device_time: datetime | None, scanned_at: datetime, visit_date: date | None = None
+) -> datetime:
     """読取時刻 (設計 §3)。``device_time`` が妥当ならそれ、そうでなければ ``scanned_at``。
 
-    妥当の条件: ``device_time <= scanned_at + 120 秒`` (端末の時計が進んでいる場合は
-    採らない) かつ ``device_time >= scanned_at - 18 時間`` かつ JST の日付が
-    ``scanned_at`` と同じ。返り値は UTC aware。
+    妥当の条件: ``device_time_in_window`` (受信の 72 時間前〜120 秒後) かつ JST の日付が
+    ``scanned_at`` と同じ **または** 訪問日 ``visit_date`` と同じ (圏外で退避して翌日以降に
+    届いた打刻は、読み取った日の訪問に付く・``checkin-late-delivery-design``)。
+    ``visit_date`` を渡さない呼び出しは受信日だけで比べる。返り値は UTC aware。
     """
     scanned = as_utc(scanned_at)
-    if device_time is None:
+    if not device_time_in_window(device_time, scanned):
         return scanned
     device = as_utc(device_time)
-    if device > scanned + DEVICE_TIME_FUTURE_TOLERANCE:
-        return scanned
-    if device < scanned - DEVICE_TIME_MAX_AGE:
-        return scanned
-    if device.astimezone(JST).date() != scanned.astimezone(JST).date():
-        return scanned
-    return device
+    day = device.astimezone(JST).date()
+    if day == scanned.astimezone(JST).date() or day == visit_date:
+        return device
+    return scanned
 
 
-def checkin_read_at(checkin: VisitCheckin) -> datetime:
-    """打刻 1 行の読取時刻 (UTC aware)。"""
-    return resolve_read_time(checkin.device_time, checkin.scanned_at)
+def late_received_at(
+    device_time: datetime | None, scanned_at: datetime, visit_date: date | None = None
+) -> datetime | None:
+    """「遅れて届いた」打刻なら受信時刻 (UTC aware)、そうでなければ None。
+
+    読取時刻に ``device_time`` を採った打刻のうち、受信が読み取りから 30 分を超えて
+    遅れた、または JST の日付をまたいで届いたもの。``device_time`` を採らなかった
+    (= 読取時刻が受信時刻) 打刻は遅れていない扱い。
+    """
+    scanned = as_utc(scanned_at)
+    read = resolve_read_time(device_time, scanned, visit_date)
+    if read == scanned:
+        return None
+    if (
+        scanned - read > LATE_DELIVERY_MARK_AFTER
+        or read.astimezone(JST).date() != scanned.astimezone(JST).date()
+    ):
+        return scanned
+    return None
+
+
+def checkin_read_at(checkin: VisitCheckin, visit_date: date | None = None) -> datetime:
+    """打刻 1 行の読取時刻 (UTC aware)。``visit_date`` = その打刻が付いた訪問の日付。"""
+    return resolve_read_time(checkin.device_time, checkin.scanned_at, visit_date)
+
+
+def checkin_late_received_at(
+    checkin: VisitCheckin, visit_date: date | None = None
+) -> datetime | None:
+    """打刻 1 行が「遅れて届いた」なら受信時刻 (``late_received_at``)。"""
+    return late_received_at(checkin.device_time, checkin.scanned_at, visit_date)
 
 
 @dataclass
@@ -103,6 +155,8 @@ class KindActual:
     checkin: VisitCheckin | None = None
     #: 効いている調整。
     adjustment: VisitTimeAdjustment | None = None
+    #: 最新の打刻が「遅れて届いた」なら受信時刻 (``late_received_at``)。それ以外は None。
+    late_received_at: datetime | None = None
 
 
 @dataclass
@@ -167,10 +221,12 @@ def _resolve_kind(
     checkin: VisitCheckin | None,
     adjustment: VisitTimeAdjustment | None,
     base_checkin: VisitCheckin | None = None,
+    visit_date: date | None = None,
 ) -> KindActual | None:
     """最新の打刻と、その kind の最新の調整行から実績を決める (設計 §4 の規則)。
 
     ``base_checkin`` は調整の元になった打刻 (``adjustment.base_checkin_id`` の行)。
+    ``visit_date`` は訪問日 (読取時刻と「遅れて届いた」の判定に使う)。
     """
     effective = adjustment
     if effective is not None and effective.adjusted_at is None:
@@ -184,7 +240,8 @@ def _resolve_kind(
         effective = None  # 調整の後に打刻し直した (同じ読み取りの再送は除く)。
     if checkin is None and effective is None:
         return None
-    read_at = checkin_read_at(checkin) if checkin is not None else None
+    read_at = checkin_read_at(checkin, visit_date) if checkin is not None else None
+    late = checkin_late_received_at(checkin, visit_date) if checkin is not None else None
     if effective is not None:
         return KindActual(
             at=as_utc(effective.adjusted_at),
@@ -193,8 +250,9 @@ def _resolve_kind(
             manual=checkin is None,
             checkin=checkin,
             adjustment=effective,
+            late_received_at=late,
         )
-    return KindActual(at=read_at, read_at=read_at, checkin=checkin)
+    return KindActual(at=read_at, read_at=read_at, checkin=checkin, late_received_at=late)
 
 
 async def load_actuals(db: AsyncSession, visit_ids: Collection[UUID]) -> dict[UUID, VisitActuals]:
@@ -208,14 +266,18 @@ async def load_actuals(db: AsyncSession, visit_ids: Collection[UUID]) -> dict[UU
         return {}
     # ``IN`` 句の大きさ: 呼び出し側の最大は打刻履歴の 92 日分 (数千件) の前提。
     ids = list(visit_ids)
-    checkins = (
-        await db.scalars(
-            select(VisitCheckin)
+    # 訪問日は読取時刻の判定に要る (遅れて届いた打刻は読み取った日の訪問に付く)。
+    checkin_rows = (
+        await db.execute(
+            select(VisitCheckin, Visit.visit_date)
+            .join(Visit, Visit.id == VisitCheckin.visit_id)
             .where(VisitCheckin.visit_id.in_(ids))
             # 第 2 キー (id DESC) は同一 scanned_at が並んだときの順序を決定化する。
             .order_by(VisitCheckin.scanned_at.desc(), VisitCheckin.id.desc())
         )
     ).all()
+    checkins = [row for row, _day in checkin_rows]
+    visit_dates: dict[UUID, date] = {row.visit_id: day for row, day in checkin_rows}
     adjustment_rows = (
         await db.scalars(
             select(VisitTimeAdjustment)
@@ -250,7 +312,9 @@ async def load_actuals(db: AsyncSession, visit_ids: Collection[UUID]) -> dict[UU
             if adjustment is not None and adjustment.base_checkin_id is not None
             else None
         )
-        return _resolve_kind(latest.get((visit_id, kind)), adjustment, base)
+        return _resolve_kind(
+            latest.get((visit_id, kind)), adjustment, base, visit_dates.get(visit_id)
+        )
 
     for visit_id in {vid for vid, _kind in (*latest, *latest_adjustment)}:
         arrival = resolve(visit_id, "arrival")
