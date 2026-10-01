@@ -968,3 +968,115 @@ async def test_karte_import_dry_run_does_not_modify_db(client, db) -> None:
     db.expire_all()
     after = len((await db.scalars(select(Patient))).all())
     assert after == before
+
+
+# ---------------------------------------------------------------------------
+# 拠点マスタに無い拠点名 (PO 決定 2026-10-01): 自動割当に回さず行エラー
+# ---------------------------------------------------------------------------
+
+
+def _new_karte_bytes(office, *, office_cell: str | None) -> bytes:
+    wb = build_blank_karte_template(offices=[office], course_templates=[])
+    ws = wb[SHEET_KARTE]
+    ws["G1"] = "P-OFFICE-CHK"
+    ws["B2"] = "拠点 確認"
+    ws["B5"] = "女性"
+    ws["D5"] = "稼働"
+    ws["F5"] = "医療"
+    ws["B6"] = office_cell
+    ws["D6"] = "千葉市稲毛区office-check"
+    ws["B12"] = "60分"
+    ws["D12"] = "終日"
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _standard_office_code(std: bytes) -> object:
+    from app.services.patient_excel.schema import PATIENT_COL_INDEX, SHEET_PATIENTS
+
+    sw = load_workbook(BytesIO(std))
+    return sw[SHEET_PATIENTS].cell(row=2, column=PATIENT_COL_INDEX["office_code"] + 1).value
+
+
+def test_parse_karte_office_cell_rules() -> None:
+    """空欄 = 自動割当 (今までどおり) / 既知の拠点名・コード = そのコード / 不明 = 自動割当に回さない."""
+    office = Office(id=uuid4(), code="INAGE", name="稲毛")
+
+    unknown: list[str] = []
+    std = parse_karte_workbook(
+        _new_karte_bytes(office, office_cell=None),
+        offices=[office],
+        unknown_office_labels_out=unknown,
+    )
+    assert _standard_office_code(std) is None
+    assert unknown == []
+
+    for cell in ("稲毛", "稲毛（自動）", "INAGE"):
+        unknown = []
+        std = parse_karte_workbook(
+            _new_karte_bytes(office, office_cell=cell),
+            offices=[office],
+            unknown_office_labels_out=unknown,
+        )
+        assert _standard_office_code(std) == "INAGE", cell
+        assert unknown == []
+
+    unknown = []
+    std = parse_karte_workbook(
+        _new_karte_bytes(office, office_cell="幕張（自動）"),
+        offices=[office],
+        unknown_office_labels_out=unknown,
+    )
+    # 住所の自動割当 (空欄) にせず、書かれた拠点名のまま渡して行エラーにする。
+    assert _standard_office_code(std) == "幕張"
+    assert unknown == ["幕張"]
+
+
+@pytest.mark.asyncio
+async def test_karte_import_unknown_office_is_row_error(client, db) -> None:
+    from sqlalchemy import select
+
+    admin = await _make_user(db, "k-unknown-office@example.com", "admin")
+    office = await _make_office(db, code="INAGE", name="稲毛")
+    content = _new_karte_bytes(office, office_cell="幕張")
+
+    res = await _upload_karte(client, admin, content=content, dry_run=True)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["patients_error"] == 1
+    row = body["patient_rows"][0]
+    assert row["operation"] == "error"
+    assert "拠点名『幕張』が拠点マスタにありません（行 6）" in row["error_message"]
+    assert "拠点コードが DB に存在しません" not in row["error_message"]
+
+    # 反映してもこの患者は取り込まれない (通常の取り込みと同じく、エラーの行だけ止まる)。
+    res = await _upload_karte(client, admin, content=content, dry_run=False)
+    assert res.status_code == 200, res.text
+    assert res.json()["transaction_applied"] is False
+    db.expire_all()
+    found = (await db.scalars(select(Patient).where(Patient.code == "P-OFFICE-CHK"))).first()
+    assert found is None
+
+
+@pytest.mark.asyncio
+async def test_karte_import_blank_and_known_office_unchanged(client, db) -> None:
+    admin = await _make_user(db, "k-known-office@example.com", "admin")
+    office = await _make_office(db, code="INAGE", name="稲毛")
+
+    # 空欄: 今までどおり (拠点のエラーにならない = 住所からの自動割当に回る)。
+    res = await _upload_karte(
+        client, admin, content=_new_karte_bytes(office, office_cell=None), dry_run=True
+    )
+    assert res.status_code == 200, res.text
+    row = res.json()["patient_rows"][0]
+    assert "拠点" not in (row["error_message"] or "")
+
+    # 既知の拠点名: 新規として通る。
+    res = await _upload_karte(
+        client, admin, content=_new_karte_bytes(office, office_cell="稲毛"), dry_run=True
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["summary"]["patients_error"] == 0
+    assert body["patient_rows"][0]["operation"] == "new"

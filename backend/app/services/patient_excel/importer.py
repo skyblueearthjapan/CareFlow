@@ -115,6 +115,11 @@ VISIT_FREQUENCY_ANY_TO_EN: dict[str, str] = _bidir_enum_map(
 # ---------------------------------------------------------------------------
 
 
+def unknown_office_code_message(office_code: str | None) -> str:
+    """拠点コード列の値が有効な拠点に無いときの行エラー (カルテの取り込みが言い換えに使う)."""
+    return f"拠点コードが DB に存在しません: {office_code!r}"
+
+
 def _is_blank(value: Any) -> bool:
     """空セルの判定. openpyxl は空セルを None で返すが、空文字 / 空白文字も空扱い."""
     if value is None:
@@ -728,7 +733,7 @@ def _parse_patient_row(
         oc = _read_str(raw_office)
         office = offices_by_code.get(oc) if oc else None
         if office is None:
-            errors.append(f"拠点コードが DB に存在しません: {oc!r}")
+            errors.append(unknown_office_code_message(oc))
         else:
             parsed["primary_office_id"] = ("SET", office.id)
 

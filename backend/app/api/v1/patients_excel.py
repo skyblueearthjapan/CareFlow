@@ -35,11 +35,16 @@ from app.services.patient_excel.exporter import (
     load_ng_staff_codes_by_patient,
     workbook_to_bytes,
 )
-from app.services.patient_excel.importer import apply_changes, parse_and_diff
+from app.services.patient_excel.importer import (
+    apply_changes,
+    parse_and_diff,
+    unknown_office_code_message,
+)
 from app.services.patient_excel.karte import (
     build_blank_karte_template,
     build_karte_workbook,
     parse_karte_workbook,
+    unknown_office_label_message,
 )
 from app.services.patient_excel.replace_all import (
     apply_replace_all,
@@ -475,8 +480,12 @@ async def import_karte(
     # カルテ → 標準 2 シート Workbook bytes に変換してから既存パイプラインへ.
     # 拠点セル (拠点名) は offices マスタで office_code に戻す (新しい拠点も解決できる).
     offices = (await db.scalars(select(Office).where(Office.deleted_at.is_(None)))).all()
+    # 拠点マスタに無い拠点名は、住所の自動割当に回さず行エラーにする (PO 決定 2026-10-01)。
+    unknown_office_labels: list[str] = []
     try:
-        standard_bytes = parse_karte_workbook(content, offices=list(offices))
+        standard_bytes = parse_karte_workbook(
+            content, offices=list(offices), unknown_office_labels_out=unknown_office_labels
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -503,6 +512,16 @@ async def import_karte(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"カルテの読み込みに失敗しました: {type(exc).__name__}: {exc}",
         ) from exc
+
+    # 取り込みの行エラー (拠点コードが無い) を、カルテの言葉 (拠点名・行) に言い換える。
+    # 行エラーの扱いは通常の取り込みと同じ: その行 (= この患者) だけ取り込まず、ほかは進む。
+    for label in unknown_office_labels:
+        generic = unknown_office_code_message(label)
+        for row in patient_rows:
+            if row.error_message and generic in row.error_message:
+                row.error_message = row.error_message.replace(
+                    generic, unknown_office_label_message(label)
+                )
 
     transaction_applied = False
     if not dry_run:
