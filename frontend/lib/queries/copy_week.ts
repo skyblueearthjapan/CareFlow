@@ -47,6 +47,8 @@ export const copySkipCountsSchema = z.object({
   kept_conflict: z.number().int(),
   occupied_day: z.number().int(),
   past_day: z.number().int(),
+  kept_same_day: z.number().int(),
+  pair_partner: z.number().int(),
 });
 export type CopySkipCounts = z.infer<typeof copySkipCountsSchema>;
 
@@ -72,6 +74,25 @@ export const missingFixedItemSchema = z.object({
   visits: z.number().int(),
 });
 export type MissingFixedItem = z.infer<typeof missingFixedItemSchema>;
+
+export const needsManualStaffItemSchema = z.object({
+  origin: z.enum(['copy', 'fill']),
+  patient_id: z.string(),
+  patient_name: z.string(),
+  target_date: z.string(),
+  start_time: z.string(),
+  end_time: z.string(),
+  reason: z.string(),
+});
+export type NeedsManualStaffItem = z.infer<typeof needsManualStaffItemSchema>;
+
+export const copyCountsSchema = z.object({
+  copy_count: z.number().int(),
+  fill_count: z.number().int(),
+  replace_count: z.number().int(),
+  needs_manual_count: z.number().int(),
+});
+export type CopyCounts = z.infer<typeof copyCountsSchema>;
 
 export const existingCountsSchema = z.object({
   total: z.number().int(),
@@ -102,6 +123,7 @@ export const copyWeekPreviewSchema = z.object({
   missing_fixed_count: z.number().int(),
   missing_patients_without_visits: z.number().int(),
   existing: existingCountsSchema,
+  needs_manual_staff: z.array(needsManualStaffItemSchema),
   source_holidays: z.array(holidaySchema),
   target_holidays: z.array(holidaySchema),
 });
@@ -120,6 +142,10 @@ export const copyWeekResultSchema = z.object({
   staff_mirrored: z.number().int(),
   snapshot_id: z.string(),
   restorable: z.boolean(),
+  needs_manual_staff: z.array(needsManualStaffItemSchema),
+  actual_counts: copyCountsSchema,
+  expected_counts: copyCountsSchema.nullable().optional(),
+  differs_from_preview: z.boolean(),
   // 中身の形は useAssignStaffOnly と同じ (表示は同じ処理に渡す)。ここでは実行時の
   // 依存を増やさないため型だけ借りる (パネルのテストが assign_staff_only を丸ごと mock する)。
   assign_result: z
@@ -198,7 +224,11 @@ export function useCopyWeekPreview(opts: CopyWeekOptions | null) {
 export function useCopyWeek() {
   const { accessToken, refreshToken } = useAuth();
   const qc = useQueryClient();
-  return useMutation<CopyWeekResult, Error, CopyWeekOptions & { assignStaff: boolean }>({
+  return useMutation<
+    CopyWeekResult,
+    Error,
+    CopyWeekOptions & { assignStaff: boolean; expectedCounts: CopyCounts | null }
+  >({
     mutationFn: async (o) =>
       copyWeekResultSchema.parse(
         await fetcher<unknown>(BASE, {
@@ -210,6 +240,8 @@ export function useCopyWeek() {
             fill_from_fixed: o.fillFromFixed,
             assign_staff: o.assignStaff,
             confirm: true,
+            // 確認画面で見せた件数。実行時と違えば結果に印が付く (differs_from_preview)。
+            expected_counts: o.expectedCounts,
           }),
           accessToken,
           refreshToken,

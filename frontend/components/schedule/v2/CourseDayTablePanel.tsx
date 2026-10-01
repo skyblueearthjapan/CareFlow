@@ -2677,7 +2677,7 @@ export function CourseDayTablePanel({
           })
         : null;
       if (!targetCourse) {
-        toast.warning('drop 先のコースが見つかりません (先に「週を作る」してください)');
+        toast.warning('drop 先のコースが見つかりません (先に「週を作る」でコースを作ってください)');
         return;
       }
       const newStaffId = targetCourse.assigned_staff_id ?? null;
@@ -3437,6 +3437,22 @@ export function CourseDayTablePanel({
     if (res.filled > 0) parts.push(`固定訪問から ${res.filled} 件を補いました`);
     if (res.replaced > 0) parts.push(`今あった ${res.replaced} 件を置き換えました`);
     toast.success(parts.join('。'));
+    if (res.differs_from_preview) {
+      const e = res.expected_counts;
+      const a = res.actual_counts;
+      toast.warning(
+        '確認画面の件数と、実際に写した件数が違いました（その間に週の内容が変わった可能性があります）。' +
+          (e
+            ? `確認画面: 写す ${e.copy_count}・補う ${e.fill_count}・置き換え ${e.replace_count} → 実際: 写す ${a.copy_count}・補う ${a.fill_count}・置き換え ${a.replace_count}。`
+            : '') +
+          '盤面をご確認ください。',
+      );
+    }
+    if (res.needs_manual_staff.length > 0) {
+      toast.warning(
+        `担当を手で付ける必要がある訪問が ${res.needs_manual_staff.length} 件あります（コースなしで入れました）。「担当なし」から割り当ててください。`,
+      );
+    }
     if (res.assign_result) {
       presentAssignResult(res.assign_result);
     } else {
@@ -3444,17 +3460,28 @@ export function CourseDayTablePanel({
     }
   };
 
-  // 「コピー前に戻す」: この週の一番新しい保存が「コピー直前」のときだけ出す
+  // 「コピー前に戻す」: この週の一番新しい保存が「コピー直前」で、まだ戻しておらず、
+  // 置き換えのコピー (足すだけの週は戻せない) で、今の週に打刻が無いときだけ出す
   // (その後に取り込みなどで保存が重なっていたら、連携画面の一覧から戻す)。
   // 仕組みは連携画面の「取り込み前に戻す」と同じ (スナップショットの復元)。
   const weekSnapshotsQuery = useInboundSnapshots(canEdit ? weekStartStr : null);
   const latestSnapshot = weekSnapshotsQuery.data?.snapshots?.[0] ?? null;
-  const copySnapshot = latestSnapshot?.kind === 'copy_week' ? latestSnapshot : null;
+  const copySnapshot =
+    latestSnapshot?.kind === 'copy_week' &&
+    !latestSnapshot.restoredAt &&
+    latestSnapshot.copyMode !== 'add_only' &&
+    !weekSnapshotsQuery.data?.hasCheckins
+      ? latestSnapshot
+      : null;
+  const copySnapshotLabel = useMemo(() => {
+    if (!copySnapshot) return '';
+    const t = new Date(copySnapshot.createdAt);
+    return `${t.getMonth() + 1}/${t.getDate()} ${t.getHours()}:${String(t.getMinutes()).padStart(2, '0')}`;
+  }, [copySnapshot]);
   const restoreSnapshotMut = useRestoreInboundSnapshot();
   const handleUndoCopy = async () => {
     if (!copySnapshot) return;
-    const taken = new Date(copySnapshot.createdAt);
-    const label = `${taken.getMonth() + 1}/${taken.getDate()} ${String(taken.getHours()).padStart(2, '0')}:${String(taken.getMinutes()).padStart(2, '0')}`;
+    const label = copySnapshotLabel;
     if (
       !window.confirm(
         `${weekRangeLabel(weekStartStr)} の週を「${label} 時点（コピー前）」の状態に戻しますか？
@@ -6110,7 +6137,7 @@ export function CourseDayTablePanel({
                       {restoreSnapshotMut.isPending ? (
                         <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
                       ) : null}
-                      ↩ コピー前に戻す
+                      ↩ {copySnapshotLabel} のコピー前に戻す
                     </Button>
                   ) : null}
                   {/* PO 指示 (W-9): 「週次ガイド」を「週を生成」の右隣に配置。
@@ -7182,7 +7209,7 @@ export function CourseDayTablePanel({
                           ? (col, staffId) => {
                               if (!col.course) {
                                 toast.warning(
-                                  '先に「週を作る」を押してコースを作成してから担当を設定してください',
+                                  '先に「週を作る」でコースを作ってから担当を設定してください',
                                 );
                                 return;
                               }

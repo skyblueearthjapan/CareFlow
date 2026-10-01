@@ -20,7 +20,10 @@ const state = vi.hoisted(() => ({
   sources: undefined as unknown,
   preview: undefined as unknown,
   previewCalls: [] as Array<unknown>,
+  previewError: false,
+  refetch: vi.fn(),
   mutateAsync: vi.fn(),
+  reset: vi.fn(),
 }));
 
 vi.mock('@/lib/queries/copy_week', () => ({
@@ -31,14 +34,16 @@ vi.mock('@/lib/queries/copy_week', () => ({
   useCopyWeekPreview: (opts: unknown) => {
     state.previewCalls.push(opts);
     return {
-      data: opts ? state.preview : undefined,
+      data: opts && !state.previewError ? state.preview : undefined,
       isFetching: false,
-      isError: false,
-      error: null,
+      isError: Boolean(opts) && state.previewError,
+      error: state.previewError ? new Error('通信エラー') : null,
+      refetch: state.refetch,
     };
   },
   useCopyWeek: () => ({
     mutateAsync: state.mutateAsync,
+    reset: state.reset,
     isPending: false,
     isError: false,
     error: null,
@@ -108,6 +113,8 @@ function preview(overrides: Partial<CopyWeekPreview> = {}): CopyWeekPreview {
       kept_conflict: 0,
       occupied_day: 0,
       past_day: 0,
+      kept_same_day: 0,
+      pair_partner: 0,
     },
     temp_course_count: 23,
     not_in_fixed: [
@@ -155,6 +162,7 @@ function preview(overrides: Partial<CopyWeekPreview> = {}): CopyWeekPreview {
       keep_past: 0,
       keep_other: 0,
     },
+    needs_manual_staff: [],
     source_holidays: [],
     target_holidays: [],
     ...overrides,
@@ -189,6 +197,9 @@ describe('MakeWeekDialog', () => {
     state.preview = preview();
     state.previewCalls = [];
     state.mutateAsync = vi.fn().mockResolvedValue({ created: 147 });
+    state.previewError = false;
+    state.refetch = vi.fn();
+    state.reset = vi.fn();
   });
 
   it('固定訪問から生成 → onChooseFixed だけ (コピー API は呼ばない)', () => {
@@ -256,6 +267,13 @@ describe('MakeWeekDialog', () => {
       excludeVisitIds: ['v-pair-a', 'v-pair-b'],
       fillFromFixed: true,
       assignStaff: true,
+      // 確認画面で見せた件数を一緒に送る (実行時と違えば結果に印が付く)
+      expectedCounts: {
+        copy_count: 147,
+        fill_count: 0,
+        replace_count: 0,
+        needs_manual_count: 0,
+      },
     });
     await waitFor(() => expect(onCopied).toHaveBeenCalledWith({ created: 147 }));
   });
@@ -278,5 +296,51 @@ describe('MakeWeekDialog', () => {
       '打刻のある週は「コピー前に戻す」を使えません',
     );
     expect(screen.getByTestId('make-week-existing')).toHaveTextContent('すべて残します');
+  });
+
+  it('開くたびに前回の実行状態を消す (copyMut.reset)', () => {
+    renderDialog();
+    expect(state.reset).toHaveBeenCalled();
+  });
+
+  it('担当を手で付ける必要がある訪問を理由つきで出す', () => {
+    state.preview = preview({
+      needs_manual_staff: [
+        {
+          origin: 'copy',
+          patient_id: 'p9',
+          patient_name: '野口 フミ',
+          target_date: '2026-10-05',
+          start_time: '09:00:00',
+          end_time: '09:45:00',
+          reason: '前の週と同じ担当（佐々木）のコースになるため',
+        },
+      ],
+      skipped: { ...preview().skipped, kept_same_day: 2, pair_partner: 1 },
+    });
+    renderDialog();
+    fireEvent.click(screen.getByTestId('make-week-next'));
+    fireEvent.click(screen.getByTestId('make-week-next'));
+    const box = screen.getByTestId('make-week-needs-manual');
+    expect(box).toHaveTextContent('担当を手で付ける必要がある訪問 1 件');
+    expect(box).toHaveTextContent('野口 フミ');
+    expect(box).toHaveTextContent('前の週と同じ担当（佐々木）のコースになるため');
+    expect(screen.getByTestId('make-week-skipped')).toHaveTextContent(
+      '同じ日に残す訪問があるため写さない 2',
+    );
+    expect(screen.getByTestId('make-week-skipped')).toHaveTextContent(
+      '2 名体制の相方を写さないため 1',
+    );
+  });
+
+  it('確認画面の読み込みに失敗したら止めて「もう一度読み込む」', () => {
+    state.previewError = true;
+    renderDialog();
+    fireEvent.click(screen.getByTestId('make-week-next'));
+    fireEvent.click(screen.getByTestId('make-week-next'));
+    expect(screen.getByTestId('make-week-preview-error')).toHaveTextContent('通信エラー');
+    fireEvent.click(screen.getByText('もう一度読み込む'));
+    expect(state.refetch).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('make-week-run')).toBeDisabled();
   });
 });

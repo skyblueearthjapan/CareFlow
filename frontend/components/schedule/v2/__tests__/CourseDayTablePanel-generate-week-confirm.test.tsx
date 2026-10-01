@@ -36,6 +36,7 @@ const genState = vi.hoisted(() => ({
 // 「コピー前に戻す」: その週の保存一覧と復元 (連携画面の「取り込み前に戻す」と同じ API)。
 const snapState = vi.hoisted(() => ({
   snapshots: [] as Array<Record<string, unknown>>,
+  hasCheckins: false,
   restore: vi.fn(),
 }));
 vi.mock('@/lib/queries/integrations', async (importOriginal) => {
@@ -43,7 +44,9 @@ vi.mock('@/lib/queries/integrations', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/queries/integrations')>();
   return {
     ...actual,
-    useInboundSnapshots: () => ({ data: { snapshots: snapState.snapshots } }),
+    useInboundSnapshots: () => ({
+      data: { snapshots: snapState.snapshots, hasCheckins: snapState.hasCheckins },
+    }),
     useRestoreInboundSnapshot: () => ({ mutateAsync: snapState.restore, isPending: false }),
   };
 });
@@ -349,6 +352,7 @@ describe('CourseDayTablePanel — 「週を生成」再実行の確認ダイア�
     capState.pfvCountFor = () => 0;
     genState.mutateAsync = vi.fn().mockResolvedValue({ visits_created: 0 });
     snapState.snapshots = [];
+    snapState.hasCheckins = false;
     snapState.restore = vi.fn().mockResolvedValue({ restored: 3, wiped: 5 });
   });
 
@@ -386,6 +390,7 @@ describe('CourseDayTablePanel — 「コピー前に戻す」(copy-week-design-2
   beforeEach(() => {
     vi.clearAllMocks();
     snapState.snapshots = [];
+    snapState.hasCheckins = false;
     snapState.restore = vi.fn().mockResolvedValue({ restored: 3, wiped: 5 });
   });
 
@@ -402,6 +407,11 @@ describe('CourseDayTablePanel — 「コピー前に戻す」(copy-week-design-2
     ];
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderPanel();
+    // いつのコピーかを見せる (古い保存への押し間違いを減らす)
+    const created = new Date('2026-05-01T01:00:00Z');
+    expect(screen.getByTestId('undo-copy-week-button')).toHaveTextContent(
+      `${created.getMonth() + 1}/${created.getDate()} ${created.getHours()}:00 のコピー前に戻す`,
+    );
     fireEvent.click(screen.getByTestId('undo-copy-week-button'));
     expect(confirmSpy).toHaveBeenCalledTimes(1);
     expect(String(confirmSpy.mock.calls[0]?.[0])).toContain('5/4(月)〜5/10(日) の週');
@@ -429,6 +439,28 @@ describe('CourseDayTablePanel — 「コピー前に戻す」(copy-week-design-2
         createdAt: '2026-05-01T01:00:00Z',
       },
     ];
+    renderPanel();
+    expect(screen.queryByTestId('undo-copy-week-button')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['戻した後', { restoredAt: '2026-05-01T02:00:00Z' }, false],
+    ['足すだけのコピー', { copyMode: 'add_only' }, false],
+    ['今の週に打刻がある', {}, true],
+  ])('%s は出さない', (_label, extra, hasCheckins) => {
+    setupHooks({ visits: [VISIT] });
+    snapState.snapshots = [
+      {
+        id: 'snap-copy',
+        weekStart: '2026-05-04',
+        kind: 'copy_week',
+        visitsCount: 5,
+        createdAt: '2026-05-01T01:00:00Z',
+        copyMode: 'replace',
+        ...extra,
+      },
+    ];
+    snapState.hasCheckins = hasCheckins as boolean;
     renderPanel();
     expect(screen.queryByTestId('undo-copy-week-button')).not.toBeInTheDocument();
   });

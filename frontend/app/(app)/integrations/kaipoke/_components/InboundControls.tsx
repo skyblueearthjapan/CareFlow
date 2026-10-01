@@ -228,7 +228,7 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                   <span className="text-text-muted">
                     {/* 週のコピー (copy-week-design-2026-09-30.md) も同じ仕組みで保存する */}
                     {sn.kind === 'copy_week' ? '週のコピー直前' : '取り込み直前'}・訪問{' '}
-                    {sn.visitsCount} 件
+                    {sn.visitsCount} 件{sn.restoredAt ? '（この時点へ戻したことがあります）' : ''}
                   </span>
                   <Button
                     variant="outline"

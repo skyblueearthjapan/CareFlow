@@ -69,7 +69,9 @@ const SKIP_LABELS: Array<[keyof CopySkipCounts, string]> = [
   ['special_extra', '特別訪問週間の追加分'],
   ['inactive_patient', '止まっている利用者'],
   ['user_excluded', 'ここで外したもの'],
-  ['kept_conflict', '残す訪問と同じ時刻'],
+  ['kept_conflict', '残す取消と同じ時刻'],
+  ['kept_same_day', '同じ日に残す訪問があるため写さない'],
+  ['pair_partner', '2 名体制の相方を写さないため'],
   ['occupied_day', 'その日に訪問がある'],
   ['past_day', '今日より前の日'],
 ];
@@ -100,9 +102,13 @@ export function MakeWeekDialog({
   const [fill, setFill] = useState(false);
   const [assign, setAssign] = useState(true);
 
-  // 開くたびに最初から (前回の選択を持ち越すと別の週へ写す事故の元)。
+  const copyMut = useCopyWeek();
+  const resetCopy = copyMut.reset;
+
+  // 開くたびに最初から (前回の選択・前回のエラーを持ち越すと別の週へ写す事故の元)。
   useEffect(() => {
     if (open) {
+      resetCopy();
       setStep(0);
       setHow(isPastWeek ? 'fixed' : 'copy');
       setSource(null);
@@ -110,7 +116,7 @@ export function MakeWeekDialog({
       setFill(false);
       setAssign(true);
     }
-  }, [open, isPastWeek]);
+  }, [open, isPastWeek, resetCopy]);
 
   const sourcesQuery = useCopyWeekSources(targetWeekStart, open && how === 'copy');
   const sources = useMemo(() => sourcesQuery.data?.items ?? [], [sourcesQuery.data]);
@@ -128,7 +134,6 @@ export function MakeWeekDialog({
       : null,
   );
   const pv = previewQuery.data;
-  const copyMut = useCopyWeek();
 
   const targetLabel = weekRangeLabel(targetWeekStart);
   const total = pv ? pv.copy_count + pv.fill_count : 0;
@@ -152,6 +157,12 @@ export function MakeWeekDialog({
       excludeVisitIds: excluded,
       fillFromFixed: fill,
       assignStaff: assign,
+      expectedCounts: {
+        copy_count: pv.copy_count,
+        fill_count: pv.fill_count,
+        replace_count: pv.existing.replace,
+        needs_manual_count: pv.needs_manual_staff.length,
+      },
     });
     onOpenChange(false);
     onCopied(res);
@@ -347,12 +358,26 @@ export function MakeWeekDialog({
 
           {step === 2 ? (
             !pv ? (
-              <p className="flex items-center gap-2 text-text-muted">
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                {previewQuery.isError
-                  ? `内容を読み込めませんでした: ${previewQuery.error?.message ?? ''}`
-                  : '内容を読み込み中…'}
-              </p>
+              previewQuery.isError ? (
+                <div className="space-y-2" role="alert" data-testid="make-week-preview-error">
+                  <p className="text-error">
+                    内容を読み込めませんでした: {previewQuery.error?.message ?? ''}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void previewQuery.refetch()}
+                    data-testid="make-week-preview-retry"
+                  >
+                    もう一度読み込む
+                  </Button>
+                </div>
+              ) : (
+                <p className="flex items-center gap-2 text-text-muted">
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                  内容を読み込み中…
+                </p>
+              )
             ) : (
               <div className="space-y-4" data-testid="make-week-confirm">
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -433,8 +458,41 @@ export function MakeWeekDialog({
                 {pv.temp_course_count > 0 ? (
                   <p className="text-text-secondary">
                     臨時コースの訪問 {pv.temp_course_count}{' '}
-                    件はコースなし（担当なし）で入ります。自動スタッフ割当では担当が付かないため、「担当なし」から割り当ててください。
+                    件は、利用者の拠点の既定のコース（週を生成するときと同じ決め方）へ入れます。
                   </p>
+                ) : null}
+
+                {pv.needs_manual_staff.length > 0 ? (
+                  <section
+                    className="overflow-hidden rounded-lg border border-border-warning"
+                    data-testid="make-week-needs-manual"
+                  >
+                    <h3 className="flex flex-wrap items-center justify-between gap-2 bg-warning-bg px-4 py-2 text-base font-bold text-warning-strong">
+                      担当を手で付ける必要がある訪問 {pv.needs_manual_staff.length} 件
+                      <small className="text-xs font-normal">
+                        コースなし（担当なし）で入ります。写した後に「担当なし」から割り当ててください。
+                      </small>
+                    </h3>
+                    <ul className="max-h-48 overflow-y-auto px-4 py-1">
+                      {pv.needs_manual_staff.map((m, i) => (
+                        <li
+                          key={`${m.patient_id}-${m.target_date}-${m.start_time}-${i}`}
+                          className="flex flex-wrap items-center gap-x-2.5 border-b border-border-default py-1.5 last:border-b-0"
+                        >
+                          <span className="tnum min-w-[150px] text-text-secondary">
+                            {mdw(m.target_date)} {hm(m.start_time)}–{hm(m.end_time)}
+                          </span>
+                          <span>{m.patient_name}</span>
+                          {m.origin === 'fill' ? (
+                            <span className="text-xs text-text-secondary">
+                              （固定訪問から補う）
+                            </span>
+                          ) : null}
+                          <span className="text-xs text-text-secondary">{m.reason}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
                 ) : null}
 
                 <section className="overflow-hidden rounded-lg border border-border-default">
