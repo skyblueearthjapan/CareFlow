@@ -191,6 +191,10 @@ class VisitRead(VisitBase):
     actual_departure_adjusted: bool = False
     # 読み取りの無い退出 (手で入れた時刻)。
     actual_departure_manual: bool = False
+    # 圏外で退避して遅れて届いた打刻なら、その受信時刻 (UTC)。遅れていなければ None
+    # (``actuals.late_received_at``・checkin-late-delivery-design-2026-10-01)。
+    actual_arrival_late_received_at: datetime | None = None
+    actual_departure_late_received_at: datetime | None = None
     # 今のユーザーがこの訪問の実績を合わせられるか (権限はサーバが判定。画面は
     # これでボタンを出し分ける)。
     actual_adjust_allowed: bool = False

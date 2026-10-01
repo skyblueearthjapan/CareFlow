@@ -24,7 +24,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { Input } from '@/components/ui/input';
 import { toast } from '@/components/ui/sonner';
 import { apiErrorMessage } from '@/lib/api/errorMessage';
-import { jstHm } from '@/lib/format/actualTime';
+import { jstHm, lateDeliveryLabel } from '@/lib/format/actualTime';
 import { useCheckinSettingsPublic } from '@/lib/queries/checkinSettings';
 import { actualTimeLimitsFrom } from '@/lib/schemas/checkinSettings';
 import {
@@ -85,6 +85,11 @@ function Tile({ label, value, note }: { label: string; value: ReactNode; note: s
   );
 }
 
+/** 調整後の注記に「遅れて届いた（…）」を添える（調整してあっても遅れて届いた事実は消さない）。 */
+function withLate(note: string, late: string | null): string {
+  return late ? `${note}・${late}` : note;
+}
+
 /** その側（到着 / 退出）の実績時刻・読取時刻・調整の有無。時刻は JST の `HH:MM`。 */
 function sideOf(row: VisitHistoryRow, kind: ActualTimeKind) {
   const arrival = kind === 'arrival';
@@ -95,7 +100,11 @@ function sideOf(row: VisitHistoryRow, kind: ActualTimeKind) {
   const readAt =
     jstHm(arrival ? row.arrival_read_at : row.departure_read_at) ??
     (adjusted || manual ? null : at);
-  return { at, readAt, adjusted, manual };
+  // 圏外で退避して後から届いた打刻 —「遅れて届いた（10/2 8:30 受信）」。
+  const late = lateDeliveryLabel(
+    arrival ? row.arrival_late_received_at : row.departure_late_received_at,
+  );
+  return { at, readAt, adjusted, manual, late };
 }
 
 export function VisitHistoryDetailDialog({
@@ -141,10 +150,10 @@ export function VisitHistoryDetailDialog({
                 !arr.at
                   ? '打刻なし'
                   : arr.adjusted
-                    ? `調整後（読取 ${arr.readAt ?? '—'}）`
+                    ? withLate(`調整後（読取 ${arr.readAt ?? '—'}）`, arr.late)
                     : qrLess
                       ? '手入力の時刻'
-                      : 'QR 読取時刻'
+                      : (arr.late ?? 'QR 読取時刻')
               }
             />
             <Tile
@@ -158,8 +167,8 @@ export function VisitHistoryDetailDialog({
                   : dep.manual
                     ? '手入力（読み取りなし）'
                     : dep.adjusted
-                      ? `調整後（読取 ${dep.readAt ?? '—'}）`
-                      : '退出の記録'
+                      ? withLate(`調整後（読取 ${dep.readAt ?? '—'}）`, dep.late)
+                      : (dep.late ?? '退出の記録')
               }
             />
             <Tile

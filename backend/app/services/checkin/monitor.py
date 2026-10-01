@@ -55,6 +55,7 @@ from app.services.accompaniment import resolve_accompaniment_by_visit
 from app.services.checkin.actuals import (
     VisitActuals,
     adjustment_payloads,
+    as_utc,
     load_actuals,
     load_adjuster_names,
     stay_minutes,
@@ -143,6 +144,7 @@ def compute_alert(
     effective_start_dt: datetime | None = None,
     is_substitute: bool = False,
     is_unplanned: bool = False,
+    late_to_earlier_day: bool = False,
 ) -> str:
     """要対応レベルを合成する (位置判定 + 時間遅延の worst).
 
@@ -154,16 +156,19 @@ def compute_alert(
     - **代行 (is_substitute) / 予定外 (is_unplanned) は最低 review**
       (設計 ``docs/plans/qr-open-checkin-design.md`` §6: mismatch と同格で
       トレイに載せ、既存の「確認済み」で消す運用に乗せる)。
+    - **前日以前の訪問へ遅れて届いた打刻 (late_to_earlier_day) も最低 review**
+      (checkin-late-delivery-design-2026-10-01 §5。「未訪問」通知の代わりに確認を促す)。
     - それ以外 (未到着の future/awaiting を含む) → none。
 
     ``max_inprogress_min`` は checkin_settings の設定値 (無ければ既定 240)。
+    ``reviewed`` は呼び出し側で「遅れて届いた打刻を受信した後の確認か」まで判定済み。
     """
     if reviewed:
         return ALERT_NONE
     if phase == PHASE_MISSING:
         return ALERT_MISSING
-    # 代行 / 予定外は位置・時間が正常でもトレイに載せる (§6)。
-    flagged = is_substitute or is_unplanned
+    # 代行 / 予定外 / 前日以前へ遅れて届いた打刻は、位置・時間が正常でもトレイに載せる。
+    flagged = is_substitute or is_unplanned or late_to_earlier_day
     if arrival_match_status is None:
         # 未到着 (future / awaiting)。時間アラートは missing で別途拾う。
         return ALERT_REVIEW if flagged else ALERT_NONE
@@ -653,6 +658,21 @@ async def build_monitor(
         # 進行中は現在時刻まで)。打刻履歴・Excel・A4 と同じ値になる。
         stay = stay_minutes(arr_scanned, dep_scanned, now=now_jst)
         review_entry = reviews.get(v.id)
+        # 遅れて届いた打刻 (checkin-late-delivery-design §5)。受信より前の「確認済み」は、
+        # まだ届いていなかった記録を確認したものではないので効かせない (場所 要確認・
+        # 位置なしの到着が後から届いても、必ずトレイに戻す)。
+        late_received = [
+            a.late_received_at
+            for a in (arrival_actual, departure_actual)
+            if a is not None and a.late_received_at is not None
+        ]
+        late_to_earlier_day = any(_as_jst(t).date() > v.visit_date for t in late_received)
+        if (
+            review_entry is not None
+            and late_received
+            and as_utc(review_entry[0].reviewed_at) < max(late_received)
+        ):
+            review_entry = None
         reviewed = review_entry is not None
         alert_level = compute_alert(
             phase=phase,
@@ -666,6 +686,7 @@ async def build_monitor(
             effective_start_dt=effective_start,
             is_substitute=is_substitute,
             is_unplanned=is_unplanned,
+            late_to_earlier_day=late_to_earlier_day,
         )
         # ペア待ち: 予定 + grace は過ぎたが、ペア補正で awaiting に留まっている間。
         pair_waiting = (
@@ -753,6 +774,12 @@ async def build_monitor(
             arrival_adjusted=arrival_actual is not None and arrival_actual.adjusted,
             departure_adjusted=(departure_actual is not None and departure_actual.adjusted),
             departure_manual=departure_actual is not None and departure_actual.manual,
+            arrival_late_received_at=(
+                arrival_actual.late_received_at if arrival_actual is not None else None
+            ),
+            departure_late_received_at=(
+                departure_actual.late_received_at if departure_actual is not None else None
+            ),
             adjustments=adjustment_payloads(actuals, adjuster_names),
             stay_minutes=stay,
             arrival_delay_min=arrival_delay_min,

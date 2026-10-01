@@ -131,6 +131,24 @@ describe('remarkBadges', () => {
     ]);
   });
 
+  it('遅れて届いた記録は注意色にせず 1 つの札にまとめ、全文を full に残す', () => {
+    expect(remarkBadges({ state: 'done', remarks: ['遅れて届いた（10/2 8:30 受信）'] })).toEqual([
+      { label: '遅れて届いた', tone: 'muted', full: '遅れて届いた（10/2 8:30 受信）' },
+    ]);
+    expect(
+      remarkBadges({
+        state: 'done',
+        remarks: ['到着が遅れて届いた（10/2 8:30 受信）', '退出が遅れて届いた（10/2 8:40 受信）'],
+      }),
+    ).toEqual([
+      {
+        label: '遅れて届いた',
+        tone: 'muted',
+        full: '到着が遅れて届いた（10/2 8:30 受信）、退出が遅れて届いた（10/2 8:40 受信）',
+      },
+    ]);
+  });
+
   it('それ以外の備考（語彙が増えた場合を含む）は文言そのままで注意色', () => {
     expect(
       remarkBadges({ state: 'done', remarks: ['到着と退出が近い', '取消済みの予定に記録'] }),

@@ -301,9 +301,12 @@ describe('VisitHistoryTab — 絞り込み・並び・ページ', () => {
       '打刻なし',
       '時刻の調整あり',
       '代行・予定外',
+      '遅れて届いた',
     ]);
     fireEvent.change(screen.getByLabelText('打刻'), { target: { value: 'adjusted' } });
     expect(lastParams().state).toBe('adjusted');
+    fireEvent.change(screen.getByLabelText('打刻'), { target: { value: 'late' } });
+    expect(lastParams().state).toBe('late');
   });
 
   it('検索は 300ms デバウンスし、1 文字の間は送らず案内を出す', () => {
@@ -771,6 +774,24 @@ describe('VisitHistoryTab — 時刻の調整の表示', () => {
     expect(screen.getByTestId('history-group-row')).toHaveTextContent(
       '川名 幸子このページに 1 件 ・ 打刻あり 1 件',
     );
+  });
+});
+
+describe('VisitHistoryTab — 詳細の「遅れて届いた」', () => {
+  it('調整してあっても、遅れて届いた到着は注記に添える', () => {
+    setData([{ ...makeAdjustedRow(), arrival_late_received_at: '2026-09-29T23:30:00Z' }]);
+    render(<VisitHistoryTab />);
+    const dlg = openDetail();
+    expect(
+      dlg.getByText('調整後（読取 13:06）・遅れて届いた（9/30 8:30 受信）'),
+    ).toBeInTheDocument();
+  });
+
+  it('調整していない遅れて届いた退出は、注記が「遅れて届いた」になる', () => {
+    setData([makeRow({ departure_late_received_at: '2026-09-29T23:31:00Z' })]);
+    render(<VisitHistoryTab />);
+    const dlg = openDetail();
+    expect(dlg.getByText('遅れて届いた（9/30 8:31 受信）')).toBeInTheDocument();
   });
 });
 

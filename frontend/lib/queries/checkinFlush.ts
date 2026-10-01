@@ -18,7 +18,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 
 import { countPending } from '@/lib/checkin-queue';
-import { flushCheckinQueue } from '@/lib/checkin-flush';
+import { flushCheckinQueue, lateSentNotice } from '@/lib/checkin-flush';
 import { toast } from '@/components/ui/sonner';
 
 export interface UseCheckinFlushResult {
@@ -47,14 +47,22 @@ export function useCheckinFlush(): UseCheckinFlushResult {
     if (typeof window === 'undefined' || !staffId) return;
     // 同一スタッフの flush は checkin-flush 側で直列化される (画面が複数
     // 載っていても同じ entry を二重 POST しない)。
-    const { remaining, dropped } = await flushCheckinQueue(staffId, accessToken, refreshToken);
+    const { remaining, dropped, sent } = await flushCheckinQueue(
+      staffId,
+      accessToken,
+      refreshToken,
+    );
     setPendingCount(remaining);
-    // 4xx で破棄された未送信分は黙って消さず、利用者へ通知する。
+    // 4xx で破棄された未送信分は黙って消さず、利用者へ通知する (失敗を先に出す)。
     if (dropped.length > 0) {
       toast.error(`未送信の${dropped.length}件は送信できませんでした`, {
         description: dropped[0]?.reason ?? '無効なQR／対象外のため破棄しました',
       });
     }
+    // 前日など、読み取りから時間が経って届いた記録は「どこへ入ったか」を伝える
+    // (今日の一覧に出ない訪問のこともある)。遅れたかはサーバの応答で決める。
+    const late = lateSentNotice(sent);
+    if (late) toast.info?.(late.title, { description: late.description });
     // Re-sent records change server-side status; refresh the visit view.
     void qc.invalidateQueries({ queryKey: ['me'] });
   }, [staffId, accessToken, refreshToken, qc]);

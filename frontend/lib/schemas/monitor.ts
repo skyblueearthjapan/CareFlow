@@ -105,6 +105,9 @@ export const monitorVisitSchema = z.object({
   departure_adjusted: z.boolean().nullish().catch(null),
   // 読み取りの無い退出 (手で入れた時刻)。`departure` は null のまま `departure_at` が入る。
   departure_manual: z.boolean().nullish().catch(null),
+  // 圏外で退避して遅れて届いた打刻の受信時刻 (遅れていなければ null)。
+  arrival_late_received_at: z.string().nullish().catch(null),
+  departure_late_received_at: z.string().nullish().catch(null),
   adjustments: z.array(monitorAdjustmentSchema).nullish().catch(null),
   // stay_minutes / arrival_delay_min / phase / alert_level は BE が実績時刻基準で出す。
   stay_minutes: z.number().nullable().optional(),

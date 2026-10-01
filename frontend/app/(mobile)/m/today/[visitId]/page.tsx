@@ -28,7 +28,7 @@ import {
   type PendingKind,
   type PendingPayload,
 } from '@/lib/checkin-queue';
-import { detailOf, isServerUnreachable } from '@/lib/checkin-flush';
+import { detailOf, isServerUnreachable, isWrongPatient } from '@/lib/checkin-flush';
 import {
   coordsOf,
   geoErrorHint,
@@ -41,6 +41,7 @@ import {
   hmToMinutes,
   jstHm,
   jstMinutes,
+  lateDeliveryLabel,
   minutesToHm,
 } from '@/lib/format/actualTime';
 import { QR_READ_AT_PARAM, extractQrToken, parseHandoffReadAt } from '@/lib/qr-token';
@@ -324,6 +325,8 @@ function MobileVisitDetailPageInner() {
       actual_departure_adjusted: freshVisit.actual_departure_adjusted,
       actual_departure_manual: freshVisit.actual_departure_manual,
       actual_adjust_allowed: freshVisit.actual_adjust_allowed,
+      actual_arrival_late_received_at: freshVisit.actual_arrival_late_received_at,
+      actual_departure_late_received_at: freshVisit.actual_departure_late_received_at,
     };
   }, [queryVisit, freshVisit]);
 
@@ -717,7 +720,7 @@ function MobileVisitDetailPageInner() {
         setFlow({ step: 'none' });
         return;
       }
-      if (apiStatus === 409) {
+      if (apiStatus === 409 && isWrongPatient(err)) {
         // 読んだ QR は「別の利用者」のもの。現地に居ることは確かなので、
         // 行き止まりにせず代行 / 予定外の記録へ渡す (設計 §5)。
         if (qrToken) {
@@ -726,6 +729,16 @@ function MobileVisitDetailPageInner() {
         }
         toast.error('このQRは別の利用者のものです', {
           description: detailOf(err) ?? '正しい患者宅のQRを読み取ってください',
+        });
+        setFlow({ step: 'none' });
+        return;
+      }
+      if (apiStatus === 409) {
+        // 訪問日でない (画面を開いたまま日付をまたいだ等)・期限切れ・取消・削除。
+        // 予定外の記録へは進めず、サーバの文言をそのまま見せて止める
+        // (checkin-late-delivery-design-2026-10-01 §5)。
+        toast.error('この訪問には記録できません', {
+          description: detailOf(err) ?? '管理者に連絡してください',
         });
         setFlow({ step: 'none' });
         return;
@@ -1011,6 +1024,11 @@ function MobileVisitDetailPageInner() {
     if (visit.actual_departure_manual) parts.push('退出は手入力');
     else if (visit.actual_departure_adjusted && depRead)
       parts.push(`退出を調整（読取 ${depRead}）`);
+    // 圏外で退避して後から届いた打刻 (設計 checkin-late-delivery-design-2026-10-01)。
+    const arrLate = lateDeliveryLabel(visit.actual_arrival_late_received_at);
+    const depLate = lateDeliveryLabel(visit.actual_departure_late_received_at);
+    if (arrLate) parts.push(arrLate);
+    if (depLate && depLate !== arrLate) parts.push(`退出が${depLate}`);
     return parts.length > 0 ? parts.join(' ・ ') : null;
   })();
 

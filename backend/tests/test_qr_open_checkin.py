@@ -1004,25 +1004,52 @@ async def test_adhoc_checkin_uses_past_device_time_of_today(client, db, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_adhoc_checkin_rejects_device_time_of_another_day(client, db, monkeypatch) -> None:
-    """当日 (JST) 外の device_time は 422 (黙って今日へ付け替えない・M-2)."""
+async def test_adhoc_checkin_of_another_day_goes_to_the_read_day(client, db, monkeypatch) -> None:
+    """前日の device_time は、読み取った日に予定外 visit を作る (黙って今日へ付け替えない).
+
+    2026-10-01 までは 422 で破棄していた (圏外で退避した記録が失われた)。
+    ``checkin-late-delivery-design-2026-10-01.md``。
+    """
     _, me = await _make_staff_user(db, "adh-dt2@example.com")
     p = await _make_patient(db, "ADH-DT2", qr_token="adh-tok-dt2")
     today = _today_jst()
     _freeze_now(monkeypatch, datetime.combine(today, time(9, 0), tzinfo=JST))
 
+    yesterday = today - timedelta(days=1)
     res = await client.post(
         "/api/v1/visits/adhoc-checkin",
         headers=_bearer(me),
         json={
             "qr_token": "adh-tok-dt2",
-            "at": datetime.combine(today - timedelta(days=1), time(22, 0), tzinfo=JST).isoformat(),
+            "at": datetime.combine(yesterday, time(22, 0), tzinfo=JST).isoformat(),
         },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["visit_date"] == yesterday.isoformat()
+    assert body["start_time"] == "22:00:00"
+    assert body["actual_arrival_late_received_at"] is not None
+    visits = (await db.scalars(select(Visit).where(Visit.patient_id == p.id))).all()
+    assert [v.visit_date for v in visits] == [yesterday]
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_adhoc_checkin_rejects_device_time_older_than_72h(client, db, monkeypatch) -> None:
+    """読み取りから 72 時間を過ぎた device_time は 422 (受付の期限・visit も作らない)."""
+    _, me = await _make_staff_user(db, "adh-dt4@example.com")
+    p = await _make_patient(db, "ADH-DT4", qr_token="adh-tok-dt4")
+    now = datetime.combine(_today_jst(), time(9, 0), tzinfo=JST)
+    _freeze_now(monkeypatch, now)
+
+    res = await client.post(
+        "/api/v1/visits/adhoc-checkin",
+        headers=_bearer(me),
+        json={"qr_token": "adh-tok-dt4", "at": (now - timedelta(hours=73)).isoformat()},
     )
     assert res.status_code == 422, res.text
     # FE が「破棄した理由」としてそのまま出せる文言。
-    assert "日付が変わった" in res.json()["detail"]
-    # visit も打刻も作られない (別日の訪問を今日の実績にしない)。
+    assert "3 日を過ぎた" in res.json()["detail"]
     assert (await db.scalars(select(Visit).where(Visit.patient_id == p.id))).all() == []
     await db.rollback()
 

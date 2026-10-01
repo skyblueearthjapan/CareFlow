@@ -113,3 +113,39 @@ export function fmtActualRange(
 ): string | null {
   return actualTimeParts(arrivalIso, departureIso)?.range ?? null;
 }
+
+// 「遅れて届いた」かどうかはサーバが決める (BE `actuals.late_received_at`・受信が読み取り
+// から 30 分超 or 日付をまたいだ)。画面は応答の `*_late_received_at` を表示するだけ
+// (設計 checkin-late-delivery-design-2026-10-01)。
+
+const JST_DAY_TIME = new Intl.DateTimeFormat('ja-JP', {
+  month: 'numeric',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+  hourCycle: 'h23',
+  timeZone: 'Asia/Tokyo',
+});
+
+function parseIso(iso: string | null | undefined): Date | null {
+  if (!iso) return null;
+  const d = new Date(HAS_TZ.test(iso) ? iso : `${iso}+09:00`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Date → JST の "M/D H:MM" (例 "10/2 8:30")。 */
+export function jstDayTime(date: Date): string {
+  const parts: Record<string, string> = {};
+  for (const p of JST_DAY_TIME.formatToParts(date)) parts[p.type] = p.value;
+  return `${parts.month}/${parts.day} ${Number(parts.hour)}:${parts.minute}`;
+}
+
+/**
+ * 遅れて届いた打刻の表示 — 「遅れて届いた（10/2 8:30 受信）」。
+ * `receivedIso` は BE の `*_late_received_at` (遅れていなければ null → null を返す)。
+ */
+export function lateDeliveryLabel(receivedIso: string | null | undefined): string | null {
+  const received = parseIso(receivedIso);
+  if (!received) return null;
+  return `遅れて届いた（${jstDayTime(received)} 受信）`;
+}

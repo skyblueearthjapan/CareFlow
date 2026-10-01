@@ -131,6 +131,12 @@ export interface MyVisit {
   actual_departure_manual?: boolean;
   actual_adjust_allowed?: boolean;
   /**
+   * 圏外で退避して遅れて届いた打刻なら、その受信時刻 (ISO)。遅れていなければ null
+   * (設計 checkin-late-delivery-design-2026-10-01)。表示は `lateDeliveryLabel`。
+   */
+  actual_arrival_late_received_at?: string | null;
+  actual_departure_late_received_at?: string | null;
+  /**
    * 同行 (§7.4): この訪問に同行するスタッフ (単数・後方互換)。null = 同行なし。
    * 複数名いる場合は `accompaniments` の先頭 1 名。新規実装は `accompaniments` を
    * 優先し、これは旧デプロイ向けのフォールバックに使う。

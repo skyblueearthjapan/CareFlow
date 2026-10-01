@@ -80,6 +80,7 @@ const STATE_OPTIONS: ReadonlyArray<{ value: VisitHistoryStateFilter; label: stri
   { value: 'none', label: '打刻なし' },
   { value: 'adjusted', label: '時刻の調整あり' },
   { value: 'special', label: '代行・予定外' },
+  { value: 'late', label: '遅れて届いた' },
 ];
 
 const SORT_OPTIONS: ReadonlyArray<{ value: VisitHistorySort; label: string }> = [

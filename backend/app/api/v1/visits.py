@@ -55,6 +55,7 @@ from app.services.accompaniment import (
     resolve_accompaniment_by_visit,
 )
 from app.services.checkin.actuals import (
+    LATE_DELIVERY_MAX_AGE,
     VisitActuals,
     checkin_read_at,
     load_actuals,
@@ -69,14 +70,18 @@ from app.services.checkin.adjust import (
     reset_actual_time,
 )
 from app.services.checkin.judge import (
+    CODE_LATE_EXPIRED,
     JST,
+    CheckinRejected,
     judge_checkin,
+    late_delivery_expired_detail,
     load_thresholds,
     resolve_patient_for_visit,
     resolve_qr_patient,
 )
 from app.services.checkin.notify import (
     notify_checkin_anomalies,
+    notify_checkin_late_arrival,
     notify_checkin_mismatch,
     resolve_checkin_missing,
 )
@@ -461,6 +466,9 @@ def _serialize_visit(
         "actual_arrival_adjusted": arrival is not None and arrival.adjusted,
         "actual_departure_adjusted": departure is not None and departure.adjusted,
         "actual_departure_manual": departure is not None and departure.manual,
+        # 圏外で退避して遅れて届いた打刻の受信時刻 (遅れていなければ None)。
+        "actual_arrival_late_received_at": arrival.late_received_at if arrival else None,
+        "actual_departure_late_received_at": departure.late_received_at if departure else None,
         "actual_adjust_allowed": adjust_allowed,
         # 同行 (非破壊追加). 一般化 決定#5 で複数名対応。``accompaniments`` が全件
         # (決定的順序)、``accompaniment`` は後方互換の先頭要素。
@@ -1410,6 +1418,9 @@ async def checkin_visit(
     # 遅刻→到着で cron 生成済みの「未訪問」通知が残らないよう、到着記録と同一
     # transaction で当該 visit の missing 通知を解消する (全ユーザー分削除)。
     await resolve_checkin_missing(db, visit.id)
+    # 前日以前の訪問へ遅れて届いた到着は、消した「未訪問」の代わりに「到着が遅れて
+    # 届きました」を管理者へ残す (黙って消さない・checkin-late-delivery-design §5)。
+    await notify_checkin_late_arrival(db, visit=visit, checkin=checkin)
     # その場で合わせた時刻の同梱 (§6-2)。不備があっても打刻は必ず記録する。
     await apply_bundled_adjustment(
         db,
@@ -1446,7 +1457,7 @@ async def checkout_visit(
     # 設計 actual-time-adjust §3) へ更新する (滞在時間・モニターのバー長を実績に
     # 合わせる)。開始以前へ巻き戻る値は採らない。
     if visit.is_unplanned:
-        actual_end = _as_jst_time(checkin_read_at(checkin))
+        actual_end = _as_jst_time(checkin_read_at(checkin, visit.visit_date))
         if actual_end > visit.start_time:
             visit.end_time = actual_end
     # 到着は担当本人・退出だけ代行が押した場合でも代行 / NG 交差に気づけるよう、
@@ -1495,13 +1506,6 @@ def _as_jst_time(dt: datetime) -> time:
     return dt.astimezone(JST).time().replace(second=0, microsecond=0)
 
 
-# device_time が当日 (JST) 外だったときの 422 文言。FE はこれをそのまま「破棄した
-# 理由」として表示できる (退避キューから消す判断がユーザーに伝わる文にする)。
-ADHOC_STALE_DEVICE_TIME_DETAIL = (
-    "打刻した日付が変わったため送信できません。管理者に連絡してください"
-)
-
-
 def _adhoc_visit_moment(device_time: datetime | None, now: datetime) -> datetime:
     """予定外 visit の ``visit_date`` / ``start_time`` の基準時刻を決める。
 
@@ -1511,23 +1515,26 @@ def _adhoc_visit_moment(device_time: datetime | None, now: datetime) -> datetime
     採る。打刻行の実績時刻と同じ規則なので、予定外 visit の開始と実績の到着が
     食い違わない (``scanned_at`` は従来どおりサーバ時刻 = 受信の事実を保つ)。
 
-    * 妥当な ``device_time`` (サーバ時刻 + 120 秒以内・18 時間以内・同じ日) はそれを採る。
+    * 妥当な ``device_time`` (受信の 72 時間前〜120 秒後) はそれを採る。前日以前に
+      読み取った打刻は **読み取った日** に予定外 visit を作る
+      (``checkin-late-delivery-design-2026-10-01.md``)。
     * 未来の ``device_time`` は**無視**してサーバ時刻を使う (端末の時計ズレ対策。
       進んだ時計をそのまま採ると未来時刻の visit が生える)。
-    * 当日 (JST) 外の ``device_time`` は 422。visit は ``visit_date`` 1 日で完結
-      する行で、判定 (``_guard_visit``) も当日のみ許すため、日跨ぎの再送は
-      サーバ時刻に丸めると別日の訪問を今日の実績として記録してしまう。
+    * 72 時間より古い ``device_time`` は 422 (受付の期限切れ。サーバ時刻に丸めると
+      別日の訪問を今日の実績として記録してしまう)。
     * ``device_time`` 無しは従来どおりサーバ時刻。
     """
     if device_time is None:
         return now
     dt = device_time if device_time.tzinfo is not None else device_time.replace(tzinfo=UTC)
-    if dt <= now and dt.astimezone(JST).date() != now.astimezone(JST).date():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=ADHOC_STALE_DEVICE_TIME_DETAIL,
+    if dt < now - LATE_DELIVERY_MAX_AGE:
+        raise CheckinRejected(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            late_delivery_expired_detail(),
+            CODE_LATE_EXPIRED,
         )
-    return resolve_read_time(dt, now)
+    # 進んだ時計 (120 秒以内) が日付をまたいでも、受信日より先の日に visit を作らない。
+    return resolve_read_time(dt, now, min(dt, now).astimezone(JST).date())
 
 
 def _weekly_pattern_service_minutes(patient: Patient) -> int | None:
@@ -1589,17 +1596,17 @@ async def adhoc_checkin(
     - ``qr_token`` **必須** (無ければ 422)。患者特定に QR が構造上必要であり、
       担当外の記録は QR 所持を認可の鍵とする (決定#1 / #6)。未知 = 404 /
       失効 = 410 は resolve と同じ意味論。
-    - **打刻時刻の基準**: ``device_time`` (端末時刻) があり当日 (JST) かつ未来で
+    - **打刻時刻の基準**: ``device_time`` (端末時刻) が受信の 72 時間前以降で未来で
       なければそれを ``visit_date`` / ``start_time`` の基準に採る (圏外退避 →
-      復帰後の再送で訪問時刻がずれないように)。当日外は 422 / 未来は無視して
-      サーバ時刻。``scanned_at`` は常にサーバ時刻 (``_adhoc_visit_moment``)。
-    - 生成値: ``visit_date`` = 当日 (JST) / ``start_time`` = 打刻時刻 /
+      復帰後の再送で訪問時刻・日付がずれないように)。72 時間より古いものは 422 /
+      未来は無視してサーバ時刻。``scanned_at`` は常にサーバ時刻 (``_adhoc_visit_moment``)。
+    - 生成値: ``visit_date`` = 読み取った日 (JST) / ``start_time`` = 打刻時刻 /
       ``end_time`` = 開始 + 患者の基本訪問時間 (無ければ 60 分・**退出打刻で実時刻へ
       更新**) / ``course_id`` = NULL / ``primary_staff_id`` = 打刻スタッフ /
       ``status`` = in_progress / ``is_unplanned`` = true。
       primary を打刻者にするのは、生成後に本人の「今日の訪問」に出て退出導線が
       既存可視性のまま成立するため (決定#4 は既存**予定** visit の話)。
-    - 二重生成ガード: 同患者 × 同スタッフ × 当日 × in_progress の予定外 visit が
+    - 二重生成ガード: 同患者 × 同スタッフ × 読み取った日 × in_progress の予定外 visit が
       既にあれば、新規生成せずその visit へ打刻を追記して返す (再スキャンで増殖
       させない)。同時 POST (連打・二重送信) は advisory lock で直列化し、後発は
       409 で弾く (未 commit の相手が見えず 2 本生えるのを防ぐ)。
@@ -1616,19 +1623,40 @@ async def adhoc_checkin(
 
     now = datetime.now(UTC)
     # オフライン退避の再送で訪問時刻がずれないよう、端末時刻を基準に採る
-    # (当日外は 422 / 未来は無視・``_adhoc_visit_moment``)。
+    # (72 時間より古いものは 422 / 未来は無視・``_adhoc_visit_moment``)。以下の
+    # 直列化と二重生成ガードも、受信日ではなく読み取った日で組む。
     moment = _adhoc_visit_moment(payload.device_time, now)
-    today_jst = moment.astimezone(JST).date()
+    read_day = moment.astimezone(JST).date()
 
     # 同時 POST の直列化 (二重生成ガードの前段)。lock は commit / rollback で
     # 自動解放される。取得できない = 同じ 3 つ組の打刻が処理中なので、増殖を
     # 作らずに 409 を返して FE のリトライに委ねる (再取得すれば既存 visit が
     # ガードに引っ掛かり追記になる)。
-    if not await try_advisory_xact_lock(db, _adhoc_lock_key(patient.id, staff_id, today_jst)):
+    if not await try_advisory_xact_lock(db, _adhoc_lock_key(patient.id, staff_id, read_day)):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="別の打刻を処理中です。少し待ってからもう一度お試しください",
         )
+
+    # 同じ読み取りの再送 (応答が届かずスマホが送り直した) は、同じ予定外訪問の応答を
+    # そのまま返し、何も追記しない。訪問が退出で完了した後に届いても 2 本目を作らない
+    # (下の二重生成ガードは進行中しか見ないため・checkin-late-delivery-design §5)。
+    if payload.device_time is not None:
+        resent_visit_id = await db.scalar(
+            select(Visit.id)
+            .join(VisitCheckin, VisitCheckin.visit_id == Visit.id)
+            .where(
+                VisitCheckin.staff_id == staff_id,
+                VisitCheckin.kind == "arrival",
+                VisitCheckin.device_time == payload.device_time,
+                Visit.patient_id == patient.id,
+                Visit.is_unplanned.is_(True),
+                Visit.deleted_at.is_(None),
+            )
+            .limit(1)
+        )
+        if resent_visit_id is not None:
+            return await _checkin_response(db, resent_visit_id, user)
 
     # 二重生成ガード (§4-3)。
     visit = await db.scalar(
@@ -1636,7 +1664,7 @@ async def adhoc_checkin(
         .where(
             Visit.patient_id == patient.id,
             Visit.primary_staff_id == staff_id,
-            Visit.visit_date == today_jst,
+            Visit.visit_date == read_day,
             Visit.status == VISIT_STATUS_IN_PROGRESS,
             Visit.is_unplanned.is_(True),
             Visit.deleted_at.is_(None),
@@ -1646,14 +1674,14 @@ async def adhoc_checkin(
     )
     if visit is None:
         start_time = _as_jst_time(moment)
-        start_dt = datetime.combine(today_jst, start_time)
+        start_dt = datetime.combine(read_day, start_time)
         end_dt = start_dt + timedelta(minutes=await _patient_service_minutes(db, patient))
         # 日跨ぎは当日内に収める (visit は visit_date 1 日で完結する行のため)。
-        end_time = end_dt.time() if end_dt.date() == today_jst else time(23, 59)
+        end_time = end_dt.time() if end_dt.date() == read_day else time(23, 59)
         visit = Visit(
             patient_id=patient.id,
             primary_staff_id=staff_id,
-            visit_date=today_jst,
+            visit_date=read_day,
             start_time=start_time,
             end_time=end_time,
             type="regular",
@@ -1709,7 +1737,7 @@ async def no_show_visit(
         )
     visit, staff_id = await _load_visit_for_checkin(db, visit_id, user)
     # no_show は visit.status を据置 (planned のまま; モニターが時間ベースで判定)。
-    await judge_checkin(db, visit, staff_id, payload, "no_show")
+    await judge_checkin(db, visit, staff_id, payload, "no_show", now=datetime.now(UTC))
     await db.commit()
     return await _checkin_response(db, visit_id, user)
 

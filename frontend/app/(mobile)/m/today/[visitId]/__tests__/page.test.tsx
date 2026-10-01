@@ -666,7 +666,9 @@ describe('QR チェックイン モバイル — 404/409 はユーザー向け�
   });
 
   it('409 は代行/予定外への導線を出し、/q/{token} へ渡す (設計 §5)', async () => {
-    checkInMutate.mockRejectedValueOnce(new ApiError('conflict', 409, { detail: 'other' }));
+    checkInMutate.mockRejectedValueOnce(
+      new ApiError('conflict', 409, { detail: 'other', code: 'wrong_patient' }),
+    );
     render(<MobileVisitDetailPage />);
     fireEvent.click(screen.getByText('QRで到着を記録'));
     fireEvent.click(screen.getByText('__scan__'));
@@ -678,6 +680,43 @@ describe('QR チェックイン モバイル — 404/409 はユーザー向け�
     fireEvent.click(screen.getByText('代行／予定外として記録する'));
     expect(routerPush).toHaveBeenCalledWith('/q/TESTTOKEN');
     // 記録は退避しない (サーバの確定回答)。
+    expect(window.localStorage.getItem('checkin-pending:staff-1')).toBeNull();
+  });
+
+  it('code の無い旧 BE でも「別の利用者の QR」の文言なら代行/予定外へ進める', async () => {
+    checkInMutate.mockRejectedValueOnce(
+      new ApiError('conflict', 409, { detail: "QR does not match this visit's patient" }),
+    );
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(screen.getByTestId('wrong-patient-panel')).toBeInTheDocument());
+  });
+
+  it.each([
+    [
+      'not_visit_day',
+      'この訪問は昨日（9/29）の予定のため、今日は記録できません。管理者に連絡してください',
+    ],
+    ['late_expired', '読み取りから 3 日を過ぎたため送信できません。管理者に連絡してください'],
+    ['cancelled', 'Visit is cancelled'],
+    ['deleted', 'Visit is deleted'],
+  ])('409 (%s) は文言を出して止め、予定外の記録へは進めない', async (code, detail) => {
+    checkInMutate.mockRejectedValueOnce(new ApiError('conflict', 409, { detail, code }));
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() =>
+      expect(asMock(toast.error)).toHaveBeenCalledWith('この訪問には記録できません', {
+        description: detail,
+      }),
+    );
+    expect(screen.queryByTestId('wrong-patient-panel')).toBeNull();
+    expect(routerPush).not.toHaveBeenCalled();
     expect(window.localStorage.getItem('checkin-pending:staff-1')).toBeNull();
   });
 });
@@ -1025,6 +1064,22 @@ describe('実績の行の「時刻を合わせる」(設計 §7-3)', () => {
     expect(screen.getByTestId('mobile-detail-actual')).toBeInTheDocument();
     expect(screen.queryByTestId('mobile-detail-adjust')).toBeNull();
     expect(screen.queryByTestId('mobile-detail-manual-departure')).toBeNull();
+  });
+
+  it('遅れて届いた打刻は「遅れて届いた（受信日時）」を実績の下に添える', () => {
+    setVisit({
+      ...adjustableVisit(),
+      status: 'completed',
+      actual_departure_at: '2026-06-30T04:31:00Z',
+      actual_departure_read_at: '2026-06-30T04:31:00Z',
+      actual_arrival_late_received_at: '2026-06-30T23:30:00Z',
+      actual_departure_late_received_at: '2026-06-30T23:30:20Z',
+    });
+    render(<MobileVisitDetailPage />);
+    // 到着・退出が同じ分に届いたら 1 つにまとめる。
+    const note = screen.getByTestId('mobile-detail-actual-note');
+    expect(note).toHaveTextContent('遅れて届いた（7/1 8:30 受信）');
+    expect(note).not.toHaveTextContent('退出が');
   });
 
   it('完了後: 「滞在 35 分 ・ 到着を 10 分 調整（読取 13:06）」', () => {

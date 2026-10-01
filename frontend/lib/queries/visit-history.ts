@@ -37,7 +37,14 @@ export const VISIT_HISTORY_PATH = '/api/v1/visit-history';
 export type VisitHistoryState = 'done' | 'in_progress' | 'no_departure' | 'none' | 'future';
 
 /** 打刻の絞り込み（設計 §3 の `state`）。'' = すべて。 */
-export type VisitHistoryStateFilter = '' | 'in' | 'nodep' | 'none' | 'adjusted' | 'special';
+export type VisitHistoryStateFilter =
+  | ''
+  | 'in'
+  | 'nodep'
+  | 'none'
+  | 'adjusted'
+  | 'special'
+  | 'late';
 
 /** 並び（設計 §3 の `sort`。A4 の `group` も同じ 3 値）。 */
 export type VisitHistorySort = 'date' | 'staff' | 'patient';
@@ -91,6 +98,9 @@ export const visitHistoryRowSchema = z.object({
   departure_adjusted: z.boolean().nullable().optional(),
   /** 読み取りの無い退出（手で入れた時刻）。 */
   departure_manual: z.boolean().nullable().optional(),
+  /** 圏外で退避して遅れて届いた打刻の受信時刻（遅れていなければ null）。 */
+  arrival_late_received_at: z.string().nullable().optional(),
+  departure_late_received_at: z.string().nullable().optional(),
   // 調整の形が崩れていても行は捨てない（時刻そのものは読める）。
   adjustments: z.array(visitHistoryAdjustmentSchema).nullish().catch(null),
   /** 今のユーザーがこの訪問の実績を合わせられるか（権限は BE が判定）。 */

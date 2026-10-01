@@ -37,6 +37,7 @@ from app.services.checkin.actuals import (
     ACTUAL_KINDS,
     VisitActuals,
     adjustment_payloads,
+    checkin_late_received_at,
     load_actuals,
     load_adjuster_names,
     stay_minutes,
@@ -72,6 +73,43 @@ def substitute_remark(planned_staff_name: str | None) -> str:
     return f"代行（予定: {planned_staff_name or '未割当'}）"
 
 
+#: 「遅れて届いた」の備考の先頭 (圏外で退避して後から届いた打刻・
+#: ``checkin-late-delivery-design-2026-10-01.md``)。
+REMARK_LATE_DELIVERY = "遅れて届いた"
+
+
+def _received_label(received_at: datetime) -> str:
+    jst = received_at.astimezone(JST)
+    return f"{jst.month}/{jst.day} {jst.hour}:{jst.minute:02d} 受信"
+
+
+def late_delivery_remarks(
+    arrival_received_at: datetime | None, departure_received_at: datetime | None
+) -> list[str]:
+    """遅れて届いた打刻の備考。例「遅れて届いた（10/2 8:30 受信）」。
+
+    到着だけなら「遅れて届いた（…）」、退出だけなら「退出が遅れて届いた（…）」。
+    両方が同じ分に届いたら「到着・退出が遅れて届いた（…）」の 1 つにまとめ、別々に
+    届いたら 2 つ並べる。
+    """
+    arrival = _received_label(arrival_received_at) if arrival_received_at is not None else None
+    departure = (
+        _received_label(departure_received_at) if departure_received_at is not None else None
+    )
+    if arrival is not None and departure is not None:
+        if arrival == departure:
+            return [f"到着・退出が{REMARK_LATE_DELIVERY}（{arrival}）"]
+        return [
+            f"到着が{REMARK_LATE_DELIVERY}（{arrival}）",
+            f"退出が{REMARK_LATE_DELIVERY}（{departure}）",
+        ]
+    if arrival is not None:
+        return [f"{REMARK_LATE_DELIVERY}（{arrival}）"]
+    if departure is not None:
+        return [f"退出が{REMARK_LATE_DELIVERY}（{departure}）"]
+    return []
+
+
 @dataclass
 class HistoryRow:
     """打刻履歴の 1 行 (= ``VisitHistoryItem`` の中身 ＋ 絞り込み・並び替え用の値)。"""
@@ -101,6 +139,9 @@ class HistoryRow:
     departure_adjusted: bool
     #: 読み取りの無い退出 (手で入れた時刻)。
     departure_manual: bool
+    #: 遅れて届いた打刻の受信時刻 (遅れていなければ None)。
+    arrival_late_received_at: datetime | None
+    departure_late_received_at: datetime | None
     #: 効いている調整 (``actuals.adjustment_payloads`` の形。訪問モニターと同じ)。
     adjustments: list[dict]
     stay_minutes: int | None
@@ -124,10 +165,24 @@ class HistoryRow:
     # ---- 応答に出す (見ているユーザーごとに API 層が決める) ----
     #: 今のユーザーがこの訪問の実績を合わせられるか。
     adjust_allowed: bool = False
+    #: 遅れて届いた「未訪問」の記録の受信時刻 (備考と絞り込みだけに使う)。
+    no_show_late_received_at: datetime | None = None
 
     @property
     def is_adjusted(self) -> bool:
         return self.arrival_adjusted or self.departure_adjusted
+
+    @property
+    def is_late_delivered(self) -> bool:
+        """遅れて届いた記録がある行 (絞り込み「遅れて届いた」)。"""
+        return any(
+            t is not None
+            for t in (
+                self.arrival_late_received_at,
+                self.departure_late_received_at,
+                self.no_show_late_received_at,
+            )
+        )
 
     @property
     def nurse_name(self) -> str | None:
@@ -336,6 +391,19 @@ async def load_history_rows(
             remarks.append(REMARK_LOCATION)
         if actuals.adjustments:
             remarks.append(REMARK_ADJUSTED)
+        arrival_late = arrival_actual.late_received_at if arrival_actual is not None else None
+        departure_late = departure_actual.late_received_at if departure_actual is not None else None
+        remarks.extend(late_delivery_remarks(arrival_late, departure_late))
+        # 「未訪問」の記録も圏外で退避して後から届くことがある。
+        no_show_late = (
+            checkin_late_received_at(actuals.no_show, v.visit_date)
+            if actuals.no_show is not None
+            else None
+        )
+        if no_show_late is not None:
+            remarks.append(
+                f"未訪問の記録が{REMARK_LATE_DELIVERY}（{_received_label(no_show_late)}）"
+            )
         if is_cancelled:
             remarks.append(REMARK_CANCELLED)
         if stay is not None and stay < SHORT_STAY_MIN:
@@ -370,6 +438,8 @@ async def load_history_rows(
                 arrival_adjusted=arrival_actual is not None and arrival_actual.adjusted,
                 departure_adjusted=departure_actual is not None and departure_actual.adjusted,
                 departure_manual=departure_actual is not None and departure_actual.manual,
+                arrival_late_received_at=arrival_late,
+                departure_late_received_at=departure_late,
                 adjustments=adjustment_payloads(actuals, adjuster_names),
                 stay_minutes=stay,
                 checkin_source=checkin_source,
@@ -383,6 +453,7 @@ async def load_history_rows(
                 related_staff_ids=frozenset(related),
                 is_deleted=v.deleted_at is not None,
                 has_arrival_read=arrival is not None,
+                no_show_late_received_at=no_show_late,
             )
         )
     return rows
@@ -426,6 +497,8 @@ def filter_rows(
         if state == "adjusted" and not r.is_adjusted:
             return False
         if state == "special" and not (r.is_substitute or r.is_unplanned):
+            return False
+        if state == "late" and not r.is_late_delivered:
             return False
         if needle and not any(
             needle in (name or "").casefold()
@@ -620,6 +693,8 @@ def reading_notes(rows: Iterable[HistoryRow]) -> list[str]:
         "「退出なし」は到着だけ読み取り、退出の読み取りが無い訪問です。滞在時間は計算していません。",
         "「予定外の訪問」は予定に無い訪問を QR で記録したものです。予定の欄は空です。",
         "「QRなし」は QR を読み取らずに記録したものです。",
+        "「遅れて届いた」は、電波の届かない場所で読み取り、後から送られた記録です。"
+        "時刻は QR を読み取った時刻で、受信した日時を括弧に添えています。",
         f"「到着と退出が近い」は間が {SHORT_STAY_MIN} 分未満のものです。"
         "訪問の後にまとめて読み取った可能性があります。",
         "「場所 要確認」は読み取り時の位置が利用者宅から離れていた、または位置が取れなかったものです。",
