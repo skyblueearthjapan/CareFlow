@@ -66,7 +66,7 @@ from app.services.constraint_override_notify import (
     constraint_confirmation_detail,
     notify_constraint_override_for_course,
 )
-from app.services.patient_excel.schema import OFFICE_CODE_TO_SHORT
+from app.services.office_labels import office_short
 from app.services.patient_status_sync import is_schedulable_status
 from app.services.scheduling.auto_allocator_v2 import _extract_weekly_entries, _parse_hhmm
 from app.services.scheduling.guards import (
@@ -124,15 +124,14 @@ def _iso_weeks_between(start: date, end: date) -> list[tuple[int, int]]:
 def _course_label(office: Office | None, course_code: str | None) -> str | None:
     """UI 表示用ラベル (拠点短縮 + コード, 例: 稲A).
 
-    0059 の拠点マスタ駆動 (``offices.short_label``) を優先し、未設定なら legacy 既定
-    (``patient_excel.schema.OFFICE_CODE_TO_SHORT``) にフォールバックする。
+    略称は ``office_labels.office_short`` (``offices.short_label``、未設定なら拠点名の
+    1 文字目。board / 提案 / 患者 Excel と同じ)。
     """
     if not course_code:
         return None
     if office is None:
         return course_code
-    code = office.code or ""
-    short = office.short_label or OFFICE_CODE_TO_SHORT.get(code, code)
+    short = office_short(office.short_label, office.name)
     return f"{short}{course_code}" if short else course_code
 
 

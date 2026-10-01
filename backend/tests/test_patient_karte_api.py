@@ -46,6 +46,9 @@ from app.services.patient_excel.karte import (
 # ---------------------------------------------------------------------------
 
 
+_PROD_SHORT_LABELS = {"INAGE": "稲", "TSUGA": "津"}
+
+
 async def _make_user(db, email: str, role: str) -> User:
     user = User(email=email, password_hash=hash_password("pw"), role=role)
     db.add(user)
@@ -60,7 +63,8 @@ def _bearer(user: User) -> dict[str, str]:
 
 
 async def _make_office(db, code: str, name: str | None = None) -> Office:
-    o = Office(code=code, name=name or code)
+    # 本番の拠点と同じ略称 (mig 0059 / 0089 で INAGE=稲・TSUGA=津 が入っている)。
+    o = Office(code=code, name=name or code, short_label=_PROD_SHORT_LABELS.get(code))
     db.add(o)
     await db.commit()
     await db.refresh(o)
@@ -709,7 +713,7 @@ async def test_office_auto_suffix_stripped_on_import(client, db) -> None:
     wb = load_workbook(BytesIO(res.content))
     assert wb[SHEET_KARTE]["B6"].value == f"稲毛{OFFICE_AUTO_SUFFIX}"
     # parse → 標準シートで office_code=INAGE.
-    std = parse_karte_workbook(res.content)
+    std = parse_karte_workbook(res.content, offices=[office])
     from app.services.patient_excel.schema import PATIENT_COL_INDEX, SHEET_PATIENTS
 
     sw = load_workbook(BytesIO(std))

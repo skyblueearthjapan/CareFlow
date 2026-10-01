@@ -39,6 +39,7 @@ from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.services.office_labels import office_code_short_pairs, sorted_offices
 from app.services.patient_excel.exporter import _course_token_dropdown_values
 from app.services.patient_excel.schema import (
     BOOL_JA_VALUES,
@@ -47,7 +48,6 @@ from app.services.patient_excel.schema import (
     ID_COLUMN_FILL_COLOR,
     ID_COLUMN_FONT_COLOR,
     INSURANCE_EN_TO_JA,
-    OFFICE_CODE_VALUES,
     PATIENT_COL_INDEX,
     PATIENT_COLUMNS,
     PATIENT_WEEKDAY_COL_KEYS,
@@ -69,6 +69,7 @@ from app.services.patient_excel.schema import (
     VISIT_FREQUENCY_EN_TO_JA,
     VISIT_FREQUENCY_JA_VALUES,
     WEEKDAY_MARK_VALUES,
+    build_office_code_short_maps,
     course_token,
     weekdays_en_to_yesno_cells,
 )
@@ -149,12 +150,15 @@ def _add_list_validation(ws: Worksheet, cell: str, values: Sequence[str]) -> Non
     ws.add_data_validation(dv)
 
 
-def _attach_dropdowns(ws: Worksheet, course_tokens: Sequence[str]) -> None:
+def _attach_dropdowns(
+    ws: Worksheet, course_tokens: Sequence[str], office_labels: Sequence[str]
+) -> None:
     """カルテの全プルダウンを付与 (確定仕様のセル割当)."""
     _add_list_validation(ws, "B5", SEX_JA_VALUES)  # 性別
     _add_list_validation(ws, "D5", STATUS_JA_VALUES)  # ステータス
     _add_list_validation(ws, "F5", INSURANCE_JA_SHORT)  # 保険 (医療/介護)
-    _add_list_validation(ws, "B6", OFFICE_LABEL_VALUES)  # 拠点 (稲毛/都賀)
+    if office_labels:  # 拠点 (offices マスタの拠点名・並び順)
+        _add_list_validation(ws, "B6", office_labels)
     _add_list_validation(ws, "B9", FREQUENCY_PER_WEEK_VALUES)  # 週回数 1-7
     _add_list_validation(ws, "D9", VISIT_FREQUENCY_JA_VALUES)  # 頻度
     for cell in PREF_WEEKDAY_CELLS:  # 希望曜日 〇/×
@@ -219,10 +223,19 @@ INSURANCE_SHORT_JA_TO_FULL: dict[str, str] = {
 }
 # サービス時間は「N分」表記の dropdown (取込時は「分」除去).
 SERVICE_MINUTES_JA_VALUES: tuple[str, ...] = tuple(f"{v}分" for v in SERVICE_MINUTES_VALUES)
-# 拠点 dropdown は表示ラベル (稲毛/都賀).
-OFFICE_CODE_TO_LABEL: dict[str, str] = {"INAGE": "稲毛", "TSUGA": "都賀"}
-OFFICE_LABEL_TO_CODE: dict[str, str] = {v: k for k, v in OFFICE_CODE_TO_LABEL.items()}
-OFFICE_LABEL_VALUES: tuple[str, ...] = tuple(OFFICE_CODE_TO_LABEL.values())
+
+
+def office_label_values(offices: Sequence[Office]) -> tuple[str, ...]:
+    """拠点プルダウン (B6) の選択肢 = コードのある拠点の拠点名 (offices の並び順).
+
+    取り込みで office_code に戻せる拠点だけを出す (``office_label_to_code_map`` と対)。
+    """
+    return tuple(o.name for o in sorted_offices(offices) if o.code and o.name)
+
+
+def office_label_to_code_map(offices: Sequence[Office]) -> dict[str, str]:
+    """拠点名 → office_code (offices マスタから作る。拠点名の決め打ちは持たない)."""
+    return {o.name: o.code for o in sorted_offices(offices) if o.code and o.name}
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +274,7 @@ def build_karte_workbook(
     """
     office_by_id: dict[UUID, Office] = {o.id: o for o in offices}
     office_code_by_id: dict[UUID, str] = {o.id: o.code for o in offices if o.code}
+    code_to_short, _ = build_office_code_short_maps(office_code_short_pairs(offices))
 
     # 拠点ラベル / コードの解決.
     resolved_office: Office | None = None
@@ -270,16 +284,16 @@ def build_karte_workbook(
         office_code = resolved_office.code
     if office_label is None:
         if resolved_office is not None:
-            # 表示は拠点名優先. 無ければ code → ラベル. 最終 fallback は code.
-            office_label = resolved_office.name or OFFICE_CODE_TO_LABEL.get(
-                resolved_office.code or "", resolved_office.code or ""
-            )
+            # 表示は拠点名優先. 無ければ code.
+            office_label = resolved_office.name or resolved_office.code
         elif office_code:
-            office_label = OFFICE_CODE_TO_LABEL.get(office_code, office_code)
+            by_code = {o.code: o for o in offices if o.code}
+            match = by_code.get(office_code)
+            office_label = (match.name if match is not None else None) or office_code
 
     wb, ws = _load_template_ws()
     course_tokens = _course_token_dropdown_values(offices, course_templates)
-    _attach_dropdowns(ws, course_tokens)
+    _attach_dropdowns(ws, course_tokens, office_label_values(offices))
     _attach_time_greyout(ws)
 
     # ---- 値の書き込み ----
@@ -362,7 +376,7 @@ def build_karte_workbook(
             if ct is not None and ct.label:
                 oc = office_code_by_id.get(ct.office_id)
                 if oc:
-                    token = course_token(oc, ct.label)
+                    token = course_token(oc, ct.label, code_to_short)
         ws[f"{col}19"].value = token if token is not None else REST_MARK
 
     # 固定訪問の日曜セルを「取込対象外」として体裁付与 (グレー + 斜体 + 注記).
@@ -386,7 +400,7 @@ def build_blank_karte_template(
     """
     wb, ws = _load_template_ws()
     course_tokens = _course_token_dropdown_values(offices, course_templates)
-    _attach_dropdowns(ws, course_tokens)
+    _attach_dropdowns(ws, course_tokens, office_label_values(offices))
     _attach_time_greyout(ws)
     # 固定訪問の日曜セルを「取込対象外」として体裁付与 (グレー + 斜体 + 注記).
     _style_sunday_fixed_unsupported(ws)
@@ -421,18 +435,22 @@ def _strip_office_auto_suffix(label: str | None) -> str | None:
     return s or None
 
 
-def _office_label_to_code(label: str | None) -> str | None:
-    """拠点ラベル (稲毛/都賀) → office_code (INAGE/TSUGA). 解決不能は None (= 住所自動割当)."""
+def _office_label_to_code(label: str | None, offices: Sequence[Office]) -> str | None:
+    """拠点ラベル (拠点名) → office_code. 解決不能は None (= 住所自動割当).
+
+    対応は offices マスタから作る (新しい拠点も拠点名で解決できる)。
+    """
     if label is None:
         return None
     # 「（自動）」除去後のラベルで照合.
     s = _strip_office_auto_suffix(label)
     if s is None:
         return None
-    if s in OFFICE_LABEL_TO_CODE:
-        return OFFICE_LABEL_TO_CODE[s]
+    label_to_code = office_label_to_code_map(offices)
+    if s in label_to_code:
+        return label_to_code[s]
     # 後方互換: コードそのものが書かれていた場合.
-    if s in OFFICE_CODE_VALUES:
+    if s in label_to_code.values():
         return s
     return None
 
@@ -470,7 +488,7 @@ def _normalize_fixed_value(value: str | None) -> str | None:
     return value.strip() or None
 
 
-def parse_karte_workbook(wb_or_bytes: Workbook | bytes) -> bytes:
+def parse_karte_workbook(wb_or_bytes: Workbook | bytes, *, offices: Sequence[Office] = ()) -> bytes:
     """カルテ Workbook (or bytes) を読み、**既存 importer 互換の標準 2 シート
     Workbook の bytes** に変換する.
 
@@ -481,6 +499,9 @@ def parse_karte_workbook(wb_or_bytes: Workbook | bytes) -> bytes:
 
     この bytes を既存 ``parse_and_diff`` に渡すことで、患者 upsert / weekly merge /
     PFV 患者単位 replace / dry_run プレビュー / ImportPreviewModal 互換応答を流用する.
+
+    ``offices`` = 拠点セル (B6) の拠点名を office_code に戻すための offices マスタ
+    (API が DB から渡す)。渡さないと拠点セルは解決できず住所からの自動割当になる。
     """
     if isinstance(wb_or_bytes, bytes):
         src = load_workbook(BytesIO(wb_or_bytes), data_only=True)
@@ -511,7 +532,7 @@ def parse_karte_workbook(wb_or_bytes: Workbook | bytes) -> bytes:
     requires_multiple_staff = _read_cell_str(ws, "D14")
     note = _read_cell_str(ws, "A22")
 
-    office_code = _office_label_to_code(office_label)  # None → 住所自動割当
+    office_code = _office_label_to_code(office_label, offices)  # None → 住所自動割当
     service_minutes = _service_label_to_minutes(service_label)
     insurance = _normalize_insurance(insurance)  # 短縮「医療/介護」→ importer 受理形へ
 

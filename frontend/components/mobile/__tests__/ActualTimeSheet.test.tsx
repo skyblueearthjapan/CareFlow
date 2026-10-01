@@ -13,6 +13,7 @@ import {
   type ActualTimeSheetProps,
   type ActualTimeTimes,
 } from '../ActualTimeSheet';
+import { actualTimeLimitsFrom } from '@/lib/schemas/checkinSettings';
 
 const hm = (h: number, m: number) => h * 60 + m;
 
@@ -93,6 +94,27 @@ describe('actualTimeRange — 合わせられる範囲 (サーバの検証と同
   it('退出は、合わせた後の到着より後', () => {
     const t = { ...base, arrival: { at: hm(12, 56), readAt: hm(13, 6) } };
     expect(actualTimeRange('departure', t)[0]).toBe(hm(12, 57));
+  });
+
+  it('上限は設定値 (checkin_settings) に従う。既定の値は今までと同じ 90 分 / 30 分', () => {
+    const read = { at: hm(13, 41), readAt: hm(13, 41) };
+    const past = { ...base, isToday: false, departure: read };
+    // 既定 (取得前・古い BE) と、よりより様の設定値 (mig 0089 で 90 / 30) は同じ範囲。
+    const seeded = actualTimeLimitsFrom({
+      match_m: 100,
+      review_m: 300,
+      accuracy_m: 50,
+      arrival_max_back_min: 90,
+      departure_max_ahead_min: 30,
+      staff_adjust_window_days: 7,
+    });
+    expect(actualTimeRange('arrival', base, seeded)).toEqual(actualTimeRange('arrival', base));
+    expect(actualTimeRange('departure', past, seeded)).toEqual(actualTimeRange('departure', past));
+    expect(actualTimeLimitsFrom(undefined)).toEqual(seeded);
+
+    const custom = { arrivalMaxBackMin: 45, departureMaxAheadMin: 10, staffAdjustWindowDays: 3 };
+    expect(actualTimeRange('arrival', base, custom)).toEqual([hm(12, 21), hm(13, 6)]);
+    expect(actualTimeRange('departure', past, custom)).toEqual([hm(13, 7), hm(13, 51)]);
   });
 });
 

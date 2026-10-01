@@ -25,6 +25,8 @@ import { Input } from '@/components/ui/input';
 import { toast } from '@/components/ui/sonner';
 import { apiErrorMessage } from '@/lib/api/errorMessage';
 import { jstHm } from '@/lib/format/actualTime';
+import { useCheckinSettingsPublic } from '@/lib/queries/checkinSettings';
+import { actualTimeLimitsFrom } from '@/lib/schemas/checkinSettings';
 import {
   useAdjustVisitActualTime,
   useResetVisitActualTime,
@@ -55,14 +57,19 @@ interface VisitHistoryDetailDialogProps {
  * 合わせられない訪問で、無効化した操作に添える理由。
  *
  * BE の規則（設計 §6-1）: 削除済みの訪問は誰も合わせられない。管理者はそれ以外すべて、
- * スタッフは自分が担当または記録した訪問で 7 日前まで。つまり管理者に `false` が返るのは
- * 削除済みのときだけなので、スタッフ向けの理由（担当・7 日）を管理者に見せない。
+ * スタッフは自分が担当または記録した訪問で 7 日前まで (日数は `checkin_settings` の設定・
+ * `windowDays`)。つまり管理者に `false` が返るのは削除済みのときだけなので、スタッフ向けの
+ * 理由（担当・日数）を管理者に見せない。
  */
-function notAllowedReason(row: VisitHistoryRow, viewerIsAdmin: boolean): string {
+function notAllowedReason(
+  row: VisitHistoryRow,
+  viewerIsAdmin: boolean,
+  windowDays: number,
+): string {
   // 項目そのものが無い応答（古い BE）は、理由を決めつけない。
   if (row.adjust_allowed == null) return 'この訪問の実績は、いまは合わせられません';
   if (viewerIsAdmin) return 'この訪問は削除されているため、実績の時刻は合わせられません';
-  return 'この訪問の実績は合わせられません（合わせられるのは、自分が担当または記録した訪問で、7 日前までのものです。削除された訪問も合わせられません）';
+  return `この訪問の実績は合わせられません（合わせられるのは、自分が担当または記録した訪問で、${windowDays} 日前までのものです。削除された訪問も合わせられません）`;
 }
 
 /** 無効でも title（理由）が出るようにする。既定の Button は無効時にポインタを切る。 */
@@ -97,6 +104,9 @@ export function VisitHistoryDetailDialog({
   viewerIsAdmin = false,
   onAdjusted,
 }: VisitHistoryDetailDialogProps) {
+  // スタッフが合わせられる期間 (日)。案内の文言に使う (判定そのものはサーバの adjust_allowed)。
+  const { data: checkinPublic } = useCheckinSettingsPublic();
+  const windowDays = actualTimeLimitsFrom(checkinPublic).staffAdjustWindowDays;
   const planned = row ? plannedRange(row) : null;
   const plannedMin = row ? plannedMinutes(row) : null;
   const qrLess = row?.checkin_source === 'manual';
@@ -224,7 +234,7 @@ export function VisitHistoryDetailDialog({
                 dep.manual,
               ].join('|')}
               row={row}
-              naReason={notAllowedReason(row, viewerIsAdmin)}
+              naReason={notAllowedReason(row, viewerIsAdmin, windowDays)}
               onAdjusted={onAdjusted}
             />
           )}

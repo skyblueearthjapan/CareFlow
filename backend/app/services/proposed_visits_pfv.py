@@ -38,6 +38,7 @@ from app.models.course_template import CourseTemplate
 from app.models.office import Office
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
+from app.services.office_labels import office_short
 from app.services.patient_excel.schema import (
     build_office_code_short_maps,
     parse_course_token,
@@ -100,10 +101,12 @@ async def _resolve_course_template_id(
         return None
     # 0059: 拠点マスタ (offices.short_label) 駆動で短縮名を解決する.
     office_rows = (
-        await db.execute(select(Office.code, Office.short_label).where(Office.deleted_at.is_(None)))
+        await db.execute(
+            select(Office.code, Office.name, Office.short_label).where(Office.deleted_at.is_(None))
+        )
     ).all()
     _, short_to_code = build_office_code_short_maps(
-        (row.code, row.short_label) for row in office_rows
+        (row.code, office_short(row.short_label, row.name)) for row in office_rows
     )
     parsed = parse_course_token(course_code, short_to_code)
     if parsed is None:

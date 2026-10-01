@@ -56,6 +56,11 @@ vi.mock('next-auth/react', () => ({
 
 vi.mock('@/components/ui/sonner', () => ({ toast: mockToast }));
 
+// 実績の時刻を合わせる上限 (checkin_settings の public)。未取得 = 既定 (7 日) で案内する。
+vi.mock('@/lib/queries/checkinSettings', () => ({
+  useCheckinSettingsPublic: () => ({ data: undefined }),
+}));
+
 vi.mock('@/lib/queries/visit-history', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   useVisitHistory: (...a: unknown[]) => mockUseVisitHistory(...a),

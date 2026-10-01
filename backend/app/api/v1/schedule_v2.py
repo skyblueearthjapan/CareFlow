@@ -266,9 +266,6 @@ from app.services.scheduling.board_service import (
     load_board_buckets,
     load_weekday_staff_counts,
 )
-from app.services.scheduling.board_service import (
-    _office_short as _board_office_short,
-)
 from app.services.scheduling.config import SchedulingConfig, load_scheduling_config
 from app.services.scheduling.guards import (
     ensure_patient_schedulable,
@@ -4484,7 +4481,7 @@ def _board_course_to_schema(
     return BoardCourse(
         course_id=course.course_id,
         course_code=course.course_code,
-        course_label=f"{_board_office_short(course.office_code)}{course.course_code}",
+        course_label=f"{course.office_short}{course.course_code}",
         staff_name=course.staff_name,
         visits=visits_out,
         capacity=BoardCapacity(

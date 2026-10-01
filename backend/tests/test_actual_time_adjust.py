@@ -427,6 +427,22 @@ async def test_arrival_range_for_staff_and_admin(client, db) -> None:
     await db.rollback()
 
 
+async def test_arrival_range_reads_checkin_settings(client, db) -> None:
+    """さかのぼれる上限は checkin_settings.arrival_max_back_min (mig 0089) から読む。"""
+    from app.models.checkin_settings import CheckinSettings
+
+    _, user, visit = await _arrived_visit(db, "AT-A3S")
+    db.add(CheckinSettings(is_singleton=True, arrival_max_back_min=30))
+    await db.commit()
+
+    # 読取 13:06 → 30 分前 = 12:36 までは可、12:35 は不可。
+    too_early = await _put(client, user, visit, "arrival", "12:35")
+    assert too_early.status_code == 422
+    assert "30 分前（12:36）" in too_early.json()["detail"]
+    assert (await _put(client, user, visit, "arrival", "12:36")).status_code == 200
+    await db.rollback()
+
+
 async def test_arrival_must_be_before_the_departure(client, db) -> None:
     day = _yesterday()
     staff, user, visit = await _arrived_visit(db, "AT-A4", status="completed")

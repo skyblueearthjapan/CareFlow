@@ -13,6 +13,7 @@ from app.api.v1 import (
     allocate,
     audit_logs,
     auth,
+    business_profile,
     checkin_settings,
     cities,
     course_templates,
@@ -238,6 +239,12 @@ api_router.include_router(
     checkin_settings.router,
     prefix="/checkin-settings",
     tags=["checkin-settings"],
+)
+# 別の事業所へ提供する準備 #1: 事業所の情報 (QR カードの事業所名・電話・ロゴ) の取得 / 部分更新.
+api_router.include_router(
+    business_profile.router,
+    prefix="/business-profile",
+    tags=["business-profile"],
 )
 
 __all__ = ["api_router"]

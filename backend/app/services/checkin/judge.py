@@ -44,6 +44,15 @@ DEFAULT_THRESHOLDS: dict[str, int] = {
     # 退出忘れ (長時間 inprogress) しきい値 (分)。Phase 3 までは monitor の定数
     # MAX_INPROGRESS_MIN にハードコードされていたが Phase 4 で設定化した。
     "max_inprogress_min": 240,
+    # 実績の時刻を合わせる上限 (mig 0089 で設定化・別の事業所へ提供する準備 #7)。
+    # 到着をさかのぼれる上限 (分)。管理者には適用しない。
+    "arrival_max_back_min": 90,
+    # 退出を読取時刻より後ろへ動かせる上限 (分)。
+    "departure_max_ahead_min": 30,
+    # スタッフが合わせられるのは、今日からこの日数前までの訪問。
+    "staff_adjust_window_days": 7,
+    # 予定外訪問の仮の所要時間 (分)。患者の基本訪問時間が取れないときに使う。
+    "unplanned_default_minutes": 60,
 }
 
 

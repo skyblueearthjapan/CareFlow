@@ -8,6 +8,7 @@ from app.models.acceptance_calendar import AcceptanceCalendar
 from app.models.acceptance_calendar_week import AcceptanceCalendarWeek
 from app.models.accompaniment import Accompaniment, AccompanimentDefault
 from app.models.audit_log import AuditLog
+from app.models.business_profile import BusinessProfile
 from app.models.checkin_settings import CheckinSettings
 from app.models.city import City
 from app.models.correction_sheet import CorrectionSheet, CorrectionSheetItem
@@ -58,6 +59,7 @@ __all__ = [
     "Accompaniment",
     "AccompanimentDefault",
     "AuditLog",
+    "BusinessProfile",
     "CheckinSettings",
     "City",
     "CorrectionSheet",

@@ -318,7 +318,7 @@ def snapshot_course_bucket(bucket: _CourseBucket) -> CourseSnapshotData:
         office_id=bucket.office_id,
         weekday=bucket.weekday,
         course_code=bucket.course_code,
-        course_label=_course_label(bucket.office_code, bucket.course_code),
+        course_label=_course_label(bucket.office_short, bucket.course_code),
         staff_name=bucket.staff_name,
         visits=[
             CourseSnapshotVisitData(
@@ -824,7 +824,7 @@ def _swap_candidates_for_pfv(
             if delta_min < IMPROVEMENT_THRESHOLD_MIN:
                 continue
 
-            cand_label = _course_label(bucket_y.office_code, course_code_y)
+            cand_label = _course_label(bucket_y.office_short, course_code_y)
             changes, unchanged = _build_changes(
                 current_weekday=wx,
                 current_start=sx,
@@ -1025,7 +1025,9 @@ async def find_improvement_candidates(
             # 当週 visit が未展開等で評価不能 (N-6 で明示する).
             summary.no_current_visit += 1
             continue
-        current_course_label = _course_label(current.office_code, current.bucket.course_code)
+        current_course_label = _course_label(
+            current.bucket.office_short, current.bucket.course_code
+        )
 
         # 候補走査用の Candidate. movability が可否の権威なので time_type は自由
         # (None) にして営業枠内を素直に探索する (固定希望に縛らない).
@@ -1131,7 +1133,7 @@ async def find_improvement_candidates(
                     summary.below_threshold += 1
                     continue
 
-                cand_label = _course_label(bucket.office_code, course_code)
+                cand_label = _course_label(bucket.office_short, course_code)
                 changes, unchanged = _build_changes(
                     current_weekday=weekday,
                     current_start=current.start_time,

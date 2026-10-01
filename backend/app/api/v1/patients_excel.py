@@ -473,8 +473,10 @@ async def import_karte(
         )
 
     # カルテ → 標準 2 シート Workbook bytes に変換してから既存パイプラインへ.
+    # 拠点セル (拠点名) は offices マスタで office_code に戻す (新しい拠点も解決できる).
+    offices = (await db.scalars(select(Office).where(Office.deleted_at.is_(None)))).all()
     try:
-        standard_bytes = parse_karte_workbook(content)
+        standard_bytes = parse_karte_workbook(content, offices=list(offices))
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

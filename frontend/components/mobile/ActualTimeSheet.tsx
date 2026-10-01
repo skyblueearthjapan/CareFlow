@@ -32,16 +32,15 @@ import {
 } from '@/components/ui/dialog';
 import { jstMinutes, minutesToHm } from '@/lib/format/actualTime';
 import type { ActualTimeKind } from '@/lib/queries/me';
+import { ACTUAL_TIME_LIMITS_FALLBACK, type ActualTimeLimits } from '@/lib/schemas/checkinSettings';
 import { cn } from '@/lib/utils';
 
-/**
- * 到着をさかのぼれる上限 (分)。サーバの検証 (設計 §6-1) と同じ値。
- * サーバは管理者にこの下限を課さないが、スマホは管理者でも 90 分まで (仕様)。
- * それより前に合わせるのは PC の打刻履歴から。
+/*
+ * 到着をさかのぼれる上限と、退出を読取時刻より後にできる上限 (分) は、サーバの検証
+ * (設計 §6-1) と同じ設定値を `GET /checkin-settings/public` から受け取る (`limits`・
+ * mig 0089 で設定化。既定 90 分 / 30 分)。サーバは管理者に到着の下限を課さないが、
+ * スマホは管理者でも上限まで (仕様)。それより前に合わせるのは PC の打刻履歴から。
  */
-const ARRIVAL_BACK_LIMIT_MIN = 90;
-/** 退出を読取時刻より後にできる上限 (分)。サーバの検証と同じ値。 */
-const DEPARTURE_AFTER_READ_LIMIT_MIN = 30;
 const LAST_MINUTE_OF_DAY = 23 * 60 + 59;
 
 /** 到着のひと押し (読取時刻からの差・分)。 */
@@ -79,10 +78,15 @@ export interface ActualTimeTimes {
  *   到着: 読取時刻の 90 分前 〜 読取時刻。退出の実績があればその 1 分前まで。
  *   退出: 到着の実績の 1 分後 〜。読み取りがあれば読取時刻の 30 分後まで。
  *         今日の訪問は現在時刻まで、過去の訪問は 23:59 まで。
+ *   (90 分 / 30 分は `limits`・設定値。省略時はサーバの既定と同じ値)
  */
-export function actualTimeRange(kind: ActualTimeKind, t: ActualTimeTimes): [number, number] {
+export function actualTimeRange(
+  kind: ActualTimeKind,
+  t: ActualTimeTimes,
+  limits: ActualTimeLimits = ACTUAL_TIME_LIMITS_FALLBACK,
+): [number, number] {
   if (kind === 'arrival') {
-    const lo = Math.max(0, t.arrival.readAt - ARRIVAL_BACK_LIMIT_MIN);
+    const lo = Math.max(0, t.arrival.readAt - limits.arrivalMaxBackMin);
     const hi =
       t.departure.at != null ? Math.min(t.arrival.readAt, t.departure.at - 1) : t.arrival.readAt;
     return [lo, hi];
@@ -91,7 +95,7 @@ export function actualTimeRange(kind: ActualTimeKind, t: ActualTimeTimes): [numb
   const lo = t.arrival.at + 1;
   const hi =
     t.departure.readAt != null
-      ? Math.min(cap, t.departure.readAt + DEPARTURE_AFTER_READ_LIMIT_MIN)
+      ? Math.min(cap, t.departure.readAt + limits.departureMaxAheadMin)
       : cap;
   return [lo, hi];
 }
@@ -112,6 +116,11 @@ export interface ActualTimeSheetProps {
   arrival: { at: number; readAt: number };
   departure: ActualTimeSide;
   isToday: boolean;
+  /**
+   * 合わせられる範囲の上限 (`checkin_settings` の設定値・`actualTimeLimitsFrom`)。
+   * 省略時はサーバの既定と同じ値 (到着 90 分前・退出 30 分後)。
+   */
+  limits?: ActualTimeLimits;
   /** 退出側を選べなくする (圏外で退避した到着を合わせている間)。 */
   departureDisabled?: boolean;
   /** いまの退出は、読み取りが無く手で入れた時刻か。 */
@@ -157,6 +166,7 @@ function SheetBody({
   arrival,
   departure,
   isToday,
+  limits = ACTUAL_TIME_LIMITS_FALLBACK,
   departureDisabled = false,
   departureManual = false,
   onCancelManualDeparture,
@@ -171,7 +181,7 @@ function SheetBody({
 
   /** その側を開いたときの最初の時刻。未記録の退出は「到着 + 予定の長さ」から。 */
   function initialDraft(k: ActualTimeKind): number {
-    const [lo, hi] = actualTimeRange(k, times);
+    const [lo, hi] = actualTimeRange(k, times, limits);
     const base = k === 'arrival' ? arrival.at : (departure.at ?? arrival.at + plan);
     return clamp(base, lo, Math.max(lo, hi));
   }
@@ -185,7 +195,7 @@ function SheetBody({
     setDraft(initialDraft(next));
   }
 
-  const [lo, hi] = actualTimeRange(kind, times);
+  const [lo, hi] = actualTimeRange(kind, times, limits);
   const hasRange = hi >= lo;
   const current = kind === 'arrival' ? arrival.at : departure.at;
   const readAt = kind === 'arrival' ? arrival.readAt : departure.readAt;

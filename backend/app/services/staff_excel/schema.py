@@ -88,7 +88,8 @@ SEX_VALUES: Final[tuple[str, ...]] = ("male", "female", "unknown")
 # W1-BE2 (§4.2): 在籍 / 休職 / 退職 の 3 値.
 STATUS_VALUES: Final[tuple[str, ...]] = ("active", "on_leave", "retired")
 ROLE_VALUES: Final[tuple[str, ...]] = ("admin", "manager", "staff")
-OFFICE_CODE_VALUES: Final[tuple[str, ...]] = ("INAGE", "TSUGA")
+# 拠点コードの選択肢は offices マスタから作る (exporter が ``office_labels.ordered_office_codes``
+# で差し込む)。列定義の ``dropdown`` は None にしておく (別の事業所へ提供する準備 #3)。
 BOOL_VALUES: Final[tuple[str, ...]] = ("TRUE", "FALSE")
 
 WEEKDAY_LABELS: Final[tuple[str, ...]] = ("月", "火", "水", "木", "金", "土", "日")
@@ -132,7 +133,7 @@ STAFF_COLUMNS: Final[list[dict[str, object]]] = [
     {"key": "sex", "header": "性別", "width": 10, "dropdown": SEX_VALUES},
     {"key": "status", "header": "ステータス", "width": 12, "dropdown": STATUS_VALUES},
     {"key": "role", "header": "ロール", "width": 12, "dropdown": ROLE_VALUES},
-    {"key": "office_code", "header": "拠点コード", "width": 12, "dropdown": OFFICE_CODE_VALUES},
+    {"key": "office_code", "header": "拠点コード", "width": 12, "dropdown": None},
     # Phase E-7 (gap P0-2): staff.secondary_offices (StaffSecondaryOffice relationship)
     # を Excel で扱えるようにする. カンマ区切りの office.code 列挙
     # (例: "INAGE,TSUGA"). 空セル = 関連解除 (= 完全置換). dropdown は値が複数

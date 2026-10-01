@@ -6,6 +6,14 @@ import { AddressGeocodeField } from '@/components/AddressGeocodeField';
 import { OperatingWeekdaysField } from '@/components/master/OperatingWeekdaysField';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { useCities } from '@/lib/queries/cities';
 import type { Office, OfficeCreate } from '@/lib/schemas/office';
@@ -41,7 +49,13 @@ export function OfficeForm({
   const [lng, setLng] = useState<string>(initial?.lng?.toString() ?? '');
   const [prefecture, setPrefecture] = useState(initial?.prefecture ?? '');
   const [note, setNote] = useState(initial?.note ?? '');
+  // 0059 の拠点マスタ駆動化: 略称・並び順・カイポケ上の事業所名 (以前は API でしか変えられなかった)。
+  const [shortLabel, setShortLabel] = useState(initial?.short_label ?? '');
+  const [sortOrder, setSortOrder] = useState<string>(initial?.sort_order?.toString() ?? '');
+  const [kaipokeName, setKaipokeName] = useState(initial?.kaipoke_name ?? '');
   const [allowed, setAllowed] = useState<string[]>(initial?.allowed_cities ?? []);
+  // 略称を変える・消すときの確認 (保存しようとした内容を控えておく)。
+  const [pendingShortChange, setPendingShortChange] = useState<OfficeCreate | null>(null);
   const [cityFilter, setCityFilter] = useState('');
   const [validationMsg, setValidationMsg] = useState<string | null>(null);
   // Phase G-45: 拠点稼働曜日.
@@ -62,6 +76,9 @@ export function OfficeForm({
       lng: initial?.lng?.toString() ?? '',
       prefecture: initial?.prefecture ?? '',
       note: initial?.note ?? '',
+      shortLabel: initial?.short_label ?? '',
+      sortOrder: initial?.sort_order?.toString() ?? '',
+      kaipokeName: initial?.kaipoke_name ?? '',
       allowed: initial?.allowed_cities ?? [],
       operatingWeekdays: initial?.operating_weekdays ?? [...DEFAULT_OPERATING_WEEKDAYS],
     }),
@@ -76,11 +93,27 @@ export function OfficeForm({
       lng,
       prefecture,
       note,
+      shortLabel,
+      sortOrder,
+      kaipokeName,
       allowed,
       operatingWeekdays,
     });
     return current !== initialSnapshotRef.current;
-  }, [name, code, address, lat, lng, prefecture, note, allowed, operatingWeekdays]);
+  }, [
+    name,
+    code,
+    address,
+    lat,
+    lng,
+    prefecture,
+    note,
+    shortLabel,
+    sortOrder,
+    kaipokeName,
+    allowed,
+    operatingWeekdays,
+  ]);
 
   useEffect(() => {
     onDirtyChange?.(isDirty);
@@ -128,6 +161,12 @@ export function OfficeForm({
     e.preventDefault();
     setValidationMsg(null);
 
+    const sortOrderTrimmed = sortOrder.trim();
+    if (sortOrderTrimmed !== '' && !/^-?\d+$/.test(sortOrderTrimmed)) {
+      setValidationMsg('並び順は整数で入力してください');
+      return;
+    }
+
     const payload: OfficeCreate = {
       name,
       code: code || null,
@@ -136,6 +175,9 @@ export function OfficeForm({
       lng: lng === '' ? null : Number(lng),
       prefecture: prefecture || null,
       note: note || null,
+      short_label: shortLabel.trim() || null,
+      sort_order: sortOrderTrimmed === '' ? null : Number(sortOrderTrimmed),
+      kaipoke_name: kaipokeName.trim() || null,
       allowed_cities: allowed,
       // Phase G-45: 稼働曜日.
       operating_weekdays: operatingWeekdays,
@@ -146,8 +188,25 @@ export function OfficeForm({
       setValidationMsg(parsed.error.issues.map((i) => i.message).join(' / '));
       return;
     }
+    // 使っている略称を変える・消すと、札・コース表・Excel の表記が一斉に変わり、
+    // 前に書き出した Excel (例「津A」) が取り込めなくなる。保存の前に確かめる。
+    const prevShort = (initial?.short_label ?? '').trim();
+    if (prevShort !== '' && (parsed.data.short_label ?? '') !== prevShort) {
+      setPendingShortChange(parsed.data);
+      return;
+    }
     await onSubmit(parsed.data);
   };
+
+  const confirmShortChange = async () => {
+    const data = pendingShortChange;
+    setPendingShortChange(null);
+    if (data) await onSubmit(data);
+  };
+
+  const prevShortLabel = (initial?.short_label ?? '').trim();
+  const nextShortLabel =
+    (pendingShortChange?.short_label ?? '').trim() || (pendingShortChange?.name ?? '').slice(0, 1);
 
   return (
     <form className="space-y-4" onSubmit={handleSubmit}>
@@ -171,6 +230,48 @@ export function OfficeForm({
             ))}
           </datalist>
         </Field>
+        <div>
+          <Field label="略称">
+            <Input
+              value={shortLabel}
+              onChange={(e) => setShortLabel(e.target.value)}
+              maxLength={8}
+              placeholder="例: 本"
+            />
+          </Field>
+          <p className="mt-1 text-xs text-text-muted">
+            札・コース表・Excel のコース表記（例「本A」）に使う短い名前です。空欄なら拠点名の 1
+            文字目を使います。Excel
+            の取り込みはこの略称で拠点を見分けるので、使い始めたあとは変えないでください。
+          </p>
+        </div>
+        <div>
+          <Field label="並び順">
+            <Input
+              type="number"
+              inputMode="numeric"
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value)}
+              placeholder="例: 1"
+            />
+          </Field>
+          <p className="mt-1 text-xs text-text-muted">
+            画面や Excel で拠点を並べる順です（小さい順）。空欄の拠点は名前順で後ろに並びます。
+          </p>
+        </div>
+        <div>
+          <Field label="カイポケ上の事業所名">
+            <Input
+              value={kaipokeName}
+              onChange={(e) => setKaipokeName(e.target.value)}
+              maxLength={120}
+              placeholder="例: 訪問看護ステーション ○○"
+            />
+          </Field>
+          <p className="mt-1 text-xs text-text-muted">
+            カイポケに送る予定の「事業所名」です。空欄なら拠点名を使います。
+          </p>
+        </div>
       </div>
 
       <AddressGeocodeField
@@ -289,6 +390,60 @@ export function OfficeForm({
           {submitting ? '送信中...' : submitLabel}
         </Button>
       </div>
+
+      <Dialog
+        open={pendingShortChange !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingShortChange(null);
+        }}
+      >
+        <DialogContent className="max-w-2xl" data-testid="short-label-confirm">
+          <DialogHeader>
+            <DialogTitle className="text-lg">
+              略称を「{prevShortLabel}」から変えますか？
+            </DialogTitle>
+            <DialogDescription className="text-sm text-text-secondary">
+              {(pendingShortChange?.short_label ?? '').trim() === ''
+                ? `略称を空欄にすると、拠点名の 1 文字目「${nextShortLabel}」を使います。`
+                : `新しい略称は「${nextShortLabel}」です。`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-text-primary">
+            <p>保存すると、次の表示がすべて変わります。</p>
+            <ul className="list-disc space-y-1 pl-5">
+              <li>
+                現場ボード・訪問モニターの札とコース表のコース名（例「{prevShortLabel}A」→「
+                {nextShortLabel}A」）
+              </li>
+              <li>訪問の提案に出るコース名</li>
+              <li>患者 Excel のコース欄とプルダウン</li>
+            </ul>
+            <p className="rounded-md border border-amber-400 bg-amber-50/60 px-3 py-2 text-amber-900">
+              変える前に書き出した Excel（「{prevShortLabel}
+              A」などのコース）は、取り込むとコースを見分けられなくなります。
+              変えたあとに書き出し直してからお使いください。
+            </p>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-10"
+              onClick={() => setPendingShortChange(null)}
+            >
+              やめる
+            </Button>
+            <Button
+              type="button"
+              className="h-10"
+              onClick={() => void confirmShortChange()}
+              data-testid="short-label-confirm-ok"
+            >
+              略称を変えて保存する
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </form>
   );
 }

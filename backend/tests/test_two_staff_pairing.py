@@ -100,6 +100,7 @@ def _bucket(
         weekday=0,
         course_code=code,
         office_code=None,
+        office_short="稲",
         staff_name=staff_name,
         course_template_id=template_id,
         visits=visits,

@@ -388,6 +388,7 @@ async def compute_course_detail(
     """
     # 循環 import 回避のため関数内 import (improvement_engine は schedule_health を
     # import しないが、モジュール読み込み順の結合を最小にする).
+    from app.services.office_labels import office_short
     from app.services.scheduling.improvement_engine import compute_exact_marginal
     from app.services.scheduling.proposal_solver import ExistingVisit
     from app.services.scheduling.propose_slots_service import _course_label
@@ -396,8 +397,10 @@ async def compute_course_detail(
         db, iso_year=iso_year, iso_week=iso_week, office_ids=[office_id]
     )
     office = await db.scalar(select(Office).where(Office.id == office_id))
-    office_code = office.code if office is not None else None
-    label = _course_label(office_code, course_code)
+    label = _course_label(
+        office_short(office.short_label, office.name) if office is not None else None,
+        course_code,
+    )
 
     weekdays: list[CourseDetailWeekday] = []
     for (oid, weekday, code), bucket in sorted(buckets.items(), key=lambda kv: kv[0][1]):
