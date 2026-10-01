@@ -8,7 +8,22 @@
 
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# ロゴに使えるのは、アプリに同梱した画像のパス (英数字と . _ ~ / - だけ・「//」始まり不可) か
+# https の URL (空白・バックスラッシュ・制御文字は不可)。FE の isAllowedLogoUrl と同じ規則。
+_LOGO_PATH_RE = re.compile(r"^/(?!/)[A-Za-z0-9._~/-]+$")
+_LOGO_HTTPS_RE = re.compile(r"^https://[^\s\\/][^\s\\]*$")
+
+
+def is_allowed_logo_url(value: str) -> bool:
+    """ロゴのパス / URL として受け付けるか (制御文字・バックスラッシュ・「//」始まりは不可)."""
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        return False
+    return bool(_LOGO_PATH_RE.match(value) or _LOGO_HTTPS_RE.match(value))
+
 
 PROFILE_FIELDS: tuple[str, ...] = (
     "station_name",
@@ -56,8 +71,9 @@ class BusinessProfileUpdate(BaseModel):
         """ロゴはアプリに同梱した画像のパス (``/...``) か ``https://`` の URL だけ受け付ける."""
         if value is None:
             return None
-        if value.startswith("//") or not (value.startswith("/") or value.startswith("https://")):
+        if not is_allowed_logo_url(value):
             raise ValueError(
-                "ロゴは「/」から始まるパスか「https://」から始まる URL で指定してください"
+                "ロゴは「/」から始まるパス (英数字と . _ ~ / - だけ) か"
+                "「https://」から始まる URL で指定してください"
             )
         return value

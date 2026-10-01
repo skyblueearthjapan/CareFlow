@@ -89,9 +89,16 @@ function setupCommon(
     patientId?: string;
     patients?: unknown[];
     profile?: typeof SEEDED_PROFILE | Record<string, null>;
+    /** 事業所の情報の取得状態 (既定 = 読み込み済み)。 */
+    profileState?: 'loaded' | 'loading' | 'error';
   } = {},
 ) {
-  (useBusinessProfile as Mock).mockReturnValue({ data: opts.profile ?? SEEDED_PROFILE });
+  const profileState = opts.profileState ?? 'loaded';
+  (useBusinessProfile as Mock).mockReturnValue({
+    data: profileState === 'loaded' ? (opts.profile ?? SEEDED_PROFILE) : undefined,
+    isLoading: profileState === 'loading',
+    isError: profileState === 'error',
+  });
   const role = opts.role ?? 'admin';
   (useSession as Mock).mockReturnValue({
     data: { user: { role }, accessToken: 't', refreshToken: 'r' },
@@ -221,6 +228,37 @@ describe('QrPrintPage — Phase 5-1', () => {
     expect(card.textContent).not.toContain('お問い合わせ先');
     expect(card.textContent).not.toContain('TEL');
     expect(container.textContent).not.toContain('よりより');
+    // 未設定は目立つ警告を出す (印刷自体は止めない)。
+    expect(screen.getByTestId('qrprint-profile-empty')).toHaveTextContent(
+      'お問い合わせ先が未設定です（設定 → 事業所の情報）',
+    );
+    expect(screen.getByTestId('qrprint-print')).toBeEnabled();
+  });
+
+  it('C4. 事業所の情報を読み込み中は印刷できない', async () => {
+    setupCommon({ mode: 'bulk', patients: [makePatient()], profileState: 'loading' });
+    render(<QrPrintPage />);
+    await screen.findByTestId('qrprint-card');
+    expect(screen.getByTestId('qrprint-profile-loading')).toBeInTheDocument();
+    expect(screen.getByTestId('qrprint-print')).toBeDisabled();
+  });
+
+  it('C5. 事業所の情報を読み込めないときは警告を出し、印刷できない', async () => {
+    setupCommon({ mode: 'bulk', patients: [makePatient()], profileState: 'error' });
+    render(<QrPrintPage />);
+    await screen.findByTestId('qrprint-card');
+    expect(screen.getByTestId('qrprint-profile-error')).toHaveAttribute('role', 'alert');
+    expect(screen.getByTestId('qrprint-print')).toBeDisabled();
+    expect(screen.queryByTestId('qrprint-profile-empty')).toBeNull();
+  });
+
+  it('C6. 設定済みなら警告は出ず、印刷できる', async () => {
+    setupCommon({ mode: 'bulk', patients: [makePatient()] });
+    render(<QrPrintPage />);
+    await screen.findByTestId('qrprint-card');
+    expect(screen.queryByTestId('qrprint-profile-empty')).toBeNull();
+    expect(screen.queryByTestId('qrprint-profile-error')).toBeNull();
+    expect(screen.getByTestId('qrprint-print')).toBeEnabled();
   });
 
   it('C3. お問い合わせ先の設定画面へ行ける', async () => {

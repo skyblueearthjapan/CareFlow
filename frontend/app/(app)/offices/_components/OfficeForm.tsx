@@ -6,6 +6,14 @@ import { AddressGeocodeField } from '@/components/AddressGeocodeField';
 import { OperatingWeekdaysField } from '@/components/master/OperatingWeekdaysField';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { useCities } from '@/lib/queries/cities';
 import type { Office, OfficeCreate } from '@/lib/schemas/office';
@@ -46,6 +54,8 @@ export function OfficeForm({
   const [sortOrder, setSortOrder] = useState<string>(initial?.sort_order?.toString() ?? '');
   const [kaipokeName, setKaipokeName] = useState(initial?.kaipoke_name ?? '');
   const [allowed, setAllowed] = useState<string[]>(initial?.allowed_cities ?? []);
+  // 略称を変える・消すときの確認 (保存しようとした内容を控えておく)。
+  const [pendingShortChange, setPendingShortChange] = useState<OfficeCreate | null>(null);
   const [cityFilter, setCityFilter] = useState('');
   const [validationMsg, setValidationMsg] = useState<string | null>(null);
   // Phase G-45: 拠点稼働曜日.
@@ -178,8 +188,25 @@ export function OfficeForm({
       setValidationMsg(parsed.error.issues.map((i) => i.message).join(' / '));
       return;
     }
+    // 使っている略称を変える・消すと、札・コース表・Excel の表記が一斉に変わり、
+    // 前に書き出した Excel (例「津A」) が取り込めなくなる。保存の前に確かめる。
+    const prevShort = (initial?.short_label ?? '').trim();
+    if (prevShort !== '' && (parsed.data.short_label ?? '') !== prevShort) {
+      setPendingShortChange(parsed.data);
+      return;
+    }
     await onSubmit(parsed.data);
   };
+
+  const confirmShortChange = async () => {
+    const data = pendingShortChange;
+    setPendingShortChange(null);
+    if (data) await onSubmit(data);
+  };
+
+  const prevShortLabel = (initial?.short_label ?? '').trim();
+  const nextShortLabel =
+    (pendingShortChange?.short_label ?? '').trim() || (pendingShortChange?.name ?? '').slice(0, 1);
 
   return (
     <form className="space-y-4" onSubmit={handleSubmit}>
@@ -363,6 +390,60 @@ export function OfficeForm({
           {submitting ? '送信中...' : submitLabel}
         </Button>
       </div>
+
+      <Dialog
+        open={pendingShortChange !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingShortChange(null);
+        }}
+      >
+        <DialogContent className="max-w-2xl" data-testid="short-label-confirm">
+          <DialogHeader>
+            <DialogTitle className="text-lg">
+              略称を「{prevShortLabel}」から変えますか？
+            </DialogTitle>
+            <DialogDescription className="text-sm text-text-secondary">
+              {(pendingShortChange?.short_label ?? '').trim() === ''
+                ? `略称を空欄にすると、拠点名の 1 文字目「${nextShortLabel}」を使います。`
+                : `新しい略称は「${nextShortLabel}」です。`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-text-primary">
+            <p>保存すると、次の表示がすべて変わります。</p>
+            <ul className="list-disc space-y-1 pl-5">
+              <li>
+                現場ボード・訪問モニターの札とコース表のコース名（例「{prevShortLabel}A」→「
+                {nextShortLabel}A」）
+              </li>
+              <li>訪問の提案に出るコース名</li>
+              <li>患者 Excel のコース欄とプルダウン</li>
+            </ul>
+            <p className="rounded-md border border-amber-400 bg-amber-50/60 px-3 py-2 text-amber-900">
+              変える前に書き出した Excel（「{prevShortLabel}
+              A」などのコース）は、取り込むとコースを見分けられなくなります。
+              変えたあとに書き出し直してからお使いください。
+            </p>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-10"
+              onClick={() => setPendingShortChange(null)}
+            >
+              やめる
+            </Button>
+            <Button
+              type="button"
+              className="h-10"
+              onClick={() => void confirmShortChange()}
+              data-testid="short-label-confirm-ok"
+            >
+              略称を変えて保存する
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </form>
   );
 }

@@ -36,23 +36,35 @@ migration **`0089_multi_office_settings`**（1 本）。データの手順で今
 | 2 | **済** | カルテの拠点プルダウン・拠点名 → office_code を `offices`（コードのある拠点・並び順）から作る。新しい拠点も拠点名で解決する。カルテのコース欄の略称も拠点マスタから |
 | 3 | **済** | 患者 Excel・スタッフ Excel の拠点コードの選択肢を `offices` から作る（並び順どおり） |
 | 4 | **済** | 略称を `offices.short_label`（未設定なら拠点名の 1 文字目）に一本化: `services/office_labels.py`（モニターの `office_short` を移設）。ボード・提案・スケジュールの健康診断・特別訪問・患者 Excel（`build_office_code_short_maps` から稲毛・都賀の決め打ちを撤去）・`CourseDayTablePanel`。拠点の編集画面に「略称」「並び順」「カイポケ上の事業所名」を追加（v1 の拠点 API に `kaipoke_name` が無かったので足した）。0089 で INAGE / TSUGA の略称・並び順が空なら 稲/1・津/2 を入れる |
-| 7 | **済** | `checkin_settings` に 4 列（到着をさかのぼれる分 90・退出を後ろへ動かせる分 30・スタッフが合わせられる日数 7・予定外訪問の仮の所要時間 60）。`/settings/checkin` に「実績の時刻を合わせるルール」を追加。スマホのシートと打刻履歴の案内は `GET /checkin-settings/public` の値を使う |
-| 9 | **済** | Excel の集計・プルダウンの拠点順を `sort_order` → 名前に。住所の分解は今までの千葉の 2 つの正規表現を先に試し（今の住所の結果は同じ）、別の都道府県向けに「都道府県＋市＋区」「東京 23 区」「郡の町村」を足した |
+| 7 | **済** | `checkin_settings` に 4 列（到着をさかのぼれる分・退出を後ろへ動かせる分・スタッフが合わせられる日数・予定外訪問の仮の所要時間）。0089 は値を入れない（NULL = コード既定 90 / 30 / 7 / 60 = 今までの定数。画面では「既定」と出る。他の列と同じ扱い）。`/settings/checkin` に「実績の時刻を合わせるルール」を追加。スマホのシートと打刻履歴の案内は `GET /checkin-settings/public` の値を使う |
+| 9 | **済** | Excel の集計・プルダウンの拠点順を `sort_order` → 名前に。住所の分解は今までの千葉の 2 つの正規表現をそのまま使い、別の都道府県向けの「都道府県＋市＋区」「東京 23 区」「郡の町村」は **千葉県以外の都道府県名から始まる住所だけ** に使う（県名の無い「若葉区都賀…」や千葉県の郡の住所など、今まで空欄だったものも空欄のまま） |
 | 5・6・8・10 | 未着手 | PO 判断待ち（今回の範囲外） |
 
 ### 残ること・気をつけること
 - **本番反映の前に**、本番の `offices` の `short_label` / `sort_order` が INAGE=稲/1・TSUGA=津/2 であることを確かめる（0059 は拠点名で入れたので通常は入っている。0089 は空のときだけ埋める。違う値が入っていたら、その値が表示に出る）。
-- 住所の分解: 千葉県の **郡** の住所（例 印旛郡酒々井町…）は今まで空欄だったエリア表示に町名が出るようになる（表示だけ・配置の計算には使わない）。
 - FE には、設定を取れないとき（取得前・古い BE）の目安として既定の 90 / 30 / 7 が `ACTUAL_TIME_LIMITS_FALLBACK` に残る（`CHECKIN_PUBLIC_FALLBACK` と同じ作り。正はサーバの検証）。
 - カルテの拠点セルに拠点マスタに無い名前が書かれていた場合は、今までどおり住所からの自動割当になる（黙って落ちる。エラーにするかは PO 判断）。
 - `propose_slots_service` などの `office_code_by_id` 引数は略称に使わなくなった（呼び出し元が多いので引数は残した）。
 - 監査に無かった決め打ちで直したもの: `schedule_health.py`（コースの原因内訳の見出し）、`special_visits.py`（legacy 既定へのフォールバック）、`karte.py` のコース欄（略称の対応を渡していなかった）。
 - まだ確かめていないもの（今回の範囲外）: カイポケ RPA 側（別リポジトリ）。`layer2_clustering.py` の「千葉エリア」はコメントだけ（処理は変わらない）。
+- QR 印刷: 事業所の情報を読み込み中・読み込めないときは印刷ボタンを止める。未設定なら「お問い合わせ先が未設定です（設定 → 事業所の情報）」を出す（印刷はできる）。
+- 拠点の編集画面: 使っている略称を変える・消すときは、札・コース表・Excel が変わり前の Excel が取り込めなくなることを確認してから保存する。
+- 0089 の downgrade は PG16 で確認済み（列の CHECK は列と一緒に消す。`op.drop_constraint` は命名規約で名前が変わるので使わない）。
+
+### 既知の失敗（このブランチの原因ではない）
+- `backend/tests/test_patients_excel_replace_all.py::test_replace_all_manager_forbidden` と `backend/tests/test_staff_excel_replace_all.py::test_staff_replace_all_manager_forbidden` は **b70f7ab の時点で失敗している**（ロール二軸 mig 0069 以降 `manager` は admin の別名なので 403 にならず 200）。テストを今のロールに合わせる必要がある（別途）。
+
+### 残っている INAGE / TSUGA / 稲毛 / 都賀 の記述（今回触っていないもの・処理には効いていない）
+2026-10-01 の grep で、処理を分ける決め打ちは残っていない。残りはコメント・docstring・API の説明文・入力例だけ。拠点名で処理を分けていた固定割当は mig 0051 で `office_feature_flags` に移し済み。
+- コメント・docstring: `backend/app/services/scheduling/layer3_assignment.py`（都賀 A / manager M の固定割当の説明。#8）、`backend/app/services/scheduling/auto_allocator_v2.py`（クロス拠点の例）、`backend/app/services/scheduling/course_staff_mirror.py`、`backend/app/services/kaipoke/replace_inbound.py`、`backend/app/services/accompaniment.py`、`backend/app/services/patient_excel/exporter.py`（グリッドの説明）、`backend/app/api/v1/schedule.py`、`backend/app/api/v1/schedule_v2.py`、`backend/app/models/office.py`
+- API の説明文 (`description=` / 例): `backend/app/schemas/staff.py`、`backend/app/schemas/v2/{office,patient,staff,board,acceptance_matrix,auto_schedule_v2}.py`、`backend/app/schemas/office_feature_flag.py`、`backend/app/schemas/integrations.py`、`backend/app/schemas/visit_monitor.py`
+- カイポケ: `backend/app/services/kaipoke/csv_builder.py` の「よりより」前提の既定値（#5・PO 判断待ち）
+- FE のコメント・入力例: `frontend/components/field/FieldSheets.tsx`（住所の入力例「千葉市稲毛区…」）、`frontend/components/field/FieldBoard.tsx`、`frontend/components/schedule/**`（`WeekTimelineBoard`・`StaffWeekBoard`・`AccompanimentBar` ほかのコメント）、`frontend/app/(app)/monitor/page.tsx`、`frontend/app/(app)/patients/_components/PatientFixedVisitsPanel.tsx`、`frontend/lib/schemas/v2/{office,staff}.ts`、`frontend/lib/schemas/{integration,trainee_accompaniment}.ts`
 
 ## 設定で変えられるもの（問題なし）
 - 移動時速・訪問間の余裕・営業時間・1 コースの人数（`scheduling_settings`・`/settings/scheduling`。6 の例外を除く）
 - 未訪問の猶予・遅刻・位置の距離・退出忘れ（`checkin_settings`・`/settings/checkin`）
-- 拠点の営業曜日（拠点の画面）、カイポケ上の事業所名（`offices.kaipoke_name`。画面の入力欄は無い）
+- 拠点の営業曜日・略称・並び順・カイポケ上の事業所名（拠点の画面。略称ほか 3 項目は 0089 のブランチで入力欄を追加）
 
 ## アプリ自体のブランド（お客様固有ではない）
 「らく助」の名前・マスコット・色。`frontend/public/brand/` のうち `yoriyori-logo-h.svg` だけはお客様のもの（#1）。

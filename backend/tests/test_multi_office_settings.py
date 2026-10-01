@@ -241,7 +241,21 @@ CURRENT_CLIENT_ADDRESSES = [
     "四街道市鷹の台1-2",
     "住所未登録",
     "",
+    # 旧実装で None だった住所 (県名・市名の無い千葉市の区、千葉県の郡)。変えない。
+    "若葉区都賀3-1-2",
+    "稲毛区園生町1-2",
+    "中央区新町",
+    "千葉県印旛郡酒々井町中央台1-1",
 ]
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["若葉区都賀3-1-2", "稲毛区園生町1-2", "中央区新町", "千葉県印旛郡酒々井町中央台1-1"],
+)
+def test_area_label_stays_none_for_chiba_addresses_that_were_none(address: str) -> None:
+    assert _legacy_extract_area_label(address) is None
+    assert _extract_area_label(address) is None
 
 
 @pytest.mark.parametrize("address", CURRENT_CLIENT_ADDRESSES)
@@ -324,7 +338,13 @@ async def test_business_profile_get_put(client, db) -> None:
     assert res.json() == {**seeded, "logo_url": None}
 
     # ロゴは「/」始まりか https の URL だけ。
-    for bad in ("javascript:alert(1)", "http://example.com/a.svg", "//evil.example/a.svg"):
+    for bad in (
+        "javascript:alert(1)",
+        "http://example.com/a.svg",
+        "//evil.example/a.svg",
+        "/\\evil.example/x.svg",
+        "/brand/a\x01.svg",
+    ):
         res = await client.put(
             "/api/v1/business-profile", headers=_bearer(admin), json={"logo_url": bad}
         )
@@ -335,6 +355,60 @@ async def test_business_profile_get_put(client, db) -> None:
         json={"logo_url": "https://cdn.example.com/logo.png"},
     )
     assert res.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("value", "ok"),
+    [
+        ("/brand/yoriyori-logo-h.svg", True),
+        ("/brand/logo_v2.png", True),
+        ("https://cdn.example.com/a/b.svg?v=1", True),
+        ("//evil.example/x.svg", False),
+        ("/\\evil.example/x.svg", False),
+        ("/brand/logo .svg", False),
+        ("/brand/ロゴ.svg", False),
+        ("/brand/a\x00.svg", False),
+        ("https://evil.example\\x.svg", False),
+        ("https:///evil", False),
+        ("http://example.com/a.svg", False),
+        ("brand/logo.svg", False),
+    ],
+)
+def test_logo_url_rule(value: str, ok: bool) -> None:
+    from app.schemas.business_profile import is_allowed_logo_url
+
+    assert is_allowed_logo_url(value) is ok
+
+
+@pytest.mark.asyncio
+async def test_business_profile_first_put_race_updates_instead_of_500(
+    client, db, monkeypatch
+) -> None:
+    """最初の PUT が同時に 2 本来た場合 (相手が先に行を作った) も 500 にせず更新として扱う.
+
+    相手の INSERT が見えなかった状況を、1 回目の読み込みだけ「行なし」にして再現する。
+    """
+    from app.api.v1 import business_profile as api
+    from app.models.business_profile import BusinessProfile
+
+    admin = await _make_user(db, "bp-race@example.com", "admin")
+    db.add(BusinessProfile(is_singleton=True, contact_tel="先に作られた行"))
+    await db.commit()
+
+    real_load = api._load_singleton
+    calls = {"n": 0}
+
+    async def first_miss(session):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else await real_load(session)
+
+    monkeypatch.setattr(api, "_load_singleton", first_miss)
+    res = await client.put(
+        "/api/v1/business-profile", headers=_bearer(admin), json={"contact_tel": "2"}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["contact_tel"] == "2"
+    assert calls["n"] >= 2
 
 
 @pytest.mark.asyncio

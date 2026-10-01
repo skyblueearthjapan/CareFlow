@@ -853,9 +853,9 @@ def _detect_cross_address_time_conflicts(
 
 # 住所の分解は上から順に試す。1・3 は千葉の住所で使ってきた正規表現そのまま (いまの
 # お客様の住所の結果を変えない)。2・4・5 は別の都道府県の住所向け (別の事業所へ提供する
-# 準備 #9)。2 は「都道府県 + 市 + 区」がそろった住所だけに当たるので、千葉市の区の住所は
-# 先に 1 で取れる。2 を 3 より先に試すのは、3 だと「区」まで町名に含めてしまうため。
-# 4・5 は 1〜3 で取れなかった住所 (市の無い住所) だけに進む。
+# 準備 #9) で、**千葉県以外の都道府県名から始まる住所だけ**に使う (県名の無い千葉の住所で
+# 今まで None だったものを変えないため)。2 を 3 より先に試すのは、3 だと「区」まで町名に
+# 含めてしまうため。4・5 は 1〜3 で取れなかった住所 (市の無い住所) だけに進む。
 #
 # 1. 千葉県千葉市XX区YY... — 区が含まれる千葉市の住所
 _AREA_PATTERN_WITH_WARD = re.compile(r"千葉県?千葉市?(?P<ward>[^区]+区)(?P<town>[^0-9０-９\s\-]+)")
@@ -877,6 +877,8 @@ _AREA_PATTERN_COUNTY = re.compile(
     r"(?P<county>[^\s県0-9０-９\-]{1,5}郡)(?P<village>[^\s町村0-9０-９\-]{1,5}[町村])"
     r"(?P<town>[^0-9０-９\s\-]+)"
 )
+# 住所の先頭の都道府県 (2・4・5 を使うか決める)。
+_LEADING_PREFECTURE = re.compile(r"^(?:東京都|北海道|京都府|大阪府|[^\s都道府県0-9０-９]{2,3}県)")
 # 末尾の「町」「丁目」「番地」等を除去するための正規表現.
 _TOWN_TRAILING_RE = re.compile(r"(町|丁目|番地|番).*$")
 
@@ -906,12 +908,20 @@ def _extract_area_label(address: str | None) -> str | None:
     m = _AREA_PATTERN_WITH_WARD.search(address)
     if m:
         return _town_label(m.group("town"), 6)
-    m = _AREA_PATTERN_DESIGNATED_WARD.search(address)
-    if m:
-        return _town_label(m.group("town"), 6)
+    # 2・4・5 は「千葉県以外の都道府県から始まる住所」だけに使う。千葉の住所 (県名の無い
+    # 「若葉区都賀…」「印旛郡…」なども含む) は今までどおり 1・3 だけで分解する
+    # (今のお客様のエリア表示を変えないため)。
+    prefecture = _LEADING_PREFECTURE.match(address.strip())
+    other_prefecture = prefecture is not None and prefecture.group(0) != "千葉県"
+    if other_prefecture:
+        m = _AREA_PATTERN_DESIGNATED_WARD.search(address)
+        if m:
+            return _town_label(m.group("town"), 6)
     m2 = _AREA_PATTERN_CITY_ONLY.search(address)
     if m2:
         return _town_label(m2.group("town"), 8)
+    if not other_prefecture:
+        return None
     m = _AREA_PATTERN_SPECIAL_WARD.search(address)
     if m:
         return _town_label(m.group("town"), 6)

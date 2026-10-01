@@ -191,9 +191,43 @@ describe('OfficeForm — 略称・並び順・カイポケ上の事業所名 (�
     await act(async () => {
       fireEvent.submit(screen.getByRole('button', { name: '作成' }).closest('form')!);
     });
+    // 使っている略称を消すときは確認してから保存する。
+    expect(onSubmit).not.toHaveBeenCalled();
+    const dialog = screen.getByTestId('short-label-confirm');
+    expect(dialog).toHaveTextContent('拠点名の 1 文字目「幕」を使います');
+    expect(dialog).toHaveTextContent('取り込むとコースを見分けられなくなります');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('short-label-confirm-ok'));
+    });
     const arg = onSubmit.mock.calls[0]![0];
     expect(arg.short_label).toBeNull();
     expect(arg.sort_order).toBeNull();
     expect(arg.kaipoke_name).toBeNull();
+  });
+
+  it('使っている略称を変えて「やめる」と保存しない', async () => {
+    const onSubmit = vi.fn();
+    render(<OfficeForm initial={{ name: '都賀', short_label: '津' }} onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByRole('textbox', { name: '略称' }), { target: { value: '都' } });
+    await act(async () => {
+      fireEvent.submit(screen.getByRole('button', { name: '作成' }).closest('form')!);
+    });
+    expect(screen.getByTestId('short-label-confirm')).toHaveTextContent('新しい略称は「都」です');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'やめる' }));
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('short-label-confirm')).toBeNull();
+  });
+
+  it('略称の無かった拠点に略称を入れるときは確認しない', async () => {
+    const onSubmit = vi.fn();
+    render(<OfficeForm initial={{ name: '幕張' }} onSubmit={onSubmit} />);
+    fireEvent.change(screen.getByRole('textbox', { name: '略称' }), { target: { value: '幕' } });
+    await act(async () => {
+      fireEvent.submit(screen.getByRole('button', { name: '作成' }).closest('form')!);
+    });
+    expect(screen.queryByTestId('short-label-confirm')).toBeNull();
+    expect(onSubmit.mock.calls[0]![0].short_label).toBe('幕');
   });
 });

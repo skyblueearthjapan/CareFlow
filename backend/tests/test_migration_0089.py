@@ -3,8 +3,8 @@
 検証観点:
   1. 0089 が 0088 から派生し、head が単一。revision id は 32 文字以内。
   2. SQLite で upgrade → business_profile ができ、checkin_settings に 4 列 (CHECK 付き)。
-  3. データ: 今までコードにあった値 (90 / 30 / 7 / 60・よりより様の QR カードの値・
-     INAGE→稲/1・TSUGA→津/2) がそのまま入る。値の入っている拠点には触れない。
+  3. データ: 上限の 4 列は NULL のまま (= コード既定 90 / 30 / 7 / 60)。よりより様の
+     QR カードの値・INAGE→稲/1・TSUGA→津/2 がそのまま入る。値の入っている拠点には触れない。
   4. よりより様の拠点 (INAGE / TSUGA) が無い DB には事業所の情報を入れない。
   5. downgrade → 再 upgrade で往復できる (シングルトン部分 UNIQUE も残る)。
 """
@@ -147,7 +147,8 @@ def test_migration_0089_seeds_current_values_for_current_client(tmp_path: Path) 
                 "staff_adjust_window_days, unplanned_default_minutes FROM checkin_settings"
             )
         ).one()
-        assert tuple(row) == (120, 90, 30, 7, 60)
+        # 既存の値は変えず、上限の列は NULL (= 既定) のまま。
+        assert tuple(row) == (120, None, None, None, None)
 
         profile = conn.execute(
             sa.text(
@@ -209,7 +210,7 @@ def test_migration_0089_seeds_current_values_for_current_client(tmp_path: Path) 
     engine.dispose()
 
 
-def test_migration_0089_no_row_inserts_singleton_and_skips_profile_for_other_client(
+def test_migration_0089_creates_no_rows_for_other_client(
     tmp_path: Path,
 ) -> None:
     # 別の事業所の新しい DB (よりより様の拠点コードが無い・しきい値の行も無い)。
@@ -218,13 +219,8 @@ def test_migration_0089_no_row_inserts_singleton_and_skips_profile_for_other_cli
     _run(engine, "upgrade")
 
     with engine.begin() as conn:
-        rows = conn.execute(
-            sa.text(
-                "SELECT is_singleton, match_m, arrival_max_back_min, departure_max_ahead_min, "
-                "staff_adjust_window_days, unplanned_default_minutes FROM checkin_settings"
-            )
-        ).all()
-        assert [tuple(r) for r in rows] == [(1, None, 90, 30, 7, 60)]
+        # しきい値の行は作らない (行が無い = 全項目既定)。
+        assert conn.execute(sa.text("SELECT COUNT(*) FROM checkin_settings")).scalar() == 0
         # よりより様の電話番号やロゴを別の事業所のカードに出さない。
         assert conn.execute(sa.text("SELECT COUNT(*) FROM business_profile")).scalar() == 0
         office = conn.execute(sa.text("SELECT short_label, sort_order FROM offices")).one()

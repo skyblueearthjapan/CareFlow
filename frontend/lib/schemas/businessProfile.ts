@@ -37,10 +37,19 @@ export const BUSINESS_PROFILE_MAX_LENGTH: Record<keyof BusinessProfile, number> 
   logo_url: 255,
 };
 
-/** ロゴに指定できる形 (アプリに同梱した画像のパス、または https の URL)。BE と同じ規則。 */
+const LOGO_PATH_RE = /^\/(?!\/)[A-Za-z0-9._~/-]+$/;
+const LOGO_HTTPS_RE = /^https:\/\/[^\s\\/][^\s\\]*$/;
+// eslint-disable-next-line no-control-regex -- 制御文字を弾くための判定
+const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f]/;
+
+/**
+ * ロゴに指定できる形。BE (`schemas/business_profile.is_allowed_logo_url`) と同じ規則:
+ * アプリに同梱した画像のパス (英数字と . _ ~ / - だけ・「//」始まり不可) か、
+ * https の URL (空白・バックスラッシュ・制御文字は不可)。空欄は「ロゴなし」で可。
+ */
 export function isAllowedLogoUrl(value: string): boolean {
   const v = value.trim();
   if (v === '') return true;
-  if (v.startsWith('//')) return false;
-  return v.startsWith('/') || v.startsWith('https://');
+  if (CONTROL_CHAR_RE.test(v)) return false;
+  return LOGO_PATH_RE.test(v) || LOGO_HTTPS_RE.test(v);
 }

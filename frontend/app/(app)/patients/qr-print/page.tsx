@@ -76,6 +76,17 @@ function todayJst(): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo' }).format(new Date());
 }
 
+/** カードに載せるお問い合わせ先が 1 つでもあるか。 */
+function hasContact(profile: BusinessProfile | undefined): boolean {
+  return Boolean(
+    profile &&
+      (profile.contact_tel ||
+        profile.contact_hours ||
+        profile.contact_days ||
+        profile.station_name),
+  );
+}
+
 /** QR に符号化する URL を組む (`${origin}/q/${token}`)。 */
 function qrUrl(token: string): string {
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
@@ -133,7 +144,10 @@ function QrPrintPageInner() {
 
   const { data: patientsData, isLoading } = usePatients({ limit: 500 });
   const { offices } = useOffices({ limit: 500 });
-  const { data: profile } = useBusinessProfile();
+  const profileQuery = useBusinessProfile();
+  const profile = profileQuery.data;
+  // 読み込み中・失敗 (zod の検証に落ちた応答も含む) は、連絡先の無いカードを刷らないよう止める。
+  const profileNotReady = profileQuery.isLoading || profileQuery.isError || !profile;
 
   const officeNameMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -386,7 +400,8 @@ function QrPrintPageInner() {
               type="button"
               className="qrprint-btn brand"
               data-testid="qrprint-print"
-              disabled={mode === 'bulk' && bulkSelectedPatients.length === 0}
+              disabled={profileNotReady || (mode === 'bulk' && bulkSelectedPatients.length === 0)}
+              title={profileNotReady ? 'お問い合わせ先を読み込めるまで印刷できません' : undefined}
               onClick={() => window.print()}
             >
               🖨 印刷
@@ -399,6 +414,24 @@ function QrPrintPageInner() {
           ? '💡 個別モード：選んだ患者 1 名分を A4 上半分の A5 カード 1 面に印刷します（切り取ってパウチ）。'
           : '💡 一括モード：拠点・ステータスで絞り込み、チェックで対象を選びます。A4 1 枚に A5 カード 2 面（2 名分）をまとめて印刷します。'}
       </div>
+
+      {/* 事業所の情報 (お問い合わせ先・ロゴ) を取れないまま刷ると、連絡先の無いカードが
+          ご利用者様宅に貼られてしまう。読み込み中・失敗は印刷を止め、未設定は目立たせる。 */}
+      {profileQuery.isError ? (
+        <div className="qrprint-warn" role="alert" data-testid="qrprint-profile-error">
+          ⚠
+          お問い合わせ先（事業所の情報）を読み込めませんでした。再読み込みしてから印刷してください。
+        </div>
+      ) : profileQuery.isLoading ? (
+        <div className="qrprint-hint" data-testid="qrprint-profile-loading">
+          お問い合わせ先を読み込んでいます…
+        </div>
+      ) : !hasContact(profile) ? (
+        <div className="qrprint-warn" role="alert" data-testid="qrprint-profile-empty">
+          ⚠ お問い合わせ先が未設定です（設定 → <Link href="/settings/business">事業所の情報</Link>
+          ）
+        </div>
+      ) : null}
 
       {overLimit ? (
         <div className="qrprint-warn" role="alert">
@@ -523,11 +556,7 @@ function QrCard({ patient, issued, profile, showCheckbox, onToggle }: QrCardProp
           <div className="qrprint-pname">{patient.name} 様</div>
           <div className="qrprint-pcode">{patient.code}</div>
 
-          {profile &&
-          (profile.contact_tel ||
-            profile.contact_hours ||
-            profile.contact_days ||
-            profile.station_name) ? (
+          {profile && hasContact(profile) ? (
             <div className="qrprint-contactbox">
               <div className="qrprint-contact-h">お問い合わせ先</div>
               {profile.contact_tel ? (

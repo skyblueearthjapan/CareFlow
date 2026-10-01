@@ -14,6 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.audit_log import AuditLog
@@ -49,18 +50,31 @@ async def update_business_profile(
     db: DbDep,
     actor: Annotated[User, Depends(require_role("admin"))],
 ) -> BusinessProfileRead:
+    updates = payload.model_dump(include=payload.model_fields_set)
     row = await _load_singleton(db)
+    before: dict[str, object | None]
     if row is None:
-        row = BusinessProfile(is_singleton=True)
-        db.add(row)
-        before: dict[str, object | None] = dict.fromkeys(PROFILE_FIELDS)
+        # 初回。最初の PUT が同時に 2 本来ると、後の方はシングルトンの部分 UNIQUE に
+        # 当たる。そのときは相手が作った行を読み直して更新として扱う (500 にしない)。
+        row = BusinessProfile(is_singleton=True, **updates)
+        before = dict.fromkeys(PROFILE_FIELDS)
+        try:
+            async with db.begin_nested():
+                db.add(row)
+                await db.flush()
+        except IntegrityError:
+            row = await _load_singleton(db)
+            if row is None:
+                raise
+            before = {f: getattr(row, f) for f in PROFILE_FIELDS}
+            for field, value in updates.items():
+                setattr(row, field, value)
+            await db.flush()
     else:
         before = {f: getattr(row, f) for f in PROFILE_FIELDS}
-
-    for field, value in payload.model_dump(include=payload.model_fields_set).items():
-        setattr(row, field, value)
-
-    await db.flush()
+        for field, value in updates.items():
+            setattr(row, field, value)
+        await db.flush()
     db.add(
         AuditLog(
             actor_user_id=actor.id,

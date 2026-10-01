@@ -8,7 +8,8 @@ Create Date: 2026-10-01
 
 正典 ``docs/plans/multi-office-readiness-audit-2026-10-01.md`` の #1 / #4 / #7。
 コードに書かれていたお客様固有の値を設定へ移す。**いまのお客様 (よりより様) の
-表示・帳票・上限は変わらない** — データの手順で、今までコードにあった値をそのまま入れる。
+表示・帳票・上限は変わらない** — 上限はコード既定 (= 今までの定数) のまま、事業所の情報と
+拠点の略称はデータの手順で今までコードにあった値をそのまま入れる。
 
 1. 新テーブル ``business_profile`` (事業所の情報・シングルトン 1 行)。患者 QR カードの
    事業所名・電話・対応時間・対応日・ロゴ (#1)。
@@ -18,8 +19,9 @@ Create Date: 2026-10-01
    * ``staff_adjust_window_days`` スタッフが合わせられる期間 (日)     既定 7   / 0..31
    * ``unplanned_default_minutes`` 予定外訪問の仮の所要時間 (分)      既定 60  / 10..240
 3. データ:
-   * ``checkin_settings`` の 4 列に 90 / 30 / 7 / 60 を入れる (行が無ければ 1 行作る。
-     他の列は NULL のまま = 既定のまま)。
+   * ``checkin_settings`` の 4 列には **何も入れない** (NULL = コード既定
+     ``judge.DEFAULT_THRESHOLDS`` の 90 / 30 / 7 / 60 = 今までの定数と同じ値。画面では
+     「既定」と表示され、既定を変えれば追随する。他の設定列と同じ扱い)。行も作らない。
    * ``business_profile``: **よりより様の DB (拠点コード INAGE / TSUGA の拠点がある) のときだけ**
      今まで ``frontend/lib/qr-print-contact.ts`` と ``qr-print/page.tsx`` にあった値を入れる。
      別の事業所の新しい DB には入れない (よりより様の電話番号が別の事業所のカードに
@@ -31,7 +33,10 @@ Create Date: 2026-10-01
 ## SQLite 互換
 
 ``checkin_settings`` の列追加は 0043 と同じ **インライン列 CHECK 付き ADD COLUMN**
-(1 文の標準 SQL・テーブル再構築なし)。downgrade は SQLite だけ batch 再構築。
+(1 文の標準 SQL・テーブル再構築なし)。downgrade は PG では列を drop するだけ (列の
+CHECK は列と一緒に消える。``op.drop_constraint`` は命名規約で名前が
+``ck_checkin_settings_ck_checkin_settings_...`` に変わり失敗するため使わない)。SQLite は
+CHECK に参照される列を直接 drop できないので batch 再構築。
 ``business_profile`` は 0041 と同じ dialect 分岐 (PG = UUID / gen_random_uuid()、
 SQLite = String(36))。データの INSERT は 0051 と同じく Python の uuid4 を渡す。
 
@@ -63,35 +68,31 @@ depends_on: str | Sequence[str] | None = None
 _PROFILE_TABLE = "business_profile"
 _PROFILE_SINGLETON_INDEX = "uq_business_profile_singleton"
 
-# (列名, CHECK 名, CHECK 式, 今までコードにあった値)
-CHECKIN_LIMIT_COLUMNS: tuple[tuple[str, str, str, int], ...] = (
+# (列名, CHECK 名, CHECK 式)。値は入れない (NULL = コード既定 90 / 30 / 7 / 60)。
+CHECKIN_LIMIT_COLUMNS: tuple[tuple[str, str, str], ...] = (
     (
         "arrival_max_back_min",
         "ck_checkin_settings_arrival_max_back_range",
         "arrival_max_back_min IS NULL OR "
         "(arrival_max_back_min >= 10 AND arrival_max_back_min <= 240)",
-        90,
     ),
     (
         "departure_max_ahead_min",
         "ck_checkin_settings_departure_max_ahead_range",
         "departure_max_ahead_min IS NULL OR "
         "(departure_max_ahead_min >= 0 AND departure_max_ahead_min <= 180)",
-        30,
     ),
     (
         "staff_adjust_window_days",
         "ck_checkin_settings_staff_adjust_window_range",
         "staff_adjust_window_days IS NULL OR "
         "(staff_adjust_window_days >= 0 AND staff_adjust_window_days <= 31)",
-        7,
     ),
     (
         "unplanned_default_minutes",
         "ck_checkin_settings_unplanned_default_range",
         "unplanned_default_minutes IS NULL OR "
         "(unplanned_default_minutes >= 10 AND unplanned_default_minutes <= 240)",
-        60,
     ),
 )
 
@@ -162,32 +163,6 @@ def _seed(bind: sa.engine.Connection) -> None:  # type: ignore[type-arg]
     is_pg = bind.dialect.name == "postgresql"
     true_lit = "true" if is_pg else "1"
 
-    # ---- checkin_settings: 時刻を合わせる上限 + 予定外訪問の仮の所要時間 ----
-    values = {col: current for col, _name, _sql, current in CHECKIN_LIMIT_COLUMNS}
-    row = bind.execute(
-        sa.text(f"SELECT id FROM checkin_settings WHERE is_singleton = {true_lit}")
-    ).fetchone()
-    if row is None:
-        bind.execute(
-            sa.text(
-                "INSERT INTO checkin_settings (id, is_singleton, "
-                + ", ".join(values)
-                + f") VALUES (:id, {true_lit}, "
-                + ", ".join(f":{c}" for c in values)
-                + ")"
-            ),
-            {"id": str(uuid.uuid4()), **values},
-        )
-    else:
-        bind.execute(
-            sa.text(
-                "UPDATE checkin_settings SET "
-                + ", ".join(f"{c} = :{c}" for c in values)
-                + f" WHERE is_singleton = {true_lit}"
-            ),
-            values,
-        )
-
     # ---- offices: 略称・並び順が空の拠点を、今までコードにあった値で埋める ----
     for code, short, order in CURRENT_OFFICE_LABELS:
         bind.execute(
@@ -232,7 +207,7 @@ def upgrade() -> None:
     _create_business_profile(is_pg)
 
     # インライン列 CHECK 付き ADD COLUMN (0043 と同じ・PG / SQLite 共通の標準 SQL)。
-    for column, check_name, check_sql, _current in CHECKIN_LIMIT_COLUMNS:
+    for column, check_name, check_sql in CHECKIN_LIMIT_COLUMNS:
         op.execute(
             f"ALTER TABLE checkin_settings ADD COLUMN {column} INTEGER "
             f"CONSTRAINT {check_name} CHECK ({check_sql})"
@@ -250,12 +225,12 @@ def downgrade() -> None:
     op.drop_table(_PROFILE_TABLE)
 
     if is_pg:
-        for column, check_name, _sql, _current in reversed(CHECKIN_LIMIT_COLUMNS):
-            op.drop_constraint(check_name, "checkin_settings", type_="check")
+        # 列の CHECK は列と一緒に消える (drop_constraint は命名規約で名前が変わるので使わない)。
+        for column, _check_name, _sql in reversed(CHECKIN_LIMIT_COLUMNS):
             op.drop_column("checkin_settings", column)
     else:
         # SQLite は CHECK に参照される列を直接 DROP できないため batch 再構築 (0043 と同じ)。
         with op.batch_alter_table("checkin_settings") as batch:
-            for column, check_name, _sql, _current in reversed(CHECKIN_LIMIT_COLUMNS):
+            for column, check_name, _sql in reversed(CHECKIN_LIMIT_COLUMNS):
                 batch.drop_constraint(check_name, type_="check")
                 batch.drop_column(column)
