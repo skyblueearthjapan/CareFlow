@@ -86,7 +86,9 @@ async def _history_query(
     patient_id: Annotated[UUID | None, Query()] = None,
     office_id: Annotated[UUID | None, Query()] = None,
     staff_id: Annotated[UUID | None, Query()] = None,
-    state: Annotated[Literal["in", "nodep", "none", "adjusted", "special"] | None, Query()] = None,
+    state: Annotated[
+        Literal["in", "nodep", "none", "adjusted", "special", "late"] | None, Query()
+    ] = None,
     # 2 文字未満は絞り込みとして無意味なので無視する (422 にはしない)。
     q: Annotated[str | None, Query(max_length=100)] = None,
     sort: Annotated[Literal["date", "staff", "patient"], Query()] = "date",

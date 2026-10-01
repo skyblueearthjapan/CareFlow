@@ -666,7 +666,9 @@ describe('QR チェックイン モバイル — 404/409 はユーザー向け�
   });
 
   it('409 は代行/予定外への導線を出し、/q/{token} へ渡す (設計 §5)', async () => {
-    checkInMutate.mockRejectedValueOnce(new ApiError('conflict', 409, { detail: 'other' }));
+    checkInMutate.mockRejectedValueOnce(
+      new ApiError('conflict', 409, { detail: 'other', code: 'wrong_patient' }),
+    );
     render(<MobileVisitDetailPage />);
     fireEvent.click(screen.getByText('QRで到着を記録'));
     fireEvent.click(screen.getByText('__scan__'));
@@ -678,6 +680,43 @@ describe('QR チェックイン モバイル — 404/409 はユーザー向け�
     fireEvent.click(screen.getByText('代行／予定外として記録する'));
     expect(routerPush).toHaveBeenCalledWith('/q/TESTTOKEN');
     // 記録は退避しない (サーバの確定回答)。
+    expect(window.localStorage.getItem('checkin-pending:staff-1')).toBeNull();
+  });
+
+  it('code の無い旧 BE でも「別の利用者の QR」の文言なら代行/予定外へ進める', async () => {
+    checkInMutate.mockRejectedValueOnce(
+      new ApiError('conflict', 409, { detail: "QR does not match this visit's patient" }),
+    );
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(screen.getByTestId('wrong-patient-panel')).toBeInTheDocument());
+  });
+
+  it.each([
+    [
+      'not_visit_day',
+      'この訪問は昨日（9/29）の予定のため、今日は記録できません。管理者に連絡してください',
+    ],
+    ['late_expired', '読み取りから 3 日を過ぎたため送信できません。管理者に連絡してください'],
+    ['cancelled', 'Visit is cancelled'],
+    ['deleted', 'Visit is deleted'],
+  ])('409 (%s) は文言を出して止め、予定外の記録へは進めない', async (code, detail) => {
+    checkInMutate.mockRejectedValueOnce(new ApiError('conflict', 409, { detail, code }));
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() =>
+      expect(asMock(toast.error)).toHaveBeenCalledWith('この訪問には記録できません', {
+        description: detail,
+      }),
+    );
+    expect(screen.queryByTestId('wrong-patient-panel')).toBeNull();
+    expect(routerPush).not.toHaveBeenCalled();
     expect(window.localStorage.getItem('checkin-pending:staff-1')).toBeNull();
   });
 });

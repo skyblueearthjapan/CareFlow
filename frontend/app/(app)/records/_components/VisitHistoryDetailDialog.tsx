@@ -85,6 +85,11 @@ function Tile({ label, value, note }: { label: string; value: ReactNode; note: s
   );
 }
 
+/** 調整後の注記に「遅れて届いた（…）」を添える（調整してあっても遅れて届いた事実は消さない）。 */
+function withLate(note: string, late: string | null): string {
+  return late ? `${note}・${late}` : note;
+}
+
 /** その側（到着 / 退出）の実績時刻・読取時刻・調整の有無。時刻は JST の `HH:MM`。 */
 function sideOf(row: VisitHistoryRow, kind: ActualTimeKind) {
   const arrival = kind === 'arrival';
@@ -145,7 +150,7 @@ export function VisitHistoryDetailDialog({
                 !arr.at
                   ? '打刻なし'
                   : arr.adjusted
-                    ? `調整後（読取 ${arr.readAt ?? '—'}）`
+                    ? withLate(`調整後（読取 ${arr.readAt ?? '—'}）`, arr.late)
                     : qrLess
                       ? '手入力の時刻'
                       : (arr.late ?? 'QR 読取時刻')
@@ -162,7 +167,7 @@ export function VisitHistoryDetailDialog({
                   : dep.manual
                     ? '手入力（読み取りなし）'
                     : dep.adjusted
-                      ? `調整後（読取 ${dep.readAt ?? '—'}）`
+                      ? withLate(`調整後（読取 ${dep.readAt ?? '—'}）`, dep.late)
                       : (dep.late ?? '退出の記録')
               }
             />

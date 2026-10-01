@@ -19,6 +19,7 @@ from app.core.rate_limit import limiter
 from app.db.session import dispose_engine
 from app.middleware.audit import AuditLogMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.services.checkin.judge import CheckinRejected, checkin_rejected_handler
 
 
 @asynccontextmanager
@@ -47,6 +48,8 @@ def create_app() -> FastAPI:
     # slowapi: register the limiter on app state and wire its 429 handler.
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    # 打刻を断る 4xx に機械向けの ``code`` を添える (detail は従来どおり)。
+    app.add_exception_handler(CheckinRejected, checkin_rejected_handler)
 
     # Production guard: a wildcard origin combined with allow_credentials=True
     # is rejected by browsers anyway, but mis-set values here can quietly

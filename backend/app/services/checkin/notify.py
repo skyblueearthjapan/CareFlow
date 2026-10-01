@@ -63,6 +63,9 @@ NOTIFY_MISSING: Final = "checkin_missing"
 NOTIFY_SUBSTITUTE: Final = "checkin_substitute"
 NOTIFY_UNPLANNED: Final = "checkin_unplanned"
 NOTIFY_NG_STAFF: Final = "checkin_ng_staff"
+# 前日以前の訪問へ遅れて届いた到着 (checkin-late-delivery-design-2026-10-01 §5)。
+# 種別名に kind (到着) を含め、reference_id = visit.id で冪等。
+NOTIFY_LATE_ARRIVAL: Final = "checkin_late_arrival"
 
 # pg_try_advisory_xact_lock 用キー (bigint 範囲内)。check-missing 専用。
 # "CHKMISSG" 相当の 64-bit 整数 (audit.py の ADVISORY_LOCK_KEY と同方式)。
@@ -352,6 +355,45 @@ async def notify_checkin_anomalies(
         NOTIFY_UNPLANNED: await notify_checkin_unplanned(db, visit=visit, checkin=checkin),
         NOTIFY_NG_STAFF: await notify_checkin_ng_staff(db, visit=visit, checkin=checkin),
     }
+
+
+def _day_time(dt: datetime) -> str:
+    jst = _as_jst(dt)
+    return f"{jst.month}/{jst.day} {jst.hour}:{jst.minute:02d}"
+
+
+async def notify_checkin_late_arrival(
+    db: AsyncSession,
+    *,
+    visit: Visit,
+    checkin: VisitCheckin,
+) -> int:
+    """前日以前の訪問へ遅れて届いた到着を admin へ冪等通知する (**commit しない**).
+
+    到着の記録で「未訪問」通知は消える (``resolve_checkin_missing``)。前日以前の訪問に
+    翌日以降届いた到着でそれを黙って消すと、管理者は「未訪問のはずが、いつの間にか
+    訪問済み」になった理由を知る手段が無い。そこで代わりにこの通知を残す
+    (checkin-late-delivery-design-2026-10-01 §5)。受信日が訪問日より後でなければ no-op。
+    冪等キーは ``reference_type`` (= 種別 + 到着) と ``reference_id`` (= visit.id)。
+    """
+    received = checkin_late_received_at(checkin, visit.visit_date)
+    if received is None or _as_jst(received).date() <= visit.visit_date:
+        return 0
+    users = await _active_admin_manager_users(db)
+    patient_name = await _resolve_patient_name(db, visit)
+    staff_name = await _resolve_staff_name(db, checkin.staff_id)
+    read = checkin_read_at(checkin, visit.visit_date)
+    return await _create_idempotent(
+        db,
+        users=users,
+        type_=NOTIFY_LATE_ARRIVAL,
+        reference_type=NOTIFY_LATE_ARRIVAL,
+        reference_id=visit.id,
+        title="前日以前の訪問に到着が遅れて届きました",
+        body=(
+            f"{patient_name}（{staff_name}）読み取り {_day_time(read)}・受信 {_day_time(received)}"
+        ),
+    )
 
 
 async def resolve_checkin_missing(db: AsyncSession, visit_id: UUID) -> int:

@@ -114,12 +114,9 @@ export function fmtActualRange(
   return actualTimeParts(arrivalIso, departureIso)?.range ?? null;
 }
 
-/**
- * 「遅れて届いた」とみなす目安 (分)。圏外で退避して後から送った打刻のうち、読み取りから
- * 受信までがこれを超えたもの (日付をまたいだものは長さに依らず)。BE
- * `actuals.LATE_DELIVERY_MARK_AFTER` と同じ値 (設計 checkin-late-delivery-design-2026-10-01)。
- */
-export const LATE_DELIVERY_MARK_AFTER_MIN = 30;
+// 「遅れて届いた」かどうかはサーバが決める (BE `actuals.late_received_at`・受信が読み取り
+// から 30 分超 or 日付をまたいだ)。画面は応答の `*_late_received_at` を表示するだけ
+// (設計 checkin-late-delivery-design-2026-10-01)。
 
 const JST_DAY_TIME = new Intl.DateTimeFormat('ja-JP', {
   month: 'numeric',
@@ -129,8 +126,6 @@ const JST_DAY_TIME = new Intl.DateTimeFormat('ja-JP', {
   hourCycle: 'h23',
   timeZone: 'Asia/Tokyo',
 });
-
-const JST_DATE_KEY = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo' });
 
 function parseIso(iso: string | null | undefined): Date | null {
   if (!iso) return null;
@@ -153,15 +148,4 @@ export function lateDeliveryLabel(receivedIso: string | null | undefined): strin
   const received = parseIso(receivedIso);
   if (!received) return null;
   return `遅れて届いた（${jstDayTime(received)} 受信）`;
-}
-
-/**
- * 読み取った時刻 `readIso` の打刻を `receivedAt` に送ったとき「遅れて届いた」になるか
- * (BE `actuals.late_received_at` と同じ目安)。端末側の再送結果の案内に使う。
- */
-export function isLateDelivery(readIso: string | null | undefined, receivedAt: Date): boolean {
-  const read = parseIso(readIso);
-  if (!read || read.getTime() >= receivedAt.getTime()) return false;
-  if (receivedAt.getTime() - read.getTime() > LATE_DELIVERY_MARK_AFTER_MIN * 60_000) return true;
-  return JST_DATE_KEY.format(read) !== JST_DATE_KEY.format(receivedAt);
 }

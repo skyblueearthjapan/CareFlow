@@ -70,7 +70,9 @@ from app.services.checkin.adjust import (
     reset_actual_time,
 )
 from app.services.checkin.judge import (
+    CODE_LATE_EXPIRED,
     JST,
+    CheckinRejected,
     judge_checkin,
     late_delivery_expired_detail,
     load_thresholds,
@@ -79,6 +81,7 @@ from app.services.checkin.judge import (
 )
 from app.services.checkin.notify import (
     notify_checkin_anomalies,
+    notify_checkin_late_arrival,
     notify_checkin_mismatch,
     resolve_checkin_missing,
 )
@@ -1415,6 +1418,9 @@ async def checkin_visit(
     # 遅刻→到着で cron 生成済みの「未訪問」通知が残らないよう、到着記録と同一
     # transaction で当該 visit の missing 通知を解消する (全ユーザー分削除)。
     await resolve_checkin_missing(db, visit.id)
+    # 前日以前の訪問へ遅れて届いた到着は、消した「未訪問」の代わりに「到着が遅れて
+    # 届きました」を管理者へ残す (黙って消さない・checkin-late-delivery-design §5)。
+    await notify_checkin_late_arrival(db, visit=visit, checkin=checkin)
     # その場で合わせた時刻の同梱 (§6-2)。不備があっても打刻は必ず記録する。
     await apply_bundled_adjustment(
         db,
@@ -1522,9 +1528,10 @@ def _adhoc_visit_moment(device_time: datetime | None, now: datetime) -> datetime
         return now
     dt = device_time if device_time.tzinfo is not None else device_time.replace(tzinfo=UTC)
     if dt < now - LATE_DELIVERY_MAX_AGE:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=late_delivery_expired_detail(),
+        raise CheckinRejected(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            late_delivery_expired_detail(),
+            CODE_LATE_EXPIRED,
         )
     # 進んだ時計 (120 秒以内) が日付をまたいでも、受信日より先の日に visit を作らない。
     return resolve_read_time(dt, now, min(dt, now).astimezone(JST).date())
@@ -1631,6 +1638,26 @@ async def adhoc_checkin(
             detail="別の打刻を処理中です。少し待ってからもう一度お試しください",
         )
 
+    # 同じ読み取りの再送 (応答が届かずスマホが送り直した) は、同じ予定外訪問の応答を
+    # そのまま返し、何も追記しない。訪問が退出で完了した後に届いても 2 本目を作らない
+    # (下の二重生成ガードは進行中しか見ないため・checkin-late-delivery-design §5)。
+    if payload.device_time is not None:
+        resent_visit_id = await db.scalar(
+            select(Visit.id)
+            .join(VisitCheckin, VisitCheckin.visit_id == Visit.id)
+            .where(
+                VisitCheckin.staff_id == staff_id,
+                VisitCheckin.kind == "arrival",
+                VisitCheckin.device_time == payload.device_time,
+                Visit.patient_id == patient.id,
+                Visit.is_unplanned.is_(True),
+                Visit.deleted_at.is_(None),
+            )
+            .limit(1)
+        )
+        if resent_visit_id is not None:
+            return await _checkin_response(db, resent_visit_id, user)
+
     # 二重生成ガード (§4-3)。
     visit = await db.scalar(
         select(Visit)
@@ -1710,7 +1737,7 @@ async def no_show_visit(
         )
     visit, staff_id = await _load_visit_for_checkin(db, visit_id, user)
     # no_show は visit.status を据置 (planned のまま; モニターが時間ベースで判定)。
-    await judge_checkin(db, visit, staff_id, payload, "no_show")
+    await judge_checkin(db, visit, staff_id, payload, "no_show", now=datetime.now(UTC))
     await db.commit()
     return await _checkin_response(db, visit_id, user)
 

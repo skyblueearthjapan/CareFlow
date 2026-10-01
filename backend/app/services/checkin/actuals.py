@@ -14,12 +14,14 @@
 * **実績時刻** = 画面・集計・レポートが使う時刻。調整があれば調整後、無ければ読取時刻。
 
 ``visit_checkins`` は追記専用で、再スキャンは新しい行になる。採るのは **kind ごとの
-最新 1 件** (``scanned_at DESC, id DESC``)。``no_show`` は実績に数えない。
+最新 1 件** = 読み取った瞬間 (読取時刻) が最も新しい行 (同じなら ``scanned_at DESC,
+id DESC``)。``no_show`` は実績に数えない。
 
 どの調整が効くか (設計 §4): (visit, kind) ごとに ``created_at DESC, id DESC`` の
-先頭 1 行。その行の ``adjusted_at`` が NULL でなく、同じ kind の最新の打刻より後に
-作られていれば有効 (打刻が無ければ無条件)。打刻し直すと、それより前の調整は
-効かなくなる。ただし **同じ読み取りの再送** は打刻し直しに数えない: 最新の打刻の
+先頭 1 行。その行の ``adjusted_at`` が NULL でなく、同じ kind の最新の打刻を **読んだ
+瞬間** (受信時刻を上限とする) より後に作られていれば有効 (打刻が無ければ無条件)。
+読み直すと、それより前の調整は効かなくなる (圏外で退避した読み取りが調整の後に
+届いても、読んだのが調整より前なら調整は効いたまま)。ただし **同じ読み取りの再送** は打刻し直しに数えない: 最新の打刻の
 ``device_time`` が、調整の元になった打刻 (``base_checkin_id``) の ``device_time`` と
 一致する (どちらも非 NULL) なら、調整は有効のまま (スマホは成功した打刻を再送する
 ことがある。``device_time`` が無い・違う場合は読み直しとして扱う)。
@@ -231,16 +233,21 @@ def _resolve_kind(
     effective = adjustment
     if effective is not None and effective.adjusted_at is None:
         effective = None  # 「読取時刻に戻す」の行。
+    read_at = checkin_read_at(checkin, visit_date) if checkin is not None else None
+    # 「打刻し直した」かは **読み取った瞬間** と調整を作った時刻で比べる。圏外で退避した
+    # 読み取りが、調整の後に届いても、読んだのが調整より前なら調整を消さない
+    # (checkin-late-delivery-design §5)。読取時刻は受信より後にならないよう受信時刻
+    # (``created_at``) で抑える (進んだ時計で、同じリクエストで同梱した調整を消さない)。
     if (
         effective is not None
         and checkin is not None
-        and as_utc(effective.created_at) < as_utc(checkin.created_at)
+        and read_at is not None
+        and as_utc(effective.created_at) < min(read_at, as_utc(checkin.created_at))
         and not _is_resend(checkin, base_checkin)
     ):
-        effective = None  # 調整の後に打刻し直した (同じ読み取りの再送は除く)。
+        effective = None  # 調整の後に読み直した (同じ読み取りの再送は除く)。
     if checkin is None and effective is None:
         return None
-    read_at = checkin_read_at(checkin, visit_date) if checkin is not None else None
     late = checkin_late_received_at(checkin, visit_date) if checkin is not None else None
     if effective is not None:
         return KindActual(
@@ -286,15 +293,23 @@ async def load_actuals(db: AsyncSession, visit_ids: Collection[UUID]) -> dict[UU
         )
     ).all()
 
-    # DESC 並びなので、キーごとに最初に出た行 = 最新。
+    # kind ごとの最新 = **読み取った瞬間** が最も新しい行 (受信順ではない)。圏外で退避した
+    # 古い読み取りが後から届いても、その後にオンラインで読んだ新しい読み取りを上書き
+    # しない。読み取りが同じ瞬間 (同じ読み取りの再送) なら受信の新しい方 (DESC 並びで
+    # 先に出た行) を採る。``latest_checkin`` (kind を問わない) は受信順のまま。
     latest: dict[tuple[UUID, str], VisitCheckin] = {}
+    latest_read: dict[tuple[UUID, str], datetime] = {}
     checkin_by_id = {row.id: row for row in checkins}
     result: dict[UUID, VisitActuals] = {}
     for row in checkins:
         actuals = result.setdefault(row.visit_id, VisitActuals())
         if actuals.latest_checkin is None:
             actuals.latest_checkin = row
-        latest.setdefault((row.visit_id, row.kind), row)
+        key = (row.visit_id, row.kind)
+        read = checkin_read_at(row, visit_dates.get(row.visit_id))
+        if key not in latest or read > latest_read[key]:
+            latest[key] = row
+            latest_read[key] = read
         if (
             row.kind in ACTUAL_KINDS
             and row.staff_id is not None

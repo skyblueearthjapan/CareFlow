@@ -14,11 +14,12 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +35,36 @@ from app.utils.geo import haversine_m
 # 「当日」判定は JST (Asia/Tokyo) で行う。scanned_at は timestamptz (UTC) なので
 # JST に変換してから naive な visit_date と比較する (設計 R3)。
 JST = ZoneInfo("Asia/Tokyo")
+
+# 打刻を断る 4xx の機械向けコード (応答の ``code``)。スマホは文言ではなくこれで
+# 次の画面を決める (別の利用者の QR だけが「代行 / 予定外」の流れへ進む)。
+CODE_WRONG_PATIENT = "wrong_patient"
+CODE_NOT_VISIT_DAY = "not_visit_day"
+CODE_LATE_EXPIRED = "late_expired"
+CODE_CANCELLED = "cancelled"
+CODE_DELETED = "deleted"
+
+
+class CheckinRejected(HTTPException):
+    """打刻を断る 4xx。応答は ``{"detail": 文言, "code": コード}`` (``main.py`` の handler)。
+
+    ``detail`` は従来どおり画面にそのまま出せる文。``code`` は上の ``CODE_*``。
+    """
+
+    def __init__(self, status_code: int, detail: str, code: str) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.code = code
+
+
+async def checkin_rejected_handler(_request: Request, exc: Exception) -> JSONResponse:
+    """``CheckinRejected`` を ``{"detail", "code"}`` の JSON にする。"""
+    assert isinstance(exc, CheckinRejected)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "code": exc.code},
+        headers=exc.headers,
+    )
+
 
 # checkin_settings 行が無い / 列が NULL のときの既定しきい値 (設計 §1-C)。
 DEFAULT_THRESHOLDS: dict[str, int] = {
@@ -183,9 +214,10 @@ async def _resolve_patient(
             detail="QR token not found",
         )
     if patient.id != visit.patient_id:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="QR does not match this visit's patient",
+        raise CheckinRejected(
+            status.HTTP_409_CONFLICT,
+            "QR does not match this visit's patient",
+            CODE_WRONG_PATIENT,
         )
     return patient, "qr"
 
@@ -196,8 +228,20 @@ async def _resolve_patient(
 resolve_patient_for_visit = _resolve_patient
 
 
-#: 今日でも、読み取った日でもない訪問への打刻 (409)。
+#: 今日より後の訪問への打刻 (409)。
 DETAIL_NOT_TODAY = "この訪問は今日の予定ではないため記録できません"
+
+
+def not_visit_day_detail(visit_date: date, today: date) -> str:
+    """今日でも、読み取った日でもない訪問への打刻 (409) の文言。
+
+    過去の訪問は何日の予定かを示す (訪問の画面を開いたまま日付をまたいだ場合など)。
+    """
+    if visit_date >= today:
+        return DETAIL_NOT_TODAY
+    label = f"{visit_date.month}/{visit_date.day}"
+    day = f"昨日（{label}）" if visit_date == today - timedelta(days=1) else label
+    return f"この訪問は{day}の予定のため、今日は記録できません。管理者に連絡してください"
 
 
 def late_delivery_expired_detail() -> str:
@@ -218,29 +262,24 @@ def _guard_visit(visit: Visit, now: datetime, device_time: datetime | None = Non
       翌日以降に届いた打刻を、読み取った日の訪問に付ける。
     """
     if visit.deleted_at is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Visit is deleted",
-        )
+        raise CheckinRejected(status.HTTP_409_CONFLICT, "Visit is deleted", CODE_DELETED)
     if visit.status == VISIT_STATUS_CANCELLED:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Visit is cancelled",
-        )
-    if visit.visit_date == now.astimezone(JST).date():
+        raise CheckinRejected(status.HTTP_409_CONFLICT, "Visit is cancelled", CODE_CANCELLED)
+    today = now.astimezone(JST).date()
+    if visit.visit_date == today:
         return
     if device_time_in_window(device_time, now):
         if as_utc(device_time).astimezone(JST).date() == visit.visit_date:
             return
     elif device_time is not None and as_utc(device_time) < as_utc(now):
         if as_utc(device_time).astimezone(JST).date() == visit.visit_date:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=late_delivery_expired_detail(),
+            raise CheckinRejected(
+                status.HTTP_409_CONFLICT, late_delivery_expired_detail(), CODE_LATE_EXPIRED
             )
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail=DETAIL_NOT_TODAY,
+    raise CheckinRejected(
+        status.HTTP_409_CONFLICT,
+        not_visit_day_detail(visit.visit_date, today),
+        CODE_NOT_VISIT_DAY,
     )
 
 

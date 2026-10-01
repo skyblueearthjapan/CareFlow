@@ -53,16 +53,16 @@ export function useCheckinFlush(): UseCheckinFlushResult {
       refreshToken,
     );
     setPendingCount(remaining);
-    // 前日など、読み取りから時間が経って届いた記録は「どこへ入ったか」を伝える
-    // (今日の一覧に出ない訪問のこともある)。
-    const late = lateSentNotice(sent, new Date());
-    if (late) toast.info(late.title, { description: late.description });
-    // 4xx で破棄された未送信分は黙って消さず、利用者へ通知する。
+    // 4xx で破棄された未送信分は黙って消さず、利用者へ通知する (失敗を先に出す)。
     if (dropped.length > 0) {
       toast.error(`未送信の${dropped.length}件は送信できませんでした`, {
         description: dropped[0]?.reason ?? '無効なQR／対象外のため破棄しました',
       });
     }
+    // 前日など、読み取りから時間が経って届いた記録は「どこへ入ったか」を伝える
+    // (今日の一覧に出ない訪問のこともある)。遅れたかはサーバの応答で決める。
+    const late = lateSentNotice(sent);
+    if (late) toast.info?.(late.title, { description: late.description });
     // Re-sent records change server-side status; refresh the visit view.
     void qc.invalidateQueries({ queryKey: ['me'] });
   }, [staffId, accessToken, refreshToken, qc]);

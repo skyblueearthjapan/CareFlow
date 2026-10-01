@@ -24,10 +24,10 @@ from sqlalchemy import func, select
 from app.api.v1 import visit_history as visit_history_api
 from app.api.v1 import visits as visits_api
 from app.core.security import create_access_token, hash_password
-from app.models import Notification, Patient, Staff, User, Visit, VisitCheckin
+from app.models import Notification, Patient, Staff, User, Visit, VisitCheckin, VisitReview
 from app.services.checkin.history import late_delivery_remarks
 from app.services.checkin.monitor import build_monitor
-from app.services.checkin.notify import NOTIFY_MISMATCH
+from app.services.checkin.notify import NOTIFY_LATE_ARRIVAL, NOTIFY_MISMATCH, NOTIFY_MISSING
 
 JST = ZoneInfo("Asia/Tokyo")
 
@@ -242,10 +242,19 @@ async def test_late_arrival_older_than_72h_is_rejected(client, db, monkeypatch) 
         client, user, visit, "arrival", {"qr_token": "tok-ld2", "at": read.isoformat()}
     )
     assert res.status_code == 409, res.text
-    assert res.json()["detail"] == (
-        "読み取りから 3 日を過ぎたため送信できません。管理者に連絡してください"
-    )
+    assert res.json() == {
+        "detail": "読み取りから 3 日を過ぎたため送信できません。管理者に連絡してください",
+        "code": "late_expired",
+    }
     assert await _checkin_count(db, visit.id) == 0
+
+    # 72 時間 + 1 秒も断る (境界)。
+    _freeze(monkeypatch, read + timedelta(hours=72, seconds=1))
+    res = await _post(
+        client, user, visit, "arrival", {"qr_token": "tok-ld2", "at": read.isoformat()}
+    )
+    assert res.status_code == 409, res.text
+    assert res.json()["code"] == "late_expired"
 
     # 72 時間ちょうどまでは受け付ける。
     _freeze(monkeypatch, read + timedelta(hours=72))
@@ -287,7 +296,10 @@ async def test_device_clock_ahead_falls_back_to_server_time(client, db, monkeypa
         {"qr_token": "tok-ld3", "at": _at(tomorrow.visit_date, 18, 45).isoformat()},
     )
     assert res.status_code == 409, res.text
-    assert res.json()["detail"] == "この訪問は今日の予定ではないため記録できません"
+    assert res.json() == {
+        "detail": "この訪問は今日の予定ではないため記録できません",
+        "code": "not_visit_day",
+    }
     await db.rollback()
 
 
@@ -299,7 +311,11 @@ async def test_without_device_time_the_next_day_is_rejected(client, db, monkeypa
 
     res = await _post(client, user, visit, "arrival", {"qr_token": "tok-ld4"})
     assert res.status_code == 409, res.text
-    assert res.json()["detail"] == "この訪問は今日の予定ではないため記録できません"
+    # 訪問の画面を開いたまま日付をまたいだ場合もこれ。何日の予定かを示す。
+    assert res.json() == {
+        "detail": "この訪問は昨日（9/29）の予定のため、今日は記録できません。管理者に連絡してください",
+        "code": "not_visit_day",
+    }
     # 読み取った日が訪問日と違う device_time も同じ。
     res = await _post(
         client,
@@ -482,3 +498,441 @@ def test_late_delivery_remarks_wording() -> None:
 def _no_real_clock(monkeypatch) -> None:
     """どのテストも実時計に依存しない (既定は受信した朝)."""
     _freeze(monkeypatch, _at(NEXT_DAY, 8, 30))
+
+
+def _monitor_row(monitor, visit: Visit):
+    return next(v for r in monitor.staff for v in r.visits if v.visit_id == visit.id)
+
+
+async def _review(db, visit: Visit, admin: User, at: datetime) -> None:
+    db.add(VisitReview(visit_id=visit.id, reviewed_by=admin.id, reviewed_at=at, comment=None))
+    await db.commit()
+
+
+async def _notifications(db, type_: str, visit: Visit) -> list[Notification]:
+    return list(
+        (
+            await db.scalars(
+                select(Notification).where(
+                    Notification.reference_type == type_, Notification.reference_id == visit.id
+                )
+            )
+        ).all()
+    )
+
+
+# ---------------------------------------------------------------------------
+# H-1: 前日以前へ遅れて届いた到着は、管理者に必ず見える
+# ---------------------------------------------------------------------------
+
+
+async def test_late_arrival_replaces_the_missing_notification(client, db, monkeypatch) -> None:
+    """「未訪問」通知は黙って消さず、「到着が遅れて届きました」に置き換える (冪等)."""
+    staff, user = await _nurse(db, "LD10")
+    admin = await _admin(db, "LD10")
+    visit = await _visit(db, await _patient(db, "LD10"), staff, READ_DAY)
+    db.add(
+        Notification(
+            user_id=admin.id,
+            type=NOTIFY_MISSING,
+            title="未訪問",
+            body="利用者 LD10",
+            reference_type=NOTIFY_MISSING,
+            reference_id=visit.id,
+        )
+    )
+    await db.commit()
+
+    payload = {"qr_token": "tok-ld10", "at": _at(READ_DAY, 18, 45).isoformat()}
+    _freeze(monkeypatch, _at(NEXT_DAY, 8, 30))
+    assert (await _post(client, user, visit, "arrival", payload)).status_code == 200
+    assert await _notifications(db, NOTIFY_MISSING, visit) == []
+    late = await _notifications(db, NOTIFY_LATE_ARRIVAL, visit)
+    assert [(n.user_id, n.title, n.body) for n in late] == [
+        (
+            admin.id,
+            "前日以前の訪問に到着が遅れて届きました",
+            "利用者 LD10（看護 LD10）読み取り 9/29 18:45・受信 9/30 8:30",
+        )
+    ]
+
+    # 同じ読み取りの再送でも 1 通のまま。
+    _freeze(monkeypatch, _at(NEXT_DAY, 8, 40))
+    assert (await _post(client, user, visit, "arrival", payload)).status_code == 200
+    assert len(await _notifications(db, NOTIFY_LATE_ARRIVAL, visit)) == 1
+    await db.rollback()
+
+
+async def test_same_day_late_arrival_does_not_notify(client, db, monkeypatch) -> None:
+    """同じ日のうちに届いた打刻 (30 分超でも) は「前日以前」の通知を出さない."""
+    staff, user = await _nurse(db, "LD11")
+    await _admin(db, "LD11")
+    visit = await _visit(db, await _patient(db, "LD11"), staff, NEXT_DAY)
+    _freeze(monkeypatch, _at(NEXT_DAY, 10, 0))
+    res = await _post(
+        client,
+        user,
+        visit,
+        "arrival",
+        {"qr_token": "tok-ld11", "at": _at(NEXT_DAY, 9, 0).isoformat()},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["actual_arrival_late_received_at"] is not None
+    assert await _notifications(db, NOTIFY_LATE_ARRIVAL, visit) == []
+    await db.rollback()
+
+
+async def test_monitor_late_arrival_to_an_earlier_day_needs_review(client, db, monkeypatch) -> None:
+    """前日以前へ遅れて届いた到着は最低「要確認」。受信より前の「確認済み」は効かない."""
+    staff, user = await _nurse(db, "LD12")
+    admin = await _admin(db, "LD12")
+    visit = await _visit(db, await _patient(db, "LD12", lat=35.6, lng=140.1), staff, READ_DAY)
+    # 受信より前に、管理者が「確認済み」にしていた (未訪問を確認した)。
+    await _review(db, visit, admin, _at(NEXT_DAY, 8, 0))
+    _freeze(monkeypatch, _at(NEXT_DAY, 8, 30))
+    res = await _post(
+        client,
+        user,
+        visit,
+        "arrival",
+        {
+            "qr_token": "tok-ld12",
+            "at": _at(READ_DAY, 18, 45).isoformat(),
+            "lat": 35.6,
+            "lng": 140.1,
+        },
+    )
+    assert res.status_code == 200, res.text
+    row = _monitor_row(await build_monitor(db, READ_DAY, now=_at(NEXT_DAY, 9, 0)), visit)
+    assert row.arrival.match_status == "match"
+    assert row.alert_level == "review"
+    assert row.reviewed is False
+
+    # 受信の後に「確認済み」にすれば消える。
+    await db.delete(await db.scalar(select(VisitReview).where(VisitReview.visit_id == visit.id)))
+    await db.commit()
+    await _review(db, visit, admin, _at(NEXT_DAY, 9, 0))
+    row = _monitor_row(await build_monitor(db, READ_DAY, now=_at(NEXT_DAY, 9, 5)), visit)
+    assert (row.alert_level, row.reviewed) == ("none", True)
+    await db.rollback()
+
+
+async def test_monitor_late_arrival_with_a_location_problem_always_needs_review(
+    client, db, monkeypatch
+) -> None:
+    """位置なし・場所違いの到着が遅れて届いたら、先の「確認済み」があっても要対応に戻す."""
+    staff, user = await _nurse(db, "LD13")
+    admin = await _admin(db, "LD13")
+    patient = await _patient(db, "LD13", lat=35.6, lng=140.1)
+    no_gps = await _visit(db, patient, staff, NEXT_DAY, start=time(8, 0), end=time(8, 30))
+    far = await _visit(db, patient, staff, NEXT_DAY, start=time(9, 0), end=time(9, 30))
+    for visit in (no_gps, far):
+        await _review(db, visit, admin, _at(NEXT_DAY, 9, 50))
+    _freeze(monkeypatch, _at(NEXT_DAY, 10, 0))
+    res = await _post(
+        client,
+        user,
+        no_gps,
+        "arrival",
+        {"qr_token": "tok-ld13", "at": _at(NEXT_DAY, 8, 5).isoformat()},
+    )
+    assert res.status_code == 200, res.text
+    res = await _post(
+        client,
+        user,
+        far,
+        "arrival",
+        {"qr_token": "tok-ld13", "at": _at(NEXT_DAY, 9, 5).isoformat(), "lat": 35.7, "lng": 140.3},
+    )
+    assert res.status_code == 200, res.text
+    monitor = await build_monitor(db, NEXT_DAY, now=_at(NEXT_DAY, 10, 5))
+    row = _monitor_row(monitor, no_gps)
+    assert (row.arrival.match_status, row.alert_level, row.reviewed) == ("no_gps", "review", False)
+    row = _monitor_row(monitor, far)
+    assert (row.arrival.match_status, row.alert_level, row.reviewed) == (
+        "mismatch",
+        "mismatch",
+        False,
+    )
+    await db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# M-1: 断るときの code
+# ---------------------------------------------------------------------------
+
+
+async def test_rejections_carry_a_code(client, db, monkeypatch) -> None:
+    staff, user = await _nurse(db, "LD14")
+    patient = await _patient(db, "LD14")
+    await _patient(db, "LD14B")
+    visit = await _visit(db, patient, staff, NEXT_DAY)
+    cancelled = await _visit(db, patient, staff, NEXT_DAY, status="cancelled")
+    deleted = await _visit(db, patient, staff, NEXT_DAY, deleted_at=_at(NEXT_DAY, 7, 0))
+    _freeze(monkeypatch, _at(NEXT_DAY, 10, 0))
+
+    res = await _post(client, user, visit, "arrival", {"qr_token": "tok-ld14b"})
+    assert res.status_code == 409, res.text
+    assert res.json() == {
+        "detail": "QR does not match this visit's patient",
+        "code": "wrong_patient",
+    }
+    res = await _post(client, user, cancelled, "arrival", {"qr_token": "tok-ld14"})
+    assert res.json() == {"detail": "Visit is cancelled", "code": "cancelled"}
+    res = await _post(client, user, deleted, "arrival", {"qr_token": "tok-ld14"})
+    assert res.json() == {"detail": "Visit is deleted", "code": "deleted"}
+    # 予定外の期限切れも同じ code (422)。
+    res = await client.post(
+        "/api/v1/visits/adhoc-checkin",
+        headers=_bearer(user),
+        json={
+            "qr_token": "tok-ld14",
+            "at": (_at(NEXT_DAY, 10, 0) - timedelta(hours=73)).isoformat(),
+        },
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["code"] == "late_expired"
+    await db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# M-2: 予定外の到着の再送は、完了した後に届いても 2 本目を作らない
+# ---------------------------------------------------------------------------
+
+
+async def test_adhoc_resend_after_completion_is_idempotent(client, db, monkeypatch) -> None:
+    """応答が消えた → 退出で完了 → 同じ到着が再送 → 同じ訪問を返し、何も足さない."""
+    staff, user = await _nurse(db, "LD15")
+    patient = await _patient(db, "LD15")
+    payload = {"qr_token": "tok-ld15", "at": _at(NEXT_DAY, 9, 0).isoformat()}
+    _freeze(monkeypatch, _at(NEXT_DAY, 9, 0, 5))
+    first = await client.post("/api/v1/visits/adhoc-checkin", headers=_bearer(user), json=payload)
+    assert first.status_code == 200, first.text
+    visit = await db.scalar(select(Visit).where(Visit.patient_id == patient.id))
+
+    _freeze(monkeypatch, _at(NEXT_DAY, 9, 40))
+    res = await _post(
+        client,
+        user,
+        visit,
+        "departure",
+        {"qr_token": "tok-ld15", "at": _at(NEXT_DAY, 9, 40).isoformat()},
+    )
+    assert res.json()["status"] == "completed"
+    count = await _checkin_count(db, visit.id)
+
+    _freeze(monkeypatch, _at(NEXT_DAY, 9, 45))
+    again = await client.post("/api/v1/visits/adhoc-checkin", headers=_bearer(user), json=payload)
+    assert again.status_code == 200, again.text
+    assert again.json()["id"] == first.json()["id"]
+    assert again.json()["status"] == "completed"
+    assert len((await db.scalars(select(Visit).where(Visit.patient_id == patient.id))).all()) == 1
+    assert await _checkin_count(db, visit.id) == count
+    await db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# M-4 / L-6: 読み取った瞬間で比べる
+# ---------------------------------------------------------------------------
+
+
+async def test_adjustment_survives_a_read_that_arrives_after_it(client, db, monkeypatch) -> None:
+    """読んだのが調整より前なら、調整の後に届いても調整は消えない (読取は残る)."""
+    staff, user = await _nurse(db, "LD16")
+    visit = await _visit(db, await _patient(db, "LD16"), staff, READ_DAY)
+    _freeze(monkeypatch, _at(READ_DAY, 18, 30))
+    res = await _post(
+        client,
+        user,
+        visit,
+        "arrival",
+        {"qr_token": "tok-ld16", "at": _at(READ_DAY, 18, 30).isoformat()},
+    )
+    assert res.status_code == 200, res.text
+    # 翌朝、退出を手で入れた (読み取りは圏外で端末に残っていた)。
+    _freeze(monkeypatch, _at(NEXT_DAY, 8, 0))
+    res = await client.put(
+        f"/api/v1/visits/{visit.id}/actual-time",
+        headers=_bearer(user),
+        json={"kind": "departure", "time": "19:20", "reason_code": None, "reason_text": None},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["actual_departure_manual"] is True
+
+    # 19:30 に読んだ退出が 8:30 に届く。
+    _freeze(monkeypatch, _at(NEXT_DAY, 8, 30))
+    res = await _post(
+        client,
+        user,
+        visit,
+        "departure",
+        {"qr_token": "tok-ld16", "at": _at(READ_DAY, 19, 30).isoformat()},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert _jst(body["actual_departure_at"]) == "9/29 19:20"
+    assert body["actual_departure_adjusted"] is True
+    assert _jst(body["actual_departure_read_at"]) == "9/29 19:30"
+    assert _jst(body["actual_departure_late_received_at"]) == "9/30 08:30"
+    assert body["status"] == "completed"
+    await db.rollback()
+
+
+async def test_older_queued_read_does_not_override_a_newer_online_read(
+    client, db, monkeypatch
+) -> None:
+    staff, user = await _nurse(db, "LD17")
+    visit = await _visit(db, await _patient(db, "LD17"), staff, NEXT_DAY)
+    _freeze(monkeypatch, _at(NEXT_DAY, 10, 5))
+    res = await _post(
+        client,
+        user,
+        visit,
+        "arrival",
+        {"qr_token": "tok-ld17", "at": _at(NEXT_DAY, 10, 5).isoformat()},
+    )
+    assert res.status_code == 200, res.text
+    _freeze(monkeypatch, _at(NEXT_DAY, 10, 30))
+    res = await _post(
+        client,
+        user,
+        visit,
+        "arrival",
+        {"qr_token": "tok-ld17", "at": _at(NEXT_DAY, 9, 50).isoformat()},
+    )
+    assert res.status_code == 200, res.text
+    assert _jst(res.json()["actual_arrival_at"]) == "9/30 10:05"
+    assert res.json()["actual_arrival_late_received_at"] is None
+    await db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# L-7: 境界
+# ---------------------------------------------------------------------------
+
+
+async def test_device_clock_tolerance_boundary(client, db, monkeypatch) -> None:
+    """端末の時計が 120 秒進んでいるまでは読取時刻に採り、121 秒は採らない."""
+    staff, user = await _nurse(db, "LD18")
+    patient = await _patient(db, "LD18")
+    ok = await _visit(db, patient, staff, NEXT_DAY, start=time(10, 0), end=time(10, 30))
+    ahead = await _visit(db, patient, staff, NEXT_DAY, start=time(11, 0), end=time(11, 30))
+    now = _at(NEXT_DAY, 10, 0)
+    _freeze(monkeypatch, now)
+    res = await _post(
+        client,
+        user,
+        ok,
+        "arrival",
+        {"qr_token": "tok-ld18", "at": (now + timedelta(seconds=120)).isoformat()},
+    )
+    assert _jst(res.json()["actual_arrival_at"]) == "9/30 10:02"
+    res = await _post(
+        client,
+        user,
+        ahead,
+        "arrival",
+        {"qr_token": "tok-ld18", "at": (now + timedelta(seconds=121)).isoformat()},
+    )
+    assert _jst(res.json()["actual_arrival_at"]) == "9/30 10:00"
+    await db.rollback()
+
+
+async def test_midnight_boundary(client, db, monkeypatch) -> None:
+    """23:59:59 に読み 0:00:00 に届く → 前日の訪問・遅れて届いた。0:00:00 は今日の訪問."""
+    staff, user = await _nurse(db, "LD19")
+    patient = await _patient(db, "LD19")
+    yesterday = await _visit(db, patient, staff, READ_DAY, start=time(23, 30), end=time(23, 59))
+    today = await _visit(db, patient, staff, NEXT_DAY, start=time(0, 0), end=time(0, 30))
+    _freeze(monkeypatch, _at(NEXT_DAY, 0, 0, 0))
+    res = await _post(
+        client,
+        user,
+        yesterday,
+        "arrival",
+        {"qr_token": "tok-ld19", "at": _at(READ_DAY, 23, 59, 59).isoformat()},
+    )
+    assert res.status_code == 200, res.text
+    assert _jst(res.json()["actual_arrival_late_received_at"]) == "9/30 00:00"
+
+    _freeze(monkeypatch, _at(NEXT_DAY, 0, 0, 1))
+    res = await _post(
+        client,
+        user,
+        today,
+        "arrival",
+        {"qr_token": "tok-ld19", "at": _at(NEXT_DAY, 0, 0, 0).isoformat()},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["actual_arrival_late_received_at"] is None
+    # 0:00:00 に読んだものは前日の訪問には付かない。
+    res = await _post(
+        client,
+        user,
+        yesterday,
+        "departure",
+        {"qr_token": "tok-ld19", "at": _at(NEXT_DAY, 0, 0, 0).isoformat()},
+    )
+    assert res.status_code == 409, res.text
+    assert res.json()["code"] == "not_visit_day"
+    await db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# M-5 / L-5: 打刻履歴の絞り込みと未訪問の記録
+# ---------------------------------------------------------------------------
+
+
+async def test_history_late_filter_and_late_no_show(client, db, monkeypatch) -> None:
+    staff, user = await _nurse(db, "LD20")
+    admin = await _admin(db, "LD20")
+    patient = await _patient(db, "LD20")
+    late = await _visit(db, patient, staff, READ_DAY, start=time(18, 30), end=time(19, 0))
+    no_show = await _visit(db, patient, staff, READ_DAY, start=time(19, 30), end=time(20, 0))
+    on_time = await _visit(db, patient, staff, READ_DAY, start=time(10, 0), end=time(10, 30))
+    _freeze(monkeypatch, _at(READ_DAY, 10, 5))
+    assert (
+        await _post(
+            client,
+            user,
+            on_time,
+            "arrival",
+            {"qr_token": "tok-ld20", "at": _at(READ_DAY, 10, 5).isoformat()},
+        )
+    ).status_code == 200
+    _freeze(monkeypatch, _at(NEXT_DAY, 8, 30))
+    assert (
+        await _post(
+            client,
+            user,
+            late,
+            "arrival",
+            {"qr_token": "tok-ld20", "at": _at(READ_DAY, 18, 45).isoformat()},
+        )
+    ).status_code == 200
+    res = await client.post(
+        f"/api/v1/visits/{no_show.id}/no-show",
+        headers=_bearer(user),
+        json={"reason": "不在", "at": _at(READ_DAY, 19, 40).isoformat()},
+    )
+    assert res.status_code == 200, res.text
+
+    params = {"from": READ_DAY.isoformat(), "to": READ_DAY.isoformat(), "state": "late"}
+    res = await client.get("/api/v1/visit-history", headers=_bearer(admin), params=params)
+    assert res.status_code == 200, res.text
+    items = {i["visit_id"]: i for i in res.json()["items"]}
+    assert set(items) == {str(late.id), str(no_show.id)}
+    assert "未訪問の記録が遅れて届いた（9/30 8:30 受信）" in items[str(no_show.id)]["remarks"]
+    # Excel・A4 も同じ絞り込みで出る。
+    res = await client.get("/api/v1/visit-history/export", headers=_bearer(admin), params=params)
+    assert res.status_code == 200, res.text
+    sheet = load_workbook(BytesIO(res.content))["全予定"]
+    cells = [str(c) for row in sheet.iter_rows(values_only=True) for c in row if c]
+    assert any("未訪問の記録が遅れて届いた" in c for c in cells)
+    assert not any("10:05" in c for c in cells)
+    res = await client.get("/api/v1/visit-history/report", headers=_bearer(admin), params=params)
+    assert res.status_code == 200, res.text
+    # A4 は既定で到着のある行だけ (未訪問の行は Excel の「全予定」で見る)。
+    assert "遅れて届いた（9/30 8:30 受信）" in res.text
+    assert "10:05" not in res.text
+    await db.rollback()

@@ -37,6 +37,7 @@ from app.services.checkin.actuals import (
     ACTUAL_KINDS,
     VisitActuals,
     adjustment_payloads,
+    checkin_late_received_at,
     load_actuals,
     load_adjuster_names,
     stay_minutes,
@@ -164,10 +165,24 @@ class HistoryRow:
     # ---- 応答に出す (見ているユーザーごとに API 層が決める) ----
     #: 今のユーザーがこの訪問の実績を合わせられるか。
     adjust_allowed: bool = False
+    #: 遅れて届いた「未訪問」の記録の受信時刻 (備考と絞り込みだけに使う)。
+    no_show_late_received_at: datetime | None = None
 
     @property
     def is_adjusted(self) -> bool:
         return self.arrival_adjusted or self.departure_adjusted
+
+    @property
+    def is_late_delivered(self) -> bool:
+        """遅れて届いた記録がある行 (絞り込み「遅れて届いた」)。"""
+        return any(
+            t is not None
+            for t in (
+                self.arrival_late_received_at,
+                self.departure_late_received_at,
+                self.no_show_late_received_at,
+            )
+        )
 
     @property
     def nurse_name(self) -> str | None:
@@ -379,6 +394,16 @@ async def load_history_rows(
         arrival_late = arrival_actual.late_received_at if arrival_actual is not None else None
         departure_late = departure_actual.late_received_at if departure_actual is not None else None
         remarks.extend(late_delivery_remarks(arrival_late, departure_late))
+        # 「未訪問」の記録も圏外で退避して後から届くことがある。
+        no_show_late = (
+            checkin_late_received_at(actuals.no_show, v.visit_date)
+            if actuals.no_show is not None
+            else None
+        )
+        if no_show_late is not None:
+            remarks.append(
+                f"未訪問の記録が{REMARK_LATE_DELIVERY}（{_received_label(no_show_late)}）"
+            )
         if is_cancelled:
             remarks.append(REMARK_CANCELLED)
         if stay is not None and stay < SHORT_STAY_MIN:
@@ -428,6 +453,7 @@ async def load_history_rows(
                 related_staff_ids=frozenset(related),
                 is_deleted=v.deleted_at is not None,
                 has_arrival_read=arrival is not None,
+                no_show_late_received_at=no_show_late,
             )
         )
     return rows
@@ -471,6 +497,8 @@ def filter_rows(
         if state == "adjusted" and not r.is_adjusted:
             return False
         if state == "special" and not (r.is_substitute or r.is_unplanned):
+            return False
+        if state == "late" and not r.is_late_delivered:
             return False
         if needle and not any(
             needle in (name or "").casefold()

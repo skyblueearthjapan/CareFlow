@@ -12,13 +12,14 @@
  */
 import { ApiError } from '@/lib/api-client';
 import { fetcher } from '@/lib/api/fetcher';
-import { isLateDelivery, jstDayTime } from '@/lib/format/actualTime';
+import { jstDayTime } from '@/lib/format/actualTime';
 import {
   DropPendingError,
   flushPending,
   type FlushResult,
   type PendingEntry,
   type PendingKind,
+  type SentPending,
 } from '@/lib/checkin-queue';
 
 /** 予定外訪問の到着打刻 (設計 §4-3)。visit はサーバが生成して返す。 */
@@ -47,6 +48,42 @@ export function detailOf(err: unknown): string | null {
     if (typeof d === 'string') return d;
   }
   return null;
+}
+
+/**
+ * 打刻を断る 4xx の機械向けコード (BE `judge.CODE_*`・応答の `code`)。
+ * 画面は文言ではなくこれで次の流れを決める (checkin-late-delivery-design-2026-10-01)。
+ */
+export const CHECKIN_REJECT_CODE = {
+  wrongPatient: 'wrong_patient',
+  notVisitDay: 'not_visit_day',
+  lateExpired: 'late_expired',
+  cancelled: 'cancelled',
+  deleted: 'deleted',
+} as const;
+
+/** 旧 BE (code を返さない) の「別の利用者の QR」の detail。 */
+const LEGACY_WRONG_PATIENT_DETAIL = "QR does not match this visit's patient";
+
+/** ApiError の body から backend の `code` を取り出す。無ければ null。 */
+export function codeOf(err: unknown): string | null {
+  if (err instanceof ApiError && err.body && typeof err.body === 'object') {
+    const c = (err.body as Record<string, unknown>).code;
+    if (typeof c === 'string') return c;
+  }
+  return null;
+}
+
+/**
+ * 「別の利用者の QR」で断られたか。この時だけ代行 / 予定外の記録へ進める。
+ * 訪問日でない・期限切れ・取消・削除で断られた場合は進めない (文言を出して止める)。
+ * code を返さない旧 BE は detail で見分ける。
+ */
+export function isWrongPatient(err: unknown): boolean {
+  if (!(err instanceof ApiError) || err.status !== 409) return false;
+  const code = codeOf(err);
+  if (code !== null) return code === CHECKIN_REJECT_CODE.wrongPatient;
+  return detailOf(err) === LEGACY_WRONG_PATIENT_DETAIL;
 }
 
 /** 再送不能な 4xx の破棄理由 (利用者へ通知する文言)。 */
@@ -105,9 +142,10 @@ export async function postPending(
   entry: PendingEntry,
   accessToken: string | null,
   refreshToken: string | null,
-): Promise<void> {
+): Promise<unknown> {
   try {
-    await fetcher(pathOf(entry), {
+    // 応答 (VisitRead) は「遅れて届いた」の案内に使う ({@link lateSentNotice})。
+    return await fetcher(pathOf(entry), {
       method: 'POST',
       body: JSON.stringify(entry.payload),
       accessToken,
@@ -117,8 +155,8 @@ export async function postPending(
     if (isServerUnreachable(err)) throw err; // keep queued (network / 5xx)
     // 旧 BE にルートが無いだけ (404/405) — BE 復帰で送れるのでキューに残す。
     if (isRouteMissing(entry, err)) throw err;
-    // definitive 4xx → won't succeed on retry; drop it WITH a reason.
-    throw new DropPendingError(dropReasonOf(err));
+    // definitive 4xx → won't succeed on retry; drop it WITH a reason (and the code).
+    throw new DropPendingError(dropReasonOf(err), codeOf(err));
   }
 }
 
@@ -152,18 +190,30 @@ export function flushCheckinQueue(
   return next;
 }
 
+/** 応答 (VisitRead) の、その打刻の kind の `*_late_received_at`。 */
+function lateReceivedOf({ entry, response }: SentPending): string | null {
+  if (!response || typeof response !== 'object') return null;
+  const body = response as Record<string, unknown>;
+  const key =
+    entry.kind === 'departure'
+      ? 'actual_departure_late_received_at'
+      : entry.kind === 'no_show'
+        ? null
+        : 'actual_arrival_late_received_at';
+  const value = key ? body[key] : null;
+  return typeof value === 'string' && value ? value : null;
+}
+
 /**
- * 再送で届いた記録のうち「遅れて届いた」もの (読み取りから 30 分超・日付をまたいだ) の案内。
+ * 再送で届いた記録のうち「遅れて届いた」もの の案内。遅れたかどうかは **サーバの応答**
+ * (`*_late_received_at`) で決める (端末の時計で判定しない)。
  *
  * 圏外で退避した記録は、読み取った日の訪問に付く (前日の訪問でも、読み取りから 72 時間
  * まで・checkin-late-delivery-design-2026-10-01)。今日の一覧には出ない訪問のこともある
  * ので、「どの読み取りが届いたか」を読み取った日時で伝える。該当が無ければ null。
  */
-export function lateSentNotice(
-  sent: PendingEntry[],
-  now: Date,
-): { title: string; description: string } | null {
-  const late = sent.filter((e) => isLateDelivery(e.payload.at, now));
+export function lateSentNotice(sent: SentPending[]): { title: string; description: string } | null {
+  const late = sent.filter((s) => lateReceivedOf(s) !== null).map((s) => s.entry);
   if (late.length === 0) return null;
   const first = new Date(late[0]!.payload.at);
   const more = late.length > 1 ? ` ほか ${late.length - 1} 件` : '';

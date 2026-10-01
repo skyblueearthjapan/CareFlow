@@ -37,7 +37,14 @@ export const VISIT_HISTORY_PATH = '/api/v1/visit-history';
 export type VisitHistoryState = 'done' | 'in_progress' | 'no_departure' | 'none' | 'future';
 
 /** 打刻の絞り込み（設計 §3 の `state`）。'' = すべて。 */
-export type VisitHistoryStateFilter = '' | 'in' | 'nodep' | 'none' | 'adjusted' | 'special';
+export type VisitHistoryStateFilter =
+  | ''
+  | 'in'
+  | 'nodep'
+  | 'none'
+  | 'adjusted'
+  | 'special'
+  | 'late';
 
 /** 並び（設計 §3 の `sort`。A4 の `group` も同じ 3 値）。 */
 export type VisitHistorySort = 'date' | 'staff' | 'patient';

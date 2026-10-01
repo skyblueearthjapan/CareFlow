@@ -86,10 +86,13 @@ export interface PendingEntry {
  */
 export class DropPendingError extends Error {
   readonly reason: string;
-  constructor(reason: string) {
+  /** サーバが返した機械向けコード (`late_expired` / `not_visit_day` など)。無ければ null。 */
+  readonly code: string | null;
+  constructor(reason: string, code: string | null = null) {
     super(reason);
     this.name = 'DropPendingError';
     this.reason = reason;
+    this.code = code;
   }
 }
 
@@ -97,6 +100,14 @@ export class DropPendingError extends Error {
 export interface DroppedPending {
   entry: PendingEntry;
   reason: string;
+  /** サーバの機械向けコード (無ければ null)。 */
+  code: string | null;
+}
+
+/** 再送で届いた entry と、サーバの応答 (VisitRead)。 */
+export interface SentPending {
+  entry: PendingEntry;
+  response: unknown;
 }
 
 /** {@link flushPending} の結果: 残件数 + 破棄した entry 一覧。 */
@@ -106,10 +117,10 @@ export interface FlushResult {
   /** 4xx で破棄した entry (理由付き)。呼び出し元が通知に使う。 */
   dropped: DroppedPending[];
   /**
-   * 今回の再送で届いた entry (送信順)。前日など読み取りから時間が経って届いた記録を
-   * 呼び出し元が案内するのに使う (checkin-late-delivery-design-2026-10-01)。
+   * 今回の再送で届いた entry と応答 (送信順)。前日など読み取りから時間が経って届いた
+   * 記録を、応答の `*_late_received_at` で案内する (checkin-late-delivery-design-2026-10-01)。
    */
-  sent: PendingEntry[];
+  sent: SentPending[];
 }
 
 function userKey(staffId: string): string {
@@ -287,7 +298,7 @@ export async function flushPending(
   if (typeof window === 'undefined' || !staffId) return { remaining: 0, dropped: [], sent: [] };
   const all = readAll(staffId);
   const dropped: DroppedPending[] = [];
-  const sent: PendingEntry[] = [];
+  const sent: SentPending[] = [];
   for (const queued of all) {
     // 送る直前に読み直す。退避から再送までの間に「その場で合わせた時刻」が
     // 書き込まれていることがあり ({@link setPendingAdjustment})、先頭で読んだ控えを
@@ -298,14 +309,14 @@ export async function flushPending(
     // 同じ同期区間で印を付け、間に書き込みが割り込めないようにする。
     sendingIds.add(entry.id);
     try {
-      await post(entry);
+      const response = await post(entry);
       removePending(staffId, entry.id);
-      sent.push(entry);
+      sent.push({ entry, response });
     } catch (err) {
       if (err instanceof DropPendingError) {
         // 再送不可の確定エラー — 取り除き、理由付きで呼び出し元へ返す。
         removePending(staffId, entry.id);
-        dropped.push({ entry, reason: err.reason });
+        dropped.push({ entry, reason: err.reason, code: err.code });
       }
       // それ以外 (ネット障害 / 5xx): まだ届かない — 残して次回 (online / mount) に再試行。
     } finally {

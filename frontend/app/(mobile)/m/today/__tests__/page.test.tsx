@@ -59,7 +59,7 @@ vi.mock('@/lib/api/fetcher', () => ({
 }));
 
 vi.mock('@/components/ui/sonner', () => ({
-  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
 }));
 
 // 音声記録 (設計 2026-09-17): 🎙 マーク用の一覧と、要紐付けの一覧。既定は 0 件。

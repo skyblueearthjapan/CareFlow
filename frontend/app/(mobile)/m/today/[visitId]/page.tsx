@@ -28,7 +28,7 @@ import {
   type PendingKind,
   type PendingPayload,
 } from '@/lib/checkin-queue';
-import { detailOf, isServerUnreachable } from '@/lib/checkin-flush';
+import { detailOf, isServerUnreachable, isWrongPatient } from '@/lib/checkin-flush';
 import {
   coordsOf,
   geoErrorHint,
@@ -720,7 +720,7 @@ function MobileVisitDetailPageInner() {
         setFlow({ step: 'none' });
         return;
       }
-      if (apiStatus === 409) {
+      if (apiStatus === 409 && isWrongPatient(err)) {
         // 読んだ QR は「別の利用者」のもの。現地に居ることは確かなので、
         // 行き止まりにせず代行 / 予定外の記録へ渡す (設計 §5)。
         if (qrToken) {
@@ -729,6 +729,16 @@ function MobileVisitDetailPageInner() {
         }
         toast.error('このQRは別の利用者のものです', {
           description: detailOf(err) ?? '正しい患者宅のQRを読み取ってください',
+        });
+        setFlow({ step: 'none' });
+        return;
+      }
+      if (apiStatus === 409) {
+        // 訪問日でない (画面を開いたまま日付をまたいだ等)・期限切れ・取消・削除。
+        // 予定外の記録へは進めず、サーバの文言をそのまま見せて止める
+        // (checkin-late-delivery-design-2026-10-01 §5)。
+        toast.error('この訪問には記録できません', {
+          description: detailOf(err) ?? '管理者に連絡してください',
         });
         setFlow({ step: 'none' });
         return;
