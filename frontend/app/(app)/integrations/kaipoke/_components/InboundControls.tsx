@@ -540,10 +540,19 @@ function SmartPlanPanel({ plan }: { plan: SmartInboundPreview }) {
               取り込み後も「要確認」として残るので、件数を先に見せる。 */}
           {(diff.checked_in_delete ?? 0) > 0 && (
             <SummaryChip
-              label="打刻済みのため取り消さない（要確認）"
+              label="打刻済みのため取り消しません（要確認）"
               value={diff.checked_in_delete ?? 0}
               tone="warning"
               testId="inbound-summary-checked-in-delete"
+            />
+          )}
+          {/* 打刻済みの訪問は別の日へも動かさない (日付変更も同じく要確認)。 */}
+          {(diff.checked_in_move ?? 0) > 0 && (
+            <SummaryChip
+              label="打刻済みのため日付を動かしません（要確認）"
+              value={diff.checked_in_move ?? 0}
+              tone="warning"
+              testId="inbound-summary-checked-in-move"
             />
           )}
           {/* 予定外の訪問がカイポケの予定と一致 → 予定として扱う (2026-10-01)。 */}
