@@ -125,10 +125,19 @@ export function StaffPerformanceCard({
           <Tag key={t}>{t}</Tag>
         ))}
         <Tag>出勤 {m.days} 日</Tag>
-        {m.no_show_count > 0 ? <Tag>未訪問の記録 {m.no_show_count} 件</Tag> : null}
       </div>
+      {m.accompany_visits > 0 ? (
+        <p className="mt-1 text-xs tnum text-text-secondary" data-testid="perf-accompany">
+          同行 {m.accompany_days} 日・{m.accompany_visits} 件（訪問件数には入れていません）
+        </p>
+      ) : null}
       <div className="my-2.5 grid grid-cols-2 gap-2">
-        <Tile k="訪問" v={String(m.visits)} unit="件" d={`利用者 ${m.patients} 名`} />
+        <Tile
+          k="訪問"
+          v={String(m.visits)}
+          unit="件"
+          d={`利用者 ${m.patients} 名${m.no_show_count > 0 ? `・うち不在 ${m.no_show_count} 件` : ''}`}
+        />
         <Tile
           k="1 日あたり"
           v={r1(m.per_day)}

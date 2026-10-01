@@ -643,3 +643,63 @@ async def test_from_and_to_go_together(client, db) -> None:
     assert res.status_code == 422
     res = await client.get(URL, headers=headers, params={"from": "2099-01-01", "to": "2099-01-02"})
     assert res.status_code == 422
+
+
+# ---------- 同行 (PO 決定 2026-10-01 (c))・未訪問 (a) -------------------------
+
+
+@pytest.mark.asyncio
+async def test_accompaniment_is_counted_separately(client, db) -> None:
+    """同行 (同行リンク・副担当) は別に数え、訪問件数・出勤日数・距離には入れない。取消は除く。"""
+    from app.models.accompaniment import Accompaniment
+
+    office = await _office(db)
+    owner = await _staff(db, "主担当", office)
+    trainee = await _staff(db, "新人さん", office, is_trainee=True)
+    p = await _patient(db, "PAC-1", P1_LL)
+    tue = MON + timedelta(days=1)
+    v1 = await _visit(db, p, MON, "09:00", "09:30", staff=owner)
+    v2 = await _visit(db, p, MON, "10:00", "10:30", staff=owner)
+    # 副担当としての同行 (訪問モニターの同行の札と同じ材料)。
+    await _visit(db, p, tue, "09:00", "09:30", staff=owner, secondary_staff_id=trainee.id)
+    # 取消・削除された訪問の同行は数えない。
+    v_cxl = await _visit(db, p, tue, "11:00", "11:30", staff=owner, status="cancelled")
+    v_del = await _visit(db, p, tue, "13:00", "13:30", staff=owner, deleted_at=datetime.now(UTC))
+    for v in (v1, v2, v_cxl, v_del):
+        db.add(Accompaniment(accompanying_staff_id=trainee.id, target_type="visit", visit_id=v.id))
+    await db.commit()
+
+    body = await _get(client, await _admin(db), MON, tue)
+    t = _row(body, trainee)["period"]
+    assert (t["accompany_days"], t["accompany_visits"]) == (2, 3)
+    # 訪問件数・出勤日数・距離・1 日あたりには入れない。
+    assert (t["visits"], t["days"], t["km_total"], t["per_day"]) == (0, 0, 0.0, None)
+    assert [(w["accompany_days"], w["accompany_visits"]) for w in _row(body, trainee)["weeks"]] == [
+        (2, 3)
+    ]
+    o = _row(body, owner)["period"]
+    assert (o["visits"], o["accompany_visits"]) == (3, 0)
+    team = body["team"]["period"]
+    assert team["visits"] == 3
+    assert team["staff_count"] == 1  # 同行だけの人は平均に入れない
+    assert team["accompany_visits"] == 3
+
+
+@pytest.mark.asyncio
+async def test_no_show_count_uses_no_show_checkin(client, db) -> None:
+    """不在 = 訪問モニターと同じく no_show の打刻がある訪問。件数には数えたまま。"""
+    office = await _office(db)
+    a = await _staff(db, "Aさん", office)
+    p = await _patient(db, "PNS-1", P1_LL)
+    v1 = await _visit(db, p, MON, "09:00", "09:30", staff=a)
+    v2 = await _visit(db, p, MON, "10:00", "10:30", staff=a)
+    await _visit(db, p, MON, "11:00", "11:30", staff=a)
+    await _checkin(db, v1, a, "no_show", _jst(MON, 9, 20))
+    # 到着だけ (打刻はあるが no_show ではない) は不在に数えない。
+    await _checkin(db, v2, a, "arrival", _jst(MON, 10, 0))
+
+    body = await _get(client, await _admin(db), MON, MON)
+    m = _row(body, a)["period"]
+    assert (m["visits"], m["no_show_count"]) == (3, 1)
+    assert _row(body, a)["weeks"][0]["no_show_count"] == 1
+    assert body["team"]["period"]["no_show_count"] == 1

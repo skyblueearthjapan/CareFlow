@@ -119,7 +119,7 @@ export function StaffDeepView({ data, staffId, onSelect, onBack }: StaffDeepView
             件・1 回あたり {r0(m.plan_min)} 分（予定）・
             {actualText(m, data.min_actual_samples)}
             {m.no_show_count > 0
-              ? `・未訪問の記録 ${m.no_show_count} 件（件数には含めています）`
+              ? `・うち不在 ${m.no_show_count} 件（訪問件数に含めています）`
               : ''}
           </p>
         </div>
@@ -202,7 +202,9 @@ export function StaffDeepView({ data, staffId, onSelect, onBack }: StaffDeepView
                 '週',
                 '出勤',
                 '訪問',
+                'うち不在',
                 '利用者',
+                '同行',
                 '1 日あたり',
                 '1 回あたり（予定）',
                 '実績（QR）',
@@ -232,7 +234,9 @@ export function StaffDeepView({ data, staffId, onSelect, onBack }: StaffDeepView
                 {[
                   `${w.days} 日`,
                   `${w.visits} 件`,
+                  w.no_show_count > 0 ? `${w.no_show_count} 件` : '—',
                   `${w.patients} 名`,
+                  w.accompany_visits > 0 ? `${w.accompany_days} 日・${w.accompany_visits} 件` : '—',
                   r1(w.per_day),
                   has(w) ? `${r0(w.plan_min)} 分` : '—',
                   w.actual_min != null ? `${r0(w.actual_min)} 分（${w.actual_samples} 件）` : '—',

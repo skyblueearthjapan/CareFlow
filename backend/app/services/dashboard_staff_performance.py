@@ -43,6 +43,7 @@ from app.schemas.dashboard import (
     StaffPerformanceRow,
     StaffPerformanceTeam,
 )
+from app.services.accompaniment import resolve_accompaniment_by_visit
 from app.services.checkin.actuals import load_actuals, stay_minutes
 from app.services.checkin.monitor import staff_code_sort_key
 from app.services.office_labels import office_short
@@ -289,7 +290,12 @@ def team_metrics_of(people: list[PerformanceMetrics], days: list[DaySummary]) ->
     並べると記録の多い人に偏らないため、全員の揃った訪問を合わせて 5 件以上のとき出す。
     """
     active = [m for m in people if m.visits > 0]
-    base = metrics_of(days)
+    base = metrics_of(days).model_copy(
+        update={
+            "accompany_days": sum(m.accompany_days for m in people),
+            "accompany_visits": sum(m.accompany_visits for m in people),
+        }
+    )
     values: dict[str, float | None] = {}
     for name, digits in _MEAN_FIELDS:
         xs = [getattr(m, name) for m in active if getattr(m, name) is not None]
@@ -339,6 +345,8 @@ async def build_staff_performance(
                 Visit.primary_staff_id,
                 Visit.course_id,
                 Visit.manual_staff_override,
+                Visit.secondary_staff_id,
+                Visit.mentor_staff_id,
                 Patient.lat,
                 Patient.lng,
             )
@@ -373,18 +381,35 @@ async def build_staff_performance(
             return None
         return course_owner.get(r.course_id)
 
-    owned = [(owner_of(r), r) for r in visit_rows]
-    owned = [(sid, r) for sid, r in owned if sid is not None]
+    owned_all = [(owner_of(r), r) for r in visit_rows]
+    owned = [(sid, r) for sid, r in owned_all if sid is not None]
+
+    # 同行 (PO 決定 2026-10-01 (c)): 訪問モニターの同行の札と同じ材料 = 副担当・メンター ∪
+    # 同行リンク (``resolve_accompaniment_by_visit``・直リンク ∪ コースリンク)。
+    # 持ち主本人は除く。件数・出勤日数・距離・時間には入れず、別に数える。
+    accompaniment_by_visit = await resolve_accompaniment_by_visit(db, list(visit_rows))  # type: ignore[arg-type]
+    companions: list[tuple[UUID, date]] = []
+    for owner, r in owned_all:
+        ids = {r.secondary_staff_id, r.mentor_staff_id}
+        ids.update(e.staff_id for e in accompaniment_by_visit.get(r.id, []))
+        ids.discard(None)
+        ids.discard(owner)
+        companions.extend((sid, r.visit_date) for sid in ids if sid is not None)
 
     staff_by_id: dict[UUID, Staff] = {}
-    owner_ids = {sid for sid, _ in owned}
-    if owner_ids:
+    staff_ids = {sid for sid, _ in owned} | {sid for sid, _ in companions}
+    if staff_ids:
         staff_by_id = {
-            s.id: s for s in (await db.scalars(select(Staff).where(Staff.id.in_(owner_ids)))).all()
+            s.id: s for s in (await db.scalars(select(Staff).where(Staff.id.in_(staff_ids)))).all()
         }
     if office_id is not None:
         staff_by_id = {k: s for k, s in staff_by_id.items() if s.primary_office_id == office_id}
     owned = [(sid, r) for sid, r in owned if sid in staff_by_id]
+    # 職員 → 同行した日 → 件数。
+    accompany: dict[UUID, dict[date, int]] = defaultdict(lambda: defaultdict(int))
+    for sid, d in companions:
+        if sid in staff_by_id:
+            accompany[sid][d] += 1
 
     offices = (await db.scalars(select(Office))).all()
     office_by_id = {o.id: o for o in offices}
@@ -497,7 +522,15 @@ async def build_staff_performance(
     weeks = week_ranges(date_from, date_to)
     all_days: list[DaySummary] = []
     rows: list[tuple[tuple, StaffPerformanceRow, list[DaySummary]]] = []
-    for sid, days_map in by_staff_day.items():
+
+    def with_accompany(m: PerformanceMetrics, sid: UUID, ws: date, we: date) -> PerformanceMetrics:
+        acc = {d: n for d, n in accompany.get(sid, {}).items() if ws <= d <= we}
+        return m.model_copy(
+            update={"accompany_days": len(acc), "accompany_visits": sum(acc.values())}
+        )
+
+    for sid in set(by_staff_day) | set(accompany):
+        days_map = by_staff_day.get(sid, {})
         staff = staff_by_id[sid]
         office = office_by_id.get(staff.primary_office_id) if staff.primary_office_id else None
         office_point = _point(office.lat, office.lng) if office is not None else None
@@ -524,8 +557,13 @@ async def build_staff_performance(
                     is_manager=staff.role in _MANAGER_ROLES,
                     is_trainee=bool(staff.is_trainee),
                     qualification=staff.qualification,
-                    period=metrics_of(days),
-                    weeks=[metrics_of([d for d in days if ws <= d.day <= we]) for ws, we in weeks],
+                    period=with_accompany(metrics_of(days), sid, date_from, date_to),
+                    weeks=[
+                        with_accompany(
+                            metrics_of([d for d in days if ws <= d.day <= we]), sid, ws, we
+                        )
+                        for ws, we in weeks
+                    ],
                 ),
                 days,
             )

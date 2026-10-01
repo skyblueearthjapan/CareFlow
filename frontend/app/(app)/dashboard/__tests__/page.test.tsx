@@ -53,6 +53,8 @@ function metrics(over: Partial<PerformanceMetrics> = {}): PerformanceMetrics {
     idle_min_per_day: 60,
     meeting_min_total: 120,
     no_show_count: 0,
+    accompany_days: 0,
+    accompany_visits: 0,
     staff_count: null,
     ...over,
   };
@@ -78,7 +80,14 @@ const PERF: StaffPerformanceResponse = {
     { id: OFFICE_B, name: '第二ステーション', short_label: '二' },
   ],
   team: {
-    period: metrics({ visits: 40, days: 8, staff_count: 2, qr_ratio: 0.1, actual_samples: 4 }),
+    period: metrics({
+      visits: 40,
+      days: 8,
+      staff_count: 2,
+      qr_ratio: 0.1,
+      actual_samples: 4,
+      no_show_count: 2,
+    }),
     weeks: [metrics({ staff_count: 2 }), metrics({ staff_count: 2 })],
   },
   staff: [
@@ -101,8 +110,17 @@ const PERF: StaffPerformanceResponse = {
       is_manager: false,
       is_trainee: true,
       qualification: '看護師',
-      period: metrics({ per_day: 4.5, arrival_only: 3, no_show_count: 2 }),
-      weeks: [metrics({ per_day: 4 }), metrics({ days: 0, visits: 0, per_day: null })],
+      period: metrics({
+        per_day: 4.5,
+        arrival_only: 3,
+        no_show_count: 2,
+        accompany_days: 2,
+        accompany_visits: 3,
+      }),
+      weeks: [
+        metrics({ per_day: 4, no_show_count: 2, accompany_days: 1, accompany_visits: 2 }),
+        metrics({ days: 0, visits: 0, per_day: null, accompany_days: 1, accompany_visits: 1 }),
+      ],
     },
   ],
 };
@@ -140,7 +158,10 @@ describe('管理者', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('1 人 1 日あたり')).toBeInTheDocument();
     expect(screen.getByText('QR で時間が取れた訪問')).toBeInTheDocument();
-    expect(screen.getByText('2 人・のべ 8 日（2 名訪問はそれぞれに数えます）')).toBeInTheDocument();
+    // 上段: 不在の件数 (訪問件数には含めたまま)。
+    expect(
+      screen.getByText('2 人・のべ 8 日・うち不在 2 件（2 名訪問はそれぞれに数えます）'),
+    ).toBeInTheDocument();
     // 管理者の画面では 7 日のトレンドを呼ばない。
     expect(useDashboardTrend).toHaveBeenLastCalledWith(7, { enabled: false });
     expect(screen.getByRole('note')).toHaveTextContent('QR の到着と退出が揃った訪問（10%）');
@@ -173,8 +194,12 @@ describe('管理者', () => {
     expect(second.getByText('新人')).toBeInTheDocument();
     expect(second.queryByText('准看護師')).not.toBeInTheDocument();
     expect(second.getByText('実績 —（到着のみ 3 件）')).toBeInTheDocument();
-    expect(second.getByText('未訪問の記録 2 件')).toBeInTheDocument();
-    expect(first.queryByText(/未訪問の記録/)).not.toBeInTheDocument();
+    // 不在は 訪問 の横に、N > 0 のときだけ。
+    expect(second.getByText('利用者 12 名・うち不在 2 件')).toBeInTheDocument();
+    expect(first.queryByText(/うち不在/)).not.toBeInTheDocument();
+    // 同行は別の行に、N > 0 のときだけ (訪問件数には入れない)。
+    expect(second.getByTestId('perf-accompany')).toHaveTextContent('同行 2 日・3 件');
+    expect(first.queryByTestId('perf-accompany')).not.toBeInTheDocument();
     // カードは article・押す所は名前付きのボタン。
     expect(cards[0]!.tagName).toBe('ARTICLE');
     expect(
@@ -213,13 +238,21 @@ describe('管理者', () => {
     expect(breakdown).toHaveTextContent('会議・研修など 0:30');
     expect(breakdown).toHaveTextContent('訪問の合間 1:00');
     expect(breakdown).toHaveTextContent('時速 20km');
-    expect(deep).toHaveTextContent('未訪問の記録 2 件（件数には含めています）');
+    expect(deep).toHaveTextContent('うち不在 2 件（訪問件数に含めています）');
     expect(within(deep).getByText('会議・研修など（週計）')).toBeInTheDocument();
     // 週ごとの表 (訪問の無い週は「—」)。
     const rows = within(screen.getByTestId('perf-week-table')).getAllByRole('row');
     expect(rows).toHaveLength(3);
     expect(rows[2]).toHaveTextContent('9/7 の週');
     expect(rows[2]).toHaveTextContent('—');
+    // 週ごとの不在と同行 (同行は訪問の無い週でも出す)。
+    const head = within(rows[0]!)
+      .getAllByRole('columnheader')
+      .map((th) => th.textContent);
+    expect(head).toEqual(expect.arrayContaining(['うち不在', '同行']));
+    expect(rows[1]).toHaveTextContent('2 件');
+    expect(rows[1]).toHaveTextContent('1 日・2 件');
+    expect(rows[2]).toHaveTextContent('1 日・1 件');
 
     fireEvent.click(screen.getByRole('button', { name: /全員のカードに戻る/ }));
     expect(screen.queryByTestId('perf-deep-view')).not.toBeInTheDocument();

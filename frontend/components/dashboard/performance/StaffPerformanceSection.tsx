@@ -179,7 +179,9 @@ export function StaffPerformanceSection({ opsSummary }: StaffPerformanceSectionP
           isLoading={query.isLoading}
           caption={
             team
-              ? `${team.staff_count ?? 0} 人・のべ ${team.days} 日（2 名訪問はそれぞれに数えます）`
+              ? `${team.staff_count ?? 0} 人・のべ ${team.days} 日${
+                  team.no_show_count > 0 ? `・うち不在 ${team.no_show_count} 件` : ''
+                }（2 名訪問はそれぞれに数えます）`
               : undefined
           }
         />

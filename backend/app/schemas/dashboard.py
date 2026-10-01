@@ -94,6 +94,12 @@ class PerformanceMetrics(BaseModel):
     no_show_count: int = Field(
         0, ge=0, description="未訪問 (no_show) の記録がある訪問の件数 (件数には数えたまま)"
     )
+    accompany_days: int = Field(
+        0,
+        ge=0,
+        description="同行した日数 (副担当・メンター・同行リンク。件数・出勤日数には入れない)",
+    )
+    accompany_visits: int = Field(0, ge=0, description="同行した訪問の件数")
     staff_count: int | None = Field(None, description="チーム平均のときだけ: 訪問のあった人数")
 
 

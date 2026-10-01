@@ -26,8 +26,11 @@ export const performanceMetricsSchema = z.object({
   meeting_min_per_day: z.number().nullable(),
   idle_min_per_day: z.number().nullable(),
   meeting_min_total: z.number(),
-  /** 未訪問 (no_show) の記録がある訪問の件数 (件数には数えたまま)。 */
+  /** 不在 = no_show の打刻がある訪問の件数 (訪問件数には数えたまま)。 */
   no_show_count: z.number().default(0),
+  /** 同行した日数・件数 (副担当・メンター・同行リンク。訪問件数・出勤日数には入れない)。 */
+  accompany_days: z.number().default(0),
+  accompany_visits: z.number().default(0),
   /** チーム平均のときだけ: 訪問のあった人数。 */
   staff_count: z.number().nullish(),
 });
