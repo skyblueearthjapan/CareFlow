@@ -11,12 +11,18 @@
 ## 対象の見つけ方
 
 1. ``status='cancelled'`` かつ論理削除されていない訪問のうち、打刻 (visit_checkins) が
-   1 件以上あるもの
+   1 件以上あり、**取込の delete で取り消されたもの** (note に取込の取消の刻印があり、
+   source がらく助側の取消 = 今週だけ取消 / ステータス連動 ではない)
 2. 同じ患者・同じ日に、生きている (cancelled でない・論理削除されていない) 訪問で
    **打刻が 1 件も無い** もの
 
-候補がちょうど 1 件なら自動で組にする。0 件・2 件以上は「要確認」として表示だけ
-する (2 件以上は ``--pair 取消ID=移動先ID`` で人が指定したときだけ移す)。
+自動で組にするのは次をすべて満たすときだけ。それ以外は「要確認」として表示だけする
+(``--pair 取消ID=移動先ID`` で人が指定したときだけ移す)。
+
+* 候補がちょうど 1 件
+* 候補の担当が、取り消された訪問の担当か打刻した職員と同じ。または候補の開始が
+  取り消された訪問の開始・最初の打刻の時刻のどちらかから ±90 分以内
+* その候補を自動で選ぶ取消済み訪問が 1 件だけ (2 件以上が同じ訪問を取り合うなら要確認)
 
 ## 移すもの
 
@@ -30,11 +36,19 @@
 
     python scripts/reattach_cancelled_checkins.py                       # 一覧のみ
     python scripts/reattach_cancelled_checkins.py --from 2026-09-21 --to 2026-09-27
-    python scripts/reattach_cancelled_checkins.py --apply               # 自動の組だけ移す
-    python scripts/reattach_cancelled_checkins.py --apply --pair <取消ID>=<移動先ID>
+    python scripts/reattach_cancelled_checkins.py --apply --from 2026-09-23 --to 2026-09-23
+    python scripts/reattach_cancelled_checkins.py --apply --from D --to D --pair <取消ID>=<移動先ID>
 
-``--apply`` は 1 トランザクションで commit する。実行前に DB のバックアップを取ること。
-本番で流す前に PO に確認する (handoff §4-2 #6「PO に一言確認してから」)。
+``--apply`` には ``--from`` と ``--to`` が必須 (日付を絞らずに書き込まない)。
+1 トランザクションで commit する。
+
+## 実行の条件 (PO 決定 2026-10-01)
+
+* デプロイ後に、DB のバックアップ → dry-run で一覧を確認 → ``--apply`` の順で流す。
+* **対象日の遅れて届く打刻の受付 (72 時間) が終わってから流す。** develop には、
+  圏外などで遅れて届いた打刻 (最大 72 時間) を「読み取った日と同じ日の訪問」に載せ、
+  取り消された訪問には載せない変更 (``services/checkin/actuals.py``) が入っている。
+  受付中に流すと、付け替えの後に届いた打刻が別の訪問に載るなど、組が崩れうる。
 """
 
 # ruff: noqa: I001
@@ -57,6 +71,7 @@ from sqlalchemy import select, update  # noqa: E402
 from app.models.patient import Patient  # noqa: E402
 from app.models.staff import Staff  # noqa: E402
 from app.models.visit import (  # noqa: E402
+    VISIT_SOURCES_LOCAL_CANCEL,
     VISIT_STATUS_CANCELLED,
     VISIT_STATUS_COMPLETED,
     VISIT_STATUS_IN_PROGRESS,
@@ -68,9 +83,12 @@ from app.models.visit_photo import VisitPhoto  # noqa: E402
 from app.models.visit_recording import VisitRecording  # noqa: E402
 from app.models.visit_review import VisitReview  # noqa: E402
 from app.models.visit_time_adjustment import VisitTimeAdjustment  # noqa: E402
+from app.services.kaipoke.inbound import IMPORT_CANCEL_NOTE  # noqa: E402
 
 JST = ZoneInfo("Asia/Tokyo")
 NOTE_PREFIX = "打刻の付け替え"
+# 自動で組にしてよい開始時刻の差 (分)。9/23 藤原様は取消 13:00・打刻 11:55・候補 11:30。
+AUTO_PAIR_MINUTES = 90
 
 
 @dataclass
@@ -82,6 +100,7 @@ class Case:
     checkins: list[VisitCheckin]
     candidates: list[Visit] = field(default_factory=list)
     target: Visit | None = None  # 自動 or --pair で決まった移動先
+    reason: str = ""  # 要確認の理由 (表示用)
 
     @property
     def status(self) -> str:
@@ -90,6 +109,22 @@ class Case:
         if not self.candidates:
             return "no_candidate"
         return "ambiguous"
+
+
+def _minutes(t) -> int:
+    return t.hour * 60 + t.minute
+
+
+def _auto_pair_ok(case: Case, cand: Visit) -> bool:
+    """担当が同じ (取消の担当 or 打刻した職員)、または開始が ±90 分以内なら自動で組める。"""
+    cv = case.cancelled
+    staff = {cv.primary_staff_id, *(c.staff_id for c in case.checkins)} - {None}
+    if cand.primary_staff_id is not None and cand.primary_staff_id in staff:
+        return True
+    refs = [_minutes(cv.start_time)]
+    if case.checkins:
+        refs.append(_minutes(case.checkins[0].scanned_at.astimezone(JST).time()))
+    return any(abs(_minutes(cand.start_time) - r) <= AUTO_PAIR_MINUTES for r in refs)
 
 
 def _hm(v: Visit) -> str:
@@ -103,7 +138,13 @@ async def find_cases(
     stmt = (
         select(Visit)
         .join(VisitCheckin, VisitCheckin.visit_id == Visit.id)
-        .where(Visit.status == VISIT_STATUS_CANCELLED, Visit.deleted_at.is_(None))
+        .where(
+            Visit.status == VISIT_STATUS_CANCELLED,
+            Visit.deleted_at.is_(None),
+            # 取込の delete で取り消されたものだけ (らく助側の意思による取消は対象外)。
+            Visit.source.not_in(tuple(VISIT_SOURCES_LOCAL_CANCEL)),
+            Visit.note.contains(IMPORT_CANCEL_NOTE),
+        )
         .distinct()
     )
     if date_from is not None:
@@ -142,8 +183,23 @@ async def find_cases(
         name = await db.scalar(select(Patient.name).where(Patient.id == cv.patient_id)) or "?"
         case = Case(cancelled=cv, patient_name=name, checkins=checkins, candidates=candidates)
         if len(candidates) == 1:
-            case.target = candidates[0]
+            if _auto_pair_ok(case, candidates[0]):
+                case.target = candidates[0]
+            else:
+                case.reason = "担当も時刻 (±90 分) も合わないため"
+        elif len(candidates) > 1:
+            case.reason = "候補が複数あるため"
         cases.append(case)
+    # 同じ訪問を 2 件以上の取消済み訪問が取り合うなら、どれも自動では組まない。
+    claims: dict[UUID, list[Case]] = {}
+    for case in cases:
+        if case.target is not None:
+            claims.setdefault(case.target.id, []).append(case)
+    for claimants in claims.values():
+        if len(claimants) > 1:
+            for case in claimants:
+                case.target = None
+                case.reason = "同じ訪問を別の取消済み訪問も候補にしているため"
     return cases
 
 
@@ -161,6 +217,17 @@ def apply_pairs(cases: list[Case], pairs: dict[UUID, UUID]) -> list[str]:
             errors.append(f"--pair: {tid} は {cid} の付け替え先の候補ではありません")
             continue
         case.target = target
+    seen: dict[UUID, UUID] = {}
+    for case in cases:
+        if case.target is None:
+            continue
+        other = seen.get(case.target.id)
+        if other is not None:
+            errors.append(
+                f"--pair: 移動先 {case.target.id} に {other} と {case.cancelled.id} の 2 件が"
+                "割り当てられています"
+            )
+        seen[case.target.id] = case.cancelled.id
     return errors
 
 
@@ -232,7 +299,9 @@ async def describe(db, case: Case) -> str:
         )
     if case.status == "no_candidate":
         return f"{head}\n    → 要確認: 同じ日に打刻の無い訪問がありません（移しません）"
-    lines = [f"{head}\n    → 要確認: 候補が複数あります（--pair で指定してください）"]
+    lines = [
+        f"{head}\n    → 要確認: {case.reason or '候補が複数あるため'}（--pair で指定してください）"
+    ]
     for v in case.candidates:
         lines.append(f"      候補 {_hm(v)}（{await _staff_name(db, v.primary_staff_id)}・{v.id}）")
     return "\n".join(lines)
@@ -296,7 +365,10 @@ def main() -> int:
     parser.add_argument(
         "--apply", action="store_true", help="実際に付け替える (既定は dry-run・書き込みなし)"
     )
-    return asyncio.run(_main(parser.parse_args()))
+    args = parser.parse_args()
+    if args.apply and (args.date_from is None or args.date_to is None):
+        parser.error("--apply には --from と --to の両方が必要です")
+    return asyncio.run(_main(args))
 
 
 if __name__ == "__main__":
