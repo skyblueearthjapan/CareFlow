@@ -44,7 +44,8 @@ from app.schemas.dashboard import (
     StaffPerformanceTeam,
 )
 from app.services.checkin.actuals import load_actuals, stay_minutes
-from app.services.checkin.monitor import office_short, staff_code_sort_key
+from app.services.checkin.monitor import staff_code_sort_key
+from app.services.office_labels import office_short
 from app.services.scheduling.config import load_scheduling_config
 from app.utils.geo import haversine_km
 
