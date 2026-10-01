@@ -787,6 +787,8 @@ class SmartInboundPreviewStatusRead(BaseModel):
     status: Literal["running", "completed", "failed"]
     error: str | None = None
     preview: SmartInboundPreviewRead | None = None
+    # completed のときの完了時刻 (画面の「HH:MM に読み込んだ結果です」に使う)
+    completed_at: datetime | None = Field(default=None, alias="completedAt")
 
 
 class SmartInboundApplyRequest(BaseModel):

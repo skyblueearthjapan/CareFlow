@@ -48,6 +48,8 @@ class StubAsyncKaipoke:
         self.rpa_running = False
         self.error: Exception | None = None
         self.delay = 0.0
+        #: export の最初の 1 回の直前に呼ぶフック (実行中の取消を再現する)。
+        self.on_export: Any = None
 
     async def aclose(self) -> None:  # pragma: no cover
         pass
@@ -59,6 +61,9 @@ class StubAsyncKaipoke:
         self, payload: dict[str, Any], *, timeout: float | None = None
     ) -> dict[str, Any]:
         self.calls.append(dict(payload))
+        if self.on_export is not None:
+            hook, self.on_export = self.on_export, None
+            await hook()
         if self.delay:
             await asyncio.sleep(self.delay)
         if self.error is not None:
@@ -228,7 +233,9 @@ async def test_unexpected_error_still_settles_the_job(client, db, stub) -> None:
     res = await _start(client, admin)
     st = (await _status(client, admin, res.json()["jobId"])).json()
     assert st["status"] == "failed"
-    assert "boom" in st["error"]
+    # 例外の中身 (英語・内部情報) は画面に出さず、決まった日本語の文言にする。
+    assert "予期しないエラー" in st["error"]
+    assert "boom" not in st["error"]
 
 
 # --- 守り (busy / 二重起動 / 残骸) ---------------------------------------------
@@ -242,7 +249,7 @@ async def test_start_rejects_when_rpa_is_busy(client, db, stub) -> None:
 
     res = await _start(client, admin)
     assert res.status_code == 409, res.text
-    assert res.json()["detail"] == "kaipoke busy"
+    assert "別の処理を実行中" in res.json()["detail"]
     assert stub.calls == []
     assert (await db.scalars(select(KaipokeJob))).all() == []
 
@@ -430,3 +437,220 @@ async def test_month_crossing_week_returns_immediately(client, db, stub, monkeyp
     assert st["preview"]["weekStart"] == CROSS_MONDAY.isoformat()
     # 置換で 10/27 (火) の 1 件を挿入する (日曜 11/1 は置換の対象外)。
     assert st["preview"]["replace"]["inserted"] == 1
+
+
+# --- 再レビュー対応 (2026-10-01) ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_cleanup_is_kept_even_when_start_returns_409(client, db, stub) -> None:
+    """残骸の掃除は、別の生きているジョブで 409 を返す場合でも失われない。"""
+    await _seed_week(db)
+    admin = await _make_admin(db)
+    orphan = await _seed_job(db, admin, minutes_ago=30)
+    await _seed_job(db, admin, week_start=WEEK_START + timedelta(days=7))
+
+    res = await _start(client, admin)
+    assert res.status_code == 409, res.text
+    await db.refresh(orphan)
+    assert orphan.status == "failed"
+    assert "中断されました" in orphan.result_summary["error"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_start_second_request_gets_409(client, db, stub, monkeypatch) -> None:
+    """2 人がほぼ同時に押した場合 (順に再現): 1 人目が 202、2 人目は 409。"""
+    from app.api.v1 import integrations as integrations_module
+
+    await _seed_week(db)
+    admin = await _make_admin(db)
+    scheduled: list[dict[str, Any]] = []
+
+    async def _record(**kwargs: Any) -> None:
+        scheduled.append(kwargs)  # 1 人目のジョブは running のまま残す
+
+    monkeypatch.setattr(integrations_module, "_run_smart_preview_job", _record)
+
+    first = await _start(client, admin)
+    second = await _start(client, admin)
+    assert first.status_code == 202, first.text
+    assert second.status_code == 409, second.text
+    assert "既に実行中" in second.json()["detail"]
+    assert len(scheduled) == 1
+    jobs = (await db.scalars(select(KaipokeJob))).all()
+    assert len(jobs) == 1
+
+
+@pytest.mark.asyncio
+async def test_start_returns_409_when_another_start_holds_the_lock(
+    client, db, stub, monkeypatch
+) -> None:
+    """「確認して開始」の lock を別のリクエストが握っていれば、ジョブを作らずに 409。"""
+    from app.api.v1 import integrations as integrations_module
+
+    await _seed_week(db)
+    admin = await _make_admin(db)
+    keys: list[int] = []
+
+    async def _held(_db, key: int) -> bool:
+        keys.append(key)
+        return False
+
+    monkeypatch.setattr(integrations_module, "try_advisory_xact_lock", _held)
+    res = await _start(client, admin)
+    assert res.status_code == 409, res.text
+    assert "ほかの方が" in res.json()["detail"]
+    assert keys == [integrations_module._SMART_PREVIEW_START_LOCK_KEY]
+    assert (await db.scalars(select(KaipokeJob))).all() == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_run_keeps_cancelled_and_leaves_nothing(
+    client, db, stub, monkeypatch
+) -> None:
+    """実行中に取消されたら cancelled のまま。差分シートも現況CSVのスナップショットも残さない。"""
+    from app.api.v1 import integrations as integrations_module
+    from app.db.session import get_session_factory
+    from app.models.correction_sheet import CorrectionSheet
+    from app.models.kaipoke_csv_snapshot import KaipokeCsvSnapshot
+
+    seeded = await _seed_week(db)
+    await _add_checkin(db, seeded, "tue")  # 打刻日があるので差分シートを作る経路を通る
+    admin = await _make_admin(db)
+    stub.by_month[MONTH] = _csv(
+        _kp_row(date(2026, 7, 7), time(14, 0), time(14, 35)),
+        _kp_row(date(2026, 7, 10), time(9, 0), time(9, 30)),
+    )
+    scheduled: list[dict[str, Any]] = []
+
+    async def _record(**kwargs: Any) -> None:
+        scheduled.append(kwargs)
+
+    monkeypatch.setattr(integrations_module, "_run_smart_preview_job", _record)
+    res = await _start(client, admin)
+    assert res.status_code == 202, res.text
+    job_id = UUID(res.json()["jobId"])
+    monkeypatch.undo()
+
+    async def _cancel() -> None:
+        async with get_session_factory()() as other:
+            row = await other.get(KaipokeJob, job_id)
+            row.status = "cancelled"
+            await other.commit()
+
+    stub.on_export = _cancel
+    await integrations_module._run_smart_preview_job(**scheduled[0])
+
+    job = await db.get(KaipokeJob, job_id)
+    await db.refresh(job)
+    assert job.status == "cancelled"
+    assert (await db.scalars(select(CorrectionSheet))).all() == []
+    assert (await db.scalars(select(KaipokeCsvSnapshot))).all() == []
+    st = (await _status(client, admin, str(job_id))).json()
+    assert st["status"] == "failed"
+    assert "取り消されました" in st["error"]
+
+
+async def _completed_preview(client, db, admin) -> tuple[KaipokeJob, dict[str, Any]]:
+    """打刻日ありの週でプレビューを完了させ、(ジョブ, preview) を返す。"""
+    res = await _start(client, admin)
+    assert res.status_code == 202, res.text
+    st = (await _status(client, admin, res.json()["jobId"])).json()
+    assert st["status"] == "completed", st
+    job = await db.get(KaipokeJob, UUID(res.json()["jobId"]))
+    await db.refresh(job)
+    return job, st["preview"]
+
+
+async def _seed_mixed_week(db, stub) -> None:
+    seeded = await _seed_week(db)
+    await _seed_course(db, office=seeded["office"], staff=seeded["staff"], weekday=1, code="A")
+    await _add_checkin(db, seeded, "tue")
+    stub.by_month[MONTH] = _csv(
+        _kp_row(date(2026, 7, 7), time(14, 0), time(14, 35)),
+        _kp_row(date(2026, 7, 10), time(9, 0), time(9, 30)),
+    )
+
+
+async def _active(client, admin, week_start: date = WEEK_START):
+    res = await client.get(
+        ACTIVE_URL, headers=_bearer(admin), params={"weekStart": week_start.isoformat()}
+    )
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+@pytest.mark.asyncio
+async def test_active_returns_a_result_completed_within_30_minutes(client, db, stub) -> None:
+    """画面へ戻ったとき、離れている間に完了した結果を見せる (PO 決定 2026-10-01)。"""
+    await _seed_mixed_week(db, stub)
+    admin = await _make_admin(db)
+    job, preview = await _completed_preview(client, db, admin)
+
+    body = await _active(client, admin)
+    assert body["status"] == "completed"
+    assert body["jobId"] == str(job.id)
+    assert body["preview"] == preview
+    assert body["completedAt"]
+
+
+@pytest.mark.asyncio
+async def test_active_does_not_return_a_result_older_than_30_minutes(client, db, stub) -> None:
+    await _seed_mixed_week(db, stub)
+    admin = await _make_admin(db)
+    job, _preview = await _completed_preview(client, db, admin)
+    job.completed_at = datetime.now(UTC) - timedelta(minutes=31)
+    await db.commit()
+
+    assert await _active(client, admin) is None
+
+
+@pytest.mark.asyncio
+async def test_active_does_not_return_a_result_whose_sheet_was_applied(client, db, stub) -> None:
+    from app.models.correction_sheet import CorrectionSheet
+
+    await _seed_mixed_week(db, stub)
+    admin = await _make_admin(db)
+    _job, preview = await _completed_preview(client, db, admin)
+    sheet = await db.get(CorrectionSheet, UUID(preview["sheetId"]))
+    sheet.status = "applied"
+    await db.commit()
+
+    assert await _active(client, admin) is None
+
+
+@pytest.mark.asyncio
+async def test_active_does_not_return_a_result_after_a_later_apply(client, db, stub) -> None:
+    """その後にこの週の取り込み (smart-apply) が走った結果は古いので見せない。"""
+    await _seed_mixed_week(db, stub)
+    admin = await _make_admin(db)
+    _job, preview = await _completed_preview(client, db, admin)
+    res = await _apply(client, admin, sheet_id=preview["sheetId"], dry_run=False)
+    assert res.status_code == 200, res.text
+
+    assert await _active(client, admin) is None
+
+
+@pytest.mark.asyncio
+async def test_active_does_not_return_a_result_superseded_by_another_inbound(
+    client, db, stub
+) -> None:
+    """差分シートの無い週でも、後から完了した取り込みがあれば見せない。"""
+    await _seed_week(db)
+    admin = await _make_admin(db)
+    stub.by_month[MONTH] = _csv(_kp_row(date(2026, 7, 7), time(14, 0), time(14, 35)))
+    _job, preview = await _completed_preview(client, db, admin)
+    assert preview["sheetId"] is None
+    assert (await _active(client, admin))["status"] == "completed"
+
+    db.add(
+        KaipokeJob(
+            job_type="fetch",
+            week_start=WEEK_START,
+            params={"op": "replace-inbound", "week_start": WEEK_START.isoformat()},
+            status="completed",
+            completed_at=datetime.now(UTC),
+        )
+    )
+    await db.commit()
+    assert await _active(client, admin) is None
