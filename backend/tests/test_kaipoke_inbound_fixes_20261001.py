@@ -546,3 +546,162 @@ async def test_date_change_without_target_course_creates_temp_course(db) -> None
     course = await db.get(Course, tue.course_id)
     assert course is not None
     assert (course.weekday, course.code, course.assigned_staff_id) == (4, "臨", seeded["staff"].id)
+
+
+# --- 5. 予定外訪問の昇格 ---------------------------------------------------------
+
+
+async def _seed_unplanned(db, seeded, start: time, end: time) -> Visit:
+    """QR の予定外打刻で生まれた訪問 (コース無し・訪問中・打刻あり)。"""
+    v = Visit(
+        patient_id=seeded["patient"].id,
+        visit_date=date(2026, 7, 7),
+        start_time=start,
+        end_time=end,
+        type="regular",
+        status="in_progress",
+        source="manual",
+        required_staff_count=1,
+        primary_staff_id=seeded["staff"].id,
+        is_unplanned=True,
+    )
+    db.add(v)
+    await db.commit()
+    await db.refresh(v)
+    await _checkin(db, v, seeded["staff"].id)
+    return v
+
+
+async def _patient_visits_on(db, patient_id, d: date) -> list[Visit]:
+    rows = await db.scalars(
+        select(Visit)
+        .where(Visit.patient_id == patient_id, Visit.visit_date == d, Visit.deleted_at.is_(None))
+        .execution_options(populate_existing=True)
+    )
+    return list(rows.all())
+
+
+@pytest.mark.asyncio
+async def test_smart_exact_match_promotes_unplanned_visit(client, db, stub_kaipoke) -> None:  # noqa: F811
+    """カイポケに実時刻どおり登録された予定外訪問は、差分が無くても昇格する。"""
+    from tests.test_kaipoke_inbound import _seed_course
+
+    seeded = await _seed_week(db)
+    course_a = await _seed_course(
+        db, office=seeded["office"], staff=seeded["staff"], weekday=1, code="A"
+    )
+    unplanned = await _seed_unplanned(db, seeded, time(12, 0, 30), time(12, 31, 10))
+    admin = await _make_admin(db)
+    stub_kaipoke.by_month[MONTH] = _csv(
+        _kp_row(date(2026, 7, 7), time(10, 0), time(10, 35)),
+        _kp_row(date(2026, 7, 7), time(12, 0), time(12, 31)),  # 予定外訪問と同じ枠
+        _kp_row(date(2026, 7, 8), time(11, 0), time(11, 35)),
+        _kp_row(date(2026, 7, 9), time(9, 0), time(9, 35)),
+    )
+
+    res = await _preview(client, admin)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["diffSummary"].get("unplanned_promote") == 1
+    assert body["diffSummary"].get("add", 0) == 0
+
+    res2 = await _apply(client, admin, sheet_id=body["sheetId"], dry_run=False)
+    assert res2.status_code == 200, res2.text
+    assert res2.json()["diff"]["failed"] == 0
+
+    await db.refresh(unplanned)
+    assert unplanned.is_unplanned is False
+    assert unplanned.course_id == course_a.id
+    assert unplanned.status == "in_progress"  # 訪問の状態は変えない
+    assert unplanned.start_time == time(12, 0)
+    tue_visits = await _patient_visits_on(db, seeded["patient"].id, date(2026, 7, 7))
+    assert len(tue_visits) == 2  # 10:00 + 昇格した 12:00 (二重にならない)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_delete_add_pair_promotes_unplanned_visit(db, dry_run: bool) -> None:
+    """予定外訪問の delete と近い時刻の add は、新しい訪問を作らず昇格にまとめる。"""
+    seeded = await _seed_week(db)
+    unplanned = await _seed_unplanned(db, seeded, time(11, 55), time(12, 29))
+    items = await _sheet_items(
+        db,
+        [
+            {
+                "patient_id": seeded["patient"].id,
+                "visit_id": unplanned.id,
+                "action": "delete",
+                "before": _side(7, "11:55", "12:29"),
+                "after": EMPTY,
+            },
+            {
+                "patient_id": seeded["patient"].id,
+                "visit_id": None,
+                "action": "add",
+                "before": EMPTY,
+                "after": _side(7, "12:10", "12:40"),
+            },
+        ],
+    )
+    summary = await apply_inbound_items(
+        db,
+        items=items,
+        week_start=WEEK_START,
+        week_end=WEEK_END,
+        days=None,
+        dry_run=dry_run,
+        now=NOW,
+    )
+    assert (summary.added, summary.cancelled, summary.failed) == (0, 0, 0), [
+        r.detail for r in summary.results
+    ]
+    assert summary.updated == 1 and summary.skipped == 1
+    assert {r.reason for r in summary.results} == {"unplanned_promoted"}
+    if dry_run:
+        return
+    await db.flush()
+    tue_visits = await _patient_visits_on(db, seeded["patient"].id, date(2026, 7, 7))
+    assert len(tue_visits) == 2  # 10:00 + 昇格した予定外訪問 (新規 INSERT なし)
+    await db.refresh(unplanned)
+    assert unplanned.is_unplanned is False
+    assert (unplanned.start_time, unplanned.end_time) == (time(12, 10), time(12, 40))
+    assert unplanned.course_id is not None  # 臨時コースへ
+    assert unplanned.status == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_add_far_from_unplanned_visit_is_not_merged(db) -> None:
+    """時刻が離れた add は別の訪問として追加する (昇格させない)。"""
+    seeded = await _seed_week(db)
+    unplanned = await _seed_unplanned(db, seeded, time(11, 55), time(12, 29))
+    items = await _sheet_items(
+        db,
+        [
+            {
+                "patient_id": seeded["patient"].id,
+                "visit_id": unplanned.id,
+                "action": "delete",
+                "before": _side(7, "11:55", "12:29"),
+                "after": EMPTY,
+            },
+            {
+                "patient_id": seeded["patient"].id,
+                "visit_id": None,
+                "action": "add",
+                "before": EMPTY,
+                "after": _side(7, "16:00", "16:30"),
+            },
+        ],
+    )
+    summary = await apply_inbound_items(
+        db,
+        items=items,
+        week_start=WEEK_START,
+        week_end=WEEK_END,
+        days=None,
+        dry_run=True,
+        now=NOW,
+    )
+    assert summary.added == 1
+    assert summary.failed == 1  # 予定外訪問は打刻済みのため取り消さない (要確認)
+    assert any(r.reason == "checked_in" for r in summary.results)

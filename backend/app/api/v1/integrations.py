@@ -2218,11 +2218,18 @@ async def _build_inbound_sheet(
     week_start: date,
     week_end: date,
     user_id: UUID | None,
+    kaipoke_csv: str | None = None,
 ):
     """inbound Correction 群を名寄せ解決して CorrectionSheet + items に永続化する。
 
     trigger_diff_inbound と smart-inbound-preview (2026-07-26) の共通部。
     Returns: (sheet, summary dict)。commit は呼び出し側の責務。
+
+    ``kaipoke_csv`` (カイポケ現況・smart-inbound-preview が渡す) があるときは、
+    **カイポケに同じ日・同じ開始時刻の行がある予定外訪問** (is_unplanned) を
+    昇格用の ``edit`` 行 (変更前=変更後) として足す (2026-10-01)。カイポケ側で
+    実時刻どおりに登録されると差分が 1 件も出ず、予定外のまま残るため
+    (9/23 川名さんの 6 件)。apply の edit 経路が予定外訪問を予定へ昇格させる。
     """
     from collections import defaultdict
 
@@ -2324,6 +2331,55 @@ async def _build_inbound_sheet(
             )
         )
         summary[c.action] += 1
+
+    if kaipoke_csv is not None:
+        from datetime import time as dt_time
+
+        from app.services.diff.engine import parse_csv_from_content
+        from app.services.kaipoke.inbound import UNPLANNED_PROMOTE_COMMENT
+
+        # カイポケ現況の (患者, 日付, 開始 HH:MM)。名寄せできない行は含めない。
+        kp_slots: set[tuple[UUID, date, dt_time]] = set()
+        for e in parse_csv_from_content(kaipoke_csv, "kaipoke"):
+            kp_pid = match_name(e.user_name, pindex)
+            kp_start = parse_hhmm(e.start_time)
+            try:
+                kp_date = day_to_date(int(str(e.date).strip()), week_start, week_end)
+            except (TypeError, ValueError):
+                kp_date = None
+            if kp_pid and kp_start is not None and kp_date is not None:
+                kp_slots.add((UUID(kp_pid), kp_date, kp_start))
+        targeted = {it.visit_id for it in items if it.visit_id is not None}
+        patient_name = {p.id: p.name for p in patients}
+        for v in visit_index.values():
+            if not v.is_unplanned or v.status == "cancelled" or v.id in targeted:
+                continue
+            start_hm = dt_time(v.start_time.hour, v.start_time.minute)
+            if (v.patient_id, v.visit_date, start_hm) not in kp_slots:
+                continue
+            primary = _smap.get(v.primary_staff_id) if v.primary_staff_id else None
+            side = {
+                "user_name": patient_name.get(v.patient_id, ""),
+                "date": str(v.visit_date.day),
+                "start_time": start_hm.strftime("%H:%M"),
+                "end_time": v.end_time.strftime("%H:%M"),
+                "staff1": primary.name if primary is not None else "",
+                "staff2": "",
+            }
+            items.append(
+                CorrectionSheetItem(
+                    sheet_id=sheet.id,
+                    patient_id=v.patient_id,
+                    visit_id=v.id,
+                    action="edit",
+                    before=side,
+                    after=dict(side),
+                    include=True,
+                    comment=UNPLANNED_PROMOTE_COMMENT,
+                )
+            )
+            summary["unplanned_promote"] += 1
+
     summary["total"] = len(items)
     summary["unresolved_patient"] = unresolved
     summary["auto_selected"] = sum(1 for it in items if it.include)
@@ -4746,6 +4802,7 @@ async def smart_inbound_preview(
             week_start=week_start,
             week_end=week_start + timedelta(days=6),
             user_id=user.id,
+            kaipoke_csv=csv_content,
         )
         await db.flush()  # items の id/include を確定させてから held 判定に使う
         sheet_items = list(
