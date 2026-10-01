@@ -491,6 +491,24 @@ async def apply_inbound_items(
         db, list(course_idx.by_id.keys())
     )
 
+    # 取込由来 (source='import') の visit 直リンク: visit_id → {staff_id: [accompaniment.id]}。
+    # カイポケで担当2 が外れた/替わったとき、取込が張った同行だけを外すのに使う
+    # (2026-10-01・9/24 修復 #4 の根治)。画面で人が張った同行 ('manual'/'default') と
+    # コースリンクは外さない (人の判断を取込で黙って消さない)。
+    import_acc_by_visit: dict[uuid.UUID, dict[uuid.UUID, list[uuid.UUID]]] = {}
+    if index:
+        acc_rows = await db.execute(
+            select(
+                Accompaniment.id, Accompaniment.visit_id, Accompaniment.accompanying_staff_id
+            ).where(
+                Accompaniment.visit_id.in_([v.id for v in index.values()]),
+                Accompaniment.target_type == "visit",
+                Accompaniment.source == ACCOMPANIMENT_SOURCE_IMPORT,
+            )
+        )
+        for acc_id, acc_vid, acc_sid in acc_rows.all():
+            import_acc_by_visit.setdefault(acc_vid, {}).setdefault(acc_sid, []).append(acc_id)
+
     def _remember_accompaniment(visit_id: uuid.UUID, staff_id: uuid.UUID) -> None:
         """自動作成した同行リンクを突合集合へ反映する (同一実行内の二重 INSERT 予防).
 
@@ -1387,12 +1405,36 @@ async def apply_inbound_items(
                 else:
                     notes.append(f"担当2「{staff2_after_name}」未解決（未反映）")
 
+        # 担当2 が外れた/別人に替わった (2026-10-01): 元の担当2 が**取込で張った同行**
+        # (visit 直リンク・source='import') なら同行も外す。従来は secondary と
+        # visit_staff_assignments だけ直し、同行が残って「担当2を解除」と記録しながら
+        # 盤面に同行者が出続けた (9/24 に 4 件を手で修復)。
+        # 人が画面で張った同行・コース単位の同行は外さず、要確認の注記だけ残す。
+        remove_acc_ids: list[uuid.UUID] = []
+        remove_acc_staff: uuid.UUID | None = None
+        if staff2_changed and staff2_before_name:
+            prev_sid_str = match_name(staff2_before_name, staff_index)
+            after_sid_str = (
+                match_name(staff2_after_name, staff_index) if staff2_after_name else None
+            )
+            if prev_sid_str and prev_sid_str != after_sid_str:
+                prev_sid2 = uuid.UUID(prev_sid_str)
+                remove_acc_ids = list(import_acc_by_visit.get(visit.id, {}).get(prev_sid2, []))
+                if remove_acc_ids:
+                    remove_acc_staff = prev_sid2
+                elif prev_sid2 in accompaniment_by_visit.get(visit.id, set()):
+                    notes.append(
+                        f"同行「{staff2_before_name}」はらく助で設定された同行のため残しています"
+                        "（要確認）"
+                    )
+
         if (
             not time_changed
             and not date_changed
             and new_sid is None
             and not staff2_update
             and accompaniment_sid2 is None
+            and not remove_acc_ids
         ):
             _finish("skipped", "・".join(notes) or "変更点なし", target_date)
             continue
@@ -1455,6 +1497,8 @@ async def apply_inbound_items(
         # (他に変更点が無くても skipped にしない)。
         if accompaniment_sid2 is not None:
             changes.append(f"担当2「{staff2_after_name}」は新人のため同行として取り込みました")
+        if remove_acc_ids:
+            changes.append(f"同行「{staff2_before_name}」を外しました")
 
         if not changes:
             _finish("skipped", "・".join(notes) or "変更点なし", target_date)
@@ -1546,6 +1590,14 @@ async def apply_inbound_items(
                     )
                 )
                 _remember_accompaniment(visit.id, accompaniment_sid2)
+            if remove_acc_ids and remove_acc_staff is not None:
+                await db.execute(delete(Accompaniment).where(Accompaniment.id.in_(remove_acc_ids)))
+                # 同一実行内の後続 item が外した同行を「まだ在る」と見ないよう突合集合も直す
+                # (コースリンク由来で同じスタッフが残る場合は by_visit から消さない)。
+                import_acc_by_visit.get(visit.id, {}).pop(remove_acc_staff, None)
+                accompaniment_direct_by_visit.get(visit.id, set()).discard(remove_acc_staff)
+                if remove_acc_staff not in accompaniment_by_course.get(visit.course_id, set()):
+                    accompaniment_by_visit.get(visit.id, set()).discard(remove_acc_staff)
         # 索引を移動後のキーへ張り替える (同一実行内の後続 item が旧キーを
         # 占有済みと誤判定したり、空いた枠へ二重に移動して 500 になるのを防ぐ)。
         # dry-run でも張り替える = 予測と実適用の結果を一致させる。

@@ -392,3 +392,88 @@ async def test_date_change_into_locally_cancelled_slot_still_fails(db) -> None:
         now=NOW,
     )
     assert summary.failed == 1 and "別の予定があります" in summary.results[0].detail
+
+
+# --- 3. 担当2 の解除で取込由来の同行を外す --------------------------------------
+
+
+async def _seed_trainee_accompaniment(db, seeded, *, source: str) -> tuple[Any, Any]:
+    from app.models.accompaniment import Accompaniment
+    from app.models.staff import Staff
+
+    trainee = Staff(name="小西　新人", role="staff", primary_office_id=seeded["office"].id)
+    trainee.qualification = "看護師"
+    trainee.is_trainee = True
+    db.add(trainee)
+    await db.flush()
+    acc = Accompaniment(
+        accompanying_staff_id=trainee.id,
+        target_type="visit",
+        visit_id=seeded["tue"].id,
+        source=source,
+        kind="trainee",
+    )
+    db.add(acc)
+    await db.commit()
+    return trainee, acc
+
+
+def _staff2_clear_item(seeded) -> dict:
+    return {
+        "patient_id": seeded["patient"].id,
+        "visit_id": seeded["tue"].id,
+        "action": "edit",
+        "before": _side(7, "10:00", "10:35", staff2="小西　新人"),
+        "after": _side(7, "10:00", "10:35", staff2=""),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_staff2_clear_removes_import_accompaniment(db, dry_run: bool) -> None:
+    from app.models.accompaniment import Accompaniment
+
+    seeded = await _seed_week(db)
+    _trainee, acc = await _seed_trainee_accompaniment(db, seeded, source="import")
+    acc_id = acc.id
+    items = await _sheet_items(db, [_staff2_clear_item(seeded)])
+
+    summary = await apply_inbound_items(
+        db,
+        items=items,
+        week_start=WEEK_START,
+        week_end=WEEK_END,
+        days=None,
+        dry_run=dry_run,
+        now=NOW,
+    )
+    assert summary.updated == 1, [r.detail for r in summary.results]
+    assert "同行「小西　新人」を外しました" in summary.results[0].detail
+    await db.flush()
+    remaining = await db.scalar(select(Accompaniment).where(Accompaniment.id == acc_id))
+    assert (remaining is None) is (not dry_run)
+
+
+@pytest.mark.asyncio
+async def test_staff2_clear_keeps_manual_accompaniment_with_note(db) -> None:
+    """画面で人が張った同行は外さない (要確認の注記のみ)。"""
+    from app.models.accompaniment import Accompaniment
+
+    seeded = await _seed_week(db)
+    _trainee, acc = await _seed_trainee_accompaniment(db, seeded, source="manual")
+    acc_id = acc.id
+    items = await _sheet_items(db, [_staff2_clear_item(seeded)])
+
+    summary = await apply_inbound_items(
+        db,
+        items=items,
+        week_start=WEEK_START,
+        week_end=WEEK_END,
+        days=None,
+        dry_run=False,
+        now=NOW,
+    )
+    assert summary.failed == 0
+    assert "らく助で設定された同行のため残しています" in summary.results[0].detail
+    await db.flush()
+    assert await db.scalar(select(Accompaniment).where(Accompaniment.id == acc_id)) is not None
