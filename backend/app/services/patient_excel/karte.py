@@ -488,7 +488,21 @@ def _normalize_fixed_value(value: str | None) -> str | None:
     return value.strip() or None
 
 
-def parse_karte_workbook(wb_or_bytes: Workbook | bytes, *, offices: Sequence[Office] = ()) -> bytes:
+# 拠点セル (B6) の行番号。拠点マスタに無い拠点名の行エラーに出す (PO 決定 2026-10-01)。
+KARTE_OFFICE_ROW: int = 6
+
+
+def unknown_office_label_message(label: str) -> str:
+    """拠点マスタに無い拠点名の行エラー (PO 決定 2026-10-01 の文言)."""
+    return f"拠点名『{label}』が拠点マスタにありません（行 {KARTE_OFFICE_ROW}）"
+
+
+def parse_karte_workbook(
+    wb_or_bytes: Workbook | bytes,
+    *,
+    offices: Sequence[Office] = (),
+    unknown_office_labels_out: list[str] | None = None,
+) -> bytes:
     """カルテ Workbook (or bytes) を読み、**既存 importer 互換の標準 2 シート
     Workbook の bytes** に変換する.
 
@@ -501,7 +515,14 @@ def parse_karte_workbook(wb_or_bytes: Workbook | bytes, *, offices: Sequence[Off
     PFV 患者単位 replace / dry_run プレビュー / ImportPreviewModal 互換応答を流用する.
 
     ``offices`` = 拠点セル (B6) の拠点名を office_code に戻すための offices マスタ
-    (API が DB から渡す)。渡さないと拠点セルは解決できず住所からの自動割当になる。
+    (API が DB から渡す)。
+
+    拠点セルの扱い (PO 決定 2026-10-01):
+      * 空欄 → office_code 空欄 = 今までどおり住所からの自動割当。
+      * 拠点名 / コードが有効な拠点に当たる → その office_code。
+      * 空欄でないのに当たらない → **住所の自動割当に回さない**。書かれた値をそのまま
+        office_code に入れて取り込みの行エラーにし (その患者は取り込まれない)、
+        ``unknown_office_labels_out`` にその値を足す (API が文言を言い換える)。
     """
     if isinstance(wb_or_bytes, bytes):
         src = load_workbook(BytesIO(wb_or_bytes), data_only=True)
@@ -533,6 +554,12 @@ def parse_karte_workbook(wb_or_bytes: Workbook | bytes, *, offices: Sequence[Off
     note = _read_cell_str(ws, "A22")
 
     office_code = _office_label_to_code(office_label, offices)  # None → 住所自動割当
+    unknown_label = _strip_office_auto_suffix(office_label)
+    if office_code is None and unknown_label is not None:
+        # 拠点マスタに無い拠点名: 自動割当に黙って回さず、行エラーにする (PO 決定 2026-10-01)。
+        office_code = unknown_label
+        if unknown_office_labels_out is not None:
+            unknown_office_labels_out.append(unknown_label)
     service_minutes = _service_label_to_minutes(service_label)
     insurance = _normalize_insurance(insurance)  # 短縮「医療/介護」→ importer 受理形へ
 
