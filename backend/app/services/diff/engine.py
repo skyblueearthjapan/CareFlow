@@ -511,8 +511,8 @@ def _compare_entries(
     渡す — 印を立てても RPA が正しい値を書けないため。
 
     ``prefer_same_slot`` (既定 False・inbound 専用 2026-10-01):
-    日付変更 (Pass 3) を探す **前に**、同じ日・同じ開始時刻で残った組を
-    サービス内容に関わらず 1 件の ``edit`` に束ねる (Pass 2.5)。
+    サービス一致 (Pass 2)・日付変更 (Pass 3) を探す **前に**、同じ日・同じ開始時刻で残った組を
+    サービス内容に関わらず 1 件の ``edit`` に束ねる (Pass 1.5・Pass 2 より前)。
     inbound ではらく助側のサービス内容は担当の資格から作った値にすぎず、
     担当が替わると「…・正看」⇄「…・准看」で Pass 1/2 に乗らない。そのまま
     Pass 3 へ進むと、別の日の訪問がこの枠へ「日付変更」で結ばれ、
@@ -800,6 +800,33 @@ def _compare_entries(
                     len(matched_current_local),
                 )
 
+            # Pass 1.5 (inbound 専用・2026-10-01): 同じ日・同じ開始時刻の残りは
+            # サービス内容に関わらず同じ訪問として結ぶ (docstring 参照)。
+            # Pass 2 (サービス一致・時刻違い) と Pass 3 (日付変更) より前に置くのが要点:
+            # 後にすると、区分違いの同時刻の組より先に、同じ区分の別の時刻の行や
+            # 別の日の行がこの枠の相手を取ってしまう。
+            if prefer_same_slot:
+                for cur_idx, cur_entry in current_on_date:
+                    if cur_idx in matched_current_local:
+                        continue
+                    for opt_idx, opt_entry in optimized_on_date:
+                        if opt_idx in matched_optimized_local:
+                            continue
+                        if cur_entry.start_time != opt_entry.start_time:
+                            continue
+                        has_diff = (
+                            cur_entry.end_time != opt_entry.end_time
+                            or _staff_differs(cur_entry.staff1_name, opt_entry.staff1_name)
+                            or _staff_differs(cur_entry.staff2_name, opt_entry.staff2_name)
+                        )
+                        if has_diff:
+                            _emit_change(user, cur_entry, opt_entry, "edit")
+                        matched_current_local.add(cur_idx)
+                        matched_optimized_local.add(opt_idx)
+                        all_matched_current.add(cur_idx)
+                        all_matched_optimized.add(opt_idx)
+                        break
+
             # Pass 2: サービス内容が一致（時間は異なる）
             for opt_idx, opt_entry in optimized_on_date:
                 if opt_idx in matched_optimized_local:
@@ -827,33 +854,6 @@ def _compare_entries(
                         all_matched_current.add(cur_idx)
                         all_matched_optimized.add(opt_idx)
                         break
-
-        # Pass 2.5 (inbound 専用・2026-10-01): 同じ日・同じ開始時刻の残り物は
-        # サービス内容に関わらず同じ訪問として edit に束ねる (docstring 参照)。
-        # Pass 3 (日付変更) より前に置くのが要点: 先に日付変更を探すと、別の日の
-        # 訪問がこの枠へ結ばれてしまう。
-        if prefer_same_slot:
-            for cur_idx, cur_entry in enumerate(user_current):
-                if cur_idx in all_matched_current:
-                    continue
-                cur_day = _date_key(cur_entry.date)
-                for opt_idx, opt_entry in enumerate(user_optimized):
-                    if opt_idx in all_matched_optimized:
-                        continue
-                    if _date_key(opt_entry.date) != cur_day:
-                        continue
-                    if cur_entry.start_time != opt_entry.start_time:
-                        continue
-                    has_diff = (
-                        cur_entry.end_time != opt_entry.end_time
-                        or _staff_differs(cur_entry.staff1_name, opt_entry.staff1_name)
-                        or _staff_differs(cur_entry.staff2_name, opt_entry.staff2_name)
-                    )
-                    if has_diff:
-                        _emit_change(user, cur_entry, opt_entry, "edit")
-                    all_matched_current.add(cur_idx)
-                    all_matched_optimized.add(opt_idx)
-                    break
 
         # Pass 3: 日付変更の検出（異なる日付間でのマッチング）
         unmatched_current = [

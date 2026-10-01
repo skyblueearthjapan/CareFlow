@@ -447,11 +447,14 @@ async def test_smart_date_change_into_sunday_holds_source_day(client, db, stub_k
 async def test_smart_case_b_with_checkin_on_moved_visit_is_blocked(
     client, db, stub_kaipoke
 ) -> None:
-    """打刻付きの訪問が置換日へ移ると置換がブロックされ 422・無書込 (F6)。
+    """打刻付きの訪問は別の日へ動かさない (2026-10-01 改訂・F6 の置き換え)。
 
-    差分パートが火→月へ動かした訪問には打刻が紐づいている。置換はその日を
-    白紙化しようとして実績ガード (ReplaceBlockedError) に当たる = 422。
-    トランザクションは丸ごとロールバックされ、火曜の訪問はそのまま残る。
+    以前: 差分パートが火→月へ動かし、置換が月曜の白紙化で実績ガードに当たって
+    422・取込全体がロールバックされていた。
+    2026-10-01 (docs/plans/inbound-fixes-2026-10-01.md §1): 打刻済みの訪問への
+    date_change は差分パートで failed (reason=checked_in・要確認) になり動かない。
+    火曜の訪問は打刻ごとそのまま残り、取込の他の部分は通る (月曜はカイポケの
+    行で置換される)。食い違いは人が確認する。
     """
     seeded = await _seed_week(db)
     await _seed_course(db, office=seeded["office"], staff=seeded["staff"], weekday=0, code="A")
@@ -469,22 +472,21 @@ async def test_smart_case_b_with_checkin_on_moved_visit_is_blocked(
     assert res.status_code == 200, res.text
     body = res.json()
 
+    assert body["diffSummary"].get("checked_in_move") == 1
+
     res2 = await _apply(client, admin, sheet_id=body["sheetId"], dry_run=False)
-    assert res2.status_code == 422, res2.text
-    assert "実績" in res2.json()["detail"]
+    assert res2.status_code == 200, res2.text
+    diff = res2.json()["diff"]
+    assert diff["failed"] == 1
+    assert [r["reason"] for r in diff["results"] if r["action"] == "date_change"] == ["checked_in"]
 
     db.expire_all()
     visits = (await db.scalars(select(Visit).where(Visit.deleted_at.is_(None)))).all()
-    # 何も書かれていない: 火 15:00 はそのまま・月曜には何も増えていない
-    assert [v for v in visits if v.visit_date == date(2026, 7, 6)] == []
+    # 火 15:00 は打刻ごとそのまま (動かない・取り消さない)
     still = [v for v in visits if v.visit_date == date(2026, 7, 7) and v.start_time == time(15, 0)]
-    assert len(still) == 1
-    assert sorted(v.visit_date for v in visits) == [
-        date(2026, 7, 7),
-        date(2026, 7, 7),
-        date(2026, 7, 8),
-        date(2026, 7, 9),
-    ]
+    assert [v.id for v in still] == [moved.id]
+    # 月曜はカイポケの行で置換された (置換日の扱いは従来どおり)
+    assert [v.start_time for v in visits if v.visit_date == date(2026, 7, 6)] == [time(15, 0)]
 
 
 @pytest.mark.asyncio
