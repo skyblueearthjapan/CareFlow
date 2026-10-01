@@ -410,7 +410,7 @@ export function StaffWeekBoard({
   if (rowKeys.length === 0) {
     return (
       <p className="px-3 py-6 text-center text-sm text-text-muted" data-testid="staff-week-empty">
-        この週にはまだ訪問がありません（「週を生成」または取り込みを実行してください）
+        この週にはまだ訪問がありません（「週を作る」または取り込みを実行してください）
       </p>
     );
   }

@@ -58,7 +58,7 @@ from app.models.special_visit import (
     SpecialVisitMark,
 )
 from app.models.staff import Staff
-from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, VISIT_STATUS_CANCELLED, Visit
+from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, Visit
 
 logger = logging.getLogger(__name__)
 
@@ -849,13 +849,16 @@ class Layer1Expander:
 
         衝突とみなすのは 2 種類:
           1. **non-auto** (manual / import / manual_week 等) — 人手入力を尊重する
-          2. **cancelled** (source 不問) — 「今週だけ取消」(週空間 Phase E /
-             week-cockpit-design.md D1) された枠。削除側
-             (``_delete_existing_auto_visits``) は ``status='planned'`` しか
-             消さないため cancelled 行は週生成後も
-             生き残る。ここで衝突扱いにしないと同じ (患者×日×開始時刻) に
-             auto 行が再 INSERT され、取消が復活したうえに枠が二重化する
-             (2 名体制なら 2 行とも)。
+          2. **planned 以外** (source 不問) — 削除側 (``_delete_existing_auto_visits``)
+             は ``status='planned'`` しか消さないため、次の行は週生成後も生き残る:
+             - cancelled: 「今週だけ取消」(週空間 Phase E / week-cockpit-design.md D1)
+               された枠。衝突扱いにしないと取消が復活したうえに枠が二重化する
+               (2 名体制なら 2 行とも)。
+             - in_progress / completed: QR 打刻で実施中・実施済みになった auto 行。
+               衝突扱いにしないと同じ (患者×日×開始時刻) に auto 行を再 INSERT し、
+               部分 UNIQUE ``uq_visits_pds_group_active`` 違反で週生成が 500 に
+               なっていた (実施済み訪問のある週で「週を生成」→ 500 の既知不具合・
+               copy-week-design-2026-09-30.md §8)。
 
         返却セットに含まれるキーは auto INSERT を skip する。
         """
@@ -867,7 +870,8 @@ class Layer1Expander:
                 Visit.deleted_at.is_(None),
                 or_(
                     Visit.source != LAYER1_VISIT_SOURCE,  # manual / ai / import 等
-                    Visit.status == VISIT_STATUS_CANCELLED,  # 今週だけ取消の枠
+                    # 今週だけ取消の枠 + 打刻で実施中・実施済みになった行
+                    Visit.status != LAYER1_VISIT_STATUS,
                 ),
                 tuple_(Visit.patient_id, Visit.visit_date, Visit.start_time).in_(candidate_keys),
             )

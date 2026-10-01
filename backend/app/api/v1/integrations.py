@@ -2354,6 +2354,8 @@ async def list_inbound_snapshots(
 ) -> InboundSnapshotListRead:
     """対象週の「取り込み前に戻す」候補 (直近 5 世代・新しい順)。"""
     from app.models.inbound_snapshot import InboundSnapshot
+    from app.models.visit import Visit as _Visit
+    from app.models.visit_checkin import VisitCheckin
 
     rows = (
         await db.scalars(
@@ -2362,7 +2364,27 @@ async def list_inbound_snapshots(
             .order_by(InboundSnapshot.created_at.desc(), InboundSnapshot.id.desc())
         )
     ).all()
-    return InboundSnapshotListRead(snapshots=[InboundSnapshotRead.model_validate(r) for r in rows])
+    has_checkins = (
+        await db.scalar(
+            select(VisitCheckin.id)
+            .join(_Visit, _Visit.id == VisitCheckin.visit_id)
+            .where(
+                _Visit.visit_date >= week_start,
+                _Visit.visit_date <= week_start + timedelta(days=6),
+                _Visit.deleted_at.is_(None),
+            )
+            .limit(1)
+        )
+    ) is not None
+    snapshots = []
+    for r in rows:
+        item = InboundSnapshotRead.model_validate(r)
+        payload = r.payload or {}
+        restored = payload.get("restored_at")
+        item.restored_at = datetime.fromisoformat(restored) if restored else None
+        item.copy_mode = payload.get("copy_mode")
+        snapshots.append(item)
+    return InboundSnapshotListRead(snapshots=snapshots, has_checkins=has_checkins)
 
 
 @router.post(

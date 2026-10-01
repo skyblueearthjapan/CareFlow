@@ -1534,7 +1534,7 @@ export function PoolCandidateList({
             if (data?.week_sync == null) {
               toast.warning(
                 `${patient.name} 様を固定訪問週間に登録しましたが、今週のスケジュールへの` +
-                  `反映は行われませんでした。「週を生成」を再実行すると反映されます`,
+                  `反映は行われませんでした。「週を作る」→「固定訪問から生成」をやり直すと反映されます`,
               );
             } else {
               toast.success(

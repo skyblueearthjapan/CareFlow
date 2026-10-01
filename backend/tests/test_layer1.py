@@ -406,8 +406,11 @@ async def test_completed_visit_is_protected(client, db) -> None:
     assert res.status_code == 200, res.text
     body = res.json()
 
-    # 新しい visit が 1 件生成される (Layer 1 出力)
-    assert body["summary"]["visits_created"] == 1
+    # 同じ (患者・日・開始時刻) に実施済みがあるので新しい visit は作らない。
+    # (旧期待値は 1 件 = 同じ枠の二重作成。本番では部分 UNIQUE 違反で 500 になっていた
+    #  既知の不具合 — copy-week-design-2026-09-30.md §8-7 / 回帰テスト
+    #  test_generate_week_completed_regression.py)
+    assert body["summary"]["visits_created"] == 0
 
     # DB 上で completed の visit はそのまま残っていること (保護)
     survived = await db.scalar(
@@ -416,7 +419,7 @@ async def test_completed_visit_is_protected(client, db) -> None:
     assert survived is not None
     assert survived.status == VISIT_STATUS_COMPLETED
 
-    # 当該患者の当該週の visits は 2 件 (completed 1 + 新生成 planned 1)
+    # 当該患者の当該週の visits は completed の 1 件だけ
     rows = (
         await db.scalars(
             select(Visit).where(
@@ -426,9 +429,7 @@ async def test_completed_visit_is_protected(client, db) -> None:
             )
         )
     ).all()
-    assert len(rows) == 2
-    statuses = sorted(v.status for v in rows)
-    assert statuses == [VISIT_STATUS_COMPLETED, VISIT_STATUS_PLANNED]
+    assert [v.status for v in rows] == [VISIT_STATUS_COMPLETED]
 
 
 @pytest.mark.asyncio

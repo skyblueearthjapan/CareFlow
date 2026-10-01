@@ -1728,6 +1728,25 @@ async def generate_week_only(
         - office_id が指定された場合は当該拠点の患者のみ Layer 1 対象
         - office_id 不存在時は 404
     """
+    # 週のコピー・自動スタッフ割当と同じ週単位のロック (同じ週への同時実行は 409)。
+    # 週を作り直している最中に割当やコピーが走ると、消える途中の訪問を相手に動く。
+    lock = _get_assign_staff_only_lock(payload.iso_year, payload.iso_week)
+    if lock.locked():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "この週で週の作成・自動スタッフ割当・週のコピーのいずれかを実行中です。"
+                "完了までお待ちください（同じ週への同時実行はできません）。"
+            ),
+        )
+    async with lock:
+        return await _generate_week_only_impl(payload, db)
+
+
+async def _generate_week_only_impl(
+    payload: GenerateWeekOnlyRequest, db: AsyncSession
+) -> GenerateWeekOnlyResponse:
+    """generate-week-only の本体 (ロックは呼び出し側)."""
     # ----- ISO 週バリデーション (Layer 1 でも行うが先行 422 のため) -----
     try:
         date.fromisocalendar(payload.iso_year, payload.iso_week, 1)

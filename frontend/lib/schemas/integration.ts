@@ -313,11 +313,17 @@ export const InboundSnapshotSchema = z.object({
   kind: z.string(),
   visitsCount: z.number().int(),
   createdAt: z.string(),
+  // この保存へ戻したことがあればその時刻 (週のコピーの「コピー前に戻す」を二度出さない)
+  restoredAt: z.string().nullable().optional(),
+  // 週のコピー直前の保存のみ: 'replace' | 'add_only' (足すだけの週は戻せない)
+  copyMode: z.string().nullable().optional(),
 });
 export type InboundSnapshot = z.infer<typeof InboundSnapshotSchema>;
 
 export const InboundSnapshotListSchema = z.object({
   snapshots: z.array(InboundSnapshotSchema),
+  // 対象週に打刻があるか (= 復元は打刻ガードで止まる)
+  hasCheckins: z.boolean().optional(),
 });
 export type InboundSnapshotList = z.infer<typeof InboundSnapshotListSchema>;
 

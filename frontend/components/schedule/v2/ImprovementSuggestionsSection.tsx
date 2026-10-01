@@ -293,7 +293,7 @@ export function ImprovementSuggestionsSection({
             if (data?.week_sync == null) {
               toast.warning(
                 `${patient.name} 様の枠を ${candWd} ${s.candidate.start_time.slice(0, 5)} に変更しました（固定訪問週間に登録）が、` +
-                  `今週のスケジュールへの反映は行われませんでした。「週を生成」を再実行すると反映されます`,
+                  `今週のスケジュールへの反映は行われませんでした。「週を作る」→「固定訪問から生成」をやり直すと反映されます`,
               );
             } else {
               toast.success(
@@ -425,7 +425,7 @@ export function ImprovementSuggestionsSection({
             if (data?.week_sync == null) {
               toast.warning(
                 `${patient.name} 様と ${cp.patient_name} 様の枠を固定訪問週間で入れ替えましたが、` +
-                  `今週のスケジュールへの反映は行われませんでした。「週を生成」を再実行すると反映されます`,
+                  `今週のスケジュールへの反映は行われませんでした。「週を作る」→「固定訪問から生成」をやり直すと反映されます`,
               );
             } else {
               toast.success(

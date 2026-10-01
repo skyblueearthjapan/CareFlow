@@ -308,11 +308,17 @@ class InboundSnapshotRead(BaseModel):
     kind: str
     visits_count: int = Field(alias="visitsCount")
     created_at: datetime = Field(alias="createdAt")
+    # この保存へ戻したことがあれば、その時刻 (payload の印・無ければ None)
+    restored_at: datetime | None = Field(default=None, alias="restoredAt")
+    # 週のコピー直前の保存のみ: 'replace' | 'add_only' (足すだけの週は戻せない)
+    copy_mode: str | None = Field(default=None, alias="copyMode")
 
 
 class InboundSnapshotListRead(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     snapshots: list[InboundSnapshotRead]
+    # 対象週の有効訪問に打刻があるか (= 復元は打刻ガードで止まる)
+    has_checkins: bool = Field(default=False, alias="hasCheckins")
 
 
 class SnapshotRestoreResultRead(BaseModel):

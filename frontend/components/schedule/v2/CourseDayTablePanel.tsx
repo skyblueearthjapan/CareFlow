@@ -95,7 +95,10 @@ import {
   type StageAssignmentNotice,
   type UnresolvedGenderWarning,
   type UnresolvedNgWarning,
+  type AssignStaffOnlyResponse,
 } from '@/lib/queries/assign_staff_only';
+import type { CopyWeekResult } from '@/lib/queries/copy_week';
+import { useInboundSnapshots, useRestoreInboundSnapshot } from '@/lib/queries/integrations';
 import {
   parseConstraintConfirmationDetail,
   type ConstraintWarning,
@@ -162,6 +165,7 @@ import { ScheduleHealthDialog } from './ScheduleHealthDialog';
 import { ScopeOptimizeDialog } from './ScopeOptimizeDialog';
 import { ScheduleReviewBanner } from './ScheduleReviewBanner';
 import { WeeklyRitualGuideDialog } from './WeeklyRitualGuideDialog';
+import { MakeWeekDialog, weekRangeLabel } from './MakeWeekDialog';
 import { ResetToFixedButton } from './ResetToFixedButton';
 import { UnassignAllStaffButton } from './UnassignAllStaffButton';
 import {
@@ -2672,7 +2676,7 @@ export function CourseDayTablePanel({
           })
         : null;
       if (!targetCourse) {
-        toast.warning('drop 先のコースが見つかりません (先に「週を生成」してください)');
+        toast.warning('drop 先のコースが見つかりません (先に「週を作る」でコースを作ってください)');
         return;
       }
       const newStaffId = targetCourse.assigned_staff_id ?? null;
@@ -3373,6 +3377,8 @@ export function CourseDayTablePanel({
   // (実施済み訪問がある週では 500 になる既知バグもある)。当週に訪問が実在する場合は
   // 即実行せず確認ダイアログを挟む。訪問 0 件の週は従来どおり即実行 (挙動不変)。
   const [generateWeekConfirmOpen, setGenerateWeekConfirmOpen] = useState(false);
+  // 「週を作る」ダイアログ (固定訪問から生成 / 前の週をコピー・copy-week-design-2026-09-30.md)。
+  const [makeWeekOpen, setMakeWeekOpen] = useState(false);
   const isProcessing = generateWeekMut.isPending || assignStaffOnlyMut.isPending;
 
   // 週生成の実処理 (mutation)。即実行と確認ダイアログの「再実行する」の両方から呼ぶ。
@@ -3407,6 +3413,90 @@ export function CourseDayTablePanel({
     await runGenerateWeek();
   };
 
+  // 「週を作る」: 作り方 (固定訪問から生成 / 前の週をコピー) はダイアログで選ぶ。
+  const handleOpenMakeWeek = () => {
+    if (!canEdit) {
+      toast.warning('編集権限がありません');
+      return;
+    }
+    setMakeWeekOpen(true);
+  };
+  // 写す先は今週以降だけ (§4-2)。今週の月曜 (ローカル) より前の週ならコピーを選べない。
+  const isPastWeekForCopy = useMemo(() => {
+    const now = new Date();
+    const thisMonday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    thisMonday.setDate(thisMonday.getDate() - ((thisMonday.getDay() + 6) % 7));
+    return weekStart.getTime() < thisMonday.getTime();
+  }, [weekStart]);
+
+  const handleCopied = (res: CopyWeekResult) => {
+    const parts = [
+      `${weekRangeLabel(res.source_week_start)} の週から ${res.created} 件を写しました`,
+    ];
+    if (res.filled > 0) parts.push(`固定訪問から ${res.filled} 件を補いました`);
+    if (res.replaced > 0) parts.push(`今あった ${res.replaced} 件を置き換えました`);
+    toast.success(parts.join('。'));
+    if (res.differs_from_preview) {
+      const e = res.expected_counts;
+      const a = res.actual_counts;
+      toast.warning(
+        '確認画面の件数と、実際に写した件数が違いました（その間に週の内容が変わった可能性があります）。' +
+          (e
+            ? `確認画面: 写す ${e.copy_count}・補う ${e.fill_count}・置き換え ${e.replace_count} → 実際: 写す ${a.copy_count}・補う ${a.fill_count}・置き換え ${a.replace_count}。`
+            : '') +
+          '盤面をご確認ください。',
+      );
+    }
+    if (res.needs_manual_staff.length > 0) {
+      toast.warning(
+        `担当を手で付ける必要がある訪問が ${res.needs_manual_staff.length} 件あります（コースなしで入れました）。「担当なし」から割り当ててください。`,
+      );
+    }
+    if (res.assign_result) {
+      presentAssignResult(res.assign_result);
+    } else {
+      toast.info('担当はまだ入っていません。「自動スタッフ割当」で割り当ててください。');
+    }
+  };
+
+  // 「コピー前に戻す」: この週の一番新しい保存が「コピー直前」で、まだ戻しておらず、
+  // 置き換えのコピー (足すだけの週は戻せない) で、今の週に打刻が無いときだけ出す
+  // (その後に取り込みなどで保存が重なっていたら、連携画面の一覧から戻す)。
+  // 仕組みは連携画面の「取り込み前に戻す」と同じ (スナップショットの復元)。
+  const weekSnapshotsQuery = useInboundSnapshots(canEdit ? weekStartStr : null);
+  const latestSnapshot = weekSnapshotsQuery.data?.snapshots?.[0] ?? null;
+  const copySnapshot =
+    latestSnapshot?.kind === 'copy_week' &&
+    !latestSnapshot.restoredAt &&
+    latestSnapshot.copyMode !== 'add_only' &&
+    !weekSnapshotsQuery.data?.hasCheckins
+      ? latestSnapshot
+      : null;
+  const copySnapshotLabel = useMemo(() => {
+    if (!copySnapshot) return '';
+    const t = new Date(copySnapshot.createdAt);
+    return `${t.getMonth() + 1}/${t.getDate()} ${t.getHours()}:${String(t.getMinutes()).padStart(2, '0')}`;
+  }, [copySnapshot]);
+  const restoreSnapshotMut = useRestoreInboundSnapshot();
+  const handleUndoCopy = async () => {
+    if (!copySnapshot) return;
+    const label = copySnapshotLabel;
+    if (
+      !window.confirm(
+        `${weekRangeLabel(weekStartStr)} の週を「${label} 時点（コピー前）」の状態に戻しますか？
+` +
+          'この週の今の訪問はすべて置き換えられます（コピーの後に変えた内容も戻ります）。この操作は「戻る」の対象外です。',
+      )
+    )
+      return;
+    try {
+      const r = await restoreSnapshotMut.mutateAsync({ snapshotId: copySnapshot.id });
+      toast.success(`コピー前の状態に戻しました（${r.restored} 件）`);
+    } catch (err) {
+      toast.error(`戻せませんでした: ${formatErr(err)}`);
+    }
+  };
+
   const handleAssignStaff = async () => {
     if (!canEdit) {
       toast.warning('編集権限がありません');
@@ -3418,93 +3508,99 @@ export function CourseDayTablePanel({
         iso_week: isoWeek,
         office_id: officeId,
       });
-      // Wave N-2 / W-11 / 4段ソルバ v2.0: 確認レビューフロー＋お知らせ＋残留違反＋Stage通知を統合処理。
-      //   - review_items (要承認) / auto_committed_notices (確定済みお知らせ) /
-      //     unresolved_warnings (性別候補ゼロの残留違反・要手動調整) /
-      //     manager_mobilized_notices (Stage 2 動員) /
-      //     cross_office_notices (新Stage 3 拠点跨ぎ救援・警告) /
-      //     rescue_swap_notices (新Stage 3 入れ替え報告) のいずれかが
-      //     1 件以上あればダイアログを開く。
-      //   - toast:
-      //       review あり                   → warning (不可避/残留/Stage件数を追記)
-      //       review 0 + notices等あり      → warning (「確認してください」で誤誘導しない)
-      //       すべて 0                      → success のみ (従来どおり)
-      const items = res.review_items ?? [];
-      const notices = res.auto_committed_notices ?? [];
-      const unresolved = res.unresolved_warnings ?? [];
-      const mobilized = res.manager_mobilized_notices ?? [];
-      const crossOffice = res.cross_office_notices ?? [];
-      const swaps = res.rescue_swap_notices ?? [];
-      // NG スタッフ (patient-ng-staff-design.md §5): NG 残留 / secondary 制約違反.
-      const unresolvedNg = res.unresolved_ng_warnings ?? [];
-      const secondaryConstraints = res.secondary_constraint_warnings ?? [];
-      if (
-        items.length > 0 ||
-        notices.length > 0 ||
-        unresolved.length > 0 ||
-        unresolvedNg.length > 0 ||
-        secondaryConstraints.length > 0 ||
-        mobilized.length > 0 ||
-        crossOffice.length > 0 ||
-        swaps.length > 0
-      ) {
-        setReviewItems(items);
-        setAutoCommittedNotices(notices);
-        setUnresolvedWarnings(unresolved);
-        setUnresolvedNgWarnings(unresolvedNg);
-        setSecondaryConstraintWarnings(secondaryConstraints);
-        setManagerMobilizedNotices(mobilized);
-        setCrossOfficeNotices(crossOffice);
-        setRescueSwapNotices(swaps);
-        setAssignWarningOpen(true);
-        if (items.length > 0) {
-          const suffixParts: string[] = [];
-          if (notices.length > 0)
-            suffixParts.push(`体制上不可避の連続 ${notices.length} 件は確定済み`);
-          if (unresolved.length > 0)
-            suffixParts.push(`性別制約を満たせない残留 ${unresolved.length} 件`);
-          if (unresolvedNg.length > 0)
-            suffixParts.push(`NGスタッフを避けられない残留 ${unresolvedNg.length} 件`);
-          if (secondaryConstraints.length > 0)
-            suffixParts.push(`2名体制の2人目未確定 ${secondaryConstraints.length} 件`);
-          if (mobilized.length > 0)
-            suffixParts.push(`マネージャー動員 ${mobilized.length} 件確定済み`);
-          if (crossOffice.length > 0)
-            suffixParts.push(`拠点をまたぐ応援 ${crossOffice.length} 件確定済み`);
-          if (swaps.length > 0) suffixParts.push(`入れ替え ${swaps.length} 件`);
-          const suffix = suffixParts.length > 0 ? `（うち${suffixParts.join('・')}）` : '';
-          toast.warning(
-            `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)。` +
-              `レビューが必要なコースが ${items.length} 件あります。${suffix}`,
-          );
-        } else {
-          // review は 0 だが notices / 残留違反 / Stage 通知があるため「問題なし」に見せない。
-          const parts: string[] = [];
-          if (notices.length > 0)
-            parts.push(`体制上不可避の連続 ${notices.length} 件を自動確定しました`);
-          if (unresolved.length > 0)
-            parts.push(`性別制約を満たせない残留が ${unresolved.length} 件あります`);
-          if (unresolvedNg.length > 0)
-            parts.push(`NGスタッフを避けられない残留が ${unresolvedNg.length} 件あります`);
-          if (secondaryConstraints.length > 0)
-            parts.push(
-              `2名体制の2人目が性別制限やNGスタッフに該当しているコースが ${secondaryConstraints.length} 件あります`,
-            );
-          if (mobilized.length > 0)
-            parts.push(`マネージャー動員 ${mobilized.length} 件を自動確定しました`);
-          if (crossOffice.length > 0)
-            parts.push(`拠点をまたぐ応援 ${crossOffice.length} 件を自動確定しました`);
-          if (swaps.length > 0) parts.push(`応援による入れ替えが ${swaps.length} 件あります`);
-          toast.warning(
-            `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)。` +
-              `${parts.join('。')}。内容をご確認ください。`,
-          );
-        }
-      } else {
-        toast.success(`自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)`);
-      }
+      presentAssignResult(res);
     } catch (err) {
       toast.error(`自動スタッフ割当に失敗しました: ${formatErr(err)}`);
+    }
+  };
+
+  // 自動スタッフ割当の結果 (レビュー・お知らせ・警告) を出す。「自動スタッフ割当」ボタンと
+  // 「週を作る → 前の週をコピー」(続けて自動割当) の両方から使う。
+  const presentAssignResult = (res: AssignStaffOnlyResponse) => {
+    // Wave N-2 / W-11 / 4段ソルバ v2.0: 確認レビューフロー＋お知らせ＋残留違反＋Stage通知を統合処理。
+    //   - review_items (要承認) / auto_committed_notices (確定済みお知らせ) /
+    //     unresolved_warnings (性別候補ゼロの残留違反・要手動調整) /
+    //     manager_mobilized_notices (Stage 2 動員) /
+    //     cross_office_notices (新Stage 3 拠点跨ぎ救援・警告) /
+    //     rescue_swap_notices (新Stage 3 入れ替え報告) のいずれかが
+    //     1 件以上あればダイアログを開く。
+    //   - toast:
+    //       review あり                   → warning (不可避/残留/Stage件数を追記)
+    //       review 0 + notices等あり      → warning (「確認してください」で誤誘導しない)
+    //       すべて 0                      → success のみ (従来どおり)
+    const items = res.review_items ?? [];
+    const notices = res.auto_committed_notices ?? [];
+    const unresolved = res.unresolved_warnings ?? [];
+    const mobilized = res.manager_mobilized_notices ?? [];
+    const crossOffice = res.cross_office_notices ?? [];
+    const swaps = res.rescue_swap_notices ?? [];
+    // NG スタッフ (patient-ng-staff-design.md §5): NG 残留 / secondary 制約違反.
+    const unresolvedNg = res.unresolved_ng_warnings ?? [];
+    const secondaryConstraints = res.secondary_constraint_warnings ?? [];
+    if (
+      items.length > 0 ||
+      notices.length > 0 ||
+      unresolved.length > 0 ||
+      unresolvedNg.length > 0 ||
+      secondaryConstraints.length > 0 ||
+      mobilized.length > 0 ||
+      crossOffice.length > 0 ||
+      swaps.length > 0
+    ) {
+      setReviewItems(items);
+      setAutoCommittedNotices(notices);
+      setUnresolvedWarnings(unresolved);
+      setUnresolvedNgWarnings(unresolvedNg);
+      setSecondaryConstraintWarnings(secondaryConstraints);
+      setManagerMobilizedNotices(mobilized);
+      setCrossOfficeNotices(crossOffice);
+      setRescueSwapNotices(swaps);
+      setAssignWarningOpen(true);
+      if (items.length > 0) {
+        const suffixParts: string[] = [];
+        if (notices.length > 0)
+          suffixParts.push(`体制上不可避の連続 ${notices.length} 件は確定済み`);
+        if (unresolved.length > 0)
+          suffixParts.push(`性別制約を満たせない残留 ${unresolved.length} 件`);
+        if (unresolvedNg.length > 0)
+          suffixParts.push(`NGスタッフを避けられない残留 ${unresolvedNg.length} 件`);
+        if (secondaryConstraints.length > 0)
+          suffixParts.push(`2名体制の2人目未確定 ${secondaryConstraints.length} 件`);
+        if (mobilized.length > 0)
+          suffixParts.push(`マネージャー動員 ${mobilized.length} 件確定済み`);
+        if (crossOffice.length > 0)
+          suffixParts.push(`拠点をまたぐ応援 ${crossOffice.length} 件確定済み`);
+        if (swaps.length > 0) suffixParts.push(`入れ替え ${swaps.length} 件`);
+        const suffix = suffixParts.length > 0 ? `（うち${suffixParts.join('・')}）` : '';
+        toast.warning(
+          `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)。` +
+            `レビューが必要なコースが ${items.length} 件あります。${suffix}`,
+        );
+      } else {
+        // review は 0 だが notices / 残留違反 / Stage 通知があるため「問題なし」に見せない。
+        const parts: string[] = [];
+        if (notices.length > 0)
+          parts.push(`体制上不可避の連続 ${notices.length} 件を自動確定しました`);
+        if (unresolved.length > 0)
+          parts.push(`性別制約を満たせない残留が ${unresolved.length} 件あります`);
+        if (unresolvedNg.length > 0)
+          parts.push(`NGスタッフを避けられない残留が ${unresolvedNg.length} 件あります`);
+        if (secondaryConstraints.length > 0)
+          parts.push(
+            `2名体制の2人目が性別制限やNGスタッフに該当しているコースが ${secondaryConstraints.length} 件あります`,
+          );
+        if (mobilized.length > 0)
+          parts.push(`マネージャー動員 ${mobilized.length} 件を自動確定しました`);
+        if (crossOffice.length > 0)
+          parts.push(`拠点をまたぐ応援 ${crossOffice.length} 件を自動確定しました`);
+        if (swaps.length > 0) parts.push(`応援による入れ替えが ${swaps.length} 件あります`);
+        toast.warning(
+          `自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)。` +
+            `${parts.join('。')}。内容をご確認ください。`,
+        );
+      }
+    } else {
+      toast.success(`自動スタッフ割当が完了しました (確定 ${res.courses_assigned} 件)`);
     }
   };
 
@@ -6017,7 +6113,7 @@ export function CourseDayTablePanel({
                     type="button"
                     size="sm"
                     variant="outline"
-                    onClick={handleGenerateWeek}
+                    onClick={handleOpenMakeWeek}
                     disabled={!canEdit || generateWeekMut.isPending}
                     data-testid="generate-week-button"
                   >
@@ -6026,8 +6122,23 @@ export function CourseDayTablePanel({
                     ) : (
                       <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
                     )}
-                    週を生成
+                    週を作る
                   </Button>
+                  {copySnapshot ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void handleUndoCopy()}
+                      disabled={!canEdit || restoreSnapshotMut.isPending}
+                      data-testid="undo-copy-week-button"
+                    >
+                      {restoreSnapshotMut.isPending ? (
+                        <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                      ) : null}
+                      ↩ {copySnapshotLabel} のコピー前に戻す
+                    </Button>
+                  ) : null}
                   {/* PO 指示 (W-9): 「週次ガイド」を「週を生成」の右隣に配置。
                     週次操作の入口とその手順書を対のペアとして隣接。
                     P3-⑥: 案内のみ・variant=ghost で目立たせすぎない. */}
@@ -7097,7 +7208,7 @@ export function CourseDayTablePanel({
                           ? (col, staffId) => {
                               if (!col.course) {
                                 toast.warning(
-                                  '先に「週を生成」を押してコースを作成してから担当を設定してください',
+                                  '先に「週を作る」でコースを作ってから担当を設定してください',
                                 );
                                 return;
                               }
@@ -7746,6 +7857,16 @@ export function CourseDayTablePanel({
         <WeeklyRitualGuideDialog
           open={weeklyRitualGuideOpen}
           onClose={() => setWeeklyRitualGuideOpen(false)}
+        />
+
+        {/* 「週を作る」: 固定訪問から生成 (= 下の確認付きの従来動作) / 前の週をコピー。 */}
+        <MakeWeekDialog
+          open={makeWeekOpen}
+          onOpenChange={setMakeWeekOpen}
+          targetWeekStart={weekStartStr}
+          isPastWeek={isPastWeekForCopy}
+          onChooseFixed={handleGenerateWeek}
+          onCopied={handleCopied}
         />
 
         {/* PO 2026-07-10: 生成済みの週への「週を生成」再実行の誤操作対策。
