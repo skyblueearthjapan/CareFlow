@@ -774,6 +774,21 @@ class SmartInboundPreviewRead(BaseModel):
     replace: ReplaceInboundResult | None = None
 
 
+class SmartInboundPreviewStatusRead(BaseModel):
+    """統合プレビューのバックグラウンド実行の状況 (smart-preview-async-2026-10-01)。
+
+    completed のとき ``preview`` に同期版と同じ ``SmartInboundPreviewRead`` が入る。
+    取消されたジョブも画面から見れば「結果が出なかった」ので failed として返す。
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    job_id: UUID = Field(alias="jobId")
+    week_start: date = Field(alias="weekStart")
+    status: Literal["running", "completed", "failed"]
+    error: str | None = None
+    preview: SmartInboundPreviewRead | None = None
+
+
 class SmartInboundApplyRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     week_start: date = Field(alias="weekStart")
