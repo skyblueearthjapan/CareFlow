@@ -7,8 +7,9 @@
 ない (#2)。固定訪問 (``patient_fixed_visits``) には書き込まない (#3)。読むのは
 「固定訪問に無い」目印と、任意の「固定訪問から補う」だけ。
 
-確認画面 (preview) と実行は **同じ ``build_copy_plan``** を通る。表示と実行の件数が
-ズレないようにするため (patient_status_sync と同じ方針)。
+確認画面 (preview) と実行は **同じ ``build_copy_plan``** を通る。どのコースへ入れるか
+(担当の決まったコースへ入れてよいかの検査を含む) も計画の段階で決めるので、表示と
+実行の件数がズレない (patient_status_sync と同じ方針)。
 
 session は commit しない (呼び出し側 = API がトランザクション境界を持つ)。
 """
@@ -32,7 +33,13 @@ from app.models.course import (
 from app.models.course_template import CourseTemplate
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
-from app.models.special_visit import MARK_KIND_EXTRA, MARK_STATUS_CANCELLED, SpecialVisitMark
+from app.models.special_visit import (
+    MARK_KIND_DISPLACED,
+    MARK_KIND_EXTRA,
+    MARK_STATUS_CANCELLED,
+    SpecialVisitMark,
+)
+from app.models.staff import Staff
 from app.models.visit import (
     VISIT_SOURCE_MANUAL_WEEK,
     VISIT_STATUS_CANCELLED,
@@ -41,13 +48,14 @@ from app.models.visit import (
 )
 from app.models.visit_checkin import VisitCheckin
 from app.models.visit_staff_assignment import VisitStaffAssignment
+from app.services.constraint_override_notify import collect_constraint_warnings_for_staff
+from app.services.kaipoke.inbound import TEMP_COURSE_CODES
 from app.services.patient_status_sync import is_schedulable_status, today_jst
 from app.services.scheduling.jp_holidays import holidays_between
 from app.services.scheduling.layer1_expander import (
+    LAYER1_VISIT_SOURCE,
+    LAYER1_VISIT_TYPE,
     Layer1Expander,
-    Layer1Result,
-    _displaced_weekdays,
-    _expand_patient_fixed_visits,
     _get_or_create_course_for_template_week_l1,
     _is_special_week_active,
 )
@@ -55,11 +63,11 @@ from app.services.scheduling.layer1_expander import (
 #: 写す元として選べる範囲 (写す先の週から何週前まで)。§4-2 の「過去 8 週」。
 MAX_WEEKS_BACK = 8
 
-#: 臨時コース (カイポケ取込由来・その日だけの回り)。配下の訪問はコースなしで入れる。
-_TEMP_COURSE_PREFIX = "臨"
-
 #: 取込 (カイポケが正) の出所。写す先で残す。
 _SOURCE_IMPORT = "import"
+
+#: 写す先で「残す」訪問のうち、その (患者・日) への写しを丸ごと止める区分 (§8-3 M-4)。
+_KEEP_BLOCKS_DAY = frozenset({"keep_checked_in", "keep_import", "keep_pinned"})
 
 
 class CopyWeekError(Exception):
@@ -88,23 +96,37 @@ def validate_weeks(source_monday: date, target_monday: date, *, today: date) -> 
 
 @dataclass
 class CopyItem:
-    """写す訪問 1 行 (写す元の visit 1 行に対応)."""
+    """写す先に作る訪問 1 行 (写す元の visit 1 行、または補う固定訪問の 1 枠)."""
 
-    source_visit_id: UUID
-    patient_id: UUID
-    patient_name: str
+    key: UUID  # 写す元の visit id (補う固定訪問は採番した id)
+    origin: str  # 'copy' | 'fill'
+    patient: Patient
     target_date: date
     start_time: time
     end_time: time
     type: str
     required_staff_count: int
-    old_group_id: UUID | None
+    group_key: UUID | None  # 組 (写す元の visit_group_id / 補う 2 名体制は採番)
     kaipoke_service_override: str | None
-    # 写す先で入れるコースのテンプレート (None = コースなし)
+    # 1st 候補のテンプレート (写す元のコース / 固定訪問の指定)。臨時・無しは None
     template_id: UUID | None
     weekday: int
     temp_course: bool
     not_in_fixed: bool
+    # 写す元の担当 (primary / secondary / VSA)。同じ人が続かないための検査に使う
+    source_staff_ids: frozenset[UUID] = frozenset()
+    # ---- 置き場所 (``_place_items`` が決める) ----
+    course_template_id: UUID | None = None
+    staff_after: UUID | None = None
+    manual_reason: str | None = None
+
+    @property
+    def patient_id(self) -> UUID:
+        return self.patient.id
+
+    @property
+    def patient_name(self) -> str:
+        return self.patient.name
 
 
 @dataclass
@@ -115,8 +137,7 @@ class MissingFixed:
     start_time: time
     end_time: time
     visits: int
-    entries: list[dict]
-    special: bool
+    entries: list[PatientFixedVisit]
 
 
 @dataclass
@@ -125,11 +146,14 @@ class CopyPlan:
     target_monday: date
     mode: str  # 'replace' | 'add_only'
     items: list[CopyItem] = field(default_factory=list)
+    fill_items: list[CopyItem] = field(default_factory=list)
     # 利用者の除外前の「固定訪問に無い」訪問 (一覧表示用)
     not_in_fixed: list[CopyItem] = field(default_factory=list)
     excluded_ids: set[UUID] = field(default_factory=set)
     skipped: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     replace_visits: list[Visit] = field(default_factory=list)
+    # 置き換えの週で、残す訪問 (取消以外) の無いコース = 担当を外す (M-1)
+    cleared_course_ids: set[UUID] = field(default_factory=set)
     existing: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     missing_fixed: list[MissingFixed] = field(default_factory=list)
     missing_patients_without_visits: int = 0
@@ -137,7 +161,11 @@ class CopyPlan:
 
     @property
     def fill_count(self) -> int:
-        return sum(m.visits for m in self.missing_fixed) if self.fill_from_fixed else 0
+        return len(self.fill_items)
+
+    @property
+    def needs_manual_staff(self) -> list[CopyItem]:
+        return [it for it in [*self.items, *self.fill_items] if it.manual_reason]
 
 
 def _week_range(monday: date) -> tuple[date, date]:
@@ -224,7 +252,7 @@ async def build_copy_plan(
     fill_from_fixed: bool,
     today: date | None = None,
 ) -> CopyPlan:
-    """写す内容を決める (DB は変えない)."""
+    """写す内容と置き場所を決める (DB は変えない)."""
     today = today or today_jst()
     validate_weeks(source_monday, target_monday, today=today)
     offset = target_monday - source_monday
@@ -240,80 +268,96 @@ async def build_copy_plan(
         fill_from_fixed=fill_from_fixed,
     )
     kept: list[Visit] = []
+    kept_kind: dict[UUID, str] = {}
     plan.existing["total"] = len(target_visits)
     for v in target_visits:
-        if mode == "add_only":
-            kept.append(v)
-            continue
         kind = _classify_existing(v, checked_in=target_checked, today=today)
-        if kind is None:
+        if mode == "replace" and kind is None:
             plan.replace_visits.append(v)
-        else:
-            plan.existing[kind] += 1
-            kept.append(v)
+            continue
+        kept.append(v)
+        kept_kind[v.id] = kind or "keep_other"
+        plan.existing[kind or "keep_other"] += 1
     plan.existing["replace"] = len(plan.replace_visits)
-    if mode == "add_only":
-        # 足すだけの週は全件残す。内訳は区分どおりに数えて見せる。
-        for v in target_visits:
-            plan.existing[
-                _classify_existing(v, checked_in=target_checked, today=today) or "keep_other"
-            ] += 1
+    # 取消行と同じ枠には写さない (同じキーは本番の部分 UNIQUE にも当たる)。
     kept_keys = {(v.patient_id, v.visit_date, v.start_time) for v in kept}
+    # 打刻・取込・青ピンの訪問がある (患者・日) は時刻を問わず写さない (M-4)。
+    blocked_days = {
+        (v.patient_id, v.visit_date) for v in kept if kept_kind[v.id] in _KEEP_BLOCKS_DAY
+    }
     occupied_days = {(v.patient_id, v.visit_date) for v in kept}
+
+    if mode == "replace":
+        # 残す訪問 (取消以外) の無いコースは担当を外す (M-1)。前の担当が残ると、
+        # 盤面 (コース担当が正典) と写した訪問の primary / VSA が食い違う。
+        live_kept_courses = {
+            v.course_id
+            for v in kept
+            if v.course_id is not None and v.status != VISIT_STATUS_CANCELLED
+        }
+        iso_t = target_monday.isocalendar()
+        plan.cleared_course_ids = {
+            c.id
+            for c in (
+                await db.scalars(
+                    select(Course).where(
+                        Course.iso_year == iso_t.year,
+                        Course.iso_week == iso_t.week,
+                        Course.deleted_at.is_(None),
+                        Course.assigned_staff_id.is_not(None),
+                    )
+                )
+            ).all()
+            if c.id not in live_kept_courses
+        }
 
     # ----- 写す元の訪問 -----
     source_visits = await _live_week_visits(db, source_monday)
     patient_ids = {v.patient_id for v in source_visits}
-    patients = (
-        {
+    patients: dict[UUID, Patient] = {}
+    if patient_ids:
+        patients = {
             p.id: p
             for p in (
                 await db.scalars(select(Patient).where(Patient.id.in_(list(patient_ids))))
             ).all()
         }
-        if patient_ids
-        else {}
-    )
+    source_ids = [v.id for v in source_visits]
     extra_ids: set[UUID] = set()
-    if source_visits:
+    vsa_by_visit: dict[UUID, set[UUID]] = defaultdict(set)
+    if source_ids:
         extra_ids = set(
             (
                 await db.scalars(
                     select(SpecialVisitMark.placed_visit_id).where(
                         SpecialVisitMark.kind == MARK_KIND_EXTRA,
                         SpecialVisitMark.status != MARK_STATUS_CANCELLED,
-                        SpecialVisitMark.placed_visit_id.in_([v.id for v in source_visits]),
+                        SpecialVisitMark.placed_visit_id.in_(source_ids),
                     )
                 )
             ).all()
         )
+        for vid, sid in (
+            await db.execute(
+                select(VisitStaffAssignment.visit_id, VisitStaffAssignment.staff_id).where(
+                    VisitStaffAssignment.visit_id.in_(source_ids)
+                )
+            )
+        ).all():
+            vsa_by_visit[vid].add(sid)
     course_ids = {v.course_id for v in source_visits if v.course_id is not None}
-    courses = (
-        {
+    courses: dict[UUID, Course] = {}
+    if course_ids:
+        courses = {
             c.id: c
             for c in (await db.scalars(select(Course).where(Course.id.in_(list(course_ids))))).all()
         }
-        if course_ids
-        else {}
-    )
-    template_ids = {c.template_id for c in courses.values() if c.template_id is not None}
-    live_templates = (
-        set(
-            (
-                await db.scalars(
-                    select(CourseTemplate.id).where(
-                        CourseTemplate.id.in_(list(template_ids)),
-                        CourseTemplate.deleted_at.is_(None),
-                    )
-                )
-            ).all()
-        )
-        if template_ids
-        else set()
+    live_templates = await _live_template_ids(
+        db, {c.template_id for c in courses.values() if c.template_id is not None}
     )
     fixed_weekdays = await _fixed_weekdays_by_patient(db, patients, source_monday)
 
-    # 2 名体制は組で扱う (片方だけ写すと組が壊れる)。利用者の除外も組へ広げる。
+    # 2 名体制は組で扱う。利用者が 1 行外すと組ごと外す。
     group_members: dict[UUID, list[Visit]] = defaultdict(list)
     for v in source_visits:
         if v.visit_group_id is not None:
@@ -324,97 +368,120 @@ async def build_copy_plan(
             excluded.update(m.id for m in members)
     plan.excluded_ids = excluded
 
-    candidates: list[CopyItem] = []
+    # 1) 1 行ずつの理由
+    own_reason: dict[UUID, str | None] = {}
+    candidates: dict[UUID, CopyItem] = {}
     for v in source_visits:
         patient = patients.get(v.patient_id)
+        target_date = v.visit_date + offset
+        reason: str | None = None
         if v.status == VISIT_STATUS_CANCELLED:
-            plan.skipped["cancelled"] += 1
-            continue
-        if v.is_unplanned:
-            plan.skipped["unplanned"] += 1
-            continue
-        if v.id in extra_ids:
-            plan.skipped["special_extra"] += 1
-            continue
-        if (
+            reason = "cancelled"
+        elif v.is_unplanned:
+            reason = "unplanned"
+        elif v.id in extra_ids:
+            reason = "special_extra"
+        elif (
             patient is None
             or patient.deleted_at is not None
             or not is_schedulable_status(patient.status)
         ):
-            plan.skipped["inactive_patient"] += 1
+            reason = "inactive_patient"
+        elif v.id in excluded:
+            reason = "user_excluded"
+        elif target_date < today:
+            reason = "past_day"
+        elif mode == "add_only" and (v.patient_id, target_date) in occupied_days:
+            reason = "occupied_day"
+        elif (v.patient_id, target_date) in blocked_days:
+            reason = "kept_same_day"
+        elif (v.patient_id, target_date, v.start_time) in kept_keys:
+            reason = "kept_conflict"
+        own_reason[v.id] = reason
+        if patient is None:
             continue
         course = courses.get(v.course_id) if v.course_id is not None else None
-        temp = course is not None and (course.code or "").startswith(_TEMP_COURSE_PREFIX)
-        template_id = (
-            course.template_id
-            if course is not None and not temp and course.template_id in live_templates
-            else None
-        )
+        temp = course is not None and course.code in TEMP_COURSE_CODES
         weekday = v.visit_date.weekday()
-        candidates.append(
-            CopyItem(
-                source_visit_id=v.id,
-                patient_id=v.patient_id,
-                patient_name=patient.name,
-                target_date=v.visit_date + offset,
-                start_time=v.start_time,
-                end_time=v.end_time,
-                type=v.type,
-                required_staff_count=v.required_staff_count,
-                old_group_id=v.visit_group_id,
-                kaipoke_service_override=v.kaipoke_service_override,
-                template_id=template_id,
-                weekday=weekday,
-                temp_course=temp,
-                not_in_fixed=weekday not in fixed_weekdays.get(v.patient_id, set()),
-            )
+        candidates[v.id] = CopyItem(
+            key=v.id,
+            origin="copy",
+            patient=patient,
+            target_date=target_date,
+            start_time=v.start_time,
+            end_time=v.end_time,
+            type=v.type,
+            required_staff_count=v.required_staff_count,
+            group_key=v.visit_group_id,
+            kaipoke_service_override=v.kaipoke_service_override,
+            template_id=(
+                course.template_id
+                if course is not None and not temp and course.template_id in live_templates
+                else None
+            ),
+            weekday=weekday,
+            temp_course=temp,
+            not_in_fixed=weekday not in fixed_weekdays.get(v.patient_id, set()),
+            source_staff_ids=frozenset(
+                {sid for sid in (v.primary_staff_id, v.secondary_staff_id) if sid is not None}
+                | vsa_by_visit.get(v.id, set())
+            ),
         )
 
-    # 組の片方が写せない (取消など) ときも、残りは組のまま写す (新しい組 ID を振る)。
-    blocked_groups: set[UUID] = set()
-    reason_of: dict[UUID, str] = {}
-    for it in candidates:
-        reason = None
-        if it.source_visit_id in excluded:
-            reason = "user_excluded"
-        elif it.target_date < today:
-            reason = "past_day"
-        elif mode == "add_only" and (it.patient_id, it.target_date) in occupied_days:
-            reason = "occupied_day"
-        elif (it.patient_id, it.target_date, it.start_time) in kept_keys:
-            reason = "kept_conflict"
-        if reason is not None:
-            reason_of[it.source_visit_id] = reason
-            if it.old_group_id is not None:
-                blocked_groups.add(it.old_group_id)
-    for it in candidates:
-        reason = reason_of.get(it.source_visit_id)
-        if reason is None and it.old_group_id in blocked_groups:
-            # 組の相方が写せない → こちらも写さない (組を壊さない)
-            reason = next(
-                reason_of[m.id] for m in group_members[it.old_group_id] if m.id in reason_of
-            )
+    # 2) 組の誰か 1 人でも写せないなら組ごと写さない (M-3)
+    for v in source_visits:
+        reason = own_reason[v.id]
+        group = group_members.get(v.visit_group_id, []) if v.visit_group_id else []
+        if reason is None and any(own_reason[m.id] for m in group):
+            reason = "pair_partner"
+        it = candidates.get(v.id)
         # 一覧に出すのは「写す」か「利用者が外した」ものだけ (外せない理由のものは出さない)
-        if it.not_in_fixed and reason in (None, "user_excluded"):
+        if (
+            it is not None
+            and it.not_in_fixed
+            and all(own_reason[m.id] in (None, "user_excluded") for m in (group or [v]))
+        ):
             plan.not_in_fixed.append(it)
         if reason is not None:
             plan.skipped[reason] += 1
             continue
-        plan.items.append(it)
+        if it is not None:
+            plan.items.append(it)
 
     # ----- 写す元の週に無かった固定訪問 (補う候補) -----
-    await _plan_missing_fixed(db, plan, today=today)
+    await _plan_missing_fixed(db, plan, today=today, live_after=kept)
+    if fill_from_fixed:
+        plan.fill_items = _fill_items(plan.missing_fixed)
+
+    # ----- 置き場所 (コース) と担当の検査 (H-1 / M-6 / M-2) -----
+    await _place_items(db, plan, kept=kept)
     return plan
 
 
-async def _plan_missing_fixed(db: AsyncSession, plan: CopyPlan, *, today: date) -> None:
-    """固定訪問のうち、写した後の週でその (患者・日) に訪問が 1 件も無いもの."""
+async def _live_template_ids(db: AsyncSession, ids: set[UUID]) -> set[UUID]:
+    if not ids:
+        return set()
+    return set(
+        (
+            await db.scalars(
+                select(CourseTemplate.id).where(
+                    CourseTemplate.id.in_(list(ids)), CourseTemplate.deleted_at.is_(None)
+                )
+            )
+        ).all()
+    )
+
+
+async def _plan_missing_fixed(
+    db: AsyncSession, plan: CopyPlan, *, today: date, live_after: list[Visit]
+) -> None:
+    """固定訪問のうち、写した後の週でその (患者・日) に訪問が 1 件も無いもの.
+
+    固定訪問と特別訪問週間の退避日はまとめて読む (患者ごとの N+1 を避ける)。
+    """
     iso = plan.target_monday.isocalendar()
     after_copy_days = {(it.patient_id, it.target_date) for it in plan.items}
-    replaced = {v.id for v in plan.replace_visits}
-    for v in await _live_week_visits(db, plan.target_monday):
-        if v.id not in replaced:
-            after_copy_days.add((v.patient_id, v.visit_date))
+    after_copy_days |= {(v.patient_id, v.visit_date) for v in live_after}
 
     active = list(
         (
@@ -425,35 +492,50 @@ async def _plan_missing_fixed(db: AsyncSession, plan: CopyPlan, *, today: date) 
             )
         ).all()
     )
+    if not active:
+        return
+    active_ids = [p.id for p in active]
+    pfv_by_patient: dict[UUID, list[PatientFixedVisit]] = defaultdict(list)
+    for fv in (
+        await db.scalars(
+            select(PatientFixedVisit).where(PatientFixedVisit.patient_id.in_(active_ids))
+        )
+    ).all():
+        pfv_by_patient[fv.patient_id].append(fv)
+    displaced: dict[UUID, set[int]] = defaultdict(set)
+    for pid, wd in (
+        await db.execute(
+            select(SpecialVisitMark.patient_id, SpecialVisitMark.weekday).where(
+                SpecialVisitMark.iso_year == iso.year,
+                SpecialVisitMark.iso_week == iso.week,
+                SpecialVisitMark.kind == MARK_KIND_DISPLACED,
+                SpecialVisitMark.status != MARK_STATUS_CANCELLED,
+                SpecialVisitMark.patient_id.in_(active_ids),
+            )
+        )
+    ).all():
+        displaced[pid].add(wd)
+
     copied_patients = {it.patient_id for it in plan.items}
     without_visits: set[UUID] = set()
     for patient in active:
-        special = _is_special_week_active(patient, iso.year, iso.week)
-        entries = await _expand_patient_fixed_visits(
-            db,
-            patient=patient,
-            mode="special" if special else "normal",
-            week_monday=plan.target_monday,
-        )
-        if not entries:
+        mode = "special" if _is_special_week_active(patient, iso.year, iso.week) else "normal"
+        rows = [fv for fv in pfv_by_patient.get(patient.id, []) if fv.mode == mode]
+        if not rows:
             continue
-        displaced = await _displaced_weekdays(
-            db, patient_id=patient.id, iso_year=iso.year, iso_week=iso.week
-        )
         multi = bool(patient.requires_multiple_staff)
-        by_weekday: dict[int, dict[int, dict]] = defaultdict(dict)
-        for fe in entries:
-            by_weekday[fe["weekday"]].setdefault(fe.get("slot_index", 0) or 0, fe)
+        by_weekday: dict[int, dict[int, PatientFixedVisit]] = defaultdict(dict)
+        for fv in rows:
+            by_weekday[fv.weekday].setdefault(fv.slot_index or 0, fv)
         for weekday in sorted(by_weekday):
             slots = by_weekday[weekday]
-            if weekday in displaced or 0 not in slots or (multi and 1 not in slots):
+            if weekday in displaced[patient.id] or 0 not in slots or (multi and 1 not in slots):
                 continue  # 週生成と同じく作らない枠 (退避・2 名体制の片側欠け)
             target_date = plan.target_monday + timedelta(days=weekday)
             if target_date < today or (patient.id, target_date) in after_copy_days:
                 continue
-            fe = slots[0]
-            start = fe["_start_time"]
-            end_min = start.hour * 60 + start.minute + int(fe["service_minutes"])
+            start = slots[0].start_time
+            end_min = start.hour * 60 + start.minute + int(slots[0].duration_min)
             if end_min >= 24 * 60:
                 continue
             chosen = [slots[0], slots[1]] if multi else [slots[0]]
@@ -466,12 +548,169 @@ async def _plan_missing_fixed(db: AsyncSession, plan: CopyPlan, *, today: date) 
                     end_time=time(end_min // 60, end_min % 60),
                     visits=len(chosen),
                     entries=chosen,
-                    special=special,
                 )
             )
             if patient.id not in copied_patients:
                 without_visits.add(patient.id)
     plan.missing_patients_without_visits = len(without_visits)
+
+
+def _fill_items(missing: list[MissingFixed]) -> list[CopyItem]:
+    """補う固定訪問を、写す訪問と同じ置き場所の処理に乗せるための行にする (M-2)."""
+    out: list[CopyItem] = []
+    for m in missing:
+        group = uuid.uuid4() if m.visits == 2 else None
+        for fv in m.entries:
+            out.append(
+                CopyItem(
+                    key=uuid.uuid4(),
+                    origin="fill",
+                    patient=m.patient,
+                    target_date=m.target_date,
+                    start_time=m.start_time,
+                    end_time=m.end_time,
+                    type=LAYER1_VISIT_TYPE,
+                    required_staff_count=m.visits,
+                    group_key=group,
+                    kaipoke_service_override=None,
+                    template_id=fv.course_template_id,
+                    weekday=m.weekday,
+                    temp_course=False,
+                    not_in_fixed=False,
+                )
+            )
+    return out
+
+
+async def _course_for(
+    db: AsyncSession, template_id: UUID, iso_year: int, iso_week: int, weekday: int
+) -> Course | None:
+    """``_get_or_create_course_for_template_week_l1`` と同じ条件で既存コースを引く (作らない)."""
+    return await db.scalar(
+        select(Course).where(
+            Course.template_id == template_id,
+            Course.iso_year == iso_year,
+            Course.iso_week == iso_week,
+            Course.weekday == weekday,
+            Course.deleted_at.is_(None),
+        )
+    )
+
+
+def _overlaps(a: tuple[time, time], b: tuple[time, time]) -> bool:
+    return a[0] < b[1] and b[0] < a[1]
+
+
+async def _place_items(db: AsyncSession, plan: CopyPlan, *, kept: list[Visit]) -> None:
+    """各行を入れるコースを決める (H-1 / M-6 / M-2).
+
+    候補の順: (1) 写す元のコースと同じテンプレート (補う固定訪問は固定訪問の指定)、
+    (2) 患者の拠点の既定テンプレート (週生成と同じ ``_resolve_template_for_patient``)。
+    候補のコースに担当が居なければそのまま入れる (自動割当がローテーションで付ける)。
+    担当が居るコースへは、ほかの経路と同じ検査を通ったときだけ入れて担当を揃える:
+      - NG スタッフ・性別 (``collect_constraint_warnings_for_staff``)
+      - その担当の写す先の週の別の訪問と時間が重ならない
+      - ローテーション: 写す元の訪問の担当 (primary / secondary / VSA) と同じ人ではない
+    どれにも入れられなければコースなしで入れ、「担当を手で付ける」に数える。
+    """
+    items = [*plan.items, *plan.fill_items]
+    if not items:
+        return
+    iso = plan.target_monday.isocalendar()
+    expander = Layer1Expander()
+    home_cache: dict[UUID, CourseTemplate | None] = {}
+    live_templates = await _live_template_ids(
+        db, {it.template_id for it in items if it.template_id is not None}
+    )
+    course_cache: dict[tuple[UUID, int], Course | None] = {}
+
+    # 担当ごとの写す先の週の予定 (残す訪問・取消以外)。
+    kept_live = [v for v in kept if v.status != VISIT_STATUS_CANCELLED]
+    busy: dict[UUID, list[tuple[date, time, time]]] = defaultdict(list)
+    vsa_rows: list[tuple[UUID, UUID]] = []
+    if kept_live:
+        vsa_rows = list(
+            (
+                await db.execute(
+                    select(VisitStaffAssignment.visit_id, VisitStaffAssignment.staff_id).where(
+                        VisitStaffAssignment.visit_id.in_([v.id for v in kept_live])
+                    )
+                )
+            ).all()
+        )
+    by_id = {v.id: v for v in kept_live}
+    seen: set[tuple[UUID, UUID]] = set()
+    for v in kept_live:
+        if v.primary_staff_id is not None:
+            seen.add((v.id, v.primary_staff_id))
+            busy[v.primary_staff_id].append((v.visit_date, v.start_time, v.end_time))
+    for vid, sid in vsa_rows:
+        if (vid, sid) not in seen:
+            seen.add((vid, sid))
+            v = by_id[vid]
+            busy[sid].append((v.visit_date, v.start_time, v.end_time))
+
+    names: dict[UUID, str] = {}
+
+    async def staff_name(sid: UUID) -> str:
+        if sid not in names:
+            names[sid] = (await db.scalar(select(Staff.name).where(Staff.id == sid))) or "担当"
+        return names[sid]
+
+    placed_in_group: dict[UUID, set[tuple[UUID, int]]] = defaultdict(set)
+    for it in items:
+        cands: list[UUID] = []
+        if it.template_id is not None and it.template_id in live_templates:
+            cands.append(it.template_id)
+        home = await expander._resolve_template_for_patient(
+            db, patient=it.patient, template_cache=home_cache
+        )
+        if home is not None and home.id not in cands:
+            cands.append(home.id)
+        reasons: list[str] = []
+        for tpl_id in cands:
+            ckey = (tpl_id, it.weekday)
+            if it.group_key is not None and ckey in placed_in_group[it.group_key]:
+                reasons.append("2 名体制の相方と同じコースになるため")
+                continue
+            if ckey not in course_cache:
+                course_cache[ckey] = await _course_for(db, tpl_id, iso.year, iso.week, it.weekday)
+            course = course_cache[ckey]
+            staff = None
+            if course is not None and course.id not in plan.cleared_course_ids:
+                staff = course.assigned_staff_id
+            if staff is not None:
+                name = await staff_name(staff)
+                if staff in it.source_staff_ids:
+                    reasons.append(f"前の週と同じ担当（{name}）のコースになるため")
+                    continue
+                warns = await collect_constraint_warnings_for_staff(
+                    db, staff_id=staff, patient_ids=[it.patient_id]
+                )
+                if warns:
+                    kinds = {w.kind for w in warns}
+                    label = "・".join(
+                        (["NG スタッフ"] if "ng_staff" in kinds else [])
+                        + (["性別の希望"] if "gender" in kinds else [])
+                    )
+                    reasons.append(f"コースの担当（{name}）が{label}に当たるため")
+                    continue
+                me = (it.start_time, it.end_time)
+                if any(d == it.target_date and _overlaps(me, (s, e)) for d, s, e in busy[staff]):
+                    reasons.append(f"コースの担当（{name}）の別の訪問と時間が重なるため")
+                    continue
+                busy[staff].append((it.target_date, it.start_time, it.end_time))
+            it.course_template_id = tpl_id
+            it.staff_after = staff
+            if it.group_key is not None:
+                placed_in_group[it.group_key].add(ckey)
+            break
+        else:
+            it.manual_reason = (
+                "・".join(dict.fromkeys(reasons))
+                if reasons
+                else "入れられるコースがありません（拠点の既定コースがありません）"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -496,36 +735,16 @@ async def apply_copy_plan(db: AsyncSession, plan: CopyPlan) -> CopyResult:
     now = datetime.now(UTC)
 
     # 1) 置き換える訪問を論理削除 (週生成と同じ soft delete)。
-    touched_course_ids: set[UUID] = set()
     for v in plan.replace_visits:
         v.deleted_at = now
-        if v.course_id is not None:
-            touched_course_ids.add(v.course_id)
     result.replaced = len(plan.replace_visits)
     await db.flush()
 
-    # 2) 置き換えで訪問 (取消以外) が 1 件も無くなったコースは担当を外す。
-    #    前の担当を残すと、盤面 (コース担当が正典) には担当が見えるのに写した訪問の
-    #    primary / VSA は空、という 3 か所の不一致になる (カイポケ担当消失事故の型)。
-    if touched_course_ids:
-        still_live = set(
-            (
-                await db.scalars(
-                    select(Visit.course_id)
-                    .where(
-                        Visit.course_id.in_(list(touched_course_ids)),
-                        Visit.deleted_at.is_(None),
-                        Visit.status != VISIT_STATUS_CANCELLED,
-                    )
-                    .distinct()
-                )
-            ).all()
-        )
+    # 2) 残す訪問の無いコースの担当を外す (M-1)。
+    if plan.cleared_course_ids:
         for c in (
-            await db.scalars(select(Course).where(Course.id.in_(list(touched_course_ids))))
+            await db.scalars(select(Course).where(Course.id.in_(list(plan.cleared_course_ids))))
         ).all():
-            if c.id in still_live or c.assigned_staff_id is None:
-                continue
             c.assigned_staff_id = None
             c.staff_assigned_at = None
             if c.course_status == COURSE_STATUS_STAFF_ASSIGNED:
@@ -533,9 +752,10 @@ async def apply_copy_plan(db: AsyncSession, plan: CopyPlan) -> CopyResult:
             result.courses_cleared += 1
         await db.flush()
 
-    # 3) 写す。コースは写す先の週の同じテンプレートのコース (無ければ作る)。
+    # 3) 写す / 補う。コースは計画で決めたテンプレートの同じ曜日のコース (無ければ作る)。
+    items = [*plan.items, *plan.fill_items]
+    tpl_ids = {it.course_template_id for it in items if it.course_template_id is not None}
     templates: dict[UUID, CourseTemplate] = {}
-    tpl_ids = {it.template_id for it in plan.items if it.template_id is not None}
     if tpl_ids:
         templates = {
             t.id: t
@@ -546,10 +766,10 @@ async def apply_copy_plan(db: AsyncSession, plan: CopyPlan) -> CopyResult:
     before_courses = await _count_week_courses(db, iso.year, iso.week)
     new_group: dict[UUID, UUID] = {}
     course_cache: dict[tuple[UUID, int], Course] = {}
-    created: list[tuple[Visit, Course | None]] = []
-    for it in plan.items:
+    created: list[tuple[CopyItem, Visit]] = []
+    for it in items:
         course: Course | None = None
-        tpl = templates.get(it.template_id) if it.template_id is not None else None
+        tpl = templates.get(it.course_template_id) if it.course_template_id else None
         if tpl is not None:
             key = (tpl.id, it.weekday)
             course = course_cache.get(key)
@@ -559,8 +779,8 @@ async def apply_copy_plan(db: AsyncSession, plan: CopyPlan) -> CopyResult:
                 )
                 course_cache[key] = course
         group_id = None
-        if it.old_group_id is not None:
-            group_id = new_group.setdefault(it.old_group_id, uuid.uuid4())
+        if it.group_key is not None:
+            group_id = new_group.setdefault(it.group_key, uuid.uuid4())
         v = Visit(
             patient_id=it.patient_id,
             visit_date=it.target_date,
@@ -568,48 +788,40 @@ async def apply_copy_plan(db: AsyncSession, plan: CopyPlan) -> CopyResult:
             end_time=it.end_time,
             type=it.type,
             status=VISIT_STATUS_PLANNED,
-            source=VISIT_SOURCE_MANUAL_WEEK,
+            source=VISIT_SOURCE_MANUAL_WEEK if it.origin == "copy" else LAYER1_VISIT_SOURCE,
             required_staff_count=it.required_staff_count,
             visit_group_id=group_id,
             kaipoke_service_override=it.kaipoke_service_override,
             course_id=course.id if course is not None else None,
         )
         db.add(v)
-        created.append((v, course))
+        created.append((it, v))
     await db.flush()
-    result.created = len(created)
+    result.created = sum(1 for it, _ in created if it.origin == "copy")
+    result.filled = sum(1 for it, _ in created if it.origin == "fill")
     result.courses_created = await _count_week_courses(db, iso.year, iso.week) - before_courses
 
-    # 4) 残す訪問があって担当の決まっているコースへ入れた訪問は、そのコースの担当を
-    #    3 か所 (コース・primary・VSA) で揃える。写す元の担当ではない (写さない)。
-    result.staff_mirrored = await _mirror_course_staff(db, created)
-
-    # 5) 写す元の週に無かった固定訪問を補う (任意)。週生成と同じ組み立てで作る。
-    if plan.fill_from_fixed and plan.missing_fixed:
-        expander = Layer1Expander()
-        l1 = Layer1Result(iso_year=iso.year, iso_week=iso.week)
-        template_cache: dict[UUID, CourseTemplate | None] = {}
-        by_patient: dict[UUID, list[MissingFixed]] = defaultdict(list)
-        for m in plan.missing_fixed:
-            by_patient[m.patient.id].append(m)
-        for items in by_patient.values():
-            patient = items[0].patient
-            template = await expander._resolve_template_for_patient(
-                db, patient=patient, template_cache=template_cache
-            )
-            made = await expander._expand_fixed_visits_to_visits(
-                db,
-                patient=patient,
-                fixed_entries=[fe for m in items for fe in m.entries],
-                week_monday=plan.target_monday,
-                special_applied=items[0].special,
-                template=template,
-                iso_year=iso.year,
-                iso_week=iso.week,
-                result=l1,
-            )
-            result.filled += len(made)
-        await db.flush()
+    # 4) 検査を通って担当の決まったコースへ入れた訪問は、コース・primary・VSA の
+    #    3 か所を揃える。写す元の担当ではない (写さない)。
+    by_group: dict[UUID, list[tuple[CopyItem, Visit]]] = defaultdict(list)
+    for it, v in created:
+        if it.group_key is not None:
+            by_group[it.group_key].append((it, v))
+    for it, v in created:
+        if it.staff_after is None:
+            continue
+        secondary = None
+        for p_it, _ in by_group.get(it.group_key, []) if it.group_key else []:
+            if p_it is not it and p_it.staff_after not in (None, it.staff_after):
+                secondary = p_it.staff_after
+                break
+        v.primary_staff_id = it.staff_after
+        v.secondary_staff_id = secondary
+        db.add(VisitStaffAssignment(visit_id=v.id, staff_id=it.staff_after))
+        if secondary is not None:
+            db.add(VisitStaffAssignment(visit_id=v.id, staff_id=secondary))
+        result.staff_mirrored += 1
+    await db.flush()
     return result
 
 
@@ -624,39 +836,6 @@ async def _count_week_courses(db: AsyncSession, iso_year: int, iso_week: int) ->
         )
         or 0
     )
-
-
-async def _mirror_course_staff(db: AsyncSession, created: list[tuple[Visit, Course | None]]) -> int:
-    """担当の決まっているコースへ入れた訪問に、そのコースの担当を揃えて書く."""
-    staff_of_course = {
-        c.id: c.assigned_staff_id for _, c in created if c is not None and c.assigned_staff_id
-    }
-    if not staff_of_course:
-        return 0
-    by_group: dict[UUID, list[Visit]] = defaultdict(list)
-    for v, _ in created:
-        if v.visit_group_id is not None:
-            by_group[v.visit_group_id].append(v)
-    n = 0
-    for v, c in created:
-        if c is None or c.id not in staff_of_course:
-            continue
-        primary = staff_of_course[c.id]
-        secondary = None
-        for partner in by_group.get(v.visit_group_id, []) if v.visit_group_id else []:
-            if partner.id != v.id and partner.course_id in staff_of_course:
-                cand = staff_of_course[partner.course_id]
-                if cand != primary:
-                    secondary = cand
-                    break
-        v.primary_staff_id = primary
-        v.secondary_staff_id = secondary
-        db.add(VisitStaffAssignment(visit_id=v.id, staff_id=primary))
-        if secondary is not None:
-            db.add(VisitStaffAssignment(visit_id=v.id, staff_id=secondary))
-        n += 1
-    await db.flush()
-    return n
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from typing import Annotated
 from uuid import UUID
@@ -33,6 +34,7 @@ from app.core.deps import DbDep, require_role
 from app.models.audit_log import AuditLog
 from app.models.user import User
 from app.schemas.v2.copy_week import (
+    CopyCounts,
     CopySkipCounts,
     CopyWeekMode,
     CopyWeekPreviewRequest,
@@ -43,6 +45,7 @@ from app.schemas.v2.copy_week import (
     ExistingCounts,
     HolidayRead,
     MissingFixedItem,
+    NeedsManualStaffItem,
     NotInFixedItem,
     WeekdayCount,
 )
@@ -82,7 +85,47 @@ class CopyWeekResponse(BaseModel):
     snapshot_id: UUID
     # 打刻のある週は復元 API が打刻ガードで止まる → 「コピー前に戻す」は使えない
     restorable: bool
+    needs_manual_staff: list[NeedsManualStaffItem]
+    # 実行時に計画し直した件数と、確認画面で見せた件数 (送られていれば) の比較
+    actual_counts: CopyCounts
+    expected_counts: CopyCounts | None = None
+    differs_from_preview: bool = False
     assign_result: AssignStaffOnlyResponse | None = None
+
+
+def _counts(plan: CopyPlan) -> CopyCounts:
+    return CopyCounts(
+        copy_count=len(plan.items),
+        fill_count=plan.fill_count,
+        replace_count=len(plan.replace_visits),
+        needs_manual_count=len(plan.needs_manual_staff),
+    )
+
+
+def _needs_manual(plan: CopyPlan) -> list[NeedsManualStaffItem]:
+    return [
+        NeedsManualStaffItem(
+            origin=it.origin,  # type: ignore[arg-type]
+            patient_id=it.patient_id,
+            patient_name=it.patient_name,
+            target_date=it.target_date,
+            start_time=it.start_time,
+            end_time=it.end_time,
+            reason=it.manual_reason or "",
+        )
+        for it in plan.needs_manual_staff
+    ]
+
+
+def _detail_text(detail: object) -> str:
+    """HTTPException.detail (文字列 / dict / list) を人が読める 1 行にする."""
+    if isinstance(detail, str):
+        return detail
+    if isinstance(detail, dict):
+        for key in ("message", "detail", "msg"):
+            if isinstance(detail.get(key), str):
+                return detail[key]
+    return json.dumps(detail, ensure_ascii=False, default=str)
 
 
 def _holidays(monday: date) -> list[HolidayRead]:
@@ -93,18 +136,13 @@ def _holidays(monday: date) -> list[HolidayRead]:
 
 def _preview_from_plan(plan: CopyPlan) -> CopyWeekPreviewResponse:
     counts: dict[int, int] = {}
-    for it in plan.items:
+    for it in [*plan.items, *plan.fill_items]:
         counts[it.weekday] = counts.get(it.weekday, 0) + 1
-    if plan.fill_from_fixed:
-        for m in plan.missing_fixed:
-            counts[m.weekday] = counts.get(m.weekday, 0) + m.visits
     by_weekday = [
         WeekdayCount(weekday=wd, date=plan.target_monday + timedelta(days=wd), count=counts[wd])
         for wd in sorted(counts)
     ]
-    patients = {it.patient_id for it in plan.items}
-    if plan.fill_from_fixed:
-        patients |= {m.patient.id for m in plan.missing_fixed}
+    patients = {it.patient_id for it in [*plan.items, *plan.fill_items]}
     return CopyWeekPreviewResponse(
         source_week_start=plan.source_monday,
         target_week_start=plan.target_monday,
@@ -131,6 +169,7 @@ def _preview_from_plan(plan: CopyPlan) -> CopyWeekPreviewResponse:
         missing_fixed_count=sum(m.visits for m in plan.missing_fixed),
         missing_patients_without_visits=plan.missing_patients_without_visits,
         existing=ExistingCounts(**plan.existing),
+        needs_manual_staff=_needs_manual(plan),
         source_holidays=_holidays(plan.source_monday),
         target_holidays=_holidays(plan.target_monday),
     )
@@ -141,21 +180,21 @@ def _not_in_fixed_rows(plan: CopyPlan) -> list[NotInFixedItem]:
     rows: list[NotInFixedItem] = []
     index_of_group: dict[UUID, int] = {}
     for it in plan.not_in_fixed:
-        if it.old_group_id is not None and it.old_group_id in index_of_group:
-            rows[index_of_group[it.old_group_id]].visit_ids.append(it.source_visit_id)
+        if it.group_key is not None and it.group_key in index_of_group:
+            rows[index_of_group[it.group_key]].visit_ids.append(it.key)
             continue
-        if it.old_group_id is not None:
-            index_of_group[it.old_group_id] = len(rows)
+        if it.group_key is not None:
+            index_of_group[it.group_key] = len(rows)
         rows.append(
             NotInFixedItem(
-                visit_ids=[it.source_visit_id],
+                visit_ids=[it.key],
                 patient_id=it.patient_id,
                 patient_name=it.patient_name,
                 weekday=it.weekday,
                 target_date=it.target_date,
                 start_time=it.start_time,
                 end_time=it.end_time,
-                excluded=it.source_visit_id in plan.excluded_ids,
+                excluded=it.key in plan.excluded_ids,
             )
         )
     return rows
@@ -256,6 +295,8 @@ async def _copy_week_locked(payload: CopyWeekRequest, db, user: User) -> CopyWee
             db, plan.target_monday, kind=SNAPSHOT_KIND_COPY_WEEK, user_id=user.id
         )
         snapshot_id = snap.id  # commit 後に ORM 属性を読まない (expire 対策)
+        # 「コピー前に戻す」を出してよいかの判断材料 (足すだけの週は戻せない)。
+        snap.payload = {**snap.payload, "copy_mode": plan.mode}
         result = await apply_copy_plan(db, plan)
         # 週生成と同じく、マネージャーの M コースと既定の同行・固定イベントを入れる
         # (同行・イベントは写さず、今までどおり既定から展開する §4-3)。
@@ -283,6 +324,7 @@ async def _copy_week_locked(payload: CopyWeekRequest, db, user: User) -> CopyWee
                     "courses_created": result.courses_created,
                     "courses_cleared": result.courses_cleared,
                     "staff_mirrored": result.staff_mirrored,
+                    "needs_manual_staff": len(plan.needs_manual_staff),
                     "options": {
                         "exclude_visit_ids": sorted(str(i) for i in payload.exclude_visit_ids),
                         "fill_from_fixed": payload.fill_from_fixed,
@@ -305,13 +347,18 @@ async def _copy_week_locked(payload: CopyWeekRequest, db, user: User) -> CopyWee
                 AssignStaffOnlyRequest(iso_year=iso.year, iso_week=iso.week), db
             )
         except HTTPException as exc:
+            await db.rollback()  # impl も rollback 済み。念のため (何も残さない)
             raise HTTPException(
                 status_code=exc.status_code,
-                detail=f"自動スタッフ割当に失敗したため、コピーも取り消しました: {exc.detail}",
+                detail=(
+                    "自動スタッフ割当に失敗したため、コピーも取り消しました: "
+                    f"{_detail_text(exc.detail)}"
+                ),
             ) from exc
     else:
         await db.commit()
 
+    actual = _counts(plan)
     return CopyWeekResponse(
         source_week_start=plan.source_monday,
         target_week_start=plan.target_monday,
@@ -325,5 +372,11 @@ async def _copy_week_locked(payload: CopyWeekRequest, db, user: User) -> CopyWee
         staff_mirrored=result.staff_mirrored,
         snapshot_id=snapshot_id,
         restorable=plan.mode == "replace",
+        needs_manual_staff=_needs_manual(plan),
+        actual_counts=actual,
+        expected_counts=payload.expected_counts,
+        differs_from_preview=(
+            payload.expected_counts is not None and payload.expected_counts != actual
+        ),
         assign_result=assign_result,
     )

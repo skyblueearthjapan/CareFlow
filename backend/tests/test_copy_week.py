@@ -328,6 +328,11 @@ async def test_preview_counts_each_category_and_writes_nothing(client, db) -> No
     assert sk["unplanned"] == 1
     assert sk["special_extra"] == 1
     assert sk["inactive_patient"] == 1
+    # 2 名体制の相方 (コースなし) は既定コースに入れると相方と同じコースになる → 手で
+    manual = body["needs_manual_staff"]
+    assert len(manual) == 1
+    assert manual[0]["patient_name"] == "患者P6"
+    assert "相方と同じコース" in manual[0]["reason"]
     assert body["temp_course_count"] == 1
     # 固定訪問に無い (患者・曜日) = P5 の金曜だけ
     assert [r["patient_name"] for r in body["not_in_fixed"]] == ["患者P5"]
@@ -393,7 +398,10 @@ async def test_copy_never_copies_staff_and_regroups_pairs(client, db) -> None:
     assert course.assigned_staff_id is None  # コース担当も写らない
 
     temp = next(v for v in copied if v.visit_date == w.target + timedelta(days=4))
-    assert temp.course_id is None  # 臨時コース配下はコースなし
+    # 臨時コース配下は患者の拠点の既定コース (週生成と同じ規則) の金曜へ (M-6)
+    temp_course = await db.get(Course, temp.course_id, populate_existing=True)
+    assert (temp_course.template_id, temp_course.weekday) == (w.tpl.id, 4)
+    assert temp_course.assigned_staff_id is None
     assert temp.end_time == time(10, 0)
 
     pair = [v for v in copied if v.start_time == time(13, 0)]
@@ -401,6 +409,9 @@ async def test_copy_never_copies_staff_and_regroups_pairs(client, db) -> None:
     assert pair[0].visit_group_id == pair[1].visit_group_id
     assert pair[0].visit_group_id not in (None, seeded["gid"])
     assert {v.required_staff_count for v in pair} == {2}
+    # 片方はコースへ・もう片方は相方と同じコースを避けてコースなし (手で付ける)
+    assert sorted(v.course_id is None for v in pair) == [False, True]
+    assert len(body["needs_manual_staff"]) == 1
 
     snaps = (await db.scalars(select(InboundSnapshot))).all()
     assert [(s.kind, s.week_start) for s in snaps] == [("copy_week", w.target)]
@@ -494,7 +505,9 @@ async def test_replace_keeps_import_pinned_cancelled(client, db) -> None:
         1,
     )
     assert pv["skipped"]["kept_conflict"] == 1  # RD 木 9:00 = 取消行と同じ枠
-    assert pv["copy_count"] == 3
+    # RB (取込) / RC (青ピン) は時刻が違っても同じ日なので写さない (M-4・二重にしない)
+    assert pv["skipped"]["kept_same_day"] == 2
+    assert pv["copy_count"] == 1
 
     res = await client.post(
         URL, headers=_bearer(admin), json=_body(source, target, assign_staff=False, confirm=True)
@@ -508,7 +521,7 @@ async def test_replace_keeps_import_pinned_cancelled(client, db) -> None:
     # 置き換えで空になったコースは担当を外す (写した訪問と 3 か所を揃える)
     assert (await db.get(Course, tcourse.id, populate_existing=True)).assigned_staff_id is None
     live = await _live(db, target)
-    assert len(live) == 3 + 3
+    assert len(live) == 3 + 1
 
 
 @pytest.mark.asyncio

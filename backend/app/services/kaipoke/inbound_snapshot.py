@@ -243,6 +243,9 @@ async def restore_snapshot(
             )
 
     result = RestoreResult(wiped=len(current))
+    # 戻した印 (スケジュール画面の「コピー前に戻す」を同じ保存で二度出さないため)。
+    # 保存そのものは残す (連携画面の一覧から同じ時点へもう一度戻すこともできる)。
+    snap.payload = {**(snap.payload or {}), "restored_at": now.isoformat()}
 
     # 1) 白紙化 (soft delete)。
     for v in current:

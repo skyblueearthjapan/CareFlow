@@ -61,11 +61,24 @@ class CopyWeekPreviewRequest(BaseModel):
     fill_from_fixed: bool = False
 
 
+class CopyCounts(BaseModel):
+    """確認画面で見せた件数 (実行時に計画し直した件数と比べる)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    copy_count: int
+    fill_count: int
+    replace_count: int
+    needs_manual_count: int
+
+
 class CopyWeekRequest(CopyWeekPreviewRequest):
     """実行. ``confirm`` が true でなければ 422 (誤操作の最後の歯止め)."""
 
     assign_staff: bool = True
     confirm: bool = False
+    # 確認画面で見せた件数。実行時の件数と違えば結果に印を付けて返す (止めはしない)。
+    expected_counts: CopyCounts | None = None
 
 
 class WeekdayCount(BaseModel):
@@ -86,8 +99,12 @@ class CopySkipCounts(BaseModel):
     special_extra: int = 0
     inactive_patient: int = 0
     user_excluded: int = 0
-    # 写す先に残す訪問と同じ (患者・日・開始時刻)
+    # 写す先に残す取消行と同じ (患者・日・開始時刻)
     kept_conflict: int = 0
+    # 写す先の同じ (患者・日) に打刻・取込・青ピンの訪問がある (時刻は問わない)
+    kept_same_day: int = 0
+    # 2 名体制の相方を写さないため組ごと写さない
+    pair_partner: int = 0
     # 打刻のある週 (足すだけ) で、写す先のその (患者・日) に既に訪問がある
     occupied_day: int = 0
     # 写す先の日付が今日より前
@@ -121,6 +138,20 @@ class MissingFixedItem(BaseModel):
     start_time: time
     end_time: time
     visits: int
+
+
+class NeedsManualStaffItem(BaseModel):
+    """担当を手で付ける必要がある訪問 (コースなしで入る) と理由."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    origin: Literal["copy", "fill"]
+    patient_id: UUID
+    patient_name: str
+    target_date: date
+    start_time: time
+    end_time: time
+    reason: str
 
 
 class ExistingCounts(BaseModel):
@@ -159,5 +190,6 @@ class CopyWeekPreviewResponse(BaseModel):
     missing_fixed_count: int
     missing_patients_without_visits: int
     existing: ExistingCounts
+    needs_manual_staff: list[NeedsManualStaffItem]
     source_holidays: list[HolidayRead]
     target_holidays: list[HolidayRead]
