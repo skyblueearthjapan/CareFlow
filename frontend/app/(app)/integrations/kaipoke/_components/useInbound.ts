@@ -195,33 +195,69 @@ export function useInbound({
   const eventsPreview = useEventsInboundPreview();
   const applyEvents = useApplyEventsInbound();
 
-  // 画面へ戻ったとき: この週の訪問の読み込みがサーバーで動いていれば、待ち受けを再開する
-  // (smart-preview-async-2026-10-01)。同じジョブを二重に待たないよう、再開した id を覚える。
+  // 非同期の続き (再開・イベント取得) から現在のモードを読むための ref (古い closure 対策)。
+  const eventsOnlyRef = useRef(eventsOnly);
+  eventsOnlyRef.current = eventsOnly;
+
+  /** ❶の後半: イベント (個別業務) を取得する。runDiff と再開の両方で使う。 */
+  const loadEvents = async (visitsOk: boolean) => {
+    try {
+      const plan = await eventsPreview.mutateAsync({ weekStart: weekStartStr });
+      setEventsPlan(plan);
+      setEventsError(null);
+    } catch (e) {
+      setEventsError(e instanceof Error ? e.message : 'イベント取得に失敗しました');
+      if (visitsOk) {
+        toast.warning('イベント（個別業務）の取得に失敗しました。訪問の差分のみ表示しています。');
+      }
+    }
+  };
+
+  // 画面へ戻ったとき (smart-preview-async-2026-10-01):
+  //   * この週の訪問の読み込みがサーバーで動いていれば、待ち受けを再開する
+  //   * 離れている間に完了していれば (30 分以内・未取り込み)、その結果を時刻つきで出す
+  // どちらも訪問が揃ったら、❶と同じ順でイベントも取得する (訪問だけで❸へ進ませない)。
+  // 同じジョブを二重に扱わないよう、扱った id を覚える。
   const activePreview = useActiveSmartInboundPreview(weekStartStr);
   const resumedJobIds = useRef<Set<string>>(new Set());
   const [resumed, setResumed] = useState(false);
+  // 完了済みの結果を出しているときの読み込み時刻 (ISO)。新しく読み込めば消える。
+  const [restoredAt, setRestoredAt] = useState<string | null>(null);
   useEffect(() => {
     const job = activePreview.data;
-    if (!job || job.status !== 'running') return;
+    if (!job || (job.status !== 'running' && job.status !== 'completed')) return;
     if (smartPreview.isPending || resumedJobIds.current.has(job.jobId)) return;
+    if (eventsOnlyRef.current) return; // イベントのみモードでは訪問の結果を出さない
     resumedJobIds.current.add(job.jobId);
+
+    if (job.status === 'completed') {
+      if (!job.preview) return;
+      setSmartPlan(job.preview);
+      setRestoredAt(job.completedAt ?? null);
+      void loadEvents(true);
+      return;
+    }
+
     setResumed(true);
     void (async () => {
+      let plan: SmartInboundPreview;
       try {
-        const plan = await smartPreview.mutateAsync({
-          weekStart: job.weekStart,
-          resumeJobId: job.jobId,
-        });
-        setSmartPlan(plan);
+        plan = await smartPreview.mutateAsync({ weekStart: job.weekStart, resumeJobId: job.jobId });
       } catch {
-        // 失敗は Alert (smartPreview.isError) で表示する。離脱 (detached) は何もしない。
+        // 離脱 (detached) は何もしない。失敗は Alert (smartPreview.isError) で出し、
+        // 「もう一度読み込む」へ誘導する (イベントだけを勝手に取りに行かない)。
+        return;
       } finally {
         setResumed(false);
       }
+      if (eventsOnlyRef.current) return;
+      setSmartPlan(plan);
+      await loadEvents(true);
     })();
-    // mutation は毎レンダー新しい参照になるため依存に入れない (再開の判定は data の変化だけ)。
+    // mutation / loadEvents は毎レンダー新しい参照になるため依存に入れない。
+    // isPending は入れる: ❶の実行中に届いた再開候補を、終わってから拾い直すため。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePreview.data]);
+  }, [activePreview.data, smartPreview.isPending]);
 
   // 取り込みプレビュータブ (InboundCalendar) 用の差分アイテム
   const sheetId = smartPlan?.sheetId ?? null;
@@ -230,6 +266,7 @@ export function useInbound({
 
   const resetPlan = () => {
     setSmartPlan(null);
+    setRestoredAt(null);
     setEventsPlan(null);
     setEventsError(null);
     setApplyError(null);
@@ -263,24 +300,18 @@ export function useInbound({
     if (!eventsOnly) {
       try {
         const plan = await smartPreview.mutateAsync({ weekStart: weekStartStr });
-        setSmartPlan(plan);
-        visitsOk = true;
+        // 待っている間にイベントのみへ切り替えたら、訪問の結果は出さない。
+        if (!eventsOnlyRef.current) {
+          setSmartPlan(plan);
+          visitsOk = true;
+        }
       } catch (e) {
         // 画面を離れた = この画面ではもう何も始めない (戻れば読み込みを再開できる)。
         if (isSmartPreviewDetached(e)) return;
         // エラーは Alert で表示。イベント取得は続行する。
       }
     }
-    try {
-      const plan = await eventsPreview.mutateAsync({ weekStart: weekStartStr });
-      setEventsPlan(plan);
-      setEventsError(null);
-    } catch (e) {
-      setEventsError(e instanceof Error ? e.message : 'イベント取得に失敗しました');
-      if (visitsOk) {
-        toast.warning('イベント（個別業務）の取得に失敗しました。訪問の差分のみ表示しています。');
-      }
-    }
+    await loadEvents(visitsOk);
   };
 
   /** 訪問の読み込みだけをやり直す (失敗 Alert の「もう一度読み込む」)。イベントの結果は残す。 */
@@ -288,7 +319,10 @@ export function useInbound({
     setApplyError(null);
     try {
       const plan = await smartPreview.mutateAsync({ weekStart: weekStartStr });
-      setSmartPlan(plan);
+      if (!eventsOnlyRef.current) {
+        setSmartPlan(plan);
+        setRestoredAt(null);
+      }
     } catch {
       // エラーは Alert で表示する。
     }
@@ -394,6 +428,8 @@ export function useInbound({
     retrySmartPreview,
     /** 画面へ戻って、実行中だった訪問の読み込みの待ち受けを再開している */
     resumed,
+    /** 表示中の訪問の結果が「離れている間に完了したもの」なら、その読み込み時刻 (ISO) */
+    restoredAt,
     applySmart,
     smartPlan,
     sheetId,

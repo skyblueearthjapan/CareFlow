@@ -275,6 +275,21 @@ describe('useKaipokeReconcile', () => {
     expect(toastError).toHaveBeenCalled();
   });
 
+  it('画面を離れて訪問の読み込みの待ち受けをやめた (detached) ときは、失敗として出さない', async () => {
+    const detached = new Error('画面を離れたため、読み込みの待ち受けをやめました');
+    detached.name = 'SmartPreviewDetached';
+    smartPreviewMutateAsync.mockRejectedValue(detached);
+    const h = render();
+    await act(async () => {
+      await h.result.current.runFetch();
+    });
+    expect(h.result.current.phase).not.toBe('error');
+    expect(h.result.current.error).toBeNull();
+    expect(toastError).not.toHaveBeenCalled();
+    // 後続 (全曜日の取込差分) も始めない。
+    expect(diffInboundMutateAsync).not.toHaveBeenCalled();
+  });
+
   it('取込の例外は握り潰さず error + toast に出る', async () => {
     applyInboundMutateAsync.mockRejectedValue(new Error('500'));
     const h = await renderReady();

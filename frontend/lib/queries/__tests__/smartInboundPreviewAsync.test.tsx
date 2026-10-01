@@ -173,4 +173,29 @@ describe('useSmartInboundPreview (start → status ポーリング)', () => {
     // 離脱後は status を撃たない (サーバーのジョブはそのまま続く)。
     expect(paths()).toEqual([START_URL, STATUS_URL]);
   });
+
+  it('12 分たっても終わらなければ、時間切れの案内で失敗する', async () => {
+    mockFetcher.mockImplementation(async (path: string) =>
+      path === START_URL ? { jobId: JOB_ID, status: 'running' } : running,
+    );
+    const { result } = renderHook(() => useSmartInboundPreview(), { wrapper });
+
+    const p = result.current.mutateAsync({ weekStart: WEEK });
+    const settled = p.then(
+      () => null,
+      (e: unknown) => e,
+    );
+    await vi.advanceTimersByTimeAsync(11 * 60_000);
+    let done = false;
+    void settled.then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done).toBe(false); // 11 分ではまだ待っている
+
+    await vi.advanceTimersByTimeAsync(60_000 + 3_000);
+    const err = await settled;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('時間内に終わりませんでした（12分）');
+  });
 });

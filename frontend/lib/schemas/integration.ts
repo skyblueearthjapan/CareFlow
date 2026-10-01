@@ -646,6 +646,8 @@ export const SmartInboundPreviewStatusSchema = z.object({
   status: z.enum(['running', 'completed', 'failed']),
   error: z.string().nullable().optional(),
   preview: SmartInboundPreviewSchema.nullable().optional(),
+  /** completed のときの完了時刻 (「HH:MM に読み込んだ結果です」に使う) */
+  completedAt: z.string().nullable().optional(),
 });
 export type SmartInboundPreviewStatus = z.infer<typeof SmartInboundPreviewStatusSchema>;
 
