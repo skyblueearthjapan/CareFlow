@@ -477,3 +477,72 @@ async def test_staff2_clear_keeps_manual_accompaniment_with_note(db) -> None:
     assert "らく助で設定された同行のため残しています" in summary.results[0].detail
     await db.flush()
     assert await db.scalar(select(Accompaniment).where(Accompaniment.id == acc_id)) is not None
+
+
+# --- 4. date_change でコースが移動先の日へ付け替わる ----------------------------
+
+
+def _date_change_item(seeded, *, to_day: int) -> dict:
+    return {
+        "patient_id": seeded["patient"].id,
+        "visit_id": seeded["tue"].id,
+        "action": "date_change",
+        "before": _side(7, "10:00", "10:35"),
+        "after": _side(to_day, "10:00", "10:35"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_date_change_moves_course_to_target_day(db) -> None:
+    from tests.test_kaipoke_inbound import _seed_course
+
+    seeded = await _seed_week(db)
+    tue_course = await _seed_course(
+        db, office=seeded["office"], staff=seeded["staff"], weekday=1, code="A"
+    )
+    wed_course = await _seed_course(
+        db, office=seeded["office"], staff=seeded["staff"], weekday=2, code="B"
+    )
+    tue = seeded["tue"]
+    tue.course_id = tue_course.id
+    await db.commit()
+    items = await _sheet_items(db, [_date_change_item(seeded, to_day=8)])
+
+    dry = await apply_inbound_items(
+        db, items=items, week_start=WEEK_START, week_end=WEEK_END, days=None, dry_run=True, now=NOW
+    )
+    assert "コースA→B" in dry.results[0].detail
+
+    summary = await apply_inbound_items(
+        db, items=items, week_start=WEEK_START, week_end=WEEK_END, days=None, dry_run=False, now=NOW
+    )
+    assert summary.updated == 1
+    await db.flush()
+    await db.refresh(tue)
+    assert tue.visit_date == date(2026, 7, 8)
+    assert tue.course_id == wed_course.id
+
+
+@pytest.mark.asyncio
+async def test_date_change_without_target_course_creates_temp_course(db) -> None:
+    from app.models.course import Course
+    from tests.test_kaipoke_inbound import _seed_course
+
+    seeded = await _seed_week(db)
+    tue_course = await _seed_course(
+        db, office=seeded["office"], staff=seeded["staff"], weekday=1, code="A"
+    )
+    tue = seeded["tue"]
+    tue.course_id = tue_course.id
+    await db.commit()
+    items = await _sheet_items(db, [_date_change_item(seeded, to_day=10)])  # 金曜
+
+    summary = await apply_inbound_items(
+        db, items=items, week_start=WEEK_START, week_end=WEEK_END, days=None, dry_run=False, now=NOW
+    )
+    assert summary.updated == 1, [r.detail for r in summary.results]
+    await db.flush()
+    await db.refresh(tue)
+    course = await db.get(Course, tue.course_id)
+    assert course is not None
+    assert (course.weekday, course.code, course.assigned_staff_id) == (4, "臨", seeded["staff"].id)

@@ -1480,6 +1480,32 @@ async def apply_inbound_items(
                     changes.append(
                         f"担当 {staff1_before_name or '−'}→{staff1_after_name}（臨時コース新設）"
                     )
+        # --- 担当はそのままの日付変更: コースを移動先の日へ付け替える (2026-10-01) ---
+        # コースは週×曜日のインスタンスなので、日付だけ動かすと訪問が元の曜日の
+        # コースに残り、移動先の日のモニターに元曜日のコース行が出る (9/22 海老澤様・
+        # 帆足様)。add と同じ規則で、移動先の日にその担当が持つコース、無ければ臨時
+        # コースへ付け替える。担当変更を伴う場合は上の分岐が移動先の曜日で解決済み。
+        follow_course: Course | None = None
+        follow_staff: uuid.UUID | None = None
+        need_follow_temp = False
+        if new_sid is None and date_changed and visit.course_id is not None:
+            cur_course = course_idx.by_id.get(visit.course_id)
+            follow_staff = visit.primary_staff_id or (
+                cur_course.assigned_staff_id if cur_course is not None else None
+            )
+            office_id = patient_office.get(item.patient_id)
+            cur_code = cur_course.code if cur_course is not None else "−"
+            if office_id is None or follow_staff is None:
+                follow_staff = None
+                notes.append("移動先の日のコースを特定できません（コースは元のまま）")
+            else:
+                follow_course = course_idx.by_staff.get((weekday, office_id, follow_staff))
+                if follow_course is not None:
+                    changes.append(f"コース{cur_code}→{follow_course.code}")
+                else:
+                    need_follow_temp = True
+                    changes.append(f"コース{cur_code}→臨時コース新設")
+
         # ⛔ NG: 担当変更 (丸ごと交代 / 既存コースへ移動 / 臨時新設) 後の担当 × 患者。
         # 丸ごと交代は事前パスでも同組を積むが、collect_ng_conflicts が重複を畳む。
         if new_sid is not None or new_sid2 is not None:
@@ -1523,6 +1549,20 @@ async def apply_inbound_items(
                 if target_course is None:
                     _finish("failed", "臨時コース枠（臨〜臨9）が満杯です", target_date)
                     continue
+            if need_follow_temp and follow_staff is not None:
+                office_id = patient_office.get(item.patient_id)
+                if office_id is not None:
+                    follow_course = await ensure_temp_course(
+                        db,
+                        course_idx,
+                        weekday=weekday,
+                        office_id=office_id,
+                        staff_id=follow_staff,
+                        now=now,
+                    )
+                if follow_course is None:
+                    _finish("failed", "臨時コース枠（臨〜臨9）が満杯です", target_date)
+                    continue
             if release_occupant is not None:
                 # 取消行を論理削除して UNIQUE 枠を空ける。移動より**先に** flush する
                 # (同じ flush に載せると UPDATE の順序次第で一意制約に当たる)。
@@ -1547,6 +1587,20 @@ async def apply_inbound_items(
                     # 循環スワップの一時退避 (仮 start_time) から最終位置へ確定。
                     # after に start_time が無い日付だけの入れ替えでも必ず戻す。
                     v.start_time = start_after if start_after is not None else parked_start[v.id]
+                if follow_course is not None and new_sid is None:
+                    if v.id == visit.id or v.primary_staff_id == follow_staff:
+                        v.course_id = follow_course.id
+                    else:
+                        # 2 名体制の相方は相方自身の担当で移動先の日のコースを引く
+                        # (無ければ元のまま・臨時コースは作らない)。
+                        partner_office = patient_office.get(v.patient_id)
+                        partner_course = (
+                            course_idx.by_staff.get((weekday, partner_office, v.primary_staff_id))
+                            if partner_office is not None and v.primary_staff_id is not None
+                            else None
+                        )
+                        if partner_course is not None:
+                            v.course_id = partner_course.id
                 if new_sid is not None:
                     if target_course is not None and not course_takeover:
                         v.course_id = target_course.id
