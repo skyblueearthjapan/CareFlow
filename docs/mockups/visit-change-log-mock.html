@@ -1,0 +1,864 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>取消・変更の記録 試案</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Noto+Serif+JP:wght@700&display=swap" rel="stylesheet">
+<style>
+/* らく助のトークン (frontend/styles/tokens.css・dashboard-staff-performance-mock.html と同じ) */
+:root{
+  --brand:#e15a7f; --brand-hover:#c94a6e; --brand-light:#ffd6e0; --brand-50:#fff5f8;
+  --bg-base:#fff; --bg-app:#faf7f2; --bg-muted:#f5f1ea;
+  --line:#e7e5e4; --line-strong:#d6d3d1;
+  --ink:#1c1917; --ink2:#57534e; --ink3:#a8a29e;
+  --warn-bg:#fef3c7; --warn-strong:#92400e; --warn-line:#fde68a;
+  --s1:#2a78d6; --s1-soft:#cde2fb;
+  /* 種類の色 (緑は「良い」と読まれるので使わない) */
+  --k-cancel:#b42318; --k-cancel-bg:#fdecea;
+  --k-staff:#2a78d6;  --k-staff-bg:#e6f0fc;
+  --k-move:#4a3aa7;   --k-move-bg:#eeebfa;
+  --k-take:#57534e;   --k-take-bg:#f1efeb;
+  --sans:'Noto Sans JP','Hiragino Sans','Yu Gothic UI','Meiryo',system-ui,sans-serif;
+  --serif:'Noto Serif JP','Hiragino Mincho ProN','Yu Mincho',serif;
+}
+html{color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg-app);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.5;overflow-x:hidden}
+button,select,textarea,input{font-family:var(--sans)}
+button{cursor:pointer}
+.tnum{font-variant-numeric:tabular-nums}
+:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+
+/* ━━━ モックの帯 ━━━ */
+.mockbar{background:#1c1917;color:#f5f1ea;font-size:12.5px;padding:8px 16px;display:flex;gap:10px 14px;align-items:center;flex-wrap:wrap}
+.mockbar b{color:#ffd6e0}
+.sw{display:inline-flex;flex-wrap:wrap;border:1px solid #78716c;border-radius:8px;overflow:hidden}
+.sw button{border:none;background:#292524;color:#d6d3d1;padding:6px 12px;font-size:13px;border-right:1px solid #78716c}
+.sw button:last-child{border-right:none}
+.sw button.on{background:var(--brand);color:#fff;font-weight:700}
+
+.page{padding:18px 16px 48px;display:flex;flex-direction:column;gap:14px;max-width:1500px;margin:0 auto}
+@media(min-width:760px){.page{padding:18px 22px 48px}}
+.ttl{display:flex;align-items:center;gap:12px}
+.logo{width:40px;height:40px;border-radius:12px;background:var(--brand);color:#fff;display:grid;place-items:center;font-weight:700;font-size:15px;flex:none}
+.ttl h1{font-family:var(--serif);font-size:22px;margin:0}
+.ttl p{margin:2px 0 0;font-size:13.5px;color:var(--ink2)}
+.who{margin-left:auto;font-size:12.5px;color:var(--ink2);background:var(--bg-base);border:1px solid var(--line);border-radius:999px;padding:3px 12px;white-space:nowrap}
+@media(max-width:640px){.who{display:none}}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--bg-base)}
+.seg button{border:none;background:var(--bg-base);color:var(--ink2);padding:6px 12px;font-size:13px;border-right:1px solid var(--line)}
+.seg button:last-child{border-right:none}
+.seg button.on{background:var(--brand);color:#fff;font-weight:700}
+.lbl{font-size:12px;color:var(--ink2)}
+.card{background:var(--bg-base);border:1px solid var(--line);border-radius:10px;box-shadow:0 1px 2px rgba(28,25,23,.04),0 8px 24px rgba(28,25,23,.05)}
+.notice{background:var(--warn-bg);border:1px solid var(--warn-line);color:var(--warn-strong);border-radius:8px;padding:9px 12px;font-size:13px}
+.notice b{font-weight:700}
+.hint{font-size:12.5px;color:var(--ink2)}
+.newmark{display:inline-block;font-size:10.5px;font-weight:700;color:var(--brand-hover);background:var(--brand-50);border:1px solid var(--brand-light);border-radius:4px;padding:0 5px;margin-left:6px;vertical-align:1px;line-height:1.6}
+.tg{font-size:10.5px;border-radius:999px;padding:0 7px;line-height:1.7;background:var(--bg-muted);color:var(--ink2);border:1px solid var(--line);white-space:nowrap}
+.tags{display:flex;gap:4px;margin-top:3px;flex-wrap:wrap}
+
+/* ━━━ ① 盤面 ━━━ */
+.boardhead{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;padding:12px 16px;border-bottom:1px solid var(--line)}
+.boardhead h2{font-size:16px;margin:0}
+.days{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0}
+.day{padding:10px 12px 14px;border-right:1px solid var(--line);min-height:220px;transition:background .12s}
+.day:last-child{border-right:none}
+@media(max-width:700px){.day{border-right:none;border-bottom:1px solid var(--line);min-height:0}.day:last-child{border-bottom:none}}
+.day h3{font-size:13.5px;margin:0 0 8px;color:var(--ink2);font-weight:500}
+.day.over{background:var(--brand-50);outline:2px dashed var(--brand);outline-offset:-6px}
+.vc{position:relative;display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-left:4px solid var(--s1);border-radius:8px;background:var(--bg-base);padding:9px 8px 9px 10px;margin-bottom:8px;cursor:grab;user-select:none}
+.vc:active{cursor:grabbing}
+.vc.dragging{opacity:.4}
+.vc .t{font-weight:700;font-size:14px;min-width:44px}
+.vc .p{font-size:14px;font-weight:500}
+.vc .m{font-size:12px;color:var(--ink2)}
+.vc .grow{flex:1;min-width:0}
+.vc.cx{border-left-color:var(--k-cancel);background:#fcfaf9;cursor:default}
+.vc.cx .p,.vc.cx .t{text-decoration:line-through;color:var(--ink3)}
+.vc .badge{font-size:11px;font-weight:700;border-radius:4px;padding:0 6px;line-height:1.7;white-space:nowrap}
+.vc .menu-btn{border:1px solid var(--line);background:var(--bg-base);border-radius:8px;width:36px;height:36px;font-size:18px;line-height:1;color:var(--ink2);flex:none}
+.vc .menu-btn:hover{border-color:var(--brand-light);color:var(--brand-hover)}
+.pop{position:absolute;right:6px;top:44px;z-index:20;background:#fff;border:1px solid var(--line-strong);border-radius:10px;box-shadow:0 10px 30px rgba(28,25,23,.16);padding:6px;min-width:200px}
+.pop button{display:block;width:100%;text-align:left;border:none;background:none;padding:9px 12px;font-size:14px;border-radius:6px;color:var(--ink)}
+.pop button:hover{background:var(--brand-50)}
+.pop small{display:block;font-size:11.5px;color:var(--ink2)}
+.quick{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.btn{border:1px solid var(--line-strong);background:var(--bg-base);color:var(--ink);border-radius:8px;height:38px;padding:0 14px;font-size:14px}
+.btn:hover{border-color:var(--brand-light)}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
+.btn.primary:hover{background:var(--brand-hover)}
+.btn.primary:disabled{background:#efc3d0;border-color:#efc3d0;cursor:not-allowed}
+.btn.sm{height:32px;font-size:13px;padding:0 10px}
+
+/* ━━━ 理由ダイアログ (add-visit-anywhere §3-5: 本文 14・小見出し 16・タイトル 18・入力 36〜40) ━━━ */
+.back{position:fixed;inset:0;z-index:40;background:rgba(28,25,23,.45);display:flex;align-items:flex-start;justify-content:center;padding:5vh 16px;overflow:auto}
+.back.anim{animation:fade .14s ease-out}
+.dlg{background:#fff;border-radius:12px;width:100%;max-width:640px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 24px 60px rgba(28,25,23,.3)}
+.back.anim .dlg{animation:rise .18s ease-out}
+.dlg header{padding:18px 20px 12px;border-bottom:1px solid var(--line)}
+.dlg header h2{font-size:18px;margin:0}
+.dlg header p{margin:4px 0 0;font-size:13px;color:var(--ink2)}
+.dlg .body{padding:14px 20px 6px;overflow:auto}
+.dlg footer{padding:12px 20px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.dlg footer .why{font-size:12.5px;color:var(--ink2);margin-right:auto}
+.sum{background:var(--bg-muted);border-radius:8px;padding:10px 12px;font-size:14px}
+.sum b{font-size:15px}
+.chg{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-top:6px}
+.chg .from{color:var(--ink2);text-decoration:line-through;text-decoration-color:var(--ink3)}
+.chg .arrow{color:var(--ink3)}
+.chg .to{font-weight:700;color:var(--k-move)}
+.sec{margin-top:16px}
+.sec>h3{font-size:16px;margin:0 0 6px;display:flex;align-items:baseline;gap:8px}
+.req{font-size:11px;font-weight:700;color:#fff;background:var(--brand);border-radius:4px;padding:0 6px;line-height:1.7}
+.opt{font-size:11px;color:var(--ink2);border:1px solid var(--line-strong);border-radius:4px;padding:0 6px;line-height:1.6}
+.field{display:flex;flex-direction:column;gap:4px}
+select.in,textarea.in{border:1px solid var(--line-strong);border-radius:8px;font-size:14px;padding:0 10px;height:40px;background:#fff;color:var(--ink);width:100%}
+textarea.in{height:auto;min-height:72px;padding:8px 10px;resize:vertical;line-height:1.5}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:520px){.row2{grid-template-columns:1fr}}
+.grp{margin-top:8px}
+.grp h4{font-size:12.5px;color:var(--ink2);font-weight:500;margin:0 0 4px}
+.ropts{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(190px,100%),1fr));gap:6px}
+.ropt{display:flex;align-items:center;gap:8px;min-height:40px;border:1px solid var(--line-strong);border-radius:8px;padding:6px 10px;font-size:14px;cursor:pointer;background:#fff;transition:border-color .1s,background .1s}
+.ropt:hover{border-color:var(--brand-light)}
+.ropt input{accent-color:var(--brand);width:16px;height:16px;margin:0;flex:none}
+.ropt.on{border-color:var(--brand);background:var(--brand-50);font-weight:700}
+.ropt .addtag{font-size:10.5px;color:var(--brand-hover);font-weight:700}
+.last{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink2);margin:2px 0 6px}
+.last button{border:1px dashed var(--brand);color:var(--brand-hover);background:var(--brand-50);border-radius:999px;padding:2px 10px;font-size:12.5px}
+.privacy{font-size:12px;color:var(--ink2);margin:4px 0 0}
+.err{font-size:12.5px;color:var(--k-cancel)}
+
+/* ━━━ トースト ━━━ */
+#toast{position:fixed;left:50%;bottom:20px;transform:translate(-50%,20px);z-index:60;background:#1c1917;color:#fff;border-radius:10px;padding:10px 12px 10px 16px;font-size:13.5px;display:flex;gap:12px;align-items:center;opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;max-width:calc(100% - 32px);flex-wrap:wrap}
+#toast.show{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+#toast button{border:1px solid #78716c;background:#292524;color:#ffd6e0;border-radius:6px;padding:4px 10px;font-size:13px}
+
+/* ━━━ B ━━━ */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(170px,100%),1fr));gap:12px}
+.kpi{padding:14px 16px}
+.kpi .k{font-size:12.5px;color:var(--ink2)}
+.kpi .v{font-size:28px;font-weight:700;line-height:1.2;margin-top:2px}
+.kpi .v small{font-size:14px;font-weight:500;color:var(--ink2);margin-left:3px}
+.kpi .s{font-size:12px;color:var(--ink2);margin-top:2px}
+.kpi.new{border-color:var(--brand-light)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(330px,100%),1fr));gap:12px}
+.pc{padding:14px 16px;position:relative}
+.pc:hover{border-color:var(--brand-light)}
+.pc h3{margin:0;font-size:16px}
+.pc .hit{position:absolute;inset:0;border:none;background:transparent;border-radius:10px;z-index:1}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+.tile{border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.tile .k{font-size:11.5px;color:var(--ink2)}
+.tile .v{font-size:22px;font-weight:700;line-height:1.25}
+.tile .v small{font-size:12px;font-weight:500;color:var(--ink2);margin-left:2px}
+.tile .d{font-size:11.5px;color:var(--ink2)}
+.chgbox{border:1px solid var(--brand-light);background:var(--brand-50);border-radius:8px;padding:8px 10px}
+.chgbox .h{font-size:11.5px;color:var(--ink2);display:flex;align-items:center}
+.chgnums{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:4px}
+.cn .k{font-size:11.5px;color:var(--ink2);display:flex;align-items:center;gap:5px}
+.cn .k i{width:8px;height:8px;border-radius:2px;display:inline-block}
+.cn .v{font-size:20px;font-weight:700;line-height:1.25}
+.cn .v small{font-size:11.5px;font-weight:500;color:var(--ink2);margin-left:2px}
+.cn .d{font-size:11px;color:var(--ink2)}
+.chgbox .nr{font-size:11.5px;color:var(--ink2);margin-top:4px}
+.zero{color:var(--ink3)}
+
+/* ━━━ C ━━━ */
+.people{display:flex;gap:6px;flex-wrap:wrap}
+.people button{border:1px solid var(--line);background:var(--bg-base);border-radius:999px;padding:5px 14px;font-size:13px;color:var(--ink2)}
+.people button.on{background:var(--ink);border-color:var(--ink);color:#fff;font-weight:700}
+.csum{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(140px,100%),1fr));gap:10px}
+.csum .card{padding:10px 14px}
+.csum .k{font-size:12px;color:var(--ink2);display:flex;gap:6px;align-items:center}
+.csum .k i{width:9px;height:9px;border-radius:2px;display:inline-block}
+.csum .v{font-size:24px;font-weight:700}
+.csum .v small{font-size:13px;font-weight:500;color:var(--ink2);margin-left:2px}
+.filters{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:12px 14px;border-bottom:1px solid var(--line)}
+.chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ink2);cursor:pointer}
+.chk input{accent-color:var(--brand);width:16px;height:16px}
+.evhead,.evrow{display:grid;grid-template-columns:118px minmax(100px,.9fr) 92px minmax(150px,1.2fr) minmax(170px,1.5fr) minmax(130px,1fr) 104px 96px;gap:10px;align-items:start;padding:10px 14px}
+.evhead{font-size:12px;color:var(--ink2);border-bottom:1px solid var(--line);padding-top:8px;padding-bottom:8px}
+.evrow{border-bottom:1px solid var(--line);font-size:13.5px}
+.evrow:last-child{border-bottom:none}
+.evrow.undone{opacity:.55}
+.evrow.undone .ba,.evrow.undone .pt{text-decoration:line-through}
+.evrow.fresh{background:var(--brand-50);box-shadow:inset 3px 0 0 var(--brand)}
+.evrow .sub{display:block;font-size:11.5px;color:var(--ink2)}
+.kind{display:inline-block;font-size:12px;font-weight:700;border-radius:4px;padding:0 7px;line-height:1.8;white-space:nowrap}
+.k-cancel{color:var(--k-cancel);background:var(--k-cancel-bg)}
+.k-uncancel{color:var(--ink2);background:var(--bg-muted)}
+.k-staff{color:var(--k-staff);background:var(--k-staff-bg)}
+.k-move{color:var(--k-move);background:var(--k-move-bg)}
+.k-take{color:var(--k-take);background:var(--k-take-bg);border:1px solid var(--line-strong)}
+.norsn{display:inline-block;font-size:12px;color:var(--ink2);background:var(--bg-muted);border:1px dashed var(--line-strong);border-radius:4px;padding:0 7px;line-height:1.8}
+.kprsn{color:var(--warn-strong)}
+.org{display:inline-block;font-size:11.5px;border-radius:999px;padding:0 8px;line-height:1.8;white-space:nowrap;border:1px solid var(--line)}
+.o-app{color:var(--brand-hover);background:var(--brand-50);border-color:var(--brand-light)}
+.o-kaipoke{color:var(--warn-strong);background:var(--warn-bg);border-color:var(--warn-line)}
+.o-status{color:var(--ink2);background:var(--bg-muted)}
+.o-back{color:var(--ink2);background:#fff;border-style:dashed;border-color:var(--line-strong)}
+.empty{padding:28px 14px;text-align:center;color:var(--ink2)}
+.more{padding:10px 14px;text-align:center}
+@media(max-width:900px){
+  .evhead{display:none}
+  .evrow{grid-template-columns:1fr auto;grid-template-areas:"dt kd" "pt pt" "ba ba" "rs rs" "op op" "og at";gap:4px 10px;padding:12px 14px}
+  .evrow>.c-dt{grid-area:dt;font-weight:700}
+  .evrow>.c-kd{grid-area:kd;justify-self:end}
+  .evrow>.c-pt{grid-area:pt}
+  .evrow>.c-ba{grid-area:ba}
+  .evrow>.c-rs{grid-area:rs}
+  .evrow>.c-op{grid-area:op;font-size:12.5px;color:var(--ink2)}
+  .evrow>.c-og{grid-area:og}
+  .evrow>.c-at{grid-area:at;justify-self:end;font-size:12px;color:var(--ink2)}
+  .evrow>.c-op::before{content:'操作した人: '}
+  .evrow>.c-at::before{content:'変更した日 '}
+}
+
+/* ━━━ ④ 理由の選択肢 ━━━ */
+.lists{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:12px}
+.lst{padding:12px 14px}
+.lst h2{font-size:16px;margin:0 0 2px;display:flex;align-items:center;gap:8px}
+.lst h2 i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.lst .cnt{font-size:12px;color:var(--ink2);font-weight:400}
+.li{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px dashed var(--line);font-size:14px}
+.li:last-child{border-bottom:none}
+.li .nm{flex:1;min-width:0}
+.li .was{display:block;font-size:11.5px;color:var(--ink2)}
+.li.off .nm>span:first-child{text-decoration:line-through;color:var(--ink3)}
+.li .mk{border:1px solid var(--line-strong);background:#fff;border-radius:6px;font-size:12px;padding:3px 8px;color:var(--ink2);white-space:nowrap}
+.li.off .mk{border-color:var(--k-cancel);color:var(--k-cancel);background:var(--k-cancel-bg)}
+.li .added{font-size:10.5px;font-weight:700;color:var(--brand-hover);background:var(--brand-50);border-radius:4px;padding:0 5px;margin-left:4px}
+.addrow{display:flex;gap:6px;margin-top:10px}
+.addrow input{flex:1;min-width:0;height:36px;border:1px solid var(--line-strong);border-radius:8px;padding:0 10px;font-size:14px}
+.addrow select{height:36px;border:1px solid var(--line-strong);border-radius:8px;font-size:13px;padding:0 6px;max-width:42%}
+.box{padding:12px 16px;font-size:13.5px}
+.box h2{font-size:13.5px;margin:0 0 6px;color:var(--brand-hover)}
+.box ul{margin:0;padding-left:18px} .box li{margin-bottom:3px}
+.explain{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:12px}
+.settings-sketch{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+.ss-row{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:8px;padding:6px 10px;background:#fff;font-size:13px}
+.ss-row .grip{color:var(--ink3);letter-spacing:-2px}
+.ss-row .act{margin-left:auto;display:flex;gap:6px;color:var(--ink2);font-size:12px}
+.ss-row .act span{border:1px solid var(--line);border-radius:4px;padding:0 6px}
+textarea.out{width:100%;min-height:140px;border:1px solid var(--line-strong);border-radius:8px;padding:8px 10px;font-size:13px;font-family:var(--sans);margin-top:8px}
+
+@keyframes fade{from{opacity:0}to{opacity:1}}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes flash{from{background:var(--brand-light)}to{background:var(--brand-50)}}
+.evrow.fresh{animation:flash 1.2s ease-out}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+</style>
+</head>
+<body>
+<div class="mockbar">
+  <span><b>モック</b>　取消・変更の記録と理由（10/20 時点の想定・記録の開始日 10/6）。氏名はすべて架空です。</span>
+  <span class="sw" id="view" role="tablist">
+    <button data-v="board" class="on">① 盤面と理由の入力</button>
+    <button data-v="B">② B 人ごとのカード</button>
+    <button data-v="C">③ C 取消・変更の記録</button>
+    <button data-v="R">④ 理由の選択肢（確認用）</button>
+  </span>
+</div>
+
+<div class="page">
+  <div class="ttl">
+    <div class="logo" aria-hidden="true">らく</div>
+    <div><h1 id="h1">今週の運転席</h1><p id="h1p"></p></div>
+    <span class="who">ログイン中: 中村 彩（管理者）</span>
+  </div>
+  <div id="main"></div>
+</div>
+<div id="toast" role="status" aria-live="polite"><span id="toastMsg"></span><span id="toastAct"></span></div>
+<div id="dlgRoot"></div>
+
+<script>
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   データ (すべて架空)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+const TODAY = '2026-10-20';
+const START = '2026-10-06';           // 記録の開始日 (change_log_started_on)
+const ACTOR = '中村 彩';              // ログイン中のユーザー (スタッフに紐づく)
+const WD = '日月火水木金土';
+const dt = s => new Date(s + 'T00:00:00');
+const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const addDays = (s, n) => { const d = dt(s); d.setDate(d.getDate() + n); return iso(d); };
+const md = s => { const d = dt(s); return `${d.getMonth() + 1}/${d.getDate()}(${WD[d.getDay()]})`; };
+const mdShort = s => { const d = dt(s); return `${d.getMonth() + 1}/${d.getDate()}`; };
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+const STAFF = [
+  { id: 's1', n: '佐々木 美咲', off: '稲毛', tags: ['管理者'], v: 92, pts: 46, pd: 4.6, plan: 36 },
+  { id: 's2', n: '中村 彩', off: '稲毛', tags: ['管理者'], v: 86, pts: 50, pd: 5.1, plan: 38 },
+  { id: 's3', n: '吉田 恵', off: '稲毛', tags: ['准看護師'], v: 110, pts: 55, pd: 5.5, plan: 35 },
+  { id: 's4', n: '木村 真央', off: '稲毛', tags: [], v: 103, pts: 52, pd: 5.2, plan: 37 },
+  { id: 's5', n: '斎藤 翔', off: '稲毛', tags: [], v: 101, pts: 47, pd: 6.0, plan: 35 },
+  { id: 's6', n: '小林 葵', off: '稲毛', tags: ['新人'], v: 26, pts: 18, pd: 3.1, plan: 36 },
+  { id: 's7', n: '加藤 由紀', off: '都賀', tags: [], v: 104, pts: 39, pd: 5.8, plan: 35 },
+];
+const SN = id => (STAFF.find(s => s.id === id) || {}).n || '';
+const PATIENTS = ['青木 ハル', '石井 正雄', '上田 キヨ', '岡本 茂', '金子 トメ', '北川 誠', '久保 文子', '近藤 清', '坂本 和子', '清水 勝', '高橋 ミツ', '田村 一郎', '西村 ヨシ', '野口 武', '藤田 幸子', '松本 進', '森 千代', '山口 フミ', '渡辺 昭', '小野 静江'];
+
+/* 理由の選択肢 (設計 §5-1)。was = PO のたたき台からの言い換え。 */
+let RID = 0;
+const mk = (label, was) => ({ id: 'r' + (++RID), label, was, removed: false, added: false, requiresText: label === 'その他' });
+const REASONS = {
+  cancel: [
+    { g: '利用者・家族', items: [mk('利用者の都合（外出・来客など）', '利用者の都合（外出・来客）'), mk('家族の都合'), mk('体調不良（利用者）'), mk('受診・検査'), mk('入院'), mk('施設入所・ショートステイ'), mk('他サービスとの重なり（デイサービスなど）', 'デイサービス等との重なり'), mk('契約終了・中止'), mk('ご逝去', '死亡')] },
+    { g: 'スタッフ・事業所', items: [mk('スタッフの急な休み', 'スタッフ急休'), mk('天候・災害'), mk('重複・誤登録')] },
+    { g: 'その他', items: [mk('その他')] },
+  ],
+  staff_change: [
+    { g: 'スタッフ', items: [mk('スタッフの急な休み', 'スタッフ急休'), mk('スタッフの体調不良・早退', 'スタッフの体調不良'), mk('研修・同行')] },
+    { g: '利用者・家族', items: [mk('利用者・家族の希望'), mk('相性（NG スタッフを含む）', '相性・NG')] },
+    { g: '事業所の調整', items: [mk('負担の平準化'), mk('資格・医療処置の都合'), mk('移動の効率'), mk('時間の都合')] },
+    { g: 'その他', items: [mk('その他')] },
+  ],
+  move: [
+    { g: '利用者・家族', items: [mk('利用者の都合'), mk('家族の都合'), mk('受診・検査'), mk('他サービスとの重なり')] },
+    { g: 'スタッフ・事業所', items: [mk('スタッフの都合'), mk('移動の効率'), mk('天候'), mk('カイポケとの調整')] },
+    { g: 'その他', items: [mk('その他')] },
+  ],
+};
+const KIND_NAME = { cancel: '取消', staff_change: '担当変更', move: '移動' };
+const SYSTEM_REASONS = ['カイポケで変更（理由はカイポケ側）', '入院（ステータス連動）', '休止（ステータス連動）', '解約（ステータス連動）', 'スタッフの急な休み（🛌 休みにする）', '提案を適用'];
+const activeReasons = kind => REASONS[kind].map(g => ({ g: g.g, items: g.items.filter(r => !r.removed) })).filter(g => g.items.length);
+/* 「その他」は常に最後 */
+const allLabels = kind => REASONS[kind].flatMap(g => g.items.filter(r => !r.removed && r.label !== 'その他').map(r => r.label));
+
+/* ━━━ 過去〜今の記録を作る (決まった種で毎回同じ) ━━━ */
+function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const SLOTS = ['09:00', '09:30', '10:00', '10:30', '11:00', '13:00', '13:30', '14:00', '14:30', '15:00', '15:30', '16:00'];
+const OLD_TEXT = ['本人より電話あり', 'ご家族から連絡', '通院のため'];
+let EVENTS = [], EID = 0, VID = 0;
+function genEvents() {
+  const r = rng(20261001), pick = a => a[Math.floor(r() * a.length)];
+  const weights = [['s1', 7], ['s2', 6], ['s3', 10], ['s4', 9], ['s5', 9], ['s6', 2], ['s7', 8]];
+  const totalW = weights.reduce((t, w) => t + w[1], 0);
+  const pickStaff = () => { let x = r() * totalW; for (const [id, w] of weights) { if ((x -= w) < 0) return id; } return 's1'; };
+  const days = []; for (let d = '2026-09-01'; d <= '2026-10-31'; d = addDays(d, 1)) { const w = dt(d).getDay(); if (w && w !== 6) days.push(d); }
+  for (let i = 0; i < 300; i++) {
+    const owner = pickStaff(), date = pick(days), time = pick(SLOTS), patient = pick(PATIENTS);
+    let created = addDays(date, -Math.floor(r() * 6));
+    if (created > TODAY) created = addDays(TODAY, -Math.floor(r() * 3));
+    const backfill = created < START;
+    const x = r();
+    const origin = backfill ? (x < .55 ? 'kaipoke' : x < .9 ? 'app' : 'status') : (x < .34 ? 'kaipoke' : x < .94 ? 'app' : 'status');
+    const y = r();
+    let kind = origin === 'status' ? 'cancel' : origin === 'kaipoke' ? (y < .55 ? 'cancel' : y < .85 ? 'move' : 'staff_change') : (y < .32 ? 'cancel' : y < .64 ? 'staff_change' : 'move');
+    const ev = { id: ++EID, vkey: 'g' + (++VID), owner, date, time, patient, kind, origin, backfill, created: `${created} ${String(8 + Math.floor(r() * 10)).padStart(2, '0')}:${pick(['02', '14', '27', '39', '46', '58'])}`, undone: false };
+    if (kind === 'staff_change') { const others = STAFF.filter(s => s.id !== owner); ev.newStaff = r() < .1 ? null : pick(others).id; }
+    if (kind === 'move') { const nd = addDays(date, pick([-1, 1, 1, 2, 0])); const wd = dt(nd).getDay(); ev.toDate = wd === 0 || wd === 6 ? date : nd; ev.toTime = pick(SLOTS); if (ev.toDate === date && ev.toTime === time) ev.toTime = time === '15:00' ? '16:00' : '15:00'; }
+    if (origin === 'kaipoke') { ev.reasonSys = 'カイポケで変更（理由はカイポケ側）'; ev.actor = r() < .7 ? '中村 彩' : '佐々木 美咲'; }
+    else if (origin === 'status') { ev.reasonSys = pick(['入院（ステータス連動）', '入院（ステータス連動）', '休止（ステータス連動）', '解約（ステータス連動）']); ev.actor = backfill ? null : pick(['佐々木 美咲', '中村 彩']); }
+    else if (backfill) {
+      ev.actor = pick(['佐々木 美咲', '中村 彩', '中村 彩', 'jimu01']);
+      if (kind === 'cancel' && r() < .3) { ev.oldText = pick(OLD_TEXT); }
+    } else {
+      ev.actor = pick(['佐々木 美咲', '中村 彩', '中村 彩', 'jimu01']);
+      const labels = allLabels(kind);
+      if (r() < .1) { ev.reason = 'その他'; ev.reasonText = pick(['利用者様の希望で時間を合わせた', '訪問先の工事のため', '主治医の指示']); }
+      else { ev.reason = pick(labels); if (r() < .3) ev.reasonText = pick(['前日にご家族から連絡', '電話で確認済み', '翌週に振り替え予定', '']); }
+      ev.undone = r() < .06;
+    }
+    EVENTS.push(ev);
+  }
+  /* 取消をやめた例 (取消の件数から外れる) */
+  const c = { id: ++EID, vkey: 'g' + (++VID), owner: 's3', date: '2026-10-14', time: '10:00', patient: '久保 文子', kind: 'cancel', origin: 'app', backfill: false, created: '2026-10-12 17:05', reason: '体調不良（利用者）', reasonText: 'ご家族から電話', actor: '中村 彩', undone: false };
+  EVENTS.push(c, { ...c, id: ++EID, kind: 'uncancel', created: '2026-10-13 09:20', reason: null, reasonText: '体調が戻ったと連絡あり', actor: '佐々木 美咲' });
+  /* カイポケ: 担当変更でも引き受けを数える例 */
+  EVENTS.push({ id: ++EID, vkey: 'g' + (++VID), owner: 's1', date: '2026-10-16', time: '14:00', patient: '松本 進', kind: 'staff_change', newStaff: 's4', origin: 'kaipoke', reasonSys: 'カイポケで変更（理由はカイポケ側）', actor: '中村 彩', backfill: false, created: '2026-10-15 18:40', undone: false });
+}
+genEvents();
+
+/* ━━━ 盤面の訪問 (佐々木 美咲 のコース・10/21〜23) ━━━ */
+const BOARD_DAYS = ['2026-10-21', '2026-10-22', '2026-10-23'];
+let VISITS = [
+  { id: 'v1', day: 0, t: '09:30', dur: 40, p: '青木 ハル', staff: 's1' },
+  { id: 'v2', day: 0, t: '11:00', dur: 60, p: '石井 正雄', staff: 's1' },
+  { id: 'v3', day: 0, t: '14:00', dur: 30, p: '上田 キヨ', staff: 's1' },
+  { id: 'v4', day: 1, t: '09:00', dur: 40, p: '岡本 茂', staff: 's1' },
+  { id: 'v5', day: 1, t: '10:30', dur: 40, p: '金子 トメ', staff: 's1' },
+  { id: 'v6', day: 1, t: '15:00', dur: 60, p: '北川 誠', staff: 's1' },
+  { id: 'v7', day: 2, t: '09:30', dur: 30, p: '近藤 清', staff: 's1' },
+  { id: 'v8', day: 2, t: '13:30', dur: 40, p: '坂本 和子', staff: 's1' },
+];
+const LAST = {};                     // 種類ごとの「前回の理由」
+let FRESH = new Set();               // いま盤面で記録した行 (C で目立たせる)
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   状態
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+const PERIODS = [
+  { k: 'oct', label: '10 月', from: '2026-10-01', to: '2026-10-31' },
+  { k: 'sep', label: '9 月', from: '2026-09-01', to: '2026-09-30' },
+  { k: 'both', label: '9/1〜10/31', from: '2026-09-01', to: '2026-10-31' },
+];
+const S = { view: 'board', period: 'oct', office: '', who: 's1', fKind: 'all', fOrigin: 'all', noReason: false, showUndone: false, mask: false, limit: 30, menu: null };
+const per = () => PERIODS.find(p => p.k === S.period);
+
+/* ━━━ 数え方 (設計 §6-1) ━━━ */
+function liveEvents() {
+  const uncancelled = new Set(EVENTS.filter(e => e.kind === 'uncancel' && !e.undone).map(e => e.vkey));
+  return { uncancelled };
+}
+function counts(staffId) {
+  const p = per(), { uncancelled } = liveEvents();
+  const inP = e => e.date >= p.from && e.date <= p.to && !e.undone;
+  const mine = EVENTS.filter(e => e.owner === staffId && inP(e));
+  const cancel = new Set(mine.filter(e => e.kind === 'cancel' && !uncancelled.has(e.vkey)).map(e => e.vkey));
+  const staffCh = new Set(mine.filter(e => e.kind === 'staff_change').map(e => e.vkey));
+  const move = new Set(mine.filter(e => e.kind === 'move').map(e => e.vkey));
+  const change = new Set([...staffCh, ...move]);
+  const take = new Set(EVENTS.filter(e => inP(e) && e.newStaff === staffId && e.owner !== staffId).map(e => e.vkey));
+  const counted = mine.filter(e => (e.kind === 'cancel' && !uncancelled.has(e.vkey)) || e.kind === 'staff_change' || e.kind === 'move');
+  const noReason = new Set(counted.filter(e => !e.reason && !e.reasonSys && !e.oldText).map(e => e.vkey + e.kind));
+  const kaipoke = new Set(counted.filter(e => e.origin === 'kaipoke').map(e => e.vkey + e.kind));
+  return { cancel: cancel.size, change: change.size, staff: staffCh.size, move: move.size, take: take.size, noReason: noReason.size, kaipoke: kaipoke.size };
+}
+const staffShown = () => STAFF.filter(s => !S.office || s.off === S.office);
+const scaleV = s => S.period === 'oct' ? Math.round(s.v * 1.04) : S.period === 'sep' ? s.v : s.v + Math.round(s.v * 1.04);
+const partialNote = (always) => (always || per().from < START)
+  ? `<div class="notice"><b>${mdShort(START)}（記録の開始日）より前の取消・変更は、残っていた記録（「戻る」のための控え・カイポケ取込の記録）から読み取ったもので、一部が欠けています。</b>理由は記録されていないため「理由の記録なし」と出します。カイポケからの取消・変更は、理由がカイポケ側にあるため、らく助では分かりません。</div>` : '';
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   ① 盤面
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+const endT = (t, dur) => { const [h, m] = t.split(':').map(Number), x = h * 60 + m + dur; return `${Math.floor(x / 60)}:${String(x % 60).padStart(2, '0')}`; };
+function renderBoard() {
+  const col = (d, i) => {
+    const vs = VISITS.filter(v => v.day === i).sort((a, b) => a.t.localeCompare(b.t));
+    return `<div class="day" data-day="${i}"><h3>${md(d)}</h3>${vs.map(v => {
+      const changed = v.staff !== 's1';
+      const badge = v.cancelled ? `<span class="badge k-cancel">今週だけ取消</span>` : changed ? `<span class="badge k-staff">担当 ${esc(SN(v.staff))}</span>` : v.moved ? `<span class="badge k-move">移動</span>` : '';
+      return `<div class="vc ${v.cancelled ? 'cx' : ''}" draggable="${!v.cancelled}" data-vid="${v.id}" aria-label="${esc(v.p)}様 ${md(d)} ${v.t}">
+        <span class="t tnum">${v.t}</span>
+        <span class="grow"><span class="p">${esc(v.p)} 様</span><br><span class="m tnum">${v.t}〜${endT(v.t, v.dur)}・${v.dur} 分</span> ${badge}</span>
+        <button class="menu-btn" data-menu="${v.id}" aria-haspopup="menu" aria-expanded="${S.menu === v.id}" aria-label="${esc(v.p)}様の操作">⋯</button>
+        ${S.menu === v.id ? `<div class="pop" role="menu">${v.cancelled
+          ? `<button role="menuitem" data-act="uncancel" data-vid="${v.id}">取消をやめる<small>理由は任意です</small></button>`
+          : `<button role="menuitem" data-act="cancel" data-vid="${v.id}">今週だけ取消<small>理由を選んでから取り消します</small></button>
+             <button role="menuitem" data-act="staff_change" data-vid="${v.id}">担当を変える<small>今週のこの訪問だけ</small></button>
+             <button role="menuitem" data-act="move" data-vid="${v.id}">移動する<small>ドラッグでも動かせます</small></button>`}</div>` : ''}
+      </div>`;
+    }).join('') || '<div class="hint">訪問はありません</div>'}</div>`;
+  };
+  return `<div class="card">
+      <div class="boardhead"><h2>稲毛 A コース</h2><span class="hint">担当 佐々木 美咲 ・ 10/19 の週（今週）</span>
+        <span class="hint" style="margin-left:auto">カードを別の日へドラッグすると移動、⋯ から取消・担当変更</span></div>
+      <div class="days">${BOARD_DAYS.map(col).join('')}</div>
+    </div>
+    <div class="card box">
+      <h2>ダイアログだけを開いて見る</h2>
+      <div class="quick">
+        <button class="btn" data-demo="cancel">(a) 今週だけ取消</button>
+        <button class="btn" data-demo="staff_change">(b) 担当変更</button>
+        <button class="btn" data-demo="move">(b) 移動（ドロップした後）</button>
+        <span class="hint">記録した操作は ③ C（佐々木 美咲）の一番上に、色付きで出ます。</span>
+      </div>
+    </div>
+    <div class="explain">
+      <div class="card box"><h2>理由の入れ方（設計 §5-3）</h2><ul>
+        <li><b>理由は必須</b>。選ぶまで「取り消す」などのボタンは押せません。</li>
+        <li>補足は任意。<b>「その他」を選んだときだけ必須</b>になります。</li>
+        <li>選択肢は小見出し（利用者・家族／スタッフ／事業所）で分け、1 画面で見比べられるようにしています。</li>
+        <li>同じ種類の操作を続けるときは「前回: ◯◯」から 1 回で選べます（自動では選びません）。</li>
+      </ul></div>
+      <div class="card box"><h2>記録されるもの（設計 §3・§4）</h2><ul>
+        <li>操作した人（ログイン中のユーザー → スタッフ名、無ければユーザー名）と日時。</li>
+        <li>変更前の担当（その時点の持ち主）と、変更後の担当。</li>
+        <li>「戻る」で戻した操作は消さず、「戻した」しるしを付けます（件数には入りません）。</li>
+        <li>🛌 休みにする の担当変更は、理由「スタッフの急な休み」で自動で記録します（聞きません）。</li>
+      </ul></div>
+    </div>`;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   理由ダイアログ
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+let D = null; // { kind, visit, toDay, toTime, newStaff, reasonId, text, fromDrop, lastFocus }
+function findReason(kind, id) { for (const g of REASONS[kind]) for (const r of g.items) if (r.id === id) return r; return null; }
+function openDialog(kind, visit, opt = {}) {
+  S.menu = null;
+  document.getElementById('toast').classList.remove('show'); // ダイアログの下のボタンに重ねない
+  D = { kind, visit, toDay: opt.toDay ?? visit.day, toTime: visit.t, newStaff: '', reasonId: '', text: '', fromDrop: !!opt.fromDrop, lastFocus: document.activeElement };
+  render();               // 開いていたメニューを閉じる
+  renderDialog(true);     // 開くときだけ動きを付ける (選ぶたびに描き直すので)
+  setTimeout(() => { const f = document.querySelector('.dlg input[type=radio], .dlg select'); f && f.focus(); }, 30);
+}
+function closeDialog() {
+  const lf = D && D.lastFocus; D = null; document.getElementById('dlgRoot').innerHTML = ''; render();
+  if (lf && document.body.contains(lf)) lf.focus();
+}
+function dlgValid() {
+  if (!D.reasonId) return { ok: false, why: '理由を選ぶと押せます' };
+  const r = findReason(D.kind, D.reasonId);
+  if (r && r.requiresText && !D.text.trim()) return { ok: false, why: '「その他」は補足を書くと押せます' };
+  if (D.kind === 'staff_change' && !D.newStaff) return { ok: false, why: '新しい担当を選ぶと押せます' };
+  if (D.kind === 'move' && D.toDay === D.visit.day && D.toTime === D.visit.t) return { ok: false, why: '移動先が今と同じです' };
+  return { ok: true, why: '' };
+}
+function renderDialog(first = false) {
+  const v = D.visit, d = BOARD_DAYS[v.day];
+  const titles = { cancel: ['今週だけ取り消す', 'この週の、この訪問だけを取り消します。毎週の型は変わりません。', '取り消す'], staff_change: ['担当を変える', '今週のこの訪問だけ、担当を変えます。毎週の型は変わりません。', '担当を変える'], move: ['訪問を移動する', D.fromDrop ? 'ドロップした位置へ移動します。やめると元の場所に戻ります。' : '今週のこの訪問だけ、日と時刻を変えます。毎週の型は変わりません。', '移動する'] };
+  const [title, lead, okLabel] = titles[D.kind];
+  const sum = `<div class="sum"><b>${esc(v.p)} 様</b>　<span class="tnum">${md(d)} ${v.t}〜${endT(v.t, v.dur)}</span>　担当 ${esc(SN(v.staff))}
+    ${D.kind === 'move' ? `<div class="chg"><span class="from tnum">${md(d)} ${v.t}</span><span class="arrow">→</span><span class="to tnum">${md(BOARD_DAYS[D.toDay])} ${D.toTime}</span></div>` : ''}
+    ${D.kind === 'staff_change' && D.newStaff ? `<div class="chg"><span class="from">${esc(SN(v.staff))}</span><span class="arrow">→</span><span class="to" style="color:var(--k-staff)">${esc(SN(D.newStaff))}</span><span class="hint">（${esc(SN(D.newStaff))} さんに「引き受け」として数えます）</span></div>` : ''}</div>`;
+  const extra = D.kind === 'staff_change'
+    ? `<div class="sec"><h3>新しい担当 <span class="req">必須</span></h3><div class="field"><select class="in" id="dNewStaff" aria-label="新しい担当"><option value="">選んでください</option>${STAFF.filter(s => s.id !== v.staff).map(s => `<option value="${s.id}" ${D.newStaff === s.id ? 'selected' : ''}>${esc(s.n)}（${s.off}）</option>`).join('')}</select></div></div>`
+    : D.kind === 'move'
+    ? `<div class="sec"><h3>移動先</h3><div class="row2">
+        <label class="field"><span class="lbl">日</span><select class="in" id="dToDay">${BOARD_DAYS.map((x, i) => `<option value="${i}" ${D.toDay === i ? 'selected' : ''}>${md(x)}</option>`).join('')}</select></label>
+        <label class="field"><span class="lbl">開始</span><select class="in" id="dToTime">${SLOTS.map(t => `<option ${D.toTime === t ? 'selected' : ''}>${t}</option>`).join('')}</select></label></div></div>`
+    : '';
+  const last = LAST[D.kind] && findReason(D.kind, LAST[D.kind]) && !findReason(D.kind, LAST[D.kind]).removed ? findReason(D.kind, LAST[D.kind]) : null;
+  const r = D.reasonId ? findReason(D.kind, D.reasonId) : null;
+  const textReq = r && r.requiresText;
+  const groups = activeReasons(D.kind).map(g => `<div class="grp" role="group" aria-label="${esc(g.g)}"><h4>${esc(g.g)}</h4><div class="ropts">${g.items.map(it => `
+      <label class="ropt ${D.reasonId === it.id ? 'on' : ''}"><input type="radio" name="reason" value="${it.id}" ${D.reasonId === it.id ? 'checked' : ''}><span>${esc(it.label)}${it.added ? ' <span class="addtag">追加案</span>' : ''}</span></label>`).join('')}</div></div>`).join('');
+  const val = dlgValid();
+  document.getElementById('dlgRoot').innerHTML = `<div class="back${first ? ' anim' : ''}" data-close="1"><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="dTitle">
+    <header><h2 id="dTitle">${title}</h2><p>${lead}</p></header>
+    <div class="body">
+      ${sum}
+      ${extra}
+      <div class="sec" role="radiogroup" aria-labelledby="dReasonH" aria-required="true">
+        <h3 id="dReasonH">${KIND_NAME[D.kind]}の理由 <span class="req">必須</span></h3>
+        ${last ? `<div class="last">前回: <button type="button" data-last="${last.id}">${esc(last.label)}</button></div>` : ''}
+        ${groups}
+      </div>
+      <div class="sec"><h3><label for="dText">補足</label> ${textReq ? '<span class="req">必須</span>' : '<span class="opt">任意</span>'}</h3>
+        <textarea class="in" id="dText" maxlength="500" placeholder="${textReq ? '「その他」の中身を書いてください' : '例: 前日にご家族から電話'}">${esc(D.text)}</textarea>
+        <p class="privacy">スタッフの評価の資料にも使われます。利用者様の様子は必要なことだけ書いてください。</p>
+      </div>
+    </div>
+    <footer><span class="why" id="dWhy">${val.why}</span>
+      <button class="btn" data-close="1">やめる</button>
+      <button class="btn primary" id="dOk" ${val.ok ? '' : 'disabled'}>${okLabel}</button></footer>
+  </div></div>`;
+}
+function refreshDialogFooter() {
+  const val = dlgValid();
+  document.getElementById('dOk').disabled = !val.ok;
+  document.getElementById('dWhy').textContent = val.why;
+}
+document.getElementById('dlgRoot').addEventListener('click', e => {
+  if (e.target.dataset.close) { closeDialog(); return; }
+  const lb = e.target.closest('[data-last]'); if (lb) { D.reasonId = lb.dataset.last; renderDialog(); document.querySelector(`.dlg input[value="${D.reasonId}"]`).focus(); return; }
+  if (e.target.id === 'dOk' && !e.target.disabled) confirmDialog();
+});
+document.getElementById('dlgRoot').addEventListener('change', e => {
+  if (e.target.name === 'reason') { D.reasonId = e.target.value; const pos = e.target.value; renderDialog(); const el = document.querySelector(`.dlg input[value="${pos}"]`); el && el.focus(); }
+  if (e.target.id === 'dNewStaff') { D.newStaff = e.target.value; renderDialog(); document.getElementById('dNewStaff').focus(); }
+  if (e.target.id === 'dToDay') { D.toDay = +e.target.value; renderDialog(); document.getElementById('dToDay').focus(); }
+  if (e.target.id === 'dToTime') { D.toTime = e.target.value; renderDialog(); document.getElementById('dToTime').focus(); }
+});
+document.getElementById('dlgRoot').addEventListener('input', e => { if (e.target.id === 'dText') { D.text = e.target.value; refreshDialogFooter(); } });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { if (D) closeDialog(); else if (S.menu) { S.menu = null; render(); } }
+  if (e.key === 'Tab' && D) { // フォーカスをダイアログの中に留める
+    const f = [...document.querySelectorAll('.dlg button:not([disabled]), .dlg input, .dlg select, .dlg textarea')];
+    if (!f.length) return; const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+});
+
+function confirmDialog() {
+  const v = D.visit, r = findReason(D.kind, D.reasonId), snap = { ...v };
+  const ev = { id: ++EID, vkey: 'b-' + v.id, owner: v.staff, date: BOARD_DAYS[v.day], time: v.t, patient: v.p, kind: D.kind, origin: 'app', backfill: false, created: `${TODAY} ${new Date().toTimeString().slice(0, 5)}`, reason: r.label, reasonText: D.text.trim(), actor: ACTOR, undone: false, boardVid: v.id };
+  let msg;
+  if (D.kind === 'cancel') { v.cancelled = true; msg = `${v.p} 様の ${md(BOARD_DAYS[v.day])} を今週だけ取り消しました（${r.label}）`; }
+  if (D.kind === 'staff_change') { ev.newStaff = D.newStaff; v.staff = D.newStaff; msg = `担当を ${SN(snap.staff)} → ${SN(D.newStaff)} に変えました（${r.label}）`; }
+  if (D.kind === 'move') { ev.toDate = BOARD_DAYS[D.toDay]; ev.toTime = D.toTime; v.day = D.toDay; v.t = D.toTime; v.moved = true; msg = `${md(BOARD_DAYS[snap.day])} ${snap.t} → ${md(ev.toDate)} ${ev.toTime} に移動しました（${r.label}）`; }
+  EVENTS.push(ev); FRESH.add(ev.id); LAST[D.kind] = D.reasonId;
+  D = null; document.getElementById('dlgRoot').innerHTML = '';
+  render();
+  toast(msg, () => { ev.undone = true; ev.undoneAt = `${TODAY} ${new Date().toTimeString().slice(0, 5)}`; Object.assign(v, snap); render(); toast('戻しました。記録は消さず「戻した」しるしを付けています。'); });
+}
+function uncancel(v) {
+  v.cancelled = false; S.menu = null;
+  const ev = { id: ++EID, vkey: 'b-' + v.id, owner: v.staff, date: BOARD_DAYS[v.day], time: v.t, patient: v.p, kind: 'uncancel', origin: 'app', backfill: false, created: `${TODAY} ${new Date().toTimeString().slice(0, 5)}`, actor: ACTOR, undone: false };
+  EVENTS.push(ev); FRESH.add(ev.id); render();
+  toast(`${v.p} 様の取消をやめました（取消の件数からも外れます）`);
+}
+
+/* ━━━ トースト ━━━ */
+let toastTimer;
+function toast(msg, undo) {
+  const t = document.getElementById('toast');
+  document.getElementById('toastMsg').textContent = msg;
+  document.getElementById('toastAct').innerHTML = (undo ? '<button id="tUndo">戻る</button> ' : '') + '<button id="tGo">C で見る</button>';
+  t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 7000);
+  document.getElementById('tGo').onclick = () => { t.classList.remove('show'); S.view = 'C'; S.who = 's1'; S.period = 'oct'; render(); window.scrollTo({ top: 0 }); };
+  if (undo) document.getElementById('tUndo').onclick = () => { t.classList.remove('show'); undo(); };
+}
+
+/* ━━━ ドラッグ (ドロップ → 移動の理由ダイアログ) ━━━ */
+let dragVid = null;
+document.addEventListener('dragstart', e => { const c = e.target.closest && e.target.closest('.vc[draggable=true]'); if (!c) return; dragVid = c.dataset.vid; c.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragVid); });
+document.addEventListener('dragend', () => { document.querySelectorAll('.dragging,.over').forEach(x => x.classList.remove('dragging', 'over')); });
+document.addEventListener('dragover', e => { const d = e.target.closest && e.target.closest('.day'); if (d && dragVid) { e.preventDefault(); document.querySelectorAll('.day.over').forEach(x => x !== d && x.classList.remove('over')); d.classList.add('over'); } });
+document.addEventListener('drop', e => {
+  const d = e.target.closest && e.target.closest('.day'); if (!d || !dragVid) return; e.preventDefault();
+  const v = VISITS.find(x => x.id === dragVid), to = +d.dataset.day; dragVid = null;
+  document.querySelectorAll('.over,.dragging').forEach(x => x.classList.remove('over', 'dragging'));
+  if (!v || to === v.day) return;
+  openDialog('move', v, { toDay: to, fromDrop: true });
+});
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   ② B 人ごとのカード
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function filterBar() {
+  return `<div class="bar"><span class="lbl">期間</span><div class="seg" id="period">${PERIODS.map(p => `<button data-p="${p.k}" class="${S.period === p.k ? 'on' : ''}">${p.label}</button>`).join('')}</div>
+    <span class="lbl" style="margin-left:6px">拠点</span><div class="seg" id="office">${[['', '全拠点'], ['稲毛', '稲毛'], ['都賀', '都賀']].map(([k, l]) => `<button data-o="${k}" class="${S.office === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>`;
+}
+function renderB() {
+  const list = staffShown(), cs = list.map(s => counts(s.id));
+  const t = k => cs.reduce((a, c) => a + c[k], 0);
+  const v = list.reduce((a, s) => a + scaleV(s), 0);
+  return `${filterBar()}
+    <div class="kpis">
+      <div class="card kpi"><div class="k">訪問</div><div class="v tnum">${v}<small>件</small></div><div class="s">${list.length} 人（今までの数字・一部だけ表示）</div></div>
+      <div class="card kpi new"><div class="k">取消<span class="newmark">追加</span></div><div class="v tnum">${t('cancel')}<small>件</small></div><div class="s">変更前の担当に数えます</div></div>
+      <div class="card kpi new"><div class="k">変更<span class="newmark">追加</span></div><div class="v tnum">${t('change')}<small>件</small></div><div class="s">担当変更 ${t('staff')}・移動 ${t('move')}</div></div>
+      <div class="card kpi new"><div class="k">うちカイポケから<span class="newmark">追加</span></div><div class="v tnum">${t('kaipoke')}<small>件</small></div><div class="s">理由はカイポケ側にあります</div></div>
+      <div class="card kpi new"><div class="k">理由の記録なし<span class="newmark">追加</span></div><div class="v tnum">${t('noReason')}<small>件</small></div><div class="s">主に記録の開始日より前の分</div></div>
+    </div>
+    ${partialNote(false)}
+    <div class="cards">${list.map((s, i) => {
+      const c = cs[i], z = n => n ? '' : 'zero';
+      return `<article class="card pc">
+        <button class="hit" data-who="${s.id}" aria-label="${esc(s.n)}の実績と取消・変更をくわしく見る"></button>
+        <h3>${esc(s.n)}</h3><div class="tags"><span class="tg">${s.off}</span>${s.tags.map(x => `<span class="tg">${x}</span>`).join('')}</div>
+        <div class="tiles">
+          <div class="tile"><div class="k">訪問</div><div class="v tnum">${scaleV(s)}<small>件</small></div><div class="d">利用者 ${s.pts} 名</div></div>
+          <div class="tile"><div class="k">1 日あたり</div><div class="v tnum">${s.pd}<small>件</small></div><div class="d">1 回あたり ${s.plan} 分（予定）</div></div>
+        </div>
+        <div class="chgbox">
+          <div class="h">取消・変更（変更前の担当として）<span class="newmark">追加</span></div>
+          <div class="chgnums">
+            <div class="cn"><div class="k"><i style="background:var(--k-cancel)"></i>取消</div><div class="v tnum ${z(c.cancel)}">${c.cancel}<small>件</small></div></div>
+            <div class="cn"><div class="k"><i style="background:var(--k-move)"></i>変更</div><div class="v tnum ${z(c.change)}">${c.change}<small>件</small></div><div class="d">担当変更 ${c.staff}・移動 ${c.move}</div></div>
+            <div class="cn"><div class="k"><i style="background:var(--k-take)"></i>引き受け</div><div class="v tnum ${z(c.take)}">${c.take}<small>件</small></div><div class="d">ほかの人から</div></div>
+          </div>
+          <div class="nr">${c.noReason ? `うち理由の記録なし ${c.noReason} 件・` : ''}${c.kaipoke ? `カイポケから ${c.kaipoke} 件` : 'カイポケから 0 件'}</div>
+        </div>
+        <p class="hint" style="margin:8px 0 0">※ 週ごとの棒・移動距離などは今のカードのまま（省略）</p>
+      </article>`;
+    }).join('')}</div>
+    <div class="explain">
+      <div class="card box"><h2>数え方（設計 §6-1・案）</h2><ul>
+        <li><b>取消・変更</b>は、変更する前の担当（その時点の持ち主）に数えます。</li>
+        <li><b>引き受け</b>は、担当変更で訪問を引き受けた人に別に数えます。</li>
+        <li>期間は<b>変更前の訪問日</b>で切ります。先の訪問の取消も数えます。</li>
+        <li>同じ訪問を 2 回動かしても 1 件。取消をやめた訪問と「戻る」で戻した操作は数えません。</li>
+      </ul></div>
+    </div>`;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   ③ C 取消・変更の記録
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+const maskName = n => S.mask ? n.split(' ').map((w, i) => i === 0 ? w[0] + '◯'.repeat(Math.max(0, w.length - 1)) : '◯'.repeat(w.length)).join(' ') : n;
+function rowsFor(staffId) {
+  const p = per();
+  const rows = [];
+  for (const e of EVENTS) {
+    if (e.date < p.from || e.date > p.to) continue;
+    if (e.owner === staffId) rows.push({ e, role: 'owner' });
+    else if (e.newStaff === staffId) rows.push({ e, role: 'take' });
+  }
+  return rows.filter(({ e, role }) => {
+    if (e.undone && !S.showUndone) return false;
+    if (S.noReason && (e.reason || e.reasonSys || e.oldText)) return false;
+    if (S.fKind === 'take') { if (role !== 'take') return false; }
+    else if (S.fKind !== 'all') { if (role === 'take') return false; if (S.fKind === 'cancel' ? !(e.kind === 'cancel' || e.kind === 'uncancel') : e.kind !== S.fKind) return false; }
+    if (S.fOrigin !== 'all' && e.origin !== S.fOrigin) return false;
+    return true;
+  }).sort((a, b) => FRESH.has(b.e.id) - FRESH.has(a.e.id) || b.e.date.localeCompare(a.e.date) || b.e.time.localeCompare(a.e.time) || b.e.created.localeCompare(a.e.created));
+}
+function evRow({ e, role }) {
+  const { uncancelled } = liveEvents();
+  const kindTag = role === 'take' ? '<span class="kind k-take">引き受け</span>'
+    : e.kind === 'cancel' ? `<span class="kind k-cancel">取消</span>${uncancelled.has(e.vkey) ? '<span class="sub">後で取消をやめた</span>' : ''}`
+    : e.kind === 'uncancel' ? '<span class="kind k-uncancel">取消をやめた</span>'
+    : e.kind === 'staff_change' ? '<span class="kind k-staff">担当変更</span>' : '<span class="kind k-move">移動</span>';
+  const ba = e.kind === 'staff_change' ? `${esc(SN(e.owner))} → <b>${e.newStaff ? esc(SN(e.newStaff)) : '代わりなし'}</b>`
+    : e.kind === 'move' ? `<span class="tnum">${md(e.date)} ${e.time}</span> → <b class="tnum">${md(e.toDate)} ${e.toTime}</b>${e.newStaff ? `<span class="sub">担当も ${esc(SN(e.newStaff))} へ</span>` : ''}`
+    : e.kind === 'cancel' ? '<span class="hint">予定 → 取消</span>' : '<span class="hint">取消 → 予定に戻す</span>';
+  const rs = e.reasonSys ? `<span class="${e.origin === 'kaipoke' ? 'kprsn' : ''}">${esc(e.reasonSys)}</span>`
+    : e.reason ? `${esc(e.reason)}${e.reasonText ? `<span class="sub">${esc(e.reasonText)}</span>` : ''}`
+    : e.oldText ? `${esc(e.oldText)}<span class="sub">以前の記録に残っていた言葉（理由の選択はなし）</span>`
+    : e.kind === 'uncancel' ? `<span class="hint">理由は任意</span>${e.reasonText ? `<span class="sub">${esc(e.reasonText)}</span>` : ''}`
+    : '<span class="norsn">理由の記録なし</span>';
+  const isUser = n => STAFF.some(s => s.n === n);
+  const op = !e.actor ? '<span class="hint">記録なし</span>'
+    : e.origin === 'kaipoke' ? `<span class="sub" style="display:inline">取込を実行した人</span><br>${esc(e.actor)}`
+    : e.origin === 'status' ? `<span class="sub" style="display:inline">ステータスを変えた人</span><br>${esc(e.actor)}`
+    : `${esc(e.actor)}${isUser(e.actor) ? '' : '<span class="sub">ユーザー名（スタッフに紐づいていません）</span>'}`;
+  const og = e.origin === 'kaipoke' ? '<span class="org o-kaipoke">カイポケ</span>' : e.origin === 'status' ? '<span class="org o-status">ステータス連動</span>' : '<span class="org o-app">らく助</span>';
+  const back = e.backfill ? ' <span class="org o-back">以前の記録</span>' : '';
+  const [cd, ct] = e.created.split(' ');
+  return `<div class="evrow ${e.undone ? 'undone' : ''} ${FRESH.has(e.id) ? 'fresh' : ''}">
+    <div class="c-dt tnum">${md(e.date)} ${e.time}${FRESH.has(e.id) ? ' <span class="newmark">いま記録</span>' : ''}</div>
+    <div class="c-pt pt">${esc(maskName(e.patient))} 様${role === 'take' ? `<span class="sub">${esc(SN(e.owner))} さんから</span>` : ''}</div>
+    <div class="c-kd">${kindTag}${e.undone ? `<span class="sub">戻した（${e.undoneAt ? e.undoneAt.slice(5).replace('-', '/') : '翌日'}）</span>` : ''}</div>
+    <div class="c-ba ba">${ba}</div>
+    <div class="c-rs">${rs}</div>
+    <div class="c-op">${op}</div>
+    <div class="c-og">${og}${back}</div>
+    <div class="c-at tnum">${mdShort(cd)} ${ct}</div>
+  </div>`;
+}
+function renderC() {
+  const s = STAFF.find(x => x.id === S.who), c = counts(s.id), rows = rowsFor(s.id);
+  const seg = (id, cur, opts) => `<div class="seg" id="${id}">${opts.map(([k, l]) => `<button data-f="${k}" class="${cur === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+  return `${filterBar()}
+    <div class="bar"><span class="lbl">職員</span><div class="people">${staffShown().map(p => `<button data-who="${p.id}" class="${p.id === S.who ? 'on' : ''}">${esc(p.n)}</button>`).join('')}</div></div>
+    <p class="hint" style="margin:0">※ C の上半分（折れ線 4 枚・週ごとの表）は今のまま。ここではその下に足す「取消・変更の記録」だけを出しています。</p>
+    <div class="csum">
+      <div class="card"><div class="k"><i style="background:var(--k-cancel)"></i>取消</div><div class="v tnum">${c.cancel}<small>件</small></div></div>
+      <div class="card"><div class="k"><i style="background:var(--k-staff)"></i>担当変更</div><div class="v tnum">${c.staff}<small>件</small></div></div>
+      <div class="card"><div class="k"><i style="background:var(--k-move)"></i>移動</div><div class="v tnum">${c.move}<small>件</small></div></div>
+      <div class="card"><div class="k"><i style="background:var(--k-take)"></i>引き受け</div><div class="v tnum">${c.take}<small>件</small></div></div>
+      <div class="card"><div class="k">理由の記録なし</div><div class="v tnum">${c.noReason}<small>件</small></div></div>
+    </div>
+    ${partialNote(true)}
+    <section class="card" aria-labelledby="clogH">
+      <div class="boardhead"><h2 id="clogH">${esc(s.n)} の取消・変更の記録 <span class="newmark">追加</span></h2><span class="hint">${rows.length} 件（訪問日の新しい順）</span></div>
+      <div class="filters">
+        <span class="lbl">種類</span>${seg('fKind', S.fKind, [['all', 'すべて'], ['cancel', '取消'], ['staff_change', '担当変更'], ['move', '移動'], ['take', '引き受け']])}
+        <span class="lbl">出所</span>${seg('fOrigin', S.fOrigin, [['all', 'すべて'], ['app', 'らく助'], ['kaipoke', 'カイポケ'], ['status', 'ステータス連動']])}
+        <label class="chk"><input type="checkbox" id="fNoReason" ${S.noReason ? 'checked' : ''}>理由の記録なしだけ</label>
+        <label class="chk"><input type="checkbox" id="fUndone" ${S.showUndone ? 'checked' : ''}>戻した操作も出す</label>
+        <label class="chk"><input type="checkbox" id="fMask" ${S.mask ? 'checked' : ''}>利用者名を伏せる</label>
+      </div>
+      <div class="evhead"><span>訪問日</span><span>利用者</span><span>種類</span><span>変更前 → 変更後</span><span>理由</span><span>操作した人</span><span>出所</span><span>変更した日</span></div>
+      ${rows.length ? rows.slice(0, S.limit).map(evRow).join('') : '<div class="empty">この条件の取消・変更はありません</div>'}
+      ${rows.length > S.limit ? `<div class="more"><button class="btn sm" id="more">さらに ${Math.min(30, rows.length - S.limit)} 件を表示</button></div>` : ''}
+    </section>
+    <div class="explain">
+      <div class="card box"><h2>この一覧の読み方</h2><ul>
+        <li><b>操作した人</b>は、らく助にログインして操作した人です（スタッフに紐づいていなければユーザー名）。</li>
+        <li><b>カイポケ</b>の行は、カイポケで変わったものを取り込んだ記録です。理由はカイポケ側にあり、「操作した人」は取込を実行した人です。</li>
+        <li><b>以前の記録</b>は、記録の開始日より前の分を、残っていた控えから読み取ったものです。</li>
+        <li><b>引き受け</b>は、ほかの人の訪問を担当変更で引き受けた行です（取消・変更の件数には入りません）。</li>
+      </ul></div>
+    </div>`;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   ④ 理由の選択肢（確認用）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+function renderR() {
+  const color = { cancel: 'var(--k-cancel)', staff_change: 'var(--k-staff)', move: 'var(--k-move)' };
+  const lst = kind => {
+    const n = REASONS[kind].reduce((a, g) => a + g.items.filter(r => !r.removed).length, 0);
+    return `<section class="card lst" aria-label="${KIND_NAME[kind]}の理由"><h2><i style="background:${color[kind]}"></i>${KIND_NAME[kind]} <span class="cnt">${n} 個</span></h2>
+      ${REASONS[kind].map((g, gi) => `<div class="grp"><h4>${esc(g.g)}</h4>${g.items.map(r => `<div class="li ${r.removed ? 'off' : ''}">
+        <span class="nm"><span>${esc(r.label)}</span>${r.added ? '<span class="added">追加案</span>' : ''}${r.requiresText ? ' <span class="hint">（補足が必須）</span>' : ''}${r.was ? `<span class="was">たたき台: ${esc(r.was)}</span>` : ''}</span>
+        <button class="mk" data-toggle="${r.id}" data-kind="${kind}" aria-pressed="${r.removed}">${r.removed ? '外す案 ✕' : '残す'}</button></div>`).join('')}</div>`).join('')}
+      <form class="addrow" data-add="${kind}"><select aria-label="小見出し">${REASONS[kind].map((g, gi) => `<option value="${gi}">${esc(g.g)}</option>`).join('')}</select><input placeholder="追加したい理由" aria-label="${KIND_NAME[kind]}に追加したい理由" maxlength="40"><button class="btn sm" type="submit">追加</button></form>
+    </section>`;
+  };
+  return `<div class="notice" style="background:var(--brand-50);border-color:var(--brand-light);color:var(--ink)"><b>PO 確認用</b>: 「残す」を押すと「外す案」になります。下の欄で追加の案も入れられます。<b>ここでの変更は ① のダイアログにもすぐ反映されます</b>（本番では <b>設定 → 取消・変更の理由</b> で同じことをします）。終わったら「確認結果を書き出す」で文字にして送ってください。</div>
+    <div class="lists">${lst('cancel')}${lst('staff_change')}${lst('move')}</div>
+    <div class="explain">
+      <div class="card box"><h2>画面からは選べないシステムの理由</h2><ul>${SYSTEM_REASONS.map(x => `<li>${esc(x)}</li>`).join('')}</ul>
+        <p class="hint" style="margin:6px 0 0">カイポケ取込・ステータス連動・🛌 休みにする・提案の適用のときに自動で入ります。名前だけ設定で変えられます。</p></div>
+      <div class="card box"><h2>設定 → 取消・変更の理由（後の段階）</h2>
+        <p style="margin:0">事業所ごとに言い方や必要な理由が違うので、コードには書かず設定で持ちます。管理者だけが変えられます。</p>
+        <div class="settings-sketch" aria-hidden="true">
+          <div class="ss-row"><span class="grip">⋮⋮</span>利用者の都合（外出・来客など）<span class="act"><span>名前</span><span>隠す</span></span></div>
+          <div class="ss-row"><span class="grip">⋮⋮</span>家族の都合<span class="act"><span>名前</span><span>隠す</span></span></div>
+          <div class="ss-row" style="color:var(--ink3)"><span class="grip">⋮⋮</span>（隠した理由）<span class="act"><span>戻す</span></span></div>
+        </div>
+        <ul style="margin-top:8px"><li>追加・名前を変える・並べ替え・小見出しを変える・隠す・「補足を必須にする」</li><li>使われた理由は削除できず、隠すだけ（過去の記録は書いたときの名前で出ます）</li></ul></div>
+      <div class="card box"><h2>たたき台から変えた点</h2><ul>
+        <li>「死亡」→「ご逝去」（画面に出る言葉なので丁寧に）</li>
+        <li>「スタッフ急休」→「スタッフの急な休み」（略語を避け、🛌 休みにする の自動の理由と同じ言葉に）</li>
+        <li>「スタッフの体調不良」→「体調不良・早退」（終日の休みと、出勤後の途中交代を分ける）</li>
+        <li>「相性・NG」→「相性（NG スタッフを含む）」</li>
+        <li>3 つの一覧で同じ意味の言葉はそろえた（後で理由別に集計できるように）</li>
+      </ul></div>
+    </div>
+    <div class="card box"><h2>確認結果</h2><button class="btn" id="exportR">確認結果を書き出す</button><textarea class="out" id="outR" readonly placeholder="ここに文字で出ます（コピーして送れます）"></textarea></div>`;
+}
+function exportR() {
+  const lines = ['理由の選択肢 確認結果'];
+  for (const kind of ['cancel', 'staff_change', 'move']) {
+    lines.push('', `■ ${KIND_NAME[kind]}`);
+    for (const g of REASONS[kind]) for (const r of g.items) lines.push(`  ${r.removed ? '✕ 外す' : r.added ? '＋ 追加' : '○ 残す'}　[${g.g}] ${r.label}`);
+  }
+  const o = document.getElementById('outR'); o.value = lines.join('\n'); o.select();
+  if (navigator.clipboard) navigator.clipboard.writeText(o.value).catch(() => { /* 書き出した欄からコピーしてもらう */ });
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   描画とイベント
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+const HEAD = {
+  board: ['今週の運転席', '訪問を取り消す・担当を変える・移動するときに、理由を選びます。'],
+  B: ['ダッシュボード', 'スタッフごとの訪問の実績に、取消・変更の件数を足します。'],
+  C: ['ダッシュボード', '1 人を深く見る画面に、取消・変更を 1 件ずつ並べます。'],
+  R: ['取消・変更の理由', '理由の選択肢を確認します（本番では 設定 → 取消・変更の理由）。'],
+};
+function render() {
+  document.querySelectorAll('#view button').forEach(b => b.classList.toggle('on', b.dataset.v === S.view));
+  document.getElementById('h1').textContent = HEAD[S.view][0];
+  document.getElementById('h1p').textContent = HEAD[S.view][1];
+  document.getElementById('main').innerHTML = `<div style="display:flex;flex-direction:column;gap:14px">${S.view === 'board' ? renderBoard() : S.view === 'B' ? renderB() : S.view === 'C' ? renderC() : renderR()}</div>`;
+}
+document.getElementById('view').onclick = e => { const v = e.target.dataset.v; if (v) { S.view = v; S.menu = null; render(); } };
+const main = document.getElementById('main');
+main.addEventListener('click', e => {
+  const t = e.target;
+  const mb = t.closest('[data-menu]'); if (mb) { S.menu = S.menu === mb.dataset.menu ? null : mb.dataset.menu; render(); const p = document.querySelector('.pop button'); p && p.focus(); return; }
+  const act = t.closest('[data-act]'); if (act) { const v = VISITS.find(x => x.id === act.dataset.vid); if (act.dataset.act === 'uncancel') uncancel(v); else openDialog(act.dataset.act, v); return; }
+  const demo = t.closest('[data-demo]'); if (demo) {
+    const k = demo.dataset.demo, v = VISITS.find(x => !x.cancelled && x.staff === 's1' && !x.moved) || VISITS.find(x => !x.cancelled);
+    if (!v) { toast('取り消していない訪問がありません'); return; }
+    openDialog(k, v, k === 'move' ? { toDay: (v.day + 1) % BOARD_DAYS.length, fromDrop: true } : {}); return;
+  }
+  const p = t.closest('#period button'); if (p) { S.period = p.dataset.p; S.limit = 30; render(); return; }
+  const o = t.closest('#office button'); if (o) { S.office = o.dataset.o; if (S.office && STAFF.find(s => s.id === S.who).off !== S.office) S.who = staffShown()[0].id; render(); return; }
+  const w = t.closest('[data-who]'); if (w) { S.who = w.dataset.who; S.view = 'C'; S.limit = 30; render(); if (w.classList.contains('hit')) window.scrollTo({ top: 0 }); return; }
+  const fk = t.closest('#fKind button'); if (fk) { S.fKind = fk.dataset.f; render(); return; }
+  const fo = t.closest('#fOrigin button'); if (fo) { S.fOrigin = fo.dataset.f; render(); return; }
+  if (t.id === 'more') { S.limit += 30; render(); return; }
+  const tg = t.closest('[data-toggle]'); if (tg) { const r = findReason(tg.dataset.kind, tg.dataset.toggle); r.removed = !r.removed; render(); return; }
+  if (t.id === 'exportR') { exportR(); return; }
+  if (S.menu && !t.closest('.pop')) { S.menu = null; render(); }
+});
+main.addEventListener('change', e => {
+  if (e.target.id === 'fNoReason') { S.noReason = e.target.checked; render(); }
+  if (e.target.id === 'fUndone') { S.showUndone = e.target.checked; render(); }
+  if (e.target.id === 'fMask') { S.mask = e.target.checked; render(); }
+});
+main.addEventListener('submit', e => {
+  const f = e.target.closest('[data-add]'); if (!f) return; e.preventDefault();
+  const kind = f.dataset.add, label = f.querySelector('input').value.trim(), gi = +f.querySelector('select').value;
+  if (!label) return;
+  const r = mk(label); r.added = true; r.requiresText = false;
+  const items = REASONS[kind][gi].items, oi = items.findIndex(x => x.label === 'その他');
+  oi >= 0 ? items.splice(oi, 0, r) : items.push(r);
+  render();
+});
+// 描画し直すと押した要素は DOM から外れるので、closest ではなく dispatch 時の経路で判定する。
+document.addEventListener('click', e => { if (S.menu && !e.composedPath().includes(main)) { S.menu = null; render(); } });
+
+render();
+/* 確認用: #B #C #R で開く */
+const H0 = location.hash.slice(1); if (['board', 'B', 'C', 'R'].includes(H0)) { S.view = H0; render(); }
+</script>
+</body>
+</html>
