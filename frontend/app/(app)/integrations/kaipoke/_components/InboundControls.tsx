@@ -536,6 +536,25 @@ function SmartPlanPanel({ plan }: { plan: SmartInboundPreview }) {
               testId="inbound-summary-inactive-patient"
             />
           )}
+          {/* 打刻済みの訪問はカイポケに無くても取り消さない (2026-10-01)。
+              取り込み後も「要確認」として残るので、件数を先に見せる。 */}
+          {(diff.checked_in_delete ?? 0) > 0 && (
+            <SummaryChip
+              label="打刻済みのため取り消さない（要確認）"
+              value={diff.checked_in_delete ?? 0}
+              tone="warning"
+              testId="inbound-summary-checked-in-delete"
+            />
+          )}
+          {/* 予定外の訪問がカイポケの予定と一致 → 予定として扱う (2026-10-01)。 */}
+          {(diff.unplanned_promote ?? 0) > 0 && (
+            <SummaryChip
+              label="予定外の訪問を予定へ"
+              value={diff.unplanned_promote ?? 0}
+              tone="success"
+              testId="inbound-summary-unplanned-promote"
+            />
+          )}
         </div>
       )}
 

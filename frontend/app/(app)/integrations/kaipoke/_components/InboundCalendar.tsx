@@ -173,6 +173,16 @@ function InboundCard({ item, sex }: { item: CorrectionItem; sex?: string | null 
           <span>{timeAfter || timeBefore || '--:--'}</span>
         )}
       </div>
+      {/* BE がプレビュー時に付ける注記 (打刻済みのため取り消さない・予定外訪問の
+          昇格など・2026-10-01)。適用前の盤面でだけ見える。 */}
+      {item.comment ? (
+        <div
+          className="mt-0.5 text-[10px] leading-snug text-warning-strong"
+          data-testid={`inbound-item-comment-${item.id}`}
+        >
+          {item.comment}
+        </div>
+      ) : null}
     </div>
   );
 }
