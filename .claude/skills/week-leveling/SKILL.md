@@ -10,6 +10,8 @@ description: らく助（CareFlow）の週や 1 日の訪問を、決まり（1 
 - 決まりの正典: `docs/plans/week-leveling-rules-2026-10-02.md`（アプリの全エンジンの決まりと PO の決定）。決まりを変えるときは先にここを直し、PO に確かめる。
 - 道具: `docs/tools/week-leveling/`（`level.py` が入口）。設定: `docs/tools/week-leveling/config.local.json`（git 管理外。無ければ `config.example.json` をコピーし、職員コードで書く）。
 
+**週42（10/12〜18）の最終ならしは手順書 `docs/plans/week42-final-leveling-runbook-2026-10-03.md` に従う**（マスターの直し → 週の作り直し → 案 → PO の最終判断）。道具は可動域 `locked` を見ない（同 §2-4・判断 D-1）。
+
 ## 手順
 
 1. **何をしたいかを確かめる**（AskUserQuestion で選択式）: 週全体か特定の日か／休む人・増える人がいるか（`--off`）／上限を少し超えてよいか（`--allow-over 1`、マネージャーより先なら `--over-before-manager`）／件数をならすか（`--balance`）／Jev の目安を付けるか（`--jev`）。

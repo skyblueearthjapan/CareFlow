@@ -1,0 +1,270 @@
+# 週42 の最終ならし 手順書（2026-10-03 以降に実施）
+
+作成: 2026-10-02 夜 ／ 対象週: **週42 = 2026-10-12（月）〜10-18（日）** ／ 前提の総括: `session-2026-10-02-HANDOFF.md`（§10 に夜の作業を追記済み）
+
+この文書だけ読めば、次の担当（人でもエージェントでも）が作業を続けられるように書いている。**記憶（メモリ）に頼らず、この文書を正とする。**
+
+---
+
+## 0. ひとことで
+
+1. **10/3 に、お客様（よりより）の川名さんが患者マスターの「希望訪問スケジュールの枠」を設定し直す。**
+2. その後、**直したマスターを元に週42 の予定を作り直し**、ならしの道具（スキル `week-leveling`）で**もう一度ならし案を出す**。アプリの物差しでの診断も付ける。
+3. PO（今泉さん）が A4 と Excel を見て、**適用するかしないかを最終判断する**。
+4. 適用する場合は、PO の了承とバックアップの後に本番へ反映する。反映後にもう一度診断して、重なりが 0 件であることを確かめる。最後に、いつもの手順でカイポケへ送る。
+
+**次の担当がしてはいけないこと**
+- PO の了承なしに本番へ書くこと。「週を生成」を押すことも含む。
+- 案を DB へ直接書くこと。
+- 利用者名が入った帳票を git に入れること、Artifact などで公開すること。
+
+---
+
+## 1. 今の状態（2026-10-02 23:30 時点）
+
+| 項目 | 状態 |
+|---|---|
+| 本番 | `fec6747`・alembic `0089`（10/2 から変わっていない） |
+| develop / origin | `7ddea13`（ならし案の「アプリの物差し」での診断を追加）の次に、この手順書と総括の追記をコミットしている（`git log --oneline -3` で確かめる）。どれもアプリの外の道具と文書だけなので、**デプロイは不要** |
+| 週42 の本番の盤面（10/2 23:11 の写し） | 10/2 14:33 の川名さんの操作のまま。**同じ職員の時間の重なり 35 件**・担当なし 11 件。訪問 140 件（出所 `auto` 132・`reset_v2`（固定枠戻し）7・`manual_week`（今週だけ）1）。週のピン 0 件。コース 32（職員の付いたコース 25）。訪問の主担当とコースの担当は全件一致 |
+| 週42 のカイポケ送信（10/2 23:40 確認） | **まだ一度も送っていない**（週42 の `kaipoke_jobs` は 7 月の push 2 件で、どちらも cancelled） |
+| ならし案 | 本番には**反映していない**。最新の案は 10/2 23:11 に取った写しから作った `docs/reports/2026-10-02-appcheck-week42/full2/`（git 管理外・利用者名入り）。**10/3 にマスターが変わるので、この案は使わない（参考のみ）** |
+| 最新の案の数字（10/2 23:11 の写しから・参考） | 140 件すべて配置／重なり 35→0／移動が間に合わない並び 8→0／決まりの検査 0 件／移動 1,231→1,144 分（411.5→380.8 km）／移動が平均の 1.5 倍を超える人・日 4→3／**あと 1 手の見落とし 0 件**／わざと選ばなかった手 11 件（マネージャー・前回と同じ・時刻ずらしとの引き換え） |
+| 患者の固定枠（本番・normal・10/2 23:30 時点） | 161 枠。可動域 `locked`（完全固定）114・`unknown` 47。コースの無い枠 **30**（「週を生成」で稲A に寄る原因） |
+| 移動の設定 | `scheduling_settings` は 0 行＝既定値（直線 20km/h・別の住所へ移るとき ゆとり 8 分）。道具とアプリは同じ値 |
+
+---
+
+## 2. 前提として知っておくこと（とても大事）
+
+### 2-1. 道具がマスターから読むもの・読まないもの
+`docs/tools/week-leveling/extract.py` が本番から読むもの:
+
+| 道具の中での役目 | 読むところ |
+|---|---|
+| 曜日・**固定の時刻**・訪問の長さ | **その週の `visits`**（開始・終了）。マスターの固定枠（`patient_fixed_visits`）は**直接は読まない** |
+| 動かしてよい時刻の範囲 | `patients.weekly_pattern` の `time_type`（固定／時間帯／午前／午後／終日）と `preferred_start`〜`preferred_end` |
+| 女性限定・NG | `patients.sex_restriction`・`patient_ng_staff` |
+| 位置・主担当拠点 | `patients.lat/lng`・`primary_office_id`（座標や拠点が無い利用者がいると道具は止まる） |
+| 職員の勤務・休み・予定 | `staff_shifts`・`staff_weekly_overrides`・`staff_events`（UTC のまま読む） |
+| ローテーション | 直前 4 週の `visits` の主担当 |
+
+→ **マスターの固定枠（曜日・時刻・長さ）を変えても、週42 の `visits` を作り直さない限り、道具には届かない。** 届くのは `weekly_pattern`（時間帯の範囲）・NG・性別などだけになる。
+
+### 2-2. 週42 をマスターから作り直す方法は「週を生成（固定訪問から）」だけ
+- 「前の週をコピー」は前の週の予定の時刻を写すだけなので、マスターで変えた時刻は入らない。
+  - 任意の「固定訪問から補う」は、前の週に無かった固定枠を足すだけ（時刻の変更は入らない）。
+  - コピーはスナップショットを取るので「コピー前に戻す」ができる（打刻のある週を除く）。
+- 「週を生成」（`POST /schedule/generate-week-only`・`backend/app/services/scheduling/layer1_expander.py`）の動き:
+  - その週の **`source='auto'`・予定（planned）・週のピンなし** の訪問を消し（`deleted_at` を入れる論理削除）、固定枠（無ければ `weekly_pattern`）から作り直す。
+    - 拠点を選ばずに押すと全拠点が対象。画面で拠点を選んでいれば、その拠点だけ。
+    - 稼働中でない利用者の auto の行も消える。
+  - 管理者（admin）だけが押せる。押すと同時に、その週の新人同行の既定と固定の予定（朝会など）も展開する。
+  - 作り直した訪問には主担当（`visits.primary_staff_id`）を付けない。ただし**コースの担当（`courses.assigned_staff_id`）は消えない**（同じ週・曜日・コースの行を使い回す）。
+    - 10/2 時点では、コース 32 のうち 25 に職員が付いている。
+    - 画面の表示がどちらに従うかは確かめていない → 手順 3-6 で、作り直した後に確かめる。
+    - 道具の「今の盤面」は `visits.primary_staff_id` を読むので、作り直した直後は全件「担当なし」として比べる。
+  - コースの無い固定枠は拠点の既定コース（稲A）に入る。ただし道具は職員ごとに組み直すので、ならし案には影響しない。
+  - **スナップショットを取らない＝画面から元に戻せない。** 押す前に pg_dump が必須。戻し方は §2-3（PO の了承が要る）。
+  - `auto` 以外の訪問は残す（固定枠戻し `reset_v2` 7 件・今週だけ `manual_week` 1 件）。
+    - 残っている行（auto 以外、または今週だけ取消・実施中・実施済み）と**同じ利用者・同じ日・同じ開始時刻**なら作り直しを飛ばすので、二重にはならない（2 名体制は 2 行とも飛ばす）。
+    - `manual_week` の日（10/12 15:00 の 1 件）は、その利用者のその日の作り直しを丸ごと飛ばす。
+    - **マスターで時刻を変えた利用者に `reset_v2` の訪問が残っていると、古い時刻の訪問と新しい時刻の訪問が二重になる。** 残っている 8 件の日時: `reset_v2` 10/12 11:00・10/12 17:00・10/14 11:00・10/14 16:25・10/15 14:30・10/16 11:00・10/16 17:00、`manual_week` 10/12 15:00。
+    - だから作り直した後は、必ず §4 手順 5 の「二重の確認」をする。
+- 「週を生成」は**本番への書き込み**。押すのは川名さんか PO か、いつ押すかは **PO が決める**。
+
+### 2-3. 「週を生成」を押した後に元へ戻す方法（PO の了承が要る・決めるのは PO）
+- 戻す方法は 2 つある。どちらも本番への書き込みなので、行う前に今の状態も pg_dump で取っておく。
+  1. **週42 だけを戻す（おすすめ）**: 「週を生成」で消えた行は論理削除なので、SQL で戻せる。
+     - 押した時刻に `deleted_at` が入った週42 の `source='auto'` の行は、`deleted_at` を NULL に戻す。
+     - 押した後に作られた週42 の `source='auto'` の行（`created_at` が押した時刻以降）には、`deleted_at` を入れる。
+     - 必ず先に `begin;` の中で件数を数え、PO に見せてから `commit;` する。
+     - 一緒に展開される新人同行や予定は冪等（同じものを二重に作らない）なので、そのままでよい。
+  2. **データベースごと戻す**: 手順 3-2 の pg_dump から戻す。押した後に入ったほかの書き込み（全拠点・全機能）もすべて消えるので、最後の手段。
+- どちらにするか、いつ行うかは PO が決める。
+
+### 2-4. 道具とアプリで決まりが違う所（既知の限界）
+1. **可動域 `locked`（完全固定）を道具は見ていない。**
+   - アプリのエンジン（範囲最適化・改善提案など）は locked の枠を動かさない。道具は `weekly_pattern` が「時間帯／午前／午後／終日」なら、その範囲の中で時刻を動かすことがある。
+   - 本番では locked 114 枠のうち **63 枠**（時間帯 45・終日 14・午前 4）が、道具では時刻を動かせる状態になっている。
+   - locked の多くは、昔の移行で一律に入った値（`is_pinned=true` を backfill）。
+   - **→ 判断 D-1（§5）。** 川名さんがマスターを直すときに可動域も正しく付けてもらうか。または、道具が locked を「時刻を動かさない」として扱うよう直すか。
+2. 勤務の開始・終了時刻、予定（前後 15 分）、半休を、道具は守る。アプリの自動割当は見ていない。だから**反映した後にアプリの「自動スタッフ割当」や「全面最適化」を押すと、案が崩れる。**
+3. 昼休みは、道具は「30 分を必ず取り、45 分未満は気を付ける点に出す」。アプリは 60→45→30 分の順に探す。
+4. 道具の検査とソルバーとで、昼休みの扱いが完全に同じかはまだ確かめていない。「あと 1 手」の見落としが 0 件なら問題はない。
+5. 1 件目（事業所や自宅から）への移動は数えない（アプリと同じ）。距離は直線で、道のりではない。
+6. 固定枠の `sub_office_id`（サブ拠点）は読まない。拠点またぎは主担当拠点だけで判定する。
+
+### 2-5. 「アプリの物差し」での診断について（10/2 夜に追加）
+- アプリの「スケジュール診断」の計算（`schedule_health._compute_course_metrics`）を、`backend/.venv` の Python でそのまま呼ぶ。
+- **使う前に確かめたこと**（PO の指示「関数が求める動作をするかテストで確かめてから使う」に従った）:
+  - 手で計算した答えと一致する。
+  - 実データの利用者の座標の全組み合わせで、道具の式と一致する。
+  - **本番の画面の診断（週42・27 コース）を読み取り専用で再現し、件数・移動・距離・ゆとり・待ち時間がすべて一致した。**
+  - 道具のテストは 18 件すべて通った（`test_app_yardstick.py`・`test_diagnose.py`）。レビューは 2 回目で APPROVE。
+- アプリの画面はコースごとに数えるが、診断は「職員 × 日 ＝ 1 本の順路」として数える。アプリの関数は時間の重なりを見つけないので、重なりは道具の側で別に数えている。
+
+---
+
+## 3. 10/3 の作業の前にしておくこと（次の担当）
+
+1. `git status --short --branch` で develop が `origin/develop` と同じかを確かめる。違えば pull する（並行作業中に `git stash` はしない）。
+2. 道具のテストを流す（本番には繋がない）:
+   ```bash
+   WEEK_JSON=docs/reports/2026-10-02-appcheck-week42/week.json PYTHONIOENCODING=utf-8 \
+     uv run -q --python 3.12 --with ortools --with openpyxl --with pytest \
+     python -m pytest docs/tools/week-leveling/test_app_yardstick.py docs/tools/week-leveling/test_diagnose.py -q < /dev/null
+   ```
+   18 件すべて通ることを確かめる。`backend/.venv` が無ければ `cd backend && uv sync --no-install-project` で作る。
+3. `docs/tools/week-leveling/config.local.json`（git 管理外）があることを確かめる。別の PC なら `config.example.json` をコピーして職員コードで書く。本番の ssh 鍵も要る。
+4. PO に §5 の判断のうち **D-1・D-2・D-2'・D-3・D-5** を先に聞いておく（AskUserQuestion の選択式で）。D-5 を PO が決めない場合は、今の「仮」の決まりのまま計算すると伝える。
+
+---
+
+## 4. 手順（10/3 以降）
+
+### 手順 1: 川名さんのマスター作業（お客様側・PO 経由で完了連絡を受ける）
+- 直す対象: 利用者ごとの**固定枠**（曜日・開始時刻・時間・コース・**可動域**）と、**希望訪問の時間帯**（`weekly_pattern` の種類・開始〜終了）。必要なら NG・女性限定も。
+- PO 経由で川名さんに伝えたいこと:
+  - **コースの無い固定枠 30 枠にコースを付けてもらう。**「週を生成」で稲A に寄らなくなる。
+  - 可動域を正しく付けてもらう（D-1）。
+  - 作業中は週42 をカイポケへ送らない。
+  - **「週を生成」はまだ押さない**（押すのは手順 3 で、PO が決めた人）。
+- 完了連絡を受けるまで、本番の週42 には触らない。
+
+### 手順 2: マスターの確認（本番・読み取りだけ）
+SQL をファイルに書き、`ssh <本番> "docker exec -i carelink-postgres psql -U carelink -d carelink -At" < q.sql` で流す。接続先は `docs/tools/week-leveling/config.local.json` の `server` にあり、`session-2026-10-01-HANDOFF.md` §9 にも書いてある。先頭に `begin transaction read only;`、末尾に `commit;` を付ける。
+```sql
+-- 固定枠の可動域とコースの無い枠
+select movability, is_pinned, count(*) from patient_fixed_visits where mode='normal' group by 1,2;
+select count(*) from patient_fixed_visits f join patients p on p.id=f.patient_id
+ where f.mode='normal' and f.course_template_id is null and p.deleted_at is null and p.status='active';
+-- 道具が止まる原因 (座標・主担当拠点が無い稼働中の利用者)
+select count(*) from patients where deleted_at is null and status='active' and (lat is null or lng is null or primary_office_id is null);
+-- locked なのに時刻を動かせる範囲がある枠 (D-1 の大きさ)
+select p.weekly_pattern->>'time_type', count(*) from patient_fixed_visits f join patients p on p.id=f.patient_id
+ where f.mode='normal' and f.movability='locked' and p.deleted_at is null and p.status='active' group by 1;
+-- 週42 の今の訪問の出所 (作り直しで残るもの)
+select source, status, count(*) from visits where visit_date between '2026-10-12' and '2026-10-18' and deleted_at is null group by 1,2;
+```
+結果を PO に平易に報告する。比べる値（10/2 23:30 時点）: locked 114・unknown 47・コースなし 30・locked で時刻を動かせる枠 63。
+
+### 手順 3: 週42 をマスターから作り直す（本番への書き込み・PO の了承が必須）
+1. カイポケの送信状況を確かめる（週42 がまだ送られていないこと。10/2 23:40 時点では未送信）。読み取りの SQL: `select job_type, status, created_at at time zone 'Asia/Tokyo' from kaipoke_jobs where week_start='2026-10-12' order by created_at;`。カイポケへの送信は日中に行う。夜間は RPA が失敗しやすく、成否はカイポケの export で確かめる。
+2. **pg_dump でバックアップを取る**（「週を生成」は画面から戻せない）。本番サーバーで `docker exec carelink-postgres pg_dump -U carelink -d carelink | gzip > backups/pre-week42-regenerate-$(date +%Y%m%d-%H%M).sql.gz` を実行し、`gunzip -t` で中身を検査する（`session-2026-10-01-HANDOFF.md` §9 のデプロイ前バックアップと同じ形）。
+3. 道具で今の盤面の写しを取っておく（作り直す前の記録）:
+   ```bash
+   PYTHONIOENCODING=utf-8 uv run -q --python 3.12 --with ortools --with openpyxl --with httpx \
+     python docs/tools/week-leveling/level.py --week 2026-10-12 --no-app-check --seconds 5 < /dev/null
+   ```
+   この案は使わず、`week.json` を作り直す前の記録として残す。
+4. PO が決めた人が、アプリの画面で週42 を開いて「週を生成（固定訪問から）」を押す。
+5. 押した後は「自動スタッフ割当」「全面最適化」「範囲最適化」を押さない。担当は道具の案で付ける。
+6. 押した直後に、読み取りで状態を確かめて記録する（§7 に書く）:
+   ```sql
+   select source, status, count(*), count(primary_staff_id) from visits
+    where visit_date between '2026-10-12' and '2026-10-18' and deleted_at is null group by 1,2;
+   select count(*), count(assigned_staff_id) from courses where iso_year=2026 and iso_week=42 and deleted_at is null;
+   ```
+   あわせて画面で週42 を開き、担当がどう表示されるか（空か、コースの担当か）を見る。
+
+### 手順 4: ならし案を作る（本番は読むだけ）
+```bash
+PYTHONIOENCODING=utf-8 uv run -q --python 3.12 --with ortools --with openpyxl --with httpx \
+  python docs/tools/week-leveling/level.py --week 2026-10-12 --jev < /dev/null
+```
+- 1 週間で 3〜4 分かかる。Claude の Bash では `run_in_background` を使い、末尾に `< /dev/null` を付ける。
+- 出力: `docs/reports/<日時>-week42-leveling/`（`leveling.xlsx`・`leveling-a4.pdf`・`summary.json`・`week.json`・`history.json`）。git に入れない。
+- `--jev` は任意。Jev の API キーは `~/.jev-hands/.env`。送るのは記号と数字だけ。
+- 条件を変えて試すときは `--from-dir <この出力>` を付ける（本番に繋がない）。オプション: `--off S004@2026-10-13`（この人が休みなら）・`--allow-over 1`（少しオーバー）・`--balance`（件数をならす）・`--seconds 60`（計算を長く）。
+
+### 手順 5: 結果を確かめる（全部満たさないと PO に出さない）
+`summary.json` で次を確かめる:
+
+| 項目 | 合格の条件 |
+|---|---|
+| `rule_errors` | **0** |
+| `unplaced` | 0。0 でなければ入らない理由を調べて PO に説明する（`--off`・`--allow-over` の試算が使える） |
+| `new_overlaps`・`new_late` | 0 |
+| `app_check.yardstick_match` | true |
+| `app_check.one_more_move_checked` | true |
+| `app_check.one_more_move_missed` | **0**。1 以上なら `--seconds 60` で計算し直し、もう一度診断する |
+
+**二重の確認（作り直しの後は必ず）**: 手順 4 の出力の `week.json` で、同じ利用者が同じ日に 2 件以上入っていないかを見る。
+- 出た行のうち、2 名体制（同じ `visit_group_id`）や、マスターで 1 日 2 回にしている利用者は正常。
+- `reset_v2` や `manual_week` の行と `auto` の行が時刻違いで並んでいれば、作り直しで二重になったもの。PO に報告して扱いを決めてもらう（今週だけ取消など・アプリの操作で）。
+```bash
+python - "docs/reports/<手順 4 の出力>/week.json" <<'EOF'
+import json, sys, collections
+d = json.load(open(sys.argv[1], encoding='utf-8'))
+by = collections.defaultdict(list)
+for v in d['visits']:
+    by[(v['patient_id'], v['visit_date'])].append(v)
+for (pid, day), vs in sorted(by.items(), key=lambda x: x[0][1]):
+    if len(vs) > 1:
+        print(day, pid[:8], [(v['start_time'][:5], v['source'], (v['visit_group_id'] or '')[:8]) for v in vs])
+EOF
+```
+（利用者 ID の頭 8 桁だけを出す。名前は出さない）
+- A4（`leveling-a4.pdf`）を開いて、崩れていないか目で見る（PDF は普段の Chrome と別のプロフィールで作る。`level.py` は対応済み）。
+- 可動域 `locked` の枠が動いていないか見る（D-1 で「道具を直す」を選んでいなければ）。Excel の「変更一覧」の時刻の変更を、手順 2 の locked の一覧と照らし合わせる。
+
+### 手順 6: PO への報告（日本語・平易に・利用者名入りのファイルは場所だけ伝える）
+次を伝える。
+- 今の盤面（作り直した直後＝全件担当なし）と案の比較: 重なり・担当なし・移動（分・km）・移動が多すぎる順路・あと 1 手。
+- 気を付ける点: マネージャーの勤務超え・拠点またぎ・時刻を動かす件数（最大何分か）・前回と同じ職員・昼休み 45 分未満・Jev の要確認。
+- ファイルの場所: A4（1 ページ目がアプリの物差しでの診断）・Excel（概要・変更一覧・今の重なり・決まりの検査・気を付ける点・アプリの物差し）。
+- そのうえで、AskUserQuestion で最終判断を聞く。選択肢は「適用する／適用しない／条件を変えて計算し直す」。
+
+### 手順 7: 適用する場合（PO の了承の後）
+1. **反映のしかたを PO と決める（D-4）**。まだ仕組みは無い。
+   - (a) 人がアプリの画面で操作する。
+     - 作り直した後は訪問の主担当が空なので、最大で約 140 件の担当付けと、時刻を動かす約 20〜30 件の「今週だけ移動」になる（件数は手順 3-6 の結果で確かめる）。
+     - 日ごと・職員ごとに A4 を見ながら行う。
+     - 10/2 の案の規模なら半日ほどかかる見込み（目安・未検証）。
+   - (b) 反映の仕組みを作る。「今週だけ」の操作 API を順に呼ぶ形で、スナップショット → 実行 → 検査の流れ。作る時間が要り、PO の了承とレビューも必要。
+2. 反映の前に **pg_dump でバックアップ**を取る。
+3. 反映したら、**もう一度 `level.py` で診断する**。今の盤面の重なり 0・移動が間に合わない並び 0・担当なし 0、移動の合計が案とほぼ同じであることを確かめる。
+4. カイポケへ送る（日中・いつもの手順・成否は export で確かめる）。送る前に PO の了承を取る。
+5. 結果をこの手順書の §7 に記録し、`session-2026-10-03-HANDOFF.md` を作る。
+
+### 手順 7': 適用しない場合
+- 本番は手順 3 の作り直しの直後（訪問の主担当が空・重なりも見ていない状態）のまま残る。**このままでは現場に出せない。**
+- PO と次のどれにするかを決める: 画面で人が組む／条件を変えて道具をもう一度回す／§2-3 の方法で作り直す前の状態に戻す（PO の了承の後）。
+
+---
+
+## 5. PO に決めてもらうこと（判断の一覧）
+
+| 番号 | 決めること | 選択肢（案） | いつまでに |
+|---|---|---|---|
+| D-1 | 可動域 `locked` の枠を、道具が時刻を動かしてよいか | (1) 川名さんがマスターで可動域を正しく付け直し、道具も locked は動かさないよう直す（道具の改修は小さい・テストを付ける）／(2) 今のまま（希望の時間帯の中なら動かす）／(3) 道具だけ直す | 手順 4 の前 |
+| D-2 | 週42 を「週を生成」で作り直すか、誰がいつ押すか | 画面で川名さんか PO が押す（admin の権限が要る）。Claude が API で押すのは、ログインの方法を PO がその場で決めた場合だけ。押す前に pg_dump。作り直さない場合、マスターで変えた時刻は週42 に入らない（§2-2） | 手順 3 の前 |
+| D-2' | 押した後に戻す必要が出たときの戻し方 | 週42 だけ SQL で戻す（おすすめ）／データベースごと戻す（§2-3） | 手順 3 の前に決めておく |
+| D-3 | 残っている `reset_v2` 7 件・`manual_week` 1 件の扱い | 残す（二重は手順 5 で確認）／作り直す前に人が消す（アプリの操作） | 手順 3 の前 |
+| D-4 | 案の反映のしかた | (a) 人が画面で／(b) 反映の仕組みを作る | 手順 7 の前 |
+| D-5 | 決まりの「仮」4 点（`week-leveling-rules-2026-10-02.md` §4） | 予定の前後 15 分も塞ぐ／予定と昼休みは重なってよい／昼休みは 30 分を必ず取る／ローテーションの重み 200・100・50。決めなければ「仮」のまま計算する | 手順 4 の前 |
+| D-6 | 植田様の金曜の固定枠が範囲最適化で稲D に変わっている（10/2 14:25 川名さん） | 意図どおりか。マスターの作業で直すか | 手順 1 で |
+
+---
+
+## 6. ファイル・コマンドの一覧
+
+| 内容 | 場所 |
+|---|---|
+| この手順書 | `docs/plans/week42-final-leveling-runbook-2026-10-03.md` |
+| 10/2 の総括 | `docs/plans/session-2026-10-02-HANDOFF.md`（§10 が夜の作業） |
+| ならしの決まり（正典） | `docs/plans/week-leveling-rules-2026-10-02.md` |
+| 道具 | `docs/tools/week-leveling/`（`level.py` 入口・`extract.py`・`solver.py`・`report.py`・`diagnose.py`・`app_yardstick.py`・`jev_check.py`・テスト 2 本・`README.md`） |
+| スキル | `.claude/skills/week-leveling/SKILL.md` |
+| 設定（git 管理外） | `docs/tools/week-leveling/config.local.json` |
+| 10/2 の帳票（git 管理外・利用者名入り・公開しない） | `docs/reports/2026-10-02-*week42*`。最新は `docs/reports/2026-10-02-appcheck-week42/full2/`。本番の診断の再現の記録は `docs/reports/2026-10-02-appcheck-week42/prod_health.json` |
+| 週の生成 | `backend/app/api/v1/schedule.py`（`/generate-week-only`）・`backend/app/services/scheduling/layer1_expander.py` |
+| アプリの診断 | `backend/app/services/scheduling/schedule_health.py`・`frontend/components/schedule/v2/ScheduleHealthDialog.tsx`（1.5 倍の基準） |
+
+## 7. 実施記録（ここに追記していく）
+
+| 日時 | した人 | したこと | 結果 |
+|---|---|---|---|
+| 2026-10-02 23:30 | Claude（PO と） | この手順書を作成。案の診断（アプリの物差し）を追加（`7ddea13`） | 週42 は未反映のまま |
+| 2026-10-02 23:50 | Claude | 別の担当（verifier）がこの手順書をコードと突き合わせた。「作り直すと全件担当なし」は不正確（コースの担当は残る）と指摘 → 本番を読んで確かめ、§2-2・手順 3-6 を直した。戻し方（§2-3）・カイポケ送信の確認 SQL・二重の確認の手順を追加。週42 は未送信と確認 | 本番は読んだだけ |
