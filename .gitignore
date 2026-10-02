@@ -84,3 +84,6 @@ _secrets/
 /docs/reports/
 /スケジュールデータ/
 /CareLink-handoff.zip
+
+# 週のならし: 事業所ごとの設定 (職員コード・サーバー)
+/docs/tools/week-leveling/config.local.json

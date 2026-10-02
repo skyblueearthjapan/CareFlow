@@ -1,0 +1,8 @@
+{
+  "_説明": "コピーして config.local.json にする（git に入れない）。職員は職員コードで書く。拠点は offices.short_label。",
+  "server": "root@<本番サーバー>",
+  "container": "carelink-postgres",
+  "cap_regular": 6,
+  "regular": { "S0xx": "稲", "S0yy": "津" },
+  "manager": { "S0zz": ["稲"], "S0ww": ["稲", "津"] }
+}
