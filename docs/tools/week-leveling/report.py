@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import html
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -219,7 +219,9 @@ def flags_for(out, hist_by_day) -> dict:
     return flags
 
 
-def write_excel(path: Path, title: str, d, visits, out, errors, warnings, cap_regular, jev=None):
+def write_excel(
+    path: Path, title: str, d, visits, out, errors, warnings, cap_regular, jev=None, diag=None
+):
     S = {s["id"]: s["name"] for s in d["staff"]}
     new = new_assignments(out)
     cur = {v.id: (v.cur_staff, v.fixed_start) for v in visits}
@@ -277,6 +279,9 @@ def write_excel(path: Path, title: str, d, visits, out, errors, warnings, cap_re
     ws.append([f"正規が {cap_regular} 名を超える日（人・日）", "—", over_days])
     ws.append(["決まりの検査で見つかった問題", "—", len(errors)])
     ws.append(["気を付ける点（勤務超え・昼休み 45 分未満など）", "—", len(warnings)])
+    if diag:
+        ws.append(["アプリの物差し: 移動が平均の 1.5 倍を超える（人・日）", len(diag["cur_high_days"]), len(diag["new_high_days"])])
+        ws.append(["アプリの物差し: あと 1 手で良くなる所（見落とし）", "—", diag["missed"]])
     ws.append([])
     staff_order = []
     for _day, (vehicles, _r, _dr) in sorted(out.items()):
@@ -348,6 +353,8 @@ def write_excel(path: Path, title: str, d, visits, out, errors, warnings, cap_re
         [90],
     )
     sheet("気を付ける点", ["内容"], [[w] for w in warnings] or [["なし"]], [90])
+    if diag:
+        _diag_sheet(wb, diag, bold, hdr, warn)
     wb.save(path)
     return {
         "cur_overlaps": len(cur_ov),
@@ -362,7 +369,7 @@ def write_excel(path: Path, title: str, d, visits, out, errors, warnings, cap_re
     }
 
 
-def write_a4(path: Path, title: str, d, visits, out, hist_by_day, jev=None):
+def write_a4(path: Path, title: str, d, visits, out, hist_by_day, jev=None, diag=None):
     S = {s["id"]: s["name"] for s in d["staff"]}
     e = html.escape
     jev = jev or {}
@@ -440,12 +447,132 @@ h2 {{ font-size:13px; margin:0 0 2mm; }} h2 small {{ font-weight:normal; color:#
 .mv {{ color:#9c9087; font-size:8.5px; text-align:center; }}
 .tg {{ display:inline-block; border-radius:2px; padding:0 2px; margin:0.3mm 0.6mm 0 0; font-size:8.5px; }}
 .t {{ background:#fbf1dd; }} .s {{ background:#e7f4f0; }} .x {{ background:#e8e4f7; }} .o {{ background:#fde2e4; }} .r {{ background:#eee; }} .j {{ background:#ffe08a; }}
+.dg {{ border-collapse:collapse; margin:2mm; font-size:11px; }} .dg th, .dg td {{ border:1px solid #e2dacd; padding:1mm 3mm; text-align:right; }} .dg th:first-child {{ text-align:left; font-weight:normal; }}
+h3 {{ font-size:11.5px; margin:3mm 2mm 1mm; }} ul {{ margin:0 2mm; padding-left:5mm; font-size:10px; }}
 .pr {{ font-size:8.5px; color:#0b6e5e; font-weight:normal; }} .em {{ color:#9c9087; }} .dr {{ color:#b00; margin-top:2mm; }}
 </style></head><body>
 <h1>{e(title)} — 案（まだ反映していません）</h1>
 <div class="note">決まり: 曜日は変えない／固定の時刻 → 希望の範囲内／正規の人数上限／勤務時刻を守る（マネージャーはあふれの受け皿）／NG・女性限定は絶対／同じ建物の 2 名は 1 人で 90 分枠／昼休み 11:30〜13:30／移動は直線 20km/h＋ゆとり 8 分。
 札: <span class="tg t">時刻 →</span> 元の時刻／<span class="tg s">今 ○○</span> 今の担当／<span class="tg x">拠点またぎ</span>／<span class="tg o">勤務超え</span>／<span class="tg r">前回と同じ</span>／<span class="tg j">Jev 要確認</span></div>
-{"".join(pages)}
+{diag_page(diag) if diag else ""}{"".join(pages)}
 </body></html>""",
         encoding="utf-8",
     )
+
+
+# ---------------------------------------------------------------- アプリの物差し (diagnose.py)
+
+DIAG_NOTE = (
+    "アプリの「スケジュール診断」と同じ計算（直線距離・{speed:g}km/h・別の住所へ移るとき ゆとり {buf} 分・"
+    "1 件目への移動は数えない）で、今の盤面とならし案を「職員 × 日 = 1 本の順路」として数えた。"
+    "アプリの画面はコースごとに数えるので、画面の数字とは分け方が違う。"
+)
+
+
+def _diag_summary_rows(diag):
+    c, n = diag["cur"], diag["new"]
+    return [
+        ["移動（分）", c["travel_minutes"], n["travel_minutes"]],
+        ["移動の距離（km）", c["travel_km"], n["travel_km"]],
+        ["ゆとり（分）", c["buffer_minutes"], n["buffer_minutes"]],
+        ["待ち時間（分・移動しても余る空き）", c["gap_minutes"], n["gap_minutes"]],
+        ["担当のある訪問（件）", c["visits"], n["visits"]],
+        ["移動が その日の平均の 1.5 倍を超える（人・日）", len(diag["cur_high_days"]), len(diag["new_high_days"])],
+        ["週の移動が 職員の平均の 1.5 倍を超える（人）", len(diag["cur_high_week"]), len(diag["new_high_week"])],
+    ]
+
+
+def _diag_sheet(wb, diag, bold, hdr, warn):
+    ws = wb.create_sheet("アプリの物差し")
+    cfg = diag["config"]
+    ws.append([DIAG_NOTE.format(speed=cfg["travel_speed_kmh"], buf=cfg["visit_buffer_min"])])
+    ws.append(
+        [
+            "物差しの一致（道具の移動の計算 = アプリの計算）: "
+            + ("全順路で一致" if diag["yardstick_match"] else "食い違いあり " + "、".join(diag["yardstick_mismatch"]))
+        ]
+    )
+    ws.append([])
+    ws.append(["", "今の盤面", "ならし案"])
+    for c in ws[ws.max_row]:
+        c.font, c.fill = bold, hdr
+    for r in _diag_summary_rows(diag):
+        ws.append(r)
+    ws.append([])
+    ws.append(["移動が多い順路（案）", "職員", "移動(分)", "km", "その日の平均", "いちばん長い移動"])
+    for c in ws[ws.max_row]:
+        c.font, c.fill = bold, hdr
+    for h in diag["new_high_days"] or []:
+        ws.append([h["day"], h["staff"], h["travel_minutes"], h["travel_km"], h["day_avg"], h["longest_leg"]])
+    if not diag["new_high_days"]:
+        ws.append(["なし"])
+    ws.append([])
+    ws.append(["あと 1 手", "日", "手", f"減る移動＋ゆとり(分・{diag['threshold_min']} 分以上)", "選ばなかった理由"])
+    for c in ws[ws.max_row]:
+        c.font, c.fill = bold, hdr
+    for mv in diag["moves"]:
+        ws.append([mv["kind"], mv["label"], mv["move"], mv["saving_min"], mv["why_not"]])
+        if mv["kind"] == "見落とし":
+            for c in ws[ws.max_row]:
+                c.fill = warn
+    if not diag.get("moves_checked", True):
+        ws.append(["確認していません（案が決まりの検査に落ちている・入らない訪問がある）"])
+    elif not diag["moves"]:
+        ws.append(["なし（決まりを守ったまま 1 手で良くなる所は残っていない）"])
+    ws.append([])
+    ws.append(["日", "職員", "今 件", "今 移動(分)", "今 km", "案 件", "案 移動(分)", "案 km", "案 待ち時間(分)"])
+    for c in ws[ws.max_row]:
+        c.font, c.fill = bold, hdr
+    for r in diag["rows"]:
+        ws.append(
+            [r["day"], r["staff"], r["cur_visits"], r["cur_travel"], r["cur_km"],
+             r["new_visits"], r["new_travel"], r["new_km"], r["new_gap"]]
+        )
+    for col, w in zip("ABCDEFGHI", [34, 14, 60, 22, 40, 9, 11, 9, 14]):  # noqa: B905
+        ws.column_dimensions[col].width = w
+
+
+def diag_page(diag) -> str:
+    e = html.escape
+    cfg = diag["config"]
+    rows = "".join(
+        f"<tr><th>{e(str(a))}</th><td>{e(str(b))}</td><td><b>{e(str(c))}</b></td></tr>"
+        for a, b, c in _diag_summary_rows(diag)
+    )
+    hi = "".join(
+        f"<li>{e(h['day'])} {e(h['staff'])}: 移動 {e(str(h['travel_minutes']))} 分（{e(str(h['travel_km']))} km・その日の平均 {e(str(h['day_avg']))} 分）"
+        f" — {e(h['longest_leg'])}</li>"
+        for h in diag["new_high_days"]
+    ) or "<li>なし</li>"
+    missed = [m for m in diag["moves"] if m["kind"] == "見落とし"]
+    declined = [m for m in diag["moves"] if m["kind"] != "見落とし"]
+    reasons = Counter(r for m in declined for r in m["why_not"].split("・") if r)
+    mv = "".join(
+        f"<li><b>見落とし</b> {e(m['label'])} {e(m['move'])}（−{m['saving_min']} 分）</li>" for m in missed[:10]
+    ) + "".join(
+        f"<li>{e(m['label'])} {e(m['move'])}（−{m['saving_min']} 分）— 選ばなかった理由: {e(m['why_not'])}</li>"
+        for m in declined[:5]
+    ) + (
+        f"<li>わざと選ばなかった手は全部で {len(declined)} 件（理由: "
+        + "、".join(f"{e(r)} {n} 件" for r, n in reasons.most_common())
+        + "）。一覧は Excel の「アプリの物差し」</li>"
+        if declined
+        else ""
+    ) or "<li>なし（決まりを守ったまま 1 手で良くなる所は残っていない）</li>"
+    if not diag.get("moves_checked", True):
+        verdict = "案が決まりの検査に落ちているので、あと 1 手の確認はしていません（先に検査の問題を直す）。"
+    elif not missed:
+        verdict = "アプリの物差しで見ても、決まりを守ったまま 1 手で良くなる所は残っていません。"
+    else:
+        verdict = (
+            f"1 手で良くなる所が {len(missed)} 件残っています（計算の打ち切りの可能性）。"
+            "--seconds を増やして計算し直すと取り込める可能性があります。計算し直した後にもう一度この診断を確かめてください。"
+        )
+    return f"""<section class="pg"><h2>アプリの物差しで見た案（スケジュール診断と同じ計算）</h2>
+<div class="note">{e(DIAG_NOTE.format(speed=cfg["travel_speed_kmh"], buf=cfg["visit_buffer_min"]))}
+物差しの一致: {"全順路で一致" if diag["yardstick_match"] else "食い違いあり"}</div>
+<p style="font-size:12px;margin:2mm"><b>結論:</b> {e(verdict)}</p>
+<table class="dg"><tr><th></th><th>今の盤面</th><th>ならし案</th></tr>{rows}</table>
+<h3>移動が その日の平均の 1.5 倍を超える順路（案）</h3><ul>{hi}</ul>
+<h3>あと 1 手（{diag["threshold_min"]} 分以上 減るもの・1 手ずつの評価で、同時に入れると足し算にならない）</h3><ul>{mv}</ul>
+</section>"""

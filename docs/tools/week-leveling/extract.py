@@ -1,6 +1,6 @@
 """本番から 1 週分の材料を読み取り専用で取り出す (ssh → psql)。書き込みは一切しない。
 
-出力: <out>/week.json (訪問・利用者・職員・勤務・休み・NG・固定枠・事業所) と
+出力: <out>/week.json (訪問・利用者・職員・勤務・休み・NG・固定枠・事業所・移動の設定) と
       <out>/history.json (直前 4 週の担当歴 = ローテーション用)。利用者名を含むので git に入れない。
 """
 
@@ -30,6 +30,9 @@ select json_build_object(
    from patients p where p.id in (select patient_id from visits
      where visit_date between '{monday}' and '{sunday}' and deleted_at is null)) x),
  'ng', (select json_agg(row_to_json(x)) from (select patient_id, staff_id from patient_ng_staff) x),
+ -- 移動の速さ・ゆとり (アプリの診断と同じ設定。0 行なら既定値)
+ 'scheduling_settings', (select row_to_json(x) from (
+   select visit_buffer_min, travel_speed_kmh from scheduling_settings where is_singleton limit 1) x),
  'offices', (select json_agg(row_to_json(x)) from (
    select id, name, short_label, lat, lng, operating_weekdays from offices where deleted_at is null) x),
  'staff', (select json_agg(row_to_json(x)) from (

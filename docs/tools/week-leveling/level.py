@@ -11,6 +11,7 @@
   --over-before-manager   マネージャーより先に「少しオーバー」で吸収する
   --balance               正規の件数をならす (平均を超える分に重み)
   --jev                   変更に Jev の「要確認」の目安を付ける (記号と数字だけ送る)
+  --no-app-check          アプリの物差しでの診断 (diagnose.py) を飛ばす (既定は行う)
   --from-dir <dir>        取り出し済みの week.json / history.json を使う (本番に繋がない)
   --seconds 30            1 日あたりの計算時間 (秒)
 """
@@ -51,7 +52,7 @@ def to_pdf(html_path: Path) -> Path | None:
     exe = next((p for p in CHROME if p.exists()), None)
     if exe is None:
         return None
-    pdf = html_path.with_suffix(".pdf")
+    pdf = html_path.resolve().with_suffix(".pdf")
     # 普段使いの Chrome と別のプロフィールで動かす (同じだと Chrome が終わらず待たされる)
     with tempfile.TemporaryDirectory() as profile:
         try:
@@ -84,6 +85,7 @@ def main():
     ap.add_argument("--over-before-manager", action="store_true")
     ap.add_argument("--balance", action="store_true")
     ap.add_argument("--jev", action="store_true")
+    ap.add_argument("--no-app-check", action="store_true")
     ap.add_argument("--from-dir")
     ap.add_argument("--seconds", type=int, default=30)
     ap.add_argument("--config", default=str(HERE / "config.local.json"))
@@ -153,11 +155,24 @@ def main():
         except Exception as exc:  # noqa: BLE001 — Jev が使えなくても案は出す
             print(f"Jev の確認は飛ばしました: {exc}", flush=True)
 
+    diag = None
+    if not a.no_app_check:
+        from diagnose import diagnose
+
+        names = {s["id"]: s["name"] for s in d["staff"]}
+        try:
+            diag = diagnose(
+                d, visits, out, hist_by_day, cap, a.allow_over, opts, names,
+                log=lambda m: print(m, flush=True),
+            )
+        except Exception as exc:  # noqa: BLE001 — 診断が使えなくても案は出す
+            print(f"アプリの物差しでの診断は飛ばしました: {exc}", flush=True)
+
     title = f"週{iso_week}（{monday:%Y/%m/%d}〜{monday + timedelta(days=6):%m/%d}）ならし案"
     stats = write_excel(
-        out_dir / "leveling.xlsx", title, d, visits, out, errors, warnings, cap, jev
+        out_dir / "leveling.xlsx", title, d, visits, out, errors, warnings, cap, jev, diag
     )
-    write_a4(out_dir / "leveling-a4.html", title, d, visits, out, hist_by_day, jev)
+    write_a4(out_dir / "leveling-a4.html", title, d, visits, out, hist_by_day, jev, diag)
     pdf = to_pdf(out_dir / "leveling-a4.html")
 
     placed = new_assignments(out)
@@ -185,6 +200,25 @@ def main():
             **jev_info,
         }
         if a.jev
+        else None,
+        # 名前は入れない (数だけ)。中身は Excel の「アプリの物差し」と A4 の 1 ページ目
+        "app_check": {
+            "yardstick_match": diag["yardstick_match"],
+            "cur_travel_minutes": diag["cur"]["travel_minutes"],
+            "new_travel_minutes": diag["new"]["travel_minutes"],
+            "cur_travel_km": diag["cur"]["travel_km"],
+            "new_travel_km": diag["new"]["travel_km"],
+            "cur_gap_minutes": diag["cur"]["gap_minutes"],
+            "new_gap_minutes": diag["new"]["gap_minutes"],
+            "cur_high_days": len(diag["cur_high_days"]),
+            "new_high_days": len(diag["new_high_days"]),
+            "cur_high_week": len(diag["cur_high_week"]),
+            "new_high_week": len(diag["new_high_week"]),
+            "one_more_move_checked": diag["moves_checked"],
+            "one_more_move_missed": diag["missed"],
+            "one_more_move_declined": diag["declined"],
+        }
+        if diag
         else None,
         "files": {
             "excel": str(out_dir / "leveling.xlsx"),

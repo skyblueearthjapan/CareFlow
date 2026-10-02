@@ -22,7 +22,7 @@ description: らく助（CareFlow）の週や 1 日の訪問を、決まり（1 
    - 出力: `docs/reports/<日時>-week<NN>-leveling<印>/`（`leveling.xlsx`・`leveling-a4.pdf`/`.html`・`summary.json`・取り出した `week.json`/`history.json`）。**利用者名入り。git に入れない・Artifact 等で公開しない。**
    - 同じデータで条件だけ変えて試すときは `--from-dir <前回の出力>` で本番に繋がずに回す。
    - 1 日 30 秒 × 日数ほどかかる。長い週は `run_in_background`。
-3. **結果を確かめる**: `summary.json` の `rule_errors` が 0 であること（0 でなければ案を出さずに原因を調べる）。`unplaced`（入らない）・`manager_overtime_visits`・`cross_office_visits`・`same_as_last_visits`・`max_move_min` を PO に伝える。A4 は Chrome の画面写し（`--screenshot`）で崩れていないか見る。
+3. **結果を確かめる**: `summary.json` の `rule_errors` が 0 であること（0 でなければ案を出さずに原因を調べる）。`app_check`（アプリの物差しでの診断）の `yardstick_match` が true であること・`one_more_move_checked` が true かつ `one_more_move_missed`（あと 1 手で良くなる見落とし）が 0 であること（0 でなければ `--seconds` を増やして計算し直す）。移動が平均の 1.5 倍を超える順路は A4 の 1 ページ目と Excel の「アプリの物差し」に理由（いちばん長い移動）付きで出る。`unplaced`（入らない）・`manager_overtime_visits`・`cross_office_visits`・`same_as_last_visits`・`max_move_min` を PO に伝える。A4 は Chrome の画面写し（`--screenshot`）で崩れていないか見る。
 4. **PO へ報告**（日本語・平易に）: 今の盤面と案の比較（重なり・担当なし・移動）、気を付ける点、ファイルの場所。反映は PO の了承の後に、アプリの操作（今週だけ移動・担当変更）で行う。
 
 ## 守ること
