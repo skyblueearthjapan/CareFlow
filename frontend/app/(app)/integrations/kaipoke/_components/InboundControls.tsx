@@ -63,6 +63,7 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
     eventsPlan,
     eventsError,
     applyError,
+    applyRetryable,
     hasEventChanges,
     eventsOnly,
     setEventsOnly,
@@ -348,11 +349,25 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                 variant="destructive"
                 size="sm"
                 onClick={() => setConfirm(true)}
-                disabled={!credentialsConfigured || !canApply || applying || busy || !!applyError}
+                disabled={
+                  !credentialsConfigured ||
+                  !canApply ||
+                  fetching ||
+                  applying ||
+                  busy ||
+                  (!!applyError && !applyRetryable)
+                }
                 data-testid="smart-apply-button"
               >
                 {applying ? '実行中…' : '❸ らく助へ取り込む'}
               </Button>
+              {/* ❶の後半 (イベントの読み込み) が終わるまでは押せない — 読み込み中は
+                  カイポケが塞がっていて、押すと kaipoke busy で落ちる (本番 2026-10-02)。 */}
+              {fetching && canApply && (
+                <span className="text-xs text-text-muted" data-testid="smart-apply-wait">
+                  読み込みが終わると押せます
+                </span>
+              )}
               {!canApply && (
                 <span className="text-xs text-text-muted">取り込む対象がありません</span>
               )}
@@ -366,7 +381,7 @@ export function InboundControls({ vm }: { vm: InboundVm }) {
                 <AlertTitle>取り込みに失敗しました</AlertTitle>
                 <AlertDescription>
                   {applyError}
-                  {' — ❶ プレビューを取り直してから再実行してください'}
+                  {!applyRetryable && ' — ❶ プレビューを取り直してから再実行してください'}
                 </AlertDescription>
               </Alert>
             )}

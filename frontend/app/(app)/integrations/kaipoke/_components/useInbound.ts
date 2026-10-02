@@ -23,6 +23,7 @@ import {
   useRestoreInboundSnapshot,
   useSmartInboundPreview,
 } from '@/lib/queries/integrations';
+import { ApiError } from '@/lib/api-client';
 import { apiErrorMessage } from '@/lib/api/errorMessage';
 import {
   INBOUND_HISTORY_OP_LABELS,
@@ -136,6 +137,9 @@ export function useInbound({
   // 「訪問は失敗・イベントは成功」の部分失敗が数秒で消えて成功に見えてしまう
   // (本番 9/15 の W38/W39 取込が丸ごと落ちたのに気付けなかった原因)。
   const [applyError, setApplyError] = useState<string | null>(null);
+  // 訪問 apply が「カイポケが別の処理中 (409 kaipoke busy)」で止まった。サーバーは何も
+  // 書かずに戻している (rollback) ので、❶を取り直さずにそのまま❸を押し直してよい。
+  const [applyRetryable, setApplyRetryable] = useState(false);
   const [confirm, setConfirm] = useState(false);
   // 取り込み対象 (kaipoke-event-two-way-design.md §3-③): false = 訪問＋イベント (従来) /
   // true = イベントのみ (訪問には一切触れない・RPA 1オペで所要も約半分)
@@ -270,6 +274,7 @@ export function useInbound({
     setEventsPlan(null);
     setEventsError(null);
     setApplyError(null);
+    setApplyRetryable(false);
   };
 
   // モード切替時は取得済みプランを破棄する (「訪問＋イベント」で取得したプランを
@@ -317,6 +322,7 @@ export function useInbound({
   /** 訪問の読み込みだけをやり直す (失敗 Alert の「もう一度読み込む」)。イベントの結果は残す。 */
   const retrySmartPreview = async () => {
     setApplyError(null);
+    setApplyRetryable(false);
     try {
       const plan = await smartPreview.mutateAsync({ weekStart: weekStartStr });
       if (!eventsOnlyRef.current) {
@@ -336,6 +342,7 @@ export function useInbound({
     if (!hasVisitTarget && !hasEventTarget) return;
     setConfirm(false);
     setApplyError(null);
+    setApplyRetryable(false);
     const parts: string[] = [];
     let failed = false;
 
@@ -361,6 +368,14 @@ export function useInbound({
         }
       } catch (e) {
         failed = true;
+        if (e instanceof ApiError && e.status === 409 && apiErrorMessage(e) === 'kaipoke busy') {
+          // 本番 2026-10-02: ❶直後のイベント読み込み (RPA 約 30 秒) と重なった。
+          setApplyRetryable(true);
+          setApplyError(
+            'カイポケが別の読み込み中でした（イベントの読み込みなど）。何も取り込んでいません。1 分ほど待ってから、もう一度「❸ らく助へ取り込む」を押してください',
+          );
+          return;
+        }
         // `e.message` は "API 422 Unprocessable Entity (/api/v1/...)" という機械向け
         // 文字列で、理由 (BE の detail) は body 側にある。現場が読めるのは detail の方。
         setApplyError(apiErrorMessage(e, '取り込みに失敗しました'));
@@ -441,6 +456,7 @@ export function useInbound({
     eventsPlan,
     eventsError,
     applyError,
+    applyRetryable,
     hasEventChanges,
     // 取り込み対象モード (③イベントのみ取込)
     eventsOnly,

@@ -10,6 +10,8 @@
  *   - 訪問成功 → イベント失敗の順では「訪問は適用済み」を Alert に含める
  *   - 失敗後は❸を押せない (古いプレビューでの再実行 = 二重適用を封じる)
  *   - 再プレビュー (❶) でクリアされる
+ *   - イベントの読み込み中は❸を押せない (本番 2026-10-02: 読み込み中に押して kaipoke busy)
+ *   - kaipoke busy (409) は何も書いていないので、❶を取り直さずに❸を押し直せる
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -22,6 +24,7 @@ const applySmartMutateAsync = vi.fn();
 const applyEventsMutateAsync = vi.fn();
 const idleQuery = { data: undefined, isLoading: false, isError: false, isSuccess: true };
 const idleMutation = { mutateAsync: vi.fn(), mutate: vi.fn(), isPending: false, isError: false };
+let eventsPreviewPending = false;
 
 vi.mock('@/lib/queries/integrations', () => ({
   useInboundEligibility: () => ({ ...idleQuery, data: { eligible: true } }),
@@ -42,6 +45,7 @@ vi.mock('@/lib/queries/integrations', () => ({
   useEventsInboundPreview: () => ({
     ...idleMutation,
     mutateAsync: eventsPreviewMutateAsync,
+    isPending: eventsPreviewPending,
     error: null,
   }),
   useApplyEventsInbound: () => ({
@@ -146,6 +150,7 @@ async function fetchThenApply(user: ReturnType<typeof userEvent.setup>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  eventsPreviewPending = false;
   smartPreviewMutateAsync.mockResolvedValue(SMART_PLAN);
   eventsPreviewMutateAsync.mockResolvedValue(EVENTS_PLAN);
   applyEventsMutateAsync.mockResolvedValue({ added: 1, updated: 0, deleted: 0, failed: 0 });
@@ -221,6 +226,50 @@ describe('InboundControls — ❸取り込みの失敗', () => {
 
     await fetchThenApply(user);
 
+    await waitFor(() => expect(applyEventsMutateAsync).toHaveBeenCalledTimes(1));
+    expect(toastSuccess).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('smart-apply-error')).not.toBeInTheDocument();
+  });
+
+  it('イベントの読み込み中は❸を押せない', async () => {
+    // 訪問の読み込みが終わった時点で、イベントの読み込み (後半) が走り出す。
+    smartPreviewMutateAsync.mockImplementation(async () => {
+      eventsPreviewPending = true;
+      return SMART_PLAN;
+    });
+    eventsPreviewMutateAsync.mockReturnValue(new Promise(() => {}));
+    const user = userEvent.setup();
+    render(<Harness />);
+
+    await user.click(screen.getByRole('button', { name: /（訪問＋イベント）/ }));
+    await waitFor(() => expect(screen.getByTestId('smart-apply-button')).toBeInTheDocument());
+    expect(screen.getByTestId('smart-apply-button')).toBeDisabled();
+    expect(screen.getByTestId('smart-apply-wait')).toBeInTheDocument();
+  });
+
+  it('kaipoke busy (409) は❶を取り直さずに❸を押し直せる', async () => {
+    applySmartMutateAsync
+      .mockRejectedValueOnce(
+        new ApiError('API 409 Conflict (/api/v1/integrations/smart-inbound-apply)', 409, {
+          detail: 'kaipoke busy',
+        }),
+      )
+      .mockResolvedValueOnce({ diff: null, replace: null });
+    const user = userEvent.setup();
+    render(<Harness />);
+
+    await fetchThenApply(user);
+
+    await waitFor(() => expect(screen.getByTestId('smart-apply-error')).toBeInTheDocument());
+    const text = screen.getByTestId('smart-apply-error').textContent ?? '';
+    expect(text).toContain('何も取り込んでいません');
+    expect(text).not.toContain('kaipoke busy');
+    expect(text).not.toContain('❶ プレビューを取り直して');
+    expect(applyEventsMutateAsync).not.toHaveBeenCalled();
+    expect(screen.getByTestId('smart-apply-button')).toBeEnabled();
+
+    await user.click(screen.getByTestId('smart-apply-button'));
+    await user.click(screen.getByRole('button', { name: '取り込む' }));
     await waitFor(() => expect(applyEventsMutateAsync).toHaveBeenCalledTimes(1));
     expect(toastSuccess).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId('smart-apply-error')).not.toBeInTheDocument();

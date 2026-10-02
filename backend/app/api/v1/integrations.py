@@ -5488,6 +5488,8 @@ async def smart_inbound_apply(
                 source_op="smart-apply",
             )
         except KaipokeBusyError as exc:
+            # 何も書かずに戻す。画面 (useInbound.ts) はこの detail の文字列で
+            # 「❶を取り直さずに押し直せる」と判断するので、文言を変えないこと。
             await db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail="kaipoke busy"
