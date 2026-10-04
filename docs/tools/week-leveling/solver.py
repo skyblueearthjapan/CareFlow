@@ -1,7 +1,7 @@
 """週のならし — 計算の本体 (OR-Tools)。DB には書かない。
 
 決まりの正典 = docs/plans/week-leveling-rules-2026-10-02.md
-  * アプリの既定: 直線 20km/h・別住所へ 8 分・昼休み 11:30〜13:30 (30 分以上)・5 分刻み・
+  * アプリの既定: 直線 20km/h・別住所へ 8 分・昼休み 11:30〜13:30 (45 分を目指し、入らない日だけ 30 分)・5 分刻み・
     始点 (事業所/自宅) からの移動は数えない・NG と女性限定は絶対・ローテーション。
   * PO 2026-10-02: 曜日は変えない／固定の時刻が第 1、だめなら希望の範囲の中／正規は 1 日 cap_regular 名まで／
     勤務時刻を守る (マネージャーはあふれの受け皿で、必要なら勤務時刻を超えて受ける)／同住所 2 名は 1 人で 90 分枠。
@@ -21,15 +21,21 @@ from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 SPEED_KMH = 20.0
 BUFFER_MIN = 8
 LUNCH_WIN = (11 * 60 + 30, 13 * 60 + 30)
-LUNCH_MIN_HARD = (
-    30  # アプリ: 60 → 45 → 30 (30 は警告)。ここでは 30 分を必ず取り、45/60 未満は検査で警告
-)
+LUNCH_MIN_HARD = 30  # 必ず取る昼休み (PO 2026-10-03)
+LUNCH_TARGET = 45  # なるべく取る昼休み。日ごとに 45 分で解き、入らない訪問が出た日だけ 30 分で解き直す
+# 予定の時間は昼休みに数えない (PO 2026-10-03: 会議の時間を昼休みにしない)。
+# OR-Tools は休憩どうしの重なりを防がない (空きに合計で収まるかだけを見る) ので、昼休みの開始の候補から
+# 予定そのものと重なる時刻を除く (lunch_starts・検査の report.lunch_free と同じ予定の時間)。
+# 合計で収まるかは前後 15 分込みの予定で数えるので、予定の近くでは控えめになる。
+# その人が予定のために 45 分を置けなければ 30 分、30 分も置けない (予定で昼の窓が埋まる) なら昼休みを置かない
+# (検査も同じ人・日を「気を付ける点」に出す)。
 BUSINESS_END = 18 * 60
 NOON = 12 * 60  # 午前休 / 午後休の境目 (アプリの allocation / dashboard と同じ 12:00)
 EVENT_BUFFER_MIN = 15  # 予定の前後 (アプリの自動スタッフ割当 layer3 と同じ。blocking の印は見ない)
 PAIR_BLOCK_MIN = 90  # 同住所 2 名 = 90 分の枠
 SAME_ADDR_DEG = 0.001  # 約 100m (アプリと同じ)
 DRIFT_OK = 0  # 希望の範囲の外へは出さない (PO: 固定の時刻 → 希望の範囲の中だけ)
+FIXED_JOIN_MAX_GAP = 30  # 固定の時刻が希望の範囲からこれより離れていたら、間の時刻は選ばない (join_fixed)
 
 
 # 目的関数の重み (移動 1 分 = 1)
@@ -86,6 +92,7 @@ class Visit:
     ng: set[str]
     cur_staff: str | None
     cur_course: str | None
+    new: bool = False  # 特別訪問週間の○から足す訪問 (まだ週に無い。fixed_start は希望の範囲の始め)
 
 
 @dataclass
@@ -117,10 +124,40 @@ class Staff:
     shift: dict[int, tuple[int, int]] = field(default_factory=dict)
     off: set[int] = field(default_factory=set)
     code: str = ""
-    events: dict[int, list[tuple[int, int]]] = field(default_factory=dict)  # 曜日 -> [(開始, 終了)]
+    events: dict[int, list[tuple[int, int]]] = field(default_factory=dict)  # 曜日 -> [(開始, 終了)] 前後 15 分込み
+    raw_events: dict[int, list[tuple[int, int]]] = field(default_factory=dict)  # 予定そのものの時間 (昼休みの判定)
 
 
-def load(path, hist_path, config: dict):
+def pref_window(wp: dict, dur: int) -> tuple[str, tuple[int, int] | None]:
+    """希望の時間帯 (開始してよい範囲)。固定は None (その訪問の時刻だけ)。"""
+    tt = wp.get("time_type") or "終日"
+    if tt == "固定":
+        return tt, None
+    if tt == "時間帯" and wp.get("preferred_start") and wp.get("preferred_end"):
+        return tt, (hm(wp["preferred_start"]), hm(wp["preferred_end"]))
+    if tt == "午前":
+        return tt, (9 * 60, 12 * 60 - 5)
+    if tt == "午後":
+        return tt, (13 * 60, BUSINESS_END - dur)
+    return tt, (9 * 60, BUSINESS_END - dur)
+
+
+def join_fixed(win: tuple[int, int], fs: int) -> tuple[int, int]:
+    """固定の時刻はいつでも候補。希望の時間帯の外なら、近い (FIXED_JOIN_MAX_GAP 分以内) ときだけ範囲をつなぐ。
+    離れているときは間の時刻 (固定でも希望でもない時刻) を選ばせず、固定の時刻のままにする
+    (2026-10-04: 固定 11:00・希望 17:00〜17:35 の訪問が 14:00 になった)。"""
+    lo, hi = win
+    if lo <= fs <= hi:
+        return win
+    if fs < lo - FIXED_JOIN_MAX_GAP or fs > hi + FIXED_JOIN_MAX_GAP:
+        return (fs, fs)
+    return (min(lo, fs), max(hi, fs))
+
+
+def load(path, hist_path, config: dict, opts: dict | None = None):
+    """opts: drop = 案から外す訪問 ID (先頭一致・今週だけ取消にする予定のもの) /
+    add_special = 特別訪問週間の未配置の○を、その日に訪問の無い日だけ「足す訪問」として入れる。"""
+    opts = opts or {}
     d = json.load(open(path, encoding="utf-8"))
     hist = json.load(open(hist_path, encoding="utf-8"))
     office_label = {o["id"]: o["short_label"] for o in d["offices"]}
@@ -173,6 +210,7 @@ def load(path, hist_path, config: dict):
                 st.events.setdefault(day.weekday(), []).append(
                     (max(0, a - EVENT_BUFFER_MIN), min(24 * 60, b + EVENT_BUFFER_MIN))
                 )
+                st.raw_events.setdefault(day.weekday(), []).append((a, b))
 
     no_loc = [p for p in d["patients"] if p["lat"] is None or p["lng"] is None]
     if no_loc:
@@ -182,24 +220,22 @@ def load(path, hist_path, config: dict):
     no_office = [p for p in d["patients"] if p["primary_office_id"] not in office_label]
     if no_office:
         raise ValueError(f"主担当拠点の無い利用者が {len(no_office)} 名います")
+    drop = tuple(opts.get("drop") or ())
+    dropped_ids = [v["id"] for v in d["visits"] if drop and v["id"].startswith(drop)]
+    unknown = [x for x in drop if not any(i.startswith(x) for i in dropped_ids)]
+    if unknown:
+        raise ValueError(f"外す訪問が週に見つかりません: {', '.join(unknown)}")
+    d["dropped_visits"] = dropped_ids
     visits: list[Visit] = []
     for v in d["visits"]:
+        if v["id"] in dropped_ids:
+            continue
         p = pats[v["patient_id"]]
         wp = p["weekly_pattern"] or {}
-        tt = wp.get("time_type") or "終日"
         fs = hm(v["start_time"])
         dur = hm(v["end_time"]) - fs
-        if tt == "固定":
-            win = (fs, fs)
-        elif tt == "時間帯" and wp.get("preferred_start") and wp.get("preferred_end"):
-            win = (hm(wp["preferred_start"]), hm(wp["preferred_end"]))
-        elif tt == "午前":
-            win = (9 * 60, 12 * 60 - 5)
-        elif tt == "午後":
-            win = (13 * 60, BUSINESS_END - dur)
-        else:
-            win = (9 * 60, BUSINESS_END - dur)
-        win = (min(win[0], fs), max(win[1], fs))  # 固定の時刻はいつでも候補
+        tt, win = pref_window(wp, dur)
+        win = (fs, fs) if win is None else join_fixed(win, fs)
         visits.append(
             Visit(
                 id=v["id"],
@@ -214,10 +250,48 @@ def load(path, hist_path, config: dict):
                 loc=(float(p["lat"]), float(p["lng"])),
                 female_only=p["sex_restriction"] == "female_only",
                 ng=ng[p["id"]],
-                cur_staff=v["primary_staff_id"],
+                # 訪問の主担当が無ければコースの担当 (アプリの表示の正典)
+                cur_staff=v["primary_staff_id"] or v.get("course_staff_id"),
                 cur_course=(v["course_office"] or "") + (v["course_code"] or ""),
             )
         )
+
+    # 特別訪問週間の○ → まだ置いていない日だけ「足す訪問」(その日に訪問がある日は足さない)
+    added, skipped_marks = [], []
+    if opts.get("add_special"):
+        has_day = {(v.patient_id, v.day) for v in visits}
+        for m in d.get("special_marks") or []:
+            p = pats[m["patient_id"]]
+            day = monday + timedelta(days=m["weekday"])
+            if (p["id"], day) in has_day:
+                skipped_marks.append(m["id"])
+                continue
+            dur = int(m["duration_min"])
+            tt, win = pref_window(p["weekly_pattern"] or {}, dur)
+            if win is None:  # 固定でも○には時刻が無いので終日の範囲で探す
+                win = (9 * 60, BUSINESS_END - dur)
+            visits.append(
+                Visit(
+                    id=f"add-{m['id']}",
+                    patient_id=p["id"],
+                    patient=p["name"],
+                    office=office_label[p["primary_office_id"]],
+                    day=day,
+                    fixed_start=win[0],
+                    dur=dur,
+                    win=win,
+                    time_type=tt,
+                    loc=(float(p["lat"]), float(p["lng"])),
+                    female_only=p["sex_restriction"] == "female_only",
+                    ng=ng[p["id"]],
+                    cur_staff=None,
+                    cur_course=None,
+                    new=True,
+                )
+            )
+            has_day.add((p["id"], day))
+            added.append(m["id"])
+    d["special_added"], d["special_skipped"] = added, skipped_marks
 
     # 担当歴 (患者ごとに新しい順) — ローテーション用
     history = defaultdict(list)
@@ -289,7 +363,16 @@ def allowed(st: Staff, job: Job) -> bool:
     return True
 
 
-def solve_day(day, jobs: list[Job], staff: list[Staff], history, seconds: int, opts: dict):
+def solve_day(
+    day,
+    jobs: list[Job],
+    staff: list[Staff],
+    history,
+    seconds: int,
+    opts: dict,
+    lunch: int = LUNCH_MIN_HARD,
+):
+    """1 日を解く。lunch = その日の昼休みの長さ (分・11:30〜13:30 の中で必ず取る)。"""
     cap_regular = opts.get("cap_regular", 6)
     allow_over = opts.get("allow_over", 0)
     wd = day.weekday()
@@ -329,8 +412,10 @@ def solve_day(day, jobs: list[Job], staff: list[Staff], history, seconds: int, o
         idx = mgr.NodeToIndex(k)
         T.CumulVar(idx).SetRange(j.lo, j.hi)
         # まず固定の時刻 (ずらすと 1 分ごとに重み)。範囲 lo〜hi = 希望の範囲 (固定はその時刻だけ)
-        T.SetCumulVarSoftLowerBound(idx, j.start, W_MOVE_PER_MIN)
-        T.SetCumulVarSoftUpperBound(idx, j.start, W_MOVE_PER_MIN)
+        # ○から足す訪問は固定の時刻が無いので、希望の範囲の中ならどこでも同じ
+        if not all(v.new for v in j.visits):
+            T.SetCumulVarSoftLowerBound(idx, j.start, W_MOVE_PER_MIN)
+            T.SetCumulVarSoftUpperBound(idx, j.start, W_MOVE_PER_MIN)
         routing.AddDisjunction([idx], W_DROP)
         if j.lo < j.hi:  # 開始は 5 分刻み (アプリと同じ)
             slot = routing.solver().IntVar(j.lo // 5, j.hi // 5 + 1, f"slot{k}")
@@ -350,13 +435,24 @@ def solve_day(day, jobs: list[Job], staff: list[Staff], history, seconds: int, o
         routing.AddVariableMaximizedByFinalizer(T.CumulVar(routing.Start(i)))
         routing.AddVariableMinimizedByFinalizer(T.CumulVar(routing.End(i)))
         breaks = []
+        evs = s.events.get(wd, [])
+        raw = s.raw_events.get(wd, [])
+        my_lunch, starts_ok = lunch, []
         if needs_lunch(st, hard_end):
-            breaks.append(
-                solver.FixedDurationIntervalVar(
-                    LUNCH_WIN[0], LUNCH_WIN[1] - LUNCH_MIN_HARD, LUNCH_MIN_HARD, False, f"lunch{i}"
-                )
+            starts_ok = lunch_starts(lunch, raw)
+            if not starts_ok:  # 予定のため 45 分を置けない → この人は 30 分
+                my_lunch, starts_ok = LUNCH_MIN_HARD, lunch_starts(LUNCH_MIN_HARD, raw)
+        if starts_ok:
+            iv = solver.FixedDurationIntervalVar(
+                starts_ok[0], starts_ok[-1], my_lunch, False, f"lunch{i}"
             )
-        for k, (ea, eb) in enumerate(s.events.get(wd, [])):  # 予定 (前後 15 分込み) には入れない
+            sv = iv.StartExpr().Var()
+            ok = set(starts_ok)
+            for x in range(starts_ok[0], starts_ok[-1] + 1):
+                if x not in ok:
+                    sv.RemoveValue(x)
+            breaks.append(iv)
+        for k, (ea, eb) in enumerate(evs):  # 予定 (前後 15 分込み) には入れない
             breaks.append(solver.FixedDurationIntervalVar(ea, ea, eb - ea, False, f"ev{i}_{k}"))
         if breaks:
             T.SetBreakIntervalsOfVehicle(breaks, i, visit_transits)
@@ -435,6 +531,15 @@ def solve_day(day, jobs: list[Job], staff: list[Staff], history, seconds: int, o
     return vehicles, routes, dropped
 
 
+def lunch_starts(lunch: int, events) -> list[int]:
+    """昼休み (lunch 分) を始めてよい時刻の一覧。11:30〜13:30 に収まり、予定 (events) と重ならない。"""
+    return [
+        x
+        for x in range(LUNCH_WIN[0], LUNCH_WIN[1] - lunch + 1)
+        if all(x + lunch <= ea or x >= eb for ea, eb in events)
+    ]
+
+
 def needs_lunch(start: int, end: int) -> bool:
     """昼休みを取る人 = 11:30 より前から 13:30 より後まで働く人 (検査も同じ条件)。"""
     return start <= LUNCH_WIN[0] and end >= LUNCH_WIN[1]
@@ -447,7 +552,7 @@ def run(
     off = [(職員コード, date|None)] … 「もしこの人が休みなら」の試算 (None = 週全部)。
     days: 計算する日 (None = 週全部)。"""
     opts = {"cap_regular": config.get("cap_regular", 6), **(opts or {})}
-    d, visits, staff, _office_loc, history = load(week_path, hist_path, config)
+    d, visits, staff, _office_loc, history = load(week_path, hist_path, config, opts)
     by_code = {s.code: s for s in staff.values()}
     for code, day in opts.get("off", []):
         if code not in by_code:
@@ -461,6 +566,7 @@ def run(
     if days:
         visits = [v for v in visits if v.day in days]
     hist_by_day = {}  # 日 -> その日を計算する直前の担当歴 (「前回と同じ」の判定用)
+    lunch_by_day = {}  # 日 -> その日に必ず取った昼休みの長さ (45 か、入らない日だけ 30)
     by_day = defaultdict(list)
     for v in visits:
         by_day[v.day].append(v)
@@ -471,14 +577,35 @@ def run(
             history[v.patient_id].insert(0, v.cur_staff)
         jobs = make_jobs(by_day[day])
         hist_by_day[day] = {v.patient_id: list(history[v.patient_id][:3]) for v in by_day[day]}
-        vehicles, routes, dropped = solve_day(
-            day, jobs, list(staff.values()), history, seconds, opts
-        )
+        lunch = LUNCH_TARGET
+        try:
+            res = solve_day(day, jobs, list(staff.values()), history, seconds, opts, lunch)
+        except RuntimeError:
+            res = None  # 45 分では解けない → 30 分で解き直す
+        if res is None or res[2]:
+            # 45 分では入らない訪問が出る → この日だけ 30 分で解き直し、入る件数が増えたら採る
+            try:
+                alt = solve_day(
+                    day, jobs, list(staff.values()), history, seconds, opts, LUNCH_MIN_HARD
+                )
+            except RuntimeError:
+                if res is None:
+                    raise
+                alt = None
+            if alt is not None and (
+                res is None or sum(j.count for j in alt[2]) < sum(j.count for j in res[2])
+            ):
+                res, lunch = alt, LUNCH_MIN_HARD
+        vehicles, routes, dropped = res
+        lunch_by_day[day] = lunch
         for sid, seq in routes.items():  # その日の結果を担当歴へ積む (翌日以降のローテーション)
             for j, _ in seq:
                 for v in j.visits:
                     history[v.patient_id].insert(0, sid)
         out[day] = (vehicles, routes, dropped)
         cnt = {staff[sid].key: sum(j.count for j, _ in seq) for sid, seq in routes.items() if seq}
-        log(f"{day} 訪問 {len(by_day[day])} 入らない {sum(j.count for j in dropped)} {cnt}")
-    return d, visits, staff, out, hist_by_day
+        log(
+            f"{day} 訪問 {len(by_day[day])} 入らない {sum(j.count for j in dropped)} "
+            f"昼休み {lunch} 分 {cnt}"
+        )
+    return d, visits, staff, out, hist_by_day, lunch_by_day

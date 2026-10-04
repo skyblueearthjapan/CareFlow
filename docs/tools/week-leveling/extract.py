@@ -1,6 +1,7 @@
 """本番から 1 週分の材料を読み取り専用で取り出す (ssh → psql)。書き込みは一切しない。
 
-出力: <out>/week.json (訪問・利用者・職員・勤務・休み・NG・予定・事業所・移動の設定。固定枠は読まない) と
+出力: <out>/week.json (訪問・利用者・職員・勤務・休み・NG・予定・事業所・移動の設定・特別訪問週間の未配置の○。
+      固定枠は読まない) と
       <out>/history.json (直前 4 週の担当歴 = ローテーション用)。利用者名を含むので git に入れない。
 """
 
@@ -22,13 +23,29 @@ select json_build_object(
  'visits', (select json_agg(row_to_json(x)) from (
    select v.id, v.patient_id, v.visit_date, v.start_time, v.end_time, v.required_staff_count,
           v.visit_group_id, v.source, v.week_pinned, v.status, v.primary_staff_id, v.secondary_staff_id,
-          c.code course_code, co.short_label course_office
+          c.code course_code, co.short_label course_office,
+          -- 表示の正典はコースの担当 (週を生成した直後の訪問は主担当が空でコースにだけ担当がいる)
+          c.assigned_staff_id course_staff_id
    from visits v left join courses c on c.id=v.course_id left join offices co on co.id=c.office_id
    where v.visit_date between '{monday}' and '{sunday}' and v.deleted_at is null and v.status<>'cancelled') x),
  'patients', (select json_agg(row_to_json(x)) from (
    select p.id, p.name, p.sex, p.sex_restriction, p.lat, p.lng, p.primary_office_id, p.weekly_pattern, p.status
    from patients p where p.id in (select patient_id from visits
-     where visit_date between '{monday}' and '{sunday}' and deleted_at is null)) x),
+     where visit_date between '{monday}' and '{sunday}' and deleted_at is null
+     union select patient_id from special_visit_marks where iso_year={iso_year} and iso_week={iso_week})) x),
+ -- 特別訪問週間の追加枠 (○) のうち、まだ置いていないもの (--add-special で案に入れる)。
+ -- 置いた訪問が消えていれば置いていない扱い (アプリのプール一覧と同じ)。長さはアプリの place と同じ順 (固定枠→希望→30 分)
+ 'special_marks', (select json_agg(row_to_json(x)) from (
+   select m.id, m.patient_id, m.weekday,
+          coalesce((select f.duration_min from patient_fixed_visits f
+                    where f.patient_id=m.patient_id and f.mode='normal' order by f.weekday, f.slot_index limit 1),
+                   nullif(p.weekly_pattern->>'service_minutes','')::int, 30) duration_min
+   from special_visit_marks m join special_visit_periods per on per.id=m.period_id
+   join patients p on p.id=m.patient_id
+   where m.iso_year={iso_year} and m.iso_week={iso_week} and m.kind='extra' and per.status='active'
+     and p.deleted_at is null and p.status='active'
+     and (m.status='pool' or (m.status='placed' and not exists (
+       select 1 from visits w where w.id=m.placed_visit_id and w.deleted_at is null and w.status<>'cancelled')))) x),
  'ng', (select json_agg(row_to_json(x)) from (select patient_id, staff_id from patient_ng_staff) x),
  -- 移動の速さ・ゆとり (アプリの診断と同じ設定。0 行なら既定値)
  'scheduling_settings', (select row_to_json(x) from (

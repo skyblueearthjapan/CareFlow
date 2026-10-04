@@ -10,6 +10,8 @@
   --allow-over 1          正規の上限を 1 名まで超えてよい (超えた分は重み付き)
   --over-before-manager   マネージャーより先に「少しオーバー」で吸収する
   --balance               正規の件数をならす (平均を超える分に重み)
+  --drop 3f2a9c1e          この訪問を案から外す (訪問 ID の先頭・今週だけ取消にする予定のもの)。何度でも指定可
+  --add-special           特別訪問週間の未配置の○を、その日に訪問の無い日だけ「足す訪問」として案に入れる
   --jev                   変更に Jev の「要確認」の目安を付ける (記号と数字だけ送る)
   --no-app-check          アプリの物差しでの診断 (diagnose.py) を飛ばす (既定は行う)
   --from-dir <dir>        取り出し済みの week.json / history.json を使う (本番に繋がない)
@@ -31,7 +33,7 @@ sys.path.insert(0, str(HERE))
 
 from extract import extract  # noqa: E402
 from report import check, flags_for, new_assignments, write_a4, write_excel  # noqa: E402
-from solver import run  # noqa: E402
+from solver import LUNCH_TARGET, run  # noqa: E402
 
 REPO = HERE.parents[2]
 CHROME = [
@@ -84,6 +86,8 @@ def main():
     ap.add_argument("--allow-over", type=int, default=0)
     ap.add_argument("--over-before-manager", action="store_true")
     ap.add_argument("--balance", action="store_true")
+    ap.add_argument("--drop", action="append", default=[])
+    ap.add_argument("--add-special", action="store_true")
     ap.add_argument("--jev", action="store_true")
     ap.add_argument("--no-app-check", action="store_true")
     ap.add_argument("--from-dir")
@@ -108,6 +112,8 @@ def main():
             "-off" if a.off else "",
             f"-over{a.allow_over}" if a.allow_over else "",
             "-bal" if a.balance else "",
+            "-drop" if a.drop else "",
+            "-sp" if a.add_special else "",
         ]
     )
     out_dir = (
@@ -138,8 +144,10 @@ def main():
         "over_before_manager": a.over_before_manager,
         "balance": a.balance,
         "off": off,
+        "drop": [x.strip().lower() for x in a.drop],
+        "add_special": a.add_special,
     }
-    d, visits, staff, out, hist_by_day = run(
+    d, visits, staff, out, hist_by_day, lunch_by_day = run(
         week_path, hist_path, config, a.seconds, opts, days, log=lambda m: print(m, flush=True)
     )
     cap = config.get("cap_regular", 6)
@@ -170,9 +178,12 @@ def main():
 
     title = f"週{iso_week}（{monday:%Y/%m/%d}〜{monday + timedelta(days=6):%m/%d}）ならし案"
     stats = write_excel(
-        out_dir / "leveling.xlsx", title, d, visits, out, errors, warnings, cap, jev, diag
+        out_dir / "leveling.xlsx", title, d, visits, out, errors, warnings, cap, jev, diag,
+        lunch_by_day,
     )
-    write_a4(out_dir / "leveling-a4.html", title, d, visits, out, hist_by_day, jev, diag)
+    write_a4(
+        out_dir / "leveling-a4.html", title, d, visits, out, hist_by_day, jev, diag, lunch_by_day
+    )
     pdf = to_pdf(out_dir / "leveling-a4.html")
 
     placed = new_assignments(out)
@@ -186,8 +197,13 @@ def main():
         },
         "visits": len(visits),
         "unplaced": sum(1 for v in visits if v.id not in placed),
+        "dropped_visits": len(d.get("dropped_visits") or []),
+        "special_added": len(d.get("special_added") or []),
+        "special_skipped_has_visit": len(d.get("special_skipped") or []),
         **stats,
         "rule_errors": len(errors),
+        # 45 分では入らない訪問が出て、昼休みを 30 分に下げて計算した日
+        "lunch_30_days": sorted(str(x) for x, m in lunch_by_day.items() if m < LUNCH_TARGET),
         "warnings": len(warnings),
         "moved_visits": len(moved),
         "max_move_min": max(map(abs, moved)) if moved else 0,

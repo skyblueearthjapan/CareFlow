@@ -8,7 +8,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
-from solver import BUFFER_MIN, LUNCH_MIN_HARD, LUNCH_WIN, bucket, fmt, travel_min
+from solver import BUFFER_MIN, LUNCH_MIN_HARD, LUNCH_TARGET, LUNCH_WIN, bucket, fmt, travel_min
 
 WD = "月火水木金土日"
 
@@ -62,8 +62,9 @@ def staff_hours(d, staff_id: str, day) -> tuple[int, int] | None:
     return hours
 
 
-def staff_events(d, staff_id: str, day) -> list[tuple[int, int]]:
-    """その日の予定 (前後 15 分込み = 決まりの正典 §4・計算側の EVENT_BUFFER_MIN と同じ値)。
+def staff_events(d, staff_id: str, day, pad: int = 15) -> list[tuple[int, int]]:
+    """その日の予定 (前後 pad 分込み。既定 15 分 = 決まりの正典 §4・計算側の EVENT_BUFFER_MIN と同じ値)。
+    pad=0 は予定そのものの時間 (昼休みに数えない時間)。
 
     日をまたぐ予定は、初日は開始〜24:00、間の日は終日、最終日は 0:00〜終了として数える。
     """
@@ -77,15 +78,17 @@ def staff_events(d, staff_id: str, day) -> list[tuple[int, int]]:
         a = _hm(e["start"]) if str(day) == first else 0
         b = _hm(e["end"]) if str(day) == last else 24 * 60
         if b > a:
-            out.append((a - 15, b + 15))
+            out.append((a - pad, b + pad))
     return out
 
 
-def lunch_free(seq) -> int:
+def lunch_free(seq, events=()) -> int:
     """11:30〜13:30 の中で取れる一番長い昼休み (分)。
 
     訪問と訪問の間では、移動 (＋ゆとり) を昼休みの前にも後にも置ける。窓の外の空きで
     移動を済ませられれば、その分だけ窓の中の空きが昼休みに使える。
+    events = 予定そのものの時間 (前後の空きは含めない)。予定の時間は昼休みにも移動にも数えない
+    (PO 2026-10-03: 会議の時間を昼休みにしない)。
     """
     lo, hi = LUNCH_WIN
     gaps = []  # (空きの始まり, 終わり, その間に要る移動)
@@ -101,12 +104,30 @@ def lunch_free(seq) -> int:
     gaps.append((prev_end if seq else lo, hi, 0))  # 最後の訪問の後
     best = 0
     for s0, e0, need in gaps:
-        a0, b0 = max(s0, lo), min(e0, hi)
-        if b0 <= a0:
-            continue
-        outside = (a0 - s0) + (e0 - b0)  # 窓の外で移動に使える時間
-        best = max(best, (b0 - a0) - max(0, need - outside))
+        pieces = _minus(s0, e0, events)  # 空きから予定の時間を除いた所
+        usable = sum(b - a for a, b in pieces)  # 昼休みと移動に使える時間の合計
+        for a, b in pieces:
+            a0, b0 = max(a, lo), min(b, hi)
+            if b0 > a0:  # 窓の中のこの切れ目を昼休みに、残りで移動を済ませる
+                best = max(best, min(b0 - a0, usable - need))
     return best
+
+
+def _minus(a: int, b: int, events) -> list[tuple[int, int]]:
+    """区間 [a, b) から予定の区間を除いた切れ目の一覧。"""
+    out = [(a, b)] if b > a else []
+    for ea, eb in events:
+        nxt = []
+        for x, y in out:
+            if eb <= x or ea >= y:
+                nxt.append((x, y))
+                continue
+            if ea > x:
+                nxt.append((x, ea))
+            if eb < y:
+                nxt.append((eb, y))
+        out = nxt
+    return out
 
 
 def check(d, out, cap_regular: int, allow_over: int) -> tuple[list[str], list[str]]:
@@ -159,10 +180,13 @@ def check(d, out, cap_regular: int, allow_over: int) -> tuple[list[str], list[st
                     if (t + off) % 5:
                         errors.append(f"{day} {s.name}: 5 分刻みでない {fmt(t + off)}")
             if st <= LUNCH_WIN[0] and hard_end >= LUNCH_WIN[1]:
-                gap = lunch_free(seq)
-                if gap < LUNCH_MIN_HARD:
+                raw = staff_events(d, sid, day, pad=0)
+                gap = lunch_free(seq, raw)
+                if lunch_free([], raw) < LUNCH_MIN_HARD:  # 予定で昼の窓が埋まっている (案のせいではない)
+                    warnings.append(f"{day} {s.name}: 予定のため昼休みが {gap} 分")
+                elif gap < LUNCH_MIN_HARD:
                     errors.append(f"{day} {s.name}: 昼休みが 30 分取れない")
-                elif gap < 45:
+                elif gap < LUNCH_TARGET:
                     warnings.append(f"{day} {s.name}: 昼休みが {gap} 分（45 分未満）")
         for j in dropped:
             errors.append(f"{day}: 入らない訪問 {j.count} 件")
@@ -208,7 +232,7 @@ def flags_for(out, hist_by_day) -> dict:
             for j, t in seq:
                 for v, off in zip(j.visits, j.offsets, strict=True):
                     st = t + off
-                    if st != v.fixed_start:
+                    if st != v.fixed_start and not v.new:
                         flags[v.id].append(("move", st - v.fixed_start))
                     if v.office not in s.offices:
                         flags[v.id].append(("cross", 1))
@@ -220,7 +244,17 @@ def flags_for(out, hist_by_day) -> dict:
 
 
 def write_excel(
-    path: Path, title: str, d, visits, out, errors, warnings, cap_regular, jev=None, diag=None
+    path: Path,
+    title: str,
+    d,
+    visits,
+    out,
+    errors,
+    warnings,
+    cap_regular,
+    jev=None,
+    diag=None,
+    lunch_by_day=None,
 ):
     S = {s["id"]: s["name"] for s in d["staff"]}
     new = new_assignments(out)
@@ -279,6 +313,15 @@ def write_excel(
     ws.append([f"正規が {cap_regular} 名を超える日（人・日）", "—", over_days])
     ws.append(["決まりの検査で見つかった問題", "—", len(errors)])
     ws.append(["気を付ける点（勤務超え・昼休み 45 分未満など）", "—", len(warnings)])
+    if lunch_by_day is not None:
+        short = [day_label(x) for x, m in sorted(lunch_by_day.items()) if m < LUNCH_TARGET]
+        ws.append(
+            [
+                f"昼休みを {LUNCH_MIN_HARD} 分に下げて計算した日（{LUNCH_TARGET} 分では入らない訪問が出た日）",
+                "—",
+                "、".join(short) or "なし",
+            ]
+        )
     if diag:
         ws.append(["アプリの物差し: 移動が平均の 1.5 倍を超える（人・日）", len(diag["cur_high_days"]), len(diag["new_high_days"])])
         ws.append(["アプリの物差し: あと 1 手で良くなる所（見落とし）", "—", diag["missed"]])
@@ -308,11 +351,11 @@ def write_excel(
             [
                 day_label(v.day),
                 v.patient,
-                fmt(v.fixed_start),
-                S.get(v.cur_staff, "担当なし"),
+                "追加（特別訪問）" if v.new else fmt(v.fixed_start),
+                "" if v.new else S.get(v.cur_staff, "担当なし"),
                 fmt(st) if st is not None else "入らない",
                 S.get(sid, ""),
-                (st - v.fixed_start) if st is not None and st != v.fixed_start else "",
+                (st - v.fixed_start) if st is not None and st != v.fixed_start and not v.new else "",
                 jev.get(v.id, ""),
             ]
         )
@@ -369,7 +412,9 @@ def write_excel(
     }
 
 
-def write_a4(path: Path, title: str, d, visits, out, hist_by_day, jev=None, diag=None):
+def write_a4(
+    path: Path, title: str, d, visits, out, hist_by_day, jev=None, diag=None, lunch_by_day=None
+):
     S = {s["id"]: s["name"] for s in d["staff"]}
     e = html.escape
     jev = jev or {}
@@ -393,9 +438,11 @@ def write_a4(path: Path, title: str, d, visits, out, hist_by_day, jev=None, diag
                 for v, off in zip(j.visits, j.offsets, strict=True):
                     vs = t + off
                     tags = []
-                    if vs != v.fixed_start:
+                    if v.new:
+                        tags.append('<span class="tg t">追加（特別訪問）</span>')
+                    elif vs != v.fixed_start:
                         tags.append(f'<span class="tg t">時刻 {fmt(v.fixed_start)}→</span>')
-                    if v.cur_staff != s.id:
+                    if v.cur_staff != s.id and not v.new:
                         tags.append(
                             f'<span class="tg s">今 {e(S.get(v.cur_staff, "担当なし").split(chr(12288))[0])}</span>'
                         )
@@ -418,14 +465,19 @@ def write_a4(path: Path, title: str, d, visits, out, hist_by_day, jev=None, diag
             role = "マネージャー" if s.manager else ""
             cols.append(
                 f'<div class="col{" mg" if s.manager else ""}"><div class="hd">{e(s.name)} <small>{role}</small>'
-                f'<div class="sub">{fmt(st)}〜{fmt(en)}・{cnt} 名・昼の空き {lunch_free(seq) if seq else 120} 分</div></div>'
+                f'<div class="sub">{fmt(st)}〜{fmt(en)}・{cnt} 名・昼の空き {lunch_free(seq, staff_events(d, s.id, day, pad=0))} 分</div></div>'
                 f"{''.join(cards) or '<div class=em>訪問なし</div>'}</div>"
             )
+        lunch_note = (
+            f"・この日は昼休み {LUNCH_MIN_HARD} 分で計算（{LUNCH_TARGET} 分では入らない訪問が出たため）"
+            if lunch_by_day and lunch_by_day.get(day, LUNCH_TARGET) < LUNCH_TARGET
+            else ""
+        )
         drop = "".join(
             f"<li>{e(v.patient)} {fmt(v.fixed_start)}</li>" for j in dropped for v in j.visits
         )
         pages.append(
-            f'<section class="pg"><h2>{day:%Y年%m月%d日}（{WD[wd]}）<small>訪問 {sum(1 for v in visits if v.day == day)} 件</small></h2>'
+            f'<section class="pg"><h2>{day:%Y年%m月%d日}（{WD[wd]}）<small>訪問 {sum(1 for v in visits if v.day == day)} 件{lunch_note}</small></h2>'
             f'<div class="grid" style="grid-template-columns:repeat({max(1, len(cols))},1fr)">{"".join(cols)}</div>'
             + (f'<div class="dr">入らない: <ul>{drop}</ul></div>' if drop else "")
             + "</section>"
@@ -452,7 +504,7 @@ h3 {{ font-size:11.5px; margin:3mm 2mm 1mm; }} ul {{ margin:0 2mm; padding-left:
 .pr {{ font-size:8.5px; color:#0b6e5e; font-weight:normal; }} .em {{ color:#9c9087; }} .dr {{ color:#b00; margin-top:2mm; }}
 </style></head><body>
 <h1>{e(title)} — 案（まだ反映していません）</h1>
-<div class="note">決まり: 曜日は変えない／固定の時刻 → 希望の範囲内／正規の人数上限／勤務時刻を守る（マネージャーはあふれの受け皿）／NG・女性限定は絶対／同じ建物の 2 名は 1 人で 90 分枠／昼休み 11:30〜13:30／移動は直線 20km/h＋ゆとり 8 分。
+<div class="note">決まり: 曜日は変えない／固定の時刻 → 希望の範囲内／正規の人数上限／勤務時刻を守る（マネージャーはあふれの受け皿）／NG・女性限定は絶対／同じ建物の 2 名は 1 人で 90 分枠／昼休み 11:30〜13:30 に 45 分（入らない日だけ 30 分・予定の時間は昼休みに数えない）／移動は直線 20km/h＋ゆとり 8 分。
 札: <span class="tg t">時刻 →</span> 元の時刻／<span class="tg s">今 ○○</span> 今の担当／<span class="tg x">拠点またぎ</span>／<span class="tg o">勤務超え</span>／<span class="tg r">前回と同じ</span>／<span class="tg j">Jev 要確認</span></div>
 {diag_page(diag) if diag else ""}{"".join(pages)}
 </body></html>""",
