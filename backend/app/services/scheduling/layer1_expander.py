@@ -80,6 +80,11 @@ _WEEKDAY_CODE_TO_INT: dict[str, int] = {code: idx for idx, code in enumerate(_WE
 
 # 自動生成された visit の source 値。冪等再生成時の削除対象を識別するために使う。
 LAYER1_VISIT_SOURCE = "auto"
+# 週を作り直すとき (冪等再生成) に論理削除して作り直す source の集合。
+# reset_v2 (固定枠戻し) は型 (patient_fixed_visits) の写しであり人の決定ではないため、
+# auto と同じく作り直す (PO 決定 2026-10-04)。含めないとマスタ変更後に旧時刻の reset_v2 が
+# 新しい auto の隣に残り、同じ患者が同じ日に 2 件になる (週42 で二重 6 件)。
+LAYER1_REGENERABLE_SOURCES: tuple[str, ...] = (LAYER1_VISIT_SOURCE, "reset_v2")
 # 自動生成された visit の type 値。v1 / v2 共に運用する "regular" を採用。
 LAYER1_VISIT_TYPE = "regular"
 # 自動生成時の status。状態遷移は将来 Layer 3 (W4-BE9) で更新される。
@@ -612,8 +617,8 @@ class Layer1Expander:
     """Layer 1: 患者マスタの ``weekly_pattern`` を当該週の visits に展開する.
 
     冪等性: 同じ (iso_year, iso_week) で 2 回呼んでも結果が一致する。
-    再生成時は当該週の既存 auto-visit を削除して INSERT し直すが、
-    completed / cancelled / source != auto の visit は保護する。
+    再生成時は当該週の既存 auto / reset_v2 visit を削除して INSERT し直すが、
+    completed / cancelled / それ以外の source の visit は保護する。
     """
 
     async def expand_week(
@@ -669,7 +674,8 @@ class Layer1Expander:
         result.patients_processed = len(patients)
 
         # ----- 既存の自動生成 visit を当該週で削除 (冪等性) -----
-        # status=completed / cancelled / source != auto は保護対象なので除外。
+        # 削除するのは source ∈ LAYER1_REGENERABLE_SOURCES (auto / reset_v2) だけ。
+        # status=completed / cancelled / それ以外の source は保護対象なので除外。
         # W16 codex fix 重大 2: office_id 指定時は patients も既に絞り込まれているため、
         # 削除スコープも自動的に当該拠点の patient だけになる (別拠点の visit は触らない)。
         #
@@ -677,7 +683,9 @@ class Layer1Expander:
         # 週生成後に status が active 以外 (入院中/一時休止/解約済み/開始前) になった
         # 患者の ``source='auto'`` 行は、上の active スコープに載らないため週を作り直しても
         # 残り続けていた。**削除対象の患者 ID にだけ** 非稼働患者を足して掃除する
-        # (展開対象は従来どおり active のみ)。削除条件 (source=auto / status=planned /
+        # (展開対象は従来どおり active のみ)。reset_v2 も同じ削除条件で掃除される
+        # (再生成されないが、非稼働患者の型の写しは残す理由がない)。
+        # 削除条件 (source∈auto/reset_v2 / status=planned /
         # week_pinned=False / deleted_at IS NULL) は不変なので、manual_week・
         # manual_cancel・status_cancel・打刻済みの行は従来どおり守られる。
         # active 患者が 0 人の拠点でも掃除は要るため、早期 return より **前** に置く。
@@ -861,6 +869,11 @@ class Layer1Expander:
                copy-week-design-2026-09-30.md §8)。
 
         返却セットに含まれるキーは auto INSERT を skip する。
+
+        reset_v2 (固定枠戻し) は 1. の non-auto に入るが、この判定は削除
+        (``_delete_existing_auto_visits``) の **後** に走るため、planned かつ
+        week_pinned=False の reset_v2 は既に消えており衝突にならない。生き残った
+        reset_v2 (青ピン / planned 以外) を衝突扱いにするのは従来どおり正しい。
         """
         if not candidate_keys:
             return set()
@@ -1255,7 +1268,7 @@ class Layer1Expander:
         week_monday: date,
         patient_ids: list[UUID],
     ) -> None:
-        """当該週の auto 生成 visit を **論理削除** (冪等性のため).
+        """当該週の auto / reset_v2 visit を **論理削除** (冪等性のため).
 
         W34: 物理 delete から **論理削除 (deleted_at = now())** に切替.
             - 監査ログ / visit_staff_assignments の整合性を保つ
@@ -1266,7 +1279,8 @@ class Layer1Expander:
         WHERE 句は **AND** 連鎖で確実に絞り込む:
             - patient_id IN (...) (拠点スコープ)
             - week_monday <= visit_date <= week_sunday (当該週)
-            - source = 'auto' (人手入力 / kaipoke 等を保護)
+            - source IN ('auto', 'reset_v2') (``LAYER1_REGENERABLE_SOURCES``。
+              manual_week / import / manual / kaipoke 等の人手・外部入力を保護)
             - status = 'planned' (completed / in_progress / cancelled を保護)
             - deleted_at IS NULL (既に論理削除された行は二重更新しない)
 
@@ -1280,8 +1294,8 @@ class Layer1Expander:
         now = datetime.now(UTC)
 
         # bulk UPDATE: 該当行の deleted_at を一括更新.
-        # 削除対象 = 週内 + source=auto + status=planned + deleted_at IS NULL.
-        # status in (completed/cancelled/in_progress) と source != auto は
+        # 削除対象 = 週内 + source∈(auto, reset_v2) + status=planned + deleted_at IS NULL.
+        # status in (completed/cancelled/in_progress) と source∉(auto, reset_v2) は
         # 履歴・人手入力の保護対象なので絶対に触らない.
         await db.execute(
             update(Visit)
@@ -1289,10 +1303,10 @@ class Layer1Expander:
                 Visit.patient_id.in_(patient_ids),
                 Visit.visit_date >= week_monday,
                 Visit.visit_date <= week_sunday,
-                Visit.source == LAYER1_VISIT_SOURCE,
+                Visit.source.in_(LAYER1_REGENERABLE_SOURCES),
                 Visit.status == LAYER1_VISIT_STATUS,
                 Visit.deleted_at.is_(None),
-                # 週のピン (青ピン / PO 決定 2026-08-09): source='auto' でも削除しない。
+                # 週のピン (青ピン / PO 決定 2026-08-09): source=auto/reset_v2 でも削除しない。
                 Visit.week_pinned.is_(False),
             )
             .values(deleted_at=now)
@@ -1474,6 +1488,7 @@ class Layer1Expander:
 # ---------------------------------------------------------------------------
 
 __all__ = [
+    "LAYER1_REGENERABLE_SOURCES",
     "LAYER1_VISIT_SOURCE",
     "LAYER1_VISIT_STATUS",
     "LAYER1_VISIT_TYPE",

@@ -1273,3 +1273,180 @@ async def test_expand_week_sweep_respects_office_scope(db) -> None:
     await db.refresh(v_out)
     assert v_in.deleted_at is not None, "同一拠点の非稼働患者の auto 残骸は掃除される"
     assert v_out.deleted_at is None, "別拠点の visit には触らない"
+
+
+# ---------------------------------------------------------------------------
+# 11) 固定枠戻し (source='reset_v2') も週の作り直しで作り直す
+#     (PO 決定 2026-10-04: 週42 で旧時刻の reset_v2 が新しい auto の隣に残り二重 6 件)
+# ---------------------------------------------------------------------------
+
+
+def _reset_v2_visit(
+    patient_id: UUID,
+    visit_date: date,
+    start: time,
+    *,
+    source: str = "reset_v2",
+    status: str = VISIT_STATUS_PLANNED,
+    week_pinned: bool = False,
+) -> Visit:
+    return Visit(
+        patient_id=patient_id,
+        visit_date=visit_date,
+        start_time=start,
+        end_time=time(start.hour + 1, start.minute),
+        type="regular",
+        status=status,
+        source=source,
+        required_staff_count=1,
+        week_pinned=week_pinned,
+    )
+
+
+async def _active_visits_of(db, patient_id: UUID) -> list[Visit]:
+    rows = await db.scalars(
+        select(Visit)
+        .where(Visit.patient_id == patient_id, Visit.deleted_at.is_(None))
+        .order_by(Visit.visit_date, Visit.start_time)
+    )
+    return list(rows.all())
+
+
+async def _add_fixed_slot(db, patient_id: UUID, weekday: int, start: time) -> None:
+    db.add(
+        PatientFixedVisit(
+            patient_id=patient_id,
+            mode="normal",
+            weekday=weekday,
+            start_time=start,
+            duration_min=60,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_reset_v2_planned_is_regenerated_from_master(db) -> None:
+    """旧時刻の planned reset_v2 は論理削除され、マスタの時刻で 1 件だけ作り直される."""
+    patient = await _make_patient(db, code="L1-RV2-A")
+    # マスタは月 10:00 に変更済み。週には固定枠戻しで作った旧時刻 09:00 が残っている。
+    await _add_fixed_slot(db, patient.id, 0, time(10, 0))
+    old = _reset_v2_visit(patient.id, TEST_WEEK_MONDAY, time(9, 0))
+    db.add(old)
+    await db.commit()
+
+    await Layer1Expander().expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    await db.refresh(old)
+    assert old.deleted_at is not None, "旧時刻の reset_v2 が週の作り直しで消えていない"
+    rows = await _active_visits_of(db, patient.id)
+    assert len(rows) == 1, (
+        f"同じ日に訪問が二重になっている: {[(r.start_time, r.source) for r in rows]}"
+    )
+    assert rows[0].visit_date == TEST_WEEK_MONDAY
+    assert rows[0].start_time == time(10, 0)
+    assert rows[0].source == LAYER1_VISIT_SOURCE
+
+
+@pytest.mark.asyncio
+async def test_reset_v2_same_time_is_regenerated_without_duplicate(db) -> None:
+    """マスタと同じ時刻の reset_v2 も作り直され、衝突で skip されず 1 件になる."""
+    patient = await _make_patient(db, code="L1-RV2-SAME")
+    await _add_fixed_slot(db, patient.id, 0, time(9, 0))
+    old = _reset_v2_visit(patient.id, TEST_WEEK_MONDAY, time(9, 0))
+    db.add(old)
+    await db.commit()
+
+    result = await Layer1Expander().expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    assert result.visits_created_count == 1
+    rows = await _active_visits_of(db, patient.id)
+    assert len(rows) == 1
+    assert rows[0].source == LAYER1_VISIT_SOURCE
+
+
+@pytest.mark.asyncio
+async def test_reset_v2_week_pinned_survives(db) -> None:
+    """週のピン (青ピン) が付いた reset_v2 は残り、その日は型から作り直さない."""
+    patient = await _make_patient(db, code="L1-RV2-PIN")
+    await _add_fixed_slot(db, patient.id, 0, time(10, 0))
+    pinned = _reset_v2_visit(patient.id, TEST_WEEK_MONDAY, time(9, 0), week_pinned=True)
+    db.add(pinned)
+    await db.commit()
+
+    await Layer1Expander().expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    await db.refresh(pinned)
+    assert pinned.deleted_at is None, "青ピンの reset_v2 を消してはいけない"
+    rows = await _active_visits_of(db, patient.id)
+    assert [r.id for r in rows] == [pinned.id]
+
+
+@pytest.mark.asyncio
+async def test_reset_v2_cancelled_and_completed_survive(db) -> None:
+    """取消済み / 実施済みの reset_v2 は planned ではないので消さない."""
+    patient = await _make_patient(db, code="L1-RV2-DONE")
+    tuesday = date.fromordinal(TEST_WEEK_MONDAY.toordinal() + 1)
+    await _add_fixed_slot(db, patient.id, 0, time(10, 0))
+    await _add_fixed_slot(db, patient.id, 1, time(10, 0))
+    cancelled = _reset_v2_visit(
+        patient.id, TEST_WEEK_MONDAY, time(9, 0), status=VISIT_STATUS_CANCELLED
+    )
+    completed = _reset_v2_visit(patient.id, tuesday, time(9, 0), status=VISIT_STATUS_COMPLETED)
+    db.add_all([cancelled, completed])
+    await db.commit()
+
+    await Layer1Expander().expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    await db.refresh(cancelled)
+    await db.refresh(completed)
+    assert cancelled.deleted_at is None, "取消済みの reset_v2 を消してはいけない"
+    assert completed.deleted_at is None, "実施済みの reset_v2 を消してはいけない"
+
+
+@pytest.mark.asyncio
+async def test_reset_v2_regeneration_keeps_manual_week_and_import(db) -> None:
+    """reset_v2 を作り直しても manual_week / import は従来どおり守られる."""
+    patient = await _make_patient(db, code="L1-RV2-MW")
+    tuesday = date.fromordinal(TEST_WEEK_MONDAY.toordinal() + 1)
+    wednesday = date.fromordinal(TEST_WEEK_MONDAY.toordinal() + 2)
+    for wd in (0, 1, 2):
+        await _add_fixed_slot(db, patient.id, wd, time(10, 0))
+    reset_v2 = _reset_v2_visit(patient.id, TEST_WEEK_MONDAY, time(9, 0))
+    manual_week = _reset_v2_visit(patient.id, tuesday, time(9, 0), source=VISIT_SOURCE_MANUAL_WEEK)
+    imported = _reset_v2_visit(patient.id, wednesday, time(9, 0), source="import")
+    db.add_all([reset_v2, manual_week, imported])
+    await db.commit()
+
+    await Layer1Expander().expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    for v in (reset_v2, manual_week, imported):
+        await db.refresh(v)
+    assert reset_v2.deleted_at is not None
+    assert manual_week.deleted_at is None, "manual_week を消してはいけない"
+    assert imported.deleted_at is None, "import を消してはいけない"
+    rows = await _active_visits_of(db, patient.id)
+    assert [(r.visit_date, r.start_time, r.source) for r in rows] == [
+        (TEST_WEEK_MONDAY, time(10, 0), LAYER1_VISIT_SOURCE),
+        (tuesday, time(9, 0), VISIT_SOURCE_MANUAL_WEEK),
+        (wednesday, time(9, 0), "import"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_expand_week_sweeps_reset_v2_of_non_active_patient(db) -> None:
+    """非稼働患者の planned reset_v2 も auto と同じく掃除される."""
+    stale_patient = await _make_patient(db, code="L1-RV2-SWEEP", status="suspended")
+    stale = _reset_v2_visit(stale_patient.id, TEST_WEEK_MONDAY, time(9, 0))
+    db.add(stale)
+    await db.commit()
+
+    await Layer1Expander().expand_week(db, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK)
+    await db.commit()
+
+    await db.refresh(stale)
+    assert stale.deleted_at is not None
