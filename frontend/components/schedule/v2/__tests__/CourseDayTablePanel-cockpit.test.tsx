@@ -486,6 +486,7 @@ import { ApiError } from '@/lib/api-client';
 import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 
 import { CourseDayTablePanel } from '../CourseDayTablePanel';
+import { useUIStore } from '@/lib/stores/ui';
 
 // ─── fixtures ───────────────────────────────────────────────────────────────
 
@@ -1139,6 +1140,36 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     // 「戻る」1 回でまとめて戻せるよう、双方向とも同じ op_group_id
     expect(calls[0]?.op_group_id).toBe(calls[1]?.op_group_id);
     expect(typeof calls[0]?.op_group_id).toBe('string');
+  });
+
+  it('(c-hide) 取消済みの訪問は既定で盤面に出ず、「取消を表示」で打消線つきで出る (PO 判断 2026-10-04)', () => {
+    useUIStore.setState({ showCancelledVisits: false });
+    setupHooks({
+      visits: [
+        swapVisit('v1', STAFF_1, '09:00:00'),
+        swapVisit('v3', STAFF_1, '13:00:00', { status: 'cancelled', source: 'manual_cancel' }),
+      ],
+    });
+    renderStaffTab();
+
+    expect(screen.getByTestId('staff-week-visit-v1')).toBeInTheDocument();
+    expect(screen.queryByTestId('staff-week-visit-v3')).not.toBeInTheDocument();
+
+    const toggle = screen.getByTestId('staff-tab-show-cancelled-toggle');
+    expect(toggle).toHaveTextContent('取消を表示');
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(toggle);
+
+    expect(useUIStore.getState().showCancelledVisits).toBe(true);
+    expect(toggle).toHaveTextContent('取消を表示中');
+    const cancelled = screen.getByTestId('staff-week-visit-v3');
+    expect(cancelled.className).toContain('line-through');
+    expect(screen.getByTestId('staff-week-visit-cancelled-v3')).toHaveTextContent('取消');
+
+    // タイムライン表示ではトグルを出さない (リスト盤だけの切替)。
+    fireEvent.click(screen.getByTestId('staff-tab-mode-timeline'));
+    expect(screen.queryByTestId('staff-tab-show-cancelled-toggle')).not.toBeInTheDocument();
+    useUIStore.setState({ showCancelledVisits: false });
   });
 
   it('(g2) スタッフ入れ替え: 取消済み・実施済みの訪問は動かさず注記する', async () => {

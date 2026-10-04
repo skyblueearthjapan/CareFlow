@@ -37,7 +37,7 @@ from app.core.deps import DbDep, require_role
 from app.models.course import Course
 from app.models.staff import Staff
 from app.models.user import User
-from app.models.visit import Visit
+from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.schemas.course import CourseCreate, CourseRead, CourseUpdate
 from app.schemas.v2.enums import CourseStatus
 from app.services.accompaniment import (
@@ -402,6 +402,9 @@ async def update_course(
     # 訪問モニター / モバイル「今日の訪問」/ ダッシュボード等は visits.primary_staff_id を
     # 参照するため、course.assigned_staff_id だけ変えると担当変更後に表示がズレる
     # (PO報告 2026-07-09: モニターとスケジュールの担当が食い違う)。手動上書き visit は尊重。
+    # 伝播先は**予定 (planned) の visit だけ**。取消 (今週だけ取消/取込の削除/status_cancel) に
+    # 担当を書くと PC 職員スケジュールに取消線の訪問が並び (PO報告 2026-10-04: 週42 で 24 件)、
+    # 打刻済み (in_progress/completed) は実績なので担当を遡って書き換えない。
     if _staff_id_changing:
         _new_staff_id: UUID | None = update_data.get("assigned_staff_id")
         # モニター/モバイル/ダッシュボードが読む primary_staff_id を一括更新 (bulk UPDATE)。
@@ -413,6 +416,7 @@ async def update_course(
                 Visit.course_id == course.id,
                 Visit.deleted_at.is_(None),
                 Visit.manual_staff_override.is_(False),
+                Visit.status == VISIT_STATUS_PLANNED,
             )
             .values(primary_staff_id=_new_staff_id)
         )

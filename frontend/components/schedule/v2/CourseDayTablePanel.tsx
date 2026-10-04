@@ -531,6 +531,10 @@ export function CourseDayTablePanel({
   // ON にすると残骸点検用に打ち消し線つきで出す。localStorage ('carelink-ui') に永続。
   const showInactive = useUIStore((s) => s.showInactiveVisits);
   const setShowInactive = useUIStore((s) => s.setShowInactiveVisits);
+  // ─── トグル「取消を表示」(職員スケジュールのリスト盤・PO 判断 2026-10-04) ─────
+  // 既定 OFF = 取消済みの訪問を盤面から隠す。ON で打ち消し線つきで出す (「取消をやめる」用)。
+  const showCancelled = useUIStore((s) => s.showCancelledVisits);
+  const setShowCancelled = useUIStore((s) => s.setShowCancelledVisits);
   // 畳んだままでも Row1/Row2 のボタン群をその場で一時展開する (「ツール」).
   const [compactToolsOpen, setCompactToolsOpen] = useState(false);
 
@@ -6517,6 +6521,25 @@ export function CourseDayTablePanel({
                       タイムライン
                     </button>
                   </div>
+                  {/* 取消を表示 (PO 判断 2026-10-04)。リスト盤だけ。既定 OFF = 取消済みの
+                      訪問を隠す。ON で打ち消し線つきで出し「取消をやめる」を使えるようにする。 */}
+                  {staffViewMode === 'list' ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={showCancelled ? 'default' : 'ghost'}
+                      onClick={() => setShowCancelled(!showCancelled)}
+                      aria-pressed={showCancelled}
+                      title={
+                        showCancelled
+                          ? '取消済みの訪問（今週だけ取消など）も表示しています'
+                          : '取消済みの訪問（今週だけ取消など）も表示します'
+                      }
+                      data-testid="staff-tab-show-cancelled-toggle"
+                    >
+                      {showCancelled ? '取消を表示中' : '取消を表示'}
+                    </Button>
+                  ) : null}
                   {/* 出所チップ: この週の予定が「どこから来たか」の内訳。 */}
                   <span
                     className="inline-flex flex-wrap items-center gap-1 text-[10px] text-text-muted"
@@ -6924,6 +6947,7 @@ export function CourseDayTablePanel({
                 ) : (
                   <StaffWeekBoard
                     showInactive={showInactive}
+                    showCancelled={showCancelled}
                     templates={templates}
                     officeNameById={officeNameById}
                     visits={cockpitVisits}

@@ -492,9 +492,10 @@ describe('StaffWeekBoard', () => {
 
   // ─── 週空間 Phase E (運転席) ────────────────────────────────────────────
 
-  it('⑰ status=cancelled の訪問は打消線 +「取消」バッジ・ドラッグ不可', () => {
+  it('⑰ showCancelled=true: status=cancelled の訪問は打消線 +「取消」バッジ・ドラッグ不可', () => {
     render(
       <StaffWeekBoard
+        showCancelled
         templates={templates}
         officeNameById={new Map([[OFFICE_ID, '稲毛']])}
         visits={[
@@ -515,6 +516,37 @@ describe('StaffWeekBoard', () => {
     );
     expect(cancelled).not.toHaveAttribute('draggable', 'true');
     // 取消していない訪問は従来どおり掴める。
+    expect(screen.getByTestId('staff-week-visit-v2')).toHaveAttribute('draggable', 'true');
+  });
+
+  it('⑰-b 既定 (showCancelled 未指定) では取消済みの訪問を盤面に出さない (PO 判断 2026-10-04)', () => {
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={[
+          {
+            ...visit({ id: 'v1', patient_name: '朝倉　美夢', source: 'manual_cancel' }),
+            status: 'cancelled',
+          },
+          // 取込の削除など source を問わず取消は隠す。
+          {
+            ...visit({ id: 'v3', patient_name: '浜野　一郎', start_time: '13:00' }),
+            status: 'cancelled',
+          },
+          visit({ id: 'v2', patient_name: '川田　春菜', start_time: '10:30' }),
+        ]}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        onVisitDrop={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('staff-week-visit-v1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('staff-week-visit-v3')).not.toBeInTheDocument();
+    expect(screen.queryByText(/朝倉/)).not.toBeInTheDocument();
+    // 取消していない訪問はそのまま出る。
     expect(screen.getByTestId('staff-week-visit-v2')).toHaveAttribute('draggable', 'true');
   });
 
@@ -865,6 +897,30 @@ describe('StaffWeekBoard — 非稼働患者', () => {
     renderWith([statusCancel], true);
     expect(screen.getByText(/小湊/)).toBeInTheDocument();
     expect(screen.getByTestId('staff-week-visit-inactive-sc1')).toHaveTextContent('取消（連動）');
+  });
+
+  it('連動取消は「取消を表示」(showCancelled) だけでは出ない (非稼働トグルが受け持つ)', () => {
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={[
+          visit({
+            id: 'sc1',
+            patient_name: '小湊　太郎',
+            source: 'status_cancel',
+            status: 'cancelled',
+            patient_status: 'admitted',
+          }),
+        ]}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={new Map()}
+        weekStart={WEEK_START}
+        showCancelled
+      />,
+    );
+    expect(screen.queryByText(/小湊/)).not.toBeInTheDocument();
   });
 
   it('連動取消の行には操作メニューを出さない (もう無い予定なので触らせない)', () => {

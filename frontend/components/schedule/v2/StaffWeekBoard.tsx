@@ -167,6 +167,13 @@ export interface StaffWeekBoardProps {
    * true = 連動取消 (source='status_cancel') も打ち消し線つきで描く。既定 false。
    */
   showInactive?: boolean;
+  /**
+   * トグル「取消を表示」(PO 判断 2026-10-04)。既定 false = 取消済みの訪問
+   * (status='cancelled'・今週だけ取消/取込の削除など) を盤面から隠す。
+   * true = 打ち消し線 +「取消」バッジ・ドラッグ不可で描く (「取消をやめる」用)。
+   * 連動取消 (source='status_cancel') は `showInactive` が受け持つ (こちらでは出さない)。
+   */
+  showCancelled?: boolean;
 }
 
 /** 「（担当なし）」行のキー (courseDnd の単一ソース)。 */
@@ -307,6 +314,7 @@ export function StaffWeekBoard({
   onSuggestCourse,
   highlightStaffId,
   showInactive = false,
+  showCancelled = false,
 }: StaffWeekBoardProps) {
   // ドラッグ中に実際に重なっているセル (`${rowKey}:${wd}`)。候補セルの
   // 淡い破線に対し、重なり中のセルだけ強く光らせる (PO指摘 2026-08-21)。
@@ -332,10 +340,18 @@ export function StaffWeekBoard({
   );
 
   // 患者ステータス連動の取消 (source='status_cancel') は盤面から消す
-  // (design 2026-09-09 §7-4)。「今週だけ取消」= manual_cancel は従来どおり残す。
+  // (design 2026-09-09 §7-4)。それ以外の取消 (今週だけ取消 = manual_cancel・取込の削除など) も
+  // 既定では消す (PO 判断 2026-10-04: 職員の行に取消線の訪問が並ぶと読みにくい)。
+  // データは残す (週の作り直しで復活させない・カイポケ差分では削除になる)。
   const visits = React.useMemo(
-    () => visitsProp.filter((v) => classifyVisitDisplay(v, { showInactive }) !== 'hidden'),
-    [visitsProp, showInactive],
+    () =>
+      visitsProp.filter((v) => {
+        const kind = classifyVisitDisplay(v, { showInactive });
+        if (kind === 'hidden') return false;
+        if (kind !== 'status_cancel' && v.status === 'cancelled' && !showCancelled) return false;
+        return true;
+      }),
+    [visitsProp, showInactive, showCancelled],
   );
 
   // (rowKey, weekday) → CellCourse[]。rowKey = staffId or UNASSIGNED_KEY。

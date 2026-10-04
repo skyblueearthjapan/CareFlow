@@ -22,11 +22,19 @@ type UIState = {
    * このトグルに関係なく常にバッジ付きで出る (隠さない = 原則⑥)。
    */
   showInactiveVisits: boolean;
+  /**
+   * 職員スケジュール (リスト盤) のトグル「取消を表示」(PO 判断 2026-10-04)。
+   * 既定は false = 取消済みの訪問 (今週だけ取消・取込の削除など) を盤面から隠す。
+   * ON にすると従来どおり打ち消し線 +「取消」バッジで出す (「取消をやめる」用)。
+   * 連動取消 (status_cancel) は従来どおり「非稼働を表示」が受け持つ。
+   */
+  showCancelledVisits: boolean;
   setSidebarCollapsed: (v: boolean) => void;
   applySidebarAutoCollapse: () => void;
   setDensity: (v: 'compact' | 'comfortable') => void;
   setScheduleHeaderCollapsed: (v: boolean) => void;
   setShowInactiveVisits: (v: boolean) => void;
+  setShowCancelledVisits: (v: boolean) => void;
 };
 
 export const useUIStore = create<UIState>()(
@@ -37,6 +45,7 @@ export const useUIStore = create<UIState>()(
       scheduleHeaderCollapsed: false,
       sidebarAutoCollapsedApplied: false,
       showInactiveVisits: false,
+      showCancelledVisits: false,
       setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
       applySidebarAutoCollapse: () =>
         set((s) =>
@@ -47,6 +56,7 @@ export const useUIStore = create<UIState>()(
       setDensity: (v) => set({ density: v }),
       setScheduleHeaderCollapsed: (v) => set({ scheduleHeaderCollapsed: v }),
       setShowInactiveVisits: (v) => set({ showInactiveVisits: v }),
+      setShowCancelledVisits: (v) => set({ showCancelledVisits: v }),
     }),
     {
       name: 'carelink-ui',
@@ -56,6 +66,7 @@ export const useUIStore = create<UIState>()(
         scheduleHeaderCollapsed: s.scheduleHeaderCollapsed,
         sidebarAutoCollapsedApplied: s.sidebarAutoCollapsedApplied,
         showInactiveVisits: s.showInactiveVisits,
+        showCancelledVisits: s.showCancelledVisits,
       }),
     },
   ),

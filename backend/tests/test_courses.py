@@ -642,3 +642,95 @@ async def test_courses_patch_staff_propagates_to_visits(client, db) -> None:
     manual = await db.scalar(select(Visit).where(Visit.id == vid_manual))
     assert manual is not None
     assert manual.primary_staff_id == s_old.id, "手動上書き visit が誤って変更された"
+
+
+@pytest.mark.asyncio
+async def test_courses_patch_staff_propagates_only_to_planned_visits(client, db) -> None:
+    """担当変更の伝播は予定 (planned) の visit だけ。取消・打刻済みは書き換えない。
+
+    回帰 (PO報告 2026-10-04): 週42 でコース担当を割り当てたら取消 visit 24 件に担当が
+    書き込まれ、PC 職員スケジュールの各職員行に取消線の訪問として並んだ。
+    """
+    from datetime import date, time
+
+    from sqlalchemy import select
+
+    from app.models.patient import Patient
+    from app.models.staff import Staff
+    from app.models.visit import Visit
+
+    admin = await _make_user(db, "c-patch-staff-planned@example.com", "admin")
+    office = await _make_office(db, "事業所-staffprop-planned")
+    s_old = Staff(name="旧担当", role="staff", is_trainee=False, primary_office_id=office.id)
+    s_new = Staff(name="新担当", role="staff", is_trainee=False, primary_office_id=office.id)
+    db.add_all([s_old, s_new])
+    await db.flush()
+    p = Patient(
+        code="CPSPLAN",
+        name="患者",
+        status="active",
+        lat=35.6,
+        lng=140.1,
+        primary_office_id=office.id,
+    )
+    db.add(p)
+    await db.flush()
+
+    create = await client.post(
+        "/api/v1/courses",
+        headers=_bearer(admin),
+        json=_course_payload(office.id, weekday=3, code="A", course_status="proposed"),
+    )
+    assert create.status_code == 201, create.text
+    cid = UUID(create.json()["id"])
+
+    def _visit(hour: int, status: str, primary, *, manual: bool = False) -> Visit:
+        return Visit(
+            patient_id=p.id,
+            course_id=cid,
+            visit_date=date(2026, 10, 15),
+            start_time=time(hour, 0),
+            end_time=time(hour, 40),
+            type="regular",
+            status=status,
+            source="manual_cancel" if status == "cancelled" else "auto_alloc",
+            required_staff_count=1,
+            primary_staff_id=primary,
+            manual_staff_override=manual,
+        )
+
+    v_planned = _visit(9, "planned", None)
+    v_cancelled_null = _visit(10, "cancelled", None)
+    v_cancelled_old = _visit(11, "cancelled", s_old.id)
+    v_completed = _visit(12, "completed", s_old.id)
+    v_in_progress = _visit(13, "in_progress", s_old.id)
+    v_manual = _visit(14, "planned", s_old.id, manual=True)
+    db.add_all([v_planned, v_cancelled_null, v_cancelled_old, v_completed, v_in_progress, v_manual])
+    await db.commit()
+    ids = {
+        "planned": v_planned.id,
+        "cancelled_null": v_cancelled_null.id,
+        "cancelled_old": v_cancelled_old.id,
+        "completed": v_completed.id,
+        "in_progress": v_in_progress.id,
+        "manual": v_manual.id,
+    }
+
+    res = await client.patch(
+        f"/api/v1/courses/{cid}",
+        headers=_bearer(admin),
+        json={"assigned_staff_id": str(s_new.id)},
+    )
+    assert res.status_code == 200, res.text
+
+    db.expunge_all()
+    got = {
+        k: (await db.scalar(select(Visit).where(Visit.id == vid))).primary_staff_id
+        for k, vid in ids.items()
+    }
+    assert got["planned"] == s_new.id, "予定 visit が新担当へ追従していない"
+    assert got["cancelled_null"] is None, "取消 visit に担当が書き込まれた"
+    assert got["cancelled_old"] == s_old.id, "取消 visit の担当が書き換えられた"
+    assert got["completed"] == s_old.id, "完了 visit の担当が遡って書き換えられた"
+    assert got["in_progress"] == s_old.id, "訪問中 visit の担当が書き換えられた"
+    assert got["manual"] == s_old.id, "手動上書き visit が誤って変更された"
