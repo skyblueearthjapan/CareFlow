@@ -1,0 +1,855 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>PC から実績の時刻を合わせる — モック</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Noto+Serif+JP:wght@700&display=swap" rel="stylesheet">
+<style>
+/* ━━━ Design tokens (frontend/styles/tokens.css と同値・既存モックと同じ) ━━━ */
+:root{
+  --brand:#e15a7f; --brand-hover:#c94a6e; --brand-light:#ffd6e0; --brand-50:#fff5f8;
+  --bg-base:#fff; --bg-app:#faf7f2; --bg-muted:#f5f1ea;
+  --line:#e7e5e4; --line-soft:#f0ede8; --line-strong:#d6d3d1;
+  --ink:#1c1917; --ink2:#57534e; --ink3:#8a837d;
+  --ok:#059669; --ok-bg:#d1fae5; --ok-line:#a7f3d0;
+  --warn:#d97706; --warn-bg:#fef3c7; --warn-strong:#92400e; --warn-line:#fde68a;
+  --err:#dc2626; --err-bg:#fee2e2; --err-line:#fecaca;
+  --info-bg:#ccfbf1; --info-strong:#115e59;
+  --m-bg:#f3f8fc; --m-bar:#6d9ec9; --m-ink:#31597e; --m-ln:#e2edf6;
+  --f-bg:#fdf5f7; --f-bar:#d48ba0; --f-ink:#96475e; --f-ln:#f4e2e8;
+  --now:#d2683c;
+  --sans:'Noto Sans JP','Hiragino Sans','Yu Gothic UI','Meiryo',system-ui,sans-serif;
+  --serif:'Noto Serif JP','Hiragino Mincho ProN','Yu Mincho',serif;
+  --shadow-card:0 1px 2px rgba(28,25,23,.04),0 8px 24px rgba(28,25,23,.05);
+  --shadow-lg:0 12px 24px rgba(28,25,23,.08),0 4px 8px rgba(28,25,23,.04);
+}
+html{color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg-app);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.55}
+button,input,select{font-family:var(--sans)}
+button{cursor:pointer}
+button:disabled{cursor:not-allowed}
+.tnum{font-variant-numeric:tabular-nums}
+
+/* ━━━ モック帯・目次 ━━━ */
+.mockbar{background:#1c1917;color:#f5f1ea;font-size:13px;padding:9px 24px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:60}
+.mockbar b{color:#ffd6e0}
+.mockbar a{color:#f5f1ea;text-decoration:none;border:1px solid #57534e;border-radius:999px;padding:2px 12px}
+.mockbar a:hover{background:#292524}
+.wrap{max-width:1400px;min-width:1240px;margin:0 auto;padding:24px 24px 64px}
+.intro{display:flex;gap:16px;align-items:center;margin-bottom:8px}
+.intro img{height:64px}
+.intro h1{font-family:var(--serif);font-size:26px;margin:0;line-height:1.3}
+.intro p{margin:4px 0 0;color:var(--ink2);font-size:14px}
+.rules{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 0}
+.rules span{font-size:13px;background:var(--bg-base);border:1px solid var(--line);border-radius:999px;padding:3px 12px;color:var(--ink2)}
+.rules b{color:var(--brand-hover)}
+
+/* ━━━ 場面の見出し ━━━ */
+.scene{margin-top:40px}
+.cap{display:grid;grid-template-columns:52px 1fr;gap:4px 14px;margin-bottom:14px}
+.cap .letter{grid-row:span 2;width:52px;height:52px;border-radius:14px;background:var(--brand);color:#fff;font-size:26px;font-weight:700;display:flex;align-items:center;justify-content:center;font-family:var(--serif)}
+.cap h2{margin:0;font-size:20px;line-height:1.4;font-family:var(--serif)}
+.cap h2 small{font-family:var(--sans);font-size:13px;font-weight:500;color:var(--ink2);margin-left:10px}
+.cap ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:3px}
+.cap li{font-size:14px;color:var(--ink2);padding-left:18px;position:relative}
+.cap li::before{content:"";position:absolute;left:3px;top:.62em;width:7px;height:7px;border-radius:50%;background:var(--brand)}
+.cap li b{color:var(--ink)}
+.qref{font-size:12.5px;color:var(--ink2);background:var(--bg-base);border:1px dashed var(--line-strong);border-radius:8px;padding:8px 12px;margin-top:10px}
+.qref b{color:var(--brand-hover)}
+
+/* 新しい部分の目印 */
+.new{font-size:11px;font-weight:700;background:var(--brand);color:#fff;border-radius:999px;padding:1px 8px;line-height:1.6;vertical-align:middle;white-space:nowrap}
+.isnew{outline:2px dashed var(--brand);outline-offset:3px;border-radius:12px}
+
+/* ━━━ 画面の枠 (コンソール箱) ━━━ */
+.screen{background:var(--bg-base);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow-card);overflow:hidden}
+.ptitle{display:flex;align-items:center;gap:10px;padding:14px 20px 10px;border-bottom:1px solid var(--line)}
+.ptitle h3{font-family:var(--serif);font-size:20px;margin:0}
+.ptitle p{margin:0;font-size:13px;color:var(--ink2)}
+.ptitle img{height:36px}
+.fbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid var(--line)}
+.date{font-size:15px;font-weight:700;display:inline-flex;align-items:center;gap:8px}
+.date i{width:28px;height:28px;border:1px solid var(--line);border-radius:6px;display:inline-flex;align-items:center;justify-content:center;font-style:normal;color:var(--ink2);font-size:13px}
+.date .past{font-size:12px;font-weight:700;background:var(--bg-muted);color:var(--ink2);border:1px solid var(--line);border-radius:999px;padding:1px 9px}
+.date .today{font-size:12px;font-weight:700;background:var(--brand-light);color:var(--brand-hover);border-radius:999px;padding:1px 9px}
+.spacer{flex:1}
+.kpi{display:inline-flex;align-items:baseline;gap:6px;border:1px solid var(--line);border-radius:999px;padding:3px 12px;font-size:13px}
+.kpi span{color:var(--ink2);font-size:12px}
+.kpi b{font-size:15px}
+.kpi.warn{background:var(--warn-bg);border-color:var(--warn-line)} .kpi.warn b{color:var(--warn-strong)}
+
+/* 要対応トレイ */
+.tray{display:flex;align-items:center;gap:8px;padding:8px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap;position:relative}
+.tray .hd{font-size:13px;font-weight:700;color:var(--err);display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.acard{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:8px;padding:4px 10px;font-size:13px;background:var(--bg-base);white-space:nowrap}
+.acard .k{font-size:11.5px;font-weight:700;border-radius:4px;padding:0 6px}
+.k.review{background:var(--warn-bg);color:var(--warn-strong)}
+.k.nodep{background:#ede9fe;color:#5b21b6}
+.k.miss{background:var(--err-bg);color:var(--err)}
+.tchip{border:none;border-radius:999px;padding:4px 12px;font-size:13px;font-weight:700;background:#ede9fe;color:#5b21b6;display:inline-flex;gap:6px;align-items:center}
+.tchip.on{background:#5b21b6;color:#fff}
+.pop{flex:0 0 100%;background:var(--bg-base);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow-lg);padding:6px}
+.pop .ph{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;font-size:13px;font-weight:700;color:var(--ink2)}
+.pitem{display:grid;grid-template-columns:auto 1fr auto auto;gap:10px;align-items:center;width:100%;text-align:left;border:1px solid transparent;background:none;border-radius:8px;padding:7px 10px;font-size:14px}
+.pitem:hover{background:var(--bg-muted)}
+.pitem.on{background:var(--brand-50);border-color:var(--brand-light)}
+.pitem .who{font-size:12.5px;color:var(--ink2)}
+.pitem .go{font-size:13px;font-weight:700;color:var(--brand-hover);white-space:nowrap}
+
+/* 本体: タイムライン + 詳細パネル */
+.body{display:flex;align-items:stretch}
+.tlw{flex:1;min-width:0;overflow-x:auto}
+.tl{--lab:160px;width:max-content;min-width:100%}
+.tl .hrow,.tl .row{display:grid;grid-template-columns:var(--lab) var(--tw)}
+.tl .hrow{border-bottom:1px solid var(--line)}
+.tl .hrow .lab{font-size:12px;color:var(--ink3);padding:8px 10px;border-right:1px solid var(--line)}
+.axis{position:relative;height:32px}
+.axis span{position:absolute;top:8px;font-size:12px;color:var(--ink3);padding-left:4px;border-left:1px solid var(--line);height:24px}
+.row{border-bottom:1px solid var(--line-soft);min-height:76px}
+.rl{border-right:1px solid var(--line-soft);padding:8px 10px;display:flex;flex-direction:column;justify-content:center}
+.rl .n{font-size:14px;font-weight:700}
+.rl .s{font-size:12px;color:var(--ink2)}
+.trk{position:relative}
+.trk .g{position:absolute;top:0;bottom:0;border-left:1px solid rgba(231,229,228,.6)}
+.nowl{position:absolute;top:0;bottom:0;width:2px;background:var(--now);z-index:5}
+.nowl span{position:absolute;top:0;left:4px;font-size:11px;font-weight:700;color:var(--now);white-space:nowrap}
+.card{position:absolute;top:8px;height:38px;border:1px solid;border-left-width:3px;border-radius:6px;padding:2px 6px;overflow:hidden;display:flex;flex-direction:column;justify-content:center;background:var(--m-bg);border-color:var(--m-ln);border-left-color:var(--m-bar);color:var(--m-ink);cursor:pointer;text-align:left}
+.card.f{background:var(--f-bg);border-color:var(--f-ln);border-left-color:var(--f-bar);color:var(--f-ink)}
+.card.noqr{background:repeating-linear-gradient(45deg,#fff,#fff 6px,#f7f5f2 6px,#f7f5f2 12px);border-style:dashed;border-color:var(--line-strong);border-left-color:#a8a29e;color:var(--ink2)}
+.card.sel{outline:2px solid var(--ink);outline-offset:1px}
+.card .c1{font-size:12px;font-weight:700;white-space:nowrap;line-height:1.3}
+.card .c2{font-size:11px;white-space:nowrap;opacity:.9;line-height:1.3}
+.rail{position:absolute;top:50px;height:18px;border-radius:5px;color:#fff;font-size:11.5px;font-weight:700;padding:0 6px;display:flex;align-items:center;gap:4px;white-space:nowrap;overflow:visible;z-index:2}
+.rail.match{background:var(--ok)}
+.rail.inprog{background:var(--brand);background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.25),rgba(255,255,255,.25) 4px,transparent 4px,transparent 8px)}
+.rail.nodep{background:repeating-linear-gradient(90deg,#ede9fe,#ede9fe 6px,#ddd6fe 6px,#ddd6fe 12px);color:#5b21b6;border:1px dashed #8b5cf6}
+.rail.none{background:none;color:var(--ink3);font-weight:500;padding:0}
+.mk{display:inline-flex;align-items:center;border-radius:4px;padding:0 5px;font-size:11px;font-weight:700;line-height:1.45;background:#fff;color:var(--brand-hover);border:1px solid var(--brand-light)}
+.mk.hand{background:var(--brand-50);color:var(--brand-hover);border:1px solid var(--brand)}
+
+.legend{display:flex;flex-wrap:wrap;gap:16px;padding:8px 20px;border-top:1px solid var(--line);font-size:12.5px;color:var(--ink2);align-items:center;background:var(--bg-app)}
+.legend i{display:inline-block;width:22px;height:11px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+
+/* 詳細パネル */
+.panel{width:440px;flex-shrink:0;border-left:1px solid var(--line);background:var(--bg-muted);padding:16px}
+.panel .ph3{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.panel h4{margin:0;font-size:17px}
+.panel .who{font-size:13px;color:var(--ink2);margin:2px 0 10px}
+.st{display:inline-flex;align-items:center;border-radius:999px;padding:1px 10px;font-size:12px;font-weight:700;border:1px solid transparent}
+.st.inprog{background:var(--brand-light);color:var(--brand-hover)}
+.st.ok{background:var(--ok-bg);color:var(--ok);border-color:var(--ok-line)}
+.st.nodep{background:#ede9fe;color:#5b21b6;border-color:#ddd6fe}
+.st.plan{background:var(--bg-base);color:var(--ink2);border-color:var(--line-strong)}
+.warnbox{border:1px solid var(--warn-line);background:var(--warn-bg);border-radius:6px;padding:8px 12px;font-size:13px;color:var(--warn-strong);margin-bottom:10px}
+.warnbox b{display:block;font-size:12px}
+.kvbox{background:var(--bg-base);border:1px solid var(--line);border-radius:8px;padding:4px 14px;margin-bottom:12px}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--line-soft);font-size:13.5px}
+.kv:last-child{border-bottom:none}
+.kv .k{color:var(--ink2)}
+.kv .v{font-weight:700;text-align:right}
+.kv .v s{color:var(--ink3);font-weight:500;margin-right:6px}
+.kv .v .arrow{color:var(--ink3);font-weight:400;margin-right:6px}
+
+/* 合わせる枠 (AdjustBox と同じ型) */
+.adj{border:1px dashed var(--brand);border-radius:12px;padding:12px 14px;background:var(--brand-50);position:relative}
+.adj h5{margin:0;font-size:15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.adj .hint{margin:3px 0 6px;font-size:12.5px;color:var(--ink2);line-height:1.6}
+.arow{border-top:1px solid var(--brand-light);padding:10px 0 8px}
+.arow .line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.arow .lb{width:36px;flex-shrink:0;font-size:14px;font-weight:700}
+.tin{height:36px;width:118px;border:1px solid var(--line-strong);border-radius:6px;background:#fff;padding:0 8px;font-size:15px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums}
+.tin:focus{outline:2px solid var(--brand);outline-offset:1px}
+.btn{height:36px;border-radius:6px;border:1px solid var(--line-strong);background:var(--bg-base);color:var(--ink);font-size:13.5px;font-weight:500;padding:0 12px;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.btn:hover:not(:disabled){background:var(--bg-muted)}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
+.btn.primary:hover:not(:disabled){background:var(--brand-hover)}
+.btn:disabled{opacity:.45}
+.btn.sm{height:30px;font-size:13px;padding:0 10px}
+.btn.lg{height:40px;font-size:14px;padding:0 18px}
+.note{font-size:12.5px;color:var(--ink2);margin:5px 0 0 44px}
+.note b{color:var(--brand-hover)}
+.cands{margin:8px 0 0 44px}
+.cands .lbl{font-size:12.5px;color:var(--ink2);margin-bottom:4px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border-radius:999px;border:1px solid var(--line-strong);background:var(--bg-base);padding:4px 12px;font-size:13px;color:var(--ink);white-space:nowrap}
+.chip b{font-variant-numeric:tabular-nums;margin-left:4px}
+.chip:hover{border-color:var(--brand)}
+.chip.on{background:var(--brand);border-color:var(--brand);color:#fff}
+.chip.on b{color:#fff}
+.chip .newdot{display:inline-block;margin-left:5px}
+.done{display:flex;align-items:center;gap:8px;border-radius:8px;background:var(--ok-bg);border:1px solid var(--ok-line);color:#065f46;padding:8px 12px;font-size:13.5px;font-weight:700;margin-top:8px}
+.foot{font-size:12px;color:var(--ink2);margin-top:8px;border-top:1px solid var(--brand-light);padding-top:8px}
+.adminonly{font-size:11.5px;font-weight:700;border-radius:999px;padding:1px 9px;background:#1c1917;color:#fff}
+.hidden{display:none!important}
+
+/* C: 見え方の比べ */
+.cmp{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.cmp .pane{background:var(--bg-base);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.cmp .pane h6{margin:0 0 6px;font-size:13px;color:var(--ink2)}
+.ghost{border:1px dashed var(--line-strong);border-radius:8px;padding:12px;font-size:13px;color:var(--ink3);text-align:center;background:var(--bg-app)}
+
+/* ━━━ D: 打刻履歴 ━━━ */
+.ptabs{display:flex;gap:4px;border-bottom:1px solid var(--line);padding:0 20px}
+.ptabs button{border:none;background:none;padding:10px 16px;font-size:14px;color:var(--ink2);border-bottom:3px solid transparent;margin-bottom:-1px}
+.ptabs button.on{color:var(--brand-hover);font-weight:700;border-bottom-color:var(--brand)}
+.range{display:inline-flex;align-items:center;gap:6px;font-size:14px;font-weight:700}
+.range i{width:28px;height:28px;border:1px solid var(--line);border-radius:6px;display:inline-flex;align-items:center;justify-content:center;font-style:normal;color:var(--ink2)}
+.fchip{border-radius:999px;border:1px solid var(--line);background:var(--bg-base);padding:4px 13px;font-size:13px;color:var(--ink2);display:inline-flex;align-items:center;gap:6px}
+.fchip .c{font-size:12px;font-weight:700;color:var(--ink3)}
+.fchip.on{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
+.fchip.on .c{color:#ffe4ec}
+.selbar{display:flex;align-items:center;gap:12px;padding:10px 20px;background:var(--brand-50);border-bottom:1px solid var(--brand-light);font-size:14px}
+.selbar b{color:var(--brand-hover);font-size:15px}
+.selbar .linkish{border:none;background:none;color:var(--ink2);text-decoration:underline;font-size:13px}
+table.t{width:100%;border-collapse:collapse;font-size:14px}
+table.t th{text-align:left;font-size:12.5px;font-weight:500;color:var(--ink2);padding:9px 14px;border-bottom:1px solid var(--line);white-space:nowrap;background:var(--bg-base)}
+table.t td{padding:10px 14px;border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:middle}
+table.t tr:hover td{background:var(--bg-muted)}
+table.t tr.chk td{background:var(--brand-50)}
+table.t td.pt{font-weight:700}
+table.t td.tm{font-size:15px;font-weight:700}
+table.t td.dim{color:var(--ink3)}
+table.t .sub{display:block;font-size:12px;color:var(--ink2);font-weight:400}
+.cb{width:18px;height:18px;accent-color:var(--brand);cursor:pointer;vertical-align:middle}
+.bd{display:inline-flex;align-items:center;border-radius:999px;padding:1px 9px;font-size:12px;font-weight:700;line-height:1.5;margin-right:4px;border:1px solid transparent}
+.bd.nodep{background:#ede9fe;color:#5b21b6;border-color:#ddd6fe}
+.bd.noqr{background:var(--bg-muted);color:var(--ink2);border-color:var(--line-strong)}
+.bd.hand{background:var(--brand-50);color:var(--brand-hover);border-color:var(--brand)}
+.bd.ok{background:var(--ok-bg);color:var(--ok)}
+
+/* 一括ダイアログ (場面内に静的に重ねる) */
+.stage{position:relative;background:rgba(28,25,23,.42);padding:36px 20px 40px;display:flex;justify-content:center}
+.stage .stlbl{position:absolute;left:16px;top:10px;font-size:12px;color:#f5f1ea}
+.dlg{background:var(--bg-base);border-radius:16px;box-shadow:var(--shadow-lg);width:100%;max-width:760px;overflow:hidden}
+.dlg-hd{padding:18px 24px 14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px}
+.dlg-hd h3{font-family:var(--serif);font-size:19px;margin:0 0 3px}
+.dlg-hd p{margin:0;font-size:13.5px;color:var(--ink2)}
+.x{width:34px;height:34px;border-radius:8px;border:1px solid var(--line);background:var(--bg-base);color:var(--ink2);font-size:16px;flex-shrink:0}
+.dlg-bd{padding:16px 24px;display:flex;flex-direction:column;gap:14px}
+.dlg-bd h4{margin:0 0 8px;font-size:14px}
+.rules2{display:flex;flex-direction:column;gap:6px}
+.rule{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:14px;cursor:pointer;background:var(--bg-base)}
+.rule:hover{border-color:var(--brand-light)}
+.rule.on{border-color:var(--brand);background:var(--brand-50)}
+.rule input[type=radio]{accent-color:var(--brand);width:17px;height:17px;margin:0}
+.rule .rec{font-size:11.5px;font-weight:700;color:var(--brand-hover);background:#fff;border:1px solid var(--brand);border-radius:999px;padding:0 8px}
+.rule .ex{margin-left:auto;font-size:12.5px;color:var(--ink2)}
+.rule .min{width:64px;height:32px;border:1px solid var(--line-strong);border-radius:6px;padding:0 6px;font-size:14px;font-weight:700;text-align:right}
+.conf{border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.conf table.t td,.conf table.t th{padding:8px 14px}
+.conf td.put{font-size:16px;font-weight:700;color:var(--brand-hover)}
+.conf td.put small{font-size:12px;color:var(--ink2);font-weight:500;margin-left:6px}
+.dlg-ft{padding:14px 24px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--bg-app)}
+.dlg-ft .t{font-size:12.5px;color:var(--ink2)}
+.result{border-radius:12px;padding:14px 16px;background:var(--ok-bg);border:1px solid var(--ok-line);color:#065f46}
+.result .big{font-size:18px;font-weight:700}
+.result ul{margin:8px 0 0;padding:0;list-style:none;font-size:13.5px;color:var(--ink)}
+.result li{padding:3px 0}
+.result li::before{content:"✓ ";color:var(--ok);font-weight:700}
+.result .fn{font-size:12.5px;color:var(--ink2);margin-top:6px}
+
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#1c1917;color:#fff;border-radius:10px;padding:10px 18px;font-size:14px;box-shadow:var(--shadow-lg);opacity:0;pointer-events:none;transition:opacity .2s;z-index:99}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+
+<div class="mockbar">
+  <span><b>モック</b>　PC から実績の時刻を合わせる（設計: pc-actual-time-edit-design-2026-10-06.md）。氏名・時刻はすべて架空。今日 = 2026/10/6（火）15:10 想定・管理者で表示。</span>
+  <span class="spacer"></span>
+  <a href="#A">A 当日</a><a href="#B">B 過去の日</a><a href="#C">C 打刻なし</a><a href="#D">D まとめて</a>
+</div>
+
+<div class="wrap">
+  <div class="intro">
+    <img src="../../frontend/public/brand/rakusuke-pose-idea.png" alt="">
+    <div>
+      <h1>PC から実績の時刻を合わせる</h1>
+      <p>部品は 1 つ（「実績の時刻を合わせる」枠）、入口は 2 つ。<b>訪問モニター</b> = その日の流れの中で気づいたとき ／ <b>打刻履歴</b> = 期間でまとめて洗い出すとき。</p>
+      <div class="rules">
+        <span><span class="new">新</span> の印と <b>ピンクの点線</b> = 今回足す部分</span>
+        <span>理由は聞きません（誰がいつ合わせたかは記録に残る）</span>
+        <span>予定は動きません・読み取った時刻も消えません</span>
+        <span>操作できるのは管理者だけ</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═════════════════════════ A ═════════════════════════ -->
+  <section class="scene" id="A">
+    <div class="cap">
+      <div class="letter">A</div>
+      <h2>訪問モニター（当日）<small>詳細パネルに「実績の時刻を合わせる」枠が出る</small></h2>
+      <ul>
+        <li>訪問のカードを押すと、右の詳細パネルの下に<b>「実績の時刻を合わせる」</b>枠（打刻履歴の詳細と同じ部品）。</li>
+        <li>到着は時刻を入れて保存。調整したあとは<b>「読取時刻に戻す」</b>で元に戻せる。</li>
+        <li>退出の読み取りが無いときは<b>「退出を 13:48 で記録する」</b>。候補（予定の終わり／到着＋予定の長さ／次の訪問の 10 分前）をひと押しで入れられる。</li>
+        <li>合わせた訪問のバーには<b>「調整」</b>、読み取り無しで入れた時刻には<b>「手入力」</b>の印。</li>
+      </ul>
+    </div>
+
+    <div class="screen">
+      <div class="ptitle"><img src="../../frontend/public/brand/rakusuke-pose-visit.png" alt=""><div><h3>訪問モニター</h3><p>今日の訪問の進み具合（QR の到着・退出）</p></div></div>
+      <div class="fbar">
+        <span class="date"><i>‹</i>2026/10/6（火）<span class="today">今日</span><i>›</i></span>
+        <span class="spacer"></span>
+        <span class="kpi"><span>予定</span><b>18</b></span>
+        <span class="kpi"><span>完了</span><b>11</b></span>
+        <span class="kpi"><span>訪問中</span><b>2</b></span>
+        <span class="kpi warn"><span>要確認</span><b>1</b></span>
+      </div>
+      <div class="tray">
+        <span class="hd">▲ 要対応 1件</span>
+        <span class="acard"><span class="k review">要確認</span><b>鈴木 和子様</b><span style="color:var(--ink2);font-size:12.5px">看護師A ・ 長く滞在中（117分）</span></span>
+      </div>
+      <div class="body">
+        <div class="tlw"><div class="tl" id="tlA"></div></div>
+        <div class="panel" id="panelA">
+          <div class="ph3"><h4>鈴木 和子様</h4><span class="st inprog" id="aSt">訪問中</span></div>
+          <div class="who">看護師A ・ 予定 13:00–13:35（35分）・ 医療</div>
+          <div class="warnbox" id="aWarn"><b>要確認</b>予定の長さを大きく超えて滞在中です（滞在 117分）。退出の読み取り忘れかもしれません。</div>
+          <div class="kvbox">
+            <div class="kv"><span class="k">予定時刻</span><span class="v tnum">13:00 – 13:35</span></div>
+            <div class="kv"><span class="k">到着（QR/GPS）</span><span class="v tnum">13:13</span></div>
+            <div class="kv"><span class="k" id="aDepK">退出（QR/GPS）</span><span class="v tnum" id="aDepV">—</span></div>
+            <div class="kv"><span class="k">滞在時間</span><span class="v tnum" id="aStay">117分（訪問中）</span></div>
+            <div class="kv"><span class="k">登録住所からの距離</span><span class="v tnum">12m</span></div>
+          </div>
+
+          <div class="adj isnew">
+            <h5>実績の時刻を合わせる <span class="new">新</span></h5>
+            <p class="hint">お宅に着いてから QR を読み取るまでに時間があったときや、退出の読み取りが無いときに、実績の時刻を合わせます。読み取った時刻は消さずに残り、予定は変わりません。</p>
+
+            <div class="arow">
+              <div class="line">
+                <span class="lb">到着</span>
+                <input class="tin" type="time" id="aArrIn" value="13:13" aria-label="到着の時刻">
+                <button class="btn primary sm" id="aArrSave" disabled>到着を保存</button>
+                <button class="btn sm" id="aArrReset" disabled title="調整したあとに押せます">読取時刻に戻す</button>
+              </div>
+              <div class="note tnum" id="aArrNote">読取 13:13</div>
+            </div>
+
+            <div class="arow">
+              <div class="line">
+                <span class="lb">退出</span>
+                <input class="tin" type="time" id="aDepIn" value="13:48" aria-label="退出の時刻">
+                <button class="btn primary" id="aDepSave">退出を <span id="aDepLbl">13:48</span> で記録する</button>
+                <button class="btn sm hidden" id="aDepUndo">手入力の時刻を消す</button>
+              </div>
+              <div class="note" id="aDepNote">読み取りなし ・ 退出の時刻を記録できます（記録すると「完了」になります）</div>
+              <div class="cands" id="aCands">
+                <div class="lbl">ひと押しで入れる</div>
+                <div class="chips" data-target="A">
+                  <button class="chip" data-t="13:35">予定の終わり<b>13:35</b></button>
+                  <button class="chip on" data-t="13:48">到着＋予定の長さ<b>13:48</b></button>
+                  <button class="chip" data-t="14:20">次の訪問の 10 分前<b>14:20</b></button>
+                </div>
+              </div>
+              <div class="done hidden" id="aDone">✓ 退出を 13:48 で記録しました ・ 完了（滞在 35分）・「手入力」の印が付きます</div>
+            </div>
+            <div class="foot">理由の入力はありません。誰がいつ合わせたかは記録に残り、詳細の「時刻の調整」に出ます。</div>
+          </div>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--ok)"></i>完了（到着〜退出）</span>
+        <span><i style="background:var(--brand)"></i>訪問中</span>
+        <span><span class="mk">調整</span> 時刻を合わせた</span>
+        <span><span class="mk hand">手入力</span> 読み取り無しで入れた時刻</span>
+        <span>縦線 = 今（15:10）</span>
+      </div>
+    </div>
+    <div class="qref"><b>決めたいこと Q2</b>　退出のひと押しの候補 = 予定の終わり／到着＋予定の長さ／次の訪問の到着の 10 分前（この順で並べ、真ん中を最初に選んでおく案）。</div>
+  </section>
+
+  <!-- ═════════════════════════ B ═════════════════════════ -->
+  <section class="scene" id="B">
+    <div class="cap">
+      <div class="letter">B</div>
+      <h2>訪問モニター（過去の日 10/3）<small>退出が無い訪問は「退出未記録」と出す</small></h2>
+      <ul>
+        <li>モニターの日付を前の日に切り替えても、同じ枠で合わせられる。</li>
+        <li>前日以前で退出が無い訪問は、滞在時間を数え続けず<b>「退出未記録」</b>（今は「滞在 2,708 分」のように今の時刻まで数えてしまう）。</li>
+        <li>要対応のトレイに<b>「退出未記録 5件」</b>。押すと一覧が開き、1 件押すと右の枠がその訪問に切り替わる。</li>
+      </ul>
+    </div>
+
+    <div class="screen">
+      <div class="ptitle"><img src="../../frontend/public/brand/rakusuke-pose-visit.png" alt=""><div><h3>訪問モニター</h3><p>前の日の訪問も、日付を切り替えて合わせられます</p></div></div>
+      <div class="fbar">
+        <span class="date"><i>‹</i>2026/10/3（土）<span class="past">過去の日</span><i>›</i></span>
+        <span class="spacer"></span>
+        <span class="kpi"><span>予定</span><b>14</b></span>
+        <span class="kpi"><span>完了</span><b>9</b></span>
+        <span class="kpi warn" style="background:#ede9fe;border-color:#ddd6fe"><span>退出未記録</span><b style="color:#5b21b6">5</b></span>
+      </div>
+      <div class="tray">
+        <span class="hd">▲ 要対応 5件</span>
+        <button class="tchip on isnew" id="bTrayBtn">退出未記録 5件 <span id="bTrayArrow">▴</span></button>
+        <span style="font-size:12.5px;color:var(--ink2)">押すと一覧を開閉 ・ 1 件押すと右の枠が切り替わります</span>
+        <div class="pop" id="bPop">
+          <div class="ph"><span>退出未記録 5件（10/3）</span><span style="font-weight:500">押すと合わせる枠が開きます</span></div>
+          <div id="bList"></div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="tlw"><div class="tl" id="tlB"></div></div>
+        <div class="panel" id="panelB">
+          <div class="ph3"><h4 id="bName">中村 光子様</h4><span class="st nodep" id="bSt">退出未記録</span></div>
+          <div class="who" id="bWho">看護師A ・ 予定 14:00–14:30（30分）・ 介護</div>
+          <div class="kvbox">
+            <div class="kv"><span class="k">予定時刻</span><span class="v tnum" id="bPlan">14:00 – 14:30</span></div>
+            <div class="kv"><span class="k">到着（QR/GPS）</span><span class="v tnum" id="bArr">14:05</span></div>
+            <div class="kv"><span class="k" id="bDepK">退出（QR/GPS）</span><span class="v tnum" id="bDepV">—</span></div>
+            <div class="kv isnew" style="border-radius:4px"><span class="k">滞在時間 <span class="new">新</span></span><span class="v tnum" id="bStay"><s>滞在 2,708 分</s><span class="arrow">→</span><span class="st nodep">退出未記録</span></span></div>
+          </div>
+          <div class="adj">
+            <h5>実績の時刻を合わせる</h5>
+            <div class="arow">
+              <div class="line">
+                <span class="lb">到着</span>
+                <input class="tin" type="time" id="bArrIn" value="14:05" aria-label="到着の時刻">
+                <button class="btn primary sm" disabled>到着を保存</button>
+              </div>
+              <div class="note tnum" id="bArrNote">読取 14:05</div>
+            </div>
+            <div class="arow">
+              <div class="line">
+                <span class="lb">退出</span>
+                <input class="tin" type="time" id="bDepIn" value="14:35" aria-label="退出の時刻">
+                <button class="btn primary" id="bDepSave">退出を <span id="bDepLbl">14:35</span> で記録する</button>
+              </div>
+              <div class="note">読み取りなし ・ 退出の時刻を記録できます</div>
+              <div class="cands" id="bCands">
+                <div class="lbl">ひと押しで入れる</div>
+                <div class="chips" id="bChips"></div>
+              </div>
+              <div class="done hidden" id="bDone"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--ok)"></i>完了</span>
+        <span><i style="background:#ede9fe;border:1px dashed #8b5cf6"></i>退出未記録（前日以前・滞在時間は数えない）</span>
+        <span>当日は「訪問中」、前日以前は「退出未記録」</span>
+      </div>
+    </div>
+    <div class="qref"><b>決めたいこと Q4</b>　当日は「訪問中」、前日以前は「退出未記録」（滞在時間は数えない）。<b>Q3</b>　到着だけ手入力した打刻なしの訪問も、過去の日なら「退出未記録」。</div>
+  </section>
+
+  <!-- ═════════════════════════ C ═════════════════════════ -->
+  <section class="scene" id="C">
+    <div class="cap">
+      <div class="letter">C</div>
+      <h2>訪問モニター（打刻なし・予定のみ）<small>管理者だけ「到着・退出を手で入れる」</small></h2>
+      <ul>
+        <li>到着の QR も読んでいない訪問に、<b>管理者だけ</b>到着・退出を手で入れられる（紙・看護記録の時刻）。</li>
+        <li>2 つ入れて保存すると<b>「完了」</b>。バーと詳細に<b>「手入力」</b>の印が付き、QR の実績と見分けられる。</li>
+        <li>管理者以外（スタッフ）の画面には、この枠は出ない。スマホの規則（本人・7 日以内・到着の読み取りがある訪問）は変わらない。</li>
+      </ul>
+    </div>
+
+    <div class="screen">
+      <div class="fbar">
+        <span class="date"><i>‹</i>2026/10/5（月）<span class="past">過去の日</span><i>›</i></span>
+        <span class="spacer"></span>
+        <span class="kpi"><span>打刻なし</span><b>1</b></span>
+      </div>
+      <div class="body">
+        <div class="tlw"><div class="tl" id="tlC"></div></div>
+        <div class="panel">
+          <div class="ph3"><h4>伊東 誠様</h4><span class="st plan" id="cSt">打刻なし（予定のみ）</span></div>
+          <div class="who">職員B ・ 予定 10:00–10:45（45分）・ 医療</div>
+          <div class="kvbox">
+            <div class="kv"><span class="k">予定時刻</span><span class="v tnum">10:00 – 10:45</span></div>
+            <div class="kv"><span class="k" id="cArrK">到着（QR/GPS）</span><span class="v tnum" id="cArrV">—（読み取りなし）</span></div>
+            <div class="kv"><span class="k" id="cDepK">退出（QR/GPS）</span><span class="v tnum" id="cDepV">—（読み取りなし）</span></div>
+            <div class="kv"><span class="k">滞在時間</span><span class="v tnum" id="cStay">—</span></div>
+          </div>
+          <div class="adj isnew">
+            <h5>到着・退出を手で入れる <span class="new">新</span> <span class="adminonly">管理者のみ</span></h5>
+            <p class="hint">QR の読み取りが無い訪問です。紙や看護記録の時刻を入れてください。入れた時刻は「手入力」の印で QR の実績と分けて出ます。</p>
+            <div class="arow">
+              <div class="line"><span class="lb">到着</span><input class="tin" type="time" id="cArrIn" value="10:02" aria-label="到着の時刻"><span style="font-size:12.5px;color:var(--ink2)">予定 10:00</span></div>
+            </div>
+            <div class="arow">
+              <div class="line"><span class="lb">退出</span><input class="tin" type="time" id="cDepIn" value="10:47" aria-label="退出の時刻"><span style="font-size:12.5px;color:var(--ink2)">予定 10:45</span></div>
+              <div class="note">到着だけ入れて保存すると「実施中」（過去の日なら「退出未記録」）。</div>
+            </div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;border-top:1px solid var(--brand-light);padding-top:10px">
+              <button class="btn hidden" id="cUndo">手入力を消す</button>
+              <button class="btn primary lg" id="cSave">保存</button>
+            </div>
+            <div class="done hidden" id="cDone">✓ 到着 10:02・退出 10:47 を手入力で記録しました ・ 完了（滞在 45分）</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cmp">
+      <div class="pane"><h6>管理者の画面</h6>上のとおり、詳細パネルに「到着・退出を手で入れる」が出る。</div>
+      <div class="pane"><h6>スタッフ（管理者以外）の画面</h6><div class="ghost">この枠は出ません（見るだけ。「打刻なし（予定のみ）」の表示のまま）</div></div>
+    </div>
+    <div class="qref"><b>決めたいこと Q6</b>　印は「手入力」。打刻履歴でまとめて入れたものを「手入力（まとめて）」と分けるかどうか。</div>
+  </section>
+
+  <!-- ═════════════════════════ D ═════════════════════════ -->
+  <section class="scene" id="D">
+    <div class="cap">
+      <div class="letter">D</div>
+      <h2>打刻履歴（記録 → 打刻履歴タブ）<small>まとめて退出を入れる</small></h2>
+      <ul>
+        <li>絞り込みに<b>「打刻なし」</b>を足す（C の手入力への入口。行の詳細に同じ枠が出る）。</li>
+        <li>「退出なし」で絞った一覧の行に<b>チェック</b>。選ぶと上に<b>「3 件を選択中 ・ まとめて退出を入れる」</b>。</li>
+        <li>決め方を選ぶ（<b>到着＋予定の長さ</b>がおすすめ／到着＋○分／予定の終わり）→ 訪問ごとに入る時刻を確かめて実行。</li>
+        <li>1 件ずつ同じ仕組みで入れ、終わったら<b>「3 件入れました・失敗 0」</b>。失敗したものは理由つきで残る。</li>
+      </ul>
+    </div>
+
+    <div class="screen">
+      <div class="ptitle"><img src="../../frontend/public/brand/rakusuke-pose-visit.png" alt=""><div><h3>訪問記録</h3><p>QR の到着・退出の記録を期間で見る</p></div></div>
+      <div class="ptabs"><button class="on">打刻履歴</button><button>音声記録</button></div>
+      <div class="fbar">
+        <span class="range"><i>‹</i>2026/10/1（木）〜 10/7（水）<i>›</i></span>
+        <span style="width:1px;height:22px;background:var(--line)"></span>
+        <button class="fchip" data-f="all">すべて <span class="c">126</span></button>
+        <button class="fchip on" data-f="nodep">退出なし <span class="c">5</span></button>
+        <button class="fchip isnew" data-f="noqr">打刻なし <span class="c">3</span> <span class="new">新</span></button>
+        <button class="fchip" data-f="adj">調整あり <span class="c">7</span></button>
+        <button class="fchip" data-f="unp">予定外 <span class="c">2</span></button>
+        <span class="spacer"></span>
+        <select class="btn" style="height:32px"><option>職員: すべて</option></select>
+      </div>
+      <div class="selbar isnew" id="selbar" style="outline-offset:-3px;border-radius:0">
+        <span><b id="selN">3</b> 件を選択中</span>
+        <span style="color:var(--ink3)">・</span>
+        <button class="btn primary" id="bulkOpen">まとめて退出を入れる</button>
+        <button class="linkish" id="selClear">選択を外す</button>
+        <span class="spacer"></span>
+        <span style="font-size:12.5px;color:var(--ink2)">「退出なし」で絞ったときにチェックが出ます</span>
+      </div>
+      <table class="t">
+        <thead id="dHead"></thead>
+        <tbody id="dBody"></tbody>
+      </table>
+
+      <div class="stage" id="stage">
+        <span class="stlbl">「まとめて退出を入れる」を押したときのダイアログ（「実行」を押すと結果「3 件入れました・失敗 0」に切り替わります。キャンセル/閉じるで最初に戻ります）</span>
+        <div class="dlg" id="dlg">
+          <div class="dlg-hd">
+            <div><h3>まとめて退出を入れる</h3><p>選んだ <b id="dN">3</b> 件の訪問に、退出の時刻を入れます。入れた時刻には「手入力」の印が付きます。</p></div>
+            <button class="x" aria-label="閉じる">✕</button>
+          </div>
+          <div class="dlg-bd" id="dlgBody">
+            <div>
+              <h4>退出の決め方</h4>
+              <div class="rules2">
+                <label class="rule on"><input type="radio" name="rule" value="len" checked> 到着＋予定の長さ <span class="rec">おすすめ</span><span class="ex">例: 到着 13:13・予定 35 分 → 13:48</span></label>
+                <label class="rule"><input type="radio" name="rule" value="min"> 到着＋ <input class="min tnum" type="number" id="mins" value="35" min="5" max="180" step="5"> 分<span class="ex">全件同じ長さ</span></label>
+                <label class="rule"><input type="radio" name="rule" value="end"> 予定の終わり<span class="ex">例: 予定 13:00–13:35 → 13:35</span></label>
+              </div>
+            </div>
+            <div>
+              <h4>入る時刻の確認</h4>
+              <div class="conf">
+                <table class="t">
+                  <thead><tr><th>日</th><th>利用者</th><th>職員</th><th>予定</th><th>到着</th><th>入る退出</th></tr></thead>
+                  <tbody id="confBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="dlg-bd hidden" id="dlgResult">
+            <div class="result">
+              <div class="big">✓ 3 件入れました ・ 失敗 0</div>
+              <ul id="resList"></ul>
+              <div class="fn">失敗したときは、その訪問と理由がここに残ります（例: 「到着より前の時刻は入れられません」）。一覧の印は「手入力」になります。</div>
+            </div>
+          </div>
+          <div class="dlg-ft">
+            <span class="t" id="ftNote">1 件ずつ記録します。理由の入力はありません。</span>
+            <span style="display:flex;gap:8px">
+              <button class="btn" id="dCancel">キャンセル</button>
+              <button class="btn primary lg" id="dRun">3 件に退出を入れる（実行）</button>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="qref"><b>決めたいこと Q1</b>　まとめて入れるときの既定 = 到着＋予定の長さ（予定 35 分なら 35 分）。到着＋○分・予定の終わりも選べる。</div>
+  </section>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ━━━ 小道具 ━━━ */
+const $ = (s, r=document) => r.querySelector(s);
+const toMin = t => { const [h,m] = t.split(':').map(Number); return h*60+m; };
+const toHM = n => String(Math.floor(n/60)).padStart(2,'0') + ':' + String(n%60).padStart(2,'0');
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'),2200); }
+
+/* ━━━ タイムライン (簡略) ━━━ */
+function renderTL(el, {from=540, to=1020, width=864, now=null, rows}){
+  const px = m => (m-from)/(to-from)*width;
+  el.style.setProperty('--tw', width+'px');
+  let h = `<div class="hrow"><div class="lab">職員</div><div class="axis">`;
+  for(let m=from; m<to; m+=60) h += `<span style="left:${px(m)}px">${m/60}:00</span>`;
+  h += `</div></div>`;
+  rows.forEach((r,ri)=>{
+    h += `<div class="row"><div class="rl"><span class="n">${r.name}</span><span class="s">${r.sub}</span></div><div class="trk">`;
+    for(let m=from; m<to; m+=60) h += `<i class="g" style="left:${px(m)}px"></i>`;
+    if(now!=null) h += `<div class="nowl" style="left:${px(now)}px"><span>${ri===0?'今 '+toHM(now):''}</span></div>`;
+    r.v.forEach(v=>{
+      const s=toMin(v.s), e=toMin(v.e);
+      h += `<div class="card ${v.k||''} ${v.sel?'sel':''}" id="${v.id||''}" style="left:${px(s)}px;width:${px(e)-px(s)}px"><span class="c1">${v.pt}</span><span class="c2 tnum">${v.s}–${v.e}</span></div>`;
+      if(v.rail){
+        const rs=toMin(v.rail.s), re=v.rail.e?toMin(v.rail.e):rs+Math.max(30,e-s);
+        const w = v.rail.cls==='none' ? 200 : Math.max(px(re)-px(rs), 44);
+        h += `<div class="rail ${v.rail.cls}" ${v.rail.id?`id="${v.rail.id}"`:''} style="left:${px(rs)}px;width:${w}px">${v.rail.label||''}${v.rail.mk||''}</div>`;
+      }
+    });
+    h += `</div></div>`;
+  });
+  el.innerHTML = h;
+}
+const MK_ADJ = '<span class="mk">調整</span>', MK_HAND = '<span class="mk hand">手入力</span>';
+
+/* ━━━ A ━━━ */
+renderTL($('#tlA'), {now: toMin('15:10'), rows:[
+  {name:'看護師A', sub:'本部 ・ 5件', v:[
+    {s:'09:00',e:'09:40',pt:'山田 花子様',k:'f',rail:{s:'09:02',e:'09:41',cls:'match',label:'09:02–09:41'}},
+    {s:'10:30',e:'11:05',pt:'佐藤 一郎様',rail:{s:'10:28',e:'11:06',cls:'match',label:'10:28–11:06 ',mk:MK_ADJ}},
+    {s:'13:00',e:'13:35',pt:'鈴木 和子様',k:'f',sel:true,id:'aCard',rail:{s:'13:13',e:'15:10',cls:'inprog',id:'aRail',label:'13:13– 訪問中'}},
+    {s:'14:30',e:'15:05',pt:'高橋 正子様',rail:{s:'14:31',e:'15:04',cls:'match',label:'14:31–15:04'}},
+  ]},
+  {name:'職員B', sub:'本部 ・ 4件', v:[
+    {s:'09:30',e:'10:15',pt:'田中 次郎様',rail:{s:'09:33',e:'10:16',cls:'match',label:'09:33–10:16'}},
+    {s:'11:00',e:'11:30',pt:'小林 美代様',k:'f',rail:{s:'11:02',e:'11:32',cls:'match',label:'11:02–11:32 ',mk:MK_HAND}},
+    {s:'13:30',e:'14:15',pt:'加藤 健様',rail:{s:'13:31',e:'14:14',cls:'match',label:'13:31–14:14'}},
+    {s:'15:00',e:'15:45',pt:'吉田 文子様',k:'f',rail:{s:'15:02',cls:'inprog',label:'15:02– 訪問中'}},
+  ]},
+  {name:'看護師C', sub:'東拠点 ・ 4件', v:[
+    {s:'09:15',e:'10:00',pt:'山本 和夫様',rail:{s:'09:16',e:'09:58',cls:'match',label:'09:16–09:58'}},
+    {s:'10:45',e:'11:30',pt:'松本 恵子様',k:'f',rail:{s:'10:49',e:'11:31',cls:'match',label:'10:49–11:31'}},
+    {s:'14:00',e:'14:40',pt:'井上 進様',rail:{s:'14:02',e:'14:41',cls:'match',label:'14:02–14:41'}},
+    {s:'16:00',e:'16:45',pt:'木村 春子様',k:'f'},
+  ]},
+  {name:'職員D', sub:'東拠点 ・ 3件', v:[
+    {s:'09:00',e:'09:30',pt:'林 幸子様',k:'f',rail:{s:'09:05',e:'09:33',cls:'match',label:'09:05–09:33'}},
+    {s:'11:30',e:'12:15',pt:'斎藤 茂様',rail:{s:'11:31',e:'12:16',cls:'match',label:'11:31–12:16'}},
+    {s:'14:00',e:'14:30',pt:'前田 久子様',k:'f',rail:{s:'14:01',e:'14:29',cls:'match',label:'14:01–14:29'}},
+  ]},
+]});
+(function(){
+  const inp=$('#aDepIn'), lbl=$('#aDepLbl'), chips=document.querySelectorAll('#aCands .chip');
+  const sync=()=>{ lbl.textContent=inp.value; chips.forEach(c=>c.classList.toggle('on',c.dataset.t===inp.value)); };
+  chips.forEach(c=>c.onclick=()=>{ inp.value=c.dataset.t; sync(); });
+  inp.oninput=sync;
+  $('#aDepSave').onclick=()=>{
+    const t=inp.value, stay=toMin(t)-toMin('13:13');
+    $('#aDepK').textContent='退出（手入力）'; $('#aDepV').textContent=t;
+    $('#aStay').textContent=stay+'分';
+    $('#aSt').className='st ok'; $('#aSt').textContent='完了';
+    $('#aWarn').classList.add('hidden');
+    $('#aCands').classList.add('hidden'); $('#aDepSave').classList.add('hidden'); $('#aDepUndo').classList.remove('hidden');
+    inp.disabled=true;
+    $('#aDepNote').textContent='読み取りなし ・ 手入力の時刻';
+    $('#aDone').textContent=`✓ 退出を ${t} で記録しました ・ 完了（滞在 ${stay}分）・ バーに「手入力」の印`;
+    $('#aDone').classList.remove('hidden');
+    const r=$('#aRail'); r.className='rail match'; r.innerHTML=`13:13–${t} `+MK_HAND;
+    r.style.width=Math.max(44,(toMin(t)-toMin('13:13'))*1.8)+'px';
+    toast(`退出を ${t} で記録しました`);
+  };
+  $('#aDepUndo').onclick=()=>{
+    $('#aDepK').textContent='退出（QR/GPS）'; $('#aDepV').textContent='—';
+    $('#aStay').textContent='117分（訪問中）'; $('#aSt').className='st inprog'; $('#aSt').textContent='訪問中';
+    $('#aWarn').classList.remove('hidden'); $('#aCands').classList.remove('hidden');
+    $('#aDepSave').classList.remove('hidden'); $('#aDepUndo').classList.add('hidden'); $('#aDone').classList.add('hidden');
+    inp.disabled=false; $('#aDepNote').textContent='読み取りなし ・ 退出の時刻を記録できます（記録すると「完了」になります）';
+    const r=$('#aRail'); r.className='rail inprog'; r.textContent='13:13– 訪問中'; r.style.width=((toMin('15:10')-toMin('13:13'))*1.8)+'px';
+    toast('手入力の退出時刻を消しました');
+  };
+  const ai=$('#aArrIn');
+  ai.oninput=()=>{ $('#aArrSave').disabled = ai.value==='13:13' || !ai.value; };
+  $('#aArrSave').onclick=()=>{ $('#aArrNote').innerHTML=`読取 13:13 ・ <b>調整あり</b>（${ai.value}）`; $('#aArrSave').disabled=true; $('#aArrReset').disabled=false; toast(`到着を ${ai.value} に合わせました`); };
+  $('#aArrReset').onclick=()=>{ ai.value='13:13'; $('#aArrNote').textContent='読取 13:13'; $('#aArrReset').disabled=true; toast('読取時刻に戻しました'); };
+})();
+
+/* ━━━ B ━━━ */
+const B = [
+  {id:'b1',pt:'中村 光子様',st:'看護師A',ins:'介護',s:'14:00',e:'14:30',a:'14:05',next:'15:00'},
+  {id:'b2',pt:'山田 花子様',st:'看護師A',ins:'医療',s:'09:00',e:'09:40',a:'09:04',next:'10:30'},
+  {id:'b3',pt:'森 義雄様',st:'職員B',ins:'医療',s:'10:00',e:'10:45',a:'10:06',next:'11:30'},
+  {id:'b4',pt:'石川 和子様',st:'職員B',ins:'介護',s:'13:30',e:'14:00',a:'13:41',next:'15:00'},
+  {id:'b5',pt:'清水 太一様',st:'看護師C',ins:'医療',s:'11:00',e:'11:35',a:'11:02',next:'13:30'},
+];
+B.forEach(b=>b.done=null);
+function railB(b){ return b.done ? {s:b.a,e:b.done,cls:'match',label:`${b.a}–${b.done} `,mk:MK_HAND} : {s:b.a,e:toHM(toMin(b.a)+Math.max(55,toMin(b.e)-toMin(b.s)+20)),cls:'nodep',label:`${b.a}– 退出未記録`}; }
+let bSel='b1';
+function drawB(){
+  const by = n => B.filter(b=>b.st===n).map(b=>({s:b.s,e:b.e,pt:b.pt,k:b.ins==='介護'?'f':'',sel:b.id===bSel,rail:railB(b)}));
+  renderTL($('#tlB'), {rows:[
+    {name:'看護師A', sub:'本部', v:[...by('看護師A'),{s:'10:30',e:'11:05',pt:'佐藤 一郎様',rail:{s:'10:31',e:'11:05',cls:'match',label:'10:31–11:05'}}]},
+    {name:'職員B', sub:'本部', v:by('職員B')},
+    {name:'看護師C', sub:'東拠点', v:[...by('看護師C'),{s:'14:00',e:'14:40',pt:'井上 進様',rail:{s:'14:01',e:'14:40',cls:'match',label:'14:01–14:40'}}]},
+  ]});
+  const left = B.filter(b=>!b.done).length;
+  $('#bList').innerHTML = B.map(b=>`<button class="pitem ${b.id===bSel?'on':''}" data-id="${b.id}">
+    <span class="k ${b.done?'':'nodep'}" style="font-size:11.5px;font-weight:700;border-radius:4px;padding:0 6px;${b.done?'background:var(--ok-bg);color:var(--ok)':''}">${b.done?'記録済み':'退出未記録'}</span>
+    <span><b>${b.pt}</b> <span class="who">${b.st} ・ 予定 ${b.s}–${b.e} ・ 到着 ${b.a}</span></span>
+    <span class="tnum" style="font-size:13px;color:var(--ink2)">${b.done?'退出 '+b.done:''}</span>
+    <span class="go">${b.done?'見る':'合わせる'} ›</span></button>`).join('');
+  $('#bTrayBtn').firstChild.textContent = `退出未記録 ${left}件 `;
+  document.querySelectorAll('#bList .pitem').forEach(p=>p.onclick=()=>{ bSel=p.dataset.id; drawB(); fillB(); });
+}
+function fillB(){
+  const b=B.find(x=>x.id===bSel), len=toMin(b.e)-toMin(b.s);
+  $('#bName').textContent=b.pt; $('#bWho').textContent=`${b.st} ・ 予定 ${b.s}–${b.e}（${len}分）・ ${b.ins}`;
+  $('#bPlan').textContent=`${b.s} – ${b.e}`; $('#bArr').textContent=b.a; $('#bArrIn').value=b.a; $('#bArrNote').textContent='読取 '+b.a;
+  const cands=[['予定の終わり',b.e],['到着＋予定の長さ',toHM(toMin(b.a)+len)],['次の訪問の 10 分前',toHM(toMin(b.next)-10)]];
+  $('#bChips').innerHTML=cands.map((c,i)=>`<button class="chip ${i===1?'on':''}" data-t="${c[1]}">${c[0]}<b>${c[1]}</b></button>`).join('');
+  const inp=$('#bDepIn');
+  if(b.done){
+    $('#bSt').className='st ok'; $('#bSt').textContent='完了';
+    $('#bDepK').textContent='退出（手入力）'; $('#bDepV').textContent=b.done;
+    $('#bStay').innerHTML=`<s>滞在 2,708 分</s><span class="arrow">→</span>${toMin(b.done)-toMin(b.a)}分`;
+    inp.value=b.done; inp.disabled=true; $('#bDepSave').classList.add('hidden'); $('#bCands').classList.add('hidden');
+    $('#bDone').textContent=`✓ 退出を ${b.done} で記録しました ・ 完了`; $('#bDone').classList.remove('hidden');
+  } else {
+    $('#bSt').className='st nodep'; $('#bSt').textContent='退出未記録';
+    $('#bDepK').textContent='退出（QR/GPS）'; $('#bDepV').textContent='—';
+    $('#bStay').innerHTML=`<s>滞在 2,708 分</s><span class="arrow">→</span><span class="st nodep">退出未記録</span>`;
+    inp.value=cands[1][1]; inp.disabled=false; $('#bDepLbl').textContent=inp.value;
+    $('#bDepSave').classList.remove('hidden'); $('#bCands').classList.remove('hidden'); $('#bDone').classList.add('hidden');
+  }
+  const sync=()=>{ $('#bDepLbl').textContent=inp.value; document.querySelectorAll('#bChips .chip').forEach(c=>c.classList.toggle('on',c.dataset.t===inp.value)); };
+  document.querySelectorAll('#bChips .chip').forEach(c=>c.onclick=()=>{ inp.value=c.dataset.t; sync(); });
+  inp.oninput=sync;
+}
+$('#bDepSave').onclick=()=>{ const b=B.find(x=>x.id===bSel); b.done=$('#bDepIn').value; toast(`${b.pt}の退出を ${b.done} で記録しました`); drawB(); fillB(); };
+$('#bTrayBtn').onclick=()=>{ const p=$('#bPop'); const open=p.classList.toggle('hidden'); $('#bTrayArrow').textContent=open?'▾':'▴'; $('#bTrayBtn').classList.toggle('on',!open); };
+drawB(); fillB();
+
+/* ━━━ C ━━━ */
+function drawC(done, a, d){
+  renderTL($('#tlC'), {rows:[
+    {name:'職員B', sub:'本部', v:[
+      {s:'09:00',e:'09:40',pt:'田中 次郎様',rail:{s:'09:01',e:'09:41',cls:'match',label:'09:01–09:41'}},
+      done ? {s:'10:00',e:'10:45',pt:'伊東 誠様',sel:true,rail:{s:a,e:d,cls:'match',label:`${a}–${d} `,mk:MK_HAND}}
+           : {s:'10:00',e:'10:45',pt:'伊東 誠様',k:'noqr',sel:true,rail:{s:'10:00',cls:'none',label:'打刻なし（予定のみ）'}},
+      {s:'13:30',e:'14:15',pt:'加藤 健様',rail:{s:'13:30',e:'14:16',cls:'match',label:'13:30–14:16'}},
+    ]},
+  ]});
+}
+drawC(false);
+$('#cSave').onclick=()=>{
+  const a=$('#cArrIn').value, d=$('#cDepIn').value;
+  if(toMin(d)<=toMin(a)){ toast('退出は到着より後の時刻にしてください'); return; }
+  drawC(true,a,d);
+  $('#cSt').className='st ok'; $('#cSt').textContent='完了';
+  $('#cArrK').textContent='到着（手入力）'; $('#cArrV').textContent=a;
+  $('#cDepK').textContent='退出（手入力）'; $('#cDepV').textContent=d;
+  $('#cStay').textContent=(toMin(d)-toMin(a))+'分';
+  $('#cDone').textContent=`✓ 到着 ${a}・退出 ${d} を手入力で記録しました ・ 完了（滞在 ${toMin(d)-toMin(a)}分）`;
+  $('#cDone').classList.remove('hidden'); $('#cSave').classList.add('hidden'); $('#cUndo').classList.remove('hidden');
+  $('#cArrIn').disabled=$('#cDepIn').disabled=true;
+  toast('到着・退出を記録しました');
+};
+$('#cUndo').onclick=()=>{
+  drawC(false);
+  $('#cSt').className='st plan'; $('#cSt').textContent='打刻なし（予定のみ）';
+  $('#cArrK').textContent='到着（QR/GPS）'; $('#cArrV').textContent='—（読み取りなし）';
+  $('#cDepK').textContent='退出（QR/GPS）'; $('#cDepV').textContent='—（読み取りなし）'; $('#cStay').textContent='—';
+  $('#cDone').classList.add('hidden'); $('#cSave').classList.remove('hidden'); $('#cUndo').classList.add('hidden');
+  $('#cArrIn').disabled=$('#cDepIn').disabled=false;
+  toast('手入力を消しました（元の「予定のみ」に戻ります）');
+};
+
+/* ━━━ D ━━━ */
+const D_NODEP = [
+  {id:1,d:'10/3（土）',pt:'鈴木 和子様',st:'看護師A',s:'13:00',e:'13:35',a:'13:13',chk:true},
+  {id:2,d:'10/3（土）',pt:'中村 光子様',st:'看護師A',s:'14:00',e:'14:30',a:'14:05',chk:true},
+  {id:3,d:'10/3（土）',pt:'森 義雄様',st:'職員B',s:'10:00',e:'10:45',a:'10:06',chk:true},
+  {id:4,d:'10/2（金）',pt:'清水 太一様',st:'看護師C',s:'11:00',e:'11:35',a:'11:02',chk:false},
+  {id:5,d:'10/6（火）',pt:'吉田 文子様',st:'職員B',s:'15:00',e:'15:45',a:'15:02',chk:false,today:true},
+];
+const D_NOQR = [
+  {d:'10/5（月）',pt:'伊東 誠様',st:'職員B',s:'10:00',e:'10:45'},
+  {d:'10/2（金）',pt:'岡田 和美様',st:'看護師C',s:'16:00',e:'16:30'},
+  {d:'10/1（木）',pt:'佐藤 一郎様',st:'看護師A',s:'10:30',e:'11:05'},
+];
+let dFilter='nodep';
+function drawD(){
+  const head=$('#dHead'), body=$('#dBody');
+  if(dFilter==='nodep'){
+    const all = D_NODEP.every(r=>r.chk||r.today);
+    head.innerHTML=`<tr><th style="width:44px"><input type="checkbox" class="cb" id="chkAll" ${all?'checked':''} aria-label="すべて選ぶ"></th><th>日</th><th>予定</th><th>利用者</th><th>職員</th><th>到着</th><th>退出</th><th>状態</th><th></th></tr>`;
+    body.innerHTML=D_NODEP.map(r=>`<tr class="${r.chk?'chk':''}">
+      <td>${(r.today||r.done)?'':`<input type="checkbox" class="cb" data-id="${r.id}" ${r.chk?'checked':''} aria-label="${r.pt}を選ぶ">`}</td>
+      <td>${r.d}</td><td class="tnum">${r.s}–${r.e}<span class="sub">${toMin(r.e)-toMin(r.s)}分</span></td>
+      <td class="pt">${r.pt}</td><td>${r.st}</td><td class="tm tnum">${r.a}</td><td class="dim">—</td>
+      <td>${r.done?`<span class="bd ok">完了</span><span class="bd hand">手入力</span>`:r.today?'<span class="bd noqr">訪問中（今日）</span>':'<span class="bd nodep">退出未記録</span>'}</td>
+      <td><button class="btn sm">詳細</button></td></tr>`).join('');
+    document.querySelectorAll('#dBody .cb').forEach(c=>c.onchange=()=>{ D_NODEP.find(r=>r.id==c.dataset.id).chk=c.checked; drawD(); drawConf(); });
+    $('#chkAll').onchange=e=>{ D_NODEP.forEach(r=>{ if(!r.today&&!r.done) r.chk=e.target.checked; }); drawD(); drawConf(); };
+    const n=D_NODEP.filter(r=>r.chk).length;
+    $('#selN').textContent=n; $('#selbar').classList.toggle('hidden', n===0); $('#bulkOpen').disabled=n===0;
+    $('#stage').classList.remove('hidden');
+  } else if(dFilter==='noqr'){
+    head.innerHTML=`<tr><th>日</th><th>予定</th><th>利用者</th><th>職員</th><th>到着</th><th>退出</th><th>状態</th><th></th></tr>`;
+    body.innerHTML=D_NOQR.map(r=>`<tr><td>${r.d}</td><td class="tnum">${r.s}–${r.e}</td><td class="pt">${r.pt}</td><td>${r.st}</td>
+      <td class="dim">—</td><td class="dim">—</td><td><span class="bd noqr">打刻なし（予定のみ）</span></td>
+      <td><button class="btn sm primary" onclick="document.getElementById('C').scrollIntoView({behavior:'smooth'})">到着・退出を手で入れる</button></td></tr>`).join('');
+    $('#selbar').classList.add('hidden'); $('#stage').classList.add('hidden');
+  } else {
+    head.innerHTML=''; body.innerHTML=`<tr><td style="padding:28px;text-align:center;color:var(--ink2)">このモックでは「退出なし」「打刻なし」の一覧だけを用意しています。</td></tr>`;
+    $('#selbar').classList.add('hidden'); $('#stage').classList.add('hidden');
+  }
+}
+document.querySelectorAll('.fchip').forEach(f=>f.onclick=()=>{ document.querySelectorAll('.fchip').forEach(x=>x.classList.remove('on')); f.classList.add('on'); dFilter=f.dataset.f; drawD(); });
+$('#selClear').onclick=()=>{ D_NODEP.forEach(r=>r.chk=false); drawD(); drawConf(); };
+
+function ruleTime(r){
+  const rule=document.querySelector('input[name=rule]:checked').value;
+  if(rule==='len') return [toHM(toMin(r.a)+toMin(r.e)-toMin(r.s)), `到着＋${toMin(r.e)-toMin(r.s)}分`];
+  if(rule==='min'){ const m=parseInt($('#mins').value,10)||35; return [toHM(toMin(r.a)+m), `到着＋${m}分`]; }
+  return [r.e, '予定の終わり'];
+}
+function drawConf(){
+  const sel=D_NODEP.filter(r=>r.chk);
+  $('#dN').textContent=sel.length;
+  $('#dRun').textContent=`${sel.length} 件に退出を入れる（実行）`; $('#dRun').disabled=sel.length===0;
+  $('#confBody').innerHTML=sel.map(r=>{ const [t,why]=ruleTime(r); return `<tr><td>${r.d}</td><td class="pt">${r.pt}</td><td>${r.st}</td><td class="tnum">${r.s}–${r.e}</td><td class="tnum">${r.a}</td><td class="put tnum">${t}<small>${why}</small></td></tr>`; }).join('')
+    || `<tr><td colspan="6" style="color:var(--ink2);text-align:center;padding:16px">訪問を選んでください</td></tr>`;
+}
+document.querySelectorAll('input[name=rule]').forEach(r=>r.onchange=()=>{ document.querySelectorAll('.rule').forEach(l=>l.classList.toggle('on', l.querySelector('input[type=radio]').checked)); drawConf(); });
+$('#mins').oninput=()=>{ document.querySelector('input[name=rule][value=min]').checked=true; document.querySelector('input[name=rule][value=min]').dispatchEvent(new Event('change')); };
+$('#mins').onclick=e=>e.stopPropagation();
+$('#bulkOpen').onclick=()=>{ $('#stage').scrollIntoView({behavior:'smooth',block:'center'}); $('#dlg').animate([{transform:'scale(.98)'},{transform:'scale(1)'}],{duration:180}); };
+$('#dRun').onclick=()=>{
+  const sel=D_NODEP.filter(r=>r.chk);
+  $('#resList').innerHTML=sel.map(r=>{ const [t]=ruleTime(r); r.done=t; return `<li>${r.d} ${r.pt}（${r.st}）退出 ${t}</li>`; }).join('');
+  $('#dlgResult .big').textContent=`✓ ${sel.length} 件入れました ・ 失敗 0`;
+  sel.forEach(r=>r.chk=false);
+  $('#dlgBody').classList.add('hidden'); $('#dlgResult').classList.remove('hidden');
+  $('#dRun').classList.add('hidden'); $('#dCancel').textContent='閉じる'; $('#ftNote').textContent='一覧の「退出なし」から外れ、「手入力」の印で出ます。';
+  drawD(); $('#stage').classList.remove('hidden');
+  toast(`${sel.length} 件に退出を入れました`);
+};
+$('#dCancel').onclick=()=>{
+  // モックなので元の状態へ戻す
+  D_NODEP.forEach((r,i)=>{ delete r.done; r.chk = i<3; });
+  $('#dlgBody').classList.remove('hidden'); $('#dlgResult').classList.add('hidden');
+  $('#dRun').classList.remove('hidden'); $('#dCancel').textContent='キャンセル'; $('#ftNote').textContent='1 件ずつ記録します。理由の入力はありません。';
+  drawD(); drawConf();
+};
+drawD(); drawConf();
+</script>
+</body>
+</html>
