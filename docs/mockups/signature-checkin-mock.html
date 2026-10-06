@@ -1,0 +1,756 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>サインで記録 試案</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Noto+Serif+JP:wght@600;700&display=swap" rel="stylesheet">
+<style>
+/* ━━━ Design tokens (frontend/styles/tokens.css と同値・既存モックと同じ) ━━━ */
+:root{
+  --brand:#e15a7f; --brand-hover:#c94a6e; --brand-light:#ffd6e0; --brand-50:#fff5f8;
+  --bg-base:#fff; --bg-app:#faf7f2; --bg-muted:#f5f1ea;
+  --line:#e7e5e4; --line-strong:#d6d3d1;
+  --ink:#1c1917; --ink2:#57534e; --ink3:#a8a29e;
+  --ok:#059669; --ok-bg:#d1fae5;
+  --warn:#d97706; --warn-bg:#fef3c7; --warn-strong:#92400e;
+  --err:#dc2626; --err-bg:#fee2e2; --info:#0d9488; --info-bg:#ccfbf1; --info-strong:#115e59;
+  --f-bg:#fdf5f7; --f-bar:#d48ba0; --f-ink:#96475e; --f-ln:#f4e2e8;
+  --sans:'Noto Sans JP','Hiragino Sans','Yu Gothic UI','Meiryo',system-ui,sans-serif;
+  --serif:'Noto Serif JP','Hiragino Mincho ProN','Yu Mincho',serif;
+}
+html{color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;background:#ece7de;color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.55}
+button{font-family:var(--sans);cursor:pointer}
+button:disabled{cursor:not-allowed}
+.tnum{font-variant-numeric:tabular-nums}
+svg.i{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+svg.i.s{width:18px;height:18px}
+.new{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;padding:0 6px;border-radius:999px;background:var(--brand);color:#fff;font-size:12px;font-weight:700;line-height:1;letter-spacing:0;flex-shrink:0;box-shadow:0 0 0 2px #fff}
+
+/* ━━━ ページ全体 ━━━ */
+.page{max-width:1500px;margin:0 auto;padding:22px 20px 60px}
+.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 24px;margin-bottom:14px}
+.top h1{font-family:var(--serif);font-size:22px;margin:0}
+.top h1 em{font-style:normal;color:var(--brand)}
+.top p{margin:2px 0 0;color:var(--ink2);font-size:13.5px}
+.devsw{display:inline-flex;border:1px solid var(--line-strong);border-radius:10px;overflow:hidden;background:#fff}
+.devsw button{border:none;background:none;padding:0 14px;height:44px;font-size:14px;color:var(--ink)}
+.devsw button+button{border-left:1px solid var(--line-strong)}
+.devsw button.on{background:var(--brand);color:#fff;font-weight:700}
+.devsw button small{display:block;font-size:10.5px;font-weight:400;opacity:.75;line-height:1}
+.layout{display:grid;grid-template-columns:320px minmax(0,1fr);gap:24px;align-items:start}
+@media (max-width:900px){.layout{grid-template-columns:1fr}}
+.side{display:flex;flex-direction:column;gap:12px}
+.box{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.box h2{font-size:13px;margin:0 0 8px;color:var(--brand-hover);display:flex;align-items:center;gap:6px}
+.box ul,.box ol{margin:0;padding-left:20px;font-size:13.5px}
+.box li{margin-bottom:4px}
+.scenes{display:flex;flex-direction:column;gap:6px}
+.scenes button{display:flex;align-items:flex-start;gap:10px;text-align:left;border:1px solid var(--line);background:#fff;border-radius:10px;padding:8px 10px;font-size:13.5px;color:var(--ink);min-height:48px}
+.scenes button:hover{background:var(--bg-muted)}
+.scenes button.on{border-color:var(--brand);background:var(--brand-50)}
+.scenes button b{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;background:var(--ink);color:#fff;font-size:13px;flex-shrink:0}
+.scenes button.on b{background:var(--brand)}
+.scenes button span small{display:block;color:var(--ink2);font-size:12px}
+.cond{display:flex;flex-direction:column;gap:8px}
+.cond label{font-size:12px;color:var(--ink2);font-weight:600}
+.seg{display:flex;border:1px solid var(--line-strong);border-radius:8px;overflow:hidden}
+.seg button{flex:1;border:none;background:#fff;height:40px;font-size:13px;color:var(--ink)}
+.seg button+button{border-left:1px solid var(--line-strong)}
+.seg button.on{background:var(--ink);color:#fff;font-weight:700}
+
+/* 場面の見出し (端末の上) */
+.cap{display:flex;align-items:flex-start;gap:12px;margin:0 0 12px}
+.cap .no{width:34px;height:34px;border-radius:50%;background:var(--brand);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px}
+.cap h2{margin:0;font-size:17px;font-family:var(--serif)}
+.cap p{margin:2px 0 0;font-size:13.5px;color:var(--ink2)}
+.devlabel{font-size:12px;color:var(--ink3);margin:0 0 6px}
+
+/* ━━━ 端末の枠 (拡大縮小して収める) ━━━ */
+.fitwrap{position:relative;width:100%}
+.frame{position:absolute;left:0;top:0;transform-origin:top left;background:#1c1917;border-radius:36px;padding:16px;box-shadow:0 24px 50px rgba(28,25,23,.25)}
+.frame.phone{border-radius:44px;padding:12px}
+.screen{position:relative;overflow:hidden;background:var(--bg-app);border-radius:22px;display:flex;flex-direction:column;font-size:15px}
+.frame.phone .screen{border-radius:34px}
+
+/* ━━━ アプリ内 (MobileShell) ━━━ */
+.sw{display:flex;gap:6px;padding:8px 14px;background:var(--bg-base);border-bottom:1px solid var(--line);align-items:center;flex-shrink:0}
+.sw span{border-radius:999px;padding:5px 14px;font-size:13px;color:var(--ink2);border:1px solid var(--line)}
+.sw span.on{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:700}
+.sw .clock{margin-left:auto;border:none;color:var(--ink3);padding:4px 0;font-size:14px}
+.phone .sw{padding-top:30px}
+.phone.land .sw{padding-top:8px;padding-left:40px;padding-right:40px}
+main{flex:1;overflow-y:auto;padding:18px 18px 90px;display:flex;flex-direction:column;gap:14px}
+.tab main{padding:22px 28px 96px}
+.phone.land main{padding:12px 40px 76px}
+.nav{position:absolute;left:0;right:0;bottom:0;height:68px;background:var(--bg-base);border-top:1px solid var(--line);display:flex;z-index:5}
+.phone.port .nav{height:78px;padding-bottom:14px}
+.phone.land .nav{height:56px;padding:0 40px}
+.nav button{flex:1;border:none;background:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:12px;color:var(--ink3)}
+.phone.land .nav button{flex-direction:row;gap:6px;font-size:13px}
+.nav button.on{color:var(--brand)}
+.sec-h{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.sec-h h1{font-family:var(--serif);font-size:22px;margin:0;line-height:1.25}
+.back{height:48px;border-radius:999px;border:1px solid var(--brand-light);background:var(--brand-50);color:var(--brand);font-size:14px;font-weight:500;padding:0 16px;display:inline-flex;align-items:center;gap:6px;flex-shrink:0}
+.dgrid{display:grid;grid-template-columns:1fr;gap:14px;align-items:start}
+.land .dgrid{grid-template-columns:minmax(0,1fr) minmax(0,1.1fr)}
+.tab.port .dgrid{max-width:640px;width:100%;margin:0 auto}
+.col{display:flex;flex-direction:column;gap:14px;min-width:0}
+.card{background:var(--bg-base);border:1px solid var(--line);border-radius:12px;padding:18px;box-shadow:0 1px 2px rgba(28,25,23,.04)}
+.d-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.d-top .n{font-family:var(--serif);font-size:22px;font-weight:700;margin:0}
+.d-top .dt{font-size:14px;color:var(--ink3);margin:0}
+.rows{margin-top:14px;display:flex;flex-direction:column;gap:10px;font-size:15px}
+.rw{display:flex;align-items:center;gap:8px;color:var(--ink2);flex-wrap:wrap}
+.rw.actual{font-weight:700;color:var(--ink)}
+.rw.actual .ok{color:var(--ok)}
+.sigrow{display:flex;align-items:center;gap:10px;margin:2px 0 0 26px;flex-wrap:wrap}
+.thumb{width:96px;height:48px;border:1px solid var(--line-strong);border-radius:8px;background:#fff center/contain no-repeat}
+.btn{width:100%;min-height:52px;border-radius:10px;border:1px solid var(--brand);background:var(--brand);color:#fff;font-size:17px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:8px;padding:0 16px}
+.btn.xl{min-height:68px;font-size:20px;border-radius:14px}
+.btn.out{background:var(--bg-base);color:var(--ink);border-color:var(--line-strong);font-weight:500}
+.btn.pinkout{background:var(--bg-base);color:var(--brand-hover);border-color:var(--brand);font-weight:700}
+.btn.ghost{background:none;border-color:transparent;color:var(--ink2);min-height:48px;font-size:15px;font-weight:500;text-decoration:underline}
+.btn.err{background:var(--bg-base);border-color:var(--line-strong);color:var(--err);min-height:48px;font-size:15px;font-weight:500}
+.btn.danger{background:var(--err);border-color:var(--err)}
+.btn:disabled{opacity:.4}
+.btn.sm{width:auto;min-height:48px;font-size:15px;padding:0 16px}
+.hint{text-align:center;font-size:14px;color:var(--ink2);margin:-4px 0 0}
+.bd{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 10px;font-size:13px;font-weight:700;white-space:nowrap}
+.bd.warn{background:var(--warn-bg);color:var(--warn-strong)}
+.bd.info{background:var(--info-bg);color:var(--info-strong)}
+.bd.ok{background:var(--ok-bg);color:var(--ok)}
+.bd.err{background:var(--err-bg);color:var(--err)}
+.bd.mut{background:var(--bg-muted);color:var(--ink2)}
+
+/* ★ 記録のしかたを選ぶ */
+.choose{border:2px solid var(--brand);background:var(--brand-50);border-radius:14px;padding:14px}
+.choose .hd{display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px;color:var(--brand-hover);margin-bottom:10px}
+.pick{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.pick button{min-height:84px;border-radius:12px;border:2px solid var(--line-strong);background:#fff;color:var(--ink);font-size:18px;font-weight:700;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:8px}
+.pick button svg{width:28px;height:28px}
+.pick button small{font-size:13px;font-weight:500;color:var(--ink2)}
+.pick button.on{border-color:var(--brand);background:var(--brand);color:#fff}
+.pick button.on small{color:#ffe4ec}
+.phone.land .pick button{min-height:64px;flex-direction:row;gap:8px;font-size:17px}
+.phone.land .pick button small{display:none}
+.choose .q{margin:10px 0 0;font-size:14px;color:var(--ink2);text-align:center}
+
+/* 位置の確認パネル (既存 PreviewPanel と同じ形) */
+.pv{display:flex;flex-direction:column;gap:12px}
+.pv .ttl{display:flex;align-items:center;gap:8px;font-weight:700;font-size:17px}
+.pv .rt{background:var(--bg-muted);border-radius:10px;padding:10px;text-align:center;font-size:15px;color:var(--ink2)}
+.pv .rt b{font-size:20px;color:var(--ink)}
+.map{position:relative;height:96px;border-radius:10px;border:1px solid var(--line);background:linear-gradient(135deg,#ffe7ee,#f5f1ea);overflow:hidden}
+.map .h{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:var(--brand-hover)}
+.map .p{position:absolute;color:var(--info)}
+.map .ring{position:absolute;left:50%;top:50%;width:120px;height:120px;border:2px dashed rgba(201,74,110,.35);border-radius:50%;transform:translate(-50%,-50%)}
+.gpsrow{display:flex;align-items:center;justify-content:space-between;border-radius:10px;padding:10px 14px;font-size:15px;font-weight:700}
+.gpsrow.ok{background:rgba(5,150,105,.12);color:var(--ok)}
+.gpsrow.warn{background:rgba(217,119,6,.13);color:var(--warn-strong)}
+.gpsrow.err{background:rgba(220,38,38,.1);color:var(--err)}
+.pv .h2{font-size:14px;color:var(--ink2);margin:-4px 0 0}
+.fld label{display:block;font-size:14px;font-weight:700;color:var(--ink2);margin-bottom:6px}
+.fld label.req{color:var(--err)}
+textarea{width:100%;border:1px solid var(--line-strong);border-radius:10px;padding:10px 12px;font:inherit;font-size:16px;resize:none;background:#fff}
+textarea:focus{outline:2px solid var(--brand);outline-offset:0;border-color:var(--brand)}
+.elapsed{text-align:center}
+.elapsed b{font-family:var(--serif);font-size:36px;color:var(--brand-hover)}
+.elapsed p{margin:0;font-size:14px;color:var(--ink3)}
+.alert{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--bg-base)}
+.alert img{height:56px}
+.alert b{display:block;font-size:16px}
+.alert span{font-size:14px;color:var(--ink2)}
+
+/* ★ 圏外の帯 */
+.offl{border:2px solid var(--warn);background:var(--warn-bg);border-radius:12px;padding:14px 16px;color:var(--warn-strong)}
+.offl .hd{display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px}
+.offl ul{margin:8px 0 10px;padding-left:22px;font-size:15px;color:var(--ink)}
+.offl .acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.offl .acts span{font-size:13px;color:var(--warn-strong)}
+
+/* ★ サインの画面 (全画面) */
+.sig{position:absolute;inset:0;z-index:20;background:#fff;display:flex;flex-direction:column;animation:fade .18s ease-out}
+@keyframes fade{from{opacity:.4}to{opacity:1}}
+.sig-h{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.phone.port .sig-h{padding:40px 16px 10px}
+.phone.land .sig-h{padding:6px 44px;gap:10px;flex-wrap:nowrap}
+.sig-h .who{display:flex;flex-direction:column}
+.sig-h .who b{font-family:var(--serif);font-size:24px;line-height:1.2}
+.phone .sig-h .who b{font-size:20px}
+.sig-h .who span{font-size:14px;color:var(--ink2)}
+.phone.land .sig-h .who{flex-direction:row;align-items:baseline;gap:10px}
+.phone.land .sig-h .who b{font-size:18px}
+.sig-h .tm{margin-left:auto;text-align:right}
+.sig-h .tm b{font-size:28px;font-weight:700;line-height:1}
+.phone .sig-h .tm b{font-size:22px}
+.sig-h .tm span{display:block;font-size:13px;color:var(--ink2)}
+.phone.land .sig-h .tm{display:flex;align-items:baseline;gap:8px}
+.gpschip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:4px 12px;font-size:13px;font-weight:700}
+.gpschip.ok{background:var(--ok-bg);color:var(--ok)} .gpschip.warn{background:var(--warn-bg);color:var(--warn-strong)} .gpschip.err{background:var(--err-bg);color:var(--err)}
+.phone.port .sig-h .gpschip{order:5;width:100%;justify-content:center}
+.sig-pad{flex:1;position:relative;margin:16px 22px 0;border:2px dashed var(--line-strong);border-radius:16px;background:#fff;min-height:0}
+.phone.port .sig-pad{margin:10px 12px 0}
+.phone.land .sig-pad{margin:6px 44px 0;border-radius:12px}
+.sig-pad canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair;border-radius:14px}
+.sig-pad .base{position:absolute;left:8%;right:8%;bottom:28%;border-bottom:2px solid #d6d3d1;pointer-events:none}
+.sig-pad .x{position:absolute;left:calc(8% - 4px);bottom:calc(28% + 6px);font-size:22px;color:var(--ink3);pointer-events:none}
+.sig-pad .ph{position:absolute;left:0;right:0;top:34%;text-align:center;color:var(--ink3);font-size:20px;pointer-events:none;transition:opacity .15s}
+.phone .sig-pad .ph{font-size:17px}
+.sig-pad.inked .ph{opacity:0}
+.rot{display:none;align-items:center;justify-content:center;gap:8px;margin:10px 12px 0;background:var(--brand-50);border:1px solid var(--brand-light);color:var(--brand-hover);border-radius:10px;padding:8px 12px;font-size:15px;font-weight:700}
+.phone.port .rot{display:flex}
+.sig-f{display:flex;align-items:center;gap:12px;padding:14px 22px 18px;flex-wrap:wrap}
+.sig-f .note{font-size:14px;color:var(--ink2);flex:1;min-width:220px}
+.sig-f .btns{display:flex;gap:10px;margin-left:auto}
+.sig-f .btn{width:auto;min-height:60px;font-size:18px;padding:0 22px}
+.sig-f .btn.out{font-weight:700}
+.phone.port .sig-f{padding:10px 12px 26px;flex-direction:column;align-items:stretch;gap:8px}
+.phone.port .sig-f .note{min-width:0;text-align:center;font-size:13.5px}
+.phone.port .sig-f .btns{margin:0;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.phone.port .sig-f .btns .btn{width:100%;padding:0 10px}
+.phone.port .sig-f .btns .btn.pri{grid-column:1 / -1;order:-1;min-height:60px}
+.phone.land .sig-f{padding:6px 44px 10px;flex-wrap:nowrap;gap:8px}
+.phone.land .sig-f .note{display:none}
+.phone.land .sig-f .btns{margin:0;width:100%}
+.phone.land .sig-f .btns .btn{min-height:50px;font-size:16px}
+.phone.land .sig-f .btns .btn.pri{flex:1}
+.phone.land .sig-h .gpschip{font-size:12px;padding:3px 10px}
+.phone.land .sig-h .cnl{min-height:44px}
+.cnl2{display:none !important}
+.phone.port .cnl2{display:flex !important}
+.phone.port .sig-h .cnl{display:none}
+
+/* 見る (オーバーレイ) */
+.shade{position:absolute;inset:0;background:rgba(28,25,23,.5);z-index:30;display:flex;align-items:center;justify-content:center;padding:20px}
+.viewer{background:#fff;border-radius:16px;padding:18px;width:min(560px,100%);max-height:100%;overflow:auto;display:flex;flex-direction:column;gap:12px}
+.viewer .vh{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.viewer .vh b{font-size:17px}
+.viewer .img{border:1px solid var(--line);border-radius:12px;background:#fff center/contain no-repeat;aspect-ratio:2/1}
+.viewer .meta{font-size:15px;color:var(--ink2)}
+.logged{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ink2);background:var(--bg-muted);border-radius:8px;padding:6px 10px}
+.xbtn{width:48px;height:48px;border-radius:50%;border:1px solid var(--line);background:#fff;color:var(--ink2);font-size:18px;flex-shrink:0}
+.toast{position:absolute;left:50%;bottom:92px;transform:translateX(-50%);max-width:calc(100% - 32px);background:#1c1917;color:#fff;border-radius:12px;padding:12px 18px;font-size:15px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:40;text-align:center}
+.toast.show{opacity:1}
+
+/* ━━━ 5. PC の打刻履歴 ━━━ */
+.pcsec{margin-top:40px}
+.pcwin{background:#fff;border:1px solid var(--line-strong);border-radius:12px;overflow:hidden;box-shadow:0 18px 40px rgba(28,25,23,.14);position:relative;max-width:1080px}
+.pcbar{display:flex;align-items:center;gap:8px;background:#f1eee8;padding:8px 12px;border-bottom:1px solid var(--line)}
+.pcbar i{width:11px;height:11px;border-radius:50%;background:#d6d3d1;display:inline-block}
+.pcbar span{margin-left:10px;font-size:12px;color:var(--ink2)}
+.pcbody{padding:18px 20px 22px;min-height:560px;position:relative}
+.pcbody h3{font-family:var(--serif);margin:0 0 4px;font-size:19px}
+.pcbody .sub{color:var(--ink2);font-size:13px;margin:0 0 12px}
+.tbl{width:100%;border-collapse:collapse;font-size:13.5px}
+.tbl th{background:var(--bg-muted);text-align:left;font-weight:600;color:var(--ink2);padding:8px 10px;border-bottom:1px solid var(--line)}
+.tbl td{padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+.tbl tr.hit td{background:var(--brand-50)}
+.tbl tr.click{cursor:pointer}
+.tbl tr.click:hover td{background:#fff0f4}
+.pcshade{position:absolute;inset:0;background:rgba(28,25,23,.35);display:flex;align-items:flex-start;justify-content:center;padding:36px 16px}
+.dlg{background:#fff;border-radius:14px;width:min(620px,100%);box-shadow:0 20px 50px rgba(28,25,23,.3);font-size:14px}
+.dlg-h{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line)}
+.dlg-h b{font-size:16px}
+.dlg-h .xbtn{width:36px;height:36px;font-size:15px}
+.dlg-b{padding:14px 18px;display:flex;flex-direction:column;gap:12px}
+.dlg-b .who{color:var(--ink2)}
+.dlg-b .who b{color:var(--ink);font-size:15px}
+.dlg .tbl td{white-space:normal}
+.dlg .mini{height:34px;border-radius:8px;border:1px solid var(--brand);background:#fff;color:var(--brand-hover);font-size:13px;font-weight:700;padding:0 10px;display:inline-flex;align-items:center;gap:5px}
+.dlg .mini.on{background:var(--brand);color:#fff}
+.pcview{border:1px solid var(--brand-light);background:var(--brand-50);border-radius:12px;padding:12px;display:grid;grid-template-columns:240px 1fr;gap:12px;align-items:center}
+@media (max-width:600px){.pcview{grid-template-columns:1fr}}
+.pcview .img{background:#fff center/contain no-repeat;border:1px solid var(--line);border-radius:10px;aspect-ratio:2/1}
+.pcview p{margin:0 0 6px;font-size:13.5px;color:var(--ink2)}
+.dlg-f{display:flex;justify-content:flex-end;gap:8px;padding:12px 18px;border-top:1px solid var(--line)}
+.dlg-f button{height:38px;border-radius:8px;border:1px solid var(--line-strong);background:#fff;padding:0 14px;font-size:13.5px}
+.dlg-f button.pri{background:var(--ink);border-color:var(--ink);color:#fff}
+.pcnote{margin-top:10px;font-size:13px;color:var(--ink2)}
+.foot{margin-top:28px;font-size:12.5px;color:var(--ink3)}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top">
+    <div>
+      <h1>QR を置けない利用者さん — <em>サインで記録</em> 試案</h1>
+      <p>端末の画面は実際に操作できます（サインは指・ペン・マウスで書けます）。氏名・住所・時刻はすべて架空です。今日は 2026/10/06（火）の想定。<span class="new">新</span> が今回足すところです。</p>
+    </div>
+    <div>
+      <div class="devlabel">表示する端末</div>
+      <div class="devsw" id="devsw" role="group" aria-label="表示する端末">
+        <button data-dev="pp">スマホ縦<small>390×844</small></button>
+        <button data-dev="pl">スマホ横<small>844×390</small></button>
+        <button data-dev="tp">タブレット縦<small>768×1024</small></button>
+        <button data-dev="tl" class="on">タブレット横<small>1024×768</small></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <aside class="side">
+      <div class="box">
+        <h2>場面へ飛ぶ</h2>
+        <div class="scenes" id="scenes">
+          <button data-scene="1"><b>1</b><span>訪問の詳細（到着前）<small>QR を読むか、サインで記録するかを選ぶ</small></span></button>
+          <button data-scene="1b"><b>1</b><span>到着を記録した後<small>「到着 13:02 ・ QRなし（サイン）」と位置の判定</small></span></button>
+          <button data-scene="2"><b>2</b><span>退出 — サインの画面<small>全画面のサイン欄。押した時刻と位置を記録</small></span></button>
+          <button data-scene="2b"><b>2</b><span>退出を記録した後<small>「退出 13:38 ・ サイン」と縮小画像</small></span></button>
+          <button data-scene="3"><b>3</b><span>位置が離れていた場合<small>QR と同じ扱い。不一致の到着は理由が要る</small></span></button>
+          <button data-scene="4"><b>4</b><span>圏外<small>端末に保存し、つながったら送る</small></span></button>
+          <button data-scene="5"><b>5</b><span>PC 打刻履歴の詳細<small>備考の印と「サインを見る」</small></span></button>
+        </div>
+      </div>
+
+      <div class="box cond">
+        <h2>試す条件</h2>
+        <label>位置（GPS）の判定</label>
+        <div class="seg" id="gpsSeg">
+          <button data-gps="match" class="on">一致</button><button data-gps="review">要確認</button><button data-gps="mismatch">不一致</button>
+        </div>
+        <label>電波</label>
+        <div class="seg" id="netSeg">
+          <button data-net="on" class="on">つながる</button><button data-net="off">圏外</button>
+        </div>
+        <button class="btn out" style="min-height:44px;font-size:14px" data-reset>最初の状態に戻す</button>
+      </div>
+
+      <div class="box">
+        <h2>PO の決定（2026-10-06）</h2>
+        <ul>
+          <li>すべての利用者さんで、<b>その場で QR かサインを選べる</b>（マスターの設定は作らない）</li>
+          <li>サインは<b>退出のとき 1 回</b>。到着は「到着を記録」（時刻＋位置）</li>
+          <li>表示: 到着＝<b>QRなし（サイン）</b>・退出＝<b>サイン</b></li>
+          <li><b>署名した人は記録しない</b>（サインの画像だけ）</li>
+          <li>画像は <b>5 年</b>保存。A4・Excel は備考の印だけ</li>
+          <li>管理者も職員も、<b>過去の日も見られる</b>。見た記録が残る</li>
+          <li>スマホでもタブレットでも同じ画面（大きさに合わせて並びが変わる）</li>
+        </ul>
+      </div>
+
+      <div class="box">
+        <h2>端末ごとの並び</h2>
+        <ul>
+          <li><b>タブレット横・スマホ横</b>: 左に訪問の情報、右に操作の 2 列</li>
+          <li><b>縦</b>: 1 列。タブレット縦は読みやすい幅に収める</li>
+          <li><b>サインの画面</b>: どの端末でも全画面。ボタンは下に固定</li>
+          <li>スマホ縦では「横向きにすると広く書けます」と案内</li>
+          <li>文字は 15px 以上、押す所は 48px 以上</li>
+        </ul>
+      </div>
+
+      <div class="box">
+        <h2>そのままのところ</h2>
+        <ul>
+          <li>位置の判定（100 m 以内＝一致・300 m 以内＝要確認・それより遠い＝不一致）と、不一致でも記録は断らないこと</li>
+          <li>押し忘れのときは「実績の時刻を合わせる」で調整（調整の印が残る）</li>
+          <li>呼び方は「記録する」「合わせる」「調整」</li>
+        </ul>
+      </div>
+    </aside>
+
+    <section>
+      <div class="cap" id="cap"></div>
+      <div class="fitwrap" id="fitwrap">
+        <div class="frame" id="frame"><div class="screen" id="screen"></div></div>
+      </div>
+
+      <div class="pcsec" id="pc">
+        <div class="cap"><div class="no">5</div><div><h2>PC — 打刻履歴の詳細 <span class="new">新</span></h2><p>備考に 到着＝「QRなし（サイン）」・退出＝「サイン」。詳細の「サインを見る」で画像を出します。管理者も職員も、過去の日も見られます。</p></div></div>
+        <div class="pcwin">
+          <div class="pcbar"><i></i><i></i><i></i><span>らく助 — 記録 ＞ 打刻履歴</span></div>
+          <div class="pcbody" id="pcbody"></div>
+        </div>
+        <p class="pcnote">タブレットで書いたサインは、そのまま PC の「サインを見る」にも出ます（まだ書いていなければ見本のサイン）。</p>
+      </div>
+      <p class="foot">docs/plans/signature-checkin-design-2026-10-06.md §2・§3・§5-1 に基づくモック。アプリのコードは変えていません。</p>
+    </section>
+  </div>
+</div>
+
+<script>
+/* ━━━ 小道具 ━━━ */
+const pad = n => String(n).padStart(2, '0');
+const hm = m => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+const IMG = '../../frontend/public/brand/';
+const NEW = '<span class="new" title="今回足すところ">新</span>';
+const I = {
+  qr: '<svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3M21 14v.01M14 21h.01M17 21h4v-4"/></svg>',
+  sign: '<svg class="i" viewBox="0 0 24 24"><path d="M3 17c3-1 4-9 6-9s0 8 2 8 2-4 4-4 1 3 3 3"/><path d="M3 21h18"/></svg>',
+  arrive: '<svg class="i" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="m9 15 2 2 4-4"/></svg>',
+  clock: '<svg class="i s" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  check: '<svg class="i s" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>',
+  back: '<svg class="i s" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>',
+  pin: '<svg class="i s" viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>',
+  home: '<svg class="i" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M9 22V12h6v10"/></svg>',
+  today: '<svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M9 16l2 2 4-4"/></svg>',
+  week: '<svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M17 14h-6M13 18H7"/></svg>',
+  user: '<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="10" r="3"/><path d="M7 20.7a5 5 0 0 1 10 0"/></svg>',
+  wifiOff: '<svg class="i" viewBox="0 0 24 24"><path d="M2 2l20 20M8.5 16.4a5 5 0 0 1 7 0M5 12.9a10 10 0 0 1 5.2-2.8M19 12.9a10 10 0 0 0-2-1.5M1.4 9a15 15 0 0 1 4.3-2.6M22.6 9A15 15 0 0 0 11 5.1M12 20h.01"/></svg>',
+  eye: '<svg class="i s" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
+  rotate: '<svg class="i" viewBox="0 0 24 24"><rect x="4" y="2" width="10" height="16" rx="2"/><path d="M17 8a6 6 0 0 1 4 6M21 14l1.5-2.5M21 14l-2.6-1.2M8 21h12a2 2 0 0 0 2-2v-1"/></svg>',
+  log: '<svg class="i s" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg>',
+  mic: '<svg class="i" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></svg>',
+};
+
+/* ━━━ 端末 ━━━ */
+const DEV = {
+  pp: { w: 390, h: 844, kind: 'phone', o: 'port', label: 'スマホ縦（iPhone 390×844）' },
+  pl: { w: 844, h: 390, kind: 'phone', o: 'land', label: 'スマホ横（iPhone 844×390）' },
+  tp: { w: 768, h: 1024, kind: 'tab', o: 'port', label: 'タブレット縦（iPad 768×1024）' },
+  tl: { w: 1024, h: 768, kind: 'tab', o: 'land', label: 'タブレット横（iPad 1024×768）' },
+};
+const GPS = {
+  match: { cls: 'ok', short: '一致', label: '登録住所と一致', hint: '位置を確認しました。', arr: 42, dep: 38 },
+  review: { cls: 'warn', short: '要確認', label: '要確認（100〜300m）', hint: '登録住所からやや離れています。', arr: 180, dep: 210 },
+  mismatch: { cls: 'err', short: '不一致', label: '登録住所と不一致（300m超）', hint: '別の場所で測位された可能性があります。', arr: 520, dep: 610 },
+};
+const T_ARR = 13 * 60 + 2, T_DEP = 13 * 60 + 38;
+
+let S;
+function fresh(keep) {
+  return { dev: keep?.dev || 'tl', gps: keep?.gps || 'match', online: keep?.online ?? true, scene: '1',
+    method: null, status: 'planned', clock: T_ARR, preview: null, reason: '', arr: null, dep: null,
+    signOpen: false, strokes: [], viewer: false, depReason: '', pcOpen: true, pcView: false };
+}
+S = fresh();
+
+/* ━━━ サイン (線は 0..1 の比率で持ち、どの大きさでも描き直せるようにする) ━━━ */
+function drawStrokes(ctx, strokes, w, h, lw) {
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#1c1917'; ctx.fillStyle = '#1c1917'; ctx.lineWidth = lw;
+  for (const s of strokes) {
+    if (s.length === 1) { ctx.beginPath(); ctx.arc(s[0][0] * w, s[0][1] * h, lw / 2, 0, 7); ctx.fill(); continue; }
+    ctx.beginPath(); ctx.moveTo(s[0][0] * w, s[0][1] * h);
+    for (let i = 1; i < s.length - 1; i++) {
+      const mx = (s[i][0] + s[i + 1][0]) / 2, my = (s[i][1] + s[i + 1][1]) / 2;
+      ctx.quadraticCurveTo(s[i][0] * w, s[i][1] * h, mx * w, my * h);
+    }
+    const l = s[s.length - 1]; ctx.lineTo(l[0] * w, l[1] * h); ctx.stroke();
+  }
+}
+function sampleStrokes() {
+  const st = [], loop = (x0, x1, y, r, k, n) => { const a = []; for (let i = 0; i <= n; i++) { const t = i / n; a.push([x0 + (x1 - x0) * t + r * 0.6 * Math.cos(k * t * 6.283), y + r * Math.sin(k * t * 6.283) - 0.04 * Math.sin(t * 3.14)]); } return a; };
+  st.push(loop(.16, .36, .52, .09, 3, 70));
+  st.push(loop(.40, .55, .50, .07, 2.5, 60));
+  st.push(loop(.58, .80, .53, .08, 3.5, 80));
+  const u = []; for (let i = 0; i <= 40; i++) { const t = i / 40; u.push([.14 + .7 * t, .74 - .05 * Math.sin(t * 3.14) + .02 * t]); } st.push(u);
+  return st;
+}
+/* 保存する画像: 書いた部分を切り出し、2:1 の白地の中央に置く (縮小画像でも読めるように) */
+function sigToDataURL(strokes, aspect = 2) {
+  const W = 800, H = 400, c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, W, H);
+  const pts = strokes.flat(); if (!pts.length) return c.toDataURL('image/png');
+  const sx = aspect * 100, sy = 100; // 書いた欄の縦横比を保つ座標
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [a, b] of pts) { x0 = Math.min(x0, a * sx); x1 = Math.max(x1, a * sx); y0 = Math.min(y0, b * sy); y1 = Math.max(y1, b * sy); }
+  const bw = Math.max(x1 - x0, 8), bh = Math.max(y1 - y0, 4), k = Math.min((W * .86) / bw, (H * .8) / bh);
+  const ox = (W - bw * k) / 2 - x0 * k, oy = (H - bh * k) / 2 - y0 * k;
+  x.save(); x.translate(ox, oy); drawStrokes(x, strokes, sx * k, sy * k, 7); x.restore();
+  return c.toDataURL('image/png');
+}
+const SAMPLE_SIG = sigToDataURL(sampleStrokes());
+
+/* ━━━ 画面の部品 ━━━ */
+const gpsBadge = (g, d) => `<span class="bd ${GPS[g].cls}">${I.pin}${GPS[g].short} ${d}m</span>`;
+const pendingBadge = r => r && r.pending ? '<span class="bd warn">端末に保存（未送信）</span>' : '';
+function shell(inner, overlay) {
+  return `<div class="sw"><span class="on">ホーム</span><span>ボード</span><span>受け入れ枠</span><span class="clock tnum">${S.online ? '' : '圏外 ・ '}${hm(S.clock)}</span></div>
+  <main>${inner}</main>
+  <div class="nav">
+    <button data-act="nop">${I.home}<span>ホーム</span></button>
+    <button class="on" data-act="nop">${I.today}<span>今日</span></button>
+    <button data-act="nop">${I.week}<span>今週</span></button>
+    <button data-act="nop">${I.user}<span>マイページ</span></button>
+  </div>${overlay || ''}<div class="toast" id="toast"></div>`;
+}
+function infoCard() {
+  const badge = S.status === 'done' ? '<span class="bd ok">完了</span>' : S.status === 'in' ? '<span class="bd info">訪問中</span>' : '<span class="bd warn">未訪問</span>';
+  let actual = '';
+  if (S.arr) actual += `<div class="rw actual tnum"><span class="ok">${I.check}</span>到着 ${hm(S.arr.t)} ・ QRなし（サイン） ${NEW} ${gpsBadge(S.arr.gps, S.arr.dist)} ${pendingBadge(S.arr)}</div>`;
+  if (S.arr && S.arr.reason) actual += `<div class="rw" style="font-size:14px;margin-left:26px">理由: ${esc(S.arr.reason)}</div>`;
+  if (S.dep) actual += `<div class="rw actual tnum"><span class="ok">${I.check}</span>退出 ${hm(S.dep.t)} ・ サイン ${NEW} ${gpsBadge(S.dep.gps, S.dep.dist)} ${pendingBadge(S.dep)}</div>
+    <div class="sigrow"><span class="thumb" style="background-image:url(${S.dep.sig})" role="img" aria-label="サインの縮小画像"></span>
+    <button class="btn pinkout sm" data-act="viewer">${I.eye}サインを見る</button></div>`;
+  return `<div class="card"><div class="d-top"><div><p class="n">山田 花子 様</p><p class="dt">2026 年 10/6（火）</p></div>${badge}</div>
+    <div class="rows">
+      <div class="rw tnum">${I.clock}予定 13:00 - 13:40（40 分）</div>
+      <div class="rw">${I.pin}稲毛区園生町 1-2-3</div>
+      ${actual}
+    </div></div>`;
+}
+function offlineBanner() {
+  const items = [];
+  if (S.arr && S.arr.pending) items.push(`<li>到着 ${hm(S.arr.t)}（時刻・位置）</li>`);
+  if (S.dep && S.dep.pending) items.push(`<li>退出 ${hm(S.dep.t)}（時刻・位置・<b>サインの画像</b>）</li>`);
+  if (!items.length) return '';
+  return `<div class="offl" role="status"><div class="hd">${I.wifiOff}圏外のため端末に保存しました。つながったら送ります ${NEW}</div>
+    <ul>${items.join('')}</ul>
+    ${S.dep && S.dep.pending ? '<p style="margin:-4px 0 10px;font-size:14px;color:var(--ink)">サインの画像も、この端末に保存してあります。</p>' : ''}
+    <div class="acts"><button class="btn out sm" data-act="sendNow">つながったので送る（モック）</button><span>アプリを閉じても消えません</span></div></div>`;
+}
+function previewPanel() {
+  const g = GPS[S.gps], mis = S.gps === 'mismatch', d = g.arr;
+  const left = mis ? '74%' : S.gps === 'review' ? '64%' : '55%', top = mis ? '72%' : '60%';
+  return `<div class="card pv" aria-label="到着の確認">
+    <div class="ttl">${I.check}到着の確認</div>
+    <div class="rt tnum">押した時刻 <b>${hm(S.preview.t)}</b> で記録します</div>
+    <div class="map"><span class="ring"></span><span class="h">${I.home}</span><span class="p" style="left:${left};top:${top}">${I.pin}</span></div>
+    <div class="gpsrow ${g.cls}"><span>${g.label}</span><span class="tnum">${d} m</span></div>
+    <p class="h2">${g.hint}</p>
+    ${mis ? `<div class="fld"><label class="req" for="reason">理由（不一致のため必須・管理者に共有）</label>
+      <textarea id="reason" rows="2" placeholder="例: マンション裏口で測位 など">${esc(S.reason)}</textarea></div>` : ''}
+    <button class="btn ${mis ? 'danger' : ''}" data-act="recArr" ${mis && !S.reason.trim() ? 'disabled' : ''}>${mis ? '理由を付けて到着を記録' : '到着を記録する'}</button>
+    <button class="btn ghost" data-act="relocate">位置を再取得</button>
+  </div>`;
+}
+function actionCol() {
+  if (S.status === 'planned') {
+    if (S.preview) return previewPanel() + `<button class="btn out" data-act="cancelPv">やめる</button>`;
+    const pick = `<div class="choose"><div class="hd">記録のしかたを選ぶ ${NEW}</div>
+      <div class="pick" role="radiogroup" aria-label="記録のしかた">
+        <button role="radio" aria-checked="${S.method === 'qr'}" class="${S.method === 'qr' ? 'on' : ''}" data-act="method" data-m="qr">${I.qr}QRを読む<small>QR カードを読み取る</small></button>
+        <button role="radio" aria-checked="${S.method === 'sign'}" class="${S.method === 'sign' ? 'on' : ''}" data-act="method" data-m="sign">${I.sign}サインで記録<small>到着はボタン・退出でサイン</small></button>
+      </div><p class="q">利用者さんごとに、その場で選べます。</p></div>`;
+    let main = '';
+    if (S.method === 'qr') main = `<button class="btn xl" data-act="qr">${I.qr}QRで到着を記録</button><p class="hint">今までどおりの QR の読み取りです</p>`;
+    else if (S.method === 'sign') main = `<button class="btn xl" data-act="arrive">${I.arrive}到着を記録 ${NEW}</button><p class="hint">押した時刻と位置（GPS）を記録します。サインは退出のときにもらいます。</p>`;
+    return pick + main + `<button class="btn err" data-act="nop">訪問できなかった（理由を記録）</button>`;
+  }
+  if (S.status === 'in') {
+    const el = S.clock - S.arr.t;
+    return `<div class="card"><div class="elapsed"><b class="tnum">${pad(el)}:00</b><p>経過時間（到着 ${hm(S.arr.t)}〜）</p></div>
+      <div class="fld" style="margin-top:10px"><label for="memo">サービスメモ（下書き・端末内）</label><textarea id="memo" rows="2" placeholder="実施内容・申し送り"></textarea></div></div>
+      <button class="btn xl" data-act="openSign">${I.sign}サインして退出 ${NEW}</button>
+      <p class="hint">利用者さんにサインをもらうと、その時刻と位置で退出を記録します。</p>
+      <button class="btn ghost" data-act="qr">QR を読んで退出する</button>`;
+  }
+  const g = S.dep.gps, needWhy = g !== 'match';
+  return `<div class="alert"><img src="${IMG}rakusuke-pose-cheer.png" alt=""><div><b>訪問完了</b><span>おつかれさまでした！押し忘れがあったときは「時刻を合わせる」で調整できます。</span></div></div>
+    ${needWhy ? `<div class="card"><div class="gpsrow ${GPS[g].cls}"><span>退出の位置: ${GPS[g].label}</span><span class="tnum">${S.dep.dist} m</span></div>
+      <div class="fld" style="margin-top:10px"><label for="depReason">理由（任意・管理者に共有）</label><textarea id="depReason" rows="2" placeholder="例: 玄関先でサインをもらった など">${esc(S.depReason)}</textarea></div></div>` : ''}
+    <button class="btn out" data-act="nop">${I.clock}時刻を合わせる</button>`;
+}
+function signOverlay() {
+  const g = GPS[S.gps];
+  return `<div class="sig" role="dialog" aria-label="サインの画面">
+    <div class="sig-h">
+      <div class="who"><b>山田 花子 様</b><span>2026 年 10 月 6 日（火） ・ 退出</span></div>
+      <span class="gpschip ${g.cls}">${I.pin}位置: ${g.short} ${g.dep}m</span>
+      <div class="tm tnum"><b>${hm(T_DEP)}</b><span>押した時刻で記録</span></div>
+      <button class="btn ghost sm cnl" data-act="closeSign" style="text-decoration:none;border:1px solid var(--line-strong);min-width:88px">やめる</button>
+    </div>
+    <div class="rot">${I.rotate}横向きにすると広く書けます</div>
+    <div class="sig-pad ${S.strokes.length ? 'inked' : ''}" id="pad">
+      <div class="base"></div><div class="x">×</div>
+      <div class="ph">この枠の中にサインをお願いします</div>
+      <canvas id="cv" aria-label="サイン欄"></canvas>
+    </div>
+    <div class="sig-f">
+      <p class="note">「サインして退出を記録」を押した時刻と位置を記録します。サインの画像は 5 年保存します。</p>
+      <div class="btns">
+        <button class="btn out" data-act="clearSign">消してもう一度</button>
+        <button class="btn out cnl2" data-act="closeSign">やめる</button>
+        <button class="btn pri" id="saveSign" data-act="saveSign" ${S.strokes.length ? '' : 'disabled'}>${I.check}サインして退出を記録</button>
+      </div>
+    </div>
+  </div>`;
+}
+function viewerOverlay() {
+  return `<div class="shade" data-act="closeViewer"><div class="viewer" role="dialog" aria-label="サイン">
+    <div class="vh"><b>サイン — 山田 花子 様</b><button class="xbtn" data-act="closeViewer" aria-label="閉じる">✕</button></div>
+    <div class="img" style="background-image:url(${S.dep.sig})"></div>
+    <div class="meta tnum">2026/10/6（火） 退出 ${hm(S.dep.t)} にサイン ・ ${GPS[S.dep.gps].label} ${S.dep.dist}m</div>
+    <span class="logged">${I.log}見た記録が残ります（見た人・日時）</span>
+  </div></div>`;
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+/* ━━━ 描画 ━━━ */
+const CAPS = {
+  '1': ['1', '訪問の詳細（到着前）', 'いつもの QR に加えて「サインで記録」を選べます。サインを選ぶと、大きな「到着を記録」ボタン（時刻＋位置・サインは無し）が出ます。'],
+  '1b': ['1', '到着を記録した後', '実績の行に「到着 13:02 ・ QRなし（サイン）」と位置の判定（一致／要確認／不一致）が出ます。'],
+  '2': ['2', '退出 — サインの画面', '全画面のサイン欄。利用者名・日時が上に出ます。署名した人は選びません。押した瞬間の時刻と位置を記録します。'],
+  '2b': ['2', '退出を記録した後', '「退出 13:38 ・ サイン」と小さなサインの画像。「サインを見る」で大きく出します（見た記録が残ります）。'],
+  '3': ['3', '位置が離れていた場合', 'QR と同じ扱いです。記録はして要確認・不一致の印を付けます。不一致の到着は理由が必須（今の決まり）。'],
+  '4': ['4', '圏外', '時刻と位置はすぐ端末に保存。サインの画像も端末に保存し、つながったら送ります。'],
+  '5': ['5', 'PC 打刻履歴の詳細', '下の PC の画面をご覧ください。'],
+};
+function render() {
+  const d = DEV[S.dev], frame = document.getElementById('frame'), scr = document.getElementById('screen');
+  frame.className = `frame ${d.kind} ${d.o}`;
+  scr.className = `screen ${d.kind} ${d.o}`;
+  scr.style.width = d.w + 'px'; scr.style.height = d.h + 'px';
+  const c = CAPS[S.scene] || CAPS['1'];
+  document.getElementById('cap').innerHTML = `<div class="no">${c[0]}</div><div><h2>${c[1]}</h2><p>${c[2]}</p><p style="font-size:12px;color:var(--ink3)">${d.label}</p></div>`;
+  const inner = `<div class="sec-h"><h1>訪問詳細</h1><button class="back" data-act="nop">${I.back}今日の訪問に戻る</button></div>
+    ${offlineBanner()}
+    <div class="dgrid"><div class="col">${infoCard()}
+      ${S.status !== 'planned' ? `<div class="card" style="display:flex;align-items:center;gap:10px;color:var(--ink2);font-size:15px">${I.mic}音声記録（今のまま）</div>` : ''}
+    </div><div class="col">${actionCol()}</div></div>`;
+  let ov = '';
+  if (S.signOpen) ov = signOverlay(); else if (S.viewer && S.dep) ov = viewerOverlay();
+  scr.innerHTML = shell(inner, ov);
+  document.querySelectorAll('#devsw button').forEach(b => b.classList.toggle('on', b.dataset.dev === S.dev));
+  document.querySelectorAll('#gpsSeg button').forEach(b => b.classList.toggle('on', b.dataset.gps === S.gps));
+  document.querySelectorAll('#netSeg button').forEach(b => b.classList.toggle('on', (b.dataset.net === 'on') === S.online));
+  document.querySelectorAll('#scenes button').forEach(b => b.classList.toggle('on', b.dataset.scene === S.scene));
+  fit();
+  if (S.signOpen) initPad();
+  const r = document.getElementById('reason');
+  if (r) r.addEventListener('input', () => { S.reason = r.value; const b = scr.querySelector('[data-act="recArr"]'); if (b) b.disabled = !S.reason.trim(); });
+  const dr = document.getElementById('depReason');
+  if (dr) dr.addEventListener('input', () => { S.depReason = dr.value; });
+  renderPC();
+}
+function fit() {
+  const wrap = document.getElementById('fitwrap'), frame = document.getElementById('frame');
+  const fw = frame.offsetWidth, fh = frame.offsetHeight, avail = wrap.clientWidth;
+  const maxH = Math.max(520, window.innerHeight - 140);
+  const s = Math.min(1, avail / fw, maxH / fh);
+  frame.style.transform = `scale(${s})`;
+  frame.style.left = Math.max(0, (avail - fw * s) / 2) + 'px';
+  wrap.style.height = fh * s + 'px';
+}
+
+/* サイン欄 (ポインターで描く。拡大縮小中でも getBoundingClientRect の比率で正しく取れる) */
+let ro;
+function initPad() {
+  const cv = document.getElementById('cv'), pad = document.getElementById('pad');
+  const ctx = cv.getContext('2d');
+  const size = () => {
+    const w = cv.offsetWidth, h = cv.offsetHeight, dpr = 2;
+    cv.width = w * dpr; cv.height = h * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawStrokes(ctx, S.strokes, w, h, lw());
+  };
+  const lw = () => Math.max(3, Math.min(cv.offsetWidth, cv.offsetHeight * 2) / 220);
+  size();
+  if (ro) ro.disconnect(); ro = new ResizeObserver(size); ro.observe(cv);
+  let cur = null;
+  const pt = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
+  cv.addEventListener('pointerdown', e => {
+    e.preventDefault(); cv.setPointerCapture(e.pointerId); cur = [pt(e)]; S.strokes.push(cur);
+    pad.classList.add('inked'); document.getElementById('saveSign').disabled = false;
+    drawStrokes(ctx, [cur], cv.offsetWidth, cv.offsetHeight, lw());
+  });
+  cv.addEventListener('pointermove', e => {
+    if (!cur) return; const p = pt(e), q = cur[cur.length - 1]; cur.push(p);
+    const w = cv.offsetWidth, h = cv.offsetHeight;
+    ctx.lineCap = 'round'; ctx.lineWidth = lw(); ctx.strokeStyle = '#1c1917';
+    ctx.beginPath(); ctx.moveTo(q[0] * w, q[1] * h); ctx.lineTo(p[0] * w, p[1] * h); ctx.stroke();
+  });
+  const end = () => { cur = null; };
+  cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+}
+
+/* ━━━ PC の打刻履歴 ━━━ */
+function renderPC() {
+  const sig = S.dep ? S.dep.sig : SAMPLE_SIG, depT = S.dep ? hm(S.dep.t) : '13:38', arrT = S.arr ? hm(S.arr.t) : '13:02';
+  const ag = S.arr ? S.arr.gps : 'match', ad = S.arr ? S.arr.dist : 42, dg = S.dep ? S.dep.gps : 'match', dd = S.dep ? S.dep.dist : 38;
+  const b = (g, d) => `<span class="bd ${GPS[g].cls}">${GPS[g].short} ${d}m</span>`;
+  document.getElementById('pcbody').innerHTML = `<h3>打刻履歴</h3><p class="sub">2026/10/06（火） ・ 稲毛 ・ 行を押すと詳細が開きます</p>
+    <table class="tbl"><thead><tr><th>時刻</th><th>職員</th><th>利用者</th><th>区分</th><th>位置</th><th>備考</th></tr></thead><tbody>
+      <tr><td class="tnum">09:31</td><td>佐々木 美咲</td><td>井上 和子</td><td>到着</td><td>${b('match', 25)}</td><td>QR</td></tr>
+      <tr><td class="tnum">10:04</td><td>佐々木 美咲</td><td>井上 和子</td><td>退出</td><td>${b('match', 31)}</td><td>QR</td></tr>
+      <tr class="hit click" data-pc="open"><td class="tnum">${arrT}</td><td>佐々木 美咲</td><td>山田 花子</td><td>到着</td><td>${b(ag, ad)}</td><td>QRなし（サイン） ${NEW}</td></tr>
+      <tr class="hit click" data-pc="open"><td class="tnum">${depT}</td><td>佐々木 美咲</td><td>山田 花子</td><td>退出</td><td>${b(dg, dd)}</td><td>サイン ${NEW}</td></tr>
+      <tr><td class="tnum">14:52</td><td>佐々木 美咲</td><td>近藤 茂</td><td>到着</td><td>${b('review', 140)}</td><td>QRなし</td></tr>
+    </tbody></table>
+    ${S.pcOpen ? `<div class="pcshade" data-pc="close"><div class="dlg" role="dialog" aria-label="打刻の詳細">
+      <div class="dlg-h"><b>打刻の詳細</b><button class="xbtn" data-pc="close" aria-label="閉じる">✕</button></div>
+      <div class="dlg-b">
+        <div class="who">2026/10/6（火） ・ <b>山田 花子 様</b> ・ 担当 佐々木 美咲 ・ 予定 13:00–13:40</div>
+        <table class="tbl"><thead><tr><th>区分</th><th>時刻</th><th>位置</th><th>備考</th><th></th></tr></thead><tbody>
+          <tr><td>到着</td><td class="tnum">${arrT}</td><td>${b(ag, ad)}</td><td>QRなし（サイン） ${NEW}</td><td></td></tr>
+          <tr><td>退出</td><td class="tnum">${depT}</td><td>${b(dg, dd)}</td><td>サイン ${NEW}</td>
+            <td><button class="mini ${S.pcView ? 'on' : ''}" data-pc="view">${I.eye}サインを見る</button></td></tr>
+        </tbody></table>
+        ${S.pcView ? `<div class="pcview"><div class="img" style="background-image:url(${sig})" role="img" aria-label="サインの画像"></div>
+          <div><p class="tnum">退出 ${depT} にサイン ・ ${GPS[dg].label} ${dd}m</p><p>画像は 5 年保存します。</p>
+          <span class="logged">${I.log}見た記録が残ります</span></div></div>` : ''}
+        <span style="font-size:12.5px;color:var(--ink3)">管理者も職員も、過去の日も見られます。A4・Excel には画像を載せず、備考の印だけです。</span>
+      </div>
+      <div class="dlg-f"><button data-pc="nop">時刻を合わせる</button><button class="pri" data-pc="close">閉じる</button></div>
+    </div></div>` : ''}`;
+}
+document.getElementById('pcbody').addEventListener('click', e => {
+  const t = e.target.closest('[data-pc]'); if (!t) return;
+  if (t.classList.contains('pcshade') && e.target !== t) return;
+  const a = t.dataset.pc;
+  if (a === 'open') S.pcOpen = true; else if (a === 'close') { S.pcOpen = false; S.pcView = false; } else if (a === 'view') S.pcView = !S.pcView; else return;
+  renderPC();
+});
+
+/* ━━━ 操作 ━━━ */
+let tt;
+function toast(m) { setTimeout(() => { const t = document.getElementById('toast'); if (!t) return; t.textContent = m; t.classList.add('show'); clearTimeout(tt); tt = setTimeout(() => t.classList.remove('show'), 2600); }, 0); }
+const A = {
+  nop() { toast('この画面はモックの対象外です'); },
+  method(t) { S.method = t.dataset.m; },
+  qr() { toast('QR の読み取りは今のままです（モックでは省略）'); },
+  arrive() { S.preview = { t: S.clock }; S.reason = ''; S.scene = S.gps === 'mismatch' ? '3' : '1'; },
+  cancelPv() { S.preview = null; },
+  relocate() { toast('位置を取り直しました'); },
+  recArr() {
+    if (S.gps === 'mismatch' && !S.reason.trim()) return;
+    S.arr = { t: S.preview.t, gps: S.gps, dist: GPS[S.gps].arr, reason: S.gps === 'mismatch' ? S.reason.trim() : '', pending: !S.online };
+    S.preview = null; S.status = 'in'; S.clock = 13 * 60 + 35; S.scene = S.online ? '1b' : '4';
+    toast(S.online ? `到着 ${hm(S.arr.t)} を記録しました` : '圏外のため端末に保存しました');
+  },
+  openSign() { S.signOpen = true; S.clock = T_DEP; S.scene = S.online ? '2' : '4'; },
+  closeSign() { S.signOpen = false; },
+  clearSign() { S.strokes = []; const pad = document.getElementById('pad'); pad.classList.remove('inked'); document.getElementById('saveSign').disabled = true; const cv = document.getElementById('cv'); cv.getContext('2d').clearRect(0, 0, cv.width, cv.height); return 'keep'; },
+  saveSign() {
+    if (!S.strokes.length) return;
+    S.dep = { t: T_DEP, gps: S.gps, dist: GPS[S.gps].dep, sig: sigToDataURL(S.strokes, (c => c.offsetWidth / c.offsetHeight)(document.getElementById('cv'))), pending: !S.online };
+    S.signOpen = false; S.status = 'done'; S.scene = S.online ? '2b' : '4';
+    toast(S.online ? `退出 ${hm(T_DEP)} をサインで記録しました` : '圏外のため、サインと記録を端末に保存しました');
+  },
+  viewer() { S.viewer = true; toast('見た記録が残ります'); },
+  closeViewer() { S.viewer = false; },
+  sendNow() {
+    S.online = true; const n = (S.arr?.pending ? 1 : 0) + (S.dep?.pending ? 1 : 0), sig = S.dep?.pending;
+    if (S.arr) S.arr.pending = false; if (S.dep) S.dep.pending = false;
+    toast(`端末に保存していた記録を送りました（${n} 件${sig ? '・サイン 1 枚' : ''}）`);
+  },
+};
+document.getElementById('screen').addEventListener('click', e => {
+  const t = e.target.closest('[data-act]'); if (!t) return;
+  if (t.classList.contains('shade') && e.target !== t) return;
+  const f = A[t.dataset.act]; if (!f) return;
+  if (f(t) === 'keep') return;
+  render();
+});
+
+/* 場面へ飛ぶ */
+function jump(sc) {
+  const keep = { dev: S.dev, gps: S.gps, online: true };
+  if (sc === '3') keep.gps = 'mismatch';
+  if (sc === '1' || sc === '1b' || sc === '2' || sc === '2b') { if (S.gps === 'mismatch' && sc !== '3') keep.gps = 'match'; }
+  S = fresh(keep); S.scene = sc;
+  const arrive = () => { S.method = 'sign'; S.arr = { t: T_ARR, gps: S.gps, dist: GPS[S.gps].arr, reason: S.gps === 'mismatch' ? 'マンション裏口で測位' : '', pending: !S.online }; S.status = 'in'; S.clock = 13 * 60 + 35; };
+  if (sc === '1') { S.method = null; }
+  if (sc === '1b') arrive();
+  if (sc === '2') { arrive(); S.signOpen = true; S.clock = T_DEP; }
+  if (sc === '2b') { arrive(); S.dep = { t: T_DEP, gps: S.gps, dist: GPS[S.gps].dep, sig: SAMPLE_SIG, pending: false }; S.status = 'done'; S.clock = T_DEP; }
+  if (sc === '3') { S.method = 'sign'; S.preview = { t: T_ARR }; }
+  if (sc === '4') { S.online = false; arrive(); }
+  if (sc === '5') { S.method = 'sign'; S.pcOpen = true; S.pcView = true; render(); document.getElementById('pc').scrollIntoView({ behavior: 'smooth' }); return; }
+  render();
+}
+document.getElementById('scenes').addEventListener('click', e => { const b = e.target.closest('[data-scene]'); if (b) jump(b.dataset.scene); });
+document.getElementById('devsw').addEventListener('click', e => { const b = e.target.closest('[data-dev]'); if (b) { S.dev = b.dataset.dev; render(); } });
+document.getElementById('gpsSeg').addEventListener('click', e => { const b = e.target.closest('[data-gps]'); if (b) { S.gps = b.dataset.gps; render(); } });
+document.getElementById('netSeg').addEventListener('click', e => { const b = e.target.closest('[data-net]'); if (b) { S.online = b.dataset.net === 'on'; render(); } });
+document.querySelector('[data-reset]').addEventListener('click', () => { S = fresh({ dev: S.dev }); render(); });
+window.addEventListener('resize', fit);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
+render();
+</script>
+</body>
+</html>
