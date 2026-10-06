@@ -299,8 +299,16 @@ function MobileVisitDetailPageInner() {
       (readToken ? parseHandoffReadAt(searchParams?.get(QR_READ_AT_PARAM), Date.now()) : null) ??
       new Date().toISOString(),
   );
-  // 今週の予定から開いたときは、戻るリンクも今週へ (設計 §7-8)。
-  const fromWeek = searchParams?.get('from') === 'week';
+  // 今週の予定から開いたときは、戻るリンクも今週へ (設計 §7-8)。先週を開いていたときは
+  // 先週へ戻す (pc-actual-time-edit-design Q5)。
+  const fromParam = searchParams?.get('from');
+  const fromLastWeek = fromParam === 'lastweek';
+  const fromWeek = fromParam === 'week' || fromLastWeek;
+  const backLabel = fromLastWeek
+    ? '先週の予定に戻る'
+    : fromWeek
+      ? '今週の予定に戻る'
+      : '今日の訪問に戻る';
 
   const { data: queryVisit, isLoading, isError, error } = useMyVisit(visitId, readToken);
   // 打刻・時刻を合わせる API の応答 (どれも VisitRead)。['me'] の再取得が届くまでの
@@ -1051,12 +1059,12 @@ function MobileVisitDetailPageInner() {
       action={
         // 無言の矢印だけでは戻り先が分からない (PO要望 2026-07-10) → テキスト付きボタンへ
         <Link
-          href={fromWeek ? '/m/this-week' : '/m/today'}
+          href={fromLastWeek ? '/m/this-week?week=last' : fromWeek ? '/m/this-week' : '/m/today'}
           className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full border border-brand-primary-light bg-brand-primary-50 px-3 text-xs font-medium text-brand-primary hover:bg-brand-primary-light"
-          aria-label={fromWeek ? '今週の予定に戻る' : '今日の訪問に戻る'}
+          aria-label={backLabel}
         >
           <ArrowLeft className="h-4 w-4" />
-          {fromWeek ? '今週の予定に戻る' : '今日の訪問に戻る'}
+          {backLabel}
         </Link>
       }
     >

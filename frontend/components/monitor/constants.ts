@@ -159,6 +159,7 @@ type ActualTimeFields = Pick<
   | 'arrival_adjusted'
   | 'departure_adjusted'
   | 'departure_manual'
+  | 'arrival_manual'
   | 'adjustments'
 >;
 
@@ -194,7 +195,7 @@ export interface AdjustmentNote {
   at: string;
   /** 読取時刻 "HH:MM" (JST)。読み取りの無い手入力は null。 */
   readAt: string | null;
-  /** 読み取りの無い退出を手で入れた。 */
+  /** 読み取りの無い到着 / 退出を手で入れた。 */
   manual: boolean;
   /** 理由 (表示名・自由記述があれば「・」で続ける)。無ければ null。 */
   reason: string | null;
@@ -210,8 +211,9 @@ export function adjustmentNotes(v: ActualTimeFields): AdjustmentNote[] {
     {
       kind: 'arrival' as const,
       label: '到着',
-      on: !!v.arrival_adjusted,
-      manual: false,
+      on: !!v.arrival_adjusted || !!v.arrival_manual,
+      // 打刻なしの訪問に管理者が手で入れた到着 (pc-actual-time-edit-design D2)。
+      manual: !!v.arrival_manual,
       at: actualArrivalIso(v),
       readAt: v.arrival_read_at ?? null,
     },
@@ -277,6 +279,18 @@ export function isLongInprogress(
 
 /** 退出忘れ (長時間 inprogress) の理由文言。 */
 export const LONG_INPROGRESS_REASON = '長時間訪問中（退出未記録の可能性）';
+
+/**
+ * 前日以前で到着はあるが退出が無い訪問の表示 (pc-actual-time-edit-design-2026-10-06 Q4)。
+ * BE が ``departure_missing`` を立て、滞在は数えない (``stay_minutes`` = null)。
+ */
+export const DEPARTURE_MISSING_LABEL = '退出未記録';
+export const DEPARTURE_MISSING_REASON = '前日以前の訪問で、退出の記録がありません';
+
+/** 「退出未記録」(前日以前・退出なし) か。当日の訪問中は false (「訪問中」のまま)。 */
+export function isDepartureMissing(v: Pick<MonitorVisit, 'departure_missing'>): boolean {
+  return !!v.departure_missing;
+}
 
 /**
  * 2 名体制 (visit_group_id) を 1 論理訪問に重複排除したグループ。

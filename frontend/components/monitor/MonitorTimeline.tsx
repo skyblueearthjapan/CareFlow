@@ -38,6 +38,7 @@ import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
 import { classifyVisitDisplay, type VisitDisplayKind } from '@/lib/schedule/visitVisibility';
 
 import {
+  DEPARTURE_MISSING_LABEL,
   MISSING_BAR_BG,
   STATUS_COLOR,
   TL_END_MIN,
@@ -50,6 +51,7 @@ import {
   displayStatus,
   formatDistance,
   hmToMinutes,
+  isDepartureMissing,
   isoToHm,
   minutesToPct,
   officeTagTone,
@@ -887,12 +889,21 @@ function VisitBars({
   let actLeft = pL;
   let actWidth = Math.max(pW, 2.5);
   let actLabel = '';
+  // 前日以前で退出が無い =「退出未記録」。今の時刻まで伸ばさず、予定の長さぶんで止める
+  // (pc-actual-time-edit-design Q4)。
+  const departureMissing = isDepartureMissing(visit);
   if (arrived) {
     const arrMin = arrivalIso ? isoToMinutesJst(arrivalIso) : ps;
-    const endMin = departureIso ? isoToMinutesJst(departureIso) : nowMinutes;
+    const endMin = departureIso
+      ? isoToMinutesJst(departureIso)
+      : departureMissing
+        ? arrMin + Math.max(pe - ps, 30)
+        : nowMinutes;
     actLeft = minutesToPct(arrMin);
     actWidth = Math.max(minutesToPct(endMin) - actLeft, 2.5);
-    if (status === 'mismatch' && visit.arrival?.distance_m != null) {
+    if (departureMissing) {
+      actLabel = DEPARTURE_MISSING_LABEL;
+    } else if (status === 'mismatch' && visit.arrival?.distance_m != null) {
       actLabel = `${Math.round(visit.arrival.distance_m)}m`;
     } else if (status === 'review' && visit.arrival_delay_min != null) {
       actLabel = `+${visit.arrival_delay_min}分`;
@@ -926,11 +937,13 @@ function VisitBars({
   // 途中切れさせない (狭いカードで詰まるのは氏名・住所側だけ)。
   // 未訪問 (no_show) は抑止する: モバイルと同じ理由 — 「未訪問」と到着時刻を
   // 並べない (BE レビュー申し送り 2026-09-18)。詳細パネルには従来どおり出る。
+  // ただし未訪問の記録の後に管理者が到着を手で入れた訪問は、訪問した扱いなので出す
+  // (未訪問の記録は詳細パネルに履歴として残る・PO 決定 2026-10-07)。
   const actual =
-    visit.phase === 'no_show' || visit.no_show != null
+    visit.phase === 'no_show' || (visit.no_show != null && !visit.arrival_manual)
       ? null
       : actualTimeParts(arrivalIso, departureIso);
-  // 「調整」の印 (モニターは閲覧のみ — 合わせる操作は打刻履歴 / スマホから)。
+  // 「調整」「手入力」の印 (合わせる操作は詳細パネルの枠・打刻履歴・スマホから)。
   // 実績を併記しない訪問 (未訪問) には出さない。
   const adjustNotes = actual ? adjustmentNotes(visit) : [];
   const adjustTitle = adjustNotes.map((n) => n.text).join(' / ');
@@ -1096,6 +1109,7 @@ function VisitBars({
           type="button"
           data-testid={`monitor-bar-actual-${visit.visit_id}`}
           data-status={status}
+          data-departure-missing={departureMissing || undefined}
           data-lane={lane}
           onClick={(e) => {
             e.stopPropagation();

@@ -7,6 +7,10 @@
  *
  * 行 = 職員 (2026-10-01) からは、行の下に開くパネル (``page.tsx``) が
  * 「地図 / 順路 (MonitorRouteList) / この詳細」を横に並べて使う。
+ *
+ * 管理者には詳細の下に「実績の時刻を合わせる」枠 (打刻履歴の詳細と同じ部品
+ * ``ActualTimeAdjustBox``) を出す。打刻なしの訪問は「到着・退出を手で入れる」。前日以前で
+ * 退出が無い訪問は、滞在を数えず「退出未記録」と出す (pc-actual-time-edit-design-2026-10-06)。
  */
 import { useState } from 'react';
 import {
@@ -25,6 +29,8 @@ import {
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { ActualTimeAdjustBox } from '@/components/records/ActualTimeAdjustBox';
+import { targetFromMonitorVisit } from '@/components/records/actualTimeAdjust';
 import { VisitRecordingLink } from '@/components/records/VisitRecordingLink';
 import { cn } from '@/lib/utils';
 import { lateDeliveryLabel } from '@/lib/format/actualTime';
@@ -32,6 +38,8 @@ import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 
 import { CourseTagChip, UnplannedChip } from './MonitorTimeline';
 import {
+  DEPARTURE_MISSING_LABEL,
+  DEPARTURE_MISSING_REASON,
   LONG_INPROGRESS_REASON,
   MAP_MARKER_COLOR,
   STATUS_COLOR,
@@ -43,6 +51,7 @@ import {
   adjustmentNotes,
   displayStatus,
   formatDistance,
+  isDepartureMissing,
   isLongInprogress,
   isoToHm,
   isoToYmdHm,
@@ -73,6 +82,11 @@ interface MonitorDetailPanelProps {
   reviewPending?: boolean;
   /** 札の色を拠点で揃えるための拠点 id の並び (モニター応答の offices 順)。 */
   officeIds?: readonly string[];
+  /**
+   * 実績の時刻を合わせる枠を出すか (管理者だけ)。出すかどうかの最終判断は訪問ごとの
+   * ``adjust_allowed`` / ``manual_arrival_allowed`` (BE の判定)。
+   */
+  canAdjust?: boolean;
 }
 
 export function MonitorDetailPanel({
@@ -84,6 +98,7 @@ export function MonitorDetailPanel({
   onUnreview,
   reviewPending,
   officeIds = [],
+  canAdjust = false,
 }: MonitorDetailPanelProps) {
   if (visit) {
     return (
@@ -94,6 +109,7 @@ export function MonitorDetailPanel({
         onReview={onReview}
         onUnreview={onUnreview}
         reviewPending={reviewPending}
+        canAdjust={canAdjust}
       />
     );
   }
@@ -226,6 +242,7 @@ function VisitDetail({
   onReview,
   onUnreview,
   reviewPending,
+  canAdjust,
 }: {
   visit: MonitorVisit;
   row: MonitorStaffRow | null;
@@ -233,6 +250,7 @@ function VisitDetail({
   onReview?: (visitId: string, comment: string | null) => void;
   onUnreview?: (visitId: string) => void;
   reviewPending?: boolean;
+  canAdjust?: boolean;
 }) {
   const st = displayStatus(visit);
   const txt = STATUS_JUDGE[st];
@@ -240,13 +258,18 @@ function VisitDetail({
   // 到着・退出は実績時刻 (調整後。無ければ読取時刻・設計 2026-09-30 §8-1)。
   // 滞在・到着ズレは BE が同じ実績時刻から出している。
   const departureIso = actualDepartureIso(visit);
-  const arrive = isoToHm(actualArrivalIso(visit));
+  const arrivalIso = actualArrivalIso(visit);
+  const arrive = arrivalIso != null ? isoToHm(arrivalIso) : '—';
+  // 前日以前で退出が無い =「退出未記録」(滞在は数えない・当日の訪問中は従来どおり)。
+  const departureMissing = isDepartureMissing(visit);
   const depart =
     departureIso != null
       ? isoToHm(departureIso)
-      : visit.phase === 'inprogress'
-        ? '（滞在中）'
-        : '—';
+      : departureMissing
+        ? DEPARTURE_MISSING_LABEL
+        : visit.phase === 'inprogress'
+          ? '（滞在中）'
+          : '—';
   const adjustNotes = adjustmentNotes(visit);
   const arrivalNote = adjustNotes.find((n) => n.kind === 'arrival');
   const departureNote = adjustNotes.find((n) => n.kind === 'departure');
@@ -254,7 +277,16 @@ function VisitDetail({
   // 注意色にしない — 電波の届かない場所で読んだだけで、看護師の誤りではない。
   const arrivalLate = lateDeliveryLabel(visit.arrival_late_received_at);
   const departureLate = lateDeliveryLabel(visit.departure_late_received_at);
-  const stay = visit.stay_minutes != null ? `${visit.stay_minutes}分` : '—';
+  const stay = departureMissing
+    ? DEPARTURE_MISSING_LABEL
+    : visit.stay_minutes != null
+      ? `${visit.stay_minutes}分`
+      : '—';
+  // 合わせる枠 (管理者だけ・訪問ごとの可否は BE の判定)。
+  const adjustTarget = targetFromMonitorVisit(visit);
+  const showAdjust =
+    !!canAdjust &&
+    (adjustTarget.arrivalAt ? !!visit.adjust_allowed : !!visit.manual_arrival_allowed);
   const delay =
     visit.arrival_delay_min != null
       ? `${visit.arrival_delay_min >= 0 ? '+' : ''}${visit.arrival_delay_min}分`
@@ -405,6 +437,20 @@ function VisitDetail({
         </div>
       )}
 
+      {departureMissing && (
+        <div
+          className="mb-3 rounded border border-border-warning bg-warning-bg p-3 text-[13px] leading-relaxed text-warning-strong"
+          data-testid="monitor-departure-missing"
+        >
+          <span className="mb-1 flex items-center gap-1 text-[11px] font-bold">
+            <Timer className="h-3.5 w-3.5" />
+            {DEPARTURE_MISSING_LABEL}
+          </span>
+          {DEPARTURE_MISSING_REASON}（滞在時間は数えません）。
+          {showAdjust && '下の枠で退出の時刻を記録できます。'}
+        </div>
+      )}
+
       {visit.phase === 'missing' && (
         <div
           className="mb-3 rounded-md border border-border-error bg-error-bg p-3"
@@ -469,7 +515,16 @@ function VisitDetail({
       {visit.phase !== 'missing' && (
         <div className="mb-3 rounded-md border border-border-default bg-bg-base px-3.5 py-1.5">
           <Kv k="予定時刻" v={`${visit.start_time} – ${visit.end_time}`} />
-          <Kv k={arrivalNote ? '到着（調整後）' : '到着（QR/GPS）'} v={arrive} />
+          <Kv
+            k={
+              arrivalNote?.manual
+                ? '到着（手入力）'
+                : arrivalNote
+                  ? '到着（調整後）'
+                  : '到着（QR/GPS）'
+            }
+            v={arrive}
+          />
           {arrivalNote?.readAt && <Kv k="到着の読取時刻" v={arrivalNote.readAt} />}
           {arrivalLate && <Kv k="到着の記録" v={arrivalLate} />}
           <Kv
@@ -484,6 +539,13 @@ function VisitDetail({
           />
           {departureNote?.readAt && <Kv k="退出の読取時刻" v={departureNote.readAt} />}
           {departureLate && <Kv k="退出の記録" v={departureLate} />}
+          {/* 未訪問の記録の後に到着が入った訪問: いまの状態ではなく履歴として出す。 */}
+          {visit.no_show != null && arrivalIso != null && (
+            <Kv
+              k="未訪問の記録（履歴）"
+              v={visit.no_show.reason ? `あり（理由: ${visit.no_show.reason}）` : 'あり'}
+            />
+          )}
           <Kv k="滞在時間" v={stay} />
           <Kv k="到着ズレ" v={delay} />
           {dist != null && (
@@ -494,6 +556,26 @@ function VisitDetail({
             <Kv k="次の訪問まで" v={formatDistance(visit.distance_to_next_m)} />
           )}
         </div>
+      )}
+
+      {/* 実績の時刻を合わせる (管理者だけ・打刻履歴の詳細と同じ部品)。保存すると
+          モニターを取り直し、バーに「調整」「手入力」の印が付く。 */}
+      {showAdjust && (
+        <ActualTimeAdjustBox
+          // 取り直したモニターで時刻が変わったら、入力欄を新しい値から作り直す。
+          key={[
+            visit.visit_id,
+            adjustTarget.arrivalAt,
+            adjustTarget.departureAt,
+            adjustTarget.arrivalAdjusted,
+            adjustTarget.departureAdjusted,
+            adjustTarget.arrivalManual,
+            adjustTarget.departureManual,
+          ].join('|')}
+          target={adjustTarget}
+          naReason="この訪問の実績は、いまは合わせられません"
+          testIdPrefix="monitor-adjust"
+        />
       )}
     </div>
   );

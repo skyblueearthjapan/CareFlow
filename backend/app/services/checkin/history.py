@@ -67,6 +67,9 @@ REMARK_LOCATION = "場所 要確認"
 REMARK_ADJUSTED = "時刻調整"
 REMARK_CANCELLED = "取消済みの予定に記録"
 REMARK_SHORT_STAY = "到着と退出が近い"
+#: 未訪問の記録がある訪問に、後から管理者が到着を手で入れた。いまの状態ではなく
+#: 履歴として出す (pc-actual-time-edit-design・PO 決定 2026-10-07)。
+REMARK_NO_SHOW_HISTORY = "未訪問の記録あり"
 
 
 def substitute_remark(planned_staff_name: str | None) -> str:
@@ -162,11 +165,18 @@ class HistoryRow:
     is_deleted: bool = False
     #: 到着の読み取りがあるか (無ければ合わせる対象が無い = ``adjust_allowed`` は偽)。
     has_arrival_read: bool = False
+    #: 読み取りの無い到着 (管理者が手で入れた時刻・pc-actual-time-edit-design D2)。
+    arrival_manual: bool = False
     # ---- 応答に出す (見ているユーザーごとに API 層が決める) ----
     #: 今のユーザーがこの訪問の実績を合わせられるか。
     adjust_allowed: bool = False
+    #: 打刻なしの訪問に、今のユーザーが到着・退出を手で入れられるか (管理者だけ)。
+    manual_arrival_allowed: bool = False
     #: 遅れて届いた「未訪問」の記録の受信時刻 (備考と絞り込みだけに使う)。
     no_show_late_received_at: datetime | None = None
+    #: 「未訪問」の記録があるか・その理由 (到着を手で入れる枠の注意書きに使う)。
+    has_no_show: bool = False
+    no_show_reason: str | None = None
 
     @property
     def is_adjusted(self) -> bool:
@@ -404,6 +414,10 @@ async def load_history_rows(
             remarks.append(
                 f"未訪問の記録が{REMARK_LATE_DELIVERY}（{_received_label(no_show_late)}）"
             )
+        # 未訪問の記録の後に管理者が到着を手で入れた訪問だけ (QR の到着と未訪問が並ぶ
+        # 従来の訪問の備考は変えない)。
+        if actuals.no_show is not None and arrival_actual is not None and arrival_actual.manual:
+            remarks.append(REMARK_NO_SHOW_HISTORY)
         if is_cancelled:
             remarks.append(REMARK_CANCELLED)
         if stay is not None and stay < SHORT_STAY_MIN:
@@ -453,7 +467,10 @@ async def load_history_rows(
                 related_staff_ids=frozenset(related),
                 is_deleted=v.deleted_at is not None,
                 has_arrival_read=arrival is not None,
+                arrival_manual=arrival_actual is not None and arrival_actual.manual,
                 no_show_late_received_at=no_show_late,
+                has_no_show=actuals.no_show is not None,
+                no_show_reason=actuals.no_show.reason if actuals.no_show is not None else None,
             )
         )
     return rows

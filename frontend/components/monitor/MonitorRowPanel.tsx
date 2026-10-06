@@ -30,6 +30,8 @@ interface MonitorRowPanelProps {
   onReview?: (visitId: string, comment: string | null) => void;
   onUnreview?: (visitId: string) => void;
   reviewPending?: boolean;
+  /** 実績の時刻を合わせる枠を出すか (管理者だけ)。 */
+  canAdjust?: boolean;
 }
 
 export function MonitorRowPanel({
@@ -44,6 +46,7 @@ export function MonitorRowPanel({
   onReview,
   onUnreview,
   reviewPending,
+  canAdjust = false,
 }: MonitorRowPanelProps) {
   const override = row.day_override ?? null;
   return (
@@ -116,6 +119,7 @@ export function MonitorRowPanel({
               onUnreview={onUnreview}
               reviewPending={reviewPending}
               officeIds={officeIds}
+              canAdjust={canAdjust}
             />
           </div>
         )}

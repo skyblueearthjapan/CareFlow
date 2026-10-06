@@ -36,7 +36,7 @@ from app.core.deps import DbDep, require_role
 from app.models.audit_log import AuditLog
 from app.models.user import User, normalize_user_role
 from app.schemas.visit_history import VisitHistoryList
-from app.services.checkin.adjust import can_adjust_actual_time
+from app.services.checkin.adjust import can_adjust_actual_time, can_enter_manual_arrival
 from app.services.checkin.history import (
     JST,
     HistoryRow,
@@ -145,6 +145,16 @@ async def _history_query(
             today=today,
             has_arrival_read=row.has_arrival_read,
             window_days=window_days,
+            has_manual_arrival=row.arrival_manual,
+        )
+        # 打刻なしの訪問への手入力 (管理者だけ・pc-actual-time-edit-design D2)。
+        row.manual_arrival_allowed = can_enter_manual_arrival(
+            is_admin=is_admin,
+            visit_date=row.visit_date,
+            deleted=row.is_deleted,
+            cancelled=row.is_cancelled,
+            has_arrival=row.arrival_at is not None,
+            today=today,
         )
     return _HistoryQuery(from_, to, sort_rows(rows, sort), scope_note, sort, user)
 

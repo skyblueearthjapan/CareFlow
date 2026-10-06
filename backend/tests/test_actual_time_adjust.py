@@ -950,6 +950,8 @@ async def test_audit_log_keeps_before_and_after(client, db) -> None:
         "reason_code": "intercom_wait",
         "reason_text": None,
         "source": "pc",
+        # 読み取りのある到着の調整 (手入力ではない・pc-actual-time-edit-design)。
+        "manual": False,
     }
     assert reset.before == {
         "kind": "arrival",
@@ -958,7 +960,7 @@ async def test_audit_log_keeps_before_and_after(client, db) -> None:
         "adjusted": True,
         "reason_code": "intercom_wait",
     }
-    assert reset.after == {"kind": "arrival", "at": read_iso, "source": "pc"}
+    assert reset.after == {"kind": "arrival", "at": read_iso, "source": "pc", "manual": False}
     await db.rollback()
 
 

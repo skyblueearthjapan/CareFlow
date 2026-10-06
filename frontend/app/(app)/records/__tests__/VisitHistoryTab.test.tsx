@@ -870,7 +870,7 @@ describe('VisitHistoryTab — 詳細から実績の時刻を合わせる', () =>
     expect(history).not.toHaveTextContent('理由');
   });
 
-  it('退出の読み取りが無い訪問には退出時刻を入れられる（時刻だけで記録する）', async () => {
+  it('退出の読み取りが無い訪問には退出時刻を入れられる（候補 2 つ・到着＋予定の長さが最初）', async () => {
     setData([
       makeRow({
         adjust_allowed: true,
@@ -883,11 +883,21 @@ describe('VisitHistoryTab — 詳細から実績の時刻を合わせる', () =>
     ]);
     render(<VisitHistoryTab />);
     const dlg = openDetail();
-    expect(dlg.getByLabelText('退出の時刻')).toHaveValue('');
+    // 到着 12:56 ＋ 予定 40 分 = 13:36 が最初に入っている（PO 決定 Q2）。
+    expect(dlg.getByLabelText('退出の時刻')).toHaveValue('13:36');
     expect(dlg.getByTestId('history-adjust-note-departure')).toHaveTextContent(
-      '読み取りなし ・ 退出時刻を入れられます',
+      '読み取りなし ・ 退出の時刻を記録できます',
     );
-    expect(dlg.getByTestId('history-adjust-save-departure')).toBeDisabled();
+    expect(dlg.getByTestId('history-adjust-save-departure')).toHaveTextContent(
+      '退出を 13:36 で記録する',
+    );
+    // 候補は 2 つだけ（「次の訪問の 10 分前」は無い）。
+    expect(dlg.getByTestId('history-adjust-cand-planned_end')).toHaveTextContent('13:40');
+    expect(dlg.getByTestId('history-adjust-cand-arrival_plus_len')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(dlg.queryByText(/次の訪問/)).not.toBeInTheDocument();
 
     fireEvent.change(dlg.getByLabelText('退出の時刻'), { target: { value: '13:35' } });
     fireEvent.click(dlg.getByTestId('history-adjust-save-departure'));
@@ -1189,5 +1199,99 @@ describe('VisitHistoryTab — 合わせられない理由の文言（L-14）', (
       expect(na()).not.toMatch(/直す|直し|修正|補正/);
       view.unmount();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PC から合わせる（pc-actual-time-edit-design-2026-10-06 D2 / D3）
+// ---------------------------------------------------------------------------
+
+describe('VisitHistoryTab — 絞り込みのチップ・まとめて退出を入れる・打刻なしの手入力', () => {
+  const nodepRow = (id: string, over: Record<string, unknown> = {}) =>
+    makeRow({
+      visit_id: id,
+      patient_name: `患者 ${id}`,
+      adjust_allowed: true,
+      departure_at: null,
+      stay_minutes: null,
+      state: 'no_departure',
+      remarks: ['退出なし'],
+      ...over,
+    });
+  const chip = (name: string) =>
+    within(screen.getByTestId('history-state-chips')).getByRole('button', { name });
+
+  it('チップ「打刻なし」「退出なし」で state を絞る', () => {
+    render(<VisitHistoryTab />);
+    fireEvent.click(chip('打刻なし'));
+    expect(lastParams().state).toBe('none');
+    fireEvent.click(chip('退出なし'));
+    expect(lastParams().state).toBe('nodep');
+    fireEvent.click(chip('すべて'));
+    expect(lastParams().state).toBeNull();
+  });
+
+  it('「退出なし」で絞るとチェックが出て、選ぶと「N 件を選択中 ・ まとめて退出を入れる」', () => {
+    setData([
+      nodepRow('a'),
+      nodepRow('b'),
+      // 今日の訪問中はチェックできない。
+      nodepRow('c', { state: 'in_progress', remarks: [] }),
+    ]);
+    render(<VisitHistoryTab />);
+    expect(screen.queryByTestId('history-check-a')).not.toBeInTheDocument();
+    fireEvent.click(chip('退出なし'));
+    expect(screen.queryByTestId('history-check-c')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('history-check-a'));
+    expect(screen.getByTestId('history-bulk-bar')).toHaveTextContent('1 件を選択中');
+    // チェックを押しても詳細は開かない。
+    expect(screen.queryByTestId('history-detail-dialog')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('history-check-all'));
+    expect(screen.getByTestId('history-bulk-bar')).toHaveTextContent('2 件を選択中');
+
+    fireEvent.click(screen.getByTestId('history-bulk-open'));
+    const dlg = within(screen.getByTestId('history-bulk-dialog'));
+    expect(dlg.getByTestId('history-bulk-plan-a')).toBeInTheDocument();
+    expect(dlg.getByTestId('history-bulk-plan-b')).toBeInTheDocument();
+    expect(dlg.queryByTestId('history-bulk-plan-c')).not.toBeInTheDocument();
+  });
+
+  it('スタッフにはチェックを出さない', () => {
+    mockRole.value = 'staff';
+    setData([nodepRow('a')]);
+    render(<VisitHistoryTab />);
+    fireEvent.click(chip('退出なし'));
+    expect(screen.queryByTestId('history-check-a')).not.toBeInTheDocument();
+  });
+
+  it('打刻なしの行（管理者）は「到着・退出を手で入れる」から詳細の手入力の枠を開く', () => {
+    setData([
+      makeRow({
+        actual_staff_name: null,
+        arrival_at: null,
+        departure_at: null,
+        stay_minutes: null,
+        state: 'none',
+        adjust_allowed: false,
+        manual_arrival_allowed: true,
+      }),
+    ]);
+    render(<VisitHistoryTab />);
+    fireEvent.click(screen.getByTestId('history-manual-entry-v-1'));
+    const dlg = within(screen.getByTestId('history-detail-dialog'));
+    expect(dlg.getByTestId('history-adjust-manual-box')).toHaveTextContent(
+      '到着・退出を手で入れる',
+    );
+    // 入力は空から・予定は横に出す (PO 決定 2026-10-07)。
+    expect(dlg.getByLabelText('到着の時刻')).toHaveValue('');
+    expect(dlg.getByTestId('history-adjust-manual-box')).toHaveTextContent('予定 13:00');
+  });
+
+  it('セッション取得中は「退出なし」で絞ってもチェックを出さない', () => {
+    mockSessionStatus.value = 'loading';
+    setData([nodepRow('a')]);
+    render(<VisitHistoryTab />);
+    fireEvent.click(chip('退出なし'));
+    expect(screen.queryByTestId('history-check-a')).not.toBeInTheDocument();
   });
 });

@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Mic } from 'lucide-react';
 
@@ -31,6 +32,14 @@ import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
 import { classifyVisitDisplay, VISIT_DISPLAY_CLASS } from '@/lib/schedule/visitVisibility';
 
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日'] as const;
+
+/**
+ * 表示する週。先週は、本人が 7 日以内の訪問の時刻を合わせられるように開く入口
+ * (設計 `pc-actual-time-edit-design-2026-10-06.md` Q5)。URL の `?week=last` で覚える
+ * (訪問詳細から戻ったときに先週のまま)。`useSearchParams` で読む (初回描画で
+ * `window.location` を読むとサーバの描画と食い違う)。
+ */
+type WeekChoice = 'this' | 'last';
 
 /** 1 日の中身 = 訪問とイベントを開始時刻順に混ぜた行 (design §3 C-3)。 */
 type DayRow =
@@ -124,10 +133,13 @@ function VisitChip({
   visit: v,
   hasRecording,
   today,
+  fromParam = 'week',
 }: {
   visit: MyVisit;
   hasRecording?: boolean;
   today: string;
+  /** 訪問詳細の戻り先 (`week` = 今週 / `lastweek` = 先週)。 */
+  fromParam?: 'week' | 'lastweek';
 }) {
   const cancelled = v.status === 'cancelled';
   const pal = genderPalette(v.patient_sex ?? null);
@@ -222,7 +234,7 @@ function VisitChip({
   }
   return (
     <Link
-      href={`/m/today/${v.id}?from=week`}
+      href={`/m/today/${v.id}?from=${fromParam}`}
       className={className}
       style={style}
       aria-label={`${v.patient_name ?? '患者'} の訪問詳細`}
@@ -233,9 +245,32 @@ function VisitChip({
   );
 }
 
+/**
+ * `useSearchParams` を使うので Suspense で包む (静的に描くページで、検索条件を読む部分だけ
+ * クライアントで描く・Next.js の規則)。
+ */
 export default function MobileThisWeekPage() {
-  const weekStart = currentWeekStartIso();
+  return (
+    <Suspense fallback={<Skeleton className="h-32 w-full" />}>
+      <ThisWeekContent />
+    </Suspense>
+  );
+}
+
+function ThisWeekContent() {
+  const searchParams = useSearchParams();
+  const [week, setWeek] = useState<WeekChoice>(() =>
+    searchParams?.get('week') === 'last' ? 'last' : 'this',
+  );
+  const isLast = week === 'last';
+  const weekStart = isLast ? addDays(currentWeekStartIso(), -7) : currentWeekStartIso();
   const today = todayIso();
+  const chooseWeek = (next: WeekChoice) => {
+    setWeek(next);
+    // 戻ったときに同じ週を開けるよう URL に残す (画面は遷移させない・押したときだけ)。
+    const url = next === 'last' ? '/m/this-week?week=last' : '/m/this-week';
+    window.history.replaceState(window.history.state, '', url);
+  };
   const {
     data: visits,
     isLoading,
@@ -279,7 +314,43 @@ export default function MobileThisWeekPage() {
   }, [recordingTotal, recordingLoaded]);
 
   return (
-    <MobileSection pose="calendar" title="今週の予定" subtitle={`${weekStart} 週`}>
+    <MobileSection
+      pose="calendar"
+      title={isLast ? '先週の予定' : '今週の予定'}
+      subtitle={`${weekStart} 週`}
+    >
+      {/* 先週への切り替え (Q5)。終わった訪問の時刻を 7 日以内なら合わせられる。 */}
+      <div
+        role="group"
+        aria-label="表示する週"
+        className="inline-flex overflow-hidden rounded-lg border border-border-default"
+        data-testid="this-week-switch"
+      >
+        {(
+          [
+            ['last', '先週'],
+            ['this', '今週'],
+          ] as const
+        ).map(([value, label], i) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={week === value}
+            onClick={() => chooseWeek(value)}
+            data-testid={`this-week-switch-${value}`}
+            className={cn(
+              'min-h-11 px-5 text-sm',
+              i > 0 && 'border-l border-border-default',
+              week === value
+                ? 'bg-brand-primary font-bold text-white'
+                : 'bg-bg-base text-text-secondary',
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       {isLoading && (
         <div className="space-y-3">
           <Skeleton className="h-32 w-full" />
@@ -300,7 +371,7 @@ export default function MobileThisWeekPage() {
         <Card className="p-6">
           <RakusukeNote
             pose="calendar"
-            title="今週の訪問はありません"
+            title={isLast ? '先週の訪問はありません' : '今週の訪問はありません'}
             comment="新しい予定が入ったら、ここでお知らせしますね"
           />
         </Card>
@@ -308,7 +379,8 @@ export default function MobileThisWeekPage() {
 
       {groups.length > 0 && (
         <p className="rounded-md border border-brand-primary-light bg-brand-primary-50 px-3 py-2 text-xs text-brand-primary-hover">
-          終わった訪問を押すと、実績の時刻を確認して合わせられます。
+          終わった訪問を押すと、実績の時刻を確認して合わせられます
+          {isLast ? '（合わせられるのは 7 日前までの訪問です）' : ''}。
         </p>
       )}
 
@@ -345,6 +417,7 @@ export default function MobileThisWeekPage() {
                     visit={row.visit}
                     hasRecording={recordedVisitIds.has(row.visit.id)}
                     today={today}
+                    fromParam={isLast ? 'lastweek' : 'week'}
                   />
                 ),
               )}

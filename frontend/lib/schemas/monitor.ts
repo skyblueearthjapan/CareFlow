@@ -105,6 +105,15 @@ export const monitorVisitSchema = z.object({
   departure_adjusted: z.boolean().nullish().catch(null),
   // 読み取りの無い退出 (手で入れた時刻)。`departure` は null のまま `departure_at` が入る。
   departure_manual: z.boolean().nullish().catch(null),
+  // 読み取りの無い到着 (管理者が手で入れた時刻・pc-actual-time-edit-design D2)。
+  arrival_manual: z.boolean().nullish().catch(null),
+  // 前日以前で到着はあるが退出が無い =「退出未記録」(同設計 Q4)。このとき
+  // stay_minutes は null (今の時刻まで数え続けない)。phase は inprogress のまま。
+  departure_missing: z.boolean().nullish().catch(null),
+  // 見ているユーザーが実績の時刻を合わせられるか / 打刻なしの訪問に到着・退出を
+  // 手で入れられるか (どちらも管理者だけ。権限は BE が判定)。古い BE は欠落 = 出さない。
+  adjust_allowed: z.boolean().nullish().catch(null),
+  manual_arrival_allowed: z.boolean().nullish().catch(null),
   // 圏外で退避して遅れて届いた打刻の受信時刻 (遅れていなければ null)。
   arrival_late_received_at: z.string().nullish().catch(null),
   departure_late_received_at: z.string().nullish().catch(null),

@@ -14,6 +14,11 @@
  * 実績の時刻の調整（設計 `actual-time-adjust-design-2026-09-30.md` §8-2）: 「調整」
  * バッジ・到着 / 退出欄の下の読取時刻・集計帯「時刻の調整」・絞り込み「時刻の調整あり」。
  * 合わせる操作は詳細ダイアログから。
+ *
+ * PC から合わせる（設計 `pc-actual-time-edit-design-2026-10-06.md` D2 / D3・管理者だけ）:
+ * 絞り込みのチップ（「退出なし」「打刻なし」ほか）。「退出なし」で絞ると行にチェックが出て、
+ * 選んだ訪問に「まとめて退出を入れる」（`BulkDepartureDialog`）。「打刻なし」の行には
+ * 「到着・退出を手で入れる」（詳細の枠を開く）。
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -23,6 +28,7 @@ import { ChevronLeft, ChevronRight, Download, Printer, Search } from 'lucide-rea
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { FilterChip } from '@/components/ui/filter-chip';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/sonner';
@@ -44,6 +50,7 @@ import {
   type VisitHistoryStateFilter,
 } from '@/lib/queries/visit-history';
 
+import { BulkDepartureDialog } from './BulkDepartureDialog';
 import { normalizeSearchTerm } from './RecordsFilterBar';
 import { VisitHistoryDetailDialog } from './VisitHistoryDetailDialog';
 import { VisitHistoryPrintDialog } from './VisitHistoryPrintDialog';
@@ -82,6 +89,20 @@ const STATE_OPTIONS: ReadonlyArray<{ value: VisitHistoryStateFilter; label: stri
   { value: 'special', label: '代行・予定外' },
   { value: 'late', label: '遅れて届いた' },
 ];
+
+/** 絞り込みのチップ（よく使う打刻の絞り込みを 1 押しで・セレクトと同じ値を切り替える）。 */
+const STATE_CHIPS: ReadonlyArray<{ value: VisitHistoryStateFilter; label: string }> = [
+  { value: '', label: 'すべて' },
+  { value: 'nodep', label: '退出なし' },
+  { value: 'none', label: '打刻なし' },
+  { value: 'adjusted', label: '調整あり' },
+  { value: 'special', label: '代行・予定外' },
+];
+
+/** まとめて退出を入れられる行か（過去の日の「退出なし」で、合わせられる行。今日の訪問中は除く）。 */
+function canBulkDeparture(row: VisitHistoryRow): boolean {
+  return row.state === 'no_departure' && row.adjust_allowed === true;
+}
 
 const SORT_OPTIONS: ReadonlyArray<{ value: VisitHistorySort; label: string }> = [
   { value: 'date', label: '日付順' },
@@ -196,15 +217,21 @@ export function VisitHistoryTab() {
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<VisitHistoryRow | null>(null);
   const [printOpen, setPrintOpen] = useState(false);
+  // まとめて退出を入れる（D3）: チェックした行（ページをまたいで覚える）とダイアログ。
+  const [checked, setChecked] = useState<Map<string, VisitHistoryRow>>(() => new Map());
+  const [bulkOpen, setBulkOpen] = useState(false);
 
-  // 条件が変わったら 1 ページ目へ戻す（窓だけ残って空表示になるのを防ぐ）。
+  // 条件が変わったら 1 ページ目へ戻す（窓だけ残って空表示になるのを防ぐ）。選択も外す
+  // （見えていない行を選んだまま実行しない）。
   const changeRange = (next: HistoryRange) => {
     setRange(next);
     setPage(0);
+    setChecked(new Map());
   };
   const patch = (next: Partial<HistoryFilterState>) => {
     setFilter((prev) => ({ ...prev, ...next }));
     setPage(0);
+    setChecked(new Map());
   };
 
   // 検索欄はタイプ中の反応を優先してローカル state を持ち、300ms 後に絞り込みへ流す。
@@ -297,6 +324,33 @@ export function VisitHistoryTab() {
     toast.info('絞り込みの条件から外れたため、詳細を閉じました');
   }, [adjusted, query.data, query.isPlaceholderData, selected]);
 
+  // チェックは管理者が「退出なし」で絞ったときだけ出す（モック D）。
+  // セッション取得中は出さない（管理者と確かめてから）。
+  const bulkMode =
+    sessionStatus === 'authenticated' &&
+    isAdminRole(session?.user?.role) &&
+    filter.state === 'nodep';
+  const pageSelectable = bulkMode ? items.filter(canBulkDeparture) : [];
+  const allPageChecked =
+    pageSelectable.length > 0 && pageSelectable.every((r) => checked.has(r.visit_id));
+  const toggleRow = (row: VisitHistoryRow) =>
+    setChecked((prev) => {
+      const next = new Map(prev);
+      if (next.has(row.visit_id)) next.delete(row.visit_id);
+      else next.set(row.visit_id, row);
+      return next;
+    });
+  const togglePage = () =>
+    setChecked((prev) => {
+      const next = new Map(prev);
+      for (const r of pageSelectable) {
+        if (allPageChecked) next.delete(r.visit_id);
+        else next.set(r.visit_id, r);
+      }
+      return next;
+    });
+  const colCount = bulkMode ? 9 : 8;
+
   const activePreset = matchPreset(range);
   const isFiltered =
     !!filter.patientId || !!filter.staffId || !!filter.officeId || !!filter.state || !!filter.q;
@@ -305,6 +359,7 @@ export function VisitHistoryTab() {
     setText('');
     setFilter(EMPTY_FILTER);
     setPage(0);
+    setChecked(new Map());
   };
 
   const runExport = async () => {
@@ -539,6 +594,28 @@ export function VisitHistoryTab() {
               2 文字以上で検索できます。
             </p>
           )}
+
+          <div
+            role="group"
+            aria-label="打刻の絞り込み"
+            className="flex flex-wrap items-center gap-1.5"
+            data-testid="history-state-chips"
+          >
+            {STATE_CHIPS.map((c) => (
+              <FilterChip
+                key={c.value || 'all'}
+                active={filter.state === c.value}
+                onClick={() => patch({ state: c.value })}
+              >
+                {c.label}
+              </FilterChip>
+            ))}
+            {bulkMode && (
+              <span className="text-xs text-text-muted">
+                チェックを付けると、まとめて退出を入れられます
+              </span>
+            )}
+          </div>
         </div>
 
         {/* 集計帯（ページングする前の絞り込み結果全体・これからの予定は数えない）。 */}
@@ -614,9 +691,50 @@ export function VisitHistoryTab() {
             className={cn('overflow-x-auto', query.isPlaceholderData && 'opacity-60')}
             aria-busy={query.isPlaceholderData || undefined}
           >
+            {bulkMode && checked.size > 0 && (
+              <div
+                className="flex flex-wrap items-center gap-2 border-b border-border-default bg-brand-primary-50 px-5 py-2"
+                data-testid="history-bulk-bar"
+              >
+                <span className="text-sm font-bold text-text-primary">
+                  {checked.size} 件を選択中
+                </span>
+                <span className="text-text-muted">・</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => setBulkOpen(true)}
+                  data-testid="history-bulk-open"
+                >
+                  まとめて退出を入れる
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setChecked(new Map())}
+                  data-testid="history-bulk-clear"
+                >
+                  選択を外す
+                </Button>
+              </div>
+            )}
             <table className="w-full text-sm" data-testid="history-table">
               <thead>
                 <tr className="border-b border-border-default text-left text-xs text-text-muted">
+                  {bulkMode && (
+                    <th className="w-10 px-3 py-2">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4"
+                        aria-label="このページの退出なしをすべて選ぶ"
+                        checked={allPageChecked}
+                        disabled={pageSelectable.length === 0}
+                        onChange={togglePage}
+                        data-testid="history-check-all"
+                      />
+                    </th>
+                  )}
                   <th className="px-4 py-2 font-medium">日付</th>
                   <th className="px-4 py-2 font-medium">患者</th>
                   <th className="px-4 py-2 font-medium">予定</th>
@@ -638,7 +756,7 @@ export function VisitHistoryTab() {
                     sort !== 'date' && (
                       <tr key={`g-${gi}`} data-testid="history-group-row">
                         <td
-                          colSpan={8}
+                          colSpan={colCount}
                           className="border-b border-border-default bg-brand-primary-50 px-4 py-1.5 text-[13px] font-bold text-brand-primary-hover"
                           title={
                             partial
@@ -679,6 +797,25 @@ export function VisitHistoryTab() {
                           )}
                           data-testid={`history-row-${row.visit_id}`}
                         >
+                          {bulkMode && (
+                            // チェックの欄を押しても詳細は開かない。
+                            <td
+                              className="w-10 px-3 py-2"
+                              onClick={(e) => e.stopPropagation()}
+                              onKeyDown={(e) => e.stopPropagation()}
+                            >
+                              {canBulkDeparture(row) && (
+                                <input
+                                  type="checkbox"
+                                  className="h-4 w-4"
+                                  aria-label={`${row.patient_name ?? '訪問'}を選ぶ`}
+                                  checked={checked.has(row.visit_id)}
+                                  onChange={() => toggleRow(row)}
+                                  data-testid={`history-check-${row.visit_id}`}
+                                />
+                              )}
+                            </td>
+                          )}
                           <td className="tnum whitespace-nowrap px-4 py-2">
                             {formatHistoryDate(row.visit_date)}
                           </td>
@@ -763,6 +900,20 @@ export function VisitHistoryTab() {
                                   {b.label}
                                 </Badge>
                               ))}
+                              {/* 打刻なしの訪問への手入力（管理者だけ・D2）。詳細の枠を開く。 */}
+                              {row.manual_arrival_allowed && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelected(row);
+                                  }}
+                                  className="whitespace-nowrap rounded-full border border-brand-primary px-2 py-0.5 text-xs font-bold text-brand-primary-hover hover:bg-brand-primary-50"
+                                  data-testid={`history-manual-entry-${row.visit_id}`}
+                                >
+                                  到着・退出を手で入れる
+                                </button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -817,6 +968,20 @@ export function VisitHistoryTab() {
       />
       {printOpen && (
         <VisitHistoryPrintDialog filters={filters} onClose={() => setPrintOpen(false)} />
+      )}
+      {bulkOpen && (
+        <BulkDepartureDialog
+          rows={Array.from(checked.values())}
+          onClose={() => setBulkOpen(false)}
+          // 入れられた訪問は選択から外す（失敗した訪問は選んだまま残す）。
+          onDone={(ids) =>
+            setChecked((prev) => {
+              const next = new Map(prev);
+              for (const id of ids) next.delete(id);
+              return next;
+            })
+          }
+        />
       )}
     </>
   );

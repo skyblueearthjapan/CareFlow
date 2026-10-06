@@ -8,6 +8,10 @@
  *
  * 注: 患者/スタッフの電話番号は現状 DB に無いため、「📞連絡」は該当 visit を選択
  * して詳細パネルの即連絡ボックスへ誘導する (tel: リンクは番号が入り次第有効化)。
+ *
+ * 前日以前で退出が無い訪問 (BE の ``departure_missing``) は「退出未記録」の札で出し、
+ * 見出しの横に「退出未記録 N件」を置く (押すとその一覧だけを開く・1 件押すと詳細の
+ * 合わせる枠が開く)。pc-actual-time-edit-design-2026-10-06 Q4。
  */
 import { useState } from 'react';
 import { Check, FileText, Phone, TriangleAlert, X } from 'lucide-react';
@@ -18,10 +22,13 @@ import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 
 import {
   ALERT_RANK,
+  DEPARTURE_MISSING_LABEL,
+  DEPARTURE_MISSING_REASON,
   LONG_INPROGRESS_REASON,
   alertReasonChips,
   groupVisits,
   hmToMinutes,
+  isDepartureMissing,
   isLongInprogress,
   substituteTitle,
 } from './constants';
@@ -46,11 +53,13 @@ function alertTag(v: MonitorVisit): string {
     const d = v.arrival?.distance_m;
     return d != null ? `場所違い ${Math.round(d)}m` : '場所違い';
   }
+  if (isDepartureMissing(v)) return DEPARTURE_MISSING_LABEL;
   return '要確認';
 }
 
 function alertReason(v: MonitorVisit, maxInprogressMin?: number): string {
   if (v.reason) return v.reason;
+  if (isDepartureMissing(v)) return DEPARTURE_MISSING_REASON;
   if (isLongInprogress(v, maxInprogressMin)) return LONG_INPROGRESS_REASON;
   // 代行 / 予定外 (§6) は理由入力が無くても、何が起きたかを 1 行で示す。
   if (v.is_unplanned) return '予定に無い訪問（QR打刻）';
@@ -70,7 +79,10 @@ export function MonitorAlertTray({
   onSelectVisit,
   maxInprogressMin,
 }: MonitorAlertTrayProps) {
-  const [popOpen, setPopOpen] = useState(false);
+  // ポップオーバー: 'all' = 全件 / 'nodep' = 退出未記録だけ。
+  const [popMode, setPopMode] = useState<null | 'all' | 'nodep'>(null);
+  const popOpen = popMode !== null;
+  const closePop = () => setPopMode(null);
 
   // 2 名体制 (visit_group_id) は 1 枚に集約。worst(alert_level) の visit を代表に、
   // 関与スタッフ名 (複数) をまとめて表示する。null グループは visit.id 単位。
@@ -87,6 +99,9 @@ export function MonitorAlertTray({
       (ALERT_RANK[a.visit.alert_level] ?? 9) - (ALERT_RANK[b.visit.alert_level] ?? 9) ||
       hmToMinutes(a.visit.start_time) - hmToMinutes(b.visit.start_time),
   );
+
+  const departureMissing = alerts.filter((a) => isDepartureMissing(a.visit));
+  const popAlerts = popMode === 'nodep' ? departureMissing : alerts;
 
   if (alerts.length === 0) {
     return (
@@ -110,12 +125,12 @@ export function MonitorAlertTray({
         tabIndex={0}
         data-testid={`monitor-alert-${v.visit_id}`}
         onClick={() => {
-          setPopOpen(false);
+          closePop();
           onSelectVisit(v.visit_id);
         }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
-            setPopOpen(false);
+            closePop();
             onSelectVisit(v.visit_id);
           }
         }}
@@ -179,7 +194,7 @@ export function MonitorAlertTray({
             data-testid={`monitor-alert-contact-${v.visit_id}`}
             onClick={(e) => {
               e.stopPropagation();
-              setPopOpen(false);
+              closePop();
               onSelectVisit(v.visit_id);
             }}
             className="h-7 gap-1 px-2 text-[11px] font-bold"
@@ -202,19 +217,35 @@ export function MonitorAlertTray({
           <TriangleAlert className="h-3.5 w-3.5" />
           要対応 {alerts.length}件
         </span>
+        {departureMissing.length > 0 && (
+          <button
+            type="button"
+            data-testid="monitor-alert-departure-missing"
+            onClick={() => setPopMode((m) => (m === 'nodep' ? null : 'nodep'))}
+            title="押すと一覧を開閉 ・ 1 件押すと詳細の合わせる枠が開きます"
+            className={cn(
+              'flex-none whitespace-nowrap rounded-full px-3 py-1 text-xs font-bold',
+              popMode === 'nodep'
+                ? 'bg-warning-strong text-white'
+                : 'bg-warning-bg text-warning-strong',
+            )}
+          >
+            {DEPARTURE_MISSING_LABEL} {departureMissing.length}件 {popMode === 'nodep' ? '▴' : '▾'}
+          </button>
+        )}
         {alerts.length > 3 && (
           <button
             type="button"
             data-testid="monitor-alert-more"
-            onClick={() => setPopOpen((o) => !o)}
+            onClick={() => setPopMode((m) => (m === 'all' ? null : 'all'))}
             className={cn(
               'flex-none whitespace-nowrap rounded-full px-3 py-1 text-xs font-bold',
-              popOpen
+              popMode === 'all'
                 ? 'bg-brand-primary text-white'
                 : 'bg-brand-primary-light text-brand-primary-hover',
             )}
           >
-            全件 {popOpen ? '▴' : '▾'}
+            全件 {popMode === 'all' ? '▴' : '▾'}
           </button>
         )}
         {alerts.map((entry) => renderCard(entry, false))}
@@ -228,11 +259,13 @@ export function MonitorAlertTray({
           <div className="sticky top-0 flex items-center justify-between bg-bg-base p-2 text-xs font-bold text-text-secondary">
             <span className="flex items-center gap-1">
               <TriangleAlert className="h-3.5 w-3.5" />
-              要対応 {alerts.length}件（未訪問→場所違い→要確認）
+              {popMode === 'nodep'
+                ? `${DEPARTURE_MISSING_LABEL} ${departureMissing.length}件（押すと合わせる枠が開きます）`
+                : `要対応 ${alerts.length}件（未訪問→場所違い→要確認）`}
             </span>
             <button
               type="button"
-              onClick={() => setPopOpen(false)}
+              onClick={() => closePop()}
               className="px-1 text-text-muted"
               aria-label="閉じる"
             >
@@ -240,7 +273,7 @@ export function MonitorAlertTray({
             </button>
           </div>
           <div className="flex flex-col gap-0.5">
-            {alerts.map((entry) => renderCard(entry, true))}
+            {popAlerts.map((entry) => renderCard(entry, true))}
           </div>
         </div>
       )}

@@ -157,6 +157,15 @@ class MonitorVisit(BaseModel):
     departure_adjusted: bool = False
     # 読み取りの無い退出 (手で入れた時刻)。
     departure_manual: bool = False
+    # 読み取りの無い到着 (管理者が手で入れた時刻・pc-actual-time-edit-design D2)。
+    arrival_manual: bool = False
+    # 前日以前の訪問で、到着はあるが退出が無い (「退出未記録」・同設計 Q4)。このとき
+    # ``stay_minutes`` は None (今の時刻まで数え続けない)。``phase`` は inprogress のまま。
+    departure_missing: bool = False
+    # 見ているユーザーがこの訪問の実績の時刻を合わせられるか (管理者・到着の実績あり)。
+    adjust_allowed: bool = False
+    # 打刻なしの訪問に、到着・退出を手で入れられるか (管理者だけ・同設計 D2)。
+    manual_arrival_allowed: bool = False
     # 圏外で退避して遅れて届いた打刻なら、その受信時刻 (UTC)。遅れていなければ None。
     arrival_late_received_at: datetime | None = None
     departure_late_received_at: datetime | None = None

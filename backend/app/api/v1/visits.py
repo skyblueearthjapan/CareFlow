@@ -66,6 +66,7 @@ from app.services.checkin.adjust import (
     adjust_actual_time,
     apply_bundled_adjustment,
     can_adjust_actual_time,
+    can_enter_manual_arrival,
     out_of_window_detail,
     reset_actual_time,
 )
@@ -347,6 +348,24 @@ def _actual_adjust_allowed(
             and actuals.arrival.checkin is not None
         ),
         window_days=window_days,
+        has_manual_arrival=(
+            actuals is not None and actuals.arrival is not None and actuals.arrival.manual
+        ),
+    )
+
+
+def _manual_arrival_allowed(user: User, visit: Visit, actuals: VisitActuals | None) -> bool:
+    """``VisitRead.actual_manual_arrival_allowed`` (pc-actual-time-edit-design D2).
+
+    打刻なし (到着の実績が無い) の訪問に、管理者が到着・退出を手で入れられるか。
+    """
+    return can_enter_manual_arrival(
+        is_admin=normalize_user_role(user.role) == "admin",
+        visit_date=visit.visit_date,
+        deleted=visit.deleted_at is not None,
+        cancelled=visit.status == VISIT_STATUS_CANCELLED,
+        has_arrival=actuals is not None and actuals.arrival is not None,
+        today=_today_jst(),
     )
 
 
@@ -362,6 +381,7 @@ def _serialize_visit(
     accompaniments: list[dict] | None = None,
     course_staff_name: str | None = None,
     adjust_allowed: bool = False,
+    manual_arrival_allowed: bool = False,
 ) -> dict:
     """Project a Visit (with optional eager-loaded patient/primary_staff) into
     the VisitRead shape, including denormalized `patient_name`/`staff_name`
@@ -466,10 +486,12 @@ def _serialize_visit(
         "actual_arrival_adjusted": arrival is not None and arrival.adjusted,
         "actual_departure_adjusted": departure is not None and departure.adjusted,
         "actual_departure_manual": departure is not None and departure.manual,
+        "actual_arrival_manual": arrival is not None and arrival.manual,
         # 圏外で退避して遅れて届いた打刻の受信時刻 (遅れていなければ None)。
         "actual_arrival_late_received_at": arrival.late_received_at if arrival else None,
         "actual_departure_late_received_at": departure.late_received_at if departure else None,
         "actual_adjust_allowed": adjust_allowed,
+        "actual_manual_arrival_allowed": manual_arrival_allowed,
         # 同行 (非破壊追加). 一般化 決定#5 で複数名対応。``accompaniments`` が全件
         # (決定的順序)、``accompaniment`` は後方互換の先頭要素。
         # **手書き dict の罠**: week_pinned / is_unplanned と同じ位置づけで、ここに
@@ -636,6 +658,7 @@ async def list_visits(
                 actuals=actuals_by_visit.get(v.id),
                 window_days=window_days,
             ),
+            manual_arrival_allowed=_manual_arrival_allowed(user, v, actuals_by_visit.get(v.id)),
         )
         for v in rows
     ]
@@ -853,6 +876,7 @@ async def get_visit(
             actuals=actuals,
             window_days=await _staff_adjust_window_days(db),
         ),
+        manual_arrival_allowed=_manual_arrival_allowed(user, visit, actuals),
     )
     if via_qr_capability:
         payload = _restrict_to_qr_capability(payload)
@@ -1384,6 +1408,7 @@ async def _checkin_response(db, visit_id: UUID, user: User, *, restricted: bool 
             actuals=actuals,
             window_days=await _staff_adjust_window_days(db),
         ),
+        manual_arrival_allowed=_manual_arrival_allowed(user, visit, actuals),
     )
     return _restrict_to_qr_capability(payload) if restricted else payload
 
@@ -1792,7 +1817,8 @@ async def _load_visit_for_adjust(db, visit_id: UUID, user: User) -> tuple[Visit,
 
     削除済みの訪問もロードする (検証側が 409 を返す。打刻の ``_load_visit_for_checkin``
     と同じく、見えない 404 と区別するため WHERE で弾かない)。到着の読み取りが無い
-    訪問もここでは通す (検証側が 409「到着の記録がありません」を返す)。
+    訪問もここでは通す (検証側が、管理者なら到着の手入力として受け、スタッフには
+    409「到着の記録がありません」を返す・pc-actual-time-edit-design D2)。
 
     返り値は ``(visit, own_checkin_only)``。``own_checkin_only`` = 担当集合には入らず、
     **自分が打刻したことだけ** で通った (代行・QR なしの GET では見えない訪問)。

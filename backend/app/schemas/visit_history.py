@@ -49,6 +49,8 @@ class VisitHistoryItem(BaseModel):
     departure_adjusted: bool = False
     # 読み取りの無い退出 (手で入れた時刻)。
     departure_manual: bool = False
+    # 読み取りの無い到着 (管理者が手で入れた時刻)。
+    arrival_manual: bool = False
     # 圏外で退避して遅れて届いた打刻なら、その受信時刻 (UTC)。遅れていなければ null。
     arrival_late_received_at: datetime | None = None
     departure_late_received_at: datetime | None = None
@@ -57,6 +59,13 @@ class VisitHistoryItem(BaseModel):
     # 今のユーザーがこの訪問の実績を合わせられるか (権限はサーバが判定)。
     # 到着の読み取りが無い訪問は、合わせる対象が無いので false。
     adjust_allowed: bool = False
+    # 打刻なしの訪問に、今のユーザーが到着・退出を手で入れられるか (管理者だけ・
+    # ``pc-actual-time-edit-design-2026-10-06.md`` D2)。絞り込みは既存の ``state=none``。
+    manual_arrival_allowed: bool = False
+    # 「未訪問」の記録があるか・その理由。到着が入った後は履歴として出す (備考
+    # 「未訪問の記録あり」)。到着を手で入れる枠の注意書きにも使う。
+    has_no_show: bool = False
+    no_show_reason: str | None = None
     # 到着・退出を JST の分に切り捨ててからの差。片方でも無ければ null。
     stay_minutes: int | None = None
     # 最新の到着の 'qr' / 'manual' と位置判定。到着が無ければ null。

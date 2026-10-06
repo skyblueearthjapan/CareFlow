@@ -98,6 +98,8 @@ export const visitHistoryRowSchema = z.object({
   departure_adjusted: z.boolean().nullable().optional(),
   /** 読み取りの無い退出（手で入れた時刻）。 */
   departure_manual: z.boolean().nullable().optional(),
+  /** 読み取りの無い到着（管理者が手で入れた時刻・pc-actual-time-edit-design D2）。 */
+  arrival_manual: z.boolean().nullable().optional(),
   /** 圏外で退避して遅れて届いた打刻の受信時刻（遅れていなければ null）。 */
   arrival_late_received_at: z.string().nullable().optional(),
   departure_late_received_at: z.string().nullable().optional(),
@@ -105,6 +107,11 @@ export const visitHistoryRowSchema = z.object({
   adjustments: z.array(visitHistoryAdjustmentSchema).nullish().catch(null),
   /** 今のユーザーがこの訪問の実績を合わせられるか（権限は BE が判定）。 */
   adjust_allowed: z.boolean().nullable().optional(),
+  /** 打刻なしの訪問に、今のユーザーが到着・退出を手で入れられるか（管理者だけ）。 */
+  manual_arrival_allowed: z.boolean().nullable().optional(),
+  /** 「未訪問」の記録があるか・その理由（到着が入った後は履歴として出す）。 */
+  has_no_show: z.boolean().nullable().optional(),
+  no_show_reason: z.string().nullable().optional(),
   stay_minutes: z.number().nullable().optional(),
   checkin_source: z.string().nullable().optional(),
   match_status: z.string().nullable().optional(),

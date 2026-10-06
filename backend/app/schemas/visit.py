@@ -191,6 +191,8 @@ class VisitRead(VisitBase):
     actual_departure_adjusted: bool = False
     # 読み取りの無い退出 (手で入れた時刻)。
     actual_departure_manual: bool = False
+    # 読み取りの無い到着 (管理者が手で入れた時刻・pc-actual-time-edit-design D2)。
+    actual_arrival_manual: bool = False
     # 圏外で退避して遅れて届いた打刻なら、その受信時刻 (UTC)。遅れていなければ None
     # (``actuals.late_received_at``・checkin-late-delivery-design-2026-10-01)。
     actual_arrival_late_received_at: datetime | None = None
@@ -198,6 +200,9 @@ class VisitRead(VisitBase):
     # 今のユーザーがこの訪問の実績を合わせられるか (権限はサーバが判定。画面は
     # これでボタンを出し分ける)。
     actual_adjust_allowed: bool = False
+    # 打刻なし (到着の実績が無い) の訪問に、今のユーザーが到着・退出を手で入れられるか
+    # (管理者だけ・pc-actual-time-edit-design D2)。
+    actual_manual_arrival_allowed: bool = False
     # 同行 (非破壊追加・R-9 の patient_sex と同じ流儀). 同行リンクは accompaniments が
     # 唯一の正典で、読み出し時に JOIN 解決する (visits.*_staff_id には書かない)。
     #

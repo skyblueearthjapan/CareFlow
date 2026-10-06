@@ -506,6 +506,8 @@ export default function MonitorPage() {
                     onReview={canReview ? onReview : undefined}
                     onUnreview={canReview ? onUnreview : undefined}
                     reviewPending={reviewPending}
+                    // 実績の時刻を合わせる (管理者だけ・pc-actual-time-edit-design D1)。
+                    canAdjust={canReview}
                   />
                 )}
               />

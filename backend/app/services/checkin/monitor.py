@@ -60,6 +60,7 @@ from app.services.checkin.actuals import (
     load_adjuster_names,
     stay_minutes,
 )
+from app.services.checkin.adjust import can_adjust_actual_time, can_enter_manual_arrival
 from app.services.checkin.judge import load_thresholds
 from app.services.office_labels import office_short, office_sort_key
 from app.services.patient_status_sync import status_since_date
@@ -145,10 +146,13 @@ def compute_alert(
     is_substitute: bool = False,
     is_unplanned: bool = False,
     late_to_earlier_day: bool = False,
+    departure_missing: bool = False,
 ) -> str:
     """要対応レベルを合成する (位置判定 + 時間遅延の worst).
 
     - **reviewed (確認済み) は最優先で none** (要対応トレイから外す / Phase 5-3)。
+      ただし **退出未記録 (departure_missing) は確認済みでも消さない** — 退出を入れるまで
+      要対応に残す (PO 決定 2026-10-07)。
     - missing 中は missing。
     - 到着あり & match_status==mismatch → mismatch。
     - match_status in (review, no_gps) / 到着遅延 (>= late_min) / 退出忘れ
@@ -158,17 +162,20 @@ def compute_alert(
       トレイに載せ、既存の「確認済み」で消す運用に乗せる)。
     - **前日以前の訪問へ遅れて届いた打刻 (late_to_earlier_day) も最低 review**
       (checkin-late-delivery-design-2026-10-01 §5。「未訪問」通知の代わりに確認を促す)。
+    - **前日以前で退出が無い (departure_missing =「退出未記録」) も最低 review**
+      (pc-actual-time-edit-design-2026-10-06 Q4。手で入れた到着だけの訪問も含む)。
     - それ以外 (未到着の future/awaiting を含む) → none。
 
     ``max_inprogress_min`` は checkin_settings の設定値 (無ければ既定 240)。
     ``reviewed`` は呼び出し側で「遅れて届いた打刻を受信した後の確認か」まで判定済み。
     """
-    if reviewed:
+    if reviewed and not departure_missing:
         return ALERT_NONE
     if phase == PHASE_MISSING:
         return ALERT_MISSING
-    # 代行 / 予定外 / 前日以前へ遅れて届いた打刻は、位置・時間が正常でもトレイに載せる。
-    flagged = is_substitute or is_unplanned or late_to_earlier_day
+    # 代行 / 予定外 / 前日以前へ遅れて届いた打刻 / 退出未記録は、位置・時間が正常でも
+    # トレイに載せる。
+    flagged = is_substitute or is_unplanned or late_to_earlier_day or departure_missing
     if arrival_match_status is None:
         # 未到着 (future / awaiting)。時間アラートは missing で別途拾う。
         return ALERT_REVIEW if flagged else ALERT_NONE
@@ -654,9 +661,14 @@ async def build_monitor(
             grace_min=thresholds["no_show_grace_min"],
             effective_start_dt=effective_start,
         )
+        # 前日以前で退出が無い =「退出未記録」(pc-actual-time-edit-design Q4)。滞在は
+        # 今の時刻まで数え続けない (当日の訪問中は従来どおり今まで数える)。
+        departure_missing = (
+            arr_scanned is not None and dep_scanned is None and v.visit_date < now_jst.date()
+        )
         # 滞在分は ``actuals.stay_minutes`` (到着・退出を分に切り捨ててからの差。
         # 進行中は現在時刻まで)。打刻履歴・Excel・A4 と同じ値になる。
-        stay = stay_minutes(arr_scanned, dep_scanned, now=now_jst)
+        stay = None if departure_missing else stay_minutes(arr_scanned, dep_scanned, now=now_jst)
         review_entry = reviews.get(v.id)
         # 遅れて届いた打刻 (checkin-late-delivery-design §5)。受信より前の「確認済み」は、
         # まだ届いていなかった記録を確認したものではないので効かせない (場所 要確認・
@@ -687,6 +699,7 @@ async def build_monitor(
             is_substitute=is_substitute,
             is_unplanned=is_unplanned,
             late_to_earlier_day=late_to_earlier_day,
+            departure_missing=departure_missing,
         )
         # ペア待ち: 予定 + grace は過ぎたが、ペア補正で awaiting に留まっている間。
         pair_waiting = (
@@ -701,8 +714,10 @@ async def build_monitor(
             else None
         )
 
-        # 表示用の理由: 未訪問の理由 ?? 到着の理由。
-        reason = (ns_p.reason if ns_p is not None else None) or (
+        # 表示用の理由: 未訪問の理由 ?? 到着の理由。未訪問の記録の後に管理者が到着を手で
+        # 入れた訪問は、未訪問の理由をいまの状態として出さない (``no_show`` に履歴として残る)。
+        arrival_manual = arrival_actual is not None and arrival_actual.manual
+        reason = (ns_p.reason if ns_p is not None and not arrival_manual else None) or (
             arr_p.reason if arr_p is not None else None
         )
 
@@ -774,6 +789,27 @@ async def build_monitor(
             arrival_adjusted=arrival_actual is not None and arrival_actual.adjusted,
             departure_adjusted=(departure_actual is not None and departure_actual.adjusted),
             departure_manual=departure_actual is not None and departure_actual.manual,
+            arrival_manual=arrival_actual is not None and arrival_actual.manual,
+            departure_missing=departure_missing,
+            # 合わせる枠・手で入れる枠の出し分け (モニターは管理者向け。管理者以外は偽)。
+            adjust_allowed=can_adjust_actual_time(
+                is_admin=viewer_is_admin,
+                visit_date=v.visit_date,
+                deleted=False,
+                related=False,
+                today=now_jst.date(),
+                has_arrival_read=arrival is not None,
+                window_days=thresholds["staff_adjust_window_days"],
+                has_manual_arrival=arrival_actual is not None and arrival_actual.manual,
+            ),
+            manual_arrival_allowed=can_enter_manual_arrival(
+                is_admin=viewer_is_admin,
+                visit_date=v.visit_date,
+                deleted=False,
+                cancelled=False,
+                has_arrival=arrival_actual is not None,
+                today=now_jst.date(),
+            ),
             arrival_late_received_at=(
                 arrival_actual.late_received_at if arrival_actual is not None else None
             ),
