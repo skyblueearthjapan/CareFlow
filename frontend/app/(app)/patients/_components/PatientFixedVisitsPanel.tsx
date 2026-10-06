@@ -74,6 +74,7 @@ import {
   SERVICE_MINUTES_OPTIONS,
   DEFAULT_SERVICE_MINUTES,
   inactiveStatusLabel,
+  patientTimeOptionsWith,
   type WeeklyPattern,
 } from '@/lib/schemas/patient';
 import { isAdminRole } from '@/lib/rbac';
@@ -94,17 +95,6 @@ const WEEKDAY_LABELS: Record<number, string> = {
   5: '土',
   6: '日',
 };
-
-/** 15 分ステップの時刻選択肢 (00:00 〜 23:45) */
-const TIME_OPTIONS: string[] = (() => {
-  const opts: string[] = [];
-  for (let h = 0; h < 24; h++) {
-    for (let m = 0; m < 60; m += 15) {
-      opts.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
-    }
-  }
-  return opts;
-})();
 
 // 所要時間の選択肢は希望訪問パターン (WeeklyPatternEditor) と**完全に同一**の
 // 5 分刻み 15〜180 分にする (PO 指示 2026-08-09: 希望側に合わせる)。
@@ -703,7 +693,9 @@ function WeekGrid({
                     className="h-8 rounded border border-border-default bg-bg-base px-2 text-sm text-text-primary focus:outline-none focus:border-brand-primary disabled:opacity-60"
                     aria-label={`${WEEKDAY_LABELS[wd]} 開始時刻`}
                   >
-                    {TIME_OPTIONS.map((t) => (
+                    {/* 5 分刻み・08:00〜19:00 (川名様のご要望 2026-10-06)。
+                        今の値が範囲外・刻み外でも消さずに出す (開いただけで化けない)。 */}
+                    {patientTimeOptionsWith(row.start_time).map((t) => (
                       <option key={t} value={t}>
                         {t}
                       </option>

@@ -213,6 +213,28 @@ export const SERVICE_MINUTES_OPTIONS: number[] = (() => {
 /** サービス時間の既定値 (基本 35 分)。新規作成時のデフォルトに使う。 */
 export const DEFAULT_SERVICE_MINUTES = 35;
 
+/**
+ * 患者マスターの時刻の選択肢 (固定訪問の開始・希望の開始/終了で共通)。
+ * 5 分刻み・08:00〜19:00 (川名様のご要望 2026-10-06)。
+ */
+export const PATIENT_TIME_OPTIONS: string[] = (() => {
+  const out: string[] = [];
+  for (let m = 8 * 60; m <= 19 * 60; m += 5) {
+    out.push(`${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`);
+  }
+  return out;
+})();
+
+/**
+ * 選択肢に今の値が無ければ足して並べ直す (範囲外・刻み外の既存データを
+ * 開いただけで別の時刻に化けさせない)。`current` は HH:MM または HH:MM:SS。
+ */
+export function patientTimeOptionsWith(current: string | null | undefined): string[] {
+  const v = (current ?? '').slice(0, 5);
+  if (!/^\d{2}:\d{2}$/.test(v) || PATIENT_TIME_OPTIONS.includes(v)) return PATIENT_TIME_OPTIONS;
+  return [...PATIENT_TIME_OPTIONS, v].sort();
+}
+
 export interface WeeklyPattern {
   frequency_per_week: number;
   visit_frequency: (typeof VISIT_FREQUENCY_OPTIONS)[number] | null;

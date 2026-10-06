@@ -14,6 +14,7 @@ import * as React from 'react';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
+  patientTimeOptionsWith,
   SERVICE_MINUTES_OPTIONS,
   TIME_TYPE_OPTIONS,
   VISIT_FREQUENCY_LABELS,
@@ -166,26 +167,30 @@ export function WeeklyPatternEditor({
 
         {showTimeRange ? (
           <>
+            {/* 5 分刻み・08:00〜19:00 のプルダウン (川名様のご要望 2026-10-06)。
+                固定訪問の開始と同じ選択肢。今の値が範囲外でも消さずに出す。 */}
             <Field label="希望開始時刻">
-              <Input
-                type="time"
+              <Select
                 disabled={disabled}
-                value={value.preferred_start ?? ''}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  update('preferred_start', v === '' ? null : v);
-                }}
+                value={(value.preferred_start ?? '').slice(0, 5)}
+                onChange={(v) => update('preferred_start', v === '' ? null : v)}
+                options={[
+                  ['', '未設定'] as const,
+                  ...patientTimeOptionsWith(value.preferred_start).map((t) => [t, t] as const),
+                ]}
+                aria-label="希望開始時刻"
               />
             </Field>
             <Field label="希望終了時刻">
-              <Input
-                type="time"
+              <Select
                 disabled={disabled}
-                value={value.preferred_end ?? ''}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  update('preferred_end', v === '' ? null : v);
-                }}
+                value={(value.preferred_end ?? '').slice(0, 5)}
+                onChange={(v) => update('preferred_end', v === '' ? null : v)}
+                options={[
+                  ['', '未設定'] as const,
+                  ...patientTimeOptionsWith(value.preferred_end).map((t) => [t, t] as const),
+                ]}
+                aria-label="希望終了時刻"
               />
             </Field>
           </>
@@ -219,13 +224,22 @@ interface SelectProps {
   options: ReadonlyArray<readonly [string, string]>;
   disabled?: boolean;
   className?: string;
+  'aria-label'?: string;
 }
 
-function Select({ value, onChange, options, disabled, className }: SelectProps) {
+function Select({
+  value,
+  onChange,
+  options,
+  disabled,
+  className,
+  'aria-label': ariaLabel,
+}: SelectProps) {
   return (
     <select
       value={value}
       disabled={disabled}
+      aria-label={ariaLabel}
       onChange={(e) => onChange(e.target.value)}
       className={`flex h-10 w-full rounded-md border border-border-default bg-bg-base px-3 py-2 text-sm text-text-primary focus-visible:outline-none focus-visible:border-brand-primary focus-visible:ring-2 focus-visible:ring-brand-primary-light disabled:cursor-not-allowed disabled:opacity-50 ${className ?? ''}`}
     >
