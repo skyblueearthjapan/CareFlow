@@ -25,6 +25,14 @@ PYTHONIOENCODING=utf-8 uv run -q --python 3.12 --with ortools --with openpyxl --
 ```
 オプションは `level.py` の先頭の説明を参照（`--day`・`--off`・`--allow-over`・`--over-before-manager`・`--balance`・`--jev`・`--from-dir`・`--seconds`）。
 
+2026-10-04 に足したもの:
+- `--drop <訪問 ID の先頭>`（何度でも）: 今週だけ取消にする予定の訪問を案から外す。
+- `--add-special`: 特別訪問週間の未配置の○（`extract.py` が読む）を、その日に訪問の無い日だけ「足す訪問」として案に入れる（時刻は希望の範囲の中・固定の時刻からのずらしの重みなし・Excel では「追加（特別訪問）」）。
+- 「今の担当」は訪問の主担当、無ければコースの担当（週を生成した直後は主担当が空）。
+- 固定の時刻が希望の範囲から 30 分超離れていたら、間の時刻は選ばず固定のまま（`join_fixed`）。
+
+試算のこつ（2026-10-06）: 並列で回すと CPU を取り合って結果が揺れるので 1 本ずつ・`--seconds 60〜120`。マネージャーの勤務を延ばすなどの「もしも」は、取り出した `week.json` を手元でコピーして書き換え、`--from-dir` で回す（本番は変えない）。新人（`is_trainee`）は道具が見ないので、同行のみの試算は `--off <職員コード>` で代用する。
+
 出力先 `docs/reports/` は git 管理外（利用者名を含む）。公開しない。
 
 ## アプリの物差しでの診断（既定で行う・`--no-app-check` で飛ばす）
@@ -37,9 +45,16 @@ PYTHONIOENCODING=utf-8 uv run -q --python 3.12 --with ortools --with openpyxl --
 - 分かっている限界（2026-10-02 夜）: 道具は**週の `visits`** を読み、マスターの固定枠（`patient_fixed_visits`）は直接読まない。固定枠の**可動域 `locked`（完全固定）も見ない**ので、`weekly_pattern` に希望の時間帯があれば時刻を動かすことがある（アプリのエンジンは動かさない）。扱いは PO 判断待ち（`docs/plans/week42-final-leveling-runbook-2026-10-03.md` §5 D-1）。
 - backend の環境（`backend/.venv`）が要る。無ければ診断だけ飛ばして案は出す。
 
+## 反映（本番へ書く・PO の了承が必須）
+`apply/` に週42（2026-10-04）で使った手順の記録がある（ID は週42 決め打ち。他の週はそのまま使わない）:
+`plan_from_excel.py`（案 → 1 件ずつの plan.json と不自然な所の洗い出し）→ `build_ops_w42.py`（API 操作の一覧）→ `make_restore_w42.sql`（反映前に「戻す SQL」を書き出し、ROLLBACK で空打ち）→ `apply_w42.py`（サーバー上で API を順に流す・止まったら `--from N`）→ 読み取り SQL で案と照合。
+- 反映の前に **新人（is_trainee）の職員が担当になっていないか**確かめる（アプリは 422 で断る）。
+- `place`（特別訪問）は拠点一致が必須。違えば同じ拠点の M に置いてから `visit-move-week-only` で移す。臨時・M2 テンプレートへは移さない。
+- 詳細と知見: `docs/plans/session-2026-10-06-HANDOFF.md` §5。
+
 ## テスト
 ```bash
-WEEK_JSON=docs/reports/<出力>/week.json PYTHONIOENCODING=utf-8 uv run -q --python 3.12 --with ortools --with openpyxl --with pytest   python -m pytest docs/tools/week-leveling/test_app_yardstick.py docs/tools/week-leveling/test_diagnose.py -q
+WEEK_JSON=docs/reports/<出力>/week.json PYTHONIOENCODING=utf-8 uv run -q --python 3.12 --with ortools --with openpyxl --with pytest   python -m pytest docs/tools/week-leveling/ -q
 ```
 - `test_app_yardstick.py`: 手で計算した答えとの一致（距離・移動・ゆとり・待ち時間・同じ建物・並べ替え・重なり・設定）と、実データの利用者の座標の全組み合わせで道具の式と一致（`WEEK_JSON` があるとき）。
 - `test_diagnose.py`: わざと悪い案を作って「見落とし」を見つけられるか・NG にぶつかる手は出さないか・良い案では何も出ないか。

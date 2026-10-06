@@ -10,22 +10,27 @@ description: らく助（CareFlow）の週や 1 日の訪問を、決まり（1 
 - 決まりの正典: `docs/plans/week-leveling-rules-2026-10-02.md`（アプリの全エンジンの決まりと PO の決定）。決まりを変えるときは先にここを直し、PO に確かめる。
 - 道具: `docs/tools/week-leveling/`（`level.py` が入口）。設定: `docs/tools/week-leveling/config.local.json`（git 管理外。無ければ `config.example.json` をコピーし、職員コードで書く）。
 
+**週42 は 2026-10-04 に案 v4 で反映済み・10/5 カイポケ送信済み。10/6 に小西さん（新人）を同行のみにする試算をした（未反映）。最新の引き継ぎ: `docs/plans/session-2026-10-06-HANDOFF.md`。**
+
 **週42（10/12〜18）の最終ならしは手順書 `docs/plans/week42-final-leveling-runbook-2026-10-03.md` に従う**（マスターの直し → 週の作り直し → 案 → PO の最終判断）。道具は可動域 `locked` を見ない（同 §2-4・判断 D-1）。
 
 ## 手順
 
+0. **新人を確かめる**: 道具は `staff.is_trainee` を見ない。新人は担当にできない（アプリが 422）ので、新人がいれば `--off <職員コード>` で抜いて計算する。
 1. **何をしたいかを確かめる**（AskUserQuestion で選択式）: 週全体か特定の日か／休む人・増える人がいるか（`--off`）／上限を少し超えてよいか（`--allow-over 1`、マネージャーより先なら `--over-before-manager`）／件数をならすか（`--balance`）／Jev の目安を付けるか（`--jev`）。
 2. **実行**（リポジトリ直下・Bash）:
    ```bash
    PYTHONIOENCODING=utf-8 uv run -q --python 3.12 --with ortools --with openpyxl --with httpx \
      python docs/tools/week-leveling/level.py --week 2026-10-12 [--day 2026-10-13] \
-     [--off S004@2026-10-13] [--allow-over 1] [--over-before-manager] [--balance] [--jev] [--seconds 30]
+     [--off S004@2026-10-13] [--allow-over 1] [--over-before-manager] [--balance] [--jev] [--seconds 30] \n     [--add-special] [--drop <訪問 ID の先頭>]
    ```
    - 出力: `docs/reports/<日時>-week<NN>-leveling<印>/`（`leveling.xlsx`・`leveling-a4.pdf`/`.html`・`summary.json`・取り出した `week.json`/`history.json`）。**利用者名入り。git に入れない・Artifact 等で公開しない。**
    - 同じデータで条件だけ変えて試すときは `--from-dir <前回の出力>` で本番に繋がずに回す。
-   - 1 日 30 秒 × 日数ほどかかる。長い週は `run_in_background`。
+   - 1 日 30 秒 × 日数ほどかかる。長い週は `run_in_background`。**試算を並列で回さない**（CPU を取り合って結果が揺れる）。
+   - `--add-special`: 特別訪問週間の未配置の○を足す訪問として入れる。`--drop`: 今週だけ取消にする予定の訪問を外す。
+   - 「マネージャーを延ばしたら」などは、取り出した `week.json` を手元のコピーで書き換えて `--from-dir` で回す。
 3. **結果を確かめる**: `summary.json` の `rule_errors` が 0 であること（0 でなければ案を出さずに原因を調べる）。`app_check`（アプリの物差しでの診断）の `yardstick_match` が true であること・`one_more_move_checked` が true かつ `one_more_move_missed`（あと 1 手で良くなる見落とし）が 0 であること（0 でなければ `--seconds` を増やして計算し直す）。移動が平均の 1.5 倍を超える順路は A4 の 1 ページ目と Excel の「アプリの物差し」に理由（いちばん長い移動）付きで出る。`unplaced`（入らない）・`manager_overtime_visits`・`cross_office_visits`・`same_as_last_visits`・`max_move_min` を PO に伝える。A4 は Chrome の画面写し（`--screenshot`）で崩れていないか見る。
-4. **PO へ報告**（日本語・平易に）: 今の盤面と案の比較（重なり・担当なし・移動）、気を付ける点、ファイルの場所。反映は PO の了承の後に、アプリの操作（今週だけ移動・担当変更）で行う。
+4. **PO へ報告**（日本語・平易に）: 今の盤面と案の比較（重なり・担当なし・移動・距離）、気を付ける点、ファイルの場所。反映は PO の了承の後に、アプリの操作か API（`docs/tools/week-leveling/apply/`・反映前に戻し用 SQL を作って空打ち）で行う。
 
 ## 守ること
 - 本番 DB へは書かない（`extract.py` は読み取り専用トランザクション）。
