@@ -1295,7 +1295,7 @@ async def test_history_rows_show_adjustments(client, db) -> None:
     )
     plain_footer = plain_only.text.split("<footer>")[1].split("</footer>")[0]
     assert "備考に「調整」とある行は" not in plain_footer
-    assert "到着・退出は QR を読み取った時刻です" in plain_footer
+    assert "到着・退出は QR・サインの時刻です" in plain_footer
     await db.rollback()
 
 

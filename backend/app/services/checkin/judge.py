@@ -291,16 +291,21 @@ async def judge_checkin(
     kind: str,
     *,
     now: datetime | None = None,
+    source: str | None = None,
 ) -> VisitCheckin:
     """打刻 1 件を判定し ``VisitCheckin`` を session に追加して返す (未 commit).
 
     可視性 (担当か) は呼び出し側 (API) が事前に検証している前提。本関数は QR 照合・
     visit ガード・距離 / match_status 確定・スナップショット保存を担う。
+
+    ``source`` を渡すと ``checkin_source`` をその値にする (サインで記録した退出 =
+    ``'signature'``・QR トークンは無い)。省略時は QR トークンの有無で ``'qr'`` /
+    ``'manual'``。
     """
     if now is None:
         now = datetime.now(UTC)
 
-    patient, source = await _resolve_patient(db, visit, payload.qr_token)
+    patient, resolved_source = await _resolve_patient(db, visit, payload.qr_token)
     _guard_visit(visit, now, payload.device_time)
 
     thresholds = await load_thresholds(db)
@@ -322,7 +327,7 @@ async def judge_checkin(
         threshold_snapshot={"v": 1, **thresholds},
         reason=payload.reason,
         is_override=payload.is_override,
-        checkin_source=source,
+        checkin_source=source or resolved_source,
         # ``scanned_at`` と同じ時計で入れる。実績の時刻の調整 (``visit_time_adjustments``)
         # が「この打刻より後に作られたか」を ``created_at`` で比べるため、DB の時計と
         # アプリの時計を混ぜない (設計 actual-time-adjust §4)。

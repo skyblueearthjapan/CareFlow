@@ -84,6 +84,17 @@ class Settings(BaseSettings):
     # 下限 30 日は purge 側でガードする (誤設定で証跡を焼かないため)。
     visit_audio_retention_days: int = Field(default=90)
 
+    # --- サインで記録 (docs/plans/signature-checkin-design-2026-10-06.md §5-1) ---
+    # 退出のときにもらったサインの画像。音声と同じく bind-mount のディレクトリに置く
+    # (本番はホスト側を `chown 999:999`)。レイアウトは
+    # ``{VISIT_SIGNATURES_DIR}/{yyyy}/{mm}/{signature_id}.png`` (年月は受け取った日・JST)。
+    # 証拠なので **日ごとのバックアップに含める** (backup-carelink-db.sh)。
+    visit_signatures_dir: str = Field(default="/opt/carelink/data/visit_signatures")
+    # 受け取る上限 (超過は 413)。1 枚は数十 KB。PNG / JPEG だけ受け付ける。
+    visit_signature_max_bytes: int = Field(default=2_097_152)
+    # 画像の保持日数 (既定 5 年)。過ぎたら画像だけ消し、記録の行は残す。
+    visit_signature_retention_days: int = Field(default=1825)
+
     # AI プロバイダ。``none`` = 受領のみ (文字起こし・要約を行わない)。
     # **コード既定は ``none``**: 環境変数を置き忘れた環境 (ローカル・CI・新しい
     # VPS) が黙って Vertex へ患者の音声を送るより、受領だけして止まる方が安全。

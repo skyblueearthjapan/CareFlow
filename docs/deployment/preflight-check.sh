@@ -31,6 +31,10 @@ fi
 audio_dir="/opt/carelink/data/visit_audio"
 audio_size=$([ -d "${audio_dir}" ] && du -sh "${audio_dir}" 2>/dev/null | awk '{print $1}' || echo "absent")
 ok "visit_audio (${audio_dir}) = ${audio_size:-unknown}"
+# 1c. Signature images bind mount (informational; backed up daily, kept 5 years).
+sig_dir="/opt/carelink/data/visit_signatures"
+sig_size=$([ -d "${sig_dir}" ] && du -sh "${sig_dir}" 2>/dev/null | awk '{print $1}' || echo "absent")
+ok "visit_signatures (${sig_dir}) = ${sig_size:-unknown}"
 
 # 2. Memory (>=1 GB available)
 hdr "memory"

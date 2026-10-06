@@ -203,6 +203,13 @@ class VisitRead(VisitBase):
     # 打刻なし (到着の実績が無い) の訪問に、今のユーザーが到着・退出を手で入れられるか
     # (管理者だけ・pc-actual-time-edit-design D2)。
     actual_manual_arrival_allowed: bool = False
+    # 実績の到着・退出の記録の方法 ('qr' / 'manual' / 'signature')。打刻が無ければ None。
+    # 到着は「QRなし」と「QRなし（サイン）」の出し分けに、退出がサインかを見る
+    # (signature-checkin-design §5-1 Q2)。
+    actual_arrival_source: str | None = None
+    actual_departure_source: str | None = None
+    # 退出がサインで記録されたとき、そのサインの画像の ID (``GET /visit-signatures/{id}/image``)。
+    departure_signature_id: UUID | None = None
     # 同行 (非破壊追加・R-9 の patient_sex と同じ流儀). 同行リンクは accompaniments が
     # 唯一の正典で、読み出し時に JOIN 解決する (visits.*_staff_id には書かない)。
     #

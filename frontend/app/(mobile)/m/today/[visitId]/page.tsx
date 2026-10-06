@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
@@ -10,9 +10,12 @@ import {
   Camera,
   CheckCircle2,
   Clock,
+  Eye,
   Home,
   Loader2,
+  LogIn,
   MapPin,
+  PenLine,
   Phone,
   QrCode,
   RefreshCw,
@@ -24,11 +27,19 @@ import { clearCheckin, loadCheckin, saveCheckin } from '@/lib/checkin-storage';
 import {
   enqueuePending,
   findPending,
+  listPending,
   setPendingAdjustment,
   type PendingKind,
   type PendingPayload,
 } from '@/lib/checkin-queue';
 import { detailOf, isServerUnreachable, isWrongPatient } from '@/lib/checkin-flush';
+import {
+  blobToDataUrl,
+  deleteSignatureImage,
+  newSignatureClientId,
+  saveSignatureImage,
+  type SignatureCheckoutPayload,
+} from '@/lib/signature-checkout';
 import {
   coordsOf,
   geoErrorHint,
@@ -60,6 +71,8 @@ import { CheckInButton } from '@/components/mobile/CheckInButton';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import { Rakusuke } from '@/components/brand/Rakusuke';
 import { QrScanner } from '@/components/mobile/QrScanner';
+import { SignaturePad } from '@/components/mobile/SignaturePad';
+import { SignatureViewer } from '@/components/records/SignatureViewer';
 import { AuthedPhoto } from '@/components/mobile/AuthedPhoto';
 import { VisitRecordCard } from '@/components/mobile/VisitRecordCard';
 import { VoiceRecorderPanel } from '@/components/mobile/VoiceRecorderPanel';
@@ -69,6 +82,7 @@ import {
   useAdjustActualTime,
   useCheckIn,
   useCheckOut,
+  useCheckOutSignature,
   useMyVisit,
   useNoShow,
   useResetActualTime,
@@ -250,6 +264,58 @@ function memoKey(staffId: string, visitId: string): string {
   return `visit-memo:${staffId}:${visitId}`;
 }
 
+/**
+ * 記録のしかた (signature-checkin-design §5-1 Q3)。すべての利用者さんで、その場で
+ * 「QRを読む」か「サインで記録」を選べる (利用者マスターの設定は無い)。
+ */
+type RecordMode = 'qr' | 'sign';
+
+/** 選んだ記録のしかたを訪問ごとに端末に覚えておく (画面を開き直しても同じ側を出す)。 */
+function recordModeKey(staffId: string, visitId: string): string {
+  return `checkin-mode:${staffId}:${visitId}`;
+}
+
+function loadRecordMode(staffId: string, visitId: string): RecordMode {
+  if (typeof window === 'undefined' || !staffId || !visitId) return 'qr';
+  try {
+    return window.localStorage.getItem(recordModeKey(staffId, visitId)) === 'sign' ? 'sign' : 'qr';
+  } catch {
+    return 'qr';
+  }
+}
+
+function saveRecordMode(staffId: string, visitId: string, mode: RecordMode): void {
+  if (typeof window === 'undefined' || !staffId || !visitId) return;
+  try {
+    window.localStorage.setItem(recordModeKey(staffId, visitId), mode);
+  } catch {
+    /* quota / private mode — ignore */
+  }
+}
+
+/** 実績の到着の記録の方法の表示 (PO 決定 Q2: サインの訪問の到着は「QRなし（サイン）」)。 */
+function arrivalMethodLabel(source: string | null | undefined, signed: boolean): string | null {
+  if (source === 'manual') return signed ? 'QRなし（サイン）' : 'QRなし';
+  if (source === 'qr') return 'QR';
+  return null;
+}
+
+/** 実績の退出の記録の方法の表示。 */
+function departureMethodLabel(source: string | null | undefined): string | null {
+  if (source === 'signature') return 'サイン';
+  if (source === 'manual') return 'QRなし';
+  if (source === 'qr') return 'QR';
+  return null;
+}
+
+/** 日付の見出し 「2026 年 10 月 6 日（火）」。 */
+function longDateLabel(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  const wd = '日月火水木金土'[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+  return `${y} 年 ${m} 月 ${d} 日（${wd}）`;
+}
+
 export default function MobileVisitDetailPage() {
   // useSearchParams (?qr= ディープリンク) は Suspense 境界が必須
   // (Next 15 の CSR bailout 対策 — qr-print ページと同パターン)。
@@ -335,11 +401,15 @@ function MobileVisitDetailPageInner() {
       actual_adjust_allowed: freshVisit.actual_adjust_allowed,
       actual_arrival_late_received_at: freshVisit.actual_arrival_late_received_at,
       actual_departure_late_received_at: freshVisit.actual_departure_late_received_at,
+      actual_arrival_source: freshVisit.actual_arrival_source,
+      actual_departure_source: freshVisit.actual_departure_source,
+      departure_signature_id: freshVisit.departure_signature_id,
     };
   }, [queryVisit, freshVisit]);
 
   const checkIn = useCheckIn(visitId);
   const checkOut = useCheckOut(visitId);
+  const checkOutSignature = useCheckOutSignature(visitId);
   const noShow = useNoShow(visitId);
   const adjustActual = useAdjustActualTime(visitId);
   const resetActual = useResetActualTime(visitId);
@@ -369,6 +439,35 @@ function MobileVisitDetailPageInner() {
       );
     }
   }, [visitId, staffId]);
+
+  // ---- サインで記録 (signature-checkin-design §5-1) -------------------------
+  const [recordMode, setRecordMode] = useState<RecordMode>(() => loadRecordMode(staffId, visitId));
+  useEffect(() => {
+    setRecordMode(loadRecordMode(staffId, visitId));
+  }, [staffId, visitId]);
+  function chooseRecordMode(mode: RecordMode) {
+    setRecordMode(mode);
+    saveRecordMode(staffId, visitId, mode);
+  }
+  // サインの画面。開いた時点で位置を取りに行く (押すまでに取れていればすぐ記録できる)。
+  const [signOpen, setSignOpen] = useState(false);
+  const [signGeo, setSignGeo] = useState<Geo | null>(null);
+  const [signSaving, setSignSaving] = useState(false);
+  // 端末に保存できなかったときの案内 (サインの画面に出す)。
+  const [signNotice, setSignNotice] = useState<string | null>(null);
+  // その画面で押した 1 回の記録 (時刻・位置・client_id)。「もう一度」でも同じものを送る。
+  const signAttemptRef = useRef<{ payload: SignatureCheckoutPayload; geo: Geo } | null>(null);
+  // 「サインを見る」(サーバの画像) と、この端末で書いた直後の画像 (未送信の控えを含む)。
+  const [viewSignatureId, setViewSignatureId] = useState<string | null>(null);
+  const [localSignature, setLocalSignature] = useState<{ url: string; pending: boolean } | null>(
+    null,
+  );
+  const [localSignatureOpen, setLocalSignatureOpen] = useState(false);
+  useEffect(() => {
+    return () => {
+      if (localSignature) URL.revokeObjectURL(localSignature.url);
+    };
+  }, [localSignature]);
 
   /** URL から 1 回きりのクエリだけを外す (他のクエリは保全)。無ければ何もしない。 */
   const dropUrlParams = useCallback(
@@ -642,6 +741,138 @@ function MobileVisitDetailPageInner() {
   function handleManual(mode: ScanMode) {
     // 「QRなしで記録」を押した時点。
     void beginPreview(mode, undefined, new Date().toISOString());
+  }
+
+  /** サインの画面を開く。位置はここで取りに行く (押すまでの間に取れるように)。 */
+  function openSignature() {
+    if (!staffId || !visitId) {
+      toast.error('ユーザー情報を取得できませんでした');
+      return;
+    }
+    setSignGeo(null);
+    setSignNotice(null);
+    signAttemptRef.current = null;
+    setSignOpen(true);
+    void getGeolocation().then((geo) => setSignGeo(geo));
+  }
+
+  /**
+   * 「サインして退出を記録」。時刻は **押した瞬間**。位置は開いたときに取ったもの
+   * (まだ取れていなければ待つ)。位置が離れていても記録は断らない (QR と同じ扱い・
+   * 退出の理由は任意)。
+   *
+   * 圏外 / 5xx: 時刻・位置は未送信キューに、サインの画像は IndexedDB に置いて後で送る
+   * (同じ `client_id` で再送するのでサーバで二重にならない)。画像を端末に置けなかった
+   * ときは、時刻と位置だけの退出 (QRなし) として残す (退出の記録そのものは失わない)。
+   */
+  async function saveSignature(image: Blob) {
+    if (signSaving) return;
+    setSignSaving(true);
+    setSignNotice(null);
+    try {
+      // 端末に保存できず画面に残ったときの「もう一度」は、最初に押した時刻・位置・
+      // client_id のまま送る (時刻を押し直した時刻にしない・サーバで二重にしない)。
+      const attempt =
+        signAttemptRef.current ??
+        (await (async () => {
+          const pressedAt = new Date().toISOString();
+          const fix = signGeo ?? (await getGeolocation());
+          const status = previewStatusOf(previewDistance(fix), matchM, reviewM);
+          const built: SignatureCheckoutPayload = {
+            ...coordsOf(fix),
+            at: pressedAt,
+            ...(status === 'mismatch' ? { is_override: true } : {}),
+            client_id: newSignatureClientId(),
+          };
+          return { payload: built, geo: fix };
+        })());
+      signAttemptRef.current = attempt;
+      const { payload, geo } = attempt;
+      const at = payload.at;
+      const showLocal = (pending: boolean) => {
+        // この端末で書いた画像をそのまま縮小表示する (サーバから取らない = 見た記録を増やさない)。
+        if (typeof URL.createObjectURL !== 'function') return;
+        setLocalSignature({ url: URL.createObjectURL(image), pending });
+      };
+      let updated: MyVisit;
+      try {
+        updated = await checkOutSignature.mutateAsync({ payload, image });
+      } catch (err) {
+        if (!isServerUnreachable(err)) {
+          // 当日でない・取消・担当外など (サーバの確定回答)。文言をそのまま出す。
+          signAttemptRef.current = null;
+          setSignOpen(false);
+          toast.error('記録できませんでした', {
+            description:
+              detailOf(err) ?? (err instanceof Error ? err.message : '管理者に連絡してください'),
+          });
+          return;
+        }
+        // 退避: 時刻・位置はキューに、画像は IndexedDB に。IndexedDB に置けなければ
+        // 画像を data URL にしてキューの控えに入れる (PO 決定 2026-10-07: QRなしの退出に
+        // 落とさない・同じ client_id でサインとして送る)。
+        let entryPayload: PendingPayload = { ...payload };
+        let imageInIdb = true;
+        try {
+          await saveSignatureImage(payload.client_id, image);
+        } catch {
+          imageInIdb = false;
+          try {
+            entryPayload = { ...payload, image_data_url: await blobToDataUrl(image) };
+          } catch {
+            entryPayload = { ...payload };
+          }
+        }
+        const queued =
+          imageInIdb || entryPayload.image_data_url
+            ? enqueuePending(staffId, {
+                visit_id: visitId,
+                kind: 'departure_signature',
+                payload: entryPayload,
+              })
+            : null;
+        const persisted = queued !== null && listPending(staffId).some((e) => e.id === queued.id);
+        if (!persisted) {
+          // どちらにも置けなかった。サインを失わないよう画面は閉じずに、もう一度押してもらう
+          // (同じ時刻・同じ client_id でもう一度送る)。
+          if (imageInIdb) void deleteSignatureImage(payload.client_id);
+          setSignNotice(
+            'この端末に保存できませんでした。電波が戻ってから送ります。電波の良い場所で、もう一度「サインして退出を記録」を押してください',
+          );
+          return;
+        }
+        signAttemptRef.current = null;
+        saveCheckin(staffId, visitId, {
+          status: 'checked_out',
+          at,
+          ...(geo.lat !== undefined ? { lat: geo.lat } : {}),
+          ...(geo.lng !== undefined ? { lng: geo.lng } : {}),
+        });
+        setLocalStatus('checked_out');
+        refreshPending();
+        showLocal(true);
+        setSignOpen(false);
+        toast.warning('未送信として保存しました', {
+          description: 'サインの画像も、この端末に保存しました。電波が戻り次第、自動で送ります',
+        });
+        return;
+      }
+      signAttemptRef.current = null;
+      clearCheckin(staffId, visitId);
+      setLocalStatus('checked_out');
+      setFreshVisit(updated);
+      showLocal(false);
+      setSignOpen(false);
+      if (updated.latest_checkin?.match_status === 'mismatch') {
+        toast.warning('訪問を完了しました', {
+          description: '登録住所から離れた位置で記録されました',
+        });
+      } else {
+        toast.success('訪問を完了しました');
+      }
+    } finally {
+      setSignSaving(false);
+    }
   }
 
   /** Validate the preview form, then issue the single POST. */
@@ -1053,6 +1284,62 @@ function MobileVisitDetailPageInner() {
     );
   }
 
+  // ---- サインの画面 (全画面) ------------------------------------------------
+  if (signOpen && visit) {
+    const signDistance = signGeo ? previewDistance(signGeo) : null;
+    const signStatus = signGeo ? previewStatusOf(signDistance, matchM, reviewM) : null;
+    const chipTone =
+      signStatus === 'match'
+        ? 'bg-success/15 text-success'
+        : signStatus === 'mismatch'
+          ? 'bg-error/15 text-error'
+          : 'bg-warning/15 text-warning';
+    const chipText = !signStatus
+      ? '位置を取得しています…'
+      : signStatus === 'no_gps'
+        ? '位置: 測位不良'
+        : `位置: ${signStatus === 'match' ? '一致' : signStatus === 'review' ? '要確認' : '不一致'} ${distanceLabel(signDistance)}`;
+    return (
+      <SignaturePad
+        patientName={patientName}
+        subtitle={`${longDateLabel(visit.visit_date)} ・ 退出`}
+        statusChip={
+          <span
+            className={cn(
+              'inline-flex min-h-9 items-center gap-1 rounded-full px-3 text-[15px] font-semibold',
+              signStatus ? chipTone : 'bg-bg-muted text-text-secondary',
+            )}
+            data-testid="signature-gps-chip"
+          >
+            <MapPin className="h-4 w-4 shrink-0" aria-hidden="true" />
+            {chipText}
+          </span>
+        }
+        saving={signSaving}
+        notice={signNotice}
+        onCancel={() => setSignOpen(false)}
+        onSave={saveSignature}
+      />
+    );
+  }
+
+  // 記録の方法の表示 (サインの訪問だけ。ただの QR / QRなし の表示は今のまま)。
+  const signedDeparture = visit?.actual_departure_source === 'signature';
+  // 退出があれば、退出がサインかどうかだけで決める (打刻履歴と同じ)。退出の前は、選んだ
+  // 記録のしかたで「QRなし（サイン）」と出す。
+  const signContext = visit?.actual_departure_source
+    ? signedDeparture
+    : recordMode === 'sign' && !substituteMode;
+  const methodLine = (() => {
+    if (!visit || !actualParts || !signContext) return null;
+    const arr = arrivalMethodLabel(visit.actual_arrival_source, signContext);
+    const dep = departureMethodLabel(visit.actual_departure_source);
+    const parts = [arr ? `到着 ${arr}` : null, dep ? `退出 ${dep}` : null].filter(Boolean);
+    return parts.length > 0 ? parts.join(' ・ ') : null;
+  })();
+  const signatureId = visit?.departure_signature_id ?? null;
+  const showSignatureRow = !!signatureId || !!localSignature;
+
   return (
     <MobileSection
       title="訪問詳細"
@@ -1161,6 +1448,49 @@ function MobileVisitDetailPageInner() {
                   {actualNote}
                 </p>
               )}
+              {methodLine && (
+                <p
+                  className="ml-6 text-[15px] font-medium text-text-primary"
+                  data-testid="mobile-detail-method"
+                >
+                  {methodLine}
+                </p>
+              )}
+              {showSignatureRow && (
+                <div
+                  className="ml-6 flex flex-wrap items-center gap-3"
+                  data-testid="mobile-detail-signature"
+                >
+                  {localSignature && (
+                    <button
+                      type="button"
+                      onClick={() => setLocalSignatureOpen(true)}
+                      className="h-12 w-24 overflow-hidden rounded-md border border-border-default bg-white"
+                      aria-label="サインの縮小画像"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={localSignature.url}
+                        alt="サインの縮小画像"
+                        className="h-full w-full object-contain"
+                      />
+                    </button>
+                  )}
+                  {signatureId ? (
+                    <button
+                      type="button"
+                      onClick={() => setViewSignatureId(signatureId)}
+                      className="inline-flex min-h-12 items-center gap-1.5 rounded-full border border-brand-primary bg-bg-base px-4 text-[15px] font-bold text-brand-primary-hover"
+                      data-testid="mobile-detail-view-signature"
+                    >
+                      <Eye className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      サインを見る
+                    </button>
+                  ) : localSignature?.pending ? (
+                    <Badge variant="warning">端末に保存（未送信）</Badge>
+                  ) : null}
+                </div>
+              )}
               {displayVisitNote(visit.note) && (
                 <div className="flex items-start gap-2 text-text-secondary">
                   <StickyNote className="h-4 w-4 shrink-0 mt-0.5" />
@@ -1204,6 +1534,7 @@ function MobileVisitDetailPageInner() {
               reviewM={reviewM}
               geoErrorCode={flow.geo.errorCode}
               readAt={flow.readAt}
+              pressed={!flow.token && recordMode === 'sign' && !substituteMode}
               mismatchReason={mismatchReason}
               onMismatchReasonChange={setMismatchReason}
               onRecord={recordPreview}
@@ -1287,10 +1618,27 @@ function MobileVisitDetailPageInner() {
                 !effectiveCompleted &&
                 isToday && (
                   <>
-                    <CheckInButton onClick={() => startScan('arrival')}>
-                      <QrCode className="h-5 w-5" />
-                      QRで到着を記録
-                    </CheckInButton>
+                    {/* 記録のしかた (signature-checkin-design §5-1 Q3)。代行 (担当外) は QR
+                        が必須なので選ばせない (決定#6)。 */}
+                    {!substituteMode && (
+                      <RecordModeChooser mode={recordMode} onChange={chooseRecordMode} />
+                    )}
+                    {recordMode === 'sign' && !substituteMode ? (
+                      <>
+                        <CheckInButton onClick={() => handleManual('arrival')}>
+                          <LogIn className="h-5 w-5" />
+                          到着を記録
+                        </CheckInButton>
+                        <p className="px-1 text-[15px] text-text-secondary">
+                          押した時刻と位置（GPS）を記録します。サインは退出のときにもらいます。
+                        </p>
+                      </>
+                    ) : (
+                      <CheckInButton onClick={() => startScan('arrival')}>
+                        <QrCode className="h-5 w-5" />
+                        QRで到着を記録
+                      </CheckInButton>
+                    )}
                     {/* 未訪問 (no-show) は担当スタッフ専用 — 代行では出さない (設計 §2)。 */}
                     {!substituteMode && (
                       <Button
@@ -1396,10 +1744,48 @@ function MobileVisitDetailPageInner() {
                 effectiveCheckedIn &&
                 !effectiveCompleted &&
                 isToday && (
-                  <CheckInButton onClick={() => startScan('departure')}>
-                    <QrCode className="h-5 w-5" />
-                    QRで退出を記録
-                  </CheckInButton>
+                  <>
+                    {recordMode === 'sign' && !substituteMode ? (
+                      <>
+                        <CheckInButton onClick={openSignature}>
+                          <PenLine className="h-5 w-5" />
+                          サインして退出
+                        </CheckInButton>
+                        <p className="px-1 text-[15px] text-text-secondary">
+                          利用者さんにサインをもらうと、その時刻と位置で退出を記録します。
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => startScan('departure')}
+                          className="flex min-h-12 w-full items-center justify-center gap-2 rounded-md px-3 text-[15px] font-semibold text-text-secondary underline"
+                        >
+                          QR を読んで退出する
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <CheckInButton onClick={() => startScan('departure')}>
+                          <QrCode className="h-5 w-5" />
+                          QRで退出を記録
+                        </CheckInButton>
+                        {/* QR を忘れたとき・QR を置けない方は、その場でサインに切り替えられる。 */}
+                        {!substituteMode && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              chooseRecordMode('sign');
+                              openSignature();
+                            }}
+                            className="flex min-h-12 w-full items-center justify-center gap-2 rounded-md px-3 text-[15px] font-semibold text-text-secondary underline"
+                            data-testid="mobile-detail-sign-departure"
+                          >
+                            <PenLine className="h-4 w-4" />
+                            サインで退出を記録
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </>
                 )}
 
               {/* 退出の読み取りが無いとき: シートの退出側で時刻を入れる (設計 §7-5)。 */}
@@ -1558,6 +1944,34 @@ function MobileVisitDetailPageInner() {
         />
       )}
 
+      {/* ---- サインを見る (サーバの画像・見るたびに監査ログに残る) ---------- */}
+      <SignatureViewer
+        signatureId={viewSignatureId}
+        onClose={() => setViewSignatureId(null)}
+        title={`サイン — ${patientName}`}
+        meta={
+          visit?.actual_departure_at
+            ? `${longDateLabel(visit.visit_date)} 退出 ${jstHm(visit.actual_departure_at) ?? ''} にサイン`
+            : undefined
+        }
+      />
+      {/* この端末で書いた直後のサイン (サーバから取らない)。 */}
+      {localSignature && localSignatureOpen && (
+        <button
+          type="button"
+          aria-label="サインの表示を閉じる"
+          onClick={() => setLocalSignatureOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/85 p-4"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={localSignature.url}
+            alt="サインの画像"
+            className="max-h-full max-w-full rounded-lg bg-white object-contain"
+          />
+        </button>
+      )}
+
       {/* ---- 写真の拡大表示 (タップで閉じる) --------------------------- */}
       {photoViewerUrl && (
         <button
@@ -1579,6 +1993,62 @@ function MobileVisitDetailPageInner() {
 }
 
 // ---------------------------------------------------------------------------
+// 記録のしかたを選ぶ (QRを読む / サインで記録) — signature-checkin-design §5-1 Q3
+// ---------------------------------------------------------------------------
+function RecordModeChooser({
+  mode,
+  onChange,
+}: {
+  mode: RecordMode;
+  onChange: (mode: RecordMode) => void;
+}) {
+  const options: Array<{ value: RecordMode; label: string; sub: string; icon: ReactNode }> = [
+    {
+      value: 'qr',
+      label: 'QRを読む',
+      sub: 'QR カードを読み取る',
+      icon: <QrCode className="h-6 w-6" aria-hidden="true" />,
+    },
+    {
+      value: 'sign',
+      label: 'サインで記録',
+      sub: '到着はボタン・退出でサイン',
+      icon: <PenLine className="h-6 w-6" aria-hidden="true" />,
+    },
+  ];
+  return (
+    <div className="space-y-1.5" data-testid="record-mode-chooser">
+      <p className="px-1 text-[15px] font-semibold text-text-secondary">記録のしかたを選ぶ</p>
+      <div role="radiogroup" aria-label="記録のしかた" className="grid grid-cols-2 gap-2">
+        {options.map((o) => {
+          const on = mode === o.value;
+          return (
+            <button
+              key={o.value}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              onClick={() => onChange(o.value)}
+              className={cn(
+                'flex min-h-16 flex-col items-center justify-center gap-0.5 rounded-xl border-2 px-2 py-2 text-[16px] font-bold',
+                on
+                  ? 'border-brand-primary bg-brand-primary-50 text-brand-primary-hover'
+                  : 'border-border-default bg-bg-base text-text-primary',
+              )}
+            >
+              {o.icon}
+              {o.label}
+              <span className="text-[13px] font-medium text-text-secondary">{o.sub}</span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="px-1 text-[13px] text-text-muted">利用者さんごとに、その場で選べます。</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Preview panel — shown AFTER a scan but BEFORE recording. Displays the
 // client-side distance / match preview; a mismatch on arrival requires a
 // reason, on departure the reason is optional (item 6 警告). Pressing 記録する
@@ -1594,6 +2064,8 @@ interface PreviewPanelProps {
   geoErrorCode?: number;
   /** QR を読み取った瞬間 (ISO 8601)。この時刻で記録する。 */
   readAt: string;
+  /** 「到着を記録」(サインで記録) から来た = 読み取りではなく、押した時刻。 */
+  pressed?: boolean;
   mismatchReason: string;
   onMismatchReasonChange: (v: string) => void;
   onRecord: () => void;
@@ -1608,6 +2080,7 @@ function PreviewPanel({
   reviewM,
   geoErrorCode,
   readAt,
+  pressed = false,
   mismatchReason,
   onMismatchReasonChange,
   onRecord,
@@ -1634,7 +2107,8 @@ function PreviewPanel({
         className="tnum rounded-lg bg-bg-muted px-3 py-2 text-center text-sm text-text-secondary"
         data-testid="preview-read-time"
       >
-        読み取った時刻 <b className="text-base text-text-primary">{jstHm(readAt)}</b> で記録します
+        {pressed ? '押した時刻' : '読み取った時刻'}{' '}
+        <b className="text-base text-text-primary">{jstHm(readAt)}</b> で記録します
       </p>
 
       {/* Simple map thumbnail (装飾) — 距離/判定は下のカードが正。 */}

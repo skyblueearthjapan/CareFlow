@@ -45,6 +45,10 @@ class MonitorCheckin(BaseModel):
     match_status: str
     reason: str | None = None
     is_override: bool = False
+    # 'qr' / 'manual' / 'signature' (サインで記録した退出)。
+    checkin_source: str | None = None
+    # サインで記録した退出のとき、そのサインの画像の ID (``GET /visit-signatures/{id}/image``)。
+    signature_id: UUID | None = None
 
 
 class MonitorAdjustment(BaseModel):

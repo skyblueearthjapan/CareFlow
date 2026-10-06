@@ -35,6 +35,7 @@ import { useSession } from 'next-auth/react';
 import { ApiError } from '@/lib/api-client';
 import { fetcher } from '@/lib/api/fetcher';
 import { ADHOC_CHECKIN_PATH } from '@/lib/checkin-flush';
+import { postSignatureCheckout, type SignatureCheckoutPayload } from '@/lib/signature-checkout';
 import { buildListUrl, parseWeekEvents } from '@/lib/queries/staff-events';
 import type { StaffRead, StaffShift } from '@/lib/schemas/staff';
 import type { EventRead } from '@/lib/schemas/staff-events';
@@ -58,7 +59,7 @@ export interface LatestCheckin {
   accuracy_m: number | null;
   /** Server receive time (ISO 8601). */
   scanned_at: string;
-  /** 'qr' | 'manual'. */
+  /** 'qr' | 'manual' | 'signature' (サインで記録した退出)。 */
   checkin_source: string;
   reason: string | null;
   is_override: boolean;
@@ -136,6 +137,13 @@ export interface MyVisit {
    */
   actual_arrival_late_received_at?: string | null;
   actual_departure_late_received_at?: string | null;
+  /**
+   * サインで記録 (signature-checkin-design §5-1)。実績の到着・退出の記録の方法
+   * ('qr' / 'manual' / 'signature')。退出がサインなら、そのサインの画像の ID。
+   */
+  actual_arrival_source?: string | null;
+  actual_departure_source?: string | null;
+  departure_signature_id?: string | null;
   /**
    * 同行 (§7.4): この訪問に同行するスタッフ (単数・後方互換)。null = 同行なし。
    * 複数名いる場合は `accompaniments` の先頭 1 名。新規実装は `accompaniments` を
@@ -629,6 +637,32 @@ export function useCheckOut(visitId: string): UseMutationResult<MyVisit, Error, 
         accessToken,
         refreshToken,
       }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ME_KEY });
+    },
+  });
+}
+
+/** サインで退出を記録する変数 (画像 + 時刻・位置・`client_id`)。 */
+export interface CheckOutSignatureVariables {
+  payload: SignatureCheckoutPayload;
+  image: Blob;
+}
+
+/**
+ * POST /api/v1/visits/{id}/checkout-signature — サインで退出を記録する (multipart)。
+ * 失敗の形は `useCheckOut` と同じ (ネットワーク障害 / `ApiError`)。
+ */
+export function useCheckOutSignature(
+  visitId: string,
+): UseMutationResult<MyVisit, Error, CheckOutSignatureVariables> {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  const { accessToken, refreshToken } = authPair(session);
+
+  return useMutation<MyVisit, Error, CheckOutSignatureVariables>({
+    mutationFn: ({ payload, image }) =>
+      postSignatureCheckout<MyVisit>(visitId, payload, image, accessToken, refreshToken),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ME_KEY });
     },

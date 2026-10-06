@@ -115,6 +115,10 @@ export const visitHistoryRowSchema = z.object({
   stay_minutes: z.number().nullable().optional(),
   checkin_source: z.string().nullable().optional(),
   match_status: z.string().nullable().optional(),
+  /** 実績の退出の記録の方法（'qr' / 'manual' / 'signature'）。サインで記録 §5-1。 */
+  departure_source: z.string().nullable().optional(),
+  /** 退出がサインのとき、そのサインの画像の ID（「サインを見る」）。 */
+  signature_id: z.string().nullable().optional(),
   is_substitute: z.boolean().nullable().optional(),
   is_unplanned: z.boolean().nullable().optional(),
   is_cancelled: z.boolean().nullable().optional(),

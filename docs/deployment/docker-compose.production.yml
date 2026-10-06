@@ -80,6 +80,11 @@ services:
       # Vertex AI のサービスアカウント鍵は /opt/carelink/secrets (ホスト側 0400・
       # chown 999:999)。どちらも mount 漏れは 500 になるので写真と同じ扱い。
       - /opt/carelink/data/visit_audio:/opt/carelink/data/visit_audio
+      # サインで記録 (2026-10-07・signature-checkin-design §5-1)。サインの画像は
+      # VISIT_SIGNATURES_DIR に置く (5 年保存・日ごとのバックアップに含める)。
+      # ホスト側は `mkdir -p /opt/carelink/data/visit_signatures && chown -R 999:999
+      # /opt/carelink/data/visit_signatures`。mount 漏れは 500 になるので写真と同じ扱い。
+      - /opt/carelink/data/visit_signatures:/opt/carelink/data/visit_signatures
       - /opt/carelink/secrets:/opt/carelink/secrets:ro
     depends_on:
       postgres:

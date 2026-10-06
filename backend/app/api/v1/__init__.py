@@ -10,6 +10,7 @@ from app.api.v1 import (
     admin_checkin,
     admin_geocoding,
     admin_visit_recordings,
+    admin_visit_signatures,
     allocate,
     audit_logs,
     auth,
@@ -57,6 +58,7 @@ from app.api.v1 import (
     visit_photos,
     visit_recordings,
     visit_review,
+    visit_signatures,
     visits,
 )
 
@@ -70,6 +72,8 @@ api_router.include_router(admin_geocoding.router)
 api_router.include_router(admin_checkin.router)
 # 訪問の音声記録 Phase 1: 保持期間パージ (定期 cron 用 admin endpoint).
 api_router.include_router(admin_visit_recordings.router)
+# サインの画像のパージ (signature-checkin-design §5-1 Q5)。
+api_router.include_router(admin_visit_signatures.router)
 # W41+ patient master Excel import / export. Must be registered BEFORE
 # patients.router so /patients/import-export/* paths are matched before the
 # /patients/{patient_id} catch-all.
@@ -149,6 +153,8 @@ api_router.include_router(visits.router, prefix="/visits", tags=["visits"])
 # prefix "/visit-recordings" を持つのでここでは付けない。/visits/... とは
 # パスが分かれているため visits.router との登録順には依存しない。
 api_router.include_router(visit_recordings.router)
+# サインの画像の取り出し (prefix "/visit-signatures" を持つ)。
+api_router.include_router(visit_signatures.router)
 # 打刻履歴 (visit-history-design-2026-09-30 §3・read-only)。router 自身が prefix
 # "/visit-history" を持つ (visit_recordings と同じ作法)。
 api_router.include_router(visit_history.router)

@@ -33,8 +33,18 @@ const PREFIX = 'checkin-pending:';
  * 圏外で候補一覧を取れないまま担当外の患者宅で読み取った場合、visit がまだ
  * 存在しない = `visit_id` を持たない打刻になるため、他 3 種と違い
  * **`visit_id` は空文字**・**`payload.qr_token` 必須** (トークンが患者特定の唯一の鍵)。
+ *
+ * `departure_signature` は「サインで記録した退出」(signature-checkin-design §5-1)。
+ * 時刻・位置はここ (localStorage) に、**サインの画像は IndexedDB** に `payload.client_id`
+ * をキーに置く (`lib/signature-checkout.ts`)。**`payload.client_id` 必須** (画像の鍵で、
+ * サーバの再送の冪等キー)。
  */
-export type PendingKind = 'arrival' | 'departure' | 'no_show' | 'adhoc_arrival';
+export type PendingKind =
+  | 'arrival'
+  | 'departure'
+  | 'no_show'
+  | 'adhoc_arrival'
+  | 'departure_signature';
 
 /** 再送時にそのまま POST body にする打刻ペイロード。 */
 export interface PendingPayload {
@@ -60,6 +70,16 @@ export interface PendingPayload {
    * 控えに残っていることがあるので、読めるように型だけ残す (再送ではそのまま送る)。
    */
   adjust_reason_code?: string;
+  /**
+   * サインで記録した退出 (`departure_signature`) の冪等キー。IndexedDB のサインの
+   * 画像のキーでもある。
+   */
+  client_id?: string;
+  /**
+   * サインの画像 (data URL)。IndexedDB に置けない端末だけ、ここに入れる
+   * (PO 決定 2026-10-07)。送るときは画像に戻し、本文には載せない。
+   */
+  image_data_url?: string;
 }
 
 /** 未送信の打刻に同梱する「その場で合わせた時刻」。理由は付けない。 */
@@ -135,7 +155,8 @@ function isPendingEntry(value: unknown): value is PendingEntry {
     v.kind !== 'arrival' &&
     v.kind !== 'departure' &&
     v.kind !== 'no_show' &&
-    v.kind !== 'adhoc_arrival'
+    v.kind !== 'adhoc_arrival' &&
+    v.kind !== 'departure_signature'
   ) {
     return false;
   }
@@ -145,6 +166,8 @@ function isPendingEntry(value: unknown): value is PendingEntry {
   // 予定外の到着は qr_token が患者特定の唯一の鍵 — 欠けた entry は再送しても
   // 必ず失敗するので、読み込み時点で捨てる (キューに居座らせない)。
   if (v.kind === 'adhoc_arrival' && typeof payload.qr_token !== 'string') return false;
+  // サインの退出は client_id が画像の鍵 — 欠けた entry は送れないので捨てる。
+  if (v.kind === 'departure_signature' && typeof payload.client_id !== 'string') return false;
   return true;
 }
 

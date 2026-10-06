@@ -9,10 +9,19 @@
  * 送信先はキューの `kind` で決まる:
  *   arrival / departure / no_show … `POST /visits/{id}/{checkin|checkout|no-show}`
  *   adhoc_arrival                 … `POST /visits/adhoc-checkin` (visit をサーバが生成)
+ *   departure_signature           … `POST /visits/{id}/checkout-signature` (multipart・
+ *                                   サインの画像は IndexedDB から読む)
  */
 import { ApiError } from '@/lib/api-client';
 import { fetcher } from '@/lib/api/fetcher';
 import { jstDayTime } from '@/lib/format/actualTime';
+import {
+  dataUrlToBlob,
+  deleteSignatureImage,
+  loadSignatureImage,
+  postSignatureCheckout,
+  signatureCheckoutPath,
+} from '@/lib/signature-checkout';
 import {
   DropPendingError,
   flushPending,
@@ -25,7 +34,7 @@ import {
 /** 予定外訪問の到着打刻 (設計 §4-3)。visit はサーバが生成して返す。 */
 export const ADHOC_CHECKIN_PATH = '/api/v1/visits/adhoc-checkin';
 
-const REST_PATH: Record<Exclude<PendingKind, 'adhoc_arrival'>, string> = {
+const REST_PATH: Record<Exclude<PendingKind, 'adhoc_arrival' | 'departure_signature'>, string> = {
   arrival: 'checkin',
   departure: 'checkout',
   no_show: 'no-show',
@@ -98,6 +107,7 @@ export function dropReasonOf(err: unknown): string {
 /** キュー entry の送信先パス。 */
 function pathOf(entry: PendingEntry): string {
   if (entry.kind === 'adhoc_arrival') return ADHOC_CHECKIN_PATH;
+  if (entry.kind === 'departure_signature') return signatureCheckoutPath(entry.visit_id);
   return `/api/v1/visits/${entry.visit_id}/${REST_PATH[entry.kind]}`;
 }
 
@@ -122,7 +132,9 @@ const ROUTE_MISSING_DETAIL = 'not found';
  * ため、そちらの 404 は「無効な QR」として破棄する従来動作を保つ。
  */
 function isRouteMissing(entry: PendingEntry, err: unknown): boolean {
-  if (entry.kind !== 'adhoc_arrival') return false;
+  // サインの退出 (`/checkout-signature`) も本機能で新設したルート。BE を戻した間は
+  // 404 / 405 になるので、同じく残す (サインの画像ごと失わない)。
+  if (entry.kind !== 'adhoc_arrival' && entry.kind !== 'departure_signature') return false;
   if (!(err instanceof ApiError)) return false;
   if (err.status === 405) return true;
   if (err.status !== 404) return false;
@@ -143,6 +155,9 @@ export async function postPending(
   accessToken: string | null,
   refreshToken: string | null,
 ): Promise<unknown> {
+  if (entry.kind === 'departure_signature') {
+    return postPendingSignature(entry, accessToken, refreshToken);
+  }
   try {
     // 応答 (VisitRead) は「遅れて届いた」の案内に使う ({@link lateSentNotice})。
     return await fetcher(pathOf(entry), {
@@ -156,6 +171,66 @@ export async function postPending(
     // 旧 BE にルートが無いだけ (404/405) — BE 復帰で送れるのでキューに残す。
     if (isRouteMissing(entry, err)) throw err;
     // definitive 4xx → won't succeed on retry; drop it WITH a reason (and the code).
+    throw new DropPendingError(dropReasonOf(err), codeOf(err));
+  }
+}
+
+/** サインの画像が端末に無い (DB は開けたが、その画像が消えていた) ときの破棄理由。 */
+export const DROP_REASON_SIGNATURE_MISSING = 'サインの画像が端末に残っていないため';
+
+/**
+ * サインで記録した退出の再送 (`departure_signature`)。
+ *
+ * 画像は IndexedDB から読む (IndexedDB に置けなかった端末は控えの `image_data_url`)。
+ * **捨てるのは確かなときだけ**:
+ *   - IndexedDB を開けない・読めない → 一時的なことがあるので残す (次回また読む)。
+ *   - 開けたのに画像が無い → 送れないので理由付きで破棄。
+ *   - 送れた → 画像を消す。
+ *   - ネットワーク / 5xx・401 (ログインの切れ)・ルートが無い 404/405 (BE を戻した間)
+ *     → 画像ごと残す。
+ *   - それ以外の 4xx (当日でない・担当外など、サーバの確定回答) → 画像を消して破棄。
+ * 同じ `client_id` の再送はサーバが 1 件に畳む。
+ */
+async function postPendingSignature(
+  entry: PendingEntry,
+  accessToken: string | null,
+  refreshToken: string | null,
+): Promise<unknown> {
+  const p = entry.payload;
+  const clientId = p.client_id ?? '';
+  let image: Blob | null = null;
+  if (p.image_data_url) {
+    image = dataUrlToBlob(p.image_data_url);
+    if (!image) throw new DropPendingError(DROP_REASON_SIGNATURE_MISSING);
+  } else {
+    const loaded = await loadSignatureImage(clientId);
+    if (!loaded.ok) throw new Error('サインの画像を端末から読めませんでした（次回また送ります）');
+    if (!loaded.blob) throw new DropPendingError(DROP_REASON_SIGNATURE_MISSING);
+    image = loaded.blob;
+  }
+  try {
+    const response = await postSignatureCheckout(
+      entry.visit_id,
+      {
+        lat: p.lat,
+        lng: p.lng,
+        accuracy: p.accuracy,
+        at: p.at,
+        reason: p.reason,
+        is_override: p.is_override,
+        client_id: clientId,
+      },
+      image,
+      accessToken,
+      refreshToken,
+    );
+    await deleteSignatureImage(clientId);
+    return response;
+  } catch (err) {
+    if (isServerUnreachable(err)) throw err; // keep queued (network / 5xx)
+    if (err instanceof ApiError && err.status === 401) throw err; // ログインし直せば送れる
+    if (isRouteMissing(entry, err)) throw err; // BE を戻した間だけ
+    await deleteSignatureImage(clientId);
     throw new DropPendingError(dropReasonOf(err), codeOf(err));
   }
 }
@@ -195,7 +270,7 @@ function lateReceivedOf({ entry, response }: SentPending): string | null {
   if (!response || typeof response !== 'object') return null;
   const body = response as Record<string, unknown>;
   const key =
-    entry.kind === 'departure'
+    entry.kind === 'departure' || entry.kind === 'departure_signature'
       ? 'actual_departure_late_received_at'
       : entry.kind === 'no_show'
         ? null

@@ -316,6 +316,7 @@ def _project_checkin(row: VisitCheckin) -> MonitorCheckin:
         match_status=row.match_status,
         reason=row.reason,
         is_override=row.is_override,
+        checkin_source=row.checkin_source,
     )
 
 
@@ -620,6 +621,9 @@ async def build_monitor(
         no_show = actuals.no_show
         arr_p = _project_checkin(arrival) if arrival is not None else None
         dep_p = _project_checkin(departure) if departure is not None else None
+        if dep_p is not None:
+            # サインで記録した退出 (signature-checkin-design §5-1)。
+            dep_p.signature_id = actuals.departure_signature_id
         ns_p = _project_checkin(no_show) if no_show is not None else None
 
         # 実績スタッフ (最新 arrival の打刻者) と代行判定 (§6)。

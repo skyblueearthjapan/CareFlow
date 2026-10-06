@@ -16,16 +16,28 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from pydantic import BaseModel, ConfigDict
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value
 
+from app.core.config import get_settings
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.models.course import Course
 from app.models.patient import Patient
@@ -41,6 +53,7 @@ from app.models.visit import (
     Visit,
 )
 from app.models.visit_checkin import VisitCheckin
+from app.models.visit_signature import VisitSignature
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.visit import VisitCreate, VisitRead, VisitUpdate
 from app.schemas.visit_checkin import (
@@ -85,6 +98,12 @@ from app.services.checkin.notify import (
     notify_checkin_late_arrival,
     notify_checkin_mismatch,
     resolve_checkin_missing,
+)
+from app.services.checkin.signature import (
+    detail_too_large,
+    discard_signature_file,
+    read_signature_image,
+    write_signature_file,
 )
 from app.services.constraint_override_notify import (
     ConstraintWarning,
@@ -492,6 +511,11 @@ def _serialize_visit(
         "actual_departure_late_received_at": departure.late_received_at if departure else None,
         "actual_adjust_allowed": adjust_allowed,
         "actual_manual_arrival_allowed": manual_arrival_allowed,
+        # サインで記録 (signature-checkin-design §5-1)。**手書き dict の罠**: ここに
+        # 足し忘れると VisitRead の default None で潰れる。
+        "actual_arrival_source": actuals.arrival_source if actuals is not None else None,
+        "actual_departure_source": actuals.departure_source if actuals is not None else None,
+        "departure_signature_id": (actuals.departure_signature_id if actuals is not None else None),
         # 同行 (非破壊追加). 一般化 決定#5 で複数名対応。``accompaniments`` が全件
         # (決定的順序)、``accompaniment`` は後方互換の先頭要素。
         # **手書き dict の罠**: week_pinned / is_unplanned と同じ位置づけで、ここに
@@ -1501,6 +1525,172 @@ async def checkout_visit(
         audit_meta=_adjust_audit_meta(request, user),
     )
     await db.commit()
+    return await _checkin_response(db, visit_id, user)
+
+
+# ---------------------------------------------------------------------------
+# サインで記録 (POST /visits/{id}/checkout-signature) — signature-checkin-design §4・§5-1
+# ---------------------------------------------------------------------------
+
+
+def _form_text(value: str | None) -> str | None:
+    """multipart の任意項目を読む (空文字 / 'null' / 'undefined' は未指定)。"""
+    if value is None:
+        return None
+    raw = value.strip()
+    return None if raw in {"", "null", "undefined"} else raw
+
+
+#: ``/checkout-signature`` の Content-Length の上限 = 画像の上限 + この余白 (項目と区切り)。
+SIGNATURE_FORM_SLACK_BYTES = 64 * 1024
+DETAIL_SIGNATURE_FORM = "位置・時刻の値が正しくありません"
+DETAIL_SIGNATURE_CLIENT_ID = "client_id が正しくありません"
+DETAIL_SIGNATURE_CLIENT_ID_CONFLICT = "この記録は別の訪問で使われています"
+
+
+async def _signature_by_client_id(db, client_id: UUID) -> VisitSignature | None:
+    return await db.scalar(select(VisitSignature).where(VisitSignature.client_id == client_id))
+
+
+def _signature_resend_response(existing: VisitSignature, visit_id: UUID, staff_id: UUID) -> None:
+    """同じ ``client_id`` の再送が別の訪問・別の人のものなら 409。"""
+    if existing.visit_id != visit_id or existing.created_by_staff_id != staff_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=DETAIL_SIGNATURE_CLIENT_ID_CONFLICT
+        )
+
+
+@router.post(
+    "/{visit_id}/checkout-signature",
+    response_model=VisitRead,
+    summary="サインで退出を記録 — staff (自分の visit)・multipart (image + 位置・時刻)",
+)
+async def checkout_with_signature(
+    visit_id: UUID,
+    db: DbDep,
+    user: CurrentActiveUser,
+    request: Request,
+    image: Annotated[UploadFile, File(...)],
+    lat: Annotated[str | None, Form()] = None,
+    lng: Annotated[str | None, Form()] = None,
+    accuracy: Annotated[str | None, Form()] = None,
+    at: Annotated[str | None, Form()] = None,
+    reason: Annotated[str | None, Form()] = None,
+    is_override: Annotated[str | None, Form()] = None,
+    client_id: Annotated[str | None, Form()] = None,
+) -> dict:
+    """利用者さんのサインをもらって退出を記録する (QR の退出と同じ扱い)。
+
+    * 判定 (距離・位置の一致・当日か) と通知は ``POST /checkout`` と同じ
+      (``judge_checkin``・``checkin_source='signature'``)。不一致でも記録は断らない。
+    * 担当外 (代行) は QR が必須なので、サインでは記録できない (``/checkout`` の QR なしと
+      同じく 404)。
+    * 画像は PNG / JPEG だけ (先頭のバイトで判定)・``VISIT_SIGNATURE_MAX_BYTES`` まで。
+      ファイルを書いてから DB に入れ、DB に入らなければファイルを消す。
+    * ``client_id`` (端末が発行する UUID) が同じ再送は、新しい記録を作らずに今の
+      訪問を返す (圏外で退避した記録の再送が重なっても 1 件)。
+    * 大きさの上限: リクエスト全体の ``Content-Length`` が ``VISIT_SIGNATURE_MAX_BYTES``
+      + 64 KiB (位置・時刻などの項目と multipart の区切りの分) を超えたら、画像も DB も
+      触らずに 413。**multipart の解析は FastAPI がこの関数より前に済ませる** (1 MiB を
+      超えた分は一時ファイルに落ちるので RAM は膨らまない) ため、ここで止められるのは
+      保存・判定の手前まで。画像そのものの上限は ``read_signature_image`` がもう一度見る。
+    """
+    staff_id = _require_staff_actor(user)
+    max_request = get_settings().visit_signature_max_bytes + SIGNATURE_FORM_SLACK_BYTES
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > max_request:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=detail_too_large(get_settings().visit_signature_max_bytes),
+        )
+    client_uuid: UUID | None = None
+    client_text = _form_text(client_id)
+    if client_text is not None:
+        try:
+            client_uuid = UUID(client_text)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=DETAIL_SIGNATURE_CLIENT_ID,
+            ) from exc
+        existing = await _signature_by_client_id(db, client_uuid)
+        if existing is not None:
+            _signature_resend_response(existing, visit_id, staff_id)
+            return await _checkin_response(db, visit_id, user)
+
+    try:
+        payload = CheckinCreate.model_validate(
+            {
+                "lat": _form_text(lat),
+                "lng": _form_text(lng),
+                "accuracy": _form_text(accuracy),
+                "at": _form_text(at),
+                "reason": _form_text(reason),
+                "is_override": (_form_text(is_override) or "false").lower() in {"true", "1"},
+            }
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=DETAIL_SIGNATURE_FORM
+        ) from exc
+    signature_image = await read_signature_image(image)
+
+    # QR トークンは無い = 担当集合 (コース担当・同行を含む) だけが通る。
+    visit, staff_id = await _load_visit_for_checkin(db, visit_id, user)
+    now = datetime.now(UTC)
+    checkin = await judge_checkin(
+        db, visit, staff_id, payload, "departure", now=now, source="signature"
+    )
+    visit.status = VISIT_STATUS_COMPLETED
+    # 予定外訪問の end_time は退出の読取時刻へ (``/checkout`` と同じ)。
+    if visit.is_unplanned:
+        actual_end = _as_jst_time(checkin_read_at(checkin, visit.visit_date))
+        if actual_end > visit.start_time:
+            visit.end_time = actual_end
+    await notify_checkin_anomalies(db, visit=visit, checkin=checkin)
+    await db.flush()  # checkin.id を確定させる (visit_signatures の FK)。
+
+    signature_id = uuid4()
+    path = write_signature_file(signature_image, signature_id, now)
+    db.add(
+        VisitSignature(
+            id=signature_id,
+            visit_id=visit.id,
+            checkin_id=checkin.id,
+            image_path=str(path),
+            image_mime=signature_image.mime,
+            image_bytes=signature_image.size,
+            sha256=signature_image.sha256,
+            device_time=payload.device_time,
+            created_by_user_id=user.id,
+            created_by_staff_id=staff_id,
+            client_id=client_uuid,
+            created_at=now,
+        )
+    )
+    try:
+        await db.commit()
+    except IntegrityError:
+        # 同じ client_id の再送が並走した (上の事前チェックをすり抜けた)。打刻ごと
+        # 巻き戻し、先に入った方を返す。
+        await db.rollback()
+        discard_signature_file(path)
+        if client_uuid is None:
+            raise
+        # rollback で ``user`` の属性は期限切れになる。応答を組む前に読み直す (触れた
+        # 瞬間の遅延ロードは async では MissingGreenlet で 500 になる)。
+        await db.refresh(user)
+        existing = await _signature_by_client_id(db, client_uuid)
+        if existing is None:  # pragma: no cover - client_id 以外の IntegrityError
+            raise
+        _signature_resend_response(existing, visit_id, staff_id)
+        return await _checkin_response(db, visit_id, user)
+    except BaseException:
+        discard_signature_file(path)
+        raise
     return await _checkin_response(db, visit_id, user)
 
 

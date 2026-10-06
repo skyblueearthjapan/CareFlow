@@ -63,6 +63,10 @@ _LOCATION_REVIEW_STATUSES = frozenset({"review", "mismatch", "no_gps"})
 REMARK_NO_DEPARTURE = "退出なし"
 REMARK_UNPLANNED = "予定外の訪問"
 REMARK_MANUAL = "QRなし"
+#: サインで記録 (signature-checkin-design §5-1 Q2)。退出がサインの訪問の、ボタンで記録した
+#: 到着は「QRなし（サイン）」(ただの QR 忘れの「QRなし」と見分ける)、退出は「サイン」。
+REMARK_MANUAL_SIGNATURE = "QRなし（サイン）"
+REMARK_SIGNATURE = "サイン"
 REMARK_LOCATION = "場所 要確認"
 REMARK_ADJUSTED = "時刻調整"
 REMARK_CANCELLED = "取消済みの予定に記録"
@@ -150,6 +154,10 @@ class HistoryRow:
     stay_minutes: int | None
     checkin_source: str | None
     match_status: str | None
+    #: 実績の退出の記録の方法 ('qr' / 'manual' / 'signature')。退出が無ければ None。
+    departure_source: str | None
+    #: 退出がサインのとき、そのサインの画像の ID (``GET /visit-signatures/{id}/image``)。
+    signature_id: UUID | None
     is_substitute: bool
     is_unplanned: bool
     is_cancelled: bool
@@ -395,8 +403,11 @@ async def load_history_rows(
             remarks.append(REMARK_UNPLANNED)
         if is_substitute:
             remarks.append(substitute_remark(planned_name))
+        signed = actuals.departure_source == "signature"
         if checkin_source == "manual":
-            remarks.append(REMARK_MANUAL)
+            remarks.append(REMARK_MANUAL_SIGNATURE if signed else REMARK_MANUAL)
+        if signed:
+            remarks.append(REMARK_SIGNATURE)
         if match_status in _LOCATION_REVIEW_STATUSES:
             remarks.append(REMARK_LOCATION)
         if actuals.adjustments:
@@ -458,6 +469,8 @@ async def load_history_rows(
                 stay_minutes=stay,
                 checkin_source=checkin_source,
                 match_status=match_status,
+                departure_source=actuals.departure_source,
+                signature_id=actuals.departure_signature_id,
                 is_substitute=is_substitute,
                 is_unplanned=v.is_unplanned,
                 is_cancelled=is_cancelled,
@@ -710,6 +723,8 @@ def reading_notes(rows: Iterable[HistoryRow]) -> list[str]:
         "「退出なし」は到着だけ読み取り、退出の読み取りが無い訪問です。滞在時間は計算していません。",
         "「予定外の訪問」は予定に無い訪問を QR で記録したものです。予定の欄は空です。",
         "「QRなし」は QR を読み取らずに記録したものです。",
+        "「サイン」は、退出のときに利用者さんのサインをもらい、その時刻と位置で記録したものです。"
+        "そのときの到着（ボタンで記録）は「QRなし（サイン）」と出ます。サインの画像は画面の詳細で見られます。",
         "「遅れて届いた」は、電波の届かない場所で読み取り、後から送られた記録です。"
         "時刻は QR を読み取った時刻で、受信した日時を括弧に添えています。",
         f"「到着と退出が近い」は間が {SHORT_STAY_MIN} 分未満のものです。"

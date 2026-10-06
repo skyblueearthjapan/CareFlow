@@ -925,7 +925,7 @@ async def test_report_returns_no_store_a4_html(client, db) -> None:
     assert "<section data-pb" not in html_doc
     # 調整のある行が無ければ、フッターは「読み取った時刻です」の注記。
     footer = flow.split("<footer>")[1].split("</footer>")[0]
-    assert footer.startswith("<span>到着・退出は QR を読み取った時刻です（家に入ってから読むため")
+    assert footer.startswith("<span>到着・退出は QR・サインの時刻です（QR は家に入ってから読むため")
     assert "調整" not in footer
 
     res = await client.get(

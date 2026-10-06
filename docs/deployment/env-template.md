@@ -86,6 +86,14 @@ VISIT_AUDIO_DIR=/opt/carelink/data/visit_audio
 VISIT_AUDIO_MAX_BYTES=20971520
 VISIT_AUDIO_RETENTION_DAYS=90
 
+# --- サインで記録 (signature-checkin-design-2026-10-06 §5-1) ---
+# サインの画像は bind-mount のディレクトリに置く (事前に mkdir + chown 999:999)。
+# 5 年保存 (下限 365・purge がガード)。日ごとのバックアップ (backup-carelink-db.sh) に含まれる。
+VISIT_SIGNATURES_DIR=/opt/carelink/data/visit_signatures
+# 2 MiB。PNG / JPEG だけ受け付ける (1 枚は数十 KB)。
+VISIT_SIGNATURE_MAX_BYTES=2097152
+VISIT_SIGNATURE_RETENTION_DAYS=1825
+
 # --- 音声 AI (Vertex AI 東京リージョン asia-northeast1) ---
 # none = 受領のみ (AI 呼び出しをしない) / vertex = Vertex AI へ送る。
 # **コード既定は none** (置き忘れた環境が黙って外部へ音声を送らないため)。

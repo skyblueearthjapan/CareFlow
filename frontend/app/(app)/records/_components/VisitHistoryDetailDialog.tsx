@@ -18,9 +18,10 @@
  * 入力の高さ 36px）。
  */
 
-import { type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 import { ActualTimeAdjustBox } from '@/components/records/ActualTimeAdjustBox';
+import { SignatureViewer } from '@/components/records/SignatureViewer';
 import { targetFromHistoryRow } from '@/components/records/actualTimeAdjust';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
@@ -111,6 +112,12 @@ export function VisitHistoryDetailDialog({
   const planned = row ? plannedRange(row) : null;
   const plannedMin = row ? plannedMinutes(row) : null;
   const qrLess = row?.checkin_source === 'manual';
+  // サインで記録 (signature-checkin-design §5-1 Q2): 退出 =「サイン」、そのときの
+  // ボタンで記録した到着 =「QRなし（サイン）」。
+  const signed = row?.departure_source === 'signature';
+  // 開いているサインの ID (押した行のもの)。行を切り替えても、別の行の画像を勝手に
+  // 取りに行かない (取りに行くたびに見た記録が残る)。
+  const [viewedSignatureId, setViewedSignatureId] = useState<string | null>(null);
   const arr = row ? sideOf(row, 'arrival') : null;
   const dep = row ? sideOf(row, 'departure') : null;
   const history = (row?.adjustments ?? []).filter(
@@ -146,7 +153,9 @@ export function VisitHistoryDetailDialog({
                     : arr.adjusted
                       ? withLate(`調整後（読取 ${arr.readAt ?? '—'}）`, arr.late)
                       : qrLess
-                        ? '手入力の時刻'
+                        ? signed
+                          ? 'QRなし（サイン）'
+                          : '手入力の時刻'
                         : (arr.late ?? 'QR 読取時刻')
               }
             />
@@ -162,7 +171,7 @@ export function VisitHistoryDetailDialog({
                     ? '手入力（読み取りなし）'
                     : dep.adjusted
                       ? withLate(`調整後（読取 ${dep.readAt ?? '—'}）`, dep.late)
-                      : (dep.late ?? '退出の記録')
+                      : (dep.late ?? (signed ? 'サイン' : '退出の記録'))
               }
             />
             <Tile
@@ -191,9 +200,33 @@ export function VisitHistoryDetailDialog({
             <dd>{row.planned_staff_name ?? '—'}</dd>
             <dt className="text-text-secondary">記録の方法</dt>
             <dd className="flex flex-wrap items-center gap-2">
-              {qrLess ? 'QR なし（手入力）' : row.checkin_source === 'qr' ? 'QR 読み取り' : '—'}
+              {signed
+                ? `到着 ${qrLess ? 'QRなし（サイン）' : 'QR 読み取り'}・退出 サイン`
+                : qrLess
+                  ? 'QR なし（手入力）'
+                  : row.checkin_source === 'qr'
+                    ? 'QR 読み取り'
+                    : '—'}
               {isLocationReview(row.match_status) && <Badge variant="warning">場所 要確認</Badge>}
             </dd>
+            {row.signature_id && (
+              <>
+                <dt className="text-text-secondary">サイン</dt>
+                <dd className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setViewedSignatureId(row.signature_id ?? null)}
+                    className="inline-flex h-9 items-center rounded-md border border-brand-primary px-3 text-sm font-semibold text-brand-primary-hover hover:bg-brand-primary-50"
+                    data-testid="history-detail-view-signature"
+                  >
+                    サインを見る
+                  </button>
+                  <span className="text-xs text-text-secondary">
+                    管理者も職員も、過去の日も見られます。見た記録が残ります。
+                  </span>
+                </dd>
+              </>
+            )}
             {(row.remarks?.length ?? 0) > 0 && (
               <>
                 <dt className="text-text-secondary">備考</dt>
@@ -240,6 +273,20 @@ export function VisitHistoryDetailDialog({
             target={targetFromHistoryRow(row)}
             naReason={notAllowedReason(row, viewerIsAdmin, windowDays)}
             onAdjusted={onAdjusted}
+          />
+          <SignatureViewer
+            signatureId={
+              viewedSignatureId !== null && viewedSignatureId === row.signature_id
+                ? viewedSignatureId
+                : null
+            }
+            onClose={() => setViewedSignatureId(null)}
+            title={`サイン — ${row.patient_name ?? '—'} 様`}
+            meta={
+              dep.at
+                ? `${formatHistoryDateLong(row.visit_date)} 退出 ${dep.at} にサイン`
+                : undefined
+            }
           />
         </DialogContent>
       )}

@@ -1075,6 +1075,16 @@ function VisitBars({
               {adjustNotes.every((n) => n.manual) ? '手入力' : '調整'}
             </span>
           ) : null}
+          {/* サインで記録した退出 (signature-checkin-design §5-1)。注意色にはしない。 */}
+          {visit.departure?.checkin_source === 'signature' ? (
+            <span
+              data-testid={`monitor-bar-signature-${visit.visit_id}`}
+              title="退出は利用者さんのサインで記録しました"
+              className="shrink-0 rounded-full bg-info-bg px-1 py-px font-bold text-info-strong"
+            >
+              サイン
+            </span>
+          ) : null}
           <span className="tnum shrink-0 font-semibold">
             {visit.start_time}–{visit.end_time}
           </span>

@@ -98,7 +98,9 @@ class VisitCheckin(Base, TimestampMixin):
     is_override: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=func.false()
     )
-    # 'qr' | 'manual' (Visit.source と混同しないよう改称).
+    # 'qr' | 'manual' | 'signature' (Visit.source と混同しないよう改称)。
+    # 'signature' = 退出のときに利用者さんのサインをもらって記録した (mig 0090・
+    # 画像は ``visit_signatures``)。
     checkin_source: Mapped[str] = mapped_column(
         String(12), nullable=False, default="qr", server_default=text("'qr'")
     )
@@ -120,7 +122,7 @@ class VisitCheckin(Base, TimestampMixin):
             name="ck_visit_checkins_match_status",
         ),
         CheckConstraint(
-            "checkin_source IN ('qr','manual')",
+            "checkin_source IN ('qr','manual','signature')",
             name="ck_visit_checkins_checkin_source",
         ),
         # 最新採用クエリ (kind ごと scanned_at DESC) に整合する複合 index.

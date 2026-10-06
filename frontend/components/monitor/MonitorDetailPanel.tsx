@@ -30,6 +30,7 @@ import {
 
 import { Button } from '@/components/ui/button';
 import { ActualTimeAdjustBox } from '@/components/records/ActualTimeAdjustBox';
+import { SignatureViewer } from '@/components/records/SignatureViewer';
 import { targetFromMonitorVisit } from '@/components/records/actualTimeAdjust';
 import { VisitRecordingLink } from '@/components/records/VisitRecordingLink';
 import { cn } from '@/lib/utils';
@@ -103,6 +104,8 @@ export function MonitorDetailPanel({
   if (visit) {
     return (
       <VisitDetail
+        // 訪問を選び直したら作り直す (「サインを見る」を開いたまま次の訪問へ持ち越さない)。
+        key={visit.visit_id}
         visit={visit}
         row={row}
         maxInprogressMin={maxInprogressMin}
@@ -255,6 +258,11 @@ function VisitDetail({
   const st = displayStatus(visit);
   const txt = STATUS_JUDGE[st];
   const JudgeIcon = STATUS_ICON[st];
+  // サインで記録 (signature-checkin-design §5-1): 退出 =「サイン」、そのときのボタンで
+  // 記録した到着 =「QRなし（サイン）」。画像は「サインを見る」で (見た記録が残る)。
+  const signatureId = visit.departure?.signature_id ?? null;
+  const signedDeparture = visit.departure?.checkin_source === 'signature';
+  const [viewSignature, setViewSignature] = useState(false);
   // 到着・退出は実績時刻 (調整後。無ければ読取時刻・設計 2026-09-30 §8-1)。
   // 滞在・到着ズレは BE が同じ実績時刻から出している。
   const departureIso = actualDepartureIso(visit);
@@ -539,6 +547,37 @@ function VisitDetail({
           />
           {departureNote?.readAt && <Kv k="退出の読取時刻" v={departureNote.readAt} />}
           {departureLate && <Kv k="退出の記録" v={departureLate} />}
+          {signedDeparture && (
+            <Kv
+              k="記録の方法"
+              v={`到着 ${
+                visit.arrival?.checkin_source === 'qr'
+                  ? 'QR'
+                  : visit.arrival?.checkin_source === 'manual'
+                    ? 'QRなし（サイン）'
+                    : '記録なし'
+              }・退出 サイン`}
+            />
+          )}
+          {signatureId && (
+            <div className="flex items-center justify-between border-b border-border-default/40 py-2 text-[13px] last:border-b-0">
+              <span className="text-text-secondary">サイン</span>
+              <button
+                type="button"
+                onClick={() => setViewSignature(true)}
+                className="inline-flex h-8 items-center rounded-md border border-brand-primary px-2.5 text-[13px] font-semibold text-brand-primary-hover hover:bg-brand-primary-50"
+                data-testid="monitor-view-signature"
+              >
+                サインを見る
+              </button>
+              <SignatureViewer
+                signatureId={viewSignature ? signatureId : null}
+                onClose={() => setViewSignature(false)}
+                title={`サイン — ${visit.patient_name ?? ''} 様`}
+                meta={depart !== '—' ? `退出 ${depart} にサイン` : undefined}
+              />
+            </div>
+          )}
           {/* 未訪問の記録の後に到着が入った訪問: いまの状態ではなく履歴として出す。 */}
           {visit.no_show != null && arrivalIso != null && (
             <Kv

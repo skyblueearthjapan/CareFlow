@@ -48,6 +48,7 @@ from app.models.staff import Staff
 from app.models.user import User
 from app.models.visit import Visit
 from app.models.visit_checkin import VisitCheckin
+from app.models.visit_signature import VisitSignature
 from app.models.visit_time_adjustment import ADJUST_REASON_LABELS, VisitTimeAdjustment
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -174,6 +175,20 @@ class VisitActuals:
     checkin_staff_ids: list[UUID] = field(default_factory=list)
     #: kind を問わない最新 1 件。
     latest_checkin: VisitCheckin | None = None
+    #: 実績の退出がサインで記録されたとき、そのサインの画像の ID (``visit_signatures``)。
+    departure_signature_id: UUID | None = None
+
+    @property
+    def arrival_source(self) -> str | None:
+        """実績の到着の打刻の記録の方法 ('qr' / 'manual')。打刻が無ければ None。"""
+        checkin = self.arrival.checkin if self.arrival is not None else None
+        return checkin.checkin_source if checkin is not None else None
+
+    @property
+    def departure_source(self) -> str | None:
+        """実績の退出の打刻の記録の方法 ('qr' / 'manual' / 'signature')。"""
+        checkin = self.departure.checkin if self.departure is not None else None
+        return checkin.checkin_source if checkin is not None else None
 
     def kind(self, kind: str) -> KindActual | None:
         return self.arrival if kind == "arrival" else self.departure
@@ -263,7 +278,8 @@ def _resolve_kind(
 
 
 async def load_actuals(db: AsyncSession, visit_ids: Collection[UUID]) -> dict[UUID, VisitActuals]:
-    """訪問 ID の集合から実績 (到着・退出・未訪問・打刻者) をまとめて引く (2 クエリ)。
+    """訪問 ID の集合から実績 (到着・退出・未訪問・打刻者) をまとめて引く (2 クエリ。サインの
+    退出があればもう 1 クエリ)。
 
     打刻も効いている調整も無い訪問はキーごと現れない。PostgreSQL 専用の
     ``DISTINCT ON`` は使わず、新しい順に読んで最初に出た行を採る (テストの SQLite
@@ -341,6 +357,25 @@ async def load_actuals(db: AsyncSession, visit_ids: Collection[UUID]) -> dict[UU
         actuals.arrival = arrival
         actuals.departure = departure
         actuals.no_show = no_show
+
+    # サインで記録した退出 (signature-checkin-design §4)。サインの退出が無ければ
+    # クエリを打たない。
+    signature_checkins = {
+        a.departure.checkin.id: a
+        for a in result.values()
+        if a.departure is not None
+        and a.departure.checkin is not None
+        and a.departure.checkin.checkin_source == "signature"
+    }
+    if signature_checkins:
+        for sig_id, checkin_id in (
+            await db.execute(
+                select(VisitSignature.id, VisitSignature.checkin_id).where(
+                    VisitSignature.checkin_id.in_(list(signature_checkins))
+                )
+            )
+        ).all():
+            signature_checkins[checkin_id].departure_signature_id = sig_id
     return result
 
 

@@ -19,6 +19,10 @@ export const monitorCheckinSchema = z.object({
   match_status: z.string(),
   reason: z.string().nullable().optional(),
   is_override: z.boolean().default(false),
+  /** 'qr' / 'manual' / 'signature' (サインで記録した退出・signature-checkin-design §5-1)。 */
+  checkin_source: z.string().nullable().optional(),
+  /** サインで記録した退出のとき、そのサインの画像の ID。 */
+  signature_id: z.string().nullable().optional(),
 });
 
 /**

@@ -78,12 +78,42 @@ vi.mock('@/lib/queries/me', () => ({
   useMyVisit: vi.fn(),
   useCheckIn: vi.fn(),
   useCheckOut: vi.fn(),
+  // サインで記録 (signature-checkin-design §5-1)。
+  useCheckOutSignature: vi.fn(),
   useNoShow: vi.fn(),
   // 実績の時刻を合わせる (設計 2026-09-30)。
   useAdjustActualTime: vi.fn(),
   useResetActualTime: vi.fn(),
   // 打刻ボタンは当日の訪問にだけ出す。fixture の visit_date と同じ日を「今日」にする。
   todayIso: () => '2026-06-30',
+}));
+
+// サインの画面の代わり: 押すと PNG を 1 枚渡す (キャンバスは jsdom で描けない)。
+vi.mock('@/components/mobile/SignaturePad', () => ({
+  SignaturePad: ({
+    onSave,
+    onCancel,
+    statusChip,
+    notice,
+  }: {
+    onSave: (b: Blob) => void;
+    onCancel: () => void;
+    statusChip?: React.ReactNode;
+    notice?: string | null;
+  }) => (
+    <div data-testid="signature-pad">
+      {statusChip}
+      {notice && <p data-testid="signature-notice">{notice}</p>}
+      <button onClick={() => onSave(new Blob(['png'], { type: 'image/png' }))}>__sign__</button>
+      <button onClick={onCancel}>__sign_cancel__</button>
+    </div>
+  ),
+}));
+
+// 「サインを見る」は画像の取得 (監査ログに残る) をするので、ここでは開いたことだけ見る。
+vi.mock('@/components/records/SignatureViewer', () => ({
+  SignatureViewer: ({ signatureId }: { signatureId: string | null }) =>
+    signatureId ? <div data-testid="signature-viewer">{signatureId}</div> : null,
 }));
 
 vi.mock('@/lib/queries/visit-photos', () => ({
@@ -130,10 +160,17 @@ import {
   useMyVisit,
   useCheckIn,
   useCheckOut,
+  useCheckOutSignature,
   useNoShow,
   useAdjustActualTime,
   useResetActualTime,
 } from '@/lib/queries/me';
+import { installFakeIndexedDB } from '@/lib/voice/__tests__/fakeIdb';
+import {
+  SIGNATURE_STORE,
+  loadSignatureImage,
+  resetSignatureDbForTest,
+} from '@/lib/signature-checkout';
 import { listPending } from '@/lib/checkin-queue';
 import { fetcher } from '@/lib/api/fetcher';
 import { useVisitPhotos, useUploadPhoto } from '@/lib/queries/visit-photos';
@@ -192,6 +229,7 @@ let checkInResult: MyVisit & { latest_checkin: LatestCheckin };
 let checkOutResult: MyVisit & { latest_checkin: LatestCheckin };
 const checkInMutate = vi.fn(async () => checkInResult);
 const checkOutMutate = vi.fn(async () => checkOutResult);
+const checkOutSignatureMutate = vi.fn(async (_vars: unknown): Promise<MyVisit> => checkOutResult);
 const noShowMutate = vi.fn(async () => makeVisit());
 const adjustMutate = vi.fn(async (_payload: unknown): Promise<MyVisit> => makeVisit());
 const resetMutate = vi.fn(async (_kind: unknown): Promise<MyVisit> => makeVisit());
@@ -254,6 +292,10 @@ beforeEach(() => {
   });
   asMock(useCheckIn).mockReturnValue({ mutateAsync: checkInMutate, isPending: false });
   asMock(useCheckOut).mockReturnValue({ mutateAsync: checkOutMutate, isPending: false });
+  asMock(useCheckOutSignature).mockReturnValue({
+    mutateAsync: checkOutSignatureMutate,
+    isPending: false,
+  });
   asMock(useNoShow).mockReturnValue({ mutateAsync: noShowMutate, isPending: false });
   asMock(useAdjustActualTime).mockReturnValue({ mutateAsync: adjustMutate, isPending: false });
   asMock(useResetActualTime).mockReturnValue({ mutateAsync: resetMutate, isPending: false });
@@ -1666,5 +1708,208 @@ describe('手で入れた退出を取り消せる (M-2)', () => {
       }),
     );
     expect(screen.getByTestId('actual-time-sheet')).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// サインで記録 (signature-checkin-design-2026-10-06 §5-1)
+// ---------------------------------------------------------------------------
+
+describe('サインで記録 — 記録のしかたを選ぶ', () => {
+  it('到着前は「QRを読む」「サインで記録」を選べる (既定は QR)', () => {
+    render(<MobileVisitDetailPage />);
+    const qr = screen.getByRole('radio', { name: /QRを読む/ });
+    const sign = screen.getByRole('radio', { name: /サインで記録/ });
+    expect(qr).toHaveAttribute('aria-checked', 'true');
+    expect(sign).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByText('QRで到着を記録')).toBeInTheDocument();
+
+    fireEvent.click(sign);
+    expect(sign).toHaveAttribute('aria-checked', 'true');
+    expect(screen.queryByText('QRで到着を記録')).not.toBeInTheDocument();
+    expect(screen.getByText('到着を記録')).toBeInTheDocument();
+    // 選んだ側は訪問ごとに端末に覚える。
+    expect(window.localStorage.getItem('checkin-mode:staff-1:visit-1')).toBe('sign');
+  });
+
+  it('「到着を記録」は QR なしで、押した時刻と位置を記録する', async () => {
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByRole('radio', { name: /サインで記録/ }));
+    fireEvent.click(screen.getByText('到着を記録'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    expect(screen.getByTestId('preview-read-time')).toHaveTextContent('押した時刻');
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() => expect(checkInMutate).toHaveBeenCalledTimes(1));
+    const payload = checkInMutate.mock.calls[0][0] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty('qr_token');
+    expect(payload).toMatchObject({ lat: 35.1, lng: 140.1 });
+  });
+});
+
+describe('サインで記録 — 退出', () => {
+  function inProgress(extra: Partial<MyVisit> = {}) {
+    asMock(useMyVisit).mockReturnValue({
+      data: {
+        ...makeVisit('in_progress'),
+        actual_arrival_at: '2026-06-30T00:32:00Z',
+        actual_arrival_source: 'manual',
+        latest_checkin: { ...makeCheckin('arrival', 'match', 5), checkin_source: 'manual' },
+        ...extra,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+  }
+
+  it('サインして退出 → 画像と位置・client_id を送り、「サインを見る」を出す', async () => {
+    window.localStorage.setItem('checkin-mode:staff-1:visit-1', 'sign');
+    inProgress();
+    checkOutResult = {
+      ...makeVisit('completed'),
+      latest_checkin: { ...makeCheckin('departure', 'match', 5), checkin_source: 'signature' },
+      actual_arrival_at: '2026-06-30T00:32:00Z',
+      actual_departure_at: '2026-06-30T01:08:00Z',
+      actual_arrival_source: 'manual',
+      actual_departure_source: 'signature',
+      departure_signature_id: 'sig-1',
+    };
+    render(<MobileVisitDetailPage />);
+    expect(screen.queryByText('QRで退出を記録')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('サインして退出'));
+    expect(screen.getByTestId('signature-pad')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('__sign__'));
+    await waitFor(() => expect(checkOutSignatureMutate).toHaveBeenCalledTimes(1));
+    const vars = checkOutSignatureMutate.mock.calls[0][0] as {
+      payload: Record<string, unknown>;
+      image: Blob;
+    };
+    expect(vars.image).toBeInstanceOf(Blob);
+    expect(vars.payload).toMatchObject({ lat: 35.1, lng: 140.1 });
+    expect(typeof vars.payload.client_id).toBe('string');
+    expect(typeof vars.payload.at).toBe('string');
+    expect(checkOutMutate).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(screen.queryByTestId('signature-pad')).not.toBeInTheDocument());
+    expect(screen.getByTestId('mobile-detail-method')).toHaveTextContent(
+      '到着 QRなし（サイン） ・ 退出 サイン',
+    );
+    // 見るのは押したときだけ (開くたびに見た記録が残る)。
+    expect(screen.queryByTestId('signature-viewer')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('サインを見る'));
+    expect(screen.getByTestId('signature-viewer')).toHaveTextContent('sig-1');
+  });
+
+  it('QR の訪問でも、その場で「サインで退出を記録」に切り替えられる', () => {
+    inProgress({ actual_arrival_source: 'qr' });
+    render(<MobileVisitDetailPage />);
+    expect(screen.getByText('QRで退出を記録')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('mobile-detail-sign-departure'));
+    expect(screen.getByTestId('signature-pad')).toBeInTheDocument();
+  });
+
+  it('圏外: 記録はキューに、サインの画像は IndexedDB に保存する', async () => {
+    const fake = installFakeIndexedDB();
+    resetSignatureDbForTest();
+    // jsdom には objectURL が無い (この端末で書いた画像の縮小表示に使う)。
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => 'blob:signature'),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    window.localStorage.setItem('checkin-mode:staff-1:visit-1', 'sign');
+    inProgress();
+    checkOutSignatureMutate.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('サインして退出'));
+    fireEvent.click(screen.getByText('__sign__'));
+    await waitFor(() => expect(asMock(toast.warning)).toHaveBeenCalled());
+    const pending = listPending('staff-1');
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ visit_id: 'visit-1', kind: 'departure_signature' });
+    const clientId = pending[0]!.payload.client_id!;
+    expect(clientId).toBeTruthy();
+    expect(fake.stores.get(SIGNATURE_STORE)?.has(clientId)).toBe(true);
+    const loaded = await loadSignatureImage(clientId);
+    expect(loaded.ok && loaded.blob).toBeInstanceOf(Blob);
+    expect(pending[0]!.payload.image_data_url).toBeUndefined();
+    expect(screen.getByText('端末に保存（未送信）')).toBeInTheDocument();
+    resetSignatureDbForTest();
+  });
+
+  it('圏外で IndexedDB に置けないときは、画像を控えに入れてサインのまま退避する (QRなしにしない)', async () => {
+    const fake = installFakeIndexedDB();
+    fake.state.failWrites = true;
+    resetSignatureDbForTest();
+    window.localStorage.setItem('checkin-mode:staff-1:visit-1', 'sign');
+    inProgress();
+    checkOutSignatureMutate.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('サインして退出'));
+    fireEvent.click(screen.getByText('__sign__'));
+    await waitFor(() => expect(asMock(toast.warning)).toHaveBeenCalled());
+    const pending = listPending('staff-1');
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.kind).toBe('departure_signature');
+    expect(pending[0]!.payload.client_id).toBeTruthy();
+    expect(pending[0]!.payload.image_data_url).toMatch(/^data:image\/png;base64,/);
+    expect(screen.queryByTestId('signature-pad')).not.toBeInTheDocument();
+    resetSignatureDbForTest();
+  });
+
+  it('どちらにも置けないときはサインの画面を閉じず、もう一度押すと同じ記録で退避する', async () => {
+    const fake = installFakeIndexedDB();
+    fake.state.failWrites = true;
+    resetSignatureDbForTest();
+    window.localStorage.setItem('checkin-mode:staff-1:visit-1', 'sign');
+    inProgress();
+    checkOutSignatureMutate.mockRejectedValue(new TypeError('Failed to fetch'));
+    const realSetItem = Storage.prototype.setItem;
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+      this: Storage,
+      key: string,
+      value: string,
+    ) {
+      if (key.startsWith('checkin-pending:')) throw new Error('QuotaExceededError');
+      return realSetItem.call(this, key, value);
+    });
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('サインして退出'));
+    fireEvent.click(screen.getByText('__sign__'));
+    await waitFor(() =>
+      expect(screen.getByTestId('signature-notice')).toHaveTextContent('電波が戻ってから送ります'),
+    );
+    expect(screen.getByTestId('signature-pad')).toBeInTheDocument();
+    expect(listPending('staff-1')).toHaveLength(0);
+    const firstVars = checkOutSignatureMutate.mock.calls[0]![0] as {
+      payload: { client_id: string; at: string };
+    };
+
+    // 保存できるようになってから、もう一度押す → 同じ時刻・同じ client_id で退避する。
+    setItem.mockRestore();
+    fireEvent.click(screen.getByText('__sign__'));
+    await waitFor(() => expect(listPending('staff-1')).toHaveLength(1));
+    const entry = listPending('staff-1')[0]!;
+    expect(entry.kind).toBe('departure_signature');
+    expect(entry.payload.client_id).toBe(firstVars.payload.client_id);
+    expect(entry.payload.at).toBe(firstVars.payload.at);
+    checkOutSignatureMutate.mockImplementation(async () => checkOutResult);
+    resetSignatureDbForTest();
+  });
+
+  it('4xx (当日でない等) は退避せず、サーバの文言を出す', async () => {
+    window.localStorage.setItem('checkin-mode:staff-1:visit-1', 'sign');
+    inProgress();
+    checkOutSignatureMutate.mockRejectedValueOnce(
+      new ApiError('409', 409, { detail: 'この訪問は今日の予定ではないため記録できません' }),
+    );
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('サインして退出'));
+    fireEvent.click(screen.getByText('__sign__'));
+    await waitFor(() => expect(asMock(toast.error)).toHaveBeenCalled());
+    expect(asMock(toast.error).mock.calls[0][1]).toMatchObject({
+      description: 'この訪問は今日の予定ではないため記録できません',
+    });
+    expect(listPending('staff-1')).toHaveLength(0);
   });
 });

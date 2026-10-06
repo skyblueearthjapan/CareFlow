@@ -20,6 +20,13 @@
 #     (transcript + summary) lives in the DB dump above. Copying it here would
 #     also keep audio alive past its retention date, which defeats the purge.
 #     See docs/plans/visit-voice-record-design-2026-09-17.md 11-3.
+#   - Signature images (/opt/carelink/data/visit_signatures, "サインで記録") ARE
+#     backed up: they are evidence (PO decision 2026-10-06). rsync'd into
+#     'visit_signatures/' under BACKUP_DIR WITHOUT --delete, so a lost or emptied
+#     source directory can never wipe the backup copy. Copies older than
+#     SIGNATURE_KEEP_DAYS (5 years + margin, matching the
+#     VISIT_SIGNATURE_RETENTION_DAYS purge) are pruned from the backup instead.
+#     See docs/plans/signature-checkin-design-2026-10-06.md 5-1.
 #   - All output appended to /var/log/carelink/backup.log.
 #
 # Exit codes:
@@ -40,6 +47,10 @@ MIN_SIZE_BYTES=10240   # 10 KB
 RETENTION_DAYS=7
 PHOTO_SRC="/opt/carelink/data/visit_photos"
 PHOTO_DEST="${BACKUP_DIR}/visit_photos"
+SIGNATURE_SRC="/opt/carelink/data/visit_signatures"
+SIGNATURE_DEST="${BACKUP_DIR}/visit_signatures"
+# VISIT_SIGNATURE_RETENTION_DAYS (1825) + 5 days margin.
+SIGNATURE_KEEP_DAYS=1830
 NOTIFY_SCRIPT="/opt/carelink/docs/deployment/scripts/notify-failure.sh"
 
 mkdir -p "${BACKUP_DIR}" "${LOG_DIR}"
@@ -92,6 +103,29 @@ if [ -d "${PHOTO_SRC}" ]; then
   fi
 else
   log "INFO photo source ${PHOTO_SRC} not present; skipping"
+fi
+
+# --- 3b) Signature images sync (evidence; no --delete) --------------------
+if [ -d "${SIGNATURE_SRC}" ]; then
+  mkdir -p "${SIGNATURE_DEST}"
+  if command -v rsync >/dev/null 2>&1; then
+    # .part files are in-flight uploads; never copy them.
+    if rsync -a --exclude='*.part' "${SIGNATURE_SRC}/" "${SIGNATURE_DEST}/" 2>>"${LOG_FILE}"; then
+      sig_count=$(find "${SIGNATURE_DEST}" -type f 2>/dev/null | wc -l)
+      log "OK signature rsync files=${sig_count}"
+    else
+      log "WARN signature rsync exited non-zero (continuing; DB backup OK)"
+      if [ -x "${NOTIFY_SCRIPT}" ]; then
+        "${NOTIFY_SCRIPT}" "carelink backup signature rsync failed at ${stamp}" >> "${LOG_FILE}" 2>&1 || true
+      fi
+    fi
+    sig_pruned=$(find "${SIGNATURE_DEST}" -type f -mtime "+${SIGNATURE_KEEP_DAYS}" -print -delete 2>/dev/null | wc -l)
+    log "OK signature retention deleted=${sig_pruned} files older than ${SIGNATURE_KEEP_DAYS}d"
+  else
+    log "WARN rsync not installed; skipping signature sync"
+  fi
+else
+  log "INFO signature source ${SIGNATURE_SRC} not present; skipping"
 fi
 
 # --- 4) Retention ---------------------------------------------------------

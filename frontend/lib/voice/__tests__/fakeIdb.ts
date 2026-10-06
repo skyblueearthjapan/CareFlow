@@ -93,6 +93,7 @@ export function installFakeIndexedDB(options: FakeIdbOptions = {}): FakeIdb {
             return {};
           },
           getAll: () => request(() => Array.from(store.values())),
+          get: (key: IDBValidKey) => request(() => store.get(String(key))),
           delete: (key: IDBValidKey) =>
             request(() => {
               store.delete(String(key));

@@ -71,6 +71,10 @@ class VisitHistoryItem(BaseModel):
     # 最新の到着の 'qr' / 'manual' と位置判定。到着が無ければ null。
     checkin_source: str | None = None
     match_status: str | None = None
+    # 実績の退出の記録の方法 ('qr' / 'manual' / 'signature')。退出が無ければ null。
+    departure_source: str | None = None
+    # 退出がサインのとき、そのサインの画像の ID (``GET /visit-signatures/{id}/image``)。
+    signature_id: UUID | None = None
     is_substitute: bool
     is_unplanned: bool
     # 取消または削除済み (打刻があるので載せている行)。

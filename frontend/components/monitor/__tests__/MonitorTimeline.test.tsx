@@ -1089,4 +1089,30 @@ describe('MonitorTimeline — 打刻の実時刻の併記 (お客様要望 2026-
     expect(parseFloat(bar.style.width)).toBeCloseTo(pct('13:40') - pct('12:56'), 4);
     expect(screen.queryByTestId(`monitor-bar-adjusted-${v.visit_id}`)).not.toBeInTheDocument();
   });
+
+  // サインで記録 (signature-checkin-design-2026-10-06 §5-1): 退出がサインなら「サイン」の印。
+  it('退出がサインの訪問には「サイン」の印を付ける', () => {
+    const signed = adjustedVisit({
+      arrival_adjusted: false,
+      adjustments: [],
+      departure: {
+        kind: 'departure',
+        scanned_at: ADJ_DEPARTURE,
+        match_status: 'match',
+        is_override: false,
+        checkin_source: 'signature',
+        signature_id: 'sig-1',
+      },
+    });
+    renderVisit(signed);
+    expect(screen.getByTestId(`monitor-bar-signature-${signed.visit_id}`).textContent).toBe(
+      'サイン',
+    );
+  });
+
+  it('QR の退出には「サイン」の印を付けない', () => {
+    const v = adjustedVisit();
+    renderVisit(v);
+    expect(screen.queryByTestId(`monitor-bar-signature-${v.visit_id}`)).not.toBeInTheDocument();
+  });
 });

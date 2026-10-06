@@ -130,6 +130,26 @@ chown -R 1000:1000 /opt/carelink/data/visit_photos   # backend container の UID
 
 DB 上の `visit_photos.path` カラムと整合していないと参照エラーになるため、原則 **DB と photo は同一時刻 backup から同時にリストア** すること。
 
+### Step 9: サインの画像 (サインで記録) を併せて復元する場合
+
+`backup-carelink-db.sh` は `/opt/carelink/backups/visit_signatures/` にサインの画像を rsync で写している（2026-10-07〜・**`--delete` なし** = 元のフォルダが消えても写しは消えない。写しは 1830 日を過ぎたものだけ消す）。
+
+```bash
+mv /opt/carelink/data/visit_signatures /opt/carelink/data/visit_signatures.bak.$(date +%Y%m%d-%H%M)
+rsync -a /opt/carelink/backups/visit_signatures/ /opt/carelink/data/visit_signatures/
+chown -R 999:999 /opt/carelink/data/visit_signatures   # backend container (app uid=999)
+```
+
+DB の `visit_signatures.image_path` と同じ時点のものを戻すこと（写真と同じ）。写しには保持期間で DB 側が消した（`image_deleted_at` のある）画像が残っていることがあるが、DB から参照されないので害は無い。
+
+**初回の設定（VPS・リポジトリの外）**: 日次 cron（`/etc/cron.d/carelink-backup`）は `/opt/carelink/docs/deployment/scripts/backup-carelink-db.sh` を直接呼ぶので、`git pull` でスクリプトが更新されれば追加の設定は不要。デプロイ前に次だけ行う:
+
+```bash
+mkdir -p /opt/carelink/data/visit_signatures && chown -R 999:999 /opt/carelink/data/visit_signatures
+```
+
+翌日 `/var/log/carelink/backup.log` に `OK signature rsync files=N` が出ていることを確認する。
+
 ## 失敗時のフォールバック
 
 - Step 5 でリストアが ERROR で止まった場合:
