@@ -1,7 +1,9 @@
 # CareLink Backup / Restore Runbook (Wave 5-B)
 
 対象環境: Hostinger Malaysia VPS (`72.60.211.213`) / Postgres 16 (`carelink-postgres` container)
-バックアップ作成元: `docs/deployment/scripts/backup-carelink-db.sh` (cron 日次 02:30)
+バックアップ作成元: `docs/deployment/scripts/backup-carelink-db.sh` (cron 日次 02:30 JST)
+
+> **2026-10-07 判明・登録**: 本番に日次 cron が**登録されていなかった**（それまでのバックアップはデプロイ前の手動 pg_dump だけ）。`/etc/cron.d/carelink-backup` を作成: `30 17 * * * root bash /opt/carelink/docs/deployment/scripts/backup-carelink-db.sh`（**サーバーは UTC** なので 17:30 UTC = 02:30 JST。スクリプトに実行権が無いので `bash` で呼ぶ）。`/var/log/carelink/` も作成。初回の手動実行で `daily-20261006-2034.sql.gz`（3.8 MB・gzip 検証済み）・写真・サイン画像の写しを確認。
 バックアップ保管場所: `/opt/carelink/backups/daily-YYYYMMDD-HHMM.sql.gz` (7 日保持)
 
 ## RTO / RPO
