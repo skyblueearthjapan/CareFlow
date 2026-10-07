@@ -129,13 +129,17 @@
 
   /* === Chart (グラフの系列色・ダッシュボードのスタッフ別の実績) ===
    * 系列色は状態色 (success/warning/error) と混ぜない。緑は「良い」と読まれるので使わない。
-   * 検証: dataviz validate_palette.js (light・白地) — 青/橙/紫 と 青/赤紫 は全項目 PASS。
-   * 中立色 (チーム平均・合間) は白地で 3:1 以上。 */
-  --chart-self: #2a78d6; /* この人・訪問 (主役) */
-  --chart-self-soft: #cde2fb;
-  --chart-travel: #eb6834; /* 移動 */
+   * 2026-10-07 らく助に合わせる (PO): 主役 = らく助ピンク (#e15a7f を白地で見やすく濃く・
+   * ボタンの操作色と少し濃さを変える)、移動 = らく助のアクセント橙 #d97706、実績 (QR) = 青
+   * (主役のピンクと紛れないよう入れ替え)。会議・研修は紫のまま (緑は合間の灰と隣で見分けにくい)。
+   * 検証: dataviz validate_palette.js (light・白地) — ピンク/橙/紫 (隣り合う組) と ピンク/青 は
+   * 色覚 (P・D 型)・ふつうの見え方・コントラスト 3:1 すべて PASS。中立色 (チーム平均・合間) は白地で 3:1 以上。
+   * 見本: docs/mockups/dashboard-chart-colors-rakusuke.html */
+  --chart-self: #d6457a; /* この人・訪問 (主役・らく助ピンク) */
+  --chart-self-soft: #f9d5e1;
+  --chart-travel: #d97706; /* 移動 (らく助のアクセント橙) */
   --chart-meeting: #4a3aa7; /* 会議・研修など */
-  --chart-actual: #c9457a; /* 実績 (QR) */
+  --chart-actual: #2a78d6; /* 実績 (QR) */
   --chart-team: #6b665f; /* チーム平均 (破線・文脈の線) 5.7:1 */
   --chart-idle: #8a847d; /* 訪問の合間 (中立) 3.7:1 */
   --chart-grid: #efece7;
@@ -166,15 +170,15 @@
 
 /* === Chart (暗い画面) ===
  * らく助は今は明るい画面だけ。暗い画面を入れるときに data-theme='dark' で効く値を先に置く。
- * 検証: validate_palette.js --mode dark (地 #1a1a19) — 青/橙/紫 (隣り合う組) と 青/赤紫 は PASS。
- * 暗い紫は青と色覚の型によって近く見えるため、1 日の内訳の帯では青と隣り合わせない
- * (訪問 → 移動 → 会議・研修など の順)。中立色は暗い地で 5:1 以上。 */
+ * 検証: validate_palette.js --mode dark (地 #1a1a19) — ピンク/橙/紫 (隣り合う組) と ピンク/青 は PASS
+ * (2026-10-07 らく助に合わせた値)。1 日の内訳の帯は 訪問 → 移動 → 会議・研修など → 合間 の順のまま。
+ * 中立色は暗い地で 5:1 以上。 */
 [data-theme='dark'] {
-  --chart-self: #3987e5;
-  --chart-self-soft: #184f95;
-  --chart-travel: #d95926;
+  --chart-self: #e2618c;
+  --chart-self-soft: #6b2440;
+  --chart-travel: #c97616;
   --chart-meeting: #9085e9;
-  --chart-actual: #d55181;
+  --chart-actual: #3987e5;
   --chart-team: #a8a29e;
   --chart-idle: #8f8a83;
   --chart-grid: #2c2c2a;

@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>グラフの色 らく助案</title>
+<style>
+  :root {
+    --bg: #faf7f2; --card: #ffffff; --ink: #1c1917; --ink2: #57534e; --line: #e7e2d8;
+    --brand: #e15a7f;
+    /* 今 */
+    --now-self: #2a78d6; --now-actual: #c9457a; --now-travel: #eb6834; --now-meeting: #4a3aa7; --now-idle: #8a847d; --now-team: #6b665f;
+    /* らく助案 (検証済み・明るい画面) */
+    --new-self: #d6457a; --new-actual: #2a78d6; --new-travel: #d97706; --new-meeting: #4a3aa7; --new-idle: #8a847d; --new-team: #6b665f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Noto Sans JP", "Yu Gothic", "Meiryo", sans-serif; font-size: 14px; line-height: 1.5; }
+  main { max-width: 1040px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0 0 4px; color: #b8325a; }
+  .sub { color: var(--ink2); font-size: 13px; margin-bottom: 16px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 720px) { .cols { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .card h2 { font-size: 15px; margin: 0 0 10px; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px; margin-left: 6px; vertical-align: 2px; }
+  .tag.now { background: #eef0f3; color: #475569; } .tag.new { background: #ffd6e0; color: #b8325a; }
+  h3 { font-size: 13px; margin: 14px 0 6px; color: var(--ink2); font-weight: 600; }
+  .mini { display: flex; align-items: flex-end; gap: 6px; height: 96px; border-bottom: 1px solid #a8a29e; }
+  .mini div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; }
+  .mini span { font-size: 10.5px; color: var(--ink2); }
+  .mini i { display: block; width: 100%; max-width: 22px; border-radius: 4px 4px 0 0; }
+  .wk { display: flex; gap: 6px; font-size: 10.5px; color: var(--ink2); } .wk span { flex: 1; text-align: center; }
+  .stack { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+  .stack b { width: 70px; font-size: 12px; color: var(--ink2); font-weight: 500; }
+  .bar { flex: 1; display: flex; gap: 2px; height: 16px; }
+  .bar i { display: block; height: 100%; } .bar i:first-child { border-radius: 4px 0 0 4px; } .bar i:last-child { border-radius: 0 4px 4px 0; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink2); margin-top: 6px; }
+  .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; background: var(--c); }
+  .legend .dash::before { height: 0; border-top: 2px dashed var(--c); background: none; width: 14px; vertical-align: 3px; }
+  svg { width: 100%; height: 130px; display: block; }
+  table.pal { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 4px; }
+  table.pal th, table.pal td { border-bottom: 1px solid var(--line); padding: 6px 6px; text-align: left; vertical-align: middle; }
+  table.pal th { color: var(--ink2); font-weight: 600; font-size: 12px; }
+  .sw { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-right: 6px; }
+  .note { font-size: 12.5px; color: var(--ink2); margin-top: 8px; }
+  .note li { margin: 3px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ダッシュボードのグラフの色 — らく助に合わせる案</h1>
+  <div class="sub">対象: スタッフ別の実績（職員のカードの小さな棒・1 日の内訳の積み上げの棒・週ごとの推移の折れ線）。見本の数字は仮のものです。</div>
+
+  <div class="cols">
+    <section class="card" id="now"><h2>今の色<span class="tag now">いま</span></h2></section>
+    <section class="card" id="new"><h2>らく助案<span class="tag new">案</span></h2></section>
+  </div>
+
+  <section class="card" style="margin-top:14px">
+    <h2>色の一覧（明るい画面・色の見分けやすさを検証済み）</h2>
+    <table class="pal">
+      <tr><th>何の色</th><th>今</th><th>らく助案</th><th>暗い画面用（先に用意）</th><th>考え方</th></tr>
+      <tr><td>主役（この人・訪問）</td><td><i class="sw" style="background:#2a78d6"></i>#2a78d6 青</td><td><i class="sw" style="background:#d6457a"></i><b>#d6457a ピンク</b></td><td><i class="sw" style="background:#e2618c"></i>#e2618c</td><td>らく助ピンク #e15a7f を白地で見やすく少し濃く</td></tr>
+      <tr><td>実績（QR）</td><td><i class="sw" style="background:#c9457a"></i>#c9457a 赤紫</td><td><i class="sw" style="background:#2a78d6"></i><b>#2a78d6 青</b></td><td><i class="sw" style="background:#3987e5"></i>#3987e5</td><td>主役と入れ替え（ピンク同士で紛れないように）</td></tr>
+      <tr><td>移動</td><td><i class="sw" style="background:#eb6834"></i>#eb6834 橙</td><td><i class="sw" style="background:#d97706"></i><b>#d97706 橙</b></td><td><i class="sw" style="background:#c97616"></i>#c97616</td><td>らく助のアクセント色そのまま</td></tr>
+      <tr><td>会議・研修など</td><td><i class="sw" style="background:#4a3aa7"></i>#4a3aa7 紫</td><td><i class="sw" style="background:#4a3aa7"></i>#4a3aa7 紫（そのまま）</td><td><i class="sw" style="background:#9085e9"></i>#9085e9</td><td>緑も試したが「合間の灰」と隣で見分けにくく不採用</td></tr>
+      <tr><td>訪問の合間</td><td><i class="sw" style="background:#8a847d"></i>#8a847d 灰</td><td><i class="sw" style="background:#8a847d"></i>#8a847d 灰（そのまま）</td><td><i class="sw" style="background:#8f8a83"></i>#8f8a83</td><td>中立の色（目立たせない）</td></tr>
+      <tr><td>チーム平均（破線）</td><td><i class="sw" style="background:#6b665f"></i>#6b665f 濃い灰</td><td><i class="sw" style="background:#6b665f"></i>#6b665f（そのまま）</td><td><i class="sw" style="background:#a8a29e"></i>#a8a29e</td><td>文脈の線</td></tr>
+    </table>
+    <ul class="note">
+      <li>検証: 明るい画面（白地）で、隣り合う色が色覚の違い（P 型・D 型）でも見分けられる差・ふつうの見え方での差・白地とのコントラスト 3:1 以上を、計算で確かめた（目分量ではない）。</li>
+      <li>状態の色（赤＝要対応 など）はグラフに使わない。ボタンなどのピンク #e15a7f とは少し濃さを変えて、操作できる部分と見分ける。</li>
+      <li>直すのは <code>styles/tokens.css</code> の <code>--chart-*</code> の値だけ（グラフの部品はこの値を読んでいる）。上のダッシュボードの推移（合計・完了・未割当）は別の色の決め方なので、合わせるなら別に相談。</li>
+    </ul>
+  </section>
+</main>
+<script>
+  const weeks = ['9/7', '9/14', '9/21', '9/28', '10/5'];
+  const perDay = [4.2, 5.1, 4.6, 5.4, 5.0];
+  const parts = [['訪問', 210, 'self'], ['移動', 95, 'travel'], ['会議・研修など', 30, 'meeting'], ['訪問の合間', 70, 'idle']];
+  const team = [180, 100, 25, 90];
+  const self = [4.6, 5.0, 4.8, 5.3, 5.1], actual = [4.1, 4.7, 4.5, 5.0, 4.9], tm = [4.4, 4.5, 4.6, 4.7, 4.6];
+  function draw(id, p) {
+    const c = k => `var(--${p}-${k})`;
+    const el = document.getElementById(id);
+    const max = Math.max(...perDay);
+    let h = `<h3>週ごとの 1 日あたり件数（職員のカード）</h3><div class="mini">` +
+      perDay.map(v => `<div><span>${v.toFixed(1)}</span><i style="height:${v / max * 64}px;background:${c('self')}"></i></div>`).join('') +
+      `</div><div class="wk">${weeks.map(w => `<span>${w}</span>`).join('')}</div>`;
+    const tot = Math.max(parts.reduce((a, x) => a + x[1], 0), team.reduce((a, b) => a + b, 0));
+    const bar = vals => `<div class="bar">${vals.map((v, i) => `<i title="${parts[i][0]}" style="width:${v / tot * 100}%;background:${c(parts[i][2])}"></i>`).join('')}</div>`;
+    h += `<h3>1 日の内訳（職員の詳しい画面）</h3>` +
+      `<div class="stack"><b>この人</b>${bar(parts.map(x => x[1]))}</div>` +
+      `<div class="stack"><b>チーム平均</b>${bar(team)}</div>` +
+      `<div class="legend">${parts.map(x => `<span style="--c:${c(x[2])}">${x[0]}</span>`).join('')}</div>`;
+    const W = 460, H = 130, x = i => 30 + i * (W - 60) / 4, y = v => H - 18 - (v - 3.8) / 1.8 * (H - 36);
+    const path = (arr) => arr.map((v, i) => `${i ? 'L' : 'M'}${x(i)},${y(v)}`).join(' ');
+    h += `<h3>週ごとの推移（折れ線）</h3><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="週ごとの推移の見本">` +
+      [4, 4.5, 5, 5.5].map(v => `<line x1="24" x2="${W - 10}" y1="${y(v)}" y2="${y(v)}" stroke="#efece7"/>`).join('') +
+      `<path d="${path(tm)}" fill="none" stroke="${c('team')}" stroke-width="2" stroke-dasharray="5 4"/>` +
+      `<path d="${path(actual)}" fill="none" stroke="${c('actual')}" stroke-width="2"/>` +
+      `<path d="${path(self)}" fill="none" stroke="${c('self')}" stroke-width="2"/>` +
+      self.map((v, i) => `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="${c('self')}" stroke="#fff" stroke-width="2"/>`).join('') +
+      weeks.map((w, i) => `<text x="${x(i)}" y="${H - 3}" font-size="10.5" text-anchor="middle" fill="#57534e">${w}</text>`).join('') +
+      `</svg><div class="legend"><span style="--c:${c('self')}">この人</span><span style="--c:${c('actual')}">実績（QR）</span><span class="dash" style="--c:${c('team')}">チーム平均</span></div>`;
+    el.insertAdjacentHTML('beforeend', h);
+  }
+  draw('now', 'now'); draw('new', 'new');
+</script>
+</body>
+</html>
