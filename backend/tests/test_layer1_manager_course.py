@@ -256,3 +256,71 @@ async def test_expand_week_also_creates_m_courses(db) -> None:
     for c in courses:
         assert c.course_status == COURSE_STATUS_COURSE_FIXED
         assert c.code == "M"
+
+
+# ---------------------------------------------------------------------------
+# 6) 同じ拠点・曜日に同じ code のコースが「案」(proposed) で既にある → 作らない
+#    (2026-10-09 本番: 週のコピーで M2 template から code='M' を作り、
+#     proposed の M を course_fixed に昇格した瞬間に UNIQUE 違反 500)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_skips_when_same_code_course_exists_even_if_proposed(db) -> None:
+    """M と M2 (どちらも code='M') の template がある拠点で、M の proposed コースが
+    既にある曜日には M2 から code='M' のコースを作らない (昇格時の重複を防ぐ)."""
+    from app.models.course import COURSE_STATUS_PROPOSED
+
+    office = await _make_office(db)
+    await _make_manager(db, office=office, code="MGR-01")
+    await _make_manager(db, office=office, code="MGR-02")
+    m = await _make_m_template(db, office=office, label="M")
+    m2 = await _make_m_template(db, office=office, label="M2")
+
+    # 週のコピーと同じく、M template の月曜コースが proposed で先にある。
+    db.add(
+        Course(
+            iso_year=TEST_ISO_YEAR,
+            iso_week=TEST_ISO_WEEK,
+            weekday=0,
+            code="M",
+            course_status=COURSE_STATUS_PROPOSED,
+            template_id=m.id,
+            office_id=office.id,
+        )
+    )
+    await db.commit()
+
+    await _ensure_manager_courses_for_week(db, TEST_ISO_YEAR, TEST_ISO_WEEK)
+    await db.commit()
+
+    monday_m = (
+        await db.scalars(
+            select(Course).where(
+                Course.office_id == office.id,
+                Course.iso_year == TEST_ISO_YEAR,
+                Course.iso_week == TEST_ISO_WEEK,
+                Course.weekday == 0,
+                Course.code == "M",
+                Course.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    assert len(monday_m) == 1  # 月曜の code='M' は proposed の 1 件だけ
+    assert monday_m[0].template_id == m.id
+    # M2 から作るコースも、同じ code の M が無い曜日 (火〜土) には作らない
+    # (code が同じなので 1 拠点・1 曜日に 1 件まで)。
+    m2_courses = await _count_m_courses(
+        db, template_id=m2.id, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK
+    )
+    m_courses = await _count_m_courses(
+        db, template_id=m.id, iso_year=TEST_ISO_YEAR, iso_week=TEST_ISO_WEEK
+    )
+    days = sorted(c.weekday for c in m_courses + m2_courses)
+    assert days == [0, 1, 2, 3, 4, 5]  # 1 曜日 1 件
+    assert m2_courses == []  # M を先に処理するので、火〜土も M template のコース
+
+    # 本番の 500 はここで起きた: proposed を course_fixed に昇格しても重複しない。
+    monday_m[0].course_status = COURSE_STATUS_COURSE_FIXED
+    await db.flush()
+    await db.commit()

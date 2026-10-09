@@ -441,11 +441,14 @@ async def _ensure_manager_courses_for_week(
         # 3. 当該 office の M 系 template を取得
         m_templates = list(
             await db.scalars(
-                select(CourseTemplate).where(
+                select(CourseTemplate)
+                .where(
                     CourseTemplate.office_id == office.id,
                     CourseTemplate.label.startswith("M"),
                     CourseTemplate.deleted_at.is_(None),
                 )
+                # M を先に (M2 以降も code='M' に丸まるので、その曜日のコースは M が持つ)。
+                .order_by(CourseTemplate.label)
             )
         )
         if not m_templates:
@@ -470,6 +473,22 @@ async def _ensure_manager_courses_for_week(
                     )
                 )
                 if existing is not None:
+                    continue
+                # 同じ拠点・曜日・code のコースが状態を問わず既にあれば作らない。
+                # M2 template も code='M' になる (_normalize_course_code) ため、UNIQUE
+                # (proposed を除く部分索引) をすり抜けて proposed の M と並び、
+                # 昇格した瞬間に重複違反になる (2026-10-09 週のコピーで 500)。
+                same_code = await db.scalar(
+                    select(Course.id).where(
+                        Course.office_id == office.id,
+                        Course.code == code,
+                        Course.iso_year == iso_year,
+                        Course.iso_week == iso_week,
+                        Course.weekday == weekday,
+                        Course.deleted_at.is_(None),
+                    )
+                )
+                if same_code is not None:
                     continue
 
                 # create (savepoint で race-safe)
