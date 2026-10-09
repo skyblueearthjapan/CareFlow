@@ -305,6 +305,101 @@ describe('PatientStatusChangeDialog — 非稼働化 (deactivate)', () => {
   });
 });
 
+describe('PatientStatusChangeDialog — 終了 (予定と固定訪問の枠を消す)', () => {
+  const impactEnd = statusImpactSchema.parse({
+    ...impactDeactivate,
+    to_status: 'cancelled',
+    special_period: null,
+    fixed_visit_rows: 4,
+    remove_schedule: true,
+    removable_visits: 12,
+  });
+
+  beforeEach(() => {
+    mockImpact(impactEnd);
+  });
+
+  it('既定でチェック ON・件数を出す・body に remove_schedule=true が載る', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderDialog({ toStatus: 'cancelled' });
+
+    expect(screen.getByTestId('patient-status-remove-schedule')).toBeChecked();
+    expect(screen.getByTestId('patient-status-remove-counts')).toHaveTextContent(
+      '消える予定 12 件・固定訪問の枠 4 行',
+    );
+    expect(screen.queryByTestId('patient-status-fixed-kept')).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId('patient-status-confirm'));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(mutateAsync.mock.calls[0][0]).toMatchObject({
+      status: 'cancelled',
+      remove_schedule: true,
+    });
+  });
+
+  it('チェックを外すと remove_schedule=false・「型は残ります」が出る', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderDialog({ toStatus: 'cancelled' });
+
+    await user.click(screen.getByTestId('patient-status-remove-schedule'));
+    expect(screen.getByTestId('patient-status-fixed-kept')).toBeInTheDocument();
+    await user.click(screen.getByTestId('patient-status-confirm'));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(mutateAsync.mock.calls[0][0]).toMatchObject({ remove_schedule: false });
+  });
+
+  describe.each(['suspended', 'admitted'] as const)('%s → 終了（向き none）', (from) => {
+    const impactNone = statusImpactSchema.parse({
+      ...impactEnd,
+      current_status: from,
+      direction: 'none',
+      visits: { total: 0, by_week: [], by_source: {}, pair_groups: 0, excluded: {} },
+      removable_visits: 7,
+    });
+
+    it('同じダイアログでチェック ON・件数つき、body に remove_schedule=true', async () => {
+      mockImpact(impactNone);
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderDialog({ fromStatus: from, toStatus: 'cancelled' });
+
+      expect(screen.queryByTestId('patient-status-already')).not.toBeInTheDocument();
+      expect(screen.getByText('消す範囲')).toBeInTheDocument();
+      expect(screen.getByTestId('patient-status-remove-schedule')).toBeChecked();
+      expect(screen.getByTestId('patient-status-remove-counts')).toHaveTextContent(
+        '消える予定 7 件・固定訪問の枠 4 行',
+      );
+      await user.click(screen.getByTestId('patient-status-confirm'));
+      await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+      expect(mutateAsync.mock.calls[0][0]).toMatchObject({
+        status: 'cancelled',
+        remove_schedule: true,
+      });
+    });
+
+    it('チェックを外すと remove_schedule=false を明示して送る', async () => {
+      mockImpact(impactNone);
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderDialog({ fromStatus: from, toStatus: 'cancelled' });
+
+      await user.click(screen.getByTestId('patient-status-remove-schedule'));
+      await user.click(screen.getByTestId('patient-status-confirm'));
+      await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+      expect(mutateAsync.mock.calls[0][0]).toMatchObject({ remove_schedule: false });
+    });
+  });
+
+  it('終了以外 (入院中) では選択肢を出さず remove_schedule も送らない', async () => {
+    mockImpact(impactDeactivate);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderDialog({ toStatus: 'admitted' });
+
+    expect(screen.queryByTestId('patient-status-remove-schedule')).not.toBeInTheDocument();
+    await user.click(screen.getByTestId('patient-status-confirm'));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    expect(mutateAsync.mock.calls[0][0]).not.toHaveProperty('remove_schedule');
+  });
+});
+
 describe('PatientStatusChangeDialog — 復帰 (reactivate)', () => {
   beforeEach(() => {
     mockImpact(impactReactivate);

@@ -83,6 +83,13 @@ class StatusImpact(BaseModel):
     pending_requests: int = Field(ge=0, default=0)
     kaipoke_weeks: int = Field(ge=0, default=0, description="送信差分が出る見込みの週数")
     regenerate: ImpactRegenerate | None = None
+    remove_schedule: bool = Field(
+        default=False,
+        description="True=予定(取消済み含む)と固定訪問の枠を消す設定で数えた結果 (終了のみ)",
+    )
+    removable_visits: int = Field(
+        ge=0, default=0, description="remove_schedule=True のとき消える今後の予定の件数"
+    )
 
 
 class StatusChangeRequest(BaseModel):
@@ -100,6 +107,13 @@ class StatusChangeRequest(BaseModel):
     )
     regenerate: bool = Field(
         default=True, description="reactivate 時のみ有効。型から生成済み週に予定を作り直す"
+    )
+    remove_schedule: bool | None = Field(
+        default=None,
+        description=(
+            "終了 (cancelled) のみ有効。今後の予定を消し、固定訪問の枠も消す。"
+            "省略時は終了なら True・それ以外は False"
+        ),
     )
     note: str | None = Field(default=None, max_length=200)
 
@@ -141,3 +155,5 @@ class StatusChangeResult(BaseModel):
     op_groups: list[OpGroupRef] = Field(default_factory=list)
     regenerated: RegeneratedSummary | None = None
     notification_count: int = Field(ge=0, default=0)
+    removed_visit_count: int = Field(ge=0, default=0, description="消した今後の予定 (取消済み含む)")
+    removed_fixed_visit_rows: int = Field(ge=0, default=0, description="消した固定訪問の枠の行数")

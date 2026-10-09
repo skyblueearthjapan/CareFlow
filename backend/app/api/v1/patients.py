@@ -330,8 +330,15 @@ async def get_patient_status_impact(
         Literal["keep", "end"],
         Query(description="非稼働化時の特別訪問週間の扱い (既定 keep=残す)"),
     ] = "keep",
+    remove_schedule: Annotated[
+        bool | None,
+        Query(description="終了のみ有効: 今後の予定と固定訪問の枠を消す (省略=終了なら消す)"),
+    ] = None,
 ) -> StatusImpact:
     """確認ダイアログ用の影響件数 (design 2026-09-09 §7-3 (a)).
+
+    終了の件数はダイアログの既定 (消す = ON) で数える。POST /status-change が消すのは
+    ``remove_schedule=true`` を明示したときだけ。
 
     実行と同じ selector / 再生成関数を通す (表示と実行のズレを構造的に無くす)。
     ``special_period_action='end'`` なら ⭐ 配置分も ``visits.total`` に含む
@@ -350,6 +357,7 @@ async def get_patient_status_impact(
         to_status=to,
         from_date=from_date,
         special_period_action=special_period_action,
+        remove_schedule=remove_schedule,
     )
     # 読み取り専用の保証: 試走で書いた分を確実に捨てる (commit しない)。
     await db.rollback()
@@ -381,6 +389,7 @@ async def change_patient_status(
         from_date=payload.from_date,
         special_period_action=payload.special_period_action,
         regenerate=payload.regenerate,
+        remove_schedule=payload.remove_schedule,
         actor_user_id=_user.id,
         note=payload.note,
     )

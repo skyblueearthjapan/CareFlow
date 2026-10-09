@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
 from app.models import Office, Patient, User
+from app.models.audit_log import AuditLog
 from app.models.notification import Notification
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.pending_request import PendingRequest
@@ -273,7 +274,7 @@ async def _special_period(db, patient: Patient, placed_visit: Visit) -> SpecialV
                 patient_id=patient.id,
                 iso_year=iso.year,
                 iso_week=iso.week,
-                weekday=placed_visit.visit_date.weekday(),
+                weekday=placed_visit.visit_date.weekday() % 6,  # 日曜は CHECK 外
                 kind=MARK_KIND_EXTRA,
                 status=MARK_STATUS_PLACED,
                 placed_visit_id=placed_visit.id,
@@ -920,3 +921,452 @@ async def test_status_impact_special_period_action_end(db, client) -> None:
     assert end.status_code == 200, end.text
     assert end.json()["visits"]["total"] == 2
     assert end.json()["special_period"]["placed_future_visits"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 9. 終了 (cancelled): 予定と固定訪問の枠を消す (PO 2026-10-09)
+# ---------------------------------------------------------------------------
+
+
+async def _end_fixture(db):
+    """未来 2 件 + 過去 1 件 + 打刻済み 1 件 + 型 3 行 (normal 2 / special 1)."""
+    today = today_jst()
+    office = await _office(db)
+    admin = await _admin(db)
+    patient = await _patient(db, office)
+    staff = await _staff_with_shifts(db, office)
+    past = _visit(patient, today - timedelta(days=2), start=time(9, 0))
+    future_1 = _visit(patient, today + timedelta(days=1), start=time(10, 0))
+    future_2 = _visit(patient, today + timedelta(days=8), start=time(11, 0))
+    checked = _visit(patient, today + timedelta(days=2), start=time(14, 0))
+    db.add_all([past, future_1, future_2, checked])
+    await db.flush()
+    db.add(VisitStaffAssignment(visit_id=future_1.id, staff_id=staff.id))
+    db.add(_checkin(checked))
+    for mode, wd in (("normal", 0), ("normal", 2), ("special", 1)):
+        db.add(
+            PatientFixedVisit(
+                patient_id=patient.id,
+                mode=mode,
+                weekday=wd,
+                start_time=time(10, 0),
+                duration_min=35,
+                slot_index=0,
+            )
+        )
+    await db.commit()
+    return patient, admin, past, future_1, future_2, checked
+
+
+async def _fixed_count(db, patient) -> int:
+    rows = await db.scalars(
+        select(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
+    )
+    return len(rows.all())
+
+
+@pytest.mark.asyncio
+async def test_end_removes_future_visits_and_fixed_visits(db) -> None:
+    patient, admin, past, future_1, future_2, checked = await _end_fixture(db)
+
+    impact = await compute_impact(db, patient, to_status="cancelled")
+    assert impact.remove_schedule is True
+    assert impact.removable_visits == 2
+    assert impact.fixed_visit_rows == 3
+
+    result = await apply_status_change(
+        db, patient, to_status="cancelled", remove_schedule=True, actor_user_id=admin.id
+    )
+    await db.commit()
+
+    assert result.cancelled_count == 2
+    assert result.removed_visit_count == 2
+    assert result.removed_fixed_visit_rows == 3
+    for v in (future_1, future_2):
+        await db.refresh(v)
+        assert v.deleted_at is not None
+        assert v.status == VISIT_STATUS_CANCELLED
+    for v in (past, checked):
+        await db.refresh(v)
+        assert v.deleted_at is None, "過去日 / 打刻済みは不変"
+        assert v.status == VISIT_STATUS_PLANNED
+    assert await _fixed_count(db, patient) == 0
+    assigned = await db.scalars(
+        select(VisitStaffAssignment).where(VisitStaffAssignment.visit_id == future_1.id)
+    )
+    assert assigned.all() == []
+
+    audit = (
+        await db.scalars(
+            select(AuditLog).where(
+                AuditLog.action == "patient_end_rm_pfv",
+                AuditLog.target_id == str(patient.id),
+            )
+        )
+    ).one()
+    assert audit.actor_user_id == admin.id
+    assert len(audit.before["rows"]) == 3
+    assert {r["mode"] for r in audit.before["rows"]} == {"normal", "special"}
+
+
+@pytest.mark.asyncio
+async def test_end_with_remove_schedule_false_keeps_old_behaviour(db) -> None:
+    patient, admin, _past, future_1, future_2, _checked = await _end_fixture(db)
+
+    impact = await compute_impact(db, patient, to_status="cancelled", remove_schedule=False)
+    assert impact.remove_schedule is False
+    assert impact.removable_visits == 0
+
+    result = await apply_status_change(
+        db, patient, to_status="cancelled", remove_schedule=False, actor_user_id=admin.id
+    )
+    await db.commit()
+
+    assert result.cancelled_count == 2
+    assert result.removed_visit_count == 0
+    for v in (future_1, future_2):
+        await db.refresh(v)
+        assert v.deleted_at is None
+        assert v.source == VISIT_SOURCE_STATUS_CANCEL
+    assert await _fixed_count(db, patient) == 3
+
+
+@pytest.mark.asyncio
+async def test_suspend_does_not_remove_schedule_even_if_asked(db) -> None:
+    patient, admin, _past, future_1, _future_2, _checked = await _end_fixture(db)
+
+    result = await apply_status_change(
+        db, patient, to_status="suspended", remove_schedule=True, actor_user_id=admin.id
+    )
+    await db.commit()
+
+    assert result.cancelled_count == 2
+    assert result.removed_visit_count == 0
+    assert result.removed_fixed_visit_rows == 0
+    await db.refresh(future_1)
+    assert future_1.deleted_at is None
+    assert await _fixed_count(db, patient) == 3
+
+
+@pytest.mark.asyncio
+async def test_suspended_to_end_removes_already_cancelled_visits(db) -> None:
+    patient, admin, _past, future_1, future_2, _checked = await _end_fixture(db)
+    await apply_status_change(db, patient, to_status="admitted", actor_user_id=admin.id)
+    await db.commit()
+
+    result = await apply_status_change(
+        db, patient, to_status="cancelled", remove_schedule=True, actor_user_id=admin.id
+    )
+    await db.commit()
+
+    assert result.direction == "none"
+    assert result.removed_visit_count == 2
+    assert result.removed_fixed_visit_rows == 3
+    for v in (future_1, future_2):
+        await db.refresh(v)
+        assert v.deleted_at is not None
+    assert await _fixed_count(db, patient) == 0
+
+
+@pytest.mark.asyncio
+async def test_end_endpoint_removes_only_when_explicit(db, client) -> None:
+    patient, admin, _past, future_1, _future_2, _checked = await _end_fixture(db)
+
+    res = await client.get(
+        f"/api/v1/patients/{patient.id}/status-impact",
+        params={"to": "cancelled"},
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["removable_visits"] == 2, "ダイアログの既定 (ON) で件数を見せる"
+
+    # 省略 = 消さない (従来動作)
+    res = await client.post(
+        f"/api/v1/patients/{patient.id}/status-change",
+        json={"status": "cancelled"},
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["removed_visit_count"] == 0
+    await db.refresh(future_1)
+    assert future_1.deleted_at is None
+    assert await _fixed_count(db, patient) == 3
+
+
+@pytest.mark.asyncio
+async def test_end_endpoint_explicit_true_removes(db, client) -> None:
+    patient, admin, _past, future_1, _future_2, _checked = await _end_fixture(db)
+    res = await client.post(
+        f"/api/v1/patients/{patient.id}/status-change",
+        json={"status": "cancelled", "remove_schedule": True},
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["removed_visit_count"] == 2
+    assert res.json()["removed_fixed_visit_rows"] == 3
+    await db.refresh(future_1)
+    assert future_1.deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_end_apply_default_does_not_remove(db) -> None:
+    patient, admin, _past, future_1, _future_2, _checked = await _end_fixture(db)
+    result = await apply_status_change(db, patient, to_status="cancelled", actor_user_id=admin.id)
+    await db.commit()
+    assert result.removed_visit_count == 0
+    await db.refresh(future_1)
+    assert future_1.deleted_at is None
+    assert await _fixed_count(db, patient) == 3
+
+
+@pytest.mark.asyncio
+async def test_patch_to_cancelled_does_not_remove(db, client) -> None:
+    patient, admin, _past, future_1, _future_2, _checked = await _end_fixture(db)
+    res = await client.patch(
+        f"/api/v1/patients/{patient.id}",
+        json={"status": "cancelled"},
+        headers=_bearer(admin),
+    )
+    assert res.status_code == 200, res.text
+    await db.refresh(future_1)
+    assert future_1.status == VISIT_STATUS_CANCELLED
+    assert future_1.deleted_at is None
+    assert await _fixed_count(db, patient) == 3
+
+
+@pytest.mark.asyncio
+async def test_pending_request_approval_to_cancelled_does_not_remove(db) -> None:
+    from app.services.pending_request_applier import PendingRequestApplier
+
+    patient, admin, _past, future_1, _future_2, _checked = await _end_fixture(db)
+    req = PendingRequest(
+        requester_user_id=admin.id,
+        request_type="patient_status_update",
+        payload={"patient_id": str(patient.id), "status": "cancelled"},
+        target_patient_id=patient.id,
+        status="pending",
+    )
+    db.add(req)
+    await db.commit()
+    await PendingRequestApplier().apply(db, req)
+    await db.commit()
+    await db.refresh(future_1)
+    assert future_1.status == VISIT_STATUS_CANCELLED
+    assert future_1.deleted_at is None
+    assert await _fixed_count(db, patient) == 3
+
+
+@pytest.mark.asyncio
+async def test_end_leaves_pinned_manual_cancel_and_before_from_date_alone(db) -> None:
+    today = today_jst()
+    office = await _office(db)
+    admin = await _admin(db)
+    patient = await _patient(db, office)
+    pinned = _visit(patient, today + timedelta(days=3), start=time(13, 0), week_pinned=True)
+    manual = _visit(
+        patient,
+        today + timedelta(days=4),
+        start=time(13, 0),
+        status=VISIT_STATUS_CANCELLED,
+        source="manual_cancel",
+    )
+    todays = _visit(
+        patient,
+        today,
+        start=time(10, 0),
+        status=VISIT_STATUS_CANCELLED,
+        source=VISIT_SOURCE_STATUS_CANCEL,
+    )
+    later = _visit(patient, today + timedelta(days=5), start=time(13, 0))
+    db.add_all([pinned, manual, todays, later])
+    await db.commit()
+
+    result = await apply_status_change(
+        db,
+        patient,
+        to_status="cancelled",
+        from_date=today + timedelta(days=1),
+        remove_schedule=True,
+        actor_user_id=admin.id,
+    )
+    await db.commit()
+
+    assert result.removed_visit_count == 1
+    for v in (pinned, manual, todays):
+        await db.refresh(v)
+        assert v.deleted_at is None
+    assert pinned.status == VISIT_STATUS_PLANNED
+    assert manual.source == "manual_cancel"
+    await db.refresh(later)
+    assert later.deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_end_today_keeps_visits_already_started(db) -> None:
+    from app.services.patient_status_sync import _now_jst
+
+    today = today_jst()
+    office = await _office(db)
+    admin = await _admin(db)
+    patient = await _patient(db, office)
+    started = _visit(patient, today, start=time(0, 0))  # 0:00 は (ほぼ) 常に開始済み
+    upcoming = _visit(patient, today, start=time(22, 58))
+    db.add_all([started, upcoming])
+    await db.commit()
+
+    impact = await compute_impact(db, patient, to_status="cancelled")
+    result = await apply_status_change(
+        db, patient, to_status="cancelled", remove_schedule=True, actor_user_id=admin.id
+    )
+    await db.commit()
+
+    # 22:58 より後に走ると upcoming も開始済みになる (その場合は両方残る)。
+    expected = 0 if _now_jst()[1] >= time(22, 58) else 1
+    assert impact.removable_visits == expected
+    assert result.removed_visit_count == expected
+    await db.refresh(started)
+    assert started.status == VISIT_STATUS_CANCELLED and started.deleted_at is None
+
+
+@pytest.mark.asyncio
+async def test_pending_to_end_via_dialog_path_removes_fixed_visits(db) -> None:
+    today = today_jst()
+    office = await _office(db)
+    admin = await _admin(db)
+    patient = await _patient(db, office, status="pending")
+    cancelled = _visit(
+        patient,
+        today + timedelta(days=2),
+        start=time(9, 0),
+        status=VISIT_STATUS_CANCELLED,
+        source=VISIT_SOURCE_STATUS_CANCEL,
+    )
+    db.add_all(
+        [
+            cancelled,
+            PatientFixedVisit(
+                patient_id=patient.id,
+                mode="normal",
+                weekday=1,
+                start_time=time(10, 0),
+                duration_min=35,
+                slot_index=0,
+            ),
+        ]
+    )
+    await db.commit()
+
+    impact = await compute_impact(db, patient, to_status="cancelled")
+    assert impact.direction == "none"
+    assert impact.removable_visits == 1 and impact.fixed_visit_rows == 1
+
+    result = await apply_status_change(
+        db, patient, to_status="cancelled", remove_schedule=True, actor_user_id=admin.id
+    )
+    await db.commit()
+    assert result.removed_visit_count == 1
+    assert result.removed_fixed_visit_rows == 1
+    await db.refresh(cancelled)
+    assert cancelled.deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_end_cancels_placed_marks_of_removed_visits_even_with_keep(db) -> None:
+    today = today_jst()
+    office = await _office(db)
+    admin = await _admin(db)
+    patient = await _patient(db, office)
+    normal = _visit(patient, today + timedelta(days=1), start=time(9, 0))
+    # 以前の取消で status_cancel になっている ● の訪問
+    placed = _visit(
+        patient,
+        today + timedelta(days=3),
+        start=time(15, 0),
+        status=VISIT_STATUS_CANCELLED,
+        source=VISIT_SOURCE_STATUS_CANCEL,
+    )
+    db.add_all([normal, placed])
+    await db.flush()
+    period = await _special_period(db, patient, placed)
+    await db.commit()
+
+    result = await apply_status_change(
+        db,
+        patient,
+        to_status="cancelled",
+        special_period_action="keep",
+        remove_schedule=True,
+        actor_user_id=admin.id,
+    )
+    await db.commit()
+
+    assert result.removed_visit_count == 2
+    marks = (
+        await db.scalars(select(SpecialVisitMark).where(SpecialVisitMark.period_id == period.id))
+    ).all()
+    assert sorted(m.status for m in marks) == sorted([MARK_STATUS_CANCELLED, MARK_STATUS_POOL])
+
+
+@pytest.mark.asyncio
+async def test_suspended_to_end_impact_counts_removable(db) -> None:
+    patient, admin, _past, _f1, _f2, _checked = await _end_fixture(db)
+    await apply_status_change(db, patient, to_status="admitted", actor_user_id=admin.id)
+    await db.commit()
+
+    impact = await compute_impact(db, patient, to_status="cancelled")
+    assert impact.direction == "none"
+    assert impact.remove_schedule is True
+    assert impact.removable_visits == 2
+    assert impact.fixed_visit_rows == 3
+
+
+@pytest.mark.asyncio
+async def test_suspended_to_end_removes_leftover_planned_visits(db) -> None:
+    today = today_jst()
+    office = await _office(db)
+    admin = await _admin(db)
+    patient = await _patient(db, office, status="suspended")
+    leftover = _visit(patient, today + timedelta(days=2), start=time(9, 0))
+    pinned = _visit(patient, today + timedelta(days=3), start=time(9, 0), week_pinned=True)
+    checked = _visit(patient, today + timedelta(days=4), start=time(9, 0))
+    db.add_all([leftover, pinned, checked])
+    await db.flush()
+    db.add(_checkin(checked))
+    await db.commit()
+
+    impact = await compute_impact(db, patient, to_status="cancelled")
+    assert impact.removable_visits == 1
+
+    result = await apply_status_change(
+        db, patient, to_status="cancelled", remove_schedule=True, actor_user_id=admin.id
+    )
+    await db.commit()
+
+    assert result.removed_visit_count == 1
+    await db.refresh(leftover)
+    assert leftover.deleted_at is not None
+    for v in (pinned, checked):
+        await db.refresh(v)
+        assert v.deleted_at is None
+        assert v.status == VISIT_STATUS_PLANNED
+
+
+@pytest.mark.asyncio
+async def test_suspended_to_end_without_remove_leaves_planned_visits(db) -> None:
+    today = today_jst()
+    office = await _office(db)
+    admin = await _admin(db)
+    patient = await _patient(db, office, status="suspended")
+    leftover = _visit(patient, today + timedelta(days=2), start=time(9, 0))
+    db.add(leftover)
+    await db.commit()
+
+    result = await apply_status_change(
+        db, patient, to_status="cancelled", remove_schedule=False, actor_user_id=admin.id
+    )
+    await db.commit()
+
+    assert result.removed_visit_count == 0
+    await db.refresh(leftover)
+    assert leftover.deleted_at is None
+    assert leftover.status == VISIT_STATUS_PLANNED

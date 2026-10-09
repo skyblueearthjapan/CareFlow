@@ -7,6 +7,10 @@
 * 非稼働化 (active → active 以外。``pending`` も非稼働):
   ``from_date`` 以降の planned を **取消** (``status='cancelled'`` /
   ``source='status_cancel'``)。行は消さない (履歴が追える・カイポケ突合は delete 差分)。
+* 終了 (``cancelled``) へ変えるときは、取消した予定を soft-delete し、固定訪問の枠
+  (patient_fixed_visits) も消す (``remove_schedule=True`` を明示したときだけ。ダイアログ経路
+  のみで、PATCH / 申請適用 / Excel 取込は消さない)。消した枠は
+  ``audit_logs`` に控える。休止 / 入院 / 開始前では行わない (復帰で戻せなくなるため)。
 * 復帰 (active 以外 → active): ``status_cancel`` を soft-delete して、生成済みの週へ
   **型 (patient_fixed_visits) から作り直す** (``reset_visits_to_fixed``)。
 * どちらでもない (非稼働 → 別の非稼働 / 同一) は status だけ書く。
@@ -25,19 +29,21 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from fastapi import status as http_status
-from sqlalchemy import select
+from sqlalchemy import and_, not_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.audit_log import AuditLog
 from app.models.notification import Notification
 from app.models.patient import Patient
+from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.pending_request import PendingRequest
 from app.models.special_visit import (
     MARK_STATUS_CANCELLED,
@@ -135,6 +141,15 @@ def direction_for(current: str | None, to: str | None) -> str:
     if not cur and nxt:
         return "reactivate"
     return "none"
+
+
+#: 予定と固定訪問の枠を消せる唯一のステータス (終了 = 解約済み)。
+PATIENT_STATUS_ENDED: str = "cancelled"
+
+
+def resolve_remove_schedule(to_status: str | None, remove_schedule: bool | None) -> bool:
+    """予定と固定訪問の枠を消すか。終了で、かつ True を明示したときだけ (省略 = 消さない)."""
+    return to_status == PATIENT_STATUS_ENDED and remove_schedule is True
 
 
 def today_jst() -> date:
@@ -407,10 +422,8 @@ async def _pending_request_rows(
 
 
 async def _fixed_visit_row_count(db: AsyncSession, patient_id: UUID) -> int:
-    """型 (patient_fixed_visits) の行数。非稼働化では **消さない** (Q13)."""
+    """型 (patient_fixed_visits) の行数。終了以外の非稼働化では **消さない** (Q13)."""
     from sqlalchemy import func
-
-    from app.models.patient_fixed_visit import PatientFixedVisit
 
     return int(
         await db.scalar(
@@ -420,6 +433,43 @@ async def _fixed_visit_row_count(db: AsyncSession, patient_id: UUID) -> int:
         )
         or 0
     )
+
+
+def _now_jst() -> tuple[date, time]:
+    now = datetime.now(UTC).astimezone(_JST)
+    return now.date(), now.time().replace(tzinfo=None)
+
+
+def _started_today(visit_date: date, start_time: time) -> bool:
+    """今日 (JST) で開始時刻をもう過ぎている訪問か (実際に行われた可能性がある)."""
+    today, now_t = _now_jst()
+    return visit_date == today and start_time < now_t
+
+
+async def _count_status_cancelled(
+    db: AsyncSession, patient_id: UUID, from_date: date, *, today_cutoff: bool = False
+) -> int:
+    """すでに取消済み (``status_cancel``) で from_date 以降の生存訪問の件数.
+
+    ``today_cutoff``: 今日の開始時刻を過ぎた訪問は数えない (消す対象にしない)。
+    """
+    from sqlalchemy import func
+
+    stmt = (
+        select(func.count())
+        .select_from(Visit)
+        .where(
+            Visit.patient_id == patient_id,
+            Visit.deleted_at.is_(None),
+            Visit.source == VISIT_SOURCE_STATUS_CANCEL,
+            Visit.status == VISIT_STATUS_CANCELLED,
+            Visit.visit_date >= from_date,
+        )
+    )
+    if today_cutoff:
+        today, now_t = _now_jst()
+        stmt = stmt.where(not_(and_(Visit.visit_date == today, Visit.start_time < now_t)))
+    return int(await db.scalar(stmt) or 0)
 
 
 async def _generated_weeks(
@@ -463,6 +513,7 @@ async def compute_impact(
     to_status: str,
     from_date: date | None = None,
     special_period_action: str = "keep",
+    remove_schedule: bool | None = None,
 ) -> StatusImpact:
     """確認ダイアログ用の影響件数を返す (DB は変更しない).
 
@@ -487,6 +538,9 @@ async def compute_impact(
     regenerate: ImpactRegenerate | None = None
     pending_count = 0
     fixed_rows = await _fixed_visit_row_count(db, patient_id)
+    # 件数の表示は、ダイアログの既定 (ON) で数える。False を明示したときだけ 0。
+    remove = to_status == PATIENT_STATUS_ENDED and remove_schedule is not False
+    removable_visits = 0
 
     if direction == "deactivate":
         # 件数は選択された ⭐ の扱い (既定 keep) で数える。keep のとき end で増える
@@ -518,6 +572,11 @@ async def compute_impact(
             )
         pending_count = len(await _pending_request_rows(db, patient_id))
         kaipoke_weeks = len(visits.by_week)
+        if remove:
+            # これから取消す分 + すでに取消済みの分 (実行と同じ条件で数える)。
+            removable_visits = sum(
+                1 for v in plan.targets if not _started_today(v.visit_date, v.start_time)
+            ) + await _count_status_cancelled(db, patient_id, resolved_from, today_cutoff=True)
 
     elif direction == "reactivate":
         weeks: list[WeekCount] = []
@@ -548,6 +607,14 @@ async def compute_impact(
 
     else:
         kaipoke_weeks = 0
+        if remove and current_status != to_status:
+            # 休止 / 入院 → 終了: 取消済みの分 + 残っている planned (実行と同じ選び方)。
+            plan = await _select_deactivation_targets(
+                db, patient_id, resolved_from, special_period_action="keep"
+            )
+            removable_visits = sum(
+                1 for v in plan.targets if not _started_today(v.visit_date, v.start_time)
+            ) + await _count_status_cancelled(db, patient_id, resolved_from, today_cutoff=True)
 
     return StatusImpact(
         patient_id=patient_id,
@@ -561,6 +628,8 @@ async def compute_impact(
         pending_requests=pending_count,
         kaipoke_weeks=kaipoke_weeks,
         regenerate=regenerate,
+        remove_schedule=remove and current_status != to_status and direction != "reactivate",
+        removable_visits=removable_visits,
     )
 
 
@@ -577,6 +646,7 @@ async def apply_status_change(
     from_date: date | None = None,
     special_period_action: str = "keep",
     regenerate: bool = True,
+    remove_schedule: bool | None = None,
     actor_user_id: UUID | None = None,
     note: str | None = None,
     exclude_pending_request_id: UUID | None = None,
@@ -587,6 +657,7 @@ async def apply_status_change(
     """
     resolved_from = _validate_from_date(from_date)
     direction = direction_for(patient.status, to_status)
+    remove = resolve_remove_schedule(to_status, remove_schedule)
 
     try:
         if direction == "deactivate":
@@ -596,6 +667,7 @@ async def apply_status_change(
                 to_status=to_status,
                 from_date=resolved_from,
                 special_period_action=special_period_action,
+                remove_schedule=remove,
                 actor_user_id=actor_user_id,
                 note=note,
                 exclude_pending_request_id=exclude_pending_request_id,
@@ -611,7 +683,12 @@ async def apply_status_change(
                 note=note,
             )
         return await _apply_status_only(
-            db, patient, to_status=to_status, actor_user_id=actor_user_id
+            db,
+            patient,
+            to_status=to_status,
+            from_date=resolved_from,
+            remove_schedule=remove,
+            actor_user_id=actor_user_id,
         )
     except IntegrityError as exc:
         await db.rollback()
@@ -632,15 +709,38 @@ async def _apply_status_only(
     patient: Patient,
     *,
     to_status: str,
+    from_date: date,
+    remove_schedule: bool,
     actor_user_id: UUID | None,
 ) -> StatusChangeResult:
-    """向きが ``none`` (非稼働 → 別の非稼働 / 同一): status だけ書く no-op."""
+    """向きが ``none`` (非稼働 → 別の非稼働 / 同一): status を書く.
+
+    非稼働 → 終了 のときだけ、残っている予定と固定訪問の枠を消す (``remove_schedule``)。
+    """
+    removed_visits = 0
+    removed_rows = 0
     if patient.status != to_status:
         _stamp_status(patient, to_status, actor_user_id)
         await db.flush()
+        if remove_schedule:
+            # 非稼働でも planned が残っていることがある (カイポケ CSV に出続けるため)。
+            # 稼働中 → 終了 と同じ選び方 (打刻済み / 訪問中 / 青ピン / 手の取消を除く) で
+            # 取消してから、まとめて消す。
+            plan = await _select_deactivation_targets(
+                db, patient.id, from_date, special_period_action="keep"
+            )
+            for v in plan.targets:
+                v.status = VISIT_STATUS_CANCELLED
+                v.source = VISIT_SOURCE_STATUS_CANCEL
+            await db.flush()
+            removed_visits, removed_rows = await _remove_schedule(
+                db, patient, from_date=from_date, actor_user_id=actor_user_id
+            )
     return StatusChangeResult(
         patient=await build_patient_read(db, patient),
         direction="none",
+        removed_visit_count=removed_visits,
+        removed_fixed_visit_rows=removed_rows,
     )
 
 
@@ -651,6 +751,7 @@ async def _apply_deactivation(
     to_status: str,
     from_date: date,
     special_period_action: str,
+    remove_schedule: bool = False,
     actor_user_id: UUID | None,
     note: str | None,
     exclude_pending_request_id: UUID | None = None,
@@ -714,7 +815,16 @@ async def _apply_deactivation(
     _stamp_status(patient, to_status, actor_user_id)
     await db.flush()
 
+    # 4b) 終了なら、取消した予定を消して固定訪問の枠も消す (枠の控えは audit_logs)。
+    removed_visits = 0
+    removed_rows = 0
+    if remove_schedule:
+        removed_visits, removed_rows = await _remove_schedule(
+            db, patient, from_date=from_date, actor_user_id=actor_user_id
+        )
+
     # 5) op-log (週ごとに 1 グループ・既存 cancel_visit を再利用 = 「戻る」が効く)。
+    #    終了で消した訪問の id もここに残る (監査用・undo は元々ブロック)。
     op_groups = await _record_cancel_ops(
         db,
         patient=patient,
@@ -738,6 +848,10 @@ async def _apply_deactivation(
             if special_result.action == "end"
             else "特別訪問週間は残しています。"
         )
+    if remove_schedule:
+        body_lines.append(
+            f"今後の予定 {removed_visits} 件と固定訪問の枠 {removed_rows} 行を消しました。"
+        )
     if rejected:
         body_lines.append(f"未処理の申請 {rejected} 件を自動却下しました。")
     if note:
@@ -760,6 +874,8 @@ async def _apply_deactivation(
         rejected_requests=rejected,
         op_groups=op_groups,
         notification_count=notified,
+        removed_visit_count=removed_visits,
+        removed_fixed_visit_rows=removed_rows,
     )
 
 
@@ -902,11 +1018,94 @@ async def _record_cancel_ops(
     return refs
 
 
-async def _soft_delete_status_cancelled(db: AsyncSession, patient_id: UUID, from_date: date) -> int:
+async def _remove_schedule(
+    db: AsyncSession,
+    patient: Patient,
+    *,
+    from_date: date,
+    actor_user_id: UUID | None,
+) -> tuple[int, int]:
+    """終了: 取消済み (``status_cancel``) の今後の予定を soft-delete し、固定訪問の枠を消す.
+
+    * 予定: 取消の対象になった行だけ (打刻済み / 訪問中 / 青ピン / 過去日は取消対象外
+      なのでここにも来ない)。担当 (visit_staff_assignments) の行も外す。
+    * 固定訪問 (normal / special とも): 全行を物理削除。手で戻せるよう、消す前の
+      中身を ``audit_logs.before`` に控える。
+    """
+    visits_removed = await _soft_delete_status_cancelled(
+        db, patient.id, from_date, today_cutoff=True
+    )
+    # 消した訪問を指す ● は取消にする (残すと ⭐ の自己回復で ○ に戻って出てくる)。
+    gone_ids = select(Visit.id).where(
+        Visit.patient_id == patient.id,
+        Visit.deleted_at.is_not(None),
+        Visit.source == VISIT_SOURCE_STATUS_CANCEL,
+        Visit.visit_date >= from_date,
+    )
+    placed_marks = await db.scalars(
+        select(SpecialVisitMark).where(
+            SpecialVisitMark.status == MARK_STATUS_PLACED,
+            SpecialVisitMark.placed_visit_id.in_(gone_ids),
+        )
+    )
+    for m in placed_marks.all():
+        m.status = MARK_STATUS_CANCELLED
+
+    rows = list(
+        (
+            await db.scalars(
+                select(PatientFixedVisit)
+                .where(PatientFixedVisit.patient_id == patient.id)
+                .order_by(
+                    PatientFixedVisit.mode,
+                    PatientFixedVisit.weekday,
+                    PatientFixedVisit.slot_index,
+                )
+            )
+        ).all()
+    )
+    if rows:
+        snapshot = [
+            {
+                "mode": r.mode,
+                "weekday": r.weekday,
+                "slot_index": r.slot_index,
+                "start_time": r.start_time.isoformat(),
+                "duration_min": r.duration_min,
+                "course_template_id": str(r.course_template_id) if r.course_template_id else None,
+                "sub_office_id": str(r.sub_office_id) if r.sub_office_id else None,
+                "is_pinned": bool(r.is_pinned),
+                "movability": r.movability,
+            }
+            for r in rows
+        ]
+        db.add(
+            AuditLog(
+                actor_user_id=actor_user_id,
+                action="patient_end_rm_pfv",
+                target_table="patient_fixed_visits",
+                target_id=str(patient.id),
+                before={"patient_name": patient.name, "rows": snapshot},
+                after={"from_date": from_date.isoformat(), "removed_visits": visits_removed},
+            )
+        )
+        from sqlalchemy import delete as sa_delete
+
+        await db.execute(
+            sa_delete(PatientFixedVisit).where(PatientFixedVisit.patient_id == patient.id)
+        )
+    await db.flush()
+    return visits_removed, len(rows)
+
+
+async def _soft_delete_status_cancelled(
+    db: AsyncSession, patient_id: UUID, from_date: date, *, today_cutoff: bool = False
+) -> int:
     """復帰時: ステータス連動で取消した訪問 (``status_cancel``) を soft-delete する.
 
     ``reset_visits_to_fixed`` の削除対象は planned/proposed のみ (cancelled は保護)
     なので、明示的に消しておかないと同じ枠に再生成できない (unique key 衝突で skip)。
+    ``today_cutoff`` (終了で消す経路): 今日の開始時刻を過ぎた訪問は消さない。
     """
     rows = list(
         (
@@ -921,6 +1120,8 @@ async def _soft_delete_status_cancelled(db: AsyncSession, patient_id: UUID, from
             )
         ).all()
     )
+    if today_cutoff:
+        rows = [v for v in rows if not _started_today(v.visit_date, v.start_time)]
     if not rows:
         return 0
     now = datetime.now(UTC)

@@ -82,6 +82,35 @@ describe('usePatientStatusGate — 素通り', () => {
   });
 });
 
+describe('usePatientStatusGate — 終了への変更は元が非稼働でも確認する', () => {
+  it.each(['suspended', 'admitted', 'pending'] as const)(
+    '%s → 終了(cancelled) はダイアログを開き、保存は保留する',
+    async (from) => {
+      const { result: hook } = setup(from);
+      const submit = vi.fn().mockResolvedValue(undefined);
+
+      act(() => {
+        void hook.current.wrapSubmit(submit)(values('cancelled'));
+      });
+
+      await waitFor(() => expect(hook.current.dialogProps.open).toBe(true));
+      expect(hook.current.dialogProps.fromStatus).toBe(from);
+      expect(hook.current.dialogProps.toStatus).toBe('cancelled');
+      expect(submit).not.toHaveBeenCalled();
+    },
+  );
+
+  it('終了 → 終了（変更なし）は素通りする', async () => {
+    const { result: hook } = setup('cancelled');
+    const submit = vi.fn().mockResolvedValue(undefined);
+    await act(async () => {
+      await hook.current.wrapSubmit(submit)(values('cancelled'));
+    });
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(hook.current.dialogProps.open).toBe(false);
+  });
+});
+
 describe('usePatientStatusGate — 確認ダイアログ', () => {
   it('稼働中 → 入院中 はダイアログを開き、確定後に omitStatus:true で保存する', async () => {
     const { result: hook } = setup('active');
@@ -205,6 +234,18 @@ describe('formatStatusChangeMessage', () => {
         }),
       ),
     ).toBe('入院中にしました（予定 9 件を取消）・特別訪問週間を終了');
+  });
+
+  it('終了: 消した予定と固定訪問の枠の件数を添える', () => {
+    expect(
+      formatStatusChangeMessage(
+        result({
+          patient: { ...result().patient, status: 'cancelled' },
+          removed_visit_count: 12,
+          removed_fixed_visit_rows: 4,
+        }),
+      ),
+    ).toBe('解約済みにしました（予定 9 件を取消）・予定 12 件と固定訪問の枠 4 行を消しました');
   });
 
   it('復帰: 作成件数つき', () => {

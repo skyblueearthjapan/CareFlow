@@ -109,6 +109,8 @@ export function PatientStatusChangeDialog({
   const [when, setWhen] = React.useState<'today' | 'tomorrow'>('today');
   const [specialAction, setSpecialAction] = React.useState<'keep' | 'end'>('keep');
   const [regenerate, setRegenerate] = React.useState(true);
+  // 終了のときだけ表示。既定 ON（取消した予定と固定訪問の枠を消す）。
+  const [removeSchedule, setRemoveSchedule] = React.useState(true);
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
 
   // 開き直すたびに既定へ戻す（前回「終了する」を選んだ状態が次の患者に残らない）。
@@ -117,6 +119,7 @@ export function PatientStatusChangeDialog({
       setWhen('today');
       setSpecialAction('keep');
       setRegenerate(true);
+      setRemoveSchedule(true);
       setErrorMessage(null);
     }
   }, [open]);
@@ -127,6 +130,9 @@ export function PatientStatusChangeDialog({
 
   // 特別訪問週間の選択も BE に渡す: `end` のとき `visits.total` は ⭐ 配置分を
   // **含んだ** 数字で返る。FE で placed_future_visits を足さない（設計 §7-3 (a)）。
+  const isEnd = toStatus === 'cancelled';
+  // 休止 / 入院 → 終了（向きは none）でも確認を出す。
+  const endFromInactive = isEnd && direction === 'none' && fromStatus !== 'cancelled';
   const impactQuery = usePatientStatusImpact(patientId, toStatus, fromDate, {
     enabled: open,
     specialPeriodAction: specialAction,
@@ -141,8 +147,15 @@ export function PatientStatusChangeDialog({
       direction === 'reactivate'
         ? { status: toStatus, from_date: fromDate, regenerate }
         : direction === 'deactivate'
-          ? { status: toStatus, from_date: fromDate, special_period_action: specialAction }
-          : { status: toStatus, from_date: fromDate };
+          ? {
+              status: toStatus,
+              from_date: fromDate,
+              special_period_action: specialAction,
+              ...(isEnd ? { remove_schedule: removeSchedule } : {}),
+            }
+          : endFromInactive
+            ? { status: toStatus, from_date: fromDate, remove_schedule: removeSchedule }
+            : { status: toStatus, from_date: fromDate };
     try {
       const result = await changeMut.mutateAsync(body);
       onDone(result);
@@ -166,7 +179,9 @@ export function PatientStatusChangeDialog({
       ? '取り消す予定と特別訪問週間の扱いを確認してください。'
       : direction === 'reactivate'
         ? '固定訪問の型から作り直す予定を確認してください。'
-        : '予定への影響はありません。';
+        : endFromInactive
+          ? '消す予定と固定訪問の枠を確認してください。'
+          : '予定への影響はありません。';
 
   return (
     <Dialog
@@ -187,12 +202,12 @@ export function PatientStatusChangeDialog({
         </DialogHeader>
 
         <div className="space-y-4 text-sm text-text-primary" data-testid="patient-status-body">
-          {direction === 'none' ? (
+          {direction === 'none' && !endFromInactive ? (
             <p>
               {STATUS_LABEL[fromStatus]} から {STATUS_LABEL[toStatus]}{' '}
               に変更します。予定への影響はありません。
             </p>
-          ) : impact?.direction === 'none' ? (
+          ) : impact?.direction === 'none' && !endFromInactive ? (
             <p data-testid="patient-status-already">
               {patientName}様はすでに{STATUS_LABEL[toStatus]}
               です（画面の表示が古い可能性があります）。 変更はありません。
@@ -202,7 +217,11 @@ export function PatientStatusChangeDialog({
               {/* ── いつから ─────────────────────────────────────────── */}
               <fieldset className="space-y-2">
                 <legend className="text-sm font-semibold text-text-secondary">
-                  {direction === 'deactivate' ? '取り消す範囲' : '戻す範囲'}
+                  {direction === 'reactivate'
+                    ? '戻す範囲'
+                    : endFromInactive
+                      ? '消す範囲'
+                      : '取り消す範囲'}
                 </legend>
                 <label className={rowCls}>
                   <input
@@ -257,8 +276,13 @@ export function PatientStatusChangeDialog({
                   </Button>
                 </div>
               ) : impact ? (
-                direction === 'deactivate' ? (
-                  <DeactivateSummary impact={impact} />
+                direction !== 'reactivate' ? (
+                  <DeactivateSummary
+                    impact={impact}
+                    isEnd={isEnd}
+                    removeSchedule={removeSchedule}
+                    onRemoveScheduleChange={setRemoveSchedule}
+                  />
                 ) : (
                   <ReactivateSummary
                     impact={impact}
@@ -351,7 +375,17 @@ export function PatientStatusChangeDialog({
 
 // ─── Sub views ───────────────────────────────────────────────────────────────
 
-function DeactivateSummary({ impact }: { impact: StatusImpact }) {
+function DeactivateSummary({
+  impact,
+  isEnd,
+  removeSchedule,
+  onRemoveScheduleChange,
+}: {
+  impact: StatusImpact;
+  isEnd: boolean;
+  removeSchedule: boolean;
+  onRemoveScheduleChange: (next: boolean) => void;
+}) {
   const excluded = excludedText(impact.visits.excluded);
   return (
     <section
@@ -380,9 +414,29 @@ function DeactivateSummary({ impact }: { impact: StatusImpact }) {
           取消しない予定: {excluded}
         </p>
       ) : null}
-      <p className="text-text-secondary">
-        固定訪問の型は残ります（{impact.fixed_visit_rows} 行・復帰時にそのまま使えます）
-      </p>
+      {isEnd ? (
+        <label className={`${rowCls} bg-bg-base`}>
+          <input
+            type="checkbox"
+            className="mt-0.5 h-4 w-4"
+            checked={removeSchedule}
+            onChange={(e) => onRemoveScheduleChange(e.target.checked)}
+            data-testid="patient-status-remove-schedule"
+          />
+          <span>
+            予定と固定訪問の枠も消す（終了の方はおすすめ）
+            <span className="block text-text-secondary" data-testid="patient-status-remove-counts">
+              消える予定 {impact.removable_visits} 件・固定訪問の枠 {impact.fixed_visit_rows} 行
+              （枠の中身は記録に残ります）
+            </span>
+          </span>
+        </label>
+      ) : null}
+      {!isEnd || !removeSchedule ? (
+        <p className="text-text-secondary" data-testid="patient-status-fixed-kept">
+          固定訪問の型は残ります（{impact.fixed_visit_rows} 行・復帰時にそのまま使えます）
+        </p>
+      ) : null}
       {impact.pending_requests > 0 ? (
         <p className="text-text-secondary" data-testid="patient-status-pending-requests">
           未処理の申請 {impact.pending_requests} 件は自動で却下します
@@ -394,7 +448,9 @@ function DeactivateSummary({ impact }: { impact: StatusImpact }) {
       {/* op-log の「戻る」はステータス連動の取消には効かない (BE 決定)。
           間違えたときの出口を必ず書いておく。 */}
       <p className="text-text-secondary" data-testid="patient-status-undo-note">
-        取り消した予定は盤面の「戻る」では戻せません。元に戻すには患者様のステータスを稼働中に戻してください。
+        {isEnd && removeSchedule
+          ? '消した予定と固定訪問の枠は、稼働中に戻しても自動では復活しません（固定訪問は入れ直しが必要です）。'
+          : '取り消した予定は盤面の「戻る」では戻せません。元に戻すには患者様のステータスを稼働中に戻してください。'}
       </p>
     </section>
   );

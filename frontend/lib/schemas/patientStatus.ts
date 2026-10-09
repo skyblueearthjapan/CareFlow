@@ -54,6 +54,9 @@ export const statusImpactSchema = z.object({
   pending_requests: z.number().int().nonnegative().default(0),
   kaipoke_weeks: z.number().int().nonnegative().default(0),
   regenerate: impactRegenerateSchema.nullish(),
+  // 終了のみ: 今後の予定と固定訪問の枠を消す設定で数えた結果（BE 既定 = 終了なら ON）。
+  remove_schedule: z.boolean().default(false),
+  removable_visits: z.number().int().nonnegative().default(0),
 });
 export type StatusImpact = z.infer<typeof statusImpactSchema>;
 
@@ -62,6 +65,8 @@ export const statusChangeRequestSchema = z.object({
   from_date: z.string().optional(),
   special_period_action: specialPeriodActionEnum.default('keep'),
   regenerate: z.boolean().default(true),
+  // 終了のみ有効。省略 = 終了なら消す。false で従来どおり（取消のみ・枠は残す）。
+  remove_schedule: z.boolean().optional(),
   note: z.string().max(200).optional(),
 });
 export type StatusChangeRequest = z.input<typeof statusChangeRequestSchema>;
@@ -100,6 +105,8 @@ export const statusChangeResultSchema = z.object({
     })
     .nullish(),
   notification_count: z.number().int().nonnegative().default(0),
+  removed_visit_count: z.number().int().nonnegative().default(0),
+  removed_fixed_visit_rows: z.number().int().nonnegative().default(0),
 });
 export type StatusChangeResult = z.infer<typeof statusChangeResultSchema>;
 

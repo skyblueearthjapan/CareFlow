@@ -95,7 +95,14 @@ export function formatStatusChangeMessage(result: StatusChangeResult): string {
       result.cancelled_count > 0
         ? `${STATUS_LABEL[to]}にしました（予定 ${result.cancelled_count} 件を取消）`
         : `${STATUS_LABEL[to]}にしました`;
-    return result.special_period?.action === 'end' ? `${base}・特別訪問週間を終了` : base;
+    const removed =
+      result.removed_visit_count > 0 || result.removed_fixed_visit_rows > 0
+        ? `・予定 ${result.removed_visit_count} 件と固定訪問の枠 ${result.removed_fixed_visit_rows} 行を消しました`
+        : '';
+    const withRemoved = `${base}${removed}`;
+    return result.special_period?.action === 'end'
+      ? `${withRemoved}・特別訪問週間を終了`
+      : withRemoved;
   }
   return `${STATUS_LABEL[to]}にしました`;
 }
@@ -131,7 +138,8 @@ export function usePatientStatusGate({
       const direction = statusChangeDirection(fromStatus, next);
       // 同じ値、または非稼働どうしの移動（入院中 → 一時休止 など）は素通し。
       // PATCH が status を運び、BE の安全網が必要なら連動を走らせる。
-      if (next === fromStatus || direction === 'none') {
+      // ただし「終了（cancelled）」への変更は元が何であっても確認する（予定と枠を消すため）。
+      if (next === fromStatus || (direction === 'none' && next !== 'cancelled')) {
         await submit(values, { omitStatus: false });
         return;
       }
