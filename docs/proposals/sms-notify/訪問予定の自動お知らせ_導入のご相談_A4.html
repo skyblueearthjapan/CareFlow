@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>訪問予定の自動お知らせ 導入のご相談</title>
+<style>
+  @page { size: A4 portrait; margin: 11mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Noto Sans JP", "Yu Gothic", "Meiryo", sans-serif; color: #222; margin: 0; font-size: 8.9pt; line-height: 1.42; background: #fff; }
+  .page { width: 188mm; margin: 0 auto; page-break-after: always; break-after: page; }
+  .page:last-child { page-break-after: auto; break-after: auto; }
+  .eyebrow { font-size: 8pt; color: #b8325a; font-weight: 700; letter-spacing: .08em; }
+  h1 { font-size: 17pt; margin: 1mm 0 1mm; line-height: 1.3; }
+  .lead { font-size: 9.6pt; margin: 1.5mm 0 3mm; }
+  .meta { font-size: 8pt; color: #666; text-align: right; }
+  h2 { font-size: 10.5pt; margin: 2.8mm 0 1.2mm; padding: 1mm 2.5mm; background: #fbe9ef; border-left: 4px solid #e15a7f; }
+  h2 .no { color: #b8325a; margin-right: 2mm; }
+  p { margin: 1mm 0; } ul, ol { margin: 1mm 0 1mm 5mm; padding: 0; } li { margin: .6mm 0; }
+  table { border-collapse: collapse; width: 100%; break-inside: avoid; }
+  th, td { border: 1px solid #c9c9c9; padding: .7mm 1.6mm; vertical-align: top; }
+  th { background: #f4f4f4; font-weight: 600; text-align: left; font-size: 8.8pt; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; }
+  .card { border: 1px solid #ddd; border-radius: 2mm; padding: 2mm 3mm; break-inside: avoid; }
+  .card h3 { font-size: 10pt; margin: 0 0 1mm; color: #b8325a; }
+  .sms { font-family: "Noto Sans JP", sans-serif; background: #f6f7f9; border: 1px solid #d9dde3; border-radius: 3mm; padding: 2mm 3mm; font-size: 9pt; margin: 1.5mm 0; }
+  .sms small { display: block; color: #777; font-size: 7.6pt; margin-top: .8mm; }
+  .flow { display: flex; gap: 1.5mm; align-items: stretch; margin: 2mm 0; }
+  .flow div { flex: 1; border: 1px solid #e15a7f; border-radius: 2mm; padding: 1.5mm 2mm; font-size: 8.6pt; background: #fff8fa; }
+  .flow b { display: block; color: #b8325a; font-size: 8pt; }
+  .note { font-size: 8.2pt; color: #555; }
+  .rec { background: #fff3cd; }
+  .good { color: #1b7a43; font-weight: 600; } .warn { color: #b26a00; font-weight: 600; }
+  .answer { border: 2px solid #e15a7f; border-radius: 2mm; padding: 2mm 3mm; margin-top: 3mm; break-inside: avoid; }
+  .answer .opt { display: inline-block; margin: 1mm 6mm 1mm 0; font-size: 10pt; }
+  .src { font-size: 7.4pt; color: #777; margin-top: 2mm; }
+  .foot { font-size: 7.4pt; color: #888; border-top: 1px solid #eee; margin-top: 2.5mm; padding-top: 1mm; display: flex; justify-content: space-between; }
+  .p2 { font-size: 8.4pt; line-height: 1.36; }
+  .p2 h2 { margin: 2.2mm 0 1mm; font-size: 10pt; }
+  .p2 .card { padding: 1.5mm 2.5mm; }
+  .p2 li { margin: .3mm 0; }
+  @media screen { body { background: #eee; } .page { background: #fff; padding: 11mm; margin: 6mm auto; width: 210mm; box-shadow: 0 0 4px #aaa; } }
+</style>
+</head>
+<body>
+
+<!-- 1 ページ目 -->
+<section class="page">
+  <div class="meta">2026年10月　ご相談資料</div>
+  <div class="eyebrow">らく助（訪問看護スケジュール）新機能のご相談</div>
+  <h1>訪問予定を患者様へ自動でお知らせする機能<br>導入についてのご相談</h1>
+  <p class="lead">らく助で週の予定が決まったら、患者様お一人おひとりに<b>その方の訪問日時だけ</b>を自動でお知らせします。決まった後に日時が変わったときは、<b>変わった方だけ</b>に変更前と変更後をお知らせします。電話連絡の手間と、連絡の漏れを減らすことがねらいです。</p>
+
+  <h2><span class="no">1</span>できること</h2>
+  <div class="two">
+    <div class="card">
+      <h3>① 翌週の予定のお知らせ</h3>
+      <p>らく助で翌週の予定を「確定」すると、患者様ごとの予定を自動で作ります。<b>送る前に職員が一覧で確かめてから</b>送ります。</p>
+      <div class="sms">【〇〇訪問看護】来週の訪問予定<br>10/19(月)9:30　10/21(水)13:35<br>ご都合が悪い日は 043-XXX-XXXX へ<small>※ 週 2 回の方で約 64 文字。週 3 回以上の方は 70 文字を超えます。病名・処置の内容・お名前は書きません。</small></div>
+    </div>
+    <div class="card">
+      <h3>② 変更があった方だけのお知らせ</h3>
+      <p>確定の後に、訪問の<b>日・時刻の変更／追加／中止</b>があると、らく助が自動で見つけて、その方だけにお知らせします。担当職員の交代だけのときは送りません。</p>
+      <div class="sms">【〇〇訪問看護】訪問日時の変更<br>10/19(月) 9:30 → 11:00<br>ご不明点は 043-XXX-XXXX へ<small>※ 約 54 文字。何度も動かす途中では送らず、落ち着いてからまとめて送ります。</small></div>
+    </div>
+  </div>
+  <p class="note">送った日時・宛先・内容・届いたかどうかは、すべてらく助に記録します。届かなかった方は一覧に出るので、職員がお電話でフォローできます。</p>
+
+  <h2><span class="no">2</span>らく助での流れ</h2>
+  <div class="flow">
+    <div><b>STEP 1</b>翌週の予定を組む（今までどおり）</div>
+    <div><b>STEP 2</b>「週の予定を確定」を押す</div>
+    <div><b>STEP 3</b>お知らせの文面を一覧で確認</div>
+    <div><b>STEP 4</b>送信（SMS／LINE／メール）</div>
+    <div><b>その後</b>変更を自動で見つけて、その方だけに再送</div>
+  </div>
+  <p class="note">送信は「確定」のあとだけです。予定を組んでいる途中の動きで、患者様にお知らせが届くことはありません。</p>
+
+  <h2><span class="no">3</span>お知らせの方法（組み合わせられます）</h2>
+  <table>
+    <tr><th style="width:22%">方法</th><th style="width:22%">費用の目安</th><th>向いている方・注意点</th></tr>
+    <tr class="rec"><td><b>SMS（ショートメッセージ）</b><br>おすすめの中心</td><td>1 通 約 6〜10 円<br>（初期・月額 0 円のサービスあり）</td><td>携帯電話の番号だけで届き、アプリも不要。<span class="warn">70 文字を超えると 2 通分の料金</span>になるため、文面は短くします。</td></tr>
+    <tr><td><b>LINE 公式アカウント</b></td><td><span class="good">月 200 通まで無料</span><br>（超える場合は月 5,000 円で 5,000 通）</td><td>LINE をお使いの方には無料で送れます。患者様（ご家族）に事業所のアカウントを「友だち追加」していただく必要があります。</td></tr>
+    <tr><td><b>メール</b></td><td><span class="good">ほぼ無料</span><br>（月数百通なら無料枠内）</td><td>ご家族への連絡に向いています。迷惑メールに入ることがあるため、最初に届くか確かめます。</td></tr>
+    <tr><td><b>紙（予定表）</b></td><td><span class="good">無料</span>（印刷のみ）</td><td>携帯をお持ちでない方向け。訪問時に翌週の予定表をお渡しします（らく助から印刷）。</td></tr>
+  </table>
+  <p class="note">おすすめ：<b>LINE やメールを希望される方は無料の方法で、それ以外の方は SMS</b>。こうすると SMS の費用を抑えられます。携帯をお持ちでない方は紙で補います。</p>
+
+  <div class="foot"><span>らく助　訪問予定の自動お知らせ　導入のご相談</span><span>1 / 2</span></div>
+</section>
+
+<!-- 2 ページ目 -->
+<section class="page p2">
+  <h2 style="margin-top:0"><span class="no">4</span>SMS 配信サービスの候補と費用の目安</h2>
+  <table>
+    <tr><th style="width:22%">サービス</th><th style="width:30%">公開されている料金</th><th>特長・確認が要る点</th></tr>
+    <tr><td><b>KDDI Message Cast</b></td><td>初期・月額 0 円<br>1 通 9.35 円（税込）〜</td><td>送った分だけのお支払い。届いたかどうかを確認できる API あり。<b>無料のお試し（最大 2 か月・3,000 通）</b>あり。</td></tr>
+    <tr><td><b>Cuenote SMS</b></td><td>初期 0 円<br>1 通 6 円〜（プランによる）</td><td>API が充実。<b>月の最低送信数</b>の条件があるため、見積もりで確認が必要。</td></tr>
+    <tr><td><b>SMSLINK／CPaaS NOW</b><br>（ネクスウェイ）</td><td>初期・月額 0 円<br>1 通 6 円〜（月の最低 1,000 円）</td><td>API の試験環境が無料。送信元を<b>事業所専用の番号</b>にする場合は月 30,000 円。</td></tr>
+  </table>
+  <p class="note">どのサービスにも後から切り替えられる作りにします。最終的なお見積もりは、実際の送信数でご契約前にご提示します。</p>
+
+  <p><b>月の費用の試算（SMS のみで送る場合）</b>：今の利用者様の数から、1 週間にお知らせする方は<b>約 80 名</b>です。</p>
+  <table>
+    <tr><th>内容</th><th>通数の目安（月）</th><th>1 通 9.35 円の場合</th><th>1 通 6 円の場合</th></tr>
+    <tr><td>翌週の予定（80 名 × 約 4.3 週）<br><span class=note>週 3 回以上の方（約 2 割）は 70 文字を超え 2 通分</span></td><td>約 420 通分</td><td>約 3,900 円</td><td>約 2,500 円</td></tr>
+    <tr><td>変更のお知らせ（変更が 1〜3 割の場合）</td><td>約 35〜105 通</td><td>約 300〜1,000 円</td><td>約 200〜650 円</td></tr>
+    <tr><td><b>合計</b></td><td><b>約 455〜525 通分</b></td><td><b>約 4,200〜4,900 円</b></td><td><b>約 2,700〜3,200 円</b></td></tr>
+  </table>
+  <p class="note">※ 2026 年 10 月の実際の予定（1 週間に約 80 名・1 人平均 1.9 回）からの概算です。LINE やメールで受け取る方が増えるほど安くなります。送信元を事業所専用の番号にする場合は、別に月額がかかることがあります。</p>
+
+  <h2><span class="no">5</span>役割分担</h2>
+  <div class="two">
+    <div class="card"><h3>事業所様にお願いすること</h3><ul>
+      <li>SMS 配信サービス（必要なら LINE 公式アカウント）のご契約とお支払い</li>
+      <li>患者様・ご家族の<b>連絡先と、お知らせを受け取るご同意</b>の確認（らく助に入力欄を追加します）</li>
+      <li>文面・送る時刻・お知らせする範囲（ご本人／ご家族）のご判断</li>
+      <li>運用開始のご承認</li>
+    </ul></div>
+    <div class="card"><h3>当方で行うこと</h3><ul>
+      <li>サービス選定のお手伝い（料金・API・契約条件の比較）</li>
+      <li>らく助への組み込み（確定・変更の自動検知・送信・履歴・失敗の一覧）</li>
+      <li>連絡先・同意の入力欄と、送信前の確認画面の追加</li>
+      <li>送信テスト（<b>職員の携帯だけ</b>で確認し、患者様の情報では試しません）</li>
+    </ul></div>
+  </div>
+
+  <h2><span class="no">6</span>安全に運用するために</h2>
+  <ul>
+    <li><b>ご同意をいただいた方だけ</b>に送ります。いつ・どなたから・どの方法でご同意をいただいたかを記録します。</li>
+    <li>本文には<b>病名・処置の内容・患者様のお名前を書きません</b>（日時と事業所名・お問い合わせ先のみ）。万一宛先を間違えても、個人の情報が伝わらないようにします。</li>
+    <li>SMS は返信を受けられない番号から届くことが多いため、本文に<b>お問い合わせの電話番号</b>を入れます。</li>
+    <li>配信サービスの接続の鍵は、らく助の中で暗号化して保管します。電話番号を配信サービスに預けるため、ご契約先の個人情報の管理体制を事前に確認します。重要な変更（当日の中止など）は、これまでどおりお電話でもご連絡ください。</li>
+  </ul>
+
+  <h2><span class="no">7</span>進め方</h2>
+  <div class="flow">
+    <div><b>STEP 1（ご契約前）</b>お知らせする範囲・方法・文面のご相談</div>
+    <div><b>STEP 2（ご契約前）</b>らく助に連絡先・同意の欄や確定・変更の検知を作り、<b>実際には送らない</b>模擬の送信で確認</div>
+    <div><b>STEP 3</b>サービスのお見積もり → 事業所様でご契約</div>
+    <div><b>STEP 4</b>接続 → 職員の携帯で試験 → 一部の患者様から開始</div>
+  </div>
+  <p class="note">STEP 2 まではご契約前でも進められます。LINE とメールは、ご契約を待たずに先に始めることもできます。</p>
+
+  <div class="answer">
+    <b>ご意向をお聞かせください</b><br>
+    <span class="opt">□ 導入を前向きに検討する</span><span class="opt">□ 費用の確認後に判断する</span><span class="opt">□ 今回は見送る</span><br>
+    <span class="note">ご希望のお知らせ方法：□ SMS　□ LINE　□ メール　□ 紙　　／　ご家族へのお知らせ：□ 希望する　□ 希望しない</span>
+  </div>
+  <div class="src">出典（2026年10月10日に確認した各社の公開情報。料金・条件は変わる場合があります）：KDDI Message Cast 料金 kddimessagecast.jp/price ／ Cuenote SMS cuenote.jp/sms ／ ネクスウェイ SMSLINK・CPaaS NOW 料金 smslink.nexway.co.jp/price ／ LINE 公式アカウント料金 lycbiz.com</div>
+  <div class="foot"><span>らく助　訪問予定の自動お知らせ　導入のご相談</span><span>2 / 2</span></div>
+</section>
+</body>
+</html>

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SMS 自動通知 確認結果と技術検討</title>
+<style>
+  @page { size: A4 portrait; margin: 11mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Noto Sans JP", "Yu Gothic", "Meiryo", sans-serif; color: #222; margin: 0; font-size: 8.9pt; line-height: 1.45; background: #fff; }
+  main { width: 188mm; margin: 0 auto; }
+  h1 { font-size: 15pt; margin: 0 0 1mm; color: #b8325a; }
+  .sub { font-size: 8.4pt; color: #555; margin-bottom: 2mm; }
+  h2 { font-size: 10.5pt; margin: 3.5mm 0 1.2mm; padding: 1mm 2.5mm; background: #fbe9ef; border-left: 4px solid #e15a7f; break-after: avoid; }
+  h3 { font-size: 9.6pt; margin: 2.5mm 0 1mm; break-after: avoid; }
+  p { margin: 1mm 0; } ul, ol { margin: 1mm 0 1mm 5mm; padding: 0; } li { margin: .4mm 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1mm 0; }
+  th, td { border: 1px solid #c9c9c9; padding: .7mm 1.6mm; vertical-align: top; }
+  th { background: #f4f4f4; font-weight: 600; text-align: left; }
+  tr { break-inside: avoid; }
+  .ok { color: #1b7a43; font-weight: 700; } .ng { color: #c62828; font-weight: 700; } .mid { color: #b26a00; font-weight: 700; }
+  .box { border: 1px solid #e15a7f; background: #fff8fa; border-radius: 2mm; padding: 1.5mm 3mm; margin: 1.5mm 0; break-inside: avoid; }
+  code { font-family: Consolas, monospace; font-size: 8pt; background: #f3f3f3; padding: 0 .8mm; border-radius: 1mm; }
+  .note { font-size: 8pt; color: #555; }
+  .src { font-size: 7.4pt; color: #777; }
+  @media screen { body { background: #eee; } main { background: #fff; padding: 11mm; margin: 6mm auto; width: 210mm; box-shadow: 0 0 4px #aaa; } }
+</style>
+</head>
+<body><main>
+<h1>【社内】SMS 自動通知　確認結果と技術検討</h1>
+<div class="sub">2026年10月10日　今泉さん向け（お客様には出さない資料）／ らく助の本番は読むだけで調べ、何も変えていません。外部への送信テストもしていません。</div>
+
+<div class="box"><b>結論</b>：らく助に組み込んで実現できます。ただし<b>今のらく助には患者様の電話番号・メール・同意の欄が無く、送信の仕組みも無い</b>ため、そこから作ります。「週の確定」の状態も無いので新しく作り、変更は「確定時の写しと今の予定を見比べる」方式で検知するのが確実です。配信サービスの契約前に、模擬の送信まで含めてほぼ全部を作れます。お客様向けの相談書は、この前提で書き直しました（<code>訪問予定の自動お知らせ_導入のご相談_A4.pdf</code>・2 ページ）。</div>
+
+<h2>1. 元の相談書（2026/10/10 版）の確認結果</h2>
+<table>
+<tr><th style="width:34%">書かれていること</th><th style="width:10%">判定</th><th>確認結果・書き直した点</th></tr>
+<tr><td>KDDI Message Cast：初期・月額 0 円、9.35 円（税込）〜、API あり</td><td class="ok">正しい</td><td>公式の料金ページと一致。<b>無料トライアル（最大 2 か月 3,000 通）</b>があるので追記。配信結果の取得 API・双方向 SMS（オプション）もあり。</td></tr>
+<tr><td>Cuenote SMS：初期 0 円、6 円〜、月間最低送信数の条件あり</td><td class="ok">正しい</td><td>公式と一致。REST API・ISMS/P マーク取得。最低送信数は見積もりで確認。</td></tr>
+<tr><td>候補に SMSLINK / CPaaS NOW（ご依頼文にはあり、相談書には無し）</td><td class="mid">抜け</td><td>初期・月額 0 円、6 円〜、<b>月の最低 1,000 円</b>、API 試験環境が無料、<b>専用番号は月 30,000 円</b>。相談書に追加。</td></tr>
+<tr><td>「患者マスターに登録されている携帯番号・メールを使う」（ご依頼文）</td><td class="ng">前提が違う</td><td><b>らく助の患者マスターに電話・メール・同意の欄は無い</b>（住所と備考のみ）。カイポケ取込・Excel 取込にも無い。→ 入力欄と同意の記録を新設し、事業所様に入力をお願いする形に書き直し。</td></tr>
+<tr><td>試算：100 人・週 1 回＋変更 10% ＝ 月 440 通 × 9.35 円 ＝ 約 4,114 円</td><td class="mid">要調整</td><td>実際は稼働中 89 名・<b>1 週間に約 80 名</b>（平均 1.9 回／週、最大 5 回）。<b>70 文字を超えると 2 通分</b>（docomo は 66 字ごと、au・楽天は 67 字ごと）で、週 3 回以上の方（約 2 割）は超える。→ 月 455〜525 通分・約 4,200〜4,900 円（9.35 円）に置き換え。</td></tr>
+<tr><td>SMS 文面例（約 60 字）</td><td class="ok">ほぼ良い</td><td>70 字以内。<b>お問い合わせ電話番号</b>を入れる形に変更（共通番号の SMS は返信を受けられないことが多い）。患者名も入れない方針を明記。</td></tr>
+<tr><td>「専用の携帯や SIM は原則不要」</td><td class="ok">正しい</td><td>API 型サービスで送るため不要。ただし<b>送信元が共通番号</b>だと誰から来たか分かりにくい。事業所専用の番号は月額がかかる（例：月 30,000 円）。本文冒頭の【事業所名】で補う。</td></tr>
+<tr><td>病名・処置を本文に入れない</td><td class="ok">正しい</td><td>さらに<b>患者名も入れない</b>（誤送信時の情報漏れを防ぐ）を追加。</td></tr>
+<tr><td>（記載なし）法令・同意</td><td class="mid">追記</td><td>予定のお知らせは広告・宣伝ではないため、特定電子メール法の「特定電子メール」には当たらない見込み（<b>宣伝文を混ぜない</b>のが条件）。電話番号を配信事業者に渡すのは個人情報保護法上の「委託」に当たり、委託先の監督（契約・管理体制の確認）が必要。医療・介護の個人情報ガイダンスに沿い、<b>ご本人・ご家族の同意を記録</b>する。<span class="note">※ 法的な最終判断は事業所様側でのご確認を推奨。</span></td></tr>
+</table>
+
+<h2>2. 無料・低価格の方法も含めた比較（お客様の負担を下げる案）</h2>
+<table>
+<tr><th style="width:18%">方法</th><th style="width:20%">費用</th><th>良い点</th><th>弱い点・条件</th></tr>
+<tr><td><b>国内 SMS 配信</b>（KDDI・Cuenote・ネクスウェイ）</td><td>6〜10 円／通</td><td>番号だけで届く。到達率が高い（国内キャリア直結）。配信結果 API あり</td><td>70 字超は 2 通分。共通番号は返信不可・誰からか分かりにくい</td></tr>
+<tr><td><b>LINE 公式アカウント</b>（Messaging API）</td><td><b>月 200 通まで無料</b>／月 5,000 円で 5,000 通</td><td>無料枠が大きい。既読が分かる。返信も受けられる</td><td>患者様（ご家族）の<b>友だち追加が必要</b>。らく助の患者と LINE の利用者を結び付ける登録の手間（初回に QR から登録）</td></tr>
+<tr><td><b>メール</b>（Amazon SES 等）</td><td>ほぼ無料（SES は 1,000 通 約 0.1 ドル）</td><td>文字数の制限なし。ご家族向け</td><td>迷惑メール判定。送信ドメインの設定（SPF/DKIM）が要る。※ SendGrid の無料プランは 2025 年に終了</td></tr>
+<tr><td><b>紙の予定表</b>（訪問時に手渡し）</td><td>無料</td><td>携帯の無い高齢者にも届く。らく助の印刷機能を流用できる</td><td>変更の連絡には使えない（変更は電話）</td></tr>
+<tr><td><b>患者様ごとの予定ページ</b>（URL を 1 回お渡し）</td><td>無料</td><td>いつでも最新の予定を見られる。変更も自動で反映</td><td>見に行く必要がある（通知ではない）。URL の管理（推測されない鍵付き URL・期限）</td></tr>
+<tr><td>海外系 SMS（Twilio・Amazon SNS）</td><td>約 11〜18 円／通</td><td>API が使いやすい</td><td>国内サービスより割高。Amazon は既定で月 1 ドルの上限があり申請が要る</td></tr>
+<tr><td>自前のスマホから送る</td><td>携帯の SMS 料金</td><td>契約が簡単</td><td><b>おすすめしない</b>：大量送信でキャリアの制限・規約に触れる恐れ、記録・再送が作れない</td></tr>
+<tr><td>自動音声電話（IVR）</td><td>月数千円〜＋通話料</td><td>固定電話の方にも届く</td><td>費用・作り込みが重い。今回は将来の選択肢</td></tr>
+</table>
+<p><b>おすすめ</b>：送り先ごとに方法を選べる作りにし、<b>LINE・メールを希望される方は無料で、それ以外は SMS</b>。携帯の無い方は紙。LINE とメールは配信サービスの契約を待たずに始められる。</p>
+
+<h2>3. らく助に組み込む場合の推奨構成</h2>
+<h3>3-1. 足りないもの（新しく作る）と、使えるもの</h3>
+<table>
+<tr><th style="width:26%">必要なもの</th><th style="width:34%">今のらく助</th><th>方針</th></tr>
+<tr><td>患者様の連絡先・同意</td><td>無い（<code>patients</code> は住所・備考のみ）</td><td>別テーブル <code>patient_contacts</code>（種別 SMS/LINE/メール、ご本人／ご家族、番号は国際形式に正規化、携帯 070/080/090 判定、受け取る種類＝週の予定／変更）と <code>patient_contact_consents</code>（いつ・誰が・方法・取り消し）。患者フォームと Excel 取込に欄を追加</td></tr>
+<tr><td>週の確定</td><td>無い（<code>course_status</code>・青ピン・カイポケの●未送信は別の意味）</td><td><code>week_confirmations</code>（拠点×週・確定者・日時）。手本は職員の休み申請の<b>月確定</b>（<code>staff_shift_confirmations</code>）</td></tr>
+<tr><td>お知らせした内容の写し</td><td>無い（取込前の写し <code>inbound_snapshots</code> は 5 世代で消える）</td><td><code>patient_week_notices</code>（患者×週で 1 行、送った予定の一覧を JSON で保存、版数）。比べるキーは <b>患者＋日＋開始時刻</b>（訪問の ID は週の生成・取込で作り直されるので使わない）。2 名体制は 1 件にまとめる</td></tr>
+<tr><td>変更の検知</td><td>訪問を書き換える経路が <b>30 以上</b>あり、1 か所で拾えない（操作履歴 <code>schedule_op_log</code> は一部の操作だけ）</td><td><b>5〜10 分おきの見比べ</b>（cron）。確定済みで今日以降の週について、今の予定と写しを患者ごとに比べ、追加・中止・日時の変更だけを拾う。担当の交代・コース・打刻は対象外。<b>落ち着くまで 10 分待ってから</b>送る（ドラッグで削除→配置の途中を送らない）</td></tr>
+<tr><td>送信の順番待ち・再送</td><td>キューは無い（FastAPI の BackgroundTasks と VPS の cron のみ）</td><td><code>notification_outbox</code>（宛先・本文・状態・試行回数・次の試行時刻・<b>二重送信防止のキー</b>・配信サービスの ID）。cron から 1 分〜5 分おきに送信 API を呼ぶ。手本はカイポケ連携の<b>ジョブ＋明細＋5 分おきの確定</b>と advisory lock</td></tr>
+<tr><td>配信サービスとのつなぎ</td><td>無い</td><td><b>送信の窓口を 1 つの型にする</b>（送る／結果を取る）。実装は「模擬（送らずに記録）」「KDDI」「Cuenote」「ネクスウェイ」「LINE」「メール」を差し替え。手本は音声機能の <code>voice_ai_provider</code>（既定は none）</td></tr>
+<tr><td>接続の鍵の保管</td><td>カイポケのログイン情報を Fernet で暗号化して DB に保存する仕組みあり</td><td>同じ形で <code>messaging_credentials</code>（拠点ごと可）。画面には鍵を出さない。監査ログの伏せ字に新しい項目名を足す</td></tr>
+<tr><td>送信の記録・失敗の一覧</td><td>アプリ内のお知らせ（職員向け）はあるが、患者宛て・送信状態の列は無い</td><td>送信ログ（宛先は伏せ字）＋届かなかった一覧の画面。失敗は管理者へアプリ内で知らせる</td></tr>
+<tr><td>届いたかの結果</td><td>受け口（Webhook）は無い。<code>carelink</code> の API は外から届く（Cloudflare Access なし）</td><td>まずは<b>結果を取りに行く（ポーリング）</b>方式で十分。Webhook を使うなら署名の確かめを必須に</td></tr>
+<tr><td>送り主の名前・電話</td><td><code>business_profile</code>（事業所名・電話）は 1 件だけ</td><td>当面はこれを使う。拠点ごとに分けるなら <code>offices</code> に列を足す</td></tr>
+</table>
+
+<h3>3-2. 処理の流れ</h3>
+<ol>
+<li><b>確定</b>：管理者が「週の予定を確定」→ 患者ごとの予定を写し、文面を作り、<b>送信前の確認画面</b>（送らない方を外せる）→ 送信予約（outbox）。ここまで 1 回の処理でまとめて記録。</li>
+<li><b>送信</b>：cron が outbox を少しずつ送る（配信サービスの上限に合わせて速さを調整）。送った ID を保存。失敗は時間をおいて再送、上限回数で「失敗」にして一覧へ。</li>
+<li><b>変更</b>：cron の見比べで差分が出た患者だけ「変更前→変更後」を outbox へ。写しを新しい内容に更新（版数＋1）。同じ変更を二度送らないキー＝患者＋週＋版数。</li>
+<li><b>取り消し</b>：確定を取り消す・ご同意の取り消し・稼働中でなくなった方は、以後送らない。</li>
+</ol>
+
+<h2>4. 配信サービスの契約前に作れるもの</h2>
+<ul>
+<li>連絡先・同意の欄（患者フォーム・Excel 取込）／週の確定と写し／変更の見比べ／文面づくり（70 字の目安を画面に表示）／送信前の確認画面／送信の記録と失敗の一覧</li>
+<li><b>模擬の送信</b>（実際には送らず、送ったことにして記録する）で、確定→通知→変更→再通知まで一通り動かせる。テストは架空の患者と職員の携帯だけで行う</li>
+<li>LINE とメールは無料枠で、契約を待たずに本物の送信まで作れる（事業所様の LINE 公式アカウントの開設は必要）</li>
+<li>契約後にやること：接続の鍵の登録 → 職員の携帯で試験 → 一部の患者様から開始</li>
+</ul>
+
+<h2>5. 想定される課題</h2>
+<table>
+<tr><th style="width:28%">課題</th><th>対策</th></tr>
+<tr><td>連絡先・同意の入力の手間（約 90 名）</td><td>Excel でまとめて取り込める欄を用意。カイポケの利用者情報に電話があれば取込も検討（要確認）</td></tr>
+<tr><td>確定後に予定がよく動く（ならし直し・カイポケ側の手直し）と変更通知が増える</td><td>確定は「最終版」になってから押す運用。変更は落ち着いてからまとめて 1 通。<b>カイポケ側だけで直した変更はらく助に入らないと通知されない</b>（取込の運用とセット）</td></tr>
+<tr><td>70 字を超えると料金が倍</td><td>文面を短く。週 3 回以上の方は日付を詰めて表記、または「詳しくは予定ページ」の URL</td></tr>
+<tr><td>送信元が誰か分からない・返信できない</td><td>本文冒頭に【事業所名】、本文に問い合わせ電話。必要なら専用番号（月額）</td></tr>
+<tr><td>誤送信（番号の入れ間違い・家族の番号変更）</td><td>番号の書式チェック、最初の 1 回は「登録のお知らせ」を送って確かめる、本文に氏名・病名を入れない</td></tr>
+<tr><td>サーバーの時計が UTC</td><td>送信時刻・「今日」は必ず日本時間で計算（共通の関数を作る）</td></tr>
+<tr><td>テスト環境が SQLite</td><td>見比べ・送信の順番待ちは SQLite でも動く書き方にし、ロック部分は本番相当の環境で確認</td></tr>
+<tr><td>既存の機能を壊さない</td><td>新しいテーブルと新しい画面を<b>足すだけ</b>。既存の予定の書き換え経路には手を入れない（見比べ方式なので不要）。機能は拠点ごとのフラグで入／切</td></tr>
+</table>
+
+<h2>6. 作業量の目安</h2>
+<p>連絡先・同意（2〜3 日）／確定と写し・見比べ（3〜4 日）／送信の順番待ち・模擬送信・記録画面（3〜4 日）／LINE・メール（各 1〜2 日）／SMS 配信サービス 1 社の接続（1〜2 日、契約後）／レビュー・試験（2〜3 日）。<b>合計 およそ 2.5〜3.5 週間</b>（目安）。</p>
+
+<div class="src">出典（2026年10月10日確認）：KDDI Message Cast 料金 https://kddimessagecast.jp/price/ ・API https://kddimessagecast.jp/blog/sms/sms-api-guide/ ／ Cuenote SMS https://www.cuenote.jp/sms/ ／ ネクスウェイ SMSLINK・CPaaS NOW https://smslink.nexway.co.jp/price ／ LINE 公式アカウント料金 https://www.lycbiz.com/jp/column/line-official-account/technique/20200204/ ・Messaging API 料金 https://developers.line.biz/ja/docs/messaging-api/pricing/ ／ Amazon SES・SendGrid 無料プラン終了 https://www.twilio.com/en-us/changelog/sendgrid-free-plan ／ Twilio 日本の SMS 料金 https://www.twilio.com/en-us/sms/pricing/jp ／ Amazon SNS SMS 料金 https://aws.amazon.com/jp/sns/sms-pricing/</div>
+</main></body></html>
