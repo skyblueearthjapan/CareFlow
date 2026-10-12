@@ -61,7 +61,7 @@ async def run_solver(problems: list[dict], seconds: int, w_change: int = 20, max
         text = (stdout or b"").decode("utf-8", "replace")
         if proc.returncode != 0:
             if "No module named 'ortools'" in text or "ortools" in text and "ModuleNotFoundError" in text:
-                raise TemplateError("計算の部品（ortools）がこのサーバーに入っていません")
+                raise TemplateError("計算の部品がこのサーバーに入っていません（管理者へお知らせください）")
             logger.warning("template_ws solve failed: %s", text[-2000:])
             raise TemplateError("計算が止まりました。もう一度やってみてください（続くときは管理者へ）")
         return json.loads(out.read_text(encoding="utf-8"))

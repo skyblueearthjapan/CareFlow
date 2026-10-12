@@ -502,7 +502,7 @@ async def move_slot(db: AsyncSession, row: TemplateDraft, user: User, *, actor: 
     try:
         st = M.hm(start)
     except ValueError:
-        raise TemplateError("時刻は HH:MM で書いてください") from None
+        raise TemplateError("時刻は 9:30 のように書いてください") from None
     ed = part_of_key(parts, key)
     if len(parts) > 1 and course_id is not None and not any(
             c["id"] == course_id for p in P.build_week(ed) for c in p["courses"]):
@@ -713,7 +713,9 @@ async def build_view(db: AsyncSession, row: TemplateDraft, compare_with: UUID | 
     ms_all: list[dict] = []
     heads: list[dict] = []
     tray: list[dict] = []
+    by_office: list[dict] = []
     for ed, ofc in zip(parts, offices):
+        ms_part: list[dict] = []
         templates = sorted((t for t in raw["templates"] if t["office_id"] == ed["office_id"]
                             and M.COURSE_CODE_RE.match(t["label"] or "")),
                            key=lambda t: (t["label"] == M.MANAGER_LABEL, t["label"]))
@@ -733,6 +735,7 @@ async def build_view(db: AsyncSession, row: TemplateDraft, compare_with: UUID | 
                 c["office_id"] = ed["office_id"]
             m = E.day_metrics(ed, p)
             ms_all.append(m)
+            ms_part.append(m)
             part_days.append(cards)
             d = by_wd.setdefault(p["weekday"], {"weekday": p["weekday"], "name": M.WD[p["weekday"]], "courses": [],
                                                 "slots": [], "notes": [], "_m": []})
@@ -740,6 +743,7 @@ async def build_view(db: AsyncSession, row: TemplateDraft, compare_with: UUID | 
             d["slots"] += cards
             d["notes"] += p["notes"]
             d["_m"].append(m)
+        by_office.append({**ofc, **(E.totals(ms_part) if ms_part else {"master": {}, "draft": {}})})
         for sp in P.candidate_specs(ed):
             code = sp["patient"].get("code")
             mine = [c for cards in part_days for c in cards if c["new"] and c["code"] == code]
@@ -778,6 +782,7 @@ async def build_view(db: AsyncSession, row: TemplateDraft, compare_with: UUID | 
         "staff": [{"code": x["code"], "name": M.short_name(x["name"])} for x in sorted(raw["staff"], key=lambda x: x["code"] or "")
                   if x["primary_office_id"] in oids and not x["is_trainee"] and x["code"]],
         "totals": E.totals(ms_all) if ms_all else {"master": {}, "draft": {}},
+        "totals_by_office": by_office if multi else [],
         "steps": [step_json(s, names) for s in steps],
         "latest_step": step_json(next((s for s in steps if not s.undone), steps[0]), names) if steps else None,
         "can_undo": any(not s.undone for s in steps), "can_redo": any(s.undone for s in steps),

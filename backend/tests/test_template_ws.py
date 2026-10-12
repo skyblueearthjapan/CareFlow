@@ -474,6 +474,7 @@ async def test_all_offices_draft_create_list_move_and_refuse(db, client):
     assert {c["office"] for c in mon["courses"]} == {"稲", "都"}
     assert len(mon["slots"]) == 5  # 稲 4 + 都 1
     assert {h["office"] for h in v["courses"]} == {"稲", "都"}
+    assert [(o["label"], o["master"]["no_course"]) for o in v["totals_by_office"]] == [("稲", 0), ("都", 1)]
     # 一覧: 全拠点だけ / 拠点だけ
     allv = (await client.get(f"{API}/drafts?all_offices=true", headers=hdr)).json()
     assert [d["name"] for d in allv] == ["全体"] and allv[0]["office_id"] is None
