@@ -5962,8 +5962,10 @@ export function CourseDayTablePanel({
                 aria-label="スケジュール主要操作"
                 data-testid="schedule-main-action-toolbar"
               >
-                {/* 左グループ: 週次操作の起点ペア (W-9b PO 指示). */}
+                {/* 左グループ: 週次操作の起点ペア (W-9b PO 指示).
+                    PO 2026-10-12: 「この週を空にする」を「週を作る」の左隣に置く。 */}
                 <div className="flex flex-wrap items-center gap-2">
+                  <ClearWeekButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
                   <Button
                     type="button"
                     size="sm"
@@ -6007,8 +6009,12 @@ export function CourseDayTablePanel({
                     <ListChecks className="mr-1 h-4 w-4" aria-hidden />
                     週次ガイド
                   </Button>
+                </div>
+
+                {/* 右グループ: その他操作 + 書き戻し系. */}
+                <div className="flex flex-wrap items-center gap-2">
                   {/* ＋訪問（任意日付の訪問追加）— 患者/日付は空で開く (§3-1 ①)。
-                      行ボタンの＋訪問と同じモーダル。 */}
+                      行ボタンの＋訪問と同じモーダル。PO 2026-10-12: 新規患者登録の左隣へ。 */}
                   <Button
                     type="button"
                     size="sm"
@@ -6019,10 +6025,6 @@ export function CourseDayTablePanel({
                   >
                     ＋訪問
                   </Button>
-                </div>
-
-                {/* 右グループ: その他操作 + 書き戻し系. */}
-                <div className="flex flex-wrap items-center gap-2">
                   {/* PO 指示 2026-07-03: 「プール投入」ボタンは削除。保留プールの
                     「効果を表示」ボタン (PoolOverviewPane) が入口として十分なため。 */}
                   {/* W-4 (D-4): 旧「＋新規提案」を「＋新規患者登録」に置換。患者マスタの
@@ -6045,7 +6047,8 @@ export function CourseDayTablePanel({
               </div>
 
               {/* Row 2 (中段): 左=戻る/進む (Wave U-3・PO指示 2026-08-21: 空いていた
-              この行へ移設し、タブ行を 2 行に収める) / 右=「この週を空にする」。
+              この行へ移設し、タブ行を 2 行に収める)。「この週を空にする」は Row 1 の
+              「週を作る」の左隣へ移した (PO 2026-10-12)。
               完全固定 (赤) の付け外しは盤面では行わない — 患者マスタの
               固定訪問スケジュールで設定する (週全体 / 曜日ごと)。 */}
               <div
@@ -6057,9 +6060,6 @@ export function CourseDayTablePanel({
                 2026-08-23: 折りたたみ時はコンパクト行側に出すためここでは描画しない
                 (data-testid の重複を避ける)。 */}
                 {headerCollapsed ? <span /> : undoRedoButtons}
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <ClearWeekButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
-                </div>
               </div>
             </div>
           ) : null}
