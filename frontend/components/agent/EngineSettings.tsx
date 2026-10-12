@@ -7,7 +7,7 @@
  * 人ごとの席(PO 2026-10-13: ChatGPT Business/Team は 1 席 1 人): ここに出るのは「あなたの」アカウント。
  * 相談はその人のアカウントで動く。サインイン・サインアウト・既定の AI も、その人の分だけが変わる。
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useAgentMaybe } from './AgentProvider';
@@ -21,6 +21,8 @@ import {
   type KarteMode,
   type KarteSettings,
   type LoginFlow,
+  type SeatAssignments,
+  type SeatColumn,
   type SeatsView,
 } from './engines';
 
@@ -258,6 +260,14 @@ export function EngineSettingsSheet({
             </p>
           )}
           {!view && !msg && <p className="rk-es-note">読み込んでいます…</p>}
+          {view?.consult_seat && !view.consult_seat.owner_is_me && (
+            <p className="rk-es-note" data-testid="rk-es-consult-seat">
+              あなたの相談は、{view.consult_seat.name ?? '管理者'} の席の AI で動きます（AI
+              の席の割り当て）。
+              {view.consult_seat.state === 'missing' &&
+                ' いまその席がサインインしていません。管理者に連絡してください。'}
+            </p>
+          )}
 
           {providers.map((p) => {
             const st: EngineState = view?.engines[p]?.state ?? 'unknown';
@@ -429,6 +439,10 @@ export function EngineSettingsSheet({
             </section>
           )}
 
+          {view?.can_view_seats && engines.assignments && engines.assignSeat && (
+            <SeatAssignmentSection engines={engines} />
+          )}
+
           {view?.can_view_seats && engines.karte && engines.setKarte && (
             <KarteSeatSection engines={engines} />
           )}
@@ -440,6 +454,198 @@ export function EngineSettingsSheet({
         </footer>
       </section>
     </>
+  );
+}
+
+/**
+ * 席を選ぶ部品(AI の席の割り当て・カルテの下書きの席で共通)。サインインしていない席は選べず、薄く出す。
+ * 押した時点で onPick(保存は呼び出し側)。
+ */
+export function SeatOption({
+  name,
+  label,
+  checked,
+  disabled,
+  onPick,
+  note,
+  ariaLabel,
+}: {
+  name: string;
+  label: ReactNode;
+  checked: boolean;
+  disabled: boolean;
+  onPick: () => void;
+  note?: string;
+  ariaLabel?: string;
+}) {
+  return (
+    <label className="rk-es-radio rk-es-seatopt" data-disabled={disabled || undefined}>
+      <input
+        type="radio"
+        name={name}
+        checked={checked}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        onChange={() => {
+          if (!disabled && !checked) onPick();
+        }}
+      />
+      <span>{label}</span>
+      {note && <small>{note}</small>}
+    </label>
+  );
+}
+
+/** 列の見出し: 「A004 の ChatGPT」(サインインしている AI の名前)。自分の席は「自分の席」 */
+function seatLabel(c: SeatColumn, providers: EngineProvider[]): string {
+  const on = providers.filter((p) => c.engines[p]?.state === 'ok').map((p) => ENGINE_NAME[p]);
+  const what = on.length ? on.join('・') : 'AI（サインインしていません）';
+  return c.me ? `自分の席（${what}）` : `${c.name} の ${what}`;
+}
+
+/**
+ * AI の席の割り当て(管理者だけ・PO 2026-10-13)。行 = 管理者、列 = サインイン済みの席。
+ * ラジオを押した時点で保存。表の上で全員をまとめて 1 つの席にもできる。効くのは、その後に始める相談から。
+ */
+export function SeatAssignmentSection({ engines }: { engines: EngineAdmin }) {
+  const [v, setV] = useState<SeatAssignments | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [bulk, setBulk] = useState('');
+  const alive = useRef(true);
+
+  useEffect(() => {
+    alive.current = true;
+    engines
+      .assignments?.()
+      .then((x) => alive.current && setV(x))
+      .catch((e: Error) => alive.current && setErr(e.message || '読めませんでした'));
+    return () => {
+      alive.current = false;
+    };
+  }, [engines]);
+
+  const run = async (f: () => Promise<SeatAssignments> | undefined) => {
+    setSaving(true);
+    setErr(null);
+    try {
+      const x = await f();
+      if (x && alive.current) setV(x);
+    } catch (e) {
+      if (alive.current) setErr((e as Error).message || '変えられませんでした');
+    } finally {
+      if (alive.current) setSaving(false);
+    }
+  };
+
+  const signed = v ? v.seats.filter((c) => c.signed_in) : [];
+  const bulkSeat = v?.seats.find((c) => c.owner_user_id === bulk);
+
+  return (
+    <section className="rk-es-seats" aria-label="AI の席の割り当て">
+      <h3 className="rk-es-subhead">AI の席の割り当て</h3>
+      <p className="rk-es-note">
+        だれが、どの席（サインインした
+        AI）で相談するかを選びます。押すとすぐに決まり、そのあとに始める相談から使われます。
+      </p>
+      {err && (
+        <p className="rk-es-msg" data-tone="bad" role="alert">
+          {err}
+        </p>
+      )}
+      {!v && !err && <p className="rk-es-note">読み込んでいます…</p>}
+      {v && (
+        <>
+          <div className="rk-es-bulk">
+            <label>
+              全員をこの席にする ▾{' '}
+              <select
+                aria-label="全員をこの席にする"
+                value={bulk}
+                disabled={saving || signed.length === 0}
+                onChange={(e) => setBulk(e.target.value)}
+              >
+                <option value="">選んでください</option>
+                {signed.map((c) => (
+                  <option key={c.owner_user_id} value={c.owner_user_id}>
+                    {seatLabel(c, v.providers)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {bulkSeat && (
+              <span className="rk-es-choices">
+                <button
+                  type="button"
+                  className="rk-es-btn"
+                  data-kind="primary"
+                  disabled={saving}
+                  onClick={() =>
+                    void run(() => engines.assignSeatAll?.(bulkSeat.owner_user_id)).then(() =>
+                      setBulk(''),
+                    )
+                  }
+                >
+                  全員を「{seatLabel(bulkSeat, v.providers)}」にする
+                </button>
+                <button
+                  type="button"
+                  className="rk-es-btn"
+                  data-kind="quiet"
+                  onClick={() => setBulk('')}
+                >
+                  やめる
+                </button>
+              </span>
+            )}
+          </div>
+          <table className="rk-es-table">
+            <thead>
+              <tr>
+                <th scope="col">名前</th>
+                {v.seats.map((c) => (
+                  <th
+                    scope="col"
+                    key={c.owner_user_id}
+                    data-disabled={!c.signed_in || undefined}
+                    className="rk-es-seatcol"
+                  >
+                    {seatLabel(c, v.providers)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {v.rows.map((r) => (
+                <tr key={r.user_id} data-testid={`rk-es-assign-${r.user_id}`}>
+                  <td>
+                    {r.name}
+                    {r.me && <small>（あなた）</small>}
+                    {!r.seat_signed_in && (
+                      <small className="rk-es-warn"> 席がサインインしていません</small>
+                    )}
+                  </td>
+                  {v.seats.map((c) => (
+                    <td key={c.owner_user_id}>
+                      <SeatOption
+                        name={`rk-assign-${r.user_id}`}
+                        ariaLabel={`${r.name} は ${seatLabel(c, v.providers)}`}
+                        label={null}
+                        checked={r.seat_owner_user_id === c.owner_user_id}
+                        disabled={saving || !c.signed_in}
+                        onPick={() =>
+                          void run(() => engines.assignSeat?.(r.user_id, c.owner_user_id))
+                        }
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -526,22 +732,24 @@ export function KarteSeatSection({ engines }: { engines: EngineAdmin }) {
                 </p>
               )}
               {choices.map((s) => (
-                <label key={s.user_id} className="rk-es-radio">
-                  <input
-                    type="radio"
-                    name="rk-karte-seat"
-                    value={s.user_id}
-                    checked={k.seat_user_id === s.user_id}
-                    onChange={() => void save({ seat_user_id: s.user_id })}
-                  />
-                  <span>
-                    {s.name}
-                    {s.me && <small>（あなた）</small>}
-                  </span>
-                  {s.state !== 'ok' && (
-                    <small>（サインインしていません。いまは Gemini で作ります）</small>
-                  )}
-                </label>
+                <SeatOption
+                  key={s.user_id}
+                  name="rk-karte-seat"
+                  label={
+                    <>
+                      {s.name}
+                      {s.me && <small>（あなた）</small>}
+                    </>
+                  }
+                  checked={k.seat_user_id === s.user_id}
+                  disabled={s.state !== 'ok' && k.seat_user_id !== s.user_id}
+                  onPick={() => void save({ seat_user_id: s.user_id })}
+                  note={
+                    s.state !== 'ok'
+                      ? '（サインインしていません。いまは Gemini で作ります）'
+                      : undefined
+                  }
+                />
               ))}
               {k.seat_user_id && !k.seat_known && (
                 <p className="rk-es-note">

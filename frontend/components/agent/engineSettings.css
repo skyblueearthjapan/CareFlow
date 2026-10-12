@@ -300,3 +300,18 @@
   font-size: 14px;
   font-weight: 700;
 }
+
+/* AI の席の割り当て・席を選ぶ部品（サインインしていない席は薄く・選べない） */
+.rk-es-seatopt[data-disabled],
+.rk-es-seatcol[data-disabled] {
+  opacity: 0.45;
+}
+.rk-es-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.rk-es-warn {
+  color: var(--rk-warn, #b45309);
+}

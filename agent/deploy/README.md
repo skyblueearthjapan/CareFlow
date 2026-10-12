@@ -303,6 +303,13 @@ compose と秘密ファイルの名前のまま中継が読む（`agent/relay/co
 
 戻し方: 旗を OFF（すぐ Gemini だけに戻る）。口ごと止めるなら秘密ファイルから `AGENT_RELAY_SERVICE_TOKEN` を消して中継を立て直す（404 → backend は `seat_off` で Gemini）。
 
+### 3-11. AI の席の割り当て（テスト期間・`docs/plans/agent-ui/per-user-seats-2026-10-13.md` §6）
+
+- 既定では、割り当ての無い管理者は `AGENT_LEGACY_OWNER_USER_ID`（PO）の席で相談する。秘密ファイルにその行があることを確かめる。
+- 中継の image を作り直して立て直す（`dca build agent-relay && dca up -d agent-relay`）。frontend も作り直す。migration は無い。
+- migration 0095（`users.display_name`）を入れたら、`agent/deploy/sql/roles.sql` を流し直す（`agent_ro` に新しい列の権限を付ける）。流すまで ⚙ の名前はログイン ID。
+- ⚙ →「AI の席の割り当て」で確かめる。割り当て先の席がサインアウトしたら、その席を使う人の相談は始まらない（「使う AI の席がサインインしていません。管理者に連絡してください」）。
+
 ## 4. メモリ（swap なし・守り）
 
 | もの | 上限（compose） |

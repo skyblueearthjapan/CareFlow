@@ -45,6 +45,14 @@ export interface EnginesView {
   can_view_seats?: boolean;
   engines: Partial<Record<EngineProvider, { state: EngineState }>>;
   login: LoginFlow | null;
+  /** 相談で使う席(AI の席の割り当て)。owner_is_me でなければ name の人の席で動く */
+  consult_seat?: {
+    owner_is_me: boolean;
+    source: 'assigned' | 'default' | 'own';
+    name: string | null;
+    /** ほかの人の席のとき、その席のサインインの様子(新しい相談で使う AI) */
+    state?: EngineState;
+  };
 }
 
 /** 管理者だけ: どの管理者がどの AI にサインインしているか(名前と状態の語だけ。AI のメールは来ない) */
@@ -54,6 +62,30 @@ export interface SeatsView {
     name: string;
     me: boolean;
     engines: Partial<Record<EngineProvider, { state: EngineState }>>;
+  }[];
+}
+
+/** AI の席の割り当て(管理者だけ・agent/relay/service.py assignments_view と同じ形) */
+export interface SeatColumn {
+  owner_user_id: string;
+  name: string;
+  me: boolean;
+  engines: Partial<Record<EngineProvider, { state: EngineState }>>;
+  /** どれかの AI にサインインしている(選べる) */
+  signed_in: boolean;
+}
+export interface SeatAssignments {
+  providers: EngineProvider[];
+  default_seat_owner_user_id: string | null;
+  seats: SeatColumn[];
+  rows: {
+    user_id: string;
+    name: string;
+    me: boolean;
+    seat_owner_user_id: string;
+    source: 'assigned' | 'default' | 'own';
+    seat_known: boolean;
+    seat_signed_in: boolean;
   }[];
 }
 
@@ -82,6 +114,10 @@ export interface EngineAdmin {
   ): Promise<{ provider: EngineProvider; ok: boolean; state: EngineState }>;
   /** 管理者のサインインの様子(無い実装では出さない) */
   seats?(): Promise<SeatsView>;
+  /** AI の席の割り当て(無い実装では出さない) */
+  assignments?(): Promise<SeatAssignments>;
+  assignSeat?(userId: string, seatOwnerUserId: string): Promise<SeatAssignments>;
+  assignSeatAll?(seatOwnerUserId: string): Promise<SeatAssignments>;
   /** カルテの下書きに使う席(無い実装では出さない) */
   karte?(): Promise<KarteSettings>;
   setKarte?(patch: { mode?: KarteMode; seat_user_id?: string | null }): Promise<KarteSettings>;
@@ -166,6 +202,20 @@ export class HttpEngineAdmin implements EngineAdmin {
   seats() {
     return this.call<SeatsView>('/seats');
   }
+  assignments() {
+    return this.send<SeatAssignments>('/seats/assignments');
+  }
+  assignSeat(userId: string, seatOwnerUserId: string) {
+    return this.send<SeatAssignments>('/seats/assignments', 'PUT', {
+      user_id: userId,
+      seat_owner_user_id: seatOwnerUserId,
+    });
+  }
+  assignSeatAll(seatOwnerUserId: string) {
+    return this.send<SeatAssignments>('/seats/assignments/all', 'POST', {
+      seat_owner_user_id: seatOwnerUserId,
+    });
+  }
   karte() {
     return this.send<KarteSettings>('/karte/settings');
   }
@@ -192,6 +242,42 @@ export function createMockEngineAdmin(): EngineAdmin {
       { user_id: 'mock-b', name: '管理者 B', me: false, state: 'missing' },
     ],
   });
+  const assigned: Record<string, string> = {};
+  const assignView = (): SeatAssignments => {
+    const seats: SeatColumn[] = [
+      {
+        owner_user_id: 'mock-me',
+        name: 'あなた',
+        me: true,
+        engines: { codex: { state: engines.codex }, claude: { state: engines.claude } },
+        signed_in: engines.codex === 'ok' || engines.claude === 'ok',
+      },
+      {
+        owner_user_id: 'mock-b',
+        name: '管理者 B',
+        me: false,
+        engines: { codex: { state: 'missing' }, claude: { state: 'missing' } },
+        signed_in: false,
+      },
+    ];
+    return {
+      providers: ['codex', 'claude'],
+      default_seat_owner_user_id: 'mock-me',
+      seats,
+      rows: seats.map((c) => {
+        const owner = assigned[c.owner_user_id] ?? 'mock-me';
+        return {
+          user_id: c.owner_user_id,
+          name: c.name,
+          me: c.me,
+          seat_owner_user_id: owner,
+          source: assigned[c.owner_user_id] ? 'assigned' : 'default',
+          seat_known: true,
+          seat_signed_in: !!seats.find((x) => x.owner_user_id === owner)?.signed_in,
+        };
+      }),
+    };
+  };
   const idle = (): LoginFlow => ({
     provider: null,
     state: 'idle',
@@ -234,6 +320,18 @@ export function createMockEngineAdmin(): EngineAdmin {
           },
         ],
       };
+    },
+    async assignments() {
+      return assignView();
+    },
+    async assignSeat(userId, owner) {
+      assigned[userId] = owner;
+      return assignView();
+    },
+    async assignSeatAll(owner) {
+      assigned['mock-me'] = owner;
+      assigned['mock-b'] = owner;
+      return assignView();
     },
     async karte() {
       return karteView();

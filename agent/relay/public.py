@@ -27,6 +27,12 @@ AI は人ごとの席（その人のログイン）で動く: 相談は持ち主
   POST   /engines/login/code {code}                            → Login（Claude: ブラウザーに出たコードを貼る）
   POST   /engines/login/cancel                                 → Login
   POST   /engines/{provider}/logout                            → {provider, ok, state}
+  GET    /seats/assignments                                    → {providers, default_seat_owner_user_id, seats: [{owner_user_id, name, me,
+                                                                  engines{…: {state}}, signed_in}], rows: [{user_id, name, me,
+                                                                  seat_owner_user_id, source: assigned|default|own, seat_known,
+                                                                  seat_signed_in}]}（管理者だけ・AI の席の割り当て）
+  PUT    /seats/assignments {user_id, seat_owner_user_id}      → 同上（1 人。サインインしていない席は 409・admin_events に記録）
+  POST   /seats/assignments/all {seat_owner_user_id}           → 同上（全員＋既定の席。その後に始める相談から効く）
   GET    /karte/settings                                       → {mode: designated|presser, modes, seat_user_id, seat_known,
                                                                   seats: [{user_id, name, me, state}]}（管理者だけ・カルテの下書きに
                                                                   使う席。state は ChatGPT のサインインの様子・relay.karte）
@@ -220,6 +226,20 @@ def create_public_app(svc: RelayService, auth: AuthChecker, feature_gate: Featur
     @app.post(PREFIX + "/engines/{provider}/logout")
     async def engines_logout(provider: str, user: User = Depends(current_user)) -> Any:
         return await svc.logout(user, provider)
+
+    # ---------- AI の席の割り当て（管理者だけ・だれがだれの席で相談するか） ----------
+    @app.get(PREFIX + "/seats/assignments")
+    async def seat_assignments(user: User = Depends(current_user)) -> Any:
+        return await svc.assignments_view(user)
+
+    @app.put(PREFIX + "/seats/assignments")
+    async def seat_assign(payload: dict = Body(...), user: User = Depends(current_user)) -> Any:
+        return await svc.assign_seat(user, str(payload.get("user_id") or ""),
+                                     str(payload.get("seat_owner_user_id") or ""))
+
+    @app.post(PREFIX + "/seats/assignments/all")
+    async def seat_assign_all(payload: dict = Body(...), user: User = Depends(current_user)) -> Any:
+        return await svc.assign_seat_all(user, str(payload.get("seat_owner_user_id") or ""))
 
     # ---------- カルテの下書きに使う席（管理者だけ・relay.karte） ----------
     @app.get(PREFIX + "/karte/settings")

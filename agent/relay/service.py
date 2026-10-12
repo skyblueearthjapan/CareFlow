@@ -46,6 +46,14 @@ from relay.watch import Watcher
 #: 持ち主がその AI にサインインしていないとき（画面は ⚙ を開くボタンを添える・error code=signin）
 SIGNIN_JA = {"codex": "ChatGPT にサインインすると、相談を始められます",
              "claude": "Claude にサインインすると、相談を始められます"}
+#: 割り当てられた（ほかの人の）席がサインインしていないとき（画面: error code=seat_signin）
+SEAT_SIGNIN_JA = "使う AI の席がサインインしていません。管理者に連絡してください"
+
+#: AI の席の割り当て（agent.settings・PO 2026-10-13）。seat_assignment:<user id> = 席の持ち主の user id
+ASSIGN_PREFIX = "seat_assignment:"
+DEFAULT_SEAT_OWNER = "default_seat_owner_user_id"
+#: 相談ごとに、始めたときの席（続きは同じ席で）。session_seat:<session id> = 席の持ち主の user id
+SESSION_SEAT_PREFIX = "session_seat:"
 
 RunnerFactory = Callable[[dict, str, "str | None"], AgentSession]
 ApiFactory = Callable[["str | None", "str | None"], Api]
@@ -96,8 +104,8 @@ def claude_runner_factory(cfg: RelayConfig) -> RunnerFactory:
 def sandbox_runner_factory(cfg: RelayConfig) -> RunnerFactory:
     """runner: 箱の runner（unix ソケット）に spawn を頼む（設計 §1-2 A）。argv・環境・isolation.json は runner が作る。"""
     def make(session: dict, rk_token: str, resume_id: str | None) -> AgentSession:
-        # 会話は持ち主のログイン（席）で動かす（PO 2026-10-13: 1 席 1 人）。runner へは席の鍵だけを渡す
-        key = seat_key(str(session["user_id"]))
+        # 会話は割り当てられた席（RelayService.seat_for_session・既定は持ち主の席）で動かす。runner へは席の鍵だけを渡す
+        key = seat_key(str(session.get("seat_user_id") or session["user_id"]))
         if session.get("provider") == "codex":
             # モデルは thread/start で渡す（model/list で選んでから）。spawn の model は runner の形の確かめ用
             spawn = {"session_id": session["id"], "provider": "codex", "model": models.SOL_BASELINE,
@@ -249,7 +257,13 @@ class RelayService:
             flow = await self.login_poll(user)
         except Refused:
             flow = None
-        return {"default_provider": dp, "default_source": src, "providers": provs,
+        owner, seat_src = self.seat_owner_for(str(user.id))
+        consult: dict[str, Any] = {"owner_is_me": owner == str(user.id), "source": seat_src, "name": None}
+        if owner != str(user.id):
+            consult["name"] = next((str(r.get("name") or "")[:60] for r in await self.admin_users(user)
+                                    if str(r["id"]) == owner), None)
+            consult["state"] = await self.engines.status(dp, seat_key(owner))
+        return {"default_provider": dp, "default_source": src, "providers": provs, "consult_seat": consult,
                 "can_sign_in": self.engines.available, "seat": "own", "can_view_seats": user.is_admin,
                 "engines": {p: {"state": st} for p, st in zip(provs, states)},
                 "login": flow if flow and flow.get("state") != "idle" else None}
@@ -258,14 +272,17 @@ class RelayService:
         """らく助の管理者（users の admin/manager）の [{id, name}]。名前は職員名かユーザー名。読めないときは自分だけ。"""
         rows: list[dict] = []
         if self.sql is not None:
-            sql = ("select u.id::text as id, coalesce(nullif(s.name, ''), u.username, '') as name "
-                   "from users u left join staff s on s.id = u.staff_id "
-                   "where u.role in ('admin', 'manager') and u.deleted_at is null order by 2 limit 50")
-            try:
-                got = await asyncio.to_thread(self.sql.run, sql)
-                rows = [r for r in got if isinstance(r, dict) and r.get("id")] if isinstance(got, list) else []
-            except Exception:  # noqa: BLE001  読めなくても自分の分は出す
-                rows = []
+            # 名前 = users.display_name（migration 0095）→ ログイン ID → メール。display_name がまだ無い・読めない
+            # （agent_ro の列の権限は roles.sql を流し直すまで付かない）ときは、ログイン ID で読み直す
+            base = ("select u.id::text as id, coalesce({name}, '') as name from users u "
+                    "where u.role in ('admin', 'manager') and u.deleted_at is null order by 2 limit 50")
+            for name in ("nullif(u.display_name, ''), u.username, u.email", "u.username, u.email"):
+                try:
+                    got = await asyncio.to_thread(self.sql.run, base.format(name=name))
+                    rows = [r for r in got if isinstance(r, dict) and r.get("id")] if isinstance(got, list) else []
+                    break
+                except Exception:  # noqa: BLE001  読めなくても自分の分は出す
+                    rows = []
         if not any(str(r["id"]) == str(user.id) for r in rows):
             rows.append({"id": str(user.id), "name": user.username or ""})
         return rows
@@ -284,6 +301,109 @@ class RelayService:
             out.append({"name": str(r.get("name") or "（名前なし）")[:60], "me": str(r["id"]) == str(user.id),
                         "engines": {p: {"state": st} for p, st in zip(provs, states)}})
         return {"providers": provs, "seats": out}
+
+    # ================= AI の席の割り当て（だれがだれの席で相談するか・PO 2026-10-13） =================
+    def default_seat_owner(self) -> str:
+        """割り当ての無い人が使う席の持ち主: agent.settings の default_seat_owner_user_id →
+        AGENT_LEGACY_OWNER_USER_ID（legacy_owner）。どちらも無ければ空（＝自分の席）。コードに user id は書かない。"""
+        v = self._setting(DEFAULT_SEAT_OWNER)
+        return str(v).strip() if v else self.legacy_owner()
+
+    def seat_owner_for(self, user_id: str) -> tuple[str, str]:
+        """その人がいま新しく相談を始めたら使う席の持ち主と、その出どころ（assigned / default / own）。"""
+        v = self._setting(ASSIGN_PREFIX + str(user_id))
+        if v:
+            return str(v), "assigned"
+        d = self.default_seat_owner()
+        if d:
+            return d, "default"
+        return str(user_id), "own"
+
+    def seat_for_session(self, session: dict) -> tuple[str, bool]:
+        """相談の席の持ち主と、それが記録済みか。始めたときの席を session_seat:<id> に残し、続きは同じ席で。
+        記録が無く、もう CLI の会話がある（割り当ての前に始めた）相談は、持ち主の席のまま。"""
+        v = self._setting(SESSION_SEAT_PREFIX + str(session["id"]))
+        if v:
+            return str(v), True
+        if session.get("cli_session_id"):
+            return str(session["user_id"]), False
+        return self.seat_owner_for(str(session["user_id"]))[0], False
+
+    def _remember_session_seat(self, session: dict, owner: str) -> None:
+        try:
+            self.store.set_setting(SESSION_SEAT_PREFIX + str(session["id"]), owner, str(session["user_id"]))
+        except Exception:  # noqa: BLE001  記録に失敗しても相談は止めない
+            return
+        self._audit(str(session["user_id"]), "session_seat", session.get("provider"),
+                    f"session={session['id']} seat={owner}")
+
+    async def _seat_columns(self, rows: list[dict], user: User) -> list[dict]:
+        provs = [p for p in ENGINE_PROVIDERS if p in self.cfg.providers]
+        out = []
+        for r in rows:
+            uid = str(r["id"])
+            states = await asyncio.gather(*(self.engines.status(p, seat_key(uid)) for p in provs))
+            st = dict(zip(provs, states))
+            out.append({"owner_user_id": uid, "name": str(r.get("name") or "（名前なし）")[:60],
+                        "me": uid == str(user.id), "engines": {p: {"state": v} for p, v in st.items()},
+                        "signed_in": any(v == "ok" for v in st.values())})
+        return out
+
+    async def assignments_view(self, user: User) -> dict:
+        """管理者だけ: 「AI の席の割り当て」の表。行 = 管理者・列 = 席（signed_in でない席は選べない）。"""
+        if not user.is_admin:
+            raise Refused("管理者だけが見られます", 403)
+        rows = await self.admin_users(user)
+        seats = await self._seat_columns(rows, user)
+        by_owner = {s["owner_user_id"]: s for s in seats}
+        out = []
+        for r in rows:
+            uid = str(r["id"])
+            owner, src = self.seat_owner_for(uid)
+            col = by_owner.get(owner)
+            out.append({"user_id": uid, "name": str(r.get("name") or "（名前なし）")[:60], "me": uid == str(user.id),
+                        "seat_owner_user_id": owner, "source": src, "seat_known": col is not None,
+                        "seat_signed_in": bool(col and col["signed_in"])})
+        return {"providers": [p for p in ENGINE_PROVIDERS if p in self.cfg.providers],
+                "default_seat_owner_user_id": self.default_seat_owner() or None, "seats": seats, "rows": out}
+
+    async def _check_seat_choice(self, user: User, owner: str, rows: list[dict]) -> None:
+        if not any(str(r["id"]) == owner for r in rows):
+            raise Refused("らく助の管理者の席から選んでください", 400)
+        cols = await self._seat_columns([r for r in rows if str(r["id"]) == owner], user)
+        if not cols or not cols[0]["signed_in"]:
+            raise Refused("その席はまだサインインしていません。サインインした席から選んでください", 409)
+
+    async def assign_seat(self, user: User, target_user_id: str, owner: str) -> dict:
+        """1 人の割り当てを変える（押した時点で保存・その後に始める相談から効く）。admin_events に記録。"""
+        if not user.is_admin:
+            raise Refused("管理者だけが変えられます", 403)
+        rows = await self.admin_users(user)
+        target, owner = str(target_user_id or ""), str(owner or "")
+        if not any(str(r["id"]) == target for r in rows):
+            raise Refused("らく助の管理者を選んでください", 400)
+        await self._check_seat_choice(user, owner, rows)
+        before = self.seat_owner_for(target)[0]
+        self.store.set_setting(ASSIGN_PREFIX + target, owner, user.id)
+        self._audit(user.id, "seat_assign", None, f"user={target} seat={before}->{owner}")
+        return await self.assignments_view(user)
+
+    async def assign_seat_all(self, user: User, owner: str) -> dict:
+        """全員（いまの管理者全員と、これから増える人の既定）を 1 つの席に。1 人ずつ admin_events に記録。"""
+        if not user.is_admin:
+            raise Refused("管理者だけが変えられます", 403)
+        rows = await self.admin_users(user)
+        owner = str(owner or "")
+        await self._check_seat_choice(user, owner, rows)
+        for r in rows:
+            target = str(r["id"])
+            before = self.seat_owner_for(target)[0]
+            self.store.set_setting(ASSIGN_PREFIX + target, owner, user.id)
+            self._audit(user.id, "seat_assign", None, f"user={target} seat={before}->{owner} all")
+        before_default = self.default_seat_owner() or "-"
+        self.store.set_setting(DEFAULT_SEAT_OWNER, owner, user.id)
+        self._audit(user.id, "seat_assign_all", None, f"default={before_default}->{owner} n={len(rows)}")
+        return await self.assignments_view(user)
 
     def _check_provider(self, provider: str) -> None:
         if provider not in ENGINE_PROVIDERS or provider not in self.cfg.providers:
@@ -354,18 +474,24 @@ class RelayService:
         self._audit(user.id, "default_provider", provider, f"{before}->{provider}")
         return {"default_provider": provider, "default_source": "user"}
 
-    async def _signin_guard(self, session: dict) -> None:
-        """会話を起こす前に、持ち主がその AI にサインインしているかを確かめる（runner のときだけ）。
-        していなければ、落ち着いた 1 行と ⚙ を開くボタン（画面: error code=signin）で止める。分からないときは止めない。"""
+    async def _signin_guard(self, session: dict, owner: str | None = None) -> None:
+        """会話を起こす前に、使う席（owner・既定は持ち主の席）がその AI にサインインしているかを確かめる（runner のときだけ）。
+        自分の席なら、落ち着いた 1 行と ⚙ を開くボタン（画面: error code=signin）。割り当てられたほかの人の席なら
+        「使う AI の席がサインインしていません。管理者に連絡してください」（code=seat_signin）。分からないときは止めない。"""
         if not self.engines.available or session.get("id") in self.live:
             return
         await self.adopt_legacy_seat()
         prov = session.get("provider") or "codex"
         if prov not in ENGINE_PROVIDERS:
             return
-        state = await self.engines.status(prov, seat_key(str(session["user_id"])))
+        owner = owner or str(session["user_id"])
+        state = await self.engines.status(prov, seat_key(owner))
         if state != "missing":
             return
+        if owner != str(session["user_id"]):
+            self.bus.emit(session["id"], {**ev.error("seat_signin", SEAT_SIGNIN_JA, retry=False), "provider": prov})
+            self.bus.emit(session["id"], ev.status("idle", "AI の席のサインインをお待ちしています"))
+            raise Refused(SEAT_SIGNIN_JA, 409)
         msg = SIGNIN_JA[prov]
         self.bus.emit(session["id"], {**ev.error("signin", msg, retry=False), "provider": prov})
         self.bus.emit(session["id"], ev.status("idle", "サインインをお待ちしています"))
@@ -429,12 +555,13 @@ class RelayService:
                 self.bus.emit(session["id"], ev.status("queued", "ほかの相談が作業中です。終わってから始めます"))
                 raise Refused("ほかの相談が作業中です。終わってからもう一度送ってください", 409)
         self._disk_guard(session)
-        await self._signin_guard(session)
+        owner, recorded = self.seat_for_session(session)
+        await self._signin_guard(session, owner)
         mem = self.mem_mb()
         if mem is not None and mem < self.cfg.min_mem_mb:
             raise Refused("いまサーバーが混んでいます。少し時間をおいてください", 503)
         token = secrets.token_urlsafe(24)
-        runner = self.runner_factory(session, token, session.get("cli_session_id"))
+        runner = self.runner_factory({**session, "seat_user_id": owner}, token, session.get("cli_session_id"))
         live = Live(runner=runner, token=token, user_id=str(session.get("user_id") or ""))
         self.live[session["id"]] = live
         self._tokens[token] = session["id"]
@@ -445,7 +572,7 @@ class RelayService:
             self._forget(session["id"], live)
             self._note_login(str(session.get("user_id") or ""), session.get("provider") or "", e.event.get("code"))
             if e.event.get("code") == "login":
-                self.engines.forget(seat_key(str(session.get("user_id") or "")))  # 次はまた確かめる
+                self.engines.forget(seat_key(owner))  # 次はまた確かめる
             self.record_tool_call(session, "start-refused", f"{e.event.get('code')}: {e.detail}", 0, 0)
             self.bus.emit(session["id"], e.event)
             self.bus.emit(session["id"], ev.status("error"))
@@ -454,6 +581,8 @@ class RelayService:
             self._forget(session["id"], live)
             self.bus.emit(session["id"], ev.error("cli_start", "らく助の作業の係を起こせませんでした。少し時間をおいてください"))
             raise Refused("らく助の作業の係を起こせませんでした。少し時間をおいてください", 503) from None
+        if not recorded:
+            self._remember_session_seat(session, owner)  # 続きはこの席で（割り当てを変えても、この相談は変わらない）
         live.task = asyncio.create_task(self._pump(session["id"], live))
         return live
 

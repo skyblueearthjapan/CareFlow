@@ -99,6 +99,8 @@ export function Conversation({
           case 'error': {
             // signin = 持ち主がその AI にサインインしていない(人ごとの席)。login = サインインが切れた。⚙ を開くボタンを添える
             const signin = it.code === 'signin' || it.code === 'login';
+            // seat_signin = 割り当てられた(ほかの人の)席がサインインしていない。管理者に連絡(⚙ は開ける人だけ出る)
+            const seatOff = it.code === 'seat_signin';
             return (
               <div
                 key={it.id}
@@ -110,12 +112,14 @@ export function Conversation({
                 <h3>
                   {signin
                     ? 'サインインをお願いします'
-                    : it.level === 'warn'
-                      ? 'お知らせ'
-                      : '申し訳ありません'}
+                    : seatOff
+                      ? 'AI の席がサインインしていません'
+                      : it.level === 'warn'
+                        ? 'お知らせ'
+                        : '申し訳ありません'}
                 </h3>
                 <p>{it.line}</p>
-                {signin && <EngineSettingsButton label="AI のつなぎ先を開く" />}
+                {(signin || seatOff) && <EngineSettingsButton label="AI のつなぎ先を開く" />}
               </div>
             );
           }
