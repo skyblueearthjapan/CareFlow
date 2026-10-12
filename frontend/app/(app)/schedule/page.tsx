@@ -152,6 +152,7 @@ export default function SchedulePage() {
         canEdit={canEdit}
         onWeekChange={setWeekStart}
         onOfficeChange={setOfficeId}
+        initialTab="staff"
         compactExtra={
           headerCollapsed ? (
             <>

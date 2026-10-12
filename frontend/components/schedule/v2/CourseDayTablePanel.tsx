@@ -499,6 +499,11 @@ export interface CourseDayTablePanelProps {
    * 未指定なら拠点フィルタは描画しない。
    */
   onOfficeChange?: (officeId: string | null) => void;
+  /**
+   * 開いたときのタブ。スケジュール画面は 'staff'（職員スケジュール・PO 2026-10-13）を渡す。
+   * 未指定は従来どおり 'week'（部品の試験は週ビュー前提）。
+   */
+  initialTab?: number | 'week' | 'staff';
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -510,6 +515,7 @@ export function CourseDayTablePanel({
   officeId,
   canEdit,
   onWeekChange,
+  initialTab = 'week',
   compactExtra,
   onOfficeChange,
 }: CourseDayTablePanelProps) {
@@ -534,10 +540,11 @@ export function CourseDayTablePanel({
   const [compactToolsOpen, setCompactToolsOpen] = useState(false);
 
   // ─── 曜日タブ state (Wave 18 Phase B-6: 'week' = 週間ビュー) ─────
-  // デフォルトは週ビュー ('week'). 曜日別 (月-土) は各タブで切替.
+  // デフォルトは職員スケジュール ('staff'・PO 2026-10-13). 曜日別 (月-土)・週は各タブで切替.
   // 'staff' = 職員スケジュール (スタッフ×曜日・イベント運用の家。
   // kaipoke-event-two-way-design.md §6-c で週ビュー内サブモードから昇格)。
-  const [activeTab, setActiveTab] = useState<number | 'week' | 'staff'>('week');
+  // 開いたときのタブは initialTab（スケジュール画面は 'staff'・PO 2026-10-13）。
+  const [activeTab, setActiveTab] = useState<number | 'week' | 'staff'>(initialTab);
   const activeWeekday = typeof activeTab === 'number' ? activeTab : 0;
 
   // ─── 2026-W20: 月-土タブの表示モード ─────────────────────────
@@ -6171,6 +6178,31 @@ export function CourseDayTablePanel({
               className="flex flex-wrap gap-1"
               data-testid="course-day-tabs"
             >
+              {/* 職員スケジュール (スタッフ×曜日・イベント運用の家)。カイポケの同名画面と
+                  同型。週ビュー内「スタッフ別」サブモードからの昇格 (2026-08-20)。
+                  PO 2026-10-13: いちばん左に置き、開いたときの既定のタブにする。 */}
+              <button
+                key="staff"
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'staff'}
+                aria-controls="course-staff-schedule-panel"
+                onClick={() => setActiveTab('staff')}
+                disabled={accompaniment.active}
+                title={
+                  accompaniment.active
+                    ? '同行モード中はタイムライン表示のみ使えます'
+                    : 'スタッフごとの週の予定とイベント（カイポケの職員スケジュールと同じ構造）'
+                }
+                data-testid="course-day-tab-staff"
+                className={`mr-1 rounded border px-3 py-1 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
+                  activeTab === 'staff'
+                    ? 'border-brand-primary bg-brand-primary text-white'
+                    : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
+                }`}
+              >
+                職員スケジュール
+              </button>
               {DISPLAY_WEEKDAYS.map((wd) => {
                 const selected = activeTab === wd;
                 // Phase G-45: 拠点 filter 選択時のみ、選択中の拠点が休業の曜日タブは
@@ -6246,30 +6278,6 @@ export function CourseDayTablePanel({
                 }`}
               >
                 週
-              </button>
-              {/* 職員スケジュール (スタッフ×曜日・イベント運用の家)。カイポケの同名画面と
-                  同型。週ビュー内「スタッフ別」サブモードからの昇格 (2026-08-20)。 */}
-              <button
-                key="staff"
-                type="button"
-                role="tab"
-                aria-selected={activeTab === 'staff'}
-                aria-controls="course-staff-schedule-panel"
-                onClick={() => setActiveTab('staff')}
-                disabled={accompaniment.active}
-                title={
-                  accompaniment.active
-                    ? '同行モード中はタイムライン表示のみ使えます'
-                    : 'スタッフごとの週の予定とイベント（カイポケの職員スケジュールと同じ構造）'
-                }
-                data-testid="course-day-tab-staff"
-                className={`ml-1 rounded border px-3 py-1 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
-                  activeTab === 'staff'
-                    ? 'border-brand-primary bg-brand-primary text-white'
-                    : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
-                }`}
-              >
-                職員スケジュール
               </button>
             </div>
 
