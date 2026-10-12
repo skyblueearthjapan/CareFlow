@@ -14,20 +14,33 @@ import {
 } from '@/components/ui/dialog';
 import { apiErrorMessage } from '@/lib/api/errorMessage';
 import { useCommitPreview, useCompare, useInputs, useWeekPreview } from '@/lib/queries/templateWs';
-import { WEEKDAYS, fmtMin } from '@/lib/templateWs/helpers';
+import { WEEKDAYS, estimateSeconds, fmtMin } from '@/lib/templateWs/helpers';
 import type { DraftSummary, DraftView, OfficeRef } from '@/lib/templateWs/types';
 
 const WD_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
+
+/** 秒 → 「40 秒」「2 分」「2 分 30 秒」。 */
+export function fmtDuration(sec: number): string {
+  if (sec < 60) return `${sec} 秒`;
+  const m = Math.floor(sec / 60);
+  const r = sec % 60;
+  return r ? `${m} 分 ${r} 秒` : `${m} 分`;
+}
 
 // ---------------------------------------------------------------------------
 // 最適化
 // ---------------------------------------------------------------------------
 export function OptimiseDialog({
   open,
+  offices = 1,
+  days = 6,
   onClose,
   onRun,
 }: {
   open: boolean;
+  /** 下書きの拠点の数（全拠点なら 2 など）と、営業日の数。かかる時間の見込みに使う。 */
+  offices?: number;
+  days?: number;
   onClose: () => void;
   onRun: (weekdays: string[] | null, seconds: number) => void;
 }) {
@@ -70,6 +83,10 @@ export function OptimiseDialog({
             aria-label="計算時間（秒）"
           />
         </label>
+        <p className="text-sm text-text-secondary" data-testid="optimise-estimate">
+          かかる時間の見込み: 約 {fmtDuration(estimateSeconds(seconds, offices, scope === 'all' ? days : 1))}
+          {offices > 1 ? `（${offices} 拠点を拠点ごとに解くので、1 曜日あたりの時間を拠点の数で分けます。全体は長くても 3 分ほど）` : ''}
+        </p>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={onClose}>
             やめる

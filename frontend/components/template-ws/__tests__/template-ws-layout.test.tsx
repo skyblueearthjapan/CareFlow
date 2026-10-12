@@ -269,3 +269,14 @@ describe('右の列の幅を変える境目', () => {
     set.mockRestore();
   });
 });
+
+describe('最適化にかかる時間の見込み（backend の plan_seconds と同じ式）', () => {
+  it('1 拠点はこれまでどおり・全拠点は 1 日あたりを拠点の数で分け、全体は 180 秒まで', async () => {
+    const { estimateSeconds } = await import('@/lib/templateWs/helpers');
+    expect(estimateSeconds(20, 1, 6)).toBe(120);
+    expect(estimateSeconds(20, 2, 6)).toBe(120);
+    expect(estimateSeconds(60, 1, 6)).toBe(180);
+    expect(estimateSeconds(60, 2, 6)).toBe(180);
+    expect(estimateSeconds(20, 1, 1)).toBe(20);
+  });
+});

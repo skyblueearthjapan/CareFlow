@@ -102,6 +102,15 @@ export function dayCounts(view: DraftView, weekday: number): { total: number; by
   };
 }
 
+/** 最適化にかかる時間の見込み（秒）。backend の optimise.plan_seconds と同じ式。 */
+export const MAX_TOTAL_SECONDS = 180;
+export function estimateSeconds(seconds: number, offices: number, days: number): number {
+  const problems = Math.max(1, offices) * Math.max(1, days);
+  let per = Math.max(2, Math.ceil(seconds / Math.max(1, offices)));
+  if (per * problems > MAX_TOTAL_SECONDS) per = Math.max(1, Math.floor(MAX_TOTAL_SECONDS / problems));
+  return per * problems;
+}
+
 export type Tone = 'good' | 'bad' | 'same';
 
 /** 小さいほどよい数の前後 → 色の向き。 */

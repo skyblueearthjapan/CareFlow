@@ -38,6 +38,18 @@ JOBS: dict[str, dict] = {}
 _TASKS: set[asyncio.Task] = set()
 
 
+MAX_TOTAL_SECONDS = 180  # 1 回の最適化で計算に使う時間の上限（拠点の数 × 曜日の数が増えても延びすぎない）
+
+
+def plan_seconds(seconds: int, n_offices: int, n_problems: int) -> int:
+    """1 つの問題（拠点 × 曜日）に使う秒数。1 日あたりの秒数を拠点の数で割り、全体は MAX_TOTAL_SECONDS まで。
+    画面の見込み（frontend/lib/templateWs/helpers.ts の estimateSeconds）と同じ式。"""
+    per = max(2, -(-int(seconds) // max(1, n_offices)))
+    if per * max(1, n_problems) > MAX_TOTAL_SECONDS:
+        per = max(1, MAX_TOTAL_SECONDS // max(1, n_problems))
+    return per
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -79,7 +91,7 @@ async def execute_optimise(db: AsyncSession, draft_id: UUID, user_id: UUID | Non
     if not problems:
         raise TemplateError("計算する枠がありません（曜日を確かめてください）")
     await db.rollback()  # 計算の間、トランザクションを持ち越さない
-    sols = await run_solver(problems, seconds, w_change, max_changes)
+    sols = await run_solver(problems, plan_seconds(seconds, len(parts), len(problems)), w_change, max_changes)
     row = await S.get_draft(db, draft_id, for_update=True)  # 読み直しから書き込みまで行をロック
     if row.version != base_version:
         raise S.TemplateConflict("計算している間に下書きが変わりました。もう一度最適化してください")

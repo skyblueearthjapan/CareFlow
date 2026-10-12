@@ -308,6 +308,8 @@ export function TemplateWorkspace() {
 
             <OptimiseDialog
               open={dialog === 'optimise'}
+              offices={view.offices?.length ?? 1}
+              days={view.days.length || 6}
               onClose={() => setDialog(null)}
               onRun={(weekdays, seconds) => {
                 setDialog(null);

@@ -54,7 +54,8 @@ export function useResizableWidth({ storageKey, defaultWidth, min = 300, max = h
     (w: number) => clampWidth(w, min, maxRef.current(viewport())),
     [min],
   );
-  const [width, setWidth] = useState(() => clampWidth(defaultWidth, min, max(viewport())));
+  // 最初は既定の幅（サーバーと最初の表示で同じ）。表示の後に、覚えた幅を読み、画面に収める
+  const [width, setWidth] = useState(defaultWidth);
   const [dragging, setDragging] = useState(false);
   const drag = useRef<{ x: number; w: number } | null>(null);
   const widthRef = useRef(width);

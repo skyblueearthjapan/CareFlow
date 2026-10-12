@@ -227,7 +227,14 @@ async def get_version(draft_id: UUID, db: DbDep, _u: AdminDep):
 
 @router.patch("/drafts/{draft_id}", summary="名前を変える / しまう")
 async def patch_draft(draft_id: UUID, body: DraftPatch, db: DbDep, _u: AdminDep):
-    row = await _draft(db, draft_id)
+    if body.name is None and body.archived is True:
+        # しまうだけなら、旗が切れた拠点を含む下書きでもできる (中身は見せない・変えない)
+        try:
+            row = await S.get_draft(db, draft_id)
+        except S.TemplateNotFound as e:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    else:
+        row = await _draft(db, draft_id)
 
     async def go():
         if body.name is not None:

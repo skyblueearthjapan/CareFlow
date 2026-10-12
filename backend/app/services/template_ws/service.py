@@ -158,28 +158,34 @@ async def engine_parts(db: AsyncSession, row: TemplateDraft, raw: dict | None = 
     for code, oid in adds_to.items():
         if cand_ids.get(code):
             owner.setdefault(cand_ids[code], oid)
-    parts = {oid: ({}, [], {}) for oid in offices}
-    for r in await slot_rows(db, row.id):
-        oid = owner.get(str(r.patient_id), offices[0]) if multi else offices[0]
-        assign, held, unplaced = parts[oid]
-        k = row_key(r)
-        if r.source == "new" and r.course_template_id is None:
-            unplaced[k] = r.reason or "入りきらない"
-            continue
-        assign[k] = {"course": str(r.course_template_id) if r.course_template_id else None,
-                     "start": from_time(r.start_time)}
-        if r.source == "manual":
-            held.append(k)
-    out = []
+    out: dict[str, dict] = {}
     for oid in offices:
         sc = scenario
         if multi:
             sc = {**scenario, "add_patients": {c: v for c, v in (scenario.get("add_patients") or {}).items()
                                                if adds_to.get(c) == oid}}
-        assign, held, unplaced = parts[oid]
-        out.append(E.make_draft(by_id[oid]["short_label"], oid, raw, scopes.get(oid) or [], sc,
-                                assign, held, unplaced))
-    return out
+        out[oid] = E.make_draft(by_id[oid]["short_label"], oid, raw, scopes.get(oid) or [], sc, {}, [], {})
+    # 枠の行はキーで振り分ける: 1 人の方が 2 つの拠点のコースを使うことがある (月は稲A・水は都A など)。
+    # 拠点ごとの問題に入る今の枠のキーは 1 回だけ作り、part_of_key もこれを引く。
+    # 持ち主の拠点に頼るのは、新しい枠 (new:) と置いていない行だけ。
+    key_office: dict[str, str] = {}
+    if multi:
+        for oid, ed in out.items():
+            ed["keys"] = {x["key"] for q in P.build_week(ed, hold=False) for x in q["slots"] if not x.get("new")}
+            for k in ed["keys"]:
+                key_office.setdefault(k, oid)
+    for r in await slot_rows(db, row.id):
+        k = row_key(r)
+        oid = (key_office.get(k) or owner.get(str(r.patient_id), offices[0])) if multi else offices[0]
+        ed = out[oid]
+        if r.source == "new" and r.course_template_id is None:
+            ed["unplaced"][k] = r.reason or "入りきらない"
+            continue
+        ed["assign"][k] = {"course": str(r.course_template_id) if r.course_template_id else None,
+                           "start": from_time(r.start_time)}
+        if r.source == "manual":
+            ed["held"].append(k)
+    return [out[oid] for oid in offices]
 
 
 async def engine_draft(db: AsyncSession, row: TemplateDraft, raw: dict | None = None) -> dict:
@@ -387,6 +393,10 @@ def _sync_part(db: AsyncSession, row: TemplateDraft, ed: dict, prev: dict, seen:
                 state = {"course": a["course"], "start": a["start"], "source": src, "reason": None}
             seen.add(k)
             before = slot_state(old)
+            if before is None and not s.get("new") and master.get(k):
+                # 行がまだ無かった今の枠は、マスターの値が「前」(取り消すとマスターに戻る)
+                before = {"placed": True, "course": master[k]["course"], "start": master[k]["start"],
+                          "source": "master", "reason": None}
             changed = not s.get("new") and (state["course"] != s["cur_course"] or state["start"] != s["start"])
             after = {"placed": state["course"] is not None or state["source"] != "new", **state}
             if old is None:
@@ -487,6 +497,9 @@ def part_of_key(parts: list[dict], key: str) -> dict:
     """枠のキー → その枠のある拠点の計算用 dict (1 拠点ならそれ)。"""
     if len(parts) == 1:
         return parts[0]
+    for ed in parts:
+        if key in (ed.get("keys") or ()):
+            return ed
     wd = int(key.split(":")[2]) if key.startswith("new:") else int(key.split(":")[1])
     for ed in parts:
         p = P.build_day(ed, wd)
@@ -530,7 +543,7 @@ async def update_whatif(db: AsyncSession, row: TemplateDraft, user: User, *, act
     if patch.get("clear"):
         sc = {**E.default_scenario(), **{k: sc[k] for k in ("red", "no_pref", "cap")}}
     if "staff_count" in patch and patch["staff_count"] is not None:
-        if is_all_offices(row) and patch["staff_count"]:
+        if is_all_offices(row) and any(v is not None for v in patch["staff_count"].values()):
             raise TemplateError("全拠点の下書きでは、曜日ごとの職員の数のもしもは使えません。"
                                 "拠点ごとの下書きで試してください（職員を外すもしもは使えます）")
         for k, v in patch["staff_count"].items():
@@ -833,6 +846,8 @@ async def inputs_view(db: AsyncSession, row: TemplateDraft, weekday: int, office
     """最適化が使う前提を、そのまま見せる (距離・職員の勤務/休み/予定・時刻の決まり方)。全拠点は拠点を選ぶ (省略で最初)。"""
     raw = await R.build_raw(db)
     parts = await engine_parts(db, row, raw)
+    if office_id and not any(e["office_id"] == office_id for e in parts):
+        raise TemplateError("その拠点はこの下書きにありません")
     ed = next((e for e in parts if e["office_id"] == office_id), parts[0]) if office_id else parts[0]
     p = P.build_day(ed, weekday)
     if p is None:

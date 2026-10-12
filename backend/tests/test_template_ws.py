@@ -629,3 +629,68 @@ async def test_all_offices_optimise_runs_each_office(db, client):
     added = next(c for c in rep["categories"] if c["kind"] == "course_added")
     assert added["items"][0]["office"] == "都"
     assert rep["travel"]["newly"]["no_course"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_all_offices_patient_using_courses_of_two_offices_keeps_edits(db, client):
+    """1 人の方が 2 つの拠点のコースを使う (月は稲A・火は都A)。火の枠の編集が、別の編集のあとも残る。"""
+    office, (tA, tB), _s, pats, _c, admin = await _world(db)
+    o2, t2, s2, _p2 = await _second_office(db)
+    db.add(StaffShift(staff_id=s2.id, weekday=1, is_on=True, start_time=time(9), end_time=time(18)))
+    db.add(PatientFixedVisit(patient_id=pats[0].id, mode="normal", weekday=1, start_time=time(10, 0),
+                             duration_min=35, course_template_id=t2.id, slot_index=0))
+    await db.commit()
+    hdr = _h(admin)
+    ids = {"o2": str(o2.id), "t2": str(t2.id), "tB": str(tB.id)}
+    v = (await client.post(f"{API}/drafts", json={"all_offices": True, "name": "全体"}, headers=hdr)).json()
+    tue = next(s for d in v["days"] if d["weekday"] == 1 for s in d["slots"] if s["code"] == "P1")
+    assert tue["course_id"] == ids["t2"] and tue["office_id"] == ids["o2"]
+    r = await client.post(f"{API}/drafts/{v['id']}/move", json={
+        "key": tue["key"], "course_id": ids["t2"], "start": "10:30", "expected_version": 1}, headers=hdr)
+    assert r.status_code == 200, r.text
+    # 別の枠 (月の P3 を稲B へ) を動かしても、火の枠の 10:30 は残る
+    p3 = next(s for d in v["days"] if d["weekday"] == 0 for s in d["slots"] if s["code"] == "P3")
+    r = await client.post(f"{API}/drafts/{v['id']}/move", json={
+        "key": p3["key"], "course_id": ids["tB"], "start": "11:30", "expected_version": 2}, headers=hdr)
+    assert r.status_code == 200, r.text
+    nv = (await client.get(f"{API}/drafts/{v['id']}", headers=hdr)).json()
+    tue2 = next(s for d in nv["days"] if d["weekday"] == 1 for s in d["slots"] if s["key"] == tue["key"])
+    assert tue2["start"] == 630 and tue2["course_id"] == ids["t2"] and tue2["changed"]
+    # 型に登録しても 2 つの拠点の枠がそのまま入る
+    pv = (await client.get(f"{API}/drafts/{v['id']}/commit-preview", headers=hdr)).json()
+    assert pv["ready"], pv["blockers"]
+    assert pv["counts"]["time"] == 1 and pv["counts"]["course"] == 1
+
+
+@pytest.mark.asyncio
+async def test_all_offices_small_rules(db, client):
+    office, *_rest, admin = await _world(db)
+    o2, *_x = await _second_office(db)
+    hdr = _h(admin)
+    o2_id = o2.id
+    v = (await client.post(f"{API}/drafts", json={"all_offices": True, "name": "全体"}, headers=hdr)).json()
+    # 前提: 下書きに無い拠点は 422
+    r = await client.get(f"{API}/drafts/{v['id']}/inputs?weekday=0&office_id={__import__('uuid').uuid4()}",
+                         headers=hdr)
+    assert r.status_code == 422
+    # 職員の数のもしも: 消す (null) は通す
+    r = await client.post(f"{API}/drafts/{v['id']}/whatif", json={
+        "staff_count": {"mon": None}, "red": "ignore", "expected_version": 1}, headers=hdr)
+    assert r.status_code == 200, r.text
+    # 旗が切れた拠点を含む下書き: 開けないが、しまうことはできる
+    flag = await db.scalar(select(OfficeFeatureFlag).where(OfficeFeatureFlag.office_id == o2_id))
+    flag.enabled_at = None
+    await db.commit()
+    assert (await client.get(f"{API}/drafts/{v['id']}", headers=hdr)).status_code == 404
+    r = await client.patch(f"{API}/drafts/{v['id']}", json={"archived": True}, headers=hdr)
+    assert r.status_code == 200 and r.json()["status"] == "archived"
+    r = await client.patch(f"{API}/drafts/{v['id']}", json={"name": "x"}, headers=hdr)
+    assert r.status_code == 404
+
+
+def test_plan_seconds_caps_total_time():
+    assert O.plan_seconds(20, 1, 6) == 20  # 1 拠点・6 曜日はこれまでどおり
+    assert O.plan_seconds(20, 2, 12) == 10  # 2 拠点は 1 日あたりを半分に
+    assert O.plan_seconds(60, 1, 6) == 30  # 全体は 180 秒まで
+    assert O.plan_seconds(60, 2, 12) == 15
+    assert O.plan_seconds(1, 3, 2) == 2
