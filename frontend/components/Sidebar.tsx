@@ -15,6 +15,7 @@ import {
   Inbox,
   MapPin,
   FileText,
+  ToggleRight,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { isAdminRole } from '@/lib/rbac';
@@ -53,6 +54,14 @@ const NAV_ITEMS = [
     href: '/admin/audit-logs',
     label: '監査ログ',
     icon: ScrollText,
+    adminOnly: true,
+    strictAdmin: true,
+  },
+  // 機能の切り替え（拠点ごとの機能の旗）。PO 2026-10-13: 旗の ON/OFF は画面から（DB を直接触らない）
+  {
+    href: '/admin/feature-flags',
+    label: '機能の切り替え',
+    icon: ToggleRight,
     adminOnly: true,
     strictAdmin: true,
   },

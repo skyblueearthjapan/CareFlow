@@ -112,7 +112,12 @@ export type PatientSameAddressLink = z.infer<typeof patientSameAddressLinkSchema
  * フロント側で扱う feature key 一覧.
  * 現状は g21_new_algorithm のみだが、将来追加に備えて enum 化.
  */
-export const OFFICE_FEATURE_KEYS = ['g21_new_algorithm'] as const;
+export const OFFICE_FEATURE_KEYS = [
+  'rakusuke_agent',
+  'template_workspace',
+  'l3_fix_primary_staff',
+  'g21_new_algorithm',
+] as const;
 export type OfficeFeatureKey = (typeof OFFICE_FEATURE_KEYS)[number];
 export const officeFeatureKeySchema = z.enum(OFFICE_FEATURE_KEYS);
 

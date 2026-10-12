@@ -94,7 +94,8 @@ describe('AdminFeatureFlagsPage (Phase G-21 T4)', () => {
     render(<AdminFeatureFlagsPage />);
     const sw = screen.getByTestId(`feature-flag-toggle-${OFFICE_ID}-g21_new_algorithm`);
     expect(sw).toHaveAttribute('aria-checked', 'false');
-    expect(screen.getByText('無効')).toBeInTheDocument();
+    // 旗が 4 つに増えたので、ほかの旗の「無効」も並ぶ（2026-10-13）
+    expect(screen.getAllByText('無効').length).toBeGreaterThan(0);
     // flag レコードが無い場合は削除ボタンも出ない
     expect(
       screen.queryByTestId(`feature-flag-delete-${OFFICE_ID}-g21_new_algorithm`),
