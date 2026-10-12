@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import { AgentProvider, useAgent } from './AgentProvider';
 import { Conversation } from './Conversation';
@@ -8,6 +9,7 @@ import { Composer, MascotStage, PlanViewer, poseSrc } from './parts';
 import { plansOf, sessionList } from './reducer';
 import { SessionList } from './SessionList';
 import type { AgentRelay } from './relay';
+import { useScreenStore } from './screenContext';
 import type { PlanInfo } from './types';
 import { useAgentEnabled } from './useAgentEnabled';
 
@@ -72,6 +74,23 @@ function WidgetInner() {
 
   useEffect(() => setPos(loadPos()), []);
 
+  // 型の作業場(§11-2): 右の列があればそこへ収まる。↘ で右下の丸へ、丸を押すと列へ戻る。
+  // ページを離れたら(列が消えたら)右下の丸にたたむ。会話は同じもの(同じ Provider の中)。
+  const dockEl = useScreenStore((s) => s.dock);
+  const dockLabel = useScreenStore((s) => s.dockLabel);
+  const setDocked = useScreenStore((s) => s.setDocked);
+  const [inDock, setInDock] = useState(false);
+  useEffect(() => {
+    setInDock(!!dockEl);
+    setPlanId(null);
+    setSize(dockEl ? 'compact' : 'mini');
+  }, [dockEl]);
+  const docked = inDock && !!dockEl && size !== 'mini';
+  useEffect(() => {
+    setDocked(docked);
+    return () => setDocked(false);
+  }, [docked, setDocked]);
+
   const busy = current ? ['working', 'starting', 'applying'].includes(current.state) : false;
   const attention = waitingCount > 0;
 
@@ -92,6 +111,8 @@ function WidgetInner() {
 
   const openPlan = useCallback(
     (id: string) => {
+      // 列の中では A4 の案の欄は使わない(盤面が案)。案を開くときだけ、浮かぶ小窓の広い形へ出る
+      setInDock(false);
       setPlanId(id);
       setSize((s) => {
         if (s !== 'wide') setPrevSize(s === 'mini' ? 'compact' : s);
@@ -139,6 +160,108 @@ function WidgetInner() {
     else if (busy) void a.stop();
   };
 
+  const diskLine = a.diskWarning ? (
+    <p className="rk-disk" role="status">
+      {a.diskWarning}
+    </p>
+  ) : null;
+
+  const composer = (
+    <Composer
+      busy={busy}
+      onStop={() => void a.stop()}
+      onSend={(t) => void a.send(t, docked ? undefined : (planId ?? undefined))}
+      ideas={current ? undefined : ['田中さんが急にお休み', '来週は人が足りてる？', '特別訪問週間が入った']}
+    />
+  );
+
+  const body = listOpen ? (
+    <div className="rk-body">
+      <SessionList
+        sessions={sessionList(a.store)}
+        currentId={a.store.currentId}
+        onSelect={(id) => {
+          a.select(id);
+          setListOpen(false);
+        }}
+        onNew={() => {
+          void a.newSession();
+          setListOpen(false);
+        }}
+        onRename={(id, t) => void a.rename(id, t)}
+      />
+    </div>
+  ) : (
+    <div className="rk-body">
+      <MascotStage
+        pose={current?.pose ?? 'wave'}
+        line={
+          current?.line ??
+          'こんにちは、らく助です。お休みの反映や、人が足りているかの確認など、何でも言ってくださいね。'
+        }
+        working={busy}
+      />
+      {current && <Conversation session={current} onOpenPlan={openPlan} />}
+    </div>
+  );
+
+  const chip = (
+    <span className="rk-chip" data-st={busy ? 'work' : attention ? 'ask' : 'idle'}>
+      <span className="rk-dot" data-st={busy ? 'work' : attention ? 'ask' : 'idle'} />
+      {busy ? 'お仕事中' : attention ? 'ご確認をお願いします' : 'ご用件をどうぞ'}
+    </span>
+  );
+
+  if (docked && dockEl) {
+    return createPortal(
+      <section className="rk-agent" data-size="dock" aria-label="らく助エージェント" onKeyDown={onKeyDown}>
+        <div className="rk-chatcol">
+          <header className="rk-head">
+            <button
+              type="button"
+              className="rk-hbtn"
+              aria-label="相談の一覧"
+              onClick={() => setListOpen((o) => !o)}
+            >
+              ☰
+            </button>
+            <div className="rk-title">
+              <b>{current?.title ?? 'らく助'}</b>
+              {chip}
+              <span className="rk-ctx" data-testid="rk-ctx">
+                一緒に見ているもの：型の作業場{dockLabel ? '・' : ''}
+                {dockLabel ? <b>{dockLabel}</b> : null}
+              </span>
+            </div>
+            <div className="rk-hbtns">
+              <button
+                type="button"
+                className="rk-hbtn"
+                aria-label="右下にたたむ"
+                title="右下にたたむ（会話はそのまま続きます）"
+                onClick={() => {
+                  setInDock(false);
+                  setSize('mini');
+                }}
+              >
+                ↘
+              </button>
+            </div>
+          </header>
+          {a.store.connection === 'lost' && (
+            <p className="rk-lost" role="status">
+              つながっていません。最後に受け取った内容です。
+            </p>
+          )}
+          {diskLine}
+          {body}
+          {composer}
+        </div>
+      </section>,
+      dockEl,
+    );
+  }
+
   if (size === 'mini') {
     return (
       <button
@@ -147,7 +270,10 @@ function WidgetInner() {
         data-size="mini"
         style={{ right: pos.right, bottom: pos.bottom }}
         aria-label="らく助を開く"
-        onClick={() => setSize('compact')}
+        onClick={() => {
+          if (dockEl) setInDock(true);
+          setSize('compact');
+        }}
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={poseSrc(current?.pose ?? 'wave')} alt="" width={40} height={40} />
@@ -188,10 +314,7 @@ function WidgetInner() {
           </button>
           <div className="rk-title">
             <b>{current?.title ?? 'らく助'}</b>
-            <span className="rk-chip" data-st={busy ? 'work' : attention ? 'ask' : 'idle'}>
-              <span className="rk-dot" data-st={busy ? 'work' : attention ? 'ask' : 'idle'} />
-              {busy ? 'お仕事中' : attention ? 'ご確認をお願いします' : 'ご用件をどうぞ'}
-            </span>
+            {chip}
           </div>
           <div className="rk-hbtns">
             {size !== 'wide' && (
@@ -215,42 +338,9 @@ function WidgetInner() {
           </p>
         )}
 
-        {listOpen ? (
-          <div className="rk-body">
-            <SessionList
-              sessions={sessionList(a.store)}
-              currentId={a.store.currentId}
-              onSelect={(id) => {
-                a.select(id);
-                setListOpen(false);
-              }}
-              onNew={() => {
-                void a.newSession();
-                setListOpen(false);
-              }}
-              onRename={(id, t) => void a.rename(id, t)}
-            />
-          </div>
-        ) : (
-          <div className="rk-body">
-            <MascotStage
-              pose={current?.pose ?? 'wave'}
-              line={
-                current?.line ??
-                'こんにちは、らく助です。お休みの反映や、人が足りているかの確認など、何でも言ってくださいね。'
-              }
-              working={busy}
-            />
-            {current && <Conversation session={current} onOpenPlan={openPlan} />}
-          </div>
-        )}
-
-        <Composer
-          busy={busy}
-          onStop={() => void a.stop()}
-          onSend={(t) => void a.send(t, planId ?? undefined)}
-          ideas={current ? undefined : ['田中さんが急にお休み', '来週は人が足りてる？', '特別訪問週間が入った']}
-        />
+        {diskLine}
+        {body}
+        {composer}
       </div>
 
       {wide && planId && current && (

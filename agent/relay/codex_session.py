@@ -90,14 +90,14 @@ class _CodexProtocol:
         self._next_inputs: list[dict] = []
 
     # ---------- JSON-RPC ----------
-    async def _w(self, msg: dict) -> None:
+    async def _rpc_write(self, msg: dict) -> None:
         await self._write(msg)  # type: ignore[attr-defined]
 
     async def _notify(self, method: str, params: dict | None = None) -> None:
         msg: dict = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             msg["params"] = params
-        await self._w(msg)
+        await self._rpc_write(msg)
 
     async def _send_call(self, method: str, params: dict | None, want: bool) -> asyncio.Future | None:
         self._rpc_seq += 1
@@ -107,7 +107,7 @@ class _CodexProtocol:
         msg: dict = {"jsonrpc": "2.0", "id": rid, "method": method}
         if params is not None:
             msg["params"] = params
-        await self._w(msg)
+        await self._rpc_write(msg)
         return fut
 
     async def _call(self, method: str, params: dict | None = None) -> dict:
@@ -129,7 +129,7 @@ class _CodexProtocol:
             msg["error"] = error
         else:
             msg["result"] = result if result is not None else {}
-        await self._w(msg)
+        await self._rpc_write(msg)
 
     async def _paged(self, method: str, params: dict, pages: int = 5) -> list[dict]:
         out: list[dict] = []
@@ -354,6 +354,8 @@ class _CodexProtocol:
         unknown = [k for k in answers if k not in ids]
         if unknown:
             raise ValueError("知らない質問への答えです: " + "、".join(map(str, unknown)))
+        labels: dict[str, list[str]] = q.get("labels") or {}
+        answers = {k: ev.option_original(v, labels.get(k, [])) for k, v in answers.items()}  # 「（おすすめ）」→ 元の名前
         out = {ids[k]: {"answers": [str(x) for x in (v if isinstance(v, list) else [v])]} for k, v in answers.items()}
         for sid in q.get("secret", []):
             out.setdefault(sid, {"answers": []})

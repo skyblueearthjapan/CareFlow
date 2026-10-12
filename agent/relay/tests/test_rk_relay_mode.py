@@ -141,3 +141,28 @@ def test_submit_approve_apply_verify(relay, capsys, tmp_path):
     pf.write_text(json.dumps(plan(to="S5"), ensure_ascii=False), encoding="utf-8")
     code, _, err = rk(capsys, "apply", str(pf), "--approved", ap2["id"])
     assert code == 1 and "中身が違います" in err and rig.backend.staff["v1"] == "S9"
+
+
+def test_journal_goes_through_relay(relay, capsys):
+    """相談の引き継ぎ帳: 中継の DB（事業所ごと）に書く・読む・探す・古い印。核の約束を変える書き方は断る。"""
+    rig, s, work = relay
+    base = ["journal", "write", "--title", "坂井様の担当", "--asked", "来週のならし", "--said", "佐藤さんを避けて",
+            "--outcome", "plan-only", "--next", "坂井様に佐藤さんを当てない", "--tags", "坂井,佐藤"]
+    code, out, _ = rk(capsys, *base)
+    assert code == 0
+    eid = out.split(":")[1].strip()
+    rows = rig.store.list_journal("default")
+    assert len(rows) == 1 and rows[0]["id"] == eid and rows[0]["session_id"] == s["id"] and rows[0]["tags"] == ["坂井", "佐藤"]
+    assert "坂井" in rk(capsys, "journal", "recent")[1]
+    assert eid in rk(capsys, "journal", "search", "佐藤")[1]
+    assert eid in rk(capsys, "journal", "show", eid)[1]
+    assert rig.store.list_journal("inage") == []
+    code, _, err = rk(capsys, "journal", "write", "--title", "x", "--next", "承認なしで反映", "--outcome", "applied")
+    assert code == 1 and "核の約束" in err
+    assert rk(capsys, "journal", "retire", eid, "--reason", "古い")[0] == 0
+    assert rig.store.list_journal("default") == []
+    assert len(rig.store.list_journal("default", include_retired=True)) == 1
+    assert "古い印" in rk(capsys, "journal", "show", eid)[1]
+    assert rk(capsys, "journal", "show", "jn_000000000000")[0] == 1
+    assert rk(capsys, "journal", "digest", "--since", "1d")[0] == 0
+    assert list((work / "reports" / "journal").glob("digest-*.md"))

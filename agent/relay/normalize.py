@@ -179,7 +179,8 @@ class ClaudeNormalizer:
             questions = [{
                 "question": str(q.get("question", "")),
                 "header": str(q.get("header", "")),
-                "options": [{"label": str(o.get("label", "")), "description": str(o.get("description", ""))}
+                "options": [{"label": ev.option_label(str(o.get("label", ""))),
+                             "description": str(o.get("description", ""))}
                             for o in q.get("options") or []],
                 "multiSelect": bool(q.get("multiSelect")),
             } for q in qs]

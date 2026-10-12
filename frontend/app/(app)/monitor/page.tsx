@@ -17,6 +17,7 @@ import { useSession } from 'next-auth/react';
 import { Settings, TriangleAlert } from 'lucide-react';
 
 import { RakusukeTitle } from '@/components/brand/Rakusuke';
+import { usePublishScreenContext } from '@/components/agent/screenContext';
 import { FilterChip } from '@/components/ui/filter-chip';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
@@ -92,6 +93,8 @@ export default function MonitorPage() {
   const canReview = isAdminRole(role);
 
   const [date, setDate] = useState<string>(todayJst);
+  // らく助エージェントへの画面の文脈(見ている日)
+  usePublishScreenContext({ screen: 'monitor', date });
   const [officeId, setOfficeId] = useState<string | null>(null);
   const [only, setOnly] = useState<OnlyFilter>(null);
   // 行キー選択 (monitorRowKey = 職員 id / 担当なし)。選んだ行の下にパネルが開く (1 つだけ)。

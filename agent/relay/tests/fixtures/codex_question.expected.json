@@ -22,7 +22,7 @@
     "header": "対象の拠点",
     "options": [
      {
-      "label": "すべての拠点 (Recommended)",
+      "label": "すべての拠点（おすすめ）",
       "description": "全拠点の合計と拠点ごとの内訳を調べます。"
      },
      {

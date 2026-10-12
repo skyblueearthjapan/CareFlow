@@ -202,12 +202,10 @@ def test_relay_db_prune(tmp_path):
         st.append_event(old_chat["id"], 1, {"type": "text"})
         old_plan = st.create_session("1", "old plan")             # 100 日前・案あり → 会話は残し、イベントだけ消す
         st.append_event(old_plan["id"], 1, {"type": "text"})
-        st.add_plan(old_plan["id"], kind="k", title="t", plan_json={}, plan_sha256="x", check_result={},
-                    html_a4="<p>")
+        st.add_plan(old_plan["id"], kind="k", title="t", plan_json={}, plan_sha256="x", check_result={})
         t["now"] = NOW - timedelta(days=400)
         ancient = st.create_session("1", "ancient")               # 400 日前 → 全部消す
-        st.add_plan(ancient["id"], kind="k", title="t", plan_json={}, plan_sha256="x", check_result={},
-                    html_a4="<p>")
+        st.add_plan(ancient["id"], kind="k", title="t", plan_json={}, plan_sha256="x", check_result={})
         t["now"] = NOW - timedelta(days=1)
         fresh = st.create_session("1", "fresh")
         st.append_event(fresh["id"], 1, {"type": "text"})

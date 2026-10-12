@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
+from relay import events as ev
 from relay import models
 from relay.normalize import ClaudeNormalizer
 
@@ -54,6 +55,10 @@ def isolation_settings(home: str, cwd: str) -> dict:
                                 "CLAUDE_CODE_USE_FOUNDRY")},
         "autoMemoryEnabled": False,
         "claudeMdExcludes": list(dict.fromkeys(excludes)),
+        # CLI の道具（Read/Edit など）は CLI と同じ uid で動く＝ログイン情報が読める。ここで断る（コマンドは別 uid の
+        # 実行係で走るので別の守り）。シンボリックリンク経由でも、実体のパスで断る（Claude Code の規則）
+        "permissions": {"deny": [f"{t}(//{h}/**)" for h in (home.strip("/"), "home/agentx") for t in ("Read", "Edit")]
+                                + ["Read(//proc/**)", "Read(//run/**)"]},
     }
 
 
@@ -114,6 +119,17 @@ def claude_env(*, home: str, cwd: str, relay_url: str, rk_token: str, work_dir: 
 
 
 # ---------- control_request への返事 ----------
+def _touches_secret(tool_input: Any) -> bool:
+    """CLI の道具の入力（file_path・path・pattern・command など）が、ログイン情報などの秘密の場所を指していないか。
+
+    CLI 本体の uid で動く道具（Read/Edit/Grep/Glob）だけの守り。シェルのコマンドは別 uid の実行係で走る。
+    リンク先は見えない（箱の runner 側の settings の deny が実体のパスで断る）。"""
+    from relay import codex_config as cx  # noqa: PLC0415
+
+    vals = [v for v in (tool_input or {}).values() if isinstance(v, str)] if isinstance(tool_input, dict) else []
+    return any(cx.SECRET_PATH.search(v) or "/home/agent" in v for v in vals)
+
+
 def control_reply(msg: dict) -> dict | None:
     """受けた control_request への control_response。AskUserQuestion は None（画面の答えを待つ）。"""
     rid = msg.get("request_id")
@@ -123,7 +139,9 @@ def control_reply(msg: dict) -> dict | None:
         name = req.get("tool_name") or ""
         if name == "AskUserQuestion":
             return None
-        if name in ALLOW_TOOLS:
+        if name in ALLOW_TOOLS and _touches_secret(req.get("input")):
+            resp = {"behavior": "deny", "message": "ここは読み書きできません。作業フォルダーの中のファイルを使ってください。"}
+        elif name in ALLOW_TOOLS:
             resp = {"behavior": "allow", "updatedInput": req.get("input") or {}}
         else:
             resp = {"behavior": "deny", "message": DENY_MESSAGE.get(name, f"この相談では {name} は使えません。")}
@@ -143,8 +161,10 @@ def answer_reply(request: dict, answers: dict[str, Any] | str) -> dict:
         if len(qs) != 1:
             raise ValueError("質問が複数あるときは {質問: 答え} で渡してください")
         answers = {qs[0]["question"]: answers}
+    labels = {q.get("question"): [str(o.get("label", "")) for o in q.get("options") or []] for q in qs}
+    answers = {k: ev.option_original(v, labels.get(str(k), [])) for k, v in answers.items()}  # 「（おすすめ）」→ 元の名前
     norm = {str(k): (", ".join(v) if isinstance(v, list) else str(v)) for k, v in answers.items()}
-    unknown = [k for k in norm if k not in {q.get("question") for q in qs}]
+    unknown = [k for k in norm if k not in labels]
     if unknown:
         raise ValueError("知らない質問への答えです: " + "、".join(unknown))
     return {"type": "control_response", "response": {

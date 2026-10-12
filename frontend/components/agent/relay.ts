@@ -6,7 +6,21 @@
  *   画面は承認番号を受け取らず、送りもしない。
  * - 画面は AgentRelay インターフェースだけを見る。mockRelay も同じ形。
  */
+import type { ScreenContext } from './screenContext';
 import type { AgentEvent, Device, PlanSize, SessionSummary } from './types';
+
+/** GET /engine の、画面が使う分だけ(disk はサーバーの空き。warning は日本語でそのまま出せる) */
+export interface EngineInfo {
+  default_provider?: string;
+  disk?: { free_gb: number; low: boolean; blocked: boolean; warning: string | null };
+}
+
+export interface SendOptions {
+  planRef?: number;
+  device?: Device;
+  /** 画面の文脈(AGENTS.md §11)。ID だけ。中継がそのターンの頭に 1 行付ける */
+  context?: ScreenContext | null;
+}
 
 export interface StreamHandlers {
   onEvent: (ev: AgentEvent) => void;
@@ -20,7 +34,7 @@ export interface AgentRelay {
   createSession(): Promise<SessionSummary>;
   renameSession(id: string, title: string): Promise<void>;
   /** planRef = 「案 N について」の版番号 */
-  send(id: string, text: string, opts?: { planRef?: number; device?: Device }): Promise<void>;
+  send(id: string, text: string, opts?: SendOptions): Promise<void>;
   stop(id: string): Promise<void>;
   /** answers = {質問の文: 答え}(複数選ぶ時は「, 」でつなぐ) */
   answer(id: string, questionId: string, answers: Record<string, string>, device?: Device): Promise<void>;
@@ -32,6 +46,8 @@ export interface AgentRelay {
   printUrl(id: string, version: number, size: PlanSize): Promise<string>;
   /** 閉じる(または signal が中断される)まで続く。切れたら reject/resolve のどちらでもよい。 */
   stream(id: string, after: number, h: StreamHandlers): Promise<void>;
+  /** 既定の AI・サーバーの空き(無い実装は出さない) */
+  engine?(): Promise<EngineInfo>;
 }
 
 export const DEFAULT_RELAY_BASE = '/agent-relay';
@@ -149,10 +165,14 @@ export class HttpRelay implements AgentRelay {
   async renameSession(id: string, title: string) {
     await this.json(`/sessions/${enc(id)}`, { method: 'PATCH', body: JSON.stringify({ title }) });
   }
-  async send(id: string, text: string, opts?: { planRef?: number; device?: Device }) {
+  async send(id: string, text: string, opts?: SendOptions) {
     const body: Record<string, unknown> = { text, device: opts?.device ?? this.device };
     if (opts?.planRef != null) body.plan_ref = opts.planRef;
+    if (opts?.context) body.context = opts.context;
     await this.post(`/sessions/${enc(id)}/messages`, body);
+  }
+  async engine() {
+    return this.json<EngineInfo>('/engine');
   }
   async stop(id: string) {
     await this.post(`/sessions/${enc(id)}/stop`, {});

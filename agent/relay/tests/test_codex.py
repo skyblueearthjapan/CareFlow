@@ -133,6 +133,36 @@ def test_text_choice_answer_is_only_a_message_never_an_approval(tmp_path):
         asyncio.run(s.answer("txt_1", "もう一度"))
 
 
+# ---------------- 「(Recommended)」は「（おすすめ）」で見せ、答えは元の名前で返す ----------------
+def test_recommended_label_is_shown_in_japanese_and_answer_maps_back(tmp_path):
+    s = CodexSession(["x"], str(tmp_path), {}, work_dir=str(tmp_path))
+    s.thread_id = "th"
+    out = s.norm.feed({"id": 7, "method": "item/tool/requestUserInput", "params": {"questions": [
+        {"id": "pick", "header": "案", "question": "どれにしますか？", "options": [
+            {"label": "この案で反映する (Recommended)", "description": ""},
+            {"label": "やめる", "description": ""}]}]}})
+    q = next(e for e in out if e["type"] == "question")
+    assert [o["label"] for o in q["questions"][0]["options"]] == ["この案で反映する（おすすめ）", "やめる"]
+    assert "Recommended" not in json.dumps(q, ensure_ascii=False)
+    s._questions[q["question_id"]] = {}
+    replies = []
+
+    async def fake_reply(rid, result=None, error=None):
+        replies.append((rid, result))
+
+    s._reply = fake_reply  # type: ignore[method-assign]
+    asyncio.run(s.answer(q["question_id"], {"どれにしますか？": "この案で反映する（おすすめ）"}))
+    assert replies == [(7, {"answers": {"pick": {"answers": ["この案で反映する (Recommended)"]}}})]
+
+
+def test_recommended_in_text_choices():
+    c = text_choices("どれにしますか？\n1. この案で反映する（Recommended）\n2. やめる")
+    assert [o["label"] for o in c["options"]] == ["この案で反映する（おすすめ）", "やめる"]
+    assert c["options"][0]["description"] == ""
+    assert events.option_label("A(recommended) ") == "A（おすすめ）"
+    assert events.option_label("Recommended の理由") == "Recommended の理由"  # 末尾だけ
+
+
 # ---------------- 承認の問い合わせの物差し（計算は自由・危うさだけ断る） ----------------
 @pytest.mark.parametrize("cmd,want", [
     ("rk sql --list", ("accept", "ok")),
@@ -504,3 +534,18 @@ def test_claude_commands_reach_the_watcher_when_enabled():
     assert [a.kind for a in w.observe(cmd)] == ["log", "stop", "card"]
     out = n.feed({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_0123456789abcdef"}]}})
     assert out[-1] == {"type": "_cmd", "phase": "end", "step_id": cmd["step_id"], "ok": True}
+
+
+def test_runner_session_attrs_do_not_shadow_codex_protocol_methods():
+    """箱の runner 経由（本番・staging の道）で、RunnerSession の属性が JSON-RPC の関数を隠さないこと。
+
+    2026-10-12 staging: RunnerSession の書き口 ``self._w`` が _CodexProtocol の ``_w`` を隠し、
+    最初の initialize で TypeError（500）になった。
+    """
+    from relay.codex_session import CodexRunnerSession, _CodexProtocol
+
+    proto = {n for n, v in vars(_CodexProtocol).items() if callable(v) and not n.startswith("__")}
+    s = CodexRunnerSession.__new__(CodexRunnerSession)
+    from relay.runner import RunnerSession
+    RunnerSession.__init__(s, "/nonexistent.sock", {}, normalizer=None)  # type: ignore[arg-type]
+    assert not (proto & set(vars(s))), sorted(proto & set(vars(s)))

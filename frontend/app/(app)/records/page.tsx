@@ -25,6 +25,7 @@ import { useSession } from 'next-auth/react';
 import { Check, Clock, Mic } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { usePublishScreenContext } from '@/components/agent/screenContext';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -107,6 +108,8 @@ function RecordsPageInner() {
   // 一度開いたタブは畳むだけで外さない（行き来しても期間・絞り込み・ページを失わない）。
   // 開いていないタブは描かない = そのタブの問い合わせも飛ばない。
   const [opened, setOpened] = useState<ReadonlySet<RecordsTab>>(() => new Set([tab]));
+  // らく助エージェントへの画面の文脈(開いているタブ。患者・職員の ID は道の ?patient= / ?staff= から)
+  usePublishScreenContext({ screen: 'records', tab });
 
   const selectTab = (next: RecordsTab) => {
     setTab(next);

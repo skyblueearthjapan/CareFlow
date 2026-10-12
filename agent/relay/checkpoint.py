@@ -8,18 +8,21 @@
 | POST /rk/plans | 案の提出（rk plan submit） |
 | POST /rk/apply・/rk/undo | 有効な承認番号があるときだけ（relay.approvals） |
 | POST /rk/progress・/rk/backup・GET /rk/runs/<id>/plan | 途中経過・バックアップ・照合用の案 |
+| POST /rk/journal/<write・list・search・show・retire> | 相談の引き継ぎ帳（事業所ごと・DB の agent.journal_entries） |
 """
 
 from __future__ import annotations
 
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Body, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from rk import RkError
+from rk.consult_journal import build_entry, office_key, rank
 from rk.opsbase import ApiError
 from rk.readonly_posts import is_dry_run_post, is_readonly_post
 from rk.transport import RELAY_TOKEN_HEADER, UPSTREAM_HEADER, normalize_path
@@ -129,6 +132,38 @@ def create_checkpoint_app(svc: RelayService) -> FastAPI:
     @app.post("/rk/backup")
     def backup(request: Request, payload: dict = Body(...)) -> Any:
         return svc.run_backup(session_of(request), str(payload.get("label") or ""))
+
+    def _jdict(e: dict) -> dict:
+        return {k: (v.strftime("%Y-%m-%dT%H:%M:%SZ") if hasattr(v, "strftime") else v) for k, v in e.items()}
+
+    def _utc(text: str | None) -> datetime | None:
+        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) if text else None
+
+    @app.post("/rk/journal/{op}")
+    def journal(op: str, request: Request, payload: dict = Body(...)) -> Any:
+        """相談の引き継ぎ帳。事業所ごと。検査（長さ・核の約束を変える書き方）は rk と同じ build_entry。"""
+        session = session_of(request)
+        office = office_key(payload.get("office"))
+        st = svc.store
+        if op == "write":
+            e = build_entry(payload.get("entry") or {}, office, session["id"])
+            e["ts"] = _utc(e["ts"])
+            return _jdict(st.add_journal(**e))
+        if op == "list":
+            lim = max(1, min(int(payload.get("limit") or 10), 1000))
+            return [_jdict(e) for e in st.list_journal(office, _utc(payload.get("since")),
+                                                       bool(payload.get("include_retired")), lim)]
+        if op == "search":
+            words = [str(w) for w in payload.get("words") or [] if str(w).strip()]
+            return rank([_jdict(e) for e in st.list_journal(office, limit=1000)], words,
+                        max(1, min(int(payload.get("limit") or 10), 100)))
+        if op in ("show", "retire"):
+            eid = str(payload.get("id") or "")
+            if op == "retire" and not st.retire_journal(office, eid, str(payload.get("reason") or "")):
+                return _refuse(f"{eid} という記録はありません", 404)
+            e = st.get_journal(office, eid)
+            return _jdict(e) if e else _refuse(f"{eid} という記録はありません", 404)
+        return _refuse("知らない操作です", 404)
 
     @app.get("/rk/runs/{run_id}/plan")
     def run_plan(run_id: str, request: Request) -> Any:

@@ -282,6 +282,11 @@ def prune_empty_dirs(root: Path, apply: bool) -> int:
     return n
 
 
+#: これを下回ったら新しい会話の CLI を起こさない（作業中のものは続ける）。10 GB 未満は warning だけ。
+MIN_FREE_START_GB = 5
+DISK_BLOCK_JA = "いまサーバーの空きが少ないため、新しい相談を始められません。管理者に連絡してください（いまの相談は続けられます）。"
+
+
 # ---- ディスクの見張り ----------------------------------------------------------------------------
 def disk_status(path: str | Path = "/", min_free_gb: float = MIN_FREE_GB,
                 usage: Callable[[str], object] = shutil.disk_usage) -> dict:
@@ -290,7 +295,7 @@ def disk_status(path: str | Path = "/", min_free_gb: float = MIN_FREE_GB,
     free_gb = u.free / (1024 ** 3)
     low = free_gb < min_free_gb
     return {"path": str(path), "free_bytes": u.free, "total_bytes": u.total, "free_gb": round(free_gb, 2),
-            "min_free_gb": min_free_gb, "low": low,
+            "min_free_gb": min_free_gb, "low": low, "blocked": free_gb < MIN_FREE_START_GB,
             "warning": DISK_WARNING_JA.format(free=free_gb) if low else None}
 
 

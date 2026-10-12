@@ -219,6 +219,11 @@ export function MobileAgentConversation({ sessionId }: { sessionId: string }) {
           つながっていません。最後に受け取った内容です。
         </p>
       )}
+      {a.diskWarning && (
+        <p className="rk-disk" role="status">
+          {a.diskWarning}
+        </p>
+      )}
       <div className="rk-mstage">
         <MascotStage pose={cur.pose} line={cur.line} working={busy} size={56} />
       </div>

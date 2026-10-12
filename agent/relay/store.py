@@ -14,7 +14,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from relay.db import ApprovalRow, Base, EventRow, PlanRow, RunRow, SessionRow, ToolCallRow
+from relay.db import ApprovalRow, Base, EventRow, JournalRow, PlanRow, RunRow, SessionRow, ToolCallRow
 
 
 def utcnow() -> datetime:
@@ -56,6 +56,11 @@ class Store(Protocol):
     def update_run(self, run_id: str, **fields: Any) -> None: ...
     def add_tool_call(self, session_id: str, **fields: Any) -> None: ...
     def list_tool_calls(self, session_id: str) -> list[dict]: ...
+    def add_journal(self, **fields: Any) -> dict: ...
+    def list_journal(self, office: str, since: datetime | None = None, include_retired: bool = False,
+                     limit: int = 1000) -> list[dict]: ...
+    def get_journal(self, office: str, entry_id: str) -> dict | None: ...
+    def retire_journal(self, office: str, entry_id: str, reason: str) -> bool: ...
 
 
 class SqlStore:
@@ -218,3 +223,31 @@ class SqlStore:
         with self._s() as s:
             q = sa.select(ToolCallRow).where(ToolCallRow.session_id == session_id).order_by(ToolCallRow.id)
             return [_row(r) for r in s.scalars(q)]
+
+    # ---------- 相談の引き継ぎ帳 ----------
+    def add_journal(self, **fields: Any) -> dict:
+        row = JournalRow(**fields)
+        with self._s() as s, s.begin():
+            s.add(row)
+        return _row(row)
+
+    def list_journal(self, office: str, since: datetime | None = None, include_retired: bool = False,
+                     limit: int = 1000) -> list[dict]:
+        with self._s() as s:
+            q = sa.select(JournalRow).where(JournalRow.office == office)
+            if since is not None:
+                q = q.where(JournalRow.ts >= since)
+            if not include_retired:
+                q = q.where(JournalRow.retired_at.is_(None))
+            return [_row(r) for r in s.scalars(q.order_by(JournalRow.ts.desc()).limit(limit))]
+
+    def get_journal(self, office: str, entry_id: str) -> dict | None:
+        with self._s() as s:
+            r = s.get(JournalRow, entry_id)
+            return _row(r) if r and r.office == office else None
+
+    def retire_journal(self, office: str, entry_id: str, reason: str) -> bool:
+        with self._s() as s, s.begin():
+            res = s.execute(sa.update(JournalRow).where(JournalRow.id == entry_id, JournalRow.office == office)
+                            .values(retired_at=utcnow(), retired_reason=reason[:200]))
+            return res.rowcount == 1

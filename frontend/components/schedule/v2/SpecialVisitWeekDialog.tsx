@@ -52,6 +52,7 @@ import * as React from 'react';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { usePublishScreenContext } from '@/components/agent/screenContext';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -241,6 +242,8 @@ export function SpecialVisitWeekDialog({
   open,
   onOpenChange,
 }: SpecialVisitWeekDialogProps) {
+  // らく助エージェントへの画面の文脈(開いている間だけ。閉じたら下の画面の文脈に戻る)
+  usePublishScreenContext(open ? { screen: 'special_week', patient_id: patientId } : null);
   const periodsQuery = useSpecialVisitPeriods(open ? patientId : null);
   const periods = periodsQuery.data ?? [];
   const activePeriod: SpecialVisitPeriod | null =

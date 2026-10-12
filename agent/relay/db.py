@@ -61,8 +61,6 @@ class PlanRow(Base):
     plan_sha256: Mapped[str] = mapped_column(sa.String(64))
     check_result: Mapped[dict] = mapped_column(JSONType)
     basis_hash: Mapped[str | None] = mapped_column(sa.String(128), nullable=True)
-    html_a4: Mapped[str] = mapped_column(sa.Text)
-    html_a3: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     status: Mapped[str] = mapped_column(sa.String(16))  # draft/approved/applying/applied/failed/rejected/stale/superseded
     created_at: Mapped[datetime] = mapped_column(TS)
 
@@ -114,3 +112,22 @@ class ToolCallRow(Base):
     status: Mapped[int] = mapped_column(sa.Integer)
     ms: Mapped[int] = mapped_column(sa.Integer)
     created_at: Mapped[datetime] = mapped_column(TS)
+
+
+class JournalRow(Base):
+    """相談の引き継ぎ帳（rk/consult_journal.py）。会話が消えても残す（外部キーなし・保存期間なし）。"""
+    __tablename__ = "journal_entries"
+    id: Mapped[str] = mapped_column(sa.String(40), primary_key=True)  # jn_…
+    ts: Mapped[datetime] = mapped_column(TS)
+    office: Mapped[str] = mapped_column(sa.String(64))
+    session_id: Mapped[str | None] = mapped_column(sa.String(40), nullable=True)
+    title: Mapped[str] = mapped_column(sa.Text)
+    asked: Mapped[str] = mapped_column(sa.Text, default="")
+    tried: Mapped[str] = mapped_column(sa.Text, default="")
+    said: Mapped[str] = mapped_column(sa.Text, default="")
+    outcome: Mapped[str] = mapped_column(sa.String(16))  # applied / plan-only / declined / unanswered
+    next_time: Mapped[str] = mapped_column(sa.Text, default="")
+    tags: Mapped[list] = mapped_column(JSONType)
+    plans: Mapped[list] = mapped_column(JSONType)
+    retired_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    retired_reason: Mapped[str | None] = mapped_column(sa.Text, nullable=True)

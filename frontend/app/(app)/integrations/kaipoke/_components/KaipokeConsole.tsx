@@ -12,6 +12,8 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { usePublishScreenContext } from '@/components/agent/screenContext';
+import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -86,6 +88,14 @@ export function KaipokeConsole({
   const recentJobs = recentJobsQuery.data?.items ?? [];
 
   const [tab, setTab] = useState<'send' | 'inbound'>('send');
+  // らく助エージェントへの画面の文脈(向きと、そのタブで選んでいる週)
+  const ctxWeek = isoWeekFromLocalDate(tab === 'send' ? weekly.weekStart : inbound.weekStart);
+  usePublishScreenContext({
+    screen: 'integrations',
+    direction: tab === 'send' ? 'send' : 'receive',
+    iso_year: ctxWeek.isoYear,
+    iso_week: ctxWeek.isoWeek,
+  });
 
   // 取り込みの❶差分取得が成功して sheetId が入ったら「取り込みプレビュー」タブへ自動切替。
   // 新しい sheetId への遷移時だけ切り替え、ユーザーが手動で戻したタブは尊重する。

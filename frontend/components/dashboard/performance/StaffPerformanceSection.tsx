@@ -9,6 +9,7 @@
 import * as React from 'react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { usePublishScreenContext } from '@/components/agent/screenContext';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/dashboard/EmptyState';
@@ -85,6 +86,8 @@ export function StaffPerformanceSection({ opsSummary }: StaffPerformanceSectionP
   const [selected, setSelected] = React.useState<string | null>(null);
 
   const range = preset === 'custom' ? custom : presetRange(preset, today);
+  // らく助エージェントへの画面の文脈(見ている期間。形が違う間は送らない)
+  usePublishScreenContext({ screen: 'dashboard', period: `${range.from}..${range.to}` });
   const customMessage =
     preset !== 'custom'
       ? null

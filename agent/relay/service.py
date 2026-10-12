@@ -35,6 +35,8 @@ from relay.execs import BackupTaker, SqlExecutor, rk_config
 from relay.normalize import ClaudeNormalizer
 from relay.runner import (AgentSession, ClaudeSession, RunnerSession, claude_argv, claude_env,
                           write_session_files)
+from relay.retention import DISK_BLOCK_JA, disk_status
+from relay.screen_context import context_line
 from relay.store import Store
 from relay import codex_config as cx
 from relay.codex_session import CodexRunnerSession, CodexSession, StartRefused, codex_env
@@ -56,6 +58,14 @@ def mem_available_mb() -> int | None:
     except (OSError, ValueError, IndexError):
         return None
     return None
+
+
+def disk_probe(path: Path) -> dict | None:
+    """データの置き場の空き（読めなければ None＝止めない）。"""
+    try:
+        return disk_status(path)
+    except OSError:
+        return None
 
 
 def claude_runner_factory(cfg: RelayConfig) -> RunnerFactory:
@@ -118,7 +128,8 @@ class RelayService:
     def __init__(self, cfg: RelayConfig, store: Store, *, runner_factory: RunnerFactory | None = None,
                  api_factory: ApiFactory | None = None, sql: SqlExecutor | None = None,
                  backup: BackupTaker | None = None, now: Callable[[], datetime] = utcnow,
-                 mem_mb: Callable[[], int | None] = mem_available_mb):
+                 mem_mb: Callable[[], int | None] = mem_available_mb,
+                 disk: Callable[[], dict | None] | None = None):
         self.cfg = cfg
         self.store = store
         self.bus = EventBus(store)
@@ -132,6 +143,7 @@ class RelayService:
         self.backup_taker = backup
         self.now = now
         self.mem_mb = mem_mb
+        self.disk = disk or (lambda: disk_probe(cfg.data_dir))
         self.live: dict[str, Live] = {}
         self._tokens: dict[str, str] = {}
         self._sends: dict[str, collections.deque] = {}
@@ -144,13 +156,48 @@ class RelayService:
         prov = provider or self.cfg.default_provider
         if prov not in self.cfg.providers:
             raise Refused("その AI はいま使えません", 400)
+        self._disk_guard()
         model = models.SOL_BASELINE if prov == "codex" else models.claude_model_arg()
         return self.store.create_session(user.id, title=title[:80], provider=prov, model=model)
 
     def engine_info(self) -> dict:
         """画面用: 既定の AI と、各 AI のログインの様子（トークンは出さない）。"""
-        return {"default_provider": self.cfg.default_provider, "providers": list(self.cfg.providers),
+        info = {"default_provider": self.cfg.default_provider, "providers": list(self.cfg.providers),
                 "login": {p: dict(v) for p, v in self.login_state.items()}}
+        d = self.disk()
+        if d is not None:  # パスは出さない。画面は warning（日本語）をそのまま出せる
+            info["disk"] = {"free_gb": d["free_gb"], "low": d["low"], "blocked": d["blocked"],
+                            "warning": DISK_BLOCK_JA if d["blocked"] else d["warning"]}
+        return info
+
+    def _disk_guard(self, session: dict | None = None) -> None:
+        """空きが 5 GB 未満なら、新しい相談（まだ CLI の会話を持たないもの）を始めない。
+        すでに会話のある相談の再開と、作業中のものは止めない。"""
+        if session is not None and session.get("cli_session_id"):
+            return
+        d = self.disk()
+        if d is not None and d["blocked"]:
+            raise Refused(DISK_BLOCK_JA, 503)
+
+    def plan_html(self, row: dict, size: str) -> str | None:
+        """案の帳票 HTML を、保存してある案の JSON からそのつど作る（HTML は DB に残さない）。A3 は時間割のある案だけ。"""
+        plan = row["plan_json"]
+        cache = self.__dict__.setdefault("_html_cache", {})  # (plan_sha256, size) → HTML。小さく（直近 32 件）
+        key = (row.get("plan_sha256"), size)
+        if key in cache:
+            return cache[key]
+        if size == "a3" and not (plan.get("timelines") or plan.get("timeline")):
+            return None
+        try:
+            html = render_html(plan, a3=True) if size == "a3" else render_html(plan)
+        except (RkError, KeyError, TypeError, ValueError):
+            if size == "a3":
+                return None
+            raise Refused("この案は帳票にできませんでした。案の作り直しを頼んでください", 422) from None
+        if len(cache) >= 32:
+            cache.pop(next(iter(cache)))
+        cache[key] = html
+        return html
 
     def owned_session(self, session_id: str, user: User) -> dict:
         s = self.store.get_session(session_id)
@@ -180,6 +227,7 @@ class RelayService:
             else:
                 self.bus.emit(session["id"], ev.status("queued", "ほかの相談が作業中です。終わってから始めます"))
                 raise Refused("ほかの相談が作業中です。終わってからもう一度送ってください", 409)
+        self._disk_guard(session)
         mem = self.mem_mb()
         if mem is not None and mem < self.cfg.min_mem_mb:
             raise Refused("いまサーバーが混んでいます。少し時間をおいてください", 503)
@@ -281,7 +329,8 @@ class RelayService:
             self._forget(session_id, live)
 
     async def send_message(self, session: dict, user: User, text: str, device: str = "pc",
-                           plan_ref: int | None = None) -> dict:
+                           plan_ref: int | None = None, context: dict | None = None) -> dict:
+        """context = 確かめ済みの画面の文脈（relay.screen_context.validate_context）。そのターンの文の頭に 1 行付ける。"""
         text = (text or "").strip()
         if not text:
             raise Refused("空の相談は送れません", 400)
@@ -297,6 +346,9 @@ class RelayService:
         if session.get("title") in ("", "新しい相談"):
             self.store.update_session(session["id"], title=text.splitlines()[0][:40])
         cli_text = f"【案 {plan_ref} について】{text}" if plan_ref is not None else text
+        line = context_line(context)
+        if line:
+            cli_text = f"{line}\n{cli_text}"
         await self._send_cli(session, cli_text)
         return e or {}
 
@@ -433,17 +485,10 @@ class RelayService:
             raise Refused("案に誤りがあります:\n  " + "\n  ".join(other), 422)
         blockers = [str(b) for b in plan.get("blockers") or [] if str(b).strip()] if ready_errs else []
         ready = not ready_errs
-        html_a4 = render_html(plan)
-        html_a3 = None
-        if plan.get("timelines") or plan.get("timeline"):
-            try:
-                html_a3 = render_html(plan, a3=True)
-            except RkError:
-                html_a3 = None
         row = self.store.add_plan(
             session["id"], kind=str(plan["kind"]), title=str(plan["title"]), plan_json=plan,
             plan_sha256=plan_sha256(plan), check_result={"errors": errs, "ready": ready, "blockers": blockers},
-            basis_hash=(plan.get("source") or {}).get("basis_hash"), html_a4=html_a4, html_a3=html_a3)
+            basis_hash=(plan.get("source") or {}).get("basis_hash"))
         self.bus.emit(session["id"], self._plan_event(session, row))
         if ready:
             # 承認カード（画面のボタン）。承認番号はまだ無い（人が押した時に公開口で作る・設計 §3-1）
@@ -457,7 +502,7 @@ class RelayService:
         nu = not_undoable_ops(plan)
         base = f"/agent-relay/sessions/{session['id']}/plans/{row['version']}/html"
         urls = {"a4": base + "?size=a4"}
-        if row.get("html_a3"):
+        if plan.get("timelines") or plan.get("timeline"):  # A3 の時間割（HTML は保存せず、開くたびに案の JSON から作る）
             urls["a3"] = base + "?size=a3"
         return {"type": "plan", "plan_id": row["id"], "version": row["version"], "title": row["title"],
                 "summary": [str(x) for x in (plan.get("summary") or [])][:5],

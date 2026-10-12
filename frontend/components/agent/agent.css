@@ -135,6 +135,37 @@
   width: min(1240px, calc(100vw - 32px));
   height: calc(100vh - 32px);
 }
+/* 型の作業場の右の列に収まった形(§11-2)。浮かばず、列の高さいっぱい */
+.rk-agent[data-size='dock'] {
+  position: relative;
+  z-index: auto;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  min-height: 480px;
+  border-radius: 12px;
+  box-shadow: none;
+}
+.rk-agent[data-size='dock'] .rk-head {
+  cursor: default;
+}
+.rk-ctx {
+  display: block;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--rk-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rk-title .rk-ctx b {
+  display: inline;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: 500;
+  color: var(--rk-fg);
+}
 .rk-agent[data-dragging='true'] {
   opacity: 0.92;
   user-select: none;
@@ -255,6 +286,15 @@
   font-size: 12px;
   background: var(--rk-amber-soft);
   color: var(--rk-amber);
+}
+/* サーバーの空きが少ない(管理者向け・落ち着いた一言) */
+.rk-disk {
+  margin: 0;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--rk-muted);
+  background: var(--rk-surface-2);
+  border-bottom: 1px solid var(--rk-line);
 }
 .rk-body {
   flex: 1;

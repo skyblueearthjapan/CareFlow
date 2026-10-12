@@ -10,13 +10,15 @@
   POST   /sessions {title?, provider?: codex|claude}           → Session（provider を省くと既定＝codex）
   GET    /engine                                               → {default_provider, providers, login{codex|claude:
                                                                   {state: ok|missing|not_subscription, plan, at}}}
+                                                                  ＋ disk{free_gb, low, blocked, warning}（空き 5 GB 未満は blocked＝新しい相談を断る）
   PATCH  /sessions/{id} {title?, pinned?}                      → Session
   GET    /sessions/{id}                                        → Session ＋ plans・live・busy
   GET    /sessions/{id}/events?after=<seq>                     → SSE（id: seq / data: 共通イベント）
-  POST   /sessions/{id}/messages {text, device, plan_ref?}     → {ok, seq}（plan_ref = 案の版の番号）
+  POST   /sessions/{id}/messages {text, device, plan_ref?, context?} → {ok, seq}（plan_ref = 案の版の番号・
+                                                                  context = 画面の文脈 relay/screen_context.py・形が違えば 400）
   POST   /sessions/{id}/answers {question_id, answers{質問: 答え}, device} → {ok}
   POST   /sessions/{id}/stop                                   → {ok}
-  GET    /sessions/{id}/plans/{version}/html?size=a4|a3        → 案の HTML（CSP sandbox）
+  GET    /sessions/{id}/plans/{version}/html?size=a4|a3        → 案の HTML（保存した案の JSON から開くたびに描く・CSP sandbox）
   POST   /sessions/{id}/plans/{version}/print-url {size}       → {url}（5 分・その人・その版だけの署名つき）
   GET    /agent-relay/print/{id}/{version}?size&u&exp&sig      → 案の HTML（鍵なし・署名で確かめる）
   POST   /sessions/{id}/plans/{version}/approve {device}       → {ok, version, expires_at}
@@ -42,6 +44,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from relay.approvals import Refused
 from relay.auth import AuthChecker, FeatureGate, User, always_on
+from relay.screen_context import ContextError, validate_context
 from relay.service import RelayService
 
 PREFIX = "/agent-relay"
@@ -209,7 +212,12 @@ def create_public_app(svc: RelayService, auth: AuthChecker, feature_gate: Featur
         ref = payload.get("plan_ref")
         if ref is not None and (isinstance(ref, bool) or not isinstance(ref, int)):
             raise HTTPException(400, "plan_ref は案の版の番号です")
-        e = await svc.send_message(s, user, str(payload.get("text") or ""), _device(payload), plan_ref=ref)
+        try:
+            ctx = validate_context(payload.get("context"))
+        except ContextError as err:
+            raise HTTPException(400, str(err)) from None
+        e = await svc.send_message(s, user, str(payload.get("text") or ""), _device(payload), plan_ref=ref,
+                                   context=ctx)
         return {"ok": True, "seq": e.get("seq")}
 
     @app.post(PREFIX + "/sessions/{session_id}/answers")
@@ -233,7 +241,7 @@ def create_public_app(svc: RelayService, auth: AuthChecker, feature_gate: Featur
         p = svc.store.get_plan(session_id, version)
         if p is None:
             raise HTTPException(404, "案が見つかりません")
-        html = p["html_a3"] if size == "a3" else p["html_a4"]
+        html = svc.plan_html(p, "a3" if size == "a3" else "a4")
         if not html:
             raise HTTPException(404, "この案には A3 の時間割がありません")
         return _plan_html_response(html)
@@ -264,7 +272,7 @@ def create_public_app(svc: RelayService, auth: AuthChecker, feature_gate: Featur
         if s is None or str(s["user_id"]) != u or s.get("archived_at"):
             raise HTTPException(404, "案が見つかりません")
         p = svc.store.get_plan(session_id, version)
-        html = (p["html_a3"] if size == "a3" else p["html_a4"]) if p else None
+        html = svc.plan_html(p, size) if p else None
         if not html:
             raise HTTPException(404, "案が見つかりません")
         return _plan_html_response(html)

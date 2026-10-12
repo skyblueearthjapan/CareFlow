@@ -51,10 +51,14 @@ def text_choices(text: str | None) -> dict | None:
         return None
     opts = []
     for it in items:
-        it = it.replace("**", "").strip()
+        it = ev.option_label(it.replace("**", "").strip())
+        rec = it.endswith(ev.RECOMMENDED_JA)
+        if rec:
+            it = it[: -len(ev.RECOMMENDED_JA)].rstrip()
         m = _LABEL_DESC.match(it)
         label, desc = (m.group(1), m.group(2) or m.group(3) or "") if m else (it, "")
-        opts.append({"label": label.strip()[:40], "description": desc.strip()[:120]})
+        label = label.strip()[: 40 - len(ev.RECOMMENDED_JA) if rec else 40] + (ev.RECOMMENDED_JA if rec else "")
+        opts.append({"label": label, "description": desc.strip()[:120]})
     return {"question": head[-200:], "header": "", "options": opts, "multiSelect": False}
 
 
@@ -194,7 +198,7 @@ class CodexNormalizer:
 
     def _question(self, rpc_id: Any, p: dict) -> list[dict]:
         qid = "cq_" + str(rpc_id)
-        shown, ids, secret = [], {}, []
+        shown, ids, labels, secret = [], {}, {}, []
         for q in p.get("questions") or []:
             if not isinstance(q, dict):
                 continue
@@ -203,11 +207,14 @@ class CodexNormalizer:
                 continue
             text = str(q.get("question", ""))
             ids[text] = str(q.get("id"))
+            opts = [o for o in q.get("options") or [] if isinstance(o, dict)]
+            labels[text] = [str(o.get("label", "")) for o in opts]
             shown.append({"question": text, "header": str(q.get("header", "")),
-                          "options": [{"label": str(o.get("label", "")), "description": str(o.get("description", ""))}
-                                      for o in q.get("options") or [] if isinstance(o, dict)],
+                          "options": [{"label": ev.option_label(str(o.get("label", ""))),
+                                       "description": str(o.get("description", ""))} for o in opts],
                           "multiSelect": False})
-        self.questions[qid] = {"kind": "native", "rpc_id": str(rpc_id), "raw_id": rpc_id, "ids": ids, "secret": secret}
+        self.questions[qid] = {"kind": "native", "rpc_id": str(rpc_id), "raw_id": rpc_id, "ids": ids, "labels": labels,
+                               "secret": secret}
         self._asked = True
         if not shown:
             return []

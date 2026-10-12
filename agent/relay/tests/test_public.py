@@ -140,3 +140,78 @@ def test_rate_limit(tmp_path):
         assert c.post(f"/agent-relay/sessions/{sid}/messages", json={"text": "2"}, headers=H).status_code == 429
         assert c.post(f"/agent-relay/sessions/{sid}/messages", json={"text": " "}, headers=H).status_code == 400
     assert ADMIN.id in rig.svc._sends
+
+
+def test_plan_html_is_rendered_on_demand_not_stored(tmp_path):
+    from relay import db
+    assert not hasattr(db.PlanRow, "html_a4") and not hasattr(db.PlanRow, "html_a3")
+    rig = Rig(tmp_path)
+    with _client(rig) as c:
+        sid = c.post("/agent-relay/sessions", json={}, headers=H).json()["id"]
+        s = rig.store.get_session(sid)
+        rig.svc.submit_plan(s, plan(title="印刷の案"))           # 時間割なし → A4 だけ
+        assert "html_a4" not in rig.store.get_plan(sid, 1)
+        assert "印刷の案" in c.get(f"/agent-relay/sessions/{sid}/plans/1/html", headers=H).text
+        assert c.get(f"/agent-relay/sessions/{sid}/plans/1/html?size=a3", headers=H).status_code == 404
+        ev = [e for e in rig.store.list_events(sid) if e["type"] == "plan"][0]
+        assert "a3" not in ev["html_urls"]
+        url = c.post(f"/agent-relay/sessions/{sid}/plans/1/print-url", json={"size": "a4"}, headers=H).json()["url"]
+        r = c.get(url)                                           # 署名つきの印刷用 URL（鍵なし）
+        assert r.status_code == 200 and "印刷の案" in r.text
+
+
+def _disk(free_gb):
+    from relay.retention import disk_status
+    gb = 1024 ** 3
+    return lambda: disk_status("/", usage=lambda p: type("U", (), {"free": int(free_gb * gb), "total": 100 * gb})())
+
+
+def test_disk_status_in_engine_and_new_sessions_stop_below_5gb(tmp_path):
+    rig = Rig(tmp_path, disk=_disk(7))                           # 5〜10 GB: 警告だけ・始められる
+    with _client(rig) as c:
+        d = c.get("/agent-relay/engine", headers=H).json()["disk"]
+        assert d["low"] and not d["blocked"] and "空き容量" in d["warning"] and "path" not in d
+        sid = c.post("/agent-relay/sessions", json={}, headers=H).json()["id"]
+        assert c.post(f"/agent-relay/sessions/{sid}/messages", json={"text": "こんにちは"}, headers=H).status_code == 200
+    rig = Rig(tmp_path, disk=_disk(3))                           # 5 GB 未満: 新しい相談・CLI を始めない
+    with _client(rig) as c:
+        d = c.get("/agent-relay/engine", headers=H).json()["disk"]
+        assert d["blocked"] and "新しい相談を始められません" in d["warning"]
+        r = c.post("/agent-relay/sessions", json={}, headers=H)
+        assert r.status_code == 503 and "空きが少ない" in r.json()["detail"]
+        fresh = rig.store.create_session(ADMIN.id, "まだ始めていない")
+        r = c.post(f"/agent-relay/sessions/{fresh['id']}/messages", json={"text": "はじめ"}, headers=H)
+        assert r.status_code == 503 and not rig.runners
+        old = rig.store.create_session(ADMIN.id, "再開")
+        rig.store.update_session(old["id"], cli_session_id="11111111-1111-4111-8111-111111111111")
+        r = c.post(f"/agent-relay/sessions/{old['id']}/messages", json={"text": "続き"}, headers=H)
+        assert r.status_code == 200  # すでに会話のある相談の再開は止めない
+    rig = Rig(tmp_path, disk=_disk(50))
+    with _client(rig) as c:
+        assert not c.get("/agent-relay/engine", headers=H).json()["disk"]["low"]
+
+
+def test_plan_html_failure_is_calm_422_and_cached(tmp_path):
+    rig = Rig(tmp_path)
+    with _client(rig) as c:
+        sid = c.post("/agent-relay/sessions", json={}, headers=H).json()["id"]
+        rig.svc.submit_plan(rig.store.get_session(sid), plan(title="キャッシュの案"))
+        row = rig.store.get_plan(sid, 1)
+        n = []
+        import relay.service as sv
+        orig = sv.render_html
+        sv.render_html = lambda p, a3=False: (n.append(1), orig(p, a3=a3))[1]
+        try:
+            for _ in range(3):
+                assert "キャッシュの案" in rig.svc.plan_html(row, "a4")
+            assert len(n) == 1                                   # (plan_sha256, size) で使い回す
+            bad = dict(row, plan_sha256="x", plan_json={"kind": "k"})
+            sv.render_html = lambda p, a3=False: (_ for _ in ()).throw(sv.RkError("壊れた案"))
+            from relay.approvals import Refused
+            try:
+                rig.svc.plan_html(bad, "a4")
+                raise AssertionError("422 になるはず")
+            except Refused as e:
+                assert e.status == 422 and "帳票にできませんでした" in str(e)
+        finally:
+            sv.render_html = orig

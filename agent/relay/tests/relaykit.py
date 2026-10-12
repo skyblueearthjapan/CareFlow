@@ -136,7 +136,7 @@ def plan(to="S9", title="試験の案", **extra):
 class Rig:
     """中継一式（SQLite のメモリ・偽の backend・偽の CLI）。"""
 
-    def __init__(self, tmp_path: Path, fixture: str | None = "claude_ask_then_tool.jsonl", **cfg_kw):
+    def __init__(self, tmp_path: Path, fixture: str | None = "claude_ask_then_tool.jsonl", disk=None, **cfg_kw):
         self.clock = Clock()
         self.cfg = RelayConfig(enabled=True, db_url="sqlite://", data_dir=tmp_path, agent_dir=AGENT,
                                allowed_origins=["https://carelink.kaipoke-api.net"], **cfg_kw)
@@ -147,7 +147,8 @@ class Rig:
         self.runners: list[FakeSession] = []
         self.by_session: dict[str, FakeSession] = {}
         self.svc = RelayService(self.cfg, self.store, runner_factory=self._runner, api_factory=self.backend.api,
-                                sql=self.sql, backup=None, now=self.clock, mem_mb=lambda: None)
+                                sql=self.sql, backup=None, now=self.clock, mem_mb=lambda: None,
+                                disk=disk or (lambda: None))
         self.svc.backup_taker = FakeBackup(self.svc.rk_cfg, self.clock)
 
     def _runner(self, session, token, resume_id):

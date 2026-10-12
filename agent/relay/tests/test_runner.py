@@ -51,6 +51,23 @@ def test_answer_reply_rejects_unknown_question_and_joins_multi():
     assert answer_reply(ask, {q: ["赤", "青"]})["response"]["response"]["updatedInput"]["answers"][q] == "赤, 青"
 
 
+def test_claude_recommended_label_shown_in_japanese_and_answer_maps_back():
+    ask = {"type": "control_request", "request_id": "q1", "request": {
+        "subtype": "can_use_tool", "tool_name": "AskUserQuestion", "input": {"questions": [
+            {"question": "どれにしますか？", "header": "案", "multiSelect": False,
+             "options": [{"label": "この案で反映する (Recommended)", "description": ""},
+                         {"label": "やめる", "description": ""}]}]}}}
+    ev = next(e for e in ClaudeNormalizer().feed(ask) if e["type"] == "question")
+    assert [o["label"] for o in ev["questions"][0]["options"]] == ["この案で反映する（おすすめ）", "やめる"]
+    r = answer_reply(ask, "この案で反映する（おすすめ）")
+    assert r["response"]["response"]["updatedInput"]["answers"] == {"どれにしますか？": "この案で反映する (Recommended)"}
+    assert answer_reply(ask, "やめる")["response"]["response"]["updatedInput"]["answers"] == {"どれにしますか？": "やめる"}
+    free = answer_reply(ask, "自由に書いた答え")["response"]["response"]["updatedInput"]
+    assert free["answers"]["どれにしますか？"] == "自由に書いた答え"
+    multi = answer_reply(ask, {"どれにしますか？": ["この案で反映する（おすすめ）", "やめる"]})["response"]["response"]["updatedInput"]
+    assert multi["answers"]["どれにしますか？"] == "この案で反映する (Recommended), やめる"
+
+
 def test_isolation_and_env():
     iso = isolation_settings("/home/agent", "/srv/agent")
     assert iso["autoMemoryEnabled"] is False and iso["forceLoginMethod"] == "claudeai"

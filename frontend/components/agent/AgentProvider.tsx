@@ -8,12 +8,15 @@ import {
   useMemo,
   useReducer,
   useRef,
+  useState,
 } from 'react';
+import { usePathname } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 
 import { createMockRelay } from './mockRelay';
 import { agentReducer, initialStore } from './reducer';
 import { HttpRelay, relayBaseFromEnv, type AgentRelay } from './relay';
+import { currentScreenContext } from './screenContext';
 import { streamWithReconnect } from './stream';
 import type { AgentStore, PlanSize, SessionView } from './types';
 
@@ -37,7 +40,14 @@ export interface AgentContextValue {
   undo: (runId: string) => Promise<void>;
   planHtml: (planId: string, size: PlanSize) => Promise<string>;
   printUrl: (planId: string, size: PlanSize) => Promise<string>;
+  /** サーバーの空きが少ない時の一言(管理者向け・ウィジェット自体が管理者だけ)。無ければ null */
+  diskWarning: string | null;
 }
+
+/** 空きが少ない(10 GB 未満)時の、落ち着いた言い方。新しい相談を断る段(5 GB 未満)は中継の文をそのまま出す */
+export const DISK_LOW_JA = 'サーバーの空きが少なくなっています。管理者にお知らせください。';
+/** 空きの見直しの間隔(ミリ秒) */
+const ENGINE_POLL_MS = 10 * 60 * 1000;
 
 const Ctx = createContext<AgentContextValue | null>(null);
 
@@ -71,6 +81,44 @@ export function AgentProvider({ children, device, relay: relayProp }: Props) {
   }, [relayProp, device]);
 
   const [store, dispatch] = useReducer(agentReducer, initialStore);
+  const [diskWarning, setDiskWarning] = useState<string | null>(null);
+
+  // 話しかけた画面の道。携帯は会話が /m/agent にあるので、その前に見ていた画面を覚えておく
+  const pathname = usePathname();
+  const lastScreen = useRef<{ path: string; search: string } | null>(null);
+  useEffect(() => {
+    if (!pathname || pathname.startsWith('/m/agent')) return;
+    lastScreen.current = { path: pathname, search: window.location.search };
+  }, [pathname]);
+  const screenContext = useCallback(() => {
+    if (device === 'mobile') {
+      const l = lastScreen.current;
+      return l ? currentScreenContext(l.path, l.search) : null;
+    }
+    return currentScreenContext(window.location.pathname, window.location.search);
+  }, [device]);
+
+  useEffect(() => {
+    if (!relay.engine) return;
+    let alive = true;
+    const load = () =>
+      relay
+        .engine?.()
+        .then((info) => {
+          if (!alive) return;
+          const d = info?.disk;
+          setDiskWarning(d?.blocked ? (d.warning ?? DISK_LOW_JA) : d?.low ? DISK_LOW_JA : null);
+        })
+        .catch(() => {
+          /* 見られなくても会話はできる */
+        });
+    void load();
+    const t = setInterval(() => void load(), ENGINE_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [relay]);
   const storeRef = useRef(store);
   storeRef.current = store;
 
@@ -147,9 +195,9 @@ export function AgentProvider({ children, device, relay: relayProp }: Props) {
       let id = storeRef.current.currentId;
       if (!id) id = await newSession();
       const v = planRef ? storeRef.current.sessions[id]?.plans[planRef]?.version : undefined;
-      await relay.send(id, t, { planRef: v, device });
+      await relay.send(id, t, { planRef: v, device, context: screenContext() });
     },
-    [relay, newSession, device],
+    [relay, newSession, device, screenContext],
   );
 
   const stop = useCallback(async () => {
@@ -223,8 +271,9 @@ export function AgentProvider({ children, device, relay: relayProp }: Props) {
       undo,
       planHtml,
       printUrl,
+      diskWarning,
     }),
-    [store, device, current, waitingCount, select, newSession, rename, send, stop, answer, decide, undo, planHtml, printUrl],
+    [store, device, current, waitingCount, select, newSession, rename, send, stop, answer, decide, undo, planHtml, printUrl, diskWarning],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

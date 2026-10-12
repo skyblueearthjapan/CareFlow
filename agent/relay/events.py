@@ -7,6 +7,7 @@ SSE の 1 件 = ``id: <seq>`` ＋ ``data: <JSON>``。JSON の共通部 ``{seq, t
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal, NotRequired, TypedDict
 
 State = Literal["idle", "starting", "working", "waiting_answer", "waiting_approval", "applying", "error",
@@ -204,6 +205,25 @@ def status(state: State, line: str | None = None, **extra: Any) -> dict:
 
 def error(code: str, message: str, retry: bool = True) -> dict:
     return {"type": "error", "code": code, "message": message, "retry": retry}
+
+
+_RECOMMENDED = re.compile(r"\s*[(（]\s*recommended\s*[)）]\s*$", re.IGNORECASE)
+RECOMMENDED_JA = "（おすすめ）"
+
+
+def option_label(label: str) -> str:
+    """選択肢の名前の末尾の「(Recommended)」（CLI の癖・英語）を「（おすすめ）」にして見せる。答えは元の名前に戻す。"""
+    return _RECOMMENDED.sub(RECOMMENDED_JA, label) if _RECOMMENDED.search(label) else label
+
+
+def option_original(answer: Any, labels: list[str]) -> Any:
+    """画面の答え（見せた名前・複数なら list）を、CLI が出した元の選択肢の名前に戻す。自由記述はそのまま。"""
+    back = {option_label(x): x for x in labels}
+    if isinstance(answer, list):
+        return [back.get(str(a), a) for a in answer]
+    if isinstance(answer, str) and answer not in back and ", " in answer:  # 複数選択を 1 つの文で渡されたとき
+        return ", ".join(back.get(a, a) for a in answer.split(", "))
+    return back.get(str(answer), answer)
 
 
 def is_internal(ev: dict) -> bool:
