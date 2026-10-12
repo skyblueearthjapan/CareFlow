@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 画面の文脈(agent/AGENTS.md §11)と、型の作業場での「右の列に収まる」(§11-2)。
+ * 画面の文脈(agent/AGENTS.md §11)と、コースの作業場での「右の列に収まる」(§11-2)。
  * - 発話ごとに {screen, ...ID} を中継へ添える。名前は入れない(ID・数・短い決まった言葉だけ)。
  * - 形の規則は agent/relay/screen_context.py と同じ。中継は形が違うと 400 で断るので、ここで先に整える。
  * - 道(URL)から分かる分はここで読み、週・日付などページの中にしか無い値はページが publish する。
@@ -109,9 +109,9 @@ export function contextFromLocation(pathname: string, search = ''): ScreenContex
 interface ScreenState {
   /** ページ・ダイアログが足した値(週・日付・下書きなど)。後から足したもの(開いたダイアログ)が上 */
   pages: { id: number; ctx: Partial<ScreenContext> }[];
-  /** 型の作業場の右の列(あればウィジェットがそこへ収まる) */
+  /** コースの作業場の右の列(あればウィジェットがそこへ収まる) */
   dock: HTMLElement | null;
-  /** 見出しの「一緒に見ているもの：型の作業場・<下書き名>」に使う(画面だけ・中継へは送らない) */
+  /** 見出しの「一緒に見ているもの：コースの作業場・<下書き名>」に使う(画面だけ・中継へは送らない) */
   dockLabel: string | null;
   /** ウィジェットがいま右の列に収まっているか(列の幅を取るかどうかにページが使う) */
   docked: boolean;
@@ -171,7 +171,7 @@ export function usePublishScreenContext(ctx: Partial<ScreenContext> | null) {
 }
 
 /**
- * 型の作業場の右の列。返す ref をその列の要素に付ける。ウィジェットが無効なら何も起きない。
+ * コースの作業場の右の列。返す ref をその列の要素に付ける。ウィジェットが無効なら何も起きない。
  * docked = ウィジェットがいま収まっているか(false の間は列を隠して盤面を広く使う)。
  */
 export function useAgentDock(opts: { draftId?: string | null; label?: string | null }) {

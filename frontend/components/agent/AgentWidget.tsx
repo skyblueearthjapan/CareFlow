@@ -218,7 +218,7 @@ function WidgetInner() {
     setSize('compact');
   });
 
-  // 型の作業場(§11-2): 右の列があればそこへ収まる。↘ で右下の丸へ、丸を押すと列へ戻る。
+  // コースの作業場(§11-2): 右の列があればそこへ収まる。↘ で右下の丸へ、丸を押すと列へ戻る。
   // ページを離れたら(列が消えたら)右下の丸にたたむ。会話は同じもの(同じ Provider の中)。
   const dockEl = useScreenStore((s) => s.dock);
   const dockLabel = useScreenStore((s) => s.dockLabel);
@@ -374,7 +374,7 @@ function WidgetInner() {
               <b>{current?.title ?? 'らく助'}</b>
               {chip}
               <span className="rk-ctx" data-testid="rk-ctx">
-                一緒に見ているもの：型の作業場{dockLabel ? '・' : ''}
+                一緒に見ているもの：コースの作業場{dockLabel ? '・' : ''}
                 {dockLabel ? <b>{dockLabel}</b> : null}
               </span>
             </div>

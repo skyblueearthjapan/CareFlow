@@ -1,5 +1,5 @@
 /**
- * 型の作業場: 盤面の組み立て・数の物差し・最新の編集（人 / らく助エージェント）・履歴・出口 2 つのダイアログ。
+ * コースの作業場: 盤面の組み立て・数の物差し・最新の編集（人 / らく助エージェント）・履歴・出口 2 つのダイアログ。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';

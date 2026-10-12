@@ -1,4 +1,4 @@
-"""型の作業場の計算まわり (DB に触らない). agent/tools/template_ws/ops.py の純粋な部分を、DB 版の下書き dict 用に移したもの.
+"""コースの作業場の計算まわり (DB に触らない). agent/tools/template_ws/ops.py の純粋な部分を、DB 版の下書き dict 用に移したもの.
 
 下書き dict (engine draft):
   office / office_id / snapshot{raw, scope_patients} / scenario / assign{枠のキー: {course, start}} /

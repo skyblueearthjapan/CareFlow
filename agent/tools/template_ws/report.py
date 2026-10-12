@@ -1,4 +1,4 @@
-"""型の作業場の帳票（1 枚の HTML）。1 枚目 = A3 横の時間割（行 = コース・列 = 月〜土・桃色 = 比べる相手と違う枠）、
+"""コースの作業場の帳票（1 枚の HTML）。1 枚目 = A3 横の時間割（行 = コース・列 = 月〜土・桃色 = 比べる相手と違う枠）、
 2 枚目 = A4 縦の要点（曜日ごとの数・変わる枠・気をつけること・もしもの条件・作業の記録）。利用者名入り → docs/reports/agent/ の下だけ。"""
 
 from __future__ import annotations
@@ -165,7 +165,7 @@ def render(cfg, draft: dict, vs: str = D.MASTER, icon_path=None) -> str:
     ms = O.refresh_metrics(draft)
     icon = _icon_data_uri(icon_path) if icon_path else _icon_data_uri()
     css = CSS % {"pink": PINK, "font": FONT}
-    title = f"型の作業場 {draft['name']}（{draft['office']}）"
+    title = f"コースの作業場 {draft['name']}（{draft['office']}）"
     meta = f"材料: {draft['snapshot'].get('extracted_at') or ''} に読んだマスター<br>比べる相手: {g['vs']}"
     img = f"<img src='{icon}' alt='らく助'>" if icon else ""
     head = f"<header>{img}<h1>{_e(title)}</h1><div class='meta'>{meta}</div></header>"

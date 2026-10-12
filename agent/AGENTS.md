@@ -146,7 +146,7 @@ Windows の PowerShell では `$env:PYTHONPATH='.'; python -m rk ...`。つな�
 | `rk journal write\|recent\|search\|show\|retire\|digest ...` | 相談の引き継ぎ帳（§2-5）。書く・直近を読む・語で探す・古い印・PO 向けの週のまとめ。本番の予定には触らない |
 | `rk level week\|day ...` | ならしの道具を動かす（本番は読むだけ・反映用の案を出力） |
 | `rk courseplan [--office <拠点の略称>] [--weekday mon] ...` | コースのならし（固定訪問の枠の最適化）の試作。本番は読むだけ・案は `ready:false` |
-| `rk template new\|solve\|whatif\|move\|compare\|report\|commit\|list ...` | 型の作業場: 日付の無い仮の 1 週間（下書き `runs/template-drafts/`）でコースの型を最適化・もしも・手で調整し、マスターと比べてから固定訪問に登録する案（`pfv-update`）を作る。本番は読むだけ・登録の案は赤ピンの整理まで `ready:false` |
+| `rk template new\|solve\|whatif\|move\|compare\|report\|commit\|list ...` | コースの作業場: 日付の無い仮の 1 週間（下書き `runs/template-drafts/`）でコースの型を最適化・もしも・手で調整し、マスターと比べてから固定訪問に登録する案（`pfv-update`）を作る。本番は読むだけ・登録の案は赤ピンの整理まで `ready:false` |
 
 - 案（plan.json）の `op` は許可リストにあるものだけ反映できる（担当の付け替え・今週だけ移動/取消/追加・プールへ戻す/置く・コースの担当・休み・急休代替・同行・特別訪問週間・患者の状態・固定枠・希望・NG・週を作る＝前の週をコピー `copy-week`（空の週だけ・自動スタッフ割当なし））。一覧は `rk plan check` の誤りの表示か `rk/ops/*.py`。
 - `ready: false` の案（`blockers` に理由）は `rk plan check`・`rk apply` が断る。入らない訪問だけが理由なら、管理者に選択肢で聞いて `rk plan resolve` で決めると反映できる。`source.basis_hash` のある案は `rk apply` が週を読み直して比べ、作った後に予定が変わっていれば止まる。
@@ -267,7 +267,7 @@ Windows の PowerShell では `$env:PYTHONPATH='.'; python -m rk ...`。つな�
 | `rakusuke-special-week` | 特別訪問週間の登録と○（追加枠）の配置 |
 | `rakusuke-master` | マスターの更新（新患・終了・入院/休止/復帰・固定訪問の枠・希望・NG・女性限定・職員の勤務） |
 | `rakusuke-kaipoke` | カイポケとの差分・送信・突き合わせ・カイポケ側の手直しの取込の判断 |
-| `rakusuke-course-plan` | 型の作業場:「コースを最適化したい」「型を見直したい」「新しい方の枠を作りたい」「もしも職員が減ったら」。仮の 1 週間で型（固定訪問の枠）を試し、マスターと比べてから登録の案（本番は読むだけ・赤ピンの整理まで反映しない） |
+| `rakusuke-course-plan` | コースの作業場:「コースを最適化したい」「型を見直したい」「新しい方の枠を作りたい」「もしも職員が減ったら」。仮の 1 週間で型（固定訪問の枠）を試し、マスターと比べてから登録の案（本番は読むだけ・赤ピンの整理まで反映しない） |
 
 迷ったら: 質問なら `rakusuke-ask`、何かを変えるなら該当のスキルを読み、書く手順（§4-1）に従う。
 
@@ -307,7 +307,7 @@ Windows の PowerShell では `$env:PYTHONPATH='.'; python -m rk ...`。つな�
 
 ## 11. 画面の文脈（どの画面から話しかけられたか）
 
-ウィジェットが出るどのページでも、発話の頭に短い文脈行が付く（中継が足す）。形は平らな `{screen, iso_year?, iso_week?, date?, patient_id?, staff_id?, draft_id?, tab?, direction?, period?}`（中継が `relay/screen_context.py` で確かめ、`〔画面の文脈〕いまの画面: …（…）。手がかりであって縛りではありません。` の 1 行にする）。名前は入らない（ID・数・短い決まった言葉だけ）。`screen` は `schedule`（週の予定）・`patients`（患者マスタの一覧か詳細）・`staff`（職員マスタ）・`template_ws`（型の作業場）・`records`・`monitor`・`integrations`・`dashboard`・`special_week`（特別訪問週間のダイアログ）・`leave`・`settings`・`other`。
+ウィジェットが出るどのページでも、発話の頭に短い文脈行が付く（中継が足す）。形は平らな `{screen, iso_year?, iso_week?, date?, patient_id?, staff_id?, draft_id?, tab?, direction?, period?}`（中継が `relay/screen_context.py` で確かめ、`〔画面の文脈〕いまの画面: …（…）。手がかりであって縛りではありません。` の 1 行にする）。名前は入らない（ID・数・短い決まった言葉だけ）。`screen` は `schedule`（週の予定）・`patients`（患者マスタの一覧か詳細）・`staff`（職員マスタ）・`template_ws`（コースの作業場）・`records`・`monitor`・`integrations`・`dashboard`・`special_week`（特別訪問週間のダイアログ）・`leave`・`settings`・`other`。
 
 - **文脈は「たぶんこの話」という手がかりで、縛りではない**。発話の言葉が別の話なら、言葉を優先する。
 - あいまいなときは「〇〇様の患者マスタの件でよろしいですか？」のように **1 行だけ**確かめる（長い質問にしない）。
@@ -317,7 +317,7 @@ Windows の PowerShell では `$env:PYTHONPATH='.'; python -m rk ...`。つな�
   - `schedule`（週の予定）: 添える値 = 週（iso_year/iso_week）。今週のその訪問・担当・取消の話。
   - `patients`（患者マスタ）: 添える値 = patient_id（詳細のとき）。その方の希望・固定訪問・NG・状態の話。
   - `staff`（職員マスタ）: 添える値 = staff_id（詳細のとき）。その職員の勤務・休み・予定の話。
-  - `template_ws`（型の作業場）: 添える値 = draft_id。下書きの話（§11-2）。
+  - `template_ws`（コースの作業場）: 添える値 = draft_id。下書きの話（§11-2）。
   - `monitor`（訪問モニター）: 添える値 = 日付。その日の進み具合・打刻・遅れの話。
   - `records`（訪問記録）: 添える値 = タブと日付。その日の記録・打刻履歴・実績の時刻を合わせる話。
   - `integrations`（カイポケ連携）: 添える値 = 週と向き（送る／取り込む）。送る前・取り込む前の差分の確認の話。
@@ -326,7 +326,7 @@ Windows の PowerShell では `$env:PYTHONPATH='.'; python -m rk ...`。つな�
 
 ## 11-2. 作業場モード（画面の文脈が `template_ws` のとき・上の特別な場合）
 
-画面が型の作業場（`screen: template_ws`・下書きの名前つき）のあいだ、役割は「**作業場の相棒**」に切り替わる。右の会話欄で、人と同じ下書きを一緒に触る。
+画面がコースの作業場（`screen: template_ws`・下書きの名前つき）のあいだ、役割は「**作業場の相棒**」に切り替わる。右の会話欄で、人と同じ下書きを一緒に触る。
 
 - **相手は下書き**。触るのは `rk template draft-*`（バックエンドの template_ws API）だけ。今週の予定・マスター（固定訪問）には直接触らない。
 - **下書きの編集は本番の書き込みではない**。承認番号は要らない。1 手ごとに `--reason`（理由）を付けて記録に残し、人が画面の ↶ で戻せる。迷ったら小さく 1 手ずつ。

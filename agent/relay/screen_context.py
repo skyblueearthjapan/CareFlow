@@ -18,7 +18,7 @@ SCREENS: dict[str, str] = {
     "schedule": "週の予定",
     "patients": "患者マスタ",
     "staff": "職員マスタ",
-    "template_ws": "型の作業場",
+    "template_ws": "コースの作業場",
     "records": "訪問記録",
     "monitor": "訪問モニター",
     "integrations": "カイポケ連携",

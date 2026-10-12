@@ -243,7 +243,7 @@ api_router.include_router(
     prefix="/office-feature-flags",
     tags=["office-feature-flags"],
 )
-# 型の作業場 (template workspace・拠点 feature flag template_workspace・管理者のみ)
+# コースの作業場 (template workspace・拠点 feature flag template_workspace・管理者のみ)
 api_router.include_router(template_ws.router, prefix="/template-ws", tags=["template-ws"])
 # Phase G-88 Step2: 自動最適化設定 (事業所単位の単一行) の取得 / 部分更新.
 api_router.include_router(

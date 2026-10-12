@@ -36,7 +36,7 @@ def _pattern(template: str) -> re.Pattern:
 _COMPILED = [(_pattern(t), t) for t, _ in READONLY_POSTS]
 
 
-#: 型の作業場（template_ws）の「下書きの編集」の POST。下書きは本番のマスターでも週の予定でもなく、
+#: コースの作業場（template_ws）の「下書きの編集」の POST。下書きは本番のマスターでも週の予定でもなく、
 #: 1 手ごとに理由つきで履歴に残り人が ↶ で戻せるので、承認番号は要らない（PO 2026-10-12）。
 #: 出口（/commit・/week-apply）は含めない＝承認番号つきの案（rk plan）でだけ。
 DRAFT_EDIT_POSTS: list[tuple[str, str]] = [

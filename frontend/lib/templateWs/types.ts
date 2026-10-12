@@ -1,5 +1,5 @@
 /**
- * 型の作業場 (template workspace) — バックエンド /api/v1/template-ws の型.
+ * コースの作業場 (template workspace) — バックエンド /api/v1/template-ws の型.
  * 設計: docs/plans/agent-skills/template-workspace-design-2026-10-12.md
  * actor は API では 'human' | 'agent'。画面の表示は「あなた」「らく助エージェント」。
  */

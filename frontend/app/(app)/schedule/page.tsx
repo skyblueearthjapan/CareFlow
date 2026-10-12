@@ -110,7 +110,7 @@ export default function SchedulePage() {
 
           {/* ml-auto で右端に拠点フィルタを寄せる. */}
           <div className="ml-auto flex flex-wrap items-center gap-3">
-            {/* 型の作業場 (管理者・拠点の feature flag ON のときだけ) */}
+            {/* コースの作業場 (管理者・拠点の feature flag ON のときだけ) */}
             <TemplateWorkspaceLink canEdit={canEdit} />
             {/* 実現性チェック (read-only): 移動/重なり/バッファ/同住所ルールを判定して A4 レポートを開く. */}
             <FeasibilityCheckButton

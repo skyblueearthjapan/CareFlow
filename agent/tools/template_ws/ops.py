@@ -1,4 +1,4 @@
-"""型の作業場の操作: 作る・解く・もしも・手で動かす・比べる・登録の案。本番には書かない（読むのは rk の読み取り専用 SQL だけ）。"""
+"""コースの作業場の操作: 作る・解く・もしも・手で動かす・比べる・登録の案。本番には書かない（読むのは rk の読み取り専用 SQL だけ）。"""
 
 from __future__ import annotations
 
@@ -593,7 +593,7 @@ def commit(cfg, name: str, *, red_cleanup_done: bool = False, run_sql=None, no_m
         "headline": headline[:3],
         "issues": issues,
         "conditions": conditions,
-        "title": f"型の作業場 {name}（{draft['office']}）の登録",
+        "title": f"コースの作業場 {name}（{draft['office']}）の登録",
         "target": {"office": draft["office"], "draft": name, "weekdays": _days_text(p["weekday"] for p in problems)},
         "created_at": now.isoformat(timespec="seconds"),
         "ready": not blockers,

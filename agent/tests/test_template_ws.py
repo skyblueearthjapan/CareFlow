@@ -1,4 +1,4 @@
-"""型の作業場（rk template）。架空のデータだけ・本番に触らない。計算は偽のプロセスで流す（OR-Tools があれば本物も 1 本）。"""
+"""コースの作業場（rk template）。架空のデータだけ・本番に触らない。計算は偽のプロセスで流す（OR-Tools があれば本物も 1 本）。"""
 
 from __future__ import annotations
 

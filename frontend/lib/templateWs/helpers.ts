@@ -1,4 +1,4 @@
-/** 型の作業場の純粋な部品（盤面の組み立て・数の差・表示用の文字）。 */
+/** コースの作業場の純粋な部品（盤面の組み立て・数の差・表示用の文字）。 */
 import type { DayView, DraftView, Metrics, SlotCard, Step } from './types';
 
 export const WEEKDAYS = ['月', '火', '水', '木', '金', '土'] as const;

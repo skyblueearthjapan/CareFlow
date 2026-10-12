@@ -1,4 +1,4 @@
-"""rk template — 型の作業場（日付の無い仮の 1 週間で、コースの型＝固定訪問の枠を試してから登録する）。本番は読むだけ。
+"""rk template — コースの作業場（日付の無い仮の 1 週間で、コースの型＝固定訪問の枠を試してから登録する）。本番は読むだけ。
 
   rk template new <名前> --office <拠点の略称> [--from master|<下書き>] [--from-raw <raw.json>] [--force]
   rk template solve <名前> [--weekday mon,tue | --all] [--seconds 20] [--max-changes N] [--w-change 20]
@@ -53,7 +53,7 @@ def _out(obj) -> int:
 
 
 def register(subparsers) -> None:
-    p = subparsers.add_parser("template", help="型の作業場（仮の 1 週間でコースの型を試す・本番は読むだけ）")
+    p = subparsers.add_parser("template", help="コースの作業場（仮の 1 週間でコースの型を試す・本番は読むだけ）")
     sub = p.add_subparsers(dest="template_cmd", required=True)
 
     q = sub.add_parser("new", help="下書きを作る（マスターを写す・本番は読むだけ）")
@@ -119,7 +119,7 @@ def register(subparsers) -> None:
 
     q = sub.add_parser("draft-new", help="画面の下書きを作る（いまの型を写す。--office all で全拠点）")
     q.add_argument("name")
-    q.add_argument("--office", required=True, help="拠点の略称か ID。all = 全拠点（型の作業場が使える拠点をまとめて）")
+    q.add_argument("--office", required=True, help="拠点の略称か ID。all = 全拠点（コースの作業場が使える拠点をまとめて）")
     q.add_argument("--from", dest="origin", help="写す元の画面の下書き（名前か ID・同じ拠点の組み合わせだけ）")
     q.set_defaults(func=cmd_draft_new)
 
@@ -313,7 +313,7 @@ def _resolve_draft(api, ref: str) -> dict:
     hits = [r for r in rows if r["id"] == ref or r["id"].startswith(ref) or r["name"] == ref]
     if not hits:
         have = "・".join(r["name"] for r in rows) or "なし"
-        raise RkError(f"下書き {ref} がありません（今ある下書き: {have}）。型の作業場が使える拠点か確かめてください")
+        raise RkError(f"下書き {ref} がありません（今ある下書き: {have}）。コースの作業場が使える拠点か確かめてください")
     if len(hits) > 1:
         raise RkError(f"{ref} に当てはまる下書きが複数あります。ID で指定してください")
     return hits[0]

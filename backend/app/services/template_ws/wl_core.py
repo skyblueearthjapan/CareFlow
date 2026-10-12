@@ -1,4 +1,4 @@
-"""週のならし solver.py（docs/tools/week-leveling/solver.py）から、型の作業場の計算に要る部品だけを写したもの。
+"""週のならし solver.py（docs/tools/week-leveling/solver.py）から、コースの作業場の計算に要る部品だけを写したもの。
 
 backend のイメージには docs/ が入らないため、importできない代わりにここへ最小限を写している（重複）。
 元の値を変えたら、ここも同じに直すこと（agent/tools/courseplan/solve.py の check_same_rules と同じ考え）。

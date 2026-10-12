@@ -1,5 +1,5 @@
 /**
- * 型の作業場 (2026-10-13): 盤面の幅の計算・全拠点の盤面・最適化の報告・右の列の幅を変える境目。
+ * コースの作業場 (2026-10-13): 盤面の幅の計算・全拠点の盤面・最適化の報告・右の列の幅を変える境目。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';

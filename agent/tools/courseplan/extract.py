@@ -3,7 +3,7 @@
 読むもの（拠点・曜日で絞らず全部。絞るのは model.build_problem）:
   pfv        … 固定訪問の枠（mode=normal）。稼働中・削除なし・検証用（【検証】）を除く患者だけ
   patients   … 上の患者の名前・座標・主担当拠点・性別制限・希望（weekly_pattern）
-  candidates … まだ固定訪問の枠が 1 つも無い方（稼働中・開始前）。型の作業場（template_ws）が希望の中で新しい枠を置く
+  candidates … まだ固定訪問の枠が 1 つも無い方（稼働中・開始前）。コースの作業場（template_ws）が希望の中で新しい枠を置く
   templates  … コース（course_templates・拠点ごと・削除なし）
   usual      … ふだんの担当: 直近 4 週＋今週の週のコース（courses）の担当を (テンプレート, 曜日, 職員) ごとに数えたもの
   staff / shifts / event_defaults … 稼働中の職員・勤務の型・固定イベント（毎週の予定・壁時計）

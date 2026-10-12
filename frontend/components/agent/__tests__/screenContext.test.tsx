@@ -1,5 +1,5 @@
 /**
- * 画面の文脈(AGENTS.md §11)・型の作業場の右の列(§11-2)・サーバーの空きの一言。
+ * 画面の文脈(AGENTS.md §11)・コースの作業場の右の列(§11-2)・サーバーの空きの一言。
  */
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
@@ -200,7 +200,7 @@ describe('Provider は送る時の画面の文脈を添える', () => {
   });
 });
 
-describe('型の作業場の右の列(ドック)', () => {
+describe('コースの作業場の右の列(ドック)', () => {
   beforeEach(() => {
     resetStore();
     vi.stubEnv('NEXT_PUBLIC_AGENT_PILOT_USERS', 'u-1');
@@ -233,7 +233,7 @@ describe('型の作業場の右の列(ドック)', () => {
     const dock = screen.getByTestId('dock');
     await waitFor(() => expect(dock.querySelector('[data-size="dock"]')).not.toBeNull());
     expect(dock).toHaveAttribute('data-docked', 'true');
-    expect(screen.getByTestId('rk-ctx')).toHaveTextContent('一緒に見ているもの：型の作業場・火曜を軽く');
+    expect(screen.getByTestId('rk-ctx')).toHaveTextContent('一緒に見ているもの：コースの作業場・火曜を軽く');
     await waitFor(() => expect(screen.getByText(DISK_LOW_JA)).toBeInTheDocument());
     // 下書きの文脈が発話に添えられる
     expect(currentScreenContext('/schedule/template')).toEqual({ screen: 'template_ws', draft_id: DID });

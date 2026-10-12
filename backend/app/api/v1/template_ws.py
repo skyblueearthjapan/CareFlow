@@ -1,4 +1,4 @@
-"""型の作業場 (template workspace) API — /api/v1/template-ws.
+"""コースの作業場 (template workspace) API — /api/v1/template-ws.
 
 管理者だけ・拠点の feature flag ``template_workspace`` が ON の拠点だけ (既定 OFF).
 人 (画面) もらく助エージェントも同じ API で下書きを編集する (actor = human | agent)。
@@ -42,7 +42,7 @@ class _Mut(BaseModel):
 class DraftCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     office_id: UUID | None = None
-    all_offices: bool = False  # true = 全拠点の下書き (型の作業場が使える拠点をまとめて)
+    all_offices: bool = False  # true = 全拠点の下書き (コースの作業場が使える拠点をまとめて)
     name: str
     from_draft_id: UUID | None = None
 
@@ -123,7 +123,7 @@ async def _draft(db, draft_id: UUID, *, for_update: bool = False) -> TemplateDra
     oids = S.office_ids_of(row)
     ok = {str(o) for o in await _enabled_office_ids(db)}
     if not oids or not set(oids) <= ok:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "型の作業場はこの拠点ではまだ使えません")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "コースの作業場はこの拠点ではまだ使えません")
     return row
 
 
@@ -166,7 +166,7 @@ async def _after_mutation(db, row: TemplateDraft) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/availability", summary="型の作業場を使える拠点 (feature flag ON)")
+@router.get("/availability", summary="コースの作業場を使える拠点 (feature flag ON)")
 async def availability(db: DbDep, _u: AdminDep):
     return {"office_ids": [str(o) for o in await _enabled_office_ids(db)]}
 
@@ -177,7 +177,7 @@ async def list_drafts(db: DbDep, _u: AdminDep, office_id: UUID | None = None, ar
     """office_id = その拠点の下書き / all_offices=true = 全拠点の下書き / どちらも無し = 全部 (エージェント用)。"""
     ok = {str(o) for o in await _enabled_office_ids(db)}
     if office_id and str(office_id) not in ok:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "型の作業場はこの拠点ではまだ使えません")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "コースの作業場はこの拠点ではまだ使えません")
     rows = [r for r in await S.list_drafts(db, office_id, archived, all_offices=all_offices)
             if S.office_ids_of(r) and set(S.office_ids_of(r)) <= ok]
     return [_summary_json(r) for r in rows]
@@ -189,11 +189,11 @@ async def create_draft(body: DraftCreate, db: DbDep, user: AdminDep):
     if body.all_offices:
         offices = await _enabled_office_ids(db)
         if not offices:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "型の作業場が使える拠点がありません")
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "コースの作業場が使える拠点がありません")
     elif body.office_id is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "拠点を選ぶか、全拠点にしてください")
     elif not await S.flag_enabled(db, body.office_id):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "型の作業場はこの拠点ではまだ使えません")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "コースの作業場はこの拠点ではまだ使えません")
 
     async def go():
         row = await S.create_draft(db, user, None if body.all_offices else body.office_id, body.name,

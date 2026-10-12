@@ -1,4 +1,4 @@
-"""DB → 型の作業場の材料 (``raw``)。agent/tools/courseplan/extract.py の SQL と同じ中身を ORM で読む.
+"""DB → コースの作業場の材料 (``raw``)。agent/tools/courseplan/extract.py の SQL と同じ中身を ORM で読む.
 
 SQLite (テスト) でも動くよう、PG 専用 SQL (json_build_object) は使わない。読むだけ。
 固定訪問の枠の ``id`` は ``<患者ID>:<曜日>:<slot>`` の合成キー (下書きの枠のキーと同じ形)。

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 型の作業場 (template workspace) の API クライアント — /api/v1/template-ws.
+ * コースの作業場 (template workspace) の API クライアント — /api/v1/template-ws.
  * 下書きの編集は全部ここを通る（人もらく助エージェントも同じ API）。変更は expected_version を送り、
  * 他で変わっていたら 409。読む側は 3 秒ごとに /version を見て、変わっていたら読み直す（エージェントの編集がすぐ見える）。
  */
@@ -33,7 +33,7 @@ function useAuth() {
   };
 }
 
-/** 型の作業場を使える拠点 (feature flag ON)。管理者以外・OFF は空。 */
+/** コースの作業場を使える拠点 (feature flag ON)。管理者以外・OFF は空。 */
 export function useTemplateAvailability() {
   const a = useAuth();
   return useQuery({

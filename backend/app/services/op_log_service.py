@@ -808,7 +808,7 @@ async def _set_visit_staff(
 
 
 async def _assert_visit_course(db: AsyncSession, payload: dict[str, Any]) -> None:
-    """set_visit_course の undo/redo 前検証: 訪問のコース・担当が期待値のままか (型の作業場の「この週のコースに入れる」)."""
+    """set_visit_course の undo/redo 前検証: 訪問のコース・担当が期待値のままか (コースの作業場の「この週のコースに入れる」)."""
     visit = await db.scalar(
         select(Visit).where(Visit.id == UUID(payload["visit_id"]), Visit.deleted_at.is_(None))
     )

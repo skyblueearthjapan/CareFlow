@@ -1,6 +1,6 @@
 'use client';
 
-/** スケジュール画面の道具のところに置く「型の作業場」へのリンク。管理者で、使える拠点があるときだけ出る。 */
+/** スケジュール画面の道具のところに置く「コースの作業場」へのリンク。管理者で、使える拠点があるときだけ出る。 */
 import Link from 'next/link';
 
 import { Button } from '@/components/ui/button';
@@ -12,7 +12,7 @@ export function TemplateWorkspaceLink({ canEdit }: { canEdit: boolean }) {
   return (
     <Button asChild type="button" variant="outline" size="sm">
       <Link href="/schedule/template" data-testid="template-workspace-link">
-        型の作業場
+        コースの作業場
       </Link>
     </Button>
   );

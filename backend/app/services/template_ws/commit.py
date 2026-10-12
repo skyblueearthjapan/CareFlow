@@ -330,7 +330,7 @@ async def week_apply(db: AsyncSession, row, user: User, *, iso_year: int, iso_we
                     new_start=to_start, new_course=UUID(a["to_course"]) if a["course_changed"] else None,
                     iso_year=iso_year, iso_week=iso_week, counters=counters)
                 await db.flush()
-                label = f"{a['patient']}様 {a['weekday']}曜（型の作業場から）"
+                label = f"{a['patient']}様 {a['weekday']}曜（コースの作業場から）"
                 if a["time_changed"]:
                     await record_op(db, user_id=user.id, iso_year=iso_year, iso_week=iso_week, op_group_id=group,
                                     op_kind="move_visit_week_only", label=f"{label} {_t(a['from_start'])}→{_t(a['to_start'])}",
@@ -369,7 +369,7 @@ async def week_apply(db: AsyncSession, row, user: User, *, iso_year: int, iso_we
                 if course.assigned_staff_id is not None:
                     db.add(VisitStaffAssignment(visit_id=v.id, staff_id=course.assigned_staff_id))
                 await record_op(db, user_id=user.id, iso_year=iso_year, iso_week=iso_week, op_group_id=group,
-                                op_kind="restore_visits", label=f"{a['patient']}様 {fmt_weekday(wd)}曜を足す（型の作業場から）",
+                                op_kind="restore_visits", label=f"{a['patient']}様 {fmt_weekday(wd)}曜を足す（コースの作業場から）",
                                 forward_payload={"op": "restore_visits", "visit_ids": [str(v.id)]},
                                 inverse_payload={"op": "soft_delete_visits", "visit_ids": [str(v.id)]},
                                 strict=True, clear_redo=first)

@@ -716,7 +716,7 @@ async def apply_put_fixed_visits(
     if commit:
         await _commit_or_409(db)
     else:
-        # 型の作業場の一括登録 (template_ws): 呼び出し側が 1 トランザクションで commit する.
+        # コースの作業場の一括登録 (template_ws): 呼び出し側が 1 トランザクションで commit する.
         # pattern_only 専用 (週の再生成は commit 済みを前提にするため).
         assert body.change_scope == "pattern_only"
         await db.flush()

@@ -1,4 +1,4 @@
-"""型の作業場 (template workspace) の下書き: 下書き・枠・編集の履歴.
+"""コースの作業場 (template workspace) の下書き: 下書き・枠・編集の履歴.
 
 設計: docs/plans/agent-skills/template-workspace-design-2026-10-12.md
 """

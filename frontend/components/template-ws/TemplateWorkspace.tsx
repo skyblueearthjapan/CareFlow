@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 型の作業場 — 日付の無い仮の 1 週間で、コースの型（固定訪問の枠）を試してから使う。
+ * コースの作業場 — 日付の無い仮の 1 週間で、コースの型（固定訪問の枠）を試してから使う。
  * 人もらく助エージェントも同じ下書きを編集する（変更は履歴に残り、3 秒ごとに画面へ反映）。
  * 出口は 2 つ: ①固定訪問（型）に登録 ②この週のコースに入れる。下書きの編集に承認は要らない。
  *
@@ -14,7 +14,8 @@
  * いちばん狭い形なので、月〜土は横にスクロールせずに収まる（1 列 ≈ 135px）。
  */
 import { useEffect, useMemo, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { ArrowLeft, Loader2 } from 'lucide-react';
+import Link from 'next/link';
 import { toast } from 'sonner';
 
 import { useAgentDock } from '@/components/agent/screenContext';
@@ -124,7 +125,7 @@ export function TemplateWorkspace() {
   if (officeIds.length === 0) {
     return (
       <p className="p-4 text-sm text-text-secondary" data-testid="template-ws-off">
-        型の作業場は、この事業所ではまだ使えません（管理者のみ・準備中）。
+        コースの作業場は、この事業所ではまだ使えません（管理者のみ・準備中）。
       </p>
     );
   }
@@ -161,11 +162,18 @@ export function TemplateWorkspace() {
     <div className="flex lg:h-full lg:min-h-0" data-testid="template-workspace">
       <div className="flex min-w-0 flex-1 flex-col gap-2 lg:min-h-0 lg:overflow-y-auto" data-testid="template-main">
         <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          {/* PO 2026-10-13: スケジュール画面へ戻る */}
+          <Button variant="outline" size="sm" asChild>
+            <Link href="/schedule" data-testid="back-to-schedule">
+              <ArrowLeft className="mr-1 h-4 w-4" aria-hidden />
+              スケジュール画面に戻る
+            </Link>
+          </Button>
           <h1
             className="text-lg font-semibold"
             title="日付の無い仮の 1 週間です。ここでの変更は、登録するまで本物の型にも今週の予定にも影響しません。"
           >
-            型の作業場
+            コースの作業場
           </h1>
           {officeIds.length > 1 ? (
             <select
