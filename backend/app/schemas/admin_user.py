@@ -18,6 +18,7 @@ from app.models.user import USER_ROLES, normalize_user_role
 # username は小文字英数字 / アンダースコア / ドット / ハイフンのみ許可。
 # schema 層で正規化 (strip().lower()) + 文字種検査を行い、DB 側の制約と二重防御する。
 _USERNAME_PATTERN = re.compile(r"^[a-z0-9_.\-]+$")
+DISPLAY_NAME_MAX = 60
 
 
 def _normalize_username_value(v: object) -> str | None:
@@ -37,12 +38,25 @@ def _normalize_username_value(v: object) -> str | None:
     return v
 
 
+def _normalize_display_name_value(v: object) -> str | None:
+    """Normalize display_name (画面に出す呼び名): strip, empty → None, max 60 chars."""
+    if v is None:
+        return None
+    v = str(v).strip()
+    if not v:
+        return None
+    if len(v) > DISPLAY_NAME_MAX:
+        raise ValueError(f"display_name must be at most {DISPLAY_NAME_MAX} characters")
+    return v
+
+
 class AdminUserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
     id: UUID
     email: EmailStr | None = None
     username: str | None = None
+    display_name: str | None = None
     role: str
     staff_id: UUID | None = None
     staff_name: str | None = None
@@ -61,6 +75,7 @@ class AdminUserCreate(BaseModel):
 
     email: EmailStr | None = None
     username: str | None = None
+    display_name: str | None = None
     role: str = Field(default="staff")
     staff_id: UUID | None = None
 
@@ -69,12 +84,18 @@ class AdminUserCreate(BaseModel):
     def _normalize_username(cls, v: object) -> str | None:
         return _normalize_username_value(v)
 
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def _normalize_display_name(cls, v: object) -> str | None:
+        return _normalize_display_name_value(v)
+
 
 class AdminUserUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: EmailStr | None = None
     username: str | None = None
+    display_name: str | None = None
     role: str | None = None
     staff_id: UUID | None = None
     must_change_password: bool | None = None
@@ -83,6 +104,11 @@ class AdminUserUpdate(BaseModel):
     @classmethod
     def _normalize_username(cls, v: object) -> str | None:
         return _normalize_username_value(v)
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def _normalize_display_name(cls, v: object) -> str | None:
+        return _normalize_display_name_value(v)
 
 
 class AdminUserCreateResponse(BaseModel):

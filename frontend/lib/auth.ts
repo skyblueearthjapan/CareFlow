@@ -22,6 +22,8 @@ const loginResponseSchema = z.object({
     // code-based login identifier (staff code).
     email: z.string().email().nullable(),
     username: z.string().nullable().optional(),
+    // 画面に出す呼び名 (PO 2026-10-13)。空のときはログイン ID を出す。
+    display_name: z.string().nullable().optional(),
     name: z.string().optional(),
     role: z.enum(['admin', 'manager', 'staff']),
     staff_id: z.string().nullable().optional(),
@@ -113,6 +115,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             id: user.id,
             email: user.email,
             username: user.username ?? null,
+            displayName: user.display_name ?? null,
             // null-safe: staff accounts have no email, so derive a display name
             // from name → email local-part → username → 'user'.
             name: user.name ?? user.email?.split('@')[0] ?? user.username ?? 'user',
@@ -138,6 +141,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (user) {
         token.role = user.role;
         token.username = user.username ?? null;
+        token.displayName = user.displayName ?? null;
         token.staffId = user.staffId ?? null;
         token.mustChangePassword = user.mustChangePassword ?? false;
         token.accessToken = user.accessToken;
@@ -204,6 +208,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
                     role?: string;
                     staff_id?: string | null;
                     must_change_password?: boolean;
+                    display_name?: string | null;
                   };
                   if (me.role === 'admin' || me.role === 'manager' || me.role === 'staff') {
                     refreshed.role = me.role;
@@ -213,6 +218,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
                   }
                   if (typeof me.must_change_password === 'boolean') {
                     refreshed.mustChangePassword = me.must_change_password;
+                  }
+                  // 管理者が名前を書き換えたら、次のリフレッシュでヘッダーに出る。
+                  if (me.display_name !== undefined) {
+                    refreshed.displayName = me.display_name ?? null;
                   }
                 }
               } catch {
@@ -234,6 +243,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (session.user) {
         session.user.role = (token.role as AppRole | undefined) ?? 'staff';
         session.user.username = (token.username as string | null | undefined) ?? null;
+        session.user.displayName = (token.displayName as string | null | undefined) ?? null;
         session.user.staffId = (token.staffId as string | null | undefined) ?? null;
         session.user.mustChangePassword =
           (token.mustChangePassword as boolean | undefined) ?? false;

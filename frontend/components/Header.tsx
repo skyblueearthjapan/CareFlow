@@ -199,7 +199,10 @@ function UserMenuButton() {
   const { data: session, status } = useSession();
   const user = session?.user;
   const role = user?.role;
-  const initial = (user?.name ?? user?.email ?? '?').slice(0, 1).toUpperCase();
+  // 名前 (users.display_name) → ログイン ID (大文字) → メール (PO 2026-10-13)。
+  const accountName =
+    user?.displayName || (user?.username ? user.username.toUpperCase() : null) || user?.email;
+  const initial = (accountName ?? '?').slice(0, 1).toUpperCase();
 
   const handleSignOut = () => {
     setOpen(false);
@@ -227,7 +230,7 @@ function UserMenuButton() {
               </div>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium text-text-primary">
-                  {user.name ?? '--'}
+                  {accountName ?? '--'}
                 </p>
                 <p className="truncate text-xs text-text-muted">{user.email ?? '--'}</p>
               </div>

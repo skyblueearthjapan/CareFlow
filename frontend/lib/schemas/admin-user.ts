@@ -23,12 +23,17 @@ export const ADMIN_ROLE_LABELS: Record<AdminUserRole, string> = {
   staff: '一般',
 };
 
+/** 名前（画面に出す呼び名）の上限。backend `DISPLAY_NAME_MAX` と同じ。 */
+export const DISPLAY_NAME_MAX = 60;
+
 export const adminUserReadSchema = z.object({
   id: z.string().uuid(),
   // email is nullable: staff-role accounts log in with `username` and may have
   // no email at all (backend P1a made the column nullable).
   email: z.string().email().nullable().optional(),
   username: z.string().nullable().optional(),
+  // 画面に出す呼び名 (PO 2026-10-13)。空 (null) のときはログイン ID を出す。
+  display_name: z.string().nullable().optional(),
   staff_name: z.string().nullable().optional(),
   role: z.enum(ADMIN_USER_ROLES),
   staff_id: z.string().uuid().nullable().optional(),
@@ -46,6 +51,7 @@ export const adminUserCreateSchema = z.object({
   // validation is enforced in the create dialog (and 422 from the backend).
   email: z.string().email('有効なメールアドレスを入力してください').nullable().optional(),
   username: z.string().nullable().optional(),
+  display_name: z.string().max(DISPLAY_NAME_MAX).nullable().optional(),
   role: z.enum(ADMIN_USER_ROLES).default('staff'),
   staff_id: z.string().uuid().nullable().optional(),
 });
@@ -54,6 +60,7 @@ export type AdminUserCreate = z.infer<typeof adminUserCreateSchema>;
 export const adminUserUpdateSchema = z.object({
   email: z.string().email().nullable().optional(),
   username: z.string().nullable().optional(),
+  display_name: z.string().max(DISPLAY_NAME_MAX).nullable().optional(),
   role: z.enum(ADMIN_USER_ROLES).optional(),
   staff_id: z.string().uuid().nullable().optional(),
   must_change_password: z.boolean().optional(),
@@ -74,4 +81,33 @@ export type AdminPasswordResetResponse = z.infer<typeof adminPasswordResetRespon
 
 export function roleLabel(role: AdminUserRole | string): string {
   return (ADMIN_ROLE_LABELS as Record<string, string>)[role] ?? role;
+}
+
+/** ログイン ID は小文字で保存・大文字で見せる (例: s001 → S001)。 */
+export function loginIdLabel(username: string | null | undefined): string | null {
+  return username ? username.toUpperCase() : null;
+}
+
+// 一覧の並び順 (PO 2026-10-13):
+//   S で始まる ID (番号順) → A で始まる ID (番号順) → ほかの ID → ID なし (メール順)。
+//   番号は数として比べる (S010 は S009 の後)。
+function loginIdRank(username: string | null | undefined): number {
+  if (!username) return 3;
+  const head = username[0]?.toLowerCase();
+  if (head === 's') return 0;
+  if (head === 'a') return 1;
+  return 2;
+}
+
+const naturalCollator = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' });
+
+export function compareAdminUsers(
+  a: Pick<AdminUserRead, 'username' | 'email'>,
+  b: Pick<AdminUserRead, 'username' | 'email'>,
+): number {
+  const ra = loginIdRank(a.username);
+  const rb = loginIdRank(b.username);
+  if (ra !== rb) return ra - rb;
+  if (ra === 3) return naturalCollator.compare(a.email ?? '', b.email ?? '');
+  return naturalCollator.compare(a.username ?? '', b.username ?? '');
 }

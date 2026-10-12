@@ -7,6 +7,9 @@
  * `/dashboard` (sidebar already hides the link). Search by email substring,
  * filter by role, optionally surface soft-deleted accounts. Row actions:
  * 編集 / パスワードリセット / 削除.
+ *
+ * 並び順 (PO 2026-10-13): S の ID (番号順) → A の ID (番号順) → ほかの ID →
+ * ID なし (メール順)。`compareAdminUsers` で画面側で並べ替える。
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -29,6 +32,8 @@ import {
   ADMIN_USER_ROLES,
   type AdminUserRead,
   type AdminUserRole,
+  compareAdminUsers,
+  loginIdLabel,
   roleLabel,
 } from '@/lib/schemas/admin-user';
 
@@ -36,6 +41,11 @@ import { UserCreateDialog } from './_components/UserCreateDialog';
 import { UserEditDialog } from './_components/UserEditDialog';
 
 type RoleFilter = 'all' | AdminUserRole;
+
+/** 確認ダイアログ等で人を指す言葉: 名前 → ログイン ID → メール → 職員名。 */
+function userLabel(u: AdminUserRead): string {
+  return u.display_name ?? loginIdLabel(u.username) ?? u.email ?? u.staff_name ?? u.id;
+}
 
 export default function AdminUsersPage() {
   const { data: session, status } = useSession();
@@ -69,7 +79,7 @@ export default function AdminUsersPage() {
     onSuccess: (resp, userId) => {
       const target = data?.items.find((u) => u.id === userId);
       setResetResult({
-        email: target?.email ?? target?.username ?? target?.staff_name ?? userId,
+        email: target ? userLabel(target) : userId,
         tempPassword: resp.temp_password,
       });
     },
@@ -77,7 +87,7 @@ export default function AdminUsersPage() {
 
   const deleteUser = useDeleteAdminUser();
 
-  const rows = useMemo(() => data?.items ?? [], [data]);
+  const rows = useMemo(() => [...(data?.items ?? [])].sort(compareAdminUsers), [data]);
 
   if (status === 'loading' || (status === 'authenticated' && !isAdmin)) {
     return null;
@@ -108,7 +118,7 @@ export default function AdminUsersPage() {
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="メール / ログインID で検索"
+              placeholder="名前 / メール / ログインID で検索"
               className="pl-9"
               aria-label="検索"
             />
@@ -185,8 +195,9 @@ export default function AdminUsersPage() {
             <table className="w-full text-sm">
               <thead className="border-b border-border-default text-left text-text-secondary">
                 <tr>
-                  <th className="px-3 py-2 font-medium">メール</th>
                   <th className="px-3 py-2 font-medium">ログインID</th>
+                  <th className="px-3 py-2 font-medium">名前</th>
+                  <th className="px-3 py-2 font-medium">メール</th>
                   <th className="px-3 py-2 font-medium">ロール</th>
                   <th className="px-3 py-2 font-medium">スタッフ紐付け</th>
                   <th className="px-3 py-2 font-medium">パスワード変更要求</th>
@@ -203,8 +214,9 @@ export default function AdminUsersPage() {
                       key={u.id}
                       className="border-b border-border-default last:border-0 hover:bg-bg-muted"
                     >
-                      <td className="px-3 py-2 font-medium">{u.email ?? '--'}</td>
-                      <td className="px-3 py-2 text-text-secondary">{u.username ?? '--'}</td>
+                      <td className="px-3 py-2 font-medium">{loginIdLabel(u.username) ?? '--'}</td>
+                      <td className="px-3 py-2">{u.display_name ?? '--'}</td>
+                      <td className="px-3 py-2 text-text-secondary">{u.email ?? '--'}</td>
                       <td className="px-3 py-2">{roleLabel(u.role)}</td>
                       <td className="px-3 py-2 text-text-secondary">{u.staff_name ?? '--'}</td>
                       <td className="px-3 py-2">{u.must_change_password ? '必須' : '任意'}</td>
@@ -227,7 +239,7 @@ export default function AdminUsersPage() {
                             size="sm"
                             disabled={isDeleted || resetPw.isPending}
                             onClick={() => {
-                              const label = u.email ?? u.username ?? u.staff_name ?? u.id;
+                              const label = userLabel(u);
                               if (
                                 window.confirm(
                                   `${label} のパスワードをリセットします。\n` +
@@ -246,7 +258,7 @@ export default function AdminUsersPage() {
                             size="sm"
                             disabled={isDeleted || isSelf}
                             onClick={() => {
-                              const label = u.email ?? u.username ?? u.staff_name ?? u.id;
+                              const label = userLabel(u);
                               if (window.confirm(`${label} を削除します。よろしいですか？`)) {
                                 deleteUser.mutate(u.id);
                               }

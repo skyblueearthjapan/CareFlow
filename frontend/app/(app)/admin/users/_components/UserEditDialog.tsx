@@ -34,6 +34,7 @@ import {
   type AdminUserRead,
   type AdminUserRole,
   type AdminUserUpdate,
+  DISPLAY_NAME_MAX,
   roleLabel,
 } from '@/lib/schemas/admin-user';
 
@@ -47,6 +48,7 @@ const NO_STAFF = '';
 export function UserEditDialog({ target, onClose }: Props) {
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [role, setRole] = useState<AdminUserRole>('staff');
   const [staffId, setStaffId] = useState<string>(NO_STAFF);
   const [mustChange, setMustChange] = useState(false);
@@ -59,6 +61,7 @@ export function UserEditDialog({ target, onClose }: Props) {
     if (target) {
       setEmail(target.email ?? '');
       setUsername(target.username ?? '');
+      setDisplayName(target.display_name ?? '');
       setRole(target.role);
       setStaffId(target.staff_id ?? NO_STAFF);
       setMustChange(target.must_change_password);
@@ -125,10 +128,14 @@ export function UserEditDialog({ target, onClose }: Props) {
     const nextStaff = staffId === NO_STAFF ? null : staffId;
     const currentEmail = target.email ?? null;
     const currentUsername = target.username ?? null;
+    const nextDisplayName = displayName.trim() === '' ? null : displayName.trim();
+    const currentDisplayName = target.display_name ?? null;
 
     const payload: AdminUserUpdate = {
       email: normalizedEmail !== currentEmail ? normalizedEmail : undefined,
       username: normalizedUsername !== currentUsername ? normalizedUsername : undefined,
+      // 空にすると null を送り、名前を消す (画面はログイン ID を出すようになる)。
+      display_name: nextDisplayName !== currentDisplayName ? nextDisplayName : undefined,
       role: role !== target.role ? role : undefined,
       // Send null explicitly to unlink; undefined leaves it unchanged.
       staff_id: nextStaff !== currentStaff ? nextStaff : undefined,
@@ -143,7 +150,7 @@ export function UserEditDialog({ target, onClose }: Props) {
         <DialogHeader>
           <DialogTitle>ユーザー編集</DialogTitle>
           <DialogDescription>
-            メール / ログインID / ロール / スタッフ紐付け / パスワード変更フラグを更新できます。
+            名前 / メール / ログインID / ロール / スタッフ紐付け / パスワード変更フラグを更新できます。
           </DialogDescription>
         </DialogHeader>
 
@@ -197,6 +204,16 @@ export function UserEditDialog({ target, onClose }: Props) {
               value={username}
               onChange={(e) => handleUsernameChange(e.target.value)}
               placeholder="例: S001"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-user-display-name">名前（画面に出す呼び名）</Label>
+            <Input
+              id="edit-user-display-name"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="例: 今泉 勇二"
+              maxLength={DISPLAY_NAME_MAX}
             />
           </div>
           <div className="space-y-1.5">

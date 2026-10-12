@@ -36,6 +36,8 @@ import {
   type AdminUserCreate,
   type AdminUserCreateResponse,
   type AdminUserRole,
+  DISPLAY_NAME_MAX,
+  loginIdLabel,
   roleLabel,
 } from '@/lib/schemas/admin-user';
 
@@ -49,6 +51,7 @@ const NO_STAFF = '';
 export function UserCreateDialog({ open, onOpenChange }: Props) {
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [role, setRole] = useState<AdminUserRole>('staff');
   const [staffId, setStaffId] = useState<string>(NO_STAFF);
   const [result, setResult] = useState<AdminUserCreateResponse | null>(null);
@@ -78,6 +81,7 @@ export function UserCreateDialog({ open, onOpenChange }: Props) {
   const reset = () => {
     setEmail('');
     setUsername('');
+    setDisplayName('');
     setRole('staff');
     setStaffId(NO_STAFF);
     setResult(null);
@@ -128,6 +132,7 @@ export function UserCreateDialog({ open, onOpenChange }: Props) {
       role,
       email: email.trim() !== '' ? email.trim() : undefined,
       username: username.trim() !== '' ? username.trim() : undefined,
+      display_name: displayName.trim() !== '' ? displayName.trim() : undefined,
       staff_id: staffId !== NO_STAFF ? staffId : undefined,
     };
     create.mutate(payload);
@@ -163,8 +168,14 @@ export function UserCreateDialog({ open, onOpenChange }: Props) {
               </p>
               <p>
                 <span className="text-text-muted">ログインID: </span>
-                <span className="font-medium">{result.user.username ?? '--'}</span>
+                <span className="font-medium">{loginIdLabel(result.user.username) ?? '--'}</span>
               </p>
+              {result.user.display_name && (
+                <p>
+                  <span className="text-text-muted">名前: </span>
+                  <span className="font-medium">{result.user.display_name}</span>
+                </p>
+              )}
               <p>
                 <span className="text-text-muted">ロール: </span>
                 {roleLabel(result.user.role as AdminUserRole)}
@@ -249,6 +260,16 @@ export function UserCreateDialog({ open, onOpenChange }: Props) {
                 value={username}
                 onChange={(e) => handleUsernameChange(e.target.value)}
                 placeholder="例: S001"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="new-user-display-name">名前（画面に出す呼び名）</Label>
+              <Input
+                id="new-user-display-name"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="例: 今泉 勇二"
+                maxLength={DISPLAY_NAME_MAX}
               />
             </div>
             <div className="space-y-1.5">

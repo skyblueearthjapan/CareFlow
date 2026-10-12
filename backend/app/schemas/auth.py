@@ -56,6 +56,8 @@ class UserOut(BaseModel):
     id: UUID
     email: EmailStr | None = None
     username: str | None = None
+    # 画面に出す呼び名 (PO 2026-10-13)。空 (None) のときはログイン ID を出す。
+    display_name: str | None = None
     role: str
     staff_id: UUID | None = None
     # Wave 40: surfaced so the frontend can force a password-change flow on

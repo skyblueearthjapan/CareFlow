@@ -47,6 +47,8 @@ class User(Base, TimestampMixin):
     username: Mapped[str | None] = mapped_column(String(32), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="staff")
+    # 画面に出す呼び名 (PO 2026-10-13・migration 0095)。空のときはログイン ID → メールを出す。
+    display_name: Mapped[str | None] = mapped_column(String(60), nullable=True)
 
     staff_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),

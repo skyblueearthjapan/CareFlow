@@ -7,6 +7,8 @@ declare module 'next-auth' {
       id: string;
       role: AppRole;
       username?: string | null;
+      /** 画面に出す呼び名 (users.display_name)。空のときはログイン ID を出す。 */
+      displayName?: string | null;
       staffId?: string | null;
       mustChangePassword?: boolean;
     } & DefaultSession['user'];
@@ -19,6 +21,7 @@ declare module 'next-auth' {
   interface User {
     role: AppRole;
     username?: string | null;
+    displayName?: string | null;
     staffId?: string | null;
     mustChangePassword?: boolean;
     accessToken: string;
@@ -30,6 +33,7 @@ declare module 'next-auth/jwt' {
   interface JWT {
     role?: AppRole;
     username?: string | null;
+    displayName?: string | null;
     staffId?: string | null;
     mustChangePassword?: boolean;
     accessToken?: string;

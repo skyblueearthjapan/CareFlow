@@ -113,7 +113,7 @@ async def list_users(
     db: DbDep,
     _admin: Annotated[User, Depends(require_role("admin"))],
     role: Annotated[str | None, Query(description="Filter by role")] = None,
-    q: Annotated[str | None, Query(description="Substring match on email or username")] = None,
+    q: Annotated[str | None, Query(description="Substring match on email, username or display_name")] = None,
     include_deleted: Annotated[bool, Query()] = False,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -131,6 +131,7 @@ async def list_users(
             or_(
                 func.lower(User.email).like(pattern, escape="\\"),
                 func.lower(User.username).like(pattern, escape="\\"),
+                func.lower(User.display_name).like(pattern, escape="\\"),
             )
         )
 
@@ -190,6 +191,7 @@ async def create_user(
     user = User(
         email=payload.email,
         username=payload.username,
+        display_name=payload.display_name,
         password_hash=hash_password(temp_password),
         role=normalize_user_role(payload.role) or payload.role,
         staff_id=payload.staff_id,
@@ -207,7 +209,7 @@ async def create_user(
 @router.patch(
     "/users/{user_id}",
     response_model=AdminUserRead,
-    summary="Update user (role / staff_id / email / must_change_password)",
+    summary="Update user (display_name / role / staff_id / email / must_change_password)",
 )
 async def update_user(
     user_id: UUID,
