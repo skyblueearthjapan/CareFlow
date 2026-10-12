@@ -1,0 +1,101 @@
+{
+ "week_start": "2026-10-19",
+ "templates": [
+  {
+   "id": "tXA",
+   "label": "A",
+   "office_id": "oX",
+   "office": "X"
+  },
+  {
+   "id": "tXB",
+   "label": "B",
+   "office_id": "oX",
+   "office": "X"
+  },
+  {
+   "id": "tXM",
+   "label": "M",
+   "office_id": "oX",
+   "office": "X"
+  },
+  {
+   "id": "tXM2",
+   "label": "M2",
+   "office_id": "oX",
+   "office": "X"
+  },
+  {
+   "id": "tXR",
+   "label": "臨",
+   "office_id": "oX",
+   "office": "X"
+  },
+  {
+   "id": "tYA",
+   "label": "A",
+   "office_id": "oY",
+   "office": "Y"
+  },
+  {
+   "id": "tYM",
+   "label": "M",
+   "office_id": "oY",
+   "office": "Y"
+  }
+ ],
+ "courses": [
+  {
+   "id": "cXA",
+   "weekday": 0,
+   "code": "A",
+   "template_id": "tXA",
+   "assigned_staff_id": "S1",
+   "office_id": "oX",
+   "office": "X"
+  },
+  {
+   "id": "cXB",
+   "weekday": 0,
+   "code": "B",
+   "template_id": "tXB",
+   "assigned_staff_id": "S2",
+   "office_id": "oX",
+   "office": "X"
+  },
+  {
+   "id": "cXM",
+   "weekday": 0,
+   "code": "M",
+   "template_id": "tXM",
+   "assigned_staff_id": null,
+   "office_id": "oX",
+   "office": "X"
+  },
+  {
+   "id": "cXC",
+   "weekday": 0,
+   "code": "C",
+   "template_id": null,
+   "assigned_staff_id": "M1",
+   "office_id": "oX",
+   "office": "X"
+  },
+  {
+   "id": "cYA",
+   "weekday": 0,
+   "code": "A",
+   "template_id": "tYA",
+   "assigned_staff_id": "S3",
+   "office_id": "oY",
+   "office": "Y"
+  }
+ ],
+ "manual_overrides": [
+  {
+   "id": "v6",
+   "primary_staff_id": "S1",
+   "visit_date": "2026-10-19"
+  }
+ ]
+}

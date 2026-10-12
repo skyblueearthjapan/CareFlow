@@ -1,0 +1,81 @@
+# らく助 使い捨て試験環境（VPS 上・本番 DB / カイポケのロボットにつながない）
+#
+# 直接 up しないこと。必ず stg-up.sh / stg-down.sh から使う:
+#   - .env.staging は stg-up.sh が作る（本番 .env から無害な値だけ写し、秘密と外部接続は差し替え）
+#   - STG_BACKEND_IMAGE は stg-up.sh が「今動いている carelink-backend の image ID」を入れる
+#   - compose project 名は carelink-stg 固定（-p carelink-stg）
+#
+# 安全の要点:
+#   - network は carelink-stg だけ（playwrighttest1_default = カイポケの RPA の網には入らない）
+#   - postgres はホストのポートを出さない。backend は 127.0.0.1:18101 だけ
+#   - 本番の写真・音声・サイン・鍵（/opt/carelink/data, /opt/carelink/secrets）は mount しない
+#   - カイポケ・Google（地図・Vertex）のホスト名は extra_hosts で 127.0.0.1 に向けて二重に塞ぐ
+#   - restart: "no"（VPS 再起動で勝手に上がらない）
+
+name: carelink-stg
+
+services:
+  stg-postgres:
+    image: postgres:16-alpine
+    container_name: stg-postgres
+    pull_policy: never
+    restart: "no"
+    env_file:
+      - ./.env.staging
+    environment:
+      TZ: Asia/Tokyo
+    mem_limit: 512m
+    volumes:
+      - carelink-stg-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks:
+      - carelink-stg
+
+  stg-backend:
+    image: ${STG_BACKEND_IMAGE:?STG_BACKEND_IMAGE must be set by stg-up.sh}
+    container_name: stg-backend
+    pull_policy: never
+    restart: "no"
+    env_file:
+      - ./.env.staging
+    mem_limit: 768m
+    ports:
+      - "127.0.0.1:18101:8000"
+    extra_hosts:
+      - "kaipoke-api.net:127.0.0.1"
+      - "novnc.kaipoke-api.net:127.0.0.1"
+      - "kaipoke:127.0.0.1"
+      - "kaipoke-api:127.0.0.1"
+      - "maps.googleapis.com:127.0.0.1"
+      - "aiplatform.googleapis.com:127.0.0.1"
+      - "asia-northeast1-aiplatform.googleapis.com:127.0.0.1"
+      - "oauth2.googleapis.com:127.0.0.1"
+    depends_on:
+      stg-postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/api/v1/healthz', timeout=3); sys.exit(0 if r.status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - carelink-stg
+
+volumes:
+  carelink-stg-pg:
+    name: carelink-stg-pg
+
+networks:
+  carelink-stg:
+    name: carelink-stg
+    driver: bridge

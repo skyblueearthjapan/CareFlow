@@ -11,6 +11,7 @@ from app.api.v1 import (
     admin_geocoding,
     admin_visit_recordings,
     admin_visit_signatures,
+    agent,
     allocate,
     audit_logs,
     auth,
@@ -256,5 +257,7 @@ api_router.include_router(
     prefix="/business-profile",
     tags=["business-profile"],
 )
+# らく助 専門エージェント向けの読み取り専用 API (admin のみ・docs/plans/agent-skills/api-additions-2026-10-12.md)
+api_router.include_router(agent.router, prefix="/agent", tags=["agent"])
 
 __all__ = ["api_router"]

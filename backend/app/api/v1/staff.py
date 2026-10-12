@@ -19,7 +19,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
@@ -90,11 +90,41 @@ async def list_staff(
     user: CurrentActiveUser,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
+    q: Annotated[
+        str | None,
+        Query(max_length=100, description="氏名 / かな / 職員コードの部分一致 (任意)"),
+    ] = None,
+    include_retired: Annotated[
+        bool | None,
+        Query(
+            description=(
+                "未指定=従来どおり (論理削除以外の全員)。true=論理削除 (退職) 済みも含める。"
+                "false=status='retired' も除く"
+            ),
+        ),
+    ] = None,
 ) -> list[Staff]:
     if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
-    stmt = select(Staff).where(Staff.deleted_at.is_(None))
+    # 任意の絞り込み (エージェント用・2026-10-12)。指定なしなら従来と同一の結果。
+    # 論理削除済みを含めるのは admin のみ (staff は自分の行しか見えないので影響なし)。
+    if include_retired is True and normalize_user_role(user.role) == "admin":
+        stmt = select(Staff)
+    else:
+        stmt = select(Staff).where(Staff.deleted_at.is_(None))
+    if include_retired is False:
+        stmt = stmt.where(Staff.status != "retired")
+    if q and q.strip():
+        q_esc = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        needle = f"%{q_esc}%"
+        stmt = stmt.where(
+            or_(
+                Staff.name.ilike(needle, escape="\\"),
+                Staff.kana.ilike(needle, escape="\\"),
+                Staff.code.ilike(needle, escape="\\"),
+            )
+        )
     if user.role == "staff":
         # Staff can only see their own record.
         if user.staff_id is None:

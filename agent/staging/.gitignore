@@ -1,0 +1,3 @@
+# 使い捨て試験環境の秘密と流し込みログ（stg-up.sh が作り stg-down.sh が消す）
+.env.staging
+restore-*.log

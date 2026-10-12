@@ -1,0 +1,426 @@
+{
+ "week_start": "2026-10-19",
+ "options": {
+  "allow_over": 0,
+  "over_before_manager": false,
+  "balance": false,
+  "off": [],
+  "drop": [],
+  "add_special": true
+ },
+ "visits": [
+  {
+   "id": "v1",
+   "patient_id": "P1",
+   "patient": "試験 一郎様",
+   "office": "X",
+   "day": "2026-10-19",
+   "fixed_start": 540,
+   "dur": 60,
+   "win": [
+    540,
+    540
+   ],
+   "time_type": "時間帯",
+   "female_only": false,
+   "ng": [],
+   "cur_staff": "S1",
+   "cur_course": "XA",
+   "new": false
+  },
+  {
+   "id": "v2",
+   "patient_id": "P2",
+   "patient": "試験 二郎様",
+   "office": "X",
+   "day": "2026-10-19",
+   "fixed_start": 600,
+   "dur": 45,
+   "win": [
+    600,
+    660
+   ],
+   "time_type": "時間帯",
+   "female_only": false,
+   "ng": [],
+   "cur_staff": "S1",
+   "cur_course": "XA",
+   "new": false
+  },
+  {
+   "id": "v3",
+   "patient_id": "P3",
+   "patient": "試験 三郎様",
+   "office": "X",
+   "day": "2026-10-19",
+   "fixed_start": 780,
+   "dur": 60,
+   "win": [
+    780,
+    780
+   ],
+   "time_type": "時間帯",
+   "female_only": false,
+   "ng": [],
+   "cur_staff": "S2",
+   "cur_course": "XB",
+   "new": false
+  },
+  {
+   "id": "v4",
+   "patient_id": "P4",
+   "patient": "試験 四郎様",
+   "office": "Y",
+   "day": "2026-10-19",
+   "fixed_start": 570,
+   "dur": 45,
+   "win": [
+    570,
+    570
+   ],
+   "time_type": "時間帯",
+   "female_only": false,
+   "ng": [],
+   "cur_staff": "S3",
+   "cur_course": "YA",
+   "new": false
+  },
+  {
+   "id": "v6",
+   "patient_id": "P6",
+   "patient": "試験 六郎様",
+   "office": "X",
+   "day": "2026-10-19",
+   "fixed_start": 690,
+   "dur": 30,
+   "win": [
+    690,
+    690
+   ],
+   "time_type": "時間帯",
+   "female_only": false,
+   "ng": [],
+   "cur_staff": "S1",
+   "cur_course": "XB",
+   "new": false
+  },
+  {
+   "id": "v7",
+   "patient_id": "P7",
+   "patient": "試験 七郎様",
+   "office": "Y",
+   "day": "2026-10-19",
+   "fixed_start": 510,
+   "dur": 30,
+   "win": [
+    510,
+    510
+   ],
+   "time_type": "時間帯",
+   "female_only": false,
+   "ng": [],
+   "cur_staff": "S3",
+   "cur_course": "YA",
+   "new": false
+  },
+  {
+   "id": "add-mk1",
+   "patient_id": "P5",
+   "patient": "試験 五郎様",
+   "office": "Y",
+   "day": "2026-10-19",
+   "fixed_start": 840,
+   "dur": 30,
+   "win": [
+    780,
+    900
+   ],
+   "time_type": "時間帯",
+   "female_only": false,
+   "ng": [],
+   "cur_staff": null,
+   "cur_course": null,
+   "new": true
+  }
+ ],
+ "staff": [
+  {
+   "id": "S1",
+   "code": "T01",
+   "name": "試験　花子",
+   "sex": "female",
+   "offices": [
+    "X"
+   ],
+   "manager": false,
+   "shift": {
+    "0": [
+     540,
+     1050
+    ],
+    "1": [
+     540,
+     1050
+    ],
+    "2": [
+     540,
+     1050
+    ],
+    "3": [
+     540,
+     1050
+    ],
+    "4": [
+     540,
+     1050
+    ],
+    "5": [
+     540,
+     1050
+    ]
+   },
+   "off": [],
+   "events": {
+    "0": [
+     [
+      510,
+      525
+     ]
+    ]
+   }
+  },
+  {
+   "id": "S2",
+   "code": "T02",
+   "name": "試験　太郎",
+   "sex": "male",
+   "offices": [
+    "X"
+   ],
+   "manager": false,
+   "shift": {
+    "0": [
+     540,
+     1050
+    ],
+    "1": [
+     540,
+     1050
+    ],
+    "2": [
+     540,
+     1050
+    ],
+    "3": [
+     540,
+     1050
+    ],
+    "4": [
+     540,
+     1050
+    ],
+    "5": [
+     540,
+     1050
+    ]
+   },
+   "off": [],
+   "events": {}
+  },
+  {
+   "id": "S3",
+   "code": "T03",
+   "name": "試験　次郎",
+   "sex": "male",
+   "offices": [
+    "Y"
+   ],
+   "manager": false,
+   "shift": {
+    "0": [
+     540,
+     1050
+    ],
+    "1": [
+     540,
+     1050
+    ],
+    "2": [
+     540,
+     1050
+    ],
+    "3": [
+     540,
+     1050
+    ],
+    "4": [
+     540,
+     1050
+    ],
+    "5": [
+     540,
+     1050
+    ]
+   },
+   "off": [],
+   "events": {}
+  },
+  {
+   "id": "M1",
+   "code": "T09",
+   "name": "試験　管理",
+   "sex": "female",
+   "offices": [
+    "X",
+    "Y"
+   ],
+   "manager": true,
+   "shift": {
+    "0": [
+     540,
+     1050
+    ],
+    "1": [
+     540,
+     1050
+    ],
+    "2": [
+     540,
+     1050
+    ],
+    "3": [
+     540,
+     1050
+    ],
+    "4": [
+     540,
+     1050
+    ],
+    "5": [
+     540,
+     1050
+    ]
+   },
+   "off": [],
+   "events": {}
+  }
+ ],
+ "days": {
+  "2026-10-19": {
+   "vehicles": [
+    "S1",
+    "S2",
+    "S3",
+    "M1"
+   ],
+   "routes": {
+    "S1": [
+     {
+      "visit_ids": [
+       "v1"
+      ],
+      "offsets": [
+       0
+      ],
+      "start": 540,
+      "dur": 60
+     }
+    ],
+    "S2": [
+     {
+      "visit_ids": [
+       "v2"
+      ],
+      "offsets": [
+       0
+      ],
+      "start": 630,
+      "dur": 45
+     },
+     {
+      "visit_ids": [
+       "v6"
+      ],
+      "offsets": [
+       0
+      ],
+      "start": 690,
+      "dur": 30
+     }
+    ],
+    "S3": [
+     {
+      "visit_ids": [
+       "v7"
+      ],
+      "offsets": [
+       0
+      ],
+      "start": 510,
+      "dur": 30
+     },
+     {
+      "visit_ids": [
+       "v4"
+      ],
+      "offsets": [
+       0
+      ],
+      "start": 570,
+      "dur": 45
+     }
+    ],
+    "M1": [
+     {
+      "visit_ids": [
+       "add-mk1"
+      ],
+      "offsets": [
+       0
+      ],
+      "start": 840,
+      "dur": 30
+     }
+    ]
+   },
+   "dropped": [
+    [
+     "v3"
+    ]
+   ],
+   "lunch_min": 45,
+   "history": {}
+  }
+ },
+ "errors": [],
+ "warnings": [
+  "2026-10-19 試験　花子: 昼休みが 40 分（45 分未満）"
+ ],
+ "flags": {
+  "v2": [
+   [
+    "move",
+    30
+   ]
+  ],
+  "add-mk1": [
+   [
+    "cross",
+    1
+   ]
+  ]
+ },
+ "dropped_visits": [],
+ "special_added": [
+  "mk1"
+ ],
+ "special_skipped": [],
+ "summary": {
+  "visits": 7,
+  "unplaced": 1,
+  "rule_errors": 0,
+  "warnings": 1,
+  "app_check": null,
+  "files": {}
+ }
+}

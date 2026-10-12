@@ -1,0 +1,123 @@
+"""rk/ops/staff.py の部品のテスト（偽の Api・本番に触らない）。"""
+
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+pytest.importorskip("rk.opsbase", reason="rk.opsbase（I1 の土台）がまだありません")
+from rk.opsbase import ApiError, load_all  # noqa: E402
+
+REG = load_all()
+
+S1 = "33333333-3333-3333-3333-333333333333"
+S2 = "44444444-4444-4444-4444-444444444444"
+OV = "99999999-9999-9999-9999-999999999999"
+C1 = "55555555-5555-5555-5555-555555555555"
+
+
+class FakeApi:
+    def __init__(self, routes=None):
+        self.routes = routes or {}
+        self.calls = []
+
+    def get(self, path, params=None):
+        self.calls.append(("GET", path, params))
+        r = self.routes.get(path)
+        if r is None:
+            raise ApiError(404, "not found")
+        return r(params) if callable(r) else r
+
+    def call(self, method, path, body=None):
+        self.calls.append((method, path, body))
+        return self.routes.get((method, path), {})
+
+
+def op(name):
+    return REG.get(name)
+
+
+# ---------------------------------------------------------------- staff-day-off
+
+def test_day_off_new_posts_and_inverse_removes():
+    impl = op("staff-day-off")
+    o = {"op": "staff-day-off", "staff_id": S1, "date": "2026-10-15", "note": "体調不良", "label": "S1 休み"}
+    assert impl.validate(o) == []
+    assert impl.request(o) == ("POST", f"/staff/{S1}/overrides", {"date": "2026-10-15", "type": "休み", "note": "体調不良"})
+    api = FakeApi({f"/staff/{S1}/overrides": []})
+    before = impl.snapshot(api, o)
+    assert before["override"] is None
+    impl.execute(api, o)
+    assert api.calls[-1][0:2] == ("POST", f"/staff/{S1}/overrides")
+    inv = impl.inverse(o, before)
+    assert inv[0]["action"] == "remove" and op("staff-day-off").validate(inv[0]) == []
+    # 戻し: 行があれば DELETE
+    api.routes[f"/staff/{S1}/overrides"] = [{"id": OV, "date": "2026-10-15", "type": "休み"}]
+    assert impl.verify(api, o) == []
+    impl.execute(api, inv[0])
+    assert api.calls[-1] == ("DELETE", f"/staff/{S1}/overrides/{OV}", None)
+
+
+def test_day_off_existing_patches_and_inverse_restores():
+    impl = op("staff-day-off")
+    o = {"staff_id": S1, "date": "2026-10-15", "type": "off", "label": "x"}
+    api = FakeApi({f"/staff/{S1}/overrides": [{"id": OV, "date": "2026-10-15", "type": "時間変更",
+                                               "start_time": "09:00", "end_time": "13:00", "note": "通院"}]})
+    before = impl.snapshot(api, o)
+    impl.execute(api, o)
+    assert api.calls[-1] == ("PATCH", f"/staff/{S1}/overrides/{OV}",
+                             {"type": "休み", "start_time": None, "end_time": None, "note": None})
+    inv = impl.inverse(o, before)[0]
+    assert inv == {"op": "staff-day-off", "staff_id": S1, "date": "2026-10-15", "label": inv["label"],
+                   "action": "set", "type": "時間変更", "start_time": "09:00", "end_time": "13:00", "note": "通院"}
+    assert impl.validate(inv) == []
+    m, path, body = impl.request(inv)
+    assert body == {"date": "2026-10-15", "type": "時間変更", "start_time": "09:00", "end_time": "13:00", "note": "通院"}
+
+
+def test_day_off_validate_errors():
+    impl = op("staff-day-off")
+    assert impl.validate({"staff_id": S1, "date": "10/15"})
+    assert impl.validate({"staff_id": S1, "date": "2026-10-15", "type": "有休"})
+    assert impl.validate({"staff_id": S1, "date": "2026-10-15", "type": "時間変更"})  # 時刻が無い
+    assert impl.validate({"staff_id": S1, "date": "2026-10-15", "action": "delete"})
+
+
+# ---------------------------------------------------------------- staff-off-week
+
+def test_off_week_request_and_no_inverse():
+    impl = op("staff-off-week")
+    assert impl.undoable is False
+    o = {"op": "staff-off-week", "staff_id": S1, "date": "2026-10-15", "to_staff_id": S2, "label": "急休代替"}
+    assert impl.validate(o) == []
+    assert impl.request(o) == ("POST", "/schedule/v2/staff-off-week",
+                               {"staff_id": S1, "date": "2026-10-15", "to_staff_id": S2})
+    assert impl.inverse(o, {}) is None
+    o2 = {"staff_id": S1, "date": "2026-10-15", "to_staff_id": None}
+    assert impl.validate(o2) == [] and impl.request(o2)[2]["to_staff_id"] is None
+
+
+def test_off_week_validate_errors():
+    impl = op("staff-off-week")
+    assert impl.validate({"staff_id": S1, "date": "2026-10-15"})  # to_staff_id が無い
+    assert impl.validate({"staff_id": S1, "date": "2026-10-15", "to_staff_id": S1})  # 本人
+
+
+def test_off_week_snapshot_and_verify():
+    impl = op("staff-off-week")
+    o = {"staff_id": S1, "date": "2026-10-15", "to_staff_id": S2}
+    api = FakeApi({
+        "/visits": [{"id": "v1", "status": "planned", "week_pinned": True, "primary_staff_id": S1,
+                     "start_time": "09:00:00", "staff_assignments": []}],
+        "/courses": [{"id": C1, "assigned_staff_id": S1, "code": "A"}, {"id": "c2", "assigned_staff_id": S2}],
+        f"/staff/{S1}/overrides": [],
+    })
+    before = impl.snapshot(api, o)
+    assert any("青ピン" in n for n in before["notes"]) and before["courses"][0]["id"] == C1
+    errs = impl.verify(api, o)
+    assert len(errs) == 3  # 休みなし・コース残り・主担当残り
+    api.routes.update({"/visits": [], "/courses": [{"id": C1, "assigned_staff_id": S2}],
+                       f"/staff/{S1}/overrides": [{"id": OV, "date": "2026-10-15", "type": "休み"}]})
+    assert impl.verify(api, o) == []

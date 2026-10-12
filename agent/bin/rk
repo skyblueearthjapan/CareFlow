@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# rk を agent/ の外からでも動かす包み（Git Bash・VPS の bash）
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Git Bash は "/patients/…" のような引数を "C:/Program Files/Git/patients/…" に書き換える → rk get が壊れる。引数の書き換えだけ止める（PYTHONPATH の書き換えは要る）
+export MSYS2_ARG_CONV_EXCL="*"
+py="${RK_PYTHON:-$(command -v python3 || command -v python)}"
+PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" exec "$py" -m rk "$@"

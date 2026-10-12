@@ -1,0 +1,235 @@
+{
+ "extracted_at": "2026-10-12T10:00:00+09:00",
+ "week_start": "2026-10-19",
+ "visits": [
+  {
+   "id": "v1",
+   "patient_id": "P1",
+   "visit_date": "2026-10-19",
+   "start_time": "09:00:00",
+   "end_time": "09:00:00",
+   "required_staff_count": 1,
+   "visit_group_id": null,
+   "source": "manual_week",
+   "week_pinned": false,
+   "status": "planned",
+   "primary_staff_id": "S1",
+   "secondary_staff_id": null,
+   "course_code": "A",
+   "course_office": "X",
+   "course_staff_id": "S1"
+  },
+  {
+   "id": "v2",
+   "patient_id": "P2",
+   "visit_date": "2026-10-19",
+   "start_time": "10:00:00",
+   "end_time": "10:00:00",
+   "required_staff_count": 1,
+   "visit_group_id": null,
+   "source": "manual_week",
+   "week_pinned": false,
+   "status": "planned",
+   "primary_staff_id": "S1",
+   "secondary_staff_id": null,
+   "course_code": "A",
+   "course_office": "X",
+   "course_staff_id": "S1"
+  },
+  {
+   "id": "v3",
+   "patient_id": "P3",
+   "visit_date": "2026-10-19",
+   "start_time": "13:00:00",
+   "end_time": "13:00:00",
+   "required_staff_count": 1,
+   "visit_group_id": null,
+   "source": "manual_week",
+   "week_pinned": false,
+   "status": "planned",
+   "primary_staff_id": "S2",
+   "secondary_staff_id": null,
+   "course_code": "B",
+   "course_office": "X",
+   "course_staff_id": "S2"
+  },
+  {
+   "id": "v4",
+   "patient_id": "P4",
+   "visit_date": "2026-10-19",
+   "start_time": "09:30:00",
+   "end_time": "09:30:00",
+   "required_staff_count": 1,
+   "visit_group_id": null,
+   "source": "manual_week",
+   "week_pinned": false,
+   "status": "planned",
+   "primary_staff_id": "S3",
+   "secondary_staff_id": null,
+   "course_code": "A",
+   "course_office": "Y",
+   "course_staff_id": "S3"
+  },
+  {
+   "id": "v6",
+   "patient_id": "P6",
+   "visit_date": "2026-10-19",
+   "start_time": "11:30:00",
+   "end_time": "11:30:00",
+   "required_staff_count": 1,
+   "visit_group_id": null,
+   "source": "manual_week",
+   "week_pinned": false,
+   "status": "planned",
+   "primary_staff_id": "S1",
+   "secondary_staff_id": null,
+   "course_code": "B",
+   "course_office": "X",
+   "course_staff_id": "S1"
+  },
+  {
+   "id": "v7",
+   "patient_id": "P7",
+   "visit_date": "2026-10-19",
+   "start_time": "08:30:00",
+   "end_time": "08:30:00",
+   "required_staff_count": 1,
+   "visit_group_id": null,
+   "source": "manual_week",
+   "week_pinned": false,
+   "status": "completed",
+   "primary_staff_id": "S3",
+   "secondary_staff_id": null,
+   "course_code": "A",
+   "course_office": "Y",
+   "course_staff_id": "S3"
+  }
+ ],
+ "patients": [
+  {
+   "id": "P1",
+   "name": "試験 一郎様",
+   "primary_office_id": "oX"
+  },
+  {
+   "id": "P2",
+   "name": "試験 二郎様",
+   "primary_office_id": "oX"
+  },
+  {
+   "id": "P3",
+   "name": "試験 三郎様",
+   "primary_office_id": "oX"
+  },
+  {
+   "id": "P4",
+   "name": "試験 四郎様",
+   "primary_office_id": "oY"
+  },
+  {
+   "id": "P5",
+   "name": "試験 五郎様",
+   "primary_office_id": "oY"
+  },
+  {
+   "id": "P6",
+   "name": "試験 六郎様",
+   "primary_office_id": "oX"
+  },
+  {
+   "id": "P7",
+   "name": "試験 七郎様",
+   "primary_office_id": "oY"
+  }
+ ],
+ "staff": [
+  {
+   "id": "S1",
+   "code": "T01",
+   "name": "試験　花子",
+   "role": "nurse",
+   "sex": "female",
+   "is_trainee": false,
+   "primary_office_id": "oX"
+  },
+  {
+   "id": "S2",
+   "code": "T02",
+   "name": "試験　太郎",
+   "role": "nurse",
+   "sex": "male",
+   "is_trainee": false,
+   "primary_office_id": "oX"
+  },
+  {
+   "id": "S3",
+   "code": "T03",
+   "name": "試験　次郎",
+   "role": "nurse",
+   "sex": "male",
+   "is_trainee": false,
+   "primary_office_id": "oX"
+  },
+  {
+   "id": "M1",
+   "code": "T09",
+   "name": "試験　管理",
+   "role": "manager",
+   "sex": "female",
+   "is_trainee": false,
+   "primary_office_id": "oX"
+  },
+  {
+   "id": "T1",
+   "code": "T05",
+   "name": "試験　新人",
+   "role": "nurse",
+   "sex": "female",
+   "is_trainee": true,
+   "primary_office_id": "oX"
+  }
+ ],
+ "offices": [
+  {
+   "id": "oX",
+   "name": "試験X",
+   "short_label": "X",
+   "lat": 35.6,
+   "lng": 140.1,
+   "operating_weekdays": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+   ]
+  },
+  {
+   "id": "oY",
+   "name": "試験Y",
+   "short_label": "Y",
+   "lat": 35.6,
+   "lng": 140.2,
+   "operating_weekdays": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ]
+  }
+ ],
+ "special_marks": [
+  {
+   "id": "mk1",
+   "patient_id": "P5",
+   "weekday": 0,
+   "duration_min": 30
+  }
+ ],
+ "ng": [],
+ "shifts": [],
+ "weekly_overrides": [],
+ "events": []
+}

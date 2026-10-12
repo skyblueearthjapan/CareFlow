@@ -164,12 +164,25 @@ async def _attach_ng_staff_count(db, patient: Patient) -> Patient:
     return patient
 
 
+def _escape_like(text: str) -> str:
+    """LIKE のワイルドカード (% / _) を文字として検索させる (staff_events.py と同じ)."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 @router.get("", response_model=list[PatientRead], summary="List patients")
 async def list_patients(
     db: DbDep,
     user: CurrentActiveUser,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
+    status_filter: Annotated[
+        str | None,
+        Query(alias="status", max_length=16, description="患者の状態で絞る (完全一致・任意)"),
+    ] = None,
+    q: Annotated[
+        str | None,
+        Query(max_length=100, description="氏名 / かなの部分一致 (任意)"),
+    ] = None,
 ) -> list[Patient]:
     if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
@@ -187,6 +200,17 @@ async def list_patients(
         if user.staff_id is None:
             return []
         stmt = stmt.where(Patient.id.in_(_staff_patient_ids_subquery(user.staff_id)))
+    # 任意の絞り込み (エージェント用・2026-10-12)。指定なしなら従来と同一の結果。
+    if status_filter:
+        stmt = stmt.where(Patient.status == status_filter)
+    if q and q.strip():
+        needle = "%" + _escape_like(q.strip()) + "%"
+        stmt = stmt.where(
+            or_(
+                Patient.name.ilike(needle, escape="\\"),
+                Patient.kana.ilike(needle, escape="\\"),
+            )
+        )
     stmt = stmt.limit(limit).offset(offset)
     rows = (await db.execute(stmt)).all()
 
