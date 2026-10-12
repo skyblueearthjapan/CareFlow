@@ -39,7 +39,7 @@ def _common(p) -> None:
     p.add_argument("--no-app-check", action="store_true", help="アプリの物差しでの診断を飛ばす")
     p.add_argument("--no-pdf", action="store_true", help="A4 の PDF を作らない（HTML だけ）")
     p.add_argument("--from-dir", help="取り出し済みの week.json / history.json を使う（本番に繋がない）")
-    p.add_argument("--config", help="config.local.json（既定 docs/tools/week-leveling/config.local.json）")
+    p.add_argument("--config", help="計算の設定（既定 docs/tools/week-leveling/config.local.json。無いとき・中継の箱の中は職員の記録から作る）")
     p.add_argument("--out", help="出力先（docs/reports の下）")
     p.add_argument("--include-trainee", action="store_true", help="新人（is_trainee）も担当として計算する（ふつうは外す）")
     level_knobs.add_args(p)  # --days / --prefer-staff / --avoid-staff / --keep-current / --cancel / --fast / --only-staff --window ...

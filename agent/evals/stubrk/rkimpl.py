@@ -45,6 +45,7 @@ for _s in (sys.stdout, sys.stderr):
 USAGE = """使い方: rk <コマンド> ...
   whoami | get <path> [-q k=v] | post-read <path> --json <file|-> | sql <名前> [-p k=v] | sql --list | sql --file <f>
   plan check|resolve|report|submit <plan.json> | week preview-clear|preview-generate --year Y --week W | level week|day ... | courseplan ... | backup --label <名前>
+  journal write|recent|search|show|retire|digest ...（相談の引き継ぎ帳）
   apply <plan.json> --approved "<誰が・いつ>" | verify <plan.json|run-id> | undo <run-id> --approved "..." | progress "<1 行>"
 （評価用の写し: RK_ENV=staging・架空の事業所）"""
 
@@ -105,13 +106,14 @@ def _opts(args: list[str], multi: tuple[str, ...] = ()) -> tuple[list[str], dict
     return pos, opt
 
 
-def _real_rk(args: list[str]) -> int:
+def _real_rk(args: list[str], extra_env: dict | None = None) -> int:
     real = CFG.get("real_agent")
     if not real:
         print("（評価用）検査の道具が見つかりません", file=sys.stderr)
         return 1
     env = {k: v for k, v in os.environ.items() if not k.startswith("RK_")}
     env.update({"PYTHONPATH": real, "RK_ENV": "staging", "RK_MODE": "pc", "PYTHONIOENCODING": "utf-8"})
+    env.update(extra_env or {})
     r = subprocess.run([sys.executable, "-m", "rk", *args], env=env, cwd=real, capture_output=True, text=True,
                        encoding="utf-8", errors="replace", timeout=60)
     sys.stdout.write(r.stdout)
@@ -313,6 +315,10 @@ def cmd(argv: list[str]) -> tuple[int, dict]:
         path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
         _out({"plan": str(path), "ready": False, "summary": plan["summary"], "blockers": plan["blockers"]})
         return 0, {"cmd": "courseplan", "options": opt}
+    if c == "journal":
+        # 引き継ぎ帳は本物の rk の実装をそのまま使う（置き場所だけ隠したフォルダーの journal/ へ。会話をまたいで残る）
+        rc = _real_rk(argv, {"RK_JOURNAL_DIR": str(HERE / "journal"), "RK_REPORTS_DIR": str(ROOT / "docs" / "reports" / "agent")})
+        return rc, {"cmd": "journal", "sub": rest[0] if rest else ""}
     if c == "backup":
         pos, opt = _opts(rest)
         label = opt.get("label") or "manual"

@@ -98,3 +98,41 @@
   expect:
     must_read: true
     must_mention: ["試(作|算)|案|反映(は|を)?(し|せ)"]
+
+# 作業場モード（stub）。画面の文脈 {screen: template_ws, draft_name} を付けた発話。実機の評価は中継の文脈行が入ってから。
+- id: template-ws-mode
+  category: template-ws
+  tags: [stub]
+  title: 作業場モード（下書きの編集は承認不要・理由つき・出口だけ 3 択）
+  context: {screen: template_ws, draft_name: ina-v1}
+  prompt: 土曜を 1 人減らしたらどうなりますか？ 下書きで試してみてください。
+  expect:
+    must_read: true
+    rk_any: [["template draft-whatif", "template draft-optimise", "template draft-show"]]
+    rk_none: ["rk apply", "rk backup", "rk plan"]
+    must_not_mention: ["承認番号", "A4"]
+    must_mention: ["下書き|型"]
+
+# 画面の文脈で読み分ける（stub）。文脈 = 手がかり。言葉が別の話なら言葉を優先する。
+- id: context-patients-time
+  category: context
+  tags: [stub]
+  title: 患者マスタの画面で「時間を 30 分遅く」→ 希望・固定訪問の話と読む（1 行だけ確かめる）
+  context: {screen: patients, patient_id: "<id>"}
+  prompt: この方の時間を 30 分遅くしたいです。
+  expect:
+    must_ask: true
+    must_read: true
+    rk_any: [["fixed-visits", "patients", "patient_lookup"]]
+    must_mention: ["(希望|固定訪問|毎週).{0,20}"]
+
+- id: context-schedule-time
+  category: context
+  tags: [stub]
+  title: 週の予定の画面で同じ言葉 → 今週のその訪問の時刻の話と読む
+  context: {screen: schedule, week: {iso_year: 2026, iso_week: 42}}
+  prompt: 大野様の時間を 30 分遅くしたいです。
+  expect:
+    must_ask: true
+    must_read: true
+    must_mention: ["(今週|この週).{0,20}"]

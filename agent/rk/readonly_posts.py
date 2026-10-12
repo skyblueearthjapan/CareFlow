@@ -36,11 +36,28 @@ def _pattern(template: str) -> re.Pattern:
 _COMPILED = [(_pattern(t), t) for t, _ in READONLY_POSTS]
 
 
+#: 型の作業場（template_ws）の「下書きの編集」の POST。下書きは本番のマスターでも週の予定でもなく、
+#: 1 手ごとに理由つきで履歴に残り人が ↶ で戻せるので、承認番号は要らない（PO 2026-10-12）。
+#: 出口（/commit・/week-apply）は含めない＝承認番号つきの案（rk plan）でだけ。
+DRAFT_EDIT_POSTS: list[tuple[str, str]] = [
+    ("/template-ws/drafts", "下書きを作る（マスターを写すだけ）"),
+    ("/template-ws/drafts/{id}/move", "下書きの 1 枠を動かす"),
+    ("/template-ws/drafts/{id}/whatif", "下書きにもしもの条件を書く"),
+    ("/template-ws/drafts/{id}/add-patient", "下書きに枠の無い方を足す"),
+    ("/template-ws/drafts/{id}/remove-patient", "下書きから足した方を外す"),
+    ("/template-ws/drafts/{id}/optimise", "下書きを最適化する（計算）"),
+    ("/template-ws/drafts/{id}/undo", "下書きの一つ前に戻す"),
+    ("/template-ws/drafts/{id}/redo", "下書きをやり直す"),
+]
+_DRAFT_COMPILED = [_pattern(t) for t, _ in DRAFT_EDIT_POSTS]
+
+
 def is_readonly_post(path: str) -> bool:
+    """読むだけの POST、または下書きの編集の POST（本番のマスター・週の予定には触らない）。"""
     bare = path.split("?", 1)[0].rstrip("/")
     if bare.startswith("/api/v1/"):
         bare = bare[len("/api/v1"):]
-    return any(rx.match(bare) for rx, _ in _COMPILED)
+    return any(rx.match(bare) for rx, _ in _COMPILED) or any(rx.match(bare) for rx in _DRAFT_COMPILED)
 
 
 #: 本文が dry_run:true のときだけ「読むだけ」になる POST（週を空にする・型から作る の確認）。

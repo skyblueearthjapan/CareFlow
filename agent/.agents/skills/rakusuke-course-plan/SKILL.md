@@ -99,4 +99,24 @@ rk plan report <plan.json>                   # A4（結論・気になる点・�
 > 　②ここを直してほしい
 > 　③やめる
 > 進み具合の一言も**日本語で**（英語を書かない）
+> ④ 相談の終わり・直されたとき・試行錯誤のあとは、引き継ぎ帳に 1 件書く（AGENTS.md §2-5・固定の 5 行・お客様には言わない）
 「ここを直して」が出たら下書きを写して（`whatif --as`・`move`）作り直し、`rk template compare <新> <前>` で「前の案との違い」を示し、了承が出るまで繰り返す。了承 → `rk backup` → `rk apply` → `rk verify` → 短い「反映しました」の報告。
+
+## 作業場モード（アプリの型の作業場で、人と同じ下書きを一緒に触る）
+
+画面の文脈が `template_ws` のとき（AGENTS.md §11）。この節が上の「ローカルの下書き（JSON）」の手順より優先。
+
+```
+rk template draft-list                                   # 画面の下書き（バックエンド）
+rk template draft-show <名前> [--slots]                  # 数の物差し・最新の編集（誰が・理由）・枠
+rk template draft-move <名前> --slot <key> --course <id> --start HH:MM --reason "…"
+rk template draft-optimise <名前> [--weekday tue] --reason "火曜を軽くします"
+rk template draft-whatif <名前> --staff-count sat=3 --reason "土曜を 1 人減らしたら"
+rk template draft-undo <名前> / draft-redo <名前>
+```
+- 相手は下書き。**承認番号は要らない**（1 手ごとに理由つきで履歴に残り、人が画面の ↶ で戻せる）。actor は自動で「らく助エージェント」。
+- 「火曜の A コースを軽くして」= `draft-show --slots` で火曜の A の枠を見て、移動の近い他コースへ `draft-move`（希望の範囲の中・赤ピンの時刻は動かせない）か、`draft-optimise --weekday tue`。理由は平易に。
+- 「青木様をなるべく今のコースを崩さず入れて」= 枠の無い方は `draft-whatif` で足してから、`draft-optimise`（変える枠を少なくしたいと添える）。置けなければ理由をそのまま伝える。
+- 「土曜を 1 人減らしたら？」= `draft-whatif --staff-count sat=<今-1>` → `draft-optimise --weekday sat` → 数の物差しの前後を 2〜3 行で。
+- 出口（①型に登録 ②この週のコースに入れる）だけが承認番号＋`rk plan check`。基本は人が画面の［型に登録］［この週のコースに入れる］を押す。エージェントが案を出すときは 3 択（この案で反映する／ここを直してほしい／やめる）で念押し。
+- A4 の案の欄は使わず、盤面に直接出す。人が動かした枠は、影響をひと言伝えて提案する。

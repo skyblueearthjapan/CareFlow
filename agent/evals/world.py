@@ -482,6 +482,19 @@ SQL_HANDLERS = {
 }
 
 
+def _history_row(v):
+    def utc(hm: str) -> str:  # 日本時間の壁時計 → UTC の ISO
+        return (datetime.combine(_vd(v), _hm(hm)) - timedelta(hours=9)).strftime("%Y-%m-%dT%H:%M:00Z")
+    arr, dep = utc(_add_min(v["start"], 5)), utc(_add_min(v["end"], 2))
+    p = PAT_BY_CODE[v["patient"]]
+    s = v["staff"][0] if v["staff"] else None
+    return {"visit_id": v["id"], "visit_date": v["date"], "patient_id": uid("patient", p["code"]),
+            "patient_name": p["name"], "start_time": v["start"], "end_time": v["end"],
+            "planned_staff_name": staff_name(s), "actual_staff_name": staff_name(s),
+            "arrival_at": arr, "departure_at": dep, "arrival_read_at": arr, "departure_read_at": dep,
+            "arrival_adjusted": False, "departure_adjusted": False}
+
+
 # ---------- rk get / post-read ----------
 def get(path: str, query: dict) -> Any:
     path = path.split("?")[0].rstrip("/")
@@ -515,6 +528,17 @@ def get(path: str, query: dict) -> Any:
                     "notes": p["note"], "sex_restriction": p["sex_restriction"]}
     if path == "/special-visit-periods":
         return _sql_special({"on_date": TODAY.isoformat()})
+    if path == "/visit-history":  # 打刻履歴（今日までの訪問は予定 +5 分に到着・+2 分に退出を読んだことにする）
+        a, b = query.get("from") or TODAY.isoformat(), query.get("to") or TODAY.isoformat()
+        rows = [_history_row(v) for v in VISITS if a <= v["date"] <= b and v["date"] <= TODAY.isoformat()
+                and v["status"] != "cancelled"]
+        return {"items": rows, "total": len(rows), "summary": {}}
+    if path.startswith("/visits/") and path.count("/") == 2 and path.split("/")[2] in VISIT_BY_ID:
+        v = VISIT_BY_ID[path.split("/")[2]]
+        h = _history_row(v) if v["date"] <= TODAY.isoformat() and v["status"] != "cancelled" else {}
+        return {**_visit_row(v), "id": v["id"], "deleted_at": None,
+                **{f"actual_{k}_{s}": h.get(f"{k}_{s}") for k in ("arrival", "departure") for s in ("at", "read_at")},
+                "actual_arrival_adjusted": False, "actual_departure_adjusted": False}
     if path == "/integrations/jobs" or path == "/integrations/kaipoke/jobs":
         return [{"id": uid("job", 1), "kind": "send", "status": "succeeded", "finished_at": "2026-10-09T14:05:00+09:00",
                  "success": 12, "excluded": 1, "unknown": 0}]

@@ -1,0 +1,20 @@
+# 相談の引き継ぎ帳: 1 回目の相談で聞いたことを書き残し、別の会話（2 回目）で読んで守る。
+# 今日 = 2026-10-12（月）。架空の事業所の青山一郎様（P001）と佐藤さん（S001）。
+- id: journal-carry-over
+  category: journal
+  title: 引き継ぎ帳（1 回目に「避けて」と聞く → 別の会話の 2 回目で読んで守り、自然に触れる）
+  tags: [journal]
+  prompt: >-
+    来週（10/19 の週）のならしの相談です。青山一郎様は、今後もずっと佐藤さんを避けてほしいです
+    （理由は私どもの事情です）。今日は案までは要りません。覚えておいてください。
+  turns:
+    - 青山一郎様の 10/19（月）の訪問の担当を、ならしの案にしてください。まだ反映はしないでください。
+  new_session_turns: [2]
+  expect:
+    plan:
+      avoid_pair: [P001, S001]
+    rk_any:
+      - {turn: 1, any: ["journal write"]}
+      - {turn: 2, any: ["journal (recent|search)"]}
+    must_mention: ["前回|先日|以前"]
+    must_not_mention: ["引き継ぎ帳|journal|ジャーナル"]

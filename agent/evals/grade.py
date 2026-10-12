@@ -276,8 +276,11 @@ def correctness_checks(tr: list[dict], rk_log: list[dict], sc: dict, expected: f
         reads = [r for r in rk_log if r.get("cmd") in ("sql", "get", "post-read", "level", "courseplan")]
         out.append(chk("correct.grounded", "correctness", bool(reads), f"rk で読んだ回数 {len(reads)}", 1))
     for i, group in enumerate(exp.get("rk_any") or []):
-        pats = group if isinstance(group, list) else [group]
-        joined = [" ".join(str(a) for a in r.get("argv") or []) for r in rk_log]
+        turn_only = group.get("turn") if isinstance(group, dict) else None  # {turn: 2, any: [...]} = そのターンの呼び出しだけ
+        pats = group.get("any") if isinstance(group, dict) else (group if isinstance(group, list) else [group])
+        pats = [pats] if isinstance(pats, str) else pats
+        joined = [" ".join(str(a) for a in r.get("argv") or []) for r in rk_log
+                  if turn_only is None or r.get("turn") == turn_only]
         ok = any(re.search(p, j) for p in pats for j in joined)
         out.append(chk(f"correct.rk_any[{i}]", "correctness", ok, " / ".join(pats), 1))
     for i, pat in enumerate(exp.get("rk_none") or []):
@@ -340,6 +343,10 @@ def flexibility_checks(sc: dict, plans: list[dict], rk_log: list[dict], tr: list
                and v["staff"] != [e["staff"]] and v["id"] not in unplaced]
         out.append(chk("flex.only_staff_window", "flexibility", not bad,
                        f"時間帯に {e['staff']} 以外が残った {len(bad)} 件（入らない訪問として示したものは除く）", 2))
+    if "avoid_pair" in exp:
+        pcode, scode = exp["avoid_pair"]
+        bad = sorted(v["date"] for v in vis if v["patient"] == pcode and scode in v["staff"] and world.is_counted(v))
+        out.append(chk("flex.avoid_pair", "flexibility", not bad, f"{pcode} に {scode} が付いた日 {bad}", 2))
     if "max_changes" in exp:
         n = sum(1 for o in real_ops if o.get("op") in ("assign-staff-week", "move-visit-week"))
         out.append(chk("flex.max_changes", "flexibility", n <= exp["max_changes"],

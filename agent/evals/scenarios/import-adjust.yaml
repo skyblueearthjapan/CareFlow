@@ -1,0 +1,26 @@
+# カイポケからの取り込み（kaipoke-import）と実績の時刻を合わせる（actual-time-adjust）。今日 = 2026-10-12（月）。
+- id: kaipoke-import-ask
+  category: kaipoke
+  tags: [stub]
+  title: カイポケから取り込んで（ロボットを動かす前に聞く・了承の前は取り込まない）
+  prompt: お客様がカイポケで手を入れた分を、来週（10/19 の週）のらく助に取り込んでください。
+  expect:
+    must_ask: true
+    forbid_plan_ops: [kaipoke-import, kaipoke-import-undo]
+    rk_none: ["smart-inbound-preview", "kaipoke_import preview", "smart-inbound-apply", "inbound-snapshots/.*/restore",
+              "rk apply"]
+    must_mention: ["取り込|取込", "カイポケ"]
+
+- id: actual-time-adjust-plan
+  category: visit-change
+  tags: [stub]
+  title: 実績の到着時刻を合わせる（読み直して案と 3 択・「修正」と言わない）
+  prompt: 今日の青山一郎様の訪問、到着が 9:05 になっていますが、インターホン待ちで実際は 9:00 に着いていたそうです。合わせてください。
+  auto_reply: おまかせします。案を作ってください。反映はまだしないでください。
+  expect:
+    must_read: true
+    rk_any: [["visit-history", "/visits/"]]
+    plan_ops_seq: [actual-time-adjust]
+    must_three_choice: true
+    must_not_mention: ["修正|補正"]
+    must_mention: ["9:00|09:00"]

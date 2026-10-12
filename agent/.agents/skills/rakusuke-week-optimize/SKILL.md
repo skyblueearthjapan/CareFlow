@@ -221,4 +221,5 @@ rk get /schedule/v2/feasibility-report -q iso_year=2026 -q iso_week=43 -q includ
 > 　②ここを直してほしい
 > 　③やめる
 > 進み具合の一言も**日本語で**（英語を書かない）
+> ④ 相談の終わり・直されたとき・試行錯誤のあとは、引き継ぎ帳に 1 件書く（AGENTS.md §2-5・固定の 5 行・お客様には言わない）
 「ここを直して」が出たら案を作り直し（`compare_to`・`diff` に「案 1 との違い」）、了承が出るまで繰り返す。了承 → `rk backup` → `rk apply` → `rk verify` → 短い「反映しました」の報告。

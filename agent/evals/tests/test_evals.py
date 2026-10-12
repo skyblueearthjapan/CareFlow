@@ -191,3 +191,44 @@ def test_peek_and_rebuild_week_checks():
     assert "eval.peeked_harness" in bad and res["score"]["pass"] and res["score"]["peeked_harness"]
     tr2 = _tr("どうしますか？\n1. 固定訪問から作り直す\n2. やめる")
     assert "correct.no_forbidden_offer" in _ids(grade.grade(sc, tr2, [], [], W, None), False)
+
+
+# ---------- 相談の引き継ぎ帳 ----------
+def test_stub_journal_persists_across_sessions_and_guard(tmp_path):
+    root = run.build_workspace(tmp_path, "j")
+    env = run.stub_env(root, 1)
+
+    def rk(*args, stdin=None):
+        return subprocess.run([sys.executable, "-m", "rk", *args], cwd=str(root / "agent"), env=env,
+                              capture_output=True, text=True, encoding="utf-8", input=stdin, timeout=120)
+
+    w = rk("journal", "write", "--json", "-", stdin=json.dumps(
+        {"title": "青山様と佐藤さん", "said": "避けて", "outcome": "plan-only", "next": "佐藤さんを当てない",
+         "tags": ["青山", "佐藤"]}, ensure_ascii=False))
+    assert w.returncode == 0, w.stderr
+    env = run.stub_env(root, 2)  # 別の会話（ターン 2）でも読める
+    assert "佐藤さんを当てない" in rk("journal", "search", "青山").stdout
+    assert rk("journal", "write", "--title", "x", "--outcome", "applied", "--next", "承認なしで反映").returncode == 1
+    log = grade.load_jsonl(run.calls_log(root))
+    assert [r["cmd"] for r in log if r["cmd"] == "journal"]
+    assert not list((root / "agent" / "runs").rglob("2026-*.jsonl"))  # 帳は作業フォルダーの外
+
+
+def test_grade_journal_scenario_checks():
+    sc = {"id": "j", "expect": {"plan": {"avoid_pair": ["P001", "S001"]},
+                                "rk_any": [{"turn": 1, "any": ["journal write"]}, {"turn": 2, "any": ["journal (recent|search)"]}],
+                                "must_mention": ["前回"], "must_not_mention": ["引き継ぎ帳"]}}
+    p001 = [v for v in W.valid_visits("2026-10-19", "2026-10-19") if v["patient"] == "P001"]
+    assert p001 and "S001" in p001[0]["staff"]
+    bad_plan = {"kind": "x", "title": "t", "ops": [{"op": "noop", "label": "a"}]}
+    log = [{"turn": 1, "argv": ["journal", "write", "--title", "t"], "cmd": "journal"},
+           {"turn": 1, "argv": ["journal", "recent"], "cmd": "journal"}]
+    tr = [{"turn": 2, "kind": "final", "text": "前回うかがった青山様の件ですね。"}]
+    res = grade.grade(sc, tr, log, [bad_plan], W, None)
+    ids_ok, ids_bad = _ids(res, True), _ids(res, False)
+    assert "correct.rk_any[0]" in ids_ok and "correct.rk_any[1]" in ids_bad  # 2 回目に読んでいない
+    assert "correct.mention[0]" in ids_ok and "correct.not_mention[0]" in ids_ok
+    assert "flex.avoid_pair" in ids_bad  # 案が S001 のままなので落ちる
+    sc2 = run.load_scenarios()
+    j = next(s for s in sc2 if s["id"] == "journal-carry-over")
+    assert j["new_session_turns"] == [2] and len(j["turns"]) == 1

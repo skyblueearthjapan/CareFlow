@@ -311,6 +311,8 @@ def run_one(sc: dict, engine: str, *, mode: str, model: str, base: Path, timeout
         turn = i + 1
         env = stub_env(root, turn) if mode == "stub" else local_env(turn)
         assert_not_prod(env)
+        if turn in (sc.get("new_session_turns") or []):
+            resume = None  # 別の会話として始める（引き継ぎ帳だけが残る）
         r = engines.run_turn(engine, root, turns[i], model=model, env=env, turn=turn, resume=resume,
                              timeout=timeout, effort=effort, network=(mode == "local"),
                              hidden=[str(hidden_dir(root))] if mode == "stub" else [])
