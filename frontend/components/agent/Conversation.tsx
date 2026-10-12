@@ -19,13 +19,45 @@ export function Conversation({
 }) {
   const { answer, decide, undo } = useAgent();
   const end = useRef<HTMLDivElement>(null);
+  const conv = useRef<HTMLDivElement>(null);
+  // 下に追従する: いちばん下を見ている間は、返事が伸びても・作業の行が増えても下へ付いていく。
+  // 人が上へスクロールして読み返している間は動かさない(PO 2026-10-13「下へのスクロールが追従してくれると」)
+  const pinned = useRef(true);
   const n = session.items.length;
+  const lastKind = n > 0 ? session.items[n - 1]?.kind : undefined;
   useEffect(() => {
-    end.current?.scrollIntoView?.({ block: 'end' });
-  }, [n]);
+    if (lastKind === 'user') pinned.current = true; // 自分が送ったら必ず下へ
+    if (pinned.current) end.current?.scrollIntoView?.({ block: 'end' });
+  }, [n, lastKind, session.thinking]);
+
+  useEffect(() => {
+    const el = conv.current;
+    if (!el) return;
+    let scroller: HTMLElement | null = el.parentElement;
+    while (scroller && scroller !== document.body) {
+      const oy = getComputedStyle(scroller).overflowY;
+      if (oy === 'auto' || oy === 'scroll') break;
+      scroller = scroller.parentElement;
+    }
+    if (!scroller || scroller === document.body) return;
+    const box = scroller;
+    const onScroll = () => {
+      pinned.current = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    };
+    box.addEventListener('scroll', onScroll, { passive: true });
+    const follow = () => {
+      if (pinned.current) box.scrollTop = box.scrollHeight;
+    };
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(follow) : null;
+    ro?.observe(el);
+    return () => {
+      box.removeEventListener('scroll', onScroll);
+      ro?.disconnect();
+    };
+  }, []);
 
   return (
-    <div className="rk-conv" role="log" aria-live="polite" aria-label="相談の内容">
+    <div ref={conv} className="rk-conv" role="log" aria-live="polite" aria-label="相談の内容">
       {session.items.map((it) => {
         switch (it.kind) {
           case 'user':
