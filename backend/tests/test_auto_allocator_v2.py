@@ -8600,11 +8600,13 @@ async def test_g93_diff_add_orphan_no_week_visit_unchanged(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_g93_diff_add_no_fixed_patient_unchanged(db) -> None:
-    """③(c) 既存挙動不変: PFV 無し患者 (no_fixed pool) は従来通り weekly_pattern 提案.
+async def test_g93_diff_add_no_fixed_patient_skips_placed_weekday(db) -> None:
+    """③(c) PFV 無し患者 (no_fixed pool) は weekly_pattern で展開するが、
+    今週すでに訪問がある曜日 (Mon) は提案しない.
 
-    部分不足分類は PFV 患者のみ対象. PFV を持たない患者は no_fixed pool で
-    従来通り展開され、 今週 visit の有無に関わらず希望曜日が提案される.
+    2026-10-13 (PO 共通の不具合 A) で変更: 旧挙動は今週 visit の有無に関わらず
+    希望曜日を全部提案し、 すでに訪問がある日に 2 回目を出していた. 回数は未充足
+    (希望 2 曜日 / 実績 1) なのでプールには残り、 未配置の Wed だけが提案される.
     """
     from datetime import date
 
@@ -8626,7 +8628,7 @@ async def test_g93_diff_add_no_fixed_patient_unchanged(db) -> None:
     )
     db.add(p)
     await db.flush()
-    # PFV 無し. 今週 Mon に既配置 (no_fixed pool は配置済を二重提案する従来挙動を維持).
+    # PFV 無し. 今週 Mon に既配置 (= Mon は同じ日の 2 回目になるので提案しない).
     db.add(
         Visit(
             patient_id=p.id,
@@ -8645,9 +8647,9 @@ async def test_g93_diff_add_no_fixed_patient_unchanged(db) -> None:
         db, iso_year=2026, iso_week=20, office_ids=[office.id], mode="diff_add"
     )
     pv = [v for v in result["pool_visits"] if v.patient_id == p.id]
-    # PFV 無し患者は no_fixed pool で weekly_pattern (Mon/Wed) 両方展開 (挙動不変).
-    assert {v.weekday for v in pv} == {0, 2}, (
-        f"PFV 無し患者は no_fixed pool で従来通り展開: {[v.weekday for v in pv]}"
+    # PFV 無し患者でも、 今週すでに訪問がある Mon は提案せず Wed だけ.
+    assert {v.weekday for v in pv} == {2}, (
+        f"PFV 無し患者は訪問済みの曜日を提案しない: {[v.weekday for v in pv]}"
     )
 
 

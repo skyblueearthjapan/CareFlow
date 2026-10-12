@@ -50,7 +50,7 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.acceptance_calendar import AcceptanceCalendar
@@ -86,6 +86,16 @@ from app.services.scheduling.course_staff_mirror import mirror_course_staff_to_v
 # OfficeFeatureFlag.feature_key が ``g21_new_algorithm`` で enabled_at IS NOT NULL の
 # office のみ新アルゴリズム (pinned/非 pinned 2 経路化 + 4 経路 union before) を使う.
 G21_NEW_ALGORITHM_FEATURE_KEY: str = "g21_new_algorithm"
+
+# 2026-10-13 (PO): メモが 「【検証】」 で始まる訪問は試しに入れたもの. 今週の実際の
+# 訪問として数えない (= プールの回数判定 / G-21 Before の既存 DB Visit 経路).
+TEST_VISIT_NOTE_PREFIX: str = "【検証】"
+
+
+def _not_test_visit_clause() -> Any:
+    """``Visit.note`` が 「【検証】」 で始まらない (NULL 含む) 行だけに絞る条件."""
+    return or_(Visit.note.is_(None), ~Visit.note.startswith(TEST_VISIT_NOTE_PREFIX))
+
 
 # Phase G-45: 拠点稼働曜日 (= operating_weekdays) のデフォルト値 (= 月-土).
 # DB カラム NULL / 不正値 (= リスト以外 or 範囲外要素を含む) の場合に
@@ -6102,6 +6112,7 @@ async def _load_before_visits_from_pfv(
     warnings: list[V2Warning] | None = None,
     op_weekdays_by_office: dict[UUID, set[int]] | None = None,
     office_name_by_id: dict[UUID, str] | None = None,
+    actual_weekdays_by_patient: dict[UUID, set[int]] | None = None,
 ) -> list[V2Visit]:
     """Before スナップショット: 既存 patient_fixed_visits (mode='normal') から構築.
 
@@ -6192,7 +6203,10 @@ async def _load_before_visits_from_pfv(
         )
         v2_office_id = course_office_id or patient.primary_office_id
         # Phase G-45: 拠点休業日 skip (Before legacy 経路).
-        if op_weekdays_by_office is not None:
+        # 2026-10-13 (PO 都賀の土曜): 今週その曜日に実際の訪問がある固定枠は、
+        # 拠点の休業曜日でも落とさず、 「休みの日」 の注意書きも出さない.
+        _has_actual = pfv.weekday in (actual_weekdays_by_patient or {}).get(pfv.patient_id, set())
+        if op_weekdays_by_office is not None and not _has_actual:
             _op_wd = op_weekdays_by_office.get(v2_office_id)
             if _op_wd is not None and pfv.weekday not in _op_wd:
                 _emit_office_closed_warning(
@@ -6408,6 +6422,12 @@ async def _load_before_visits_v2(
                     Visit.visit_date >= week_monday,
                     Visit.visit_date <= week_sunday,
                     Visit.deleted_at.is_(None),
+                    # 2026-10-13 (PO): 取消した訪問・【検証】 の訪問は 「入っている」
+                    # 扱いにしない (= 配置済みの定義を pool 判定と揃える).
+                    Visit.status.in_(
+                        (VISIT_STATUS_PLANNED, VISIT_STATUS_IN_PROGRESS, VISIT_STATUS_COMPLETED)
+                    ),
+                    _not_test_visit_clause(),
                 )
             )
         ).all()
@@ -6434,20 +6454,9 @@ async def _load_before_visits_v2(
             ps_str, pe_str = _extract_preferred_window_for_weekday(patient, wd)
             am_pm = "am" if v.start_time.hour < NOON_HOUR else "pm"
             addr = patient.address
-            # Phase G-45: 拠点休業日 skip (Before 経路 1 = 既存 DB Visit).
-            if op_weekdays_by_office is not None:
-                _op_wd = op_weekdays_by_office.get(patient.primary_office_id)
-                if _op_wd is not None and wd not in _op_wd:
-                    _emit_office_closed_warning(
-                        warnings=warnings,
-                        closed_warned=closed_warned,
-                        patient_id=patient.id,
-                        patient_name=patient.name,
-                        weekday=wd,
-                        office_id=patient.primary_office_id,
-                        office_name_by_id=office_name_by_id,
-                    )
-                    continue
+            # Phase G-45 → 2026-10-13 (PO 都賀の土曜): 経路 1 (= 既存 DB Visit) は
+            # 実際にある訪問なので、 拠点の休業曜日でも落とさず注意書きも出さない.
+            # 新しい提案を休業曜日に置かない判定は経路 2〜4 / build_visits_for_pool* 側.
             chosen[key] = V2Visit(
                 patient_id=patient.id,
                 patient_name=patient.name,
@@ -6529,16 +6538,29 @@ async def _load_before_visits_v2(
             chosen[key] = v2v
 
     # 経路 4: weekly_pattern entries.
+    # 2026-10-13 (PO G-21 弱点 2): 希望曜日を全部 「入っている」 と見なさない.
+    # 経路 1〜3 (実際の訪問 / 固定訪問の表) で採用済みの件数を先に数え、 希望は
+    # 希望回数 (frequency_per_week → 無ければ 固定 ∪ 希望 の曜日数) に届くまでだけ
+    # 足す. 例: 週 2 回・希望 月水金 で実際の訪問が 月水 → 金は足さない.
+    chosen_count_by_patient: dict[UUID, int] = defaultdict(int)
+    for _ck in chosen:
+        chosen_count_by_patient[_ck[0]] += 1
+    pfv_rows_by_patient: dict[UUID, list[PatientFixedVisit]] = defaultdict(list)
+    for _pfv in pfv_rows_all:
+        pfv_rows_by_patient[_pfv.patient_id].append(_pfv)
     for patient in patients_by_id.values():
         if patient.lat is None or patient.lng is None:
             continue
         if patient.primary_office_id is None:
             continue
+        desired_n = _g94_desired_count(patient, pfv_rows_by_patient.get(patient.id), config=config)
         entries = _extract_weekly_entries(patient, config=config)
         for wd, st, sm, tt_raw, ps_raw, pe_raw in entries:
             key = (patient.id, wd, 0)
             if key in chosen:
                 continue
+            if desired_n is not None and chosen_count_by_patient[patient.id] >= desired_n:
+                break
             overlay = pending_overlay.get((patient.id, wd))
             if overlay is not None:
                 st_eff = overlay.new_start
@@ -6592,6 +6614,7 @@ async def _load_before_visits_v2(
                     getattr(patient, "requires_multiple_staff", False) or False
                 ),
             )
+            chosen_count_by_patient[patient.id] += 1
 
     # pending_overlay にだけ存在する key (= 上位経路に無い) は warning.
     seen_pfv_keys: set[tuple[UUID, int]] = {(p.patient_id, p.weekday) for p in pfv_rows_all}
@@ -7555,6 +7578,9 @@ async def run_v2_pipeline(
     from datetime import date as _date_cls
 
     orphan_fixed_by_patient: dict[UUID, list[PatientFixedVisit]] = {}
+    # 2026-10-13 (PO 都賀の土曜): 今週の実際の訪問がある曜日 (患者ごと). 旧 Before
+    # 経路で拠点の休業曜日でも実在する訪問を落とさないために使う (diff_add のみ).
+    actual_weekdays_for_before: dict[UUID, set[int]] | None = None
     if mode == "diff_add":
         try:
             week_monday = _date_cls.fromisocalendar(iso_year, iso_week, 1)
@@ -7587,6 +7613,9 @@ async def run_v2_pipeline(
         # 曜日 1 visit だが、 同曜日複数 visit の稀ケースも正確に数えるため曜日集合
         # の cardinality ではなく実 row 数を集計する.
         placed_count_by_patient: dict[UUID, int] = defaultdict(int)
+        # 2026-10-13 (PO): (患者, 曜日) ごとの実際の訪問件数. 同じ日に 2 回目を
+        # 提案しない判定 (= 希望が 1 日 2 回を明示している曜日だけ例外) に使う.
+        placed_count_by_patient_wd: dict[tuple[UUID, int], int] = defaultdict(int)
         if week_monday is not None and week_sunday is not None:
             placed_rows = (
                 await db.execute(
@@ -7595,6 +7624,7 @@ async def run_v2_pipeline(
                         Visit.visit_date.between(week_monday, week_sunday),
                         Visit.status.in_(placed_statuses),
                         Visit.deleted_at.is_(None),
+                        _not_test_visit_clause(),
                     )
                 )
             ).all()
@@ -7604,15 +7634,8 @@ async def run_v2_pipeline(
                 patients_with_week_visit.add(_pid)
                 placed_slots_by_patient[_pid].add(_vdate.weekday())
                 placed_count_by_patient[_pid] += 1
-
-        # 通常 pool (PFV 無し): weekly_pattern ベース展開.
-        # Phase E-5: sub_office 経由で引き込まれた患者は除外 (sub_office 用 orphan
-        # 経路で扱うため).
-        pool_patients_no_fixed = [
-            p
-            for p in patients_by_id.values()
-            if p.id not in patients_with_fixed and p.id not in sub_office_patient_ids
-        ]
+                placed_count_by_patient_wd[(_pid, _vdate.weekday())] += 1
+        actual_weekdays_for_before = placed_slots_by_patient
 
         # Phase G-93 (部分不足プール): PFV を持つ患者の固定枠を事前ロードする.
         # 孤児判定 (= 今週 visit 0 件) に加えて「今週 visit が一部あるが希望回数に
@@ -7630,6 +7653,31 @@ async def run_v2_pipeline(
             )
             for _pfv in _all_pfv_rows.all():
                 all_fixed_by_patient[_pfv.patient_id].append(_pfv)
+
+        # 2026-10-13 (PO 共通の不具合 A): 今週の回数が実際の訪問で足りている患者.
+        # 旧実装はサブ拠点経由の患者と固定訪問の表が無い患者を、 回数が足りていても
+        # 無条件にプールへ入れていたため、 すでに訪問がある日に 2 回目を提案していた.
+        # 希望回数 (frequency_per_week → 無ければ 固定 ∪ 希望 の曜日数) を今週の実際の
+        # 訪問件数 (取消・削除・【検証】 を除く) が満たしていればプールに入れない.
+        count_satisfied_patient_ids: set[UUID] = set()
+        for p in patients_by_id.values():
+            _placed_n = placed_count_by_patient.get(p.id, 0)
+            if _placed_n <= 0:
+                continue
+            _desired_n = _g94_desired_count(p, all_fixed_by_patient.get(p.id), config=config)
+            if _desired_n is not None and _placed_n >= _desired_n:
+                count_satisfied_patient_ids.add(p.id)
+
+        # 通常 pool (PFV 無し): weekly_pattern ベース展開.
+        # Phase E-5: sub_office 経由で引き込まれた患者は除外 (sub_office 用 orphan
+        # 経路で扱うため).
+        pool_patients_no_fixed = [
+            p
+            for p in patients_by_id.values()
+            if p.id not in patients_with_fixed
+            and p.id not in sub_office_patient_ids
+            and p.id not in count_satisfied_patient_ids
+        ]
 
         # Phase G-93: 部分不足患者の集合.
         #   - PFV あり (= patients_with_fixed) かつ
@@ -7674,6 +7722,7 @@ async def run_v2_pipeline(
             for p in patients_by_id.values()
             if (
                 p.id in patients_with_fixed
+                and p.id not in count_satisfied_patient_ids
                 and (
                     p.id in sub_office_patient_ids
                     or p.id not in patients_with_week_visit
@@ -7771,6 +7820,7 @@ async def run_v2_pipeline(
                 warnings=warnings,
                 op_weekdays_by_office=op_weekdays_by_office,
                 office_name_by_id=office_name_by_id,
+                actual_weekdays_by_patient=actual_weekdays_for_before,
             )
             if legacy_patients_by_id
             else []
@@ -7785,6 +7835,7 @@ async def run_v2_pipeline(
             warnings=warnings,
             op_weekdays_by_office=op_weekdays_by_office,
             office_name_by_id=office_name_by_id,
+            actual_weekdays_by_patient=actual_weekdays_for_before,
         )
 
     # Stage 1+2 中間: pool_patients を V2Visit に展開
@@ -8084,6 +8135,7 @@ async def run_v2_pipeline(
         # 既存 visit (filtered_before) と時間重複する pool visit を除外.
         # 同 (patient_id, weekday) で時間帯が被るものを取り除き、warning を出す.
         pool_visits = _filter_conflicting_pool_visits(filtered_before, pool_visits, warnings)
+
         # Phase G-93 (部分不足プール: 二重提案防止): 部分不足患者は orphan として
         # filtered_before から除外されるため、 上の存在衝突フィルタでは「今週すでに
         # 配置済みの (patient, weekday)」を落とせない. ここで実 DB visit の
@@ -8091,15 +8143,29 @@ async def run_v2_pipeline(
         # 既に希望が入っている曜日の pool 候補 (固定/希望どちらも) を除外する.
         # → 不足している曜日 (= P070 の月曜) だけが提案に残る. warning は出さない
         # (既配置は欠落でなく正常状態のため).
-        if partial_short_patient_ids:
-            pool_visits = [
-                pv
-                for pv in pool_visits
-                if not (
-                    pv.patient_id in partial_short_patient_ids
-                    and pv.weekday in placed_slots_by_patient.get(pv.patient_id, set())
-                )
-            ]
+        #
+        # 2026-10-13 (PO 共通の不具合 A): 部分不足患者に限らず、 プールの全患者
+        # (固定訪問の表が無い患者・サブ拠点経由の患者を含む) について、 今週すでに
+        # 実際の訪問がある曜日には提案しない. 例外は希望 (weekly_pattern) または
+        # 固定訪問の表がその曜日に 1 日 2 回以上を明示している場合だけで、 その回数に
+        # 達するまでは同じ曜日の提案を残す.
+        def _allowed_per_day(pid: UUID, wd: int) -> int:
+            _p = patients_by_id.get(pid)
+            n_pref = (
+                sum(1 for e in _extract_weekly_entries(_p, config=config) if e[0] == wd)
+                if _p is not None
+                else 0
+            )
+            n_pfv = sum(1 for f in all_fixed_by_patient.get(pid, []) if f.weekday == wd)
+            return max(1, n_pref, n_pfv)
+
+        pool_visits = [
+            pv
+            for pv in pool_visits
+            if placed_count_by_patient_wd.get((pv.patient_id, pv.weekday), 0) == 0
+            or placed_count_by_patient_wd[(pv.patient_id, pv.weekday)]
+            < _allowed_per_day(pv.patient_id, pv.weekday)
+        ]
         # Phase G-92: 固定優先→希望フォールバックの dedup.
         # 同 (patient_id, weekday) に固定候補 (pool_origin="fixed") と希望候補
         # (pool_origin="preferred") が並存する場合、固定を優先採用し希望を落とす.
