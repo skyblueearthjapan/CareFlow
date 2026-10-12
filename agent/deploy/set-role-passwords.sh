@@ -68,7 +68,9 @@ SQL
 log "パスワードを付けました（表示しません）"
 
 mkdir -p "$(dirname "${SECRETS_FILE}")"
-chmod 700 "$(dirname "${SECRETS_FILE}")" 2>/dev/null || true
+# 置き場（/opt/carelink/secrets）は backend（uid 999）も Vertex の鍵を読むために通る。700 にすると
+# 訪問の音声記録が止まる（2026-10-13 実際に起きた）。置き場は 711（中は見せず、通るだけ許す）にし、絞るのはこのファイルだけ。
+chmod 711 "$(dirname "${SECRETS_FILE}")" 2>/dev/null || true
 TMP="$(mktemp "${SECRETS_FILE}.XXXXXX")"
 {
   echo "# らく助エージェントの中継の秘密（set-role-passwords.sh が $(date -u '+%Y-%m-%dT%H:%MZ') に生成・UTC）"
