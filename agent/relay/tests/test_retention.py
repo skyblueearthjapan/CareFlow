@@ -177,6 +177,27 @@ def test_sandbox_transcripts_and_scratch_7_days(tmp_path):
     assert not s_old.exists() and s_new.exists()
 
 
+
+def test_sandbox_transcripts_in_per_user_seats(tmp_path):
+    """人ごとの席（home/u/<鍵>/）の会話の写しも 7 日で消す。ログイン情報は消さない。"""
+    home = tmp_path / "home"
+    seat = home / "u" / ("a" * 32)
+    proj = seat / ".claude" / "projects" / "-srv-agent"
+    proj.mkdir(parents=True)
+    old, new = proj / "old.jsonl", proj / "new.jsonl"
+    old.write_text("x"), new.write_text("y")
+    _age(old, 8), _age(new, 6)
+    roll = seat / ".codex" / "sessions" / "2026" / "10" / "01" / "rollout.jsonl"
+    roll.parent.mkdir(parents=True)
+    roll.write_text("z")
+    _age(roll, 10)
+    auth = seat / ".codex" / "auth.json"
+    auth.write_text("{}")
+    _age(auth, 400)
+    now = NOW.strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert _cli(["sandbox", "--home", str(home), "--scratch", str(tmp_path / "none"), "--now", now, "--apply"]) == 0
+    assert not old.exists() and new.exists() and not roll.exists() and auth.exists()
+
 def test_run_records_one_year(tmp_path):
     runs = tmp_path / "runs"
     (runs / "20251012-183000-week-leveling").mkdir(parents=True)   # ちょうど 1 年（365 日）前 → 残す

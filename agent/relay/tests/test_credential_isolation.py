@@ -124,16 +124,21 @@ def test_runner_points_both_clis_at_the_exec_split(monkeypatch):
     runner = _load("agent_runner_exec_under_test", "agent_runner.py")
     monkeypatch.setattr(runner, "EXEC_SOCKET", "/run/x/exec.sock")
     sd = Path("/data/sessions/x")
-    claude = runner.build_env(sd, "claude", "t" * 40)
+    claude = runner.build_env(sd, "claude", "t" * 40, "b" * 32)
     assert claude["CLAUDE_CODE_SHELL_PREFIX"].replace("\\", "/").endswith("/bx") and claude["RUNNER_EXEC_SOCKET"] == "/run/x/exec.sock"
-    codex = runner.build_env(sd, "codex", "t" * 40)
+    codex = runner.build_env(sd, "codex", "t" * 40, "b" * 32)
     assert codex["CODEX_EXEC_SERVER_URL"].startswith("ws://127.0.0.1:")
     args = runner.codex_exec_env_args(codex)
     joined = " ".join(args)
     assert "RK_RELAY_TOKEN" in joined and "allow_login_shell=false" in joined
     assert "CODEX_HOME" not in joined and "HOME =" not in joined  # 実行係には CLI の HOME / CODEX_HOME を渡さない
+    # ログイン情報は持ち主の席（/home/agent/u/<鍵>/）だけ。実行係に渡る値にも席のパスは入らない
+    assert codex["CODEX_HOME"].replace("\\", "/").endswith("/home/agent/u/" + "b" * 32 + "/.codex")
+    assert claude["CLAUDE_CONFIG_DIR"].replace("\\", "/").endswith("/home/agent/u/" + "b" * 32 + "/.claude")
+    assert codex["HOME"] == claude["HOME"] and codex["HOME"].replace("\\", "/").endswith("/u/" + "b" * 32)
+    assert "/u/" not in joined
     monkeypatch.setattr(runner, "EXEC_SOCKET", "")
-    assert "CLAUDE_CODE_SHELL_PREFIX" not in runner.build_env(sd, "claude", "t" * 40)
+    assert "CLAUDE_CODE_SHELL_PREFIX" not in runner.build_env(sd, "claude", "t" * 40, "b" * 32)
 
 
 def test_isolation_settings_deny_cli_tools_on_credentials():

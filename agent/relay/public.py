@@ -1,6 +1,8 @@
 """中継の公開口（ブラウザー向け・Cloudflare Tunnel の /agent-relay/* → :8090・設計 §1-7・§1-8）。
 
-鍵 = らく助のログインの access JWT（Authorization: Bearer）。backend の /auth/me で確かめ、管理者だけ。
+鍵 = らく助のログインの access JWT（Authorization: Bearer）。backend の /auth/me で確かめ、管理者だけ
+（目的ごとの入口 relay.auth.can_use・のちに職員へ限られた目的を開くときの継ぎ目）。
+AI は人ごとの席（その人のログイン）で動く: 相談は持ち主の席・/engines* は呼んだ本人の席だけ（PO 2026-10-13）。
 加えて: 全体の止め（AGENT_RELAY_ENABLED）・試験中の許可（AGENT_ALLOWED_USER_IDS）・機能の旗（rakusuke_agent）。
 相談は作った本人だけが見られる（D8）。流れは SSE（fetch で読む・15 秒ごとに ping）。
 
@@ -11,11 +13,14 @@
   GET    /engine                                               → {default_provider, providers, login{codex|claude:
                                                                   {state: ok|missing|not_subscription, plan, at}}}
                                                                   ＋ disk{free_gb, low, blocked, warning}（空き 5 GB 未満は blocked＝新しい相談を断る）
-  GET    /engines                                              → {default_provider, default_source: setting|env, providers,
-                                                                  can_sign_in, engines{codex|claude: {state: ok|missing|api_key|unknown}},
-                                                                  login: Login|null}（AI のつなぎ先の設定画面）
-  POST   /engines/default {provider}                           → {default_provider, default_source}（新しい相談の既定の AI）
-  POST   /engines/{provider}/login                             → Login（サインインを始める・同時に 1 つ・1 人 15 分に 5 回まで）
+  GET    /engines                                              → {default_provider, default_source: user|setting|env, providers,
+                                                                  can_sign_in, seat: "own", can_view_seats,
+                                                                  engines{codex|claude: {state: ok|missing|api_key|unknown}},
+                                                                  login: Login|null}（AI のつなぎ先の設定画面・呼んだ本人の席）
+  GET    /engines/seats                                        → {providers, seats: [{name, me, engines{…: {state}}}]}
+                                                                  （管理者だけ・どの管理者がサインインしているか。AI のメールは出さない）
+  POST   /engines/default {provider}                           → {default_provider, default_source: "user"}（その人の新しい相談の AI）
+  POST   /engines/{provider}/login                             → Login（その人の席にサインイン・箱で同時に 1 つ・1 人 15 分に 5 回まで）
   GET    /engines/login                                        → Login（Login = {provider, state, url, code, needs_input,
                                                                   expires_in, error}。state = idle|starting|waiting|verifying|
                                                                   done|failed|timeout|cancelled）
@@ -54,7 +59,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from relay.approvals import Refused
-from relay.auth import AuthChecker, FeatureGate, User, always_on
+from relay.auth import AuthChecker, FeatureGate, User, always_on, can_use
 from relay.screen_context import ContextError, validate_context
 from relay.service import RelayService
 
@@ -106,6 +111,10 @@ def create_public_app(svc: RelayService, auth: AuthChecker, feature_gate: Featur
                     pass
         task = asyncio.create_task(sweeper())
         try:
+            await svc.adopt_legacy_seat()  # 前の共有のログインを持ち主の席へ（届かなければ、使われたときにまた試す）
+        except Exception:
+            pass
+        try:
             yield
         finally:
             task.cancel()
@@ -143,7 +152,7 @@ def create_public_app(svc: RelayService, auth: AuthChecker, feature_gate: Featur
         user = await auth(h[7:].strip())
         if user is None:
             raise HTTPException(401, "ログインが切れました。もう一度ログインしてください")
-        if not user.is_admin:
+        if not can_use(user, "consult"):  # 目的ごとの入口（relay.auth.AGENT_USES・いまは管理者だけ）
             raise HTTPException(403, "管理者だけが使えます")
         if cfg.allowed_user_ids and user.id not in cfg.allowed_user_ids:
             raise HTTPException(403, "いまは試験中のため、決められた方だけが使えます")
@@ -167,12 +176,16 @@ def create_public_app(svc: RelayService, auth: AuthChecker, feature_gate: Featur
 
     @app.get(PREFIX + "/engine")
     async def engine(user: User = Depends(current_user)) -> Any:
-        return svc.engine_info()
+        return svc.engine_info(user)
 
-    # ---------- AI のつなぎ先（管理者だけ・記録を残す） ----------
+    # ---------- AI のつなぎ先（呼んだ本人の席だけ・記録を残す） ----------
     @app.get(PREFIX + "/engines")
     async def engines(user: User = Depends(current_user)) -> Any:
-        return await svc.engines_view()
+        return await svc.engines_view(user)
+
+    @app.get(PREFIX + "/engines/seats")
+    async def engines_seats(user: User = Depends(current_user)) -> Any:
+        return await svc.seats_view(user)
 
     @app.post(PREFIX + "/engines/default")
     async def engines_default(payload: dict = Body(...), user: User = Depends(current_user)) -> Any:

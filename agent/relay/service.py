@@ -31,7 +31,7 @@ from relay.approvals import Refused, plan_sha256
 from relay.auth import User
 from relay.bus import EventBus
 from relay.config import RelayConfig
-from relay.engines import PROVIDERS as ENGINE_PROVIDERS, EngineAdmin
+from relay.engines import PROVIDERS as ENGINE_PROVIDERS, EngineAdmin, seat_key
 from relay.execs import BackupTaker, SqlExecutor, rk_config
 from relay.normalize import ClaudeNormalizer
 from relay.runner import (AgentSession, ClaudeSession, RunnerSession, claude_argv, claude_env,
@@ -42,6 +42,10 @@ from relay.store import Store
 from relay import codex_config as cx
 from relay.codex_session import CodexRunnerSession, CodexSession, StartRefused, codex_env
 from relay.watch import Watcher
+
+#: 持ち主がその AI にサインインしていないとき（画面は ⚙ を開くボタンを添える・error code=signin）
+SIGNIN_JA = {"codex": "ChatGPT にサインインすると、相談を始められます",
+             "claude": "Claude にサインインすると、相談を始められます"}
 
 RunnerFactory = Callable[[dict, str, "str | None"], AgentSession]
 ApiFactory = Callable[["str | None", "str | None"], Api]
@@ -92,17 +96,19 @@ def claude_runner_factory(cfg: RelayConfig) -> RunnerFactory:
 def sandbox_runner_factory(cfg: RelayConfig) -> RunnerFactory:
     """runner: 箱の runner（unix ソケット）に spawn を頼む（設計 §1-2 A）。argv・環境・isolation.json は runner が作る。"""
     def make(session: dict, rk_token: str, resume_id: str | None) -> AgentSession:
+        # 会話は持ち主のログイン（席）で動かす（PO 2026-10-13: 1 席 1 人）。runner へは席の鍵だけを渡す
+        key = seat_key(str(session["user_id"]))
         if session.get("provider") == "codex":
             # モデルは thread/start で渡す（model/list で選んでから）。spawn の model は runner の形の確かめ用
             spawn = {"session_id": session["id"], "provider": "codex", "model": models.SOL_BASELINE,
-                     "relay_token": rk_token}
+                     "relay_token": rk_token, "user_key": key}
             if resume_id:
                 spawn["resume_id"] = resume_id
             work = f"{cfg.runner_sessions_dir.rstrip('/')}/{session['id']}/work"
             return CodexRunnerSession(cfg.runner_socket, spawn, cwd=cfg.runner_agent_dir, work_dir=work,
                                       resume_id=resume_id)
         spawn: dict[str, Any] = {"session_id": session["id"], "provider": "claude",
-                                 "model": models.claude_model_arg(), "relay_token": rk_token}
+                                 "model": models.claude_model_arg(), "relay_token": rk_token, "user_key": key}
         if resume_id:
             spawn["resume_id"] = resume_id
         return RunnerSession(cfg.runner_socket, spawn,
@@ -118,6 +124,7 @@ def default_runner_factory(cfg: RelayConfig) -> RunnerFactory:
 class Live:
     runner: AgentSession
     token: str
+    user_id: str = ""
     task: asyncio.Task | None = None
     last_active: float = field(default_factory=time.monotonic)
     last_send: float = 0.0
@@ -149,61 +156,129 @@ class RelayService:
         self._tokens: dict[str, str] = {}
         self._sends: dict[str, collections.deque] = {}
         self._apply_lock = threading.Lock()
-        #: 最後に会話を始めたときに分かったログインの様子（provider → {state, plan, at}）。トークンは持たない
-        self.login_state: dict[str, dict] = {}
-        #: AI のつなぎ先の管理（画面からのサインイン）。runner の無い手元では使えない（状態は unknown）
+        #: 最後に会話を始めたときに分かったログインの様子（user id → provider → {state, plan, at}）。トークンは持たない
+        self.login_state: dict[str, dict[str, dict]] = {}
+        #: AI のつなぎ先の管理（画面からのサインイン・人ごとの席）。runner の無い手元では使えない（状態は unknown）
         self.engines = EngineAdmin(cfg.runner_socket if cfg.launch == "runner" else "")
         self._login_starts: dict[str, collections.deque] = {}
-        self._login_open = False
+        #: サインインを始めて、まだ「終わった」を記録していない人（user id）
+        self._login_open: set[str] = set()
+        #: 前の共有のログインを持ち主の席へ移す確かめが済んだか（runner に届くまで、使われるたびに試す）
+        self._legacy_done = False
 
     # ================= 会話（画面から） =================
     def create_session(self, user: User, title: str = "", provider: str | None = None) -> dict:
-        prov = provider or self.default_provider()[0]
+        prov = provider or self.default_provider(user)[0]
         if prov not in self.cfg.providers:
             raise Refused("その AI はいま使えません", 400)
         self._disk_guard()
         model = models.SOL_BASELINE if prov == "codex" else models.claude_model_arg()
         return self.store.create_session(user.id, title=title[:80], provider=prov, model=model)
 
-    def engine_info(self) -> dict:
-        """画面用: 既定の AI と、各 AI のログインの様子（トークンは出さない）。"""
-        info = {"default_provider": self.default_provider()[0], "providers": list(self.cfg.providers),
-                "login": {p: dict(v) for p, v in self.login_state.items()}}
+    def engine_info(self, user: User) -> dict:
+        """画面用: その人の既定の AI と、その人の各 AI のログインの様子（トークンは出さない）。"""
+        mine = self.login_state.get(str(user.id), {})
+        info = {"default_provider": self.default_provider(user)[0], "providers": list(self.cfg.providers),
+                "login": {p: dict(v) for p, v in mine.items()}}
         d = self.disk()
         if d is not None:  # パスは出さない。画面は warning（日本語）をそのまま出せる
             info["disk"] = {"free_gb": d["free_gb"], "low": d["low"], "blocked": d["blocked"],
                             "warning": DISK_BLOCK_JA if d["blocked"] else d["warning"]}
         return info
 
-    def default_provider(self) -> tuple[str, str]:
-        """新しい相談の既定の AI と、その出どころ（setting = 画面で選んだもの / env = AGENT_DEFAULT_PROVIDER）。"""
+    @staticmethod
+    def _user_default_key(user_id: str) -> str:
+        return f"default_provider:{user_id}"
+
+    def _setting(self, key: str) -> Any:
         try:
-            v = self.store.get_setting("default_provider")
+            return self.store.get_setting(key)
         except Exception:  # noqa: BLE001  設定の表がまだ無い（migration 前）でも会話は始められる
-            v = None
+            return None
+
+    def default_provider(self, user: User | None = None) -> tuple[str, str]:
+        """新しい相談の既定の AI と、その出どころ。user = その人が ⚙ で選んだもの（agent.settings の
+        default_provider:<user id>）→ setting = 全体の既定（default_provider）→ env = AGENT_DEFAULT_PROVIDER。"""
+        if user is not None:
+            v = self._setting(self._user_default_key(str(user.id)))
+            if v in self.cfg.providers:
+                return v, "user"
+        v = self._setting("default_provider")
         if v in self.cfg.providers:
             return v, "setting"
         return self.cfg.default_provider, "env"
 
-    # ================= AI のつなぎ先（管理者・画面から） =================
+    # ================= AI のつなぎ先（人ごとの席・画面から） =================
     def _audit(self, user_id: str | None, action: str, provider: str | None = None, detail: str = "") -> None:
         try:
             self.store.add_admin_event(user_id or "-", action, provider, detail)
         except Exception:  # noqa: BLE001  記録に失敗しても操作は止めない
             pass
 
-    async def engines_view(self) -> dict:
-        provs = [p for p in ENGINE_PROVIDERS if p in self.cfg.providers]
-        states = await asyncio.gather(*(self.engines.status(p) for p in provs))
-        dp, src = self.default_provider()
+    def legacy_owner(self) -> str:
+        """前の共有のログインの持ち主（AGENT_LEGACY_OWNER_USER_ID → agent.settings の legacy_owner_user_id）。"""
+        v = self.cfg.legacy_owner_user_id or self._setting("legacy_owner_user_id")
+        return str(v).strip() if v else ""
+
+    async def adopt_legacy_seat(self) -> list[str]:
+        """前の共有のログイン（箱の /home/agent/.codex・.claude）を持ち主の席へ移す（席が空のときだけ・1 回きり）。
+        runner に届かないときは、次に使われたときにまた試す。"""
+        if self._legacy_done:
+            return []
+        owner = self.legacy_owner()
+        if not owner or not self.engines.available:
+            self._legacy_done = True
+            return []
         try:
-            flow = await self.login_poll(None)
+            moved = await self.engines.adopt_legacy(seat_key(owner))
+        except Refused:
+            return []
+        self._legacy_done = True
+        if moved:
+            self._audit(owner, "legacy_adopted", None, ",".join(moved))
+        return moved
+
+    async def engines_view(self, user: User) -> dict:
+        """その人の AI のつなぎ先（その人の席のログインの様子・その人の既定の AI・その人のサインインの途中）。"""
+        await self.adopt_legacy_seat()
+        key = seat_key(str(user.id))
+        provs = [p for p in ENGINE_PROVIDERS if p in self.cfg.providers]
+        states = await asyncio.gather(*(self.engines.status(p, key) for p in provs))
+        dp, src = self.default_provider(user)
+        try:
+            flow = await self.login_poll(user)
         except Refused:
             flow = None
         return {"default_provider": dp, "default_source": src, "providers": provs,
-                "can_sign_in": self.engines.available,
+                "can_sign_in": self.engines.available, "seat": "own", "can_view_seats": user.is_admin,
                 "engines": {p: {"state": st} for p, st in zip(provs, states)},
                 "login": flow if flow and flow.get("state") != "idle" else None}
+
+    async def seats_view(self, user: User) -> dict:
+        """管理者だけ: どの管理者がどの AI にサインインしているか（状態の語と名前だけ。AI のアカウントのメールは出さない）。
+        名前はらく助の利用者（users・職員名）から。読めないときは自分だけ。"""
+        if not user.is_admin:
+            raise Refused("管理者だけが見られます", 403)
+        rows: list[dict] = []
+        if self.sql is not None:
+            sql = ("select u.id::text as id, coalesce(nullif(s.name, ''), u.username, '') as name "
+                   "from users u left join staff s on s.id = u.staff_id "
+                   "where u.role in ('admin', 'manager') and u.deleted_at is null order by 2 limit 50")
+            try:
+                got = await asyncio.to_thread(self.sql.run, sql)
+                rows = [r for r in got if isinstance(r, dict) and r.get("id")] if isinstance(got, list) else []
+            except Exception:  # noqa: BLE001  読めなくても自分の分は出す
+                rows = []
+        if not any(str(r["id"]) == str(user.id) for r in rows):
+            rows.append({"id": str(user.id), "name": user.username or ""})
+        provs = [p for p in ENGINE_PROVIDERS if p in self.cfg.providers]
+        out = []
+        for r in rows:
+            key = seat_key(str(r["id"]))
+            states = await asyncio.gather(*(self.engines.status(p, key) for p in provs))
+            out.append({"name": str(r.get("name") or "（名前なし）")[:60], "me": str(r["id"]) == str(user.id),
+                        "engines": {p: {"state": st} for p, st in zip(provs, states)}})
+        return {"providers": provs, "seats": out}
 
     def _check_provider(self, provider: str) -> None:
         if provider not in ENGINE_PROVIDERS or provider not in self.cfg.providers:
@@ -211,6 +286,7 @@ class RelayService:
 
     async def login_start(self, user: User, provider: str) -> dict:
         self._check_provider(provider)
+        await self.adopt_legacy_seat()  # 持ち主の古いログインを席へ移してから（先にサインインすると移さない）
         q = self._login_starts.setdefault(user.id, collections.deque())
         t = time.monotonic()
         while q and t - q[0] > 900:
@@ -218,56 +294,77 @@ class RelayService:
         if len(q) >= 5:
             raise Refused("サインインを何度も始めています。15 分ほどおいてから、もう一度どうぞ", 429)
         q.append(t)
-        flow = await self.engines.login_start(provider)
-        self._login_open = True
-        self.engines.started_by = user.id
+        flow = await self.engines.login_start(provider, seat_key(str(user.id)))
+        self._login_open.add(str(user.id))
         self._audit(user.id, "login_start", provider, flow["state"])
-        await self._settle_login(flow)
+        await self._settle_login(user, flow)
         return flow
 
-    async def login_poll(self, user: User | None) -> dict:
-        flow = await self.engines.login_poll()
-        await self._settle_login(flow)
+    async def login_poll(self, user: User) -> dict:
+        flow = await self.engines.login_poll(seat_key(str(user.id)))
+        await self._settle_login(user, flow)
         return flow
 
-    async def _settle_login(self, flow: dict) -> None:
-        """サインインが終わった（できた・できなかった）ことを 1 回だけ記録し、画面の「ログイン済み」を新しくする。"""
-        if not self._login_open or flow.get("state") not in ("done", "failed", "timeout", "cancelled"):
+    async def _settle_login(self, user: User, flow: dict) -> None:
+        """その人のサインインが終わった（できた・できなかった）ことを 1 回だけ記録し、「ログイン済み」を新しくする。"""
+        uid = str(user.id)
+        if uid not in self._login_open or flow.get("state") not in ("done", "failed", "timeout", "cancelled"):
             return
-        self._login_open = False
+        self._login_open.discard(uid)
         prov = flow.get("provider")
-        state = await self.engines.status(prov, fresh=True) if prov else "unknown"
+        state = await self.engines.status(prov, seat_key(uid), fresh=True) if prov else "unknown"
         if flow["state"] == "done":
-            self.login_state.pop(prov, None)  # 前の「ログインが切れています」を忘れる（次の会話の始めでまた確かめる）
-        self._audit(self.engines.started_by, "login_" + flow["state"], prov, state)
+            # 前の「ログインが切れています」を忘れる（次の会話の始めでまた確かめる）
+            self.login_state.get(uid, {}).pop(prov, None)
+        self._audit(uid, "login_" + flow["state"], prov, state)
 
     async def login_input(self, user: User, code: str) -> dict:
-        flow = await self.engines.login_input(code)
+        flow = await self.engines.login_input(code, seat_key(str(user.id)))
         self._audit(user.id, "login_code", flow.get("provider"), flow["state"])  # コードそのものは書かない
-        await self._settle_login(flow)
+        await self._settle_login(user, flow)
         return flow
 
     async def login_cancel(self, user: User) -> dict:
-        flow = await self.engines.login_cancel()
+        flow = await self.engines.login_cancel(seat_key(str(user.id)))
         self._audit(user.id, "login_cancel", flow.get("provider"))
-        await self._settle_login(flow)
+        await self._settle_login(user, flow)
         return flow
 
     async def logout(self, user: User, provider: str) -> dict:
         self._check_provider(provider)
-        r = await self.engines.logout(provider)
+        await self.adopt_legacy_seat()
+        r = await self.engines.logout(provider, seat_key(str(user.id)))
         if r["state"] == "missing":
-            self.login_state[provider] = {"state": "missing", "plan": None, "at": self.now().isoformat()}
+            self.login_state.setdefault(str(user.id), {})[provider] = {
+                "state": "missing", "plan": None, "at": self.now().isoformat()}
         self._audit(user.id, "logout", provider, f"ok={r['ok']} state={r['state']}")
         return r
 
     def set_default_provider(self, user: User, provider: str) -> dict:
+        """その人の「新しい相談で使う AI」（ほかの人には効かない）。"""
         if provider not in ENGINE_PROVIDERS or provider not in self.cfg.providers:
             raise Refused("その AI は選べません", 400)
-        before = self.default_provider()[0]
-        self.store.set_setting("default_provider", provider, user.id)
+        before = self.default_provider(user)[0]
+        self.store.set_setting(self._user_default_key(str(user.id)), provider, user.id)
         self._audit(user.id, "default_provider", provider, f"{before}->{provider}")
-        return {"default_provider": provider, "default_source": "setting"}
+        return {"default_provider": provider, "default_source": "user"}
+
+    async def _signin_guard(self, session: dict) -> None:
+        """会話を起こす前に、持ち主がその AI にサインインしているかを確かめる（runner のときだけ）。
+        していなければ、落ち着いた 1 行と ⚙ を開くボタン（画面: error code=signin）で止める。分からないときは止めない。"""
+        if not self.engines.available or session.get("id") in self.live:
+            return
+        await self.adopt_legacy_seat()
+        prov = session.get("provider") or "codex"
+        if prov not in ENGINE_PROVIDERS:
+            return
+        state = await self.engines.status(prov, seat_key(str(session["user_id"])))
+        if state != "missing":
+            return
+        msg = SIGNIN_JA[prov]
+        self.bus.emit(session["id"], {**ev.error("signin", msg, retry=False), "provider": prov})
+        self.bus.emit(session["id"], ev.status("idle", "サインインをお待ちしています"))
+        raise Refused(msg, 409)
 
     def _disk_guard(self, session: dict | None = None) -> None:
         """空きが 5 GB 未満なら、新しい相談（まだ CLI の会話を持たないもの）を始めない。
@@ -327,12 +424,13 @@ class RelayService:
                 self.bus.emit(session["id"], ev.status("queued", "ほかの相談が作業中です。終わってから始めます"))
                 raise Refused("ほかの相談が作業中です。終わってからもう一度送ってください", 409)
         self._disk_guard(session)
+        await self._signin_guard(session)
         mem = self.mem_mb()
         if mem is not None and mem < self.cfg.min_mem_mb:
             raise Refused("いまサーバーが混んでいます。少し時間をおいてください", 503)
         token = secrets.token_urlsafe(24)
         runner = self.runner_factory(session, token, session.get("cli_session_id"))
-        live = Live(runner=runner, token=token)
+        live = Live(runner=runner, token=token, user_id=str(session.get("user_id") or ""))
         self.live[session["id"]] = live
         self._tokens[token] = session["id"]
         self.bus.emit(session["id"], ev.status("starting"))
@@ -340,7 +438,9 @@ class RelayService:
             await runner.start()
         except StartRefused as e:
             self._forget(session["id"], live)
-            self._note_login(session.get("provider") or "", e.event.get("code"))
+            self._note_login(str(session.get("user_id") or ""), session.get("provider") or "", e.event.get("code"))
+            if e.event.get("code") == "login":
+                self.engines.forget(seat_key(str(session.get("user_id") or "")))  # 次はまた確かめる
             self.record_tool_call(session, "start-refused", f"{e.event.get('code')}: {e.detail}", 0, 0)
             self.bus.emit(session["id"], e.event)
             self.bus.emit(session["id"], ev.status("error"))
@@ -364,7 +464,7 @@ class RelayService:
                 if fields:
                     self.store.update_session(session_id, **fields)
                 if e.get("provider") == "codex":
-                    self._note_login("codex", "ok", e.get("plan_type"))
+                    self._note_login(live.user_id, "codex", "ok", e.get("plan_type"))
                     for fb in e.get("model_fallbacks") or []:
                         self.record_tool_call({"id": session_id}, "model-fallback", f"{fb.get('from')}->{fb.get('to')}", 0, 0)
                 continue
@@ -389,13 +489,14 @@ class RelayService:
                 self.store.update_session(session_id, status=e["state"], last_active_at=self.now())
         self._forget(session_id, live)
 
-    def _note_login(self, provider: str, code: str | None, plan: str | None = None) -> None:
+    def _note_login(self, user_id: str, provider: str, code: str | None, plan: str | None = None) -> None:
         if not provider:
             return
         state = {"ok": "ok", "login": "missing", "auth_source": "not_subscription"}.get(code or "", None)
         if state is None:
             return
-        self.login_state[provider] = {"state": state, "plan": plan, "at": self.now().isoformat()}
+        self.login_state.setdefault(user_id, {})[provider] = {"state": state, "plan": plan,
+                                                              "at": self.now().isoformat()}
 
     async def _watch(self, session_id: str, live: Live, e: dict) -> None:
         """脇道の見張り（relay.watch）。印は監査へ・最初は道案内・重い/重なったら止めて琥珀の 1 行。"""

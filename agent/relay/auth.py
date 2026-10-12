@@ -61,6 +61,16 @@ class BackendAuthChecker:
         return user
 
 
+#: だれが何のためにエージェントを使えるか（目的 → 役割）。いまは「相談」＝管理者だけ（PO 2026-10-13）。
+#: のちに職員へ限られた目的（例: カルテの下書き "karte"）を開くときは、ここに目的と役割を足し、その目的の口だけ
+#: can_use(user, "karte") で確かめる（相談の口・AI のつなぎ先は "consult" のまま）。画面はまだ作らない。
+AGENT_USES: dict[str, frozenset[str]] = {"consult": frozenset(ADMIN_ROLES)}
+
+
+def can_use(user: User, purpose: str = "consult") -> bool:
+    return user.role in AGENT_USES.get(purpose, frozenset())
+
+
 FeatureGate = Callable[[User], Awaitable[bool]]
 
 

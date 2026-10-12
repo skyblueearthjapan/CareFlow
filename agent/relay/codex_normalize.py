@@ -26,6 +26,10 @@ from relay import models
 from relay.normalize import JST
 from relay.step_labels import GENERIC, label_for
 
+#: この割合（％）を超えたら「このアカウントの利用上限に近づいています」を 1 回だけ出す（人ごとの席＝その人の契約の分）
+NEAR_LIMIT_PCT = 80
+NEAR_LIMIT_JA = "いまはこのアカウントの利用上限に近づいています（あなたの ChatGPT の契約の分です）"
+
 _CHOICE_LINE = re.compile(r"^\s*(?:[(（]?[1-4１-４][).）．.、:：]|[①②③④])\s*(.+?)\s*$")
 _ASKING = re.compile(r"[？?]|ください|しますか|どれ|どちら")
 _LABEL_DESC = re.compile(r"^(.{1,40}?)\s*(?:[（(]\s*(.+?)\s*[）)]|[—－:：]\s*(.+))$")
@@ -96,6 +100,7 @@ class CodexNormalizer:
         self._asked = False
         self._pending_error: dict | None = None
         self.rate_limits: dict | None = None
+        self._limit_hinted = False
         self.file_changes: dict[str, list[str]] = {}
         #: question_id → {"kind": "native", "rpc_id", "ids": {質問文: id}, "secret": [...]} / {"kind": "text", ...}
         self.questions: dict[str, dict] = {}
@@ -129,7 +134,7 @@ class CodexNormalizer:
             if isinstance(p.get("rateLimits"), dict):
                 self.rate_limits = {**(self.rate_limits or {}), **{k: v for k, v in p["rateLimits"].items()
                                                                     if v is not None}}
-            return []
+            return self.usage_hint() if self.used_percent() >= NEAR_LIMIT_PCT else []
         if meth == "turn/completed":
             return self._turn_completed(p.get("turn") or {})
         return []  # thread/started・tokenUsage・mcpServer/*・warning・deprecationNotice などは画面に出さない
@@ -276,10 +281,11 @@ class CodexNormalizer:
         kind = self.error_kind(err)
         text = str(err.get("message") or "")
         if kind == "unauthorized" or any(w in text.lower() for w in ("401", "unauthorized", "not logged in")):
-            return [ev.error("login", "ChatGPT へのログインが切れています（らく助の係の方へご連絡ください）", retry=False),
+            return [ev.error("login", "ChatGPT へのサインインが切れています。⚙ の「AI のつなぎ先」から、サインインし直してください",
+                             retry=False),
                     ev.status("error")]
         if kind in ("usageLimitExceeded", "rateLimitExceeded"):
-            return [self.rate_limited()]
+            return [*self.usage_hint(), self.rate_limited()]
         if models.codex_unsupported(text):
             return [ev.error("model", "この ChatGPT の契約では使えない AI でした（らく助の係の方へご連絡ください）",
                              retry=False), ev.status("error")]
@@ -290,6 +296,20 @@ class CodexNormalizer:
             return [ev.error("busy", "AI の側が混み合っています。少し時間をおいてもう一度お試しください", retry=True),
                     ev.status("error")]
         return [ev.error("cli", "うまくいきませんでした。もう一度お試しください", retry=True), ev.status("error")]
+
+    def used_percent(self) -> float:
+        """いちばん使っている窓（primary・secondary）の使った割合（分からなければ 0）。"""
+        snap = self.rate_limits or {}
+        pct = [w.get("usedPercent") for w in (snap.get("primary"), snap.get("secondary")) if isinstance(w, dict)]
+        nums = [float(x) for x in pct if isinstance(x, (int, float)) and not isinstance(x, bool)]
+        return max(nums, default=0.0)
+
+    def usage_hint(self) -> list[dict]:
+        """「このアカウントの利用上限に近づいています」（会話につき 1 回・会話は止めない＝level warn）。"""
+        if self._limit_hinted:
+            return []
+        self._limit_hinted = True
+        return [{**ev.error("usage_limit", NEAR_LIMIT_JA, retry=False), "level": "warn"}]
 
     def rate_limited(self) -> dict:
         snap = self.rate_limits or {}

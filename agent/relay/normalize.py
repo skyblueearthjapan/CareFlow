@@ -226,7 +226,8 @@ class ClaudeNormalizer:
         text = " ".join(str(x) for x in (msg.get("result"), msg.get("errors")) if x).lower()
         st = str(msg.get("subtype", ""))
         if any(w in text for w in ("authentication", "login", "401", "oauth", "credentials")):
-            return ev.error("login", "AI へのログインが切れています（らく助の係の方へご連絡ください）", retry=False)
+            return ev.error("login", "AI へのサインインが切れています。⚙ の「AI のつなぎ先」から、サインインし直してください",
+                            retry=False)
         if st == "error_max_turns":
             return ev.error("max_turns", "作業が長くなりすぎたので止めました。分けて頼んでください", retry=True)
         return ev.error("cli", "うまくいきませんでした。もう一度お試しください", retry=True)

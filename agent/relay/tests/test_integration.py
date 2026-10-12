@@ -229,14 +229,22 @@ def test_sandbox_runner_scrubs_api_keys(monkeypatch, tmp_path):
     import os
     assert "ANTHROPIC_API_KEY" not in os.environ
     for provider in ("claude", "codex"):
-        env = mod.build_env(tmp_path, provider, "t" * 32)
+        env = mod.build_env(tmp_path, provider, "t" * 32, "a" * 32)
         assert not set(env) & set(mod.FORBIDDEN_ENV)
     # 中継の spawn の形を runner が受ける（session_id は uuid・token は token_urlsafe(24)）
     import secrets
     import uuid
     msg = {"op": "spawn", "session_id": str(uuid.uuid4()), "provider": "claude", "model": "opus",
            "relay_token": secrets.token_urlsafe(24), "resume_id": str(uuid.uuid4())}
-    assert mod.validate_spawn(msg)[0] == msg["session_id"]
+    import pytest
+    with pytest.raises(ValueError, match="user_key"):
+        mod.validate_spawn(msg)  # 持ち主の席の鍵が無い spawn は起こさない
+    from relay.engines import seat_key
+    msg["user_key"] = seat_key("c3889e7b-6571-4347-8bc6-7c286b464031")
+    assert mod.validate_spawn(msg)[0] == msg["session_id"] and mod.validate_spawn(msg)[-1] == msg["user_key"]
+    for bad in ("../../etc", "A" * 32, "a" * 31, "/home/agent/.codex", 123):
+        with pytest.raises(ValueError):
+            mod.validate_spawn({**msg, "user_key": bad})
     assert (AGENT / "relay" / "relay-prompt.md").is_file()  # runner が --append-system-prompt-file に渡す
 
 

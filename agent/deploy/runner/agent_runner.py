@@ -6,14 +6,20 @@
 - unix ソケット（既定 /run/agent/runner.sock）で待つ。接続ごとに SO_PEERCRED で相手の uid を見て、
   中継の uid（RUNNER_ALLOWED_PEER_UID・既定 10001）以外は即切る。箱の中のモデル（uid 10002）からは使えない。
 - 受けるのは次の 4 つだけ（1 行 1 JSON）。任意のコマンド・引数・環境変数・作業フォルダーは受けない。
-    {"op":"spawn","session_id":..,"provider":"claude"|"codex","model":..,"resume_id":..?,"relay_token":..}
-    {"op":"auth_status","provider"?:"codex"|"claude"} … ログインの様子（ok/missing/api_key/unknown の 1 語・既定 codex）
-    {"op":"login_start","provider":"codex"|"claude"}  … 画面からのサインイン（同時に 1 つだけ・15 分で打ち切り）
-    {"op":"login_poll"} / {"op":"login_cancel"}       … その様子・やめる
-    {"op":"login_input","data":"<貼り付けたコード>"}  … Claude だけ（ブラウザーで出たコードを CLI の stdin へ）
-    {"op":"logout","provider":"codex"|"claude"}       … サインアウト
+    {"op":"spawn","session_id":..,"provider":"claude"|"codex","model":..,"resume_id":..?,"relay_token":..,"user_key":..}
+    {"op":"auth_status","provider"?:"codex"|"claude","user_key"} … ログインの様子（ok/missing/api_key/unknown の 1 語・既定 codex）
+    {"op":"login_start","provider":"codex"|"claude","user_key"} … 画面からのサインイン（箱で同時に 1 つだけ・15 分で打ち切り）
+    {"op":"login_poll","user_key"} / {"op":"login_cancel","user_key"} … その人のサインインの様子・やめる（他人のものは idle）
+    {"op":"login_input","data":"<貼り付けたコード>","user_key"} … Claude だけ（ブラウザーで出たコードを CLI の stdin へ）
+    {"op":"logout","provider":"codex"|"claude","user_key"} … サインアウト（その人の席だけ）
+    {"op":"adopt_legacy","user_key"}               … 前の共有のログイン（/home/agent/.codex・.claude）をその人の席へ移す
+                                                      （席が空のときだけ・移す元が無くなるので 1 回きり）
       サインインの返事は {"ev":"login","provider","state","url","code","needs_input","expires_in","error"} だけ。
       CLI の文・トークン・メールは返さない（URL は決まったホストのものだけ・コードは決まった形のものだけ）。
+- 人ごとの席（PO 2026-10-13: ChatGPT Business/Team は 1 席 1 人・設計 docs/plans/agent-ui/per-user-seats-2026-10-13.md）:
+  ログイン情報は HOME_DIR/u/<user_key>/.codex・.claude（CODEX_HOME・CLAUDE_CONFIG_DIR・HOME をその人の席に）。
+  user_key は中継が user id から作る不透明な 32 桁の 16 進（[a-f0-9]{32} 以外は断る）。runner は中継からパスを受けない。
+  席は 0700・持ち主 10002（HOME_DIR 自体も 0700＝実行係 10004 は入れない）。
     {"op":"stdin","data":"<1 行以上の文字列>"}     … spawn した接続でだけ
     {"op":"close_stdin"}                           … 同上（CLI を穏やかに終わらせる）
     {"op":"kill"}                                  … 同上（TERM → 5 秒で KILL・プロセスグループごと）
@@ -61,8 +67,9 @@ WORK_GID = int(os.environ.get("RUNNER_WORK_GID", "10005"))
 CODEX_RULES = RUNTIME_DIR / "rakusuke.rules"
 #: Codex の起こし方の決まり（-c の締め付け）。中継と同じファイルをパスで読む（/srv/agent は読み取り専用）
 CODEX_CONFIG_PY = AGENT_DIR / "relay" / "codex_config.py"
-CODEX_HOME = HOME_DIR / ".codex"
-CLAUDE_HOME = HOME_DIR / ".claude"
+#: 人ごとの席（ログイン情報）の置き場の名前（HOME_DIR/u/<user_key>/）。前の共有のログインは HOME_DIR/.codex・.claude
+SEATS_NAME = "u"
+USER_KEY_RE = re.compile(r"^[a-f0-9]{32}$")
 #: ログイン・状態を見る CLI の PATH（試験は偽の CLI の置き場を前に足す）
 CLI_PATH = os.environ.get("RUNNER_CLI_PATH", "/usr/local/bin:/usr/bin:/bin")
 #: 認証情報の隔離（deploy/README.md「認証情報の隔離」）: モデルのコマンドは別 uid の実行係（execd / codex exec-server）で
@@ -124,11 +131,69 @@ def peer_uid(sock: socket.socket) -> int:
     return uid
 
 
-def build_env(session_dir: Path, provider: str, relay_token: str) -> dict[str, str]:
-    """CLI に渡す環境（許可リストで一から作る）。"""
+def check_user_key(v: object) -> str:
+    """中継から来た席の鍵（不透明な 32 桁の 16 進）。形が違えば断る（パスは受けない）。"""
+    if not isinstance(v, str) or not USER_KEY_RE.match(v):
+        raise ValueError("bad user_key")
+    return v
+
+
+def seat_dir(user_key: str) -> Path:
+    return HOME_DIR / SEATS_NAME / check_user_key(user_key)
+
+
+def provider_home(provider: str, user_key: str) -> Path:
+    """その人の CODEX_HOME / CLAUDE_CONFIG_DIR。"""
+    return seat_dir(user_key) / (".claude" if provider == "claude" else ".codex")
+
+
+def ensure_seat(user_key: str) -> Path:
+    """席（HOME_DIR/u と HOME_DIR/u/<key>）を 0700 で作る。リンクなら使わない（差し替え防止）。"""
+    seat = seat_dir(user_key)
+    old = os.umask(0o077)
+    try:
+        for d in (seat.parent, seat):
+            if d.is_symlink():
+                raise ValueError("seat is a symlink")
+            d.mkdir(mode=0o700, exist_ok=True)
+            os.chmod(d, 0o700)
+    finally:
+        os.umask(old)
+    return seat
+
+
+def adopt_legacy(user_key: str) -> list[str]:
+    """前の共有のログイン（HOME_DIR/.codex・.claude）を、その人の席へ移す（席に無い・空のときだけ）。
+    移したものの名前（codex / claude）を返す。一度でも走ったら印（HOME_DIR/u/.legacy-adopted）を残し、2 回目からは
+    だれの鍵で頼まれても何もしない（移さなかった残りがほかの人の席へ移ることはない）。"""
+    seat = ensure_seat(user_key)
+    mark = seat.parent / ".legacy-adopted"
+    if mark.exists() or mark.is_symlink():
+        return []
+    moved = []
+    for name in (".codex", ".claude"):
+        src, dst = HOME_DIR / name, seat / name
+        if src.is_symlink() or not src.is_dir() or dst.is_symlink():
+            continue
+        if dst.exists():
+            if dst.is_dir() and not any(dst.iterdir()):
+                dst.rmdir()
+            else:
+                continue  # 席にもうログインがある（その人が先にサインインした）＝触らない
+        os.rename(src, dst)
+        os.chmod(dst, 0o700)
+        moved.append(name[1:])
+    fd = os.open(mark, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(",".join(moved) + "\n")
+    return moved
+
+
+def build_env(session_dir: Path, provider: str, relay_token: str, user_key: str) -> dict[str, str]:
+    """CLI に渡す環境（許可リストで一から作る）。ログイン情報はその会話の持ち主の席（user_key）だけ。"""
     env = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "HOME": str(HOME_DIR),
+        "HOME": str(seat_dir(user_key)),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "TZ": "Asia/Tokyo",
@@ -150,7 +215,7 @@ def build_env(session_dir: Path, provider: str, relay_token: str) -> dict[str, s
     }
     if provider == "claude":
         env.update({
-            "CLAUDE_CONFIG_DIR": str(HOME_DIR / ".claude"),
+            "CLAUDE_CONFIG_DIR": str(provider_home("claude", user_key)),
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "DISABLE_TELEMETRY": "1",
             "DISABLE_ERROR_REPORTING": "1",
@@ -160,7 +225,7 @@ def build_env(session_dir: Path, provider: str, relay_token: str) -> dict[str, s
         })
     else:
         env.update({
-            "CODEX_HOME": str(CODEX_HOME),
+            "CODEX_HOME": str(provider_home("codex", user_key)),
             # rk の包み（/srv/agent/bin/rk）を PATH に（rakusuke.rules が allow する「いちばん楽な道」）
             "PATH": f"{AGENT_DIR}/bin:/usr/local/bin:/usr/bin:/bin",
             # その場の script・計算の置き場所（会話ごと・書ける）
@@ -228,19 +293,19 @@ def codex_exec_env_args(env: dict[str, str]) -> list[str]:
     return ["-c", f"shell_environment_policy.set={{{pairs}}}", "-c", "allow_login_shell=false"]
 
 
-def prepare_codex_home() -> None:
-    """CODEX_HOME（箱の volume・ログイン情報 auth.json がある）を起動のたびに決まった形に戻す。
+def prepare_codex_home(home: Path) -> None:
+    """CODEX_HOME（その人の席・ログイン情報 auth.json がある）を起動のたびに決まった形に戻す。
 
     - config.toml は空に近い決まった中身に書き直す（モデルが MCP・別のつなぎ先などを書き足していても消える。
       -c の上書きが勝つが、二重に。auth.json には触らない）
     - rules/ は rakusuke.rules だけにする
     """
-    CODEX_HOME.mkdir(mode=0o700, exist_ok=True)
-    cfg = CODEX_HOME / "config.toml"
-    tmp = CODEX_HOME / "config.toml.tmp"
+    home.mkdir(mode=0o700, exist_ok=True)
+    cfg = home / "config.toml"
+    tmp = home / "config.toml.tmp"
     tmp.write_text("# らく助の runner が起動のたびに書き直します（ここに書いても消えます）" + chr(10), encoding="utf-8")
     os.replace(tmp, cfg)
-    rules = CODEX_HOME / "rules"
+    rules = home / "rules"
     rules.mkdir(mode=0o700, exist_ok=True)
     for f in rules.iterdir():
         if f.name != CODEX_RULES.name:
@@ -251,34 +316,34 @@ def prepare_codex_home() -> None:
     os.replace(rtmp, rules / CODEX_RULES.name)
 
 
-def auth_env(provider: str) -> dict[str, str]:
-    """ログイン・ログアウト・状態を見る CLI の環境（許可リストで一から作る・会話の RK_* は入れない）。"""
+def auth_env(provider: str, user_key: str) -> dict[str, str]:
+    """ログイン・ログアウト・状態を見る CLI の環境（許可リストで一から作る・会話の RK_* は入れない）。その人の席だけ。"""
     env = {
-        "PATH": CLI_PATH, "HOME": str(HOME_DIR), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "Asia/Tokyo",
+        "PATH": CLI_PATH, "HOME": str(seat_dir(user_key)), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "Asia/Tokyo",
         "TMPDIR": "/tmp", "NO_COLOR": "1",
         "HTTPS_PROXY": EGRESS_PROXY, "https_proxy": EGRESS_PROXY, "HTTP_PROXY": EGRESS_PROXY, "http_proxy": EGRESS_PROXY,
         "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
     }
     if provider == "claude":
-        env.update({"CLAUDE_CONFIG_DIR": str(CLAUDE_HOME), "DISABLE_AUTOUPDATER": "1", "DISABLE_TELEMETRY": "1",
-                    "DISABLE_ERROR_REPORTING": "1"})
+        env.update({"CLAUDE_CONFIG_DIR": str(provider_home("claude", user_key)), "DISABLE_AUTOUPDATER": "1",
+                    "DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1"})
     else:
-        env["CODEX_HOME"] = str(CODEX_HOME)
+        env["CODEX_HOME"] = str(provider_home("codex", user_key))
     leaked = [k for k in FORBIDDEN_ENV if k in env]
     if leaked:
         raise ValueError("forbidden env: " + ",".join(leaked))
     return env
 
 
-def codex_auth_status() -> str:
+def codex_auth_status(user_key: str) -> str:
     """``codex login status`` の結果を「ok / missing / api_key / unknown」に（文は返さない＝鍵の一部も出さない）。"""
     import subprocess
 
-    if not CODEX_HOME.is_dir():
-        return "missing"  # まだ一度もログインしていない（置き場が無いと codex は状態を言えない）
+    if not provider_home("codex", user_key).is_dir():
+        return "missing"  # まだ一度もログインしていない（置き場が無いと codex は状態を言えない・席も作らない）
     try:
-        r = subprocess.run(["codex", "login", "status"], env=auth_env("codex"), capture_output=True, text=True,
-                           timeout=20)
+        r = subprocess.run(["codex", "login", "status"], env=auth_env("codex", user_key), capture_output=True,
+                           text=True, timeout=20, cwd=str(seat_dir(user_key)))
     except (OSError, subprocess.TimeoutExpired):
         return "unknown"
     out = (r.stdout + " " + r.stderr).lower()
@@ -309,29 +374,33 @@ def claude_status_word(stdout: str) -> str:
     return "unknown"  # oauth_token（環境変数のトークン）などは段 3 では使わない
 
 
-def claude_auth_status() -> str:
+def claude_auth_status(user_key: str) -> str:
     import subprocess
 
+    if not provider_home("claude", user_key).is_dir():
+        return "missing"  # その人はまだ一度もサインインしていない（CLI を起こさず・席も作らない）
     try:
-        r = subprocess.run(["claude", "auth", "status"], env=auth_env("claude"), capture_output=True, text=True,
-                           timeout=20)
+        r = subprocess.run(["claude", "auth", "status"], env=auth_env("claude", user_key), capture_output=True,
+                           text=True, timeout=20, cwd=str(seat_dir(user_key)))
     except (OSError, subprocess.TimeoutExpired):
         return "unknown"
     return claude_status_word(r.stdout)
 
 
-def auth_status(provider: str) -> str:
-    return claude_auth_status() if provider == "claude" else codex_auth_status()
+def auth_status(provider: str, user_key: str) -> str:
+    return claude_auth_status(user_key) if provider == "claude" else codex_auth_status(user_key)
 
 
-def run_logout(provider: str) -> bool:
-    """``codex logout`` / ``claude auth logout``。ログイン情報のファイルは CLI 自身が消す。"""
+def run_logout(provider: str, user_key: str) -> bool:
+    """``codex logout`` / ``claude auth logout``（その人の席だけ）。ログイン情報のファイルは CLI 自身が消す。"""
     import subprocess
 
+    if not provider_home(provider, user_key).is_dir():
+        return True  # 一度もサインインしていない＝もうサインアウトしている
     argv = ["claude", "auth", "logout"] if provider == "claude" else ["codex", "logout"]
     try:
-        r = subprocess.run(argv, env=auth_env(provider), capture_output=True, text=True, timeout=30,
-                           cwd=str(HOME_DIR))
+        r = subprocess.run(argv, env=auth_env(provider, user_key), capture_output=True, text=True, timeout=30,
+                           cwd=str(seat_dir(user_key)))
     except (OSError, subprocess.TimeoutExpired):
         return False
     return r.returncode == 0
@@ -356,8 +425,9 @@ LOGIN_ACTIVE = ("starting", "waiting", "verifying")
 
 
 class Login:
-    def __init__(self, provider: str, proc: asyncio.subprocess.Process) -> None:
+    def __init__(self, provider: str, proc: asyncio.subprocess.Process, user_key: str = "") -> None:
         self.provider = provider
+        self.user_key = user_key
         self.proc = proc
         self.state = "starting"
         self.url: str | None = None
@@ -416,8 +486,12 @@ class LoginRefused(Exception):
     pass
 
 
-def login_snapshot() -> dict:
-    return _login.public() if _login is not None else {"ev": "login", "state": "idle"}
+def login_snapshot(user_key: str | None = None) -> dict:
+    """その人のサインインの様子（他人のサインインは見せない＝idle）。user_key=None は試験・内部用（いまのもの）。"""
+    lg = _login
+    if lg is None or (user_key is not None and lg.user_key != user_key):
+        return {"ev": "login", "state": "idle"}
+    return lg.public()
 
 
 async def _login_reader(lg: Login) -> None:
@@ -447,28 +521,34 @@ async def _login_watch(lg: Login) -> None:
     log(f"login provider={lg.provider} state={lg.state} code={code}")
 
 
-async def login_start(provider: str) -> dict:
+async def login_start(provider: str, user_key: str) -> dict:
     global _login
     if provider not in ("codex", "claude"):
         raise LoginRefused("bad provider")
+    try:
+        check_user_key(user_key)
+    except ValueError:
+        raise LoginRefused("bad user_key") from None
     if _login is not None and _login.active:
-        raise LoginRefused("login busy")
+        raise LoginRefused("login busy")  # 箱の中で同時に 1 つだけ（だれのものでも）
+    seat = ensure_seat(user_key)
+    home = provider_home(provider, user_key)
+    if home.is_symlink():
+        raise LoginRefused("bad seat")
     old = os.umask(0o077)  # ログイン情報の置き場は持ち主だけ
     try:
         if provider == "codex":
-            home = CODEX_HOME
             argv = ["codex", "login", "--device-auth"]
         else:
-            home = CLAUDE_HOME
             argv = ["claude", "auth", "login", "--claudeai"]   # サブスク（Claude アカウント）だけ。--console は使わない
         home.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(home, 0o700)  # 状態を見た CLI が先に作っていても持ち主だけに
         proc = await asyncio.create_subprocess_exec(
             *argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-            cwd=str(HOME_DIR), env=auth_env(provider), start_new_session=True, close_fds=True)
+            cwd=str(seat), env=auth_env(provider, user_key), start_new_session=True, close_fds=True)
     finally:
         os.umask(old)
-    lg = _login = Login(provider, proc)
+    lg = _login = Login(provider, proc, user_key)
     lg.task = asyncio.create_task(_login_watch(lg))
     end = time.monotonic() + LOGIN_URL_WAIT_SEC
     while lg.state == "starting" and time.monotonic() < end:
@@ -480,9 +560,10 @@ async def login_start(provider: str) -> dict:
     return lg.public()
 
 
-async def login_input(data: object) -> dict:
+async def login_input(data: object, user_key: str | None = None) -> dict:
     lg = _login
-    if lg is None or lg.provider != "claude" or lg.state != "waiting":
+    if (lg is None or lg.provider != "claude" or lg.state != "waiting"
+            or (user_key is not None and lg.user_key != user_key)):
         raise LoginRefused("not waiting for a code")
     if not isinstance(data, str) or not PASTE_CODE_RE.match(data.strip()):
         lg.error = "invalid_code"
@@ -499,12 +580,12 @@ async def login_input(data: object) -> dict:
     return lg.public()
 
 
-async def login_cancel() -> dict:
+async def login_cancel(user_key: str | None = None) -> dict:
     lg = _login
-    if lg is not None and lg.active:
+    if lg is not None and lg.active and (user_key is None or lg.user_key == user_key):
         lg.state = "cancelled"
         await lg.kill()
-    return login_snapshot()
+    return login_snapshot(user_key)
 
 
 def settings_path(session_id: str) -> Path:
@@ -566,13 +647,13 @@ async def send(writer: asyncio.StreamWriter, obj: dict) -> None:
     await writer.drain()
 
 
-def validate_spawn(msg: dict) -> tuple[str, str, str, str | None, str]:
+def validate_spawn(msg: dict) -> tuple[str, str, str, str | None, str, str]:
     session_id = msg.get("session_id")
     provider = msg.get("provider")
     model = msg.get("model")
     resume_id = msg.get("resume_id")
     token = msg.get("relay_token")
-    allowed = {"op", "session_id", "provider", "model", "resume_id", "relay_token"}
+    allowed = {"op", "session_id", "provider", "model", "resume_id", "relay_token", "user_key"}
     if set(msg) - allowed:
         raise ValueError("unknown field")
     if not isinstance(session_id, str) or not SESSION_ID_RE.match(session_id):
@@ -591,7 +672,8 @@ def validate_spawn(msg: dict) -> tuple[str, str, str, str | None, str]:
             raise ValueError("bad resume_id")
     if not isinstance(token, str) or not TOKEN_RE.match(token):
         raise ValueError("bad relay_token")
-    return session_id, provider, model, resume_id, token
+    user_key = check_user_key(msg.get("user_key"))  # 会話の持ち主の席（無い・形が違うなら起こさない）
+    return session_id, provider, model, resume_id, token, user_key
 
 
 async def pump_stdout(sess: Session, writer: asyncio.StreamWriter) -> None:
@@ -656,40 +738,49 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 await send(writer, {"ev": "status", "running": sorted(_running), "max": MAX_PROCS})
                 continue
 
-            if op == "auth_status":
-                # ログインの様子の 1 語だけ（トークン・メール・文は返さない）。中継の「ログイン済み/未」の表示用
-                prov = msg.get("provider") or "codex"
-                if prov not in ("codex", "claude"):
-                    await send(writer, {"ev": "error", "message": "bad provider"})
-                    continue
-                state = await asyncio.get_running_loop().run_in_executor(None, auth_status, prov)
-                await send(writer, {"ev": "auth_status", "provider": prov, "state": state})
-                continue
-
-            if op in ("login_start", "login_poll", "login_input", "login_cancel", "logout"):
-                # 画面からのサインイン。CLI は runner と同じ uid（10002）で起こす＝実行係（10004）からは見えない
+            if op in ("auth_status", "login_start", "login_poll", "login_input", "login_cancel", "logout",
+                      "adopt_legacy"):
+                # ログイン・状態はその人の席（user_key）だけ。CLI は runner と同じ uid（10002）で起こす＝実行係（10004）からは見えない
                 try:
-                    if op == "login_start":
-                        await send(writer, await login_start(str(msg.get("provider") or "")))
+                    key = check_user_key(msg.get("user_key"))
+                except ValueError:
+                    await send(writer, {"ev": "error", "message": "bad user_key"})
+                    continue
+                loop = asyncio.get_running_loop()
+                try:
+                    if op == "auth_status":
+                        # ログインの様子の 1 語だけ（トークン・メール・文は返さない）。中継の「ログイン済み/未」の表示用
+                        prov = msg.get("provider") or "codex"
+                        if prov not in ("codex", "claude"):
+                            raise LoginRefused("bad provider")
+                        state = await loop.run_in_executor(None, auth_status, prov, key)
+                        await send(writer, {"ev": "auth_status", "provider": prov, "state": state})
+                    elif op == "login_start":
+                        await send(writer, await login_start(str(msg.get("provider") or ""), key))
                     elif op == "login_poll":
-                        await send(writer, login_snapshot())
+                        await send(writer, login_snapshot(key))
                     elif op == "login_input":
-                        await send(writer, await login_input(msg.get("data")))
+                        await send(writer, await login_input(msg.get("data"), key))
                     elif op == "login_cancel":
-                        await send(writer, await login_cancel())
+                        await send(writer, await login_cancel(key))
+                    elif op == "adopt_legacy":
+                        moved = await loop.run_in_executor(None, adopt_legacy, key)
+                        log(f"adopt_legacy moved={','.join(moved) or '-'}")
+                        await send(writer, {"ev": "adopted", "moved": moved})
                     else:
                         prov = msg.get("provider")
                         if prov not in ("codex", "claude"):
                             raise LoginRefused("bad provider")
-                        if _login is not None and _login.active:
+                        if _login is not None and _login.active and _login.user_key == key:
                             raise LoginRefused("login busy")
-                        loop = asyncio.get_running_loop()
-                        ok = await loop.run_in_executor(None, run_logout, prov)
-                        state = await loop.run_in_executor(None, auth_status, prov)
+                        ok = await loop.run_in_executor(None, run_logout, prov, key)
+                        state = await loop.run_in_executor(None, auth_status, prov, key)
                         log(f"logout provider={prov} ok={ok} state={state}")
                         await send(writer, {"ev": "logout", "provider": prov, "ok": ok, "state": state})
                 except LoginRefused as e:
                     await send(writer, {"ev": "error", "message": str(e)})
+                except (OSError, ValueError):
+                    await send(writer, {"ev": "error", "message": "seat unavailable"})
                 continue
 
             if op == "spawn":
@@ -697,7 +788,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                     await send(writer, {"ev": "error", "message": "already spawned on this connection"})
                     continue
                 try:
-                    session_id, provider, model, resume_id, token = validate_spawn(msg)
+                    session_id, provider, model, resume_id, token, user_key = validate_spawn(msg)
                 except ValueError as e:
                     await send(writer, {"ev": "error", "message": str(e)})
                     continue
@@ -710,12 +801,17 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 if EXEC_SOCKET and not stat.S_ISSOCK(_mode(EXEC_SOCKET)):
                     await send(writer, {"ev": "error", "message": "exec service unavailable"})
                     continue
+                try:
+                    ensure_seat(user_key)
+                except (OSError, ValueError):
+                    await send(writer, {"ev": "error", "message": "seat unavailable"})
+                    continue
                 session_dir = prepare_session_dir(session_id)
-                spawn_env = build_env(session_dir, provider, token)
+                spawn_env = build_env(session_dir, provider, token, user_key)
                 if provider == "claude":
                     argv = claude_argv(session_dir, model, resume_id)
                 else:
-                    prepare_codex_home()
+                    prepare_codex_home(provider_home("codex", user_key))
                     argv = codex_argv()  # 続き（resume_id）は中継が thread/resume で頼む
                     if EXEC_SOCKET:
                         argv = [argv[0], *codex_exec_env_args(spawn_env), *argv[1:]]

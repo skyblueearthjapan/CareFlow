@@ -42,7 +42,7 @@ class CodexRpcError(RuntimeError):
         super().__init__(f"{method}: {str(self.error.get('message', ''))[:200]}")
 
 
-LOGIN_MISSING = ev.error("login", "ChatGPT にログインしていません（らく助の係の方へご連絡ください）", retry=False)
+LOGIN_MISSING = ev.error("login", "ChatGPT にサインインすると、相談を始められます（⚙ の「AI のつなぎ先」から）", retry=False)
 NOT_CHATGPT = ev.error("auth_source", "ChatGPT のログイン以外の方法で AI につながろうとしたので止めました"
                                       "（らく助の係の方へご連絡ください）", retry=False)
 LOCKDOWN_OFF = ev.error("lockdown", "安全の設定が効いていないので始めませんでした（らく助の係の方へご連絡ください）",

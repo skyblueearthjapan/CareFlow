@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from relaykit import FIXTURES
+from relaykit import ADMIN, ADMIN2, FIXTURES
 from relay import codex_config as cx
 from relay import events, models
 from relay.codex_normalize import CodexNormalizer, text_choices
@@ -495,7 +495,7 @@ def test_service_routes_watch_and_audit(tmp_path):
 
     from relay.service import Live
     r = FakeRunner()
-    live = Live(runner=r, token="t")  # type: ignore[arg-type]
+    live = Live(runner=r, token="t", user_id=ADMIN.id)  # type: ignore[arg-type]
 
     async def go():
         for e in [{"type": "_meta", "provider": "codex", "cli_session_id": "th", "model": "gpt-5.6-sol",
@@ -514,9 +514,10 @@ def test_service_routes_watch_and_audit(tmp_path):
     calls = svc.store.list_tool_calls(sess["id"])
     kinds = sorted(c["kind"] for c in calls)
     assert kinds == ["cx-approval", "watch"]
-    assert svc.engine_info()["login"]["codex"]["state"] == "ok"
-    assert svc.engine_info()["default_provider"] == "codex"
-    assert "token" not in json.dumps(svc.engine_info()).lower()
+    assert svc.engine_info(ADMIN)["login"]["codex"]["state"] == "ok"  # その人（会話の持ち主）のログインの様子
+    assert svc.engine_info(ADMIN2)["login"] == {}  # ほかの人には出ない
+    assert svc.engine_info(ADMIN)["default_provider"] == "codex"
+    assert "token" not in json.dumps(svc.engine_info(ADMIN)).lower()
 
 
 def test_display_name_for_sol():
@@ -549,3 +550,25 @@ def test_runner_session_attrs_do_not_shadow_codex_protocol_methods():
     from relay.runner import RunnerSession
     RunnerSession.__init__(s, "/nonexistent.sock", {}, normalizer=None)  # type: ignore[arg-type]
     assert not (proto & set(vars(s))), sorted(proto & set(vars(s)))
+
+
+def test_usage_limit_hint_is_per_account_and_shown_once():
+    """人ごとの席: Codex が利用上限に近い（rateLimits の usedPercent）と言ったら、その人の契約の分として 1 回だけ知らせる。"""
+    from relay.codex_normalize import NEAR_LIMIT_JA, NEAR_LIMIT_PCT
+
+    def upd(pct):
+        return {"method": "account/rateLimits/updated",
+                "params": {"rateLimits": {"primary": {"usedPercent": pct, "resetsAt": 1760000000}}}}
+
+    n = CodexNormalizer(clock=lambda: 0.0)
+    assert n.feed(upd(NEAR_LIMIT_PCT - 30)) == []
+    hint = n.feed(upd(NEAR_LIMIT_PCT + 5))
+    assert hint == [{"type": "error", "code": "usage_limit", "message": NEAR_LIMIT_JA, "retry": False, "level": "warn"}]
+    assert NEAR_LIMIT_JA.startswith("いまはこのアカウントの利用上限に近づいています")
+    assert n.feed(upd(99)) == []  # 会話につき 1 回
+    out = n.failure({"codexErrorInfo": {"usageLimitExceeded": {}}, "message": "limit"})
+    assert [e["type"] for e in out] == ["status"] and out[0]["state"] == "rate_limited"
+    n2 = CodexNormalizer(clock=lambda: 0.0)  # 近づいた知らせの前に上限に当たった → 知らせと「HH:MM 以降に」を両方
+    out2 = n2.failure({"codexErrorInfo": {"rateLimitExceeded": {}}, "message": "limit"})
+    assert [e.get("code") or e.get("state") for e in out2] == ["usage_limit", "rate_limited"]
+    assert all(not events.validate(e) for e in out2)

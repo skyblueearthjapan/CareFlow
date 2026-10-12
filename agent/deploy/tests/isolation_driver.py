@@ -6,6 +6,8 @@
   - CLI 自身（uid 10002）はダミーの認証ファイルを読める
   - claude の Read の道具でログイン情報を読もうとしても settings の deny で断られる
   - 実行係が無いとき bx は走らせない（126）
+  - 人ごとの席（/home/agent/u/<鍵>/.claude・.codex・2026-10-13〜）: CLI は持ち主の席のログインを使い、モデルのコマンドからは
+    持ち主の席も別の人の席も、前の共有の置き場も読めない。席は 0700
 """
 
 from __future__ import annotations
@@ -55,8 +57,12 @@ def tool_results() -> list[str]:
     return [json.loads(x)["result"] for x in LOG.read_text(encoding="utf-8").splitlines() if '"tool_result"' in x]
 
 
+KEY = "c" * 32   # 会話の持ち主の席（中継の seat_key と同じ形）
+KEY2 = "d" * 32  # 別の人の席
+
+
 def cli_env(provider: str, sid: str) -> dict:
-    env = ar.build_env(ar.prepare_session_dir(sid), provider, "t" * 40)
+    env = ar.build_env(ar.prepare_session_dir(sid), provider, "t" * 40, KEY)
     for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
         env.pop(k, None)
     env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1"
@@ -65,12 +71,21 @@ def cli_env(provider: str, sid: str) -> dict:
 
 # ---------------------------------------------------------------- 事前: ダミーのログイン情報
 home = Path(os.environ.get("HOME", "/home/agent"))
-creds = {home / ".claude" / ".credentials.json": json.dumps({"claudeAiOauth": {"accessToken": SECRET}}),
-         home / ".codex" / "auth.json": json.dumps({"tokens": {"access_token": SECRET}})}
+ar.ensure_seat(KEY)
+ar.ensure_seat(KEY2)
+SEAT, SEAT2 = ar.seat_dir(KEY), ar.seat_dir(KEY2)
+creds = {}
+for base in (home, SEAT, SEAT2):  # 前の共有の置き場・持ち主の席・別の人の席
+    creds[base / ".claude" / ".credentials.json"] = json.dumps({"claudeAiOauth": {"accessToken": SECRET}})
+    creds[base / ".codex" / "auth.json"] = json.dumps({"tokens": {"access_token": SECRET}})
 for p, body in creds.items():
     p.parent.mkdir(mode=0o700, exist_ok=True)
     p.write_text(body)
     p.chmod(0o600)
+check("席は 0700（/home/agent/u と各席）", all(oct(d.stat().st_mode & 0o777) == "0o700" for d in (home / "u", SEAT, SEAT2)),
+      " ".join(oct(d.stat().st_mode) for d in (home / "u", SEAT, SEAT2)))
+check("CLI は持ち主の席のログインを使う", cli_env("claude", "isotest-env")["CLAUDE_CONFIG_DIR"] == str(SEAT / ".claude")
+      and cli_env("codex", "isotest-env")["CODEX_HOME"] == str(SEAT / ".codex"), "")
 
 check("setup: runner が実行係の窓口を設定している", bool(ar.EXEC_SOCKET), "RUNNER_EXEC_SOCKET が空")
 check("CLI 自身（uid %d）はダミーの認証ファイルを読める" % os.getuid(),
@@ -78,7 +93,8 @@ check("CLI 自身（uid %d）はダミーの認証ファイルを読める" % os
 
 # ---------------------------------------------------------------- claude: Bash
 cmd = ("id -u; cat /home/agent/.claude/.credentials.json; echo rc=$?; cat /home/agent/.codex/auth.json; echo rc=$?; "
-       "ls /home/agent; echo cwd=$(pwd)")
+       f"cat {SEAT}/.claude/.credentials.json; echo rc=$?; cat {SEAT2}/.codex/auth.json; echo rc=$?; "
+       "ls /home/agent; ls /home/agent/u; echo cwd=$(pwd)")
 srv = start_model({"tool": "Bash", "input": {"command": cmd, "description": "t"}})
 sid = "isotest-claude-bash"
 sd = ar.prepare_session_dir(sid)
@@ -96,13 +112,13 @@ res = " ".join(tool_results())
 print("  claude の結果:", res[:1800].replace("\n", " | "))
 check("claude: Bash の結果が返った", bool(res), (r.stdout[-800:] + r.stderr[-800:]))
 check("claude: モデルのコマンドは uid 10004 で走る", "10004" in res, res)
-check("claude: ログイン情報は Permission denied", res.count("Permission denied") >= 2 and "rc=1" in res, res)
+check("claude: ログイン情報は Permission denied（共有・持ち主の席・別の人の席）", res.count("Permission denied") >= 4 and "rc=1" in res, res)
 check("claude: ダミーの秘密が結果に出ない", SECRET not in res and SECRET not in r.stdout, res)
 check("claude: /home/agent の中身も見えない", "ls: cannot open directory" in res or "Permission denied" in res, res)
 srv.terminate()
 
 # ---------------------------------------------------------------- claude: Read の道具
-srv = start_model({"tool": "Read", "input": {"file_path": "/home/agent/.claude/.credentials.json"}})
+srv = start_model({"tool": "Read", "input": {"file_path": f"{SEAT}/.claude/.credentials.json"}})
 sid = "isotest-claude-read"
 sd = ar.prepare_session_dir(sid)
 test_iso = Path("/run/agent") / f"{sid}.test.json"
@@ -123,13 +139,14 @@ def work_of(sid: str) -> Path:
 
 for SCEN in ("shell", "patch"):
     cmd = ("id -u; cat /home/agent/.codex/auth.json; echo rc=$?; cat \"$CODEX_HOME/auth.json\"; echo rc=$?; "
+           f"cat {SEAT}/.codex/auth.json; echo rc=$?; cat {SEAT2}/.claude/.credentials.json; echo rc=$?; "
            "(setsid sleep 311 >/dev/null 2>&1 < /dev/null &); echo RKTOKEN=${RK_RELAY_TOKEN:+set}; env | grep -E '^(PATH|RK_MODE|RK_WORK_DIR|PYTHONPATH)='; which rk; pwd")
     PATCH_FILE = work_of("isotest-codex") / "patched.txt"
     PATCH = "*** Begin Patch\n*** Add File: " + str(PATCH_FILE) + "\n+patched\n*** End Patch\n"
     # patch: モデルの道具に apply_patch が無い（偽のモデル名）ので、codex が横取りする「apply_patch <<EOF」の形で頼む
     srv = start_model({"shell": cmd} if SCEN == "shell" else {"patch": PATCH})
     sid = "isotest-codex"
-    ar.prepare_codex_home()
+    ar.prepare_codex_home(ar.provider_home("codex", KEY))
     env = cli_env("codex", sid)
     env.update({"FAKE_KEY": "dummy-not-a-real-key"})
     sys.path.insert(0, "/srv/agent")
@@ -209,7 +226,7 @@ for SCEN in ("shell", "patch"):
     if SCEN == "patch":
         # 実測の方針: apply_patch の道具はモデルの名前しだいで出る（偽のモデルでは出ない）ので、app-server 自身のファイル API
         # （fs/readFile）が CLI の uid のローカルファイルを読まないこと＝ファイル操作は実行係の環境だけに出ることを確かめる
-        send({"id": 9, "method": "fs/readFile", "params": {"path": "/home/agent/.codex/auth.json"}})
+        send({"id": 9, "method": "fs/readFile", "params": {"path": f"{SEAT}/.codex/auth.json"}})
         got = {}
         pump(lambda m: m.get("id") == 9 and not got.update(m), 15)
         fs_text = json.dumps(got, ensure_ascii=False)
@@ -220,7 +237,7 @@ for SCEN in ("shell", "patch"):
         print("  codex の結果:", res[:1800].replace("\n", " | "))
         check("codex: コマンドの結果が返った", bool(res), "".join(lines)[-1500:] + p.stderr.read()[-800:])
         check("codex: モデルのコマンドは uid 10004 で走る", "10004" in res, res)
-        check("codex: ログイン情報は Permission denied", res.count("Permission denied") >= 1 and "rc=1" in res, res)
+        check("codex: ログイン情報は Permission denied（共有・持ち主の席・別の人の席）", res.count("Permission denied") >= 3 and "rc=1" in res, res)
         check("codex: ダミーの秘密が結果に出ない", SECRET not in res, res)
         for _ in range(20):
             if not subprocess.run(["pgrep", "-f", "sleep 311"], capture_output=True).stdout:

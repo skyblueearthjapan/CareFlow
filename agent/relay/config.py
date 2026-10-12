@@ -33,6 +33,9 @@
                              direct = 中継のプロセスから claude を直接起こす（手元の開発・試験だけ）
   AGENT_SANDBOX_SUBNET       箱の網（例 172.31.250.0/24）。内側口はこの範囲からだけ・公開口はこの範囲以外からだけ受ける
   AGENT_URL_SIGNING_KEY      印刷用の署名つき URL の鍵（無ければ起動ごとに作る＝再起動で古い URL は無効）
+  AGENT_LEGACY_OWNER_USER_ID 人ごとの席にする前の共有のログイン（箱の /home/agent/.codex・.claude）の持ち主の user id。
+                             あれば最初にその人の席へ移す（席が空のときだけ・1 回きり）。無ければ agent.settings の
+                             legacy_owner_user_id を見る。どちらも無ければ移さない（コードに user id は書かない）
 
 agent/deploy（docker-compose.agent.yml・set-role-passwords.sh）の名前も受ける（左が無ければ右）:
   AGENT_RELAY_BACKEND_URL <- AGENT_BACKEND_URL、AGENT_RELAY_ALLOWED_ORIGINS <- AGENT_PUBLIC_ORIGIN、
@@ -147,6 +150,7 @@ class RelayConfig:
     sandbox_subnet: str = ""
     url_signing_key: str = field(default_factory=lambda: secrets.token_hex(32))
     cli_home: str = "/home/agent"
+    legacy_owner_user_id: str = ""
 
     def in_sandbox(self, host: str | None) -> bool:
         """接続元が箱の網か（AGENT_SANDBOX_SUBNET が無ければ判定しない＝False）。"""
@@ -217,4 +221,5 @@ class RelayConfig:
             sandbox_subnet=_env("AGENT_SANDBOX_SUBNET", ""),
             url_signing_key=signing or secrets.token_hex(32),
             cli_home=_env("AGENT_CLI_HOME", "/home/agent"),
+            legacy_owner_user_id=_env("AGENT_LEGACY_OWNER_USER_ID", ""),
         )

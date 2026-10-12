@@ -358,10 +358,13 @@ def run_sandbox(args, now: datetime) -> dict:
     home = Path(args.home)
     sel: list[Item] = []
     roots = []
-    for rel in SANDBOX_TRANSCRIPT_DIRS:
-        root = home / rel
-        roots.append(root)
-        sel += select_older_than(scan_tree_files(root, "transcript"), now, SCRATCH_DAYS)
+    # 人ごとの席（home/u/<鍵>/.claude・.codex・2026-10-13〜）と、前の共有の置き場（home/.claude・.codex）の両方
+    seats = sorted(d for d in (home / "u").glob("*") if d.is_dir() and not d.is_symlink()) if (home / "u").is_dir() else []
+    for base in (home, *seats):
+        for rel in SANDBOX_TRANSCRIPT_DIRS:
+            root = base / rel
+            roots.append(root)
+            sel += select_older_than(scan_tree_files(root, "transcript"), now, SCRATCH_DAYS)
     for d in args.scratch:
         sel += select_older_than(scan_folders(Path(d), "scratch"), now, SCRATCH_DAYS)
     summary = delete_items(sel, args.apply)
