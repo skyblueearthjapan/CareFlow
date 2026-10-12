@@ -129,7 +129,7 @@ services:
       RUNNER_RELAY_URL: http://agent-relay:8091         # 中継の内側口
     volumes:
       - agent-sock:/run/agent
-      - agent-home:/home/agent          # CLI のログイン情報（~/.claude・~/.codex）。PO が 1 回ログインする
+      - agent-home:/home/agent          # CLI のログイン情報。人ごとの席 /home/agent/u/<鍵>/.codex・.claude（1 席 1 人・画面の ⚙ から）
       - agent-sessions:/data/sessions   # 会話ごとの作業フォルダー・isolation.json
     tmpfs:
       - /tmp:size=256m,mode=1777

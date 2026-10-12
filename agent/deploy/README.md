@@ -116,16 +116,20 @@ docker exec -u 10002:10000 $S python3 -c "import socket; s=socket.socket(socket.
 ```
 
 ### 3-7b. 認証情報の隔離を確かめる（必須・お客様が使う前に）
-考え方と残る危険は §9-(1)。ログイン情報（`/home/agent/.claude/.credentials*`・`/home/agent/.codex/auth.json`）は CLI の uid（10002）だけが読める。
-**モデルのコマンドは別 uid（10004）の実行係で走る**ので読めない。
+考え方と残る危険は §9-(1)・§9-(8)。ログイン情報は**人ごとの席**（`/home/agent/u/<鍵>/.claude/.credentials*`・`/home/agent/u/<鍵>/.codex/auth.json`・2026-10-13〜。前の共有の置き場 `/home/agent/.claude`・`.codex` も同じ扱い）にあり、CLI の uid（10002）だけが読める（`/home/agent`・`/home/agent/u`・各席はどれも 0700）。
+**モデルのコマンドは別 uid（10004）の実行係で走る**ので、持ち主の席も別の人の席も読めない。
 ```bash
-# (1) 手元・CI でも: 偽のモデルで本物の claude / codex を動かし、モデルの cat が Permission denied になることを確かめる（13 項目）
+# (1) 手元・CI でも: 偽のモデルで本物の claude / codex を動かし、モデルの cat が Permission denied になることを確かめる
+#     （人ごとの席: 持ち主の席・別の人の席・前の共有の置き場の 3 つとも読めないこと、席が 0700 であることも見る）
 bash agent/deploy/tests/isolation_e2e.sh carelink-agent-sandbox:latest
 # (2) 立てた箱で: 3 つの係の uid・capability（CapEff/CapBnd が 0・NoNewPrivs が 1 のこと）
 docker exec carelink-agent-sandbox sh -c 'for p in $(pgrep -f "execd.py|exec-server|agent_runner.py"); do grep -E "^(Uid|CapEff|CapBnd|NoNewPrivs)" /proc/$p/status | tr "\n" " "; echo; done'
 # (3) ログイン後に、実行係の側から見えないこと（Permission denied が正しい）
 # -u は名前で（agent の補助グループ 10005 が付かないと実行係のソケットに届かず 126・2026-10-12 staging で実測）
 docker exec -u agent carelink-agent-sandbox /opt/runner/bx 'id -u; cat /home/agent/.claude/.credentials.json; cat /home/agent/.codex/auth.json'
+# (3') 人ごとの席も（一覧も中身も Permission denied が正しい）
+docker exec -u agent carelink-agent-sandbox /opt/runner/bx 'ls /home/agent/u; cat /home/agent/u/*/.codex/auth.json'
+docker exec -u 10002:10000 carelink-agent-sandbox sh -c 'stat -c "%a %U %n" /home/agent /home/agent/u /home/agent/u/*'   # すべて 700 agent
 ```
 - 箱の healthcheck は実行係のソケット（`/run/x/exec.sock`）も見る。無いと unhealthy（中継は起きない）。runner も `RUNNER_EXEC_SOCKET` が設定されているのにソケットが無ければ CLI を起こさない（`exec service unavailable`）。
 - 仕組み（`runner/entrypoint.sh`）: 箱は root で起動（capability は SETUID/SETGID/SETPCAP だけ・何も待ち受けず何も読まない）→ **runner と CLI は uid 10002（agent）、execd と codex exec-server は uid 10004（agentx）**。どれも capability 0・no-new-privs。どれかが落ちたら箱ごと再起動。
@@ -151,17 +155,41 @@ docker exec -u agent carelink-agent-sandbox /opt/runner/bx 'id -u; cat /home/age
 
 **画面からのサインイン（2026-10-13〜・ふだんはこちら）**
 
-管理者は、らく助の小窓の見出し（携帯は「相談」タブの ☰ の中）の **⚙ 設定 →「AI のつなぎ先」** から、SSH なしで次ができる。
-- 様子: ChatGPT（Codex）・Claude それぞれ「サインインしています／していません／使えないつなぎ方（API キーなど）／分かりません」。アカウント・メールは出さない。
-- サインイン（同時に 1 つだけ・15 分で打ち切り・1 人 15 分に 5 回まで）:
-  - ChatGPT: 箱の runner が `codex login --device-auth` を uid 10002（`CODEX_HOME=/home/agent/.codex`・`HTTPS_PROXY=http://agent-egress:3128`・置き場が無ければ 0700 で作る）で起こし、画面に `https://auth.openai.com/codex/device` と 1 回限りのコード（コピーのボタン・残り時間）を出す。ブラウザーで入れ終わると「サインインできました」。
-  - Claude: runner が `claude auth login --claudeai`（サブスクだけ・`--console` は使わない）を uid 10002（`CLAUDE_CONFIG_DIR=/home/agent/.claude`）で起こし、画面に Claude のサインインのページへのリンクを出す。ブラウザーでサインインすると出るコード（`code#state` の形）を画面の欄に貼る → 中継 → runner が CLI の stdin に渡す（2.1.296 で、TTY なしでも URL を出し stdin のコードを受けることを実測・2026-10-13）。トークンの交換先は `platform.claude.com`（出口の許可リストにある）。リンク先 `claude.com` は利用者のブラウザーが開くだけ（箱からは出ない）。
-- サインアウト: `codex logout` / `claude auth logout`（3 択で確かめる: サインアウトする／サインアウトして別のアカウントでサインインし直す／やめる）。サインアウトすると、その AI での相談はだれかがサインインし直すまで止まる。
-- 新しい相談で使う AI: 画面で選ぶと `agent.settings`（migration 0094）の `default_provider` に残り、`AGENT_DEFAULT_PROVIDER` より優先する。
-- 守り: 中継の口は管理者だけ（`/auth/me`・旗・試験中の許可）。runner が返すのは状態の語と、決まったホストの URL・決まった形のコードだけ（CLI の文・トークン・メールは返さない・中継ももう一度形を確かめて捨てる）。貼ったコードは記録に残さない。誰がいつ始めた・終わった・サインアウトした・既定を変えたかは `agent.admin_events` に残る。ログインの CLI は runner と同じ uid 10002 で動く（実行係 10004 からは読めない・§3-7b のまま）。
-- 道: `GET /agent-relay/engines`・`POST /engines/{codex|claude}/login`・`GET /engines/login`・`POST /engines/login/code`・`POST /engines/login/cancel`・`POST /engines/{provider}/logout`・`POST /engines/default`（`agent/relay/public.py` が正）。runner の op は `auth_status{provider}`・`login_start`・`login_poll`・`login_input`・`login_cancel`・`logout`（`runner/agent_runner.py` の先頭）。
+**人ごとの席（PO 2026-10-13: お客様は ChatGPT Team。ChatGPT Business/Team の約束は 1 席 1 人）**: らく助エージェントの相談は、**その相談を始めた人自身の AI のログイン**で動く（1 つのログインをみんなで使わない）。設計: `docs/plans/agent-ui/per-user-seats-2026-10-13.md`。
+- 置き場: 箱の `/home/agent/u/<鍵>/.codex`（`CODEX_HOME`）・`/home/agent/u/<鍵>/.claude`（`CLAUDE_CONFIG_DIR`）。`HOME` もその席。`<鍵>` は中継が らく助の user id から作る 32 桁の 16 進（`relay.engines.seat_key`＝`sha256("rakusuke-agent-seat\n" + user id)` の先頭 32 桁・秘密ではなく、フォルダー名に user id を出さないための写像）。runner は中継から鍵だけを受け、形（`[a-f0-9]{32}`）が違えば断る。パスは受けない。
+- 席は runner が 0700・持ち主 10002 で作る（様子を見るだけでは作らない）。実行係 10004 は `/home/agent` に入れない（§3-7b のまま）。
+- 相談を始めるとき、中継は持ち主の席のログインを確かめ、**していなければ CLI を起こさず**、会話に「ChatGPT にサインインすると、相談を始められます」と ⚙ を開くボタンを出す（`error code=signin`）。
+- ⚙ の「AI のつなぎ先」に出るのは**開いた本人の**様子（「あなたの ChatGPT」「あなたの Claude」）。サインイン・サインアウト・「あなたの新しい相談で使う AI」（`agent.settings` の `default_provider:<user id>`。無ければ全体の `default_provider` → `AGENT_DEFAULT_PROVIDER`）も本人の分だけが変わる。
+- 管理者だけの一覧「管理者のサインインの様子」（`GET /agent-relay/engines/seats`）: らく助の管理者（users の admin/manager・名前は職員名かユーザー名）ごとの「サインインしています／していません…」の語だけ。AI のアカウントのメール・user id は出さない。
+- Codex が利用上限に近い（`account/rateLimits/updated` の使った割合が 80% 以上）と言ったら、会話に「いまはこのアカウントの利用上限に近づいています（あなたの ChatGPT の契約の分です）」を 1 回だけ出す（会話は止めない）。上限に当たったら、いままでどおり「HH:MM 以降に続けられます」。
+- サインインは**箱の中で同時に 1 つだけ**（だれのものでも。ほかの人の途中は「いま別のサインインの途中です（ほかの方の場合もあります）」で断る）。様子・やめる・コードの貼り付けは、本人のサインインだけに効く（他人の途中は見えない）。
 
-**SSH でのログイン（画面が使えないときの予備・PO 本人・ログイン情報は volume `carelink-agent-home` の `/home/agent/.claude/.credentials.json` に残る）**
+管理者は、らく助の小窓の見出し（携帯は「相談」タブの ☰ の中）の **⚙ 設定 →「AI のつなぎ先」** から、SSH なしで次ができる。
+- 様子: あなたの ChatGPT（Codex）・あなたの Claude それぞれ「サインインしています／していません／使えないつなぎ方（API キーなど）／分かりません」。アカウント・メールは出さない。
+- サインイン（箱で同時に 1 つだけ・15 分で打ち切り・1 人 15 分に 5 回まで）:
+  - ChatGPT: 箱の runner が `codex login --device-auth` を uid 10002（`CODEX_HOME=/home/agent/u/<鍵>/.codex`・`HTTPS_PROXY=http://agent-egress:3128`・席が無ければ 0700 で作る）で起こし、画面に `https://auth.openai.com/codex/device` と 1 回限りのコード（コピーのボタン・残り時間）を出す。ブラウザーで**自分の** ChatGPT（Team の自分の席）で入れ終わると「サインインできました」。
+  - Claude: runner が `claude auth login --claudeai`（サブスクだけ・`--console` は使わない）を uid 10002（`CLAUDE_CONFIG_DIR=/home/agent/u/<鍵>/.claude`）で起こし、画面に Claude のサインインのページへのリンクを出す。ブラウザーでサインインすると出るコード（`code#state` の形）を画面の欄に貼る → 中継 → runner が CLI の stdin に渡す（2.1.296 で、TTY なしでも URL を出し stdin のコードを受けることを実測・2026-10-13）。トークンの交換先は `platform.claude.com`（出口の許可リストにある）。リンク先 `claude.com` は利用者のブラウザーが開くだけ（箱からは出ない）。
+- サインアウト: `codex logout` / `claude auth logout`（その人の席だけ・3 択で確かめる: サインアウトする／サインアウトして別のアカウントでサインインし直す／やめる）。サインアウトすると、**その人の**その AI での相談は、本人がサインインし直すまで止まる（ほかの人の分は変わらない）。
+- 新しい相談で使う AI: 画面で選ぶと `agent.settings`（migration 0094・表はそのまま）の `default_provider:<user id>` に残る（本人だけ）。無い人は全体の `default_provider` → `AGENT_DEFAULT_PROVIDER`。
+- 守り: 中継の口は管理者だけ（`/auth/me`・旗・試験中の許可）。runner が返すのは状態の語と、決まったホストの URL・決まった形のコードだけ（CLI の文・トークン・メールは返さない・中継ももう一度形を確かめて捨てる）。貼ったコードは記録に残さない。誰がいつ始めた・終わった・サインアウトした・既定を変えたかは `agent.admin_events` に残る。ログインの CLI は runner と同じ uid 10002 で動く（実行係 10004 からは読めない・§3-7b のまま）。
+- 道: `GET /agent-relay/engines`・`GET /engines/seats`（管理者の一覧）・`POST /engines/{codex|claude}/login`・`GET /engines/login`・`POST /engines/login/code`・`POST /engines/login/cancel`・`POST /engines/{provider}/logout`・`POST /engines/default`（`agent/relay/public.py` が正）。runner の op は `auth_status{provider,user_key}`・`login_start`・`login_poll`・`login_input`・`login_cancel`・`logout`・`adopt_legacy`（どれも `user_key` が要る・`spawn` も `user_key` が要る・`runner/agent_runner.py` の先頭）。
+
+**前の共有のログインを、PO の席へ移す（1 回きり・2026-10-13 の版を入れるとき）**
+
+それまでの共有のログイン（`/home/agent/.codex`・`/home/agent/.claude`＝PO がサインインしたもの）は、PO 本人の席に移す。user id はコードに書かない。
+1. VPS の中継の秘密ファイル（`/opt/carelink/secrets/agent-relay.env`・git 管理外）に 1 行足す: `AGENT_LEGACY_OWNER_USER_ID=<PO の らく助の user id>`（代わりに `agent.settings` の `legacy_owner_user_id` でもよい）。
+2. 中継を起こし直すと、起きたとき（runner に届かなければ、最初に ⚙ を開いたとき・相談を始めたとき）に runner へ `adopt_legacy` を 1 回頼む。runner は、PO の席にまだそのログインが無い（無い・空のフォルダー）ときだけ `rename` で移し、`/home/agent/u/.legacy-adopted` に印を残す。印があれば、だれの鍵で頼まれても二度と動かない。移したことは `agent.admin_events` に `legacy_adopted`（`codex,claude` など）で残る。
+3. 確かめ: PO が ⚙ を開いて「あなたの ChatGPT: サインインしています」。ほかの管理者は「サインインしていません」→ 各自が自分の ChatGPT（Team の自分の席）でサインインする。
+4. 移せなかった分（PO が先に自分の席へサインインしていた等）は `/home/agent/.codex`・`.claude` に残る。要らなければ PO が消す: `docker exec -u 10002:10000 carelink-agent-sandbox rm -rf /home/agent/.codex /home/agent/.claude`。
+- 手で移す場合（自動を使わない・`AGENT_LEGACY_OWNER_USER_ID` を書かない）:
+```bash
+KEY=$(python3 -c 'import hashlib,sys;print(hashlib.sha256(("rakusuke-agent-seat\n"+sys.argv[1]).encode()).hexdigest()[:32])' <PO の user id>)
+docker exec -u 10002:10000 carelink-agent-sandbox sh -c "umask 077; mkdir -p /home/agent/u/$KEY && chmod 700 /home/agent/u /home/agent/u/$KEY && mv /home/agent/.codex /home/agent/u/$KEY/.codex && mv /home/agent/.claude /home/agent/u/$KEY/.claude && touch /home/agent/u/.legacy-adopted"
+```
+
+**SSH でのログイン（画面が使えないときの予備・本人だけ・ログイン情報は volume `carelink-agent-home` の本人の席 `/home/agent/u/<鍵>/.claude/.credentials.json` に残る）**
+
+人ごとの席なので、下の `CLAUDE_CONFIG_DIR`・`CODEX_HOME` は**その人の席**にする（`<鍵>` は上の「手で移す場合」の `KEY=$(python3 …)` で、その人の らく助の user id から作る）。下の例の `/home/agent/.claude`・`/home/agent/.codex` は `/home/agent/u/<鍵>/.claude`・`/home/agent/u/<鍵>/.codex` に読み替える（席が無ければ先に `mkdir -m 700 -p`）。
 
 Claude Code の画面から PO が `!` で打つ（`-t` が要る）。URL が出たら自分の PC のブラウザーで開き、出たコードを貼る。
 ```bash
@@ -354,7 +382,8 @@ dcs up -d          # stg-agent（127.0.0.1:18211）・stg-agent-sandbox・stg-ag
 ## 9. 守りの要点と残る危険（レビュー用）
 
 - 箱の中のモデルが Bash で何をしても: backend・Postgres・ホストのポート・ほかのコンテナに届かない（網が internal・名前が引けない）。外へは許可リストの 443 だけ。本番 `.env`・docker.sock・らく助のトークン・DB のパスワードは箱に無い。
-- 残る危険: (1) **認証情報の隔離（2026-10-12 実装）**: ログイン情報は CLI の uid 10002 だけが読め、モデルのコマンド（claude の Bash・codex のシェル/ファイル操作）は別 uid 10004 の実行係で走るので `cat` では読めない（`tests/isolation_e2e.sh` で実証）。**残る穴**: (a) Claude の Read/Edit/Grep/Glob は CLI の uid で動く。`permissions.deny`＋中継の許可の返事で断り、さらに execd が work の外を指すリンクを消す（試験あり）。リンクを張ってから消えるまでの最大 2 秒の隙間と、リンクを使わず別の道で CLI の道具に /home/agent を指させる手は、本物のモデルでは未確認（staging で）。(b) CLI の版を上げるたびに `isolation_e2e.sh` を流す（CLI 内の道具が実行係に出ない版が出ていないか）。(c) 実行係の uid 10004 のコマンドは、同じ箱の別の会話の `RK_RELAY_TOKEN`（`/proc/<pid>/environ`）も読める＝会話をまたいで中継の内側口を使える（同時 2 会話・どちらも管理者の相談。承認番号は画面からしか出ないので、書き込みの関所は破れない）。(d) 箱の root の親プロセスは SETUID/SETGID/SETPCAP を持つが、何も待ち受けず別 uid からは触れない。(e) 本物の OAuth ログインの `.credentials.json` では未確認（偽のモデル＋ダミーの認証ファイルで実証）。(2) 出口のコンテナは普通の網にいるので、ホストの 0.0.0.0 に出ているほかのアプリ（n8n 5678・couchdb 5984 など）へは届く。ただし tinyproxy は許可リストのホスト名の 443 だけをつなぐので、箱からは使えない（IP 直書きは許可リストに当たらない）。(3) runner が箱の中から返す行は中継にとって信用しない入力（中継の担当: 1 行の大きさ・JSON の形を検査）。(4) 中継が乗っ取られた場合は `agent_dump`（全部読める）と管理者トークンが漏れる（§3-4 の絞る案）。(5) `/home/agent/.claude/projects/` に会話の写し（利用者名入り）が残る → 中継の掃除（90 日）で消す対象に入れること。(6) Codex: `~/.codex/auth.json` は (1) の隔離で、モデルのコマンドからは読めない。見張り（`relay/watch.py`）は引き続き拾って記録する。(7) Codex のコマンドは聞かずに動く（計算は自由の決まり）。守りは網・鍵なし・中継の承認番号で、承認の問い合わせや見張りは道案内と記録。
+- 残る危険: (8) **1 つの箱に何人分ものログイン情報（人ごとの席・2026-10-13〜）**: 席は `/home/agent/u/<鍵>/`（0700・持ち主 10002）。モデルのコマンド（実行係 10004）は `/home/agent` に入れないので、だれの席も読めない（`isolation_e2e.sh` で、持ち主の席・別の人の席・前の共有の置き場の 3 つを確かめる）。runner は中継から鍵だけを受け（パスは受けない・形が違えば断る）、会話はいつも持ち主の席で起こす。**残る穴**: CLI 自身は全員 uid 10002 なので、ある人の会話の CLI の道具（Claude の Read など）が別の人の席を指すのを止めているのは (1)-(a) と同じ `permissions.deny`（`//home/agent/**`）＋中継の許可の返事＋リンク消し。席ごとに uid を分ける（人ごとに uid を作る）のは、人数が増えたら検討（段 4）。サインアウトしても席のフォルダー（会話の写し `.claude/projects` など）は残る＝§10 の片づけが席ごとに 7 日で消す。人が辞めたら、その人の席をサインアウト → PO が `rm -rf /home/agent/u/<鍵>`。
+- 残る危険: (1) **認証情報の隔離（2026-10-12 実装）**: ログイン情報は CLI の uid 10002 だけが読め、モデルのコマンド（claude の Bash・codex のシェル/ファイル操作）は別 uid 10004 の実行係で走るので `cat` では読めない（`tests/isolation_e2e.sh` で実証）。**残る穴**: (a) Claude の Read/Edit/Grep/Glob は CLI の uid で動く。`permissions.deny`＋中継の許可の返事で断り、さらに execd が work の外を指すリンクを消す（試験あり）。リンクを張ってから消えるまでの最大 2 秒の隙間と、リンクを使わず別の道で CLI の道具に /home/agent を指させる手は、本物のモデルでは未確認（staging で）。(b) CLI の版を上げるたびに `isolation_e2e.sh` を流す（CLI 内の道具が実行係に出ない版が出ていないか）。(c) 実行係の uid 10004 のコマンドは、同じ箱の別の会話の `RK_RELAY_TOKEN`（`/proc/<pid>/environ`）も読める＝会話をまたいで中継の内側口を使える（同時 2 会話・どちらも管理者の相談。承認番号は画面からしか出ないので、書き込みの関所は破れない）。(d) 箱の root の親プロセスは SETUID/SETGID/SETPCAP を持つが、何も待ち受けず別 uid からは触れない。(e) 本物の OAuth ログインの `.credentials.json` では未確認（偽のモデル＋ダミーの認証ファイルで実証）。(2) 出口のコンテナは普通の網にいるので、ホストの 0.0.0.0 に出ているほかのアプリ（n8n 5678・couchdb 5984 など）へは届く。ただし tinyproxy は許可リストのホスト名の 443 だけをつなぐので、箱からは使えない（IP 直書きは許可リストに当たらない）。(3) runner が箱の中から返す行は中継にとって信用しない入力（中継の担当: 1 行の大きさ・JSON の形を検査）。(4) 中継が乗っ取られた場合は `agent_dump`（全部読める）と管理者トークンが漏れる（§3-4 の絞る案）。(5) `/home/agent/.claude/projects/`（人ごとの席では `/home/agent/u/*/.claude/projects/`・`.codex/sessions`）に会話の写し（利用者名入り）が残る → 箱の片づけ（`retention.py sandbox`・7 日）が共有の置き場と各席の両方を見る。(6) Codex: `~/.codex/auth.json` は (1) の隔離で、モデルのコマンドからは読めない。見張り（`relay/watch.py`）は引き続き拾って記録する。(7) Codex のコマンドは聞かずに動く（計算は自由の決まり）。守りは網・鍵なし・中継の承認番号で、承認の問い合わせや見張りは道案内と記録。
 
 ## 10. 保存期間と片づけ（PO 決定 2026-10-12・`cleanup/`）
 
