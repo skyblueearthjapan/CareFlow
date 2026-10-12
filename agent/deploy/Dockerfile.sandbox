@@ -48,28 +48,50 @@ COPY --from=cli /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY --from=cli /opt/clibin/ /usr/local/bin/
 RUN claude --version && codex --version
 
-# ならし・型の道具の依存（ortools）。版は固定する
+# ならし・型の道具の依存（ortools・openpyxl＝ならしの Excel。solver_prefix は両方あるときだけ今の Python で動かす）。版は固定する
 ARG ORTOOLS_VERSION=9.15.6755
-RUN pip install "ortools==${ORTOOLS_VERSION}"
+ARG OPENPYXL_VERSION=3.1.5
+RUN pip install "ortools==${ORTOOLS_VERSION}" "openpyxl==${OPENPYXL_VERSION}"
 
-# 利用者: 10002（CLI と runner）。グループ 10000 は runner ソケットの共有用（中継 10001 も入る）
+# 利用者（認証情報の隔離・entrypoint.sh 参照）:
+#   10002 agent  … runner と CLI。ログイン情報（/home/agent）を持つ。グループ 10000 は runner ソケットの共有用（中継 10001 も入る）
+#   10004 agentx … モデルのコマンドを走らせる係（execd・codex exec-server）。/home/agent は読めない
+#   グループ 10005 agentwork … 会話の作業フォルダーを CLI と agentx の両方で書くため
 RUN groupadd -g 10000 agentsock \
- && useradd -u 10002 -g 10000 -d /home/agent -s /bin/bash agent \
+ && groupadd -g 10005 agentwork \
+ && useradd -u 10002 -g 10000 -G agentwork -d /home/agent -s /bin/bash agent \
+ && useradd -u 10004 -g 10005 -d /home/agentx -s /bin/bash agentx \
  && install -d -o 10002 -g 10000 -m 0700 /home/agent \
- && install -d -o 10002 -g 10000 -m 0700 /data/sessions \
- && install -d -o 10002 -g 10000 -m 0750 /run/agent
+ && install -d -o 10004 -g 10005 -m 0700 /home/agentx \
+ && install -d -o 10002 -g 10005 -m 0750 /data/sessions \
+ && install -d -o 10002 -g 10000 -m 0750 /run/agent \
+ && install -d -o 10004 -g 10005 -m 2770 /run/x
 
 # runner と決まりの設定（root 持ち・読み取り専用）
 COPY --chown=root:root deploy/runner/ /opt/runner/
 # agent/ の写し（スキル・rk・SQL）。/srv/agent は読み取り専用で、モデルは書き換えられない
 COPY --chown=root:root . /srv/agent
+# ならしの計算の部品（docs/tools/week-leveling・compose の additional_contexts「leveling」）。tools/leveling・courseplan の
+# LEVELING_DIR = <agent の親>/docs/tools/week-leveling。使うファイルだけを名指しで写す（config.local.json・test_*・apply/・
+# app_yardstick.py（backend の環境が要る）・jev_check.py（httpx・PC 用）は入れない）
+COPY --from=leveling --chown=root:root \
+     level.py level_knobs.py extract.py report.py solver.py diagnose.py \
+     /srv/docs/tools/week-leveling/
 RUN rm -rf /srv/agent/deploy \
+ && test ! -e /srv/docs/tools/week-leveling/config.local.json \
+ && test -z "$(find /srv/docs/tools/week-leveling -mindepth 1 ! -name '*.py')" \
+ && chmod -R a-w /srv/docs \
+ && PYTHONPATH=/srv/docs/tools/week-leveling python3 -c "import level, level_knobs, extract, report, solver, diagnose" \
+ && find /srv/docs -name '__pycache__' -prune -exec rm -rf {} + \
  && find /srv/agent -name '__pycache__' -prune -exec rm -rf {} + \
  && test ! -e /srv/agent/runs \
  && test ! -e /srv/agent/staging \
  && chmod 0555 /srv/agent/bin/rk \
+ && chmod 0555 /opt/runner/bx /opt/runner/entrypoint.sh \
  && chmod -R a-w /srv/agent /opt/runner \
- && python3 -m py_compile /opt/runner/agent_runner.py \
+ && python3 -m py_compile /opt/runner/agent_runner.py /opt/runner/execd.py \
+ && setpriv --version >/dev/null \
+ && codex exec-server --help >/dev/null 2>&1 \
  && python3 -m py_compile /srv/agent/relay/codex_config.py \
  && codex execpolicy check -r /opt/runner/rakusuke.rules rk whoami | grep -q '"decision":"allow"' \
  && codex execpolicy check -r /opt/runner/rakusuke.rules curl http://x | grep -q '"decision":"forbidden"'
@@ -77,6 +99,8 @@ RUN rm -rf /srv/agent/deploy \
 ENV PYTHONPATH=/srv/agent \
     HOME=/home/agent
 
-USER 10002:10000
+# root で起動し、entrypoint.sh が runner（agent）と実行係（agentx）を capability なしで起こす（compose は
+# cap_drop ALL のうえ SETUID/SETGID/SETPCAP だけ足す）。CLI を root で動かすことはない。
+USER 0:0
 WORKDIR /srv/agent
-CMD ["python3", "/opt/runner/agent_runner.py"]
+ENTRYPOINT ["/opt/runner/entrypoint.sh"]

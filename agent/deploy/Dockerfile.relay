@@ -53,11 +53,14 @@ RUN pip install --require-hashes -r /tmp/relay-requirements.txt 2>/dev/null \
 COPY --chown=root:root . /srv/agent
 # 帳票のアイコン（rk/config.py の ICON_PATH = <agent の親>/frontend/public/brand/...）
 COPY --from=brand --chown=root:root rakusuke-icon-round.png /srv/frontend/public/brand/rakusuke-icon-round.png
+# 反映前の照合（rk/applyrun.py の basis_hash）が週の SQL を extract.py から読む（LEVELING_DIR = <agent の親>/docs/tools/week-leveling）。
+# extract.py だけを名指しで写す（config.local.json は写さない・2026-10-12 staging で欠けていて反映が止まった）
+COPY --from=leveling --chown=root:root extract.py /srv/docs/tools/week-leveling/extract.py
 
 RUN find /srv/agent -name '__pycache__' -prune -exec rm -rf {} + \
  && test ! -e /srv/agent/runs \
  && test ! -e /srv/agent/staging \
- && chmod -R a-w /srv/agent
+ && test ! -e /srv/docs/tools/week-leveling/config.local.json  && chmod -R a-w /srv/agent /srv/docs
 
 ENV PYTHONPATH=/srv/agent \
     RK_MODE=relay

@@ -28,7 +28,7 @@
 | らく助の網 | `deployment_default`（172.24.0.0/16）: `carelink-postgres`・`carelink-backend`（＋`playwrighttest1_default`）・`carelink-frontend`。compose project = `deployment` |
 | Postgres | 16.13・ロールは `carelink`（superuser）だけ・スキーマ `public` だけ・56 表・RLS 0・ラージオブジェクト 0・alembic 0090。pg_hba は `host all all all scram-sha-256`（網の中からパスワードで入れる） |
 | 秘密の列 | `users.password_hash`・`kaipoke_credentials.password_encrypted`・`patients.qr_token`（掲示 QR の合言葉）・`revoked_qr_tokens.token`（取り消し済み・害なし） |
-| 使っている網の範囲 | 172.17〜172.29/16・10.78.0/24・10.79.0/24。箱の網に **172.31.250.0/24（本番）・172.31.251.0/24（staging）** を使う（空き） |
+| 使っている網の範囲 | 172.17〜172.29/16・10.78.0/24・10.79.0/24。箱の網に **172.31.250.0/24（本番）・172.31.251.0/24（staging）** を使う（空き）。出口の網は **172.31.240.0/24（本番）・172.31.241.0/24（staging）** に固定（自動に任せると 172.31.0.0/16 を取って箱の網と重なる） |
 | ポート | 18201・18211 は空き（18000/18001 = らく助、18101 = staging backend） |
 | cloudflared | **systemd（ホスト上）**・`/usr/bin/cloudflared --no-autoupdate --config /etc/cloudflared/config.yml tunnel run`・版 2026.1.2（古いと警告あり）・tunnel `ff143e2a-…` |
 | tunnel の設定の正 | **Cloudflare ダッシュボード（リモート管理）**。根拠: ログの `ingressRule=2 → 127.0.0.1:18789`・`ingressRule=3 → localhost:18001`・`ingressRule=4 → localhost:18000` が、ローカルの `/etc/cloudflared/config.yml`（linebot が 1 番目・`127.0.0.1` 表記・2026-05-05 から変わっていない）と合わない。runbook Phase G の「2026-05-05 実測: ダッシュボード管理」と一致。**ローカルの config.yml を編集しても効かない** |
@@ -112,8 +112,33 @@ docker exec $S python3 -c "import urllib.request as u; o=u.build_opener(u.ProxyH
 # 秘密が無い
 docker exec $S sh -c 'env | grep -ciE "postgres|jwt|kaipoke|secret" ; ls /var/run/docker.sock /opt/carelink 2>&1'
 # runner は中継以外を断る（箱の uid からつなぐと切られる）
-docker exec $S python3 -c "import socket; s=socket.socket(socket.AF_UNIX); s.connect('/run/agent/runner.sock'); s.send(b'{\"op\":\"status\"}\n'); print(s.recv(100))"
+docker exec -u 10002:10000 $S python3 -c "import socket; s=socket.socket(socket.AF_UNIX); s.connect('/run/agent/runner.sock'); s.send(b'{\"op\":\"status\"}\n'); print(s.recv(100))"
 ```
+
+### 3-7b. 認証情報の隔離を確かめる（必須・お客様が使う前に）
+考え方と残る危険は §9-(1)。ログイン情報（`/home/agent/.claude/.credentials*`・`/home/agent/.codex/auth.json`）は CLI の uid（10002）だけが読める。
+**モデルのコマンドは別 uid（10004）の実行係で走る**ので読めない。
+```bash
+# (1) 手元・CI でも: 偽のモデルで本物の claude / codex を動かし、モデルの cat が Permission denied になることを確かめる（13 項目）
+bash agent/deploy/tests/isolation_e2e.sh carelink-agent-sandbox:latest
+# (2) 立てた箱で: 3 つの係の uid・capability（CapEff/CapBnd が 0・NoNewPrivs が 1 のこと）
+docker exec carelink-agent-sandbox sh -c 'for p in $(pgrep -f "execd.py|exec-server|agent_runner.py"); do grep -E "^(Uid|CapEff|CapBnd|NoNewPrivs)" /proc/$p/status | tr "\n" " "; echo; done'
+# (3) ログイン後に、実行係の側から見えないこと（Permission denied が正しい）
+# -u は名前で（agent の補助グループ 10005 が付かないと実行係のソケットに届かず 126・2026-10-12 staging で実測）
+docker exec -u agent carelink-agent-sandbox /opt/runner/bx 'id -u; cat /home/agent/.claude/.credentials.json; cat /home/agent/.codex/auth.json'
+```
+- 箱の healthcheck は実行係のソケット（`/run/x/exec.sock`）も見る。無いと unhealthy（中継は起きない）。runner も `RUNNER_EXEC_SOCKET` が設定されているのにソケットが無ければ CLI を起こさない（`exec service unavailable`）。
+- 仕組み（`runner/entrypoint.sh`）: 箱は root で起動（capability は SETUID/SETGID/SETPCAP だけ・何も待ち受けず何も読まない）→ **runner と CLI は uid 10002（agent）、execd と codex exec-server は uid 10004（agentx）**。どれも capability 0・no-new-privs。どれかが落ちたら箱ごと再起動。
+  - claude: `CLAUDE_CODE_SHELL_PREFIX=/opt/runner/bx`。Bash の道具のコマンドはすべて `bx`（fd を unix ソケットで execd に渡す）経由で uid 10004 が走らせる。execd に届かなければ **走らせず 126**（CLI の uid では絶対に走らせない）。
+  - codex: `CODEX_EXEC_SERVER_URL=ws://127.0.0.1:9911`（uid 10004 の `codex exec-server`）。この変数があると app-server は自分では何も走らせず、コマンド・ファイル操作とも実行係の環境「remote」だけを使う（実測 0.162.1: 無い環境は `local environment is not configured`）。実行係には app-server の環境が渡らないので、rk に要る `RK_*` と PATH は `-c shell_environment_policy.set` で渡し、ログインシェル（`/etc/profile` が PATH を戻す）は `allow_login_shell=false` で止める。
+  - 会話の作業フォルダー（`/data/sessions/<id>/work`）はグループ 10005（agentwork）の 2770。CLI も実行係も書ける。実行係に渡る環境は `execd.py` の許可リスト（`RK_*`・`TMPDIR`・`PYTHONPATH`・言語・プロキシ。`HOME`・`CODEX_HOME`・`CLAUDE_CONFIG_DIR` は渡さない）。
+  - CLI 自身の道具（Claude の Read/Edit/Grep/Glob は CLI と同じ uid で動く）: `permissions.deny`（`Read(//home/agent/**)` など・`runner/isolation.json`）と、中継の許可の返事（`relay/runner.py` の `_touches_secret`）で `/home/agent` と認証情報の場所を断る。
+  - **実行係の手が届く範囲**（レビュー対応）: `/data/sessions` と各会話のフォルダー d は agent 持ち 0750（実行係は入れるが消す・付け替えるは不可）、書けるのは d/work（2770）の中だけ。**`--settings` は `/run/agent/<会話>.settings.json`**（実行係は入れない）に、起こすたびに消して `O_EXCL|O_NOFOLLOW` で新しく書く。
+  - execd は subreaper。コマンドの終わりと 2 秒ごとに、要求から外れた子孫（setsid・二重 fork）と init の子になった uid 10004 の残り（codex 側）を止める。PID 名前空間（`unshare --pid`）は capability 0 では使えないため、この掃除で代える。
+  - execd は要求の前後と 2 秒ごとに、`/data/sessions/*/work` の中の **work の外を指すシンボリックリンクを消す**（CLI の uid の道具がリンク経由で `/home/agent` へ辿れないように。CLI の deny に頼らない守り）。
+  - codex のファイル操作: CODEX_EXEC_SERVER_URL があると app-server の `fs/readFile` は `local filesystem is not configured`（実測・試験に入れた）＝app-server（10002）自身はローカルのファイルを触らず、コマンド・ファイル操作とも実行係の環境「remote」に出る。**`apply_patch` の道具そのものは、偽のモデルでは道具の一覧に出ず直接は試せていない**（本物のモデルで staging にて確認: 作業フォルダーに作ったファイルの持ち主が 10004 になること）。
+  - ログインの手順の `docker exec` には **`-u 10002:10000`** が要る（§3-8）。
+
 
 ### 3-8. CLI のログイン（P7・PO が自分の端末で・対話）
 
@@ -129,12 +154,12 @@ docker exec $S python3 -c "import socket; s=socket.socket(socket.AF_UNIX); s.con
 Claude Code の画面から PO が `!` で打つ（`-t` が要る）。URL が出たら自分の PC のブラウザーで開き、出たコードを貼る。
 ```bash
 # 1) 対話の claude を箱の中で開き、/login →「Claude アカウント（サブスク）」を選ぶ → 終わったら /exit
-! ssh -t root@72.60.211.213 docker exec -it -e HTTPS_PROXY=http://agent-egress:3128 -e CLAUDE_CONFIG_DIR=/home/agent/.claude -e DISABLE_AUTOUPDATER=1 carelink-agent-sandbox claude
+! ssh -t root@72.60.211.213 docker exec -it -u 10002:10000 -e HTTPS_PROXY=http://agent-egress:3128 -e CLAUDE_CONFIG_DIR=/home/agent/.claude -e DISABLE_AUTOUPDATER=1 carelink-agent-sandbox claude
 # 2) 状態を見る（版によっては auth status が無い。その時は 3) だけで確かめる）
-! ssh -t root@72.60.211.213 docker exec -it -e HTTPS_PROXY=http://agent-egress:3128 -e CLAUDE_CONFIG_DIR=/home/agent/.claude carelink-agent-sandbox claude auth status
+! ssh -t root@72.60.211.213 docker exec -it -u 10002:10000 -e HTTPS_PROXY=http://agent-egress:3128 -e CLAUDE_CONFIG_DIR=/home/agent/.claude carelink-agent-sandbox claude auth status
 ```
 - staging は同じことをコンテナ名 `stg-agent-sandbox` で（volume `stg-agent-home` は本番と別）。
-- `docker exec` は箱の利用者（uid 10002）で入るので、ログイン情報の持ち主も 10002 になる（runner が起こす CLI と同じ）。`-u root` を付けない。
+- 箱は root で起動して CLI を uid 10002 に落とす作りなので、`docker exec` には必ず **`-u 10002:10000`** を付ける（付けないと root で入り、ログイン情報が 10002 の持ち主にならない・root は 10002 のファイルを読み書きできない）。
 - 別案 `claude setup-token`: 長期の OAuth トークンを**表示するだけ**（保存しない）。段 3 の runner はこのトークン（`CLAUDE_CODE_OAUTH_TOKEN`）を CLI に渡さないので、**段 3 では `/login` を使う**。setup-token は段 4 の「ログイン情報をモデルから読めない所に置き、runner がトークンだけ渡す」形で使う（設計 §2-1）。
 
 **ChatGPT（Codex）のログイン — 既定の AI（PO 2026-10-12: お客様は ChatGPT の契約が多い）**
@@ -144,12 +169,12 @@ Claude Code の画面から PO が `!` で打つ（`-t` が要る）。URL が�
 
 ```bash
 # 1) デバイスコードでログイン（codex-cli 0.162.1 で --device-auth があることを実測・2026-10-12）
-! ssh -t root@72.60.211.213 docker exec -it -e HTTPS_PROXY=http://agent-egress:3128 -e CODEX_HOME=/home/agent/.codex carelink-agent-sandbox codex login --device-auth
+! ssh -t root@72.60.211.213 docker exec -it -u 10002:10000 -e HTTPS_PROXY=http://agent-egress:3128 -e CODEX_HOME=/home/agent/.codex carelink-agent-sandbox codex login --device-auth
 #    → 画面に「https://auth.openai.com/codex/device」と 1 回限りのコード（XXXX-XXXXX・15 分）が出る。
 #      スマホか PC のブラウザーでその URL を開き、ChatGPT（PO のアカウント）でログイン → コードを入れる → 許可。
 #      ターミナルに「Successfully logged in」が出たら終わり。
 # 2) 確かめ（"Logged in using ChatGPT" が正しい。"Not logged in" なら 1) をやり直す。API キーと出たら PO へ）
-! ssh -t root@72.60.211.213 docker exec -it -e CODEX_HOME=/home/agent/.codex carelink-agent-sandbox codex login status
+! ssh -t root@72.60.211.213 docker exec -it -u 10002:10000 -e CODEX_HOME=/home/agent/.codex carelink-agent-sandbox codex login status
 # 3) 締め付けの確かめ（ログインしていなくても見られる）: 中継が会話の始めに同じことをする
 #    agent/deploy/README の §3-8b の probe（下）か、画面で相談を 1 つ送って返事が来ること
 ```
@@ -192,7 +217,7 @@ EOF
 **`apiKeySource: none` の確かめ方（ログインの直後に必ず）**
 ```bash
 # 3) 1 回だけ問いを流し、最初の行（system/init）の apiKeySource と model を見る（none・claude-opus-… が正しい）
-docker exec -i -e HTTPS_PROXY=http://agent-egress:3128 -e CLAUDE_CONFIG_DIR=/home/agent/.claude -e DISABLE_AUTOUPDATER=1 \
+docker exec -i -u 10002:10000 -e HTTPS_PROXY=http://agent-egress:3128 -e CLAUDE_CONFIG_DIR=/home/agent/.claude -e DISABLE_AUTOUPDATER=1 \
   carelink-agent-sandbox sh -c 'printf "%s\n" "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"1+1\"}]}}" \
   | claude -p --input-format stream-json --output-format stream-json --verbose --model opus \
       --settings /opt/runner/isolation.json --strict-mcp-config --mcp-config /opt/runner/empty-mcp.json' \
@@ -317,7 +342,7 @@ dcs up -d          # stg-agent（127.0.0.1:18211）・stg-agent-sandbox・stg-ag
 ## 9. 守りの要点と残る危険（レビュー用）
 
 - 箱の中のモデルが Bash で何をしても: backend・Postgres・ホストのポート・ほかのコンテナに届かない（網が internal・名前が引けない）。外へは許可リストの 443 だけ。本番 `.env`・docker.sock・らく助のトークン・DB のパスワードは箱に無い。
-- 残る危険: (1) 箱の中の CLI のログイン情報はモデルから読める（持ち出し先は Anthropic/OpenAI だけ）。(2) 出口のコンテナは普通の網にいるので、ホストの 0.0.0.0 に出ているほかのアプリ（n8n 5678・couchdb 5984 など）へは届く。ただし tinyproxy は許可リストのホスト名の 443 だけをつなぐので、箱からは使えない（IP 直書きは許可リストに当たらない）。(3) runner が箱の中から返す行は中継にとって信用しない入力（中継の担当: 1 行の大きさ・JSON の形を検査）。(4) 中継が乗っ取られた場合は `agent_dump`（全部読める）と管理者トークンが漏れる（§3-4 の絞る案）。(5) `/home/agent/.claude/projects/` に会話の写し（利用者名入り）が残る → 中継の掃除（90 日）で消す対象に入れること。(6) Codex: `~/.codex/auth.json` は CLI と同じ uid なので、モデルが動かすコマンドからも読める（Codex の砂場は Docker の中で動かない・ファイルの権限では分けられない）。見張りが読みを見つけたらその場で止めて記録するが、出力はもうモデルに渡っている。持ち出し先は出口の許可リスト（OpenAI/Anthropic）だけ。段 4 で「ログイン情報を別 uid に置く」案を検討。(7) Codex のコマンドは聞かずに動く（計算は自由の決まり）。守りは網・鍵なし・中継の承認番号で、承認の問い合わせや見張りは道案内と記録。
+- 残る危険: (1) **認証情報の隔離（2026-10-12 実装）**: ログイン情報は CLI の uid 10002 だけが読め、モデルのコマンド（claude の Bash・codex のシェル/ファイル操作）は別 uid 10004 の実行係で走るので `cat` では読めない（`tests/isolation_e2e.sh` で実証）。**残る穴**: (a) Claude の Read/Edit/Grep/Glob は CLI の uid で動く。`permissions.deny`＋中継の許可の返事で断り、さらに execd が work の外を指すリンクを消す（試験あり）。リンクを張ってから消えるまでの最大 2 秒の隙間と、リンクを使わず別の道で CLI の道具に /home/agent を指させる手は、本物のモデルでは未確認（staging で）。(b) CLI の版を上げるたびに `isolation_e2e.sh` を流す（CLI 内の道具が実行係に出ない版が出ていないか）。(c) 実行係の uid 10004 のコマンドは、同じ箱の別の会話の `RK_RELAY_TOKEN`（`/proc/<pid>/environ`）も読める＝会話をまたいで中継の内側口を使える（同時 2 会話・どちらも管理者の相談。承認番号は画面からしか出ないので、書き込みの関所は破れない）。(d) 箱の root の親プロセスは SETUID/SETGID/SETPCAP を持つが、何も待ち受けず別 uid からは触れない。(e) 本物の OAuth ログインの `.credentials.json` では未確認（偽のモデル＋ダミーの認証ファイルで実証）。(2) 出口のコンテナは普通の網にいるので、ホストの 0.0.0.0 に出ているほかのアプリ（n8n 5678・couchdb 5984 など）へは届く。ただし tinyproxy は許可リストのホスト名の 443 だけをつなぐので、箱からは使えない（IP 直書きは許可リストに当たらない）。(3) runner が箱の中から返す行は中継にとって信用しない入力（中継の担当: 1 行の大きさ・JSON の形を検査）。(4) 中継が乗っ取られた場合は `agent_dump`（全部読める）と管理者トークンが漏れる（§3-4 の絞る案）。(5) `/home/agent/.claude/projects/` に会話の写し（利用者名入り）が残る → 中継の掃除（90 日）で消す対象に入れること。(6) Codex: `~/.codex/auth.json` は (1) の隔離で、モデルのコマンドからは読めない。見張り（`relay/watch.py`）は引き続き拾って記録する。(7) Codex のコマンドは聞かずに動く（計算は自由の決まり）。守りは網・鍵なし・中継の承認番号で、承認の問い合わせや見張りは道案内と記録。
 
 ## 10. 保存期間と片づけ（PO 決定 2026-10-12・`cleanup/`）
 
@@ -353,6 +378,6 @@ unit を置き、両方の片づけを dry-run で 1 回動かして、消す候
    cat /etc/cron.d/carelink-backup       # 呼んでいる path がこのファイルか確かめる
    ```
    次の 17:30 UTC の実行から新しい決まりになる（すぐ試すなら手で 1 回実行。ダンプが 1 個増える）。入れ替えるまでは従来どおり 7 日で消える。
-2. 案の HTML が会話の記録 DB に入っている（`plans.html_a4`・`html_a3`・`relay/service.py` が案ごとに作って保存、`relay/public.py` が返す）。決まりは「HTML は保存しない・JSON から都度作る」。`service.py`・`public.py`・`db.py`（と migration 0091 の列）を直す必要があり、ここでは直していない。
-3. 中継の状態に「空きが少ない」を出す: `relay.retention.disk_status("/data")` の `low`・`warning` を中継の状態（`/healthz` か会話の一覧の応答）に足す（`public.py`・別担当）。
+2. ~~案の HTML を DB に入れている~~ → **直した（2026-10-12）**: `plans.html_a4`・`html_a3` 列を無くし（0091 は未適用なので書き換え）、`GET …/plans/{v}/html` と署名つきの印刷 URL は保存した案の JSON から開くたびに描く（`RelayService.plan_html`）。A3 は時間割のある案だけ。
+3. ~~中継の状態に「空きが少ない」を出す~~ → **済み（2026-10-12）**: `GET /agent-relay/engine` の `disk`（`free_gb`・`low`・`blocked`・`warning`）。空き **5 GB 未満**は新しい相談・新しい CLI を起こさず、穏やかな日本語で断る（503・作業中の相談は続く）。10 GB 未満は警告だけ。パスは返さない。
 4. 中継を立てる前に `/var/lib/carelink-agent/journal/` に書いた分は、立てた後に volume の journal の頭に足し合わせる（`cat` で連結・持ち主 10001）。

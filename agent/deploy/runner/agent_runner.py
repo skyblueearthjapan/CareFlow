@@ -30,6 +30,7 @@ import os
 import re
 import signal
 import socket
+import stat
 import struct
 import sys
 from pathlib import Path
@@ -45,11 +46,20 @@ HOME_DIR = Path(os.environ.get("RUNNER_HOME_DIR", "/home/agent"))
 RUNTIME_DIR = Path(__file__).resolve().parent
 EMPTY_MCP = RUNTIME_DIR / "empty-mcp.json"
 ISOLATION_TEMPLATE = RUNTIME_DIR / "isolation.json"
+#: --settings の置き場。実行係（uid 10004）が書き換えられない所（/run/agent は agent 持ち・0750）。会話の作業フォルダー側には置かない
+SETTINGS_DIR = Path(os.environ.get("RUNNER_SETTINGS_DIR", "/run/agent"))
+#: 作業フォルダーを CLI と実行係の両方で書くためのグループ
+WORK_GID = int(os.environ.get("RUNNER_WORK_GID", "10005"))
 #: Codex のコマンドの決まり（execpolicy）。起動のたびに CODEX_HOME/rules/ に書き直す（モデルが足したものは消す）
 CODEX_RULES = RUNTIME_DIR / "rakusuke.rules"
 #: Codex の起こし方の決まり（-c の締め付け）。中継と同じファイルをパスで読む（/srv/agent は読み取り専用）
 CODEX_CONFIG_PY = AGENT_DIR / "relay" / "codex_config.py"
 CODEX_HOME = HOME_DIR / ".codex"
+#: 認証情報の隔離（deploy/README.md「認証情報の隔離」）: モデルのコマンドは別 uid の実行係（execd / codex exec-server）で
+#: 走らせる。この変数があると、実行係が見えないときは CLI を起こさない（閉じる側に倒す）。無ければ（手元の試験）従来どおり。
+EXEC_SOCKET = os.environ.get("RUNNER_EXEC_SOCKET", "")
+EXEC_SERVER_URL = os.environ.get("RUNNER_EXEC_SERVER_URL", "ws://127.0.0.1:9911")
+BX = RUNTIME_DIR / "bx"
 # 画面の約束（承認は画面のボタン等）。中継の担当が agent/relay/relay-prompt.md に置く。無ければ付けない
 APPEND_PROMPT = AGENT_DIR / "relay" / "relay-prompt.md"
 MAX_TURNS = "80"
@@ -91,6 +101,13 @@ def log(msg: str) -> None:
     print(f"[runner] {msg}", file=sys.stderr, flush=True)
 
 
+def _mode(path: str) -> int:
+    try:
+        return os.stat(path).st_mode
+    except OSError:
+        return 0
+
+
 def peer_uid(sock: socket.socket) -> int:
     creds = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
     _pid, uid, _gid = struct.unpack("3i", creds)
@@ -110,9 +127,10 @@ def build_env(session_dir: Path, provider: str, relay_token: str) -> dict[str, s
         "https_proxy": EGRESS_PROXY,
         "HTTP_PROXY": EGRESS_PROXY,
         "http_proxy": EGRESS_PROXY,
-        # 中継の内側口はプロキシを通さない（同じ箱の網の中）
-        "NO_PROXY": "agent-relay",
-        "no_proxy": "agent-relay",
+        # 中継の内側口と、codex の実行係（ws://127.0.0.1:9911）はプロキシを通さない（同じ箱の中・網の中）。
+        # 127.0.0.1 が無いと app-server が実行係へのつなぎをプロキシに投げて 403 になる（2026-10-12 staging で実測）
+        "NO_PROXY": "agent-relay,127.0.0.1,localhost",
+        "no_proxy": "agent-relay,127.0.0.1,localhost",
         "PYTHONPATH": str(AGENT_DIR),
         "PYTHONDONTWRITEBYTECODE": "1",
         "RK_MODE": "relay",
@@ -138,6 +156,13 @@ def build_env(session_dir: Path, provider: str, relay_token: str) -> dict[str, s
             # その場の script・計算の置き場所（会話ごと・書ける）
             "TMPDIR": str(session_dir / "work" / "scratch"),
         })
+    if EXEC_SOCKET:
+        if provider == "claude":
+            # Bash の道具のコマンドは全部 bx（→ execd・uid 10004）経由。bx は実行係に届かなければ走らせない
+            env.update({"CLAUDE_CODE_SHELL_PREFIX": str(BX), "RUNNER_EXEC_SOCKET": EXEC_SOCKET})
+        else:
+            # app-server は自分では何も走らせず、実行係（codex exec-server・uid 10004）の環境「remote」だけを使う
+            env["CODEX_EXEC_SERVER_URL"] = EXEC_SERVER_URL
     leaked = [k for k in FORBIDDEN_ENV if k in env]
     if leaked:  # 許可リストで作っているので来ないはず。来たら起こさない
         raise ValueError("forbidden env: " + ",".join(leaked))
@@ -155,7 +180,7 @@ def claude_argv(session_dir: Path, model: str, resume_id: str | None) -> list[st
         "--permission-mode", "default",
         "--setting-sources", "project",
         "--strict-mcp-config", "--mcp-config", str(EMPTY_MCP),
-        "--settings", str(session_dir / "isolation.json"),
+        "--settings", str(settings_path(session_dir.name)),
         "--max-turns", MAX_TURNS,
         "--model", model,                    # --resume の時も毎回付ける（付けないと既定に戻る）
     ]
@@ -182,6 +207,15 @@ def codex_argv() -> list[str]:
     ＝2026-10-12 に 0.162.1 で実測）。締め付けの一覧は agent/relay/codex_config.py（中継と同じ・1 か所）。
     """
     return _codex_config().codex_argv("codex")
+
+
+def codex_exec_env_args(env: dict[str, str]) -> list[str]:
+    """codex の実行係（別 uid）は app-server の環境を継がない。rk に要る RK_*・作業の置き場所だけを
+    shell_environment_policy.set で渡す（-c の TOML。値は JSON 文字列＝TOML の基本文字列として有効）。"""
+    keys = ("RK_MODE", "RK_RELAY_URL", "RK_RELAY_TOKEN", "RK_WORK_DIR", "TMPDIR", "PYTHONPATH", "PATH", "TZ", "LANG")
+    pairs = ", ".join(f"{k} = {json.dumps(env[k])}" for k in keys if k in env)
+    # ログインシェル（bash -l）は /etc/profile で PATH を既定に戻す＝/srv/agent/bin の rk が見つからなくなるので使わない
+    return ["-c", f"shell_environment_policy.set={{{pairs}}}", "-c", "allow_login_shell=false"]
 
 
 def prepare_codex_home() -> None:
@@ -227,14 +261,35 @@ def codex_auth_status() -> str:
     return "unknown"
 
 
+def settings_path(session_id: str) -> Path:
+    return SETTINGS_DIR / f"{session_id}.settings.json"
+
+
+def _write_settings(session_id: str) -> None:
+    """--settings を実行係の手が届かない所へ、毎回消して O_EXCL|O_NOFOLLOW で新しく書く（差し替え・リンクの先書き防止）。"""
+    path = settings_path(session_id)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o440)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(ISOLATION_TEMPLATE.read_text(encoding="utf-8"))
+
+
 def prepare_session_dir(session_id: str) -> Path:
+    """会話のフォルダー: d は agent 持ち 0750（実行係は入れるが d の中身を消す・付け替えることはできない）。
+    実行係が書けるのは d/work（グループ 10005・2770）の中だけ。"""
     d = SESSIONS_DIR / session_id
-    (d / "work" / "scratch").mkdir(parents=True, exist_ok=True, mode=0o700)
-    iso = d / "isolation.json"
-    tmp = d / "isolation.json.tmp"
-    tmp.write_text(ISOLATION_TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
-    os.replace(tmp, iso)
-    os.chmod(iso, 0o400)  # CLI からは読めるが書き換えにくくする（同じ uid なので完全ではない・守りは出口と --settings）
+    work = d / "work"
+    (work / "scratch").mkdir(parents=True, exist_ok=True)
+    for path, mode in ((d, 0o750), (work, 0o2770), (work / "scratch", 0o2770)):
+        try:
+            os.chown(path, -1, WORK_GID)
+        except PermissionError:  # グループに入っていない開発環境
+            pass
+        os.chmod(path, mode)
+    _write_settings(session_id)
     return d
 
 
@@ -376,19 +431,25 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 if len(_running) >= MAX_PROCS:
                     await send(writer, {"ev": "error", "message": "busy"})
                     continue
+                if EXEC_SOCKET and not stat.S_ISSOCK(_mode(EXEC_SOCKET)):
+                    await send(writer, {"ev": "error", "message": "exec service unavailable"})
+                    continue
                 session_dir = prepare_session_dir(session_id)
+                spawn_env = build_env(session_dir, provider, token)
                 if provider == "claude":
                     argv = claude_argv(session_dir, model, resume_id)
                 else:
                     prepare_codex_home()
                     argv = codex_argv()  # 続き（resume_id）は中継が thread/resume で頼む
+                    if EXEC_SOCKET:
+                        argv = [argv[0], *codex_exec_env_args(spawn_env), *argv[1:]]
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(AGENT_DIR),
-                    env=build_env(session_dir, provider, token),
+                    env=spawn_env,
                     start_new_session=True,       # プロセスグループごと止められるように
                     limit=MAX_OUT_LINE,
                     close_fds=True,
@@ -452,6 +513,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
 
 
 async def main() -> None:
+    os.umask(0o007)  # 作業フォルダー・/tmp に作る物はグループ（実行係）まで・他人には見せない
     dropped = scrub_own_env()
     if dropped:
         log("dropped forbidden env from runner: " + ",".join(dropped))

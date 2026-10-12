@@ -43,6 +43,7 @@ services:
       dockerfile: deploy/Dockerfile.relay
       additional_contexts:
         brand: ../../frontend/public/brand   # 帳票のアイコン（rk/report.py の ICON_PATH）
+        leveling: ../../docs/tools/week-leveling   # 反映前の週の形の照合（applyrun → extract.py の SQL）
     image: carelink-agent-relay:${AGENT_IMAGE_TAG:-latest}
     container_name: ${AGENT_NAME_PREFIX:-carelink}-agent
     restart: ${AGENT_RESTART:-unless-stopped}
@@ -100,19 +101,28 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.sandbox
+      additional_contexts:
+        # ならしの計算の部品（rk level / courseplan / template が import する）。Dockerfile で使うファイルだけを名指しで写す
+        # （config.local.json＝本番の ssh 先入り・git 管理外 は写さない・build で無いことを確かめる）
+        leveling: ../../docs/tools/week-leveling
       args:
         CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.296}
         CODEX_VERSION: ${CODEX_VERSION:-0.162.1}
     image: carelink-agent-sandbox:${AGENT_IMAGE_TAG:-latest}
     container_name: ${AGENT_NAME_PREFIX:-carelink}-agent-sandbox
     restart: ${AGENT_RESTART:-unless-stopped}
-    user: "10002:10000"
+    # root で起動 → entrypoint.sh が runner/CLI(10002) と実行係(10004) を capability なし・no-new-privs で起こす。
+    # root のプロセスに残る capability は SETUID/SETGID/SETPCAP だけ（ファイルは読まない・何も待ち受けない）
+    user: "0:0"
+    cap_add: ["SETUID", "SETGID", "SETPCAP"]
     # env_file は書かない（.env も中継の秘密も渡さない）。CLI の環境は runner が許可リストで作り直す。
     # ANTHROPIC_API_KEY・ANTHROPIC_BASE_URL・OPENAI_API_KEY などは決して足さない（ログインはサブスクだけ・
     # runner が起動時に消し、CLI にも渡さない。healthcheck も「あれば unhealthy」で止める）。
     environment:
       TZ: Asia/Tokyo
       RUNNER_SOCKET: /run/agent/runner.sock
+      RUNNER_EXEC_SOCKET: /run/x/exec.sock              # モデルのコマンドの実行係（uid 10004）。無いと CLI を起こさない
+      RUNNER_EXEC_SERVER_URL: ws://127.0.0.1:9911       # codex の実行係（同じ uid 10004）
       RUNNER_ALLOWED_PEER_UID: "10001"
       RUNNER_MAX_PROCS: "2"
       RUNNER_EGRESS_PROXY: http://agent-egress:3128     # サービス名（その project の網の中だけで引ける）
@@ -123,13 +133,16 @@ services:
       - agent-sessions:/data/sessions   # 会話ごとの作業フォルダー・isolation.json
     tmpfs:
       - /tmp:size=256m,mode=1777
+      - /run/x:size=1m,mode=2770,uid=10004,gid=10005          # 実行係のソケット（agent が使えるのはグループ 10005）
+      - /home/agentx:size=64m,mode=0700,uid=10004,gid=10005   # 実行係の HOME（ログイン情報の volume は入れない）
     mem_limit: 1g
     memswap_limit: 1g
     pids_limit: 256
     cpus: 1.5
     healthcheck:
       # ソケットがある ＋ API キー・つなぎ先の変数が箱の環境に無い（あれば unhealthy → 中継も起きない）
-      test: ["CMD", "python3", "-c", "import os,stat,sys; bad=[k for k in ('ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_BASE_URL','OPENAI_API_KEY','OPENAI_BASE_URL','CODEX_API_KEY') if k in os.environ]; sys.exit(1 if bad else (0 if stat.S_ISSOCK(os.stat('/run/agent/runner.sock').st_mode) else 1))"]
+      # root では /run/agent・/run/x（agent / agentx 持ち）に入れない（DAC_OVERRIDE なし）ので、agent の uid で見る
+      test: ["CMD", "setpriv", "--reuid=10002", "--regid=10000", "--groups=10005", "python3", "-c", "import os,stat,sys; bad=[k for k in ('ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_BASE_URL','OPENAI_API_KEY','OPENAI_BASE_URL','CODEX_API_KEY') if k in os.environ]; sys.exit(1 if bad else (0 if stat.S_ISSOCK(os.stat('/run/agent/runner.sock').st_mode) and stat.S_ISSOCK(os.stat('/run/x/exec.sock').st_mode) else 1))"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -188,6 +201,10 @@ networks:
       config:
         - subnet: ${AGENT_SANDBOX_SUBNET:-172.31.250.0/24}
   # 出口プロキシだけが外へ出る網。
+  # 範囲を固定する（自動で選ばせると 172.31.0.0/16 を取り、箱の網と重なって立たない・2026-10-12 staging で実測）
   agent-egress-net:
     name: ${AGENT_NAME_PREFIX:-carelink}-agent-egress-net
     driver: bridge
+    ipam:
+      config:
+        - subnet: ${AGENT_EGRESS_SUBNET:-172.31.240.0/24}

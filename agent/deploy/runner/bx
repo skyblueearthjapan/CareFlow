@@ -1,0 +1,47 @@
+#!/usr/local/bin/python3
+"""bx — モデルのコマンドを execd（別 uid）に頼んで走らせる小さな窓口。CLAUDE_CODE_SHELL_PREFIX に指定する。
+
+Claude Code は `bx '<コマンド文>'` と呼ぶ（cwd 記録・snapshot 込みの 1 本の文字列）。bash -c でそのまま走らせる。
+execd に届かないときは **自分では走らせず** 126 で終わる（認証情報を持つ uid で実行しない＝閉じる側に倒す）。
+"""
+import json
+import os
+import socket
+import sys
+
+SOCK = os.environ.get("RUNNER_EXEC_SOCKET", "/run/x/exec.sock")
+PASS = ("RK_MODE", "RK_RELAY_URL", "RK_RELAY_TOKEN", "RK_WORK_DIR", "TMPDIR", "PYTHONPATH", "PYTHONIOENCODING",
+        "LANG", "LC_ALL", "TZ", "COLUMNS", "LINES", "PATH", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY",
+        "http_proxy", "NO_PROXY", "no_proxy")
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    argv = ["/bin/bash", "-c", args[0]] if len(args) == 1 else args
+    if not argv:
+        return 2
+    req = {"argv": argv, "cwd": os.getcwd(), "env": {k: os.environ[k] for k in PASS if k in os.environ}}
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(SOCK)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        socket.send_fds(s, [json.dumps(req).encode("utf-8")], [0, 1, 2])
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        rep = json.loads(buf or b"{}")
+    except (OSError, ValueError) as e:
+        print(f"コマンドの実行係に届きません（実行しませんでした）: {e}", file=sys.stderr)
+        return 126
+    if "error" in rep and "exit" not in rep:
+        print(f"コマンドの実行係に断られました: {rep['error']}", file=sys.stderr)
+        return 126
+    return int(rep.get("exit", 126))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -66,7 +66,7 @@ fi
 # 3) 箱: CLI の会話の写し（~/.claude/projects・~/.codex/sessions・log）と作業フォルダー（/data/sessions）7 日
 if running "${PREFIX}-agent-sandbox"; then
   SB_ARGS=(--json --trigger "${TRIGGER}"); [ -n "${APPLY}" ] && SB_ARGS+=(--apply)
-  out=$(docker exec "${PREFIX}-agent-sandbox" python3 -I /srv/agent/relay/retention.py "${SB_ARGS[@]}" \
+  out=$(docker exec -u 10002:10000 "${PREFIX}-agent-sandbox" python3 -I /srv/agent/relay/retention.py "${SB_ARGS[@]}" \
         sandbox --home /home/agent --scratch /data/sessions) || rc=1
   printf '%s\n' "${out}" | "${PY}" -c 'import json,sys; d=json.loads(sys.stdin.read() or "{}"); print("[sandbox]", "dry-run" if d.get("dry_run") else "deleted", json.dumps(d.get("deleted")), "\n" + "\n".join("  %s\t%s\t%s" % (i["size"], i["ts"], i["path"]) for i in d.get("items", [])))' \
     | tee -a "${LOG_FILE}"

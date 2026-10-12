@@ -78,6 +78,49 @@ select json_build_object(
 )"""
 
 
+STAFF_CONFIG_SQL = """
+select coalesce(json_agg(row_to_json(x)), '[]'::json) as staff from (
+  select s.code, s.role, s.is_trainee, o.short_label as office,
+         (select coalesce(json_agg(so.short_label order by so.short_label), '[]'::json)
+            from staff_secondary_offices sx join offices so on so.id = sx.office_id
+           where sx.staff_id = s.id and so.deleted_at is null) as support_offices
+  from staff s
+  left join offices o on o.id = s.primary_office_id and o.deleted_at is null
+  where s.status = 'active' and s.deleted_at is null and s.code is not null
+  order by s.code) x"""
+
+
+def config_from_staff(rows: list[dict], cap_regular: int = 6) -> dict:
+    """職員の記録（稼働中・職員コード・業務ロール・主担当拠点・応援拠点）から、ならしの config を作る。
+    config.local.json と同じ形: 正規（role が manager 以外）= {コード: 主担当拠点}、
+    マネージャー = {コード: [主担当拠点 + 応援拠点]}。新人も正規に入れる（trainee_off が週全部を休みにして外す）。
+    拠点の無い人は入れない（道具が見ない）。事業所ごとの名前はコードに書かない（記録から読む）。"""
+    regular: dict[str, str] = {}
+    manager: dict[str, list[str]] = {}
+    for r in rows or []:
+        code = r.get("code")
+        support = r.get("support_offices") or []
+        if isinstance(support, str):
+            support = json.loads(support) if support[:1] == "[" else [x for x in support.split(",") if x]
+        if not code:
+            continue
+        if r.get("role") == "manager":
+            offices = list(dict.fromkeys([o for o in [r.get("office"), *support] if o]))
+            if offices:
+                manager[code] = offices
+        elif r.get("office"):
+            regular[code] = r["office"]
+    return {"cap_regular": int(cap_regular), "regular": regular, "manager": manager}
+
+
+def config_from_db(run_sql: RunSql, cap_regular: int = 6) -> dict:
+    """本番の職員の記録から config を作る（読み取り専用・1 文）。"""
+    rows = unwrap(run_sql(STAFF_CONFIG_SQL))
+    if not isinstance(rows, list):
+        raise RuntimeError("職員の一覧を読めませんでした")
+    return config_from_staff(rows, cap_regular)
+
+
 def extract_week(run_sql: RunSql, monday: date, out_dir: Path) -> tuple[Path, Path, Path]:
     """本番から読み、week.json / history.json / agent_extra.json を書く。"""
     ex = load_extract_module()

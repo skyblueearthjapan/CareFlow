@@ -14,6 +14,7 @@ solve() は ortools と openpyxl が要る: uv run --python 3.12 --with ortools 
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -22,7 +23,7 @@ from typing import Any, Callable
 
 from tools.leveling import DEFAULT_CONFIG, HERE, LEVELING_DIR, REPO_ROOT  # noqa: F401
 from tools.leveling.plan import build_plan
-from tools.leveling.run import LevelError, check_out_dir, monday_of, trainee_off
+from tools.leveling.run import LevelError, check_out_dir, monday_of, resolve_config, trainee_off
 
 sys.path.insert(0, str(LEVELING_DIR))
 import level_knobs  # noqa: E402
@@ -55,10 +56,6 @@ def load_week(week: str, out_dir: str | Path | None = None, *, from_dir: str | P
         from rk.config import load_config
 
         cfg = load_config()
-    cpath = Path(config_path) if config_path else DEFAULT_CONFIG
-    if not cpath.exists():
-        raise LevelError(f"{cpath} がありません（config.example.json を写して職員コードで書いてください・git 管理外）")
-    config = json.loads(cpath.read_text(encoding="utf-8"))
     iso_week = monday.isocalendar()[1]
     now = datetime.now()
     if out_dir is None:
@@ -69,6 +66,12 @@ def load_week(week: str, out_dir: str | Path | None = None, *, from_dir: str | P
         out = Path(out_dir)
     check_out_dir(out)
     out.mkdir(parents=True, exist_ok=True)
+    if config_path is None and cfg is None and run_sql is None and (
+            os.environ.get("RK_MODE", "").lower() == "relay" or not DEFAULT_CONFIG.exists()):
+        from rk.config import load_config  # 職員の記録から config を作るつなぎ先
+
+        cfg = load_config()
+    config, cpath = resolve_config(config_path, out, cfg, run_sql, log)
     if from_dir is not None or (out / "week.json").exists():
         in_dir = Path(from_dir) if from_dir is not None else out
         if not (in_dir / "week.json").exists():

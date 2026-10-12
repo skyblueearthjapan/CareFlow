@@ -28,5 +28,14 @@
     "/srv/CLAUDE.local.md",
     "/srv/.claude/CLAUDE.md",
     "/srv/agent/CLAUDE.local.md"
-  ]
+  ],
+  "permissions": {
+    "deny": [
+      "Read(//home/agent/**)",
+      "Edit(//home/agent/**)",
+      "Read(//home/agentx/**)",
+      "Read(//proc/**)",
+      "Read(//run/**)"
+    ]
+  }
 }

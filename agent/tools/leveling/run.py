@@ -57,6 +57,42 @@ def check_out_dir(out_dir: Path) -> None:
         raise LevelError("出力先がリポジトリの中なら docs/reports の下にしてください（利用者名を git に入れないため）")
 
 
+def resolve_config(config_path: str | Path | None, out_dir: Path, cfg=None,
+                   run_sql: Callable[[str], Any] | None = None,
+                   log: Callable[[str], None] = print) -> tuple[dict, Path]:
+    """ならしの config を決める。(config, 計算に渡すファイル) を返す。
+    1) --config があればそれ  2) PC/VPS で config.local.json があればそれ
+    3) 無いとき・中継の箱の中（RK_MODE=relay）は、本番の職員の記録から作って out_dir/config.json に書く
+       （正規 = 主担当拠点・マネージャー = 主担当＋応援拠点。cap_regular は RK_LEVEL_CAP_REGULAR か 6）。"""
+    if config_path:
+        cpath = Path(config_path)
+        if not cpath.exists():
+            raise LevelError(f"{cpath} がありません")
+        return json.loads(cpath.read_text(encoding="utf-8")), cpath
+    relay = os.environ.get("RK_MODE", "").lower() == "relay" or getattr(cfg, "mode", None) == "relay"
+    if not relay and DEFAULT_CONFIG.exists():
+        return json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8")), DEFAULT_CONFIG
+    from tools.leveling.extract_rk import config_from_db, rk_runner
+
+    try:
+        cap = int(os.environ.get("RK_LEVEL_CAP_REGULAR") or 6)
+    except ValueError:
+        raise LevelError("RK_LEVEL_CAP_REGULAR は数字です") from None
+    if run_sql is None:
+        if cfg is None:
+            raise LevelError("職員の記録を読むつなぎ先がありません（--config を指定してください）")
+        run_sql = rk_runner(cfg)
+    config = config_from_db(run_sql, cap)
+    if not config["regular"] and not config["manager"]:
+        raise LevelError("職員の記録から、拠点のある稼働中の職員を読めませんでした")
+    log(f"職員の記録から計算の設定を作りました（正規 {len(config['regular'])} 名・マネージャー {len(config['manager'])} 名・"
+        f"1 日の上限 {cap} 名）")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cpath = out_dir / "config.json"
+    cpath.write_text(json.dumps(config, ensure_ascii=False, indent=1), encoding="utf-8")
+    return config, cpath
+
+
 def trainee_off(config: dict, week_data: dict, off: list[str], log: Callable[[str], None] = print) -> list[str]:
     """新人は道具が見ない（is_trainee）→ config に入っていれば週全部を休みとして外す（--off に足して返す）。"""
     off = list(off)
@@ -111,16 +147,12 @@ def level(
         if not monday <= x <= sunday:
             raise LevelError(f"{x} は {monday}〜{sunday} の週の外です")
 
-    cpath = Path(config_path) if config_path else DEFAULT_CONFIG
-    if not cpath.exists():
-        raise LevelError(f"{cpath} がありません（config.example.json を写して職員コードで書いてください・git 管理外）")
-    config = json.loads(cpath.read_text(encoding="utf-8"))
-
     now = datetime.now()
     tag = tag_for(day_set, off, allow_over, balance, drop, add_special, bool(knob_argv))
     out_dir = Path(out) if out else Path(cfg.reports_dir) / f"{now:%Y-%m-%d}" / f"{now:%H%M}-week{iso_week}-leveling{tag}"
     check_out_dir(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    config, cpath = resolve_config(config_path, out_dir, cfg, run_sql, log)
 
     # 1) 読む（本番は読むだけ）
     if from_dir:
