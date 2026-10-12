@@ -126,7 +126,7 @@ def candidate_specs(draft: dict) -> list[dict]:
             freq = int(wp.get("frequency_per_week") or 0) or len(days_pref)
             pool = [d for d in (days_pref or open_days) if d in open_days]
             if not freq:
-                days, reason = [], reason or "希望の回数・曜日が無い（--add-patient で曜日を指定できます）"
+                days, reason = [], reason or "希望の回数・曜日がまだありません（患者マスタで希望を入れるか、らく助エージェントに曜日を伝えてください）"
             elif len(pool) <= freq:
                 days = sorted(pool)
                 if len(pool) < freq:
