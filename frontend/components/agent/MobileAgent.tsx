@@ -233,6 +233,7 @@ export function MobileAgentConversation({ sessionId }: { sessionId: string }) {
         <Conversation session={cur} onOpenPlan={setSheet} />
       </div>
       <Composer
+        voice
         mobile
         busy={busy}
         onStop={() => void a.stop()}

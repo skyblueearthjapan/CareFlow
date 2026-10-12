@@ -779,6 +779,89 @@
   padding: 6px 12px;
   height: 40px;
 }
+.rk-voice {
+  position: relative;
+  flex: none;
+}
+.rk-mic {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--rk-line);
+  background: var(--rk-surface);
+  color: var(--rk-fg);
+  font-size: 18px;
+  touch-action: manipulation;
+}
+.rk-mic[data-rec] {
+  border-color: var(--rk-red);
+  background: var(--rk-red-soft);
+  color: var(--rk-red);
+  font-size: 14px;
+}
+.rk-mic:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+.rk-voice-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 32px));
+  padding: 6px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--rk-line);
+  background: var(--rk-surface);
+  color: var(--rk-fg);
+  font-size: 12px;
+  box-shadow: 0 3px 10px rgba(120, 40, 70, 0.12);
+  z-index: 2;
+}
+.rk-voice-pop[data-tone='warn'] {
+  border-color: var(--rk-amber);
+  background: var(--rk-amber-soft);
+}
+.rk-voice-rec {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.rk-rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--rk-red);
+  animation: rk-rec-blink 1s steps(2, start) infinite;
+}
+@keyframes rk-rec-blink {
+  to {
+    visibility: hidden;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rk-rec-dot {
+    animation: none;
+  }
+}
+.rk-voice-x {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 2px 4px;
+}
+/* 右下の丸は指でもつかんで動かせる(ドラッグの間にページがスクロールしないように) */
+.rk-pill {
+  touch-action: none;
+}
+.rk-pill[data-dragging='true'] {
+  cursor: grabbing;
+}
 .rk-hint {
   margin: 0;
   font-size: 11px;

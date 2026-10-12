@@ -68,7 +68,11 @@ export async function fetcher<T = unknown>(
 ): Promise<T> {
   const url = path.startsWith('http') ? path : `${resolveBaseUrl()}${path}`;
   const h = new Headers(headers ?? {});
-  if (!h.has('Content-Type')) {
+  // FormData は boundary 付きの Content-Type をブラウザーに書かせる
+  if (
+    !h.has('Content-Type') &&
+    !(typeof FormData !== 'undefined' && init.body instanceof FormData)
+  ) {
     h.set('Content-Type', 'application/json');
   }
   if (accessToken) {

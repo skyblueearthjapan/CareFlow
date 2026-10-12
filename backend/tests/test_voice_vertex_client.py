@@ -469,3 +469,26 @@ def test_set_test_client_overrides_factory() -> None:
     stub = _client(handler)
     vertex_client.set_test_client(stub)
     assert vertex_client.get_voice_client(_Settings(voice_ai_provider="none")) is stub
+
+
+async def test_transcribe_plain_returns_text_without_schema() -> None:
+    """らく助エージェントへの声の入力: JSON にせず、文字だけを返す。東京の窓口。"""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_ok_payload("  田中さんが明日お休みです。\n"))
+
+    client = _client(handler)
+    text = await client.transcribe_plain(b"abc", "audio/mp4", "文字にして")
+    await client.aclose()
+
+    assert text == "田中さんが明日お休みです。"
+    assert "asia-northeast1-aiplatform.googleapis.com" in seen["url"]
+    config = seen["body"]["generationConfig"]
+    assert "responseSchema" not in config
+    assert "responseMimeType" not in config
+    inline = seen["body"]["contents"][0]["parts"][1]["inlineData"]
+    assert inline["mimeType"] == "audio/mp4"
+    assert base64.b64decode(inline["data"]) == b"abc"

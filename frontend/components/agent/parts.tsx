@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { workLabel } from './reducer';
+import { VoiceInputButton } from './VoiceInputButton';
 import type {
   PlanInfo,
   PlanSize,
@@ -586,6 +587,7 @@ export function Composer({
   onClearAttach,
   mobile,
   ideas,
+  voice,
 }: {
   onSend: (text: string) => void;
   onStop?: () => void;
@@ -595,9 +597,17 @@ export function Composer({
   /** スマホ: Enter は改行。送るのは ➤ ボタン */
   mobile?: boolean;
   ideas?: string[];
+  /** 🎙 声で入力を出す(サーバーが使えると言う時だけ実際に描く) */
+  voice?: boolean;
 }) {
   const [text, setText] = useState('');
   const composing = useRef(false);
+  const box = useRef<HTMLTextAreaElement>(null);
+  // 声の文は今の文の後ろに足す(消さない・送らない)
+  const appendVoice = (t: string) => {
+    setText((cur) => (cur.trim() ? `${cur.replace(/\s+$/, '')} ${t}` : t));
+    box.current?.focus();
+  };
   const submit = () => {
     const t = text.trim();
     if (!t) return;
@@ -625,6 +635,7 @@ export function Composer({
       )}
       <div className="rk-compose">
         <textarea
+          ref={box}
           aria-label="らく助に相談"
           rows={1}
           value={text}
@@ -641,6 +652,7 @@ export function Composer({
             }
           }}
         />
+        {voice && <VoiceInputButton onText={appendVoice} />}
         {busy && onStop ? (
           <button type="button" className="rk-stop" onClick={onStop}>
             止める

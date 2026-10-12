@@ -61,7 +61,7 @@ _AUDITED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # buffering entirely and record metadata only — the row still carries actor /
 # method / path / status / latency, with `{"_multipart": true}` as the body
 # marker so an auditor can tell "not captured" from "empty body".
-_MULTIPART_BODY_SKIP_PREFIXES = ("/api/v1/visit-recordings",)
+_MULTIPART_BODY_SKIP_PREFIXES = ("/api/v1/visit-recordings", "/api/v1/agent/transcribe")
 
 # Body placeholder persisted for the skipped uploads above.
 _MULTIPART_BODY_MARKER: dict[str, Any] = {"_multipart": True}

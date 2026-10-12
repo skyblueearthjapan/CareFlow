@@ -100,6 +100,8 @@ VISIT_SIGNATURE_RETENTION_DAYS=1825
 # 本番はここで vertex を明示する。none のままだと録音は保存されるが
 # 文字起こし・要約が一切生成されない。
 # SA キーは 0400 で bind-mount し、GOOGLE_APPLICATION_CREDENTIALS で指す。
+# らく助エージェントの 🎙 声で入力 (POST /api/v1/agent/transcribe) も同じ設定で動く。
+# 下の 4 つと SA キーのファイルが揃っていないと 🎙 は画面に出ない (新しい鍵は不要)。
 VOICE_AI_PROVIDER=vertex
 VERTEX_PROJECT_ID=rakusuke-voice
 VERTEX_LOCATION=asia-northeast1

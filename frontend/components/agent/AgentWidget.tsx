@@ -29,9 +29,19 @@ const HOME: Pos = { right: 16, bottom: 16 };
 /** 浮いている小窓の幅（左の端をつかんで変える・覚える）。広い表示は案を見るので、画面いっぱいまで。 */
 const minusGutter = (vw: number) => vw - 32;
 
-function loadPos(): Pos {
+/** たたんだ丸の位置(開いた窓とは別に覚える) */
+const PILL_POS_KEY = 'rk-agent-pill-pos';
+/** これだけ動かしたら「つかんで動かした」とみなし、開くクリックにしない */
+const DRAG_THRESHOLD_PX = 5;
+/** 矢印キー 1 回で動く量(Shift で大きく) */
+const KEY_STEP_PX = 10;
+const KEY_STEP_BIG_PX = 50;
+/** 動かした丸は、ダブルクリック(右下へ戻す)と見分けるため、開くのを少し待つ */
+const DBL_CLICK_WAIT_MS = 250;
+
+function loadPos(key = POS_KEY): Pos {
   try {
-    const raw = window.localStorage.getItem(POS_KEY);
+    const raw = window.localStorage.getItem(key);
     if (!raw) return HOME;
     const p = JSON.parse(raw) as Partial<Pos>;
     if (typeof p.right === 'number' && typeof p.bottom === 'number') {
@@ -42,13 +52,135 @@ function loadPos(): Pos {
   }
   return HOME;
 }
-function savePos(p: Pos | null) {
+function savePos(p: Pos | null, key = POS_KEY) {
   try {
-    if (p) window.localStorage.setItem(POS_KEY, JSON.stringify(p));
-    else window.localStorage.removeItem(POS_KEY);
+    if (p) window.localStorage.setItem(key, JSON.stringify(p));
+    else window.localStorage.removeItem(key);
   } catch {
     /* 保存できなくても動く */
   }
+}
+
+/** 右下基準の位置を画面の中に収める(w・h は丸の大きさ、vw・vh は画面の大きさ) */
+export function clampPos(p: Pos, w: number, h: number, vw: number, vh: number): Pos {
+  return {
+    right: Math.min(Math.max(0, p.right), Math.max(0, vw - w)),
+    bottom: Math.min(Math.max(0, p.bottom), Math.max(0, vh - h)),
+  };
+}
+
+/**
+ * たたんだ丸を動かす: マウスでも指でも(pointer events)。5px 以上動かしたら開かない。
+ * ダブルクリック・Home キーで右下へ戻す。矢印キーで動かす。画面の大きさが変わったら中へ戻す。
+ */
+function usePillDrag(open: () => void) {
+  const [pos, setPos] = useState<Pos>(HOME);
+  const [dragging, setDragging] = useState(false);
+  const el = useRef<HTMLButtonElement>(null);
+  const drag = useRef<{ x: number; y: number; p: Pos; moved: boolean } | null>(null);
+  const swallowClick = useRef(false);
+  const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fit = useCallback((p: Pos) => {
+    const w = el.current?.offsetWidth || 300;
+    const h = el.current?.offsetHeight || 64;
+    return clampPos(p, w, h, window.innerWidth, window.innerHeight);
+  }, []);
+
+  useEffect(() => {
+    setPos(fit(loadPos(PILL_POS_KEY)));
+    const onResize = () => setPos((p) => fit(p));
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      if (openTimer.current) clearTimeout(openTimer.current);
+    };
+  }, [fit]);
+
+  const moveTo = (p: Pos) => {
+    const next = fit(p);
+    setPos(next);
+    savePos(next, PILL_POS_KEY);
+  };
+  const reset = () => {
+    if (openTimer.current) clearTimeout(openTimer.current);
+    openTimer.current = null;
+    setPos(fit(HOME));
+    savePos(null, PILL_POS_KEY);
+  };
+  const atHome = pos.right === HOME.right && pos.bottom === HOME.bottom;
+
+  const props = {
+    ref: el,
+    'data-dragging': dragging,
+    style: { right: pos.right, bottom: pos.bottom },
+    onPointerDown: (e: React.PointerEvent) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      swallowClick.current = false;
+      drag.current = { x: e.clientX, y: e.clientY, p: pos, moved: false };
+      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    },
+    onPointerMove: (e: React.PointerEvent) => {
+      const d = drag.current;
+      if (!d) return;
+      const dx = e.clientX - d.x;
+      const dy = e.clientY - d.y;
+      if (!d.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+      if (!d.moved) {
+        d.moved = true;
+        setDragging(true);
+      }
+      setPos(fit({ right: d.p.right - dx, bottom: d.p.bottom - dy }));
+    },
+    onPointerUp: (e: React.PointerEvent) => {
+      const d = drag.current;
+      drag.current = null;
+      if (!d?.moved) return;
+      swallowClick.current = true;
+      setDragging(false);
+      moveTo({ right: d.p.right - (e.clientX - d.x), bottom: d.p.bottom - (e.clientY - d.y) });
+    },
+    onPointerCancel: () => {
+      if (drag.current?.moved) setDragging(false);
+      drag.current = null;
+    },
+    onClick: (e: React.MouseEvent) => {
+      if (swallowClick.current) {
+        swallowClick.current = false;
+        return;
+      }
+      // キーボード(detail 0)と右下のままの丸はすぐ開く。動かした丸はダブルクリックを待つ
+      if (e.detail === 0 || atHome) {
+        open();
+        return;
+      }
+      if (openTimer.current) return;
+      openTimer.current = setTimeout(() => {
+        openTimer.current = null;
+        open();
+      }, DBL_CLICK_WAIT_MS);
+    },
+    onDoubleClick: reset,
+    onKeyDown: (e: React.KeyboardEvent) => {
+      const step = e.shiftKey ? KEY_STEP_BIG_PX : KEY_STEP_PX;
+      const delta: Record<string, [number, number]> = {
+        ArrowLeft: [step, 0],
+        ArrowRight: [-step, 0],
+        ArrowUp: [0, step],
+        ArrowDown: [0, -step],
+      };
+      if (e.key === 'Home') {
+        e.preventDefault();
+        reset();
+        return;
+      }
+      const d = delta[e.key];
+      if (!d) return;
+      e.preventDefault();
+      moveTo({ right: pos.right + d[0], bottom: pos.bottom + d[1] });
+    },
+  };
+  return props;
 }
 
 /**
@@ -81,6 +213,10 @@ function WidgetInner() {
   const wideW = useResizableWidth({ storageKey: 'rk-agent-w-wide', defaultWidth: 1240, min: 760, max: minusGutter });
 
   useEffect(() => setPos(loadPos()), []);
+  const pill = usePillDrag(() => {
+    if (dockEl) setInDock(true);
+    setSize('compact');
+  });
 
   // 型の作業場(§11-2): 右の列があればそこへ収まる。↘ で右下の丸へ、丸を押すと列へ戻る。
   // ページを離れたら(列が消えたら)右下の丸にたたむ。会話は同じもの(同じ Provider の中)。
@@ -176,6 +312,7 @@ function WidgetInner() {
 
   const composer = (
     <Composer
+      voice
       busy={busy}
       onStop={() => void a.stop()}
       onSend={(t) => void a.send(t, docked ? undefined : (planId ?? undefined))}
@@ -277,12 +414,10 @@ function WidgetInner() {
         type="button"
         className="rk-agent rk-pill"
         data-size="mini"
-        style={{ right: pos.right, bottom: pos.bottom }}
+        {...pill}
         aria-label="らく助を開く"
-        onClick={() => {
-          if (dockEl) setInDock(true);
-          setSize('compact');
-        }}
+        title="押すと開きます。つかんで動かせます（ダブルクリックで右下へ戻ります）"
+        aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Home"
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={poseSrc(current?.pose ?? 'wave')} alt="" width={40} height={40} />

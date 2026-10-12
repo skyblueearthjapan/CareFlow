@@ -226,6 +226,32 @@ class VertexVoiceClient:
         payload = await self._post(body)
         return self._parse_result(payload)
 
+    async def transcribe_plain(
+        self,
+        audio_bytes: bytes,
+        mime_type: str,
+        prompt: str,
+        *,
+        max_output_tokens: int = 1024,
+    ) -> str:
+        """Short audio → plain text (no JSON schema, no summary).
+
+        らく助エージェントへの声の入力用 (60 秒まで)。1 回だけ投げる。
+        """
+        if len(audio_bytes) > MAX_INLINE_AUDIO_BYTES:
+            raise VoiceAiError(
+                "too_large",
+                f"audio is {len(audio_bytes)} bytes (inline limit {MAX_INLINE_AUDIO_BYTES})",
+            )
+        body = self._build_body(audio_bytes, mime_type, prompt)
+        body["generationConfig"] = {
+            "maxOutputTokens": max_output_tokens,
+            "thinkingConfig": {"thinkingBudget": 0},
+            "temperature": 0.0,
+        }
+        payload = await self._post(body)
+        return _extract_text(payload).strip()
+
     # --- Internals --------------------------------------------------------
 
     def _build_body(self, audio_bytes: bytes, mime_type: str, prompt: str) -> dict[str, Any]:
@@ -406,6 +432,25 @@ def set_test_client(client: VertexVoiceClient | None) -> None:
     """Test seam: inject a stub client without monkeypatching the constructor."""
     global _OVERRIDE
     _OVERRIDE = client
+
+
+def is_configured(settings: Any) -> bool:
+    """Vertex を呼べる設定がそろっているか (呼ばずに判定する)。
+
+    ``VOICE_AI_PROVIDER=vertex``・プロジェクト ID・SA キーのファイルが揃っている
+    時だけ True。テストでクライアントを差し込んでいる間は True。
+    """
+    if _OVERRIDE is not None:
+        return True
+    provider = str(getattr(settings, "voice_ai_provider", "vertex") or "vertex").strip().lower()
+    if provider != "vertex":
+        return False
+    if not str(getattr(settings, "vertex_project_id", "") or "").strip():
+        return False
+    path = getattr(settings, "google_application_credentials", None) or os.getenv(
+        "GOOGLE_APPLICATION_CREDENTIALS"
+    )
+    return bool(path) and os.path.isfile(str(path))
 
 
 def get_voice_client(settings: Any) -> VertexVoiceClient | None:

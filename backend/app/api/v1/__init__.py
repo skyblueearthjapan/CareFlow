@@ -12,6 +12,7 @@ from app.api.v1 import (
     admin_visit_recordings,
     admin_visit_signatures,
     agent,
+    agent_transcribe,
     allocate,
     audit_logs,
     auth,
@@ -265,5 +266,7 @@ api_router.include_router(
 )
 # らく助 専門エージェント向けの読み取り専用 API (admin のみ・docs/plans/agent-skills/api-additions-2026-10-12.md)
 api_router.include_router(agent.router, prefix="/agent", tags=["agent"])
+# らく助エージェントへの声の入力 (admin のみ・音声は保存しない・docs/plans/voice-input-and-karte-engine-research-2026-10-13.md)
+api_router.include_router(agent_transcribe.router, prefix="/agent", tags=["agent"])
 
 __all__ = ["api_router"]
