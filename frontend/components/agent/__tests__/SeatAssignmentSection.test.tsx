@@ -77,10 +77,11 @@ describe('SeatAssignmentSection', () => {
     expect(
       await screen.findByRole('columnheader', { name: 'A004 の ChatGPT' }),
     ).toBeInTheDocument();
-    const mine = screen.getByRole('columnheader', { name: /自分の席/ });
-    expect(mine).toHaveAttribute('data-disabled');
+    // 2026-10-13: サインインしていない席は列に出さず、表の下に 1 行でまとめる（狭い所に詰め込まない）
+    expect(screen.queryByRole('columnheader', { name: /自分の席/ })).not.toBeInTheDocument();
+    expect(screen.getByTestId('rk-es-unsigned')).toHaveTextContent('自分');
     expect(screen.getByRole('radio', { name: 'A004 は A004 の ChatGPT' })).toBeChecked();
-    expect(screen.getByRole('radio', { name: /A004 は 自分の席/ })).toBeDisabled();
+    expect(screen.queryByRole('radio', { name: /A004 は 自分の席/ })).not.toBeInTheDocument();
   });
 
   it('割り当て先がサインインしていない行に「席がサインインしていません」', async () => {

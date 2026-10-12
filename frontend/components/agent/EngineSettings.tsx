@@ -498,10 +498,21 @@ export function SeatOption({
 }
 
 /** 列の見出し: 「A004 の ChatGPT」(サインインしている AI の名前)。自分の席は「自分の席」 */
+/** ログイン ID だけの名前（a001・s001）は大文字で見せる。 */
+function personName(name: string): string {
+  return /^[a-z]\d{2,}$/i.test(name.trim()) ? name.trim().toUpperCase() : name;
+}
+
+/** 表の見出し用の短い 2 行（上: 誰の席・下: サインインしている AI）。PO 2026-10-13「狭い所に詰め込みすぎ」 */
+function seatHead(c: SeatColumn, providers: EngineProvider[]): { who: string; ai: string } {
+  const on = providers.filter((p) => c.engines[p]?.state === 'ok').map((p) => ENGINE_NAME[p]);
+  return { who: c.me ? '自分' : personName(c.name), ai: on.join('・') };
+}
+
 function seatLabel(c: SeatColumn, providers: EngineProvider[]): string {
   const on = providers.filter((p) => c.engines[p]?.state === 'ok').map((p) => ENGINE_NAME[p]);
   const what = on.length ? on.join('・') : 'AI（サインインしていません）';
-  return c.me ? `自分の席（${what}）` : `${c.name} の ${what}`;
+  return c.me ? `自分の席（${what}）` : `${personName(c.name)} の ${what}`;
 }
 
 /**
@@ -604,29 +615,35 @@ export function SeatAssignmentSection({ engines }: { engines: EngineAdmin }) {
             <thead>
               <tr>
                 <th scope="col">名前</th>
-                {v.seats.map((c) => (
-                  <th
-                    scope="col"
-                    key={c.owner_user_id}
-                    data-disabled={!c.signed_in || undefined}
-                    className="rk-es-seatcol"
-                  >
-                    {seatLabel(c, v.providers)}
-                  </th>
-                ))}
+                {signed.map((c) => {
+                  const h = seatHead(c, v.providers);
+                  return (
+                    <th
+                      scope="col"
+                      key={c.owner_user_id}
+                      className="rk-es-seatcol"
+                      aria-label={seatLabel(c, v.providers)}
+                    >
+                      <span className="rk-es-seatwho">{h.who}</span>
+                      <small>{h.ai}</small>
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
               {v.rows.map((r) => (
                 <tr key={r.user_id} data-testid={`rk-es-assign-${r.user_id}`}>
                   <td>
-                    {r.name}
-                    {r.me && <small>（あなた）</small>}
+                    <span className="rk-es-person">
+                      {personName(r.name)}
+                      {r.me && <small>（あなた）</small>}
+                    </span>
                     {!r.seat_signed_in && (
-                      <small className="rk-es-warn"> 席がサインインしていません</small>
+                      <small className="rk-es-warn rk-es-block">使う席がサインインしていません</small>
                     )}
                   </td>
-                  {v.seats.map((c) => (
+                  {signed.map((c) => (
                     <td key={c.owner_user_id}>
                       <SeatOption
                         name={`rk-assign-${r.user_id}`}
@@ -644,6 +661,19 @@ export function SeatAssignmentSection({ engines }: { engines: EngineAdmin }) {
               ))}
             </tbody>
           </table>
+          {signed.length === 0 && (
+            <p className="rk-es-note">まだ AI にサインインした席がありません。</p>
+          )}
+          {v.seats.some((c) => !c.signed_in) && (
+            <p className="rk-es-note" data-testid="rk-es-unsigned">
+              まだ AI にサインインしていない席：
+              {v.seats
+                .filter((c) => !c.signed_in)
+                .map((c) => (c.me ? '自分' : personName(c.name)))
+                .join('・')}
+              （サインインすると、表に列が増えます）
+            </p>
+          )}
         </>
       )}
     </section>

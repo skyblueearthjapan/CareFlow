@@ -315,3 +315,11 @@
 .rk-es-warn {
   color: var(--rk-warn, #b45309);
 }
+
+/* AI の席の割り当て: 見出しは短い 2 行・狭い所で 1 文字ずつ折れない（PO 2026-10-13） */
+.rk-es-seatcol { white-space: nowrap; text-align: center; }
+.rk-es-seatcol small { display: block; font-weight: 400; }
+.rk-es-seatwho { display: block; }
+.rk-es-table td:first-child { white-space: nowrap; }
+.rk-es-person { display: block; }
+.rk-es-block { display: block; white-space: normal; }
