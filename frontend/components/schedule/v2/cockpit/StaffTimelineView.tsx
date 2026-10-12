@@ -16,7 +16,7 @@
  *   - 横ドラッグ = 時刻変更 (15分スナップ・週のみ)
  *   - 縦ドラッグ (別のスタッフ行へドロップ) = 担当変更 (週のみ)。行の外で離したら担当は変えない。
  *   - 3px 以内の動き = クリック扱い → `onVisitClick` (親が VisitActionMenu を開く)
- *   - 青ピン (week_pinned) / 今週だけ取消 (status='cancelled') / 過去日 / 閲覧のみ
+ *   - 今週だけ取消 (status='cancelled') / 過去日 / 閲覧のみ
  *     はドラッグ不可。カーソル・title・aria-label で理由を示し `aria-disabled` を付ける。
  *   - 氏名列の ⠿ を別のスタッフ行の氏名セルへドロップ = **その日の 2 人の予定を丸ごと入れ替え**
  *     (PO 要望 2026-08-22)。バーの DnD (1 訪問) とは別物で、HTML5 DnD を使う。
@@ -1542,18 +1542,16 @@ const Bar = React.memo(function Bar({
 }: BarProps) {
   const isVisit = item.kind === 'visit';
   const cancelled = isVisit ? item.visit.status === 'cancelled' : item.event.cancelled_at != null;
-  const pinned = isVisit ? item.visit.week_pinned === true : false;
   // 訪問単位でサービス内容を上書きしている印 (mig 0078)。自動判定 (区分 × 資格)
   // から外れている = 後で「なぜこの訪問だけ違うのか」を追えるようにする。
   const serviceOverride =
     isVisit && item.visit.kaipoke_service_override ? item.visit.kaipoke_service_override : null;
 
-  // 状態の理由 (取消・青ピン) を種別の理由 (イベント) より先に出す。
+  // 状態の理由 (取消) を種別の理由 (イベント) より先に出す。
   let blockReason: string | null = null;
   if (!canEdit) blockReason = '閲覧のみのため動かせません。';
   else if (isPast) blockReason = '過去日は変更できません。';
   else if (cancelled) blockReason = '今週だけ取消済みのため動かせません。';
-  else if (pinned) blockReason = '青ピン（今週だけ固定）のため動かせません。';
   else if (!isVisit) blockReason = 'イベントはクリックして編集してください。';
   const movable = blockReason === null;
 
@@ -1581,7 +1579,6 @@ const Bar = React.memo(function Bar({
     timeLabel,
     title,
     `担当 ${rowName}`,
-    pinned ? '青ピン' : '',
     cancelled ? '今週だけ取消' : '',
     blockReason ?? '',
   ]
@@ -1635,7 +1632,6 @@ const Bar = React.memo(function Bar({
             data-testid={`tl-unsent-${item.id}`}
           />
         ) : null}
-        {pinned ? '📌 ' : ''}
         {serviceOverride ? (
           <span
             title={`カイポケのサービス内容に合わせています: ${serviceOverride}`}

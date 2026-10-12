@@ -28,6 +28,7 @@ from sqlalchemy import select
 from app.models.accompaniment import ACCOMPANIMENT_KIND_TRAINEE, Accompaniment
 from app.models.course import Course
 from app.models.inbound_snapshot import InboundSnapshot
+from app.models.patient import Patient
 from app.models.visit import Visit
 from app.models.visit_checkin import VisitCheckin
 from app.models.visit_staff_assignment import VisitStaffAssignment
@@ -50,7 +51,6 @@ _VISIT_FIELDS: tuple[str, ...] = (
     "type",
     "status",
     "source",
-    "week_pinned",
     "note",
     "kaipoke_id",
     "course_id",
@@ -158,7 +158,10 @@ async def snapshot_week(
     # visit_id → payload 内 index (復元時は新 UUID になるため位置で参照する)。
     index_of = {v.id: i for i, v in enumerate(visits)}
     payload = {
-        "visits": [{f: _dump(getattr(v, f)) for f in _VISIT_FIELDS} for v in visits],
+        # "id" は「空にする」の元に戻す (消した訪問だけ戻す) が使う。復元は新 UUID で作る。
+        "visits": [
+            {"id": str(v.id), **{f: _dump(getattr(v, f)) for f in _VISIT_FIELDS}} for v in visits
+        ],
         "assignments": [
             {"visit_index": index_of[a.visit_id], "staff_id": _dump(a.staff_id)}
             for a in assignment_rows
@@ -212,6 +215,56 @@ async def snapshot_week(
     for row in olds:
         await db.delete(row)
     return snap
+
+
+def _visit_from_payload(vdata: dict) -> Visit:
+    """保存した 1 訪問から Visit を作る (新 UUID・未追加)."""
+    return Visit(
+        patient_id=_load_uuid(vdata.get("patient_id")),
+        primary_staff_id=_load_uuid(vdata.get("primary_staff_id")),
+        secondary_staff_id=_load_uuid(vdata.get("secondary_staff_id")),
+        mentor_staff_id=_load_uuid(vdata.get("mentor_staff_id")),
+        visit_date=date.fromisoformat(vdata["visit_date"]),
+        start_time=time.fromisoformat(vdata["start_time"]),
+        end_time=time.fromisoformat(vdata["end_time"]),
+        type=vdata.get("type") or "regular",
+        status=vdata.get("status") or "planned",
+        source=vdata.get("source") or "manual",
+        note=vdata.get("note"),
+        kaipoke_id=vdata.get("kaipoke_id"),
+        course_id=_load_uuid(vdata.get("course_id")),
+        required_staff_count=int(vdata.get("required_staff_count") or 1),
+        visit_group_id=_load_uuid(vdata.get("visit_group_id")),
+        manual_staff_override=bool(vdata.get("manual_staff_override")),
+        kaipoke_service_override=vdata.get("kaipoke_service_override"),
+        is_unplanned=bool(vdata.get("is_unplanned")),
+    )
+
+
+def _restore_links(db: AsyncSession, payload: dict, new_by_index: dict[int, Visit]) -> None:
+    """スタッフ割当・同行リンクを書き戻す (index → 新 visit に含まれるものだけ)."""
+    for adata in payload.get("assignments") or []:
+        idx = adata.get("visit_index")
+        sid = _load_uuid(adata.get("staff_id"))
+        if isinstance(idx, int) and idx in new_by_index and sid is not None:
+            db.add(VisitStaffAssignment(visit_id=new_by_index[idx].id, staff_id=sid))
+    for tdata in payload.get("accompaniments") or []:
+        idx = tdata.get("visit_index")
+        # 新キー優先 → 旧キー (mig 0072 以前に取ったスナップショットの復元)。
+        tid = _load_uuid(tdata.get("accompanying_staff_id")) or _load_uuid(
+            tdata.get("trainee_staff_id")
+        )
+        if isinstance(idx, int) and idx in new_by_index and tid is not None:
+            db.add(
+                Accompaniment(
+                    accompanying_staff_id=tid,
+                    target_type="visit",
+                    visit_id=new_by_index[idx].id,
+                    source=tdata.get("source") or "manual",
+                    kind=tdata.get("kind") or ACCOMPANIMENT_KIND_TRAINEE,
+                    created_by=None,
+                )
+            )
 
 
 @dataclass
@@ -296,54 +349,66 @@ async def restore_snapshot(
     # 3) 訪問の書き戻し (新 UUID で INSERT)。
     new_visits: list[Visit] = []
     for vdata in snap.payload.get("visits") or []:
-        v = Visit(
-            patient_id=_load_uuid(vdata.get("patient_id")),
-            primary_staff_id=_load_uuid(vdata.get("primary_staff_id")),
-            secondary_staff_id=_load_uuid(vdata.get("secondary_staff_id")),
-            mentor_staff_id=_load_uuid(vdata.get("mentor_staff_id")),
-            visit_date=date.fromisoformat(vdata["visit_date"]),
-            start_time=time.fromisoformat(vdata["start_time"]),
-            end_time=time.fromisoformat(vdata["end_time"]),
-            type=vdata.get("type") or "regular",
-            status=vdata.get("status") or "planned",
-            source=vdata.get("source") or "manual",
-            week_pinned=bool(vdata.get("week_pinned")),
-            note=vdata.get("note"),
-            kaipoke_id=vdata.get("kaipoke_id"),
-            course_id=_load_uuid(vdata.get("course_id")),
-            required_staff_count=int(vdata.get("required_staff_count") or 1),
-            visit_group_id=_load_uuid(vdata.get("visit_group_id")),
-            manual_staff_override=bool(vdata.get("manual_staff_override")),
-            kaipoke_service_override=vdata.get("kaipoke_service_override"),
-            is_unplanned=bool(vdata.get("is_unplanned")),
-        )
+        v = _visit_from_payload(vdata)
         db.add(v)
         new_visits.append(v)
     await db.flush()
     result.restored = len(new_visits)
 
     # 4) スタッフ割当・同行リンクの書き戻し (index → 新 visit)。
-    for adata in snap.payload.get("assignments") or []:
-        idx = adata.get("visit_index")
-        sid = _load_uuid(adata.get("staff_id"))
-        if isinstance(idx, int) and 0 <= idx < len(new_visits) and sid is not None:
-            db.add(VisitStaffAssignment(visit_id=new_visits[idx].id, staff_id=sid))
-    for tdata in snap.payload.get("accompaniments") or []:
-        idx = tdata.get("visit_index")
-        # 新キー優先 → 旧キー (mig 0072 以前に取ったスナップショットの復元)。
-        tid = _load_uuid(tdata.get("accompanying_staff_id")) or _load_uuid(
-            tdata.get("trainee_staff_id")
-        )
-        if isinstance(idx, int) and 0 <= idx < len(new_visits) and tid is not None:
-            db.add(
-                Accompaniment(
-                    accompanying_staff_id=tid,
-                    target_type="visit",
-                    visit_id=new_visits[idx].id,
-                    source=tdata.get("source") or "manual",
-                    kind=tdata.get("kind") or ACCOMPANIMENT_KIND_TRAINEE,
-                    created_by=None,
-                )
-            )
+    _restore_links(db, snap.payload, dict(enumerate(new_visits)))
     await db.flush()
     return result
+
+
+class ClearUndoBlockedError(RuntimeError):
+    """「空にする」を元に戻せない (もう戻した / 空にした後に予定が入った)."""
+
+
+async def restore_cleared_visits(db: AsyncSession, snap: InboundSnapshot, *, now: datetime) -> int:
+    """「この週を空にする」で消した訪問だけを書き戻す (残した訪問には触れない).
+
+    ``restore_snapshot`` は週を白紙化して全部作り直すため、残した打刻付きの訪問を
+    二重にしてしまう。こちらは ``payload['cleared_visit_ids']`` の訪問だけを新 UUID で
+    作り直し、担当を外したコースの担当 (``payload['cleared_courses']``) を戻す。
+    空にした後に予定が入っている (残した訪問以外が 1 件でもある) 週は戻さない。
+    """
+    payload = snap.payload or {}
+    if payload.get("restored_at"):
+        raise ClearUndoBlockedError("この『空にする』はすでに元に戻しています")
+    kept_ids = set(payload.get("kept_visit_ids") or [])
+    cleared_ids = set(payload.get("cleared_visit_ids") or [])
+    current = await _week_visits(db, snap.week_start)
+    office_id = _load_uuid(payload.get("office_id"))
+    if office_id is not None:
+        # 事業所限定で空にした場合は、その事業所の訪問だけを「変わったか」の判定に使う。
+        in_office = set(
+            (
+                await db.scalars(
+                    select(Patient.id).where(Patient.primary_office_id == office_id)
+                )
+            ).all()
+        )
+        current = [v for v in current if v.patient_id in in_office]
+    if any(str(v.id) not in kept_ids for v in current):
+        raise ClearUndoBlockedError(
+            "空にした後に予定が入っているため、元に戻せません（先に『この週を空にする』を押してください）"
+        )
+    new_by_index: dict[int, Visit] = {}
+    for i, vdata in enumerate(payload.get("visits") or []):
+        if vdata.get("id") in cleared_ids:
+            v = _visit_from_payload(vdata)
+            db.add(v)
+            new_by_index[i] = v
+    await db.flush()
+    _restore_links(db, payload, new_by_index)
+    for cdata in payload.get("cleared_courses") or []:
+        course = await db.get(Course, _load_uuid(cdata.get("id")))
+        if course is not None and course.deleted_at is None and course.assigned_staff_id is None:
+            course.assigned_staff_id = _load_uuid(cdata.get("assigned_staff_id"))
+            course.course_status = cdata.get("course_status") or course.course_status
+            at = cdata.get("staff_assigned_at")
+            course.staff_assigned_at = datetime.fromisoformat(at) if at else None
+    snap.payload = {**payload, "restored_at": now.isoformat()}
+    await db.flush()
+    return len(new_by_index)

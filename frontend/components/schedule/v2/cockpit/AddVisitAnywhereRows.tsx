@@ -262,7 +262,7 @@ export function WeekSourceRow({
   onChange,
 }: {
   date: string;
-  /** その週の「動かせる」訪問すべて (planned・青ピンでない・当日以前でない)。 */
+  /** その週の「動かせる」訪問すべて (planned・当日以前でない)。 */
   candidates: VisitLite[];
   /** 割り当てられた元。'' = この日には残っていない → 新規追加になる。 */
   selectedId: string;

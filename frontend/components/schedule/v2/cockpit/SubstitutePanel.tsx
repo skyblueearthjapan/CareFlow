@@ -111,14 +111,12 @@ export function SubstitutePanel({
     .filter((g) => plannedVisitsOf(g).length > 0)
     .map((g) => g.course_label)
     .filter(Boolean);
-  const pinnedNames = plannedVisits.filter((v) => v.week_pinned).map((v) => v.patient_name);
-  const blocked = pinnedNames.length > 0;
 
   const wholeDay = React.useMemo(() => pickWholeDayCandidates(groups), [groups]);
   // 候補の取得が終わるまでは押させない: 「0 件」と「まだ分からない」を混同すると、
-  // 青ピンや予定を見落としたまま実行してしまう。
+  // 予定を見落としたまま実行してしまう。
   const loading = canEdit && (query.isPending || query.isError);
-  const disabled = !canEdit || submitting || blocked || loading;
+  const disabled = !canEdit || submitting || loading;
 
   return (
     <Dialog open onOpenChange={(next) => (next ? undefined : onClose())}>
@@ -174,19 +172,6 @@ export function SubstitutePanel({
               ⚠ {w}
             </p>
           ))}
-
-          {/* 青ピン (今週固定) は「今週はこの人・この位置のまま」の宣言。
-              休みにすると担当が外れるので、解除してもらうまで実行させない。 */}
-          {blocked ? (
-            <p
-              className="rounded border border-error/40 bg-error/5 px-2 py-1.5 text-[12px] text-error"
-              data-testid="substitute-pinned"
-            >
-              今週固定（青ピン）の予定が {pinnedNames.length}件あります（
-              {pinnedNames.map((n) => `${n}様`).join('・')}
-              ）。青ピンを外してから休みにしてください。
-            </p>
-          ) : null}
 
           {/* 丸ごと引き受けられる人がいるときだけ出す (1 人ずつの提案はしない)。 */}
           {wholeDay.length > 0 ? (

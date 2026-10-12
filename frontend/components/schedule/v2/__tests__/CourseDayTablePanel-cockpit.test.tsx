@@ -365,10 +365,6 @@ vi.mock('@/lib/queries/assign_staff_only', () => ({
   useAssignStaffOnly: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useApplyStaffReview: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
-vi.mock('@/lib/queries/g21', () => ({
-  useTogglePfvPin: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-  useBulkPinPfvs: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-}));
 vi.mock('@/lib/queries/autoScheduleV2', () => {
   const noop = () => ({
     mutateAsync: vi.fn(),
@@ -382,7 +378,6 @@ vi.mock('@/lib/queries/autoScheduleV2', () => {
     useDiffAddProposalsMutation: noop,
     useFullOptimizeMutation: noop,
     useApplyIndividualMutation: noop,
-    useResetToFixedMutation: noop,
     useApplyWeekOnlyMutation: noop,
     useUnassignAllStaffMutation: noop,
   };
@@ -450,7 +445,6 @@ vi.mock('@/lib/queries/cockpit', () => ({
               patient_name: '田中',
               start_time: '09:00',
               end_time: '10:00',
-              week_pinned: false,
               status: 'planned',
             },
           ],
@@ -1191,15 +1185,6 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     await vi.waitFor(() => expect(mockAssignStaffWeek).toHaveBeenCalledTimes(2));
     const ids = mockAssignStaffWeek.mock.calls.map((c) => (c[0] as { visit_id: string }).visit_id);
     expect(ids).toEqual(['v1', 'v2']);
-  });
-
-  it('(g3) スタッフ入れ替え: 青ピン / 新人 / 当日以前 は実行できない', async () => {
-    setupHooks({ visits: [swapVisit('v1', STAFF_1, '09:00:00', { week_pinned: true })] });
-    renderStaffTab();
-    await openSwapDialog();
-
-    expect(screen.getByTestId('cockpit-staff-swap-summary')).toHaveTextContent('青ピン');
-    expect(screen.getByTestId('cockpit-staff-swap-confirm')).toBeDisabled();
   });
 
   it('(g4) スタッフ入れ替え: 新人は入れ替え相手にできない (⠿ を出さない)', () => {

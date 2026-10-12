@@ -139,7 +139,6 @@ def _visit_dict(v: Visit, course: Course | None, office_label: str | None, pname
         "required_staff_count": v.required_staff_count,
         "visit_group_id": _s(v.visit_group_id),
         "source": v.source,
-        "week_pinned": bool(v.week_pinned),
         "status": v.status,
         "is_unplanned": bool(v.is_unplanned),
         "manual_staff_override": bool(v.manual_staff_override),

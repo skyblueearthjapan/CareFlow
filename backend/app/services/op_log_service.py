@@ -99,11 +99,6 @@ async def check_cancel_visit_allowed(
     """
     if not visits:
         return None
-    # 青ピン (蓋) はどちら向きでもブロックする — 「今週この位置のまま」の宣言は
-    # 取消にも及ぶ (解除してから操作する)。
-    if any(bool(getattr(v, "week_pinned", False)) for v in visits):
-        return "今週固定（青ピン）されています。解除してから取消してください"
-
     if not cancel:
         if any(v.status != VISIT_STATUS_CANCELLED for v in visits):
             return "取消済み (cancelled) の訪問のみ戻せます"

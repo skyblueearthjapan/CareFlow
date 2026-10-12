@@ -120,26 +120,13 @@ function baseServiceMinutes(pattern: WeeklyPattern | null | undefined): number {
 /**
  * 所要時間セレクトの選択肢。標準の刻みに「基本時間」と「現在値」を必ず含める。
  * 現在値を含めるのは、選択肢に無い値 (取込由来の 65 分など) を開いたときに
- * 未選択表示のまま黙って別の値へ化けるのを防ぐため (可動域の旧値と同じ流儀)。
+ * 未選択表示のまま黙って別の値へ化けるのを防ぐため。
  */
 function durationOptionsFor(baseMin: number, currentMin: number): number[] {
   return Array.from(new Set([...SERVICE_MINUTES_OPTIONS, baseMin, currentMin])).sort(
     (a, b) => a - b,
   );
 }
-
-/**
- * 旧 4 段階時代の値のラベル (PO 決定 2026-08-08 で 2 段階へ整理).
- *
- * 本番の利用実績は time_flexible / day_flexible とも **0 件** だったため移行は
- * 不要だったが、万一これらの値が入っている行を開いたときに、選択肢に無いせいで
- * 黙って別の値へ化けることがないよう、表示用のラベルだけ残す。
- * 一度でも編集されれば 2 段階のいずれかに収束する。
- */
-const LEGACY_MOVABILITY_LABELS: Record<string, string> = {
-  time_flexible: '時刻変更可（旧設定）',
-  day_flexible: '曜日変更可（旧設定）',
-};
 
 // ─── 案Z (PO 決定 2026-08-09): コース空き判定 ────────────────────────────────
 
@@ -817,7 +804,7 @@ function WeekGrid({
                 {/* 完全固定 (統合 / PO 決定 2026-08-09):
                     旧「ピン留め」(is_pinned) と「可動域: 完全固定」を 1 概念に統合。
                     - チェック ON = movability='locked' (BE が is_pinned をミラー)
-                    - 意味は「エンジン (自動最適化・週生成・提案 apply) が動かさない」
+                    - 意味は「曜日と時刻を固定 (エンジンは動かさない)。コース・担当は動くことがある」
                     - 人手の編集は常に可 (編集ロックはしない / 保存で 422 にもならない)
                     - 切替は通常の PUT (保存) に含める。旧 PATCH /pin フローは廃止。 */}
                 <label
@@ -838,16 +825,7 @@ function WeekGrid({
                 </label>
                 {isLocked ? (
                   <span className="text-xs text-text-muted" data-testid={`pfv-locked-note-${wd}`}>
-                    システムはこの枠を動かしません（手動での変更はできます）
-                  </span>
-                ) : null}
-                {LEGACY_MOVABILITY_LABELS[row.movability] ? (
-                  /* 旧 4 段階の値が残っている行のための表示。保存すると 2 段階へ収束する。 */
-                  <span
-                    className="text-xs text-text-muted"
-                    data-testid={`pfv-legacy-movability-${wd}`}
-                  >
-                    旧設定: {LEGACY_MOVABILITY_LABELS[row.movability]}
+                    システムはこの枠の曜日と時刻を動かしません（コース・担当は動くことがあります。手動での変更はできます）
                   </span>
                 ) : null}
                 {errors[wd] ? <span className="text-xs text-error">{errors[wd]}</span> : null}
@@ -1390,9 +1368,7 @@ function ModePanel({
           className="flex flex-wrap items-center gap-2 rounded-md border border-red-200 bg-red-50/50 px-3 py-2"
           data-testid="pfv-lock-all-toolbar"
         >
-          <span className="text-xs font-medium text-red-700">
-            完全固定（システムは動かさない）:
-          </span>
+          <span className="text-xs font-medium text-red-700">完全固定（曜日と時刻を固定）:</span>
           <Button
             type="button"
             variant="outline"

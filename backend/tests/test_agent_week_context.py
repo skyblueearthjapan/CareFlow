@@ -288,7 +288,7 @@ async def test_week_context_mirrors_extract(client, db) -> None:
     assert v["start_time"] == "09:00:00"
     assert v["course_code"] == "M"
     assert v["course_office"] == "稲"
-    assert v["week_pinned"] is True
+    assert "week_pinned" not in v
     assert v["primary_staff_id"] is None
     assert v["course_staff_id"] == str(seed["s1"].id)
     assert v["effective_staff_id"] == str(seed["s1"].id)

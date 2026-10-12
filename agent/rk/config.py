@@ -4,7 +4,11 @@
   RK_ENV             prod | staging（既定 prod）。staging は VPS の使い捨て試験環境（agent/staging）:
                      ポート 18101・コンテナ stg-postgres・バックアップ /opt/carelink/agent-staging/backups・
                      資格情報/トークンは ~/.rakusuke/*-staging.json・実行記録は agent/runs/staging
-  RK_MODE            pc | vps（既定 pc）
+  RK_MODE            pc | vps | relay（既定 pc）。relay = 中継（agent/relay）の内側口だけに話す（箱の中の CLI 用・
+                     設計 docs/plans/agent-ui/phase3-implementation-design-2026-10-12.md §2-2）
+  RK_RELAY_URL       relay のときの内側口（http://host:port か unix:/path/to.sock）
+  RK_RELAY_TOKEN     relay のときの会話ごとの合言葉（中継が CLI を起こすときに渡す）
+  RK_WORK_DIR        relay のときの作業フォルダ（runs/・帳票の置き場所。箱の中で書ける所）
   RK_SSH             ssh の行き先（既定 root@72.60.211.213・pc のときだけ使う）
   RK_API_PORT        VPS の中の API のポート（既定 18001）
   RK_PG_CONTAINER    Postgres のコンテナ名（既定 carelink-postgres）
@@ -30,6 +34,7 @@ ICON_PATH = REPO_ROOT / "frontend" / "public" / "brand" / "rakusuke-icon-round.p
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _SSH_RE = re.compile(r"^[A-Za-z0-9_.@:-]+$")
+_RELAY_URL_RE = re.compile(r"^(https?://[A-Za-z0-9_.-]+(:[0-9]+)?/?|unix:/[A-Za-z0-9_./-]+)$")
 
 
 def _env(name: str, default: str) -> str:
@@ -56,6 +61,8 @@ class Config:
     sql_dir: Path = field(default_factory=lambda: AGENT_DIR / "sql")
     reports_dir: Path = field(default_factory=lambda: REPO_ROOT / "docs" / "reports" / "agent")
     home: Path = field(default_factory=rakusuke_dir)
+    relay_url: str = ""
+    relay_token: str = ""
 
     @property
     def api_base_remote(self) -> str:
@@ -90,8 +97,8 @@ def load_config() -> Config:
         raise RkError(f"RK_ENV は prod か staging です（今: {env}）")
     d = _ENV_DEFAULTS[env]
     mode = _env("RK_MODE", "pc").lower()
-    if mode not in ("pc", "vps"):
-        raise RkError(f"RK_MODE は pc か vps です（今: {mode}）")
+    if mode not in ("pc", "vps", "relay"):
+        raise RkError(f"RK_MODE は pc・vps・relay のどれかです（今: {mode}）")
     try:
         port = int(_env("RK_API_PORT", d["port"]))
     except ValueError as e:
@@ -109,6 +116,17 @@ def load_config() -> Config:
     )
     if env != "prod":
         cfg.runs_dir = cfg.runs_dir / env
+    if mode == "relay":
+        cfg.relay_url = _env("RK_RELAY_URL", "")
+        cfg.relay_token = _env("RK_RELAY_TOKEN", "")
+        if not _RELAY_URL_RE.match(cfg.relay_url):
+            raise RkError("RK_MODE=relay では RK_RELAY_URL（http://host:port か unix:/path）が要ります")
+        if not cfg.relay_token:
+            raise RkError("RK_MODE=relay では RK_RELAY_TOKEN が要ります（中継が渡します）")
+        work = os.environ.get("RK_WORK_DIR")
+        if work:
+            cfg.runs_dir = Path(work) / "runs"
+            cfg.reports_dir = Path(work) / "reports"
     if os.environ.get("RK_RUNS_DIR"):
         cfg.runs_dir = Path(os.environ["RK_RUNS_DIR"])
     if os.environ.get("RK_SQL_DIR"):

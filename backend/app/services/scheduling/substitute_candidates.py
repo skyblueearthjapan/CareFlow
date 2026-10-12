@@ -638,7 +638,6 @@ async def build_candidates_for_visits(
                         patient_name=p.name,
                         start_time=_hhmm(v.start_time),
                         end_time=_hhmm(v.end_time),
-                        week_pinned=bool(v.week_pinned),
                         status=v.status,
                     )
                     for v, _c, p in rows

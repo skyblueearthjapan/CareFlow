@@ -10,7 +10,9 @@ undo_note() が理由（日本語）を返す。`undoable` はクラスの既定
 - 終了の「予定と固定訪問の枠も消す」は remove_schedule を**必ず明示**して送る。
 - 固定訪問の枠は「その mode の全件の置き換え」（PUT）。前の全件を保存しておけば同じ PUT で戻せる。
   ただし change_scope=pattern_and_week は今週の予定も作り直すので、その分は API で戻せない。
-- 赤ピン（movability=locked / is_pinned）の付け外しはしない（docs/plans/red-pin-simplify-design.md で整理予定）。
+- 赤ピン（movability=locked / is_pinned）= 完全固定は曜日・時刻だけを縛る（docs/plans/red-pin-simplify-design.md K-2）。
+  赤の枠の曜日・時刻の変更は断る（コース・長さは変えてよい）。赤の付け外しは患者マスタで人がする（K-6）ので、
+  op に pin_change_approved_by が明示されたときだけ通す。
   既存の枠の movability はそのまま運ぶ（省略すると 'unknown' に戻る罠・patient_fixed_visits.py:705-707）。
 - 職員は「画面の編集の全項目保存」をしない（退職が稼働中に戻る罠・R2 D-8）。勤務時刻は PUT /shifts、
   職員の基本項目は変えた項目だけを PATCH（staff.py:177 は exclude_unset なので送った項目しか変わらない）。
@@ -337,7 +339,7 @@ class PfvUpdate(Op):
     schemas/v2/patient_fixed_visit.py:99）。1 TX で (patient, mode) を DELETE → INSERT。
     - change_scope=pattern_only（既定）: 型だけ。週の予定は「週を作る」まで変わらない。
     - change_scope=pattern_and_week: 型 ＋ その週の予定を型から作り直す（iso_year/iso_week 必須・非稼働は 422）。
-    - 赤ピン（locked）の枠を変える・消すと 422（patient_fixed_visits.py:583）。NG/性別の警告は 422
+    - 赤ピン（locked）の枠は曜日・時刻を変えられない（execute が断る）。付け外しは op の pin_change_approved_by が必要。NG/性別の警告は 422
       code=constraint_confirmation_required。NG・女性限定は破らない約束なので acknowledge で通すことはしない（validate で拒否）。
     事前検査（書かない）: POST /patients/{id}/fixed-visits/validate（:443）・空き: GET …/course-load（:474）。
     op: {"op":"pfv-update","patient_id":"…","mode":"normal","change_scope":"pattern_only",
@@ -416,16 +418,36 @@ class PfvUpdate(Op):
         return {"mode": op["mode"], "items": [pfv_item(r) for r in rows]}
 
     def execute(self, api, op):
-        """赤ピンの付け外しを止めてから PUT（赤は red-pin-simplify-design で整理するまで触らない）。"""
+        """赤ピン（完全固定 = 曜日・時刻を固定。コース・担当・長さは動く）の守りを確かめてから PUT。
+
+        - 赤の枠の曜日・時刻を変える → 断る（red-pin-simplify-design K-2/K-5）。コース・長さの変更は通す。
+        - 赤の付け外し（赤を外す・枠を消す・新しい枠を赤にする）→ 患者マスタで人がする操作（K-6）。
+          op に pin_change_approved_by（承認した人）が明示されているときだけ通す。
+        """
         rows = api.get(f"/patients/{op['patient_id']}/fixed-visits", {"mode": op["mode"]}) or []
-        cur = {(int(r["weekday"]), int(r.get("slot_index") or 0)): (r.get("movability") or "unknown") for r in rows}
-        for it in op["items"]:
-            k = (it["weekday"], it.get("slot_index", 0))
-            mv = it.get("movability")
-            if k in cur and cur[k] != mv:
-                raise RkError(f"曜日 {k[0]} の枠の movability を {cur[k]} → {mv} に変えようとしています（赤ピン等の付け外しはこの操作ではしない）")
-            if k not in cur and mv == "locked":
-                raise RkError(f"曜日 {k[0]} の新しい枠を赤ピン（locked）にしようとしています（この操作ではしない）")
+        approved = bool(str(op.get("pin_change_approved_by") or "").strip())
+        new = {(it["weekday"], it.get("slot_index", 0)): it for it in op["items"]}
+        for r in rows:
+            if (r.get("movability") or "unknown") != "locked":
+                continue
+            wd, si = int(r["weekday"]), int(r.get("slot_index") or 0)
+            it = new.get((wd, si))
+            if it is None or it.get("movability") != "locked":
+                if not approved:
+                    raise RkError(
+                        f"曜日 {wd} の赤ピン（完全固定）の枠を外す・消そうとしています（赤の付け外しは患者マスタで人がする操作。"
+                        "承認済みなら op に pin_change_approved_by を書く）")
+            elif _hhmm(it.get("start_time")) != _hhmm(r.get("start_time")):
+                raise RkError(
+                    f"曜日 {wd} の赤ピン（完全固定）の枠の時刻を {_hhmm(r.get('start_time'))} → {_hhmm(it.get('start_time'))} に"
+                    "変えようとしています（赤は曜日・時刻を変えない。コースの変更だけにする）")
+        cur_locked = {(int(r["weekday"]), int(r.get("slot_index") or 0)) for r in rows
+                      if (r.get("movability") or "unknown") == "locked"}
+        for k, it in new.items():
+            if it.get("movability") == "locked" and k not in cur_locked and not approved:
+                raise RkError(
+                    f"曜日 {k[0]} の枠を新しく赤ピン（locked）にしようとしています（赤の付け外しは患者マスタで人がする操作。"
+                    "承認済みなら op に pin_change_approved_by を書く）")
         return super().execute(api, op)
 
     def check_response(self, op, response):

@@ -34,7 +34,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import func, or_, select, tuple_
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -100,10 +100,6 @@ from app.schemas.v2.auto_schedule_v2 import (
     VisitAssignStaffWeekResponse,
     VisitMoveWeekOnlyRequest,
     VisitMoveWeekOnlyResponse,
-    VisitWeekPinBulkRequest,
-    VisitWeekPinBulkResponse,
-    VisitWeekPinRequest,
-    VisitWeekPinResponse,
     WeekdayStaffCapacityItem,
     WeekdayStaffCapacityResponse,
 )
@@ -1521,32 +1517,11 @@ async def visit_move_week_only_endpoint(
         )
 
     # PO 決定 (2026-08-09): 旧 pinned (=完全固定) の人手ブロックは撤廃 — 人手の
-    # 「今週だけ移動」は常に正当 (FE が「これは完全固定です」確認を出す)。
-    # 代わりに **青ピン (week_pinned) は蓋**: 解除するまで人手でも動かせない。
-    blue_locked = await db.scalar(
-        select(Visit.id).where(
-            Visit.patient_id == payload.patient_id,
-            Visit.deleted_at.is_(None),
-            Visit.status == VISIT_STATUS_PLANNED,
-            Visit.week_pinned.is_(True),
-            Visit.visit_date
-            == date.fromordinal(
-                date.fromisocalendar(payload.iso_year, payload.iso_week, 1).toordinal()
-                + payload.old_weekday
-            ),
-            Visit.start_time == payload.old_start_time,
-        )
-    )
-    if blue_locked is not None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="今週固定（青ピン）されています。解除してから動かしてください",
-        )
+    # 「今週だけ移動」は常に正当。青ピンも廃止 (2026-10-12): 動かせない蓋は無い。
 
     # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
     # PO 実機テストの穴: 「訪問を移動」で患者を NG 指定スタッフのコースへ無警告で
-    # 移せてしまっていた。青ピン (絶対ブロック) の **後** に置く = 通せない蓋を先に
-    # 効かせ、確認で通せる警告は後 (courses.py の新人 422 → 制約確認と同じ順序)。
+    # 移せてしまっていた。確認で通せる警告 (courses.py の新人 422 → 制約確認と同じ順序)。
     _cw: list[ConstraintWarning] = []
     _dest_course: Course | None = None
     if payload.new_course_template_id is not None:
@@ -1693,7 +1668,7 @@ async def visit_assign_staff_week(
     コース担当 (courses.assigned_staff_id) と PFV には一切触れない。
     2 名体制 (visit_group) の相方 visit も触れない = 「1 名ずつ」の操作。
 
-    ガード: planned 以外 422 (打刻済み等) / 青ピン 422 / 新人 422 /
+    ガード: planned 以外 422 (打刻済み等) / 新人 422 /
     NG・性別は ``constraint_confirmation_required`` 422 + acknowledge 再送
     (courses.py PATCH と同じ確認フロー・通した事実は管理者へお知らせ)。
     undo: op_log ``set_visit_staff`` (ツールバー「戻る」対応)。
@@ -1708,8 +1683,6 @@ async def visit_assign_staff_week(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="予定 (planned) の訪問のみ担当を変更できます（打刻済み・完了は不可）",
         )
-    # 青ピン (蓋) は担当変更もブロックしない — が守るのは「位置」。ここは位置を
-    # 変えないため通す (visits.py PATCH の非配置フィールド許可と同じ整理)。
 
     old_staff_id = visit.primary_staff_id
     if payload.staff_id == old_staff_id:
@@ -1856,8 +1829,7 @@ async def staff_off_week(
          / ``cancel_staff_event`` — すべて同一 op_group なので「戻る」1 回で
          取消印も外れる
 
-    ガード: 青ピン (今週固定) の訪問があれば 422 (件数と患者名) /
-    引き受け先が新人・退職・本人・その日が休み なら 422 / 過去日 (JST) は 422 /
+    ガード:     引き受け先が新人・退職・本人・その日が休み なら 422 / 過去日 (JST) は 422 /
     引き受け先が対象患者の NG スタッフ・性別制限に触れるなら
     ``constraint_confirmation_required`` 422 → ``acknowledge_constraint_warnings``
     付きで再送 (通した事実は管理者へお知らせ・§7-2 の全経路共通の作法)。
@@ -1963,25 +1935,6 @@ async def staff_off_week(
     skipped.sort(key=lambda v: (v.start_time, str(v.id)))
     skipped_visit_ids = [v.id for v in skipped]
 
-    # 青ピン (蓋) は「今週はこの位置・この人のまま」の宣言。解除してから。
-    pinned = [v for v, _p in target_visits if bool(v.week_pinned)]
-    if pinned:
-        _names = (
-            await db.scalars(
-                select(Patient.name)
-                .where(Patient.id.in_([v.patient_id for v in pinned]), Patient.deleted_at.is_(None))
-                .order_by(Patient.name, Patient.id)
-            )
-        ).all()
-        _label = "・".join(f"{n}様" for n in _names) if _names else ""
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"今週固定（青ピン）の訪問が {len(pinned)} 件あります"
-                + (f"（{_label}）" if _label else "")
-                + "。解除してから休みにしてください"
-            ),
-        )
 
     # NG スタッフ / 性別制限 (§7-2): 引き受け先 × 対象患者を **一括**で検査する。
     # 1 件ずつ 422 を返すと確認ダイアログが件数分出るため、まとめて 1 回で聞く。
@@ -2258,7 +2211,6 @@ async def course_move_weekday_week_only(
     ガード:
       - 移動先に同 code コース (非 proposed) が既にあれば 422 (§9-7 当面の整理・
         DB の partial UNIQUE と同じ条件)
-      - 配下に青ピン (week_pinned) 訪問があれば 422 (位置の蓋)
       - 実績のある訪問 (in_progress / completed) は動かさず残す
         (visits_moved に含めない)
       - **cancelled は planned と一緒に動かす** (status は保持・週空間 Phase E)。
@@ -2310,12 +2262,6 @@ async def course_move_weekday_week_only(
         ).all()
     )
     _movable_statuses = (VISIT_STATUS_PLANNED, VISIT_STATUS_CANCELLED)
-    if any(bool(v.week_pinned) for v in course_visits if v.status in _movable_statuses):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="今週固定（青ピン）の訪問が含まれています。解除してから動かしてください",
-        )
-
     to_date = date.fromisocalendar(course.iso_year, course.iso_week, payload.to_weekday + 1)
     # 取消 (cancelled) も一緒に動かす — status は書き換えない (保持)。
     moved_visits = [v for v in course_visits if v.status in _movable_statuses]
@@ -2397,188 +2343,6 @@ async def course_move_weekday_week_only(
         visits_moved=len(moved_visits),
         warnings=warnings,
     )
-
-
-# ---------------------------------------------------------------------------
-# 4d) PATCH /schedule/v2/visits/{visit_id}/week-pin (週のピン = 青ピン)
-#     PO 決定 2026-08-08 / 仕様: docs/plans/pin-and-movability-spec.md
-# ---------------------------------------------------------------------------
-
-# (旧) 青ピンを掛け外しできる source の制限は PO 決定 2026-08-09 で撤廃した。
-# 実体が visits.week_pinned フラグになり source に触れないため、カイポケ取込
-# (import) や手動作成 (manual) にも安全に掛け外しできる (出所は失われない)。
-# 解除時に「型の管理へ戻す」意味を持つのは manual_week だけなので、その変換用に
-# 定数だけ残す。
-_WEEK_PIN_RELEASED_SOURCE = "auto"
-
-
-def _visit_is_week_pinned(visit: Visit) -> bool:
-    """青ピンが立っているか。フラグ or 旧方式 (source='manual_week') の和集合。
-
-    0066 が manual_week を backfill 済みだが、DnD 移動等で新たに manual_week に
-    なる行はフラグ無しで生まれる。表示・解除の対象はどちらも含める。
-    """
-    return bool(visit.week_pinned) or visit.source == VISIT_SOURCE_MANUAL_WEEK
-
-
-@router.patch(
-    "/v2/visits/{visit_id}/week-pin",
-    response_model=VisitWeekPinResponse,
-    status_code=status.HTTP_200_OK,
-    summary="週のピン (青ピン): 今週この位置で固定する / 解除する",
-)
-async def visit_week_pin_endpoint(
-    visit_id: uuid.UUID,
-    payload: VisitWeekPinRequest,
-    db: DbDep,
-    current_user: Annotated[User, Depends(require_role("admin"))],
-) -> VisitWeekPinResponse:
-    """今週の訪問を「この位置のまま動かさない」状態にする / 解除する。
-
-    実体は ``visits.week_pinned`` フラグ (PO 決定 2026-08-09 / migration 0066)。
-    source には触れないため、カイポケ取込 (import) の訪問にも掛け外しでき、
-    解除しても「取込由来」という出所と保護は失われない。
-
-    保護の意味論 (reset_visits_to_fixed 側):
-      - week_pinned=true は週生成の削除対象外
-      - 当該 (patient, visit_date) の再生成を skip (型の時刻で上書きされない)
-
-    解除 (``pinned=false``):
-      - フラグを下ろす。**その場では訪問を動かさない**。
-      - source='manual_week' (この週だけの手動配置) は 'auto' に戻し、次の週生成で
-        型の時刻が読み込まれる。import / manual 等は source そのまま = 保護継続。
-
-    planned 以外 (完了・実績入力済み等) は 422。
-    """
-    visit = await db.scalar(select(Visit).where(Visit.id == visit_id, Visit.deleted_at.is_(None)))
-    if visit is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"visit_id={visit_id} が見つかりません",
-        )
-
-    if visit.status != VISIT_STATUS_PLANNED:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"予定 (planned) 以外の訪問は今週固定を変更できません (status={visit.status})",
-        )
-
-    old_flag = bool(visit.week_pinned)
-    old_source = visit.source
-    changed = False
-    if payload.pinned:
-        if not visit.week_pinned:
-            visit.week_pinned = True
-            changed = True
-    else:
-        if visit.week_pinned:
-            visit.week_pinned = False
-            changed = True
-        if visit.source == VISIT_SOURCE_MANUAL_WEEK:
-            visit.source = _WEEK_PIN_RELEASED_SOURCE
-            changed = True
-
-    if changed:
-        db.add(
-            AuditLog(
-                actor_user_id=current_user.id,
-                action="visit_week_pin_toggle",
-                target_table="visits",
-                target_id=str(visit.id),
-                before={"week_pinned": old_flag, "source": old_source},
-                after={"week_pinned": bool(visit.week_pinned), "source": visit.source},
-            )
-        )
-        await db.commit()
-        await db.refresh(visit)
-
-    return VisitWeekPinResponse(
-        visit_id=visit.id,
-        pinned=_visit_is_week_pinned(visit),
-        source=visit.source,
-    )
-
-
-@router.post(
-    "/v2/visits/week-pin/bulk",
-    response_model=VisitWeekPinBulkResponse,
-    status_code=status.HTTP_200_OK,
-    summary="週のピン (青) 一括: 今週を全件固定する / 今週の固定を全解除する",
-)
-async def visit_week_pin_bulk_endpoint(
-    payload: VisitWeekPinBulkRequest,
-    db: DbDep,
-    current_user: Annotated[User, Depends(require_role("admin"))],
-) -> VisitWeekPinBulkResponse:
-    """赤ピンの「全件ピン留め / 全件ピン留め解除」と対になる青ピンの一括操作。
-
-    実体は ``visits.week_pinned`` フラグ (PO 決定 2026-08-09)。source に触れないため
-    **カイポケ取込 (import) を含む当該週の planned 全訪問** が対象になる
-    (旧実装は source 書き換え方式で import/manual を除外しており、取込週では
-    119 件中 5 件しか固定されなかった)。
-
-    - ``pinned=true``  : planned かつ未固定 (フラグ無し・manual_week でもない) を
-      一括で week_pinned=true に。
-    - ``pinned=false`` : 固定済み (フラグ or manual_week) を一括で解除。
-      **その場では動かない**。manual_week は 'auto' へ戻し、次の週生成で型の時刻が
-      読み込まれる。import / manual は source そのまま = 出所と保護は失われない。
-
-    ``dry_run=true`` は件数だけ返す (確認ダイアログ用)。
-    audit_log は 1 操作 1 行 (counts)。
-    """
-    try:
-        week_monday = date.fromisocalendar(payload.iso_year, payload.iso_week, 1)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"invalid ISO week: year={payload.iso_year} week={payload.iso_week}",
-        ) from exc
-    week_sunday = date.fromordinal(week_monday.toordinal() + 6)
-
-    base = [
-        Visit.deleted_at.is_(None),
-        Visit.visit_date >= week_monday,
-        Visit.visit_date <= week_sunday,
-        Visit.status == VISIT_STATUS_PLANNED,
-    ]
-    if payload.pinned:
-        # 未固定のみ (既に青ピンの行を数えない = 件数表示が「これから変わる数」になる)。
-        cond = [
-            *base,
-            Visit.week_pinned.is_(False),
-            Visit.source != VISIT_SOURCE_MANUAL_WEEK,
-        ]
-    else:
-        cond = [
-            *base,
-            or_(Visit.week_pinned.is_(True), Visit.source == VISIT_SOURCE_MANUAL_WEEK),
-        ]
-
-    rows = (await db.scalars(select(Visit).where(*cond))).all()
-
-    if payload.dry_run or not rows:
-        return VisitWeekPinBulkResponse(target_count=len(rows), updated_count=0)
-
-    for v in rows:
-        if payload.pinned:
-            v.week_pinned = True
-        else:
-            v.week_pinned = False
-            if v.source == VISIT_SOURCE_MANUAL_WEEK:
-                v.source = _WEEK_PIN_RELEASED_SOURCE
-    db.add(
-        AuditLog(
-            actor_user_id=current_user.id,
-            action="visit_week_pin_bulk",
-            target_table="visits",
-            target_id=f"{payload.iso_year}-W{payload.iso_week:02d}",
-            before={"pinned": not payload.pinned, "count": len(rows)},
-            after={"pinned": payload.pinned, "count": len(rows)},
-        )
-    )
-    await db.commit()
-
-    return VisitWeekPinBulkResponse(target_count=len(rows), updated_count=len(rows))
 
 
 # ---------------------------------------------------------------------------
@@ -4752,9 +4516,10 @@ async def improvement_suggestions_endpoint(
     )
 
 
-# 却下理由 → 可動域昇格先 (設計書 §2.3). is_pinned=true 行は昇格せず locked のまま.
+# 却下理由 → 赤ピン昇格 (赤ピン整理 2026-10-12: 赤は 'locked' の 1 値だけ).
+# 昇格するのは time_immovable (この時刻は動かせない) だけ = 赤。
+# day_immovable (この曜日は動かせない) は却下を記録するだけで可動域は変えない (PO 2026-10-12).
 _PROMOTE_TARGET: dict[str, str] = {
-    "day_immovable": "time_flexible",
     "time_immovable": "locked",
 }
 
@@ -4773,8 +4538,8 @@ async def improvement_dismiss_endpoint(
     """改善提案の却下を記録する.
 
     同一指紋 ``(patient_id, kind, target_weekday)`` は既存行を upsert (reason 更新).
-    ``promote_movability=true`` かつ reason が day_immovable / time_immovable のときのみ、
-    該当 PFV の movability を昇格する (is_pinned=true の行は locked のまま = 昇格しない).
+    ``promote_movability=true`` かつ reason が time_immovable のときのみ、
+    該当 PFV を赤ピン ('locked' + is_pinned=true のミラー) にする (すでに赤の行はそのまま).
     """
     patient = await db.scalar(
         select(Patient).where(
@@ -4829,7 +4594,7 @@ async def improvement_dismiss_endpoint(
             dismissal = existing
             await db.flush()
 
-    # 可動域昇格 (人間確認後にのみ). is_pinned=true 行は locked のまま.
+    # 赤ピン昇格 (人間確認後にのみ). movability と is_pinned を同時に立てる.
     movability_updated = False
     new_movability: str | None = None
     if payload.promote_movability and payload.reason in _PROMOTE_TARGET:
@@ -4844,10 +4609,9 @@ async def improvement_dismiss_endpoint(
             )
         ).all()
         for row in rows:
-            if row.is_pinned:
-                continue  # is_pinned ⇒ locked のまま (昇格しない).
-            if row.movability != target:
+            if row.movability != target or not row.is_pinned:
                 row.movability = target
+                row.is_pinned = target == "locked"
                 movability_updated = True
         if movability_updated:
             new_movability = target
@@ -6637,8 +6401,7 @@ async def visit_cancel_week(
     ガード (``cancel=true``):
       * 当日以前 (JST) — 済んだ日は取り消さない
       * 打刻あり / ``in_progress`` / ``completed`` — 実績のある訪問は消せない
-      * 青ピン (week_pinned) — 蓋。解除してから
-    ``cancel=false`` は cancelled → planned へ戻す (青ピンは同じく 422)。
+    ``cancel=false`` は cancelled → planned へ戻す。
 
     2 名体制 (``visit_group_id``) のペアは同時に切り替える (片肺を作らない)。
     undo: op_log ``cancel_visit`` (inverse は逆フラグ)。
@@ -6878,8 +6641,7 @@ async def visit_service_override(
 
     ``service_content`` が null / 空文字なら解除 = 自動判定へ戻る。
 
-    **422 を出さない条件**: planned 以外 (完了・訪問中・取消) でも、青ピン
-    (week_pinned) でも設定できる。この操作は訪問の **位置 (日付 / 時刻 /
+    **422 を出さない条件**: planned 以外 (完了・訪問中・取消) でも設定できる。この操作は訪問の **位置 (日付 / 時刻 /
     担当)** を一切変えず、カイポケへ送るサービス内容の文字列だけを変える。
     「今週だけ取消」のようなガードを流用すると、実績のある訪問のサービス内容
     (= 請求に効く) を直せなくなり、目的そのものが果たせない。

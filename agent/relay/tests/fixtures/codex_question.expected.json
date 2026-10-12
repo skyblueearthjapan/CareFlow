@@ -1,0 +1,189 @@
+[
+ {
+  "type": "status",
+  "state": "working",
+  "pose": "search",
+  "line": "調べています"
+ },
+ {
+  "type": "thinking",
+  "phase": "start"
+ },
+ {
+  "type": "thinking",
+  "phase": "end"
+ },
+ {
+  "type": "question",
+  "question_id": "cq_0",
+  "questions": [
+   {
+    "question": "来週（10/19（月）〜10/25（日））の訪問件数は、どの拠点を対象に調べますか？",
+    "header": "対象の拠点",
+    "options": [
+     {
+      "label": "すべての拠点 (Recommended)",
+      "description": "全拠点の合計と拠点ごとの内訳を調べます。"
+     },
+     {
+      "label": "稲毛",
+      "description": "稲毛拠点だけを対象に調べます。"
+     },
+     {
+      "label": "都賀",
+      "description": "都賀拠点だけを対象に調べます。"
+     }
+    ],
+    "multiSelect": false
+   }
+  ]
+ },
+ {
+  "type": "status",
+  "state": "waiting_answer",
+  "pose": "waiting",
+  "line": "教えていただけますか"
+ },
+ {
+  "type": "thinking",
+  "phase": "start"
+ },
+ {
+  "type": "thinking",
+  "phase": "end"
+ },
+ {
+  "type": "message.delta",
+  "text": "「"
+ },
+ {
+  "type": "message.delta",
+  "text": "す"
+ },
+ {
+  "type": "message.delta",
+  "text": "べ"
+ },
+ {
+  "type": "message.delta",
+  "text": "て"
+ },
+ {
+  "type": "message.delta",
+  "text": "の"
+ },
+ {
+  "type": "message.delta",
+  "text": "拠"
+ },
+ {
+  "type": "message.delta",
+  "text": "点"
+ },
+ {
+  "type": "message.delta",
+  "text": "」で"
+ },
+ {
+  "type": "message.delta",
+  "text": "承"
+ },
+ {
+  "type": "message.delta",
+  "text": "りました"
+ },
+ {
+  "type": "message.delta",
+  "text": "。"
+ },
+ {
+  "type": "message.delta",
+  "text": "まだ"
+ },
+ {
+  "type": "message.delta",
+  "text": "調"
+ },
+ {
+  "type": "message.delta",
+  "text": "査"
+ },
+ {
+  "type": "message.delta",
+  "text": "は"
+ },
+ {
+  "type": "message.delta",
+  "text": "実"
+ },
+ {
+  "type": "message.delta",
+  "text": "行"
+ },
+ {
+  "type": "message.delta",
+  "text": "して"
+ },
+ {
+  "type": "message.delta",
+  "text": "い"
+ },
+ {
+  "type": "message.delta",
+  "text": "ません"
+ },
+ {
+  "type": "message.delta",
+  "text": "。"
+ },
+ {
+  "type": "message",
+  "text": "「すべての拠点」で承りました。まだ調査は実行していません。"
+ },
+ {
+  "type": "turn.end",
+  "secs": 28.6,
+  "ok": true,
+  "reason": "completed"
+ },
+ {
+  "type": "status",
+  "state": "idle",
+  "pose": "bow",
+  "line": "ほかにも何かあれば、どうぞ"
+ },
+ {
+  "type": "status",
+  "state": "working",
+  "pose": "search",
+  "line": "調べています"
+ },
+ {
+  "type": "thinking",
+  "phase": "start"
+ },
+ {
+  "type": "thinking",
+  "phase": "end"
+ },
+ {
+  "type": "message.delta",
+  "text": "55"
+ },
+ {
+  "type": "message",
+  "text": "55"
+ },
+ {
+  "type": "turn.end",
+  "secs": 13.2,
+  "ok": true,
+  "reason": "completed"
+ },
+ {
+  "type": "status",
+  "state": "idle",
+  "pose": "bow",
+  "line": "ほかにも何かあれば、どうぞ"
+ }
+]

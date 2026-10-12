@@ -13,7 +13,8 @@ from typing import Any, Iterator
 from rk.auth import TokenManager
 from rk.config import Config
 from rk.opsbase import ApiError
-from rk.transport import Http, SshTunnel
+from rk import RkError
+from rk.transport import Http, RelayClient, SshTunnel, normalize_path, relay_client
 
 
 class RkApi:
@@ -38,8 +39,26 @@ class RkApi:
         return self._do(method.upper(), path, body)
 
 
+class RelayApi:
+    """relay モードの窓口: 読む（GET・許可リストの POST）だけを中継の内側口へ。書き込みはここでは送らない。"""
+
+    def __init__(self, client: RelayClient):
+        self.client = client
+
+    def get(self, path: str, params: dict | None = None) -> Any:
+        return self.client.request("GET", "/rk/api/v1" + normalize_path(path), None, params)
+
+    def call(self, method: str, path: str, body: Any = None) -> Any:
+        if method.upper() != "POST":
+            raise RkError("反映は画面の承認を通してください（rk plan submit → 画面で承認 → rk apply --approved ap_…）")
+        return self.client.request("POST", "/rk/api/v1" + normalize_path(path), body)
+
+
 @contextlib.contextmanager
 def open_api(cfg: Config, tunnel_factory=SshTunnel) -> Iterator[RkApi]:
+    if cfg.mode == "relay":
+        yield RelayApi(relay_client(cfg))  # type: ignore[misc]
+        return
     if cfg.mode == "vps":
         http = Http(cfg.api_base_remote)
         yield RkApi(http, TokenManager(cfg, http))

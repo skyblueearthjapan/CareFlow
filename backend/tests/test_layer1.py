@@ -1367,8 +1367,8 @@ async def test_reset_v2_same_time_is_regenerated_without_duplicate(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_reset_v2_week_pinned_survives(db) -> None:
-    """週のピン (青ピン) が付いた reset_v2 は残り、その日は型から作り直さない."""
+async def test_reset_v2_week_pinned_flag_is_ignored(db) -> None:
+    """青ピン廃止 (2026-10-12): 列に true が残る reset_v2 も守られず、型から作り直される."""
     patient = await _make_patient(db, code="L1-RV2-PIN")
     await _add_fixed_slot(db, patient.id, 0, time(10, 0))
     pinned = _reset_v2_visit(patient.id, TEST_WEEK_MONDAY, time(9, 0), week_pinned=True)
@@ -1379,9 +1379,9 @@ async def test_reset_v2_week_pinned_survives(db) -> None:
     await db.commit()
 
     await db.refresh(pinned)
-    assert pinned.deleted_at is None, "青ピンの reset_v2 を消してはいけない"
+    assert pinned.deleted_at is not None, "フラグはもう守りにならない"
     rows = await _active_visits_of(db, patient.id)
-    assert [r.id for r in rows] == [pinned.id]
+    assert [r.start_time for r in rows] == [time(10, 0)]
 
 
 @pytest.mark.asyncio

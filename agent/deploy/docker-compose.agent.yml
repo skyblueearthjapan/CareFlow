@@ -1,0 +1,193 @@
+# らく助エージェント 段 3 — 中継・箱・出口（本番 / staging 共用・設計 phase3-implementation-design-2026-10-12 §1-1/§2）
+#
+# 直接 up しないこと。README.md の手順（PO の了承 → preflight.sh → up）で使う。
+#
+#   本番:    docker compose -p carelink-agent     -f agent/deploy/docker-compose.agent.yml --env-file agent/deploy/agent.prod.env up -d
+#   staging: docker compose -p carelink-agent-stg -f agent/deploy/docker-compose.agent.yml --env-file agent/deploy/agent.stg.env  up -d
+#
+# 3 つのコンテナ:
+#   carelink-agent          中継（FastAPI）。backend の網（本番 deployment_default）＋箱の網。
+#                           公開口 :8090 → ホスト 127.0.0.1:18201（cloudflared が /agent-relay/* を渡す）
+#                           内側口 :8091（箱の rk 専用。公開しない）
+#   carelink-agent-sandbox  箱（claude / codex CLI と rk）。網は agent-sandbox-net（internal: true）だけ。
+#                           backend・Postgres・.env・docker.sock なし。中継とは unix ソケットだけでつながる。
+#   carelink-agent-egress   出口プロキシ（tinyproxy）。箱から外へは、ここを通る許可リストのホストだけ。
+#
+# 守りの要点（変えるときは安全レビューを通す）:
+#   - どのコンテナにも env_file: ../../.env（本番の統合 .env）を書かない。中継の秘密は
+#     /opt/carelink/secrets/agent-relay.env（0400）だけ（AGENT_RELAY_SECRETS で差し替え）。
+#   - docker.sock はどこにも mount しない。
+#   - 全コンテナ: 非 root・read_only・cap_drop ALL・no-new-privileges・メモリ/PID/CPU の上限。
+#   - 箱の網は internal（既定経路なし）。外へは出口プロキシ経由だけ。
+#   - runner のソケットは SO_PEERCRED で中継の uid（10001）以外を断る（箱の中のモデルは uid 10002）。
+
+name: carelink-agent
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: ["ALL"]
+  security_opt:
+    - no-new-privileges:true
+  init: true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  agent-relay:
+    <<: *hardening
+    build:
+      context: ..                     # = agent/（リポジトリ全体は渡さない）
+      dockerfile: deploy/Dockerfile.relay
+      additional_contexts:
+        brand: ../../frontend/public/brand   # 帳票のアイコン（rk/report.py の ICON_PATH）
+    image: carelink-agent-relay:${AGENT_IMAGE_TAG:-latest}
+    container_name: ${AGENT_NAME_PREFIX:-carelink}-agent
+    restart: ${AGENT_RESTART:-unless-stopped}
+    user: "10001:10001"
+    group_add:
+      - "10000"                       # runner ソケットの共有グループ
+    env_file:
+      - ${AGENT_RELAY_SECRETS:-/opt/carelink/secrets/agent-relay.env}
+    environment:
+      TZ: Asia/Tokyo
+      AGENT_ENV: ${AGENT_ENV:-prod}
+      # 全体の止め（0 = 公開口は healthz 以外 404）。本番は PO の了承（P9）まで 0
+      AGENT_RELAY_ENABLED: ${AGENT_RELAY_ENABLED:-0}
+      AGENT_RELAY_DATA_DIR: /data         # rk の実行記録（runs/・利用者名入り）・トークン・バックアップの記録
+      AGENT_PUBLIC_PORT: "8090"
+      AGENT_INNER_PORT: "8091"
+      AGENT_BACKEND_URL: ${AGENT_BACKEND_URL:-http://carelink-backend:8000/api/v1}
+      AGENT_PG_HOST: ${AGENT_PG_HOST:-carelink-postgres}
+      AGENT_PG_DB: ${AGENT_PG_DB:-carelink}
+      AGENT_RUNNER_SOCKET: /run/agent/runner.sock   # これがあると中継は CLI を箱の runner に起こしてもらう（直接は起こさない）
+      AGENT_ALLOWED_KEY_SOURCES: none                # init の apiKeySource は none（サブスクのログイン）だけ
+      # 箱の網の範囲。中継は「公開口へこの範囲から来たもの」「内側口へこの範囲以外から来たもの」を断る
+      AGENT_SANDBOX_SUBNET: ${AGENT_SANDBOX_SUBNET:-172.31.250.0/24}
+      AGENT_PUBLIC_ORIGIN: ${AGENT_PUBLIC_ORIGIN:-https://carelink.kaipoke-api.net}
+      AGENT_BACKUP_DIR: /backups
+      AGENT_MAX_PROCS: "1"
+      AGENT_MIN_MEM_AVAILABLE_MB: "900"
+    ports:
+      - "127.0.0.1:${AGENT_PUBLIC_HOST_PORT:-18201}:8090"
+    volumes:
+      - agent-sock:/run/agent
+      - agent-relay-data:/data
+      - ${AGENT_BACKUP_HOST_DIR:-/opt/carelink/backups/agent}:/backups
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 128
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8090/agent-relay/healthz', timeout=3); sys.exit(0 if r.status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      agent-sandbox:
+        condition: service_healthy
+    networks:
+      backend: {}
+      agent-sandbox-net: {}
+
+  agent-sandbox:
+    <<: *hardening
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.sandbox
+      args:
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.296}
+        CODEX_VERSION: ${CODEX_VERSION:-0.162.1}
+    image: carelink-agent-sandbox:${AGENT_IMAGE_TAG:-latest}
+    container_name: ${AGENT_NAME_PREFIX:-carelink}-agent-sandbox
+    restart: ${AGENT_RESTART:-unless-stopped}
+    user: "10002:10000"
+    # env_file は書かない（.env も中継の秘密も渡さない）。CLI の環境は runner が許可リストで作り直す。
+    # ANTHROPIC_API_KEY・ANTHROPIC_BASE_URL・OPENAI_API_KEY などは決して足さない（ログインはサブスクだけ・
+    # runner が起動時に消し、CLI にも渡さない。healthcheck も「あれば unhealthy」で止める）。
+    environment:
+      TZ: Asia/Tokyo
+      RUNNER_SOCKET: /run/agent/runner.sock
+      RUNNER_ALLOWED_PEER_UID: "10001"
+      RUNNER_MAX_PROCS: "2"
+      RUNNER_EGRESS_PROXY: http://agent-egress:3128     # サービス名（その project の網の中だけで引ける）
+      RUNNER_RELAY_URL: http://agent-relay:8091         # 中継の内側口
+    volumes:
+      - agent-sock:/run/agent
+      - agent-home:/home/agent          # CLI のログイン情報（~/.claude・~/.codex）。PO が 1 回ログインする
+      - agent-sessions:/data/sessions   # 会話ごとの作業フォルダー・isolation.json
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    mem_limit: 1g
+    memswap_limit: 1g
+    pids_limit: 256
+    cpus: 1.5
+    healthcheck:
+      # ソケットがある ＋ API キー・つなぎ先の変数が箱の環境に無い（あれば unhealthy → 中継も起きない）
+      test: ["CMD", "python3", "-c", "import os,stat,sys; bad=[k for k in ('ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_BASE_URL','OPENAI_API_KEY','OPENAI_BASE_URL','CODEX_API_KEY') if k in os.environ]; sys.exit(1 if bad else (0 if stat.S_ISSOCK(os.stat('/run/agent/runner.sock').st_mode) else 1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      agent-sandbox-net: {}
+
+  agent-egress:
+    <<: *hardening
+    build:
+      context: ./egress
+      dockerfile: Dockerfile
+    image: carelink-agent-egress:${AGENT_IMAGE_TAG:-latest}
+    container_name: ${AGENT_NAME_PREFIX:-carelink}-agent-egress
+    restart: ${AGENT_RESTART:-unless-stopped}
+    user: "10003:10003"
+    environment:
+      TZ: Asia/Tokyo
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    mem_limit: 64m
+    memswap_limit: 64m
+    pids_limit: 64
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 3128 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      agent-sandbox-net: {}
+      agent-egress-net: {}
+
+volumes:
+  agent-sock:
+    name: ${AGENT_NAME_PREFIX:-carelink}-agent-sock
+  agent-relay-data:
+    name: ${AGENT_NAME_PREFIX:-carelink}-agent-relay-data
+  agent-home:
+    name: ${AGENT_NAME_PREFIX:-carelink}-agent-home
+  agent-sessions:
+    name: ${AGENT_NAME_PREFIX:-carelink}-agent-sessions
+
+networks:
+  # backend・Postgres のいる網（本番 = deployment_default・staging = carelink-stg）。作らずに参加するだけ。
+  backend:
+    external: true
+    name: ${AGENT_BACKEND_NETWORK:-deployment_default}
+  # 箱の網。internal: true = 既定経路なし（外へも、ホストのポートへも出られない）。
+  agent-sandbox-net:
+    name: ${AGENT_NAME_PREFIX:-carelink}-agent-sandbox-net
+    internal: true
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${AGENT_SANDBOX_SUBNET:-172.31.250.0/24}
+  # 出口プロキシだけが外へ出る網。
+  agent-egress-net:
+    name: ${AGENT_NAME_PREFIX:-carelink}-agent-egress-net
+    driver: bridge

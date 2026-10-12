@@ -275,7 +275,6 @@ async def _select_deactivation_targets(
     除外 (``excluded`` に理由別で計上):
       * ``checked_in``  … 打刻がある (実績が付いている)
       * ``in_progress`` … 訪問中
-      * ``week_pinned`` … 青ピン (蓋)。解除してから
     2 名体制 (``visit_group_id``) は **グループ単位**で扱い、1 人でも除外理由が
     あればグループごと除外する (片肺の取消を作らない)。
 
@@ -328,15 +327,13 @@ async def _select_deactivation_targets(
         ).all()
     )
 
-    excluded: dict[str, int] = {"checked_in": 0, "in_progress": 0, "week_pinned": 0}
+    excluded: dict[str, int] = {"checked_in": 0, "in_progress": 0}
 
     def _reason(v: Visit) -> str | None:
         if v.id in checked_in_ids:
             return "checked_in"
         if v.status == VISIT_STATUS_IN_PROGRESS:
             return "in_progress"
-        if bool(v.week_pinned):
-            return "week_pinned"
         return None
 
     # グループ単位の除外: 1 件でも理由があればグループ全員を同じ理由で除外する。
@@ -559,7 +556,7 @@ async def compute_impact(
             by_week=_week_counts(by_week),
             by_source=by_source,
             pair_groups=len({v.visit_group_id for v in plan.targets if v.visit_group_id}),
-            excluded=plan.excluded or {"checked_in": 0, "in_progress": 0, "week_pinned": 0},
+            excluded=plan.excluded or {"checked_in": 0, "in_progress": 0},
         )
         if plan.period is not None:
             special = ImpactSpecialPeriod(

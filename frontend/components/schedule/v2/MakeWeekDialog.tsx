@@ -84,6 +84,8 @@ export interface MakeWeekDialogProps {
   /** 今週より前の週か (コピーは今週以降だけ) */
   isPastWeek: boolean;
   onChooseFixed: () => void;
+  /** 「固定訪問から生成」を選べない理由 (予定が入っている週)。null/未指定なら選べる。 */
+  fixedDisabledReason?: string | null;
   onCopied: (result: CopyWeekResult) => void;
 }
 
@@ -93,6 +95,7 @@ export function MakeWeekDialog({
   targetWeekStart,
   isPastWeek,
   onChooseFixed,
+  fixedDisabledReason = null,
   onCopied,
 }: MakeWeekDialogProps) {
   const [step, setStep] = useState<0 | 1 | 2>(0);
@@ -216,9 +219,11 @@ export function MakeWeekDialog({
             <div className="grid gap-3 md:grid-cols-2">
               <button
                 type="button"
-                onClick={() => setHow('fixed')}
+                onClick={() => !fixedDisabledReason && setHow('fixed')}
+                disabled={fixedDisabledReason != null}
+                title={fixedDisabledReason ?? undefined}
                 className={cn(
-                  'rounded-xl border-2 p-4 text-left',
+                  'rounded-xl border-2 p-4 text-left disabled:cursor-not-allowed disabled:opacity-50',
                   how === 'fixed'
                     ? 'border-brand-primary bg-brand-primary-50'
                     : 'border-border-default hover:border-brand-primary-light',
@@ -233,6 +238,14 @@ export function MakeWeekDialog({
                 <ul className="mt-2 list-disc pl-5 text-text-secondary">
                   <li>時刻は固定訪問の時刻</li>
                 </ul>
+                {fixedDisabledReason ? (
+                  <p
+                    className="mt-2 text-text-secondary"
+                    data-testid="make-week-fixed-disabled-reason"
+                  >
+                    {fixedDisabledReason}
+                  </p>
+                ) : null}
               </button>
               <button
                 type="button"
@@ -442,7 +455,7 @@ export function MakeWeekDialog({
                   </p>
                 ) : pv.existing.total > 0 ? (
                   <p className="text-text-secondary" data-testid="make-week-replace-note">
-                    今ある訪問のうち、打刻済み・カイポケ取込済み・青ピン・取消の訪問は残し、それ以外の{' '}
+                    今ある訪問のうち、打刻済み・カイポケ取込済み・取消の訪問は残し、それ以外の{' '}
                     {pv.existing.replace} 件を置き換えます。
                   </p>
                 ) : null}
@@ -648,6 +661,7 @@ export function MakeWeekDialog({
           {step === 0 ? (
             <Button
               type="button"
+              disabled={how === 'fixed' && fixedDisabledReason != null}
               onClick={() => {
                 if (how === 'fixed') {
                   onOpenChange(false);

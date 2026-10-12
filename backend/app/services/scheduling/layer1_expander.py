@@ -928,12 +928,9 @@ class Layer1Expander:
         rows = await db.execute(
             select(Visit.visit_date).where(
                 Visit.patient_id == patient_id,
-                # PO 決定 (2026-08-09): manual_week に加え、カイポケ取込 (取込が正) と
-                # 週のピン (青ピン) の日も型からの再生成をスキップする。
-                or_(
-                    Visit.source.in_((VISIT_SOURCE_MANUAL_WEEK, "import")),
-                    Visit.week_pinned.is_(True),
-                ),
+                # PO 決定 (2026-08-09): manual_week に加え、カイポケ取込 (取込が正) の
+                # 日も型からの再生成をスキップする。青ピンは廃止 (2026-10-12)。
+                Visit.source.in_((VISIT_SOURCE_MANUAL_WEEK, "import")),
                 Visit.deleted_at.is_(None),
                 Visit.visit_date >= week_monday,
                 Visit.visit_date <= week_sunday,
@@ -1325,8 +1322,6 @@ class Layer1Expander:
                 Visit.source.in_(LAYER1_REGENERABLE_SOURCES),
                 Visit.status == LAYER1_VISIT_STATUS,
                 Visit.deleted_at.is_(None),
-                # 週のピン (青ピン / PO 決定 2026-08-09): source=auto/reset_v2 でも削除しない。
-                Visit.week_pinned.is_(False),
             )
             .values(deleted_at=now)
             .execution_options(synchronize_session=False),

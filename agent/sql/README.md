@@ -16,7 +16,7 @@
 
 | 名前 | 何を返すか | 引数 |
 |---|---|---|
-| `visits_valid` | 有効な訪問の一覧（担当・コース・拠点・出所・青ピン）。`collapse=1` で 2 名体制を 1 回 1 行に | date_from, date_to, office（名か略称・空=全）, collapse（1/0） |
+| `visits_valid` | 有効な訪問の一覧（担当・コース・拠点・出所）。`collapse=1` で 2 名体制を 1 回 1 行に | date_from, date_to, office（名か略称・空=全）, collapse（1/0） |
 | `visit_counts_by_day` | 日 × 拠点の件数（1 回 1 件・行数・完了） | date_from, date_to |
 | `visits_by_staff_day` | 職員 × 日の担当件数・最初/最後の時刻・訪問分（副担当も 1 件・同行は入れない） | date_from, date_to, staff（コード/氏名の一部・空=全員） |
 | `visits_by_patient` | 利用者の訪問（取消も状態つき） | patient（コード/氏名/かな）, date_from, date_to |

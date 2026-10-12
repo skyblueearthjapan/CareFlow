@@ -28,7 +28,7 @@
     **旧コース担当と同一** の visit だけを対象にする。Layer3 の個別 swap
     (``auto_allocator._swap_consecutive_visits``: コース担当は変えずに visit 単位で
     担当を差し替える) の結果を自動処理で踏み潰さないための保険。さらに、自動経路が
-    作り直さないと決めている訪問 (青ピン ``week_pinned`` / 打刻済み・取消済み
+    作り直さないと決めている訪問 (打刻済み・取消済み
     ``status``) も対象外にする — 詳細は関数の docstring。
 """
 
@@ -73,7 +73,6 @@ async def mirror_course_staff_to_visits(
         * ``course_id`` 一致 / ``deleted_at IS NULL``
         * ``manual_staff_override IS FALSE`` … 手動で担当を変えた訪問は尊重する
         * ``primary_staff_id`` が NULL または ``old_staff_id`` と一致 … 個別 swap の結果を残す
-        * ``week_pinned IS FALSE`` … 青ピン (今週この位置) は自動処理で触らない
         * ``status IN ('planned', 'proposed')`` … 打刻済み (completed / in_progress) や
           取消済みの訪問は書き換えない
 
@@ -102,7 +101,6 @@ async def mirror_course_staff_to_visits(
             Visit.course_id == course_id,
             Visit.deleted_at.is_(None),
             Visit.manual_staff_override.is_(False),
-            Visit.week_pinned.is_(False),
             Visit.status.in_(_MIRRORABLE_STATUSES),
             staff_cond,
         )

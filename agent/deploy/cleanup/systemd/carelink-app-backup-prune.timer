@@ -1,0 +1,10 @@
+[Unit]
+Description=CareLink: prune old app DB backups (18:30 UTC, after the 17:30 UTC daily backup)
+
+[Timer]
+OnCalendar=*-*-* 18:30:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

@@ -30,6 +30,9 @@ def backups_log(cfg: Config) -> Path:
 def run_backup(cfg: Config, label: str, runner: Runner = default_runner, now: datetime | None = None) -> dict:
     if not LABEL_RE.match(label or ""):
         raise RkError("--label は英小文字・数字・- だけです（例 w43-absence）")
+    if cfg.mode == "relay":  # 中継が agent_dump ロールで取る（箱には DB への道が無い）
+        from rk.transport import relay_client
+        return relay_client(cfg).request("POST", "/rk/backup", {"label": label})
     now = now or _utcnow()
     rel = f"backups/agent-{label}-{now.strftime('%Y%m%d-%H%M')}.sql.gz"
     path = f"{cfg.remote_dir.rstrip('/')}/{rel}"

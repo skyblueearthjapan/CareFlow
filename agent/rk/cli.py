@@ -99,7 +99,7 @@ def cmd_sql(args) -> int:
             raise RkError(f"{args.name}.sql に無い引数です: {', '.join(unknown)}（rk sql --list と sql/README.md を確認）")
     else:
         raise RkError("SQL の名前か --file か --list を指定してください")
-    _print_json(sqlrun.run_sql(cfg, text, params))
+    _print_json(sqlrun.run_sql(cfg, text, params, name=args.name if not args.file else None))
     return 0
 
 
@@ -119,6 +119,9 @@ def cmd_plan_check(args) -> int:
                 print(f"  - {x}")
         return 1
     print(f"案は正しい形です: {plan['title']}（操作 {len(plan['ops'])} 件）")
+    from rk.report_v2 import proposal_warnings
+    for w in proposal_warnings(plan):
+        print(f"  注意（誤りではありません）: {w}")
     nu = not_undoable_ops(plan)
     if nu:
         print(f"  API で戻せない操作が {len(nu)} 件あります（戻すにはバックアップから）: "
@@ -150,7 +153,9 @@ def cmd_plan_resolve(args) -> int:
 
 def cmd_plan_report(args) -> int:
     from rk.plan import check_plan, load_plan
-    from rk.report import write_report
+    from rk.report import write_report as write_report_v1
+    from rk.report_v2 import write_report as write_report_v2
+    write_report = write_report_v1 if getattr(args, "v1", False) else write_report_v2  # 既定は v2（--v1 で旧形式）
     plan = load_plan(args.plan)
     errs = check_plan(plan)
     if errs:
@@ -159,6 +164,32 @@ def cmd_plan_report(args) -> int:
             print(f"  - {e}", file=sys.stderr)
     path = write_report(args.cfg, plan, a3=args.a3, out=Path(args.out) if args.out else None)
     print(f"帳票を作りました: {path}")
+    return 0
+
+
+def cmd_plan_submit(args) -> int:
+    from rk.plan import check_plan, load_plan, readiness_errors
+    from rk.transport import relay_client
+    plan = load_plan(args.plan)
+    errs = [e for e in check_plan(plan) if e not in readiness_errors(plan)]
+    if errs:
+        raise RkError("案に誤りがあります（画面には出しません）:\n  " + "\n  ".join(errs))
+    res = relay_client(args.cfg).request("POST", "/rk/plans", {"plan": plan})
+    print(f"案 {res.get('version')} を画面に出しました: {plan['title']}")
+    if res.get("ready") is False:
+        print("まだ反映できない案です（決めていないことがあります）: " + "／".join(res.get("blockers") or []))
+    else:
+        print("反映するかどうかは、人が画面のボタンで決めます。承認番号（ap_…）が届くまで反映しないでください。")
+    return 0
+
+
+def cmd_progress(args) -> int:
+    text = " ".join(args.text).strip()[:80]
+    if args.cfg.mode != "relay":
+        print(f"（進み具合）{text}", file=sys.stderr)  # 画面が無いときは表示だけ
+        return 0
+    from rk.transport import relay_client
+    relay_client(args.cfg).request("POST", "/rk/progress", {"text": text})
     return 0
 
 
@@ -171,6 +202,31 @@ def cmd_backup(args) -> int:
     return 0
 
 
+APPROVAL_CODE_RE = re.compile(r"^ap_[A-Za-z0-9_-]{8,64}$")
+
+
+def _relay_approval(args) -> str:
+    code = (args.approved or "").strip()
+    if not APPROVAL_CODE_RE.match(code):
+        raise RkError("中継の中では --approved に画面の承認番号（ap_…）だけを書きます。"
+                      "承認番号は人が画面の［この案で反映する］を押したときに届きます")
+    if getattr(args, "backup", None):
+        raise RkError("中継の中では --backup は使えません（バックアップは中継が取ります）")
+    return code
+
+
+def _relay_apply(args, plan: dict) -> int:
+    from rk.applyrun import summary_ja
+    from rk.transport import relay_client
+    code = _relay_approval(args)
+    if args.no_basis_check:
+        raise RkError("中継の中では --no-basis-check は使えません（予定が変わっていないかは中継が必ず確かめます）")
+    print("中継に反映を頼みました（承認番号を確かめ、バックアップを取ってから 1 件ずつ反映します）…", file=sys.stderr)
+    res = relay_client(args.cfg).request("POST", "/rk/apply", {"plan": plan, "approval": code})
+    print(summary_ja(res))
+    return 0 if res.get("ok") else 2
+
+
 def cmd_apply(args) -> int:
     from rk.applyrun import apply_plan, require_approval_and_backup, summary_ja
     from rk.plan import check_plan, load_plan
@@ -178,6 +234,8 @@ def cmd_apply(args) -> int:
     errs = check_plan(plan)
     if errs:
         raise RkError("案に誤りがあります:\n  " + "\n  ".join(errs))
+    if args.cfg.mode == "relay":
+        return _relay_apply(args, plan)
     require_approval_and_backup(args.cfg, args.approved, args.backup)  # つなぐ前に確かめる
     basis = None
     if (plan.get("source") or {}).get("basis_hash"):
@@ -199,9 +257,13 @@ def cmd_verify(args) -> int:
     from rk.applyrun import RUN_ID_RE, verify_plan
     from rk.plan import load_plan
     src = args.plan
-    if RUN_ID_RE.match(src) and (args.cfg.runs_dir / src / "plan.json").exists():
-        src = args.cfg.runs_dir / src / "plan.json"
-    plan = load_plan(src)
+    if args.cfg.mode == "relay" and RUN_ID_RE.match(src) and not Path(src).exists():
+        from rk.transport import relay_client
+        plan = relay_client(args.cfg).request("GET", f"/rk/runs/{src}/plan")
+    else:
+        if RUN_ID_RE.match(src) and (args.cfg.runs_dir / src / "plan.json").exists():
+            src = args.cfg.runs_dir / src / "plan.json"
+        plan = load_plan(src)
     with _open_api(args) as api:
         results = verify_plan(plan, api)
     bad = [r for r in results if not r["ok"]]
@@ -214,6 +276,16 @@ def cmd_verify(args) -> int:
 
 def cmd_undo(args) -> int:
     from rk.applyrun import require_approval_and_backup, resolve_run_dir, summary_ja, undo_run
+    if args.cfg.mode == "relay":
+        from rk.applyrun import RUN_ID_RE
+        from rk.transport import relay_client
+        code = _relay_approval(args)
+        if not RUN_ID_RE.match(args.run_id or ""):
+            raise RkError(f"run-id の形が違います: {args.run_id}")
+        res = relay_client(args.cfg).request("POST", "/rk/undo",
+                                             {"run_id": args.run_id, "approval": code, "partial": bool(args.partial)})
+        print(summary_ja(res))
+        return 0 if res.get("ok") else 2
     resolve_run_dir(args.cfg, args.run_id)
     require_approval_and_backup(args.cfg, args.approved, args.backup)
     with _open_api(args) as api:
@@ -248,7 +320,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_sql)
 
     p = sub.add_parser("plan", help="案の検査・帳票")
-    psub = p.add_subparsers(dest="plan_command", metavar="<check|report|resolve>")
+    psub = p.add_subparsers(dest="plan_command", metavar="<check|report|resolve|submit>")
     q = psub.add_parser("check", help="案の形と操作の許可を検査")
     q.add_argument("plan")
     q.set_defaults(func=cmd_plan_check)
@@ -265,8 +337,17 @@ def build_parser() -> argparse.ArgumentParser:
     q = psub.add_parser("report", help="案を A4（--a3 で A3 横の時間割）の HTML に")
     q.add_argument("plan")
     q.add_argument("--a3", action="store_true")
+    q.add_argument("--v1", action="store_true", help="旧形式の帳票（既定は結論・理由つきの v2）")
     q.add_argument("--out")
     q.set_defaults(func=cmd_plan_report)
+
+    q = psub.add_parser("submit", help="（中継の中だけ）案を画面に出す。反映は人が画面で承認してから")
+    q.add_argument("plan")
+    q.set_defaults(func=cmd_plan_submit)
+
+    p = sub.add_parser("progress", help="長い作業の途中経過を 1 行で画面に出す（中継の中だけ。ほかでは表示だけ）")
+    p.add_argument("text", nargs="+")
+    p.set_defaults(func=cmd_progress)
 
     p = sub.add_parser("backup", help="VPS で pg_dump")
     p.add_argument("--label", required=True)

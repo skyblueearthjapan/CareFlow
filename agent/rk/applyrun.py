@@ -17,6 +17,7 @@ from typing import Any, Callable
 from rk import RkError
 from rk.backup import FRESH_MINUTES, backups_log, recent_backup
 from rk.config import AGENT_DIR, Config
+from rk.journal import record_apply
 from rk.opsbase import Api, ApiError, Registry, load_all
 from rk.plan import check_plan
 
@@ -139,8 +140,12 @@ def check_basis(cfg: Config, plan: dict, run_sql: Callable[[str], Any] | None = 
 
 def apply_plan(cfg: Config, plan: dict, api: Api, approved: str | None, backup: str | None = None,
                registry: Registry | None = None, now: datetime | None = None,
-               source: dict | None = None) -> dict:
-    """案を反映する。戻り値: {run_id, run_dir, total, applied, ok, error, not_undoable}。"""
+               source: dict | None = None,
+               progress: Callable[[int, int, str, bool], None] | None = None) -> dict:
+    """案を反映する。戻り値: {run_id, run_dir, total, applied, ok, error, not_undoable}。
+
+    progress(i, total, label, ok) は 1 件ごとに呼ぶ（中継が画面へ進み具合を流す。失敗しても反映は止めない）。
+    """
     reg = registry or load_all()
     errs = check_plan(plan, reg)
     if errs:
@@ -215,6 +220,11 @@ def apply_plan(cfg: Config, plan: dict, api: Api, approved: str | None, backup: 
             "status": status, "ok": ok, "problems": problems,
             "response": None if ok else _short(response), "at_utc": _utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
         })
+        if progress is not None:
+            try:
+                progress(i, len(plan["ops"]), label, ok)
+            except Exception:  # 進み具合の通知の失敗で反映を止めない
+                pass
         if not ok:
             why = "・".join(problems) if problems else f"HTTP {status}"
             error = f"{i + 1} 件目（{label}）で止めました: {why}"
@@ -234,6 +244,7 @@ def apply_plan(cfg: Config, plan: dict, api: Api, approved: str | None, backup: 
     meta.update({"finished_at_utc": _utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
                  "applied": applied, "unknown": unknown, "total": len(plan["ops"]), "error": error})
     _write_json(run_dir / "meta.json", meta)
+    record_apply(cfg, plan, approved, source, run_id, applied, unknown, error, bool(backup_rec.get("path")))
     return {"run_id": run_id, "run_dir": str(run_dir), "total": len(plan["ops"]), "applied": applied,
             "unknown": unknown, "ok": error is None, "error": error, "not_undoable": not_undoable,
             "backup": backup_rec.get("path")}
@@ -279,7 +290,8 @@ def resolve_run_dir(cfg: Config, run_id: str) -> Path:
 
 
 def undo_run(cfg: Config, run_id: str, api: Api, approved: str | None, backup: str | None = None,
-             partial: bool = False, registry: Registry | None = None, now: datetime | None = None) -> dict:
+             partial: bool = False, registry: Registry | None = None, now: datetime | None = None,
+             progress: Callable[[int, int, str, bool], None] | None = None) -> dict:
     d = resolve_run_dir(cfg, run_id)
     marker = d / "undone.json"
     if marker.exists():
@@ -295,7 +307,7 @@ def undo_run(cfg: Config, run_id: str, api: Api, approved: str | None, backup: s
                       "戻せる分だけ戻すなら --partial、全部ならバックアップから")
     if not plan.get("ops"):
         raise RkError("戻す操作がありません")
-    res = apply_plan(cfg, plan, api, approved, backup, registry, now, source={"undo_of": run_id})
+    res = apply_plan(cfg, plan, api, approved, backup, registry, now, source={"undo_of": run_id}, progress=progress)
     if res["ok"]:
         _write_json(marker, {"undone_by": res["run_id"], "at_utc": _utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")})
     return res

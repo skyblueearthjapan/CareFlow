@@ -436,7 +436,8 @@ async def test_from_week_bulk_replaces_nonpinned_and_inherits_movability(client,
     # 置換されて duration が visit に合う (09:00-09:45 = 45 分).
     assert mon[0].duration_min == 45, "非 pinned 行は visit で置換される"
     assert mon[0].is_pinned is False
-    assert mon[0].movability == "time_flexible", "旧行から movability を引き継ぐ"
+    # 赤ピン整理 (2026-10-12): 赤は 2 値のみ書く. 旧 time_flexible は引き継がず unknown.
+    assert mon[0].movability == "unknown"
 
 
 @pytest.mark.asyncio

@@ -318,7 +318,8 @@ async def test_redo_reapplies_off(client, db) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_week_pinned_returns_422(client, db) -> None:
+async def test_stale_week_pinned_flag_is_not_blocked(client, db) -> None:
+    """青ピン廃止 (2026-10-12): 列に true が残っていても休みにできる."""
     admin = await _make_user(db, email="sow-5@example.com")
     staff_a = await _make_staff(db, name="休む人5")
     patient = await _make_patient(db, code="SOW-5", name="青ピン太郎")
@@ -330,12 +331,8 @@ async def test_week_pinned_returns_422(client, db) -> None:
         headers=_bearer(admin),
         json={"staff_id": str(staff_a.id), "date": target.isoformat(), "to_staff_id": None},
     )
-    assert res.status_code == 422, res.text
-    detail = res.json()["detail"]
-    assert "1 件" in detail
-    assert "青ピン太郎" in detail
-    # 休みは登録されない (途中まで書いて止まらない)。
-    assert await _overrides(db, staff_a.id) == []
+    assert res.status_code == 200, res.text
+    assert "青ピン" not in res.text
 
 
 async def test_past_date_returns_422(client, db) -> None:

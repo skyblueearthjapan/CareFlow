@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import shlex
 import socket
@@ -89,9 +90,10 @@ class SshTunnel:
 class Http:
     """base_url（…/api/v1）への JSON の HTTP。2xx 以外は ApiError。"""
 
-    def __init__(self, base_url: str, timeout: float = 120):
+    def __init__(self, base_url: str, timeout: float = 120, headers: dict | None = None):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.extra_headers = dict(headers or {})  # 例: 中継の User-Agent（監査ログに承認番号を残す）
 
     def request(self, method: str, path: str, body: Any = None, params: dict | None = None,
                 token: str | None = None) -> Any:
@@ -101,7 +103,7 @@ class Http:
             sep = "&" if "?" in url else "?"
             url += sep + urllib.parse.urlencode(params, doseq=True)
         data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", **self.extra_headers}
         if data is not None:
             headers["Content-Type"] = "application/json"
         if token:
@@ -136,3 +138,72 @@ def normalize_path(path: str) -> str:
     if "://" in path or ".." in path.split("?")[0].split("/") or path.startswith("//"):
         raise RkError(f"パスが正しくありません: {path}")
     return path
+
+
+# ---------- relay モード（箱の中の rk → 中継の内側口） ----------
+RELAY_TOKEN_HEADER = "X-RK-Relay-Token"
+UPSTREAM_HEADER = "X-RK-Upstream"  # 中継が backend の応答をそのまま返したときの印（ApiError にする）
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, sock_path: str, timeout: float):
+        super().__init__("localhost", timeout=timeout)
+        self._sock_path = sock_path
+
+    def connect(self) -> None:  # pragma: no cover - Linux の箱でだけ使う
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)  # type: ignore[attr-defined]
+        s.settimeout(self.timeout)
+        s.connect(self._sock_path)
+        self.sock = s
+
+
+class RelayClient:
+    """中継の内側口（/rk/...）への JSON の HTTP。合言葉（RK_RELAY_TOKEN）を毎回付ける。
+
+    応答: 2xx → JSON。X-RK-Upstream の付いた 4xx/5xx → ApiError（backend の応答そのもの）。
+    それ以外の 4xx/5xx → RkError（中継が断った理由 {"rk_error": "..."} を日本語で見せる）。
+    """
+
+    def __init__(self, url: str, token: str, timeout: float = 900, conn_factory: Callable | None = None):
+        self.url = url
+        self.token = token
+        self.timeout = timeout
+        self.conn_factory = conn_factory or self._default_conn
+
+    def _default_conn(self):
+        if self.url.startswith("unix:"):
+            return _UnixHTTPConnection(self.url[len("unix:"):], self.timeout)
+        u = urllib.parse.urlsplit(self.url)
+        cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
+        return cls(u.hostname, u.port, timeout=self.timeout)
+
+    def request(self, method: str, path: str, body: Any = None, params: dict | None = None) -> Any:
+        if params:
+            path += ("&" if "?" in path else "?") + urllib.parse.urlencode(params, doseq=True)
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
+        headers = {"Accept": "application/json", RELAY_TOKEN_HEADER: self.token}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        conn = self.conn_factory()
+        try:
+            conn.request(method.upper(), path, body=data, headers=headers)
+            r = conn.getresponse()
+            raw = r.read().decode("utf-8", "replace")
+            status, upstream = r.status, r.getheader(UPSTREAM_HEADER)
+        except OSError as e:
+            raise RkError(f"中継につながりません（{self.url}）: {e}") from None
+        finally:
+            conn.close()
+        parsed = _parse(raw)
+        if 200 <= status < 300:
+            return parsed
+        if upstream:
+            raise ApiError(status, parsed)
+        msg = parsed.get("rk_error") or parsed.get("detail") if isinstance(parsed, dict) else None
+        raise RkError(str(msg or f"中継が断りました（HTTP {status}）"))
+
+
+def relay_client(cfg: Config) -> RelayClient:
+    if cfg.mode != "relay":
+        raise RkError("この操作は RK_MODE=relay（中継の中）でだけ使えます")
+    return RelayClient(cfg.relay_url, cfg.relay_token)

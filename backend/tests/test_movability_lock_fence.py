@@ -331,9 +331,8 @@ async def test_legacy_pipeline_propagates_movability_locked(db) -> None:
     assert locked_after[0].is_movability_locked is True, (
         "PFV.movability='locked' が V2Visit.is_movability_locked に伝播していない"
     )
-    assert locked_after[0].is_pinned is False, (
-        "可動域ロックは is_pinned を立てない (フラグ分離が壊れている)"
-    )
+    # 赤ピン整理 (2026-10-12): locked は is_pinned の厳密ミラー (どちらも赤).
+    assert locked_after[0].is_pinned is True, "locked の PFV は is_pinned ミラーも立つ"
     assert locked_after[0].start_time == time(10, 0), (
         "可動域=完全固定 の PFV の start_time (10:00) が補正で動いた: "
         f"actual={locked_after[0].start_time}"

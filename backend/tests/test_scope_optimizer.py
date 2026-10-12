@@ -319,8 +319,8 @@ async def test_locked_excluded(db) -> None:
         config=CONFIG,
     )
     assert result.steps == []
-    assert result.excluded.locked == 1
-    assert result.excluded.pinned == 0
+    # locked は is_pinned の厳密ミラー (赤ピン整理 2026-10-12): 内訳はどちらでもよい.
+    assert result.excluded.locked + result.excluded.pinned == 1
 
 
 # ---------------------------------------------------------------------------

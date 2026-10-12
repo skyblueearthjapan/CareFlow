@@ -80,6 +80,7 @@ from app.schemas.integrations import (
     MasterReconcileRequest,
     NgConflictRead,
     PlanActualCompareRequest,
+    RakusukeAdjustedReplacedRead,
     ReconcileReportRead,
     ReplaceInboundRequest,
     ReplaceInboundResult,
@@ -4804,6 +4805,64 @@ async def _smart_preview_gate(db, week_start: date) -> None:
         )
 
 
+async def _rakusuke_adjusted_replaced(
+    db: AsyncSession,
+    *,
+    week_start: date,
+    target_days: set[date],
+    entries: list[Any],
+) -> list[RakusukeAdjustedReplacedRead]:
+    """置換の対象日にある「らく助で調整した訪問」を挙げる (読むだけ・青ピン廃止 BP-6).
+
+    source が ``manual_week`` (今週だけ) / ``manual`` (手で足した) の planned 訪問。
+    置換は対象日の訪問を白紙化してカイポケ現況で作り直すので、その枠がカイポケに
+    無ければ消え、あれば作り直される。
+    """
+    if not target_days:
+        return []
+    from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, Visit
+    from app.services.kaipoke.name_match import build_name_index
+    from app.services.kaipoke.replace_inbound import _hhmm, _kaipoke_slot_keys
+
+    rows = (
+        await db.execute(
+            select(Visit, Patient.name)
+            .join(Patient, Patient.id == Visit.patient_id)
+            .where(
+                Visit.deleted_at.is_(None),
+                Visit.status == "planned",
+                Visit.source.in_((VISIT_SOURCE_MANUAL_WEEK, "manual")),
+                Visit.visit_date.in_(sorted(target_days)),
+            )
+            .order_by(Visit.visit_date, Visit.start_time, Patient.name)
+        )
+    ).all()
+    if not rows:
+        return []
+    patients = (await db.scalars(select(Patient).where(Patient.deleted_at.is_(None)))).all()
+    kaipoke_slots = _kaipoke_slot_keys(
+        entries,
+        build_name_index({str(p.id): p.name for p in patients}),
+        {str(p.id): p for p in patients},
+        week_start,
+        week_start + timedelta(days=6),
+    )
+    return [
+        RakusukeAdjustedReplacedRead(
+            visit_id=v.id,
+            date=v.visit_date,
+            start_time=v.start_time.strftime("%H:%M"),
+            patient_label=f"{name}様",
+            change=(
+                "カイポケの内容で作り直されます"
+                if (str(v.patient_id), v.visit_date, _hhmm(v.start_time)) in kaipoke_slots
+                else "カイポケに無いため消えます"
+            ),
+        )
+        for v, name in rows
+    ]
+
+
 async def _compute_smart_preview(
     db: AsyncSession,
     *,
@@ -4899,6 +4958,14 @@ async def _compute_smart_preview(
         )
         replace_read = _replace_result_read(plan, None)
 
+    adjusted_replaced = await _rakusuke_adjusted_replaced(
+        db,
+        week_start=week_start,
+        # 置換が実際に触る日だけ (らく助側の取消で見送った日は plan.per_day に出ない)。
+        target_days=set(plan.per_day) if replace_days else set(),
+        entries=entries,
+    )
+
     summary: dict[str, Any] = {
         "protected_days": len(protected_days),
         "replace_days": len(replace_days),
@@ -4914,6 +4981,7 @@ async def _compute_smart_preview(
         sheet_id=sheet.id if sheet is not None else None,
         diff_summary=diff_summary,
         replace=replace_read,
+        rakusuke_adjusted_replaced=adjusted_replaced,
     )
     return preview, summary
 

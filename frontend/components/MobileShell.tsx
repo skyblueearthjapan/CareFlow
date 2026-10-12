@@ -3,9 +3,11 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Home, CalendarCheck, CalendarRange, UserCircle2 } from 'lucide-react';
+import { Home, CalendarCheck, CalendarRange, UserCircle2, MessageCircleHeart } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MobileSurfaceSwitcher } from '@/components/mobile/MobileSurfaceSwitcher';
+import { AgentProvider } from '@/components/agent/AgentProvider';
+import { useAgentEnabled } from '@/components/agent/useAgentEnabled';
 
 const TABS = [
   { href: '/m/home', label: 'ホーム', icon: Home },
@@ -13,6 +15,8 @@ const TABS = [
   { href: '/m/this-week', label: '今週', icon: CalendarRange },
   { href: '/m/mypage', label: 'マイページ', icon: UserCircle2 },
 ] as const;
+
+const AGENT_TAB = { href: '/m/agent', label: '相談', icon: MessageCircleHeart } as const;
 
 interface MobileShellProps {
   children: React.ReactNode;
@@ -23,7 +27,12 @@ export function MobileShell({ children }: MobileShellProps) {
   const { data: session } = useSession();
   // 現場ボード (/m) は全ロールが閲覧できる (staff は閲覧専用・編集系はボード内で出さない)。
   const showFieldBoard = !!session;
-  return (
+  // らく助エージェントの「相談」タブ: 管理者 + 試験の許可 + 機能の旗が揃った時だけ (設計書 §4-3)。
+  const agentOn = useAgentEnabled();
+  // 会話中 (/m/agent/<id>) は全画面。入力欄と取り合うので下タブを隠す。
+  const inAgentConv = !!pathname?.startsWith('/m/agent/');
+  const tabs = agentOn ? [...TABS, AGENT_TAB] : TABS;
+  const shell = (
     // h-screen(100vh) はモバイルブラウザの URL バー表示時に可視領域より高くなり、
     // 最下行が固定下タブの裏に隠れる。dvh 対応ブラウザでは動的ビューポート高
     // (100dvh) を使い、可視領域とスクロール範囲を一致させる (非対応は 100vh のまま)。
@@ -36,12 +45,13 @@ export function MobileShell({ children }: MobileShellProps) {
       >
         {children}
       </main>
+      {!inAgentConv && (
       <nav
         className="fixed inset-x-0 bottom-0 z-40 flex h-16 border-t border-border-default bg-bg-base"
         style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
         aria-label="Bottom navigation"
       >
-        {TABS.map(({ href, label, icon: Icon }) => {
+        {tabs.map(({ href, label, icon: Icon }) => {
           // Exact match OR a strict path-segment prefix (e.g. `/m/today/123`).
           // Avoid the loose `startsWith(href)` which would also match
           // `/m/home123` or `/m/todayspecial`.
@@ -61,6 +71,8 @@ export function MobileShell({ children }: MobileShellProps) {
           );
         })}
       </nav>
+      )}
     </div>
   );
+  return agentOn ? <AgentProvider device="mobile">{shell}</AgentProvider> : shell;
 }

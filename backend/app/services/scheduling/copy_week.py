@@ -67,7 +67,7 @@ MAX_WEEKS_BACK = 8
 _SOURCE_IMPORT = "import"
 
 #: 写す先で「残す」訪問のうち、その (患者・日) への写しを丸ごと止める区分 (§8-3 M-4)。
-_KEEP_BLOCKS_DAY = frozenset({"keep_checked_in", "keep_import", "keep_pinned"})
+_KEEP_BLOCKS_DAY = frozenset({"keep_checked_in", "keep_import"})
 
 
 class CopyWeekError(Exception):
@@ -236,8 +236,6 @@ def _classify_existing(v: Visit, *, checked_in: set[UUID], today: date) -> str |
         return "keep_cancelled"
     if v.source == _SOURCE_IMPORT:
         return "keep_import"
-    if v.week_pinned:
-        return "keep_pinned"
     if v.visit_date < today:
         return "keep_past"
     return None

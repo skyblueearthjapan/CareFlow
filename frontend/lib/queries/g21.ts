@@ -1,7 +1,6 @@
 /**
  * TanStack Query hooks for Phase G-21 endpoints.
  *
- * - 完全固定 PFV (pin) toggle / bulk
  * - 同住所候補 / 紐付け (blocked / preferred / required)
  * - Office feature flag (g21_new_algorithm 等)
  *
@@ -27,7 +26,6 @@ import type {
   OfficeFeatureKey,
   PatientSameAddressLink,
   PatientSameAddressLinkCreate,
-  PfvPinBulkItem,
   SameAddressCandidate,
 } from '@/lib/schemas/g21';
 
@@ -63,76 +61,6 @@ function invalidateSameAddressDependents(qc: ReturnType<typeof useQueryClient>):
   void qc.invalidateQueries({ queryKey: [IMPROVEMENT_SUGGESTIONS_KEY] });
   void qc.invalidateQueries({ queryKey: ['diff-add'] });
   void qc.invalidateQueries({ queryKey: ['field-board'] });
-}
-
-// ─── PATCH /api/v1/patients/fixed-visits/{pfv_id}/pin ────────────────────────
-
-/**
- * Phase G-21 T4 reviewer M4: `patientId` を required にする.
- * 当該 PFV の fixed-visits cache を必ず invalidate するため、呼び出し側は
- * 必ず patient_id を渡す責任を負う (= 「invalidate 漏れ → 古いキャッシュで
- * 🔒 状態が反映されない」事故を防ぐ).
- */
-export interface TogglePfvPinVariables {
-  pfvId: string;
-  isPinned: boolean;
-  /** 該当患者の fixed-visits cache を refetch するために必須. */
-  patientId: string;
-}
-
-/**
- * 単一 PFV の is_pinned を切り替える.
- * 成功時に patient の fixed-visits / courses / visits cache を無効化.
- */
-export function useTogglePfvPin(): UseMutationResult<unknown, Error, TogglePfvPinVariables> {
-  const qc = useQueryClient();
-  const { data: session } = useSession();
-  const { accessToken, refreshToken } = authPair(session);
-
-  return useMutation<unknown, Error, TogglePfvPinVariables>({
-    mutationFn: async ({ pfvId, isPinned }) =>
-      fetcher(`/api/v1/patients/fixed-visits/${pfvId}/pin`, {
-        method: 'PATCH',
-        body: JSON.stringify({ is_pinned: isPinned }),
-        accessToken,
-        refreshToken,
-      }),
-    onSuccess: (_data, vars) => {
-      // 患者単位の fixed-visits cache + 全体の courses/visits を refresh.
-      void qc.invalidateQueries({
-        queryKey: ['patients', vars.patientId, 'fixed-visits'],
-      });
-      void qc.invalidateQueries({ queryKey: ['courses'] });
-      void qc.invalidateQueries({ queryKey: ['visits'] });
-    },
-  });
-}
-
-// ─── POST /api/v1/patients/fixed-visits/pin/bulk ─────────────────────────────
-
-/**
- * bulk pin/unpin.
- * BE は POST で {pfv_id, is_pinned}[] を受け取る.
- */
-export function useBulkPinPfvs(): UseMutationResult<unknown, Error, PfvPinBulkItem[]> {
-  const qc = useQueryClient();
-  const { data: session } = useSession();
-  const { accessToken, refreshToken } = authPair(session);
-
-  return useMutation<unknown, Error, PfvPinBulkItem[]>({
-    mutationFn: async (items) =>
-      fetcher('/api/v1/patients/fixed-visits/pin/bulk', {
-        method: 'POST',
-        body: JSON.stringify(items),
-        accessToken,
-        refreshToken,
-      }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['patients'] });
-      void qc.invalidateQueries({ queryKey: ['courses'] });
-      void qc.invalidateQueries({ queryKey: ['visits'] });
-    },
-  });
 }
 
 // ─── GET /api/v1/patients/{patient_id}/same-address-candidates ───────────────

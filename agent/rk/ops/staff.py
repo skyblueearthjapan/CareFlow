@@ -155,7 +155,7 @@ class StaffOffWeek(Op):
     （2 名体制の相方は残す）・その日のコースの担当を引き受け先へ・その日の固定イベントに取消印。
     受け取る値: ``staff_id``*（休む人）・``date``*・``to_staff_id``（引き受け先。null=全部「担当なし」）※別名 ``to_staff``・
     ``acknowledge_constraint_warnings``・``op_group_id``。
-    前提: 過去日 422（当日は可）・青ピンの訪問が 1 件でもあれば 422・引き受け先が新人/退職/本人/その日休みなら 422・
+    前提: 過去日 422（当日は可）・引き受け先が新人/退職/本人/その日休みなら 422・
     NG・女性限定は 422（了承で再送）。打刻済み等は据え置き（応答の skipped_visit_ids）。
     複数人へ振り分けたいときはこれではなく、ならし（rk level day）→ staff-day-off＋assign-staff-week など。
     戻し方: **rk undo では戻せない（None）** → 戻すにはバックアップから。理由: 2 名体制の「本人の枠」だけの差し替え・
@@ -218,9 +218,6 @@ class StaffOffWeek(Op):
         visits, courses = self._day(api, sid, day)
         rows = overrides_on(api, sid, day)
         notes = []
-        pinned = [v for v in visits if v.get("status") == "planned" and v.get("week_pinned")]
-        if pinned:
-            notes.append(f"青ピン（今週固定）の訪問が {len(pinned)} 件 → 解除しないと休みにできません")
         return {"staff_id": sid, "date": day, "override": override_brief(rows[0] if rows else None),
                 "visits": [visit_brief(v) for v in visits],
                 "courses": [{"id": str(c["id"]), "code": c.get("code"), "office_id": c.get("office_id")} for c in courses],

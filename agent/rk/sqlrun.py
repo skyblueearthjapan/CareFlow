@@ -170,8 +170,14 @@ def psql_argv(cfg: Config, params: dict[str, str]) -> list[str]:
     return argv
 
 
-def run_sql(cfg: Config, sql: str, params: dict[str, str] | None = None, runner: Runner = default_runner) -> Any:
-    script = wrap_sql(sql)
+def run_sql(cfg: Config, sql: str, params: dict[str, str] | None = None, runner: Runner = default_runner,
+            name: str | None = None) -> Any:
+    script = wrap_sql(sql)  # relay でも先にここで形を確かめる（中継も同じ検査をする）
+    if cfg.mode == "relay":
+        from rk.transport import relay_client
+        for k, v in (params or {}).items():
+            validate_param(k, v)
+        return relay_client(cfg).request("POST", "/rk/sql", {"sql": sql, "params": params or {}, "name": name})
     cmd = remote_cmd(cfg, psql_argv(cfg, params or {}))
     res = runner(cmd, script.encode("utf-8"), 600)
     out = (res.stdout or b"").decode("utf-8", "replace")

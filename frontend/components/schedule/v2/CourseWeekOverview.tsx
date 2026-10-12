@@ -34,10 +34,9 @@ import {
   type VisitDisplayKind,
 } from '@/lib/schedule/visitVisibility';
 import { genderPalette } from '@/lib/scheduling/timeline';
-import { PushPin, PushPinOff } from '@/components/ui/push-pin';
+import { PushPin } from '@/components/ui/push-pin';
 import { haversineKm } from '../WeekdayScheduleCard';
 import { formatEventLabelLines, getStaffEventsForWeekday } from './courseGrid';
-import { PinScopeMenu, type PinScope } from './PinScopeMenu';
 import { buildWeekOverviewCellDroppableId } from './courseDnd';
 import type { AccompanimentBinding } from '../timeline/accompaniment/types';
 
@@ -67,12 +66,9 @@ export interface WeekOverviewVisit {
    * 指定があれば 🔒 toggle が enable.
    */
   fixed_visit_id?: string | null;
-  /** Phase G-22: PFV.is_pinned のミラー値. */
-  is_pinned?: boolean | null;
   /**
-   * PFV.movability のミラー値 (2026-08-07 / PO 要望).
-   * 週タイムラインで「固 / 時 / 曜」の淡いマークを出すのに使う。
-   * null/undefined/'unknown' は非表示 (日タイムラインと同じ規則)。
+   * PFV.movability のミラー値 = 完全固定 (赤) の唯一の表示根拠.
+   * 'locked' のとき赤い画鋲を出す (表示のみ・付け外しは患者マスタ)。
    */
   movability?: Movability | null;
   /**
@@ -86,8 +82,6 @@ export interface WeekOverviewVisit {
    * 'manual_week' = 今週固定。欠落は非表示 (寛容)。
    */
   source?: string | null;
-  /** 週のピン (青ピン / 2026-08-09)。source と独立のフラグ。 */
-  week_pinned?: boolean | null;
   /** 患者の緯度経度 (距離算出用). null = 未登録 → 距離は出さない. */
   lat?: number | null;
   lng?: number | null;
@@ -177,13 +171,6 @@ export interface CourseWeekOverviewProps {
    * canEdit に依らない。
    */
   onPatientClick?: (patientId: string) => void;
-  /**
-   * Phase G-22 / Phase G-47: 🔒 完全固定 toggle ハンドラ (週ビュー).
-   * 指定時のみ各 visit の患者名後ろに 🔒 / 🔓 button が描画され、 click で
-   * PinScopeMenu (= 曜日のみ / 全曜日) が開く.
-   * visit.fixed_visit_id が無い場合は disabled.
-   */
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   /**
    * スタッフ数連動 (auto-schedule 統一): (office_id, weekday) → 稼働スタッフ数.
    * A-E コースの「休」/定員はこの値で判定する
@@ -299,7 +286,6 @@ export function CourseWeekOverview({
   staffMap,
   sameAddressKeyByPatientId,
   onPatientClick,
-  onTogglePin,
   staffCountFor,
   courseCodesMax = COURSE_CODES_MAX,
   pfvCountFor,
@@ -623,14 +609,8 @@ export function CourseWeekOverview({
                         groupKey: string | null;
                         /** Phase G-15: 性別制限. female_only=赤 / male_only=青. */
                         sexRestriction: 'female_only' | 'male_only' | null;
-                        /** Phase G-22: 🔒 toggle 対象 PFV id. null = weekly_pattern 由来. */
-                        fixedVisitId: string | null;
-                        /** Phase G-22: PFV.is_pinned. */
-                        isPinned: boolean;
-                        /** 週のピン (青 / 2026-08-09)。コース別一覧でも見えるようにする。 */
-                        isWeekPinned: boolean;
-                        /** 2026-08-08: 型とズレているときの型の開始時刻 'HH:MM' (一致なら null)。 */
-                        masterStartTime: string | null;
+                        /** 完全固定 (赤): PFV.movability==='locked'。表示のみ。 */
+                        isLocked: boolean;
                         /** 患者性別 (male/female/unknown)。行頭ドット (日リストと同じ視覚言語)。 */
                         patientSex: string | null;
                         /** 今週だけ取消 (visits.status='cancelled')。打消線で見せる。 */
@@ -672,12 +652,7 @@ export function CourseWeekOverview({
                         label: v.patient_name ?? v.patient_id,
                         groupKey: inGroup ? k : null,
                         sexRestriction: v.patient_sex_restriction ?? null,
-                        fixedVisitId: v.fixed_visit_id ?? null,
-                        isPinned: v.is_pinned === true,
-                        // 週のピン (青 / 2026-08-09): フラグ ∪ 旧 manual_week の和集合。
-                        isWeekPinned: v.week_pinned === true || v.source === 'manual_week',
-                        // 2026-08-08: ピン留め不可の理由を正しく出すために型の時刻を運ぶ。
-                        masterStartTime: v.master_start_time ?? null,
+                        isLocked: v.movability === 'locked',
                         patientSex: v.patient_sex ?? null,
                         cancelled: v.status === 'cancelled',
                         // 描くと決まった訪問なので showInactive:true で区分だけ求める。
@@ -947,26 +922,12 @@ export function CourseWeekOverview({
                                             <span style={sexStyle}>{item.label}</span>
                                           );
                                         })()}
-                                        {/* 週のピン (青 / 2026-08-09): コース別一覧では状態表示のみ
-                                            (操作は日ビュー / 一括ボタン)。 */}
-                                        {item.isWeekPinned && (
+                                        {/* 完全固定 (赤): 表示のみ。付け外しは患者マスタ。 */}
+                                        {item.isLocked && (
                                           <PushPin
-                                            className="ml-0.5 inline-block h-3 w-3 shrink-0 text-info [&_.fill-error]:fill-[var(--info)]"
-                                            aria-label="今週固定"
-                                            data-testid={`course-week-overview-week-pin-${item.id}`}
-                                          />
-                                        )}
-                                        {/* Phase G-22 / G-47: 🔒 完全固定 toggle (週ビュー) — scope 選択メニュー化 */}
-                                        {onTogglePin && (
-                                          <PinIconButton
-                                            fixedVisitId={item.fixedVisitId}
-                                            isPinned={item.isPinned}
-                                            masterStartTime={item.masterStartTime}
-                                            label={item.label}
-                                            patientId={item.patient_id}
-                                            onTogglePin={onTogglePin}
-                                            testIdPrefix="course-week-overview-pin"
-                                            visitId={item.id}
+                                            className="ml-0.5 inline-block h-3 w-3 shrink-0"
+                                            aria-label="完全固定"
+                                            data-testid={`course-week-overview-locked-${item.id}`}
                                           />
                                         )}
                                       </span>
@@ -1074,25 +1035,12 @@ export function CourseWeekOverview({
                                                   <span style={sexStyle}>{v.label}</span>
                                                 );
                                               })()}
-                                              {/* 週のピン (青 / 2026-08-09): 状態表示のみ。 */}
-                                              {v.isWeekPinned && (
+                                              {/* 完全固定 (赤): 表示のみ。付け外しは患者マスタ。 */}
+                                              {v.isLocked && (
                                                 <PushPin
-                                                  className="ml-0.5 inline-block h-3 w-3 shrink-0 text-info [&_.fill-error]:fill-[var(--info)]"
-                                                  aria-label="今週固定"
-                                                  data-testid={`course-week-overview-week-pin-${v.id}`}
-                                                />
-                                              )}
-                                              {/* Phase G-22 / G-47: 🔒 完全固定 toggle (週ビュー pair cluster) — scope 選択メニュー化 */}
-                                              {onTogglePin && (
-                                                <PinIconButton
-                                                  fixedVisitId={v.fixedVisitId}
-                                                  isPinned={v.isPinned}
-                                                  masterStartTime={v.masterStartTime}
-                                                  label={v.label}
-                                                  patientId={v.patient_id}
-                                                  onTogglePin={onTogglePin}
-                                                  testIdPrefix="course-week-overview-pin"
-                                                  visitId={v.id}
+                                                  className="ml-0.5 inline-block h-3 w-3 shrink-0"
+                                                  aria-label="完全固定"
+                                                  data-testid={`course-week-overview-locked-${v.id}`}
                                                 />
                                               )}
                                             </span>
@@ -1136,91 +1084,6 @@ export function CourseWeekOverview({
         </div>
       </div>
     </Card>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// Phase G-22: PinIconButton (週ビュー 用)
-// ─────────────────────────────────────────────────────────────────────────
-
-interface PinIconButtonProps {
-  fixedVisitId: string | null;
-  isPinned: boolean;
-  /**
-   * 型 (固定訪問スケジュール) の開始時刻。今週の実配置とズレているときだけ 'HH:MM'。
-   * ズレている場合は「固定枠が無い」のではなく「時刻が違う」のでピン留めできない。
-   * 旧実装は両者を区別せず「先に固定枠登録が必要」と表示しており、嘘になっていた。
-   */
-  masterStartTime?: string | null;
-  label: string;
-  /** Phase G-47: bulk (全曜日) スコープ選択時に patient の全 PFV 対象として渡る. */
-  patientId: string;
-  visitId: string;
-  testIdPrefix: string;
-  onTogglePin: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
-}
-
-function PinIconButton({
-  fixedVisitId,
-  isPinned,
-  masterStartTime,
-  label,
-  patientId,
-  visitId,
-  testIdPrefix,
-  onTogglePin,
-}: PinIconButtonProps) {
-  const disabled = !fixedVisitId;
-  // 論点 1 (PO 決定 2026-08-08): 無効の理由を正しく伝える。合わせ直す導線は設けない。
-  const diverged = disabled && typeof masterStartTime === 'string' && masterStartTime.length > 0;
-  const disabledReason = diverged
-    ? `固定訪問スケジュールは ${masterStartTime} です。この時間帯では完全固定にできません`
-    : '先に固定枠登録が必要';
-  // Phase G-47: click 即時 toggle を廃し、 PinScopeMenu で「曜日のみ / 全曜日」 2 択を提示.
-  return (
-    <PinScopeMenu
-      pfvId={fixedVisitId ?? ''}
-      patientId={patientId}
-      isPinned={isPinned}
-      onSelect={onTogglePin}
-      disabled={disabled}
-      testIdSuffix={`${testIdPrefix}-${visitId}`}
-    >
-      {({ isOpen }) => (
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          disabled={disabled}
-          aria-label={
-            isPinned
-              ? `${label} の完全固定スコープを選択 (完全固定を外す)`
-              : disabled
-                ? `${label} は${disabledReason}`
-                : `${label} の完全固定スコープを選択 (完全固定にする)`
-          }
-          title={
-            disabled
-              ? disabledReason
-              : isPinned
-                ? '完全固定を外すスコープを選択 (この曜日のみ / 全曜日)'
-                : '完全固定にするスコープを選択 (この曜日のみ / 全曜日)'
-          }
-          aria-pressed={isPinned}
-          aria-haspopup="menu"
-          aria-expanded={isOpen}
-          data-testid={`${testIdPrefix}-${visitId}`}
-          data-pinned={isPinned ? 'true' : 'false'}
-          data-pfv-id={fixedVisitId ?? ''}
-          className={cn(
-            'ml-1 inline-flex items-center justify-center rounded px-0.5 leading-none align-middle',
-            isPinned ? 'text-yellow-700 hover:bg-yellow-100' : 'text-text-muted hover:bg-bg-muted',
-            disabled ? 'cursor-not-allowed opacity-30' : '',
-          )}
-        >
-          {isPinned ? <PushPin className="h-3 w-3" /> : <PushPinOff className="h-3 w-3" />}
-        </button>
-      )}
-    </PinScopeMenu>
   );
 }
 

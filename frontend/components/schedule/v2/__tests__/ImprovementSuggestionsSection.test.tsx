@@ -219,7 +219,7 @@ describe('ImprovementSuggestionsSection', () => {
     };
     renderSection();
     expect(screen.getByTestId('improvement-requires-confirmation')).toHaveTextContent(
-      '可動域未設定・患者様への確認推奨',
+      '完全固定ではない枠・患者様への確認推奨',
     );
   });
 
@@ -453,7 +453,7 @@ describe('ImprovementSuggestionsSection', () => {
     };
     renderSection();
     expect(screen.getByTestId('improvement-swap-counterpart-confirmation')).toHaveTextContent(
-      '佐藤 花子 様の可動域未設定',
+      '佐藤 花子 様は完全固定ではない枠',
     );
     // X 側は未設定なので出ない.
     expect(screen.queryByTestId('improvement-requires-confirmation')).not.toBeInTheDocument();

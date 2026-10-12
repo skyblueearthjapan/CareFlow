@@ -69,7 +69,6 @@ const EXCLUDED_LABEL: Record<string, string> = {
   checked_in: '打刻済み',
   in_progress: '訪問中',
   completed: '実施済み',
-  week_pinned: '青ピン（今週固定）',
 };
 
 function excludedText(excluded: Record<string, number>): string | null {

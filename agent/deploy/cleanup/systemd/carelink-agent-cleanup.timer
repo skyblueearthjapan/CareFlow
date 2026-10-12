@@ -1,0 +1,10 @@
+[Unit]
+Description=Rakusuke agent: retention cleanup (18:45 UTC daily)
+
+[Timer]
+OnCalendar=*-*-* 18:45:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

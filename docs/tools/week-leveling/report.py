@@ -175,7 +175,9 @@ def check(d, out, cap_regular: int, allow_over: int) -> tuple[list[str], list[st
                         errors.append(f"{day} {s.name}: NG の職員")
                     if v.female_only and s.sex == "male":
                         errors.append(f"{day} {s.name}: 女性限定に男性")
-                    if not (v.win[0] <= t + off <= v.win[1]):
+                    if v.time_fixed and t + off != v.fixed_start:
+                        errors.append(f"{day} {s.name}: 完全固定（赤ピン）の時刻が動いた {fmt(t + off)}")
+                    elif not (v.win[0] <= t + off <= v.win[1]):
                         errors.append(f"{day} {s.name}: 希望の範囲外 {fmt(t + off)}")
                     if (t + off) % 5:
                         errors.append(f"{day} {s.name}: 5 分刻みでない {fmt(t + off)}")
@@ -255,6 +257,7 @@ def write_excel(
     jev=None,
     diag=None,
     lunch_by_day=None,
+    conditions=None,
 ):
     S = {s["id"]: s["name"] for s in d["staff"]}
     new = new_assignments(out)
@@ -396,6 +399,13 @@ def write_excel(
         [90],
     )
     sheet("気を付ける点", ["内容"], [[w] for w in warnings] or [["なし"]], [90])
+    if conditions:
+        sheet(
+            "今回だけの条件",
+            ["条件", "決まりをゆるめる"],
+            [[c["text"], "はい" if c["relax"] else ""] for c in conditions],
+            [90, 14],
+        )
     if diag:
         _diag_sheet(wb, diag, bold, hdr, warn)
     wb.save(path)
@@ -412,8 +422,28 @@ def write_excel(
     }
 
 
+def conditions_page(conditions) -> str:
+    """A4 の「今回だけの条件」(ふつうの決まりに足した、この案だけの指定)。無ければ空。"""
+    if not conditions:
+        return ""
+    lis = "".join(
+        f"<li>{html.escape(c['text'])}{' <b>（決まりをゆるめています）</b>' if c['relax'] else ''}</li>"
+        for c in conditions
+    )
+    return f'<section class="pg"><h2>今回だけの条件</h2><ul class="cond">{lis}</ul></section>'
+
+
 def write_a4(
-    path: Path, title: str, d, visits, out, hist_by_day, jev=None, diag=None, lunch_by_day=None
+    path: Path,
+    title: str,
+    d,
+    visits,
+    out,
+    hist_by_day,
+    jev=None,
+    diag=None,
+    lunch_by_day=None,
+    conditions=None,
 ):
     S = {s["id"]: s["name"] for s in d["staff"]}
     e = html.escape
@@ -504,9 +534,9 @@ h3 {{ font-size:11.5px; margin:3mm 2mm 1mm; }} ul {{ margin:0 2mm; padding-left:
 .pr {{ font-size:8.5px; color:#0b6e5e; font-weight:normal; }} .em {{ color:#9c9087; }} .dr {{ color:#b00; margin-top:2mm; }}
 </style></head><body>
 <h1>{e(title)} — 案（まだ反映していません）</h1>
-<div class="note">決まり: 曜日は変えない／固定の時刻 → 希望の範囲内／正規の人数上限／勤務時刻を守る（マネージャーはあふれの受け皿）／NG・女性限定は絶対／同じ建物の 2 名は 1 人で 90 分枠／昼休み 11:30〜13:30 に 45 分（入らない日だけ 30 分・予定の時間は昼休みに数えない）／移動は直線 20km/h＋ゆとり 8 分。
+<div class="note">決まり: 曜日は変えない／完全固定（赤ピン）の訪問 {sum(1 for v in visits if v.time_fixed)} 件は曜日・時刻とも動かさない（担当は動く）／固定の時刻 → 希望の範囲内／正規の人数上限／勤務時刻を守る（マネージャーはあふれの受け皿）／NG・女性限定は絶対／同じ建物の 2 名は 1 人で 90 分枠／昼休み 11:30〜13:30 に 45 分（入らない日だけ 30 分・予定の時間は昼休みに数えない）／移動は直線 20km/h＋ゆとり 8 分。
 札: <span class="tg t">時刻 →</span> 元の時刻／<span class="tg s">今 ○○</span> 今の担当／<span class="tg x">拠点またぎ</span>／<span class="tg o">勤務超え</span>／<span class="tg r">前回と同じ</span>／<span class="tg j">Jev 要確認</span></div>
-{diag_page(diag) if diag else ""}{"".join(pages)}
+{conditions_page(conditions)}{diag_page(diag) if diag else ""}{"".join(pages)}
 </body></html>""",
         encoding="utf-8",
     )

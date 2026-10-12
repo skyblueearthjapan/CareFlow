@@ -29,7 +29,11 @@ from sqlalchemy import (
     String,
     Time,
     UniqueConstraint,
+    event,
     func,
+)
+from sqlalchemy import (
+    inspect as sa_inspect,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -107,12 +111,13 @@ class PatientFixedVisit(Base):
         server_default=sa.false(),
     )
 
-    # P2-A: 可動域フラグ = 提案の可否 (改善提案 MVP).
-    #   - unknown(既定・保守的) / time_flexible(同曜日内の時刻変更可) /
-    #     day_flexible(曜日も変更可) / locked(完全固定).
-    #   - is_pinned=true の既存行は migration 0047 で 'locked' に backfill 済.
-    #   - is_pinned との矛盾 (is_pinned=True ⇒ locked) は DB CHECK でなく
-    #     pfv_validator V6 (proposed_items の自動矯正) で担保する.
+    # 赤ピン (完全固定) = 「この曜日と時刻は変えない」(担当・コースは縛らない).
+    # 2026-10-12 赤ピン整理 (docs/plans/red-pin-simplify-design.md):
+    #   - 書き込む値は 'locked'(赤) / 'unknown'(赤でない) の 2 値だけ.
+    #     time_flexible / day_flexible は読み取り互換のため CHECK には残るが、
+    #     もう書かない (エンジンは locked 以外を unknown として扱う).
+    #   - is_pinned は movability=='locked' の厳密なミラー. 全書き込み経路で
+    #     下の ORM イベント (_sync_pfv_red_pin) が 1 か所でそろえる.
     movability: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
@@ -163,3 +168,32 @@ class PatientFixedVisit(Base):
             name="ck_pfv_movability",
         ),
     )
+
+
+def _sync_pfv_red_pin(_mapper: object, _connection: object, target: PatientFixedVisit) -> None:
+    """赤ピンの 2 列 (movability / is_pinned) を 1 か所でそろえる (insert / update 共通).
+
+    - 正典は ``movability``。``is_pinned`` は ``movability == 'locked'`` の厳密なミラー。
+    - 新規行で ``is_pinned=True`` が明示された (または ``movability`` 未指定で true) 場合は 'locked'。
+    - 既存行で ``is_pinned`` だけが変更され ``movability`` が変わっていない場合は、
+      ``is_pinned`` の新しい値を正として movability を 'locked' / 'unknown' にする。
+    - 'time_flexible' / 'day_flexible' は既存値としては温存する (本番は 0 件。新規には
+      どの経路も書かない)。
+    """
+    state = sa_inspect(target)
+    mov = target.movability
+    pinned = bool(target.is_pinned)
+    if state.persistent:
+        mov_changed = state.attrs.movability.history.has_changes()
+        pin_changed = state.attrs.is_pinned.history.has_changes()
+        if pin_changed and not mov_changed:
+            mov = "locked" if pinned else "unknown"
+    elif mov is None or pinned:
+        # 新規行: movability 未指定、または is_pinned=True が明示された → 赤.
+        mov = "locked" if (pinned or mov == "locked") else "unknown"
+    target.movability = mov
+    target.is_pinned = mov == "locked"
+
+
+event.listen(PatientFixedVisit, "before_insert", _sync_pfv_red_pin)
+event.listen(PatientFixedVisit, "before_update", _sync_pfv_red_pin)

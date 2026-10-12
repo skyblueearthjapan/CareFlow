@@ -15,6 +15,7 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
@@ -47,6 +48,32 @@ W_ROTATION = (200, 100, 50)  # 直前・2 回前・3 回前と同じ職員
 W_DROP = 1_000_000
 W_OVER_PER_PATIENT = 300  # 上限を超えて持つ 1 名 (allow_over のとき)。over_before_manager なら 120
 W_BALANCE_PER_PATIENT = 60  # ならし: 正規の平均 (切り上げ) を超えて持つ 1 名
+W_PREFER = 100  # --prefer-staff: 寄せたい人以外へ回す 1 名ごと (寄せたい人の重みとの差)
+W_AVOID = 600  # --avoid-staff: 使いたくない人へ回す 1 名ごと
+W_KEEP_CURRENT = 300  # --keep-current: 今の担当から変える 1 名ごと
+
+# opts["weights"] で上書きできる重み (名前 → 既定値)。自作の指定 (agent/tools/leveling/api.py) 用
+WEIGHTS = {
+    "manager_visit": W_MANAGER_VISIT,
+    "manager_overtime_per_min": W_MANAGER_OVERTIME_PER_MIN,
+    "cross_office": W_CROSS_OFFICE,
+    "move_per_min": W_MOVE_PER_MIN,
+    "rotation": W_ROTATION,
+    "drop": W_DROP,
+    "over_per_patient": W_OVER_PER_PATIENT,
+    "balance_per_patient": W_BALANCE_PER_PATIENT,
+    "prefer": W_PREFER,
+    "avoid": W_AVOID,
+    "keep_current": W_KEEP_CURRENT,
+}
+
+
+def weights_for(opts: dict) -> dict:
+    over = opts.get("weights") or {}
+    unknown = sorted(set(over) - set(WEIGHTS))
+    if unknown:
+        raise ValueError(f"重みの名前が違います: {', '.join(unknown)}（使えるのは {', '.join(WEIGHTS)}）")
+    return {**WEIGHTS, **over}
 
 
 def hm(t: str) -> int:
@@ -93,6 +120,7 @@ class Visit:
     cur_staff: str | None
     cur_course: str | None
     new: bool = False  # 特別訪問週間の○から足す訪問 (まだ週に無い。fixed_start は希望の範囲の始め)
+    time_fixed: bool = False  # 赤ピン (完全固定) の枠の訪問: 曜日・時刻を動かさない (担当は自由)
 
 
 @dataclass
@@ -152,6 +180,20 @@ def join_fixed(win: tuple[int, int], fs: int) -> tuple[int, int]:
     if fs < lo - FIXED_JOIN_MAX_GAP or fs > hi + FIXED_JOIN_MAX_GAP:
         return (fs, fs)
     return (min(lo, fs), max(hi, fs))
+
+
+def is_time_fixed(v: dict, locked: list[dict]) -> bool:
+    """訪問が赤ピン (完全固定) の枠のものか。赤は曜日・時刻だけを縛る (red-pin-simplify-design K-2/K-5)。
+    - その患者・曜日の赤の枠と開始時刻が同じ → 固定
+    - 今週だけ動かした訪問 (source=manual_week) は、その曜日の枠がすべて赤なら今週の時刻のまま固定 (Q-1)
+    固定の時刻は訪問の今の時刻 (= 枠の時刻、または Q-1 で今週の時刻)。希望の時間帯より赤を優先 (Q-4)。"""
+    wd = date.fromisoformat(v["visit_date"]).weekday()
+    mine = [r for r in locked if r["patient_id"] == v["patient_id"] and r["weekday"] == wd]
+    if not mine:
+        return False
+    if any(hm(r["start_time"]) == hm(v["start_time"]) for r in mine):
+        return True
+    return v.get("source") == "manual_week" and not any(r.get("has_unlocked") for r in mine)
 
 
 def load(path, hist_path, config: dict, opts: dict | None = None):
@@ -220,12 +262,14 @@ def load(path, hist_path, config: dict, opts: dict | None = None):
     no_office = [p for p in d["patients"] if p["primary_office_id"] not in office_label]
     if no_office:
         raise ValueError(f"主担当拠点の無い利用者が {len(no_office)} 名います")
-    drop = tuple(opts.get("drop") or ())
+    cancel = tuple(opts.get("cancel") or ())  # 急遽キャンセル = 外す + 今週だけ取消の操作 (plan.py)
+    drop = tuple(opts.get("drop") or ()) + cancel
     dropped_ids = [v["id"] for v in d["visits"] if drop and v["id"].startswith(drop)]
     unknown = [x for x in drop if not any(i.startswith(x) for i in dropped_ids)]
     if unknown:
         raise ValueError(f"外す訪問が週に見つかりません: {', '.join(unknown)}")
     d["dropped_visits"] = dropped_ids
+    d["cancelled_visits"] = [v["id"] for v in d["visits"] if cancel and v["id"].startswith(cancel)]
     visits: list[Visit] = []
     for v in d["visits"]:
         if v["id"] in dropped_ids:
@@ -235,7 +279,8 @@ def load(path, hist_path, config: dict, opts: dict | None = None):
         fs = hm(v["start_time"])
         dur = hm(v["end_time"]) - fs
         tt, win = pref_window(wp, dur)
-        win = (fs, fs) if win is None else join_fixed(win, fs)
+        tfix = is_time_fixed(v, d.get("pfv_locked") or [])
+        win = (fs, fs) if (win is None or tfix) else join_fixed(win, fs)
         visits.append(
             Visit(
                 id=v["id"],
@@ -253,6 +298,7 @@ def load(path, hist_path, config: dict, opts: dict | None = None):
                 # 訪問の主担当が無ければコースの担当 (アプリの表示の正典)
                 cur_staff=v["primary_staff_id"] or v.get("course_staff_id"),
                 cur_course=(v["course_office"] or "") + (v["course_code"] or ""),
+                time_fixed=tfix,
             )
         )
 
@@ -347,6 +393,57 @@ def _job(visits, offsets, start, dur, pref_lo, pref_hi) -> Job:
     return Job(visits, offsets, start, dur, pref_lo, pref_hi + DRIFT_OK, pref_lo, pref_hi)
 
 
+def find_patient(d: dict, token: str) -> str:
+    """利用者を 利用者 ID の先頭 か 名前の一部 (空白なし) で 1 名に決める。"""
+    sp = " \u3000"
+
+    def squeeze(x: str) -> str:
+        return "".join(c for c in (x or "") if c not in sp).lower()
+
+    t = squeeze(token)
+    hits = [p["id"] for p in d["patients"] if p["id"].lower().startswith(t) or t in squeeze(p["name"])]
+    if not hits:
+        raise ValueError(f"利用者が見つかりません: {token}")
+    if len(hits) > 1:
+        raise ValueError(f"利用者が {len(hits)} 名に当たります（もう少し長く書いてください）: {token}")
+    return hits[0]
+
+
+def resolve_knobs(opts: dict, d: dict, staff: dict[str, Staff]) -> dict:
+    """「今回だけの条件」の利用者・職員コードを id に直す (見つからなければ ValueError)。"""
+    by_code = {s.code: s for s in staff.values()}
+
+    def sid(code: str) -> str:
+        if code not in by_code:
+            raise ValueError(f"職員コード {code} は config に無いか、稼働していません")
+        return by_code[code].id
+
+    k: dict = {"only": [], "not_same_day": [], "pair": {}, "forbid": {}}
+    for x in opts.get("only_staff") or []:
+        lo, hi = x["window"]
+        k["only"].append(({sid(c) for c in x["codes"]}, int(lo), int(hi)))
+    for a, b in opts.get("not_same_day") or []:
+        pa, pb = find_patient(d, a), find_patient(d, b)
+        if pa == pb:
+            raise ValueError(f"--not-same-day に同じ利用者が 2 回: {a}, {b}")
+        k["not_same_day"].append((pa, pb))
+    for key, src in (("pair", "pair_staff"), ("forbid", "forbid_pair")):
+        for p, c in opts.get(src) or []:
+            k[key].setdefault(find_patient(d, p), set()).add(sid(c))
+    for c in list(opts.get("prefer") or {}) + list(opts.get("avoid") or {}):
+        sid(c)
+    return k
+
+
+def knob_ok(st: Staff, job: Job, k: dict) -> bool:
+    for v in job.visits:
+        if v.patient_id in k["pair"] and st.id not in k["pair"][v.patient_id]:
+            return False
+        if st.id in k["forbid"].get(v.patient_id, ()):
+            return False
+    return True
+
+
 def covered_all_day(st: Staff, wd: int) -> bool:
     """勤務時間が丸ごと予定で埋まっている (研修で終日など) = その日は回れない。"""
     a, b = st.shift[wd]
@@ -375,6 +472,8 @@ def solve_day(
     """1 日を解く。lunch = その日の昼休みの長さ (分・11:30〜13:30 の中で必ず取る)。"""
     cap_regular = opts.get("cap_regular", 6)
     allow_over = opts.get("allow_over", 0)
+    W = weights_for(opts)
+    knobs = opts.get("_knobs") or {"only": [], "not_same_day": [], "pair": {}, "forbid": {}}
     wd = day.weekday()
     vehicles = [
         s for s in staff if wd in s.shift and wd not in s.off and not covered_all_day(s, wd)
@@ -414,14 +513,14 @@ def solve_day(
         # まず固定の時刻 (ずらすと 1 分ごとに重み)。範囲 lo〜hi = 希望の範囲 (固定はその時刻だけ)
         # ○から足す訪問は固定の時刻が無いので、希望の範囲の中ならどこでも同じ
         if not all(v.new for v in j.visits):
-            T.SetCumulVarSoftLowerBound(idx, j.start, W_MOVE_PER_MIN)
-            T.SetCumulVarSoftUpperBound(idx, j.start, W_MOVE_PER_MIN)
-        routing.AddDisjunction([idx], W_DROP)
+            T.SetCumulVarSoftLowerBound(idx, j.start, W["move_per_min"])
+            T.SetCumulVarSoftUpperBound(idx, j.start, W["move_per_min"])
+        routing.AddDisjunction([idx], W["drop"])
         if j.lo < j.hi:  # 開始は 5 分刻み (アプリと同じ)
             slot = routing.solver().IntVar(j.lo // 5, j.hi // 5 + 1, f"slot{k}")
             routing.solver().Add(T.CumulVar(idx) == slot * 5)
         for i, s in enumerate(vehicles):
-            if not allowed(s, j):
+            if not allowed(s, j) or not knob_ok(s, j, knobs):
                 routing.VehicleVar(idx).RemoveValue(i)
 
     solver = routing.solver()
@@ -431,12 +530,16 @@ def solve_day(
         T.CumulVar(routing.Start(i)).SetRange(st, hard_end)
         T.CumulVar(routing.End(i)).SetRange(st, hard_end)
         if s.manager and en < hard_end:
-            T.SetCumulVarSoftUpperBound(routing.End(i), en, W_MANAGER_OVERTIME_PER_MIN)
+            T.SetCumulVarSoftUpperBound(routing.End(i), en, W["manager_overtime_per_min"])
         routing.AddVariableMaximizedByFinalizer(T.CumulVar(routing.Start(i)))
         routing.AddVariableMinimizedByFinalizer(T.CumulVar(routing.End(i)))
         breaks = []
-        evs = s.events.get(wd, [])
-        raw = s.raw_events.get(wd, [])
+        evs = list(s.events.get(wd, []))
+        raw = list(s.raw_events.get(wd, []))
+        for ok_ids, lo, hi in knobs["only"]:  # その時間帯は指定の人だけ = 他の人にはその時間の予定を置く
+            if s.id not in ok_ids:
+                evs.append((lo, hi))
+                raw.append((lo, hi))
         my_lunch, starts_ok = lunch, []
         if needs_lunch(st, hard_end):
             starts_ok = lunch_starts(lunch, raw)
@@ -465,9 +568,18 @@ def solve_day(
     C = routing.GetDimensionOrDie("Count")
     regulars = [i for i, s in enumerate(vehicles) if not s.manager]
     if allow_over:  # 少しオーバー: 上限を超えた 1 名ごとに重み (マネージャーより先に使うかは設定)
-        w_over = 120 if opts.get("over_before_manager") else W_OVER_PER_PATIENT
+        w_over = 120 if opts.get("over_before_manager") else W["over_per_patient"]
         for i in regulars:
             C.SetCumulVarSoftUpperBound(routing.End(i), cap_regular, w_over)
+    for pa, pb in knobs["not_same_day"]:  # 同じ職員が同じ日に両方を持たない
+        ja = [k for k, j in enumerate(jobs) if any(v.patient_id == pa for v in j.visits)]
+        jb = [k for k, j in enumerate(jobs) if any(v.patient_id == pb for v in j.visits)]
+        for a_ in ja:
+            for b_ in jb:
+                if a_ == b_:
+                    raise ValueError(f"{day}: 同じ建物の 2 名は 1 人が持つので --not-same-day にできません")
+                va, vb = routing.VehicleVar(mgr.NodeToIndex(a_)), routing.VehicleVar(mgr.NodeToIndex(b_))
+                solver.Add((va != vb).Var() + (va == -1).Var() >= 1)
     if opts.get("balance") and regulars:  # ならし: 正規の平均 (切り上げ) を超える分に重み
         total = sum(j.count for j in jobs)
         fair = -(-total // len(regulars))
@@ -475,27 +587,37 @@ def solve_day(
         B = routing.GetDimensionOrDie("Balance")
         for i in regulars:
             B.SetCumulVarSoftUpperBound(
-                routing.End(i), min(fair, cap_regular), W_BALANCE_PER_PATIENT
+                routing.End(i), min(fair, cap_regular), W["balance_per_patient"]
             )
 
     def rot_cost(s: Staff, j: Job) -> int:
         c = 0
         for v in j.visits:
             h = history[v.patient_id]
-            for rank, w in enumerate(W_ROTATION):
+            for rank, w in enumerate(W["rotation"]):
                 if rank < len(h) and h[rank] == s.id:
                     c = max(c, w)
                     break
         return c
 
+    prefer = opts.get("prefer") or {}
+    avoid = opts.get("avoid") or {}
+    keep_w = opts.get("keep_current") or 0
+    prefer_top = max(prefer.values(), default=0)
     for i, s in enumerate(vehicles):
         extra = []
         for j in jobs:
             e = rot_cost(s, j)
+            if prefer:  # 寄せたい人 (重みが大きいほど有利) 以外へは、差の分だけ高くする
+                e += (prefer_top - prefer.get(s.code, 0)) * j.count
+            if s.code in avoid:
+                e += avoid[s.code] * j.count
+            if keep_w:
+                e += keep_w * sum(1 for v in j.visits if v.cur_staff and v.cur_staff != s.id)
             if s.manager:
-                e += W_MANAGER_VISIT * j.count
+                e += W["manager_visit"] * j.count
             if any(v.office not in s.offices for v in j.visits):
-                e += W_CROSS_OFFICE * j.count
+                e += W["cross_office"] * j.count
             extra.append(e)
 
         def cb(a, b, extra=extra):
@@ -503,6 +625,21 @@ def solve_day(
             return tm[na][nb] + (extra[nb] if nb < n else 0)
 
         routing.SetArcCostEvaluatorOfVehicle(routing.RegisterTransitCallback(cb), i)
+
+    # 自作の条件 (agent/tools/leveling/api.py): 日ごとに fn(model=routing, vars=道具の箱, data=その日の情報)
+    if opts.get("extra_constraints"):
+        by_visit = {v.id: mgr.NodeToIndex(k) for k, j in enumerate(jobs) for v in j.visits}
+        box = {
+            "routing": routing, "manager": mgr, "solver": solver, "time": T, "count": C,
+            "jobs": jobs, "vehicles": vehicles, "day": day,
+            "index_of_visit": by_visit,
+            "vehicle_of_code": {s.code: i for i, s in enumerate(vehicles)},
+            "vehicle_of_staff": {s.id: i for i, s in enumerate(vehicles)},
+        }
+        data = SimpleNamespace(day=day, jobs=jobs, staff=staff, history=history, opts=opts,
+                               visits=[v for j in jobs for v in j.visits])
+        for fn in opts["extra_constraints"]:
+            fn(routing, box, data)
 
     params = pywrapcp.DefaultRoutingSearchParameters()
     params.first_solution_strategy = (
@@ -554,6 +691,7 @@ def run(
     opts = {"cap_regular": config.get("cap_regular", 6), **(opts or {})}
     d, visits, staff, _office_loc, history = load(week_path, hist_path, config, opts)
     by_code = {s.code: s for s in staff.values()}
+    opts["_knobs"] = resolve_knobs(opts, d, staff)
     for code, day in opts.get("off", []):
         if code not in by_code:
             raise ValueError(f"職員コード {code} は config に無いか、稼働していません")

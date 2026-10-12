@@ -5,12 +5,11 @@
  * ② 過去日 (JST) は「送信対象外」の警告が出る / 未来日は出ない
  * ③ 各操作が props のコールバックを正しい引数で呼ぶ (API は呼ばない)
  * ④ cancelled は「取消をやめる」に切り替わる
- * ⑤ 青ピン (week_pinned) は操作不可
  * ⑥ 提案 (2-C)「この1件を入れられる人」= ◎ で 1 クリック付け替え
  */
 import * as React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 
 // 提案セクション (2-C) は assign-candidates を叩くので、既定は「空の結果」に
 // 差し替えて既存シナリオへ影響させない (各テストで上書きする)。
@@ -50,7 +49,6 @@ const BASE_VISIT: VisitActionMenuVisit = {
   status: 'planned',
   source: 'manual_week',
   staff_id: STAFF_A,
-  week_pinned: false,
   unsent: true,
 };
 
@@ -157,11 +155,6 @@ describe('VisitActionMenu', () => {
     expect(h.onOpenMoveDialog).toHaveBeenCalledTimes(1);
   });
 
-  it('青ピンでは「曜日を移動…」も押せない', () => {
-    renderMenu({ visit: { ...BASE_VISIT, week_pinned: true } });
-    expect(screen.getByTestId('visit-action-weekday-dialog')).toBeDisabled();
-  });
-
   it('型も変える… が親へ通知される', () => {
     const h = renderMenu();
     fireEvent.click(screen.getByTestId('visit-action-master'));
@@ -179,13 +172,6 @@ describe('VisitActionMenu', () => {
     expect(screen.queryByTestId('visit-action-cancel')).toBeNull();
     fireEvent.click(screen.getByTestId('visit-action-uncancel'));
     expect(h.onCancelToggle).toHaveBeenCalledWith(false);
-  });
-
-  it('青ピンは操作できない', () => {
-    renderMenu({ visit: { ...BASE_VISIT, week_pinned: true } });
-    expect(screen.getByTestId('visit-action-week-pinned')).toBeInTheDocument();
-    expect(screen.getByTestId('visit-action-cancel')).toBeDisabled();
-    expect(screen.getByLabelText('担当変更')).toBeDisabled();
   });
 
   // ── 🧾 カイポケのサービス内容に合わせる (mig 0078 / 設計 §2) ──
@@ -206,11 +192,6 @@ describe('VisitActionMenu', () => {
     expect(screen.getByTestId('visit-action-service-content')).toHaveTextContent(
       'この訪問だけ変えます（マスタは変えません）',
     );
-  });
-
-  it('位置を変えないので青ピンでも押せる（取消と違って蓋の対象外）', () => {
-    renderMenu({ visit: { ...BASE_VISIT, week_pinned: true } });
-    expect(screen.getByTestId('visit-action-service-content')).toBeEnabled();
   });
 
   it('コールバック未指定なら項目を出さない', () => {
@@ -296,11 +277,8 @@ describe('VisitActionMenu', () => {
     expect(screen.getByTestId('visit-action-suggestions-loading')).toBeInTheDocument();
   });
 
-  it('提案セクション: 青ピン・取消済みでは出さない (付け替えできないため)', () => {
+  it('提案セクション: 取消済みでは出さない (付け替えできないため)', () => {
     mockAssignCandidates.mockReturnValue(suggestResult());
-    renderMenu({ visit: { ...BASE_VISIT, week_pinned: true } });
-    expect(screen.queryByTestId('visit-action-suggestions')).toBeNull();
-    cleanup();
     renderMenu({ visit: { ...BASE_VISIT, status: 'cancelled' } });
     expect(screen.queryByTestId('visit-action-suggestions')).toBeNull();
   });

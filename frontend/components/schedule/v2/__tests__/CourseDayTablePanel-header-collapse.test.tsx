@@ -224,16 +224,6 @@ vi.mock('@/lib/queries/assign_staff_only', async (importOriginal) => {
     useAssignStaffOnly: () => ({ mutateAsync: vi.fn(), isPending: false }),
   };
 });
-vi.mock('@/lib/queries/g21', async (importOriginal) => {
-  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
-  type M = typeof import('@/lib/queries/g21');
-  const actual = await importOriginal<M>();
-  return {
-    ...actual,
-    useTogglePfvPin: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-    useBulkPinPfvs: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-  };
-});
 vi.mock('@/lib/queries/staff-events', async (importOriginal) => {
   // eslint-disable-next-line @typescript-eslint/consistent-type-imports
   type M = typeof import('@/lib/queries/staff-events');

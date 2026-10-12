@@ -5,7 +5,6 @@
  *
  *   - POST /api/v1/schedule/v2/diff-add          → useDiffAddProposalsMutation
  *   - POST /api/v1/schedule/v2/apply-individual  → useApplyIndividualMutation
- *   - POST /api/v1/schedule/v2/reset-to-fixed    → useResetToFixedMutation
  *
  * BE 仕様: ``backend/app/schemas/v2/auto_schedule_v2.py`` と一致.
  * 設計仕様書: ``docs/plans/auto-schedule-v2.md`` v0.2
@@ -29,8 +28,6 @@ import {
   applyIndividualResponseSchema,
   diffAddRequestSchema,
   diffAddResponseSchema,
-  resetToFixedRequestSchema,
-  resetToFixedResponseSchema,
   unassignAllStaffRequestSchema,
   unassignAllStaffResponseSchema,
   updateFixedTimeMasterRequestSchema,
@@ -41,8 +38,6 @@ import {
   type ApplyIndividualResponse,
   type DiffAddRequest,
   type DiffAddResponse,
-  type ResetToFixedRequest,
-  type ResetToFixedResponse,
   type UnassignAllStaffRequest,
   type UnassignAllStaffResponse,
   type UpdateFixedTimeMasterRequest,
@@ -53,7 +48,6 @@ import {
 
 const DIFF_ADD_PATH = '/api/v1/schedule/v2/diff-add';
 const APPLY_INDIVIDUAL_PATH = '/api/v1/schedule/v2/apply-individual';
-const RESET_TO_FIXED_PATH = '/api/v1/schedule/v2/reset-to-fixed';
 const UPDATE_FIXED_TIME_MASTER_PATH = '/api/v1/schedule/v2/update-fixed-time-master';
 const UPDATE_FIXED_TIME_WEEK_ONLY_PATH = '/api/v1/schedule/v2/update-fixed-time-week-only';
 const UNASSIGN_ALL_STAFF_PATH = '/api/v1/schedule/v2/unassign-all-staff';
@@ -179,40 +173,6 @@ export function useApplyIndividualMutation(): UseMutationResult<
       // 採用で当該患者の固定枠が変わるため、キャッシュした diff-add 提案も無効化する.
       // 一括ダイアログ (DiffAddDialog) は mutation ベースで本キーを購読しないため再計算storm は起きない.
       void qc.invalidateQueries({ queryKey: ['diff-add'] });
-    },
-  });
-}
-
-/**
- * POST /api/v1/schedule/v2/reset-to-fixed — 対象週の visits を patient_fixed_visits から再生成する.
- *
- * §13.6 機能 D: 「📌 固定枠に戻す」.
- * 1 週間単位 (Q4 確定) で全 visits を soft-delete + 再生成する.
- */
-export function useResetToFixedMutation(): UseMutationResult<
-  ResetToFixedResponse,
-  Error,
-  ResetToFixedRequest
-> {
-  const qc = useQueryClient();
-  const { data: session } = useSession();
-  const { accessToken, refreshToken } = authPair(session);
-
-  return useMutation<ResetToFixedResponse, Error, ResetToFixedRequest>({
-    mutationFn: async (raw) => {
-      const payload = resetToFixedRequestSchema.parse(raw);
-      const result = await fetcher<unknown>(RESET_TO_FIXED_PATH, {
-        method: 'POST',
-        body: JSON.stringify(payload),
-        accessToken,
-        refreshToken,
-      });
-      return resetToFixedResponseSchema.parse(result);
-    },
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['visits'] });
-      void qc.invalidateQueries({ queryKey: ['courses'] });
-      void qc.invalidateQueries({ queryKey: ['patient-fixed-visits'] });
     },
   });
 }

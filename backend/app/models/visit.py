@@ -142,9 +142,9 @@ class Visit(Base, TimestampMixin):
     )
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
 
-    # 週のピン (青ピン / PO 決定 2026-08-09)。true = 今週この位置のまま動かさない
-    # (週生成の削除対象外 + 当該患者日の再生成 skip)。source とは独立の軸で、
-    # 掛け外ししても出所 (import 等) は失われない (migration 0066)。
+    # 週のピン (青ピン): **廃止 (PO 2026-10-12)**。コードは読まない・書かない。
+    # 1 リリース残し、次のリリースの migration で DROP する
+    # (docs/plans/blue-pin/blue-pin-abolish-design-2026-10-12.md)。
     week_pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # 予定外訪問 (migration 0071 / 設計 ``docs/plans/qr-open-checkin-design.md`` §3)。

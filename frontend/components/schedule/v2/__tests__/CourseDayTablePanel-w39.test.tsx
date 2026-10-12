@@ -248,12 +248,6 @@ vi.mock('@/lib/queries/assign_staff_only', () => ({
   useAssignStaffOnly: () => ({ mutateAsync: mockAssignStaffOnly, isPending: false }),
   useApplyStaffReview: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
-// Phase G-21 T4: useTogglePfvPin は内部で useMutation を呼ぶため必須.
-vi.mock('@/lib/queries/g21', () => ({
-  useTogglePfvPin: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-  // Phase G-47: PinScopeMenu の「全曜日」スコープ用 bulk hook (panel 内で使用).
-  useBulkPinPfvs: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-}));
 // Wave 41 v2: autoScheduleV2 モック (useMutation を直接呼ぶため必須).
 vi.mock('@/lib/queries/autoScheduleV2', () => ({
   useDiffAddProposalsMutation: () => ({
@@ -273,13 +267,6 @@ vi.mock('@/lib/queries/autoScheduleV2', () => ({
     isSuccess: false,
   }),
   useApplyIndividualMutation: () => ({
-    mutateAsync: vi.fn(),
-    reset: vi.fn(),
-    isPending: false,
-    error: null,
-    isSuccess: false,
-  }),
-  useResetToFixedMutation: () => ({
     mutateAsync: vi.fn(),
     reset: vi.fn(),
     isPending: false,

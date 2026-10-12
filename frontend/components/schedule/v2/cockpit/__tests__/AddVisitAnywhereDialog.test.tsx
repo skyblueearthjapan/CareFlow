@@ -93,7 +93,6 @@ function visit(over: Partial<VisitLite> & { id: string; visit_date: string }): V
     end_time: '10:05',
     primary_staff_id: null,
     staff_name: '高岡',
-    week_pinned: false,
     status: 'planned',
     source: 'auto',
     ...over,
@@ -298,7 +297,7 @@ describe('AddVisitAnywhereDialog', () => {
     const loadPatientWeekVisits = vi.fn(async () => [
       visit({ id: 'v-wed', visit_date: '2026-09-16' }),
       visit({ id: 'v-mon', visit_date: '2026-09-14' }),
-      visit({ id: 'v-pinned', visit_date: '2026-09-14', week_pinned: true }),
+      visit({ id: 'v-pinned', visit_date: '2026-09-14', status: 'cancelled' }),
     ]);
     renderDialog({
       loadPatientWeekVisits,
@@ -308,7 +307,7 @@ describe('AddVisitAnywhereDialog', () => {
     await waitFor(() => expect(loadPatientWeekVisits).toHaveBeenCalledWith(PATIENT_ID, 2026, 38));
     const select = (await screen.findByTestId('ava-source-2026-09-14')) as HTMLSelectElement;
     expect(select.value).toBe('v-mon');
-    // 青ピンは動かす元に出さない
+    // planned でない訪問は動かす元に出さない
     expect(Array.from(select.options).map((o) => o.value)).toEqual(['v-wed', 'v-mon']);
     // lockedScope のときは反映先を切り替えられない
     expect(screen.getByTestId('ava-scope-new')).toBeDisabled();
@@ -391,12 +390,12 @@ describe('AddVisitAnywhereDialog', () => {
     expect(plan.items[0]?.sourceVisit?.start_time).toBe('09:00');
   });
 
-  it('H1 押した予定が動かせない (青ピン) ときは行エラーで登録を止める', async () => {
+  it('H1 押した予定が動かせない (planned でない) ときは行エラーで登録を止める', async () => {
     const clicked = visit({
       id: 'v-pinned',
       visit_date: '2026-09-15',
       start_time: '09:00',
-      week_pinned: true,
+      status: 'completed',
     });
     const proposeSlots = vi.fn(async () => response({ slots: [slot({ weekday: 2 })] }));
     renderDialog({

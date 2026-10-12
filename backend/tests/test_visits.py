@@ -40,13 +40,8 @@ async def test_visits_list_admin_returns_200(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_visits_list_exposes_week_pinned(client, db) -> None:
-    """回帰 (2026-08-09): 一覧 API が week_pinned を返すこと。
-
-    _serialize_visit は手書き dict のため、列を足してもここに追記しないと
-    VisitRead の default False で上書きされ、DB が true でも API が false を
-    返す (実際に起きた: 青ピンが盤面に一切出なかった)。
-    """
+async def test_visits_list_does_not_expose_week_pinned(client, db) -> None:
+    """青ピン廃止 (2026-10-12): 一覧 API は week_pinned を返さない (列は残るが読まない)."""
     admin = await _make_user(db, "v-wp@example.com", "admin")
     p = Patient(code="V-WP", name="患者")
     db.add(p)
@@ -67,7 +62,7 @@ async def test_visits_list_exposes_week_pinned(client, db) -> None:
     res = await client.get("/api/v1/visits", headers=_bearer(admin))
     assert res.status_code == 200, res.text
     row = next(r for r in res.json() if r["id"] == str(visit.id))
-    assert row["week_pinned"] is True
+    assert "week_pinned" not in row
     assert row["source"] == "import"
 
 

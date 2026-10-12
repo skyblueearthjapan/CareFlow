@@ -118,7 +118,6 @@ class SubstituteVisit(BaseModel):
     patient_name: str
     start_time: str = Field(description="HH:MM")
     end_time: str = Field(description="HH:MM")
-    week_pinned: bool
     status: str = Field(
         description=(
             "訪問の状態 (planned / in_progress / completed)。"

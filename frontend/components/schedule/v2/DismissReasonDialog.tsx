@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * DismissReasonDialog — 改善提案「見送り」の理由選択 + 可動域昇格確認ダイアログ (P2-C).
+ * DismissReasonDialog — 改善提案「見送り」の理由選択 + 完全固定への昇格確認ダイアログ (P2-C).
  *
  * フロー (設計 §3 / §1.2):
  *   1. 4 択ラジオで却下理由を選ぶ (その他は自由記述):
@@ -9,10 +9,9 @@
  *        time_immovable この時刻は動かせない
  *        staff_relation スタッフとの関係
  *        other          その他 (+ 自由記述)
- *   2. reason=day_immovable / time_immovable のときのみ **昇格確認** を挟む:
- *        「◯曜の枠を[曜日固定/完全固定]として記録しますか？今後この種の提案は表示されません」
- *        - はい → promote_movability=true で POST (day_immovable→time_flexible /
- *                 time_immovable→locked を BE が反映).
+ *   2. reason=time_immovable のときのみ **昇格確認** を挟む (day_immovable は記録だけ・可動域は変えない):
+ *        「◯曜の枠を完全固定 (曜日・時刻を固定) として記録しますか？今後この種の提案は表示されません」
+ *        - はい → promote_movability=true で POST (BE が完全固定 (locked) にする).
  *        - いいえ → promote なし (promote_movability=false) で POST (却下のみ).
  *      staff_relation / other は昇格ステップを挟まず即 POST.
  *   3. 成功後は useDismissSuggestion が improvement-suggestions を invalidate してカード消滅.
@@ -48,15 +47,13 @@ const REASON_OPTIONS: ReadonlyArray<{ value: ImprovementDismissReason; label: st
   { value: 'other', label: 'その他' },
 ];
 
-/** 昇格対象になる理由か (day_immovable / time_immovable のみ昇格確認を挟む). */
+/** 昇格対象になる理由か (time_immovable のみ昇格確認を挟む. day_immovable は記録のみ). */
 function isPromotable(reason: ImprovementDismissReason): boolean {
-  return reason === 'day_immovable' || reason === 'time_immovable';
+  return reason === 'time_immovable';
 }
 
-/** 昇格後の可動域ラベル (day_immovable→曜日固定 / time_immovable→完全固定). */
-function promoteLabel(reason: ImprovementDismissReason): string {
-  return reason === 'day_immovable' ? '曜日固定' : '完全固定';
-}
+/** 昇格後のラベル. 完全固定 (曜日と時刻を固定。コース・担当は動くことがある). */
+const PROMOTE_LABEL = '完全固定';
 
 export interface DismissReasonDialogProps {
   open: boolean;
@@ -117,7 +114,7 @@ export function DismissReasonDialog({
   );
 
   const handleNext = React.useCallback(() => {
-    // スワップ却下は「相手との組合せ」の否定であり、当該患者の可動域 (曜日/時刻固定) の
+    // スワップ却下は「相手との組合せ」の否定であり、当該患者の完全固定 (曜日・時刻の固定) の
     // 断定ではない. したがって day/time_immovable を選んでも昇格確認は挟まず dismiss のみ
     // (kind='swap' は promote_movability=false 固定). move (time_change/day_change) のみ昇格.
     if (suggestion?.kind !== 'swap' && isPromotable(reason)) {
@@ -136,12 +133,12 @@ export function DismissReasonDialog({
       <DialogContent aria-describedby="dismiss-reason-desc" data-testid="dismiss-reason-dialog">
         <DialogHeader>
           <DialogTitle>
-            {step === 'reason' ? '提案を見送る理由' : '可動域として記録しますか？'}
+            {step === 'reason' ? '提案を見送る理由' : '完全固定として記録しますか？'}
           </DialogTitle>
           <DialogDescription id="dismiss-reason-desc">
             {step === 'reason'
               ? '見送る理由を選んでください。今後の提案精度の向上に使われます。'
-              : `${weekdayLabel}曜の枠を「${promoteLabel(reason)}」として記録すると、今後この種の提案は表示されません。`}
+              : `${weekdayLabel}曜の枠を「${PROMOTE_LABEL}」(曜日・時刻を固定) として記録すると、今後この種の提案は表示されません。`}
           </DialogDescription>
         </DialogHeader>
 
@@ -184,9 +181,9 @@ export function DismissReasonDialog({
           >
             <p>
               <span className="font-medium text-text-primary">
-                {weekdayLabel}曜の枠を「{promoteLabel(reason)}」
+                {weekdayLabel}曜の枠を「{PROMOTE_LABEL}」
               </span>
-              として記録します。今後この種の提案は表示されなくなります。
+              (曜日・時刻を固定) として記録します。今後この種の提案は表示されなくなります。
             </p>
           </div>
         )}
@@ -236,7 +233,7 @@ export function DismissReasonDialog({
                     記録中…
                   </>
                 ) : (
-                  `はい、${promoteLabel(reason)}として記録`
+                  `はい、${PROMOTE_LABEL}として記録`
                 )}
               </Button>
             </>

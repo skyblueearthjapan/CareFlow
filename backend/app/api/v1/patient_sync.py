@@ -314,8 +314,11 @@ def _apply_sync_changes(
             # 同一 weekday の既存 PFV (slot_index=0 の 1 行/weekday) があれば
             # pin / 可動域を引き継ぐ.
             prior = existing_by_wd.get(change.new.weekday)
-            inherit_pin = bool(prior.is_pinned) if prior is not None else False
-            inherit_mov = prior.movability if prior is not None else "unknown"
+            # 赤ピンは 2 値 (locked / unknown) だけ書く。is_pinned は厳密なミラー。
+            inherit_pin = prior is not None and (
+                prior.movability == "locked" or bool(prior.is_pinned)
+            )
+            inherit_mov = "locked" if inherit_pin else "unknown"
             new_pfv = PatientFixedVisit(
                 patient_id=patient_id,
                 mode="normal",

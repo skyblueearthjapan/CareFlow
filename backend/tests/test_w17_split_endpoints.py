@@ -266,7 +266,7 @@ async def test_sequential_equals_generate_and_assign(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_generate_week_only_idempotent(client, db) -> None:
-    """generate-week-only × 2 で visits が削除→再生成される (冪等)."""
+    """generate-week-only × 2: 2 回目は 409 (空の週でだけ生成できる)."""
     admin = await _make_user(db, "w17-gw-idm@example.com", "admin")
     await _seed_office_staff_courses(db)
 
@@ -288,25 +288,22 @@ async def test_generate_week_only_idempotent(client, db) -> None:
         ).all()
     }
 
-    # 2 回目
+    # 2 回目: 予定のある週では生成できない (青ピン廃止 BP-3・空にしてから)
     res2 = await client.post(
         "/api/v1/schedule/generate-week-only",
         headers=_bearer(admin),
         json={"iso_year": TEST_ISO_YEAR, "iso_week": TEST_ISO_WEEK},
     )
-    assert res2.status_code == 200
-    visits2_count = res2.json()["visits_created"]
-    assert visits2_count == visits1_count  # 同じ件数
-
-    ids2 = {
+    assert res2.status_code == 409
+    assert {
         v.id
         for v in (
             await db.scalars(
                 select(Visit).where(Visit.source == "auto", Visit.deleted_at.is_(None))
             )
         ).all()
-    }
-    assert ids1.isdisjoint(ids2), "2 回目の実行で visits が削除→再生成されるはず"
+    } == ids1
+    assert visits1_count > 0
 
 
 # ---------------------------------------------------------------------------

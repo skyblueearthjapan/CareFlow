@@ -4,7 +4,7 @@
  * 背景:
  *   今週の実配置が型と違う時刻になっていることがある。1 週 117 訪問のうち 2 件
  *   (1.7%) で、いずれも自動割当 (移動時間補正) が動かしたもの。ズレていると
- *   赤ピン (型のピン) が刺せないが、現場にはその理由が見えていなかった。
+ *   青ピン (今週固定) の扱いや型との違いが、現場には見えていなかった。
  *
  * PO 方針:
  *   「ズレていることを伝えるだけでよい。どうするかはユーザーに委ねる」
@@ -39,14 +39,11 @@ export function masterTimeSuffix(visit: MasterDivergenceSource): string | null {
 
 /**
  * カード全体に付ける説明 (title 属性)。ズレていなければ null。
- * 完全固定にできない理由もここで説明する (論点 1: 合わせる導線は設けず、伝えるだけ)。
+ * 型の時刻を伝える (論点 1: 合わせる導線は設けず、伝えるだけ)。
  */
 export function masterDivergenceTitle(visit: MasterDivergenceSource): string | null {
   if (!isDivergedFromMaster(visit)) return null;
-  return (
-    `固定訪問スケジュールは ${visit.master_start_time} です。` +
-    'この時間帯では完全固定にできません'
-  );
+  return `固定訪問スケジュールは ${visit.master_start_time} です`;
 }
 
 /**

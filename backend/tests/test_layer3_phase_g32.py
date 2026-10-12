@@ -171,14 +171,10 @@ async def test_pinned_visit_course_code_not_overwritten_by_clustering(db) -> Non
             ``_find_next_available_code`` が 'M' を返す → code='M'.
           - G-32 fix なしだと pinned visit が 'A' → 'M' に上書きされる.
 
-    期待:
-        - p_pinned.after_visit.course_code == 'A' を維持.
-        - is_pinned=True / start_time=14:00 を維持.
-
-    Sabotage (= Phase G-32 fix の主経路を無効化):
-        auto_allocator_v2.py Stage 5 主経路 (line ~6675 周辺) の
-        ``if v.is_pinned: continue`` を取り除くと、 candidate fallback で pinned visit が
-        'A' → 'M' に上書きされ、 本 test が fail する (= load-bearing).
+    期待 (赤ピン整理 2026-10-12 で反転):
+        - 赤は曜日・時刻だけを縛り、コースは縛らない → course_code は 'A' → 'M' に
+          振り替わってよい (旧 G-32 は撤去).
+        - is_pinned=True / start_time=14:00 は維持 (時刻は縛られる).
     """
     office = await _make_office(db, name="g32-1-office")
     ct_a = await _make_course_template(db, office=office, label="A", capacity_mon=6)
@@ -268,11 +264,12 @@ async def test_pinned_visit_course_code_not_overwritten_by_clustering(db) -> Non
         "G-32 regression: G-30.1 で固定した start_time=14:00 が動いている: "
         f"actual={pinned_after[0].start_time}"
     )
-    assert pinned_after[0].course_code == "A", (
-        f"G-32 (load-bearing): pinned PFV の course='A' が Stage 5 candidate "
-        f"fallback で別 code (= 'M' 等) に上書きされた "
-        f"(= G-32 fix が無効化されている可能性): "
-        f"actual={pinned_after[0].course_code}"
+    # 赤ピン整理 (2026-10-12): 赤は曜日・時刻だけを縛り、コースは縛らない.
+    # 旧 G-32 (赤の course を Stage 5 で書き換えない) は撤去したので、'A' が他 set に
+    # 取られた場合は赤も他の訪問と同じに 'M' (manager overflow) へ振り替わる.
+    assert pinned_after[0].course_code == "M", (
+        "赤ピンはコースを縛らない: Stage 5 の candidate fallback で 'A' → 'M' に"
+        f"振り替わるはず: actual={pinned_after[0].course_code}"
     )
 
 

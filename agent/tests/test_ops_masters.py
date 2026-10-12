@@ -264,6 +264,33 @@ def test_pfv_update_refuses_ack_and_red_pin_toggle():
     assert not [c for c in s.calls if c[0] == "PUT"]
 
 
+def test_pfv_update_red_slot_course_and_duration_change_allowed():
+    s, impl = FakeServer(), PfvUpdate()
+    items = _cur_items()
+    items[0].update(course_template_id=None, duration_min=45)  # 赤のままコース・長さを変える
+    run(impl, s, {"op": "pfv-update", "patient_id": PID, "mode": "normal", "items": items})
+    assert [c for c in s.calls if c[0] == "PUT"]
+
+
+@pytest.mark.parametrize("field, value", [("start_time", "10:00"), ("weekday", 2)])
+def test_pfv_update_red_slot_weekday_time_change_refused(field, value):
+    s, impl = FakeServer(), PfvUpdate()
+    items = _cur_items()
+    items[0][field] = value
+    with pytest.raises(RkError):
+        impl.execute(s, {"patient_id": PID, "mode": "normal", "items": items})
+    assert not [c for c in s.calls if c[0] == "PUT"]
+
+
+def test_pfv_update_pin_change_needs_explicit_approval():
+    s, impl = FakeServer(), PfvUpdate()
+    items = _cur_items()
+    items[0].update(movability="unknown", is_pinned=False)
+    run(impl, s, {"op": "pfv-update", "patient_id": PID, "mode": "normal", "items": items,
+                  "pin_change_approved_by": "PO"})
+    assert s.pfv["normal"][0]["movability"] == "unknown"
+
+
 # --- preference-update ------------------------------------------------------------
 
 

@@ -41,7 +41,7 @@ class ImpactVisits(BaseModel):
     pair_groups: int = Field(ge=0, default=0, description="2 名体制 (visit_group_id) のグループ数")
     excluded: dict[str, int] = Field(
         default_factory=dict,
-        description="対象外にした理由別件数: checked_in / in_progress / week_pinned",
+        description="対象外にした理由別件数: checked_in / in_progress",
     )
 
 

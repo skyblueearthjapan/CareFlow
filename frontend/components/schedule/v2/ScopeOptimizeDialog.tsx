@@ -126,7 +126,7 @@ function formatDelta(before: number, after: number, unit: '分' | 'km'): DeltaDi
 }
 
 /** excluded_summary → 「完全固定N件・…」の内訳テキスト (0 は省略).
-    統合 (2026-08-09): 旧「ピン留め」と「可動域が完全固定」は同一概念のため合算表示。 */
+    旧「ピン留め」と「完全固定」は同一概念 (曜日と時刻を固定) のため合算表示。 */
 function summarizeExcluded(ex: ScopeOptimizationExcludedSummary): string[] {
   const parts: Array<[number, string]> = [
     [ex.pinned + ex.locked, `完全固定${ex.pinned + ex.locked}件`],
@@ -526,7 +526,7 @@ export function ScopeOptimizeDialog({
           </DialogTitle>
           <DialogDescription>
             範囲を選んで計算すると、その範囲の中だけで「どの枠をどう動かすとどれだけ移動が減るか」を
-            手順として提案します。ピン留め・完全固定・却下済みの枠は動かしません。
+            手順として提案します。完全固定（曜日と時刻を固定）・却下済みの枠は動かしません。
           </DialogDescription>
         </DialogHeader>
 

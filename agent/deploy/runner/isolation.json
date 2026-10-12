@@ -1,0 +1,32 @@
+{
+  "forceLoginMethod": "claudeai",
+  "apiKeyHelper": "",
+  "env": {
+    "ANTHROPIC_API_KEY": "",
+    "ANTHROPIC_AUTH_TOKEN": "",
+    "ANTHROPIC_BASE_URL": "",
+    "ANTHROPIC_CUSTOM_HEADERS": "",
+    "CLAUDE_CODE_USE_BEDROCK": "",
+    "CLAUDE_CODE_USE_VERTEX": "",
+    "CLAUDE_CODE_USE_FOUNDRY": "",
+    "HTTPS_PROXY": "http://agent-egress:3128",
+    "HTTP_PROXY": "http://agent-egress:3128",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "DISABLE_AUTOUPDATER": "1",
+    "ENABLE_CLAUDEAI_MCP_SERVERS": "false"
+  },
+  "autoMemoryEnabled": false,
+  "claudeMdExcludes": [
+    "/home/agent/.claude/CLAUDE.md",
+    "/home/agent/.claude/rules/**",
+    "/home/agent/CLAUDE.md",
+    "/home/agent/CLAUDE.local.md",
+    "/CLAUDE.md",
+    "/CLAUDE.local.md",
+    "/.claude/CLAUDE.md",
+    "/srv/CLAUDE.md",
+    "/srv/CLAUDE.local.md",
+    "/srv/.claude/CLAUDE.md",
+    "/srv/agent/CLAUDE.local.md"
+  ]
+}

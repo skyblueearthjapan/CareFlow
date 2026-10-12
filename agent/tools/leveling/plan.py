@@ -318,6 +318,20 @@ def build_plan(result: dict, week: dict, extra: dict | None = None, *, config: d
                         "patient_id": v["patient_id"], "date": v["day"], "op_group_id": group_main,
                         "label": f"{day_label(date.fromisoformat(v['day']))} {v['patient']} {fmt(v['fixed_start'])} "
                                  f"手の上書きを外す（コースの担当に合わせるため）"})
+    cancelled = list(result.get("cancelled_visits") or [])
+    for vid in cancelled:  # 急遽キャンセル (--cancel): 案から外した訪問を「今週だけ取消」にする (プールへは戻さない)
+        r = raw.get(vid)
+        if r is None:
+            continue
+        p = pats.get(r["patient_id"]) or {}
+        label = f"{day_label(date.fromisoformat(r['visit_date']))} {p.get('name') or ''} {r['start_time'][:5]}"
+        if r.get("status", "planned") != "planned":
+            warnings.append(f"急遽キャンセル: {label} は予定でない（{r.get('status')}）ので取消の操作は出しません")
+            continue
+        ops.append({"op": "cancel-visit-week", "step": 2, "visit_id": vid, "cancel": True,
+                    "reason": "急遽キャンセル", "patient_id": r["patient_id"], "date": r["visit_date"],
+                    "start_time": r["start_time"][:5], "op_group_id": group_main,
+                    "label": f"{label} → 今週だけ取消（急遽キャンセル）"})
     for x in items:
         if x["kind"] != "pool":
             continue
@@ -371,7 +385,7 @@ def build_plan(result: dict, week: dict, extra: dict | None = None, *, config: d
         final_course[(x["visit"]["day"], tgt)] += 1
     planned_days = {x["visit"]["day"] for x in items}
     for vid, r in raw.items():  # 案に入っていない訪問（--drop・計算しない日）は今のコースに残る
-        if vid not in vis and r["visit_date"] in planned_days:
+        if vid not in vis and vid not in cancelled and r["visit_date"] in planned_days:
             final_course[(r["visit_date"], (r.get("course_office") or "") + (r.get("course_code") or ""))] += 1
 
     for d, m in sorted(cmap.items()):
@@ -409,6 +423,10 @@ def build_plan(result: dict, week: dict, extra: dict | None = None, *, config: d
     check_details = build_checks(errors, list(result.get("warnings") or []), trainee_hits, flags)
     for w in result.get("warnings") or []:
         warnings.append("気を付ける点: " + w)
+    conditions = list(result.get("conditions") or [])
+    for c in conditions:  # 決まりをゆるめる条件は「気を付ける点」にも出す (全部は A4 の「今回だけの条件」)
+        if c.get("relax"):
+            warnings.append("今回だけの条件（決まりをゆるめる）: " + c["text"])
     lunch30 = sorted(d for d, dd in result["days"].items() if (dd.get("lunch_min") or 45) < 45)
     if lunch30:
         warnings.append("昼休みを 30 分に下げて計算した日: " + "・".join(day_label(date.fromisoformat(d)) for d in lunch30))
@@ -440,6 +458,7 @@ def build_plan(result: dict, week: dict, extra: dict | None = None, *, config: d
         "checks": [check_line(c) for c in check_details],
         "check_details": check_details,
         "warnings": warnings,
+        "conditions": conditions,
         "blockers": blockers,
         "ready": not blockers,
         "unplaced": unplaced,
@@ -521,6 +540,8 @@ def _summary(result, items, new_assign, ops, errors, flags, staff) -> list[str]:
     c = Counter(o["op"] for o in ops)
     lines.append("操作 {} 件（{}）".format(len(ops), "・".join(f"{k} {n}" for k, n in sorted(c.items()))))
     lines.append(f"決まりの検査: 問題 {len(errors)} 件・気を付ける点 {len(result.get('warnings') or [])} 件")
+    if result.get("conditions"):
+        lines.append(f"今回だけの条件 {len(result['conditions'])} 件（A4 の「今回だけの条件」・warnings を見る）")
     off = (result.get("options") or {}).get("off") or []
     if off:
         by_code = {s["code"]: short_name(s["name"]) for s in staff.values()}

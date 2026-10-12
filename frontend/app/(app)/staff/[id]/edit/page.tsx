@@ -337,7 +337,7 @@ export default function StaffEditPage() {
           <AlertDescription>
             このスタッフは新人ですが、今週以降のコース担当（
             {traineeGuard.data?.count ?? 0} 件）に残っています。新人はコースを持たない運用です。
-            スケジュール画面で「固定枠に戻す」か担当を変更して解消してください
+            スケジュール画面で担当を変更するか、週を空にして作り直して解消してください
             （自動では解除しません）。
           </AlertDescription>
         </Alert>

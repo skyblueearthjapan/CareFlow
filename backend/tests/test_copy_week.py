@@ -459,22 +459,20 @@ async def test_user_can_exclude_not_in_fixed_visits(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_replace_keeps_import_pinned_cancelled(client, db) -> None:
+async def test_replace_keeps_import_and_cancelled(client, db) -> None:
     admin = await _user(db)
     source, target = _weeks()
     w = await World(db, source, target).setup()
     s0 = w.staff[0]
     pa = await w.patient("RA", pfv=(0,))
     pb = await w.patient("RB", pfv=(1,))
-    pc = await w.patient("RC", pfv=(2,))
     pd = await w.patient("RD", pfv=(3,))
-    for p, wd in ((pa, 0), (pb, 1), (pc, 2), (pd, 3)):
+    for p, wd in ((pa, 0), (pb, 1), (pd, 3)):
         await w.visit(p, source, wd)
     tcourse = await w.course(target, 0, staff=s0)
     # 写す訪問と同じ枠 → 置き換え (論理削除) が先に効かないと本番の部分 UNIQUE に当たる
     replaced = await w.visit(pa, target, 0, course=tcourse, staff=s0)
     imp = await w.visit(pb, target, 1, start=time(11, 0), source="import")
-    pinned = await w.visit(pc, target, 2, start=time(14, 0), week_pinned=True)
     cancelled = await w.visit(pd, target, 3, status="cancelled", source="manual_cancel")
     await db.execute(
         text(
@@ -498,15 +496,15 @@ async def test_replace_keeps_import_pinned_cancelled(client, db) -> None:
         ex["keep_pinned"],
         ex["keep_cancelled"],
     ) == (
-        4,
+        3,
         1,
         1,
-        1,
+        0,
         1,
     )
     assert pv["skipped"]["kept_conflict"] == 1  # RD 木 9:00 = 取消行と同じ枠
-    # RB (取込) / RC (青ピン) は時刻が違っても同じ日なので写さない (M-4・二重にしない)
-    assert pv["skipped"]["kept_same_day"] == 2
+    # RB (取込) は時刻が違っても同じ日なので写さない (M-4・二重にしない)
+    assert pv["skipped"]["kept_same_day"] == 1
     assert pv["copy_count"] == 1
 
     res = await client.post(
@@ -516,12 +514,12 @@ async def test_replace_keeps_import_pinned_cancelled(client, db) -> None:
     assert res.json()["replaced"] == 1
     assert res.json()["courses_cleared"] == 1
     assert (await db.get(Visit, replaced.id, populate_existing=True)).deleted_at is not None
-    for kept in (imp, pinned, cancelled):
+    for kept in (imp, cancelled):
         assert (await db.get(Visit, kept.id, populate_existing=True)).deleted_at is None
     # 置き換えで空になったコースは担当を外す (写した訪問と 3 か所を揃える)
     assert (await db.get(Course, tcourse.id, populate_existing=True)).assigned_staff_id is None
     live = await _live(db, target)
-    assert len(live) == 3 + 1
+    assert len(live) == 2 + 1
 
 
 @pytest.mark.asyncio

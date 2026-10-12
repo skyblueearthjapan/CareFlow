@@ -1,0 +1,729 @@
+{
+ "extracted_at": "2026-10-12T10:00:00+09:00",
+ "reference_monday": "2026-10-12",
+ "offices": [
+  {
+   "id": "o1",
+   "short_label": "甲",
+   "lat": 35.6,
+   "lng": 140.1,
+   "operating_weekdays": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+   ]
+  },
+  {
+   "id": "o2",
+   "short_label": "乙",
+   "lat": 35.7,
+   "lng": 140.3,
+   "operating_weekdays": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ]
+  }
+ ],
+ "templates": [
+  {
+   "id": "tA",
+   "office_id": "o1",
+   "label": "A",
+   "capacity": [
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    0
+   ]
+  },
+  {
+   "id": "tB",
+   "office_id": "o1",
+   "label": "B",
+   "capacity": [
+    6,
+    6,
+    6,
+    6,
+    6,
+    6,
+    0
+   ]
+  },
+  {
+   "id": "tM",
+   "office_id": "o1",
+   "label": "M",
+   "capacity": [
+    7,
+    7,
+    7,
+    7,
+    7,
+    7,
+    0
+   ]
+  },
+  {
+   "id": "tRin",
+   "office_id": "o1",
+   "label": "臨時",
+   "capacity": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "tZA",
+   "office_id": "o2",
+   "label": "A",
+   "capacity": [
+    6,
+    6,
+    6,
+    6,
+    6,
+    0,
+    0
+   ]
+  }
+ ],
+ "pfv": [
+  {
+   "id": "F1",
+   "patient_id": "P1",
+   "weekday": 0,
+   "start_time": "09:30",
+   "duration_min": 35,
+   "course_template_id": "tA",
+   "sub_office_id": null,
+   "slot_index": 0,
+   "movability": "unknown",
+   "is_pinned": false
+  },
+  {
+   "id": "F2",
+   "patient_id": "P1",
+   "weekday": 2,
+   "start_time": "10:00",
+   "duration_min": 35,
+   "course_template_id": "tB",
+   "sub_office_id": null,
+   "slot_index": 0,
+   "movability": "locked",
+   "is_pinned": true
+  },
+  {
+   "id": "F3",
+   "patient_id": "P2",
+   "weekday": 0,
+   "start_time": "09:30",
+   "duration_min": 35,
+   "course_template_id": "tA",
+   "sub_office_id": null,
+   "slot_index": 0,
+   "movability": "unknown",
+   "is_pinned": false
+  },
+  {
+   "id": "F4",
+   "patient_id": "P3",
+   "weekday": 0,
+   "start_time": "10:30",
+   "duration_min": 35,
+   "course_template_id": "tB",
+   "sub_office_id": null,
+   "slot_index": 0,
+   "movability": "locked",
+   "is_pinned": true
+  },
+  {
+   "id": "F5",
+   "patient_id": "P4",
+   "weekday": 0,
+   "start_time": "14:00",
+   "duration_min": 35,
+   "course_template_id": null,
+   "sub_office_id": null,
+   "slot_index": 0,
+   "movability": "unknown",
+   "is_pinned": false
+  },
+  {
+   "id": "F6",
+   "patient_id": "P5",
+   "weekday": 0,
+   "start_time": "13:30",
+   "duration_min": 35,
+   "course_template_id": "tA",
+   "sub_office_id": null,
+   "slot_index": 0,
+   "movability": "unknown",
+   "is_pinned": false
+  },
+  {
+   "id": "F7",
+   "patient_id": "P6",
+   "weekday": 0,
+   "start_time": "13:30",
+   "duration_min": 35,
+   "course_template_id": "tA",
+   "sub_office_id": null,
+   "slot_index": 0,
+   "movability": "unknown",
+   "is_pinned": false
+  },
+  {
+   "id": "F8",
+   "patient_id": "P7",
+   "weekday": 0,
+   "start_time": "15:00",
+   "duration_min": 35,
+   "course_template_id": "tA",
+   "sub_office_id": null,
+   "slot_index": 0,
+   "movability": "unknown",
+   "is_pinned": false
+  },
+  {
+   "id": "F9",
+   "patient_id": "P7",
+   "weekday": 0,
+   "start_time": "15:00",
+   "duration_min": 35,
+   "course_template_id": "tB",
+   "sub_office_id": null,
+   "slot_index": 1,
+   "movability": "unknown",
+   "is_pinned": false
+  },
+  {
+   "id": "F10",
+   "patient_id": "P8",
+   "weekday": 0,
+   "start_time": "16:00",
+   "duration_min": 35,
+   "course_template_id": "tB",
+   "sub_office_id": null,
+   "slot_index": 0,
+   "movability": "unknown",
+   "is_pinned": false
+  },
+  {
+   "id": "F11",
+   "patient_id": "P9",
+   "weekday": 0,
+   "start_time": "11:00",
+   "duration_min": 35,
+   "course_template_id": "tB",
+   "sub_office_id": null,
+   "slot_index": 0,
+   "movability": "unknown",
+   "is_pinned": false
+  },
+  {
+   "id": "F12",
+   "patient_id": "P10",
+   "weekday": 0,
+   "start_time": "10:00",
+   "duration_min": 35,
+   "course_template_id": "tZA",
+   "sub_office_id": null,
+   "slot_index": 0,
+   "movability": "unknown",
+   "is_pinned": false
+  }
+ ],
+ "patients": [
+  {
+   "id": "P1",
+   "code": "P901",
+   "name": "架空 イ子",
+   "sex_restriction": null,
+   "lat": 35.6,
+   "lng": 140.1,
+   "primary_office_id": "o1",
+   "weekly_pattern": {
+    "time_type": "時間帯",
+    "preferred_start": "09:00",
+    "preferred_end": "11:00",
+    "service_minutes": 35
+   },
+   "requires_multiple_staff": false
+  },
+  {
+   "id": "P2",
+   "code": "P902",
+   "name": "架空 ウ子",
+   "sex_restriction": null,
+   "lat": 35.64,
+   "lng": 140.14,
+   "primary_office_id": "o1",
+   "weekly_pattern": {
+    "time_type": "時間帯",
+    "preferred_start": "09:00",
+    "preferred_end": "12:00",
+    "service_minutes": 35
+   },
+   "requires_multiple_staff": false
+  },
+  {
+   "id": "P3",
+   "code": "P903",
+   "name": "架空 エ子",
+   "sex_restriction": "female_only",
+   "lat": 35.605,
+   "lng": 140.105,
+   "primary_office_id": "o1",
+   "weekly_pattern": {
+    "time_type": "時間帯",
+    "preferred_start": "10:00",
+    "preferred_end": "11:00",
+    "service_minutes": 35
+   },
+   "requires_multiple_staff": false
+  },
+  {
+   "id": "P4",
+   "code": "P904",
+   "name": "架空 オ子",
+   "sex_restriction": null,
+   "lat": 35.61,
+   "lng": 140.09,
+   "primary_office_id": "o1",
+   "weekly_pattern": {
+    "time_type": "終日",
+    "service_minutes": 35
+   },
+   "requires_multiple_staff": false
+  },
+  {
+   "id": "P5",
+   "code": "P905",
+   "name": "架空 ガ子",
+   "sex_restriction": null,
+   "lat": 35.62,
+   "lng": 140.12,
+   "primary_office_id": "o1",
+   "weekly_pattern": {
+    "time_type": "時間帯",
+    "preferred_start": "13:00",
+    "preferred_end": "15:00",
+    "service_minutes": 35
+   },
+   "requires_multiple_staff": false
+  },
+  {
+   "id": "P6",
+   "code": "P906",
+   "name": "架空 ギ子",
+   "sex_restriction": null,
+   "lat": 35.6203,
+   "lng": 140.1202,
+   "primary_office_id": "o1",
+   "weekly_pattern": {
+    "time_type": "時間帯",
+    "preferred_start": "13:00",
+    "preferred_end": "15:00",
+    "service_minutes": 35
+   },
+   "requires_multiple_staff": false
+  },
+  {
+   "id": "P7",
+   "code": "P907",
+   "name": "架空 グ子",
+   "sex_restriction": null,
+   "lat": 35.59,
+   "lng": 140.11,
+   "primary_office_id": "o1",
+   "weekly_pattern": {
+    "time_type": "固定",
+    "service_minutes": 35
+   },
+   "requires_multiple_staff": false
+  },
+  {
+   "id": "P8",
+   "code": "P908",
+   "name": "架空 ゲ子",
+   "sex_restriction": null,
+   "lat": 35.615,
+   "lng": 140.095,
+   "primary_office_id": "o1",
+   "weekly_pattern": {
+    "time_type": "固定",
+    "service_minutes": 35
+   },
+   "requires_multiple_staff": false
+  },
+  {
+   "id": "P9",
+   "code": "P909",
+   "name": "架空 ゴ子",
+   "sex_restriction": null,
+   "lat": 35.6,
+   "lng": 140.13,
+   "primary_office_id": "o1",
+   "weekly_pattern": null,
+   "requires_multiple_staff": false
+  },
+  {
+   "id": "P10",
+   "code": "P910",
+   "name": "架空 ザ子",
+   "sex_restriction": null,
+   "lat": 35.7,
+   "lng": 140.3,
+   "primary_office_id": "o2",
+   "weekly_pattern": {
+    "time_type": "時間帯",
+    "preferred_start": "10:00",
+    "preferred_end": "12:00",
+    "service_minutes": 35
+   },
+   "requires_multiple_staff": false
+  }
+ ],
+ "usual": [
+  {
+   "template_id": "tA",
+   "weekday": 0,
+   "staff_id": "S1",
+   "n": 4,
+   "last_week": "2026-10-12"
+  },
+  {
+   "template_id": "tA",
+   "weekday": 0,
+   "staff_id": "S4",
+   "n": 1,
+   "last_week": "2026-10-05"
+  },
+  {
+   "template_id": "tB",
+   "weekday": 0,
+   "staff_id": "S2",
+   "n": 5,
+   "last_week": "2026-10-12"
+  },
+  {
+   "template_id": "tM",
+   "weekday": 0,
+   "staff_id": "S3",
+   "n": 5,
+   "last_week": "2026-10-12"
+  },
+  {
+   "template_id": "tZA",
+   "weekday": 0,
+   "staff_id": "S5",
+   "n": 5,
+   "last_week": "2026-10-12"
+  },
+  {
+   "template_id": "tA",
+   "weekday": 2,
+   "staff_id": "S6",
+   "n": 5,
+   "last_week": "2026-10-12"
+  }
+ ],
+ "staff": [
+  {
+   "id": "S1",
+   "code": "T01",
+   "name": "試験 一花",
+   "sex": "female",
+   "role": "nurse",
+   "is_trainee": false,
+   "primary_office_id": "o1"
+  },
+  {
+   "id": "S2",
+   "code": "T02",
+   "name": "試験 二郎",
+   "sex": "male",
+   "role": "nurse",
+   "is_trainee": false,
+   "primary_office_id": "o1"
+  },
+  {
+   "id": "S3",
+   "code": "T03",
+   "name": "試験 三恵",
+   "sex": "female",
+   "role": "manager",
+   "is_trainee": false,
+   "primary_office_id": "o1"
+  },
+  {
+   "id": "S4",
+   "code": "T04",
+   "name": "試験 四葉",
+   "sex": "female",
+   "role": "nurse",
+   "is_trainee": false,
+   "primary_office_id": "o1"
+  },
+  {
+   "id": "S5",
+   "code": "T05",
+   "name": "試験 五月",
+   "sex": "female",
+   "role": "nurse",
+   "is_trainee": false,
+   "primary_office_id": "o2"
+  },
+  {
+   "id": "S6",
+   "code": "T06",
+   "name": "試験 六花",
+   "sex": "female",
+   "role": "nurse",
+   "is_trainee": true,
+   "primary_office_id": "o1"
+  }
+ ],
+ "shifts": [
+  {
+   "staff_id": "S1",
+   "weekday": 0,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S1",
+   "weekday": 1,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S1",
+   "weekday": 2,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S1",
+   "weekday": 3,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S1",
+   "weekday": 4,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S1",
+   "weekday": 5,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S2",
+   "weekday": 0,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S2",
+   "weekday": 1,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S2",
+   "weekday": 2,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S2",
+   "weekday": 3,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S2",
+   "weekday": 4,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S2",
+   "weekday": 5,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S3",
+   "weekday": 0,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S3",
+   "weekday": 1,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S3",
+   "weekday": 2,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S3",
+   "weekday": 3,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S3",
+   "weekday": 4,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S3",
+   "weekday": 5,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S4",
+   "weekday": 0,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S4",
+   "weekday": 1,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S4",
+   "weekday": 2,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S4",
+   "weekday": 3,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S4",
+   "weekday": 4,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S4",
+   "weekday": 5,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S5",
+   "weekday": 0,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S5",
+   "weekday": 1,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S5",
+   "weekday": 2,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S5",
+   "weekday": 3,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S5",
+   "weekday": 4,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  },
+  {
+   "staff_id": "S5",
+   "weekday": 5,
+   "is_on": true,
+   "start_time": "09:00",
+   "end_time": "18:00"
+  }
+ ],
+ "event_defaults": [
+  {
+   "staff_id": "S1",
+   "weekday": 0,
+   "start_time": "17:00",
+   "end_time": "17:30"
+  }
+ ],
+ "ng": [
+  {
+   "patient_id": "P8",
+   "staff_id": "S1"
+  }
+ ],
+ "scheduling_settings": null
+}

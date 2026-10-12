@@ -20,8 +20,7 @@ import { buildWeekTimelineColDroppableId } from '@/components/schedule/v2/course
 import type { WeekOverviewVisit } from '@/components/schedule/v2/CourseWeekOverview';
 import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
 import { classifyVisitDisplay, VISIT_DISPLAY_CLASS } from '@/lib/schedule/visitVisibility';
-import { CornerPushPin, CornerWeekPushPin } from '@/components/ui/push-pin';
-import { MovabilityMark } from './MovabilityMark';
+import { CornerPushPin } from '@/components/ui/push-pin';
 import {
   isDivergedFromMaster,
   masterDivergenceCardStyle,
@@ -232,6 +231,7 @@ function WeekCard({
   const showSvcLine = h >= TL_SHOW_SVC_PX && (!nameTwoLine || h >= TL_TWOLINE_SVC_PX);
   const showAddrLine = h >= TL_SHOW_ADDR_PX && (!nameTwoLine || h >= TL_TWOLINE_ADDR_PX);
   const showPills = h >= TL_SHOW_PILLS_PX && (!nameTwoLine || h >= TL_TWOLINE_PILLS_PX);
+  const isLocked = v.movability === 'locked';
   // 同行モード中はカードクリック=選択トグル (選択済みコース内は個別トグル不可)。
   // 「コース(曜日)単位」に絞っている間は患者カードを受け付けない (確定#2)。
   const effectiveOnClick = accActive
@@ -284,12 +284,12 @@ function WeekCard({
       )}
       {/* 常時表示 (モード外): 個別同行バッジ 👥新人名 (§7.2)。
           右上へ配置 (患者名との被り解消・PO要望)。名は左寄せ truncate なので右上は空く。
-          ピン留めカードは右上の画鋲 (CornerPushPin) を避けて少し左へ寄せる。 */}
+          赤い画鋲 (完全固定) が刺さったカードは左へ寄せる。 */}
       {accBadge && (
         <span
           className={cn(
             'absolute top-0.5 z-[2] max-w-[70%] truncate rounded-full bg-info-bg px-1 text-[8px] font-bold text-info',
-            v.is_pinned ? 'right-[15px]' : 'right-0.5',
+            isLocked ? 'right-[15px]' : 'right-0.5',
           )}
           data-testid={`wtl-accompaniment-badge-${v.id}`}
           title={`同行: ${accBadge}`}
@@ -297,12 +297,8 @@ function WeekCard({
           👥{accBadge}
         </span>
       )}
-      {/* ピン留めの状態表示: 赤=型のピン (毎週) / 青=週のピン (今週だけ)。
-          両方刺さっていれば 2 本並べる — 青は赤の左隣 (PO 決定 2026-08-08)。 */}
-      {v.is_pinned && <CornerPushPin className="h-4 w-4" />}
-      {(v.week_pinned === true || v.source === 'manual_week') && (
-        <CornerWeekPushPin className={cn('h-4 w-4', v.is_pinned && 'right-[11px] translate-x-0')} />
-      )}
+      {/* ピン留めの状態表示: 赤=完全固定 (曜日・時刻を固定)。 */}
+      {isLocked && <CornerPushPin className="h-4 w-4" />}
       {/* 1行目: アイコン + 患者名 (フル表示)。 */}
       <span className="flex min-w-0 items-center gap-0.5">
         {isMulti && (
@@ -310,8 +306,6 @@ function WeekCard({
             <PersonMark />
           </span>
         )}
-        {/* 可動域 (2026-08-07 / PO 要望): 日タイムラインと同じ判定・同じ淡さ。 */}
-        <MovabilityMark visit={v} visitId={v.id} testIdPrefix="wtl" />
         <span
           className={cn(
             'font-bold leading-tight',
@@ -520,7 +514,7 @@ function WeekPairBox({
                 <span
                   className={cn(
                     'absolute top-0.5 z-[2] max-w-[46px] truncate rounded-full bg-info-bg px-1 text-[7.5px] font-bold text-info',
-                    v.is_pinned ? 'right-[15px]' : 'right-0.5',
+                    v.movability === 'locked' ? 'right-[15px]' : 'right-0.5',
                   )}
                   data-testid={`wtl-accompaniment-badge-${v.id}`}
                   title={`同行: ${accBadge}`}
@@ -528,13 +522,15 @@ function WeekPairBox({
                   👥{lanes === 1 ? accBadge : ''}
                 </span>
               )}
-              {v.is_pinned && <CornerPushPin className="h-4 w-4" />}
+              {v.movability === 'locked' && <CornerPushPin className="h-4 w-4" />}
               {/* 1行目: 右端の時刻が右上バッジと重ならないよう、バッジ有り時は右パディングで逃がす。
                   等分 (lanes ≥ 2) では余白も時刻も捨てて氏名を 2 行で読ませる (§2-B1)。 */}
               <span
                 className={cn(
                   'flex min-w-0 items-center gap-1',
-                  lanes === 1 && accBadge && (v.is_pinned ? 'pr-[64px]' : 'pr-[50px]'),
+                  lanes === 1 &&
+                    accBadge &&
+                    (v.movability === 'locked' ? 'pr-[64px]' : 'pr-[50px]'),
                 )}
               >
                 <span

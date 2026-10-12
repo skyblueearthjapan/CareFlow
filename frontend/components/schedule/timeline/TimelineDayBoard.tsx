@@ -36,9 +36,7 @@ import type { EventRead } from '@/lib/schemas/staff-events';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';
 import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
 import { classifyVisitDisplay, VISIT_DISPLAY_CLASS } from '@/lib/schedule/visitVisibility';
-import { CornerPushPin, CornerWeekPushPin, PushPin, PushPinOff } from '@/components/ui/push-pin';
-import { PinScopeMenu, type PinScope } from '@/components/schedule/v2/PinScopeMenu';
-import { MovabilityMark } from './MovabilityMark';
+import { CornerPushPin } from '@/components/ui/push-pin';
 import {
   isDivergedFromMaster,
   masterDivergenceCardStyle,
@@ -202,19 +200,6 @@ export interface TimelineDayBoardProps {
    */
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
   /**
-   * 週のピン (青ピン / PO 決定 2026-08-08)。「今週はこの位置のまま動かさない」。
-   *
-   * 赤ピン (型のピン) は型と一致する訪問にしか刺せないため、型とズレた訪問を
-   * 今の位置で守る手段が無かった。青ピンはその穴を埋める。
-   * 未指定ならトグルを描画しない (閲覧のみのロール / 表示専用の呼び出し)。
-   */
-  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
-  /**
-   * 型のピン (赤) のトグル (PO 決定 2026-08-08: カード右下クラスタ)。
-   * 型と一致する訪問でのみ操作可 (§1.3)。スコープは PinScopeMenu (曜日のみ/全曜日)。
-   */
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
-  /**
    * トグル「非稼働を表示」(患者ステータス連動 Phase 3・design 2026-09-09 §3-4)。
    * true = 連動取消 (source='status_cancel') も打ち消し線つきで描く (残骸点検)。
    * 既定 false = 従来どおり消す。非稼働患者の**残っている予定**はどちらでも
@@ -239,25 +224,19 @@ function DeleteVisitButton({
   onDeleteVisit: (visitId: string, patientName: string) => void;
 }) {
   const label = visit.patient_name ?? visit.patient_id;
-  // 青 (今週固定) は蓋 = 削除も不可 (解除してから。BE も 422 で二重防御)。
-  const lidLocked = visit.week_pinned === true;
   return (
     <button
       type="button"
       data-testid={`tl-delete-visit-${visit.id}`}
       aria-label={`${label} の訪問を削除`}
-      aria-disabled={lidLocked || undefined}
-      title={lidLocked ? '今週固定（青ピン）を解除してから削除してください' : 'この訪問を削除'}
+      title="この訪問を削除"
       className={cn(
         'absolute bottom-0.5 right-0.5 z-[3] grid h-[15px] w-[15px] place-items-center rounded-full border border-transparent bg-bg-base/80 text-[11px] font-bold leading-none text-error opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-error',
-        lidLocked
-          ? 'cursor-not-allowed text-text-muted group-hover:opacity-40'
-          : 'hover:border-error hover:bg-error-bg',
+        'hover:border-error hover:bg-error-bg',
       )}
       onClick={(ev) => {
         // カード本体の onClick (患者詳細) を発火させない。
         ev.stopPropagation();
-        if (lidLocked) return;
         onDeleteVisit(visit.id, label);
       }}
       onPointerDown={(ev) => {
@@ -267,133 +246,6 @@ function DeleteVisitButton({
     >
       ×
     </button>
-  );
-}
-
-/**
- * カード右下のピン操作クラスタ (PO 決定 2026-08-08: 右下ホバー出現方式)。
- *
- * [赤ピン][青ピン] を × 削除の左隣に横並びで置く。× と同じ group-hover 出現の
- * 慣例に合わせ、**未固定側のトグルはホバー時のみ薄く出る**。刺さっている側は
- * 色付きで常時表示する (状態の一次表示は右上の画鋲が担い、こちらは操作の足場)。
- *
- *   - 赤 = 完全固定 (統合 2026-08-09: movability='locked' の表示/操作)。
- *     型と一致する訪問でのみ操作可 (§1.3)。スコープは PinScopeMenu で選ぶ。
- *     ズレていて押せないときは理由を title で正しく伝える (論点 1)。
- *   - 青 = 週のピン (今週だけ)。型とズレていても刺せる。**完全固定中でも操作できる**。
- *     青が刺さっている間は盤面の人手操作 (移動/削除) も蓋 = ブロックされる。
- */
-function CardPinControls({
-  visit,
-  isWeekOnly,
-  onTogglePin,
-  onToggleWeekPin,
-}: {
-  visit: CourseGridVisit;
-  isWeekOnly: boolean;
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
-  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
-}) {
-  const isPinned = visit.is_pinned === true;
-  const pfvId = visit.fixed_visit_id ?? null;
-  const redDisabled = !pfvId;
-  const redDisabledReason = masterDivergenceTitle(visit) ?? '先に固定枠登録が必要';
-  const label = visit.patient_name ?? visit.patient_id;
-  // 共通のボタン意匠: × 削除と同寸 (15px)。ON 側は常時表示、OFF 側はホバー出現。
-  // PO 指摘 (2026-08-09): 刺さっている側のトグルを常時表示にすると、右上の画鋲と
-  // 「同じ色のピンが 2 つ」見えて紛らわしく、住所行にも被る。状態表示は右上の
-  // 画鋲に一本化し、操作は × 削除と同じ「ホバーで出現」に統一する。
-  const btnBase =
-    'grid h-[15px] w-[15px] place-items-center rounded-full border border-transparent bg-bg-base/80 leading-none transition-opacity focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1';
-  const reveal = 'opacity-0 group-focus-within:opacity-70 group-hover:opacity-70 hover:opacity-100';
-  return (
-    <span
-      className="absolute bottom-0.5 right-[19px] z-[3] flex items-center gap-0.5"
-      data-testid={`tl-pin-controls-${visit.id}`}
-    >
-      {onTogglePin && (
-        <PinScopeMenu
-          pfvId={pfvId ?? ''}
-          patientId={visit.patient_id}
-          isPinned={isPinned}
-          onSelect={onTogglePin}
-          disabled={redDisabled}
-          testIdSuffix={`tl-${visit.id}`}
-        >
-          {({ isOpen }) => (
-            <button
-              type="button"
-              onPointerDown={(e) => e.stopPropagation()}
-              // カード本体の onClick (患者詳細) へバブリングさせない。Radix の
-              // open トグルは同一要素上で合成されるため影響しない。
-              onClick={(e) => e.stopPropagation()}
-              disabled={redDisabled}
-              data-testid={`tl-pin-toggle-${visit.id}`}
-              data-pinned={isPinned ? 'true' : 'false'}
-              aria-pressed={isPinned}
-              aria-haspopup="menu"
-              aria-expanded={isOpen}
-              aria-label={
-                isPinned
-                  ? `${label} の完全固定を外すスコープを選択`
-                  : redDisabled
-                    ? `${label} は${redDisabledReason}`
-                    : `${label} を完全固定にするスコープを選択`
-              }
-              title={
-                redDisabled
-                  ? redDisabledReason
-                  : isPinned
-                    ? '完全固定を外す（システムが動かせるようになります）— スコープを選択 (この曜日のみ / 全曜日)'
-                    : '完全固定にする（システムはこの枠を動かしません）— スコープを選択 (この曜日のみ / 全曜日)'
-              }
-              className={cn(
-                btnBase,
-                'hover:border-error hover:bg-error-bg focus-visible:ring-error',
-                reveal,
-                redDisabled && 'cursor-not-allowed group-hover:opacity-25',
-              )}
-            >
-              {isPinned ? (
-                <PushPin className="h-3 w-3" />
-              ) : (
-                <PushPinOff className="h-3 w-3 text-error/70" />
-              )}
-            </button>
-          )}
-        </PinScopeMenu>
-      )}
-      {onToggleWeekPin && (
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleWeekPin(visit.id, !isWeekOnly);
-          }}
-          data-testid={`tl-week-pin-toggle-${visit.id}`}
-          data-week-pinned={isWeekOnly ? 'true' : 'false'}
-          aria-pressed={isWeekOnly}
-          aria-label={isWeekOnly ? `${label} の今週の固定を解除` : `${label} を今週この時刻で固定`}
-          title={
-            isWeekOnly
-              ? '今週の固定を解除します（この場では動きません。次の週生成で固定訪問スケジュールの時刻が読み込まれます）'
-              : '今週この時刻で固定します（固定訪問スケジュールは変更しません）'
-          }
-          className={cn(
-            btnBase,
-            'hover:border-info hover:bg-info-bg focus-visible:ring-info',
-            reveal,
-          )}
-        >
-          {isWeekOnly ? (
-            <PushPin className="h-3 w-3 text-info [&_.fill-error]:fill-[var(--info)]" />
-          ) : (
-            <PushPinOff className="h-3 w-3 text-info/70" />
-          )}
-        </button>
-      )}
-    </span>
   );
 }
 
@@ -408,13 +260,6 @@ function WeekOnlyChip({
 }: {
   visit: CourseGridVisit;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
-  /** 週のピン (青ピン) のトグル。未指定なら描画しない。 */
-  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
-  /**
-   * 型のピン (赤) のトグル (PO 決定 2026-08-08: カード右下クラスタ)。
-   * 型と一致する訪問でのみ操作可 (§1.3)。スコープは PinScopeMenu (曜日のみ/全曜日)。
-   */
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   className?: string;
 }) {
   const base = cn(
@@ -520,8 +365,6 @@ function VisitCard({
   drag,
   onDeleteVisit,
   onPromoteWeekOnly,
-  onToggleWeekPin,
-  onTogglePin,
   accompaniment,
 }: {
   visit: CourseGridVisit;
@@ -533,19 +376,9 @@ function VisitCard({
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   /** G3: 「今週のみ」チップの昇格ハンドラ。未指定でもチップ自体は表示する。 */
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
-  /** 週のピン (青ピン) のトグル。未指定ならトグルを描画しない。 */
-  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
-  /**
-   * 型のピン (赤) のトグル (PO 決定 2026-08-08: カード右下クラスタ)。
-   * 型と一致する訪問でのみ操作可 (§1.3)。スコープは PinScopeMenu (曜日のみ/全曜日)。
-   */
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   /** 新人同行 (§7.1/§7.2)。 */
   accompaniment?: AccompanimentBinding;
 }) {
-  // T-2 ②-c: ピン留めカードを掴もうとしたら shake で「不可侵」を伝える (ドラッグは
-  // disabled で始まらないため、pointerdown を合図に演出だけ出す)。
-  const [shake, setShake] = useState(false);
   const accActive = accompaniment?.active === true;
   const accSelected = accActive && accompaniment!.isVisitSelected(visit.id);
   const accInCourse = accActive && accompaniment!.isVisitInSelectedCourse(visit.id);
@@ -602,8 +435,6 @@ function VisitCard({
   if (visit.same_address_group_id) pills.push('📍同住所');
   // 「今週のみ」チップ = 型に未反映のこの週だけの配置 (source ベース・従来どおり)。
   const isWeekOnly = visit.source === 'manual_week';
-  // 週のピン (青ピン) = フラグ or 旧方式 manual_week の和集合 (PO 決定 2026-08-09)。
-  const isWeekPinned = visit.week_pinned === true || isWeekOnly;
   // 同行モード中はカードクリック=選択トグル (選択済みコース内は個別不可)。
   // 「コース(曜日)単位」に絞っている間は患者カードを受け付けない (確定#2)。
   const accClick = accActive
@@ -624,17 +455,10 @@ function VisitCard({
       // DnD 有効カード = dnd-kit の listeners/attributes、ピン留め = shake ハンドラ、を
       // 1 つの spread に合成する。別プロップで onPointerDown を書くと undefined でも
       // 後勝ちで listeners の onPointerDown を上書きし、ドラッグが死ぬ (②-c で実バグ化)。
-      {...(drag
-        ? drag.disabled
-          ? visit.week_pinned === true
-            ? { onPointerDown: () => setShake(true) }
-            : {}
-          : { ...drag.listeners, ...drag.attributes }
-        : {})}
+      {...(drag ? (drag.disabled ? {} : { ...drag.listeners, ...drag.attributes }) : {})}
       // onKeyDown は spread の「後」に置く (後勝ち)。将来 KeyboardSensor を足しても
       // listeners.onKeyDown に黙って上書きされずキーボード操作が生き残る (レビューMED)。
       onKeyDown={cardKeyDownHandler(accClick)}
-      onAnimationEnd={shake ? () => setShake(false) : undefined}
       data-testid={`tl-visit-${visit.id}`}
       data-accompaniment-selected={accSelected ? 'true' : undefined}
       data-tl-drag={drag ? (drag.disabled ? 'disabled' : 'enabled') : undefined}
@@ -646,13 +470,11 @@ function VisitCard({
             ? 'コース丸ごとに含まれています（個別解除はコース選択を外してください）'
             : [
                 drag?.disabled
-                  ? visit.week_pinned
-                    ? '今週固定（青ピン）中のため動かせません（青ピンを解除してから移動）'
-                    : visit.visit_group_id
-                      ? '2名体制（ペア配置）のため個別移動できません'
-                      : visit.status === 'cancelled'
-                        ? 'キャンセル済みのため移動できません'
-                        : visit.patient_address
+                  ? visit.visit_group_id
+                    ? '2名体制（ペア配置）のため個別移動できません'
+                    : visit.status === 'cancelled'
+                      ? 'キャンセル済みのため移動できません'
+                      : visit.patient_address
                   : visit.patient_address,
                 partner.tooltip,
               ]
@@ -665,7 +487,6 @@ function VisitCard({
         lanes > 1 ? 'px-1.5' : 'px-2',
         drag && !drag.disabled && 'cursor-grab touch-none active:cursor-grabbing',
         drag?.isDragging && 'opacity-40',
-        shake && 'tl-shake',
         // armed でない対象は「押せそう」に見せない (確定#2)。
         accActive && !accInCourse && accompaniment!.isVisitArmed && 'cursor-pointer',
         accOverlap && 'z-[4] ring-2 ring-error',
@@ -703,12 +524,8 @@ function VisitCard({
         <span
           className={cn(
             'absolute top-0.5 z-[3] max-w-[70%] truncate rounded-full bg-info-bg px-1 text-[8.5px] font-bold text-info',
-            // 画鋲の本数ぶん左へ避ける (赤+青の 2 本 → さらに左)。
-            visit.is_pinned && isWeekPinned
-              ? 'right-[34px]'
-              : visit.is_pinned || isWeekPinned
-                ? 'right-[16px]'
-                : 'right-0.5',
+            // 赤い画鋲 (右上) を避けて少し左へ寄せる。
+            visit.movability === 'locked' ? 'right-[16px]' : 'right-0.5',
           )}
           data-testid={`tl-accompaniment-badge-${visit.id}`}
           title={`同行: ${accBadge}`}
@@ -717,13 +534,8 @@ function VisitCard({
         </span>
       )}
       {/* ピン留めの状態表示: 右上に打ち込んだ画鋲 (📍住所と誤認しない・PO要望 2026-07-08)。
-          赤=型のピン (毎週) / 青=週のピン (今週だけ)。PO 決定 (2026-08-08): 両方
-          刺さっていれば 2 本並べる — 青は赤の左隣 (先に青を仕込んでから一括赤解除する
-          運用があるため、併存は正常な状態)。 */}
-      {visit.is_pinned && <CornerPushPin />}
-      {isWeekPinned && (
-        <CornerWeekPushPin className={visit.is_pinned ? 'right-[14px] translate-x-0' : undefined} />
-      )}
+          赤=型のピン (毎週)。青ピンは廃止 (PO 2026-10-12)。 */}
+      {visit.movability === 'locked' && <CornerPushPin />}
       {/* 1行目: アイコン + 患者名 (名前に行を専有させフル表示。切れにくくする)。 */}
       <span className="flex min-w-0 items-center gap-1">
         {isMulti && (
@@ -732,7 +544,6 @@ function VisitCard({
             <PersonMark />
           </span>
         )}
-        <MovabilityMark visit={visit} visitId={visit.id} />
         <span
           className={cn(
             'font-bold leading-tight',
@@ -827,16 +638,7 @@ function VisitCard({
           ))}
         </span>
       )}
-      {/* ピン操作クラスタ [赤][青] — × の左隣・ホバー出現 (PO 決定 2026-08-08)。 */}
-      {!isCancelled && height >= TL_SHOW_DELETE_PX && (onTogglePin || onToggleWeekPin) && (
-        <CardPinControls
-          visit={visit}
-          isWeekOnly={isWeekPinned}
-          onTogglePin={onTogglePin}
-          onToggleWeekPin={onToggleWeekPin}
-        />
-      )}
-      {/* G2: 訪問削除 (×)。右上は CornerPushPin が刺さっているため右下に置く。
+      {/* G2: 訪問削除 (×)。右上は画鋲が刺さっているため右下に置く。
           極小カード (< TL_SHOW_DELETE_PX) では潰れるので出さない。 */}
       {onDeleteVisit && height >= TL_SHOW_DELETE_PX && (
         <DeleteVisitButton visit={visit} onDeleteVisit={onDeleteVisit} />
@@ -857,8 +659,6 @@ function DraggableVisitCard({
   laneInfo,
   onDeleteVisit,
   onPromoteWeekOnly,
-  onToggleWeekPin,
-  onTogglePin,
   accompaniment,
 }: {
   visit: CourseGridVisit;
@@ -866,20 +666,11 @@ function DraggableVisitCard({
   laneInfo?: CardLane;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
-  /** 週のピン (青ピン) のトグル。未指定なら描画しない。 */
-  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
-  /**
-   * 型のピン (赤) のトグル (PO 決定 2026-08-08: カード右下クラスタ)。
-   * 型と一致する訪問でのみ操作可 (§1.3)。スコープは PinScopeMenu (曜日のみ/全曜日)。
-   */
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   accompaniment?: AccompanimentBinding;
 }) {
   // 統合 (PO 決定 2026-08-09): 赤 (完全固定) はドラッグ可 — 移動確認ダイアログで
   // 「これは完全固定です」注意書きを出したうえで人手移動を許す。
-  // 青 (今週固定) は蓋 = ドラッグ不可 (解除してから動かす。BE も 422 で二重防御)。
-  const dragDisabled =
-    visit.week_pinned === true || visit.status === 'cancelled' || Boolean(visit.visit_group_id);
+  const dragDisabled = visit.status === 'cancelled' || Boolean(visit.visit_group_id);
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: tlVisitDraggableId(visit.id),
     disabled: dragDisabled,
@@ -893,8 +684,6 @@ function DraggableVisitCard({
       drag={{ attributes, listeners, setNodeRef, isDragging, disabled: dragDisabled }}
       onDeleteVisit={onDeleteVisit}
       onPromoteWeekOnly={onPromoteWeekOnly}
-      onToggleWeekPin={onToggleWeekPin}
-      onTogglePin={onTogglePin}
       accompaniment={accompaniment}
     />
   );
@@ -918,18 +707,10 @@ function DraggablePairBox({
   onPatientClick?: (patientId: string) => void;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
-  /** 週のピン (青ピン) のトグル。未指定なら描画しない。 */
-  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
-  /**
-   * 型のピン (赤) のトグル (PO 決定 2026-08-08: カード右下クラスタ)。
-   * 型と一致する訪問でのみ操作可 (§1.3)。スコープは PinScopeMenu (曜日のみ/全曜日)。
-   */
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   accompaniment?: AccompanimentBinding;
 }) {
-  // 青 (今週固定) を含むペアは蓋 = ドラッグ不可。赤 (完全固定) は移動確認で注意書き。
   const dragDisabled = item.visits.some(
-    (v) => v.week_pinned === true || v.status === 'cancelled' || Boolean(v.visit_group_id),
+    (v) => v.status === 'cancelled' || Boolean(v.visit_group_id),
   );
   const [id1, id2] = [item.visits[0]!.id, item.visits[1]?.id ?? item.visits[0]!.id];
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
@@ -976,7 +757,7 @@ export function TlPairDragGhost({ visits }: { visits: CourseGridVisit[] }) {
                 color: pal.ink,
               }}
             >
-              {v.is_pinned && <CornerPushPin />}
+              {v.movability === 'locked' && <CornerPushPin />}
               <span className="truncate text-[12px] font-bold leading-tight">
                 {v.patient_name ?? '—'}
               </span>
@@ -1031,7 +812,7 @@ export function TlVisitDragGhost({ visit }: { visit: CourseGridVisit }) {
       style={{ background: pal.bg, borderColor: pal.ln, borderLeftColor: pal.bar, color: pal.ink }}
       data-testid="tl-drag-ghost"
     >
-      {visit.is_pinned && <CornerPushPin />}
+      {visit.movability === 'locked' && <CornerPushPin />}
       <span className="flex min-w-0 items-center gap-1">
         <span className="truncate text-[13px] font-bold leading-tight">
           {visit.patient_name ?? '—'}
@@ -1143,13 +924,6 @@ function PairMemberRowView({
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   /** G3: ペア行の「今週のみ」チップ。 */
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
-  /** 週のピン (青ピン) のトグル。未指定なら描画しない。 */
-  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
-  /**
-   * 型のピン (赤) のトグル (PO 決定 2026-08-08: カード右下クラスタ)。
-   * 型と一致する訪問でのみ操作可 (§1.3)。スコープは PinScopeMenu (曜日のみ/全曜日)。
-   */
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   /** 新人同行 (§7.1/§7.2)。 */
   accompaniment?: AccompanimentBinding;
 }) {
@@ -1221,7 +995,7 @@ function PairMemberRowView({
         <span
           className={cn(
             'absolute top-0.5 z-[3] max-w-[46px] truncate rounded-full bg-info-bg px-1 text-[7.5px] font-bold text-info',
-            v.is_pinned ? 'right-[16px]' : 'right-0.5',
+            v.movability === 'locked' ? 'right-[16px]' : 'right-0.5',
           )}
           data-testid={`tl-accompaniment-badge-${v.id}`}
           title={`同行: ${accBadge}`}
@@ -1229,8 +1003,7 @@ function PairMemberRowView({
           👥{lanes === 1 ? accBadge : ''}
         </span>
       )}
-      {v.is_pinned && <CornerPushPin />}
-      <MovabilityMark visit={v} visitId={v.id} />
+      {v.movability === 'locked' && <CornerPushPin />}
       {showHandle ? (
         <span
           data-testid={`tl-pair-member-handle-${v.id}`}
@@ -1269,7 +1042,7 @@ function PairMemberRowView({
         className={cn(
           'flex min-w-0 items-center gap-1',
           // 等分 (lanes ≥ 2) では右上バッジの逃がし余白と時刻バッジを捨てて氏名に幅を渡す (§2-B1)。
-          lanes === 1 && accBadge && (v.is_pinned ? 'pr-[64px]' : 'pr-[50px]'),
+          lanes === 1 && accBadge && (v.movability === 'locked' ? 'pr-[64px]' : 'pr-[50px]'),
         )}
       >
         <span
@@ -1337,18 +1110,9 @@ function DraggablePairMemberRow({
   onPatientClick?: (patientId: string) => void;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
-  /** 週のピン (青ピン) のトグル。未指定なら描画しない。 */
-  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
-  /**
-   * 型のピン (赤) のトグル (PO 決定 2026-08-08: カード右下クラスタ)。
-   * 型と一致する訪問でのみ操作可 (§1.3)。スコープは PinScopeMenu (曜日のみ/全曜日)。
-   */
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   accompaniment?: AccompanimentBinding;
 }) {
-  // 青 (今週固定) は蓋 = ドラッグ不可。赤 (完全固定) は移動確認で注意書き。
-  const dragDisabled =
-    v.week_pinned === true || v.status === 'cancelled' || Boolean(v.visit_group_id);
+  const dragDisabled = v.status === 'cancelled' || Boolean(v.visit_group_id);
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: tlVisitDraggableId(v.id),
     disabled: dragDisabled,
@@ -1387,18 +1151,10 @@ function PairBox({
   memberDndEnabled?: boolean;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
-  /** 週のピン (青ピン) のトグル。未指定なら描画しない。 */
-  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
-  /**
-   * 型のピン (赤) のトグル (PO 決定 2026-08-08: カード右下クラスタ)。
-   * 型と一致する訪問でのみ操作可 (§1.3)。スコープは PinScopeMenu (曜日のみ/全曜日)。
-   */
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   /** 新人同行 (§7.1/§7.2)。 */
   accompaniment?: AccompanimentBinding;
 }) {
   const [shake, setShake] = useState(false);
-  const anyWeekPinned = item.visits.some((v) => v.week_pinned === true);
   const anyGroup = item.visits.some((v) => Boolean(v.visit_group_id));
   const cs = Math.max(item.startMin, TL_DAY_START_MIN);
   const ce = Math.min(item.endMin, TL_DAY_END_MIN);
@@ -1425,7 +1181,7 @@ function PairBox({
       // (別プロップで書くと後勝ち上書きでドラッグが死ぬ — 64acdef の教訓)。
       {...(drag
         ? drag.disabled
-          ? anyWeekPinned || anyGroup
+          ? anyGroup
             ? { onPointerDown: () => setShake(true) }
             : {}
           : { ...drag.listeners, ...drag.attributes }
@@ -1433,11 +1189,9 @@ function PairBox({
       onAnimationEnd={shake ? () => setShake(false) : undefined}
       title={
         drag?.disabled
-          ? anyWeekPinned
-            ? '今週固定（青ピン）を含むため動かせません（青ピンを解除してから移動）'
-            : anyGroup
-              ? '2名体制（ペア配置）を含むため移動できません'
-              : 'キャンセル済みを含むため移動できません'
+          ? anyGroup
+            ? '2名体制（ペア配置）を含むため移動できません'
+            : 'キャンセル済みを含むため移動できません'
           : drag
             ? '2名セットで移動します（1名だけ動かすときは行頭の ⠿ をドラッグ）'
             : undefined
@@ -1683,8 +1437,6 @@ function TimelineColumn({
   dndEnabled,
   onDeleteVisit,
   onPromoteWeekOnly,
-  onToggleWeekPin,
-  onTogglePin,
   accompaniment,
   showInactive,
 }: {
@@ -1695,13 +1447,6 @@ function TimelineColumn({
   dndEnabled?: boolean;
   onDeleteVisit?: (visitId: string, patientName: string) => void;
   onPromoteWeekOnly?: (patientId: string, patientName: string) => void;
-  /** 週のピン (青ピン) のトグル。未指定なら描画しない。 */
-  onToggleWeekPin?: (visitId: string, nextPinned: boolean) => void;
-  /**
-   * 型のピン (赤) のトグル (PO 決定 2026-08-08: カード右下クラスタ)。
-   * 型と一致する訪問でのみ操作可 (§1.3)。スコープは PinScopeMenu (曜日のみ/全曜日)。
-   */
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   accompaniment?: AccompanimentBinding;
   /** トグル「非稼働を表示」(design 2026-09-09 §3-4)。連動取消も描くかどうか。 */
   showInactive?: boolean;
@@ -1834,8 +1579,6 @@ function TimelineColumn({
             onClick={onPatientClick ? () => onPatientClick(it.v.patient_id) : undefined}
             onDeleteVisit={onDeleteVisit}
             onPromoteWeekOnly={onPromoteWeekOnly}
-            onToggleWeekPin={onToggleWeekPin}
-            onTogglePin={onTogglePin}
             accompaniment={accompaniment}
           />
         ) : (
@@ -1846,8 +1589,6 @@ function TimelineColumn({
             onClick={onPatientClick ? () => onPatientClick(it.v.patient_id) : undefined}
             onDeleteVisit={onDeleteVisit}
             onPromoteWeekOnly={onPromoteWeekOnly}
-            onToggleWeekPin={onToggleWeekPin}
-            onTogglePin={onTogglePin}
             accompaniment={accompaniment}
           />
         ),
@@ -1871,8 +1612,6 @@ export function TimelineDayBoard({
   isStaffMutating,
   onDeleteVisit,
   onPromoteWeekOnly,
-  onToggleWeekPin,
-  onTogglePin,
   accompaniment,
   accompanimentWeekday,
   showInactive = false,
@@ -2141,8 +1880,6 @@ export function TimelineDayBoard({
             dndEnabled={dndEnabled}
             onDeleteVisit={onDeleteVisit}
             onPromoteWeekOnly={onPromoteWeekOnly}
-            onToggleWeekPin={onToggleWeekPin}
-            onTogglePin={onTogglePin}
             accompaniment={accompaniment}
             showInactive={showInactive}
           />

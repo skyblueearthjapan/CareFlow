@@ -1,0 +1,67 @@
+# らく助エージェントの中継（carelink-agent）。build context = agent/（docker-compose.agent.yml 参照）
+#
+# 中身: Python 3.12 ＋ 中継の依存（agent/relay/requirements.txt）＋ rk（標準ライブラリだけ）
+#       ＋ pg_dump 16（反映の直前のバックアップ用・本番の Postgres は 16.13）
+# 入れないもの: docker CLI・docker.sock・本番 .env・agent/runs（実行記録＝利用者名入り）
+#
+# 中継の実装（agent/relay/）との約束:
+#   - 起動: `python -m relay`（公開口 0.0.0.0:8090・内側口 0.0.0.0:8091）
+#   - 健康確認: GET http://127.0.0.1:8090/agent-relay/healthz → 200（鍵なし）
+#   - CLI は AGENT_RUNNER_SOCKET（/run/agent/runner.sock）の箱の runner に起こしてもらう（この image に claude は無い）
+#   - 依存: agent/relay/requirements.txt（版を固定）。無いと build が止まる
+
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm
+
+FROM ${PYTHON_IMAGE}
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    LANG=C.UTF-8 \
+    TZ=Asia/Tokyo
+
+# pg_dump は「サーバーと同じか新しい版」が要る。bookworm 標準は 15 なので PGDG から 16 を入れる。
+# hadolint ignore=DL3008
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg tzdata; \
+    install -d /usr/share/postgresql-common/pgdg; \
+    curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc; \
+    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends postgresql-client-16; \
+    apt-get purge -y --auto-remove curl gnupg; \
+    rm -rf /var/lib/apt/lists/*; \
+    pg_dump --version
+
+RUN groupadd -g 10001 agentrelay \
+ && groupadd -g 10000 agentsock \
+ && useradd -u 10001 -g 10001 -G agentsock -M -d /nonexistent -s /usr/sbin/nologin agentrelay \
+ && install -d -o 10001 -g 10001 -m 0700 /data
+# /data = 中継の作業の置き場所（named volume agent-relay-data の初期の持ち主を 10001 にするため image に作る）
+
+WORKDIR /srv/agent
+
+COPY relay/requirements.txt /tmp/relay-requirements.txt
+RUN pip install --require-hashes -r /tmp/relay-requirements.txt 2>/dev/null \
+    || pip install -r /tmp/relay-requirements.txt; \
+    rm -f /tmp/relay-requirements.txt
+
+# rk・中継・SQL・スキル（読み取り専用。持ち主は root・中継の uid からは書けない）
+COPY --chown=root:root . /srv/agent
+# 帳票のアイコン（rk/config.py の ICON_PATH = <agent の親>/frontend/public/brand/...）
+COPY --from=brand --chown=root:root rakusuke-icon-round.png /srv/frontend/public/brand/rakusuke-icon-round.png
+
+RUN find /srv/agent -name '__pycache__' -prune -exec rm -rf {} + \
+ && test ! -e /srv/agent/runs \
+ && test ! -e /srv/agent/staging \
+ && chmod -R a-w /srv/agent
+
+ENV PYTHONPATH=/srv/agent \
+    RK_MODE=relay
+
+USER 10001:10001
+EXPOSE 8090 8091
+CMD ["python", "-m", "relay"]

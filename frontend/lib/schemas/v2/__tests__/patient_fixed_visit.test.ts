@@ -59,8 +59,8 @@ describe('patientFixedVisitV2BaseSchema (W37 Phase 1)', () => {
     expect(parsed.movability).toBeUndefined();
   });
 
-  it('P2-A: movability の 4 値を許容し、不正値はエラー', () => {
-    for (const mv of ['unknown', 'time_flexible', 'day_flexible', 'locked'] as const) {
+  it('movability は unknown / locked の 2 値だけ許容し、旧値・不正値はエラー', () => {
+    for (const mv of ['unknown', 'locked'] as const) {
       const parsed = patientFixedVisitV2BaseSchema.parse({
         weekday: 0,
         start_time: '09:00',
@@ -69,13 +69,15 @@ describe('patientFixedVisitV2BaseSchema (W37 Phase 1)', () => {
       });
       expect(parsed.movability).toBe(mv);
     }
-    const bad = patientFixedVisitV2BaseSchema.safeParse({
-      weekday: 0,
-      start_time: '09:00',
-      duration_min: 30,
-      movability: 'bogus',
-    });
-    expect(bad.success).toBe(false);
+    for (const mv of ['bogus', 'time_flexible', 'day_flexible']) {
+      const bad = patientFixedVisitV2BaseSchema.safeParse({
+        weekday: 0,
+        start_time: '09:00',
+        duration_min: 30,
+        movability: mv,
+      });
+      expect(bad.success).toBe(false);
+    }
   });
 });
 

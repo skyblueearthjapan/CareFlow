@@ -260,7 +260,6 @@ export function SpecialVisitPlaceLauncher({
         staff_name: null,
         course_id: v.course_id ?? null,
         course_label: null,
-        week_pinned: v.week_pinned === true,
         status: v.status ?? 'planned',
         source: v.source ?? 'auto',
       }));

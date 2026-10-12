@@ -168,7 +168,8 @@ async def test_move_duplicate_code_at_target_returns_422(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_move_with_week_pinned_visit_returns_422(client, db) -> None:
+async def test_move_with_stale_week_pinned_flag_is_not_blocked(client, db) -> None:
+    """青ピン廃止 (2026-10-12): 列に true が残っていても動かせる."""
     admin = await _make_user(db, email="cmw-4@example.com", role="admin")
     office = await _make_office(db, name="稲毛CMW4")
     course = await _make_course(db, office=office, weekday=4)
@@ -180,8 +181,7 @@ async def test_move_with_week_pinned_visit_returns_422(client, db) -> None:
         headers=_bearer(admin),
         json={"course_id": str(course.id), "to_weekday": 0},
     )
-    assert res.status_code == 422, res.text
-    assert "青ピン" in res.text
+    assert res.status_code == 200, res.text
 
 
 @pytest.mark.asyncio

@@ -293,7 +293,9 @@ async def test_locked_blocker_not_moved(client, db) -> None:
     assert res.status_code == 200, res.text
     data = res.json()
     assert data["plans"] == []
-    assert data["unmovable_summary"]["locked"] >= 1
+    # locked は is_pinned の厳密ミラー (赤ピン整理 2026-10-12): 内訳はどちらでもよい.
+    summary = data["unmovable_summary"]
+    assert summary["locked"] + summary["pinned"] >= 1
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,28 @@
+# rakusuke-rules v2 — らく助の箱の Codex のコマンドの決まり（runner が起動のたびに CODEX_HOME/rules/ に書き直す。
+# image では /srv/agent/.codex/rules/ にも root 持ち・読み取り専用で置く）。
+# 考え方（PO 2026-10-12 改め）: 箱の中で考える・計算する（シェル・python・その場の script）は自由。
+# 書き込みは中継の承認番号だけ・秘密と抜け道を守る。ここは「明らかに要らない・危ない道具」を聞かずに断る道案内。
+#   - allow     … rk の包み（聞かずに動く・いちばん楽な道）
+#   - forbidden … 外へ出る道具・パッケージの導入・別の CLI・権限の道具・プロセスの覗き見
+# ここに無いコマンド（python・bash・cat・ls など）は聞かずに動く（sandbox は danger-full-access＝箱が砂場）。
+# 複数に当たったら「いちばん厳しいもの」が勝つ（codex execpolicy check で確認済み・2026-10-12）。
+# 注意: 絶対パス（/usr/bin/curl など）は前置きの一致に当たらない（実測）。最後の守りは網（箱は内側の網だけ・
+# 出口は許可リスト）と中継の関所。
+
+prefix_rule(
+    pattern=[["rk", "bin/rk", "./bin/rk"]],
+    decision="allow",
+    justification="rakusuke: rk is the way to read and propose",
+    match=[["rk", "sql", "--list"], ["bin/rk", "whoami"]],
+)
+
+prefix_rule(
+    pattern=[["curl", "wget", "nc", "ncat", "netcat", "socat", "ssh", "scp", "sftp", "telnet", "ftp", "openssl",
+              "git", "pip", "pip3", "uv", "npm", "npx", "deno", "bun", "docker", "kubectl", "sudo", "su",
+              "apt", "apt-get", "dpkg", "codex", "claude", "crontab", "systemctl", "mount", "psql", "pg_dump",
+              "printenv", "strace", "gdb", "nsenter", "unshare", "chroot", "ping", "dig", "nslookup"]],
+    decision="forbidden",
+    justification="rakusuke: not available here. Read with rk, compute with python in the work folder",
+    match=[["curl", "http://agent-relay:8091/"], ["git", "status"], ["printenv"]],
+    not_match=[["python3", "-c", "print(1)"], ["cat", "AGENTS.md"]],
+)

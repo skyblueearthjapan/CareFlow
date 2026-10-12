@@ -751,4 +751,5 @@ async def test_apply_mirror_protects_completed_and_pinned_visits(client, db) -> 
 
     pinned_after = await db.get(Visit, pinned_visit_id)
     assert pinned_after is not None
-    assert pinned_after.primary_staff_id == retired_id, "青ピン訪問の担当は書き換えない"
+    # 青ピン廃止 (2026-10-12): 列に true が残っていても守りにならない (ミラーが担当を直す)。
+    assert pinned_after.primary_staff_id == staff_id

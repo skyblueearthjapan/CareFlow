@@ -623,17 +623,48 @@ export type ReplaceInboundResult = z.infer<typeof ReplaceInboundResultSchema>;
 
 // --- smart-inbound (日単位ハイブリッド自動判別・2026-07-26 PO確定) -----------
 
-export const SmartInboundPreviewSchema = z.object({
-  weekStart: z.string(),
-  weekEnd: z.string(),
-  /** 打刻実績のある日 (差分モード担当・行を残して直す) */
-  protectedDays: z.array(z.string()).default([]),
-  /** 打刻の無い日 (置換モード担当・白紙化して書き直す) */
-  replaceDays: z.array(z.string()).default([]),
-  sheetId: z.string().uuid().nullable(),
-  diffSummary: z.record(z.string(), z.number()).default({}),
-  replace: ReplaceInboundResultSchema.nullable(),
-});
+/**
+ * らく助で調整した訪問のうち、カイポケの内容に合わせて置き換わるもの (BP-6)。
+ * BE は snake_case (`visit_id` など) で返す。camelCase でも受けられるよう両方読む。
+ */
+export const RakusukeAdjustedReplacedSchema = z
+  .object({
+    visit_id: z.string().optional(),
+    visitId: z.string().optional(),
+    date: z.string().default(''),
+    start_time: z.string().optional(),
+    startTime: z.string().optional(),
+    patient_label: z.string().optional(),
+    patientLabel: z.string().optional(),
+    change: z.string().default(''),
+  })
+  .transform((v) => ({
+    visitId: v.visitId ?? v.visit_id ?? '',
+    date: v.date,
+    startTime: v.startTime ?? v.start_time ?? '',
+    patientLabel: v.patientLabel ?? v.patient_label ?? '',
+    change: v.change,
+  }));
+export type RakusukeAdjustedReplaced = z.infer<typeof RakusukeAdjustedReplacedSchema>;
+
+export const SmartInboundPreviewSchema = z
+  .object({
+    weekStart: z.string(),
+    weekEnd: z.string(),
+    /** 打刻実績のある日 (差分モード担当・行を残して直す) */
+    protectedDays: z.array(z.string()).default([]),
+    /** 打刻の無い日 (置換モード担当・白紙化して書き直す) */
+    replaceDays: z.array(z.string()).default([]),
+    sheetId: z.string().uuid().nullable(),
+    diffSummary: z.record(z.string(), z.number()).default({}),
+    replace: ReplaceInboundResultSchema.nullable(),
+    rakusuke_adjusted_replaced: z.array(RakusukeAdjustedReplacedSchema).optional(),
+    rakusukeAdjustedReplaced: z.array(RakusukeAdjustedReplacedSchema).optional(),
+  })
+  .transform(({ rakusuke_adjusted_replaced, rakusukeAdjustedReplaced, ...rest }) => ({
+    ...rest,
+    rakusukeAdjustedReplaced: rakusukeAdjustedReplaced ?? rakusuke_adjusted_replaced ?? [],
+  }));
 export type SmartInboundPreview = z.infer<typeof SmartInboundPreviewSchema>;
 
 /**

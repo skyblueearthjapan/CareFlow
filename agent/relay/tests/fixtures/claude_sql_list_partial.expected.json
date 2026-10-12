@@ -1,0 +1,54 @@
+[
+ {
+  "type": "_meta",
+  "cli_session_id": "5dcd2f1b-ef49-4037-b725-7edad54cdd40",
+  "model": "claude-sonnet-5-5",
+  "model_display": "Sonnet 5.5",
+  "api_key_source": "none"
+ },
+ {
+  "type": "status",
+  "state": "working",
+  "pose": "search",
+  "line": "調べています"
+ },
+ {
+  "type": "step.start",
+  "step_id": "s_qy2zP9Bd2gan",
+  "label": "調べ方の一覧を見ています…"
+ },
+ {
+  "type": "step.end",
+  "step_id": "s_qy2zP9Bd2gan",
+  "label": "調べ方の一覧を見ています…",
+  "ok": true,
+  "secs": 0.0
+ },
+ {
+  "type": "message.delta",
+  "text": "30"
+ },
+ {
+  "type": "message",
+  "text": "30"
+ },
+ {
+  "type": "steps.summary",
+  "count": 1,
+  "failed": 0,
+  "secs": 0.0,
+  "label": "✓ 調べました（1 件・0 秒）"
+ },
+ {
+  "type": "turn.end",
+  "secs": 6.7,
+  "ok": true,
+  "reason": "completed"
+ },
+ {
+  "type": "status",
+  "state": "idle",
+  "pose": "bow",
+  "line": "ほかにも何かあれば、どうぞ"
+ }
+]

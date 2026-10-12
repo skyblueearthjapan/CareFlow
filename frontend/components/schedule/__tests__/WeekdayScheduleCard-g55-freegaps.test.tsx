@@ -28,10 +28,6 @@ vi.mock('../v2/VisitArrow', () => ({
   VisitArrow: () => <span data-testid="visit-arrow" />,
 }));
 
-vi.mock('../v2/PinScopeMenu', () => ({
-  PinScopeMenu: () => null,
-}));
-
 import { WeekdayScheduleCard } from '../WeekdayScheduleCard';
 import type { CourseListItem } from '../WeekdayScheduleCard';
 import type { FreeGap } from '@/lib/scheduling/freeGaps';

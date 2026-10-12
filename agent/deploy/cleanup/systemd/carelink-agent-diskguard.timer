@@ -1,0 +1,9 @@
+[Unit]
+Description=Rakusuke agent: disk guard (hourly at :15 UTC)
+
+[Timer]
+OnCalendar=*-*-* *:15:00 UTC
+Persistent=false
+
+[Install]
+WantedBy=timers.target

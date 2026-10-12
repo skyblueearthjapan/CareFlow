@@ -106,6 +106,7 @@ import {
 import { useStaffNgPatients } from '@/lib/queries/patient_ng_staff';
 import { useCourses, useUpdateCourse, type CourseV2Read } from '@/lib/queries/courses';
 import { useGenerateWeekOnly } from '@/lib/queries/generate_week';
+import { useGenerateWeekPreview } from '@/lib/queries/week_clear';
 import { useOffices } from '@/lib/queries/offices';
 import { usePatients } from '@/lib/queries/patients';
 import { useOpLogState, useUndoOpLog, useRedoOpLog, useInvalidateOpLog } from '@/lib/queries/opLog';
@@ -122,11 +123,6 @@ import { useCourseMoveWeekdayWeekOnly } from '@/lib/queries/courseMoveWeekday';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import { useCreateVisit, useDeleteVisit, useVisits } from '@/lib/queries/visits';
 import { useBulkSyncWeekToFixedMutation } from '@/lib/api/patientSync';
-import { useBulkPinPfvs, useTogglePfvPin } from '@/lib/queries/g21';
-import { useToggleVisitWeekPin } from '@/lib/queries/visit_week_pin';
-import { apiErrorMessage } from '@/lib/api/errorMessage';
-// Phase G-47: PinScope 型 (= 個別 🔒 toggle のスコープ '曜日のみ' / '全曜日').
-import type { PinScope } from './PinScopeMenu';
 import type { PatientFixedVisitV2Read } from '@/lib/schemas/v2/patient_fixed_visit';
 import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
 import { jstDateOf } from '@/lib/format/patientStatus';
@@ -155,18 +151,17 @@ import {
 } from '../WeekdayScheduleCard';
 import { TimelineDayList } from '@/components/schedule/timeline/TimelineDayList';
 import { BulkFixToPatternButton } from './BulkFixToPatternButton';
-import { BulkWeekPinAllButton } from './BulkWeekPinAllButton';
 import { AssignWarningDialog, type ApprovedReviewItem } from './AssignWarningDialog';
 import { ConstraintOverrideConfirmDialog } from './ConstraintOverrideConfirmDialog';
 import { ackFlag, useConstraintConfirmRetry } from './useConstraintConfirmRetry';
 import { BulkPoolInsertDialog } from './BulkPoolInsertDialog';
+import { ClearWeekButton } from './ClearWeekButton';
 import { RegisterPatientButton } from './RegisterPatientButton';
 import { ScheduleHealthDialog } from './ScheduleHealthDialog';
 import { ScopeOptimizeDialog } from './ScopeOptimizeDialog';
 import { ScheduleReviewBanner } from './ScheduleReviewBanner';
 import { WeeklyRitualGuideDialog } from './WeeklyRitualGuideDialog';
 import { MakeWeekDialog, weekRangeLabel } from './MakeWeekDialog';
-import { ResetToFixedButton } from './ResetToFixedButton';
 import { UnassignAllStaffButton } from './UnassignAllStaffButton';
 import {
   floorToCourseSlot,
@@ -725,11 +720,6 @@ export function CourseDayTablePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pfvPatientIds.join(','), pfvQueriesDepKey]);
 
-  // Phase G-21 T4 reviewer C2: 単一 PFV pin toggle hook (panel 全体で 1 instance).
-  const togglePfvPin = useTogglePfvPin();
-  // Phase G-47: 「全曜日」 スコープ選択時の bulk hook (panel 全体で 1 instance).
-  const bulkPinPfvs = useBulkPinPfvs();
-
   // ─── Courses (当週: course_template の逆引き / 担当 dropdown 用) ──
   const coursesQuery = useCourses({ iso_year: isoYear, iso_week: isoWeek, limit: 200 });
   const courses = useMemo(() => coursesQuery.data ?? [], [coursesQuery.data]);
@@ -1273,8 +1263,7 @@ export function CourseDayTablePanel({
         pfvSlot = idx === 1 ? 1 : 0;
       }
       let fixedVisitId: string | null = null;
-      let isPinned = false;
-      // 2026-08-07 (PO 要望): 可動域を盤面に「うっすら」出すための値.
+      // 完全固定 (赤) の表示根拠 = movability==='locked' の 1 本だけ.
       let movability: Movability | null = null;
       // 2026-08-08 (PO 要望): 型とズレている場合の「型の開始時刻」.
       let masterStartTime: string | null = null;
@@ -1282,7 +1271,6 @@ export function CourseDayTablePanel({
         const pfv = pfvByVisitKey.get(`${v.patient_id}:${pfvWeekday}:${visitHHMM}:${pfvSlot}`);
         if (pfv) {
           fixedVisitId = pfv.id;
-          isPinned = pfv.is_pinned === true;
           movability = pfv.movability ?? null;
         } else {
           // 完全一致が無い = 「固定枠が無い」か「固定枠はあるが時刻がズレている」。
@@ -1290,17 +1278,15 @@ export function CourseDayTablePanel({
           const byWd = pfvByPatientWeekdaySlot.get(`${v.patient_id}:${pfvWeekday}:${pfvSlot}`);
           if (byWd) {
             masterStartTime = (byWd.start_time ?? '').slice(0, 5) || null;
-            // 可動域は「その枠の性質」なのでズレていても伝える (盤面の一貫性).
+            // 完全固定は「その枠の性質」なのでズレていても伝える (盤面の一貫性).
             movability = byWd.movability ?? null;
           }
         }
       }
-      // BE が将来 visit response に直接 fixed_visit_id / is_pinned を expose した
+      // BE が将来 visit response に直接 fixed_visit_id を expose した
       // 場合のフォールバック (= 上書きできない PFV lookup より優先).
       const beFixedVisitId = (v as { fixed_visit_id?: string | null }).fixed_visit_id ?? null;
-      const beIsPinned = (v as { is_pinned?: boolean | null }).is_pinned ?? null;
       if (beFixedVisitId) fixedVisitId = beFixedVisitId;
-      if (beIsPinned !== null) isPinned = beIsPinned === true;
 
       const arr = m.get(cid) ?? [];
       arr.push({
@@ -1324,17 +1310,14 @@ export function CourseDayTablePanel({
         // Phase G-6: 同住所×同時刻ペア囲み用. 同 start_slot 内に同 key が複数あれば
         // CourseDayTable 側で紫枠装飾を付ける.
         same_address_group_id: sameAddressKeyByPatientId.get(v.patient_id) ?? null,
-        // Phase G-21 T4 reviewer C2: PFV lookup 結果 (= null なら 🔒 ボタンは disabled).
+        // PFV lookup 結果 (型とのズレ表示用).
         fixed_visit_id: fixedVisitId,
-        is_pinned: isPinned,
-        // 可動域 (2026-08-07): 'locked' は提案系・自動割当とも不可侵。'unknown' は非表示。
+        // 完全固定 (赤): 'locked' は曜日・時刻を固定。'unknown' は何も出さない。
         movability,
         // 型とのズレ (2026-08-08): ズレている場合のみ型の開始時刻が入る。
         master_start_time: masterStartTime,
         // Wave U-2: 「今週のみ」チップの根拠 (source='manual_week' でチップ表示).
         source: (v as { source?: string | null }).source ?? null,
-        // 週のピン (青ピン / 2026-08-09): source と独立のフラグ。
-        week_pinned: (v as { week_pinned?: boolean | null }).week_pinned ?? null,
         // R-2: キャンセル表示 ('cancelled' のとき grey + 打消し線 + バッジ).
         status: (v as { status?: string | null }).status ?? null,
         // 表示の保険 (§3-4): 非稼働患者の残骸バッジ / 連動取消の判定に使う。
@@ -1574,9 +1557,8 @@ export function CourseDayTablePanel({
         ? undefined
         : pfvByPatientWeekdaySlot.get(`${v.patient_id}:${wd}:${pfvSlot}`);
       const masterStartTime = pfvByWd ? (pfvByWd.start_time ?? '').slice(0, 5) || null : null;
-      // BE が将来 fixed_visit_id / is_pinned を直接返した場合のフォールバック
+      // BE が将来 fixed_visit_id を直接返した場合のフォールバック
       const beFixedVisitId = (v as { fixed_visit_id?: string | null }).fixed_visit_id ?? null;
-      const beIsPinned = (v as { is_pinned?: boolean | null }).is_pinned ?? null;
       out.push({
         id: v.id,
         patient_id: v.patient_id,
@@ -1588,14 +1570,12 @@ export function CourseDayTablePanel({
         patient_sex_restriction:
           normalizePatientSexRestriction(patient?.sex_restriction as string | null | undefined) ??
           null,
-        // Phase G-23: 週ビュー 🔒 toggle 用
         fixed_visit_id: beFixedVisitId ?? pfvHit?.id ?? null,
-        is_pinned: beIsPinned !== null ? beIsPinned === true : pfvHit?.is_pinned === true,
-        // 可動域 (2026-08-07): 週タイムラインでも「固 / 時 / 曜」を淡く出す。
+        // 完全固定 (赤): 週タイムラインでも movability==='locked' で出す。
         movability: pfvHit?.movability ?? pfvByWd?.movability ?? null,
         // 型とのズレ (2026-08-08): ズレている場合のみ型の開始時刻が入る。
         master_start_time: masterStartTime,
-        // 週のピン (青) の表示根拠。source と week_pinned の両方を運ぶ (2026-08-09)。
+        // 「今週のみ」チップの根拠 (source)。
         source: (v as { source?: string | null }).source ?? null,
         // 取消の判定に source と status の両方が要る (2026-09-09)。status を落とすと
         // 受け手 (WeekTimelineBoard) の classifyVisitDisplay が永久に 'normal' になる。
@@ -1605,7 +1585,6 @@ export function CourseDayTablePanel({
         // バッジの日付条件 (2026-09-10): 起点日 + 訪問日を週ビューまで運ぶ。
         patient_status_since: patientStatusSinceOfVisit(v),
         visit_date: v.visit_date ?? null,
-        week_pinned: (v as { week_pinned?: boolean | null }).week_pinned ?? null,
         // 週ビューの距離算出用 (コース合計 + 次までの距離).
         lat: (patient as { lat?: number | null } | undefined)?.lat ?? null,
         lng: (patient as { lng?: number | null } | undefined)?.lng ?? null,
@@ -1770,32 +1749,6 @@ export function CourseDayTablePanel({
   //   使えない)、patient_ids 配列を渡せる bulk 版フックを 1 患者で流用する。
   const bulkSyncWeekToFixedMut = useBulkSyncWeekToFixedMutation();
   // 同住所ペアの2名セット移動でも一括昇格できるよう patient_ids 配列を受ける。
-  // 週のピン (青ピン / PO 決定 2026-08-08)。
-  // 型とズレている訪問は赤ピン (型のピン) が刺せないため、今の位置で守る手段が
-  // これしか無い。解除してもその場では動かず、次の週生成で型の時刻が読み込まれる。
-  const toggleWeekPinMut = useToggleVisitWeekPin();
-  const handleToggleWeekPin = useCallback(
-    (visitId: string, nextPinned: boolean) => {
-      if (!canEdit) return;
-      toggleWeekPinMut.mutate(
-        { visitId, pinned: nextPinned },
-        {
-          onSuccess: () => {
-            toast.success(
-              nextPinned
-                ? '今週この時刻で固定しました（固定訪問スケジュールは変更していません）'
-                : '今週の固定を解除しました（次の週生成で固定訪問スケジュールの時刻に戻ります）',
-            );
-          },
-          onError: (e) => {
-            toast.error(`今週の固定を変更できませんでした: ${apiErrorMessage(e)}`);
-          },
-        },
-      );
-    },
-    [canEdit, toggleWeekPinMut],
-  );
-
   const promoteWeekToFixed = useCallback(
     (patientIds: string[], label: string) => {
       bulkSyncWeekToFixedMut.mutate(
@@ -2545,7 +2498,7 @@ export function CourseDayTablePanel({
         );
         const label = poolVisits.length >= 2 ? `${names.join('・')}（同住所2名）` : names[0]!;
         // 赤 (完全固定) は注意書きを見せたうえで人手操作を許す (PO 決定 2026-08-09)。
-        if (poolVisits.some((v) => v.is_pinned === true)) {
+        if (poolVisits.some((v) => v.movability === 'locked')) {
           if (
             !window.confirm(
               `⚠ これは完全固定です。\n${label} をプールに戻しますか？\n(固定枠は保持されます)`,
@@ -3170,13 +3123,8 @@ export function CourseDayTablePanel({
   // ─── Wave 36: visit × ボタン削除ハンドラ ────────────────────────
   const handleDeleteVisit = async (visitId: string, patientName: string) => {
     const targetVisit = timelineColumns.flatMap((c) => c.visits).find((x) => x.id === visitId);
-    // 青 (今週固定) は蓋 = 削除不可 (ボタン側でも防ぐが二重防御。BE も 422)。
-    if (targetVisit?.week_pinned === true) {
-      toast.warning('今週固定（青ピン）されています。解除してから削除してください');
-      return;
-    }
     // 赤 (完全固定) は注意書きを見せたうえで人手削除を許す (PO 決定 2026-08-09)。
-    const lockedNote = targetVisit?.is_pinned === true ? '\n⚠ これは完全固定です。' : '';
+    const lockedNote = targetVisit?.movability === 'locked' ? '\n⚠ これは完全固定です。' : '';
     if (
       !window.confirm(`${patientName} の訪問を削除しますか？${lockedNote}\n(固定枠は保持されます)`)
     )
@@ -3245,95 +3193,6 @@ export function CourseDayTablePanel({
     window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
   }, [handleOpenPoolPatientDetail]);
 
-  // ─── Phase G-21 T4 reviewer C2: 🔒 完全固定 toggle handler ────────────
-  // CourseDayTable / CourseWeekOverview / WeekdayScheduleCard から
-  // (pfvId, nextPinned, scope, patientId) で呼ばれる.
-  //
-  // Phase G-47: PinScopeMenu で「曜日のみ / 全曜日」が選択可能になったので、
-  //   scope に応じて単一 PATCH か bulk POST を振り分ける.
-  //     - scope='day'      → 当該 PFV のみ反転 (= 既存挙動と完全同等).
-  //     - scope='all-days' → 当該患者の全 PFV (= pfvByPatientId map から取得) を
-  //                           bulk POST. 既に target 状態の PFV は payload 除外.
-  //
-  //   反映先:
-  //     - React Query invalidate (patients / courses / visits) で全 UI 再 fetch.
-  //     - これにより 患者マスタ / 各曜日テーブル / 週ビュー / リスト表示 が同期する.
-  const handleTogglePin = useCallback(
-    (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => {
-      if (!canEdit) {
-        toast.warning('編集権限がありません');
-        return;
-      }
-      // 患者 ID の整合性確認 (= 渡された patientId が pfvByVisitKey と一致するか).
-      // 'day' scope は単一 PFV を更新するため pfvId からも逆引きする.
-      if (scope === 'day') {
-        if (!pfvId) {
-          toast.error('対象の固定枠が見つかりません');
-          return;
-        }
-        togglePfvPin.mutate(
-          { pfvId, isPinned: nextPinned, patientId },
-          {
-            onSuccess: () => {
-              toast.success(
-                nextPinned ? '完全固定にしました (システムは動かしません)' : '完全固定を外しました',
-              );
-            },
-            onError: (err) => {
-              const msg = err instanceof Error ? err.message : '不明なエラー';
-              toast.error(`完全固定の更新に失敗: ${msg}`);
-            },
-          },
-        );
-        return;
-      }
-
-      // ─ 'all-days' (全曜日 bulk) ─────────────────────────────────────────
-      // pfvByVisitKey から当該患者の全 PFV を抽出 (= 7 曜日 × 最大 2 slot まで).
-      // 同 pfv は (patient_id, weekday, slot, time) 軸で複数 key を持ち得るが、
-      // pfv.id でユニーク化することで重複 PATCH を防ぐ.
-      if (!patientId) {
-        toast.error('患者 ID が指定されていません');
-        return;
-      }
-      const seen = new Set<string>();
-      const allPfvs: PatientFixedVisitV2Read[] = [];
-      for (const pfv of pfvByVisitKey.values()) {
-        if (pfv.patient_id !== patientId) continue;
-        if (seen.has(pfv.id)) continue;
-        seen.add(pfv.id);
-        allPfvs.push(pfv);
-      }
-      if (allPfvs.length === 0) {
-        toast.error('対象患者の固定枠が見つかりません');
-        return;
-      }
-      // 既に target 状態の PFV は除外 (= 無駄な PATCH 抑止 + audit_log のノイズ削減).
-      const needUpdate = allPfvs.filter((p) => Boolean(p.is_pinned) !== nextPinned);
-      if (needUpdate.length === 0) {
-        toast.info(
-          nextPinned ? '既に全曜日 完全固定の状態です' : '既に全曜日 完全固定なしの状態です',
-        );
-        return;
-      }
-      const items = needUpdate.map((p) => ({ pfv_id: p.id, is_pinned: nextPinned }));
-      bulkPinPfvs.mutate(items, {
-        onSuccess: () => {
-          toast.success(
-            nextPinned
-              ? `全曜日 ${items.length} 件を完全固定にしました (システムは動かしません)`
-              : `全曜日 ${items.length} 件の完全固定を外しました`,
-          );
-        },
-        onError: (err) => {
-          const msg = err instanceof Error ? err.message : '不明なエラー';
-          toast.error(`全曜日の完全固定更新に失敗: ${msg}`);
-        },
-      });
-    },
-    [canEdit, pfvByVisitKey, togglePfvPin, bulkPinPfvs],
-  );
-
   // ─── Phase G-41 起源: 主要ボタン群を本 panel Row 1 に再収容 (現在は 週生成/新規患者登録/診断/最適化/週次ガイド) ───
   //   page 側 (Card 1) に置いた G-40 構成から戻し、 mutation/state/dialog を全部 panel 内で抱える.
   //   pending 中の `isProcessing` は二次操作 (固定枠戻 / 一斉未割当) の多重実行抑止にも利用する.
@@ -3377,10 +3236,11 @@ export function CourseDayTablePanel({
   );
   // P3-⑥: 週次ガイドダイアログ (案内のみ・実行ボタンなし).
   const [weeklyRitualGuideOpen, setWeeklyRitualGuideOpen] = useState(false);
-  // PO 2026-07-10: 既に生成済みの週へ「週を生成」を誤って再実行すると不都合
-  // (実施済み訪問がある週では 500 になる既知バグもある)。当週に訪問が実在する場合は
-  // 即実行せず確認ダイアログを挟む。訪問 0 件の週は従来どおり即実行 (挙動不変)。
+  // 青ピン廃止 (BP-3): 「週を生成」は空の週でだけ押せる。押したら型から作る件数を
+  // 確認ダイアログで見せる (件数は dry_run で取得)。
   const [generateWeekConfirmOpen, setGenerateWeekConfirmOpen] = useState(false);
+  const [generateToAdd, setGenerateToAdd] = useState<number | null>(null);
+  const generatePreviewMut = useGenerateWeekPreview();
   // 「週を作る」ダイアログ (固定訪問から生成 / 前の週をコピー・copy-week-design-2026-09-30.md)。
   const [makeWeekOpen, setMakeWeekOpen] = useState(false);
   const isProcessing = generateWeekMut.isPending || assignStaffOnlyMut.isPending;
@@ -3399,17 +3259,29 @@ export function CourseDayTablePanel({
     }
   };
 
+  // 予定が入っている週では生成できない (取消の記録は数えない)。BE も 409 で同じ理由を返す。
+  const generateBlockedReason = weekVisits.some((v) => v.status === 'planned')
+    ? '予定が入っている週では生成できません。先に『この週を空にする』を押してください'
+    : null;
+
   const handleGenerateWeek = () => {
     if (!canEdit) {
       toast.warning('編集権限がありません');
       return;
     }
-    // 既に訪問がある週は再生成の誤操作対策として確認ダイアログを出す。
-    if (weekVisits.length > 0) {
-      setGenerateWeekConfirmOpen(true);
+    if (generateBlockedReason) {
+      toast.warning(generateBlockedReason);
       return;
     }
-    void runGenerateWeek();
+    void (async () => {
+      try {
+        const res = await generatePreviewMut.mutateAsync({ isoYear, isoWeek, officeId });
+        setGenerateToAdd(res.to_add);
+        setGenerateWeekConfirmOpen(true);
+      } catch (err) {
+        toast.error(`週の生成の確認に失敗しました: ${formatErr(err)}`);
+      }
+    })();
   };
 
   const handleConfirmGenerateWeek = async () => {
@@ -4899,14 +4771,6 @@ export function CourseDayTablePanel({
       bail();
       return;
     }
-    const pinned = band.visits.filter((v) => v.week_pinned === true).length;
-    if (pinned > 0) {
-      toast.warning(
-        `青ピン（今週だけ固定）の予定が ${pinned}件あります。先に解除してから割り当ててください`,
-      );
-      bail();
-      return;
-    }
     if (band.visits.length === 0) {
       setSuggestCourse(null);
       toast.info('割り当てる予定がありません');
@@ -4997,8 +4861,6 @@ export function CourseDayTablePanel({
     visitIds: string[];
     /** ダイアログに出すコース名 (重複除去前)。 */
     labels: string[];
-    /** 動かす対象のうち青ピン (実行不可) の件数。 */
-    pinned: number;
     /** 2名体制ペアの両脚が当事者 2 人に載っていて対象外にした件数 (M4)。 */
     excludedPairs: number;
     /** その日のイベント件数 (入れ替えないことを注記する)。 */
@@ -5022,7 +4884,6 @@ export function CourseDayTablePanel({
       const visitIds: string[] = [];
       const labels: string[] = [];
       let excludedPairs = 0;
-      let pinned = 0;
       for (const v of mine) {
         const gid = (visitById.get(v.id) as { visit_group_id?: string | null } | undefined)
           ?.visit_group_id;
@@ -5041,15 +4902,12 @@ export function CourseDayTablePanel({
         }
         visitIds.push(v.id);
         labels.push(cockpitCourseLabel(v.course_template_id) ?? '臨時');
-        // 青ピンの判定は**実際に動かす対象**だけを見る (除外済みの訪問が
-        // 実行を止めてしまわないように)。
-        if (v.week_pinned === true) pinned += 1;
       }
       const dayIso = isoOfWeekday(day);
       const events = (staffEventsByStaff.get(staffId) ?? []).filter(
         (ev) => ev.date === dayIso && ev.cancelled_at == null,
       ).length;
-      return { visitIds, labels, pinned, excludedPairs, events };
+      return { visitIds, labels, excludedPairs, events };
     },
     [
       cockpitVisits,
@@ -5094,7 +4952,7 @@ export function CourseDayTablePanel({
     const events = a.events + b.events;
     if (events > 0) notes.push(`イベント ${events} 件は入れ替えません（訪問だけが対象です）`);
 
-    // 実行不可 (M5 当日以前 / H2 新人 / 青ピン)
+    // 実行不可 (M5 当日以前 / H2 新人)
     if (dateIso <= todayIsoJst)
       blockers.push('当日以前は入れ替えできません（実績が入っている可能性があります）');
     if (
@@ -5102,9 +4960,6 @@ export function CourseDayTablePanel({
       staffMap.get(toStaffId)?.is_trainee === true
     )
       blockers.push('新人は担当にできません（同行で割り当ててください）');
-    const pinned = a.pinned + b.pinned;
-    if (pinned > 0)
-      blockers.push(`青ピン（今週だけ固定）の訪問が ${pinned} 件あります。先に解除してください`);
 
     return {
       ...staffSwap,
@@ -5247,7 +5102,6 @@ export function CourseDayTablePanel({
             status: visit.status ?? 'planned',
             source: visit.source ?? 'auto',
             staff_id: visit.primary_staff_id ?? null,
-            week_pinned: visit.week_pinned === true,
             // ●未送信の正は同期バー (unsent-summary)。まだ数えていない間は
             // null = 「同期バーで確認」と出す (✓同期済 と言い切らない)。
             unsent: isVisitUnsent(visit.id),
@@ -5281,7 +5135,6 @@ export function CourseDayTablePanel({
                     : null,
                   course_id: null,
                   course_label: visit.course_label ?? null,
-                  week_pinned: visit.week_pinned === true,
                   status: visit.status ?? 'planned',
                   source: visit.source ?? 'auto',
                 },
@@ -5338,7 +5191,7 @@ export function CourseDayTablePanel({
 
   /**
    * (b)「その週を変える」の動かす元候補 = その患者のその週の訪問。
-   * 絞り込み（planned・青ピン・当日以前）はモーダル側が `isMovableSourceVisit` で行う。
+   * 絞り込み（planned・当日以前）はモーダル側が `isMovableSourceVisit` で行う。
    */
   const loadPatientWeekVisits = useCallback(
     async (
@@ -5375,7 +5228,6 @@ export function CourseDayTablePanel({
           staff_name: v.primary_staff_id ? (staffNameById.get(v.primary_staff_id) ?? null) : null,
           course_id: courseId,
           course_label: tplId ? cockpitCourseLabel(tplId) : null,
-          week_pinned: v.week_pinned === true,
           status: v.status ?? 'planned',
           source: v.source ?? 'auto',
         };
@@ -5653,15 +5505,14 @@ export function CourseDayTablePanel({
           duration_min: durationMin,
           // Phase G-21 T4 reviewer C2: list view にも pin 状態を流し込む.
           fixed_visit_id: cv.fixed_visit_id ?? null,
-          is_pinned: cv.is_pinned === true,
-          // 型とのズレ (2026-08-08): 赤トグルが押せない理由を正しく出すのに必要。
+          movability: cv.movability ?? null,
+          // 型とのズレ (2026-08-08): 型ズレ表示に必要。
           master_start_time: cv.master_start_time ?? null,
           // T-1L: タイムライン兄弟リスト用の患者性別 (行頭ドット・左色帯).
           patient_sex: (patient?.sex as string | null | undefined) ?? null,
           // G2/G3: 日リストの × (訪問削除) と「今週のみ」チップ (固定昇格) の根拠.
           visit_id: cv.id,
           source: cv.source ?? null,
-          week_pinned: cv.week_pinned ?? null,
           // T-6撤去: 旧テーブルの ①/② バッジと「相方: ...」注記を日リストへ移設.
           group_slot_label: cv.group_slot_label,
           partner_location: cv.partner_location ?? null,
@@ -6188,20 +6039,14 @@ export function CourseDayTablePanel({
                     data-testid="course-day-button-divider"
                   />
 
-                  {/* 固定枠戻 + 全件保存 (= データ書き戻し系). */}
-                  <ResetToFixedButton
-                    isoYear={isoYear}
-                    isoWeek={isoWeek}
-                    officeId={officeId}
-                    disabled={!canEdit || isProcessing}
-                  />
+                  {/* 全件保存 (= データ書き戻し系). */}
                   <BulkFixToPatternButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
                 </div>
               </div>
 
               {/* Row 2 (中段): 左=戻る/進む (Wave U-3・PO指示 2026-08-21: 空いていた
-              この行へ移設し、タブ行を 2 行に収める) / 右=青ピン一括 (PO 決定 2026-08-09)。
-              赤の一括 (全件ピン留め/解除) は統合により廃止 — 完全固定は患者マスタの
+              この行へ移設し、タブ行を 2 行に収める) / 右=「この週を空にする」。
+              完全固定 (赤) の付け外しは盤面では行わない — 患者マスタの
               固定訪問スケジュールで設定する (週全体 / 曜日ごと)。 */}
               <div
                 className="mt-2 flex flex-wrap items-center justify-between gap-1.5"
@@ -6213,9 +6058,7 @@ export function CourseDayTablePanel({
                 (data-testid の重複を避ける)。 */}
                 {headerCollapsed ? <span /> : undoRedoButtons}
                 <div className="flex flex-wrap items-center gap-1.5">
-                  {/* 何に対する一括かをグループ見出しで明示する (PO 指摘 2026-08-09)。 */}
-                  <span className="text-[11px] font-semibold text-text-muted">今週の配置:</span>
-                  <BulkWeekPinAllButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
+                  <ClearWeekButton canEdit={canEdit} isoYear={isoYear} isoWeek={isoWeek} />
                 </div>
               </div>
             </div>
@@ -6664,7 +6507,7 @@ export function CourseDayTablePanel({
                   {/* Group γ: 自動スタッフ割当 + リセット.
                       2026-07: 「自動スタッフ割付」を「自動スタッフ割当」に改称し
                       Row 1 から一斉スタッフ未割当の左隣へ移動 (割当⇄リセットの対操作を隣接).
-                      Wave U-3 の 戻る/進むは Row 2 (青ピン一括の行) へ移設
+                      Wave U-3 の 戻る/進むは Row 2 (週の操作の行) へ移設
                       (PO指示 2026-08-21: 空き行の活用でタブ行を 2 行に収める)。 */}
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Button
@@ -7151,7 +6994,6 @@ export function CourseDayTablePanel({
                     staffMap={staffMap}
                     sameAddressKeyByPatientId={sameAddressKeyByPatientId}
                     onPatientClick={handleOpenPatientDetail}
-                    onTogglePin={canEdit ? handleTogglePin : undefined}
                     staffCountFor={staffCountFor}
                     courseCodesMax={courseCodesMax}
                     pfvCountFor={pfvCountFor}
@@ -7255,12 +7097,6 @@ export function CourseDayTablePanel({
                           ? (patientId, patientName) => promoteWeekToFixed([patientId], patientName)
                           : undefined
                       }
-                      // 週のピン (青ピン): 型とズレた訪問を今週この位置で固定する。
-                      onToggleWeekPin={
-                        canEdit && !accompaniment.active ? handleToggleWeekPin : undefined
-                      }
-                      // 型のピン (赤): カード右下クラスタから毎週の固定を操作 (PO 決定 2026-08-08)。
-                      onTogglePin={canEdit && !accompaniment.active ? handleTogglePin : undefined}
                       accompaniment={accompaniment.binding}
                       accompanimentWeekday={activeWeekday}
                     />
@@ -7273,9 +7109,6 @@ export function CourseDayTablePanel({
                       courses={weekdayListCourses}
                       staffFrames={staffEventFramesByWeekday.get(activeWeekday) ?? []}
                       onPatientClick={handleOpenPatientDetail}
-                      onTogglePin={canEdit ? handleTogglePin : undefined}
-                      // 週のピン (青): 赤トグルの右隣に並ぶ (PO 決定 2026-08-08)。
-                      onToggleWeekPin={canEdit ? handleToggleWeekPin : undefined}
                       // G2: 行末の × (訪問削除)。確認ダイアログは既存ハンドラが持つ。
                       onDeleteVisit={
                         canEdit
@@ -7721,7 +7554,7 @@ export function CourseDayTablePanel({
                   durationMin: tlMoveState.durationMin,
                   courseChanged: tlMoveState.toCol.template.id !== tlMoveState.fromCol.template.id,
                   // 完全固定 (赤) を含む移動は注意書き付きで許可 (PO 決定 2026-08-09)。
-                  lockedNotice: tlMoveState.visits.some((v) => v.is_pinned === true),
+                  lockedNotice: tlMoveState.visits.some((v) => v.movability === 'locked'),
                 }
               : null
           }
@@ -7890,6 +7723,7 @@ export function CourseDayTablePanel({
           targetWeekStart={weekStartStr}
           isPastWeek={isPastWeekForCopy}
           onChooseFixed={handleGenerateWeek}
+          fixedDisabledReason={generateBlockedReason}
           onCopied={handleCopied}
         />
 
@@ -7905,11 +7739,10 @@ export function CourseDayTablePanel({
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 <Rakusuke pose="think" className="h-10 shrink-0" />
-                この週は既に生成されています。再実行しますか？
+                この週を型から作りますか？
               </DialogTitle>
-              <DialogDescription>
-                この週には既に {weekVisits.length}{' '}
-                件の訪問があります。週の生成をやり直すと、自動生成された未実施の訪問が作り直されます（実施済み・手動作成分は保持されます）。予定の組み直しが目的なら、通常は「固定枠に戻す」を使ってください。
+              <DialogDescription data-testid="generate-week-confirm-text">
+                型から {generateToAdd ?? 0} 件を作ります
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
@@ -7933,7 +7766,7 @@ export function CourseDayTablePanel({
                 ) : (
                   <RefreshCw className="mr-1 h-4 w-4" aria-hidden />
                 )}
-                再実行する
+                作成する
               </Button>
             </DialogFooter>
           </DialogContent>

@@ -759,6 +759,17 @@ class SmartInboundPreviewRequest(BaseModel):
     week_start: date = Field(alias="weekStart")
 
 
+class RakusukeAdjustedReplacedRead(BaseModel):
+    """取込で置き換わる「らく助で調整した訪問」1 件 (青ピン廃止 BP-6・読み取りだけ)."""
+
+    model_config = ConfigDict(extra="forbid")
+    visit_id: UUID
+    date: date
+    start_time: str = Field(description="HH:MM")
+    patient_label: str
+    change: str = Field(description="どう変わるか (利用者向け日本語)")
+
+
 class SmartInboundPreviewRead(BaseModel):
     """統合プレビュー: 打刻あり日=差分 (🔒実績保護)・なし日=置換、をシステムが自動判別。"""
 
@@ -772,6 +783,9 @@ class SmartInboundPreviewRead(BaseModel):
     sheet_id: UUID | None = Field(default=None, alias="sheetId")
     diff_summary: dict[str, int] = Field(default_factory=dict, alias="diffSummary")
     replace: ReplaceInboundResult | None = None
+    # 置換で上書きされる「らく助で調整した訪問」(source が manual_week / manual)。
+    # 0 件なら画面は何も出さない。キーは snake_case のまま返す。
+    rakusuke_adjusted_replaced: list[RakusukeAdjustedReplacedRead] = Field(default_factory=list)
 
 
 class SmartInboundPreviewStatusRead(BaseModel):

@@ -7,6 +7,7 @@
  * システムが日単位で自動判別する (打刻あり日=🔒差分・なし日=置換)。
  * イベント (個別業務) も同じボタンに相乗り。状態・ハンドラは useInbound が持つ。
  */
+import { useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { apiErrorMessage } from '@/lib/api/errorMessage';
@@ -649,6 +650,10 @@ function SmartPlanPanel({ plan }: { plan: SmartInboundPreview }) {
         </div>
       )}
 
+      {/* BP-6: らく助で調整した訪問がカイポケの内容に合わせて変わる件数。
+          落ち着いた 1 行 + 押したときだけ一覧。0 件なら何も出さない。 */}
+      <AdjustedReplacedLine items={plan.rakusukeAdjustedReplaced ?? []} />
+
       {/* ⚠新人の単独訪問 (取り込むが新人フラグ見直しを促す) */}
       {plan.replace && plan.replace.traineeSolo.length > 0 && (
         <Alert data-testid="trainee-solo-warning">
@@ -714,6 +719,44 @@ function SmartPlanPanel({ plan }: { plan: SmartInboundPreview }) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** らく助で調整した訪問のうち、カイポケの内容に合わせて変わるもの (BP-6)。 */
+function AdjustedReplacedLine({
+  items,
+}: {
+  items: SmartInboundPreview['rakusukeAdjustedReplaced'];
+}) {
+  const [open, setOpen] = useState(false);
+  if (items.length === 0) return null;
+  return (
+    <div className="text-xs text-text-secondary" data-testid="adjusted-replaced">
+      <p>
+        らく助で調整した訪問のうち {items.length} 件が、カイポケの内容に合わせて変わります{' '}
+        <button
+          type="button"
+          className="underline underline-offset-2"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+          data-testid="adjusted-replaced-toggle"
+        >
+          {open ? '▾ 閉じる' : '▸ 見る'}
+        </button>
+      </p>
+      {open && (
+        <div className="mt-1 space-y-1" data-testid="adjusted-replaced-list">
+          <ul className="space-y-0.5">
+            {items.map((it, i) => (
+              <li key={`${it.visitId}-${i}`}>
+                {it.date} {it.startTime} {it.patientLabel} — {it.change}
+              </li>
+            ))}
+          </ul>
+          <p className="text-[11px] text-text-muted">「取り込み前に戻す」で戻せます。</p>
         </div>
       )}
     </div>

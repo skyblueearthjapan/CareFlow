@@ -1375,8 +1375,8 @@ describe('W-12d: 詰まり解消相談 (unblock)', () => {
 
     const summary = screen.getByTestId('unblock-unmovable-summary');
     expect(summary).toBeInTheDocument();
-    expect(summary).toHaveTextContent('ピン留め 2件');
-    expect(summary).toHaveTextContent('固定（可動域） 1件');
+    // pinned と locked は同じ「完全固定」として合算 (2 + 1)。
+    expect(summary).toHaveTextContent('完全固定 3件');
     expect(summary).toHaveTextContent('同住所ペア 1件');
     expect(summary).toHaveTextContent('患者確認が必要 3件');
     // 0 件のキー (2名体制・見送り済み) は出さない。

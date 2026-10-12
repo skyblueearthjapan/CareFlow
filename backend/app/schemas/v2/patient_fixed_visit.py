@@ -17,9 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 PatientFixedVisitMode = Literal["normal", "special"]
 
-# P2-A: 可動域フラグ = 提案の可否 (改善提案 MVP).
-# unknown(既定・保守的) / time_flexible(同曜日内の時刻変更可) /
-# day_flexible(曜日も変更可) / locked(完全固定).
+# 赤ピン整理 (2026-10-12): 意味を持つ値は locked(赤=曜日と時刻を変えない) /
+# unknown(赤でない) の 2 値だけ. time_flexible / day_flexible は旧 FE が送っても
+# 受け取れるよう型には残すが、下の Base の validator が unknown に寄せて捨てる.
 PatientFixedVisitMovability = Literal["unknown", "time_flexible", "day_flexible", "locked"]
 
 
@@ -82,6 +82,18 @@ class PatientFixedVisitV2Base(BaseModel):
             "未指定は 'unknown' で保存 (従来挙動)."
         ),
     )
+
+    @model_validator(mode="after")
+    def _normalize_red_pin(self) -> PatientFixedVisitV2Base:
+        """赤ピンを 2 値 + 厳密ミラーにそろえる (旧 FE の値は受けて正規化する).
+
+        赤 = ``movability == 'locked'`` または ``is_pinned`` が真. それ以外
+        (unknown / time_flexible / day_flexible) は赤でない = 'unknown'.
+        """
+        red = self.movability == "locked" or self.is_pinned
+        self.movability = "locked" if red else "unknown"
+        self.is_pinned = red
+        return self
 
 
 class PatientFixedVisitV2Read(PatientFixedVisitV2Base):
@@ -243,29 +255,3 @@ class PfvCourseLoadResponse(BaseModel):
     cells: list[PfvCourseLoadCell] = Field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# Phase G-21 T2: is_pinned 単独切替用 schema
-# ---------------------------------------------------------------------------
-
-
-class PatientFixedVisitPinUpdate(BaseModel):
-    """PATCH /patients/.../fixed-visits/{pfv_id}/pin の body.
-
-    既存 PFV 行の ``is_pinned`` のみ単独切替する用途.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    is_pinned: bool = Field(description="Phase G-21: true = 自動算出で絶対動かさない完全固定.")
-
-
-class PatientFixedVisitPinBulkItem(BaseModel):
-    """POST /patients/fixed-visits/pin/bulk の items 1 件.
-
-    複数 PFV の is_pinned を一括切替する用途.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    pfv_id: UUID = Field(description="対象 patient_fixed_visits.id")
-    is_pinned: bool = Field(description="Phase G-21: true = 自動算出で絶対動かさない完全固定.")

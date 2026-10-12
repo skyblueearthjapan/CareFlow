@@ -5,6 +5,7 @@ import { useEffect } from 'react';
 import { Sidebar } from '@/components/Sidebar';
 import { Header } from '@/components/Header';
 import { useUIStore } from '@/lib/stores/ui';
+import { AgentWidget } from '@/components/agent/AgentWidget';
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -58,6 +59,8 @@ export function AppShell({ children }: AppShellProps) {
           <main className="flex-1 overflow-y-auto bg-bg-app p-4 2xl:p-6">{children}</main>
         </div>
       </div>
+      {/* らく助エージェントの小窓 (管理者 + 試験の許可 + 機能の旗 rakusuke_agent が揃った時だけ描く) */}
+      <AgentWidget />
     </div>
   );
 }

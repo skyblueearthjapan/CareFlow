@@ -84,17 +84,10 @@ describe('isDeletedByReset', () => {
     expect(isDeletedByReset(visit({ source: 'auto', status: 'in_progress' }))).toBe(false);
     expect(isDeletedByReset(visit({ source: 'auto', status: 'confirmed' }))).toBe(false);
   });
-
-  it('青ピン (week_pinned) は source/status に関わらず消えない', () => {
-    expect(isDeletedByReset(visit({ source: 'auto', status: 'planned', week_pinned: true }))).toBe(
-      false,
-    );
-  });
 });
 
 describe('suppressesRegen', () => {
-  it('week_pinned / manual_week / import は同日の型スロット再生成を止める', () => {
-    expect(suppressesRegen(visit({ week_pinned: true }))).toBe(true);
+  it('manual_week / import は同日の型スロット再生成を止める', () => {
     expect(suppressesRegen(visit({ source: 'manual_week' }))).toBe(true);
     expect(suppressesRegen(visit({ source: 'import' }))).toBe(true);
   });

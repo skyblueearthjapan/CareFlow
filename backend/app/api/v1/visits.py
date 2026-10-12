@@ -430,11 +430,7 @@ def _serialize_visit(
         "type": visit.type,
         "status": visit.status,
         "source": visit.source,
-        # 週のピン (青ピン / 2026-08-09)。手書き dict のため列追加時はここにも
-        # 足すこと — 漏れると VisitRead の default False で上書きされ、DB が true
-        # でも API が false を返す (実際に起きた事故)。
-        "week_pinned": bool(getattr(visit, "week_pinned", False)),
-        # 予定外訪問 (adhoc-checkin 生成 / 設計 §3)。week_pinned と同じ罠の位置:
+        # 予定外訪問 (adhoc-checkin 生成 / 設計 §3)。手書き dict の罠の位置:
         # 手書き dict なのでここに足さないと VisitRead の default False で潰れる。
         "is_unplanned": visit.is_unplanned,
         # 訪問単位のサービス内容上書き (migration 0078)。week_pinned と同じ罠の
@@ -971,21 +967,6 @@ async def update_visit(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
     changes = payload.model_dump(exclude_unset=True)
-    # 青ピン (week_pinned) は蓋 (PO 決定 2026-08-09): 配置 (日付・時刻) の変更は
-    # 解除するまで人手でも不可。担当・状態・メモ等の非配置フィールドは許可する
-    # (青ピンが守るのは「今週この位置」であって業務メタ情報ではない)。
-    # week_pinned 自体の変更 (= 解除操作) はもちろん許可。
-    _placement_fields = {"visit_date", "start_time", "end_time"}
-    if (
-        bool(getattr(visit, "week_pinned", False))
-        and changes.get("week_pinned") is not False
-        and _placement_fields & set(changes.keys())
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="今週固定（青ピン）されています。解除してから時刻・日付を変更してください",
-        )
-
     # 入口ガード (Phase 2・設計 §7-3(d)) その 1: **患者の付け替え**は「その患者を
     # 予定に入れる」操作なので、移す先が非稼働なら 422。同一患者への PATCH
     # (担当変更・メモ等) は非稼働でも通す — 残骸の手当てを塞がないため。
@@ -1145,14 +1126,6 @@ async def delete_visit(
             )
         ).all()
         partner_visits = list(partner_rows)
-
-    # 青ピン (week_pinned) は蓋 (PO 決定 2026-08-09): 解除するまで人手でも
-    # 削除できない。「今週の盤面を凍らせる」ための明示的な 2 段操作にする。
-    if bool(getattr(visit, "week_pinned", False)):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="今週固定（青ピン）されています。解除してから削除してください",
-        )
 
     # PO 決定 (2026-08-09): 完全固定 (旧 pinned) の 422 ブロックは撤廃。
     # 完全固定の意味は「エンジンが動かさない」であり、人手の削除は常に正当。

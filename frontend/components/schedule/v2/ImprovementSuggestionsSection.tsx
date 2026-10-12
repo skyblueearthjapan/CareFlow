@@ -84,7 +84,7 @@ function fingerprint(s: ImprovementSuggestion): string {
 }
 
 /** filtered_summary → 「完全固定N件・閾値未満N件…」の内訳テキスト (0 は省略).
-    統合 (2026-08-09): 旧「ピン留め」と「可動域が完全固定」は同一概念のため合算表示。 */
+    旧「ピン留め」と「完全固定」は同一概念 (曜日と時刻を固定) のため合算表示。 */
 function summarizeFiltered(fs: ImprovementFilteredSummary): string[] {
   const parts: Array<[number, string]> = [
     [fs.pinned + fs.locked, `完全固定${fs.pinned + fs.locked}件`],

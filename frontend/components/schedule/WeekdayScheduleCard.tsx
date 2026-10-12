@@ -29,11 +29,11 @@ import { cn } from '@/lib/utils';
 import { formatDuration } from '@/lib/format/duration';
 import { buildSameAddressKey, parseHM, type FreeGap } from '@/lib/scheduling/freeGaps';
 import { genderPalette } from '@/lib/scheduling/timeline';
-import { CornerPushPin, PushPin, PushPinOff } from '@/components/ui/push-pin';
+import { CornerPushPin } from '@/components/ui/push-pin';
 import { VisitArrow } from './v2/VisitArrow';
 import { trimSeconds } from './v2/_autoScheduleUtils';
 import type { PartnerLocation } from './v2/courseGrid';
-import { PinScopeMenu, type PinScope } from './v2/PinScopeMenu';
+import type { Movability } from '@/lib/schemas/v2/patient_fixed_visit';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Types — 共通 visit / course データ型 (V2VisitForUI と互換)
@@ -80,18 +80,16 @@ export interface VisitListItem {
   warnings?: Array<{ type?: string | null; message?: string | null } | null> | null;
   /**
    * Phase G-21: 当該 visit のソース PFV id.
-   * 指定があれば 🔒 toggle が enable になる. 未指定 (weekly_pattern 由来) は disabled.
+   * 未指定 (weekly_pattern 由来) は null 扱い.
    */
   fixed_visit_id?: string | null;
-  /** Phase G-21: PFV.is_pinned のミラー値. true で 🔒 active 表示. */
-  is_pinned?: boolean | null;
+  /** PFV.movability のミラー値. 'locked' (完全固定) のとき赤い画鋲を表示する. */
+  movability?: Movability | null;
   /**
    * 2026-08-08: 型 (固定訪問スケジュール) とズレているときの型の開始時刻 'HH:MM'.
    * 一致 / 固定枠なし は null. ピン留めできない理由の説明に使う.
    */
   master_start_time?: string | null;
-  /** 週のピン (青ピン / 2026-08-09)。source と独立のフラグ。 */
-  week_pinned?: boolean | null;
   /**
    * T-1L: タイムライン兄弟リスト (TimelineDayList) 用の患者性別 (patient.sex:
    * male/female/unknown)。行頭の性別ドット・左色帯に使う。既存 WeekdayScheduleCard は
@@ -192,13 +190,6 @@ export interface WeekdayScheduleCardProps {
    * false (default): フル表示 (Before/After と同等).
    */
   weekView?: boolean;
-  /**
-   * Phase G-21: 🔒 完全固定 toggle ハンドラ.
-   * 指定時のみ各 visit 行に 🔒 / 🔓 ボタンが描画される.
-   * - visit.fixed_visit_id が無い場合は disabled (tooltip で説明).
-   * - canEdit による表示制御は呼び出し側 (ハンドラ未指定で完全に非表示) で行う.
-   */
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   /**
    * 距離 (distance_to_next_km) の意味.
    * - 'to_next' (default): その値は「次の患者までの距離」。最後尾は空欄、同住所ペアは
@@ -309,7 +300,6 @@ export function WeekdayScheduleCard({
   testIdPrefix,
   onPatientClick,
   weekView = false,
-  onTogglePin,
   distanceMode = 'to_next',
 }: WeekdayScheduleCardProps) {
   const headerCls =
@@ -339,7 +329,6 @@ export function WeekdayScheduleCard({
               testIdPrefix={testIdPrefix}
               onPatientClick={onPatientClick}
               weekView={weekView}
-              onTogglePin={onTogglePin}
               distanceMode={distanceMode}
             />
           ))}
@@ -355,7 +344,6 @@ interface CourseRowProps {
   testIdPrefix?: string;
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   distanceMode: 'to_next' | 'to_reach';
 }
 
@@ -365,7 +353,6 @@ function CourseRow({
   testIdPrefix,
   onPatientClick,
   weekView,
-  onTogglePin,
   distanceMode,
 }: CourseRowProps) {
   // 「最大 N 件」制限は visit 単位で先に slice して、その後に cluster 化する.
@@ -434,7 +421,6 @@ function CourseRow({
                   testIdPrefix={testIdPrefix}
                   onPatientClick={onPatientClick}
                   weekView={weekView}
-                  onTogglePin={onTogglePin}
                 />
               );
             }
@@ -452,7 +438,6 @@ function CourseRow({
                 testIdPrefix={testIdPrefix}
                 onPatientClick={onPatientClick}
                 weekView={weekView}
-                onTogglePin={onTogglePin}
                 distanceMode={distanceMode}
               />
             );
@@ -500,7 +485,6 @@ interface PairClusterProps {
   testIdPrefix?: string;
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
   distanceMode: 'to_next' | 'to_reach';
 }
 
@@ -510,7 +494,6 @@ function PairCluster({
   testIdPrefix,
   onPatientClick,
   weekView,
-  onTogglePin,
   distanceMode,
 }: PairClusterProps) {
   const { visits, groupId } = cluster;
@@ -541,7 +524,6 @@ function PairCluster({
               testIdPrefix={testIdPrefix}
               onPatientClick={onPatientClick}
               weekView={weekView}
-              onTogglePin={onTogglePin}
             />
           );
         })}
@@ -557,7 +539,6 @@ interface PairMemberRowProps {
   testIdPrefix?: string;
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
 /**
@@ -570,11 +551,10 @@ function PairMemberRow({
   testIdPrefix,
   onPatientClick,
   weekView,
-  onTogglePin,
 }: PairMemberRowProps) {
   // CareFlow #101 FE: warning ありの visit は赤枠ハイライト + tooltip 表示.
   const warningInfo = collectVisitWarningInfo(visit);
-  const isPinned = visit.is_pinned === true;
+  const isLocked = visit.movability === 'locked';
   // T-4: 日リストと同じカード視覚言語 (性別ウォッシュ地 + 性別左帯 + 角丸)。
   // 警告赤 / ピン琥珀の背景はウォッシュより優先 (inline bg は通常行のみ)。
   const pal = genderPalette(visit.patient_sex);
@@ -584,23 +564,23 @@ function PairMemberRow({
         'relative flex flex-wrap items-center gap-1 rounded-md border border-l-[3px] px-1 py-0.5 text-[10px]',
         warningInfo.hasWarning ? 'bg-red-50/40' : '',
         // Phase G-21: 完全固定 visit は薄い黄色背景.
-        isPinned && !warningInfo.hasWarning ? 'bg-yellow-50/60' : '',
+        isLocked && !warningInfo.hasWarning ? 'bg-yellow-50/60' : '',
       )}
       style={{
         borderColor: warningInfo.hasWarning ? '#ef4444' : pal.ln,
         borderLeftColor: pal.bar,
-        ...(warningInfo.hasWarning || isPinned ? {} : { background: pal.bg }),
+        ...(warningInfo.hasWarning || isLocked ? {} : { background: pal.bg }),
       }}
       data-testid={testIdPrefix ? `${testIdPrefix}-visit-${visit.key}` : undefined}
       data-same-address-group-id={visit.same_address_group_id ?? undefined}
       data-pair-member="true"
       data-visit-warning={warningInfo.hasWarning ? 'true' : undefined}
-      data-pinned={isPinned ? 'true' : undefined}
+      data-pinned={isLocked ? 'true' : undefined}
       title={warningInfo.tooltip ?? undefined}
       aria-label={warningInfo.tooltip ?? undefined}
     >
       {/* ピン留め: 行右上に打ち込んだ画鋲 (📍住所と誤認しない・PO要望 2026-07-08)。 */}
-      {isPinned ? <CornerPushPin className="h-3.5 w-3.5" /> : null}
+      {isLocked ? <CornerPushPin className="h-3.5 w-3.5" /> : null}
       <VisitRowContent
         visit={visit}
         onPatientClick={onPatientClick}
@@ -610,7 +590,6 @@ function PairMemberRow({
         // 用として維持しつつ、住所詳細は各カードに復活させる.
         // ペア内距離 (= 同住所なので 0km) は親側 (PairCluster) が決定する.
         suppressDistance={suppressDistance}
-        onTogglePin={onTogglePin}
       />
     </li>
   );
@@ -625,13 +604,12 @@ interface VisitRowProps {
   testIdPrefix?: string;
   onPatientClick?: (patientId: string) => void;
   weekView: boolean;
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
-function VisitRow({ visit, testIdPrefix, onPatientClick, weekView, onTogglePin }: VisitRowProps) {
+function VisitRow({ visit, testIdPrefix, onPatientClick, weekView }: VisitRowProps) {
   // CareFlow #101 FE: warning ありの visit は赤枠ハイライト + tooltip 表示.
   const warningInfo = collectVisitWarningInfo(visit);
-  const isPinned = visit.is_pinned === true;
+  const isLocked = visit.movability === 'locked';
   // T-4: 日リストと同じカード視覚言語 (性別ウォッシュ地 + 性別左帯 + 角丸)。
   // 警告赤 / ピン琥珀の背景はウォッシュより優先 (inline bg は通常行のみ)。
   const pal = genderPalette(visit.patient_sex);
@@ -641,28 +619,23 @@ function VisitRow({ visit, testIdPrefix, onPatientClick, weekView, onTogglePin }
         'relative flex flex-wrap items-center gap-1 rounded-md border border-l-[3px] px-1 py-0.5 text-[10px]',
         warningInfo.hasWarning ? 'bg-red-50/40' : '',
         // Phase G-21: 完全固定 visit は薄い黄色背景.
-        isPinned && !warningInfo.hasWarning ? 'bg-yellow-50/60' : '',
+        isLocked && !warningInfo.hasWarning ? 'bg-yellow-50/60' : '',
       )}
       style={{
         borderColor: warningInfo.hasWarning ? '#ef4444' : pal.ln,
         borderLeftColor: pal.bar,
-        ...(warningInfo.hasWarning || isPinned ? {} : { background: pal.bg }),
+        ...(warningInfo.hasWarning || isLocked ? {} : { background: pal.bg }),
       }}
       data-testid={testIdPrefix ? `${testIdPrefix}-visit-${visit.key}` : undefined}
       data-same-address-group-id={visit.same_address_group_id ?? undefined}
       data-visit-warning={warningInfo.hasWarning ? 'true' : undefined}
-      data-pinned={isPinned ? 'true' : undefined}
+      data-pinned={isLocked ? 'true' : undefined}
       title={warningInfo.tooltip ?? undefined}
       aria-label={warningInfo.tooltip ?? undefined}
     >
       {/* ピン留め: 行右上に打ち込んだ画鋲 (📍住所と誤認しない・PO要望 2026-07-08)。 */}
-      {isPinned ? <CornerPushPin className="h-3.5 w-3.5" /> : null}
-      <VisitRowContent
-        visit={visit}
-        onPatientClick={onPatientClick}
-        weekView={weekView}
-        onTogglePin={onTogglePin}
-      />
+      {isLocked ? <CornerPushPin className="h-3.5 w-3.5" /> : null}
+      <VisitRowContent visit={visit} onPatientClick={onPatientClick} weekView={weekView} />
     </li>
   );
 }
@@ -706,8 +679,6 @@ interface VisitRowContentProps {
   weekView: boolean;
   /** ペア内距離 (0km) を省略する場合 true. */
   suppressDistance?: boolean;
-  /** Phase G-21: 🔒 toggle ハンドラ. 指定時のみボタンが描画される. */
-  onTogglePin?: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
 }
 
 function VisitRowContent({
@@ -715,7 +686,6 @@ function VisitRowContent({
   onPatientClick,
   weekView,
   suppressDistance,
-  onTogglePin,
 }: VisitRowContentProps) {
   const timeCondition = weekView
     ? null
@@ -799,8 +769,6 @@ function VisitRowContent({
       {showSexRestriction && visit.sex_restriction === 'male_only' ? (
         <span className="text-[9px] text-blue-600">👨 男性のみ</span>
       ) : null}
-      {/* Phase G-21: 🔒 完全固定 toggle. 時間条件 / 性別制限の直後に配置 (距離より前). */}
-      {onTogglePin ? <PinToggleButton visit={visit} onTogglePin={onTogglePin} /> : null}
       {/* 次の patient までの距離 (= VisitArrow). 行末右端に寄せる. */}
       {showDistance ? (
         <span className="ml-auto">
@@ -808,88 +776,6 @@ function VisitRowContent({
         </span>
       ) : null}
     </>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// PinToggleButton — Phase G-21
-// ─────────────────────────────────────────────────────────────────────────
-
-interface PinToggleButtonProps {
-  visit: VisitListItem;
-  onTogglePin: (pfvId: string, nextPinned: boolean, scope: PinScope, patientId: string) => void;
-}
-
-/**
- * ピン留め toggle ボタン.
- *
- * - visit.fixed_visit_id が無い (= weekly_pattern 由来) → disabled + tooltip 「先に固定枠登録が必要」
- * - visit.is_pinned=true                              → PushPin (赤い丸頭)
- * - visit.is_pinned=false                             → PushPinOff (灰色アウトライン)
- *
- * 全 UI 共通の PushPin/PushPinOff アイコン (@/components/ui/push-pin) を使用し、
- * スケジュール表・週ビュー・リスト表示で「ピン留め」の見た目を統一する.
- */
-export function PinToggleButton({ visit, onTogglePin }: PinToggleButtonProps) {
-  const isPinned = visit.is_pinned === true;
-  const pfvId = visit.fixed_visit_id ?? null;
-  // Phase G-47: bulk (全曜日) スコープには patient_id が必須.
-  // visit.patient_id が無い (= weekly_pattern fallback 等の例外) ときは disabled.
-  const patientId = visit.patient_id ?? null;
-  const disabled = !pfvId || !patientId;
-  // 論点 1 (PO 決定 2026-08-08): 無効の理由を正しく伝える。
-  // 固定枠が在るのに時刻がズレている場合、「先に固定枠登録が必要」は嘘になる。
-  // 合わせ直す導線は設けず、事実を伝えるだけにする。
-  const masterStartTime = visit.master_start_time ?? null;
-  const diverged = !pfvId && !!masterStartTime;
-  const disabledReason = diverged
-    ? `固定訪問スケジュールは ${masterStartTime} です。この時間帯では完全固定にできません`
-    : '先に固定枠登録が必要';
-  // Phase G-47: click 即時 toggle を廃し、 PinScopeMenu で「曜日のみ / 全曜日」 2 択を提示.
-  return (
-    <PinScopeMenu
-      pfvId={pfvId ?? ''}
-      patientId={patientId ?? ''}
-      isPinned={isPinned}
-      onSelect={onTogglePin}
-      disabled={disabled}
-      testIdSuffix={`weekday-${visit.key}`}
-    >
-      {({ isOpen }) => (
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          disabled={disabled}
-          aria-label={
-            isPinned
-              ? `${visit.patient_name} の完全固定スコープを選択 (完全固定を外す)`
-              : disabled
-                ? `${visit.patient_name} は${disabledReason}`
-                : `${visit.patient_name} の完全固定スコープを選択 (完全固定にする)`
-          }
-          title={
-            disabled
-              ? disabledReason
-              : isPinned
-                ? '完全固定を外すスコープを選択 (この曜日のみ / 全曜日)'
-                : '完全固定にするスコープを選択 (この曜日のみ / 全曜日)'
-          }
-          aria-pressed={isPinned}
-          aria-haspopup="menu"
-          aria-expanded={isOpen}
-          data-testid={`weekday-pin-btn-${visit.key}`}
-          data-pinned={isPinned ? 'true' : 'false'}
-          data-pfv-id={pfvId ?? ''}
-          className={cn(
-            'inline-flex items-center justify-center rounded px-1 py-0.5 leading-none',
-            isPinned ? 'text-yellow-700 hover:bg-yellow-100' : 'text-text-muted hover:bg-bg-muted',
-            disabled ? 'cursor-not-allowed opacity-30' : '',
-          )}
-        >
-          {isPinned ? <PushPin className="h-3.5 w-3.5" /> : <PushPinOff className="h-3.5 w-3.5" />}
-        </button>
-      )}
-    </PinScopeMenu>
   );
 }
 

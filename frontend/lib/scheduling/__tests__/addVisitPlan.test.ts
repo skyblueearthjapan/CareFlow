@@ -67,7 +67,6 @@ function visit(over: Partial<VisitLite> & { id: string; visit_date: string }): V
     start_time: '09:30',
     end_time: '10:05',
     primary_staff_id: null,
-    week_pinned: false,
     status: 'planned',
     source: 'auto',
     ...over,
@@ -278,10 +277,9 @@ describe('isMCourseCode', () => {
 });
 
 describe('isMovableSourceVisit', () => {
-  it('planned・青ピンでない・当日より後 のときだけ動かせる', () => {
+  it('planned・当日より後 のときだけ動かせる', () => {
     const base = visit({ id: 'v1', visit_date: '2026-09-14' });
     expect(isMovableSourceVisit(base, '2026-09-07')).toBe(true);
-    expect(isMovableSourceVisit({ ...base, week_pinned: true }, '2026-09-07')).toBe(false);
     expect(isMovableSourceVisit({ ...base, status: 'cancelled' }, '2026-09-07')).toBe(false);
     // 当日以前は動かせない (当日ちょうども不可)
     expect(isMovableSourceVisit(base, '2026-09-14')).toBe(false);

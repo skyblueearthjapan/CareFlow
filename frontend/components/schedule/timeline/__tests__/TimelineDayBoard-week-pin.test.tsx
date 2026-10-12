@@ -1,13 +1,9 @@
 /**
- * 週のピン (青ピン) の盤面挙動 — PO 決定 2026-08-08.
- * 仕様: docs/plans/pin-and-movability-spec.md
- *
- * 赤ピン (型のピン) は型と一致する訪問にしか刺せないため、型とズレた訪問を
- * 今の位置で守る手段が無かった。青ピンはその穴を埋める。
+ * 青ピン廃止 (BP-1 / PO 2026-10-12): 盤面に青のトグル・青の画鋲は出ない。
+ * 「今週のみ」チップは残る。赤 (完全固定) の表示は TimelineDayBoard-red-pin.test.tsx。
  */
 import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import type { CourseGridVisit } from '@/components/schedule/v2/courseGrid';
 import {
@@ -49,102 +45,25 @@ function column(visits: CourseGridVisit[]): TimelineCourseColumn {
   } as TimelineCourseColumn;
 }
 
-function renderBoard(v: CourseGridVisit, onToggleWeekPin?: (id: string, next: boolean) => void) {
-  return render(<TimelineDayBoard columns={[column([v])]} onToggleWeekPin={onToggleWeekPin} />);
+function renderBoard(v: CourseGridVisit) {
+  return render(<TimelineDayBoard columns={[column([v])]} />);
 }
 
-describe('週のピン (青ピン)', () => {
-  it('未固定の訪問はトグルが「未ピン」状態で出る', () => {
-    renderBoard(visit({ id: 'v1', source: 'auto' }), vi.fn());
-    const btn = screen.getByTestId('tl-week-pin-toggle-v1');
-    expect(btn).toHaveAttribute('data-week-pinned', 'false');
-    expect(btn).toHaveAttribute('aria-pressed', 'false');
+describe('青ピン廃止', () => {
+  it('青のトグルも青い画鋲も出ない (week_pinned が来ても無視する)', () => {
+    renderBoard(visit({ id: 'v1', source: 'auto', week_pinned: true } as never));
+    expect(screen.queryByTestId('tl-week-pin-toggle-v1')).not.toBeInTheDocument();
+    expect(document.querySelector('[data-icon="corner-week-push-pin"]')).not.toBeInTheDocument();
   });
 
-  it('型とズレた訪問 (source=auto) でも今週固定できる — 赤ピンとの決定的な違い', async () => {
-    const onToggle = vi.fn();
-    // 型は 13:00 / 実配置は 10:25 = 赤ピンは刺せない状態。
-    renderBoard(visit({ id: 'v2', source: 'auto', master_start_time: '13:00' }), onToggle);
-
-    await userEvent.click(screen.getByTestId('tl-week-pin-toggle-v2'));
-    expect(onToggle).toHaveBeenCalledWith('v2', true);
+  it('今週のみ (manual_week) は青い画鋲ではなく「今週のみ」チップで示す', () => {
+    renderBoard(visit({ id: 'v2', source: 'manual_week', end_time: '12:30' }));
+    expect(document.querySelector('[data-icon="corner-week-push-pin"]')).not.toBeInTheDocument();
+    expect(screen.getByTestId('tl-week-only-chip-v2')).toBeInTheDocument();
   });
 
-  it('今週固定済みの訪問は青い画鋲が立ち、トグルで解除できる', async () => {
-    const onToggle = vi.fn();
-    renderBoard(visit({ id: 'v3', source: 'manual_week' }), onToggle);
-
-    const btn = screen.getByTestId('tl-week-pin-toggle-v3');
-    expect(btn).toHaveAttribute('data-week-pinned', 'true');
-    expect(document.querySelector('[data-icon="corner-week-push-pin"]')).toBeInTheDocument();
-
-    await userEvent.click(btn);
-    expect(onToggle).toHaveBeenCalledWith('v3', false);
-  });
-
-  it('week_pinned フラグだけでも青ピンが立つ — 取込 (import) の訪問を固定した状態', () => {
-    // PO 決定 2026-08-09: 実体はフラグ。source は import のまま = 出所保持。
-    renderBoard(visit({ id: 'v7f', source: 'import', week_pinned: true }), vi.fn());
-    expect(document.querySelector('[data-icon="corner-week-push-pin"]')).toBeInTheDocument();
-    const btn = screen.getByTestId('tl-week-pin-toggle-v7f');
-    expect(btn).toHaveAttribute('data-week-pinned', 'true');
-  });
-
-  it('赤ピン中でも青ピンのトグルは出る（先に青を仕込んでから一括赤解除する運用のため）', async () => {
-    // 旧仕様は「赤ピン中は青トグルを出さない」だったが、全件ピン留めすると青の
-    // 入口が全滅し、一括赤解除前の保護を仕込めなかった (PO 指摘 2026-08-08)。
-    const onToggle = vi.fn();
-    renderBoard(visit({ id: 'v4', source: 'auto', is_pinned: true }), onToggle);
-    const btn = screen.getByTestId('tl-week-pin-toggle-v4');
-    expect(btn).toBeInTheDocument();
-    await userEvent.click(btn);
-    expect(onToggle).toHaveBeenCalledWith('v4', true);
-  });
-
-  it('赤と青が両方刺さっていれば画鋲が 2 本並ぶ（青は赤の左隣）', () => {
-    renderBoard(visit({ id: 'v6', source: 'manual_week', is_pinned: true }), vi.fn());
-    expect(document.querySelector('[data-icon="corner-push-pin"]')).toBeInTheDocument();
-    const blue = document.querySelector('[data-icon="corner-week-push-pin"]');
-    expect(blue).toBeInTheDocument();
-    // 青は赤の左隣スロットへ避ける (right-[14px])。
-    expect(blue?.getAttribute('class') ?? '').toContain('right-[14px]');
-  });
-
-  it('赤トグルは型と一致する訪問で操作でき、ズレていれば理由を示して無効', () => {
-    const onTogglePin = vi.fn();
-    // 一致 (fixed_visit_id あり) → 有効
-    render(
-      <TimelineDayBoard
-        columns={[column([visit({ id: 'v7', source: 'auto', fixed_visit_id: 'pfv-7' })])]}
-        onTogglePin={onTogglePin}
-      />,
-    );
-    expect(screen.getByTestId('tl-pin-toggle-v7')).not.toBeDisabled();
-  });
-
-  it('赤トグル: 型とズレた訪問は無効で、型の時刻を理由に出す（論点1）', () => {
-    render(
-      <TimelineDayBoard
-        columns={[
-          column([
-            visit({ id: 'v8', source: 'auto', fixed_visit_id: null, master_start_time: '13:00' }),
-          ]),
-        ]}
-        onTogglePin={vi.fn()}
-      />,
-    );
-    const btn = screen.getByTestId('tl-pin-toggle-v8');
-    expect(btn).toBeDisabled();
-    expect(btn).toHaveAttribute(
-      'title',
-      '固定訪問スケジュールは 13:00 です。この時間帯では完全固定にできません',
-    );
-  });
-
-  it('ハンドラ未指定 (閲覧のみ) ではトグルを描画しない', () => {
-    renderBoard(visit({ id: 'v5', source: 'manual_week' }));
-    expect(screen.queryByTestId('tl-week-pin-toggle-v5')).not.toBeInTheDocument();
-    // 表示 (青い画鋲) は残る — 状態は読めるべきなので。
-    expect(document.querySelector('[data-icon="corner-week-push-pin"]')).toBeInTheDocument();
+  it('赤い画鋲は角 (既定の位置) に 1 本だけ刺さる', () => {
+    renderBoard(visit({ id: 'v3', source: 'manual_week', movability: 'locked' }));
+    expect(document.querySelectorAll('[data-icon="corner-push-pin"]')).toHaveLength(1);
   });
 });

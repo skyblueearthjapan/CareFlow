@@ -164,7 +164,8 @@ async def test_dismiss_same_fingerprint_upserts(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_promote_day_immovable_sets_time_flexible(client, db) -> None:
+async def test_day_immovable_records_dismissal_without_promotion(client, db) -> None:
+    """PO 2026-10-12: day_immovable は可動域を変えない (記録のみ)."""
     admin = await _make_user(db, email="sd-admin3@example.com", role="admin")
     p = await _seed_patient(db)
     pfv = await _seed_pfv(db, patient=p, movability="unknown")
@@ -177,11 +178,12 @@ async def test_promote_day_immovable_sets_time_flexible(client, db) -> None:
     )
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["movability_updated"] is True
-    assert body["new_movability"] == "time_flexible"
+    assert body["movability_updated"] is False
+    assert body["new_movability"] is None
 
     await db.refresh(pfv)
-    assert pfv.movability == "time_flexible"
+    assert pfv.movability == "unknown"
+    assert pfv.is_pinned is False
 
 
 @pytest.mark.asyncio
@@ -201,6 +203,7 @@ async def test_promote_time_immovable_sets_locked(client, db) -> None:
 
     await db.refresh(pfv)
     assert pfv.movability == "locked"
+    assert pfv.is_pinned is True
 
 
 @pytest.mark.asyncio
@@ -312,7 +315,9 @@ async def test_get_locked_pfv_counts_in_summary(client, db) -> None:
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["suggestions"] == []
-    assert body["filtered_summary"]["locked"] == 1
+    # locked は is_pinned の厳密ミラー (赤ピン整理 2026-10-12): 内訳はどちらでもよい.
+    summary = body["filtered_summary"]
+    assert summary["locked"] + summary["pinned"] == 1
 
 
 @pytest.mark.asyncio

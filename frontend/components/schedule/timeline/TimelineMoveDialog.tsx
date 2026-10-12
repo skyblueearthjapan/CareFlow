@@ -39,7 +39,7 @@ export interface TimelineMoveContext {
   courseChanged: boolean;
   /**
    * 統合 (PO 決定 2026-08-09): 移動対象に完全固定 (movability='locked') を含む。
-   * エンジンは動かさないが、人手は注意書きを見たうえで動かせる (確認して可)。
+   * エンジンは曜日・時刻を動かさないが、人手は注意書きを見たうえで動かせる (確認して可)。
    */
   lockedNotice?: boolean;
 }
@@ -109,7 +109,8 @@ export function TimelineMoveDialog({
             className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700"
             data-testid="timeline-move-locked-notice"
           >
-            ⚠ これは完全固定です。システムは動かしませんが、この操作では手動で移動します。
+            ⚠
+            これは完全固定です。システムは曜日・時刻を動かしませんが、この操作では手動で移動します。
           </div>
         ) : null}
 

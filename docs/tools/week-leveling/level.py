@@ -16,6 +16,14 @@
   --no-app-check          アプリの物差しでの診断 (diagnose.py) を飛ばす (既定は行う)
   --from-dir <dir>        取り出し済みの week.json / history.json を使う (本番に繋がない)
   --seconds 30            1 日あたりの計算時間 (秒)
+
+変わった注文用の「今回だけの条件」(詳しくは level_knobs.py の先頭。A4 と summary.json に日本語で残る):
+  --days thu,fri          この曜日だけ計算 (他の日は触らない)
+  --prefer-staff CODE[:重み]   この人へ多めに寄せる      --avoid-staff CODE[:重み]   必要なときだけ使う
+  --keep-current [重み]   今の担当を変えない方へ寄せる      --cancel 訪問ID   急遽キャンセル (外す + 今週だけ取消)
+  --only-staff A,B --window 09:00-12:00   その時間帯はその人たちだけ
+  --not-same-day 利用者A,利用者B   --pair-staff 利用者:CODE   --forbid-pair 利用者:CODE
+  --fast                  計算 10 秒 (今日すぐ用)
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import level_knobs  # noqa: E402
 from extract import extract  # noqa: E402
 from report import check, flags_for, new_assignments, write_a4, write_excel  # noqa: E402
 from solver import LUNCH_TARGET, run  # noqa: E402
@@ -91,17 +100,25 @@ def main():
     ap.add_argument("--jev", action="store_true")
     ap.add_argument("--no-app-check", action="store_true")
     ap.add_argument("--from-dir")
-    ap.add_argument("--seconds", type=int, default=30)
+    ap.add_argument("--seconds", type=int, default=None, help="1 日あたりの計算時間 (秒・既定 30・--fast なら 10)")
     ap.add_argument("--config", default=str(HERE / "config.local.json"))
     ap.add_argument("--out")
+    level_knobs.add_args(ap)
     a = ap.parse_args()
+    try:
+        knob_opts = level_knobs.from_args(a)
+        weekdays = level_knobs.parse_weekdays(a.days) if a.days else []
+    except ValueError as e:
+        ap.error(str(e))
+    if a.seconds is None:
+        a.seconds = level_knobs.FAST_SECONDS if a.fast else 30
 
     config = json.loads(Path(a.config).read_text(encoding="utf-8"))
     any_day = date.fromisoformat(a.week)
     monday = any_day - timedelta(days=any_day.weekday())
     _, iso_week, _ = monday.isocalendar()
     sunday = monday + timedelta(days=6)
-    days = {date.fromisoformat(x) for x in a.day} or None
+    days = {date.fromisoformat(x) for x in a.day} | {monday + timedelta(days=w) for w in weekdays} or None
     off = parse_off(a.off)
     for x in list(days or []) + [dd for _c, dd in off if dd]:
         if not monday <= x <= sunday:
@@ -114,6 +131,7 @@ def main():
             "-bal" if a.balance else "",
             "-drop" if a.drop else "",
             "-sp" if a.add_special else "",
+            "-knob" if knob_opts else "",
         ]
     )
     out_dir = (
@@ -146,6 +164,7 @@ def main():
         "off": off,
         "drop": [x.strip().lower() for x in a.drop],
         "add_special": a.add_special,
+        **knob_opts,
     }
     d, visits, staff, out, hist_by_day, lunch_by_day = run(
         week_path, hist_path, config, a.seconds, opts, days, log=lambda m: print(m, flush=True)
@@ -153,6 +172,10 @@ def main():
     cap = config.get("cap_regular", 6)
     errors, warnings = check(d, out, cap, a.allow_over)
     flags = flags_for(out, hist_by_day)
+    # 今回だけの条件: 全部を A4 に日本語で残し、決まりをゆるめるものは「気を付ける点」にも出す
+    names = {s["code"]: s["name"].replace("\u3000", " ").split(" ")[0] for s in d["staff"]}
+    conditions = level_knobs.describe(opts, names, days)
+    warnings = warnings + [f"今回だけの条件（決まりをゆるめる）: {c['text']}" for c in conditions if c["relax"]]
 
     jev, jev_info = {}, {}
     if a.jev:
@@ -179,10 +202,11 @@ def main():
     title = f"週{iso_week}（{monday:%Y/%m/%d}〜{monday + timedelta(days=6):%m/%d}）ならし案"
     stats = write_excel(
         out_dir / "leveling.xlsx", title, d, visits, out, errors, warnings, cap, jev, diag,
-        lunch_by_day,
+        lunch_by_day, conditions,
     )
     write_a4(
-        out_dir / "leveling-a4.html", title, d, visits, out, hist_by_day, jev, diag, lunch_by_day
+        out_dir / "leveling-a4.html", title, d, visits, out, hist_by_day, jev, diag, lunch_by_day,
+        conditions,
     )
     pdf = to_pdf(out_dir / "leveling-a4.html")
 
@@ -198,6 +222,7 @@ def main():
         "visits": len(visits),
         "unplaced": sum(1 for v in visits if v.id not in placed),
         "dropped_visits": len(d.get("dropped_visits") or []),
+        "time_fixed_visits": sum(1 for v in visits if v.time_fixed),  # 完全固定（赤ピン）= 曜日・時刻を動かさない
         "special_added": len(d.get("special_added") or []),
         "special_skipped_has_visit": len(d.get("special_skipped") or []),
         **stats,
@@ -205,6 +230,7 @@ def main():
         # 45 分では入らない訪問が出て、昼休みを 30 分に下げて計算した日
         "lunch_30_days": sorted(str(x) for x, m in lunch_by_day.items() if m < LUNCH_TARGET),
         "warnings": len(warnings),
+        "conditions": [c["text"] for c in conditions],
         "moved_visits": len(moved),
         "max_move_min": max(map(abs, moved)) if moved else 0,
         "manager_overtime_visits": sum(1 for f in flags.values() for k, _ in f if k == "overtime"),
@@ -220,6 +246,7 @@ def main():
         # 名前は入れない (数だけ)。中身は Excel の「アプリの物差し」と A4 の 1 ページ目
         "app_check": {
             "yardstick_match": diag["yardstick_match"],
+            "time_fixed_visits": diag["time_fixed_visits"],
             "cur_travel_minutes": diag["cur"]["travel_minutes"],
             "new_travel_minutes": diag["new"]["travel_minutes"],
             "cur_travel_km": diag["cur"]["travel_km"],

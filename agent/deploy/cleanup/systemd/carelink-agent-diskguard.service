@@ -1,0 +1,8 @@
+[Unit]
+Description=Rakusuke agent: disk guard (free < 10 GB -> run cleanup early)
+After=docker.service
+
+[Service]
+Type=oneshot
+Nice=10
+ExecStart=/bin/bash /opt/carelink/agent/deploy/cleanup/diskguard.sh

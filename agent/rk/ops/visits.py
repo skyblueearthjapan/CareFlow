@@ -154,7 +154,7 @@ def staff_ids_of(v: dict) -> list[str]:
 
 def visit_brief(v: dict) -> dict:
     keys = ("id", "patient_id", "patient_name", "visit_date", "start_time", "end_time", "status", "source",
-            "week_pinned", "course_id", "primary_staff_id", "visit_group_id", "required_staff_count")
+            "course_id", "primary_staff_id", "visit_group_id", "required_staff_count")
     out = {k: v.get(k) for k in keys}
     out["staff_ids"] = staff_ids_of(v)
     for k in ("course_id", "primary_staff_id", "visit_group_id", "id", "patient_id"):
@@ -195,7 +195,7 @@ class AssignStaffWeek(Op):
     要求 schemas/v2/auto_schedule_v2.py:670）。
     受け取る値: ``visit_id``*・``staff_id``（UUID/職員コード。null=担当なし）※別名 ``to_staff``・
     ``acknowledge_constraint_warnings``（NG・女性限定の 422 を了承済みで通す）・``op_group_id``。
-    前提: planned だけ（打刻済み・完了は 422）。新人は 422。青ピンでは止まらない（位置を変えないため）。
+    前提: planned だけ（打刻済み・完了は 422）。新人は 422。
     2 名体制は相方に触れない（1 件ずつ）。コース担当と固定訪問は変えない。
     戻し方: 元の担当へ同じ操作（manual_staff_override は読めないので、元が「コースの担当に従う」だった
     訪問も戻した後は「手で付けた」扱いになる。後でコース担当を変えてもこの訪問には伝わらない）。
@@ -277,7 +277,7 @@ class MoveVisitWeek(Op):
     ``new_course_template_id``（省略=コース据え置き。曜日を変えるときは付けること：据え置くと旧曜日のコースに残る）・
     ``acknowledge_constraint_warnings``・``op_group_id``。任意 ``old_course_template_id``（戻し用。無ければ読み取りで推定）。
     元は ID ではなく「患者×曜日×開始時刻」で決まる（planned のみ・2 名体制は 2 行とも動く）。
-    元が無いと 200 で visits_moved=0 → check_response で止める。青ピンは 422。非稼働の患者は 422。
+    元が無いと 200 で visits_moved=0 → check_response で止める。非稼働の患者は 422。
     戻し方: 新しい位置から元の位置へ同じ操作（コースを変えたときは元のテンプレートへ）。
     2 名体制で 2 行のコースが違う場合・元のテンプレートが決まらない場合は戻せない（None）。
     """
@@ -328,8 +328,6 @@ class MoveVisitWeek(Op):
         notes = []
         if not rows:
             notes.append("移動元の予定がありません")
-        if any(v.get("week_pinned") for v in rows):
-            notes.append("青ピン（今週固定）→ 解除しないと動かせません")
         course_ids = sorted({str(v["course_id"]) for v in rows if v.get("course_id")})
         old_tpl = f.get("old_course_template_id")
         if not old_tpl and f.get("new_course_template_id") and len(course_ids) == 1:
@@ -379,7 +377,7 @@ class CancelVisitWeek(Op):
 
     API: POST /schedule/v2/visit-cancel-week（schedule_v2.py:6619、要求 schemas/visit.py:100）。
     受け取る値: ``visit_id``*・``cancel``（既定 true）・``reason``（200 字まで・訪問のメモには書かれない）・``op_group_id``。
-    前提: 当日以前・打刻あり・実施中/完了・青ピンは 422。2 名体制はペアごと切り替わる。
+    前提: 当日以前・打刻あり・実施中/完了は 422。2 名体制はペアごと切り替わる。
     罠: 取消は保留プールに出ない（回数にも数える）。別の日に振り替えるなら return-to-pool か add-visit-week。
     カイポケへ送ると削除になる（送信は別のスキル）。
     戻し方: ``cancel`` を反対にして同じ操作（出所は manual_week になる・元の出所は戻らない）。
@@ -410,10 +408,7 @@ class CancelVisitWeek(Op):
     def snapshot(self, api, op):
         f = fields(op)
         v = visit_or_none(api, str(f["visit_id"]))
-        notes = []
-        if v and v.get("week_pinned"):
-            notes.append("青ピン（今週固定）→ 解除しないと取り消せません")
-        return {"visit": visit_brief(v) if v else None, "notes": notes}
+        return {"visit": visit_brief(v) if v else None, "notes": []}
 
     def inverse(self, op, before):
         v = (before or {}).get("visit")
@@ -448,7 +443,7 @@ class ReturnToPool(Op):
     API: DELETE /visits/{id}?cascade_partner=..&op_group_id=..（visits.py:1066）。
     受け取る値: ``visit_id``（または探し方 ``patient_id``＋``date``＋``start_time`` ＝ 反映の時に 1 件に決める）・
     ``cascade_partner``（既定 true＝2 名体制の相方も消す。build_ops.py は false を送る）・``op_group_id``。
-    前提: 青ピンは 422。プールは保存されず、希望の回数に足りない分として画面が数えて出す。
+    前提: プールは保存されず、希望の回数に足りない分として画面が数えて出す。
     戻し方: **API では戻せない（None）**。置き直し（place-from-pool）は新しい ID の別の訪問になり、
     カイポケの対応・担当・出所が元と同じにならない。戻すにはバックアップから（rk backup）。
     """
@@ -501,8 +496,7 @@ class ReturnToPool(Op):
         except ApiError:
             return {"visit": None, "notes": ["対象の訪問が見つかりません"]}
         v = visit_or_none(api, vid)
-        notes = ["青ピン（今週固定）→ 解除しないと消せません"] if v and v.get("week_pinned") else []
-        return {"visit": visit_brief(v) if v else None, "notes": notes}
+        return {"visit": visit_brief(v) if v else None, "notes": []}
 
     def inverse(self, op, before):
         return None

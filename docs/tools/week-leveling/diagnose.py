@@ -387,6 +387,7 @@ def diagnose(d, visits, out, hist_by_day, cap, allow_over, opts, names, log=prin
     return {
         "config": res["config"],
         "threshold_min": res["threshold_min"],
+        "time_fixed_visits": sum(1 for v in visits if v.time_fixed),  # 完全固定（赤ピン）の訪問数
         "yardstick_match": not mismatch,
         "yardstick_mismatch": mismatch[:20],
         "cur": totals("cur", cur),

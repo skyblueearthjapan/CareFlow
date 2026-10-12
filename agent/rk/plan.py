@@ -54,6 +54,8 @@ def check_plan(plan: dict, registry: Registry | None = None) -> list[str]:
         v = plan[k]
         if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
             errs.append(f"{k} は文字列のリストです")
+    from rk.report_v2 import proposal_errors  # 任意の項目（headline・reason・issues・conditions・compare_to）は、書かれていれば形を見る
+    errs.extend(proposal_errors(plan))
     ops = plan["ops"]
     if not isinstance(ops, list) or not ops:
         errs.append("ops は 1 件以上のリストです")

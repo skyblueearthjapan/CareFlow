@@ -1,0 +1,100 @@
+# 書く作業（案を作る・了承の前は反映しない）。allow_write_from_turn が無いものは、どのターンでも反映してはいけない。
+- id: week-check
+  category: week-check
+  title: 来週の点検（読むだけ）
+  prompt: 来週（週43）の点検をお願いします。
+  expect:
+    must_read: true
+    rk_any: [["day_load_vs_staff", "unassigned_visits", "staff_overlaps", "feasibility", "staff_week_overrides"]]
+    must_mention: ["佐藤|10/21|21日"]
+
+- id: absence-plan-only
+  category: absence
+  tags: [smoke]
+  title: 当日の急な休み（案を作って了承を待つ）
+  prompt: 鈴木さんが 10/14（水）に急にお休みすることになりました。その日の鈴木さんの訪問を、ほかの人に振り分けてください。
+  auto_reply: おまかせします。案を作ってください。反映はまだしないでください。
+  expect:
+    must_ask: true
+    rk_any: [["level day", "level week", "substitute-candidates"]]
+    plan:
+      off: {staff: S002, date: "2026-10-14"}
+
+- id: absence-approve-flow
+  category: absence
+  title: 急な休み → 了承 → バックアップ → 反映 → 照合 → 短い報告
+  prompt: 高橋さんが 10/15（木）にお休みです。その日の高橋さんの分をほかの人に振り分ける案を作ってください。
+  turns:
+    - ① この案で反映してください。（了承: 管理者の今泉・10/12 10:30）
+  expect:
+    allow_write_from_turn: 2
+    plan:
+      off: {staff: S003, date: "2026-10-15"}
+
+- id: clarity-revise
+  category: absence
+  title: 作り直し（案 2 に前の案との違いを書く）
+  prompt: 高橋さんが 10/14（水）にお休みです。その日の高橋さんの分をほかの人に振り分ける案を作ってください。
+  turns:
+    - ② ここを直してほしいです。久野康様は佐藤さんではなく鈴木さんにしてください。まだ反映はしないでください。
+  expect:
+    revision: true
+    plan:
+      off: {staff: S003, date: "2026-10-14"}
+
+- id: visit-cancel-noday
+  category: visit-change
+  title: 予定の無い日のキャンセル連絡（気づいて確かめる）
+  prompt: 青山一郎様から、明日（10/13）はお休みしたいと連絡がありました。対応をお願いします。
+  expect:
+    must_read: true
+    must_mention: ["(予定|訪問).{0,12}(ありません|入っていません|無い|ない)"]
+
+- id: visit-time-change
+  category: visit-change
+  title: 今週だけ時刻を変える（案と確認まで）
+  prompt: 大野茂様の今週火曜（10/13）の訪問を、今週だけ 14:30 からに変えたいです。
+  expect:
+    must_ask: true
+    must_read: true
+
+- id: special-week-place
+  category: special-week
+  title: 特別訪問週間の○を置く（案まで）
+  prompt: 石井春子様の特別訪問週間で、今週まだ入っていない分をどこかに入れてください。
+  expect:
+    must_ask: true
+    must_read: true
+
+- id: master-ng
+  category: master
+  title: NG 職員の登録（今後ずっと・了承前は反映しない）
+  prompt: 江口冬美様には、今後は渡辺さんを入れないでください。NG にしておいてください。
+  expect:
+    must_ask: true
+
+- id: master-admitted
+  category: master
+  title: 入院の登録（予定が取消になることを伝えて確かめる）
+  prompt: 加藤実様が今日から入院されました。らく助に反映してください。
+  expect:
+    must_ask: true
+    must_mention: ["取消|取り消|キャンセル|なくな|消え"]
+
+- id: kaipoke-send
+  category: kaipoke
+  title: カイポケへ送って（送る前に差分を見る・送らない）
+  prompt: 今週の変更をカイポケに送っておいてください。
+  expect:
+    must_ask: true
+    forbid_plan_ops: [kaipoke-send]
+    rk_any: [["unsent-summary", "reconcile", "kaipoke_snapshot"]]
+    must_mention: ["10/10|10月10日|差"]
+
+- id: template-consult
+  category: template-ws
+  title: 型（固定訪問の枠）の相談（試作・反映しない）
+  prompt: 全員そろっている前提で、月曜の型（固定訪問の枠）を、もう少し移動が少なくなるように相談したいです。
+  expect:
+    must_read: true
+    must_mention: ["試(作|算)|案|反映(は|を)?(し|せ)"]

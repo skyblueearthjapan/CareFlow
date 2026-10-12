@@ -37,7 +37,7 @@ def solver_prefix() -> list[str]:
     return list(UV_SOLVER)
 
 
-def tag_for(days, off, allow_over, balance, drop, add_special) -> str:
+def tag_for(days, off, allow_over, balance, drop, add_special, knobs=False) -> str:
     return "".join([
         f"-{min(days):%m%d}" if days else "",
         "-off" if off else "",
@@ -45,6 +45,7 @@ def tag_for(days, off, allow_over, balance, drop, add_special) -> str:
         "-bal" if balance else "",
         "-drop" if drop else "",
         "-sp" if add_special else "",
+        "-knob" if knobs else "",
     ])
 
 
@@ -54,6 +55,18 @@ def check_out_dir(out_dir: Path) -> None:
     o = out_dir.resolve()
     if o.is_relative_to(REPO_ROOT.resolve()) and not o.is_relative_to(reports):
         raise LevelError("出力先がリポジトリの中なら docs/reports の下にしてください（利用者名を git に入れないため）")
+
+
+def trainee_off(config: dict, week_data: dict, off: list[str], log: Callable[[str], None] = print) -> list[str]:
+    """新人は道具が見ない（is_trainee）→ config に入っていれば週全部を休みとして外す（--off に足して返す）。"""
+    off = list(off)
+    known = set(config.get("regular") or {}) | set(config.get("manager") or {})
+    off_codes = {v.partition("@")[0] for v in off}
+    for s in week_data.get("staff") or []:
+        if s.get("is_trainee") and s["code"] in known and s["code"] not in off_codes:
+            off.append(s["code"])
+            log(f"新人 {short_name(s['name'])}（{s['code']}）は同行のみなので外して計算します")
+    return off
 
 
 def level(
@@ -67,7 +80,9 @@ def level(
     balance: bool = False,
     drop: list[str] | None = None,
     add_special: bool = False,
-    seconds: int = 30,
+    seconds: int | None = None,
+    weekdays: list[int] | None = None,
+    knob_argv: list[str] | None = None,
     no_app_check: bool = False,
     no_pdf: bool = False,
     from_dir: str | None = None,
@@ -80,11 +95,15 @@ def level(
     solver_cmd: list[str] | None = None,
     log: Callable[[str], None] = print,
 ) -> dict:
+    """knob_argv = level_knobs.to_argv(args)（--prefer-staff など「今回だけの条件」を solve.py へそのまま渡す）。
+    weekdays = 計算する曜日 (0=月)。days と合わせた日だけ計算する。seconds が無ければ 30 秒（--fast は 10 秒）。"""
     try:
         monday = monday_of(date.fromisoformat(week))
-        day_set = sorted({date.fromisoformat(x) for x in days or []})
+        day_set = sorted({date.fromisoformat(x) for x in days or []} | {monday + timedelta(days=w) for w in weekdays or []})
     except ValueError as e:
         raise LevelError(f"日付は YYYY-MM-DD で書いてください: {e}") from None
+    if seconds is None:
+        seconds = 10 if "--fast" in (knob_argv or []) else 30
     sunday = monday + timedelta(days=6)
     iso_year, iso_week, _ = monday.isocalendar()
     off = list(off or [])
@@ -98,7 +117,7 @@ def level(
     config = json.loads(cpath.read_text(encoding="utf-8"))
 
     now = datetime.now()
-    tag = tag_for(day_set, off, allow_over, balance, drop, add_special)
+    tag = tag_for(day_set, off, allow_over, balance, drop, add_special, bool(knob_argv))
     out_dir = Path(out) if out else Path(cfg.reports_dir) / f"{now:%Y-%m-%d}" / f"{now:%H%M}-week{iso_week}-leveling{tag}"
     check_out_dir(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -121,14 +140,8 @@ def level(
     if title is None and kind == "staff-absence" and day_set:
         title = day_title(day_set[0], [v.partition("@")[0] for v in off], week_data.get("staff"))
 
-    # 新人は道具が見ない（is_trainee）→ config に入っていれば週全部を休みとして外す
     if not include_trainee:
-        known = set(config.get("regular") or {}) | set(config.get("manager") or {})
-        off_codes = {v.partition("@")[0] for v in off}
-        for s in week_data.get("staff") or []:
-            if s.get("is_trainee") and s["code"] in known and s["code"] not in off_codes:
-                off.append(s["code"])
-                log(f"新人 {short_name(s['name'])}（{s['code']}）は同行のみなので外して計算します")
+        off = trainee_off(config, week_data, off, log)
 
     # 2) 計算（ortools の入った別プロセス）
     cmd = list(solver_cmd or solver_prefix()) + [
@@ -141,6 +154,7 @@ def level(
         cmd += ["--off", x]
     for x in drop or []:
         cmd += ["--drop", x]
+    cmd += list(knob_argv or [])
     if allow_over:
         cmd += ["--allow-over", str(allow_over)]
     for flag, on in (("--over-before-manager", over_before_manager), ("--balance", balance),

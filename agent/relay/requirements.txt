@@ -1,0 +1,7 @@
+# らく助エージェントの中継（agent/relay）。Python 3.12。rk は標準ライブラリだけなので追加なし。
+fastapi==0.115.12
+uvicorn==0.34.2
+sqlalchemy==2.0.40
+psycopg[binary]==3.2.6
+httpx==0.28.1
+# 試験だけ: pytest（agent/tests と同じ）

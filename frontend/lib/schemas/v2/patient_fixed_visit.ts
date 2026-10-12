@@ -30,11 +30,10 @@ export const SLOT_INDEX_VALUES = [0, 1] as const;
 export type SlotIndex = (typeof SLOT_INDEX_VALUES)[number];
 
 /**
- * P2-A: 可動域フラグ = 提案の可否 (改善提案 MVP).
- * unknown(既定・保守的) / time_flexible(同曜日内の時刻変更可) /
- * day_flexible(曜日も変更可) / locked(完全固定).
+ * 完全固定フラグ (2 値). unknown(既定) / locked(完全固定 = 曜日と時刻を固定。
+ * コース・担当は動くことがある).
  */
-export const MOVABILITY_VALUES = ['unknown', 'time_flexible', 'day_flexible', 'locked'] as const;
+export const MOVABILITY_VALUES = ['unknown', 'locked'] as const;
 export type Movability = (typeof MOVABILITY_VALUES)[number];
 
 export const patientFixedVisitV2BaseSchema = z.object({

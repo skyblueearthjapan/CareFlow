@@ -1,0 +1,82 @@
+# らく助エージェントの箱（carelink-agent-sandbox）。build context = agent/（docker-compose.agent.yml 参照）
+#
+# 中身: Python 3.12（rk・ならし/型の道具・ortools）＋ Node 22 ＋ claude CLI・codex CLI（版を固定）
+#       ＋ runner（決まった起動だけをする小さな常駐・agent/deploy/runner/）
+#       ＋ agent/ の写し（/srv/agent・root 持ち・読み取り専用）
+# 入れないもの: docker・psql・本番 .env・らく助のトークン・agent/runs（利用者名入り）
+#
+# CLI の版の上げ方: compose の build args（CLAUDE_CODE_VERSION / CODEX_VERSION）を変えて build し直す。
+# 箱の中では自動更新しない（DISABLE_AUTOUPDATER=1・出口の許可リストにも更新の宛先を入れない）。
+
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm
+ARG NODE_IMAGE=node:22-bookworm-slim
+
+# ---------------------------------------------------------------- CLI を入れる段
+FROM ${NODE_IMAGE} AS cli
+ARG CLAUDE_CODE_VERSION
+ARG CODEX_VERSION
+RUN test -n "${CLAUDE_CODE_VERSION}" && test -n "${CODEX_VERSION}" \
+ && npm install -g --omit=dev --no-fund --no-audit \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+      "@openai/codex@${CODEX_VERSION}" \
+ && npm cache clean --force \
+ && mkdir /opt/clibin \
+ && for b in claude codex; do ln -s "$(readlink -f "/usr/local/bin/${b}")" "/opt/clibin/${b}"; done \
+ && claude --version \
+ && codex --version
+
+# ---------------------------------------------------------------- 本体
+FROM ${PYTHON_IMAGE}
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    LANG=C.UTF-8 \
+    TZ=Asia/Tokyo
+
+# Bash の道具で使うもの（rk は標準ライブラリだけ）。git・curl・wget は入れない（外へ出る道具を増やさない）
+# hadolint ignore=DL3008
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates tzdata ripgrep procps; \
+    rm -rf /var/lib/apt/lists/*
+
+# Node と CLI（node:22 の段から写す）
+COPY --from=cli /usr/local/bin/node /usr/local/bin/node
+COPY --from=cli /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=cli /opt/clibin/ /usr/local/bin/
+RUN claude --version && codex --version
+
+# ならし・型の道具の依存（ortools）。版は固定する
+ARG ORTOOLS_VERSION=9.15.6755
+RUN pip install "ortools==${ORTOOLS_VERSION}"
+
+# 利用者: 10002（CLI と runner）。グループ 10000 は runner ソケットの共有用（中継 10001 も入る）
+RUN groupadd -g 10000 agentsock \
+ && useradd -u 10002 -g 10000 -d /home/agent -s /bin/bash agent \
+ && install -d -o 10002 -g 10000 -m 0700 /home/agent \
+ && install -d -o 10002 -g 10000 -m 0700 /data/sessions \
+ && install -d -o 10002 -g 10000 -m 0750 /run/agent
+
+# runner と決まりの設定（root 持ち・読み取り専用）
+COPY --chown=root:root deploy/runner/ /opt/runner/
+# agent/ の写し（スキル・rk・SQL）。/srv/agent は読み取り専用で、モデルは書き換えられない
+COPY --chown=root:root . /srv/agent
+RUN rm -rf /srv/agent/deploy \
+ && find /srv/agent -name '__pycache__' -prune -exec rm -rf {} + \
+ && test ! -e /srv/agent/runs \
+ && test ! -e /srv/agent/staging \
+ && chmod 0555 /srv/agent/bin/rk \
+ && chmod -R a-w /srv/agent /opt/runner \
+ && python3 -m py_compile /opt/runner/agent_runner.py \
+ && python3 -m py_compile /srv/agent/relay/codex_config.py \
+ && codex execpolicy check -r /opt/runner/rakusuke.rules rk whoami | grep -q '"decision":"allow"' \
+ && codex execpolicy check -r /opt/runner/rakusuke.rules curl http://x | grep -q '"decision":"forbidden"'
+
+ENV PYTHONPATH=/srv/agent \
+    HOME=/home/agent
+
+USER 10002:10000
+WORKDIR /srv/agent
+CMD ["python3", "/opt/runner/agent_runner.py"]

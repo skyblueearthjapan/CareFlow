@@ -1,0 +1,93 @@
+# 柔軟さ: 管理者の変わった注文（毎週ある・直感的）。案（plan.json）で本当にかなったかを見る。
+# 道具（rk level）の「今回だけの条件」（--prefer-staff・--days・--cancel・--only-staff/--window・--not-same-day・
+# --keep-current・--fast など）を使っても、自分でスクリプトを書いて案を作ってもよい。反映は了承の後だけ。
+- id: flex-fast-day
+  category: flexibility
+  title: 今日 1 人休み・早く最適解を
+  prompt: 明日 10/13（火）、高橋さんが急にお休みです。急ぎでその日の振り分けの案をください。時間はかけなくていいです。
+  auto_reply: おまかせします。案を作ってください。反映はまだしないでください。
+  expect:
+    plan:
+      off: {staff: S003, date: "2026-10-13"}
+      seconds_max: 15
+
+- id: flex-give-to
+  category: flexibility
+  tags: [smoke]
+  title: 手の空いた人に寄せて
+  prompt: 水曜（10/14）は田中さんの手が空いているので、田中さんに少し寄せる案を作ってください。
+  auto_reply: おまかせします。案を作ってください。反映はまだしないでください。
+  expect:
+    plan:
+      gains: {staff: S004, date: "2026-10-14"}
+      only_dates: ["2026-10-14"]
+
+- id: flex-cancel-relevel
+  category: flexibility
+  title: 急遽キャンセル → その日を組み直す
+  prompt: 木村夏子様の 10/15（木）の訪問が、急遽キャンセルになりました。その日の分を組み直してください。
+  auto_reply: おまかせします。案を作ってください。反映はまだしないでください。
+  expect:
+    plan:
+      cancelled: {patient: P008, date: "2026-10-15"}
+      only_dates: ["2026-10-15"]
+
+- id: flex-only-thu-fri
+  category: flexibility
+  title: 木曜と金曜だけ作って
+  prompt: 来週、高橋さんが木曜と金曜お休みです。木曜と金曜の分だけ、組み直しの案を作ってください。
+  auto_reply: おまかせします。案を作ってください。反映はまだしないでください。
+  expect:
+    plan:
+      only_dates: ["2026-10-22", "2026-10-23"]
+      off: {staff: S003, date: "2026-10-22"}
+
+- id: flex-morning-only
+  category: flexibility
+  title: 午前は鈴木さんだけで回して
+  prompt: 10/15（木）の午前（12 時まで）は、東の訪問を鈴木さんだけで回す案を作ってください。
+  auto_reply: おまかせします。入らない分は気になる点として示してください。反映はまだしないでください。
+  expect:
+    plan:
+      only_staff_window: {staff: S002, date: "2026-10-15", until: "12:00", office: 東}
+      only_dates: ["2026-10-15"]
+
+- id: flex-not-same-day
+  category: flexibility
+  title: この 2 人（利用者）を同じ人が同じ日に持たない
+  prompt: 来週は、上田清様と久野康様を、同じ職員が同じ日に担当しないようにしてください。
+  auto_reply: 来週だけでお願いします。案を作ってください。反映はまだしないでください。
+  expect:
+    plan:
+      not_same_day: [P003, P018]
+
+- id: flex-continuity
+  category: flexibility
+  title: 移動を減らすより担当の継続を優先
+  prompt: 来週の水曜（10/21）は佐藤さんがお休みです。移動を減らすより、いつもの担当が続くことを優先して組み直してください。
+  auto_reply: おまかせします。案を作ってください。反映はまだしないでください。
+  expect:
+    plan:
+      off: {staff: S001, date: "2026-10-21"}
+      max_changes: 1
+      only_dates: ["2026-10-21"]
+
+- id: flex-trainee
+  category: flexibility
+  title: 来週は新人を毎日同行させて
+  prompt: 来週は、新人の山本さんを毎日（月〜土）だれかに同行させてください。
+  auto_reply: 同行先はおまかせします。案を作ってください。反映はまだしないでください。
+  expect:
+    plan:
+      trainee: {staff: S007, iso_week: 43, min_days: 5}
+      respect_rules: true
+
+- id: flex-allow-over
+  category: flexibility
+  title: 少しオーバーしても全員でならして
+  prompt: 10/15（木）は田中さんがお休みです。少し上限を超えてもいいので、全員でならす案を作ってください。
+  auto_reply: おまかせします。案を作ってください。反映はまだしないでください。
+  expect:
+    plan:
+      off: {staff: S004, date: "2026-10-15"}
+      rk_flags_any: ["allow-over", "balance"]

@@ -692,6 +692,10 @@ def _swap_candidates_for_pfv(
             pfv_y = pfv_by_pw.get((y_pid, wy))
             if pfv_y is None or pfv_y.is_pinned or pfv_y.movability == "locked":
                 continue
+            # 2 名体制の患者は入れ替え相手にもしない (片方だけ動く提案を防ぐ).
+            _py = patient_by_id.get(y_pid)
+            if _py is not None and bool(getattr(_py, "requires_multiple_staff", False)):
+                continue
             y_movability = pfv_y.movability
             y_duration = vy.service_minutes  # type: ignore[attr-defined]
             sy = vy.start_time  # type: ignore[attr-defined]
@@ -1000,6 +1004,11 @@ async def find_improvement_candidates(
 
     for pfv in pfvs:
         weekday = pfv.weekday
+
+        # 赤ピン整理 (2026-10-12 §2): 2 名体制の患者は片方だけ動く提案になり得るので
+        # 候補から外す (slot 0/1 を両方同じに扱う方針の安全側).
+        if bool(getattr(patient, "requires_multiple_staff", False)):
+            continue
 
         # movability / is_pinned の除外 (設計書 §2.2).
         if pfv.is_pinned:

@@ -126,3 +126,57 @@ def test_apply_plan_with_copy_week(tmp_path):
     assert res["not_undoable"] and res["not_undoable"][0]["op"] == "copy-week"
     res = apply_plan(cfg, plan, FakeApi(existing_total=3), approved="今泉 10/12", backup="/x.sql.gz")
     assert not res["ok"] and res["applied"] == 0 and "空の週" in res["error"]
+
+
+# ---- clear-week / clear-week-undo / generate-week（青ピン廃止） ----
+from rk.opsbase import ApiError  # noqa: E402
+
+
+class ClearApi:
+    def __init__(self, left=5, gen_409=False):
+        self.left, self.gen_409, self.calls = left, gen_409, []
+
+    def get(self, path, params=None):
+        return {"items": [{"week_start": "2026-10-19", "visits": 3}]}
+
+    def call(self, method, path, body=None):
+        self.calls.append((path, dict(body or {})))
+        if path.endswith("/clear"):
+            if body["dry_run"]:
+                return {"to_delete": self.left, "kaipoke_linked": 2, "kept_checked_in": 1, "snapshot_id": None}
+            self.left = 0
+            return {"to_delete": 5, "kaipoke_linked": 2, "kept_checked_in": 1, "snapshot_id": "snap-1"}
+        if path == "/schedule/generate-week-only":
+            if self.gen_409:
+                raise ApiError(409, "not empty")
+            if body["dry_run"]:
+                return {"to_add": 100}
+            return {"visits_created": 100, "unplaced_multi_staff_patients": []}
+        raise AssertionError(path)
+
+
+def test_clear_week_flow_and_inverse():
+    impl = REG.get("clear-week")
+    op = {"op": "clear-week", "iso_year": 2026, "iso_week": 43}
+    assert impl.validate(op) == [] and impl.validate({"op": "clear-week"})
+    api = ClearApi()
+    before = impl.snapshot(api, op)
+    assert before["dry_run"]["to_delete"] == 5 and api.calls[0][1]["dry_run"] is True
+    impl.execute(api, op)
+    inv = impl.inverse(op, before)
+    assert inv == [{"op": "clear-week-undo", "iso_year": 2026, "iso_week": 43, "snapshot_id": "snap-1"}]
+    assert impl.undoable and impl.verify(api, op) == []
+    assert REG.get("clear-week-undo").request(inv[0]) == (
+        "POST", "/schedule/v2/weeks/2026/43/clear/undo", {"snapshot_id": "snap-1"})
+    assert REG.get("clear-week-undo").validate(inv[0]) == []
+
+
+def test_generate_week_refuses_nonempty_and_is_not_undoable():
+    impl = REG.get("generate-week")
+    op = {"op": "generate-week", "iso_year": 2026, "iso_week": 43}
+    assert impl.validate(op) == [] and impl.inverse(op, {}) is None
+    assert "元に戻せません" in impl.undo_note(op)
+    assert impl.snapshot(ClearApi(), op) == {"to_add": 100}
+    with pytest.raises(RkError):
+        impl.snapshot(ClearApi(gen_409=True), op)
+    assert impl.check_response(op, {"visits_created": 0})

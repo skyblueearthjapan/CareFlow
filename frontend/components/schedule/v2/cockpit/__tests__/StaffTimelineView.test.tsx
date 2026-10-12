@@ -6,7 +6,7 @@
  * ③ 3px 以内の動き = クリック → onVisitClick
  * ④ 横 pointer ドラッグ → onVisitMove の toStart が 15分スナップされる
  * ⑤ 縦ドラッグ → toStaffId が付く / レーン外は担当変更なし / 変化なしは呼ばない
- * ⑥ 青ピン・取消・過去日・閲覧のみはドラッグ不可 (理由が title と aria-label に出る)
+ * ⑥ 取消・過去日・閲覧のみはドラッグ不可 (理由が title と aria-label に出る)
  * ⑦ ドラッグ状態が次の操作へ漏れない (HIGH-1/2 の回帰)
  * ⑧ 突合マーカー (ゴースト before/after) が描かれる
  * ⑨ 氏名 ⠿ の HTML5 DnD = その日の 2 人の予定を丸ごと入れ替え (PO 2026-08-22)
@@ -333,8 +333,8 @@ describe('StaffTimelineView — ドラッグ', () => {
 });
 
 describe('StaffTimelineView — ドラッグ不可', () => {
-  it('青ピン (week_pinned) は動かない・理由が title と aria-label に出る', () => {
-    const { onVisitMove } = renderView({ visits: [visit({ id: 'vp', week_pinned: true })] });
+  it('今週だけ取消済みは動かない・理由が title と aria-label に出る', () => {
+    const { onVisitMove } = renderView({ visits: [visit({ id: 'vp', status: 'cancelled' })] });
     const bar = screen.getByTestId('tl-bar-vp');
 
     firePointer(bar, 'pointerdown', 100, 10);
@@ -342,8 +342,8 @@ describe('StaffTimelineView — ドラッグ不可', () => {
     firePointer(bar, 'pointerup', 160, 10);
 
     expect(onVisitMove).not.toHaveBeenCalled();
-    expect(bar.getAttribute('title')).toContain('青ピン');
-    expect(bar.getAttribute('aria-label')).toContain('青ピン（今週だけ固定）のため動かせません。');
+    expect(bar.getAttribute('title')).toContain('取消');
+    expect(bar.getAttribute('aria-label')).toContain('今週だけ取消済みのため動かせません。');
     expect(bar).toHaveAttribute('aria-disabled', 'true');
     expect(bar.className).toContain('cursor-not-allowed');
   });
@@ -408,9 +408,9 @@ describe('StaffTimelineView — ドラッグ状態の後始末 (HIGH-1/2 回帰)
     expect(onVisitClick.mock.calls[0][0].id).toBe('v2');
   });
 
-  it('青ピンを押した後は直前の押下が残らず、別の訪問が動かない', () => {
+  it('動かせないバーを押した後は直前の押下が残らず、別の訪問が動かない', () => {
     const { onVisitMove } = renderView({
-      visits: [visit({ id: 'v1' }), visit({ id: 'vp', start_time: '13:00', week_pinned: true })],
+      visits: [visit({ id: 'v1' }), visit({ id: 'vp', start_time: '13:00', status: 'cancelled' })],
     });
     const bar1 = screen.getByTestId('tl-bar-v1');
     const pinned = screen.getByTestId('tl-bar-vp');

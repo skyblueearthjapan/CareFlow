@@ -15,17 +15,19 @@ description: らく助で利用者の訪問を今週だけ変えるときに使�
 
 ## 1. 依頼ごとの操作
 
+> 組み直しを伴う変更（急なキャンセルで残りをならし直す・特定の曜日だけ見直す）は `rk level week|day` の指定が使える: `--cancel <訪問 ID>`（取消の操作つき）・`--days thu,fri`・`--keep-current`・`--fast`。表と約束（まず指定で・言えなければ scratch のスクリプトで `tools.leveling.api`・共有の道具は書き換えない）は `rakusuke-week-optimize` の §1-4a。
+
 ### キャンセル（お休み）
 - 振り替えない → `cancel-visit-week`（今週だけ取消）。
 - **別の日に振り替える → 取消ではなく** `move-visit-week`（その週の中で日・時刻を動かす）か、`return-to-pool`（プールへ戻して、後で置く）。
 - 罠: **今週だけ取消は保留プールに出ない**（回数にも数える）。振替のつもりで取消すと、振替先が出てこない。
-- 当日以前・打刻あり・青ピンは取り消せない（らく助が断る）。カイポケへ送ると削除になる。
+- 当日以前・打刻ありは取り消せない（らく助が断る）。カイポケへ送ると削除になる。
 - 取消をやめる: `cancel-visit-week` に `"cancel": false`。
 
 ### 時刻・曜日・コースの変更（今週だけ）
 - `move-visit-week`。元は「利用者×曜日×開始時刻」で決まる（同じ時刻に 2 件あると決まらない）。
 - **曜日を変えるときは `new_course_template_id`（移る先のコース）を必ず付ける**。付けないと旧曜日のコースに残る。
-- 2 名体制は 2 行とも動く。青ピンは動かせない。非稼働（入院・休止など）の方は断られる。
+- 2 名体制は 2 行とも動く。非稼働（入院・休止など）の方は断られる。
 
 ### 担当替え（今週だけ）
 - 1 件だけ → `assign-staff-week`（コースの担当は変えない・2 名体制の相方は触らない）。
@@ -47,7 +49,7 @@ description: らく助で利用者の訪問を今週だけ変えるときに使�
 
 ```
 rk sql patient_lookup -p name=伊東                                    # 利用者を確かめる（複数なら選択肢）
-rk get /visits -q patient_id=<UUID> -q week_start=2026-10-19 -q week_end=2026-10-25   # その週の予定（青ピン・状態・コース）
+rk get /visits -q patient_id=<UUID> -q week_start=2026-10-19 -q week_end=2026-10-25   # その週の予定（状態・コース）
 rk get /schedule/v2/board -q iso_year=2026 -q iso_week=43             # 盤面（コースと担当）
 rk get /course-templates -q office_id=<拠点>                           # コースのテンプレート（A〜E・M）
 rk get /schedule/v2/feasibility-report -q iso_year=2026 -q iso_week=43 -q days=6   # 変えた後の重なり・移動
@@ -64,7 +66,7 @@ rk get /schedule/v2/feasibility-report -q iso_year=2026 -q iso_week=43 -q days=6
 | `patch-course-staff` | コースの担当 | `course_id`（または `iso_year`・`iso_week`・`weekday`・`course`）・`staff_id` | 戻せる |
 | `add-visit-week` | 今週だけ追加 | `patient_id`・`date`・`start_time`・`duration_min`・`course_template_id`（2 名は `course_template_ids` と `staff_count: 2`） | 戻せる（足した訪問を消す） |
 | `place-from-pool` | プールから置く | add と同じ（コース必須） | 戻せる |
-| `return-to-pool` | プールへ戻す | `visit_id` | **戻せない**（バックアップから） |
+| `return-to-pool` | プールへ戻す | `visit_id` | **戻せない**（画面からは元に戻せません） |
 
 例（キャンセルと振替）:
 ```json
@@ -80,5 +82,19 @@ rk get /schedule/v2/feasibility-report -q iso_year=2026 -q iso_week=43 -q days=6
 
 - 要点: 何が・いつからいつへ・担当は誰・**利用者へのご連絡が要るか**（時刻が変わる方）・カイポケへ送る件数・元に戻せるか。
 - 選択肢:「この案で反映する／条件を変える／やめる」。
-- 反映後 `rk verify` と実現性チェック（重なりが増えていないか）を読み、3〜5 行で報告。`rk undo <run-id>` で戻せることと、戻せない操作があればバックアップからになることを添える。
+- 反映後 `rk verify` と実現性チェック（重なりが増えていないか）を読み、3〜5 行で報告。戻せる操作は「ご希望があれば戻します」、戻せない操作があれば「この操作は、画面からは元に戻せません」と添える（バックアップ・run-id は言わない）。
 - カイポケへ送るのは別（`rakusuke-kaipoke`・送る前に差分・日中・当日分は送れない）。
+
+## 案の出し方（必須・AGENTS.md §5-2）
+
+案を作るときは `headline`（結論 3 行まで）・`ops[i].reason`（1 件ごとの理由）・`issues[]`（気になる点・足りない所と選択肢）・`conditions[]`（今回だけの条件）を必ず埋める（`rk plan check` が足りないと注意する）。
+`rk plan report` で出した帳票（案のペイン）を指し、チャットでは **結論・気になる点・確かめの問い（①この案で反映する ②ここを直してほしい ③やめる）** だけを話す。
+
+> **最後に必ず**（案を出したら、この順で。長くしない）
+> ① 結論と気になる点を短く　② 「案は画面の右の欄（シート）にあります。見てください」と一言
+> ③ 「どれにしますか？」と聞き、次の 3 つを**この番号のまま、1 行ずつ分けて**示す（聞かずに終わらない・1 行に並べない）:
+> 　①この案で反映する
+> 　②ここを直してほしい
+> 　③やめる
+> 進み具合の一言も**日本語で**（英語を書かない）
+「ここを直して」が出たら案を作り直し（`compare_to`・`diff` に「案 1 との違い」）、了承が出るまで繰り返す。了承 → `rk backup` → `rk apply` → `rk verify` → 短い「反映しました」の報告。

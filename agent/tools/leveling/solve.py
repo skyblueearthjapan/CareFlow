@@ -16,10 +16,12 @@ import json
 import sys
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Callable
 
 LEVELING_DIR = Path(__file__).resolve().parents[3] / "docs" / "tools" / "week-leveling"
 sys.path.insert(0, str(LEVELING_DIR))
 
+import level_knobs  # noqa: E402
 from level import parse_off, to_pdf  # noqa: E402
 from report import check, flags_for, new_assignments, write_a4, write_excel  # noqa: E402
 from solver import LUNCH_TARGET, run  # noqa: E402
@@ -58,7 +60,7 @@ def staff_dict(s) -> dict:
     }
 
 
-def result_dict(d, visits, staff, out, hist_by_day, lunch_by_day, errors, warnings, flags, opts) -> dict:
+def result_dict(d, visits, staff, out, hist_by_day, lunch_by_day, errors, warnings, flags, opts, conditions=None) -> dict:
     days = {}
     for day, (vehicles, routes, dropped) in sorted(out.items()):
         days[str(day)] = {
@@ -76,7 +78,8 @@ def result_dict(d, visits, staff, out, hist_by_day, lunch_by_day, errors, warnin
         }
     return {
         "week_start": d["week_start"],
-        "options": {k: (v if k != "off" else [[c, str(dd) if dd else None] for c, dd in v]) for k, v in opts.items()},
+        "options": {k: (v if k != "off" else [[c, str(dd) if dd else None] for c, dd in v])
+                    for k, v in opts.items() if k != "extra_constraints"},
         "visits": [visit_dict(v) for v in visits],
         "staff": [staff_dict(s) for s in staff.values()],
         "days": days,
@@ -84,70 +87,54 @@ def result_dict(d, visits, staff, out, hist_by_day, lunch_by_day, errors, warnin
         "warnings": warnings,
         "flags": {vid: [[k, m] for k, m in fl] for vid, fl in flags.items()},
         "dropped_visits": d.get("dropped_visits") or [],
+        "cancelled_visits": d.get("cancelled_visits") or [],
+        "conditions": conditions or [],
         "special_added": d.get("special_added") or [],
         "special_skipped": d.get("special_skipped") or [],
     }
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="ならしの計算（rk level から呼ぶ）")
-    ap.add_argument("--week", required=True)
-    ap.add_argument("--in", dest="in_dir", required=True, help="week.json / history.json のある所")
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--config", required=True)
-    ap.add_argument("--day", action="append", default=[])
-    ap.add_argument("--off", action="append", default=[])
-    ap.add_argument("--allow-over", type=int, default=0)
-    ap.add_argument("--over-before-manager", action="store_true")
-    ap.add_argument("--balance", action="store_true")
-    ap.add_argument("--drop", action="append", default=[])
-    ap.add_argument("--add-special", action="store_true")
-    ap.add_argument("--no-app-check", action="store_true")
-    ap.add_argument("--no-pdf", action="store_true")
-    ap.add_argument("--seconds", type=int, default=30)
-    a = ap.parse_args(argv)
 
-    config = json.loads(Path(a.config).read_text(encoding="utf-8"))
-    any_day = date.fromisoformat(a.week)
+
+def compute(in_dir, out_dir, config: dict, week: str, *, days=None, opts: dict | None = None, seconds: int = 30,
+            no_app_check: bool = False, no_pdf: bool = False, custom_notes: list[str] | None = None,
+            log: Callable[[str], None] = lambda m: print(m, flush=True)) -> tuple[dict, dict]:
+    """計算 → 決まりの数え直し → 診断 → Excel/A4/summary.json/result.json。(summary, result) を返す。
+    opts = solver.run の opts（allow_over など + level_knobs の「今回だけの条件」+ weights / extra_constraints）。
+    days = 計算する日 (date の集合・None = 週全部)。custom_notes = 自作の条件の説明（A4 の「今回だけの条件」に出す）。"""
+    in_dir, out_dir = Path(in_dir), Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    any_day = date.fromisoformat(week)
     monday = any_day - timedelta(days=any_day.weekday())
     _, iso_week, _ = monday.isocalendar()
-    days = {date.fromisoformat(x) for x in a.day} or None
-    off = parse_off(a.off)
-    in_dir, out_dir = Path(a.in_dir), Path(a.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    opts = {
-        "allow_over": a.allow_over,
-        "over_before_manager": a.over_before_manager,
-        "balance": a.balance,
-        "off": off,
-        "drop": [x.strip().lower() for x in a.drop],
-        "add_special": a.add_special,
-    }
+    opts = {"allow_over": 0, "over_before_manager": False, "balance": False, "off": [], "drop": [],
+            "add_special": False, **(opts or {})}
     d, visits, staff, out, hist_by_day, lunch_by_day = run(
-        in_dir / "week.json", in_dir / "history.json", config, a.seconds, opts, days,
-        log=lambda m: print(m, flush=True),
+        in_dir / "week.json", in_dir / "history.json", config, seconds, opts, days, log=log,
     )
     cap = config.get("cap_regular", 6)
-    errors, warnings = check(d, out, cap, a.allow_over)
+    allow_over = opts["allow_over"]
+    errors, warnings = check(d, out, cap, allow_over)
     flags = flags_for(out, hist_by_day)
+    names = {s["code"]: s["name"].replace("　", " ").split(" ")[0] for s in d["staff"]}
+    conditions = level_knobs.describe(opts, names, days, custom_notes)
+    warnings = warnings + [f"今回だけの条件（決まりをゆるめる）: {c['text']}" for c in conditions if c["relax"]]
 
     diag = None
-    if not a.no_app_check:
+    if not no_app_check:
         from diagnose import diagnose
 
-        names = {s["id"]: s["name"] for s in d["staff"]}
+        names_by_id = {s["id"]: s["name"] for s in d["staff"]}
         try:
-            diag = diagnose(d, visits, out, hist_by_day, cap, a.allow_over, opts, names,
-                            log=lambda m: print(m, flush=True))
+            diag = diagnose(d, visits, out, hist_by_day, cap, allow_over, opts, names_by_id, log=log)
         except Exception as exc:  # noqa: BLE001 — 診断が使えなくても案は出す
-            print(f"アプリの物差しでの診断は飛ばしました: {exc}", flush=True)
+            log(f"アプリの物差しでの診断は飛ばしました: {exc}")
 
     title = f"週{iso_week}（{monday:%Y/%m/%d}〜{monday + timedelta(days=6):%m/%d}）ならし案"
     stats = write_excel(out_dir / "leveling.xlsx", title, d, visits, out, errors, warnings, cap, {}, diag,
-                        lunch_by_day)
-    write_a4(out_dir / "leveling-a4.html", title, d, visits, out, hist_by_day, {}, diag, lunch_by_day)
-    pdf = None if a.no_pdf else to_pdf(out_dir / "leveling-a4.html")
+                        lunch_by_day, conditions)
+    write_a4(out_dir / "leveling-a4.html", title, d, visits, out, hist_by_day, {}, diag, lunch_by_day, conditions)
+    pdf = None if no_pdf else to_pdf(out_dir / "leveling-a4.html")
 
     placed = new_assignments(out)
     moved = [m for f in flags.values() for k, m in f if k == "move"]
@@ -157,12 +144,14 @@ def main(argv=None) -> int:
         "visits": len(visits),
         "unplaced": sum(1 for v in visits if v.id not in placed),
         "dropped_visits": len(d.get("dropped_visits") or []),
+        "cancelled_visits": len(d.get("cancelled_visits") or []),
         "special_added": len(d.get("special_added") or []),
         "special_skipped_has_visit": len(d.get("special_skipped") or []),
         **stats,
         "rule_errors": len(errors),
         "lunch_30_days": sorted(str(x) for x, m in lunch_by_day.items() if m < LUNCH_TARGET),
         "warnings": len(warnings),
+        "conditions": [c["text"] for c in conditions],
         "moved_visits": len(moved),
         "max_move_min": max(map(abs, moved)) if moved else 0,
         "manager_overtime_visits": sum(1 for f in flags.values() for k, _ in f if k == "overtime"),
@@ -190,9 +179,52 @@ def main(argv=None) -> int:
         },
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    res = result_dict(d, visits, staff, out, hist_by_day, lunch_by_day, errors, warnings, flags, opts)
+    res = result_dict(d, visits, staff, out, hist_by_day, lunch_by_day, errors, warnings, flags, opts, conditions)
     res["summary"] = summary
     (out_dir / "result.json").write_text(json.dumps(res, ensure_ascii=False), encoding="utf-8")
+    return summary, res
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="ならしの計算（rk level から呼ぶ）")
+    ap.add_argument("--week", required=True)
+    ap.add_argument("--in", dest="in_dir", required=True, help="week.json / history.json のある所")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--config", required=True)
+    ap.add_argument("--day", action="append", default=[])
+    ap.add_argument("--off", action="append", default=[])
+    ap.add_argument("--allow-over", type=int, default=0)
+    ap.add_argument("--over-before-manager", action="store_true")
+    ap.add_argument("--balance", action="store_true")
+    ap.add_argument("--drop", action="append", default=[])
+    ap.add_argument("--add-special", action="store_true")
+    ap.add_argument("--no-app-check", action="store_true")
+    ap.add_argument("--no-pdf", action="store_true")
+    ap.add_argument("--seconds", type=int, default=None)
+    level_knobs.add_args(ap)
+    a = ap.parse_args(argv)
+
+    config = json.loads(Path(a.config).read_text(encoding="utf-8"))
+    any_day = date.fromisoformat(a.week)
+    monday = any_day - timedelta(days=any_day.weekday())
+    try:
+        knob_opts = level_knobs.from_args(a)
+        weekdays = level_knobs.parse_weekdays(a.days) if a.days else []
+    except ValueError as e:
+        ap.error(str(e))
+    days = {date.fromisoformat(x) for x in a.day} | {monday + timedelta(days=w) for w in weekdays} or None
+    seconds = a.seconds or (level_knobs.FAST_SECONDS if a.fast else 30)
+    opts = {
+        "allow_over": a.allow_over,
+        "over_before_manager": a.over_before_manager,
+        "balance": a.balance,
+        "off": parse_off(a.off),
+        "drop": [x.strip().lower() for x in a.drop],
+        "add_special": a.add_special,
+        **knob_opts,
+    }
+    summary, _res = compute(a.in_dir, a.out, config, a.week, days=days, opts=opts, seconds=seconds,
+                            no_app_check=a.no_app_check, no_pdf=a.no_pdf)
     print(json.dumps({k: summary[k] for k in ("visits", "unplaced", "rule_errors", "warnings")}, ensure_ascii=False))
     return 0
 

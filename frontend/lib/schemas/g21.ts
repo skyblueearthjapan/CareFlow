@@ -2,8 +2,6 @@
  * Phase G-21 zod schemas.
  *
  * Backend endpoints (T1/T2) と完全一致させる:
- *   - PATCH /api/v1/patients/fixed-visits/{pfv_id}/pin       body: { is_pinned: boolean }
- *   - POST  /api/v1/patients/fixed-visits/pin/bulk           body: [{pfv_id, is_pinned}, ...]
  *   - GET   /api/v1/patients/{patient_id}/same-address-candidates
  *   - POST  /api/v1/patient-same-address-links               body: {patient_a_id, patient_b_id, pair_mode, note?}
  *   - DELETE /api/v1/patient-same-address-links/{a}/{b}
@@ -13,45 +11,6 @@
  *   - DELETE /api/v1/office-feature-flags/{office_id}/{feature_key}
  */
 import { z } from 'zod';
-
-// ─────────────────────────────────────────────────────────────────────────
-// 完全固定 PFV (pin)
-// ─────────────────────────────────────────────────────────────────────────
-
-/** PATCH /pin リクエスト body. */
-export const pfvPinPatchSchema = z.object({
-  is_pinned: z.boolean(),
-});
-export type PfvPinPatch = z.infer<typeof pfvPinPatchSchema>;
-
-/** bulk PUT/POST 1 件分. */
-export const pfvPinBulkItemSchema = z.object({
-  pfv_id: z.string().uuid(),
-  is_pinned: z.boolean(),
-});
-export type PfvPinBulkItem = z.infer<typeof pfvPinBulkItemSchema>;
-
-/**
- * bulk POST body は items[] そのもの.
- *
- * Phase G-21 T4 reviewer L2: BE 側 (`pin/bulk` 422 検証) と同様、payload 内に
- * 重複した `pfv_id` があれば FE 側でも事前検出して error にする (= 同 PFV を
- * 矛盾した `is_pinned` 値で複数回更新するような不整合 payload を防ぐ).
- */
-export const pfvPinBulkRequestSchema = z.array(pfvPinBulkItemSchema).superRefine((items, ctx) => {
-  const seen = new Set<string>();
-  items.forEach((it, i) => {
-    if (seen.has(it.pfv_id)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: [i, 'pfv_id'],
-        message: '同じ pfv_id が複数回指定されています',
-      });
-    }
-    seen.add(it.pfv_id);
-  });
-});
-export type PfvPinBulkRequest = z.infer<typeof pfvPinBulkRequestSchema>;
 
 // ─────────────────────────────────────────────────────────────────────────
 // pair_mode (同住所紐付け)

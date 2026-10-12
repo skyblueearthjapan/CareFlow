@@ -183,10 +183,10 @@ def test_cancel_request_inverse_roundtrip():
     assert impl.inverse(o, {"visit": {"id": V1, "status": "cancelled"}}) == []
 
 
-def test_cancel_snapshot_blue_pin_note_and_validate():
+def test_cancel_snapshot_and_validate():
     impl = op("cancel-visit-week")
-    before = impl.snapshot(FakeApi({f"/visits/{V1}": visit(week_pinned=True)}), {"visit_id": V1})
-    assert any("青ピン" in n for n in before["notes"])
+    before = impl.snapshot(FakeApi({f"/visits/{V1}": visit()}), {"visit_id": V1})
+    assert before["notes"] == []
     assert impl.validate({"visit_id": V1, "cancel": "yes"})
     assert impl.validate({"visit_id": V1, "reason": "x" * 201})
 

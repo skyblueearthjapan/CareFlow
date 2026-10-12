@@ -1,0 +1,9 @@
+[Unit]
+Description=CareLink: prune old app DB backups in /opt/carelink/backups (daily 30d + monthly 12m, pre-* 60d, newest 3 kept)
+After=docker.service
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/bin/bash /opt/carelink/agent/deploy/cleanup/prune-app-backups.sh --apply

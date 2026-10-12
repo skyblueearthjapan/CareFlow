@@ -1,7 +1,7 @@
 """本番から 1 週分の材料を読み取り専用で取り出す (ssh → psql)。書き込みは一切しない。
 
 出力: <out>/week.json (訪問・利用者・職員・勤務・休み・NG・予定・事業所・移動の設定・特別訪問週間の未配置の○。
-      固定枠は読まない) と
+      赤ピン(完全固定)の枠 pfv_locked のみ読む) と
       <out>/history.json (直前 4 週の担当歴 = ローテーション用)。利用者名を含むので git に入れない。
 """
 
@@ -46,6 +46,15 @@ select json_build_object(
      and p.deleted_at is null and p.status='active'
      and (m.status='pool' or (m.status='placed' and not exists (
        select 1 from visits w where w.id=m.placed_visit_id and w.deleted_at is null and w.status<>'cancelled')))) x),
+ -- 赤ピン (完全固定 = 曜日・時刻を固定。担当・コースは動く: docs/plans/red-pin-simplify-design.md K-2/K-5)。
+ -- 固定訪問の枠 (mode=normal) のうち movability='locked' (または is_pinned) の枠。weekday は月=0
+ 'pfv_locked', (select coalesce(json_agg(row_to_json(x)), '[]'::json) from (
+   select f.patient_id, f.weekday, to_char(f.start_time, 'HH24:MI') start_time, f.slot_index,
+          -- 同じ曜日に赤でない枠もあるか (今週だけ動かした訪問を赤に結び付けてよいかの判定用)
+          exists (select 1 from patient_fixed_visits g where g.patient_id=f.patient_id and g.weekday=f.weekday
+                  and g.mode='normal' and not (g.movability='locked' or g.is_pinned)) has_unlocked
+   from patient_fixed_visits f
+   where f.mode='normal' and (f.movability='locked' or f.is_pinned)) x),
  'ng', (select json_agg(row_to_json(x)) from (select patient_id, staff_id from patient_ng_staff) x),
  -- 移動の速さ・ゆとり (アプリの診断と同じ設定。0 行なら既定値)
  'scheduling_settings', (select row_to_json(x) from (

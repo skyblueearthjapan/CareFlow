@@ -99,7 +99,6 @@ def _visit(
     start: time = time(10, 0),
     status: str = VISIT_STATUS_PLANNED,
     source: str = "auto",
-    week_pinned: bool = False,
     group_id: UUID | None = None,
 ) -> Visit:
     return Visit(
@@ -111,7 +110,6 @@ def _visit(
         status=status,
         source=source,
         required_staff_count=1,
-        week_pinned=week_pinned,
         visit_group_id=group_id,
     )
 
@@ -154,19 +152,18 @@ async def test_deactivate_cancels_future_planned_only(db) -> None:
     future_2 = _visit(patient, today + timedelta(days=8), start=time(11, 0))
     completed = _visit(patient, today + timedelta(days=2), start=time(12, 0), status="completed")
     in_prog = _visit(patient, today + timedelta(days=2), start=time(17, 0), status="in_progress")
-    pinned = _visit(patient, today + timedelta(days=3), start=time(13, 0), week_pinned=True)
     checked = _visit(patient, today + timedelta(days=4), start=time(14, 0))
     group_id = uuid4()
     pair_a = _visit(patient, today + timedelta(days=5), start=time(15, 0), group_id=group_id)
     pair_b = _visit(patient, today + timedelta(days=5), start=time(16, 0), group_id=group_id)
-    db.add_all([past, future_1, future_2, completed, in_prog, pinned, checked, pair_a, pair_b])
+    db.add_all([past, future_1, future_2, completed, in_prog, checked, pair_a, pair_b])
     await db.flush()
     db.add(_checkin(checked))
     await db.commit()
 
     impact = await compute_impact(db, patient, to_status="admitted")
-    assert impact.visits.excluded == {"checked_in": 1, "in_progress": 0, "week_pinned": 1}, (
-        "打刻済み / 青ピンは除外理由として数える (in_progress は planned でないので対象外)"
+    assert impact.visits.excluded == {"checked_in": 1, "in_progress": 0}, (
+        "打刻済みは除外理由として数える (in_progress は planned でないので対象外)"
     )
     assert impact.visits.pair_groups == 1
 
@@ -181,9 +178,9 @@ async def test_deactivate_cancels_future_planned_only(db) -> None:
         await db.refresh(v)
         assert v.status == VISIT_STATUS_CANCELLED
         assert v.source == VISIT_SOURCE_STATUS_CANCEL
-    for v in (past, pinned, checked):
+    for v in (past, checked):
         await db.refresh(v)
-        assert v.status == VISIT_STATUS_PLANNED, "過去日 / 青ピン / 打刻済みは不変"
+        assert v.status == VISIT_STATUS_PLANNED, "過去日 / 打刻済みは不変"
         assert v.source == "auto"
     for v in (completed, in_prog):
         await db.refresh(v)
@@ -204,20 +201,17 @@ async def test_deactivate_impact_matches_apply(db) -> None:
     office = await _office(db)
     admin = await _admin(db)
     patient = await _patient(db, office)
-    pinned = _visit(patient, today + timedelta(days=1), start=time(9, 0), week_pinned=True)
     db.add_all(
         [
             _visit(patient, today + timedelta(days=1), start=time(10, 0)),
             _visit(patient, today + timedelta(days=2), start=time(10, 0), source="manual_week"),
             _visit(patient, today + timedelta(days=9), start=time(10, 0)),
-            pinned,
         ]
     )
     await db.commit()
 
     impact = await compute_impact(db, patient, to_status="admitted")
     assert impact.direction == "deactivate"
-    assert impact.visits.excluded["week_pinned"] == 1
     assert impact.visits.by_source == {"auto": 2, "manual_week": 1}
     assert sum(w.count for w in impact.visits.by_week) == impact.visits.total
     assert impact.kaipoke_weeks == len(impact.visits.by_week)
@@ -1157,12 +1151,11 @@ async def test_pending_request_approval_to_cancelled_does_not_remove(db) -> None
 
 
 @pytest.mark.asyncio
-async def test_end_leaves_pinned_manual_cancel_and_before_from_date_alone(db) -> None:
+async def test_end_leaves_manual_cancel_and_before_from_date_alone(db) -> None:
     today = today_jst()
     office = await _office(db)
     admin = await _admin(db)
     patient = await _patient(db, office)
-    pinned = _visit(patient, today + timedelta(days=3), start=time(13, 0), week_pinned=True)
     manual = _visit(
         patient,
         today + timedelta(days=4),
@@ -1178,7 +1171,7 @@ async def test_end_leaves_pinned_manual_cancel_and_before_from_date_alone(db) ->
         source=VISIT_SOURCE_STATUS_CANCEL,
     )
     later = _visit(patient, today + timedelta(days=5), start=time(13, 0))
-    db.add_all([pinned, manual, todays, later])
+    db.add_all([manual, todays, later])
     await db.commit()
 
     result = await apply_status_change(
@@ -1192,10 +1185,9 @@ async def test_end_leaves_pinned_manual_cancel_and_before_from_date_alone(db) ->
     await db.commit()
 
     assert result.removed_visit_count == 1
-    for v in (pinned, manual, todays):
+    for v in (manual, todays):
         await db.refresh(v)
         assert v.deleted_at is None
-    assert pinned.status == VISIT_STATUS_PLANNED
     assert manual.source == "manual_cancel"
     await db.refresh(later)
     assert later.deleted_at is not None
@@ -1327,9 +1319,8 @@ async def test_suspended_to_end_removes_leftover_planned_visits(db) -> None:
     admin = await _admin(db)
     patient = await _patient(db, office, status="suspended")
     leftover = _visit(patient, today + timedelta(days=2), start=time(9, 0))
-    pinned = _visit(patient, today + timedelta(days=3), start=time(9, 0), week_pinned=True)
     checked = _visit(patient, today + timedelta(days=4), start=time(9, 0))
-    db.add_all([leftover, pinned, checked])
+    db.add_all([leftover, checked])
     await db.flush()
     db.add(_checkin(checked))
     await db.commit()
@@ -1345,7 +1336,7 @@ async def test_suspended_to_end_removes_leftover_planned_visits(db) -> None:
     assert result.removed_visit_count == 1
     await db.refresh(leftover)
     assert leftover.deleted_at is not None
-    for v in (pinned, checked):
+    for v in (checked,):
         await db.refresh(v)
         assert v.deleted_at is None
         assert v.status == VISIT_STATUS_PLANNED

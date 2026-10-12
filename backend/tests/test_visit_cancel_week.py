@@ -219,7 +219,8 @@ async def test_cancel_rejects_checked_in_visit(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancel_rejects_blue_pinned_visit(client, db) -> None:
+async def test_cancel_ignores_stale_blue_pin_flag(client, db) -> None:
+    """青ピン廃止 (2026-10-12): 列に true が残っていても取消せる."""
     admin = await _make_user(db, email="vcw-6@example.com", role="admin")
     patient = await _make_patient(db, code="VCW-6")
     visit = await _make_visit(db, patient=patient, week_pinned=True)
@@ -227,10 +228,9 @@ async def test_cancel_rejects_blue_pinned_visit(client, db) -> None:
     res = await client.post(
         _URL, headers=_bearer(admin), json={"visit_id": str(visit.id), "cancel": True}
     )
-    assert res.status_code == 422, res.text
-    assert "青ピン" in res.json()["detail"]
+    assert res.status_code == 200, res.text
     await db.refresh(visit)
-    assert visit.status == "planned"
+    assert visit.status == "cancelled"
 
 
 # ---------------------------------------------------------------------------
@@ -562,28 +562,6 @@ async def _cancel_then_undo(client, db, admin, visit: Visit) -> dict[str, int]:
     undo = await client.post("/api/v1/schedule/v2/op-log/undo", headers=_bearer(admin), json=week)
     assert undo.status_code == 200, undo.text
     return week
-
-
-@pytest.mark.asyncio
-async def test_redo_conflicts_when_visit_became_blue_pinned(client, db) -> None:
-    admin = await _make_user(db, email="vcw-16@example.com", role="admin")
-    patient = await _make_patient(db, code="VCW-16")
-    visit = await _make_visit(db, patient=patient)
-    week = await _cancel_then_undo(client, db, admin, visit)
-
-    pin = await client.patch(
-        f"/api/v1/schedule/v2/visits/{visit.id}/week-pin",
-        headers=_bearer(admin),
-        json={"pinned": True},
-    )
-    assert pin.status_code == 200, pin.text
-
-    redo = await client.post("/api/v1/schedule/v2/op-log/redo", headers=_bearer(admin), json=week)
-    assert redo.status_code == 409, redo.text
-    assert "青ピン" in redo.json()["detail"]
-
-    rows = await _all_visits(db, patient)
-    assert rows[0].status == "planned"  # 取り消されていない
 
 
 @pytest.mark.asyncio

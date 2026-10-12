@@ -7,7 +7,7 @@
  *   - 効果を主役に: 「移動 −18分/週（−2.1km/週）」を text-success で大きく.
  *   - 変わるもの / 変わらないもの (BE 生成の日本語差分).
  *   - 要確認ラベル: requires_patient_confirmation=true のとき warning-bg バッジ
- *     「可動域未設定・患者様への確認推奨」(movability=unknown の時刻提案).
+ *     「完全固定ではない・患者様への確認推奨」(完全固定でない枠の時刻提案).
  *   - staff_warnings: P0-1 の proposeWarningLabel 辞書を流用して日本語化.
  *   - [採用][見送り]: canEdit=false のときは非表示 (RBAC は BE でも担保).
  *
@@ -316,7 +316,7 @@ function SwapCard({
               className="rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
               data-testid="improvement-requires-confirmation"
             >
-              可動域未設定・患者様への確認推奨
+              完全固定ではない枠・患者様への確認推奨
             </span>
           ) : null}
           {cp.within_preference ? (
@@ -331,7 +331,7 @@ function SwapCard({
               className="rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
               data-testid="improvement-swap-counterpart-confirmation"
             >
-              {cp.patient_name} 様の可動域未設定
+              {cp.patient_name} 様は完全固定ではない枠
             </span>
           ) : null}
         </div>
@@ -417,7 +417,7 @@ export function ImprovementSuggestionCard({
             className="rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
             data-testid="improvement-requires-confirmation"
           >
-            可動域未設定・患者様への確認推奨
+            完全固定ではない枠・患者様への確認推奨
           </span>
         ) : null}
       </div>

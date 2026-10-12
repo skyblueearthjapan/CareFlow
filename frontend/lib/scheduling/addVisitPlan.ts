@@ -49,16 +49,14 @@ export interface VisitLite {
   staff_name?: string | null;
   course_id?: string | null;
   course_label?: string | null;
-  /** 青ピン。true の訪問は動かせない (BE 422 と一致・§5)。 */
-  week_pinned: boolean;
   /** `planned` / `completed` / `cancelled` 等。動かせるのは `planned` だけ。 */
   status: string;
   source: string;
 }
 
-/** 「動かす元」に選べる訪問か (§5: planned・青ピンでない・当日以前でない)。 */
+/** 「動かす元」に選べる訪問か (§5: planned・当日以前でない)。 */
 export function isMovableSourceVisit(visit: VisitLite, todayIso: string): boolean {
-  return visit.status === 'planned' && !visit.week_pinned && visit.visit_date > todayIso;
+  return visit.status === 'planned' && visit.visit_date > todayIso;
 }
 
 /** 1 日付ぶんの決定。 */
@@ -298,7 +296,6 @@ function daysBetween(aIso: string, bIso: string): number {
  * 動かす元の既定 (PO 決定 9): **同じ曜日 → 無ければ最も近い日付**。
  * 同距離なら早い日付、さらに同じなら早い開始時刻。候補が無ければ null。
  *
- * 青ピン (`week_pinned`) の除外は呼び出し側で行う（BE 422 と一致・§5）。
  */
 export function pickDefaultSourceVisit(
   candidates: VisitLite[],

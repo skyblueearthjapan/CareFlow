@@ -56,7 +56,6 @@ function visitLite(over: Partial<VisitLite> = {}): VisitLite {
     start_time: '09:30',
     end_time: '10:05',
     primary_staff_id: null,
-    week_pinned: false,
     status: 'planned',
     source: 'auto',
     ...over,

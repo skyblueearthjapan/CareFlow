@@ -1,7 +1,7 @@
 /**
  * Auto-schedule v2 共通ユーティリティ.
  *
- * DiffAddDialog / FullOptimizeDialog / ResetToFixedButton で重複していた
+ * DiffAddDialog / FullOptimizeDialog で重複していた
  * 小関数を集約する。
  */
 import { toast } from 'sonner';

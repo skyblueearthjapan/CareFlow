@@ -1306,7 +1306,7 @@ describe('PatientFixedVisitsPanel', () => {
 
       expect(await screen.findByTestId('pfv-locked-checkbox-0')).toBeChecked();
       expect(screen.getByTestId('pfv-locked-note-0')).toHaveTextContent(
-        'システムはこの枠を動かしません',
+        'システムはこの枠の曜日と時刻を動かしません',
       );
     });
 
@@ -1467,8 +1467,8 @@ describe('PatientFixedVisitsPanel', () => {
       expect(call.items[0]?.is_pinned).toBe(false);
     });
 
-    it('LK-8. 旧 4 段階の値が入っている行は「旧設定」表示され、チェックは OFF 扱い', async () => {
-      // 本番実績 0 件だが、万一入っていても黙って化けない。保存すれば 2 値に収束。
+    it('LK-8. 未設定 (unknown) の行はチェック OFF で、「旧設定」の表示は出ない', async () => {
+      // 完全固定は locked / unknown の 2 値だけ。旧 4 段階の表示は廃止。
       setupMocks({
         reads: [
           {
@@ -1481,7 +1481,7 @@ describe('PatientFixedVisitsPanel', () => {
             course_template_id: null,
             slot_index: 0,
             is_pinned: false,
-            movability: 'day_flexible',
+            movability: 'unknown',
             created_at: '2026-01-01T00:00:00',
             updated_at: '2026-01-01T00:00:00',
           },
@@ -1489,10 +1489,8 @@ describe('PatientFixedVisitsPanel', () => {
       });
       render(<PatientFixedVisitsPanel patientId={PATIENT_ID} />);
 
-      expect(await screen.findByTestId('pfv-legacy-movability-0')).toHaveTextContent(
-        '曜日変更可（旧設定）',
-      );
-      expect(screen.getByTestId('pfv-locked-checkbox-0')).not.toBeChecked();
+      expect(await screen.findByTestId('pfv-locked-checkbox-0')).not.toBeChecked();
+      expect(screen.queryByTestId('pfv-legacy-movability-0')).not.toBeInTheDocument();
     });
 
     it('LK-9. patientFixedVisitV2BaseSchema が movability を受理する', async () => {
@@ -1563,7 +1561,6 @@ describe('PatientFixedVisitsPanel', () => {
         status: 'planned',
         // BE の許可リスト (_RESET_DELETABLE_SOURCES) に含まれる = 作り直しで消える側.
         source: 'auto',
-        week_pinned: false,
         staff_name: '高岡',
         created_at: '2026-09-01T00:00:00',
         updated_at: '2026-09-01T00:00:00',
@@ -1635,7 +1632,7 @@ describe('PatientFixedVisitsPanel', () => {
       );
     });
 
-    it('E-3. (B) の影響プレビュー: 保護なし = 消える / week_pinned・manual_week = 保護', async () => {
+    it('E-3. (B) の影響プレビュー: 保護なし = 消える / import・manual_week = 保護', async () => {
       setupMocks({
         reads: [],
         visits: [
@@ -1643,7 +1640,7 @@ describe('PatientFixedVisitsPanel', () => {
           makeVisit({
             id: '00000000-0000-0000-0000-0000000000a2',
             visit_date: '2026-09-15',
-            week_pinned: true,
+            source: 'import',
             staff_name: '熊澤',
           }),
           makeVisit({
@@ -1667,7 +1664,7 @@ describe('PatientFixedVisitsPanel', () => {
 
       const prot = screen.getByTestId('pfv-scope-protected');
       expect(prot).toHaveTextContent('保護される予定 2 件');
-      expect(prot).toHaveTextContent('今週固定・今週のみ・取込・実施済み/手動');
+      expect(prot).toHaveTextContent('今週のみ・取込・実施済み/手動');
       const protList = screen.getByTestId('pfv-scope-protected-list');
       expect(protList).toHaveTextContent('熊澤');
       expect(protList).toHaveTextContent('髙梨');

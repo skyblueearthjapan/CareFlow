@@ -109,13 +109,13 @@ def test_off_week_snapshot_and_verify():
     impl = op("staff-off-week")
     o = {"staff_id": S1, "date": "2026-10-15", "to_staff_id": S2}
     api = FakeApi({
-        "/visits": [{"id": "v1", "status": "planned", "week_pinned": True, "primary_staff_id": S1,
+        "/visits": [{"id": "v1", "status": "planned", "primary_staff_id": S1,
                      "start_time": "09:00:00", "staff_assignments": []}],
         "/courses": [{"id": C1, "assigned_staff_id": S1, "code": "A"}, {"id": "c2", "assigned_staff_id": S2}],
         f"/staff/{S1}/overrides": [],
     })
     before = impl.snapshot(api, o)
-    assert any("青ピン" in n for n in before["notes"]) and before["courses"][0]["id"] == C1
+    assert before["notes"] == [] and before["courses"][0]["id"] == C1
     errs = impl.verify(api, o)
     assert len(errs) == 3  # 休みなし・コース残り・主担当残り
     api.routes.update({"/visits": [], "/courses": [{"id": C1, "assigned_staff_id": S2}],

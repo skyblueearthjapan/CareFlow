@@ -1,11 +1,11 @@
-"""週のピン (青ピン) と取込 (import) の週生成保護 — PO 決定 2026-08-09.
+"""取込 (import) の週生成保護 / 青ピン廃止後はフラグを読まない — PO 決定 2026-08-09, 2026-10-12.
 
 仕様: docs/plans/pin-and-movability-spec.md §5
 
 検証観点:
-  1. week_pinned=true の visit は reset-to-fixed で soft-delete されない
-     (source='auto' でも守られる = フラグが source と独立に効く)
-  2. week_pinned の日は型からの再生成をスキップする (重複挿入されない)
+  1. (青ピン廃止 2026-10-12) week_pinned=true が列に残っていても守りにならない:
+     source='auto' の訪問は reset-to-fixed で消え、型から作り直される
+  2. (同上) generate-week-only の展開でも同様
   3. **import の日も再生成をスキップする** (案 B: 取込が正の原則。旧実装は
      削除からは保護していたが日スキップが無く、取込週で週生成を回すと型の
      時刻で重複挿入され得た)
@@ -121,9 +121,8 @@ async def _active_visits(db, patient_id) -> list[Visit]:
 
 
 @pytest.mark.asyncio
-async def test_week_pinned_auto_visit_survives_reset_and_blocks_regeneration(db) -> None:
-    """核心: source='auto' でも week_pinned=true なら reset で消えず、
-    その日は型からの再生成もスキップされる (重複しない)."""
+async def test_week_pinned_flag_no_longer_protects_auto_visit_from_reset(db) -> None:
+    """青ピン廃止: 列に true が残る source='auto' の訪問も reset で消え、型から作り直される."""
     office = await _make_office(db, "wpr-1-office")
     p = await _make_patient(db, "WPR-1", office_id=office.id)
     # 型: 月曜 09:00。実配置: 月曜 10:25 (ズレ) + 青ピン。
@@ -138,13 +137,9 @@ async def test_week_pinned_auto_visit_survives_reset_and_blocks_regeneration(db)
     await db.commit()
 
     survivors = await _active_visits(db, p.id)
-    ids = [v.id for v in survivors]
-    assert pinned.id in ids, "青ピン (source=auto) は reset で消えない"
+    assert pinned.id not in [v.id for v in survivors], "フラグはもう守りにならない"
     mon_rows = [v for v in survivors if v.visit_date == MON]
-    assert len(mon_rows) == 1, (
-        f"青ピンの日は型から再生成されない (重複しない): {[(v.start_time, v.source) for v in mon_rows]}"
-    )
-    assert mon_rows[0].start_time == time(10, 25)
+    assert [v.start_time for v in mon_rows] == [time(9, 0)], "型の時刻で作り直される"
 
 
 # ---------------------------------------------------------------------------
@@ -186,9 +181,8 @@ async def test_import_day_blocks_regeneration(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_week_pinned_survives_generate_week_only(db) -> None:
-    """Layer1 の週生成 (source='auto' を白紙化→再展開) でも青ピンは残り、
-    その日は再展開もスキップされる."""
+async def test_week_pinned_flag_no_longer_protects_in_generate_week_only(db) -> None:
+    """青ピン廃止: Layer1 の展開 (source='auto' を白紙化→再展開) でフラグは守りにならない."""
     office = await _make_office(db, "wpr-3-office")
     p = await _make_patient(db, "WPR-3", office_id=office.id)
     await _make_pfv(db, patient=p, weekday=0, start=time(9, 0))
@@ -201,8 +195,6 @@ async def test_week_pinned_survives_generate_week_only(db) -> None:
     await db.commit()
 
     survivors = await _active_visits(db, p.id)
-    assert pinned.id in [v.id for v in survivors], "青ピンは generate-week-only で消えない"
+    assert pinned.id not in [v.id for v in survivors], "フラグはもう守りにならない"
     mon_rows = [v for v in survivors if v.visit_date == MON]
-    assert len(mon_rows) == 1, (
-        f"青ピンの日は再展開されない: {[(v.start_time, v.source) for v in mon_rows]}"
-    )
+    assert [v.start_time for v in mon_rows] == [time(9, 0)], "型の時刻で作り直される"

@@ -1,0 +1,73 @@
+# データへの質問（答えの決まっているもの）。答えは stub では evals/world.py、local では staging を rk sql で読んで計算する。
+# 今日 = 2026-10-12（月）。週42 = 10/12〜10/18。
+- id: data-sat-count
+  category: data
+  tags: [smoke]
+  title: 今週の土曜の訪問件数（取消・検証用・2 名体制の数え方）
+  prompt: 今週の土曜（10/17）の訪問は何件ですか？
+  expect:
+    answer:
+      unit: 件
+      tolerance: 0
+      wrong: [5, 6]            # 2 名体制を 2 件・取消や検証用を入れた数
+      reference: {sql: visit_counts_by_day, params: {date_from: "2026-10-17", date_to: "2026-10-17"},
+                  field: visits_one_per_visit, agg: sum}
+    must_mention: ["10/17|17日"]
+
+- id: data-week-total
+  category: data
+  title: 週42 の合計と曜日別
+  prompt: 週42 は全部で何件の訪問がありますか？曜日ごとの件数も教えてください。
+  expect:
+    answer:
+      unit: 件
+      tolerance: 0
+      reference: {sql: visit_counts_by_day, params: {date_from: "2026-10-12", date_to: "2026-10-18"},
+                  field: visits_one_per_visit, agg: sum}
+
+- id: data-unassigned
+  category: data
+  title: 担当が決まっていない訪問
+  prompt: 今週、担当が決まっていない訪問はありますか？
+  expect:
+    answer:
+      unit: 件
+      reference: {sql: unassigned_visits, params: {date_from: "2026-10-12", date_to: "2026-10-18"}, agg: count}
+    must_mention: ["島田"]
+
+- id: data-admitted
+  category: data
+  title: 入院中の方といつから
+  prompt: いま入院中の利用者さんは誰ですか？いつからか分かれば教えてください。
+  expect:
+    must_read: true
+    must_mention: ["高木", "10/5|10月5日|10/05"]
+
+- id: data-active-patients
+  category: data
+  title: 稼働中の利用者数（検証用・開始前を除く）
+  prompt: 稼働中の利用者さんは何人ですか？拠点ごとにも教えてください。
+  expect:
+    answer:
+      unit: 人
+      wrong: [19, 20]
+      reference: {sql: patient_counts_by_office, where: {status: active}, field: patients, agg: sum}
+
+- id: data-unbuilt-week
+  category: data
+  title: まだ週を作っていない週（0 件と言わない）
+  prompt: 11/2 の週の訪問は何件入っていますか？
+  expect:
+    must_read: true
+    must_mention: ["まだ.*(作って|作られて|できて)|週を作って(い|お)ない|作成されていない|未作成"]
+
+- id: data-kaipoke-unsent
+  category: kaipoke
+  title: カイポケへまだ送っていない変更（ロボットを動かさない・写しの時刻を添える）
+  prompt: 今週、カイポケにまだ送っていない変更はありますか？
+  expect:
+    answer:
+      unit: 件
+      value: 2
+    must_mention: ["10/10|10月10日"]
+    rk_none: ["diff-local", "smart-inbound", "/integrations/kaipoke/.*/(diff|export)"]

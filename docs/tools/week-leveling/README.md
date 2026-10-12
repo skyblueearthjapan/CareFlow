@@ -42,7 +42,8 @@ PYTHONIOENCODING=utf-8 uv run -q --python 3.12 --with ortools --with openpyxl --
 - 案そのものが決まりの検査に落ちているときは、あと 1 手の確認はしない（落ちる訪問を外すだけの手が「良くなる」と出てしまうため）。
 - 重なりは診断では見つからない（アプリの関数は重なっても移動を数え、待ち時間を 0 にするだけ）。重なりは「概要」で別に数えている。
 - 分かっている限界: 「見落とし」は道具の検査（`report.check`）を通った手で、ソルバーの昼休みの扱いと完全に同じかは確かめていない。見落としが出たら `--seconds` を増やして計算し直し、もう一度診断する。
-- 分かっている限界（2026-10-02 夜）: 道具は**週の `visits`** を読み、マスターの固定枠（`patient_fixed_visits`）は直接読まない。固定枠の**可動域 `locked`（完全固定）も見ない**ので、`weekly_pattern` に希望の時間帯があれば時刻を動かすことがある（アプリのエンジンは動かさない）。扱いは PO 判断待ち（`docs/plans/week42-final-leveling-runbook-2026-10-03.md` §5 D-1）。
+- **完全固定（赤ピン）の扱い（2026-10-12 改訂・`docs/plans/red-pin-simplify-design.md` K-2/K-5）**: `extract.py` が固定枠（`patient_fixed_visits`・mode=normal）のうち `movability=locked`（または `is_pinned`）の枠を `pfv_locked` として読む。患者・曜日・開始時刻が赤の枠と同じ訪問は、**曜日・時刻とも動かさない**（時間帯の希望より赤を優先＝Q-4）。担当・コースは自由。今週だけ別の時刻に動かした訪問（`source=manual_week`）は、その曜日の枠がすべて赤なら**今週の時刻**を固定する（Q-1）。`summary.json` と診断に `time_fixed_visits`（完全固定の訪問数）、A4 の決まりに件数を出し、動けば決まりの検査が「完全固定（赤ピン）の時刻が動いた」と出す。
+- 旧メモ（2026-10-02 夜）: 以前は赤を見ず、希望の時間帯があれば時刻を動かすことがあった（§5 D-1「locked でも希望の範囲内なら動かしてよい」）。**D-1 は K-5 で上書きされた**（赤があるところは絶対に動かさない）。
 - backend の環境（`backend/.venv`）が要る。無ければ診断だけ飛ばして案は出す。
 
 ## 反映（本番へ書く・PO の了承が必須）
@@ -51,6 +52,21 @@ PYTHONIOENCODING=utf-8 uv run -q --python 3.12 --with ortools --with openpyxl --
 - 反映の前に **新人（is_trainee）の職員が担当になっていないか**確かめる（アプリは 422 で断る）。
 - `place`（特別訪問）は拠点一致が必須。違えば同じ拠点の M に置いてから `visit-move-week-only` で移す。臨時・M2 テンプレートへは移さない。
 - 詳細と知見: `docs/plans/session-2026-10-06-HANDOFF.md` §5。
+
+## 今回だけの条件（変わった注文用の部品・既定の動きは変わらない）
+`level.py` に足せる指定（`level_knobs.py` が引数の解釈と日本語の説明。`rk level` も同じ指定を受ける）。指定した条件は A4 の「今回だけの条件」・Excel の同名シート・`summary.json` の `conditions` に日本語で残り、決まりをゆるめるもの（少しオーバー・`--fast`・重みの変更・自作の条件）は「気を付ける点」にも出る。
+
+| 指定 | 働き |
+|---|---|
+| `--days thu,fri` | この曜日だけ計算（ほかの日は触らない） |
+| `--prefer-staff CODE[:重み]` / `--avoid-staff CODE[:重み]` | 多めに寄せる（既定 100）／必要なときだけ使う（既定 600）。`--off` は絶対に使わない |
+| `--keep-current [重み]` | 今の担当から変える 1 件ごとに重み（既定 300） |
+| `--cancel 訪問ID` | 急遽キャンセル。`--drop` と同じく案から外し、`rk level` では「今週だけ取消」の操作が入る |
+| `--fast` | 計算 10 秒（`--seconds` 省略時） |
+| `--only-staff A,B --window 09:00-12:00` | その時間帯は指定の人だけが訪問する（他の人にはその時間の予定を置く扱い） |
+| `--not-same-day A,B` / `--pair-staff 利用者:CODE` / `--forbid-pair 利用者:CODE` | 同じ職員が同じ日に両方を持たない／必ずこの人／この人にはしない（利用者は ID の先頭か名前の一部） |
+
+計算の中の入口は `solver.run(... opts)` の `weights`（重みの上書き。名前は `solver.WEIGHTS`）と `extra_constraints`（日ごとに `fn(model, vars, data)`）。Python から使うのは `agent/tools/leveling/api.py`（例は `agent/tools/leveling/CUSTOM.md`）。テストは `test_knobs.py`。
 
 ## テスト
 ```bash

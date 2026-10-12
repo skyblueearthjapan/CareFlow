@@ -134,7 +134,7 @@ export interface AddVisitAnywhereDialogProps {
   /**
    * その患者のその週の訪問を返す。
    *
-   * 契約: **絞り込みはしなくてよい**（`status`・`week_pinned`・日付での
+   * 契約: **絞り込みはしなくてよい**（`status`・日付での
    * 「動かせるか」判定はこのモーダルが `isMovableSourceVisit` で行う）。
    * `status` は BE の値をそのまま入れること (`planned` 以外は候補から外れる)。
    */
@@ -558,7 +558,7 @@ export function AddVisitAnywhereDialog({
   }
 
   /**
-   * その日付の週で「動かす元」に選べる訪問 (planned・青ピン以外・未来日)。
+   * その日付の週で「動かす元」に選べる訪問 (planned・未来日)。
    *
    * 📅 曜日移動で指定された訪問は、週の読み込みが済んでいなくても・絞り込みで
    * 落ちても **必ず候補に入れる**（押した予定を動かすのがこの導線の目的・H1）。
@@ -665,7 +665,7 @@ export function AddVisitAnywhereDialog({
 
   /** この日の選択が登録できない理由 (あれば登録ボタンを止める)。 */
   function rowError(date: string): string | null {
-    // H1: 押した予定が動かせない (当日以前 / 青ピン / planned でない)。
+    // H1: 押した予定が動かせない (当日以前 / planned でない)。
     const pinned = pinnedSourceFor(date);
     if (pinned && !isMovableSourceVisit(pinned, todayIso)) {
       return PINNED_SOURCE_IMMOVABLE_ERROR;

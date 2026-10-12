@@ -1,0 +1,120 @@
+[
+ {
+  "type": "status",
+  "state": "working",
+  "pose": "search",
+  "line": "調べています"
+ },
+ {
+  "type": "message.delta",
+  "text": "Python"
+ },
+ {
+  "type": "message.delta",
+  "text": "を"
+ },
+ {
+  "type": "message.delta",
+  "text": "実"
+ },
+ {
+  "type": "message.delta",
+  "text": "際"
+ },
+ {
+  "type": "message.delta",
+  "text": "に"
+ },
+ {
+  "type": "message.delta",
+  "text": "動"
+ },
+ {
+  "type": "message.delta",
+  "text": "か"
+ },
+ {
+  "type": "message.delta",
+  "text": "して"
+ },
+ {
+  "type": "message.delta",
+  "text": "確"
+ },
+ {
+  "type": "message.delta",
+  "text": "か"
+ },
+ {
+  "type": "message.delta",
+  "text": "め"
+ },
+ {
+  "type": "message.delta",
+  "text": "ます"
+ },
+ {
+  "type": "message.delta",
+  "text": "。"
+ },
+ {
+  "type": "message",
+  "text": "Pythonを実際に動かして確かめます。"
+ },
+ {
+  "type": "step.start",
+  "step_id": "s_5a6929d25b0f",
+  "label": "計算しています…"
+ },
+ {
+  "type": "_cmd",
+  "phase": "start",
+  "step_id": "s_5a6929d25b0f",
+  "command": "python -c \"print(2 ** 10)\""
+ },
+ {
+  "type": "step.end",
+  "step_id": "s_5a6929d25b0f",
+  "label": "計算しています…",
+  "ok": true,
+  "secs": 0.0
+ },
+ {
+  "type": "_cmd",
+  "phase": "end",
+  "step_id": "s_5a6929d25b0f",
+  "ok": true,
+  "exit_code": 0
+ },
+ {
+  "type": "message.delta",
+  "text": "102"
+ },
+ {
+  "type": "message.delta",
+  "text": "4"
+ },
+ {
+  "type": "message",
+  "text": "1024"
+ },
+ {
+  "type": "steps.summary",
+  "count": 1,
+  "failed": 0,
+  "secs": 0.0,
+  "label": "✓ 調べました（1 件・0 秒）"
+ },
+ {
+  "type": "turn.end",
+  "secs": 8.2,
+  "ok": true,
+  "reason": "completed"
+ },
+ {
+  "type": "status",
+  "state": "idle",
+  "pose": "bow",
+  "line": "ほかにも何かあれば、どうぞ"
+ }
+]

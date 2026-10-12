@@ -17,7 +17,7 @@
  *   - 週文脈なし（患者マスタ画面）→ (A)「型だけ変える」
  *   - 週文脈あり（盤面の患者詳細）→ (B)「型と表示中の週」
  *
- * 保護の意味論（設計 §2-3）: `week_pinned` / `source='manual_week'` / `source='import'`
+ * 保護の意味論（設計 §2-3）: `source='manual_week'` / `source='import'`
  * の訪問は型保存の再生成で消えない。加えて **同じ日付の型スロットの再生成をスキップ**
  * するため、作られる件数からもその日を除く。
  */
@@ -120,7 +120,6 @@ const RESET_DELETABLE_STATUSES = new Set(['planned', 'proposed']);
  * 否定形だと「消える予定」を過大に見せていた。
  */
 export function isDeletedByReset(v: VisitRead): boolean {
-  if (v.week_pinned === true) return false;
   return (
     RESET_DELETABLE_SOURCES.has(v.source ?? '') && RESET_DELETABLE_STATUSES.has(v.status ?? '')
   );
@@ -131,7 +130,7 @@ export function isDeletedByReset(v: VisitRead): boolean {
  * `manual_week_day_keys`）。削除可否とは別軸なので predicate を分ける。
  */
 export function suppressesRegen(v: VisitRead): boolean {
-  return v.week_pinned === true || v.source === 'manual_week' || v.source === 'import';
+  return v.source === 'manual_week' || v.source === 'import';
 }
 
 /** 打刻済み（QR チェックイン済み）か。到着で in_progress・退出で completed になる。 */
@@ -296,7 +295,7 @@ export function FixedVisitScopeConfirmDialog({
     [visitsQuery.data],
   );
   const removedVisits = React.useMemo(() => weekVisits.filter(isDeletedByReset), [weekVisits]);
-  // 消えない訪問はすべて「保護」= 今週固定 (青ピン) / 今週のみ / 取込 / 実施済み・手動。
+  // 消えない訪問はすべて「保護」= 今週のみ / 取込 / 実施済み・手動。
   const survivingVisits = React.useMemo(
     () => weekVisits.filter((v) => !isDeletedByReset(v)),
     [weekVisits],
@@ -463,7 +462,7 @@ export function FixedVisitScopeConfirmDialog({
                     <div data-testid="pfv-scope-protected">
                       <p className="font-medium text-text-primary">
                         保護される予定 {survivingVisits.length}{' '}
-                        件（今週固定・今週のみ・取込・実施済み/手動）
+                        件（今週のみ・取込・実施済み/手動）
                       </p>
                       {survivingVisits.length > 0 ? (
                         <ul

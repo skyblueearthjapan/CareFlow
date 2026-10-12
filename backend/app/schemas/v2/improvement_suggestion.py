@@ -297,7 +297,7 @@ class ImprovementDismissRequest(BaseModel):
         default=False,
         description=(
             "true で該当 PFV の movability を昇格 "
-            "(day_immovable→time_flexible / time_immovable→locked). "
+            "(time_immovable のみ赤ピン locked に昇格. day_immovable は却下の記録だけ). "
             "is_pinned=true の行は locked のまま."
         ),
     )

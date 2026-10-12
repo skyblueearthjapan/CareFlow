@@ -2,7 +2,7 @@
  * DismissReasonDialog — 見送り理由 + 可動域昇格分岐の単体テスト (P2-C).
  *
  * 検証:
- *   1. day_immovable / time_immovable は「見送る」後に昇格確認ステップを挟む.
+ *   1. time_immovable だけ「見送る」後に昇格確認ステップを挟む (day_immovable は記録のみ).
  *   2. 昇格「はい」→ promote_movability=true で dismiss POST.
  *   3. 昇格「いいえ」→ promote_movability=false で dismiss POST.
  *   4. staff_relation は昇格ステップを挟まず即 POST (promote=false).
@@ -77,19 +77,34 @@ describe('DismissReasonDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // 既定は onSuccess を即発火する mutate 実装.
-    mocks.dismissMutate.mockImplementation(
-      (_body: unknown, opts: { onSuccess?: () => void }) => opts.onSuccess?.(),
+    mocks.dismissMutate.mockImplementation((_body: unknown, opts: { onSuccess?: () => void }) =>
+      opts.onSuccess?.(),
     );
   });
 
-  it('1+2. day_immovable → 昇格確認 → はい で promote_movability=true POST', async () => {
+  it('0. day_immovable は昇格確認を挟まず promote=false で即 POST', async () => {
+    renderDialog();
+    await userEvent.click(screen.getByTestId('dismiss-reason-next'));
+    expect(screen.queryByTestId('dismiss-promote-confirm')).not.toBeInTheDocument();
+    await waitFor(() => expect(mocks.dismissMutate).toHaveBeenCalledTimes(1));
+    expect(mocks.dismissMutate.mock.calls[0][0]).toMatchObject({
+      reason: 'day_immovable',
+      promote_movability: false,
+    });
+  });
+
+  it('1+2. time_immovable → 昇格確認 → はい で promote_movability=true POST', async () => {
     const { onClose, onDismissed } = renderDialog();
 
-    // day_immovable は既定選択. 「見送る」で昇格確認ステップへ.
+    await userEvent.click(screen.getByLabelText('この時刻は動かせない'));
     await userEvent.click(screen.getByTestId('dismiss-reason-next'));
 
     // 昇格確認ステップが出る.
     expect(screen.getByTestId('dismiss-promote-confirm')).toBeInTheDocument();
+    // どちらの理由も「完全固定 (曜日・時刻を固定)」として記録する旧 2 段階の言葉は出さない。
+    expect(screen.getByTestId('dismiss-promote-confirm')).toHaveTextContent('完全固定');
+    expect(screen.getByTestId('dismiss-promote-confirm')).toHaveTextContent('曜日・時刻を固定');
+    expect(screen.getByTestId('dismiss-promote-confirm')).not.toHaveTextContent('曜日固定」');
 
     // 「はい」→ promote true.
     await userEvent.click(screen.getByTestId('dismiss-promote-yes'));
@@ -100,21 +115,22 @@ describe('DismissReasonDialog', () => {
       patient_id: PATIENT_ID,
       kind: 'time_change',
       target_weekday: 0,
-      reason: 'day_immovable',
+      reason: 'time_immovable',
       promote_movability: true,
     });
     expect(onDismissed).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('3. day_immovable → 昇格確認 → いいえ で promote_movability=false POST', async () => {
+  it('3. time_immovable → 昇格確認 → いいえ で promote_movability=false POST', async () => {
     renderDialog();
+    await userEvent.click(screen.getByLabelText('この時刻は動かせない'));
     await userEvent.click(screen.getByTestId('dismiss-reason-next'));
     await userEvent.click(screen.getByTestId('dismiss-promote-no'));
 
     await waitFor(() => expect(mocks.dismissMutate).toHaveBeenCalledTimes(1));
     expect(mocks.dismissMutate.mock.calls[0][0]).toMatchObject({
-      reason: 'day_immovable',
+      reason: 'time_immovable',
       promote_movability: false,
     });
   });

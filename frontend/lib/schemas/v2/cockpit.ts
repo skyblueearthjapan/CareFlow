@@ -79,7 +79,6 @@ export const substituteGroupVisitSchema = z.object({
   patient_name: z.string(),
   start_time: hhmmSchema,
   end_time: hhmmSchema,
-  week_pinned: z.boolean().default(false),
   /**
    * 訪問の状態。付替の対象になるのは planned だけ (BE staff-off-week と同じ規則)
    * なので、件数表示・青ピン判定も planned で数えて **対象集合を一致させる**。

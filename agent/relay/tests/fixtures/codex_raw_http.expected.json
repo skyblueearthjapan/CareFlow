@@ -1,0 +1,229 @@
+[
+ {
+  "type": "status",
+  "state": "working",
+  "pose": "search",
+  "line": "調べています"
+ },
+ {
+  "type": "thinking",
+  "phase": "start"
+ },
+ {
+  "type": "thinking",
+  "phase": "end"
+ },
+ {
+  "type": "message.delta",
+  "text": "指定"
+ },
+ {
+  "type": "message.delta",
+  "text": "ど"
+ },
+ {
+  "type": "message.delta",
+  "text": "お"
+ },
+ {
+  "type": "message.delta",
+  "text": "り"
+ },
+ {
+  "type": "message.delta",
+  "text": "、"
+ },
+ {
+  "type": "message.delta",
+  "text": "`"
+ },
+ {
+  "type": "message.delta",
+  "text": "urllib"
+ },
+ {
+  "type": "message.delta",
+  "text": "`"
+ },
+ {
+  "type": "message.delta",
+  "text": " "
+ },
+ {
+  "type": "message.delta",
+  "text": "で"
+ },
+ {
+  "type": "message.delta",
+  "text": " POST"
+ },
+ {
+  "type": "message.delta",
+  "text": " を"
+ },
+ {
+  "type": "message.delta",
+  "text": "試"
+ },
+ {
+  "type": "message.delta",
+  "text": "し"
+ },
+ {
+  "type": "message.delta",
+  "text": "、"
+ },
+ {
+  "type": "message.delta",
+  "text": "エ"
+ },
+ {
+  "type": "message.delta",
+  "text": "ラー"
+ },
+ {
+  "type": "message.delta",
+  "text": "の"
+ },
+ {
+  "type": "message.delta",
+  "text": "種類"
+ },
+ {
+  "type": "message.delta",
+  "text": "だけ"
+ },
+ {
+  "type": "message.delta",
+  "text": "確認"
+ },
+ {
+  "type": "message.delta",
+  "text": "します"
+ },
+ {
+  "type": "message.delta",
+  "text": "。"
+ },
+ {
+  "type": "message",
+  "text": "指定どおり、`urllib` で POST を試し、エラーの種類だけ確認します。"
+ },
+ {
+  "type": "step.start",
+  "step_id": "s_af089fca0f0c",
+  "label": "やり方を確かめています…"
+ },
+ {
+  "type": "_cmd",
+  "phase": "start",
+  "step_id": "s_af089fca0f0c",
+  "command": "Get-Content -Raw -Encoding UTF8 PERSONA.md"
+ },
+ {
+  "type": "step.end",
+  "step_id": "s_af089fca0f0c",
+  "label": "やり方を確かめています…",
+  "ok": true,
+  "secs": 0.0
+ },
+ {
+  "type": "_cmd",
+  "phase": "end",
+  "step_id": "s_af089fca0f0c",
+  "ok": true,
+  "exit_code": 0
+ },
+ {
+  "type": "thinking",
+  "phase": "start"
+ },
+ {
+  "type": "thinking",
+  "phase": "end"
+ },
+ {
+  "type": "step.start",
+  "step_id": "s_e756b6551d9a",
+  "label": "計算しています…"
+ },
+ {
+  "type": "_cmd",
+  "phase": "start",
+  "step_id": "s_e756b6551d9a",
+  "command": "python -c \"import urllib.request; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:9/rk/apply', data=b'', method='POST'))\""
+ },
+ {
+  "type": "step.end",
+  "step_id": "s_e756b6551d9a",
+  "label": "計算しています…",
+  "ok": false,
+  "secs": 0.0
+ },
+ {
+  "type": "_cmd",
+  "phase": "end",
+  "step_id": "s_e756b6551d9a",
+  "ok": false,
+  "exit_code": 1
+ },
+ {
+  "type": "message.delta",
+  "text": "`"
+ },
+ {
+  "type": "message.delta",
+  "text": "urllib"
+ },
+ {
+  "type": "message.delta",
+  "text": ".error"
+ },
+ {
+  "type": "message.delta",
+  "text": ".UR"
+ },
+ {
+  "type": "message.delta",
+  "text": "LError"
+ },
+ {
+  "type": "message.delta",
+  "text": "`"
+ },
+ {
+  "type": "message.delta",
+  "text": " "
+ },
+ {
+  "type": "message.delta",
+  "text": "です"
+ },
+ {
+  "type": "message.delta",
+  "text": "。"
+ },
+ {
+  "type": "message",
+  "text": "`urllib.error.URLError` です。"
+ },
+ {
+  "type": "steps.summary",
+  "count": 2,
+  "failed": 1,
+  "secs": 0.0,
+  "label": "⚠ 調べました（2 件のうち 1 件うまくいきませんでした）"
+ },
+ {
+  "type": "turn.end",
+  "secs": 21.8,
+  "ok": true,
+  "reason": "completed"
+ },
+ {
+  "type": "status",
+  "state": "idle",
+  "pose": "bow",
+  "line": "ほかにも何かあれば、どうぞ"
+ }
+]

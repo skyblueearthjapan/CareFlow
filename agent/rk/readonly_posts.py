@@ -41,3 +41,21 @@ def is_readonly_post(path: str) -> bool:
     if bare.startswith("/api/v1/"):
         bare = bare[len("/api/v1"):]
     return any(rx.match(bare) for rx, _ in _COMPILED)
+
+
+#: 本文が dry_run:true のときだけ「読むだけ」になる POST（週を空にする・型から作る の確認）。
+#: dry_run が true でない・無いときは通さない（本番を書き換えるため）。
+DRY_RUN_POSTS: list[tuple[str, str]] = [
+    ("/schedule/v2/weeks/{y}/{w}/clear", "週を空にしたときに消える件数の確認"),
+    ("/schedule/generate-week-only", "型から週を作ったときに増える件数の確認"),
+]
+_DRY_COMPILED = [_pattern(t) for t, _ in DRY_RUN_POSTS]
+
+
+def is_dry_run_post(path: str, body: object) -> bool:
+    if not isinstance(body, dict) or body.get("dry_run") is not True:
+        return False
+    bare = path.split("?", 1)[0].rstrip("/")
+    if bare.startswith("/api/v1/"):
+        bare = bare[len("/api/v1"):]
+    return any(rx.match(bare) for rx in _DRY_COMPILED)

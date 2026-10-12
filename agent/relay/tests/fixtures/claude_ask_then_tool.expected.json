@@ -1,0 +1,112 @@
+[
+ {
+  "type": "_meta",
+  "cli_session_id": "d85dde79-9a8f-47cf-8084-8b158602fa81",
+  "model": "claude-sonnet-5-5",
+  "model_display": "Sonnet 5.5",
+  "api_key_source": "none"
+ },
+ {
+  "type": "status",
+  "state": "working",
+  "pose": "search",
+  "line": "調べています"
+ },
+ {
+  "type": "question",
+  "question_id": "e6761f41-b66b-4740-8b60-59648752a63b",
+  "questions": [
+   {
+    "question": "どちらの色が好きですか？",
+    "header": "好きな色",
+    "options": [
+     {
+      "label": "赤",
+      "description": "赤が好き"
+     },
+     {
+      "label": "青",
+      "description": "青が好き"
+     }
+    ],
+    "multiSelect": false
+   }
+  ]
+ },
+ {
+  "type": "status",
+  "state": "waiting_answer",
+  "pose": "waiting",
+  "line": "教えていただけますか"
+ },
+ {
+  "type": "status",
+  "state": "working",
+  "pose": "search",
+  "line": "調べています"
+ },
+ {
+  "type": "message",
+  "text": "青がお好きなんですね。"
+ },
+ {
+  "type": "turn.end",
+  "secs": 4.9,
+  "ok": true,
+  "reason": "completed"
+ },
+ {
+  "type": "status",
+  "state": "idle",
+  "pose": "bow",
+  "line": "ほかにも何かあれば、どうぞ"
+ },
+ {
+  "type": "_meta",
+  "cli_session_id": "d85dde79-9a8f-47cf-8084-8b158602fa81",
+  "model": "claude-sonnet-5-5",
+  "model_display": "Sonnet 5.5",
+  "api_key_source": "none"
+ },
+ {
+  "type": "status",
+  "state": "working",
+  "pose": "search",
+  "line": "調べています"
+ },
+ {
+  "type": "step.start",
+  "step_id": "s_ZgWCPQUcLJJV",
+  "label": "調べ方の一覧を見ています…"
+ },
+ {
+  "type": "step.end",
+  "step_id": "s_ZgWCPQUcLJJV",
+  "label": "調べ方の一覧を見ています…",
+  "ok": true,
+  "secs": 0.0
+ },
+ {
+  "type": "message",
+  "text": "30"
+ },
+ {
+  "type": "steps.summary",
+  "count": 1,
+  "failed": 0,
+  "secs": 0.0,
+  "label": "✓ 調べました（1 件・0 秒）"
+ },
+ {
+  "type": "turn.end",
+  "secs": 5.6,
+  "ok": true,
+  "reason": "completed"
+ },
+ {
+  "type": "status",
+  "state": "idle",
+  "pose": "bow",
+  "line": "ほかにも何かあれば、どうぞ"
+ }
+]

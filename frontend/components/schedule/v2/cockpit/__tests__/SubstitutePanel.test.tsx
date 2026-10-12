@@ -5,9 +5,8 @@
  * ② [担当なしに戻す] は onApply(null)
  * ③ その日を**丸ごと**引き受けられる人 (全グループ ◎) だけを最大 3 名出す
  * ④ 1 グループでも ◎ でない人は出さない (1 人ずつの提案はしない)
- * ⑤ 青ピンがあれば理由を出して実行不可
  * ⑥ [やめる] は onClose
- * ⑦ planned 以外 (打刻済み・完了・取消済み) は件数にも青ピン判定にも数えない
+ * ⑦ planned 以外 (打刻済み・完了・取消済み) は件数に数えない
  *    = BE (staff-off-week) が動かす対象集合と一致させる
  * ⑧ 取得中 / 失敗中は主ボタンを押させない (「0 件」と混同させない・再試行できる)
  */
@@ -34,14 +33,13 @@ const VISIT_3 = '00000000-0000-4000-8000-000000000a13';
 
 const refetchMock = vi.fn();
 
-function visit(id: string, name: string, pinned = false, status = 'planned') {
+function visit(id: string, name: string, status = 'planned') {
   return {
     visit_id: id,
     patient_id: `${id}-p`,
     patient_name: name,
     start_time: '09:00',
     end_time: '10:00',
-    week_pinned: pinned,
     status,
   };
 }
@@ -164,7 +162,7 @@ describe('SubstitutePanel', () => {
     expect(screen.getByTestId('substitute-summary')).toHaveTextContent('予定 3件');
   });
 
-  it('planned 以外 (完了・取消済み) は件数にも青ピン判定にも数えない', () => {
+  it('planned 以外 (完了・取消済み) は件数に数えない', () => {
     mockQuery({
       data: {
         ...DATA,
@@ -173,8 +171,8 @@ describe('SubstitutePanel', () => {
             ...DATA.groups[0],
             visits: [
               visit(VISIT_1, '佐々木 様'),
-              // 完了済み + 青ピン。BE は据え置くので、ここで実行不可にしてはいけない。
-              visit(VISIT_2, '中村 様', true, 'completed'),
+              // 完了済み。BE は据え置くので件数に数えない。
+              visit(VISIT_2, '中村 様', 'completed'),
             ],
           },
         ],
@@ -182,28 +180,7 @@ describe('SubstitutePanel', () => {
     });
     renderPanel();
     expect(screen.getByTestId('substitute-summary')).toHaveTextContent('予定 1件');
-    expect(screen.queryByTestId('substitute-pinned')).toBeNull();
     expect(screen.getByTestId('substitute-unassign')).toBeEnabled();
-  });
-
-  it('青ピンがあると理由を出して実行できない', () => {
-    mockQuery({
-      data: {
-        ...DATA,
-        groups: [
-          {
-            ...DATA.groups[0],
-            visits: [visit(VISIT_1, '佐々木 様', true), visit(VISIT_2, '中村 様')],
-          },
-        ],
-      },
-    });
-    const h = renderPanel();
-    expect(screen.getByTestId('substitute-pinned')).toHaveTextContent('佐々木 様');
-    expect(screen.getByTestId('substitute-unassign')).toBeDisabled();
-    expect(screen.getByTestId(`substitute-cand-${CAND_OK}`)).toBeDisabled();
-    fireEvent.click(screen.getByTestId('substitute-unassign'));
-    expect(h.onApply).not.toHaveBeenCalled();
   });
 
   it('[やめる] は onClose', () => {

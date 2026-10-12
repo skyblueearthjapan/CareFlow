@@ -2219,13 +2219,22 @@ def build_visits_for_pool(
         # (pinned_pfv_by_wd が支配する部分) には一切影響させない.
         frozen_pfv_by_wd: dict[int, PatientFixedVisit] = {}
         if fixed_by_patient is not None:
+            # 赤ピン整理 (2026-10-12): 2 名体制は slot 0/1 のどちらかが赤なら
+            # その曜日は赤 (時刻を動かさない). 組み立ての元データは slot 0 の行.
+            _slot0_by_wd: dict[int, PatientFixedVisit] = {}
+            _red_wds: set[int] = set()
             for _row in fixed_by_patient.get(patient.id) or []:
-                if _row.mode != "normal" or _row.slot_index != 0:
+                if _row.mode != "normal":
                     continue
-                if _row.is_pinned:
-                    pinned_pfv_by_wd[_row.weekday] = _row
+                if _row.slot_index == 0:
+                    _slot0_by_wd[_row.weekday] = _row
                 if _row.is_pinned or _pfv_movability_locked(_row):
-                    frozen_pfv_by_wd[_row.weekday] = _row
+                    _red_wds.add(_row.weekday)
+            for _wd in _red_wds:
+                _r0 = _slot0_by_wd.get(_wd)
+                if _r0 is not None:
+                    pinned_pfv_by_wd[_wd] = _r0
+                    frozen_pfv_by_wd[_wd] = _r0
         used_fixed = False
         if use_fixed_as_source and fixed_by_patient is not None:
             fixed_rows = fixed_by_patient.get(patient.id) or []
@@ -2585,10 +2594,14 @@ def build_visits_for_pool_v2(
         # weekday -> pinned PFV (slot_index=0, mode='normal', is_pinned=True).
         # Invariant G21-A: pinned PFV があれば該当 weekday の weekly_pattern entry を skip.
         pinned_by_wd: dict[int, PatientFixedVisit] = {}
+        _red_wds_v2: set[int] = {
+            pfv.weekday for pfv in pfv_rows if pfv.mode == "normal" and pfv.is_pinned
+        }
         for pfv in pfv_rows:
             if pfv.mode != "normal" or pfv.slot_index != 0:
                 continue
-            if pfv.is_pinned:
+            # 2 名体制は slot 0/1 のどちらかが赤ならその曜日は赤 (赤ピン整理 2026-10-12).
+            if pfv.weekday in _red_wds_v2:
                 pinned_by_wd[pfv.weekday] = pfv
 
         # course_template_id → label map / sub_office_id 差し替えマップ.
@@ -4812,13 +4825,16 @@ def _apply_corrections_to_visits(
     )
     # 凍結対象 visit の値を snapshot から復元する ("監視のみ" — 制約計算には参加
     # するが、 自身の時刻 / コースは絶対に動かない).
+    # 赤ピン整理 (2026-10-12): 赤が縛るのは曜日と時刻だけ. コースは縛らない
+    # (復元するのは「補正が course_code=None にして未割当に落とした」場合の救済だけ).
     for v in frozen_visits:
         st, et, cc = frozen_snapshot[id(v)]
         v.start_time = st
         v.end_time = et
-        v.course_code = cc
+        if v.course_code is None:
+            v.course_code = cc
         # 凍結対象 visit が `course_code=None` に書き換えられた場合 (= 補正で
-        # unassigned 扱いになった) でも post-restore で元 course を復元するため、
+        # unassigned 扱いになった) でも時刻を維持したまま残すため、
         # travel_unassigned_ids 集合からも除外して「物理不可能」扱いを取り消す.
         unassigned.discard(id(v))
     return unassigned
@@ -8282,12 +8298,8 @@ async def run_v2_pipeline(
                         if pm_set is not None:
                             affected_visits_nocode.extend(pm_set.visits)
                         for v in affected_visits_nocode:
-                            # Phase G-32: pinned visit は未割当に流さない (= 元 course
-                            # を維持). Stage 4 が他 set の空き code 枯渇で fallback
-                            # 不能になった場合でも、 pinned 自身は既存 course_code
-                            # (= PFV.course_template_id 由来) を保持する.
-                            if v.is_pinned:
-                                continue
+                            # 赤ピン整理 (2026-10-12): 赤は曜日と時刻だけを縛り、コースは
+                            # 縛らない (旧 G-32 のコース保持は撤去). 他の訪問と同じに扱う.
                             v.course_code = None
                             unassigned_visit_ids.add(id(v))
                         warnings.append(
@@ -8370,12 +8382,7 @@ async def run_v2_pipeline(
                     affected_patient_ids_overflow = list({v.patient_id for v in affected_visits})
                     affected_patient_count = len(affected_patient_ids_overflow)
                     for v in affected_visits:
-                        # Phase G-32: pinned visit は未割当に流さない (= 元 course
-                        # を維持). manager 数超過で本 set に code を割当てられない
-                        # 場合でも、 pinned 自身は PFV.course_template_id 由来の
-                        # course_code を保持する.
-                        if v.is_pinned:
-                            continue
+                        # 赤ピン整理 (2026-10-12): 赤もコースは縛らない (旧 G-32 撤去).
                         unassigned_visit_ids.add(id(v))
                     warnings.append(
                         V2Warning(
@@ -8398,20 +8405,13 @@ async def run_v2_pipeline(
                     )
                     continue
             assigned_codes.add(code)
-            # Phase G-32: pinned visit (= V2Visit.is_pinned=True, PFV.is_pinned 由来)
-            # の course_code は **絶対動かさない**. Stage 4 conflict fallback で
-            # candidate (= 既存 pinned 由来 course) が他 set と衝突して別 code に
-            # 振り替わった場合でも、 pinned visit 自身は元 course を維持する.
-            # 非 pinned visit のみ確定 code を書き戻し、 pinned 同住所ペア相手の
-            # 非 pinned 側は pinned の course に追従させる仕組みは
-            # ``existing_codes`` 経路 (candidate=pinned の course) が担保している.
+            # 赤ピン整理 (2026-10-12): 赤ピンは曜日と時刻だけを縛り、コース・担当は
+            # 縛らない. 旧 G-32 (赤の course_code を書き戻さない) は撤去したので、
+            # 確定 code は赤の訪問にも書き戻す (時刻は _apply_corrections_to_visits の
+            # フェンスが元に戻す). 既存コースは existing_codes 経由で優先されるだけ.
             for v in am_set.visits if am_set else []:
-                if v.is_pinned:
-                    continue
                 v.course_code = code
             for v in pm_set.visits if pm_set else []:
-                if v.is_pinned:
-                    continue
                 v.course_code = code
 
     # マネージャー不足で未割当になった visit を after_visits から取り除く.
@@ -9275,8 +9275,6 @@ async def apply_week_only(
                 Visit.visit_date <= week_sunday,
                 Visit.status.in_(_RESET_DELETABLE_STATUSES),
                 Visit.source.in_(_RESET_DELETABLE_SOURCES),
-                # 週のピン (青ピン / PO 決定 2026-08-09): source を問わず削除しない。
-                Visit.week_pinned.is_(False),
             )
             .with_for_update()
         )
@@ -9847,8 +9845,6 @@ async def reset_visits_to_fixed(
                 Visit.visit_date <= week_sunday,
                 Visit.status.in_(_RESET_DELETABLE_STATUSES),
                 Visit.source.in_(_RESET_DELETABLE_SOURCES),
-                # 週のピン (青ピン / PO 決定 2026-08-09): source を問わず削除しない。
-                Visit.week_pinned.is_(False),
             )
             .with_for_update()
         )
@@ -9904,11 +9900,10 @@ async def reset_visits_to_fixed(
     #   - source='import'      … カイポケ取込 (取込が正の原則。旧実装は削除からは
     #     保護していたが日スキップが無く、取込週で週生成を回すと型の時刻で重複
     #     挿入され得た = 案 B の穴の修正)
-    #   - week_pinned=true     … 週のピン (青ピン)。source を問わず「今週この位置」
     manual_week_day_keys: set[tuple[UUID, date]] = {
         (v.patient_id, v.visit_date)
         for v in protected_existing_keys.values()
-        if v.source in (VISIT_SOURCE_MANUAL_WEEK, "import") or bool(v.week_pinned)
+        if v.source in (VISIT_SOURCE_MANUAL_WEEK, "import")
     }
 
     # 2) patient_fixed_visits から visits を再生成

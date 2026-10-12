@@ -201,22 +201,12 @@ export interface CourseGridVisit {
    */
   fixed_visit_id?: string | null;
   /**
-   * Phase G-21: PFV.is_pinned のミラー値.
-   * true: 🔒 (active) + 訪問カード背景を黄色で強調.
-   * false/null: 🔓 (hover で出現).
-   * fixed_visit_id が無い場合は常に false.
-   */
-  is_pinned?: boolean | null;
-  /**
-   * PFV.movability のミラー値 (2026-08-07 / PO 要望).
+   * PFV.movability のミラー値 = 完全固定 (赤) の唯一の表示根拠.
    *
-   * 可動域はピン留めの「さらに先」にある固定手段で、'locked' なら提案系エンジンも
-   * 自動割当も枠を動かさない。それまで盤面には一切表示されておらず、
-   * 「一括ピン解除したが完全固定は守られている」状態が現場から見えなかった。
-   *
+   * - 'locked'       : 完全固定 (曜日と時刻を固定。コース・担当は動くことがある) → 赤い画鋲を出す.
    * - null/undefined : PFV 非紐付け (weekly_pattern 由来) → 表示しない.
-   * - 'unknown'      : 未設定 (既定) → 表示しない (ノイズを増やさない).
-   * - それ以外       : 固 / 時 / 曜 の淡いマークを出す.
+   * - 'unknown'      : 未設定 (既定) → 表示しない.
+   * 付け外しは患者マスタだけ (盤面には赤のトグルを置かない).
    */
   movability?: Movability | null;
   /**
@@ -232,12 +222,6 @@ export interface CourseGridVisit {
    *      「先に固定枠登録が必要」と表示しており、嘘になっていた。
    */
   master_start_time?: string | null;
-  /**
-   * 週のピン (青ピン / PO 決定 2026-08-09)。true = 今週この位置のまま動かさない。
-   * source とは独立の軸 (import の訪問にも刺せる・掛け外しで出所は失われない)。
-   * 表示・トグルの判定は week_pinned === true || source === 'manual_week' の和集合。
-   */
-  week_pinned?: boolean | null;
   /**
    * Wave U-2: visit のソース (入力チャネル).
    * 'manual_week' = この週だけの配置 (型に未反映)。「今週のみ」チップを出す根拠。

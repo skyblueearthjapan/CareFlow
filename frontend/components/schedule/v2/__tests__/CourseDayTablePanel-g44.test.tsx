@@ -251,8 +251,6 @@ vi.mock('@/lib/queries/assign_staff_only', () => ({
   useApplyStaffReview: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock('@/lib/queries/g21', () => ({
-  useTogglePfvPin: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-  useBulkPinPfvs: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
   useSameAddressCandidates: () => ({ data: [], isLoading: false }),
   useSameAddressLinks: () => ({ data: [], isLoading: false }),
   useSetSameAddressLink: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -287,13 +285,6 @@ vi.mock('@/lib/queries/autoScheduleV2', () => ({
     isSuccess: false,
   }),
   useApplyIndividualMutation: () => ({
-    mutateAsync: vi.fn(),
-    reset: vi.fn(),
-    isPending: false,
-    error: null,
-    isSuccess: false,
-  }),
-  useResetToFixedMutation: () => ({
     mutateAsync: vi.fn(),
     reset: vi.fn(),
     isPending: false,

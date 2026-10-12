@@ -191,8 +191,9 @@ const UNBLOCK_TRIGGER_REASONS = [
 
 /** W-12d: unmovable_summary キーの訳語 (設計書 §3・「動かせない事情」)。 */
 const UNMOVABLE_LABEL: Record<keyof UnblockUnmovableSummary, string> = {
-  pinned: 'ピン留め',
-  locked: '固定（可動域）',
+  // pinned と locked は同じ「完全固定」(曜日と時刻を固定) として合算して出す。
+  pinned: '完全固定',
+  locked: '完全固定',
   two_staff: '2名体制',
   pair: '同住所ペア',
   dismissed: '見送り済みの提案',
@@ -536,7 +537,16 @@ function AdoptBeforeAfter({
 /** 動かせない事情の内訳 (黙って諦めない)。0 件のキーは出さない。 */
 function UnmovableSummaryList({ summary }: { summary: UnblockUnmovableSummary }) {
   const entries = (Object.keys(UNMOVABLE_LABEL) as (keyof UnblockUnmovableSummary)[])
-    .map((k) => ({ key: k, label: UNMOVABLE_LABEL[k], count: summary[k] ?? 0 }))
+    .map((k) => ({
+      key: k,
+      label: UNMOVABLE_LABEL[k],
+      count:
+        k === 'locked'
+          ? 0
+          : k === 'pinned'
+            ? (summary.pinned ?? 0) + (summary.locked ?? 0)
+            : (summary[k] ?? 0),
+    }))
     .filter((e) => e.count > 0);
   if (entries.length === 0) {
     return (

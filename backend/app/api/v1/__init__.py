@@ -61,6 +61,7 @@ from app.api.v1 import (
     visit_review,
     visit_signatures,
     visits,
+    week_clear,
 )
 
 api_router = APIRouter()
@@ -224,6 +225,8 @@ api_router.include_router(substitute_candidates.router, prefix="/schedule", tags
 # 前の週をコピーして週を作る (/schedule/v2/copy-week[/preview|/sources])
 # docs/plans/copy-week-design-2026-09-30.md
 api_router.include_router(copy_week.router, prefix="/schedule", tags=["schedule-v2"])
+# この週を空にする / 元に戻す (/schedule/v2/weeks/{y}/{w}/clear[/undo]・青ピン廃止 BP-4)
+api_router.include_router(week_clear.router, prefix="/schedule", tags=["schedule-v2"])
 # Wave U-3: 操作ジャーナル undo/redo エンドポイント (/schedule/v2/op-log/*)
 api_router.include_router(op_log.router, prefix="/schedule", tags=["op-log"])
 # Phase G-21 T2: 同住所紐付け CRUD (blocked / required の link 行管理).

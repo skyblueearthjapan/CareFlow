@@ -12,6 +12,7 @@
 - 画面の既定は「自動スタッフ割当 = する」だが、ならしの手順では **しない**（勤務時刻・予定・半休を見ないため）。
   この操作の既定は assign_staff: false・fill_from_fixed: false（画面の「固定訪問から補う」の既定と同じ）。
 - 戻すのは API ではできない（バックアップから。画面の「コピー前に戻す」は置き換えの週だけ）。
+- 週を空にする clear-week・型から作る generate-week は下の節（青ピン廃止 2026-10-12）。
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from rk import RkError
-from rk.opsbase import Api, Op, register
+from rk.opsbase import Api, ApiError, Op, register
 
 MAX_WEEKS_BACK = 8  # services/scheduling/copy_week.py と同じ
 BIG_DIFF_RATIO = 0.15  # 写す元と写す先の件数がこれより離れたら照合で知らせる
@@ -143,3 +144,150 @@ class CopyWeek(Op):
             return [f"写す先 {got} 件・写す元 {want} 件と大きく違います（取消・予定外・特別訪問の○・"
                     "終了した利用者は写さないので、差の理由を確かめてください）"]
         return []
+
+
+# ---- 週を空にする / 型から週を作る（青ピン廃止 BP-3/BP-4・2026-10-12） ----
+# 根拠: backend/app/api/v1/week_clear.py・schedule.py（generate-week-only）。どちらも admin。
+#   POST /schedule/v2/weeks/{y}/{w}/clear       {dry_run, office_id?} → {to_delete, kaipoke_linked, kept_checked_in, snapshot_id}
+#   POST /schedule/v2/weeks/{y}/{w}/clear/undo  {snapshot_id} → {restored}
+#   POST /schedule/generate-week-only           {iso_year, iso_week, office_id?, dry_run} → dry_run は {to_add}・空でない週は 409
+# dry_run: true は DB を変えない。ただし POST の本文で決まるため rk post-read の許可リストには入れず、
+# この操作の中（snapshot）で api.call(dry_run=true) を押す。
+
+
+def _week_ints(op: dict) -> list[str]:
+    errs: list[str] = []
+    for k in ("iso_year", "iso_week"):
+        v = op.get(k)
+        if not isinstance(v, int) or isinstance(v, bool):
+            errs.append(f"{k} は整数です（{v!r}）")
+    if errs:
+        return errs
+    try:
+        date.fromisocalendar(op["iso_year"], op["iso_week"], 1)
+    except ValueError as e:
+        errs.append(f"ISO の週が正しくありません: {e}")
+    return errs
+
+
+def _office(op: dict) -> dict:
+    return {"office_id": op["office_id"]} if op.get("office_id") else {}
+
+
+def _clear_path(op: dict) -> str:
+    return f"/schedule/v2/weeks/{op['iso_year']}/{op['iso_week']}/clear"
+
+
+@register
+class ClearWeek(Op):
+    name = "clear-week"
+    summary = "この週を空にする（打刻・実績のある訪問と取消の記録は残る）"
+    undoable = True
+
+    def validate(self, op: dict) -> list[str]:
+        errs = _week_ints(op)
+        if op.get("office_id") is not None and not isinstance(op["office_id"], str):
+            errs.append("office_id は拠点 ID（文字列）です")
+        return errs
+
+    def request(self, op: dict) -> tuple[str, str, dict | None]:
+        return ("POST", _clear_path(op), {"dry_run": False, **_office(op)})
+
+    def snapshot(self, api: Api, op: dict) -> dict:
+        pv = api.call("POST", _clear_path(op), {"dry_run": True, **_office(op)}) or {}
+        return {"dry_run": {k: pv.get(k) for k in ("to_delete", "kaipoke_linked", "kept_checked_in")}}
+
+    def execute(self, api: Api, op: dict) -> Any:
+        res = api.call("POST", _clear_path(op), {"dry_run": False, **_office(op)})
+        if isinstance(res, dict):
+            op["_snapshot_id"] = res.get("snapshot_id")  # inverse() が読む（応答は inverse に渡らないため）
+        return res
+
+    def check_response(self, op: dict, response: Any) -> list[str]:
+        if not isinstance(response, dict):
+            return ["応答の形が想定外です"]
+        return []
+
+    def inverse(self, op: dict, before: dict) -> list[dict] | None:
+        sid = op.get("_snapshot_id")
+        if not sid:
+            return []  # 消すものが無かった（元に戻すものも無い）
+        return [{"op": "clear-week-undo", "iso_year": op["iso_year"], "iso_week": op["iso_week"], "snapshot_id": sid}]
+
+    def verify(self, api: Api, op: dict) -> list[str]:
+        pv = api.call("POST", _clear_path(op), {"dry_run": True, **_office(op)}) or {}
+        left = int(pv.get("to_delete") or 0)
+        return [f"まだ消える訪問が {left} 件あります"] if left else []
+
+
+@register
+class ClearWeekUndo(Op):
+    name = "clear-week-undo"
+    summary = "この週を空にする前へ戻す（消した訪問だけ書き戻す）"
+    undoable = False
+
+    def validate(self, op: dict) -> list[str]:
+        errs = _week_ints(op)
+        if not isinstance(op.get("snapshot_id"), str) or not op.get("snapshot_id"):
+            errs.append("snapshot_id（空にしたときの応答）が要ります")
+        return errs
+
+    def request(self, op: dict) -> tuple[str, str, dict | None]:
+        return ("POST", _clear_path(op) + "/undo", {"snapshot_id": op["snapshot_id"]})
+
+    def check_response(self, op: dict, response: Any) -> list[str]:
+        if not isinstance(response, dict) or "restored" not in response:
+            return ["応答の形が想定外です"]
+        return []
+
+    def undo_note(self, op: dict, before: dict | None = None) -> str | None:
+        return "画面からは元に戻せません"
+
+
+@register
+class GenerateWeek(Op):
+    name = "generate-week"
+    summary = "空の週に、固定訪問の型から訪問を作る（担当は付けない）"
+    undoable = False
+
+    def validate(self, op: dict) -> list[str]:
+        errs = _week_ints(op)
+        if op.get("office_id") is not None and not isinstance(op["office_id"], str):
+            errs.append("office_id は拠点 ID（文字列）です")
+        return errs
+
+    def request(self, op: dict) -> tuple[str, str, dict | None]:
+        return ("POST", "/schedule/generate-week-only",
+                {"iso_year": op["iso_year"], "iso_week": op["iso_week"], "dry_run": False, **_office(op)})
+
+    def snapshot(self, api: Api, op: dict) -> dict:
+        _, path, body = self.request(op)
+        try:
+            pv = api.call("POST", path, {**body, "dry_run": True}) or {}
+        except ApiError as e:
+            if e.status == 409:
+                raise RkError("この週にはもう予定があります（取消の記録と打刻・実績のある訪問以外）。"
+                              "作り直すなら先に clear-week で空にします") from e
+            raise
+        return {"to_add": pv.get("to_add")}
+
+    def check_response(self, op: dict, response: Any) -> list[str]:
+        if not isinstance(response, dict):
+            return ["応答の形が想定外です"]
+        out = []
+        if int(response.get("visits_created") or 0) == 0:
+            out.append("作った訪問が 0 件です")
+        if response.get("unplaced_multi_staff_patients"):
+            out.append(f"2 名体制で片側が欠けて作れなかった方が {len(response['unplaced_multi_staff_patients'])} 名います")
+        return out
+
+    def inverse(self, op: dict, before: dict) -> list[dict] | None:
+        # clear-week で戻すと、同じ週の他の新しい訪問まで消えるため式にしない
+        return None
+
+    def undo_note(self, op: dict, before: dict | None = None) -> str | None:
+        return "画面からは元に戻せません"
+
+    def verify(self, api: Api, op: dict) -> list[str]:
+        monday = date.fromisocalendar(op["iso_year"], op["iso_week"], 1)
+        return [] if _week_visits(api, monday) else [f"{monday} の週に訪問がありません"]

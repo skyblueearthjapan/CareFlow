@@ -466,29 +466,6 @@ export const applyIndividualResponseSchema = z.object({
 export type ApplyIndividualResponse = z.infer<typeof applyIndividualResponseSchema>;
 
 // ---------------------------------------------------------------------------
-// 機能 D: 固定枠に戻す (POST /reset-to-fixed)
-// ---------------------------------------------------------------------------
-
-export const resetToFixedRequestSchema = z.object({
-  iso_year: z.number().int().min(2020).max(2100),
-  iso_week: z.number().int().min(1).max(53),
-  office_ids: z.array(z.string().uuid()).default([]),
-  // W41 v2 final cross-review (M-Codex-1): UI 側の確認ダイアログを経由した
-  // ことを示すマーカー. Backend の AutoScheduleV2ResetToFixedRequest.confirm が
-  // Literal[True] のため必ず true を送る必要がある.
-  confirm: z.literal(true).default(true),
-});
-export type ResetToFixedRequest = z.infer<typeof resetToFixedRequestSchema>;
-
-export const resetToFixedResponseSchema = z.object({
-  visits_regenerated: z.number().int().nonnegative(),
-  visits_soft_deleted: z.number().int().nonnegative(),
-  courses_used: z.number().int().nonnegative(),
-  warnings: z.array(z.string()).default([]),
-});
-export type ResetToFixedResponse = z.infer<typeof resetToFixedResponseSchema>;
-
-// ---------------------------------------------------------------------------
 // この週だけ反映 (POST /apply-week-only)
 //
 // 全面最適化結果を **その週の visits だけ** に反映する慎重モード.

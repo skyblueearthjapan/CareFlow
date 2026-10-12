@@ -115,6 +115,7 @@ from app.services.scheduling.layer3_assignment import (
     UnresolvedGenderWarning,
     UnresolvedNgStaffWarning,
 )
+from app.services.scheduling.week_clear import GENERATE_NEEDS_EMPTY_WEEK_MESSAGE, week_is_empty
 from app.services.staff_event_defaults import expand_staff_event_defaults
 
 logger = logging.getLogger(__name__)
@@ -1107,7 +1108,7 @@ async def place_and_fix(
                     course_template_id=tpl_id,
                     # W37 Phase 2-A: slot_index は 0 から順番に割り当てる.
                     slot_index=slot_idx,
-                    movability=_mov,
+                    movability="locked" if _mov == "locked" else "unknown",
                     is_pinned=(_mov == "locked"),
                 )
                 db.add(fv)
@@ -1362,6 +1363,18 @@ class GenerateWeekOnlyRequest(BaseModel):
         default=None,
         description="対象拠点 (None=全拠点合算で実行).",
     )
+    dry_run: bool = Field(
+        default=False,
+        description="true なら何も書かず、型から足す件数 (to_add) だけ返す (青ピン廃止 BP-3).",
+    )
+
+
+class GenerateWeekPreviewResponse(BaseModel):
+    """``generate-week-only`` の ``dry_run: true`` のレスポンス (型から足す件数)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    to_add: int
 
 
 class GenerateWeekOnlyResponse(BaseModel):
@@ -1702,15 +1715,15 @@ class AssignStaffOnlyResponse(BaseModel):
 
 @router.post(
     "/generate-week-only",
-    response_model=GenerateWeekOnlyResponse,
+    response_model=GenerateWeekOnlyResponse | GenerateWeekPreviewResponse,
     status_code=status.HTTP_200_OK,
-    summary="W17-BE-A1: Layer 1 のみ — visit 展開 (staff 未割当)",
+    summary="W17-BE-A1: Layer 1 のみ — visit 展開 (staff 未割当・空の週だけ)",
 )
 async def generate_week_only(
     payload: GenerateWeekOnlyRequest,
     db: DbDep,
     _user: Annotated[User, Depends(require_role("admin"))],
-) -> GenerateWeekOnlyResponse:
+) -> GenerateWeekOnlyResponse | GenerateWeekPreviewResponse:
     """Layer 1 のみ実行し visits を展開する。staff 割付は行わない (W17-BE-A1).
 
     Wave 17 の 3 段階運用:
@@ -1718,8 +1731,13 @@ async def generate_week_only(
         2. 管理者が内容を確認
         3. ``POST /assign-staff-only``   — Layer 3 のみ
 
+    **空の週でだけ実行できる** (青ピン廃止 BP-3・PO 2026-10-12): 取消の記録と打刻・
+    実績のある訪問以外に予定が 1 件でもあれば 409。型と今ある予定の「どれとどれが
+    同じか」は確実に見分けられないため、推し量る仕組みを持たない。作り直したいとき
+    は ``POST /v2/weeks/{y}/{w}/clear`` で空にしてから生成する。
+    ``dry_run: true`` は何も書かず ``{to_add}`` だけ返す。
+
     冪等性:
-        - 当該週の ``source='auto'`` visit は全て削除されてから再生成される
         - ``courses.assigned_staff_id`` は変更しない
         - エラー時は全 rollback
 
@@ -1745,7 +1763,7 @@ async def generate_week_only(
 
 async def _generate_week_only_impl(
     payload: GenerateWeekOnlyRequest, db: AsyncSession
-) -> GenerateWeekOnlyResponse:
+) -> GenerateWeekOnlyResponse | GenerateWeekPreviewResponse:
     """generate-week-only の本体 (ロックは呼び出し側)."""
     # ----- ISO 週バリデーション (Layer 1 でも行うが先行 422 のため) -----
     try:
@@ -1770,6 +1788,15 @@ async def _generate_week_only_impl(
                 detail=f"Office not found: {payload.office_id}",
             )
 
+    # ----- 空の週でだけ生成できる (BP-3) -----
+    if not await week_is_empty(
+        db, date.fromisocalendar(payload.iso_year, payload.iso_week, 1), payload.office_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=GENERATE_NEEDS_EMPTY_WEEK_MESSAGE,
+        )
+
     expander = Layer1Expander()
 
     try:
@@ -1780,6 +1807,11 @@ async def _generate_week_only_impl(
             iso_week=payload.iso_week,
             office_id=payload.office_id,
         )
+        if payload.dry_run:
+            # 件数だけ数えて全部捨てる (週が空なので失うものは無い)。
+            to_add = l1_result.visits_created_count
+            await db.rollback()
+            return GenerateWeekPreviewResponse(to_add=to_add)
 
         # 新人同行 (§5.1-1): 展開成功後・commit 前に既定を当該週へ物質化する (冪等)。
         await expand_accompaniment_defaults(db, payload.iso_year, payload.iso_week)

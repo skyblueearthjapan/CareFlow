@@ -94,7 +94,7 @@ describe('statusImpactSchema', () => {
         by_week: [{ iso_year: 2026, iso_week: 38, count: 3, label: '9/14週' }],
         by_source: { auto: 7, manual_week: 2, inbound: 0 },
         pair_groups: 0,
-        excluded: { checked_in: 0, in_progress: 0, week_pinned: 0 },
+        excluded: { checked_in: 0, in_progress: 0 },
       },
       special_period: {
         id: SPID,

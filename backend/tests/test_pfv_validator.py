@@ -365,7 +365,8 @@ async def test_no_capacity_warning_when_no_office(db) -> None:
 
 @pytest.mark.asyncio
 async def test_pinned_row_keeps_its_movability_unknown(db) -> None:
-    """is_pinned=True でも movability='unknown' はそのまま保存される (旧 V6 は locked に矯正していた)."""
+    """赤ピン整理 (2026-10-12): is_pinned=True は schema で movability='locked' に正規化される
+    (赤は 2 値 + 厳密ミラー. validator が矯正 warning を出すわけではない)."""
     p = await _make_patient(db, code="MV-V6-1")
     items = [_item(0, time(9, 0), 30, is_pinned=True, movability="unknown")]
     result = await validate_pfv_changes(db, p.id, items, "normal", config=CFG)
@@ -374,8 +375,8 @@ async def test_pinned_row_keeps_its_movability_unknown(db) -> None:
     # 矯正 warning はもう出ない.
     assert all(w.code != CODE_MOVABILITY_CORRECTED for w in result.warnings)
     assert len(result.corrected_items) == 1
-    assert result.corrected_items[0].movability == "unknown"
-    assert items[0].movability == "unknown"
+    assert result.corrected_items[0].movability == "locked"
+    assert items[0].movability == "locked"
 
 
 @pytest.mark.asyncio
@@ -391,28 +392,24 @@ async def test_pinned_row_keeps_explicit_locked(db) -> None:
 
 @pytest.mark.asyncio
 async def test_pinned_row_keeps_time_flexible(db) -> None:
-    """核心: ピン留め中でも 'time_flexible' が保持される.
-
-    旧実装ではここが 'locked' に潰され、ピンを外すと 'unknown' に戻っていたため、
-    現場が設定した「時刻変更可」が往復で消えていた。
-    """
+    """赤ピン整理 (2026-10-12): is_pinned=True なら旧値 time_flexible は 'locked' (赤) になる."""
     p = await _make_patient(db, code="MV-V6-3")
     items = [_item(0, time(9, 0), 30, is_pinned=True, movability="time_flexible")]
     result = await validate_pfv_changes(db, p.id, items, "normal", config=CFG)
 
     assert all(w.code != CODE_MOVABILITY_CORRECTED for w in result.warnings)
-    assert result.corrected_items[0].movability == "time_flexible"
+    assert result.corrected_items[0].movability == "locked"
 
 
 @pytest.mark.asyncio
 async def test_non_pinned_row_keeps_its_movability(db) -> None:
-    """非 pinned 行は従来どおりそのまま保持 (regression)."""
+    """赤ピン整理 (2026-10-12): 非 pinned 行の旧値 time_flexible は 'unknown' に正規化される."""
     p = await _make_patient(db, code="MV-V6-4")
     items = [_item(0, time(9, 0), 30, is_pinned=False, movability="time_flexible")]
     result = await validate_pfv_changes(db, p.id, items, "normal", config=CFG)
 
     assert all(w.code != CODE_MOVABILITY_CORRECTED for w in result.warnings)
-    assert result.corrected_items[0].movability == "time_flexible"
+    assert result.corrected_items[0].movability == "unknown"
 
 
 # ---------------------------------------------------------------------------

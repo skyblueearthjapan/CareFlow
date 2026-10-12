@@ -58,6 +58,11 @@ place は拠点一致が必須なので、担当のコースが利用者の拠�
 使うテンプレートは 1 文字のコード（A〜E・M）だけ（M2・臨時へは移さない）。拠点の休みの曜日のテンプレートは使わない。
 案で使わないコースに担当が残っていて訪問も残らないときは `staff_id: null` で外す。
 
+### step 2 `cancel-visit-week`（急遽キャンセル）
+`rk level --cancel <訪問 ID の先頭>` で出る。`visit_id`・`cancel: true`・`reason: "急遽キャンセル"`・`patient_id`・`date`・`start_time "HH:MM"`・`op_group_id`
+→ `POST /schedule/v2/visit-cancel-week`。計算からは外れ（`--drop` と同じ）、プールへは戻さない。予定でない訪問（実施済みなど）には出さず warnings に書く。
+最上位の `conditions[]` は「今回だけの条件」（`{text, relax}`。`rk plan report` の「今回だけの条件」と A4 に出る）。`relax: true`（少しオーバー・`--fast`・重みの変更・自作の条件）は `warnings` にも「今回だけの条件（決まりをゆるめる）: …」で入る。
+
 ## 出さないもの
 - `place-from-pool`（ならしはプールから置かない。○は special-visit-place）。
 - 週を作る（copy-week）・一斉スタッフ未割当（禁止の操作）。ならしは週がもう作られている前提。

@@ -35,7 +35,6 @@ export const visitBaseSchema = z.object({
   status: z.string().default('planned'),
   source: z.string().default('manual'),
   // 週のピン (青ピン / PO 決定 2026-08-09)。source と独立の軸 (migration 0066)。
-  week_pinned: z.boolean().optional(),
   note: z.string().nullable().optional(),
   kaipoke_id: z.string().nullable().optional(),
 });
@@ -84,12 +83,11 @@ export const visitReadSchema = visitBaseSchema.extend({
   /** v2 §3.3: 2 名体制の visit グルーピングキー. 通常は null. */
   visit_group_id: z.string().uuid().nullable().optional(),
   /**
-   * Phase G-21 T4 reviewer C2: BE が将来 visits API に `fixed_visit_id` / `is_pinned`
+   * Phase G-21 T4 reviewer C2: BE が将来 visits API に `fixed_visit_id`
    * を expose した場合に備えて optional で受け取れるようにする. 現状 BE 未 expose で
    * あり、FE は別途 PFV API を join して値を導出する (CourseDayTablePanel 参照).
    */
   fixed_visit_id: z.string().uuid().nullable().optional(),
-  is_pinned: z.boolean().nullable().optional(),
   /**
    * 同行 (§6.4 / §7.4): この訪問に同行するスタッフ (単数・後方互換)。null = 同行なし。
    * 複数名いる場合は `accompaniments[0]` と同じ先頭 1 名。新規実装は

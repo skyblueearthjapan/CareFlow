@@ -1,6 +1,10 @@
 /**
  * CourseDayTablePanel — 「週を生成」再実行の確認ダイアログ (PO 2026-07-10)。
  *
+ * 青ピン廃止 (BP-3 / PO 2026-10-12): 「週を生成」は空の週でだけ押せる。
+ *   予定が入っている週 = 「固定訪問から生成」は選べず理由を出す。
+ *   空の週 = 確認ダイアログに「型から N 件を作ります」(N は dry_run の件数)。
+ *
  * 2026-10-01: ツールバーは「週を作る」になり、ダイアログで「固定訪問から生成」を選ぶと
  * 従来の「週を生成」と同じ流れ (この確認ダイアログを含む) になる
  * (copy-week-design-2026-09-30.md §4-1)。以下の「押す」は「週を作る → 固定訪問から生成」。
@@ -31,6 +35,16 @@ const { mockToast } = vi.hoisted(() => ({
 // 週生成 mutation の hoisted spy (呼び出し有無を検証する)。
 const genState = vi.hoisted(() => ({
   mutateAsync: vi.fn(),
+}));
+
+// 「週を生成」の確認用の件数取得 (dry_run) の spy。
+const previewState = vi.hoisted(() => ({
+  mutateAsync: vi.fn(),
+}));
+vi.mock('@/lib/queries/week_clear', () => ({
+  useGenerateWeekPreview: () => ({ mutateAsync: previewState.mutateAsync, isPending: false }),
+  useClearWeek: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUndoClearWeek: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 // 「コピー前に戻す」: その週の保存一覧と復元 (連携画面の「取り込み前に戻す」と同じ API)。
@@ -193,10 +207,6 @@ vi.mock('@/lib/queries/assign_staff_only', () => ({
   useAssignStaffOnly: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useApplyStaffReview: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
-vi.mock('@/lib/queries/g21', () => ({
-  useTogglePfvPin: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-  useBulkPinPfvs: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
-}));
 vi.mock('@/lib/queries/autoScheduleV2', () => ({
   useDiffAddProposalsMutation: () => ({
     mutateAsync: vi.fn(),
@@ -215,13 +225,6 @@ vi.mock('@/lib/queries/autoScheduleV2', () => ({
     isSuccess: false,
   }),
   useApplyIndividualMutation: () => ({
-    mutateAsync: vi.fn(),
-    reset: vi.fn(),
-    isPending: false,
-    error: null,
-    isSuccess: false,
-  }),
-  useResetToFixedMutation: () => ({
     mutateAsync: vi.fn(),
     reset: vi.fn(),
     isPending: false,
@@ -324,7 +327,9 @@ function renderPanel() {
   );
 }
 
-const CONFIRM_TITLE = 'この週は既に生成されています。再実行しますか？';
+const CONFIRM_TITLE = 'この週を型から作りますか？';
+const BLOCK_REASON =
+  '予定が入っている週では生成できません。先に『この週を空にする』を押してください';
 
 /** 「週を作る」→「固定訪問から生成」→「固定訪問から生成する」(= 従来の「週を生成」)。 */
 function pressGenerateFromFixed() {
@@ -345,44 +350,54 @@ const VISIT = {
   status: 'planned',
 };
 
-describe('CourseDayTablePanel — 「週を生成」再実行の確認ダイアログ (PO 2026-07-10)', () => {
+describe('CourseDayTablePanel — 「週を生成」は空の週でだけ (BP-3 / PO 2026-10-12)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capState.staffCountFor = () => 5;
     capState.pfvCountFor = () => 0;
     genState.mutateAsync = vi.fn().mockResolvedValue({ visits_created: 0 });
+    previewState.mutateAsync = vi.fn().mockResolvedValue({ to_add: 7 });
     snapState.snapshots = [];
     snapState.hasCheckins = false;
     snapState.restore = vi.fn().mockResolvedValue({ restored: 3, wiped: 5 });
   });
 
-  it('① 訪問ありで押す → ダイアログが出て mutation 未実行 → 「再実行する」で実行', async () => {
+  it('① 予定が入っている週: 「固定訪問から生成」は選べず理由が出る', async () => {
     setupHooks({ visits: [VISIT] });
     renderPanel();
 
-    // まだダイアログは出ていない。
-    expect(screen.queryByText(CONFIRM_TITLE)).not.toBeInTheDocument();
-
-    pressGenerateFromFixed();
-
-    // ダイアログが出る & mutation は未実行。
-    expect(await screen.findByText(CONFIRM_TITLE)).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('generate-week-button'));
+    expect(screen.getByTestId('make-week-how-fixed')).toBeDisabled();
+    expect(screen.getByTestId('make-week-fixed-disabled-reason')).toHaveTextContent(BLOCK_REASON);
     expect(genState.mutateAsync).not.toHaveBeenCalled();
-
-    // 「再実行する」で実行される。
-    fireEvent.click(screen.getByTestId('generate-week-confirm-ok'));
-    await waitFor(() => expect(genState.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(previewState.mutateAsync).not.toHaveBeenCalled();
   });
 
-  it('② 訪問 0 件で押す → ダイアログなしで即実行 (挙動不変)', async () => {
+  it('② 空の週: 「型から N 件を作ります」と確認 → 「作成する」で実行', async () => {
     setupHooks({ visits: [] });
     renderPanel();
 
     pressGenerateFromFixed();
 
-    // ダイアログは出ず、即 mutation が走る。
-    expect(screen.queryByText(CONFIRM_TITLE)).not.toBeInTheDocument();
+    expect(await screen.findByText(CONFIRM_TITLE)).toBeInTheDocument();
+    expect(screen.getByTestId('generate-week-confirm-text')).toHaveTextContent(
+      '型から 7 件を作ります',
+    );
+    // 旧文言 (今ある予定は消しません) は出さない
+    expect(screen.queryByText(/今ある予定は消しません/)).not.toBeInTheDocument();
+    expect(genState.mutateAsync).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('generate-week-confirm-ok'));
     await waitFor(() => expect(genState.mutateAsync).toHaveBeenCalledTimes(1));
+  });
+
+  it('③ 取消の記録だけが残る週は空の週として生成できる', async () => {
+    setupHooks({ visits: [{ ...VISIT, status: 'cancelled' }] });
+    renderPanel();
+
+    pressGenerateFromFixed();
+
+    expect(await screen.findByText(CONFIRM_TITLE)).toBeInTheDocument();
   });
 });
 

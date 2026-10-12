@@ -127,6 +127,23 @@ describe('WeekTimelineBoard 同行モード', () => {
     expect(screen.queryByTestId('wtl-course-header-t1-0')).toBeNull();
   });
 
+  it('個別同行バッジは赤い画鋲があれば左へ避ける', () => {
+    const acc = makeBinding({
+      active: false,
+      visitBadgeName: () => ['髙梨'],
+    });
+    const cls = (v: WeekOverviewVisit) => {
+      const { unmount } = render(
+        <WeekTimelineBoard options={OPTIONS} visits={[v]} accompaniment={acc} />,
+      );
+      const c = screen.getByTestId(`wtl-accompaniment-badge-${v.id}`).className;
+      unmount();
+      return c;
+    };
+    expect(cls(wv({ id: 'n', weekday: 0 }))).toContain('right-0.5');
+    expect(cls(wv({ id: 'r', weekday: 0, movability: 'locked' }))).toContain('right-[15px]');
+  });
+
   it('モード外: 同行が複数名なら「・」連結で全員を出す (確定#5)', () => {
     render(
       <WeekTimelineBoard

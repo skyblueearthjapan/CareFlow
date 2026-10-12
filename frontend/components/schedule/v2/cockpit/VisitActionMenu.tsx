@@ -57,8 +57,6 @@ export interface VisitActionMenuVisit {
   /** manual / auto / import / ai / manual_week。 */
   source: string;
   staff_id: string | null;
-  /** 青ピン = 今週の蓋。人手操作も BE が 422 で拒否する。 */
-  week_pinned: boolean;
   /**
    * ●未送信 (カイポケへまだ送っていない)。
    * `null` = まだ分からない (同期バーが未送信を数えていない) — 「✓同期済」と
@@ -228,8 +226,7 @@ export function VisitActionMenu({
 }: VisitActionMenuProps) {
   const [open, setOpen] = React.useState(defaultOpen);
   const cancelled = visit.status === 'cancelled';
-  const locked = visit.week_pinned;
-  const disabled = !canEdit || locked;
+  const disabled = !canEdit;
   // 当日以前は実績が付いている可能性があるため取消できない (BE も 422)。
   const cancelDisabled = disabled || (!cancelled && isPast);
   const curStaffValue = visit.staff_id ?? '__none__';
@@ -263,7 +260,7 @@ export function VisitActionMenu({
           </p>
         </div>
 
-        {/* 提案 (2-C): 青ピン (locked) や取消済みでは付け替えできないので出さない。 */}
+        {/* 提案 (2-C): 取消済みでは付け替えできないので出さない。 */}
         {showSuggestions && !disabled && !cancelled ? (
           <VisitSuggestions
             visitId={visit.id}
@@ -277,15 +274,6 @@ export function VisitActionMenu({
         ) : null}
 
         <div className="space-y-1.5 px-3 py-2">
-          {locked ? (
-            <p
-              className="rounded bg-warning-bg px-2 py-1 text-[11px] text-warning-strong"
-              data-testid="visit-action-week-pinned"
-            >
-              📌 青ピン（今週の蓋）が付いています。解除するまで変更できません
-            </p>
-          ) : null}
-
           {cancelled ? (
             <button
               type="button"
@@ -406,7 +394,7 @@ export function VisitActionMenu({
           </button>
 
           {onChangeServiceContent ? (
-            // 位置 (日付/時刻/担当) を変えないので青ピン (locked) でも押せる。
+            // 位置 (日付/時刻/担当) を変えないので押せる。
             // 完了済み・当日以前でも直せる = 請求に効く値だからこそ後から合わせたい。
             <button
               type="button"

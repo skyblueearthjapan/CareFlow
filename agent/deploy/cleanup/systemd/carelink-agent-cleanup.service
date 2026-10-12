@@ -1,0 +1,9 @@
+[Unit]
+Description=Rakusuke agent: retention cleanup (agent pg_dumps 14d/newest 5, transcripts+scratch 7d, conversations 90d, plans/runs 1y)
+After=docker.service
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/bin/bash /opt/carelink/agent/deploy/cleanup/agent-cleanup.sh --apply

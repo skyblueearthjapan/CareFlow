@@ -94,7 +94,6 @@ async def _seed_week(db) -> dict[str, Any]:
         type="regular",
         status="planned",
         source="auto",
-        week_pinned=True,
         required_staff_count=1,
         primary_staff_id=staff.id,
         course_id=course.id,
@@ -180,9 +179,9 @@ async def test_snapshot_restore_roundtrip(db) -> None:
 
     survivors = await _active_week_visits(db)
     assert len(survivors) == 2
-    keyset = {(v.visit_date, v.start_time, v.source, bool(v.week_pinned)) for v in survivors}
-    assert (TUE, time(10, 0), "auto", True) in keyset  # 青ピンごと戻る
-    assert (WED, time(11, 0), "manual_week", False) in keyset
+    keyset = {(v.visit_date, v.start_time, v.source) for v in survivors}
+    assert (TUE, time(10, 0), "auto") in keyset
+    assert (WED, time(11, 0), "manual_week") in keyset
     # コース担当も取り込み前へ戻る
     await db.refresh(seeded["course"])
     assert seeded["course"].assigned_staff_id == seeded["staff"].id
