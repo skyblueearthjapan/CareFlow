@@ -32,8 +32,9 @@ class TemplateDraft(Base):
     __tablename__ = "template_drafts"
 
     id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    office_id: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("offices.id", ondelete="CASCADE"), nullable=False
+    # NULL = 全拠点の下書き (拠点は params.offices・拠点ごとの対象の方は params.scopes)。0093 から
+    office_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("offices.id", ondelete="CASCADE"), nullable=True
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     base_snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -105,6 +106,8 @@ class TemplateDraftStep(Base):
     params_before: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
     params_after: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
     undone: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # 最適化の報告 (何をどう変えたか・曜日ごとの物差し・移動の増減の内訳・説明文)。kind=optimise だけ。0093 から
+    summary: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
     version_after: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 

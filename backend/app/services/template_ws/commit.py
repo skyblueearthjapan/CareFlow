@@ -48,10 +48,10 @@ def _t(minutes: int) -> str:
 
 async def _change_rows(db: AsyncSession, row, raw: dict | None = None):
     raw = raw or await R.build_raw(db)
-    ed = await S.engine_draft(db, row, raw)
-    problems = P.build_week(ed)
+    parts = await S.engine_parts(db, row, raw)
+    problems = [(ed, p) for ed in parts for p in P.build_week(ed)]
     chg_all, virt = [], 0
-    for p in problems:
+    for ed, p in problems:
         mine = E.draft_assign(ed, p)
         chg = M.changes(p, mine)
         for c in chg:
@@ -61,7 +61,7 @@ async def _change_rows(db: AsyncSession, row, raw: dict | None = None):
         chg_all += chg
         virtual = {c["id"] for c in p["courses"] if c.get("virtual")}
         virt += sum(1 for s in p["slots"] if (mine.get(s["key"]) or {}).get("course") in virtual)
-    return ed, problems, chg_all, virt
+    return parts[0], [p for _e, p in problems], chg_all, virt
 
 
 async def commit_preview(db: AsyncSession, row) -> dict:
@@ -211,9 +211,10 @@ async def week_preview(db: AsyncSession, row, iso_year: int, iso_week: int) -> d
     if not any(v.status == "planned" for v in visits):
         raise TemplateError("その週はまだ作られていません。先に「週を生成」するか、前の週をコピーしてください")
     raw = await R.build_raw(db)
-    ed = await S.engine_draft(db, row, raw)
-    labels = {c["id"]: c["label"] for p in P.build_week(ed) for c in p["courses"]}
-    labels |= {t["id"]: f"{ed['office']}{t['label']}" for t in raw["templates"]}
+    parts = await S.engine_parts(db, row, raw)
+    labels = {c["id"]: c["label"] for ed in parts for p in P.build_week(ed) for c in p["courses"]}
+    olabel = {o["id"]: o["short_label"] for o in raw["offices"]}
+    labels |= {t["id"]: f"{olabel.get(t['office_id'], '')}{t['label']}" for t in raw["templates"]}
     names = {p["id"]: p["name"] for p in raw["patients"]} | {c["id"]: c["name"] for c in raw["candidates"]}
     course_rows = {c.id: c for c in (await db.scalars(select(Course).where(
         Course.id.in_({v.course_id for v in visits if v.course_id})))).all()} if visits else {}

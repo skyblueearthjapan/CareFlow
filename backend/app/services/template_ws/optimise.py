@@ -24,8 +24,10 @@ from app.db.session import get_session_factory
 from app.models.user import User
 
 from . import engine as E
+from . import model as M
 from . import problems as P
 from . import raw as R
+from . import report as TR
 from . import service as S
 from .errors import TemplateError
 
@@ -72,8 +74,8 @@ async def execute_optimise(db: AsyncSession, draft_id: UUID, user_id: UUID | Non
     row = await S.get_draft(db, draft_id)
     S.check_version(row, base_version)
     raw = await R.build_raw(db)
-    ed = await S.engine_draft(db, row, raw)
-    problems = P.build_week(ed, weekdays)
+    parts = await S.engine_parts(db, row, raw)
+    problems = [p for ed in parts for p in P.build_week(ed, weekdays)]
     if not problems:
         raise TemplateError("計算する枠がありません（曜日を確かめてください）")
     await db.rollback()  # 計算の間、トランザクションを持ち越さない
@@ -81,17 +83,24 @@ async def execute_optimise(db: AsyncSession, draft_id: UUID, user_id: UUID | Non
     row = await S.get_draft(db, draft_id, for_update=True)  # 読み直しから書き込みまで行をロック
     if row.version != base_version:
         raise S.TemplateConflict("計算している間に下書きが変わりました。もう一度最適化してください")
-    ed = await S.engine_draft(db, row, raw)
-    problems = P.build_week(ed, weekdays)
-    notes = E.apply_solutions(ed, problems, sols, w_change)
-    changes = await S.sync_slots(db, row, ed)
-    await S.refresh_metrics(db, row, raw, ed)
+    parts = await S.engine_parts(db, row, raw)
+    notes, items = [], []
+    for ed in parts:  # 拠点ごとに解く (問題・解は拠点の略称で見分ける)
+        probs = P.build_week(ed, weekdays)
+        before = {p["weekday"]: E.draft_assign(ed, p) for p in probs}
+        mine = [x for x in sols if x.get("office", ed["office"]) == ed["office"]]
+        notes += [(f"{ed['office']} " if len(parts) > 1 else "") + n for n in E.apply_solutions(ed, probs, mine, w_change)]
+        items += [(p, before[p["weekday"]], E.draft_assign(ed, p)) for p in probs]
+    changes = await S.sync_slots(db, row, parts)
+    await S.refresh_metrics(db, row, raw, parts)
+    summary = TR.optimise_summary(items, changes, *S.report_names(raw, parts))
     user = await db.get(User, user_id) if user_id else None
-    days = "".join(p["weekday_ja"] for p in problems)
+    days = "".join(dict.fromkeys(M.WD[p["weekday"]] for p in problems))
     step = await S.add_step(db, row, actor=actor, user=user, kind="optimise",
-                            reason=reason or f"{days}曜を最適化しました", changes=changes)
+                            reason=reason or f"{days}曜を最適化しました", changes=changes, summary=summary)
     await db.commit()
-    return {"step": step.seq, "changed": len(changes), "notes": notes, "version": row.version}
+    return {"step": step.seq, "changed": len(changes), "notes": notes, "version": row.version,
+            "text": summary["text"]}
 
 
 async def _run_job(job_id: str, draft_id: UUID, user_id: UUID | None, kwargs: dict) -> None:

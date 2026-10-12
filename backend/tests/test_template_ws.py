@@ -426,3 +426,205 @@ async def test_week_preview_skips_multi_staff_visit_and_set_visit_course_keeps_s
     await OL._assert_visit_course(db, payload)  # 一致なら通る
     with pytest.raises(OL.OpLogConflictError):
         await OL._assert_visit_course(db, {**payload, "staff_id": str(ids["s"][1])})  # 担当が違えば断る
+
+
+# ---------------------------------------------------------------------------
+# 全拠点の下書き (0093) と 最適化の報告
+# ---------------------------------------------------------------------------
+
+
+async def _second_office(db, *, flag: bool = True):
+    """2 つ目の拠点 (都): コース A・職員 1 名 (月曜)・患者 1 名 (コースの無い枠)。"""
+    o2 = Office(name="都賀", short_label="都", code="tsu")
+    db.add(o2)
+    await db.flush()
+    t2 = CourseTemplate(office_id=o2.id, label="A", capacity_mon=6)
+    db.add(t2)
+    s2 = Staff(name="鈴木 一郎", code="S9", sex="female", status="active", role="staff", primary_office_id=o2.id)
+    db.add(s2)
+    await db.flush()
+    db.add(StaffShift(staff_id=s2.id, weekday=0, is_on=True, start_time=time(9), end_time=time(18)))
+    p2 = Patient(code="T1", name="都の方 様", status="active", primary_office_id=o2.id, lat=35.62, lng=140.15,
+                 special_week_active=[],
+                 weekly_pattern={"time_type": "時間帯", "preferred_start": "09:30", "preferred_end": "13:00",
+                                 "service_minutes": 35})
+    db.add(p2)
+    await db.flush()
+    db.add(PatientFixedVisit(patient_id=p2.id, mode="normal", weekday=0, start_time=time(10, 0),
+                             duration_min=35, course_template_id=None, slot_index=0))
+    if flag:
+        db.add(OfficeFeatureFlag(office_id=o2.id, feature_key="template_workspace", enabled_at=datetime.now(UTC)))
+    await db.commit()
+    return o2, t2, s2, p2
+
+
+@pytest.mark.asyncio
+async def test_all_offices_draft_create_list_move_and_refuse(db, client):
+    office, (tA, tB), _s, pats, _c, admin = await _world(db)
+    o2, t2, _s2, _p2 = await _second_office(db)
+    hdr = _h(admin)
+    ids = {"o1": str(office.id), "o2": str(o2.id), "tB": str(tB.id), "t2": str(t2.id)}
+    r = await client.post(f"{API}/drafts", json={"all_offices": True, "name": "全体"}, headers=hdr)
+    assert r.status_code == 201, r.text
+    v = r.json()
+    assert v["all_offices"] is True and v["office"] == {"id": None, "label": "全拠点"}
+    assert {o["label"] for o in v["offices"]} == {"稲", "都"}
+    mon = next(d for d in v["days"] if d["weekday"] == 0)
+    assert {c["label"] for c in mon["courses"]} == {"稲A", "稲B", "都A"}
+    assert {c["office"] for c in mon["courses"]} == {"稲", "都"}
+    assert len(mon["slots"]) == 5  # 稲 4 + 都 1
+    assert {h["office"] for h in v["courses"]} == {"稲", "都"}
+    # 一覧: 全拠点だけ / 拠点だけ
+    allv = (await client.get(f"{API}/drafts?all_offices=true", headers=hdr)).json()
+    assert [d["name"] for d in allv] == ["全体"] and allv[0]["office_id"] is None
+    assert set(allv[0]["offices"]) == {ids["o1"], ids["o2"]}
+    assert (await client.get(f"{API}/drafts?office_id={ids['o1']}", headers=hdr)).json() == []
+    # 拠点ごとに動かせる (都の方を都 A へ)
+    t1 = next(s for s in mon["slots"] if s["code"] == "T1")
+    assert t1["course_id"] is None and t1["office_id"] == ids["o2"]
+    r = await client.post(f"{API}/drafts/{v['id']}/move", json={
+        "key": t1["key"], "course_id": ids["t2"], "start": "10:00", "expected_version": 1}, headers=hdr)
+    assert r.status_code == 200, r.text
+    nv = r.json()["view"]
+    assert next(s for d in nv["days"] for s in d["slots"] if s["code"] == "T1")["course_id"] == ids["t2"]
+    assert nv["totals"]["draft"]["no_course"] == 0 and nv["totals"]["master"]["no_course"] == 1
+    # 別の拠点のコースへは動かせない
+    r = await client.post(f"{API}/drafts/{v['id']}/move", json={
+        "key": t1["key"], "course_id": ids["tB"], "start": "10:00", "expected_version": 2}, headers=hdr)
+    assert r.status_code == 422 and "別の拠点" in r.json()["detail"]
+    # 曜日ごとの職員の数のもしもは全拠点では使えない
+    r = await client.post(f"{API}/drafts/{v['id']}/whatif", json={
+        "staff_count": {"mon": 1}, "expected_version": 2}, headers=hdr)
+    assert r.status_code == 422 and "拠点ごとの下書き" in r.json()["detail"]
+    # 前提は拠点を選べる
+    j = (await client.get(f"{API}/drafts/{v['id']}/inputs?weekday=0&office_id={ids['o2']}", headers=hdr)).json()
+    assert j["office"]["label"] == "都" and {c["label"] for c in j["courses"]} == {"都A"}
+    # 見比べ (マスターと): 都の 1 枠が違う
+    c = (await client.get(f"{API}/drafts/{v['id']}/compare", headers=hdr)).json()
+    assert [x["office"] for x in c["changed"]] == ["都"]
+    # 取り消すと戻る
+    r = await client.post(f"{API}/drafts/{v['id']}/undo", json={"expected_version": 2}, headers=hdr)
+    assert r.status_code == 200
+    assert next(s for d in r.json()["view"]["days"] for s in d["slots"] if s["code"] == "T1")["course_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_all_offices_uses_only_enabled_offices(db, client):
+    office, *_rest, admin = await _world(db)
+    await _second_office(db, flag=False)
+    hdr = _h(admin)
+    v = (await client.post(f"{API}/drafts", json={"all_offices": True, "name": "全体"}, headers=hdr)).json()
+    assert [o["label"] for o in v["offices"]] == ["稲"]  # 使える拠点だけで作る
+    assert len((await client.get(f"{API}/drafts?all_offices=true", headers=hdr)).json()) == 1
+    r = await client.post(f"{API}/drafts", json={"name": "どこ"}, headers=hdr)
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_all_offices_commit_writes_both_offices_in_one_go(db, client):
+    office, (tA, tB), _s, pats, _c, admin = await _world(db)
+    o2, t2, _s2, p2 = await _second_office(db)
+    hdr = _h(admin)
+    ids = {"tB": str(tB.id), "t2": t2.id, "p3": pats[2].id, "p2": p2.id}
+    v = (await client.post(f"{API}/drafts", json={"all_offices": True, "name": "全体"}, headers=hdr)).json()
+    mon = next(d for d in v["days"] if d["weekday"] == 0)
+    p3 = next(s for s in mon["slots"] if s["code"] == "P3")
+    t1 = next(s for s in mon["slots"] if s["code"] == "T1")
+    await client.post(f"{API}/drafts/{v['id']}/move", json={
+        "key": p3["key"], "course_id": ids["tB"], "start": "11:30", "expected_version": 1}, headers=hdr)
+    await client.post(f"{API}/drafts/{v['id']}/move", json={
+        "key": t1["key"], "course_id": str(ids["t2"]), "start": "10:00", "expected_version": 2}, headers=hdr)
+    pv = (await client.get(f"{API}/drafts/{v['id']}/commit-preview", headers=hdr)).json()
+    assert pv["ready"], pv["blockers"]
+    assert pv["counts"]["patients"] == 2
+    r = await client.post(f"{API}/drafts/{v['id']}/commit", json={"expected_version": 3, "confirm": True}, headers=hdr)
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    f1 = await db.scalar(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == ids["p3"]))
+    f2 = await db.scalar(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == ids["p2"]))
+    assert str(f1.course_template_id) == ids["tB"] and f2.course_template_id == ids["t2"]
+
+
+def test_report_classify_and_explain_travel_increase():
+    from app.services.template_ws import report as TR
+
+    def st(c, s, src="master", placed=True):
+        return {"placed": placed, "course": c, "start": s, "source": src, "reason": None}
+
+    changes = [
+        {"key": "p1:0:0", "patient_id": "p1", "weekday": 0, "before": st(None, 600), "after": st("cA", 600, "optimised")},
+        {"key": "p2:0:0", "patient_id": "p2", "weekday": 0, "before": st("cA", 600), "after": st("cB", 600, "optimised")},
+        {"key": "p3:1:0", "patient_id": "p3", "weekday": 1, "before": st("cA", 600), "after": st("cB", 660, "optimised")},
+        {"key": "p4:1:0", "patient_id": "p4", "weekday": 1, "before": st("cA", 600), "after": st("cA", 630, "optimised")},
+        {"key": "new:p5:1:0", "patient_id": "p5", "weekday": 1, "before": None, "after": st("cA", 700, "new")},
+        {"key": "new:p6:1:0", "patient_id": "p6", "weekday": 1, "before": st("cA", 700, "new"), "after": None},
+        {"key": "new:p7:1:0", "patient_id": "p7", "weekday": 1, "before": None,
+         "after": st(None, 700, "new", placed=False)},
+    ]
+    kinds = [TR.classify(c) for c in changes]
+    assert kinds == ["course_added", "course_only", "course_and_time", "time_only", "new_placed", "removed",
+                     "not_placed"]
+    cats = TR.categorize(changes, {"cA": "稲A", "cB": "稲B"}, {"p1": "一 様", "p3": "三 様"})
+    first = cats[0]
+    assert first["label"] == "コースが無かった枠にコースを付けた" and first["items"][0]["from_course"] == "（コースなし）"
+    cat = next(c for c in cats if c["kind"] == "course_and_time")["items"][0]
+    assert (cat["from_course"], cat["to_course"], cat["from_start"], cat["to_start"]) == ("稲A", "稲B", "10:00", "11:00")
+    zero = {k: 0 for k in TR.DAY_KEYS} | {"regular_counts": [3, 3]}
+    s = {"categories": cats, "days": [{
+        "name": "火", "weekday": 1, "master": zero, "before": zero, "after": zero | {"travel_min": 40},
+        "changes": 5, "travel": {"delta": 40, "reorder": 5, "routed": 35,
+                                 "newly": {"no_course": 5, "unstaffed": 0, "new": 0}}}],
+        "travel": {"before": 100, "after": 140, "delta": 40, "reorder": 5, "routed": 35,
+                   "newly": {"no_course": 5, "unstaffed": 0, "new": 1}}}
+    text = "\n".join(TR.explain(s))
+    assert "+40 分" in text and "道順に入れた分" in text and "コースの無い枠 5 件" in text and "並べ替え" in text
+    assert "火曜は移動が +40 分" in text
+    assert not any(w in text for w in ("直す", "修正", "補正"))
+    s["days"][0]["after"] = zero | {"manager_visits": 2}
+    assert any("管理者" in c for c in TR.cautions(s))
+
+
+@pytest.mark.asyncio
+async def test_optimise_report_is_saved_and_reopens(db, client):
+    pytest.importorskip("ortools")
+    office, (tA, tB), _s, pats, cand, admin = await _world(db)
+    admin_id, hdr = admin.id, _h(admin)
+    v = await _create(client, admin, office)
+    r = await client.get(f"{API}/drafts/{v['id']}/report", headers=hdr)
+    assert r.status_code == 404  # まだ最適化していない
+    await db.rollback()
+    res = await O.execute_optimise(db, __import__("uuid").UUID(v["id"]), admin_id, actor="human", weekdays=[0],
+                                   seconds=3, reason=None, base_version=1)
+    assert res["text"]
+    rep = (await client.get(f"{API}/drafts/{v['id']}/report", headers=hdr)).json()
+    assert rep["seq"] == res["step"] and rep["changed"] == res["changed"]
+    assert sum(c["count"] for c in rep["categories"]) >= 1
+    assert rep["days"][0]["name"] == "月" and "travel_min" in rep["days"][0]["master"]
+    t = rep["travel"]
+    assert t["after"] - t["before"] == t["delta"] == t["reorder"] + t["routed"]
+    assert rep["text"] and isinstance(rep["cautions"], list)
+    # 手順の番号で開き直せる
+    again = (await client.get(f"{API}/drafts/{v['id']}/report?seq={res['step']}", headers=hdr)).json()
+    assert again["categories"] == rep["categories"]
+    view = (await client.get(f"{API}/drafts/{v['id']}", headers=hdr)).json()
+    assert view["latest_step"]["has_report"] is True
+
+
+@pytest.mark.asyncio
+async def test_all_offices_optimise_runs_each_office(db, client):
+    pytest.importorskip("ortools")
+    office, (tA, tB), _s, pats, _c, admin = await _world(db)
+    o2, t2, _s2, _p2 = await _second_office(db)
+    admin_id, hdr, t2_id = admin.id, _h(admin), str(t2.id)
+    v = (await client.post(f"{API}/drafts", json={"all_offices": True, "name": "全体"}, headers=hdr)).json()
+    await db.rollback()
+    res = await O.execute_optimise(db, __import__("uuid").UUID(v["id"]), admin_id, actor="agent", weekdays=[0],
+                                   seconds=3, reason=None, base_version=1)
+    assert res["changed"] > 0
+    nv = (await client.get(f"{API}/drafts/{v['id']}", headers=hdr)).json()
+    t1 = next(s for d in nv["days"] for s in d["slots"] if s["code"] == "T1")
+    assert t1["course_id"] == t2_id  # 都の方は都のコースへ
+    rep = (await client.get(f"{API}/drafts/{v['id']}/report", headers=hdr)).json()
+    added = next(c for c in rep["categories"] if c["kind"] == "course_added")
+    assert added["items"][0]["office"] == "都"
+    assert rep["travel"]["newly"]["no_course"] >= 1

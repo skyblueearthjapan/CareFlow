@@ -41,7 +41,8 @@ class _Mut(BaseModel):
 
 class DraftCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    office_id: UUID
+    office_id: UUID | None = None
+    all_offices: bool = False  # true = 全拠点の下書き (型の作業場が使える拠点をまとめて)
     name: str
     from_draft_id: UUID | None = None
 
@@ -119,9 +120,20 @@ async def _draft(db, draft_id: UUID, *, for_update: bool = False) -> TemplateDra
         row = await S.get_draft(db, draft_id, for_update=for_update)
     except S.TemplateNotFound as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
-    if not await S.flag_enabled(db, row.office_id):
+    oids = S.office_ids_of(row)
+    ok = {str(o) for o in await _enabled_office_ids(db)}
+    if not oids or not set(oids) <= ok:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "型の作業場はこの拠点ではまだ使えません")
     return row
+
+
+def _summary_json(r: TemplateDraft) -> dict:
+    return {"id": str(r.id), "name": r.name, "status": r.status, "version": r.version,
+            "office_id": str(r.office_id) if r.office_id else None, "all_offices": r.office_id is None,
+            "offices": S.office_ids_of(r),
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "totals": (r.metrics or {}).get("totals")}
 
 
 async def _guard(db, fn):
@@ -160,24 +172,32 @@ async def availability(db: DbDep, _u: AdminDep):
 
 
 @router.get("/drafts", summary="下書きの一覧")
-async def list_drafts(db: DbDep, _u: AdminDep, office_id: UUID | None = None, archived: bool = False):
-    ok = await _enabled_office_ids(db)
-    if office_id and office_id not in ok:
+async def list_drafts(db: DbDep, _u: AdminDep, office_id: UUID | None = None, archived: bool = False,
+                      all_offices: bool = False):
+    """office_id = その拠点の下書き / all_offices=true = 全拠点の下書き / どちらも無し = 全部 (エージェント用)。"""
+    ok = {str(o) for o in await _enabled_office_ids(db)}
+    if office_id and str(office_id) not in ok:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "型の作業場はこの拠点ではまだ使えません")
-    rows = [r for r in await S.list_drafts(db, office_id, archived) if r.office_id in ok]
-    return [{"id": str(r.id), "name": r.name, "status": r.status, "version": r.version, "office_id": str(r.office_id),
-             "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-             "created_at": r.created_at.isoformat() if r.created_at else None,
-             "totals": (r.metrics or {}).get("totals")} for r in rows]
+    rows = [r for r in await S.list_drafts(db, office_id, archived, all_offices=all_offices)
+            if S.office_ids_of(r) and set(S.office_ids_of(r)) <= ok]
+    return [_summary_json(r) for r in rows]
 
 
 @router.post("/drafts", status_code=status.HTTP_201_CREATED, summary="いまの型（マスター）から下書きを作る")
 async def create_draft(body: DraftCreate, db: DbDep, user: AdminDep):
-    if not await S.flag_enabled(db, body.office_id):
+    offices: list[UUID] | None = None
+    if body.all_offices:
+        offices = await _enabled_office_ids(db)
+        if not offices:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "型の作業場が使える拠点がありません")
+    elif body.office_id is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "拠点を選ぶか、全拠点にしてください")
+    elif not await S.flag_enabled(db, body.office_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "型の作業場はこの拠点ではまだ使えません")
 
     async def go():
-        row = await S.create_draft(db, user, body.office_id, body.name, body.from_draft_id)
+        row = await S.create_draft(db, user, None if body.all_offices else body.office_id, body.name,
+                                   body.from_draft_id, offices=offices)
         await db.commit()
         await db.refresh(row)
         return await S.build_view(db, row)
@@ -225,6 +245,12 @@ async def patch_draft(draft_id: UUID, body: DraftPatch, db: DbDep, _u: AdminDep)
 async def get_steps(draft_id: UUID, db: DbDep, _u: AdminDep, limit: int = Query(default=50, ge=1, le=200)):
     row = await _draft(db, draft_id)
     return [S.step_json(s) for s in await S.list_steps(db, row.id, limit)]
+
+
+@router.get("/drafts/{draft_id}/report", summary="最適化の報告（いちばん新しい最適化。seq でその手順の報告）")
+async def get_report(draft_id: UUID, db: DbDep, _u: AdminDep, seq: int | None = Query(default=None, ge=1)):
+    row = await _draft(db, draft_id)
+    return await _guard(db, lambda: S.step_report(db, row, seq))
 
 
 # ---------------------------------------------------------------------------
@@ -342,9 +368,10 @@ async def compare(draft_id: UUID, db: DbDep, _u: AdminDep, other: str = "master"
 
 
 @router.get("/drafts/{draft_id}/inputs", summary="最適化が使う前提（距離・職員の勤務/休み/予定・時刻の決まり方）")
-async def inputs(draft_id: UUID, db: DbDep, _u: AdminDep, weekday: int = Query(ge=0, le=5)):
+async def inputs(draft_id: UUID, db: DbDep, _u: AdminDep, weekday: int = Query(ge=0, le=5),
+                 office_id: str | None = None):
     row = await _draft(db, draft_id)
-    return await _guard(db, lambda: S.inputs_view(db, row, weekday))
+    return await _guard(db, lambda: S.inputs_view(db, row, weekday, office_id))
 
 
 @router.get("/drafts/{draft_id}/commit-preview", summary="①型に登録: 変わるものの一覧（書かない）")
