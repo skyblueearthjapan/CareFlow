@@ -118,6 +118,8 @@ services:
         # service worker caches are invalidated per release. Set via deployment
         # script (`GIT_SHA=$(git rev-parse HEAD) docker compose ... build`).
         GIT_SHA: ${GIT_SHA:-dev}
+        # らく助エージェントを出す人（/opt/carelink/.env の NEXT_PUBLIC_AGENT_PILOT_USERS・空なら誰にも出さない）
+        NEXT_PUBLIC_AGENT_PILOT_USERS: ${NEXT_PUBLIC_AGENT_PILOT_USERS:-}
     container_name: carelink-frontend
     restart: unless-stopped
     env_file:

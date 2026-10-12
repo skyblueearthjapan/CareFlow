@@ -14,6 +14,9 @@ FROM base AS builder
 ARG GIT_SHA=dev
 ENV GIT_SHA=$GIT_SHA
 ENV NEXT_PUBLIC_BUILD_ID=$GIT_SHA
+# らく助エージェントの試験の許可リスト（ユーザー ID かメールのカンマ区切り・空なら誰にも出さない）。ビルド時に埋め込まれる
+ARG NEXT_PUBLIC_AGENT_PILOT_USERS=
+ENV NEXT_PUBLIC_AGENT_PILOT_USERS=$NEXT_PUBLIC_AGENT_PILOT_USERS
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
