@@ -25,6 +25,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "structlog>=24.1,<25.0",
     "slowapi>=0.1.9,<1.0",
+    "ortools>=9.10,<10.0",  # 型の作業場 (template_ws) の最適化。wheel ~30MB
 ]
 
 [project.optional-dependencies]

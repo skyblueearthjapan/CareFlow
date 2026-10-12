@@ -44,6 +44,7 @@ from app.models.staff import (
     StaffWeeklyOverride,
 )
 from app.models.suggestion_dismissal import SuggestionDismissal
+from app.models.template_draft import TemplateDraft, TemplateDraftSlot, TemplateDraftStep
 from app.models.user import User
 from app.models.visit import Visit
 from app.models.visit_checkin import VisitCheckin
@@ -93,6 +94,9 @@ __all__ = [
     "SpecialVisitPeriod",
     "SpecialWeek",
     "SpecialWeekItem",
+    "TemplateDraft",
+    "TemplateDraftSlot",
+    "TemplateDraftStep",
     "SuggestionDismissal",
     "Staff",
     "StaffEvent",

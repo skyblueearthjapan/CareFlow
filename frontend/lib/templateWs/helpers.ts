@@ -1,0 +1,96 @@
+/** 型の作業場の純粋な部品（盤面の組み立て・数の差・表示用の文字）。 */
+import type { DayView, DraftView, Metrics, SlotCard, Step } from './types';
+
+export const WEEKDAYS = ['月', '火', '水', '木', '金', '土'] as const;
+
+export function fmtMin(m: number | null | undefined): string {
+  if (m == null) return '--:--';
+  return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
+}
+
+/** "9:30" / "09:30" → 分。形が違えば null。 */
+export function parseHm(s: string): number | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s.trim());
+  if (!m) return null;
+  const v = Number(m[1]) * 60 + Number(m[2]);
+  return Number(m[2]) < 60 && v < 24 * 60 ? v : null;
+}
+
+export const NO_COURSE = '__none__';
+
+export interface GridRow {
+  id: string;
+  label: string;
+  manager: boolean;
+  /** weekday → セル */
+  cells: Record<number, { slots: SlotCard[]; staff: string | null; open: boolean }>;
+}
+
+/** 行 = コース（A〜E・M）＋ コースなし、列 = 月〜土。人のいない日のコースは薄く（open=false）。 */
+export function buildGrid(view: DraftView): GridRow[] {
+  const rows: GridRow[] = view.courses.map((c) => ({
+    id: c.id,
+    label: c.label,
+    manager: c.manager,
+    cells: {},
+  }));
+  const none: GridRow = { id: NO_COURSE, label: 'コースなし', manager: false, cells: {} };
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  for (const d of view.days) {
+    const empty = () => ({ slots: [] as SlotCard[], staff: null as string | null, open: false });
+    for (const r of [...rows, none]) r.cells[d.weekday] = empty();
+    for (const c of d.courses) {
+      const row = byId.get(c.id);
+      if (row) row.cells[d.weekday] = { slots: [], staff: c.staff, open: true };
+    }
+    for (const s of d.slots) {
+      if (!s.placed) continue;
+      const row = (s.course_id && byId.get(s.course_id)) || none;
+      (row.cells[d.weekday] ??= empty()).slots.push(s);
+    }
+    for (const r of [...rows, none]) {
+      r.cells[d.weekday]?.slots.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+    }
+  }
+  const hasNone = Object.values(none.cells).some((c) => c.slots.length > 0);
+  return hasNone ? [...rows, none] : rows;
+}
+
+export type Tone = 'good' | 'bad' | 'same';
+
+/** 小さいほどよい数の前後 → 色の向き。 */
+export function tone(before: number | undefined, after: number | undefined): Tone {
+  if (before == null || after == null || before === after) return 'same';
+  return after < before ? 'good' : 'bad';
+}
+
+export const METRIC_ITEMS: { key: keyof Metrics; label: string }[] = [
+  { key: 'conflicts', label: '移動が間に合わない組' },
+  { key: 'over_cap', label: '上限超え' },
+  { key: 'no_course', label: 'コースの無い枠' },
+  { key: 'unstaffed', label: '人のいないコース' },
+  { key: 'travel_min', label: '移動の合計（分）' },
+];
+
+export function dayChangedCount(d: DayView): number {
+  return d.slots.filter((s) => s.changed).length;
+}
+
+/** 最新の編集の見出し（「あなた」「らく助エージェント」）。 */
+export function stepTitle(s: Step): string {
+  const what: Record<Step['kind'], string> = {
+    move: '枠を動かしました',
+    optimise: '最適化しました',
+    whatif: 'もしもの条件を変えました',
+    add: '枠の無い方を足しました',
+    remove: '足した方を外しました',
+    commit: '登録しました',
+  };
+  return `${s.actor_label}が${what[s.kind]}`;
+}
+
+/** 最新の編集で変わった枠のキー（盤面で目立たせる）。 */
+export function latestStepKeys(view: DraftView): Set<string> {
+  const s = view.latest_step;
+  return new Set(s && !s.undone ? s.changes.map((c) => c.key) : []);
+}

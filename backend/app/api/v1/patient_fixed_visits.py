@@ -540,6 +540,17 @@ async def put_fixed_visits(
     db: DbDep,
     current_user: Annotated[User, Depends(require_role("admin"))],
 ) -> PatientFixedVisitsBulkPutResponse:
+    return await apply_put_fixed_visits(db, patient_id, body, current_user)
+
+
+async def apply_put_fixed_visits(
+    db: AsyncSession,
+    patient_id: UUID,
+    body: PatientFixedVisitsBulkPut,
+    current_user: User,
+    *,
+    commit: bool = True,
+) -> PatientFixedVisitsBulkPutResponse:
     """患者の固定訪問パターンを一括上書きする (提案採用「固定訪問週間に登録」の実体).
 
     NG スタッフ / 性別制限 (§7-2): ``change_scope='pattern_and_week'`` のときのみ
@@ -702,7 +713,13 @@ async def put_fixed_visits(
         await notify_constraint_override_for_course(
             db, course=_c, warnings=_w, actor=current_user, op_group_id=None
         )
-    await _commit_or_409(db)
+    if commit:
+        await _commit_or_409(db)
+    else:
+        # 型の作業場の一括登録 (template_ws): 呼び出し側が 1 トランザクションで commit する.
+        # pattern_only 専用 (週の再生成は commit 済みを前提にするため).
+        assert body.change_scope == "pattern_only"
+        await db.flush()
 
     # Wave U-1 (§2.2 A 経路 = プール採用): PFV 置換コミット後、同一エンドポイント内で
     # 当該患者の今週 visits を PFV から再生成する (reset_visits_to_fixed の 1 患者版).

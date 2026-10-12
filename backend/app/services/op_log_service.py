@@ -450,6 +450,9 @@ async def _verify_forward_state(db: AsyncSession, row: ScheduleOpLog) -> None:
         # forward result = primary (書いたなら) と VSA の add/remove が反映済み
         await _assert_visit_staff_slot(db, fp)
 
+    elif op_name == "set_visit_course":
+        await _assert_visit_course(db, fp)
+
     elif op_name == "set_staff_off":
         # forward result = 休みの行が fp["type"] のまま存在する (null なら不在)
         await _assert_staff_override(db, fp, fp.get("type"))
@@ -526,6 +529,9 @@ async def _verify_inverse_state(db: AsyncSession, row: ScheduleOpLog) -> None:
     elif op_name == "set_visit_staff_slot":
         # inverse result = primary (書いたなら) と VSA の add/remove が反映済み
         await _assert_visit_staff_slot(db, ip)
+
+    elif op_name == "set_visit_course":
+        await _assert_visit_course(db, ip)
 
     elif op_name == "set_staff_off":
         # inverse result = 休みの行が ip["type"] のまま (null なら不在)
@@ -612,6 +618,9 @@ async def _execute_payload(db: AsyncSession, payload: dict[str, Any]) -> None:
 
     elif op_name == "set_visit_staff_slot":
         await _set_visit_staff_slot(db, payload)
+
+    elif op_name == "set_visit_course":
+        await _set_visit_course(db, payload)
 
     elif op_name == "set_staff_off":
         await _set_staff_override(db, payload)
@@ -794,6 +803,57 @@ async def _set_visit_staff(
     await db.flush()
     if staff_id is not None:
         db.add(VisitStaffAssignment(visit_id=visit_id, staff_id=staff_id))
+    await db.flush()
+
+
+
+async def _assert_visit_course(db: AsyncSession, payload: dict[str, Any]) -> None:
+    """set_visit_course の undo/redo 前検証: 訪問のコース・担当が期待値のままか (型の作業場の「この週のコースに入れる」)."""
+    visit = await db.scalar(
+        select(Visit).where(Visit.id == UUID(payload["visit_id"]), Visit.deleted_at.is_(None))
+    )
+    if visit is None:
+        raise OpLogConflictError("他の変更があったため戻せません (対象の訪問が見つかりません)")
+    want = UUID(payload["course_id"]) if payload.get("course_id") else None
+    if visit.course_id != want:
+        raise OpLogConflictError("他の変更があったため戻せません (訪問のコースが既に変更されています)")
+    want_staff = UUID(payload["staff_id"]) if payload.get("staff_id") else None
+    if visit.primary_staff_id != want_staff:
+        raise OpLogConflictError("他の変更があったため戻せません (訪問の担当が既に変更されています)")
+
+
+async def _set_visit_course(db: AsyncSession, payload: dict[str, Any]) -> None:
+    """visit 1 件のコースと担当を (course_id, staff_id) に戻す/進める (visit-move-week-only の course 跨ぎと同じ書き方)."""
+    visit = await db.scalar(
+        select(Visit).where(Visit.id == UUID(payload["visit_id"]), Visit.deleted_at.is_(None))
+    )
+    if visit is None:
+        raise OpLogConflictError("他の変更があったため戻せません (対象の訪問が見つかりません)")
+    old_staff = visit.primary_staff_id
+    new_staff = UUID(payload["staff_id"]) if payload.get("staff_id") else None
+    visit.course_id = UUID(payload["course_id"]) if payload.get("course_id") else None
+    visit.primary_staff_id = new_staff
+    visit.manual_staff_override = bool(payload.get("manual", False))
+    # 担当の入れ替えは「主担当の VSA だけ」(visit-move-week-only の前向きの処理と同じ)。2 人目以降の VSA は消さない。
+    if old_staff is not None and old_staff != new_staff:
+        existing = (
+            await db.scalars(
+                select(VisitStaffAssignment).where(
+                    VisitStaffAssignment.visit_id == visit.id, VisitStaffAssignment.staff_id == old_staff
+                )
+            )
+        ).all()
+        for r in existing:
+            await db.delete(r)
+        await db.flush()
+    if new_staff is not None:
+        have = await db.scalar(
+            select(VisitStaffAssignment.visit_id).where(
+                VisitStaffAssignment.visit_id == visit.id, VisitStaffAssignment.staff_id == new_staff
+            )
+        )
+        if have is None:
+            db.add(VisitStaffAssignment(visit_id=visit.id, staff_id=new_staff))
     await db.flush()
 
 

@@ -22,6 +22,8 @@ python-multipart>=0.0.9
 structlog>=24.1,<25.0
 slowapi>=0.1.9,<1.0
 openpyxl>=3.1,<4.0
+# 型の作業場 (template_ws) の最適化 (OR-Tools・イメージ +約 100MB 展開後)。
+ortools>=9.10,<10.0
 
 # Dev / test (kept here so the image can run pytest without extras install).
 pytest>=8.2,<9.0

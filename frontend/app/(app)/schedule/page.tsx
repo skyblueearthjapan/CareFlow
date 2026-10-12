@@ -26,8 +26,10 @@
 import { useMemo, useState } from 'react';
 
 import { RakusukeTitle } from '@/components/brand/Rakusuke';
+import { usePublishScreenContext } from '@/components/agent/screenContext';
 import { CourseDayTablePanel } from '@/components/schedule/v2/CourseDayTablePanel';
 import { FeasibilityCheckButton } from '@/components/schedule/FeasibilityCheckButton';
+import { TemplateWorkspaceLink } from '@/components/template-ws/TemplateWorkspaceLink';
 import { ReconcileToolbar } from '@/components/integrations/ReconcileReportButton';
 import { useDragAutoScroll } from '@/lib/hooks/useDragAutoScroll';
 import { WeekSelector, toWeekStart } from '@/components/schedule/WeekSelector';
@@ -52,6 +54,8 @@ export default function SchedulePage() {
   useDragAutoScroll();
   const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
   const { isoYear, isoWeek } = useMemo(() => isoWeekFromLocalDate(weekStart), [weekStart]);
+  // らく助エージェントへの画面の文脈(見ている週)
+  usePublishScreenContext({ screen: 'schedule', iso_year: isoYear, iso_week: isoWeek });
   // 突合レポート用 (ローカル日付の YYYY-MM-DD。toISOString は UTC ずれするので使わない)
   const weekStartYmd = useMemo(
     () =>
@@ -106,6 +110,8 @@ export default function SchedulePage() {
 
           {/* ml-auto で右端に拠点フィルタを寄せる. */}
           <div className="ml-auto flex flex-wrap items-center gap-3">
+            {/* 型の作業場 (管理者・拠点の feature flag ON のときだけ) */}
+            <TemplateWorkspaceLink canEdit={canEdit} />
             {/* 実現性チェック (read-only): 移動/重なり/バッファ/同住所ルールを判定して A4 レポートを開く. */}
             <FeasibilityCheckButton
               isoYear={isoYear}
