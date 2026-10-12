@@ -36,7 +36,7 @@
 
 ## 3-2. 本番への導入（2026-10-13 未明・PO 了承）
 
-- 済み: pg_dump → develop へ ff → backend/frontend 作り直し → 0091+0092 → roles.sql（verify OK）→ `/opt/carelink/secrets/agent-relay.env`（7 行・0400。エージェント専用管理者 = 既存の rakusuke-agent@lineworks-local.info・使える人 = PO だけ）→ `/opt/carelink/backups/agent` → preflight 全 OK → 中継・箱・出口を起動（`carelink-agent*`・127.0.0.1:18201）→ 隔離の確かめ OK → **PO が ChatGPT でログイン済み**（実行係からは auth.json が Permission denied）。
+- 済み: pg_dump → develop へ ff → backend/frontend 作り直し → 0091+0092 → roles.sql（verify OK）→ `/opt/carelink/secrets/agent-relay.env`（7 行・0400。エージェント専用管理者 = 既存の ログイン ID A005（メールなし・2026-10-13 PO）・使える人 = PO だけ）→ `/opt/carelink/backups/agent` → preflight 全 OK → 中継・箱・出口を起動（`carelink-agent*`・127.0.0.1:18201）→ 隔離の確かめ OK → **PO が ChatGPT でログイン済み**（実行係からは auth.json が Permission denied）。
 - **開けた（2026-10-13 05 時 JST・PO「了解は取ってある・一気通貫で」）**:
   1. 中継 `AGENT_RELAY_ENABLED=1`（agent.prod.env・b7e7e6a）。使える人 = **管理者全員**（秘密ファイルの `AGENT_ALLOWED_USER_IDS` を外した・画面は `/opt/carelink/.env` の `NEXT_PUBLIC_AGENT_PILOT_USERS=*`＝ビルド時に埋め込む・c7e1dc8）。
   2. 機能の旗 `rakusuke_agent` を稲毛・都賀の両方に。旗の名前が backend の Literal に無く一覧 GET が 500 → 9dc3be5 で足した（`template_workspace` も）。
