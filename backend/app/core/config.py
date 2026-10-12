@@ -120,7 +120,7 @@ class Settings(BaseSettings):
     # failed に倒してしまう。
     voice_job_stale_minutes: int = Field(default=20)
 
-    # --- カルテの下書きを決めた管理者の ChatGPT の席で (docs/plans/karte-via-seat-2026-10-13.md) ---
+    # --- カルテの下書きを決めた管理者のサインインした AI の席で (docs/plans/karte-via-seat-2026-10-13.md) ---
     # 拠点の旗 ``karte_via_seat`` が ON の拠点だけ使う。失敗したら Gemini の要約に戻る。
     # 中継 (carelink-agent) のサーバーどうしの口。ホストへは出ていない (backend の網の中だけ)。
     agent_relay_service_url: str = Field(default="http://carelink-agent:8092")

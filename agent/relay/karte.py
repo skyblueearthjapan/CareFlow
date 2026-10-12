@@ -1,4 +1,4 @@
-"""カルテ（看護記録）の下書きを、決めた管理者の ChatGPT の席で作る（PO 2026-10-13）。
+"""カルテ（看護記録）の下書きを、決めた管理者のサインインした AI（ChatGPT / Claude）の席で作る（PO 2026-10-13）。
 
 設計: docs/plans/karte-via-seat-2026-10-13.md。
 
@@ -7,8 +7,11 @@
   ``summary``（主訴・様子 / バイタル / 処置・ケア / 申し送り / 次回 / free）。形は backend
   ``app/services/voice/prompts.py`` の SUMMARY_SECTIONS・VITAL_KEYS と同じ（変えるときは両方そろえる）。
 - 動かす席: ``agent.settings`` の ``karte_mode``（designated = ``karte_seat_user_id`` の管理者の席・既定 /
-  presser = 録音した本人の席〔全員が ChatGPT の席を持ったら〕）。
-- 1 回きりの codex app-server（箱の runner・その席の CODEX_HOME）: thread は ``ephemeral``（席に会話の写しを残さない）・
+  presser = 録音した本人の席〔全員が席を持ったら〕）。使う AI は ``karte_provider``（codex / claude・無ければ
+  席の人の既定の AI → サインインしている方）。
+- Claude: 1 回きりの ``claude -p``（runner の purpose=karte: --tools ""・--no-session-persistence・--max-turns 1・
+  空の作業フォルダー）。
+- ChatGPT: 1 回きりの codex app-server（箱の runner・その席の CODEX_HOME）: thread は ``ephemeral``（席に会話の写しを残さない）・
   ``sandbox=read-only``・``approvalPolicy=never``・作業フォルダーは空（AGENTS.md を読ませない）。rk の合言葉は
   中継に登録しない使い捨て（内側口は断る）。道具（コマンド・ファイル・質問）が 1 つでも動いたら打ち切る。
 - 失敗したら ``kind`` を返すだけ（backend が Gemini の要約に戻る）。記録（agent.admin_events）に文字起こしは書かない。
@@ -28,11 +31,14 @@ from relay.approvals import Refused
 from relay.auth import User
 from relay.codex_session import CodexRunnerSession, StartRefused
 from relay.engines import seat_key
+from relay.normalize import ClaudeNormalizer
+from relay.runner import RunnerSession
 
 PROMPT_VERSION = "seat-v1"
 MODES = ("designated", "presser")
 SETTING_MODE = "karte_mode"
 SETTING_SEAT = "karte_seat_user_id"
+SETTING_PROVIDER = "karte_provider"
 MAX_TRANSCRIPT_CHARS = 60_000
 
 #: backend の prompts.SUMMARY_SECTIONS・VITAL_KEYS と同じ（変えるときは両方）
@@ -157,7 +163,10 @@ def parse_summary(text: str) -> dict:
     return out
 
 
-SessionFactory = Callable[[str, str], Any]
+SessionFactory = Callable[[str, str, str], Any]
+
+#: 下書きに使える AI（ChatGPT = codex / Claude = claude）
+DRAFT_PROVIDERS = ("codex", "claude")
 
 
 class KarteDrafter:
@@ -178,39 +187,66 @@ class KarteDrafter:
         v = self.svc._setting(SETTING_SEAT)
         return str(v) if v else ""
 
+    def provider_setting(self) -> str | None:
+        """⚙ で選んだ AI（codex / claude）。無ければ None＝席の人の既定の AI → サインインしている方。"""
+        v = self.svc._setting(SETTING_PROVIDER)
+        return v if v in self._providers() else None
+
+    def _providers(self) -> list[str]:
+        return [p for p in DRAFT_PROVIDERS if p in self.svc.cfg.providers]
+
+    async def _states(self, owner: str, fresh: bool = False) -> dict[str, str]:
+        provs = self._providers()
+        got = await asyncio.gather(*(self.svc.engines.status(p, seat_key(owner), fresh=fresh) for p in provs))
+        return dict(zip(provs, got))
+
     async def settings_view(self, user: User) -> dict:
-        """管理者だけ: いまの決まりと、選べる管理者（その人の ChatGPT のサインインの様子）。"""
+        """管理者だけ: いまの決まりと、選べる管理者（その人の各 AI のサインインの様子）。"""
         if not user.is_admin:
             raise Refused("管理者だけが見られます", 403)
         rows = await self.svc.admin_users(user)
-        states = await asyncio.gather(*(self.svc.engines.status("codex", seat_key(str(r["id"]))) for r in rows))
         seat = self.seat_user_id()
-        seats = [{"user_id": str(r["id"]), "name": str(r.get("name") or "（名前なし）")[:60],
-                  "me": str(r["id"]) == str(user.id), "state": st} for r, st in zip(rows, states)]
+        seats = []
+        for r in rows:
+            st = await self._states(str(r["id"]))
+            seats.append({"user_id": str(r["id"]), "name": str(r.get("name") or "（名前なし）")[:60],
+                          "me": str(r["id"]) == str(user.id),
+                          "state": "ok" if any(v == "ok" for v in st.values()) else st.get("codex", "unknown"),
+                          "engines": {p: {"state": v} for p, v in st.items()}})
         return {"mode": self.mode(), "modes": list(MODES), "seat_user_id": seat or None,
-                "seat_known": any(s["user_id"] == seat for s in seats), "seats": seats}
+                "seat_known": any(s["user_id"] == seat for s in seats), "seats": seats,
+                "provider": self.provider_setting(), "providers": self._providers()}
 
     async def update_settings(self, user: User, payload: dict) -> dict:
         if not user.is_admin:
             raise Refused("管理者だけが変えられます", 403)
-        mode_before, seat_before = self.mode(), self.seat_user_id()
+        mode_before, seat_before, prov_before = self.mode(), self.seat_user_id(), self.provider_setting()
         mode = payload.get("mode", mode_before)
         if mode not in MODES:
             raise Refused("その決め方はありません", 400)
         seat = payload.get("seat_user_id", seat_before) or ""
+        prov = payload.get("provider", prov_before) or None
+        if prov is not None and prov not in self._providers():
+            raise Refused("その AI は選べません", 400)
         if seat and seat != seat_before:
             rows = await self.svc.admin_users(user)
             if not any(str(r["id"]) == str(seat) for r in rows):
                 raise Refused("らく助の管理者から選んでください", 400)
-            state = await self.svc.engines.status("codex", seat_key(str(seat)), fresh=True)
-            if state in ("missing", "api_key"):
-                raise Refused("その方は ChatGPT にサインインしていません（⚙ の「あなたの ChatGPT」からサインインしてもらってください）", 409)
+        if seat and (seat != seat_before or prov != prov_before):
+            st = await self._states(str(seat), fresh=True)
+            if prov is not None and st.get(prov) != "ok":
+                raise Refused("その席は、その AI にサインインしていません。サインインしている AI を選んでください", 409)
+            if prov is None and not any(v == "ok" for v in st.values()):
+                raise Refused("その方は AI にサインインしていません（⚙ の「あなたの …」からサインインしてもらってください）", 409)
         if mode != mode_before:
             self.svc.store.set_setting(SETTING_MODE, mode, user.id)
         if seat != seat_before:
             self.svc.store.set_setting(SETTING_SEAT, seat or None, user.id)
-        self.svc._audit(user.id, "karte_settings", "codex",
-                        f"mode={mode_before}->{mode} seat={seat_before or '-'}->{seat or '-'}")
+        if prov != prov_before:
+            self.svc.store.set_setting(SETTING_PROVIDER, prov, user.id)
+        self.svc._audit(user.id, "karte_settings", prov,
+                        f"mode={mode_before}->{mode} seat={seat_before or '-'}->{seat or '-'} "
+                        f"ai={prov_before or 'auto'}->{prov or 'auto'}")
         return await self.settings_view(user)
 
     # ---------- 下書き（backend から） ----------
@@ -219,13 +255,34 @@ class KarteDrafter:
             return req.get("presser_user_id") or ""
         return self.seat_user_id()
 
+    async def _provider_for(self, seat: str) -> str:
+        """使う AI: ⚙ で選んだもの（サインインしていなければ signed_out）。選んでいなければ、席の人の
+        「新しい相談で使う AI」→ サインインしている方。どれもサインインしていなければ signed_out。"""
+        chosen = self.provider_setting()
+        if chosen is not None:
+            if await self.svc.engines.status(chosen, seat_key(seat)) in ("missing", "api_key"):
+                raise KarteFailed("signed_out")
+            return chosen
+        pref = self.svc._setting(f"default_provider:{seat}")
+        order = [pref] if pref in self._providers() else []
+        order += [p for p in self._providers() if p not in order]
+        states = await self._states(seat)
+        for p in order:
+            if states.get(p) == "ok":
+                return p
+        for p in order:  # 分からない（unknown）なら、その AI で試す（起こした所で分かる）
+            if states.get(p) == "unknown":
+                return p
+        raise KarteFailed("signed_out")
+
     async def draft(self, payload: Any) -> dict:
-        """成功: {ok: True, summary, model, prompt_version, seat_user_id, mode, secs}。
-        失敗: {ok: False, kind, seat_user_id, mode, secs}（backend は Gemini の要約に戻る）。形の誤りは ValueError。"""
+        """成功: {ok: True, summary, model, provider, prompt_version, seat_user_id, mode, secs}。
+        失敗: {ok: False, kind, provider, seat_user_id, mode, secs}（backend は Gemini の要約に戻る）。形の誤りは ValueError。"""
         req = validate_request(payload)
         t0 = time.monotonic()
         mode = self.mode()
         seat = ""
+        prov: str | None = None
         result: dict
         try:
             if not self.svc.cfg.enabled:
@@ -233,32 +290,30 @@ class KarteDrafter:
             seat = self._seat_for(req)
             if not seat:
                 raise KarteFailed("no_seat")
-            key = seat_key(seat)
-            if await self.svc.engines.status("codex", key) in ("missing", "api_key"):
-                raise KarteFailed("signed_out")
+            prov = await self._provider_for(seat)
             mem = self.svc.mem_mb()
             if mem is not None and mem < self.svc.cfg.min_mem_mb:
                 raise KarteFailed("busy")
-            summary, model = await asyncio.wait_for(self._locked_run(key, req), self.timeout)
+            summary, model = await asyncio.wait_for(self._locked_run(seat_key(seat), prov, req), self.timeout)
             result = {"ok": True, "summary": summary, "model": model, "prompt_version": PROMPT_VERSION}
         except asyncio.TimeoutError:
             result = {"ok": False, "kind": "timeout"}
         except KarteFailed as e:
             result = {"ok": False, "kind": e.kind}
         secs = round(time.monotonic() - t0, 1)
-        result.update({"seat_user_id": seat or None, "mode": mode, "secs": secs})
+        result.update({"provider": prov, "seat_user_id": seat or None, "mode": mode, "secs": secs})
         how = f"ok model={result.get('model')}" if result["ok"] else f"fallback={result['kind']}"
         # 文字起こし・下書きの本文は書かない（録音の id と結果だけ）
-        self.svc._audit(seat or "-", "karte_draft", "codex", f"rec={req['recording_id']} mode={mode} {how} secs={secs}")
+        self.svc._audit(seat or "-", "karte_draft", prov, f"rec={req['recording_id']} mode={mode} {how} secs={secs}")
         return result
 
-    async def _locked_run(self, key: str, req: dict) -> tuple[dict, str | None]:
+    async def _locked_run(self, key: str, provider: str, req: dict) -> tuple[dict, str | None]:
         async with self._lock:
-            return await self._run(key, req)
+            return await self._run(key, provider, req)
 
-    async def _run(self, key: str, req: dict) -> tuple[dict, str | None]:
+    async def _run(self, key: str, provider: str, req: dict) -> tuple[dict, str | None]:
         sid = "karte-" + secrets.token_hex(12)
-        sess = self.session_factory(sid, key)
+        sess = self.session_factory(sid, key, provider)
         try:
             try:
                 await sess.start()
@@ -269,7 +324,10 @@ class KarteDrafter:
                 raise KarteFailed("signed_out" if code in ("login", "auth_source") else "failed") from None
             except RuntimeError as e:
                 raise KarteFailed("busy" if "busy" in str(e) else "unreachable") from None
-            await sess.send(turn_text(req["transcript"], req["context"]))
+            text_in = turn_text(req["transcript"], req["context"])
+            if provider == "claude":  # claude -p は指示文を別に受けない（runner が決まった argv で起こす）→ 文の頭に
+                text_in = instructions() + "\n\n" + text_in
+            await sess.send(text_in)
             text = ""
             async for e in sess.events():
                 t = e.get("type")
@@ -281,8 +339,11 @@ class KarteDrafter:
                     raise KarteFailed("rate_limited")
                 elif t == "error" and e.get("level") != "warn":
                     code = e.get("code")
-                    raise KarteFailed({"login": "signed_out", "busy": "busy"}.get(code, "failed"))
-                elif t == "_exit":
+                    if code == "login":
+                        self.svc.engines.forget(key)
+                    raise KarteFailed({"login": "signed_out", "auth_source": "signed_out",
+                                       "busy": "busy"}.get(code, "failed"))
+                elif t in ("_exit", "_abort"):
                     raise KarteFailed("failed")
                 elif t == "turn.end":
                     if not e.get("ok"):
@@ -290,6 +351,8 @@ class KarteDrafter:
                     break
             picker = getattr(sess, "picker", None)
             model = getattr(picker, "current", None) if picker is not None else None
+            if model is None:
+                model = getattr(getattr(sess, "norm", None), "model", None)
             return parse_summary(text), model
         finally:
             try:
@@ -297,13 +360,21 @@ class KarteDrafter:
             except Exception:  # noqa: BLE001  後始末の失敗で結果を捨てない（runner は接続が切れると CLI を止める）
                 pass
 
-    def _runner_session(self, session_id: str, key: str):
+    def _runner_session(self, session_id: str, key: str, provider: str = "codex"):
         cfg = self.svc.cfg
         if cfg.launch != "runner" or not cfg.runner_socket:
             raise KarteFailed("unreachable")
         # rk の合言葉は使い捨て（中継に登録しない＝内側口は断る）
+        token = secrets.token_urlsafe(24)
+        if provider == "claude":
+            # runner が purpose=karte の argv で起こす: --tools ""・--no-session-persistence・--max-turns 1・空の作業フォルダー
+            spawn = {"session_id": session_id, "provider": "claude", "model": models.claude_model_arg(),
+                     "relay_token": token, "user_key": key, "purpose": "karte"}
+            return RunnerSession(cfg.runner_socket, spawn,
+                                 ClaudeNormalizer(allowed_key_sources=cfg.allowed_key_sources), stop_wait=3.0)
+        # codex は spawn をいままでの形のまま（thread/start で read-only・never・ephemeral・空の cwd を頼む）
         spawn = {"session_id": session_id, "provider": "codex", "model": models.SOL_BASELINE,
-                 "relay_token": secrets.token_urlsafe(24), "user_key": key}
+                 "relay_token": token, "user_key": key}
         work = f"{cfg.runner_sessions_dir.rstrip('/')}/{session_id}/work"  # 空のフォルダー（AGENTS.md が無い）
         return CodexRunnerSession(cfg.runner_socket, spawn, cwd=work, work_dir=work,
                                   developer_instructions=instructions(), thread_extra=THREAD_EXTRA, stop_wait=3.0)

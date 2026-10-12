@@ -51,23 +51,23 @@ import { OFFICE_FEATURE_KEYS, type OfficeFeatureKey } from '@/lib/schemas/g21';
 
 const FEATURE_KEY_LABEL: Record<OfficeFeatureKey, string> = {
   rakusuke_agent: 'らく助エージェント',
-  template_workspace: '型の作業場',
+  template_workspace: 'コースの作業場',
   l3_fix_primary_staff: '主担当を A コースに固定',
   g21_new_algorithm: 'G-21 新アルゴリズム',
-  karte_via_seat: 'カルテの下書きを ChatGPT で',
+  karte_via_seat: 'カルテの下書きをサインインした AI で',
 };
 
 const FEATURE_KEY_DESC: Record<OfficeFeatureKey, string> = {
   rakusuke_agent:
     '管理者の画面の右下に、らく助エージェント（相談の小窓）を出します。使うには、各自が ⚙ から自分の ChatGPT か Claude の席を結びつけます。',
   template_workspace:
-    'スケジュールの画面に「型の作業場」を出します。いまの型を写した下書きで、コースの組み方を試して登録できます。',
+    'スケジュールの画面に「コースの作業場」を出します。いまの型を写した下書きで、コースの組み方を試して登録できます。',
   l3_fix_primary_staff:
     '自動で担当を割り当てるとき、その拠点の主担当（職員コードの先頭の方）を A コースに固定します。',
   g21_new_algorithm:
     '完全固定 / 同住所紐付け / 拠点間移動コスト を考慮した新自動最適化エンジンを有効化します.',
   karte_via_seat:
-    '訪問の録音から作るカルテの下書きを、⚙ で決めた管理者の ChatGPT で作ります。ChatGPT が使えないときは、いままでどおり Gemini で作ります。',
+    '訪問の録音から作るカルテの下書きを、⚙ で決めた管理者のサインインした AI（ChatGPT か Claude）で作ります。AI が使えないときは、いままでどおり Gemini で作ります。',
 };
 
 // ─────────────────────────────────────────────────────────────────────────

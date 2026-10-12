@@ -201,9 +201,9 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
 async def _maybe_seat_draft(
     db: AsyncSession, row: VisitRecording, result: VoiceAiResult, settings
 ) -> tuple[str, str | None]:
-    """拠点の旗 ``karte_via_seat`` が ON なら、要約を決めた管理者の ChatGPT の席で作り直す.
+    """拠点の旗 ``karte_via_seat`` が ON なら、要約を決めた管理者のサインインした AI の席で作り直す.
 
-    成功: ``result`` の要約・モデル・プロンプト版を席のものに差し替え、``("codex-seat", None)``。
+    成功: ``result`` の要約・モデル・プロンプト版を席のものに差し替え、``("codex-seat" | "claude-seat", None)``。
     失敗: ``result`` (Gemini の要約) はそのまま、``("vertex", "seat_<kind>")``。旗が OFF なら
     ``("vertex", None)`` (今までと同じ・中継を呼ばない)。例外は投げない (カルテを止めない)。
     文字起こし・費用・トークンは Gemini のもの (席の分は定額なので数えない)。
@@ -233,7 +233,7 @@ async def _maybe_seat_draft(
     result.summary_text = draft.summary_text
     result.model = draft.model or result.model
     result.prompt_version = draft.prompt_version or result.prompt_version
-    return karte_seat.SEAT_PROVIDER, None
+    return draft.provider, None
 
 
 async def _call_with_retry(

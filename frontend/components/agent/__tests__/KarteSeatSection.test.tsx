@@ -104,4 +104,34 @@ describe('KarteSeatSection', () => {
     render(<EngineSettingsSheet engines={b} onClose={() => {}} />);
     expect(await screen.findByText('カルテの下書きに使う席')).toBeInTheDocument();
   });
+  it('使う AI: サインインしていない AI は選べない。選ぶと保存する', async () => {
+    const k = karte({
+      seat_user_id: 'u-1',
+      seat_known: true,
+      provider: null,
+      providers: ['codex', 'claude'],
+      seats: [
+        {
+          user_id: 'u-1',
+          name: '今泉',
+          me: true,
+          state: 'ok',
+          engines: { codex: { state: 'missing' }, claude: { state: 'ok' } },
+        },
+      ],
+    });
+    const a = admin(k);
+    render(<KarteSeatSection engines={a} />);
+    expect(await screen.findByRole('radio', { name: /自動/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /^ChatGPT/ })).toBeDisabled();
+    expect(screen.getByText('（この席はサインインしていません）')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: /^Claude/ }));
+    await waitFor(() => expect(a.setKarte).toHaveBeenCalledWith({ provider: 'claude' }));
+  });
+
+  it('言葉は「サインインした AI」（ChatGPT と決め打ちしない）', async () => {
+    render(<KarteSeatSection engines={admin()} />);
+    expect(await screen.findByText(/サインインした AI\s*で作ります/)).toBeInTheDocument();
+    expect(screen.queryByText(/ChatGPT で作ります/)).not.toBeInTheDocument();
+  });
 });

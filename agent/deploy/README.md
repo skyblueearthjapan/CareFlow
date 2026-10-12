@@ -287,19 +287,20 @@ compose と秘密ファイルの名前のまま中継が読む（`agent/relay/co
 
 - 健康確認は鍵なしの `GET /agent-relay/healthz`（`{"ok":true}`）。中継の作業の置き場所は volume `carelink-agent-relay-data`（`/data`・rk の `runs/` は利用者名入り）。
 
-### 3-10. カルテの下書きを決めた管理者の ChatGPT の席で（2026-10-13・設計 `docs/plans/karte-via-seat-2026-10-13.md`）
+### 3-10. カルテの下書きを決めた管理者のサインインした AI の席で（2026-10-13・設計 `docs/plans/karte-via-seat-2026-10-13.md`）
 
 1. 合言葉を作る（値はどこにも貼らない・git に入れない）: `openssl rand -hex 32`
 2. 中継の秘密ファイルに 1 行: `/opt/carelink/secrets/agent-relay.env` に `AGENT_RELAY_SERVICE_TOKEN=<値>`（0400 root のまま。`set-role-passwords.sh` の作り直しで消えないよう、作り直したら足し直す）
 3. backend の `.env`（`/opt/carelink/.env`）に `AGENT_RELAY_SERVICE_URL=http://carelink-agent:8092`・`AGENT_RELAY_SERVICE_TOKEN=<同じ値>`
 4. 中継の image を作り直して立て直す（箱・出口は作り直し不要）: `dca build agent-relay && dca up -d agent-relay`
 5. backend を作り直して立て直す（`docs/deployment` の手順どおり）。migration は無い
+   - **Claude の席で作るときだけ**、箱（sandbox）の image も作り直す（runner の spawn の `purpose: "karte"` ＝ `claude -p --tools "" --no-session-persistence --max-turns 1`・空の作業フォルダー）: `dca build agent-sandbox && dca up -d agent-sandbox agent-relay`。古い箱は `purpose` を断る（`seat_unreachable` で Gemini に戻るだけ）。ChatGPT の席は箱の作り直し不要
 6. 確かめ（backend のコンテナから・合言葉は env から読む）:
    `docker exec carelink-backend python -c "import os,httpx; r=httpx.get('http://carelink-agent:8092/svc/healthz', headers={'X-Rakusuke-Service-Token': os.environ['AGENT_RELAY_SERVICE_TOKEN']}); print(r.status_code, r.text)"` → `200 {"ok":true}`。
    合言葉なしは 401、ホストの `curl 127.0.0.1:8092` は届かない（ports に無い）、箱から（`docker exec carelink-agent-sandbox …`）は 404
-7. 画面: 管理者が ⚙ →「カルテの下書きに使う席」で、ChatGPT にサインインしている管理者を選ぶ
-8. 画面: 「機能の切り替え」（/admin/feature-flags）で、試す拠点だけ「カルテの下書きを ChatGPT で」を ON
-9. 録音 1 件で確かめる: 記録の「モデル」が `codex-seat / gpt-…-sol / seat-v1` になる。Gemini に戻ったときは `visit_recordings.error_kind` が `seat_<理由>`、`agent.admin_events` の `karte_draft` に `fallback=<理由>`
+7. 画面: 管理者が ⚙ →「カルテの下書きに使う席」で、AI（ChatGPT か Claude）にサインインしている管理者を選び、使う AI（自動／ChatGPT／Claude）を選ぶ
+8. 画面: 「機能の切り替え」（/admin/feature-flags）で、試す拠点だけ「カルテの下書きをサインインした AI で」を ON
+9. 録音 1 件で確かめる: 記録の「モデル」が `codex-seat / gpt-…-sol / seat-v1`（Claude なら `claude-seat / claude-opus-… / seat-v1`）になる。Gemini に戻ったときは `visit_recordings.error_kind` が `seat_<理由>`、`agent.admin_events` の `karte_draft` に `fallback=<理由>`
 
 戻し方: 旗を OFF（すぐ Gemini だけに戻る）。口ごと止めるなら秘密ファイルから `AGENT_RELAY_SERVICE_TOKEN` を消して中継を立て直す（404 → backend は `seat_off` で Gemini）。
 

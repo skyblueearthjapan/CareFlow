@@ -113,7 +113,7 @@ VOICE_AI_TIMEOUT_SECONDS=240
 # 1 コール 240 秒 + 再試行より長く取る (短いと走っているジョブを failed に倒す)。
 VOICE_JOB_STALE_MINUTES=20
 
-# --- カルテの下書きを決めた管理者の ChatGPT の席で (docs/plans/karte-via-seat-2026-10-13.md) ---
+# --- カルテの下書きを決めた管理者のサインインした AI の席で (docs/plans/karte-via-seat-2026-10-13.md) ---
 # 拠点の旗 karte_via_seat (画面の「機能の切り替え」) を ON にした拠点だけ使う。失敗したら Gemini の要約。
 # 中継 (carelink-agent) のサーバーどうしの口。ホストへは出ていない (deployment_default の網の中だけ)。
 AGENT_RELAY_SERVICE_URL=http://carelink-agent:8092

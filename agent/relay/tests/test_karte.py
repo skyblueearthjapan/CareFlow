@@ -78,9 +78,10 @@ def _rig(tmp_path, sessions=None, states=None, timeout=5.0, **cfg_kw):
     rig.svc.engines.forget = lambda *a, **k: None
     made = []
 
-    def factory(session_id, key):
+    def factory(session_id, key, provider="codex"):
         s = (sessions or [FakeKarteSession()]).pop(0) if sessions is not None else FakeKarteSession()
         made.append((session_id, key, s))
+        s.provider = provider
         return s
 
     rig.karte = KarteDrafter(rig.svc, session_factory=factory, timeout=timeout)
@@ -185,7 +186,7 @@ def test_fallback_kinds_before_starting(tmp_path, setup, kind):
         rig.svc.mem_mb = lambda: 100
     r = asyncio.run(rig.karte.draft(BODY))
     assert r == {"ok": False, "kind": kind, "seat_user_id": r["seat_user_id"], "mode": "designated",
-                 "secs": r["secs"]}
+                 "secs": r["secs"], "provider": r["provider"]}
     assert rig.made == []  # CLI は起こさない
     assert f"fallback={kind}" in rig.store.list_admin_events()[0]["detail"]
 
@@ -282,8 +283,11 @@ def test_settings_admin_only_and_lists_signed_in_state(tmp_path):
         assert c.get("/agent-relay/karte/settings", headers=HS).status_code == 403
         v = c.get("/agent-relay/karte/settings", headers=H).json()
     assert v["mode"] == "designated" and v["seat_user_id"] is None and v["modes"] == ["designated", "presser"]
-    assert v["seats"] == [{"user_id": ADMIN.id, "name": "今泉", "me": True, "state": "ok"},
-                          {"user_id": ADMIN2.id, "name": "佐藤", "me": False, "state": "missing"}]
+    ok = {"codex": {"state": "ok"}, "claude": {"state": "ok"}}
+    miss = {"codex": {"state": "missing"}, "claude": {"state": "missing"}}
+    assert v["seats"] == [{"user_id": ADMIN.id, "name": "今泉", "me": True, "state": "ok", "engines": ok},
+                          {"user_id": ADMIN2.id, "name": "佐藤", "me": False, "state": "missing", "engines": miss}]
+    assert v["provider"] is None and v["providers"] == ["codex", "claude"]
 
 
 def test_settings_update_validates_and_audits(tmp_path):
@@ -302,7 +306,7 @@ def test_settings_update_validates_and_audits(tmp_path):
     assert rig.store.get_setting(SETTING_SEAT) == ADMIN.id
     e = rig.store.list_admin_events()[0]
     assert e["action"] == "karte_settings" and e["user_id"] == ADMIN2.id
-    assert e["detail"] == f"mode=designated->presser seat=-->{ADMIN.id}"
+    assert e["detail"] == f"mode=designated->presser seat=-->{ADMIN.id} ai=auto->auto"
 
 
 # ---------------- 本物の JSON-RPC（偽の app-server） ----------------

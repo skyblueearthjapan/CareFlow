@@ -21,9 +21,9 @@ from pydantic import BaseModel, ConfigDict, Field
 #     (active role=staff の code 昇順先頭 1 名) を A コースに固定割当する
 #     (旧「都賀」拠点名ハードコードの設定化. 拠点名判定を廃し、フラグ enabled で発動).
 #   - ``rakusuke_agent``: らく助エージェント（右下の小窓・相談タブ）を出す拠点.
-#   - ``template_workspace``: 型の作業場（/schedule/template）を出す拠点.
+#   - ``template_workspace``: コースの作業場（/schedule/template）を出す拠点.
 #     ※ 2026-10-13: この 2 つを Literal に入れ忘れ、一覧 GET が 500 になって小窓が出なかった
-#   - ``karte_via_seat``: 訪問の音声記録のカルテ下書きを、決めた管理者の ChatGPT の席で作る拠点
+#   - ``karte_via_seat``: 訪問の音声記録のカルテ下書きを、決めた管理者のサインインした AI の席で作る拠点
 #     (失敗したら今の Gemini の要約に戻る。docs/plans/karte-via-seat-2026-10-13.md)。
 FeatureKey = Literal[
     "g21_new_algorithm",

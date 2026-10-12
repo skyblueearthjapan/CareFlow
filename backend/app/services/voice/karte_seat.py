@@ -1,4 +1,4 @@
-"""カルテの下書きを、らく助エージェントの中継経由で「決めた管理者の ChatGPT の席」に作らせる.
+"""カルテの下書きを、らく助エージェントの中継経由で「決めた管理者のサインインした AI の席」に作らせる.
 
 設計: ``docs/plans/karte-via-seat-2026-10-13.md`` (PO 2026-10-13)。
 
@@ -34,8 +34,10 @@ from app.services.voice.vertex_client import render_summary_text
 logger = logging.getLogger(__name__)
 
 FEATURE_KEY = "karte_via_seat"
-#: ``visit_recordings.provider`` に残す名前 (席で作った下書き)。
-SEAT_PROVIDER = "codex-seat"
+#: ``visit_recordings.provider`` に残す名前 (席で作った下書き)。中継が返す AI ごとに分ける。
+SEAT_PROVIDERS = {"codex": "codex-seat", "claude": "claude-seat"}
+#: 中継が AI を返さなかったとき (Claude 対応より前の中継) は ChatGPT の席。
+SEAT_PROVIDER = SEAT_PROVIDERS["codex"]
 #: 中継の合言葉のヘッダー (agent/relay/service_port.py と同じ)。
 TOKEN_HEADER = "X-Rakusuke-Service-Token"
 DRAFT_PATH = "/svc/karte/draft"
@@ -61,6 +63,8 @@ class SeatDraft:
     summary_text: str
     model: str | None
     prompt_version: str | None
+    #: ``visit_recordings.provider`` に入れる名前 (codex-seat / claude-seat)
+    provider: str = SEAT_PROVIDER
 
 
 # --- テスト用の差し込み口 (中継へ実際に通信しない) ---
@@ -170,4 +174,5 @@ async def request_draft(
         summary_text=render_summary_text(summary),
         model=str(model)[:64] if model else None,
         prompt_version=str(version)[:16] if version else None,
+        provider=SEAT_PROVIDERS.get(str(data.get("provider") or "codex"), SEAT_PROVIDER),
     )

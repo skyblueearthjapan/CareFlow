@@ -6,7 +6,9 @@
 - unix ソケット（既定 /run/agent/runner.sock）で待つ。接続ごとに SO_PEERCRED で相手の uid を見て、
   中継の uid（RUNNER_ALLOWED_PEER_UID・既定 10001）以外は即切る。箱の中のモデル（uid 10002）からは使えない。
 - 受けるのは次の 4 つだけ（1 行 1 JSON）。任意のコマンド・引数・環境変数・作業フォルダーは受けない。
-    {"op":"spawn","session_id":..,"provider":"claude"|"codex","model":..,"resume_id":..?,"relay_token":..,"user_key":..}
+    {"op":"spawn","session_id":..,"provider":"claude"|"codex","model":..,"resume_id":..?,"relay_token":..,"user_key":..,
+     "purpose":"karte"?}  … purpose=karte はカルテの下書き（1 回きり・道具なし・作業フォルダーは空・会話を残さない。
+                          claude は karte_claude_argv、codex は中継が thread/start で read-only・never・ephemeral を頼む）
     {"op":"auth_status","provider"?:"codex"|"claude","user_key"} … ログインの様子（ok/missing/api_key/unknown の 1 語・既定 codex）
     {"op":"login_start","provider":"codex"|"claude","user_key"} … 画面からのサインイン（箱で同時に 1 つだけ・15 分で打ち切り）
     {"op":"login_poll","user_key"} / {"op":"login_cancel","user_key"} … その人のサインインの様子・やめる（他人のものは idle）
@@ -264,6 +266,35 @@ def claude_argv(session_dir: Path, model: str, resume_id: str | None) -> list[st
     if resume_id:
         argv += ["--resume", resume_id]
     return argv
+
+
+def karte_claude_argv(session_dir: Path, model: str) -> list[str]:
+    """カルテの下書き（purpose=karte）: 道具なし（--tools ""）・会話を残さない（--no-session-persistence）・1 ターン。
+    らく助の決まり（relay-prompt.md・agent/ の CLAUDE.md）は読ませない（cwd は空の作業フォルダー）。"""
+    return [
+        "claude", "-p",
+        "--input-format", "stream-json",
+        "--output-format", "stream-json",
+        "--verbose",
+        "--tools", "",
+        "--no-session-persistence",
+        "--disable-slash-commands",
+        "--setting-sources", "project",
+        "--strict-mcp-config", "--mcp-config", str(EMPTY_MCP),
+        "--settings", str(settings_path(session_dir.name)),
+        "--max-turns", "1",
+        "--model", model,
+    ]
+
+
+def spawn_purpose(msg: dict) -> str:
+    """spawn の目的（"" = 相談・"karte" = カルテの下書き）。ほかの値は ValueError。"""
+    v = msg.get("purpose")
+    if v is None or v == "":
+        return ""
+    if v != "karte":
+        raise ValueError("bad purpose")
+    return v
 
 
 def _codex_config():
@@ -653,7 +684,7 @@ def validate_spawn(msg: dict) -> tuple[str, str, str, str | None, str, str]:
     model = msg.get("model")
     resume_id = msg.get("resume_id")
     token = msg.get("relay_token")
-    allowed = {"op", "session_id", "provider", "model", "resume_id", "relay_token", "user_key"}
+    allowed = {"op", "session_id", "provider", "model", "resume_id", "relay_token", "user_key", "purpose"}
     if set(msg) - allowed:
         raise ValueError("unknown field")
     if not isinstance(session_id, str) or not SESSION_ID_RE.match(session_id):
@@ -673,6 +704,8 @@ def validate_spawn(msg: dict) -> tuple[str, str, str, str | None, str, str]:
     if not isinstance(token, str) or not TOKEN_RE.match(token):
         raise ValueError("bad relay_token")
     user_key = check_user_key(msg.get("user_key"))  # 会話の持ち主の席（無い・形が違うなら起こさない）
+    if spawn_purpose(msg) and resume_id is not None:
+        raise ValueError("karte cannot resume")
     return session_id, provider, model, resume_id, token, user_key
 
 
@@ -806,9 +839,14 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 except (OSError, ValueError):
                     await send(writer, {"ev": "error", "message": "seat unavailable"})
                     continue
+                purpose = spawn_purpose(msg)
                 session_dir = prepare_session_dir(session_id)
                 spawn_env = build_env(session_dir, provider, token, user_key)
-                if provider == "claude":
+                # カルテの下書きは空の作業フォルダーで（agent/ の CLAUDE.md・AGENTS.md を読ませない）
+                proc_cwd = str(session_dir / "work") if purpose == "karte" else str(AGENT_DIR)
+                if provider == "claude" and purpose == "karte":
+                    argv = karte_claude_argv(session_dir, model)
+                elif provider == "claude":
                     argv = claude_argv(session_dir, model, resume_id)
                 else:
                     prepare_codex_home(provider_home("codex", user_key))
@@ -820,7 +858,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    cwd=str(AGENT_DIR),
+                    cwd=proc_cwd,
                     env=spawn_env,
                     start_new_session=True,       # プロセスグループごと止められるように
                     limit=MAX_OUT_LINE,
@@ -828,7 +866,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 )
                 sess = Session(session_id, proc)
                 _running[session_id] = sess
-                log(f"spawn session={session_id} provider={provider} model={model} pid={proc.pid} resume={'y' if resume_id else 'n'}")
+                log(f"spawn session={session_id} provider={provider} model={model} pid={proc.pid} "
+                    f"resume={'y' if resume_id else 'n'} purpose={purpose or 'consult'}")
                 await send(writer, {"ev": "spawned", "pid": proc.pid})
                 tasks = [asyncio.create_task(pump_stdout(sess, writer)), asyncio.create_task(pump_stderr(sess))]
 

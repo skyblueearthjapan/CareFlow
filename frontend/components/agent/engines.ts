@@ -99,8 +99,23 @@ export interface KarteSettings {
   /** 決めた席が、いまの管理者の一覧にいるか */
   seat_known: boolean;
   /** state は ChatGPT のサインインの様子 */
-  seats: { user_id: string; name: string; me: boolean; state: EngineState }[];
+  /** state = どれかの AI にサインインしていれば ok。engines = AI ごとの様子 */
+  seats: {
+    user_id: string;
+    name: string;
+    me: boolean;
+    state: EngineState;
+    engines?: Partial<Record<EngineProvider, { state: EngineState }>>;
+  }[];
+  /** 下書きに使う AI。null = 自動(その方の新しい相談で使う AI → サインインしている方) */
+  provider?: EngineProvider | null;
+  providers?: EngineProvider[];
 }
+export type KartePatch = {
+  mode?: KarteMode;
+  seat_user_id?: string | null;
+  provider?: EngineProvider | null;
+};
 
 export interface EngineAdmin {
   view(): Promise<EnginesView>;
@@ -120,7 +135,7 @@ export interface EngineAdmin {
   assignSeatAll?(seatOwnerUserId: string): Promise<SeatAssignments>;
   /** カルテの下書きに使う席(無い実装では出さない) */
   karte?(): Promise<KarteSettings>;
-  setKarte?(patch: { mode?: KarteMode; seat_user_id?: string | null }): Promise<KarteSettings>;
+  setKarte?(patch: KartePatch): Promise<KarteSettings>;
 }
 
 export const ENGINE_NAME: Record<EngineProvider, string> = { codex: 'ChatGPT', claude: 'Claude' };
@@ -219,7 +234,7 @@ export class HttpEngineAdmin implements EngineAdmin {
   karte() {
     return this.send<KarteSettings>('/karte/settings');
   }
-  setKarte(patch: { mode?: KarteMode; seat_user_id?: string | null }) {
+  setKarte(patch: KartePatch) {
     return this.send<KarteSettings>('/karte/settings', 'PUT', patch);
   }
 }
@@ -232,15 +247,24 @@ export function createMockEngineAdmin(): EngineAdmin {
   let flow: LoginFlow | null = null;
   let karteMode: KarteMode = 'designated';
   let karteSeat: string | null = null;
+  let karteProvider: EngineProvider | null = null;
   const karteView = (): KarteSettings => ({
     mode: karteMode,
     modes: ['designated', 'presser'],
     seat_user_id: karteSeat,
     seat_known: karteSeat === null || karteSeat === 'mock-me' || karteSeat === 'mock-b',
     seats: [
-      { user_id: 'mock-me', name: 'あなた', me: true, state: engines.codex },
+      {
+        user_id: 'mock-me',
+        name: 'あなた',
+        me: true,
+        state: engines.codex === 'ok' || engines.claude === 'ok' ? 'ok' : 'missing',
+        engines: { codex: { state: engines.codex }, claude: { state: engines.claude } },
+      },
       { user_id: 'mock-b', name: '管理者 B', me: false, state: 'missing' },
     ],
+    provider: karteProvider,
+    providers: ['codex', 'claude'],
   });
   const assigned: Record<string, string> = {};
   const assignView = (): SeatAssignments => {
@@ -339,6 +363,7 @@ export function createMockEngineAdmin(): EngineAdmin {
     async setKarte(patch) {
       if (patch.mode) karteMode = patch.mode;
       if (patch.seat_user_id !== undefined) karteSeat = patch.seat_user_id;
+      if (patch.provider !== undefined) karteProvider = patch.provider;
       return karteView();
     },
     async startLogin(p) {

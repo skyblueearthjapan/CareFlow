@@ -1,7 +1,7 @@
-# カルテの下書きを、決めた管理者の ChatGPT の席で作る（2026-10-13）
+# カルテの下書きを、決めた管理者のサインインした AI の席で作る（2026-10-13）
 
-PO 決定（2026-10-13）: 訪問の音声記録のカルテ（看護記録）の下書きは、**当面は指定した管理者 1 人の ChatGPT の席**で作る。
-看護師全員が ChatGPT Team の席を持ったら「録音した本人の席」に切り替えられるようにしておく。
+PO 決定（2026-10-13）: 訪問の音声記録のカルテ（看護記録）の下書きは、**当面は指定した管理者 1 人の、サインインした AI（ChatGPT か Claude）の席**で作る（PO 追記: 画面と文書では「ChatGPT で」と書かず「サインインした AI で」と書く。Claude の席でも作れる）。
+看護師全員が AI の席を持ったら「録音した本人の席」に切り替えられるようにしておく。
 文字起こしと聞き間違いの補正は **Vertex AI 東京の Gemini 2.5 Flash のまま**。席が使えないとき（サインアウト・上限・打ち切り・中継が止まっている）は、**今の Gemini の要約を使う**（カルテは止めない）。
 
 関連: 調査 `docs/plans/voice-input-and-karte-engine-research-2026-10-13.md`（§1・§3 は「サブスクでのカルテ自動下書きは採らない」と勧めていた。今回はそれを承知のうえでの当面の PO 判断）・人ごとの席 `docs/plans/agent-ui/per-user-seats-2026-10-13.md`・音声記録 `docs/plans/visit-voice-record-design-2026-09-17.md`。
@@ -25,7 +25,8 @@ PO 決定（2026-10-13）: 訪問の音声記録のカルテ（看護記録）�
                                            │
                                            ▼ 中継（relay.karte.KarteDrafter・同時に 1 件）
                                          席を決める（agent.settings: karte_mode / karte_seat_user_id）
-                                         席の ChatGPT のサインインを確かめる（runner の auth_status）
+                                         使う AI を決める（⚙ の選択 → 無ければ席の人の既定の AI → サインインしている方）
+                                         その AI のサインインを確かめる（runner の auth_status）
                                          箱の runner に codex app-server を 1 本だけ起こしてもらう（その席の CODEX_HOME）
                                            thread/start: sandbox=read-only・approvalPolicy=never・ephemeral=true・cwd=空の作業フォルダー
                                            turn/start: 文脈＋文字起こし → JSON（summary）だけを返させる
@@ -39,7 +40,7 @@ PO 決定（2026-10-13）: 訪問の音声記録のカルテ（看護記録）�
                      どちらも status=summarized・本人へ「要約ができました」の通知（今までと同じ）
 ```
 
-- 文字起こし・トークン・費用（`tokens_in/out`・`cost_usd`）は Gemini の分のまま。席の分は ChatGPT の定額なので数えない。
+- 文字起こし・トークン・費用（`tokens_in/out`・`cost_usd`）は Gemini の分のまま。席の分は AI のサブスクの定額なので数えない。
 - 画面（記録の詳細の「モデル」欄）は `codex-seat / gpt-6.1-sol / seat-v1` のように出る。要約の形は Gemini と同じ（主訴・様子 / バイタル / 処置・ケア / 申し送り / 次回 / free）なので、画面・帳票・人手の修正の退避（`previous_manual`）は変わらない。
 - 1 件の所要: Gemini（30 分の録音で 1 分前後）＋席（数秒〜90 秒）。非同期のジョブのままなので待たせない。stale の判定（20 分）は十分に長い。
 
@@ -48,14 +49,14 @@ PO 決定（2026-10-13）: 訪問の音声記録のカルテ（看護記録）�
 | 段 | 処理する所 | 送るもの |
 |---|---|---|
 | ① 文字起こし＋補正（＋予備の要約） | Google Vertex AI **東京**（asia-northeast1） | 音声・患者名・職員名・訪問日（今までどおり） |
-| ② カルテの下書き（旗 ON の拠点だけ） | **OpenAI（ChatGPT）＝米国**（ChatGPT Business/Team は日本でのデータ保管を選べない） | **文字起こしの文**（会話の中で呼ばれた呼称・病状・服薬などはそのまま入る）＋性別・訪問日時・職種。**患者名・職員名の欄は送らない** |
+| ② カルテの下書き（旗 ON の拠点だけ） | **OpenAI（ChatGPT）か Anthropic（Claude）＝どちらも米国など国外**（ChatGPT Business/Team は日本でのデータ保管を選べない・Claude のサブスクも国内処理を選べない） | **文字起こしの文**（会話の中で呼ばれた呼称・病状・服薬などはそのまま入る）＋性別・訪問日時・職種。**患者名・職員名の欄は送らない** |
 
 - 2026-09-17 の「国内で処理する」方針から、旗 ON の拠点だけ外れる。**要配慮個人情報が国外（米国）の事業者で処理される**ので、患者様・ご家族への説明と同意（外国にある第三者への提供）の見直しが要る。旗を ON にする前に、お客様（事業所）と確かめること。法的な判断は顧問の専門家に。
-- ChatGPT Business/Team は学習に使われない（契約の約束）。会話の写しは席に残さない（`ephemeral` の thread）。中継の記録（`agent.admin_events`）とログには本文を書かない（録音の id・結果・秒・モデルだけ）。
+- ChatGPT Business/Team は学習に使われない（契約の約束）。Claude は個人向けプラン（Pro・Max）だと「学習に使う」設定が既定で入りうるので、席の人のアカウントの設定で切っておくこと（Team・Enterprise は学習に使われない）。会話の写しは席に残さない（ChatGPT は `ephemeral` の thread・Claude は `--no-session-persistence`）。中継の記録（`agent.admin_events`）とログには本文を書かない（録音の id・結果・秒・モデルだけ）。
 
 ## 3. 規約上の注意（当面の PO 判断）
 
-- ChatGPT Business/Team の約束は **1 席 1 人**（ログインを共有しない・席を貸さない）。指定した管理者 1 人の席で全職員の録音の下書きを作るのは、この約束から外れる。**一時的な PO の判断**として扱い、⚙ にもその旨を 1 行出している。
+- ChatGPT Business/Team の約束は **1 席 1 人**（Claude のサブスクも「本人が使う」ためのもので、Anthropic は自動処理には API キーを使うよう求めている）（ログインを共有しない・席を貸さない）。指定した管理者 1 人の席で全職員の録音の下書きを作るのは、この約束から外れる。**一時的な PO の判断**として扱い、⚙ にもその旨を 1 行出している。
 - OpenAI の利用規約の「自動・プログラムでの出力の取り出し」の禁止、Codex の公式の「自動処理は API キーが既定」の案内にも触れうる。看護師全員が席を持った時点で、§5 の「録音した本人の席」に切り替えるか、API（Bedrock の jp. 経路など）の契約に移す。
 - 席の利用上限はその管理者の契約の分を使う。上限に当たったら `rate_limited` で Gemini に戻る（カルテは止まらない）。その管理者の相談（らく助エージェント）の上限も減る。
 
@@ -73,7 +74,17 @@ PO 決定（2026-10-13）: 訪問の音声記録のカルテ（看護記録）�
 | backend | `app/core/config.py` | `AGENT_RELAY_SERVICE_URL`・`AGENT_RELAY_SERVICE_TOKEN`・`KARTE_SEAT_TIMEOUT_SECONDS` |
 | backend | `app/schemas/office_feature_flag.py` | `FeatureKey` に `karte_via_seat`（入れ忘れると旗の一覧 GET が 500） |
 | 画面 | `components/agent/EngineSettings.tsx`（`KarteSeatSection`）・`engines.ts` | ⚙ の「カルテの下書きに使う席」（管理者の一覧が見られる人だけ） |
-| 画面 | `app/(app)/admin/feature-flags/page.tsx`・`lib/schemas/g21.ts` | 「カルテの下書きを ChatGPT で」の旗（拠点ごとの ON/OFF） |
+| 画面 | `app/(app)/admin/feature-flags/page.tsx`・`lib/schemas/g21.ts` | 「カルテの下書きをサインインした AI で」の旗（拠点ごとの ON/OFF） |
+
+### 4-0. Claude の席で作るとき（PO 2026-10-13 追記）
+
+- 箱の runner に `purpose: "karte"` の spawn を頼む。runner が決まった argv で起こす:
+  `claude -p --input-format stream-json --output-format stream-json --verbose --tools "" --no-session-persistence --disable-slash-commands --setting-sources project --strict-mcp-config --mcp-config empty-mcp.json --settings <隔離> --max-turns 1 --model opus`。
+  `--permission-prompt-tool`・らく助の決まり（`relay-prompt.md`）は付けない。cwd は空の作業フォルダー（agent/ の CLAUDE.md を読ませない）。resume はできない（runner が断る）。
+- 指示文は CLI に別で渡せない（runner は決まった argv だけ）ので、文の頭に指示文を付けて 1 回だけ送る。
+- 守りは ChatGPT と同じ: 90 秒・同時に 1 件・道具が動いたら打ち切り・失敗したら Gemini。init の `apiKeySource` が `none` 以外なら止める（`signed_out`）。
+- 保存は `visit_recordings.provider = claude-seat`（ChatGPT は `codex-seat`）・`model` は init の model（例 `claude-opus-…`）。
+- ChatGPT の spawn は前と同じ形（`purpose` なし）。Claude で作るには箱（sandbox）の image の作り直しが要る（古い runner は `purpose` を断り `seat_unreachable` で Gemini に戻るだけ）。
 
 migration は無い（`agent.settings`・`agent.admin_events`〔0094〕と `visit_recordings` の既存の列を使う）。
 
@@ -83,8 +94,9 @@ migration は無い（`agent.settings`・`agent.admin_events`〔0094〕と `visi
 |---|---|---|
 | `karte_mode` | `designated`（決めた管理者の席）/ `presser`（録音した本人の席） | `designated` |
 | `karte_seat_user_id` | らく助の管理者の user id | なし（なしの間は `no_seat` で Gemini） |
+| `karte_provider` | `codex`（ChatGPT）/ `claude` / なし（自動 = 席の人の `default_provider:<id>` → サインインしている方） | なし |
 
-- ⚙ で変える（管理者だけ）。選べるのは ChatGPT にサインインしている管理者だけ（中継も確かめる・していなければ 409）。変更は `agent.admin_events` に `karte_settings`（`mode=a->b seat=x->y`）。
+- ⚙ で変える（管理者だけ）。選べるのは AI にサインインしている管理者だけ（中継も確かめる・していなければ 409）。使う AI（`karte_provider`: 自動 / codex / claude）も選べる。サインインしていない AI は選べない（409）。変更は `agent.admin_events` に `karte_settings`（`mode=a->b seat=x->y ai=a->b`）。
 - 席の管理者がサインアウトしたら、次の録音から `signed_out` で Gemini に戻る（設定はそのまま。サインインし直せば戻る）。
 
 ### 4-2. 失敗の種類（`visit_recordings.error_kind` = `seat_<kind>`・status は `summarized`）
@@ -96,9 +108,9 @@ migration は無い（`agent.settings`・`agent.admin_events`〔0094〕と `visi
 | `off` / `auth` / `http` / `unreachable` / `timeout` / `parse` | 中継の口が無い（404）・合言葉が違う・中継の誤り・届かない・100 秒で打ち切り・答えの形が違う |
 | `disabled` | 中継の全体の止め（`AGENT_RELAY_ENABLED=0`） |
 | `no_seat` | 席が決まっていない（presser なら録音した人が分からない） |
-| `signed_out` | 席の ChatGPT がサインインしていない・切れた |
+| `signed_out` | 席の AI がサインインしていない・切れた・サブスク以外のつなぎ方（Claude の apiKeySource） |
 | `busy` | 箱の runner が埋まっている・サーバーのメモリが足りない |
-| `rate_limited` | 席の ChatGPT の利用上限 |
+| `rate_limited` | 席の AI の利用上限 |
 | `tool_use` | モデルが道具を使おうとした（打ち切り） |
 | `failed` | そのほか（ターンの失敗・CLI が終わった） |
 | `error` | backend の想定外（ログに例外） |
@@ -107,8 +119,8 @@ migration は無い（`agent.settings`・`agent.admin_events`〔0094〕と `visi
 
 ## 5. 「録音した本人の席」への切り替え方（presser）
 
-1. 看護師が ChatGPT Team の席を持ち、らく助の ⚙ の「あなたの ChatGPT」でサインインできるようにする。**いまの中継は管理者だけ**（`relay/auth.py` の `AGENT_USES = {"consult": 管理者}`）なので、職員が ⚙ を開けるよう、目的 `karte` と職員の役割を足し、サインインの口だけ `can_use(user, "karte")` で通す（相談の口は管理者のまま）。
-2. ⚙ の「カルテの下書きに使う席」で「録音した本人の ChatGPT で作る」を選ぶ（`karte_mode=presser`）。
+1. 看護師が AI の席（ChatGPT Team か Claude）を持ち、らく助の ⚙ の「あなたの …」でサインインできるようにする。**いまの中継は管理者だけ**（`relay/auth.py` の `AGENT_USES = {"consult": 管理者}`）なので、職員が ⚙ を開けるよう、目的 `karte` と職員の役割を足し、サインインの口だけ `can_use(user, "karte")` で通す（相談の口は管理者のまま）。
+2. ⚙ の「カルテの下書きに使う席」で「録音した本人の、サインインした AI で作る」を選ぶ（`karte_mode=presser`）。
 3. 以後、backend が送る `presser_user_id`（録音を受け取ったユーザー＝`visit_recordings.created_by_user_id`）の席で作る。サインインしていない人の録音は `signed_out` で Gemini に戻る。
 
 ## 6. 守り（だれが何をできるか）
@@ -125,7 +137,7 @@ migration は無い（`agent.settings`・`agent.admin_events`〔0094〕と `visi
 1. `openssl rand -hex 32` で合言葉を作る。
 2. `/opt/carelink/secrets/agent-relay.env` に `AGENT_RELAY_SERVICE_TOKEN=<値>`。
 3. `/opt/carelink/.env` に `AGENT_RELAY_SERVICE_URL=http://carelink-agent:8092`・`AGENT_RELAY_SERVICE_TOKEN=<同じ値>`（`KARTE_SEAT_TIMEOUT_SECONDS` は既定 100 のままでよい）。
-4. 作り直す image: **中継（`carelink-agent-relay`）・backend・frontend**。箱（sandbox）・出口（egress）は作り直し不要。migration なし。
+4. 作り直す image: **中継（`carelink-agent-relay`）・backend・frontend**。Claude の席で作るなら**箱（sandbox）も**（§4-0）。出口（egress）は作り直し不要。migration なし。
 5. backend のコンテナから `/svc/healthz` が 200 になることを確かめる（README §3-10 の 6）。
 6. ⚙ で席を選ぶ → 「機能の切り替え」で試す拠点だけ ON（**ON にする前に §2 の同意の確認**）。
 7. 録音 1 件で `codex-seat` になること、席をサインアウトした状態で `seat_signed_out` の Gemini に戻ることを確かめる。

@@ -19,6 +19,7 @@ import {
   type EngineState,
   type EnginesView,
   type KarteMode,
+  type KartePatch,
   type KarteSettings,
   type LoginFlow,
   type SeatAssignments,
@@ -650,14 +651,16 @@ export function SeatAssignmentSection({ engines }: { engines: EngineAdmin }) {
 }
 
 const KARTE_MODE_LABEL: Record<KarteMode, string> = {
-  designated: 'ここで選んだ管理者の ChatGPT で作る',
-  presser: '録音した本人の ChatGPT で作る（全員が ChatGPT の席を持ってから）',
+  designated: 'ここで選んだ管理者の、サインインした AI で作る',
+  presser: '録音した本人の、サインインした AI で作る（全員が AI の席を持ってから）',
 };
 
 /**
  * カルテの下書きに使う席(管理者だけ・PO 2026-10-13)。訪問の録音から作るカルテの下書きを、
- * 選んだ管理者の ChatGPT で作る。選べるのは ChatGPT にサインインしている管理者だけ。
- * ChatGPT が使えないときは Gemini で作る(カルテは止まらない)。拠点ごとの ON/OFF は「機能の切り替え」。
+ * 選んだ管理者のサインインした AI(ChatGPT か Claude)で作る。選べるのは AI にサインインしている管理者だけ。
+ * 使う AI は「自動(その人の新しい相談で使う AI → サインインしている方)/ChatGPT/Claude」。
+ * サインインしていない AI は選べない。使えないときは Gemini で作る(カルテは止まらない)。
+ * 拠点ごとの ON/OFF は「機能の切り替え」。
  */
 export function KarteSeatSection({ engines }: { engines: EngineAdmin }) {
   const [k, setK] = useState<KarteSettings | null>(null);
@@ -676,7 +679,7 @@ export function KarteSeatSection({ engines }: { engines: EngineAdmin }) {
     };
   }, [engines]);
 
-  const save = async (patch: { mode?: KarteMode; seat_user_id?: string | null }) => {
+  const save = async (patch: KartePatch) => {
     if (!engines.setKarte) return;
     setSaving(true);
     setErr(null);
@@ -691,13 +694,15 @@ export function KarteSeatSection({ engines }: { engines: EngineAdmin }) {
   };
 
   const choices = k ? k.seats.filter((s) => s.state === 'ok' || s.user_id === k.seat_user_id) : [];
+  const seat = k?.seats.find((s) => s.user_id === k.seat_user_id);
+  const providers = k?.providers ?? [];
 
   return (
     <section className="rk-es-seats" aria-label="カルテの下書きに使う席">
       <h3 className="rk-es-subhead">カルテの下書きに使う席</h3>
       <p className="rk-es-note">
-        訪問の録音から作るカルテの下書きを、ChatGPT で作ります（「機能の切り替え」で ON
-        にした拠点だけ）。ChatGPT が使えないときは、いままでどおり Gemini で作ります。
+        訪問の録音から作るカルテの下書きを、サインインした AI で作ります（「機能の切り替え」で ON
+        にした拠点だけ）。AI が使えないときは、いままでどおり Gemini で作ります。
       </p>
       {err && (
         <p className="rk-es-msg" data-tone="bad" role="alert">
@@ -708,7 +713,7 @@ export function KarteSeatSection({ engines }: { engines: EngineAdmin }) {
       {k && (
         <>
           <fieldset className="rk-es-default" disabled={saving}>
-            <legend>だれの ChatGPT で作るか</legend>
+            <legend>だれの AI で作るか</legend>
             {k.modes.map((m) => (
               <label key={m} className="rk-es-radio">
                 <input
@@ -724,11 +729,11 @@ export function KarteSeatSection({ engines }: { engines: EngineAdmin }) {
           </fieldset>
           {k.mode === 'designated' && (
             <fieldset className="rk-es-default" disabled={saving}>
-              <legend>使う席（ChatGPT にサインインしている管理者）</legend>
+              <legend>使う席（AI にサインインしている管理者）</legend>
               {choices.length === 0 && (
                 <p className="rk-es-note">
-                  ChatGPT にサインインしている管理者がいません。上の「あなたの
-                  ChatGPT」からサインインしてください。
+                  AI にサインインしている管理者がいません。上の「あなたの
+                  …」からサインインしてください。
                 </p>
               )}
               {choices.map((s) => (
@@ -760,9 +765,35 @@ export function KarteSeatSection({ engines }: { engines: EngineAdmin }) {
                 <p className="rk-es-note">まだ選んでいません（選ぶまでは Gemini で作ります）。</p>
               )}
               <p className="rk-es-note">
-                いまは 1 つの席で全員の分を作ります（ChatGPT の「1 席 1
+                いまは 1 つの席で全員の分を作ります（「1 席 1
                 人」の約束から外れる、当面の決め方です）。
               </p>
+            </fieldset>
+          )}
+          {k.mode === 'designated' && seat && providers.length > 0 && (
+            <fieldset className="rk-es-default" disabled={saving}>
+              <legend>使う AI</legend>
+              <SeatOption
+                name="rk-karte-ai"
+                label="自動（その方の「新しい相談で使う AI」→ サインインしている方）"
+                checked={!k.provider}
+                disabled={false}
+                onPick={() => void save({ provider: null })}
+              />
+              {providers.map((p) => {
+                const ok = seat.engines?.[p]?.state === 'ok';
+                return (
+                  <SeatOption
+                    key={p}
+                    name="rk-karte-ai"
+                    label={ENGINE_NAME[p]}
+                    checked={k.provider === p}
+                    disabled={!ok && k.provider !== p}
+                    onPick={() => void save({ provider: p })}
+                    note={ok ? undefined : '（この席はサインインしていません）'}
+                  />
+                );
+              })}
             </fieldset>
           )}
         </>

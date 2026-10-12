@@ -266,3 +266,29 @@ async def test_retry_after_seat_success_clears_fallback_kind(db, rec) -> None:
     await db.refresh(row)
     assert row.provider == "codex-seat" and row.error_kind is None
     await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_claude_seat_is_recorded_separately(db, rec) -> None:
+    """中継が Claude の席で作ったら provider=claude-seat。AI を返さない (前の) 中継は codex-seat。"""
+    row, office, _ = rec
+    await _flag(db, office)
+    _use(Relay(reply={**Relay().reply, "provider": "claude", "model": "claude-opus-5-5"}))
+    _install(_FakeVoiceClient(_result(), _result()))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert (
+        row.provider == "claude-seat" and row.model == "claude-opus-5-5" and row.error_kind is None
+    )
+
+    _use(
+        Relay(reply={**Relay().reply, "provider": "gemini"})
+    )  # 知らない AI の名前は ChatGPT の席として扱う
+    row.status = "uploaded"
+    await db.commit()
+    await jobs.run_transcribe_job(row.id)
+    await db.refresh(row)
+    assert row.provider == "codex-seat"
+    await db.rollback()
