@@ -293,3 +293,10 @@
   margin-left: 4px;
   color: var(--rk-muted);
 }
+
+/* カルテの下書きに使う席 */
+.rk-es-subhead {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 700;
+}

@@ -72,8 +72,10 @@ class _CodexProtocol:
     stop_wait: float
 
     def _codex_setup(self, *, cwd: str, work_dir: str, resume_id: str | None, developer_instructions: str,
-                     rpc_timeout: float) -> None:
+                     rpc_timeout: float, thread_extra: dict | None = None) -> None:
         self.thread_cwd = cwd
+        #: thread/start に足す項目（カルテの下書き: sandbox=read-only・approvalPolicy=never・ephemeral。relay.karte）
+        self.thread_extra = dict(thread_extra or {})
         self.work_dir = work_dir
         self.resume_id = resume_id
         self.developer_instructions = developer_instructions
@@ -187,7 +189,7 @@ class _CodexProtocol:
             raise StartRefused(LOCKDOWN_OFF, "; ".join(self.lockdown))
         params = {"cwd": self.thread_cwd, "model": self.picker.current, "approvalPolicy": cx.APPROVAL_POLICY,
                   "sandbox": cx.SANDBOX_MODE, "approvalsReviewer": cx.APPROVALS_REVIEWER,
-                  "developerInstructions": self.developer_instructions}
+                  "developerInstructions": self.developer_instructions, **self.thread_extra}
         r: dict | None = None
         if self.resume_id:
             try:
@@ -403,8 +405,9 @@ class CodexRunnerSession(_CodexProtocol, RunnerSession):
     def __init__(self, socket_path: str, spawn: dict, *, cwd: str, work_dir: str, resume_id: str | None = None,
                  developer_instructions: str = RELAY_PROMPT, normalizer: CodexNormalizer | None = None,
                  stop_wait: float = 10.0, connect: Callable[[str], Awaitable[tuple[Any, Any]]] | None = None,
-                 rpc_timeout: float = 30.0):
+                 rpc_timeout: float = 30.0, thread_extra: dict | None = None):
         RunnerSession.__init__(self, socket_path, spawn, normalizer or CodexNormalizer(),  # type: ignore[arg-type]
                                stop_wait=stop_wait, connect=connect)
         self._codex_setup(cwd=cwd, work_dir=work_dir, resume_id=resume_id,
-                          developer_instructions=developer_instructions, rpc_timeout=rpc_timeout)
+                          developer_instructions=developer_instructions, rpc_timeout=rpc_timeout,
+                          thread_extra=thread_extra)

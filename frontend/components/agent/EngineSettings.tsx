@@ -18,6 +18,8 @@ import {
   type EngineProvider,
   type EngineState,
   type EnginesView,
+  type KarteMode,
+  type KarteSettings,
   type LoginFlow,
   type SeatsView,
 } from './engines';
@@ -426,6 +428,10 @@ export function EngineSettingsSheet({
               )}
             </section>
           )}
+
+          {view?.can_view_seats && engines.karte && engines.setKarte && (
+            <KarteSeatSection engines={engines} />
+          )}
         </div>
         <footer className="rk-es-foot">
           <button type="button" className="rk-es-btn" onClick={onClose}>
@@ -434,6 +440,126 @@ export function EngineSettingsSheet({
         </footer>
       </section>
     </>
+  );
+}
+
+const KARTE_MODE_LABEL: Record<KarteMode, string> = {
+  designated: 'ここで選んだ管理者の ChatGPT で作る',
+  presser: '録音した本人の ChatGPT で作る（全員が ChatGPT の席を持ってから）',
+};
+
+/**
+ * カルテの下書きに使う席(管理者だけ・PO 2026-10-13)。訪問の録音から作るカルテの下書きを、
+ * 選んだ管理者の ChatGPT で作る。選べるのは ChatGPT にサインインしている管理者だけ。
+ * ChatGPT が使えないときは Gemini で作る(カルテは止まらない)。拠点ごとの ON/OFF は「機能の切り替え」。
+ */
+export function KarteSeatSection({ engines }: { engines: EngineAdmin }) {
+  const [k, setK] = useState<KarteSettings | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const alive = useRef(true);
+
+  useEffect(() => {
+    alive.current = true;
+    engines
+      .karte?.()
+      .then((v) => alive.current && setK(v))
+      .catch((e: Error) => alive.current && setErr(e.message || '読めませんでした'));
+    return () => {
+      alive.current = false;
+    };
+  }, [engines]);
+
+  const save = async (patch: { mode?: KarteMode; seat_user_id?: string | null }) => {
+    if (!engines.setKarte) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const v = await engines.setKarte(patch);
+      if (alive.current) setK(v);
+    } catch (e) {
+      if (alive.current) setErr((e as Error).message || '変えられませんでした');
+    } finally {
+      if (alive.current) setSaving(false);
+    }
+  };
+
+  const choices = k ? k.seats.filter((s) => s.state === 'ok' || s.user_id === k.seat_user_id) : [];
+
+  return (
+    <section className="rk-es-seats" aria-label="カルテの下書きに使う席">
+      <h3 className="rk-es-subhead">カルテの下書きに使う席</h3>
+      <p className="rk-es-note">
+        訪問の録音から作るカルテの下書きを、ChatGPT で作ります（「機能の切り替え」で ON
+        にした拠点だけ）。ChatGPT が使えないときは、いままでどおり Gemini で作ります。
+      </p>
+      {err && (
+        <p className="rk-es-msg" data-tone="bad" role="alert">
+          {err}
+        </p>
+      )}
+      {!k && !err && <p className="rk-es-note">読み込んでいます…</p>}
+      {k && (
+        <>
+          <fieldset className="rk-es-default" disabled={saving}>
+            <legend>だれの ChatGPT で作るか</legend>
+            {k.modes.map((m) => (
+              <label key={m} className="rk-es-radio">
+                <input
+                  type="radio"
+                  name="rk-karte-mode"
+                  value={m}
+                  checked={k.mode === m}
+                  onChange={() => void save({ mode: m })}
+                />
+                <span>{KARTE_MODE_LABEL[m]}</span>
+              </label>
+            ))}
+          </fieldset>
+          {k.mode === 'designated' && (
+            <fieldset className="rk-es-default" disabled={saving}>
+              <legend>使う席（ChatGPT にサインインしている管理者）</legend>
+              {choices.length === 0 && (
+                <p className="rk-es-note">
+                  ChatGPT にサインインしている管理者がいません。上の「あなたの
+                  ChatGPT」からサインインしてください。
+                </p>
+              )}
+              {choices.map((s) => (
+                <label key={s.user_id} className="rk-es-radio">
+                  <input
+                    type="radio"
+                    name="rk-karte-seat"
+                    value={s.user_id}
+                    checked={k.seat_user_id === s.user_id}
+                    onChange={() => void save({ seat_user_id: s.user_id })}
+                  />
+                  <span>
+                    {s.name}
+                    {s.me && <small>（あなた）</small>}
+                  </span>
+                  {s.state !== 'ok' && (
+                    <small>（サインインしていません。いまは Gemini で作ります）</small>
+                  )}
+                </label>
+              ))}
+              {k.seat_user_id && !k.seat_known && (
+                <p className="rk-es-note">
+                  前に選んだ方は、いまの管理者の一覧にいません。選び直してください。
+                </p>
+              )}
+              {!k.seat_user_id && choices.length > 0 && (
+                <p className="rk-es-note">まだ選んでいません（選ぶまでは Gemini で作ります）。</p>
+              )}
+              <p className="rk-es-note">
+                いまは 1 つの席で全員の分を作ります（ChatGPT の「1 席 1
+                人」の約束から外れる、当面の決め方です）。
+              </p>
+            </fieldset>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

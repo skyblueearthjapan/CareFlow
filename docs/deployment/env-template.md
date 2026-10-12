@@ -113,6 +113,16 @@ VOICE_AI_TIMEOUT_SECONDS=240
 # 1 コール 240 秒 + 再試行より長く取る (短いと走っているジョブを failed に倒す)。
 VOICE_JOB_STALE_MINUTES=20
 
+# --- カルテの下書きを決めた管理者の ChatGPT の席で (docs/plans/karte-via-seat-2026-10-13.md) ---
+# 拠点の旗 karte_via_seat (画面の「機能の切り替え」) を ON にした拠点だけ使う。失敗したら Gemini の要約。
+# 中継 (carelink-agent) のサーバーどうしの口。ホストへは出ていない (deployment_default の網の中だけ)。
+AGENT_RELAY_SERVICE_URL=http://carelink-agent:8092
+# 合言葉 (秘密)。/opt/carelink/secrets/agent-relay.env の AGENT_RELAY_SERVICE_TOKEN と同じ値。
+# 作り方: openssl rand -hex 32。空なら中継を呼ばない (seat_config で Gemini のまま)。
+AGENT_RELAY_SERVICE_TOKEN=__REPLACE_WITH_OPENSSL_RAND_HEX_32__
+# 中継へ 1 回頼むときの打ち切り (秒)。中継の中 (AGENT_KARTE_TIMEOUT=90) より少し長く。
+KARTE_SEAT_TIMEOUT_SECONDS=100
+
 # --- NextAuth (frontend) ---
 NEXTAUTH_URL=https://carelink.kaipoke-api.net
 NEXTAUTH_SECRET=__REPLACE_WITH_OPENSSL_RAND_BASE64_32__

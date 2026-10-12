@@ -23,8 +23,14 @@ from pydantic import BaseModel, ConfigDict, Field
 #   - ``rakusuke_agent``: らく助エージェント（右下の小窓・相談タブ）を出す拠点.
 #   - ``template_workspace``: 型の作業場（/schedule/template）を出す拠点.
 #     ※ 2026-10-13: この 2 つを Literal に入れ忘れ、一覧 GET が 500 になって小窓が出なかった
+#   - ``karte_via_seat``: 訪問の音声記録のカルテ下書きを、決めた管理者の ChatGPT の席で作る拠点
+#     (失敗したら今の Gemini の要約に戻る。docs/plans/karte-via-seat-2026-10-13.md)。
 FeatureKey = Literal[
-    "g21_new_algorithm", "l3_fix_primary_staff", "rakusuke_agent", "template_workspace"
+    "g21_new_algorithm",
+    "l3_fix_primary_staff",
+    "rakusuke_agent",
+    "template_workspace",
+    "karte_via_seat",
 ]
 
 

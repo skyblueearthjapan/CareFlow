@@ -117,6 +117,7 @@ export const OFFICE_FEATURE_KEYS = [
   'template_workspace',
   'l3_fix_primary_staff',
   'g21_new_algorithm',
+  'karte_via_seat',
 ] as const;
 export type OfficeFeatureKey = (typeof OFFICE_FEATURE_KEYS)[number];
 export const officeFeatureKeySchema = z.enum(OFFICE_FEATURE_KEYS);

@@ -57,6 +57,19 @@ export interface SeatsView {
   }[];
 }
 
+/** カルテの下書きに使う席(管理者だけ・agent/relay/karte.py の /karte/settings と同じ形) */
+export type KarteMode = 'designated' | 'presser';
+export interface KarteSettings {
+  /** designated = 決めた管理者の席 / presser = 録音した本人の席 */
+  mode: KarteMode;
+  modes: KarteMode[];
+  seat_user_id: string | null;
+  /** 決めた席が、いまの管理者の一覧にいるか */
+  seat_known: boolean;
+  /** state は ChatGPT のサインインの様子 */
+  seats: { user_id: string; name: string; me: boolean; state: EngineState }[];
+}
+
 export interface EngineAdmin {
   view(): Promise<EnginesView>;
   setDefault(provider: EngineProvider): Promise<void>;
@@ -69,6 +82,9 @@ export interface EngineAdmin {
   ): Promise<{ provider: EngineProvider; ok: boolean; state: EngineState }>;
   /** 管理者のサインインの様子(無い実装では出さない) */
   seats?(): Promise<SeatsView>;
+  /** カルテの下書きに使う席(無い実装では出さない) */
+  karte?(): Promise<KarteSettings>;
+  setKarte?(patch: { mode?: KarteMode; seat_user_id?: string | null }): Promise<KarteSettings>;
 }
 
 export const ENGINE_NAME: Record<EngineProvider, string> = { codex: 'ChatGPT', claude: 'Claude' };
@@ -91,16 +107,24 @@ export class HttpEngineAdmin implements EngineAdmin {
     private readonly base: string,
   ) {}
 
-  private async call<T>(path: string, method: 'GET' | 'POST' = 'GET', body?: unknown): Promise<T> {
+  private call<T>(path: string, method: 'GET' | 'POST' = 'GET', body?: unknown): Promise<T> {
+    return this.send<T>(`/engines${path}`, method, body);
+  }
+
+  private async send<T>(
+    path: string,
+    method: 'GET' | 'POST' | 'PUT' = 'GET',
+    body?: unknown,
+  ): Promise<T> {
     const headers = new Headers();
     const t = this.getToken();
     if (t) headers.set('Authorization', `Bearer ${t}`);
-    if (method === 'POST') headers.set('Content-Type', 'application/json');
-    const res = await fetch(`${this.base}/engines${path}`, {
+    if (method !== 'GET') headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${this.base}${path}`, {
       method,
       headers,
       cache: 'no-store',
-      body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
+      body: method !== 'GET' ? JSON.stringify(body ?? {}) : undefined,
     });
     if (!res.ok) {
       let msg = 'うまくいきませんでした。少し時間をおいて、もう一度どうぞ';
@@ -142,6 +166,12 @@ export class HttpEngineAdmin implements EngineAdmin {
   seats() {
     return this.call<SeatsView>('/seats');
   }
+  karte() {
+    return this.send<KarteSettings>('/karte/settings');
+  }
+  setKarte(patch: { mode?: KarteMode; seat_user_id?: string | null }) {
+    return this.send<KarteSettings>('/karte/settings', 'PUT', patch);
+  }
 }
 
 /** 模擬(NEXT_PUBLIC_AGENT_RELAY_MOCK=1・試験)。ChatGPT はサインイン済み、Claude はしていない状態から始まる */
@@ -150,6 +180,18 @@ export function createMockEngineAdmin(): EngineAdmin {
   let def: EngineProvider = 'codex';
   let source: EnginesView['default_source'] = 'env';
   let flow: LoginFlow | null = null;
+  let karteMode: KarteMode = 'designated';
+  let karteSeat: string | null = null;
+  const karteView = (): KarteSettings => ({
+    mode: karteMode,
+    modes: ['designated', 'presser'],
+    seat_user_id: karteSeat,
+    seat_known: karteSeat === null || karteSeat === 'mock-me' || karteSeat === 'mock-b',
+    seats: [
+      { user_id: 'mock-me', name: 'あなた', me: true, state: engines.codex },
+      { user_id: 'mock-b', name: '管理者 B', me: false, state: 'missing' },
+    ],
+  });
   const idle = (): LoginFlow => ({
     provider: null,
     state: 'idle',
@@ -192,6 +234,14 @@ export function createMockEngineAdmin(): EngineAdmin {
           },
         ],
       };
+    },
+    async karte() {
+      return karteView();
+    },
+    async setKarte(patch) {
+      if (patch.mode) karteMode = patch.mode;
+      if (patch.seat_user_id !== undefined) karteSeat = patch.seat_user_id;
+      return karteView();
     },
     async startLogin(p) {
       if (flow && ACTIVE_LOGIN.includes(flow.state)) {

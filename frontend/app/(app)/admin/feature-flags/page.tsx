@@ -54,6 +54,7 @@ const FEATURE_KEY_LABEL: Record<OfficeFeatureKey, string> = {
   template_workspace: '型の作業場',
   l3_fix_primary_staff: '主担当を A コースに固定',
   g21_new_algorithm: 'G-21 新アルゴリズム',
+  karte_via_seat: 'カルテの下書きを ChatGPT で',
 };
 
 const FEATURE_KEY_DESC: Record<OfficeFeatureKey, string> = {
@@ -65,6 +66,8 @@ const FEATURE_KEY_DESC: Record<OfficeFeatureKey, string> = {
     '自動で担当を割り当てるとき、その拠点の主担当（職員コードの先頭の方）を A コースに固定します。',
   g21_new_algorithm:
     '完全固定 / 同住所紐付け / 拠点間移動コスト を考慮した新自動最適化エンジンを有効化します.',
+  karte_via_seat:
+    '訪問の録音から作るカルテの下書きを、⚙ で決めた管理者の ChatGPT で作ります。ChatGPT が使えないときは、いままでどおり Gemini で作ります。',
 };
 
 // ─────────────────────────────────────────────────────────────────────────

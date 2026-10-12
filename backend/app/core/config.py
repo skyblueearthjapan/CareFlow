@@ -120,6 +120,16 @@ class Settings(BaseSettings):
     # failed に倒してしまう。
     voice_job_stale_minutes: int = Field(default=20)
 
+    # --- カルテの下書きを決めた管理者の ChatGPT の席で (docs/plans/karte-via-seat-2026-10-13.md) ---
+    # 拠点の旗 ``karte_via_seat`` が ON の拠点だけ使う。失敗したら Gemini の要約に戻る。
+    # 中継 (carelink-agent) のサーバーどうしの口。ホストへは出ていない (backend の網の中だけ)。
+    agent_relay_service_url: str = Field(default="http://carelink-agent:8092")
+    # 合言葉 (秘密)。中継の /opt/carelink/secrets/agent-relay.env の AGENT_RELAY_SERVICE_TOKEN と同じ値。
+    # 空なら呼ばない (seat_config で Gemini のまま)。
+    agent_relay_service_token: str = Field(default="")
+    # 中継へ 1 回頼むときの打ち切り (秒)。中継の中の打ち切り (AGENT_KARTE_TIMEOUT=90) より少し長く。
+    karte_seat_timeout_seconds: int = Field(default=100)
+
     @field_validator("cors_origins")
     @classmethod
     def _normalize_origins(cls, value: str) -> str:

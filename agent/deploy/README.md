@@ -281,9 +281,27 @@ compose と秘密ファイルの名前のまま中継が読む（`agent/relay/co
 | `AGENT_BACKEND_IDENTIFIER`・`AGENT_BACKEND_PASSWORD`（秘密） | エージェント専用の管理者（中継の中の rk が反映に使う） |
 | `AGENT_URL_SIGNING_KEY`（秘密） | 印刷用の署名つき URL（5 分） |
 | `AGENT_ALLOWED_USER_IDS`（秘密） | 試験中に使える管理者の user id（カンマ区切り） |
+| `AGENT_RELAY_SERVICE_TOKEN`（秘密） | サーバーどうしの口 :8092（backend → カルテの下書き）の合言葉。backend の `.env` の `AGENT_RELAY_SERVICE_TOKEN` と同じ値。無ければその口は全部 404 |
+| `AGENT_RELAY_SERVICE_PORT=8092`（compose）・`AGENT_KARTE_TIMEOUT`（既定 90 秒） | サーバーどうしの口（ホストへ出さない・箱の網からは 404）・下書き 1 件の打ち切り |
 | `AGENT_PUBLIC_ORIGIN`・`AGENT_BACKEND_URL`・`AGENT_PUBLIC_PORT`・`AGENT_INNER_PORT`・`AGENT_MAX_PROCS`・`AGENT_MIN_MEM_AVAILABLE_MB`・`AGENT_BACKUP_DIR`（compose） | POST を受ける Origin・`/auth/me` の確かめ先・口・同時の CLI・始める前の空きメモリ・バックアップの置き場所 |
 
 - 健康確認は鍵なしの `GET /agent-relay/healthz`（`{"ok":true}`）。中継の作業の置き場所は volume `carelink-agent-relay-data`（`/data`・rk の `runs/` は利用者名入り）。
+
+### 3-10. カルテの下書きを決めた管理者の ChatGPT の席で（2026-10-13・設計 `docs/plans/karte-via-seat-2026-10-13.md`）
+
+1. 合言葉を作る（値はどこにも貼らない・git に入れない）: `openssl rand -hex 32`
+2. 中継の秘密ファイルに 1 行: `/opt/carelink/secrets/agent-relay.env` に `AGENT_RELAY_SERVICE_TOKEN=<値>`（0400 root のまま。`set-role-passwords.sh` の作り直しで消えないよう、作り直したら足し直す）
+3. backend の `.env`（`/opt/carelink/.env`）に `AGENT_RELAY_SERVICE_URL=http://carelink-agent:8092`・`AGENT_RELAY_SERVICE_TOKEN=<同じ値>`
+4. 中継の image を作り直して立て直す（箱・出口は作り直し不要）: `dca build agent-relay && dca up -d agent-relay`
+5. backend を作り直して立て直す（`docs/deployment` の手順どおり）。migration は無い
+6. 確かめ（backend のコンテナから・合言葉は env から読む）:
+   `docker exec carelink-backend python -c "import os,httpx; r=httpx.get('http://carelink-agent:8092/svc/healthz', headers={'X-Rakusuke-Service-Token': os.environ['AGENT_RELAY_SERVICE_TOKEN']}); print(r.status_code, r.text)"` → `200 {"ok":true}`。
+   合言葉なしは 401、ホストの `curl 127.0.0.1:8092` は届かない（ports に無い）、箱から（`docker exec carelink-agent-sandbox …`）は 404
+7. 画面: 管理者が ⚙ →「カルテの下書きに使う席」で、ChatGPT にサインインしている管理者を選ぶ
+8. 画面: 「機能の切り替え」（/admin/feature-flags）で、試す拠点だけ「カルテの下書きを ChatGPT で」を ON
+9. 録音 1 件で確かめる: 記録の「モデル」が `codex-seat / gpt-…-sol / seat-v1` になる。Gemini に戻ったときは `visit_recordings.error_kind` が `seat_<理由>`、`agent.admin_events` の `karte_draft` に `fallback=<理由>`
+
+戻し方: 旗を OFF（すぐ Gemini だけに戻る）。口ごと止めるなら秘密ファイルから `AGENT_RELAY_SERVICE_TOKEN` を消して中継を立て直す（404 → backend は `seat_off` で Gemini）。
 
 ## 4. メモリ（swap なし・守り）
 

@@ -1,0 +1,4 @@
+{"method": "turn/started", "params": {"threadId": "01a12f21-903f-7f83-8d61-c8e063ad8bbb", "turn": {"id": "turn-1", "items": [], "status": "inProgress"}}}
+{"method": "item/started", "params": {"threadId": "01a12f21-903f-7f83-8d61-c8e063ad8bbb", "turnId": "turn-1", "item": {"type": "agentMessage", "id": "msg-1", "text": "", "phase": "final_answer"}}}
+{"method": "item/completed", "params": {"threadId": "01a12f21-903f-7f83-8d61-c8e063ad8bbb", "turnId": "turn-1", "item": {"type": "agentMessage", "id": "msg-1", "text": "{\"summary\": {\"主訴・様子\": [\"腰の痛みは昨日より楽とのこと\"], \"バイタル\": {\"血圧\": \"132/78\", \"体温\": \"36.5\", \"脈拍\": \"\", \"SpO2\": \"97\", \"血糖\": \"\"}, \"処置・ケア\": [\"清拭\"], \"申し送り\": [\"［不明］ 薬の残数の確認\"], \"次回\": \"来週火曜\", \"free\": \"\"}}", "phase": "final_answer"}}}
+{"method": "turn/completed", "params": {"threadId": "01a12f21-903f-7f83-8d61-c8e063ad8bbb", "turn": {"id": "turn-1", "items": [], "status": "completed", "durationMs": 4200}}}

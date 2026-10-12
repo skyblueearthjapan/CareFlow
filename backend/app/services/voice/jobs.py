@@ -40,6 +40,7 @@ from app.models.visit_recording import (
     VisitRecording,
 )
 from app.services.checkin.judge import JST
+from app.services.voice import karte_seat
 from app.services.voice.prompts import build_transcribe_summary_prompt
 from app.services.voice.vertex_client import (
     MAX_INLINE_AUDIO_BYTES,
@@ -192,8 +193,47 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
         except Exception:  # noqa: BLE001 — 後始末の失敗で結果を捨てない
             logger.exception("voice: クライアントの close に失敗 (recording_id=%s)", recording_id)
 
-    await _save_result(db, row, result)
+    provider, fallback_kind = await _maybe_seat_draft(db, row, result, settings)
+    await _save_result(db, row, result, provider=provider, fallback_kind=fallback_kind)
     await _notify_summary_ready(db, row, patient_name=patient_name)
+
+
+async def _maybe_seat_draft(
+    db: AsyncSession, row: VisitRecording, result: VoiceAiResult, settings
+) -> tuple[str, str | None]:
+    """拠点の旗 ``karte_via_seat`` が ON なら、要約を決めた管理者の ChatGPT の席で作り直す.
+
+    成功: ``result`` の要約・モデル・プロンプト版を席のものに差し替え、``("codex-seat", None)``。
+    失敗: ``result`` (Gemini の要約) はそのまま、``("vertex", "seat_<kind>")``。旗が OFF なら
+    ``("vertex", None)`` (今までと同じ・中継を呼ばない)。例外は投げない (カルテを止めない)。
+    文字起こし・費用・トークンは Gemini のもの (席の分は定額なので数えない)。
+    """
+    try:
+        if not await karte_seat.flag_enabled(db, row.office_id):
+            return "vertex", None
+        context = await karte_seat.build_context(db, row)
+        draft = await karte_seat.request_draft(
+            settings,
+            recording_id=row.id,
+            transcript=result.transcript or "",
+            context=context,
+            presser_user_id=row.created_by_user_id,
+        )
+    except karte_seat.SeatDraftError as exc:
+        logger.info(
+            "voice: 席での下書きをやめて Gemini の要約を使います kind=%s (recording_id=%s)",
+            exc.kind,
+            row.id,
+        )
+        return "vertex", exc.error_kind
+    except Exception:  # noqa: BLE001 — 想定外でも Gemini の要約で続ける
+        logger.exception("voice: 席での下書きで想定外の失敗 (recording_id=%s)", row.id)
+        return "vertex", "seat_error"
+    result.summary = draft.summary
+    result.summary_text = draft.summary_text
+    result.model = draft.model or result.model
+    result.prompt_version = draft.prompt_version or result.prompt_version
+    return karte_seat.SEAT_PROVIDER, None
 
 
 async def _call_with_retry(
@@ -251,7 +291,14 @@ async def _context_for(
     return patient_name, staff_name, visit_day.isoformat() if visit_day else None
 
 
-async def _save_result(db: AsyncSession, row: VisitRecording, result: VoiceAiResult) -> None:
+async def _save_result(
+    db: AsyncSession,
+    row: VisitRecording,
+    result: VoiceAiResult,
+    *,
+    provider: str = "vertex",
+    fallback_kind: str | None = None,
+) -> None:
     """成功した結果を書き戻す (患者未紐付けなら ``unlinked`` のまま要約だけ残す)。
 
     人手修正 (``summary_edited_at`` が立っている行) はここで踏み潰されるので、
@@ -290,14 +337,15 @@ async def _save_result(db: AsyncSession, row: VisitRecording, result: VoiceAiRes
     row.transcript_json = result.transcript_segments or []
     row.summary = {**(result.summary or {}), **kept}
     row.summary_text = result.summary_text or None
-    row.provider = "vertex"
+    row.provider = provider
     row.model = result.model
     row.prompt_version = result.prompt_version
     row.tokens_in = result.tokens_in
     row.tokens_out = result.tokens_out
     row.cost_usd = result.cost_usd
     row.error_message = None
-    row.error_kind = None
+    # 成功でも、席での下書きをやめて Gemini の要約にしたときは理由 (seat_<kind>) を残す。
+    row.error_kind = fallback_kind[:32] if fallback_kind else None
     # 紐付け待ちの行は「未紐付け」の表示を守る (要約は保存する)。
     row.status = (
         RECORDING_STATUS_SUMMARIZED if row.patient_id is not None else RECORDING_STATUS_UNLINKED

@@ -9,6 +9,8 @@
 #   carelink-agent          中継（FastAPI）。backend の網（本番 deployment_default）＋箱の網。
 #                           公開口 :8090 → ホスト 127.0.0.1:18201（cloudflared が /agent-relay/* を渡す）
 #                           内側口 :8091（箱の rk 専用。公開しない）
+#                           サーバーどうしの口 :8092（backend → カルテの下書き。ホストへ出さない＝ports に書かない。
+#                           backend の網から http://carelink-agent:8092・合言葉 AGENT_RELAY_SERVICE_TOKEN〔秘密ファイル〕）
 #   carelink-agent-sandbox  箱（claude / codex CLI と rk）。網は agent-sandbox-net（internal: true）だけ。
 #                           backend・Postgres・.env・docker.sock なし。中継とは unix ソケットだけでつながる。
 #   carelink-agent-egress   出口プロキシ（tinyproxy）。箱から外へは、ここを通る許可リストのホストだけ。
@@ -60,6 +62,7 @@ services:
       AGENT_RELAY_DATA_DIR: /data         # rk の実行記録（runs/・利用者名入り）・トークン・バックアップの記録
       AGENT_PUBLIC_PORT: "8090"
       AGENT_INNER_PORT: "8091"
+      AGENT_RELAY_SERVICE_PORT: "8092"     # backend → 中継（カルテの下書き）。ports には書かない
       AGENT_BACKEND_URL: ${AGENT_BACKEND_URL:-http://carelink-backend:8000/api/v1}
       AGENT_PG_HOST: ${AGENT_PG_HOST:-carelink-postgres}
       AGENT_PG_DB: ${AGENT_PG_DB:-carelink}

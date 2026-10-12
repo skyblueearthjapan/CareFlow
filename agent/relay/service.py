@@ -254,11 +254,8 @@ class RelayService:
                 "engines": {p: {"state": st} for p, st in zip(provs, states)},
                 "login": flow if flow and flow.get("state") != "idle" else None}
 
-    async def seats_view(self, user: User) -> dict:
-        """管理者だけ: どの管理者がどの AI にサインインしているか（状態の語と名前だけ。AI のアカウントのメールは出さない）。
-        名前はらく助の利用者（users・職員名）から。読めないときは自分だけ。"""
-        if not user.is_admin:
-            raise Refused("管理者だけが見られます", 403)
+    async def admin_users(self, user: User) -> list[dict]:
+        """らく助の管理者（users の admin/manager）の [{id, name}]。名前は職員名かユーザー名。読めないときは自分だけ。"""
         rows: list[dict] = []
         if self.sql is not None:
             sql = ("select u.id::text as id, coalesce(nullif(s.name, ''), u.username, '') as name "
@@ -271,6 +268,14 @@ class RelayService:
                 rows = []
         if not any(str(r["id"]) == str(user.id) for r in rows):
             rows.append({"id": str(user.id), "name": user.username or ""})
+        return rows
+
+    async def seats_view(self, user: User) -> dict:
+        """管理者だけ: どの管理者がどの AI にサインインしているか（状態の語と名前だけ。AI のアカウントのメールは出さない）。
+        名前はらく助の利用者（users・職員名）から。読めないときは自分だけ。"""
+        if not user.is_admin:
+            raise Refused("管理者だけが見られます", 403)
+        rows = await self.admin_users(user)
         provs = [p for p in ENGINE_PROVIDERS if p in self.cfg.providers]
         out = []
         for r in rows:

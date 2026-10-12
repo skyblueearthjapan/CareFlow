@@ -27,6 +27,10 @@ AI は人ごとの席（その人のログイン）で動く: 相談は持ち主
   POST   /engines/login/code {code}                            → Login（Claude: ブラウザーに出たコードを貼る）
   POST   /engines/login/cancel                                 → Login
   POST   /engines/{provider}/logout                            → {provider, ok, state}
+  GET    /karte/settings                                       → {mode: designated|presser, modes, seat_user_id, seat_known,
+                                                                  seats: [{user_id, name, me, state}]}（管理者だけ・カルテの下書きに
+                                                                  使う席。state は ChatGPT のサインインの様子・relay.karte）
+  PUT    /karte/settings {mode?, seat_user_id?}                → 同上（サインインしていない方は 409・変更は admin_events に記録）
   PATCH  /sessions/{id} {title?, pinned?}                      → Session
   GET    /sessions/{id}                                        → Session ＋ plans・live・busy
   GET    /sessions/{id}/events?after=<seq>                     → SSE（id: seq / data: 共通イベント）
@@ -97,8 +101,11 @@ def _plan_html_response(html: str) -> HTMLResponse:
 
 
 def create_public_app(svc: RelayService, auth: AuthChecker, feature_gate: FeatureGate = always_on,
-                      sweep_seconds: float = 30.0) -> FastAPI:
+                      sweep_seconds: float = 30.0, karte: Any = None) -> FastAPI:
     cfg = svc.cfg
+    if karte is None:
+        from relay.karte import KarteDrafter
+        karte = KarteDrafter(svc)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -125,7 +132,7 @@ def create_public_app(svc: RelayService, auth: AuthChecker, feature_gate: Featur
     # 本番は同じオリジン（Cloudflare の道）なので CORS は使わない。staging（手元の Next.js :3000 → SSH 転送の中継）
     # だけ、許した Origin（AGENT_PUBLIC_ORIGIN）からの呼び出しを通す。Cookie は使わない（Bearer）。
     app.add_middleware(CORSMiddleware, allow_origins=list(cfg.allowed_origins), allow_credentials=False,
-                       allow_methods=["GET", "POST", "PATCH"], allow_headers=["Authorization", "Content-Type"],
+                       allow_methods=["GET", "POST", "PATCH", "PUT"], allow_headers=["Authorization", "Content-Type"],
                        max_age=600)
 
     @app.middleware("http")
@@ -213,6 +220,15 @@ def create_public_app(svc: RelayService, auth: AuthChecker, feature_gate: Featur
     @app.post(PREFIX + "/engines/{provider}/logout")
     async def engines_logout(provider: str, user: User = Depends(current_user)) -> Any:
         return await svc.logout(user, provider)
+
+    # ---------- カルテの下書きに使う席（管理者だけ・relay.karte） ----------
+    @app.get(PREFIX + "/karte/settings")
+    async def karte_settings(user: User = Depends(current_user)) -> Any:
+        return await karte.settings_view(user)
+
+    @app.put(PREFIX + "/karte/settings")
+    async def karte_settings_update(payload: dict = Body(...), user: User = Depends(current_user)) -> Any:
+        return await karte.update_settings(user, payload)
 
     @app.get(PREFIX + "/sessions")
     async def list_sessions(user: User = Depends(current_user)) -> Any:

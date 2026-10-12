@@ -37,6 +37,13 @@
                              あれば最初にその人の席へ移す（席が空のときだけ・1 回きり）。無ければ agent.settings の
                              legacy_owner_user_id を見る。どちらも無ければ移さない（コードに user id は書かない）
 
+backend → 中継（サーバーどうし・カルテの下書き。docs/plans/karte-via-seat-2026-10-13.md）:
+  AGENT_RELAY_SERVICE_PORT   サーバーどうしの口（既定 8092）。ホストへは出さない（compose の ports に書かない）。
+                             backend の網（deployment_default）から http://carelink-agent:8092 で届く。箱の網からは断る
+  AGENT_RELAY_SERVICE_TOKEN  その口の合言葉（秘密・/opt/carelink/secrets/agent-relay.env と backend の .env に同じ値）。
+                             無ければ口は全部 404（使わない）
+  AGENT_KARTE_TIMEOUT        カルテの下書き 1 件の打ち切り（秒・既定 90）
+
 agent/deploy（docker-compose.agent.yml・set-role-passwords.sh）の名前も受ける（左が無ければ右）:
   AGENT_RELAY_BACKEND_URL <- AGENT_BACKEND_URL、AGENT_RELAY_ALLOWED_ORIGINS <- AGENT_PUBLIC_ORIGIN、
   AGENT_RELAY_PUBLIC_PORT <- AGENT_PUBLIC_PORT、AGENT_RELAY_INTERNAL_PORT <- AGENT_INNER_PORT、
@@ -151,6 +158,9 @@ class RelayConfig:
     url_signing_key: str = field(default_factory=lambda: secrets.token_hex(32))
     cli_home: str = "/home/agent"
     legacy_owner_user_id: str = ""
+    service_port: int = 8092
+    service_token: str = ""
+    karte_timeout: float = 90.0
 
     def in_sandbox(self, host: str | None) -> bool:
         """接続元が箱の網か（AGENT_SANDBOX_SUBNET が無ければ判定しない＝False）。"""
@@ -222,4 +232,7 @@ class RelayConfig:
             url_signing_key=signing or secrets.token_hex(32),
             cli_home=_env("AGENT_CLI_HOME", "/home/agent"),
             legacy_owner_user_id=_env("AGENT_LEGACY_OWNER_USER_ID", ""),
+            service_port=int(_env("AGENT_RELAY_SERVICE_PORT", "8092")),
+            service_token=_env("AGENT_RELAY_SERVICE_TOKEN", ""),
+            karte_timeout=float(_env("AGENT_KARTE_TIMEOUT", "90")),
         )
