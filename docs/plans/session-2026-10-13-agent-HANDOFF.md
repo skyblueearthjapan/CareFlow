@@ -1,6 +1,6 @@
 # 引き継ぎ 2026-10-12〜13（らく助エージェント・型の作業場・staging の通し試験）
 
-ブランチ `feature/agent-skills`（develop へは未マージ・本番へは未反映）。本番は 10-12 夜の da13a9c（画面の並び替え）まで。
+**本番 = ba03da6（develop・2026-10-13 04:20 JST 頃）・alembic 0092**。直前のバックアップ `/opt/carelink/backups/pre-agent-release-20261012-1920.sql.gz`（UTC）。
 
 ## 1. 今日決まったこと（PO）
 
@@ -34,11 +34,19 @@
 - **大事な点**: 試験の相談で、職員と患者の実名が PO の ChatGPT アカウント経由で OpenAI に届いた。お客様に使っていただく前に、契約の種類（学習に使われない形）と同意の確認が必須。
 - 試験の後片づけ: `down -v`・`stg-down.sh`・`/opt/carelink/agent-staging` 削除（ログイン情報・実名入りの写しも消えた）。VPS に残っているのは箱と中継の image だけ（データなし）。
 
+## 3-2. 本番への導入（2026-10-13 未明・PO 了承）
+
+- 済み: pg_dump → develop へ ff → backend/frontend 作り直し → 0091+0092 → roles.sql（verify OK）→ `/opt/carelink/secrets/agent-relay.env`（7 行・0400。エージェント専用管理者 = 既存の rakusuke-agent@lineworks-local.info・使える人 = PO だけ）→ `/opt/carelink/backups/agent` → preflight 全 OK → 中継・箱・出口を起動（`carelink-agent*`・127.0.0.1:18201）→ 隔離の確かめ OK → **PO が ChatGPT でログイン済み**（実行係からは auth.json が Permission denied）。
+- **まだ閉じてあるもの（お客様の了解の後に開ける）**:
+  1. 中継の `AGENT_RELAY_ENABLED=0`（agent/deploy/agent.prod.env）。
+  2. 機能の旗 `rakusuke_agent`（稲毛／都賀）は未設定。
+  3. Cloudflare の道 `/agent-relay/*` → 127.0.0.1:18201 は未設定。トンネルはダッシュボード管理で、ほかのサービスと共用（README §5）。開ける日に PO とダッシュボードで足す。
+- お客様は **ChatGPT のチームプラン（学習に使われない設定）**（PO 10-13）。お客様のアカウントでログインし直すかどうかは開ける前に決める（いまは PO のアカウント）。
+- 型の作業場の旗 `template_workspace` も OFF のまま。
+
 ## 4. 次にやること
 
-1. **本番への中継の導入**（PO の了承が各段に要る・`agent/deploy/README.md` §2〜§5）。
-   - 手順: pg_dump → 0091+0092 → roles.sql → 秘密ファイル → 立てる → 隔離の確かめ → PO のログイン → Cloudflare の道 `/agent-relay/*` → 127.0.0.1:18201 → 機能の旗。
-   - 前提: お客様の同意と ChatGPT の契約の確認。
+1. **お客様の了解が取れたら開ける**（§3-2 の 1〜3）。開けた直後に PO と画面で SSE が溜まらないかを確かめる（README §5-5）。
 2. 型の作業場の画面版をブラウザーで確かめる（まだ実ブラウザ未確認）。本番規模での最適化の所要時間も測る。
 3. 残る宿題:
    - 取込の「差分を見せた後に打刻が入る」隙間（アプリ側で apply の応答に保存した盤の ID を返すと楽）。
