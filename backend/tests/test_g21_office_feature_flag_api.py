@@ -363,3 +363,19 @@ async def test_t2_18_delete_writes_audit_log(client, db) -> None:
         )
     ).all()
     assert len(rows) == 1  # 増えない
+
+
+def test_feature_key_literal_accepts_agent_and_template_keys():
+    """2026-10-13: rakusuke_agent / template_workspace が Literal に無く、一覧 GET が 500 になった。"""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from app.schemas.office_feature_flag import OfficeFeatureFlagRead
+
+    for key in ("rakusuke_agent", "template_workspace"):
+        row = OfficeFeatureFlagRead.model_validate({
+            "id": uuid4(), "office_id": uuid4(), "feature_key": key,
+            "enabled_at": datetime.now(UTC), "enabled_by_user_id": None, "note": None,
+            "created_at": datetime.now(UTC), "updated_at": datetime.now(UTC),
+        })
+        assert row.feature_key == key

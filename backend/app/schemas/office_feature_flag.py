@@ -20,7 +20,12 @@ from pydantic import BaseModel, ConfigDict, Field
 #   - ``l3_fix_primary_staff``: Wave N-1 — Layer 3 で当該拠点の primary staff
 #     (active role=staff の code 昇順先頭 1 名) を A コースに固定割当する
 #     (旧「都賀」拠点名ハードコードの設定化. 拠点名判定を廃し、フラグ enabled で発動).
-FeatureKey = Literal["g21_new_algorithm", "l3_fix_primary_staff"]
+#   - ``rakusuke_agent``: らく助エージェント（右下の小窓・相談タブ）を出す拠点.
+#   - ``template_workspace``: 型の作業場（/schedule/template）を出す拠点.
+#     ※ 2026-10-13: この 2 つを Literal に入れ忘れ、一覧 GET が 500 になって小窓が出なかった
+FeatureKey = Literal[
+    "g21_new_algorithm", "l3_fix_primary_staff", "rakusuke_agent", "template_workspace"
+]
 
 
 class OfficeFeatureFlagBase(BaseModel):
