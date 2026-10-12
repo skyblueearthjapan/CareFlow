@@ -7,7 +7,13 @@
   中継の uid（RUNNER_ALLOWED_PEER_UID・既定 10001）以外は即切る。箱の中のモデル（uid 10002）からは使えない。
 - 受けるのは次の 4 つだけ（1 行 1 JSON）。任意のコマンド・引数・環境変数・作業フォルダーは受けない。
     {"op":"spawn","session_id":..,"provider":"claude"|"codex","model":..,"resume_id":..?,"relay_token":..}
-    {"op":"auth_status"}                           … Codex の ChatGPT ログインの様子（ok/missing/api_key/unknown）
+    {"op":"auth_status","provider"?:"codex"|"claude"} … ログインの様子（ok/missing/api_key/unknown の 1 語・既定 codex）
+    {"op":"login_start","provider":"codex"|"claude"}  … 画面からのサインイン（同時に 1 つだけ・15 分で打ち切り）
+    {"op":"login_poll"} / {"op":"login_cancel"}       … その様子・やめる
+    {"op":"login_input","data":"<貼り付けたコード>"}  … Claude だけ（ブラウザーで出たコードを CLI の stdin へ）
+    {"op":"logout","provider":"codex"|"claude"}       … サインアウト
+      サインインの返事は {"ev":"login","provider","state","url","code","needs_input","expires_in","error"} だけ。
+      CLI の文・トークン・メールは返さない（URL は決まったホストのものだけ・コードは決まった形のものだけ）。
     {"op":"stdin","data":"<1 行以上の文字列>"}     … spawn した接続でだけ
     {"op":"close_stdin"}                           … 同上（CLI を穏やかに終わらせる）
     {"op":"kill"}                                  … 同上（TERM → 5 秒で KILL・プロセスグループごと）
@@ -33,6 +39,7 @@ import socket
 import stat
 import struct
 import sys
+import time
 from pathlib import Path
 
 SOCKET_PATH = os.environ.get("RUNNER_SOCKET", "/run/agent/runner.sock")
@@ -55,6 +62,9 @@ CODEX_RULES = RUNTIME_DIR / "rakusuke.rules"
 #: Codex の起こし方の決まり（-c の締め付け）。中継と同じファイルをパスで読む（/srv/agent は読み取り専用）
 CODEX_CONFIG_PY = AGENT_DIR / "relay" / "codex_config.py"
 CODEX_HOME = HOME_DIR / ".codex"
+CLAUDE_HOME = HOME_DIR / ".claude"
+#: ログイン・状態を見る CLI の PATH（試験は偽の CLI の置き場を前に足す）
+CLI_PATH = os.environ.get("RUNNER_CLI_PATH", "/usr/local/bin:/usr/bin:/bin")
 #: 認証情報の隔離（deploy/README.md「認証情報の隔離」）: モデルのコマンドは別 uid の実行係（execd / codex exec-server）で
 #: 走らせる。この変数があると、実行係が見えないときは CLI を起こさない（閉じる側に倒す）。無ければ（手元の試験）従来どおり。
 EXEC_SOCKET = os.environ.get("RUNNER_EXEC_SOCKET", "")
@@ -241,14 +251,34 @@ def prepare_codex_home() -> None:
     os.replace(rtmp, rules / CODEX_RULES.name)
 
 
+def auth_env(provider: str) -> dict[str, str]:
+    """ログイン・ログアウト・状態を見る CLI の環境（許可リストで一から作る・会話の RK_* は入れない）。"""
+    env = {
+        "PATH": CLI_PATH, "HOME": str(HOME_DIR), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "Asia/Tokyo",
+        "TMPDIR": "/tmp", "NO_COLOR": "1",
+        "HTTPS_PROXY": EGRESS_PROXY, "https_proxy": EGRESS_PROXY, "HTTP_PROXY": EGRESS_PROXY, "http_proxy": EGRESS_PROXY,
+        "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
+    }
+    if provider == "claude":
+        env.update({"CLAUDE_CONFIG_DIR": str(CLAUDE_HOME), "DISABLE_AUTOUPDATER": "1", "DISABLE_TELEMETRY": "1",
+                    "DISABLE_ERROR_REPORTING": "1"})
+    else:
+        env["CODEX_HOME"] = str(CODEX_HOME)
+    leaked = [k for k in FORBIDDEN_ENV if k in env]
+    if leaked:
+        raise ValueError("forbidden env: " + ",".join(leaked))
+    return env
+
+
 def codex_auth_status() -> str:
     """``codex login status`` の結果を「ok / missing / api_key / unknown」に（文は返さない＝鍵の一部も出さない）。"""
     import subprocess
 
-    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(HOME_DIR), "CODEX_HOME": str(CODEX_HOME),
-           "LANG": "C.UTF-8"}
+    if not CODEX_HOME.is_dir():
+        return "missing"  # まだ一度もログインしていない（置き場が無いと codex は状態を言えない）
     try:
-        r = subprocess.run(["codex", "login", "status"], env=env, capture_output=True, text=True, timeout=20)
+        r = subprocess.run(["codex", "login", "status"], env=auth_env("codex"), capture_output=True, text=True,
+                           timeout=20)
     except (OSError, subprocess.TimeoutExpired):
         return "unknown"
     out = (r.stdout + " " + r.stderr).lower()
@@ -259,6 +289,222 @@ def codex_auth_status() -> str:
     if "api key" in out:
         return "api_key"
     return "unknown"
+
+
+def claude_status_word(stdout: str) -> str:
+    """``claude auth status``（JSON）を 1 語に。メール・組織名などは読まずに捨てる（2.1.296 で形を実測）。"""
+    try:
+        d = json.loads(stdout)
+    except ValueError:
+        return "unknown"
+    if not isinstance(d, dict):
+        return "unknown"
+    method = d.get("authMethod")
+    if method in ("api_key", "api_key_helper", "third_party"):
+        return "api_key"
+    if not d.get("loggedIn"):
+        return "missing"
+    if method == "claude.ai":
+        return "ok"
+    return "unknown"  # oauth_token（環境変数のトークン）などは段 3 では使わない
+
+
+def claude_auth_status() -> str:
+    import subprocess
+
+    try:
+        r = subprocess.run(["claude", "auth", "status"], env=auth_env("claude"), capture_output=True, text=True,
+                           timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    return claude_status_word(r.stdout)
+
+
+def auth_status(provider: str) -> str:
+    return claude_auth_status() if provider == "claude" else codex_auth_status()
+
+
+def run_logout(provider: str) -> bool:
+    """``codex logout`` / ``claude auth logout``。ログイン情報のファイルは CLI 自身が消す。"""
+    import subprocess
+
+    argv = ["claude", "auth", "logout"] if provider == "claude" else ["codex", "logout"]
+    try:
+        r = subprocess.run(argv, env=auth_env(provider), capture_output=True, text=True, timeout=30,
+                           cwd=str(HOME_DIR))
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
+# ---------------------------------------------------------------- 画面からのサインイン
+#: 1 回のサインインの寿命（codex のデバイスコードは 15 分。claude も同じだけ待つ）
+LOGIN_TTL_SEC = float(os.environ.get("RUNNER_LOGIN_TTL", "900"))
+#: URL（と codex のコード）が出るまで待つ秒
+LOGIN_URL_WAIT_SEC = float(os.environ.get("RUNNER_LOGIN_URL_WAIT", "25"))
+LOGIN_BUF_MAX = 64 << 10
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")
+#: 画面に出してよい URL（決まったホストだけ。CLI の文はほかには返さない）
+LOGIN_URL_RE = {
+    "codex": re.compile(r"https://auth\.openai\.com/[A-Za-z0-9/_\-.?=&%]{1,200}"),
+    "claude": re.compile(r"https://(?:claude\.com|claude\.ai|platform\.claude\.com)/[A-Za-z0-9/_\-.?=&%:+~]{1,2000}"),
+}
+DEVICE_CODE_RE = re.compile(r"^\s*([A-Z0-9]{4,6}-[A-Z0-9]{4,6})\s*$", re.M)
+#: Claude のブラウザーに出るコード（code#state の形）。貼り付けで紛れた空白は前後だけ落とす
+PASTE_CODE_RE = re.compile(r"^[A-Za-z0-9_\-#.~]{8,1024}$")
+LOGIN_ACTIVE = ("starting", "waiting", "verifying")
+
+
+class Login:
+    def __init__(self, provider: str, proc: asyncio.subprocess.Process) -> None:
+        self.provider = provider
+        self.proc = proc
+        self.state = "starting"
+        self.url: str | None = None
+        self.code: str | None = None
+        self.error: str | None = None
+        self.buf = ""
+        self.input_mark = 0
+        self.deadline = time.monotonic() + LOGIN_TTL_SEC
+        self.task: asyncio.Task | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.state in LOGIN_ACTIVE
+
+    def feed(self, text: str) -> None:
+        self.buf = (self.buf + ANSI_RE.sub("", text))[-LOGIN_BUF_MAX:]
+        if self.url is None:
+            m = LOGIN_URL_RE[self.provider].search(self.buf)
+            if m:
+                self.url = m.group(0)
+        if self.provider == "codex" and self.code is None:
+            m = DEVICE_CODE_RE.search(self.buf)
+            if m:
+                self.code = m.group(1)
+        if self.state == "starting" and self.url and (self.provider == "claude" or self.code):
+            self.state = "waiting"
+        if self.state == "verifying" and "invalid code" in self.buf[self.input_mark:].lower():
+            self.state, self.error = "waiting", "invalid_code"   # 形の違うコード（CLI はまだ待っている）
+
+    def public(self) -> dict:
+        left = max(0, int(self.deadline - time.monotonic())) if self.active else 0
+        return {"ev": "login", "provider": self.provider, "state": self.state, "url": self.url, "code": self.code,
+                "needs_input": self.provider == "claude" and self.state == "waiting", "expires_in": left,
+                "error": self.error}
+
+    async def kill(self) -> None:
+        if self.proc.returncode is not None:
+            return
+        try:
+            os.killpg(self.proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            await asyncio.wait_for(self.proc.wait(), 3.0)
+        except asyncio.TimeoutError:
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+_login: Login | None = None
+
+
+class LoginRefused(Exception):
+    pass
+
+
+def login_snapshot() -> dict:
+    return _login.public() if _login is not None else {"ev": "login", "state": "idle"}
+
+
+async def _login_reader(lg: Login) -> None:
+    assert lg.proc.stdout is not None
+    while True:
+        chunk = await lg.proc.stdout.read(4096)
+        if not chunk:
+            return
+        lg.feed(chunk.decode("utf-8", "replace"))
+
+
+async def _login_watch(lg: Login) -> None:
+    reader = asyncio.create_task(_login_reader(lg))
+    try:
+        code = await asyncio.wait_for(lg.proc.wait(), max(0.0, lg.deadline - time.monotonic()))
+    except asyncio.TimeoutError:
+        if lg.active:
+            lg.state = "timeout"
+        await lg.kill()
+        code = None
+    try:
+        await asyncio.wait_for(reader, 3.0)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        reader.cancel()
+    if lg.active:
+        lg.state = "done" if code == 0 else "failed"
+    log(f"login provider={lg.provider} state={lg.state} code={code}")
+
+
+async def login_start(provider: str) -> dict:
+    global _login
+    if provider not in ("codex", "claude"):
+        raise LoginRefused("bad provider")
+    if _login is not None and _login.active:
+        raise LoginRefused("login busy")
+    old = os.umask(0o077)  # ログイン情報の置き場は持ち主だけ
+    try:
+        if provider == "codex":
+            home = CODEX_HOME
+            argv = ["codex", "login", "--device-auth"]
+        else:
+            home = CLAUDE_HOME
+            argv = ["claude", "auth", "login", "--claudeai"]   # サブスク（Claude アカウント）だけ。--console は使わない
+        home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(home, 0o700)  # 状態を見た CLI が先に作っていても持ち主だけに
+        proc = await asyncio.create_subprocess_exec(
+            *argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            cwd=str(HOME_DIR), env=auth_env(provider), start_new_session=True, close_fds=True)
+    finally:
+        os.umask(old)
+    lg = _login = Login(provider, proc)
+    lg.task = asyncio.create_task(_login_watch(lg))
+    end = time.monotonic() + LOGIN_URL_WAIT_SEC
+    while lg.state == "starting" and time.monotonic() < end:
+        await asyncio.sleep(0.05)
+    if lg.state == "starting":  # URL が出ない（つながらない・版が違う）
+        lg.state, lg.error = "failed", "no_url"
+        await lg.kill()
+    log(f"login start provider={provider} state={lg.state}")
+    return lg.public()
+
+
+async def login_input(data: object) -> dict:
+    lg = _login
+    if lg is None or lg.provider != "claude" or lg.state != "waiting":
+        raise LoginRefused("not waiting for a code")
+    if not isinstance(data, str) or not PASTE_CODE_RE.match(data.strip()):
+        lg.error = "invalid_code"
+        return lg.public()
+    if lg.proc.stdin is None or lg.proc.stdin.is_closing():
+        raise LoginRefused("stdin closed")
+    lg.input_mark = len(lg.buf)
+    lg.state, lg.error = "verifying", None
+    try:
+        lg.proc.stdin.write((data.strip() + "\n").encode("utf-8"))   # コードは記録に残さない
+        await lg.proc.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        raise LoginRefused("stdin closed") from None
+    return lg.public()
+
+
+async def login_cancel() -> dict:
+    lg = _login
+    if lg is not None and lg.active:
+        lg.state = "cancelled"
+        await lg.kill()
+    return login_snapshot()
 
 
 def settings_path(session_id: str) -> Path:
@@ -411,9 +657,39 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
                 continue
 
             if op == "auth_status":
-                # ChatGPT のログインの様子だけ（トークン・文は返さない）。中継の「ログイン済み/未」の表示用
-                state = await asyncio.get_running_loop().run_in_executor(None, codex_auth_status)
-                await send(writer, {"ev": "auth_status", "provider": "codex", "state": state})
+                # ログインの様子の 1 語だけ（トークン・メール・文は返さない）。中継の「ログイン済み/未」の表示用
+                prov = msg.get("provider") or "codex"
+                if prov not in ("codex", "claude"):
+                    await send(writer, {"ev": "error", "message": "bad provider"})
+                    continue
+                state = await asyncio.get_running_loop().run_in_executor(None, auth_status, prov)
+                await send(writer, {"ev": "auth_status", "provider": prov, "state": state})
+                continue
+
+            if op in ("login_start", "login_poll", "login_input", "login_cancel", "logout"):
+                # 画面からのサインイン。CLI は runner と同じ uid（10002）で起こす＝実行係（10004）からは見えない
+                try:
+                    if op == "login_start":
+                        await send(writer, await login_start(str(msg.get("provider") or "")))
+                    elif op == "login_poll":
+                        await send(writer, login_snapshot())
+                    elif op == "login_input":
+                        await send(writer, await login_input(msg.get("data")))
+                    elif op == "login_cancel":
+                        await send(writer, await login_cancel())
+                    else:
+                        prov = msg.get("provider")
+                        if prov not in ("codex", "claude"):
+                            raise LoginRefused("bad provider")
+                        if _login is not None and _login.active:
+                            raise LoginRefused("login busy")
+                        loop = asyncio.get_running_loop()
+                        ok = await loop.run_in_executor(None, run_logout, prov)
+                        state = await loop.run_in_executor(None, auth_status, prov)
+                        log(f"logout provider={prov} ok={ok} state={state}")
+                        await send(writer, {"ev": "logout", "provider": prov, "ok": ok, "state": state})
+                except LoginRefused as e:
+                    await send(writer, {"ev": "error", "message": str(e)})
                 continue
 
             if op == "spawn":
@@ -531,6 +807,8 @@ async def main() -> None:
         await stop.wait()
     for s in list(_running.values()):
         await s.kill()
+    if _login is not None:
+        await _login.kill()
 
 
 if __name__ == "__main__":

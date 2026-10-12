@@ -31,6 +31,7 @@ from relay.approvals import Refused, plan_sha256
 from relay.auth import User
 from relay.bus import EventBus
 from relay.config import RelayConfig
+from relay.engines import PROVIDERS as ENGINE_PROVIDERS, EngineAdmin
 from relay.execs import BackupTaker, SqlExecutor, rk_config
 from relay.normalize import ClaudeNormalizer
 from relay.runner import (AgentSession, ClaudeSession, RunnerSession, claude_argv, claude_env,
@@ -150,10 +151,14 @@ class RelayService:
         self._apply_lock = threading.Lock()
         #: 最後に会話を始めたときに分かったログインの様子（provider → {state, plan, at}）。トークンは持たない
         self.login_state: dict[str, dict] = {}
+        #: AI のつなぎ先の管理（画面からのサインイン）。runner の無い手元では使えない（状態は unknown）
+        self.engines = EngineAdmin(cfg.runner_socket if cfg.launch == "runner" else "")
+        self._login_starts: dict[str, collections.deque] = {}
+        self._login_open = False
 
     # ================= 会話（画面から） =================
     def create_session(self, user: User, title: str = "", provider: str | None = None) -> dict:
-        prov = provider or self.cfg.default_provider
+        prov = provider or self.default_provider()[0]
         if prov not in self.cfg.providers:
             raise Refused("その AI はいま使えません", 400)
         self._disk_guard()
@@ -162,13 +167,107 @@ class RelayService:
 
     def engine_info(self) -> dict:
         """画面用: 既定の AI と、各 AI のログインの様子（トークンは出さない）。"""
-        info = {"default_provider": self.cfg.default_provider, "providers": list(self.cfg.providers),
+        info = {"default_provider": self.default_provider()[0], "providers": list(self.cfg.providers),
                 "login": {p: dict(v) for p, v in self.login_state.items()}}
         d = self.disk()
         if d is not None:  # パスは出さない。画面は warning（日本語）をそのまま出せる
             info["disk"] = {"free_gb": d["free_gb"], "low": d["low"], "blocked": d["blocked"],
                             "warning": DISK_BLOCK_JA if d["blocked"] else d["warning"]}
         return info
+
+    def default_provider(self) -> tuple[str, str]:
+        """新しい相談の既定の AI と、その出どころ（setting = 画面で選んだもの / env = AGENT_DEFAULT_PROVIDER）。"""
+        try:
+            v = self.store.get_setting("default_provider")
+        except Exception:  # noqa: BLE001  設定の表がまだ無い（migration 前）でも会話は始められる
+            v = None
+        if v in self.cfg.providers:
+            return v, "setting"
+        return self.cfg.default_provider, "env"
+
+    # ================= AI のつなぎ先（管理者・画面から） =================
+    def _audit(self, user_id: str | None, action: str, provider: str | None = None, detail: str = "") -> None:
+        try:
+            self.store.add_admin_event(user_id or "-", action, provider, detail)
+        except Exception:  # noqa: BLE001  記録に失敗しても操作は止めない
+            pass
+
+    async def engines_view(self) -> dict:
+        provs = [p for p in ENGINE_PROVIDERS if p in self.cfg.providers]
+        states = await asyncio.gather(*(self.engines.status(p) for p in provs))
+        dp, src = self.default_provider()
+        try:
+            flow = await self.login_poll(None)
+        except Refused:
+            flow = None
+        return {"default_provider": dp, "default_source": src, "providers": provs,
+                "can_sign_in": self.engines.available,
+                "engines": {p: {"state": st} for p, st in zip(provs, states)},
+                "login": flow if flow and flow.get("state") != "idle" else None}
+
+    def _check_provider(self, provider: str) -> None:
+        if provider not in ENGINE_PROVIDERS or provider not in self.cfg.providers:
+            raise Refused("その AI はありません", 404)
+
+    async def login_start(self, user: User, provider: str) -> dict:
+        self._check_provider(provider)
+        q = self._login_starts.setdefault(user.id, collections.deque())
+        t = time.monotonic()
+        while q and t - q[0] > 900:
+            q.popleft()
+        if len(q) >= 5:
+            raise Refused("サインインを何度も始めています。15 分ほどおいてから、もう一度どうぞ", 429)
+        q.append(t)
+        flow = await self.engines.login_start(provider)
+        self._login_open = True
+        self.engines.started_by = user.id
+        self._audit(user.id, "login_start", provider, flow["state"])
+        await self._settle_login(flow)
+        return flow
+
+    async def login_poll(self, user: User | None) -> dict:
+        flow = await self.engines.login_poll()
+        await self._settle_login(flow)
+        return flow
+
+    async def _settle_login(self, flow: dict) -> None:
+        """サインインが終わった（できた・できなかった）ことを 1 回だけ記録し、画面の「ログイン済み」を新しくする。"""
+        if not self._login_open or flow.get("state") not in ("done", "failed", "timeout", "cancelled"):
+            return
+        self._login_open = False
+        prov = flow.get("provider")
+        state = await self.engines.status(prov, fresh=True) if prov else "unknown"
+        if flow["state"] == "done":
+            self.login_state.pop(prov, None)  # 前の「ログインが切れています」を忘れる（次の会話の始めでまた確かめる）
+        self._audit(self.engines.started_by, "login_" + flow["state"], prov, state)
+
+    async def login_input(self, user: User, code: str) -> dict:
+        flow = await self.engines.login_input(code)
+        self._audit(user.id, "login_code", flow.get("provider"), flow["state"])  # コードそのものは書かない
+        await self._settle_login(flow)
+        return flow
+
+    async def login_cancel(self, user: User) -> dict:
+        flow = await self.engines.login_cancel()
+        self._audit(user.id, "login_cancel", flow.get("provider"))
+        await self._settle_login(flow)
+        return flow
+
+    async def logout(self, user: User, provider: str) -> dict:
+        self._check_provider(provider)
+        r = await self.engines.logout(provider)
+        if r["state"] == "missing":
+            self.login_state[provider] = {"state": "missing", "plan": None, "at": self.now().isoformat()}
+        self._audit(user.id, "logout", provider, f"ok={r['ok']} state={r['state']}")
+        return r
+
+    def set_default_provider(self, user: User, provider: str) -> dict:
+        if provider not in ENGINE_PROVIDERS or provider not in self.cfg.providers:
+            raise Refused("その AI は選べません", 400)
+        before = self.default_provider()[0]
+        self.store.set_setting("default_provider", provider, user.id)
+        self._audit(user.id, "default_provider", provider, f"{before}->{provider}")
+        return {"default_provider": provider, "default_source": "setting"}
 
     def _disk_guard(self, session: dict | None = None) -> None:
         """空きが 5 GB 未満なら、新しい相談（まだ CLI の会話を持たないもの）を始めない。

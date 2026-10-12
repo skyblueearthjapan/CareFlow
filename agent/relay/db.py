@@ -131,3 +131,23 @@ class JournalRow(Base):
     plans: Mapped[list] = mapped_column(JSONType)
     retired_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     retired_reason: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+
+
+class SettingRow(Base):
+    """中継の設定（小さなキーと値・migration 0094_agent_settings）。例: default_provider = "codex" | "claude"。"""
+    __tablename__ = "settings"
+    key: Mapped[str] = mapped_column(sa.String(64), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSONType)
+    updated_by: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(TS)
+
+
+class AdminEventRow(Base):
+    """管理の記録（AI のサインイン・サインアウト・既定の AI の変更。誰がいつ）。トークン・メールは書かない。"""
+    __tablename__ = "admin_events"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(TS, index=True)
+    user_id: Mapped[str] = mapped_column(sa.String(64))
+    action: Mapped[str] = mapped_column(sa.String(32))   # login_start / login_done / login_failed / logout / default_provider …
+    provider: Mapped[str | None] = mapped_column(sa.String(16), nullable=True)
+    detail: Mapped[str] = mapped_column(sa.Text, default="")

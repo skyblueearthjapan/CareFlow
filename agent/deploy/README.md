@@ -140,7 +140,7 @@ docker exec -u agent carelink-agent-sandbox /opt/runner/bx 'id -u; cat /home/age
   - ログインの手順の `docker exec` には **`-u 10002:10000`** が要る（§3-8）。
 
 
-### 3-8. CLI のログイン（P7・PO が自分の端末で・対話）
+### 3-8. CLI のログイン（P7・画面の ⚙ 設定から／予備は PO の端末から SSH で）
 
 **決まり: 箱の CLI はサブスク（Claude アカウント）のログインだけで動かす。API キーは使わない。**
 - 箱の環境に `ANTHROPIC_API_KEY`・`ANTHROPIC_AUTH_TOKEN`・`ANTHROPIC_BASE_URL`・`OPENAI_API_KEY`・`OPENAI_BASE_URL`・`CODEX_API_KEY` などは入れない。三重に止める:
@@ -149,7 +149,19 @@ docker exec -u agent carelink-agent-sandbox /opt/runner/bx 'id -u; cat /home/age
   3. CLI の `--settings`（`runner/isolation.json`）で `ANTHROPIC_*`・`CLAUDE_CODE_USE_*` を空・`forceLoginMethod: claudeai`・`apiKeyHelper: ""`。
 - 中継は毎ターンの `system/init` の `apiKeySource` が **`none`（サブスクのログイン）のときだけ**続ける。ほかの値・項目が無いときは会話を止め、画面に「思っていない方法で AI につながろうとしたので止めました」を出す（`error` の `code: auth_source`）。`AGENT_ALLOWED_KEY_SOURCES` に別の値を書いても段 3 では無視する。
 
-**ログインのしかた（PO 本人・1 回だけ・ログイン情報は volume `carelink-agent-home` の `/home/agent/.claude/.credentials.json` に残る）**
+**画面からのサインイン（2026-10-13〜・ふだんはこちら）**
+
+管理者は、らく助の小窓の見出し（携帯は「相談」タブの ☰ の中）の **⚙ 設定 →「AI のつなぎ先」** から、SSH なしで次ができる。
+- 様子: ChatGPT（Codex）・Claude それぞれ「サインインしています／していません／使えないつなぎ方（API キーなど）／分かりません」。アカウント・メールは出さない。
+- サインイン（同時に 1 つだけ・15 分で打ち切り・1 人 15 分に 5 回まで）:
+  - ChatGPT: 箱の runner が `codex login --device-auth` を uid 10002（`CODEX_HOME=/home/agent/.codex`・`HTTPS_PROXY=http://agent-egress:3128`・置き場が無ければ 0700 で作る）で起こし、画面に `https://auth.openai.com/codex/device` と 1 回限りのコード（コピーのボタン・残り時間）を出す。ブラウザーで入れ終わると「サインインできました」。
+  - Claude: runner が `claude auth login --claudeai`（サブスクだけ・`--console` は使わない）を uid 10002（`CLAUDE_CONFIG_DIR=/home/agent/.claude`）で起こし、画面に Claude のサインインのページへのリンクを出す。ブラウザーでサインインすると出るコード（`code#state` の形）を画面の欄に貼る → 中継 → runner が CLI の stdin に渡す（2.1.296 で、TTY なしでも URL を出し stdin のコードを受けることを実測・2026-10-13）。トークンの交換先は `platform.claude.com`（出口の許可リストにある）。リンク先 `claude.com` は利用者のブラウザーが開くだけ（箱からは出ない）。
+- サインアウト: `codex logout` / `claude auth logout`（3 択で確かめる: サインアウトする／サインアウトして別のアカウントでサインインし直す／やめる）。サインアウトすると、その AI での相談はだれかがサインインし直すまで止まる。
+- 新しい相談で使う AI: 画面で選ぶと `agent.settings`（migration 0094）の `default_provider` に残り、`AGENT_DEFAULT_PROVIDER` より優先する。
+- 守り: 中継の口は管理者だけ（`/auth/me`・旗・試験中の許可）。runner が返すのは状態の語と、決まったホストの URL・決まった形のコードだけ（CLI の文・トークン・メールは返さない・中継ももう一度形を確かめて捨てる）。貼ったコードは記録に残さない。誰がいつ始めた・終わった・サインアウトした・既定を変えたかは `agent.admin_events` に残る。ログインの CLI は runner と同じ uid 10002 で動く（実行係 10004 からは読めない・§3-7b のまま）。
+- 道: `GET /agent-relay/engines`・`POST /engines/{codex|claude}/login`・`GET /engines/login`・`POST /engines/login/code`・`POST /engines/login/cancel`・`POST /engines/{provider}/logout`・`POST /engines/default`（`agent/relay/public.py` が正）。runner の op は `auth_status{provider}`・`login_start`・`login_poll`・`login_input`・`login_cancel`・`logout`（`runner/agent_runner.py` の先頭）。
+
+**SSH でのログイン（画面が使えないときの予備・PO 本人・ログイン情報は volume `carelink-agent-home` の `/home/agent/.claude/.credentials.json` に残る）**
 
 Claude Code の画面から PO が `!` で打つ（`-t` が要る）。URL が出たら自分の PC のブラウザーで開き、出たコードを貼る。
 ```bash

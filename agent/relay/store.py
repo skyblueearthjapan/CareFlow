@@ -14,7 +14,8 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from relay.db import ApprovalRow, Base, EventRow, JournalRow, PlanRow, RunRow, SessionRow, ToolCallRow
+from relay.db import (AdminEventRow, ApprovalRow, Base, EventRow, JournalRow, PlanRow, RunRow, SessionRow, SettingRow,
+                      ToolCallRow)
 
 
 def utcnow() -> datetime:
@@ -61,6 +62,10 @@ class Store(Protocol):
                      limit: int = 1000) -> list[dict]: ...
     def get_journal(self, office: str, entry_id: str) -> dict | None: ...
     def retire_journal(self, office: str, entry_id: str, reason: str) -> bool: ...
+    def get_setting(self, key: str) -> Any: ...
+    def set_setting(self, key: str, value: Any, user_id: str | None = None) -> None: ...
+    def add_admin_event(self, user_id: str, action: str, provider: str | None = None, detail: str = "") -> None: ...
+    def list_admin_events(self, limit: int = 100) -> list[dict]: ...
 
 
 class SqlStore:
@@ -251,3 +256,27 @@ class SqlStore:
             res = s.execute(sa.update(JournalRow).where(JournalRow.id == entry_id, JournalRow.office == office)
                             .values(retired_at=utcnow(), retired_reason=reason[:200]))
             return res.rowcount == 1
+
+    # ---------- 設定・管理の記録 ----------
+    def get_setting(self, key: str) -> Any:
+        with self._s() as s:
+            r = s.get(SettingRow, key)
+            return r.value.get("v") if r is not None and isinstance(r.value, dict) else None
+
+    def set_setting(self, key: str, value: Any, user_id: str | None = None) -> None:
+        with self._lock, self._s() as s, s.begin():
+            r = s.get(SettingRow, key)
+            if r is None:
+                s.add(SettingRow(key=key, value={"v": value}, updated_by=user_id, updated_at=utcnow()))
+            else:
+                r.value, r.updated_by, r.updated_at = {"v": value}, user_id, utcnow()
+
+    def add_admin_event(self, user_id: str, action: str, provider: str | None = None, detail: str = "") -> None:
+        with self._s() as s, s.begin():
+            s.add(AdminEventRow(ts=utcnow(), user_id=str(user_id), action=action[:32], provider=provider,
+                                detail=detail[:500]))
+
+    def list_admin_events(self, limit: int = 100) -> list[dict]:
+        with self._s() as s:
+            q = sa.select(AdminEventRow).order_by(AdminEventRow.id.desc()).limit(limit)
+            return [_row(r) for r in s.scalars(q)]

@@ -11,6 +11,17 @@
   GET    /engine                                               → {default_provider, providers, login{codex|claude:
                                                                   {state: ok|missing|not_subscription, plan, at}}}
                                                                   ＋ disk{free_gb, low, blocked, warning}（空き 5 GB 未満は blocked＝新しい相談を断る）
+  GET    /engines                                              → {default_provider, default_source: setting|env, providers,
+                                                                  can_sign_in, engines{codex|claude: {state: ok|missing|api_key|unknown}},
+                                                                  login: Login|null}（AI のつなぎ先の設定画面）
+  POST   /engines/default {provider}                           → {default_provider, default_source}（新しい相談の既定の AI）
+  POST   /engines/{provider}/login                             → Login（サインインを始める・同時に 1 つ・1 人 15 分に 5 回まで）
+  GET    /engines/login                                        → Login（Login = {provider, state, url, code, needs_input,
+                                                                  expires_in, error}。state = idle|starting|waiting|verifying|
+                                                                  done|failed|timeout|cancelled）
+  POST   /engines/login/code {code}                            → Login（Claude: ブラウザーに出たコードを貼る）
+  POST   /engines/login/cancel                                 → Login
+  POST   /engines/{provider}/logout                            → {provider, ok, state}
   PATCH  /sessions/{id} {title?, pinned?}                      → Session
   GET    /sessions/{id}                                        → Session ＋ plans・live・busy
   GET    /sessions/{id}/events?after=<seq>                     → SSE（id: seq / data: 共通イベント）
@@ -157,6 +168,38 @@ def create_public_app(svc: RelayService, auth: AuthChecker, feature_gate: Featur
     @app.get(PREFIX + "/engine")
     async def engine(user: User = Depends(current_user)) -> Any:
         return svc.engine_info()
+
+    # ---------- AI のつなぎ先（管理者だけ・記録を残す） ----------
+    @app.get(PREFIX + "/engines")
+    async def engines(user: User = Depends(current_user)) -> Any:
+        return await svc.engines_view()
+
+    @app.post(PREFIX + "/engines/default")
+    async def engines_default(payload: dict = Body(...), user: User = Depends(current_user)) -> Any:
+        return svc.set_default_provider(user, str(payload.get("provider") or ""))
+
+    @app.get(PREFIX + "/engines/login")
+    async def engines_login_poll(user: User = Depends(current_user)) -> Any:
+        return await svc.login_poll(user)
+
+    @app.post(PREFIX + "/engines/login/code")
+    async def engines_login_code(payload: dict = Body(...), user: User = Depends(current_user)) -> Any:
+        code = payload.get("code")
+        if not isinstance(code, str):
+            raise HTTPException(400, "コードを貼り付けてください")
+        return await svc.login_input(user, code)
+
+    @app.post(PREFIX + "/engines/login/cancel")
+    async def engines_login_cancel(user: User = Depends(current_user)) -> Any:
+        return await svc.login_cancel(user)
+
+    @app.post(PREFIX + "/engines/{provider}/login")
+    async def engines_login_start(provider: str, user: User = Depends(current_user)) -> Any:
+        return await svc.login_start(user, provider)
+
+    @app.post(PREFIX + "/engines/{provider}/logout")
+    async def engines_logout(provider: str, user: User = Depends(current_user)) -> Any:
+        return await svc.logout(user, provider)
 
     @app.get(PREFIX + "/sessions")
     async def list_sessions(user: User = Depends(current_user)) -> Any:
