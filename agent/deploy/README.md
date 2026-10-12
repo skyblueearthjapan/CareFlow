@@ -346,7 +346,13 @@ unit を置き、両方の片づけを dry-run で 1 回動かして、消す候
 - 2026-10-12 の一覧（読むだけで取得・手元で計算）: アプリのバックアップは pre-deploy 180 個・pre 30 個・約 273MB が消す候補。daily は 6 個とも残る。agent-* は 1 個で消さない。
 
 **残っていること**
-1. 毎日のバックアップ（`docs/deployment/scripts/backup-carelink-db.sh`）が `daily-*` を **7 日で消している**（`RETENTION_DAYS=7`）。30 日＋月初 12 か月を残すには、そちらの手順 4（7 日の削除）を止める（別担当・PO 了承）。止めるまでは daily は 7 日のまま。
+1. 毎日のバックアップ（`docs/deployment/scripts/backup-carelink-db.sh`）は更新済み（30 日＋各月の最初の 1 個を 12 か月・UTC。`prune-app-backups.sh` と同じ決まりなので二重に消しても食い違わない）。**VPS への入れ方**（cron は `/etc/cron.d/carelink-backup` がこの path を直接呼ぶので、ファイルを置き換えるだけ・cron の書き換えは不要）:
+   ```bash
+   cd /opt/carelink && git pull          # develop 取り込み後
+   bash -n docs/deployment/scripts/backup-carelink-db.sh && chmod +x docs/deployment/scripts/backup-carelink-db.sh
+   cat /etc/cron.d/carelink-backup       # 呼んでいる path がこのファイルか確かめる
+   ```
+   次の 17:30 UTC の実行から新しい決まりになる（すぐ試すなら手で 1 回実行。ダンプが 1 個増える）。入れ替えるまでは従来どおり 7 日で消える。
 2. 案の HTML が会話の記録 DB に入っている（`plans.html_a4`・`html_a3`・`relay/service.py` が案ごとに作って保存、`relay/public.py` が返す）。決まりは「HTML は保存しない・JSON から都度作る」。`service.py`・`public.py`・`db.py`（と migration 0091 の列）を直す必要があり、ここでは直していない。
 3. 中継の状態に「空きが少ない」を出す: `relay.retention.disk_status("/data")` の `low`・`warning` を中継の状態（`/healthz` か会話の一覧の応答）に足す（`public.py`・別担当）。
 4. 中継を立てる前に `/var/lib/carelink-agent/journal/` に書いた分は、立てた後に volume の journal の頭に足し合わせる（`cat` で連結・持ち主 10001）。

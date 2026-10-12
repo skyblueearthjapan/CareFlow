@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "CareLink FastAPI backend (auth + masters + visits + integrations)"
 requires-python = ">=3.12"
 authors = [{ name = "CareLink Team" }]
-readme = "../README.md"
 license = { text = "Proprietary" }
 
 dependencies = [

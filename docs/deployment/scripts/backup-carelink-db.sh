@@ -9,7 +9,11 @@
 #   - pg_dump --format=plain via `docker exec`, gzip-compressed.
 #   - Output: /opt/carelink/backups/daily-YYYYMMDD-HHMM.sql.gz
 #   - Sanity check: dump must be >= 10 KB (smaller is treated as failure).
-#   - Retention: deletes daily-*.sql.gz older than 7 days.
+#   - Retention (PO 2026-10-12): keep daily-*.sql.gz for 30 days, plus the first
+#     backup of each calendar month (UTC) for 12 months (this month + 11 before).
+#     Everything else is deleted. Idempotent. Same rule as
+#     agent/deploy/cleanup/prune-app-backups.sh (deleting twice is harmless).
+#     Background only; never shown to users.
 #   - VisitPhoto bind mount (/opt/carelink/data/visit_photos) is rsync'd into
 #     a sibling 'visit_photos/' directory under BACKUP_DIR (size-bounded
 #     incremental copy; large datasets should switch to a dedicated object
@@ -44,7 +48,8 @@ DB_CONTAINER="carelink-postgres"
 DB_USER="carelink"
 DB_NAME="carelink"
 MIN_SIZE_BYTES=10240   # 10 KB
-RETENTION_DAYS=7
+RETENTION_DAYS=30      # keep every daily for this many days
+MONTHLY_KEEP_MONTHS=12 # ...and the first backup of each month for this many months
 PHOTO_SRC="/opt/carelink/data/visit_photos"
 PHOTO_DEST="${BACKUP_DIR}/visit_photos"
 SIGNATURE_SRC="/opt/carelink/data/visit_signatures"
@@ -58,7 +63,7 @@ mkdir -p "${BACKUP_DIR}" "${LOG_DIR}"
 ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 log() { printf '%s %s\n' "$(ts)" "$1" | tee -a "${LOG_FILE}" >/dev/null; }
 
-stamp=$(date '+%Y%m%d-%H%M')
+stamp=$(date -u '+%Y%m%d-%H%M')
 BACKUP_FILE="${BACKUP_DIR}/daily-${stamp}.sql.gz"
 
 log "START daily backup -> ${BACKUP_FILE}"
@@ -129,9 +134,25 @@ else
 fi
 
 # --- 4) Retention ---------------------------------------------------------
-deleted=$(find "${BACKUP_DIR}" -maxdepth 1 -type f -name 'daily-*.sql.gz' \
-            -mtime "+${RETENTION_DAYS}" -print -delete 2>/dev/null | wc -l)
-log "OK retention deleted=${deleted} files older than ${RETENTION_DAYS}d"
+# Files within RETENTION_DAYS are kept. Older ones survive only if they are the
+# first (earliest name) daily of their UTC month and that month is within the
+# last MONTHLY_KEEP_MONTHS months (current month included).
+cur_ym=$(date -u '+%Y%m')
+oldest_ym=$(date -u -d "$(date -u '+%Y-%m-01') -$((MONTHLY_KEEP_MONTHS - 1)) months" '+%Y%m')
+deleted=0
+prev_ym=""
+while IFS= read -r f; do
+  base=$(basename "${f}")
+  ym=${base:6:6}
+  first_of_month=0
+  if [ "${ym}" != "${prev_ym}" ]; then first_of_month=1; prev_ym="${ym}"; fi
+  [ -n "$(find "${f}" -maxdepth 0 -mtime "+${RETENTION_DAYS}" 2>/dev/null)" ] || continue
+  if [ "${first_of_month}" -eq 1 ] && [ "${ym}" -ge "${oldest_ym}" ] && [ "${ym}" -le "${cur_ym}" ]; then
+    continue
+  fi
+  rm -f "${f}" && deleted=$((deleted + 1))
+done < <(find "${BACKUP_DIR}" -maxdepth 1 -type f -name 'daily-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-*.sql.gz' | sort)
+log "OK retention deleted=${deleted} files (keep ${RETENTION_DAYS}d + first-of-month x${MONTHLY_KEEP_MONTHS})"
 
 log "END daily backup file=${BACKUP_FILE} size=${size_bytes}"
 exit 0

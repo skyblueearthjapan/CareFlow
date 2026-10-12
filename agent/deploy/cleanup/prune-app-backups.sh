@@ -11,8 +11,9 @@
 #   bash prune-app-backups.sh --apply    # 消す（件数・バイト数を journal とログへ）
 # ログ: /var/log/carelink/app-backup-prune.log（お客様の画面・エージェントには出さない）
 #
-# 注意: 毎日のバックアップ（docs/deployment/scripts/backup-carelink-db.sh）が daily-* を 7 日で消している
-#       （RETENTION_DAYS=7）。30 日＋月初を残すには、そちらの 7 日の削除を止める必要がある（README §10）。
+# 注意: 毎日のバックアップ（docs/deployment/scripts/backup-carelink-db.sh）も同じ決まり
+#       （30 日＋各月の最初の 1 個を 12 か月・UTC）で daily-* を消す。同じものを選ぶので二重に消しても
+#       食い違わない（先に消えていれば何もしない）。更新した backup 側の入れ方は README §10。
 set -u
 set -o pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
