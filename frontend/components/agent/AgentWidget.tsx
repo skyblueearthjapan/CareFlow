@@ -12,6 +12,7 @@ import type { AgentRelay } from './relay';
 import { useScreenStore } from './screenContext';
 import type { PlanInfo } from './types';
 import { useAgentEnabled } from './useAgentEnabled';
+import { useResizableWidth } from './useResizableWidth';
 
 import './agent.css';
 
@@ -23,6 +24,9 @@ interface Pos {
   bottom: number;
 }
 const HOME: Pos = { right: 16, bottom: 16 };
+
+/** 浮いている小窓の幅（左の端をつかんで変える・覚える）。広い表示は案を見るので、画面いっぱいまで。 */
+const minusGutter = (vw: number) => vw - 32;
 
 function loadPos(): Pos {
   try {
@@ -71,6 +75,9 @@ function WidgetInner() {
   const [planId, setPlanId] = useState<string | null>(null);
   const root = useRef<HTMLElement>(null);
   const drag = useRef<{ x: number; y: number; p: Pos } | null>(null);
+  const compactW = useResizableWidth({ storageKey: 'rk-agent-w-compact', defaultWidth: 400, min: 300 });
+  const tallW = useResizableWidth({ storageKey: 'rk-agent-w-tall', defaultWidth: 460, min: 300 });
+  const wideW = useResizableWidth({ storageKey: 'rk-agent-w-wide', defaultWidth: 1240, min: 760, max: minusGutter });
 
   useEffect(() => setPos(loadPos()), []);
 
@@ -284,7 +291,10 @@ function WidgetInner() {
   }
 
   const wide = size === 'wide';
-  const style = wide ? { right: HOME.right, bottom: HOME.bottom } : { right: pos.right, bottom: pos.bottom };
+  const sized = size === 'wide' ? wideW : size === 'tall' ? tallW : compactW;
+  const style = wide
+    ? { right: HOME.right, bottom: HOME.bottom, width: sized.width }
+    : { right: pos.right, bottom: pos.bottom, width: sized.width };
 
   return (
     <section
@@ -296,6 +306,12 @@ function WidgetInner() {
       aria-label="らく助エージェント"
       onKeyDown={onKeyDown}
     >
+      <div
+        className="rk-resize"
+        {...sized.handleProps}
+        aria-label="小窓の幅"
+        data-testid="rk-float-resize"
+      />
       <div className="rk-chatcol">
         <header
           className="rk-head"

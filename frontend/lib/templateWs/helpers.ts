@@ -18,42 +18,88 @@ export function parseHm(s: string): number | null {
 
 export const NO_COURSE = '__none__';
 
+/** 「コースなし」の行か（全拠点では拠点ごとに `__none__:<拠点 ID>`）。 */
+export function isNoCourse(id: string): boolean {
+  return id === NO_COURSE || id.startsWith(`${NO_COURSE}:`);
+}
+
 export interface GridRow {
   id: string;
   label: string;
   manager: boolean;
+  /** 全拠点の下書きのときの拠点（見出しの行に使う）。1 拠点なら null。 */
+  officeId: string | null;
+  office: string | null;
   /** weekday → セル */
   cells: Record<number, { slots: SlotCard[]; staff: string | null; open: boolean }>;
 }
 
-/** 行 = コース（A〜E・M）＋ コースなし、列 = 月〜土。人のいない日のコースは薄く（open=false）。 */
+/**
+ * 行 = コース（A〜E・M）＋ コースなし、列 = 月〜土。人のいない日のコースは薄く（open=false）。
+ * 全拠点の下書きは拠点ごとに並べ、コースなしの行も拠点ごとに分ける。
+ */
 export function buildGrid(view: DraftView): GridRow[] {
+  const multi = !!view.all_offices && (view.offices?.length ?? 0) > 1;
   const rows: GridRow[] = view.courses.map((c) => ({
     id: c.id,
     label: c.label,
     manager: c.manager,
+    officeId: multi ? (c.office_id ?? null) : null,
+    office: multi ? (c.office ?? null) : null,
     cells: {},
   }));
-  const none: GridRow = { id: NO_COURSE, label: 'コースなし', manager: false, cells: {} };
+  const offices = multi ? (view.offices ?? []) : [{ id: '', label: '' }];
+  const nones = new Map<string, GridRow>(
+    offices.map((o) => [
+      o.id,
+      {
+        id: multi ? `${NO_COURSE}:${o.id}` : NO_COURSE,
+        label: 'コースなし',
+        manager: false,
+        officeId: multi ? o.id : null,
+        office: multi ? o.label : null,
+        cells: {},
+      },
+    ]),
+  );
+  const noneOf = (oid: string | undefined) => nones.get(multi ? (oid ?? '') : '') ?? [...nones.values()][0]!;
   const byId = new Map(rows.map((r) => [r.id, r]));
+  const all = [...rows, ...nones.values()];
   for (const d of view.days) {
     const empty = () => ({ slots: [] as SlotCard[], staff: null as string | null, open: false });
-    for (const r of [...rows, none]) r.cells[d.weekday] = empty();
+    for (const r of all) r.cells[d.weekday] = empty();
     for (const c of d.courses) {
       const row = byId.get(c.id);
       if (row) row.cells[d.weekday] = { slots: [], staff: c.staff, open: true };
     }
     for (const s of d.slots) {
       if (!s.placed) continue;
-      const row = (s.course_id && byId.get(s.course_id)) || none;
+      const row = (s.course_id && byId.get(s.course_id)) || noneOf(s.office_id);
       (row.cells[d.weekday] ??= empty()).slots.push(s);
     }
-    for (const r of [...rows, none]) {
+    for (const r of all) {
       r.cells[d.weekday]?.slots.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
     }
   }
-  const hasNone = Object.values(none.cells).some((c) => c.slots.length > 0);
-  return hasNone ? [...rows, none] : rows;
+  const used = (r: GridRow) => Object.values(r.cells).some((c) => c.slots.length > 0);
+  if (!multi) {
+    const none = [...nones.values()][0]!;
+    return used(none) ? [...rows, none] : rows;
+  }
+  return offices.flatMap((o) => {
+    const none = nones.get(o.id)!;
+    return [...rows.filter((r) => r.officeId === o.id), ...(used(none) ? [none] : [])];
+  });
+}
+
+/** 盤面の見出しの数: 曜日ごとの置いた枠（全拠点なら拠点ごとも）。 */
+export function dayCounts(view: DraftView, weekday: number): { total: number; byOffice: { label: string; n: number }[] } {
+  const slots = view.days.find((d) => d.weekday === weekday)?.slots.filter((s) => s.placed) ?? [];
+  const offices = view.all_offices ? (view.offices ?? []) : [];
+  return {
+    total: slots.length,
+    byOffice: offices.map((o) => ({ label: o.label, n: slots.filter((s) => s.office_id === o.id).length })),
+  };
 }
 
 export type Tone = 'good' | 'bad' | 'same';

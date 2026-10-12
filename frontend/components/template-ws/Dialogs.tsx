@@ -15,7 +15,7 @@ import {
 import { apiErrorMessage } from '@/lib/api/errorMessage';
 import { useCommitPreview, useCompare, useInputs, useWeekPreview } from '@/lib/queries/templateWs';
 import { WEEKDAYS, fmtMin } from '@/lib/templateWs/helpers';
-import type { DraftSummary, DraftView } from '@/lib/templateWs/types';
+import type { DraftSummary, DraftView, OfficeRef } from '@/lib/templateWs/types';
 
 const WD_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 
@@ -120,7 +120,12 @@ export function WhatifDialog({
             職員の人数を変えたり、この人がいないとしたら、を試します。条件を変えたあとで最適化すると、並べ直されます。
           </DialogDescription>
         </DialogHeader>
-        <div className="grid grid-cols-3 gap-2 text-sm">
+        {view.all_offices ? (
+          <p className="text-sm text-text-secondary" data-testid="whatif-all-offices-note">
+            全拠点の下書きでは、曜日ごとの職員の人数のもしもは使えません（拠点ごとの下書きで試せます）。「この人がいないとしたら」は使えます。
+          </p>
+        ) : null}
+        <div className={`grid grid-cols-3 gap-2 text-sm ${view.all_offices ? 'hidden' : ''}`}>
           {view.days.map((d) => (
             <label key={d.weekday} className="flex items-center gap-1">
               {d.name}曜
@@ -162,7 +167,7 @@ export function WhatifDialog({
             type="button"
             onClick={() => {
               const staff_count: Record<string, number | null> = {};
-              for (const d of view.days) {
+              for (const d of view.all_offices ? [] : view.days) {
                 const normal = d.courses.filter((c) => !c.virtual).length;
                 const n = Number(counts[d.weekday]);
                 const was = view.scenario.staff_count[String(d.weekday)];
@@ -256,6 +261,7 @@ export function CompareDialog({
               {q.data.changed.slice(0, 40).map((c) => (
                 <li key={c.key}>
                   {c.weekday} {c.patient}
+                  {c.office && draft.all_offices ? `（${c.office}）` : ''}
                   {c.red ? '（赤ピン）' : ''}：{c.b.course ?? '—'} {c.b.start ?? ''} → {c.a.course ?? '—'} {c.a.start ?? ''}
                 </li>
               ))}
@@ -286,14 +292,18 @@ export function CompareDialog({
 export function InputsDialog({
   open,
   draftId,
+  offices = [],
   onClose,
 }: {
   open: boolean;
   draftId: string;
+  /** 全拠点の下書きのとき、前提を見る拠点を選ぶ。 */
+  offices?: OfficeRef[];
   onClose: () => void;
 }) {
   const [wd, setWd] = useState(0);
-  const q = useInputs(draftId, wd, open);
+  const [office, setOffice] = useState<string | null>(offices[0]?.id ?? null);
+  const q = useInputs(draftId, wd, open, offices.length > 1 ? office : null);
   const d = q.data;
   return (
     <Dialog open={open} onOpenChange={(o) => (!o ? onClose() : undefined)}>
@@ -304,7 +314,21 @@ export function InputsDialog({
             最適化が使う距離・職員の勤務と予定・時刻の決まり方です。職員マスタと患者マスタの値をそのまま使います。
           </DialogDescription>
         </DialogHeader>
-        <div className="flex gap-1">
+        <div className="flex flex-wrap items-center gap-1">
+          {offices.length > 1 ? (
+            <select
+              value={office ?? ''}
+              onChange={(e) => setOffice(e.target.value)}
+              className="mr-2 h-9 rounded border border-border-default bg-bg-base px-2 text-sm"
+              aria-label="前提を見る拠点"
+            >
+              {offices.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
           {WEEKDAYS.map((w, i) => (
             <Button key={w} type="button" size="sm" variant={i === wd ? 'default' : 'outline'} onClick={() => setWd(i)}>
               {w}

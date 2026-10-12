@@ -11,7 +11,10 @@ export interface DraftSummary {
   name: string;
   status: 'draft' | 'committed' | 'archived';
   version: number;
-  office_id: string;
+  /** 全拠点の下書きは null（拠点は offices）。 */
+  office_id: string | null;
+  all_offices?: boolean;
+  offices?: string[];
   updated_at: string | null;
   created_at: string | null;
 }
@@ -33,6 +36,13 @@ export interface CourseHead {
   label: string;
   short: string;
   manager: boolean;
+  office_id?: string;
+  office?: string;
+}
+
+export interface OfficeRef {
+  id: string;
+  label: string;
 }
 
 export interface DayCourse {
@@ -44,6 +54,8 @@ export interface DayCourse {
   shift: [number, number];
   events: [number, number][];
   cap: number;
+  office_id?: string;
+  office?: string;
 }
 
 export interface SlotCard {
@@ -70,6 +82,7 @@ export interface SlotCard {
   time_type: string;
   placed: boolean;
   unplaced_reason: string | null;
+  office_id?: string;
 }
 
 export interface DayView {
@@ -89,6 +102,7 @@ export interface TrayItem {
   reason: string | null;
   state: 'waiting' | 'unplaced' | 'blocked';
   added: boolean;
+  office?: string;
 }
 
 export interface StepChange {
@@ -112,6 +126,8 @@ export interface Step {
   changed_slots: number;
   changes: StepChange[];
   params_changed: boolean;
+  /** 最適化の手順だけ true（［くわしく］で報告を開ける）。 */
+  has_report?: boolean;
 }
 
 export interface DraftView {
@@ -119,7 +135,10 @@ export interface DraftView {
   name: string;
   status: DraftSummary['status'];
   version: number;
-  office: { id: string; label: string };
+  /** 全拠点の下書きは { id: null, label: '全拠点' }。 */
+  office: { id: string | null; label: string };
+  offices?: OfficeRef[];
+  all_offices?: boolean;
   scenario: {
     staff_count: Record<string, number>;
     drop_staff: string[];
@@ -133,6 +152,8 @@ export interface DraftView {
   tray: TrayItem[];
   staff: { code: string; name: string }[];
   totals: { master: Metrics; draft: Metrics } | Record<string, never>;
+  /** 全拠点の下書きのときだけ: 拠点ごとの数（いまの型 → 下書き）。 */
+  totals_by_office?: (OfficeRef & { master: Metrics; draft: Metrics })[];
   steps: Step[];
   latest_step: Step | null;
   can_undo: boolean;
@@ -191,6 +212,7 @@ export interface CompareResult {
     weekday: string;
     patient: string;
     red: boolean;
+    office?: string;
     a: { course: string | null; start: string | null };
     b: { course: string | null; start: string | null };
   }[];
@@ -199,6 +221,8 @@ export interface CompareResult {
 export interface InputsView {
   weekday: number;
   name: string;
+  office?: OfficeRef;
+  offices?: OfficeRef[];
   rules: {
     speed_kmh: number;
     buffer_min: number;
@@ -224,4 +248,76 @@ export interface InputsView {
     courses: string[];
   }[];
   matrix: { patients: { name: string; code: string | null }[]; minutes: number[][] };
+}
+
+/** 最適化の報告（GET /drafts/{id}/report）。backend の report.py が作る（らく助エージェントと同じ中身）。 */
+export type ReportKind =
+  | 'course_added'
+  | 'course_only'
+  | 'course_and_time'
+  | 'time_only'
+  | 'new_placed'
+  | 'removed'
+  | 'not_placed';
+
+export interface ReportItem {
+  key: string;
+  weekday: number;
+  weekday_ja: string;
+  patient_id: string | null;
+  patient: string;
+  office: string | null;
+  from_course: string;
+  to_course: string;
+  from_start: string | null;
+  to_start: string | null;
+  red: boolean;
+}
+
+export interface ReportDayNumbers {
+  conflicts: number;
+  over_cap: number;
+  no_course: number;
+  unstaffed: number;
+  travel_min: number;
+  regular_counts: number[];
+  manager_visits: number;
+}
+
+export interface ReportDay {
+  weekday: number;
+  name: string;
+  master: ReportDayNumbers;
+  before: ReportDayNumbers;
+  after: ReportDayNumbers;
+  changes: number;
+  travel: {
+    delta: number;
+    reorder: number;
+    routed: number;
+    newly: { no_course: number; unstaffed: number; new: number };
+  };
+}
+
+export interface OptimiseReport {
+  draft_id: string;
+  draft: string;
+  seq: number;
+  actor_label: string;
+  reason: string | null;
+  undone: boolean;
+  created_at: string | null;
+  changed: number;
+  categories: { kind: ReportKind; label: string; count: number; items: ReportItem[] }[];
+  days: ReportDay[];
+  travel: {
+    before?: number;
+    after?: number;
+    master?: number;
+    delta?: number;
+    reorder?: number;
+    routed?: number;
+  };
+  text: string[];
+  cautions: string[];
 }

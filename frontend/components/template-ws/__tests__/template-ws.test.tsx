@@ -16,7 +16,7 @@ import { buildGrid, fmtMin, latestStepKeys, parseHm, stepTitle, tone } from '@/l
 import type { DraftView, SlotCard, Step } from '@/lib/templateWs/types';
 import { CommitDialog } from '../Dialogs';
 import { MetricsHeader } from '../MetricsHeader';
-import { HistoryList, LatestStepCard } from '../SidePanels';
+import { HistoryList, LatestStepCard, UndoRedo } from '../SidePanels';
 import { TemplateBoard } from '../TemplateBoard';
 
 function slot(over: Partial<SlotCard>): SlotCard {
@@ -119,7 +119,7 @@ describe('TemplateBoard', () => {
     expect(screen.getByTestId('slot-k2')).toHaveAttribute('data-latest', 'true');
     expect(screen.getByTestId('slot-k1')).toHaveAttribute('data-changed', 'false');
     expect(screen.getByLabelText('赤ピン（曜日と時刻は動かしません）')).toBeInTheDocument();
-    expect(screen.getByTestId('cell-0-cA')).toHaveTextContent('山田さん');
+    expect(screen.getByTestId('cell-0-cA')).toHaveTextContent('担当: 山田');
   });
   it('枠を押すと選べる', () => {
     const onSelect = vi.fn();
@@ -147,14 +147,12 @@ describe('最新の編集と履歴', () => {
   });
   it('↶ ↷ は戻せるときだけ押せる', () => {
     const onUndo = vi.fn();
+    const v = view({ can_undo: true, can_redo: false, steps: [step({}), step({ seq: 2, undone: true })] });
     render(
-      <HistoryList
-        view={view({ can_undo: true, can_redo: false, steps: [step({}), step({ seq: 2, undone: true })] })}
-        readOnly={false}
-        busy={false}
-        onUndo={onUndo}
-        onRedo={vi.fn()}
-      />,
+      <>
+        <UndoRedo view={v} disabled={false} onUndo={onUndo} onRedo={vi.fn()} />
+        <HistoryList view={v} />
+      </>,
     );
     fireEvent.click(screen.getByTestId('undo'));
     expect(onUndo).toHaveBeenCalled();

@@ -17,6 +17,7 @@ import type {
   DraftView,
   InputsView,
   Job,
+  OptimiseReport,
   WeekPreview,
 } from '@/lib/templateWs/types';
 
@@ -51,12 +52,19 @@ export function useTemplateAvailability() {
   });
 }
 
+/** 全拠点の下書きを選ぶときの拠点の値。 */
+export const ALL_OFFICES = 'all';
+
 export function useDrafts(officeId: string | null) {
   const a = useAuth();
   return useQuery({
     queryKey: ['template-ws', 'drafts', officeId],
     enabled: a.isAdmin && !!officeId,
-    queryFn: () => fetcher<DraftSummary[]>(`${BASE}/drafts?office_id=${officeId}`, a),
+    queryFn: () =>
+      fetcher<DraftSummary[]>(
+        `${BASE}/drafts?${officeId === ALL_OFFICES ? 'all_offices=true' : `office_id=${officeId}`}`,
+        a,
+      ),
   });
 }
 
@@ -148,7 +156,11 @@ export function useCreateDraft() {
       fetcher<DraftView>(`${BASE}/drafts`, {
         ...a,
         method: 'POST',
-        body: JSON.stringify({ office_id: v.officeId, name: v.name, from_draft_id: v.fromDraftId ?? null }),
+        body: JSON.stringify(
+          v.officeId === ALL_OFFICES
+            ? { all_offices: true, name: v.name, from_draft_id: v.fromDraftId ?? null }
+            : { office_id: v.officeId, name: v.name, from_draft_id: v.fromDraftId ?? null },
+        ),
       }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['template-ws', 'drafts'] }),
   });
@@ -177,12 +189,28 @@ export function useCompare(draftId: string | null, other: string | null) {
   });
 }
 
-export function useInputs(draftId: string | null, weekday: number, enabled: boolean) {
+export function useInputs(draftId: string | null, weekday: number, enabled: boolean, officeId?: string | null) {
   const a = useAuth();
   return useQuery({
-    queryKey: ['template-ws', 'inputs', draftId, weekday],
+    queryKey: ['template-ws', 'inputs', draftId, weekday, officeId ?? null],
     enabled: enabled && !!draftId,
-    queryFn: () => fetcher<InputsView>(`${BASE}/drafts/${draftId}/inputs?weekday=${weekday}`, a),
+    queryFn: () =>
+      fetcher<InputsView>(
+        `${BASE}/drafts/${draftId}/inputs?weekday=${weekday}${officeId ? `&office_id=${officeId}` : ''}`,
+        a,
+      ),
+  });
+}
+
+/** 最適化の報告（何をどう変えたか）。seq 省略 = いちばん新しい最適化。 */
+export function useReport(draftId: string | null, seq: number | null, enabled: boolean) {
+  const a = useAuth();
+  return useQuery({
+    queryKey: ['template-ws', 'report', draftId, seq],
+    enabled: enabled && !!draftId,
+    retry: false,
+    queryFn: () =>
+      fetcher<OptimiseReport>(`${BASE}/drafts/${draftId}/report${seq ? `?seq=${seq}` : ''}`, a),
   });
 }
 
