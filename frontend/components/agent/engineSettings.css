@@ -270,3 +270,26 @@
   padding: 10px 18px 14px;
   border-top: 1px solid var(--rk-line);
 }
+/* 管理者のサインインの様子(人ごとの席・名前と状態の語だけ) */
+.rk-es-seats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+.rk-es-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+.rk-es-table th,
+.rk-es-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--rk-line);
+  vertical-align: middle;
+}
+.rk-es-table small {
+  margin-left: 4px;
+  color: var(--rk-muted);
+}

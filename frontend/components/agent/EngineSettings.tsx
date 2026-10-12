@@ -4,6 +4,8 @@
  * ⚙ 設定 —「AI のつなぎ先」(ChatGPT / Claude のサインイン・サインアウト)と「新しい相談で使う AI」。
  * 管理者だけ(小窓・相談タブ自体が管理者だけ。中継も確かめる)。SSH なしで、画面からサインインできる。
  * サインインは同時に 1 つだけ・15 分で打ち切り(中継と箱の runner が守る)。
+ * 人ごとの席(PO 2026-10-13: ChatGPT Business/Team は 1 席 1 人): ここに出るのは「あなたの」アカウント。
+ * 相談はその人のアカウントで動く。サインイン・サインアウト・既定の AI も、その人の分だけが変わる。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -17,6 +19,7 @@ import {
   type EngineState,
   type EnginesView,
   type LoginFlow,
+  type SeatsView,
 } from './engines';
 
 import './engineSettings.css';
@@ -87,6 +90,8 @@ export function EngineSettingsSheet({
   const [confirm, setConfirm] = useState<EngineProvider | null>(null);
   const [code, setCode] = useState('');
   const [copied, setCopied] = useState(false);
+  const [seats, setSeats] = useState<SeatsView | null>(null);
+  const [seatsOpen, setSeatsOpen] = useState(false);
   const alive = useRef(true);
 
   const load = useCallback(async () => {
@@ -212,6 +217,19 @@ export function EngineSettingsSheet({
     }
   };
 
+  const toggleSeats = async () => {
+    const next = !seatsOpen;
+    setSeatsOpen(next);
+    if (!next || !engines.seats) return;
+    try {
+      const v = await engines.seats();
+      if (alive.current) setSeats(v);
+    } catch (e) {
+      if (alive.current)
+        setMsg({ tone: 'bad', text: (e as Error).message || '一覧を読めませんでした' });
+    }
+  };
+
   const providers = view?.providers ?? [];
 
   return (
@@ -226,7 +244,8 @@ export function EngineSettingsSheet({
         </header>
         <div className="rk-es-body">
           <p className="rk-es-lead">
-            ぼくが相談に使う AI です。サインインやサインアウトは、ここからできます。
+            ぼくが相談に使う AI です。相談は、あなた自身のアカウントで動きます（1 人に 1 つ）。
+            サインインやサインアウトは、ここからできます。
           </p>
           {view && !view.can_sign_in && (
             <p className="rk-es-note">この環境では、画面からのサインインはできません。</p>
@@ -246,7 +265,7 @@ export function EngineSettingsSheet({
               <article className="rk-es-card" key={p} data-testid={`rk-es-card-${p}`}>
                 <div className="rk-es-card-top">
                   <div>
-                    <h3>{ENGINE_NAME[p]}</h3>
+                    <h3>あなたの {ENGINE_NAME[p]}</h3>
                     <p className="rk-es-sub">{ACCOUNT_OF[p]}</p>
                   </div>
                   <span className="rk-es-state" data-tone={STATE_TONE[st]}>
@@ -279,8 +298,8 @@ export function EngineSettingsSheet({
                     aria-label={`${ENGINE_NAME[p]} からサインアウトしますか`}
                   >
                     <p>
-                      サインアウトすると、{ENGINE_NAME[p]}
-                      での相談は、だれかがもう一度サインインするまで止まります。どうしますか？
+                      サインアウトすると、あなたの {ENGINE_NAME[p]}
+                      での相談は、もう一度サインインするまで止まります（ほかの方の分は変わりません）。どうしますか？
                     </p>
                     <div className="rk-es-choices">
                       <button
@@ -340,7 +359,7 @@ export function EngineSettingsSheet({
 
           {providers.length > 1 && view && (
             <fieldset className="rk-es-default">
-              <legend>新しい相談で使う AI</legend>
+              <legend>あなたの新しい相談で使う AI</legend>
               {providers.map((p) => (
                 <label key={p} className="rk-es-radio">
                   <input
@@ -357,6 +376,55 @@ export function EngineSettingsSheet({
               ))}
               <p className="rk-es-note">いま開いている相談は、そのままの AI で続きます。</p>
             </fieldset>
+          )}
+
+          {view?.can_view_seats && engines.seats && (
+            <section className="rk-es-seats" aria-label="管理者のサインインの様子">
+              <button
+                type="button"
+                className="rk-es-btn"
+                data-kind="quiet"
+                aria-expanded={seatsOpen}
+                onClick={() => void toggleSeats()}
+              >
+                {seatsOpen ? '▾' : '▸'} 管理者のサインインの様子
+              </button>
+              {seatsOpen && !seats && <p className="rk-es-note">読み込んでいます…</p>}
+              {seatsOpen && seats && (
+                <table className="rk-es-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">名前</th>
+                      {seats.providers.map((p) => (
+                        <th scope="col" key={p}>
+                          {ENGINE_NAME[p]}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {seats.seats.map((s, i) => (
+                      <tr key={`${s.name}-${i}`}>
+                        <td>
+                          {s.name}
+                          {s.me && <small>（あなた）</small>}
+                        </td>
+                        {seats.providers.map((p) => {
+                          const st: EngineState = s.engines[p]?.state ?? 'unknown';
+                          return (
+                            <td key={p}>
+                              <span className="rk-es-state" data-tone={STATE_TONE[st]}>
+                                {STATE_LABEL[st]}
+                              </span>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </section>
           )}
         </div>
         <footer className="rk-es-foot">

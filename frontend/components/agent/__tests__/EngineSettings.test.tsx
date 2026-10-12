@@ -66,7 +66,7 @@ describe('EngineSettingsSheet', () => {
     const admin = fakeAdmin();
     render(<EngineSettingsSheet engines={admin} onClose={() => {}} />);
     const codex = await screen.findByTestId('rk-es-card-codex');
-    expect(within(codex).getByText('ChatGPT')).toBeInTheDocument();
+    expect(within(codex).getByText('あなたの ChatGPT')).toBeInTheDocument(); // 人ごとの席: 本人のアカウント
     expect(within(codex).getByText('サインインしています')).toBeInTheDocument();
     expect(within(codex).getByRole('button', { name: 'サインアウト' })).toBeInTheDocument();
     const claude = screen.getByTestId('rk-es-card-claude');
@@ -90,7 +90,7 @@ describe('EngineSettingsSheet', () => {
     const link = screen.getByRole('link', { name: 'https://auth.openai.com/codex/device' });
     expect(link).toHaveAttribute('target', '_blank');
     expect(link.getAttribute('rel')).toContain('noopener');
-    expect(screen.getByText(/あと 15:00/)).toBeInTheDocument();
+    expect(screen.getByText(/あと 1[45]:\d\d/)).toBeInTheDocument(); // 1 秒ずつ減る（遅い機械では 14:59 のことも）
     fireEvent.click(screen.getByRole('button', { name: 'コピー' }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('T9U6-PTFBM'));
     expect(await screen.findByRole('button', { name: 'コピーしました' })).toBeInTheDocument();
@@ -184,7 +184,10 @@ describe('EngineSettingsSheet', () => {
     const card = await screen.findByTestId('rk-es-card-codex');
     fireEvent.click(within(card).getByRole('button', { name: 'サインアウト' }));
     const group = screen.getByRole('group', { name: /サインアウトしますか/ });
-    expect(group).toHaveTextContent('だれかがもう一度サインインするまで止まります');
+    expect(group).toHaveTextContent('あなたの ChatGPT');
+    expect(group).toHaveTextContent(
+      'もう一度サインインするまで止まります（ほかの方の分は変わりません）',
+    );
     const choices = within(group)
       .getAllByRole('button')
       .map((b) => b.textContent);
@@ -219,6 +222,57 @@ describe('EngineSettingsSheet', () => {
     expect(
       within(screen.getByTestId('rk-es-card-claude')).getByRole('button', { name: 'サインイン' }),
     ).toBeDisabled();
+  });
+
+  it('「あなたの」アカウントだと分かる言葉で出す(1 人 1 席)', async () => {
+    render(<EngineSettingsSheet engines={fakeAdmin()} onClose={() => {}} />);
+    expect(await screen.findByText('あなたの ChatGPT')).toBeInTheDocument();
+    expect(screen.getByText('あなたの Claude')).toBeInTheDocument();
+    expect(screen.getByText(/あなた自身のアカウントで動きます/)).toBeInTheDocument();
+    expect(screen.getByText('あなたの新しい相談で使う AI')).toBeInTheDocument();
+  });
+
+  it('管理者のサインインの様子: 名前と状態の語だけを出す', async () => {
+    const admin = fakeAdmin(view({ seat: 'own', can_view_seats: true }));
+    (admin as unknown as Record<string, Mock>).seats = vi.fn().mockResolvedValue({
+      providers: ['codex', 'claude'],
+      seats: [
+        {
+          name: '今泉',
+          me: true,
+          engines: { codex: { state: 'ok' }, claude: { state: 'missing' } },
+        },
+        {
+          name: '佐藤',
+          me: false,
+          engines: { codex: { state: 'missing' }, claude: { state: 'api_key' } },
+        },
+      ],
+    });
+    render(<EngineSettingsSheet engines={admin} onClose={() => {}} />);
+    const open = await screen.findByRole('button', { name: /管理者のサインインの様子/ });
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    fireEvent.click(open);
+    const table = await screen.findByRole('table');
+    const rows = within(table).getAllByRole('row');
+    expect(rows[1]).toHaveTextContent('今泉（あなた）');
+    expect(rows[1]).toHaveTextContent('サインインしています');
+    expect(rows[2]).toHaveTextContent('佐藤');
+    expect(rows[2]).toHaveTextContent('使えないつなぎ方になっています');
+    expect(table.textContent).not.toMatch(/@/);
+  });
+
+  it('一覧を見られない人・一覧の無い実装では出さない', async () => {
+    render(
+      <EngineSettingsSheet
+        engines={fakeAdmin(view({ can_view_seats: false }))}
+        onClose={() => {}}
+      />,
+    );
+    await screen.findByTestId('rk-es-card-codex');
+    expect(
+      screen.queryByRole('button', { name: /管理者のサインインの様子/ }),
+    ).not.toBeInTheDocument();
   });
 
   it('Esc・✕・閉じるで閉じる', async () => {

@@ -204,6 +204,31 @@ describe('reducer: 案・承認・反映(中継の形)', () => {
     expect(s.sessions['s1']!.state).toBe('error');
   });
 
+  it('signin(サインインが要る)は code を持ち、お知らせ(level warn)は会話を止めない', () => {
+    const s = feed(start(), [
+      {
+        type: 'error',
+        code: 'signin',
+        message: 'ChatGPT にサインインすると、相談を始められます',
+        retry: false,
+        provider: 'codex',
+      },
+    ]);
+    expect(items(s)[0]).toMatchObject({ kind: 'error', code: 'signin', retry: false });
+    const w = feed(start(), [
+      { type: 'status', state: 'working', pose: 'search', line: '調べています' },
+      {
+        type: 'error',
+        code: 'usage_limit',
+        message: 'いまはこのアカウントの利用上限に近づいています',
+        retry: false,
+        level: 'warn',
+      },
+    ]);
+    expect(items(w)[0]).toMatchObject({ kind: 'error', code: 'usage_limit', level: 'warn' });
+    expect(w.sessions['s1']!.state).toBe('working');
+  });
+
   it('progress は吹き出しの 1 行・queued も受ける', () => {
     const s = feed(start(), [
       { type: 'progress', text: '組み合わせを比べています（3/6 日）' },

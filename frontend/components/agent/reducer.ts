@@ -345,18 +345,19 @@ function applyEvent(s: SessionView, ev: AgentEvent): SessionView {
       }
       return { ...s, items };
     }
-    case 'error':
-      return {
-        ...s,
-        state: 'error',
-        pose: 'waiting',
-        items: pushItem(s.items, {
-          kind: 'error',
-          id: `e${ev.seq}`,
-          line: ev.message,
-          retry: !!ev.retry,
-        }),
+    case 'error': {
+      const item = {
+        kind: 'error' as const,
+        id: `e${ev.seq}`,
+        line: ev.message,
+        retry: !!ev.retry,
+        ...(ev.code ? { code: ev.code } : {}),
+        ...(ev.level === 'warn' ? { level: 'warn' as const } : {}),
       };
+      // お知らせ(level warn)は会話を止めない＝状態は変えない
+      if (ev.level === 'warn') return { ...s, items: pushItem(s.items, item) };
+      return { ...s, state: 'error', pose: 'waiting', items: pushItem(s.items, item) };
+    }
     case 'turn.end':
       return {
         ...s,

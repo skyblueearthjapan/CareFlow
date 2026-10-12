@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 
 import { useAgent } from './AgentProvider';
+import { EngineSettingsButton } from './EngineSettings';
 import { ApprovalCard, PlanCard, QuestionCard, RunCard, WorkGroup, poseSrc } from './parts';
 import type { SessionView } from './types';
 
@@ -95,13 +96,29 @@ export function Conversation({
             );
           case 'run':
             return <RunCard key={it.id} item={it} onUndo={(r) => void undo(r)} />;
-          case 'error':
+          case 'error': {
+            // signin = 持ち主がその AI にサインインしていない(人ごとの席)。login = サインインが切れた。⚙ を開くボタンを添える
+            const signin = it.code === 'signin' || it.code === 'login';
             return (
-              <div key={it.id} className="rk-card" data-tone="warn" role="alert">
-                <h3>申し訳ありません</h3>
+              <div
+                key={it.id}
+                className="rk-card"
+                data-tone="warn"
+                role={it.level === 'warn' ? 'status' : 'alert'}
+                data-code={it.code}
+              >
+                <h3>
+                  {signin
+                    ? 'サインインをお願いします'
+                    : it.level === 'warn'
+                      ? 'お知らせ'
+                      : '申し訳ありません'}
+                </h3>
                 <p>{it.line}</p>
+                {signin && <EngineSettingsButton label="AI のつなぎ先を開く" />}
               </div>
             );
+          }
           default:
             return null;
         }

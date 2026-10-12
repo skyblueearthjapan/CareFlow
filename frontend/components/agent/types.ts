@@ -152,7 +152,16 @@ export type AgentEvent =
       undoable?: boolean;
       backup?: string | null;
     })
-  | (Base & { type: 'error'; code?: string; message: string; retry?: boolean })
+  | (Base & {
+      type: 'error';
+      code?: string;
+      message: string;
+      retry?: boolean;
+      /** warn = お知らせ(会話は止めない。例: 利用上限に近づいた) */
+      level?: 'warn';
+      /** code=signin のとき、サインインが要る AI */
+      provider?: string;
+    })
   | (Base & { type: 'turn.end'; secs?: number; ok?: boolean; reason?: string });
 
 export interface StepItem {
@@ -202,7 +211,15 @@ export type TimelineItem =
       undoable?: boolean;
       finished: boolean;
     }
-  | { kind: 'error'; id: string; line: string; retry: boolean };
+  | {
+      kind: 'error';
+      id: string;
+      line: string;
+      retry: boolean;
+      /** signin / login = ⚙(AI のつなぎ先)を開くボタンを添える */
+      code?: string;
+      level?: 'warn';
+    };
 
 export interface SessionSummary {
   id: string;

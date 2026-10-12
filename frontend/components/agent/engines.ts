@@ -2,6 +2,7 @@
  * AI のつなぎ先(ChatGPT = Codex / Claude)の設定: ログインの様子・画面からのサインイン/サインアウト・既定の AI。
  * 形は agent/relay/public.py の /engines* と同じにする。管理者だけ(中継が /auth/me で確かめる)。
  * 中継はトークン・メールを返さない。画面に来るのは状態の語と、サインイン用の URL・1 回限りのコードだけ。
+ * 人ごとの席(PO 2026-10-13: ChatGPT Business/Team は 1 席 1 人): どれも「開いている本人」の AI のアカウント。
  */
 
 export type EngineProvider = 'codex' | 'claude';
@@ -33,13 +34,27 @@ export interface LoginFlow {
 
 export interface EnginesView {
   default_provider: EngineProvider;
-  /** setting = 画面で選んだもの / env = サーバーの初期の設定 */
-  default_source: 'setting' | 'env';
+  /** user = この人が選んだもの / setting = 全体の既定 / env = サーバーの初期の設定 */
+  default_source: 'user' | 'setting' | 'env';
   providers: EngineProvider[];
   /** 画面からサインインできる環境か(手元の開発では false) */
   can_sign_in: boolean;
+  /** own = ここに出る様子・サインインは開いている本人の席(アカウント) */
+  seat?: 'own';
+  /** 管理者のサインインの様子(一覧)を見られるか */
+  can_view_seats?: boolean;
   engines: Partial<Record<EngineProvider, { state: EngineState }>>;
   login: LoginFlow | null;
+}
+
+/** 管理者だけ: どの管理者がどの AI にサインインしているか(名前と状態の語だけ。AI のメールは来ない) */
+export interface SeatsView {
+  providers: EngineProvider[];
+  seats: {
+    name: string;
+    me: boolean;
+    engines: Partial<Record<EngineProvider, { state: EngineState }>>;
+  }[];
 }
 
 export interface EngineAdmin {
@@ -52,6 +67,8 @@ export interface EngineAdmin {
   logout(
     provider: EngineProvider,
   ): Promise<{ provider: EngineProvider; ok: boolean; state: EngineState }>;
+  /** 管理者のサインインの様子(無い実装では出さない) */
+  seats?(): Promise<SeatsView>;
 }
 
 export const ENGINE_NAME: Record<EngineProvider, string> = { codex: 'ChatGPT', claude: 'Claude' };
@@ -122,13 +139,16 @@ export class HttpEngineAdmin implements EngineAdmin {
       'POST',
     );
   }
+  seats() {
+    return this.call<SeatsView>('/seats');
+  }
 }
 
 /** 模擬(NEXT_PUBLIC_AGENT_RELAY_MOCK=1・試験)。ChatGPT はサインイン済み、Claude はしていない状態から始まる */
 export function createMockEngineAdmin(): EngineAdmin {
   const engines: Record<EngineProvider, EngineState> = { codex: 'ok', claude: 'missing' };
   let def: EngineProvider = 'codex';
-  let source: 'setting' | 'env' = 'env';
+  let source: EnginesView['default_source'] = 'env';
   let flow: LoginFlow | null = null;
   const idle = (): LoginFlow => ({
     provider: null,
@@ -146,13 +166,32 @@ export function createMockEngineAdmin(): EngineAdmin {
         default_source: source,
         providers: ['codex', 'claude'],
         can_sign_in: true,
+        seat: 'own',
+        can_view_seats: true,
         engines: { codex: { state: engines.codex }, claude: { state: engines.claude } },
         login: flow && flow.state !== 'idle' ? { ...flow } : null,
       };
     },
     async setDefault(p) {
       def = p;
-      source = 'setting';
+      source = 'user';
+    },
+    async seats() {
+      return {
+        providers: ['codex', 'claude'] as EngineProvider[],
+        seats: [
+          {
+            name: 'あなた',
+            me: true,
+            engines: { codex: { state: engines.codex }, claude: { state: engines.claude } },
+          },
+          {
+            name: '管理者 B',
+            me: false,
+            engines: { codex: { state: 'missing' }, claude: { state: 'missing' } },
+          },
+        ],
+      };
     },
     async startLogin(p) {
       if (flow && ACTIVE_LOGIN.includes(flow.state)) {
