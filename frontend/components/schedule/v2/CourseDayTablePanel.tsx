@@ -6178,31 +6178,13 @@ export function CourseDayTablePanel({
               className="flex flex-wrap gap-1"
               data-testid="course-day-tabs"
             >
-              {/* 職員スケジュール (スタッフ×曜日・イベント運用の家)。カイポケの同名画面と
-                  同型。週ビュー内「スタッフ別」サブモードからの昇格 (2026-08-20)。
-                  PO 2026-10-13: いちばん左に置き、開いたときの既定のタブにする。 */}
-              <button
-                key="staff"
-                type="button"
-                role="tab"
-                aria-selected={activeTab === 'staff'}
-                aria-controls="course-staff-schedule-panel"
-                onClick={() => setActiveTab('staff')}
-                disabled={accompaniment.active}
-                title={
-                  accompaniment.active
-                    ? '同行モード中はタイムライン表示のみ使えます'
-                    : 'スタッフごとの週の予定とイベント（カイポケの職員スケジュールと同じ構造）'
-                }
-                data-testid="course-day-tab-staff"
-                className={`mr-1 rounded border px-3 py-1 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
-                  activeTab === 'staff'
-                    ? 'border-brand-primary bg-brand-primary text-white'
-                    : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
-                }`}
+              {/* PO 2026-10-13: コーススケジュール（月〜土・週）と職員スケジュールを分けて見せる */}
+              <span
+                aria-hidden
+                className="self-center pr-1 text-[11px] font-semibold text-text-muted"
               >
-                職員スケジュール
-              </button>
+                コース
+              </span>
               {DISPLAY_WEEKDAYS.map((wd) => {
                 const selected = activeTab === wd;
                 // Phase G-45: 拠点 filter 選択時のみ、選択中の拠点が休業の曜日タブは
@@ -6278,6 +6260,35 @@ export function CourseDayTablePanel({
                 }`}
               >
                 週
+              </button>
+              <span
+                aria-hidden
+                className="mx-2 h-6 w-px self-center bg-border-default"
+                data-testid="course-staff-tab-divider"
+              />
+              {/* 職員スケジュール (スタッフ×曜日・イベント運用の家)。カイポケの同名画面と
+                  同型。週ビュー内「スタッフ別」サブモードからの昇格 (2026-08-20)。 */}
+              <button
+                key="staff"
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'staff'}
+                aria-controls="course-staff-schedule-panel"
+                onClick={() => setActiveTab('staff')}
+                disabled={accompaniment.active}
+                title={
+                  accompaniment.active
+                    ? '同行モード中はタイムライン表示のみ使えます'
+                    : 'スタッフごとの週の予定とイベント（カイポケの職員スケジュールと同じ構造）'
+                }
+                data-testid="course-day-tab-staff"
+                className={`rounded border px-3 py-1 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
+                  activeTab === 'staff'
+                    ? 'border-brand-primary bg-brand-primary text-white'
+                    : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
+                }`}
+              >
+                職員スケジュール
               </button>
             </div>
 
