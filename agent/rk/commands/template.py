@@ -12,7 +12,9 @@
 
 アプリの画面と同じ下書き（バックエンドの template_ws API・人とらく助エージェントの共同作業）を触る道具:
   rk template draft-list
+  rk template draft-new <名前> --office <拠点の略称か ID|all>   （all = 全拠点の下書き。稲毛と都賀を一緒に）
   rk template draft-show <名前か ID> [--slots]
+  rk template explain <名前か ID> [--seq N]   （最適化で何をどう変えたかの報告。画面の［くわしく］と同じ中身）
   rk template draft-move <名前か ID> --slot <枠のキー> --course <コース ID> --start HH:MM --reason "..."
   rk template draft-optimise <名前か ID> [--weekday mon,tue] [--seconds 20] --reason "..."
   rk template draft-whatif <名前か ID> [--staff-count mon=4] [--drop-staff S004] [--pref P1:mon=09:00-11:00] [--clear] --reason "..."
@@ -114,6 +116,17 @@ def register(subparsers) -> None:
     # --- アプリの画面と同じ下書き（バックエンド API）---
     q = sub.add_parser("draft-list", help="画面の下書きの一覧（バックエンド）")
     q.set_defaults(func=cmd_draft_list)
+
+    q = sub.add_parser("draft-new", help="画面の下書きを作る（いまの型を写す。--office all で全拠点）")
+    q.add_argument("name")
+    q.add_argument("--office", required=True, help="拠点の略称か ID。all = 全拠点（型の作業場が使える拠点をまとめて）")
+    q.add_argument("--from", dest="origin", help="写す元の画面の下書き（名前か ID・同じ拠点の組み合わせだけ）")
+    q.set_defaults(func=cmd_draft_new)
+
+    q = sub.add_parser("explain", help="最適化で何をどう変えたかの報告（種類ごとの件数・曜日ごとの数・移動が増えた理由）")
+    q.add_argument("draft", help="下書きの名前か ID")
+    q.add_argument("--seq", type=int, help="履歴の番号（省略でいちばん新しい最適化）")
+    q.set_defaults(func=cmd_explain)
 
     q = sub.add_parser("draft-show", help="画面の下書きの要点（数の物差し・最新の編集）")
     q.add_argument("draft", help="下書きの名前か ID")
@@ -336,11 +349,87 @@ def _summary(view: dict) -> dict:
                         "変えた枠": last.get("changed_slots")} if last else None}
 
 
+def _scope_label(row: dict, offices: dict[str, str]) -> str:
+    if row.get("all_offices"):
+        return "全拠点（" + "・".join(offices.get(o, o[:8]) for o in row.get("offices") or []) + "）"
+    return offices.get(str(row.get("office_id")), str(row.get("office_id")))
+
+
+def _office_labels(api) -> dict[str, str]:
+    rows = api.get("/offices", {"limit": 200}) or []
+    return {str(o["id"]): (o.get("short_label") or o.get("name") or "") for o in rows}
+
+
 def cmd_draft_list(args) -> int:
     with _api_open(args) as api:
         rows = api.get("/template-ws/drafts") or []
-    return _out([{"id": r["id"], "name": r["name"], "status": r["status"], "version": r["version"],
-                  "updated_at": r["updated_at"]} for r in rows])
+        offices = _office_labels(api)
+    return _out([{"id": r["id"], "name": r["name"], "拠点": _scope_label(r, offices), "status": r["status"],
+                  "version": r["version"], "updated_at": r["updated_at"]} for r in rows])
+
+
+def cmd_draft_new(args) -> int:
+    body: dict = {"name": args.name}
+    with _api_open(args) as api:
+        if str(args.office).lower() in ("all", "全拠点"):
+            body["all_offices"] = True
+        else:
+            offices = _office_labels(api)
+            hits = [oid for oid, lab in offices.items() if args.office in (oid, lab)]
+            if len(hits) != 1:
+                raise RkError(f"拠点 {args.office} を 1 つに決められません（略称・ID・all のどれかで）")
+            body["office_id"] = hits[0]
+        if args.origin:
+            body["from_draft_id"] = _resolve_draft(api, args.origin)["id"]
+        from rk.opsbase import ApiError
+
+        try:
+            v = api.call("POST", "/template-ws/drafts", body)
+        except ApiError as e:
+            detail = e.body.get("detail") if isinstance(e.body, dict) else e.body
+            raise RkError(str(detail)) from None
+    out = _summary(v)
+    out["id"] = v["id"]
+    out["拠点"] = "・".join(o["label"] for o in v.get("offices") or []) + ("（全拠点）" if v.get("all_offices") else "")
+    return _out(out)
+
+
+def explain_summary(rep: dict) -> dict:
+    """GET /template-ws/drafts/{id}/report → 要約（短い日本語＋種類ごとの件数＋曜日ごとの数）。"""
+    days = []
+    for d in rep.get("days") or []:
+        m, a = d["master"], d["after"]
+        days.append({"曜日": d["name"], "変えた枠": d["changes"],
+                     "間に合わない組": f"{m['conflicts']}→{a['conflicts']}", "上限超え": f"{m['over_cap']}→{a['over_cap']}",
+                     "コースの無い枠": f"{m['no_course']}→{a['no_course']}",
+                     "人のいないコース": f"{m['unstaffed']}→{a['unstaffed']}",
+                     "移動の合計（分）": f"{m['travel_min']}→{a['travel_min']}",
+                     "一般職員の件数": f"{'・'.join(map(str, m['regular_counts']))} → {'・'.join(map(str, a['regular_counts']))}",
+                     "管理者の訪問": f"{m['manager_visits']}→{a['manager_visits']}",
+                     "移動の増減の内訳": {"道順に新しく入った訪問": d["travel"]["routed"], "並べ替え": d["travel"]["reorder"]}})
+    return {
+        "draft": rep.get("draft"), "履歴の番号": rep.get("seq"), "誰が": rep.get("actor_label"),
+        "要約": rep.get("text") or [], "気になる点": rep.get("cautions") or [],
+        "種類ごと": [{"種類": c["label"], "件数": c["count"],
+                    "枠": [f"{i['weekday_ja']}曜 {i['patient']} {i['from_course']}"
+                          f"{(' ' + i['from_start']) if i.get('from_start') else ''} → {i['to_course']}"
+                          f"{(' ' + i['to_start']) if i.get('to_start') else ''}" for i in c["items"][:20]]}
+                   for c in rep.get("categories") or []],
+        "曜日ごと（いまの型→下書き）": days,
+    }
+
+
+def cmd_explain(args) -> int:
+    from rk.opsbase import ApiError
+
+    with _api_open(args) as api:
+        d = _resolve_draft(api, args.draft)
+        try:
+            rep = api.get(f"/template-ws/drafts/{d['id']}/report", {"seq": args.seq} if args.seq else None)
+        except ApiError as e:
+            detail = e.body.get("detail") if isinstance(e.body, dict) else e.body
+            raise RkError(str(detail)) from None
+    return _out(explain_summary(rep))
 
 
 def cmd_draft_show(args) -> int:
@@ -348,6 +437,7 @@ def cmd_draft_show(args) -> int:
         d = _resolve_draft(api, args.draft)
         v = api.get(f"/template-ws/drafts/{d['id']}")
     out = _summary(v)
+    out["拠点"] = "・".join(o["label"] for o in v.get("offices") or []) + ("（全拠点）" if v.get("all_offices") else "")
     out["courses"] = [{"id": c["id"], "label": c["label"]} for c in v["courses"]]
     out["枠の無い方"] = [{"code": t["code"], "state": t["state"], "reason": t["reason"]} for t in v["tray"]]
     if args.slots:
@@ -386,7 +476,16 @@ def cmd_draft_optimise(args) -> int:
         v = api.get(f"/template-ws/drafts/{d['id']}")
     out = _summary(v)
     out["結果"] = job.get("result")
+    try:
+        out["何をどう変えたか"] = explain_summary(api_report(args, d["id"]))
+    except Exception:  # noqa: BLE001 — 報告が読めなくても最適化の結果は返す
+        pass
     return _out(out)
+
+
+def api_report(args, did: str) -> dict:
+    with _api_open(args) as api:
+        return api.get(f"/template-ws/drafts/{did}/report")
 
 
 def cmd_draft_whatif(args) -> int:

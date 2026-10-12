@@ -306,3 +306,44 @@ def test_real_solver_places_new_patients(env):
     assert a["new:PN2:1:0"]["start"] == a["new:PN2:1:1"]["start"] and a["new:PN2:1:0"]["course"] != a["new:PN2:1:1"]["course"]
     assert 540 <= a["new:PN1:2:0"]["start"] <= 715
     assert a["F4"]["start"] == 630  # 赤ピンの時刻は動かない
+
+
+# ---------------------------------------------------------------------------
+# 画面の下書き: 全拠点で作る・最適化の報告（画面の［くわしく］と同じ中身）
+# ---------------------------------------------------------------------------
+
+
+def test_cli_draft_new_all_offices_and_explain_registered():
+    p = cli.build_parser()
+    a = p.parse_args(["template", "draft-new", "全体の型", "--office", "all"])
+    assert a.func.__name__ == "cmd_draft_new" and a.office == "all"
+    a = p.parse_args(["template", "explain", "全体の型", "--seq", "3"])
+    assert a.func.__name__ == "cmd_explain" and a.seq == 3
+
+
+def test_explain_summary_speaks_plain_japanese():
+    from rk.commands.template import explain_summary
+
+    day = {"conflicts": 2, "over_cap": 1, "no_course": 5, "unstaffed": 0, "travel_min": 100,
+           "regular_counts": [5, 7, 3], "manager_visits": 1}
+    rep = {
+        "draft": "火曜を軽く", "seq": 4, "actor_label": "あなた",
+        "text": ["変わった枠は 2 件です。", "移動の合計は 100 分 → 140 分（+40 分）に増えました。"],
+        "cautions": ["管理者（M のコース）の訪問が増えました"],
+        "categories": [{"kind": "course_added", "label": "コースが無かった枠にコースを付けた", "count": 1, "items": [
+            {"weekday_ja": "火", "patient": "青木 様", "from_course": "（コースなし）", "from_start": "10:00",
+             "to_course": "稲B", "to_start": "10:00"}]}],
+        "days": [{"name": "火", "changes": 2, "master": day,
+                  "after": {**day, "conflicts": 0, "no_course": 0, "travel_min": 140, "regular_counts": [6, 6, 6]},
+                  "travel": {"routed": 35, "reorder": 5}}],
+    }
+    out = explain_summary(rep)
+    assert out["要約"][1].startswith("移動の合計")
+    assert out["種類ごと"][0]["枠"] == ["火曜 青木 様 （コースなし） 10:00 → 稲B 10:00"]
+    d = out["曜日ごと（いまの型→下書き）"][0]
+    assert d["一般職員の件数"] == "5・7・3 → 6・6・6" and d["移動の合計（分）"] == "100→140"
+    assert d["移動の増減の内訳"] == {"道順に新しく入った訪問": 35, "並べ替え": 5}
+    import json
+
+    text = json.dumps(out, ensure_ascii=False)
+    assert not any(w in text for w in ("直す", "修正", "補正"))
