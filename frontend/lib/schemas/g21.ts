@@ -112,10 +112,10 @@ export type PatientSameAddressLink = z.infer<typeof patientSameAddressLinkSchema
  * フロント側で扱う feature key 一覧.
  * 現状は g21_new_algorithm のみだが、将来追加に備えて enum 化.
  */
+// l3_fix_primary_staff は画面から外した（PO 2026-10-13: ローテーションが原則で、都賀の 1 人体制の名残。OFF のまま）
 export const OFFICE_FEATURE_KEYS = [
   'rakusuke_agent',
   'template_workspace',
-  'l3_fix_primary_staff',
   'g21_new_algorithm',
   'karte_via_seat',
 ] as const;
