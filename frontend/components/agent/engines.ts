@@ -1,0 +1,217 @@
+/**
+ * AI のつなぎ先(ChatGPT = Codex / Claude)の設定: ログインの様子・画面からのサインイン/サインアウト・既定の AI。
+ * 形は agent/relay/public.py の /engines* と同じにする。管理者だけ(中継が /auth/me で確かめる)。
+ * 中継はトークン・メールを返さない。画面に来るのは状態の語と、サインイン用の URL・1 回限りのコードだけ。
+ */
+
+export type EngineProvider = 'codex' | 'claude';
+/** ok = サインイン済み / missing = していない / api_key = 使えないつなぎ方 / unknown = 分からない */
+export type EngineState = 'ok' | 'missing' | 'api_key' | 'unknown';
+export type LoginState =
+  | 'idle'
+  | 'starting'
+  | 'waiting'
+  | 'verifying'
+  | 'done'
+  | 'failed'
+  | 'timeout'
+  | 'cancelled';
+
+export interface LoginFlow {
+  provider: EngineProvider | null;
+  state: LoginState;
+  /** ブラウザーで開くところ(決まったホストだけ) */
+  url: string | null;
+  /** ChatGPT の 1 回限りのコード(XXXX-XXXXX) */
+  code: string | null;
+  /** Claude: ブラウザーに出たコードを貼る欄を出す */
+  needs_input: boolean;
+  /** 残りの秒(最長 900) */
+  expires_in: number;
+  error: 'invalid_code' | 'no_url' | null;
+}
+
+export interface EnginesView {
+  default_provider: EngineProvider;
+  /** setting = 画面で選んだもの / env = サーバーの初期の設定 */
+  default_source: 'setting' | 'env';
+  providers: EngineProvider[];
+  /** 画面からサインインできる環境か(手元の開発では false) */
+  can_sign_in: boolean;
+  engines: Partial<Record<EngineProvider, { state: EngineState }>>;
+  login: LoginFlow | null;
+}
+
+export interface EngineAdmin {
+  view(): Promise<EnginesView>;
+  setDefault(provider: EngineProvider): Promise<void>;
+  startLogin(provider: EngineProvider): Promise<LoginFlow>;
+  pollLogin(): Promise<LoginFlow>;
+  sendCode(code: string): Promise<LoginFlow>;
+  cancelLogin(): Promise<LoginFlow>;
+  logout(
+    provider: EngineProvider,
+  ): Promise<{ provider: EngineProvider; ok: boolean; state: EngineState }>;
+}
+
+export const ENGINE_NAME: Record<EngineProvider, string> = { codex: 'ChatGPT', claude: 'Claude' };
+
+export const ACTIVE_LOGIN: LoginState[] = ['starting', 'waiting', 'verifying'];
+
+export class EngineError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = 'EngineError';
+  }
+}
+
+export class HttpEngineAdmin implements EngineAdmin {
+  constructor(
+    private readonly getToken: () => string | null | undefined,
+    private readonly base: string,
+  ) {}
+
+  private async call<T>(path: string, method: 'GET' | 'POST' = 'GET', body?: unknown): Promise<T> {
+    const headers = new Headers();
+    const t = this.getToken();
+    if (t) headers.set('Authorization', `Bearer ${t}`);
+    if (method === 'POST') headers.set('Content-Type', 'application/json');
+    const res = await fetch(`${this.base}/engines${path}`, {
+      method,
+      headers,
+      cache: 'no-store',
+      body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
+    });
+    if (!res.ok) {
+      let msg = 'うまくいきませんでした。少し時間をおいて、もう一度どうぞ';
+      try {
+        const d = (await res.json()) as { detail?: unknown };
+        if (typeof d?.detail === 'string' && d.detail) msg = d.detail;
+      } catch {
+        /* 本文が JSON でない */
+      }
+      throw new EngineError(msg, res.status);
+    }
+    return (await res.json()) as T;
+  }
+
+  view() {
+    return this.call<EnginesView>('');
+  }
+  async setDefault(provider: EngineProvider) {
+    await this.call('/default', 'POST', { provider });
+  }
+  startLogin(provider: EngineProvider) {
+    return this.call<LoginFlow>(`/${provider}/login`, 'POST');
+  }
+  pollLogin() {
+    return this.call<LoginFlow>('/login');
+  }
+  sendCode(code: string) {
+    return this.call<LoginFlow>('/login/code', 'POST', { code });
+  }
+  cancelLogin() {
+    return this.call<LoginFlow>('/login/cancel', 'POST');
+  }
+  logout(provider: EngineProvider) {
+    return this.call<{ provider: EngineProvider; ok: boolean; state: EngineState }>(
+      `/${provider}/logout`,
+      'POST',
+    );
+  }
+}
+
+/** 模擬(NEXT_PUBLIC_AGENT_RELAY_MOCK=1・試験)。ChatGPT はサインイン済み、Claude はしていない状態から始まる */
+export function createMockEngineAdmin(): EngineAdmin {
+  const engines: Record<EngineProvider, EngineState> = { codex: 'ok', claude: 'missing' };
+  let def: EngineProvider = 'codex';
+  let source: 'setting' | 'env' = 'env';
+  let flow: LoginFlow | null = null;
+  const idle = (): LoginFlow => ({
+    provider: null,
+    state: 'idle',
+    url: null,
+    code: null,
+    needs_input: false,
+    expires_in: 0,
+    error: null,
+  });
+  return {
+    async view() {
+      return {
+        default_provider: def,
+        default_source: source,
+        providers: ['codex', 'claude'],
+        can_sign_in: true,
+        engines: { codex: { state: engines.codex }, claude: { state: engines.claude } },
+        login: flow && flow.state !== 'idle' ? { ...flow } : null,
+      };
+    },
+    async setDefault(p) {
+      def = p;
+      source = 'setting';
+    },
+    async startLogin(p) {
+      if (flow && ACTIVE_LOGIN.includes(flow.state)) {
+        throw new EngineError(
+          'いま別のサインインの途中です。終わるか「やめる」を押してから、もう一度どうぞ',
+          409,
+        );
+      }
+      flow = {
+        provider: p,
+        state: 'waiting',
+        url:
+          p === 'codex'
+            ? 'https://auth.openai.com/codex/device'
+            : 'https://claude.ai/oauth/authorize?mock=1',
+        code: p === 'codex' ? 'MOCK-12345' : null,
+        needs_input: p === 'claude',
+        expires_in: 900,
+        error: null,
+      };
+      // 模擬: ChatGPT は少しして「できました」になる
+      if (p === 'codex') {
+        setTimeout(() => {
+          if (flow?.provider === 'codex' && flow.state === 'waiting') {
+            flow = { ...flow, state: 'done', expires_in: 0 };
+            engines.codex = 'ok';
+          }
+        }, 4000);
+      }
+      return { ...flow };
+    },
+    async pollLogin() {
+      return flow ? { ...flow } : idle();
+    },
+    async sendCode(code) {
+      if (!flow || flow.state !== 'waiting' || flow.provider !== 'claude') {
+        throw new EngineError(
+          'いまはコードを受け付けていません。もう一度サインインからどうぞ',
+          409,
+        );
+      }
+      if (!/^[A-Za-z0-9_\-#.~]{8,1024}$/.test(code.trim())) {
+        throw new EngineError(
+          'コードの形が違うようです。ブラウザーに出たコードを、そのまま貼り付けてください',
+          400,
+        );
+      }
+      flow = { ...flow, state: 'done', needs_input: false, expires_in: 0 };
+      engines.claude = 'ok';
+      return { ...flow };
+    },
+    async cancelLogin() {
+      if (flow && ACTIVE_LOGIN.includes(flow.state))
+        flow = { ...flow, state: 'cancelled', needs_input: false };
+      return flow ? { ...flow } : idle();
+    },
+    async logout(p) {
+      engines[p] = 'missing';
+      return { provider: p, ok: true, state: 'missing' as EngineState };
+    },
+  };
+}

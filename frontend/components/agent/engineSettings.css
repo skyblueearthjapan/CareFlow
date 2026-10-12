@@ -1,0 +1,272 @@
+/* ⚙ 設定 — AI のつなぎ先(EngineSettings.tsx)。色は agent.css の --rk-* を使う。文字は小さくしない(15px 以上)。 */
+.rk-es-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(40, 20, 28, 0.35);
+}
+.rk-es {
+  position: fixed;
+  z-index: 10001;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  background: var(--rk-surface);
+  color: var(--rk-fg);
+  border: 1px solid var(--rk-line);
+  border-radius: 16px;
+  box-shadow: var(--rk-shadow);
+  font-size: 15px;
+  line-height: 1.7;
+}
+@media (max-width: 640px) {
+  .rk-es {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    transform: none;
+    width: 100vw;
+    max-height: 92vh;
+    border-radius: 16px 16px 0 0;
+  }
+}
+.rk-es-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 8px;
+  border-bottom: 1px solid var(--rk-line);
+}
+.rk-es-head h2 {
+  margin: 0;
+  font-size: 18px;
+  font-family: var(--rk-font-round);
+}
+.rk-es-x {
+  border: 0;
+  background: transparent;
+  color: var(--rk-muted);
+  font-size: 18px;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 10px;
+}
+.rk-es-x:hover {
+  background: var(--rk-surface-2);
+  color: var(--rk-fg);
+}
+.rk-es-body {
+  overflow-y: auto;
+  padding: 12px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.rk-es-lead {
+  margin: 0;
+}
+.rk-es-note {
+  margin: 0;
+  color: var(--rk-muted);
+  font-size: 15px;
+}
+.rk-es-msg {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--rk-leaf-soft);
+  color: var(--rk-fg);
+}
+.rk-es-msg[data-tone='bad'] {
+  background: var(--rk-red-soft);
+}
+.rk-es-card {
+  border: 1px solid var(--rk-line);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: var(--rk-surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rk-es-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.rk-es-card h3 {
+  margin: 0;
+  font-size: 17px;
+}
+.rk-es-sub {
+  margin: 0;
+  color: var(--rk-muted);
+  font-size: 15px;
+}
+.rk-es-state {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 12px;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 600;
+  background: var(--rk-surface);
+  border: 1px solid var(--rk-line);
+  color: var(--rk-muted);
+}
+.rk-es-state[data-tone='ok'] {
+  background: var(--rk-leaf-soft);
+  border-color: transparent;
+  color: var(--rk-leaf);
+}
+.rk-es-state[data-tone='warn'] {
+  background: var(--rk-amber-soft);
+  border-color: transparent;
+  color: var(--rk-amber);
+}
+.rk-es-state[data-tone='bad'] {
+  background: var(--rk-red-soft);
+  border-color: transparent;
+  color: var(--rk-red);
+}
+.rk-es-actions,
+.rk-es-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.rk-es-choices {
+  flex-direction: column;
+  align-items: stretch;
+}
+.rk-es-btn {
+  min-height: 44px;
+  padding: 8px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--rk-line);
+  background: var(--rk-surface);
+  color: var(--rk-fg);
+  font-size: 15px;
+  text-align: center;
+}
+.rk-es-btn:hover:not(:disabled) {
+  border-color: var(--rk-pink);
+}
+.rk-es-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.rk-es-btn[data-kind='primary'] {
+  background: var(--rk-pink);
+  border-color: var(--rk-pink);
+  color: var(--rk-on-pink);
+  font-weight: 600;
+}
+.rk-es-btn[data-kind='danger'] {
+  border-color: var(--rk-red);
+  color: var(--rk-red);
+  font-weight: 600;
+}
+.rk-es-btn[data-kind='quiet'] {
+  background: transparent;
+  color: var(--rk-muted);
+}
+.rk-es-confirm p {
+  margin: 0 0 8px;
+}
+.rk-es-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+.rk-es-flow ol {
+  margin: 0;
+  padding-left: 1.4em;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rk-es-link {
+  display: block;
+  margin-top: 4px;
+  color: var(--rk-sky);
+  font-weight: 600;
+  word-break: break-all;
+}
+.rk-es-coderow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+}
+.rk-es-code {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 4px 14px;
+  border-radius: 10px;
+  background: var(--rk-surface);
+  border: 1px dashed var(--rk-pink);
+  user-select: all;
+}
+.rk-es-input {
+  flex: 1 1 220px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--rk-line);
+  background: var(--rk-surface);
+  color: var(--rk-fg);
+  font-size: 15px;
+}
+.rk-es-err {
+  display: block;
+  margin-top: 4px;
+  color: var(--rk-red);
+}
+.rk-es-wait {
+  margin: 0;
+  color: var(--rk-sky);
+}
+.rk-es-default {
+  border: 1px solid var(--rk-line);
+  border-radius: 14px;
+  padding: 10px 14px 12px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rk-es-default legend {
+  font-weight: 600;
+  padding: 0 6px;
+}
+.rk-es-radio {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+}
+.rk-es-radio input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--rk-pink);
+}
+.rk-es-radio small {
+  color: var(--rk-muted);
+  font-size: 15px;
+}
+.rk-es-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 18px 14px;
+  border-top: 1px solid var(--rk-line);
+}

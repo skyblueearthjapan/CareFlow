@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { useAgentMaybe, type AgentContextValue } from './AgentProvider';
 import { Conversation } from './Conversation';
+import { EngineSettingsButton } from './EngineSettings';
 import { Composer, MascotStage, PlanViewer, poseSrc } from './parts';
 import { plansOf, sessionList } from './reducer';
 import { SessionList } from './SessionList';
@@ -85,6 +86,7 @@ function Drawer({
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/brand/rakusuke-icon-round.png" alt="" width={32} height={32} />
           <b>らく助に相談</b>
+          <EngineSettingsButton />
           <button type="button" className="rk-hbtn" aria-label="閉じる" onClick={onClose}>
             ✕
           </button>

@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 
 import { AgentProvider, useAgent } from './AgentProvider';
 import { Conversation } from './Conversation';
+import { EngineSettingsButton } from './EngineSettings';
 import { Composer, MascotStage, PlanViewer, poseSrc } from './parts';
 import { plansOf, sessionList } from './reducer';
 import { SessionList } from './SessionList';
@@ -241,6 +242,7 @@ function WidgetInner() {
               </span>
             </div>
             <div className="rk-hbtns">
+              <EngineSettingsButton label="" />
               <button
                 type="button"
                 className="rk-hbtn"
@@ -333,6 +335,7 @@ function WidgetInner() {
             {chip}
           </div>
           <div className="rk-hbtns">
+            <EngineSettingsButton />
             {size !== 'wide' && (
               <button
                 type="button"

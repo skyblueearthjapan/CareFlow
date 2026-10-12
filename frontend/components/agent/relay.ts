@@ -6,6 +6,7 @@
  *   画面は承認番号を受け取らず、送りもしない。
  * - 画面は AgentRelay インターフェースだけを見る。mockRelay も同じ形。
  */
+import { HttpEngineAdmin, type EngineAdmin } from './engines';
 import type { ScreenContext } from './screenContext';
 import type { AgentEvent, Device, PlanSize, SessionSummary } from './types';
 
@@ -48,6 +49,8 @@ export interface AgentRelay {
   stream(id: string, after: number, h: StreamHandlers): Promise<void>;
   /** 既定の AI・サーバーの空き(無い実装は出さない) */
   engine?(): Promise<EngineInfo>;
+  /** AI のつなぎ先の設定(⚙ 設定・管理者だけ)。無い実装は出さない */
+  engines?: EngineAdmin;
 }
 
 export const DEFAULT_RELAY_BASE = '/agent-relay';
@@ -128,11 +131,15 @@ async function errorOf(res: Response): Promise<RelayError> {
 const enc = encodeURIComponent;
 
 export class HttpRelay implements AgentRelay {
+  readonly engines: EngineAdmin;
+
   constructor(
     private readonly getToken: () => string | null | undefined,
     private readonly base: string = DEFAULT_RELAY_BASE,
     private readonly device: Device = 'pc',
-  ) {}
+  ) {
+    this.engines = new HttpEngineAdmin(getToken, base);
+  }
 
   private headers(extra?: Record<string, string>): Headers {
     const h = new Headers(extra);

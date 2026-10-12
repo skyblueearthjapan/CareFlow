@@ -13,6 +13,7 @@ import {
 import { usePathname } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 
+import type { EngineAdmin } from './engines';
 import { createMockRelay } from './mockRelay';
 import { agentReducer, initialStore } from './reducer';
 import { HttpRelay, relayBaseFromEnv, type AgentRelay } from './relay';
@@ -42,6 +43,8 @@ export interface AgentContextValue {
   printUrl: (planId: string, size: PlanSize) => Promise<string>;
   /** サーバーの空きが少ない時の一言(管理者向け・ウィジェット自体が管理者だけ)。無ければ null */
   diskWarning: string | null;
+  /** AI のつなぎ先の設定(⚙ 設定)。中継が持たない時は null */
+  engines: EngineAdmin | null;
 }
 
 /** 空きが少ない(10 GB 未満)時の、落ち着いた言い方。新しい相談を断る段(5 GB 未満)は中継の文をそのまま出す */
@@ -272,8 +275,9 @@ export function AgentProvider({ children, device, relay: relayProp }: Props) {
       planHtml,
       printUrl,
       diskWarning,
+      engines: relay.engines ?? null,
     }),
-    [store, device, current, waitingCount, select, newSession, rename, send, stop, answer, decide, undo, planHtml, printUrl, diskWarning],
+    [store, device, current, waitingCount, select, newSession, rename, send, stop, answer, decide, undo, planHtml, printUrl, diskWarning, relay],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

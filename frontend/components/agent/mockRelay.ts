@@ -12,6 +12,7 @@
  * 使い方: <AgentProvider relay={createMockRelay()}> か、
  *         NEXT_PUBLIC_AGENT_RELAY_MOCK=1 で AgentProvider が自動で使う。
  */
+import { createMockEngineAdmin } from './engines';
 import type { AgentRelay, StreamHandlers } from './relay';
 import type { AgentEvent, PlanSize, SessionSummary } from './types';
 
@@ -318,6 +319,7 @@ export function createMockRelay(opts: MockOptions = {}): AgentRelay & { __hubs: 
 
   const relay: AgentRelay & { __hubs: Map<string, Hub> } = {
     __hubs: hubs,
+    engines: createMockEngineAdmin(),
     async listSessions() {
       return [...hubs.values()].map((h) => h.summary);
     },
