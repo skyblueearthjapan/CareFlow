@@ -1,6 +1,6 @@
 # 型の作業場（テンプレートの作業場）— 設計（A = らく助エージェントの中・B = アプリの画面へ引き継ぐ形）
 
-- 作成: 2026-10-12（S9 の続き）／状態: **A を実装・本番で 1 回（読むだけ）試行済み**。B（アプリの画面＋DB の表）は未着手。
+- 作成: 2026-10-12（S9 の続き）／状態: **A を実装・本番で 1 回（読むだけ）試行済み**。B（アプリの画面＋DB の表）を実装済み（§6・未コミット・flag 既定 OFF）。
 - 関連: `course-plan-design-2026-10-12.md`（決まり・重み・Q-A〜J の正典）・`../red-pin-simplify-design.md`（赤 = 曜日・時刻だけ・K-2/K-4）・
   `../weekly-space-design.md`（マスター／今週の二層）・`agent/PERSONA.md`・`agent/rk/ops/masters.py`（`pfv-update`）
 - 実装: `agent/tools/template_ws/`（draft・problems・ops・report）・`agent/rk/commands/template.py`（`rk template`）・
@@ -123,3 +123,47 @@
 2. 赤ピンの整理（K-4）の後、試験環境で 1 拠点 1 曜日の登録 → `rk verify` → 週を作って `rk level` と突き合わせ。
 3. `rk apply` で `source.master_hash` も読み直して比べる（今は commit の時だけ確かめる）。
 4. 職員の数のもしもで「どのコースを閉じるか」を選べるように（今はラベルの後ろから）。
+
+---
+
+## 6. B（アプリの画面）の実装 — 2026-10-12（コミット・デプロイ前）
+
+**状態**: backend（表・API・最適化ジョブ）・画面（/schedule/template）・rk の道具・テストまで入れた。拠点の feature flag `template_workspace` は**既定 OFF**（`office_feature_flags` に行が無い）。PO の拠点だけ ON にして試す。
+
+### 6-1. デプロイの注意（必ず一緒に）
+- **migration は 0091_agent_schema（らく助エージェントの中継）と 0092_template_drafts を一緒にデプロイする**（0092 の down_revision が 0091）。0092 は表 3 つを作るだけで、flag が OFF なら画面・API は閉じたまま。
+- **backend のイメージに `ortools`（>=9.10,<10）を追加**した（`pyproject.toml`・`requirements.txt`）。wheel 約 30MB・展開後およそ 100MB 増える。イメージを作り直す（`--build`）こと。ortools が無いと最適化だけが「部品が入っていません」で止まり、ほかは動く。
+- 最適化は backend の別プロセス（`python -m app.services.template_ws.solve`）で動く。ジョブの状態はそのプロセスの中だけ（uvicorn 1 ワーカー前提・再起動で途中のジョブは消えるが下書きは壊れない）。
+- ON にする: `POST /api/v1/office-feature-flags {office_id, feature_key: "template_workspace", enabled: true}`。
+
+### 6-2. 作ったもの
+| 層 | 場所 |
+|---|---|
+| 表 | `template_drafts`（version 楽観ロック・params=もしも+scope+患者ごとの指紋・metrics）・`template_draft_slots`（枠。source=master/optimised/manual/new・locked・changed・reason）・`template_draft_steps`（編集の履歴。actor=human/agent・kind・理由・変えた枠の前後・取り消し済みか）。`backend/alembic/versions/0092_template_drafts.py`・`backend/app/models/template_draft.py` |
+| 計算 | `backend/app/services/template_ws/`。**agent/ のコードは backend のイメージに入らない**ので、`model.py`（= agent/tools/courseplan/model.py）・`problems.py`（= agent/tools/template_ws/problems.py）・`solve.py`（= agent/tools/courseplan/solve.py）・`wl_core.py`（= docs/tools/week-leveling/solver.py の部品）は**写し**（重複）。元を変えたら両方そろえる。`solve.check_same_rules` が決まりの値の食い違いを止める。`engine.py`（ops.py の純粋な部分）・`raw.py`（extract の SQL を ORM で）・`service.py`・`optimise.py`・`commit.py` は backend 専用 |
+| API | `/api/v1/template-ws`（`backend/app/api/v1/template_ws.py`）。管理者のみ＋flag ON の拠点だけ。`availability`・`drafts`（一覧/作る）・`drafts/{id}`（ETag・`compare_with`）・`/version`（3 秒ポーリング用）・`move`・`whatif`・`add-patient`・`remove-patient`・`undo`・`redo`・`optimise`（202→`/jobs/{id}`）・`compare`・`inputs`・`commit-preview`・`commit`・`week-preview`・`week-apply`・`steps` |
+| 画面 | `/schedule/template`（スケジュール画面の道具のところにリンク。管理者・flag ON のときだけ）。`frontend/components/template-ws/`・`frontend/lib/queries/templateWs.ts`・`frontend/lib/templateWs/` |
+| 道具 | `rk template draft-list/draft-show/draft-move/draft-optimise/draft-whatif/draft-undo/draft-redo`（`agent/rk/commands/template.py`）。ローカル JSON の `rk template new/solve/…` は従来どおり残す（バックエンドが無いときの代わり） |
+
+### 6-3. 共同作業台（人とらく助エージェントが同じ下書きを触る）
+- 下書きへの変更は**必ず API を通り**、編集の履歴（seq・actor・actor_user_id・kind・理由・変えた枠の前後）に残る。actor は API では `human`/`agent`、画面の表示は「あなた」「らく助エージェント」。
+- **取り消す/やり直す**は下書きの履歴だけ（アプリの op-log とは別）。新しい編集でやり直しの枝は消える。
+- 変更系は `expected_version` を送り、違えば **409**（画面は「ほかで変わりました。最新を読み込みました」）。最適化は計算の間に版が進んだら 409 で捨てる。
+- 画面は 3 秒ごとに `/version` を見て、変わっていれば読み直す。最新の編集は小さなカード（誰が・理由・何枠）と、盤面の縁取りで見える。
+- **下書きの編集に承認は要らない**。承認番号＋`rk plan check` が要るのは出口だけ。relay の POST 許可は `agent/rk/readonly_posts.py` の `DRAFT_EDIT_POSTS`（move/whatif/add-patient/remove-patient/optimise/undo/redo/作る）に入れた。**出口（commit・week-apply）は入れていない**＝エージェントは直接押せない。
+
+### 6-4. 出口は 2 つ（PO）
+1. **① 固定訪問（型）に登録** — `commit-preview`（患者ごとの変わる枠・コース N・時刻 M・新しい枠 K・止める理由）→ `commit`（`confirm:true`）。**患者マスタの PUT と同じ関数**（`apply_put_fixed_visits`。PUT の中身を関数に出しただけで挙動は同じ）を患者ごとに呼び、**1 トランザクション**。下書きを作った後に scope の患者の枠の指紋が変わっていたら断る（`base_snapshot_hash`・患者ごとの指紋は `params.basis`）。赤の時刻を変える・仮の職員のコース・もしもの希望を使った下書きは登録できない。監査（`audit_logs`）に残る。「登録すると、次に『週を生成』した週から反映されます」。
+2. **② この週のコースに入れる** — 選んだ ISO 週 1 つだけ（型は変えない）。`week-preview` が **コースが変わる訪問 N・時刻が変わる訪問 M・今週だけ足す訪問 K・その週に無くて入れられない枠 L（理由つき）**を返す。週が作られていなければ断る。`week-apply` は `week_hash`（その週の訪問の指紋）が違えば 409。経路は週画面と同じ `_apply_visit_move_week_only`（コースの解決/作成・担当の付け替え）と訪問の追加。コースの担当が週に居なければ**担当なしのまま入れて一覧に出す**。**op-log を 1 グループ**で記録（時刻 = `move_visit_week_only`・コース = 新しい op `set_visit_course`・足す = `restore_visits`/`soft_delete_visits`）＝アプリの「戻る」1 回で戻る（テストで確認）。2 名体制の枠は今は入れられない（L に理由つきで出る）。
+
+### 6-5. 最適化の前提を見せる（`GET /drafts/{id}/inputs`・画面の「計算の前提」）
+距離（患者の座標から、直線 20km/h・別の家へ 8 分・約 100m 以内は同じ建物で 0 — 患者どうしの移動時間の表つき）・職員の勤務/休み/固定イベント（職員マスタ）・昼休み・上限・時刻の決まり方（**赤ピン=曜日と時刻を守る → 赤でない枠は今の時刻を第一に、だめなら希望の範囲の中だけ。曜日は動かさない**）を、そのまま返す。
+
+### 6-6. PO の決め事の反映
+コースの数 = その曜日に出勤の職員（新人を除く・マネージャーを含む）／時刻は希望の範囲の中だけ（赤は固定）／曜日は動かさない／コースの無い枠も入れてよい／枠の無い方（PFV 無し・希望あり）は最適化で下書きに置く（置けなければトレイに理由）。
+
+### 6-7. 残り・既知の制限
+- 画面の文脈（`{screen, week?, patient_id?, staff_id?, draft_id?, selected?}`）をウィジェットが発話に付ける部分と、中継がそれを発話の頭の文脈行にする部分は、**agent/relay と frontend/components/agent の担当**（このタスクの範囲外）。agent/AGENTS.md の「画面の文脈」「作業場モード」の約束と evals（stub）だけ入れた。
+- 画面を右の会話欄に統合するモック（rakusuke-template-workspace-mock.html v2）のレイアウトは未対応（エージェントの窓の移動は components/agent 側）。
+- ジョブの状態は 1 プロセスのメモリ。2 名体制の枠の手での移動・週への投入は未対応。2 つ目の出口は「戻る」の `set_visit_course` を op_log_service に足した（既存の op は変えていない）。
+- 実機（ブラウザ）での操作確認と、本番に近いデータでの最適化の所要時間は未確認（テストは SQLite・小さな世界）。

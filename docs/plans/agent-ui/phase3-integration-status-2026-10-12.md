@@ -135,3 +135,40 @@
 ### 6-5. 試験
 
 `PYTHONPATH=agent python -m pytest agent/tests agent/relay/tests -q -p no:asyncio` → **414 件通る・3 件 skip**（Codex の試験 `agent/relay/tests/test_codex.py` 44 件を含む: 金型 4・伏せ字の確かめ・質問カード・文の選択肢は承認にならない・承認の物差し 11・締め付け・rules〔手元に codex があれば `execpolicy check` も〕・偽の app-server〔`tests/fake_codex.py`〕での流れ・始めない 3 通り・承認の答えと監査・一つ下の Sol・止める・見張り 6・中継の組み込み）。
+
+---
+
+## 7. 堅くした 4 点（staging の前・2026-10-12 追記）
+
+### 7-1. 認証情報の隔離（お客様が使う前に必須だったもの・実装と実測）
+- **変えたこと**: ログイン情報（`~/.claude/.credentials*`・`~/.codex/auth.json`）は CLI の uid **10002** だけが読む。**モデルのコマンドは別 uid 10004（agentx）の実行係で走る**（`agent/deploy/runner/entrypoint.sh`・`execd.py`・`bx`）。箱は root で起動し（capability は SETUID/SETGID/SETPCAP だけ・何も待ち受けない）、runner/CLI と実行係を capability 0・no-new-privs で起こす。
+  - claude: `CLAUDE_CODE_SHELL_PREFIX=/opt/runner/bx` → Bash の道具の全コマンドが execd 経由。届かなければ走らせず 126。
+  - codex: `CODEX_EXEC_SERVER_URL`（uid 10004 の `codex exec-server`）。app-server はローカルで何も走らせず（実測: 無い環境は `local environment is not configured`）、コマンドもファイル操作も実行係の環境に出る。`RK_*`・PATH は `-c shell_environment_policy.set` で渡し、`allow_login_shell=false`（ログインシェルは PATH を戻して rk が見えなくなる）。
+  - CLI の uid で動く道具（Claude の Read/Edit/Grep/Glob）: `permissions.deny`（`//home/agent/**`）＋中継の許可の返事で断る。
+  - compose: 箱を `user: "0:0"` ＋ `cap_add: SETUID/SETGID/SETPCAP`、tmpfs `/run/x`（ソケット）・`/home/agentx`、healthcheck は agent の uid で実行係のソケットも見る。作業フォルダーはグループ 10005 の 2770。
+- **実証**（箱の中・本物の claude 2.1.296 / codex 0.162.1・偽のモデル・ダミーの認証ファイル）: `bash agent/deploy/tests/isolation_e2e.sh <image>` → **13/13**。モデルの `cat` は `Permission denied`・`id -u`=10004・ダミーの秘密が結果に出ない（claude の Bash・Read の道具・codex のシェル）／CLI 自身（10002）はダミーを読める／実行係に届かなければ bx は走らせない。codex の実行係で `which rk`=`/srv/agent/bin/rk`・`RK_RELAY_TOKEN` あり。部品の試験: `agent/relay/tests/test_credential_isolation.py`（9 件）。
+- **残る危険**（`agent/deploy/README.md` §9-(1)）: Claude の道具のシンボリックリンク経由は未確認（staging で）／実行係のコマンドは別会話の `RK_RELAY_TOKEN` を `/proc` から読める（同時 2 会話・承認番号は画面だけなので書き込みの関所は破れない）／本物の OAuth のログインでの実証は staging で／CLI の版を上げるたびに `isolation_e2e.sh` を流す。
+- **運用が変わる所**: 箱の `docker exec` には **`-u 10002:10000`** が要る（README のログイン手順・`cleanup/agent-cleanup.sh` は直した）。image の `ENTRYPOINT` が `entrypoint.sh` になった（`CMD` ではない）。
+
+### 7-2. 案の HTML を保存しない
+`plans.html_a4`・`html_a3` 列を無くし（0091 は未適用なので `backend/alembic/versions/0091_agent_schema.py` と `relay/db.py` を書き換え）、`RelayService.plan_html` が保存した案の JSON から A4/A3 を開くたびに描く。署名つきの印刷 URL（5 分）は同じ。A3 は時間割のある案だけ（無ければ 404・案のイベントの `html_urls` にも出さない）。試験: `test_public.py::test_plan_html_is_rendered_on_demand_not_stored`。
+
+### 7-3. ディスクの空き
+`GET /agent-relay/engine` に `disk{free_gb, low, blocked, warning}` を追加（パスは返さない）。空き **5 GB 未満**は新しい相談・新しい CLI を起こさず、穏やかな日本語で 503（作業中の相談は続く）。10 GB 未満は警告だけ。`retention.disk_status` に `blocked` を足し、見るのは中継のデータ置き場（`AGENT_RELAY_DATA_DIR`＝`/data`）。試験: `test_public.py::test_disk_status_in_engine_and_new_sessions_stop_below_5gb`。**画面側**（`frontend/`）が `disk.warning` を出す部分は別担当。
+
+### 7-4. 試験（手元）
+`PYTHONPATH=agent python -m pytest agent/tests agent/relay/tests agent/evals/tests -q -p no:asyncio` → **447 件通る・7 件 skip**（skip は unix 専用の試験で Windows 上のもの。箱の中では 9 件とも通った）。箱の image・中継の image は Docker Desktop で build 済み。compose は `docker compose config` で構文を確認（外部の網があるので `up` は未実施）。
+
+### 7-5. staging に置く手順（追加分・§4 の前後に）
+1. 箱の image を**作り直す**（`ENTRYPOINT`・ユーザーが変わった）。volume `stg-agent-home` は持ち主 10002 のまま使える。`stg-agent-sessions` は作り直すか、`entrypoint.sh` が最初に `chgrp -R 10005` するので古い会話はそのままでよい。
+2. 立てたら `deploy/README.md` §3-7b の (2)(3) を流す（capability 0・no-new-privs・`bx` で読めないこと）。
+3. PO のログイン後、**本物のログイン情報**で §3-7b (3) と `bash agent/deploy/tests/isolation_e2e.sh` の考え方（モデルに `cat ~/.codex/auth.json` を頼んで断られること）を確かめる。Claude の Read で作業フォルダー内のリンク→`/home/agent` を試して断られることも見る。
+4. migration は 0091（html 列なし）を流す。ディスク: `curl` ではなく画面かログインした状態で `/agent-relay/engine` の `disk` を見る。
+
+### 7-6. レビュー指摘の対応（隔離の追加・2026-10-12 夜）
+- **[HIGH] `--settings` の差し替え**: 会話のフォルダー d を agent 持ち 0750 にし（実行係は入れるが消せない・付け替えられない）、書けるのは d/work（2770）だけ。`--settings` は `/run/agent/<会話>.settings.json`（実行係は入れない）に `O_EXCL|O_NOFOLLOW` で毎回新しく書く。`entrypoint.sh` の chmod は `*/work` だけ。試験: 設定の差し替え・削除・フォルダーの付け替えが Permission denied、設定のハッシュが変わらない。
+- **[MEDIUM] 逃げる子**: execd を subreaper にし、コマンド終了時と 2 秒ごとに、要求から外れた子孫・init の子になった uid 10004 の残りを止めて reap。PID 名前空間は capability 0 では使えないため掃除で代えた。試験: `setsid`・二重 fork・`nohup` の子が残らない（claude 経路）／codex 経路の `setsid` の子も定期の掃除で片づく。
+- **[確認] リンク**: execd が work の外を指すシンボリックリンクを要求の前後と定期に消す（試験: /home/agent へのリンクが消え、work 内を指すリンクは残る）。codex のファイル操作は app-server 側ではなく実行係に出る（`fs/readFile` が `local filesystem is not configured`・試験に入れた）。`apply_patch` の道具そのものは偽のモデルで出ず未実行（staging で本物のモデルにて確認）。
+- **[MEDIUM] plan_html**: A4 の描画失敗は 422「この案は帳票にできませんでした…」の穏やかな文（500 にならない）。`(plan_sha256, size)` の小さな cache（32 件）。
+- **[MEDIUM] ディスク**: 5 GB 未満で止めるのは「まだ CLI の会話を持たない新しい相談」だけ（`_ensure_live` の 1 行を `_disk_guard(session)` に）。会話のある相談の再開は止めない。
+- 試験: `isolation_e2e.sh` **19/19**、`pytest agent/tests agent/relay/tests agent/evals/tests` **495 件通る・8 skip**（skip は unix 専用で、箱側の python 3.12 では `test_credential_isolation.py` 10 件とも通った）。
