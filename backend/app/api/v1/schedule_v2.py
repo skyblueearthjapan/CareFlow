@@ -851,11 +851,30 @@ async def diff_add_endpoint(
 
     kpi = _build_kpi_overall(before_visits, after_visits, warnings=warnings, config=config)
 
+    # 2026-10-13 (PO): 入れられなかった方 (提案が 1 件も出なかった方) と理由. 提案が
+    # 出た方は除く (G-92 のフォールバック成立者は run_v2_pipeline 側で除外済).
+    _proposed_pids = {p.patient_id for p in proposals}
+    unassigned = [
+        UnassignedPatient(
+            patient_id=u["patient_id"],
+            patient_name=u["patient_name"],
+            patient_code=u.get("patient_code"),
+            reason=u["reason"],
+            reason_detail=u.get("reason_detail"),
+            dropped_at_stage=u.get("dropped_at_stage"),
+            reason_label=u.get("reason_label") or "",
+            weekdays=list(u.get("weekdays") or []),
+        )
+        for u in result.get("unassigned_patients", []) or []
+        if u["patient_id"] not in _proposed_pids
+    ]
+
     return AutoScheduleV2DiffAddResponse(
         proposal_batch_id=result["proposal_batch_id"],
         proposals=proposals,
         kpi_overall=kpi,
         warnings=[_warning_to_out(w) for w in warnings],
+        unassigned_patients=unassigned,
     )
 
 
@@ -929,6 +948,8 @@ async def full_optimize_endpoint(
             reason=u["reason"],
             reason_detail=u.get("reason_detail"),
             dropped_at_stage=u.get("dropped_at_stage"),
+            reason_label=u.get("reason_label") or "",
+            weekdays=list(u.get("weekdays") or []),
         )
         for u in unassigned_raw
     ]
@@ -1934,7 +1955,6 @@ async def staff_off_week(
     target_visits.sort(key=lambda item: (item[0].start_time, str(item[0].id)))
     skipped.sort(key=lambda v: (v.start_time, str(v.id)))
     skipped_visit_ids = [v.id for v in skipped]
-
 
     # NG スタッフ / 性別制限 (§7-2): 引き受け先 × 対象患者を **一括**で検査する。
     # 1 件ずつ 422 を返すと確認ダイアログが件数分出るため、まとめて 1 回で聞く。

@@ -225,6 +225,8 @@ async def test_diff_add_unplaceable_pool_visit_is_unassigned_not_m(db) -> None:
     unassigned = {u["patient_id"]: u for u in result["unassigned_patients"]}
     assert pool.id in unassigned
     assert unassigned[pool.id]["reason"] not in (None, "unknown"), unassigned[pool.id]
+    assert unassigned[pool.id]["reason_label"] == "移動が間に合わない", unassigned[pool.id]
+    assert unassigned[pool.id]["weekdays"] == [0]
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +269,12 @@ async def test_diff_add_drops_proposal_when_course_staff_busy_in_other_office(db
         if w.type == "diff_add_conflict" and w.patient_id == pool.id
     ]
     assert any("担当職員が同じ時刻に別の訪問" in m for m in msgs), msgs
-    assert pool.id in {u["patient_id"] for u in result["unassigned_patients"]}
+    un = {u["patient_id"]: u for u in result["unassigned_patients"]}
+    assert pool.id in un
+    # 拠点 × 曜日の 「N グループ必要」 などの広い注意書きより、 決め手の理由を出す.
+    assert un[pool.id]["reason"] == "staff_time_conflict", un[pool.id]
+    assert un[pool.id]["reason_label"] == "担当の職員が同じ時刻にほかの訪問"
+    assert un[pool.id]["weekdays"] == [0]
 
 
 @pytest.mark.asyncio
@@ -355,3 +362,106 @@ async def test_diff_add_no_pfv_pool_patient_not_blocked_by_own_preferred_before(
     assert not [
         w for w in result["warnings"] if w.type == "diff_add_conflict" and w.patient_id == pool.id
     ]
+
+
+# ---------------------------------------------------------------------------
+# 6. 応答の形: diff-add / full-optimize に 「入れられなかった方」 の一覧
+# ---------------------------------------------------------------------------
+
+
+def test_unassigned_reason_labels_are_short_japanese() -> None:
+    from app.services.scheduling.auto_allocator_v2 import _unassigned_reason_label
+
+    assert _unassigned_reason_label("staff_time_conflict", "diff_add_conflict") == (
+        "担当の職員が同じ時刻にほかの訪問"
+    )
+    assert (
+        _unassigned_reason_label("course_capacity", "course_capacity") == "コースの人数がいっぱい"
+    )
+    assert _unassigned_reason_label("course_overflow", "course_count") == "コースの人数がいっぱい"
+    assert (
+        _unassigned_reason_label("fixed_time_conflict", "travel_time_shortage")
+        == "移動が間に合わない"
+    )
+    assert (
+        _unassigned_reason_label("fixed_time_conflict", "diff_add_conflict")
+        == "希望の時間帯に空きが無い"
+    )
+    assert _unassigned_reason_label("unknown", None) == "理由を特定できませんでした"
+
+
+async def _api_seed_unplaceable(db):
+    office = await _office(db, name="cc-api")
+    s1 = await _staff(db, office=office, name="cc-api-staff", weekdays=[0])
+    c_a = await _course(db, office=office, code="A", staff=s1)
+    pa = await _patient(db, code="CC-API1", office=office, lat=35.65, lng=140.10)
+    db.add(_visit(pa, c_a, time(10, 0), time(10, 30)))
+    pool = await _patient(
+        db,
+        code="CC-API-POOL",
+        office=office,
+        lat=35.66,
+        lng=140.11,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "10:30",
+            "time_type": "固定",
+        },
+    )
+    await db.commit()
+    return office, pool
+
+
+@pytest.mark.asyncio
+async def test_diff_add_api_returns_unassigned_patients_with_reason(client, db) -> None:
+    """diff-add の応答に unassigned_patients (患者 id・名前・曜日の候補・理由) が乗る."""
+    from tests.test_schedule_v2_api import _bearer, _make_user
+
+    admin = await _make_user(db, email="cc-api-diff@example.com", role="admin")
+    office, pool = await _api_seed_unplaceable(db)
+
+    res = await client.post(
+        "/api/v1/schedule/v2/diff-add",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)]},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert [p for p in body["proposals"] if p["patient_id"] == str(pool.id)] == []
+    un = [u for u in body["unassigned_patients"] if u["patient_id"] == str(pool.id)]
+    assert len(un) == 1, body["unassigned_patients"]
+    assert un[0]["patient_name"] == "患者CC-API-POOL"
+    assert un[0]["weekdays"] == [0]
+    assert un[0]["reason_label"] == "移動が間に合わない"
+    assert un[0]["reason"] == "fixed_time_conflict"
+
+
+@pytest.mark.asyncio
+async def test_full_optimize_api_unassigned_patients_have_label_and_weekdays(client, db) -> None:
+    """full-optimize の unassigned_patients にも reason_label / weekdays が乗る."""
+    from tests.test_schedule_v2_api import _bearer, _make_user
+
+    admin = await _make_user(db, email="cc-api-full@example.com", role="admin")
+    office = await _office(db, name="cc-api-full")  # 出勤 0 名 → 全員入らない
+    p = await _patient(
+        db,
+        code="CC-API-FULL",
+        office=office,
+        weekly_pattern={
+            "preferred_weekdays": ["Mon"],
+            "preferred_start": "10:00",
+            "time_type": "固定",
+        },
+    )
+    await db.commit()
+
+    res = await client.post(
+        "/api/v1/schedule/v2/full-optimize",
+        headers=_bearer(admin),
+        json={"iso_year": 2026, "iso_week": 20, "office_ids": [str(office.id)]},
+    )
+    assert res.status_code == 200, res.text
+    un = [u for u in res.json()["unassigned_patients"] if u["patient_id"] == str(p.id)]
+    assert len(un) == 1, res.json()["unassigned_patients"]
+    assert un[0]["reason_label"] == "コースの人数がいっぱい", un[0]
+    assert un[0]["weekdays"] == [0]

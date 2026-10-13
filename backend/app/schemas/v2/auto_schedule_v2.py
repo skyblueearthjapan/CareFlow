@@ -339,6 +339,9 @@ class AutoScheduleV2DiffAddResponse(BaseModel):
     proposals: list[V2DiffAddProposal] = Field(default_factory=list)
     kpi_overall: V2KpiOverall = Field(default_factory=V2KpiOverall)
     warnings: list[V2WarningOut] = Field(default_factory=list)
+    # 2026-10-13 (PO): 保留プールで入れられなかった方 (提案が 1 件も出なかった方) と理由.
+    # 提案が 0 件のとき、 利用者に 「なぜ出ないか」 を見せるため.
+    unassigned_patients: list[UnassignedPatient] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +396,8 @@ UnassignedReasonOut = Literal[
     # Wave 4 (Phase C): 希望時刻から CARE_ALARM_UNASSIGNED_THRESHOLD_MIN (=60) 分超
     # で配置された固定/時間帯 patient. ケアアラーム閾値超過のため未割当扱い.
     "care_alarm_exceeded",
+    # 2026-10-13: 提案先コースの担当職員が同じ時刻に別の訪問 (他拠点のコースを含む).
+    "staff_time_conflict",
     "unknown",
 ]
 
@@ -429,6 +434,15 @@ class UnassignedPatient(BaseModel):
     reason_detail: str | None = None
     # P2: どの stage で未割当が確定したか.
     dropped_at_stage: UnassignedStageOut | None = None
+    # 2026-10-13 (PO): 画面・エージェントに出す短い日本語の理由
+    # (例: 「担当の職員が同じ時刻にほかの訪問」「コースの人数がいっぱい」「移動が間に合わない」).
+    reason_label: str = ""
+    # 2026-10-13 (PO): 試した曜日の候補 (0=月 .. 6=日). 候補が無かった方は空.
+    weekdays: list[int] = Field(default_factory=list)
+
+
+# diff-add の応答は UnassignedPatient より前に定義しているので、 ここで参照を解決する.
+AutoScheduleV2DiffAddResponse.model_rebuild()
 
 
 class AutoScheduleV2FullOptimizeResponse(BaseModel):

@@ -429,8 +429,36 @@ UnassignedReason = Literal[
     # Wave 4 (Phase C): 希望時刻から CARE_ALARM_UNASSIGNED_THRESHOLD_MIN (=60) 分超で
     # 配置された固定/時間帯 patient. ケアアラーム閾値超過のため unassigned 扱い.
     "care_alarm_exceeded",
+    # 2026-10-13: 提案先コースの担当職員が同じ時刻に別の訪問を持つ (他拠点のコースを含む).
+    "staff_time_conflict",
     "unknown",  # 上記いずれにも一致しない fallback
 ]
+
+# 2026-10-13 (PO): 入れられなかった方の理由を画面・エージェントで見せる短い日本語.
+# reason (enum) が粗い所 (fixed_time_conflict) は、 決め手になった注意書きの type で分ける.
+_UNASSIGNED_REASON_LABEL: dict[str, str] = {
+    "no_coordinates": "住所の位置が未登録",
+    "no_primary_office": "拠点が未設定",
+    "no_weekly_pattern": "希望の訪問パターンが未登録",
+    "acceptance_calendar": "受け入れ表で × の枠",
+    "course_capacity": "コースの人数がいっぱい",
+    "course_overflow": "コースの人数がいっぱい",
+    "manager_short": "コースの人数がいっぱい",
+    "same_address_split": "同じ建物の方と同じコースに入れない",
+    "same_address_three_or_more": "同じ建物の方と同じコースに入れない",
+    "fixed_time_conflict": "希望の時間帯に空きが無い",
+    "lunch_break": "昼休みの時間帯",
+    "care_alarm_exceeded": "希望の時間帯に空きが無い",
+    "staff_time_conflict": "担当の職員が同じ時刻にほかの訪問",
+    "unknown": "理由を特定できませんでした",
+}
+
+
+def _unassigned_reason_label(reason: str, warning_type: str | None) -> str:
+    """未割当理由の短い日本語. 移動時間不足は fixed_time_conflict から分けて出す."""
+    if reason == "fixed_time_conflict" and warning_type == "travel_time_shortage":
+        return "移動が間に合わない"
+    return _UNASSIGNED_REASON_LABEL.get(reason, _UNASSIGNED_REASON_LABEL["unknown"])
 
 
 # P2: 未割当が確定した stage. UI で「どの段階で外れたか」を案内するため.
@@ -6295,6 +6323,8 @@ def _classify_warning_reason(
     # silent drop fix: diff_add で既存固定枠 / pool 内重複によりスキップされた visit.
     # _filter_conflicting_pool_visits / _filter_pool_internal_conflicts が emit する.
     if wtype == "diff_add_conflict":
+        if "担当職員が同じ時刻" in msg:
+            return ("staff_time_conflict", "general")
         return ("fixed_time_conflict", "general")
     # 一般 warning の中で「昼休憩」"H10" 含む → lunch_break.
     if wtype == "general" and ("昼休憩" in msg or "H10" in msg):
@@ -6320,6 +6350,7 @@ def _identify_unassigned_patients(
     after_visits: list[V2Visit],
     warnings: list[V2Warning],
     exclude_patient_ids: set[UUID] | None = None,
+    candidate_weekdays_by_patient: dict[UUID, set[int]] | None = None,
 ) -> list[dict[str, Any]]:
     """Mode 2 (full_optimize) で after_visits に出てこなかった患者と理由を抽出する.
 
@@ -6332,6 +6363,8 @@ def _identify_unassigned_patients(
         exclude_patient_ids: Phase G-92 — 未割当判定から除外する patient_id 集合.
             固定→希望フォールバックが成立した患者は希望候補が proposal として
             残るため (after_visits には痕跡が無くても) 未割当に計上しない.
+        candidate_weekdays_by_patient: 2026-10-13 — 患者ごとに試した曜日 (提案の候補).
+            返り値の ``weekdays`` に入れる (画面で 「どの曜日を探したか」 を出す).
 
     Returns:
         ``[{"patient_id": UUID, "patient_name": str, "patient_code": str | None,
@@ -6347,6 +6380,7 @@ def _identify_unassigned_patients(
         reason: UnassignedReason
         stage: UnassignedStage | None
         reason_detail: str | None = None
+        reason_wtype: str | None = None
         # Stage 前段 (build_visits_for_pool で skip される) の判定を優先する.
         # build_visits_for_pool は lat/lng/primary_office_id のいずれかが None なら skip.
         if p.lat is None or p.lng is None:
@@ -6360,14 +6394,33 @@ def _identify_unassigned_patients(
         else:
             reason = "unknown"
             stage = None
-            # P2: warning.affected_patient_ids での照合を最優先.
             matched_by_id = False
+            # 2026-10-13: その患者の提案を落とした決め手の注意書き (g94 / 担当職員の
+            # 時刻の重なり = diff_add_conflict 「提案不可」) を最優先する. 拠点 × 曜日の
+            # 「N グループ必要」 などの広い注意書きは多くの患者を affected に含むため、
+            # 先に当たると職員の重なりで外した方が 「コースの枠を超える」 と出ていた.
             for w in warnings:
+                if (
+                    w.type == "diff_add_conflict"
+                    and w.patient_id == p.id
+                    and w.message
+                    and "提案不可" in w.message
+                ):
+                    classified = _classify_warning_reason(w)
+                    if classified is not None:
+                        reason, stage = classified
+                        reason_detail = w.message[:200]
+                        reason_wtype = w.type
+                        matched_by_id = True
+                        break
+            # P2: warning.affected_patient_ids での照合を最優先.
+            for w in warnings if not matched_by_id else []:
                 if p.id in (w.affected_patient_ids or []):
                     classified = _classify_warning_reason(w)
                     if classified is not None:
                         reason, stage = classified
                         reason_detail = w.message[:200] if w.message else None
+                        reason_wtype = w.type
                         matched_by_id = True
                         break
             # 後方互換 fallback: affected_patient_ids が未埋めの古い warning や
@@ -6380,6 +6433,7 @@ def _identify_unassigned_patients(
                         if classified is not None:
                             reason, stage = classified
                             reason_detail = w.message[:200] if w.message else None
+                            reason_wtype = w.type
                             matched_by_patient = True
                             break
             # silent drop fix (#2): どの warning にも一致せず reason=unknown 確定する
@@ -6402,6 +6456,8 @@ def _identify_unassigned_patients(
                 "reason": reason,
                 "reason_detail": reason_detail,
                 "dropped_at_stage": stage,
+                "reason_label": _unassigned_reason_label(reason, reason_wtype),
+                "weekdays": sorted((candidate_weekdays_by_patient or {}).get(p.id, set())),
             }
         )
     return out
@@ -7576,6 +7632,8 @@ async def run_v2_pipeline(
         config=config,
     )
 
+    candidate_weekdays_by_patient: dict[UUID, set[int]] = defaultdict(set)
+
     # 機能 A: pool_visits 単独で配置 (既存 PFV はそのまま)
     # 機能 B: pool_visits = 全 active patient ベースで再配置
     #
@@ -7651,8 +7709,14 @@ async def run_v2_pipeline(
         # (weekly_pattern.entries が同曜日 2 件以上ある稀ケース対策).
         pool_visits = _filter_pool_internal_conflicts(pool_visits, warnings)
         after_visits = filtered_before + list(pool_visits)
+        # 2026-10-13: 入れられなかった方の一覧に 「試した曜日」 を出すため、 衝突などで
+        # 落とす前の候補曜日を患者ごとに覚えておく (固定 / 希望の両方).
+        for _cv in list(pool_visits) + list(fallback_preferred_by_key.values()):
+            candidate_weekdays_by_patient[_cv.patient_id].add(_cv.weekday)
     else:
         after_visits = list(pool_visits)
+        for _cv in pool_visits:
+            candidate_weekdays_by_patient[_cv.patient_id].add(_cv.weekday)
         fallback_preferred_by_key = {}
 
     # W41 v2 (同住所同時刻集約 ソフト制約): _enforce_h2_same_address の前に呼ぶ.
@@ -8330,6 +8394,7 @@ async def run_v2_pipeline(
         ],
         warnings=warnings,
         exclude_patient_ids=_g92_fallback_pids,
+        candidate_weekdays_by_patient=candidate_weekdays_by_patient,
     )
 
     return {
