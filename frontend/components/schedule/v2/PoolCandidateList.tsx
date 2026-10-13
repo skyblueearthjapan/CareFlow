@@ -182,7 +182,7 @@ function excludedReasonLabel(reason: string): string {
  * （+1名相談）の呼びかけと並列に出し、管理者が「ずらす」か「+1名」かを選べる。
  */
 // 設計書 unblock-consult-design.md §3 / §4.5 W-15: この4件が発動条件（新 reason 追加時は要更新）。
-const UNBLOCK_TRIGGER_REASONS = [
+export const UNBLOCK_TRIGGER_REASONS = [
   'no_gap',
   'no_pair_slot',
   'travel_shortage',

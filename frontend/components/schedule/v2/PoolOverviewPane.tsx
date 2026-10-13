@@ -28,7 +28,7 @@ import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { usePoolOverviewMutation } from '@/lib/queries/poolOverview';
 import { patientNameFromMessage } from '@/components/schedule/v2/patientNotActiveGateContext';
-import { EXCLUDED_REASON_LABEL } from './PoolCandidateList';
+import { EXCLUDED_REASON_LABEL, UNBLOCK_TRIGGER_REASONS } from './PoolCandidateList';
 import { SpecialVisitPoolSection } from './SpecialTicketPlacePanel';
 import {
   PoolGroupedByWeekday,
@@ -123,6 +123,67 @@ function NoSlotBadge({ reason }: { reason: string | null | undefined }) {
   );
 }
 
+/**
+ * 2026-10-13 (PO): 入れられる枠が無かった理由の短い日本語 (利用者向け)。
+ * 未知の理由は EXCLUDED_REASON_LABEL → そのままの順で出す。
+ */
+const NO_SLOT_SHORT_REASON: Record<string, string> = {
+  capacity_full: 'コースの人数がいっぱい',
+  travel_shortage: '移動が間に合わない',
+  no_gap: '希望の時間帯に空きが無い',
+  lunch_window: '昼休みの時間帯',
+  course_closed: 'その曜日にコースが無い',
+  no_pair_slot: '2 名で入れる組が無い',
+};
+
+export function noSlotShortReason(reason: string | null | undefined): string {
+  if (!reason) return '理由を特定できませんでした';
+  return NO_SLOT_SHORT_REASON[reason] ?? overviewExcludedLabel(reason);
+}
+
+/**
+ * 2026-10-13 (PO): 個別の提案が 0 件の方に 「入れられる枠が見つかりませんでした」と
+ * 理由を出す。詰まり解消の相談 (最大 3 手) で入れられる見込みのある理由なら、
+ * 既存の詰まり解消の入口 (患者詳細の自動探索) へ進む案内を出す。
+ */
+function NoSlotNotice({
+  reason,
+  onOpenUnblock,
+}: {
+  reason: string | null | undefined;
+  onOpenUnblock?: () => void;
+}) {
+  const canUnblock =
+    onOpenUnblock != null &&
+    reason != null &&
+    (UNBLOCK_TRIGGER_REASONS as readonly string[]).includes(reason);
+  return (
+    <div
+      className="w-full rounded border border-warning bg-warning-bg px-2 py-1 text-[11px] text-text-primary"
+      data-testid="pool-overview-no-slot-notice"
+    >
+      <p>
+        入れられる枠が見つかりませんでした
+        <span className="text-text-muted">（理由: {noSlotShortReason(reason)}）</span>
+      </p>
+      {canUnblock ? (
+        <button
+          type="button"
+          className="mt-0.5 text-[11px] font-semibold text-primary underline-offset-2 hover:underline"
+          data-testid="pool-overview-unblock-link"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenUnblock?.();
+          }}
+        >
+          詰まり解消の相談（3 手まで）へ進む
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Props / Handle
 // ─────────────────────────────────────────────────────────────────────────
@@ -146,6 +207,11 @@ export interface PoolOverviewPaneProps extends Omit<PoolGroupedByWeekdayProps, '
    * handleOpenPoolPatientDetail と同じ導線 (patient_id を渡す)。
    */
   onClickUnregisteredPatient?: (patientId: string) => void;
+  /**
+   * 2026-10-13 (PO): 入れられる枠が無かった方の 「詰まり解消の相談（3 手まで）」 へ進む。
+   * 既存の入口 (患者詳細ダイアログで詰まり解消探索を自動発火) を親から渡す。未指定なら案内を出さない。
+   */
+  onOpenUnblock?: (patientId: string) => void;
 }
 
 /**
@@ -175,6 +241,7 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
       onBulkInsert,
       unregisteredPatients = [],
       onClickUnregisteredPatient,
+      onOpenUnblock,
     }: PoolOverviewPaneProps,
     ref,
   ) {
@@ -256,11 +323,17 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
             <div className="flex flex-wrap gap-1 px-1 pb-1 pt-0.5">
               {showDelta ? <DeltaBadge minutes={item!.best_delta_minutes!} /> : null}
               {showNoSlot ? <NoSlotBadge reason={item!.top_excluded_reason} /> : null}
+              {showNoSlot ? (
+                <NoSlotNotice
+                  reason={item!.top_excluded_reason}
+                  onOpenUnblock={onOpenUnblock ? () => onOpenUnblock(patient.id) : undefined}
+                />
+              ) : null}
             </div>
           </div>
         );
       },
-      [renderCard, overviewByPatient],
+      [renderCard, overviewByPatient, onOpenUnblock],
     );
 
     /** 一括投入対象がプール上限を超えているか (先頭 50 名のみ対象) */

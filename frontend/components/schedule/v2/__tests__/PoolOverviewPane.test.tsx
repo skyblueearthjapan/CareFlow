@@ -261,6 +261,76 @@ describe('PoolOverviewPane', () => {
     expect(badge.getAttribute('title')).toBe('コース容量が上限');
   });
 
+  it('2026-10-13: candidate_count=0 → 「入れられる枠が見つかりませんでした」と理由・詰まり解消の案内', () => {
+    mockMutationState.isSuccess = true;
+    mockMutationState.data = {
+      items: [
+        {
+          patient_id: 'p1',
+          best_delta_minutes: null,
+          candidate_count: 0,
+          top_excluded_reason: 'capacity_full',
+          best_slot: null,
+        },
+      ],
+    };
+    const onOpenUnblock = vi.fn();
+    render(
+      <PoolOverviewPane
+        {...BASE_PROPS}
+        patients={[makePatient('p1', '田中')]}
+        onOpenUnblock={onOpenUnblock}
+      />,
+    );
+
+    const notice = screen.getByTestId('pool-overview-no-slot-notice');
+    expect(notice).toHaveTextContent('入れられる枠が見つかりませんでした');
+    expect(notice).toHaveTextContent('コースの人数がいっぱい');
+    const link = screen.getByTestId('pool-overview-unblock-link');
+    expect(link).toHaveTextContent('詰まり解消の相談（3 手まで）');
+    fireEvent.click(link);
+    expect(onOpenUnblock).toHaveBeenCalledWith('p1');
+  });
+
+  it('2026-10-13: 詰まり解消で動かせない理由 (昼休み) や入口が無いときは案内を出さない', () => {
+    mockMutationState.isSuccess = true;
+    mockMutationState.data = {
+      items: [
+        {
+          patient_id: 'p1',
+          best_delta_minutes: null,
+          candidate_count: 0,
+          top_excluded_reason: 'lunch_window',
+          best_slot: null,
+        },
+        {
+          patient_id: 'p2',
+          best_delta_minutes: null,
+          candidate_count: 0,
+          top_excluded_reason: 'travel_shortage',
+          best_slot: null,
+        },
+      ],
+    };
+    const { unmount } = render(
+      <PoolOverviewPane
+        {...BASE_PROPS}
+        patients={[makePatient('p1', '田中')]}
+        onOpenUnblock={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('pool-overview-no-slot-notice')).toHaveTextContent('昼休みの時間帯');
+    expect(screen.queryByTestId('pool-overview-unblock-link')).toBeNull();
+    unmount();
+
+    // 入口 (onOpenUnblock) が渡されていなければ、理由だけ出して案内は出さない.
+    render(<PoolOverviewPane {...BASE_PROPS} patients={[makePatient('p2', '佐藤')]} />);
+    expect(screen.getByTestId('pool-overview-no-slot-notice')).toHaveTextContent(
+      '移動が間に合わない',
+    );
+    expect(screen.queryByTestId('pool-overview-unblock-link')).toBeNull();
+  });
+
   it('未知の top_excluded_reason → そのまま title に表示 (フォールバック)', () => {
     mockMutationState.isSuccess = true;
     mockMutationState.data = {

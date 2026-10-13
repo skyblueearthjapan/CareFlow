@@ -301,6 +301,9 @@ export const diffAddResponseSchema = z.object({
   proposals: z.array(diffAddProposalSchema).default([]),
   kpi_overall: v2KpiOverallSchema,
   warnings: z.array(v2WarningSchema).default([]),
+  // 2026-10-13 (PO): 入れられなかった方 (提案が 1 件も出なかった方) と理由.
+  // unassignedPatientSchema はこの下で定義するので lazy で参照する.
+  unassigned_patients: z.lazy(() => z.array(unassignedPatientSchema)).default([]),
 });
 export type DiffAddResponse = z.infer<typeof diffAddResponseSchema>;
 
@@ -365,6 +368,8 @@ export const unassignedReasonSchema = z.enum([
   // Wave 4 (Phase C): 希望時刻から CARE_ALARM_UNASSIGNED_THRESHOLD_MIN (=60) 分超
   // で配置された固定/時間帯 patient. ケアアラーム閾値超過のため未割当扱い.
   'care_alarm_exceeded',
+  // 2026-10-13: 提案先コースの担当職員が同じ時刻に別の訪問 (他拠点のコースを含む).
+  'staff_time_conflict',
   'unknown',
 ]);
 export type UnassignedReason = z.infer<typeof unassignedReasonSchema>;
@@ -389,6 +394,9 @@ export const unassignedPatientSchema = z.object({
   reason_detail: z.string().nullable().default(null),
   // P2: どの stage で未割当確定したか.
   dropped_at_stage: unassignedStageSchema.nullable().default(null),
+  // 2026-10-13 (PO): 画面に出す短い日本語の理由 / 試した曜日 (0=月). 旧 BE は返さない.
+  reason_label: z.string().default(''),
+  weekdays: z.array(z.number().int()).default([]),
 });
 export type UnassignedPatient = z.infer<typeof unassignedPatientSchema>;
 

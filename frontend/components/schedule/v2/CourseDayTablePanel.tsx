@@ -7191,6 +7191,7 @@ export function CourseDayTablePanel({
                */
               unregisteredPatients={unregisteredActivePatients}
               onClickUnregisteredPatient={handleOpenPoolPatientDetail}
+              onOpenUnblock={(pid) => handleOpenPoolPatientDetail(pid, { autoUnblock: true })}
               renderCard={(p, slotInfo) => {
                 const wp = coerceWeeklyPattern(p.weekly_pattern);
                 // Phase G-44: 不足表示用. 複数体制患者は slot 単位で表示しているので

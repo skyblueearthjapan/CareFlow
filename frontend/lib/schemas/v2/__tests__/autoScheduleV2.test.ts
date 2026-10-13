@@ -24,6 +24,7 @@ import {
   applyIndividualResponseSchema,
   diffAddProposalSchema,
   diffAddProposalSourceSchema,
+  diffAddResponseSchema,
   unassignedPatientSchema,
   v2WarningCategorySchema,
   v2WarningSchema,
@@ -329,5 +330,48 @@ describe('v2WarningCategorySchema (Wave 4 Phase C)', () => {
     }
     expect(v2WarningCategorySchema.safeParse('foo').success).toBe(false);
     expect(v2WarningCategorySchema.safeParse(null).success).toBe(false);
+  });
+});
+
+// 2026-10-13 (PO): diff-add の応答に 「入れられなかった方」 の一覧 (理由の日本語・試した曜日)
+describe('diffAddResponseSchema.unassigned_patients (2026-10-13)', () => {
+  const base = {
+    proposal_batch_id: '00000000-0000-0000-0000-000000000001',
+    proposals: [],
+    kpi_overall: {},
+    warnings: [],
+  };
+
+  it('一覧を受け取り、staff_time_conflict と reason_label / weekdays を保つ', () => {
+    const parsed = diffAddResponseSchema.parse({
+      ...base,
+      unassigned_patients: [
+        {
+          patient_id: '00000000-0000-0000-0000-000000000002',
+          patient_name: '患者A',
+          patient_code: 'P001',
+          reason: 'staff_time_conflict',
+          reason_detail: null,
+          dropped_at_stage: 'general',
+          reason_label: '担当の職員が同じ時刻にほかの訪問',
+          weekdays: [1, 3],
+        },
+      ],
+    });
+    expect(parsed.unassigned_patients).toHaveLength(1);
+    expect(parsed.unassigned_patients[0]!.reason_label).toBe('担当の職員が同じ時刻にほかの訪問');
+    expect(parsed.unassigned_patients[0]!.weekdays).toEqual([1, 3]);
+  });
+
+  it('旧 BE (一覧なし・label なし) でも落ちない', () => {
+    const parsed = diffAddResponseSchema.parse(base);
+    expect(parsed.unassigned_patients).toEqual([]);
+    const u = unassignedPatientSchema.parse({
+      patient_id: '00000000-0000-0000-0000-000000000003',
+      patient_name: '患者B',
+      reason: 'course_capacity',
+    });
+    expect(u.reason_label).toBe('');
+    expect(u.weekdays).toEqual([]);
   });
 });
