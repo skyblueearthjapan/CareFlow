@@ -140,7 +140,7 @@ services:
       - /run/x:size=1m,mode=2770,uid=10004,gid=10005          # 実行係のソケット（agent が使えるのはグループ 10005）
       - /home/agentx:size=64m,mode=0700,uid=10004,gid=10005   # 実行係の HOME（ログイン情報の volume は入れない）
     mem_limit: 1536m   # 相談 3 つを同時に動かすため（2026-10-13）
-    memswap_limit: 1g
+    memswap_limit: 1536m
     pids_limit: 256
     cpus: 1.5
     healthcheck:
