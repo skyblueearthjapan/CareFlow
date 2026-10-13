@@ -20,7 +20,7 @@ describe('Phase G-21 reviewer fixes — zod schemas', () => {
     it('enabled 省略 + enabled_at = null でも parse 成功 (= 未有効レコード)', () => {
       const result = officeFeatureFlagSchema.safeParse({
         office_id: UUID_A,
-        feature_key: 'g21_new_algorithm',
+        feature_key: 'rakusuke_agent',
         enabled_at: null,
         enabled_by_user_id: null,
         note: null,
@@ -31,7 +31,7 @@ describe('Phase G-21 reviewer fixes — zod schemas', () => {
     it('enabled 省略 + enabled_at = ISO 日時 → parse 成功 (= 有効レコード)', () => {
       const result = officeFeatureFlagSchema.safeParse({
         office_id: UUID_A,
-        feature_key: 'g21_new_algorithm',
+        feature_key: 'rakusuke_agent',
         enabled_at: '2026-05-22T10:00:00Z',
         enabled_by_user_id: UUID_B,
         note: '稼働開始',
@@ -42,7 +42,7 @@ describe('Phase G-21 reviewer fixes — zod schemas', () => {
     it('enabled も明示的に true で渡しても parse 成功 (互換のため受け入れる)', () => {
       const result = officeFeatureFlagSchema.safeParse({
         office_id: UUID_A,
-        feature_key: 'g21_new_algorithm',
+        feature_key: 'rakusuke_agent',
         enabled: true,
         enabled_at: '2026-05-22T10:00:00Z',
       });

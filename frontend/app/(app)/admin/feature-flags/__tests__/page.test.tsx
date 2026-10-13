@@ -92,14 +92,35 @@ describe('AdminFeatureFlagsPage (Phase G-21 T4)', () => {
   it('C1: enabled_at=null → Switch が OFF + 削除ボタン非表示', () => {
     setupMocks({ flags: [] });
     render(<AdminFeatureFlagsPage />);
-    const sw = screen.getByTestId(`feature-flag-toggle-${OFFICE_ID}-g21_new_algorithm`);
+    const sw = screen.getByTestId(`feature-flag-toggle-${OFFICE_ID}-template_workspace`);
     expect(sw).toHaveAttribute('aria-checked', 'false');
     // 旗が 4 つに増えたので、ほかの旗の「無効」も並ぶ（2026-10-13）
     expect(screen.getAllByText('無効').length).toBeGreaterThan(0);
     // flag レコードが無い場合は削除ボタンも出ない
     expect(
-      screen.queryByTestId(`feature-flag-delete-${OFFICE_ID}-g21_new_algorithm`),
+      screen.queryByTestId(`feature-flag-delete-${OFFICE_ID}-template_workspace`),
     ).not.toBeInTheDocument();
+  });
+
+  it('2026-10-13 一本化: G-21 の旗は画面に出さない (DB に行が残っていても)', () => {
+    setupMocks({
+      flags: [
+        {
+          office_id: OFFICE_ID,
+          feature_key: 'g21_new_algorithm',
+          enabled_at: null,
+        },
+      ],
+    });
+    render(<AdminFeatureFlagsPage />);
+    expect(
+      screen.queryByTestId(`feature-flag-toggle-${OFFICE_ID}-g21_new_algorithm`),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('G-21 新アルゴリズム')).not.toBeInTheDocument();
+    // ほかの旗はそのまま出る
+    expect(
+      screen.getByTestId(`feature-flag-toggle-${OFFICE_ID}-template_workspace`),
+    ).toBeInTheDocument();
   });
 
   it('C1: enabled_at=ISO 文字列 → Switch が ON (BE の enabled フィールド非依存)', () => {
@@ -107,7 +128,7 @@ describe('AdminFeatureFlagsPage (Phase G-21 T4)', () => {
       flags: [
         {
           office_id: OFFICE_ID,
-          feature_key: 'g21_new_algorithm',
+          feature_key: 'template_workspace',
           enabled_at: '2026-05-22T10:00:00Z',
           enabled_by_user_id: '00000000-0000-0000-0000-000000000099',
           note: null,
@@ -115,7 +136,7 @@ describe('AdminFeatureFlagsPage (Phase G-21 T4)', () => {
       ],
     });
     render(<AdminFeatureFlagsPage />);
-    const sw = screen.getByTestId(`feature-flag-toggle-${OFFICE_ID}-g21_new_algorithm`);
+    const sw = screen.getByTestId(`feature-flag-toggle-${OFFICE_ID}-template_workspace`);
     expect(sw).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByText('有効')).toBeInTheDocument();
   });
@@ -125,7 +146,7 @@ describe('AdminFeatureFlagsPage (Phase G-21 T4)', () => {
       flags: [
         {
           office_id: OFFICE_ID,
-          feature_key: 'g21_new_algorithm',
+          feature_key: 'template_workspace',
           enabled_at: '2026-05-22T10:00:00Z',
           enabled_by_user_id: '00000000-0000-0000-0000-000000000099',
         },
@@ -133,7 +154,7 @@ describe('AdminFeatureFlagsPage (Phase G-21 T4)', () => {
     });
     render(<AdminFeatureFlagsPage />);
 
-    fireEvent.click(screen.getByTestId(`feature-flag-delete-${OFFICE_ID}-g21_new_algorithm`));
+    fireEvent.click(screen.getByTestId(`feature-flag-delete-${OFFICE_ID}-template_workspace`));
 
     await waitFor(() => {
       expect(screen.getByTestId('feature-flag-confirm-dialog')).toBeInTheDocument();
@@ -154,21 +175,21 @@ describe('AdminFeatureFlagsPage (Phase G-21 T4)', () => {
       flags: [
         {
           office_id: OFFICE_ID,
-          feature_key: 'g21_new_algorithm',
+          feature_key: 'template_workspace',
           enabled_at: '2026-05-22T10:00:00Z',
         },
       ],
     });
     render(<AdminFeatureFlagsPage />);
 
-    fireEvent.click(screen.getByTestId(`feature-flag-delete-${OFFICE_ID}-g21_new_algorithm`));
+    fireEvent.click(screen.getByTestId(`feature-flag-delete-${OFFICE_ID}-template_workspace`));
     await screen.findByTestId('feature-flag-confirm-dialog');
     fireEvent.click(screen.getByTestId('feature-flag-confirm-disable'));
 
     await waitFor(() => expect(setFn).toHaveBeenCalledTimes(1));
     expect(setFn).toHaveBeenCalledWith({
       office_id: OFFICE_ID,
-      feature_key: 'g21_new_algorithm',
+      feature_key: 'template_workspace',
       enabled: false,
     });
   });
@@ -180,21 +201,21 @@ describe('AdminFeatureFlagsPage (Phase G-21 T4)', () => {
       flags: [
         {
           office_id: OFFICE_ID,
-          feature_key: 'g21_new_algorithm',
+          feature_key: 'template_workspace',
           enabled_at: '2026-05-22T10:00:00Z',
         },
       ],
     });
     render(<AdminFeatureFlagsPage />);
 
-    fireEvent.click(screen.getByTestId(`feature-flag-delete-${OFFICE_ID}-g21_new_algorithm`));
+    fireEvent.click(screen.getByTestId(`feature-flag-delete-${OFFICE_ID}-template_workspace`));
     await screen.findByTestId('feature-flag-confirm-dialog');
     fireEvent.click(screen.getByTestId('feature-flag-confirm-delete'));
 
     await waitFor(() => expect(deleteFn).toHaveBeenCalledTimes(1));
     expect(deleteFn).toHaveBeenCalledWith({
       office_id: OFFICE_ID,
-      feature_key: 'g21_new_algorithm',
+      feature_key: 'template_workspace',
     });
   });
 
@@ -207,14 +228,14 @@ describe('AdminFeatureFlagsPage (Phase G-21 T4)', () => {
       flags: [
         {
           office_id: OFFICE_ID,
-          feature_key: 'g21_new_algorithm',
+          feature_key: 'template_workspace',
           enabled_at: '2026-05-22T10:00:00Z',
         },
       ],
     });
     render(<AdminFeatureFlagsPage />);
 
-    fireEvent.click(screen.getByTestId(`feature-flag-delete-${OFFICE_ID}-g21_new_algorithm`));
+    fireEvent.click(screen.getByTestId(`feature-flag-delete-${OFFICE_ID}-template_workspace`));
     await screen.findByTestId('feature-flag-confirm-dialog');
     fireEvent.click(screen.getByTestId('feature-flag-confirm-cancel'));
 

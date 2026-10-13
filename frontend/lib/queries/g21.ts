@@ -2,7 +2,7 @@
  * TanStack Query hooks for Phase G-21 endpoints.
  *
  * - 同住所候補 / 紐付け (blocked / preferred / required)
- * - Office feature flag (g21_new_algorithm 等)
+ * - Office feature flag (rakusuke_agent 等)
  *
  * 成功時は関連クエリ (patients / fixed-visits / courses / visits) を
  * invalidate して下流の UI を再フェッチさせる.

@@ -5,7 +5,8 @@
  *
  * Office × feature_key 単位で feature flag を有効/無効化するページ. admin only.
  *
- * 現在の feature_key は `g21_new_algorithm` のみ. 拠点 (office) ごとに toggle.
+ * 拠点 (office) ごとに toggle. 出す旗は OFFICE_FEATURE_KEYS (lib/schemas/g21.ts).
+ * g21_new_algorithm は 2026-10-13 に一本化したので出さない.
  *
  * - GET  /api/v1/office-feature-flags                    (一覧)
  * - POST /api/v1/office-feature-flags                    (upsert)
@@ -13,7 +14,7 @@
  *
  * UI:
  *   - 拠点ごとに 1 行
- *   - 列: 拠点名 / g21_new_algorithm enabled / enabled_at / enabled_by / 操作
+ *   - 列: 拠点名 / 旗ごとの enabled / enabled_at / enabled_by / 操作
  *   - toggle 操作はその場で POST (enabled の反転). DELETE は「履歴消去」ボタンから.
  */
 
@@ -52,7 +53,6 @@ import { OFFICE_FEATURE_KEYS, type OfficeFeatureKey } from '@/lib/schemas/g21';
 const FEATURE_KEY_LABEL: Record<OfficeFeatureKey, string> = {
   rakusuke_agent: 'らく助エージェント',
   template_workspace: 'コースの作業場',
-  g21_new_algorithm: 'G-21 新アルゴリズム',
   karte_via_seat: 'カルテの下書きをサインインした AI で',
 };
 
@@ -61,8 +61,6 @@ const FEATURE_KEY_DESC: Record<OfficeFeatureKey, string> = {
     '管理者の画面の右下に、らく助エージェント（相談の小窓）を出します。使うには、各自が ⚙ から自分の ChatGPT か Claude の席を結びつけます。',
   template_workspace:
     'スケジュールの画面に「コースの作業場」を出します。いまの型を写した下書きで、コースの組み方を試して登録できます。',
-  g21_new_algorithm:
-    '完全固定 / 同住所紐付け / 拠点間移動コスト を考慮した新自動最適化エンジンを有効化します.',
   karte_via_seat:
     '訪問の録音から作るカルテの下書きを、⚙ で決めた管理者のサインインした AI（ChatGPT か Claude）で作ります。AI が使えないときは、いままでどおり Gemini で作ります。',
 };
