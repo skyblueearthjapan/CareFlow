@@ -72,8 +72,8 @@ services:
       AGENT_SANDBOX_SUBNET: ${AGENT_SANDBOX_SUBNET:-172.31.250.0/24}
       AGENT_PUBLIC_ORIGIN: ${AGENT_PUBLIC_ORIGIN:-https://carelink.kaipoke-api.net}
       AGENT_BACKUP_DIR: /backups
-      # 同時に動かす相談の数（PO 2026-10-13: 1 だと 2 つ目の相談が「ほかの相談が作業中」で断られた）
-      AGENT_MAX_PROCS: "${AGENT_MAX_PROCS:-3}"
+      # 同時に動かす相談の数（PO 2026-10-13: 1 だと 2 つ目の相談が断られた → 5 に）
+      AGENT_MAX_PROCS: "${AGENT_MAX_PROCS:-5}"
       AGENT_MIN_MEM_AVAILABLE_MB: "900"
     ports:
       - "127.0.0.1:${AGENT_PUBLIC_HOST_PORT:-18201}:8090"
@@ -128,7 +128,7 @@ services:
       RUNNER_EXEC_SOCKET: /run/x/exec.sock              # モデルのコマンドの実行係（uid 10004）。無いと CLI を起こさない
       RUNNER_EXEC_SERVER_URL: ws://127.0.0.1:9911       # codex の実行係（同じ uid 10004）
       RUNNER_ALLOWED_PEER_UID: "10001"
-      RUNNER_MAX_PROCS: "${RUNNER_MAX_PROCS:-4}"           # 相談 3 ＋ カルテの下書き 1
+      RUNNER_MAX_PROCS: "${RUNNER_MAX_PROCS:-6}"           # 相談 5 ＋ カルテの下書き 1
       RUNNER_EGRESS_PROXY: http://agent-egress:3128     # サービス名（その project の網の中だけで引ける）
       RUNNER_RELAY_URL: http://agent-relay:8091         # 中継の内側口
     volumes:
@@ -139,8 +139,8 @@ services:
       - /tmp:size=256m,mode=1777
       - /run/x:size=1m,mode=2770,uid=10004,gid=10005          # 実行係のソケット（agent が使えるのはグループ 10005）
       - /home/agentx:size=64m,mode=0700,uid=10004,gid=10005   # 実行係の HOME（ログイン情報の volume は入れない）
-    mem_limit: 1536m   # 相談 3 つを同時に動かすため（2026-10-13）
-    memswap_limit: 1536m
+    mem_limit: 2g       # 相談 5 つを同時に動かすため（2026-10-13 PO）。ホストの空きは中継が 900MB を下回ったら新しい CLI を起こさない
+    memswap_limit: 2g
     pids_limit: 256
     cpus: 1.5
     healthcheck:

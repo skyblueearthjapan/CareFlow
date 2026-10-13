@@ -210,7 +210,7 @@ class RelayConfig:
             host=_env("AGENT_RELAY_HOST", "0.0.0.0"),
             public_port=int(_env2("AGENT_RELAY_PUBLIC_PORT", "AGENT_PUBLIC_PORT", "8090")),
             internal_port=int(_env2("AGENT_RELAY_INTERNAL_PORT", "AGENT_INNER_PORT", "8091")),
-            max_cli=max(1, min(4, int(_env2("AGENT_MAX_CLI", "AGENT_MAX_PROCS", "1")))),
+            max_cli=max(1, min(6, int(_env2("AGENT_MAX_CLI", "AGENT_MAX_PROCS", "1")))),
             idle_seconds=int(_env("AGENT_IDLE_SECONDS", "1200")),
             approval_ttl=int(_env("AGENT_APPROVAL_TTL", "900")),
             min_mem_mb=int(_env2("AGENT_MIN_MEM_MB", "AGENT_MIN_MEM_AVAILABLE_MB", "900")),
