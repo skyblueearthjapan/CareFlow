@@ -16,7 +16,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # ``feature_key`` は Literal で固定することで タイポ (= 永久に有効化されない
 # feature_key) を schema レベルで弾く. 新しい key を追加する際は本 Literal を拡張する.
-#   - ``g21_new_algorithm``: Phase G-21 auto_allocator_v2 新ロジックの canary 切替.
+#   - ``g21_new_algorithm``: Phase G-21 auto_allocator_v2 新ロジックの canary 切替だった.
+#     2026-10-13 (PO) に全拠点で一本化し、 run_v2_pipeline はもう読まない (画面からも外した).
+#     DB に行が残っていても一覧 GET が壊れないよう Literal には残す.
 #   - ``l3_fix_primary_staff``: Wave N-1 — Layer 3 で当該拠点の primary staff
 #     (active role=staff の code 昇順先頭 1 名) を A コースに固定割当する
 #     (旧「都賀」拠点名ハードコードの設定化. 拠点名判定を廃し、フラグ enabled で発動).

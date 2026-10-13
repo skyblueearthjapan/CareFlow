@@ -4,7 +4,7 @@
   T3.1  pinned 厳守 (PFV.start_time そのまま)
   T3.2  pinned + 異住所同時刻 (= shift 警告)
   T3.3  非 pinned 配置 (weekly_pattern preferred_start..end 範囲内)
-  T3.4  同 patient 同 weekday pinned + weekly_pattern entry 同時 → Invariant G21-A
+  T3.4  同 patient 同 weekday pinned + weekly_pattern entry 同時 → pinned 1 件 (旧 G21-A)
   T3.5  pair_mode=blocked → 同時刻 NG
   T3.6  pair_mode=required → 同時刻優先
   T3.7  pair_mode=preferred (default) → 既存挙動 (= 同住所同時刻 OK)
@@ -19,7 +19,7 @@
   T3.16 _enforce_h2_split_overflow sort 決定論化 (= 同 input で常に同じ overflow patient 選出)
   T3.17 Wave 1: apply_week_only で apply_travel_corrections 呼ばれる (補正一元化)
   T3.18 Wave 1: reset_to_fixed (auto mode) でも補正呼ばれる
-  T3.19 feature flag OFF 拠点は旧経路 (canary 切替)
+  T3.19 2026-10-13 一本化: 切り替え (g21_new_algorithm) の有無に関係なく常に新経路
 """
 
 from __future__ import annotations
@@ -36,7 +36,6 @@ from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.staff import Staff, StaffShift
 from app.models.visit import Visit
 from app.services.scheduling.auto_allocator_v2 import (
-    G21_NEW_ALGORITHM_FEATURE_KEY,
     PinnedVisitMovedError,
     V2Set,
     V2Visit,
@@ -45,7 +44,7 @@ from app.services.scheduling.auto_allocator_v2 import (
     _enforce_same_address_pair_mode,
     _load_before_visits_v2,
     apply_week_only,
-    build_visits_for_pool_v2,
+    build_visits_for_pool,
     reset_visits_to_fixed,
     run_v2_pipeline,
 )
@@ -110,9 +109,11 @@ async def _make_pfv(
 
 
 async def _enable_g21_flag(db, office: Office) -> None:
+    """旧 canary 切替の行を作る. 2026-10-13 の一本化後は run_v2_pipeline は読まない
+    (= 行が残っていても挙動が変わらないことの確認用)."""
     flag = OfficeFeatureFlag(
         office_id=office.id,
-        feature_key=G21_NEW_ALGORITHM_FEATURE_KEY,
+        feature_key="g21_new_algorithm",
         enabled_at=datetime.now(tz=UTC),
     )
     db.add(flag)
@@ -157,8 +158,9 @@ async def test_t3_1_pinned_keeps_pfv_start_time(db) -> None:
     await _seed_staff_and_shift(db, office=office, weekday=0)
     await db.commit()
 
-    # build_visits_for_pool_v2 経由で時刻保持を確認.
-    visits = build_visits_for_pool_v2(
+    # 2026-10-13 一本化: G-21 の pool 再生成 (build_visits_for_pool_v2) は撤去.
+    # 全拠点で使う build_visits_for_pool (G-30/G-30.1) で時刻保持を確認.
+    visits = build_visits_for_pool(
         [p],
         fixed_by_patient={p.id: [pfv]},
     )
@@ -209,7 +211,7 @@ async def test_t3_2_pinned_with_cross_address_same_time_warns_but_not_moved(db) 
     pfv_b = await _make_pfv(db, patient=pb, weekday=0, start_hhmm=(10, 0), is_pinned=False)
     await db.commit()
 
-    visits = build_visits_for_pool_v2(
+    visits = build_visits_for_pool(
         [pa, pb],
         fixed_by_patient={pa.id: [pfv_a], pb.id: [pfv_b]},
     )
@@ -244,12 +246,12 @@ async def test_t3_3_non_pinned_uses_weekly_pattern(db) -> None:
     pfv = await _make_pfv(db, patient=p, weekday=0, start_hhmm=(10, 0), is_pinned=False)
     await db.commit()
 
-    visits = build_visits_for_pool_v2(
+    visits = build_visits_for_pool(
         [p],
         fixed_by_patient={p.id: [pfv]},
     )
-    # 非 pinned 経路: weekly_pattern entry をそのまま使う (PFV は 1 行で is_pinned=False
-    # でも、 build_visits_for_pool_v2 は pinned PFV のみ採用し、それ以外は weekly_pattern 経路).
+    # 非 pinned 経路: weekly_pattern entry をそのまま使う (PFV は 1 行で is_pinned=False.
+    # build_visits_for_pool は use_fixed_as_source=False なら weekly_pattern 経路).
     assert len(visits) == 1
     v = visits[0]
     assert v.is_pinned is False
@@ -259,14 +261,18 @@ async def test_t3_3_non_pinned_uses_weekly_pattern(db) -> None:
 
 
 # ---------------------------------------------------------------------------
-# T3.4: Invariant G21-A (pinned PFV + weekly_pattern 同時 → weekly_pattern skip + warning)
+# T3.4: pinned PFV + weekly_pattern 同時 → weekly_pattern skip (旧 Invariant G21-A)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_t3_4_invariant_g21_a_pinned_skips_weekly_pattern(db) -> None:
     """同 patient × 同 weekday に pinned PFV と weekly_pattern entry が同時にある場合、
-    weekly_pattern entry は skip + warning."""
+    weekly_pattern entry は skip し pinned PFV の 1 件だけ出す.
+
+    2026-10-13 一本化: G-21 の pool 再生成 (Invariant G21-A の warning を出していた)
+    は撤去. build_visits_for_pool の G-30.1 が同じ不変条件 (pinned 曜日は PFV ベース
+    1 件) を守る (warning は出さない)."""
     office = await _make_office(db, name="g21-t3-4-office")
     p = await _make_patient(
         db,
@@ -284,7 +290,7 @@ async def test_t3_4_invariant_g21_a_pinned_skips_weekly_pattern(db) -> None:
     await db.commit()
 
     warnings: list[V2Warning] = []
-    visits = build_visits_for_pool_v2(
+    visits = build_visits_for_pool(
         [p],
         fixed_by_patient={p.id: [pfv]},
         warnings=warnings,
@@ -293,8 +299,7 @@ async def test_t3_4_invariant_g21_a_pinned_skips_weekly_pattern(db) -> None:
     assert len(visits) == 1
     assert visits[0].is_pinned is True
     assert visits[0].start_time == time(10, 30)
-    # Invariant G21-A warning.
-    assert any("Invariant G21-A" in w.message for w in warnings), warnings
+    assert visits[0].time_type == "固定"
 
 
 # ---------------------------------------------------------------------------
@@ -960,30 +965,28 @@ async def test_t3_18_reset_to_fixed_auto_calls_travel_corrections(db, monkeypatc
 
 
 # ---------------------------------------------------------------------------
-# T3.19: feature flag OFF 拠点は旧経路 (canary 切替)
+# T3.19: 2026-10-13 (PO 一本化) — 切り替えの有無に関係なく常に新経路
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_t3_19_feature_flag_off_uses_legacy_before(db, monkeypatch) -> None:
-    """feature flag OFF (= OfficeFeatureFlag 行無し) の拠点は run_v2_pipeline で
-    旧 _load_before_visits_from_pfv 経路を使う."""
+async def test_t3_19_single_path_without_flag_uses_new_before(db, monkeypatch) -> None:
+    """切り替えの行が無い拠点でも run_v2_pipeline は _load_before_visits_v2 を使う.
+
+    旧 ``_load_before_visits_from_pfv`` / ``_load_g21_enabled_offices`` は撤去済.
+    """
     from app.services.scheduling import auto_allocator_v2 as mod
 
-    legacy_call_count = {"n": 0}
-    new_call_count = {"n": 0}
-    original_legacy = mod._load_before_visits_from_pfv
-    original_new = mod._load_before_visits_v2
+    assert not hasattr(mod, "_load_before_visits_from_pfv")
+    assert not hasattr(mod, "_load_g21_enabled_offices")
 
-    async def _legacy_spy(*args, **kwargs):
-        legacy_call_count["n"] += 1
-        return await original_legacy(*args, **kwargs)
+    new_call_count = {"n": 0}
+    original_new = mod._load_before_visits_v2
 
     async def _new_spy(*args, **kwargs):
         new_call_count["n"] += 1
         return await original_new(*args, **kwargs)
 
-    monkeypatch.setattr(mod, "_load_before_visits_from_pfv", _legacy_spy)
     monkeypatch.setattr(mod, "_load_before_visits_v2", _new_spy)
 
     office = await _make_office(db, name="g21-t3-19-office")
@@ -1001,7 +1004,6 @@ async def test_t3_19_feature_flag_off_uses_legacy_before(db, monkeypatch) -> Non
     await _make_pfv(db, patient=p, weekday=0, start_hhmm=(10, 0), is_pinned=True)
     await db.commit()
 
-    # feature flag 未設定 (OFF) で run_v2_pipeline.
     await run_v2_pipeline(
         db,
         iso_year=2026,
@@ -1009,16 +1011,12 @@ async def test_t3_19_feature_flag_off_uses_legacy_before(db, monkeypatch) -> Non
         office_ids=[office.id],
         mode="full_optimize",
     )
-    # OFF 拠点は legacy のみ呼ばれる. new (= _load_before_visits_v2) は 0 回.
-    assert legacy_call_count["n"] >= 1, "OFF 拠点で legacy 経路が呼ばれていない"
-    assert new_call_count["n"] == 0, (
-        f"feature flag OFF なのに _load_before_visits_v2 が呼ばれた (n={new_call_count['n']})"
-    )
+    assert new_call_count["n"] >= 1, "切り替え無しの拠点で新経路が呼ばれていない"
 
 
 @pytest.mark.asyncio
-async def test_t3_19b_feature_flag_on_uses_new_before(db, monkeypatch) -> None:
-    """feature flag ON の拠点は _load_before_visits_v2 (新経路) を呼ぶ (canary 切替)."""
+async def test_t3_19b_leftover_flag_row_is_ignored(db, monkeypatch) -> None:
+    """旧切り替えの行 (g21_new_algorithm) が残っていても同じ新経路を 1 回だけ呼ぶ."""
     from app.services.scheduling import auto_allocator_v2 as mod
 
     new_call_count = {"n": 0}
@@ -1053,7 +1051,7 @@ async def test_t3_19b_feature_flag_on_uses_new_before(db, monkeypatch) -> None:
         office_ids=[office.id],
         mode="full_optimize",
     )
-    assert new_call_count["n"] >= 1, "feature flag ON 拠点で新経路が呼ばれていない"
+    assert new_call_count["n"] == 1, new_call_count
 
 
 # ===========================================================================
@@ -1062,21 +1060,17 @@ async def test_t3_19b_feature_flag_on_uses_new_before(db, monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Reviewer C1 fix: build_visits_for_pool_v2 が run_v2_pipeline から呼ばれる
-# (canary ON で同 patient × 同 weekday の pinned + weekly_pattern → After で
-# 1 visit のみ + Invariant G21-A warning)
+# Reviewer C1 fix → 2026-10-13 一本化: 同 patient × 同 weekday の pinned +
+# weekly_pattern → After で 1 visit のみ (全拠点・切り替え無し)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_reviewer_c1_run_v2_pipeline_uses_build_visits_for_pool_v2(db) -> None:
-    """canary ON 拠点で run_v2_pipeline が build_visits_for_pool_v2 経由で after を作る.
-
-    同 patient × 同 weekday に pinned PFV + weekly_pattern 同曜日 entry がある場合、
-    Invariant G21-A により weekly_pattern entry を skip し pinned のみ採用される.
+async def test_reviewer_c1_pinned_and_weekly_same_weekday_one_visit(db) -> None:
+    """同 patient × 同 weekday に pinned PFV + weekly_pattern 同曜日 entry がある場合、
+    weekly_pattern entry を skip し pinned のみ採用される (build_visits_for_pool G-30.1).
     """
     office = await _make_office(db, name="g21-rc1-office")
-    await _enable_g21_flag(db, office)
     p = await _make_patient(
         db,
         code="RC1",
@@ -1090,8 +1084,7 @@ async def test_reviewer_c1_run_v2_pipeline_uses_build_visits_for_pool_v2(db) -> 
         },
     )
     # 同 patient × 同 weekday に pinned PFV 10:30 + weekly_pattern entry 09:00..17:00 が
-    # 同時にある状況. 旧経路 (legacy build_visits_for_pool) では Invariant G21-A が
-    # 効かず 2 visit 出る. 新経路では pinned のみ 1 visit + warning.
+    # 同時にある状況. pinned のみ 1 visit.
     await _make_pfv(db, patient=p, weekday=0, start_hhmm=(10, 30), is_pinned=True)
     await _seed_staff_and_shift(db, office=office, weekday=0)
     await db.commit()
@@ -1107,54 +1100,12 @@ async def test_reviewer_c1_run_v2_pipeline_uses_build_visits_for_pool_v2(db) -> 
     after_visits = result.get("after_visits") or []
     same_patient_weekday = [v for v in after_visits if v.patient_id == p.id and v.weekday == 0]
     assert len(same_patient_weekday) == 1, (
-        f"canary ON で 1 visit のみ期待だが {len(same_patient_weekday)} 件: {same_patient_weekday}"
+        f"1 visit のみ期待だが {len(same_patient_weekday)} 件: {same_patient_weekday}"
     )
     # pinned 由来 (= is_pinned=True, start_time=10:30).
     v = same_patient_weekday[0]
     assert v.is_pinned is True, "after の visit に is_pinned=True が乗っていない"
     assert v.start_time == time(10, 30)
-    # Invariant G21-A warning が出ている.
-    warnings_list = result.get("warnings") or []
-    warning_msgs = [w.message if hasattr(w, "message") else str(w) for w in warnings_list]
-    assert any("Invariant G21-A" in m for m in warning_msgs), warning_msgs
-
-
-@pytest.mark.asyncio
-async def test_reviewer_c1_canary_off_keeps_legacy_after(db) -> None:
-    """canary OFF (= feature flag 未設定) の拠点では legacy 経路維持で挙動不変."""
-    office = await _make_office(db, name="g21-rc1-off-office")
-    # NOTE: _enable_g21_flag は呼ばない (= canary OFF)
-    p = await _make_patient(
-        db,
-        code="RC1OFF",
-        name="reviewer C1 off patient",
-        office=office,
-        weekly_pattern={
-            "preferred_weekdays": ["Mon"],
-            "preferred_start": "10:00",
-            "time_type": "固定",
-        },
-    )
-    await _make_pfv(db, patient=p, weekday=0, start_hhmm=(10, 0), is_pinned=True)
-    await _seed_staff_and_shift(db, office=office, weekday=0)
-    await db.commit()
-
-    result = await run_v2_pipeline(
-        db,
-        iso_year=2026,
-        iso_week=20,
-        office_ids=[office.id],
-        mode="full_optimize",
-    )
-    after_visits = result.get("after_visits") or []
-    same_pw = [v for v in after_visits if v.patient_id == p.id and v.weekday == 0]
-    # Phase G-30: legacy 経路でも pinned PFV (is_pinned=True) は V2Visit.is_pinned=True
-    # を立てる (= apply_travel_corrections で時刻が動かない). canary OFF でも
-    # 「pinned なら不動」という不変条件は維持される.
-    assert len(same_pw) >= 1
-    assert same_pw[0].is_pinned is True, (
-        "Phase G-30: canary OFF でも pinned PFV は is_pinned=True が乗るべき"
-    )
 
 
 # ---------------------------------------------------------------------------

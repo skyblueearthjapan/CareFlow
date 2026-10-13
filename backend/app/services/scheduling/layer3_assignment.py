@@ -3578,7 +3578,7 @@ class Layer3Assigner:
         (旧「都賀」拠点名ハードコードの設定化). enabled_at IS NULL は「未有効化」
         として固定割当を発動しない.
 
-        ``auto_allocator_v2._load_g21_enabled_offices`` と同一の照会パターン.
+        (旧 ``auto_allocator_v2._load_g21_enabled_offices`` と同一の照会パターンだった.)
         """
         if not office_ids:
             return set()

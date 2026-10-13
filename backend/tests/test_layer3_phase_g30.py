@@ -2,7 +2,8 @@
 
 背景:
     Phase G-21 (canary deploy) は **shadow mode = office_feature_flags 空** で
-    本番運用中. canary OFF (= legacy 経路) でも 「pinned なら時刻動かない」
+    本番運用中だった (2026-10-13 に切り替えを撤去し Before は G-21 経路に一本化).
+    pool の展開 (build_visits_for_pool) でも 「pinned なら時刻動かない」
     という不変条件は維持されるべき.
 
     既存実装:
@@ -38,7 +39,6 @@ from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.staff import Staff, StaffShift
 from app.services.scheduling.auto_allocator_v2 import (
-    G21_NEW_ALGORITHM_FEATURE_KEY,
     V2Visit,
     apply_travel_corrections,
     build_visits_for_pool,
@@ -107,7 +107,7 @@ async def _make_pfv(
 async def _enable_g21_flag(db, office: Office) -> None:
     flag = OfficeFeatureFlag(
         office_id=office.id,
-        feature_key=G21_NEW_ALGORITHM_FEATURE_KEY,
+        feature_key="g21_new_algorithm",
         enabled_at=datetime.now(tz=UTC),
     )
     db.add(flag)
@@ -375,7 +375,10 @@ def test_legacy_path_unpinned_visit_can_move() -> None:
 
 @pytest.mark.asyncio
 async def test_g21_path_still_works(db) -> None:
-    """G-21 feature flag ON (= canary 拠点) でも pinned PFV の時刻は動かない.
+    """旧 G-21 切り替えの行が残った拠点でも pinned PFV の時刻は動かない.
+
+    2026-10-13 (PO 一本化): 切り替えは撤去され、 行が残っていても run_v2_pipeline は
+    読まない (全拠点で同じ経路). 行が残っていても壊れないことの確認を兼ねる.
 
     Phase G-21 経路は既に is_pinned=True を立てているため G-30 修正の前後で
     挙動不変. これを assertion 1 件で確認する regression test.

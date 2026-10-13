@@ -9,18 +9,16 @@ from __future__ import annotations
 
 import uuid
 from collections import Counter
-from datetime import UTC, datetime, time
+from datetime import time
 from uuid import UUID
 
 import pytest
 
 from app.models import Office, Patient
-from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.staff import Staff, StaffShift
 from app.models.visit import VISIT_STATUS_PLANNED, Visit
 from app.services.scheduling.auto_allocator_v2 import (
-    G21_NEW_ALGORITHM_FEATURE_KEY,
     MAX_PATIENTS_PER_COURSE,
     MAX_PATIENTS_PER_SET,
     V2Visit,
@@ -444,7 +442,7 @@ def test_filter_acceptance_enforced_in_mode1_default() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _load_before_visits_from_pfv — course_code が PFV.course_template_id 由来になる
+# _load_before_visits_v2 (2026-10-13 一本化) — course_code が PFV.course_template_id 由来になる
 # ---------------------------------------------------------------------------
 
 
@@ -452,7 +450,7 @@ def test_filter_acceptance_enforced_in_mode1_default() -> None:
 async def test_load_before_visits_course_code_from_course_template(db) -> None:
     """PFV に course_template_id が設定されていれば V2Visit.course_code = CourseTemplate.label."""
     from app.models.course_template import CourseTemplate
-    from app.services.scheduling.auto_allocator_v2 import _load_before_visits_from_pfv
+    from app.services.scheduling.auto_allocator_v2 import _load_before_visits_v2
 
     office = Office(name="before-test-office")
     db.add(office)
@@ -487,7 +485,9 @@ async def test_load_before_visits_course_code_from_course_template(db) -> None:
     db.add(pfv)
     await db.commit()
 
-    visits = await _load_before_visits_from_pfv(db, patients_by_id={patient.id: patient})
+    visits = await _load_before_visits_v2(
+        db, patients_by_id={patient.id: patient}, iso_year=2026, iso_week=20
+    )
 
     assert len(visits) == 1, f"expected 1 visit, got {len(visits)}"
     assert visits[0].course_code == "A", (
@@ -529,9 +529,11 @@ async def test_run_v2_pipeline_diff_add_returns_pool_only(db) -> None:
         lat=35.66,
         lng=140.11,
         primary_office_id=office.id,
+        # 2026-10-13: 10:30 固定だと FIXED (10:00-10:30) から移動できず入らない提案に
+        # なり、 入らない提案は pool_visits に出さなくなったので、 入る時刻にする.
         weekly_pattern={
             "preferred_weekdays": ["Mon"],
-            "preferred_start": "10:30",
+            "preferred_start": "14:00",
             "time_type": "固定",
         },
     )
@@ -2343,8 +2345,8 @@ def test_build_visits_for_pool_propagates_sex_restriction() -> None:
 
 @pytest.mark.asyncio
 async def test_load_before_visits_sets_time_type_and_sex_restriction(db) -> None:
-    """_load_before_visits_from_pfv が time_type / sex_restriction をセットする."""
-    from app.services.scheduling.auto_allocator_v2 import _load_before_visits_from_pfv
+    """_load_before_visits_v2 が time_type / sex_restriction をセットする."""
+    from app.services.scheduling.auto_allocator_v2 import _load_before_visits_v2
 
     office = Office(name="tt-before-office")
     db.add(office)
@@ -2377,7 +2379,9 @@ async def test_load_before_visits_sets_time_type_and_sex_restriction(db) -> None
     db.add(pfv)
     await db.commit()
 
-    visits = await _load_before_visits_from_pfv(db, patients_by_id={patient.id: patient})
+    visits = await _load_before_visits_v2(
+        db, patients_by_id={patient.id: patient}, iso_year=2026, iso_week=20
+    )
     assert len(visits) == 1
     assert visits[0].time_type == "午前"
     assert visits[0].sex_restriction == "male_only"
@@ -8128,21 +8132,10 @@ async def test_g92_diff_add_both_unavailable_unassigned_with_reason(db) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _enable_g21_flag(db, office: Office) -> None:
-    """Phase G-92 テスト用: 拠点で g21_new_algorithm feature flag を有効化する."""
-    db.add(
-        OfficeFeatureFlag(
-            office_id=office.id,
-            feature_key=G21_NEW_ALGORITHM_FEATURE_KEY,
-            enabled_at=datetime.now(tz=UTC),
-        )
-    )
-    await db.flush()
-
-
 @pytest.mark.asyncio
 async def test_g92_diff_add_g21_enabled_sets_fixed_pool_origin(db) -> None:
-    """修正1: g21 feature flag 有効拠点でも固定候補に pool_origin='fixed' が立つ.
+    """修正1: 固定候補に pool_origin='fixed' が立つ (2026-10-13 一本化後は全拠点で
+    build_visits_for_pool の固定訪問の表の展開を通る).
 
     g21 経路は build_visits_for_pool_v2 で pool_visits を再生成する. 旧実装では
     pool_origin が設定されず全候補が "preferred" 既定になり、
@@ -8151,12 +8144,11 @@ async def test_g92_diff_add_g21_enabled_sets_fixed_pool_origin(db) -> None:
     修正後は pinned PFV 由来の候補に pool_origin='fixed' が立ち、 固定優先→希望
     フォールバックの土台 (dedup の fixed_keys 検出) が成立する.
 
-    本テストは g21 有効状態で pinned PFV (Mon・スタッフあり) が固定として配置され、
+    本テストは g21 経路で pinned PFV (Mon・スタッフあり) が固定として配置され、
     その pool_visit に pool_origin='fixed' / proposal_source='fixed' が立つことを
     検証する (= wiring が legacy 経路と同等であることの確認).
     """
     office = await _seed_g92_office(db, name="g92-g21-fixed", staffed_weekdays=[0])  # Mon
-    await _enable_g21_flag(db, office)
     p = Patient(
         code="G92-G21-FX",
         name="g21固定",

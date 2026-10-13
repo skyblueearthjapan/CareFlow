@@ -2701,10 +2701,27 @@ async def test_apply_week_only_pending_edits_invalid_end_before_start_skips(clie
 
 @pytest.mark.asyncio
 async def test_full_optimize_pending_edits_unknown_pfv_emits_warning(client, db) -> None:
-    """存在しない PFV (patient_id+weekday の組合せが無い) の pending_edit は warning + 無視."""
+    """存在しない PFV (patient_id+weekday の組合せが無い) の pending_edit は warning + 無視.
+
+    2026-10-13 (PO 一本化): 今週の姿は希望 (weekly_pattern) からも作るので、 希望に
+    その曜日があればオーバーレイは希望の分に効く (= 無視ではない). ここでは希望にも
+    その曜日 (月) が無い患者で確かめる.
+    """
     admin = await _make_user(db, email="v2-pe-noexist@example.com", role="admin")
     office, _ = await _seed_office_with_staff(db)
-    p = await _seed_patient(db, office=office, code="PE-NX1", lat=35.65, lng=140.10)
+    p = await _seed_patient(
+        db,
+        office=office,
+        code="PE-NX1",
+        lat=35.65,
+        lng=140.10,
+        weekly_pattern={
+            "preferred_weekdays": ["Tue"],
+            "preferred_start": "10:00",
+            "service_minutes": 30,
+            "time_type": "固定",
+        },
+    )
     # PFV を **作らない** (新規 patient と同じ状態)
     await db.commit()
 
@@ -2852,7 +2869,9 @@ async def test_full_optimize_idempotent_after_apply_week_only(client, db) -> Non
     )
     assert res_apply.status_code == 200, res_apply.text
 
-    # 2) 再度 /full-optimize を pending_edits なしで呼ぶ → PFV の 10:00 が反映される
+    # 2) 再度 /full-optimize を pending_edits なしで呼ぶ → 提案 (after) は PFV の 10:00.
+    #    2026-10-13 (PO 一本化): 今週の姿 (before) は実際の訪問から作るので、
+    #    apply-week-only で入れた今週の 11:00 がそのまま見える.
     res_fo = await client.post(
         "/api/v1/schedule/v2/full-optimize",
         headers=_bearer(admin),
@@ -2862,15 +2881,21 @@ async def test_full_optimize_idempotent_after_apply_week_only(client, db) -> Non
     body = res_fo.json()
     mon = next((w for w in body["week_proposals"] if w["weekday"] == 0), None)
     assert mon is not None
-    found_start: str | None = None
-    for course in mon["before"]["courses"]:
-        for v in course["visits"]:
-            if v["patient_id"] == str(p.id):
-                found_start = v["start_time"]
-    assert found_start is not None
-    # pending_edits なしで再算出すれば、PFV 元値の 10:00 に戻る
-    assert found_start.startswith("10:00"), (
-        f"再算出時 pending_edits なしなら PFV 元値 10:00 に戻るべき (実際: {found_start})"
+
+    def _start_in(side: str) -> str | None:
+        found: str | None = None
+        for course in mon[side]["courses"]:
+            for v in course["visits"]:
+                if v["patient_id"] == str(p.id):
+                    found = v["start_time"]
+        return found
+
+    before_start = _start_in("before")
+    after_start = _start_in("after")
+    assert before_start is not None and before_start.startswith("11:00"), before_start
+    # pending_edits なしで再算出すれば、提案は PFV 元値の 10:00 に戻る
+    assert after_start is not None and after_start.startswith("10:00"), (
+        f"再算出時 pending_edits なしなら PFV 元値 10:00 に戻るべき (実際: {after_start})"
     )
 
     # PFV (マスター) も変更されていない

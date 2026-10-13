@@ -57,7 +57,6 @@ from app.models.acceptance_calendar import AcceptanceCalendar
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.course_template import CourseTemplate
 from app.models.office import Office
-from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.patient_same_address_link import PatientSameAddressLink
@@ -81,11 +80,6 @@ from app.services.scheduling.constants import (
     SAME_ADDRESS_TOLERANCE,
 )
 from app.services.scheduling.course_staff_mirror import mirror_course_staff_to_visits
-
-# Phase G-21: feature flag canary 切替キー.
-# OfficeFeatureFlag.feature_key が ``g21_new_algorithm`` で enabled_at IS NOT NULL の
-# office のみ新アルゴリズム (pinned/非 pinned 2 経路化 + 4 経路 union before) を使う.
-G21_NEW_ALGORITHM_FEATURE_KEY: str = "g21_new_algorithm"
 
 # 2026-10-13 (PO): メモが 「【検証】」 で始まる訪問は試しに入れたもの. 今週の実際の
 # 訪問として数えない (= プールの回数判定 / G-21 Before の既存 DB Visit 経路).
@@ -584,6 +578,10 @@ class V2Visit:
     # クリアできない場合に希望側へ差し替える. 既定 ``"preferred"`` で、 PFV 非対象 /
     # full_optimize 等の既存経路は不変.
     pool_origin: Literal["fixed", "preferred", "fixed_fallback_preferred"] = "preferred"
+    # 2026-10-13 (PO 一本化): 今週の姿 (``_load_before_visits_v2``) のうち、 当週の
+    # 実際の訪問 (visits テーブル) から作った visit. diff_add で pool 患者の
+    # 「思い込み」 (固定訪問の表 / 希望から作った分) だけを after から外すのに使う.
+    from_actual_visit: bool = False
 
 
 def _pfv_movability_locked(pfv: object) -> bool:
@@ -1611,29 +1609,6 @@ async def _load_patients_with_fixed(
     return set(rows.all())
 
 
-async def _load_g21_enabled_offices(
-    db: AsyncSession,
-    *,
-    office_ids: list[UUID],
-) -> set[UUID]:
-    """Phase G-21: ``g21_new_algorithm`` feature flag が enabled な拠点集合を返す.
-
-    canary 切替: ``OfficeFeatureFlag.enabled_at IS NOT NULL`` の office のみ新ロジック
-    (pinned/非 pinned 2 経路 + 4 経路 union before) を使う.
-    enabled_at IS NULL は「未有効化」として旧経路を維持.
-    """
-    if not office_ids:
-        return set()
-    rows = await db.scalars(
-        select(OfficeFeatureFlag.office_id).where(
-            OfficeFeatureFlag.office_id.in_(office_ids),
-            OfficeFeatureFlag.feature_key == G21_NEW_ALGORITHM_FEATURE_KEY,
-            OfficeFeatureFlag.enabled_at.is_not(None),
-        )
-    )
-    return set(rows.all())
-
-
 def _coerce_operating_weekdays(raw: object) -> set[int]:
     """``Office.operating_weekdays`` (JSONB) を ``set[int]`` (0..6) に正規化する.
 
@@ -1678,6 +1653,14 @@ def _emit_office_closed_warning(
     if key in closed_warned:
         return
     closed_warned.add(key)
+    # 2026-10-13: Before ローダと pool 展開 (build_visits_for_pool*) はそれぞれ別の
+    # closed_warned を持つため、 同じ (患者, 曜日) の注意書きが 2 回出ていた.
+    # 既に同じ注意書きがあれば足さない.
+    if any(
+        w.type == "office_closed" and w.patient_id == patient_id and w.weekday == weekday
+        for w in warnings
+    ):
+        return
     name = patient_name or "不明"
     office_name = (
         (office_name_by_id or {}).get(office_id) if office_name_by_id else None
@@ -2184,7 +2167,7 @@ def build_visits_for_pool(
     Before 側 (Phase G-24 で適用済) と同じ規約になる. ``sub_office_scope`` 側の
     差し替え (PFV.sub_office_id) が優先で、 cross-office 差し替えはその次.
     map が None または該当 entry 無しなら patient.primary_office_id を使う (=
-    既存挙動). G-21 経路 (= build_visits_for_pool_v2) は本変更対象外.
+    既存挙動).
 
     Phase E-5 (項目 ⑥B): ``sub_office_scope`` が渡された場合、fixed source 分岐で
     PFV.sub_office_id が set 内に含まれる行は V2Visit.office_id を sub_office_id に
@@ -2538,233 +2521,6 @@ def build_visits_for_pool(
                         is_pinned=False,
                     )
                 )
-    return visits
-
-
-# ---------------------------------------------------------------------------
-# Phase G-21 T3-2: build_visits_for_pool_v2 (pinned / 非 pinned 2 経路化)
-# ---------------------------------------------------------------------------
-
-
-def build_visits_for_pool_v2(
-    patients: list[Patient],
-    *,
-    fixed_by_patient: dict[UUID, list[PatientFixedVisit]] | None = None,
-    pending_overlay: dict[tuple[UUID, int], PendingEditOverlay] | None = None,
-    course_code_by_template_id: dict[UUID, str] | None = None,
-    sub_office_scope: set[UUID] | None = None,
-    op_weekdays_by_office: dict[UUID, set[int]] | None = None,
-    office_name_by_id: dict[UUID, str] | None = None,
-    warnings: list[V2Warning] | None = None,
-    config: SchedulingConfig | None = None,
-) -> list[V2Visit]:
-    """Phase G-21 T3-2: pinned / 非 pinned 患者で 2 経路に分けて V2Visit に展開する.
-
-    ``build_visits_for_pool`` の置き換え (= G21 feature flag enabled 拠点で使用):
-
-    * **pinned PFV** (``is_pinned=True``): time_type='固定', PFV.start_time 厳守.
-      Phase G-10/G-11 と同じ「動かさない」配置 (= 現在の挙動 = ``time_type='固定'``).
-    * **非 pinned 患者** (PFV.is_pinned=False または PFV なし):
-      ``weekly_pattern.entries[].time_type / preferred_start / preferred_end`` を採用.
-      時間帯範囲内で ``apply_travel_corrections`` に時刻 shift を任せる.
-
-    **Invariant G21-A**: 同 patient × 同 weekday に pinned PFV が存在する場合は
-    weekly_pattern entry を **skip + warning**. 同曜日で pinned と非 pinned が
-    混在することはあり得ないが、データ不整合の防衛として明示的に skip する.
-
-    Args:
-        patients: pool 候補患者リスト.
-        fixed_by_patient: ``{patient_id: list[PatientFixedVisit]}``. PFV を patient 別に
-            事前にロードしたマップ. ``None`` の場合は全 patient で weekly_pattern 経路.
-        pending_overlay: 今週限定オーバーレイ (``run_v2_pipeline`` から渡される).
-        course_code_by_template_id: PFV.course_template_id → course label の map
-            (pinned PFV 経路で V2Visit.course_code に流す).
-        sub_office_scope: Phase E-5 sub_office 経由配置の scope.
-        warnings: Invariant G21-A 違反時に warning を追記するためのリスト.
-
-    Returns:
-        ``list[V2Visit]``: 全患者 × 全 weekday の V2Visit を展開したリスト.
-    """
-    overlay = pending_overlay or {}
-    sub_scope = sub_office_scope or set()
-    fixed_map = fixed_by_patient or {}
-    visits: list[V2Visit] = []
-    # Phase G-45: 拠点休業日 skip の重複 emit 抑止. (patient_id, weekday) ごと 1 件.
-    closed_warned: set[tuple[UUID, int]] = set()
-
-    for patient in patients:
-        if patient.lat is None or patient.lng is None or patient.primary_office_id is None:
-            continue
-        addr = patient.address
-        area = _extract_area_label(addr)
-        sex_r = patient.sex_restriction
-        req_multi = bool(getattr(patient, "requires_multiple_staff", False) or False)
-
-        pfv_rows = fixed_map.get(patient.id) or []
-        # weekday -> pinned PFV (slot_index=0, mode='normal', is_pinned=True).
-        # Invariant G21-A: pinned PFV があれば該当 weekday の weekly_pattern entry を skip.
-        pinned_by_wd: dict[int, PatientFixedVisit] = {}
-        _red_wds_v2: set[int] = {
-            pfv.weekday for pfv in pfv_rows if pfv.mode == "normal" and pfv.is_pinned
-        }
-        for pfv in pfv_rows:
-            if pfv.mode != "normal" or pfv.slot_index != 0:
-                continue
-            # 2 名体制は slot 0/1 のどちらかが赤ならその曜日は赤 (赤ピン整理 2026-10-12).
-            if pfv.weekday in _red_wds_v2:
-                pinned_by_wd[pfv.weekday] = pfv
-
-        # course_template_id → label map / sub_office_id 差し替えマップ.
-        wd_to_course_code: dict[int, str] = {}
-        if course_code_by_template_id:
-            for _row in pfv_rows:
-                if _row.course_template_id is not None:
-                    _label = course_code_by_template_id.get(_row.course_template_id)
-                    if _label is not None:
-                        wd_to_course_code[_row.weekday] = _label
-        wd_to_office_id: dict[int, UUID] = {}
-        if sub_scope:
-            for _row in pfv_rows:
-                if _row.sub_office_id is not None and _row.sub_office_id in sub_scope:
-                    wd_to_office_id[_row.weekday] = _row.sub_office_id
-
-        # 1) pinned PFV 経路: time_type='固定', PFV.start_time 厳守.
-        for wd, pfv in pinned_by_wd.items():
-            ov = overlay.get((patient.id, wd))
-            if ov is not None:
-                st_eff = ov.new_start
-                sm_eff = _compute_overlay_duration(ov, existing_duration=pfv.duration_min)
-                tt_eff = ov.new_time_type or "固定"
-                ps_eff = ov.new_start_str
-                pe_eff = ov.new_end_str
-            else:
-                st_eff = pfv.start_time
-                sm_eff = pfv.duration_min
-                tt_eff = "固定"
-                ps_eff = _fmt_hhmm(pfv.start_time)
-                pe_eff = None
-            end_t = _add_minutes(st_eff, sm_eff)
-            am_pm = determine_am_pm(time_type=tt_eff, preferred_start=st_eff)
-            cc_eff = wd_to_course_code.get(wd)
-            office_id_eff = wd_to_office_id.get(wd, patient.primary_office_id)
-            # Phase G-45: 拠点休業日 skip (G-21 経路 pinned PFV).
-            if op_weekdays_by_office is not None:
-                _op_wd = op_weekdays_by_office.get(office_id_eff)
-                if _op_wd is not None and wd not in _op_wd:
-                    _emit_office_closed_warning(
-                        warnings=warnings,
-                        closed_warned=closed_warned,
-                        patient_id=patient.id,
-                        patient_name=patient.name,
-                        weekday=wd,
-                        office_id=office_id_eff,
-                        office_name_by_id=office_name_by_id,
-                    )
-                    continue
-            visits.append(
-                V2Visit(
-                    patient_id=patient.id,
-                    patient_name=patient.name,
-                    patient_code=patient.code,
-                    weekday=wd,
-                    start_time=st_eff,
-                    end_time=end_t,
-                    service_minutes=sm_eff,
-                    lat=float(patient.lat),
-                    lng=float(patient.lng),
-                    office_id=office_id_eff,
-                    am_pm=am_pm,
-                    source_kind="fixed",
-                    course_code=cc_eff,
-                    address=addr,
-                    area_label=area,
-                    time_type=tt_eff,
-                    preferred_start=ps_eff,
-                    preferred_end=pe_eff,
-                    sex_restriction=sex_r,
-                    requires_multiple_staff=req_multi,
-                    is_pinned=True,
-                    is_movability_locked=_pfv_movability_locked(pfv),
-                )
-            )
-
-        # 2) 非 pinned 経路: weekly_pattern.entries の time_type / preferred_start / preferred_end
-        #    を採用. apply_travel_corrections が時間帯範囲内で時刻 shift する.
-        entries = _extract_weekly_entries(patient, config=config)
-        for wd, st, sm, tt, ps_str, pe_str in entries:
-            # Invariant G21-A: 同 weekday に pinned PFV があれば weekly_pattern entry skip + warning.
-            if wd in pinned_by_wd:
-                if warnings is not None:
-                    pinned = pinned_by_wd[wd]
-                    warnings.append(
-                        V2Warning(
-                            type="general",
-                            message=(
-                                f"Invariant G21-A: 患者 {patient.name} 様 ({_weekday_jp(wd)}) "
-                                f"に pinned PFV (start_time={_fmt_hhmm(pinned.start_time)}) と "
-                                f"weekly_pattern entry が同時に存在 — "
-                                f"weekly_pattern entry を skip し pinned を採用"
-                            ),
-                            weekday=wd,
-                            actionable=False,
-                            patient_id=patient.id,
-                            patient_name=patient.name,
-                        )
-                    )
-                continue
-            ov = overlay.get((patient.id, wd))
-            if ov is not None:
-                st_eff = ov.new_start
-                sm_eff = _compute_overlay_duration(ov, existing_duration=sm)
-                tt_eff = ov.new_time_type or tt
-                ps_eff = ov.new_start_str
-                pe_eff = ov.new_end_str if ov.new_end_str is not None else pe_str
-            else:
-                st_eff = st
-                sm_eff = sm
-                tt_eff = tt
-                ps_eff = ps_str
-                pe_eff = pe_str
-            end_t = _add_minutes(st_eff, sm_eff)
-            am_pm = determine_am_pm(time_type=tt_eff, preferred_start=st_eff)
-            # Phase G-45: 拠点休業日 skip (G-21 経路 非 pinned weekly_pattern).
-            if op_weekdays_by_office is not None:
-                _op_wd = op_weekdays_by_office.get(patient.primary_office_id)
-                if _op_wd is not None and wd not in _op_wd:
-                    _emit_office_closed_warning(
-                        warnings=warnings,
-                        closed_warned=closed_warned,
-                        patient_id=patient.id,
-                        patient_name=patient.name,
-                        weekday=wd,
-                        office_id=patient.primary_office_id,
-                        office_name_by_id=office_name_by_id,
-                    )
-                    continue
-            visits.append(
-                V2Visit(
-                    patient_id=patient.id,
-                    patient_name=patient.name,
-                    patient_code=patient.code,
-                    weekday=wd,
-                    start_time=st_eff,
-                    end_time=end_t,
-                    service_minutes=sm_eff,
-                    lat=float(patient.lat),
-                    lng=float(patient.lng),
-                    office_id=patient.primary_office_id,
-                    am_pm=am_pm,
-                    source_kind="pool",
-                    address=addr,
-                    area_label=area,
-                    time_type=tt_eff,
-                    sex_restriction=sex_r,
-                    preferred_start=ps_eff,
-                    preferred_end=pe_eff,
-                    requires_multiple_staff=req_multi,
-                )
-            )
-
     return visits
 
 
@@ -6104,180 +5860,6 @@ def calc_h_violations(
 # ---------------------------------------------------------------------------
 
 
-async def _load_before_visits_from_pfv(
-    db: AsyncSession,
-    *,
-    patients_by_id: dict[UUID, Patient],
-    pending_overlay: dict[tuple[UUID, int], PendingEditOverlay] | None = None,
-    warnings: list[V2Warning] | None = None,
-    op_weekdays_by_office: dict[UUID, set[int]] | None = None,
-    office_name_by_id: dict[UUID, str] | None = None,
-    actual_weekdays_by_patient: dict[UUID, set[int]] | None = None,
-) -> list[V2Visit]:
-    """Before スナップショット: 既存 patient_fixed_visits (mode='normal') から構築.
-
-    ``pending_overlay`` が渡された場合は、PFV 値を Python オブジェクトレベルで上書きする
-    (DB / SQLAlchemy セッションには触らない). マスターは絶対に変更しない.
-    overlay に該当するキーがあるのに PFV が見つからない場合は warning に記録.
-
-    Phase G-45 (拠点稼働曜日): ``op_weekdays_by_office`` が渡された場合、
-    最終 ``v2_office_id`` (= course_template の office_id 由来) が当該 weekday に
-    休業の場合は V2Visit を emit せず skip + 重複防止 warning emit.
-    """
-    # Phase G-45: 拠点休業日 skip 用 dedupe set.
-    closed_warned: set[tuple[UUID, int]] = set()
-    if not patients_by_id:
-        return []
-    pfv_rows = (
-        await db.scalars(
-            select(PatientFixedVisit).where(
-                PatientFixedVisit.patient_id.in_(list(patients_by_id.keys())),
-                PatientFixedVisit.mode == "normal",
-                PatientFixedVisit.slot_index == 0,
-            )
-        )
-    ).all()
-
-    # course_template_id → (CourseTemplate.label, office_id) の map を事前構築 (N+1 回避)
-    ct_ids = {pfv.course_template_id for pfv in pfv_rows if pfv.course_template_id is not None}
-    ct_label_by_id: dict[UUID, str] = {}
-    # Phase G-24: V2Visit.office_id を patient.primary_office_id ではなく
-    # course_template の office_id 由来にするための逆引き map.
-    # 例: INAGE 拠点患者だが PFV.course_template が TSUGA-A を指す場合 (= Phase G-8 cross-office),
-    # Before の Course グループは (TSUGA, weekday, "A") に集計される.
-    ct_office_by_id: dict[UUID, UUID] = {}
-    if ct_ids:
-        ct_rows = await db.scalars(
-            select(CourseTemplate).where(
-                CourseTemplate.id.in_(ct_ids),
-                CourseTemplate.deleted_at.is_(None),
-            )
-        )
-        for ct in ct_rows.all():
-            ct_label_by_id[ct.id] = ct.label
-            ct_office_by_id[ct.id] = ct.office_id
-
-    pending_overlay = pending_overlay or {}
-    pfv_keys_seen: set[tuple[UUID, int]] = set()
-
-    out: list[V2Visit] = []
-    for pfv in pfv_rows:
-        patient = patients_by_id.get(pfv.patient_id)
-        if patient is None or patient.lat is None or patient.lng is None:
-            continue
-        if patient.primary_office_id is None:
-            continue
-        overlay_key = (pfv.patient_id, pfv.weekday)
-        pfv_keys_seen.add(overlay_key)
-        overlay = pending_overlay.get(overlay_key)
-        # overlay の new_start_time / duration_min を採用 (PFV モデルは書き換えない)
-        if overlay is not None:
-            start_time_v = overlay.new_start
-            duration_v = _compute_overlay_duration(overlay, existing_duration=pfv.duration_min)
-        else:
-            start_time_v = pfv.start_time
-            duration_v = pfv.duration_min
-        end_t = _add_minutes(start_time_v, duration_v)
-        am_pm = "am" if start_time_v.hour < NOON_HOUR else "pm"
-        course_code = ct_label_by_id.get(pfv.course_template_id) if pfv.course_template_id else None
-        addr = patient.address
-        # time_type / preferred_start / preferred_end も overlay を優先する.
-        if overlay is not None:
-            tt = overlay.new_time_type or _extract_time_type_for_weekday(patient, pfv.weekday)
-            ps_str = overlay.new_start_str
-            pe_str = (
-                overlay.new_end_str
-                or _extract_preferred_window_for_weekday(patient, pfv.weekday)[1]
-            )
-        else:
-            tt = _extract_time_type_for_weekday(patient, pfv.weekday)
-            ps_str, pe_str = _extract_preferred_window_for_weekday(patient, pfv.weekday)
-        # Phase G-24: V2Visit.office_id を course_template の office_id 由来にする.
-        # patient.primary_office_id を使うと cross-office PFV (Phase G-8) で
-        # Before の Course グループが (patient_office, "A") に統合され、
-        # 例えば TSUGA-A 行の visit が INAGE-A に混入する問題が起きる.
-        course_office_id = (
-            ct_office_by_id.get(pfv.course_template_id)
-            if pfv.course_template_id is not None
-            else None
-        )
-        v2_office_id = course_office_id or patient.primary_office_id
-        # Phase G-45: 拠点休業日 skip (Before legacy 経路).
-        # 2026-10-13 (PO 都賀の土曜): 今週その曜日に実際の訪問がある固定枠は、
-        # 拠点の休業曜日でも落とさず、 「休みの日」 の注意書きも出さない.
-        _has_actual = pfv.weekday in (actual_weekdays_by_patient or {}).get(pfv.patient_id, set())
-        if op_weekdays_by_office is not None and not _has_actual:
-            _op_wd = op_weekdays_by_office.get(v2_office_id)
-            if _op_wd is not None and pfv.weekday not in _op_wd:
-                _emit_office_closed_warning(
-                    warnings=warnings,
-                    closed_warned=closed_warned,
-                    patient_id=patient.id,
-                    patient_name=patient.name,
-                    weekday=pfv.weekday,
-                    office_id=v2_office_id,
-                    office_name_by_id=office_name_by_id,
-                )
-                continue
-        out.append(
-            V2Visit(
-                patient_id=patient.id,
-                patient_name=patient.name,
-                patient_code=patient.code,
-                weekday=pfv.weekday,
-                start_time=start_time_v,
-                end_time=end_t,
-                service_minutes=duration_v,
-                lat=float(patient.lat),
-                lng=float(patient.lng),
-                office_id=v2_office_id,
-                am_pm=am_pm,  # type: ignore[arg-type]
-                course_code=course_code,  # PFV.course_template_id 由来
-                source_kind="fixed",
-                address=addr,
-                area_label=_extract_area_label(addr),
-                time_type=tt,
-                sex_restriction=patient.sex_restriction,
-                preferred_start=ps_str,
-                preferred_end=pe_str,
-                # W41 v2 拡張 (二人組訪問): patient.requires_multiple_staff を流す.
-                requires_multiple_staff=bool(
-                    getattr(patient, "requires_multiple_staff", False) or False
-                ),
-                # Phase G-30: legacy Before 経路でも pinned PFV の is_pinned=True を
-                # V2Visit に流す. diff_add 経路では before_visits → before_copies
-                # (dataclasses.replace) 経由で after_visits に流入するため、
-                # ここで True を立てておかないと apply_travel_corrections の
-                # pinned fence が engage せず時刻が動く可能性がある.
-                is_pinned=bool(pfv.is_pinned),
-                # PO 決定 (2026-08-07): 可動域=完全固定 も同じ経路で凍結する.
-                is_movability_locked=_pfv_movability_locked(pfv),
-            )
-        )
-
-    # overlay に該当するが PFV が見つからない (= 新規患者 or 別曜日) は warning.
-    if warnings is not None:
-        for key in pending_overlay.keys():
-            if key not in pfv_keys_seen:
-                patient = patients_by_id.get(key[0])
-                pname = patient.name if patient is not None else None
-                warnings.append(
-                    V2Warning(
-                        type="general",
-                        message=(
-                            f"今週限定変更: (patient_id={key[0]}, weekday={key[1]}) に対応する "
-                            f"固定枠が存在しないためオーバーレイをスキップしました"
-                        ),
-                        actionable=False,
-                        patient_id=key[0],
-                        patient_name=pname,
-                        weekday=key[1],
-                    )
-                )
-
-    return out
-
-
 async def _load_before_visits_v2(
     db: AsyncSession,
     *,
@@ -6333,6 +5915,10 @@ async def _load_before_visits_v2(
     ).all()
     ct_ids = {p.course_template_id for p in pfv_rows_all if p.course_template_id is not None}
     ct_label_by_id: dict[UUID, str] = {}
+    # Phase G-24 (旧 legacy Before と同じ規約): PFV 由来の V2Visit.office_id は
+    # course_template の office_id を優先する (cross-office / サブ拠点の固定枠を
+    # 患者の主担当拠点のコースに混ぜない).
+    ct_office_by_id: dict[UUID, UUID] = {}
     if ct_ids:
         ct_rows = await db.scalars(
             select(CourseTemplate).where(
@@ -6342,6 +5928,7 @@ async def _load_before_visits_v2(
         )
         for ct in ct_rows.all():
             ct_label_by_id[ct.id] = ct.label
+            ct_office_by_id[ct.id] = ct.office_id
 
     # dedupe key = (patient_id, weekday, slot_index). slot_index は通常 0.
     # 価値順位を上げて優先採用するため、上位採用後は下位経路を skip する.
@@ -6386,7 +5973,12 @@ async def _load_before_visits_v2(
             service_minutes=duration_v,
             lat=float(patient.lat),
             lng=float(patient.lng),
-            office_id=patient.primary_office_id,
+            office_id=(
+                ct_office_by_id.get(pfv.course_template_id)
+                if pfv.course_template_id is not None
+                else None
+            )
+            or patient.primary_office_id,
             am_pm=am_pm,  # type: ignore[arg-type]
             course_code=course_code,
             source_kind="fixed",
@@ -6415,9 +6007,19 @@ async def _load_before_visits_v2(
         week_sunday = None  # type: ignore[assignment]
 
     if week_monday is not None and week_sunday is not None and patient_ids:
+        # 2026-10-13 (PO 一本化・M の根治): 実際の訪問が入っているコース (Course.code /
+        # Course.office_id) も一緒に読む. 旧実装はコースを捨てていたため、 今週の姿の
+        # ほぼ全件が 「コース無し」 になり、 Stage 5 が実際のコースを尊重できず
+        # 出勤人数ぶんの A〜 しか発番できない → あふれた組 (= プールの提案を含む) が
+        # コース未定 (画面の 「M」) になっていた.
         visit_rows = (
-            await db.scalars(
-                select(Visit).where(
+            await db.execute(
+                select(Visit, Course.code, Course.office_id)
+                .outerjoin(
+                    Course,
+                    (Course.id == Visit.course_id) & Course.deleted_at.is_(None),
+                )
+                .where(
                     Visit.patient_id.in_(patient_ids),
                     Visit.visit_date >= week_monday,
                     Visit.visit_date <= week_sunday,
@@ -6431,7 +6033,7 @@ async def _load_before_visits_v2(
                 )
             )
         ).all()
-        for v in visit_rows:
+        for v, course_code_v, course_office_v in visit_rows:
             patient = patients_by_id.get(v.patient_id)
             if patient is None or patient.lat is None or patient.lng is None:
                 continue
@@ -6467,9 +6069,11 @@ async def _load_before_visits_v2(
                 service_minutes=duration_min,
                 lat=float(patient.lat),
                 lng=float(patient.lng),
-                office_id=patient.primary_office_id,
+                office_id=course_office_v or patient.primary_office_id,
                 am_pm=am_pm,  # type: ignore[arg-type]
+                course_code=course_code_v,
                 source_kind="fixed",
+                from_actual_visit=True,
                 address=addr,
                 area_label=_extract_area_label(addr),
                 time_type=tt,
@@ -7307,7 +6911,7 @@ def _g94_resolve_cross_patient_double_booking(
         existing_visits_by_ow[(v.office_id, v.weekday)].append(v)
 
     # Phase G-99 (懸念①): canary 非依存で当週の実 placed visit を衝突相手に注入する.
-    # legacy before ローダ (_load_before_visits_from_pfv) は PatientFixedVisit のみ読み
+    # 旧 legacy before ローダ (_load_before_visits_from_pfv, 2026-10-13 撤去) は PatientFixedVisit のみ読み
     # 実 visits テーブルを読まないため、 PFV 非対応の実 visit (手動配置等) が
     # after_visits に載らず、 中尾 16:00 が井上 16:00 と同時刻でも衝突未検出になっていた.
     # run_v2_pipeline が当週 placed visit を (patient_id, weekday) 重複排除済で渡すので、
@@ -7578,9 +7182,6 @@ async def run_v2_pipeline(
     from datetime import date as _date_cls
 
     orphan_fixed_by_patient: dict[UUID, list[PatientFixedVisit]] = {}
-    # 2026-10-13 (PO 都賀の土曜): 今週の実際の訪問がある曜日 (患者ごと). 旧 Before
-    # 経路で拠点の休業曜日でも実在する訪問を落とさないために使う (diff_add のみ).
-    actual_weekdays_for_before: dict[UUID, set[int]] | None = None
     if mode == "diff_add":
         try:
             week_monday = _date_cls.fromisocalendar(iso_year, iso_week, 1)
@@ -7635,7 +7236,6 @@ async def run_v2_pipeline(
                 placed_slots_by_patient[_pid].add(_vdate.weekday())
                 placed_count_by_patient[_pid] += 1
                 placed_count_by_patient_wd[(_pid, _vdate.weekday())] += 1
-        actual_weekdays_for_before = placed_slots_by_patient
 
         # Phase G-93 (部分不足プール): PFV を持つ患者の固定枠を事前ロードする.
         # 孤児判定 (= 今週 visit 0 件) に加えて「今週 visit が一部あるが希望回数に
@@ -7782,61 +7382,21 @@ async def run_v2_pipeline(
     # DB / SQLAlchemy セッションには触らない.
     pending_overlay = _build_pending_edit_overlay(pending_edits, warnings=warnings)
 
-    # Phase G-21 T3-1 (canary 切替): feature flag ``g21_new_algorithm`` が enabled な
-    # 拠点に属する patient のみ 4 経路 union (PFV ∪ weekly ∪ DB Visit ∪ overlay) の
-    # 新 before 経路を使う. それ以外は旧 ``_load_before_visits_from_pfv`` 継続.
-    g21_enabled_offices = await _load_g21_enabled_offices(db, office_ids=office_ids)
-    if g21_enabled_offices:
-        g21_patients_by_id = {
-            pid: p
-            for pid, p in patients_by_id.items()
-            if p.primary_office_id in g21_enabled_offices
-        }
-        legacy_patients_by_id = {
-            pid: p
-            for pid, p in patients_by_id.items()
-            if p.primary_office_id not in g21_enabled_offices
-        }
-        before_visits_g21 = (
-            await _load_before_visits_v2(
-                db,
-                patients_by_id=g21_patients_by_id,
-                iso_year=iso_year,
-                iso_week=iso_week,
-                pending_overlay=pending_overlay,
-                warnings=warnings,
-                op_weekdays_by_office=op_weekdays_by_office,
-                office_name_by_id=office_name_by_id,
-                config=config,
-            )
-            if g21_patients_by_id
-            else []
-        )
-        before_visits_legacy = (
-            await _load_before_visits_from_pfv(
-                db,
-                patients_by_id=legacy_patients_by_id,
-                pending_overlay=pending_overlay,
-                warnings=warnings,
-                op_weekdays_by_office=op_weekdays_by_office,
-                office_name_by_id=office_name_by_id,
-                actual_weekdays_by_patient=actual_weekdays_for_before,
-            )
-            if legacy_patients_by_id
-            else []
-        )
-        before_visits = before_visits_g21 + before_visits_legacy
-    else:
-        # canary OFF: 全 office で旧経路を使用.
-        before_visits = await _load_before_visits_from_pfv(
-            db,
-            patients_by_id=patients_by_id,
-            pending_overlay=pending_overlay,
-            warnings=warnings,
-            op_weekdays_by_office=op_weekdays_by_office,
-            office_name_by_id=office_name_by_id,
-            actual_weekdays_by_patient=actual_weekdays_for_before,
-        )
+    # Phase G-21 T3-1 → 2026-10-13 (PO 一本化): 今週の姿 (Before) は全拠点で
+    # 4 経路 union (当週の実際の訪問 ∪ 固定訪問の表 ∪ 希望 ∪ overlay) で作る.
+    # 旧 ``_load_before_visits_from_pfv`` (固定訪問の表だけ) と拠点ごとの切り替え
+    # (office_feature_flags の g21_new_algorithm) は撤去した.
+    before_visits = await _load_before_visits_v2(
+        db,
+        patients_by_id=patients_by_id,
+        iso_year=iso_year,
+        iso_week=iso_week,
+        pending_overlay=pending_overlay,
+        warnings=warnings,
+        op_weekdays_by_office=op_weekdays_by_office,
+        office_name_by_id=office_name_by_id,
+        config=config,
+    )
 
     # Stage 1+2 中間: pool_patients を V2Visit に展開
     # W41 v2 (警告日本語化): 緯度経度 / 拠点 未設定の患者を明示的に warning に出す.
@@ -7995,106 +7555,12 @@ async def run_v2_pipeline(
                 _v.pool_origin = "preferred"
             pool_visits = pool_visits + pool_visits_fallback
 
-    # Phase G-21 T3 (Reviewer C1 fix): G21 feature flag enabled 拠点に属する
-    # patient については legacy build_visits_for_pool の出力を捨て、
-    # build_visits_for_pool_v2 (pinned / 非 pinned 2 経路化 + Invariant G21-A) で
-    # 再生成する. これにより:
-    #   - pinned PFV の is_pinned=True が after_visits に乗る (= 後段
-    #     _apply_corrections_to_visits の pinned fence が engage する).
-    #   - 同 (patient, weekday) で pinned + weekly_pattern entry が重複した場合、
-    #     Invariant G21-A により weekly_pattern が skip + warning.
-    # canary OFF 拠点は legacy 経路維持で挙動不変.
-    if g21_enabled_offices:
-        g21_patient_ids: set[UUID] = {
-            pid for pid, p in patients_by_id.items() if p.primary_office_id in g21_enabled_offices
-        }
-        if g21_patient_ids:
-            g21_pool_patients = [p for p in pool_patients if p.id in g21_patient_ids]
-            if g21_pool_patients:
-                # G21 patient の全 PFV (pinned 含む) を取得.
-                g21_pfv_by_patient: dict[UUID, list[PatientFixedVisit]] = {}
-                g21_pfv_rows = await db.scalars(
-                    select(PatientFixedVisit).where(
-                        PatientFixedVisit.patient_id.in_(list(g21_patient_ids)),
-                        PatientFixedVisit.mode == "normal",
-                    )
-                )
-                for _pfv_row in g21_pfv_rows.all():
-                    g21_pfv_by_patient.setdefault(_pfv_row.patient_id, []).append(_pfv_row)
-
-                # course_template_id -> label map (pinned 経路で V2Visit.course_code に流す).
-                g21_template_ids: set[UUID] = {
-                    pfv.course_template_id
-                    for _pfvs in g21_pfv_by_patient.values()
-                    for pfv in _pfvs
-                    if pfv.course_template_id is not None
-                }
-                g21_course_code_by_template_id: dict[UUID, str] = {}
-                if g21_template_ids:
-                    g21_ct_rows = await db.scalars(
-                        select(CourseTemplate).where(
-                            CourseTemplate.id.in_(g21_template_ids),
-                            CourseTemplate.deleted_at.is_(None),
-                        )
-                    )
-                    for _ct in g21_ct_rows.all():
-                        g21_course_code_by_template_id[_ct.id] = _ct.label
-
-                # legacy pool_visits から G21 patient の visit を除外.
-                pool_visits = [v for v in pool_visits if v.patient_id not in g21_patient_ids]
-
-                # build_visits_for_pool_v2 で G21 patient の visit を再生成.
-                g21_pool_visits = build_visits_for_pool_v2(
-                    g21_pool_patients,
-                    fixed_by_patient=g21_pfv_by_patient,
-                    pending_overlay=pending_overlay,
-                    course_code_by_template_id=g21_course_code_by_template_id or None,
-                    sub_office_scope=sub_office_scope_set if mode == "diff_add" else None,
-                    op_weekdays_by_office=op_weekdays_by_office,
-                    office_name_by_id=office_name_by_id,
-                    warnings=warnings,
-                    config=config,
-                )
-                # Phase G-92: g21 再生成パスでも pool_origin を立てる. legacy 経路
-                # (7048-7049) と同じく「固定優先→希望フォールバック」を成立させる.
-                # build_visits_for_pool_v2 は pinned PFV を source_kind="fixed"
-                # (is_pinned=True), weekly_pattern を source_kind="pool" で展開する
-                # ため、 これを pool_origin に写像する:
-                #   - source_kind="fixed" (pinned PFV 由来)   → pool_origin="fixed"
-                #   - source_kind="pool"  (weekly_pattern 由来) → pool_origin="preferred"
-                # これで _dedup_fixed_preferred_candidates が fixed_keys を検出でき、
-                # 固定が落ちたときに fixed_fallback_preferred 分岐へ到達する.
-                for _gv in g21_pool_visits:
-                    _gv.pool_origin = "fixed" if _gv.source_kind == "fixed" else "preferred"
-                pool_visits = pool_visits + g21_pool_visits
-
-                # Phase G-92: g21 PFV 患者の希望フォールバック候補を補完する.
-                # build_visits_for_pool_v2 は Invariant G21-A により pinned PFV と
-                # 同 (patient, weekday) の weekly_pattern entry を skip するため、
-                # 「同曜日で固定が落ちたら希望へ差し替える」フォールバック候補が
-                # 上の再生成だけでは欠落する. legacy 経路 (7058-7072) と同様に、
-                # weekly_pattern を素直に展開した preferred 候補を別途追加し、
-                # _dedup で固定候補の裏に退避させる (= 遅延フォールバック源).
-                # diff_add のみ (full_optimize は固定優先フォールバック対象外).
-                if mode == "diff_add":
-                    g21_fixed_patient_ids = set(g21_pfv_by_patient.keys())
-                    g21_fallback_patients = [
-                        p for p in g21_pool_patients if p.id in g21_fixed_patient_ids
-                    ]
-                    if g21_fallback_patients:
-                        g21_pool_visits_fallback = build_visits_for_pool(
-                            g21_fallback_patients,
-                            # use_fixed_as_source=False (既定) で weekly_pattern を読む.
-                            pending_overlay=pending_overlay,
-                            op_weekdays_by_office=op_weekdays_by_office,
-                            office_name_by_id=office_name_by_id,
-                            # 重複 warning を避けるため warnings は渡さない.
-                            warnings=None,
-                            config=config,
-                        )
-                        for _gfv in g21_pool_visits_fallback:
-                            _gfv.pool_origin = "preferred"
-                        pool_visits = pool_visits + g21_pool_visits_fallback
+    # 2026-10-13 (PO 一本化): 旧 canary ON 拠点だけで動いていた G-21 の pool 再生成
+    # (build_visits_for_pool_v2) は撤去した. pool の展開は全拠点で上の
+    # build_visits_for_pool (固定訪問の表 → 希望フォールバック・赤ピン/コース/拠点の
+    # 引き継ぎ込み) に一本化する. G-21 の再生成は赤でない固定訪問の表を展開せず、
+    # 固定訪問の表しか無い患者を全面最適化で落とし、 固定枠のコースも捨てていた
+    # (= 提案が 「M (コース未定)」 になる原因の 1 つ).
 
     # H5 + H10: 受入カレンダー × + 昼休憩を除外
     # Mode 2 (full_optimize) は H5 をスキップ — 受入カレンダー × は既存スケジュール
@@ -8125,9 +7591,17 @@ async def run_v2_pipeline(
         # 判定が出て pool から除外される. 結果として候補に出ない.
         # 解決: orphan patient の visit は filtered_before から除外し、
         # pool 経由でのみ after に流入させる.
-        orphan_patient_ids: set[UUID] = {p.id for p in pool_patients_orphan_fixed}
+        # 2026-10-13 (PO 一本化): Before は希望 (weekly_pattern) からも作るので、 固定訪問の
+        # 表が無い pool 患者 (pool_patients_no_fixed) の希望も before に入る. これを
+        # filtered_before に残すと同じく自分自身と衝突して提案が消え、 しかも希望の
+        # 「思い込み」 が after に配置済みとして残る. pool 患者は 「思い込み」 (固定訪問の
+        # 表 / 希望から作った分) を全員 filtered_before から除き、 今週の実際の訪問
+        # (from_actual_visit) だけ残す (= 実際のコースの占有として数える).
+        orphan_patient_ids: set[UUID] = {p.id for p in pool_patients}
         before_copies = [
-            replace(v) for v in before_visits if v.patient_id not in orphan_patient_ids
+            replace(v)
+            for v in before_visits
+            if v.patient_id not in orphan_patient_ids or v.from_actual_visit
         ]
         filtered_before = _filter_unavailable_and_lunch(
             before_copies, unavailable_slots=unavailable, warnings=warnings, config=config
@@ -8565,6 +8039,90 @@ async def run_v2_pipeline(
             extra_existing_visits=_g94_extra_existing,
             config=config,
         )
+
+        # 2026-10-13 (PO 一本化・職員の時刻の重なり): g94 は (拠点, 曜日, コース) と
+        # (拠点, 曜日) でしか重なりを見ないため、 提案先コースの担当職員が同じ時刻に
+        # 別の訪問を持つ場合 (= 他拠点のコースも兼ねている・その訪問の患者がプールに
+        # いて今週の姿から外れている等) をすり抜けていた. 今週のコースの担当職員
+        # (Course.assigned_staff_id) と、 その職員の今週の実際の訪問 (主担当 →
+        # 無ければコースの担当・2 人目) を突き合わせ、 時刻が重なる提案は出さない.
+        if week_monday is not None and week_sunday is not None:
+            _week_courses = (
+                await db.scalars(
+                    select(Course).where(
+                        Course.iso_year == iso_year,
+                        Course.iso_week == iso_week,
+                        Course.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+            _course_by_id = {c.id: c for c in _week_courses}
+            _staff_by_course_key: dict[tuple[UUID, int, str | None], UUID] = {
+                (c.office_id, c.weekday, c.code): c.assigned_staff_id
+                for c in _week_courses
+                if c.assigned_staff_id is not None
+            }
+            _targets = [
+                v
+                for v in after_visits
+                if id(v) in _g94_pool_ids
+                and id(v) not in _g94_double_booking_ids
+                and (v.office_id, v.weekday, v.course_code) in _staff_by_course_key
+            ]
+            if _targets:
+                _staff_busy: dict[tuple[UUID, int], list[tuple[time, time, UUID]]] = defaultdict(
+                    list
+                )
+                _staff_rows = (
+                    await db.scalars(
+                        select(Visit).where(
+                            Visit.visit_date.between(week_monday, week_sunday),
+                            Visit.status.in_(placed_statuses),
+                            Visit.deleted_at.is_(None),
+                            _not_test_visit_clause(),
+                        )
+                    )
+                ).all()
+                for _sv in _staff_rows:
+                    _sc = _course_by_id.get(_sv.course_id) if _sv.course_id else None
+                    _main = _sv.primary_staff_id or (_sc.assigned_staff_id if _sc else None)
+                    for _sid in {_main, _sv.secondary_staff_id}:
+                        if _sid is not None:
+                            _staff_busy[(_sid, _sv.visit_date.weekday())].append(
+                                (_sv.start_time, _sv.end_time, _sv.patient_id)
+                            )
+                for pv in _targets:
+                    _sid = _staff_by_course_key[(pv.office_id, pv.weekday, pv.course_code)]
+                    _hit = next(
+                        (
+                            (bs, be)
+                            for bs, be, bpid in _staff_busy.get((_sid, pv.weekday), [])
+                            if bpid != pv.patient_id and pv.start_time < be and pv.end_time > bs
+                        ),
+                        None,
+                    )
+                    if _hit is None:
+                        continue
+                    _g94_double_booking_ids.add(id(pv))
+                    office_name = (office_name_by_id or {}).get(pv.office_id, "")
+                    warnings.append(
+                        V2Warning(
+                            type="diff_add_conflict",
+                            message=(
+                                f"{pv.patient_name or pv.patient_code or '不明'} 様: "
+                                f"{office_name} {_weekday_jp(pv.weekday)} "
+                                f"{_fmt_hhmm(pv.start_time)}-{_fmt_hhmm(pv.end_time)} は "
+                                f"{pv.course_code} コースの担当職員が同じ時刻に別の訪問 "
+                                f"({_fmt_hhmm(_hit[0])}-{_fmt_hhmm(_hit[1])}) があるため提案不可"
+                            ),
+                            weekday=pv.weekday,
+                            actionable=True,
+                            patient_id=pv.patient_id,
+                            patient_name=pv.patient_name,
+                            affected_patient_ids=[pv.patient_id],
+                        )
+                    )
+
         if _g94_double_booking_ids:
             after_visits = [v for v in after_visits if id(v) not in _g94_double_booking_ids]
 
@@ -8579,7 +8137,10 @@ async def run_v2_pipeline(
     # 一致するため、 (patient_id, weekday) が after に残っていなければ固定枠は失敗.
     proposal_meta_by_patient: dict[UUID, dict[str, Any]] = {}
     if mode == "diff_add":
-        after_keys: set[tuple[UUID, int]] = {(v.patient_id, v.weekday) for v in after_visits}
+        # 2026-10-13: 今週の実際の訪問 (from_actual_visit) は pool 提案の生存判定に使わない.
+        after_keys: set[tuple[UUID, int]] = {
+            (v.patient_id, v.weekday) for v in after_visits if not v.from_actual_visit
+        }
         # Phase G-92 (Reviewer fix #2): in-place 差し替えで生成した「同曜日希望候補」の
         # id を記録する. この候補は run の Stage 5/6 を経ていない (= after_visits に
         # 乗らない) 未検証の提案であり、 配置可能性が保証できない. 同曜日で固定も
@@ -8717,6 +8278,15 @@ async def run_v2_pipeline(
         if _g94_double_booking_ids:
             pool_visits = [v for v in pool_visits if id(v) not in _g94_double_booking_ids]
 
+        # 2026-10-13 (PO 一本化・「M」 の根治): Stage 5 のコースあふれ (出勤人数 +
+        # マネージャー数を超えた組) / 移動時間不足 / ケアアラーム超過で after_visits
+        # から外れた pool 提案は、 course_code=None のまま pool_visits に残り、 endpoint
+        # (schedule_v2) が 「M (コース未定)」 の提案として出していた. 実際には入らない
+        # 提案なので pool_visits から除き、 G-100 と同じく未割当 (理由は warnings) に
+        # 一本化する. after に残った提案 (本物の M / M2 コースを含む) は不変.
+        _after_ids_final = {id(v) for v in after_visits}
+        pool_visits = [v for v in pool_visits if id(v) in _after_ids_final]
+
     # W41 v2 拡張 (コース容量 duration 化): 既存の人数制約 (MAX_PATIENTS_PER_COURSE=6)
     # と独立して、コース総所要時間 (visit duration + 移動時間) が 480 分を超えていないか check.
     _check_course_capacity_minutes(
@@ -8743,6 +8313,7 @@ async def run_v2_pipeline(
     # ため、 固定と希望が同曜日で他に生存曜日が無い患者は after_visits に痕跡が
     # 残らず、 _identify_unassigned_patients に「未割当」と誤計上される.
     # フォールバック成立患者は提案ありなので未割当判定から除外する.
+    pool_patient_ids_for_unassigned: set[UUID] = {p.id for p in pool_patients}
     _g92_fallback_pids: set[UUID] = {
         pid
         for pid, meta in proposal_meta_by_patient.items()
@@ -8750,7 +8321,13 @@ async def run_v2_pipeline(
     }
     unassigned = _identify_unassigned_patients(
         pool_patients=pool_patients,
-        after_visits=after_visits,
+        # 2026-10-13: pool 患者の今週の実際の訪問 (from_actual_visit) は after に残る
+        # ようにしたので、 未割当の判定 (= 提案が after に残ったか) からは除く.
+        after_visits=[
+            v
+            for v in after_visits
+            if not (v.from_actual_visit and v.patient_id in pool_patient_ids_for_unassigned)
+        ],
         warnings=warnings,
         exclude_patient_ids=_g92_fallback_pids,
     )
@@ -10925,7 +10502,6 @@ __all__ = [
     "PM_BLOCK_START",
     "SAME_ADDRESS_TOLERANCE",
     "TRAVEL_SPEED_KMH",
-    "G21_NEW_ALGORITHM_FEATURE_KEY",
     "CrossAddressTimeConflictError",
     "PinnedVisitMovedError",
     "V2Bucket",
@@ -10944,16 +10520,13 @@ __all__ = [
     "_g94_desired_count",
     "_g94_resolve_cross_patient_double_booking",
     "_is_in_lunch_break",
-    "_load_before_visits_from_pfv",
     "_load_before_visits_v2",
-    "_load_g21_enabled_offices",
     "_load_same_address_pair_modes",
     "_load_unavailable_slots",
     "apply_individual_proposal",
     "apply_travel_corrections",
     "apply_week_only",
     "build_visits_for_pool",
-    "build_visits_for_pool_v2",
     "calc_course_total_minutes",
     "calc_h_violations",
     "calc_total_distance",

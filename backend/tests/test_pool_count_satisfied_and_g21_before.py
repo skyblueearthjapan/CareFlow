@@ -15,12 +15,10 @@ from datetime import UTC, date, datetime, time
 import pytest
 
 from app.models import Office, Patient
-from app.models.office_feature_flag import OfficeFeatureFlag
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.staff import Staff, StaffShift
 from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
 from app.services.scheduling.auto_allocator_v2 import (
-    G21_NEW_ALGORITHM_FEATURE_KEY,
     _load_before_visits_v2,
     run_v2_pipeline,
 )
@@ -83,17 +81,6 @@ def _pfv(p: Patient, wd: int, hh: int, *, sub_office_id=None, is_pinned: bool = 
         sub_office_id=sub_office_id,
         is_pinned=is_pinned,
     )
-
-
-async def _enable_g21(db, office: Office) -> None:
-    db.add(
-        OfficeFeatureFlag(
-            office_id=office.id,
-            feature_key=G21_NEW_ALGORITHM_FEATURE_KEY,
-            enabled_at=datetime.now(tz=UTC),
-        )
-    )
-    await db.flush()
 
 
 async def _diff_add(db, office: Office) -> dict:
@@ -387,11 +374,11 @@ async def test_legacy_before_keeps_pfv_on_closed_weekday_when_actual_visit_exist
 
 @pytest.mark.asyncio
 async def test_g21_pipeline_keeps_actual_saturday_visit(db) -> None:
-    """G-21 ON の拠点でも土曜の実際の訪問は Before に残り、 注意書きを出さない."""
+    """パイプライン (2026-10-13 から全拠点で G-21 の Before) でも土曜の実際の訪問は
+    Before に残り、 注意書きを出さない."""
     office = await _office(
         db, name="d-g21-sat", staffed_weekdays=[0, 1, 2, 3, 4], operating=[0, 1, 2, 3, 4]
     )
-    await _enable_g21(db, office)
     p = await _patient(db, code="D-G21-SAT", office=office, weekly_pattern=None)
     db.add(_visit(p, 5, 15))
     await db.commit()
