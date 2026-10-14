@@ -358,13 +358,16 @@ export function MonitorTimeline({
           onPointerUp={onAxisPointerEnd}
           onPointerCancel={onAxisPointerEnd}
         >
-          {/* 8時ラベルは左端に絶対配置し、残り11時間を目盛線 (行側と同じ11分割) に揃える。
-              旧: 12分割 flex-1 で目盛線から最大180pxドリフトしていた (レビューLOW対応)。 */}
-          <span className="absolute left-0 top-0 py-2 pl-0.5 text-[11px] text-text-muted">8</span>
-          {HOURS.slice(1).map((h) => (
+          {/* 行側の目盛線と同じ11分割。各区間 [h, h+1) の左端 = h 時の線に h を書く。
+              旧: 区間の左端に h+1 を書いていたため、数字が 1 時間先にずれていた (2026-10-14)。 */}
+          {HOURS.slice(0, -1).map((h, i) => (
             <span
               key={h}
-              className="flex-1 border-l border-border-default py-2 pl-0.5 text-[11px] text-text-muted"
+              className={cn(
+                'flex-1 py-2 pl-0.5 text-[11px] text-text-muted',
+                // 先頭も透明の線を持たせ、11 区間の幅を行側 (全区間 border-l) とそろえる。
+                i > 0 ? 'border-l border-border-default' : 'border-l border-transparent',
+              )}
             >
               {h}
             </span>

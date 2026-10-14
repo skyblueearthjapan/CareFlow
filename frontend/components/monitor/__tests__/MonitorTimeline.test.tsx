@@ -25,6 +25,23 @@ describe('MonitorTimeline', () => {
     expect(screen.getAllByText('佐藤 一郎').length).toBeGreaterThan(0);
   });
 
+  it('時間軸の数字は目盛線と同じ位置: 左端から 8〜18 時 (1 時間先にずれない・2026-10-14)', () => {
+    render(
+      <MonitorTimeline
+        rows={[makeRow({ visits: [makeVisit()] })]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={13 * 60 + 30}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    const labels = Array.from(screen.getByTestId('monitor-time-axis').querySelectorAll('span'))
+      .map((el) => el.textContent)
+      .filter((t) => t !== '');
+    expect(labels).toEqual(['8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18']);
+  });
+
   it('到着済 mismatch の実績バーは data-status=mismatch', () => {
     const v = makeVisit({
       phase: 'done',

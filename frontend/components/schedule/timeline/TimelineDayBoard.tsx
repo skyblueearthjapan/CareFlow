@@ -1467,7 +1467,7 @@ function TimelineColumn({
   return (
     <div
       className="relative border-l border-[var(--border-subtle)]"
-      style={{ flex: 1, minWidth: COL_MIN_W }}
+      style={{ minWidth: 0 }}
       data-testid={`tl-col-${col.key}`}
     >
       {/* T-2 ②-b: DnD 有効時のみ列全体を droppable にする (isOver ハイライト付き)。 */}
@@ -1632,6 +1632,16 @@ export function TimelineDayBoard({
   const showNow =
     nowMinutes != null && nowMinutes >= TL_DAY_START_MIN && nowMinutes <= TL_DAY_END_MIN;
 
+  // 列ヘッダと本体は同じグリッドで列幅を決める。flex:1 だと各セルの余白 (ヘッダ px-2.5 /
+  // スタッフ枠 px-2 / 本体 0) が幅の配分に入り、スタッフ枠があると職員名と縦線がずれていた (2026-10-14)。
+  // 最小幅も数値で同じにする (min-w-fit だとヘッダは select の長い名前で広がり、本体と幅が食い違う)。
+  const colCount = columns.length + staffFrames.length;
+  const boardGridStyle = {
+    display: 'grid',
+    gridTemplateColumns: `${TIME_RAIL_W}px repeat(${colCount}, minmax(${COL_MIN_W}px, 1fr))`,
+    minWidth: TIME_RAIL_W + colCount * COL_MIN_W,
+  } as const;
+
   return (
     <div
       // lg 以上は親 (course-day-timeline-view) の高さいっぱいで盤面内スクロール。
@@ -1640,8 +1650,12 @@ export function TimelineDayBoard({
       data-testid="timeline-day-board"
     >
       {/* 列ヘッダ (担当スタッフ主・コース記号従) */}
-      <div className="sticky top-0 z-[6] flex min-w-fit border-b border-border-default bg-bg-muted">
-        <div style={{ width: TIME_RAIL_W, flex: `0 0 ${TIME_RAIL_W}px` }} />
+      <div
+        className="sticky top-0 z-[6] border-b border-border-default bg-bg-muted"
+        style={boardGridStyle}
+        data-testid="timeline-day-board-header"
+      >
+        <div />
         {columns.map((col) => {
           const gk = genderKey(col.assignedStaff?.sex);
           const pal = genderPalette(col.assignedStaff?.sex);
@@ -1697,7 +1711,7 @@ export function TimelineDayBoard({
                   'cursor-pointer outline-none hover:bg-brand-primary-light focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-primary',
                 headerSelected && 'bg-brand-primary-light ring-2 ring-inset ring-brand-primary',
               )}
-              style={{ flex: 1, minWidth: COL_MIN_W }}
+              style={{ minWidth: 0 }}
             >
               {accActive && (
                 <span
@@ -1820,7 +1834,7 @@ export function TimelineDayBoard({
           <div
             key={`frame-h-${f.staff.id}`}
             className="flex items-center gap-1.5 border-l border-border-subtle px-2 py-1.5"
-            style={{ flex: 1, minWidth: COL_MIN_W }}
+            style={{ minWidth: 0 }}
             data-testid={`tl-staff-frame-header-${f.staff.id}`}
           >
             <span
@@ -1856,8 +1870,8 @@ export function TimelineDayBoard({
       </div>
 
       {/* 本体 (時間軸レール + コース列 + イベント帯 + 現在線) */}
-      <div className="relative flex min-w-fit">
-        <div style={{ width: TIME_RAIL_W, flex: `0 0 ${TIME_RAIL_W}px` }} className="relative">
+      <div className="relative" style={boardGridStyle} data-testid="timeline-day-board-body">
+        <div className="relative">
           {hours.map((m) => (
             <span
               key={m}
@@ -1895,7 +1909,7 @@ export function TimelineDayBoard({
             <div
               key={`frame-b-${f.staff.id}`}
               className="relative border-l border-border-subtle"
-              style={{ flex: 1, minWidth: COL_MIN_W, height }}
+              style={{ minWidth: 0, height }}
               data-testid={`tl-staff-frame-${f.staff.id}`}
             >
               {f.events.map((ev) => (

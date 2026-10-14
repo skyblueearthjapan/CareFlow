@@ -707,6 +707,70 @@ describe('QR チェックイン モバイル — 404/409 はユーザー向け�
     expect(window.localStorage.getItem('checkin-pending:staff-1')).toBeNull();
   });
 
+  it('404 の説明は英語のサーバ文言ではなく、古い QR シールの可能性を日本語で伝える', async () => {
+    checkInMutate.mockRejectedValueOnce(
+      new ApiError('not found', 404, { detail: 'QR token not found' }),
+    );
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() =>
+      expect(asMock(toast.error)).toHaveBeenCalledWith('このQRは無効です', {
+        description: expect.stringContaining('古いQRシール'),
+      }),
+    );
+  });
+
+  it('410 (再発行で失効した QR) は「QRが更新されています」を表示し退避しない', async () => {
+    // detail が無い応答 → 既定の文言 (detail があればそれを出す)
+    checkInMutate.mockRejectedValueOnce(new ApiError('gone', 410, {}));
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() =>
+      expect(asMock(toast.error)).toHaveBeenCalledWith('QRが更新されています', {
+        description: expect.stringContaining('最新のQRシール'),
+      }),
+    );
+    expect(window.localStorage.getItem('checkin-pending:staff-1')).toBeNull();
+  });
+
+  it('410 でサーバの日本語の文言 (氏名入り) があればそれを出す', async () => {
+    checkInMutate.mockRejectedValueOnce(
+      new ApiError('gone', 410, {
+        detail: 'このQRは更新されています。山田様の新しいQRをご利用ください',
+      }),
+    );
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__scan__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() =>
+      expect(asMock(toast.error)).toHaveBeenCalledWith('QRが更新されています', {
+        description: 'このQRは更新されています。山田様の新しいQRをご利用ください',
+      }),
+    );
+  });
+
+  it('QR なしの記録の 404 は QR の話をせず「この訪問には記録できません」', async () => {
+    checkInMutate.mockRejectedValueOnce(new ApiError('not found', 404, { detail: 'Not found' }));
+    render(<MobileVisitDetailPage />);
+    fireEvent.click(screen.getByText('QRで到着を記録'));
+    fireEvent.click(screen.getByText('__manual__'));
+    await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('到着を記録する'));
+    await waitFor(() =>
+      expect(asMock(toast.error)).toHaveBeenCalledWith('この訪問には記録できません', {
+        description: expect.stringContaining('担当が変わった可能性'),
+      }),
+    );
+  });
+
   it('409 は代行/予定外への導線を出し、/q/{token} へ渡す (設計 §5)', async () => {
     checkInMutate.mockRejectedValueOnce(
       new ApiError('conflict', 409, { detail: 'other', code: 'wrong_patient' }),

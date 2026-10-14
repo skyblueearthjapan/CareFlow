@@ -952,9 +952,30 @@ function MobileVisitDetailPageInner() {
       ) {
         clearDeepLinkToken();
       }
+      // 404 のサーバ文言は英語 (「QR token not found」/「Not found」) なので出さず、
+      // 現場で次に何をすればよいかを書く (お客様の問い合わせ 2026-10-14・古い QR シール)。
+      // QR なしの記録の 404 = 訪問が見つからない・担当が外れた (QR の話ではない)。
       if (apiStatus === 404) {
-        toast.error('このQRは無効です', {
-          description: detailOf(err) ?? '患者マスタでQRを再発行してください',
+        if (qrToken) {
+          toast.error('このQRは無効です', {
+            description:
+              '登録のないQRです。古いQRシールの可能性があります。管理者に最新のQRシールへの貼り替えを依頼してください',
+          });
+        } else {
+          toast.error('この訪問には記録できません', {
+            description:
+              'この訪問が見つかりません（担当が変わった可能性があります）。画面を更新してください',
+          });
+        }
+        setFlow({ step: 'none' });
+        return;
+      }
+      if (apiStatus === 410) {
+        // 410 のサーバ文言は日本語 (氏名入り・judge.py)。無いときだけ既定の文言。
+        toast.error('QRが更新されています', {
+          description:
+            detailOf(err) ??
+            '再発行前の古いQRです。管理者に最新のQRシールへの貼り替えを依頼してください',
         });
         setFlow({ step: 'none' });
         return;

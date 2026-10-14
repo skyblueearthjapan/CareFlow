@@ -78,6 +78,38 @@ describe('イベントのスタッフ枠', () => {
     expect(within(body).getByTestId(`tl-memos-staff-frame-${STAFF_1}`)).toBeInTheDocument();
   });
 
+  it('⑤ 日タイムライン: 列ヘッダと本体は同じグリッドで列幅を決める (職員名と縦線がずれない・2026-10-14)', () => {
+    const col = {
+      key: 'tpl-a:2',
+      template: { id: 'tpl-a', label: 'A' },
+      course: { id: 'c-a', assigned_staff_id: null },
+      officeName: '稲毛',
+      visits: [],
+      assignedStaff: null,
+      assignedStaffMissing: false,
+      freeGaps: [],
+      capacity: { filled: 0, max: 6 },
+      staffEvents: [],
+      staffOptions: [],
+    } as unknown as TimelineCourseColumn;
+    render(<TimelineDayBoard columns={[col]} staffFrames={frames} weekdayLabel="火" />);
+    const header = screen.getByTestId('timeline-day-board-header');
+    const body = screen.getByTestId('timeline-day-board-body');
+    // 時間軸レール + コース 1 + スタッフ枠 1 = 同じ 3 列
+    expect(header.style.gridTemplateColumns).toBe('54px repeat(2, minmax(172px, 1fr))');
+    expect(body.style.gridTemplateColumns).toBe(header.style.gridTemplateColumns);
+    // 最小幅も同じ数値 (54 + 2 列 × 172)。中身の長さで片方だけ広がらない
+    expect(header.style.minWidth).toBe('398px');
+    expect(body.style.minWidth).toBe(header.style.minWidth);
+    expect(header.children).toHaveLength(3);
+    // 本体は「時間軸レール + 列」の後に現在線などの絶対配置が続いてもよいが、列の数は同じ
+    expect(
+      body.querySelectorAll(
+        ':scope > [data-testid^="tl-col-"], :scope > [data-testid^="tl-staff-frame-"]',
+      ),
+    ).toHaveLength(2);
+  });
+
   it('④ 日タイムライン: 新人担当コースは select に現在値として名前（新人）が出る', () => {
     // 候補一覧 (staffOptions) から新人は除外されるが (らく助発の割当封鎖)、
     // カイポケ取込で担当になったコースが（未割当）に見えてはいけない (PO報告 2026-07-26)。
@@ -99,13 +131,7 @@ describe('イベントのスタッフ枠', () => {
       staffEvents: [],
       staffOptions: [],
     } as unknown as TimelineCourseColumn;
-    render(
-      <TimelineDayBoard
-        columns={[col]}
-        weekdayLabel="水"
-        onChangeAssignedStaff={vi.fn()}
-      />,
-    );
+    render(<TimelineDayBoard columns={[col]} weekdayLabel="水" onChangeAssignedStaff={vi.fn()} />);
     const select = screen.getByTestId('tl-staff-select-tpl-e:2') as HTMLSelectElement;
     expect(select.value).toBe(STAFF_1);
     expect(screen.getByText(/髙梨桂子（新人）/)).toBeInTheDocument();
