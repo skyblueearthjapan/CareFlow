@@ -9,6 +9,10 @@ QR 再発行 (``POST /patients/{id}/qr/regenerate``) で patients.qr_token を�
   非 NULL の重複は禁止 (unique)。
 * ``patient_id`` は監査証跡として **ON DELETE RESTRICT** (患者の物理削除を防ぐ。
   patients は soft delete 運用なので実害なし)。
+* ``valid_until`` (mig 0096) は古い QR の猶予の期限。NULL = 即時に無効 (既存の行と
+  理由なしの再発行)。``valid_until > now`` かつ患者が稼働中なら judge はその患者として
+  通す。新しい QR が一度読めたら、猶予中の行は ``valid_until = now`` で打ち切る。
+* ``reason`` (mig 0096) は再発行の理由 ``damaged`` / ``lost`` / ``misuse`` (NULL 可)。
 
 SQLite 互換: ``patient.py`` / ``checkin_settings.py`` と同じ dialect 分岐方針。
 """
@@ -52,3 +56,7 @@ class RevokedQrToken(Base):
         nullable=False,
         server_default=func.now(),
     )
+    # 古い QR の猶予の期限 (NULL = 即時に無効)。
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 再発行の理由 (damaged / lost / misuse)。
+    reason: Mapped[str | None] = mapped_column(String(16), nullable=True)

@@ -30,7 +30,6 @@ import { formatStatusSince } from '@/lib/format/patientStatus';
 import { RecordNavigator, type NavigatorRecord } from '@/components/RecordNavigator';
 import { useDeletePatient, usePatient, usePatients } from '@/lib/queries/patients';
 import { useNgStaffList } from '@/lib/queries/patient_ng_staff';
-import { useRegeneratePatientQr } from '@/lib/queries/patientQr';
 import { useOffices } from '@/lib/queries/offices';
 import {
   INSURANCE_LABEL,
@@ -51,6 +50,7 @@ import { formatNgStaffNames } from '@/lib/schemas/patient_ng_staff';
 import { useSameAddressCandidates } from '@/lib/queries/g21';
 import { formatSameAddressLinkNames } from '@/lib/schemas/g21';
 import { PatientFixedVisitsPanel } from '../_components/PatientFixedVisitsPanel';
+import { PatientQrManageDialog } from '@/components/patients/PatientQrManageDialog';
 import { isAdminRole } from '@/lib/rbac';
 
 export default function PatientDetailPage() {
@@ -73,20 +73,9 @@ export default function PatientDetailPage() {
   const { data: sameAddressCandidates = [] } = useSameAddressCandidates(id);
   const { offices } = useOffices();
   const deleteMutation = useDeletePatient();
-  const regenerateQr = useRegeneratePatientQr(id);
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [qrRegenerateOpen, setQrRegenerateOpen] = useState(false);
+  const [qrManageOpen, setQrManageOpen] = useState(false);
   const [isExportingKarte, setIsExportingKarte] = useState(false);
-
-  const handleRegenerateQr = async () => {
-    try {
-      await regenerateQr.mutateAsync();
-      toast.success('QRを再発行しました。新しいQRを印刷してください');
-      router.push(`/patients/qr-print?mode=single&patient=${id}`);
-    } catch (e) {
-      toast.error(`QR再発行に失敗しました: ${e instanceof Error ? e.message : '不明なエラー'}`);
-    }
-  };
 
   const handleExportKarte = async () => {
     if (!accessToken || !id) return;
@@ -218,13 +207,6 @@ export default function PatientDetailPage() {
               QRを印刷
             </Button>
           )}
-          <Button
-            variant="outline"
-            onClick={() => setQrRegenerateOpen(true)}
-            disabled={!canEdit || data.deleted_at != null || regenerateQr.isPending}
-          >
-            QR再発行
-          </Button>
           {canEdit && !data.deleted_at ? (
             <Button asChild variant="outline">
               <Link href={`/patients/${id}/edit`}>編集</Link>
@@ -234,6 +216,15 @@ export default function PatientDetailPage() {
               編集
             </Button>
           )}
+          {/* 再発行は右上に置かず「QRの管理」の一番下にたたむ (PO 2026-10-14)。 */}
+          <button
+            type="button"
+            className="self-center whitespace-nowrap text-sm text-text-secondary hover:underline disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:no-underline"
+            onClick={() => setQrManageOpen(true)}
+            disabled={!canEdit || data.deleted_at != null}
+          >
+            QRの管理 ›
+          </button>
           {canDelete && !data.deleted_at ? (
             <Button
               variant="destructive"
@@ -348,39 +339,11 @@ export default function PatientDetailPage() {
         }}
       />
 
-      <Dialog open={qrRegenerateOpen} onOpenChange={setQrRegenerateOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>QRを再発行しますか？</DialogTitle>
-            <DialogDescription>
-              新しいQRコードを発行します。これまでに掲示・配布した古いQRは無効になり、
-              読み取るとエラー（更新済み）になります。再発行後は新しいQRを印刷して貼り替えてください。
-            </DialogDescription>
-          </DialogHeader>
-          <p className="rounded-md border border-border-default bg-bg-muted/50 px-3 py-2 text-sm">
-            <span className="font-medium">{data.name}</span>
-            <span className="ml-2 text-text-muted tnum">({data.code})</span>
-          </p>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setQrRegenerateOpen(false)}
-              disabled={regenerateQr.isPending}
-            >
-              キャンセル
-            </Button>
-            <Button
-              onClick={() => {
-                setQrRegenerateOpen(false);
-                void handleRegenerateQr();
-              }}
-              disabled={regenerateQr.isPending}
-            >
-              {regenerateQr.isPending ? '再発行中…' : '再発行して印刷へ'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <PatientQrManageDialog
+        open={qrManageOpen}
+        onOpenChange={setQrManageOpen}
+        patient={{ id: data.id, name: data.name, code: data.code }}
+      />
     </section>
   );
 }

@@ -156,6 +156,44 @@ async def _lookup_revoked_token(db: AsyncSession, qr_token: str) -> RevokedQrTok
     return await db.scalar(select(RevokedQrToken).where(RevokedQrToken.token == qr_token))
 
 
+async def _lookup_grace_patient(
+    db: AsyncSession, revoked: RevokedQrToken, now: datetime
+) -> Patient | None:
+    """猶予中の旧トークンなら、その患者 (稼働中・未削除) を返す (無ければ None).
+
+    再発行の理由が「汚れた・読めない」のとき、旧トークンは ``valid_until`` まで使える
+    (``docs/plans/qr-manage-reissue-guard-2026-10-14.md`` §4-2)。期限切れ・NULL
+    (即時無効) は None = 従来どおり 410。
+    """
+    if revoked.valid_until is None or as_utc(revoked.valid_until) <= now:
+        return None
+    return await db.scalar(
+        select(Patient).where(
+            Patient.id == revoked.patient_id,
+            Patient.deleted_at.is_(None),
+            Patient.status == "active",
+        )
+    )
+
+
+async def expire_grace_tokens(db: AsyncSession, patient: Patient, now: datetime) -> None:
+    """新しいシールが読めたら、その患者の猶予中の旧トークンを今の時刻で打ち切る (未 commit).
+
+    貼り替えが済んだら古いシールは自動で使えなくする (設計 §2「貼り替え後」)。
+    """
+    rows = (
+        await db.scalars(
+            select(RevokedQrToken).where(
+                RevokedQrToken.patient_id == patient.id,
+                RevokedQrToken.valid_until.is_not(None),
+            )
+        )
+    ).all()
+    for row in rows:
+        if row.valid_until is not None and as_utc(row.valid_until) > now:
+            row.valid_until = now
+
+
 async def resolve_qr_patient(db: AsyncSession, qr_token: str) -> Patient:
     """QR トークン**単独** (visit 文脈なし) から患者を解決する。
 
@@ -163,11 +201,16 @@ async def resolve_qr_patient(db: AsyncSession, qr_token: str) -> Patient:
     `_resolve_patient` と同じルールだが、visit が無いため失効 QR (410) の案内は
     患者名を出さない汎用文に固定する (情報露出の最小化)。
     未知トークンは 404 (checkin API と同水準の存在情報として許容)。
+    猶予中の旧トークン (``valid_until > now``) は、その患者が稼働中なら通す。
     """
     patient = await _lookup_active_patient_by_token(db, qr_token)
     if patient is not None:
         return patient
-    if await _lookup_revoked_token(db, qr_token) is not None:
+    revoked = await _lookup_revoked_token(db, qr_token)
+    if revoked is not None:
+        grace_patient = await _lookup_grace_patient(db, revoked, datetime.now(UTC))
+        if grace_patient is not None:
+            return grace_patient
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
             detail="このQRは更新されています。正しいQRをご利用ください",
@@ -179,17 +222,27 @@ async def resolve_qr_patient(db: AsyncSession, qr_token: str) -> Patient:
 
 
 async def _resolve_patient(
-    db: AsyncSession, visit: Visit, qr_token: str | None
+    db: AsyncSession, visit: Visit, qr_token: str | None, *, now: datetime | None = None
 ) -> tuple[Patient, str]:
-    """QR トークンから患者を解決する。無し = manual で visit.patient を採用 (R1)."""
+    """QR トークンから患者を解決する。無し = manual で visit.patient を採用 (R1).
+
+    猶予中の旧トークン (``valid_until > now`` かつ患者が稼働中) はその患者として通し、
+    記録の方法は ``qr`` (設計 qr-manage-reissue-guard §4-2)。
+    """
     if not qr_token:
         return visit.patient, "manual"
+    if now is None:
+        now = datetime.now(UTC)
     patient = await _lookup_active_patient_by_token(db, qr_token)
+    revoked = None
+    if patient is None:
+        revoked = await _lookup_revoked_token(db, qr_token)
+        if revoked is not None:
+            patient = await _lookup_grace_patient(db, revoked, now)
     if patient is None:
         # 未知トークン: 再発行で失効した旧 QR (= ローテ済) なら 410 Gone を返し、
         # 旧ステッカーで打刻したスタッフに「QR が更新された」と気づかせる。
         # 失効履歴にも無い完全な未知トークンは従来どおり 404。
-        revoked = await _lookup_revoked_token(db, qr_token)
         if revoked is not None:
             # 氏名スコープ: 旧トークンが「この visit の患者」のものなら氏名入りで
             # 案内する。担当外患者の旧トークン (= 別患者のステッカー誤読) では
@@ -305,7 +358,7 @@ async def judge_checkin(
     if now is None:
         now = datetime.now(UTC)
 
-    patient, resolved_source = await _resolve_patient(db, visit, payload.qr_token)
+    patient, resolved_source = await _resolve_patient(db, visit, payload.qr_token, now=now)
     _guard_visit(visit, now, payload.device_time)
 
     thresholds = await load_thresholds(db)
@@ -334,4 +387,7 @@ async def judge_checkin(
         created_at=now,
     )
     db.add(checkin)
+    # 新しいシール (今のトークン) で記録できたら、猶予中の古いシールはここで打ち切る。
+    if checkin.checkin_source == "qr" and payload.qr_token == patient.qr_token:
+        await expire_grace_tokens(db, patient, now)
     return checkin

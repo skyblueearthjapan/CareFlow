@@ -5,11 +5,14 @@
   audit_logs に回転記録・新トークンに置換。
 - judge: 旧 (失効) トークンで 410、未知トークンで 404、有効トークンで従来通り。
 - RBAC: staff は 403。
+- 再発行の理由と猶予 (qr-manage-reissue-guard-2026-10-14): damaged は 7 日の猶予、
+  lost / misuse / 本文なしは即時無効。猶予内は打刻できる (記録は qr)・期限後と NULL は
+  410。新しい QR が読めたら猶予中の旧トークンは失効。GET /qr/status の値。
 """
 
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import UTC, datetime, time, timedelta
 from uuid import uuid4
 
 import pytest
@@ -17,6 +20,7 @@ from sqlalchemy import func, select
 
 from app.core.security import create_access_token, hash_password
 from app.models import AuditLog, Patient, RevokedQrToken, Staff, User, Visit
+from app.services.checkin.actuals import as_utc
 from app.services.checkin.judge import JST
 
 
@@ -276,3 +280,361 @@ async def test_checkin_with_new_qr_after_regenerate_succeeds(client, db) -> None
     )
     assert res.status_code == 200, res.text
     assert res.json()["latest_checkin"]["checkin_source"] == "qr"
+
+
+# ---------------------------------------------------------------------------
+# 再発行の理由と古い QR の猶予
+# ---------------------------------------------------------------------------
+
+
+async def _revoked(db, token: str) -> RevokedQrToken:
+    return await db.scalar(
+        select(RevokedQrToken)
+        .where(RevokedQrToken.token == token)
+        .execution_options(populate_existing=True)
+    )
+
+
+@pytest.mark.asyncio
+async def test_regenerate_damaged_keeps_old_token_for_7_days(client, db) -> None:
+    """理由「汚れた・読めない」は旧トークンを 7 日の猶予つきで退避し、監査に理由を残す."""
+    admin = await _make_user(db, "qr-dmg@example.com", "admin")
+    p = await _make_patient(db, "QR-DMG", qr_token="dmg-old")
+    pid = p.id
+
+    before = datetime.now(UTC)
+    res = await client.post(
+        f"/api/v1/patients/{pid}/qr/regenerate",
+        headers=_bearer(admin),
+        json={"reason": "damaged"},
+    )
+    assert res.status_code == 200, res.text
+
+    revoked = await _revoked(db, "dmg-old")
+    assert revoked.reason == "damaged"
+    assert revoked.valid_until is not None
+    until = as_utc(revoked.valid_until)
+    assert before + timedelta(days=7) <= until <= datetime.now(UTC) + timedelta(days=7)
+
+    audit = await db.scalar(
+        select(AuditLog).where(
+            AuditLog.action == "patient_qr_regenerate", AuditLog.target_id == str(pid)
+        )
+    )
+    assert audit.after["reason"] == "damaged"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["lost", "misuse"])
+async def test_regenerate_lost_or_misuse_revokes_immediately(client, db, reason) -> None:
+    """理由「なくした」「他人に使われた恐れ」は即時無効 (valid_until NULL)."""
+    admin = await _make_user(db, f"qr-{reason}@example.com", "admin")
+    p = await _make_patient(db, f"QR-{reason}", qr_token=f"{reason}-old")
+
+    res = await client.post(
+        f"/api/v1/patients/{p.id}/qr/regenerate",
+        headers=_bearer(admin),
+        json={"reason": reason},
+    )
+    assert res.status_code == 200, res.text
+
+    revoked = await _revoked(db, f"{reason}-old")
+    assert revoked.reason == reason
+    assert revoked.valid_until is None
+
+
+@pytest.mark.asyncio
+async def test_regenerate_misuse_also_expires_earlier_grace(client, db) -> None:
+    """汚れで再発行 (猶予 7 日) の後に「他人に使われた恐れ」で再発行したら、前の猶予も打ち切る."""
+    admin = await _make_user(db, "qr-dmg-misuse@example.com", "admin")
+    p = await _make_patient(db, "QR-DMG-MISUSE", qr_token="dm-v1")
+    pid = p.id
+
+    res = await client.post(
+        f"/api/v1/patients/{pid}/qr/regenerate",
+        headers=_bearer(admin),
+        json={"reason": "damaged"},
+    )
+    assert res.status_code == 200, res.text
+    res = await client.post(
+        f"/api/v1/patients/{pid}/qr/regenerate",
+        headers=_bearer(admin),
+        json={"reason": "misuse"},
+    )
+    assert res.status_code == 200, res.text
+
+    v1 = await _revoked(db, "dm-v1")
+    await db.refresh(v1)
+    assert v1.valid_until is not None
+    assert as_utc(v1.valid_until) <= datetime.now(UTC)
+
+    status_res = await client.get(f"/api/v1/patients/{pid}/qr/status", headers=_bearer(admin))
+    assert status_res.status_code == 200, status_res.text
+    assert status_res.json()["grace"] == []
+
+
+@pytest.mark.asyncio
+async def test_regenerate_without_body_revokes_immediately(client, db) -> None:
+    """本文なし (古い画面) は今と同じ即時無効・理由なし."""
+    admin = await _make_user(db, "qr-nobody@example.com", "admin")
+    p = await _make_patient(db, "QR-NOBODY", qr_token="nobody-old")
+
+    res = await client.post(f"/api/v1/patients/{p.id}/qr/regenerate", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+
+    revoked = await _revoked(db, "nobody-old")
+    assert revoked.valid_until is None
+    assert revoked.reason is None
+
+
+@pytest.mark.asyncio
+async def test_regenerate_unknown_reason_returns_422(client, db) -> None:
+    admin = await _make_user(db, "qr-badreason@example.com", "admin")
+    p = await _make_patient(db, "QR-BADREASON", qr_token="bad-old")
+
+    res = await client.post(
+        f"/api/v1/patients/{p.id}/qr/regenerate",
+        headers=_bearer(admin),
+        json={"reason": "other"},
+    )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
+async def test_checkin_with_old_qr_in_grace_succeeds_as_qr(client, db) -> None:
+    """猶予中の旧トークンでの打刻は 200 (記録の方法は qr)."""
+    admin = await _make_user(db, "qr-grace-admin@example.com", "admin")
+    staff, staff_user = await _make_staff_user(db, "qr-grace-staff@example.com")
+    p = await _make_patient(db, "QR-GRACE", lat=35.0, lng=139.0, qr_token="grace-old")
+    visit = await _make_visit(db, p.id, staff.id)
+
+    regen = await client.post(
+        f"/api/v1/patients/{p.id}/qr/regenerate",
+        headers=_bearer(admin),
+        json={"reason": "damaged"},
+    )
+    assert regen.status_code == 200, regen.text
+
+    res = await client.post(
+        f"/api/v1/visits/{visit.id}/checkin",
+        headers=_bearer(staff_user),
+        json={"qr_token": "grace-old", "lat": 35.0, "lng": 139.0},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["latest_checkin"]["checkin_source"] == "qr"
+
+    # 古いシールで読んだだけでは猶予は打ち切らない。
+    revoked = await _revoked(db, "grace-old")
+    assert as_utc(revoked.valid_until) > datetime.now(UTC)
+
+    # 汎用カメラのディープリンクも猶予中は通す。
+    resolved = await client.get("/api/v1/visits/resolve-qr/grace-old", headers=_bearer(staff_user))
+    assert resolved.status_code == 200, resolved.text
+
+
+@pytest.mark.asyncio
+async def test_checkin_with_old_qr_after_grace_returns_410(client, db) -> None:
+    """猶予の期限を過ぎた旧トークンは従来どおり 410 (氏名入り)."""
+    staff, staff_user = await _make_staff_user(db, "qr-expired-staff@example.com")
+    p = await _make_patient(
+        db, "QR-EXPIRED", lat=35.0, lng=139.0, qr_token="expired-new", name="佐藤 花子"
+    )
+    db.add(
+        RevokedQrToken(
+            patient_id=p.id,
+            token="expired-old",
+            valid_until=datetime.now(UTC) - timedelta(minutes=1),
+            reason="damaged",
+        )
+    )
+    await db.commit()
+    visit = await _make_visit(db, p.id, staff.id)
+
+    res = await client.post(
+        f"/api/v1/visits/{visit.id}/checkin",
+        headers=_bearer(staff_user),
+        json={"qr_token": "expired-old", "lat": 35.0, "lng": 139.0},
+    )
+    assert res.status_code == 410, res.text
+    assert "佐藤 花子" in res.json()["detail"]
+
+    resolved = await client.get(
+        "/api/v1/visits/resolve-qr/expired-old", headers=_bearer(staff_user)
+    )
+    assert resolved.status_code == 410, resolved.text
+
+
+@pytest.mark.asyncio
+async def test_checkin_with_old_qr_after_lost_returns_410(client, db) -> None:
+    """理由「なくした」(valid_until NULL) の旧トークンは 410."""
+    admin = await _make_user(db, "qr-lost410-admin@example.com", "admin")
+    staff, staff_user = await _make_staff_user(db, "qr-lost410-staff@example.com")
+    p = await _make_patient(db, "QR-LOST410", lat=35.0, lng=139.0, qr_token="lost410-old")
+    visit = await _make_visit(db, p.id, staff.id)
+
+    regen = await client.post(
+        f"/api/v1/patients/{p.id}/qr/regenerate",
+        headers=_bearer(admin),
+        json={"reason": "lost"},
+    )
+    assert regen.status_code == 200, regen.text
+
+    res = await client.post(
+        f"/api/v1/visits/{visit.id}/checkin",
+        headers=_bearer(staff_user),
+        json={"qr_token": "lost410-old", "lat": 35.0, "lng": 139.0},
+    )
+    assert res.status_code == 410, res.text
+
+
+@pytest.mark.asyncio
+async def test_old_qr_in_grace_for_other_patient_is_wrong_patient(client, db) -> None:
+    """別の方の猶予中の旧トークンは、今のトークンと同じく別の利用者 (409)."""
+    admin = await _make_user(db, "qr-grace-other-admin@example.com", "admin")
+    staff, staff_user = await _make_staff_user(db, "qr-grace-other-staff@example.com")
+    patient_a = await _make_patient(db, "QR-GRACE-A", lat=35.0, lng=139.0)
+    visit = await _make_visit(db, patient_a.id, staff.id)
+    patient_b = await _make_patient(db, "QR-GRACE-B", qr_token="grace-b-old")
+    regen = await client.post(
+        f"/api/v1/patients/{patient_b.id}/qr/regenerate",
+        headers=_bearer(admin),
+        json={"reason": "damaged"},
+    )
+    assert regen.status_code == 200, regen.text
+
+    res = await client.post(
+        f"/api/v1/visits/{visit.id}/checkin",
+        headers=_bearer(staff_user),
+        json={"qr_token": "grace-b-old", "lat": 35.0, "lng": 139.0},
+    )
+    assert res.status_code == 409, res.text
+    assert res.json()["code"] == "wrong_patient"
+
+
+@pytest.mark.asyncio
+async def test_old_qr_in_grace_for_inactive_patient_returns_410(client, db) -> None:
+    """猶予中でも患者が稼働中でなければ通さない (410)."""
+    staff, staff_user = await _make_staff_user(db, "qr-grace-inactive-staff@example.com")
+    p = await _make_patient(db, "QR-GRACE-INACTIVE", lat=35.0, lng=139.0, qr_token="inact-new")
+    db.add(
+        RevokedQrToken(
+            patient_id=p.id,
+            token="inact-old",
+            valid_until=datetime.now(UTC) + timedelta(days=3),
+            reason="damaged",
+        )
+    )
+    p.status = "inactive"
+    await db.commit()
+
+    res = await client.get("/api/v1/visits/resolve-qr/inact-old", headers=_bearer(staff_user))
+    assert res.status_code == 410, res.text
+
+
+@pytest.mark.asyncio
+async def test_checkin_with_new_qr_expires_old_qr_in_grace(client, db) -> None:
+    """新しいシールが一度読めたら、猶予中の古いシールはその時点で使えなくなる."""
+    admin = await _make_user(db, "qr-swap-admin@example.com", "admin")
+    staff, staff_user = await _make_staff_user(db, "qr-swap-staff@example.com")
+    p = await _make_patient(db, "QR-SWAP", lat=35.0, lng=139.0, qr_token="swap-old")
+    visit = await _make_visit(db, p.id, staff.id)
+
+    regen = await client.post(
+        f"/api/v1/patients/{p.id}/qr/regenerate",
+        headers=_bearer(admin),
+        json={"reason": "damaged"},
+    )
+    assert regen.status_code == 200, regen.text
+    new_token = regen.json()["token"]
+
+    res = await client.post(
+        f"/api/v1/visits/{visit.id}/checkin",
+        headers=_bearer(staff_user),
+        json={"qr_token": new_token, "lat": 35.0, "lng": 139.0},
+    )
+    assert res.status_code == 200, res.text
+
+    revoked = await _revoked(db, "swap-old")
+    assert as_utc(revoked.valid_until) <= datetime.now(UTC)
+
+    old = await client.get("/api/v1/visits/resolve-qr/swap-old", headers=_bearer(staff_user))
+    assert old.status_code == 410, old.text
+
+
+# ---------------------------------------------------------------------------
+# GET /patients/{id}/qr/status
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_qr_status_first_issue_has_no_history(client, db) -> None:
+    admin = await _make_user(db, "qr-status0@example.com", "admin")
+    p = await _make_patient(db, "QR-STATUS0", qr_token="status0-tok")
+
+    res = await client.get(f"/api/v1/patients/{p.id}/qr/status", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    assert res.json() == {
+        "version": 1,
+        "issued_at": None,
+        "last_scanned_at": None,
+        "last_scanned_staff_name": None,
+        "grace": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_qr_status_shows_grace_and_last_scan(client, db) -> None:
+    """再発行の時刻・猶予中の古い版・QR で記録された最新の打刻と職員名を返す."""
+    admin = await _make_user(db, "qr-status-admin@example.com", "admin")
+    staff, staff_user = await _make_staff_user(db, "qr-status-staff@example.com")
+    p = await _make_patient(db, "QR-STATUS", lat=35.0, lng=139.0, qr_token="status-v1")
+    visit = await _make_visit(db, p.id, staff.id)
+
+    # 第1版 → 第2版 (なくした = 即時) → 第3版 (汚れた = 第2版に猶予)。
+    for reason in ("lost", "damaged"):
+        regen = await client.post(
+            f"/api/v1/patients/{p.id}/qr/regenerate",
+            headers=_bearer(admin),
+            json={"reason": reason},
+        )
+        assert regen.status_code == 200, regen.text
+    v2 = await db.scalar(
+        select(RevokedQrToken).where(
+            RevokedQrToken.patient_id == p.id, RevokedQrToken.reason == "damaged"
+        )
+    )
+
+    # 手動の記録は「最後に読めた」に数えない。
+    manual = await client.post(
+        f"/api/v1/visits/{visit.id}/checkin",
+        headers=_bearer(staff_user),
+        json={"lat": 35.0, "lng": 139.0},
+    )
+    assert manual.status_code == 200, manual.text
+    res0 = await client.get(f"/api/v1/patients/{p.id}/qr/status", headers=_bearer(admin))
+    assert res0.json()["last_scanned_at"] is None
+
+    # 猶予中の第2版で退出を読む。
+    scan = await client.post(
+        f"/api/v1/visits/{visit.id}/checkout",
+        headers=_bearer(staff_user),
+        json={"qr_token": v2.token, "lat": 35.0, "lng": 139.0},
+    )
+    assert scan.status_code == 200, scan.text
+
+    res = await client.get(f"/api/v1/patients/{p.id}/qr/status", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["version"] == 3
+    assert body["issued_at"] is not None
+    assert body["last_scanned_at"] is not None
+    assert body["last_scanned_staff_name"] == "担当ヘルパー"
+    assert [g["version"] for g in body["grace"]] == [2]
+
+
+@pytest.mark.asyncio
+async def test_qr_status_staff_returns_403(client, db) -> None:
+    staff_user = await _make_user(db, "qr-status-staff403@example.com", "staff")
+    p = await _make_patient(db, "QR-STATUS403")
+    res = await client.get(f"/api/v1/patients/{p.id}/qr/status", headers=_bearer(staff_user))
+    assert res.status_code == 403, res.text

@@ -8,10 +8,12 @@
  * 4. 編集ボタンクリックで編集画面遷移 (regression)
  * 5. requires_multiple_staff=true → ヘッダに「2 名対応」バッジ表示
  * 6. requires_multiple_staff=false → 「2 名対応」バッジ非表示
+ * 12. 右上に QR の再発行ボタンが無く、「QRの管理 ›」でダイアログが開く
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // ─── Mock next/navigation ─────────────────────────────────────────────────────
@@ -43,6 +45,7 @@ vi.mock('@/lib/queries/patients', () => ({
 // ─── Mock patient QR query hooks ──────────────────────────────────────────────
 vi.mock('@/lib/queries/patientQr', () => ({
   useRegeneratePatientQr: vi.fn(),
+  usePatientQrStatus: vi.fn(),
 }));
 
 // ─── Mock patient_fixed_visits query hooks ─────────────────────────────────────
@@ -123,7 +126,7 @@ vi.mock('@/components/ui/sonner', () => ({
 
 import { useSession } from 'next-auth/react';
 import { usePatient, usePatients, useDeletePatient } from '@/lib/queries/patients';
-import { useRegeneratePatientQr } from '@/lib/queries/patientQr';
+import { usePatientQrStatus, useRegeneratePatientQr } from '@/lib/queries/patientQr';
 import {
   useFixedVisits,
   useUpdateFixedVisits,
@@ -241,6 +244,15 @@ function setupMocks(
   );
   (useDeletePatient as Mock).mockReturnValue(makeMutation());
   (useRegeneratePatientQr as Mock).mockReturnValue(makeMutation());
+  (usePatientQrStatus as Mock).mockReturnValue(
+    makeQueryResult({
+      version: 3,
+      issued_at: '2026-10-07T03:46:51Z',
+      last_scanned_at: null,
+      last_scanned_staff_name: null,
+      grace: [],
+    }),
+  );
   (useOffices as Mock).mockReturnValue({
     offices: [{ id: OFFICE_ID, name: '稲毛', address: null }],
     allOffices: [],
@@ -463,5 +475,31 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
       'href',
       '/records?patient=patient-0001',
     );
+  });
+
+  it('12. 右上に QR の再発行ボタンが無く、「QRの管理 ›」でダイアログが開く', async () => {
+    setupMocks({ role: 'admin' });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    expect(screen.queryByRole('button', { name: 'QR再発行' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'QRを印刷' })).toBeInTheDocument();
+    expect(screen.queryByTestId('qr-manage-dialog')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'QRの管理 ›' }));
+
+    expect(await screen.findByTestId('qr-manage-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('qr-manage-version')).toHaveTextContent('第3版（10/7 発行）');
+    // 再発行はたたまれていて、開くまで赤いボタンは出ない。
+    expect(screen.queryByTestId('qr-manage-regenerate')).not.toBeInTheDocument();
+  });
+
+  it('13. 一般の権限では「QRの管理 ›」は押せない', () => {
+    setupMocks({ role: 'staff' });
+
+    renderPage();
+
+    expect(screen.getByRole('button', { name: 'QRの管理 ›' })).toBeDisabled();
   });
 });
