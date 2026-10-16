@@ -18,6 +18,46 @@ function cleanAddress(address: string | null | undefined): string | null {
 
 const TAIL = '&travelmode=driving&hl=ja';
 
+/**
+ * 同じ建物を指す住所か (書き方の違いを吸収する)。
+ *
+ * 本番 10/17: 「宮野木町818-2」と「宮野木町818-2障がい者グループホームよりより」の
+ * 2 人を続けて回る日に、同じ場所どうしの経路を作ってしまい、Google マップが
+ * 「運転ルートを計算できませんでした」になった。全角/半角・郵便番号・空白・
+ * 都道府県の有無・建物名や部屋番号の有無を吸収して、番地までで比べる。
+ */
+function buildingKey(address: string): string {
+  let a = address.normalize('NFKC');
+  // 郵便番号は先頭か「〒」付きのときだけ外す (番地の数字を誤って消さないように)。
+  a = a.replace(/^日本[、,]?\s*/, '').replace(/^〒?\s*\d{3}-?\d{4}|〒\s*\d{3}-?\d{4}/g, '');
+  a = a.replace(/\s+/g, '');
+  // 数字の間のハイフンのゆれ (‐–—―−ー) をそろえる。
+  a = a.replace(/(\d)[‐-―−ーｰ](?=\d)/g, '$1-');
+  // 「2丁目11番5号」も「2-11-5」にそろえる (本番: 「幸町2丁目11-5」と「幸町2-12-1」を
+  // 取り違えないように)。
+  a = a.replace(/(\d)(?:丁目|番地|番)(?=\d)/g, '$1-').replace(/(\d)号/g, '$1');
+  a = a.replace(/^(東京都|北海道|京都府|大阪府|.{2,3}県)/, '');
+  // 番地 (最初の「数字-数字…」のまとまり) までを鍵にする。後ろの建物名・部屋番号は見ない。
+  const m = a.match(/^(.*?\d+(?:-\d+)*)/);
+  return m ? m[1]! : a;
+}
+
+export function isSameBuilding(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  const x = cleanAddress(a);
+  const y = cleanAddress(b);
+  if (!x || !y) return false;
+  const kx = buildingKey(x);
+  const ky = buildingKey(y);
+  if (kx === ky) return true;
+  // 「都賀1-1-1」と「都賀1-1-1-508」(部屋番号つき) も同じ建物とみなす。ただし短い方が
+  // 「町名＋数字 1 つ」だけ (例「幸町2」) のときは広すぎるので、前方一致では見ない。
+  const [short, long] = kx.length <= ky.length ? [kx, ky] : [ky, kx];
+  return /\d+-\d+$/.test(short) && long.startsWith(`${short}-`);
+}
+
 /** スマホ用: その住所までの道案内を開く。 */
 export function googleMapsDirectionsUrl(address: string | null | undefined): string | null {
   const a = cleanAddress(address);
@@ -35,7 +75,7 @@ export function googleMapsPlaceUrl(address: string | null | undefined): string |
 /**
  * PC 用: 住所 A から住所 B への経路 (PO 要望 2026-10-17: 事業所にいる管理者が
  * 「A さんの家から B さんの家へ」を押すだけで見られるように)。
- * どちらかの住所が空なら null。
+ * どちらかの住所が空、または同じ建物どうし (経路にならない) なら null。
  */
 export function googleMapsRouteUrl(
   fromAddress: string | null | undefined,
@@ -43,7 +83,7 @@ export function googleMapsRouteUrl(
 ): string | null {
   const from = cleanAddress(fromAddress);
   const to = cleanAddress(toAddress);
-  if (!from || !to) return null;
+  if (!from || !to || isSameBuilding(from, to)) return null;
   return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(from)}&destination=${encodeURIComponent(to)}${TAIL}`;
 }
 
@@ -55,7 +95,7 @@ export const MAX_ROUTE_STOPS = 11;
 
 /**
  * PC 用: 1 日の順路をまとめて 1 本の経路で開く (PO 要望 2026-10-17)。
- * 住所の無い方は飛ばし、続けて同じ住所 (同住所のペア) は 1 か所にまとめる。
+ * 住所の無い方は飛ばし、続けて同じ建物 (同住所のペア・グループホーム) は 1 か所にまとめる。
  * 地点が 2 か所未満なら null。多すぎるときは先頭から MAX_ROUTE_STOPS か所まで。
  */
 export function googleMapsDayRouteUrl(
@@ -64,7 +104,7 @@ export function googleMapsDayRouteUrl(
   const stops: string[] = [];
   for (const raw of addresses) {
     const a = cleanAddress(raw);
-    if (a && stops[stops.length - 1] !== a) stops.push(a);
+    if (a && !isSameBuilding(stops[stops.length - 1], a)) stops.push(a);
   }
   if (stops.length < 2) return null;
   const truncated = stops.length > MAX_ROUTE_STOPS;

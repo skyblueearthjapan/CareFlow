@@ -6,6 +6,7 @@ import {
   googleMapsDirectionsUrl,
   googleMapsPlaceUrl,
   googleMapsRouteUrl,
+  isSameBuilding,
 } from '../maps';
 
 const ADDR = '千葉県千葉市稲毛区小仲台1-2-3 ○○マンション101';
@@ -65,5 +66,37 @@ describe('Google マップのリンク', () => {
     );
     const r = googleMapsDayRouteUrl(['A', 'B|棟', 'C'])!;
     expect(new URL(r.url).searchParams.get('waypoints')).toBe('B 棟');
+  });
+
+  // 本番 10/17: 同じ建物どうしで「運転ルートを計算できませんでした」。
+  describe('同じ建物の判定', () => {
+    const GH = '千葉県千葉市稲毛区宮野木町818-2障がい者グループホームよりより';
+    it('建物名・郵便番号・全角・都道府県の有無が違っても同じ建物', () => {
+      expect(isSameBuilding('千葉県千葉市稲毛区宮野木町818-2', GH)).toBe(true);
+      expect(isSameBuilding('〒263-0054 千葉県千葉市稲毛区宮野木町８１８−２', GH)).toBe(true);
+      expect(isSameBuilding('千葉市稲毛区宮野木町818-2', GH)).toBe(true);
+      expect(isSameBuilding('千葉市若葉区都賀1-1-1', '千葉県千葉市若葉区都賀1-1-1-508')).toBe(true);
+    });
+    it('番地が違えば別の建物', () => {
+      expect(isSameBuilding('千葉市稲毛区宮野木町818-2', '千葉市稲毛区宮野木町818-3')).toBe(false);
+      expect(isSameBuilding('千葉市稲毛区宮野木町818', '千葉市稲毛区宮野木町8181')).toBe(false);
+      expect(isSameBuilding('千葉市稲毛区宮野木町969', '千葉市稲毛区宮野木台969')).toBe(false);
+      expect(
+        isSameBuilding(
+          '千葉県千葉市美浜区幸町2丁目11-5-505',
+          '千葉市美浜区幸町2-12-1しょうじゅレジデンス427',
+        ),
+      ).toBe(false);
+      expect(isSameBuilding('千葉市美浜区幸町2丁目11番5号', '千葉市美浜区幸町2-11-5-505')).toBe(
+        true,
+      );
+    });
+    it('同じ建物どうしの経路は出さない・1 日の経路では 1 か所にまとめる', () => {
+      expect(googleMapsRouteUrl('千葉市稲毛区宮野木町818-2', GH)).toBeNull();
+      const r = googleMapsDayRouteUrl(['A町1', '千葉市稲毛区宮野木町818-2', GH, 'C町3'])!;
+      const u = new URL(r.url);
+      expect(u.searchParams.get('waypoints')).toBe('千葉市稲毛区宮野木町818-2');
+      expect(r.stops).toBe(3);
+    });
   });
 });
