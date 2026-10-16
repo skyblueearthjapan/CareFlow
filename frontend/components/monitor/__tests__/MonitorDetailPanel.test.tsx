@@ -13,6 +13,12 @@ vi.mock('@/lib/queries/visit-recordings', () => ({
   recordingAudioUrl: (id: string) => `/api/v1/visit-recordings/${id}/audio`,
 }));
 
+// 登録の位置のずれ (location-drift-align-2026-10-17)。合わせる / 元に戻すの mutation。
+vi.mock('@/lib/queries/patientLocation', () => ({
+  useAlignPatientLocation: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useRevertPatientLocation: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
+
 import { MonitorDetailPanel } from '../MonitorDetailPanel';
 import { makeRow, makeVisit } from './fixtures';
 
@@ -385,6 +391,40 @@ describe('MonitorDetailPanel', () => {
       expect(new URL(link.getAttribute('href')!).searchParams.get('query')).toBe(
         '千葉市稲毛区B町2-2',
       );
+    });
+
+    it('登録の位置のずれがあれば住所の下にお知らせを出す (BE が管理者にだけ入れる)', () => {
+      const v = makeVisit({
+        patient_address: '千葉市稲毛区B町2-2',
+        patient_lat: 35.6,
+        patient_lng: 140.1,
+        location_drift: {
+          distance_m: 441,
+          suggested_lat: 35.604,
+          suggested_lng: 140.1,
+          scans: 6,
+          days: 3,
+        },
+      });
+      render(
+        <MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />,
+      );
+      const notice = screen.getByTestId('location-drift-notice');
+      expect(notice).toHaveTextContent('約 440m 離れています（打刻 6 回・3 日分）');
+      // 住所の行のすぐ下。
+      expect(screen.getByTestId('monitor-detail-address').nextElementSibling).toBe(notice);
+      expect(screen.getByTestId('location-drift-compare')).toHaveAttribute(
+        'href',
+        'https://www.google.com/maps/dir/?api=1&origin=35.6%2C140.1&destination=35.604%2C140.1&travelmode=driving&hl=ja',
+      );
+    });
+
+    it('ずれが無ければ (職員の画面も) お知らせを出さない', () => {
+      const v = makeVisit({ patient_address: '千葉市稲毛区B町2-2', location_drift: null });
+      render(
+        <MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />,
+      );
+      expect(screen.queryByTestId('location-drift-notice')).toBeNull();
     });
 
     it('住所が無ければ出さない', () => {

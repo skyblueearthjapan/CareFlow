@@ -62,6 +62,7 @@ from app.services.checkin.actuals import (
 )
 from app.services.checkin.adjust import can_adjust_actual_time, can_enter_manual_arrival
 from app.services.checkin.judge import load_thresholds
+from app.services.checkin.location_drift import load_location_drifts
 from app.services.office_labels import office_short, office_sort_key
 from app.services.patient_status_sync import status_since_date
 from app.utils.geo import haversine_m
@@ -356,8 +357,8 @@ async def build_monitor(
     ``viewer_is_admin`` = 見ているユーザーが admin か。効くのは 2 か所: 調整した人の名前
     (``adjustments[].by_name``) — スタッフ名の無い調整者は、admin には email / username、
     それ以外には「管理者」と出す — と、休み・時間変更の理由 (``day_override.reason``) —
-    admin 以外には null (既定は出さない側)。患者の住所 (``patient_address``) も
-    admin だけ (2026-10-17)。
+    admin 以外には null (既定は出さない側)。患者の住所 (``patient_address``) と登録の
+    位置のずれ (``location_drift``) も admin だけ (2026-10-17)。
 
     代行 / 実績スタッフの合成規則 (設計 ``qr-open-checkin-design.md`` §6):
 
@@ -407,6 +408,24 @@ async def build_monitor(
     # ヘッダには先頭 (= support 優先 → 名前昇順) を出すが、代行判定の担当集合には
     # 全員を渡す (2 人目の同行者を代行と誤判定しないため)。
     accompaniment_by_visit = await resolve_accompaniment_by_visit(db, list(visits))
+
+    # 登録の位置のずれ (2026-10-17・管理者だけ)。その日の患者分を 1 回のクエリでまとめて
+    # 計算する (訪問ごとに問い合わせない)。
+    location_drifts = (
+        await load_location_drifts(
+            db,
+            {
+                v.patient.id: v.patient
+                for v in visits
+                # 削除済みの患者は合わせられないので計算しない。
+                if v.patient is not None and v.patient.deleted_at is None
+            }.values(),
+            now=now,
+            match_m=thresholds["match_m"],
+        )
+        if viewer_is_admin
+        else {}
+    )
 
     # 実績 (到着・退出の実績時刻 / 未訪問 / 打刻者) は単一ソース ``actuals.py`` から引く
     # (設計 actual-time-adjust §5)。ここでは ``scanned_at`` を読まない — 実績時刻は
@@ -784,6 +803,7 @@ async def build_monitor(
                 if viewer_is_admin and patient is not None
                 else None
             ),
+            location_drift=location_drifts.get(v.patient_id),
             start_time=_fmt_time(v.start_time),
             end_time=_fmt_time(v.end_time),
             phase=phase,

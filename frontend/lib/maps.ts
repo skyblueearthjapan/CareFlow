@@ -76,3 +76,19 @@ export function googleMapsDayRouteUrl(
   if (waypoints.length > 0) url += `&waypoints=${encodeURIComponent(waypoints.join('|'))}`;
   return { url: `${url}${TAIL}`, stops: used.length, truncated };
 }
+
+/**
+ * PC 用: 登録の位置から、実際に QR を読んだ場所 (提案の位置) までの経路
+ * (location-drift-align-2026-10-17 §5「地図で見比べる」)。2 点と距離が一度に見られる。
+ * ここだけは住所ではなく「緯度,経度」で渡す (比べたいのが登録座標そのものなので)。
+ * 登録座標が無いときは、提案の位置にピンが立った地図を開く。
+ */
+export function googleMapsCompareUrl(
+  from: { lat: number; lng: number } | null,
+  to: { lat: number; lng: number },
+): string {
+  const dest = encodeURIComponent(`${to.lat},${to.lng}`);
+  if (!from) return `https://www.google.com/maps/search/?api=1&query=${dest}&hl=ja`;
+  const origin = encodeURIComponent(`${from.lat},${from.lng}`);
+  return `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${dest}${TAIL}`;
+}

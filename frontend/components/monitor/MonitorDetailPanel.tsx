@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { LocationDriftNotice } from '@/components/patients/LocationDriftNotice';
 import { ActualTimeAdjustBox } from '@/components/records/ActualTimeAdjustBox';
 import { SignatureViewer } from '@/components/records/SignatureViewer';
 import { targetFromMonitorVisit } from '@/components/records/actualTimeAdjust';
@@ -422,6 +423,18 @@ function VisitDetail({
           </a>
         </div>
       )}
+
+      {/* 登録の位置のずれ (location-drift-align-2026-10-17・BE が管理者にだけ入れる)。 */}
+      <LocationDriftNotice
+        className="mb-3"
+        patientId={visit.patient_id}
+        drift={visit.location_drift}
+        registered={
+          visit.patient_lat != null && visit.patient_lng != null
+            ? { lat: visit.patient_lat, lng: visit.patient_lng }
+            : null
+        }
+      />
 
       {/* 患者さんの家から家への経路 (PO 要望 2026-10-17)。押すと Google マップの経路が開く。 */}
       {(fromPrevUrl || toNextUrl) && (

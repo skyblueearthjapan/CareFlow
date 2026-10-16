@@ -17,6 +17,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.patient_location import LocationDrift
+
 
 class MonitorThresholds(BaseModel):
     """判定に用いたしきい値 (UI のしきい値円・遅延表示用)."""
@@ -125,6 +127,8 @@ class MonitorVisit(BaseModel):
     patient_lng: float | None = None
     # 患者の住所 (詳細の欄の「地図を開く」・経路用・2026-10-17)。管理者にだけ入れる。
     patient_address: str | None = None
+    # 登録の位置のずれ (打刻の場所とのずれ・2026-10-17)。管理者にだけ入れる。ずれが無ければ None。
+    location_drift: LocationDrift | None = None
     # 患者ステータス連動 Phase 3 §3-4「表示の保険」(非破壊追加・既定 None)。
     # モニターは cancelled を最初から落とすので ``source`` は基本 planned の出所だが、
     # 残骸点検のため visits.source をそのまま載せる。``patient_status`` が active

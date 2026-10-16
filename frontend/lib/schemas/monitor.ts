@@ -39,6 +39,19 @@ export const monitorAdjustmentSchema = z.object({
   created_at: z.string().nullable().optional(),
 });
 
+/**
+ * 登録の位置のずれ (location-drift-align-2026-10-17 §3)。
+ * BE `app/schemas/patient_location.py` の `LocationDrift` と同じ形。
+ * `distance_m` は登録座標が無い患者では null。
+ */
+export const locationDriftSchema = z.object({
+  distance_m: z.number().nullable(),
+  suggested_lat: z.number(),
+  suggested_lng: z.number(),
+  scans: z.number(),
+  days: z.number(),
+});
+
 export const monitorVisitSchema = z.object({
   visit_id: z.string().uuid(),
   // 訪問の担当 (= visits.primary_staff_id)。モバイル「今日の訪問」と同一ソース。
@@ -89,6 +102,8 @@ export const monitorVisitSchema = z.object({
   patient_lng: z.number().nullable().optional(),
   // 患者の住所 (詳細の欄の「地図を開く」用・2026-10-17)。旧デプロイは欠落。
   patient_address: z.string().nullish().catch(null),
+  // 登録の位置のずれ (管理者だけ・2026-10-17)。旧デプロイは欠落・形が崩れていても null。
+  location_drift: locationDriftSchema.nullish().catch(null),
   start_time: z.string(),
   end_time: z.string(),
   phase: z.string(),
@@ -216,6 +231,7 @@ export const nearbyResponseSchema = z.object({
   items: z.array(nearbyPatientSchema),
 });
 
+export type LocationDrift = z.infer<typeof locationDriftSchema>;
 export type MonitorCheckin = z.infer<typeof monitorCheckinSchema>;
 export type MonitorAdjustment = z.infer<typeof monitorAdjustmentSchema>;
 export type MonitorVisit = z.infer<typeof monitorVisitSchema>;

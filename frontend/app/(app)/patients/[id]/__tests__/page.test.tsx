@@ -9,6 +9,7 @@
  * 5. requires_multiple_staff=true → ヘッダに「2 名対応」バッジ表示
  * 6. requires_multiple_staff=false → 「2 名対応」バッジ非表示
  * 12. 右上に QR の再発行ボタンが無く、「QRの管理 ›」でダイアログが開く
+ * 14-15. 登録の位置のずれのお知らせは管理者だけ
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
@@ -116,6 +117,13 @@ vi.mock('@/lib/queries/g21', async (importOriginal) => {
   return { ...actual, useSameAddressCandidates: vi.fn() };
 });
 
+// ─── Mock 登録の位置のずれ (location-drift-align-2026-10-17) ───────────────────
+vi.mock('@/lib/queries/patientLocation', () => ({
+  usePatientLocationDrift: vi.fn(),
+  useAlignPatientLocation: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useRevertPatientLocation: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+}));
+
 // ─── Mock toast ───────────────────────────────────────────────────────────────
 vi.mock('@/components/ui/sonner', () => ({
   toast: {
@@ -137,6 +145,7 @@ import { useCourseTemplates } from '@/lib/queries/course_templates';
 import { useOffices } from '@/lib/queries/offices';
 import { useNgStaffList } from '@/lib/queries/patient_ng_staff';
 import { useSameAddressCandidates } from '@/lib/queries/g21';
+import { usePatientLocationDrift } from '@/lib/queries/patientLocation';
 
 import PatientDetailPage from '../page';
 
@@ -229,6 +238,7 @@ function setupMocks(
     role?: 'admin' | 'manager' | 'staff';
     ngStaff?: unknown[];
     sameAddressCandidates?: unknown[];
+    locationDrift?: unknown;
   } = {},
 ) {
   const role = opts.role ?? 'admin';
@@ -267,6 +277,7 @@ function setupMocks(
   (useSameAddressCandidates as Mock).mockReturnValue(
     makeQueryResult(opts.sameAddressCandidates ?? []),
   );
+  (usePatientLocationDrift as Mock).mockReturnValue(makeQueryResult(opts.locationDrift ?? null));
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -501,5 +512,27 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
     renderPage();
 
     expect(screen.getByRole('button', { name: 'QRの管理 ›' })).toBeDisabled();
+  });
+
+  const DRIFT = { distance_m: 441, suggested_lat: 35.604, suggested_lng: 140.1, scans: 6, days: 3 };
+
+  it('14. 管理者には登録の位置のずれのお知らせが連絡先に出る', () => {
+    setupMocks({ role: 'admin', locationDrift: DRIFT });
+
+    renderPage();
+
+    expect(screen.getByTestId('location-drift-notice')).toHaveTextContent(
+      '登録の位置が、実際に QR を読んだ場所と約 440m 離れています（打刻 6 回・3 日分）',
+    );
+    expect(usePatientLocationDrift).toHaveBeenCalledWith(PATIENT_ID, { enabled: true });
+  });
+
+  it('15. 一般の権限ではずれのお知らせを出さず、問い合わせもしない', () => {
+    setupMocks({ role: 'staff', locationDrift: DRIFT });
+
+    renderPage();
+
+    expect(screen.queryByTestId('location-drift-notice')).not.toBeInTheDocument();
+    expect(usePatientLocationDrift).toHaveBeenCalledWith(PATIENT_ID, { enabled: false });
   });
 });

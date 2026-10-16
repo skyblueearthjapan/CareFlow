@@ -51,6 +51,8 @@ import { useSameAddressCandidates } from '@/lib/queries/g21';
 import { formatSameAddressLinkNames } from '@/lib/schemas/g21';
 import { PatientFixedVisitsPanel } from '../_components/PatientFixedVisitsPanel';
 import { PatientQrManageDialog } from '@/components/patients/PatientQrManageDialog';
+import { LocationDriftNotice } from '@/components/patients/LocationDriftNotice';
+import { usePatientLocationDrift } from '@/lib/queries/patientLocation';
 import { isAdminRole } from '@/lib/rbac';
 
 export default function PatientDetailPage() {
@@ -72,6 +74,8 @@ export default function PatientDetailPage() {
   // 同住所紐付け (Phase G-21): NGスタッフと並べて「訪問条件」Card に列挙する.
   const { data: sameAddressCandidates = [] } = useSameAddressCandidates(id);
   const { offices } = useOffices();
+  // 登録の位置のずれ (location-drift-align-2026-10-17・管理者だけ)。
+  const { data: locationDrift } = usePatientLocationDrift(id, { enabled: canEdit });
   const deleteMutation = useDeletePatient();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [qrManageOpen, setQrManageOpen] = useState(false);
@@ -265,6 +269,17 @@ export default function PatientDetailPage() {
             ['経度', data.lng != null ? String(data.lng) : '--'],
           ]}
         />
+        {canEdit && !data.deleted_at && (
+          <LocationDriftNotice
+            patientId={data.id}
+            drift={locationDrift}
+            registered={
+              data.lat != null && data.lng != null
+                ? { lat: Number(data.lat), lng: Number(data.lng) }
+                : null
+            }
+          />
+        )}
       </Card>
 
       <Card className="p-5 space-y-3">

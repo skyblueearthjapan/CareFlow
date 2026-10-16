@@ -133,4 +133,10 @@ class VisitCheckin(Base, TimestampMixin):
             text("scanned_at DESC"),
         ),
         Index("ix_visit_checkins_staff_scanned", "staff_id", "scanned_at"),
+        # 患者ごとの直近の打刻 (登録の位置のずれ・mig 0097)。
+        Index(
+            "ix_visit_checkins_patient_scanned",
+            "patient_id",
+            text("scanned_at DESC"),
+        ),
     )

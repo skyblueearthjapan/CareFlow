@@ -34,6 +34,7 @@ from app.api.v1 import (
     offices,
     op_log,
     patient_fixed_visits,
+    patient_location,
     patient_ng_staff,
     patient_qr,
     patient_same_address_links,
@@ -99,6 +100,9 @@ api_router.include_router(
 # patients.router の **前** に登録し、/patients/{id}/qr が /patients/{id} の
 # catch-all に吸われないようにする (patient_fixed_visits と同方針)。
 api_router.include_router(patient_qr.router, prefix="/patients", tags=["patient-qr"])
+# 登録の位置のずれと「打刻の場所に合わせる」(2026-10-17)。patient_qr と同方針で
+# patients.router の **前** に登録する。
+api_router.include_router(patient_location.router, prefix="/patients", tags=["patient-location"])
 # NG スタッフ (患者×スタッフ割当禁止) sub-resource.
 # patient_fixed_visits / patient_qr と同方針で patients.router の **前** に登録し、
 # /patients/{id}/ng-staff が /patients/{id} の catch-all に吸われないようにする。
