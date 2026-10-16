@@ -349,4 +349,207 @@ describe('MonitorDetailPanel', () => {
     expect(kv('退出（QR/GPS）')).toContain('09:55');
     expect(screen.queryByTestId('monitor-detail-adjusted')).toBeNull();
   });
+
+  // 地図 (PO 決定 2026-10-17): PC は場所を地図で見る・家から家への経路。
+  describe('住所と経路', () => {
+    const a = () =>
+      makeVisit({
+        patient_name: '患者A',
+        start_time: '09:00',
+        end_time: '09:30',
+        patient_address: '千葉市稲毛区A町1-1',
+      });
+    const b = () =>
+      makeVisit({
+        patient_name: '患者B',
+        start_time: '10:00',
+        end_time: '10:30',
+        patient_address: '千葉市稲毛区B町2-2',
+      });
+    const c = () =>
+      makeVisit({
+        patient_name: '患者C',
+        start_time: '11:00',
+        end_time: '11:30',
+        patient_address: '千葉市稲毛区C町3-3',
+      });
+
+    it('住所と「地図を開く」を新しいタブで出す', () => {
+      const v = b();
+      render(
+        <MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />,
+      );
+      expect(screen.getByTestId('monitor-detail-address')).toHaveTextContent('千葉市稲毛区B町2-2');
+      const link = screen.getByTestId('monitor-detail-map-link');
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(new URL(link.getAttribute('href')!).searchParams.get('query')).toBe(
+        '千葉市稲毛区B町2-2',
+      );
+    });
+
+    it('住所が無ければ出さない', () => {
+      const v = makeVisit({ patient_address: null });
+      render(
+        <MonitorDetailPanel visit={v} row={makeRow({ visits: [v] })} onSelectVisit={vi.fn()} />,
+      );
+      expect(screen.queryByTestId('monitor-detail-address')).toBeNull();
+    });
+
+    it('前の訪問から・次の訪問への経路を時刻順で出す (並びが逆でも)', () => {
+      const [va, vb, vc] = [a(), b(), c()];
+      render(
+        <MonitorDetailPanel
+          visit={vb}
+          row={makeRow({ visits: [vc, va, vb] })}
+          onSelectVisit={vi.fn()}
+        />,
+      );
+      const prev = new URL(screen.getByTestId('monitor-detail-route-prev').getAttribute('href')!);
+      expect(prev.searchParams.get('origin')).toBe('千葉市稲毛区A町1-1');
+      expect(prev.searchParams.get('destination')).toBe('千葉市稲毛区B町2-2');
+      const next = new URL(screen.getByTestId('monitor-detail-route-next').getAttribute('href')!);
+      expect(next.searchParams.get('origin')).toBe('千葉市稲毛区B町2-2');
+      expect(next.searchParams.get('destination')).toBe('千葉市稲毛区C町3-3');
+      expect(screen.getByTestId('monitor-detail-route-prev')).toHaveTextContent('患者A さんから');
+      expect(screen.getByTestId('monitor-detail-route-next')).toHaveTextContent('患者C さんへ');
+    });
+
+    it('1 日の最初の訪問は「次」だけ', () => {
+      const [va, vb] = [a(), b()];
+      render(
+        <MonitorDetailPanel
+          visit={va}
+          row={makeRow({ visits: [va, vb] })}
+          onSelectVisit={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId('monitor-detail-route-prev')).toBeNull();
+      expect(screen.getByTestId('monitor-detail-route-next')).toBeInTheDocument();
+    });
+
+    it('担当なしの行は 1 人の順路ではないので経路を出さない', () => {
+      const [va, vb] = [a(), b()];
+      render(
+        <MonitorDetailPanel
+          visit={vb}
+          row={makeRow({ staff_id: null, visits: [va, vb] })}
+          onSelectVisit={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId('monitor-detail-routes')).toBeNull();
+    });
+  });
+
+  describe('1 日の経路を地図で', () => {
+    const v = (name: string, t: string, addr: string | null) =>
+      makeVisit({ patient_name: name, start_time: t, end_time: t, patient_address: addr });
+
+    it('順路の見出しに 1 つだけ。住所の無い方は飛ばし、続けて同じ住所はまとめる', () => {
+      const row = makeRow({
+        visits: [
+          v('A', '09:00', 'A町1'),
+          v('B', '10:00', 'B町2'),
+          v('B2', '10:00', 'B町2'),
+          v('X', '11:00', null),
+          v('C', '13:00', 'C町3'),
+        ],
+      });
+      render(<MonitorDetailPanel visit={null} row={row} onSelectVisit={vi.fn()} />);
+      expect(screen.getAllByTestId('monitor-route-day-map')).toHaveLength(1);
+      const u = new URL(screen.getByTestId('monitor-route-day-map').getAttribute('href')!);
+      expect(u.searchParams.get('origin')).toBe('A町1');
+      expect(u.searchParams.get('waypoints')).toBe('B町2');
+      expect(u.searchParams.get('destination')).toBe('C町3');
+    });
+
+    it('担当なしの行・地点が 1 か所だけの行には出さない', () => {
+      const { unmount } = render(
+        <MonitorDetailPanel
+          visit={null}
+          row={makeRow({
+            staff_id: null,
+            visits: [v('A', '09:00', 'A町1'), v('B', '10:00', 'B町2')],
+          })}
+          onSelectVisit={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId('monitor-route-day-map')).toBeNull();
+      unmount();
+      render(
+        <MonitorDetailPanel
+          visit={null}
+          row={makeRow({ visits: [v('A', '09:00', 'A町1')] })}
+          onSelectVisit={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId('monitor-route-day-map')).toBeNull();
+    });
+  });
+
+  // レビュー 2026-10-17: 絞り込み・住所なし・稼働中でない患者。
+  describe('経路の前後 (レビュー対応)', () => {
+    const v = (name: string, t: string, addr: string | null, extra: object = {}) =>
+      makeVisit({
+        patient_name: name,
+        start_time: t,
+        end_time: t,
+        patient_address: addr,
+        ...extra,
+      });
+
+    it('「異常のみ」で行が絞られていても、前後は 1 日ぜんぶの順番で出す', () => {
+      const [a, b, c] = [v('A', '09:00', 'A町1'), v('B', '10:00', 'B町2'), v('C', '11:00', 'C町3')];
+      render(
+        <MonitorDetailPanel
+          visit={c}
+          row={makeRow({ visits: [a, c] })}
+          routeVisits={[a, b, c]}
+          onSelectVisit={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId('monitor-detail-route-prev')).toHaveTextContent('B さんから');
+    });
+
+    it('1 日の経路も絞り込み前の訪問で作る', () => {
+      const [a, b, c] = [v('A', '09:00', 'A町1'), v('B', '10:00', 'B町2'), v('C', '11:00', 'C町3')];
+      render(
+        <MonitorDetailPanel
+          visit={null}
+          row={makeRow({ visits: [a, c] })}
+          routeVisits={[a, b, c]}
+          onSelectVisit={vi.fn()}
+        />,
+      );
+      const u = new URL(screen.getByTestId('monitor-route-day-map').getAttribute('href')!);
+      expect(u.searchParams.get('waypoints')).toBe('B町2');
+    });
+
+    it('住所の無い前の訪問は飛ばして、その前の方から', () => {
+      const [a, x, c] = [v('A', '09:00', 'A町1'), v('X', '10:00', null), v('C', '11:00', 'C町3')];
+      render(
+        <MonitorDetailPanel
+          visit={c}
+          row={makeRow({ visits: [a, x, c] })}
+          onSelectVisit={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId('monitor-detail-route-prev')).toHaveTextContent('A さんから');
+    });
+
+    it('稼働中でない患者 (入院中など) は経路に入れない', () => {
+      const [a, h, c] = [
+        v('A', '09:00', 'A町1'),
+        v('H', '10:00', 'H町9', { patient_status: 'hospitalized' }),
+        v('C', '11:00', 'C町3'),
+      ];
+      render(
+        <MonitorDetailPanel
+          visit={c}
+          row={makeRow({ visits: [a, h, c] })}
+          onSelectVisit={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId('monitor-detail-route-prev')).toHaveTextContent('A さんから');
+    });
+  });
 });

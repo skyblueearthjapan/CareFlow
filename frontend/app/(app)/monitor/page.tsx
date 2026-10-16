@@ -511,6 +511,12 @@ export default function MonitorPage() {
                     reviewPending={reviewPending}
                     // 実績の時刻を合わせる (管理者だけ・pc-actual-time-edit-design D1)。
                     canAdjust={canReview}
+                    // 経路は「異常のみ」等で絞る前の 1 日の順番で (レビュー 2026-10-17)。
+                    routeVisits={
+                      row.staff_id != null
+                        ? data?.staff.find((r) => r.staff_id === row.staff_id)?.visits
+                        : undefined
+                    }
                   />
                 )}
               />

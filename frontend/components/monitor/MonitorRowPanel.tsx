@@ -32,6 +32,8 @@ interface MonitorRowPanelProps {
   reviewPending?: boolean;
   /** 実績の時刻を合わせる枠を出すか (管理者だけ)。 */
   canAdjust?: boolean;
+  /** その職員の 1 日の訪問ぜんぶ (絞り込み前・経路用)。 */
+  routeVisits?: MonitorVisit[];
 }
 
 export function MonitorRowPanel({
@@ -47,6 +49,7 @@ export function MonitorRowPanel({
   onUnreview,
   reviewPending,
   canAdjust = false,
+  routeVisits,
 }: MonitorRowPanelProps) {
   const override = row.day_override ?? null;
   return (
@@ -103,6 +106,7 @@ export function MonitorRowPanel({
             onSelectVisit={onSelectVisit}
             selectedVisitId={visit?.visit_id ?? null}
             officeIds={officeIds}
+            routeVisits={routeVisits}
           />
         </div>
         {visit && (
@@ -120,6 +124,7 @@ export function MonitorRowPanel({
               reviewPending={reviewPending}
               officeIds={officeIds}
               canAdjust={canAdjust}
+              routeVisits={routeVisits}
             />
           </div>
         )}

@@ -20,6 +20,7 @@ import {
   CircleDot,
   CircleX,
   Clock,
+  ExternalLink,
   MapPin,
   OctagonAlert,
   Timer,
@@ -35,6 +36,12 @@ import { targetFromMonitorVisit } from '@/components/records/actualTimeAdjust';
 import { VisitRecordingLink } from '@/components/records/VisitRecordingLink';
 import { cn } from '@/lib/utils';
 import { lateDeliveryLabel } from '@/lib/format/actualTime';
+import {
+  MAX_ROUTE_STOPS,
+  googleMapsDayRouteUrl,
+  googleMapsPlaceUrl,
+  googleMapsRouteUrl,
+} from '@/lib/maps';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 
 import { CourseTagChip, UnplannedChip } from './MonitorTimeline';
@@ -88,6 +95,11 @@ interface MonitorDetailPanelProps {
    * ``adjust_allowed`` / ``manual_arrival_allowed`` (BE の判定)。
    */
   canAdjust?: boolean;
+  /**
+   * その職員の 1 日の訪問ぜんぶ (経路用)。「異常のみ」などで ``row.visits`` が
+   * 絞られていても、経路の前後は本当の 1 日の順番で出す。省略時は ``row.visits``。
+   */
+  routeVisits?: MonitorVisit[];
 }
 
 export function MonitorDetailPanel({
@@ -100,6 +112,7 @@ export function MonitorDetailPanel({
   reviewPending,
   officeIds = [],
   canAdjust = false,
+  routeVisits,
 }: MonitorDetailPanelProps) {
   if (visit) {
     return (
@@ -113,6 +126,7 @@ export function MonitorDetailPanel({
         onUnreview={onUnreview}
         reviewPending={reviewPending}
         canAdjust={canAdjust}
+        routeVisits={routeVisits}
       />
     );
   }
@@ -122,7 +136,12 @@ export function MonitorDetailPanel({
         <h3 className="m-0 mb-1 text-[15px] font-bold text-text-primary">
           {row.staff_name ?? '担当なし'}
         </h3>
-        <MonitorRouteList row={row} onSelectVisit={onSelectVisit} officeIds={officeIds} />
+        <MonitorRouteList
+          row={row}
+          onSelectVisit={onSelectVisit}
+          officeIds={officeIds}
+          routeVisits={routeVisits}
+        />
       </div>
     );
   }
@@ -147,19 +166,45 @@ export function MonitorRouteList({
   onSelectVisit,
   selectedVisitId = null,
   officeIds = [],
+  routeVisits,
 }: {
   row: MonitorStaffRow;
   onSelectVisit: (visitId: string) => void;
   selectedVisitId?: string | null;
   officeIds?: readonly string[];
+  /** その職員の 1 日の訪問ぜんぶ (経路用・省略時は ``row.visits``)。 */
+  routeVisits?: MonitorVisit[];
 }) {
   const unassigned = row.staff_id == null;
+  // 1 日の順路をまとめて Google マップの経路で (PO 要望 2026-10-17)。担当なしの行は出さない。
+  const dayRoute = unassigned
+    ? null
+    : googleMapsDayRouteUrl(routeStops(routeVisits ?? row.visits).map((v) => v.patient_address));
   return (
     <div data-testid="monitor-detail-route">
-      <div className="mb-2 text-sm text-text-secondary">
-        {unassigned
-          ? `担当が決まっていない訪問 ${row.visits.length}件（1 人の順路ではありません）`
-          : `${row.office_name ?? '所属なし'} ・ 1 日の順路 ・ 訪問 ${row.visits.length}件`}
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-sm text-text-secondary">
+        <span>
+          {unassigned
+            ? `担当が決まっていない訪問 ${row.visits.length}件（1 人の順路ではありません）`
+            : `${row.office_name ?? '所属なし'} ・ 1 日の順路 ・ 訪問 ${row.visits.length}件`}
+        </span>
+        {dayRoute && (
+          <a
+            href={dayRoute.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-brand-primary px-2 py-0.5 text-xs font-semibold text-brand-primary-hover hover:bg-brand-primary-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+            title={
+              dayRoute.truncated
+                ? `Google マップで開けるのは ${MAX_ROUTE_STOPS} か所までです。最初の ${MAX_ROUTE_STOPS} か所を開きます`
+                : undefined
+            }
+            data-testid="monitor-route-day-map"
+          >
+            {dayRoute.truncated ? `経路を地図で（${MAX_ROUTE_STOPS} か所まで）` : '経路を地図で'}
+            <ExternalLink className="h-3 w-3" aria-hidden="true" />
+          </a>
+        )}
       </div>
       {row.visits.length === 0 ? (
         <div className="rounded-md border border-border-default bg-bg-base px-3 py-2.5 text-sm text-text-secondary">
@@ -246,6 +291,7 @@ function VisitDetail({
   onUnreview,
   reviewPending,
   canAdjust,
+  routeVisits,
 }: {
   visit: MonitorVisit;
   row: MonitorStaffRow | null;
@@ -254,9 +300,20 @@ function VisitDetail({
   onUnreview?: (visitId: string) => void;
   reviewPending?: boolean;
   canAdjust?: boolean;
+  routeVisits?: MonitorVisit[];
 }) {
   const st = displayStatus(visit);
   const txt = STATUS_JUDGE[st];
+  // 同じ職員の 1 日の順路で前後の訪問 (BE の「次の訪問まで」と同じ時刻順)。
+  // 担当なしの行は 1 人の順路ではないので経路を出さない。
+  const route =
+    row && row.staff_id != null ? neighborVisits(routeVisits ?? row.visits, visit.visit_id) : null;
+  const fromPrevUrl = route?.prev
+    ? googleMapsRouteUrl(route.prev.patient_address, visit.patient_address)
+    : null;
+  const toNextUrl = route?.next
+    ? googleMapsRouteUrl(visit.patient_address, route.next.patient_address)
+    : null;
   const JudgeIcon = STATUS_ICON[st];
   // サインで記録 (signature-checkin-design §5-1): 退出 =「サイン」、そのときのボタンで
   // 記録した到着 =「QRなし（サイン）」。画像は「サインを見る」で (見た記録が残る)。
@@ -344,6 +401,53 @@ function VisitDetail({
           .filter(Boolean)
           .join(' ／ ')}
       </div>
+
+      {/* 住所と「地図を開く」(PO 決定 2026-10-17: PC は場所を地図で見る・新しいタブ)。 */}
+      {visit.patient_address?.trim() && (
+        <div
+          className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-secondary"
+          data-testid="monitor-detail-address"
+        >
+          <MapPin className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 break-all">{visit.patient_address}</span>
+          <a
+            href={googleMapsPlaceUrl(visit.patient_address) ?? undefined}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-brand-primary px-2 py-0.5 font-semibold text-brand-primary-hover hover:bg-brand-primary-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+            data-testid="monitor-detail-map-link"
+          >
+            地図を開く
+            <ExternalLink className="h-3 w-3" aria-hidden="true" />
+          </a>
+        </div>
+      )}
+
+      {/* 患者さんの家から家への経路 (PO 要望 2026-10-17)。押すと Google マップの経路が開く。 */}
+      {(fromPrevUrl || toNextUrl) && (
+        <div
+          className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-secondary"
+          data-testid="monitor-detail-routes"
+        >
+          <span>経路</span>
+          {fromPrevUrl && route?.prev && (
+            <RouteLink
+              href={fromPrevUrl}
+              label={`${route.prev.patient_name ?? '—'} さんから`}
+              title={`前の訪問 ${route.prev.patient_name ?? '—'} さんの家から ${visit.patient_name ?? '—'} さんの家への経路`}
+              testId="monitor-detail-route-prev"
+            />
+          )}
+          {toNextUrl && route?.next && (
+            <RouteLink
+              href={toNextUrl}
+              label={`${route.next.patient_name ?? '—'} さんへ`}
+              title={`${visit.patient_name ?? '—'} さんの家から次の訪問 ${route.next.patient_name ?? '—'} さんの家への経路`}
+              testId="monitor-detail-route-next"
+            />
+          )}
+        </div>
+      )}
 
       {/* 🎙 記録を見る (音声記録がある訪問だけ・visit-voice-record-design §11-2)。 */}
       <div className="mb-3">
@@ -740,6 +844,62 @@ function ReviewSection({
         </Button>
       </div>
     </div>
+  );
+}
+
+/**
+ * 経路に入れる訪問を時刻順に (BE の「次の訪問まで」と同じ並び)。
+ * 稼働中でない患者の残骸 (入院中など・行かない家) は外す。
+ */
+function routeStops(visits: readonly MonitorVisit[]): MonitorVisit[] {
+  return visits
+    .filter((v) => v.patient_status == null || v.patient_status === 'active')
+    .sort(
+      (a, b) => a.start_time.localeCompare(b.start_time) || a.end_time.localeCompare(b.end_time),
+    );
+}
+
+/**
+ * この訪問の前と後ろで、住所のある一番近い訪問 (無ければ null)。
+ * 住所の無い方は 1 日の経路と同じく飛ばす。
+ */
+function neighborVisits(
+  visits: readonly MonitorVisit[],
+  visitId: string,
+): { prev: MonitorVisit | null; next: MonitorVisit | null } {
+  const ordered = routeStops(visits);
+  const i = ordered.findIndex((v) => v.visit_id === visitId);
+  if (i < 0) return { prev: null, next: null };
+  const hasAddr = (v: MonitorVisit) => !!v.patient_address?.trim();
+  const prev = ordered.slice(0, i).reverse().find(hasAddr) ?? null;
+  const next = ordered.slice(i + 1).find(hasAddr) ?? null;
+  return { prev, next };
+}
+
+function RouteLink({
+  href,
+  label,
+  title,
+  testId,
+}: {
+  href: string;
+  label: string;
+  title: string;
+  testId: string;
+}) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={title}
+      aria-label={title}
+      className="inline-flex max-w-full items-center gap-1 rounded-md border border-border-default px-2 py-0.5 font-semibold text-brand-primary-hover hover:border-brand-primary hover:bg-brand-primary-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+      data-testid={testId}
+    >
+      <span className="min-w-0 truncate">{label}</span>
+      <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
+    </a>
   );
 }
 

@@ -364,6 +364,27 @@ async def test_build_monitor_done_match(db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_build_monitor_carries_patient_address(db) -> None:
+    """詳細の欄の「地図を開く」用に患者の住所を載せる (2026-10-17)。"""
+    staff = await _make_staff(db, "S-addr")
+    p = await _make_patient(db, "M-ADDR", lat=35.0, lng=139.0)
+    p.address = "千葉県千葉市稲毛区小仲台1-2-3"
+    await db.commit()
+    v = await _make_visit(db, p, staff, start=time(9, 0), end=time(10, 0))
+
+    resp = await build_monitor(db, TARGET, now=_utc(8, 0), viewer_is_admin=True)
+    mv = _find(resp, v.id)
+    assert mv is not None
+    assert mv.patient_address == "千葉県千葉市稲毛区小仲台1-2-3"
+
+    # 職員には出さない (担当外の患者の住所まで見えてしまうため)。
+    staff_view = await build_monitor(db, TARGET, now=_utc(8, 0), viewer_is_admin=False)
+    mv_staff = _find(staff_view, v.id)
+    assert mv_staff is not None
+    assert mv_staff.patient_address is None
+
+
+@pytest.mark.asyncio
 async def test_build_monitor_inprogress_review_late(db) -> None:
     staff = await _make_staff(db, "S-inprog")
     p = await _make_patient(db, "M-INPROG", lat=35.0, lng=139.0)

@@ -213,4 +213,32 @@ describe('MobileVisitCard 時刻の調整の印 (設計 2026-09-30 §7-7)', () =
     );
     expect(screen.queryByTestId('mobile-visit-adjusted')).toBeNull();
   });
+
+  // 地図 (PO 決定 2026-10-17): 一覧から詳細を開かずに道案内。
+  it('住所があれば地図ボタン (Link の外・新しいタブ・住所の文字で道案内)', () => {
+    setSession('staff-senior-1');
+    render(<MobileVisitCard visit={makeVisit({ patient_address: '千葉市稲毛区A町1-1' })} />);
+    const btn = screen.getByTestId('mobile-visit-map-link');
+    expect(btn).toHaveAttribute('target', '_blank');
+    expect(new URL(btn.getAttribute('href')!).searchParams.get('destination')).toBe(
+      '千葉市稲毛区A町1-1',
+    );
+    expect(btn.closest('a[href^="/m/today/"]')).toBeNull();
+  });
+
+  it('住所が無ければ地図ボタンを出さない', () => {
+    setSession('staff-senior-1');
+    render(<MobileVisitCard visit={makeVisit({ patient_address: null })} />);
+    expect(screen.queryByTestId('mobile-visit-map-link')).toBeNull();
+  });
+
+  it('取消の訪問には地図ボタンを出さない', () => {
+    setSession('staff-senior-1');
+    render(
+      <MobileVisitCard
+        visit={makeVisit({ status: 'cancelled', patient_address: '千葉市稲毛区A町1-1' })}
+      />,
+    );
+    expect(screen.queryByTestId('mobile-visit-map-link')).toBeNull();
+  });
 });

@@ -1,10 +1,11 @@
 import Link from 'next/link';
-import { CheckCircle2, ChevronRight, Clock, MapPin, Mic } from 'lucide-react';
+import { CheckCircle2, ChevronRight, Clock, Map as MapIcon, MapPin, Mic } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { actualTimeParts } from '@/lib/format/actualTime';
+import { googleMapsDirectionsUrl } from '@/lib/maps';
 import { cn } from '@/lib/utils';
 import { displayVisitNote } from '@/lib/visit-note';
 import { genderPalette } from '@/lib/scheduling/timeline';
@@ -59,6 +60,12 @@ export function MobileVisitCard({ visit, address, hasRecording }: MobileVisitCar
   // 地色=患者性別ウォッシュ・左帯/性別ドット=性別色・時刻 tnum・📍住所。
   const pal = genderPalette(visit.patient_sex ?? null);
   const shownAddress = address ?? visit.patient_address ?? null;
+  // 一覧から詳細を開かずに道案内 (PO 決定 2026-10-17: 詳細と一覧の両方・住所の文字で渡す)。
+  // 取消・稼働中でない患者の残骸 (行かない家) には出さない。
+  const mapUrl =
+    visit.status === 'cancelled' || displayKind !== 'normal'
+      ? null
+      : googleMapsDirectionsUrl(shownAddress);
   // 同行 (§7.4): 担当側は「同行: ◯◯・◯◯」、同行者本人は「同行」バッジ。
   // 複数名対応 (確定#5): accompaniments[] 優先・旧単数 accompaniment はフォールバック。
   const { data: session } = useSession();
@@ -87,106 +94,126 @@ export function MobileVisitCard({ visit, address, hasRecording }: MobileVisitCar
     !!visit.actual_departure_adjusted ||
     !!visit.actual_departure_manual;
   return (
-    <Link
-      href={`/m/today/${visit.id}`}
-      className="block focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary rounded-lg"
-      aria-label={`${visit.patient_name ?? '患者'} の訪問詳細`}
-    >
-      <Card
-        className={cn(
-          'flex items-center gap-3 rounded-md border border-l-4 p-4 shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-sm)]',
-          visit.status === 'cancelled' && 'opacity-60',
-          // 非稼働患者の残骸 (§3-4)。稼働中に戻すまで訪問できない予定と分かるように。
-          VISIT_DISPLAY_CLASS[displayKind],
-        )}
-        style={{
-          // 左帯は常に性別色 (PC版踏襲・PO要望 2026-07-10)。未訪問の区別はバッジが担う。
-          background: pal.bg,
-          borderColor: pal.ln,
-          borderLeftColor: pal.bar,
-          color: pal.ink,
-        }}
+    // 地図ボタンは <Link> の外の兄弟に置く (a の中に a を入れない)。
+    <div className="relative">
+      <Link
+        href={`/m/today/${visit.id}`}
+        className="block focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary rounded-lg"
+        aria-label={`${visit.patient_name ?? '患者'} の訪問詳細`}
       >
-        <div className="flex w-14 shrink-0 flex-col items-center justify-center">
-          <span className="font-serif text-lg font-bold tnum">{shortTime(visit.start_time)}</span>
-          <span className="text-[11px] opacity-70 tnum">{shortTime(visit.end_time)}</span>
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <i
-              className="h-2 w-2 shrink-0 rounded-full"
-              style={{ background: pal.bar }}
-              aria-hidden="true"
-            />
-            <p className="truncate font-bold">{visit.patient_name ?? '(患者名未設定)'}</p>
-            <Badge variant={meta.variant}>{meta.label}</Badge>
-            {/* 非稼働患者のバッジ (「入院中」等・§3-4)。 */}
-            <InactiveVisitBadge
-              visit={visit}
-              kind={displayKind}
-              testId="mobile-visit-inactive-badge"
-            />
-            {isTrainee && (
-              <Badge variant="info" data-testid="mobile-visit-accompaniment">
-                同行
-              </Badge>
-            )}
-            {hasRecording && (
-              <Mic
-                className="h-4 w-4 shrink-0 opacity-70"
-                aria-label="音声記録あり"
-                data-testid="mobile-visit-recording-mark"
-              />
-            )}
+        <Card
+          className={cn(
+            'flex items-center gap-3 rounded-md border border-l-4 p-4 shadow-[var(--shadow-xs)] transition-shadow hover:shadow-[var(--shadow-sm)]',
+            visit.status === 'cancelled' && 'opacity-60',
+            // 非稼働患者の残骸 (§3-4)。稼働中に戻すまで訪問できない予定と分かるように。
+            VISIT_DISPLAY_CLASS[displayKind],
+          )}
+          style={{
+            // 左帯は常に性別色 (PC版踏襲・PO要望 2026-07-10)。未訪問の区別はバッジが担う。
+            background: pal.bg,
+            borderColor: pal.ln,
+            borderLeftColor: pal.bar,
+            color: pal.ink,
+          }}
+        >
+          <div className="flex w-14 shrink-0 flex-col items-center justify-center">
+            <span className="font-serif text-lg font-bold tnum">{shortTime(visit.start_time)}</span>
+            <span className="text-[11px] opacity-70 tnum">{shortTime(visit.end_time)}</span>
           </div>
-          {/* 打刻の実績 (お客様要望 2026-09-18)。退出まであれば確定した実績レンジ、
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <i
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ background: pal.bar }}
+                aria-hidden="true"
+              />
+              <p className="truncate font-bold">{visit.patient_name ?? '(患者名未設定)'}</p>
+              <Badge variant={meta.variant}>{meta.label}</Badge>
+              {/* 非稼働患者のバッジ (「入院中」等・§3-4)。 */}
+              <InactiveVisitBadge
+                visit={visit}
+                kind={displayKind}
+                testId="mobile-visit-inactive-badge"
+              />
+              {isTrainee && (
+                <Badge variant="info" data-testid="mobile-visit-accompaniment">
+                  同行
+                </Badge>
+              )}
+              {hasRecording && (
+                <Mic
+                  className="h-4 w-4 shrink-0 opacity-70"
+                  aria-label="音声記録あり"
+                  data-testid="mobile-visit-recording-mark"
+                />
+              )}
+            </div>
+            {/* 打刻の実績 (お客様要望 2026-09-18)。退出まであれば確定した実績レンジ、
               到着だけなら訪問中。色はステータスバッジと同系 (完了=success・訪問中=brand)。 */}
-          {actual && (
-            <p
-              className={cn(
-                'mt-1 flex items-center gap-1 truncate text-xs font-medium',
-                actual.done ? 'text-success' : 'text-brand-primary',
-              )}
-              data-testid="mobile-visit-actual"
-            >
-              {actual.done ? (
-                <CheckCircle2 className="h-3 w-3 shrink-0" aria-hidden="true" />
-              ) : (
-                <Clock className="h-3 w-3 shrink-0" aria-hidden="true" />
-              )}
-              <span className="truncate tnum">
-                {actual.done
-                  ? `実績 ${actual.range}`
-                  : `到着 ${actual.range}${inProgress ? '（訪問中）' : ''}`}
-              </span>
-              {adjusted && (
-                <span
-                  className="shrink-0 rounded-full border border-brand-primary-light bg-brand-primary-50 px-2 text-[11px] font-semibold text-brand-primary-hover"
-                  data-testid="mobile-visit-adjusted"
-                >
-                  調整
+            {actual && (
+              <p
+                className={cn(
+                  'mt-1 flex items-center gap-1 truncate text-xs font-medium',
+                  actual.done ? 'text-success' : 'text-brand-primary',
+                )}
+                data-testid="mobile-visit-actual"
+              >
+                {actual.done ? (
+                  <CheckCircle2 className="h-3 w-3 shrink-0" aria-hidden="true" />
+                ) : (
+                  <Clock className="h-3 w-3 shrink-0" aria-hidden="true" />
+                )}
+                <span className="truncate tnum">
+                  {actual.done
+                    ? `実績 ${actual.range}`
+                    : `到着 ${actual.range}${inProgress ? '（訪問中）' : ''}`}
                 </span>
-              )}
-            </p>
+                {adjusted && (
+                  <span
+                    className="shrink-0 rounded-full border border-brand-primary-light bg-brand-primary-50 px-2 text-[11px] font-semibold text-brand-primary-hover"
+                    data-testid="mobile-visit-adjusted"
+                  >
+                    調整
+                  </span>
+                )}
+              </p>
+            )}
+            {accompanimentNames.length > 0 && (
+              <p
+                className="mt-1 truncate text-xs font-medium text-info"
+                data-testid="mobile-visit-accompaniment"
+              >
+                同行: {accompanimentNames.join('・')}
+              </p>
+            )}
+            {shownAddress && (
+              <p className="mt-1 flex items-center gap-1 truncate text-xs opacity-80">
+                <MapPin className="h-3 w-3 shrink-0" />
+                <span className="truncate">{shownAddress}</span>
+              </p>
+            )}
+            {note && <p className="mt-1 truncate text-xs opacity-80">{note}</p>}
+          </div>
+          {mapUrl ? (
+            // 地図ボタンが重なる場所を空けておく (本文がボタンの下に潜らないように)。
+            <span className="w-10 shrink-0" aria-hidden="true" />
+          ) : (
+            <ChevronRight className="h-4 w-4 shrink-0 opacity-60" />
           )}
-          {accompanimentNames.length > 0 && (
-            <p
-              className="mt-1 truncate text-xs font-medium text-info"
-              data-testid="mobile-visit-accompaniment"
-            >
-              同行: {accompanimentNames.join('・')}
-            </p>
-          )}
-          {shownAddress && (
-            <p className="mt-1 flex items-center gap-1 truncate text-xs opacity-80">
-              <MapPin className="h-3 w-3 shrink-0" />
-              <span className="truncate">{shownAddress}</span>
-            </p>
-          )}
-          {note && <p className="mt-1 truncate text-xs opacity-80">{note}</p>}
-        </div>
-        <ChevronRight className="h-4 w-4 shrink-0 opacity-60" />
-      </Card>
-    </Link>
+        </Card>
+      </Link>
+      {mapUrl && (
+        <a
+          href={mapUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="absolute right-3 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-lg border border-border-default bg-white/90 text-brand-primary shadow-[var(--shadow-xs)] active:bg-brand-primary-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+          aria-label={`${visit.patient_name ?? '患者'} 様の家まで Google マップで道案内`}
+          data-testid="mobile-visit-map-link"
+        >
+          <MapIcon className="h-5 w-5" aria-hidden="true" />
+        </a>
+      )}
+    </div>
   );
 }

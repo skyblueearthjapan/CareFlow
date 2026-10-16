@@ -87,6 +87,8 @@ export const monitorVisitSchema = z.object({
   patient_status_since: z.string().nullish().catch(null),
   patient_lat: z.number().nullable().optional(),
   patient_lng: z.number().nullable().optional(),
+  // 患者の住所 (詳細の欄の「地図を開く」用・2026-10-17)。旧デプロイは欠落。
+  patient_address: z.string().nullish().catch(null),
   start_time: z.string(),
   end_time: z.string(),
   phase: z.string(),

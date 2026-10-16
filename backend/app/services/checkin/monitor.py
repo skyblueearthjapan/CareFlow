@@ -356,7 +356,8 @@ async def build_monitor(
     ``viewer_is_admin`` = 見ているユーザーが admin か。効くのは 2 か所: 調整した人の名前
     (``adjustments[].by_name``) — スタッフ名の無い調整者は、admin には email / username、
     それ以外には「管理者」と出す — と、休み・時間変更の理由 (``day_override.reason``) —
-    admin 以外には null (既定は出さない側)。
+    admin 以外には null (既定は出さない側)。患者の住所 (``patient_address``) も
+    admin だけ (2026-10-17)。
 
     代行 / 実績スタッフの合成規則 (設計 ``qr-open-checkin-design.md`` §6):
 
@@ -776,6 +777,12 @@ async def build_monitor(
             ),
             patient_lng=(
                 float(patient.lng) if patient is not None and patient.lng is not None else None
+            ),
+            # 住所は管理者だけ (職員が見られる患者の一覧は自分の担当まで・レビュー 2026-10-17)。
+            patient_address=(
+                getattr(patient, "address", None)
+                if viewer_is_admin and patient is not None
+                else None
             ),
             start_time=_fmt_time(v.start_time),
             end_time=_fmt_time(v.end_time),

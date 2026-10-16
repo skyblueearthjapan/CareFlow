@@ -14,6 +14,7 @@ import {
   Home,
   Loader2,
   LogIn,
+  Map as MapIcon,
   MapPin,
   PenLine,
   Phone,
@@ -56,6 +57,7 @@ import {
   minutesToHm,
 } from '@/lib/format/actualTime';
 import { QR_READ_AT_PARAM, extractQrToken, parseHandoffReadAt } from '@/lib/qr-token';
+import { googleMapsDirectionsUrl } from '@/lib/maps';
 import { cn } from '@/lib/utils';
 import { visitAccompaniments } from '@/lib/schemas/trainee_accompaniment';
 import { Card } from '@/components/ui/card';
@@ -1532,10 +1534,28 @@ function MobileVisitDetailPageInner() {
                   </span>
                 </div>
               )}
-              {/* Address / phone live on the patient record; surfaced as
-                  TODO until the patient relation is included in VisitRead. */}
+              {/* 住所と「Google マップで道案内」(PO 決定 2026-10-17・住所の文字で渡す)。 */}
+              {googleMapsDirectionsUrl(visit.patient_address) && (
+                <div className="space-y-2" data-testid="mobile-detail-address">
+                  <div className="flex items-start gap-2 text-text-primary">
+                    <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-brand-primary" />
+                    <span className="break-all">{visit.patient_address}</span>
+                  </div>
+                  <a
+                    href={googleMapsDirectionsUrl(visit.patient_address) ?? undefined}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg border-2 border-brand-primary bg-bg-base px-4 text-[15px] font-bold text-brand-primary-hover active:bg-brand-primary-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+                    data-testid="mobile-detail-map-link"
+                  >
+                    <MapIcon className="h-5 w-5 shrink-0" aria-hidden="true" />
+                    Google マップで道案内
+                  </a>
+                </div>
+              )}
+              {/* 電話番号は患者マスタにまだ無いので案内だけ。 */}
               <div className="flex items-center gap-2 text-text-muted">
-                <MapPin className="h-4 w-4 shrink-0" />
+                <QrCode className="h-4 w-4 shrink-0" />
                 <span>玄関の固定QRを読み取って打刻してください</span>
               </div>
               <div className="flex items-center gap-2 text-text-muted">

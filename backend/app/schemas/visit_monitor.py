@@ -123,6 +123,8 @@ class MonitorVisit(BaseModel):
     patient_code: str | None = None
     patient_lat: float | None = None
     patient_lng: float | None = None
+    # 患者の住所 (詳細の欄の「地図を開く」・経路用・2026-10-17)。管理者にだけ入れる。
+    patient_address: str | None = None
     # 患者ステータス連動 Phase 3 §3-4「表示の保険」(非破壊追加・既定 None)。
     # モニターは cancelled を最初から落とすので ``source`` は基本 planned の出所だが、
     # 残骸点検のため visits.source をそのまま載せる。``patient_status`` が active
