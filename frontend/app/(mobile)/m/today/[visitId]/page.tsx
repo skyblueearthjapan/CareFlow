@@ -1279,7 +1279,11 @@ function MobileVisitDetailPageInner() {
     if (visit.actual_arrival_adjusted && arrRead) {
       const back = arr != null ? (hmToMinutes(arrRead) ?? arr) - arr : 0;
       parts.push(
-        back > 0 ? `到着を ${back} 分 調整（読取 ${arrRead}）` : `到着を調整（読取 ${arrRead}）`,
+        back > 0
+          ? `到着を ${back} 分 調整（読取 ${arrRead}）`
+          : back < 0
+            ? `到着を ${-back} 分 後へ調整（読取 ${arrRead}）`
+            : `到着を調整（読取 ${arrRead}）`,
       );
     }
     const depRead = jstHm(visit.actual_departure_read_at);

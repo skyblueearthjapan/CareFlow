@@ -123,8 +123,6 @@ class ActualTimeAdjust(Op):
             if not arr["read_at"] and not arr["manual"] and not op.get("manual"):
                 raise RkError("合わせるのを止めました: 到着の読み取りがありません。手で到着を入れるなら、"
                               "管理者に確かめてから manual: true にする")
-            if arr["read_at"] and _hm(t) > _hm(arr["read_at"]):
-                raise RkError(f"合わせるのを止めました: 到着は読み取った時刻（{arr['read_at']}）より後にはできません")
             if dep["at"] and _hm(t) >= _hm(dep["at"]):
                 raise RkError(f"合わせるのを止めました: 到着は退出（{dep['at']}）より前の時刻にしてください")
         else:

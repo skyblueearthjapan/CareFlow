@@ -413,14 +413,14 @@ async def test_source_defaults_to_pc_without_the_surface_header(client, db) -> N
 
 
 async def test_arrival_range_for_staff_and_admin(client, db) -> None:
-    """読取より後は不可・さかのぼれるのは 90 分 (admin は下限なし)。"""
+    """読取より後も可 (PO 2026-10-19)・さかのぼれるのは 90 分 (admin は下限なし)。"""
     _, user, visit = await _arrived_visit(db, "AT-A3")
     admin = await _user(db, "at-a3-admin@example.com", role="admin")
 
-    # 読取 13:06:40 → 分に切り捨てた 13:06 までは可、13:07 は不可。
-    late = await _put(client, user, visit, "arrival", "13:07")
-    assert late.status_code == 422
-    assert late.json()["detail"] == "到着は読み取った時刻（13:06）より後にはできません"
+    # 読取 13:06:40 より後 (同じお宅で続けて訪問する方の QR をまとめて読んだとき) も可。
+    late = await _put(client, user, visit, "arrival", "13:40")
+    assert late.status_code == 200, late.text
+    assert _hm(late.json()["actual_arrival_at"]) == "13:40:00"
     assert (await _put(client, user, visit, "arrival", "13:06")).status_code == 200
 
     # 90 分前 = 11:36 までは可、11:35 は不可。
@@ -429,11 +429,11 @@ async def test_arrival_range_for_staff_and_admin(client, db) -> None:
     assert "90 分前（11:36）" in too_early.json()["detail"]
     assert (await _put(client, user, visit, "arrival", "11:36")).status_code == 200
 
-    # admin は 90 分の下限なし (同じ日の 00:00 以降)。読取より後は admin でも不可。
+    # admin は 90 分の下限なし (同じ日の 00:00 以降)。読取より後も可。
     res = await _put(client, admin, visit, "arrival", "00:00")
     assert res.status_code == 200, res.text
     assert _hm(res.json()["actual_arrival_at"]) == "00:00:00"
-    assert (await _put(client, admin, visit, "arrival", "13:07")).status_code == 422
+    assert (await _put(client, admin, visit, "arrival", "13:07")).status_code == 200
     await db.rollback()
 
 
@@ -606,6 +606,53 @@ async def test_todays_departure_cannot_be_later_than_now(client, db, monkeypatch
     res = await _put(client, user, visit, "departure", "13:50")
     assert res.status_code == 200, res.text
     assert res.json()["status"] == "completed"
+    await db.rollback()
+
+
+async def test_todays_arrival_after_read_is_capped_by_now(client, db, monkeypatch) -> None:
+    """読取より後へ合わせる到着 (PO 2026-10-19) も、今日の訪問はいまの時刻まで。"""
+    day = _today()
+    _, user, visit = await _arrived_visit(db, "AT-A3N", day=day)
+    _freeze_now(monkeypatch, _at(day, 13, 20, 30))
+
+    res = await _put(client, user, visit, "arrival", "13:21")
+    assert res.status_code == 422
+    assert res.json()["detail"] == "到着はいまの時刻より後にはできません"
+    res = await _put(client, user, visit, "arrival", "13:20")
+    assert res.status_code == 200, res.text
+    assert _hm(res.json()["actual_arrival_at"]) == "13:20:00"
+    await db.rollback()
+
+
+async def test_arrival_after_read_must_stay_before_departure(client, db) -> None:
+    """同じお宅で 2 人分をまとめて読んだ形: 到着は読取より後へ、退出より前まで。"""
+    staff, user, visit = await _arrived_visit(db, "AT-A3D")
+    await _checkin(db, visit, staff, "departure", _at(visit.visit_date, 13, 40, 10))
+
+    res = await _put(client, user, visit, "arrival", "13:40")
+    assert res.status_code == 422
+    assert res.json()["detail"] == "到着は退出（13:40）より前の時刻にしてください"
+    res = await _put(client, user, visit, "arrival", "13:39")
+    assert res.status_code == 200, res.text
+    await db.rollback()
+
+
+async def test_departure_reset_cannot_go_before_a_later_arrival(client, db) -> None:
+    """到着を読取より後へ合わせた後、退出を読取時刻に戻すと到着より前になるなら断る。"""
+    staff, user, visit = await _arrived_visit(db, "AT-A3R")
+    await _checkin(db, visit, staff, "departure", _at(visit.visit_date, 13, 30, 10))
+
+    assert (await _put(client, user, visit, "departure", "13:50")).status_code == 200
+    assert (await _put(client, user, visit, "arrival", "13:40")).status_code == 200
+    res = await _delete(client, user, visit, "departure")
+    assert res.status_code == 422
+    assert res.json()["detail"] == (
+        "読み取った時刻（13:30）が到着（13:40）より後にならないため戻せません。"
+        "先に到着の時刻を合わせてください"
+    )
+    # 到着を戻してからなら、退出も戻せる。
+    assert (await _delete(client, user, visit, "arrival")).status_code == 200
+    assert (await _delete(client, user, visit, "departure")).status_code == 200
     await db.rollback()
 
 

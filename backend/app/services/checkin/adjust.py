@@ -248,8 +248,9 @@ async def adjust_actual_time(
 
     検証 (設計 §6-1):
 
-    * 到着: 到着の読み取りが必要。``読取時刻 - 90 分 <= time <= 読取時刻`` (分に
-      切り捨て)。退出の実績があればそれより前。admin は 90 分の下限なし。
+    * 到着: 到着の読み取りが必要。``読取時刻 - 90 分 <= time`` (分に切り捨て)。
+      読取時刻より後も可 (PO 2026-10-19) で、退出の実績があればそれより前・いまの時刻
+      まで。admin は 90 分の下限なし。
     * 退出 (読み取りあり): ``到着の実績 < time <= 読取時刻 + 30 分``。
     * 90 分 / 30 分は ``checkin_settings`` の ``arrival_max_back_min`` /
       ``departure_max_ahead_min`` (既定の値)。
@@ -298,8 +299,11 @@ async def adjust_actual_time(
         current, base = arrival, None
     elif kind == "arrival":
         read = _floor_jst(arrival.read_at)
-        if target > read:
-            raise _invalid(f"到着は読み取った時刻（{_hm(read)}）より後にはできません")
+        # 読み取りより後へも合わせられる (PO 2026-10-19: 同じお宅で続けて訪問する方の QR を
+        # 着いたときにまとめて読むと、2 人目の到着が読み取りより後になる)。上限は退出より前・
+        # いまの時刻まで。
+        if target > now_jst:
+            raise _invalid("到着はいまの時刻より後にはできません")
         earliest = read - timedelta(minutes=arrival_max_back_min)
         if not is_admin and target < earliest:
             raise _invalid(
@@ -435,6 +439,20 @@ async def reset_actual_time(
         raise _invalid(
             f"読み取った時刻（{_hm(current.read_at)}）が退出（{_hm(departure.at)}）より"
             "前にならないため戻せません。先に退出の時刻を合わせてください"
+        )
+    # 逆向き: 到着を読み取りより後へ合わせてある (PO 2026-10-19) と、退出を読取時刻に
+    # 戻したときに到着より前になり得る。
+    arrival = actuals.arrival
+    if (
+        kind == "departure"
+        and current.read_at is not None
+        and arrival is not None
+        and arrival.adjusted
+        and _floor_jst(current.read_at) <= _floor_jst(arrival.at)
+    ):
+        raise _invalid(
+            f"読み取った時刻（{_hm(current.read_at)}）が到着（{_hm(arrival.at)}）より"
+            "後にならないため戻せません。先に到着の時刻を合わせてください"
         )
 
     # 手で入れた到着を消すと到着が無くなる。手で入れた退出が残ると「到着の無い手入力の

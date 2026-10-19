@@ -110,7 +110,6 @@ def test_inverse_back_to_previous_adjusted_time():
     (None, op(), "見つかりません"),
     (visit(deleted_at="2026-10-12T01:00:00Z"), op(), "見つかりません"),
     (visit(actual_arrival_at=None, actual_arrival_read_at=None), op(), "読み取りがありません"),
-    (visit(), op(time="09:10"), "読み取った時刻"),
     (visit(actual_departure_at="2026-10-12T00:00:00Z"), op(time="09:00"), "退出"),
     (visit(actual_arrival_at=None, actual_arrival_read_at=None), op(kind="departure", time="09:50"), "到着の記録"),
     (visit(), op(kind="departure", time="09:05"), "到着"),
@@ -120,6 +119,14 @@ def test_execute_refuses(v, o, msg):
     with pytest.raises(RkError, match=msg):
         ActualTimeAdjust().execute(api, o)
     assert not [c for c in api.calls if c[0] in ("PUT", "DELETE")]
+
+
+def test_arrival_later_than_read_is_allowed():
+    """同じお宅で続けて訪問する方の QR をまとめて読んだとき、読み取りより後へ合わせられる（PO 2026-10-19）。"""
+    impl = ActualTimeAdjust()
+    api = FakeApi(visit())
+    impl.execute(api, op(time="09:30"))
+    assert impl.verify(api, op(time="09:30")) == []
 
 
 def test_manual_arrival_allowed_when_flagged():

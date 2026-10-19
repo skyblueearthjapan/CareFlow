@@ -66,8 +66,9 @@ export function ArrivedAdjustCard({
       {adjustedTo != null ? (
         <>
           <p className="tnum mb-2.5 mt-1 text-[13px] text-text-secondary">
-            読み取った時刻は {minutesToHm(readMin)}（{readMin - adjustedTo} 分前に到着）。
-            読取時刻も記録に残ります。
+            読み取った時刻は {minutesToHm(readMin)}（
+            {`${Math.abs(readMin - adjustedTo)} 分${readMin >= adjustedTo ? '前' : '後'}`}
+            に到着）。 読取時刻も記録に残ります。
           </p>
           <div className="grid grid-cols-2 gap-2">
             <button type="button" className={SUB_BUTTON} disabled={busy} onClick={onUndo}>

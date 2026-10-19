@@ -75,7 +75,9 @@ export interface ActualTimeTimes {
  * 合わせられる時刻の範囲 `[下端, 上端]` (どちらも含む)。上端 < 下端 なら
  * 合わせられる時刻が無い。サーバの検証 (設計 §6-1) と同じ規則。
  *
- *   到着: 読取時刻の 90 分前 〜 読取時刻。退出の実績があればその 1 分前まで。
+ *   到着: 読取時刻の 90 分前 〜。読取時刻より後も可 (PO 2026-10-19・同じお宅で続けて
+ *         訪問する方の QR をまとめて読んだとき)。退出の実績があればその 1 分前まで、
+ *         今日の訪問は現在時刻まで、過去の訪問は 23:59 まで。
  *   退出: 到着の実績の 1 分後 〜。読み取りがあれば読取時刻の 30 分後まで。
  *         今日の訪問は現在時刻まで、過去の訪問は 23:59 まで。
  *   (90 分 / 30 分は `limits`・設定値。省略時はサーバの既定と同じ値)
@@ -85,13 +87,12 @@ export function actualTimeRange(
   t: ActualTimeTimes,
   limits: ActualTimeLimits = ACTUAL_TIME_LIMITS_FALLBACK,
 ): [number, number] {
+  const cap = t.isToday ? t.nowMin : LAST_MINUTE_OF_DAY;
   if (kind === 'arrival') {
     const lo = Math.max(0, t.arrival.readAt - limits.arrivalMaxBackMin);
-    const hi =
-      t.departure.at != null ? Math.min(t.arrival.readAt, t.departure.at - 1) : t.arrival.readAt;
+    const hi = t.departure.at != null ? Math.min(cap, t.departure.at - 1) : cap;
     return [lo, hi];
   }
-  const cap = t.isToday ? t.nowMin : LAST_MINUTE_OF_DAY;
   const lo = t.arrival.at + 1;
   const hi =
     t.departure.readAt != null

@@ -4,7 +4,7 @@
  * 文言は `docs/mockups/mobile-actual-time-fix-mock.html` が正。画面に
  * 「直す」「修正」「補正」を出さないこと (PO 決定 #7) もここで縛る。
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import {
@@ -42,6 +42,12 @@ const draft = () => screen.getByTestId('actual-time-draft').textContent;
 // 保存ボタン。未記録の退出を入れるときだけ「退出を HH:MM で記録する」になる。
 const saveButton = () => screen.getByRole('button', { name: /に合わせる$|で記録する$/ });
 
+// 到着の上限は「いまの時刻」(PO 2026-10-19) なので、時計を JST 14:00 に固定しておく
+// (時刻を決めたい試験は各自で置き直す)。
+beforeEach(() => {
+  vi.setSystemTime(new Date('2026-09-30T05:00:00Z'));
+});
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -54,8 +60,15 @@ describe('actualTimeRange — 合わせられる範囲 (サーバの検証と同
     nowMin: hm(14, 0),
   };
 
-  it('到着: 読取時刻の 90 分前 〜 読取時刻', () => {
-    expect(actualTimeRange('arrival', base)).toEqual([hm(11, 36), hm(13, 6)]);
+  it('到着: 読取時刻の 90 分前 〜 現在時刻 (読取時刻より後も可)', () => {
+    expect(actualTimeRange('arrival', base)).toEqual([hm(11, 36), hm(14, 0)]);
+  });
+
+  it('到着 (過去の訪問・退出なし): 23:59 まで', () => {
+    expect(actualTimeRange('arrival', { ...base, isToday: false })).toEqual([
+      hm(11, 36),
+      hm(23, 59),
+    ]);
   });
 
   it('到着: 退出の実績があれば、その 1 分前まで', () => {
@@ -65,7 +78,7 @@ describe('actualTimeRange — 合わせられる範囲 (サーバの検証と同
 
   it('到着: 0 時より前にはさかのぼらない', () => {
     const t = { ...base, arrival: { at: 20, readAt: 20 } };
-    expect(actualTimeRange('arrival', t)).toEqual([0, 20]);
+    expect(actualTimeRange('arrival', t)[0]).toBe(0);
   });
 
   it('退出 (読み取りなし・今日): 到着の 1 分後 〜 現在時刻', () => {
@@ -113,7 +126,7 @@ describe('actualTimeRange — 合わせられる範囲 (サーバの検証と同
     expect(actualTimeLimitsFrom(undefined)).toEqual(seeded);
 
     const custom = { arrivalMaxBackMin: 45, departureMaxAheadMin: 10, staffAdjustWindowDays: 3 };
-    expect(actualTimeRange('arrival', base, custom)).toEqual([hm(12, 21), hm(13, 6)]);
+    expect(actualTimeRange('arrival', base, custom)).toEqual([hm(12, 21), hm(14, 0)]);
     expect(actualTimeRange('departure', past, custom)).toEqual([hm(13, 7), hm(13, 51)]);
   });
 });
@@ -152,25 +165,32 @@ describe('ActualTimeSheet — 到着', () => {
     expect(saveButton()).toBeEnabled();
   });
 
-  it('「1 分 まえ」「1 分 あと」で詰める。読取時刻より後にはできない', () => {
+  it('「1 分 まえ」「1 分 あと」で詰める。読取時刻より後へも、いまの時刻まで進められる', () => {
+    vi.setSystemTime(new Date('2026-09-30T04:08:00Z')); // JST 13:08
     renderSheet();
-    expect(screen.getByRole('button', { name: '1 分 あと' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: '1 分 まえ' }));
     fireEvent.click(screen.getByRole('button', { name: '1 分 まえ' }));
     expect(draft()).toBe('13:04');
     fireEvent.click(screen.getByRole('button', { name: '1 分 あと' }));
     expect(draft()).toBe('13:05');
+    for (let i = 0; i < 3; i += 1)
+      fireEvent.click(screen.getByRole('button', { name: '1 分 あと' }));
+    expect(draft()).toBe('13:08');
+    expect(screen.getByTestId('actual-time-sub')).toHaveTextContent('読取 13:06 ・ 2 分後');
+    expect(screen.getByRole('button', { name: '1 分 あと' })).toBeDisabled();
+    expect(saveButton()).toBeEnabled();
   });
 
   it('さかのぼれるのは 90 分まで — ホイールに範囲の外の時刻は無く、端で「1 分 まえ」が止まる', () => {
+    vi.setSystemTime(new Date('2026-09-30T05:00:00Z')); // JST 14:00
     renderSheet({ arrival: { at: hm(11, 36), readAt: hm(13, 6) } });
     expect(draft()).toBe('11:36');
     expect(screen.getByRole('button', { name: '1 分 まえ' })).toBeDisabled();
     const options = screen.getAllByRole('option');
     expect(options[0]).toHaveTextContent('11:36');
-    expect(options[options.length - 1]).toHaveTextContent('13:06');
+    expect(options[options.length - 1]).toHaveTextContent('14:00');
     expect(screen.queryByText('11:35')).toBeNull();
-    expect(screen.queryByText('13:07')).toBeNull();
+    expect(screen.queryByText('14:01')).toBeNull();
   });
 
   it('理由は尋ねない。選んだ時刻だけで保存し、成功したら閉じる (PO 決定 2026-10-01)', async () => {
