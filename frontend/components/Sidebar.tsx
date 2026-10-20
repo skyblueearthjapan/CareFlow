@@ -16,9 +16,15 @@ import {
   MapPin,
   FileText,
   ToggleRight,
+  CalendarHeart,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { isAdminRole } from '@/lib/rbac';
+import { upcomingLeaveMonth } from '@/lib/leave-sheet';
+import { useLeaveMonthSummary } from '@/lib/queries/leave';
+
+/** メニューの未処理の休みの申請の件数を読み直す間隔 (60 秒に 1 回まで・PO 決定)。 */
+const LEAVE_PENDING_POLL_MS = 60_000;
 
 interface SidebarProps {
   collapsed: boolean;
@@ -48,6 +54,14 @@ const NAV_ITEMS = [
   // 申請履歴ページ右カラムに「休み・月確定」パネルを同居 (staff-shift-confirmation-design.md §3・
   // 2026-08-18 サブ配置へ移設。独立ページ /admin/staff-leave は廃止)
   { href: '/admin/pending-requests', label: '申請履歴', icon: Inbox, adminOnly: true },
+  // 休み・勤務表 (leave-and-kinmu-sheet-design §5): 全員×日付の月の表。管理者だけ
+  {
+    href: '/admin/leave',
+    label: '休み・勤務表',
+    icon: CalendarHeart,
+    adminOnly: true,
+    strictAdmin: true,
+  },
   // Wave 4-F: admin audit logs (admin role only). User management was moved
   // to the header rightmost button so admins can reach it from any screen.
   {
@@ -75,6 +89,10 @@ export function Sidebar({ collapsed }: SidebarProps) {
   const { data: session } = useSession();
   const role = session?.user?.role;
   const width = collapsed ? 'w-[72px]' : 'w-[232px]';
+  const isAdmin = isAdminRole(role);
+  // 「休み・勤務表」の未処理の申請の件数 = いま組んでいる月 (来月) の申請中 (管理者のときだけ読む)
+  const leaveSummary = useLeaveMonthSummary(upcomingLeaveMonth(), isAdmin, LEAVE_PENDING_POLL_MS);
+  const leavePendingCount = isAdmin ? (leaveSummary.data?.pending_count ?? 0) : 0;
 
   const items = NAV_ITEMS.filter((item) => {
     // strictAdmin = 管理者のみ表示。ロール二軸(mig 0069)以降アカウント権限は
@@ -118,12 +136,13 @@ export function Sidebar({ collapsed }: SidebarProps) {
         <ul className="space-y-1">
           {items.map(({ href, label, icon: Icon }) => {
             const active = pathname?.startsWith(href);
+            const badge = href === '/admin/leave' ? leavePendingCount : 0;
             return (
               <li key={href}>
                 <Link
                   href={href}
                   className={cn(
-                    'flex h-11 items-center gap-3 rounded-md px-3 text-sm transition-colors',
+                    'relative flex h-11 items-center gap-3 rounded-md px-3 text-sm transition-colors',
                     active
                       ? 'bg-brand-primary-light text-brand-primary-hover font-medium'
                       : 'text-text-secondary hover:bg-bg-muted',
@@ -132,6 +151,20 @@ export function Sidebar({ collapsed }: SidebarProps) {
                 >
                   <Icon className="h-5 w-5 shrink-0" strokeWidth={1.75} />
                   {!collapsed && <span>{label}</span>}
+                  {badge > 0 &&
+                    (collapsed ? (
+                      <span
+                        data-testid="nav-badge-dot"
+                        className="absolute right-2 top-2 h-2 w-2 rounded-full bg-brand-primary"
+                      >
+                        <span className="sr-only">未処理の申請 {badge} 件</span>
+                      </span>
+                    ) : (
+                      <span className="ml-auto rounded-full bg-brand-primary px-2 text-xs font-bold leading-5 text-white tnum">
+                        <span aria-hidden>{badge > 99 ? '99+' : badge}</span>
+                        <span className="sr-only">未処理の申請 {badge} 件</span>
+                      </span>
+                    ))}
                 </Link>
               </li>
             );
