@@ -531,14 +531,20 @@ def test_actual_staff_not_in_rakusuke_is_counted_and_day_unconfirmed() -> None:
         (DAY, lc.UNCONFIRMED_ACTUAL_STAFF, ["他の　人"]),
         (other_day, lc.UNCONFIRMED_ACTUAL_STAFF, ["他の　人"]),
     ]
+    # ボタンは無く (取り直しでは直らない)、名前をそろえて比べ直す案内を出す。
+    assert all(d.action is None for d in unconfirmed)
+    assert all(d.detail["guide"] == lc.GUIDE_FIX_STAFF_NAME for d in unconfirmed)
+    assert all(lc.GUIDE_FIX_STAFF_NAME in d.message for d in unconfirmed)
     [missing] = [d for d in result.diffs if d.kind == lc.DIFF_STAFF_NOT_FOUND]
     assert missing.detail == {
         "name": "他の　人",
         "dates": [DAY.isoformat(), other_day.isoformat()],
         "count": 3,
         "source": "actual_csv",
+        "guide": lc.GUIDE_FIX_STAFF_NAME,
     }
-    assert "3件" in missing.message
+    assert missing.action is None and missing.as_dict()["action"] is None
+    assert "3件" in missing.message and lc.GUIDE_FIX_STAFF_NAME in missing.message
     assert result.unconfirmed_dates == [DAY, other_day]
     # 合わない名前の行は本人の実績として数えない (食い違いは出ない)。
     assert not [d for d in result.diffs if d.kind == lc.DIFF_ACTUAL_CONFLICT]
@@ -592,10 +598,21 @@ def test_actual_rows_are_not_deduped_across_second_staff() -> None:
         task_rows=[_leave_task(DAY, "off")],
         actual=_actual([first_row, second_row, second_row]),
     )
-    [diff] = [d for d in result.diffs if d.kind == lc.DIFF_ACTUAL_CONFLICT]
-    assert len(diff.detail["visits"]) == 1  # (職員, 日) の中の同じ行は 1 件
-    # 職員名１・２ のらく助にいない名前は件数で出す (黙って捨てない)。
+    # 差分の種類の組を全部確かめる: 本人の実績との食い違いは 1 件 (同じ行は 1 件)、
+    # らく助にいない名前 (職員名１・２) はその日の未確認 1 件と、名前ごとの件数。
+    assert [
+        (d.kind, d.day, d.staff_id, d.detail.get("reason"), d.detail.get("name"))
+        for d in result.diffs
+    ] == [
+        (lc.DIFF_UNCONFIRMED, DAY, None, lc.UNCONFIRMED_ACTUAL_STAFF, None),
+        (lc.DIFF_ACTUAL_CONFLICT, DAY, STAFF, None, None),
+        (lc.DIFF_STAFF_NOT_FOUND, None, None, None, "他の　人"),
+        (lc.DIFF_STAFF_NOT_FOUND, None, None, None, "別の　人"),
+    ]
+    [conflict] = [d for d in result.diffs if d.kind == lc.DIFF_ACTUAL_CONFLICT]
+    assert len(conflict.detail["visits"]) == 1  # (職員, 日) の中の同じ行は 1 件
     assert result.actual_unmatched_names == {"他の　人": 3, "別の　人": 1}
+    assert result.unconfirmed_dates == [DAY]
 
 
 def test_stale_actual_csv_makes_leave_days_unconfirmed() -> None:

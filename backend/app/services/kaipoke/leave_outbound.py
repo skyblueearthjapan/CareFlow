@@ -36,11 +36,12 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from app.core.leave import LEAVE_TYPES, kaipoke_send_window
 from app.db.session import get_session_factory
 from app.models.kaipoke_job import KaipokeJob
-from app.models.leave import LeaveMonth, StaffLeaveKaipoke
+from app.models.leave import LeaveCompareRun, LeaveMonth, StaffLeaveKaipoke
 from app.models.staff import Staff, StaffEvent, StaffShift
 from app.services.kaipoke import sources
 from app.services.kaipoke.credentials import get_credentials_payload
@@ -50,12 +51,14 @@ from app.services.kaipoke.sources import (
     OP_LEAVE_OUTBOUND,
     STATUS_FAILED,
     STATUS_OK,
+    RpaJobConflictError,
     RpaUnavailableError,
     SourceFetchResult,
     SourceJobCancelledError,
 )
 from app.services.kaipoke_client import KaipokeApiError
 from app.services.leave_calendar import leave_type_on, load_overrides_between
+from app.services.leave_compare import DIFF_UNCONFIRMED
 from app.services.scheduling.config import load_scheduling_config
 
 if TYPE_CHECKING:
@@ -83,9 +86,8 @@ OUTCOME_SKIPPED: Final = "skipped_changed"
 #: RPA が「送れた」とする結果 (作った・同じ予定が既にあった)。
 _RPA_OK: Final = ("added", "skipped_duplicate")
 
-#: RPA の書き込みの結果を読みに行く間隔 (秒) と回数 (5 秒 × 720 = 60 分で諦める)。
+#: RPA の書き込みの結果を読みに行く間隔 (秒)。待つのはジョブ全体の締め切りまで。
 APPLY_POLL_SECONDS: float = 5.0
-APPLY_POLL_MAX: int = 720
 #: RPA の書き込みを始めるときの待ち時間 (秒・async で即応答する)。
 _START_TIMEOUT: Final = 30.0
 _SUNDAY: Final = 6
@@ -100,6 +102,15 @@ MSG_NO_INTERNAL_ID: Final = "カイポケの職員IDが未対応です（この�
 MSG_CHANGED: Final = "送る前に休みが変わったため送りませんでした"
 MSG_NO_RESULT: Final = "カイポケから結果が返りませんでした（カイポケで確かめてください）"
 MSG_BAD_KEY: Final = "カイポケから予定の番号が返りませんでした（カイポケで確かめてください）"
+MSG_DIFF_PENDING: Final = "カイポケとの差分が残っています。先に合わせてください"
+MSG_UNCONFIRMED: Final = "この日はカイポケと確かめられていません。取り直してから比べ直してください"
+MSG_DEADLINE: Final = (
+    "送信の締め切り（ジョブの開始から {minutes} 分）を過ぎたため送りませんでした"
+    "（カイポケで確かめてから送り直してください）"
+)
+
+#: ジョブ全体の締め切り (分)。段階 0 の自動クローズ (120 分) より手前で必ず終える。
+JOB_DEADLINE_MINUTES: float = 110
 
 
 def _label(kind: str | None) -> str:
@@ -240,6 +251,23 @@ async def build_leave_send_plan(db: AsyncSession, month: date | str) -> LeaveSen
         last_compared_at=compared_at,
         blocked_reason=None if compared_at is not None else MSG_NOT_COMPARED,
     )
+    # 最新の照合でまだ合わせていない差分 (種類がわからない・同じ日に 2 件を含む) がある
+    # (職員, 日) と、未確認の日は送らない (カイポケが正・確かめてから送る)。
+    run_id = leave_month.last_compare_run_id if leave_month is not None else None
+    run = await db.get(LeaveCompareRun, run_id) if run_id is not None else None
+    pending: set[tuple[uuid.UUID, date]] = set()
+    unconfirmed_days: set[date] = set()
+    for raw in (run.diffs if run is not None else None) or []:
+        if not isinstance(raw, dict) or raw.get("resolved") or not raw.get("date"):
+            continue
+        try:
+            diff_day = date.fromisoformat(str(raw["date"]))
+        except ValueError:
+            continue
+        if raw.get("staff_id"):
+            pending.add((uuid.UUID(str(raw["staff_id"])), diff_day))
+        elif raw.get("kind") == DIFF_UNCONFIRMED:
+            unconfirmed_days.add(diff_day)
 
     staff_names = {
         s.id: s.name
@@ -301,6 +329,10 @@ async def build_leave_send_plan(db: AsyncSession, month: date | str) -> LeaveSen
             reason: str | None = None
             if day.weekday() == _SUNDAY:
                 reason = MSG_SUNDAY
+            elif day in unconfirmed_days:
+                reason = MSG_UNCONFIRMED
+            elif (staff_id, day) in pending:
+                reason = MSG_DIFF_PENDING
             elif internal is None:
                 reason = MSG_NO_INTERNAL_ID
             plan.items.append(
@@ -356,7 +388,8 @@ async def start_leave_outbound(
     """送る予定を作り、送る休みがあれば段階 0 のジョブ (``leave-outbound``) を立てる。
 
     * 照合がまだの月・送る休みが無いときはジョブを立てず ``reason`` を返す。
-    * ほかの RPA のジョブが動いていれば ``RpaJobConflictError`` (API は 409)。
+    * ほかの RPA のジョブが動いていれば ``RpaJobConflictError`` (API は 409)。同時に押されて
+      行がぶつかった (IntegrityError) ときも ``RpaJobConflictError``。
     * 送る休みの ``staff_leave_kaipoke`` の行 (``external_ref`` の id) が無ければここで作る
       (S = NULL・照合前でない = 未送信のまま。409 なら rollback で消える)。
 
@@ -377,7 +410,12 @@ async def start_leave_outbound(
             )
             db.add(record)
             item.record_id = record.id
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        # 同時に押された別の送信の開始が同じ (職員, 日) の行を先に作った → 409。
+        await db.rollback()
+        raise RpaJobConflictError([]) from exc
 
     weeks: dict[date, int] = defaultdict(int)
     for item in items:
@@ -436,11 +474,12 @@ async def _apply_and_wait(
     job_id: uuid.UUID,
     monday: date,
     rpa_items: list[dict[str, Any]],
+    deadline: datetime,
 ) -> list[dict[str, Any]]:
     """RPA の個別業務の作成を 1 週ぶん呼び、結果 (``results[]``) を受け取るまで待つ。
 
-    RPA の空き確認・待ち・再試行は段階 0 の ``call_when_idle``。取れなければ
-    ``RuntimeError`` (理由つき)。
+    RPA の空き確認・待ち・再試行は段階 0 の ``call_when_idle``。待つのはジョブ全体の
+    締め切り (``deadline``) まで。取れなければ ``RuntimeError`` (理由つき)。
     """
     credentials = await get_credentials_payload(db)
     await db.commit()
@@ -457,16 +496,16 @@ async def _apply_and_wait(
     if not resp.get("success"):
         raise RuntimeError(str(resp.get("error") or "カイポケへの送信を始められませんでした"))
 
-    last_error = MSG_NO_RESULT
-    for _attempt in range(APPLY_POLL_MAX):
+    while True:
+        if datetime.now(UTC) >= deadline:
+            raise RuntimeError(_deadline_message())
         await asyncio.sleep(APPLY_POLL_SECONDS)
         # 取り消されても、RPA は作り続けているので結果は受け取って記録する。
         await _touch(db, job_id)
         try:
             rpa = await client.individual_tasks_apply_result()
-        except KaipokeApiError as exc:
-            last_error = f"カイポケの結果を読めませんでした（{exc}）"
-            continue
+        except KaipokeApiError:
+            continue  # 読めないときは締め切りまで読み直す
         status = str(rpa.get("status") or "")
         ours = str(rpa.get("job_id") or "") == rpa_job_id
         if status == "running":
@@ -483,7 +522,18 @@ async def _apply_and_wait(
         if not isinstance(results, list):
             raise RuntimeError("カイポケの送信の結果の形が不正です")
         return [r for r in results if isinstance(r, dict)]
-    raise RuntimeError(last_error)
+
+
+def _deadline_message() -> str:
+    return MSG_DEADLINE.format(minutes=f"{JOB_DEADLINE_MINUTES:g}")
+
+
+def job_deadline(job: KaipokeJob) -> datetime:
+    """ジョブ全体の締め切り = 開始 + ``JOB_DEADLINE_MINUTES`` (自動クローズの 120 分より手前)。"""
+    started = job.started_at or job.created_at or datetime.now(UTC)
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    return started + timedelta(minutes=JOB_DEADLINE_MINUTES)
 
 
 async def _record_sent(
@@ -570,12 +620,14 @@ async def send_leave_week(
     monday: date,
     items: list[dict[str, Any]],
     sent_by: uuid.UUID | None,
+    deadline: datetime,
 ) -> SourceFetchResult:
     """1 週ぶんの休みを送り、送れた分を書く。進み具合の 1 本 (週) の結果を返す。
 
-    送る直前に未送信のままか確かめ、変わっていたものは送らない。送れた分の ``sent_type``
-    などと ``staff_events`` の行、ジョブの ``result_summary.items`` を 1 つのトランザクション
-    で書いて commit する。
+    送る直前に未送信のままか確かめ、変わっていたものは送らない。ジョブ全体の締め切り
+    (``deadline``) を過ぎていれば RPA を呼ばず、未送信のまま失敗として理由を残す。
+    送れた分の ``sent_type`` などと ``staff_events`` の行、ジョブの ``result_summary.items``
+    を 1 つのトランザクションで書いて commit する。
     """
     outcomes: list[dict[str, Any]] = []
     to_send: list[dict[str, Any]] = []
@@ -599,13 +651,21 @@ async def send_leave_week(
             }
             for item in to_send
         ]
-        try:
-            results = await _apply_and_wait(
-                db, client, job_id=job_id, monday=monday, rpa_items=rpa_items
-            )
-        except (RpaUnavailableError, KaipokeApiError, RuntimeError) as exc:
-            error = _short(exc)
-            results = []
+        results: list[dict[str, Any]] = []
+        if datetime.now(UTC) >= deadline:
+            error = _deadline_message()
+        else:
+            try:
+                results = await _apply_and_wait(
+                    db,
+                    client,
+                    job_id=job_id,
+                    monday=monday,
+                    rpa_items=rpa_items,
+                    deadline=deadline,
+                )
+            except (RpaUnavailableError, KaipokeApiError, RuntimeError) as exc:
+                error = _short(exc)
         by_ref = {str(r.get("external_ref")): r for r in results}
         for item in to_send:
             got = by_ref.get(f"leave:{item['record_id']}")
@@ -665,6 +725,7 @@ async def run_leave_outbound(
         return job
     params = job.params or {}
     sent_by = job.created_by_user_id
+    deadline = job_deadline(job)
     by_week: dict[date, list[dict[str, Any]]] = defaultdict(list)
     for item in params.get("items") or []:
         by_week[_monday(date.fromisoformat(item["date"]))].append(item)
@@ -674,7 +735,13 @@ async def run_leave_outbound(
     try:
         for monday in sorted(by_week):
             result = await send_leave_week(
-                db, client, job_id=job_id, monday=monday, items=by_week[monday], sent_by=sent_by
+                db,
+                client,
+                job_id=job_id,
+                monday=monday,
+                items=by_week[monday],
+                sent_by=sent_by,
+                deadline=deadline,
             )
             results.append(result)
             await sources.record_progress(db, job_id, result)
@@ -699,12 +766,15 @@ async def run_leave_outbound_job(*, job_id: uuid.UUID, client: KaipokeClient) ->
 
 
 __all__ = [
-    "APPLY_POLL_MAX",
     "APPLY_POLL_SECONDS",
+    "JOB_DEADLINE_MINUTES",
     "KIND_LEAVE_WEEK",
     "LEAVE_SUBJECTS",
+    "MSG_DEADLINE",
+    "MSG_DIFF_PENDING",
     "MSG_NOTHING_TO_SEND",
     "MSG_NOT_COMPARED",
+    "MSG_UNCONFIRMED",
     "OUTCOME_FAILED",
     "OUTCOME_SENT",
     "OUTCOME_SKIPPED",
@@ -713,6 +783,7 @@ __all__ = [
     "LeaveSendItem",
     "LeaveSendPlan",
     "build_leave_send_plan",
+    "job_deadline",
     "run_leave_outbound",
     "run_leave_outbound_job",
     "send_leave_week",

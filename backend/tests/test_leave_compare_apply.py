@@ -502,3 +502,83 @@ async def test_input_errors(db) -> None:
             db, items=[lc.CompareAction(staff.id, day, lc.ACTION_ADD_TO_RAKUSUKE)], actor=admin
         )
     assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", [OP_LEAVE_COMPARE, "leave-outbound"])
+async def test_apply_is_409_while_month_job_runs(db, op) -> None:
+    """その月の照合・送信のジョブが動いている間は「合わせる」を止める (結果と食い違わない)。"""
+    admin = await _admin(db)
+    staff = await _staff(db)
+    day = _weekday_in(FUTURE, 1)
+    await _compare(db, FUTURE, [_task(day, X)])
+    staff_id = staff.id
+    label = f"{FUTURE.year:04d}-{FUTURE.month:02d}"
+    job = await sources.start_source_job(
+        db, op=op, week_start=lc.month_mondays(FUTURE)[0], user_id=None, params={"month": label}
+    )
+    job_id = job.id  # rollback の後は行が期限切れになる
+    with pytest.raises(StaffLeaveError) as exc:
+        await lc.apply_compare_actions(
+            db, items=[lc.CompareAction(staff_id, day, lc.ACTION_ADD_TO_RAKUSUKE)], actor=admin
+        )
+    assert exc.value.status_code == 409
+    assert exc.value.detail == lc.MSG_APPLY_JOB_RUNNING
+    assert await leave_type_on(db, staff_id, day) is None
+
+    # 別の月のジョブなら止めない。
+    await sources.finish_source_job(db, job_id, [])
+    await sources.start_source_job(
+        db, op=op, week_start=lc.month_mondays(FUTURE)[0], user_id=None, params={"month": "2000-01"}
+    )
+    await db.refresh(admin)  # 409 の rollback で期限切れになった
+    result = await lc.apply_compare_actions(
+        db, items=[lc.CompareAction(staff_id, day, lc.ACTION_ADD_TO_RAKUSUKE)], actor=admin
+    )
+    assert result.applied[0]["sent_after"] == X
+
+
+@pytest.mark.asyncio
+async def test_concurrent_apply_integrity_error_is_409(db, monkeypatch) -> None:
+    """同時に押された別の「合わせる」と行がぶつかった (UNIQUE) → 409・何も残らない。"""
+    from sqlalchemy.exc import IntegrityError
+
+    admin = await _admin(db)
+    staff = await _staff(db)
+    day = _weekday_in(FUTURE, 1)
+    await _compare(db, FUTURE, [_task(day, X)])
+    staff_id = staff.id
+
+    async def collide(*args, **kwargs):
+        raise IntegrityError("INSERT", {}, Exception("UNIQUE constraint failed"))
+
+    monkeypatch.setattr(lc, "apply_staff_leave", collide)
+    with pytest.raises(StaffLeaveError) as exc:
+        await lc.apply_compare_actions(
+            db, items=[lc.CompareAction(staff_id, day, lc.ACTION_ADD_TO_RAKUSUKE)], actor=admin
+        )
+    assert exc.value.status_code == 409
+    assert exc.value.detail == lc.MSG_APPLY_CONFLICT
+    assert (await db.scalars(select(StaffLeaveKaipoke))).all() == []
+
+
+@pytest.mark.asyncio
+async def test_second_apply_reads_first_resolution_after_lock(db) -> None:
+    """古い照合の写しを持つ別のセッションも、月の行の鍵を取ったあと読み直すので二重に合わせない。"""
+    from app.db.session import get_session_factory
+
+    admin = await _admin(db)
+    staff = await _staff(db)
+    day = _weekday_in(FUTURE, 1)
+    await _compare(db, FUTURE, [_task(day, X)])
+    item = lc.CompareAction(staff.id, day, lc.ACTION_ADD_TO_RAKUSUKE)
+    async with get_session_factory()() as other:
+        month = await other.get(LeaveMonth, FUTURE)
+        assert month is not None and month.last_compare_run_id is not None
+        stale_run = await other.get(LeaveCompareRun, month.last_compare_run_id)
+        assert stale_run is not None and "resolved" not in stale_run.diffs[0]
+        await other.commit()
+        await lc.apply_compare_actions(db, items=[item], actor=admin)
+        with pytest.raises(StaffLeaveError) as exc:
+            await lc.apply_compare_actions(other, items=[item], actor=admin)
+        assert exc.value.status_code == 409

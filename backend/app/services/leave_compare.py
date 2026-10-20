@@ -50,6 +50,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 
 from app.core.leave import (
     AM_OFF_UNTIL,
@@ -82,6 +83,7 @@ from app.services.kaipoke.sources import (
     KIND_ACTUAL_CSV,
     KIND_TASKS,
     OP_LEAVE_COMPARE,
+    OP_LEAVE_OUTBOUND,
     STATUS_EMPTY,
     STATUS_FAILED,
     STATUS_OK,
@@ -141,6 +143,8 @@ ACTION_MATCH_KAIPOKE_KIND: Final = "match_kaipoke_kind"
 ACTION_CANCEL_RAKUSUKE: Final = "cancel_rakusuke"
 ACTION_CHOOSE_KIND: Final = "choose_kind"
 ACTION_REFETCH_WEEK: Final = "refetch_week"
+#: 実績の職員名が合わない差分の案内 (ボタンは無い・``action`` は None)。
+GUIDE_FIX_STAFF_NAME: Final = "らく助の職員の名前をそろえて比べ直してください"
 
 # --- 未確認の理由 -------------------------------------------------------------------
 UNCONFIRMED_NO_SNAPSHOT: Final = "no_snapshot"
@@ -718,9 +722,18 @@ def build_leave_diffs(
         result.diffs.append(
             LeaveDiff(
                 kind=DIFF_UNCONFIRMED,
-                message=f"未確認：{_UNCONFIRMED_LABELS[UNCONFIRMED_ACTUAL_STAFF]}",
+                message=(
+                    f"未確認：{_UNCONFIRMED_LABELS[UNCONFIRMED_ACTUAL_STAFF]}"
+                    f"（{GUIDE_FIX_STAFF_NAME}）"
+                ),
                 day=d,
-                detail={"reason": UNCONFIRMED_ACTUAL_STAFF, "names": names_by_day[d]},
+                # ボタンは無い (取り直しでは直らない)。名前をそろえてから比べ直す。
+                action=None,
+                detail={
+                    "reason": UNCONFIRMED_ACTUAL_STAFF,
+                    "names": names_by_day[d],
+                    "guide": GUIDE_FIX_STAFF_NAME,
+                },
             )
         )
 
@@ -849,12 +862,17 @@ def build_leave_diffs(
         result.diffs.append(
             LeaveDiff(
                 kind=DIFF_STAFF_NOT_FOUND,
-                message=f"カイポケの実績の職員「{staff_name}」がらく助に見つかりません（{count}件）",
+                message=(
+                    f"カイポケの実績の職員「{staff_name}」がらく助に見つかりません"
+                    f"（{count}件・{GUIDE_FIX_STAFF_NAME}）"
+                ),
+                action=None,
                 detail={
                     "name": staff_name,
                     "dates": [d.isoformat() for d in sorted(per_day)],
                     "count": count,
                     "source": KIND_ACTUAL_CSV,
+                    "guide": GUIDE_FIX_STAFF_NAME,
                 },
             )
         )
@@ -1131,6 +1149,12 @@ JUDGEMENT_KINDS: Final = frozenset({JUDGED_NOT_LEAVE, *LEAVE_TYPES})
 #: 照合の「合わせる」の通知の頭 (まとめて押したとき・§3-3 の 7)。
 APPLY_NOTIFY_PREFIX: Final = "カイポケに合わせて"
 _ORIGIN: Final = "kaipoke_compare"
+#: この月のジョブが動いている間は「合わせる」を止める op。
+_MONTH_JOB_OPS: Final = (OP_LEAVE_COMPARE, OP_LEAVE_OUTBOUND)
+MSG_APPLY_JOB_RUNNING: Final = (
+    "この月のカイポケとの照合・休みの送信が動いています。終わってから合わせてください"
+)
+MSG_APPLY_CONFLICT: Final = "ほかの方が同時に合わせました。画面を読み直してください"
 
 
 @dataclass(frozen=True)
@@ -1194,6 +1218,15 @@ async def _sent_row(db: AsyncSession, staff_id: uuid.UUID, day: date) -> StaffLe
             StaffLeaveKaipoke.staff_id == staff_id, StaffLeaveKaipoke.leave_date == day
         )
     )
+
+
+async def _ensure_no_month_job(db: AsyncSession, month: date) -> None:
+    """その月の照合 (取り直し)・送信のジョブが動いていれば 409 (結果と食い違わないように)。"""
+    label = f"{month.year:04d}-{month.month:02d}"
+    for job in await sources.active_rpa_jobs(db):
+        params = job.params or {}
+        if params.get("op") in _MONTH_JOB_OPS and params.get("month") == label:
+            raise StaffLeaveError(409, MSG_APPLY_JOB_RUNNING)
 
 
 def _validate_actions(items: list[CompareAction]) -> None:
@@ -1275,9 +1308,21 @@ async def apply_compare_actions(
             first = month_first_day(item.day)
             run = runs.get(first)
             if run is None:
-                leave_month = await db.get(LeaveMonth, first)
+                await _ensure_no_month_job(db, first)
+                # 同時に押されたら 1 本ずつ (月の行の鍵・PG だけ効く)。鍵を取ってから最新の
+                # 照合を読み直すので、先に合わせた側の resolved が見える。
+                leave_month = await db.scalar(
+                    select(LeaveMonth)
+                    .where(LeaveMonth.month == first)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
                 run_id = leave_month.last_compare_run_id if leave_month is not None else None
-                run = await db.get(LeaveCompareRun, run_id) if run_id is not None else None
+                run = (
+                    await db.get(LeaveCompareRun, run_id, populate_existing=True)
+                    if run_id is not None
+                    else None
+                )
                 if run is None:
                     raise StaffLeaveError(409, "この月はまだカイポケと比べていません")
                 runs[first] = run
@@ -1385,6 +1430,10 @@ async def apply_compare_actions(
             db, leave_results, summary_prefix=APPLY_NOTIFY_PREFIX
         )
         await db.commit()
+    except IntegrityError as exc:
+        # 同時に押された別の「合わせる」と行がぶつかった (UNIQUE)。
+        await db.rollback()
+        raise StaffLeaveError(409, MSG_APPLY_CONFLICT) from exc
     except BaseException:
         await db.rollback()
         raise
@@ -1399,7 +1448,10 @@ __all__ = [
     "ACTION_REFETCH_WEEK",
     "APPLY_ACTIONS",
     "APPLY_NOTIFY_PREFIX",
+    "GUIDE_FIX_STAFF_NAME",
     "JUDGEMENT_KINDS",
+    "MSG_APPLY_CONFLICT",
+    "MSG_APPLY_JOB_RUNNING",
     "DIFF_ACTUAL_CONFLICT",
     "DIFF_CHANGED_IN_KAIPOKE",
     "DIFF_DELETED_IN_KAIPOKE",

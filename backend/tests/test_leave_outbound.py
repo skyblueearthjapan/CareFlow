@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 import pytest
@@ -18,7 +18,7 @@ from sqlalchemy import select, update
 from app.core.security import hash_password
 from app.models import User
 from app.models.kaipoke_job import KaipokeJob
-from app.models.leave import LeaveMonth, StaffLeaveKaipoke
+from app.models.leave import LeaveCompareRun, LeaveMonth, StaffLeaveKaipoke
 from app.models.staff import Staff, StaffEvent, StaffShift, StaffWeeklyOverride
 from app.services.kaipoke import leave_outbound as lo
 from app.services.kaipoke import sources
@@ -39,7 +39,6 @@ INTERNAL = "4321"
 @pytest.fixture(autouse=True)
 def _no_wait(monkeypatch) -> None:
     monkeypatch.setattr(lo, "APPLY_POLL_SECONDS", 0.0)
-    monkeypatch.setattr(lo, "APPLY_POLL_MAX", 5)
     monkeypatch.setattr(sources, "RETRY_INTERVAL_SECONDS", 0.0)
 
 
@@ -535,3 +534,156 @@ async def test_baseline_month_close_sends_only_after_compare_changes(db) -> None
     started = await _start(db)
     assert [i["date"] for i in started.job.params["items"]] == [THU.isoformat()]  # type: ignore[union-attr]
     assert started.job.params["items"][0]["start"] == "09:00"  # type: ignore[union-attr]
+
+
+# --- 最新の照合で差分が残っている・未確認の日は送らない ---------------------------------
+
+
+async def _compared_with(db, diffs: list[dict[str, Any]]) -> None:
+    run = LeaveCompareRun(month=MONTH, diffs=diffs, diff_count=len(diffs))
+    db.add(run)
+    await db.flush()
+    db.add(LeaveMonth(month=MONTH, last_compared_at=datetime.now(UTC), last_compare_run_id=run.id))
+    await db.commit()
+
+
+def _diff(kind: str, day: date, staff_id: uuid.UUID | None, **extra: Any) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "date": day.isoformat(),
+        "staff_id": str(staff_id) if staff_id else None,
+        **extra,
+    }
+
+
+@pytest.mark.asyncio
+async def test_pending_diffs_and_unconfirmed_days_are_not_sent(db) -> None:
+    staff = await _staff(db)
+    other = await _staff(db, "別の　人", internal="5555")
+    d_mismatch, d_unknown, d_dup, d_unconfirmed, d_resolved, d_ok = (
+        date(2026, 11, 2),
+        date(2026, 11, 3),
+        date(2026, 11, 4),
+        date(2026, 11, 5),
+        date(2026, 11, 6),
+        date(2026, 11, 7),
+    )
+    for d in (d_mismatch, d_unknown, d_dup, d_unconfirmed, d_resolved):
+        db.add(_override(staff.id, d, "off"))
+    db.add(_override(other.id, d_unconfirmed, "pm_off"))  # 未確認の日は全員
+    db.add(_override(other.id, d_ok, "am_off"))
+    await db.commit()
+    await _compared_with(
+        db,
+        [
+            # #8 らく助は公休・カイポケは午後休 (まだ合わせていない)。
+            _diff("type_mismatch", d_mismatch, staff.id, case=8, action="match_kaipoke_kind"),
+            _diff("unknown_kind", d_unknown, staff.id, action="choose_kind"),
+            _diff("duplicate_leave", d_dup, staff.id),
+            _diff("unconfirmed", d_unconfirmed, None, action="refetch_week"),
+            # 合わせ済みの差分は止めない。
+            _diff(
+                "type_mismatch",
+                d_resolved,
+                staff.id,
+                action="match_kaipoke_kind",
+                resolved={"action": "match_kaipoke_kind"},
+            ),
+        ],
+    )
+    plan = await lo.build_leave_send_plan(db, MONTH)
+    reasons = {(i.staff_name, i.day): i.reason for i in plan.items}
+    assert reasons == {
+        ("送信　花子", d_mismatch): lo.MSG_DIFF_PENDING,
+        ("送信　花子", d_unknown): lo.MSG_DIFF_PENDING,
+        ("送信　花子", d_dup): lo.MSG_DIFF_PENDING,
+        ("送信　花子", d_unconfirmed): lo.MSG_UNCONFIRMED,
+        ("別の　人", d_unconfirmed): lo.MSG_UNCONFIRMED,
+        ("送信　花子", d_resolved): None,
+        ("別の　人", d_ok): None,
+    }
+    assert {(i.staff_name, i.day) for i in plan.sendable_items} == {
+        ("送信　花子", d_resolved),
+        ("別の　人", d_ok),
+    }
+    started = await _start(db)
+    assert sorted(i["date"] for i in started.job.params["items"]) == [  # type: ignore[union-attr]
+        d_resolved.isoformat(),
+        d_ok.isoformat(),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_start_integrity_error_is_409(db, monkeypatch) -> None:
+    """同時に押された別の開始が同じ (職員, 日) の行を先に作った → 409・ジョブは立てない。"""
+    from sqlalchemy.exc import IntegrityError
+
+    staff = await _staff(db)
+    db.add(_override(staff.id, WED, "off"))
+    await db.commit()
+    await _compared(db)
+
+    original_flush = db.flush
+
+    async def collide(*args, **kwargs):
+        if any(isinstance(o, StaffLeaveKaipoke) for o in db.new):
+            raise IntegrityError("INSERT", {}, Exception("UNIQUE constraint failed"))
+        return await original_flush(*args, **kwargs)
+
+    monkeypatch.setattr(db, "flush", collide)
+    with pytest.raises(RpaJobConflictError):
+        await lo.start_leave_outbound(db, month=MONTH, user_id=None)
+    monkeypatch.undo()
+    assert (await db.scalars(select(KaipokeJob))).all() == []
+    assert (await db.scalars(select(StaffLeaveKaipoke))).all() == []
+
+
+@pytest.mark.asyncio
+async def test_deadline_passed_before_week_keeps_unsent(db, monkeypatch) -> None:
+    """ジョブ全体の締め切りを過ぎた週は RPA を呼ばず、未送信のまま failed[] に理由を残す。"""
+    staff = await _staff(db)
+    db.add_all([_override(staff.id, WED, "off"), _override(staff.id, NEXT_WED, "off")])
+    await db.commit()
+    await _compared(db)
+    started = await _start(db)
+    assert started.job is not None
+    job_id, staff_id = started.job.id, staff.id
+    monkeypatch.setattr(lo, "JOB_DEADLINE_MINUTES", 0)
+    rpa = _Rpa()
+    job = await lo.run_leave_outbound(db, rpa, job_id)  # type: ignore[arg-type]
+    assert job is not None and job.status == "completed"
+    assert rpa.applied == []
+    reasons = [f["reason"] for f in job.result_summary["failed"]]
+    assert len(reasons) == 2 and all("締め切り" in r for r in reasons)
+    assert {i["outcome"] for i in job.result_summary["items"]} == {lo.OUTCOME_FAILED}
+    assert (await _record(db, staff_id, WED)).sent_type is None  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_deadline_passes_while_waiting_for_rpa(db, monkeypatch) -> None:
+    """RPA の結果を待っている間に締め切りが来たら、その週は未送信のまま終える (1 週 60 分ではない)。"""
+    staff = await _staff(db)
+    db.add(_override(staff.id, WED, "off"))
+    await db.commit()
+    await _compared(db)
+    started = await _start(db)
+    assert started.job is not None
+    job_id, staff_id = started.job.id, staff.id
+    monkeypatch.setattr(lo, "JOB_DEADLINE_MINUTES", 0.02)  # 1.2 秒
+    monkeypatch.setattr(lo, "APPLY_POLL_SECONDS", 0.05)
+
+    class _Slow(_Rpa):
+        async def individual_tasks_apply_result(self) -> dict[str, Any]:
+            assert self._last is not None
+            return {"status": "running", "job_id": self._last["job_id"]}
+
+    rpa = _Slow()
+    job = await lo.run_leave_outbound(db, rpa, job_id)  # type: ignore[arg-type]
+    assert job is not None and job.status == "completed"
+    assert len(rpa.applied) == 1
+    [failed] = job.result_summary["failed"]
+    assert "締め切り" in failed["reason"]
+    assert (await _record(db, staff_id, WED)).sent_type is None  # type: ignore[union-attr]
+    assert lo.job_deadline(job) == job.started_at.replace(tzinfo=UTC) + timedelta(  # type: ignore[union-attr]
+        minutes=0.02
+    )
