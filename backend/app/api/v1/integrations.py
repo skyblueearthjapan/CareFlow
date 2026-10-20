@@ -72,6 +72,7 @@ from app.schemas.integrations import (
     KaipokeJobRead,
     KaipokeLoginTestResult,
     KaipokeStatusRead,
+    LeaveConflictRead,
     LiveSnapshotRead,
     MasterReconcileGroup,
     MasterReconcileNotation,
@@ -1095,16 +1096,22 @@ async def get_week_schedule(
         ③ visits.primary/secondary_staff_id (レガシー)。staff1 はコース担当を先頭に。
         """
         assigned = list(assignments_by_visit.get(v.id, []))
-        course_staff = course.assigned_staff_id if course else None
+        # 訪問だけ担当を変えた (manual) 訪問は訪問の担当が正。primary が空なら「明示の
+        # 担当なし」= コース担当に読み替えない (休み設計 §3-2)。
+        head = (
+            v.primary_staff_id
+            if v.manual_staff_override
+            else (course.assigned_staff_id if course else None)
+        )
         ordered: list = []
         # コース担当を先頭 (本体スケジュールのコース担当表示と一致させる)。
-        if course_staff is not None:
-            ordered.append(course_staff)
+        if head is not None:
+            ordered.append(head)
         for sid in assigned:
             if sid not in ordered:
                 ordered.append(sid)
-        # 割当もコース担当も無ければレガシー欄にフォールバック。
-        if not ordered:
+        # 割当もコース担当も無ければレガシー欄にフォールバック (明示の担当なしは除く)。
+        if not ordered and not v.manual_staff_override:
             for sid in (v.primary_staff_id, v.secondary_staff_id):
                 if sid is not None and sid not in ordered:
                     ordered.append(sid)
@@ -2711,6 +2718,21 @@ async def trigger_diff_inbound(
     return DiffAccepted(job_id=job.id, sheet_id=sheet.id, summary=dict(summary))
 
 
+def _leave_conflicts_read(conflicts) -> list[LeaveConflictRead]:
+    """LeaveConflict (service) → LeaveConflictRead (schema)。dry-run のみ非空 (休み設計 §4-2)."""
+    return [
+        LeaveConflictRead(
+            staff_id=c.staff_id,
+            staff_name=c.staff_name,
+            target_date=c.visit_date,
+            start_time=c.start_time.strftime("%H:%M"),
+            end_time=c.end_time.strftime("%H:%M"),
+            leave_type=c.leave_type,
+        )
+        for c in conflicts
+    ]
+
+
 def _ng_conflicts_read(conflicts) -> list[NgConflictRead]:
     """NgConflict (service) → NgConflictRead (schema)。dry-run のみ非空。
 
@@ -2885,6 +2907,7 @@ async def trigger_apply_inbound(
         failed=summary.failed,
         results=[InboundItemResultRead(**r.__dict__) for r in summary.results],
         ng_conflicts=_ng_conflicts_read(summary.ng_conflicts),
+        leave_conflicts=_leave_conflicts_read(summary.leave_conflicts),
     )
 
 
@@ -4718,6 +4741,7 @@ async def replace_inbound(
             for name, count in sorted(result.trainee_solo.items())
         ],
         ng_conflicts=_ng_conflicts_read(result.ng_conflicts),
+        leave_conflicts=_leave_conflicts_read(result.leave_conflicts),
     )
 
 
@@ -4756,6 +4780,7 @@ def _replace_result_read(result, job_id) -> ReplaceInboundResult:
             for name, count in sorted(result.trainee_solo.items())
         ],
         ng_conflicts=_ng_conflicts_read(result.ng_conflicts),
+        leave_conflicts=_leave_conflicts_read(result.leave_conflicts),
     )
 
 
@@ -5716,6 +5741,7 @@ async def smart_inbound_apply(
                     for r in summary.results
                 ],
                 ng_conflicts=_ng_conflicts_read(summary.ng_conflicts),
+                leave_conflicts=_leave_conflicts_read(summary.leave_conflicts),
             )
 
     # 差分パートの書込を DB へ送り出してから置換パートへ入る (2026-09-11)。

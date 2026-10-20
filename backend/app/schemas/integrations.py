@@ -371,6 +371,22 @@ class NgConflictRead(BaseModel):
     course_code: str | None = Field(default=None, alias="courseCode")
 
 
+class LeaveConflictRead(BaseModel):
+    """休む人の休みの時間帯に担当が付く訪問 (取込・置換の dry-run のみ・**警告のみ**).
+
+    カイポケが正なので取り込みは止めず、後始末も呼ばない (休み設計 §4-2 H-b)。
+    プレビューで「休みの時間帯に担当が付く訪問 N 件」を出す材料。
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    staff_id: UUID = Field(alias="staffId")
+    staff_name: str = Field(default="", alias="staffName")
+    target_date: date = Field(alias="date")
+    start_time: str = Field(alias="startTime", description="HH:MM")
+    end_time: str = Field(alias="endTime", description="HH:MM")
+    leave_type: str = Field(alias="leaveType", description="off / am_off / pm_off / paid_off")
+
+
 class InboundApplyResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
     job_id: UUID | None = Field(default=None, alias="jobId")
@@ -383,6 +399,8 @@ class InboundApplyResult(BaseModel):
     results: list[InboundItemResultRead] = Field(default_factory=list)
     # dry-run のみ非空 (警告・取込はブロックしない)。追加フィールドのみで後方互換。
     ng_conflicts: list[NgConflictRead] = Field(default_factory=list, alias="ngConflicts")
+    # 休む人の休みの時間帯に担当が付く訪問 (dry-run のみ非空・休み設計 §4-2)。
+    leave_conflicts: list[LeaveConflictRead] = Field(default_factory=list, alias="leaveConflicts")
 
 
 class MasterReconcileRequest(BaseModel):
@@ -749,6 +767,8 @@ class ReplaceInboundResult(BaseModel):
     )
     # dry-run のみ非空 (警告・取込はブロックしない)。追加フィールドのみで後方互換。
     ng_conflicts: list[NgConflictRead] = Field(default_factory=list, alias="ngConflicts")
+    # 休む人の休みの時間帯に担当が付く訪問 (dry-run のみ非空・休み設計 §4-2)。
+    leave_conflicts: list[LeaveConflictRead] = Field(default_factory=list, alias="leaveConflicts")
 
 
 # --- smart-inbound (日単位ハイブリッド自動判別・2026-07-26 PO確定) ------------
