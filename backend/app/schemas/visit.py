@@ -146,6 +146,9 @@ class VisitRead(VisitBase):
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None
+    # 訪問だけ担当を変えた印。primary_staff_id が空でこれが真なら「明示の担当なし」
+    # (コース担当に読み替えない・設計 §3-2)。
+    manual_staff_override: bool = False
     # Denormalized display names — populated by selectinload() in the router.
     # Frontend (`schedule/page.tsx`) renders these directly without a join.
     patient_name: str | None = None

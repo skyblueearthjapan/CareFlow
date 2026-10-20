@@ -151,7 +151,12 @@ def _visit_dict(v: Visit, course: Course | None, office_label: str | None, pname
         # 表示の正典はコースの担当 (週を生成した直後は主担当が空でコースにだけ担当がいる)
         "course_staff_id": _s(course.assigned_staff_id) if course else None,
         "effective_staff_id": _s(
-            v.primary_staff_id or (course.assigned_staff_id if course else None)
+            v.primary_staff_id
+            or (
+                course.assigned_staff_id
+                if course is not None and not v.manual_staff_override
+                else None
+            )
         ),
         "kaipoke_id": v.kaipoke_id,
     }
@@ -820,7 +825,10 @@ async def staff_week(
     second_cnt: dict[tuple[UUID, date], int] = defaultdict(int)
     for v in visits:
         c = courses.get(v.course_id) if v.course_id else None
-        eff = v.primary_staff_id or (c.assigned_staff_id if c else None)
+        # 明示の担当なし (primary 空・manual 真) はコース担当に読み替えない (設計 §3-2)。
+        eff = v.primary_staff_id or (
+            c.assigned_staff_id if c is not None and not v.manual_staff_override else None
+        )
         if eff is not None:
             k = (eff, v.visit_date)
             primary_cnt[k] += 1

@@ -348,8 +348,9 @@ function applyStaffSwapDragImage(dt: DataTransfer, name: string, office?: string
 
 /**
  * 訪問の行帰属。StaffWeekBoard の cellMap と**同じ規則**:
- * 訪問自身の primary を最優先 → コース担当 → 「（担当なし）」。
- * (臨時テンプレは複数スタッフの臨N コースを束ねるため primary が正)
+ * 訪問自身の primary を最優先 → （manual でなければ）コース担当 → 「（担当なし）」。
+ * (臨時テンプレは複数スタッフの臨N コースを束ねるため primary が正。
+ *  primary 空＋manual 真は「明示の担当なし」= コース担当に読み替えない・休み設計 §3-2)
  */
 export function resolveVisitRowKey(
   visit: TimelineVisit,
@@ -357,7 +358,9 @@ export function resolveVisitRowKey(
 ): string {
   return (
     visit.primary_staff_id ??
-    assignedStaffByTemplateWeekday?.get(`${visit.course_template_id}:${visit.weekday}`) ??
+    (visit.manual_staff_override
+      ? undefined
+      : assignedStaffByTemplateWeekday?.get(`${visit.course_template_id}:${visit.weekday}`)) ??
     UNASSIGNED_ROW_KEY
   );
 }

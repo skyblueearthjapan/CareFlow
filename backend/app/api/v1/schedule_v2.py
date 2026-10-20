@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.deps import DbDep, require_role
+from app.core.leave import visit_hits_leave
 from app.models.audit_log import AuditLog
 from app.models.course import Course
 from app.models.course_template import CourseTemplate
@@ -211,6 +212,7 @@ from app.services.geocoding.client import (
     GeocodingServiceError,
     geocode_address,
 )
+from app.services.leave_calendar import leave_type_on
 from app.services.office_assigner import OfficeAssigner
 from app.services.op_log_service import (
     check_cancel_visit_allowed,
@@ -1727,6 +1729,14 @@ async def visit_assign_staff_week(
         _cw = await collect_constraint_warnings_for_staff(
             db, staff_id=staff.id, patient_ids=[visit.patient_id]
         )
+        # 休みの相手への付け替えは止める (終日休み・半休でこの訪問が休みの時間帯にかかる・
+        # 休み設計 §3-2 中2)。
+        _target_leave = await leave_type_on(db, staff.id, visit.visit_date)
+        if visit_hits_leave(_target_leave, visit.start_time, visit.end_time):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{staff.name}さんはこの時間は休みです",
+            )
         if _cw and not payload.acknowledge_constraint_warnings:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1735,6 +1745,20 @@ async def visit_assign_staff_week(
 
     old_manual = bool(visit.manual_staff_override)
     new_manual = payload.staff_id is not None
+    if payload.staff_id is None and visit.course_id is not None:
+        # 担当を外すとき、コース担当がこの訪問の時間に休みなら manual を真のまま
+        # (偽にするとコース担当＝休む人に読み替えられる・休み設計 §3-2 中2)。
+        _course_staff = await db.scalar(
+            select(Course.assigned_staff_id).where(
+                Course.id == visit.course_id, Course.deleted_at.is_(None)
+            )
+        )
+        if _course_staff is not None and visit_hits_leave(
+            await leave_type_on(db, _course_staff, visit.visit_date),
+            visit.start_time,
+            visit.end_time,
+        ):
+            new_manual = True
 
     try:
         visit.primary_staff_id = payload.staff_id
@@ -1938,6 +1962,9 @@ async def staff_off_week(
         """primary の枠を本人が握っているか (盤面の行決定と同じ規則)."""
         if visit.primary_staff_id is not None:
             return visit.primary_staff_id == payload.staff_id
+        # 明示の担当なし (primary 空・manual 真) は本人のものではない (設計 §3-2)。
+        if visit.manual_staff_override:
+            return False
         return course is not None and course.assigned_staff_id == payload.staff_id
 
     target_visits: list[tuple[Visit, bool]] = []  # (visit, primary を書くか)

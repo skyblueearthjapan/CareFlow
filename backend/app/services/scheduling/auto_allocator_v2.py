@@ -8149,7 +8149,10 @@ async def run_v2_pipeline(
                 ).all()
                 for _sv in _staff_rows:
                     _sc = _course_by_id.get(_sv.course_id) if _sv.course_id else None
-                    _main = _sv.primary_staff_id or (_sc.assigned_staff_id if _sc else None)
+                    # 明示の担当なし (primary 空・manual 真) はコース担当に読み替えない。
+                    _main = _sv.primary_staff_id or (
+                        _sc.assigned_staff_id if _sc and not _sv.manual_staff_override else None
+                    )
                     for _sid in {_main, _sv.secondary_staff_id}:
                         if _sid is not None:
                             _staff_busy[(_sid, _sv.visit_date.weekday())].append(

@@ -25,7 +25,7 @@ from uuid import UUID
 from sqlalchemy import ColumnElement, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.leave import FULL_DAY_OFF, HALF_DAY_OFF
+from app.core.leave import FULL_DAY_OFF, HALF_DAY_OFF, LEAVE_TYPES
 from app.models.leave import OfficeClosedDay
 from app.models.staff import StaffShift, StaffWeeklyOverride
 from app.services.scheduling.jp_holidays import holidays_between
@@ -174,6 +174,20 @@ async def load_overrides_between(
     return out
 
 
+async def leave_type_on(db: AsyncSession, staff_id: UUID, day: date) -> str | None:
+    """その日のその職員の休みの種類 (``LEAVE_TYPES``)。休みでなければ None (時間変更も None)."""
+    y, w, wd = iso_key(day)
+    value = await db.scalar(
+        select(StaffWeeklyOverride.override_type).where(
+            StaffWeeklyOverride.staff_id == staff_id,
+            StaffWeeklyOverride.iso_year == y,
+            StaffWeeklyOverride.iso_week == w,
+            StaffWeeklyOverride.weekday == wd,
+        )
+    )
+    return value if value in LEAVE_TYPES else None
+
+
 async def load_working_weekdays(
     db: AsyncSession, staff_ids: Iterable[UUID]
 ) -> dict[UUID, set[int]]:
@@ -213,6 +227,7 @@ __all__ = [
     "date_of",
     "day_holiday_value",
     "iso_key",
+    "leave_type_on",
     "load_closed_days",
     "load_overrides_between",
     "load_working_weekdays",

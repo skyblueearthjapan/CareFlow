@@ -1608,6 +1608,9 @@ export function CourseDayTablePanel({
         // スタッフ別ビューの帰属用 (2026-07-26: 臨時テンプレ合算の誤帰属を防ぐため
         // コース担当ではなく訪問の primary で行を決める)。
         primary_staff_id: (v as { primary_staff_id?: string | null }).primary_staff_id ?? null,
+        // 明示の担当なし (primary 空＋manual 真) を盤面で「（担当なし）」にする (休み設計 §3-2)。
+        manual_staff_override:
+          (v as { manual_staff_override?: boolean | null }).manual_staff_override === true,
       });
     }
     return out;

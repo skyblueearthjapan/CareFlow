@@ -1755,8 +1755,11 @@ async def apply_inbound_items(
             (date_changed and visit.course_id is not None) or promote_unplanned
         ):
             cur_course = course_idx.by_id.get(visit.course_id)
+            # 明示の担当なし (primary 空・manual 真) はコース担当を引き継がない (設計 §3-2)。
             follow_staff = visit.primary_staff_id or (
-                cur_course.assigned_staff_id if cur_course is not None else None
+                cur_course.assigned_staff_id
+                if cur_course is not None and not visit.manual_staff_override
+                else None
             )
             office_id = patient_office.get(item.patient_id)
             cur_code = cur_course.code if cur_course is not None else "−"

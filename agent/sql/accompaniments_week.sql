@@ -10,7 +10,7 @@ with links as (
   union all
   select a.id, a.accompanying_staff_id, a.kind, a.source, a.target_type,
          (v.visit_date - :'monday'::date), cc.code, coalesce(cc.office_id, p.primary_office_id),
-         coalesce(v.primary_staff_id, cc.assigned_staff_id), 1
+         coalesce(v.primary_staff_id, case when not v.manual_staff_override then cc.assigned_staff_id end), 1
   from accompaniments a join visits v on v.id = a.visit_id
   join patients p on p.id = v.patient_id
   left join courses cc on cc.id = v.course_id

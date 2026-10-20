@@ -362,9 +362,12 @@ export function StaffWeekBoard({
     for (const v of visits) {
       // 行の帰属は訪問自身の primary を最優先 (2026-07-26)。コース担当経由だと
       // 臨時テンプレ (臨・臨2… を束ねる) で他スタッフの訪問が混ざるため。
+      // 明示の担当なし (primary 空＋manual 真) はコース担当に読み替えない (休み設計 §3-2)。
       const staffId =
         v.primary_staff_id ??
-        assignedStaffByTemplateWeekday.get(`${v.course_template_id}:${v.weekday}`) ??
+        (v.manual_staff_override
+          ? undefined
+          : assignedStaffByTemplateWeekday.get(`${v.course_template_id}:${v.weekday}`)) ??
         UNASSIGNED_KEY;
       rows.add(staffId);
       const cellKey = `${staffId}:${v.weekday}`;

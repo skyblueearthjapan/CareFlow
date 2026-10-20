@@ -641,7 +641,10 @@ async def load_week_items(
         pos = (float(p.lat), float(p.lng)) if p.lat is not None and p.lng is not None else None
         pname = (p.name or "").replace("　", " ").strip()
         # 訪問自身の担当が正 (手動変更 manual_staff_override 込み)。無い時だけコース担当。
-        primary_sid = v.primary_staff_id or (c.assigned_staff_id if c is not None else None)
+        # 明示の担当なし (primary 空・manual 真) はコース担当に読み替えない (設計 §3-2)。
+        primary_sid = v.primary_staff_id or (
+            c.assigned_staff_id if c is not None and not v.manual_staff_override else None
+        )
         primary_key = str(primary_sid) if primary_sid and str(primary_sid) in staff_names else None
         who: dict[str, str] = {}
         who[primary_key or UNASSIGNED_STAFF_KEY] = ROLE_PRIMARY

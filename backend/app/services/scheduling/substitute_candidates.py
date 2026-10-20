@@ -234,10 +234,13 @@ _DayRow = tuple[Visit, "Course | None", Patient]
 
 
 def _owner_of(visit: Visit, course: Course | None) -> UUID | None:
-    """盤面 (StaffWeekBoard) の行決定と同じ規則: primary_staff_id 優先 → コース担当."""
+    """盤面 (StaffWeekBoard) の行決定と同じ規則: primary_staff_id 優先 → コース担当.
+
+    明示の担当なし (primary 空・manual 真) はコース担当に読み替えず None (設計 §3-2)。
+    """
     if visit.primary_staff_id is not None:
         return visit.primary_staff_id
-    if course is not None:
+    if course is not None and not visit.manual_staff_override:
         return course.assigned_staff_id
     return None
 
