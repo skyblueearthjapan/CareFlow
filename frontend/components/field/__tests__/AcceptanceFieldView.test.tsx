@@ -1,97 +1,47 @@
 /**
- * AcceptanceFieldView — モバイル受け入れ枠マトリックス (現場ボード /m) の描画テスト。
+ * AcceptanceFieldView — スマホの受け入れ枠 (見るだけ・設計書 §5-2)。
  *
- * カバー:
- *   1. 拠点名とマトリックスの ○ / △ 記号が表示される
- *   2. 定休日 (office_closed) の曜日列は「休」表示
+ * 既定の条件 (職員だけ・直近 4 週・休みは実際のとおり) の結果を出す。
+ * 週の送り・チップ・取り直しは無い。マスを押すと内訳を下に開く。
  */
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 
-import type { AcceptanceMatrixResponse } from '@/lib/schemas/v2/acceptance_matrix';
+import { makePayload } from '@/lib/__tests__/fixtures/acceptanceStrictPayload';
 
-const MOCK: AcceptanceMatrixResponse = {
-  iso_year: 2026,
-  iso_week: 20,
-  service_minutes: 60,
-  slots: ['10:00:00', '11:00:00'],
-  week_generated_any: true,
-  offices: [
-    {
-      office_id: '00000000-0000-0000-0000-000000000001',
-      office_name: '稲毛拠点',
-      city_names: ['稲毛区'],
-      operating_weekdays: [0, 1, 2, 3, 4, 5],
-      week_generated: true,
-      days: [
-        {
-          weekday: 0,
-          date: '2026-05-11',
-          office_closed: false,
-          cells: [
-            {
-              time_slot: '10:00:00',
-              auto_status: 'available',
-              manual_status: null,
-              week_status: null,
-              effective_status: 'available',
-              source: 'auto',
-              note: null,
-              metrics: {
-                remaining_patients_total: 5,
-                remaining_minutes_total: 420,
-                available_course_count: 3,
-                consult_course_count: 0,
-                max_free_gap_minutes: 90,
-                reasons: ['60分枠あり'],
-              },
-            },
-            {
-              time_slot: '11:00:00',
-              auto_status: 'consult',
-              manual_status: null,
-              week_status: null,
-              effective_status: 'consult',
-              source: 'auto',
-              note: null,
-              metrics: {
-                remaining_patients_total: 3,
-                remaining_minutes_total: 60,
-                available_course_count: 0,
-                consult_course_count: 1,
-                max_free_gap_minutes: 30,
-                reasons: ['部分空きのみ(相談)'],
-              },
-            },
-          ],
-        },
-        { weekday: 6, date: '2026-05-17', office_closed: true, cells: [] },
-      ],
-    },
-  ],
-};
-
-vi.mock('@/lib/queries/acceptance_matrix', () => ({
-  useAcceptanceMatrix: () => ({ data: MOCK, isLoading: false, isError: false }),
+vi.mock('@/lib/queries/acceptance_strict', () => ({
+  useStrictAcceptance: () => ({ data: makePayload(), isLoading: false, isError: false }),
+}));
+vi.mock('@/lib/queries/offices', () => ({
+  useOffices: () => ({ allOffices: [{ id: 'office-1', name: '稲毛拠点' }] }),
+}));
+vi.mock('@/components/mobile/MobileSurfaceSwitcher', () => ({
+  MobileSurfaceSwitcher: () => null,
 }));
 
 import { AcceptanceFieldView } from '../AcceptanceFieldView';
 
 describe('AcceptanceFieldView', () => {
-  it('拠点名とマトリックスの ○ / △ 記号を表示する', () => {
+  it('既定の条件の ○ × と、短い決まりの文章・取った日時を出す', () => {
     render(<AcceptanceFieldView />);
-    expect(screen.getByText('稲毛拠点')).toBeInTheDocument();
-    // 月曜の 10:00=○, 11:00=△ がマトリックスに出る (× は他の曜日列に多数)。
-    expect(screen.getAllByText('○').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('△').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('×').length).toBeGreaterThanOrEqual(1);
-    // ○セルに空きコース数 (=3) が併記される。
-    expect(screen.getAllByText('3').length).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getByText(
+        /直近 4 週のカイポケの記録で、4 週すべてに空きのある人がいた時間 = ○、3 週 = △/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/カイポケから取った日時: 10\/20 9:12/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^火曜 9時台 ○/ })).toBeInTheDocument();
+    // 職員だけ (マネージャーは入れない) → 火曜 15 時台は ×。
+    expect(screen.getByRole('button', { name: /^火曜 15時台 ×/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '前の週' })).not.toBeInTheDocument();
+    expect(screen.queryByText('カイポケから取り直す')).not.toBeInTheDocument();
   });
 
-  it('定休日 (日曜) の列は「休」表示', () => {
+  it('マスを押すと内訳を下に開く', () => {
     render(<AcceptanceFieldView />);
-    // 日曜 (closed) の 2 時間帯セル = 「休」2 つ。
-    expect(screen.getAllByText('休')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: /^月曜 9時台/ }));
+    const panel = screen.getByLabelText('マスの内訳');
+    expect(panel).toHaveTextContent('入れる人: 職員A');
+    expect(panel).toHaveTextContent('祝日（スポーツの日）のため数えていません');
   });
 });

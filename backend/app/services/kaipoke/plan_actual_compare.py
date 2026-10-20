@@ -194,7 +194,7 @@ def _norm_name(s: str) -> str:
     return (s or "").replace("　", " ").strip()
 
 
-def _norm_time(s: str) -> str:
+def norm_time(s: str) -> str:
     """時刻を ``HH:MM`` に揃える (実績CSVは前ゼロが落ちる・2026-09-01 実測)。
 
     ``9:50`` → ``09:50`` / ``9:5`` → ``09:05`` / ``9:50:00`` → ``09:50``。
@@ -211,7 +211,7 @@ def _norm_time(s: str) -> str:
 
 #: 「担当なし」を表すカイポケ側の表記。CSV では空欄のほか ``-`` / ``－`` が来る
 #: (担当なし行・2026-09-03 の送信事故で実在を確認)。照合でも集計でも 1 つに寄せる。
-_NO_STAFF_TOKENS: frozenset[str] = frozenset({"", "-", "－", "ー", "―"})
+NO_STAFF_TOKENS: frozenset[str] = frozenset({"", "-", "－", "ー", "―"})
 
 #: 担当なしの照合キー (実在の氏名と衝突しない値)。
 _NO_STAFF_KEY = "\x00none"
@@ -219,7 +219,7 @@ _NO_STAFF_KEY = "\x00none"
 
 def _staff_key(name: str) -> str:
     """担当名 → 照合キー。担当なし表記はすべて同じキーに寄せる。"""
-    if (name or "").strip() in _NO_STAFF_TOKENS:
+    if (name or "").strip() in NO_STAFF_TOKENS:
         return _NO_STAFF_KEY
     return normalize_name_key(name)
 
@@ -227,7 +227,7 @@ def _staff_key(name: str) -> str:
 def _staff_label(name: str) -> str:
     """担当名 → 表示・集計用の名前。担当なし表記はすべて ``NO_STAFF``。"""
     cleaned = (name or "").strip()
-    return NO_STAFF if cleaned in _NO_STAFF_TOKENS else cleaned
+    return NO_STAFF if cleaned in NO_STAFF_TOKENS else cleaned
 
 
 def _service_matches(a: str, b: str) -> bool:
@@ -403,8 +403,8 @@ def parse_rows_with_stats(csv_text: str) -> tuple[list[PARow], int]:
                 patient=_norm_name(r[cols["patient"]]),
                 staff1=_norm_name(r[cols["staff1"]]),
                 staff2=_norm_name(r[cols["staff2"]]),
-                start=_norm_time(r[cols["start"]]),
-                end=_norm_time(r[cols["end"]]),
+                start=norm_time(r[cols["start"]]),
+                end=norm_time(r[cols["end"]]),
                 service=(r[cols["service"]] or "").strip(),
                 business=(r[cols["business"]] or "").strip(),
                 job1=_cell(r, "job1").strip(),

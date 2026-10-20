@@ -1,6 +1,10 @@
 """受け入れ枠マトリックス (acceptance matrix) endpoints — P1 / P4 / P5.
 
 GET    /api/v1/acceptance-matrix                    — 拠点×曜日×時間帯 ○△× 自動算出 (read-only)
+GET    /api/v1/acceptance-matrix/strict             — 数週続けて空いているか (職員×日×時台・read-only)
+POST   /api/v1/acceptance-matrix/strict/refresh     — カイポケの材料を取り直す (admin・202)
+GET    /api/v1/acceptance-matrix/strict/refresh/latest   — 動いている取り直しのジョブ
+GET    /api/v1/acceptance-matrix/strict/refresh/{job_id} — 取り直しの進み具合
 PUT    /api/v1/acceptance-matrix/week-override      — 週別手動上書き 1 セルを upsert (admin/manager)
 DELETE /api/v1/acceptance-matrix/week-override      — 週別手動上書き 1 セルを解除 (admin/manager)
 PUT    /api/v1/acceptance-matrix/standing-override  — 常設(毎週)上書き 1 セルを upsert (admin/manager)
@@ -12,34 +16,154 @@ DELETE /api/v1/acceptance-matrix/standing-override  — 常設(毎週)上書き 
 ``office_id`` 省略で全拠点一括も可。コメントは notes で保存する。
 
 ロジック本体は ``app.services.scheduling.acceptance_matrix_service``。
+``/strict`` (設計書 ``docs/plans/acceptance-strict-design-2026-10-20.md`` §4) の本体は
+``acceptance_strict`` (判定)・``acceptance_strict_data`` (材料)・``acceptance_strict_refresh``
+(取り直しの範囲。仕組みは段階 0 の ``services/kaipoke/sources.py``)。
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import time
-from typing import Annotated
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.deps import DbDep, require_role
 from app.models.acceptance_calendar import AcceptanceCalendar
 from app.models.acceptance_calendar_week import AcceptanceCalendarWeek
+from app.models.kaipoke_job import KaipokeJob
 from app.models.office import Office
-from app.models.user import User
+from app.models.user import User, normalize_user_role
 from app.schemas.v2.acceptance_matrix import (
     AcceptanceMatrixResponse,
     StandingOverrideUpsert,
     WeekOverrideRead,
     WeekOverrideUpsert,
 )
+from app.services.kaipoke.sources import OP_ACCEPTANCE_REFRESH, RpaJobConflictError
+from app.services.kaipoke_client import KaipokeClient, get_kaipoke_client
 from app.services.scheduling.acceptance_matrix_service import compute_acceptance_matrix
+from app.services.scheduling.acceptance_strict_data import (
+    OfficeNotFoundError,
+    build_strict_payload,
+    job_view,
+    jst_today,
+    latest_refresh_job,
+    round_for_staff,
+)
+from app.services.scheduling.acceptance_strict_refresh import run_refresh_job, start_refresh
 
 router = APIRouter()
+
+
+def _kaipoke_dep() -> KaipokeClient:
+    """RPA のクライアント (試験は ``kaipoke_client.set_test_client`` で差し替える)。"""
+    return get_kaipoke_client()
+
+
+# ---------------------------------------------------------------------------
+# 数週続けて空いているか (strict) — 設計書 acceptance-strict-design-2026-10-20.md §4
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/strict",
+    summary="受け入れ枠: 職員×日×時台の「入れる」(直近 8 週・休みの扱いの両方・read-only)",
+)
+async def get_strict_acceptance(
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin", "staff"))],
+    office_id: Annotated[
+        UUID, Query(description="拠点 ID (担い手の候補を絞る。訪問の行は絞らない)")
+    ],
+    plan_only: Annotated[
+        bool,
+        Query(description="開発用: すべての日をカイポケの予定で見る (本番では使えない)"),
+    ] = False,
+) -> dict[str, Any]:
+    """担い手・見る週・休みの扱いは画面が集計する。DB に書かない。
+
+    職員の権限の応答では休みの理由を「休み」「半休」に丸める。
+    """
+    if plan_only and get_settings().is_production:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="plan_only は開発用です")
+    try:
+        payload = await build_strict_payload(db, office_id, plan_only=plan_only)
+    except OfficeNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="office not found"
+        ) from exc
+    if normalize_user_role(user.role) != "admin":
+        return round_for_staff(payload)
+    return payload
+
+
+class StrictRefreshRequest(BaseModel):
+    """取り直しの範囲。``recent`` = ふだん (日で決めた部分)、``all`` = 8 週ぶんすべて。"""
+
+    scope: Literal["recent", "all"] = "recent"
+
+
+@router.post(
+    "/strict/refresh",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="受け入れ枠: カイポケの材料を取り直す (admin・ジョブを立ててすぐ返す)",
+)
+async def refresh_strict_sources(
+    payload: StrictRefreshRequest,
+    background: BackgroundTasks,
+    db: DbDep,
+    user: Annotated[User, Depends(require_role("admin"))],
+    kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
+) -> dict[str, Any]:
+    """取る月・週を決め、段階 0 の仕組みでジョブを立てる。RPA を使う他のジョブがあれば 409。
+
+    実体は応答の後に自前のセッションで走る (``BackgroundTasks``・予実比較と同じ理由)。
+    """
+    try:
+        job, targets = await start_refresh(
+            db, scope=payload.scope, today=jst_today(), user_id=user.id
+        )
+    except RpaJobConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    background.add_task(run_refresh_job, job_id=job.id, targets=targets, client=kaipoke)
+    return {"job_id": str(job.id), "status": job.status, "total": len(targets)}
+
+
+# ⚠ 登録の順: ``/strict/refresh/latest`` は ``/strict/refresh/{job_id}`` より先
+# (後にすると "latest" が job_id として読まれ、UUID でないため 422 になる)。
+@router.get(
+    "/strict/refresh/latest",
+    summary="受け入れ枠: 動いている取り直しのジョブ (無ければ直近の 1 本)",
+)
+async def latest_strict_refresh(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "staff"))],
+) -> dict[str, Any]:
+    job = await latest_refresh_job(db, active_only=True) or await latest_refresh_job(db)
+    return {"job": job_view(job) if job else None}
+
+
+@router.get(
+    "/strict/refresh/{job_id}",
+    summary="受け入れ枠: 取り直しの進み具合",
+)
+async def get_strict_refresh(
+    job_id: UUID,
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin", "staff"))],
+) -> dict[str, Any]:
+    job = await db.get(KaipokeJob, job_id, populate_existing=True)
+    if job is None or (job.params or {}).get("op") != OP_ACCEPTANCE_REFRESH:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
+    return job_view(job)
 
 
 @router.get(

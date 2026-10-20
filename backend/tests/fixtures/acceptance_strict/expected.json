@@ -1,0 +1,6008 @@
+{
+ "staff4_4w": {
+  "staff": [
+   "A",
+   "B",
+   "C",
+   "D"
+  ],
+  "weeks": [
+   40,
+   41,
+   42,
+   43
+  ],
+  "off": "real",
+  "cells": {
+   "0-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "0-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "0-12": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "0-13": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     1,
+     1,
+     0
+    ]
+   },
+   "0-14": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "0-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-10": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "2-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-10": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     3,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-12": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     2,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-13": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     2,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-14": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     3,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-10": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-13": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     2,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-14": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   }
+  }
+ },
+ "staff4_4w_nooff": {
+  "staff": [
+   "A",
+   "B",
+   "C",
+   "D"
+  ],
+  "weeks": [
+   40,
+   41,
+   42,
+   43
+  ],
+  "off": "ignore",
+  "cells": {
+   "0-9": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     1,
+     1,
+     0
+    ]
+   },
+   "0-10": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "0-11": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     1,
+     1,
+     0
+    ]
+   },
+   "0-12": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     1,
+     1,
+     0
+    ]
+   },
+   "0-13": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     1,
+     2,
+     0
+    ]
+   },
+   "0-14": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     2,
+     0
+    ]
+   },
+   "0-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "0-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "0-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-9": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     1,
+     0
+    ]
+   },
+   "1-10": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     1,
+     0
+    ]
+   },
+   "1-11": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     1,
+     0
+    ]
+   },
+   "1-12": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     1,
+     0
+    ]
+   },
+   "1-13": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     2,
+     1,
+     0
+    ]
+   },
+   "1-14": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     2,
+     1,
+     0
+    ]
+   },
+   "1-15": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     2,
+     1,
+     0
+    ]
+   },
+   "1-16": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     2,
+     1,
+     0
+    ]
+   },
+   "1-17": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     1,
+     0,
+     0
+    ]
+   },
+   "2-9": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     0,
+     1
+    ]
+   },
+   "2-10": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     2,
+     0,
+     1
+    ]
+   },
+   "2-11": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     1,
+     0,
+     0
+    ]
+   },
+   "2-12": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     1,
+     0,
+     0
+    ]
+   },
+   "2-13": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     0,
+     1
+    ]
+   },
+   "2-14": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     0,
+     1
+    ]
+   },
+   "2-15": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     0,
+     1
+    ]
+   },
+   "2-16": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     0,
+     1
+    ]
+   },
+   "2-17": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "3-10": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     1,
+     0
+    ]
+   },
+   "3-11": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     3,
+     0,
+     1,
+     0
+    ]
+   },
+   "3-12": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     2,
+     0,
+     1,
+     0
+    ]
+   },
+   "3-13": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     2,
+     0,
+     1,
+     0
+    ]
+   },
+   "3-14": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     3,
+     0,
+     1,
+     1
+    ]
+   },
+   "3-15": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     1,
+     1
+    ]
+   },
+   "3-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "3-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-9": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     1,
+     1
+    ]
+   },
+   "4-10": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     1,
+     1
+    ]
+   },
+   "4-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "4-12": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "4-13": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     2,
+     0,
+     1,
+     1
+    ]
+   },
+   "4-14": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     0,
+     1
+    ]
+   },
+   "4-15": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     0,
+     1
+    ]
+   },
+   "4-16": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     0,
+     1
+    ]
+   },
+   "4-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-9": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     3,
+     3,
+     2,
+     3
+    ]
+   },
+   "5-10": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     3,
+     3,
+     2,
+     3
+    ]
+   },
+   "5-11": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     3,
+     3,
+     2,
+     3
+    ]
+   },
+   "5-12": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     3,
+     3,
+     2,
+     3
+    ]
+   },
+   "5-13": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     3,
+     3,
+     2,
+     3
+    ]
+   },
+   "5-14": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     3,
+     3,
+     2,
+     3
+    ]
+   },
+   "5-15": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     3,
+     3,
+     3,
+     3
+    ]
+   },
+   "5-16": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     3,
+     3,
+     3,
+     3
+    ]
+   },
+   "5-17": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     2,
+     1,
+     2,
+     2
+    ]
+   }
+  }
+ },
+ "staff4_E_4w": {
+  "staff": [
+   "A",
+   "B",
+   "C",
+   "D",
+   "E"
+  ],
+  "weeks": [
+   40,
+   41,
+   42,
+   43
+  ],
+  "off": "real",
+  "cells": {
+   "0-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "0-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "0-12": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "0-13": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     1,
+     1,
+     0
+    ]
+   },
+   "0-14": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "0-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "1-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-10": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "2-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-10": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     4,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-12": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     3,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-13": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     3,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-14": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     3,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-10": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-13": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     2,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-14": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   }
+  }
+ },
+ "staff4_F_4w": {
+  "staff": [
+   "A",
+   "B",
+   "C",
+   "D",
+   "F"
+  ],
+  "weeks": [
+   40,
+   41,
+   42,
+   43
+  ],
+  "off": "real",
+  "cells": {
+   "0-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     2,
+     0,
+     0
+    ]
+   },
+   "0-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "0-12": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "0-13": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     0,
+     1,
+     1,
+     1
+    ]
+   },
+   "0-14": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     1,
+     1
+    ]
+   },
+   "0-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-10": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     1,
+     0,
+     0
+    ]
+   },
+   "2-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "3-10": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     1,
+     0
+    ]
+   },
+   "3-11": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     3,
+     1,
+     1,
+     0
+    ]
+   },
+   "3-12": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     2,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-13": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     2,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-14": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     3,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-9": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-10": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     2,
+     0
+    ]
+   },
+   "4-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-12": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-13": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     3,
+     0,
+     2,
+     0
+    ]
+   },
+   "4-14": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     2,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   }
+  }
+ },
+ "staff_managers_4w": {
+  "staff": [
+   "A",
+   "B",
+   "C",
+   "D",
+   "E",
+   "F"
+  ],
+  "weeks": [
+   40,
+   41,
+   42,
+   43
+  ],
+  "off": "real",
+  "cells": {
+   "0-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     2,
+     0,
+     0
+    ]
+   },
+   "0-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "0-12": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "0-13": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     0,
+     1,
+     1,
+     1
+    ]
+   },
+   "0-14": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     1,
+     1
+    ]
+   },
+   "0-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "1-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-10": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     1,
+     0,
+     0
+    ]
+   },
+   "2-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "3-10": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     1,
+     0
+    ]
+   },
+   "3-11": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     4,
+     1,
+     1,
+     0
+    ]
+   },
+   "3-12": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     3,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-13": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     3,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-14": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     3,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-9": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-10": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     2,
+     0
+    ]
+   },
+   "4-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-12": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-13": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     3,
+     0,
+     2,
+     0
+    ]
+   },
+   "4-14": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     2,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   }
+  }
+ },
+ "staff_trainee_4w": {
+  "staff": [
+   "A",
+   "B",
+   "C",
+   "D",
+   "G"
+  ],
+  "weeks": [
+   40,
+   41,
+   42,
+   43
+  ],
+  "off": "real",
+  "cells": {
+   "0-9": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     1,
+     0,
+     1
+    ]
+   },
+   "0-10": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "0-11": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     1,
+     0,
+     1
+    ]
+   },
+   "0-12": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     1,
+     0,
+     1
+    ]
+   },
+   "0-13": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     0,
+     1,
+     1,
+     1
+    ]
+   },
+   "0-14": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     1,
+     1
+    ]
+   },
+   "0-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "0-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "0-17": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "1-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "1-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "1-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-13": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "1-14": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "1-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "2-10": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "2-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-17": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-10": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     2,
+     0,
+     0
+    ]
+   },
+   "3-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     3,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-12": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     2,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-13": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     2,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-14": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     3,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-10": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-13": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     3,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-14": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-17": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   }
+  }
+ },
+ "all_4w": {
+  "staff": [
+   "A",
+   "B",
+   "C",
+   "D",
+   "E",
+   "F",
+   "G"
+  ],
+  "weeks": [
+   40,
+   41,
+   42,
+   43
+  ],
+  "off": "real",
+  "cells": {
+   "0-9": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     2,
+     0,
+     1
+    ]
+   },
+   "0-10": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "0-11": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     1,
+     0,
+     1
+    ]
+   },
+   "0-12": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     1,
+     0,
+     1
+    ]
+   },
+   "0-13": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     0,
+     1,
+     1,
+     2
+    ]
+   },
+   "0-14": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     1,
+     2
+    ]
+   },
+   "0-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "0-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "0-17": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "1-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "1-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     2,
+     0,
+     0
+    ]
+   },
+   "1-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-13": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "1-14": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "1-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "2-10": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     1,
+     0,
+     0
+    ]
+   },
+   "2-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-15": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-16": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-17": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-9": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "3-10": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     2,
+     1,
+     0
+    ]
+   },
+   "3-11": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     4,
+     1,
+     1,
+     0
+    ]
+   },
+   "3-12": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     3,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-13": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     3,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-14": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     3,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-9": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-10": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     2,
+     0
+    ]
+   },
+   "4-11": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-12": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-13": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     4,
+     0,
+     2,
+     0
+    ]
+   },
+   "4-14": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     2,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-17": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-9": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-10": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-11": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-12": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-13": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-14": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-15": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-16": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-17": {
+    "n_weeks": 4,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0
+    ]
+   }
+  }
+ },
+ "all_4w_nooff": {
+  "staff": [
+   "A",
+   "B",
+   "C",
+   "D",
+   "E",
+   "F",
+   "G"
+  ],
+  "weeks": [
+   40,
+   41,
+   42,
+   43
+  ],
+  "off": "ignore",
+  "cells": {
+   "0-9": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     2,
+     3,
+     1,
+     1
+    ]
+   },
+   "0-10": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     2,
+     1,
+     1,
+     1
+    ]
+   },
+   "0-11": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     2,
+     2,
+     2,
+     1
+    ]
+   },
+   "0-12": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     2,
+     2,
+     2,
+     1
+    ]
+   },
+   "0-13": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     2,
+     2,
+     3,
+     2
+    ]
+   },
+   "0-14": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     2,
+     1,
+     2,
+     2
+    ]
+   },
+   "0-15": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     2,
+     1,
+     1,
+     1
+    ]
+   },
+   "0-16": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     1,
+     1,
+     1
+    ]
+   },
+   "0-17": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     0,
+     1
+    ]
+   },
+   "1-9": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     2,
+     1,
+     1
+    ]
+   },
+   "1-10": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     1,
+     1,
+     1
+    ]
+   },
+   "1-11": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     3,
+     1,
+     1
+    ]
+   },
+   "1-12": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     1,
+     1,
+     1
+    ]
+   },
+   "1-13": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     3,
+     1,
+     1
+    ]
+   },
+   "1-14": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     3,
+     1,
+     1
+    ]
+   },
+   "1-15": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     2,
+     1,
+     1
+    ]
+   },
+   "1-16": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     2,
+     1,
+     1
+    ]
+   },
+   "1-17": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     0,
+     1
+    ]
+   },
+   "2-9": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     2,
+     0,
+     1
+    ]
+   },
+   "2-10": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     2,
+     2,
+     1,
+     1
+    ]
+   },
+   "2-11": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     1,
+     0
+    ]
+   },
+   "2-12": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     1,
+     0
+    ]
+   },
+   "2-13": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     1,
+     1,
+     1
+    ]
+   },
+   "2-14": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     1,
+     1,
+     1
+    ]
+   },
+   "2-15": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     1,
+     1,
+     1
+    ]
+   },
+   "2-16": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     1,
+     1,
+     1
+    ]
+   },
+   "2-17": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     2,
+     1,
+     0
+    ]
+   },
+   "3-9": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     3,
+     1
+    ]
+   },
+   "3-10": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     2,
+     3,
+     1
+    ]
+   },
+   "3-11": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     4,
+     1,
+     3,
+     1
+    ]
+   },
+   "3-12": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     3,
+     1,
+     2,
+     1
+    ]
+   },
+   "3-13": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     3,
+     1,
+     2,
+     1
+    ]
+   },
+   "3-14": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     3,
+     0,
+     2,
+     2
+    ]
+   },
+   "3-15": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     2,
+     2
+    ]
+   },
+   "3-16": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     1,
+     2,
+     0
+    ]
+   },
+   "3-17": {
+    "n_weeks": 4,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-9": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     2,
+     1
+    ]
+   },
+   "4-10": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     3,
+     1
+    ]
+   },
+   "4-11": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     2,
+     1
+    ]
+   },
+   "4-12": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     2,
+     1
+    ]
+   },
+   "4-13": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     4,
+     0,
+     3,
+     1
+    ]
+   },
+   "4-14": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     2,
+     0,
+     1,
+     1
+    ]
+   },
+   "4-15": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     1,
+     1
+    ]
+   },
+   "4-16": {
+    "n_weeks": 4,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     1,
+     1
+    ]
+   },
+   "4-17": {
+    "n_weeks": 4,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-9": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     4,
+     4,
+     4,
+     4
+    ]
+   },
+   "5-10": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     4,
+     4,
+     4,
+     4
+    ]
+   },
+   "5-11": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     4,
+     4,
+     4,
+     4
+    ]
+   },
+   "5-12": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     4,
+     4,
+     4,
+     4
+    ]
+   },
+   "5-13": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     4,
+     4,
+     4,
+     4
+    ]
+   },
+   "5-14": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     4,
+     4,
+     4,
+     4
+    ]
+   },
+   "5-15": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     4,
+     4,
+     5,
+     4
+    ]
+   },
+   "5-16": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     4,
+     3,
+     4,
+     4
+    ]
+   },
+   "5-17": {
+    "n_weeks": 4,
+    "weeks_ok": 4,
+    "per_week": [
+     3,
+     1,
+     3,
+     3
+    ]
+   }
+  }
+ },
+ "staff4_8w": {
+  "staff": [
+   "A",
+   "B",
+   "C",
+   "D"
+  ],
+  "weeks": [
+   36,
+   37,
+   38,
+   39,
+   40,
+   41,
+   42,
+   43
+  ],
+  "off": "real",
+  "cells": {
+   "0-9": {
+    "n_weeks": 7,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "0-10": {
+    "n_weeks": 7,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-11": {
+    "n_weeks": 7,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     1,
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "0-12": {
+    "n_weeks": 7,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "0-13": {
+    "n_weeks": 7,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     1,
+     1,
+     0
+    ]
+   },
+   "0-14": {
+    "n_weeks": 7,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "0-15": {
+    "n_weeks": 7,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-16": {
+    "n_weeks": 7,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "0-17": {
+    "n_weeks": 7,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-9": {
+    "n_weeks": 8,
+    "weeks_ok": 2,
+    "per_week": [
+     2,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-10": {
+    "n_weeks": 8,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-11": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-12": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-13": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-14": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-15": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-16": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-17": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-9": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-10": {
+    "n_weeks": 8,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "2-11": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-12": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-13": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-14": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-15": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-16": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-17": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-9": {
+    "n_weeks": 8,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-10": {
+    "n_weeks": 8,
+    "weeks_ok": 5,
+    "per_week": [
+     1,
+     0,
+     1,
+     1,
+     1,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-11": {
+    "n_weeks": 8,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     0,
+     1,
+     2,
+     3,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-12": {
+    "n_weeks": 8,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     0,
+     1,
+     2,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-13": {
+    "n_weeks": 8,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     0,
+     1,
+     2,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-14": {
+    "n_weeks": 8,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     3,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-15": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-16": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "3-17": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-9": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-10": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-11": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-12": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-13": {
+    "n_weeks": 8,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     2,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-14": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-15": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-16": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-17": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-9": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-10": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-11": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-12": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-13": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-14": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-15": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-16": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-17": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   }
+  }
+ },
+ "all_8w": {
+  "staff": [
+   "A",
+   "B",
+   "C",
+   "D",
+   "E",
+   "F",
+   "G"
+  ],
+  "weeks": [
+   36,
+   37,
+   38,
+   39,
+   40,
+   41,
+   42,
+   43
+  ],
+  "off": "real",
+  "cells": {
+   "0-9": {
+    "n_weeks": 7,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     2,
+     0,
+     1
+    ]
+   },
+   "0-10": {
+    "n_weeks": 7,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     1,
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "0-11": {
+    "n_weeks": 7,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     0,
+     1,
+     0,
+     1,
+     0,
+     1
+    ]
+   },
+   "0-12": {
+    "n_weeks": 7,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     1,
+     0,
+     1
+    ]
+   },
+   "0-13": {
+    "n_weeks": 7,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     1,
+     1,
+     2
+    ]
+   },
+   "0-14": {
+    "n_weeks": 7,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     1,
+     2
+    ]
+   },
+   "0-15": {
+    "n_weeks": 7,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "0-16": {
+    "n_weeks": 7,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "0-17": {
+    "n_weeks": 7,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "1-9": {
+    "n_weeks": 8,
+    "weeks_ok": 3,
+    "per_week": [
+     2,
+     1,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "1-10": {
+    "n_weeks": 8,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     1,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-11": {
+    "n_weeks": 8,
+    "weeks_ok": 3,
+    "per_week": [
+     0,
+     1,
+     0,
+     1,
+     0,
+     2,
+     0,
+     0
+    ]
+   },
+   "1-12": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-13": {
+    "n_weeks": 8,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     0,
+     1,
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "1-14": {
+    "n_weeks": 8,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     0,
+     1,
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "1-15": {
+    "n_weeks": 8,
+    "weeks_ok": 2,
+    "per_week": [
+     1,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-16": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "1-17": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-9": {
+    "n_weeks": 8,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "2-10": {
+    "n_weeks": 8,
+    "weeks_ok": 4,
+    "per_week": [
+     0,
+     1,
+     1,
+     0,
+     1,
+     1,
+     0,
+     0
+    ]
+   },
+   "2-11": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-12": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-13": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-14": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-15": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-16": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "2-17": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-9": {
+    "n_weeks": 8,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     3,
+     0,
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "3-10": {
+    "n_weeks": 8,
+    "weeks_ok": 6,
+    "per_week": [
+     1,
+     0,
+     3,
+     1,
+     1,
+     2,
+     1,
+     0
+    ]
+   },
+   "3-11": {
+    "n_weeks": 8,
+    "weeks_ok": 6,
+    "per_week": [
+     1,
+     0,
+     1,
+     2,
+     4,
+     1,
+     1,
+     0
+    ]
+   },
+   "3-12": {
+    "n_weeks": 8,
+    "weeks_ok": 3,
+    "per_week": [
+     0,
+     0,
+     0,
+     1,
+     3,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-13": {
+    "n_weeks": 8,
+    "weeks_ok": 4,
+    "per_week": [
+     1,
+     0,
+     0,
+     1,
+     3,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-14": {
+    "n_weeks": 8,
+    "weeks_ok": 3,
+    "per_week": [
+     1,
+     0,
+     0,
+     0,
+     3,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-15": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1
+    ]
+   },
+   "3-16": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "3-17": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-9": {
+    "n_weeks": 8,
+    "weeks_ok": 3,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     1,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-10": {
+    "n_weeks": 8,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     2,
+     0
+    ]
+   },
+   "4-11": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-12": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "4-13": {
+    "n_weeks": 8,
+    "weeks_ok": 2,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     4,
+     0,
+     2,
+     0
+    ]
+   },
+   "4-14": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     2,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-15": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-16": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "4-17": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-9": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-10": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-11": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-12": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-13": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-14": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "5-15": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-16": {
+    "n_weeks": 8,
+    "weeks_ok": 1,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0
+    ]
+   },
+   "5-17": {
+    "n_weeks": 8,
+    "weeks_ok": 0,
+    "per_week": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   }
+  }
+ }
+}
