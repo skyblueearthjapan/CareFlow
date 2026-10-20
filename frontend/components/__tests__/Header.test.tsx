@@ -30,7 +30,7 @@ vi.mock('@/lib/queries/notifications', () => ({
 }));
 
 import { useSession } from 'next-auth/react';
-import { Header } from '../Header';
+import { Header, leaveSheetHrefFromNotice } from '../Header';
 
 function setRole(role: 'admin' | 'manager' | 'staff') {
   (useSession as Mock).mockReturnValue({
@@ -91,7 +91,7 @@ describe('Header — 最適化ルール設定ボタン (Phase G-88)', () => {
         title: '職員Aさんの11/12（木）の訪問を未割り当てとしました',
         body: null,
         read_at: null,
-        created_at: new Date().toISOString(),
+        created_at: '2026-10-21T01:00:00Z',
       },
       {
         id: 'n-2',
@@ -108,7 +108,8 @@ describe('Header — 最適化ルール設定ボタン (Phase G-88)', () => {
     fireEvent.click(screen.getByRole('button', { name: '通知' }));
     const links = await screen.findAllByRole('link', { name: '休み・勤務表で開く' });
     expect(links).toHaveLength(1);
-    expect(links[0]).toHaveAttribute('href', '/admin/leave');
+    // 題名の日付の月と日で開く
+    expect(links[0]).toHaveAttribute('href', '/admin/leave?month=2026-11&date=2026-11-12');
     // jsdom は画面の移動をしないので、押したときの既定の動きだけ止める
     const stop = (e: Event) => e.preventDefault();
     document.addEventListener('click', stop);
@@ -124,5 +125,22 @@ describe('Header — 最適化ルール設定ボタン (Phase G-88)', () => {
     expect(await screen.findByText('ほかの通知')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '休み・勤務表で開く' })).not.toBeInTheDocument();
     notifItems = [];
+  });
+
+  it('6. 通知の日付から開く月を決める (年は通知の時刻から・年をまたぐ)', () => {
+    const at = (created_at: string, title: string, body: string | null = null) =>
+      leaveSheetHrefFromNotice({ title, body, created_at });
+    // 本文の最初の日付 (まとめた通知)
+    expect(
+      at(
+        '2026-12-20T01:00:00Z',
+        '休みで訪問4件を未割り当てとしました',
+        '（職員Aさん 1/5 3件・職員Bさん 1/6 1件）',
+      ),
+    ).toBe('/admin/leave?month=2027-01&date=2027-01-05');
+    expect(at('2027-01-03T01:00:00Z', '職員Aさんの12/28（月）の訪問を未割り当てとしました')).toBe(
+      '/admin/leave?month=2026-12&date=2026-12-28',
+    );
+    expect(at('2026-10-21T01:00:00Z', '日付の無い通知')).toBe('/admin/leave');
   });
 });

@@ -31,6 +31,30 @@ import { cn } from '@/lib/utils';
  */
 const LEAVE_SHEET_NOTIFICATION_TYPES: ReadonlySet<string> = new Set(['leave_unassigned']);
 
+/**
+ * 通知の題名・本文の最初の「M/D」から、その日を開く「休み・勤務表」の URL を作る。
+ * 年は通知の時刻 (JST) の年で、半年より離れるなら前後の年にする。日付が無ければ月を付けない。
+ */
+export function leaveSheetHrefFromNotice(
+  n: Pick<NotificationRead, 'title' | 'body' | 'created_at'>,
+): string {
+  const m = /(\d{1,2})\/(\d{1,2})/.exec(`${n.title} ${n.body ?? ''}`);
+  if (!m) return '/admin/leave';
+  const month = Number(m[1]);
+  const day = Number(m[2]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return '/admin/leave';
+  const created = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo' }).format(
+    new Date(n.created_at),
+  );
+  const [cy = 0, cm = 1] = created.split('-').map(Number);
+  let year = cy;
+  if (month - cm > 6) year -= 1;
+  else if (cm - month > 6) year += 1;
+  const mm = String(month).padStart(2, '0');
+  const dd = String(day).padStart(2, '0');
+  return `/admin/leave?month=${year}-${mm}&date=${year}-${mm}-${dd}`;
+}
+
 interface HeaderProps {
   title?: string;
   onToggleSidebar: () => void;
@@ -149,7 +173,7 @@ function NotificationButton() {
                   />
                   {isAdmin && LEAVE_SHEET_NOTIFICATION_TYPES.has(n.type) && (
                     <Link
-                      href="/admin/leave"
+                      href={leaveSheetHrefFromNotice(n)}
                       onClick={() => {
                         if (n.read_at == null) markRead.mutate(n.id);
                         setOpen(false);

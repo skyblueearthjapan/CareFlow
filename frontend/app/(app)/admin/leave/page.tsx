@@ -289,7 +289,8 @@ function LeaveSheetPage() {
     enqueue([cellKey(item.staff_id, item.date)], async () => {
       try {
         await reject.mutateAsync({ id: item.id, reason });
-        setPop(null);
+        // その間にほかのマスの小窓を開いていたら、そちらは閉じない
+        setPop((p) => (p && p.staffId === item.staff_id && p.date === item.date ? null : p));
         toast.success(
           `却下して本人へ通知しました（${item.staff_name}さん ${fmtDayJp(item.date)}）`,
         );

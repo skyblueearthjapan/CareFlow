@@ -68,8 +68,10 @@ export function LeaveCellPopover(props: LeaveCellPopoverProps) {
         aria-label={`${staff.name} ${fmtDayJp(day.date)}`}
         onCloseAutoFocus={(e) => {
           // 閉じたら押したマスへ焦点を戻す (開いたときは Radix が最初のボタンへ焦点を移す)
+          // ただし、別のマスの小窓へ移った (焦点がもう別の所にある) ときは奪わない
           e.preventDefault();
-          anchorRef.current.focus();
+          const active = document.activeElement;
+          if (!active || active === document.body) anchorRef.current.focus();
         }}
       >
         <PopoverBody {...props} />

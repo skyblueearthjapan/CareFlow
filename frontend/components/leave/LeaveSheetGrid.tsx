@@ -302,7 +302,8 @@ const SheetCell = memo(function SheetCell({
       aria-haspopup="dialog"
       aria-expanded={expanded}
       aria-busy={busy || undefined}
-      disabled={busy}
+      // disabled にすると焦点が body へ落ちるので aria-disabled にする (押下はページが止める)
+      aria-disabled={busy || undefined}
       onClick={(e) => onCellClick(staff.id, day.date, e.currentTarget)}
       style={cell?.cancelled_after_approval && !leave ? STRIPES : undefined}
       className={cn(

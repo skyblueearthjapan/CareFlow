@@ -176,7 +176,11 @@ beforeEach(() => {
   vi.mocked(toast.info).mockClear();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // 試験の後ろで終わる順番待ち (読み直し・マスを戻す) を act の中で流してから片付ける
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
   vi.useRealTimers();
 });
 
@@ -515,7 +519,7 @@ describe('マスの小窓', () => {
       leave_type: 'paid_off',
     });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    await waitFor(() => expect(cellEl(S1, '2026-11-14')).not.toBeDisabled());
+    await waitFor(() => expect(cellEl(S1, '2026-11-14')).not.toHaveAttribute('aria-disabled'));
     fireEvent.click(cellEl(S1, '2026-11-15'));
     pop = await popover();
     fireEvent.click(within(pop).getByRole('button', { name: '閉じる' }));
@@ -559,6 +563,7 @@ describe('マスの小窓', () => {
     fireEvent.click(within(pop).getByRole('button', { name: /^有給/ }));
     fireEvent.click(within(pop).getByRole('button', { name: '有給で承認する' }));
     expect(m.approveOne.mutateAsync).toHaveBeenCalledWith({ id: P1, override_type: 'paid_off' });
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
   });
 
   it('申請: 承認でその日の休みが 2 人以上なら黄色', async () => {
@@ -877,10 +882,10 @@ describe('続けて押す (連打)', () => {
     fireEvent.click(cellEl(S1, '2026-11-17'));
     // 並行の POST を出さない: 1 件目が終わるまで 2 件目は出ない
     expect(m.setDay.mutateAsync).toHaveBeenCalledTimes(1);
-    expect(cellEl(S1, '2026-11-16')).toBeDisabled();
+    expect(cellEl(S1, '2026-11-16')).toHaveAttribute('aria-disabled', 'true');
     expect(cellEl(S1, '2026-11-16')).toHaveAttribute('aria-busy', 'true');
     expect(cellEl(S1, '2026-11-16').className).toContain('opacity-40');
-    expect(cellEl(S1, '2026-11-17')).toBeDisabled();
+    expect(cellEl(S1, '2026-11-17')).toHaveAttribute('aria-disabled', 'true');
     await act(async () => release?.());
     await waitFor(() => expect(m.setDay.mutateAsync).toHaveBeenCalledTimes(2));
     expect(m.setDay.mutateAsync).toHaveBeenNthCalledWith(2, {
@@ -894,13 +899,68 @@ describe('続けて押す (連打)', () => {
       ).length;
     expect(leaveReloads()).toBe(0);
     await act(async () => release?.());
-    await waitFor(() => expect(cellEl(S1, '2026-11-17')).not.toBeDisabled());
+    await waitFor(() => expect(cellEl(S1, '2026-11-17')).not.toHaveAttribute('aria-disabled'));
     expect(leaveReloads()).toBe(1);
-    expect(cellEl(S1, '2026-11-16')).not.toBeDisabled();
+    expect(cellEl(S1, '2026-11-16')).not.toHaveAttribute('aria-disabled');
+  });
+});
+
+describe('続けて押す (失敗)', () => {
+  it('1 件目が失敗しても 2 件目は出る・マスは戻る・読み直しは 1 回', async () => {
+    m.setDay.mutateAsync
+      .mockRejectedValueOnce(new ApiError('API 409', 409, { detail: 'この日は申請中です' }))
+      .mockResolvedValueOnce(DAY_RESULT);
+    render(<AdminLeavePage />);
+    stamp('公休');
+    fireEvent.click(cellEl(S1, '2026-11-16'));
+    fireEvent.click(cellEl(S1, '2026-11-17'));
+    await waitFor(() => expect(m.setDay.mutateAsync).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(cellEl(S1, '2026-11-16')).not.toHaveAttribute('aria-disabled'));
+    expect(cellEl(S1, '2026-11-17')).not.toHaveAttribute('aria-disabled');
+    expect(toast.error).toHaveBeenCalledWith('この日は申請中です');
+    expect(toast.success).toHaveBeenCalledTimes(1);
+    const reloads = qcStub.invalidateQueries.mock.calls.filter(
+      (c: unknown[]) => JSON.stringify((c[0] as { queryKey: unknown }).queryKey) === '["leave"]',
+    );
+    expect(reloads).toHaveLength(1);
   });
 });
 
 describe('キーボードと光り', () => {
+  it('小窓で公休を入れた後も、焦点はそのマスにある', async () => {
+    render(<AdminLeavePage />);
+    const c = cellEl(S1, '2026-11-16');
+    fireEvent.click(c);
+    const pop = await popover();
+    fireEvent.click(within(pop).getByRole('button', { name: /^公休/ }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(document.activeElement).toBe(cellEl(S1, '2026-11-16'));
+    await waitFor(() => expect(cellEl(S1, '2026-11-16')).not.toHaveAttribute('aria-disabled'));
+    expect(document.activeElement).toBe(cellEl(S1, '2026-11-16'));
+  });
+
+  it('却下が終わる前にほかのマスを開いたら、その小窓は閉じない', async () => {
+    let release: (() => void) | null = null;
+    m.reject.mutateAsync.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ request_id: P2, reason: 'x' });
+        }),
+    );
+    render(<AdminLeavePage />);
+    fireEvent.click(cellEl(S2, '2026-11-12'));
+    let pop = await popover();
+    fireEvent.click(within(pop).getByRole('button', { name: '却下…' }));
+    fireEvent.change(within(pop).getByLabelText(/却下の理由/), { target: { value: '理由' } });
+    fireEvent.click(within(pop).getByRole('button', { name: '却下して通知' }));
+    fireEvent.click(cellEl(S1, '2026-11-11'));
+    await waitFor(() => expect(screen.getByRole('dialog')).toHaveTextContent('職員Aさん ・ 11/11'));
+    await act(async () => release?.());
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    pop = screen.getByRole('dialog');
+    expect(pop).toHaveTextContent('職員Aさん ・ 11/11');
+  });
+
   it('小窓を開くと最初のボタンへ焦点・閉じるとマスへ戻る・マスに aria-expanded', async () => {
     render(<AdminLeavePage />);
     const c = cellEl(S1, '2026-11-11');

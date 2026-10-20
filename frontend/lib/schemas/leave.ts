@@ -233,6 +233,16 @@ export const leaveDayBulkResultSchema = z.object({
   date: isoDate,
   override_type: leaveTypeCodeSchema,
   applied: z.array(leaveDayResultSchema),
+  /** 休みがすでに入っていて飛ばした人 (staff_ids を渡したとき)。 */
+  skipped: z
+    .array(
+      z.object({
+        staff_id: uuid,
+        reason: z.literal('already_on_leave'),
+        leave_type: leaveTypeCodeSchema.nullable().optional(),
+      }),
+    )
+    .default([]),
   moved_visit_count: z.number().int(),
 });
 export type LeaveDayBulkResult = z.infer<typeof leaveDayBulkResultSchema>;
