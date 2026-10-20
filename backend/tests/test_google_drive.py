@@ -920,3 +920,95 @@ async def test_failed_cleanup_is_logged(
         with pytest.raises(GoogleDriveError, match="想定と違う応答"):
             await create_spreadsheet(db, "t", None, [SheetData(title="a", rows=[["x"]])])
     assert any("sheet_9" in rec.getMessage() for rec in caplog.records)
+
+
+def _reconnect_fakes(google, *, new_email: str, old_email: str, revoke_status: int = 200):
+    """つなぎ直しの Google を用意する。取り消しの記録と、呼ばれた順番を返す。"""
+    revoked: list[str] = []
+    order: list[str] = []
+
+    def _revoke(r: httpx.Request) -> httpx.Response:
+        revoked.append(parse_qs(r.content.decode())["token"][0])
+        order.append("revoke")
+        return httpx.Response(revoke_status)
+
+    def _token(r: httpx.Request) -> httpx.Response:
+        form = parse_qs(r.content.decode())
+        if form["grant_type"] == ["authorization_code"]:
+            order.append("exchange")
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "ya29.new",
+                    "refresh_token": "1//refresh-new",
+                    "scope": SCOPE,
+                },
+            )
+        return httpx.Response(200, json={"access_token": "ya29.old", "expires_in": 3599})
+
+    def _about(r: httpx.Request) -> httpx.Response:
+        email = new_email if "ya29.new" in r.headers["Authorization"] else old_email
+        return httpx.Response(200, json={"user": {"emailAddress": email, "displayName": "D"}})
+
+    google.on("POST", "https://oauth2.googleapis.com/revoke", _revoke)
+    google.on("POST", "https://oauth2.googleapis.com/token", _token)
+    google.on("GET", "https://www.googleapis.com/drive/v3/about", _about)
+    return revoked, order
+
+
+async def _run_callback(client, admin) -> str:
+    res = await client.post("/api/v1/google-drive/connect", headers=_bearer(admin))
+    state = parse_qs(urlparse(res.json()["authorization_url"]).query)["state"][0]
+    res = await client.get("/api/v1/google-drive/callback", params={"code": "c", "state": state})
+    return res.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_same_account_does_not_revoke(client, db, configured, google) -> None:
+    admin = await _make_user(db, "gd-admin26@example.com", "admin")
+    await _connect_row(db, admin)
+    revoked, _order = _reconnect_fakes(google, new_email="a@example.com", old_email="a@example.com")
+    assert await _run_callback(client, admin) == "/settings/google-drive?result=connected"
+    assert revoked == []
+    db.expire_all()
+    row = await load_connection(db)
+    assert row is not None
+    assert decrypt_token(row.refresh_token_encrypted or "") == "1//refresh-new"
+    notes = (
+        await db.scalars(
+            select(Notification).where(Notification.reference_type == NOTIFY_GOOGLE_DRIVE_CHANGED)
+        )
+    ).all()
+    assert notes == []
+
+
+@pytest.mark.asyncio
+async def test_reconnect_other_account_revokes_after_saving(client, db, configured, google) -> None:
+    admin = await _make_user(db, "gd-admin27@example.com", "admin")
+    await _connect_row(db, admin)
+    revoked, order = _reconnect_fakes(google, new_email="b@example.com", old_email="a@example.com")
+    assert await _run_callback(client, admin) == "/settings/google-drive?result=connected"
+    assert revoked == ["1//refresh-test"]
+    # 新しい code を換えたあとで、前のトークンを取り消す。
+    assert order == ["exchange", "revoke"]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_revoke_failure_keeps_new_connection(
+    client, db, configured, google, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    admin = await _make_user(db, "gd-admin28@example.com", "admin")
+    await _connect_row(db, admin)
+    revoked, _order = _reconnect_fakes(
+        google, new_email="b@example.com", old_email="a@example.com", revoke_status=400
+    )
+    with caplog.at_level(logging.WARNING, logger="app.api.v1.google_drive"):
+        assert await _run_callback(client, admin) == "/settings/google-drive?result=connected"
+    assert revoked == ["1//refresh-test"]
+    assert any("not revoked" in rec.getMessage() for rec in caplog.records)
+    db.expire_all()
+    row = await load_connection(db)
+    assert row is not None and row.status == "connected"
+    assert decrypt_token(row.refresh_token_encrypted or "") == "1//refresh-new"

@@ -13,6 +13,7 @@ DELETE /google-drive/connection    切断 (Google 側の許可を取り消して
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 from urllib.parse import urlencode
 
@@ -39,7 +40,6 @@ from app.services.google_drive.client import (
     GoogleDriveReconnectRequiredError,
 )
 from app.services.google_drive.connection import (
-    clear_token_cache,
     delete_connection,
     get_access_token,
     load_connection,
@@ -63,6 +63,7 @@ from app.services.google_drive.oauth import (
 from app.services.google_drive.sheets import get_folder
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 AdminUser = Annotated[User, Depends(require_role("admin"))]
 
@@ -202,39 +203,36 @@ async def oauth_callback(
     if user is None or user.deleted_at is not None or normalize_user_role(user.role) != "admin":
         return _back("error", "forbidden")
 
-    # つなぎ直し: 前の接続の持ち主と保存先を監査に残し、前のアカウントを確かめてから
-    # 前のトークンを取り消す (L-2)。取り消したトークンは行から外しておく。
+    # つなぎ直し (L-2): 先に新しい code をトークンに換え、つないだアカウントを確かめる。
+    # 前のリフレッシュトークンは、前の接続と**違うアカウントだと分かったときだけ**、新しい
+    # 接続を保存したあとで取り消す。同じアカウント (または前のアカウントが読めない) なら
+    # 取り消さない — 許可が共有で、新しいトークンまで使えなくなることがあるため。
     previous = await load_connection(db)
     before: dict[str, object] | None = None
-    previous_account: DriveAccount | None = None
+    old_token: str | None = None
     if previous is not None:
         before = {
             "status": previous.status,
             "connected_by": str(previous.connected_by) if previous.connected_by else None,
             "folder_id": previous.folder_id,
         }
-        old_token = (
-            decrypt_token(previous.refresh_token_encrypted)
-            if previous.refresh_token_encrypted
-            else None
-        )
-        if old_token is not None:
-            try:
-                old_access, _ = await refresh_access_token(old_token)
-                previous_account = await get_account(old_access)
-            except GoogleDriveError:
-                previous_account = None
-            await revoke_token(old_token)
-        previous.refresh_token_encrypted = None
-        clear_token_cache()
-        await db.flush()
+        if previous.refresh_token_encrypted:
+            old_token = decrypt_token(previous.refresh_token_encrypted)
 
     try:
         tokens = await exchange_code(code, verifier)
     except GoogleDriveError:
-        await db.commit()
         return _back("error", "exchange")
     account = await get_account(tokens.access_token)
+
+    previous_account: DriveAccount | None = None
+    if old_token is not None:
+        try:
+            old_access, _ = await refresh_access_token(old_token)
+            previous_account = await get_account(old_access)
+        except GoogleDriveError:
+            previous_account = None
+
     row = await save_connection(db, refresh_token=tokens.refresh_token, user_id=user.id)
     db.add(
         AuditLog(
@@ -258,6 +256,11 @@ async def oauth_callback(
             db, account=_account_label(account), by=_user_label(user) or "管理者"
         )
     await db.commit()
+
+    if old_token is not None and old_email and new_email and old_email != new_email:
+        # 取り消せなくても新しい接続は成功のまま (記録だけ残す)。
+        if not await revoke_token(old_token):
+            logger.warning("google drive: previous refresh token was not revoked")
     return _back("connected")
 
 
