@@ -23,14 +23,24 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Final, cast, get_args
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
-from sqlalchemy import and_, or_, select, update
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Body,
+    Depends,
+    HTTPException,
+    Query,
+    Response,
+    status,
+)
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,8 +59,6 @@ from app.models.pending_request import PendingRequest
 from app.models.schedule_op_log import ScheduleOpLog
 from app.models.staff import Staff, StaffShiftConfirmation, StaffWeeklyOverride
 from app.models.user import User, normalize_user_role
-from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
-from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.leave import (
     HolidayRead,
     KinmuSheetRead,
@@ -67,6 +75,8 @@ from app.schemas.leave import (
     LeaveDayBulkResult,
     LeaveDayInput,
     LeaveDayResult,
+    LeaveKinmuRebuildInput,
+    LeaveKinmuSheetOutcome,
     LeaveMonthCell,
     LeaveMonthConfirmation,
     LeaveMonthDay,
@@ -75,8 +85,12 @@ from app.schemas.leave import (
     LeaveMonthSummary,
     LeaveMonthUpdate,
     LeaveMonthView,
+    LeaveOutboundStarted,
     LeavePendingBrief,
     LeavePendingItem,
+    LeaveRecordActualsResult,
+    LeaveRecordBlocker,
+    LeaveRecordReadiness,
     LeaveRejectInput,
     LeaveRejectResult,
     LeaveRequestType,
@@ -87,6 +101,10 @@ from app.schemas.leave import (
     OfficeClosedDayRead,
 )
 from app.schemas.v2.enums import RequestStatus, RequestType
+from app.services.kaipoke import leave_outbound
+from app.services.kaipoke.sources import RpaJobConflictError
+from app.services.kaipoke_client import KaipokeClient, get_kaipoke_client
+from app.services.kinmu_sheet.publish import MSG_DRIVE_FAILED, KinmuKind, create_kinmu_sheet
 from app.services.leave_calendar import (
     day_holiday_value,
     iso_key,
@@ -97,6 +115,11 @@ from app.services.leave_calendar import (
     month_holidays,
     required_holidays,
 )
+from app.services.leave_compare import (
+    RECORD_ALREADY_RECORDED,
+    RecordBlocker,
+    load_record_actuals_blockers,
+)
 from app.services.leave_notify import (
     notify_leave_approved,
     notify_leave_rejected,
@@ -104,15 +127,23 @@ from app.services.leave_notify import (
 )
 from app.services.staff_leave import (
     LeaveApplyResult,
+    OwnedVisit,
     StaffLeaveError,
     apply_staff_leave,
     cancel_staff_leave,
     leave_request_deadline,
+    load_owned_visits_between,
     notify_leave_results,
     today_jst,
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+#: 確定の後に送信を始められなかった (予期しない失敗)。
+MSG_OUTBOUND_FAILED: Final = (
+    "カイポケへの送信を始められませんでした。「カイポケへ送る」から送ってください"
+)
 
 AdminUser = Annotated[User, Depends(require_role("admin"))]
 
@@ -254,70 +285,6 @@ async def _load_month(db: AsyncSession, month: date, *, with_requests: bool) -> 
     return data
 
 
-@dataclass(frozen=True)
-class _VisitLite:
-    id: UUID
-    day: date
-    start: Any
-    end: Any
-    planned: bool
-
-
-async def _load_month_visits(
-    db: AsyncSession, days: list[date]
-) -> dict[tuple[UUID, date], list[_VisitLite]]:
-    """{(職員, 日): 本人が担当の訪問 (取消・削除を除く)}.
-
-    「本人の訪問」は共通の処理 (``staff_leave._owns_primary``・§3-3) と同じ: primary が本人／
-    primary が空・明示の担当なしでない・コース担当が本人／2 名体制の VSA に本人。
-    """
-    rows = (
-        await db.execute(
-            select(
-                Visit.id,
-                Visit.visit_date,
-                Visit.start_time,
-                Visit.end_time,
-                Visit.status,
-                Visit.primary_staff_id,
-                Visit.manual_staff_override,
-                Course.assigned_staff_id,
-            )
-            .outerjoin(Course, (Course.id == Visit.course_id) & (Course.deleted_at.is_(None)))
-            .where(
-                Visit.visit_date >= days[0],
-                Visit.visit_date <= days[-1],
-                Visit.deleted_at.is_(None),
-                Visit.status != VISIT_STATUS_CANCELLED,
-            )
-        )
-    ).all()
-    vsa: dict[UUID, set[UUID]] = defaultdict(set)
-    for visit_id, staff_id in (
-        await db.execute(
-            select(VisitStaffAssignment.visit_id, VisitStaffAssignment.staff_id)
-            .join(Visit, Visit.id == VisitStaffAssignment.visit_id)
-            .where(
-                Visit.visit_date >= days[0],
-                Visit.visit_date <= days[-1],
-                Visit.deleted_at.is_(None),
-            )
-        )
-    ).all():
-        vsa[visit_id].add(staff_id)
-    out: dict[tuple[UUID, date], list[_VisitLite]] = defaultdict(list)
-    for vid, vday, start, end, vstatus, primary, manual, course_staff in rows:
-        owners = set(vsa.get(vid, set()))
-        if primary is not None:
-            owners.add(primary)
-        elif not manual and course_staff is not None:
-            owners.add(course_staff)
-        lite = _VisitLite(vid, vday, start, end, vstatus == VISIT_STATUS_PLANNED)
-        for sid in owners:
-            out[(sid, vday)].append(lite)
-    return out
-
-
 async def _generated_weeks(db: AsyncSession, days: list[date]) -> set[tuple[int, int]]:
     """その月にかかる週のうち、作り済み (コースがある) の (ISO 年, ISO 週)."""
     pairs = sorted({(d.isocalendar().year, d.isocalendar().week) for d in days})
@@ -352,9 +319,11 @@ def _counts_as_off(data: _MonthData, s: Staff, day: date, leave_type: str | None
     )
 
 
-def _moves(visits: list[_VisitLite], leave_type: str) -> int:
+def _moves(visits: list[OwnedVisit], leave_type: str) -> int:
     """休みを入れたら担当なしへ移る訪問の数 (planned で休みの時間帯にかかるもの)."""
-    return sum(1 for v in visits if v.planned and visit_hits_leave(leave_type, v.start, v.end))
+    return sum(
+        1 for v in visits if v.planned and visit_hits_leave(leave_type, v.start_time, v.end_time)
+    )
 
 
 def _send_status(
@@ -367,6 +336,22 @@ def _send_status(
     if sent is None:
         return "baseline" if kaipoke is not None and kaipoke.baseline_pending else "unsent"
     return "sent" if sent == leave_type else "kaipoke_action"
+
+
+async def _pending_total(db: AsyncSession) -> int:
+    """月をまたいだ休みの申請中の件数 (消した職員の申請は数えない・メニューの件数)."""
+    return int(
+        await db.scalar(
+            select(func.count(PendingRequest.id))
+            .join(Staff, Staff.id == PendingRequest.target_staff_id)
+            .where(
+                PendingRequest.request_type == RequestType.STAFF_OFF.value,
+                PendingRequest.status == RequestStatus.PENDING.value,
+                Staff.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
 
 
 async def _confirmations(
@@ -408,7 +393,7 @@ async def get_leave_month(month: MonthParam, db: DbDep, _user: AdminUser) -> Lea
     data = await _load_month(db, month, with_requests=True)
     days = data.days
     today = today_jst()
-    visits = await _load_month_visits(db, days)
+    visits = await load_owned_visits_between(db, days[0], days[-1])
     generated = await _generated_weeks(db, days)
     staff_ids = [s.id for s in data.staff]
     confirmations = await _confirmations(db, data.month, staff_ids)
@@ -435,14 +420,10 @@ async def get_leave_month(month: MonthParam, db: DbDep, _user: AdminUser) -> Lea
     required = required_holidays(data.month, data.closed.keys())
     staff_by_id = {s.id: s for s in data.staff}
     order = {s.id: i for i, s in enumerate(data.staff)}
-    # 同じマスに申請中が 2 件以上あるとき (作成時の 409 をすり抜けた古いデータなど):
-    # マスの印と「通れば あと N」(pending_gain) は **いちばん先に出された申請** を使う
-    # (data.pending は作成順)。件数 (見出しの「申N」・職員の pending_count) と右の一覧は
-    # すべての申請を数える。
-    pending_by_cell: dict[tuple[UUID, date], _RequestRow] = {}
+    # 同じ職員・同じ日の申請中は 1 件だけ (0099 の部分 UNIQUE)。
+    pending_by_cell = {(r.staff_id, r.day): r for r in data.pending}
     pending_per_staff: dict[UUID, int] = defaultdict(int)
     for r in data.pending:
-        pending_by_cell.setdefault((r.staff_id, r.day), r)
         pending_per_staff[r.staff_id] += 1
     approved_cells = {(r.staff_id, r.day) for r in data.approved if r.override_type in LEAVE_TYPES}
 
@@ -625,6 +606,7 @@ async def get_leave_month(month: MonthParam, db: DbDep, _user: AdminUser) -> Lea
             baseline_pending_count=sum(1 for c in cells if c.send_status == "baseline"),
         ),
         visits_on_leave_count=visits_on_leave,
+        record_actuals=_readiness(await load_record_actuals_blockers(db, data.month), leave_month),
     )
 
 
@@ -692,6 +674,7 @@ async def get_leave_month_summary(
             _short_staff(data, required_holidays(data.month, data.closed.keys()))
         ),
         kaipoke_action_count=kaipoke_action,
+        pending_total=await _pending_total(db),
     )
 
 
@@ -1231,18 +1214,94 @@ def _short_staff(data: _MonthData, required: int) -> list[LeaveShortStaff]:
     return out
 
 
+async def _start_outbound_after_confirm(
+    db: AsyncSession,
+    *,
+    month: date,
+    user_id: UUID,
+    background: BackgroundTasks,
+    kaipoke: KaipokeClient,
+    staff_ids: list[UUID] | None = None,
+) -> LeaveOutboundStarted:
+    """確定の後 (新しいトランザクション) にカイポケへの休みの送信のジョブを始める.
+
+    照合がまだの月・送る休みが無い・ほかの RPA のジョブが動いている (409) ときは始めず、
+    理由を返す (確定は成功のまま)。予期しない例外もログに残して始めなかったことにする
+    (確定の応答を 500 にしない)。実体は応答の後に背景で送る。``staff_ids`` を渡せば
+    その職員の分だけ送る (一部の職員だけを確定したとき)。
+    """
+    try:
+        started = await leave_outbound.start_leave_outbound(
+            db, month=month, user_id=user_id, staff_ids=staff_ids
+        )
+    except RpaJobConflictError as exc:
+        await db.rollback()
+        return LeaveOutboundStarted(started=False, reason=str(exc))
+    except Exception:  # noqa: BLE001 — 確定は済んでいる
+        logger.exception("leave outbound could not start after confirm (%s)", month)
+        await db.rollback()
+        return LeaveOutboundStarted(started=False, reason=MSG_OUTBOUND_FAILED)
+    if started.job is None:
+        await db.rollback()
+        return LeaveOutboundStarted(started=False, reason=started.reason)
+    background.add_task(
+        leave_outbound.run_leave_outbound_job, job_id=started.job.id, client=kaipoke
+    )
+    return LeaveOutboundStarted(started=True, job_id=started.job.id, count=started.count)
+
+
+async def _make_kinmu_sheet(
+    db: AsyncSession, *, month: date, kind: KinmuKind, user_id: UUID, reason: str | None = None
+) -> LeaveKinmuSheetOutcome:
+    """勤務表を作って記録し commit する (作れなくても「未作成」の行と理由を残す)."""
+    try:
+        outcome = await create_kinmu_sheet(
+            db, month=month, kind=kind, user_id=user_id, reason=reason
+        )
+        await db.commit()
+    except IntegrityError:
+        # 同時に押された別の確定が同じ版の番号で先に作った。
+        await db.rollback()
+        return LeaveKinmuSheetOutcome(
+            created=False,
+            kind=kind,
+            reason="ほかの方が同時に勤務表を作りました。勤務表の一覧を読み直してください",
+        )
+    except Exception:  # noqa: BLE001 — 確定・実績の記録は済んでいる (500 にしない)
+        logger.exception("kinmu sheet %s %s could not be made", month, kind)
+        await db.rollback()
+        return LeaveKinmuSheetOutcome(created=False, kind=kind, reason=MSG_DRIVE_FAILED)
+    await db.refresh(outcome.sheet)
+    return LeaveKinmuSheetOutcome(
+        created=outcome.created,
+        kind=kind,
+        sheet=KinmuSheetRead.model_validate(outcome.sheet),
+        reason=outcome.reason,
+    )
+
+
 @router.post("/month/{month}/confirm", response_model=LeaveConfirmResult)
 async def confirm_leave_month(
     month: MonthParam,
     db: DbDep,
     user: AdminUser,
+    background: BackgroundTasks,
+    kaipoke: Annotated[KaipokeClient, Depends(get_kaipoke_client)],
     payload: Annotated[LeaveConfirmInput | None, Body()] = None,
 ) -> LeaveConfirmResult:
-    """この月を確定して通知する (記録と本人への通知だけ・確定後も表で変えられる).
+    """この月を確定して通知する (確定後も表で変えられる・§2-4・§7-2).
+
+    1. 確定の記録と本人への通知を commit する。
+    2. 新しいトランザクションで、カイポケへ送る休みがあれば送信のジョブを始める
+       (照合が済んだ月だけ・背景で送る・始められなくても確定は残る)。
+    3. 勤務表の予定版を作る (ドライブ未接続などでも確定は残り、行は「未作成」)。
 
     ``staff_ids`` を渡せばその人だけ (表に載っている人に限る)、無ければ表の全員。
-    申請中の残り・足りない人も、確定した人の分だけを返す。
+    申請中の残り・足りない人・カイポケへ送る休みも、確定した人の分だけ (ディレクター決定)。
+    予定版は月全体 (最新の版が「未作成」ならその行で作る)。
     """
+    # commit・rollback の後に ORM の属性を読まない (非同期では読み直せない)。
+    user_id = user.id
     data = await _load_month(db, month, with_requests=True)
     if payload is not None and payload.staff_ids is not None:
         wanted = set(payload.staff_ids)
@@ -1266,7 +1325,109 @@ async def confirm_leave_month(
         required_hours=leave_month.required_hours if leave_month is not None else None,
     )
     await db.commit()
+    partial = payload is not None and payload.staff_ids is not None
+    result.outbound = await _start_outbound_after_confirm(
+        db,
+        month=data.month,
+        user_id=user_id,
+        background=background,
+        kaipoke=kaipoke,
+        staff_ids=list(record.staff_ids) if partial else None,
+    )
+    result.kinmu_sheet = await _make_kinmu_sheet(db, month=data.month, kind="plan", user_id=user_id)
     return result
+
+
+# ---------------------------------------------------------------------------
+# 実績を記録する (§7-2 の 3・§7-4-2)
+# ---------------------------------------------------------------------------
+
+
+def _readiness(
+    blockers: list[RecordBlocker], leave_month: LeaveMonth | None
+) -> LeaveRecordReadiness:
+    return LeaveRecordReadiness(
+        ready=not blockers,
+        blockers=[LeaveRecordBlocker(code=cast(Any, b.code), message=b.message) for b in blockers],
+        actual_recorded_at=leave_month.actual_recorded_at if leave_month is not None else None,
+    )
+
+
+@router.post("/month/{month}/record-actuals", response_model=LeaveRecordActualsResult)
+async def record_month_actuals(
+    month: MonthParam, db: DbDep, user: AdminUser
+) -> LeaveRecordActualsResult:
+    """実績を記録し、勤務表の確定版を作る (条件がそろったときだけ・自動では作らない).
+
+    条件 (``leave_compare.record_actuals_blockers``・画面の表示と同じ判定) が欠けていれば
+    409 (``detail.blockers`` に理由の一覧)。勤務表はドライブ未接続などで作れなくても、
+    実績の記録は残り、行は「未作成」で残る。
+    """
+    user_id = user.id
+    blockers = await load_record_actuals_blockers(db, month)
+    if blockers:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "まだ実績を記録できません",
+                "blockers": [{"code": b.code, "message": b.message} for b in blockers],
+            },
+        )
+    now = datetime.now(UTC)
+    # 同時に 2 回押されても 1 回だけ (まだ記録していない行だけを書く)。
+    written = await db.execute(
+        update(LeaveMonth)
+        .where(LeaveMonth.month == month, LeaveMonth.actual_recorded_at.is_(None))
+        .values(actual_recorded_at=now, actual_recorded_by=user_id)
+        .execution_options(synchronize_session=False)
+    )
+    if (getattr(written, "rowcount", 0) or 0) == 0:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "まだ実績を記録できません",
+                "blockers": [
+                    {
+                        "code": RECORD_ALREADY_RECORDED,
+                        "message": "この月の実績は記録済みです",
+                    }
+                ],
+            },
+        )
+    await db.commit()
+    sheet = await _make_kinmu_sheet(db, month=month, kind="final", user_id=user_id)
+    return LeaveRecordActualsResult(month=month, actual_recorded_at=now, kinmu_sheet=sheet)
+
+
+@router.post("/month/{month}/kinmu-sheets/rebuild", response_model=LeaveKinmuSheetOutcome)
+async def rebuild_kinmu_sheet(
+    month: MonthParam, payload: LeaveKinmuRebuildInput, db: DbDep, user: AdminUser
+) -> LeaveKinmuSheetOutcome:
+    """勤務表を作り直す (理由は必須・前の版は残す・§7-2 の 2〜3).
+
+    予定版はドライブにつないだ後の「作る」にも使う (最新の版が「未作成」ならその行で作る)。
+    確定版は実績を記録した月だけ。実績の記録の時刻は変えない。
+    """
+    user_id = user.id
+    reason = payload.reason.strip()
+    if not reason:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="作り直す理由を入れてください",
+        )
+    if payload.kind == "final":
+        recorded = await db.scalar(
+            select(LeaveMonth.actual_recorded_at).where(LeaveMonth.month == month)
+        )
+        if recorded is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="この月はまだ実績を記録していません。先に「実績を記録する」を押してください",
+            )
+    return await _make_kinmu_sheet(
+        db, month=month, kind=payload.kind, user_id=user_id, reason=reason
+    )
 
 
 __all__ = ["OFF_WARN_THRESHOLD", "router"]

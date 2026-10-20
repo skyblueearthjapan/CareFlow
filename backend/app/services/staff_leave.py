@@ -44,7 +44,7 @@ from app.models.course import Course
 from app.models.pending_request import PendingRequest
 from app.models.staff import Staff, StaffEvent, StaffWeeklyOverride
 from app.models.user import User
-from app.models.visit import VISIT_STATUS_PLANNED, Visit
+from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.services.constraint_override_notify import (
     ConstraintWarning,
@@ -171,13 +171,135 @@ def _date_label(day: date) -> str:
 # ---------------------------------------------------------------------------
 
 
+def primary_owner_id(
+    primary_staff_id: UUID | None, manual_staff_override: bool, course_staff_id: UUID | None
+) -> UUID | None:
+    """primary の枠を握っている職員 (盤面の行決定と同じ・明示の担当なしは誰でもない).
+
+    primary が正。空なら、明示の担当なし (``manual_staff_override``) でなければコース担当。
+    """
+    if primary_staff_id is not None:
+        return primary_staff_id
+    if manual_staff_override:
+        return None
+    return course_staff_id
+
+
+def visit_owner_ids(
+    *,
+    primary_staff_id: UUID | None,
+    manual_staff_override: bool,
+    course_staff_id: UUID | None,
+    secondary_staff_id: UUID | None,
+    vsa_staff_ids: Iterable[UUID] = (),
+) -> set[UUID]:
+    """その訪問の「本人」たち (休み設計 §3-3 の判定・ここだけに書く).
+
+    primary の枠を握る人 (``primary_owner_id``) ＋ 2 名体制の 2 人目 (VSA に入っている人・
+    古い行は ``secondary_staff_id``)。
+    """
+    owners = set(vsa_staff_ids)
+    primary = primary_owner_id(primary_staff_id, manual_staff_override, course_staff_id)
+    if primary is not None:
+        owners.add(primary)
+    if secondary_staff_id is not None:
+        owners.add(secondary_staff_id)
+    return owners
+
+
 def _owns_primary(visit: Visit, course: Course | None, staff_id: UUID) -> bool:
-    """primary の枠を本人が握っているか (盤面の行決定と同じ・明示の担当なしは除く)."""
-    if visit.primary_staff_id is not None:
-        return visit.primary_staff_id == staff_id
-    if visit.manual_staff_override:
-        return False
-    return course is not None and course.assigned_staff_id == staff_id
+    """primary の枠を本人が握っているか."""
+    owner = primary_owner_id(
+        visit.primary_staff_id,
+        bool(visit.manual_staff_override),
+        course.assigned_staff_id if course is not None else None,
+    )
+    return owner == staff_id
+
+
+@dataclass(frozen=True)
+class OwnedVisit:
+    """本人の訪問 1 件 (``load_owned_visits_between`` の値)."""
+
+    visit_id: UUID
+    staff_id: UUID
+    visit_date: date
+    start_time: time
+    end_time: time
+    patient_id: UUID
+    status: str
+    #: primary の枠を握っているか (偽 = 2 名体制の 2 人目)。
+    on_primary: bool
+
+    @property
+    def planned(self) -> bool:
+        return self.status == VISIT_STATUS_PLANNED
+
+
+async def load_owned_visits_between(
+    db: AsyncSession,
+    date_from: date,
+    date_to: date,
+    *,
+    include_cancelled: bool = False,
+) -> dict[tuple[UUID, date], list[OwnedVisit]]:
+    """``date_from``〜``date_to`` の訪問を {(本人, 日): [訪問]} で返す (クエリは 2 回だけ).
+
+    本人の判定は ``visit_owner_ids``。削除した訪問は含めず、取消は ``include_cancelled``
+    のときだけ。月の表・検知のように日や職員の数だけ読まないための入口。
+    """
+    stmt = (
+        select(
+            Visit.id,
+            Visit.visit_date,
+            Visit.start_time,
+            Visit.end_time,
+            Visit.patient_id,
+            Visit.status,
+            Visit.primary_staff_id,
+            Visit.manual_staff_override,
+            Visit.secondary_staff_id,
+            Course.assigned_staff_id,
+        )
+        .outerjoin(Course, (Course.id == Visit.course_id) & (Course.deleted_at.is_(None)))
+        .where(
+            Visit.visit_date >= date_from,
+            Visit.visit_date <= date_to,
+            Visit.deleted_at.is_(None),
+        )
+    )
+    if not include_cancelled:
+        stmt = stmt.where(Visit.status != VISIT_STATUS_CANCELLED)
+    rows = (await db.execute(stmt)).all()
+    vsa: dict[UUID, set[UUID]] = {}
+    for vid, sid in (
+        await db.execute(
+            select(VisitStaffAssignment.visit_id, VisitStaffAssignment.staff_id)
+            .join(Visit, Visit.id == VisitStaffAssignment.visit_id)
+            .where(
+                Visit.visit_date >= date_from,
+                Visit.visit_date <= date_to,
+                Visit.deleted_at.is_(None),
+            )
+        )
+    ).all():
+        vsa.setdefault(vid, set()).add(sid)
+    out: dict[tuple[UUID, date], list[OwnedVisit]] = {}
+    for vid, vday, start, end, pid, vstatus, primary, manual, secondary, course_staff in rows:
+        primary_owner = primary_owner_id(primary, bool(manual), course_staff)
+        for sid in visit_owner_ids(
+            primary_staff_id=primary,
+            manual_staff_override=bool(manual),
+            course_staff_id=course_staff,
+            secondary_staff_id=secondary,
+            vsa_staff_ids=vsa.get(vid, ()),
+        ):
+            out.setdefault((sid, vday), []).append(
+                OwnedVisit(vid, sid, vday, start, end, pid, vstatus, primary_owner == sid)
+            )
+    for visits in out.values():
+        visits.sort(key=lambda v: (v.start_time, str(v.visit_id)))
+    return out
 
 
 @dataclass
@@ -233,10 +355,16 @@ async def _owned_hit_visits(
     targets: list[_Target] = []
     skipped: list[Visit] = []
     for visit, course in data.rows:
-        on_primary = _owns_primary(visit, course, staff_id)
-        second = staff_id in data.vsa.get(visit.id, set()) or visit.secondary_staff_id == staff_id
-        if not on_primary and not second:
+        owners = visit_owner_ids(
+            primary_staff_id=visit.primary_staff_id,
+            manual_staff_override=bool(visit.manual_staff_override),
+            course_staff_id=course.assigned_staff_id if course is not None else None,
+            secondary_staff_id=visit.secondary_staff_id,
+            vsa_staff_ids=data.vsa.get(visit.id, ()),
+        )
+        if staff_id not in owners:
             continue
+        on_primary = _owns_primary(visit, course, staff_id)
         if not visit_hits_leave(leave_type, visit.start_time, visit.end_time):
             continue
         if visit.status != VISIT_STATUS_PLANNED:
@@ -685,6 +813,7 @@ async def apply_staff_leave(
                 [
                     UnassignedNotice(
                         staff_name=staff.name,
+                        staff_id=staff_id,
                         day=day,
                         patient_count=result.moved_patient_count,
                         visit_count=len(result.moved_visit_ids),
@@ -836,6 +965,10 @@ async def write_override_day(
             notify=False,
         )
     group = uuid.uuid4()
+    if actor is not None:
+        # 時間変更を書く新しい操作: ほかの記録と同じく先に redo 枝を消す
+        # (write_custom_time は group を渡すと消さないため、ここで 1 回だけ)。
+        await clear_redo_branch(db, user_id=actor.id, iso_year=y, iso_week=w)
     if row is not None and row.override_type in LEAVE_TYPES:
         # 休み → 時間変更: 先に休みを取り消す (取り消しの記録・last_leave_changed_at)。
         await cancel_staff_leave(
@@ -984,6 +1117,7 @@ async def notify_leave_results(
     notices = [
         UnassignedNotice(
             staff_name=names.get(r.staff_id) or "職員",
+            staff_id=r.staff_id,
             day=r.day,
             patient_count=r.moved_patient_count,
             visit_count=len(r.moved_visit_ids),
@@ -1102,6 +1236,7 @@ async def settle_leave_unassign(
             notices.append(
                 UnassignedNotice(
                     staff_name=names.get(sid) or "職員",
+                    staff_id=sid,
                     day=day,
                     patient_count=len(moved.moved_patient_ids),
                     visit_count=len(moved.moved_visit_ids),
@@ -1126,15 +1261,15 @@ async def find_visits_on_leave(
         return []
     days = [start + timedelta(days=i) for i in range((date_to - start).days + 1)]
     entries = await _leave_entries(db, days, list(staff_ids) if staff_ids is not None else None)
+    if not entries:
+        return []
+    # 範囲の訪問を 1 回で読む (休みのある日の数だけ読まない)。
+    owned = await load_owned_visits_between(db, start, date_to)
     out: list[VisitOnLeave] = []
-    loaded: dict[date, _DayData] = {}
     for sid, day, leave_type in entries:
-        if day not in loaded:
-            loaded[day] = await _load_day(db, day)
-        targets, _skipped = await _owned_hit_visits(db, sid, day, leave_type, loaded[day])
         out.extend(
             VisitOnLeave(
-                visit_id=v.id,
+                visit_id=v.visit_id,
                 staff_id=sid,
                 visit_date=day,
                 start_time=v.start_time,
@@ -1142,7 +1277,8 @@ async def find_visits_on_leave(
                 patient_id=v.patient_id,
                 leave_type=leave_type,
             )
-            for v, _p, _c in targets
+            for v in owned.get((sid, day), [])
+            if v.planned and visit_hits_leave(leave_type, v.start_time, v.end_time)
         )
     return out
 
@@ -1206,6 +1342,10 @@ async def count_visits_on_leave(db: AsyncSession, date_from: date, date_to: date
 
 
 __all__ = [
+    "OwnedVisit",
+    "load_owned_visits_between",
+    "primary_owner_id",
+    "visit_owner_ids",
     "LEAVE_ORIGINS",
     "LEAVE_WRITE_CONFLICT_DETAIL",
     "LEAVE_SOURCES",

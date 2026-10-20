@@ -417,8 +417,16 @@ async def _ensure_staff_off_creatable(
 
 
 async def _commit_or_409(db: AsyncSession) -> None:
+    await _write_or_409(db, flush_only=False)
+
+
+async def _write_or_409(db: AsyncSession, *, flush_only: bool) -> None:
+    """commit (または flush) し、制約の衝突は 409／そのほかは 422 にする."""
     try:
-        await db.commit()
+        if flush_only:
+            await db.flush()
+        else:
+            await db.commit()
     except IntegrityError as exc:
         await db.rollback()
         msg = str(exc).lower()
@@ -501,6 +509,12 @@ async def create_pending_request(
         payload_dict=payload_dict,
     )
     db.add(row)
+    # 休みの申請は管理者全員へ知らせる (ベル・同じ TX・§5-2)。行を先に書いて (同じ日の
+    # 申請中の部分 UNIQUE はここで 409) から通知に申請の id を入れる。
+    await _write_or_409(db, flush_only=True)
+    from app.services.leave_notify import notify_leave_requested
+
+    await notify_leave_requested(db, request=row)
     await _commit_or_409(db)
     await db.refresh(row)
     return _to_read(row)
@@ -914,10 +928,17 @@ async def reject_pending_request(
             detail="Request is already rejected",
         )
 
+    # 空白だけの理由は理由なしと同じ (休み・勤務表の却下とそろえる)。
+    reason = payload.rejection_reason.strip()
+    if not reason:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="却下の理由を入れてください",
+        )
     locked.status = RequestStatus.REJECTED.value
     locked.rejected_by = user.id
     locked.rejected_at = datetime.now(UTC)
-    locked.rejection_reason = payload.rejection_reason
+    locked.rejection_reason = reason
 
     # 休み申請 (staff_off) の却下は申請者本人へ通知 (同一 TX・staff_off 以外は no-op)
     from app.services.leave_notify import notify_leave_rejected

@@ -28,7 +28,7 @@ from app.schemas.staff_overrides import (
     _db_type_to_label,
 )
 from app.services.leave_notify import notify_leave_cancelled
-from app.services.op_log_service import fmt_time, set_staff_override
+from app.services.op_log_service import clear_redo_branch, fmt_time, set_staff_override
 from app.services.staff_leave import (
     LEAVE_WRITE_CONFLICT_DETAIL,
     StaffLeaveError,
@@ -366,6 +366,11 @@ async def update_override(
             status_code=status.HTTP_409_CONFLICT,
             detail="Conflict: override already exists for that date",
         )
+    # 新しい操作: 元の日・新しい日の週の redo 枝を先に消す (下の書き込みは同じ op_group を
+    # 渡すので、時間変更だけのときは中で消されない)。
+    for week_day in {old_date, new_date}:
+        iso = week_day.isocalendar()
+        await clear_redo_branch(db, user_id=user.id, iso_year=iso.year, iso_week=iso.week)
     if row.override_type in LEAVE_TYPES and (new_date != old_date or new_type not in LEAVE_TYPES):
         # 元が休み: 休み→時間変更・日付の移動は、先に休みを取り消す (同じ op_group)。
         try:
