@@ -396,10 +396,13 @@ class LeaveMonthSummary(BaseModel):
     confirmed: bool
     #: 管理者: いちばん新しい確定の時刻／職員: 本人の確定の時刻。
     confirmed_at: datetime | None = None
-    #: 管理者だけ (職員には None): 確定済みの人数と表の人数・申請中の件数。
+    #: 管理者だけ (職員には None): 確定済みの人数と表の人数・申請中の件数
+    #: (メニューの未処理件数)・必要休日数に足りない常勤の人数・カイポケで要対応の件数。
     confirmed_staff_count: int | None = None
     staff_count: int | None = None
     pending_count: int | None = None
+    short_staff_count: int | None = None
+    kaipoke_action_count: int | None = None
 
 
 class LeaveDayInput(BaseModel):
@@ -438,6 +441,31 @@ class LeaveCancelResult(BaseModel):
     staff_id: UUID
     date: date
     cancelled_type: LeaveTypeCode
+    #: この休みで担当なしへ移した訪問の件数 (自動では戻らない・トーストの「N 件」)。
+    moved_visit_count: int = 0
+
+
+class LeaveDayBulkInput(BaseModel):
+    """``POST /leave/day/bulk`` — 「この日の全員に公休を入れる」(1 トランザクション).
+
+    ``staff_ids`` が無ければ、非常勤・型で勤務しない曜日の人・在籍でない人・その日に申請中の人・
+    休みが入っている人を除く全員 (新人は含む)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    date: date
+    override_type: LeaveTypeCode = "off"
+    staff_ids: list[UUID] | None = Field(default=None, max_length=200)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class LeaveDayBulkResult(BaseModel):
+    date: date
+    override_type: LeaveTypeCode
+    applied: list[LeaveDayResult]
+    #: 担当なしへ移した訪問の合計 (管理者への通知は 1 通)。
+    moved_visit_count: int
 
 
 class LeaveApproveInput(BaseModel):
@@ -497,6 +525,14 @@ class LeaveShortStaff(BaseModel):
     holidays: float
     required_holidays: int
     shortfall: float
+
+
+class LeaveConfirmInput(BaseModel):
+    """``POST /leave/month/{month}/confirm`` の本文 (任意)。``staff_ids`` が無ければ表の全員."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    staff_ids: list[UUID] | None = Field(default=None, min_length=1, max_length=200)
 
 
 class LeaveConfirmResult(BaseModel):
