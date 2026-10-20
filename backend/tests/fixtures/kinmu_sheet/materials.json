@@ -1,0 +1,271 @@
+{
+ "month": "2026-10-01",
+ "required_hours": 160.0,
+ "staff": [
+  {
+   "key": "A",
+   "name": "職員A",
+   "title": "管理責任者",
+   "job": "看護師",
+   "work_form": "A",
+   "office_label": "稲毛・都賀",
+   "full_time": true,
+   "admin_hours_per_day": 4.0,
+   "shift": {
+    "start": "09:00",
+    "end": "18:00",
+    "weekdays": [
+     0,
+     1,
+     2,
+     3,
+     4
+    ]
+   },
+   "overrides": {
+    "2026-10-12": {
+     "type": "off"
+    }
+   }
+  },
+  {
+   "key": "B",
+   "name": "職員B",
+   "title": "課長",
+   "job": "看護師",
+   "work_form": "A",
+   "office_label": "稲毛",
+   "full_time": true,
+   "admin_hours_per_day": null,
+   "shift": {
+    "start": "09:00",
+    "end": "18:00",
+    "weekdays": [
+     0,
+     1,
+     2,
+     3,
+     4
+    ]
+   },
+   "overrides": {
+    "2026-09-28": {
+     "type": "off"
+    },
+    "2026-10-03": {
+     "type": "custom_time",
+     "start": "09:00",
+     "end": "18:00"
+    },
+    "2026-10-22": {
+     "type": "off"
+    },
+    "2026-10-24": {
+     "type": "custom_time",
+     "start": "09:00",
+     "end": "18:00"
+    },
+    "2026-10-30": {
+     "type": "off"
+    }
+   }
+  },
+  {
+   "key": "C",
+   "name": "職員C",
+   "title": null,
+   "job": "看護師",
+   "work_form": "A",
+   "office_label": "稲毛",
+   "full_time": true,
+   "admin_hours_per_day": null,
+   "shift": {
+    "start": "09:00",
+    "end": "18:00",
+    "weekdays": [
+     0,
+     1,
+     2,
+     3,
+     4
+    ]
+   },
+   "overrides": {
+    "2026-09-29": {
+     "type": "off"
+    },
+    "2026-10-26": {
+     "type": "off"
+    },
+    "2026-10-31": {
+     "type": "custom_time",
+     "start": "09:00",
+     "end": "18:00"
+    }
+   }
+  },
+  {
+   "key": "D",
+   "name": "職員D",
+   "title": null,
+   "job": "看護師",
+   "work_form": "A",
+   "office_label": "都賀",
+   "full_time": true,
+   "admin_hours_per_day": null,
+   "shift": {
+    "start": "09:00",
+    "end": "18:00",
+    "weekdays": [
+     0,
+     1,
+     2,
+     3,
+     4
+    ]
+   },
+   "overrides": {
+    "2026-10-06": {
+     "type": "off"
+    },
+    "2026-10-07": {
+     "type": "off"
+    },
+    "2026-10-10": {
+     "type": "custom_time",
+     "start": "09:00",
+     "end": "18:00"
+    }
+   }
+  },
+  {
+   "key": "E",
+   "name": "職員E",
+   "title": null,
+   "job": "看護師",
+   "work_form": "A",
+   "office_label": "稲毛",
+   "full_time": true,
+   "admin_hours_per_day": null,
+   "shift": {
+    "start": "08:30",
+    "end": "17:30",
+    "weekdays": [
+     0,
+     1,
+     2,
+     3,
+     4
+    ]
+   },
+   "overrides": {
+    "2026-10-06": {
+     "type": "pm_off"
+    },
+    "2026-10-12": {
+     "type": "off"
+    },
+    "2026-10-13": {
+     "type": "off"
+    },
+    "2026-10-17": {
+     "type": "custom_time",
+     "start": "08:30",
+     "end": "17:30"
+    },
+    "2026-10-21": {
+     "type": "pm_off"
+    },
+    "2026-10-24": {
+     "type": "custom_time",
+     "start": "08:30",
+     "end": "17:30"
+    }
+   }
+  },
+  {
+   "key": "F",
+   "name": "職員F",
+   "title": null,
+   "job": "看護師",
+   "work_form": "A",
+   "office_label": "稲毛",
+   "full_time": true,
+   "admin_hours_per_day": null,
+   "shift": {
+    "start": "09:00",
+    "end": "18:00",
+    "weekdays": [
+     0,
+     1,
+     2,
+     3,
+     4
+    ]
+   },
+   "overrides": {
+    "2026-09-30": {
+     "type": "off"
+    },
+    "2026-10-03": {
+     "type": "custom_time",
+     "start": "09:00",
+     "end": "18:00"
+    },
+    "2026-10-15": {
+     "type": "off"
+    },
+    "2026-10-17": {
+     "type": "custom_time",
+     "start": "09:00",
+     "end": "18:00"
+    },
+    "2026-10-23": {
+     "type": "off"
+    }
+   }
+  },
+  {
+   "key": "G",
+   "name": "職員G",
+   "title": null,
+   "job": "看護師",
+   "work_form": "A",
+   "office_label": "稲毛",
+   "full_time": true,
+   "admin_hours_per_day": null,
+   "shift": {
+    "start": "09:00",
+    "end": "18:00",
+    "weekdays": [
+     0,
+     1,
+     2,
+     3,
+     4
+    ]
+   },
+   "overrides": {
+    "2026-09-28": {
+     "type": "off"
+    },
+    "2026-10-05": {
+     "type": "off"
+    },
+    "2026-10-10": {
+     "type": "custom_time",
+     "start": "09:00",
+     "end": "18:00"
+    },
+    "2026-10-26": {
+     "type": "off"
+    },
+    "2026-10-31": {
+     "type": "custom_time",
+     "start": "09:00",
+     "end": "18:00"
+    }
+   }
+  }
+ ]
+}

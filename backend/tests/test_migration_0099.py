@@ -217,7 +217,7 @@ def test_migration_0099_columns_tables_and_baseline(tmp_path: Path) -> None:
         "kaipoke_external_id",
         "updated_at",
     }
-    assert "reason" in {c["name"] for c in insp.get_columns("kinmu_sheets")}
+    assert {"reason", "plan_snapshot"} <= {c["name"] for c in insp.get_columns("kinmu_sheets")}
     assert {c["name"] for c in insp.get_columns("leave_months")} == {
         "month",
         "required_hours",
