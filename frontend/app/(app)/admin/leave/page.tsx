@@ -32,7 +32,9 @@ import { BulkApproveDialog } from '@/components/leave/BulkApproveDialog';
 import { ClosedDaysDialog } from '@/components/leave/ClosedDaysDialog';
 import { LeaveCellPopover } from '@/components/leave/LeaveCellPopover';
 import { LeaveComparePanel } from '@/components/leave/LeaveComparePanel';
+import { KinmuRebuildDialog } from '@/components/leave/KinmuRebuildDialog';
 import { LeaveConfirmDialog } from '@/components/leave/LeaveConfirmDialog';
+import { LeaveConfirmOutcome } from '@/components/leave/LeaveConfirmOutcome';
 import { LeavePendingPanel } from '@/components/leave/LeavePendingPanel';
 import { LeaveSheetGrid } from '@/components/leave/LeaveSheetGrid';
 import { cn } from '@/lib/utils';
@@ -69,6 +71,7 @@ import {
   useSetLeaveDayBulk,
 } from '@/lib/queries/leave';
 import type {
+  LeaveConfirmResult,
   LeaveDayResult,
   LeaveMonthView,
   LeavePendingItem,
@@ -157,6 +160,10 @@ function LeaveSheetPage() {
   const putMonth = usePutLeaveMonth();
   const confirmMonth = useConfirmLeaveMonth();
   const [confirming, setConfirming] = useState(false);
+  /** 確定の結果 (送信・勤務表の予定版)。月を変えたら消す。 */
+  const [confirmOutcome, setConfirmOutcome] = useState<LeaveConfirmResult | null>(null);
+  /** 勤務表を作る・作り直す小窓 (種類)。 */
+  const [rebuildKind, setRebuildKind] = useState<'plan' | 'final' | null>(null);
 
   const staffById = useMemo(() => new Map((view?.staff ?? []).map((s) => [s.id, s])), [view]);
   const dayByDate = useMemo(() => new Map((view?.days ?? []).map((d) => [d.date, d])), [view]);
@@ -208,6 +215,7 @@ function LeaveSheetPage() {
   // 月を変えたら小窓・光りを閉じる
   const changeMonth = (delta: number) => {
     setPop(null);
+    setConfirmOutcome(null);
     setHighlight(null);
     setMonth((m) => addMonths(m, delta));
   };
@@ -353,6 +361,7 @@ function LeaveSheetPage() {
       }
       const r = await confirmMonth.mutateAsync(month);
       setConfirmOpen(false);
+      setConfirmOutcome(r);
       toast.success(`${fmtMonthJp(month)}を確定し、${r.notified_count} 人へ通知しました`, {
         description:
           [
@@ -542,6 +551,13 @@ function LeaveSheetPage() {
         </div>
 
         {view && <StatusLine view={view} />}
+        {confirmOutcome && (
+          <LeaveConfirmOutcome
+            result={confirmOutcome}
+            onBuildPlan={() => setRebuildKind('plan')}
+            onDismiss={() => setConfirmOutcome(null)}
+          />
+        )}
 
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-text-muted">押すと入るもの</span>
@@ -655,15 +671,15 @@ function LeaveSheetPage() {
                   onOpenCell={openCellFor}
                 />
               ) : (
-                <LeaveComparePanel
-                  key={month}
-                  month={month}
-                  baselinePendingCount={view.compare.baseline_pending_count}
-                />
+                <LeaveComparePanel key={month} month={month} recordActuals={view.record_actuals} />
               )}
             </div>
           </div>
-          <DriveCard month={month} />
+          <DriveCard
+            month={month}
+            recordedAt={view.record_actuals?.actual_recorded_at ?? null}
+            onRebuild={setRebuildKind}
+          />
         </>
       )}
 
@@ -701,6 +717,11 @@ function LeaveSheetPage() {
 
       {view && (
         <>
+          <KinmuRebuildDialog
+            kind={rebuildKind}
+            onClose={() => setRebuildKind(null)}
+            month={month}
+          />
           <LeaveConfirmDialog
             open={confirmOpen}
             onOpenChange={setConfirmOpen}
@@ -875,7 +896,16 @@ function Legend() {
 }
 
 /** 勤務表 (Google スプレッドシート) の一覧と置き場の接続の状態 (§7-2・§7-3)。 */
-function DriveCard({ month }: { month: string }) {
+function DriveCard({
+  month,
+  recordedAt,
+  onRebuild,
+}: {
+  month: string;
+  /** 実績を記録した時刻 (確定版は記録した月だけ作れる)。 */
+  recordedAt: string | null;
+  onRebuild: (kind: 'plan' | 'final') => void;
+}) {
   const drive = useGoogleDriveStatus();
   const sheets = useKinmuSheets(month);
   const st = drive.data;
@@ -900,6 +930,24 @@ function DriveCard({ month }: { month: string }) {
             <ExternalLink className="h-4 w-4" />
           </Link>
         </Button>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" size="sm" variant="outline" onClick={() => onRebuild('plan')}>
+          予定版を作る・作り直す…
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={!recordedAt}
+          title={recordedAt ? undefined : '実績を記録した月だけ作れます'}
+          onClick={() => onRebuild('final')}
+        >
+          確定版を作り直す…
+        </Button>
+        {!recordedAt && (
+          <span className="text-xs text-text-muted">確定版は実績を記録した月だけ作れます</span>
+        )}
       </div>
       <div data-testid="kinmu-sheets">
         {sheets.isError ? (

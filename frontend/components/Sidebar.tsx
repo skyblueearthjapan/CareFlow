@@ -90,9 +90,9 @@ export function Sidebar({ collapsed }: SidebarProps) {
   const role = session?.user?.role;
   const width = collapsed ? 'w-[72px]' : 'w-[232px]';
   const isAdmin = isAdminRole(role);
-  // 「休み・勤務表」の未処理の申請の件数 = いま組んでいる月 (来月) の申請中 (管理者のときだけ読む)
+  // 「休み・勤務表」の未処理の申請の件数 = 月をまたいだ申請中 (summary の pending_total・管理者だけ)
   const leaveSummary = useLeaveMonthSummary(upcomingLeaveMonth(), isAdmin, LEAVE_PENDING_POLL_MS);
-  const leavePendingCount = isAdmin ? (leaveSummary.data?.pending_count ?? 0) : 0;
+  const leavePendingCount = isAdmin ? (leaveSummary.data?.pending_total ?? 0) : 0;
 
   const items = NAV_ITEMS.filter((item) => {
     // strictAdmin = 管理者のみ表示。ロール二軸(mig 0069)以降アカウント権限は

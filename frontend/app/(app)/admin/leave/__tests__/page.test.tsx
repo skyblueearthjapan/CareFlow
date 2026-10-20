@@ -58,8 +58,13 @@ vi.mock('@/lib/queries/leaveKaipoke', () => ({
   useApplyCompare: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useOutboundPreview: () => ({ data: undefined, isError: false }),
   useStartOutbound: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useOutboundJob: () => ({ data: undefined }),
+  useOutboundJob: (id: string | null) => ({
+    data: id ? outboundJobData : undefined,
+    isError: false,
+    refetch: vi.fn(),
+  }),
 }));
+let outboundJobData: unknown = undefined;
 
 vi.mock('@/lib/queries/googleDrive', () => ({
   useGoogleDriveStatus: () => ({
@@ -84,6 +89,8 @@ const m = {
   deleteClosed: mutation(),
   putMonth: mutation(),
   confirm: mutation(),
+  rebuild: mutation(),
+  record: mutation(),
 };
 vi.mock('@/lib/queries/leave', async (importOriginal) => {
   const actual = await importOriginal<typeof LeaveQueries>();
@@ -106,6 +113,9 @@ vi.mock('@/lib/queries/leave', async (importOriginal) => {
     useDeleteClosedDay: () => m.deleteClosed,
     usePutLeaveMonth: () => m.putMonth,
     useConfirmLeaveMonth: () => m.confirm,
+    useRebuildKinmuSheet: () => m.rebuild,
+    useRecordActuals: () => m.record,
+    leaveErrorBlockers: actual.leaveErrorBlockers,
   };
 });
 
@@ -1020,7 +1030,148 @@ describe('右の一覧のタブ', () => {
     expect(screen.getByRole('complementary', { name: 'カイポケとの差分' })).toBeInTheDocument();
     expect(screen.queryByRole('complementary', { name: '申請中の休み' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'カイポケと比べる' })).toBeInTheDocument();
+    // 押せるかはサーバーの判定 (月の表の record_actuals) で決める。無ければ読み込み中で押せない
     expect(screen.getByRole('button', { name: '実績を記録する' })).toBeDisabled();
+  });
+});
+
+describe('確定のあと (送信・勤務表の予定版)', () => {
+  const RESULT = {
+    month: '2026-11-01',
+    confirmed_at: '2026-10-21T01:00:00Z',
+    confirmed_staff_count: 4,
+    notified_count: 3,
+    pending_remaining: 0,
+    short_staff: [],
+    required_hours: 160,
+  };
+
+  async function confirmWith(extra: Record<string, unknown>) {
+    m.confirm.mutateAsync.mockResolvedValue({ ...RESULT, ...extra });
+    render(<AdminLeavePage />);
+    fireEvent.click(screen.getByRole('button', { name: 'この月を確定して通知' }));
+    const dlg = await screen.findByRole('dialog', { name: '2026年11月を確定して通知' });
+    fireEvent.click(within(dlg).getByRole('button', { name: 'このまま確定する' }));
+    return screen.findByTestId('confirm-outcome');
+  }
+
+  it('送信を始めたら進み具合を読み、予定版を作れたら開ける', async () => {
+    outboundJobData = {
+      job: {
+        id: 'out-1',
+        status: 'running',
+        done: 1,
+        total: 2,
+        results: [],
+        failed: [],
+        stale: false,
+      },
+      count: 2,
+      items: [],
+      sent_count: 0,
+      failed_count: 0,
+      skipped_count: 0,
+      needs_action: [],
+    };
+    const card = await confirmWith({
+      outbound: { started: true, job_id: 'aaaaaaa9-aaaa-4aaa-8aaa-aaaaaaaaaaaa', count: 2 },
+      kinmu_sheet: {
+        created: true,
+        kind: 'plan',
+        sheet: {
+          id: 'bbbbbbb1-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          month: '2026-11-01',
+          kind: 'plan',
+          version: 1,
+          url: 'https://docs.google.com/spreadsheets/d/x',
+          created_at: '2026-10-21T01:00:00Z',
+        },
+      },
+    });
+    expect(card).toHaveTextContent('カイポケへ休みを 2 件送っています。');
+    expect(within(card).getByTestId('outbound-progress')).toHaveTextContent(
+      'カイポケへ送信中（1/2 週）',
+    );
+    expect(card).toHaveTextContent('勤務表の予定版を作りました');
+    expect(within(card).getByRole('link', { name: '開く' })).toHaveAttribute(
+      'href',
+      'https://docs.google.com/spreadsheets/d/x',
+    );
+    outboundJobData = undefined;
+  });
+
+  it('送らなかった理由・予定版を作れなかった理由と「作る」(理由は必須)', async () => {
+    m.rebuild.mutateAsync.mockResolvedValue({ created: true, kind: 'plan', sheet: null });
+    const card = await confirmWith({
+      outbound: {
+        started: false,
+        count: 0,
+        reason: 'まだカイポケと比べていないので、休みは送りません',
+      },
+      kinmu_sheet: {
+        created: false,
+        kind: 'plan',
+        sheet: null,
+        reason: 'Google ドライブに接続していません',
+      },
+    });
+    expect(card).toHaveTextContent(
+      'カイポケへは送りませんでした：まだカイポケと比べていないので、休みは送りません',
+    );
+    expect(card).toHaveTextContent(
+      '勤務表の予定版を作れませんでした：Google ドライブに接続していません',
+    );
+    fireEvent.click(within(card).getByRole('button', { name: '作る' }));
+    const dlg = await screen.findByRole('dialog', { name: '2026年11月の勤務表（予定版）を作る' });
+    const go = within(dlg).getByRole('button', { name: '作る' });
+    expect(go).toBeDisabled();
+    fireEvent.change(within(dlg).getByLabelText(/作る理由/), {
+      target: { value: 'ドライブにつないだ' },
+    });
+    fireEvent.click(go);
+    expect(m.rebuild.mutateAsync).toHaveBeenCalledWith({
+      month: '2026-11',
+      kind: 'plan',
+      reason: 'ドライブにつないだ',
+    });
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('勤務表の予定版を作りました'));
+  });
+});
+
+describe('勤務表の作り直し', () => {
+  it('確定版は実績を記録した月だけ作り直せる', async () => {
+    const { unmount } = render(<AdminLeavePage />);
+    expect(screen.getByRole('button', { name: '確定版を作り直す…' })).toBeDisabled();
+    expect(screen.getByTestId('drive-card')).toHaveTextContent(
+      '確定版は実績を記録した月だけ作れます',
+    );
+    unmount();
+    view = makeView({
+      record_actuals: { ready: false, blockers: [], actual_recorded_at: '2026-12-01T01:00:00Z' },
+    });
+    m.rebuild.mutateAsync.mockResolvedValue({
+      created: false,
+      kind: 'final',
+      sheet: null,
+      reason: 'Google ドライブにもう一度接続してください',
+    });
+    render(<AdminLeavePage />);
+    fireEvent.click(screen.getByRole('button', { name: '確定版を作り直す…' }));
+    const dlg = await screen.findByRole('dialog', { name: '2026年11月の勤務表（確定版）を作る' });
+    fireEvent.change(within(dlg).getByLabelText(/作る理由/), {
+      target: { value: '休みを合わせた' },
+    });
+    fireEvent.click(within(dlg).getByRole('button', { name: '作る' }));
+    expect(m.rebuild.mutateAsync).toHaveBeenCalledWith({
+      month: '2026-11',
+      kind: 'final',
+      reason: '休みを合わせた',
+    });
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('勤務表の確定版を作れませんでした', {
+        description: 'Google ドライブにもう一度接続してください',
+      }),
+    );
   });
 });
 

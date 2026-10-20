@@ -23,6 +23,8 @@ import {
   leaveMonthReadSchema,
   leaveMonthSummarySchema,
   leaveMonthViewSchema,
+  leaveKinmuSheetOutcomeSchema,
+  leaveRecordActualsResultSchema,
   leaveRejectResultSchema,
   officeClosedDaySchema,
   type LeaveApproveBatchResult,
@@ -37,6 +39,8 @@ import {
   type LeaveMonthRead,
   type LeaveMonthSummary,
   type LeaveMonthView,
+  type LeaveKinmuSheetOutcome,
+  type LeaveRecordActualsResult,
   type LeaveRejectResult,
   type LeaveTypeCode,
   type OfficeClosedDay,
@@ -93,6 +97,24 @@ export function leaveErrorRequestId(e: unknown): string | null {
     }
   }
   return null;
+}
+
+/**
+ * 「実績を記録する」の 409 の `detail.blockers` の message の一覧。無ければ空。
+ */
+export function leaveErrorBlockers(e: unknown): string[] {
+  if (e instanceof ApiError && e.body && typeof e.body === 'object' && 'detail' in e.body) {
+    const detail = (e.body as { detail: unknown }).detail;
+    if (detail && typeof detail === 'object' && 'blockers' in detail) {
+      const list = (detail as { blockers: unknown }).blockers;
+      if (Array.isArray(list)) {
+        return list
+          .map((b) => (b && typeof b === 'object' && 'message' in b ? String(b.message) : ''))
+          .filter(Boolean);
+      }
+    }
+  }
+  return [];
 }
 
 /** 休みが動いたあとに読み直すもの (月の表・職員ごとの休み・スケジュール系)。 */
@@ -354,5 +376,44 @@ export function useConfirmLeaveMonth() {
       void qc.invalidateQueries({ queryKey: LEAVE_KEY });
       void qc.invalidateQueries({ queryKey: ['staff-shift-confirmations'] });
     },
+  });
+}
+
+/** POST /month/{month}/record-actuals — 実績を記録し、勤務表の確定版を作る。 */
+export function useRecordActuals() {
+  const { accessToken, refreshToken } = useTokens();
+  const qc = useQueryClient();
+  return useMutation<LeaveRecordActualsResult, Error, string>({
+    mutationFn: async (month) => {
+      const raw = await fetcher<unknown>(`${BASE}/month/${month}/record-actuals`, {
+        method: 'POST',
+        accessToken,
+        refreshToken,
+      });
+      return leaveRecordActualsResultSchema.parse(raw);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: LEAVE_KEY }),
+  });
+}
+
+/** POST /month/{month}/kinmu-sheets/rebuild — 勤務表を作り直す・未作成なら作る (理由は必須)。 */
+export function useRebuildKinmuSheet() {
+  const { accessToken, refreshToken } = useTokens();
+  const qc = useQueryClient();
+  return useMutation<
+    LeaveKinmuSheetOutcome,
+    Error,
+    { month: string; kind: 'plan' | 'final'; reason: string }
+  >({
+    mutationFn: async ({ month, kind, reason }) => {
+      const raw = await fetcher<unknown>(`${BASE}/month/${month}/kinmu-sheets/rebuild`, {
+        method: 'POST',
+        body: JSON.stringify({ kind, reason }),
+        accessToken,
+        refreshToken,
+      });
+      return leaveKinmuSheetOutcomeSchema.parse(raw);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: LEAVE_KEY }),
   });
 }
