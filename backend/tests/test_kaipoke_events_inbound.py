@@ -54,6 +54,7 @@ class StubKaipokeClient:
         # individual_tasks_result の応答キュー (先頭から消費・尽きたら completed 既定)
         self.result_responses: list[dict[str, Any]] = []
         self.result_calls = 0
+        self.stop_calls = 0
 
     async def aclose(self) -> None:  # pragma: no cover
         pass
@@ -78,6 +79,10 @@ class StubKaipokeClient:
             self.async_job_id = str(payload.get("job_id") or "") or None
             return {"success": True, "async": True, "job_id": self.async_job_id}
         return {"success": True, "result": self._sync_result()}
+
+    async def stop(self) -> dict[str, Any]:
+        self.stop_calls += 1
+        return {"success": True}
 
     async def individual_tasks_result(self) -> dict[str, Any]:
         self.result_calls += 1
@@ -1141,3 +1146,168 @@ async def test_absorb_dry_run_writes_nothing(client, db, stub_kaipoke) -> None:
     assert manual.source == "manual"
     assert manual.external_id is None
     assert await _kaipoke_rows(db) == []
+
+
+# --- 8. 非同期の経路でも covered_dates を渡す・段階 0 の取り直しの間は 409 (段階 L #9) ---
+
+# 月曜 (7/20) だけ画面に出なかった週。
+_SHOWN_EXCEPT_MONDAY = [date(2026, 7, d).isoformat() for d in range(21, 26)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("week_dates", [None, _SHOWN_EXCEPT_MONDAY])
+async def test_async_preview_keeps_rows_on_days_not_shown(
+    client, db, stub_kaipoke, week_dates
+) -> None:
+    """月をまたぐ週: 画面に出なかった日 (月曜) のカイポケ行は、非同期の経路でも消さない。"""
+    from datetime import datetime
+
+    seeded = await _seed_staff(db)
+    admin = await _make_admin(db)
+    db.add(
+        StaffEvent(
+            staff_id=seeded["a"].id,
+            event_type="event",
+            title="朝会",
+            starts_at=datetime.combine(WEEK_START, time(9, 0)),
+            ends_at=datetime.combine(WEEK_START, time(9, 15)),
+            source="kaipoke",
+            external_id=f"1:1:{WEEK_START.isoformat()}",
+        )
+    )
+    await db.commit()
+    job_id = await _start(client, admin)
+    result: dict[str, Any] = {"success": True, "tasks": []}
+    if week_dates is not None:
+        result["week_dates"] = week_dates
+    stub_kaipoke.result_responses = [
+        {"success": True, "status": "completed", "job_id": job_id, "result": result}
+    ]
+
+    res = await client.get(_status_url(job_id), headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    changes = res.json()["preview"]["changes"]
+    deletes = [c for c in changes if c["action"] == "delete"]
+    if week_dates is None:
+        assert len(deletes) == 1  # 全部の日が出た扱い → カイポケに無いので消す
+    else:
+        assert deletes == []
+
+
+async def _source_job(db, *, op: str, minutes_ago: int = 0) -> KaipokeJob:
+    from datetime import UTC, datetime, timedelta
+
+    touched = datetime.now(UTC) - timedelta(minutes=minutes_ago)
+    job = KaipokeJob(
+        job_type="fetch",
+        status="running",
+        week_start=WEEK_START,
+        params={"op": op},
+        started_at=touched,
+        created_at=touched,
+        updated_at=touched,
+    )
+    db.add(job)
+    await db.commit()
+    return job
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", ["acceptance-refresh", "leave-compare", "leave-outbound"])
+async def test_job_start_409_while_source_job_running(client, db, stub_kaipoke, op) -> None:
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    await _source_job(db, op=op)
+
+    res = await client.post(
+        START_URL, headers=_bearer(admin), json={"weekStart": WEEK_START.isoformat()}
+    )
+    assert res.status_code == 409, res.text
+    res = await client.post(
+        PREVIEW_URL, headers=_bearer(admin), json={"weekStart": WEEK_START.isoformat()}
+    )
+    assert res.status_code == 409, res.text
+    assert stub_kaipoke.calls == []  # RPA は呼ばない
+    jobs = (await db.scalars(select(KaipokeJob))).all()
+    assert [j.params.get("op") for j in jobs] == [op]
+
+
+@pytest.mark.asyncio
+async def test_job_start_ignores_stale_source_job_and_other_ops(client, db, stub_kaipoke) -> None:
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    stale = await _source_job(db, op="leave-compare", minutes_ago=31)
+    # 段階 0 の取り直しではないジョブは、この入口の 409 の対象ではない (今までどおり)。
+    await _source_job(db, op="plan-actual-compare")
+
+    res = await client.post(
+        START_URL, headers=_bearer(admin), json={"weekStart": WEEK_START.isoformat()}
+    )
+    assert res.status_code == 202, res.text
+    await db.refresh(stale)
+    assert stale.status == "running"  # 残骸は書き換えない
+
+
+#: RPA を使う POST の入口のうち、409 を当てないもの (止める・決着させるだけ)。
+_GUARD_EXEMPT = {"stop_integration_job", "reconcile_jobs"}
+
+
+def test_every_rpa_post_entry_checks_source_jobs() -> None:
+    """``_kaipoke_dep`` に依存する POST の入口は、段階 0 の取り直しの 409 を必ず通る。"""
+    import ast
+    from pathlib import Path
+
+    import app.api.v1.integrations as integrations
+
+    tree = ast.parse(Path(integrations.__file__).read_text(encoding="utf-8"))
+    missing: list[str] = []
+    checked = 0
+    for node in tree.body:
+        if not isinstance(node, ast.AsyncFunctionDef) or node.name in _GUARD_EXEMPT:
+            continue
+        is_post = any(
+            isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr == "post"
+            for d in node.decorator_list
+        )
+        if not is_post or "_kaipoke_dep" not in ast.unparse(node.args):
+            continue
+        checked += 1
+        guarded = any(
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "_raise_if_source_job_running"
+            for n in ast.walk(node)
+        )
+        if not guarded:
+            missing.append(node.name)
+    assert missing == []
+    assert checked >= 16
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_running", [True, False])
+async def test_stop_does_not_stop_rpa_while_source_job_runs(
+    client, db, stub_kaipoke, source_running
+) -> None:
+    """取り直しが動いている間に別のジョブを止めても、RPA (= 取り直しの 1 本) は止めない。"""
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    target = await _source_job(db, op="events-preview")
+    if source_running:
+        await _source_job(db, op="leave-compare")
+
+    res = await client.post(f"/api/v1/integrations/jobs/{target.id}/stop", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "cancelled"
+    assert stub_kaipoke.stop_calls == (0 if source_running else 1)
+
+
+@pytest.mark.asyncio
+async def test_stop_source_job_itself_stops_rpa(client, db, stub_kaipoke) -> None:
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    target = await _source_job(db, op="leave-compare")
+
+    res = await client.post(f"/api/v1/integrations/jobs/{target.id}/stop", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    assert stub_kaipoke.stop_calls == 1

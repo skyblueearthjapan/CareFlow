@@ -477,9 +477,10 @@ def parse_csv_rows(csv_text: str) -> list[dict[str, str]]:
 
 
 def covered_dates_of(result: dict[str, Any]) -> list[str] | None:
-    """RPA の結果の ``week_dates`` (画面に出た日) → ISO 日付の並び。無ければ None。
+    """RPA の結果の ``week_dates`` (画面に出た日) → ISO 日付の並び。返らなければ None。
 
-    イベント取り込み (``integrations._events_covered_dates``) と同じ読み方 (読めない値は捨てる)。
+    読めない値は捨てる。``[]`` や全部読めないときは空の一覧のまま返す (= どの日も
+    表示を確かめられていない。None = RPA が返さなかった とは区別する)。
     """
     raw = result.get("week_dates")
     if not isinstance(raw, list):
@@ -490,7 +491,7 @@ def covered_dates_of(result: dict[str, Any]) -> list[str] | None:
             out.add(date.fromisoformat(str(value)))
         except ValueError:
             continue
-    return [d.isoformat() for d in sorted(out)] or None
+    return [d.isoformat() for d in sorted(out)]
 
 
 def _month_start(month: str) -> date:

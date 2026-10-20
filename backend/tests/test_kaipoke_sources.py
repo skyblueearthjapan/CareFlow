@@ -500,7 +500,9 @@ async def test_recently_updated_long_job_still_blocks(db) -> None:
 def test_covered_dates_of() -> None:
     assert covered_dates_of({}) is None
     assert covered_dates_of({"week_dates": "2026-10-19"}) is None
-    assert covered_dates_of({"week_dates": ["x"]}) is None
+    # 空・全部読めない一覧は None (返らなかった) にせず空のまま (= どの日も確かめられていない)。
+    assert covered_dates_of({"week_dates": []}) == []
+    assert covered_dates_of({"week_dates": ["x"]}) == []
     assert covered_dates_of({"week_dates": ["2026-10-20", "bad", "2026-10-19", "2026-10-20"]}) == [
         "2026-10-19",
         "2026-10-20",

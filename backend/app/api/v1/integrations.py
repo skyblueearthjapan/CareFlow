@@ -474,6 +474,28 @@ async def _settle_stale_jobs(
     return alive
 
 
+async def _raise_if_source_job_running(db: AsyncSession) -> None:
+    """段階 0 の取り直し・休みの送信 (``SOURCE_OPS``) が動いていれば 409。
+
+    それらは 1 本と 1 本の合間に RPA が空いて見えるため、RPA の状態だけでは
+    割り込みを止められない。残骸 (``updated_at`` が 30 分以上前) は数えない
+    (段階 0 の ``active_rpa_jobs`` と同じ扱い・書き換えない)。
+    """
+    from app.services.kaipoke.sources import SOURCE_OPS, active_rpa_jobs
+
+    running = [
+        job for job in await active_rpa_jobs(db) if (job.params or {}).get("op") in SOURCE_OPS
+    ]
+    if running:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "カイポケの材料の取り直し・休みの送信が動いています。"
+                "終わってからもう一度お試しください"
+            ),
+        )
+
+
 async def _notify_apply_result(db, job: KaipokeJob) -> None:
     """apply(本番反映)が失敗/スキップを含んで決着したら管理者へ通知を残す。
 
@@ -1172,6 +1194,7 @@ async def trigger_expand(
     user: Annotated[User, Depends(require_role("admin"))],
     kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
 ) -> JobAccepted:
+    await _raise_if_source_job_running(db)
     job = KaipokeJob(
         job_type="fetch",
         week_start=_month_to_week_start(payload.month),
@@ -1227,6 +1250,7 @@ async def trigger_export(
     user: Annotated[User, Depends(require_role("admin"))],
     kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
 ) -> JobAccepted:
+    await _raise_if_source_job_running(db)
     job = KaipokeJob(
         job_type="fetch",
         week_start=_month_to_week_start(payload.month),
@@ -1274,6 +1298,7 @@ async def trigger_diff(
     user: Annotated[User, Depends(require_role("admin"))],
     kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
 ) -> DiffAccepted:
+    await _raise_if_source_job_running(db)
     job = KaipokeJob(
         job_type="fetch",
         week_start=_month_to_week_start(payload.month),
@@ -1511,6 +1536,7 @@ async def trigger_diff_local(
     Correction を CorrectionSheet 化する。利用者名は name_match で patient へ解決
     (未解決は patient_id=None のまま可視化)。同期 export のため ~50s かかる。
     """
+    await _raise_if_source_job_running(db)
     from collections import defaultdict
 
     from app.models.patient import Patient
@@ -1637,6 +1663,7 @@ async def trigger_plan_actual_compare(
     レポート本体は ``GET /integrations/plan-actual-report`` が保存済み
     スナップショットから描く。
     """
+    await _raise_if_source_job_running(db)
     from app.services.kaipoke.plan_actual_job import OP, run_plan_actual_job
 
     # (a) 事前チェック: RPA が塞がっていれば起動しない。ここで弾かないと、
@@ -1729,6 +1756,7 @@ async def master_reconcile(
     RPA なしで出せるようにする。**業務データ (訪問/イベント/マスタ) には一切
     触れない**という性質は変わらない。
     """
+    await _raise_if_source_job_running(db)
     from app.models.patient import Patient
     from app.models.staff import Staff as StaffModel
     from app.services.kaipoke.export_guard import ensure_export_ok
@@ -1829,6 +1857,7 @@ async def trigger_apply(
     user: Annotated[User, Depends(require_role("admin"))],
     kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
 ) -> JobAccepted:
+    await _raise_if_source_job_running(db)
     sheet = await db.scalar(
         select(CorrectionSheet)
         .where(CorrectionSheet.id == payload.sheet_id)
@@ -2209,6 +2238,7 @@ async def test_kaipoke_credentials(
     kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
 ) -> KaipokeLoginTestResult:
     """RPA の単一スロットを短時間占有して実ログインを1回試す (noVNC で目視可)。"""
+    await _raise_if_source_job_running(db)
     creds = await _kaipoke_credentials(db)
     if creds is None:
         raise HTTPException(
@@ -2592,6 +2622,7 @@ async def trigger_diff_inbound(
     apply実績ゲートを通った週のみ許可。visit_id まで解決して inbound シートに永続化。
     """
 
+    await _raise_if_source_job_running(db)
     from app.services.kaipoke.inbound import (
         inbound_week_eligible,
     )
@@ -2897,10 +2928,20 @@ async def stop_integration_job(
 
     # kaipoke-api is single-slot: /api/stop halts the one running task (no id).
     # Best-effort — we still mark the DB job cancelled even if the call fails.
-    try:
-        await kaipoke.stop()
-    except KaipokeApiError:
-        pass
+    # 段階 0 の取り直し・休みの送信 (SOURCE_OPS) が動いている間に別のジョブを止めると、
+    # RPA で動いているのはそちらの 1 本なので、それを止めてしまう。DB の状態だけ変える。
+    from app.services.kaipoke.sources import SOURCE_OPS, active_rpa_jobs
+
+    own_op = (job.params or {}).get("op")
+    source_running = own_op not in SOURCE_OPS and any(
+        (other.params or {}).get("op") in SOURCE_OPS
+        for other in await active_rpa_jobs(db, exclude_job_id=job.id)
+    )
+    if not source_running:
+        try:
+            await kaipoke.stop()
+        except KaipokeApiError:
+            pass
 
     job.status = "cancelled"
     job.completed_at = datetime.now(UTC)
@@ -3810,6 +3851,7 @@ async def events_inbound_preview(
     read-only (staff_events への書込なし・シート永続化なし。KaipokeJob の監査
     記録のみ作成)。取り込みゲート = 訪問取り込みと同一。
     """
+    await _raise_if_source_job_running(db)
     from app.services.kaipoke.events_inbound import (
         EventsFetchError,
         build_events_plan,
@@ -3893,6 +3935,7 @@ async def events_inbound_preview_start(
     バリデーション・ゲートは同期版と同一。job_id は RPA へ相関IDとして渡し、
     結果の取り違え (RPA 再起動・別ジョブ) を status 側で検知する。
     """
+    await _raise_if_source_job_running(db)
     await _ensure_events_week_valid(db, payload.week_start)
 
     credentials = await _kaipoke_credentials(db)
@@ -4049,7 +4092,13 @@ async def events_inbound_preview_status(
             db, job, "individual-tasks: 結果の構造が不正です (tasks 欠落)"
         )
 
-    plan = await build_events_plan(db, week_start=job.week_start, tasks=result["tasks"])
+    # 月をまたぐ週で表示されなかった日のカイポケ行を消さない (同期版・自己回復と同じ)。
+    plan = await build_events_plan(
+        db,
+        week_start=job.week_start,
+        tasks=result["tasks"],
+        covered_dates=_events_covered_dates(result),
+    )
     from app.services.kaipoke.events_inbound import find_event_visit_conflicts
 
     conflicts = await find_event_visit_conflicts(db, job.week_start, _plan_conflict_items(plan))
@@ -4293,6 +4342,7 @@ async def events_outbound_apply_start(
     kaipoke: Annotated[KaipokeClient, Depends(_kaipoke_dep)],
 ) -> EventsOutboundStartRead:
     """イベント送信を非同期起動する (202 即返し・job_id で status をポーリング)。"""
+    await _raise_if_source_job_running(db)
     from app.services.kaipoke.events_outbound import build_outbound_plan, to_rpa_items
     from app.services.kaipoke.sync_report_items import (
         build_report_meta,
@@ -4476,6 +4526,7 @@ async def replace_inbound(
     「らく助側のこの週の情報はすべて削除される可能性がございます」を明記した
     確認ダイアログを必須とする。
     """
+    await _raise_if_source_job_running(db)
     from app.services.diff.engine import parse_csv_from_content
     from app.services.kaipoke.inbound import inbound_week_eligible
     from app.services.kaipoke.local_diff import export_current_week_csv
@@ -5019,6 +5070,7 @@ async def smart_inbound_preview(
     新しい画面は ``POST /smart-inbound-preview/start`` (202) →
     ``GET /smart-inbound-preview/status/{job_id}`` のポーリングを使う。
     """
+    await _raise_if_source_job_running(db)
     week_start = payload.week_start
     await _smart_preview_gate(db, week_start)
 
@@ -5227,6 +5279,7 @@ async def smart_inbound_preview_start(
       * 統合プレビューが既に動いていれば 409 (export を奪い合って両方失敗するのを防ぐ)。
       * 10 分を超えて running のものは残骸 (プロセス再起動) とみなし failed にして進む。
     """
+    await _raise_if_source_job_running(db)
     week_start = payload.week_start
     await _smart_preview_gate(db, week_start)
 
@@ -5520,6 +5573,7 @@ async def smart_inbound_apply(
     実行時に再分類・再取得する (プレビュー後に打刻やカイポケ入力が進んでも安全)。
     dry_run=True は一切書き込まない。
     """
+    await _raise_if_source_job_running(db)
     from app.services.diff.engine import parse_csv_from_content
     from app.services.kaipoke.inbound import apply_inbound_items, inbound_week_eligible
     from app.services.kaipoke.local_diff import export_current_week_csv

@@ -218,6 +218,9 @@ def test_migration_0099_columns_tables_and_baseline(tmp_path: Path) -> None:
         "updated_at",
     }
     assert {"reason", "plan_snapshot"} <= {c["name"] for c in insp.get_columns("kinmu_sheets")}
+    assert {"fetched_at", "diffs", "auto_updates"} <= {
+        c["name"] for c in insp.get_columns("leave_compare_runs")
+    }
     assert {c["name"] for c in insp.get_columns("leave_months")} == {
         "month",
         "required_hours",
