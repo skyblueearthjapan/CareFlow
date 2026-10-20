@@ -7,6 +7,7 @@ triple on write and back to a date on read.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, time
 from typing import Annotated
 from uuid import UUID
@@ -28,7 +29,14 @@ from app.schemas.staff_overrides import (
 )
 from app.services.leave_notify import notify_leave_cancelled
 from app.services.op_log_service import fmt_time, set_staff_override
-from app.services.staff_leave import StaffLeaveError, apply_staff_leave, cancel_staff_leave
+from app.services.staff_leave import (
+    LEAVE_WRITE_CONFLICT_DETAIL,
+    StaffLeaveError,
+    apply_staff_leave,
+    cancel_staff_leave,
+    delete_override_day,
+    write_custom_time,
+)
 
 router = APIRouter()
 
@@ -117,7 +125,7 @@ async def _commit_or_409(db) -> None:
         if "unique" in msg or "duplicate" in msg:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Conflict: override already exists for that date",
+                detail=LEAVE_WRITE_CONFLICT_DETAIL,
             ) from exc
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -215,6 +223,7 @@ async def _write_day(
     actor: User,
     source: str | None = None,
     pending_request_id: UUID | None = None,
+    op_group_id: UUID | None = None,
 ) -> None:
     """1 日ぶんを書く: 休みは共通の処理 (訪問を担当なしへ・休み設計 §3-1)、時間変更は行だけ."""
     if override_type in LEAVE_TYPES:
@@ -227,27 +236,39 @@ async def _write_day(
                 source=source or "admin",
                 note=note,
                 actor=actor,
-                op_group_id=None,
+                op_group_id=op_group_id,
                 origin="staff_detail",
+                pending_request_id=pending_request_id,
             )
         except StaffLeaveError as exc:
             await db.rollback()
             raise _leave_error(exc) from exc
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=LEAVE_WRITE_CONFLICT_DETAIL
+            ) from exc
         return
-    iso_year, iso_week, weekday = _date_to_iso(d)
-    await set_staff_override(
-        db,
-        staff_id=staff_id,
-        iso_year=iso_year,
-        iso_week=iso_week,
-        weekday=weekday,
-        override_type=override_type,
-        reason=note,
-        start_time=start_time,
-        end_time=end_time,
-        source=source,
-        pending_request_id=pending_request_id,
-    )
+    try:
+        # 時間変更も set_staff_off として同じ op_group に記録する (休み→時間変更の「戻る」)。
+        await write_custom_time(
+            db,
+            staff_id=staff_id,
+            day=d,
+            start_time=start_time,
+            end_time=end_time,
+            reason=note,
+            actor=actor,
+            op_group_id=op_group_id,
+            origin="staff_detail",
+            source=source,
+            pending_request_id=pending_request_id,
+        )
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=LEAVE_WRITE_CONFLICT_DETAIL
+        ) from exc
 
 
 @router.post(
@@ -335,22 +356,40 @@ async def update_override(
             detail="custom_time override requires start_time and end_time",
         )
 
-    same_type = new_type == row.override_type
-    keep_source = row.source if same_type else None
-    keep_request = row.pending_request_id if same_type else None
-    if new_date != old_date:
-        if await _row_on(db, staff_id, new_date) is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Conflict: override already exists for that date",
+    # 種類と日付が同じ (メモ・時刻だけ違う) なら、誰が入れたか・承認元の申請を残す。
+    same_slot = new_type == row.override_type and new_date == old_date
+    keep_source = row.source if same_slot else None
+    keep_request = row.pending_request_id if same_slot else None
+    group = uuid.uuid4()
+    if new_date != old_date and await _row_on(db, staff_id, new_date) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conflict: override already exists for that date",
+        )
+    if row.override_type in LEAVE_TYPES and (new_date != old_date or new_type not in LEAVE_TYPES):
+        # 元が休み: 休み→時間変更・日付の移動は、先に休みを取り消す (同じ op_group)。
+        try:
+            await cancel_staff_leave(
+                db,
+                staff_id=staff_id,
+                day=old_date,
+                actor=user,
+                op_group_id=group,
+                origin="staff_detail",
+                notify=False,
             )
-        await set_staff_override(
+        except StaffLeaveError as exc:
+            await db.rollback()
+            raise _leave_error(exc) from exc
+    elif new_date != old_date:
+        # 時間変更の日付を移す: 元の日の行を消すことも同じ op_group に記録する。
+        await delete_override_day(
             db,
             staff_id=staff_id,
-            iso_year=row.iso_year,
-            iso_week=row.iso_week,
-            weekday=row.weekday,
-            override_type=None,
+            day=old_date,
+            actor=user,
+            op_group_id=group,
+            origin="staff_detail",
         )
     await _write_day(
         db,
@@ -363,6 +402,7 @@ async def update_override(
         actor=user,
         source=keep_source,
         pending_request_id=keep_request,
+        op_group_id=group,
     )
     out = await _row_on(db, staff_id, new_date)
     await _commit_or_409(db)

@@ -423,6 +423,8 @@ def _serialize_visit(
         "id": visit.id,
         "patient_id": visit.patient_id,
         "primary_staff_id": visit.primary_staff_id,
+        # 訪問だけ担当を変えた印。primary が空でこれが真なら「明示の担当なし」(休み設計 §3-2)。
+        "manual_staff_override": bool(getattr(visit, "manual_staff_override", False)),
         "secondary_staff_id": visit.secondary_staff_id,
         "mentor_staff_id": visit.mentor_staff_id,
         "visit_date": visit.visit_date,
@@ -452,8 +454,9 @@ def _serialize_visit(
         # フォールバックする。``primary_staff_id`` を見て分岐するのは、``primary_staff``
         # が eager-load されていない呼出 (lazy="noload" → 常に None) でコース担当名が
         # 誤って入り込まないようにするため。
+        # 明示の担当なし (primary 空・manual 真) はコース担当名を出さない (休み設計 §3-2)。
         "staff_name": (
-            course_staff_name
+            (None if visit.manual_staff_override else course_staff_name)
             if visit.primary_staff_id is None
             else (
                 getattr(visit.primary_staff, "name", None)
@@ -768,7 +771,11 @@ async def resolve_qr_visits(
                 "planned_staff_name": (
                     getattr(v.primary_staff, "name", None)
                     if v.primary_staff is not None
-                    else course_staff_names.get(v.course_id)
+                    else (
+                        None
+                        if v.primary_staff_id is not None or v.manual_staff_override
+                        else course_staff_names.get(v.course_id)
+                    )
                 ),
                 "is_mine": v.id in mine,
                 "is_unplanned": v.is_unplanned,

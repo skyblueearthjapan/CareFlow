@@ -2394,6 +2394,17 @@ async def _leave_entries_from_ops(
 ) -> list[tuple[UUID, date, str]]:
     """取込で入る・変わる休み (職員, 日, 種類)。プレビューの件数の材料."""
     out: list[tuple[UUID, date, str]] = []
+    update_ids = [op["_override_id"] for op in override_ops if op.get("_op") == "update"]
+    existing_by_id: dict[UUID, StaffWeeklyOverride] = {}
+    if update_ids:
+        existing_by_id = {
+            r.id: r
+            for r in (
+                await db.scalars(
+                    select(StaffWeeklyOverride).where(StaffWeeklyOverride.id.in_(update_ids))
+                )
+            ).all()
+        }
     for op in override_ops:
         if op.get("_op") == "new":
             sid, y, w, wd, ot = (
@@ -2404,7 +2415,7 @@ async def _leave_entries_from_ops(
                 op["override_type"],
             )
         elif op.get("_op") == "update":
-            obj = await db.get(StaffWeeklyOverride, op["_override_id"])
+            obj = existing_by_id.get(op["_override_id"])
             if obj is None:
                 continue
             sid = op.get("staff_id", obj.staff_id)

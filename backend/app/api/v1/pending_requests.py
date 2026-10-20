@@ -67,7 +67,7 @@ from app.services.pending_request_applier import (
     PendingRequestApplier,
     PendingRequestApplyError,
 )
-from app.services.staff_leave import is_past_leave_deadline
+from app.services.staff_leave import LEAVE_WRITE_CONFLICT_DETAIL, is_past_leave_deadline
 
 router = APIRouter()
 
@@ -404,6 +404,11 @@ async def _ensure_staff_off_creatable(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="この日に取り消す休みはありません",
         )
+    if kind == "change" and override_type == existing_type:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="今と同じ種類です。変えたい種類を選んでください",
+        )
     if has_leave and kind != "change":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -418,9 +423,17 @@ async def _commit_or_409(db: AsyncSession) -> None:
         await db.rollback()
         msg = str(exc).lower()
         if "unique" in msg or "duplicate" in msg:
+            # 休みの申請・休みの行の衝突 (申請中の部分 UNIQUE・override の UNIQUE) は
+            # 休みの入口と同じ日本語の文言にそろえる。
+            leave_conflict = any(
+                k in msg
+                for k in ("staff_off", "target_staff_id", "staff_weekly_overrides", "uq_staff_week")
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Conflict: duplicate value",
+                detail=LEAVE_WRITE_CONFLICT_DETAIL
+                if leave_conflict
+                else "Conflict: duplicate value",
             ) from exc
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -598,6 +611,11 @@ async def create_and_apply_pending_request(
         raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
     except IntegrityError as exc:
         await db.rollback()
+        if payload.request_type.value == RequestType.STAFF_OFF.value:
+            # 同じ日の休みが同時に書かれた (staff_weekly_overrides の UNIQUE)。
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=LEAVE_WRITE_CONFLICT_DETAIL
+            ) from exc
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Validation error during create-and-apply",
@@ -797,6 +815,13 @@ async def _do_approve(
     except PendingRequestApplyError as exc:
         await db.rollback()
         raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        await db.rollback()
+        if row.request_type == RequestType.STAFF_OFF.value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=LEAVE_WRITE_CONFLICT_DETAIL
+            ) from exc
+        raise
     except Exception:
         await db.rollback()
         raise
@@ -809,6 +834,10 @@ async def _do_approve(
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
+        if row.request_type == RequestType.STAFF_OFF.value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=LEAVE_WRITE_CONFLICT_DETAIL
+            ) from exc
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Validation error during approve",

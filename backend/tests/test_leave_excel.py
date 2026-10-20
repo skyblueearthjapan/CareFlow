@@ -227,6 +227,44 @@ def _py_files() -> list[Path]:
     return [p for p in APP_DIR.rglob("*.py") if "__pycache__" not in p.parts]
 
 
+@pytest.mark.asyncio
+async def test_replace_preview_count_matches_actual_for_unchanged_leave(client, db) -> None:
+    """今ある休みと同じ種類の日は触らないので、プレビューにも数えない (件数をそろえる)."""
+    admin = await _admin(db)
+    staff = Staff(code="XL3", name="エクセル 三郎")
+    patient = Patient(code="XL-P3", name="エクセル患者3", status="active", special_week_active=[])
+    db.add_all([staff, patient])
+    await db.flush()
+    day = today_jst() + timedelta(days=11)
+    y, w, wd = iso_key(day)
+    await set_staff_override(
+        db, staff_id=staff.id, iso_year=y, iso_week=w, weekday=wd, override_type="am_off"
+    )
+    # カイポケの取込などで休みの時間帯に担当が戻っている訪問 (漏れ)
+    visit = Visit(
+        patient_id=patient.id,
+        primary_staff_id=staff.id,
+        visit_date=day,
+        start_time=time(9, 0),
+        end_time=time(10, 0),
+        type="regular",
+        status="planned",
+        source="kaipoke",
+    )
+    db.add(visit)
+    await db.flush()
+    visit_id, staff_id = visit.id, staff.id
+    await db.commit()
+    content = await _export(client, admin)
+    preview = await _replace(client, admin, content, dry_run=True)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["summary"]["leave_unassign_visits"] == 0
+    res = await _replace(client, admin, content, dry_run=False)
+    assert res.status_code == 200, res.text
+    got = await db.get(Visit, visit_id, populate_existing=True)
+    assert got is not None and got.primary_staff_id == staff_id  # 実際も動かない
+
+
 def test_no_off_equality_outside_core_leave() -> None:
     """``== "off"`` (と ``!=``) を ``app/core/leave.py`` 以外に書かない."""
     pattern = re.compile(r"""[!=]=\s*['"]off['"]""")

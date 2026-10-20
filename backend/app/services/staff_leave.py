@@ -81,6 +81,9 @@ LEAVE_ORIGINS: Final = frozenset(
     {"leave_page", "cockpit", "request_list", "staff_detail", "agent", "kaipoke_compare", "excel"}
 )
 
+#: 同じ (職員, 日) の休みが同時に書かれて UNIQUE がぶつかったときの 409 の文言 (入口で使う)。
+LEAVE_WRITE_CONFLICT_DETAIL: Final = "同じ日の休みが同時に入れられました。読み込み直してください"
+
 #: op_log へ 1 行書く関数 (``record_op`` の op_group を束ねたもの)。
 Journal = Callable[..., Awaitable[None]]
 
@@ -177,50 +180,69 @@ def _owns_primary(visit: Visit, course: Course | None, staff_id: UUID) -> bool:
     return course is not None and course.assigned_staff_id == staff_id
 
 
-async def _day_rows(db: AsyncSession, day: date) -> list[tuple[Visit, Course | None]]:
-    rows = (
-        await db.execute(
-            select(Visit, Course)
-            .outerjoin(Course, (Course.id == Visit.course_id) & (Course.deleted_at.is_(None)))
-            .where(Visit.visit_date == day, Visit.deleted_at.is_(None))
-        )
-    ).all()
-    return [(v, c) for v, c in rows]
+@dataclass
+class _DayData:
+    """その日の訪問 (コースつき) と VSA {visit_id: {staff_id}} (1 日 1 回だけ読む)."""
+
+    rows: list[tuple[Visit, Course | None]]
+    vsa: dict[UUID, set[UUID]]
 
 
-async def _vsa_visit_ids(db: AsyncSession, visit_ids: list[UUID], staff_id: UUID) -> set[UUID]:
-    if not visit_ids:
-        return set()
-    return set(
-        (
-            await db.scalars(
-                select(VisitStaffAssignment.visit_id).where(
-                    VisitStaffAssignment.visit_id.in_(visit_ids),
-                    VisitStaffAssignment.staff_id == staff_id,
-                )
+async def _load_day(db: AsyncSession, day: date) -> _DayData:
+    rows = [
+        (v, c)
+        for v, c in (
+            await db.execute(
+                select(Visit, Course)
+                .outerjoin(Course, (Course.id == Visit.course_id) & (Course.deleted_at.is_(None)))
+                .where(Visit.visit_date == day, Visit.deleted_at.is_(None))
             )
         ).all()
-    )
+    ]
+    vsa: dict[UUID, set[UUID]] = {}
+    if rows:
+        for vid, sid in (
+            await db.execute(
+                select(VisitStaffAssignment.visit_id, VisitStaffAssignment.staff_id).where(
+                    VisitStaffAssignment.visit_id.in_([v.id for v, _c in rows])
+                )
+            )
+        ).all():
+            vsa.setdefault(vid, set()).add(sid)
+    return _DayData(rows=rows, vsa=vsa)
+
+
+#: (訪問, primary を握るか, コース)。
+_Target = tuple[Visit, bool, "Course | None"]
 
 
 async def _owned_hit_visits(
-    db: AsyncSession, staff_id: UUID, day: date, leave_type: str
-) -> tuple[list[tuple[Visit, bool]], list[Visit]]:
-    """本人の訪問のうち休みの時間帯にかかるもの → (planned の (訪問, primary を握るか), それ以外)."""
-    rows = await _day_rows(db, day)
-    vsa_ids = await _vsa_visit_ids(db, [v.id for v, _c in rows], staff_id)
-    targets: list[tuple[Visit, bool]] = []
+    db: AsyncSession,
+    staff_id: UUID,
+    day: date,
+    leave_type: str,
+    day_data: _DayData | None = None,
+) -> tuple[list[_Target], list[Visit]]:
+    """本人の訪問のうち休みの時間帯にかかるもの → (planned の対象, それ以外).
+
+    本人の訪問 = primary が本人／primary が空・manual でない・コース担当が本人／
+    2 名体制の 2 人目 (VSA に本人・古い行は ``secondary_staff_id`` が本人)。
+    ``day_data`` を渡せばその日の読み込みを使い回す (後始末で 1 日 1 回)。
+    """
+    data = day_data or await _load_day(db, day)
+    targets: list[_Target] = []
     skipped: list[Visit] = []
-    for visit, course in rows:
+    for visit, course in data.rows:
         on_primary = _owns_primary(visit, course, staff_id)
-        if not on_primary and visit.id not in vsa_ids:
+        second = staff_id in data.vsa.get(visit.id, set()) or visit.secondary_staff_id == staff_id
+        if not on_primary and not second:
             continue
         if not visit_hits_leave(leave_type, visit.start_time, visit.end_time):
             continue
         if visit.status != VISIT_STATUS_PLANNED:
             skipped.append(visit)
             continue
-        targets.append((visit, on_primary))
+        targets.append((visit, on_primary, course))
     targets.sort(key=lambda item: (item[0].start_time, str(item[0].id)))
     skipped.sort(key=lambda v: (v.start_time, str(v.id)))
     return targets, skipped
@@ -232,19 +254,29 @@ async def _unassign_day(
     staff_id: UUID,
     day: date,
     leave_type: str,
-    targets: list[tuple[Visit, bool]],
+    targets: list[_Target],
     to_staff_id: UUID | None,
+    day_data: _DayData | None = None,
     journal: Journal | None,
     to_label: str,
 ) -> DayUnassignResult:
     """休みの時間帯の本人の訪問を担当なし (または引き受け先) へ移し、終日ならコースも外す."""
     result = DayUnassignResult()
     full_day = leave_type in FULL_DAY_OFF
-    # 半休はコースを本人のまま残すので、訪問は「明示の担当なし」(manual=True)。
-    # 終日はコースごと担当なしにするので manual=False (引き受け先があれば True)。
-    new_manual = to_staff_id is not None or not full_day
     label_day = _date_label(day)
-    for visit, on_primary in targets:
+    for visit, on_primary, course in targets:
+        # 半休はコースを本人のまま残すので、訪問は「明示の担当なし」(manual=True)。
+        # 終日で本人のコースの訪問はコースごと担当なし (manual=False・あとでコースに人を
+        # 付ければ一緒に付く)。終日でも他人のコース (やコース無し) の訪問は、コース担当に
+        # 読み替えないよう明示の担当なし (manual=True)。引き受け先があれば True。
+        new_manual = (
+            to_staff_id is not None
+            or not full_day
+            or course is None
+            or course.assigned_staff_id != staff_id
+        )
+        # 古い行の 2 人目の列 (VSA に居ない場合もある)。本人の枠だけ空け、戻すときに戻す。
+        clear_secondary = visit.secondary_staff_id == staff_id
         old_primary = visit.primary_staff_id
         old_manual = bool(visit.manual_staff_override)
         current_vsa = await visit_staff_ids(db, visit.id)
@@ -260,7 +292,13 @@ async def _unassign_day(
             manual=new_manual,
             vsa_add=vsa_add,
             vsa_remove=vsa_remove,
+            set_secondary=clear_secondary,
+            secondary_staff_id=None,
         )
+        if day_data is not None:
+            members = day_data.vsa.setdefault(visit.id, set())
+            members.difference_update(vsa_remove)
+            members.update(vsa_add)
         result.moved_visit_ids.append(visit.id)
         result.moved_patient_ids.add(visit.patient_id)
         if journal is not None:
@@ -275,6 +313,8 @@ async def _unassign_day(
                     "manual": new_manual,
                     "vsa_add": [str(s) for s in vsa_add],
                     "vsa_remove": [str(s) for s in vsa_remove],
+                    "set_secondary": clear_secondary,
+                    "secondary_staff_id": None,
                 },
                 inverse_payload={
                     "op": "set_visit_staff_slot",
@@ -284,6 +324,8 @@ async def _unassign_day(
                     "manual": old_manual,
                     "vsa_add": [str(s) for s in vsa_remove],
                     "vsa_remove": [str(s) for s in vsa_add],
+                    "set_secondary": clear_secondary,
+                    "secondary_staff_id": str(staff_id) if clear_secondary else None,
                 },
             )
 
@@ -365,30 +407,25 @@ async def _cancel_fixed_events(
 async def _count_accompaniments(
     db: AsyncSession, *, staff_id: UUID, day: date, leave_type: str
 ) -> int:
-    """本人が同行者に入っている、その日の休みの時間帯の訪問の数 (取消・削除は除く)."""
-    links = (
-        await db.scalars(
-            select(Accompaniment).where(Accompaniment.accompanying_staff_id == staff_id)
-        )
-    ).all()
-    if not links:
-        return 0
-    visit_ids = {a.visit_id for a in links if a.target_type == "visit" and a.visit_id}
-    course_ids = {a.course_id for a in links if a.target_type == "course" and a.course_id}
-    conds = []
-    if visit_ids:
-        conds.append(Visit.id.in_(visit_ids))
-    if course_ids:
-        conds.append(Visit.course_id.in_(course_ids))
-    if not conds:
-        return 0
+    """本人が同行者に入っている、その日の休みの時間帯の訪問の数 (取消・削除は除く).
+
+    その日の訪問から引く (訪問への同行と、訪問のコースへの同行)。全期間の同行は読まない。
+    """
+    visit_link = select(Accompaniment.visit_id).where(
+        Accompaniment.accompanying_staff_id == staff_id,
+        Accompaniment.target_type == "visit",
+    )
+    course_link = select(Accompaniment.course_id).where(
+        Accompaniment.accompanying_staff_id == staff_id,
+        Accompaniment.target_type == "course",
+    )
     visits = (
         await db.scalars(
             select(Visit).where(
                 Visit.visit_date == day,
                 Visit.deleted_at.is_(None),
                 Visit.status != "cancelled",
-                or_(*conds),
+                or_(Visit.id.in_(visit_link), Visit.course_id.in_(course_link)),
             )
         )
     ).all()
@@ -494,6 +531,7 @@ async def apply_staff_leave(
     to_staff_id: UUID | None = None,
     acknowledge_constraint_warnings: bool = False,
     notify: bool = True,
+    pending_request_id: UUID | None = None,
 ) -> LeaveApplyResult:
     """休みを入れる・種類を変える (§3-3)。1 トランザクション・同じ op_group (commit しない).
 
@@ -535,20 +573,20 @@ async def apply_staff_leave(
             db, staff_id=staff_id, to_staff_id=to_staff_id, day=day
         )
 
-    targets: list[tuple[Visit, bool]] = []
+    targets: list[_Target] = []
     skipped: list[Visit] = []
     warnings: list[ConstraintWarning] = []
     if not past:
         targets, skipped = await _owned_hit_visits(db, staff_id, day, leave_type)
         if to_staff is not None and to_leave in HALF_DAY_OFF:
-            for visit, _p in targets:
+            for visit, _p, _c in targets:
                 if visit_hits_leave(to_leave, visit.start_time, visit.end_time):
                     raise StaffLeaveError(
                         422, f"{to_staff.name}さんはこの時間は休みのため引き受けられません"
                     )
         if to_staff is not None and targets:
             warnings = await collect_constraint_warnings_for_staff(
-                db, staff_id=to_staff.id, patient_ids=list({v.patient_id for v, _p in targets})
+                db, staff_id=to_staff.id, patient_ids=list({v.patient_id for v, _p, _c in targets})
             )
             if warnings and not acknowledge_constraint_warnings:
                 raise StaffLeaveError(422, constraint_confirmation_detail(warnings))
@@ -562,7 +600,9 @@ async def apply_staff_leave(
     prev = await _load_override(db, staff_id, day)
     inverse = _override_payload(staff_id, day, prev, origin)
     y, w, wd = iso_key(day)
-    pending_request_id = request.id if request is not None else None
+    # 承認元の申請 (``request`` が無いときは引数の値＝今の行の値を引き継ぐ経路用)。
+    if request is not None:
+        pending_request_id = request.id
     override_id = await set_staff_override(
         db,
         staff_id=staff_id,
@@ -795,18 +835,134 @@ async def write_override_day(
             origin=origin,
             notify=False,
         )
-    await set_staff_override(
+    group = uuid.uuid4()
+    if row is not None and row.override_type in LEAVE_TYPES:
+        # 休み → 時間変更: 先に休みを取り消す (取り消しの記録・last_leave_changed_at)。
+        await cancel_staff_leave(
+            db,
+            staff_id=staff_id,
+            day=day,
+            actor=actor,
+            op_group_id=group,
+            origin=origin,
+            notify=False,
+        )
+    await write_custom_time(
+        db,
+        staff_id=staff_id,
+        day=day,
+        start_time=fmt_time(start_time) if start_time else None,
+        end_time=fmt_time(end_time) if end_time else None,
+        reason=reason,
+        actor=actor,
+        op_group_id=group,
+        origin=origin,
+    )
+    return None
+
+
+async def write_custom_time(
+    db: AsyncSession,
+    *,
+    staff_id: UUID,
+    day: date,
+    start_time: str | None,
+    end_time: str | None,
+    reason: str | None,
+    actor: User | None,
+    op_group_id: UUID | None,
+    origin: str,
+    source: str | None = None,
+    pending_request_id: UUID | None = None,
+) -> UUID | None:
+    """時間変更 (``custom_time``) の行を書き、``set_staff_off`` として op_log に記録する.
+
+    休み → 時間変更のとき、休みの取り消しと同じ op_group に記録しないと、取り消しの
+    「戻る」が「行が無いはず」の検証で止まる (休み設計 §3-4)。
+    """
+    y, w, wd = iso_key(day)
+    if actor is not None and op_group_id is None:
+        # 単独で書くとき (他の操作と同じグループでない) は、ほかの記録と同じく redo 枝を消す。
+        await clear_redo_branch(db, user_id=actor.id, iso_year=y, iso_week=w)
+    prev = await _load_override(db, staff_id, day)
+    inverse = _override_payload(staff_id, day, prev, origin)
+    override_id = await set_staff_override(
         db,
         staff_id=staff_id,
         iso_year=y,
         iso_week=w,
         weekday=wd,
-        override_type=override_type,
+        override_type="custom_time",
         reason=reason,
-        start_time=fmt_time(start_time) if start_time else None,
-        end_time=fmt_time(end_time) if end_time else None,
+        start_time=start_time,
+        end_time=end_time,
+        source=source,
+        pending_request_id=pending_request_id,
     )
-    return None
+    journal = _journal_for(db, actor, day, op_group_id or uuid.uuid4())
+    if journal is not None:
+        written = await _load_override(db, staff_id, day)
+        forward = {
+            **inverse,
+            "type": "custom_time",
+            "reason": reason,
+            "start_time": start_time,
+            "end_time": end_time,
+            # 実際に書いた値 (set_staff_override が None を既定へ置き換える)。
+            "source": written.source if written is not None else source,
+            "pending_request_id": str(pending_request_id) if pending_request_id else None,
+            "override_id": str(override_id),
+        }
+        inverse["override_id"] = str(override_id)
+        await journal(
+            op_kind="set_staff_off",
+            label=f"{_date_label(day)}を時間変更に",
+            forward_payload=forward,
+            inverse_payload=inverse,
+        )
+    return override_id
+
+
+async def delete_override_day(
+    db: AsyncSession,
+    *,
+    staff_id: UUID,
+    day: date,
+    actor: User | None,
+    op_group_id: UUID | None,
+    origin: str,
+) -> None:
+    """休みでない行 (時間変更) を消し、``set_staff_off`` として op_log に記録する.
+
+    休みの行は ``cancel_staff_leave`` を使う。日付の移動などで、書き込みと同じ op_group に
+    記録して「戻る」1 回で元の日の行も戻せるようにする。
+    """
+    row = await _load_override(db, staff_id, day)
+    if row is None:
+        return
+    inverse = _override_payload(staff_id, day, row, origin)
+    inverse["override_id"] = str(row.id)
+    y, w, wd = iso_key(day)
+    await set_staff_override(
+        db, staff_id=staff_id, iso_year=y, iso_week=w, weekday=wd, override_type=None
+    )
+    journal = _journal_for(db, actor, day, op_group_id or uuid.uuid4())
+    if journal is not None:
+        forward = {
+            **inverse,
+            "type": None,
+            "reason": None,
+            "start_time": None,
+            "end_time": None,
+            "source": None,
+            "pending_request_id": None,
+        }
+        await journal(
+            op_kind="set_staff_off",
+            label=f"{_date_label(day)}の時間変更を移す",
+            forward_payload=forward,
+            inverse_payload=inverse,
+        )
 
 
 async def notify_leave_results(
@@ -843,13 +999,24 @@ async def count_leave_moves(db: AsyncSession, entries: Iterable[tuple[UUID, date
     """休みを入れたら担当なしへ移る訪問の数 (取込のプレビュー「N 件を担当なしへ移します」).
 
     ``entries`` は (職員, 日, 休みの種類)。今日 (JST) より前の日は記録だけなので数えない。
+    今ある休みと同じ種類の日は ``write_override_day`` が触らないので数えない
+    (プレビューの件数と実際の件数をそろえる)。
     """
     today = today_jst()
+    wanted = {(sid, day, t) for sid, day, t in entries if day >= today and t in LEAVE_TYPES}
+    if not wanted:
+        return 0
+    days = sorted({d for _s, d, _t in wanted})
+    current = await load_overrides_between(db, days[0], days[-1], {s for s, _d, _t in wanted})
+    loaded: dict[date, _DayData] = {}
     total = 0
-    for sid, day, leave_type in set(entries):
-        if day < today or leave_type not in LEAVE_TYPES:
+    for sid, day, leave_type in sorted(wanted, key=lambda e: (e[1], str(e[0]))):
+        row = current.get(sid, {}).get(day)
+        if row is not None and row.override_type == leave_type:
             continue
-        targets, _skipped = await _owned_hit_visits(db, sid, day, leave_type)
+        if day not in loaded:
+            loaded[day] = await _load_day(db, day)
+        targets, _skipped = await _owned_hit_visits(db, sid, day, leave_type, loaded[day])
         total += len(targets)
     return total
 
@@ -914,8 +1081,11 @@ async def settle_leave_unassign(
     names: dict[UUID, str] = {sid: name for sid, name in name_rows.all()}
     total = 0
     notices: list[UnassignedNotice] = []
+    loaded: dict[date, _DayData] = {}
     for sid, day, leave_type in entries:
-        targets, _skipped = await _owned_hit_visits(db, sid, day, leave_type)
+        if day not in loaded:
+            loaded[day] = await _load_day(db, day)
+        targets, _skipped = await _owned_hit_visits(db, sid, day, leave_type, loaded[day])
         moved = await _unassign_day(
             db,
             staff_id=sid,
@@ -925,6 +1095,7 @@ async def settle_leave_unassign(
             to_staff_id=None,
             journal=journal,
             to_label="担当なし",
+            day_data=loaded[day],
         )
         if moved.moved_visit_ids:
             total += len(moved.moved_visit_ids)
@@ -956,8 +1127,11 @@ async def find_visits_on_leave(
     days = [start + timedelta(days=i) for i in range((date_to - start).days + 1)]
     entries = await _leave_entries(db, days, list(staff_ids) if staff_ids is not None else None)
     out: list[VisitOnLeave] = []
+    loaded: dict[date, _DayData] = {}
     for sid, day, leave_type in entries:
-        targets, _skipped = await _owned_hit_visits(db, sid, day, leave_type)
+        if day not in loaded:
+            loaded[day] = await _load_day(db, day)
+        targets, _skipped = await _owned_hit_visits(db, sid, day, leave_type, loaded[day])
         out.extend(
             VisitOnLeave(
                 visit_id=v.id,
@@ -968,7 +1142,7 @@ async def find_visits_on_leave(
                 patient_id=v.patient_id,
                 leave_type=leave_type,
             )
-            for v, _p in targets
+            for v, _p, _c in targets
         )
     return out
 
@@ -1033,6 +1207,7 @@ async def count_visits_on_leave(db: AsyncSession, date_from: date, date_to: date
 
 __all__ = [
     "LEAVE_ORIGINS",
+    "LEAVE_WRITE_CONFLICT_DETAIL",
     "LEAVE_SOURCES",
     "DayUnassignResult",
     "Journal",
@@ -1051,6 +1226,8 @@ __all__ = [
     "leave_request_deadline",
     "notify_leave_results",
     "settle_leave_unassign",
+    "delete_override_day",
     "today_jst",
+    "write_custom_time",
     "write_override_day",
 ]

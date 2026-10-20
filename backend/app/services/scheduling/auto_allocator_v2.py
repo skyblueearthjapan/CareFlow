@@ -45,7 +45,7 @@ import re
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
-from datetime import date, time
+from datetime import date, time, timedelta
 from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
@@ -9465,8 +9465,12 @@ async def reset_visits_to_fixed(
     dry_run: bool = False,
     config: SchedulingConfig | None = None,
     patient_id: UUID | None = None,
+    settle: bool = True,
 ) -> dict[str, Any]:
     """機能 D: 対象週の visits を soft-delete → patient_fixed_visits から再生成.
+
+    ``settle=False`` は最後の後始末 (休み設計 §4-2) を呼び出し側がまとめて 1 回呼ぶとき
+    (患者ステータス連動の複数週の作り直し・通知を 1 通にする)。
 
     手順:
       1. (iso_year, iso_week) の active visits を patient 範囲で soft-delete
@@ -10109,7 +10113,23 @@ async def reset_visits_to_fixed(
     # 休み設計 §4-2: 訪問を作る処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。
     from app.services.staff_leave import settle_leave_unassign
 
-    await settle_leave_unassign(db, iso_week=(iso_year, iso_week))
+    if settle and patient_id is None:
+        await settle_leave_unassign(db, iso_week=(iso_year, iso_week))
+    elif settle:
+        # 1 患者だけの戻し (呼び出し側が患者ごとに回す経路) は、その患者の訪問がある日に絞る。
+        _patient_days = set(
+            (
+                await db.scalars(
+                    select(Visit.visit_date).where(
+                        Visit.patient_id == patient_id,
+                        Visit.deleted_at.is_(None),
+                        Visit.visit_date.between(week_monday, week_monday + timedelta(days=6)),
+                    )
+                )
+            ).all()
+        )
+        if _patient_days:
+            await settle_leave_unassign(db, dates=_patient_days)
 
     return {
         "visits_regenerated": inserted_visits,

@@ -904,6 +904,8 @@ async def place_and_fix(
         ) from exc
 
     visit_date = week_monday + timedelta(days=body.weekday)
+    # 配置と最後の後始末を同じ op_group に記録する (「戻る」1 回で戻る・休み設計 §4-2)。
+    _place_group = body.op_group_id or uuid.uuid4()
 
     # 終了時刻計算 (24:00 越え禁止)
     end_minutes = body.start_time.hour * 60 + body.start_time.minute + body.duration_min
@@ -1122,10 +1124,51 @@ async def place_and_fix(
             )
 
         # ----- 2c) 休み設計 §4-2: 置いた日の休む人の休みの時間帯 → 担当なし (共通の後始末) -----
+        from functools import partial
+
         from app.services.staff_leave import settle_leave_unassign
 
         await db.flush()
-        await settle_leave_unassign(db, dates=[visit_date])
+        # Wave U-3: fix_pattern=False のみ操作ジャーナルに記録する。置いた行を後始末より
+        # **先に・同じトランザクションで**記録する (戻す = 後始末 → 置いたもの、の順になる)。
+        if not body.fix_pattern and new_visits:
+            visit_ids_str = [str(v.id) for v in new_visits]
+            _patient_name = getattr(patient, "name", None) or str(body.patient_id)
+            _label = (
+                f"{_patient_name}様を {fmt_weekday(body.weekday)}"
+                f"{fmt_time(body.start_time)} に配置（この週のみ）"
+            )
+            await record_op(
+                db,
+                user_id=current_user.id,
+                iso_year=body.iso_year,
+                iso_week=body.iso_week,
+                op_group_id=_place_group,
+                op_kind="place_and_fix",
+                label=_label,
+                forward_payload={"op": "restore_visits", "visit_ids": visit_ids_str},
+                inverse_payload={"op": "soft_delete_visits", "visit_ids": visit_ids_str},
+                strict=True,
+            )
+        # この週だけの配置は「戻る」に載るので、後始末も同じ op_group に記録する。
+        await settle_leave_unassign(
+            db,
+            dates=[visit_date],
+            journal=(
+                None
+                if body.fix_pattern
+                else partial(
+                    record_op,
+                    db,
+                    user_id=current_user.id,
+                    iso_year=body.iso_year,
+                    iso_week=body.iso_week,
+                    op_group_id=_place_group,
+                    strict=True,
+                    clear_redo=False,
+                )
+            ),
+        )
 
         # ----- 3) 1 トランザクション commit -----
         await db.commit()
@@ -1144,26 +1187,6 @@ async def place_and_fix(
 
     visits_read = [VisitV2Read.model_validate(v) for v in new_visits]
     fixed_visits_read = [PatientFixedVisitV2Read.model_validate(fv) for fv in new_fvs]
-
-    # Wave U-3: fix_pattern=False のみ操作ジャーナルに記録（ベストエフォート）
-    if not body.fix_pattern and new_visits:
-        visit_ids_str = [str(v.id) for v in new_visits]
-        _patient_name = getattr(patient, "name", None) or str(body.patient_id)
-        _wd_jp = fmt_weekday(body.weekday)
-        _st_str = fmt_time(body.start_time)
-        _label = f"{_patient_name}様を {_wd_jp}{_st_str} に配置（この週のみ）"
-        await record_op(
-            db,
-            user_id=current_user.id,
-            iso_year=body.iso_year,
-            iso_week=body.iso_week,
-            op_group_id=body.op_group_id,
-            op_kind="place_and_fix",
-            label=_label,
-            forward_payload={"op": "restore_visits", "visit_ids": visit_ids_str},
-            inverse_payload={"op": "soft_delete_visits", "visit_ids": visit_ids_str},
-        )
-        await db.commit()
 
     return PlaceAndFixResponse(
         # 後方互換: 1 件目をスカラフィールドにも入れる.

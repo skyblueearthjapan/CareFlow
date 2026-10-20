@@ -1954,6 +1954,32 @@ async def apply_inbound_items(
                 accompaniment_direct_by_visit.get(visit.id, set()).discard(remove_acc_staff)
                 if remove_acc_staff not in accompaniment_by_course.get(visit.course_id, set()):
                     accompaniment_by_visit.get(visit.id, set()).discard(remove_acc_staff)
+        # 休み設計 §4-2 H-b: 日付・時刻・担当 (follow_staff を含む) が変わった後の担当で、
+        # 休みの時間帯に担当が付くかを見る (dry-run のプレビューの件数・重複は畳まれる)。
+        if dry_run and (
+            time_changed or date_changed or new_sid is not None or follow_staff is not None
+        ):
+            _after_course = course_idx.by_id.get(visit.course_id) if visit.course_id else None
+            _after_main = (
+                new_sid
+                or follow_staff
+                or visit.primary_staff_id
+                or (
+                    _after_course.assigned_staff_id
+                    if _after_course is not None and not visit.manual_staff_override
+                    else None
+                )
+            )
+            for _after_sid in (_after_main, new_sid2):
+                if _after_sid is not None:
+                    leave_slots.append(
+                        (
+                            _after_sid,
+                            final_date,
+                            start_after if start_after is not None else cur_start,
+                            end_after if end_after is not None else visit.end_time,
+                        )
+                    )
         # 索引を移動後のキーへ張り替える (同一実行内の後続 item が旧キーを
         # 占有済みと誤判定したり、空いた枠へ二重に移動して 500 になるのを防ぐ)。
         # dry-run でも張り替える = 予測と実適用の結果を一致させる。
