@@ -91,12 +91,7 @@ describe('ClearWeekButton', () => {
         snapshots: [
           { id: 'old', kind: 'clear_week', createdAt: '2020-01-01T00:00:00Z', restoredAt: null },
           { id: 'done', kind: 'clear_week', createdAt: new Date().toISOString(), restoredAt: 'x' },
-          {
-            id: 'snap-9',
-            kind: 'clear_week',
-            createdAt: new Date().toISOString(),
-            restoredAt: null,
-          },
+          { id: 'snap-9', kind: 'clear_week', createdAt: new Date().toISOString(), restoredAt: null },
         ],
       },
     });

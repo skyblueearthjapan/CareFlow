@@ -143,11 +143,9 @@ const BASE_PROPS = {
 
 /** simulate の onSuccess を即時コールするモック実装 */
 function makeSimulateWithResult(result: unknown) {
-  return vi
-    .fn()
-    .mockImplementation((_vars: unknown, opts?: { onSuccess?: (d: unknown) => void }) => {
-      opts?.onSuccess?.(result);
-    });
+  return vi.fn().mockImplementation((_vars: unknown, opts?: { onSuccess?: (d: unknown) => void }) => {
+    opts?.onSuccess?.(result);
+  });
 }
 
 /** 1 手の最小 simulate レスポンス */
@@ -186,20 +184,8 @@ function makeSimulateResult(stepCount = 1) {
     office_id: OFFICE_ID,
     state_token: 'token-abc',
     steps,
-    before: {
-      visit_count: 10,
-      travel_minutes: 100,
-      travel_km: 5,
-      buffer_minutes: 20,
-      gap_minutes: 30,
-    },
-    after: {
-      visit_count: 10,
-      travel_minutes: 90,
-      travel_km: 4.5,
-      buffer_minutes: 20,
-      gap_minutes: 30,
-    },
+    before: { visit_count: 10, travel_minutes: 100, travel_km: 5, buffer_minutes: 20, gap_minutes: 30 },
+    after: { visit_count: 10, travel_minutes: 90, travel_km: 4.5, buffer_minutes: 20, gap_minutes: 30 },
     courses: [],
     focus_before: null,
     focus_after: null,

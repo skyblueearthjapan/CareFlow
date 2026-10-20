@@ -92,8 +92,8 @@ describe('ChangeScopeChoice', () => {
     const onChange = vi.fn();
     const { container } = render(<ChangeScopeChoice value="pattern" onChange={onChange} />);
     // 3 要素 (change-scope-choice div, pattern button, week button) のみ
-    expect(container.querySelector('[data-testid="change-scope-choice"]')?.children).toHaveLength(
-      2,
-    );
+    expect(
+      container.querySelector('[data-testid="change-scope-choice"]')?.children,
+    ).toHaveLength(2);
   });
 });

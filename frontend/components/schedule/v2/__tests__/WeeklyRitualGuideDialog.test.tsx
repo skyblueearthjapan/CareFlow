@@ -16,7 +16,13 @@ import React from 'react';
 vi.mock('@/components/ui/dialog', () => ({
   Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) =>
     open ? <div data-testid="dialog">{children}</div> : null,
-  DialogContent: ({ children, ...rest }: { children: React.ReactNode; [k: string]: unknown }) => (
+  DialogContent: ({
+    children,
+    ...rest
+  }: {
+    children: React.ReactNode;
+    [k: string]: unknown;
+  }) => (
     <div data-testid="dialog-content" {...rest}>
       {children}
     </div>
