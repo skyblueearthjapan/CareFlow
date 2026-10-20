@@ -24,6 +24,10 @@ def http_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS, transport=_test_transport)
 
 
+#: Google の応答が想定の形でなかったときの文 (L-7)。
+UNEXPECTED_RESPONSE = "Google から想定と違う応答が返りました"
+
+
 class GoogleDriveError(Exception):
     """Google ドライブの操作ができなかった (画面に出せる日本語の文を持つ)。"""
 

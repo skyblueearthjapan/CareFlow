@@ -22,8 +22,13 @@ class GoogleDriveStatusRead(BaseModel):
     folder_missing: bool = False
     shared_drive_id: str | None = None
     connected_by_name: str | None = None
+    #: つないだ Google アカウント (Drive の about・読めなければ null)。
+    account_email: str | None = None
+    account_name: str | None = None
     last_error: str | None = None
     updated_at: datetime | None = None
+    #: 切断のとき Google 側の許可を取り消せなかった (切断の応答だけ)。
+    revoke_failed: bool = False
 
 
 class GoogleDriveConnectStart(BaseModel):

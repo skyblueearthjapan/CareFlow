@@ -13,6 +13,7 @@ DELETE /google-drive/connection    切断 (Google 側の許可を取り消して
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 from urllib.parse import urlencode
 
@@ -42,22 +43,27 @@ from app.services.google_drive.connection import (
     delete_connection,
     get_access_token,
     load_connection,
+    notify_connection_changed,
     save_connection,
 )
 from app.services.google_drive.oauth import (
     STATE_TTL_SECONDS,
+    DriveAccount,
     InvalidOAuthStateError,
     build_authorization,
     decrypt_token,
     exchange_code,
+    get_account,
     is_configured,
     is_picker_configured,
+    refresh_access_token,
     revoke_token,
     verify_state,
 )
 from app.services.google_drive.sheets import get_folder
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 AdminUser = Annotated[User, Depends(require_role("admin"))]
 
@@ -69,6 +75,14 @@ SETTINGS_PAGE = "/settings/google-drive"
 
 def _cookie_path() -> str:
     return f"{get_settings().api_v1_prefix}/google-drive"
+
+
+def _account_label(account: DriveAccount | None) -> str:
+    if account is None:
+        return "（アカウントを読めませんでした）"
+    if account.name and account.email:
+        return f"{account.name}（{account.email}）"
+    return account.email or account.name or "（アカウントを読めませんでした）"
 
 
 def _user_label(user: User | None) -> str | None:
@@ -116,9 +130,13 @@ async def get_status(db: DbDep, _actor: AdminUser) -> GoogleDriveStatusRead:
     row = await load_connection(db)
     folder_name: str | None = None
     folder_missing = False
-    if row is not None and row.status == "connected" and row.folder_id and is_configured():
+    account: DriveAccount | None = None
+    if row is not None and row.status == "connected" and is_configured():
         try:
-            folder_name = str((await get_folder(db, row.folder_id)).get("name") or "") or None
+            token, _expires, _row = await get_access_token(db)
+            account = await get_account(token)
+            if row.folder_id:
+                folder_name = str((await get_folder(db, row.folder_id)).get("name") or "") or None
         except GoogleDriveNotFoundError:
             folder_missing = True
         except GoogleDriveReconnectRequiredError:
@@ -131,6 +149,9 @@ async def get_status(db: DbDep, _actor: AdminUser) -> GoogleDriveStatusRead:
     result = await _build_status(db, row)
     result.folder_name = folder_name
     result.folder_missing = folder_missing
+    if account is not None:
+        result.account_email = account.email
+        result.account_name = account.name
     return result
 
 
@@ -181,22 +202,65 @@ async def oauth_callback(
     user = await db.get(User, user_id)
     if user is None or user.deleted_at is not None or normalize_user_role(user.role) != "admin":
         return _back("error", "forbidden")
+
+    # つなぎ直し (L-2): 先に新しい code をトークンに換え、つないだアカウントを確かめる。
+    # 前のリフレッシュトークンは、前の接続と**違うアカウントだと分かったときだけ**、新しい
+    # 接続を保存したあとで取り消す。同じアカウント (または前のアカウントが読めない) なら
+    # 取り消さない — 許可が共有で、新しいトークンまで使えなくなることがあるため。
+    previous = await load_connection(db)
+    before: dict[str, object] | None = None
+    old_token: str | None = None
+    if previous is not None:
+        before = {
+            "status": previous.status,
+            "connected_by": str(previous.connected_by) if previous.connected_by else None,
+            "folder_id": previous.folder_id,
+        }
+        if previous.refresh_token_encrypted:
+            old_token = decrypt_token(previous.refresh_token_encrypted)
+
     try:
-        refresh_token = await exchange_code(code, verifier)
+        tokens = await exchange_code(code, verifier)
     except GoogleDriveError:
         return _back("error", "exchange")
-    row = await save_connection(db, refresh_token=refresh_token, user_id=user.id)
+    account = await get_account(tokens.access_token)
+
+    previous_account: DriveAccount | None = None
+    if old_token is not None:
+        try:
+            old_access, _ = await refresh_access_token(old_token)
+            previous_account = await get_account(old_access)
+        except GoogleDriveError:
+            previous_account = None
+
+    row = await save_connection(db, refresh_token=tokens.refresh_token, user_id=user.id)
     db.add(
         AuditLog(
             actor_user_id=user.id,
             action="google_drive_connect",
             target_table="google_drive_connections",
             target_id=str(row.id),
-            before=None,
-            after={"status": row.status, "folder_id": row.folder_id},
+            before=before,
+            after={
+                "status": row.status,
+                "connected_by": str(user.id),
+                "folder_id": row.folder_id,
+                "account": account.email if account else None,
+            },
         )
     )
+    new_email = account.email if account else None
+    old_email = previous_account.email if previous_account else None
+    if previous is not None and new_email != old_email:
+        await notify_connection_changed(
+            db, account=_account_label(account), by=_user_label(user) or "管理者"
+        )
     await db.commit()
+
+    if old_token is not None and old_email and new_email and old_email != new_email:
+        # 取り消せなくても新しい接続は成功のまま (記録だけ残す)。
+        if not await revoke_token(old_token):
+            logger.warning("google drive: previous refresh token was not revoked")
     return _back("connected")
 
 
@@ -243,7 +307,9 @@ async def save_folder(
     response_model=GoogleDrivePickerToken,
     summary="Google Picker 用の短い寿命のアクセストークン",
 )
-async def picker_token(db: DbDep, _actor: AdminUser) -> GoogleDrivePickerToken:
+async def picker_token(response: Response, db: DbDep, _actor: AdminUser) -> GoogleDrivePickerToken:
+    # アクセストークンを途中の層・ブラウザーに残さない (L-4)。
+    response.headers["Cache-Control"] = "no-store"
     settings = get_settings()
     if not is_picker_configured(settings):
         raise HTTPException(
@@ -270,14 +336,17 @@ async def picker_token(db: DbDep, _actor: AdminUser) -> GoogleDrivePickerToken:
 )
 async def disconnect(db: DbDep, actor: AdminUser) -> GoogleDriveStatusRead:
     row = await load_connection(db)
+    revoke_failed = False
     if row is not None:
-        if row.refresh_token_encrypted:
-            token = decrypt_token(row.refresh_token_encrypted)
-            if token is not None:
-                # 使えなくなったトークンの取り消しは失敗するが、切断は続ける。
-                await revoke_token(token)
+        token = decrypt_token(row.refresh_token_encrypted) if row.refresh_token_encrypted else None
+        # 取り消せなかったときも切断は続け、応答で知らせる (L-3)。
+        revoke_failed = token is None or not await revoke_token(token)
         row_id = str(row.id)
-        before = {"status": row.status, "folder_id": row.folder_id}
+        before = {
+            "status": row.status,
+            "connected_by": str(row.connected_by) if row.connected_by else None,
+            "folder_id": row.folder_id,
+        }
         await delete_connection(db)
         db.add(
             AuditLog(
@@ -286,8 +355,10 @@ async def disconnect(db: DbDep, actor: AdminUser) -> GoogleDriveStatusRead:
                 target_table="google_drive_connections",
                 target_id=row_id,
                 before=before,
-                after=None,
+                after={"revoke_failed": revoke_failed},
             )
         )
         await db.commit()
-    return await _build_status(db, None)
+    result = await _build_status(db, None)
+    result.revoke_failed = revoke_failed
+    return result

@@ -20,6 +20,7 @@ import json
 import secrets
 import uuid
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlencode
 
 import httpx
@@ -27,6 +28,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from app.core.config import Settings, get_settings
 from app.services.google_drive.client import (
+    UNEXPECTED_RESPONSE,
     GoogleDriveError,
     GoogleDriveNotConfiguredError,
     GoogleDriveReconnectRequiredError,
@@ -36,6 +38,7 @@ from app.services.google_drive.client import (
 SCOPE_DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
+ABOUT_URL = "https://www.googleapis.com/drive/v3/about"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 
 #: state の有効 (秒)。許可の画面で迷っても足りる長さ。
@@ -47,7 +50,13 @@ class InvalidOAuthStateError(Exception):
 
 
 def is_configured(settings: Settings | None = None) -> bool:
+    """接続に要る値がそろっているか。
+
+    本番では暗号化の鍵 ``GOOGLE_DRIVE_TOKEN_SECRET`` も必須 (jwt_secret から導出しない・L-6)。
+    """
     s = settings or get_settings()
+    if s.is_production and not (s.google_drive_token_secret or "").strip():
+        return False
     return bool(
         s.google_drive_client_id.strip()
         and s.google_drive_client_secret.strip()
@@ -109,7 +118,6 @@ def build_authorization(user_id: uuid.UUID) -> AuthorizationStart:
         "scope": SCOPE_DRIVE_FILE,
         "access_type": "offline",
         "prompt": "consent",
-        "include_granted_scopes": "true",
         "state": state,
         "code_challenge": _code_challenge(verifier),
         "code_challenge_method": "S256",
@@ -140,8 +148,28 @@ def _error_code(resp: httpx.Response) -> str:
     return str(body.get("error") or "") if isinstance(body, dict) else ""
 
 
-async def exchange_code(code: str, code_verifier: str) -> str:
-    """許可のコードをトークンに換え、リフレッシュトークンを返す。"""
+def _json(resp: httpx.Response) -> dict[str, Any]:
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise GoogleDriveError(UNEXPECTED_RESPONSE) from exc
+    if not isinstance(body, dict):
+        raise GoogleDriveError(UNEXPECTED_RESPONSE)
+    return body
+
+
+@dataclass(frozen=True)
+class ExchangedTokens:
+    refresh_token: str
+    access_token: str
+
+
+async def exchange_code(code: str, code_verifier: str) -> ExchangedTokens:
+    """許可のコードをトークンに換える。
+
+    許可が ``drive.file`` だけでないとき (足りない・ほかの許可も付いている) は断り、
+    受け取ったトークンは取り消す (L-1)。
+    """
     settings = get_settings()
     if not is_configured(settings):
         raise GoogleDriveNotConfiguredError()
@@ -162,17 +190,24 @@ async def exchange_code(code: str, code_verifier: str) -> str:
         raise GoogleDriveError(
             f"Google から許可を受け取れませんでした（{_error_code(resp) or resp.status_code}）"
         )
-    body = resp.json()
-    # 細かい許可の画面でドライブのチェックを外すと scope に入らない。
-    granted = str(body.get("scope") or "").split()
-    if SCOPE_DRIVE_FILE not in granted:
-        raise GoogleDriveError(
-            "ドライブへの許可がありませんでした。許可の画面でドライブのチェックを入れてください"
-        )
+    body = _json(resp)
     refresh_token = body.get("refresh_token")
-    if not refresh_token:
+    access_token = body.get("access_token")
+    # 細かい許可の画面でドライブのチェックを外すと scope に入らない。
+    granted = set(str(body.get("scope") or "").split())
+    if granted != {SCOPE_DRIVE_FILE}:
+        if refresh_token or access_token:
+            await revoke_token(str(refresh_token or access_token))
+        if SCOPE_DRIVE_FILE not in granted:
+            raise GoogleDriveError(
+                "ドライブへの許可がありませんでした。許可の画面でドライブのチェックを入れてください"
+            )
+        raise GoogleDriveError(
+            "ドライブ（drive.file）以外の許可が付いていたため、接続しませんでした"
+        )
+    if not refresh_token or not access_token:
         raise GoogleDriveError("Google からリフレッシュトークンを受け取れませんでした")
-    return str(refresh_token)
+    return ExchangedTokens(refresh_token=str(refresh_token), access_token=str(access_token))
 
 
 async def refresh_access_token(refresh_token: str) -> tuple[str, int]:
@@ -201,8 +236,11 @@ async def refresh_access_token(refresh_token: str) -> tuple[str, int]:
         raise GoogleDriveError(
             f"Google のトークンを更新できませんでした（{_error_code(resp) or resp.status_code}）"
         )
-    body = resp.json()
-    return str(body["access_token"]), int(body.get("expires_in") or 3600)
+    body = _json(resp)
+    try:
+        return str(body["access_token"]), int(body.get("expires_in") or 3600)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GoogleDriveError(UNEXPECTED_RESPONSE) from exc
 
 
 async def revoke_token(token: str) -> bool:
@@ -217,3 +255,34 @@ async def revoke_token(token: str) -> bool:
     except httpx.RequestError:
         return False
     return resp.status_code == 200
+
+
+@dataclass(frozen=True)
+class DriveAccount:
+    email: str | None
+    name: str | None
+
+
+async def get_account(access_token: str) -> DriveAccount | None:
+    """つないだ Google アカウント (``about?fields=user(emailAddress,displayName)``)。
+
+    読めなければ None (画面に出さないだけで、接続は続ける)。
+    """
+    try:
+        async with http_client() as client:
+            resp = await client.get(
+                ABOUT_URL,
+                params={"fields": "user(emailAddress,displayName)"},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+    except httpx.RequestError:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        user = _json(resp).get("user") or {}
+    except GoogleDriveError:
+        return None
+    if not isinstance(user, dict):
+        return None
+    return DriveAccount(email=user.get("emailAddress"), name=user.get("displayName"))

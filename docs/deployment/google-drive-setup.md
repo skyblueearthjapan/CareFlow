@@ -7,7 +7,7 @@ PO の Google アカウントで 1 回だけ行う。**秘密の値（クライ�
 
 ## 0. 先にお客様へ確かめること
 - 会社の Google Workspace で、外部のアプリ（らく助）の接続が許されているか（管理コンソールの「API の制御」）。止められていると許可の画面でエラーになる。
-- 勤務表を置く**共有ドライブ**（推奨。作った人が辞めてもファイルが残る）と、その中のフォルダ。
+- 勤務表を置く**共有ドライブ**（推奨。作った人が辞めてもファイルが残る）と、その中のフォルダ。接続する Google アカウントには、その共有ドライブで**コンテンツ管理者以上**の権限を付ける（作りかけのファイルを消すのに要る）。
 
 ## 1. Google Cloud のプロジェクト
 1. https://console.cloud.google.com/ で新しいプロジェクトを作る（例「rakusuke-kinmu」。音声記録の `rakusuke-voice` とは分けてよい）。
@@ -42,7 +42,7 @@ PO の Google アカウントで 1 回だけ行う。**秘密の値（クライ�
 | `GOOGLE_DRIVE_REDIRECT_URI` | `https://carelink.kaipoke-api.net/api/v1/google-drive/callback` |
 | `GOOGLE_PICKER_API_KEY` | 4 の API キー |
 | `GOOGLE_PICKER_APP_ID` | 1 のプロジェクト番号 |
-| `GOOGLE_DRIVE_TOKEN_SECRET` | リフレッシュトークンを暗号化する鍵の元。`openssl rand -hex 32` で作る（秘密）。変えると接続し直しになる |
+| `GOOGLE_DRIVE_TOKEN_SECRET` | リフレッシュトークンを暗号化する鍵の元。`openssl rand -hex 32` で作る（秘密）。**本番では必須**（空だと「未設定」扱いで接続できない）。変えるともう一度接続が要る |
 
 - 秘密の値を別のファイル（`/opt/carelink/secrets/` の下）に置く場合も、**ディレクトリの権限は 711 のまま**にする（700 にすると backend から読めない・音声記録の Vertex が止まった前例）。置いたら backend のコンテナから読めることを確かめる。
 - 入れたら backend を作り直す: `docker compose ... up -d --force-recreate backend`。

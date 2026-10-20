@@ -46,6 +46,9 @@ import {
 import { GOOGLE_DRIVE_CALLBACK_REASON, type GoogleDriveStatus } from '@/lib/schemas/googleDrive';
 import { isAdminRole } from '@/lib/rbac';
 
+/** 許可の画面はここで始まる URL だけ (L-9)。 */
+const GOOGLE_AUTH_ORIGIN = 'https://accounts.google.com/';
+
 const STATUS_LABEL: Record<GoogleDriveStatus['status'], string> = {
   not_connected: '未接続',
   connected: '接続中',
@@ -109,6 +112,7 @@ function GoogleDriveSettings() {
   const disconnect = useDisconnectGoogleDrive();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [revokeFailed, setRevokeFailed] = useState(false);
 
   if (sessionStatus === 'loading') return null;
 
@@ -136,6 +140,11 @@ function GoogleDriveSettings() {
   const handleConnect = async () => {
     try {
       const url = await connect.mutateAsync();
+      // Google の許可の画面以外へは移らない (L-9)。
+      if (!url.startsWith(GOOGLE_AUTH_ORIGIN)) {
+        toast.error('接続を始められませんでした（許可の画面の URL が想定と違います）');
+        return;
+      }
       window.location.assign(url);
     } catch (e) {
       toast.error(googleDriveErrorMessage(e, '接続を始められませんでした'));
@@ -163,7 +172,8 @@ function GoogleDriveSettings() {
 
   const handleDisconnect = async () => {
     try {
-      await disconnect.mutateAsync();
+      const result = await disconnect.mutateAsync();
+      setRevokeFailed(result.revoke_failed);
       toast.success('Google ドライブを切断しました');
       setConfirmOpen(false);
     } catch (e) {
@@ -205,6 +215,18 @@ function GoogleDriveSettings() {
             </Alert>
           )}
 
+          {revokeFailed && (
+            <Alert variant="destructive" data-testid="revoke-failed">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>Google 側の許可を取り消せませんでした</AlertTitle>
+              <AlertDescription>
+                らく助の接続は外しました。念のため、接続していた Google アカウントで「Google
+                アカウント → セキュリティ →
+                サードパーティ製のアプリとサービス」（https://myaccount.google.com/connections）を開き、らく助へのアクセスを外してください。
+              </AlertDescription>
+            </Alert>
+          )}
+
           {data.status === 'needs_reconnect' && (
             <Alert variant="destructive" data-testid="needs-reconnect">
               <AlertTriangle className="h-4 w-4" />
@@ -231,6 +253,14 @@ function GoogleDriveSettings() {
                 </dd>
                 {data.status !== 'not_connected' && (
                   <>
+                    <dt className="text-text-muted">Google アカウント</dt>
+                    <dd data-testid="drive-account">
+                      {data.account_email
+                        ? data.account_name
+                          ? `${data.account_name}（${data.account_email}）`
+                          : data.account_email
+                        : '—'}
+                    </dd>
                     <dt className="text-text-muted">接続した人</dt>
                     <dd>{data.connected_by_name ?? '—'}</dd>
                     <dt className="text-text-muted">最後の変更</dt>

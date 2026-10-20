@@ -22,8 +22,13 @@ export const googleDriveStatusSchema = z.object({
   folder_missing: z.boolean(),
   shared_drive_id: z.string().nullable(),
   connected_by_name: z.string().nullable(),
+  /** つないだ Google アカウント (読めなければ null)。 */
+  account_email: z.string().nullable(),
+  account_name: z.string().nullable(),
   last_error: z.string().nullable(),
   updated_at: z.string().nullable(),
+  /** 切断で Google 側の許可を取り消せなかった (切断の応答だけ true になりうる)。 */
+  revoke_failed: z.boolean(),
 });
 export type GoogleDriveStatus = z.infer<typeof googleDriveStatusSchema>;
 
