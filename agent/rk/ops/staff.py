@@ -274,7 +274,16 @@ class StaffOffWeek(Op):
         visits, courses = self._day(api, sid, day)
         if want in ("午前休", "午後休"):
             # 半休はコースが本人のまま・休みの時間帯の外の訪問も本人に残る。時間帯にかかる本人の予定だけを見る
-            left = [v for v in visits if v.get("status") == "planned" and str(v.get("primary_staff_id") or "") == sid
+            # 本人の予定 = 主担当が本人／主担当が空で印 (明示の担当なし) が無く、コースの担当が本人
+            own_courses = {str(c["id"]) for c in courses}
+
+            def _mine(v: dict) -> bool:
+                primary = str(v.get("primary_staff_id") or "")
+                if primary:
+                    return primary == sid
+                return not v.get("manual_staff_override") and str(v.get("course_id") or "") in own_courses
+
+            left = [v for v in visits if v.get("status") == "planned" and _mine(v)
                     and hits_half_day_leave(want, v.get("start_time"), v.get("end_time"))]
             if left:
                 errs.append(f"{day} に まだ本人が主担当の{want}の時間帯の予定が {len(left)} 件あります")

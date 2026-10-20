@@ -727,6 +727,25 @@ async def test_exchange_rejects_extra_scopes_and_revokes(configured, google) -> 
 
 
 @pytest.mark.asyncio
+async def test_exchange_without_drive_scope_does_not_revoke(configured, google) -> None:
+    """drive.file が無いときは断るが取り消さない (アプリへの許可ごと消すといまの接続も切れる)."""
+    from app.services.google_drive import GoogleDriveError
+    from app.services.google_drive.oauth import exchange_code
+
+    google.on(
+        "POST",
+        "https://oauth2.googleapis.com/token",
+        lambda r: httpx.Response(
+            200,
+            json={"access_token": "a", "refresh_token": "1//r", "scope": "openid email"},
+        ),
+    )
+    with pytest.raises(GoogleDriveError, match="ドライブへの許可がありませんでした"):
+        await exchange_code("c", "v")
+    assert all(r.url.path != "/revoke" for r in google.requests)
+
+
+@pytest.mark.asyncio
 async def test_unexpected_token_response_is_wrapped(db, configured, google) -> None:
     from app.services.google_drive import GoogleDriveError
 
@@ -794,6 +813,7 @@ async def test_reconnect_revokes_old_token_audits_and_notifies(
     assert audit is not None
     assert audit.before["connected_by"] == str(admin_id)
     assert audit.before["folder_id"] == "fold_A"
+    assert audit.after["previous_revoked"] is True
     notes = (
         await db.scalars(
             select(Notification).where(Notification.reference_type == NOTIFY_GOOGLE_DRIVE_CHANGED)
@@ -971,6 +991,10 @@ async def test_reconnect_same_account_does_not_revoke(client, db, configured, go
     assert await _run_callback(client, admin) == "/settings/google-drive?result=connected"
     assert revoked == []
     db.expire_all()
+    from app.models.audit_log import AuditLog
+
+    audit = await db.scalar(select(AuditLog).where(AuditLog.action == "google_drive_connect"))
+    assert audit is not None and audit.after["previous_revoked"] is False
     row = await load_connection(db)
     assert row is not None
     assert decrypt_token(row.refresh_token_encrypted or "") == "1//refresh-new"

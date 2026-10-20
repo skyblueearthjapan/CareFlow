@@ -837,7 +837,9 @@ async def test_compare_month_failure_is_recorded_on_job(db, monkeypatch) -> None
     assert await lc.compare_month(db, job_id) is None
     refreshed = await db.get(KaipokeJob, job_id, populate_existing=True)
     assert refreshed is not None and refreshed.status == "completed"
-    assert "こわれた" in refreshed.result_summary["compare_error"]
+    # 画面に出す文は例外の型の名前だけ (中身はログへ・L5 再確認 LOW)
+    assert "RuntimeError" in refreshed.result_summary["compare_error"]
+    assert "こわれた" not in refreshed.result_summary["compare_error"]
     assert refreshed.result_summary["done"] == 0  # 段階 0 の記録は残す
     assert (await db.scalars(select(LeaveCompareRun))).all() == []
 

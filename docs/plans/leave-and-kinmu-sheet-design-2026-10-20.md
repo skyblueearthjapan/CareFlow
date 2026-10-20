@@ -108,6 +108,7 @@
 - 今の `staff_shift_confirmations`（職員×月で 1 行）はそのまま使い、確定 POST を「月＋職員の一覧」で受けられるようにする（中身は職員ごとに upsert・通知も職員ごと）。
 - 確定は「通知した記録」。確定後の変更を止めるロックは作らない（表で変えて再確定）。
 - 確定と同時に: ①送ってよい未送信の休みをカイポケへ送る**ジョブを始める**（§7-4-4・`op='leave-outbound'`・非同期。確定の API の中では送らない・送る前に一覧で確認・**その月の照合が一度も済んでいなければ送らない**）②勤務表の予定版を作る（§7-2）。
+- 実装（#13）: 確定の記録と通知を commit してから、新しいトランザクションで ① と ② を行う。どちらも失敗しても確定は成功のまま（応答の `outbound: {started, job_id?, count, reason?}`・`kinmu_sheet: {created, kind, sheet, reason?}` に理由。予期しない例外もログに残して 500 にしない）。**一部の職員だけを確定したとき（`staff_ids`）は、送るのもその職員の休みだけ**（ディレクター決定・`build_leave_send_plan(staff_ids=…)`）。予定版は月全体。`staff_ids=[]` は 422。
 
 ### 2-5. 新しい表（alembic 0099・`down_revision='0098'`）
 | 表 | 中身 | 使う節 |
@@ -381,6 +382,7 @@
 3. 照合で差分 0 件・送る予定 0 件になったあと、管理者が **「実績を記録する」** を押す → 照合を済ませた休みで実績の行を入れた**確定版**を作る（`…_確定`）。以後は書き換えない（間違えたときは管理者が理由を入れて「確定版を作り直す」＝ `…_確定_第2版` を作る・前の版は残す）。**自動では作らない・cron は作らない**。
 4. 作ったファイルは `kinmu_sheets` に記録し、「休み・勤務表」の下に一覧で出す。**作ってから 5 年間はらく助から消さない**（消す API・ボタンを作らない。ドライブ側で消されたら一覧に「ドライブに見つかりません」と出す）。
 5. Google ドライブに接続していないときも確定・実績の記録はでき、勤務表だけ「未作成（ドライブ未接続）」として残る。接続後に「作る」ボタンで作れる。
+6. 実装（#13）: 作り直し・「作る」は `POST /leave/month/{month}/kinmu-sheets/rebuild {kind, reason}`（**理由は必須**・確定版は実績を記録した月だけ・**実績の記録の時刻は変えない**）。同じ種類の**最新の版が「未作成」なら新しい行は足さずその行で作る**（確定のたびに未作成の行が増えない・同時に押されたときは行の鍵で 1 つだけ作る）。「実績を記録する」は月に 1 回だけ（2 回目は 409 `already_recorded`・作り直しは rebuild）。一覧は `GET /leave/month/{month}/kinmu-sheets`。
 
 ### 7-3. Google ドライブへの接続（M10）
 - **形式**: Google スプレッドシート（xlsx ではない）。Drive API の `files.create`（`mimeType=application/vnd.google-apps.spreadsheet`・`parents=[保存先フォルダ]`）で作り、Sheets API の `batchUpdate` で値と書式（罫線・塗り・列幅・セルの結合）を書く。
@@ -393,7 +395,7 @@
 - **鍵の置き場**: OAuth のクライアントシークレットと API キーは VPS の secrets の置き場に置く。**ディレクトリの権限は 711 のまま**（700 にすると backend から読めない・音声記録の Vertex が止まった前例）。置いたあと backend のコンテナから読めることを確かめる。
 - **時刻**: 勤務表の作成日時は JST で表示。定期処理は作らない（作る場合は VPS が UTC なので cron は UTC で書く）。
 - 注意: 会社の Google Workspace で外部アプリが止められていると接続できない（§10 のお客様確認）。サービスアカウントはマイドライブに作れないので使わない。
-- ライブラリ: 音声記録で入っている `google-auth` を使い回し、`google-api-python-client`（Drive/Sheets）を足す。フロントは Picker の script を読み込む。
+- ライブラリ: **新しいライブラリは足さない**。Drive と Sheets は `httpx` で REST を直接呼ぶ（`app/services/google_drive/`・#12 で `google-api-python-client` から変更）。フロントは Picker の script を読み込む。
 
 ### 7-4. カイポケとの照合（H4・H5・H-c・H-d・H-f・PO 決定 2・3）
 
@@ -410,6 +412,8 @@
   - 最新の照合が**その月の全部の週（月〜土）を取れている**（未確認の日が 0）
   - **差分 0 件・送る予定 0 件・照合前 0 件**
   - **`leave_months.last_leave_changed_at` が `last_compared_at` より前**（照合の後に休みを足した・変えた・消したら比べ直す・中6）
+  - （実装 #13 で足した条件）**月の最後の日が過ぎている（JST）**（月の途中では記録しない・ディレクター決定）・**まだ記録していない**・**種類を選んだだけの差分が無い**（選んだ種類は次の照合で効くので比べ直す・送信の「比べ直してください」と同じ判定）・**使った材料が新しい**（`fetched_at` がすべてその照合のジョブの開始以降）
+  - 判定は `leave_compare.record_actuals_blockers` の 1 つ。欠けていれば 409 で理由の一覧（code: `month_not_ended`・`already_recorded`・`not_compared`・`diffs_remaining`・`recompare_after_choose`・`unconfirmed_days`・`planned_sends`・`changed_since_compare`・`stale_material`）。月の表の `record_actuals` も同じ判定。
 - 日曜は取り込まないので照合の対象外（型で休み）。
 
 #### 7-4-3. 「カイポケと比べる」
@@ -684,5 +688,5 @@
 | `agent/rk/ops/staff.py:24-25`・`:45-54` | A-1 のとおり |
 | `agent/.claude/skills/rakusuke-absence/SKILL.md:21`・`:44`・`:89`（`.agents/` 側も同じ） | 種類に有給・`staff-day-off` が訪問を担当なしへ移すこと |
 | `agent/.claude/skills/rakusuke-ask/SKILL.md:28`・`:46`・`references/questions.md:65`（`.agents/` 側も） | 担当の式は今のまま（明示の担当なしと一致）・休みの種類に有給 |
-| `agent/.claude/skills/rakusuke-week-check/SKILL.md:19`・`rakusuke-week-optimize/SKILL.md:28`・`:71`・`:79-81`・`:189` | 有給も `--off`・半休の扱い（ならし道具は休みを DB から読まず `--off` で受ける＝`agent/tools/leveling/plan.py:125`・`solve.py:221`） |
+| `agent/.claude/skills/rakusuke-week-check/SKILL.md:19`・`rakusuke-week-optimize/SKILL.md:28`・`:71`・`:79-81`・`:189` | 有給も終日の休み・半休の扱い。ならし道具は休みを **DB から読む**（`docs/tools/week-leveling/extract.py` が `staff_weekly_overrides` を読み、終日・半休を道具の入力にする）。`--off` は「まだ登録していない終日の休み」を試算で足すときだけ。**まだ登録していない半休は `--off` で表せない**ので、先に休みを登録してから試算する（スキルにもそう書いた・#15） |
 | `.claude/skills/week-leveling/` | 同上 |

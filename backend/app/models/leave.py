@@ -34,6 +34,7 @@ from sqlalchemy import (
     Text,
     Time,
     UniqueConstraint,
+    false,
     func,
     text,
     true,
@@ -91,7 +92,7 @@ class StaffLeaveKaipoke(Base):
     sent_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # 照合前 (0099 より前からある休み)。その月の照合で決めるまで送らない。
     baseline_pending: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default=text("false")
+        Boolean, nullable=False, default=False, server_default=false()
     )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sent_by: Mapped[uuid.UUID | None] = mapped_column(

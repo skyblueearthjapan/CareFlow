@@ -167,8 +167,8 @@ class ExchangedTokens:
 async def exchange_code(code: str, code_verifier: str) -> ExchangedTokens:
     """許可のコードをトークンに換える。
 
-    許可が ``drive.file`` だけでないとき (足りない・ほかの許可も付いている) は断り、
-    受け取ったトークンは取り消す (L-1)。
+    許可が ``drive.file`` だけでないとき (足りない・ほかの許可も付いている) は断る。
+    受け取ったトークンは、``drive.file`` とほかの許可が付いていたときだけ取り消す (L-1)。
     """
     settings = get_settings()
     if not is_configured(settings):
@@ -196,7 +196,10 @@ async def exchange_code(code: str, code_verifier: str) -> ExchangedTokens:
     # 細かい許可の画面でドライブのチェックを外すと scope に入らない。
     granted = set(str(body.get("scope") or "").split())
     if granted != {SCOPE_DRIVE_FILE}:
-        if refresh_token or access_token:
+        # 取り消すのは drive.file に加えてほかの許可も付いていたときだけ (広すぎる許可を
+        # 残さない)。drive.file が無いときは取り消さない: Google の取り消しはアプリへの許可
+        # ごと消すので、いまの接続 (前に許可した drive.file) まで使えなくなるため。
+        if SCOPE_DRIVE_FILE in granted and (refresh_token or access_token):
             await revoke_token(str(refresh_token or access_token))
         if SCOPE_DRIVE_FILE not in granted:
             raise GoogleDriveError(

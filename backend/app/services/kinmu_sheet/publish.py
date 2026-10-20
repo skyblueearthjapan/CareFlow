@@ -84,6 +84,10 @@ async def create_kinmu_sheet(
         .where(KinmuSheet.month == first, KinmuSheet.kind == kind)
         .order_by(KinmuSheet.version.desc())
         .limit(1)
+        # 同時に「未作成」の行を使い直すと、ドライブのファイルが 2 つできる。行を鍵で押さえ、
+        # 後から来た方は先の commit を待って (作り済みなら) 新しい版にする。
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if latest is not None and latest.drive_file_id is None:
         row = latest
