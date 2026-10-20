@@ -92,6 +92,7 @@ export function useMonthConfirmedCount(staffIds: readonly string[], monthStart: 
     confirmed: results.filter((r) => (r.data?.length ?? 0) > 0).length,
     total: staffIds.length,
     isLoading: results.some((r) => r.isLoading),
+    isError: results.some((r) => r.isError),
   };
 }
 

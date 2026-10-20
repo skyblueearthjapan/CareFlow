@@ -146,3 +146,21 @@ export function leaveRequestDeadline(target: string): Date {
 export function isPastLeaveDeadline(target: string, now: Date = new Date()): boolean {
   return now.getTime() > leaveRequestDeadline(target).getTime();
 }
+
+/** JST の今日 'YYYY-MM-DD' (端末の時刻帯によらない)。 */
+export function jstToday(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo' }).format(now);
+}
+
+/**
+ * 締め切りがまだ来ていない最初の月 'YYYY-MM' (JST)。
+ * 20 日までなら来月、21 日からは再来月。
+ */
+export function firstOpenLeaveMonth(now: Date = new Date()): string {
+  const [y = 0, m = 1] = jstToday(now).split('-').map(Number);
+  for (let add = 1; ; add++) {
+    const d = new Date(Date.UTC(y, m - 1 + add, 1));
+    const ym = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    if (!isPastLeaveDeadline(ym, now)) return ym;
+  }
+}

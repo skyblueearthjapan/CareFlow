@@ -52,6 +52,14 @@ vi.mock('@/lib/queries/staff', () => ({
     data: [
       { id: 'staff-1', name: '職員A', status: 'active', deleted_at: null },
       { id: 'staff-2', name: '職員B', status: 'active', deleted_at: null },
+      {
+        id: 'staff-3',
+        name: '職員C',
+        status: 'active',
+        deleted_at: null,
+        employment_type: 'part_time',
+      },
+      { id: 'staff-4', name: '職員D', status: 'retired', deleted_at: null },
     ],
   }),
 }));
@@ -59,7 +67,7 @@ vi.mock('@/lib/queries/patients', () => ({
   usePatients: () => ({ data: { items: [] } }),
 }));
 
-let confirmCount = { confirmed: 0, total: 2, isLoading: false };
+let confirmCount = { confirmed: 0, total: 2, isLoading: false, isError: false };
 const confirmCalls: unknown[][] = [];
 vi.mock('@/lib/queries/staff-shift-confirmations', () => ({
   useMonthConfirmedCount: (...args: unknown[]) => {
@@ -118,7 +126,7 @@ beforeEach(() => {
   listCalls.length = 0;
   confirmCalls.length = 0;
   listItems = [];
-  confirmCount = { confirmed: 0, total: 2, isLoading: false };
+  confirmCount = { confirmed: 0, total: 2, isLoading: false, isError: false };
 });
 
 afterEach(() => {
@@ -135,7 +143,7 @@ describe('AdminPendingRequestsPage — 休みの帯', () => {
       'href',
       '/admin/leave',
     );
-    // 申請中の staff_off の件数を読み、来月 (2026-11-01) の確定を在職の職員で数える
+    // 申請中の staff_off の件数を読み、来月 (2026-11-01) の確定を在職の常勤だけで数える
     expect(listCalls).toContainEqual({ request_type: 'staff_off', status: 'pending', limit: 1 });
     expect(confirmCalls[0]).toEqual([['staff-1', 'staff-2'], '2026-11-01']);
     // 右の小さなカレンダーは無い
@@ -143,15 +151,23 @@ describe('AdminPendingRequestsPage — 休みの帯', () => {
   });
 
   it('一部だけ確定なら人数、全員確定なら「確定済み」', () => {
-    confirmCount = { confirmed: 1, total: 2, isLoading: false };
+    confirmCount = { confirmed: 1, total: 2, isLoading: false, isError: false };
     const { unmount } = render(<AdminPendingRequestsPage />);
     expect(screen.getByRole('region', { name: '休みの申請' })).toHaveTextContent(
       '11月は未確定（1/2 人確定）',
     );
     unmount();
-    confirmCount = { confirmed: 2, total: 2, isLoading: false };
+    confirmCount = { confirmed: 2, total: 2, isLoading: false, isError: false };
     render(<AdminPendingRequestsPage />);
     expect(screen.getByRole('region', { name: '休みの申請' })).toHaveTextContent('11月は確定済み');
+  });
+
+  it('確定の読み込みが 1 件でも失敗したら「読み込めませんでした」と出す', () => {
+    confirmCount = { confirmed: 1, total: 2, isLoading: false, isError: true };
+    render(<AdminPendingRequestsPage />);
+    const band = screen.getByRole('region', { name: '休みの申請' });
+    expect(band).toHaveTextContent('11月の確定の状態を読み込めませんでした');
+    expect(band).not.toHaveTextContent('未確定');
   });
 });
 

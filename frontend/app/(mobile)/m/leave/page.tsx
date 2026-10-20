@@ -32,13 +32,16 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui/sonner';
 import { MobileSection } from '@/components/mobile/MobileSection';
 import { cn } from '@/lib/utils';
 import {
   AM_OFF_UNTIL,
+  firstOpenLeaveMonth,
   isPastLeaveDeadline,
+  jstToday,
   LEAVE_REQUEST_DEADLINE_DAY,
   LEAVE_TYPES,
   PM_OFF_FROM,
@@ -150,11 +153,11 @@ export default function MobileLeavePage() {
   const { data: session } = useSession();
   const staffId = session?.user?.staffId ?? null;
 
-  const todayIso = fmtIsoLocal(new Date());
-  // 既定は来月 (いま希望を集めている月)。
+  const todayIso = jstToday();
+  // 開いたときは締め切りがまだ来ていない最初の月 (JST の 20 日までなら来月、21 日からは再来月)。
   const [month, setMonth] = useState<Date>(() => {
-    const now = new Date();
-    return new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const [y = 0, m = 1] = firstOpenLeaveMonth().split('-').map(Number);
+    return new Date(y, m - 1, 1);
   });
   const monthStart = fmtIsoLocal(startOfMonth(month));
   const monthEnd = fmtIsoLocal(endOfMonth(month));
@@ -224,13 +227,17 @@ export default function MobileLeavePage() {
   }）`;
 
   const summary = useMemo(() => summarizeShiftMonth(days), [days]);
+  // 申請中の増分 = その種類の数 − その日のいまの数 (勤務しない曜日はもともと休みなので 0)。
   const pendingGain = useMemo(() => {
     let n = 0;
     for (const r of requests) {
       if (r.status !== 'pending' || isChangeRequest(r)) continue;
       const t = requestTypeOf(r);
       const day = dayByDate.get(r.target_date!);
-      if (t !== 'cancel' && day && !leaveOf(day)) n += leaveDayWeight(t, day.patternWorking);
+      if (t === 'cancel' || !day || !day.patternWorking) continue;
+      const leave = leaveOf(day);
+      const now = leave ? leaveDayWeight(leave, true) : 0;
+      n += leaveDayWeight(t, true) - now;
     }
     return n;
   }, [requests, dayByDate]);
@@ -306,7 +313,13 @@ export default function MobileLeavePage() {
       }
     }
     const okCount = sortedSelected.length - failed.length;
-    setSelected(new Map(failed.map((f) => [f.date, f.type])));
+    const failedDates = new Set(failed.map((f) => f.date));
+    // 成功した日だけをいまの選択から外す (選択の全体は上書きしない)
+    setSelected((prev) => {
+      const next = new Map(prev);
+      for (const [iso] of sortedSelected) if (!failedDates.has(iso)) next.delete(iso);
+      return next;
+    });
     setSheet(null);
     if (failed.length === 0) {
       setMemo('');
@@ -354,12 +367,15 @@ export default function MobileLeavePage() {
   async function handleWithdraw(item: PendingRequestV2Read) {
     try {
       await withdrawMut.mutateAsync(item.id);
-      setSheet(null);
       toast.success('取り下げました');
     } catch (err) {
       toast.error('取り下げられませんでした', {
         description: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      // 成功でも失敗 (すでに承認された など) でも小窓を閉じ、一覧を読み直す
+      setSheet(null);
+      void requestsQuery.refetch();
     }
   }
 
@@ -385,15 +401,13 @@ export default function MobileLeavePage() {
     if (r.status === 'pending') return <Badge variant="warning">申請中</Badge>;
     if (r.status === 'rejected') return <Badge variant="destructive">却下</Badge>;
     const t = requestTypeOf(r);
-    const removed =
-      overridesQuery.data !== undefined &&
-      t !== 'cancel' &&
-      !leaveOf(dayByDate.get(r.target_date!));
-    return removed ? (
-      <Badge variant="secondary">承認後に取り消し</Badge>
-    ) : (
-      <Badge variant="success">承認</Badge>
-    );
+    const now = leaveOf(dayByDate.get(r.target_date!));
+    if (overridesQuery.data !== undefined && t !== 'cancel') {
+      if (!now) return <Badge variant="secondary">承認後に取り消し</Badge>;
+      // 管理者が種類を変えて承認した (または後で変えた) ときは、いまの種類を出す
+      if (now !== t) return <Badge variant="success">{TYPE_LABEL[now]}で承認</Badge>;
+    }
+    return <Badge variant="success">承認</Badge>;
   }
 
   return (
@@ -594,7 +608,13 @@ export default function MobileLeavePage() {
         )}
       </Card>
 
-      <Dialog open={sheet !== null} onOpenChange={(open) => !open && setSheet(null)}>
+      <Dialog
+        open={sheet !== null}
+        onOpenChange={(open) => {
+          // 送信中は閉じさせない (結果が出てから閉じる)
+          if (!open && !submitting) setSheet(null);
+        }}
+      >
         <DialogContent>
           {sheet?.kind === 'send' && (
             <>
@@ -624,7 +644,12 @@ export default function MobileLeavePage() {
                 />
               </div>
               <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => setSheet(null)}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setSheet(null)}
+                  disabled={submitting}
+                >
                   戻る
                 </Button>
                 <Button type="button" onClick={() => void handleSubmit()} disabled={submitting}>
@@ -762,7 +787,7 @@ function DayCell({ day, selectedType, request, past, onTap }: DayCellProps) {
     label = '時間';
     status = '時間変更';
   } else if (day.kind === 'nonworking') {
-    label = '休';
+    // マスは灰色だけ (「休」は出さない)。読み上げのラベルは残す。
     status = '勤務しない曜日';
   }
   let sub = '';
@@ -869,29 +894,32 @@ function ChangeSheet({
           管理者へ変更をお願いします。
         </DialogDescription>
       </DialogHeader>
-      <div className="space-y-1.5" role="radiogroup" aria-label="お願いの中身">
+      <RadioGroup
+        aria-label="お願いの中身"
+        value={value}
+        onValueChange={(v) => onValueChange(v as RequestOverrideType)}
+        className="gap-1.5"
+      >
         {options.map((t) => (
-          <button
+          <Label
             key={t}
-            type="button"
-            role="radio"
-            aria-checked={value === t}
-            onClick={() => onValueChange(t)}
+            htmlFor={`change-${t}`}
             className={cn(
-              'w-full rounded-md border px-3 py-2 text-left text-sm',
+              'flex w-full cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm font-normal',
               value === t
                 ? 'border-brand-primary bg-brand-primary-50 font-bold text-brand-primary'
                 : 'border-border-default bg-bg-base text-text-primary',
             )}
           >
+            <RadioGroupItem id={`change-${t}`} value={t} />
             {t === 'cancel'
               ? '休みを取り消してほしい（出勤したい）'
               : current
                 ? `「${TYPE_LABEL[t]}」に変えてほしい`
                 : `この日を「${TYPE_LABEL[t]}」にしてほしい`}
-          </button>
+          </Label>
         ))}
-      </div>
+      </RadioGroup>
       <div className="space-y-1">
         <Label htmlFor="change-reason" className="text-sm">
           理由（必須・管理者に届きます）
@@ -906,7 +934,7 @@ function ChangeSheet({
         />
       </div>
       <DialogFooter>
-        <Button type="button" variant="outline" onClick={onCancel}>
+        <Button type="button" variant="outline" onClick={onCancel} disabled={submitting}>
           やめる
         </Button>
         <Button type="button" onClick={onSubmit} disabled={submitting || reason.trim() === ''}>

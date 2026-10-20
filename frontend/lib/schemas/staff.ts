@@ -86,6 +86,8 @@ export const staffReadSchema = staffBaseSchema.extend({
   created_at: z.string(),
   updated_at: z.string(),
   deleted_at: z.string().nullable().optional(),
+  /** 常勤 / 非常勤 (mig 0099・読み出しだけ)。非常勤は必要休日数の対象外。 */
+  employment_type: z.enum(['full_time', 'part_time']).optional(),
 });
 
 export type StaffCreate = z.infer<typeof staffCreateSchema>;

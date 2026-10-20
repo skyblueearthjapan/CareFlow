@@ -48,7 +48,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui/sonner';
 import { StaffCombobox } from '@/components/master/StaffCombobox';
 import { isAdminRole } from '@/lib/rbac';
-import { LEAVE_TYPES } from '@/lib/leave';
+import { jstToday, LEAVE_TYPES } from '@/lib/leave';
 import { usePatients } from '@/lib/queries/patients';
 import { useStaffList } from '@/lib/queries/staff';
 import { useMonthConfirmedCount } from '@/lib/queries/staff-shift-confirmations';
@@ -224,11 +224,10 @@ function leaveSheetHref(row: PendingRequestV2Read): string | null {
 
 /** いま管理者が組んでいる月 (来月) の月初 'YYYY-MM-01' と月の数字。 */
 function nextMonthStart(now: Date): { iso: string; month: number } {
-  const d = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-  return {
-    iso: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`,
-    month: d.getMonth() + 1,
-  };
+  const [y = 0, m = 1] = jstToday(now).split('-').map(Number);
+  const ny = m === 12 ? y + 1 : y;
+  const nm = m === 12 ? 1 : m + 1;
+  return { iso: `${ny}-${String(nm).padStart(2, '0')}-01`, month: nm };
 }
 
 function statusBadgeVariant(s: RequestStatus): 'warning' | 'success' | 'destructive' {
@@ -311,14 +310,20 @@ export default function AdminPendingRequestsPage() {
     limit: 1,
   });
   const upcoming = useMemo(() => nextMonthStart(new Date()), []);
-  const activeStaffIds = useMemo(
+  // 数えるのは在職の常勤だけ (職員ごとの GET を並べるので数を絞る。#8 の月の API ができたら置き換える)
+  const fullTimeStaffIds = useMemo(
     () =>
       (staffList.data ?? [])
-        .filter((s) => !s.deleted_at && (s.status ?? 'active') === 'active')
+        .filter(
+          (s) =>
+            !s.deleted_at &&
+            (s.status ?? 'active') === 'active' &&
+            (s.employment_type ?? 'full_time') === 'full_time',
+        )
         .map((s) => s.id),
     [staffList.data],
   );
-  const monthConfirm = useMonthConfirmedCount(activeStaffIds, upcoming.iso);
+  const monthConfirm = useMonthConfirmedCount(fullTimeStaffIds, upcoming.iso);
 
   const qc = useQueryClient();
   const approve = useApproveRequest();
@@ -428,14 +433,18 @@ export default function AdminPendingRequestsPage() {
           </span>
           <span className="text-text-muted">・</span>
           <span>
-            {upcoming.month}月は
-            {monthConfirm.isLoading
-              ? '確定の状態を確かめています'
-              : monthConfirm.total > 0 && monthConfirm.confirmed === monthConfirm.total
-                ? '確定済み'
-                : monthConfirm.confirmed > 0
-                  ? `未確定（${monthConfirm.confirmed}/${monthConfirm.total} 人確定）`
-                  : '未確定'}
+            {monthConfirm.isError
+              ? `${upcoming.month}月の確定の状態を読み込めませんでした`
+              : `${upcoming.month}月は`}
+            {monthConfirm.isError
+              ? null
+              : monthConfirm.isLoading
+                ? '確定の状態を確かめています'
+                : monthConfirm.total > 0 && monthConfirm.confirmed === monthConfirm.total
+                  ? '確定済み'
+                  : monthConfirm.confirmed > 0
+                    ? `未確定（${monthConfirm.confirmed}/${monthConfirm.total} 人確定）`
+                    : '未確定'}
           </span>
         </div>
         <Button asChild size="sm">

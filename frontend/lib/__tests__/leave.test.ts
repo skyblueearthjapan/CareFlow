@@ -12,7 +12,9 @@ import {
   PM_OFF_FROM,
   classifyKaipokeLeave,
   isLeaveEvent,
+  firstOpenLeaveMonth,
   isPastLeaveDeadline,
+  jstToday,
   leaveRequestDeadline,
   leaveWindow,
 } from '@/lib/leave';
@@ -30,6 +32,17 @@ describe('休みの申請の締め切り (前の月の 20 日 23:59 JST)', () =>
   it('JST の 20 日 23:59 はまだ締め切り前・21 日 0:00 は締め切り後', () => {
     expect(isPastLeaveDeadline('2026-12-03', new Date('2026-11-20T23:59:00+09:00'))).toBe(false);
     expect(isPastLeaveDeadline('2026-12-03', new Date('2026-11-21T00:00:00+09:00'))).toBe(true);
+  });
+
+  it('jstToday は JST の日付 (UTC の 15:00 で日が変わる)', () => {
+    expect(jstToday(new Date('2026-11-20T14:59:59Z'))).toBe('2026-11-20');
+    expect(jstToday(new Date('2026-11-20T15:00:00Z'))).toBe('2026-11-21');
+  });
+
+  it('firstOpenLeaveMonth: 20 日 23:59 JST までは来月、21 日 0:00 からは再来月 (年をまたぐ)', () => {
+    expect(firstOpenLeaveMonth(new Date('2026-11-20T23:59:00+09:00'))).toBe('2026-12');
+    expect(firstOpenLeaveMonth(new Date('2026-11-21T00:00:00+09:00'))).toBe('2027-01');
+    expect(firstOpenLeaveMonth(new Date('2026-12-21T00:00:00+09:00'))).toBe('2027-02');
   });
 
   it('UTC では 20 日 15:00 が境目 (端末の時刻帯によらない)', () => {
