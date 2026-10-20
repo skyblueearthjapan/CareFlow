@@ -40,6 +40,14 @@ export interface UnassignAllStaffButtonProps {
   size?: 'sm' | 'md' | 'lg' | 'icon';
   /** 他の mutation 進行中で disable させたいときに使う. */
   disabled?: boolean;
+  /**
+   * 確認ダイアログの開閉を外で持つとき (コンパクト表示の「その他 ▾」・
+   * schedule-unit-switch 設計 D5)。ボタンは Popover の中・確認は外に置くため。
+   */
+  confirmOpen?: boolean;
+  onConfirmOpenChange?: (open: boolean) => void;
+  /** 'button' = ボタンだけ / 'dialog' = 確認だけ / 'both' (既定) = 両方。 */
+  part?: 'both' | 'button' | 'dialog';
 }
 
 export function UnassignAllStaffButton({
@@ -48,8 +56,16 @@ export function UnassignAllStaffButton({
   officeId,
   size = 'sm',
   disabled = false,
+  confirmOpen: confirmOpenProp,
+  onConfirmOpenChange,
+  part = 'both',
 }: UnassignAllStaffButtonProps) {
-  const [confirmOpen, setConfirmOpen] = React.useState(false);
+  const [confirmOpenLocal, setConfirmOpenLocal] = React.useState(false);
+  const confirmOpen = confirmOpenProp ?? confirmOpenLocal;
+  const setConfirmOpen = (open: boolean) => {
+    if (confirmOpenProp === undefined) setConfirmOpenLocal(open);
+    onConfirmOpenChange?.(open);
+  };
   const unassignMut = useUnassignAllStaffMutation();
 
   const handleClick = () => {
@@ -75,66 +91,70 @@ export function UnassignAllStaffButton({
 
   return (
     <>
-      <Button
-        type="button"
-        size={size}
-        variant="outline"
-        onClick={handleClick}
-        disabled={disabled || unassignMut.isPending}
-        data-testid="unassign-all-staff-button"
-      >
-        {unassignMut.isPending ? (
-          <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-        ) : (
-          <UserX className="mr-1 h-4 w-4" aria-hidden />
-        )}
-        一斉スタッフ未割当
-      </Button>
+      {part === 'dialog' ? null : (
+        <Button
+          type="button"
+          size={size}
+          variant="outline"
+          onClick={handleClick}
+          disabled={disabled || unassignMut.isPending}
+          data-testid="unassign-all-staff-button"
+        >
+          {unassignMut.isPending ? (
+            <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+          ) : (
+            <UserX className="mr-1 h-4 w-4" aria-hidden />
+          )}
+          一斉スタッフ未割当
+        </Button>
+      )}
 
-      <Dialog
-        open={confirmOpen}
-        onOpenChange={(o) => {
-          if (!o && !unassignMut.isPending) setConfirmOpen(false);
-        }}
-      >
-        <DialogContent className="max-w-md" data-testid="unassign-all-staff-confirm">
-          <DialogHeader>
-            <DialogTitle>
-              {isoYear} 年 第 {isoWeek} 週 の担当を一括解除しますか?
-            </DialogTitle>
-            <DialogDescription>
-              表示中の週の全コース担当と訪問担当 (visit_staff_assignments) を一括で解除します。
-              <br />
-              <span className="font-semibold text-warning">取り消せません。</span>
-              <br />
-              よろしいですか?
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setConfirmOpen(false)}
-              disabled={unassignMut.isPending}
-            >
-              キャンセル
-            </Button>
-            <Button
-              type="button"
-              onClick={handleConfirm}
-              disabled={unassignMut.isPending}
-              data-testid="unassign-all-staff-confirm-ok"
-            >
-              {unassignMut.isPending ? (
-                <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-              ) : (
-                <UserX className="mr-1 h-4 w-4" aria-hidden />
-              )}
-              一斉スタッフ未割当
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {part === 'button' ? null : (
+        <Dialog
+          open={confirmOpen}
+          onOpenChange={(o) => {
+            if (!o && !unassignMut.isPending) setConfirmOpen(false);
+          }}
+        >
+          <DialogContent className="max-w-md" data-testid="unassign-all-staff-confirm">
+            <DialogHeader>
+              <DialogTitle>
+                {isoYear} 年 第 {isoWeek} 週 の担当を一括解除しますか?
+              </DialogTitle>
+              <DialogDescription>
+                表示中の週の全コース担当と訪問担当 (visit_staff_assignments) を一括で解除します。
+                <br />
+                <span className="font-semibold text-warning">取り消せません。</span>
+                <br />
+                よろしいですか?
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setConfirmOpen(false)}
+                disabled={unassignMut.isPending}
+              >
+                キャンセル
+              </Button>
+              <Button
+                type="button"
+                onClick={handleConfirm}
+                disabled={unassignMut.isPending}
+                data-testid="unassign-all-staff-confirm-ok"
+              >
+                {unassignMut.isPending ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                ) : (
+                  <UserX className="mr-1 h-4 w-4" aria-hidden />
+                )}
+                一斉スタッフ未割当
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </>
   );
 }

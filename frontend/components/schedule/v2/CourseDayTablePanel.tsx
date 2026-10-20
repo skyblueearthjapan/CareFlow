@@ -575,6 +575,9 @@ export function CourseDayTablePanel({
   const [compactToolsOpen, setCompactToolsOpen] = useState(false);
   // コンパクト表示の「その他 ▾」(一斉スタッフ未割当・非稼働を表示・拠点・D5)。
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  // 「その他 ▾」の中の一斉スタッフ未割当の確認。ダイアログは Popover の外に置き、
+  // 開閉だけここで持つ (Popover が閉じても確認が消えないように)。
+  const [unassignConfirmOpen, setUnassignConfirmOpen] = useState(false);
   // 「コース／職員」の切り替えの初回案内 (D9)。この端末で一度［わかった］を押したら出さない。
   const unitIntroSeen = useUIStore((s) => s.scheduleUnitIntroSeen);
   const setUnitIntroSeen = useUIStore((s) => s.setScheduleUnitIntroSeen);
@@ -631,10 +634,11 @@ export function CourseDayTablePanel({
 
   // 一時展開した「ツール」はタブ/週を切り替えたら畳む (2026-08-23)。
   // 盤面のドラッグ開始でも畳む (handleDragStart)。
+  // 職員の表示では activeTab が 'staff' のまま変わらないので、曜日 (selectedDay) でも畳む。
   useEffect(() => {
     setCompactToolsOpen(false);
     setMoreMenuOpen(false);
-  }, [activeTab, weekStart]);
+  }, [activeTab, selectedDay, weekStart]);
 
   // ─── Master data ────────────────────────────────────────────────────
   const officesQuery = useOffices({ limit: 50 });
@@ -4175,23 +4179,24 @@ export function CourseDayTablePanel({
     }
     return out;
   }, [weekVisits]);
-  /** visit id → 2 名体制の組 (visit_group_id)。 */
-  const groupIdByVisitId = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const v of weekVisits) {
-      const gid = (v as { visit_group_id?: string | null }).visit_group_id;
-      if (gid) m.set(v.id, gid);
-    }
+  /** 2 名体制の組 → 盤面と同じ並び (visitsByGroupId = コースの記号の順) の訪問 id。 */
+  const orderedGroupMembers = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const [gid, arr] of visitsByGroupId)
+      m.set(
+        gid,
+        arr.map((v) => v.id),
+      );
     return m;
-  }, [weekVisits]);
+  }, [visitsByGroupId]);
   const staffDayCounts = useMemo(
     () =>
       countStaffDays(cockpitVisits, {
         assignedStaffByTemplateWeekday,
         companions: companionRefs,
-        groupIdByVisitId,
+        orderedGroupMembers,
       }),
-    [cockpitVisits, assignedStaffByTemplateWeekday, companionRefs, groupIdByVisitId],
+    [cockpitVisits, assignedStaffByTemplateWeekday, companionRefs, orderedGroupMembers],
   );
   /**
    * 同行の薄いカード (D8): `${staffId}:${weekday}` → その職員が同行する訪問。
@@ -6617,15 +6622,24 @@ export function CourseDayTablePanel({
                         <ChevronDown className="ml-1 h-4 w-4" aria-hidden />
                       </Button>
                     </PopoverTrigger>
-                    {/* 閉じても中身は残す (forceMount): 一斉スタッフ未割当の確認ダイアログは
-                        この中の部品が持っているため、閉じたときに消すと確認が出せなくなる。 */}
                     <PopoverContent
-                      forceMount
                       align="end"
-                      className="flex w-auto flex-col items-stretch gap-2 p-3 data-[state=closed]:hidden"
+                      className="flex w-auto flex-col items-stretch gap-2 p-3"
                       data-testid="schedule-more-menu-content"
                     >
-                      {unassignAllButton}
+                      {/* ボタンだけここ。確認ダイアログは Popover の外 (下)。 */}
+                      <UnassignAllStaffButton
+                        part="button"
+                        isoYear={isoYear}
+                        isoWeek={isoWeek}
+                        officeId={officeId}
+                        disabled={!canEdit || isProcessing}
+                        confirmOpen={unassignConfirmOpen}
+                        onConfirmOpenChange={(open) => {
+                          setUnassignConfirmOpen(open);
+                          if (open) setMoreMenuOpen(false);
+                        }}
+                      />
                       {showInactiveToggle}
                       {onOfficeChange ? (
                         <label className="flex items-center gap-1 text-xs text-text-secondary">
@@ -6650,6 +6664,14 @@ export function CourseDayTablePanel({
                       ) : null}
                     </PopoverContent>
                   </Popover>
+                  <UnassignAllStaffButton
+                    part="dialog"
+                    isoYear={isoYear}
+                    isoWeek={isoWeek}
+                    officeId={officeId}
+                    confirmOpen={unassignConfirmOpen}
+                    onConfirmOpenChange={setUnassignConfirmOpen}
+                  />
                 </>
               ) : (
                 showInactiveToggle

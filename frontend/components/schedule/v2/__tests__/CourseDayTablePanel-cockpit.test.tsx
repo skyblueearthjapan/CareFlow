@@ -1105,6 +1105,18 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     expect(screen.queryByTestId('staff-tools')).not.toBeInTheDocument();
   });
 
+  it('(u3) ●未送信の帯はコースの表示でも出る (D4)・職員の道具は職員だけ', () => {
+    setupHooks();
+    renderStaffTab();
+    expect(screen.getByTestId('stub-report-unsent')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('schedule-unit-course'));
+    expect(screen.getByTestId('stub-report-unsent')).toBeInTheDocument();
+    expect(screen.queryByTestId('staff-tools')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    expect(screen.getByTestId('stub-report-unsent')).toBeInTheDocument();
+  });
+
   it('(u2) 初回の案内は［わかった］で消え、端末に覚える', () => {
     useUIStore.setState({ scheduleUnitIntroSeen: false });
     setupHooks();

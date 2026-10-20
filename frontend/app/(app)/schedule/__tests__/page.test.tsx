@@ -7,9 +7,14 @@
  */
 import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 
 const panelProps: Record<string, unknown>[] = [];
+
+// 道の ?unit&day&view を読む (App Router の外なので window.location から作る)。
+vi.mock('next/navigation', () => ({
+  useSearchParams: () => new URLSearchParams(window.location.search),
+}));
 
 vi.mock('next-auth/react', () => ({
   useSession: () => ({ data: { user: { role: 'admin' } }, status: 'authenticated' }),
@@ -27,7 +32,9 @@ vi.mock('@/components/schedule/v2/CourseDayTablePanel', () => ({
 }));
 
 // 実現性チェックボタンは react-query の mutation を使う (Provider 不要にするため stub)。
-vi.mock('@/components/template-ws/TemplateWorkspaceLink', () => ({ TemplateWorkspaceLink: () => null }));
+vi.mock('@/components/template-ws/TemplateWorkspaceLink', () => ({
+  TemplateWorkspaceLink: () => null,
+}));
 vi.mock('@/components/schedule/FeasibilityCheckButton', () => ({
   FeasibilityCheckButton: () => <div data-testid="feasibility-check-stub" />,
 }));
@@ -38,7 +45,12 @@ vi.mock('@/components/integrations/ReconcileReportButton', () => ({
   ReconcileToolbar: () => <div data-testid="reconcile-toolbar-stub" />,
 }));
 vi.mock('@/components/brand/Rakusuke', () => ({
-  RakusukeTitle: ({ title }: { title: string }) => <h1>{title}</h1>,
+  RakusukeTitle: ({ title, subtitle }: { title: string; subtitle?: string }) => (
+    <>
+      <h1>{title}</h1>
+      {subtitle ? <p>{subtitle}</p> : null}
+    </>
+  ),
 }));
 
 vi.mock('@/components/ui/card', () => ({
@@ -92,5 +104,34 @@ describe('/schedule — 上部折りたたみ', () => {
     const props = panelProps[panelProps.length - 1];
     expect(typeof props.onWeekChange).toBe('function');
     expect(typeof props.onOfficeChange).toBe('function');
+  });
+
+  it('URL の ?unit&day&view を初期値にし、変わったら replaceState で書く (他のクエリは残す)', () => {
+    window.history.replaceState(null, '', '/schedule?visit=abc&unit=course&day=wed&view=timeline');
+    const spy = vi.spyOn(window.history, 'replaceState');
+    render(<SchedulePage />);
+    const props = panelProps[panelProps.length - 1]!;
+    expect(props.initialViewState).toEqual({ unit: 'course', day: 2, view: 'timeline' });
+    // 見出しの説明文は unit に合わせる。
+    expect(screen.getByText('コースごとに、曜日と週の予定を見ます。')).toBeInTheDocument();
+
+    act(() => {
+      (props.onViewStateChange as (s: unknown) => void)({
+        unit: 'staff',
+        day: 'week',
+        view: 'list',
+      });
+    });
+    expect(spy).toHaveBeenCalled();
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get('visit')).toBe('abc');
+    expect(params.get('unit')).toBe('staff');
+    expect(params.get('day')).toBe('week');
+    expect(params.get('view')).toBe('list');
+    expect(
+      screen.getByText('職員ごとに、曜日と週の予定と、その日の訪問の件数を見ます。'),
+    ).toBeInTheDocument();
+    spy.mockRestore();
+    window.history.replaceState(null, '', '/');
   });
 });
