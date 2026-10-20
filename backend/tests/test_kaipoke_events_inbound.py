@@ -1141,3 +1141,103 @@ async def test_absorb_dry_run_writes_nothing(client, db, stub_kaipoke) -> None:
     assert manual.source == "manual"
     assert manual.external_id is None
     assert await _kaipoke_rows(db) == []
+
+
+# --- 8. 非同期の経路でも covered_dates を渡す・段階 0 の取り直しの間は 409 (段階 L #9) ---
+
+# 月曜 (7/20) だけ画面に出なかった週。
+_SHOWN_EXCEPT_MONDAY = [date(2026, 7, d).isoformat() for d in range(21, 26)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("week_dates", [None, _SHOWN_EXCEPT_MONDAY])
+async def test_async_preview_keeps_rows_on_days_not_shown(
+    client, db, stub_kaipoke, week_dates
+) -> None:
+    """月をまたぐ週: 画面に出なかった日 (月曜) のカイポケ行は、非同期の経路でも消さない。"""
+    from datetime import datetime
+
+    seeded = await _seed_staff(db)
+    admin = await _make_admin(db)
+    db.add(
+        StaffEvent(
+            staff_id=seeded["a"].id,
+            event_type="event",
+            title="朝会",
+            starts_at=datetime.combine(WEEK_START, time(9, 0)),
+            ends_at=datetime.combine(WEEK_START, time(9, 15)),
+            source="kaipoke",
+            external_id=f"1:1:{WEEK_START.isoformat()}",
+        )
+    )
+    await db.commit()
+    job_id = await _start(client, admin)
+    result: dict[str, Any] = {"success": True, "tasks": []}
+    if week_dates is not None:
+        result["week_dates"] = week_dates
+    stub_kaipoke.result_responses = [
+        {"success": True, "status": "completed", "job_id": job_id, "result": result}
+    ]
+
+    res = await client.get(_status_url(job_id), headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    changes = res.json()["preview"]["changes"]
+    deletes = [c for c in changes if c["action"] == "delete"]
+    if week_dates is None:
+        assert len(deletes) == 1  # 全部の日が出た扱い → カイポケに無いので消す
+    else:
+        assert deletes == []
+
+
+async def _source_job(db, *, op: str, minutes_ago: int = 0) -> KaipokeJob:
+    from datetime import UTC, datetime, timedelta
+
+    touched = datetime.now(UTC) - timedelta(minutes=minutes_ago)
+    job = KaipokeJob(
+        job_type="fetch",
+        status="running",
+        week_start=WEEK_START,
+        params={"op": op},
+        started_at=touched,
+        created_at=touched,
+        updated_at=touched,
+    )
+    db.add(job)
+    await db.commit()
+    return job
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", ["acceptance-refresh", "leave-compare", "leave-outbound"])
+async def test_job_start_409_while_source_job_running(client, db, stub_kaipoke, op) -> None:
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    await _source_job(db, op=op)
+
+    res = await client.post(
+        START_URL, headers=_bearer(admin), json={"weekStart": WEEK_START.isoformat()}
+    )
+    assert res.status_code == 409, res.text
+    res = await client.post(
+        PREVIEW_URL, headers=_bearer(admin), json={"weekStart": WEEK_START.isoformat()}
+    )
+    assert res.status_code == 409, res.text
+    assert stub_kaipoke.calls == []  # RPA は呼ばない
+    jobs = (await db.scalars(select(KaipokeJob))).all()
+    assert [j.params.get("op") for j in jobs] == [op]
+
+
+@pytest.mark.asyncio
+async def test_job_start_ignores_stale_source_job_and_other_ops(client, db, stub_kaipoke) -> None:
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    stale = await _source_job(db, op="leave-compare", minutes_ago=31)
+    # 段階 0 の取り直しではないジョブは、この入口の 409 の対象ではない (今までどおり)。
+    await _source_job(db, op="plan-actual-compare")
+
+    res = await client.post(
+        START_URL, headers=_bearer(admin), json={"weekStart": WEEK_START.isoformat()}
+    )
+    assert res.status_code == 202, res.text
+    await db.refresh(stale)
+    assert stale.status == "running"  # 残骸は書き換えない
