@@ -71,7 +71,7 @@ _LEAVE_OVERRIDE_TYPES = (OVERRIDE_OFF, OVERRIDE_AM_OFF, OVERRIDE_PM_OFF)
 LatLng = tuple[float, float]
 
 
-def leave_window(kind: str | None) -> tuple[int, int] | None:
+def _leave_block_minutes(kind: str | None) -> tuple[int, int] | None:
     """休みの種別 → その日の休みの時間帯 (分)。休みでなければ None。"""
     if kind == OVERRIDE_OFF:
         return (0, 24 * 60)
@@ -461,7 +461,7 @@ async def build_staff_performance(
                         _minus_window(
                             int((lo - day_lo).total_seconds() // 60),
                             int((hi - day_lo).total_seconds() // 60),
-                            leave_window(leave_kind.get((sid, d))),
+                            _leave_block_minutes(leave_kind.get((sid, d))),
                         )
                     )
                 d += timedelta(days=1)
@@ -579,7 +579,6 @@ __all__ = [
     "DaySummary",
     "build_staff_performance",
     "is_leave_event",
-    "leave_window",
     "metrics_of",
     "summarize_day",
     "team_metrics_of",

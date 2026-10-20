@@ -18,6 +18,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -53,7 +54,7 @@ class KaipokeSourceSnapshot(Base):
     # tasks だけ: RPA が表示できた日 (``week_dates`` の ISO 日付)。NULL = RPA が返さなかった。
     # 月をまたぐ週で表示されなかった日を「未確認」にするのに使う。
     covered_dates: Mapped[list | None] = mapped_column(JSONBish, nullable=True)
-    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     # ok / empty (該当なし) / failed
     status: Mapped[str] = mapped_column(String(8), nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -70,4 +71,5 @@ class KaipokeSourceSnapshot(Base):
             "status IN ('ok','empty','failed')", name="ck_kaipoke_source_snapshots_status"
         ),
         UniqueConstraint("kind", "period_start", name="uq_kaipoke_source_snapshots_kind_period"),
+        Index("ix_kaipoke_source_snapshots_job", "job_id"),
     )

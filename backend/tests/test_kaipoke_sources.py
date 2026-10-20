@@ -5,7 +5,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import subprocess
+import sys
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -23,14 +27,16 @@ from app.services.kaipoke.sources import (
     OP_LEAVE_COMPARE,
     OP_LEAVE_OUTBOUND,
     RpaJobConflictError,
+    SourceSpec,
     covered_dates_of,
     evening_warning,
     fetch_month_csv,
     fetch_week_tasks,
     finish_source_job,
+    run_source_job,
     start_source_job,
 )
-from app.services.kaipoke_client import KaipokeBusyError
+from app.services.kaipoke_client import KaipokeApiError, KaipokeBusyError
 
 HEADER = (
     "職員名１,職種１,職員名２,職種２,同行２,職員名３,職種３,同行３,事業所名,日付,曜日,"
@@ -54,7 +60,10 @@ class StubClient:
         export_results: list[Any] | None = None,
         tasks_results: list[Any] | None = None,
         busy: int = 0,
+        busy_after_tasks: int = 0,
     ) -> None:
+        #: 個別業務を呼んだあと status() が実行中を返す回数 (時間切れのあとも RPA が動いている)。
+        self.busy_after_tasks = busy_after_tasks
         self.export_results = list(export_results or [])
         self.tasks_results = list(tasks_results or [])
         self.busy = busy
@@ -72,7 +81,7 @@ class StubClient:
     @staticmethod
     def _next(queue: list[Any]) -> dict[str, Any]:
         item = queue.pop(0)
-        if isinstance(item, Exception):
+        if isinstance(item, BaseException):  # CancelledError も
             raise item
         return item
 
@@ -84,6 +93,7 @@ class StubClient:
         self, payload: dict[str, Any], *, timeout: float | None = None
     ) -> dict:
         self.tasks_payloads.append(dict(payload))
+        self.busy += self.busy_after_tasks
         return self._next(self.tasks_results)
 
 
@@ -517,3 +527,209 @@ async def test_reconcile_latest_job_holds_source_ops_120_minutes(
     job = await _reconcile_latest_job(db, kaipoke_idle=True, result_payload=None)
     assert job is not None
     assert (job.status != "running") is closed
+
+
+# --- 段階 0 のレビュー対応 -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_start_one_conflicts(_engine) -> None:
+    from app.db.session import get_session_factory
+
+    factory = get_session_factory()
+
+    async def start(op: str):
+        async with factory() as session:
+            try:
+                job = await start_source_job(session, op=op, week_start=MONDAY, user_id=None)
+                return job.id
+            except RpaJobConflictError as exc:
+                return exc
+
+    got = await asyncio.gather(start(OP_ACCEPTANCE_REFRESH), start(OP_LEAVE_COMPARE))
+    conflicts = [g for g in got if isinstance(g, RpaJobConflictError)]
+    assert len(conflicts) == 1
+    assert conflicts[0].status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_start_job_requires_monday(db) -> None:
+    with pytest.raises(ValueError):
+        await start_source_job(
+            db, op=OP_ACCEPTANCE_REFRESH, week_start=date(2026, 10, 20), user_id=None
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_source_job_completes(db) -> None:
+    plan = [SourceSpec(KIND_PLAN_CSV, date(2026, 10, 1)), SourceSpec(KIND_TASKS, MONDAY)]
+    job = await start_source_job(
+        db, op=OP_ACCEPTANCE_REFRESH, week_start=MONDAY, user_id=None, total=len(plan)
+    )
+    client = StubClient(
+        export_results=[export_ok(CSV_TEXT, "plan")],
+        tasks_results=[{"success": False, "error": "壊れた", "result": {}}],
+    )
+
+    done = await run_source_job(db, client, job.id, plan)
+
+    assert done is not None and done.status == "completed"
+    summary = done.result_summary or {}
+    assert summary["done"] == 2 and summary["total"] == 2
+    assert [f["kind"] for f in summary["failed"]] == ["tasks"]
+
+
+@pytest.mark.asyncio
+async def test_run_source_job_closes_job_on_unexpected_error(db) -> None:
+    plan = [
+        SourceSpec(KIND_PLAN_CSV, date(2026, 10, 1)),
+        SourceSpec(KIND_ACTUAL_CSV, date(2026, 10, 1)),
+    ]
+    job = await start_source_job(db, op=OP_LEAVE_COMPARE, week_start=MONDAY, user_id=None)
+    client = StubClient(export_results=[export_ok(CSV_TEXT, "plan"), RuntimeError("想定外")])
+
+    done = await run_source_job(db, client, job.id, plan)
+
+    assert done is not None and done.status == "failed"
+    summary = done.result_summary or {}
+    assert "想定外" in summary["error"]
+    assert summary["done"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_midway_is_not_overwritten(db) -> None:
+    plan = [
+        SourceSpec(KIND_PLAN_CSV, date(2026, 10, 1)),
+        SourceSpec(KIND_ACTUAL_CSV, date(2026, 10, 1)),
+    ]
+    job = await start_source_job(db, op=OP_ACCEPTANCE_REFRESH, week_start=MONDAY, user_id=None)
+
+    class CancellingClient(StubClient):
+        async def export(self, payload, *, timeout=None):
+            # 1 本目を取っている間に、画面で取り消された。
+            row = await db.get(KaipokeJob, job.id)
+            assert row is not None
+            row.status = "cancelled"
+            await db.commit()
+            return await super().export(payload, timeout=timeout)
+
+    client = CancellingClient(
+        export_results=[export_ok(CSV_TEXT, "plan"), export_ok(CSV_TEXT, "actual")]
+    )
+
+    done = await run_source_job(db, client, job.id, plan)
+
+    assert done is not None and done.status == "cancelled"
+    assert len(client.export_payloads) == 1  # 取り消しのあとは次の本へ進まない
+    assert await finish_source_job(db, job.id, []) is not None
+    await db.refresh(done)
+    assert done.status == "cancelled"  # finish でも completed に上書きしない
+
+
+@pytest.mark.asyncio
+async def test_tasks_timeout_waits_for_rpa_idle(db) -> None:
+    client = StubClient(
+        tasks_results=[KaipokeApiError(504, {"error": "timeout"})], busy_after_tasks=2
+    )
+
+    result = await fetch_week_tasks(db, client, MONDAY)
+
+    assert result.status == "failed"
+    assert client.busy == 0  # 実行中の 2 回を見送ってから次へ
+    assert client.status_calls == 1 + 3
+
+
+@pytest.mark.asyncio
+async def test_tasks_timeout_reports_when_rpa_stays_busy(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sources, "MAX_RETRIES", 1)
+    client = StubClient(
+        tasks_results=[KaipokeApiError(504, {"error": "timeout"})], busy_after_tasks=100
+    )
+    result = await fetch_week_tasks(db, client, MONDAY)
+    assert result.status == "failed"
+    assert "空かなかった" in (result.error or "")
+
+
+def test_core_leave_does_not_import_services() -> None:
+    backend = Path(__file__).resolve().parent.parent
+    code = (
+        "import sys, app.core.leave; print(any(m.startswith('app.services') for m in sys.modules))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], cwd=backend, capture_output=True, text=True, check=True
+    )
+    assert out.stdout.strip() == "False"
+
+
+@pytest.mark.asyncio
+async def test_task_cancellation_closes_job_then_reraises(db) -> None:
+    plan = [SourceSpec(KIND_PLAN_CSV, date(2026, 10, 1))]
+    job = await start_source_job(db, op=OP_LEAVE_COMPARE, week_start=MONDAY, user_id=None)
+    client = StubClient(export_results=[asyncio.CancelledError()])
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_source_job(db, client, job.id, plan)
+
+    row = await db.get(KaipokeJob, job.id, populate_existing=True)
+    assert row is not None and row.status == "failed"
+    assert (row.result_summary or {})["error"] == "中断されました"
+
+
+@pytest.mark.asyncio
+async def test_close_failure_is_logged(
+    db, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    plan = [SourceSpec(KIND_PLAN_CSV, date(2026, 10, 1))]
+    job = await start_source_job(db, op=OP_LEAVE_COMPARE, week_start=MONDAY, user_id=None)
+
+    async def broken_finish(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("DB が落ちた")
+
+    monkeypatch.setattr(sources, "finish_source_job", broken_finish)
+    client = StubClient(export_results=[RuntimeError("想定外")])
+
+    with caplog.at_level("ERROR", logger=sources.__name__):
+        assert await run_source_job(db, client, job.id, plan) is None
+    assert "could not be closed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cancel_while_waiting_for_rpa_stops(db) -> None:
+    plan = [SourceSpec(KIND_PLAN_CSV, date(2026, 10, 1))]
+    job = await start_source_job(db, op=OP_ACCEPTANCE_REFRESH, week_start=MONDAY, user_id=None)
+
+    class CancelWhileBusy(StubClient):
+        async def status(self) -> dict[str, Any]:
+            # RPA が塞がっている間に、画面で取り消された。
+            row = await db.get(KaipokeJob, job.id)
+            assert row is not None
+            row.status = "cancelled"
+            await db.commit()
+            return {"current_task": {"running": True}}
+
+    client = CancelWhileBusy(export_results=[export_ok(CSV_TEXT, "plan")])
+
+    done = await run_source_job(db, client, job.id, plan)
+
+    assert done is not None and done.status == "cancelled"
+    assert client.export_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_while_waiting_after_timeout_stops(db) -> None:
+    job = await start_source_job(db, op=OP_ACCEPTANCE_REFRESH, week_start=MONDAY, user_id=None)
+
+    class CancelAfterTimeout(StubClient):
+        async def individual_tasks(
+            self, payload: dict[str, Any], *, timeout: float | None = None
+        ) -> dict:
+            row = await db.get(KaipokeJob, job.id)
+            assert row is not None
+            row.status = "cancelled"
+            await db.commit()
+            raise KaipokeApiError(504, {"error": "timeout"})
+
+    with pytest.raises(sources.SourceJobCancelledError):
+        await fetch_week_tasks(db, CancelAfterTimeout(), MONDAY, job_id=job.id)

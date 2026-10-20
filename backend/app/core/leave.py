@@ -11,14 +11,16 @@ import unicodedata
 from datetime import time
 from typing import Final, Literal
 
-from app.services.scheduling.constants import DEFAULT_BUSINESS_END, DEFAULT_BUSINESS_START
-
 #: 終日の休み (有給も終日休み)。
 FULL_DAY_OFF: Final = frozenset({"off", "paid_off"})
 #: 半日の休み。
 HALF_DAY_OFF: Final = frozenset({"am_off", "pm_off"})
 #: 休みの種類 (``custom_time`` は休みではない)。
 LEAVE_TYPES: Final = FULL_DAY_OFF | HALF_DAY_OFF
+
+#: 営業時間の既定 (勤務時刻が無いときの代わり)。``scheduling/constants.py`` はここを参照する。
+DEFAULT_BUSINESS_START: Final = time(9, 30)
+DEFAULT_BUSINESS_END: Final = time(18, 0)
 
 #: 午前休の人はこの時刻から勤務。
 AM_OFF_UNTIL: Final = time(13, 0)
@@ -76,7 +78,12 @@ def leave_window(
 
 
 def _minutes(value: time) -> int:
+    """時刻 → その日の 0:00 からの分 (秒は見ない)。"""
     return value.hour * 60 + value.minute
+
+
+def _within(value: time, bounds: tuple[time, time]) -> bool:
+    return _minutes(bounds[0]) <= _minutes(value) <= _minutes(bounds[1])
 
 
 def classify_kaipoke_leave(
@@ -128,9 +135,9 @@ def classify_kaipoke_leave(
     ends_late = _minutes(end) >= _minutes(shift_end) - _END_SLACK_MIN
     if starts_early and ends_late:
         return "off"
-    if starts_early and _AM_END_RANGE[0] <= end <= _AM_END_RANGE[1]:
+    if starts_early and _within(end, _AM_END_RANGE):
         return "am_off"
-    if _PM_START_RANGE[0] <= start <= _PM_START_RANGE[1] and ends_late:
+    if _within(start, _PM_START_RANGE) and ends_late:
         return "pm_off"
     return "unknown"
 
@@ -142,6 +149,8 @@ def is_leave_event(subject: str | None) -> bool:
 
 __all__ = [
     "AM_OFF_UNTIL",
+    "DEFAULT_BUSINESS_END",
+    "DEFAULT_BUSINESS_START",
     "FULL_DAY_OFF",
     "HALF_DAY_OFF",
     "LEAVE_TITLE_EXCLUSIONS",
