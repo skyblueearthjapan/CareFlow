@@ -145,19 +145,6 @@ export const staffShiftSchema = z.object({
 });
 export type StaffShift = z.infer<typeof staffShiftSchema>;
 
-export const staffWeeklyOverrideSchema = z.object({
-  id: z.string().uuid(),
-  staff_id: z.string().uuid(),
-  iso_year: z.number().int(),
-  iso_week: z.number().int(),
-  weekday: z.number().int().min(0).max(6),
-  override_type: z.enum(['off', 'custom_time']),
-  start_time: z.string().nullable().optional(),
-  end_time: z.string().nullable().optional(),
-  reason: z.string().nullable().optional(),
-});
-export type StaffWeeklyOverride = z.infer<typeof staffWeeklyOverrideSchema>;
-
 export const staffEventSchema = z.object({
   id: z.string().uuid(),
   staff_id: z.string().uuid(),

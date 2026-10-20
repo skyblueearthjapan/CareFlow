@@ -1,25 +1,36 @@
 /**
- * 月間出勤カレンダーの純関数 (staff-shift-confirmation-design.md §4).
+ * 月の出勤カレンダーの純関数 (スマホの「休み」ページ・設計 leave-and-kinmu-sheet §2-2・§6).
  *
- * 素材は既存 API 2 本 (BE 追加なし):
+ * 素材は既存 API 2 本:
  *   - GET /staff/{id}/shifts      … 7 曜日の is_on (weekday 0=月 … 6=日)
- *   - GET /staff/{id}/overrides   … その週だけの休み/時間変更 (日本語ラベル + date)
+ *   - GET /staff/{id}/overrides   … その日だけの休み/時間変更 (日本語ラベル + date)
  *
  * 「日ごとの状態」への畳み込み規則:
- *   override あり: '休み'→off / '午前休'・'午後休'→partial / '時間変更'→custom
+ *   override あり: '休み'→off / '午前休'→am_off / '午後休'→pm_off / '有給'→paid_off / '時間変更'→custom
  *   override なし: shifts[weekday].is_on ? working : nonworking
  *
- * PC (/admin/staff-leave) とモバイル (/m/shifts) の両方が使う共有ロジック。
+ * 休日数 (§2-2): 公休 1・半休 0.5 (型で勤務しない曜日なら 1)・有給 0 (別に数える)・
+ * 登録なしで型で勤務しない曜日 1。
  */
-import type { OverrideRead } from '@/lib/schemas/staff-overrides';
+import type { OverrideRead, OverrideType } from '@/lib/schemas/staff-overrides';
 import type { StaffShiftItem } from '@/lib/schemas/staff-shifts';
+import type { LeaveType } from '@/lib/leave';
 
-export type ShiftDayKind = 'working' | 'off' | 'partial' | 'custom' | 'nonworking';
+export type ShiftDayKind =
+  | 'working'
+  | 'off'
+  | 'am_off'
+  | 'pm_off'
+  | 'paid_off'
+  | 'custom'
+  | 'nonworking';
 
 export interface ShiftDay {
   /** YYYY-MM-DD (ローカル基準) */
   date: string;
   kind: ShiftDayKind;
+  /** 型 (staff_shifts) でその曜日に勤務するか。 */
+  patternWorking: boolean;
   /** その日に適用されている override (なければ null) */
   override: OverrideRead | null;
 }
@@ -46,12 +57,24 @@ export function toPyWeekday(d: Date): number {
   return (d.getDay() + 6) % 7;
 }
 
-const OVERRIDE_KIND: Record<string, ShiftDayKind> = {
+/** override の日本語ラベル → 日の状態。 */
+const OVERRIDE_KIND: Record<OverrideType, ShiftDayKind> = {
   休み: 'off',
-  午前休: 'partial',
-  午後休: 'partial',
+  午前休: 'am_off',
+  午後休: 'pm_off',
+  有給: 'paid_off',
   時間変更: 'custom',
 };
+
+/**
+ * 休みの種類 1 日ぶんの休日数。有給は数えない (0)。
+ * 半休は 0.5、ただし型で勤務しない曜日なら 1。
+ */
+export function leaveDayWeight(type: LeaveType, patternWorking: boolean): number {
+  if (type === 'paid_off') return 0;
+  if (type === 'off') return 1;
+  return patternWorking ? 0.5 : 1;
+}
 
 /**
  * 月の全日を状態つきで返す。
@@ -87,25 +110,31 @@ export function buildShiftMonth({
     const d = new Date(first.getFullYear(), first.getMonth(), dayNum);
     const iso = fmtIsoLocal(d);
     const override = overrideByDate.get(iso) ?? null;
+    // shifts 欠損曜日は BE と同じく is_on=true 扱い (バックフィル規約)
+    const patternWorking = isOnByWeekday.get(toPyWeekday(d)) ?? true;
     let kind: ShiftDayKind;
     if (override) {
       kind = OVERRIDE_KIND[override.type] ?? 'custom';
     } else {
-      // shifts 欠損曜日は BE と同じく is_on=true 扱い (バックフィル規約)
-      kind = (isOnByWeekday.get(toPyWeekday(d)) ?? true) ? 'working' : 'nonworking';
+      kind = patternWorking ? 'working' : 'nonworking';
     }
-    days.push({ date: iso, kind, override });
+    days.push({ date: iso, kind, patternWorking, override });
   }
   return days;
 }
 
-/** 集計: 出勤 (working+custom+partial) / 休み (off)。nonworking は勤務外で数えない。 */
-export function summarizeShiftMonth(days: ShiftDay[]): { workDays: number; offDays: number } {
-  let workDays = 0;
-  let offDays = 0;
+/**
+ * 集計: 休日数 (公休 1・半休 0.5・型で勤務しない曜日 1) と有給の日数。
+ * 有給は休日数に数えない。時間変更・出勤は 0。
+ */
+export function summarizeShiftMonth(days: ShiftDay[]): { holidays: number; paidDays: number } {
+  let holidays = 0;
+  let paidDays = 0;
   for (const d of days) {
-    if (d.kind === 'off') offDays++;
-    else if (d.kind !== 'nonworking') workDays++;
+    if (d.kind === 'nonworking') holidays += 1;
+    else if (d.kind === 'off' || d.kind === 'am_off' || d.kind === 'pm_off') {
+      holidays += leaveDayWeight(d.kind, d.patternWorking);
+    } else if (d.kind === 'paid_off') paidDays += 1;
   }
-  return { workDays, offDays };
+  return { holidays, paidDays };
 }

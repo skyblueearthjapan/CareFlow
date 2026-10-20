@@ -18,7 +18,12 @@ import {
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
-import type { OverrideCreate, OverrideRead, OverrideUpdate } from '@/lib/schemas/staff-overrides';
+import type {
+  OverrideCreate,
+  OverrideRead,
+  OverrideType,
+  OverrideUpdate,
+} from '@/lib/schemas/staff-overrides';
 
 const STAFF_BASE = '/api/v1/staff';
 
@@ -72,7 +77,7 @@ export interface WeekOverrideRead {
   staff_id: string;
   date: string; // YYYY-MM-DD
   weekday: number; // 0=Mon..6=Sun
-  type: '休み' | '時間変更' | '午前休' | '午後休';
+  type: OverrideType;
   start_time: string | null;
   end_time: string | null;
   note: string | null;

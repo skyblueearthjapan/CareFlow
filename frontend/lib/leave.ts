@@ -125,3 +125,24 @@ export function classifyKaipokeLeave(
 export function isLeaveEvent(subject: string | null | undefined): boolean {
   return classifyKaipokeLeave(subject) !== null;
 }
+
+/** 休みの申請の締め切りの日。対象日の月の前の月のこの日の 23:59 (JST) まで (設計 §2-3)。 */
+export const LEAVE_REQUEST_DEADLINE_DAY = 20;
+
+/** JST は UTC+9 (夏時間なし)。 */
+const JST_OFFSET_HOURS = 9;
+
+/**
+ * 対象の月 ('YYYY-MM' または 'YYYY-MM-DD') の休みの申請の締め切りの時刻
+ * (前の月の 20 日 23:59:59.999 JST)。これを過ぎた申請は「変更のお願い」になる。
+ */
+export function leaveRequestDeadline(target: string): Date {
+  const [y = 0, m = 1] = target.split('-').map(Number);
+  // 前の月の 21 日 0:00 JST の 1 ミリ秒前。Date.UTC は月・時の負の値を前へ繰り下げる。
+  return new Date(Date.UTC(y, m - 2, LEAVE_REQUEST_DEADLINE_DAY + 1, -JST_OFFSET_HOURS) - 1);
+}
+
+/** その日 (またはその月) の休みの申請の締め切りを過ぎたか。 */
+export function isPastLeaveDeadline(target: string, now: Date = new Date()): boolean {
+  return now.getTime() > leaveRequestDeadline(target).getTime();
+}

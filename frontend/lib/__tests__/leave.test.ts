@@ -12,8 +12,31 @@ import {
   PM_OFF_FROM,
   classifyKaipokeLeave,
   isLeaveEvent,
+  isPastLeaveDeadline,
+  leaveRequestDeadline,
   leaveWindow,
 } from '@/lib/leave';
+
+describe('休みの申請の締め切り (前の月の 20 日 23:59 JST)', () => {
+  it('12 月の締め切りは 11/20 23:59:59.999 JST', () => {
+    expect(leaveRequestDeadline('2026-12').toISOString()).toBe('2026-11-20T14:59:59.999Z');
+    expect(leaveRequestDeadline('2026-12-15').toISOString()).toBe('2026-11-20T14:59:59.999Z');
+  });
+
+  it('1 月の締め切りは前の年の 12/20', () => {
+    expect(leaveRequestDeadline('2027-01-05').toISOString()).toBe('2026-12-20T14:59:59.999Z');
+  });
+
+  it('JST の 20 日 23:59 はまだ締め切り前・21 日 0:00 は締め切り後', () => {
+    expect(isPastLeaveDeadline('2026-12-03', new Date('2026-11-20T23:59:00+09:00'))).toBe(false);
+    expect(isPastLeaveDeadline('2026-12-03', new Date('2026-11-21T00:00:00+09:00'))).toBe(true);
+  });
+
+  it('UTC では 20 日 15:00 が境目 (端末の時刻帯によらない)', () => {
+    expect(isPastLeaveDeadline('2026-12', new Date('2026-11-20T14:59:59Z'))).toBe(false);
+    expect(isPastLeaveDeadline('2026-12', new Date('2026-11-20T15:00:00Z'))).toBe(true);
+  });
+});
 
 describe('leave constants', () => {
   it('バックエンドと同じ値', () => {

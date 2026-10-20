@@ -51,7 +51,7 @@ function isoOf(d: Date): string {
  */
 function isOffForEvent(ov: WeekOverrideRead | undefined, startTime: string): boolean {
   if (!ov) return false;
-  if (ov.type === '休み') return true;
+  if (ov.type === '休み' || ov.type === '有給') return true;
   if (ov.type === '午前休') return startTime < '12:00';
   if (ov.type === '午後休') return startTime >= '12:00';
   return false; // 時間変更は勤務そのものはあるので自動除外しない

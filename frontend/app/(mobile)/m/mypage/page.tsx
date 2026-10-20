@@ -130,8 +130,8 @@ export default function MobileMyPage() {
         <div className="flex items-center gap-3">
           <CalendarHeart className="h-5 w-5 text-brand-primary" />
           <div>
-            <p className="font-medium text-text-primary">休みを申請する</p>
-            <p className="text-xs text-text-muted">カレンダーから日付を選ぶだけ</p>
+            <p className="font-medium text-text-primary">休み</p>
+            <p className="text-xs text-text-muted">月のカレンダーを見て、休みを申請する</p>
           </div>
         </div>
         <ChevronRight className="h-4 w-4 text-text-muted" />
