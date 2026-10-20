@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -186,6 +186,21 @@ async def record_op(
         if clear_redo:
             await clear_redo_branch(db, user_id=user_id, iso_year=iso_year, iso_week=iso_week)
 
+        # 同じグループの中の順番 (戻す = created_at の新しい順) を決めるため、時刻を
+        # Python から入れる。PG の now() はトランザクションの始まりの時刻、SQLite の
+        # CURRENT_TIMESTAMP は秒の単位なので、同じグループの行の時刻がそろってしまう。
+        # 「今」と「同じグループの最後 + 1µs」の大きいほうにして、必ず増やす。
+        created_at = datetime.now(UTC)
+        last = await db.scalar(
+            select(func.max(ScheduleOpLog.created_at)).where(
+                ScheduleOpLog.op_group_id == effective_group_id
+            )
+        )
+        if last is not None:
+            if last.tzinfo is None:  # SQLite は tz を持たない (UTC で入れている)
+                last = last.replace(tzinfo=UTC)
+            created_at = max(created_at, last + timedelta(microseconds=1))
+
         row = ScheduleOpLog(
             user_id=user_id,
             iso_year=iso_year,
@@ -196,6 +211,7 @@ async def record_op(
             forward_payload=forward_payload,
             inverse_payload=inverse_payload,
             undone=False,
+            created_at=created_at,
         )
         db.add(row)
         await db.flush()
@@ -915,8 +931,13 @@ async def set_visit_staff_slot(
     manual: bool,
     vsa_add: list[UUID],
     vsa_remove: list[UUID],
+    set_secondary: bool = False,
+    secondary_staff_id: UUID | None = None,
 ) -> None:
     """訪問 1 件の **担当枠 1 つ分**を差し替える (エンドポイントと undo の単一ソース).
+
+    ``set_secondary=True`` なら古い行の ``secondary_staff_id`` も書く (休みで 2 人目の列を
+    空けたとき・戻すとき)。
 
     ``visit-assign-staff-week`` の「VSA 全消し + 1 人だけ入れ直し」は 2 名体制の
     **相方まで消してしまう**ため、こちらは *抜ける人の行だけ* を外し、引き受け先の
@@ -932,6 +953,8 @@ async def set_visit_staff_slot(
     if set_primary:
         visit.primary_staff_id = primary_staff_id
         visit.manual_staff_override = manual
+    if set_secondary:
+        visit.secondary_staff_id = secondary_staff_id
     if vsa_remove:
         # ORM 経由 + 先 flush: bulk delete は同一セッションに残る旧行と同一 PK の
         # 再 INSERT が flush 順序 (INSERT→DELETE) で相殺される罠がある。
@@ -966,6 +989,10 @@ async def _set_visit_staff_slot(db: AsyncSession, payload: dict[str, Any]) -> No
         manual=bool(payload.get("manual", False)),
         vsa_add=[UUID(v) for v in payload.get("vsa_add") or []],
         vsa_remove=[UUID(v) for v in payload.get("vsa_remove") or []],
+        set_secondary=bool(payload.get("set_secondary")),
+        secondary_staff_id=(
+            UUID(payload["secondary_staff_id"]) if payload.get("secondary_staff_id") else None
+        ),
     )
 
 

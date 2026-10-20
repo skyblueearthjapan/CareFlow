@@ -275,9 +275,8 @@ async def _unassign_day(
             or course is None
             or course.assigned_staff_id != staff_id
         )
-        if visit.secondary_staff_id == staff_id:
-            # 古い行の 2 人目の列 (VSA に居ない場合もある)。本人の枠だけ空ける。
-            visit.secondary_staff_id = None
+        # 古い行の 2 人目の列 (VSA に居ない場合もある)。本人の枠だけ空け、戻すときに戻す。
+        clear_secondary = visit.secondary_staff_id == staff_id
         old_primary = visit.primary_staff_id
         old_manual = bool(visit.manual_staff_override)
         current_vsa = await visit_staff_ids(db, visit.id)
@@ -293,6 +292,8 @@ async def _unassign_day(
             manual=new_manual,
             vsa_add=vsa_add,
             vsa_remove=vsa_remove,
+            set_secondary=clear_secondary,
+            secondary_staff_id=None,
         )
         if day_data is not None:
             members = day_data.vsa.setdefault(visit.id, set())
@@ -312,6 +313,8 @@ async def _unassign_day(
                     "manual": new_manual,
                     "vsa_add": [str(s) for s in vsa_add],
                     "vsa_remove": [str(s) for s in vsa_remove],
+                    "set_secondary": clear_secondary,
+                    "secondary_staff_id": None,
                 },
                 inverse_payload={
                     "op": "set_visit_staff_slot",
@@ -321,6 +324,8 @@ async def _unassign_day(
                     "manual": old_manual,
                     "vsa_add": [str(s) for s in vsa_remove],
                     "vsa_remove": [str(s) for s in vsa_add],
+                    "set_secondary": clear_secondary,
+                    "secondary_staff_id": str(staff_id) if clear_secondary else None,
                 },
             )
 
@@ -830,6 +835,7 @@ async def write_override_day(
             origin=origin,
             notify=False,
         )
+    group = uuid.uuid4()
     if row is not None and row.override_type in LEAVE_TYPES:
         # 休み → 時間変更: 先に休みを取り消す (取り消しの記録・last_leave_changed_at)。
         await cancel_staff_leave(
@@ -837,22 +843,79 @@ async def write_override_day(
             staff_id=staff_id,
             day=day,
             actor=actor,
-            op_group_id=None,
+            op_group_id=group,
             origin=origin,
             notify=False,
         )
-    await set_staff_override(
+    await write_custom_time(
+        db,
+        staff_id=staff_id,
+        day=day,
+        start_time=fmt_time(start_time) if start_time else None,
+        end_time=fmt_time(end_time) if end_time else None,
+        reason=reason,
+        actor=actor,
+        op_group_id=group,
+        origin=origin,
+    )
+    return None
+
+
+async def write_custom_time(
+    db: AsyncSession,
+    *,
+    staff_id: UUID,
+    day: date,
+    start_time: str | None,
+    end_time: str | None,
+    reason: str | None,
+    actor: User | None,
+    op_group_id: UUID | None,
+    origin: str,
+    source: str | None = None,
+    pending_request_id: UUID | None = None,
+) -> UUID | None:
+    """時間変更 (``custom_time``) の行を書き、``set_staff_off`` として op_log に記録する.
+
+    休み → 時間変更のとき、休みの取り消しと同じ op_group に記録しないと、取り消しの
+    「戻る」が「行が無いはず」の検証で止まる (休み設計 §3-4)。
+    """
+    y, w, wd = iso_key(day)
+    prev = await _load_override(db, staff_id, day)
+    inverse = _override_payload(staff_id, day, prev, origin)
+    override_id = await set_staff_override(
         db,
         staff_id=staff_id,
         iso_year=y,
         iso_week=w,
         weekday=wd,
-        override_type=override_type,
+        override_type="custom_time",
         reason=reason,
-        start_time=fmt_time(start_time) if start_time else None,
-        end_time=fmt_time(end_time) if end_time else None,
+        start_time=start_time,
+        end_time=end_time,
+        source=source,
+        pending_request_id=pending_request_id,
     )
-    return None
+    journal = _journal_for(db, actor, day, op_group_id or uuid.uuid4())
+    if journal is not None:
+        forward = {
+            **inverse,
+            "type": "custom_time",
+            "reason": reason,
+            "start_time": start_time,
+            "end_time": end_time,
+            "source": source or "admin",
+            "pending_request_id": str(pending_request_id) if pending_request_id else None,
+            "override_id": str(override_id),
+        }
+        inverse["override_id"] = str(override_id)
+        await journal(
+            op_kind="set_staff_off",
+            label=f"{_date_label(day)}を時間変更に",
+            forward_payload=forward,
+            inverse_payload=inverse,
+        )
+    return override_id
 
 
 async def notify_leave_results(db: AsyncSession, results: Iterable[LeaveApplyResult | None]) -> int:
@@ -1108,5 +1171,6 @@ __all__ = [
     "notify_leave_results",
     "settle_leave_unassign",
     "today_jst",
+    "write_custom_time",
     "write_override_day",
 ]

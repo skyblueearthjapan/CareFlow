@@ -34,6 +34,7 @@ from app.services.staff_leave import (
     StaffLeaveError,
     apply_staff_leave,
     cancel_staff_leave,
+    write_custom_time,
 )
 
 router = APIRouter()
@@ -247,18 +248,18 @@ async def _write_day(
                 status_code=status.HTTP_409_CONFLICT, detail=LEAVE_WRITE_CONFLICT_DETAIL
             ) from exc
         return
-    iso_year, iso_week, weekday = _date_to_iso(d)
     try:
-        await set_staff_override(
+        # 時間変更も set_staff_off として同じ op_group に記録する (休み→時間変更の「戻る」)。
+        await write_custom_time(
             db,
             staff_id=staff_id,
-            iso_year=iso_year,
-            iso_week=iso_week,
-            weekday=weekday,
-            override_type=override_type,
-            reason=note,
+            day=d,
             start_time=start_time,
             end_time=end_time,
+            reason=note,
+            actor=actor,
+            op_group_id=op_group_id,
+            origin="staff_detail",
             source=source,
             pending_request_id=pending_request_id,
         )

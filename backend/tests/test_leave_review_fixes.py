@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from datetime import date, time, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
@@ -294,7 +294,7 @@ async def test_unique_collision_on_override_write_is_409(client, db, monkeypatch
     async def boom(*_a, **_k):
         raise IntegrityError("INSERT", {}, Exception("UNIQUE constraint failed"))
 
-    monkeypatch.setattr(mod, "set_staff_override", boom)
+    monkeypatch.setattr(mod, "write_custom_time", boom)
     admin = await _admin(db)
     staff = Staff(name="同時 書き")
     db.add(staff)
@@ -395,7 +395,8 @@ async def test_patch_course_to_full_day_leave_staff_is_422(client, db, leave_typ
 
 
 @pytest.mark.asyncio
-async def test_patch_course_half_leave_settles_and_undo_restores(client, db) -> None:
+@pytest.mark.parametrize("_round", range(10))  # 同じグループの中の順番が毎回決まること
+async def test_patch_course_half_leave_settles_and_undo_restores(client, db, _round) -> None:
     admin = await _admin(db)
     s = await _course_setup(db, leave_type="pm_off")
     res = await client.patch(
@@ -482,3 +483,135 @@ async def test_move_week_only_keeps_explicit_unassigned_and_undo(client, db) -> 
     assert back.start_time == time(14, 0)
     assert back.primary_staff_id is None
     assert back.manual_staff_override is True
+
+
+# ---------------------------------------------------------------------------
+# 再確認 1〜3: 同じ op_group の中の順番・置いて固定・休み→時間変更の「戻る」
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_op_orders_rows_in_group_with_microseconds(db) -> None:
+    from app.services.op_log_service import record_op
+
+    admin = await _admin(db)
+    group = uuid4()
+    for i in range(5):
+        await record_op(
+            db,
+            user_id=admin.id,
+            iso_year=2030,
+            iso_week=1,
+            op_group_id=group,
+            op_kind="noop",
+            label=f"行{i}",
+            forward_payload={"op": "noop"},
+            inverse_payload={"op": "noop"},
+            strict=True,
+        )
+    await db.commit()
+    rows = (
+        await db.scalars(
+            select(ScheduleOpLog)
+            .where(ScheduleOpLog.op_group_id == group)
+            .order_by(ScheduleOpLog.created_at)
+            .execution_options(populate_existing=True)
+        )
+    ).all()
+    assert [r.label for r in rows] == [f"行{i}" for i in range(5)]
+    stamps = [r.created_at for r in rows]
+    assert len(set(stamps)) == 5  # SQLite でもマイクロ秒が残る
+
+
+@pytest.mark.asyncio
+async def test_place_and_fix_on_half_leave_course_undo_and_redo(client, db) -> None:
+    from app.models import Course
+
+    admin = await _admin(db)
+    s = await _course_setup(db, leave_type="pm_off")
+    # コースの担当を午後休の人に (この試験の材料)
+    course = await db.get(Course, s["course"])
+    assert course is not None
+    course.assigned_staff_id = s["b"]
+    patient = await db.get(Patient, s["patient"])
+    assert patient is not None
+    patient.primary_office_id = s["office"].id
+    await db.commit()
+    from app.models import CourseTemplate
+
+    tpl_id = (await db.get(Course, s["course"])).template_id
+    assert tpl_id is not None and await db.get(CourseTemplate, tpl_id) is not None
+    y, w, wd = iso_key(s["day"])
+    res = await client.post(
+        "/api/v1/schedule/place-and-fix",
+        headers=_bearer(admin),
+        json={
+            "patient_id": str(s["patient"]),
+            "course_template_id": str(tpl_id),
+            "iso_year": y,
+            "iso_week": w,
+            "weekday": wd,
+            "start_time": "16:00:00",
+            "duration_min": 30,
+            "staff_count": 1,
+            "fix_pattern": False,
+        },
+    )
+    assert res.status_code == 200, res.text
+    vid = res.json()["visit"]["id"]
+    placed = await db.get(Visit, UUID(vid), populate_existing=True)
+    assert placed is not None and placed.primary_staff_id is None
+    assert placed.manual_staff_override is True
+
+    undo = await client.post(_UNDO_URL, headers=_bearer(admin), json={"iso_year": y, "iso_week": w})
+    assert undo.status_code == 200, undo.text
+    gone = await db.get(Visit, placed.id, populate_existing=True)
+    assert gone is not None and gone.deleted_at is not None
+
+    redo = await client.post(
+        "/api/v1/schedule/v2/op-log/redo",
+        headers=_bearer(admin),
+        json={"iso_year": y, "iso_week": w},
+    )
+    assert redo.status_code == 200, redo.text
+    back = await db.get(Visit, placed.id, populate_existing=True)
+    assert back is not None and back.deleted_at is None
+    assert back.primary_staff_id is None and back.manual_staff_override is True
+
+
+@pytest.mark.asyncio
+async def test_leave_to_custom_time_undo_then_redo(client, db) -> None:
+    admin = await _admin(db)
+    staff = Staff(name="時間変更へ 花子")
+    db.add(staff)
+    await db.commit()
+    staff_id = staff.id
+    day = today_jst() + timedelta(days=9)
+    res = await client.post(
+        f"/api/v1/staff/{staff_id}/overrides",
+        headers=_bearer(admin),
+        json={"date": day.isoformat(), "type": "休み"},
+    )
+    assert res.status_code == 201, res.text
+    oid = res.json()["id"]
+    res = await client.patch(
+        f"/api/v1/staff/{staff_id}/overrides/{oid}",
+        headers=_bearer(admin),
+        json={"type": "時間変更", "start_time": "09:00", "end_time": "12:00"},
+    )
+    assert res.status_code == 200, res.text
+    y, w, _wd = iso_key(day)
+
+    undo = await client.post(_UNDO_URL, headers=_bearer(admin), json={"iso_year": y, "iso_week": w})
+    assert undo.status_code == 200, undo.text
+    row = await _override(db, staff_id, day)
+    assert row is not None and row.override_type == "off"  # 休みに戻る
+
+    redo = await client.post(
+        "/api/v1/schedule/v2/op-log/redo",
+        headers=_bearer(admin),
+        json={"iso_year": y, "iso_week": w},
+    )
+    assert redo.status_code == 200, redo.text
+    row = await _override(db, staff_id, day)
+    assert row is not None and row.override_type == "custom_time"  # もう一度で元に戻る
