@@ -27,6 +27,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as time_cls
+from functools import partial
 from typing import Annotated, Any, NoReturn
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -1575,6 +1576,9 @@ async def visit_move_week_only_endpoint(
         )
 
     counters: dict[str, Any] = {"visits": 0, "patients": set()}
+    # 移動と、最後の後始末 (休む人の休みの時間帯 → 担当なし) を同じ op_group に記録する
+    # (「戻る」1 回で両方戻る・休み設計 §4-2)。
+    _group = payload.op_group_id or uuid.uuid4()
     try:
         await _apply_visit_move_week_only(
             db,
@@ -1587,6 +1591,16 @@ async def visit_move_week_only_endpoint(
             iso_year=payload.iso_year,
             iso_week=payload.iso_week,
             counters=counters,
+            journal=partial(
+                record_op,
+                db,
+                user_id=current_user.id,
+                iso_year=payload.iso_year,
+                iso_week=payload.iso_week,
+                op_group_id=_group,
+                strict=True,
+                clear_redo=False,
+            ),
         )
         # §7-3: acknowledge を通した事実を管理者へお知らせする。commit 前に add =
         # 移動と同一トランザクション (適用されたものだけ通知される)。
@@ -1628,7 +1642,7 @@ async def visit_move_week_only_endpoint(
             user_id=current_user.id,
             iso_year=_iso_year,
             iso_week=_iso_week,
-            op_group_id=payload.op_group_id,
+            op_group_id=_group,
             op_kind="move_visit_week_only",
             label=_label,
             forward_payload={
@@ -5009,6 +5023,7 @@ async def _apply_visit_move_week_only(
     iso_year: int,
     iso_week: int,
     counters: dict[str, Any],
+    journal: Any = None,
 ) -> None:
     """Wave U-1 (§2.2 B = week_only): 1 手ぶんの移動を今週の visits にのみ反映する.
 
@@ -5072,7 +5087,16 @@ async def _apply_visit_move_week_only(
         v.visit_date = new_date
         v.start_time = new_start
         v.end_time = time_cls(min(end_minutes // 60, 23), end_minutes % 60)
-        if new_course_id is not None and v.course_id != new_course_id:
+        if (
+            new_course_id is not None
+            and v.course_id != new_course_id
+            and v.primary_staff_id is None
+            and v.manual_staff_override
+        ):
+            # 明示の担当なし (primary 空・manual 真・休みの時間帯など) はコースだけ移し、
+            # 担当は空のまま・印も真のまま (移動先のコース担当に読み替えない・休み設計 §3-2)。
+            v.course_id = new_course_id
+        elif new_course_id is not None and v.course_id != new_course_id:
             # 副次バグ修正 (2026-08-11): コース跨ぎ移動で course_id だけ差し替えて
             # 担当を放置していたため、移動後も **旧コースの担当** が visit に残り、
             # 訪問モニター / モバイル「今日の訪問」/ 子アプリの可視性 (VSA) が
@@ -5108,7 +5132,7 @@ async def _apply_visit_move_week_only(
 
     # 休み設計 §4-2: 担当を書く処理の最後の共通の後始末 (移動先の日の休む人 → 担当なし)。
     await db.flush()
-    await settle_leave_unassign(db, dates=[new_date])
+    await settle_leave_unassign(db, dates=[new_date], journal=journal)
 
 
 async def _validate_and_move_one(

@@ -24,7 +24,9 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import date
+from functools import partial
 from typing import Annotated
 from uuid import UUID
 
@@ -35,6 +37,7 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
+from app.core.leave import FULL_DAY_OFF
 from app.models.course import Course
 from app.models.staff import Staff
 from app.models.user import User
@@ -51,6 +54,7 @@ from app.services.constraint_override_notify import (
     collect_constraint_warnings,
     notify_constraint_override,
 )
+from app.services.leave_calendar import leave_type_on
 from app.services.op_log_service import record_op
 from app.services.scheduling import (
     CourseProposal,
@@ -364,6 +368,19 @@ async def update_course(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="新人はコース担当にできません（同行で割り当ててください）",
             )
+        # 休み設計 §4-2 (ディレクター決定): その日終日休み (公休・有給) の人は担当にできない。
+        # 半休は今のまま (コースを持ち、休みの時間帯の訪問は最後の後始末で担当なし)。
+        if _cand is not None:
+            _course_day = date.fromisocalendar(
+                course.iso_year,
+                course.iso_week,
+                int(update_data.get("weekday", course.weekday)) + 1,
+            )
+            if await leave_type_on(db, _cand.id, _course_day) in FULL_DAY_OFF:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{_cand.name}さんはこの日休みです",
+                )
 
         # NG スタッフ / 性別制限の確認フロー (docs/plans/patient-ng-staff-design.md §7-2)。
         # 新人 422 の **後** に置く: あちらは override 不可の絶対ブロック、こちらは
@@ -407,20 +424,28 @@ async def update_course(
     # 伝播先は**予定 (planned) の visit だけ**。取消 (今週だけ取消/取込の削除/status_cancel) に
     # 担当を書くと PC 職員スケジュールに取消線の訪問が並び (PO報告 2026-10-04: 週42 で 24 件)、
     # 打刻済み (in_progress/completed) は実績なので担当を遡って書き換えない。
+    _mirrored: list[tuple[UUID, UUID | None]] = []  # (visit_id, 書き換え前の primary)
     if _staff_id_changing:
         _new_staff_id: UUID | None = update_data.get("assigned_staff_id")
+        _mirror_where = (
+            Visit.course_id == course.id,
+            Visit.deleted_at.is_(None),
+            Visit.manual_staff_override.is_(False),
+            Visit.status == VISIT_STATUS_PLANNED,
+        )
+        # 「戻る」で訪問の担当も戻せるよう、書き換える訪問と元の担当を控える。
+        _mirrored = [
+            (vid, old)
+            for vid, old in (
+                await db.execute(select(Visit.id, Visit.primary_staff_id).where(*_mirror_where))
+            ).all()
+            if old != _new_staff_id
+        ]
         # モニター/モバイル/ダッシュボードが読む primary_staff_id を一括更新 (bulk UPDATE)。
         # VSA(正典) は連携週スケジュール(コース担当優先)・layer3 再実行で吸収されるため
         # ここでは触らない (相方や async セッションを巻き込まない・単純で確実)。
         await db.execute(
-            sa_update(Visit)
-            .where(
-                Visit.course_id == course.id,
-                Visit.deleted_at.is_(None),
-                Visit.manual_staff_override.is_(False),
-                Visit.status == VISIT_STATUS_PLANNED,
-            )
-            .values(primary_staff_id=_new_staff_id)
+            sa_update(Visit).where(*_mirror_where).values(primary_staff_id=_new_staff_id)
         )
 
     # §7-3: acknowledge 付きで制約を通した事実を管理者へお知らせする。
@@ -447,28 +472,22 @@ async def update_course(
         )
 
     if _staff_id_changing:
-        # 休み設計 §4-2: 担当を書く処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。
-        await db.flush()
-        await settle_leave_unassign(
-            db,
-            dates=[date.fromisocalendar(course.iso_year, course.iso_week, course.weekday + 1)],
-        )
-
-    await _commit_or_409(db)
-    await db.refresh(course)
-
-    # Wave U-3: assigned_staff_id 変更のみ記録（ベストエフォート）
-    if _staff_id_changing:
-        _new_staff_id = course.assigned_staff_id
-        _new_staff_str = str(_new_staff_id) if _new_staff_id else None
-        _old_staff_str = str(_old_staff_id) if _old_staff_id else None
-        _label = f"コース担当者を変更（→{'未割当' if _new_staff_str is None else _new_staff_str[:8] + '...'}）"
-        await record_op(
+        # Wave U-3: assigned_staff_id 変更を記録する。休み設計 §4-2: 訪問の担当の書き換えと
+        # 最後の共通の後始末 (休む人の休みの時間帯 → 担当なし) も同じ op_group に記録し、
+        # 「戻る」1 回で訪問の担当まで戻す。
+        _group = _op_group_id or uuid.uuid4()
+        _journal = partial(
+            record_op,
             db,
             user_id=current_user.id,
             iso_year=course.iso_year,
             iso_week=course.iso_week,
-            op_group_id=_op_group_id,
+            op_group_id=_group,
+        )
+        _new_staff_str = str(course.assigned_staff_id) if course.assigned_staff_id else None
+        _old_staff_str = str(_old_staff_id) if _old_staff_id else None
+        _label = f"コース担当者を変更（→{'未割当' if _new_staff_str is None else _new_staff_str[:8] + '...'}）"
+        await _journal(
             op_kind="patch_course_staff",
             label=_label,
             forward_payload={
@@ -482,7 +501,39 @@ async def update_course(
                 "staff_id": _old_staff_str,
             },
         )
-        await db.commit()
+        for _vid, _old in _mirrored:
+            await _journal(
+                op_kind="set_visit_staff_slot",
+                label="コース担当の変更を訪問へ",
+                forward_payload={
+                    "op": "set_visit_staff_slot",
+                    "visit_id": str(_vid),
+                    "set_primary": True,
+                    "primary_staff_id": _new_staff_str,
+                    "manual": False,
+                    "vsa_add": [],
+                    "vsa_remove": [],
+                },
+                inverse_payload={
+                    "op": "set_visit_staff_slot",
+                    "visit_id": str(_vid),
+                    "set_primary": True,
+                    "primary_staff_id": str(_old) if _old else None,
+                    "manual": False,
+                    "vsa_add": [],
+                    "vsa_remove": [],
+                },
+                clear_redo=False,
+            )
+        await db.flush()
+        await settle_leave_unassign(
+            db,
+            dates=[date.fromisocalendar(course.iso_year, course.iso_week, course.weekday + 1)],
+            journal=partial(_journal, strict=True, clear_redo=False),
+        )
+
+    await _commit_or_409(db)
+    await db.refresh(course)
 
     # 逆方向の警告は**レスポンスにも**載せる (非破壊追加・既定 [])。
     # 通知に加えてレスポンスにも載せる (FE のトースト表示は未配線 = Phase E 予定。

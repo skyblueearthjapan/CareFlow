@@ -311,3 +311,174 @@ async def test_unique_collision_on_override_write_is_409(client, db, monkeypatch
     )
     assert res.status_code == 409, res.text
     assert "同じ日の休みが同時に入れられました" in res.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# ② MEDIUM-1・HIGH-2: PATCH /courses と「戻る」・今週だけ動かす
+# ---------------------------------------------------------------------------
+
+_UNDO_URL = "/api/v1/schedule/v2/op-log/undo"
+
+
+async def _course_setup(db, *, leave_type: str | None):
+    from app.models import Course, CourseTemplate, Office
+
+    office = Office(name=f"コース拠点{uuid4().hex[:4]}")
+    a = Staff(name="元の 担当", status="active")
+    b = Staff(name="新しい 担当", status="active")
+    patient = Patient(
+        code=f"CP-{uuid4().hex[:6]}", name="コース患者", status="active", special_week_active=[]
+    )
+    db.add_all([office, a, b, patient])
+    await db.flush()
+    tpl = CourseTemplate(office_id=office.id, label="A")
+    db.add(tpl)
+    await db.flush()
+    day = today_jst() + timedelta(days=6)
+    y, w, wd = iso_key(day)
+    course = Course(
+        iso_year=y,
+        iso_week=w,
+        weekday=wd,
+        code="A",
+        office_id=office.id,
+        template_id=tpl.id,
+        course_status="staff_assigned",
+        assigned_staff_id=a.id,
+    )
+    db.add(course)
+    await db.flush()
+    visits = {}
+    for h in (9, 14):
+        v = Visit(
+            patient_id=patient.id,
+            primary_staff_id=a.id,
+            course_id=course.id,
+            visit_date=day,
+            start_time=time(h, 0),
+            end_time=time(h + 1, 0),
+            type="regular",
+            status="planned",
+            source="auto",
+        )
+        db.add(v)
+        visits[h] = v
+    if leave_type is not None:
+        await set_staff_override(
+            db, staff_id=b.id, iso_year=y, iso_week=w, weekday=wd, override_type=leave_type
+        )
+    await db.commit()
+    return {
+        "office": office,
+        "a": a.id,
+        "b": b.id,
+        "b_name": b.name,
+        "course": course.id,
+        "patient": patient.id,
+        "day": day,
+        "visits": {h: v.id for h, v in visits.items()},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("leave_type", ["off", "paid_off"])
+async def test_patch_course_to_full_day_leave_staff_is_422(client, db, leave_type) -> None:
+    admin = await _admin(db)
+    s = await _course_setup(db, leave_type=leave_type)
+    res = await client.patch(
+        f"/api/v1/courses/{s['course']}",
+        headers=_bearer(admin),
+        json={"assigned_staff_id": str(s["b"])},
+    )
+    assert res.status_code == 422, res.text
+    assert f"{s['b_name']}さんはこの日休みです" in res.text
+
+
+@pytest.mark.asyncio
+async def test_patch_course_half_leave_settles_and_undo_restores(client, db) -> None:
+    admin = await _admin(db)
+    s = await _course_setup(db, leave_type="pm_off")
+    res = await client.patch(
+        f"/api/v1/courses/{s['course']}",
+        headers=_bearer(admin),
+        json={"assigned_staff_id": str(s["b"])},
+    )
+    assert res.status_code == 200, res.text
+    am = await db.get(Visit, s["visits"][9], populate_existing=True)
+    pm = await db.get(Visit, s["visits"][14], populate_existing=True)
+    assert am is not None and am.primary_staff_id == s["b"]
+    assert pm is not None and pm.primary_staff_id is None and pm.manual_staff_override is True
+
+    y, w, _ = iso_key(s["day"])
+    undo = await client.post(_UNDO_URL, headers=_bearer(admin), json={"iso_year": y, "iso_week": w})
+    assert undo.status_code == 200, undo.text
+    from app.models import Course
+
+    am = await db.get(Visit, s["visits"][9], populate_existing=True)
+    pm = await db.get(Visit, s["visits"][14], populate_existing=True)
+    course = await db.get(Course, s["course"], populate_existing=True)
+    assert course is not None and course.assigned_staff_id == s["a"]
+    assert am is not None and am.primary_staff_id == s["a"]
+    assert pm is not None and pm.primary_staff_id == s["a"]
+    assert pm.manual_staff_override is False
+
+
+@pytest.mark.asyncio
+async def test_move_week_only_keeps_explicit_unassigned_and_undo(client, db) -> None:
+    from app.models import Course, CourseTemplate
+
+    admin = await _admin(db)
+    s = await _course_setup(db, leave_type=None)
+    # 14:00 の訪問は明示の担当なし (休みの時間帯などで外した)
+    pm = await db.get(Visit, s["visits"][14])
+    assert pm is not None
+    pm.primary_staff_id = None
+    pm.manual_staff_override = True
+    # 移動先のコース (別テンプレート・担当あり)
+    tpl_b = CourseTemplate(office_id=s["office"].id, label="B")
+    db.add(tpl_b)
+    await db.flush()
+    y, w, wd = iso_key(s["day"])
+    db.add(
+        Course(
+            iso_year=y,
+            iso_week=w,
+            weekday=wd,
+            code="B",
+            office_id=s["office"].id,
+            template_id=tpl_b.id,
+            course_status="staff_assigned",
+            assigned_staff_id=s["b"],
+        )
+    )
+    tpl_b_id = tpl_b.id
+    await db.commit()
+    res = await client.post(
+        "/api/v1/schedule/v2/visit-move-week-only",
+        headers=_bearer(admin),
+        json={
+            "iso_year": y,
+            "iso_week": w,
+            "patient_id": str(s["patient"]),
+            "old_weekday": wd,
+            "old_start_time": "14:00",
+            "new_weekday": wd,
+            "new_start_time": "15:00",
+            "new_course_template_id": str(tpl_b_id),
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["visits_moved"] == 1
+    moved = await db.get(Visit, s["visits"][14], populate_existing=True)
+    assert moved is not None
+    assert moved.start_time == time(15, 0)
+    assert moved.primary_staff_id is None
+    assert moved.manual_staff_override is True
+
+    undo = await client.post(_UNDO_URL, headers=_bearer(admin), json={"iso_year": y, "iso_week": w})
+    assert undo.status_code == 200, undo.text
+    back = await db.get(Visit, s["visits"][14], populate_existing=True)
+    assert back is not None
+    assert back.start_time == time(14, 0)
+    assert back.primary_staff_id is None
+    assert back.manual_staff_override is True
