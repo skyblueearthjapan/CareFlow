@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -30,9 +29,7 @@ from app.services.kaipoke.sources import (
     KIND_TASKS,
     OP_ACCEPTANCE_REFRESH,
     STATUS_EMPTY,
-    STATUS_FAILED,
     STATUS_OK,
-    SourceFetchResult,
 )
 from app.services.scheduling.acceptance_strict_data import JST, months_between, view_mondays
 
@@ -41,8 +38,6 @@ if TYPE_CHECKING:
 
     from app.models.kaipoke_job import KaipokeJob
     from app.services.kaipoke_client import KaipokeClient
-
-logger = logging.getLogger(__name__)
 
 SCOPE_RECENT: Final = "recent"
 SCOPE_ALL: Final = "all"
@@ -144,51 +139,25 @@ async def start_refresh(
     return job, targets
 
 
+def source_plan(targets: list[RefreshTarget]) -> list[dict[str, object]]:
+    """段階 0 の ``run_source_job`` に渡す「取る本の一覧」(kind と period)。"""
+    return [{"kind": t.kind, "period": t.period_start} for t in targets]
+
+
 async def run_refresh_job(
     *,
     job_id: uuid.UUID,
     targets: list[RefreshTarget],
     client: KaipokeClient,
 ) -> None:
-    """1 本ずつ取り直してジョブを決着させる (自前のセッション・応答の後に走る)。
+    """応答の後に自前のセッションで段階 0 の ``run_source_job`` を呼ぶ。
 
-    1 本が失敗しても次へ進む (段階 0 が ``failed`` にして前の材料を残す)。
-    思わぬ例外もその本の失敗として残し、ジョブは必ず決着させる。
+    1 本ずつ取る・進み具合を書き戻す・例外でも必ずジョブを閉じるのは段階 0 の仕事
+    (受け入れ枠は取り直しのループを持たない)。
     """
     factory = get_session_factory()
     async with factory() as db:
-        results: list[SourceFetchResult] = []
-        try:
-            for target in targets:
-                try:
-                    if target.kind == KIND_TASKS:
-                        result = await sources.fetch_week_tasks(
-                            db, client, target.period_start, job_id=job_id
-                        )
-                    else:
-                        result = await sources.fetch_month_csv(
-                            db,
-                            client,
-                            target.kind,
-                            target.period_start.strftime("%Y-%m"),
-                            job_id=job_id,
-                        )
-                except Exception as exc:  # noqa: BLE001 — 1 本の失敗で全体を止めない
-                    logger.exception("acceptance refresh failed: %s", target)
-                    await db.rollback()
-                    result = SourceFetchResult(
-                        kind=target.kind,
-                        period_start=target.period_start,
-                        status=STATUS_FAILED,
-                        error=str(exc)[:300] or type(exc).__name__,
-                    )
-                    await sources.record_progress(db, job_id, result)
-                results.append(result)
-            await sources.finish_source_job(db, job_id, results)
-        except Exception as exc:  # noqa: BLE001 — どの経路でもジョブを決着させる
-            logger.exception("acceptance refresh job %s crashed", job_id)
-            await db.rollback()
-            await sources.finish_source_job(db, job_id, results, error=str(exc)[:300])
+        await sources.run_source_job(db, client, job_id, source_plan(targets))
 
 
 __all__ = [
@@ -200,5 +169,6 @@ __all__ = [
     "load_tasks_fetched",
     "plan_targets",
     "run_refresh_job",
+    "source_plan",
     "start_refresh",
 ]
