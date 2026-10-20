@@ -255,3 +255,59 @@ async def test_legacy_secondary_column_is_released_on_leave(db) -> None:
     await db.refresh(v)
     assert v.primary_staff_id == lead.id
     assert v.secondary_staff_id is None
+
+
+# ---------------------------------------------------------------------------
+# ① MEDIUM-3: leave_months の upsert・UNIQUE の衝突は 409
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_touch_leave_month_upserts_when_row_exists_outside_session(db) -> None:
+    import sqlalchemy as sa
+
+    from app.models import LeaveMonth
+
+    staff = Staff(name="月 行あり")
+    db.add(staff)
+    await db.flush()
+    day = today_jst() + timedelta(days=40)
+    month = day.replace(day=1)
+    # 別の処理が先に作った行 (このセッションには読み込まれていない)
+    await db.execute(sa.insert(LeaveMonth).values(month=month, required_hours=160))
+    y, w, wd = iso_key(day)
+    await set_staff_override(
+        db, staff_id=staff.id, iso_year=y, iso_week=w, weekday=wd, override_type="off"
+    )
+    row = await db.get(LeaveMonth, month, populate_existing=True)
+    assert row is not None
+    assert row.required_hours == 160
+    assert row.last_leave_changed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_unique_collision_on_override_write_is_409(client, db, monkeypatch) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    import app.api.v1.staff_overrides as mod
+
+    async def boom(*_a, **_k):
+        raise IntegrityError("INSERT", {}, Exception("UNIQUE constraint failed"))
+
+    monkeypatch.setattr(mod, "set_staff_override", boom)
+    admin = await _admin(db)
+    staff = Staff(name="同時 書き")
+    db.add(staff)
+    await db.commit()
+    res = await client.post(
+        f"/api/v1/staff/{staff.id}/overrides",
+        headers=_bearer(admin),
+        json={
+            "date": (today_jst() + timedelta(days=3)).isoformat(),
+            "type": "時間変更",
+            "start_time": "09:00",
+            "end_time": "12:00",
+        },
+    )
+    assert res.status_code == 409, res.text
+    assert "同じ日の休みが同時に入れられました" in res.json()["detail"]

@@ -60,6 +60,8 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.leave import LEAVE_TYPES
@@ -1097,13 +1099,19 @@ async def _touch_leave_month(
     if before_type not in LEAVE_TYPES and after_type not in LEAVE_TYPES:
         return
     month = date.fromisocalendar(iso_year, iso_week, weekday + 1).replace(day=1)
-    row = await db.get(LeaveMonth, month)
     now = datetime.now(UTC)
-    if row is None:
-        db.add(LeaveMonth(month=month, last_leave_changed_at=now))
-    else:
-        row.last_leave_changed_at = now
-    await db.flush()
+    # 同じ月の行を 2 つの処理が同時に作っても衝突しないよう upsert (PG と SQLite)。
+    insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
+    stmt = insert(LeaveMonth).values(month=month, last_leave_changed_at=now)
+    await db.execute(
+        stmt.on_conflict_do_update(
+            index_elements=[LeaveMonth.month], set_={"last_leave_changed_at": now}
+        )
+    )
+    # セッションに読み込み済みの行があれば今の値で読み直す。
+    loaded = db.identity_map.get(db.identity_key(LeaveMonth, month))  # type: ignore[union-attr]
+    if loaded is not None:
+        await db.refresh(loaded)
 
 
 async def _set_staff_override(db: AsyncSession, payload: dict[str, Any]) -> None:

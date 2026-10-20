@@ -29,7 +29,12 @@ from app.schemas.staff_overrides import (
 )
 from app.services.leave_notify import notify_leave_cancelled
 from app.services.op_log_service import fmt_time, set_staff_override
-from app.services.staff_leave import StaffLeaveError, apply_staff_leave, cancel_staff_leave
+from app.services.staff_leave import (
+    LEAVE_WRITE_CONFLICT_DETAIL,
+    StaffLeaveError,
+    apply_staff_leave,
+    cancel_staff_leave,
+)
 
 router = APIRouter()
 
@@ -118,7 +123,7 @@ async def _commit_or_409(db) -> None:
         if "unique" in msg or "duplicate" in msg:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Conflict: override already exists for that date",
+                detail=LEAVE_WRITE_CONFLICT_DETAIL,
             ) from exc
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -236,21 +241,32 @@ async def _write_day(
         except StaffLeaveError as exc:
             await db.rollback()
             raise _leave_error(exc) from exc
+        except IntegrityError as exc:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=LEAVE_WRITE_CONFLICT_DETAIL
+            ) from exc
         return
     iso_year, iso_week, weekday = _date_to_iso(d)
-    await set_staff_override(
-        db,
-        staff_id=staff_id,
-        iso_year=iso_year,
-        iso_week=iso_week,
-        weekday=weekday,
-        override_type=override_type,
-        reason=note,
-        start_time=start_time,
-        end_time=end_time,
-        source=source,
-        pending_request_id=pending_request_id,
-    )
+    try:
+        await set_staff_override(
+            db,
+            staff_id=staff_id,
+            iso_year=iso_year,
+            iso_week=iso_week,
+            weekday=weekday,
+            override_type=override_type,
+            reason=note,
+            start_time=start_time,
+            end_time=end_time,
+            source=source,
+            pending_request_id=pending_request_id,
+        )
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=LEAVE_WRITE_CONFLICT_DETAIL
+        ) from exc
 
 
 @router.post(

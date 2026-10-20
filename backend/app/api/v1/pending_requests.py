@@ -67,7 +67,7 @@ from app.services.pending_request_applier import (
     PendingRequestApplier,
     PendingRequestApplyError,
 )
-from app.services.staff_leave import is_past_leave_deadline
+from app.services.staff_leave import LEAVE_WRITE_CONFLICT_DETAIL, is_past_leave_deadline
 
 router = APIRouter()
 
@@ -598,6 +598,11 @@ async def create_and_apply_pending_request(
         raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
     except IntegrityError as exc:
         await db.rollback()
+        if payload.request_type.value == RequestType.STAFF_OFF.value:
+            # 同じ日の休みが同時に書かれた (staff_weekly_overrides の UNIQUE)。
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=LEAVE_WRITE_CONFLICT_DETAIL
+            ) from exc
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Validation error during create-and-apply",
@@ -797,6 +802,13 @@ async def _do_approve(
     except PendingRequestApplyError as exc:
         await db.rollback()
         raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        await db.rollback()
+        if row.request_type == RequestType.STAFF_OFF.value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=LEAVE_WRITE_CONFLICT_DETAIL
+            ) from exc
+        raise
     except Exception:
         await db.rollback()
         raise
@@ -809,6 +821,10 @@ async def _do_approve(
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
+        if row.request_type == RequestType.STAFF_OFF.value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=LEAVE_WRITE_CONFLICT_DETAIL
+            ) from exc
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Validation error during approve",

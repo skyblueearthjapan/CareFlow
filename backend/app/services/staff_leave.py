@@ -81,6 +81,9 @@ LEAVE_ORIGINS: Final = frozenset(
     {"leave_page", "cockpit", "request_list", "staff_detail", "agent", "kaipoke_compare", "excel"}
 )
 
+#: 同じ (職員, 日) の休みが同時に書かれて UNIQUE がぶつかったときの 409 の文言 (入口で使う)。
+LEAVE_WRITE_CONFLICT_DETAIL: Final = "同じ日の休みが同時に入れられました。読み込み直してください"
+
 #: op_log へ 1 行書く関数 (``record_op`` の op_group を束ねたもの)。
 Journal = Callable[..., Awaitable[None]]
 
@@ -1063,6 +1066,7 @@ async def count_visits_on_leave(db: AsyncSession, date_from: date, date_to: date
 
 __all__ = [
     "LEAVE_ORIGINS",
+    "LEAVE_WRITE_CONFLICT_DETAIL",
     "LEAVE_SOURCES",
     "DayUnassignResult",
     "Journal",
