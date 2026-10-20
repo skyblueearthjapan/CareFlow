@@ -280,6 +280,8 @@ def _create_tables() -> None:
         sa.Column("url", sa.Text(), nullable=True),
         # 確定版を作り直した理由 (§7-2 の 3)。
         sa.Column("reason", sa.Text(), nullable=True),
+        # 予定版を作ったときの職員×日の休みと型の入力 (確定版の「予定」の行はこの写し)。
+        sa.Column("plan_snapshot", _json(), nullable=True),
         _user_fk("created_by"),
         sa.Column("created_at", _TS, nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("kind IN ('plan','final')", name=op.f("ck_kinmu_sheets_kind")),

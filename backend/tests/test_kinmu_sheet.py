@@ -5,36 +5,49 @@
 10 月の正解 (``tests/fixtures/kinmu_sheet``) はお客様の勤務表の見本 (2026.10 と 9/27〜9/30)
 から職員名を「職員A〜G」に置き換えて作った。見本の値のうち、設計の規則と違う所は規則を正とし、
 ``expected.json`` の ``corrections`` と ``test_october_matches_sample`` のコメントに書いた。
+正解の作り直し: 見本 (git 管理外) を openpyxl で読むスクリプト (リポジトリの外・make_fixture.py) に
+見本のパスと ``backend/tests/fixtures/kinmu_sheet`` を渡して materials.json・expected.json を書き直す。
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, time, timedelta
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from app.models import (
+    KinmuSheet,
     LeaveMonth,
     Office,
     OfficeClosedDay,
+    Patient,
     Staff,
     StaffShift,
     StaffWeeklyOverride,
+    Visit,
 )
 from app.models.staff import StaffSecondaryOffice
+from app.services.google_drive import Formula
+from app.services.google_drive.sheets import CellRange
 from app.services.kinmu_sheet import (
     DayOverride,
+    KinmuRules,
     KinmuStaffInput,
     build_holiday_summary,
     build_kinmu_month,
     load_holiday_counts_by_month,
     load_kinmu_inputs,
+    plan_from_snapshot,
+    snapshot_plan,
     summary_to_sheet_data,
     to_sheet_data,
 )
 from app.services.kinmu_sheet.build import fte, holiday_marks, week_bands
+from app.services.kinmu_sheet.sheet import col_letter
 from app.services.leave_calendar import HolidayCount, iso_key
 
 FIXTURES = Path(__file__).parent / "fixtures" / "kinmu_sheet"
@@ -173,17 +186,59 @@ def test_october_matches_sample() -> None:
     assert km.staff[1].plan[11] == 8.0
 
 
+def _cell_ref(ref: str) -> tuple[int, int]:
+    ref = ref.replace("$", "")
+    letters = "".join(ch for ch in ref if ch.isalpha())
+    col = 0
+    for ch in letters:
+        col = col * 26 + (ord(ch) - ord("A") + 1)
+    return int(ref[len(letters) :]) - 1, col - 1
+
+
+def _evaluate(rows: list[list], value):
+    """試験用の小さな式の計算 (=SUM の範囲と並び・=ROUNDDOWN(x/y,1) だけ)."""
+    if not isinstance(value, Formula):
+        return value
+
+    def get(ref: str):
+        r, c = _cell_ref(ref)
+        v = rows[r][c] if r < len(rows) and c < len(rows[r]) else None
+        return _evaluate(rows, v)
+
+    body = value.expr[1:]
+    if body.startswith("SUM(") and body.endswith(")"):
+        total = 0.0
+        for part in body[4:-1].split(","):
+            if ":" in part:
+                (r0, c0), (r1, c1) = (_cell_ref(x) for x in part.split(":"))
+                cells = [
+                    get(f"{col_letter(c)}{r + 1}")
+                    for r in range(r0, r1 + 1)
+                    for c in range(c0, c1 + 1)
+                ]
+            else:
+                cells = [get(part)]
+            total += sum(v for v in cells if isinstance(v, int | float))
+        return round(total, 2)
+    if body.startswith("ROUNDDOWN(") and body.endswith(",1)"):
+        num, den = body[len("ROUNDDOWN(") : -3].split("/")
+        return fte(get(num), get(den))
+    raise AssertionError(f"知らない式: {value}")
+
+
 def test_october_sheet_layout_matches_template() -> None:
-    """シートの並びが見本 (2026.10) と同じ行・列に来る."""
+    """シートの並びが見本 (2026.10) と同じ行・列に来る。合計・常勤換算は式で、値は計算と同じ."""
     inputs, _, required = _load_october()
     km = build_kinmu_month(OCT, inputs, required)
     sheets = to_sheet_data(km)
     assert [s.title for s in sheets] == ["勤務表"]
-    v = sheets[0].values
+    v = sheets[0].rows
     # 列: E=1 日 (4)・AJ=暦月の合計 (35)・AK=常勤換算 (36)・AL=備考 (37)
     assert v[0][0] == "　10月"
+    assert v[0][26] == "常勤の従業者が当該月勤務すべき時間数（合計）"
     assert v[0][36] == 160.0 and v[0][37] == "時間"
     assert v[1][0] == "従業者の勤務の体制及び勤務形態一覧表"
+    assert v[1][13] == "（2026 年　10 月分 ）"
     assert v[3][1] == "勤務形態" and v[3][4] == "第1週" and v[3][7] == "第2週"
     assert v[3][35] == "暦月の合計" and v[3][36] == "常勤換算後の人数"
     assert v[5][4] == 1 and v[5][34] == 31
@@ -191,9 +246,11 @@ def test_october_sheet_layout_matches_template() -> None:
     # 職員A (管理者): 8〜11 行目 = 予定・管理時間・実績・番号
     assert v[7][:4] == ["管理責任者", "A", "稲毛・都賀", "予定"]
     assert v[7][4] == 4.0 and v[7][6] == "休"
-    assert v[7][35] == 84.0 and v[7][36] == 0.5
+    assert v[7][35] == Formula("=SUM(E8:AI8)")
+    assert v[7][36] == Formula("=ROUNDDOWN(AJ8/$AK$1,1)")
     assert v[8][0] == "看護師" and v[8][2] == "職員A" and v[8][3] == "管理時間"
-    assert v[9][3] == "実績" and v[9][4] is None
+    assert v[8][35] == Formula("=SUM(E9:AI9)")
+    assert v[9][3] == "実績" and v[9][4] is None and v[9][35] is None
     assert v[10][6] == 2 and v[10][7] == 1  # 10/3 = 2・10/4 = 1 (数で書く)
     # 職員B: 12〜14 行目 (役職があるので 1 行目は「課長」)
     assert v[11][:4] == ["課長", "A", "稲毛", "予定"]
@@ -202,19 +259,41 @@ def test_october_sheet_layout_matches_template() -> None:
     assert v[14][0] == "看護師" and v[15][2] == "職員C"
     # 職員E の番号の行: 半休は「0,5」
     assert v[22][9] == "0,5"
-    # 合計: 30・31 行目
-    assert v[29][0] == "合計" and v[29][3] == "予定" and v[29][35] == 1124.0
-    assert v[29][36] == 7.0
-    assert v[30][3] == "実績"
-    assert v[32][2].startswith("勤務形態の区分")
-    assert "小数点以下第２位を切り捨て" in v[34][0]
-    merges = sheets[0].merges
-    assert (3, 4, 3, 6) in merges  # 第1週 E4:G4
-    assert (7, 1, 10, 1) in merges  # 職員A の勤務形態 B8:B11
-    assert (8, 0, 10, 0) in merges and (8, 2, 10, 2) in merges  # A9:A11・C9:C11
-    assert (12, 0, 13, 0) in merges  # 職員B A13:A14
-    assert (7, 37, 30, 37) in merges  # 備考の列
-    assert sheets[0].frozen_rows == 7 and sheets[0].frozen_cols == 4
+    # 合計: 30・31 行目。対象の行 (全員の予定) を並べた SUM
+    assert v[29][0] == "合計" and v[29][3] == "予定"
+    assert v[29][4] == Formula("=SUM(E8,E12,E15,E18,E21,E24,E27)")
+    assert v[29][35] == Formula("=SUM(AJ8,AJ12,AJ15,AJ18,AJ21,AJ24,AJ27)")
+    assert v[29][36] == Formula("=ROUNDDOWN(AJ30/$AK$1,1)")
+    assert v[30][3] == "実績" and v[30][4] is None
+    # 注記: 見本と同じ 34〜36 行目
+    assert v[33][2].startswith("勤務形態の区分")
+    assert v[34][0].startswith("　　　㊟")
+    assert "小数点以下第２位を切り捨て" in v[35][0]
+
+    # 式の値 = Python の計算 (KinmuMonth)
+    for row, r in zip(km.staff, (7, 11, 14, 17, 20, 23, 26), strict=True):
+        assert _evaluate(v, v[r][35]) == row.plan_total
+        assert _evaluate(v, v[r][36]) == row.plan_fte
+    assert _evaluate(v, v[8][35]) == km.staff[0].admin_total
+    assert _evaluate(v, v[8][36]) == km.staff[0].admin_fte
+    assert [_evaluate(v, v[29][4 + i]) for i in range(31)] == km.plan_day_totals
+    assert _evaluate(v, v[29][35]) == km.plan_total == 1124.0
+    assert _evaluate(v, v[29][36]) == km.plan_fte == 7.0
+
+    sheet = sheets[0]
+    merges = sheet.merges
+    assert CellRange(3, 4, 4, 7) in merges  # 第1週 E4:G4
+    assert CellRange(7, 1, 11, 2) in merges  # 職員A の勤務形態 B8:B11
+    assert CellRange(8, 0, 11, 1) in merges and CellRange(8, 2, 11, 3) in merges  # A9:A11・C9:C11
+    assert CellRange(12, 0, 14, 1) in merges  # 職員B A13:A14
+    assert CellRange(7, 37, 31, 38) in merges  # 備考の列
+    assert sheet.frozen_rows == 7 and sheet.frozen_cols == 4
+    assert sheet.column_widths[4] == 36 and sheet.column_widths[2] == 100
+    hour_rows = {f.range.start_row for f in sheet.formats if f.format.number_format == "0.0"}
+    assert {7, 8, 11, 29} <= hour_rows
+    assert 10 not in hour_rows  # 番号の行には数の書式をかけない (1 が 1.0 にならない)
+    assert any(f.borders and f.range == CellRange(3, 0, 31, 38) for f in sheet.formats)
+    assert any(f.format.background and f.range == CellRange(3, 0, 7, 38) for f in sheet.formats)
 
 
 # ---------------------------------------------------------------------------
@@ -419,8 +498,10 @@ def test_actual_rows_use_reconciled_leave() -> None:
     assert row.plan_total == 168.0 and row.actual_total == 173.0
     assert km.actual_total == 173.0 and km.actual_fte == 1.0
     assert km.actual_day_totals is not None and km.actual_day_totals[4] == 8.0
-    sheet = to_sheet_data(km)[0].values
-    assert sheet[8][3] == "実績" and sheet[8][4 + 4] == 8.0 and sheet[8][35] == 173.0
+    sheet = to_sheet_data(km)[0].rows
+    assert sheet[8][3] == "実績" and sheet[8][4 + 4] == 8.0
+    assert sheet[8][35] == Formula("=SUM(E9:AI9)") and _evaluate(sheet, sheet[8][35]) == 173.0
+    assert sheet[11][4] == Formula("=SUM(E9)")  # 合計の実績の行
 
 
 # ---------------------------------------------------------------------------
@@ -589,13 +670,39 @@ async def test_holiday_summary_from_db(db) -> None:
     assert summary.month_totals[:3] == [9.0, 9.0, 9.5] and summary.grand_total == 27.5
 
     sheet = summary_to_sheet_data(summary)
+    v = sheet.rows
     assert sheet.title == "集計"
-    assert sheet.values[0][0] == "休日取得数"
-    assert sheet.values[2][0] == "■2026年" and sheet.values[2][1] == "1月"
-    assert sheet.values[2][13] == "合計"
-    assert sheet.values[3][:4] == ["集計 花子", 9.0, 9.0, 9.5]
-    assert sheet.values[3][13] == 27.5
-    assert sheet.values[4][0] == "合計" and sheet.values[4][13] == 27.5
+    assert v[0][0] == "休日取得数"
+    assert v[2][0] == "■2026年" and v[2][1] == "1月"
+    assert v[2][13] == "合計"
+    assert v[3][:4] == ["集計 花子", 9.0, 9.0, 9.5]
+    assert v[3][13] == Formula("=SUM(B4:M4)") and _evaluate(v, v[3][13]) == 27.5
+    assert v[4][0] == "合計" and v[4][1] == Formula("=SUM(B4:B4)") and v[4][4] is None
+    assert _evaluate(v, v[4][13]) == summary.grand_total
+
+
+@pytest.mark.asyncio
+async def test_holiday_summary_part_time_is_not_applicable(db) -> None:
+    """非常勤は集計も「対象外」(合計に入れない)。1 月 1 日〜月末を 1 回で読む."""
+    full = _add_staff(db, "常勤 花子", code="001")
+    part = _add_staff(db, "非常 次郎", code="002", employment_type="part_time")
+    await db.flush()
+    for s in (full, part):
+        for wd in range(7):
+            db.add(StaffShift(staff_id=s.id, weekday=wd, is_on=wd < 5))
+    _add_off(db, full, date(2026, 1, 1))  # 木 (ISO 2026-W01)
+    await db.flush()
+    rows = await load_holiday_counts_by_month(db, date(2026, 2, 10))
+    assert rows[1] == ("非常 次郎", None)
+    summary = build_holiday_summary(date(2026, 2, 1), rows)
+    # 1 月: 土 5・日 4 ＋ 公休 1 = 10／2 月: 土 4・日 4 = 8
+    assert summary.rows[0][1][:2] == [10.0, 8.0]
+    assert summary.rows[1][1][:3] == ["対象外", "対象外", None]
+    assert summary.rows[1][2] == "対象外"
+    assert summary.month_totals[:2] == [10.0, 8.0] and summary.grand_total == 18.0
+    v = summary_to_sheet_data(summary).rows
+    assert v[4][1] == "対象外"
+    assert _evaluate(v, v[5][13]) == 18.0
 
 
 def test_to_sheet_data_includes_summary_sheet() -> None:
@@ -604,8 +711,170 @@ def test_to_sheet_data_includes_summary_sheet() -> None:
     assert [s.title for s in to_sheet_data(km, summary)] == ["勤務表", "集計"]
     # 30 日の月は合計の列が 1 つ左 (9 月: E〜AH が日付・AI が合計)
     sep = build_kinmu_month(date(2026, 9, 1), [staff_input()], 160)
-    v = to_sheet_data(sep)[0].values
+    v = to_sheet_data(sep)[0].rows
     assert v[3][34] == "暦月の合計"
+    assert v[7][34] == Formula("=SUM(E8:AH8)")
+    assert v[7][35] == Formula("=ROUNDDOWN(AI8/$AJ$1,1)")
     assert len(v[0]) == 4 + 30 + 3
     assert all(d.day.month == 9 for d in sep.days)
     assert sep.days[-1].day == date(2026, 9, 1) + timedelta(days=29)
+
+
+# ---------------------------------------------------------------------------
+# 休職・非常勤・管理者・働ける時間の無い半休 (ディレクター決定・KinmuRules で切り替え)
+# ---------------------------------------------------------------------------
+
+
+def test_on_leave_staff_all_off_and_not_in_fte() -> None:
+    s = replace(staff_input("L"), on_leave=True)
+    km = build_kinmu_month(OCT, [s, staff_input("F")], 160)
+    row = next(r for r in km.staff if r.staff.key == "L")
+    assert row.plan == ["休"] * 31
+    assert row.plan_total == 0.0 and row.plan_fte is None
+    assert row.marks is None and row.marks_note == "休職" and row.holidays is None
+    v = to_sheet_data(km)[0].rows
+    assert v[7][36] is None  # 常勤換算を書かない
+    assert v[9][4] == "休職"
+    # 切り替え: 休職でもふつうに計算する
+    normal = build_kinmu_month(OCT, [s], 160, rules=KinmuRules(on_leave_all_off=False))
+    assert normal.staff[0].plan_total == 176.0 and normal.staff[0].plan_fte == 1.1
+
+
+def test_part_time_marks_not_applicable() -> None:
+    p = staff_input("P", full_time=False)
+    km = build_kinmu_month(OCT, [p], 160)
+    row = km.staff[0]
+    assert row.marks is None and row.marks_note == "対象外" and row.holidays is None
+    assert row.plan_fte == 1.1  # 常勤換算には入れる
+    assert to_sheet_data(km)[0].rows[9][4] == "対象外"
+    with_marks = build_kinmu_month(OCT, [p], 160, rules=KinmuRules(part_time_marks=True))
+    assert with_marks.staff[0].marks is not None
+    assert with_marks.staff[0].holidays == HolidayCount(9.0, 0)
+
+
+def test_admin_hours_zero_is_not_manager() -> None:
+    z = staff_input("Z", admin=0.0)
+    assert not z.is_manager
+    row = build_kinmu_month(OCT, [z], 160).staff[0]
+    assert row.admin is None and row.plan[4] == 8.0
+
+
+def test_half_day_without_working_time_is_full_off() -> None:
+    """勤務が 13:00 までの人の午前休は働ける時間が残らない → 終日の休み (番号を取る)."""
+    s = staff_input(end="13:00", overrides={date(2026, 10, 6): DayOverride("am_off")})
+    row = build_kinmu_month(OCT, [s], 160).staff[0]
+    assert row.plan[5] == "休"
+    assert row.marks is not None and row.marks[5] == "2"
+
+
+def test_staff_name_starting_with_equals_stays_text() -> None:
+    """職員名・職種・拠点名が = で始まっても数式にしない (数式は Formula だけ)."""
+    s = replace(staff_input("X"), name="=HYPERLINK(1)", job="=1+1", office_label="=A1")
+    v = to_sheet_data(build_kinmu_month(OCT, [s], 160))[0].rows
+    assert v[7][0] == "=1+1" and v[7][2] == "=A1" and v[8][2] == "=HYPERLINK(1)"
+    for cell in (v[7][0], v[7][2], v[8][0], v[8][2]):
+        assert type(cell) is str
+    assert isinstance(v[7][35], Formula)
+    summary = summary_to_sheet_data(build_holiday_summary(OCT, [("=1+1", {OCT: 9.0})]))
+    assert type(summary.rows[3][0]) is str
+
+
+# ---------------------------------------------------------------------------
+# 予定版の写し (kinmu_sheets.plan_snapshot)・退職者・休職
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_round_trip() -> None:
+    s = staff_input(
+        overrides={
+            date(2026, 9, 28): DayOverride("off"),
+            date(2026, 10, 5): DayOverride("custom_time", t("10:00"), t("15:00")),
+        }
+    )
+    snap = json.loads(json.dumps(snapshot_plan([s])))
+    got = plan_from_snapshot(snap, "S")
+    assert got is not None
+    assert got[0] == dict(s.shifts) and got[1] == dict(s.overrides)
+    assert plan_from_snapshot(snap, "missing") is None
+
+
+@pytest.mark.asyncio
+async def test_final_version_plan_from_snapshot_actual_from_current(db) -> None:
+    staff = _add_staff(db, "写し 花子", code="001")
+    await db.flush()
+    for wd in range(5):
+        db.add(
+            StaffShift(
+                staff_id=staff.id,
+                weekday=wd,
+                is_on=True,
+                start_time=t("09:00"),
+                end_time=t("18:00"),
+            )
+        )
+    _add_off(db, staff, date(2026, 10, 5))
+    db.add(LeaveMonth(month=OCT, required_hours=160))
+    await db.flush()
+
+    # 写しが無い月: いまの予定を使い、印で知らせる
+    first = await load_kinmu_inputs(db, OCT, with_actual=True)
+    assert first.plan_source == "current"
+    assert first.staff[0].overrides == first.staff[0].actual_overrides
+
+    # 予定版を作ったときの写し (10/5 が休み) を置き、そのあと休みを 10/6 へ変える
+    plan_inputs = await load_kinmu_inputs(db, OCT)
+    assert plan_inputs.staff[0].actual_overrides is None
+    db.add(
+        KinmuSheet(
+            month=OCT, kind="plan", version=1, plan_snapshot=snapshot_plan(plan_inputs.staff)
+        )
+    )
+    await db.flush()
+    row = await db.scalar(select(StaffWeeklyOverride))
+    row.weekday = iso_key(date(2026, 10, 6))[2]
+    await db.flush()
+
+    final = await load_kinmu_inputs(db, OCT, with_actual=True)
+    assert final.plan_source == "snapshot"
+    km = build_kinmu_month(final.month, final.staff, final.required_hours)
+    r = km.staff[0]
+    assert r.plan[4] == "休" and r.plan[5] == 8.0  # 予定 = 写し
+    assert r.actual is not None and r.actual[4] == 8.0 and r.actual[5] == "休"  # 実績 = いま
+    assert r.marks is not None and r.marks[5] == "2"  # 番号は実績で付ける
+
+
+@pytest.mark.asyncio
+async def test_retired_staff_listed_only_with_activity(db) -> None:
+    office = Office(name="拠点1")
+    db.add(office)
+    await db.flush()
+    patient = Patient(code="P-1", name="利用者 一")
+    db.add(patient)
+    visited = _add_staff(db, "退職 訪問", code="001", status="retired")
+    leave = _add_staff(db, "退職 休み", code="002", status="retired")
+    _add_staff(db, "退職 なし", code="003", status="retired")
+    _add_staff(db, "休職 花子", code="004", status="on_leave")
+    await db.flush()
+    db.add(
+        Visit(
+            patient_id=patient.id,
+            primary_staff_id=visited.id,
+            visit_date=date(2026, 10, 2),
+            start_time=t("09:00"),
+            end_time=t("10:00"),
+            type="regular",
+        )
+    )
+    _add_off(db, leave, date(2026, 10, 8))
+    await db.flush()
+
+    inputs = await load_kinmu_inputs(db, OCT)
+    assert [s.name for s in inputs.staff] == ["退職 訪問", "退職 休み", "休職 花子"]
+    assert inputs.staff[2].on_leave and not inputs.staff[0].on_leave
+    # 訪問も休みも無い月 (11 月) の退職者は載せない
+    nov = await load_kinmu_inputs(db, date(2026, 11, 1))
+    assert [s.name for s in nov.staff] == ["休職 花子"]
+    excluded = await load_kinmu_inputs(
+        db, OCT, rules=KinmuRules(include_retired_with_activity=False)
+    )
+    assert [s.name for s in excluded.staff] == ["休職 花子"]
