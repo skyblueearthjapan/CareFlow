@@ -28,6 +28,25 @@ TYPES = {"休み": "休み", "off": "休み", "午前休": "午前休", "am_off"
          "時間変更": "時間変更", "custom_time": "時間変更"}
 #: 画面の言葉 → staff-off-week の leave_type（休みの種類だけ。時間変更は受けない）。
 LEAVE_TYPE_API = {"休み": "off", "午前休": "am_off", "午後休": "pm_off", "有給": "paid_off"}
+#: 半休の境目（HH:MM）。値の正典は backend/app/core/leave.py（AM_OFF_UNTIL・PM_OFF_FROM）。rk は backend の無い箱でも
+#: 動くので import せず、rk の中ではここ 1 か所に写す（tests/test_leave_boundaries.py が core と同じ値か確かめる）。
+AM_OFF_UNTIL = "13:00"  # 午前休の人はこの時刻から勤務
+PM_OFF_FROM = "12:30"  # 午後休の人はこの時刻から休み
+
+
+def hits_half_day_leave(label: str, start: str | None, end: str | None) -> bool:
+    """訪問 (開始, 終了) が半休の時間帯にかかるか（core/leave.py の visit_hits_leave と同じ規則）。
+
+    午前休 = 開始が 13:00 より前／午後休 = 終了が 12:30 より後（終了が空なら開始が 12:30 以後）。
+    ほかの種類は偽（終日の休みは呼び出し側で扱う）。"""
+    st, en = hhmm(start), hhmm(end)
+    if label == "午前休":
+        return st is not None and st < AM_OFF_UNTIL
+    if label == "午後休":
+        if en is None:
+            return st is not None and st >= PM_OFF_FROM
+        return en > PM_OFF_FROM
+    return False
 
 
 def overrides_on(api: Api, staff_id: str, day: str) -> list[dict]:
@@ -252,9 +271,14 @@ class StaffOffWeek(Op):
         want = TYPES[f.get("type", "休み")]
         if not rows or rows[0].get("type") != want:
             errs.append(f"{day} の{want}が登録されていません")
-        if want in ("午前休", "午後休"):
-            return errs  # 半休はコースが本人のまま・休みの時間帯の外の訪問も本人に残る（休みの記録だけ確かめる）
         visits, courses = self._day(api, sid, day)
+        if want in ("午前休", "午後休"):
+            # 半休はコースが本人のまま・休みの時間帯の外の訪問も本人に残る。時間帯にかかる本人の予定だけを見る
+            left = [v for v in visits if v.get("status") == "planned" and str(v.get("primary_staff_id") or "") == sid
+                    and hits_half_day_leave(want, v.get("start_time"), v.get("end_time"))]
+            if left:
+                errs.append(f"{day} に まだ本人が主担当の{want}の時間帯の予定が {len(left)} 件あります")
+            return errs
         if courses:
             errs.append(f"{day} に まだ本人が担当のコースが {len(courses)} 本あります")
         left = [v for v in visits if v.get("status") == "planned" and str(v.get("primary_staff_id") or "") == sid]

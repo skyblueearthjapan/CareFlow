@@ -22,8 +22,8 @@
 | `visits_by_staff_day` | 職員 × 日の担当件数・最初/最後の時刻・訪問分（副担当も 1 件・同行は入れない） | date_from, date_to, staff（コード/氏名の一部・空=全員） |
 | `visits_by_patient` | 利用者の訪問（取消も状態つき） | patient（コード/氏名/かな）, date_from, date_to |
 | `patient_next_visits` | 利用者の次の予定 5 件 | patient |
-| `day_load_vs_staff` | 日ごとの件数と出勤人数（終日休み＝公休・有給／うち有給／半休・マネージャー・新人を別列。半休は出勤に数える）・1 人あたり | date_from, date_to |
-| `unassigned_visits` | 本当に担当なしの訪問 | date_from, date_to |
+| `day_load_vs_staff` | 日ごとの件数と出勤人数（終日休み＝公休・有給／うち有給／半休・マネージャー・新人を別列。半休は出勤に数える。休みの列は新人・マネージャーも数える）・1 人あたり | date_from, date_to |
+| `unassigned_visits` | 本当に担当なしの訪問（明示の担当なしを含む） | date_from, date_to |
 | `staff_overlaps` | 同じ職員で時間が重なる訪問の組（移動は見ない） | date_from, date_to |
 | `visit_source_breakdown` | 出所 × 状態の件数（取消の内訳・削除済み） | date_from, date_to |
 | `checkin_arrivals` | 打刻の実績（誰が・何時に・どの家・到着/退出・合わせた理由・場所判定）日本時間 | date_from, date_to, patient（空=全）, staff（空=全） |

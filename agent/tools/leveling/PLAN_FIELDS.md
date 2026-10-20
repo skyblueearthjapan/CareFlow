@@ -34,6 +34,11 @@
 → `POST /schedule/v2/visit-assign-staff-week {visit_id, staff_id: null, op_group_id}`。
 手の上書き（manual_staff_override）の訪問には PATCH /courses の担当が伝わらないので先に外す（R2 B-2）。
 案の担当と今の上書きの担当が同じなら出さない。
+明示の担当なし（主担当が空で manual_staff_override が真＝休みの時間帯から外した訪問など）には出さない（外すとコースの担当＝休む方に読み替わる）。代わりに step 5 で直接担当を付ける。
+
+### step 5 `assign-staff-week`（明示の担当なしに直接担当を付ける）
+`visit_id`・`staff_id`（案の担当）・`patient_id`・`date`・`op_group_id`
+→ `POST /schedule/v2/visit-assign-staff-week {visit_id, staff_id, op_group_id}`。コースの担当付け（step 4）の後に出す（手の上書きの印がある訪問にはコースの担当が伝わらないため）。
 
 ### step 1 `return-to-pool`（入らない訪問 → 保留プール）
 `visit_id`・`patient_id`・`date`・`start_time "HH:MM"`・`course`（今のコース）・`cascade_partner: false`・`op_group_id`・`required_staff_count`

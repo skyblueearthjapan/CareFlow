@@ -1,4 +1,4 @@
--- 日ごとの訪問件数（1 回 1 件）と出勤人数（勤務表の出勤日−終日休み＝公休 off・有給 paid_off。半休は出勤に数えて別列にも。新人・マネージャーは別列）と 1 人あたり件数 | params: date_from, date_to
+-- 日ごとの訪問件数（1 回 1 件）と出勤人数（勤務表の出勤日−終日休み＝公休 off・有給 paid_off。半休は出勤に数えて別列にも。新人・マネージャーは別列。休みの列 staff_off・staff_paid_off は新人・マネージャーも数える）と 1 人あたり件数 | params: date_from, date_to
 with days as (
   select d::date as d from generate_series(:'date_from'::date, :'date_to'::date, interval '1 day') d
 ), vis as (

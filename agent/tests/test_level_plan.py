@@ -102,6 +102,29 @@ def test_unchanged_and_completed_visits_have_no_ops():
     assert "v1" not in touched and "v4" not in touched and "v7" not in touched
 
 
+def test_explicit_unassigned_gets_direct_assign_after_course_patch():
+    """明示の担当なし（主担当が空・手の上書きの印＝半休の時間帯から外した訪問など・休み設計 §3-2）は
+    step 0 で印を外さず（外すとコースの担当＝休む方に読み替わる）、step 4 の後に直接担当を付ける。"""
+    r, extra = load("result"), load("extra")
+    for v in r["visits"]:
+        if v["id"] in ("v2", "v4"):
+            v["cur_staff"] = None  # 道具は明示の担当なしを「今の担当なし」として読む
+    # v2 = 半休の S1 のコース XA に残っていた訪問 → S2 へ（別のコースへ移る）／v4 = コースも時刻も変わらない
+    extra["manual_overrides"] += [{"id": "v2", "primary_staff_id": None, "visit_date": "2026-10-19"},
+                                  {"id": "v4", "primary_staff_id": None, "visit_date": "2026-10-19"}]
+    plan = make(result=r, extra=extra)
+    asg = {o["visit_id"]: o for o in ops_of(plan, "assign-staff-week")}
+    assert asg["v6"]["step"] == 0 and asg["v6"]["staff_id"] is None  # 担当のある手の上書きは今までどおり外す
+    assert asg["v2"]["step"] == 5 and asg["v2"]["staff_id"] == "S2"
+    assert asg["v4"]["step"] == 5 and asg["v4"]["staff_id"] == "S3"
+    assert any(o["op"] == "move-visit-week" and o["visit_id"] == "v2" for o in plan["ops"])
+    assert not any(o["op"] == "move-visit-week" and o["visit_id"] == "v4" for o in plan["ops"])
+    steps = [o["step"] for o in plan["ops"]]
+    assert steps == sorted(steps)
+    last_patch = max(i for i, o in enumerate(plan["ops"]) if o["op"] == "patch-course-staff")
+    assert all(i > last_patch for i, o in enumerate(plan["ops"]) if o["op"] == "assign-staff-week" and o["step"] == 5)
+
+
 def test_checks_are_strings_and_errors_block():
     plan = make()
     assert all(isinstance(c, str) for c in plan["checks"])
