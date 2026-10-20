@@ -52,7 +52,7 @@
 ## 0-3. 取り直しの仕組み — `backend/app/services/kaipoke/sources.py`
 - `fetch_month_csv(db, client, kind, month)`、`fetch_week_tasks(db, client, week_start)`。どちらも 0-2 に保存。
 - ジョブは既存の `KaipokeJob` を使う（`status` は `completed` / `failed` / `cancelled` のみ・一部失敗は `result_summary.failed[]`・`week_start` には範囲の最初の月曜）。`params.op` = `acceptance-refresh` / `leave-compare` / `leave-outbound`（休みをカイポケへ送る。休みの段階 L が使う。非同期・画面は状態を数秒おきに読む）。
-- `job_type`（`String(16) NOT NULL`）は、取り直し（acceptance-refresh・leave-compare）が `"fetch"`、送信（leave-outbound）は今のイベント送信（`op="events-outbound"`）と同じ値を使う（実装時にコードで確かめて決め、この文書に書き足す）。op の名前を `job_type` に入れない。
+- `job_type`（`String(16) NOT NULL`）は、取り直し（acceptance-refresh・leave-compare）が `"fetch"`、送信（leave-outbound）は今のイベント送信（`op="events-outbound"`）と同じ **`"push"`**（`integrations.py:4319` で確認・段階 0 実装 `5bc1f514`）。409 の判定では、30 分以上 `updated_at` が更新されていない `pending`/`running` は残骸として数えない（書き換えはしない）。op の名前を `job_type` に入れない。
 - `covered_dates` は `sources.py` の中で作る（`integrations.py` の私的な関数 `_events_covered_dates` は呼ばず、同じ処理を持つ）。
 - 始める前に、種類を問わず RPA を使うジョブ（`KaipokeJob` が `pending`/`running`）があれば 409。
 - 1 本ごとに RPA の空きを確かめ、塞がっていれば待って再試行（30 秒おき・最大 10 回）。それでも駄目ならその本を `failed` にして次へ。
