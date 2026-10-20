@@ -29,29 +29,41 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Final, cast, get_args
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from sqlalchemy import and_, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.pending_requests import _claim_pending_for_approve
 from app.core.deps import CurrentActiveUser, DbDep, require_role
 from app.core.leave import LEAVE_TYPES, visit_hits_leave
 from app.models.course import Course
-from app.models.leave import LeaveCompareRun, LeaveMonth, OfficeClosedDay, StaffLeaveKaipoke
+from app.models.leave import (
+    KinmuSheet,
+    LeaveCompareRun,
+    LeaveMonth,
+    OfficeClosedDay,
+    StaffLeaveKaipoke,
+)
 from app.models.pending_request import PendingRequest
+from app.models.schedule_op_log import ScheduleOpLog
 from app.models.staff import Staff, StaffShiftConfirmation, StaffWeeklyOverride
 from app.models.user import User, normalize_user_role
 from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.leave import (
     HolidayRead,
+    KinmuSheetRead,
     LeaveApproveBatchInput,
     LeaveApproveBatchResult,
     LeaveApproveInput,
     LeaveApproveResult,
     LeaveCancelResult,
     LeaveCompareStatus,
+    LeaveConfirmInput,
     LeaveConfirmResult,
+    LeaveDayBulkInput,
+    LeaveDayBulkResult,
     LeaveDayInput,
     LeaveDayResult,
     LeaveMonthCell,
@@ -75,9 +87,10 @@ from app.schemas.leave import (
 )
 from app.schemas.v2.enums import RequestStatus, RequestType
 from app.services.leave_calendar import (
-    date_of,
     day_holiday_value,
+    iso_key,
     load_closed_days,
+    load_overrides_between,
     load_working_weekdays,
     month_days,
     month_holidays,
@@ -107,6 +120,8 @@ OFF_WARN_THRESHOLD: Final = 2
 #: 申請の種類として受ける値 (変更のお願いの ``cancel`` を含む)。
 _REQUEST_TYPES: Final = frozenset(get_args(LeaveRequestType))
 _ORIGIN: Final = "leave_page"
+#: 申請中の日に入れる・取り消すとき (申請を先に決めてもらう)。
+_PENDING_DAY_DETAIL: Final = "この日は申請中です。申請を承認か却下で決めてください"
 
 
 def _raise_leave_error(exc: StaffLeaveError) -> HTTPException:
@@ -206,8 +221,8 @@ async def _load_month(db: AsyncSession, month: date, *, with_requests: bool) -> 
             )
         ).all()
     )
-    # 全職員ぶんを 1 回で読む (職員ごとに読まない)。
-    overrides = await _load_month_overrides(db, days)
+    # 全職員ぶんを 1 回で読む (職員ごとに読まない・日付の範囲から ISO 週の組を作る L2)。
+    overrides = await load_overrides_between(db, days[0], days[-1])
     staff = [
         s
         for s in all_staff
@@ -236,31 +251,6 @@ async def _load_month(db: AsyncSession, month: date, *, with_requests: bool) -> 
             r for r in rows if r.row.status == RequestStatus.APPROVED.value and r.staff_id in listed
         ]
     return data
-
-
-async def _load_month_overrides(
-    db: AsyncSession, days: list[date]
-) -> dict[UUID, dict[date, StaffWeeklyOverride]]:
-    """その月の override (全職員)。ISO 週ではなく日付の範囲から (年, 週) の組を作る (L2)."""
-    pairs = sorted({(d.isocalendar().year, d.isocalendar().week) for d in days})
-    rows = (
-        await db.scalars(
-            select(StaffWeeklyOverride).where(
-                or_(
-                    *(
-                        and_(StaffWeeklyOverride.iso_year == y, StaffWeeklyOverride.iso_week == w)
-                        for y, w in pairs
-                    )
-                )
-            )
-        )
-    ).all()
-    out: dict[UUID, dict[date, StaffWeeklyOverride]] = {}
-    for row in rows:
-        d = date_of(row.iso_year, row.iso_week, row.weekday)
-        if days[0] <= d <= days[-1]:
-            out.setdefault(row.staff_id, {})[d] = row
-    return out
 
 
 @dataclass(frozen=True)
@@ -349,9 +339,13 @@ def _leave_type(data: _MonthData, staff_id: UUID, day: date) -> str | None:
 
 
 def _counts_as_off(data: _MonthData, s: Staff, day: date, leave_type: str | None) -> bool:
-    """その日休む人に数えるか: 休みの登録があり・新人でなく・型で勤務する曜日."""
+    """その日休む人に数えるか: 休みの登録があり・在籍 (active)・新人でなく・型で勤務する曜日.
+
+    退職・休職 (status が active でない) の人の休みは数えない (ディレクター決定)。
+    """
     return (
         leave_type in LEAVE_TYPES
+        and s.status == "active"
         and not s.is_trainee
         and day.weekday() in data.working.get(s.id, set())
     )
@@ -440,7 +434,15 @@ async def get_leave_month(month: MonthParam, db: DbDep, _user: AdminUser) -> Lea
     required = required_holidays(data.month, data.closed.keys())
     staff_by_id = {s.id: s for s in data.staff}
     order = {s.id: i for i, s in enumerate(data.staff)}
-    pending_by_cell = {(r.staff_id, r.day): r for r in data.pending}
+    # 同じマスに申請中が 2 件以上あるとき (作成時の 409 をすり抜けた古いデータなど):
+    # マスの印と「通れば あと N」(pending_gain) は **いちばん先に出された申請** を使う
+    # (data.pending は作成順)。件数 (見出しの「申N」・職員の pending_count) と右の一覧は
+    # すべての申請を数える。
+    pending_by_cell: dict[tuple[UUID, date], _RequestRow] = {}
+    pending_per_staff: dict[UUID, int] = defaultdict(int)
+    for r in data.pending:
+        pending_by_cell.setdefault((r.staff_id, r.day), r)
+        pending_per_staff[r.staff_id] += 1
     approved_cells = {(r.staff_id, r.day) for r in data.approved if r.override_type in LEAVE_TYPES}
 
     # 日ごとのその日休む人
@@ -476,7 +478,6 @@ async def get_leave_month(month: MonthParam, db: DbDep, _user: AdminUser) -> Lea
         holidays_total = 0.0
         paid = 0
         gain = 0.0
-        n_pending = 0
         for d in days:
             row = data.overrides.get(s.id, {}).get(d)
             leave = (
@@ -490,7 +491,6 @@ async def get_leave_month(month: MonthParam, db: DbDep, _user: AdminUser) -> Lea
                 visits_on_leave += _moves(day_visits, leave)
             req = pending_by_cell.get((s.id, d))
             if req is not None:
-                n_pending += 1
                 new_type = None if req.override_type == "cancel" else req.override_type
                 gain += day_holiday_value(new_type, d.weekday() in work)[0] - h
             k = kaipoke.get((s.id, d))
@@ -541,7 +541,7 @@ async def get_leave_month(month: MonthParam, db: DbDep, _user: AdminUser) -> Lea
                 required_holidays=required if full else None,
                 shortfall=max(0.0, required - holidays_total) if full else None,
                 paid_days=paid,
-                pending_count=n_pending,
+                pending_count=pending_per_staff.get(s.id, 0),
                 pending_gain=gain,
                 confirmed_at=confirmations.get(s.id),
             )
@@ -656,10 +656,25 @@ async def get_leave_month_summary(
             confirmed=mine is not None,
             confirmed_at=mine,
         )
+    # 訪問は読まない (月の表より軽い): 職員・休み・型・事業所の休み・確定・申請・送信の記録だけ。
     data = await _load_month(db, month, with_requests=False)
     staff_ids = [s.id for s in data.staff]
     confirmations = await _confirmations(db, days[0], staff_ids)
     pending = await _load_staff_off_requests(db, days, (RequestStatus.PENDING.value,))
+    listed = set(staff_ids)
+    kaipoke_rows = (
+        await db.scalars(
+            select(StaffLeaveKaipoke).where(
+                StaffLeaveKaipoke.leave_date >= days[0], StaffLeaveKaipoke.leave_date <= days[-1]
+            )
+        )
+    ).all()
+    # 「カイポケで要対応」は sent_type がある行からしか生まれない (§2-5) ので、送信の記録だけを見る。
+    kaipoke_action = sum(
+        1
+        for k in kaipoke_rows
+        if _send_status(_leave_type(data, k.staff_id, k.leave_date), k) == "kaipoke_action"
+    )
     times = list(confirmations.values())
     return LeaveMonthSummary(
         month=days[0],
@@ -670,8 +685,30 @@ async def get_leave_month_summary(
         confirmed_at=max(times, key=lambda t: _aware(t) or t) if times else None,
         confirmed_staff_count=len(times),
         staff_count=len(staff_ids),
-        pending_count=len(pending),
+        pending_count=sum(1 for r in pending if r.staff_id in listed),
+        short_staff_count=len(
+            _short_staff(data, required_holidays(data.month, data.closed.keys()))
+        ),
+        kaipoke_action_count=kaipoke_action,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /leave/month/{month}/kinmu-sheets (作った勤務表の一覧)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/month/{month}/kinmu-sheets", response_model=list[KinmuSheetRead])
+async def list_kinmu_sheets(month: MonthParam, db: DbDep, _user: AdminUser) -> list[KinmuSheetRead]:
+    """その月に作った勤務表 (予定版・確定版の全部の版)。予定版→確定版、版の新しい順."""
+    rows = (
+        await db.scalars(
+            select(KinmuSheet)
+            .where(KinmuSheet.month == month)
+            .order_by(KinmuSheet.kind.desc(), KinmuSheet.version.desc())
+        )
+    ).all()
+    return [KinmuSheetRead.model_validate(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -702,10 +739,7 @@ async def _pending_on(db: AsyncSession, staff_id: UUID, day: date) -> PendingReq
 async def put_leave_day(payload: LeaveDayInput, db: DbDep, user: AdminUser) -> LeaveDayResult:
     """休みを入れる・種類を変える (管理者が入れた休み = source 'admin')."""
     if await _pending_on(db, payload.staff_id, payload.date) is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="この日は申請中です。申請を承認か却下で決めてください",
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_PENDING_DAY_DETAIL)
     try:
         result = await apply_staff_leave(
             db,
@@ -733,6 +767,9 @@ async def delete_leave_day(
     day: Annotated[date, Query(alias="date")],
 ) -> LeaveCancelResult:
     """休みを取り消す。担当なしへ移した訪問・申請の承認は戻さない (§5-3)."""
+    if await _pending_on(db, staff_id, day) is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_PENDING_DAY_DETAIL)
+    moved = await _moved_to_unassigned(db, staff_id, day)
     try:
         cancelled = await cancel_staff_leave(
             db, staff_id=staff_id, day=day, actor=user, op_group_id=None, origin=_ORIGIN
@@ -741,7 +778,106 @@ async def delete_leave_day(
         await db.rollback()
         raise _raise_leave_error(exc) from exc
     await db.commit()
-    return LeaveCancelResult(staff_id=staff_id, date=day, cancelled_type=cast(Any, cancelled))
+    return LeaveCancelResult(
+        staff_id=staff_id, date=day, cancelled_type=cast(Any, cancelled), moved_visit_count=moved
+    )
+
+
+@router.post("/day/bulk", response_model=LeaveDayBulkResult)
+async def put_leave_day_bulk(
+    payload: LeaveDayBulkInput, db: DbDep, user: AdminUser
+) -> LeaveDayBulkResult:
+    """「この日の全員に公休を入れる」(事業所の休みの日など)。1 トランザクション.
+
+    ``staff_ids`` が無ければ、常勤・在籍・型でその曜日に勤務・その日に申請中でない・
+    まだ休みが入っていない人の全員 (新人は含む)。渡したときは、その中に申請中の人がいれば
+    409。1 人でも入れられなければ全部やめる。管理者への通知は 1 通にまとめる。
+    """
+    day = payload.date
+    data = await _load_month(db, day, with_requests=True)
+    pending_staff = {r.staff_id for r in data.pending if r.day == day}
+    if payload.staff_ids is not None:
+        targets = list(dict.fromkeys(payload.staff_ids))
+        if pending_staff & set(targets):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_PENDING_DAY_DETAIL)
+    else:
+        targets = [
+            s.id
+            for s in data.staff
+            if s.employment_type == "full_time"
+            and s.status == "active"
+            and day.weekday() in data.working.get(s.id, set())
+            and s.id not in pending_staff
+            and _leave_type(data, s.id, day) is None
+        ]
+    results: list[LeaveApplyResult] = []
+    for sid in targets:
+        try:
+            results.append(
+                await apply_staff_leave(
+                    db,
+                    staff_id=sid,
+                    day=day,
+                    leave_type=payload.override_type,
+                    source="admin",
+                    note=payload.note,
+                    actor=user,
+                    op_group_id=None,
+                    origin=_ORIGIN,
+                    notify=False,
+                )
+            )
+        except StaffLeaveError as exc:
+            await db.rollback()
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={"staff_id": str(sid), "message": exc.detail},
+            ) from exc
+    await notify_leave_results(db, list(results))
+    await db.commit()
+    return LeaveDayBulkResult(
+        date=day,
+        override_type=payload.override_type,
+        applied=[_day_result(r) for r in results],
+        moved_visit_count=sum(len(r.moved_visit_ids) for r in results),
+    )
+
+
+async def _moved_to_unassigned(db: AsyncSession, staff_id: UUID, day: date) -> int:
+    """この人のこの日の休みで担当なしへ移した訪問の数 (op_log から・戻した操作は除く).
+
+    休みを入れた操作 (``set_staff_off``) と同じ op_group の ``set_visit_staff_slot`` のうち、
+    担当なしへ移したもの (``primary_staff_id`` が空) の訪問を重ねずに数える。週を作るときの
+    後始末など op_log を書かない経路で移した訪問は数えられない。
+    """
+    y, w, wd = iso_key(day)
+    rows = (
+        await db.scalars(
+            select(ScheduleOpLog).where(
+                ScheduleOpLog.iso_year == y,
+                ScheduleOpLog.iso_week == w,
+                ScheduleOpLog.undone.is_(False),
+                ScheduleOpLog.op_kind.in_(("set_staff_off", "set_visit_staff_slot")),
+            )
+        )
+    ).all()
+    groups = {
+        r.op_group_id
+        for r in rows
+        if r.op_kind == "set_staff_off"
+        and str(r.forward_payload.get("staff_id")) == str(staff_id)
+        and r.forward_payload.get("weekday") == wd
+        and r.forward_payload.get("type") in LEAVE_TYPES
+    }
+    return len(
+        {
+            str(r.forward_payload.get("visit_id"))
+            for r in rows
+            if r.op_kind == "set_visit_staff_slot"
+            and r.op_group_id in groups
+            and r.forward_payload.get("primary_staff_id") is None
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -779,7 +915,9 @@ async def _approve_one(
         )
     final_type = override_type or requested
     if override_type is not None and override_type != requested:
-        row.edited_payload = {**dict(row.payload or {}), "override_type": override_type}
+        # 先に編集された内容 (edited_payload) があればそれを保ち、種類だけ変える。
+        base = dict(row.edited_payload or row.payload or {})
+        row.edited_payload = {**base, "override_type": override_type}
 
     now = datetime.now(UTC)
     cas = await db.execute(
@@ -842,8 +980,9 @@ async def approve_leave_requests_batch(
     """申請をまとめて承認する (1 トランザクション・1 件でも失敗したら全部やめる).
 
     管理者への「未割り当てとしました」は 1 通にまとめ、本人へは 1 件ずつ承認を知らせる。
+    行ロックは id を並べた順で取る (同時に 2 つのまとめて承認が走っても互いに待ち合わない)。
     """
-    ids = list(dict.fromkeys(payload.request_ids))
+    ids = sorted(set(payload.request_ids), key=str)
     approved: list[LeaveApproveResult] = []
     applied: list[LeaveApplyResult | None] = []
     for rid in ids:
@@ -946,9 +1085,21 @@ async def put_closed_day(
         db.add(row)
     else:
         row.label = payload.label
-    await db.commit()
+    await _commit_or_409(db)
     await db.refresh(row)
     return OfficeClosedDayRead.model_validate(row)
+
+
+async def _commit_or_409(db: AsyncSession) -> None:
+    """同じ行を同時に新しく作ったとき (主キーの重なり) は 409 (もう一度押してもらう)."""
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="ほかの方が同時に登録しました。表を読み直してからもう一度押してください",
+        ) from exc
 
 
 @router.delete("/closed-days/{day}", status_code=status.HTTP_204_NO_CONTENT)
@@ -972,7 +1123,7 @@ async def put_leave_month(
         db.add(row)
     else:
         row.required_hours = payload.required_hours
-    await db.commit()
+    await _commit_or_409(db)
     await db.refresh(row)
     return LeaveMonthRead.model_validate(row)
 
@@ -990,7 +1141,7 @@ class _ConfirmRecord:
 
 
 async def _confirm_month(db: AsyncSession, data: _MonthData, user: User) -> _ConfirmRecord:
-    """表の職員の全員ぶん ``staff_shift_confirmations`` を upsert し本人へ通知する (commit しない).
+    """``data.staff`` の職員ぶん ``staff_shift_confirmations`` を upsert し本人へ通知する (commit しない).
 
     #13 はこの後に送信のジョブ (照合が済んだ月だけ) と予定版を足す。
     """
@@ -1051,9 +1202,28 @@ def _short_staff(data: _MonthData, required: int) -> list[LeaveShortStaff]:
 
 
 @router.post("/month/{month}/confirm", response_model=LeaveConfirmResult)
-async def confirm_leave_month(month: MonthParam, db: DbDep, user: AdminUser) -> LeaveConfirmResult:
-    """この月を確定して通知する (全員分・記録と本人への通知だけ・確定後も表で変えられる)."""
+async def confirm_leave_month(
+    month: MonthParam,
+    db: DbDep,
+    user: AdminUser,
+    payload: Annotated[LeaveConfirmInput | None, Body()] = None,
+) -> LeaveConfirmResult:
+    """この月を確定して通知する (記録と本人への通知だけ・確定後も表で変えられる).
+
+    ``staff_ids`` を渡せばその人だけ (表に載っている人に限る)、無ければ表の全員。
+    申請中の残り・足りない人も、確定した人の分だけを返す。
+    """
     data = await _load_month(db, month, with_requests=True)
+    if payload is not None and payload.staff_ids is not None:
+        wanted = set(payload.staff_ids)
+        unknown = wanted - {s.id for s in data.staff}
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="この月の表に載っていない職員が含まれています",
+            )
+        data.staff = [s for s in data.staff if s.id in wanted]
+        data.pending = [r for r in data.pending if r.staff_id in wanted]
     record = await _confirm_month(db, data, user)
     leave_month = await db.get(LeaveMonth, data.month)
     result = LeaveConfirmResult(
