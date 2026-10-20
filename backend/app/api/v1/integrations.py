@@ -2928,10 +2928,20 @@ async def stop_integration_job(
 
     # kaipoke-api is single-slot: /api/stop halts the one running task (no id).
     # Best-effort — we still mark the DB job cancelled even if the call fails.
-    try:
-        await kaipoke.stop()
-    except KaipokeApiError:
-        pass
+    # 段階 0 の取り直し・休みの送信 (SOURCE_OPS) が動いている間に別のジョブを止めると、
+    # RPA で動いているのはそちらの 1 本なので、それを止めてしまう。DB の状態だけ変える。
+    from app.services.kaipoke.sources import SOURCE_OPS, active_rpa_jobs
+
+    own_op = (job.params or {}).get("op")
+    source_running = own_op not in SOURCE_OPS and any(
+        (other.params or {}).get("op") in SOURCE_OPS
+        for other in await active_rpa_jobs(db, exclude_job_id=job.id)
+    )
+    if not source_running:
+        try:
+            await kaipoke.stop()
+        except KaipokeApiError:
+            pass
 
     job.status = "cancelled"
     job.completed_at = datetime.now(UTC)

@@ -54,6 +54,7 @@ class StubKaipokeClient:
         # individual_tasks_result の応答キュー (先頭から消費・尽きたら completed 既定)
         self.result_responses: list[dict[str, Any]] = []
         self.result_calls = 0
+        self.stop_calls = 0
 
     async def aclose(self) -> None:  # pragma: no cover
         pass
@@ -78,6 +79,10 @@ class StubKaipokeClient:
             self.async_job_id = str(payload.get("job_id") or "") or None
             return {"success": True, "async": True, "job_id": self.async_job_id}
         return {"success": True, "result": self._sync_result()}
+
+    async def stop(self) -> dict[str, Any]:
+        self.stop_calls += 1
+        return {"success": True}
 
     async def individual_tasks_result(self) -> dict[str, Any]:
         self.result_calls += 1
@@ -1241,3 +1246,68 @@ async def test_job_start_ignores_stale_source_job_and_other_ops(client, db, stub
     assert res.status_code == 202, res.text
     await db.refresh(stale)
     assert stale.status == "running"  # 残骸は書き換えない
+
+
+#: RPA を使う POST の入口のうち、409 を当てないもの (止める・決着させるだけ)。
+_GUARD_EXEMPT = {"stop_integration_job", "reconcile_jobs"}
+
+
+def test_every_rpa_post_entry_checks_source_jobs() -> None:
+    """``_kaipoke_dep`` に依存する POST の入口は、段階 0 の取り直しの 409 を必ず通る。"""
+    import ast
+    from pathlib import Path
+
+    import app.api.v1.integrations as integrations
+
+    tree = ast.parse(Path(integrations.__file__).read_text(encoding="utf-8"))
+    missing: list[str] = []
+    checked = 0
+    for node in tree.body:
+        if not isinstance(node, ast.AsyncFunctionDef) or node.name in _GUARD_EXEMPT:
+            continue
+        is_post = any(
+            isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr == "post"
+            for d in node.decorator_list
+        )
+        if not is_post or "_kaipoke_dep" not in ast.unparse(node.args):
+            continue
+        checked += 1
+        guarded = any(
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "_raise_if_source_job_running"
+            for n in ast.walk(node)
+        )
+        if not guarded:
+            missing.append(node.name)
+    assert missing == []
+    assert checked >= 16
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_running", [True, False])
+async def test_stop_does_not_stop_rpa_while_source_job_runs(
+    client, db, stub_kaipoke, source_running
+) -> None:
+    """取り直しが動いている間に別のジョブを止めても、RPA (= 取り直しの 1 本) は止めない。"""
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    target = await _source_job(db, op="events-preview")
+    if source_running:
+        await _source_job(db, op="leave-compare")
+
+    res = await client.post(f"/api/v1/integrations/jobs/{target.id}/stop", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "cancelled"
+    assert stub_kaipoke.stop_calls == (0 if source_running else 1)
+
+
+@pytest.mark.asyncio
+async def test_stop_source_job_itself_stops_rpa(client, db, stub_kaipoke) -> None:
+    await _seed_staff(db)
+    admin = await _make_admin(db)
+    target = await _source_job(db, op="leave-compare")
+
+    res = await client.post(f"/api/v1/integrations/jobs/{target.id}/stop", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    assert stub_kaipoke.stop_calls == 1
