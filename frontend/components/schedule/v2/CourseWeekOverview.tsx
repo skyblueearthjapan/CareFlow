@@ -801,7 +801,7 @@ export function CourseWeekOverview({
                               )}
                               data-testid={`course-week-overview-capacity-${tpl.id}-${wd}`}
                             >
-                              {occupantCount} 名 / 上限 {perCourse}
+                              {occupantCount} 名 / 上限 {cap > 0 ? cap : perCourse}
                             </span>
                             <span className="flex shrink-0 items-center gap-1">
                               {/* 新人同行のコース表示はスタッフ名行へ移設 (PO要望 2026-07-12)。 */}

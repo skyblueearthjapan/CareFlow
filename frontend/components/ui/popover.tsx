@@ -12,12 +12,10 @@ export const PopoverAnchor = PopoverPrimitive.Anchor;
 export const PopoverContent = React.forwardRef<
   React.ElementRef<typeof PopoverPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Content>
->(({ className, align = 'center', sideOffset = 4, forceMount, ...props }, ref) => (
-  // forceMount は Portal にも渡す (閉じても中身を残したいとき。Content だけでは Portal ごと外れる)。
-  <PopoverPrimitive.Portal forceMount={forceMount}>
+>(({ className, align = 'center', sideOffset = 4, ...props }, ref) => (
+  <PopoverPrimitive.Portal>
     <PopoverPrimitive.Content
       ref={ref}
-      forceMount={forceMount}
       align={align}
       sideOffset={sideOffset}
       className={cn(

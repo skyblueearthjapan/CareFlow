@@ -46,7 +46,8 @@ interface Row {
   name: string;
   visits: DayCountVisit[];
   companions?: DayCountCompanion[];
-  groups?: [string, string][];
+  /** 組 → 盤面の並び (コースの記号の順) の訪問 id。 */
+  groups?: [string, string[]][];
   /** 期待: rowKey → [件数, 人数, 同行]。 */
   expect: Record<string, [number, number, number]>;
 }
@@ -118,27 +119,39 @@ const rows: Row[] = [
     expect: {},
   },
   {
-    name: '2 名体制は 1 人目が 1 件・2 人目は ＋同行',
+    name: '2 名体制は盤面の並びの 1 人目が 1 件・2 人目は ＋同行',
     visits: [
       visit({ id: 'g-1', patient_id: p1 }),
       visit({ id: 'g-2', patient_id: p1, course_template_id: 'T2' }),
     ],
-    groups: [
-      ['g-1', 'grp'],
-      ['g-2', 'grp'],
-    ],
+    groups: [['grp', ['g-1', 'g-2']]],
     expect: { [A]: [1, 1, 0], [B]: [0, 0, 1] },
   },
   {
-    name: '2 名体制で片方が担当なしなら、担当のある方が 1 人目・担当なしも 1 件',
+    name: '2 名体制の順は盤面の並びに従う (id の順ではない)',
     visits: [
-      visit({ id: 'h-1', patient_id: p1, course_template_id: 'T9' }),
-      visit({ id: 'h-2', patient_id: p1 }),
+      visit({ id: 'g-1', patient_id: p1 }),
+      visit({ id: 'g-2', patient_id: p1, course_template_id: 'T2' }),
     ],
-    groups: [
-      ['h-1', 'grp2'],
-      ['h-2', 'grp2'],
+    groups: [['grp', ['g-2', 'g-1']]],
+    expect: { [A]: [0, 0, 1], [B]: [1, 1, 0] },
+  },
+  {
+    name: '2 名体制の 1 人目が取消なら、残った方が 1 人目',
+    visits: [
+      visit({ id: 'g-1', patient_id: p1, status: 'cancelled' }),
+      visit({ id: 'g-2', patient_id: p1, course_template_id: 'T2' }),
     ],
+    groups: [['grp', ['g-1', 'g-2']]],
+    expect: { [B]: [1, 1, 0] },
+  },
+  {
+    name: '2 名体制の 2 人目が担当なしなら担当なし行に 1 件',
+    visits: [
+      visit({ id: 'h-1', patient_id: p1 }),
+      visit({ id: 'h-2', patient_id: p1, course_template_id: 'T9' }),
+    ],
+    groups: [['grp2', ['h-1', 'h-2']]],
     expect: { [A]: [1, 1, 0], [UNASSIGNED_COUNT_ROW_KEY]: [1, 1, 0] },
   },
   {
@@ -153,7 +166,7 @@ describe('countStaffDays (表)', () => {
     const counts = countStaffDays(visits, {
       assignedStaffByTemplateWeekday: assigned,
       companions,
-      groupIdByVisitId: groups ? new Map(groups) : undefined,
+      orderedGroupMembers: groups ? new Map(groups) : undefined,
       today: TODAY,
     });
     const got: Record<string, [number, number, number]> = {};

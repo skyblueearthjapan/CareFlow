@@ -83,35 +83,28 @@ export interface CountStaffDaysOptions {
   assignedStaffByTemplateWeekday?: Map<string, string>;
   /** 同行 (訪問の `accompaniments[]`)。 */
   companions?: readonly DayCountCompanion[];
-  /** visit id → visit_group_id (2 名体制の組)。 */
-  groupIdByVisitId?: Map<string, string>;
+  /**
+   * 2 名体制の組 (visit_group_id) → 組の訪問 id を盤面と同じ順に並べたもの
+   * (CourseDayTablePanel の `visitsByGroupId` = コースの記号の順・同じなら id の順)。
+   * 先頭が 1 人目、2 番目以降が 2 人目。
+   */
+  orderedGroupMembers?: Map<string, readonly string[]>;
   /** 今日 (JST・`YYYY-MM-DD`)。試験用の注入口。 */
   today?: string;
 }
 
 /**
- * 2 名体制の組のうち「2 人目」の訪問 id。組の中で担当の決まっている行を先に、
- * 同じなら id の順に並べ、先頭を 1 人目とする (どちらが 1 人目かは決めで、件数の合計は変わらない)。
+ * 2 名体制の組のうち「2 人目」の訪問 id。盤面の並び (`orderedGroupMembers`) で、
+ * 数える訪問だけを残したときの 2 番目以降。
  */
 function pairSecondIds(
-  counted: readonly { v: DayCountVisit; rowKey: string }[],
-  groupIdByVisitId: Map<string, string>,
+  countedIds: ReadonlySet<string>,
+  orderedGroupMembers: Map<string, readonly string[]>,
 ): Set<string> {
-  const groups = new Map<string, { id: string; assigned: boolean }[]>();
-  for (const { v, rowKey } of counted) {
-    const gid = groupIdByVisitId.get(v.id);
-    if (!gid) continue;
-    const arr = groups.get(gid) ?? [];
-    arr.push({ id: v.id, assigned: rowKey !== UNASSIGNED_COUNT_ROW_KEY });
-    groups.set(gid, arr);
-  }
   const out = new Set<string>();
-  for (const members of groups.values()) {
-    if (members.length < 2) continue;
-    members.sort((a, b) =>
-      a.assigned !== b.assigned ? (a.assigned ? -1 : 1) : a.id.localeCompare(b.id),
-    );
-    for (const m of members.slice(1)) out.add(m.id);
+  for (const ids of orderedGroupMembers.values()) {
+    const members = ids.filter((id) => countedIds.has(id));
+    for (const id of members.slice(1)) out.add(id);
   }
   return out;
 }
@@ -125,14 +118,16 @@ export function countStaffDays(
   {
     assignedStaffByTemplateWeekday,
     companions = [],
-    groupIdByVisitId,
+    orderedGroupMembers,
     today,
   }: CountStaffDaysOptions = {},
 ): Map<string, StaffDayCount> {
   const counted = visits
     .filter((v) => isCountedVisit(v, today))
     .map((v) => ({ v, rowKey: resolveVisitRowKey(v, assignedStaffByTemplateWeekday) }));
-  const seconds = groupIdByVisitId ? pairSecondIds(counted, groupIdByVisitId) : new Set<string>();
+  const seconds = orderedGroupMembers
+    ? pairSecondIds(new Set(counted.map((x) => x.v.id)), orderedGroupMembers)
+    : new Set<string>();
 
   const out = new Map<string, StaffDayCount>();
   const patientsByKey = new Map<string, Set<string>>();
