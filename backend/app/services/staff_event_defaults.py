@@ -36,6 +36,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.leave import FULL_DAY_OFF, LEAVE_TYPES, visit_hits_leave
 from app.models.staff import (
     Staff,
     StaffEvent,
@@ -45,9 +46,6 @@ from app.models.staff import (
 )
 
 EVENT_SOURCE_FIXED = "fixed"
-# staff_weekly_overrides.override_type の「終日休み」。layer3_assignment /
-# propose_slots_service / staff-off-week と同じ値 (DB 正典)。
-STAFF_OVERRIDE_TYPE_OFF = "off"
 
 
 def _week_monday(iso_year: int, iso_week: int) -> date:
@@ -97,8 +95,9 @@ def content_keys_from(rows: Iterable[StaffEvent]) -> set[tuple]:
 
 async def _load_off_keys(
     db: AsyncSession, staff_ids: set[uuid.UUID], iso_year: int, iso_week: int
-) -> set[tuple[uuid.UUID, int]]:
-    """当該週の「休み」の (staff_id, weekday) 集合を返す (Phase 3 休み連携).
+) -> tuple[set[tuple[uuid.UUID, int]], dict[tuple[uuid.UUID, int], str]]:
+    """当該週の「休み」を返す (Phase 3 休み連携) → (終日の (staff_id, weekday) 集合,
+    半休の {(staff_id, weekday): "am_off" | "pm_off"}).
 
     休みの定義はこのコードベースの既存の正をそのまま使う — 独自定義はしない:
 
@@ -108,18 +107,20 @@ async def _load_off_keys(
          倒しているが、ここでそれを採ると shift を 1 行も持たないスタッフの
          固定イベントが一切展開されなくなる (既存挙動の破壊) ため、
          「明示的に休みと書かれている」場合だけを見る。
-      2. ``StaffWeeklyOverride.override_type = 'off'`` の当該週の曜日
-         = その週だけの休み。モバイル休み申請 (pending_request ``staff_off``)・
+      2. ``StaffWeeklyOverride`` の終日の休み (公休・有給 = ``FULL_DAY_OFF``) の
+         当該週の曜日 = その週だけの休み。モバイル休み申請 (pending_request ``staff_off``)・
          PC のスタッフ別休み・運転席の「🛌 休みにする」はいずれも最終的に
          この行を書く (= 3 経路とも 1 箇所で拾える)。
 
-    ``custom_time`` (時間変更) / ``am_off`` / ``pm_off`` (半休) は終日休みでは
-    ないため対象外 (エンジン側も同じ扱い)。
+    半休 (午前休・午後休) は 2 つ目の戻り値に入れ、呼び出し側が時間で判定する
+    (休みの時間帯にかかる固定イベントだけ展開しない・休み設計 §4-2)。
+    ``custom_time`` (時間変更) は休みではないので対象外。
     """
     if not staff_ids:
-        return set()
+        return set(), {}
 
     off_keys: set[tuple[uuid.UUID, int]] = set()
+    half_keys: dict[tuple[uuid.UUID, int], str] = {}
     shift_rows = await db.execute(
         select(StaffShift.staff_id, StaffShift.weekday).where(
             StaffShift.staff_id.in_(staff_ids),
@@ -129,15 +130,23 @@ async def _load_off_keys(
     off_keys.update((sid, wd) for sid, wd in shift_rows.all())
 
     override_rows = await db.execute(
-        select(StaffWeeklyOverride.staff_id, StaffWeeklyOverride.weekday).where(
+        select(
+            StaffWeeklyOverride.staff_id,
+            StaffWeeklyOverride.weekday,
+            StaffWeeklyOverride.override_type,
+        ).where(
             StaffWeeklyOverride.staff_id.in_(staff_ids),
             StaffWeeklyOverride.iso_year == iso_year,
             StaffWeeklyOverride.iso_week == iso_week,
-            StaffWeeklyOverride.override_type == STAFF_OVERRIDE_TYPE_OFF,
+            StaffWeeklyOverride.override_type.in_(LEAVE_TYPES),
         )
     )
-    off_keys.update((sid, wd) for sid, wd in override_rows.all())
-    return off_keys
+    for sid, wd, ot in override_rows.all():
+        if ot in FULL_DAY_OFF:
+            off_keys.add((sid, wd))
+        else:
+            half_keys[(sid, wd)] = ot
+    return off_keys, half_keys
 
 
 async def expand_staff_event_defaults(db: AsyncSession, iso_year: int, iso_week: int) -> int:
@@ -159,7 +168,9 @@ async def expand_staff_event_defaults(db: AsyncSession, iso_year: int, iso_week:
         return 0
 
     # 休みの日は展開しない (PO Q3: 自動で不参加)。既定を持つスタッフぶんだけ引く。
-    off_keys = await _load_off_keys(db, {d.staff_id for d in defaults}, iso_year, iso_week)
+    off_keys, half_keys = await _load_off_keys(
+        db, {d.staff_id for d in defaults}, iso_year, iso_week
+    )
 
     monday = _week_monday(iso_year, iso_week)
     range_start = datetime.combine(monday, time.min)
@@ -189,6 +200,8 @@ async def expand_staff_event_defaults(db: AsyncSession, iso_year: int, iso_week:
             continue  # 日曜(6)・不正値は展開しない (API 側でも 0-5 に制限)
         if (d.staff_id, d.weekday) in off_keys:
             continue  # その日は休み → 展開しない (Phase 3 休み連携)
+        if visit_hits_leave(half_keys.get((d.staff_id, d.weekday)), d.start_time, d.end_time):
+            continue  # 半休の時間帯にかかる → 展開しない (休み設計 §4-2)
         target = monday + timedelta(days=d.weekday)
         key = fixed_external_id(d.id, target)
         if key in existing_keys:

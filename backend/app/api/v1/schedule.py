@@ -1121,6 +1121,12 @@ async def place_and_fix(
                 db, course=_c, warnings=_w, actor=current_user, op_group_id=body.op_group_id
             )
 
+        # ----- 2c) 休み設計 §4-2: 置いた日の休む人の休みの時間帯 → 担当なし (共通の後始末) -----
+        from app.services.staff_leave import settle_leave_unassign
+
+        await db.flush()
+        await settle_leave_unassign(db, dates=[visit_date])
+
         # ----- 3) 1 トランザクション commit -----
         await db.commit()
 

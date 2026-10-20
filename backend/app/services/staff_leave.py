@@ -836,6 +836,59 @@ async def find_visits_on_leave(
     return out
 
 
+@dataclass(frozen=True)
+class LeaveConflict:
+    """取込の計画で、休む人の休みの時間帯に担当が付く訪問 1 件 (取込のプレビューの件数)."""
+
+    staff_id: UUID
+    staff_name: str
+    visit_date: date
+    start_time: time
+    end_time: time
+    leave_type: str
+
+
+#: (職員, 日, 開始, 終了) — 取込の計画で担当が付く訪問の枠。
+LeaveSlot = tuple[UUID, date, time, time]
+
+
+async def collect_leave_conflicts(
+    db: AsyncSession, slots: Iterable[LeaveSlot]
+) -> list[LeaveConflict]:
+    """取込の計画 (カイポケが正・後始末を呼ばない) のうち、休みの時間帯に担当が付く枠.
+
+    カイポケの取込・置換は休む人に担当を戻すことがある (休み設計 §4-2 H-b)。プレビューで
+    「休みの時間帯に担当が付く訪問 N 件」を出すための材料。今日 (JST) 以降の日だけ。
+    同じ (職員, 日, 開始) は 1 件にまとめ、日付・開始・職員名の順に並べる。
+    """
+    today = today_jst()
+    wanted = {(sid, d, st, en) for sid, d, st, en in slots if d >= today}
+    if not wanted:
+        return []
+    days = sorted({d for _sid, d, _st, _en in wanted})
+    staff_ids = {sid for sid, _d, _st, _en in wanted}
+    leaves = await load_overrides_between(db, days[0], days[-1], staff_ids)
+    name_rows = await db.execute(select(Staff.id, Staff.name).where(Staff.id.in_(staff_ids)))
+    names: dict[UUID, str] = {sid: name for sid, name in name_rows.all()}
+    hits: dict[tuple[UUID, date, time], LeaveConflict] = {}
+    for sid, d, st, en in wanted:
+        row = leaves.get(sid, {}).get(d)
+        if row is None or not visit_hits_leave(row.override_type, st, en):
+            continue
+        hits.setdefault(
+            (sid, d, st),
+            LeaveConflict(
+                staff_id=sid,
+                staff_name=names.get(sid) or "職員",
+                visit_date=d,
+                start_time=st,
+                end_time=en,
+                leave_type=row.override_type,
+            ),
+        )
+    return sorted(hits.values(), key=lambda c: (c.visit_date, c.start_time, c.staff_name))
+
+
 async def count_visits_on_leave(db: AsyncSession, date_from: date, date_to: date) -> int:
     """``find_visits_on_leave`` の件数 (「休みの時間帯に担当が付いている訪問 N 件」)."""
     return len(await find_visits_on_leave(db, date_from, date_to))
@@ -847,10 +900,13 @@ __all__ = [
     "DayUnassignResult",
     "Journal",
     "LeaveApplyResult",
+    "LeaveConflict",
+    "LeaveSlot",
     "StaffLeaveError",
     "VisitOnLeave",
     "apply_staff_leave",
     "cancel_staff_leave",
+    "collect_leave_conflicts",
     "count_visits_on_leave",
     "find_visits_on_leave",
     "is_past_leave_deadline",

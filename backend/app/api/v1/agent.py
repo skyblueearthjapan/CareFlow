@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_, select
 
 from app.core.deps import DbDep, require_role
+from app.core.leave import FULL_DAY_OFF, HALF_DAY_OFF
 from app.models.accompaniment import Accompaniment
 from app.models.course import Course
 from app.models.course_template import CourseTemplate
@@ -885,15 +886,15 @@ async def staff_week(
             is_on = base_on
             half_off = None
             if ov is not None:
-                if ov.override_type == "off":
+                if ov.override_type in FULL_DAY_OFF:  # 公休・有給
                     is_on, start, end = False, None, None
                 elif ov.override_type == "custom_time":
                     # layer3 と同じく時間変更は「その日は出勤」とみなす
                     is_on = True
                     start = ov.start_time or (sh.start_time if sh else None)
                     end = ov.end_time or (sh.end_time if sh else None)
-                elif ov.override_type in ("am_off", "pm_off"):
-                    half_off = "am" if ov.override_type == "am_off" else "pm"
+                elif ov.override_type in HALF_DAY_OFF:
+                    half_off = "pm" if ov.override_type == "pm_off" else "am"
             k = (s.id, d)
             week_total += primary_cnt.get(k, 0)
             day_rows.append(

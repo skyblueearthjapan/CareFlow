@@ -35,6 +35,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.leave import FULL_DAY_OFF, visit_hits_leave
 from app.models.course import Course
 from app.models.office import Office
 from app.models.patient import Patient
@@ -50,6 +51,7 @@ from app.schemas.substitute import (
     SubstituteVisit,
 )
 from app.services.accompaniment import load_accompaniment_visits_by_staff
+from app.services.leave_notify import leave_type_label
 from app.services.scheduling.config import SchedulingConfig, load_scheduling_config
 from app.services.scheduling.layer3_assignment import (
     _PATIENT_RECENT_PENALTY_BY_INDEX,
@@ -412,7 +414,8 @@ async def build_candidates_for_visits(
                     StaffWeeklyOverride.iso_year == iso_year,
                     StaffWeeklyOverride.iso_week == iso_week,
                     StaffWeeklyOverride.weekday == weekday,
-                    StaffWeeklyOverride.override_type == "off",
+                    # 終日の休み (公休・有給)。半休は StaffInfo.half_day_off で時間を見る。
+                    StaffWeeklyOverride.override_type.in_(FULL_DAY_OFF),
                     StaffWeeklyOverride.staff_id.in_(pool_ids),
                 )
             )
@@ -495,6 +498,18 @@ async def build_candidates_for_visits(
                     reasons.append(
                         SubstituteReason(
                             code=CODE_NOT_WORKING_DAY, message="この曜日は勤務日ではありません"
+                        )
+                    )
+            else:
+                # 休み設計 §4-2: 半休の人は、訪問が休みの時間帯にかかれば「休み」で ×。
+                half = staff.half_day_off.get(weekday)
+                if half is not None and any(
+                    visit_hits_leave(half, v.start_time, v.end_time) for v, _c, _p in rows
+                ):
+                    reasons.append(
+                        SubstituteReason(
+                            code=CODE_OFF,
+                            message=f"この時間は休み（{leave_type_label(half)}）です",
                         )
                     )
 

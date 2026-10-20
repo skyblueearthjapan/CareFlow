@@ -210,7 +210,8 @@ class MonitorCourseTag(BaseModel):
 class MonitorDayOverride(BaseModel):
     """その日の休み・時間変更 (staff_weekly_overrides) — 行の帯と見出しに使う."""
 
-    # 'off' (休み) | 'custom_time' (時間変更)
+    # 'off' (休み) | 'am_off' (午前休) | 'pm_off' (午後休) | 'paid_off' (有給) |
+    # 'custom_time' (時間変更)。値はそのまま渡す (app/core/leave.py の種類)
     kind: str
     start_time: str | None = None
     end_time: str | None = None

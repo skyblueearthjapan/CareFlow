@@ -375,6 +375,15 @@ async def week_apply(db: AsyncSession, row, user: User, *, iso_year: int, iso_we
                                 strict=True, clear_redo=first)
                 first = False
                 done["add"] += 1
+        # 休み設計 §4-2: 訪問を作る・担当を書く処理の最後の共通の後始末 (同じ op_group に記録)。
+        from functools import partial
+
+        from app.services.staff_leave import settle_leave_unassign
+
+        await db.flush()
+        await settle_leave_unassign(db, iso_week=(iso_year, iso_week), journal=partial(
+            record_op, db, user_id=user.id, iso_year=iso_year, iso_week=iso_week, op_group_id=group,
+            strict=True, clear_redo=False))
         db.add(AuditLog(actor_user_id=user.id, action="template_draft_apply_week", target_table="template_drafts",
                         target_id=str(row.id), before=None,
                         after={"iso_year": iso_year, "iso_week": iso_week, "done": done, "skipped": len(prev["skipped"])}))

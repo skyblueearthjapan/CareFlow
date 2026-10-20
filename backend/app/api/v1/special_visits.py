@@ -73,6 +73,7 @@ from app.services.scheduling.guards import (
     ensure_patient_schedulable,
     patient_not_active_detail,
 )
+from app.services.staff_leave import settle_leave_unassign
 
 router = APIRouter()
 
@@ -892,6 +893,9 @@ async def restore_mark(
             if not isinstance(entry, dict):
                 continue
             await _restore_one_visit(db, mark=mark, entry=entry, day_date=day_date)
+        # 休み設計 §4-2: 戻した訪問の休む人の休みの時間帯 → 担当なし (共通の後始末)。
+        await db.flush()
+        await settle_leave_unassign(db, dates=[day_date])
 
     mark.status = MARK_STATUS_CANCELLED
     mark.placed_visit_id = None
@@ -1223,6 +1227,9 @@ async def place_mark(
                 actor=current_user,
                 op_group_id=None,
             )
+        # 休み設計 §4-2: 共通の後始末 (休む人の休みの時間帯 → 担当なし)。
+        await db.flush()
+        await settle_leave_unassign(db, dates=[mark_date])
         await db.commit()
         await db.refresh(mark)
         summary = await _placed_summary_for(db, mark.placed_visit_id)
@@ -1332,6 +1339,8 @@ async def place_mark(
     await notify_constraint_override_for_course(
         db, course=course, warnings=_cw, actor=current_user, op_group_id=None
     )
+    # 休み設計 §4-2: 共通の後始末 (休む人の休みの時間帯 → 担当なし)。
+    await settle_leave_unassign(db, dates=[mark_date])
     await db.commit()
     await db.refresh(mark)
 

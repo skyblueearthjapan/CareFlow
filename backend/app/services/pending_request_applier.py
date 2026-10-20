@@ -64,7 +64,12 @@ from app.services.proposed_visits_pfv import (
     apply_proposed_visits_as_normal_pfv,
 )
 from app.services.scheduling.config import load_scheduling_config
-from app.services.staff_leave import StaffLeaveError, apply_staff_leave, cancel_staff_leave
+from app.services.staff_leave import (
+    StaffLeaveError,
+    apply_staff_leave,
+    cancel_staff_leave,
+    settle_leave_unassign,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -901,6 +906,8 @@ async def _apply_visit_add_onetime(
         )
     )
     await db.flush()
+    # 休み設計 §4-2: 訪問を作る処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。
+    await settle_leave_unassign(db, dates=[visit_date])
 
 
 async def _apply_patient_cancel(
@@ -1020,6 +1027,8 @@ async def _apply_patient_reschedule(
             patient.weekly_pattern = new_pattern
 
     await db.flush()
+    # 休み設計 §4-2: 担当を書く処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。
+    await settle_leave_unassign(db, dates=[target_visit.visit_date])
 
 
 async def _apply_patient_special_week_on(

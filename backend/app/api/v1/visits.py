@@ -114,6 +114,7 @@ from app.services.constraint_override_notify import (
 from app.services.op_log_service import fmt_time, fmt_weekday, record_op
 from app.services.patient_status_sync import status_since_date
 from app.services.scheduling.guards import ensure_patient_schedulable
+from app.services.staff_leave import settle_leave_unassign
 from app.utils.db import try_advisory_xact_lock
 
 router = APIRouter()
@@ -926,6 +927,9 @@ async def create_visit(
     visit = Visit(**payload.model_dump())
     db.add(visit)
     try:
+        await db.flush()
+        # 休み設計 §4-2: 訪問を作る処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。
+        await settle_leave_unassign(db, dates=[visit.visit_date])
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()

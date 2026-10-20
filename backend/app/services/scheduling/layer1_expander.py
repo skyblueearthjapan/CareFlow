@@ -745,6 +745,12 @@ class Layer1Expander:
         # Layer 3 がこれらの course に manager を割り当てる前提。
         await _ensure_manager_courses_for_week(db, iso_year, iso_week, office_id=office_id)
 
+        # 休み設計 §4-2: 作った訪問のうち休みの時間帯にかかる本人の訪問を担当なしへ
+        # (訪問を作る処理の最後で必ず呼ぶ共通の後始末・今日以降だけ)。
+        from app.services.staff_leave import settle_leave_unassign
+
+        await settle_leave_unassign(db, iso_week=(iso_year, iso_week))
+
         # 確定 (commit は呼び出し側)
         await db.flush()
         return result

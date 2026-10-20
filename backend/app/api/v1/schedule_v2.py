@@ -305,7 +305,7 @@ from app.services.scheduling.unblock_search import (
     compute_plan_id,
     search_unblock_plans,
 )
-from app.services.staff_leave import StaffLeaveError, apply_staff_leave
+from app.services.staff_leave import StaffLeaveError, apply_staff_leave, settle_leave_unassign
 
 logger = logging.getLogger(__name__)
 
@@ -5105,6 +5105,10 @@ async def _apply_visit_move_week_only(
         v.source = VISIT_SOURCE_MANUAL_WEEK
         counters["visits"] += 1
         counters["patients"].add(patient_id)
+
+    # 休み設計 §4-2: 担当を書く処理の最後の共通の後始末 (移動先の日の休む人 → 担当なし)。
+    await db.flush()
+    await settle_leave_unassign(db, dates=[new_date])
 
 
 async def _validate_and_move_one(
