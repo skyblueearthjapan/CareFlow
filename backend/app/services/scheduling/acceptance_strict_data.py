@@ -674,13 +674,21 @@ async def latest_refresh_job(db: AsyncSession, *, active_only: bool = False) -> 
 def job_view(job: KaipokeJob) -> dict[str, Any]:
     """取り直しのジョブの進み具合 (画面に出すもの)。"""
     summary = job.result_summary or {}
+    done = int(summary.get("done") or 0)
+    targets = list((job.params or {}).get("targets") or [])
+    # 動いている間は「いま取っている本」= 一覧の done 番目 (無ければ最後に終わった本)。
+    current = (
+        targets[done]
+        if job.status in ("pending", "running") and done < len(targets)
+        else summary.get("current")
+    )
     return {
         "id": str(job.id),
         "status": job.status,
         "scope": (job.params or {}).get("scope"),
-        "done": int(summary.get("done") or 0),
+        "done": done,
         "total": summary.get("total"),
-        "current": summary.get("current"),
+        "current": current,
         "failed": list(summary.get("failed") or []),
         "error": summary.get("error"),
         "started_at": job.started_at.isoformat() if job.started_at else None,

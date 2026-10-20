@@ -1,80 +1,59 @@
 'use client';
 
 /**
- * /acceptance — 受け入れ枠マトリックス (PC版, P2).
+ * /acceptance — 受け入れ枠 (PC)。
  *
- * 拠点ごとに、配下の全コースを統合した「曜日 × 時間帯」の受け入れ可否 (○△×) を
- * 一覧表示する read-only ページ。事務所・現場での空き状況把握と、印刷して持ち運ぶ
- * 用途を想定 (印刷ボタン → ブラウザ印刷、マトリックスのみ印字)。
+ * 「何曜日の何時台なら毎週受け入れられるか」を、今週を含む直近 4・6・8 週の
+ * カイポケの記録 (終わった日は実績・今日から先は予定) から出す。
+ * 正典: docs/plans/acceptance-strict-design-2026-10-20.md §5-1。
  *
- * 値は自動算出 (当週の実 Visit) に既存の手動「受入目安」を重ねた effective を表示。
- * 拠点・コースはアプリ登録データに完全追従する (ハードコードなし)。
+ * 担い手・休みの扱い・見る週は画面で集計する (サーバーに問い合わせ直さない)。
+ * 毎週の手での上書きは自動より優先し、角に「手」の印。取り直しは管理者だけ。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 
-import { format } from 'date-fns';
-import { ja } from 'date-fns/locale';
 import { Printer } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 
-import {
-  AcceptanceMatrixBoard,
-  AcceptanceMatrixLegend,
-  type MatrixEditApi,
-} from '@/components/acceptance/AcceptanceMatrixBoard';
+import { StrictAcceptanceBoard } from '@/components/acceptance/StrictAcceptanceBoard';
 import { RakusukeTitle } from '@/components/brand/Rakusuke';
-import { WeekSelector, toWeekStart, addDays } from '@/components/schedule/WeekSelector';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { EVENING_CONFIRM, isEveningJst } from '@/lib/acceptanceStrict';
+import { useClearStandingOverride, useSetStandingOverride } from '@/lib/queries/acceptance_matrix';
 import {
-  useAcceptanceMatrix,
-  useClearStandingOverride,
-  useClearWeekOverride,
-  useSetStandingOverride,
-  useSetWeekOverride,
-} from '@/lib/queries/acceptance_matrix';
-import { toIsoYearWeek } from '@/lib/queries/fieldBoard';
+  useStartStrictRefresh,
+  useStrictAcceptance,
+  useStrictRefreshJob,
+} from '@/lib/queries/acceptance_strict';
 import { useOffices } from '@/lib/queries/offices';
 import { isAdminRole } from '@/lib/rbac';
 
+const IS_DEV = process.env.NODE_ENV !== 'production';
+
 export default function AcceptanceMatrixPage() {
   const { data: session } = useSession();
-  const role = session?.user?.role;
-  const canEdit = isAdminRole(role);
-
-  const [weekStart, setWeekStart] = useState<Date>(() => toWeekStart(new Date()));
-  const { isoYear, isoWeek } = useMemo(() => toIsoYearWeek(weekStart), [weekStart]);
-  const [officeId, setOfficeId] = useState<string | null>(null);
+  const canEdit = isAdminRole(session?.user?.role);
 
   const officesQuery = useOffices({ limit: 50 });
-  const matrixQuery = useAcceptanceMatrix({ isoYear, isoWeek, officeId });
+  const offices = officesQuery.allOffices;
+  const [officeId, setOfficeId] = useState<string | null>(null);
+  useEffect(() => {
+    const first = offices[0];
+    if (!officeId && first) setOfficeId(first.id);
+  }, [officeId, offices]);
+  const [planOnly, setPlanOnly] = useState(false);
 
-  const setWeek = useSetWeekOverride();
-  const clearWeek = useClearWeekOverride();
+  const query = useStrictAcceptance(officeId, { planOnly: IS_DEV && planOnly });
+  const jobQuery = useStrictRefreshJob();
+  const startRefresh = useStartStrictRefresh();
   const setStanding = useSetStandingOverride();
   const clearStanding = useClearStandingOverride();
-  const editBusy =
-    setWeek.isPending || clearWeek.isPending || setStanding.isPending || clearStanding.isPending;
-  const edit: MatrixEditApi | undefined = canEdit
-    ? {
-        busy: editBusy,
-        setWeek: ({ officeId: oid, weekday, timeSlot, status, notes }) =>
-          setWeek.mutate({ officeId: oid, isoYear, isoWeek, weekday, timeSlot, status, notes }),
-        clearWeek: ({ officeId: oid, weekday, timeSlot }) =>
-          clearWeek.mutate({ officeId: oid, isoYear, isoWeek, weekday, timeSlot }),
-        setStanding: ({ officeId: oid, weekday, timeSlot, status, notes }) =>
-          setStanding.mutate({ officeId: oid, weekday, timeSlot, status, notes }),
-        clearStanding: ({ officeId: oid, weekday, timeSlot }) =>
-          clearStanding.mutate({ officeId: oid, weekday, timeSlot }),
-      }
-    : undefined;
 
-  const isoWeekLabel = `${isoYear}-W${String(isoWeek).padStart(2, '0')}`;
-  const rangeLabel = `${format(weekStart, 'yyyy/M/d', { locale: ja })} 〜 ${format(
-    addDays(weekStart, 6),
-    'M/d',
-    { locale: ja },
-  )}`;
+  const start = (scope: 'recent' | 'all') => {
+    if (isEveningJst() && !window.confirm(EVENING_CONFIRM)) return;
+    startRefresh.mutate(scope);
+  };
 
   return (
     <section className="space-y-3">
@@ -82,83 +61,84 @@ export default function AcceptanceMatrixPage() {
         <RakusukeTitle
           pose="heart"
           title="受け入れ枠"
-          subtitle={
-            <>
-              拠点ごとに全コースを統合した「曜日 × 時間帯」の受け入れ可能枠（おおよその目安）。
-              {canEdit &&
-                'セルをクリックで「この週だけ」または「毎週（継続）」の上書き・コメント登録ができます。'}
-            </>
-          }
+          subtitle="毎週通う新しい患者さんを、何曜日の何時台なら受け入れられるかを、直近の数週のカイポケの記録から出しています。"
         />
       </header>
 
-      {/* 操作バー (印刷対象外) */}
       <Card className="flex flex-wrap items-center gap-3 p-3 no-print">
-        <div className="flex flex-wrap items-center gap-3">
-          <WeekSelector weekStart={weekStart} onChange={setWeekStart} />
-          <span className="tnum text-xs text-text-muted">{isoWeekLabel}</span>
-        </div>
-        <div className="ml-auto flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-1 text-xs text-text-secondary">
-            拠点
-            <select
-              value={officeId ?? ''}
-              onChange={(e) => setOfficeId(e.target.value === '' ? null : e.target.value)}
-              className="rounded border border-border-default bg-bg-base px-1.5 py-1 text-xs"
-              aria-label="拠点フィルタ"
-            >
-              <option value="">全拠点</option>
-              {officesQuery.allOffices.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => window.print()}
-            className="gap-1.5"
+        <label className="flex items-center gap-2 text-sm text-text-secondary">
+          拠点
+          <select
+            value={officeId ?? ''}
+            onChange={(e) => setOfficeId(e.target.value || null)}
+            className="rounded border border-border-default bg-bg-base px-2 py-1 text-sm"
+            aria-label="拠点"
           >
-            <Printer className="h-4 w-4" />
-            印刷
-          </Button>
-        </div>
+            {offices.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => window.print()}
+          className="ml-auto gap-1.5"
+        >
+          <Printer className="h-4 w-4" />
+          印刷
+        </Button>
       </Card>
 
-      {/* 印刷対象コンテナ */}
-      <div id="acceptance-print" className="space-y-4">
-        <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border-default pb-3">
-          <div>
-            <h2 className="font-serif text-xl font-bold text-text-primary">
-              受け入れ枠マトリックス
-            </h2>
-            <p className="text-xs text-text-secondary">
-              {isoYear}年 第{isoWeek}週（{rangeLabel}）現在 ・ 全コース統合の目安
-            </p>
-          </div>
-          <AcceptanceMatrixLegend />
-        </div>
-
-        {matrixQuery.isLoading && <p className="text-sm text-text-secondary">読み込み中…</p>}
-        {matrixQuery.isError && (
-          <p className="text-sm text-rose-600">
-            読み込みに失敗しました: {matrixQuery.error.message}
-          </p>
-        )}
-        {matrixQuery.data && (
-          <>
-            {!matrixQuery.data.week_generated_any && (
-              <p className="rounded bg-bg-muted px-3 py-2 text-xs text-text-secondary no-print">
-                ※ この週はまだコースが生成されていないため、空き枠を算出できません（×表示）。
-              </p>
-            )}
-            <AcceptanceMatrixBoard data={matrixQuery.data} edit={edit} />
-          </>
-        )}
-      </div>
+      {query.isLoading && <p className="text-sm text-text-secondary">読み込み中…</p>}
+      {query.isError && (
+        <p className="text-sm text-rose-600">読み込みに失敗しました: {query.error.message}</p>
+      )}
+      {query.data && (
+        <StrictAcceptanceBoard
+          key={`${query.data.office_id}-${query.data.plan_only ? 'plan' : 'real'}`}
+          data={query.data}
+          edit={
+            canEdit && officeId
+              ? {
+                  busy: setStanding.isPending || clearStanding.isPending,
+                  set: ({ weekday, hour, status, note }) =>
+                    setStanding.mutate({
+                      officeId,
+                      weekday,
+                      timeSlot: `${String(hour).padStart(2, '0')}:00:00`,
+                      status,
+                      notes: note,
+                    }),
+                  clear: ({ weekday, hour }) =>
+                    clearStanding.mutate({
+                      officeId,
+                      weekday,
+                      timeSlot: `${String(hour).padStart(2, '0')}:00:00`,
+                    }),
+                }
+              : undefined
+          }
+          refresh={
+            canEdit ? { job: jobQuery.data, starting: startRefresh.isPending, start } : undefined
+          }
+          devToggle={
+            IS_DEV ? (
+              <label className="flex items-center gap-2 text-xs text-text-secondary">
+                <input
+                  type="checkbox"
+                  checked={planOnly}
+                  onChange={(e) => setPlanOnly(e.target.checked)}
+                />
+                開発用: 予定だけで見る
+              </label>
+            ) : undefined
+          }
+        />
+      )}
     </section>
   );
 }
