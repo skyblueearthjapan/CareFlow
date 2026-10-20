@@ -478,6 +478,7 @@ async def test_import_apply_mixed_operations(client, db) -> None:
         "override_delete": 0,
         "override_error": 0,
         "override_noop": 0,
+        "leave_unassign_visits": 0,
     }
 
     db.expire_all()

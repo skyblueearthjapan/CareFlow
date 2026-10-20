@@ -1,5 +1,11 @@
 """Import per-week staff overrides from Sample 2 (sheet 'スタッフ個別変更リクエスト').
 
+注意 (休み設計 2026-10-20 §2-1・付録 A-1): この道具は行を直接書くだけで、休みの共通の処理
+(``app/services/staff_leave.apply_staff_leave``: 休みの時間帯の訪問を担当なしへ・
+``leave_months.last_leave_changed_at`` の更新) を通らない。**休みの種類 (休み・午前休・
+午後休・有給) を入れるのには使わない**。休みは画面か ``POST /api/v1/staff/{id}/overrides``
+(同じ API) から入れる。時間変更の初期投入にだけ使う。
+
 Each row → ``staff_weekly_overrides``. Excel ``staff_id`` is the staff master
 ``code`` (e.g. ``S001``); we resolve to the DB UUID. ``制限タイプ`` is mapped
 to ``override_type``: ``休み → off``, ``時間変更 → custom_time``.

@@ -92,6 +92,8 @@ class StaffExcelImportSummary(BaseModel):
     override_delete: int = 0
     override_error: int = 0
     override_noop: int = 0
+    # 休み設計 §4-3: 取り込むと担当なしへ移る休みの日の訪問の数 (今日以降)。
+    leave_unassign_visits: int = 0
 
 
 class StaffExcelImportResponse(BaseModel):
@@ -137,6 +139,8 @@ class StaffExcelReplaceAllSummary(BaseModel):
     override_to_replace: int = 0
     override_to_create: int = 0
     override_error: int = 0
+    # 休み設計 §4-3: 置き換えると担当なしへ移る休みの日の訪問の数 (今日以降)。
+    leave_unassign_visits: int = 0
 
 
 class StaffExcelReplaceAllResponse(BaseModel):

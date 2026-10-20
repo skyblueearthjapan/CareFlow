@@ -717,6 +717,134 @@ async def cancel_staff_leave(
     return leave_type
 
 
+async def write_override_day(
+    db: AsyncSession,
+    *,
+    staff_id: UUID,
+    day: date,
+    override_type: str | None,
+    start_time: time | None,
+    end_time: time | None,
+    reason: str | None,
+    actor: User | None,
+    origin: str,
+) -> LeaveApplyResult | None:
+    """1 日ぶんの休み・時間変更を「あるべき姿」にそろえる (職員 Excel の取込・全置換・§4-3).
+
+    * 同じ種類・同じ時刻の行があれば種類は触らない (``source``・``pending_request_id`` を
+      残す。理由だけ違えば理由だけ書く)。
+    * 休みの種類へ変わる・増える → ``apply_staff_leave(source='admin', notify=False)``
+      (今日以降なら休みの時間帯の訪問を担当なしへ。通知は呼び出し側がまとめて 1 通)。
+    * 消える → 休みなら ``cancel_staff_leave(notify=False)``、時間変更なら行を消す。
+    * 時間変更 → ``set_staff_override`` で行だけ。
+
+    Returns:
+        休みを入れた・変えたときの結果 (通知の材料)。それ以外は None。
+    """
+    row = await _load_override(db, staff_id, day)
+    y, w, wd = iso_key(day)
+    if override_type is None:
+        if row is None:
+            return None
+        if row.override_type in LEAVE_TYPES:
+            await cancel_staff_leave(
+                db,
+                staff_id=staff_id,
+                day=day,
+                actor=actor,
+                op_group_id=None,
+                origin=origin,
+                notify=False,
+            )
+        else:
+            await set_staff_override(
+                db, staff_id=staff_id, iso_year=y, iso_week=w, weekday=wd, override_type=None
+            )
+        return None
+    if (
+        row is not None
+        and row.override_type == override_type
+        and row.start_time == start_time
+        and row.end_time == end_time
+    ):
+        if (row.reason or None) != (reason or None):
+            await set_staff_override(
+                db,
+                staff_id=staff_id,
+                iso_year=y,
+                iso_week=w,
+                weekday=wd,
+                override_type=override_type,
+                reason=reason,
+                start_time=fmt_time(start_time) if start_time else None,
+                end_time=fmt_time(end_time) if end_time else None,
+                source=row.source,
+                pending_request_id=row.pending_request_id,
+            )
+        return None
+    if override_type in LEAVE_TYPES:
+        return await apply_staff_leave(
+            db,
+            staff_id=staff_id,
+            day=day,
+            leave_type=override_type,
+            source="admin",
+            note=reason,
+            actor=actor,
+            op_group_id=None,
+            origin=origin,
+            notify=False,
+        )
+    await set_staff_override(
+        db,
+        staff_id=staff_id,
+        iso_year=y,
+        iso_week=w,
+        weekday=wd,
+        override_type=override_type,
+        reason=reason,
+        start_time=fmt_time(start_time) if start_time else None,
+        end_time=fmt_time(end_time) if end_time else None,
+    )
+    return None
+
+
+async def notify_leave_results(db: AsyncSession, results: Iterable[LeaveApplyResult | None]) -> int:
+    """``notify=False`` で入れた休みの結果から、管理者への通知を 1 通にまとめて出す."""
+    staff_ids = {r.staff_id for r in results if r is not None and r.moved_visit_ids}
+    if not staff_ids:
+        return 0
+    name_rows = await db.execute(select(Staff.id, Staff.name).where(Staff.id.in_(staff_ids)))
+    names: dict[UUID, str] = {sid: name for sid, name in name_rows.all()}
+    notices = [
+        UnassignedNotice(
+            staff_name=names.get(r.staff_id) or "職員",
+            day=r.day,
+            patient_count=r.moved_patient_count,
+            visit_count=len(r.moved_visit_ids),
+            accompaniment_count=r.accompaniment_count,
+        )
+        for r in results
+        if r is not None and r.moved_visit_ids
+    ]
+    return await notify_leave_unassigned(db, notices)
+
+
+async def count_leave_moves(db: AsyncSession, entries: Iterable[tuple[UUID, date, str]]) -> int:
+    """休みを入れたら担当なしへ移る訪問の数 (取込のプレビュー「N 件を担当なしへ移します」).
+
+    ``entries`` は (職員, 日, 休みの種類)。今日 (JST) より前の日は記録だけなので数えない。
+    """
+    today = today_jst()
+    total = 0
+    for sid, day, leave_type in set(entries):
+        if day < today or leave_type not in LEAVE_TYPES:
+            continue
+        targets, _skipped = await _owned_hit_visits(db, sid, day, leave_type)
+        total += len(targets)
+    return total
+
+
 # ---------------------------------------------------------------------------
 # 後始末と検知 (§4-2)
 # ---------------------------------------------------------------------------
@@ -907,10 +1035,13 @@ __all__ = [
     "apply_staff_leave",
     "cancel_staff_leave",
     "collect_leave_conflicts",
+    "count_leave_moves",
     "count_visits_on_leave",
     "find_visits_on_leave",
     "is_past_leave_deadline",
     "leave_request_deadline",
+    "notify_leave_results",
     "settle_leave_unassign",
     "today_jst",
+    "write_override_day",
 ]

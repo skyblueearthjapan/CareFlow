@@ -120,7 +120,14 @@ SHEET_SHIFT_EDIT: Final = "勤務シフト（編集用）"
 SHEET_OVERRIDE_EDIT: Final = "勤務例外（編集用）"
 
 # Phase E-7 (gap P1): StaffWeeklyOverride.override_type の dropdown 値.
-OVERRIDE_TYPE_VALUES: Final[tuple[str, ...]] = ("off", "custom_time")
+# 休み設計 §4-3: 半休・有給も書き出し・取り込みで消えないように足す。
+OVERRIDE_TYPE_VALUES: Final[tuple[str, ...]] = (
+    "off",
+    "am_off",
+    "pm_off",
+    "paid_off",
+    "custom_time",
+)
 
 # 列定義: (key, header, width, dropdown_values).
 # key は内部識別子. header は実際の Excel ヘッダー文字列.
@@ -279,11 +286,24 @@ SHIFT_EDIT_COL_INDEX: Final[dict[str, int]] = {
 #
 # 1 (staff, iso_year, iso_week) = 1 行. 各曜日 (月..日) に 1 セルで例外内容を表記:
 #   * "休"          → その曜日休 (override_type='off', 時刻なし).
+#   * "午前休" / "午後休" / "有給" → 半休・有給 (am_off / pm_off / paid_off・時刻なし).
 #   * "HH:MM-HH:MM" → 時刻変更 (override_type='custom_time', start/end).
 #   * 空欄          → 例外なし.
 # importer は per-(staff, iso_year, iso_week) replace でその週の例外を行に一致させる.
 
 OVERRIDE_OFF_TOKEN: Final = "休"
+#: 休みの種類 → 例外セルの表記 (休み設計 §4-3)。時間変更は "HH:MM-HH:MM"。
+OVERRIDE_LEAVE_TOKENS: Final[dict[str, str]] = {
+    "off": OVERRIDE_OFF_TOKEN,
+    "am_off": "午前休",
+    "pm_off": "午後休",
+    "paid_off": "有給",
+}
+_OVERRIDE_TOKEN_TO_TYPE: Final[dict[str, str]] = {
+    **{token: t for t, token in OVERRIDE_LEAVE_TOKENS.items()},
+    **{t: t for t in OVERRIDE_LEAVE_TOKENS},
+    "休み": "off",
+}
 
 OVERRIDE_EDIT_WEEKDAY_KEYS: Final[tuple[str, ...]] = (
     "mon",
@@ -340,12 +360,13 @@ def format_override_cell(
     start_hhmm: str | None,
     end_hhmm: str | None,
 ) -> str | None:
-    """(override_type, start, end) → 例外セル表記 ("休" / "HH:MM-HH:MM").
+    """(override_type, start, end) → 例外セル表記 ("休" / "午前休" / "午後休" / "有給" /
+    "HH:MM-HH:MM").
 
     解決できない場合 (override_type 不明 / custom_time なのに時刻欠落) は None.
     """
-    if override_type == "off":
-        return OVERRIDE_OFF_TOKEN
+    if override_type in OVERRIDE_LEAVE_TOKENS:
+        return OVERRIDE_LEAVE_TOKENS[override_type]
     if override_type == "custom_time":
         if start_hhmm and end_hhmm:
             return f"{start_hhmm}-{end_hhmm}"
@@ -357,6 +378,7 @@ def parse_override_cell(value: object) -> tuple[str, str | None, str | None] | N
     """例外セル表記 → (override_type, start_hhmm, end_hhmm).
 
     * "休"          → ("off", None, None)
+    * "午前休" / "午後休" / "有給" → ("am_off" / "pm_off" / "paid_off", None, None)
     * "HH:MM-HH:MM" → ("custom_time", "HH:MM", "HH:MM")
     解析できない / 空欄は None (= 例外なし). 不正表記は ValueError.
     """
@@ -365,8 +387,9 @@ def parse_override_cell(value: object) -> tuple[str, str | None, str | None] | N
     s = str(value).strip()
     if not s:
         return None
-    if s == OVERRIDE_OFF_TOKEN or s.lower() == "off":
-        return ("off", None, None)
+    leave_type = _OVERRIDE_TOKEN_TO_TYPE.get(s) or _OVERRIDE_TOKEN_TO_TYPE.get(s.lower())
+    if leave_type is not None:
+        return (leave_type, None, None)
     # "HH:MM-HH:MM" を許容. ハイフン (半角/全角/波ダッシュ) で分割.
     sep = None
     for ch in ("-", "−", "〜", "~", "ー"):
@@ -374,10 +397,14 @@ def parse_override_cell(value: object) -> tuple[str, str | None, str | None] | N
             sep = ch
             break
     if sep is None:
-        raise ValueError(f"例外セルの表記が不正です (休 または HH:MM-HH:MM): {s!r}")
+        raise ValueError(
+            f"例外セルの表記が不正です (休・午前休・午後休・有給 または HH:MM-HH:MM): {s!r}"
+        )
     parts = s.split(sep)
     if len(parts) != 2:
-        raise ValueError(f"例外セルの表記が不正です (休 または HH:MM-HH:MM): {s!r}")
+        raise ValueError(
+            f"例外セルの表記が不正です (休・午前休・午後休・有給 または HH:MM-HH:MM): {s!r}"
+        )
     start = _normalize_hhmm(parts[0].strip())
     end = _normalize_hhmm(parts[1].strip())
     return ("custom_time", start, end)
