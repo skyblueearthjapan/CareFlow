@@ -32,7 +32,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # 件名から休みのイベントかの予備の判定 (休みの正典は staff_weekly_overrides と
 # staff_shifts.is_on。カイポケ取り込みの休みは件名だけで staff_events に入るため件名でも除く)。
-from app.core.leave import is_leave_event
+from app.core.leave import (
+    AM_OFF_UNTIL,
+    FULL_DAY_OFF,
+    LEAVE_TYPES,
+    PM_OFF_FROM,
+    is_leave_event,
+)
 from app.models.course import Course
 from app.models.office import Office
 from app.models.patient import Patient
@@ -59,26 +65,24 @@ MIN_ACTUAL_SAMPLES = 5
 MAX_PERIOD_DAYS = 93
 #: 業務ロールのうち「管理者」の札を付けるもの (``staff.role``・スケジュールエンジン用の軸)。
 _MANAGER_ROLES = frozenset({"manager", "admin"})
-#: 半日休みの境目 (分・12:00)。``allocation.engine`` の午前休 / 午後休と同じ。
-NOON_MIN = 12 * 60
-
-#: 休みの正典 (``staff_weekly_overrides.override_type``)。終日 / 午前 / 午後。
-OVERRIDE_OFF = "off"
-OVERRIDE_AM_OFF = "am_off"
-OVERRIDE_PM_OFF = "pm_off"
-_LEAVE_OVERRIDE_TYPES = (OVERRIDE_OFF, OVERRIDE_AM_OFF, OVERRIDE_PM_OFF)
+#: 週間シフトで休みの曜日 (staff_shifts.is_on = False) の扱い = 終日の休み。
+_SHIFT_OFF_KIND = "off"
 
 LatLng = tuple[float, float]
 
 
 def _leave_block_minutes(kind: str | None) -> tuple[int, int] | None:
-    """休みの種別 → その日の休みの時間帯 (分)。休みでなければ None。"""
-    if kind == OVERRIDE_OFF:
+    """休みの種別 → その日の休みの時間帯 (分)。休みでなければ None。
+
+    境目は ``app/core/leave.py`` (午前休 = 13:00 まで休み・午後休 = 12:30 から休み)。
+    有給は終日の休み。
+    """
+    if kind in FULL_DAY_OFF:
         return (0, 24 * 60)
-    if kind == OVERRIDE_AM_OFF:
-        return (0, NOON_MIN)
-    if kind == OVERRIDE_PM_OFF:
-        return (NOON_MIN, 24 * 60)
+    if kind == "am_off":
+        return (0, _minute_of_day(AM_OFF_UNTIL))
+    if kind == "pm_off":
+        return (_minute_of_day(PM_OFF_FROM), 24 * 60)
     return None
 
 
@@ -427,8 +431,8 @@ async def build_staff_performance(
             for sid in staff_list:
                 kind = overrides.get((sid, d))
                 if kind is None and (sid, d.weekday()) in shift_off:
-                    kind = OVERRIDE_OFF
-                if kind in _LEAVE_OVERRIDE_TYPES:
+                    kind = _SHIFT_OFF_KIND
+                if kind in LEAVE_TYPES:
                     leave_kind[(sid, d)] = kind
 
     # 休み以外のイベント (取消を除く): (職員, 日) → [(開始分, 終了分)]。日を跨ぐものは日ごとに切る。

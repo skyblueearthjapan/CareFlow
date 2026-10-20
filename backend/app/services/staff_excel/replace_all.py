@@ -21,8 +21,10 @@ from openpyxl import load_workbook
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.leave import LEAVE_TYPES
 from app.models.office import Office
 from app.models.staff import Staff, StaffSecondaryOffice, StaffShift, StaffWeeklyOverride
+from app.models.user import User
 from app.schemas.v2.staff_excel import (
     OverrideExcelImportRow,
     ShiftExcelImportRow,
@@ -30,6 +32,8 @@ from app.schemas.v2.staff_excel import (
     StaffExcelImportRow,
     StaffExcelReplaceAllSummary,
 )
+from app.services.leave_calendar import date_of
+from app.services.op_log_service import set_staff_override
 from app.services.staff_excel.schema import (
     OVERRIDE_COL_INDEX,
     OVERRIDE_EDIT_COL_INDEX,
@@ -50,6 +54,12 @@ from app.services.staff_excel.schema import (
     WEEKDAY_LABEL_TO_INT,
     is_sample_row,
     parse_override_cell,
+)
+from app.services.staff_leave import (
+    LeaveApplyResult,
+    count_leave_moves,
+    notify_leave_results,
+    write_override_day,
 )
 
 logger = logging.getLogger(__name__)
@@ -1539,6 +1549,19 @@ async def parse_and_diff_replace_all(
             case "error":
                 summary.override_error += 1
     summary.override_to_replace = int(override_count or 0)
+    # 休み設計 §4-3: 置き換えると担当なしへ移る休みの日の訪問の数。
+    summary.leave_unassign_visits = await count_leave_moves(
+        db,
+        [
+            (
+                op["staff_id"],
+                date_of(op["iso_year"], op["iso_week"], op["weekday"]),
+                op["override_type"],
+            )
+            for op in override_ops
+            if op.get("_op") == "new" and op.get("override_type") in LEAVE_TYPES
+        ],
+    )
 
     return (
         staff_rows,
@@ -1559,17 +1582,21 @@ async def apply_replace_all(
     shift_ops: list[dict[str, Any]],
     staff_ids_to_soft_delete: list[UUID],
     override_ops: list[dict[str, Any]] | None = None,
+    actor: User | None = None,
 ) -> None:
     """完全置換を DB に反映 (atomic).
 
     順序:
-      1. 削除対象 staff の shift / secondary / override を物理削除
+      1. 削除対象 staff の shift / secondary / override を物理削除 (override は
+         ``set_staff_override`` で消す)
       2. 削除対象 staff を soft delete
-      3. 残り alive staff の shift / secondary / override を全件物理削除
+      3. 残り alive staff の shift / secondary を全件物理削除
       4. staff_ops apply
       5. shift_ops INSERT
       6. secondary_office_ids INSERT (Phase E-7 gap P0-2)
-      7. override_ops INSERT (Phase E-7 gap P1)
+      7. override は **差分で反映** (休み設計 §4-3): 同じ (職員, 週, 曜日) が同じ種類・
+         時刻なら触らない (``source``・``pending_request_id`` を残す)。増えた・変わった
+         休みは共通の処理、消えた休みは取り消し、時間変更は行だけ。通知は最後に 1 通。
     """
     if staff_ids_to_soft_delete:
         shifts_for_delete = (
@@ -1597,7 +1624,14 @@ async def apply_replace_all(
             )
         ).all()
         for ov in ovs_for_delete:
-            await db.delete(ov)
+            await set_staff_override(
+                db,
+                staff_id=ov.staff_id,
+                iso_year=ov.iso_year,
+                iso_week=ov.iso_week,
+                weekday=ov.weekday,
+                override_type=None,
+            )
         await db.flush()
         for sid in staff_ids_to_soft_delete:
             staff_obj = await db.get(Staff, sid)
@@ -1624,16 +1658,6 @@ async def apply_replace_all(
         ).all()
         for so in rest_sec:
             await db.delete(so)
-        # Phase E-7 (gap P1): 既存 overrides 全件物理削除.
-        rest_ovs = (
-            await db.scalars(
-                select(StaffWeeklyOverride).where(
-                    StaffWeeklyOverride.staff_id.in_(list(alive_staff_ids))
-                )
-            )
-        ).all()
-        for ov in rest_ovs:
-            await db.delete(ov)
         await db.flush()
 
     staff_by_id: dict[UUID, Staff] = {}
@@ -1692,11 +1716,51 @@ async def apply_replace_all(
     if secondary_office_inserts:
         await db.flush()
 
-    # Phase E-7 (gap P1): override_ops INSERT (replace-all は new のみ).
-    if override_ops:
-        for op in override_ops:
-            if op.get("_op") != "new":
-                continue
-            data = {k: v for k, v in op.items() if not k.startswith("_")}
-            db.add(StaffWeeklyOverride(**data))
-        await db.flush()
+    # Phase E-7 (gap P1) / 休み設計 §4-3: override は差分で反映 (全行を消して作り直さない)。
+    desired: dict[tuple[UUID, int, int, int], dict[str, Any]] = {
+        (op["staff_id"], op["iso_year"], op["iso_week"], op["weekday"]): op
+        for op in (override_ops or [])
+        if op.get("_op") == "new"
+    }
+    existing_keys: list[tuple[UUID, int, int, int]] = []
+    if alive_staff_ids:
+        existing_keys = [
+            (ov.staff_id, ov.iso_year, ov.iso_week, ov.weekday)
+            for ov in (
+                await db.scalars(
+                    select(StaffWeeklyOverride).where(
+                        StaffWeeklyOverride.staff_id.in_(list(alive_staff_ids))
+                    )
+                )
+            ).all()
+        ]
+    results: list[LeaveApplyResult | None] = []
+    for key in existing_keys:
+        if key not in desired:
+            await write_override_day(
+                db,
+                staff_id=key[0],
+                day=date_of(key[1], key[2], key[3]),
+                override_type=None,
+                start_time=None,
+                end_time=None,
+                reason=None,
+                actor=actor,
+                origin="excel",
+            )
+    for (sid, y, w, wd), op in desired.items():
+        results.append(
+            await write_override_day(
+                db,
+                staff_id=sid,
+                day=date_of(y, w, wd),
+                override_type=op["override_type"],
+                start_time=op.get("start_time"),
+                end_time=op.get("end_time"),
+                reason=op.get("reason"),
+                actor=actor,
+                origin="excel",
+            )
+        )
+    await notify_leave_results(db, results)
+    await db.flush()

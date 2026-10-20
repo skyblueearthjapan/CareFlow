@@ -66,6 +66,7 @@ from app.services.accompaniment import (
 from app.services.kaipoke.name_match import build_name_index, match_name
 from app.services.kaipoke.ng_conflicts import NgConflict, NgPair, collect_ng_conflicts
 from app.services.patient_status_sync import is_schedulable_status, status_label
+from app.services.staff_leave import LeaveConflict, LeaveSlot, collect_leave_conflicts
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -416,6 +417,10 @@ class InboundApplySummary:
     # カイポケが「正」なので取り込みはブロックしない — 警告として可視化するだけ。
     # ``as_dict`` には **載せない**: 実適用の job.result_summary を変えないため。
     ng_conflicts: list[NgConflict] = field(default_factory=list)
+    # 休む人の休みの時間帯に担当が付く訪問 (dry-run のみ集計・休み設計 §4-2 H-b)。
+    # カイポケが正なので取り込みは止めず、後始末も呼ばない — プレビューで知らせるだけ。
+    # ``as_dict`` には載せない (ng_conflicts と同じ)。
+    leave_conflicts: list[LeaveConflict] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -664,6 +669,8 @@ async def apply_inbound_items(
     # **警告のみ・取込はブロックしない** (カイポケが正)。照会は末尾で 1 回だけ行い、
     # 実適用 (dry_run=False) では照会そのものを走らせない (apply の挙動は不変)。
     ng_pairs: list[NgPair] = []
+    # 休み設計 §4-2 H-b: 取込後に担当が付く訪問の枠 (職員, 日, 開始, 終了)。dry-run で照会。
+    leave_slots: list[LeaveSlot] = []
     patient_by_visit_id = {v.id: v.patient_id for v in index.values()}
     for (takeover_course_id, takeover_date), takeover_sid in takeover.items():
         takeover_course = course_idx.by_id.get(takeover_course_id)
@@ -1238,6 +1245,7 @@ async def apply_inbound_items(
                             str(course.code) if course is not None else None,
                         )
                     )
+                    leave_slots.append((ng_sid, target_date, start_new, end_new))
             revive_note = "・キャンセル済みの枠を復活" if revive is not None else ""
             detail = (
                 f"{target_date.month}/{target_date.day} {after.get('start_time')} を追加"
@@ -1755,8 +1763,11 @@ async def apply_inbound_items(
             (date_changed and visit.course_id is not None) or promote_unplanned
         ):
             cur_course = course_idx.by_id.get(visit.course_id)
+            # 明示の担当なし (primary 空・manual 真) はコース担当を引き継がない (設計 §3-2)。
             follow_staff = visit.primary_staff_id or (
-                cur_course.assigned_staff_id if cur_course is not None else None
+                cur_course.assigned_staff_id
+                if cur_course is not None and not visit.manual_staff_override
+                else None
             )
             office_id = patient_office.get(item.patient_id)
             cur_code = cur_course.code if cur_course is not None else "−"
@@ -1797,6 +1808,14 @@ async def apply_inbound_items(
             for ng_sid in (new_sid, new_sid2):
                 if ng_sid is not None:
                     ng_pairs.append((item.patient_id, ng_sid, final_date, ng_code))
+                    leave_slots.append(
+                        (
+                            ng_sid,
+                            final_date,
+                            start_after or cur_start,
+                            end_after or visit.end_time,
+                        )
+                    )
 
         if staff2_update:
             changes.append(f"担当2 →{staff2_after_name}" if new_sid2 is not None else "担当2を解除")
@@ -1974,5 +1993,6 @@ async def apply_inbound_items(
 
     if dry_run:
         summary.ng_conflicts = await collect_ng_conflicts(db, ng_pairs)
+        summary.leave_conflicts = await collect_leave_conflicts(db, leave_slots)
 
     return summary

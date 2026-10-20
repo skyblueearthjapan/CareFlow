@@ -16,6 +16,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
+from app.core.leave import LEAVE_TYPES
 from app.models.staff import Staff, StaffWeeklyOverride
 from app.models.user import User, normalize_user_role
 from app.schemas.staff_overrides import (
@@ -25,6 +26,9 @@ from app.schemas.staff_overrides import (
     WeekOverrideRead,
     _db_type_to_label,
 )
+from app.services.leave_notify import notify_leave_cancelled
+from app.services.op_log_service import fmt_time, set_staff_override
+from app.services.staff_leave import StaffLeaveError, apply_staff_leave, cancel_staff_leave
 
 router = APIRouter()
 
@@ -99,13 +103,6 @@ async def _ensure_staff_exists(db, staff_id: UUID) -> Staff:
     return staff
 
 
-def _parse_hhmm(value: str | None) -> time | None:
-    if value is None:
-        return None
-    h, m = value.split(":")
-    return time(int(h), int(m))
-
-
 def _date_to_iso(d: date) -> tuple[int, int, int]:
     iso = d.isocalendar()
     return iso.year, iso.week, d.weekday()
@@ -178,6 +175,81 @@ async def list_overrides(
     return list(rows)
 
 
+def _leave_error(exc: StaffLeaveError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+async def _load_row(db, staff_id: UUID, override_id: UUID) -> StaffWeeklyOverride:
+    row = await db.scalar(
+        select(StaffWeeklyOverride).where(
+            StaffWeeklyOverride.id == override_id,
+            StaffWeeklyOverride.staff_id == staff_id,
+        )
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return row
+
+
+async def _row_on(db, staff_id: UUID, d: date) -> StaffWeeklyOverride | None:
+    iso_year, iso_week, weekday = _date_to_iso(d)
+    return await db.scalar(
+        select(StaffWeeklyOverride).where(
+            StaffWeeklyOverride.staff_id == staff_id,
+            StaffWeeklyOverride.iso_year == iso_year,
+            StaffWeeklyOverride.iso_week == iso_week,
+            StaffWeeklyOverride.weekday == weekday,
+        )
+    )
+
+
+async def _write_day(
+    db,
+    *,
+    staff_id: UUID,
+    d: date,
+    override_type: str,
+    start_time: str | None,
+    end_time: str | None,
+    note: str | None,
+    actor: User,
+    source: str | None = None,
+    pending_request_id: UUID | None = None,
+) -> None:
+    """1 日ぶんを書く: 休みは共通の処理 (訪問を担当なしへ・休み設計 §3-1)、時間変更は行だけ."""
+    if override_type in LEAVE_TYPES:
+        try:
+            await apply_staff_leave(
+                db,
+                staff_id=staff_id,
+                day=d,
+                leave_type=override_type,
+                source=source or "admin",
+                note=note,
+                actor=actor,
+                op_group_id=None,
+                origin="staff_detail",
+            )
+        except StaffLeaveError as exc:
+            await db.rollback()
+            raise _leave_error(exc) from exc
+        return
+    iso_year, iso_week, weekday = _date_to_iso(d)
+    await set_staff_override(
+        db,
+        staff_id=staff_id,
+        iso_year=iso_year,
+        iso_week=iso_week,
+        weekday=weekday,
+        override_type=override_type,
+        reason=note,
+        start_time=start_time,
+        end_time=end_time,
+        source=source,
+        pending_request_id=pending_request_id,
+    )
+
+
 @router.post(
     "/{staff_id}/overrides",
     response_model=OverrideRead,
@@ -188,25 +260,40 @@ async def create_override(
     staff_id: UUID,
     payload: OverrideCreate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin"))],
+    user: Annotated[User, Depends(require_role("admin"))],
 ) -> StaffWeeklyOverride:
-    await _ensure_staff_exists(db, staff_id)
-    iso_year, iso_week, weekday = _date_to_iso(payload.date)
+    """1 日ぶんの休み・時間変更を入れる.
 
-    row = StaffWeeklyOverride(
+    休みの種類 (休み・午前休・午後休・有給) は共通の処理 ``apply_staff_leave`` で入れる
+    (今日以降なら休みの時間帯の本人の訪問を担当なしへ移す)。時間変更は行だけを書く。
+    同じ日に登録があれば 409 (今までどおり・種類を変えるのは PATCH)。
+    """
+    await _ensure_staff_exists(db, staff_id)
+    if await _row_on(db, staff_id, payload.date) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conflict: override already exists for that date",
+        )
+    await _write_day(
+        db,
         staff_id=staff_id,
-        iso_year=iso_year,
-        iso_week=iso_week,
-        weekday=weekday,
+        d=payload.date,
         override_type=payload.type,  # already normalised to DB code
-        start_time=_parse_hhmm(payload.start_time),
-        end_time=_parse_hhmm(payload.end_time),
-        reason=payload.note,
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+        note=payload.note,
+        actor=user,
     )
-    db.add(row)
+    row = await _row_on(db, staff_id, payload.date)
     await _commit_or_409(db)
+    if row is None:  # pragma: no cover (直前に書いた行)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     await db.refresh(row)
     return row
+
+
+def _hhmm_or_none(value: time | None) -> str | None:
+    return fmt_time(value) if value is not None else None
 
 
 @router.patch(
@@ -219,47 +306,70 @@ async def update_override(
     override_id: UUID,
     payload: OverrideUpdate,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin"))],
+    user: Annotated[User, Depends(require_role("admin"))],
 ) -> StaffWeeklyOverride:
-    row = await db.scalar(
-        select(StaffWeeklyOverride).where(
-            StaffWeeklyOverride.id == override_id,
-            StaffWeeklyOverride.staff_id == staff_id,
-        )
-    )
-    if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    """休み・時間変更を変える (日付・種類・時刻・メモ).
 
+    休みの種類へ変える・休みのまま日付を変えると共通の処理を通る。日付を変えたときは
+    元の日の行を消してから新しい日に入れる (新しい日に登録があれば 409)。
+    種類が変わらなければ ``source``・``pending_request_id`` を残す。
+    """
+    row = await _load_row(db, staff_id, override_id)
     data = payload.model_dump(exclude_unset=True)
-    if "date" in data and data["date"] is not None:
-        iso_year, iso_week, weekday = _date_to_iso(data.pop("date"))
-        row.iso_year = iso_year
-        row.iso_week = iso_week
-        row.weekday = weekday
-    elif "date" in data:
-        data.pop("date")  # explicit None — ignored
-
-    if "start_time" in data:
-        row.start_time = _parse_hhmm(data.pop("start_time"))
-    if "end_time" in data:
-        row.end_time = _parse_hhmm(data.pop("end_time"))
-
-    # Frontend → DB column name mapping (the schema validator already
-    # normalised `type` to its canonical English code).
-    _api_to_db = {"type": "override_type", "note": "reason"}
-    for k, v in data.items():
-        setattr(row, _api_to_db.get(k, k), v)
-
-    # Cross-field validation after merge.
-    if row.start_time is not None and row.end_time is not None and row.start_time >= row.end_time:
+    old_date = date.fromisocalendar(row.iso_year, row.iso_week, row.weekday + 1)
+    new_date = data.get("date") or old_date
+    new_type = data.get("type") or row.override_type
+    new_start = data["start_time"] if "start_time" in data else _hhmm_or_none(row.start_time)
+    new_end = data["end_time"] if "end_time" in data else _hhmm_or_none(row.end_time)
+    new_note = data["note"] if "note" in data else row.reason
+    if new_type in LEAVE_TYPES:
+        new_start = new_end = None
+    if new_start is not None and new_end is not None and new_start >= new_end:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="start_time must be < end_time",
         )
+    if new_type == "custom_time" and (new_start is None or new_end is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="custom_time override requires start_time and end_time",
+        )
 
+    same_type = new_type == row.override_type
+    keep_source = row.source if same_type else None
+    keep_request = row.pending_request_id if same_type else None
+    if new_date != old_date:
+        if await _row_on(db, staff_id, new_date) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Conflict: override already exists for that date",
+            )
+        await set_staff_override(
+            db,
+            staff_id=staff_id,
+            iso_year=row.iso_year,
+            iso_week=row.iso_week,
+            weekday=row.weekday,
+            override_type=None,
+        )
+    await _write_day(
+        db,
+        staff_id=staff_id,
+        d=new_date,
+        override_type=new_type,
+        start_time=new_start,
+        end_time=new_end,
+        note=new_note,
+        actor=user,
+        source=keep_source,
+        pending_request_id=keep_request,
+    )
+    out = await _row_on(db, staff_id, new_date)
     await _commit_or_409(db)
-    await db.refresh(row)
-    return row
+    if out is None:  # pragma: no cover (直前に書いた行)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    await db.refresh(out)
+    return out
 
 
 @router.delete(
@@ -271,29 +381,43 @@ async def delete_override(
     staff_id: UUID,
     override_id: UUID,
     db: DbDep,
-    _user: Annotated[User, Depends(require_role("admin"))],
+    user: Annotated[User, Depends(require_role("admin"))],
 ) -> None:
-    row = await db.scalar(
-        select(StaffWeeklyOverride).where(
-            StaffWeeklyOverride.id == override_id,
-            StaffWeeklyOverride.staff_id == staff_id,
-        )
-    )
-    if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    """休み・時間変更を消す。スタッフ本人へ取消通知 (同一 TX).
 
-    # スタッフ本人へ取消通知 (staff-shift-confirmation-design.md §2-b・同一 TX)。
-    # 削除前に ISO 三つ組から日付を逆算する (_date_to_iso の逆変換)。
-    from app.services.leave_notify import notify_leave_cancelled
-
+    休みの種類は共通の処理 ``cancel_staff_leave`` (担当なしへ移した訪問は戻さない)。
+    """
+    row = await _load_row(db, staff_id, override_id)
     target = date.fromisocalendar(row.iso_year, row.iso_week, row.weekday + 1)
+    if row.override_type in LEAVE_TYPES:
+        try:
+            await cancel_staff_leave(
+                db,
+                staff_id=staff_id,
+                day=target,
+                actor=user,
+                op_group_id=None,
+                origin="staff_detail",
+            )
+        except StaffLeaveError as exc:
+            await db.rollback()
+            raise _leave_error(exc) from exc
+        await db.commit()
+        return None
+
     await notify_leave_cancelled(
         db,
         staff_id=row.staff_id,
         target=target,
         type_label=_db_type_to_label(row.override_type),
     )
-
-    await db.delete(row)
+    await set_staff_override(
+        db,
+        staff_id=staff_id,
+        iso_year=row.iso_year,
+        iso_week=row.iso_week,
+        weekday=row.weekday,
+        override_type=None,
+    )
     await db.commit()
     return None

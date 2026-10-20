@@ -57,6 +57,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.leave import FULL_DAY_OFF, HALF_DAY_OFF, visit_hits_leave
 from app.models.course import (
     COURSE_STATUS_COURSE_FIXED,
     COURSE_STATUS_STAFF_ASSIGNED,
@@ -203,6 +204,13 @@ COST_W5_ROTATION_MAX: float = 10.0
 #   患者継続性の回避を優先する序列を保つ.
 COST_CROSS_OFFICE_VIOLATION: float = 400_000.0
 
+# 休み設計 §4-2「割当の好み」: 半休 (午前休・午後休) の人に、休みの時間帯にかかる
+# 訪問の多いコースが行きにくくなるソフトコスト (かかる訪問 1 件あたり)。ハードには
+# しない (半休の人もコースを 1 つ持つ・方式 (c))。かかった訪問は割当の最後の後始末
+# (settle_leave_unassign) が担当なしにする。
+# 序列: 患者連続 (≧2e5) > 半休の時間帯 (1e3/件) > W16 前日 (100) > β (≦~20) > ジッタ (≦10)。
+COST_HALF_DAY_LEAVE_VISIT: float = 1_000.0
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -243,6 +251,9 @@ class StaffInfo:
     # Phase G-45: 当 staff が属する office (primary + secondary) の稼働曜日 map.
     # ``effective_office_for_weekday`` が primary 休業 → secondary 転入を判定する.
     office_operating_weekdays: dict[UUID, frozenset[int]] = field(default_factory=dict)
+    # 休み設計 §4-2: その週の半休 {weekday: "am_off" | "pm_off"}。コースは持てるが、
+    # 休みの時間帯にかかる訪問の数だけコストを足す (``COST_HALF_DAY_LEAVE_VISIT``)。
+    half_day_off: dict[int, str] = field(default_factory=dict)
 
     def effective_office_for_weekday(self, weekday: int) -> UUID | None:
         """Phase G-45: 当該 weekday の effective 主拠点 (= 稼働日かどうかで切替).
@@ -1114,6 +1125,12 @@ class Layer3Assigner:
         # PO 決定4: _persist は 2 名体制 secondary の性別 / NG 違反を検証して警告を
         # 返す (割当自体は行う = 構造的ペアリングを壊さない).
         result.secondary_constraint_warnings = await self._persist(db, persist_assignments)
+
+        # 休み設計 §4-2: 割当の最後の共通の後始末。休む人 (半休の時間帯・終日) に付いた
+        # 訪問を担当なしへ (今日以降だけ)。
+        from app.services.staff_leave import settle_leave_unassign
+
+        await settle_leave_unassign(db, iso_week=(iso_year, iso_week))
 
         return result
 
@@ -2850,6 +2867,15 @@ class Layer3Assigner:
         # 1 コース内で代表 patient (= min(patient_ids)) を seed に使う.
         # patient_ids が空のときは course_code を hash 化したダミー値を seed にする.
         # Wave 5 fix: DB 取得順依存を避けるため min() で決定的に最小 UUID を選ぶ.
+        # ---------- 休み設計 §4-2: 半休の時間帯にかかる訪問 (ソフト) ----------
+        half_leave_penalty = 0.0
+        half_type = staff.half_day_off.get(weekday)
+        if half_type is not None:
+            hits = sum(
+                1 for v in course.visits if visit_hits_leave(half_type, v.start_time, v.end_time)
+            )
+            half_leave_penalty = COST_HALF_DAY_LEAVE_VISIT * hits
+
         rotation_random = 0.0
         if iso_year is not None and iso_week is not None:
             seed_patient = min(course.patient_ids) if course.patient_ids else None
@@ -2866,6 +2892,7 @@ class Layer3Assigner:
             + patient_rotation_penalty
             + rotation_random
             + cross_office_penalty
+            + half_leave_penalty
         )
 
     def _distance_km(self, course: CourseAssignmentTarget, staff: StaffInfo) -> float:
@@ -3197,7 +3224,8 @@ class Layer3Assigner:
 
         - ``Staff.status='active'`` のみ
         - ``StaffShift`` から ``is_on=True`` の曜日集合を構築
-        - ``StaffWeeklyOverride`` (override_type='off') があれば当該曜日を除外
+        - 終日の休み (公休・有給 = ``FULL_DAY_OFF``) の曜日を除外。半休は出勤の曜日の
+          まま ``half_day_off`` に持たせる (休み設計 §4-2)
 
         Phase G-45: ``StaffSecondaryOffice`` を staff ごとにロードし、
         各 office の ``operating_weekdays`` を ``StaffInfo`` に持たせる. これにより
@@ -3237,9 +3265,12 @@ class Layer3Assigner:
         overrides = list((await db.scalars(override_stmt)).all())
         off_days: dict[UUID, set[int]] = {}
         on_days_override: dict[UUID, set[int]] = {}
+        half_days: dict[UUID, dict[int, str]] = {}
         for ov in overrides:
-            if ov.override_type == "off":
+            if ov.override_type in FULL_DAY_OFF:
                 off_days.setdefault(ov.staff_id, set()).add(ov.weekday)
+            elif ov.override_type in HALF_DAY_OFF:
+                half_days.setdefault(ov.staff_id, {})[ov.weekday] = ov.override_type
             elif ov.override_type == "custom_time":
                 on_days_override.setdefault(ov.staff_id, set()).add(ov.weekday)
 
@@ -3317,6 +3348,7 @@ class Layer3Assigner:
                     primary_office_id=staff.primary_office_id,
                     secondary_office_ids=sec_ids,
                     office_operating_weekdays=staff_op_map,
+                    half_day_off=dict(half_days.get(staff.id, {})),
                 )
             )
         return result

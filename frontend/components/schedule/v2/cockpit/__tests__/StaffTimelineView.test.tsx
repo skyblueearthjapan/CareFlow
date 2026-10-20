@@ -163,6 +163,16 @@ describe('StaffTimelineView — 描画', () => {
     );
   });
 
+  it('明示の担当なし (primary 空＋manual 真) はコース担当に読み替えず「（担当なし）」行に出る', () => {
+    renderView({
+      visits: [visit({ id: 'vm', primary_staff_id: null, manual_staff_override: true })],
+      assignedStaffByTemplateWeekday: new Map([[`${TPL_A}:0`, STAFF_2]]),
+    });
+    expect(screen.getByTestId(`tl-lane-${UNASSIGNED_ROW_KEY}`)).toContainElement(
+      screen.getByTestId('tl-bar-vm'),
+    );
+  });
+
   it('担当スタッフの居ない訪問は「（担当なし）」行に出る', () => {
     renderView({ visits: [visit({ id: 'v9', primary_staff_id: null })] });
     expect(screen.getByTestId(`tl-lane-${UNASSIGNED_ROW_KEY}`)).toContainElement(

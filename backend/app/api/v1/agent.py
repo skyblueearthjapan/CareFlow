@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_, select
 
 from app.core.deps import DbDep, require_role
+from app.core.leave import FULL_DAY_OFF, HALF_DAY_OFF
 from app.models.accompaniment import Accompaniment
 from app.models.course import Course
 from app.models.course_template import CourseTemplate
@@ -151,7 +152,12 @@ def _visit_dict(v: Visit, course: Course | None, office_label: str | None, pname
         # 表示の正典はコースの担当 (週を生成した直後は主担当が空でコースにだけ担当がいる)
         "course_staff_id": _s(course.assigned_staff_id) if course else None,
         "effective_staff_id": _s(
-            v.primary_staff_id or (course.assigned_staff_id if course else None)
+            v.primary_staff_id
+            or (
+                course.assigned_staff_id
+                if course is not None and not v.manual_staff_override
+                else None
+            )
         ),
         "kaipoke_id": v.kaipoke_id,
     }
@@ -820,7 +826,10 @@ async def staff_week(
     second_cnt: dict[tuple[UUID, date], int] = defaultdict(int)
     for v in visits:
         c = courses.get(v.course_id) if v.course_id else None
-        eff = v.primary_staff_id or (c.assigned_staff_id if c else None)
+        # 明示の担当なし (primary 空・manual 真) はコース担当に読み替えない (設計 §3-2)。
+        eff = v.primary_staff_id or (
+            c.assigned_staff_id if c is not None and not v.manual_staff_override else None
+        )
         if eff is not None:
             k = (eff, v.visit_date)
             primary_cnt[k] += 1
@@ -877,15 +886,15 @@ async def staff_week(
             is_on = base_on
             half_off = None
             if ov is not None:
-                if ov.override_type == "off":
+                if ov.override_type in FULL_DAY_OFF:  # 公休・有給
                     is_on, start, end = False, None, None
                 elif ov.override_type == "custom_time":
                     # layer3 と同じく時間変更は「その日は出勤」とみなす
                     is_on = True
                     start = ov.start_time or (sh.start_time if sh else None)
                     end = ov.end_time or (sh.end_time if sh else None)
-                elif ov.override_type in ("am_off", "pm_off"):
-                    half_off = "am" if ov.override_type == "am_off" else "pm"
+                elif ov.override_type in HALF_DAY_OFF:
+                    half_off = "pm" if ov.override_type == "pm_off" else "am"
             k = (s.id, d)
             week_total += primary_cnt.get(k, 0)
             day_rows.append(

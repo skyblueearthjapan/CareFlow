@@ -19,6 +19,7 @@ no-op (既存 producer の流儀)。**いずれも commit しない** — 呼び
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from typing import Final
 from uuid import UUID
@@ -33,10 +34,30 @@ from app.models.user import User
 NOTIFY_LEAVE_REJECTED: Final = "leave_rejected"
 NOTIFY_LEAVE_CANCELLED: Final = "leave_cancelled"
 NOTIFY_SHIFT_CONFIRMED: Final = "shift_confirmed"
+NOTIFY_LEAVE_APPROVED: Final = "leave_approved"
+NOTIFY_LEAVE_UNASSIGNED: Final = "leave_unassigned"
+
+#: 休みの種類 → 画面・通知の言葉 (休み設計 §2-1)。
+_LEAVE_LABELS: Final = {
+    "off": "休み",
+    "am_off": "午前休",
+    "pm_off": "午後休",
+    "paid_off": "有給",
+    "custom_time": "時間変更",
+}
 
 _REFERENCE_PENDING_REQUEST: Final = "pending_request"
 
 _WEEKDAYS_JP: Final = ("月", "火", "水", "木", "金", "土", "日")
+
+
+def leave_type_label(leave_type: str) -> str:
+    """休みの種類 (``off`` など) → 「休み」「午前休」「午後休」「有給」(API の読み出しのラベルと同じ)。"""
+    return _LEAVE_LABELS.get(leave_type, leave_type)
+
+
+def _fmt_md(d: date) -> str:
+    return f"{d.month}/{d.day}（{_WEEKDAYS_JP[d.weekday()]}）"
 
 
 def _fmt_date_jp(d: date) -> str:
@@ -141,3 +162,82 @@ async def notify_shift_confirmed(db: AsyncSession, *, staff_id: UUID, month: dat
         )
     )
     return 1
+
+
+async def notify_leave_approved(
+    db: AsyncSession, *, staff_id: UUID, target: date, leave_type: str
+) -> int:
+    """休みの申請の承認を本人へ通知する (「M/D（曜）の午前休が承認されました」・毎回通知)."""
+    user = await _staff_user(db, staff_id)
+    if user is None:
+        return 0
+    label = leave_type_label(leave_type)
+    db.add(
+        Notification(
+            user_id=user.id,
+            type=NOTIFY_LEAVE_APPROVED,
+            title=f"{_fmt_md(target)}の{label}が承認されました",
+            body=f"{_fmt_date_jp(target)} の{label}が承認されました。",
+        )
+    )
+    return 1
+
+
+@dataclass(frozen=True)
+class UnassignedNotice:
+    """休みで担当なしへ移した 1 人 1 日ぶん (管理者への通知の材料)."""
+
+    staff_name: str
+    day: date
+    #: 移した訪問の患者の数 (「N 名の訪問」)。
+    patient_count: int
+    visit_count: int
+    #: 本人が同行者に入っている休みの時間帯の訪問の数 (同行はそのまま)。
+    accompaniment_count: int = 0
+
+
+async def notify_leave_unassigned(
+    db: AsyncSession,
+    notices: list[UnassignedNotice],
+    *,
+    summary_prefix: str = "",
+) -> int:
+    """休みで訪問を担当なしへ移したことを管理者全員へ知らせる (1 通にまとめる・§3-3 の 7).
+
+    1 件なら「スタッフの〇〇さんは M/D（曜）に N 名の訪問を予定していましたが、未割り当てと
+    しました。…」、2 件以上なら「{summary_prefix}休みを N 件入れ、訪問 M 件を未割り当てと
+    しました（〇〇さん 11/12 3 件・…）」。
+    """
+    notices = [n for n in notices if n.visit_count > 0]
+    if not notices:
+        return 0
+    from app.services.constraint_override_notify import _active_admin_users
+
+    tail = (
+        "職員スケジュールの「（担当なし）」から割り当て直してください。"
+        "割り当て直すまでカイポケへは送られません。"
+    )
+    accompaniments = sum(n.accompaniment_count for n in notices)
+    if len(notices) == 1:
+        n = notices[0]
+        title = f"{n.staff_name}さんの{_fmt_md(n.day)}の訪問を未割り当てとしました"
+        body = (
+            f"スタッフの{n.staff_name}さんは{_fmt_md(n.day)}に{n.patient_count}名の訪問を"
+            f"予定していましたが、未割り当てとしました。{tail}"
+        )
+    else:
+        visits = sum(n.visit_count for n in notices)
+        detail = "・".join(
+            f"{n.staff_name}さん {n.day.month}/{n.day.day} {n.visit_count}件" for n in notices
+        )
+        title = f"休みで訪問{visits}件を未割り当てとしました"
+        body = (
+            f"{summary_prefix}休みを{len(notices)}件入れ、訪問{visits}件を未割り当てとしました"
+            f"（{detail}）。{tail}"
+        )
+    if accompaniments:
+        body += f"\n同行{accompaniments}件はそのままです。職員スケジュールで外してください。"
+    users = await _active_admin_users(db)
+    for u in users:
+        db.add(Notification(user_id=u.id, type=NOTIFY_LEAVE_UNASSIGNED, title=title, body=body))
+    return len(users)

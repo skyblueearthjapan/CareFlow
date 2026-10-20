@@ -126,6 +126,12 @@ export interface WeekOverviewVisit {
    * 経由の帰属では他人の訪問が混ざる — 訪問自身の primary が正)。
    */
   primary_staff_id?: string | null;
+  /**
+   * 訪問だけ担当を変えた印 (visit.manual_staff_override)。`primary_staff_id` が空で
+   * これが true なら「明示の担当なし」= コース担当に読み替えず「（担当なし）」の行
+   * (休み設計 §3-2)。欠落は false 扱い。
+   */
+  manual_staff_override?: boolean | null;
 }
 
 export interface CourseWeekOverviewProps {

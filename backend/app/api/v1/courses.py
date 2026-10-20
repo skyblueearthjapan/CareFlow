@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Annotated
 from uuid import UUID
 
@@ -59,6 +60,7 @@ from app.services.scheduling import (
     Layer3AssignmentError,
     StaffAssignment,
 )
+from app.services.staff_leave import settle_leave_unassign
 
 logger = logging.getLogger(__name__)
 
@@ -442,6 +444,14 @@ async def update_course(
             warnings=_accompaniment_warnings,
             actor=current_user,
             op_group_id=_op_group_id,
+        )
+
+    if _staff_id_changing:
+        # 休み設計 §4-2: 担当を書く処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。
+        await db.flush()
+        await settle_leave_unassign(
+            db,
+            dates=[date.fromisocalendar(course.iso_year, course.iso_week, course.weekday + 1)],
         )
 
     await _commit_or_409(db)

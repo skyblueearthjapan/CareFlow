@@ -81,10 +81,20 @@ KIND_NO_COORD = "座標なし"
 # から落ちるため、物理的には成立していても「直すべき」指摘として △ に載せる
 # (2026-09-16 / 調査 `mobile-staff-schedule-mismatch-investigation-2026-09-16.md` §6)。
 KIND_STAFF_NOT_MIRRORED = "主担当なし(コース担当あり)"
+# 休みの時間帯に本人が担当の訪問 (休み設計 §4-2 の漏れの検知)。カイポケの取込で休む人に
+# 担当が戻ったときなど。職員スケジュールで割り当て直す対象として △ に載せる。
+KIND_ON_LEAVE = "休みの時間帯に担当"
 # 「成立しない」(❗) と「余裕がない/ルール逸脱」(△)。それ以外 (昼休み・座標なし) は参考。
 HARD_KINDS: frozenset[str] = frozenset({KIND_OVERLAP, KIND_IMPOSSIBLE, KIND_PAIR_OVER})
 SOFT_KINDS: frozenset[str] = frozenset(
-    {KIND_TIGHT, KIND_WATCH, KIND_PAIR_SHORT, KIND_PAIR_NOT_SAME_START, KIND_STAFF_NOT_MIRRORED}
+    {
+        KIND_TIGHT,
+        KIND_WATCH,
+        KIND_PAIR_SHORT,
+        KIND_PAIR_NOT_SAME_START,
+        KIND_STAFF_NOT_MIRRORED,
+        KIND_ON_LEAVE,
+    }
 )
 # item.level → (❗/△/参考, ラベル)。HTML 側の表示にも使う。
 LEVEL_HARD: frozenset[str] = frozenset({"overlap", "impossible", "pair_over"})
@@ -641,7 +651,10 @@ async def load_week_items(
         pos = (float(p.lat), float(p.lng)) if p.lat is not None and p.lng is not None else None
         pname = (p.name or "").replace("　", " ").strip()
         # 訪問自身の担当が正 (手動変更 manual_staff_override 込み)。無い時だけコース担当。
-        primary_sid = v.primary_staff_id or (c.assigned_staff_id if c is not None else None)
+        # 明示の担当なし (primary 空・manual 真) はコース担当に読み替えない (設計 §3-2)。
+        primary_sid = v.primary_staff_id or (
+            c.assigned_staff_id if c is not None and not v.manual_staff_override else None
+        )
         primary_key = str(primary_sid) if primary_sid and str(primary_sid) in staff_names else None
         who: dict[str, str] = {}
         who[primary_key or UNASSIGNED_STAFF_KEY] = ROLE_PRIMARY
@@ -788,6 +801,65 @@ async def load_unmirrored_staff_findings(
     return findings
 
 
+async def load_leave_findings(
+    db: AsyncSession,
+    *,
+    week_start: date,
+    week_end: date,
+    office_id: uuid.UUID | None = None,
+) -> list[Finding]:
+    """「休みの時間帯に担当が付いている訪問」を指摘として拾う (休み設計 §4-2・SELECT のみ).
+
+    判定は ``staff_leave.find_visits_on_leave`` (今日以降・本人が担当・planned) と同じ。
+    拠点は盤面と同じくコースの拠点、コース無しは患者の主担当拠点で絞る。
+    """
+    from app.services.leave_notify import leave_type_label
+    from app.services.staff_leave import find_visits_on_leave
+
+    hits = await find_visits_on_leave(db, week_start, week_end)
+    if not hits:
+        return []
+    visit_ids = [h.visit_id for h in hits]
+    rows = (
+        await db.execute(
+            select(Visit.id, Patient.name, Patient.primary_office_id, Course.office_id)
+            .join(Patient, Patient.id == Visit.patient_id)
+            .outerjoin(Course, and_(Course.id == Visit.course_id, Course.deleted_at.is_(None)))
+            .where(Visit.id.in_(visit_ids))
+        )
+    ).all()
+    info = {vid: (pname, c_office or p_office) for vid, pname, p_office, c_office in rows}
+    staff_names = dict(
+        (
+            await db.execute(
+                select(Staff.id, Staff.name).where(Staff.id.in_({h.staff_id for h in hits}))
+            )
+        ).all()
+    )
+    findings: list[Finding] = []
+    for h in hits:
+        pname, v_office = info.get(h.visit_id, (None, None))
+        if office_id is not None and v_office != office_id:
+            continue
+        sname = (staff_names.get(h.staff_id) or "").replace("　", " ").strip()
+        findings.append(
+            Finding(
+                staff=sname,
+                day=h.visit_date,
+                kind=KIND_ON_LEAVE,
+                at=fmt_hm(_to_min(h.start_time)),
+                to=(pname or "").replace("　", " ").strip(),
+                frm=(
+                    f"{sname}さんは{leave_type_label(h.leave_type)}です"
+                    "（職員スケジュールで割り当て直してください）"
+                ),
+                staff_key=str(h.staff_id),
+            )
+        )
+    findings.sort(key=lambda f: (f.day, f.at, f.staff, f.to))
+    return findings
+
+
 async def build_feasibility_report(
     db: AsyncSession,
     *,
@@ -817,6 +889,9 @@ async def build_feasibility_report(
         await load_unmirrored_staff_findings(
             db, week_start=week_start, week_end=week_end, office_id=office_id
         )
+    )
+    report.findings.extend(
+        await load_leave_findings(db, week_start=week_start, week_end=week_end, office_id=office_id)
     )
     return report
 

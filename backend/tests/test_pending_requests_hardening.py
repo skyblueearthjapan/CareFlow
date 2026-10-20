@@ -206,11 +206,11 @@ async def test_staff_payload_staff_id_force_overwrite(client, db) -> None:
             "request_type": "staff_off",
             "payload": {
                 "staff_id": str(other_staff.id),  # 他人を指定
-                "date": "2026-05-11",
+                "date": "2030-05-11",
                 "override_type": "off",
             },
             "target_staff_id": str(me_staff.id),  # 自分を target に
-            "target_date": "2026-05-11",
+            "target_date": "2030-05-11",
         },
     )
     assert res.status_code == 201, res.text

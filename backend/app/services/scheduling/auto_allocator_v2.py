@@ -53,6 +53,7 @@ from uuid import UUID
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.leave import FULL_DAY_OFF
 from app.models.acceptance_calendar import AcceptanceCalendar
 from app.models.course import COURSE_STATUS_STAFF_ASSIGNED, Course
 from app.models.course_template import CourseTemplate
@@ -3317,13 +3318,14 @@ async def _count_active_staff_per_weekday_for_role(
     shifts_by_staff: dict[UUID, set[int]] = {}
     for sh in shifts_rows.all():
         shifts_by_staff.setdefault(sh.staff_id, set()).add(sh.weekday)
-    # 当該週の off override を取得
+    # 当該週の終日の休み (公休・有給) を取得
     overrides_rows = await db.scalars(
         select(StaffWeeklyOverride).where(
             StaffWeeklyOverride.staff_id.in_(staff_ids),
             StaffWeeklyOverride.iso_year == iso_year,
             StaffWeeklyOverride.iso_week == iso_week,
-            StaffWeeklyOverride.override_type == "off",
+            # 終日の休み (公休・有給)。半休の人はコースを持つので 1 人に数える (§4-2)。
+            StaffWeeklyOverride.override_type.in_(FULL_DAY_OFF),
         )
     )
     off_overrides: set[tuple[UUID, int]] = {
@@ -8149,7 +8151,10 @@ async def run_v2_pipeline(
                 ).all()
                 for _sv in _staff_rows:
                     _sc = _course_by_id.get(_sv.course_id) if _sv.course_id else None
-                    _main = _sv.primary_staff_id or (_sc.assigned_staff_id if _sc else None)
+                    # 明示の担当なし (primary 空・manual 真) はコース担当に読み替えない。
+                    _main = _sv.primary_staff_id or (
+                        _sc.assigned_staff_id if _sc and not _sv.manual_staff_override else None
+                    )
                     for _sid in {_main, _sv.secondary_staff_id}:
                         if _sid is not None:
                             _staff_busy[(_sid, _sv.visit_date.weekday())].append(
@@ -9409,6 +9414,11 @@ async def apply_week_only(
         assignments_created += 1
     await db.flush()
 
+    # 休み設計 §4-2: 訪問を作る処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。
+    from app.services.staff_leave import settle_leave_unassign
+
+    await settle_leave_unassign(db, iso_week=(iso_year, iso_week))
+
     return {
         "visits_created": inserted_visits,
         "visits_soft_deleted": soft_deleted_count,
@@ -9722,7 +9732,8 @@ async def reset_visits_to_fixed(
             StaffWeeklyOverride.staff_id.in_(staff_ids),
             StaffWeeklyOverride.iso_year == iso_year,
             StaffWeeklyOverride.iso_week == iso_week,
-            StaffWeeklyOverride.override_type == "off",
+            # 終日の休み (公休・有給)。半休の人はコースを持つので 1 人に数える (§4-2)。
+            StaffWeeklyOverride.override_type.in_(FULL_DAY_OFF),
         )
     )
     off_overrides: set[tuple[UUID, int]] = {
@@ -10094,6 +10105,11 @@ async def reset_visits_to_fixed(
     from app.services.staff_event_defaults import expand_staff_event_defaults
 
     await expand_staff_event_defaults(db, iso_year, iso_week)
+
+    # 休み設計 §4-2: 訪問を作る処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。
+    from app.services.staff_leave import settle_leave_unassign
+
+    await settle_leave_unassign(db, iso_week=(iso_year, iso_week))
 
     return {
         "visits_regenerated": inserted_visits,

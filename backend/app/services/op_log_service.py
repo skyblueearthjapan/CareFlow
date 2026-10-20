@@ -62,7 +62,9 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.leave import LEAVE_TYPES
 from app.models.course import Course
+from app.models.leave import LeaveMonth
 from app.models.schedule_op_log import ScheduleOpLog
 from app.models.staff import StaffEvent, StaffWeeklyOverride
 from app.models.visit import (
@@ -806,7 +808,6 @@ async def _set_visit_staff(
     await db.flush()
 
 
-
 async def _assert_visit_course(db: AsyncSession, payload: dict[str, Any]) -> None:
     """set_visit_course の undo/redo 前検証: 訪問のコース・担当が期待値のままか (コースの作業場の「この週のコースに入れる」)."""
     visit = await db.scalar(
@@ -816,10 +817,14 @@ async def _assert_visit_course(db: AsyncSession, payload: dict[str, Any]) -> Non
         raise OpLogConflictError("他の変更があったため戻せません (対象の訪問が見つかりません)")
     want = UUID(payload["course_id"]) if payload.get("course_id") else None
     if visit.course_id != want:
-        raise OpLogConflictError("他の変更があったため戻せません (訪問のコースが既に変更されています)")
+        raise OpLogConflictError(
+            "他の変更があったため戻せません (訪問のコースが既に変更されています)"
+        )
     want_staff = UUID(payload["staff_id"]) if payload.get("staff_id") else None
     if visit.primary_staff_id != want_staff:
-        raise OpLogConflictError("他の変更があったため戻せません (訪問の担当が既に変更されています)")
+        raise OpLogConflictError(
+            "他の変更があったため戻せません (訪問の担当が既に変更されています)"
+        )
 
 
 async def _set_visit_course(db: AsyncSession, payload: dict[str, Any]) -> None:
@@ -839,7 +844,8 @@ async def _set_visit_course(db: AsyncSession, payload: dict[str, Any]) -> None:
         existing = (
             await db.scalars(
                 select(VisitStaffAssignment).where(
-                    VisitStaffAssignment.visit_id == visit.id, VisitStaffAssignment.staff_id == old_staff
+                    VisitStaffAssignment.visit_id == visit.id,
+                    VisitStaffAssignment.staff_id == old_staff,
                 )
             )
         ).all()
@@ -849,7 +855,8 @@ async def _set_visit_course(db: AsyncSession, payload: dict[str, Any]) -> None:
     if new_staff is not None:
         have = await db.scalar(
             select(VisitStaffAssignment.visit_id).where(
-                VisitStaffAssignment.visit_id == visit.id, VisitStaffAssignment.staff_id == new_staff
+                VisitStaffAssignment.visit_id == visit.id,
+                VisitStaffAssignment.staff_id == new_staff,
             )
         )
         if have is None:
@@ -1015,25 +1022,33 @@ async def set_staff_override(
     reason: str | None = None,
     start_time: str | None = None,
     end_time: str | None = None,
+    source: str | None = None,
+    pending_request_id: UUID | None = None,
 ) -> UUID | None:
-    """休み / 時間変更の行を upsert / 削除する (エンドポイントと undo の単一ソース).
+    """休み / 時間変更の行を upsert / 削除する (**override を書く唯一の口**・休み設計 §2-1).
 
     ``staff_weekly_overrides`` は (staff, iso 年, iso 週, weekday) で一意なので、
     既存行があれば **流用** する (同じ日を 2 回「休みにする」しても 1 件のまま)。
+    書く前か後の種類が休み (``LEAVE_TYPES``) なら、その月の
+    ``leave_months.last_leave_changed_at`` を今にする (照合の後の変更の検知・中6)。
 
     Args:
-        override_type: ``'off'`` / ``'custom_time'``。``None`` = 行を削除する
-            (= 「休みにする」の undo)。
+        override_type: ``'off'`` / ``'am_off'`` / ``'pm_off'`` / ``'paid_off'`` /
+            ``'custom_time'``。``None`` = 行を削除する (= 「休みにする」の undo・取り消し)。
         override_id: 新規作成するときの id。省略時は採番。
+        source: 誰が入れた休みか (``request`` / ``admin`` / ``kaipoke``)。None は ``admin``。
+        pending_request_id: 承認元の申請。
 
     Returns:
         書いた行の id。削除したときは ``None``。
     """
     existing = await _load_staff_override(db, staff_id, iso_year, iso_week, weekday)
+    before_type = existing.override_type if existing is not None else None
     if override_type is None:
         if existing is not None:
             await db.delete(existing)
             await db.flush()
+            await _touch_leave_month(db, iso_year, iso_week, weekday, before_type, None)
         return None
 
     if existing is not None:
@@ -1041,7 +1056,10 @@ async def set_staff_override(
         existing.reason = reason
         existing.start_time = _parse_time(start_time) if start_time else None
         existing.end_time = _parse_time(end_time) if end_time else None
+        existing.source = source or "admin"
+        existing.pending_request_id = pending_request_id
         await db.flush()
+        await _touch_leave_month(db, iso_year, iso_week, weekday, before_type, override_type)
         return existing.id
 
     row = StaffWeeklyOverride(
@@ -1053,12 +1071,39 @@ async def set_staff_override(
         start_time=_parse_time(start_time) if start_time else None,
         end_time=_parse_time(end_time) if end_time else None,
         reason=reason,
+        source=source or "admin",
+        pending_request_id=pending_request_id,
     )
     if override_id is not None:
         row.id = override_id
     db.add(row)
     await db.flush()
+    await _touch_leave_month(db, iso_year, iso_week, weekday, None, override_type)
     return row.id
+
+
+async def _touch_leave_month(
+    db: AsyncSession,
+    iso_year: int,
+    iso_week: int,
+    weekday: int,
+    before_type: str | None,
+    after_type: str | None,
+) -> None:
+    """休みの追加・変更・削除なら、その月の ``last_leave_changed_at`` を今にする.
+
+    時間変更どうしの書き換え (前も後も休みでない) では更新しない (休み設計 §2-1)。
+    """
+    if before_type not in LEAVE_TYPES and after_type not in LEAVE_TYPES:
+        return
+    month = date.fromisocalendar(iso_year, iso_week, weekday + 1).replace(day=1)
+    row = await db.get(LeaveMonth, month)
+    now = datetime.now(UTC)
+    if row is None:
+        db.add(LeaveMonth(month=month, last_leave_changed_at=now))
+    else:
+        row.last_leave_changed_at = now
+    await db.flush()
 
 
 async def _set_staff_override(db: AsyncSession, payload: dict[str, Any]) -> None:
@@ -1075,6 +1120,11 @@ async def _set_staff_override(db: AsyncSession, payload: dict[str, Any]) -> None
         reason=payload.get("reason"),
         start_time=payload.get("start_time"),
         end_time=payload.get("end_time"),
+        # 休み設計 §3-4: 誰が入れた休みか・承認元の申請も戻す (古い記録には無い = admin)。
+        source=payload.get("source"),
+        pending_request_id=(
+            UUID(payload["pending_request_id"]) if payload.get("pending_request_id") else None
+        ),
     )
 
 

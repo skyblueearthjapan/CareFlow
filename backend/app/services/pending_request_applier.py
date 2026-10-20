@@ -46,11 +46,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.leave import LEAVE_TYPES
 from app.models.course import Course
 from app.models.patient import Patient
 from app.models.patient_fixed_visit import PatientFixedVisit
 from app.models.pending_request import PendingRequest
-from app.models.staff import Staff, StaffEvent, StaffWeeklyOverride
+from app.models.staff import Staff, StaffEvent
+from app.models.user import User
 from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
 from app.schemas.v2.enums import RequestScope, RequestStatus, RequestType
 from app.services.geocoding.client import geocode_address
@@ -62,6 +64,12 @@ from app.services.proposed_visits_pfv import (
     apply_proposed_visits_as_normal_pfv,
 )
 from app.services.scheduling.config import load_scheduling_config
+from app.services.staff_leave import (
+    StaffLeaveError,
+    apply_staff_leave,
+    cancel_staff_leave,
+    settle_leave_unassign,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,11 +130,6 @@ def _coerce_time(value: Any) -> time | None:
         except (ValueError, IndexError):
             return None
     return None
-
-
-def _date_to_iso(d: date) -> tuple[int, int, int]:
-    iso = d.isocalendar()
-    return iso.year, iso.week, d.weekday()
 
 
 # Phase G-84 A-2: 赤警告コード (満員 / 時刻重複). フロント (computePlacementWarnings)
@@ -192,7 +195,14 @@ class PendingRequestApplier:
     トランザクション: 適用失敗時は status 変更を含めて呼び出し側で rollback。
     """
 
-    async def apply(self, db: AsyncSession, request: PendingRequest) -> None:
+    async def apply(
+        self,
+        db: AsyncSession,
+        request: PendingRequest,
+        *,
+        actor: User | None = None,
+        op_group_id: UUID | None = None,
+    ) -> None:
         """request.request_type に応じて対応する handler を呼び出す。
 
         approve 済み (applied_at IS NOT NULL or status='approved' with approved_at)
@@ -224,6 +234,10 @@ class PendingRequestApplier:
             else dict(request.payload or {})
         )
 
+        if request.request_type == RequestType.STAFF_OFF.value:
+            # 休みは共通の処理へ (操作した人・op_group を渡す・休み設計 §3-1 L6)。
+            await _apply_staff_off(db, request, payload, actor=actor, op_group_id=op_group_id)
+            return
         await handler(db, request, payload)
 
 
@@ -232,8 +246,20 @@ class PendingRequestApplier:
 # ----------------------------------------------------------------------------
 
 
-async def _apply_staff_off(db: AsyncSession, request: PendingRequest, payload: _Payload) -> None:
-    """``staff_off``: スタッフのその週だけの休み登録 (staff_weekly_overrides)."""
+async def _apply_staff_off(
+    db: AsyncSession,
+    request: PendingRequest,
+    payload: _Payload,
+    *,
+    actor: User | None = None,
+    op_group_id: UUID | None = None,
+) -> None:
+    """``staff_off``: 休みの申請の承認 → 共通の処理 (休み設計 §3-1・§2-3).
+
+    ``override_type`` は ``off`` / ``am_off`` / ``pm_off`` / ``paid_off``。変更のお願い
+    (``kind='change'``) の ``cancel`` は休みの取り消し。同じ日に休みがあれば種類を置き換える
+    (upsert)。今日より前の日は休みの記録だけ。
+    """
     staff_id = _coerce_uuid(payload.get("staff_id") or request.target_staff_id)
     target = _coerce_date(payload.get("date") or request.target_date)
     if staff_id is None or target is None:
@@ -241,25 +267,37 @@ async def _apply_staff_off(db: AsyncSession, request: PendingRequest, payload: _
             "staff_off: staff_id and date are required",
             http_status=422,
         )
-
-    iso_year, iso_week, weekday = _date_to_iso(target)
     override_type = str(payload.get("override_type") or payload.get("type") or "off")
-    start_time = _coerce_time(payload.get("start_time"))
-    end_time = _coerce_time(payload.get("end_time"))
-    reason = payload.get("reason") or payload.get("note")
-
-    row = StaffWeeklyOverride(
-        staff_id=staff_id,
-        iso_year=iso_year,
-        iso_week=iso_week,
-        weekday=weekday,
-        override_type=override_type,
-        start_time=start_time,
-        end_time=end_time,
-        reason=reason,
-    )
-    db.add(row)
-    await db.flush()
+    note = payload.get("note") or payload.get("reason")
+    try:
+        if override_type == "cancel":
+            await cancel_staff_leave(
+                db,
+                staff_id=staff_id,
+                day=target,
+                actor=actor,
+                op_group_id=op_group_id,
+                origin="request_list",
+            )
+            return
+        if override_type not in LEAVE_TYPES:
+            raise PendingRequestApplyError(
+                f"staff_off: 休みの種類が不正です ({override_type})", http_status=422
+            )
+        await apply_staff_leave(
+            db,
+            staff_id=staff_id,
+            day=target,
+            leave_type=override_type,
+            source="request",
+            note=str(note) if note else None,
+            actor=actor,
+            op_group_id=op_group_id,
+            origin="request_list",
+            request=request,
+        )
+    except StaffLeaveError as exc:
+        raise PendingRequestApplyError(str(exc.detail), http_status=exc.status_code) from exc
 
 
 async def _apply_staff_event(db: AsyncSession, request: PendingRequest, payload: _Payload) -> None:
@@ -868,6 +906,8 @@ async def _apply_visit_add_onetime(
         )
     )
     await db.flush()
+    # 休み設計 §4-2: 訪問を作る処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。
+    await settle_leave_unassign(db, dates=[visit_date])
 
 
 async def _apply_patient_cancel(
@@ -987,6 +1027,8 @@ async def _apply_patient_reschedule(
             patient.weekly_pattern = new_pattern
 
     await db.flush()
+    # 休み設計 §4-2: 担当を書く処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。
+    await settle_leave_unassign(db, dates=[target_visit.visit_date])
 
 
 async def _apply_patient_special_week_on(

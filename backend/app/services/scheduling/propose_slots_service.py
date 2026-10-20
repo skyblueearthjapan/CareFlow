@@ -29,6 +29,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.leave import FULL_DAY_OFF, LEAVE_TYPES, visit_hits_leave
 from app.models.course import Course
 from app.models.office import Office
 from app.models.patient import Patient
@@ -133,6 +134,9 @@ class _CourseBucket:
     assigned_staff_id: UUID | None = None
     staff_sex: str | None = None
     staff_absent: bool = False
+    # 休み設計 §4-2: 割付スタッフのその日の半休 ("am_off" / "pm_off")。休みの時間帯に
+    # かかる枠だけ staff_absent と同じ扱い (警告＋降格) にする。
+    half_day_off: str | None = None
     # NG スタッフ (patient_ng_staff / 設計書 §6): このコースの割付スタッフを NG 指定して
     # いる患者 ID 集合 (逆引き). load 時に ix_patient_ng_staff_staff で 1 クエリ一括ロード
     # する. 候補患者がこの集合に居れば **提案から除外** (PO確定 2026-08-11: ハード制約).
@@ -377,8 +381,9 @@ async def load_week_course_buckets(
     #   1) StaffShift  … 固定週シフト (weekday ごとの is_on). 行が無い weekday は
     #      「非番」とみなす (StaffShift は通常 staff あたり 7 行揃うため, 欠落 =
     #      未設定 = 非番扱い. schedule-advisor N-3 の定義に従う).
-    #   2) StaffWeeklyOverride(override_type='off') … 当週の休み (iso_year/iso_week/
-    #      weekday). is_on=True のシフトでも当週 off なら非番になる.
+    #   2) StaffWeeklyOverride … 当週の終日の休み (公休・有給 = FULL_DAY_OFF) なら
+    #      is_on=True のシフトでも非番。半休は bucket.half_day_off に持たせ、休みの
+    #      時間帯にかかる枠だけ非番と同じ扱いにする (休み設計 §4-2).
     staff_ids = {b.assigned_staff_id for b in buckets.values() if b.assigned_staff_id is not None}
     if staff_ids:
         shift_on_by_key: dict[tuple[UUID, int], bool] = {}
@@ -391,16 +396,24 @@ async def load_week_course_buckets(
             shift_on_by_key[(sid, wd)] = bool(is_on)
 
         override_off_keys: set[tuple[UUID, int]] = set()
+        half_off_by_key: dict[tuple[UUID, int], str] = {}
         override_rows = await db.execute(
-            select(StaffWeeklyOverride.staff_id, StaffWeeklyOverride.weekday).where(
+            select(
+                StaffWeeklyOverride.staff_id,
+                StaffWeeklyOverride.weekday,
+                StaffWeeklyOverride.override_type,
+            ).where(
                 StaffWeeklyOverride.staff_id.in_(staff_ids),
                 StaffWeeklyOverride.iso_year == iso_year,
                 StaffWeeklyOverride.iso_week == iso_week,
-                StaffWeeklyOverride.override_type == "off",
+                StaffWeeklyOverride.override_type.in_(LEAVE_TYPES),
             )
         )
-        for sid, wd in override_rows.all():
-            override_off_keys.add((sid, wd))
+        for sid, wd, ot in override_rows.all():
+            if ot in FULL_DAY_OFF:
+                override_off_keys.add((sid, wd))
+            else:
+                half_off_by_key[(sid, wd)] = ot
 
         # NG スタッフ (設計書 §6): バケット割付スタッフを NG 指定している患者を
         # **逆引きで 1 クエリ** 一括ロードする (ix_patient_ng_staff_staff の用途そのもの).
@@ -423,6 +436,7 @@ async def load_week_course_buckets(
             shift_on = shift_on_by_key.get(shift_key)  # None = シフト行なし
             shift_absent = shift_on is None or shift_on is False
             b.staff_absent = shift_absent or (shift_key in override_off_keys)
+            b.half_day_off = half_off_by_key.get(shift_key)
             b.ng_patient_ids = frozenset(ng_patients_by_staff.get(sid, ()))
 
         # イベント考慮2段階提案: 割付スタッフの当該週 staff_events を占有窓として
@@ -1050,6 +1064,10 @@ def _enumerate_candidate_slots(
             # I-07 (H5): 同住所ペア枠は既存訪問の時刻を継ぐが、単独枠は slot.start を
             # × 時刻集合と突合する (auto_allocator の v.start_time in blocked と同判定).
             acceptance_blocked = slot.start in blocked_starts
+            # 休み設計 §4-2: 割付スタッフの半休の時間帯にかかる枠は「休み」扱い。
+            slot_absent = staff_absent or visit_hits_leave(
+                bucket.half_day_off, slot.start, slot.end
+            )
             reasons, warnings = _slot_reasons_and_warnings(
                 slot,
                 candidate,
@@ -1057,7 +1075,7 @@ def _enumerate_candidate_slots(
                 remaining_count=remaining_count,
                 matched_weekday=matched_weekday,
                 staff_unassigned=staff_unassigned,
-                staff_absent=staff_absent,
+                staff_absent=slot_absent,
                 staff_sex_mismatch=staff_sex_mismatch,
                 acceptance_blocked=acceptance_blocked,
                 is_efficiency_alternative=is_efficiency_alternative,
@@ -1071,7 +1089,7 @@ def _enumerate_candidate_slots(
                 matched_time_type=matched_time_type,
                 max_patients=max_patients,
                 staff_unassigned=staff_unassigned,
-                staff_absent=staff_absent,
+                staff_absent=slot_absent,
                 staff_sex_mismatch=staff_sex_mismatch,
                 acceptance_blocked=acceptance_blocked,
             )
@@ -1163,7 +1181,13 @@ def _build_pair_proposed_slot(
     staff_unassigned = (primary_bucket.assigned_staff_id is None) or (
         partner_bucket.assigned_staff_id is None
     )
-    staff_absent = primary_bucket.staff_absent or partner_bucket.staff_absent
+    staff_absent = (
+        primary_bucket.staff_absent
+        or partner_bucket.staff_absent
+        # 休み設計 §4-2: どちらかの半休の時間帯にかかる枠も「休み」扱い。
+        or visit_hits_leave(primary_bucket.half_day_off, start, end)
+        or visit_hits_leave(partner_bucket.half_day_off, start, end)
+    )
     staff_sex_mismatch = _staff_sex_mismatch(
         primary_bucket.staff_sex, candidate.sex_restriction
     ) or _staff_sex_mismatch(partner_bucket.staff_sex, candidate.sex_restriction)

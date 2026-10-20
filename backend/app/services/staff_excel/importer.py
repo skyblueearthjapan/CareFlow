@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, time
+from datetime import date, datetime, time
 from io import BytesIO
 from typing import Any
 from uuid import UUID
@@ -35,8 +35,10 @@ from openpyxl import load_workbook
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.leave import LEAVE_TYPES
 from app.models.office import Office
 from app.models.staff import Staff, StaffSecondaryOffice, StaffShift, StaffWeeklyOverride
+from app.models.user import User
 from app.schemas.v2.staff_excel import (
     OverrideExcelImportRow,
     ShiftExcelImportRow,
@@ -44,6 +46,8 @@ from app.schemas.v2.staff_excel import (
     StaffExcelImportRow,
     StaffExcelImportSummary,
 )
+from app.services.leave_calendar import date_of
+from app.services.op_log_service import set_staff_override
 from app.services.staff_excel.schema import (
     OVERRIDE_COL_INDEX,
     OVERRIDE_EDIT_COL_INDEX,
@@ -66,6 +70,12 @@ from app.services.staff_excel.schema import (
     is_magic_delete,
     is_sample_row,
     parse_override_cell,
+)
+from app.services.staff_leave import (
+    LeaveApplyResult,
+    count_leave_moves,
+    notify_leave_results,
+    write_override_day,
 )
 
 logger = logging.getLogger(__name__)
@@ -2371,8 +2381,42 @@ async def parse_and_diff(
                 summary.override_error += 1
             case "noop":
                 summary.override_noop += 1
+    # 休み設計 §4-3: 「休みの日の訪問 N 件を担当なしへ移します」。
+    summary.leave_unassign_visits = await count_leave_moves(
+        db, await _leave_entries_from_ops(db, override_ops)
+    )
 
     return staff_rows, shift_rows, summary, staff_ops, shift_ops, override_rows, override_ops
+
+
+async def _leave_entries_from_ops(
+    db: AsyncSession, override_ops: list[dict[str, Any]]
+) -> list[tuple[UUID, date, str]]:
+    """取込で入る・変わる休み (職員, 日, 種類)。プレビューの件数の材料."""
+    out: list[tuple[UUID, date, str]] = []
+    for op in override_ops:
+        if op.get("_op") == "new":
+            sid, y, w, wd, ot = (
+                op["staff_id"],
+                op["iso_year"],
+                op["iso_week"],
+                op["weekday"],
+                op["override_type"],
+            )
+        elif op.get("_op") == "update":
+            obj = await db.get(StaffWeeklyOverride, op["_override_id"])
+            if obj is None:
+                continue
+            sid = op.get("staff_id", obj.staff_id)
+            y = op.get("iso_year", obj.iso_year)
+            w = op.get("iso_week", obj.iso_week)
+            wd = op.get("weekday", obj.weekday)
+            ot = op.get("override_type", obj.override_type)
+        else:
+            continue
+        if ot in LEAVE_TYPES:
+            out.append((sid, date_of(y, w, wd), ot))
+    return out
 
 
 async def apply_changes(
@@ -2381,6 +2425,7 @@ async def apply_changes(
     staff_ops: list[dict[str, Any]],
     shift_ops: list[dict[str, Any]],
     override_ops: list[dict[str, Any]] | None = None,
+    actor: User | None = None,
 ) -> None:
     """差分を DB に反映する (partial commit).
 
@@ -2453,14 +2498,22 @@ async def apply_changes(
                 ).all()
                 for so in sec_to_cleanup:
                     await db.delete(so)
-                # 関連 override も物理削除 (cascade で消えるが明示).
+                # 関連 override も物理削除 (cascade で消えるが明示)。書き口は set_staff_override
+                # (休み設計 §2-1: last_leave_changed_at も更新する)。
                 ovs_to_cleanup = (
                     await db.scalars(
                         select(StaffWeeklyOverride).where(StaffWeeklyOverride.staff_id == sid)
                     )
                 ).all()
                 for ov in ovs_to_cleanup:
-                    await db.delete(ov)
+                    await set_staff_override(
+                        db,
+                        staff_id=ov.staff_id,
+                        iso_year=ov.iso_year,
+                        iso_week=ov.iso_week,
+                        weekday=ov.weekday,
+                        override_type=None,
+                    )
     # 中間 flush で staff row を確定 (shift new で staff_id を再参照する可能性).
     await db.flush()
 
@@ -2511,25 +2564,82 @@ async def apply_changes(
                 await db.delete(obj)
     await db.flush()
 
-    # 3) Override (Phase E-7 gap P1).
+    # 3) Override (Phase E-7 gap P1)。休み設計 §4-3: 1 日ずつ「あるべき姿」にそろえる
+    #    (休みは共通の処理・時間変更は行だけ・同じなら触らない)。通知は最後に 1 通。
     if override_ops:
+        results: list[LeaveApplyResult | None] = []
         for op in override_ops:
             op_type = op.get("_op")
             if op_type == "new":
-                data = {k: v for k, v in op.items() if not k.startswith("_")}
-                db.add(StaffWeeklyOverride(**data))
-            elif op_type == "update":
-                ov_id = op["_override_id"]
-                obj = await db.get(StaffWeeklyOverride, ov_id)
-                if obj is None:
-                    continue
-                for k, v in op.items():
-                    if k.startswith("_"):
-                        continue
-                    setattr(obj, k, v)
-            elif op_type == "delete":
-                ov_id = op["_override_id"]
-                obj = await db.get(StaffWeeklyOverride, ov_id)
-                if obj is not None:
-                    await db.delete(obj)
+                results.append(
+                    await write_override_day(
+                        db,
+                        staff_id=op["staff_id"],
+                        day=date_of(op["iso_year"], op["iso_week"], op["weekday"]),
+                        override_type=op["override_type"],
+                        start_time=op.get("start_time"),
+                        end_time=op.get("end_time"),
+                        reason=op.get("reason"),
+                        actor=actor,
+                        origin="excel",
+                    )
+                )
+                continue
+            ov_obj = await db.get(StaffWeeklyOverride, op["_override_id"])
+            if ov_obj is None:
+                continue
+            old_day = date_of(ov_obj.iso_year, ov_obj.iso_week, ov_obj.weekday)
+            if op_type == "delete":
+                await write_override_day(
+                    db,
+                    staff_id=ov_obj.staff_id,
+                    day=old_day,
+                    override_type=None,
+                    start_time=None,
+                    end_time=None,
+                    reason=None,
+                    actor=actor,
+                    origin="excel",
+                )
+                continue
+            if op_type != "update":
+                continue
+            merged: dict[str, Any] = {
+                "override_type": ov_obj.override_type,
+                "start_time": ov_obj.start_time,
+                "end_time": ov_obj.end_time,
+                "reason": ov_obj.reason,
+                "iso_year": ov_obj.iso_year,
+                "iso_week": ov_obj.iso_week,
+                "weekday": ov_obj.weekday,
+                "staff_id": ov_obj.staff_id,
+            }
+            merged.update({k: v for k, v in op.items() if not k.startswith("_")})
+            new_day = date_of(merged["iso_year"], merged["iso_week"], merged["weekday"])
+            if new_day != old_day or merged["staff_id"] != ov_obj.staff_id:
+                await write_override_day(
+                    db,
+                    staff_id=ov_obj.staff_id,
+                    day=old_day,
+                    override_type=None,
+                    start_time=None,
+                    end_time=None,
+                    reason=None,
+                    actor=actor,
+                    origin="excel",
+                )
+            results.append(
+                await write_override_day(
+                    db,
+                    staff_id=merged["staff_id"],
+                    day=new_day,
+                    override_type=merged["override_type"],
+                    start_time=merged["start_time"],
+                    end_time=merged["end_time"],
+                    reason=merged["reason"],
+                    actor=actor,
+                    origin="excel",
+                )
+            )
+        await notify_leave_results(db, results)
         await db.flush()

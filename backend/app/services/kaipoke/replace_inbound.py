@@ -53,6 +53,7 @@ from app.services.kaipoke.inbound import (
 from app.services.kaipoke.name_match import build_name_index, match_name
 from app.services.kaipoke.ng_conflicts import NgConflict, NgPair, collect_ng_conflicts
 from app.services.patient_status_sync import is_schedulable_status, status_label
+from app.services.staff_leave import LeaveConflict, collect_leave_conflicts
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -116,6 +117,9 @@ class ReplaceResult:
     # ⛔ NG スタッフ (patient_ng_staff) に該当する組み合わせ (dry-run のみ集計)。
     # カイポケが「正」なので取り込みはブロックしない — 警告として可視化するだけ。
     ng_conflicts: list[NgConflict] = field(default_factory=list)
+    # 休む人の休みの時間帯に担当が付く訪問 (dry-run のみ集計・休み設計 §4-2 H-b)。
+    # カイポケが正なので取り込みは止めず、後始末も呼ばない — プレビューで知らせるだけ。
+    leave_conflicts: list[LeaveConflict] = field(default_factory=list)
     # 日ごとの内訳 {日付: {"wiped": n, "inserted": n}} — 連携結果レポートの
     # 明細 (kind='day') の材料。置換対象になった日は 0 件でもキーを持つ
     # (「その日は置換した・結果 0 件だった」と「触っていない」を区別する)。
@@ -650,5 +654,14 @@ async def replace_week_from_kaipoke(
 
     if dry_run:
         result.ng_conflicts = await collect_ng_conflicts(db, ng_pairs)
+        result.leave_conflicts = await collect_leave_conflicts(
+            db,
+            [
+                (s, r.d, r.start_t, r.end_t)
+                for r in resolved
+                for s in (r.sid, r.sid2)
+                if s is not None and (target_days is None or r.d in target_days)
+            ],
+        )
 
     return result

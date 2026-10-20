@@ -224,6 +224,7 @@ async def import_excel(
                 staff_ops=staff_ops,
                 shift_ops=shift_ops,
                 override_ops=override_ops,
+                actor=_user,
             )
             await db.commit()
             transaction_applied = True
@@ -333,6 +334,7 @@ async def replace_all_endpoint(
                 shift_ops=shift_ops,
                 staff_ids_to_soft_delete=staff_ids_to_soft_delete,
                 override_ops=override_ops,
+                actor=_user,
             )
             await db.commit()
             transaction_applied = True

@@ -1915,6 +1915,11 @@ async def auto_allocate(
     # H1 (review): 全 Phase 完了後に最終 flush (commit は呼び出し側)
     await session.flush()
 
+    # 休み設計 §4-2: 訪問を作る処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。
+    from app.services.staff_leave import settle_leave_unassign
+
+    await settle_leave_unassign(session, iso_week=(iso_year, iso_week))
+
     logger.info(
         "auto_allocate done: batch=%s proposals=%d warnings=%d improvement_score=%s",
         proposal_batch_id,

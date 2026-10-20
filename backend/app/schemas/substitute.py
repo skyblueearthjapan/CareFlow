@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 SubstituteStatus = Literal["ok", "warn", "ng"]
 
 SubstituteReasonCode = Literal[
-    "off",  # 当該週の休み申請 (StaffWeeklyOverride override_type='off')
+    "off",  # 休み (有給・半休の時間帯を含む・StaffWeeklyOverride)
     "ng_staff",  # 患者の NG スタッフ指定
     "gender",  # 患者の性別制限に不適合
     "trainee",  # 新人 (単独で担当は不可・同行で割り当てる)

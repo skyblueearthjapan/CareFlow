@@ -820,6 +820,11 @@ async def apply_copy_plan(db: AsyncSession, plan: CopyPlan) -> CopyResult:
             db.add(VisitStaffAssignment(visit_id=v.id, staff_id=secondary))
         result.staff_mirrored += 1
     await db.flush()
+
+    # 休み設計 §4-2: 訪問を作る処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。
+    from app.services.staff_leave import settle_leave_unassign
+
+    await settle_leave_unassign(db, iso_week=(iso.year, iso.week))
     return result
 
 
