@@ -28,6 +28,7 @@ import type { StaffRead } from '@/lib/schemas/staff';
 import type { CockpitEventRead } from '@/lib/schemas/v2/cockpit';
 import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
 import { classifyVisitDisplay, VISIT_DISPLAY_CLASS } from '@/lib/schedule/visitVisibility';
+import { resolveVisitRowKey } from '@/lib/schedule/staffDayCount';
 
 import { compareByStaffCode } from '@/lib/kana-sort';
 import { genderPalette } from '@/lib/scheduling/timeline';
@@ -363,12 +364,7 @@ export function StaffWeekBoard({
       // 行の帰属は訪問自身の primary を最優先 (2026-07-26)。コース担当経由だと
       // 臨時テンプレ (臨・臨2… を束ねる) で他スタッフの訪問が混ざるため。
       // 明示の担当なし (primary 空＋manual 真) はコース担当に読み替えない (休み設計 §3-2)。
-      const staffId =
-        v.primary_staff_id ??
-        (v.manual_staff_override
-          ? undefined
-          : assignedStaffByTemplateWeekday.get(`${v.course_template_id}:${v.weekday}`)) ??
-        UNASSIGNED_KEY;
+      const staffId = resolveVisitRowKey(v, assignedStaffByTemplateWeekday);
       rows.add(staffId);
       const cellKey = `${staffId}:${v.weekday}`;
       let byTpl = cells.get(cellKey);

@@ -40,6 +40,7 @@ import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
 import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
+import { resolveVisitRowKey as resolveRowKey } from '@/lib/schedule/staffDayCount';
 import { parseHM } from '@/lib/scheduling/freeGaps';
 import {
   assignLanes,
@@ -347,22 +348,14 @@ function applyStaffSwapDragImage(dt: DataTransfer, name: string, office?: string
 }
 
 /**
- * 訪問の行帰属。StaffWeekBoard の cellMap と**同じ規則**:
+ * 訪問の行帰属。StaffWeekBoard と**同じ規則** (単一の出所 = `lib/schedule/staffDayCount.ts`):
  * 訪問自身の primary を最優先 → （manual でなければ）コース担当 → 「（担当なし）」。
- * (臨時テンプレは複数スタッフの臨N コースを束ねるため primary が正。
- *  primary 空＋manual 真は「明示の担当なし」= コース担当に読み替えない・休み設計 §3-2)
  */
 export function resolveVisitRowKey(
   visit: TimelineVisit,
   assignedStaffByTemplateWeekday?: Map<string, string>,
 ): string {
-  return (
-    visit.primary_staff_id ??
-    (visit.manual_staff_override
-      ? undefined
-      : assignedStaffByTemplateWeekday?.get(`${visit.course_template_id}:${visit.weekday}`)) ??
-    UNASSIGNED_ROW_KEY
-  );
+  return resolveRowKey(visit, assignedStaffByTemplateWeekday);
 }
 
 /**
