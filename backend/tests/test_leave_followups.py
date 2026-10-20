@@ -51,7 +51,7 @@ async def _user(db, role: str, staff_id: UUID | None = None) -> User:
     return u
 
 
-async def _staff(db, name: str = "青木") -> Staff:
+async def _staff(db, name: str = "職員A") -> Staff:
     s = Staff(name=name)
     db.add(s)
     await db.flush()
@@ -102,7 +102,7 @@ def _off_request(staff: Staff, d: date, t: str = "pm_off", **extra) -> dict:
 async def test_new_request_notifies_admins_with_reference_and_data(client, db) -> None:
     admin = await _user(db, "admin")
     other_admin = await _user(db, "admin")
-    s = await _staff(db, "佐々木")
+    s = await _staff(db, "職員X")
     u = await _user(db, "staff", s.id)
     res = await client.post(
         "/api/v1/pending-requests", headers=_bearer(u), json=_off_request(s, TUE, note="学校")
@@ -121,7 +121,7 @@ async def test_new_request_notifies_admins_with_reference_and_data(client, db) -
         "override_type": "pm_off",
         "kind": "normal",
     }
-    assert "佐々木さん" in n.title and "11/12" in n.title and "午後休" in n.title
+    assert "職員Xさん" in n.title and "11/12" in n.title and "午後休" in n.title
     # 職員本人には届かない
     assert (await db.scalar(select(Notification.id).where(Notification.user_id == u.id))) is None
 
@@ -146,7 +146,7 @@ async def test_unassigned_notice_has_staff_and_date(client, db) -> None:
     n = await db.scalar(select(Notification).where(Notification.type == "leave_unassigned"))
     assert n.data["staff_id"] == str(s.id) and n.data["date"] == TUE.isoformat()
     assert n.data["items"] == [
-        {"staff_id": str(s.id), "staff_name": "青木", "date": TUE.isoformat(), "visit_count": 1}
+        {"staff_id": str(s.id), "staff_name": "職員A", "date": TUE.isoformat(), "visit_count": 1}
     ]
 
 
@@ -203,8 +203,8 @@ def test_visit_owner_ids_rules() -> None:
 @pytest.mark.asyncio
 async def test_month_table_counts_legacy_secondary(client, db) -> None:
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木")
-    b = await _staff(db, "伊藤")
+    a = await _staff(db, "職員A")
+    b = await _staff(db, "職員B")
     await _visit(db, a, TUE, "09:00", "10:00", secondary_staff_id=b.id)
     owned = await load_owned_visits_between(db, TUE, TUE)
     assert [v.on_primary for v in owned[(a.id, TUE)]] == [True]
@@ -388,3 +388,18 @@ async def test_second_request_same_day_is_409(client, db) -> None:
     assert res.status_code == 409
     # 1 件目の通知だけ (2 件目は書かれない)
     assert len((await db.scalars(select(PendingRequest))).all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_own_request_does_not_notify_self(client, db) -> None:
+    me = await _user(db, "admin")
+    other = await _user(db, "admin")
+    s = await _staff(db, "職員Y")
+    res = await client.post(
+        "/api/v1/pending-requests", headers=_bearer(me), json=_off_request(s, TUE)
+    )
+    assert res.status_code == 201, res.text
+    rows = (
+        await db.scalars(select(Notification).where(Notification.type == "leave_requested"))
+    ).all()
+    assert [r.user_id for r in rows] == [other.id]

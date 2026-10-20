@@ -32,6 +32,10 @@ Create Date: 2026-10-20
 SQLite の ``pending_requests`` は batch で再構築して付ける (downgrade は外すだけ)。
 月の列の「1 日だけ」の CHECK は PG だけ (SQLite に EXTRACT が無い)。
 
+## オフライン (``alembic upgrade --sql``)
+5 の「照合前」の行づくりと申請中の重複そろえは DB を読むので、オフラインの SQL 出力では
+落ちる (本番はつないだ状態で ``alembic upgrade head`` を流す)。
+
 ## downgrade
 新しい表と列を消す (照合前の印・事業所の休み・勤務表の記録・Google ドライブの接続は
 失われる)。``pending_requests`` の CHECK は旧 9 種・本番の旧名 1 つへ戻すが、PG では ``NOT VALID`` で付ける
@@ -446,9 +450,7 @@ def upgrade() -> None:
     _create_tables()
     _seed_baseline()
     # 6. 通知に画面が開く先の材料 (休みの通知の staff_id・date など・#8/#13)。
-    # (試験の小さな DB には notifications が無いことがあるので、あるときだけ)
-    if sa.inspect(op.get_bind()).has_table("notifications"):
-        op.add_column("notifications", sa.Column("data", _json(), nullable=True))
+    op.add_column("notifications", sa.Column("data", _json(), nullable=True))
 
 
 # ---------------------------------------------------------------------------
@@ -463,12 +465,8 @@ def downgrade() -> None:
     """
     is_pg = _is_pg()
 
-    inspector = sa.inspect(op.get_bind())
-    if inspector.has_table("notifications") and any(
-        c["name"] == "data" for c in inspector.get_columns("notifications")
-    ):
-        with op.batch_alter_table("notifications") as batch:
-            batch.drop_column("data")
+    with op.batch_alter_table("notifications") as batch:
+        batch.drop_column("data")
     op.drop_index(op.f(_PENDING_STAFF_OFF_UNIQUE), table_name="pending_requests")
     op.drop_index(
         op.f("uq_google_drive_connections_singleton"), table_name="google_drive_connections"

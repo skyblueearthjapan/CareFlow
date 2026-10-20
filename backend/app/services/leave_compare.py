@@ -97,6 +97,7 @@ from app.services.staff_leave import (
     apply_staff_leave,
     cancel_staff_leave,
     notify_leave_results,
+    today_jst,
 )
 
 if TYPE_CHECKING:
@@ -1479,6 +1480,26 @@ RECORD_UNCONFIRMED_DAYS: Final = "unconfirmed_days"
 RECORD_PLANNED_SENDS: Final = "planned_sends"
 RECORD_CHANGED_SINCE_COMPARE: Final = "changed_since_compare"
 RECORD_STALE_MATERIAL: Final = "stale_material"
+RECORD_RECOMPARE_AFTER_CHOOSE: Final = "recompare_after_choose"
+RECORD_ALREADY_RECORDED: Final = "already_recorded"
+RECORD_MONTH_NOT_ENDED: Final = "month_not_ended"
+
+
+def diff_is_open(raw: Any) -> bool:
+    """照合の差分 (``leave_compare_runs.diffs`` の 1 件) をまだ合わせていないか."""
+    return isinstance(raw, dict) and not raw.get("resolved")
+
+
+def diff_needs_recompare(raw: Any) -> bool:
+    """種類を選んだ (判定を記録した) だけで、まだ比べ直していない差分か.
+
+    選んだ種類は次の照合で K として効くので、比べ直すまで送らない・記録しない
+    (送信の ``rechoose`` と「実績を記録する」で同じ判定)。
+    """
+    if not isinstance(raw, dict):
+        return False
+    resolved = raw.get("resolved")
+    return isinstance(resolved, dict) and resolved.get("action") == ACTION_CHOOSE_KIND
 
 
 @dataclass(frozen=True)
@@ -1517,23 +1538,49 @@ def record_actuals_blockers(
     leave_month: LeaveMonth | None,
     run: LeaveCompareRun | None,
     job_started_at: datetime | None,
+    month: date | None = None,
+    today: date | None = None,
 ) -> list[RecordBlocker]:
     """「実績を記録する」の条件 (§7-4-2) を確かめ、欠けているものを全部返す (空 = 押せる).
 
-    1. 最新の照合がある  2. まだ合わせていない差分が 0 件  3. 未確認の日が 0 日
-    4. 送る予定が 0 件  5. 照合の後に休みを変えていない
+    0. 月の最後の日が過ぎた (JST・ディレクター決定)・まだ記録していない (作り直しは
+       ``kinmu-sheets/rebuild``)
+    1. 最新の照合がある  2. まだ合わせていない差分が 0 件 (種類を選んだだけの差分は
+       「比べ直してください」)  3. 未確認の日が 0 日  4. 送る予定が 0 件
+    5. 照合の後に休みを変えていない
     6. 材料が新しい (使った材料の ``fetched_at`` がすべてその照合のジョブの開始以降)。
     """
-    if leave_month is None or leave_month.last_compared_at is None or run is None:
-        return [RecordBlocker(RECORD_NOT_COMPARED, "まだカイポケと比べていません")]
     out: list[RecordBlocker] = []
-    open_diffs = sum(
-        1 for d in (run.diffs or []) if not (isinstance(d, dict) and d.get("resolved"))
-    )
+    target = month or (leave_month.month if leave_month is not None else None)
+    current = today or today_jst()
+    if target is not None and current <= _month_last_day(month_first_day(target)):
+        out.append(
+            RecordBlocker(RECORD_MONTH_NOT_ENDED, "月の最後の日が過ぎてから記録してください")
+        )
+    if leave_month is not None and leave_month.actual_recorded_at is not None:
+        out.append(
+            RecordBlocker(
+                RECORD_ALREADY_RECORDED,
+                "この月の実績は記録済みです（勤務表は「作り直す」から作ってください）",
+            )
+        )
+    if leave_month is None or leave_month.last_compared_at is None or run is None:
+        out.append(RecordBlocker(RECORD_NOT_COMPARED, "まだカイポケと比べていません"))
+        return out
+    diffs = run.diffs or []
+    open_diffs = sum(1 for d in diffs if diff_is_open(d))
     if open_diffs:
         out.append(
             RecordBlocker(
                 RECORD_DIFFS_REMAINING, f"まだ合わせていない差分が {open_diffs} 件あります"
+            )
+        )
+    chosen = sum(1 for d in diffs if diff_needs_recompare(d))
+    if chosen:
+        out.append(
+            RecordBlocker(
+                RECORD_RECOMPARE_AFTER_CHOOSE,
+                f"種類を選んだ差分が {chosen} 件あります。もう一度カイポケと比べてください",
             )
         )
     if run.unconfirmed_days:
@@ -1580,10 +1627,17 @@ async def load_record_actuals_blockers(db: AsyncSession, month: date) -> list[Re
         started = await db.scalar(
             select(KaipokeJob.started_at).where(KaipokeJob.id == run.kaipoke_job_id)
         )
-    return record_actuals_blockers(leave_month=leave_month, run=run, job_started_at=started)
+    return record_actuals_blockers(
+        leave_month=leave_month, run=run, job_started_at=started, month=first
+    )
 
 
 __all__ = [
+    "RECORD_ALREADY_RECORDED",
+    "RECORD_MONTH_NOT_ENDED",
+    "RECORD_RECOMPARE_AFTER_CHOOSE",
+    "diff_is_open",
+    "diff_needs_recompare",
     "RECORD_CHANGED_SINCE_COMPARE",
     "RECORD_DIFFS_REMAINING",
     "RECORD_NOT_COMPARED",

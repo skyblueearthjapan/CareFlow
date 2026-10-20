@@ -580,7 +580,23 @@ RecordBlockerCode = Literal[
     "planned_sends",
     "changed_since_compare",
     "stale_material",
+    "recompare_after_choose",
+    "already_recorded",
+    "month_not_ended",
 ]
+
+
+class LeaveKinmuRebuildInput(BaseModel):
+    """``POST /leave/month/{month}/kinmu-sheets/rebuild`` — 勤務表を作り直す (理由は必須).
+
+    予定版はドライブにつないだ後の「作る」にも使う (最新の版が「未作成」ならその行で作る)。
+    確定版は実績を記録した月だけ (記録の時刻は変えない)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: KinmuSheetKind
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class LeaveRecordBlocker(BaseModel):

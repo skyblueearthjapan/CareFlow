@@ -71,19 +71,36 @@ async def create_kinmu_sheet(
     user_id: UUID | None,
     reason: str | None = None,
 ) -> KinmuSheetOutcome:
-    """その月の勤務表を新しい版で作り、``kinmu_sheets`` に行を足す (commit しない)."""
+    """その月の勤務表を新しい版で作り、``kinmu_sheets`` に行を足す (commit しない).
+
+    同じ種類の最新の版が「未作成」(ファイルが無い) なら、新しい行は足さずにその行で作り直す
+    (確定のたびに未作成の行が増えないように・ドライブにつないだ後の「作る」)。
+    """
     first = month.replace(day=1)
     inputs = await load_kinmu_inputs(db, first, with_actual=kind == "final")
-    version = await _next_version(db, first, kind)
-    row = KinmuSheet(
-        month=first,
-        kind=kind,
-        version=version,
-        reason=reason,
-        plan_snapshot=snapshot_plan(inputs.staff) if kind == "plan" else None,
-        created_by=user_id,
+    snapshot = snapshot_plan(inputs.staff) if kind == "plan" else None
+    latest = await db.scalar(
+        select(KinmuSheet)
+        .where(KinmuSheet.month == first, KinmuSheet.kind == kind)
+        .order_by(KinmuSheet.version.desc())
+        .limit(1)
     )
-    db.add(row)
+    if latest is not None and latest.drive_file_id is None:
+        row = latest
+        row.plan_snapshot = snapshot
+        row.reason = reason or row.reason
+        row.created_by = user_id
+    else:
+        row = KinmuSheet(
+            month=first,
+            kind=kind,
+            version=await _next_version(db, first, kind),
+            reason=reason,
+            plan_snapshot=snapshot,
+            created_by=user_id,
+        )
+        db.add(row)
+    version = row.version
     await db.flush()
     try:
         km = build_kinmu_month(first, inputs.staff, inputs.required_hours, inputs.closed_days)

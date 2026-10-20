@@ -196,8 +196,8 @@ def _weekend_days(month: date) -> int:
 @pytest.mark.asyncio
 async def test_month_table_contents(client, db) -> None:
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
-    b = await _staff(db, "伊藤", code="002")
+    a = await _staff(db, "職員A", code="001")
+    b = await _staff(db, "職員B", code="002")
     c = await _staff(db, "新人", code="003", trainee=True)
     d = await _staff(db, "非常勤", code="004", weekdays=(0, 2, 4), employment="part_time")
     await _staff(db, "退職なし", code="005", status="retired")
@@ -231,7 +231,7 @@ async def test_month_table_contents(client, db) -> None:
     required = required_holidays(MONTH, [CLOSED])
     assert body["required_holidays"] == required
     assert body["month"] == "2030-11-01"
-    assert [s["name"] for s in body["staff"]] == ["青木", "伊藤", "新人", "非常勤", "退職あり"]
+    assert [s["name"] for s in body["staff"]] == ["職員A", "職員B", "新人", "非常勤", "退職あり"]
 
     # 見出し: 祝日の名前・事業所の休み・作り済みの週・その日休む人
     holidays = {h["date"]: h["name"] for h in body["holidays"]}
@@ -242,7 +242,7 @@ async def test_month_table_contents(client, db) -> None:
     tue = _day(body, TUE)
     assert tue["week_generated"] is True
     assert _day(body, date(2030, 11, 4))["week_generated"] is False
-    # 青木 (公休)・伊藤 (午前休 = 1 人) → 2 人。新人と退職者 (在籍でない) は数えない。
+    # 職員A (公休)・職員B (午前休 = 1 人) → 2 人。新人と退職者 (在籍でない) は数えない。
     assert tue["off_count"] == 2 and tue["off_warn"] is True
     assert _day(body, SAT)["off_count"] == 0
     assert _day(body, PAID)["off_count"] == 1 and _day(body, PAID)["off_warn"] is False
@@ -308,7 +308,7 @@ async def test_month_must_be_first_day(client, db) -> None:
 async def test_year_end_iso_week_53(client, db) -> None:
     """2027-01-01 は ISO 2026 年の第 53 週。1 月の表に載り、12 月の表には載らない."""
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
+    a = await _staff(db, "職員A", code="001")
     await _leave(db, a, date(2027, 1, 1), "off")
     await _leave(db, a, date(2026, 12, 31), "pm_off")
     jan = (await client.get("/api/v1/leave/month/2027-01", headers=_bearer(admin))).json()
@@ -366,7 +366,7 @@ async def test_month_query_count_does_not_grow(client, db) -> None:
 @pytest.mark.asyncio
 async def test_put_change_and_cancel_day(client, db) -> None:
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
+    a = await _staff(db, "職員A", code="001")
     await _user(db, "staff", a.id)
     v_am = await _visit(db, a, TUE, "09:00", "10:00")
     v_pm = await _visit(db, a, TUE, "14:00", "15:00")
@@ -423,7 +423,7 @@ async def test_put_change_and_cancel_day(client, db) -> None:
 @pytest.mark.asyncio
 async def test_put_day_with_pending_request_is_409(client, db) -> None:
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
+    a = await _staff(db, "職員A", code="001")
     u = await _user(db, "staff", a.id)
     await _request(db, u, a, TUE, "off")
     res = await client.post(
@@ -438,7 +438,7 @@ async def test_put_day_with_pending_request_is_409(client, db) -> None:
 async def test_delete_day_with_pending_request_is_409(client, db) -> None:
     """休みの日に「取り消してほしい」の申請中 → 表から取り消すのも 409 (申請を先に決める)."""
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
+    a = await _staff(db, "職員A", code="001")
     u = await _user(db, "staff", a.id)
     await _leave(db, a, TUE, "off")
     await _request(db, u, a, TUE, "cancel", kind="change", note="出勤できます")
@@ -456,7 +456,7 @@ async def test_delete_day_with_pending_request_is_409(client, db) -> None:
 async def test_second_pending_on_one_cell_is_refused(client, db) -> None:
     """同じ職員・同じ日の申請中は 1 件だけ (0099 の部分 UNIQUE・作成時の 409)."""
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
+    a = await _staff(db, "職員A", code="001")
     u = await _user(db, "staff", a.id)
     body = {
         "request_type": "staff_off",
@@ -480,8 +480,8 @@ async def test_second_pending_on_one_cell_is_refused(client, db) -> None:
 @pytest.mark.asyncio
 async def test_bulk_day_default_targets_and_one_notice(client, db) -> None:
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
-    b = await _staff(db, "伊藤", code="002")
+    a = await _staff(db, "職員A", code="001")
+    b = await _staff(db, "職員B", code="002")
     t = await _staff(db, "新人", code="003", trainee=True)
     await _staff(db, "非常勤", code="004", employment="part_time")
     await _staff(db, "火曜休み", code="005", weekdays=(0, 2, 3, 4))
@@ -536,7 +536,7 @@ async def test_bulk_day_default_targets_and_one_notice(client, db) -> None:
 @pytest.mark.asyncio
 async def test_approve_with_changed_type(client, db) -> None:
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
+    a = await _staff(db, "職員A", code="001")
     u = await _user(db, "staff", a.id)
     req = await _request(db, u, a, TUE, "pm_off", note="通院")
     await _visit(db, a, TUE, "09:00", "10:00")
@@ -576,7 +576,7 @@ async def test_approve_with_changed_type(client, db) -> None:
 @pytest.mark.asyncio
 async def test_approve_cancel_request_removes_leave(client, db) -> None:
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
+    a = await _staff(db, "職員A", code="001")
     u = await _user(db, "staff", a.id)
     await _leave(db, a, TUE, "off")
     req = await _request(db, u, a, TUE, "cancel", kind="change", note="出勤できます")
@@ -597,8 +597,8 @@ async def test_approve_cancel_request_removes_leave(client, db) -> None:
 @pytest.mark.asyncio
 async def test_approve_batch_one_transaction_one_admin_notice(client, db) -> None:
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
-    b = await _staff(db, "伊藤", code="002")
+    a = await _staff(db, "職員A", code="001")
+    b = await _staff(db, "職員B", code="002")
     ua = await _user(db, "staff", a.id)
     ub = await _user(db, "staff", b.id)
     ra = await _request(db, ua, a, TUE, "off")
@@ -630,8 +630,8 @@ async def test_approve_batch_one_transaction_one_admin_notice(client, db) -> Non
 @pytest.mark.asyncio
 async def test_approve_batch_rolls_back_all_on_failure(client, db) -> None:
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
-    b = await _staff(db, "伊藤", code="002")
+    a = await _staff(db, "職員A", code="001")
+    b = await _staff(db, "職員B", code="002")
     ua = await _user(db, "staff", a.id)
     ub = await _user(db, "staff", b.id)
     ra = await _request(db, ua, a, TUE, "off")
@@ -653,7 +653,7 @@ async def test_approve_batch_rolls_back_all_on_failure(client, db) -> None:
 @pytest.mark.asyncio
 async def test_reject_requires_reason(client, db) -> None:
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
+    a = await _staff(db, "職員A", code="001")
     u = await _user(db, "staff", a.id)
     req = await _request(db, u, a, TUE, "off")
     res = await client.post(
@@ -718,8 +718,8 @@ async def test_closed_days_and_required_hours(client, db) -> None:
 @pytest.mark.asyncio
 async def test_confirm_records_and_notifies(client, db) -> None:
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
-    b = await _staff(db, "伊藤", code="002")  # アカウントなし = 通知なし
+    a = await _staff(db, "職員A", code="001")
+    b = await _staff(db, "職員B", code="002")  # アカウントなし = 通知なし
     ua = await _user(db, "staff", a.id)
     await _request(db, ua, a, TUE, "off")
     for d in month_days(MONTH):
@@ -731,7 +731,7 @@ async def test_confirm_records_and_notifies(client, db) -> None:
     body = res.json()
     assert body["confirmed_staff_count"] == 2 and body["notified_count"] == 1
     assert body["pending_remaining"] == 1
-    assert [s["name"] for s in body["short_staff"]] == ["青木"]
+    assert [s["name"] for s in body["short_staff"]] == ["職員A"]
     rows = (await db.scalars(select(StaffShiftConfirmation))).all()
     assert {r.staff_id for r in rows} == {a.id, b.id}
     assert all(r.month == MONTH for r in rows)
@@ -756,8 +756,8 @@ async def test_confirm_records_and_notifies(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_staff_is_forbidden_except_summary(client, db) -> None:
-    a = await _staff(db, "青木", code="001")
-    b = await _staff(db, "伊藤", code="002")
+    a = await _staff(db, "職員A", code="001")
+    b = await _staff(db, "職員B", code="002")
     ua = await _user(db, "staff", a.id)
     await _leave(db, b, TUE, "off", reason="家族の通院")
     h = _bearer(ua)
@@ -805,7 +805,7 @@ async def test_staff_is_forbidden_except_summary(client, db) -> None:
 @pytest.mark.asyncio
 async def test_approve_with_changed_type_keeps_edited_payload(client, db) -> None:
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
+    a = await _staff(db, "職員A", code="001")
     u = await _user(db, "staff", a.id)
     req = await _request(db, u, a, TUE, "pm_off", note="元のメモ")
     req.edited_payload = {**req.payload, "note": "管理者が直したメモ"}
@@ -825,8 +825,8 @@ async def test_approve_with_changed_type_keeps_edited_payload(client, db) -> Non
 @pytest.mark.asyncio
 async def test_confirm_only_given_staff(client, db) -> None:
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
-    b = await _staff(db, "伊藤", code="002")
+    a = await _staff(db, "職員A", code="001")
+    b = await _staff(db, "職員B", code="002")
     ub = await _user(db, "staff", b.id)
     await _request(db, ub, b, TUE, "off")
     res = await client.post(
@@ -851,8 +851,8 @@ async def test_confirm_only_given_staff(client, db) -> None:
 @pytest.mark.asyncio
 async def test_summary_admin_counts(client, db) -> None:
     admin = await _user(db, "admin")
-    a = await _staff(db, "青木", code="001")
-    b = await _staff(db, "伊藤", code="002")
+    a = await _staff(db, "職員A", code="001")
+    b = await _staff(db, "職員B", code="002")
     p = await _staff(db, "非常勤", code="003", employment="part_time")
     ub = await _user(db, "staff", b.id)
     await _request(db, ub, b, TUE, "off")
@@ -871,7 +871,7 @@ async def test_summary_admin_counts(client, db) -> None:
     body = res.json()
     assert body["pending_count"] == 1
     assert body["kaipoke_action_count"] == 2
-    # 必要休日数 = 土日 + 平日の祝日 1 日 (11/4 振替休日)。青木は火曜の公休で足り、伊藤は足りない。
+    # 必要休日数 = 土日 + 平日の祝日 1 日 (11/4 振替休日)。職員Aは火曜の公休で足り、職員Bは足りない。
     assert required_holidays(MONTH) == _weekend_days(MONTH) + 1
     assert body["short_staff_count"] == 1
     res = await client.get("/api/v1/leave/month/2030-11/summary", headers=_bearer(ub))
@@ -902,7 +902,7 @@ async def test_kinmu_sheets_list(client, db) -> None:
         ("final", 1),
     ]
     assert res.json()[0]["url"] == "https://example.com/p2"
-    staff = await _staff(db, "青木", code="001")
+    staff = await _staff(db, "職員A", code="001")
     u = await _user(db, "staff", staff.id)
     res = await client.get("/api/v1/leave/month/2030-11/kinmu-sheets", headers=_bearer(u))
     assert res.status_code == 403
@@ -913,7 +913,7 @@ async def test_cancel_counts_only_moves_after_last_cancel(client, db) -> None:
     """公休で移す → 取り消す → 担当を戻す → 午前休 → 取り消す: 最後は 0 件."""
     admin = await _user(db, "admin")
     h = _bearer(admin)
-    a = await _staff(db, "青木", code="001")
+    a = await _staff(db, "職員A", code="001")
     v = await _visit(db, a, TUE, "14:00", "15:00")
     params = {"staff_id": str(a.id), "date": TUE.isoformat()}
 
@@ -937,8 +937,8 @@ async def test_cancel_counts_only_moves_after_last_cancel(client, db) -> None:
 async def test_bulk_with_staff_ids_skips_existing_leave(client, db) -> None:
     admin = await _user(db, "admin")
     h = _bearer(admin)
-    a = await _staff(db, "青木", code="001")
-    b = await _staff(db, "伊藤", code="002")
+    a = await _staff(db, "職員A", code="001")
+    b = await _staff(db, "職員B", code="002")
     await _leave(db, b, TUE, "pm_off")
     res = await client.post(
         "/api/v1/leave/day/bulk",

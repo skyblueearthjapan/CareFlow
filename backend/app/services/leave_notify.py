@@ -275,9 +275,9 @@ async def notify_leave_unassigned(
 async def notify_leave_requested(db: AsyncSession, *, request: PendingRequest) -> int:
     """職員の休みの申請 (staff_off の作成) を管理者全員へ知らせる (ベル・メールなし・§5-2).
 
-    ``reference`` は申請 (``pending_request``・id)、``data`` は ``staff_id``・``date``・
+    ``reference`` は申請 (``leave_request``・申請の id)、``data`` は ``staff_id``・``date``・
     ``override_type``・``kind`` (ベルから「休み・勤務表」のそのマスを開く)。管理者が自分で
-    出した申請 (即時反映など) では呼ばない。
+    出した申請では、出した本人には送らない (ほかの管理者には送る)。
     """
     if request.request_type != "staff_off":
         return 0
@@ -320,7 +320,8 @@ async def notify_leave_requested(db: AsyncSession, *, request: PendingRequest) -
         "override_type": override_type,
         "kind": kind,
     }
-    users = await _active_admin_users(db)
+    # 管理者が自分で出した申請は、本人には知らせない (ほかの管理者には知らせる)。
+    users = [u for u in await _active_admin_users(db) if u.id != request.requester_user_id]
     for u in users:
         db.add(
             Notification(

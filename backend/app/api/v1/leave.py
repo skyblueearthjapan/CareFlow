@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -74,6 +75,7 @@ from app.schemas.leave import (
     LeaveDayBulkResult,
     LeaveDayInput,
     LeaveDayResult,
+    LeaveKinmuRebuildInput,
     LeaveKinmuSheetOutcome,
     LeaveMonthCell,
     LeaveMonthConfirmation,
@@ -102,7 +104,7 @@ from app.schemas.v2.enums import RequestStatus, RequestType
 from app.services.kaipoke import leave_outbound
 from app.services.kaipoke.sources import RpaJobConflictError
 from app.services.kaipoke_client import KaipokeClient, get_kaipoke_client
-from app.services.kinmu_sheet.publish import KinmuKind, create_kinmu_sheet
+from app.services.kinmu_sheet.publish import MSG_DRIVE_FAILED, KinmuKind, create_kinmu_sheet
 from app.services.leave_calendar import (
     day_holiday_value,
     iso_key,
@@ -113,7 +115,11 @@ from app.services.leave_calendar import (
     month_holidays,
     required_holidays,
 )
-from app.services.leave_compare import RecordBlocker, load_record_actuals_blockers
+from app.services.leave_compare import (
+    RECORD_ALREADY_RECORDED,
+    RecordBlocker,
+    load_record_actuals_blockers,
+)
 from app.services.leave_notify import (
     notify_leave_approved,
     notify_leave_rejected,
@@ -132,6 +138,12 @@ from app.services.staff_leave import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+#: 確定の後に送信を始められなかった (予期しない失敗)。
+MSG_OUTBOUND_FAILED: Final = (
+    "カイポケへの送信を始められませんでした。「カイポケへ送る」から送ってください"
+)
 
 AdminUser = Annotated[User, Depends(require_role("admin"))]
 
@@ -1209,17 +1221,26 @@ async def _start_outbound_after_confirm(
     user_id: UUID,
     background: BackgroundTasks,
     kaipoke: KaipokeClient,
+    staff_ids: list[UUID] | None = None,
 ) -> LeaveOutboundStarted:
     """確定の後 (新しいトランザクション) にカイポケへの休みの送信のジョブを始める.
 
     照合がまだの月・送る休みが無い・ほかの RPA のジョブが動いている (409) ときは始めず、
-    理由を返す (確定は成功のまま)。実体は応答の後に背景で送る。
+    理由を返す (確定は成功のまま)。予期しない例外もログに残して始めなかったことにする
+    (確定の応答を 500 にしない)。実体は応答の後に背景で送る。``staff_ids`` を渡せば
+    その職員の分だけ送る (一部の職員だけを確定したとき)。
     """
     try:
-        started = await leave_outbound.start_leave_outbound(db, month=month, user_id=user_id)
+        started = await leave_outbound.start_leave_outbound(
+            db, month=month, user_id=user_id, staff_ids=staff_ids
+        )
     except RpaJobConflictError as exc:
         await db.rollback()
         return LeaveOutboundStarted(started=False, reason=str(exc))
+    except Exception:  # noqa: BLE001 — 確定は済んでいる
+        logger.exception("leave outbound could not start after confirm (%s)", month)
+        await db.rollback()
+        return LeaveOutboundStarted(started=False, reason=MSG_OUTBOUND_FAILED)
     if started.job is None:
         await db.rollback()
         return LeaveOutboundStarted(started=False, reason=started.reason)
@@ -1246,6 +1267,10 @@ async def _make_kinmu_sheet(
             kind=kind,
             reason="ほかの方が同時に勤務表を作りました。勤務表の一覧を読み直してください",
         )
+    except Exception:  # noqa: BLE001 — 確定・実績の記録は済んでいる (500 にしない)
+        logger.exception("kinmu sheet %s %s could not be made", month, kind)
+        await db.rollback()
+        return LeaveKinmuSheetOutcome(created=False, kind=kind, reason=MSG_DRIVE_FAILED)
     await db.refresh(outcome.sheet)
     return LeaveKinmuSheetOutcome(
         created=outcome.created,
@@ -1272,7 +1297,8 @@ async def confirm_leave_month(
     3. 勤務表の予定版を作る (ドライブ未接続などでも確定は残り、行は「未作成」)。
 
     ``staff_ids`` を渡せばその人だけ (表に載っている人に限る)、無ければ表の全員。
-    申請中の残り・足りない人も、確定した人の分だけを返す。送信と予定版は月全体。
+    申請中の残り・足りない人・カイポケへ送る休みも、確定した人の分だけ (ディレクター決定)。
+    予定版は月全体 (最新の版が「未作成」ならその行で作る)。
     """
     # commit・rollback の後に ORM の属性を読まない (非同期では読み直せない)。
     user_id = user.id
@@ -1299,8 +1325,14 @@ async def confirm_leave_month(
         required_hours=leave_month.required_hours if leave_month is not None else None,
     )
     await db.commit()
+    partial = payload is not None and payload.staff_ids is not None
     result.outbound = await _start_outbound_after_confirm(
-        db, month=data.month, user_id=user_id, background=background, kaipoke=kaipoke
+        db,
+        month=data.month,
+        user_id=user_id,
+        background=background,
+        kaipoke=kaipoke,
+        staff_ids=list(record.staff_ids) if partial else None,
     )
     result.kinmu_sheet = await _make_kinmu_sheet(db, month=data.month, kind="plan", user_id=user_id)
     return result
@@ -1341,17 +1373,61 @@ async def record_month_actuals(
                 "blockers": [{"code": b.code, "message": b.message} for b in blockers],
             },
         )
-    leave_month = await db.get(LeaveMonth, month)
-    if leave_month is None:  # 条件 1 (照合がある) を満たすので行はある
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="まだカイポケと比べていません"
-        )
     now = datetime.now(UTC)
-    leave_month.actual_recorded_at = now
-    leave_month.actual_recorded_by = user_id
+    # 同時に 2 回押されても 1 回だけ (まだ記録していない行だけを書く)。
+    written = await db.execute(
+        update(LeaveMonth)
+        .where(LeaveMonth.month == month, LeaveMonth.actual_recorded_at.is_(None))
+        .values(actual_recorded_at=now, actual_recorded_by=user_id)
+        .execution_options(synchronize_session=False)
+    )
+    if (getattr(written, "rowcount", 0) or 0) == 0:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "まだ実績を記録できません",
+                "blockers": [
+                    {
+                        "code": RECORD_ALREADY_RECORDED,
+                        "message": "この月の実績は記録済みです",
+                    }
+                ],
+            },
+        )
     await db.commit()
     sheet = await _make_kinmu_sheet(db, month=month, kind="final", user_id=user_id)
     return LeaveRecordActualsResult(month=month, actual_recorded_at=now, kinmu_sheet=sheet)
+
+
+@router.post("/month/{month}/kinmu-sheets/rebuild", response_model=LeaveKinmuSheetOutcome)
+async def rebuild_kinmu_sheet(
+    month: MonthParam, payload: LeaveKinmuRebuildInput, db: DbDep, user: AdminUser
+) -> LeaveKinmuSheetOutcome:
+    """勤務表を作り直す (理由は必須・前の版は残す・§7-2 の 2〜3).
+
+    予定版はドライブにつないだ後の「作る」にも使う (最新の版が「未作成」ならその行で作る)。
+    確定版は実績を記録した月だけ。実績の記録の時刻は変えない。
+    """
+    user_id = user.id
+    reason = payload.reason.strip()
+    if not reason:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="作り直す理由を入れてください",
+        )
+    if payload.kind == "final":
+        recorded = await db.scalar(
+            select(LeaveMonth.actual_recorded_at).where(LeaveMonth.month == month)
+        )
+        if recorded is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="この月はまだ実績を記録していません。先に「実績を記録する」を押してください",
+            )
+    return await _make_kinmu_sheet(
+        db, month=month, kind=payload.kind, user_id=user_id, reason=reason
+    )
 
 
 __all__ = ["OFF_WARN_THRESHOLD", "router"]

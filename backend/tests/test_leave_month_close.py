@@ -45,7 +45,7 @@ async def _admin(db) -> User:
     return u
 
 
-async def _staff(db, name: str = "送信　花子", internal: str | None = "4321") -> Staff:
+async def _staff(db, name: str = "職員C", internal: str | None = "4321") -> Staff:
     s = Staff(name=name, role="staff")
     db.add(s)
     await db.flush()
@@ -224,20 +224,28 @@ def _month(**kw) -> LeaveMonth:
     return LeaveMonth(**base)
 
 
+AFTER_MONTH = date(2030, 12, 5)
+
+
 def _codes(**kw) -> list[str]:
     leave_month = kw.pop("leave_month", _month())
     run = kw.pop("run", _run())
     started = kw.pop("started", STARTED)
+    today = kw.pop("today", AFTER_MONTH)
     return [
         b.code
         for b in lc.record_actuals_blockers(
-            leave_month=leave_month, run=run, job_started_at=started
+            leave_month=leave_month, run=run, job_started_at=started, month=MONTH, today=today
         )
     ]
 
 
 def test_record_actuals_conditions() -> None:
     assert _codes() == []
+    # 0. 月の最後の日が過ぎるまで (JST) は記録できない・記録済みは 409
+    assert _codes(today=date(2030, 11, 30)) == [lc.RECORD_MONTH_NOT_ENDED]
+    assert _codes(today=date(2030, 12, 1)) == []
+    assert _codes(leave_month=_month(actual_recorded_at=STARTED)) == [lc.RECORD_ALREADY_RECORDED]
     # 1. 照合がない
     assert _codes(leave_month=None) == [lc.RECORD_NOT_COMPARED]
     assert _codes(run=None) == [lc.RECORD_NOT_COMPARED]
@@ -246,6 +254,10 @@ def test_record_actuals_conditions() -> None:
         lc.RECORD_DIFFS_REMAINING
     ]
     assert _codes(run=_run(diffs=[{"kind": "y", "resolved": {"by": "a"}}])) == []
+    # 2'. 種類を選んだだけ (比べ直していない) → 比べ直す (送信の rechoose と同じ判定)
+    chosen = {"kind": "unknown_kind", "resolved": {"action": lc.ACTION_CHOOSE_KIND}}
+    assert lc.diff_needs_recompare(chosen) and not lc.diff_is_open(chosen)
+    assert _codes(run=_run(diffs=[chosen])) == [lc.RECORD_RECOMPARE_AFTER_CHOOSE]
     # 3. 未確認の日
     assert _codes(run=_run(unconfirmed_days=2)) == [lc.RECORD_UNCONFIRMED_DAYS]
     # 4. 送る予定
@@ -270,7 +282,13 @@ def test_record_actuals_conditions() -> None:
     }
 
 
-async def _compared_month(db, *, unconfirmed: int = 0) -> None:
+@pytest.fixture
+def after_month(monkeypatch):
+    """今日 (JST) を 11 月が終わった後にする (記録の条件 0)."""
+    monkeypatch.setattr(lc, "today_jst", lambda: AFTER_MONTH)
+
+
+async def _compared_month(db, *, unconfirmed: int = 0, diffs: list | None = None) -> None:
     job = KaipokeJob(
         job_type="sync",
         status="completed",
@@ -282,7 +300,7 @@ async def _compared_month(db, *, unconfirmed: int = 0) -> None:
     )
     db.add(job)
     await db.flush()
-    run = _run(kaipoke_job_id=job.id, unconfirmed_days=unconfirmed)
+    run = _run(kaipoke_job_id=job.id, unconfirmed_days=unconfirmed, diffs=diffs or [])
     db.add(run)
     await db.flush()
     db.add(
@@ -297,41 +315,91 @@ async def _compared_month(db, *, unconfirmed: int = 0) -> None:
 
 
 @pytest.mark.asyncio
-async def test_record_actuals_409_with_reasons(client, db) -> None:
+async def test_record_actuals_409_with_reasons(client, db, after_month) -> None:
     admin = await _admin(db)
-    res = await client.post(f"{URL}/record-actuals", headers=_bearer(admin))
+    h = _bearer(admin)
+    res = await client.post(f"{URL}/record-actuals", headers=h)
     assert res.status_code == 409
     assert [b["code"] for b in res.json()["detail"]["blockers"]] == ["not_compared"]
 
     await _compared_month(db, unconfirmed=3)
-    res = await client.post(f"{URL}/record-actuals", headers=_bearer(admin))
+    res = await client.post(f"{URL}/record-actuals", headers=h)
     assert res.status_code == 409
     assert [b["code"] for b in res.json()["detail"]["blockers"]] == ["unconfirmed_days"]
     # 月の表も同じ判定を出す
-    view = (await client.get(URL, headers=_bearer(admin))).json()
+    view = (await client.get(URL, headers=h)).json()
     assert view["record_actuals"]["ready"] is False
     assert [b["code"] for b in view["record_actuals"]["blockers"]] == ["unconfirmed_days"]
     assert await db.scalar(select(LeaveMonth.actual_recorded_at)) is None
 
 
 @pytest.mark.asyncio
-async def test_record_actuals_creates_final_sheet(client, db, drive) -> None:
+async def test_record_actuals_month_not_ended(client, db) -> None:
+    """今日がまだ月の中なら記録できない (月の表にも同じ理由)."""
     admin = await _admin(db)
+    h = _bearer(admin)
+    await _compared_month(db)
+    view = (await client.get(URL, headers=h)).json()
+    assert [b["code"] for b in view["record_actuals"]["blockers"]] == ["month_not_ended"]
+    res = await client.post(f"{URL}/record-actuals", headers=h)
+    assert res.status_code == 409
+    assert [b["code"] for b in res.json()["detail"]["blockers"]] == ["month_not_ended"]
+
+
+@pytest.mark.asyncio
+async def test_record_actuals_recompare_after_choose(client, db, after_month) -> None:
+    admin = await _admin(db)
+    chosen = {
+        "kind": "unknown_kind",
+        "staff_id": str(uuid4()),
+        "date": "2030-11-12",
+        "resolved": {"action": "choose_kind", "chosen_kind": "off"},
+    }
+    await _compared_month(db, diffs=[chosen])
+    res = await client.post(f"{URL}/record-actuals", headers=_bearer(admin))
+    assert res.status_code == 409
+    assert [b["code"] for b in res.json()["detail"]["blockers"]] == ["recompare_after_choose"]
+
+
+@pytest.mark.asyncio
+async def test_record_actuals_once_and_rebuild(client, db, drive, after_month) -> None:
+    admin = await _admin(db)
+    h = _bearer(admin)
     await _staff(db)
     await _compared_month(db)
-    view = (await client.get(URL, headers=_bearer(admin))).json()
+    view = (await client.get(URL, headers=h)).json()
     assert view["record_actuals"] == {"ready": True, "blockers": [], "actual_recorded_at": None}
-    res = await client.post(f"{URL}/record-actuals", headers=_bearer(admin))
+    res = await client.post(f"{URL}/record-actuals", headers=h)
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["kinmu_sheet"]["created"] is True and body["kinmu_sheet"]["kind"] == "final"
     assert drive == ["勤務形態一覧表_2030年11月_確定"]
     lm = await db.scalar(select(LeaveMonth).execution_options(populate_existing=True))
-    assert lm.actual_recorded_at is not None and lm.actual_recorded_by == admin.id
+    recorded_at = lm.actual_recorded_at
+    assert recorded_at is not None and lm.actual_recorded_by == admin.id
+
+    # 2 回目は 409 (already_recorded)
+    res = await client.post(f"{URL}/record-actuals", headers=h)
+    assert res.status_code == 409
+    assert "already_recorded" in [b["code"] for b in res.json()["detail"]["blockers"]]
+
+    # 作り直しは理由が必須・記録の時刻は変えない・第 2 版
+    res = await client.post(
+        f"{URL}/kinmu-sheets/rebuild", headers=h, json={"kind": "final", "reason": ""}
+    )
+    assert res.status_code == 422
+    res = await client.post(
+        f"{URL}/kinmu-sheets/rebuild", headers=h, json={"kind": "final", "reason": "誤りの訂正"}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["sheet"]["version"] == 2 and res.json()["sheet"]["reason"] == "誤りの訂正"
+    assert drive[-1] == "勤務形態一覧表_2030年11月_確定_第2版"
+    lm = await db.scalar(select(LeaveMonth).execution_options(populate_existing=True))
+    assert lm.actual_recorded_at == recorded_at
 
 
 @pytest.mark.asyncio
-async def test_record_actuals_without_drive_still_records(client, db) -> None:
+async def test_record_actuals_without_drive_still_records(client, db, after_month) -> None:
     admin = await _admin(db)
     await _staff(db)
     await _compared_month(db)
@@ -341,3 +409,96 @@ async def test_record_actuals_without_drive_still_records(client, db) -> None:
     assert sheet["created"] is False and sheet["reason"]
     assert sheet["sheet"]["kind"] == "final" and sheet["sheet"]["url"] is None
     assert await db.scalar(select(LeaveMonth.actual_recorded_at)) is not None
+
+
+@pytest.mark.asyncio
+async def test_rebuild_final_needs_record(client, db) -> None:
+    admin = await _admin(db)
+    res = await client.post(
+        f"{URL}/kinmu-sheets/rebuild",
+        headers=_bearer(admin),
+        json={"kind": "final", "reason": "作り直し"},
+    )
+    assert res.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# 未作成の行を使い直す・ドライブにつないだ後の「作る」
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unmade_plan_is_reused_then_made_by_rebuild(client, db, monkeypatch) -> None:
+    admin = await _admin(db)
+    h = _bearer(admin)
+    await _staff(db)
+    for _ in range(2):
+        res = await client.post(f"{URL}/confirm", headers=h)
+        assert res.status_code == 200, res.text
+        assert res.json()["kinmu_sheet"]["created"] is False
+    rows = (await db.scalars(select(KinmuSheet))).all()
+    assert [(r.kind, r.version, r.url) for r in rows] == [("plan", 1, None)]
+
+    titles: list[str] = []
+
+    async def _create(db_, title, folder_id, sheets):  # noqa: ANN001
+        titles.append(title)
+        return "f1", "https://docs.google.com/spreadsheets/d/f1/edit"
+
+    monkeypatch.setattr(publish, "create_spreadsheet", _create)
+    res = await client.put("/api/v1/leave/months/2030-11", headers=h, json={"required_hours": 168})
+    assert res.status_code == 200
+    res = await client.post(
+        f"{URL}/kinmu-sheets/rebuild",
+        headers=h,
+        json={"kind": "plan", "reason": "ドライブに接続した"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["created"] is True and body["sheet"]["version"] == 1
+    assert titles == ["勤務形態一覧表_2030年11月_予定"]
+    assert len((await db.scalars(select(KinmuSheet))).all()) == 1
+
+
+# ---------------------------------------------------------------------------
+# 一部の職員だけの確定・確定の後の予期しない例外
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_partial_confirm_sends_only_confirmed_staff(client, db, sent_jobs) -> None:
+    admin = await _admin(db)
+    h = _bearer(admin)
+    a = await _staff(db, "職員A", internal="1001")
+    b = await _staff(db, "職員B", internal="1002")
+    await _leave(db, a, WED)
+    await _leave(db, b, WED)
+    lm = await db.get(LeaveMonth, MONTH)
+    lm.last_compared_at = datetime.now(UTC) + timedelta(hours=1)
+    await db.commit()
+    res = await client.post(f"{URL}/confirm", headers=h, json={"staff_ids": [str(a.id)]})
+    assert res.status_code == 200, res.text
+    out = res.json()["outbound"]
+    assert out["started"] is True and out["count"] == 1
+    job = await db.get(KaipokeJob, UUID(out["job_id"]))
+    assert [i["staff_id"] for i in job.params["items"]] == [str(a.id)]
+
+
+@pytest.mark.asyncio
+async def test_confirm_survives_unexpected_errors(client, db, monkeypatch) -> None:
+    from app.api.v1 import leave as leave_api
+
+    admin = await _admin(db)
+    await _staff(db)
+
+    async def _boom(*_a, **_k):  # noqa: ANN002, ANN003
+        raise RuntimeError("想定外")
+
+    monkeypatch.setattr(lo, "start_leave_outbound", _boom)
+    monkeypatch.setattr(leave_api, "create_kinmu_sheet", _boom)
+    res = await client.post(f"{URL}/confirm", headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["outbound"]["started"] is False and body["outbound"]["reason"]
+    assert body["kinmu_sheet"]["created"] is False and body["kinmu_sheet"]["reason"]
+    assert len((await db.scalars(select(StaffShiftConfirmation))).all()) == 1
