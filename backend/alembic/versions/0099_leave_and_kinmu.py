@@ -24,12 +24,15 @@ Create Date: 2026-10-20
 ## SQLite 互換
 列の追加は 0089 と同じインライン列 CHECK / REFERENCES 付きの ``ADD COLUMN`` (標準 SQL・
 表の再構築なし)。CHECK の名前は ``op.drop_constraint`` / ``op.create_check_constraint`` を
-使うと命名規約で名前が変わるので、PG は生の SQL で書く。SQLite の ``pending_requests`` は
-mig0013 で CHECK を付けていないので、batch で再構築して付ける (downgrade は外すだけ)。
+使うと命名規約で名前が変わるので、PG は生の SQL で書く。mig0013 の CHECK は本番 PG で
+命名規約が二重にかかり ``ck_pending_requests_ck_pending_requests_request_type`` になって
+いるので、0085 と同じく旧名・新名とも ``DROP CONSTRAINT IF EXISTS`` で落としてから 1 つ付ける。
+SQLite の ``pending_requests`` は batch で再構築して付ける (downgrade は外すだけ)。
+月の列の「1 日だけ」の CHECK は PG だけ (SQLite に EXTRACT が無い)。
 
 ## downgrade
 新しい表と列を消す (照合前の印・事業所の休み・勤務表の記録・Google ドライブの接続は
-失われる)。``pending_requests`` の CHECK は旧 9 種へ戻すが、PG では ``NOT VALID`` で付ける
+失われる)。``pending_requests`` の CHECK は旧 9 種・本番の旧名 1 つへ戻すが、PG では ``NOT VALID`` で付ける
 (新しい 3 種の行が既にあっても downgrade を止めない。新しい行の検査だけ旧 9 種に戻る)。
 """
 
@@ -72,10 +75,16 @@ _REQUEST_TYPES: tuple[str, ...] = (
     "patient_visit_add",
 )
 _REQUEST_TYPE_CHECK = "ck_pending_requests_request_type"
+# mig0013 が本番 PG に付けた名前 (命名規約が二重にかかった)。
+_LEGACY_REQUEST_TYPE_CHECK = "ck_pending_requests_ck_pending_requests_request_type"
+_REQUEST_TYPE_CHECK_NAMES = (_LEGACY_REQUEST_TYPE_CHECK, _REQUEST_TYPE_CHECK)
 
 # 休みの種類 (``app/core/leave.py`` の ``LEAVE_TYPES`` と同じ値。migration は書いた時点の
 # 値で固定するため、アプリのコードは読まない)。
 _LEAVE_TYPES: tuple[str, ...] = ("off", "am_off", "pm_off", "paid_off")
+
+# month 列 (月の 1 日) を持つ表。
+_MONTH_TABLES = ("leave_compare_runs", "leave_months", "kinmu_sheets")
 
 _OVERRIDE_SOURCE_CHECK = "ck_staff_weekly_overrides_source"
 _OVERRIDE_FK = "fk_staff_weekly_overrides_pending_request_id_pending_requests"
@@ -147,11 +156,14 @@ def _add_staff_columns() -> None:
     op.add_column("staff", sa.Column("kinmu_title", sa.String(64), nullable=True))
 
 
-def _set_request_type_check(values: Sequence[str], *, not_valid: bool = False) -> None:
+def _set_request_type_check(values: Sequence[str], *, name: str, not_valid: bool = False) -> None:
+    """request_type を縛る CHECK を旧名・新名とも落としてから ``name`` で 1 つだけ付ける."""
     if _is_pg():
-        op.execute(f"ALTER TABLE pending_requests DROP CONSTRAINT IF EXISTS {_REQUEST_TYPE_CHECK}")
+        # 0085 と同じく、存在するものだけ落とす (名前は引用符で命名規約を通さない)。
+        for old in _REQUEST_TYPE_CHECK_NAMES:
+            op.execute(f'ALTER TABLE pending_requests DROP CONSTRAINT IF EXISTS "{old}"')
         op.execute(
-            f"ALTER TABLE pending_requests ADD CONSTRAINT {_REQUEST_TYPE_CHECK} "
+            f'ALTER TABLE pending_requests ADD CONSTRAINT "{name}" '
             f"CHECK (request_type IN ({_csv(values)}))" + (" NOT VALID" if not_valid else "")
         )
         return
@@ -160,11 +172,10 @@ def _set_request_type_check(values: Sequence[str], *, not_valid: bool = False) -
         c.get("name") for c in sa.inspect(op.get_bind()).get_check_constraints("pending_requests")
     }
     with op.batch_alter_table("pending_requests", recreate="always") as batch:
-        if _REQUEST_TYPE_CHECK in existing:
-            batch.drop_constraint(op.f(_REQUEST_TYPE_CHECK), type_="check")
-        batch.create_check_constraint(
-            op.f(_REQUEST_TYPE_CHECK), f"request_type IN ({_csv(values)})"
-        )
+        for old in _REQUEST_TYPE_CHECK_NAMES:
+            if old in existing:
+                batch.drop_constraint(op.f(old), type_="check")
+        batch.create_check_constraint(op.f(name), f"request_type IN ({_csv(values)})")
 
 
 def _create_tables() -> None:
@@ -206,7 +217,7 @@ def _create_tables() -> None:
         ),
         sa.Column("event_date", sa.Date(), nullable=False),
         sa.Column("content_hash", sa.String(64), nullable=False),
-        sa.Column("subject", sa.String(255), nullable=False),
+        sa.Column("subject", sa.Text(), nullable=False),
         sa.Column("starts", sa.Time(), nullable=True),
         sa.Column("ends", sa.Time(), nullable=True),
         sa.Column("chosen_kind", sa.String(16), nullable=False),
@@ -267,6 +278,8 @@ def _create_tables() -> None:
         sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("drive_file_id", sa.String(128), nullable=True),
         sa.Column("url", sa.Text(), nullable=True),
+        # 確定版を作り直した理由 (§7-2 の 3)。
+        sa.Column("reason", sa.Text(), nullable=True),
         _user_fk("created_by"),
         sa.Column("created_at", _TS, nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("kind IN ('plan','final')", name=op.f("ck_kinmu_sheets_kind")),
@@ -284,7 +297,7 @@ def _create_tables() -> None:
         sa.Column("folder_id", sa.String(128), nullable=True),
         sa.Column("shared_drive_id", sa.String(128), nullable=True),
         _user_fk("connected_by"),
-        sa.Column("status", sa.String(16), nullable=False, server_default="connected"),
+        sa.Column("status", sa.String(16), nullable=False),
         sa.Column("last_error", sa.Text(), nullable=True),
         sa.Column("created_at", _TS, nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", _TS, nullable=False, server_default=sa.func.now()),
@@ -292,6 +305,8 @@ def _create_tables() -> None:
             "status IN ('connected','needs_reconnect')",
             name=op.f("ck_google_drive_connections_status"),
         ),
+        # 1 行だけ: is_singleton は真しか入らず、真の行は部分 UNIQUE で 1 つだけ。
+        sa.CheckConstraint("is_singleton", name=op.f("ck_google_drive_connections_singleton")),
     )
     op.create_index(
         op.f("uq_google_drive_connections_singleton"),
@@ -301,6 +316,14 @@ def _create_tables() -> None:
         postgresql_where=sa.text("is_singleton = true"),
         sqlite_where=sa.text("is_singleton = 1"),
     )
+
+    if _is_pg():
+        # 月の列は月の 1 日だけ (SQLite は EXTRACT が無いので PG だけ・スキーマでも月初にそろえる)。
+        for table in _MONTH_TABLES:
+            op.execute(
+                f'ALTER TABLE {table} ADD CONSTRAINT "ck_{table}_month_first_day" '
+                "CHECK (EXTRACT(DAY FROM month) = 1)"
+            )
 
 
 def _seed_baseline() -> None:
@@ -358,7 +381,7 @@ def _seed_baseline() -> None:
 def upgrade() -> None:
     is_pg = _is_pg()
     _add_override_columns(is_pg)
-    _set_request_type_check(_REQUEST_TYPES)
+    _set_request_type_check(_REQUEST_TYPES, name=_REQUEST_TYPE_CHECK)
     _add_staff_columns()
     _create_tables()
     _seed_baseline()
@@ -392,7 +415,8 @@ def downgrade() -> None:
             op.drop_column("staff", column)
         op.drop_column("staff_weekly_overrides", "pending_request_id")
         op.drop_column("staff_weekly_overrides", "source")
-        _set_request_type_check(_OLD_REQUEST_TYPES, not_valid=True)
+        # 0098 までの状態 (本番の名前) に 1 つだけ戻す。
+        _set_request_type_check(_OLD_REQUEST_TYPES, name=_LEGACY_REQUEST_TYPE_CHECK, not_valid=True)
         return
 
     # SQLite: CHECK に参照される列は直接 DROP できないので batch で再構築 (0089 と同じ)。
@@ -407,5 +431,10 @@ def downgrade() -> None:
         batch.drop_constraint(op.f(_OVERRIDE_SOURCE_CHECK), type_="check")
         batch.drop_column("source")
     # mig0013 の SQLite は request_type に CHECK を付けていなかったので、外すだけにする。
+    existing = {
+        c.get("name") for c in sa.inspect(op.get_bind()).get_check_constraints("pending_requests")
+    }
     with op.batch_alter_table("pending_requests", recreate="always") as batch:
-        batch.drop_constraint(op.f(_REQUEST_TYPE_CHECK), type_="check")
+        for old in _REQUEST_TYPE_CHECK_NAMES:
+            if old in existing:
+                batch.drop_constraint(op.f(old), type_="check")

@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 #: 休みの種類の英語の値 (``app/core/leave.py`` の ``LEAVE_TYPES``)。
 LeaveTypeCode = Literal["off", "am_off", "pm_off", "paid_off"]
@@ -18,6 +18,15 @@ LeaveTypeCode = Literal["off", "am_off", "pm_off", "paid_off"]
 JudgementKind = Literal["not_leave", "off", "am_off", "pm_off", "paid_off"]
 KinmuSheetKind = Literal["plan", "final"]
 DriveStatus = Literal["connected", "needs_reconnect"]
+
+
+def month_start(value: date) -> date:
+    """月の列 (leave_months など・DB は月の 1 日だけ) へ渡す日付を月の 1 日にそろえる."""
+    return value.replace(day=1)
+
+
+#: 月の 1 日にそろえた日付 (``2026-10-15`` → ``2026-10-01``)。
+MonthStart = Annotated[date, AfterValidator(month_start)]
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +81,7 @@ class KaipokeLeaveJudgementCreate(BaseModel):
 
     staff_id: UUID
     event_date: date
-    subject: str = Field(min_length=1, max_length=255)
+    subject: str = Field(min_length=1)
     starts: time | None = None
     ends: time | None = None
     chosen_kind: JudgementKind
@@ -96,7 +105,7 @@ class LeaveCompareRunRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    month: date
+    month: MonthStart
     kaipoke_job_id: UUID | None = None
     fetched_at: dict[str, Any] | None = None
     diffs: list[dict[str, Any]] = Field(default_factory=list)
@@ -118,7 +127,7 @@ class LeaveMonthUpdate(BaseModel):
 class LeaveMonthRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    month: date
+    month: MonthStart
     required_hours: float | None = None
     last_leave_changed_at: datetime | None = None
     last_compared_at: datetime | None = None
@@ -136,11 +145,12 @@ class KinmuSheetRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    month: date
+    month: MonthStart
     kind: KinmuSheetKind
     version: int
     drive_file_id: str | None = None
     url: str | None = None
+    reason: str | None = None
     created_by: UUID | None = None
     created_at: datetime
 

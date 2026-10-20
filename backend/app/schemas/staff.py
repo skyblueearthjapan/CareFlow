@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # 列挙値 (§4.2 / Wave 0-C `app.schemas.v2.staff` と同一定義)
@@ -119,6 +119,14 @@ class StaffUpdate(BaseModel):
     work_form: WorkFormV2 | None = None
     admin_hours_per_day: float | None = Field(default=None, ge=0, le=24)
     kinmu_title: str | None = Field(default=None, max_length=64)
+
+    @field_validator("employment_type")
+    @classmethod
+    def _employment_type_not_null(cls, v: EmploymentTypeV2 | None) -> EmploymentTypeV2:
+        # 省略は「変えない」。明示の null は DB の NOT NULL で 500 になるので 422 にする。
+        if v is None:
+            raise ValueError("employment_type は full_time か part_time を指定してください")
+        return v
 
 
 class StaffRead(StaffBase):

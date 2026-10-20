@@ -65,8 +65,15 @@ async def test_leave_tables_round_trip(db) -> None:
                 decided_by=user.id,
             ),
             LeaveMonth(month=date(2026, 10, 1), required_hours=160, last_compare_run_id=run.id),
-            KinmuSheet(month=date(2026, 10, 1), kind="plan", drive_file_id="f1", url="https://x"),
-            GoogleDriveConnection(folder_id="folder", connected_by=user.id),
+            KinmuSheet(
+                month=date(2026, 10, 1),
+                kind="final",
+                version=2,
+                drive_file_id="f1",
+                url="https://x",
+                reason="実績の時間を合わせた",
+            ),
+            GoogleDriveConnection(folder_id="folder", connected_by=user.id, status="connected"),
         ]
     )
     await db.commit()
@@ -87,7 +94,7 @@ async def test_leave_tables_round_trip(db) -> None:
     month = LeaveMonthRead.model_validate(await db.get(LeaveMonth, date(2026, 10, 1)))
     assert month.required_hours == 160 and month.last_compare_run_id == run.id
     sheet = KinmuSheetRead.model_validate(await db.scalar(select(KinmuSheet)))
-    assert sheet.version == 1
+    assert (sheet.version, sheet.reason) == (2, "実績の時間を合わせた")
     conn = GoogleDriveConnectionRead.model_validate(await db.scalar(select(GoogleDriveConnection)))
     assert conn.status == "connected"
     assert "refresh_token_encrypted" not in conn.model_dump()
@@ -150,3 +157,66 @@ async def test_pending_request_check_accepts_all_app_types(db) -> None:
         db.add(PendingRequest(requester_user_id=user.id, request_type="visit_reschedule"))
         await db.commit()
     await db.rollback()
+
+
+def test_month_start_schema_aligns_to_first_day() -> None:
+    from app.schemas.leave import month_start
+
+    assert month_start(date(2026, 10, 15)) == date(2026, 10, 1)
+    assert LeaveMonthRead.model_validate({"month": date(2026, 2, 28)}).month == date(2026, 2, 1)
+
+
+def test_month_check_is_postgres_only() -> None:
+    """月の 1 日だけの CHECK は PG の DDL にだけ出る (SQLite の試験の DB は作れる)."""
+    from sqlalchemy.dialects import postgresql, sqlite
+    from sqlalchemy.schema import CreateTable
+
+    for model in (LeaveMonth, LeaveCompareRun, KinmuSheet):
+        pg = str(CreateTable(model.__table__).compile(dialect=postgresql.dialect()))
+        lite = str(CreateTable(model.__table__).compile(dialect=sqlite.dialect()))
+        assert "EXTRACT(DAY FROM month) = 1" in pg
+        assert f"ck_{model.__tablename__}_month_first_day" in pg
+        assert "EXTRACT" not in lite
+
+
+@pytest.mark.asyncio
+async def test_google_drive_connection_is_single_row(db) -> None:
+    db.add(GoogleDriveConnection(status="connected"))
+    await db.commit()
+    with pytest.raises(sa.exc.IntegrityError):
+        db.add(GoogleDriveConnection(status="connected"))
+        await db.commit()
+    await db.rollback()
+    with pytest.raises(sa.exc.IntegrityError):
+        db.add(GoogleDriveConnection(status="connected", is_singleton=False))
+        await db.commit()
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_staff_patch_employment_type_null_is_422(client, db) -> None:
+    from app.core.security import create_access_token, hash_password
+
+    admin = User(email="leave-models4@example.com", password_hash=hash_password("x"), role="admin")
+    staff = Staff(name="常勤一郎")
+    db.add_all([admin, staff])
+    await db.commit()
+    token = create_access_token(subject=admin.id, role=admin.role, staff_id=None)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    res = await client.patch(
+        f"/api/v1/staff/{staff.id}", headers=headers, json={"employment_type": None}
+    )
+    assert res.status_code == 422, res.text
+    res = await client.patch(
+        f"/api/v1/staff/{staff.id}",
+        headers=headers,
+        json={"employment_type": "part_time", "work_form": "C", "admin_hours_per_day": 4},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert (body["employment_type"], body["work_form"], body["admin_hours_per_day"]) == (
+        "part_time",
+        "C",
+        4.0,
+    )

@@ -27,6 +27,7 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
 
+from app.db.base import Base
 from app.models.pending_request import PendingRequest
 from app.schemas.v2.enums import RequestType
 
@@ -54,7 +55,8 @@ _NEW_TABLES = {
     "google_drive_connections",
 }
 
-# 0098 までの状態のうち、0099 が触る表だけ (pending_requests は本番 PG と同じ旧 9 種の CHECK)。
+# 0098 までの状態のうち、0099 が触る表だけ (pending_requests は本番 PG と同じ旧 9 種の CHECK。
+# 名前も本番と同じ、命名規約が二重にかかった ck_pending_requests_ck_pending_requests_...)。
 _PREREQ_SQL = (
     "CREATE TABLE users (id VARCHAR(36) NOT NULL PRIMARY KEY)",
     "CREATE TABLE kaipoke_jobs (id VARCHAR(36) NOT NULL PRIMARY KEY)",
@@ -71,7 +73,7 @@ _PREREQ_SQL = (
         request_type VARCHAR(40) NOT NULL,
         payload JSON NOT NULL,
         status VARCHAR(16) DEFAULT 'pending' NOT NULL,
-        CONSTRAINT ck_pending_requests_request_type
+        CONSTRAINT ck_pending_requests_ck_pending_requests_request_type
             CHECK (request_type IN ({", ".join(f"'{t}'" for t in _OLD_TYPES)}))
     )
     """,
@@ -100,7 +102,8 @@ def _run(engine: sa.Engine, fn_name: str) -> None:
     sys.modules["migration_0099"] = mod
     spec.loader.exec_module(mod)
     with engine.begin() as conn:
-        ctx = MigrationContext.configure(conn)
+        # 本番の env.py と同じく target_metadata を渡し、命名規約を本番とそろえる。
+        ctx = MigrationContext.configure(conn, opts={"target_metadata": Base.metadata})
         with Operations.context(ctx):
             getattr(mod, fn_name)()
 
@@ -170,6 +173,9 @@ def test_migration_0099_request_type_check_fixed(tmp_path: Path) -> None:
         _insert_request(conn, "before", "staff_status_update")
 
     _run(engine, "upgrade")
+    names = {c.get("name") for c in inspect(engine).get_check_constraints("pending_requests")}
+    assert "ck_pending_requests_request_type" in names
+    assert "ck_pending_requests_ck_pending_requests_request_type" not in names, "旧名は残さない"
     with engine.begin() as conn:
         for t in RequestType:
             _insert_request(conn, f"r-{t.value}", t.value)
@@ -178,7 +184,13 @@ def test_migration_0099_request_type_check_fixed(tmp_path: Path) -> None:
 
     _run(engine, "downgrade")
     names = {c.get("name") for c in inspect(engine).get_check_constraints("pending_requests")}
-    assert "ck_pending_requests_request_type" not in names
+    assert (
+        not {
+            "ck_pending_requests_request_type",
+            "ck_pending_requests_ck_pending_requests_request_type",
+        }
+        & names
+    )
     with engine.begin() as conn:
         count = conn.execute(sa.text("SELECT count(*) FROM pending_requests")).scalar()
     assert count == len(RequestType), "downgrade で申請の行は消えない"
@@ -205,6 +217,7 @@ def test_migration_0099_columns_tables_and_baseline(tmp_path: Path) -> None:
         "kaipoke_external_id",
         "updated_at",
     }
+    assert "reason" in {c["name"] for c in insp.get_columns("kinmu_sheets")}
     assert {c["name"] for c in insp.get_columns("leave_months")} == {
         "month",
         "required_hours",
@@ -261,6 +274,11 @@ def test_migration_0099_columns_tables_and_baseline(tmp_path: Path) -> None:
         f"chosen_kind) VALUES ('j1', '{_STAFF_A.hex}', '2026-10-01', 'h', '休み', 'maybe')",
         "INSERT INTO kinmu_sheets (id, month, kind) VALUES ('k1', '2026-10-01', 'draft')",
         "INSERT INTO google_drive_connections (id, status) VALUES ('g1', 'broken')",
+        # status は必須 (既定値なし)
+        "INSERT INTO google_drive_connections (id) VALUES ('g2')",
+        # is_singleton は真だけ (偽の 2 行目で 1 行だけの約束を抜けられない)
+        "INSERT INTO google_drive_connections (id, is_singleton, status) "
+        "VALUES ('g3', 0, 'connected')",
         # UNIQUE(staff_id, leave_date)
         "INSERT INTO staff_leave_kaipoke (id, staff_id, leave_date) "
         f"VALUES ('dup', '{_STAFF_A.hex}', '2026-07-28')",
@@ -277,13 +295,13 @@ def test_migration_0099_columns_tables_and_baseline(tmp_path: Path) -> None:
         )
         conn.execute(sa.text("UPDATE staff_weekly_overrides SET source = 'request'"))
         conn.execute(
-            sa.text("INSERT INTO google_drive_connections (id) VALUES (:id)"),
+            sa.text("INSERT INTO google_drive_connections (id, status) VALUES (:id, 'connected')"),
             {"id": uuid.uuid4().hex},
         )
     # google_drive_connections は 1 行だけ。
     with pytest.raises(sa.exc.IntegrityError), engine.begin() as conn:
         conn.execute(
-            sa.text("INSERT INTO google_drive_connections (id) VALUES (:id)"),
+            sa.text("INSERT INTO google_drive_connections (id, status) VALUES (:id, 'connected')"),
             {"id": uuid.uuid4().hex},
         )
 

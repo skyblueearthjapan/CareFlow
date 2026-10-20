@@ -36,6 +36,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     text,
+    true,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -45,6 +46,13 @@ from app.models.patient import JSONBish
 
 #: 照合でカイポケから取り込んだ・送った休みの種類 (``app/core/leave.py`` の ``LEAVE_TYPES``)。
 _LEAVE_TYPES_SQL = "'off', 'am_off', 'pm_off', 'paid_off'"
+
+
+def _month_first_day() -> CheckConstraint:
+    """月の列は月の 1 日だけ (mig 0099 と同じ・SQLite には EXTRACT が無いので PG だけ)."""
+    return CheckConstraint("EXTRACT(DAY FROM month) = 1", name="month_first_day").ddl_if(
+        dialect="postgresql"
+    )
 
 
 def _user_fk() -> ForeignKey:
@@ -116,7 +124,7 @@ class KaipokeLeaveJudgement(Base):
     event_date: Mapped[date] = mapped_column(Date, nullable=False)
     # sha256(職員 id ‖ 日付 ‖ 件名 ‖ 開始 HH:MM ‖ 終了 HH:MM) の 16 進 (§7-4-3)。
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    subject: Mapped[str] = mapped_column(Text, nullable=False)
     starts: Mapped[time | None] = mapped_column(Time, nullable=True)
     ends: Mapped[time | None] = mapped_column(Time, nullable=True)
     # not_leave / off / am_off / pm_off / paid_off
@@ -167,7 +175,10 @@ class LeaveCompareRun(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    __table_args__ = (Index("ix_leave_compare_runs_month_created_at", "month", "created_at"),)
+    __table_args__ = (
+        Index("ix_leave_compare_runs_month_created_at", "month", "created_at"),
+        _month_first_day(),
+    )
 
 
 class LeaveMonth(Base):
@@ -200,6 +211,8 @@ class LeaveMonth(Base):
         PG_UUID(as_uuid=True), _user_fk(), nullable=True
     )
 
+    __table_args__ = (_month_first_day(),)
+
 
 class KinmuSheet(Base):
     """作った勤務表のファイル (kinmu_sheets)。行を消す API は作らない."""
@@ -217,6 +230,8 @@ class KinmuSheet(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     drive_file_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 確定版を作り直した理由 (§7-2 の 3)。
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), _user_fk(), nullable=True
     )
@@ -228,6 +243,7 @@ class KinmuSheet(Base):
         CheckConstraint("kind IN ('plan','final')", name="kind"),
         CheckConstraint("version >= 1", name="version"),
         UniqueConstraint("month", "kind", "version"),
+        _month_first_day(),
     )
 
 
@@ -240,7 +256,7 @@ class GoogleDriveConnection(Base):
         PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     is_singleton: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True, server_default=func.true()
+        Boolean, nullable=False, default=True, server_default=true()
     )
     # Fernet で暗号化したリフレッシュトークン (API では返さない)。
     refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -251,9 +267,7 @@ class GoogleDriveConnection(Base):
         PG_UUID(as_uuid=True), _user_fk(), nullable=True
     )
     # connected / needs_reconnect
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="connected", server_default="connected"
-    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -264,6 +278,8 @@ class GoogleDriveConnection(Base):
 
     __table_args__ = (
         CheckConstraint("status IN ('connected','needs_reconnect')", name="status"),
+        # 1 行だけ (真の行は部分 UNIQUE で 1 つ)。
+        CheckConstraint("is_singleton", name="singleton"),
         Index(
             "uq_google_drive_connections_singleton",
             "is_singleton",
