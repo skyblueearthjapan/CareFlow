@@ -13,15 +13,20 @@
  *   5. 却下時は理由入力ダイアログで必須化 (§3.5.4)
  *
  * 「編集承認」(JSON テキストエリア) は 2026-08-18 に UI から撤去 —
- * 人が読めない生 payload 編集は運用に不適で、休みの調整は右パネル
- * (StaffLeavePanel) の直接追加/取消で代替できる。BE エンドポイント
+ * 人が読めない生 payload 編集は運用に不適。BE エンドポイント
  * (approve-with-edit) と FE フックは互換のため存続。
+ *
+ * 休み (leave-and-kinmu-sheet-design §5-1): 右の小さなカレンダーは無くし、休みの調整は
+ * 「休み・勤務表」(/admin/leave) で行う。一覧の上に「休み・勤務表で開く」の帯、休みの行に
+ * 種類と「表で開く」。承認したら休みのデータも読み直す (「元に戻す」は付けない・§5-3)。
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Filter, RefreshCw } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { ArrowRight, CalendarHeart, Filter, RefreshCw } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { RakusukeNote, RakusukeTitle } from '@/components/brand/Rakusuke';
@@ -40,10 +45,13 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
+import { toast } from '@/components/ui/sonner';
+import { StaffCombobox } from '@/components/master/StaffCombobox';
 import { isAdminRole } from '@/lib/rbac';
+import { jstToday, LEAVE_TYPES } from '@/lib/leave';
 import { usePatients } from '@/lib/queries/patients';
 import { useStaffList } from '@/lib/queries/staff';
-import { StaffLeavePanel } from './_components/StaffLeavePanel';
+import { useMonthConfirmedCount } from '@/lib/queries/staff-shift-confirmations';
 import {
   useApproveRequest,
   usePendingRequests,
@@ -190,6 +198,38 @@ function summarizeRequest(row: PendingRequestV2Read): string {
   return parts.join(' ・ ');
 }
 
+const LEAVE_TYPE_LABEL: Record<string, string> = {
+  off: '公休',
+  am_off: '午前休',
+  pm_off: '午後休',
+  paid_off: '有給',
+};
+
+/**
+ * 休みの申請 (staff_off) の種類の表示。変更のお願いは「変更のお願い」の印つき。
+ * 旧い申請は override_type が無い / 'off' 固定。
+ */
+function leaveRequestLabel(row: PendingRequestV2Read): { type: string; change: boolean } {
+  const p = (row.edited_payload ?? row.payload ?? {}) as Record<string, unknown>;
+  const t = typeof p.override_type === 'string' ? p.override_type : 'off';
+  const type = t === 'cancel' ? '休みの取り消し' : LEAVE_TYPES.has(t) ? LEAVE_TYPE_LABEL[t]! : t;
+  return { type, change: p.kind === 'change' };
+}
+
+/** 「休み・勤務表」でその人・その日のマスを開く URL。 */
+function leaveSheetHref(row: PendingRequestV2Read): string | null {
+  if (!row.target_staff_id || !row.target_date) return null;
+  return `/admin/leave?staff=${encodeURIComponent(row.target_staff_id)}&date=${row.target_date}`;
+}
+
+/** いま管理者が組んでいる月 (来月) の月初 'YYYY-MM-01' と月の数字。 */
+function nextMonthStart(now: Date): { iso: string; month: number } {
+  const [y = 0, m = 1] = jstToday(now).split('-').map(Number);
+  const ny = m === 12 ? y + 1 : y;
+  const nm = m === 12 ? 1 : m + 1;
+  return { iso: `${ny}-${String(nm).padStart(2, '0')}-01`, month: nm };
+}
+
 function statusBadgeVariant(s: RequestStatus): 'warning' | 'success' | 'destructive' {
   switch (s) {
     case 'pending':
@@ -263,6 +303,29 @@ export default function AdminPendingRequestsPage() {
     [patientsList.data],
   );
 
+  // 帯: 休みの申請 (申請中) の件数と、来月の確定の状態。
+  const leavePending = usePendingRequests({
+    request_type: 'staff_off',
+    status: 'pending',
+    limit: 1,
+  });
+  const upcoming = useMemo(() => nextMonthStart(new Date()), []);
+  // 数えるのは在職の常勤だけ (職員ごとの GET を並べるので数を絞る。#8 の月の API ができたら置き換える)
+  const fullTimeStaffIds = useMemo(
+    () =>
+      (staffList.data ?? [])
+        .filter(
+          (s) =>
+            !s.deleted_at &&
+            (s.status ?? 'active') === 'active' &&
+            (s.employment_type ?? 'full_time') === 'full_time',
+        )
+        .map((s) => s.id),
+    [staffList.data],
+  );
+  const monthConfirm = useMonthConfirmedCount(fullTimeStaffIds, upcoming.iso);
+
+  const qc = useQueryClient();
   const approve = useApproveRequest();
   const reject = useRejectRequest();
 
@@ -289,6 +352,22 @@ export default function AdminPendingRequestsPage() {
   const handleApprove = (row: PendingRequestV2Read) => {
     setActionError(null);
     approve.mutate(row.id, {
+      onSuccess: () => {
+        const staffName = row.target_staff_id ? staffNameById.get(row.target_staff_id) : null;
+        const what = [
+          staffName ? `${staffName}さん` : null,
+          row.target_date ? fmtTargetDate(row.target_date) : null,
+          row.request_type === 'staff_off' ? leaveRequestLabel(row).type : null,
+        ]
+          .filter(Boolean)
+          .join(' ');
+        toast.success(`承認しました${what ? `（${what}）` : ''}`);
+        if (row.request_type === 'staff_off') {
+          // 承認で休みの登録が変わる → 休みのデータ (職員ごと・週の盤面) を読み直す
+          void qc.invalidateQueries({ queryKey: ['staff-overrides'] });
+          void qc.invalidateQueries({ queryKey: ['staff-overrides-week'] });
+        }
+      },
       onError: (err) => setActionError(err.message),
     });
   };
@@ -342,11 +421,40 @@ export default function AdminPendingRequestsPage() {
         </Alert>
       )}
 
-      {/* 2カラム: 左=申請リスト (主) / 右=休み・月確定パネル (副)。
-          両カラムをストレッチして枠の下端を揃える (2026-08-18 ユーザー要望)。
-          パネルでスタッフを選ぶと左のリストも同じスタッフで絞り込まれる。 */}
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_400px]">
-        <div className="flex min-w-0 flex-col gap-4">
+      <div
+        role="region"
+        aria-label="休みの申請"
+        className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-brand-primary-light bg-brand-primary-50 px-4 py-3"
+      >
+        <div className="flex items-center gap-2 text-sm text-text-primary">
+          <CalendarHeart className="h-4 w-4 text-brand-primary" />
+          <span>
+            休みの申請 <b className="tnum">{leavePending.data?.total ?? 0}</b> 件
+          </span>
+          <span className="text-text-muted">・</span>
+          <span>
+            {monthConfirm.isError
+              ? `${upcoming.month}月の確定の状態を読み込めませんでした`
+              : `${upcoming.month}月は`}
+            {monthConfirm.isError
+              ? null
+              : monthConfirm.isLoading
+                ? '確定の状態を確かめています'
+                : monthConfirm.total > 0 && monthConfirm.confirmed === monthConfirm.total
+                  ? '確定済み'
+                  : monthConfirm.confirmed > 0
+                    ? `未確定（${monthConfirm.confirmed}/${monthConfirm.total} 人確定）`
+                    : '未確定'}
+          </span>
+        </div>
+        <Button asChild size="sm">
+          <Link href="/admin/leave">
+            休み・勤務表で開く
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        </Button>
+      </div>
+
       <Card className="p-4">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
@@ -379,12 +487,12 @@ export default function AdminPendingRequestsPage() {
               </option>
             ))}
           </select>
-          <Input
+          <StaffCombobox
             value={staffIdFilter}
-            onChange={(e) => setStaffIdFilter(e.target.value)}
-            placeholder="対象スタッフ ID (UUID)"
-            className="max-w-[280px] font-mono text-xs"
-            aria-label="対象スタッフ ID"
+            onChange={setStaffIdFilter}
+            clearLabel="― 全員（絞り込みなし）"
+            placeholder="対象スタッフ（全員）"
+            className="w-[240px]"
           />
           <Input
             value={patientIdFilter}
@@ -443,15 +551,6 @@ export default function AdminPendingRequestsPage() {
           />
         </TabsContent>
       </Tabs>
-        </div>
-
-        <StaffLeavePanel
-          onStaffChange={(id) => {
-            setStaffIdFilter(id);
-            if (id) setTab('staff');
-          }}
-        />
-      </div>
 
       {/* Reject dialog — rejection_reason は必須 */}
       <Dialog
@@ -504,7 +603,6 @@ export default function AdminPendingRequestsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
     </section>
   );
 }
@@ -562,7 +660,6 @@ function RequestList({
   }
 
   if (items.length === 0) {
-    // h-full + 縦中央: 右パネルとの下端揃えでカードが伸びても空状態が浮かないように
     return (
       <Card className="flex h-full items-center justify-center p-5">
         <RakusukeNote pose="clap" size="sm" title={emptyMessage} comment="すべて対応済みです" />
@@ -632,6 +729,8 @@ function RequestRow({
   const summary = summarizeRequest(row);
   const staffName = row.target_staff_id ? staffNameById.get(row.target_staff_id) : null;
   const patientName = row.target_patient_id ? patientNameById.get(row.target_patient_id) : null;
+  const leave = row.request_type === 'staff_off' ? leaveRequestLabel(row) : null;
+  const sheetHref = row.request_type === 'staff_off' ? leaveSheetHref(row) : null;
 
   return (
     <tr className="border-b border-border-default last:border-0 align-top hover:bg-bg-muted">
@@ -645,8 +744,16 @@ function RequestRow({
           {REQUEST_TYPE_LABEL[row.request_type]}
         </span>
         {row.scope && (
-          <p className="mt-0.5 text-[11px] text-text-muted">
-            {SCOPE_LABEL[row.scope] ?? row.scope}
+          <p className="mt-0.5 text-xs text-text-muted">{SCOPE_LABEL[row.scope] ?? row.scope}</p>
+        )}
+        {leave && (
+          <p className="mt-0.5 flex flex-wrap items-center gap-1 text-sm text-text-primary">
+            {leave.type}
+            {leave.change && (
+              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
+                変更のお願い
+              </span>
+            )}
           </p>
         )}
       </td>
@@ -685,23 +792,29 @@ function RequestRow({
         )}
       </td>
       <td className="px-3 py-2">
-        {isActionable ? (
-          <div className="flex flex-col gap-1">
-            <Button size="sm" onClick={() => onApprove(row)} disabled={actionPending}>
-              承認
+        <div className="flex flex-col gap-1">
+          {isActionable && (
+            <>
+              <Button size="sm" onClick={() => onApprove(row)} disabled={actionPending}>
+                承認
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => onReject(row)}
+                disabled={actionPending}
+              >
+                却下
+              </Button>
+            </>
+          )}
+          {sheetHref && (
+            <Button asChild size="sm" variant="outline">
+              <Link href={sheetHref}>表で開く</Link>
             </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={() => onReject(row)}
-              disabled={actionPending}
-            >
-              却下
-            </Button>
-          </div>
-        ) : (
-          <span className="text-xs text-text-muted">--</span>
-        )}
+          )}
+          {!isActionable && !sheetHref && <span className="text-xs text-text-muted">--</span>}
+        </div>
       </td>
     </tr>
   );

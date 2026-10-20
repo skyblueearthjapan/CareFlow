@@ -16,7 +16,8 @@ const ISO_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 const hhmmSchema = z.string().regex(HHMM_REGEX, 'HH:MM 形式で入力してください');
 
-export const OVERRIDE_TYPE_VALUES = ['休み', '時間変更', '午前休', '午後休'] as const;
+/** BE `OverrideLabel` (schemas/staff_overrides.py) と同じ 5 つ。'有給' = paid_off。 */
+export const OVERRIDE_TYPE_VALUES = ['休み', '時間変更', '午前休', '午後休', '有給'] as const;
 
 export const overrideTypeSchema = z.enum(OVERRIDE_TYPE_VALUES);
 export type OverrideType = z.infer<typeof overrideTypeSchema>;

@@ -86,6 +86,8 @@ export const staffReadSchema = staffBaseSchema.extend({
   created_at: z.string(),
   updated_at: z.string(),
   deleted_at: z.string().nullable().optional(),
+  /** 常勤 / 非常勤 (mig 0099・読み出しだけ)。非常勤は必要休日数の対象外。 */
+  employment_type: z.enum(['full_time', 'part_time']).optional(),
 });
 
 export type StaffCreate = z.infer<typeof staffCreateSchema>;
@@ -144,19 +146,6 @@ export const staffShiftSchema = z.object({
   end_time: z.string().nullable().optional(),
 });
 export type StaffShift = z.infer<typeof staffShiftSchema>;
-
-export const staffWeeklyOverrideSchema = z.object({
-  id: z.string().uuid(),
-  staff_id: z.string().uuid(),
-  iso_year: z.number().int(),
-  iso_week: z.number().int(),
-  weekday: z.number().int().min(0).max(6),
-  override_type: z.enum(['off', 'custom_time']),
-  start_time: z.string().nullable().optional(),
-  end_time: z.string().nullable().optional(),
-  reason: z.string().nullable().optional(),
-});
-export type StaffWeeklyOverride = z.infer<typeof staffWeeklyOverrideSchema>;
 
 export const staffEventSchema = z.object({
   id: z.string().uuid(),
