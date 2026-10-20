@@ -47,7 +47,8 @@ for r in rows:
                       source=v["source"], office=v["course_office"], course=v["course_code"]))
 for (iso, pname, t), left in key.items():  # 変わらない訪問
     for v in left:
-        cs = v["primary_staff_id"] or v.get("course_staff_id")
+        # 主担当が空で manual_staff_override が真なら「明示の担当なし」(休み設計 §3-2)。コースの担当に読み替えない
+        cs = v["primary_staff_id"] or (None if v.get("manual_staff_override") else v.get("course_staff_id"))
         items.append(dict(id=v["id"], pid=v["patient_id"], day=iso, name=pname, start=hm(t),
                           dur=hm(v["end_time"]) - hm(v["start_time"]), staff=staff[cs]["name"] if cs else "担当なし",
                           cur_t=t, cur_s=staff[cs]["name"] if cs else "担当なし", new=False, source=v["source"],

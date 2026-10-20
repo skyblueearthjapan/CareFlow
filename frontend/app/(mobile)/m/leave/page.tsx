@@ -52,6 +52,7 @@ import {
   usePendingRequests,
   useWithdrawPendingRequest,
 } from '@/lib/queries/pending_requests';
+import { useLeaveMonthSummary } from '@/lib/queries/leave';
 import { useShiftConfirmations } from '@/lib/queries/staff-shift-confirmations';
 import { useStaffOverrides } from '@/lib/queries/staff-overrides';
 import { useStaffShifts } from '@/lib/queries/staff-shifts';
@@ -174,6 +175,12 @@ export default function MobileLeavePage() {
   const shiftsQuery = useStaffShifts(staffId);
   const overridesQuery = useStaffOverrides(staffId, { from: monthStart, to: monthEnd });
   const confirmationsQuery = useShiftConfirmations(staffId, { from: monthStart, to: monthStart });
+  // 祝日 (振替休日・国民の休日を含む) は月の軽い情報から。祝日も出勤の日のまま (日付を赤くするだけ)
+  const monthInfoQuery = useLeaveMonthSummary(monthStart.slice(0, 7));
+  const holidayByDate = useMemo(
+    () => new Map((monthInfoQuery.data?.holidays ?? []).map((h) => [h.date, h.name])),
+    [monthInfoQuery.data],
+  );
   // 本人のその月の staff_off (staff の GET はサーバ側で自分軸に絞り込み済み)
   const requestsQuery = usePendingRequests({
     request_type: 'staff_off',
@@ -529,6 +536,7 @@ export default function MobileLeavePage() {
               day={day}
               selectedType={selected.get(day.date) ?? null}
               request={requestByDate.get(day.date) ?? null}
+              holiday={holidayByDate.get(day.date) ?? null}
               past={day.date < todayIso}
               onTap={() => handleDayTap(day)}
             />
@@ -763,12 +771,14 @@ interface DayCellProps {
   day: ShiftDay;
   selectedType: LeaveType | null;
   request: PendingRequestV2Read | null;
+  /** 祝日の名前 (祝日でなければ null)。日付を赤くするだけで、出勤の日のまま。 */
+  holiday: string | null;
   past: boolean;
   onTap: () => void;
 }
 
 /** カレンダーの 1 日。選択中 > 休みの登録 > 勤務しない曜日 の順に塗り、申請中は枠、却下は ✕。 */
-function DayCell({ day, selectedType, request, past, onTap }: DayCellProps) {
+function DayCell({ day, selectedType, request, holiday, past, onTap }: DayCellProps) {
   const leave = leaveOf(day);
   const d = new Date(day.date + 'T00:00:00');
   const dow = d.getDay();
@@ -807,7 +817,8 @@ function DayCell({ day, selectedType, request, past, onTap }: DayCellProps) {
       type="button"
       disabled={past}
       onClick={onTap}
-      aria-label={`${fmtJp(day.date)}${status ? ` ${status}` : ''}`}
+      aria-label={`${fmtJp(day.date)}${holiday ? ` ${holiday}` : ''}${status ? ` ${status}` : ''}`}
+      data-holiday={holiday ?? undefined}
       aria-pressed={selectedType !== null}
       className={cn(
         'relative h-16 overflow-hidden rounded-md border border-border-default bg-bg-base text-center',
@@ -834,8 +845,8 @@ function DayCell({ day, selectedType, request, past, onTap }: DayCellProps) {
       <span
         className={cn(
           'absolute left-1 top-0.5 text-sm font-medium',
-          !selectedType && dow === 0 && 'text-red-600',
-          !selectedType && dow === 6 && 'text-blue-600',
+          !selectedType && (dow === 0 || holiday) && 'text-red-600',
+          !selectedType && dow === 6 && !holiday && 'text-blue-600',
         )}
       >
         {d.getDate()}

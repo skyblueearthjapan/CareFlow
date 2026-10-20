@@ -67,6 +67,16 @@ vi.mock('@/lib/queries/staff-shift-confirmations', () => ({
   useShiftConfirmations: () => ({ data: confirmations, isLoading: false }),
 }));
 
+// 祝日は月の軽い情報 (GET /leave/month/{month}/summary) の holidays から
+let monthHolidays: { date: string; name: string }[] = [];
+const summaryMonths: string[] = [];
+vi.mock('@/lib/queries/leave', () => ({
+  useLeaveMonthSummary: (month: string) => {
+    summaryMonths.push(month);
+    return { data: { month: `${month}-01`, holidays: monthHolidays, closed_days: [] } };
+  },
+}));
+
 import { toast } from '@/components/ui/sonner';
 import MobileLeavePage from '../page';
 
@@ -428,5 +438,23 @@ describe('MobileLeavePage — 締め切り後・確定後の「変更をお願�
         description: '理由を入れてください',
       }),
     );
+  });
+});
+
+describe('MobileLeavePage — 祝日', () => {
+  it('summary の祝日は日付を赤くし、名前を読み上げる (出勤の日のまま選べる)', () => {
+    monthHolidays = [{ date: '2026-12-03', name: '試験の祝日' }];
+    summaryMonths.length = 0;
+    render(<MobileLeavePage />);
+    expect(summaryMonths).toContain('2026-12');
+    const cell = day('12/3（木） 試験の祝日');
+    expect(cell).toHaveAttribute('data-holiday', '試験の祝日');
+    expect(cell.querySelector('.text-red-600')).toHaveTextContent('3');
+    // 祝日でない平日は赤くない
+    expect(day('12/4（金）').querySelector('.text-red-600')).toBeNull();
+    // 出勤の日のまま: 押すと選べる
+    fireEvent.click(cell);
+    expect(cell).toHaveAttribute('aria-pressed', 'true');
+    monthHolidays = [];
   });
 });

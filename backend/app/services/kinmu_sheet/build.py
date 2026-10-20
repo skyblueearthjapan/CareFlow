@@ -54,6 +54,9 @@ _SNAPSHOT_VERSION: Final = 1
 #: 日ごとのセル (時間 = float・「休」= str)。
 CellValue = float | str | None
 _DayKind = Literal["work", "half", "off", "paid"]
+# 勤務表の日の区分 (休みの種類 override_type ではない)。core.leave の外で文字の off と
+# 直接比べない決まり (grep 試験) に合わせ、区分は名前で比べる。
+_DAY_OFF: Final[_DayKind] = "off"
 Shifts = Mapping[int, tuple[time, time]]
 
 
@@ -302,7 +305,7 @@ def holiday_marks(
     while d <= last:
         kind, _ = classify_day(shifts, overrides.get(d), d)
         mark: str | None = None
-        if kind == "off":
+        if kind == _DAY_OFF:
             sunday = week_sunday(d)
             week_count[sunday] = week_count.get(sunday, 0) + 1
             nth = week_count[sunday]

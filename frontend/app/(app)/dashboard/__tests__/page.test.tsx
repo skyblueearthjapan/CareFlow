@@ -19,6 +19,12 @@ vi.mock('@/lib/queries/dashboard', () => ({
   useStaffPerformance: (...a: unknown[]) => useStaffPerformance(...a),
 }));
 
+// 「M月の休み」のカード (休み・勤務表の月の API)
+const useLeaveMonthSummary = vi.fn();
+vi.mock('@/lib/queries/leave', () => ({
+  useLeaveMonthSummary: (...a: unknown[]) => useLeaveMonthSummary(...a),
+}));
+
 import type { PerformanceMetrics, StaffPerformanceResponse } from '@/lib/schemas/dashboard';
 
 import DashboardPage from '../page';
@@ -143,6 +149,17 @@ beforeEach(() => {
   });
   useStaffPerformance.mockReset();
   useStaffPerformance.mockReturnValue({ data: PERF, isLoading: false, isError: false });
+  useLeaveMonthSummary.mockReset();
+  useLeaveMonthSummary.mockReturnValue({
+    data: {
+      confirmed: false,
+      pending_count: 2,
+      short_staff_count: 1,
+      kaipoke_action_count: 1,
+    },
+    isLoading: false,
+    isError: false,
+  });
 });
 
 function asRole(role: 'admin' | 'staff') {
@@ -150,6 +167,20 @@ function asRole(role: 'admin' | 'staff') {
 }
 
 describe('管理者', () => {
+  it('「M月の休み：申請中 N 件・足りない人 N 人・カイポケで要対応 N 件」から休み・勤務表へ', () => {
+    asRole('admin');
+    render(<DashboardPage />);
+    const card = screen.getByTestId('leave-dashboard-card');
+    expect(card).toHaveTextContent('申請中 2 件・足りない人 1 人・カイポケで要対応 1 件');
+    const month = String(useLeaveMonthSummary.mock.calls[0]?.[0]);
+    expect(month).toMatch(/^\d{4}-\d{2}$/);
+    expect(card).toHaveTextContent(`${Number(month.slice(5))}月の休み`);
+    expect(within(card).getByRole('link', { name: /休み・勤務表で開く/ })).toHaveAttribute(
+      'href',
+      `/admin/leave?month=${month}`,
+    );
+  });
+
   it('チーム全体の数字・QR の注意書き・今日の運用・注意の 3 点を出す', () => {
     asRole('admin');
     render(<DashboardPage />);
@@ -315,6 +346,8 @@ describe('権限が分かる前', () => {
     expect(screen.getByTestId('dashboard-loading')).toBeInTheDocument();
     expect(screen.queryByText('今週完了率')).not.toBeInTheDocument();
     expect(useStaffPerformance).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('leave-dashboard-card')).not.toBeInTheDocument();
+    expect(useLeaveMonthSummary).not.toHaveBeenCalled();
     expect(useDashboardTrend).toHaveBeenLastCalledWith(7, { enabled: false });
   });
 });

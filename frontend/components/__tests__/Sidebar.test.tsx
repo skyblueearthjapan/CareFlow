@@ -23,6 +23,16 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/dashboard',
 }));
 
+// メニューの未処理の休みの申請の件数 (いま組んでいる月の summary の pending_count)
+let pendingTotal = 0;
+const pendingCalls: unknown[][] = [];
+vi.mock('@/lib/queries/leave', () => ({
+  useLeaveMonthSummary: (...args: unknown[]) => {
+    pendingCalls.push(args);
+    return { data: { pending_count: pendingTotal } };
+  },
+}));
+
 import { useSession } from 'next-auth/react';
 import { Sidebar } from '../Sidebar';
 
@@ -34,7 +44,11 @@ function setRole(role: 'admin' | 'manager' | 'staff') {
 }
 
 describe('Sidebar — ロール別メニュー表示', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    pendingTotal = 0;
+    pendingCalls.length = 0;
+  });
 
   it('1. admin → 連携・監査ログ・申請履歴が表示される', () => {
     setRole('admin');
@@ -64,5 +78,40 @@ describe('Sidebar — ロール別メニュー表示', () => {
     // 共通メニューは全ロール表示
     expect(screen.getByRole('link', { name: /スケジュール/ })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /訪問モニター/ })).toBeInTheDocument();
+  });
+
+  it('4. 「休み・勤務表」は申請履歴のすぐ下・管理者だけ', () => {
+    setRole('admin');
+    render(<Sidebar collapsed={false} />);
+    const links = screen.getAllByRole('link').map((a) => a.textContent);
+    const i = links.indexOf('申請履歴');
+    expect(links[i + 1]).toBe('休み・勤務表');
+    expect(screen.getByRole('link', { name: '休み・勤務表' })).toHaveAttribute(
+      'href',
+      '/admin/leave',
+    );
+    // 0 件なら件数を出さない
+    expect(screen.queryByText(/未処理の申請/)).not.toBeInTheDocument();
+  });
+
+  it('5. staff には「休み・勤務表」を出さない', () => {
+    setRole('staff');
+    render(<Sidebar collapsed={false} />);
+    expect(screen.queryByRole('link', { name: '休み・勤務表' })).not.toBeInTheDocument();
+    // 管理者でなければ件数を読まない
+    expect(pendingCalls.every((c) => c[1] === false)).toBe(true);
+  });
+
+  it('6. 未処理の休みの申請の件数 (60 秒に 1 回まで)・折りたたみでは点', () => {
+    setRole('admin');
+    pendingTotal = 3;
+    const { unmount } = render(<Sidebar collapsed={false} />);
+    expect(pendingCalls[0]).toEqual([expect.stringMatching(/^\d{4}-\d{2}$/), true, 60_000]);
+    const link = screen.getByRole('link', { name: /休み・勤務表/ });
+    expect(link).toHaveTextContent('3');
+    expect(link).toHaveTextContent('未処理の申請 3 件');
+    unmount();
+    render(<Sidebar collapsed />);
+    expect(screen.getByTestId('nav-badge-dot')).toHaveTextContent('未処理の申請 3 件');
   });
 });

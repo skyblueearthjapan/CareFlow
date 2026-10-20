@@ -7,6 +7,7 @@
 - 1 行目は必ず `-- <日本語の説明> | params: key1, key2`（引数なしは `params: (なし)`）。rk の一覧と検査がこの行を読む。
 - 引数は psql 変数 `:'key'`（文字列として埋め込まれる。日付は `:'date_from'::date`）。**列挙した引数はすべて必須**。「指定なし」は空文字（`-p staff=`）で渡す。
 - 数える訪問は `deleted_at is null and status <> 'cancelled'`、【検証】患者を除く（`p.name not like '【検証】%'`）。担当は `coalesce(v.primary_staff_id, case when not v.manual_staff_override and c.deleted_at is null then c.assigned_staff_id end)`。1 回 1 件は `count(distinct coalesce(v.visit_group_id, v.id))`。
+- 休みの種類（`staff_weekly_overrides.override_type`）: 終日の休みは `in ('off', 'paid_off')`（公休と有給）。半休は `am_off`（13:00 から勤務）・`pm_off`（12:30 から休み）。`custom_time` は時間変更で休みではない。**`= 'off'` だけで終日休みを見ない**（有給が漏れる）。主担当が空で `manual_staff_override` が真の訪問は「明示の担当なし」（休みの時間帯から外した訪問など）で、上の担当の式のとおりコースの担当に読み替えない。
 - 時刻: 予定（visits）は日本時間のまま。打刻・作成時刻は `at time zone 'Asia/Tokyo'`。職員の予定（staff_events）は `at time zone 'UTC'`（壁時計を UTC として保存）。今日は `(now() at time zone 'Asia/Tokyo')::date`。
 - 曜日の番号は 0=月〜6=日（staff_shifts・overrides・PFV・courses・marks）。
 - 列名は英語の snake_case（JSON のキー）。答えるときは日本語に言い換える。
@@ -21,8 +22,8 @@
 | `visits_by_staff_day` | 職員 × 日の担当件数・最初/最後の時刻・訪問分（副担当も 1 件・同行は入れない） | date_from, date_to, staff（コード/氏名の一部・空=全員） |
 | `visits_by_patient` | 利用者の訪問（取消も状態つき） | patient（コード/氏名/かな）, date_from, date_to |
 | `patient_next_visits` | 利用者の次の予定 5 件 | patient |
-| `day_load_vs_staff` | 日ごとの件数と出勤人数（休み・半休・マネージャー・新人を別列）・1 人あたり | date_from, date_to |
-| `unassigned_visits` | 本当に担当なしの訪問 | date_from, date_to |
+| `day_load_vs_staff` | 日ごとの件数と出勤人数（終日休み＝公休・有給／うち有給／半休・マネージャー・新人を別列。半休は出勤に数える。休みの列は新人・マネージャーも数える）・1 人あたり | date_from, date_to |
+| `unassigned_visits` | 本当に担当なしの訪問（明示の担当なしを含む） | date_from, date_to |
 | `staff_overlaps` | 同じ職員で時間が重なる訪問の組（移動は見ない） | date_from, date_to |
 | `visit_source_breakdown` | 出所 × 状態の件数（取消の内訳・削除済み） | date_from, date_to |
 | `checkin_arrivals` | 打刻の実績（誰が・何時に・どの家・到着/退出・合わせた理由・場所判定）日本時間 | date_from, date_to, patient（空=全）, staff（空=全） |
@@ -31,9 +32,9 @@
 | `time_adjustment_reasons` | 実績の時刻を合わせた件数（理由別・最新行のみ） | date_from, date_to |
 | `staff_roster` | 稼働中の職員（拠点・ロール・新人・資格・勤務時刻・応援拠点） | (なし) |
 | `staff_lookup` | 職員の名前の同定（候補 30 件まで） | name |
-| `staff_week_overrides` | 週の休み・半休・時間変更 | monday |
+| `staff_week_overrides` | 週の休み（公休・午前休・午後休・有給）と時間変更・種類の日本語・終日か・入れた元（申請／管理者／カイポケ） | monday |
 | `staff_week_events` | 週の職員の予定（壁時計・今週だけ外した印） | monday |
-| `pending_leave_requests` | 未承認の申請（休み申請など） | request_type（空=全種類・例 staff_off） |
+| `pending_leave_requests` | 未承認の申請（休み申請など）。休み申請は種類・変更のお願いか・理由 | request_type（空=全種類・例 staff_off） |
 | `accompaniments_week` | 週の同行（新人・支援）とコースの担当・件数 | monday |
 | `patient_lookup` | 利用者の名前の同定（候補 30 件まで） | name |
 | `patients_by_status` | 状態ごとの利用者・いつから・今日以降の予定の残り・枠の数 | status（空=稼働中以外すべて） |

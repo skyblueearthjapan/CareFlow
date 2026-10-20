@@ -10,7 +10,6 @@
  */
 import {
   useMutation,
-  useQueries,
   useQuery,
   useQueryClient,
   type UseMutationOptions,
@@ -66,34 +65,6 @@ export function useShiftConfirmations(
     },
     enabled: isAuthenticated && !!staffId,
   });
-}
-
-/**
- * 職員の一覧のうち、その月 (月初 'YYYY-MM-01') を確定済みの人数。
- * 職員ごとの GET を並べて読む (キャッシュは useShiftConfirmations と同じキー)。
- */
-export function useMonthConfirmedCount(staffIds: readonly string[], monthStart: string) {
-  const { accessToken, refreshToken, isAuthenticated } = useAuthTokens();
-  const range = { from: monthStart, to: monthStart };
-  const results = useQueries({
-    queries: staffIds.map((staffId) => ({
-      queryKey: shiftConfirmationsKey(staffId, range),
-      queryFn: () =>
-        fetcher<ShiftConfirmationRead[]>(
-          `${STAFF_BASE}/${staffId}/shift-confirmations?from=${encodeURIComponent(
-            monthStart,
-          )}&to=${encodeURIComponent(monthStart)}`,
-          { accessToken, refreshToken },
-        ),
-      enabled: isAuthenticated,
-    })),
-  });
-  return {
-    confirmed: results.filter((r) => (r.data?.length ?? 0) > 0).length,
-    total: staffIds.length,
-    isLoading: results.some((r) => r.isLoading),
-    isError: results.some((r) => r.isError),
-  };
 }
 
 type ConfirmOptions = UseMutationOptions<ShiftConfirmationRead, Error, ShiftConfirmationCreate>;

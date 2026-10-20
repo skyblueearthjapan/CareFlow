@@ -22,7 +22,38 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useMarkAllRead, useMarkRead, useNotifications } from '@/lib/queries/notifications';
 import { roleLabel } from '@/lib/schemas/staff';
 import type { NotificationRead } from '@/lib/schemas/notification';
+import { isAdminRole } from '@/lib/rbac';
 import { cn } from '@/lib/utils';
+
+/**
+ * 「休み・勤務表」(/admin/leave) で開ける管理者向けの通知の種類
+ * (leave_unassigned = 休みで訪問を担当なしへ移した・backend/app/services/leave_notify.py)。
+ */
+const LEAVE_SHEET_NOTIFICATION_TYPES: ReadonlySet<string> = new Set(['leave_unassigned']);
+
+/**
+ * 通知の題名・本文の最初の「M/D」から、その日を開く「休み・勤務表」の URL を作る。
+ * 年は通知の時刻 (JST) の年で、半年より離れるなら前後の年にする。日付が無ければ月を付けない。
+ */
+export function leaveSheetHrefFromNotice(
+  n: Pick<NotificationRead, 'title' | 'body' | 'created_at'>,
+): string {
+  const m = /(\d{1,2})\/(\d{1,2})/.exec(`${n.title} ${n.body ?? ''}`);
+  if (!m) return '/admin/leave';
+  const month = Number(m[1]);
+  const day = Number(m[2]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return '/admin/leave';
+  const created = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo' }).format(
+    new Date(n.created_at),
+  );
+  const [cy = 0, cm = 1] = created.split('-').map(Number);
+  let year = cy;
+  if (month - cm > 6) year -= 1;
+  else if (cm - month > 6) year += 1;
+  const mm = String(month).padStart(2, '0');
+  const dd = String(day).padStart(2, '0');
+  return `/admin/leave?month=${year}-${mm}&date=${year}-${mm}-${dd}`;
+}
 
 interface HeaderProps {
   title?: string;
@@ -60,6 +91,8 @@ export function Header({ title = 'らく助', onToggleSidebar }: HeaderProps) {
 
 function NotificationButton() {
   const [open, setOpen] = useState(false);
+  const { data: session } = useSession();
+  const isAdmin = isAdminRole(session?.user?.role);
   const { data, isLoading, isError, refetch } = useNotifications({ limit: 30 });
   const markRead = useMarkRead();
   const markAllRead = useMarkAllRead();
@@ -138,6 +171,18 @@ function NotificationButton() {
                       if (n.read_at == null) markRead.mutate(id);
                     }}
                   />
+                  {isAdmin && LEAVE_SHEET_NOTIFICATION_TYPES.has(n.type) && (
+                    <Link
+                      href={leaveSheetHrefFromNotice(n)}
+                      onClick={() => {
+                        if (n.read_at == null) markRead.mutate(n.id);
+                        setOpen(false);
+                      }}
+                      className="mt-1 inline-flex items-center px-2 text-xs font-medium text-brand-primary underline-offset-2 hover:underline"
+                    >
+                      休み・勤務表で開く
+                    </Link>
+                  )}
                 </li>
               ))}
             </ul>
