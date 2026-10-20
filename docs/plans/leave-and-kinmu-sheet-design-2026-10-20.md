@@ -287,13 +287,15 @@
 - マスの小窓: 申請なら内容・移す訪問の件数・「この日の出勤：今 N 人 → 承認すると N 人」・承認／種類を変えて承認／却下。登録済みなら種類を変える・**取り消す**。過去の日は「訪問は動かしません（休みの記録だけ）」と出す。
 - 確定のダイアログ: 申請中の残り・休日数が足りない人・勤務すべき時間数（未入力なら入力欄・前の月の値が初期値）・**カイポケへ送る休みの一覧（§7-4-4）**（その月をまだ比べていなければ「まだカイポケと比べていないので、休みは送りません」）を出し、「このまま確定する」も選べる。
 - 下: 勤務表（Google スプレッドシート）の一覧と接続の状態（§7-3）。
-- 権限: 管理者のみ（`require_role("admin")`）。
-- API（新設・`app/api/v1/leave.py`）:
-  - `GET /leave/month?month=YYYY-MM` — 月×全職員を 1 回で返す（職員・型・休み・申請・訪問の件数・祝日・事業所の休み・確定の状態・送信の状態・最新の照合の差分・`last_leave_changed_at`・`last_compared_at`・休みの時間帯に担当が付いている訪問の件数）。**ISO 週ではなくその月の日付の範囲から (iso_year, iso_week) の組を作って読む**（1 月 1 日が前の年の ISO 週に入る年末年始を落とさない・L2）。
-  - `POST /leave/entries`（入れる・種類を変える）・`DELETE /leave/entries`（取り消す）— 中身は `apply_staff_leave` / `cancel_staff_leave`。
-  - `POST /leave/approve-many`（申請 id の一覧・1 件ずつ別トランザクションで処理し、結果を件ごとに返す）。
-  - `POST /leave/confirm`（月＋職員の一覧・§9 #13 で送信と予定版をつなぐ）・`GET/POST/DELETE /leave/closed-days`・`PUT /leave/months/{month}`（勤務すべき時間数）。
-  - 照合・送信・実績の記録・勤務表は §7。
+- 権限: 管理者のみ（`require_role("admin")`）。`summary` だけ職員も読める。
+- API（新設・`app/api/v1/leave.py`・#8 で実装。型は `app/schemas/leave.py`）。月のパスと入力は `YYYY-MM` か月の 1 日（それ以外の日付は 422）:
+  - `GET /leave/month/{month}` — 月×全職員を 1 回で返す（職員・型・休み・申請・訪問の件数・祝日・事業所の休み・確定の状態・送信の状態・最新の照合の差分の件数・`last_leave_changed_at`・`last_compared_at`・休みの時間帯に担当が付いている訪問の件数）。クエリの回数は職員・週の数によらず一定。**ISO 週ではなくその月の日付の範囲から (iso_year, iso_week) の組を作って読む**（1 月 1 日が前の年の ISO 週に入る年末年始を落とさない・L2）。その日休む人は在籍（active）の人だけを数える（退職・休職の人の休みは数えない・ディレクター決定）。
+  - `GET /leave/month/{month}/summary` — 祝日・事業所の休み・締め切り・確定の状態（職員は本人の分だけ・休みの中身は返さない）。管理者には申請中の件数・足りない人の数・カイポケで要対応の件数も（訪問は読まない軽い数え方）。
+  - `POST /leave/day`（入れる・種類を変える）・`DELETE /leave/day?staff_id=&date=`（取り消す・担当なしへ移した訪問の件数を返す）— 中身は `apply_staff_leave` / `cancel_staff_leave`。**その日に申請中があれば、入れる・取り消すとも 409**（申請を先に承認か却下で決めてもらう。申請と表の休みが食い違わないため）。
+  - `POST /leave/day/bulk`（「この日の全員に公休を入れる」。`staff_ids` が無ければ非常勤・型で勤務しない曜日の人・在籍でない人・申請中の人・休みが入っている人を除く全員・新人は含む。1 トランザクション・管理者への通知は 1 通）。
+  - `POST /leave/requests/approve-batch`（申請 id の一覧）— **1 トランザクションで全部か無し**（ディレクター決定。1 件でも承認できなければ全部やめ、どの申請かを返す。理由: 「この日をまとめて承認」で一部だけ通ると、その日休む人の数と画面の見込みが食い違い、管理者への通知も 1 通にまとめられないため。行ロックは id の順で取る）。`POST /leave/requests/{id}/approve`（`override_type` で種類を変えて承認）・`POST /leave/requests/{id}/reject`（理由必須）。承認は申請一覧と同じ行ロック＋CAS。
+  - `POST /leave/month/{month}/confirm`（任意の `staff_ids`・無ければ表の全員。#8 は記録と本人への通知だけ。§9 #13 で送信と予定版をつなぐ）・`GET /leave/closed-days?month=`・`PUT /leave/closed-days`・`DELETE /leave/closed-days/{date}`・`PUT /leave/months/{month}`（勤務すべき時間数）・`GET /leave/month/{month}/kinmu-sheets`（作った勤務表の一覧）。
+  - 照合・送信・実績の記録・勤務表は §7（照合と送信の API は `app/api/v1/leave_kaipoke.py`）。
 - 文字は 14px・補足 12px 以上（`add-visit-anywhere-design.md` §3-5）。
 
 ### 5-1. 申請履歴ページの変更
