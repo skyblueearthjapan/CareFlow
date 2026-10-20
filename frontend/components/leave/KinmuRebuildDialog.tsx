@@ -55,8 +55,17 @@ export function KinmuRebuildDialog({ kind, onClose, month }: KinmuRebuildDialogP
   };
 
   return (
-    <Dialog open={kind !== null} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+    <Dialog
+      open={kind !== null}
+      onOpenChange={(o) => {
+        // 作っている間は閉じない (Esc・外側・×)
+        if (!o && !rebuild.isPending) onClose();
+      }}
+    >
+      <DialogContent
+        onEscapeKeyDown={(e) => rebuild.isPending && e.preventDefault()}
+        onInteractOutside={(e) => rebuild.isPending && e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>
             {fmtMonthJp(month)}の勤務表（{label}）を作る

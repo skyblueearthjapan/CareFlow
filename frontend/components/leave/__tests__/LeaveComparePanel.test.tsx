@@ -475,6 +475,15 @@ describe('実績を記録する', () => {
     expect(screen.getByTestId('record-actuals')).toHaveTextContent('12/1 に記録済み');
   });
 
+  it('月の表に判定が無ければ「押せるかを確かめられませんでした」で押せない', () => {
+    setLatest(run());
+    render(<LeaveComparePanel month="2026-11" recordActuals={null} />);
+    expect(screen.getByRole('button', { name: '実績を記録する' })).toBeDisabled();
+    expect(screen.getByTestId('record-actuals')).toHaveTextContent(
+      '押せるかを確かめられませんでした',
+    );
+  });
+
   it('比べた後に休みを変えたら案内する', () => {
     setLatest(run(), { changed_since_compare: true });
     render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);

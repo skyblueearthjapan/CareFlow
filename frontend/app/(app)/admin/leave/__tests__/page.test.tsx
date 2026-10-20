@@ -1139,6 +1139,27 @@ describe('確定のあと (送信・勤務表の予定版)', () => {
 });
 
 describe('勤務表の作り直し', () => {
+  it('作っている間は Esc でも閉じない', async () => {
+    let release: (() => void) | null = null;
+    m.rebuild.mutateAsync.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ created: true, kind: 'plan', sheet: null });
+        }),
+    );
+    m.rebuild.isPending = true;
+    render(<AdminLeavePage />);
+    fireEvent.click(screen.getByRole('button', { name: '予定版を作る・作り直す…' }));
+    const dlg = await screen.findByRole('dialog', { name: '2026年11月の勤務表（予定版）を作る' });
+    fireEvent.keyDown(dlg, { key: 'Escape' });
+    expect(
+      screen.getByRole('dialog', { name: '2026年11月の勤務表（予定版）を作る' }),
+    ).toBeInTheDocument();
+    expect(within(dlg).getByRole('button', { name: '作っています…' })).toBeDisabled();
+    m.rebuild.isPending = false;
+    release?.();
+  });
+
   it('確定版は実績を記録した月だけ作り直せる', async () => {
     const { unmount } = render(<AdminLeavePage />);
     expect(screen.getByRole('button', { name: '確定版を作り直す…' })).toBeDisabled();
