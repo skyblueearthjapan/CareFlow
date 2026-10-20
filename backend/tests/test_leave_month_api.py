@@ -854,6 +854,10 @@ async def test_summary_admin_counts(client, db) -> None:
     db.add(StaffLeaveKaipoke(staff_id=b.id, leave_date=WED, sent_type="off"))
     db.add(StaffLeaveKaipoke(staff_id=a.id, leave_date=TUE, sent_type="am_off"))
     db.add(StaffLeaveKaipoke(staff_id=p.id, leave_date=THU, sent_type=None, baseline_pending=True))
+    # 表に載らない人 (消した職員) の記録は数えない
+    gone = await _staff(db, "消した人", code="009")
+    gone.deleted_at = datetime.now(UTC)
+    db.add(StaffLeaveKaipoke(staff_id=gone.id, leave_date=WED, sent_type="off"))
     await db.commit()
     res = await client.get("/api/v1/leave/month/2030-11/summary", headers=_bearer(admin))
     assert res.status_code == 200, res.text
@@ -895,3 +899,57 @@ async def test_kinmu_sheets_list(client, db) -> None:
     u = await _user(db, "staff", staff.id)
     res = await client.get("/api/v1/leave/month/2030-11/kinmu-sheets", headers=_bearer(u))
     assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_cancel_counts_only_moves_after_last_cancel(client, db) -> None:
+    """公休で移す → 取り消す → 担当を戻す → 午前休 → 取り消す: 最後は 0 件."""
+    admin = await _user(db, "admin")
+    h = _bearer(admin)
+    a = await _staff(db, "青木", code="001")
+    v = await _visit(db, a, TUE, "14:00", "15:00")
+    params = {"staff_id": str(a.id), "date": TUE.isoformat()}
+
+    res = await client.post("/api/v1/leave/day", headers=h, json={**params, "leave_type": "off"})
+    assert res.json()["moved_visit_count"] == 1
+    res = await client.delete("/api/v1/leave/day", headers=h, params=params)
+    assert res.json()["moved_visit_count"] == 1
+    # 職員スケジュールで担当を戻した
+    await db.refresh(v)
+    v.primary_staff_id = a.id
+    v.manual_staff_override = False
+    await db.commit()
+    res = await client.post("/api/v1/leave/day", headers=h, json={**params, "leave_type": "am_off"})
+    assert res.json()["moved_visit_count"] == 0  # 14:00 は午前休の時間帯の外
+    res = await client.delete("/api/v1/leave/day", headers=h, params=params)
+    assert res.status_code == 200
+    assert res.json()["moved_visit_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_bulk_with_staff_ids_skips_existing_leave(client, db) -> None:
+    admin = await _user(db, "admin")
+    h = _bearer(admin)
+    a = await _staff(db, "青木", code="001")
+    b = await _staff(db, "伊藤", code="002")
+    await _leave(db, b, TUE, "pm_off")
+    res = await client.post(
+        "/api/v1/leave/day/bulk",
+        headers=h,
+        json={"date": TUE.isoformat(), "staff_ids": [str(a.id), str(b.id)]},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert [x["staff_id"] for x in body["applied"]] == [str(a.id)]
+    assert body["skipped"] == [
+        {"staff_id": str(b.id), "reason": "already_on_leave", "leave_type": "pm_off"}
+    ]
+    assert (await _override(db, b, TUE)).override_type == "pm_off"
+
+    res = await client.post(
+        "/api/v1/leave/day/bulk",
+        headers=h,
+        json={"date": WED.isoformat(), "staff_ids": [str(a.id), str(uuid4())]},
+    )
+    assert res.status_code == 422
+    assert await _override(db, a, WED) is None

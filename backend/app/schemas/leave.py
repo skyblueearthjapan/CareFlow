@@ -460,10 +460,21 @@ class LeaveDayBulkInput(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class LeaveBulkSkip(BaseModel):
+    """まとめて入れるときに飛ばした人 (``already_on_leave`` = すでに休みがある・上書きしない)."""
+
+    staff_id: UUID
+    reason: Literal["already_on_leave"]
+    #: いまの休みの種類。
+    leave_type: LeaveTypeCode | None = None
+
+
 class LeaveDayBulkResult(BaseModel):
     date: date
     override_type: LeaveTypeCode
     applied: list[LeaveDayResult]
+    #: ``staff_ids`` を渡したときに飛ばした人 (省いたときは初めから対象にしないので空)。
+    skipped: list[LeaveBulkSkip] = Field(default_factory=list)
     #: 担当なしへ移した訪問の合計 (管理者への通知は 1 通)。
     moved_visit_count: int
 
