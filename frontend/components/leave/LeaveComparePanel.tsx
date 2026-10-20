@@ -345,7 +345,8 @@ export function LeaveComparePanel({ month, recordActuals }: LeaveComparePanelPro
         </Button>
         <ul id="record-actual-reasons" className="list-disc pl-5 text-xs text-text-secondary">
           {!recordActuals ? (
-            <li>押せるかどうかを読み込んでいます</li>
+            // この小窓は月の表を読めてから出すので、ここで無いのはサーバーが判定を返さなかったとき
+            <li>押せるかを確かめられませんでした（ページを読み直してください）</li>
           ) : recordActuals.ready ? (
             <li>押すと実績を記録し、勤務表の確定版を作ります（そのあとは書き換えません）</li>
           ) : (

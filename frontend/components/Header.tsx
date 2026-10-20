@@ -42,10 +42,16 @@ const LEAVE_SHEET_NOTIFICATION_TYPES: ReadonlySet<string> = new Set([
  */
 export function leaveSheetHrefFromNotice(
   n: Pick<NotificationRead, 'title' | 'body' | 'created_at'> & {
+    type?: string;
     data?: Record<string, unknown> | null;
   },
 ): string {
   const date = typeof n.data?.date === 'string' ? n.data.date : null;
+  // 担当なしの通知で 2 人以上をまとめたときは、先頭の 1 人に寄せず月だけで開く
+  const items = n.data?.items;
+  if (date && Array.isArray(items) && items.length >= 2) {
+    return `/admin/leave?month=${date.slice(0, 7)}`;
+  }
   if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
     const staff = typeof n.data?.staff_id === 'string' ? n.data.staff_id : null;
     return `/admin/leave?month=${date.slice(0, 7)}&date=${date}${

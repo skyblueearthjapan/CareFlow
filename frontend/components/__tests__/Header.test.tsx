@@ -176,4 +176,38 @@ describe('Header — 最適化ルール設定ボタン (Phase G-88)', () => {
     ]);
     notifItems = [];
   });
+
+  it('9. 担当なしの通知で 2 人以上をまとめたときは月だけで開く', () => {
+    const base = {
+      title: '休みで訪問4件を未割り当てとしました',
+      body: null,
+      created_at: '2026-10-21T01:00:00Z',
+    };
+    expect(
+      leaveSheetHrefFromNotice({
+        ...base,
+        type: 'leave_unassigned',
+        data: {
+          staff_id: 's-1',
+          date: '2026-11-12',
+          items: [
+            { staff_id: 's-1', date: '2026-11-12' },
+            { staff_id: 's-2', date: '2026-11-13' },
+          ],
+        },
+      }),
+    ).toBe('/admin/leave?month=2026-11');
+    // 1 人だけならその人・その日
+    expect(
+      leaveSheetHrefFromNotice({
+        ...base,
+        type: 'leave_unassigned',
+        data: {
+          staff_id: 's-1',
+          date: '2026-11-12',
+          items: [{ staff_id: 's-1', date: '2026-11-12' }],
+        },
+      }),
+    ).toBe('/admin/leave?month=2026-11&date=2026-11-12&staff=s-1');
+  });
 });
