@@ -155,3 +155,9 @@ def test_leave_window(
 ) -> None:
     got = leave_window(leave_type, t(shift[0]), t(shift[1]))
     assert got == (None if expected is None else (t(expected[0]), t(expected[1])))
+
+
+def test_seconds_are_ignored_in_ranges() -> None:
+    # 14:00:30 は分でそろえて 14:00 (午前休の終わりの範囲の内)。
+    assert classify_kaipoke_leave("休み", time(9, 0), time(14, 0, 30), S9, E18) == "am_off"
+    assert classify_kaipoke_leave("休み", time(13, 30, 59), time(18, 0), S9, E18) == "pm_off"

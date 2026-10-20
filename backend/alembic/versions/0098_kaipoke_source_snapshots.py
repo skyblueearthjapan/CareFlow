@@ -69,7 +69,9 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint("kind", "period_start", name="uq_kaipoke_source_snapshots_kind_period"),
     )
+    op.create_index("ix_kaipoke_source_snapshots_job", "kaipoke_source_snapshots", ["job_id"])
 
 
 def downgrade() -> None:
+    op.drop_index("ix_kaipoke_source_snapshots_job", table_name="kaipoke_source_snapshots")
     op.drop_table("kaipoke_source_snapshots")

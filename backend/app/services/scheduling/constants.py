@@ -19,6 +19,9 @@ from __future__ import annotations
 
 from datetime import time
 
+from app.core.leave import DEFAULT_BUSINESS_END as _LEAVE_DEFAULT_BUSINESS_END
+from app.core.leave import DEFAULT_BUSINESS_START as _LEAVE_DEFAULT_BUSINESS_START
+
 # H9: 1 コース (午前 + 午後 合計) の上限人数 (§12.1).
 # 出所: 旧 ``auto_allocator_v2.MAX_PATIENTS_PER_COURSE`` (= 6).
 # ``layer2_clustering`` / ``auto_allocator`` / ``propose_slots_service`` でも
@@ -80,9 +83,10 @@ DEFAULT_LUNCH_DURATION_MINUTES: int = 60
 DEFAULT_LUNCH_WINDOW_START: time = time(11, 30)
 DEFAULT_LUNCH_WINDOW_END: time = time(13, 30)
 
-# ④ 営業時間 (開始 / 終了). 既定 09:30 / 18:00.
-DEFAULT_BUSINESS_START: time = time(9, 30)
-DEFAULT_BUSINESS_END: time = time(18, 0)
+# ④ 営業時間 (開始 / 終了). 既定 09:30 / 18:00. 値の出所は ``app.core.leave``
+# (休みの判定が services を読まずに使えるように)。名前はここでもそのまま使える。
+DEFAULT_BUSINESS_START: time = _LEAVE_DEFAULT_BUSINESS_START
+DEFAULT_BUSINESS_END: time = _LEAVE_DEFAULT_BUSINESS_END
 
 # ⑤ 1 コース最大人数. 既定は ``MAX_PATIENTS_PER_COURSE`` (= 6) を出所にする
 # (別名は設けず、SchedulingConfig 構築側で ``MAX_PATIENTS_PER_COURSE`` を参照).

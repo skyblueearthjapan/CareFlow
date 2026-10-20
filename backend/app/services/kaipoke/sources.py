@@ -13,6 +13,9 @@
   最大 10 回待つ。それでも空かなければその本を ``failed`` にして次へ。
 * 個別業務は同期モード (``async``・``job_id`` なし) で取る。他のジョブが動いている間は
   RPA を呼ばないので、イベント取り込みの非同期の結果の置き場を上書きしない。
+  同期の取得が時間切れになったら、RPA が空くのを確かめてから次の本へ進む。
+* 待ちとカイポケへの呼び出しの前に DB のトランザクションを閉じる (鍵や行を抱えたまま待たない)。
+* 段階 L・A は ``start_source_job`` → ``run_source_job`` の順に使う (``run_source_job`` を参照)。
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import select, text, update
 
 from app.models.kaipoke_job import KaipokeJob
 from app.models.kaipoke_source_snapshot import KaipokeSourceSnapshot
@@ -83,6 +86,11 @@ _CSV_NO_STAFF: Final = "-"
 _ERROR_MAX_LEN: Final = 300
 
 _ACTIVE_JOB_STATUSES: Final = ("pending", "running")
+_RUNNING: Final = "running"
+#: 「動いているジョブを数える → 作る」を 1 本ずつにする鍵 (PG の advisory lock のキー)。
+_START_LOCK_KEY: Final = 7_202_610_200_098
+#: 同じプロセスの中で同時に立てるのを防ぐ (SQLite の試験では advisory lock が無い)。
+_START_LOCK = asyncio.Lock()
 _JST: Final = ZoneInfo("Asia/Tokyo")
 #: 17〜18 時台 (JST) は送信・取り込みと重なりやすい。
 _EVENING_HOURS: Final = (17, 18)
@@ -108,6 +116,22 @@ class RpaJobConflictError(RuntimeError):
 
 class _RpaUnavailableError(RuntimeError):
     """待っても RPA が空かなかった。"""
+
+
+class SourceJobCancelledError(RuntimeError):
+    """ジョブが途中で取り消された (``running`` でなくなった)。取り直しを止める。"""
+
+    def __init__(self, job_id: uuid.UUID) -> None:
+        super().__init__(f"kaipoke source job {job_id} is no longer running")
+        self.job_id = job_id
+
+
+@dataclass(frozen=True)
+class SourceSpec:
+    """取る 1 本。``kind`` が CSV なら ``period`` はその月の 1 日、``tasks`` なら週の月曜。"""
+
+    kind: str
+    period: date
 
 
 @dataclass
@@ -184,12 +208,35 @@ async def start_source_job(
     """ジョブを ``running`` で立てて commit する。他のジョブが動いていれば 409。
 
     ``week_start`` は取る範囲の最初の月曜。``total`` は取る本数 (進み具合の分母)。
+    「動いているジョブを数える → 作る」は鍵を取った 1 つのトランザクションで行う
+    (同時に 2 本押されても 1 本は 409。PG は advisory lock、同じプロセスは asyncio の鍵)。
     """
     if op not in SOURCE_OPS:
         raise ValueError(f"unknown source op: {op}")
-    blocking = await active_rpa_jobs(db)
-    if blocking:
-        raise RpaJobConflictError(blocking)
+    if week_start.weekday() != 0:
+        raise ValueError(f"week_start must be a Monday: {week_start}")
+    async with _START_LOCK:
+        if db.get_bind().dialect.name == "postgresql":
+            await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _START_LOCK_KEY})
+        blocking = await active_rpa_jobs(db)
+        if blocking:
+            conflict = RpaJobConflictError(blocking)  # rollback で行が期限切れになる前に読む
+            await db.rollback()  # 鍵を外す
+            raise conflict
+        return await _create_job(
+            db, op=op, week_start=week_start, user_id=user_id, params=params, total=total
+        )
+
+
+async def _create_job(
+    db: AsyncSession,
+    *,
+    op: str,
+    week_start: date,
+    user_id: uuid.UUID | None,
+    params: dict[str, Any] | None,
+    total: int | None,
+) -> KaipokeJob:
     job = KaipokeJob(
         job_type=_JOB_TYPES[op],
         status="running",
@@ -200,7 +247,7 @@ async def start_source_job(
         created_by_user_id=user_id,
     )
     db.add(job)
-    await db.commit()
+    await db.commit()  # 鍵もここで外れる
     return job
 
 
@@ -212,20 +259,35 @@ def _failure_entry(result: SourceFetchResult) -> dict[str, Any]:
     }
 
 
+async def _write_if_running(db: AsyncSession, job_id: uuid.UUID, **values: Any) -> bool:
+    """``status='running'`` のときだけジョブを書き換えて commit する。書けたら True。"""
+    written = await db.execute(
+        update(KaipokeJob)
+        .where(KaipokeJob.id == job_id, KaipokeJob.status == _RUNNING)
+        .values(**values, updated_at=datetime.now(UTC))
+        .execution_options(synchronize_session=False)
+    )
+    await db.commit()
+    return bool(getattr(written, "rowcount", 0))
+
+
 async def record_progress(db: AsyncSession, job_id: uuid.UUID, result: SourceFetchResult) -> None:
-    """1 本終わるごとにジョブの ``updated_at`` と進み具合を書き戻す (途中で閉じられないように)。"""
+    """1 本終わるごとにジョブの ``updated_at`` と進み具合を書き戻す (途中で閉じられないように)。
+
+    ジョブが ``running`` でなくなっていたら (取り消し) ``SourceJobCancelledError``。
+    """
     job = await db.get(KaipokeJob, job_id, populate_existing=True)
-    if job is None:
-        return
+    if job is None or job.status != _RUNNING:
+        await db.rollback()
+        raise SourceJobCancelledError(job_id)
     summary = dict(job.result_summary or {})
     summary["done"] = int(summary.get("done") or 0) + 1
     summary["current"] = {"kind": result.kind, "period_start": result.period_start.isoformat()}
     summary["results"] = [*(summary.get("results") or []), result.as_summary()]
     if result.status == STATUS_FAILED:
         summary["failed"] = [*(summary.get("failed") or []), _failure_entry(result)]
-    job.result_summary = summary
-    job.updated_at = datetime.now(UTC)
-    await db.commit()
+    if not await _write_if_running(db, job_id, result_summary=summary):
+        raise SourceJobCancelledError(job_id)
 
 
 async def finish_source_job(
@@ -238,10 +300,12 @@ async def finish_source_job(
     """ジョブを決着させる。一部の失敗は ``completed`` のまま ``result_summary.failed[]`` に。
 
     ``error`` を渡したとき (ジョブ自体が壊れた) だけ ``failed``。
+    ``running`` でなくなったジョブ (取り消し済みなど) は書き換えずにそのまま返す。
     """
     job = await db.get(KaipokeJob, job_id, populate_existing=True)
-    if job is None:
-        return None
+    if job is None or job.status != _RUNNING:
+        await db.rollback()
+        return job
     unmatched: dict[str, int] = {}
     for result in results:
         for name, count in result.unmatched_names.items():
@@ -258,18 +322,23 @@ async def finish_source_job(
     }
     if error is not None:
         summary["error"] = error
-    job.status = "failed" if error is not None else "completed"
-    job.completed_at = datetime.now(UTC)
-    job.result_summary = summary
-    await db.commit()
-    return job
+    await _write_if_running(
+        db,
+        job_id,
+        status="failed" if error is not None else "completed",
+        completed_at=datetime.now(UTC),
+        result_summary=summary,
+    )
+    return await db.get(KaipokeJob, job_id, populate_existing=True)
 
 
 async def _rpa_busy_reason(
     db: AsyncSession, client: KaipokeClient, *, job_id: uuid.UUID | None
 ) -> str | None:
-    """RPA が使えなければ理由、使えれば None。"""
-    if await active_rpa_jobs(db, exclude_job_id=job_id):
+    """RPA が使えなければ理由、使えれば None。読んだらトランザクションを閉じてから RPA を見る。"""
+    others = await active_rpa_jobs(db, exclude_job_id=job_id)
+    await db.commit()
+    if others:
         return _MSG_JOB_RUNNING
     try:
         raw = await client.status()
@@ -301,6 +370,20 @@ async def _call_when_idle[T](
         except KaipokeBusyError:
             reason = _MSG_RPA_BUSY
     raise _RpaUnavailableError(reason)
+
+
+async def _wait_rpa_idle(client: KaipokeClient) -> bool:
+    """RPA が実行中でなくなるまで待つ (30 秒おき・最大 10 回)。空いたら True。"""
+    for attempt in range(MAX_RETRIES + 1):
+        if attempt:
+            await asyncio.sleep(RETRY_INTERVAL_SECONDS)
+        try:
+            raw = await client.status()
+        except KaipokeApiError:
+            continue
+        if not bool((raw.get("current_task") or {}).get("running")):
+            return True
+    return False
 
 
 def _short(message: object) -> str:
@@ -444,6 +527,7 @@ async def fetch_month_csv(
         raise ValueError(f"not a csv kind: {kind}")
     period_start = _month_start(month)
     credentials = await get_credentials_payload(db)
+    await db.commit()
     try:
         csv_text = await _call_when_idle(
             db,
@@ -486,6 +570,7 @@ async def fetch_week_tasks(
     if week_start.weekday() != 0:
         raise ValueError(f"week_start must be a Monday: {week_start}")
     credentials = await get_credentials_payload(db)
+    await db.commit()
     try:
         result = await _call_when_idle(
             db,
@@ -494,8 +579,14 @@ async def fetch_week_tasks(
             call=lambda: rpa_fetch_week_tasks(client, week_start, credentials),
         )
     except (_RpaUnavailableError, KaipokeApiError, EventsFetchError) as exc:
+        error = _short(exc)
+        if isinstance(exc, KaipokeApiError) and exc.status_code == 504:
+            # 同期の取得が時間切れ: RPA はまだ動いているかもしれない。空くのを確かめてから
+            # 次の本へ (次の呼び出しが動いている取得の結果の置き場を上書きしないように)。
+            if not await _wait_rpa_idle(client):
+                error = _short(f"{error}（時間切れのあと{_MSG_RPA_BUSY}）")
         return await _store(
-            db, kind=KIND_TASKS, period_start=week_start, job_id=job_id, error=_short(exc)
+            db, kind=KIND_TASKS, period_start=week_start, job_id=job_id, error=error
         )
 
     tasks = list(result.get("tasks") or [])
@@ -515,6 +606,54 @@ async def fetch_week_tasks(
     )
 
 
+async def run_source_job(
+    db: AsyncSession,
+    client: KaipokeClient,
+    job_id: uuid.UUID,
+    plan: list[SourceSpec],
+) -> KaipokeJob | None:
+    """``plan`` の本を 1 本ずつ取り、ジョブを必ず決着させる (段階 L・A の入口)。
+
+    使い方 (API は 202 を返し、実体は BackgroundTasks で自前のセッションから呼ぶ)::
+
+        plan = [SourceSpec(KIND_ACTUAL_CSV, date(2026, 10, 1)),
+                SourceSpec(KIND_TASKS, date(2026, 10, 19))]
+        try:
+            job = await start_source_job(db, op=OP_LEAVE_COMPARE, week_start=monday,
+                                         user_id=user.id, total=len(plan))
+        except RpaJobConflictError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        background.add_task(_run, job.id, plan)
+
+        async def _run(job_id, plan):
+            async with get_session_factory()() as db:
+                await run_source_job(db, client, job_id, plan)
+
+    * 1 本ごとに保存・commit し、ジョブの ``updated_at`` と進み具合を書き戻す。
+    * 1 本の失敗は ``result_summary.failed[]`` に入れて次へ (最後は ``completed``)。
+    * 途中でジョブが取り消されたら、そこで止めて書き換えない。
+    * 思わぬ例外のときは rollback して ``finish_source_job(error=...)`` で ``failed`` に閉じる。
+    """
+    results: list[SourceFetchResult] = []
+    try:
+        for spec in plan:
+            if spec.kind == KIND_TASKS:
+                result = await fetch_week_tasks(db, client, spec.period, job_id=job_id)
+            else:
+                month = f"{spec.period.year:04d}-{spec.period.month:02d}"
+                result = await fetch_month_csv(db, client, spec.kind, month, job_id=job_id)
+            results.append(result)
+    except SourceJobCancelledError:
+        await db.rollback()
+        return await db.get(KaipokeJob, job_id, populate_existing=True)
+    except Exception as exc:  # noqa: BLE001 — 黙って死なせない (running が残る)
+        await db.rollback()
+        return await finish_source_job(
+            db, job_id, results, error=f"取り直しの途中で失敗しました: {_short(exc)}"
+        )
+    return await finish_source_job(db, job_id, results)
+
+
 __all__ = [
     "EVENING_WARNING",
     "KIND_ACTUAL_CSV",
@@ -531,6 +670,8 @@ __all__ = [
     "STATUS_FAILED",
     "STATUS_OK",
     "RpaJobConflictError",
+    "SourceJobCancelledError",
+    "SourceSpec",
     "SourceFetchResult",
     "active_rpa_jobs",
     "covered_dates_of",
@@ -540,5 +681,6 @@ __all__ = [
     "finish_source_job",
     "parse_csv_rows",
     "record_progress",
+    "run_source_job",
     "start_source_job",
 ]
