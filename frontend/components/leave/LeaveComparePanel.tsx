@@ -9,7 +9,8 @@
  *     取り消す／種類を選ぶ／カイポケと比べ直す)。action が無い差分は案内 (detail.guide) だけ。
  *     合わせた差分は「合わせ済み」。同じ職員の「入れる」「取り消す」はまとめて押せる。
  *   - 「カイポケへ送る」: 送る前の一覧 (LeaveOutboundDialog)。
- *   - 「実績を記録する」: 未確認の日・差分・送る予定・照合前・照合の後の変更があれば押せない
+ *   - 「実績を記録する」: 押せるか・押せない理由はサーバーの判定 (月の表の record_actuals) だけで
+ *     決め、理由の message をそのまま出す。409 は detail.blockers を出す。
  *     (理由を出す)。記録の API はまだ無いので、いまは理由を出すところまで。
  * 画面の言葉は「合わせる」(「直す」は使わない)。
  */
@@ -21,7 +22,13 @@ import { toast } from '@/components/ui/sonner';
 import { LeaveOutboundDialog } from '@/components/leave/LeaveOutboundDialog';
 import { cn } from '@/lib/utils';
 import { fmtDateTimeShort, fmtDayJp, LEAVE_LABEL } from '@/lib/leave-sheet';
-import { invalidateAfterLeave, leaveErrorMessage } from '@/lib/queries/leave';
+import {
+  invalidateAfterLeave,
+  leaveErrorBlockers,
+  leaveErrorMessage,
+  useRecordActuals,
+} from '@/lib/queries/leave';
+import type { LeaveRecordReadiness } from '@/lib/schemas/leave';
 import {
   useApplyCompare,
   useCompareJob,
@@ -35,7 +42,6 @@ import {
   type ChosenKind,
   type CompareApplyItem,
   type CompareJobStatus,
-  type LeaveCompareRunView,
   type LeaveDiff,
 } from '@/lib/schemas/leaveKaipoke';
 
@@ -64,35 +70,9 @@ function applicable(d: LeaveDiff): boolean {
   return !d.resolved && !!d.staff_id && !!d.date && !!d.action && d.action !== 'refetch_week';
 }
 
-/**
- * 「実績を記録する」を押せない理由 (設計 §7-4-2)。空なら条件はそろっている。
- * 未確認の日が 1 日でもあれば押せない。
- */
-export function recordActualBlockers(args: {
-  run: LeaveCompareRunView | null | undefined;
-  changedSinceCompare: boolean;
-  baselinePendingCount: number;
-}): string[] {
-  const { run } = args;
-  if (!run) return ['まだカイポケと比べていません'];
-  const out: string[] = [];
-  if (run.unconfirmed_days > 0) {
-    out.push(`未確認の日が ${run.unconfirmed_days} 日あります（その週を取り直してください）`);
-  }
-  const open = run.diffs.filter((d) => !d.resolved && d.kind !== 'unconfirmed').length;
-  if (open > 0) out.push(`カイポケとの差分が ${open} 件あります`);
-  if (run.planned_send_count > 0) {
-    out.push(`カイポケへ送る予定の休みが ${run.planned_send_count} 件あります`);
-  }
-  if (args.baselinePendingCount > 0) {
-    out.push(`照合前の休みが ${args.baselinePendingCount} 件あります`);
-  }
-  if (args.changedSinceCompare) {
-    out.push('比べた後に休みを変えました（もう一度比べてください）');
-  } else if (run.diffs.some((d) => d.resolved)) {
-    out.push('合わせた差分があります（もう一度比べて確かめてください）');
-  }
-  return out;
+/** ISO 日時 → 'M/D' (JST)。 */
+function fmtMonthDay(iso: string): string {
+  return fmtDateTimeShort(iso).split(' ')[0] ?? '';
 }
 
 /** ジョブの進み具合の文。 */
@@ -119,12 +99,13 @@ function progressText(status: CompareJobStatus | undefined, total: number | null
 
 export interface LeaveComparePanelProps {
   month: string;
-  /** 照合前の休みの件数 (月の表の compare.baseline_pending_count)。 */
-  baselinePendingCount: number;
+  /** 「実績を記録する」を押せるか (月の表の record_actuals・サーバーの判定)。 */
+  recordActuals: LeaveRecordReadiness | null | undefined;
 }
 
-export function LeaveComparePanel({ month, baselinePendingCount }: LeaveComparePanelProps) {
+export function LeaveComparePanel({ month, recordActuals }: LeaveComparePanelProps) {
   const qc = useQueryClient();
+  const record = useRecordActuals();
   const latest = useCompareLatest(month);
   const start = useStartCompare();
   const apply = useApplyCompare();
@@ -167,11 +148,6 @@ export function LeaveComparePanel({ month, baselinePendingCount }: LeaveCompareP
   const diffs = useMemo(() => run?.diffs ?? [], [run]);
   const evening = isEveningJst(now) ? (startWarning ?? latest.data?.evening_warning ?? null) : null;
   const changedSince = latest.data?.changed_since_compare ?? false;
-  const blockers = recordActualBlockers({
-    run,
-    changedSinceCompare: changedSince || recompare,
-    baselinePendingCount,
-  });
 
   const groups = useMemo(() => {
     const out: { key: string; staffId: string | null; name: string; items: LeaveDiff[] }[] = [];
@@ -234,12 +210,33 @@ export function LeaveComparePanel({ month, baselinePendingCount }: LeaveCompareP
     };
   };
 
+  const doRecord = () => {
+    record
+      .mutateAsync(month)
+      .then((r) => {
+        const sheet = r.kinmu_sheet;
+        toast.success('実績を記録しました', {
+          description: sheet.created
+            ? '勤務表の確定版を作りました'
+            : `勤務表の確定版は作れませんでした${sheet.reason ? `：${sheet.reason}` : ''}`,
+        });
+      })
+      .catch((e: unknown) => {
+        const reasons = leaveErrorBlockers(e);
+        toast.error(leaveErrorMessage(e, '実績を記録できませんでした'), {
+          description: reasons.length > 0 ? reasons.join(' / ') : undefined,
+        });
+      });
+  };
+
   const busy = running || apply.isPending;
   const progress = start.isPending
     ? 'カイポケと比べ始めています'
     : jobQuery.isError
       ? `進み具合を読めませんでした：${leaveErrorMessage(jobQuery.error, '通信に失敗しました')}（しばらくしてから、もう一度比べてください）`
       : progressText(jobQuery.data, startTotal);
+  // 読めなかった・止まったときは、進み具合をもう一度読めるようにする
+  const canReread = !!activeJobId && (jobQuery.isError || !!jobQuery.data?.job.stale);
   const openCount = diffs.filter((d) => !d.resolved).length;
 
   return (
@@ -279,10 +276,28 @@ export function LeaveComparePanel({ month, baselinePendingCount }: LeaveCompareP
           )}
         >
           {progress}
+          {canReread && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="ml-2"
+              onClick={() => void jobQuery.refetch()}
+            >
+              進み具合をもう一度読む
+            </Button>
+          )}
         </p>
       )}
 
       <div className="text-sm text-text-secondary" data-testid="compare-summary">
+        {latest.isError && run && (
+          // 読み直せなかったが前に読んだ結果がある: その結果を出し、古いかもしれないと書く
+          <p className="text-error">
+            照合の結果を読み直せませんでした（前に読んだ結果を出しています）：
+            {leaveErrorMessage(latest.error, '通信に失敗しました')}
+          </p>
+        )}
         {run ? (
           <>
             <p>比べた時刻：{fmtDateTimeShort(latest.data?.last_compared_at ?? run.created_at)}</p>
@@ -309,22 +324,37 @@ export function LeaveComparePanel({ month, baselinePendingCount }: LeaveCompareP
         )}
       </div>
 
-      <div className="space-y-1 rounded-md border border-border-default p-2">
+      <div
+        className="space-y-1 rounded-md border border-border-default p-2"
+        data-testid="record-actuals"
+      >
+        {recordActuals?.actual_recorded_at && (
+          <p className="text-sm font-bold text-success">
+            {fmtMonthDay(recordActuals.actual_recorded_at)} に記録済み
+          </p>
+        )}
         <Button
           type="button"
           size="sm"
           variant="outline"
-          // 記録の API (#13) ができるまでは押せない。理由は下に出す
-          disabled
+          disabled={!recordActuals?.ready || record.isPending || busy}
           aria-describedby="record-actual-reasons"
+          onClick={doRecord}
         >
-          実績を記録する
+          {record.isPending ? '記録しています…' : '実績を記録する'}
         </Button>
         <ul id="record-actual-reasons" className="list-disc pl-5 text-xs text-text-secondary">
-          {blockers.length > 0 ? (
-            blockers.map((b) => <li key={b}>{b}</li>)
+          {!recordActuals ? (
+            // この小窓は月の表を読めてから出すので、ここで無いのはサーバーが判定を返さなかったとき
+            <li>押せるかを確かめられませんでした（ページを読み直してください）</li>
+          ) : recordActuals.ready ? (
+            <li>押すと実績を記録し、勤務表の確定版を作ります（そのあとは書き換えません）</li>
           ) : (
-            <li>条件はそろっています（実績の記録はこのあと使えるようになります）</li>
+            recordActuals.blockers.map((b) => (
+              <li key={b.code} data-code={b.code}>
+                {b.message}
+              </li>
+            ))
           )}
         </ul>
       </div>

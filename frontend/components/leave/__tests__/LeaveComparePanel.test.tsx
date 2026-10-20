@@ -37,9 +37,21 @@ vi.mock('@/components/ui/sonner', () => ({
 }));
 
 const invalidate = vi.fn(() => Promise.resolve());
+const recordActuals = vi.fn();
+/** 月の表の record_actuals (サーバーの判定)。 */
+let readiness: LeaveRecordReadiness | null = {
+  ready: false,
+  blockers: [{ code: 'not_compared', message: 'まだカイポケと比べていません' }],
+  actual_recorded_at: null,
+};
 vi.mock('@/lib/queries/leave', async (importOriginal) => {
   const actual = await importOriginal<typeof LeaveQueries>();
-  return { leaveErrorMessage: actual.leaveErrorMessage, invalidateAfterLeave: () => invalidate() };
+  return {
+    leaveErrorMessage: actual.leaveErrorMessage,
+    leaveErrorBlockers: actual.leaveErrorBlockers,
+    invalidateAfterLeave: () => invalidate(),
+    useRecordActuals: () => ({ mutateAsync: recordActuals, isPending: false }),
+  };
 });
 
 let latest: CompareLatest | undefined;
@@ -53,11 +65,13 @@ let outJob: OutboundJobStatus | undefined;
 const jobCalls: (string | null)[] = [];
 const outJobCalls: (string | null)[] = [];
 const startCompare = vi.fn();
+const refetchJob = vi.fn();
 const applyCompare = vi.fn();
 const startOutbound = vi.fn();
 vi.mock('@/lib/queries/leaveKaipoke', () => ({
   useCompareLatest: () => ({
-    data: latestError ? undefined : latest,
+    // 読み直しに失敗しても前に読んだ結果は残る (TanStack Query と同じ)
+    data: latest,
     isLoading: false,
     isError: !!latestError,
     error: latestError,
@@ -68,6 +82,7 @@ vi.mock('@/lib/queries/leaveKaipoke', () => ({
       data: id && !jobError ? jobStatus : undefined,
       isError: !!id && !!jobError,
       error: jobError,
+      refetch: refetchJob,
     };
   },
   useStartCompare: () => ({ mutateAsync: startCompare, isPending: false }),
@@ -83,12 +98,14 @@ vi.mock('@/lib/queries/leaveKaipoke', () => ({
       data: id && !outJobError ? outJob : undefined,
       isError: !!id && !!outJobError,
       error: outJobError,
+      refetch: vi.fn(),
     };
   },
 }));
 
 import { toast } from '@/components/ui/sonner';
-import { LeaveComparePanel, recordActualBlockers } from '../LeaveComparePanel';
+import { LeaveComparePanel } from '../LeaveComparePanel';
+import type { LeaveRecordReadiness } from '@/lib/schemas/leave';
 
 const S1 = '11111111-1111-4111-8111-111111111111';
 const S2 = '22222222-2222-4222-8222-222222222222';
@@ -247,6 +264,12 @@ beforeEach(() => {
   jobError = null;
   outJobError = null;
   applyPending = false;
+  recordActuals.mockReset();
+  readiness = {
+    ready: false,
+    blockers: [{ code: 'not_compared', message: 'まだカイポケと比べていません' }],
+    actual_recorded_at: null,
+  };
   jobStatus = undefined;
   preview = undefined;
   outJob = undefined;
@@ -269,7 +292,7 @@ beforeEach(() => {
 describe('差分の一覧', () => {
   it('まだ比べていなければそう出し、実績を記録するは押せない', () => {
     setLatest(null);
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(screen.getByTestId('compare-summary')).toHaveTextContent(
       'この月はまだカイポケと比べていません',
     );
@@ -279,7 +302,7 @@ describe('差分の一覧', () => {
 
   it('action ごとのボタン・種類を選ぶ・案内だけ・合わせ済み', () => {
     setLatest(run({ diffs: ALL_DIFFS, unconfirmed_days: 1 }));
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     const rows = screen.getAllByTestId('leave-diff');
     expect(rows).toHaveLength(ALL_DIFFS.length);
     const byKind = (k: string) => rows.filter((r) => r.getAttribute('data-kind') === k);
@@ -325,7 +348,7 @@ describe('差分の一覧', () => {
 
   it('1 件を合わせる・種類を選ぶ (content_hash つき)・同じ職員はまとめて', async () => {
     setLatest(run({ diffs: ALL_DIFFS }));
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     fireEvent.click(screen.getByRole('button', { name: 'カイポケの種類に合わせる（有給）' }));
     expect(applyCompare).toHaveBeenLastCalledWith([
       { staff_id: S2, date: '2026-11-12', action: 'match_kaipoke_kind' },
@@ -367,7 +390,7 @@ describe('差分の一覧', () => {
         detail: 'この差分は最新の照合にありません。カイポケと比べ直してください',
       }),
     );
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     fireEvent.click(screen.getByRole('button', { name: 'カイポケの種類に合わせる（有給）' }));
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith(
@@ -378,55 +401,92 @@ describe('差分の一覧', () => {
 });
 
 describe('実績を記録する', () => {
-  it('未確認の日が 1 日でもあれば押せず、理由を出す', () => {
+  it('押せない理由はサーバーの判定の message をそのまま出す', () => {
     setLatest(run({ diffs: [], unconfirmed_days: 1 }));
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    readiness = {
+      ready: false,
+      blockers: [
+        { code: 'unconfirmed_days', message: '未確認の日が 1 日あります（試験の文）' },
+        { code: 'month_not_ended', message: 'この月はまだ終わっていません（試験の文）' },
+      ],
+      actual_recorded_at: null,
+    };
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(screen.getByRole('button', { name: '実績を記録する' })).toBeDisabled();
-    expect(
-      screen.getByText('未確認の日が 1 日あります（その週を取り直してください）'),
-    ).toBeInTheDocument();
+    const box = screen.getByTestId('record-actuals');
+    expect(within(box).getByText('未確認の日が 1 日あります（試験の文）')).toHaveAttribute(
+      'data-code',
+      'unconfirmed_days',
+    );
+    expect(box).toHaveTextContent('この月はまだ終わっていません（試験の文）');
   });
 
-  it('押せない理由の決まり', () => {
-    expect(
-      recordActualBlockers({ run: null, changedSinceCompare: false, baselinePendingCount: 0 }),
-    ).toEqual(['まだカイポケと比べていません']);
-    expect(
-      recordActualBlockers({
-        run: run({ diffs: [diff({})], planned_send_count: 2, unconfirmed_days: 0 }),
-        changedSinceCompare: true,
-        baselinePendingCount: 3,
-      }),
-    ).toEqual([
-      'カイポケとの差分が 1 件あります',
-      'カイポケへ送る予定の休みが 2 件あります',
-      '照合前の休みが 3 件あります',
-      '比べた後に休みを変えました（もう一度比べてください）',
-    ]);
-    // 合わせ済みの差分は数えないが、比べ直しは要る
-    expect(
-      recordActualBlockers({
-        run: run({ diffs: [diff({ resolved: { action: 'add_to_rakusuke' } })] }),
-        changedSinceCompare: false,
-        baselinePendingCount: 0,
-      }),
-    ).toEqual(['合わせた差分があります（もう一度比べて確かめてください）']);
-    expect(
-      recordActualBlockers({ run: run(), changedSinceCompare: false, baselinePendingCount: 0 }),
-    ).toEqual([]);
-  });
-
-  it('条件がそろっていても、記録の API ができるまでは押せないと書く', () => {
+  it('押せるなら押せる・押すと記録し、確定版の結果を出す', async () => {
     setLatest(run());
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    readiness = { ready: true, blockers: [], actual_recorded_at: null };
+    recordActuals.mockResolvedValue({
+      month: '2026-11-01',
+      actual_recorded_at: '2026-12-01T01:00:00Z',
+      kinmu_sheet: {
+        created: false,
+        kind: 'final',
+        sheet: null,
+        reason: 'Google ドライブに接続していません',
+      },
+    });
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
+    fireEvent.click(screen.getByRole('button', { name: '実績を記録する' }));
+    expect(recordActuals).toHaveBeenCalledWith('2026-11');
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith('実績を記録しました', {
+        description: '勤務表の確定版は作れませんでした：Google ドライブに接続していません',
+      }),
+    );
+  });
+
+  it('409 なら detail.blockers を出す', async () => {
+    setLatest(run());
+    readiness = { ready: true, blockers: [], actual_recorded_at: null };
+    recordActuals.mockRejectedValue(
+      new ApiError('API 409', 409, {
+        detail: {
+          message: 'まだ実績を記録できません',
+          blockers: [{ code: 'already_recorded', message: 'この月の実績は記録済みです' }],
+        },
+      }),
+    );
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
+    fireEvent.click(screen.getByRole('button', { name: '実績を記録する' }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('まだ実績を記録できません', {
+        description: 'この月の実績は記録済みです',
+      }),
+    );
+  });
+
+  it('記録が済んだら「M/D に記録済み」', () => {
+    setLatest(run());
+    readiness = {
+      ready: false,
+      blockers: [{ code: 'already_recorded', message: 'この月の実績は記録済みです' }],
+      actual_recorded_at: '2026-12-01T01:00:00Z',
+    };
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
+    expect(screen.getByTestId('record-actuals')).toHaveTextContent('12/1 に記録済み');
+  });
+
+  it('月の表に判定が無ければ「押せるかを確かめられませんでした」で押せない', () => {
+    setLatest(run());
+    render(<LeaveComparePanel month="2026-11" recordActuals={null} />);
     expect(screen.getByRole('button', { name: '実績を記録する' })).toBeDisabled();
-    expect(screen.getByText(/実績の記録はこのあと使えるようになります/)).toBeInTheDocument();
-    expect(screen.getByText('カイポケとの差分はありません。')).toBeInTheDocument();
+    expect(screen.getByTestId('record-actuals')).toHaveTextContent(
+      '押せるかを確かめられませんでした',
+    );
   });
 
   it('比べた後に休みを変えたら案内する', () => {
     setLatest(run(), { changed_since_compare: true });
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(screen.getByTestId('compare-summary')).toHaveTextContent(
       '比べた後に休みを変えました。もう一度比べてください',
     );
@@ -445,7 +505,7 @@ describe('カイポケと比べる', () => {
       evening_warning: '夕方は送信・取り込みと重なりやすい時間です。',
     });
     jobStatus = job('running');
-    const { rerender } = render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    const { rerender } = render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     fireEvent.click(screen.getByRole('button', { name: 'カイポケと比べる' }));
     expect(startCompare).toHaveBeenCalledWith('2026-11');
     await waitFor(() => expect(jobCalls[jobCalls.length - 1]).toBe('job-1'));
@@ -459,17 +519,17 @@ describe('カイポケと比べる', () => {
     expect(screen.getByRole('button', { name: 'カイポケと比べる' })).toBeDisabled();
 
     jobStatus = job('completed', { state: 'comparing' });
-    rerender(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    rerender(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(screen.getByTestId('compare-progress')).toHaveTextContent('らく助の休みと比べています');
     expect(invalidate).not.toHaveBeenCalled();
 
     jobStatus = job('completed', { state: 'done', run: run({ diffs: [diff({})] }) });
-    rerender(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    rerender(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     await waitFor(() =>
       expect(screen.getByTestId('compare-progress')).toHaveTextContent('比べ終わりました'),
     );
     expect(invalidate).toHaveBeenCalledTimes(1);
-    rerender(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    rerender(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(invalidate).toHaveBeenCalledTimes(1);
     // 最新がまだ読めていなくても、ジョブの結果の差分を出す
     expect(screen.getAllByTestId('leave-diff')).toHaveLength(1);
@@ -479,7 +539,7 @@ describe('カイポケと比べる', () => {
   it('開いたときに動いているジョブがあれば、その進み具合を読む', () => {
     setLatest(null, { job: job('running').job });
     jobStatus = job('running');
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(jobCalls).toContain('job-1');
     expect(screen.getByTestId('compare-progress')).toHaveTextContent('取り直し中（2/6 週）');
     expect(screen.getByRole('button', { name: 'カイポケと比べる' })).toBeDisabled();
@@ -488,7 +548,7 @@ describe('カイポケと比べる', () => {
   it('止まったジョブは終わったものとして扱い、「カイポケと比べる」を押せる', () => {
     setLatest(null, { job: job('running').job });
     jobStatus = job('running', { job: { ...job('running').job, stale: true } });
-    const { unmount } = render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    const { unmount } = render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(screen.getByTestId('compare-progress')).toHaveTextContent('止まっているようです');
     expect(screen.getByRole('button', { name: 'カイポケと比べる' })).not.toBeDisabled();
     expect(invalidate).toHaveBeenCalledTimes(1);
@@ -496,22 +556,35 @@ describe('カイポケと比べる', () => {
     // 最新の照合のジョブが止まっていれば、そもそも読みに行かない
     jobCalls.length = 0;
     setLatest(null, { job: { ...job('running').job, stale: true } });
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(jobCalls.every((id) => id === null)).toBe(true);
     expect(screen.getByRole('button', { name: 'カイポケと比べる' })).not.toBeDisabled();
   });
 
-  it('進み具合を読めなかったらエラーを出し、押せるように戻す', () => {
+  it('進み具合を読めなかったらエラーを出し、押せるように戻す・もう一度読める', () => {
     setLatest(null, { job: job('running').job });
     jobError = new Error('通信に失敗しました');
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(screen.getByTestId('compare-progress')).toHaveTextContent('進み具合を読めませんでした');
     expect(screen.getByRole('button', { name: 'カイポケと比べる' })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '進み具合をもう一度読む' }));
+    expect(refetchJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('読み直しに失敗しても前に読んだ照合の結果は出し、古いかもしれないと書く', () => {
+    setLatest(run({ diffs: [diff({})] }));
+    latestError = new Error('通信に失敗しました');
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
+    expect(screen.getByTestId('compare-summary')).toHaveTextContent(
+      '照合の結果を読み直せませんでした（前に読んだ結果を出しています）',
+    );
+    expect(screen.getAllByTestId('leave-diff')).toHaveLength(1);
   });
 
   it('照合の結果を読めなかったら「読めませんでした」と出す', () => {
+    latest = undefined;
     latestError = new Error('通信に失敗しました');
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(screen.getByTestId('compare-summary')).toHaveTextContent(
       '照合の結果を読めませんでした：通信に失敗しました',
     );
@@ -521,18 +594,18 @@ describe('カイポケと比べる', () => {
     setLatest(null, { evening_warning: '夕方の注意' });
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-10-21T19:05:00+09:00'));
-    const { unmount } = render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    const { unmount } = render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(screen.queryByRole('note')).not.toBeInTheDocument();
     unmount();
     atEvening();
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(screen.getByRole('note')).toHaveTextContent('夕方の注意');
   });
 
   it('合わせている途中 (読み直しが終わるまで) はボタンを押せない', () => {
     setLatest(run({ diffs: ALL_DIFFS }));
     applyPending = true;
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(screen.getByRole('button', { name: 'カイポケの種類に合わせる（有給）' })).toBeDisabled();
     expect(
       screen.getByRole('button', { name: 'まとめて「らく助に入れる」（2 件）' }),
@@ -543,7 +616,7 @@ describe('カイポケと比べる', () => {
   it('比べられなかった・取り直せなかったら理由を出す', () => {
     setLatest(null, { job: { ...job('running').job } });
     jobStatus = job('completed', { state: 'compare_failed', compare_error: 'ValueError' });
-    const { unmount } = render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    const { unmount } = render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(screen.getByTestId('compare-progress')).toHaveTextContent(
       '比べられませんでした：ValueError',
     );
@@ -553,7 +626,7 @@ describe('カイポケと比べる', () => {
       state: 'failed',
       job: { ...job('failed').job, error: 'カイポケにログインできませんでした' },
     });
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(screen.getByTestId('compare-progress')).toHaveTextContent(
       'カイポケから取り直せませんでした：カイポケにログインできませんでした',
     );
@@ -566,7 +639,7 @@ describe('カイポケと比べる', () => {
         detail: 'カイポケの処理が動いています。終わってから押してください',
       }),
     );
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     fireEvent.click(
       screen.getByRole('button', { name: 'カイポケと比べ直す（月をまとめて取り直します）' }),
     );
@@ -628,7 +701,7 @@ describe('カイポケへ送る', () => {
 
   async function openSend() {
     setLatest(run());
-    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     fireEvent.click(screen.getByRole('button', { name: 'カイポケへ送る…' }));
     return screen.findByRole('dialog', { name: '2026年11月の休みをカイポケへ送る' });
   }

@@ -152,6 +152,34 @@ export const leaveMonthConfirmationSchema = z.object({
 });
 export type LeaveMonthConfirmation = z.infer<typeof leaveMonthConfirmationSchema>;
 
+/** 「実績を記録する」を押せない理由の種類 (`leave_compare.RECORD_*`)。message をそのまま出す。 */
+export const recordBlockerCodeSchema = z.enum([
+  'not_compared',
+  'diffs_remaining',
+  'unconfirmed_days',
+  'planned_sends',
+  'changed_since_compare',
+  'stale_material',
+  'recompare_after_choose',
+  'already_recorded',
+  'month_not_ended',
+]);
+export type RecordBlockerCode = z.infer<typeof recordBlockerCodeSchema>;
+
+export const leaveRecordBlockerSchema = z.object({
+  code: recordBlockerCodeSchema,
+  message: z.string(),
+});
+export type LeaveRecordBlocker = z.infer<typeof leaveRecordBlockerSchema>;
+
+/** 「実績を記録する」を押せるか (API の 409 と同じ判定・画面はこれだけで決める)。 */
+export const leaveRecordReadinessSchema = z.object({
+  ready: z.boolean(),
+  blockers: z.array(leaveRecordBlockerSchema).default([]),
+  actual_recorded_at: z.string().nullable().optional(),
+});
+export type LeaveRecordReadiness = z.infer<typeof leaveRecordReadinessSchema>;
+
 export const leaveMonthViewSchema = z.object({
   month: isoDate,
   today: isoDate,
@@ -168,6 +196,8 @@ export const leaveMonthViewSchema = z.object({
   confirmation: leaveMonthConfirmationSchema,
   compare: leaveCompareStatusSchema,
   visits_on_leave_count: z.number().int(),
+  /** 「実績を記録する」を押せるか (押せない理由の一覧)。 */
+  record_actuals: leaveRecordReadinessSchema.nullable().optional(),
 });
 export type LeaveMonthView = z.infer<typeof leaveMonthViewSchema>;
 
@@ -187,6 +217,8 @@ export const leaveMonthSummarySchema = z.object({
   pending_count: z.number().int().nullable().optional(),
   short_staff_count: z.number().int().nullable().optional(),
   kaipoke_action_count: z.number().int().nullable().optional(),
+  /** 管理者だけ: 月をまたいだ休みの申請中の件数 (メニューの未処理件数)。 */
+  pending_total: z.number().int().nullable().optional(),
 });
 export type LeaveMonthSummary = z.infer<typeof leaveMonthSummarySchema>;
 
@@ -308,6 +340,33 @@ export const kinmuSheetSchema = z.object({
 });
 export type KinmuSheet = z.infer<typeof kinmuSheetSchema>;
 
+/** 確定から始めたカイポケへの休みの送信 (非同期のジョブ)。 */
+export const leaveOutboundStartedSchema = z.object({
+  started: z.boolean(),
+  job_id: uuid.nullable().optional(),
+  count: z.number().int().default(0),
+  /** 始めなかった理由 (照合がまだ・送る休みが無い・ほかのジョブが動いている など)。 */
+  reason: z.string().nullable().optional(),
+});
+export type LeaveOutboundStarted = z.infer<typeof leaveOutboundStartedSchema>;
+
+/** 作った勤務表。作れなくても行は「未作成」(sheet.url が空) で残る。 */
+export const leaveKinmuSheetOutcomeSchema = z.object({
+  created: z.boolean(),
+  kind: z.enum(['plan', 'final']),
+  sheet: kinmuSheetSchema.nullable().optional(),
+  reason: z.string().nullable().optional(),
+});
+export type LeaveKinmuSheetOutcome = z.infer<typeof leaveKinmuSheetOutcomeSchema>;
+
+/** POST /leave/month/{month}/record-actuals */
+export const leaveRecordActualsResultSchema = z.object({
+  month: isoDate,
+  actual_recorded_at: z.string(),
+  kinmu_sheet: leaveKinmuSheetOutcomeSchema,
+});
+export type LeaveRecordActualsResult = z.infer<typeof leaveRecordActualsResultSchema>;
+
 export const leaveConfirmResultSchema = z.object({
   month: isoDate,
   confirmed_at: z.string(),
@@ -316,5 +375,7 @@ export const leaveConfirmResultSchema = z.object({
   pending_remaining: z.number().int(),
   short_staff: z.array(leaveShortStaffSchema),
   required_hours: z.number().nullable().optional(),
+  outbound: leaveOutboundStartedSchema.nullable().optional(),
+  kinmu_sheet: leaveKinmuSheetOutcomeSchema.nullable().optional(),
 });
 export type LeaveConfirmResult = z.infer<typeof leaveConfirmResultSchema>;

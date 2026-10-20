@@ -38,25 +38,86 @@ export interface LeaveOutboundDialogProps {
   month: string;
 }
 
-export function LeaveOutboundDialog({ open, onOpenChange, month }: LeaveOutboundDialogProps) {
+/**
+ * 送信のジョブの進み具合 (確定から始めた送信もこれを使う)。止まった (stale)・読めなかった
+ * ジョブは終わったものとして扱い、終わったら 1 回だけ読み直す (送信の状態・月の表)。
+ */
+export function useOutboundJobState(jobId: string | null) {
   const qc = useQueryClient();
+  const job = useOutboundJob(jobId);
+  const status = job.data;
+  const active = !!jobId && !job.isError && (!status || isJobActive(status.job));
+  const handled = useRef<string | null>(null);
+  useEffect(() => {
+    if (!jobId || !status || active || handled.current === jobId) return;
+    handled.current = jobId;
+    void invalidateAfterLeave(qc);
+  }, [jobId, status, active, qc]);
+  return { job, status, active };
+}
+
+/** 送信の進み具合と結果 (送信中 N/M 週 → 送れた・送れなかった・飛ばした)。 */
+export function OutboundJobProgress({ state }: { state: ReturnType<typeof useOutboundJobState> }) {
+  const { job, status, active } = state;
+  return (
+    <>
+      {job.isError && (
+        <div role="alert" className="space-y-1 rounded-md bg-error-bg px-3 py-2 text-sm text-error">
+          <p>
+            送信の進み具合を読めませんでした：{leaveErrorMessage(job.error, '通信に失敗しました')}
+          </p>
+          <Button type="button" size="sm" variant="outline" onClick={() => void job.refetch()}>
+            進み具合をもう一度読む
+          </Button>
+        </div>
+      )}
+      {(active || status) && (
+        <div role="status" data-testid="outbound-progress" className="space-y-1 text-sm">
+          {active ? (
+            <p className="rounded-md bg-bg-muted px-3 py-2 text-text-secondary">
+              カイポケへ送信中
+              {status ? `（${status.job.done}/${status.job.total ?? '?'} 週）` : ''}
+            </p>
+          ) : status ? (
+            <>
+              <p
+                className={cn(
+                  'rounded-md px-3 py-2',
+                  status.failed_count > 0 || status.job.status === 'failed' || status.job.stale
+                    ? 'bg-warning-bg text-warning-strong'
+                    : 'bg-success-bg text-success',
+                )}
+              >
+                {status.job.stale && '送信が止まっているようです。'}
+                送れた {status.sent_count} 件・送れなかった {status.failed_count} 件・飛ばした{' '}
+                {status.skipped_count} 件{status.job.error ? `（${status.job.error}）` : ''}
+              </p>
+              <ul className="list-disc pl-5 text-text-secondary">
+                {status.items
+                  .filter((it) => it.outcome !== 'sent')
+                  .map((it) => (
+                    <li key={`${it.staff_id}|${it.date}`}>
+                      {it.staff_name ?? ''} {fmtDayJp(it.date)}：
+                      {OUTCOME_LABEL[it.outcome] ?? it.outcome}
+                      {it.reason ? `（${it.reason}）` : ''}
+                    </li>
+                  ))}
+              </ul>
+            </>
+          ) : null}
+        </div>
+      )}
+    </>
+  );
+}
+
+export function LeaveOutboundDialog({ open, onOpenChange, month }: LeaveOutboundDialogProps) {
   const preview = useOutboundPreview(month, open);
   const start = useStartOutbound();
   const [jobId, setJobId] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
-  const job = useOutboundJob(jobId);
-  const status = job.data;
-  // 止まった (stale) ジョブ・読めなかったジョブは終わったものとして扱う
-  const sending =
-    start.isPending || (!!jobId && !job.isError && (!status || isJobActive(status.job)));
-
-  // 終わったら 1 回だけ読み直す (送信の状態・月の表)
-  const handled = useRef<string | null>(null);
-  useEffect(() => {
-    if (!jobId || !status || sending || handled.current === jobId) return;
-    handled.current = jobId;
-    void invalidateAfterLeave(qc);
-  }, [jobId, status, sending, qc]);
+  const jobState = useOutboundJobState(jobId);
+  const sending = start.isPending || jobState.active;
 
   const p = preview.data;
   // 夕方の注意は開いたときの時刻で決める (時間が過ぎていれば出さない)
@@ -178,46 +239,7 @@ export function LeaveOutboundDialog({ open, onOpenChange, month }: LeaveOutbound
           </div>
         )}
 
-        {job.isError && (
-          <p role="alert" className="rounded-md bg-error-bg px-3 py-2 text-sm text-error">
-            送信の進み具合を読めませんでした：{leaveErrorMessage(job.error, '通信に失敗しました')}
-          </p>
-        )}
-        {(sending || status) && (
-          <div role="status" data-testid="outbound-progress" className="space-y-1 text-sm">
-            {sending ? (
-              <p className="rounded-md bg-bg-muted px-3 py-2 text-text-secondary">
-                カイポケへ送信中
-                {status ? `（${status.job.done}/${status.job.total ?? '?'} 週）` : ''}
-              </p>
-            ) : status ? (
-              <>
-                <p
-                  className={cn(
-                    'rounded-md px-3 py-2',
-                    status.failed_count > 0 || status.job.status === 'failed'
-                      ? 'bg-warning-bg text-warning-strong'
-                      : 'bg-success-bg text-success',
-                  )}
-                >
-                  送れた {status.sent_count} 件・送れなかった {status.failed_count} 件・飛ばした{' '}
-                  {status.skipped_count} 件{status.job.error ? `（${status.job.error}）` : ''}
-                </p>
-                <ul className="list-disc pl-5 text-text-secondary">
-                  {status.items
-                    .filter((it) => it.outcome !== 'sent')
-                    .map((it) => (
-                      <li key={`${it.staff_id}|${it.date}`}>
-                        {it.staff_name ?? ''} {fmtDayJp(it.date)}：
-                        {OUTCOME_LABEL[it.outcome] ?? it.outcome}
-                        {it.reason ? `（${it.reason}）` : ''}
-                      </li>
-                    ))}
-                </ul>
-              </>
-            ) : null}
-          </div>
-        )}
+        <OutboundJobProgress state={jobState} />
 
         <DialogFooter>
           <Button type="button" variant="outline" onClick={close}>

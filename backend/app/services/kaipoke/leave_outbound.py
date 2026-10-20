@@ -31,6 +31,7 @@ import asyncio
 import logging
 import uuid
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
@@ -59,9 +60,9 @@ from app.services.kaipoke.sources import (
 from app.services.kaipoke_client import KaipokeApiError
 from app.services.leave_calendar import leave_type_on, load_overrides_between
 from app.services.leave_compare import (
-    ACTION_CHOOSE_KIND,
     DIFF_STAFF_NOT_FOUND,
     DIFF_UNCONFIRMED,
+    diff_needs_recompare,
 )
 from app.services.scheduling.config import load_scheduling_config
 
@@ -243,8 +244,12 @@ class LeaveSendPlan:
         }
 
 
-async def build_leave_send_plan(db: AsyncSession, month: date | str) -> LeaveSendPlan:
+async def build_leave_send_plan(
+    db: AsyncSession, month: date | str, *, staff_ids: Iterable[uuid.UUID] | None = None
+) -> LeaveSendPlan:
     """その月の休みの送信の状態から、送る予定・要対応・照合前・送信済みを作る (書かない)。
+
+    ``staff_ids`` を渡すとその職員の分だけ (一部の職員だけを確定したとき・ディレクター決定)。
 
     状態は R・S・照合前からその場で決める (§2-5 の表):
     R あり・S NULL・照合前 → 照合前 (送らない)／R あり・S NULL → 未送信 (送る予定)／
@@ -291,7 +296,7 @@ async def build_leave_send_plan(db: AsyncSession, month: date | str) -> LeaveSen
             key = (uuid.UUID(str(raw["staff_id"])), diff_day)
             if not resolved:
                 pending.add(key)
-            elif isinstance(resolved, dict) and resolved.get("action") == ACTION_CHOOSE_KIND:
+            elif diff_needs_recompare(raw):
                 rechoose.add(key)
         elif raw.get("kind") == DIFF_UNCONFIRMED and not resolved:
             unconfirmed_days.add(diff_day)
@@ -322,11 +327,14 @@ async def build_leave_send_plan(db: AsyncSession, month: date | str) -> LeaveSen
         (row.staff_id, row.weekday): row for row in (await db.scalars(select(StaffShift))).all()
     }
     internal_map = await build_staff_internal_map(db)
+    wanted = set(staff_ids) if staff_ids is not None else None
 
     for staff_id, day in sorted(
         {*rakusuke, *records}, key=lambda k: (k[1], staff_names.get(k[0], ""), str(k[0]))
     ):
         if staff_id not in staff_names:
+            continue
+        if wanted is not None and staff_id not in wanted:
             continue
         name = staff_names[staff_id]
         r = rakusuke.get((staff_id, day))
@@ -414,7 +422,11 @@ class LeaveOutboundStart:
 
 
 async def start_leave_outbound(
-    db: AsyncSession, *, month: date | str, user_id: uuid.UUID | None
+    db: AsyncSession,
+    *,
+    month: date | str,
+    user_id: uuid.UUID | None,
+    staff_ids: Iterable[uuid.UUID] | None = None,
 ) -> LeaveOutboundStart:
     """送る予定を作り、送る休みがあれば段階 0 のジョブ (``leave-outbound``) を立てる。
 
@@ -427,7 +439,7 @@ async def start_leave_outbound(
     **新しいトランザクションで呼ぶこと** (月の確定から呼ぶときは確定の記録を commit して
     から)。実体は ``run_leave_outbound_job`` を応答の後に背景で呼ぶ。
     """
-    plan = await build_leave_send_plan(db, month)
+    plan = await build_leave_send_plan(db, month, staff_ids=staff_ids)
     if plan.blocked_reason is not None:
         return LeaveOutboundStart(plan=plan, reason=plan.blocked_reason)
     items = plan.sendable_items

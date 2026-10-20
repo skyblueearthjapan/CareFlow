@@ -97,6 +97,7 @@ from app.services.staff_leave import (
     apply_staff_leave,
     cancel_staff_leave,
     notify_leave_results,
+    today_jst,
 )
 
 if TYPE_CHECKING:
@@ -1083,19 +1084,37 @@ async def compare_month(db: AsyncSession, job_id: uuid.UUID) -> LeaveCompareRun 
     except Exception as exc:  # noqa: BLE001 — 黙って失わない (ジョブは completed で残る)
         logger.exception("leave compare failed for job %s", job_id)
         await db.rollback()
-        summary = dict(
-            (await db.scalar(select(KaipokeJob.result_summary).where(KaipokeJob.id == job_id)))
-            or {}
-        )
-        summary["compare_error"] = f"照合の差分を作れませんでした: {str(exc)[:300]}"
-        await db.execute(
-            update(KaipokeJob)
-            .where(KaipokeJob.id == job_id)
-            .values(result_summary=summary, updated_at=datetime.now(UTC))
-            .execution_options(synchronize_session=False)
-        )
-        await db.commit()
+        await record_compare_error(job_id, f"照合の差分を作れませんでした: {str(exc)[:300]}")
         return None
+
+
+async def record_compare_error(job_id: uuid.UUID, message: str) -> None:
+    """ジョブの ``result_summary.compare_error`` を **新しいセッションで** 書く.
+
+    比べる処理の例外で元のセッションが使えなくなっていても必ず書く (画面が「比べています」
+    のまま止まらないように)。書けなかったときはログだけ残す。
+    """
+    try:
+        factory = get_session_factory()
+        async with factory() as fresh:
+            summary = dict(
+                (
+                    await fresh.scalar(
+                        select(KaipokeJob.result_summary).where(KaipokeJob.id == job_id)
+                    )
+                )
+                or {}
+            )
+            summary["compare_error"] = message
+            await fresh.execute(
+                update(KaipokeJob)
+                .where(KaipokeJob.id == job_id)
+                .values(result_summary=summary, updated_at=datetime.now(UTC))
+                .execution_options(synchronize_session=False)
+            )
+            await fresh.commit()
+    except Exception:  # noqa: BLE001 — ここで落とすと元の失敗が見えなくなる
+        logger.exception("could not record compare_error for job %s", job_id)
 
 
 async def start_leave_compare(
@@ -1135,7 +1154,19 @@ async def run_leave_compare_job(
         job = await sources.run_source_job(db, client, job_id, plan)
         if job is None or job.status != "completed":
             return None
-        return await compare_month(db, job_id)
+        try:
+            run = await compare_month(db, job_id)
+        except BaseException as exc:
+            # compare_month の外側で落ちた (取り消し・セッションの破損など): completed のまま
+            # 結果も compare_error も無いと画面が「比べています」で止まるので必ず書く。
+            await record_compare_error(job_id, f"照合の差分を作れませんでした: {str(exc)[:300]}")
+            raise
+        if run is None:
+            # 材料は取れたのに結果が無い (ジョブの記録が足りないなど): 理由が無ければ書く。
+            fresh = await db.get(KaipokeJob, job_id, populate_existing=True)
+            if fresh is not None and not (fresh.result_summary or {}).get("compare_error"):
+                await record_compare_error(job_id, "照合の差分を作れませんでした")
+        return run
 
 
 # --- 「合わせる」ボタン (§7-4-3・H-c) -------------------------------------------------
@@ -1441,7 +1472,182 @@ async def apply_compare_actions(
     return result
 
 
+# --- 「実績を記録する」の条件 (§7-4-2・画面と API で同じ判定) -------------------------
+
+RECORD_NOT_COMPARED: Final = "not_compared"
+RECORD_DIFFS_REMAINING: Final = "diffs_remaining"
+RECORD_UNCONFIRMED_DAYS: Final = "unconfirmed_days"
+RECORD_PLANNED_SENDS: Final = "planned_sends"
+RECORD_CHANGED_SINCE_COMPARE: Final = "changed_since_compare"
+RECORD_STALE_MATERIAL: Final = "stale_material"
+RECORD_RECOMPARE_AFTER_CHOOSE: Final = "recompare_after_choose"
+RECORD_ALREADY_RECORDED: Final = "already_recorded"
+RECORD_MONTH_NOT_ENDED: Final = "month_not_ended"
+
+
+def diff_is_open(raw: Any) -> bool:
+    """照合の差分 (``leave_compare_runs.diffs`` の 1 件) をまだ合わせていないか."""
+    return isinstance(raw, dict) and not raw.get("resolved")
+
+
+def diff_needs_recompare(raw: Any) -> bool:
+    """種類を選んだ (判定を記録した) だけで、まだ比べ直していない差分か.
+
+    選んだ種類は次の照合で K として効くので、比べ直すまで送らない・記録しない
+    (送信の ``rechoose`` と「実績を記録する」で同じ判定)。
+    """
+    if not isinstance(raw, dict):
+        return False
+    resolved = raw.get("resolved")
+    return isinstance(resolved, dict) and resolved.get("action") == ACTION_CHOOSE_KIND
+
+
+@dataclass(frozen=True)
+class RecordBlocker:
+    """「実績を記録する」を押せない理由 1 つ (``code`` は画面の出し分け・``message`` は文)."""
+
+    code: str
+    message: str
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return _aware(datetime.fromisoformat(value))
+    except ValueError:
+        return None
+
+
+def _material_is_fresh(run: LeaveCompareRun, job_started_at: datetime | None) -> bool:
+    """照合に使った材料 (週ごとの個別業務・実績 CSV) が全部そのジョブの開始以降に取ったものか."""
+    if job_started_at is None:
+        return False
+    started = _aware(job_started_at)
+    fetched = run.fetched_at or {}
+    tasks = fetched.get("tasks")
+    if not isinstance(tasks, dict) or not tasks:
+        return False
+    stamps = [*tasks.values(), fetched.get("actual_csv")]
+    parsed = [_parse_iso(v) for v in stamps]
+    return all(p is not None and p >= started for p in parsed)
+
+
+def record_actuals_blockers(
+    *,
+    leave_month: LeaveMonth | None,
+    run: LeaveCompareRun | None,
+    job_started_at: datetime | None,
+    month: date | None = None,
+    today: date | None = None,
+) -> list[RecordBlocker]:
+    """「実績を記録する」の条件 (§7-4-2) を確かめ、欠けているものを全部返す (空 = 押せる).
+
+    0. 月の最後の日が過ぎた (JST・ディレクター決定)・まだ記録していない (作り直しは
+       ``kinmu-sheets/rebuild``)
+    1. 最新の照合がある  2. まだ合わせていない差分が 0 件 (種類を選んだだけの差分は
+       「比べ直してください」)  3. 未確認の日が 0 日  4. 送る予定が 0 件
+    5. 照合の後に休みを変えていない
+    6. 材料が新しい (使った材料の ``fetched_at`` がすべてその照合のジョブの開始以降)。
+    """
+    out: list[RecordBlocker] = []
+    target = month or (leave_month.month if leave_month is not None else None)
+    current = today or today_jst()
+    if target is not None and current <= _month_last_day(month_first_day(target)):
+        out.append(
+            RecordBlocker(RECORD_MONTH_NOT_ENDED, "月の最後の日が過ぎてから記録してください")
+        )
+    if leave_month is not None and leave_month.actual_recorded_at is not None:
+        out.append(
+            RecordBlocker(
+                RECORD_ALREADY_RECORDED,
+                "この月の実績は記録済みです（勤務表は「作り直す」から作ってください）",
+            )
+        )
+    if leave_month is None or leave_month.last_compared_at is None or run is None:
+        out.append(RecordBlocker(RECORD_NOT_COMPARED, "まだカイポケと比べていません"))
+        return out
+    diffs = run.diffs or []
+    open_diffs = sum(1 for d in diffs if diff_is_open(d))
+    if open_diffs:
+        out.append(
+            RecordBlocker(
+                RECORD_DIFFS_REMAINING, f"まだ合わせていない差分が {open_diffs} 件あります"
+            )
+        )
+    chosen = sum(1 for d in diffs if diff_needs_recompare(d))
+    if chosen:
+        out.append(
+            RecordBlocker(
+                RECORD_RECOMPARE_AFTER_CHOOSE,
+                f"種類を選んだ差分が {chosen} 件あります。もう一度カイポケと比べてください",
+            )
+        )
+    if run.unconfirmed_days:
+        out.append(
+            RecordBlocker(
+                RECORD_UNCONFIRMED_DAYS,
+                f"カイポケを確かめられていない日が {run.unconfirmed_days} 日あります",
+            )
+        )
+    if run.planned_send_count:
+        out.append(
+            RecordBlocker(
+                RECORD_PLANNED_SENDS,
+                f"カイポケへ送る予定の休みが {run.planned_send_count} 件あります",
+            )
+        )
+    changed = leave_month.last_leave_changed_at
+    if changed is not None and _aware(changed) > _aware(leave_month.last_compared_at):
+        out.append(
+            RecordBlocker(
+                RECORD_CHANGED_SINCE_COMPARE,
+                "比べた後に休みが変わりました。もう一度カイポケと比べてください",
+            )
+        )
+    if not _material_is_fresh(run, job_started_at):
+        out.append(
+            RecordBlocker(
+                RECORD_STALE_MATERIAL,
+                "照合に使ったカイポケの材料が古いです。もう一度カイポケと比べてください",
+            )
+        )
+    return out
+
+
+async def load_record_actuals_blockers(db: AsyncSession, month: date) -> list[RecordBlocker]:
+    """その月の「実績を記録する」の条件 (DB から最新の照合とそのジョブを読む)."""
+    first = month_first_day(month)
+    leave_month = await db.get(LeaveMonth, first)
+    run = None
+    if leave_month is not None and leave_month.last_compare_run_id is not None:
+        run = await db.get(LeaveCompareRun, leave_month.last_compare_run_id)
+    started = None
+    if run is not None and run.kaipoke_job_id is not None:
+        started = await db.scalar(
+            select(KaipokeJob.started_at).where(KaipokeJob.id == run.kaipoke_job_id)
+        )
+    return record_actuals_blockers(
+        leave_month=leave_month, run=run, job_started_at=started, month=first
+    )
+
+
 __all__ = [
+    "RECORD_ALREADY_RECORDED",
+    "RECORD_MONTH_NOT_ENDED",
+    "RECORD_RECOMPARE_AFTER_CHOOSE",
+    "diff_is_open",
+    "diff_needs_recompare",
+    "RECORD_CHANGED_SINCE_COMPARE",
+    "RECORD_DIFFS_REMAINING",
+    "RECORD_NOT_COMPARED",
+    "RECORD_PLANNED_SENDS",
+    "RECORD_STALE_MATERIAL",
+    "RECORD_UNCONFIRMED_DAYS",
+    "RecordBlocker",
+    "load_record_actuals_blockers",
+    "record_actuals_blockers",
+    "record_compare_error",
     "ACTION_ADD_TO_RAKUSUKE",
     "ACTION_CANCEL_RAKUSUKE",
     "ACTION_CHOOSE_KIND",

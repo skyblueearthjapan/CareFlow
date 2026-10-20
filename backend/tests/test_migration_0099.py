@@ -61,6 +61,20 @@ _PREREQ_SQL = (
     "CREATE TABLE users (id VARCHAR(36) NOT NULL PRIMARY KEY)",
     "CREATE TABLE kaipoke_jobs (id VARCHAR(36) NOT NULL PRIMARY KEY)",
     """
+    CREATE TABLE notifications (
+        id VARCHAR(36) NOT NULL PRIMARY KEY,
+        user_id VARCHAR(36) NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+        type VARCHAR(32) NOT NULL,
+        title VARCHAR(200) NOT NULL,
+        body TEXT,
+        read_at DATETIME,
+        reference_type VARCHAR(32),
+        reference_id VARCHAR(36),
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+    )
+    """,
+    """
     CREATE TABLE staff (
         id VARCHAR(36) NOT NULL PRIMARY KEY,
         name VARCHAR(120) NOT NULL
@@ -169,6 +183,28 @@ def test_migration_0099_revision_chain() -> None:
     assert rev.down_revision == "0098_kaipoke_source_snapshots"
     assert len(_REVISION) <= 32
     assert len(list(script.get_heads())) == 1
+
+
+def test_migration_0099_notifications_data_column(tmp_path: Path) -> None:
+    """7. ``notifications.data`` (通知から画面が開く先) が足され、downgrade で消える."""
+    engine = _prepare(tmp_path)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO notifications (id, user_id, type, title) "
+                "VALUES ('n1', 'u1', 'leave_approved', '承認')"
+            )
+        )
+    assert "data" not in {c["name"] for c in inspect(engine).get_columns("notifications")}
+    _run(engine, "upgrade")
+    assert "data" in {c["name"] for c in inspect(engine).get_columns("notifications")}
+    with engine.begin() as conn:
+        conn.execute(sa.text("""UPDATE notifications SET data = '{"date": "2026-11-12"}'"""))
+    _run(engine, "downgrade")
+    assert "data" not in {c["name"] for c in inspect(engine).get_columns("notifications")}
+    with engine.begin() as conn:
+        # 既存の通知は消えない
+        assert conn.execute(sa.text("SELECT count(*) FROM notifications")).scalar() == 1
 
 
 def test_migration_0099_request_type_check_fixed(tmp_path: Path) -> None:

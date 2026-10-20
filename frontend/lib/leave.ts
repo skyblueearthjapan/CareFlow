@@ -164,3 +164,31 @@ export function firstOpenLeaveMonth(now: Date = new Date()): string {
     if (!isPastLeaveDeadline(ym, now)) return ym;
   }
 }
+
+/**
+ * 訪問・予定 (開始, 終了) が休みの時間帯にかかるか。バックエンドの `visit_hits_leave` と同じ規則:
+ * 終日の休み (公休・有給) は常に真／午前休は開始が 13:00 より前なら真 (13:00 ちょうどは対象外)／
+ * 午後休は終了が 12:30 より後なら真 (12:30 ちょうどは対象外・終了が空なら開始が 12:30 以後で真)／
+ * 休みでない種類は偽。
+ */
+export function visitHitsLeave(
+  leaveType: string | null | undefined,
+  start: string | null | undefined,
+  end: string | null | undefined,
+): boolean {
+  if (leaveType && FULL_DAY_OFF.has(leaveType)) return true;
+  if (leaveType === 'am_off') return !!start && hhmm(start) < AM_OFF_UNTIL;
+  if (leaveType === 'pm_off') {
+    if (!end) return !!start && hhmm(start) >= PM_OFF_FROM;
+    return hhmm(end) > PM_OFF_FROM;
+  }
+  return false;
+}
+
+/** 画面の休みのラベル (staff-overrides の type) → 種類。休みでないラベルは載せない。 */
+export const LEAVE_TYPE_OF_LABEL: Readonly<Record<string, LeaveType>> = {
+  休み: 'off',
+  有給: 'paid_off',
+  午前休: 'am_off',
+  午後休: 'pm_off',
+};

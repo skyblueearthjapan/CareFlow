@@ -26,18 +26,38 @@ import { isAdminRole } from '@/lib/rbac';
 import { cn } from '@/lib/utils';
 
 /**
- * 「休み・勤務表」(/admin/leave) で開ける管理者向けの通知の種類
- * (leave_unassigned = 休みで訪問を担当なしへ移した・backend/app/services/leave_notify.py)。
+ * 「休み・勤務表」(/admin/leave) で開ける通知の種類 (backend/app/services/leave_notify.py):
+ * 担当なしへ移した・新しい申請・承認した。開くのは管理者だけ。
  */
-const LEAVE_SHEET_NOTIFICATION_TYPES: ReadonlySet<string> = new Set(['leave_unassigned']);
+const LEAVE_SHEET_NOTIFICATION_TYPES: ReadonlySet<string> = new Set([
+  'leave_unassigned',
+  'leave_requested',
+  'leave_approved',
+]);
 
 /**
- * 通知の題名・本文の最初の「M/D」から、その日を開く「休み・勤務表」の URL を作る。
- * 年は通知の時刻 (JST) の年で、半年より離れるなら前後の年にする。日付が無ければ月を付けない。
+ * 通知からその人・その日のマスを開く「休み・勤務表」の URL を作る。
+ * `data` の staff_id・date を使う。`data` が無い古い通知だけ、題名・本文の最初の「M/D」から
+ * 日付を読む (年は通知の時刻 JST の年で、半年より離れるなら前後の年)。日付が無ければ月を付けない。
  */
 export function leaveSheetHrefFromNotice(
-  n: Pick<NotificationRead, 'title' | 'body' | 'created_at'>,
+  n: Pick<NotificationRead, 'title' | 'body' | 'created_at'> & {
+    type?: string;
+    data?: Record<string, unknown> | null;
+  },
 ): string {
+  const date = typeof n.data?.date === 'string' ? n.data.date : null;
+  // 担当なしの通知で 2 人以上をまとめたときは、先頭の 1 人に寄せず月だけで開く
+  const items = n.data?.items;
+  if (date && Array.isArray(items) && items.length >= 2) {
+    return `/admin/leave?month=${date.slice(0, 7)}`;
+  }
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    const staff = typeof n.data?.staff_id === 'string' ? n.data.staff_id : null;
+    return `/admin/leave?month=${date.slice(0, 7)}&date=${date}${
+      staff ? `&staff=${encodeURIComponent(staff)}` : ''
+    }`;
+  }
   const m = /(\d{1,2})\/(\d{1,2})/.exec(`${n.title} ${n.body ?? ''}`);
   if (!m) return '/admin/leave';
   const month = Number(m[1]);

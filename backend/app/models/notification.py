@@ -16,6 +16,7 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
+from app.models.pending_request import JSONBish
 
 
 class Notification(Base, TimestampMixin):
@@ -41,6 +42,8 @@ class Notification(Base, TimestampMixin):
     # 「同一 visit の同種通知は 1 ユーザー 1 行」を担保する。NULL は重複制約対象外。
     reference_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reference_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    # 画面が開く先の材料 (mig 0099・休みの通知は ``staff_id``・``date`` など)。文面から読まない。
+    data: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
 
     __table_args__ = (
         Index("ix_notifications_user_created", "user_id", "created_at"),
