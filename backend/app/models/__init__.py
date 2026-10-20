@@ -20,6 +20,15 @@ from app.models.kaipoke_credential import KaipokeCredential
 from app.models.kaipoke_csv_snapshot import KaipokeCsvSnapshot
 from app.models.kaipoke_job import KaipokeJob, KaipokeJobItem
 from app.models.kaipoke_source_snapshot import KaipokeSourceSnapshot
+from app.models.leave import (
+    GoogleDriveConnection,
+    KaipokeLeaveJudgement,
+    KinmuSheet,
+    LeaveCompareRun,
+    LeaveMonth,
+    OfficeClosedDay,
+    StaffLeaveKaipoke,
+)
 from app.models.notification import Notification
 from app.models.office import Office, OfficeCity
 from app.models.office_area_prompt_dismissal import OfficeAreaPromptDismissal
@@ -77,6 +86,13 @@ __all__ = [
     "KaipokeJob",
     "KaipokeJobItem",
     "KaipokeSourceSnapshot",
+    "GoogleDriveConnection",
+    "KaipokeLeaveJudgement",
+    "KinmuSheet",
+    "LeaveCompareRun",
+    "LeaveMonth",
+    "OfficeClosedDay",
+    "StaffLeaveKaipoke",
     "Notification",
     "Office",
     "OfficeAreaPromptDismissal",

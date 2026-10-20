@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
 
 from app.core.security import create_access_token, hash_password
-from app.models import Staff, User
+from app.models import Staff, StaffWeeklyOverride, User
 
 
 async def _make_user(db, email: str, role: str, staff_id=None) -> User:
@@ -218,3 +219,70 @@ async def test_overrides_post_staff_role_returns_403(client, db) -> None:
         json={"date": "2026-05-09", "type": "休み"},
     )
     assert res.status_code == 403, res.text
+
+
+@pytest.mark.asyncio
+async def test_overrides_paid_off_round_trip(client, db) -> None:
+    """有給 (paid_off・mig 0099): 日本語でも英語でも入れられ、読み出しは「有給」."""
+    admin = await _make_user(db, "ov-paid1@example.com", "admin")
+    staff = await _make_staff(db)
+    for d, t in (("2026-11-04", "有給"), ("2026-11-05", "paid_off")):
+        r = await client.post(
+            f"/api/v1/staff/{staff.id}/overrides",
+            headers=_bearer(admin),
+            json={"date": d, "type": t},
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["type"] == "有給"
+
+    rows = (
+        await db.scalars(
+            select(StaffWeeklyOverride).where(StaffWeeklyOverride.staff_id == staff.id)
+        )
+    ).all()
+    assert {r.override_type for r in rows} == {"paid_off"}
+    # 列の既定 (mig 0099): 管理者が入れた休み・承認元の申請なし。
+    assert {r.source for r in rows} == {"admin"}
+    assert all(r.pending_request_id is None for r in rows)
+
+    res = await client.get(
+        f"/api/v1/staff/{staff.id}/overrides",
+        headers=_bearer(admin),
+        params={"from": "2026-11-01", "to": "2026-11-30"},
+    )
+    assert res.status_code == 200, res.text
+    assert sorted((row["date"], row["type"]) for row in res.json()) == [
+        ("2026-11-04", "有給"),
+        ("2026-11-05", "有給"),
+    ]
+
+    oid = res.json()[0]["id"]
+    patch = await client.patch(
+        f"/api/v1/staff/{staff.id}/overrides/{oid}",
+        headers=_bearer(admin),
+        json={"type": "午前休"},
+    )
+    assert patch.status_code == 200, patch.text
+    assert patch.json()["type"] == "午前休"
+
+
+@pytest.mark.asyncio
+async def test_overrides_week_with_paid_off_row_does_not_500(client, db) -> None:
+    """有給の行が 1 件あるだけで週の一覧が 500 にならない (読み出しの Literal)."""
+    admin = await _make_user(db, "ov-paid2@example.com", "admin")
+    staff = await _make_staff(db)
+    # 2026-11-04 (水) = ISO 2026-W45 weekday 2。API を通さず行を直接置く (照合の取り込みなど)。
+    db.add(
+        StaffWeeklyOverride(
+            staff_id=staff.id, iso_year=2026, iso_week=45, weekday=2, override_type="paid_off"
+        )
+    )
+    await db.commit()
+
+    res = await client.get(
+        "/api/v1/staff/overrides-week",
+        headers=_bearer(admin),
+        params={"iso_year": 2026, "iso_week": 45},
+    )
+    assert res.status_code == 200, res.text
+    assert [(row["date"], row["type"]) for row in res.json()] == [("2026-11-04", "有給")]

@@ -1,12 +1,12 @@
 """Schemas for `staff_weekly_overrides` (per-week 休み / 時間変更 etc.).
 
 DB storage (unchanged): `iso_year` + `iso_week` + `weekday` triple plus
-`override_type` ∈ { 'off', 'custom_time', 'am_off', 'pm_off' } and `reason`
+`override_type` ∈ { 'off', 'custom_time', 'am_off', 'pm_off', 'paid_off' } and `reason`
 (text). The HTTP API contract however speaks the *Frontend* language:
 
   - `date`  (YYYY-MM-DD, derived from the iso triple via
     `datetime.date.fromisocalendar(iso_year, iso_week, weekday + 1)`)
-  - `type`  (Japanese label: '休み' / '時間変更' / '午前休' / '午後休')
+  - `type`  (Japanese label: '休み' / '時間変更' / '午前休' / '午後休' / '有給')
   - `note`  (was `reason` in the DB)
 
 Writes additionally accept legacy English codes ('off' / 'custom_time' / …)
@@ -29,8 +29,19 @@ from app.schemas.patient import _validate_hhmm
 # ---------------------------------------------------------------------------
 
 OverrideType = Literal[
-    "休み", "時間変更", "午前休", "午後休", "off", "custom_time", "am_off", "pm_off"
+    "休み",
+    "時間変更",
+    "午前休",
+    "午後休",
+    "有給",
+    "off",
+    "custom_time",
+    "am_off",
+    "pm_off",
+    "paid_off",
 ]
+# 読み出しのラベル (DB の種類が 1 つでも欠けると、その行が 1 件あるだけで 500 になる)。
+OverrideLabel = Literal["休み", "時間変更", "午前休", "午後休", "有給"]
 
 # Canonical (DB) values — keep in sync with import_staff_overrides.py.
 _CANONICAL_OVERRIDE = {
@@ -43,6 +54,8 @@ _CANONICAL_OVERRIDE = {
     "am_off": "am_off",
     "午後休": "pm_off",
     "pm_off": "pm_off",
+    "有給": "paid_off",
+    "paid_off": "paid_off",
 }
 
 # Inverse map for output: DB value → Japanese label.
@@ -51,6 +64,7 @@ _DB_TO_JP_OVERRIDE = {
     "custom_time": "時間変更",
     "am_off": "午前休",
     "pm_off": "午後休",
+    "paid_off": "有給",
 }
 
 
@@ -149,7 +163,7 @@ class WeekOverrideRead(BaseModel):
     staff_id: UUID
     date: _Date
     weekday: int = Field(ge=0, le=6, description="0=Mon..6=Sun")
-    type: Literal["休み", "時間変更", "午前休", "午後休"]
+    type: OverrideLabel
     start_time: str | None = None
     end_time: str | None = None
     note: str | None = None
@@ -162,7 +176,7 @@ class OverrideRead(BaseModel):
 
     id: UUID
     date: _Date
-    type: Literal["休み", "時間変更", "午前休", "午後休"]
+    type: OverrideLabel
     start_time: str | None = None
     end_time: str | None = None
     note: str | None = None
