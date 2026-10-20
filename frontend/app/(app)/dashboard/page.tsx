@@ -10,6 +10,7 @@ import { EmptyState } from '@/components/dashboard/EmptyState';
 import { KpiCard } from '@/components/dashboard/KpiCard';
 import { TrendChart } from '@/components/dashboard/TrendChart';
 import { StaffPerformanceSection } from '@/components/dashboard/performance/StaffPerformanceSection';
+import { LeaveDashboardCard } from '@/components/leave/LeaveDashboardCard';
 import { useDashboardKpi, useDashboardTrend, type DashboardKpi } from '@/lib/queries/dashboard';
 import { isAdminRole } from '@/lib/rbac';
 
@@ -108,6 +109,7 @@ export default function DashboardPage() {
           />
         </header>
         {kpiError}
+        <LeaveDashboardCard />
         <StaffPerformanceSection
           opsSummary={<OpsSummary kpi={kpi.data} isLoading={kpiLoading} />}
         />

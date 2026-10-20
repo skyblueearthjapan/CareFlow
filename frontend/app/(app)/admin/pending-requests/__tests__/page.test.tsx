@@ -67,12 +67,20 @@ vi.mock('@/lib/queries/patients', () => ({
   usePatients: () => ({ data: { items: [] } }),
 }));
 
-let confirmCount = { confirmed: 0, total: 2, isLoading: false, isError: false };
-const confirmCalls: unknown[][] = [];
-vi.mock('@/lib/queries/staff-shift-confirmations', () => ({
-  useMonthConfirmedCount: (...args: unknown[]) => {
-    confirmCalls.push(args);
-    return confirmCount;
+// 帯の確定の状態は月の軽い情報 (GET /leave/month/{month}/summary) を 1 回だけ読む
+interface SummaryStub {
+  data?: { confirmed: boolean; confirmed_staff_count: number | null; staff_count: number | null };
+  isError: boolean;
+}
+let summaryStub: SummaryStub = {
+  data: { confirmed: false, confirmed_staff_count: 0, staff_count: 2 },
+  isError: false,
+};
+const summaryCalls: unknown[][] = [];
+vi.mock('@/lib/queries/leave', () => ({
+  useLeaveMonthSummary: (...args: unknown[]) => {
+    summaryCalls.push(args);
+    return summaryStub;
   },
 }));
 
@@ -124,9 +132,12 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date('2026-10-21T10:00:00+09:00'));
   listCalls.length = 0;
-  confirmCalls.length = 0;
+  summaryCalls.length = 0;
   listItems = [];
-  confirmCount = { confirmed: 0, total: 2, isLoading: false, isError: false };
+  summaryStub = {
+    data: { confirmed: false, confirmed_staff_count: 0, staff_count: 2 },
+    isError: false,
+  };
 });
 
 afterEach(() => {
@@ -141,29 +152,35 @@ describe('AdminPendingRequestsPage — 休みの帯', () => {
     expect(band).toHaveTextContent('11月は未確定');
     expect(within(band).getByRole('link', { name: /休み・勤務表で開く/ })).toHaveAttribute(
       'href',
-      '/admin/leave',
+      '/admin/leave?month=2026-11',
     );
-    // 申請中の staff_off の件数を読み、来月 (2026-11-01) の確定を在職の常勤だけで数える
+    // 申請中の staff_off の件数を読み、来月 (2026-11) の確定の状態は summary を 1 回だけ読む
     expect(listCalls).toContainEqual({ request_type: 'staff_off', status: 'pending', limit: 1 });
-    expect(confirmCalls[0]).toEqual([['staff-1', 'staff-2'], '2026-11-01']);
+    expect(new Set(summaryCalls.map((c) => c[0]))).toEqual(new Set(['2026-11']));
     // 右の小さなカレンダーは無い
     expect(screen.queryByText('休み・月確定')).not.toBeInTheDocument();
   });
 
   it('一部だけ確定なら人数、全員確定なら「確定済み」', () => {
-    confirmCount = { confirmed: 1, total: 2, isLoading: false, isError: false };
+    summaryStub = {
+      data: { confirmed: false, confirmed_staff_count: 1, staff_count: 2 },
+      isError: false,
+    };
     const { unmount } = render(<AdminPendingRequestsPage />);
     expect(screen.getByRole('region', { name: '休みの申請' })).toHaveTextContent(
       '11月は未確定（1/2 人確定）',
     );
     unmount();
-    confirmCount = { confirmed: 2, total: 2, isLoading: false, isError: false };
+    summaryStub = {
+      data: { confirmed: true, confirmed_staff_count: 2, staff_count: 2 },
+      isError: false,
+    };
     render(<AdminPendingRequestsPage />);
     expect(screen.getByRole('region', { name: '休みの申請' })).toHaveTextContent('11月は確定済み');
   });
 
-  it('確定の読み込みが 1 件でも失敗したら「読み込めませんでした」と出す', () => {
-    confirmCount = { confirmed: 1, total: 2, isLoading: false, isError: true };
+  it('確定の状態を読めなかったら「読み込めませんでした」と出す', () => {
+    summaryStub = { isError: true };
     render(<AdminPendingRequestsPage />);
     const band = screen.getByRole('region', { name: '休みの申請' });
     expect(band).toHaveTextContent('11月の確定の状態を読み込めませんでした');

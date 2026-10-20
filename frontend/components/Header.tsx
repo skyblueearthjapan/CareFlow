@@ -22,7 +22,14 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useMarkAllRead, useMarkRead, useNotifications } from '@/lib/queries/notifications';
 import { roleLabel } from '@/lib/schemas/staff';
 import type { NotificationRead } from '@/lib/schemas/notification';
+import { isAdminRole } from '@/lib/rbac';
 import { cn } from '@/lib/utils';
+
+/**
+ * 「休み・勤務表」(/admin/leave) で開ける管理者向けの通知の種類
+ * (leave_unassigned = 休みで訪問を担当なしへ移した・backend/app/services/leave_notify.py)。
+ */
+const LEAVE_SHEET_NOTIFICATION_TYPES: ReadonlySet<string> = new Set(['leave_unassigned']);
 
 interface HeaderProps {
   title?: string;
@@ -60,6 +67,8 @@ export function Header({ title = 'らく助', onToggleSidebar }: HeaderProps) {
 
 function NotificationButton() {
   const [open, setOpen] = useState(false);
+  const { data: session } = useSession();
+  const isAdmin = isAdminRole(session?.user?.role);
   const { data, isLoading, isError, refetch } = useNotifications({ limit: 30 });
   const markRead = useMarkRead();
   const markAllRead = useMarkAllRead();
@@ -138,6 +147,18 @@ function NotificationButton() {
                       if (n.read_at == null) markRead.mutate(id);
                     }}
                   />
+                  {isAdmin && LEAVE_SHEET_NOTIFICATION_TYPES.has(n.type) && (
+                    <Link
+                      href="/admin/leave"
+                      onClick={() => {
+                        if (n.read_at == null) markRead.mutate(n.id);
+                        setOpen(false);
+                      }}
+                      className="mt-1 inline-flex items-center px-2 text-xs font-medium text-brand-primary underline-offset-2 hover:underline"
+                    >
+                      休み・勤務表で開く
+                    </Link>
+                  )}
                 </li>
               ))}
             </ul>

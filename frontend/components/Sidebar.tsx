@@ -16,6 +16,7 @@ import {
   MapPin,
   FileText,
   ToggleRight,
+  CalendarHeart,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { isAdminRole } from '@/lib/rbac';
@@ -48,6 +49,14 @@ const NAV_ITEMS = [
   // 申請履歴ページ右カラムに「休み・月確定」パネルを同居 (staff-shift-confirmation-design.md §3・
   // 2026-08-18 サブ配置へ移設。独立ページ /admin/staff-leave は廃止)
   { href: '/admin/pending-requests', label: '申請履歴', icon: Inbox, adminOnly: true },
+  // 休み・勤務表 (leave-and-kinmu-sheet-design §5): 全員×日付の月の表。管理者だけ
+  {
+    href: '/admin/leave',
+    label: '休み・勤務表',
+    icon: CalendarHeart,
+    adminOnly: true,
+    strictAdmin: true,
+  },
   // Wave 4-F: admin audit logs (admin role only). User management was moved
   // to the header rightmost button so admins can reach it from any screen.
   {

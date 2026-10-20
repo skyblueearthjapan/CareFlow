@@ -65,4 +65,22 @@ describe('Sidebar — ロール別メニュー表示', () => {
     expect(screen.getByRole('link', { name: /スケジュール/ })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /訪問モニター/ })).toBeInTheDocument();
   });
+
+  it('4. 「休み・勤務表」は申請履歴のすぐ下・管理者だけ', () => {
+    setRole('admin');
+    render(<Sidebar collapsed={false} />);
+    const links = screen.getAllByRole('link').map((a) => a.textContent);
+    const i = links.indexOf('申請履歴');
+    expect(links[i + 1]).toBe('休み・勤務表');
+    expect(screen.getByRole('link', { name: '休み・勤務表' })).toHaveAttribute(
+      'href',
+      '/admin/leave',
+    );
+  });
+
+  it('5. staff には「休み・勤務表」を出さない', () => {
+    setRole('staff');
+    render(<Sidebar collapsed={false} />);
+    expect(screen.queryByRole('link', { name: '休み・勤務表' })).not.toBeInTheDocument();
+  });
 });

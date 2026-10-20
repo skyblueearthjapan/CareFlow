@@ -404,17 +404,25 @@ function OverridesCard({ staffId, canEdit }: { staffId: string; canEdit: boolean
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>今後の休み・時間変更</CardTitle>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={!canEdit}
-          title={canEdit ? undefined : '編集権限がありません'}
-          onClick={() => setAddOpen(true)}
-        >
-          <Plus className="h-4 w-4" />
-          追加
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* 休み・勤務表 (管理者だけ) でこの人の行を光らせて開く (leave-and-kinmu-sheet-design §5-2) */}
+          {canEdit && (
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/admin/leave?staff=${encodeURIComponent(staffId)}`}>月の表で見る</Link>
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!canEdit}
+            title={canEdit ? undefined : '編集権限がありません'}
+            onClick={() => setAddOpen(true)}
+          >
+            <Plus className="h-4 w-4" />
+            追加
+          </Button>
+        </div>
       </CardHeader>
       <CardContent>
         {isLoading ? (

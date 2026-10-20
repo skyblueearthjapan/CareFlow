@@ -16,14 +16,16 @@ vi.mock('next-auth/react', () => ({
 }));
 
 // 通知ボタンが叩く query hooks をスタブ (表示に影響しない最小形)。
+let notifItems: unknown[] = [];
+const markReadMutate = vi.fn();
 vi.mock('@/lib/queries/notifications', () => ({
   useNotifications: () => ({
-    data: { items: [] },
+    data: { items: notifItems },
     isLoading: false,
     isError: false,
     refetch: vi.fn(),
   }),
-  useMarkRead: () => ({ mutate: vi.fn() }),
+  useMarkRead: () => ({ mutate: markReadMutate }),
   useMarkAllRead: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
@@ -78,5 +80,49 @@ describe('Header — 最適化ルール設定ボタン (Phase G-88)', () => {
     // ログアウトは出る = Popover は開いている。その上でパスワード変更だけ無いことを見る。
     expect(await screen.findByText('ログアウト')).toBeInTheDocument();
     expect(screen.queryByText('パスワード変更')).not.toBeInTheDocument();
+  });
+
+  it('5. 休みで担当なしへ移した通知は、管理者に「休み・勤務表で開く」を出す', async () => {
+    notifItems = [
+      {
+        id: 'n-1',
+        user_id: 'u-1',
+        type: 'leave_unassigned',
+        title: '職員Aさんの11/12（木）の訪問を未割り当てとしました',
+        body: null,
+        read_at: null,
+        created_at: new Date().toISOString(),
+      },
+      {
+        id: 'n-2',
+        user_id: 'u-1',
+        type: 'visit_assigned',
+        title: 'ほかの通知',
+        body: null,
+        read_at: null,
+        created_at: new Date().toISOString(),
+      },
+    ];
+    setRole('admin');
+    const { unmount } = render(<Header onToggleSidebar={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '通知' }));
+    const links = await screen.findAllByRole('link', { name: '休み・勤務表で開く' });
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute('href', '/admin/leave');
+    // jsdom は画面の移動をしないので、押したときの既定の動きだけ止める
+    const stop = (e: Event) => e.preventDefault();
+    document.addEventListener('click', stop);
+    fireEvent.click(links[0]!);
+    document.removeEventListener('click', stop);
+    expect(markReadMutate).toHaveBeenCalledWith('n-1');
+    unmount();
+
+    // 職員には出さない
+    setRole('staff');
+    render(<Header onToggleSidebar={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '通知' }));
+    expect(await screen.findByText('ほかの通知')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '休み・勤務表で開く' })).not.toBeInTheDocument();
+    notifItems = [];
   });
 });

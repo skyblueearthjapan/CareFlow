@@ -48,10 +48,11 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui/sonner';
 import { StaffCombobox } from '@/components/master/StaffCombobox';
 import { isAdminRole } from '@/lib/rbac';
-import { jstToday, LEAVE_TYPES } from '@/lib/leave';
+import { LEAVE_TYPES } from '@/lib/leave';
+import { monthNumber, upcomingLeaveMonth } from '@/lib/leave-sheet';
+import { useLeaveMonthSummary } from '@/lib/queries/leave';
 import { usePatients } from '@/lib/queries/patients';
 import { useStaffList } from '@/lib/queries/staff';
-import { useMonthConfirmedCount } from '@/lib/queries/staff-shift-confirmations';
 import {
   useApproveRequest,
   usePendingRequests,
@@ -222,14 +223,6 @@ function leaveSheetHref(row: PendingRequestV2Read): string | null {
   return `/admin/leave?staff=${encodeURIComponent(row.target_staff_id)}&date=${row.target_date}`;
 }
 
-/** いま管理者が組んでいる月 (来月) の月初 'YYYY-MM-01' と月の数字。 */
-function nextMonthStart(now: Date): { iso: string; month: number } {
-  const [y = 0, m = 1] = jstToday(now).split('-').map(Number);
-  const ny = m === 12 ? y + 1 : y;
-  const nm = m === 12 ? 1 : m + 1;
-  return { iso: `${ny}-${String(nm).padStart(2, '0')}-01`, month: nm };
-}
-
 function statusBadgeVariant(s: RequestStatus): 'warning' | 'success' | 'destructive' {
   switch (s) {
     case 'pending':
@@ -309,21 +302,12 @@ export default function AdminPendingRequestsPage() {
     status: 'pending',
     limit: 1,
   });
-  const upcoming = useMemo(() => nextMonthStart(new Date()), []);
-  // 数えるのは在職の常勤だけ (職員ごとの GET を並べるので数を絞る。#8 の月の API ができたら置き換える)
-  const fullTimeStaffIds = useMemo(
-    () =>
-      (staffList.data ?? [])
-        .filter(
-          (s) =>
-            !s.deleted_at &&
-            (s.status ?? 'active') === 'active' &&
-            (s.employment_type ?? 'full_time') === 'full_time',
-        )
-        .map((s) => s.id),
-    [staffList.data],
-  );
-  const monthConfirm = useMonthConfirmedCount(fullTimeStaffIds, upcoming.iso);
+  // いま管理者が組んでいる月 (JST の来月)。確定の状態は月の軽い情報 (summary) を 1 回だけ読む。
+  const upcoming = useMemo(() => {
+    const ym = upcomingLeaveMonth();
+    return { ym, month: monthNumber(ym) };
+  }, []);
+  const monthSummary = useLeaveMonthSummary(upcoming.ym, isAuthorized);
 
   const qc = useQueryClient();
   const approve = useApproveRequest();
@@ -433,22 +417,22 @@ export default function AdminPendingRequestsPage() {
           </span>
           <span className="text-text-muted">・</span>
           <span>
-            {monthConfirm.isError
+            {monthSummary.isError
               ? `${upcoming.month}月の確定の状態を読み込めませんでした`
               : `${upcoming.month}月は`}
-            {monthConfirm.isError
+            {monthSummary.isError
               ? null
-              : monthConfirm.isLoading
+              : !monthSummary.data
                 ? '確定の状態を確かめています'
-                : monthConfirm.total > 0 && monthConfirm.confirmed === monthConfirm.total
+                : monthSummary.data.confirmed
                   ? '確定済み'
-                  : monthConfirm.confirmed > 0
-                    ? `未確定（${monthConfirm.confirmed}/${monthConfirm.total} 人確定）`
+                  : (monthSummary.data.confirmed_staff_count ?? 0) > 0
+                    ? `未確定（${monthSummary.data.confirmed_staff_count}/${monthSummary.data.staff_count ?? 0} 人確定）`
                     : '未確定'}
           </span>
         </div>
         <Button asChild size="sm">
-          <Link href="/admin/leave">
+          <Link href={`/admin/leave?month=${upcoming.ym}`}>
             休み・勤務表で開く
             <ArrowRight className="h-4 w-4" />
           </Link>
