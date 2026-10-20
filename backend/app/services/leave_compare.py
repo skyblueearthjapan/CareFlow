@@ -1304,28 +1304,29 @@ async def apply_compare_actions(
     groups: dict[tuple[int, int], uuid.UUID] = {}
     now = datetime.now(UTC)
     try:
+        # 月をまたいでまとめて合わせるときも、月を古い順に並べてから鍵を取る (deadlock を防ぐ)。
+        for first in sorted({month_first_day(item.day) for item in items}):
+            await _ensure_no_month_job(db, first)
+            # 同時に押されたら 1 本ずつ (月の行の鍵・PG だけ効く)。鍵を取ってから最新の
+            # 照合を読み直すので、先に合わせた側の resolved が見える。
+            leave_month = await db.scalar(
+                select(LeaveMonth)
+                .where(LeaveMonth.month == first)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            run_id = leave_month.last_compare_run_id if leave_month is not None else None
+            locked = (
+                await db.get(LeaveCompareRun, run_id, populate_existing=True)
+                if run_id is not None
+                else None
+            )
+            if locked is None:
+                raise StaffLeaveError(409, "この月はまだカイポケと比べていません")
+            runs[first] = locked
+
         for item in items:
-            first = month_first_day(item.day)
-            run = runs.get(first)
-            if run is None:
-                await _ensure_no_month_job(db, first)
-                # 同時に押されたら 1 本ずつ (月の行の鍵・PG だけ効く)。鍵を取ってから最新の
-                # 照合を読み直すので、先に合わせた側の resolved が見える。
-                leave_month = await db.scalar(
-                    select(LeaveMonth)
-                    .where(LeaveMonth.month == first)
-                    .with_for_update()
-                    .execution_options(populate_existing=True)
-                )
-                run_id = leave_month.last_compare_run_id if leave_month is not None else None
-                run = (
-                    await db.get(LeaveCompareRun, run_id, populate_existing=True)
-                    if run_id is not None
-                    else None
-                )
-                if run is None:
-                    raise StaffLeaveError(409, "この月はまだカイポケと比べていません")
-                runs[first] = run
+            run = runs[month_first_day(item.day)]
             diffs = list(run.diffs or [])
             index = _find_diff(diffs, item)
             if index is None or index in marks[run.id]:

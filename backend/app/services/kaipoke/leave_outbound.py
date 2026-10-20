@@ -58,7 +58,11 @@ from app.services.kaipoke.sources import (
 )
 from app.services.kaipoke_client import KaipokeApiError
 from app.services.leave_calendar import leave_type_on, load_overrides_between
-from app.services.leave_compare import DIFF_UNCONFIRMED
+from app.services.leave_compare import (
+    ACTION_CHOOSE_KIND,
+    DIFF_STAFF_NOT_FOUND,
+    DIFF_UNCONFIRMED,
+)
 from app.services.scheduling.config import load_scheduling_config
 
 if TYPE_CHECKING:
@@ -103,6 +107,11 @@ MSG_CHANGED: Final = "送る前に休みが変わったため送りませんで�
 MSG_NO_RESULT: Final = "カイポケから結果が返りませんでした（カイポケで確かめてください）"
 MSG_BAD_KEY: Final = "カイポケから予定の番号が返りませんでした（カイポケで確かめてください）"
 MSG_DIFF_PENDING: Final = "カイポケとの差分が残っています。先に合わせてください"
+MSG_RECOMPARE_AFTER_CHOOSE: Final = "種類を選んだので比べ直してください"
+MSG_UNKNOWN_STAFF_DAY: Final = (
+    "この日はカイポケの予定にらく助に見つからない職員がいます。"
+    "らく助の職員の名前をそろえて比べ直してください"
+)
 MSG_UNCONFIRMED: Final = "この日はカイポケと確かめられていません。取り直してから比べ直してください"
 MSG_DEADLINE: Final = (
     "送信の締め切り（ジョブの開始から {minutes} 分）を過ぎたため送りませんでした"
@@ -256,17 +265,35 @@ async def build_leave_send_plan(db: AsyncSession, month: date | str) -> LeaveSen
     run_id = leave_month.last_compare_run_id if leave_month is not None else None
     run = await db.get(LeaveCompareRun, run_id) if run_id is not None else None
     pending: set[tuple[uuid.UUID, date]] = set()
+    #: 種類を選んだ (判定の記録をした) が、まだ比べ直していない (職員, 日)。
+    rechoose: set[tuple[uuid.UUID, date]] = set()
     unconfirmed_days: set[date] = set()
+    #: カイポケの予定の職員がらく助に見つからない日 (誰の休みか確かめられない・全員止める)。
+    unknown_staff_days: set[date] = set()
     for raw in (run.diffs if run is not None else None) or []:
-        if not isinstance(raw, dict) or raw.get("resolved") or not raw.get("date"):
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("kind") == DIFF_STAFF_NOT_FOUND:
+            for value in (raw.get("detail") or {}).get("dates") or []:
+                try:
+                    unknown_staff_days.add(date.fromisoformat(str(value)))
+                except ValueError:
+                    continue
+            continue
+        if not raw.get("date"):
             continue
         try:
             diff_day = date.fromisoformat(str(raw["date"]))
         except ValueError:
             continue
+        resolved = raw.get("resolved")
         if raw.get("staff_id"):
-            pending.add((uuid.UUID(str(raw["staff_id"])), diff_day))
-        elif raw.get("kind") == DIFF_UNCONFIRMED:
+            key = (uuid.UUID(str(raw["staff_id"])), diff_day)
+            if not resolved:
+                pending.add(key)
+            elif isinstance(resolved, dict) and resolved.get("action") == ACTION_CHOOSE_KIND:
+                rechoose.add(key)
+        elif raw.get("kind") == DIFF_UNCONFIRMED and not resolved:
             unconfirmed_days.add(diff_day)
 
     staff_names = {
@@ -331,8 +358,12 @@ async def build_leave_send_plan(db: AsyncSession, month: date | str) -> LeaveSen
                 reason = MSG_SUNDAY
             elif day in unconfirmed_days:
                 reason = MSG_UNCONFIRMED
+            elif day in unknown_staff_days:
+                reason = MSG_UNKNOWN_STAFF_DAY
             elif (staff_id, day) in pending:
                 reason = MSG_DIFF_PENDING
+            elif (staff_id, day) in rechoose:
+                reason = MSG_RECOMPARE_AFTER_CHOOSE
             elif internal is None:
                 reason = MSG_NO_INTERNAL_ID
             plan.items.append(
@@ -487,12 +518,14 @@ async def _apply_and_wait(
     body: dict[str, Any] = {"items": rpa_items, "async": True, "job_id": rpa_job_id}
     if credentials:
         body["credentials"] = credentials
-    resp = await sources.call_when_idle(
-        db,
-        client,
-        job_id=job_id,
-        call=lambda: client.individual_tasks_apply(body, timeout=_START_TIMEOUT),
-    )
+
+    async def _apply() -> dict[str, Any]:
+        # 空き待ちのあいだに締め切りを過ぎたら、RPA へ頼まない。
+        if datetime.now(UTC) >= deadline:
+            raise RuntimeError(_deadline_message())
+        return await client.individual_tasks_apply(body, timeout=_START_TIMEOUT)
+
+    resp = await sources.call_when_idle(db, client, job_id=job_id, call=_apply)
     if not resp.get("success"):
         raise RuntimeError(str(resp.get("error") or "カイポケへの送信を始められませんでした"))
 
@@ -774,7 +807,9 @@ __all__ = [
     "MSG_DIFF_PENDING",
     "MSG_NOTHING_TO_SEND",
     "MSG_NOT_COMPARED",
+    "MSG_RECOMPARE_AFTER_CHOOSE",
     "MSG_UNCONFIRMED",
+    "MSG_UNKNOWN_STAFF_DAY",
     "OUTCOME_FAILED",
     "OUTCOME_SENT",
     "OUTCOME_SKIPPED",

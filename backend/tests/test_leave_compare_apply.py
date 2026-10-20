@@ -582,3 +582,34 @@ async def test_second_apply_reads_first_resolution_after_lock(db) -> None:
         with pytest.raises(StaffLeaveError) as exc:
             await lc.apply_compare_actions(other, items=[item], actor=admin)
         assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_multi_month_apply_locks_months_in_order(db, monkeypatch) -> None:
+    """月をまたいでまとめて合わせるときは、渡された順でなく月の古い順に鍵を取る。"""
+    admin = await _admin(db)
+    staff = await _staff(db)
+    later = _month_ahead(3)
+    d_early, d_late = _weekday_in(FUTURE, 1), _weekday_in(later, 1)
+    await _compare(db, FUTURE, [_task(d_early, X)])
+    await _compare(db, later, [_task(d_late, X)])
+    order: list[date] = []
+    original = lc._ensure_no_month_job
+
+    async def spy(session, month):
+        order.append(month)
+        await original(session, month)
+
+    monkeypatch.setattr(lc, "_ensure_no_month_job", spy)
+    result = await lc.apply_compare_actions(
+        db,
+        items=[
+            lc.CompareAction(staff.id, d_late, lc.ACTION_ADD_TO_RAKUSUKE),
+            lc.CompareAction(staff.id, d_early, lc.ACTION_ADD_TO_RAKUSUKE),
+        ],
+        actor=admin,
+    )
+    assert order == [FUTURE, later]
+    assert [a["date"] for a in result.applied] == [d_late.isoformat(), d_early.isoformat()]
+    assert await leave_type_on(db, staff.id, d_early) == X
+    assert await leave_type_on(db, staff.id, d_late) == X

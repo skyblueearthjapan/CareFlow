@@ -687,3 +687,74 @@ async def test_deadline_passes_while_waiting_for_rpa(db, monkeypatch) -> None:
     assert lo.job_deadline(job) == job.started_at.replace(tzinfo=UTC) + timedelta(  # type: ignore[union-attr]
         minutes=0.02
     )
+
+
+@pytest.mark.asyncio
+async def test_deadline_passed_during_idle_wait_does_not_call_rpa(db, monkeypatch) -> None:
+    """RPA の空き待ちのあいだに締め切りを過ぎたら、頼む直前に確かめて送らない。"""
+    staff = await _staff(db)
+    db.add(_override(staff.id, WED, "off"))
+    await db.commit()
+    await _compared(db)
+    started = await _start(db)
+    assert started.job is not None
+    job_id, staff_id = started.job.id, staff.id
+    monkeypatch.setattr(lo, "JOB_DEADLINE_MINUTES", 0.01)  # 0.6 秒
+    original = sources.call_when_idle
+
+    async def slow_idle(session, client, *, job_id, call):
+        await asyncio.sleep(1.0)  # 空きを待っているうちに締め切りを過ぎる
+        return await original(session, client, job_id=job_id, call=call)
+
+    monkeypatch.setattr(sources, "call_when_idle", slow_idle)
+    rpa = _Rpa()
+    job = await lo.run_leave_outbound(db, rpa, job_id)  # type: ignore[arg-type]
+    assert job is not None and job.status == "completed"
+    assert rpa.applied == []
+    [failed] = job.result_summary["failed"]
+    assert "締め切り" in failed["reason"]
+    assert (await _record(db, staff_id, WED)).sent_type is None  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_chosen_kind_and_unknown_staff_days_are_not_sent(db) -> None:
+    """種類を選んだだけ (比べ直していない) の日と、カイポケの職員が見つからない日 (全員) は送らない。"""
+    staff = await _staff(db)
+    other = await _staff(db, "別の　人", internal="5555")
+    d_chosen, d_unknown_staff, d_ok = date(2026, 11, 2), date(2026, 11, 3), date(2026, 11, 4)
+    db.add_all(
+        [
+            _override(staff.id, d_chosen, "off"),
+            _override(staff.id, d_unknown_staff, "off"),
+            _override(other.id, d_unknown_staff, "pm_off"),
+            _override(other.id, d_ok, "off"),
+        ]
+    )
+    await db.commit()
+    await _compared_with(
+        db,
+        [
+            _diff(
+                "unknown_kind",
+                d_chosen,
+                staff.id,
+                action="choose_kind",
+                resolved={"action": "choose_kind", "chosen_kind": "off"},
+            ),
+            {
+                "kind": "staff_not_found",
+                "date": None,
+                "staff_id": None,
+                "detail": {"name": "菅野　頼子", "dates": [d_unknown_staff.isoformat()]},
+            },
+        ],
+    )
+    plan = await lo.build_leave_send_plan(db, MONTH)
+    reasons = {(i.staff_name, i.day): i.reason for i in plan.items}
+    assert reasons == {
+        ("送信　花子", d_chosen): lo.MSG_RECOMPARE_AFTER_CHOOSE,
+        ("送信　花子", d_unknown_staff): lo.MSG_UNKNOWN_STAFF_DAY,
+        ("別の　人", d_unknown_staff): lo.MSG_UNKNOWN_STAFF_DAY,
+        ("別の　人", d_ok): None,
+    }
+    assert lo.MSG_RECOMPARE_AFTER_CHOOSE == "種類を選んだので比べ直してください"
