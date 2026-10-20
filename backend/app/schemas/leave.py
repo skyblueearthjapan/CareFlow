@@ -378,6 +378,8 @@ class LeaveMonthView(BaseModel):
     compare: LeaveCompareStatus
     #: 休みの時間帯に担当が付いている訪問の件数 (今日以降・その月)。
     visits_on_leave_count: int
+    #: 「実績を記録する」を押せるか (押せない理由の一覧)。
+    record_actuals: LeaveRecordReadiness | None = None
 
 
 class LeaveMonthSummary(BaseModel):
@@ -548,10 +550,66 @@ class LeaveConfirmInput(BaseModel):
     staff_ids: list[UUID] | None = Field(default=None, min_length=1, max_length=200)
 
 
-class LeaveConfirmResult(BaseModel):
-    """``POST /leave/month/{month}/confirm`` — 確定の記録と本人への通知だけ.
+class LeaveOutboundStarted(BaseModel):
+    """確定から始めたカイポケへの休みの送信 (非同期のジョブ)."""
 
-    カイポケへの送信と勤務表の予定版は #13 で足す (この API の中では行わない)。
+    #: 送信のジョブを始めた (画面は ``/leave/outbound/{job_id}`` を数秒おきに読む)。
+    started: bool
+    job_id: UUID | None = None
+    #: 送る件数。
+    count: int = 0
+    #: 始めなかった理由 (照合がまだ・送る休みが無い・ほかのジョブが動いている など)。
+    reason: str | None = None
+
+
+class LeaveKinmuSheetOutcome(BaseModel):
+    """作った勤務表 (予定版・確定版)。作れなくても行は「未作成」(``sheet.url`` が空) で残る."""
+
+    created: bool
+    kind: KinmuSheetKind
+    sheet: KinmuSheetRead | None = None
+    #: 作れなかった理由 (ドライブ未接続・繋ぎ直しが要る・勤務すべき時間数が未入力 など)。
+    reason: str | None = None
+
+
+#: 「実績を記録する」を押せない理由の種類 (``app/services/leave_compare.py`` の RECORD_*)。
+RecordBlockerCode = Literal[
+    "not_compared",
+    "diffs_remaining",
+    "unconfirmed_days",
+    "planned_sends",
+    "changed_since_compare",
+    "stale_material",
+]
+
+
+class LeaveRecordBlocker(BaseModel):
+    code: RecordBlockerCode
+    message: str
+
+
+class LeaveRecordReadiness(BaseModel):
+    """「実績を記録する」を押せるか (API の 409 と同じ判定)。"""
+
+    ready: bool
+    blockers: list[LeaveRecordBlocker] = Field(default_factory=list)
+    #: 最後に実績を記録した時刻 (未記録は None)。
+    actual_recorded_at: datetime | None = None
+
+
+class LeaveRecordActualsResult(BaseModel):
+    """``POST /leave/month/{month}/record-actuals`` — 実績を記録し、勤務表の確定版を作る."""
+
+    month: date
+    actual_recorded_at: datetime
+    kinmu_sheet: LeaveKinmuSheetOutcome
+
+
+class LeaveConfirmResult(BaseModel):
+    """``POST /leave/month/{month}/confirm`` — 確定の記録と本人への通知.
+
+    記録を commit したあと、別のトランザクションでカイポケへの送信のジョブを始め
+    (``outbound``)、勤務表の予定版を作る (``kinmu_sheet``)。どちらが失敗しても確定は残る。
     """
 
     month: date
@@ -564,3 +622,5 @@ class LeaveConfirmResult(BaseModel):
     #: 休日数が足りない常勤の職員。
     short_staff: list[LeaveShortStaff]
     required_hours: float | None = None
+    outbound: LeaveOutboundStarted | None = None
+    kinmu_sheet: LeaveKinmuSheetOutcome | None = None

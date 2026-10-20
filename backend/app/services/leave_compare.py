@@ -1471,7 +1471,129 @@ async def apply_compare_actions(
     return result
 
 
+# --- 「実績を記録する」の条件 (§7-4-2・画面と API で同じ判定) -------------------------
+
+RECORD_NOT_COMPARED: Final = "not_compared"
+RECORD_DIFFS_REMAINING: Final = "diffs_remaining"
+RECORD_UNCONFIRMED_DAYS: Final = "unconfirmed_days"
+RECORD_PLANNED_SENDS: Final = "planned_sends"
+RECORD_CHANGED_SINCE_COMPARE: Final = "changed_since_compare"
+RECORD_STALE_MATERIAL: Final = "stale_material"
+
+
+@dataclass(frozen=True)
+class RecordBlocker:
+    """「実績を記録する」を押せない理由 1 つ (``code`` は画面の出し分け・``message`` は文)."""
+
+    code: str
+    message: str
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return _aware(datetime.fromisoformat(value))
+    except ValueError:
+        return None
+
+
+def _material_is_fresh(run: LeaveCompareRun, job_started_at: datetime | None) -> bool:
+    """照合に使った材料 (週ごとの個別業務・実績 CSV) が全部そのジョブの開始以降に取ったものか."""
+    if job_started_at is None:
+        return False
+    started = _aware(job_started_at)
+    fetched = run.fetched_at or {}
+    tasks = fetched.get("tasks")
+    if not isinstance(tasks, dict) or not tasks:
+        return False
+    stamps = [*tasks.values(), fetched.get("actual_csv")]
+    parsed = [_parse_iso(v) for v in stamps]
+    return all(p is not None and p >= started for p in parsed)
+
+
+def record_actuals_blockers(
+    *,
+    leave_month: LeaveMonth | None,
+    run: LeaveCompareRun | None,
+    job_started_at: datetime | None,
+) -> list[RecordBlocker]:
+    """「実績を記録する」の条件 (§7-4-2) を確かめ、欠けているものを全部返す (空 = 押せる).
+
+    1. 最新の照合がある  2. まだ合わせていない差分が 0 件  3. 未確認の日が 0 日
+    4. 送る予定が 0 件  5. 照合の後に休みを変えていない
+    6. 材料が新しい (使った材料の ``fetched_at`` がすべてその照合のジョブの開始以降)。
+    """
+    if leave_month is None or leave_month.last_compared_at is None or run is None:
+        return [RecordBlocker(RECORD_NOT_COMPARED, "まだカイポケと比べていません")]
+    out: list[RecordBlocker] = []
+    open_diffs = sum(
+        1 for d in (run.diffs or []) if not (isinstance(d, dict) and d.get("resolved"))
+    )
+    if open_diffs:
+        out.append(
+            RecordBlocker(
+                RECORD_DIFFS_REMAINING, f"まだ合わせていない差分が {open_diffs} 件あります"
+            )
+        )
+    if run.unconfirmed_days:
+        out.append(
+            RecordBlocker(
+                RECORD_UNCONFIRMED_DAYS,
+                f"カイポケを確かめられていない日が {run.unconfirmed_days} 日あります",
+            )
+        )
+    if run.planned_send_count:
+        out.append(
+            RecordBlocker(
+                RECORD_PLANNED_SENDS,
+                f"カイポケへ送る予定の休みが {run.planned_send_count} 件あります",
+            )
+        )
+    changed = leave_month.last_leave_changed_at
+    if changed is not None and _aware(changed) > _aware(leave_month.last_compared_at):
+        out.append(
+            RecordBlocker(
+                RECORD_CHANGED_SINCE_COMPARE,
+                "比べた後に休みが変わりました。もう一度カイポケと比べてください",
+            )
+        )
+    if not _material_is_fresh(run, job_started_at):
+        out.append(
+            RecordBlocker(
+                RECORD_STALE_MATERIAL,
+                "照合に使ったカイポケの材料が古いです。もう一度カイポケと比べてください",
+            )
+        )
+    return out
+
+
+async def load_record_actuals_blockers(db: AsyncSession, month: date) -> list[RecordBlocker]:
+    """その月の「実績を記録する」の条件 (DB から最新の照合とそのジョブを読む)."""
+    first = month_first_day(month)
+    leave_month = await db.get(LeaveMonth, first)
+    run = None
+    if leave_month is not None and leave_month.last_compare_run_id is not None:
+        run = await db.get(LeaveCompareRun, leave_month.last_compare_run_id)
+    started = None
+    if run is not None and run.kaipoke_job_id is not None:
+        started = await db.scalar(
+            select(KaipokeJob.started_at).where(KaipokeJob.id == run.kaipoke_job_id)
+        )
+    return record_actuals_blockers(leave_month=leave_month, run=run, job_started_at=started)
+
+
 __all__ = [
+    "RECORD_CHANGED_SINCE_COMPARE",
+    "RECORD_DIFFS_REMAINING",
+    "RECORD_NOT_COMPARED",
+    "RECORD_PLANNED_SENDS",
+    "RECORD_STALE_MATERIAL",
+    "RECORD_UNCONFIRMED_DAYS",
+    "RecordBlocker",
+    "load_record_actuals_blockers",
+    "record_actuals_blockers",
+    "record_compare_error",
     "ACTION_ADD_TO_RAKUSUKE",
     "ACTION_CANCEL_RAKUSUKE",
     "ACTION_CHOOSE_KIND",
