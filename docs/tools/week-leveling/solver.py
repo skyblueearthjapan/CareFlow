@@ -31,7 +31,12 @@ LUNCH_TARGET = 45  # なるべく取る昼休み。日ごとに 45 分で解き�
 # その人が予定のために 45 分を置けなければ 30 分、30 分も置けない (予定で昼の窓が埋まる) なら昼休みを置かない
 # (検査も同じ人・日を「気を付ける点」に出す)。
 BUSINESS_END = 18 * 60
-NOON = 12 * 60  # 午前休 / 午後休の境目 (アプリの allocation / dashboard と同じ 12:00)
+# 休みの種類と境目 (休み設計 2026-10-20 §2-1)。値の正典は backend/app/core/leave.py
+# (FULL_DAY_OFF・AM_OFF_UNTIL・PM_OFF_FROM)。この道具は backend の無い箱 (agent-sandbox) や uv の別環境で動くので
+# import せず、同じ値をここ 1 か所に写す (report.py もここを読む)。値が同じことは agent/tests/test_leave_boundaries.py が確かめる。
+FULL_DAY_OFF = frozenset({"off", "paid_off"})  # 終日の休み (有給も終日休み)
+AM_OFF_UNTIL = 13 * 60  # 午前休の人はこの時刻から勤務
+PM_OFF_FROM = 12 * 60 + 30  # 午後休の人はこの時刻から休み
 EVENT_BUFFER_MIN = 15  # 予定の前後 (アプリの自動スタッフ割当 layer3 と同じ。blocking の印は見ない)
 PAIR_BLOCK_MIN = 90  # 同住所 2 名 = 90 分の枠
 SAME_ADDR_DEG = 0.001  # 約 100m (アプリと同じ)
@@ -196,6 +201,17 @@ def is_time_fixed(v: dict, locked: list[dict]) -> bool:
     return v.get("source") == "manual_week" and not any(r.get("has_unlocked") for r in mine)
 
 
+def leave_hours(kind: str | None, hours: tuple[int, int]) -> tuple[int, int]:
+    """半休の日に働ける時間 (分)。午前休 = 13:00 から・午後休 = 12:30 まで。ほかの種類はそのまま。
+    終日の休み (FULL_DAY_OFF) は呼び出し側が休みとして扱う。開始 >= 終了なら呼び出し側が休みにする。"""
+    a, b = hours
+    if kind == "am_off":
+        return (max(a, AM_OFF_UNTIL), b)
+    if kind == "pm_off":
+        return (a, min(b, PM_OFF_FROM))
+    return (a, b)
+
+
 def load(path, hist_path, config: dict, opts: dict | None = None):
     """opts: drop = 案から外す訪問 ID (先頭一致・今週だけ取消にする予定のもの) /
     add_special = 特別訪問週間の未配置の○を、その日に訪問の無い日だけ「足す訪問」として入れる。"""
@@ -230,16 +246,12 @@ def load(path, hist_path, config: dict, opts: dict | None = None):
         if st is None:
             continue
         wd, kind = r["weekday"], r["override_type"]
-        if kind == "off":
+        if kind in FULL_DAY_OFF:
             st.off.add(wd)
         elif kind == "custom_time" and r.get("start_time") and r.get("end_time"):
             st.shift[wd] = (hm(r["start_time"]), hm(r["end_time"]))
-        elif kind == "am_off" and wd in st.shift:
-            a, b = st.shift[wd]
-            st.shift[wd] = (max(a, NOON), b)
-        elif kind == "pm_off" and wd in st.shift:
-            a, b = st.shift[wd]
-            st.shift[wd] = (a, min(b, NOON))
+        elif wd in st.shift:
+            st.shift[wd] = leave_hours(kind, st.shift[wd])
         if wd in st.shift and st.shift[wd][0] >= st.shift[wd][1]:
             st.off.add(wd)
     monday = date.fromisoformat(d["week_start"])
@@ -295,8 +307,10 @@ def load(path, hist_path, config: dict, opts: dict | None = None):
                 loc=(float(p["lat"]), float(p["lng"])),
                 female_only=p["sex_restriction"] == "female_only",
                 ng=ng[p["id"]],
-                # 訪問の主担当が無ければコースの担当 (アプリの表示の正典)
-                cur_staff=v["primary_staff_id"] or v.get("course_staff_id"),
+                # 訪問の主担当が無ければコースの担当 (アプリの表示の正典)。主担当が空で manual_staff_override が
+                # 真なら「明示の担当なし」(休みの時間帯から外した訪問・休み設計 §3-2) なのでコースの担当に読み替えない
+                cur_staff=v["primary_staff_id"]
+                or (None if v.get("manual_staff_override") else v.get("course_staff_id")),
                 cur_course=(v["course_office"] or "") + (v["course_code"] or ""),
                 time_fixed=tfix,
             )

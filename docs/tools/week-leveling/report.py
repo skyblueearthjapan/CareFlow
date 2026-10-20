@@ -8,7 +8,17 @@ from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
-from solver import BUFFER_MIN, LUNCH_MIN_HARD, LUNCH_TARGET, LUNCH_WIN, bucket, fmt, travel_min
+from solver import (
+    BUFFER_MIN,
+    FULL_DAY_OFF,
+    LUNCH_MIN_HARD,
+    LUNCH_TARGET,
+    LUNCH_WIN,
+    bucket,
+    fmt,
+    leave_hours,
+    travel_min,
+)
 
 WD = "月火水木金土日"
 
@@ -49,14 +59,12 @@ def staff_hours(d, staff_id: str, day) -> tuple[int, int] | None:
         if r["staff_id"] != staff_id or r["weekday"] != wd:
             continue
         kind = r["override_type"]
-        if kind == "off":
+        if kind in FULL_DAY_OFF:
             return None
         if kind == "custom_time" and r.get("start_time") and r.get("end_time"):
             hours = (_hm(r["start_time"]), _hm(r["end_time"]))
-        elif kind == "am_off" and hours:
-            hours = (max(hours[0], 12 * 60), hours[1])
-        elif kind == "pm_off" and hours:
-            hours = (hours[0], min(hours[1], 12 * 60))
+        elif hours:
+            hours = leave_hours(kind, hours)
     if hours and hours[0] >= hours[1]:
         return None
     return hours

@@ -17,7 +17,7 @@ description: らく助（CareFlow）の週や 1 日の訪問を、決まり（1 
 ## 手順
 
 0. **新人を確かめる**: 道具は `staff.is_trainee` を見ない。新人は担当にできない（アプリが 422）ので、新人がいれば `--off <職員コード>` で抜いて計算する。
-1. **何をしたいかを確かめる**（AskUserQuestion で選択式）: 週全体か特定の日か／休む人・増える人がいるか（`--off`）／上限を少し超えてよいか（`--allow-over 1`、マネージャーより先なら `--over-before-manager`）／件数をならすか（`--balance`）／Jev の目安を付けるか（`--jev`）。
+1. **何をしたいかを確かめる**（AskUserQuestion で選択式）: 週全体か特定の日か／休む人・増える人がいるか（`--off`。登録済みの休みは道具が記録から読む＝公休・有給はその日外す・午前休は 13:00 から・午後休は 12:30 まで（値は `backend/app/core/leave.py` と同じ・`solver.py` の定数）。`--off` は終日を外すので、まだ登録していない半休は先に休みを登録するか、`week.json` の `weekly_overrides` に足して `--from-dir` で試算）／上限を少し超えてよいか（`--allow-over 1`、マネージャーより先なら `--over-before-manager`）／件数をならすか（`--balance`）／Jev の目安を付けるか（`--jev`）。
 2. **実行**（リポジトリ直下・Bash）:
    ```bash
    PYTHONIOENCODING=utf-8 uv run -q --python 3.12 --with ortools --with openpyxl --with httpx \
