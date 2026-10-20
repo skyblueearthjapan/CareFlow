@@ -77,6 +77,54 @@ def leave_window(
     return (shift_start, shift_end)
 
 
+def visit_hits_leave(leave_type: str | None, start: time | None, end: time | None) -> bool:
+    """訪問 (開始, 終了) が休みの時間帯にかかるか (設計 §2-1)。
+
+    * 終日の休み (公休・有給) は常に真。
+    * 午前休は **開始が 13:00 より前** なら真 (13:00 ちょうどは対象外)。
+    * 午後休は **終了が 12:30 より後** なら真 (12:30 ちょうどは対象外)。終了が空の訪問は
+      開始で判定し、開始が 12:30 以後なら真。
+    * 休みでない種類 (``custom_time``・None) は偽。
+    """
+    if leave_type in FULL_DAY_OFF:
+        return True
+    if leave_type == "am_off":
+        return start is not None and start < AM_OFF_UNTIL
+    if leave_type == "pm_off":
+        if end is None:
+            return start is not None and start >= PM_OFF_FROM
+        return end > PM_OFF_FROM
+    return False
+
+
+def kaipoke_send_window(
+    leave_type: str,
+    shift_start: time | None,
+    shift_end: time | None,
+    is_working_day: bool,
+    *,
+    business_hours: tuple[time, time] = (DEFAULT_BUSINESS_START, DEFAULT_BUSINESS_END),
+) -> tuple[time, time]:
+    """休みをカイポケへ送るときの個別業務の時刻 (開始, 終了)・設計 §2-1 の表の右の列。
+
+    * 公休・有給: その人の勤務時間。型で勤務しない曜日 (``is_working_day=False``) や
+      勤務時刻が無いときは営業時間 (``business_hours``・呼び出し側が ``SchedulingConfig``
+      の ``business_start/end`` を渡す)。
+    * 午前休: 始業〜13:00。午後休: 12:30〜終業 (始業・終業は同じく勤務時間か営業時間)。
+    """
+    if leave_type not in LEAVE_TYPES:
+        raise ValueError(f"休みの種類ではありません: {leave_type!r}")
+    if is_working_day and shift_start is not None and shift_end is not None:
+        start, end = shift_start, shift_end
+    else:
+        start, end = business_hours
+    if leave_type == "am_off":
+        return (start, AM_OFF_UNTIL)
+    if leave_type == "pm_off":
+        return (PM_OFF_FROM, end)
+    return (start, end)
+
+
 def _minutes(value: time) -> int:
     """時刻 → その日の 0:00 からの分 (秒は見ない)。"""
     return value.hour * 60 + value.minute
@@ -160,5 +208,7 @@ __all__ = [
     "KaipokeLeaveKind",
     "classify_kaipoke_leave",
     "is_leave_event",
+    "kaipoke_send_window",
     "leave_window",
+    "visit_hits_leave",
 ]

@@ -232,6 +232,9 @@ class KinmuSheet(Base):
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 確定版を作り直した理由 (§7-2 の 3)。
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 予定版を作ったときの職員×日の休みと型の入力 (``kinmu_sheet.snapshot_plan`` の形)。
+    # 確定版の「予定」の行はこの写しで作る (写しが無い月はいまの予定)。
+    plan_snapshot: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), _user_fk(), nullable=True
     )

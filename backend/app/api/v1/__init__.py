@@ -27,6 +27,7 @@ from app.api.v1 import (
     event_templates,
     feasibility,
     geocoding,
+    google_drive,
     health,
     integrations,
     notifications,
@@ -268,6 +269,8 @@ api_router.include_router(
     prefix="/business-profile",
     tags=["business-profile"],
 )
+# Google ドライブの接続 (勤務表のスプレッドシート・admin のみ・休み・勤務表の設計 §7-3)
+api_router.include_router(google_drive.router, prefix="/google-drive", tags=["google-drive"])
 # らく助 専門エージェント向けの読み取り専用 API (admin のみ・docs/plans/agent-skills/api-additions-2026-10-12.md)
 api_router.include_router(agent.router, prefix="/agent", tags=["agent"])
 # らく助エージェントへの声の入力 (admin のみ・音声は保存しない・docs/plans/voice-input-and-karte-engine-research-2026-10-13.md)
