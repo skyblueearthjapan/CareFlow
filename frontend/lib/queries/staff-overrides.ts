@@ -72,7 +72,7 @@ export interface WeekOverrideRead {
   staff_id: string;
   date: string; // YYYY-MM-DD
   weekday: number; // 0=Mon..6=Sun
-  type: '休み' | '時間変更' | '午前休' | '午後休';
+  type: '休み' | '時間変更' | '午前休' | '午後休' | '有給';
   start_time: string | null;
   end_time: string | null;
   note: string | null;

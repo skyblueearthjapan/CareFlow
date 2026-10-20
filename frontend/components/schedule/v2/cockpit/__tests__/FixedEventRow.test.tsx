@@ -145,6 +145,74 @@ describe('FixedEventRow', () => {
     expect(screen.getByTestId(`fixed-event-exclude-${EV_3}`)).toBeInTheDocument();
   });
 
+  it('午前休・午後休の境目は 13:00・12:30 (lib/leave.ts)・有給は終日', () => {
+    const offs = new Map<string, WeekOverrideRead>([
+      [
+        `${S1}:0`,
+        {
+          id: 'o3',
+          staff_id: S1,
+          date: MON,
+          weekday: 0,
+          type: '午前休',
+          start_time: null,
+          end_time: null,
+          note: null,
+        },
+      ],
+      [
+        `${S2}:0`,
+        {
+          id: 'o4',
+          staff_id: S2,
+          date: MON,
+          weekday: 0,
+          type: '午後休',
+          start_time: null,
+          end_time: null,
+          note: null,
+        },
+      ],
+      [
+        `${S3}:0`,
+        {
+          id: 'o5',
+          staff_id: S3,
+          date: MON,
+          weekday: 0,
+          type: '有給',
+          start_time: null,
+          end_time: null,
+          note: null,
+        },
+      ],
+    ] as [string, WeekOverrideRead][]);
+    render(
+      <FixedEventRow
+        events={[
+          // 12:30〜13:00: 午前休 (13:00 まで休み) にかかる・午後休は終わりが 12:30 の後なのでかかる
+          ev(EV_1, S1, { start_time: '12:30', end_time: '13:00', title: '昼会' }),
+          ev(EV_2, S2, { start_time: '12:30', end_time: '13:00', title: '昼会' }),
+          // 12:00〜12:30: 午後休は終わりがちょうど 12:30 なのでかからない
+          ev(EV_3, S2, { id: EV_3, start_time: '12:00', end_time: '12:30', title: '連絡会' }),
+          ev('00000000-0000-4000-8000-0000000000e4', S3, {
+            start_time: '16:00',
+            end_time: '16:30',
+            title: '夕会',
+          }),
+        ]}
+        staffMap={staffMap}
+        offByStaffWeekday={offs}
+        weekStart={WEEK_START}
+        onExclude={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('fixed-event-band-0-12:30')).toHaveTextContent('休:川名');
+    expect(screen.getByTestId('fixed-event-band-0-12:30')).toHaveTextContent('髙梨');
+    expect(screen.getByTestId('fixed-event-band-0-12:00')).not.toHaveTextContent('休:');
+    expect(screen.getByTestId('fixed-event-band-0-16:00')).toHaveTextContent('休:熊澤');
+  });
+
   it('固定イベントの無い曜日は「—」', () => {
     renderRow([ev(EV_1, S1)]);
     expect(screen.getByTestId('fixed-event-day-1')).toHaveTextContent('—');

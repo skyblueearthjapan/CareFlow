@@ -15,6 +15,7 @@
 import * as React from 'react';
 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { AM_OFF_UNTIL, PM_OFF_FROM } from '@/lib/leave';
 import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { CockpitEventRead } from '@/lib/schemas/v2/cockpit';
 import type { StaffRead } from '@/lib/schemas/staff';
@@ -46,14 +47,19 @@ function isoOf(d: Date): string {
 }
 
 /**
- * その休み種別で、この開始時刻のイベントに出られないか。
- * 午前休/午後休は「かかっている時間帯だけ」外す (12:00 を境に判定)。
+ * その休み種別で、このイベント (開始〜終了) に出られないか。
+ * 休み・有給は終日。午前休/午後休は「かかっている時間帯だけ」外す
+ * (境目は `lib/leave.ts`: 午前休 = 13:00 から勤務・午後休 = 12:30 から休み)。
  */
-function isOffForEvent(ov: WeekOverrideRead | undefined, startTime: string): boolean {
+function isOffForEvent(
+  ov: WeekOverrideRead | undefined,
+  startTime: string,
+  endTime: string,
+): boolean {
   if (!ov) return false;
-  if (ov.type === '休み') return true;
-  if (ov.type === '午前休') return startTime < '12:00';
-  if (ov.type === '午後休') return startTime >= '12:00';
+  if (ov.type === '休み' || ov.type === '有給') return true;
+  if (ov.type === '午前休') return startTime.slice(0, 5) < AM_OFF_UNTIL;
+  if (ov.type === '午後休') return endTime.slice(0, 5) > PM_OFF_FROM;
   return false; // 時間変更は勤務そのものはあるので自動除外しない
 }
 
@@ -105,7 +111,9 @@ export function FixedEventRow({
       };
       const entry = { eventId: ev.id, staffId, name };
       if (ev.cancelled_at) g.excluded.push(entry);
-      else if (isOffForEvent(offByStaffWeekday?.get(`${staffId}:${weekday}`), ev.start_time))
+      else if (
+        isOffForEvent(offByStaffWeekday?.get(`${staffId}:${weekday}`), ev.start_time, ev.end_time)
+      )
         g.off.push(name);
       else g.joining.push(entry);
       dayMap.set(key, g);

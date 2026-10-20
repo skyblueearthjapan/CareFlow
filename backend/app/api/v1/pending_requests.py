@@ -301,8 +301,9 @@ async def _ensure_staff_off_creatable(
     * 種類 ``override_type`` は ``off`` / ``am_off`` / ``pm_off`` / ``paid_off`` (省略は ``off``)。
       変更のお願い (``kind='change'``) だけ ``cancel`` (休みを取り消してほしい) も可。
       それ以外は 422。``payload_dict`` に正規化した値を書き戻す。
-    * 職員本人の申請で、締め切り (前の月の 20 日 23:59 JST) を過ぎた・その月が確定済みなら
-      ``kind='change'`` (変更のお願い) として受け付ける。変更のお願いは理由 (``note``) が必須。
+    * 職員本人の申請で、締め切り (前の月の 20 日 23:59 JST) を過ぎた・その月が確定済みなのに
+      ``kind`` が無ければ 422 (``kind='change'`` = 変更のお願いで送り直してもらう)。
+      変更のお願いは理由 (``payload.note``) が必須 (空なら 422)。
     * 同じ日に申請中があれば 409 (種類によらない)。
     * 同じ日に **休みの種類の** override があれば 409 (時間変更の日は止めない・中7)。
       変更のお願いには当てない (登録済みの日が相手・M4)。``cancel`` はその日に休みが
@@ -341,7 +342,16 @@ async def _ensure_staff_off_creatable(
                 )
             ) is not None
         if confirmed or is_past_leave_deadline(target):
-            kind = "change"
+            # 締め切り後・確定後は「変更のお願い」(kind='change') でしか受けない (画面は文言を
+            # そのまま出す)。
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "この月は確定済みのため「変更をお願いする」から送ってください"
+                    if confirmed
+                    else "締め切りを過ぎたため「変更をお願いする」から送ってください"
+                ),
+            )
     if kind == "change":
         payload_dict["kind"] = "change"
         if not str(payload_dict.get("note") or "").strip():

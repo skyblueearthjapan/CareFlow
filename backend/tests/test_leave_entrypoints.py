@@ -147,25 +147,40 @@ async def test_each_type_can_be_requested(client, db, leave_type) -> None:
 
 
 @pytest.mark.asyncio
-async def test_after_deadline_becomes_change_and_needs_note(client, db) -> None:
+async def test_after_deadline_without_kind_is_422_and_change_needs_note(client, db) -> None:
     staff = await _staff(db)
     user = await _user(db, "staff", staff.id)
     day = today_jst() + timedelta(days=1)  # 締め切り (前の月の 20 日) は過ぎている
-    res = await client.post(
-        "/api/v1/pending-requests", headers=_bearer(user), json=_req(staff.id, day)
-    )
-    assert res.status_code == 422, res.text
+    # kind なし → 422 (理由があっても)
     res = await client.post(
         "/api/v1/pending-requests",
         headers=_bearer(user),
         json=_req(staff.id, day, note="通院のため"),
     )
+    assert res.status_code == 422, res.text
+    assert "締め切りを過ぎたため「変更をお願いする」から送ってください" in res.json()["detail"]
+    # 変更のお願いで note が空 → 422
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user),
+        json=_req(staff.id, day, kind="change", note="  "),
+    )
+    assert res.status_code == 422, res.text
+    # 変更のお願い＋理由 → 受け付ける (理由は payload.note のまま)
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user),
+        json=_req(staff.id, day, kind="change", note="通院のため"),
+    )
     assert res.status_code == 201, res.text
-    assert res.json()["payload"]["kind"] == "change"
+    body = res.json()["payload"]
+    assert body["kind"] == "change"
+    assert body["note"] == "通院のため"
+    assert "reason" not in body
 
 
 @pytest.mark.asyncio
-async def test_confirmed_month_becomes_change(client, db) -> None:
+async def test_confirmed_month_without_kind_is_422(client, db) -> None:
     staff = await _staff(db)
     user = await _user(db, "staff", staff.id)
     db.add(
@@ -175,14 +190,16 @@ async def test_confirmed_month_becomes_change(client, db) -> None:
     )
     await db.commit()
     res = await client.post(
-        "/api/v1/pending-requests", headers=_bearer(user), json=_req(staff.id, FAR)
-    )
-    assert res.status_code == 422, res.text  # 理由が要る
-    res = await client.post(
         "/api/v1/pending-requests", headers=_bearer(user), json=_req(staff.id, FAR, note="家の用事")
     )
+    assert res.status_code == 422, res.text
+    assert "変更をお願いする" in res.json()["detail"]
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user),
+        json=_req(staff.id, FAR, kind="change", note="家の用事"),
+    )
     assert res.status_code == 201, res.text
-    assert res.json()["payload"]["kind"] == "change"
 
 
 @pytest.mark.asyncio
@@ -288,7 +305,7 @@ async def test_approve_half_day_moves_visits_and_notifies(client, db) -> None:
     res = await client.post(
         "/api/v1/pending-requests",
         headers=_bearer(user),
-        json=_req(staff.id, day, "am_off", note="通院"),
+        json=_req(staff.id, day, "am_off", kind="change", note="通院"),
     )
     assert res.status_code == 201, res.text
     rid = res.json()["id"]
