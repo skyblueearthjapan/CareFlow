@@ -502,3 +502,12 @@ async def test_confirm_survives_unexpected_errors(client, db, monkeypatch) -> No
     assert body["outbound"]["started"] is False and body["outbound"]["reason"]
     assert body["kinmu_sheet"]["created"] is False and body["kinmu_sheet"]["reason"]
     assert len((await db.scalars(select(StaffShiftConfirmation))).all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_confirm_empty_staff_ids_is_422(client, db) -> None:
+    admin = await _admin(db)
+    await _staff(db)
+    res = await client.post(f"{URL}/confirm", headers=_bearer(admin), json={"staff_ids": []})
+    assert res.status_code == 422
+    assert (await db.scalars(select(StaffShiftConfirmation))).all() == []
