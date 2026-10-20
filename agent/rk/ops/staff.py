@@ -1,7 +1,9 @@
 """職員の休みと急休代替の操作（設計書 §3-4・S4）。
 
-- 休みを登録しても**訪問はそのまま元の担当に残る**（プールにも行かない）。振り分けは別の操作
-  （ならし案の assign-staff-week / move-visit-week / return-to-pool、または staff-off-week）。
+- 休み（公休・午前休・午後休・有給）を登録すると、今日以降の日なら**休みの時間帯の本人の訪問は「担当なし」へ移る**
+  （backend の共通の処理 services/staff_leave.apply_staff_leave・プールには行かない）。誰かへ振り分けるのは別の操作
+  （ならし案の assign-staff-week / move-visit-week / return-to-pool、または staff-off-week で 1 人へ）。
+  今日より前の日は休みの記録だけ（訪問は動かない）。
 - 時刻・日付の書き方は rk/ops/visits.py の先頭を参照。
 """
 
@@ -24,6 +26,27 @@ from rk.ops.visits import (
 TYPES = {"休み": "休み", "off": "休み", "午前休": "午前休", "am_off": "午前休", "午後休": "午後休",
          "pm_off": "午後休", "有給": "有給", "paid_off": "有給",
          "時間変更": "時間変更", "custom_time": "時間変更"}
+#: 画面の言葉 → staff-off-week の leave_type（休みの種類だけ。時間変更は受けない）。
+LEAVE_TYPE_API = {"休み": "off", "午前休": "am_off", "午後休": "pm_off", "有給": "paid_off"}
+#: 半休の境目（HH:MM）。値の正典は backend/app/core/leave.py（AM_OFF_UNTIL・PM_OFF_FROM）。rk は backend の無い箱でも
+#: 動くので import せず、rk の中ではここ 1 か所に写す（tests/test_leave_boundaries.py が core と同じ値か確かめる）。
+AM_OFF_UNTIL = "13:00"  # 午前休の人はこの時刻から勤務
+PM_OFF_FROM = "12:30"  # 午後休の人はこの時刻から休み
+
+
+def hits_half_day_leave(label: str, start: str | None, end: str | None) -> bool:
+    """訪問 (開始, 終了) が半休の時間帯にかかるか（core/leave.py の visit_hits_leave と同じ規則）。
+
+    午前休 = 開始が 13:00 より前／午後休 = 終了が 12:30 より後（終了が空なら開始が 12:30 以後）。
+    ほかの種類は偽（終日の休みは呼び出し側で扱う）。"""
+    st, en = hhmm(start), hhmm(end)
+    if label == "午前休":
+        return st is not None and st < AM_OFF_UNTIL
+    if label == "午後休":
+        if en is None:
+            return st is not None and st >= PM_OFF_FROM
+        return en > PM_OFF_FROM
+    return False
 
 
 def overrides_on(api: Api, staff_id: str, day: str) -> list[dict]:
@@ -154,14 +177,16 @@ class StaffDayOff(Op):
 class StaffOffWeek(Op):
     """急休代替：その日を休みにして、その日の担当を **1 人** に任せる（今週の運転席「🛌 休みにする」と同じ）。
 
-    API: POST /schedule/v2/staff-off-week（schedule_v2.py:1818、要求 auto_schedule_v2.py:699）
-    body ``{staff_id, date, to_staff_id|null, acknowledge_constraint_warnings, op_group_id}``。1 回で:
-    休み（override=off）の登録・その日その人が載っている planned の訪問の「本人の枠」だけを引き受け先へ
-    （2 名体制の相方は残す）・その日のコースの担当を引き受け先へ・その日の固定イベントに取消印。
+    API: POST /schedule/v2/staff-off-week（schedule_v2.py:1827、要求 schemas/v2/auto_schedule_v2.py の StaffOffWeekRequest）
+    body ``{staff_id, date, to_staff_id|null, leave_type, acknowledge_constraint_warnings, op_group_id}``。1 回で:
+    休みの登録（共通の処理 apply_staff_leave）・休みの時間帯にかかる本人の planned の訪問の「本人の枠」だけを
+    引き受け先へ（2 名体制の相方は残す）・終日の休み（公休・有給）ならその日のコースの担当も引き受け先へ
+    （半休はコースは本人のまま）・休みの時間帯の固定イベントに取消印。
     受け取る値: ``staff_id``*（休む人）・``date``*・``to_staff_id``（引き受け先。null=全部「担当なし」）※別名 ``to_staff``・
+    ``type``（休み 既定 / 午前休 / 午後休 / 有給。英語の off・am_off・pm_off・paid_off も可）・
     ``acknowledge_constraint_warnings``・``op_group_id``。
-    前提: 過去日 422（当日は可）・引き受け先が新人/退職/本人/その日休みなら 422・
-    NG・女性限定は 422（了承で再送）。打刻済み等は据え置き（応答の skipped_visit_ids）。
+    前提: 過去日 422（当日は可）・引き受け先が新人/退職/本人/その日終日休みなら 422・引き受け先が半休で
+    その訪問が休みの時間帯にかかれば 422・NG・女性限定は 422（了承で再送）。打刻済み等は据え置き（応答の skipped_visit_ids）。
     複数人へ振り分けたいときはこれではなく、ならし（rk level day）→ staff-day-off＋assign-staff-week など。
     戻し方: **rk undo では戻せない（None）** → 戻すにはバックアップから。理由: 2 名体制の「本人の枠」だけの差し替え・
     固定イベントの取消印・手の上書き印（API に出ない）を、許可リストの操作では元どおりにできない。
@@ -182,6 +207,9 @@ class StaffOffWeek(Op):
         check_staff_ref("staff_id", f.get("staff_id"), errs, allow_none=False)
         if to_date(f.get("date")) is None:
             errs.append("date（YYYY-MM-DD）がありません")
+        t = f.get("type", "休み")
+        if TYPES.get(t) not in LEAVE_TYPE_API:
+            errs.append(f"type は 休み/午前休/午後休/有給 のどれかです（{t}）")
         if "to_staff_id" not in f and "to_staff" not in f:
             errs.append("to_staff_id（全部担当なしにするなら null）がありません")
         else:
@@ -192,6 +220,9 @@ class StaffOffWeek(Op):
 
     def _body(self, f: dict, staff_id: str, to_staff_id: Any) -> dict:
         body: dict = {"staff_id": staff_id, "date": str(to_date(f["date"])), "to_staff_id": to_staff_id}
+        leave_type = LEAVE_TYPE_API[TYPES[f.get("type", "休み")]]
+        if leave_type != "off":  # 既定（公休）のときは送らない（API の既定と同じ）
+            body["leave_type"] = leave_type
         if f.get("acknowledge_constraint_warnings"):
             body["acknowledge_constraint_warnings"] = True
         if f.get("op_group_id"):
@@ -237,9 +268,17 @@ class StaffOffWeek(Op):
         day = str(to_date(f["date"]))
         errs = []
         rows = overrides_on(api, sid, day)
-        if not rows or rows[0].get("type") != "休み":
-            errs.append(f"{day} の休みが登録されていません")
+        want = TYPES[f.get("type", "休み")]
+        if not rows or rows[0].get("type") != want:
+            errs.append(f"{day} の{want}が登録されていません")
         visits, courses = self._day(api, sid, day)
+        if want in ("午前休", "午後休"):
+            # 半休はコースが本人のまま・休みの時間帯の外の訪問も本人に残る。時間帯にかかる本人の予定だけを見る
+            left = [v for v in visits if v.get("status") == "planned" and str(v.get("primary_staff_id") or "") == sid
+                    and hits_half_day_leave(want, v.get("start_time"), v.get("end_time"))]
+            if left:
+                errs.append(f"{day} に まだ本人が主担当の{want}の時間帯の予定が {len(left)} 件あります")
+            return errs
         if courses:
             errs.append(f"{day} に まだ本人が担当のコースが {len(courses)} 本あります")
         left = [v for v in visits if v.get("status") == "planned" and str(v.get("primary_staff_id") or "") == sid]

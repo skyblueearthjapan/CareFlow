@@ -121,3 +121,64 @@ def test_off_week_snapshot_and_verify():
     api.routes.update({"/visits": [], "/courses": [{"id": C1, "assigned_staff_id": S2}],
                        f"/staff/{S1}/overrides": [{"id": OV, "date": "2026-10-15", "type": "休み"}]})
     assert impl.verify(api, o) == []
+
+
+def test_off_week_leave_types():
+    impl = op("staff-off-week")
+    base = {"staff_id": S1, "date": "2026-10-15", "to_staff_id": None}
+    for t, api_type in (("午前休", "am_off"), ("pm_off", "pm_off"), ("有給", "paid_off")):
+        o = {**base, "type": t}
+        assert impl.validate(o) == []
+        assert impl.request(o)[2]["leave_type"] == api_type
+    assert "leave_type" not in impl.request({**base, "type": "休み"})[2]
+    assert impl.validate({**base, "type": "時間変更"})  # 時間変更は急休代替にしない
+    assert impl.validate({**base, "type": "有休"})
+
+
+def test_off_week_verify_half_day_checks_only_the_record():
+    impl = op("staff-off-week")
+    o = {"staff_id": S1, "date": "2026-10-15", "to_staff_id": S2, "type": "午後休"}
+    api = FakeApi({
+        # 半休はコースが本人のまま・休みの時間帯の外（午前）の訪問も本人に残る
+        "/visits": [{"id": "v1", "status": "planned", "primary_staff_id": S1, "start_time": "09:00:00"}],
+        "/courses": [{"id": C1, "assigned_staff_id": S1}],
+        f"/staff/{S1}/overrides": [{"id": OV, "date": "2026-10-15", "type": "午後休"}],
+    })
+    assert impl.verify(api, o) == []
+    # 休みの時間帯（終わりが 12:30 より後）にかかる本人の予定が残っていれば知らせる
+    api.routes["/visits"] = [
+        {"id": "v1", "status": "planned", "primary_staff_id": S1, "start_time": "11:55:00", "end_time": "12:30:00"},
+        {"id": "v2", "status": "planned", "primary_staff_id": S1, "start_time": "12:00:00", "end_time": "12:35:00"},
+        {"id": "v3", "status": "planned", "primary_staff_id": S2, "start_time": "14:00:00", "end_time": "14:35:00"},
+    ]
+    assert impl.verify(api, o) == ["2026-10-15 に まだ本人が主担当の午後休の時間帯の予定が 1 件あります"]
+    api.routes[f"/staff/{S1}/overrides"] = [{"id": OV, "date": "2026-10-15", "type": "休み"}]
+    assert impl.verify(api, o)[0] == "2026-10-15 の午後休が登録されていません"
+
+
+@pytest.mark.parametrize(("label", "start", "end", "hit"), [
+    ("午前休", "12:59:00", "13:30:00", True), ("午前休", "13:00:00", "13:35:00", False),
+    ("午後休", "12:00:00", "12:30:00", False), ("午後休", "12:00:00", "12:31:00", True),
+    ("午後休", "12:30:00", None, True), ("午後休", "12:29:00", None, False),
+    ("休み", "10:00:00", "10:35:00", False), ("時間変更", "10:00:00", "10:35:00", False),
+])
+def test_half_day_leave_boundaries(label, start, end, hit):
+    from rk.ops.staff import hits_half_day_leave
+    assert hits_half_day_leave(label, start, end) is hit
+
+
+def test_off_week_verify_paid_off_is_full_day():
+    impl = op("staff-off-week")
+    o = {"staff_id": S1, "date": "2026-10-15", "to_staff_id": S2, "type": "有給"}
+    api = FakeApi({
+        "/visits": [], "/courses": [{"id": C1, "assigned_staff_id": S1}],
+        f"/staff/{S1}/overrides": [{"id": OV, "date": "2026-10-15", "type": "有給"}],
+    })
+    assert len(impl.verify(api, o)) == 1  # 終日なのでコースが本人に残っていれば知らせる
+
+
+def test_day_off_paid_leave_label():
+    impl = op("staff-day-off")
+    o = {"staff_id": S1, "date": "2026-10-15", "type": "paid_off"}
+    assert impl.validate(o) == []
+    assert impl.request(o)[2]["type"] == "有給"
