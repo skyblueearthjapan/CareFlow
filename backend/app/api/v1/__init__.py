@@ -30,6 +30,7 @@ from app.api.v1 import (
     google_drive,
     health,
     integrations,
+    leave_kaipoke,
     notifications,
     office_feature_flags,
     offices,
@@ -269,6 +270,10 @@ api_router.include_router(
     prefix="/business-profile",
     tags=["business-profile"],
 )
+# 休みのカイポケとの照合と送信 (admin のみ・休み・勤務表の設計 §7-4-3・§7-4-4)。
+# /leave/compare/* と /leave/outbound/* だけを持つ。/leave の他の API (leave.py) より先に登録する
+# (後の /leave/{...} のような道に /leave/compare/latest などが取られないように)。
+api_router.include_router(leave_kaipoke.router, prefix="/leave", tags=["leave-kaipoke"])
 # Google ドライブの接続 (勤務表のスプレッドシート・admin のみ・休み・勤務表の設計 §7-3)
 api_router.include_router(google_drive.router, prefix="/google-drive", tags=["google-drive"])
 # らく助 専門エージェント向けの読み取り専用 API (admin のみ・docs/plans/agent-skills/api-additions-2026-10-12.md)
