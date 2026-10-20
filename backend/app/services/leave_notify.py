@@ -36,6 +36,8 @@ NOTIFY_LEAVE_CANCELLED: Final = "leave_cancelled"
 NOTIFY_SHIFT_CONFIRMED: Final = "shift_confirmed"
 NOTIFY_LEAVE_APPROVED: Final = "leave_approved"
 NOTIFY_LEAVE_UNASSIGNED: Final = "leave_unassigned"
+#: 職員から休みの申請が届いた (管理者向け)。
+NOTIFY_LEAVE_REQUESTED: Final = "leave_requested"
 
 #: 休みの種類 → 画面・通知の言葉 (休み設計 §2-1)。
 _LEAVE_LABELS: Final = {
@@ -47,6 +49,8 @@ _LEAVE_LABELS: Final = {
 }
 
 _REFERENCE_PENDING_REQUEST: Final = "pending_request"
+#: 新しい休みの申請の通知の reference_type (reference_id = 申請の id)。
+REFERENCE_LEAVE_REQUEST: Final = "leave_request"
 
 _WEEKDAYS_JP: Final = ("月", "火", "水", "木", "金", "土", "日")
 
@@ -146,7 +150,7 @@ async def notify_leave_cancelled(
 
 
 async def notify_shift_confirmed(db: AsyncSession, *, staff_id: UUID, month: date) -> int:
-    """月次出勤カレンダーの確定をスタッフ本人へ通知する (再確定 = 再通知)。"""
+    """月の休みの確定をスタッフ本人へ通知する (再確定 = 再通知)。"""
     user = await _staff_user(db, staff_id)
     if user is None:
         return 0
@@ -154,11 +158,12 @@ async def notify_shift_confirmed(db: AsyncSession, *, staff_id: UUID, month: dat
         Notification(
             user_id=user.id,
             type=NOTIFY_SHIFT_CONFIRMED,
-            title=f"{month.year}年{month.month}月の出勤カレンダーが確定しました",
+            title=f"{month.year}年{month.month}月の休みが確定しました",
             body=(
                 f"{month.year}年{month.month}月の出勤日・お休みが確定しました。\n"
-                "アプリの「出勤カレンダー」からご確認ください。"
+                "アプリの「休み」からご確認ください。"
             ),
+            data={"staff_id": str(staff_id), "month": month.replace(day=1).isoformat()},
         )
     )
     return 1
@@ -178,6 +183,7 @@ async def notify_leave_approved(
             type=NOTIFY_LEAVE_APPROVED,
             title=f"{_fmt_md(target)}の{label}が承認されました",
             body=f"{_fmt_date_jp(target)} の{label}が承認されました。",
+            data={"staff_id": str(staff_id), "date": target.isoformat(), "leave_type": leave_type},
         )
     )
     return 1
@@ -194,6 +200,17 @@ class UnassignedNotice:
     visit_count: int
     #: 本人が同行者に入っている休みの時間帯の訪問の数 (同行はそのまま)。
     accompaniment_count: int = 0
+    #: 職員 (通知の ``data`` に入れる・ベルから表のマスを開く)。
+    staff_id: UUID | None = None
+
+
+def _notice_item(n: UnassignedNotice) -> dict[str, object]:
+    return {
+        "staff_id": str(n.staff_id) if n.staff_id is not None else None,
+        "staff_name": n.staff_name,
+        "date": n.day.isoformat(),
+        "visit_count": n.visit_count,
+    }
 
 
 async def notify_leave_unassigned(
@@ -238,7 +255,84 @@ async def notify_leave_unassigned(
         )
     if accompaniments:
         body += f"\n同行{accompaniments}件はそのままです。職員スケジュールで外してください。"
+    # 画面はここから日付と職員を読む (文面から M/D を読まない)。先頭の 1 件のマスを開く。
+    items = [_notice_item(n) for n in notices]
+    data: dict[str, object] = {
+        "staff_id": items[0]["staff_id"],
+        "date": items[0]["date"],
+        "items": items,
+    }
     users = await _active_admin_users(db)
     for u in users:
-        db.add(Notification(user_id=u.id, type=NOTIFY_LEAVE_UNASSIGNED, title=title, body=body))
+        db.add(
+            Notification(
+                user_id=u.id, type=NOTIFY_LEAVE_UNASSIGNED, title=title, body=body, data=data
+            )
+        )
+    return len(users)
+
+
+async def notify_leave_requested(db: AsyncSession, *, request: PendingRequest) -> int:
+    """職員の休みの申請 (staff_off の作成) を管理者全員へ知らせる (ベル・メールなし・§5-2).
+
+    ``reference`` は申請 (``pending_request``・id)、``data`` は ``staff_id``・``date``・
+    ``override_type``・``kind`` (ベルから「休み・勤務表」のそのマスを開く)。管理者が自分で
+    出した申請 (即時反映など) では呼ばない。
+    """
+    if request.request_type != "staff_off":
+        return 0
+    from app.services.constraint_override_notify import _active_admin_users
+
+    payload = dict(request.payload or {})
+    raw_staff = request.target_staff_id or payload.get("staff_id")
+    staff_id: UUID | None = None
+    if isinstance(raw_staff, UUID):
+        staff_id = raw_staff
+    elif raw_staff:
+        try:
+            staff_id = UUID(str(raw_staff))
+        except ValueError:
+            staff_id = None
+    target = request.target_date
+    override_type = str(payload.get("override_type") or "off")
+    kind = "change" if payload.get("kind") == "change" else "normal"
+    staff_name = None
+    if staff_id is not None:
+        from app.models.staff import Staff
+
+        staff_name = await db.scalar(select(Staff.name).where(Staff.id == staff_id))
+    who = f"{staff_name}さん" if staff_name else "職員"
+    if override_type == "cancel":
+        what = "休みの取り消し"
+    else:
+        what = leave_type_label(override_type)
+    when = _fmt_md(target) if target is not None else ""
+    head = "変更のお願い" if kind == "change" else "休みの申請"
+    title = f"{who}から{head}（{when} {what}）"
+    body = (
+        f"{who}から{when}の{what}の{head}が届きました。「休み・勤務表」で承認か却下をしてください。"
+    )
+    if payload.get("note"):
+        body += f"\nメモ: {payload['note']}"
+    data = {
+        "staff_id": str(staff_id) if staff_id is not None else None,
+        "date": target.isoformat() if target is not None else None,
+        "override_type": override_type,
+        "kind": kind,
+    }
+    users = await _active_admin_users(db)
+    for u in users:
+        db.add(
+            Notification(
+                user_id=u.id,
+                type=NOTIFY_LEAVE_REQUESTED,
+                title=title[:200],
+                body=body,
+                # 却下の通知 (pending_request) と別の種類にする: 申請者が管理者でも
+                # (user, reference_type, reference_id) の部分 UNIQUE にぶつからない。
+                reference_type=REFERENCE_LEAVE_REQUEST,
+                reference_id=request.id,
+                data=data,
+            )
+        )
     return len(users)

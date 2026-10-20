@@ -1083,19 +1083,37 @@ async def compare_month(db: AsyncSession, job_id: uuid.UUID) -> LeaveCompareRun 
     except Exception as exc:  # noqa: BLE001 — 黙って失わない (ジョブは completed で残る)
         logger.exception("leave compare failed for job %s", job_id)
         await db.rollback()
-        summary = dict(
-            (await db.scalar(select(KaipokeJob.result_summary).where(KaipokeJob.id == job_id)))
-            or {}
-        )
-        summary["compare_error"] = f"照合の差分を作れませんでした: {str(exc)[:300]}"
-        await db.execute(
-            update(KaipokeJob)
-            .where(KaipokeJob.id == job_id)
-            .values(result_summary=summary, updated_at=datetime.now(UTC))
-            .execution_options(synchronize_session=False)
-        )
-        await db.commit()
+        await record_compare_error(job_id, f"照合の差分を作れませんでした: {str(exc)[:300]}")
         return None
+
+
+async def record_compare_error(job_id: uuid.UUID, message: str) -> None:
+    """ジョブの ``result_summary.compare_error`` を **新しいセッションで** 書く.
+
+    比べる処理の例外で元のセッションが使えなくなっていても必ず書く (画面が「比べています」
+    のまま止まらないように)。書けなかったときはログだけ残す。
+    """
+    try:
+        factory = get_session_factory()
+        async with factory() as fresh:
+            summary = dict(
+                (
+                    await fresh.scalar(
+                        select(KaipokeJob.result_summary).where(KaipokeJob.id == job_id)
+                    )
+                )
+                or {}
+            )
+            summary["compare_error"] = message
+            await fresh.execute(
+                update(KaipokeJob)
+                .where(KaipokeJob.id == job_id)
+                .values(result_summary=summary, updated_at=datetime.now(UTC))
+                .execution_options(synchronize_session=False)
+            )
+            await fresh.commit()
+    except Exception:  # noqa: BLE001 — ここで落とすと元の失敗が見えなくなる
+        logger.exception("could not record compare_error for job %s", job_id)
 
 
 async def start_leave_compare(
@@ -1135,7 +1153,19 @@ async def run_leave_compare_job(
         job = await sources.run_source_job(db, client, job_id, plan)
         if job is None or job.status != "completed":
             return None
-        return await compare_month(db, job_id)
+        try:
+            run = await compare_month(db, job_id)
+        except BaseException as exc:
+            # compare_month の外側で落ちた (取り消し・セッションの破損など): completed のまま
+            # 結果も compare_error も無いと画面が「比べています」で止まるので必ず書く。
+            await record_compare_error(job_id, f"照合の差分を作れませんでした: {str(exc)[:300]}")
+            raise
+        if run is None:
+            # 材料は取れたのに結果が無い (ジョブの記録が足りないなど): 理由が無ければ書く。
+            fresh = await db.get(KaipokeJob, job_id, populate_existing=True)
+            if fresh is not None and not (fresh.result_summary or {}).get("compare_error"):
+                await record_compare_error(job_id, "照合の差分を作れませんでした")
+        return run
 
 
 # --- 「合わせる」ボタン (§7-4-3・H-c) -------------------------------------------------

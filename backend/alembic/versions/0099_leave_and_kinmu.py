@@ -20,6 +20,8 @@ Create Date: 2026-10-20
 5. 既存の休み (本番 96 件・全部 ``off``) を「照合前」にする: 休みの種類の override ごとに
    ``staff_leave_kaipoke`` を ``sent_type=NULL・baseline_pending=TRUE`` で作り、override の
    ある月に ``leave_months`` の行 (``last_compared_at=NULL``) を作る (§2-5 H-f)。
+6. ``notifications.data`` (JSON・NULL 可): 通知から画面が開く先 (休みの通知の ``staff_id``・
+   ``date`` など)。文面から日付を読まないため。
 
 ## SQLite 互換
 列の追加は 0089 と同じインライン列 CHECK / REFERENCES 付きの ``ADD COLUMN`` (標準 SQL・
@@ -443,6 +445,10 @@ def upgrade() -> None:
     _add_staff_columns()
     _create_tables()
     _seed_baseline()
+    # 6. 通知に画面が開く先の材料 (休みの通知の staff_id・date など・#8/#13)。
+    # (試験の小さな DB には notifications が無いことがあるので、あるときだけ)
+    if sa.inspect(op.get_bind()).has_table("notifications"):
+        op.add_column("notifications", sa.Column("data", _json(), nullable=True))
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +463,12 @@ def downgrade() -> None:
     """
     is_pg = _is_pg()
 
+    inspector = sa.inspect(op.get_bind())
+    if inspector.has_table("notifications") and any(
+        c["name"] == "data" for c in inspector.get_columns("notifications")
+    ):
+        with op.batch_alter_table("notifications") as batch:
+            batch.drop_column("data")
     op.drop_index(op.f(_PENDING_STAFF_OFF_UNIQUE), table_name="pending_requests")
     op.drop_index(
         op.f("uq_google_drive_connections_singleton"), table_name="google_drive_connections"

@@ -453,21 +453,28 @@ async def test_delete_day_with_pending_request_is_409(client, db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_two_pending_on_one_cell_uses_oldest(client, db) -> None:
+async def test_second_pending_on_one_cell_is_refused(client, db) -> None:
+    """同じ職員・同じ日の申請中は 1 件だけ (0099 の部分 UNIQUE・作成時の 409)."""
     admin = await _user(db, "admin")
     a = await _staff(db, "青木", code="001")
     u = await _user(db, "staff", a.id)
-    first = await _request(db, u, a, TUE, "am_off")
-    second = await _request(db, u, a, TUE, "off")
-    first.created_at = datetime(2030, 10, 1, 9, 0, tzinfo=UTC)
-    second.created_at = datetime(2030, 10, 2, 9, 0, tzinfo=UTC)
-    await db.commit()
-    body = (await client.get("/api/v1/leave/month/2030-11", headers=_bearer(admin))).json()
-    assert _cell(body, a, TUE)["pending"]["request_id"] == str(first.id)
-    row = _row(body, a)
-    assert row["pending_count"] == 2 and row["pending_gain"] == 0.5
-    assert _day(body, TUE)["pending_count"] == 2
-    assert len(body["pending"]) == 2
+    body = {
+        "request_type": "staff_off",
+        "payload": {"staff_id": str(a.id), "date": TUE.isoformat(), "override_type": "am_off"},
+        "target_staff_id": str(a.id),
+        "target_date": TUE.isoformat(),
+    }
+    res = await client.post("/api/v1/pending-requests", headers=_bearer(u), json=body)
+    assert res.status_code == 201, res.text
+    body["payload"]["override_type"] = "off"
+    res = await client.post("/api/v1/pending-requests", headers=_bearer(u), json=body)
+    assert res.status_code in (409, 422), res.text
+    month = (await client.get("/api/v1/leave/month/2030-11", headers=_bearer(admin))).json()
+    assert _cell(month, a, TUE)["pending"]["override_type"] == "am_off"
+    row = _row(month, a)
+    assert row["pending_count"] == 1 and row["pending_gain"] == 0.5
+    assert _day(month, TUE)["pending_count"] == 1
+    assert len(month["pending"]) == 1
 
 
 @pytest.mark.asyncio

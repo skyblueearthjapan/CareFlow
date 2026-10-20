@@ -30,7 +30,7 @@ from typing import Annotated, Any, Final, cast, get_args
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,8 +49,6 @@ from app.models.pending_request import PendingRequest
 from app.models.schedule_op_log import ScheduleOpLog
 from app.models.staff import Staff, StaffShiftConfirmation, StaffWeeklyOverride
 from app.models.user import User, normalize_user_role
-from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
-from app.models.visit_staff_assignment import VisitStaffAssignment
 from app.schemas.leave import (
     HolidayRead,
     KinmuSheetRead,
@@ -104,10 +102,12 @@ from app.services.leave_notify import (
 )
 from app.services.staff_leave import (
     LeaveApplyResult,
+    OwnedVisit,
     StaffLeaveError,
     apply_staff_leave,
     cancel_staff_leave,
     leave_request_deadline,
+    load_owned_visits_between,
     notify_leave_results,
     today_jst,
 )
@@ -254,70 +254,6 @@ async def _load_month(db: AsyncSession, month: date, *, with_requests: bool) -> 
     return data
 
 
-@dataclass(frozen=True)
-class _VisitLite:
-    id: UUID
-    day: date
-    start: Any
-    end: Any
-    planned: bool
-
-
-async def _load_month_visits(
-    db: AsyncSession, days: list[date]
-) -> dict[tuple[UUID, date], list[_VisitLite]]:
-    """{(職員, 日): 本人が担当の訪問 (取消・削除を除く)}.
-
-    「本人の訪問」は共通の処理 (``staff_leave._owns_primary``・§3-3) と同じ: primary が本人／
-    primary が空・明示の担当なしでない・コース担当が本人／2 名体制の VSA に本人。
-    """
-    rows = (
-        await db.execute(
-            select(
-                Visit.id,
-                Visit.visit_date,
-                Visit.start_time,
-                Visit.end_time,
-                Visit.status,
-                Visit.primary_staff_id,
-                Visit.manual_staff_override,
-                Course.assigned_staff_id,
-            )
-            .outerjoin(Course, (Course.id == Visit.course_id) & (Course.deleted_at.is_(None)))
-            .where(
-                Visit.visit_date >= days[0],
-                Visit.visit_date <= days[-1],
-                Visit.deleted_at.is_(None),
-                Visit.status != VISIT_STATUS_CANCELLED,
-            )
-        )
-    ).all()
-    vsa: dict[UUID, set[UUID]] = defaultdict(set)
-    for visit_id, staff_id in (
-        await db.execute(
-            select(VisitStaffAssignment.visit_id, VisitStaffAssignment.staff_id)
-            .join(Visit, Visit.id == VisitStaffAssignment.visit_id)
-            .where(
-                Visit.visit_date >= days[0],
-                Visit.visit_date <= days[-1],
-                Visit.deleted_at.is_(None),
-            )
-        )
-    ).all():
-        vsa[visit_id].add(staff_id)
-    out: dict[tuple[UUID, date], list[_VisitLite]] = defaultdict(list)
-    for vid, vday, start, end, vstatus, primary, manual, course_staff in rows:
-        owners = set(vsa.get(vid, set()))
-        if primary is not None:
-            owners.add(primary)
-        elif not manual and course_staff is not None:
-            owners.add(course_staff)
-        lite = _VisitLite(vid, vday, start, end, vstatus == VISIT_STATUS_PLANNED)
-        for sid in owners:
-            out[(sid, vday)].append(lite)
-    return out
-
-
 async def _generated_weeks(db: AsyncSession, days: list[date]) -> set[tuple[int, int]]:
     """その月にかかる週のうち、作り済み (コースがある) の (ISO 年, ISO 週)."""
     pairs = sorted({(d.isocalendar().year, d.isocalendar().week) for d in days})
@@ -352,9 +288,11 @@ def _counts_as_off(data: _MonthData, s: Staff, day: date, leave_type: str | None
     )
 
 
-def _moves(visits: list[_VisitLite], leave_type: str) -> int:
+def _moves(visits: list[OwnedVisit], leave_type: str) -> int:
     """休みを入れたら担当なしへ移る訪問の数 (planned で休みの時間帯にかかるもの)."""
-    return sum(1 for v in visits if v.planned and visit_hits_leave(leave_type, v.start, v.end))
+    return sum(
+        1 for v in visits if v.planned and visit_hits_leave(leave_type, v.start_time, v.end_time)
+    )
 
 
 def _send_status(
@@ -367,6 +305,22 @@ def _send_status(
     if sent is None:
         return "baseline" if kaipoke is not None and kaipoke.baseline_pending else "unsent"
     return "sent" if sent == leave_type else "kaipoke_action"
+
+
+async def _pending_total(db: AsyncSession) -> int:
+    """月をまたいだ休みの申請中の件数 (消した職員の申請は数えない・メニューの件数)."""
+    return int(
+        await db.scalar(
+            select(func.count(PendingRequest.id))
+            .join(Staff, Staff.id == PendingRequest.target_staff_id)
+            .where(
+                PendingRequest.request_type == RequestType.STAFF_OFF.value,
+                PendingRequest.status == RequestStatus.PENDING.value,
+                Staff.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
 
 
 async def _confirmations(
@@ -408,7 +362,7 @@ async def get_leave_month(month: MonthParam, db: DbDep, _user: AdminUser) -> Lea
     data = await _load_month(db, month, with_requests=True)
     days = data.days
     today = today_jst()
-    visits = await _load_month_visits(db, days)
+    visits = await load_owned_visits_between(db, days[0], days[-1])
     generated = await _generated_weeks(db, days)
     staff_ids = [s.id for s in data.staff]
     confirmations = await _confirmations(db, data.month, staff_ids)
@@ -435,14 +389,10 @@ async def get_leave_month(month: MonthParam, db: DbDep, _user: AdminUser) -> Lea
     required = required_holidays(data.month, data.closed.keys())
     staff_by_id = {s.id: s for s in data.staff}
     order = {s.id: i for i, s in enumerate(data.staff)}
-    # 同じマスに申請中が 2 件以上あるとき (作成時の 409 をすり抜けた古いデータなど):
-    # マスの印と「通れば あと N」(pending_gain) は **いちばん先に出された申請** を使う
-    # (data.pending は作成順)。件数 (見出しの「申N」・職員の pending_count) と右の一覧は
-    # すべての申請を数える。
-    pending_by_cell: dict[tuple[UUID, date], _RequestRow] = {}
+    # 同じ職員・同じ日の申請中は 1 件だけ (0099 の部分 UNIQUE)。
+    pending_by_cell = {(r.staff_id, r.day): r for r in data.pending}
     pending_per_staff: dict[UUID, int] = defaultdict(int)
     for r in data.pending:
-        pending_by_cell.setdefault((r.staff_id, r.day), r)
         pending_per_staff[r.staff_id] += 1
     approved_cells = {(r.staff_id, r.day) for r in data.approved if r.override_type in LEAVE_TYPES}
 
@@ -692,6 +642,7 @@ async def get_leave_month_summary(
             _short_staff(data, required_holidays(data.month, data.closed.keys()))
         ),
         kaipoke_action_count=kaipoke_action,
+        pending_total=await _pending_total(db),
     )
 
 

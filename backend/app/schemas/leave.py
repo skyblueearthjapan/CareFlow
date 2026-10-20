@@ -403,6 +403,8 @@ class LeaveMonthSummary(BaseModel):
     pending_count: int | None = None
     short_staff_count: int | None = None
     kaipoke_action_count: int | None = None
+    #: 管理者だけ: 月をまたいだ休みの申請中の件数 (メニューの未処理件数)。
+    pending_total: int | None = None
 
 
 class LeaveDayInput(BaseModel):
