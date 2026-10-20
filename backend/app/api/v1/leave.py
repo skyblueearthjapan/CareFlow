@@ -58,6 +58,7 @@ from app.schemas.leave import (
     LeaveApproveBatchResult,
     LeaveApproveInput,
     LeaveApproveResult,
+    LeaveBulkSkip,
     LeaveCancelResult,
     LeaveCompareStatus,
     LeaveConfirmInput,
@@ -673,7 +674,8 @@ async def get_leave_month_summary(
     kaipoke_action = sum(
         1
         for k in kaipoke_rows
-        if _send_status(_leave_type(data, k.staff_id, k.leave_date), k) == "kaipoke_action"
+        if k.staff_id in listed
+        and _send_status(_leave_type(data, k.staff_id, k.leave_date), k) == "kaipoke_action"
     )
     times = list(confirmations.values())
     return LeaveMonthSummary(
@@ -790,16 +792,33 @@ async def put_leave_day_bulk(
     """「この日の全員に公休を入れる」(事業所の休みの日など)。1 トランザクション.
 
     ``staff_ids`` が無ければ、常勤・在籍・型でその曜日に勤務・その日に申請中でない・
-    まだ休みが入っていない人の全員 (新人は含む)。渡したときは、その中に申請中の人がいれば
-    409。1 人でも入れられなければ全部やめる。管理者への通知は 1 通にまとめる。
+    まだ休みが入っていない人の全員 (新人は含む)。渡したときは、表に載っていない人がいれば
+    422・申請中の人がいれば 409。どちらのときも、すでに休みが入っている人は上書きせず
+    ``skipped`` に返す (ディレクター決定)。1 人でも入れられなければ全部やめる。
+    管理者への通知は 1 通にまとめる。
     """
     day = payload.date
     data = await _load_month(db, day, with_requests=True)
     pending_staff = {r.staff_id for r in data.pending if r.day == day}
+    skipped: list[LeaveBulkSkip] = []
     if payload.staff_ids is not None:
-        targets = list(dict.fromkeys(payload.staff_ids))
-        if pending_staff & set(targets):
+        wanted = list(dict.fromkeys(payload.staff_ids))
+        if set(wanted) - {s.id for s in data.staff}:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="この月の表に載っていない職員が含まれています",
+            )
+        if pending_staff & set(wanted):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_PENDING_DAY_DETAIL)
+        targets = []
+        for sid in wanted:
+            existing = _leave_type(data, sid, day)
+            if existing is not None:
+                skipped.append(
+                    LeaveBulkSkip(staff_id=sid, reason="already_on_leave", leave_type=existing)
+                )
+            else:
+                targets.append(sid)
     else:
         targets = [
             s.id
@@ -839,6 +858,7 @@ async def put_leave_day_bulk(
         date=day,
         override_type=payload.override_type,
         applied=[_day_result(r) for r in results],
+        skipped=skipped,
         moved_visit_count=sum(len(r.moved_visit_ids) for r in results),
     )
 
@@ -846,10 +866,19 @@ async def put_leave_day_bulk(
 async def _moved_to_unassigned(db: AsyncSession, staff_id: UUID, day: date) -> int:
     """この人のこの日の休みで担当なしへ移した訪問の数 (op_log から・戻した操作は除く).
 
-    休みを入れた操作 (``set_staff_off``) と同じ op_group の ``set_visit_staff_slot`` のうち、
-    担当なしへ移したもの (``primary_staff_id`` が空) の訪問を重ねずに数える。週を作るときの
-    後始末など op_log を書かない経路で移した訪問は数えられない。
+    **その日の最後の取り消しの後に入れた休み** (いまの override の行) の操作 (``set_staff_off``)
+    と同じ op_group の ``set_visit_staff_slot`` のうち、担当なしへ移したもの
+    (``primary_staff_id`` が空) の訪問を重ねずに数える。
+
+    「最後の取り消しの後」は override の行の id で決める: 取り消すと行が消え、次に入れると
+    新しい id になる (種類を変えるだけなら同じ id のまま)。運転席の「戻る」で取り消しを
+    戻すと元の id の行が戻るので、元の休みの移し替えもまた数える。op_log の時刻の並びに
+    頼らない (同じ秒の操作でも決まる)。週を作るときの後始末など op_log を書かない経路で
+    移した訪問は数えられない。
     """
+    current = (await load_overrides_between(db, day, day, [staff_id])).get(staff_id, {}).get(day)
+    if current is None or current.override_type not in LEAVE_TYPES:
+        return 0
     y, w, wd = iso_key(day)
     rows = (
         await db.scalars(
@@ -868,6 +897,7 @@ async def _moved_to_unassigned(db: AsyncSession, staff_id: UUID, day: date) -> i
         and str(r.forward_payload.get("staff_id")) == str(staff_id)
         and r.forward_payload.get("weekday") == wd
         and r.forward_payload.get("type") in LEAVE_TYPES
+        and str(r.forward_payload.get("override_id")) == str(current.id)
     }
     return len(
         {
