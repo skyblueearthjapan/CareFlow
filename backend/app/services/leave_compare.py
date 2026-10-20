@@ -16,7 +16,8 @@
 
 **材料が新しいと認める条件** = ``fetched_at`` が今回の leave-compare ジョブの開始
 (``KaipokeJob.started_at``) 以降。新しくない週・無い週・``failed`` の週の日と、
-``covered_dates`` に無い日は「未確認」(差分に数える)。
+``covered_dates`` に無い日 (``covered_dates`` が NULL・空の週は全部の日) は「未確認」
+(差分に数える)。
 
 「合わせる」ボタンの処理 (このファイルでは作らない。``staff_leave.apply_staff_leave`` /
 ``cancel_staff_leave`` と同じトランザクションで ``sent_type`` を書く・§7-4-3 H-c):
@@ -40,6 +41,7 @@ None                      (ボタンなし) #4・#14・実績との       カイ
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from collections import defaultdict
 from collections.abc import Mapping
@@ -47,7 +49,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from app.core.leave import (
     AM_OFF_UNTIL,
@@ -71,6 +73,11 @@ from app.models.staff import StaffShift, StaffWeeklyOverride
 from app.services.kaipoke import sources
 from app.services.kaipoke.inbound import load_staff_name_index
 from app.services.kaipoke.name_match import match_name
+from app.services.kaipoke.plan_actual_compare import (
+    NO_STAFF_TOKENS,
+    VISIT_BUSINESS_TYPES,
+    norm_time,
+)
 from app.services.kaipoke.sources import (
     KIND_ACTUAL_CSV,
     KIND_TASKS,
@@ -80,13 +87,14 @@ from app.services.kaipoke.sources import (
     STATUS_OK,
     SourceSpec,
 )
-from app.services.scheduling.acceptance_strict_data import parse_visit_rows
 from app.services.scheduling.config import load_scheduling_config
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.services.kaipoke_client import KaipokeClient
+
+logger = logging.getLogger(__name__)
 
 # --- 差分の種類 (``LeaveDiff.kind``) ------------------------------------------------
 #: #2 カイポケだけ休み。
@@ -136,6 +144,8 @@ UNCONFIRMED_ACTUAL: Final = "actual_csv"
 JUDGED_NOT_LEAVE: Final = "not_leave"
 
 _USABLE: Final = (STATUS_OK, STATUS_EMPTY)
+#: 実績 CSV の職員名の列 (主担当・同行)。
+_CSV_STAFF_COLUMNS: Final = ("職員名１", "職員名２", "職員名３")
 _SUNDAY: Final = 6
 _HASH_SEP: Final = "\x1f"
 
@@ -256,12 +266,24 @@ class SentTypeUpdate:
     delete_row: bool
     case: int
 
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "staff_id": str(self.staff_id),
+            "date": self.day.isoformat(),
+            "sent_type": self.sent_type,
+            "delete_row": self.delete_row,
+            "case": self.case,
+        }
+
 
 @dataclass
 class LeaveCompareResult:
     """``build_leave_diffs`` の結果。"""
 
     month: date
+    #: らく助の休みを読む前に取った時刻 (``leave_months.last_compared_at`` に書く)。
+    #: 読んだ後に休みが変わったら「照合の後に変えた」と分かるように、読む前の時刻にする。
+    compared_at: datetime | None = None
     diffs: list[LeaveDiff] = field(default_factory=list)
     planned_sends: list[PlannedSend] = field(default_factory=list)
     sent_type_updates: list[SentTypeUpdate] = field(default_factory=list)
@@ -383,16 +405,71 @@ def _minutes(value: time) -> int:
     return value.hour * 60 + value.minute
 
 
-def _visit_hits_leave(leave_type: str, start_min: int, end_min: int) -> bool:
+def _visit_hits_leave(leave_type: str, start_min: int, end_min: int | None) -> bool:
     """訪問 (分) が休みの時間帯にかかるか。終日は常に・午前休は開始が勤務の始まりより前・
-    午後休は終了が休みの始まりより後 (境目は ``app/core/leave.py`` の定数)。"""
+    午後休は終了が休みの始まりより後 (境目は ``app/core/leave.py`` の定数)。
+
+    照合では見落とさない向きに倒す: 終了が空 (読めない) の訪問は、午後休なら当たりとする。
+    """
     if leave_type in FULL_DAY_OFF:
         return True
     if leave_type == "am_off":
         return start_min < _minutes(AM_OFF_UNTIL)
     if leave_type == "pm_off":
-        return end_min > _minutes(PM_OFF_FROM)
+        return end_min is None or end_min > _minutes(PM_OFF_FROM)
     return False
+
+
+def _hhmm(minutes: int | None) -> str | None:
+    return None if minutes is None else f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _actual_visits_by_staff(
+    rows: list[Any],
+    first: date,
+    day_set: set[date],
+    name_index: dict[str, list[str]],
+) -> dict[tuple[uuid.UUID, date], list[dict[str, Any]]]:
+    """実績 CSV → (職員, 日) ごとの訪問 (照合用の読み方)。
+
+    * 開始だけで数える (終了が空・読めなくても落とさない。``end`` は None)。
+    * 行の重複のまとめはしない。職員名１〜３ のそれぞれへ配り、(職員, 日) の中で
+      同じ利用者・開始・終了の行だけを 1 件にする (職員名２・３ の食い違いを見落とさない)。
+    """
+    out: dict[tuple[uuid.UUID, date], list[dict[str, Any]]] = defaultdict(list)
+    seen: set[tuple[uuid.UUID, date, str, int, int | None]] = set()
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        if str(raw.get("業務種別") or "").strip() not in VISIT_BUSINESS_TYPES:
+            continue
+        try:
+            day = first.replace(day=int(str(raw.get("日付") or "").strip()))
+        except ValueError:
+            continue
+        if day not in day_set:
+            continue
+        start = _parse_hhmm(norm_time(str(raw.get("開始時間") or "")))
+        if start is None:
+            continue
+        end = _parse_hhmm(norm_time(str(raw.get("終了時間") or "")))
+        start_min = _minutes(start)
+        end_min = _minutes(end) if end is not None else None
+        patient = str(raw.get("利用者") or "").strip()
+        for column in _CSV_STAFF_COLUMNS:
+            name = str(raw.get(column) or "").strip()
+            if name in NO_STAFF_TOKENS:
+                continue
+            hit = match_name(name, name_index)
+            if hit is None:
+                continue
+            staff_id = uuid.UUID(hit)
+            key = (staff_id, day, patient, start_min, end_min)
+            if key in seen:
+                continue
+            seen.add(key)
+            out[(staff_id, day)].append({"patient": patient, "start": start_min, "end": end_min})
+    return out
 
 
 @dataclass
@@ -528,11 +605,10 @@ def build_leave_diffs(
             for d in week:
                 unconfirmed[d] = (reason or UNCONFIRMED_NO_SNAPSHOT, monday)
             continue
-        covered = (
-            set(week)
-            if source.covered_dates is None
-            else {d for d in week if d.isoformat() in {str(v) for v in source.covered_dates}}
-        )
+        # covered_dates が NULL (RPA が画面に出た日を返さなかった) の週は、どの日も表示を
+        # 確かめられないので全部の日を未確認にする (保守的に・空の一覧も同じ)。
+        shown = {str(v) for v in (source.covered_dates or [])}
+        covered = {d for d in week if d.isoformat() in shown}
         for d in week:
             if d in covered:
                 confirmed.add(d)
@@ -583,20 +659,9 @@ def build_leave_diffs(
     actual_fresh = _is_fresh(actual, job_started_at)
     if actual is not None:
         fetched["actual_csv"] = _aware(actual.fetched_at).isoformat()
-    actual_visits: dict[tuple[uuid.UUID, date], list[dict[str, Any]]] = defaultdict(list)
+    actual_visits: dict[tuple[uuid.UUID, date], list[dict[str, Any]]] = {}
     if actual_fresh and actual is not None:
-        for row in parse_visit_rows(list(actual.rows), first, dedupe=True):
-            if row.day not in day_set:
-                continue
-            for name in row.names:
-                if not name:
-                    continue
-                hit = match_name(name, name_index)
-                if hit is None:
-                    continue
-                actual_visits[(uuid.UUID(hit), row.day)].append(
-                    {"patient": row.patient, "start": row.start, "end": row.end}
-                )
+        actual_visits = _actual_visits_by_staff(actual.rows, first, day_set, name_index)
     result.fetched_at = fetched
 
     # --- 未確認の日 (日ごとに 1 件) ---
@@ -723,8 +788,8 @@ def build_leave_diffs(
                             "visits": [
                                 {
                                     "patient": v["patient"],
-                                    "start": f"{v['start'] // 60:02d}:{v['start'] % 60:02d}",
-                                    "end": f"{v['end'] // 60:02d}:{v['end'] % 60:02d}",
+                                    "start": _hhmm(v["start"]),
+                                    "end": _hhmm(v["end"]),
                                 }
                                 for v in hits
                             ]
@@ -764,7 +829,12 @@ def _to_source(row: KaipokeSourceSnapshot) -> SourceRows:
 async def build_month_diffs(
     db: AsyncSession, *, month: date, job_started_at: datetime
 ) -> LeaveCompareResult:
-    """DB から材料を読み、``build_leave_diffs`` で差分を作る (書かない)。"""
+    """DB から材料を読み、``build_leave_diffs`` で差分を作る (書かない)。
+
+    らく助の休みを読む前の時刻を ``compared_at`` に持たせる (読んだ後の変更は
+    ``last_leave_changed_at`` がこれより後になり、比べ直しが要ると分かる)。
+    """
+    compared_at = datetime.now(UTC)
     first = month_first_day(month)
     days = month_days(first)
     mondays = month_mondays(first)
@@ -837,7 +907,7 @@ async def build_month_diffs(
         for row in (await db.scalars(select(StaffShift))).all()
         if row.is_on
     }
-    return build_leave_diffs(
+    result = build_leave_diffs(
         month=first,
         job_started_at=job_started_at,
         staff_names=staff_names,
@@ -850,6 +920,8 @@ async def build_month_diffs(
         shifts=shifts,
         business_hours=biz,
     )
+    result.compared_at = compared_at
+    return result
 
 
 async def save_compare_run(
@@ -861,31 +933,35 @@ async def save_compare_run(
 ) -> LeaveCompareRun:
     """差分の結果を ``leave_compare_runs`` に置き、自動の行 (#3・#7・#12・#13) の S をそろえ、
     ``leave_months`` の照合の記録を更新する。1 つのトランザクションで commit する。"""
-    for update in result.sent_type_updates:
-        if update.delete_row:
+    for change in result.sent_type_updates:
+        if change.delete_row:
             await db.execute(
                 delete(StaffLeaveKaipoke).where(
-                    StaffLeaveKaipoke.staff_id == update.staff_id,
-                    StaffLeaveKaipoke.leave_date == update.day,
+                    StaffLeaveKaipoke.staff_id == change.staff_id,
+                    StaffLeaveKaipoke.leave_date == change.day,
                 )
             )
             continue
         row = await db.scalar(
             select(StaffLeaveKaipoke).where(
-                StaffLeaveKaipoke.staff_id == update.staff_id,
-                StaffLeaveKaipoke.leave_date == update.day,
+                StaffLeaveKaipoke.staff_id == change.staff_id,
+                StaffLeaveKaipoke.leave_date == change.day,
             )
         )
         if row is None:
-            row = StaffLeaveKaipoke(staff_id=update.staff_id, leave_date=update.day)
+            row = StaffLeaveKaipoke(staff_id=change.staff_id, leave_date=change.day)
             db.add(row)
-        row.sent_type = update.sent_type
+        row.sent_type = change.sent_type
         row.baseline_pending = False
 
     run = LeaveCompareRun(
         month=result.month,
         kaipoke_job_id=job_id,
-        fetched_at=result.fetched_at,
+        # 使った材料の fetched_at と、自動でそろえた sent_type (#3・#7・#12・#13・行の片付け)。
+        fetched_at={
+            **result.fetched_at,
+            "auto_updates": [u.as_dict() for u in result.sent_type_updates],
+        },
         diffs=[diff.as_dict() for diff in result.diffs],
         diff_count=result.diff_count,
         planned_send_count=result.planned_send_count,
@@ -899,24 +975,49 @@ async def save_compare_run(
     if leave_month is None:
         leave_month = LeaveMonth(month=result.month)
         db.add(leave_month)
-    leave_month.last_compared_at = datetime.now(UTC)
+    leave_month.last_compared_at = result.compared_at or datetime.now(UTC)
     leave_month.last_compare_run_id = run.id
     await db.commit()
     return run
 
 
 async def compare_month(db: AsyncSession, job_id: uuid.UUID) -> LeaveCompareRun | None:
-    """ジョブ (``completed``) の材料から差分を作って保存する。決着していなければ None。"""
+    """ジョブ (``completed``) の材料から差分を作って保存する。決着していなければ None。
+
+    差分づくり・保存が失敗したら rollback し、ログとジョブの
+    ``result_summary.compare_error`` に残して None を返す (ジョブは ``completed`` のまま)。
+    結果を返す側 (API) は ``leave_compare_runs.kaipoke_job_id == job.id`` の行で
+    このジョブの照合の結果を突き合わせる (行が無く ``compare_error`` があれば失敗)。
+    """
     job = await db.get(KaipokeJob, job_id, populate_existing=True)
     if job is None or job.status != "completed" or job.started_at is None:
         return None
     params = job.params or {}
     if params.get("op") != OP_LEAVE_COMPARE or not params.get("month"):
         return None
-    result = await build_month_diffs(
-        db, month=month_first_day(str(params["month"])), job_started_at=job.started_at
-    )
-    return await save_compare_run(db, result=result, job_id=job.id, user_id=job.created_by_user_id)
+    started_at = job.started_at
+    user_id = job.created_by_user_id
+    try:
+        result = await build_month_diffs(
+            db, month=month_first_day(str(params["month"])), job_started_at=started_at
+        )
+        return await save_compare_run(db, result=result, job_id=job_id, user_id=user_id)
+    except Exception as exc:  # noqa: BLE001 — 黙って失わない (ジョブは completed で残る)
+        logger.exception("leave compare failed for job %s", job_id)
+        await db.rollback()
+        summary = dict(
+            (await db.scalar(select(KaipokeJob.result_summary).where(KaipokeJob.id == job_id)))
+            or {}
+        )
+        summary["compare_error"] = f"照合の差分を作れませんでした: {str(exc)[:300]}"
+        await db.execute(
+            update(KaipokeJob)
+            .where(KaipokeJob.id == job_id)
+            .values(result_summary=summary, updated_at=datetime.now(UTC))
+            .execution_options(synchronize_session=False)
+        )
+        await db.commit()
+        return None
 
 
 async def start_leave_compare(

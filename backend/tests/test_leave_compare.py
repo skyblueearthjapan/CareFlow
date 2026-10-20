@@ -325,6 +325,27 @@ def test_month_crossing_week_only_counts_days_in_month() -> None:
     assert result.unconfirmed_dates == [date(2026, 10, 1), date(2026, 10, 2), date(2026, 10, 3)]
 
 
+@pytest.mark.parametrize("covered", [None, []])
+@pytest.mark.parametrize("monday", [date(2026, 9, 28), date(2026, 10, 12)])
+def test_week_without_covered_dates_is_all_unconfirmed(
+    covered: list[str] | None, monday: date
+) -> None:
+    """covered_dates が NULL・空の週は、画面に出た日を確かめられないので全部の日が未確認。"""
+    day = max(monday, MONTH) + timedelta(days=1)
+    week = lc.SourceRows(
+        status="ok", fetched_at=FRESH, rows=[_leave_task(day, "off")], covered_dates=covered
+    )
+    result = _build(rakusuke={(STAFF, day): "off"}, tasks=_weeks([], **{monday.isoformat(): week}))
+    expected = [
+        monday + timedelta(days=i)
+        for i in range(6)
+        if (monday + timedelta(days=i)).month == MONTH.month
+    ]
+    assert result.unconfirmed_dates == expected
+    assert {d.detail["reason"] for d in result.diffs} == {lc.UNCONFIRMED_NOT_COVERED}
+    assert result.sent_type_updates == [] and result.planned_sends == []
+
+
 def test_compare_plan_and_month_weeks() -> None:
     assert lc.month_mondays(MONTH) == MONDAYS
     plan = lc.compare_source_plan(MONTH)
@@ -492,6 +513,46 @@ def test_actual_visit_on_other_day_or_other_staff_is_ignored() -> None:
         ),
     )
     assert result.diffs == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "start", "conflict"),
+    [
+        ("pm_off", "11:00", True),  # 終了が空 → 午後休は当たり (見落とさない向き)
+        ("am_off", "12:59", True),  # 開始だけで判定
+        ("am_off", "13:00", False),
+        ("off", "15:00", True),
+    ],
+)
+def test_actual_visit_without_end_is_judged_by_start(kind: str, start: str, conflict: bool) -> None:
+    visit = _visit(DAY, start, "")
+    result = _build(
+        rakusuke={(STAFF, DAY): kind},
+        sent={(STAFF, DAY): lc.SentRecord(kind)},
+        task_rows=[_leave_task(DAY, kind)],
+        actual=_actual([visit]),
+    )
+    if conflict:
+        [diff] = result.diffs
+        assert diff.kind == lc.DIFF_ACTUAL_CONFLICT
+        assert diff.detail["visits"] == [{"patient": "患者　一郎", "start": start, "end": None}]
+    else:
+        assert result.diffs == []
+
+
+def test_actual_rows_are_not_deduped_across_second_staff() -> None:
+    """同じ職員名１・利用者・時刻の行が 2 つあり、職員名２ だけ違う → 2 行目の同行も見る。"""
+    first_row = {**_visit(DAY, "10:00", "11:00", name="他の　人"), "職員名２": "別の　人"}
+    second_row = {**_visit(DAY, "10:00", "11:00", name="他の　人"), "職員名２": NAME}
+    result = _build(
+        rakusuke={(STAFF, DAY): "off"},
+        sent={(STAFF, DAY): lc.SentRecord("off")},
+        task_rows=[_leave_task(DAY, "off")],
+        actual=_actual([first_row, second_row, second_row]),
+    )
+    [diff] = result.diffs
+    assert diff.kind == lc.DIFF_ACTUAL_CONFLICT
+    assert len(diff.detail["visits"]) == 1  # (職員, 日) の中の同じ行は 1 件
 
 
 def test_stale_actual_csv_makes_leave_days_unconfirmed() -> None:
@@ -665,6 +726,11 @@ async def test_compare_month_saves_run_and_aligns_sent_type(db) -> None:
     assert saved.planned_send_count == 1
     assert saved.unconfirmed_days == 0
     assert set(saved.fetched_at["tasks"]) == {m.isoformat() for m in MONDAYS}
+    # 自動でそろえた sent_type も残す。
+    assert sorted(
+        (u["date"], u["case"], u["sent_type"], u["delete_row"])
+        for u in saved.fetched_at["auto_updates"]
+    ) == [(d7.isoformat(), 7, "off", False), (d3.isoformat(), 3, None, True)]
 
     rows = {
         r.leave_date: r
@@ -681,6 +747,40 @@ async def test_compare_month_saves_run_and_aligns_sent_type(db) -> None:
     month = await db.get(LeaveMonth, MONTH)
     assert month is not None and month.last_compare_run_id == run.id
     assert month.last_compared_at is not None
+
+
+@pytest.mark.asyncio
+async def test_last_compared_at_is_taken_before_reading_leaves(db) -> None:
+    before = datetime.now(UTC)
+    result = await lc.build_month_diffs(db, month=MONTH, job_started_at=JOB_START)
+    assert result.compared_at is not None and before <= result.compared_at <= datetime.now(UTC)
+
+    # 保存は差分を作った時刻ではなく、読む前の時刻を書く。
+    result.compared_at = datetime(2026, 10, 20, 2, 0, tzinfo=UTC)
+    await lc.save_compare_run(db, result=result, job_id=None, user_id=None)
+    month = await db.get(LeaveMonth, MONTH)
+    assert month is not None and month.last_compared_at is not None
+    assert month.last_compared_at.replace(tzinfo=UTC) == result.compared_at
+
+
+@pytest.mark.asyncio
+async def test_compare_month_failure_is_recorded_on_job(db, monkeypatch) -> None:
+    job = await sources.start_source_job(
+        db, op=OP_LEAVE_COMPARE, week_start=MONDAYS[0], user_id=None, params={"month": "2026-10"}
+    )
+    await sources.finish_source_job(db, job.id, [])
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("こわれた")
+
+    job_id = job.id  # compare_month の rollback で job は期限切れになる
+    monkeypatch.setattr(lc, "build_month_diffs", broken)
+    assert await lc.compare_month(db, job_id) is None
+    refreshed = await db.get(KaipokeJob, job_id, populate_existing=True)
+    assert refreshed is not None and refreshed.status == "completed"
+    assert "こわれた" in refreshed.result_summary["compare_error"]
+    assert refreshed.result_summary["done"] == 0  # 段階 0 の記録は残す
+    assert (await db.scalars(select(LeaveCompareRun))).all() == []
 
 
 @pytest.mark.asyncio
