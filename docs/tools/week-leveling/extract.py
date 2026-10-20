@@ -23,8 +23,10 @@ select json_build_object(
  'visits', (select json_agg(row_to_json(x)) from (
    select v.id, v.patient_id, v.visit_date, v.start_time, v.end_time, v.required_staff_count,
           v.visit_group_id, v.source, v.week_pinned, v.status, v.primary_staff_id, v.secondary_staff_id,
+          v.manual_staff_override,
           c.code course_code, co.short_label course_office,
-          -- 表示の正典はコースの担当 (週を生成した直後の訪問は主担当が空でコースにだけ担当がいる)
+          -- 表示の正典はコースの担当 (週を生成した直後の訪問は主担当が空でコースにだけ担当がいる)。
+          -- ただし主担当が空で manual_staff_override が真の訪問は「明示の担当なし」(休み設計 §3-2) で読み替えない
           c.assigned_staff_id course_staff_id
    from visits v left join courses c on c.id=v.course_id left join offices co on co.id=c.office_id
    where v.visit_date between '{monday}' and '{sunday}' and v.deleted_at is null and v.status<>'cancelled') x),

@@ -62,8 +62,8 @@
 
 | # | 質問例 | まず使う | 補う・別の方法 | 注意 |
 |---|---|---|---|---|
-| 38 | 今週休みの人は？ | `rk get /staff/overrides-week -q iso_year=2026 -q iso_week=42` | `rk sql staff_week_overrides -p monday=2026-10-12`（日付つき） | 申請中は入らない（#39） |
-| 39 | 未承認の休み申請は？ | `rk get /pending-requests -q status=pending -q request_type=staff_off` | `rk sql pending_leave_requests -p request_type=staff_off` | 1 日 = 1 件 |
+| 38 | 今週休みの人は？ | `rk get /staff/overrides-week -q iso_year=2026 -q iso_week=42` | `rk sql staff_week_overrides -p monday=2026-10-12`（日付つき・種類の日本語 `type_ja`・終日か `full_day_off`・入れた元 `source`） | 種類は公休・午前休（13:00 から勤務）・午後休（12:30 から休み）・有給。終日の休みは公休と有給。申請中は入らない（#39） |
+| 39 | 未承認の休み申請は？ | `rk get /pending-requests -q status=pending -q request_type=staff_off` | `rk sql pending_leave_requests -p request_type=staff_off`（種類 `leave_type`・変更のお願い `is_change`・理由 `note`） | 1 日 = 1 件。締め切り（前の月の 20 日・日本時間）の後は「変更のお願い」。`cancel` は休みを取り消してほしいというお願い |
 | 40 | ◯月の出勤カレンダーは確定した？ | `rk get /staff/<sid>/shift-confirmations` | — | 再確定は同じ行の更新 |
 | 41 | 田中さんの会議・研修の予定は？ | `rk get /staff/<sid>/events -q from=2026-10-12 -q to=2026-10-18` | 週の全員: `rk sql staff_week_events -p monday=2026-10-12` | 時刻は壁時計（UTC として保存）。cancelled は「今週だけ外した」 |
 | 42 | 新人の同行は今週どこ？ | `rk get /accompaniments -q iso_year=2026 -q iso_week=42 -q staff_id=<sid>` | `rk sql accompaniments_week -p monday=2026-10-12` | course リンクはそのコースの全訪問 |
