@@ -31,6 +31,7 @@ import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { BulkApproveDialog } from '@/components/leave/BulkApproveDialog';
 import { ClosedDaysDialog } from '@/components/leave/ClosedDaysDialog';
 import { LeaveCellPopover } from '@/components/leave/LeaveCellPopover';
+import { LeaveComparePanel } from '@/components/leave/LeaveComparePanel';
 import { LeaveConfirmDialog } from '@/components/leave/LeaveConfirmDialog';
 import { LeavePendingPanel } from '@/components/leave/LeavePendingPanel';
 import { LeaveSheetGrid } from '@/components/leave/LeaveSheetGrid';
@@ -135,6 +136,8 @@ function LeaveSheetPage() {
   const [stamp, setStamp] = useState<Stamp>('pointer');
   const [pop, setPop] = useState<PopTarget | null>(null);
   const [groupMode, setGroupMode] = useState<'date' | 'staff'>('date');
+  /** 右の一覧: 申請中／カイポケとの差分。 */
+  const [sideTab, setSideTab] = useState<'pending' | 'kaipoke'>('pending');
   const [focusPending, setFocusPending] = useState(false);
   const [highlight, setHighlight] = useState<{ staffId: string; date: string } | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -609,18 +612,56 @@ function LeaveSheetPage() {
               />
               <Legend />
             </Card>
-            <LeavePendingPanel
-              view={view}
-              mode={groupMode}
-              onModeChange={setGroupMode}
-              focusPending={focusPending}
-              onFocusPendingChange={setFocusPending}
-              busyCells={busyCells}
-              onHighlight={onHighlight}
-              onApprove={(it) => doApprove(it)}
-              onApproveMany={(items) => doApproveMany(items.map((i) => i.id))}
-              onOpenCell={openCellFor}
-            />
+            <div className="flex min-w-0 flex-col gap-2">
+              <div
+                className="flex rounded-md border border-border-default bg-bg-base p-0.5"
+                role="tablist"
+                aria-label="右の一覧"
+              >
+                {(
+                  [
+                    ['pending', `申請中（${view.pending.length}）`],
+                    ['kaipoke', 'カイポケとの差分'],
+                  ] as const
+                ).map(([k, label]) => (
+                  <button
+                    key={k}
+                    type="button"
+                    role="tab"
+                    aria-selected={sideTab === k}
+                    onClick={() => setSideTab(k)}
+                    className={cn(
+                      'flex-1 rounded px-2 py-1.5 text-sm',
+                      sideTab === k
+                        ? 'bg-brand-primary font-bold text-white'
+                        : 'text-text-secondary',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {sideTab === 'pending' ? (
+                <LeavePendingPanel
+                  view={view}
+                  mode={groupMode}
+                  onModeChange={setGroupMode}
+                  focusPending={focusPending}
+                  onFocusPendingChange={setFocusPending}
+                  busyCells={busyCells}
+                  onHighlight={onHighlight}
+                  onApprove={(it) => doApprove(it)}
+                  onApproveMany={(items) => doApproveMany(items.map((i) => i.id))}
+                  onOpenCell={openCellFor}
+                />
+              ) : (
+                <LeaveComparePanel
+                  key={month}
+                  month={month}
+                  baselinePendingCount={view.compare.baseline_pending_count}
+                />
+              )}
+            </div>
           </div>
           <DriveCard month={month} />
         </>
