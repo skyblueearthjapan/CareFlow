@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.services.kaipoke_client import KaipokeClient
+
+logger = logging.getLogger(__name__)
 
 #: ``KaipokeJob.params["op"]`` の値。
 OP_ACCEPTANCE_REFRESH: Final = "acceptance-refresh"
@@ -210,6 +213,8 @@ async def start_source_job(
     ``week_start`` は取る範囲の最初の月曜。``total`` は取る本数 (進み具合の分母)。
     「動いているジョブを数える → 作る」は鍵を取った 1 つのトランザクションで行う
     (同時に 2 本押されても 1 本は 409。PG は advisory lock、同じプロセスは asyncio の鍵)。
+    **新しいトランザクションで呼ぶこと** (409 のときの rollback は、呼び出し側の
+    未 commit の変更も捨てるため)。
     """
     if op not in SOURCE_OPS:
         raise ValueError(f"unknown source op: {op}")
@@ -356,11 +361,15 @@ async def _call_when_idle[T](
     job_id: uuid.UUID | None,
     call: Callable[[], Awaitable[T]],
 ) -> T:
-    """RPA が空くのを待ってから ``call`` する (30 秒おき・最大 10 回)。"""
+    """RPA が空くのを待ってから ``call`` する (30 秒おき・最大 10 回)。
+
+    待ちの各回で自分のジョブがまだ ``running`` か確かめる (違えば ``SourceJobCancelledError``)。
+    """
     reason = _MSG_RPA_BUSY
     for attempt in range(MAX_RETRIES + 1):
         if attempt:
             await asyncio.sleep(RETRY_INTERVAL_SECONDS)
+        await _ensure_running(db, job_id)
         busy = await _rpa_busy_reason(db, client, job_id=job_id)
         if busy is not None:
             reason = busy
@@ -372,11 +381,27 @@ async def _call_when_idle[T](
     raise _RpaUnavailableError(reason)
 
 
-async def _wait_rpa_idle(client: KaipokeClient) -> bool:
-    """RPA が実行中でなくなるまで待つ (30 秒おき・最大 10 回)。空いたら True。"""
+async def _ensure_running(db: AsyncSession, job_id: uuid.UUID | None) -> None:
+    """自分のジョブがまだ ``running`` か確かめる。違えば ``SourceJobCancelledError``。"""
+    if job_id is None:
+        return
+    status = await db.scalar(select(KaipokeJob.status).where(KaipokeJob.id == job_id))
+    await db.commit()
+    if status != _RUNNING:
+        raise SourceJobCancelledError(job_id)
+
+
+async def _wait_rpa_idle(
+    db: AsyncSession, client: KaipokeClient, *, job_id: uuid.UUID | None
+) -> bool:
+    """RPA が実行中でなくなるまで待つ (30 秒おき・最大 10 回)。空いたら True。
+
+    待ちの各回で自分のジョブがまだ ``running`` か確かめる (違えば ``SourceJobCancelledError``)。
+    """
     for attempt in range(MAX_RETRIES + 1):
         if attempt:
             await asyncio.sleep(RETRY_INTERVAL_SECONDS)
+        await _ensure_running(db, job_id)
         try:
             raw = await client.status()
         except KaipokeApiError:
@@ -583,7 +608,7 @@ async def fetch_week_tasks(
         if isinstance(exc, KaipokeApiError) and exc.status_code == 504:
             # 同期の取得が時間切れ: RPA はまだ動いているかもしれない。空くのを確かめてから
             # 次の本へ (次の呼び出しが動いている取得の結果の置き場を上書きしないように)。
-            if not await _wait_rpa_idle(client):
+            if not await _wait_rpa_idle(db, client, job_id=job_id):
                 error = _short(f"{error}（時間切れのあと{_MSG_RPA_BUSY}）")
         return await _store(
             db, kind=KIND_TASKS, period_start=week_start, job_id=job_id, error=error
@@ -646,12 +671,27 @@ async def run_source_job(
     except SourceJobCancelledError:
         await db.rollback()
         return await db.get(KaipokeJob, job_id, populate_existing=True)
+    except asyncio.CancelledError:
+        # タスクごと止められた (プロセスの終了など)。閉じ終えるまでは止めさせない。
+        await asyncio.shield(_close_failed(db, job_id, results, "中断されました"))
+        raise
     except Exception as exc:  # noqa: BLE001 — 黙って死なせない (running が残る)
-        await db.rollback()
-        return await finish_source_job(
-            db, job_id, results, error=f"取り直しの途中で失敗しました: {_short(exc)}"
+        return await _close_failed(
+            db, job_id, results, f"取り直しの途中で失敗しました: {_short(exc)}"
         )
     return await finish_source_job(db, job_id, results)
+
+
+async def _close_failed(
+    db: AsyncSession, job_id: uuid.UUID, results: list[SourceFetchResult], error: str
+) -> KaipokeJob | None:
+    """rollback してジョブを ``failed`` で閉じる。閉じられなければログに残す。"""
+    try:
+        await db.rollback()
+        return await finish_source_job(db, job_id, results, error=error)
+    except Exception:  # noqa: BLE001 — 元の失敗を隠さない (ここはログだけ)
+        logger.exception("kaipoke source job %s could not be closed (%s)", job_id, error)
+        return None
 
 
 __all__ = [
