@@ -223,7 +223,31 @@ export const outboundJobStatusSchema = z.object({
 });
 export type OutboundJobStatus = z.infer<typeof outboundJobStatusSchema>;
 
-/** ジョブが動いている (pending / running)。 */
-export function isJobActive(job: { status: string } | null | undefined): boolean {
-  return job?.status === 'pending' || job?.status === 'running';
+/**
+ * ジョブが動いている (pending / running)。止まった (stale = 長く書き戻しが無い) ジョブは
+ * 終わったものとして扱う (押せないまま・読み続けるのを防ぐ)。
+ */
+export function isJobActive(
+  job: { status: string; stale?: boolean | null } | null | undefined,
+): boolean {
+  return (job?.status === 'pending' || job?.status === 'running') && !job.stale;
+}
+
+/** 照合のジョブの状態が「まだ動いている」(取り直し中・比べている・止まっていない)。 */
+export function isCompareRunning(status: CompareJobStatus | null | undefined): boolean {
+  if (!status) return false;
+  if (status.job.stale) return false;
+  return status.state === 'fetching' || status.state === 'comparing';
+}
+
+/** JST の 17〜18 時台 (夕方の注意を出す時間・バックエンドの evening_warning と同じ)。 */
+export function isEveningJst(now: Date = new Date()): boolean {
+  const hour = Number(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Tokyo',
+      hour: 'numeric',
+      hourCycle: 'h23',
+    }).format(now),
+  );
+  return hour === 17 || hour === 18;
 }

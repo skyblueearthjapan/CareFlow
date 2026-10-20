@@ -16,6 +16,7 @@ import {
   compareJobStatusSchema,
   compareLatestSchema,
   compareStartSchema,
+  isCompareRunning,
   isJobActive,
   outboundJobStatusSchema,
   outboundPreviewSchema,
@@ -33,6 +34,29 @@ import {
 const BASE = '/api/v1/leave';
 /** ジョブの状態を読み直す間隔。 */
 export const LEAVE_JOB_POLL_MS = 3_000;
+
+/** 読み直しの決まりに渡す query の状態 (TanStack Query の q.state の一部)。 */
+interface PollState<T> {
+  status: 'pending' | 'error' | 'success';
+  data: T | undefined;
+}
+
+/**
+ * 照合のジョブを読み直す間隔。読めなかった (error)・止まった (stale)・終わったら読まない。
+ * まだ 1 回も読めていなければ読む。
+ */
+export function compareJobPollMs(q: PollState<CompareJobStatus>): number | false {
+  if (q.status === 'error') return false;
+  if (!q.data) return LEAVE_JOB_POLL_MS;
+  return isCompareRunning(q.data) ? LEAVE_JOB_POLL_MS : false;
+}
+
+/** 送信のジョブを読み直す間隔 (決まりは照合と同じ)。 */
+export function outboundJobPollMs(q: PollState<OutboundJobStatus>): number | false {
+  if (q.status === 'error') return false;
+  if (!q.data) return LEAVE_JOB_POLL_MS;
+  return isJobActive(q.data.job) ? LEAVE_JOB_POLL_MS : false;
+}
 
 export const compareLatestKey = (month: string) => ['leave', 'kaipoke', 'latest', month] as const;
 export const outboundPreviewKey = (month: string) =>
@@ -76,10 +100,9 @@ export function useCompareJob(jobId: string | null) {
       return compareJobStatusSchema.parse(raw);
     },
     enabled: ready && !!jobId,
-    refetchInterval: (q) => {
-      const st = q.state.data?.state;
-      return !st || st === 'fetching' || st === 'comparing' ? LEAVE_JOB_POLL_MS : false;
-    },
+    refetchInterval: (q) => compareJobPollMs(q.state),
+    // 失敗し続けたら読み直しをやめて画面にエラーを出す
+    retry: 2,
   });
 }
 
@@ -113,7 +136,8 @@ export function useApplyCompare() {
       });
       return compareApplyResultSchema.parse(raw);
     },
-    onSettled: () => void invalidateAfterLeave(qc),
+    // Promise を返すと、読み直しが終わるまで isPending のまま (その間ボタンを押せない)
+    onSettled: () => invalidateAfterLeave(qc),
   });
 }
 
@@ -162,7 +186,7 @@ export function useOutboundJob(jobId: string | null) {
       return outboundJobStatusSchema.parse(raw);
     },
     enabled: ready && !!jobId,
-    refetchInterval: (q) =>
-      !q.state.data || isJobActive(q.state.data.job) ? LEAVE_JOB_POLL_MS : false,
+    refetchInterval: (q) => outboundJobPollMs(q.state),
+    retry: 2,
   });
 }

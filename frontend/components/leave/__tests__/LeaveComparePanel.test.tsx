@@ -11,7 +11,7 @@
  *   - 送る前の一覧 (送れない理由)・照合がまだの月は送れない・送信中・結果
  */
 import * as React from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import type * as ReactQueryModule from '@tanstack/react-query';
@@ -43,6 +43,10 @@ vi.mock('@/lib/queries/leave', async (importOriginal) => {
 });
 
 let latest: CompareLatest | undefined;
+let latestError: Error | null = null;
+let jobError: Error | null = null;
+let outJobError: Error | null = null;
+let applyPending = false;
 let jobStatus: CompareJobStatus | undefined;
 let preview: OutboundPreview | undefined;
 let outJob: OutboundJobStatus | undefined;
@@ -52,13 +56,22 @@ const startCompare = vi.fn();
 const applyCompare = vi.fn();
 const startOutbound = vi.fn();
 vi.mock('@/lib/queries/leaveKaipoke', () => ({
-  useCompareLatest: () => ({ data: latest, isLoading: false }),
+  useCompareLatest: () => ({
+    data: latestError ? undefined : latest,
+    isLoading: false,
+    isError: !!latestError,
+    error: latestError,
+  }),
   useCompareJob: (id: string | null) => {
     jobCalls.push(id);
-    return { data: id ? jobStatus : undefined };
+    return {
+      data: id && !jobError ? jobStatus : undefined,
+      isError: !!id && !!jobError,
+      error: jobError,
+    };
   },
   useStartCompare: () => ({ mutateAsync: startCompare, isPending: false }),
-  useApplyCompare: () => ({ mutateAsync: applyCompare, isPending: false }),
+  useApplyCompare: () => ({ mutateAsync: applyCompare, isPending: applyPending }),
   useOutboundPreview: (_m: string, enabled: boolean) => ({
     data: enabled ? preview : undefined,
     isError: false,
@@ -66,7 +79,11 @@ vi.mock('@/lib/queries/leaveKaipoke', () => ({
   useStartOutbound: () => ({ mutateAsync: startOutbound, isPending: false }),
   useOutboundJob: (id: string | null) => {
     outJobCalls.push(id);
-    return { data: id ? outJob : undefined };
+    return {
+      data: id && !outJobError ? outJob : undefined,
+      isError: !!id && !!outJobError,
+      error: outJobError,
+    };
   },
 }));
 
@@ -214,8 +231,22 @@ const ALL_DIFFS: LeaveDiff[] = [
   }),
 ];
 
+/** 夕方 (JST 17:30) にする。夕方の注意は 17〜18 時台だけ出す。 */
+function atEvening() {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-21T17:30:00+09:00'));
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 beforeEach(() => {
   latest = undefined;
+  latestError = null;
+  jobError = null;
+  outJobError = null;
+  applyPending = false;
   jobStatus = undefined;
   preview = undefined;
   outJob = undefined;
@@ -279,15 +310,17 @@ describe('差分の一覧', () => {
       'らく助の職員の名前をそろえて比べ直してください',
     );
     expect(
-      within(byKind('unconfirmed')[0]!).getByRole('button', { name: 'この週を取り直す' }),
+      within(byKind('unconfirmed')[0]!).getByRole('button', {
+        name: 'カイポケと比べ直す（月をまとめて取り直します）',
+      }),
     ).toBeInTheDocument();
     // 合わせ済み
     const done = rows.find((r) => r.textContent?.includes('11/18'))!;
     expect(done).toHaveTextContent('合わせ済み');
     expect(within(done).queryByRole('button')).not.toBeInTheDocument();
     // 言葉は「合わせる」(「直す」「修正」は使わない)
-    // (「この週を取り直す」の取り直すは別の意味)
-    expect(document.body.textContent).not.toMatch(/修正|(?<!取り)直す/);
+    // (「取り直す」「比べ直す」は別の意味)
+    expect(document.body.textContent).not.toMatch(/修正|(?<!取り|比べ)直す/);
   });
 
   it('1 件を合わせる・種類を選ぶ (content_hash つき)・同じ職員はまとめて', async () => {
@@ -402,6 +435,7 @@ describe('実績を記録する', () => {
 
 describe('カイポケと比べる', () => {
   it('始めると進み具合を読み (取り直し中→比べている→終わった)、終わったら 1 回だけ読み直す', async () => {
+    atEvening();
     setLatest(null);
     startCompare.mockResolvedValue({
       job_id: 'job-1',
@@ -416,7 +450,7 @@ describe('カイポケと比べる', () => {
     expect(startCompare).toHaveBeenCalledWith('2026-11');
     await waitFor(() => expect(jobCalls[jobCalls.length - 1]).toBe('job-1'));
     expect(screen.getByTestId('compare-progress')).toHaveTextContent(
-      'カイポケから取り直し中（2/6 件）',
+      'カイポケから取り直し中（2/6 週）',
     );
     expect(screen.getByRole('note')).toHaveTextContent(
       '夕方は送信・取り込みと重なりやすい時間です。',
@@ -444,10 +478,66 @@ describe('カイポケと比べる', () => {
 
   it('開いたときに動いているジョブがあれば、その進み具合を読む', () => {
     setLatest(null, { job: job('running').job });
-    jobStatus = job('running', { job: { ...job('running').job, stale: true } });
+    jobStatus = job('running');
     render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
     expect(jobCalls).toContain('job-1');
+    expect(screen.getByTestId('compare-progress')).toHaveTextContent('取り直し中（2/6 週）');
+    expect(screen.getByRole('button', { name: 'カイポケと比べる' })).toBeDisabled();
+  });
+
+  it('止まったジョブは終わったものとして扱い、「カイポケと比べる」を押せる', () => {
+    setLatest(null, { job: job('running').job });
+    jobStatus = job('running', { job: { ...job('running').job, stale: true } });
+    const { unmount } = render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
     expect(screen.getByTestId('compare-progress')).toHaveTextContent('止まっているようです');
+    expect(screen.getByRole('button', { name: 'カイポケと比べる' })).not.toBeDisabled();
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    unmount();
+    // 最新の照合のジョブが止まっていれば、そもそも読みに行かない
+    jobCalls.length = 0;
+    setLatest(null, { job: { ...job('running').job, stale: true } });
+    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    expect(jobCalls.every((id) => id === null)).toBe(true);
+    expect(screen.getByRole('button', { name: 'カイポケと比べる' })).not.toBeDisabled();
+  });
+
+  it('進み具合を読めなかったらエラーを出し、押せるように戻す', () => {
+    setLatest(null, { job: job('running').job });
+    jobError = new Error('通信に失敗しました');
+    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    expect(screen.getByTestId('compare-progress')).toHaveTextContent('進み具合を読めませんでした');
+    expect(screen.getByRole('button', { name: 'カイポケと比べる' })).not.toBeDisabled();
+  });
+
+  it('照合の結果を読めなかったら「読めませんでした」と出す', () => {
+    latestError = new Error('通信に失敗しました');
+    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    expect(screen.getByTestId('compare-summary')).toHaveTextContent(
+      '照合の結果を読めませんでした：通信に失敗しました',
+    );
+  });
+
+  it('夕方の注意は 17〜18 時台だけ出す', () => {
+    setLatest(null, { evening_warning: '夕方の注意' });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-21T19:05:00+09:00'));
+    const { unmount } = render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    unmount();
+    atEvening();
+    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    expect(screen.getByRole('note')).toHaveTextContent('夕方の注意');
+  });
+
+  it('合わせている途中 (読み直しが終わるまで) はボタンを押せない', () => {
+    setLatest(run({ diffs: ALL_DIFFS }));
+    applyPending = true;
+    render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
+    expect(screen.getByRole('button', { name: 'カイポケの種類に合わせる（有給）' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'まとめて「らく助に入れる」（2 件）' }),
+    ).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'カイポケと比べる' })).toBeDisabled();
   });
 
   it('比べられなかった・取り直せなかったら理由を出す', () => {
@@ -469,7 +559,7 @@ describe('カイポケと比べる', () => {
     );
   });
 
-  it('ほかのジョブが動いていたら 409 の文言をそのまま出す・この週を取り直すでも始める', async () => {
+  it('ほかのジョブが動いていたら 409 の文言をそのまま出す・未確認の日の「比べ直す」でも始める', async () => {
     setLatest(run({ diffs: ALL_DIFFS }));
     startCompare.mockRejectedValue(
       new ApiError('API 409', 409, {
@@ -477,7 +567,9 @@ describe('カイポケと比べる', () => {
       }),
     );
     render(<LeaveComparePanel month="2026-11" baselinePendingCount={0} />);
-    fireEvent.click(screen.getByRole('button', { name: 'この週を取り直す' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'カイポケと比べ直す（月をまとめて取り直します）' }),
+    );
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith(
         'カイポケの処理が動いています。終わってから押してください',
@@ -565,6 +657,7 @@ describe('カイポケへ送る', () => {
   });
 
   it('送ると送信中を出し、終わったら結果と送れなかった理由を出す', async () => {
+    atEvening();
     preview = PREVIEW;
     startOutbound.mockResolvedValue({
       job_id: 'out-1',
@@ -653,5 +746,61 @@ describe('カイポケへ送る', () => {
       '職員B 11/12（木）：送れませんでした（カイポケの職員 ID が分かりません）',
     );
     await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(1));
+  });
+
+  it('送り終わったら「閉じる」で閉じて開き直し、もう一度送れる', async () => {
+    preview = PREVIEW;
+    startOutbound.mockResolvedValue({
+      job_id: 'out-1',
+      status: 'pending',
+      month: '2026-11',
+      count: 1,
+      total: 1,
+      needs_action: [],
+      evening_warning: null,
+    });
+    outJob = {
+      job: { ...job('completed').job, id: 'out-1', op: 'leave-outbound', done: 1, total: 1 },
+      count: 1,
+      items: [],
+      sent_count: 1,
+      failed_count: 0,
+      skipped_count: 0,
+      needs_action: [],
+    };
+    let dlg = await openSend();
+    await act(async () => {
+      fireEvent.click(within(dlg).getByRole('button', { name: 'カイポケへ送る（1 件）' }));
+    });
+    await within(dlg).findByText(/送れた 1 件/);
+    expect(within(dlg).getByRole('button', { name: 'カイポケへ送る（1 件）' })).toBeDisabled();
+    fireEvent.click(within(dlg).getByRole('button', { name: '閉じる' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'カイポケへ送る…' }));
+    dlg = await screen.findByRole('dialog', { name: '2026年11月の休みをカイポケへ送る' });
+    expect(within(dlg).queryByText(/送れた 1 件/)).not.toBeInTheDocument();
+    expect(within(dlg).getByRole('button', { name: 'カイポケへ送る（1 件）' })).not.toBeDisabled();
+  });
+
+  it('止まった送信・読めなかった送信は送信中にしない', async () => {
+    preview = PREVIEW;
+    startOutbound.mockResolvedValue({
+      job_id: 'out-1',
+      status: 'pending',
+      month: '2026-11',
+      count: 1,
+      total: 1,
+      needs_action: [],
+      evening_warning: null,
+    });
+    outJobError = new Error('通信に失敗しました');
+    const dlg = await openSend();
+    await act(async () => {
+      fireEvent.click(within(dlg).getByRole('button', { name: 'カイポケへ送る（1 件）' }));
+    });
+    expect(await within(dlg).findByRole('alert')).toHaveTextContent(
+      '送信の進み具合を読めませんでした',
+    );
+    expect(dlg).not.toHaveTextContent('カイポケへ送信中');
   });
 });

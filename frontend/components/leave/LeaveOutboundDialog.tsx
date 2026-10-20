@@ -24,7 +24,7 @@ import { cn } from '@/lib/utils';
 import { fmtDayJp, fmtMonthJp, LEAVE_LABEL } from '@/lib/leave-sheet';
 import { invalidateAfterLeave, leaveErrorMessage } from '@/lib/queries/leave';
 import { useOutboundJob, useOutboundPreview, useStartOutbound } from '@/lib/queries/leaveKaipoke';
-import { isJobActive } from '@/lib/schemas/leaveKaipoke';
+import { isEveningJst, isJobActive } from '@/lib/schemas/leaveKaipoke';
 
 const OUTCOME_LABEL: Record<string, string> = {
   sent: '送りました',
@@ -46,19 +46,31 @@ export function LeaveOutboundDialog({ open, onOpenChange, month }: LeaveOutbound
   const [warning, setWarning] = useState<string | null>(null);
   const job = useOutboundJob(jobId);
   const status = job.data;
-  const sending = start.isPending || (!!jobId && (!status || isJobActive(status.job)));
+  // 止まった (stale) ジョブ・読めなかったジョブは終わったものとして扱う
+  const sending =
+    start.isPending || (!!jobId && !job.isError && (!status || isJobActive(status.job)));
 
   // 終わったら 1 回だけ読み直す (送信の状態・月の表)
   const handled = useRef<string | null>(null);
   useEffect(() => {
-    if (!jobId || !status || isJobActive(status.job) || handled.current === jobId) return;
+    if (!jobId || !status || sending || handled.current === jobId) return;
     handled.current = jobId;
     void invalidateAfterLeave(qc);
-  }, [jobId, status, qc]);
+  }, [jobId, status, sending, qc]);
 
   const p = preview.data;
-  const evening = warning ?? p?.evening_warning ?? null;
+  // 夕方の注意は開いたときの時刻で決める (時間が過ぎていれば出さない)
+  const evening = isEveningJst() ? (warning ?? p?.evening_warning ?? null) : null;
   const canSend = !!p && !p.blocked_reason && p.sendable_count > 0 && !sending && !jobId;
+
+  /** 閉じる (×・外を押す・「閉じる」のどれでも同じ)。送り終わっていれば次は新しい一覧から。 */
+  const close = () => {
+    if (!sending) {
+      setJobId(null);
+      setWarning(null);
+    }
+    onOpenChange(false);
+  };
 
   const doStart = () => {
     start
@@ -74,9 +86,9 @@ export function LeaveOutboundDialog({ open, onOpenChange, month }: LeaveOutbound
     <Dialog
       open={open}
       onOpenChange={(o) => {
-        // 送っている間も閉じてよい (ジョブは続く)。開き直したら新しい一覧から
-        if (!o && !sending) setJobId(null);
-        onOpenChange(o);
+        // 送っている間も閉じてよい (ジョブは続く)
+        if (o) onOpenChange(true);
+        else close();
       }}
     >
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[720px]">
@@ -166,6 +178,11 @@ export function LeaveOutboundDialog({ open, onOpenChange, month }: LeaveOutbound
           </div>
         )}
 
+        {job.isError && (
+          <p role="alert" className="rounded-md bg-error-bg px-3 py-2 text-sm text-error">
+            送信の進み具合を読めませんでした：{leaveErrorMessage(job.error, '通信に失敗しました')}
+          </p>
+        )}
         {(sending || status) && (
           <div role="status" data-testid="outbound-progress" className="space-y-1 text-sm">
             {sending ? (
@@ -203,7 +220,7 @@ export function LeaveOutboundDialog({ open, onOpenChange, month }: LeaveOutbound
         )}
 
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+          <Button type="button" variant="outline" onClick={close}>
             閉じる
           </Button>
           <Button type="button" disabled={!canSend} onClick={doStart}>

@@ -6,7 +6,7 @@
  *   - 「カイポケと比べる」: 取り直しのジョブを始め、数秒おきに進み具合を読む
  *     (取り直し中 N/M 週 → 比べている → 比べ終わった)。17〜18 時台は注意を出す。
  *   - 差分の一覧: action ごとのボタン (らく助に入れる／カイポケの種類に合わせる／らく助の休みを
- *     取り消す／種類を選ぶ／この週を取り直す)。action が無い差分は案内 (detail.guide) だけ。
+ *     取り消す／種類を選ぶ／カイポケと比べ直す)。action が無い差分は案内 (detail.guide) だけ。
  *     合わせた差分は「合わせ済み」。同じ職員の「入れる」「取り消す」はまとめて押せる。
  *   - 「カイポケへ送る」: 送る前の一覧 (LeaveOutboundDialog)。
  *   - 「実績を記録する」: 未確認の日・差分・送る予定・照合前・照合の後の変更があれば押せない
@@ -29,6 +29,8 @@ import {
   useStartCompare,
 } from '@/lib/queries/leaveKaipoke';
 import {
+  isCompareRunning,
+  isEveningJst,
   isJobActive,
   type ChosenKind,
   type CompareApplyItem,
@@ -101,7 +103,7 @@ function progressText(status: CompareJobStatus | undefined, total: number | null
     case 'fetching':
       return job.stale
         ? 'カイポケの取り直しが止まっているようです（しばらくしてから、もう一度比べてください）'
-        : `カイポケから取り直し中（${job.done}/${job.total ?? total ?? '?'} 件）`;
+        : `カイポケから取り直し中（${job.done}/${job.total ?? total ?? '?'} 週）`;
     case 'comparing':
       return 'らく助の休みと比べています';
     case 'done':
@@ -137,21 +139,33 @@ export function LeaveComparePanel({ month, baselinePendingCount }: LeaveCompareP
   const activeJobId = jobId ?? (latestJob && isJobActive(latestJob) ? latestJob.id : null);
   const jobQuery = useCompareJob(activeJobId);
   const state = jobQuery.data?.state;
-  const running = start.isPending || (!!activeJobId && (!state || !TERMINAL.has(state)));
+  // 止まった (stale) ジョブ・読めなかったジョブは終わったものとして扱う
+  const finished =
+    !!jobQuery.data && (TERMINAL.has(jobQuery.data.state) || !!jobQuery.data.job.stale);
+  const running =
+    start.isPending ||
+    (!!activeJobId && !jobQuery.isError && (!jobQuery.data || isCompareRunning(jobQuery.data)));
+
+  // 夕方の注意は時間が過ぎたら消す (1 分ごとに確かめる)
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(t);
+  }, []);
 
   // ジョブが終わったら、最新の照合と月の表を 1 回だけ読み直す
   const handled = useRef<string | null>(null);
   useEffect(() => {
-    if (!activeJobId || !state || !TERMINAL.has(state)) return;
+    if (!activeJobId || !finished) return;
     if (handled.current === activeJobId) return;
     handled.current = activeJobId;
     if (state === 'done') setRecompare(false);
     void invalidateAfterLeave(qc);
-  }, [activeJobId, state, qc]);
+  }, [activeJobId, finished, state, qc]);
 
   const run = latest.data?.run ?? jobQuery.data?.run ?? null;
   const diffs = useMemo(() => run?.diffs ?? [], [run]);
-  const evening = startWarning ?? latest.data?.evening_warning ?? null;
+  const evening = isEveningJst(now) ? (startWarning ?? latest.data?.evening_warning ?? null) : null;
   const changedSince = latest.data?.changed_since_compare ?? false;
   const blockers = recordActualBlockers({
     run,
@@ -223,7 +237,9 @@ export function LeaveComparePanel({ month, baselinePendingCount }: LeaveCompareP
   const busy = running || apply.isPending;
   const progress = start.isPending
     ? 'カイポケと比べ始めています'
-    : progressText(jobQuery.data, startTotal);
+    : jobQuery.isError
+      ? `進み具合を読めませんでした：${leaveErrorMessage(jobQuery.error, '通信に失敗しました')}（しばらくしてから、もう一度比べてください）`
+      : progressText(jobQuery.data, startTotal);
   const openCount = diffs.filter((d) => !d.resolved).length;
 
   return (
@@ -257,7 +273,7 @@ export function LeaveComparePanel({ month, baselinePendingCount }: LeaveCompareP
           data-testid="compare-progress"
           className={cn(
             'rounded-md px-3 py-2 text-sm',
-            state === 'failed' || state === 'compare_failed'
+            state === 'failed' || state === 'compare_failed' || jobQuery.isError
               ? 'bg-error-bg text-error'
               : 'bg-bg-muted text-text-secondary',
           )}
@@ -277,9 +293,11 @@ export function LeaveComparePanel({ month, baselinePendingCount }: LeaveCompareP
           </>
         ) : (
           <p>
-            {latest.isLoading
-              ? '照合の結果を読み込んでいます'
-              : 'この月はまだカイポケと比べていません'}
+            {latest.isError
+              ? `照合の結果を読めませんでした：${leaveErrorMessage(latest.error, '通信に失敗しました')}`
+              : latest.isLoading
+                ? '照合の結果を読み込んでいます'
+                : 'この月はまだカイポケと比べていません'}
           </p>
         )}
         {(changedSince || recompare) && (
@@ -438,7 +456,7 @@ function DiffRow({
         </div>
       ) : diff.action === 'refetch_week' ? (
         <Button type="button" size="sm" variant="outline" disabled={busy} onClick={onRefetch}>
-          この週を取り直す
+          カイポケと比べ直す（月をまとめて取り直します）
         </Button>
       ) : diff.action ? (
         <Button type="button" size="sm" disabled={busy} onClick={() => onApply()}>
