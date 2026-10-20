@@ -19,7 +19,7 @@
 ``covered_dates`` に無い日 (``covered_dates`` が NULL・空の週は全部の日) は「未確認」
 (差分に数える)。
 
-「合わせる」ボタンの処理 (このファイルでは作らない。``staff_leave.apply_staff_leave`` /
+「合わせる」ボタンの処理 (``apply_compare_actions``。``staff_leave.apply_staff_leave`` /
 ``cancel_staff_leave`` と同じトランザクションで ``sent_type`` を書く・§7-4-3 H-c):
 
 =======================  ===============================  ======================================
@@ -50,6 +50,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 
 from app.core.leave import (
     AM_OFF_UNTIL,
@@ -82,16 +83,26 @@ from app.services.kaipoke.sources import (
     KIND_ACTUAL_CSV,
     KIND_TASKS,
     OP_LEAVE_COMPARE,
+    OP_LEAVE_OUTBOUND,
     STATUS_EMPTY,
     STATUS_FAILED,
     STATUS_OK,
     SourceSpec,
 )
+from app.services.leave_calendar import iso_key, leave_type_on
 from app.services.scheduling.config import load_scheduling_config
+from app.services.staff_leave import (
+    LeaveApplyResult,
+    StaffLeaveError,
+    apply_staff_leave,
+    cancel_staff_leave,
+    notify_leave_results,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from app.models.user import User
     from app.services.kaipoke_client import KaipokeClient
 
 logger = logging.getLogger(__name__)
@@ -132,6 +143,8 @@ ACTION_MATCH_KAIPOKE_KIND: Final = "match_kaipoke_kind"
 ACTION_CANCEL_RAKUSUKE: Final = "cancel_rakusuke"
 ACTION_CHOOSE_KIND: Final = "choose_kind"
 ACTION_REFETCH_WEEK: Final = "refetch_week"
+#: 実績の職員名が合わない差分の案内 (ボタンは無い・``action`` は None)。
+GUIDE_FIX_STAFF_NAME: Final = "らく助の職員の名前をそろえて比べ直してください"
 
 # --- 未確認の理由 -------------------------------------------------------------------
 UNCONFIRMED_NO_SNAPSHOT: Final = "no_snapshot"
@@ -139,6 +152,8 @@ UNCONFIRMED_FAILED: Final = "failed"
 UNCONFIRMED_STALE: Final = "stale"
 UNCONFIRMED_NOT_COVERED: Final = "not_covered"
 UNCONFIRMED_ACTUAL: Final = "actual_csv"
+#: 実績 CSV の職員名がらく助に見つからない (その日の実績を確かめきれない)。
+UNCONFIRMED_ACTUAL_STAFF: Final = "actual_staff"
 
 #: 管理者が選んだ「休みではない」。
 JUDGED_NOT_LEAVE: Final = "not_leave"
@@ -161,6 +176,7 @@ _UNCONFIRMED_LABELS: Final = {
     UNCONFIRMED_STALE: "この週のカイポケの予定が今回の取り直しより前のものです",
     UNCONFIRMED_NOT_COVERED: "カイポケの画面にこの日が出ませんでした（月をまたぐ週）",
     UNCONFIRMED_ACTUAL: "この月のカイポケの実績を今回取れていません",
+    UNCONFIRMED_ACTUAL_STAFF: "カイポケの実績にらく助に見つからない職員がいます",
 }
 
 
@@ -291,6 +307,8 @@ class LeaveCompareResult:
     unconfirmed_dates: list[date] = field(default_factory=list)
     #: 使った材料の ``fetched_at`` (``leave_compare_runs.fetched_at`` に置く形)。
     fetched_at: dict[str, Any] = field(default_factory=dict)
+    #: 実績 CSV の職員名でらく助に結び付かなかったもの → 行の数 (黙って捨てない)。
+    actual_unmatched_names: dict[str, int] = field(default_factory=dict)
 
     @property
     def diff_count(self) -> int:
@@ -429,14 +447,21 @@ def _actual_visits_by_staff(
     first: date,
     day_set: set[date],
     name_index: dict[str, list[str]],
-) -> dict[tuple[uuid.UUID, date], list[dict[str, Any]]]:
-    """実績 CSV → (職員, 日) ごとの訪問 (照合用の読み方)。
+    staff_ids: Mapping[uuid.UUID, str] | None = None,
+) -> tuple[
+    dict[tuple[uuid.UUID, date], list[dict[str, Any]]],
+    dict[str, dict[date, int]],
+]:
+    """実績 CSV → ((職員, 日) ごとの訪問, らく助に結び付かない職員名 → {日: 行の数})。
 
     * 開始だけで数える (終了が空・読めなくても落とさない。``end`` は None)。
     * 行の重複のまとめはしない。職員名１〜３ のそれぞれへ配り、(職員, 日) の中で
       同じ利用者・開始・終了の行だけを 1 件にする (職員名２・３ の食い違いを見落とさない)。
+    * 名前がらく助の職員 (``staff_ids`` を渡したときはその中) に結び付かない行は黙って
+      捨てず、名前と日ごとの行の数を返す (その日は実績を確かめきれない)。
     """
     out: dict[tuple[uuid.UUID, date], list[dict[str, Any]]] = defaultdict(list)
+    unmatched: dict[str, dict[date, int]] = defaultdict(lambda: defaultdict(int))
     seen: set[tuple[uuid.UUID, date, str, int, int | None]] = set()
     for raw in rows:
         if not isinstance(raw, dict):
@@ -461,15 +486,16 @@ def _actual_visits_by_staff(
             if name in NO_STAFF_TOKENS:
                 continue
             hit = match_name(name, name_index)
-            if hit is None:
+            staff_id = uuid.UUID(hit) if hit is not None else None
+            if staff_id is None or (staff_ids is not None and staff_id not in staff_ids):
+                unmatched[name][day] += 1
                 continue
-            staff_id = uuid.UUID(hit)
             key = (staff_id, day, patient, start_min, end_min)
             if key in seen:
                 continue
             seen.add(key)
             out[(staff_id, day)].append({"patient": patient, "start": start_min, "end": end_min})
-    return out
+    return out, {name: dict(per_day) for name, per_day in unmatched.items()}
 
 
 @dataclass
@@ -660,9 +686,15 @@ def build_leave_diffs(
     if actual is not None:
         fetched["actual_csv"] = _aware(actual.fetched_at).isoformat()
     actual_visits: dict[tuple[uuid.UUID, date], list[dict[str, Any]]] = {}
+    actual_unmatched: dict[str, dict[date, int]] = {}
     if actual_fresh and actual is not None:
-        actual_visits = _actual_visits_by_staff(actual.rows, first, day_set, name_index)
+        actual_visits, actual_unmatched = _actual_visits_by_staff(
+            actual.rows, first, day_set, name_index, staff_names
+        )
     result.fetched_at = fetched
+    result.actual_unmatched_names = {
+        name: sum(per_day.values()) for name, per_day in sorted(actual_unmatched.items())
+    }
 
     # --- 未確認の日 (日ごとに 1 件) ---
     for d in sorted(unconfirmed):
@@ -677,9 +709,36 @@ def build_leave_diffs(
             )
         )
 
+    # --- 実績の職員名がらく助に見つからない日 (個別業務を確かめられた日だけ・日ごとに 1 件) ---
+    unconfirmed_actual: set[date] = set()
+    names_by_day: dict[date, list[str]] = defaultdict(list)
+    for name, per_day in sorted(actual_unmatched.items()):
+        for d in per_day:
+            names_by_day[d].append(name)
+    for d in sorted(names_by_day):
+        unconfirmed_actual.add(d)
+        if d not in confirmed:
+            continue  # 個別業務で未確認の日はもう 1 件出している
+        result.diffs.append(
+            LeaveDiff(
+                kind=DIFF_UNCONFIRMED,
+                message=(
+                    f"未確認：{_UNCONFIRMED_LABELS[UNCONFIRMED_ACTUAL_STAFF]}"
+                    f"（{GUIDE_FIX_STAFF_NAME}）"
+                ),
+                day=d,
+                # ボタンは無い (取り直しでは直らない)。名前をそろえてから比べ直す。
+                action=None,
+                detail={
+                    "reason": UNCONFIRMED_ACTUAL_STAFF,
+                    "names": names_by_day[d],
+                    "guide": GUIDE_FIX_STAFF_NAME,
+                },
+            )
+        )
+
     # --- 職員 × 日 ---
     keys = {k for k in (*rakusuke, *sent, *task_items) if k[1] in day_set}
-    unconfirmed_actual: set[date] = set()
     for staff_id, d in sorted(keys, key=lambda k: (staff_names.get(k[0], ""), str(k[0]), k[1])):
         if staff_id not in staff_names:
             continue
@@ -796,6 +855,27 @@ def build_leave_diffs(
                         },
                     )
                 )
+
+    # --- カイポケの実績の職員がらく助に見つからない (行の数を出す) ---
+    for staff_name, per_day in sorted(actual_unmatched.items()):
+        count = sum(per_day.values())
+        result.diffs.append(
+            LeaveDiff(
+                kind=DIFF_STAFF_NOT_FOUND,
+                message=(
+                    f"カイポケの実績の職員「{staff_name}」がらく助に見つかりません"
+                    f"（{count}件・{GUIDE_FIX_STAFF_NAME}）"
+                ),
+                action=None,
+                detail={
+                    "name": staff_name,
+                    "dates": [d.isoformat() for d in sorted(per_day)],
+                    "count": count,
+                    "source": KIND_ACTUAL_CSV,
+                    "guide": GUIDE_FIX_STAFF_NAME,
+                },
+            )
+        )
 
     # --- カイポケの職員がらく助に見つからない (休みの予定だけ) ---
     for staff_name in sorted(unmatched):
@@ -1058,12 +1138,321 @@ async def run_leave_compare_job(
         return await compare_month(db, job_id)
 
 
+# --- 「合わせる」ボタン (§7-4-3・H-c) -------------------------------------------------
+
+#: 「合わせる」で受ける action (``refetch_week`` は「カイポケと比べる」をもう一度押す)。
+APPLY_ACTIONS: Final = frozenset(
+    {ACTION_ADD_TO_RAKUSUKE, ACTION_MATCH_KAIPOKE_KIND, ACTION_CANCEL_RAKUSUKE, ACTION_CHOOSE_KIND}
+)
+#: 判定の記録で選べる種類。
+JUDGEMENT_KINDS: Final = frozenset({JUDGED_NOT_LEAVE, *LEAVE_TYPES})
+#: 照合の「合わせる」の通知の頭 (まとめて押したとき・§3-3 の 7)。
+APPLY_NOTIFY_PREFIX: Final = "カイポケに合わせて"
+_ORIGIN: Final = "kaipoke_compare"
+#: この月のジョブが動いている間は「合わせる」を止める op。
+_MONTH_JOB_OPS: Final = (OP_LEAVE_COMPARE, OP_LEAVE_OUTBOUND)
+MSG_APPLY_JOB_RUNNING: Final = (
+    "この月のカイポケとの照合・休みの送信が動いています。終わってから合わせてください"
+)
+MSG_APPLY_CONFLICT: Final = "ほかの方が同時に合わせました。画面を読み直してください"
+
+
+@dataclass(frozen=True)
+class CompareAction:
+    """「合わせる」の 1 件 (差分を職員・日・action で指す)。
+
+    ``choose_kind`` は ``content_hash`` (差分の ``detail.content_hash``) と ``chosen_kind``
+    (``not_leave`` / ``off`` / ``am_off`` / ``pm_off`` / ``paid_off``) が要る。
+    """
+
+    staff_id: uuid.UUID
+    day: date
+    action: str
+    content_hash: str | None = None
+    chosen_kind: str | None = None
+
+
+@dataclass
+class CompareApplyResult:
+    """``apply_compare_actions`` の結果。"""
+
+    #: 合わせた差分 (職員・日・action・前と後の R と S・移した訪問の数)。
+    applied: list[dict[str, Any]] = field(default_factory=list)
+    #: 判定の記録をした・休みを変えた → もう一度「カイポケと比べる」が要る。
+    recompare_needed: bool = False
+    #: 担当なしへ移した訪問の数 (今日以降の日だけ)。
+    moved_visit_count: int = 0
+    #: 管理者への通知の数 (まとめて 1 通 × 管理者の人数)。
+    notified: int = 0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "applied": self.applied,
+            "recompare_needed": self.recompare_needed,
+            "moved_visit_count": self.moved_visit_count,
+            "notified": self.notified,
+        }
+
+
+def _find_diff(diffs: list[Any], item: CompareAction) -> int | None:
+    """最新の照合の差分のうち ``item`` が指すもの (まだ合わせていないもの) の位置。"""
+    for index, raw in enumerate(diffs):
+        if not isinstance(raw, dict) or raw.get("resolved"):
+            continue
+        if (
+            raw.get("staff_id") != str(item.staff_id)
+            or raw.get("date") != item.day.isoformat()
+            or raw.get("action") != item.action
+        ):
+            continue
+        if item.action == ACTION_CHOOSE_KIND:
+            if (raw.get("detail") or {}).get("content_hash") != item.content_hash:
+                continue
+        return index
+    return None
+
+
+async def _sent_row(db: AsyncSession, staff_id: uuid.UUID, day: date) -> StaffLeaveKaipoke | None:
+    return await db.scalar(
+        select(StaffLeaveKaipoke).where(
+            StaffLeaveKaipoke.staff_id == staff_id, StaffLeaveKaipoke.leave_date == day
+        )
+    )
+
+
+async def _ensure_no_month_job(db: AsyncSession, month: date) -> None:
+    """その月の照合 (取り直し)・送信のジョブが動いていれば 409 (結果と食い違わないように)。"""
+    label = f"{month.year:04d}-{month.month:02d}"
+    for job in await sources.active_rpa_jobs(db):
+        params = job.params or {}
+        if params.get("op") in _MONTH_JOB_OPS and params.get("month") == label:
+            raise StaffLeaveError(409, MSG_APPLY_JOB_RUNNING)
+
+
+def _validate_actions(items: list[CompareAction]) -> None:
+    if not items:
+        raise StaffLeaveError(422, "合わせる差分を選んでください")
+    seen: set[tuple[uuid.UUID, date]] = set()
+    for item in items:
+        if item.action not in APPLY_ACTIONS:
+            raise StaffLeaveError(422, f"合わせ方が不正です: {item.action}")
+        if item.action == ACTION_CHOOSE_KIND:
+            if not item.content_hash or item.chosen_kind not in JUDGEMENT_KINDS:
+                raise StaffLeaveError(422, "種類を選んでください")
+            continue
+        key = (item.staff_id, item.day)
+        if key in seen:
+            raise StaffLeaveError(422, "同じ職員・同じ日の差分が 2 回選ばれています")
+        seen.add(key)
+
+
+async def _record_judgement(
+    db: AsyncSession, item: CompareAction, diff: dict[str, Any], actor: User | None
+) -> None:
+    """種類を選んだ記録 (``content_hash`` ごとに 1 行・選び直したら書き換える)。"""
+    detail = diff.get("detail") or {}
+    row = await db.scalar(
+        select(KaipokeLeaveJudgement).where(KaipokeLeaveJudgement.content_hash == item.content_hash)
+    )
+    if row is None:
+        row = KaipokeLeaveJudgement(
+            staff_id=item.staff_id,
+            event_date=item.day,
+            content_hash=str(item.content_hash),
+            subject=str(detail.get("subject") or ""),
+            starts=_parse_hhmm(detail.get("start")),
+            ends=_parse_hhmm(detail.get("end")),
+        )
+        db.add(row)
+    row.chosen_kind = str(item.chosen_kind)
+    row.decided_by = actor.id if actor is not None else None
+    row.decided_at = datetime.now(UTC)
+
+
+async def apply_compare_actions(
+    db: AsyncSession, *, items: list[CompareAction], actor: User | None
+) -> CompareApplyResult:
+    """照合の差分を「合わせる」(1 件でも、同じ職員・同じ月のまとめてでも)。
+
+    すべてを **1 つのトランザクション** で行い、最後に commit する (途中で失敗したら
+    rollback して何も残さない)。差分は各月の最新の照合 (``leave_months.last_compare_run_id``)
+    から探し、照合のときの R・S が今と違えば 409 (比べ直す)。
+
+    * ``add_to_rakusuke`` (#2・#5)・``match_kaipoke_kind`` (#8・#11・#15):
+      ``apply_staff_leave(source='kaipoke', notify=False)`` で R = K、同じトランザクションで
+      ``sent_type`` = K・照合前を外す。過去の日は休みの記録だけ (``apply_staff_leave`` が守る)。
+    * ``cancel_rakusuke`` (#6 照合前・#9): ``cancel_staff_leave(notify=False)`` で R = 無、
+      ``staff_leave_kaipoke`` の行を消す (S = NULL)。
+    * ``choose_kind`` (種類がわからない): ``kaipoke_leave_judgements`` に記録する。
+      R・S は動かさない (比べ直すと K が決まる)。
+
+    合わせた差分は照合の結果 (``leave_compare_runs.diffs``) に ``resolved`` (誰が・いつ・
+    どう合わせたか) を書く。担当なしへ移した訪問があれば、管理者への通知を 1 回だけ出す
+    (「カイポケに合わせて…」・本人へは送らない)。
+
+    Raises:
+        StaffLeaveError: 422 (入力)・409 (照合が無い・差分が見つからない・照合の後に変わった)
+            ・404 (職員が見つからない)。
+    """
+    _validate_actions(items)
+    result = CompareApplyResult()
+    leave_results: list[LeaveApplyResult] = []
+    runs: dict[date, LeaveCompareRun] = {}
+    #: 照合の結果に書き戻す印 (run → 差分の位置 → resolved)。
+    marks: dict[uuid.UUID, dict[int, dict[str, Any]]] = defaultdict(dict)
+    #: 運転席の「戻る」は ユーザー×ISO 週 で戻すので、op_group は週ごとに分ける。
+    groups: dict[tuple[int, int], uuid.UUID] = {}
+    now = datetime.now(UTC)
+    try:
+        # 月をまたいでまとめて合わせるときも、月を古い順に並べてから鍵を取る (deadlock を防ぐ)。
+        for first in sorted({month_first_day(item.day) for item in items}):
+            await _ensure_no_month_job(db, first)
+            # 同時に押されたら 1 本ずつ (月の行の鍵・PG だけ効く)。鍵を取ってから最新の
+            # 照合を読み直すので、先に合わせた側の resolved が見える。
+            leave_month = await db.scalar(
+                select(LeaveMonth)
+                .where(LeaveMonth.month == first)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            run_id = leave_month.last_compare_run_id if leave_month is not None else None
+            locked = (
+                await db.get(LeaveCompareRun, run_id, populate_existing=True)
+                if run_id is not None
+                else None
+            )
+            if locked is None:
+                raise StaffLeaveError(409, "この月はまだカイポケと比べていません")
+            runs[first] = locked
+
+        for item in items:
+            run = runs[month_first_day(item.day)]
+            diffs = list(run.diffs or [])
+            index = _find_diff(diffs, item)
+            if index is None or index in marks[run.id]:
+                raise StaffLeaveError(
+                    409, "この差分は最新の照合にありません。カイポケと比べ直してください"
+                )
+            diff = diffs[index]
+            mark: dict[str, Any] = {
+                "action": item.action,
+                "by": str(actor.id) if actor is not None else None,
+                "at": now.isoformat(),
+            }
+            if item.action == ACTION_CHOOSE_KIND:
+                await _record_judgement(db, item, diff, actor)
+                mark["chosen_kind"] = item.chosen_kind
+                marks[run.id][index] = mark
+                result.recompare_needed = True
+                result.applied.append(
+                    {
+                        "staff_id": str(item.staff_id),
+                        "date": item.day.isoformat(),
+                        "action": item.action,
+                        "chosen_kind": item.chosen_kind,
+                    }
+                )
+                continue
+
+            r_now = await leave_type_on(db, item.staff_id, item.day)
+            row = await _sent_row(db, item.staff_id, item.day)
+            s_now = row.sent_type if row is not None else None
+            if r_now != diff.get("rakusuke") or s_now != diff.get("sent"):
+                raise StaffLeaveError(
+                    409, "比べた後に休みが変わっています。カイポケと比べ直してください"
+                )
+            y, w, _wd = iso_key(item.day)
+            group = groups.setdefault((y, w), uuid.uuid4())
+            moved = 0
+            after: str | None = None
+            if item.action == ACTION_CANCEL_RAKUSUKE:
+                if r_now is not None:
+                    await cancel_staff_leave(
+                        db,
+                        staff_id=item.staff_id,
+                        day=item.day,
+                        actor=actor,
+                        op_group_id=group,
+                        origin=_ORIGIN,
+                        notify=False,
+                    )
+                if row is not None:
+                    await db.delete(row)
+            else:
+                kind = diff.get("kaipoke")
+                if kind not in LEAVE_TYPES:
+                    raise StaffLeaveError(409, "カイポケの休みの種類が分かりません")
+                applied = await apply_staff_leave(
+                    db,
+                    staff_id=item.staff_id,
+                    day=item.day,
+                    leave_type=str(kind),
+                    source="kaipoke",
+                    note=None,
+                    actor=actor,
+                    op_group_id=group,
+                    origin=_ORIGIN,
+                    notify=False,
+                )
+                leave_results.append(applied)
+                moved = len(applied.moved_visit_ids)
+                if row is None:
+                    row = StaffLeaveKaipoke(staff_id=item.staff_id, leave_date=item.day)
+                    db.add(row)
+                row.sent_type = str(kind)
+                row.baseline_pending = False
+                after = str(kind)
+            await db.flush()
+            result.moved_visit_count += moved
+            result.recompare_needed = True
+            marks[run.id][index] = mark
+            result.applied.append(
+                {
+                    "staff_id": str(item.staff_id),
+                    "date": item.day.isoformat(),
+                    "action": item.action,
+                    "case": diff.get("case"),
+                    "rakusuke_before": r_now,
+                    "sent_before": s_now,
+                    "rakusuke_after": after,
+                    "sent_after": after,
+                    "moved_visit_count": moved,
+                }
+            )
+
+        for run in runs.values():
+            run_marks = marks.get(run.id) or {}
+            if run_marks:
+                run.diffs = [
+                    {**raw, "resolved": run_marks[i]} if i in run_marks else raw
+                    for i, raw in enumerate(run.diffs or [])
+                ]
+        result.notified = await notify_leave_results(
+            db, leave_results, summary_prefix=APPLY_NOTIFY_PREFIX
+        )
+        await db.commit()
+    except IntegrityError as exc:
+        # 同時に押された別の「合わせる」と行がぶつかった (UNIQUE)。
+        await db.rollback()
+        raise StaffLeaveError(409, MSG_APPLY_CONFLICT) from exc
+    except BaseException:
+        await db.rollback()
+        raise
+    return result
+
+
 __all__ = [
     "ACTION_ADD_TO_RAKUSUKE",
     "ACTION_CANCEL_RAKUSUKE",
     "ACTION_CHOOSE_KIND",
     "ACTION_MATCH_KAIPOKE_KIND",
     "ACTION_REFETCH_WEEK",
+    "APPLY_ACTIONS",
+    "APPLY_NOTIFY_PREFIX",
+    "GUIDE_FIX_STAFF_NAME",
+    "JUDGEMENT_KINDS",
+    "MSG_APPLY_CONFLICT",
+    "MSG_APPLY_JOB_RUNNING",
     "DIFF_ACTUAL_CONFLICT",
     "DIFF_CHANGED_IN_KAIPOKE",
     "DIFF_DELETED_IN_KAIPOKE",
@@ -1080,16 +1469,20 @@ __all__ = [
     "DIFF_UNKNOWN_KIND",
     "JUDGED_NOT_LEAVE",
     "UNCONFIRMED_ACTUAL",
+    "UNCONFIRMED_ACTUAL_STAFF",
     "UNCONFIRMED_FAILED",
     "UNCONFIRMED_NOT_COVERED",
     "UNCONFIRMED_NO_SNAPSHOT",
     "UNCONFIRMED_STALE",
+    "CompareAction",
+    "CompareApplyResult",
     "LeaveCompareResult",
     "LeaveDiff",
     "PlannedSend",
     "SentRecord",
     "SentTypeUpdate",
     "SourceRows",
+    "apply_compare_actions",
     "build_leave_diffs",
     "build_month_diffs",
     "compare_month",

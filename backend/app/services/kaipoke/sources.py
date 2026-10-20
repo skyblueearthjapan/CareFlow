@@ -117,7 +117,7 @@ class RpaJobConflictError(RuntimeError):
         self.job_ids = [job.id for job in jobs]
 
 
-class _RpaUnavailableError(RuntimeError):
+class RpaUnavailableError(RuntimeError):
     """待っても RPA が空かなかった。"""
 
 
@@ -354,7 +354,7 @@ async def _rpa_busy_reason(
     return None
 
 
-async def _call_when_idle[T](
+async def call_when_idle[T](
     db: AsyncSession,
     client: KaipokeClient,
     *,
@@ -378,7 +378,7 @@ async def _call_when_idle[T](
             return await call()
         except KaipokeBusyError:
             reason = _MSG_RPA_BUSY
-    raise _RpaUnavailableError(reason)
+    raise RpaUnavailableError(reason)
 
 
 async def _ensure_running(db: AsyncSession, job_id: uuid.UUID | None) -> None:
@@ -555,7 +555,7 @@ async def fetch_month_csv(
     credentials = await get_credentials_payload(db)
     await db.commit()
     try:
-        csv_text = await _call_when_idle(
+        csv_text = await call_when_idle(
             db,
             client,
             job_id=job_id,
@@ -563,7 +563,7 @@ async def fetch_month_csv(
                 client=client, month=month, division=division, credentials=credentials
             ),
         )
-    except (_RpaUnavailableError, KaipokeApiError) as exc:
+    except (RpaUnavailableError, KaipokeApiError) as exc:
         return await _store(
             db, kind=kind, period_start=period_start, job_id=job_id, error=_short(exc)
         )
@@ -598,13 +598,13 @@ async def fetch_week_tasks(
     credentials = await get_credentials_payload(db)
     await db.commit()
     try:
-        result = await _call_when_idle(
+        result = await call_when_idle(
             db,
             client,
             job_id=job_id,
             call=lambda: rpa_fetch_week_tasks(client, week_start, credentials),
         )
-    except (_RpaUnavailableError, KaipokeApiError, EventsFetchError) as exc:
+    except (RpaUnavailableError, KaipokeApiError, EventsFetchError) as exc:
         error = _short(exc)
         if isinstance(exc, KaipokeApiError) and exc.status_code == 504:
             # 同期の取得が時間切れ: RPA はまだ動いているかもしれない。空くのを確かめてから
@@ -711,10 +711,12 @@ __all__ = [
     "STATUS_FAILED",
     "STATUS_OK",
     "RpaJobConflictError",
+    "RpaUnavailableError",
     "SourceJobCancelledError",
     "SourceSpec",
     "SourceFetchResult",
     "active_rpa_jobs",
+    "call_when_idle",
     "covered_dates_of",
     "evening_warning",
     "fetch_month_csv",

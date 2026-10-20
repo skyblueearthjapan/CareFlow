@@ -809,8 +809,17 @@ async def write_override_day(
     return None
 
 
-async def notify_leave_results(db: AsyncSession, results: Iterable[LeaveApplyResult | None]) -> int:
-    """``notify=False`` で入れた休みの結果から、管理者への通知を 1 通にまとめて出す."""
+async def notify_leave_results(
+    db: AsyncSession,
+    results: Iterable[LeaveApplyResult | None],
+    *,
+    summary_prefix: str = "",
+) -> int:
+    """``notify=False`` で入れた休みの結果から、管理者への通知を 1 通にまとめて出す.
+
+    ``summary_prefix`` は 2 件以上のときの本文の頭 (照合の「合わせる」は「カイポケに合わせて」)。
+    """
+    results = list(results)
     staff_ids = {r.staff_id for r in results if r is not None and r.moved_visit_ids}
     if not staff_ids:
         return 0
@@ -827,7 +836,7 @@ async def notify_leave_results(db: AsyncSession, results: Iterable[LeaveApplyRes
         for r in results
         if r is not None and r.moved_visit_ids
     ]
-    return await notify_leave_unassigned(db, notices)
+    return await notify_leave_unassigned(db, notices, summary_prefix=summary_prefix)
 
 
 async def count_leave_moves(db: AsyncSession, entries: Iterable[tuple[UUID, date, str]]) -> int:
