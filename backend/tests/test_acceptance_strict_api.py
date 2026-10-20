@@ -434,7 +434,7 @@ def test_refresh_targets_all_and_plan_shape() -> None:
         date(2026, 9, 1),
         date(2026, 10, 1),
     ]
-    assert source_plan([RefreshTarget("tasks", MONDAY)]) == [{"kind": "tasks", "period": MONDAY}]
+    assert source_plan([RefreshTarget("tasks", MONDAY)]) == [sources.SourceSpec("tasks", MONDAY)]
 
 
 # --- API ----------------------------------------------------------------------
@@ -486,7 +486,7 @@ async def test_refresh_api_runs_stage0_job_and_does_not_touch_csv_snapshots(
     client, db, monkeypatch
 ) -> None:
     admin, staff_user = await _user(db, "admin"), await _user(db, "staff")
-    calls: list[tuple[uuid.UUID, list[dict[str, Any]]]] = []
+    calls: list[tuple[uuid.UUID, list[sources.SourceSpec]]] = []
 
     async def fake_run_source_job(session, _client, job_id, plan) -> None:
         calls.append((job_id, plan))
@@ -495,7 +495,7 @@ async def test_refresh_api_runs_stage0_job_and_does_not_touch_csv_snapshots(
         )
         await sources.finish_source_job(session, job_id, [failed])
 
-    monkeypatch.setattr(sources, "run_source_job", fake_run_source_job, raising=False)
+    monkeypatch.setattr(sources, "run_source_job", fake_run_source_job)
     from app.api.v1 import acceptance_matrix as api
 
     monkeypatch.setattr(api, "jst_today", lambda now=None: TODAY)
@@ -516,7 +516,8 @@ async def test_refresh_api_runs_stage0_job_and_does_not_touch_csv_snapshots(
     job_id = uuid.UUID(body["job_id"])
     assert body["total"] == len(calls[0][1])
     assert calls[0][0] == job_id
-    assert {p["kind"] for p in calls[0][1]} == {"plan_csv", "actual_csv", "tasks"}
+    assert {p.kind for p in calls[0][1]} == {"plan_csv", "actual_csv", "tasks"}
+    assert all(isinstance(p, sources.SourceSpec) for p in calls[0][1])
 
     job = await db.get(KaipokeJob, job_id, populate_existing=True)
     assert job.params["op"] == "acceptance-refresh"
@@ -577,3 +578,106 @@ async def test_plan_only_rejected_in_production(client, db, monkeypatch) -> None
         headers=_bearer(admin),
     )
     assert res.status_code == 403
+
+
+class _StubRpa:
+    """RPA のクライアントだけのモック (段階 0 の取り直しは本物を通す)。"""
+
+    def __init__(self) -> None:
+        self.exports: list[dict[str, Any]] = []
+        self.tasks: list[dict[str, Any]] = []
+
+    async def status(self) -> dict[str, Any]:
+        return {"current_task": {"running": False}}
+
+    async def export(self, payload: dict[str, Any], *, timeout: float | None = None) -> dict:
+        self.exports.append(dict(payload))
+        header = "職員名１,職員名２,職員名３,日付,利用者,業務種別,開始時間,終了時間"
+        body = "職員A,,,21,利用者001,医療保険,10:00,10:50" if payload["division"] == "plan" else ""
+        return {
+            "result": {
+                "success": True,
+                "csv_content": f"{header}\n{body}\n",
+                "division": payload["division"],
+            }
+        }
+
+    async def individual_tasks(
+        self, payload: dict[str, Any], *, timeout: float | None = None
+    ) -> dict:
+        self.tasks.append(dict(payload))
+        if payload["date"] == "2026-10-12":
+            return {"success": False, "error": "取れませんでした", "result": {}}
+        tasks = (
+            [
+                {
+                    "date": "2026-10-22",
+                    "start": "09:00",
+                    "end": "18:00",
+                    "title": "休み",
+                    "staff_name": "職員A",
+                    "external_key": "1:1:2026-10-22",
+                }
+            ]
+            if payload["date"] == "2026-10-19"
+            else []
+        )
+        return {"success": True, "result": {"success": True, "tasks": tasks}}
+
+
+@pytest.mark.asyncio
+async def test_refresh_end_to_end_with_stage0(client, db, monkeypatch) -> None:
+    """API → start_source_job → 背景で段階 0 の run_source_job (本物) → 表に反映。"""
+    from app.api.v1 import acceptance_matrix as api
+    from app.services import kaipoke_client
+
+    monkeypatch.setattr(api, "jst_today", lambda now=None: TODAY)
+    monkeypatch.setattr(sources, "RETRY_INTERVAL_SECONDS", 0.0)
+    rpa = _StubRpa()
+    kaipoke_client.set_test_client(rpa)  # type: ignore[arg-type]
+    try:
+        admin = await _user(db, "admin")
+        office = await _office(db)
+        a = await _staff(db, office, "職員A")
+        await _snap(db, "plan_csv", date(2026, 9, 1), [_row(1, "09:00", "09:35", "職員A")])
+        await db.commit()
+        csv_before = await db.scalar(select(func.count()).select_from(KaipokeCsvSnapshot))
+
+        res = await client.post(
+            "/api/v1/acceptance-matrix/strict/refresh",
+            json={"scope": "recent"},
+            headers=_bearer(admin),
+        )
+        assert res.status_code == 202, res.text
+        job_id = res.json()["job_id"]
+        # 実績 10 月・予定 10 月・個別業務 8 週 = 10 本。
+        assert res.json()["total"] == 10
+        assert [p["division"] for p in rpa.exports] == ["actual", "plan"]
+        assert len(rpa.tasks) == 8
+
+        view = (
+            await client.get(
+                f"/api/v1/acceptance-matrix/strict/refresh/{job_id}", headers=_bearer(admin)
+            )
+        ).json()
+        assert view["status"] == "completed"
+        assert view["done"] == 10
+        assert view["failed"] == [
+            {"kind": "tasks", "period_start": "2026-10-12", "reason": "取れませんでした"}
+        ]
+
+        body = (
+            await client.get(
+                f"/api/v1/acceptance-matrix/strict?office_id={office.id}", headers=_bearer(admin)
+            )
+        ).json()
+        cells = body["cells"][str(a.id)]
+        assert 10 not in cells["2026-10-21"]["real"]["hours"]  # 予定 CSV の訪問
+        assert cells["2026-10-22"]["real"]["why"] == "休み（カイポケ）"  # 個別業務
+        days = {d["date"]: d for d in body["days"]}
+        assert days["2026-10-13"]["tasks_from"] == "staff_events"  # 取れなかった週は代わり
+        assert days["2026-10-20"]["tasks_from"] == "snapshot"
+        assert body["sources"]["last_job"]["failed"] == view["failed"]
+        assert await db.scalar(select(func.count()).select_from(KaipokeCsvSnapshot)) == csv_before
+    finally:
+        kaipoke_client.set_test_client(None)

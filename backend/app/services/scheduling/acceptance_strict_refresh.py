@@ -30,6 +30,7 @@ from app.services.kaipoke.sources import (
     OP_ACCEPTANCE_REFRESH,
     STATUS_EMPTY,
     STATUS_OK,
+    SourceSpec,
 )
 from app.services.scheduling.acceptance_strict_data import JST, months_between, view_mondays
 
@@ -139,9 +140,9 @@ async def start_refresh(
     return job, targets
 
 
-def source_plan(targets: list[RefreshTarget]) -> list[dict[str, object]]:
-    """段階 0 の ``run_source_job`` に渡す「取る本の一覧」(kind と period)。"""
-    return [{"kind": t.kind, "period": t.period_start} for t in targets]
+def source_plan(targets: list[RefreshTarget]) -> list[SourceSpec]:
+    """段階 0 の ``run_source_job`` に渡す「取る本の一覧」。"""
+    return [SourceSpec(kind=t.kind, period=t.period_start) for t in targets]
 
 
 async def run_refresh_job(

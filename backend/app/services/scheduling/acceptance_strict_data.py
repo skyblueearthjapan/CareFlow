@@ -676,7 +676,9 @@ def job_view(job: KaipokeJob) -> dict[str, Any]:
     summary = job.result_summary or {}
     done = int(summary.get("done") or 0)
     targets = list((job.params or {}).get("targets") or [])
-    # 動いている間は「いま取っている本」= 一覧の done 番目 (無ければ最後に終わった本)。
+    # 進み具合 (done・failed・最後に終わった本) を書くのは段階 0 の record_progress だけ。
+    # 受け入れ枠は書かず、立てたときの本の一覧 (params.targets) の done 番目を
+    # 「いま取っている本」として読むだけ (終わったら段階 0 の current = 最後に終わった本)。
     current = (
         targets[done]
         if job.status in ("pending", "running") and done < len(targets)
