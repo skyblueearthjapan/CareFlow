@@ -1172,6 +1172,19 @@ async def _regenerate_from_fixed(
             db, patient_id, week_monday=week_monday, from_date=from_date, before_ids=before_ids
         )
         await _restore_assignments(db, before_assignments)
+        if before_ids:
+            # 休み設計 §4-2: 貼り直した担当が休む人なら、休みの時間帯は担当なしへ (今日以降だけ)。
+            from app.services.staff_leave import settle_leave_unassign
+
+            await settle_leave_unassign(
+                db,
+                dates=[
+                    week_monday + timedelta(days=i)
+                    for i in range(
+                        (min(from_date, week_monday + timedelta(days=7)) - week_monday).days
+                    )
+                ],
+            )
         created[(iso_year, iso_week)] = max(made, 0)
     return created
 

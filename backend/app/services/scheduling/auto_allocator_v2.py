@@ -45,7 +45,7 @@ import re
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
-from datetime import date, time
+from datetime import date, time, timedelta
 from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
@@ -10109,7 +10109,23 @@ async def reset_visits_to_fixed(
     # 休み設計 §4-2: 訪問を作る処理の最後の共通の後始末 (休む人の休みの時間帯 → 担当なし)。
     from app.services.staff_leave import settle_leave_unassign
 
-    await settle_leave_unassign(db, iso_week=(iso_year, iso_week))
+    if patient_id is None:
+        await settle_leave_unassign(db, iso_week=(iso_year, iso_week))
+    else:
+        # 1 患者だけの戻し (呼び出し側が患者ごとに回す経路) は、その患者の訪問がある日に絞る。
+        _patient_days = set(
+            (
+                await db.scalars(
+                    select(Visit.visit_date).where(
+                        Visit.patient_id == patient_id,
+                        Visit.deleted_at.is_(None),
+                        Visit.visit_date.between(week_monday, week_monday + timedelta(days=6)),
+                    )
+                )
+            ).all()
+        )
+        if _patient_days:
+            await settle_leave_unassign(db, dates=_patient_days)
 
     return {
         "visits_regenerated": inserted_visits,

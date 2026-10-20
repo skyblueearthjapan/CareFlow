@@ -830,6 +830,17 @@ async def write_override_day(
             origin=origin,
             notify=False,
         )
+    if row is not None and row.override_type in LEAVE_TYPES:
+        # 休み → 時間変更: 先に休みを取り消す (取り消しの記録・last_leave_changed_at)。
+        await cancel_staff_leave(
+            db,
+            staff_id=staff_id,
+            day=day,
+            actor=actor,
+            op_group_id=None,
+            origin=origin,
+            notify=False,
+        )
     await set_staff_override(
         db,
         staff_id=staff_id,
@@ -869,13 +880,24 @@ async def count_leave_moves(db: AsyncSession, entries: Iterable[tuple[UUID, date
     """休みを入れたら担当なしへ移る訪問の数 (取込のプレビュー「N 件を担当なしへ移します」).
 
     ``entries`` は (職員, 日, 休みの種類)。今日 (JST) より前の日は記録だけなので数えない。
+    今ある休みと同じ種類の日は ``write_override_day`` が触らないので数えない
+    (プレビューの件数と実際の件数をそろえる)。
     """
     today = today_jst()
+    wanted = {(sid, day, t) for sid, day, t in entries if day >= today and t in LEAVE_TYPES}
+    if not wanted:
+        return 0
+    days = sorted({d for _s, d, _t in wanted})
+    current = await load_overrides_between(db, days[0], days[-1], {s for s, _d, _t in wanted})
+    loaded: dict[date, _DayData] = {}
     total = 0
-    for sid, day, leave_type in set(entries):
-        if day < today or leave_type not in LEAVE_TYPES:
+    for sid, day, leave_type in sorted(wanted, key=lambda e: (e[1], str(e[0]))):
+        row = current.get(sid, {}).get(day)
+        if row is not None and row.override_type == leave_type:
             continue
-        targets, _skipped = await _owned_hit_visits(db, sid, day, leave_type)
+        if day not in loaded:
+            loaded[day] = await _load_day(db, day)
+        targets, _skipped = await _owned_hit_visits(db, sid, day, leave_type, loaded[day])
         total += len(targets)
     return total
 
