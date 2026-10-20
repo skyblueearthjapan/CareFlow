@@ -50,6 +50,17 @@ vi.mock('@tanstack/react-query', async (importOriginal) => {
 
 let kinmuSheets: unknown[] = [];
 
+// カイポケとの差分 (右の一覧のタブ) — 中身は LeaveComparePanel の試験で見る
+vi.mock('@/lib/queries/leaveKaipoke', () => ({
+  useCompareLatest: () => ({ data: undefined, isLoading: true }),
+  useCompareJob: () => ({ data: undefined }),
+  useStartCompare: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useApplyCompare: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useOutboundPreview: () => ({ data: undefined, isError: false }),
+  useStartOutbound: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useOutboundJob: () => ({ data: undefined }),
+}));
+
 vi.mock('@/lib/queries/googleDrive', () => ({
   useGoogleDriveStatus: () => ({
     data: { status: 'connected', folder_name: '勤務表' },
@@ -994,6 +1005,22 @@ describe('キーボードと光り', () => {
     await waitFor(() =>
       expect(cellEl(S1, '2026-11-12').className).not.toContain('ring-brand-primary-hover'),
     );
+  });
+});
+
+describe('右の一覧のタブ', () => {
+  it('申請中とカイポケとの差分を切り替える', () => {
+    render(<AdminLeavePage />);
+    const tabs = screen.getByRole('tablist', { name: '右の一覧' });
+    expect(within(tabs).getByRole('tab', { name: '申請中（4）' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    fireEvent.click(within(tabs).getByRole('tab', { name: 'カイポケとの差分' }));
+    expect(screen.getByRole('complementary', { name: 'カイポケとの差分' })).toBeInTheDocument();
+    expect(screen.queryByRole('complementary', { name: '申請中の休み' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'カイポケと比べる' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '実績を記録する' })).toBeDisabled();
   });
 });
 
