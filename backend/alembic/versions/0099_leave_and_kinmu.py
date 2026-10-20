@@ -387,7 +387,44 @@ _PENDING_STAFF_OFF_UNIQUE = "uq_pending_requests_staff_off_pending"
 _PENDING_STAFF_OFF_WHERE = "request_type = 'staff_off' AND status = 'pending'"
 
 
+_DEDUPE_REASON = (
+    "同じ職員・同じ日の申請中の休みの申請が重なっていたため、新しい申請に置き換えました"
+    "（migration 0099）"
+)
+
+
+def _dedupe_pending_staff_off() -> None:
+    """索引を付ける前に、同じ職員・同じ日の申請中の休みの申請を 1 件にそろえる.
+
+    いちばん新しい申請 (created_at・id の新しい順) を残し、古いものは「却下」(CHECK で
+    許される値のうち処理済みにあたるもの) にして理由を残す。
+    """
+    conn = op.get_bind()
+    rows = conn.execute(
+        sa.text(
+            "SELECT id, target_staff_id, target_date FROM pending_requests "
+            "WHERE request_type = 'staff_off' AND status = 'pending' "
+            "AND target_staff_id IS NOT NULL AND target_date IS NOT NULL "
+            "ORDER BY target_staff_id, target_date, created_at DESC, id DESC"
+        )
+    ).all()
+    seen: set[tuple[object, object]] = set()
+    for row_id, staff_id, target_date in rows:
+        key = (staff_id, target_date)
+        if key not in seen:
+            seen.add(key)
+            continue
+        conn.execute(
+            sa.text(
+                "UPDATE pending_requests SET status = 'rejected', "
+                "rejection_reason = :reason, rejected_at = CURRENT_TIMESTAMP WHERE id = :id"
+            ),
+            {"reason": _DEDUPE_REASON, "id": row_id},
+        )
+
+
 def _create_pending_staff_off_unique() -> None:
+    _dedupe_pending_staff_off()
     op.create_index(
         op.f(_PENDING_STAFF_OFF_UNIQUE),
         "pending_requests",

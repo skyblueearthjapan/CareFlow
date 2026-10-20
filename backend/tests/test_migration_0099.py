@@ -75,6 +75,9 @@ _PREREQ_SQL = (
         status VARCHAR(16) DEFAULT 'pending' NOT NULL,
         target_staff_id VARCHAR(36),
         target_date DATE,
+        rejection_reason TEXT,
+        rejected_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
         CONSTRAINT ck_pending_requests_ck_pending_requests_request_type
             CHECK (request_type IN ({", ".join(f"'{t}'" for t in _OLD_TYPES)}))
     )
@@ -371,3 +374,30 @@ def test_migration_0099_pending_staff_off_unique(tmp_path: Path) -> None:
     _run(engine, "downgrade")
     names = {ix["name"] for ix in inspect(engine).get_indexes("pending_requests")}
     assert "uq_pending_requests_staff_off_pending" not in names
+
+
+def test_migration_0099_dedupes_pending_staff_off_before_unique(tmp_path: Path) -> None:
+    """本番に申請中の重複があっても upgrade が止まらない: 古いものは却下 (理由つき)."""
+    engine = _prepare(tmp_path)
+    with engine.begin() as conn:
+        for id_, created in (("old", "2026-10-01 09:00:00"), ("new", "2026-10-02 09:00:00")):
+            conn.execute(
+                sa.text(
+                    "INSERT INTO pending_requests (id, requester_user_id, request_type, payload, "
+                    "status, target_staff_id, target_date, created_at) "
+                    "VALUES (:id, 'u1', 'staff_off', '{}', 'pending', :sid, '2026-11-04', :c)"
+                ),
+                {"id": id_, "sid": _STAFF_A.hex, "c": created},
+            )
+    _run(engine, "upgrade")
+    with engine.begin() as conn:
+        rows = dict(
+            conn.execute(
+                sa.text("SELECT id, status FROM pending_requests WHERE id IN ('old', 'new')")
+            ).all()
+        )
+        reason = conn.execute(
+            sa.text("SELECT rejection_reason FROM pending_requests WHERE id = 'old'")
+        ).scalar()
+    assert rows == {"new": "pending", "old": "rejected"}
+    assert reason and "置き換えました" in reason

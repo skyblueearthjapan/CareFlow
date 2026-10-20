@@ -1,6 +1,10 @@
 """休み設計 §4-2 の表の ○ の経路 (訪問を作る・担当を書く処理) が最後に後始末を呼ぶ.
 
-* 13 経路すべて: 処理の本体に ``settle_leave_unassign(`` があること (経路ごとに parametrize)。
+* 表の ○ の 13 経路 (関数は 15。特別訪問の「置く・戻す」と申請の反映「臨時の訪問・振替」が
+  2 つずつ) ＋ 患者ステータス連動の作り直し: 処理の本体に ``settle_leave_unassign(`` が
+  あること (関数ごとに parametrize)。
+* 動かして呼ばれることを確かめる (既存の試験の流れに後始末の見張りを付ける): 特別訪問の
+  置く・戻す、週のコピー、申請の反映 (振替)、患者ステータス連動の作り直し (下)。
 * 動かして確かめる経路: 週の生成・自動スタッフ割当・一斉未割当・週を空に (test_leave_engine)、
   コースの担当の変更・今週だけ動かす (test_leave_review_fixes)、申請の反映 (下)、
   訪問の作成・固定枠へ戻す (下)。共通の材料 = 午後休の職員と、その人の 14:00 の訪問。
@@ -49,6 +53,7 @@ SETTLE_ROUTES = [
     ("app.api.v1.schedule_v2", "_apply_visit_move_week_only"),
     ("app.api.v1.courses", "update_course"),
     ("app.services.scheduling.auto_allocator", "auto_allocate"),
+    ("app.services.patient_status_sync", "_regenerate_from_fixed"),
 ]
 
 
@@ -244,3 +249,79 @@ async def test_applier_onetime_visit_add_settles(db) -> None:
     assert rows
     for v in rows:
         _assert_unassigned(v)
+
+
+# ---------------------------------------------------------------------------
+# 動かして呼ばれることを確かめる (既存の試験の流れ + 後始末の見張り)
+# ---------------------------------------------------------------------------
+
+
+def _spy(monkeypatch, target_module: str) -> list[dict]:
+    """``target_module.settle_leave_unassign`` を、呼び出しを控えて本物を呼ぶものに置き換える."""
+    import app.services.staff_leave as staff_leave
+
+    real = staff_leave.settle_leave_unassign
+    calls: list[dict] = []
+
+    async def spy(db, **kwargs):
+        calls.append(kwargs)
+        return await real(db, **kwargs)
+
+    module = importlib.import_module(target_module)
+    if hasattr(module, "settle_leave_unassign"):
+        monkeypatch.setattr(module, "settle_leave_unassign", spy)
+    # 関数の中で import する経路 (copy_week・patient_status_sync) は元の場所を置き換える。
+    monkeypatch.setattr(staff_leave, "settle_leave_unassign", spy)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_special_visit_place_calls_settle(client, db, monkeypatch) -> None:
+    from tests.test_special_visit_week import test_place_creates_manual_week_visit
+
+    calls = _spy(monkeypatch, "app.api.v1.special_visits")
+    await test_place_creates_manual_week_visit(client, db)
+    assert calls and all(c.get("dates") for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_special_visit_restore_calls_settle(client, db, monkeypatch) -> None:
+    from tests.test_special_visit_week import (
+        test_displace_soft_deletes_visit_and_restore_brings_it_back as scenario,
+    )
+
+    calls = _spy(monkeypatch, "app.api.v1.special_visits")
+    await scenario(client, db)
+    assert calls and all(c.get("dates") for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_copy_week_calls_settle(client, db, monkeypatch) -> None:
+    from tests.test_copy_week import test_copy_never_copies_staff_and_regroups_pairs as scenario
+
+    calls = _spy(monkeypatch, "app.services.scheduling.copy_week")
+    await scenario(client, db)
+    assert any(c.get("iso_week") for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_patient_reschedule_calls_settle(db, monkeypatch) -> None:
+    from tests.test_pending_request_applier import (
+        test_apply_patient_reschedule_one_time_updates_visit_only as scenario,
+    )
+
+    calls = _spy(monkeypatch, "app.services.pending_request_applier")
+    await scenario(db)
+    assert calls and all(c.get("dates") for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_patient_status_regenerate_calls_settle_once(db, monkeypatch) -> None:
+    from tests.test_patient_status_sync import (
+        test_reactivate_regenerates_from_fixed_visits as scenario,
+    )
+
+    calls = _spy(monkeypatch, "app.services.patient_status_sync")
+    await scenario(db)
+    # 作り直しの週ごとではなく最後に 1 回 (通知を 1 通にまとめる)
+    assert len(calls) == 1 and calls[0].get("dates")

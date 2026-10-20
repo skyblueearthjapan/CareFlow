@@ -423,9 +423,17 @@ async def _commit_or_409(db: AsyncSession) -> None:
         await db.rollback()
         msg = str(exc).lower()
         if "unique" in msg or "duplicate" in msg:
+            # 休みの申請・休みの行の衝突 (申請中の部分 UNIQUE・override の UNIQUE) は
+            # 休みの入口と同じ日本語の文言にそろえる。
+            leave_conflict = any(
+                k in msg
+                for k in ("staff_off", "target_staff_id", "staff_weekly_overrides", "uq_staff_week")
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Conflict: duplicate value",
+                detail=LEAVE_WRITE_CONFLICT_DETAIL
+                if leave_conflict
+                else "Conflict: duplicate value",
             ) from exc
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

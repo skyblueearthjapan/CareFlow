@@ -216,7 +216,7 @@ async def notify_leave_unassigned(
     tail = (
         "職員スケジュールの「（担当なし）」から割り当て直してください。"
         "割り当て直すまでカイポケへは送られません。"
-        "コースの担当を替えても、担当なしの訪問は 1 件ずつ付け直してください。"
+        "コースの担当を替えても、担当なしの訪問は 1 件ずつ付け替えてください。"
     )
     accompaniments = sum(n.accompaniment_count for n in notices)
     if len(notices) == 1:
