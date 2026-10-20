@@ -881,6 +881,9 @@ async def write_custom_time(
     「戻る」が「行が無いはず」の検証で止まる (休み設計 §3-4)。
     """
     y, w, wd = iso_key(day)
+    if actor is not None and op_group_id is None:
+        # 単独で書くとき (他の操作と同じグループでない) は、ほかの記録と同じく redo 枝を消す。
+        await clear_redo_branch(db, user_id=actor.id, iso_year=y, iso_week=w)
     prev = await _load_override(db, staff_id, day)
     inverse = _override_payload(staff_id, day, prev, origin)
     override_id = await set_staff_override(
@@ -898,13 +901,15 @@ async def write_custom_time(
     )
     journal = _journal_for(db, actor, day, op_group_id or uuid.uuid4())
     if journal is not None:
+        written = await _load_override(db, staff_id, day)
         forward = {
             **inverse,
             "type": "custom_time",
             "reason": reason,
             "start_time": start_time,
             "end_time": end_time,
-            "source": source or "admin",
+            # 実際に書いた値 (set_staff_override が None を既定へ置き換える)。
+            "source": written.source if written is not None else source,
             "pending_request_id": str(pending_request_id) if pending_request_id else None,
             "override_id": str(override_id),
         }
@@ -916,6 +921,48 @@ async def write_custom_time(
             inverse_payload=inverse,
         )
     return override_id
+
+
+async def delete_override_day(
+    db: AsyncSession,
+    *,
+    staff_id: UUID,
+    day: date,
+    actor: User | None,
+    op_group_id: UUID | None,
+    origin: str,
+) -> None:
+    """休みでない行 (時間変更) を消し、``set_staff_off`` として op_log に記録する.
+
+    休みの行は ``cancel_staff_leave`` を使う。日付の移動などで、書き込みと同じ op_group に
+    記録して「戻る」1 回で元の日の行も戻せるようにする。
+    """
+    row = await _load_override(db, staff_id, day)
+    if row is None:
+        return
+    inverse = _override_payload(staff_id, day, row, origin)
+    inverse["override_id"] = str(row.id)
+    y, w, wd = iso_key(day)
+    await set_staff_override(
+        db, staff_id=staff_id, iso_year=y, iso_week=w, weekday=wd, override_type=None
+    )
+    journal = _journal_for(db, actor, day, op_group_id or uuid.uuid4())
+    if journal is not None:
+        forward = {
+            **inverse,
+            "type": None,
+            "reason": None,
+            "start_time": None,
+            "end_time": None,
+            "source": None,
+            "pending_request_id": None,
+        }
+        await journal(
+            op_kind="set_staff_off",
+            label=f"{_date_label(day)}の時間変更を移す",
+            forward_payload=forward,
+            inverse_payload=inverse,
+        )
 
 
 async def notify_leave_results(db: AsyncSession, results: Iterable[LeaveApplyResult | None]) -> int:
@@ -1170,6 +1217,7 @@ __all__ = [
     "leave_request_deadline",
     "notify_leave_results",
     "settle_leave_unassign",
+    "delete_override_day",
     "today_jst",
     "write_custom_time",
     "write_override_day",

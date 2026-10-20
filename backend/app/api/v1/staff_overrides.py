@@ -34,6 +34,7 @@ from app.services.staff_leave import (
     StaffLeaveError,
     apply_staff_leave,
     cancel_staff_leave,
+    delete_override_day,
     write_custom_time,
 )
 
@@ -381,13 +382,14 @@ async def update_override(
             await db.rollback()
             raise _leave_error(exc) from exc
     elif new_date != old_date:
-        await set_staff_override(
+        # 時間変更の日付を移す: 元の日の行を消すことも同じ op_group に記録する。
+        await delete_override_day(
             db,
             staff_id=staff_id,
-            iso_year=row.iso_year,
-            iso_week=row.iso_week,
-            weekday=row.weekday,
-            override_type=None,
+            day=old_date,
+            actor=user,
+            op_group_id=group,
+            origin="staff_detail",
         )
     await _write_day(
         db,

@@ -451,7 +451,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """注意: 照合前の印・事業所の休み・照合の結果・勤務表の記録・Google の接続は失われる."""
+    """注意: 照合前の印・事業所の休み・照合の結果・勤務表の記録・Google の接続は失われる.
+
+    upgrade で重複をそろえるために「却下」(rejected) にした申請中の休みの申請は戻らない。
+    """
     is_pg = _is_pg()
 
     op.drop_index(op.f(_PENDING_STAFF_OFF_UNIQUE), table_name="pending_requests")

@@ -615,3 +615,40 @@ async def test_leave_to_custom_time_undo_then_redo(client, db) -> None:
     assert redo.status_code == 200, redo.text
     row = await _override(db, staff_id, day)
     assert row is not None and row.override_type == "custom_time"  # もう一度で元に戻る
+
+
+@pytest.mark.asyncio
+async def test_move_custom_time_date_then_undo_restores_old_day(client, db) -> None:
+    admin = await _admin(db)
+    staff = Staff(name="時間変更 移す")
+    db.add(staff)
+    await db.commit()
+    staff_id = staff.id
+    day = today_jst() + timedelta(days=9)
+    new_day = day + timedelta(days=1)
+    res = await client.post(
+        f"/api/v1/staff/{staff_id}/overrides",
+        headers=_bearer(admin),
+        json={
+            "date": day.isoformat(),
+            "type": "時間変更",
+            "start_time": "09:00",
+            "end_time": "12:00",
+        },
+    )
+    assert res.status_code == 201, res.text
+    res = await client.patch(
+        f"/api/v1/staff/{staff_id}/overrides/{res.json()['id']}",
+        headers=_bearer(admin),
+        json={"date": new_day.isoformat()},
+    )
+    assert res.status_code == 200, res.text
+    assert await _override(db, staff_id, day) is None
+
+    y, w, _wd = iso_key(day)
+    undo = await client.post(_UNDO_URL, headers=_bearer(admin), json={"iso_year": y, "iso_week": w})
+    assert undo.status_code == 200, undo.text
+    old = await _override(db, staff_id, day)
+    assert old is not None and old.override_type == "custom_time"
+    assert old.start_time == time(9, 0) and old.end_time == time(12, 0)
+    assert await _override(db, staff_id, new_day) is None
