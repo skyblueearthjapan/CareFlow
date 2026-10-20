@@ -41,6 +41,9 @@ const jobSchema = z.object({
     z.object({ kind: z.string(), period_start: z.string(), reason: z.string().nullable() }),
   ),
   error: z.string().nullable().optional(),
+  updated_at: z.string().nullable().optional(),
+  /** 更新が止まったままの残骸 (動いていないとみなす)。 */
+  stale: z.boolean().optional(),
   started_at: z.string().nullable().optional(),
   completed_at: z.string().nullable().optional(),
 });
@@ -99,6 +102,8 @@ export const strictPayloadSchema = z.object({
       }),
     ),
     unmatched_staff_names: z.record(z.string(), z.number()),
+    /** 結び付かない職員名の件数 (職員の権限では名前は空で件数だけ)。 */
+    unmatched_staff_count: z.number().optional(),
     dropped_events: z.number(),
     last_job: jobSchema.nullable(),
   }),
@@ -344,7 +349,7 @@ export function rulesText(rules: StrictPayload['rules'], nWeeks: number) {
   return {
     intro: `毎週決まって通う新しい患者さんを、何曜日の何時台なら受け入れられるかを、今週を含む直近 ${nWeeks} 週のカイポケの記録（終わった日は実績、今日から先は予定）から出しています。`,
     ok: `見た ${nWeeks} 週のすべてで、その時間台に新しい訪問（${rules.visit_min} 分）を入れられる人が 1 人以上いました。`,
-    mid: `${nWeeks} 週のうち ${triText}で入れられる人がいました。（6 週なら 4〜5 週、8 週なら 5〜7 週）`,
+    mid: `${nWeeks} 週のうち ${triText}で入れられる人がいました。${nWeeks === 4 ? '（6 週なら 4〜5 週、8 週なら 5〜7 週）' : ''}`,
     ng: 'それより少ない週しか入れられる人がいませんでした。',
     none: '祝日やデータの無い日が多く、判定できませんでした。',
     how: `その人の勤務の時間の中で、前後の訪問との間に ${pad} 分（ゆとり ${rules.buffer_min} 分＋移動の見込み ${rules.travel_guess_min} 分）をあけて ${rules.visit_min} 分の訪問が入ること。${rules.lunch_from}〜${rules.lunch_to} の中に ${rules.lunch_min} 分の昼休みが残ること。朝会などの予定と重ならないこと。その日の訪問が ${rules.cap} 件に達していないこと。休み・半休の日はその時間を除きます。祝日は数えません。`,
@@ -418,13 +423,26 @@ export function progressLabel(job: RefreshJob): string {
 }
 
 /** 取れなかったものの文言。 */
-export function failedMessages(job: RefreshJob | null | undefined): string[] {
+export function failedMessages(
+  job: RefreshJob | null | undefined,
+  snapshots: StrictPayload['sources']['snapshots'] = [],
+): string[] {
   if (!job) return [];
-  return job.failed.map((f) =>
-    f.kind === 'tasks'
-      ? `${sourceLabel(f.kind, f.period_start)}が取れませんでした。らく助に取り込み済みの個別業務で見ています`
-      : `${sourceLabel(f.kind, f.period_start)}が取れませんでした。前に取ったものがあればそれで見ています`,
-  );
+  const started = job.started_at ? new Date(job.started_at).getTime() : null;
+  // その本が今回のジョブの開始より後に取れていれば (別の取り直しで取れた)、印は出さない。
+  const fetchedLater = (kind: string, period: string) =>
+    started !== null &&
+    snapshots.some(
+      (s) =>
+        s.kind === kind && s.period_start === period && new Date(s.fetched_at).getTime() > started,
+    );
+  return job.failed
+    .filter((f) => !fetchedLater(f.kind, f.period_start))
+    .map((f) =>
+      f.kind === 'tasks'
+        ? `${sourceLabel(f.kind, f.period_start)}が取れませんでした。らく助に取り込み済みの個別業務で見ています`
+        : `${sourceLabel(f.kind, f.period_start)}が取れませんでした。前に取ったものがあればそれで見ています`,
+    );
 }
 
 /** 'YYYY-MM-DDTHH:MM...' (UTC) → JST の「10/20 9:12」。 */
@@ -444,6 +462,31 @@ export function staleSources(payload: StrictPayload): string[] {
   return payload.sources.snapshots
     .filter((s) => new Date(s.fetched_at).getTime() < started)
     .map((s) => `${sourceLabel(s.kind, s.period_start)}（${jstLabel(s.fetched_at)} に取ったもの）`);
+}
+
+/** 拠点の一覧が読めない・拠点が無いときの文言 (無ければ null)。 */
+export function officeNotice(q: {
+  isError?: boolean;
+  isSuccess?: boolean;
+  allOffices?: readonly unknown[];
+}): string | null {
+  if (q.isError) return '拠点を読み込めませんでした。時間をおいてもう一度開いてください。';
+  if (q.isSuccess && (q.allOffices?.length ?? 0) === 0)
+    return '拠点が登録されていません。拠点を登録すると受け入れ枠が出ます。';
+  return null;
+}
+
+/** 動いているジョブか (残骸は動いていないとみなす)。 */
+export function isJobActive(job: RefreshJob | null | undefined): boolean {
+  return !!job && (job.status === 'running' || job.status === 'pending') && !job.stale;
+}
+
+/** 結び付かない職員名の件数。 */
+export function unmatchedCount(sources: StrictPayload['sources']): number {
+  return (
+    sources.unmatched_staff_count ??
+    Object.values(sources.unmatched_staff_names).reduce((a, b) => a + b, 0)
+  );
 }
 
 /** 17〜18 時台 (JST) か (送信・取り込みと重なりやすい)。 */

@@ -190,6 +190,9 @@ def _window(
             return True, ws, we, label, _why_kind(sd.kp_off.kind)
         ws, we = max(ws, minutes_of(w[0])), min(we, minutes_of(w[1]))
         why, why_kind = label, _why_kind(sd.kp_off.kind)
+        if ws >= we:
+            # らく助の半休・時間変更と重ねて、働ける時間が残らない → 休み。
+            return True, ws, we, label, _why_kind(sd.kp_off.kind)
     return False, ws, we, why, why_kind
 
 

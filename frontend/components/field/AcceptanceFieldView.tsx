@@ -19,6 +19,7 @@ import {
   dayLabel,
   effectiveMark,
   jstLabel,
+  officeNotice,
   overrideMap,
   rulesText,
   summarize,
@@ -308,6 +309,11 @@ export function AcceptanceFieldView() {
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '12px 12px 24px' }}>
+        {officeNotice(officesQuery) && (
+          <p style={{ fontSize: 14, color: INK2, padding: '24px 0', textAlign: 'center' }}>
+            {officeNotice(officesQuery)}
+          </p>
+        )}
         {query.isLoading && (
           <p style={{ fontSize: 14, color: INK2, padding: '24px 0', textAlign: 'center' }}>
             読み込み中…

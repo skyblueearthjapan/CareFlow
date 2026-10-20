@@ -21,6 +21,7 @@ import {
   dayLabel,
   effectiveMark,
   failedMessages,
+  isJobActive,
   jstLabel,
   overrideMap,
   overrideMark,
@@ -30,6 +31,7 @@ import {
   rulesText,
   staleSources,
   summarize,
+  unmatchedCount,
   type LeaveMode,
   type Mark,
   type Preset,
@@ -134,10 +136,11 @@ export function StrictAcceptanceBoard({
   const overrides = useMemo(() => overrideMap(data.overrides), [data.overrides]);
   const text = rulesText(data.rules, nWeeks);
   const job = refresh?.job ?? data.sources.last_job;
-  const running = job?.status === 'running' || job?.status === 'pending';
-  const failed = failedMessages(job);
+  const running = isJobActive(job);
+  const failed = failedMessages(job, data.sources.snapshots);
   const stale = staleSources(data);
-  const unmatched = Object.values(data.sources.unmatched_staff_names).reduce((a, b) => a + b, 0);
+  const unmatched = unmatchedCount(data.sources);
+  const unmatchedNames = Object.keys(data.sources.unmatched_staff_names);
 
   const toggle = (id: string) =>
     setSelected((prev) => {
@@ -262,8 +265,8 @@ export function StrictAcceptanceBoard({
           )}
           {unmatched > 0 && (
             <p className="text-xs text-text-secondary">
-              らく助に無い職員名 {unmatched} 件（
-              {Object.keys(data.sources.unmatched_staff_names).join('・')}）は数えていません
+              らく助に無い職員名 {unmatched} 件
+              {unmatchedNames.length > 0 && `（${unmatchedNames.join('・')}）`}は数えていません
             </p>
           )}
           {devToggle}

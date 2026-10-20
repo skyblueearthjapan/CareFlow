@@ -482,9 +482,9 @@ def test_time_zero_padding_is_normalised() -> None:
 )
 def test_norm_time_cases(raw: str, expected: str) -> None:
     """``9:50:00`` を 5 文字で切ると分が壊れる — 割ってから前ゼロを詰める。"""
-    from app.services.kaipoke.plan_actual_compare import _norm_time
+    from app.services.kaipoke.plan_actual_compare import norm_time
 
-    assert _norm_time(raw) == expected
+    assert norm_time(raw) == expected
 
 
 @pytest.mark.parametrize("token", ["", "-", "－"])

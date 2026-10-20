@@ -22,6 +22,7 @@ import { useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 
 import {
+  isJobActive,
   refreshJobSchema,
   strictPayloadSchema,
   type RefreshJob,
@@ -76,20 +77,17 @@ export function useStrictRefreshJob(): UseQueryResult<RefreshJob | null, Error> 
       });
       return raw.job ? refreshJobSchema.parse(raw.job) : null;
     },
-    refetchInterval: (q) => {
-      const s = q.state.data?.status;
-      return s === 'running' || s === 'pending' ? 3000 : false;
-    },
+    // 残骸 (stale) は動いていないとみなして読みに行かない。
+    refetchInterval: (q) => (isJobActive(q.state.data) ? 3000 : false),
   });
-  const prev = useRef<string | undefined>(undefined);
-  const current = query.data?.status;
+  const prev = useRef(false);
+  const active = isJobActive(query.data);
   useEffect(() => {
-    const wasActive = prev.current === 'running' || prev.current === 'pending';
-    if (wasActive && current && current !== 'running' && current !== 'pending') {
+    if (prev.current && !active) {
       void qc.invalidateQueries({ queryKey: STRICT_KEY });
     }
-    prev.current = current;
-  }, [current, qc]);
+    prev.current = active;
+  }, [active, qc]);
   return query;
 }
 

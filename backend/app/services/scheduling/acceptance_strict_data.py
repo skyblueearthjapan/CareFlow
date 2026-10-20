@@ -39,12 +39,17 @@ from app.models.staff import (
 )
 from app.services.kaipoke.inbound import load_staff_name_index
 from app.services.kaipoke.name_match import match_name, normalize_name_key
-from app.services.kaipoke.plan_actual_compare import VISIT_BUSINESS_TYPES, _norm_time
+from app.services.kaipoke.plan_actual_compare import (
+    NO_STAFF_TOKENS,
+    VISIT_BUSINESS_TYPES,
+    norm_time,
+)
 from app.services.kaipoke.sources import (
     KIND_ACTUAL_CSV,
     KIND_PLAN_CSV,
     KIND_TASKS,
     OP_ACCEPTANCE_REFRESH,
+    STALE_JOB_MINUTES,
     STATUS_EMPTY,
     STATUS_OK,
 )
@@ -68,9 +73,8 @@ from app.services.scheduling.jp_holidays import holidays_between
 JST: Final = ZoneInfo("Asia/Tokyo")
 _DAY_MINUTES: Final = 24 * 60
 _STAFF_COLUMNS: Final = ("職員名１", "職員名２", "職員名３")
-#: CSV で「担当なし」を表す値 (予実比較と同じ)。
-_NO_STAFF_TOKENS: Final = frozenset({"", "-", "－", "ー", "―"})
 _USABLE: Final = (STATUS_OK, STATUS_EMPTY)
+_ACTIVE_JOB_STATUSES: Final = ("pending", "running")
 _EVENT_SOURCE_KAIPOKE: Final = "kaipoke"
 #: 実績がこの割合 (予定の件数に対して) 未満なら、その日は予定で見る。
 _ACTUAL_MIN_RATIO_NUM: Final = 1
@@ -123,7 +127,7 @@ def months_between(first: date, last: date) -> list[date]:
 
 def _parse_hm(value: Any) -> int | None:
     """``HH:MM`` → 分。``24:00`` まで読む。読めなければ None。"""
-    text = _norm_time(str(value or ""))
+    text = norm_time(str(value or ""))
     head, sep, tail = text.partition(":")
     if not sep:
         return None
@@ -142,6 +146,7 @@ class _VisitRow:
     start: int
     end: int
     names: tuple[str, str, str]
+    patient: str = ""
 
 
 def parse_visit_rows(rows: list[Any], period_start: date, *, dedupe: bool) -> list[_VisitRow]:
@@ -164,16 +169,24 @@ def parse_visit_rows(rows: list[Any], period_start: date, *, dedupe: bool) -> li
         if start is None or end is None or end <= start:
             continue
         n1, n2, n3 = (
-            "" if (v := str(raw.get(col) or "").strip()) in _NO_STAFF_TOKENS else v
+            "" if (v := str(raw.get(col) or "").strip()) in NO_STAFF_TOKENS else v
             for col in _STAFF_COLUMNS
         )
+        patient = str(raw.get("利用者") or "").strip()
         if dedupe:
-            key = (normalize_name_key(n1), str(raw.get("利用者") or "").strip(), day, start, end)
+            key = (normalize_name_key(n1), patient, day, start, end)
             if key in seen:
                 continue
             seen.add(key)
-        out.append(_VisitRow(day=day, start=start, end=end, names=(n1, n2, n3)))
+        out.append(_VisitRow(day=day, start=start, end=end, names=(n1, n2, n3), patient=patient))
     return out
+
+
+def _count_main(rows: list[_VisitRow]) -> int:
+    """主担当 (職員名１) の入った行の数。同じ職員名１・利用者・時刻の行は 1 件に数える。"""
+    return len(
+        {(normalize_name_key(r.names[0]), r.patient, r.start, r.end) for r in rows if r.names[0]}
+    )
 
 
 @dataclass
@@ -329,8 +342,8 @@ class _Builder:
                 info["src"] = SRC_PLAN if plan_ok else None
                 info["state"] = DAY_OK if plan_ok else DAY_NO_DATA
             else:
-                n_plan = len(visits.get((KIND_PLAN_CSV, d), []))
-                n_actual = len(visits.get((KIND_ACTUAL_CSV, d), []))
+                n_plan = _count_main(visits.get((KIND_PLAN_CSV, d), []))
+                n_actual = _count_main(visits.get((KIND_ACTUAL_CSV, d), []))
                 waiting = n_plan >= 1 and (
                     n_actual * _ACTUAL_MIN_RATIO_DEN < n_plan * _ACTUAL_MIN_RATIO_NUM
                 )
@@ -346,10 +359,10 @@ class _Builder:
         staff_visits: dict[tuple[uuid.UUID, date], list[tuple[int, int]]] = defaultdict(list)
         staff_count: dict[tuple[uuid.UUID, date], int] = defaultdict(int)
         for (kind, d), rows in visits.items():
-            info = day_info[d] if d in day_info else None
-            use = info is not None and (
-                (kind == KIND_ACTUAL_CSV and info["src"] == SRC_ACTUAL)
-                or (kind == KIND_PLAN_CSV and info["src"] in (SRC_PLAN, SRC_PLAN_FALLBACK))
+            day_rec = day_info.get(d)
+            use = day_rec is not None and (
+                (kind == KIND_ACTUAL_CSV and day_rec["src"] == SRC_ACTUAL)
+                or (kind == KIND_PLAN_CSV and day_rec["src"] in (SRC_PLAN, SRC_PLAN_FALLBACK))
             )
             for row in rows:
                 for i, name in enumerate(row.names):
@@ -393,7 +406,10 @@ class _Builder:
                 if start is None or end is None or end <= start:
                     self.dropped_events += 1
                     continue
-                sid = self._match(str(task.get("staff_name") or "").strip(), name_index)
+                staff_name = str(task.get("staff_name") or "").strip()
+                if not staff_name:
+                    continue
+                sid = self._match(staff_name, name_index)
                 if sid is None:
                     continue
                 self._see(sid, d)
@@ -444,7 +460,7 @@ class _Builder:
                     if ov.start_time is not None and ov.end_time is not None:
                         sd.rk_time = (minutes_of(ov.start_time), minutes_of(ov.end_time))
                 for line in events_by.get((c.id, d), []):
-                    kind = (
+                    leave_kind = (
                         leave.classify_kaipoke_leave(
                             line.title,
                             time_of(line.start),
@@ -456,10 +472,12 @@ class _Builder:
                         if line.kaipoke
                         else None
                     )
-                    if kind in leave.LEAVE_TYPES:
-                        if sd.kp_off is None or leave_breadth(kind) > leave_breadth(sd.kp_off.kind):
-                            sd.kp_off = KaipokeLeave(kind=kind, subject=line.title)
-                    elif kind is not None:
+                    if leave_kind in leave.LEAVE_TYPES:
+                        if sd.kp_off is None or leave_breadth(leave_kind) > leave_breadth(
+                            sd.kp_off.kind
+                        ):
+                            sd.kp_off = KaipokeLeave(kind=leave_kind, subject=line.title)
+                    elif leave_kind is not None:
                         sd.kp_unknown.append((line.start, line.end, line.title))
                     else:
                         sd.events.append((line.start, line.end))
@@ -651,6 +669,7 @@ async def build_strict_core(
                 for r in sorted(usable, key=lambda r: (r.kind, r.period_start))
             ],
             "unmatched_staff_names": dict(sorted(builder.unmatched.items())),
+            "unmatched_staff_count": sum(builder.unmatched.values()),
             "dropped_events": builder.dropped_events,
         },
     }
@@ -660,14 +679,45 @@ async def build_strict_core(
     return core
 
 
+def _op_filter(db: AsyncSession, op: str) -> Any:
+    """``params.op`` で絞る条件 (PG は JSONB の ``->>``、SQLite は ``json_extract``)。"""
+    if db.get_bind().dialect.name == "postgresql":
+        return KaipokeJob.params["op"].astext == op
+    return func.json_extract(KaipokeJob.params, "$.op") == op
+
+
+def _job_touched(job: KaipokeJob) -> datetime | None:
+    touched = job.updated_at or job.created_at
+    if touched is not None and touched.tzinfo is None:
+        touched = touched.replace(tzinfo=UTC)
+    return touched
+
+
+def is_stale(job: KaipokeJob, now: datetime | None = None) -> bool:
+    """動いていることになっているが、段階 0 の残骸の時間を超えて更新が無い (止まったまま)。"""
+    if job.status not in _ACTIVE_JOB_STATUSES:
+        return False
+    touched = _job_touched(job)
+    limit = (now or datetime.now(UTC)) - timedelta(minutes=STALE_JOB_MINUTES)
+    return touched is not None and touched < limit
+
+
 async def latest_refresh_job(db: AsyncSession, *, active_only: bool = False) -> KaipokeJob | None:
-    """受け入れ枠の取り直しのジョブのうち、いちばん新しいもの。"""
-    query = select(KaipokeJob).order_by(KaipokeJob.created_at.desc()).limit(200)
+    """受け入れ枠の取り直しのジョブのうち、いちばん新しいもの。
+
+    ``active_only`` のときは動いているものだけ (残骸は返さない)。
+    """
+    query = (
+        select(KaipokeJob)
+        .where(_op_filter(db, OP_ACCEPTANCE_REFRESH))
+        .order_by(KaipokeJob.created_at.desc())
+    )
     if active_only:
-        query = query.where(KaipokeJob.status.in_(("pending", "running")))
-    for job in (await db.scalars(query)).all():
-        if (job.params or {}).get("op") == OP_ACCEPTANCE_REFRESH:
-            return job
+        query = query.where(KaipokeJob.status.in_(_ACTIVE_JOB_STATUSES))
+    for job in (await db.scalars(query.limit(20))).all():
+        if active_only and is_stale(job):
+            continue
+        return job
     return None
 
 
@@ -681,7 +731,7 @@ def job_view(job: KaipokeJob) -> dict[str, Any]:
     # 「いま取っている本」として読むだけ (終わったら段階 0 の current = 最後に終わった本)。
     current = (
         targets[done]
-        if job.status in ("pending", "running") and done < len(targets)
+        if job.status in _ACTIVE_JOB_STATUSES and done < len(targets)
         else summary.get("current")
     )
     return {
@@ -693,6 +743,9 @@ def job_view(job: KaipokeJob) -> dict[str, Any]:
         "current": current,
         "failed": list(summary.get("failed") or []),
         "error": summary.get("error"),
+        "updated_at": touched.isoformat() if (touched := _job_touched(job)) else None,
+        # 残骸 (更新が止まったまま): 画面は動いていないとみなす (ボタンを押せる・読みに行かない)。
+        "stale": is_stale(job),
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
     }
@@ -737,7 +790,7 @@ async def build_strict_payload(
 
 
 def round_for_staff(payload: dict[str, Any]) -> dict[str, Any]:
-    """職員の権限の応答: 休みの理由を「休み」「半休」に丸める (M9)。"""
+    """職員の権限の応答: 休みの理由を「休み」「半休」に丸め、結び付かない職員名は件数だけにする (M9)。"""
     out = dict(payload)
     cells = copy.deepcopy(payload["cells"])
     for by_day in cells.values():
@@ -751,6 +804,8 @@ def round_for_staff(payload: dict[str, Any]) -> dict[str, Any]:
                 if rec.get("unknown_leave"):
                     rec["unknown_leave"] = _ROUNDED_UNKNOWN
     out["cells"] = cells
+    # らく助に無い職員名は件数だけ (名前は出さない)。
+    out["sources"] = {**payload["sources"], "unmatched_staff_names": {}}
     return out
 
 

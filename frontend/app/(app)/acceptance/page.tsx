@@ -19,7 +19,7 @@ import { StrictAcceptanceBoard } from '@/components/acceptance/StrictAcceptanceB
 import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { EVENING_CONFIRM, isEveningJst } from '@/lib/acceptanceStrict';
+import { EVENING_CONFIRM, isEveningJst, officeNotice } from '@/lib/acceptanceStrict';
 import { useClearStandingOverride, useSetStandingOverride } from '@/lib/queries/acceptance_matrix';
 import {
   useStartStrictRefresh,
@@ -93,6 +93,11 @@ export default function AcceptanceMatrixPage() {
         </Button>
       </Card>
 
+      {officeNotice(officesQuery) && (
+        <p className="rounded bg-bg-muted px-3 py-2 text-sm text-text-secondary">
+          {officeNotice(officesQuery)}
+        </p>
+      )}
       {query.isLoading && <p className="text-sm text-text-secondary">読み込み中…</p>}
       {query.isError && (
         <p className="text-sm text-rose-600">読み込みに失敗しました: {query.error.message}</p>
