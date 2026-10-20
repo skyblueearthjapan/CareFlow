@@ -483,7 +483,7 @@ async def test_notifications_admins_and_requester(db) -> None:
     assert "カイポケへは送られません" in (admins[0].body or "")
     approved = await _notifications(db, "leave_approved")
     assert len(approved) == 1
-    assert "公休が承認されました" in approved[0].title
+    assert "休みが承認されました" in approved[0].title
 
 
 @pytest.mark.asyncio

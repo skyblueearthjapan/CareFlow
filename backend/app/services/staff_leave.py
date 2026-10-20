@@ -144,6 +144,21 @@ def today_jst() -> date:
     return datetime.now(UTC).astimezone(_JST).date()
 
 
+def leave_request_deadline(target: date) -> datetime:
+    """休みの申請の締め切り = 対象日の月の前の月の 20 日 23:59 (JST) の終わり (§2-3).
+
+    戻り値は「この時刻より後は締め切り後」の境目 (前の月の 21 日 0:00 JST・aware)。
+    """
+    prev_month = target.replace(day=1) - timedelta(days=1)
+    return datetime(prev_month.year, prev_month.month, 21, tzinfo=_JST)
+
+
+def is_past_leave_deadline(target: date, now: datetime | None = None) -> bool:
+    """今 (``now``・既定は現在) が対象日の申請の締め切りを過ぎているか."""
+    current = now or datetime.now(UTC)
+    return current >= leave_request_deadline(target)
+
+
 def _date_label(day: date) -> str:
     return f"{day.month}/{day.day}({fmt_weekday(day.weekday())})"
 
@@ -838,6 +853,8 @@ __all__ = [
     "cancel_staff_leave",
     "count_visits_on_leave",
     "find_visits_on_leave",
+    "is_past_leave_deadline",
+    "leave_request_deadline",
     "settle_leave_unassign",
     "today_jst",
 ]

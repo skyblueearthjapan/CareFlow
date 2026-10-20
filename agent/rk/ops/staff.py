@@ -22,7 +22,8 @@ from rk.ops.visits import (
 )
 
 TYPES = {"休み": "休み", "off": "休み", "午前休": "午前休", "am_off": "午前休", "午後休": "午後休",
-         "pm_off": "午後休", "時間変更": "時間変更", "custom_time": "時間変更"}
+         "pm_off": "午後休", "有給": "有給", "paid_off": "有給",
+         "時間変更": "時間変更", "custom_time": "時間変更"}
 
 
 def overrides_on(api: Api, staff_id: str, day: str) -> list[dict]:
@@ -48,15 +49,19 @@ class StaffDayOff(Op):
     - 取り消す DELETE /staff/{staff_id}/overrides/{override_id}（:265・**本人に取消のお知らせが届く**）
     どれにするかは反映の時に GET /staff/{id}/overrides（:131）で決める（同じ日の行は 1 つだけ）。
     受け取る値: ``staff_id``*（UUID/職員コード）・``date``*・``action``（"set" 既定 / "remove"）・
-    ``type``（休み 既定 / 午前休 / 午後休 / 時間変更。英語の off・am_off・pm_off・custom_time も可）・
+    ``type``（休み 既定 / 午前休 / 午後休 / 有給 / 時間変更。英語の off・am_off・pm_off・paid_off・
+    custom_time も可）・
     ``start_time``・``end_time``（時間変更のとき HH:MM）・``note``（500 字まで）。
-    注意: 休みを登録しても**訪問は動かない**（元の担当に残る）。その日の固定イベントにも取消印は付かない
-    （付けたいときは staff-off-week）。「戻る」（op_log）には残らない。
+    注意: 休み（休み・午前休・午後休・有給）を登録すると、今日以降の日なら**休みの時間帯の本人の訪問は
+    「担当なし」へ移る**（半休は時間帯の訪問だけ・コースは本人のまま／終日はコースごと担当なし）。
+    休みの時間帯の固定イベントにも取消印が付き、管理者へ「未割り当てとしました」のお知らせが届く。
+    今日より前の日は休みの記録だけ。時間変更は今までどおり行だけ（訪問は動かない）。
+    取り消しても担当なしへ移した訪問は戻らない（職員スケジュールで割り当て直す）。
     戻し方: 反映前に行が無ければ remove、あれば元の type・時刻・メモで set（remove は本人へお知らせが飛ぶ）。
     """
 
     name = "staff-day-off"
-    summary = "職員の休み・時間変更を登録する（訪問は動かさない）"
+    summary = "職員の休み・時間変更を登録する（休みの時間帯の訪問は担当なしへ移る）"
 
     def validate(self, op):
         f, errs = fields(op), []
@@ -69,7 +74,7 @@ class StaffDayOff(Op):
         if action == "set":
             t = f.get("type", "休み")
             if t not in TYPES:
-                errs.append(f"type は 休み/午前休/午後休/時間変更 のどれかです（{t}）")
+                errs.append(f"type は 休み/午前休/午後休/有給/時間変更 のどれかです（{t}）")
             elif TYPES[t] == "時間変更":
                 check_hhmm("start_time", f.get("start_time"), errs)
                 check_hhmm("end_time", f.get("end_time"), errs)

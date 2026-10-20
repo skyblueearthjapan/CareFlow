@@ -66,7 +66,7 @@ def _bearer(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _staff_off_payload(*, staff_id, target_date: date | str = "2026-05-11") -> dict:
+def _staff_off_payload(*, staff_id, target_date: date | str = "2030-05-11") -> dict:
     return {
         "request_type": "staff_off",
         "payload": {
@@ -176,13 +176,13 @@ async def test_list_filters_by_status_and_request_type(client, db) -> None:
             "request_type": "staff_event",
             "payload": {
                 "staff_id": str(staff.id),
-                "date": "2026-05-11",
+                "date": "2030-05-11",
                 "start_time": "10:00",
                 "end_time": "11:00",
                 "title": "管理者会議",
             },
             "target_staff_id": str(staff.id),
-            "target_date": "2026-05-11",
+            "target_date": "2030-05-11",
         },
     )
 
@@ -214,7 +214,7 @@ async def test_list_filters_by_target_date_range(client, db) -> None:
     admin = await _make_user(db, "pr-daterange@example.com", "admin")
     staff = await _make_staff(db)
 
-    for d in ("2026-05-11", "2026-05-15", "2026-06-01"):
+    for d in ("2030-05-11", "2030-05-15", "2030-06-01"):
         await client.post(
             "/api/v1/pending-requests",
             headers=_bearer(admin),
@@ -225,8 +225,8 @@ async def test_list_filters_by_target_date_range(client, db) -> None:
         "/api/v1/pending-requests",
         headers=_bearer(admin),
         params={
-            "target_date_from": "2026-05-01",
-            "target_date_to": "2026-05-31",
+            "target_date_from": "2030-05-01",
+            "target_date_to": "2030-05-31",
         },
     )
     assert res.status_code == 200, res.text
@@ -350,7 +350,7 @@ async def test_approve_with_edit_uses_edited_payload(client, db) -> None:
         json={
             "edited_payload": {
                 "staff_id": str(staff.id),
-                "date": "2026-05-11",
+                "date": "2030-05-11",
                 "override_type": "off",
                 "reason": "編集理由",
             }
@@ -529,12 +529,12 @@ async def test_patient_reschedule_requires_scope(client, db) -> None:
             "request_type": "patient_reschedule",
             "payload": {
                 "patient_id": str(patient.id),
-                "date": "2026-05-11",
+                "date": "2030-05-11",
                 "start_time": "10:00",
                 "end_time": "11:00",
             },
             "target_patient_id": str(patient.id),
-            "target_date": "2026-05-11",
+            "target_date": "2030-05-11",
             # scope を意図的に未指定
         },
     )
@@ -640,7 +640,7 @@ async def test_staff_off_existing_override_is_409(client, db) -> None:
     staff = await _make_staff(db)
     user = await _make_user(db, "pr-dup2@example.com", "staff", staff_id=staff.id)
 
-    d = date(2026, 5, 11)
+    d = date(2030, 5, 11)
     iso = d.isocalendar()
     db.add(
         StaffWeeklyOverride(
@@ -672,7 +672,7 @@ async def test_staff_off_other_date_and_after_reject_ok(client, db) -> None:
     res = await client.post(
         "/api/v1/pending-requests",
         headers=_bearer(user),
-        json=_staff_off_payload(staff_id=staff.id, target_date="2026-05-11"),
+        json=_staff_off_payload(staff_id=staff.id, target_date="2030-05-11"),
     )
     assert res.status_code == 201, res.text
     first_id = res.json()["id"]
@@ -681,7 +681,7 @@ async def test_staff_off_other_date_and_after_reject_ok(client, db) -> None:
     res = await client.post(
         "/api/v1/pending-requests",
         headers=_bearer(user),
-        json=_staff_off_payload(staff_id=staff.id, target_date="2026-05-12"),
+        json=_staff_off_payload(staff_id=staff.id, target_date="2030-05-12"),
     )
     assert res.status_code == 201, res.text
 
@@ -695,7 +695,7 @@ async def test_staff_off_other_date_and_after_reject_ok(client, db) -> None:
     res = await client.post(
         "/api/v1/pending-requests",
         headers=_bearer(user),
-        json=_staff_off_payload(staff_id=staff.id, target_date="2026-05-11"),
+        json=_staff_off_payload(staff_id=staff.id, target_date="2030-05-11"),
     )
     assert res.status_code == 201, res.text
 

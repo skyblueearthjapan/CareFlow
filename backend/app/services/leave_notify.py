@@ -39,7 +39,7 @@ NOTIFY_LEAVE_UNASSIGNED: Final = "leave_unassigned"
 
 #: 休みの種類 → 画面・通知の言葉 (休み設計 §2-1)。
 _LEAVE_LABELS: Final = {
-    "off": "公休",
+    "off": "休み",
     "am_off": "午前休",
     "pm_off": "午後休",
     "paid_off": "有給",
@@ -52,7 +52,7 @@ _WEEKDAYS_JP: Final = ("月", "火", "水", "木", "金", "土", "日")
 
 
 def leave_type_label(leave_type: str) -> str:
-    """休みの種類 (``off`` など) → 「公休」「午前休」「午後休」「有給」。"""
+    """休みの種類 (``off`` など) → 「休み」「午前休」「午後休」「有給」(API の読み出しのラベルと同じ)。"""
     return _LEAVE_LABELS.get(leave_type, leave_type)
 
 

@@ -179,9 +179,9 @@ async def test_reject_staff_off_notifies_requester(client, db) -> None:
         headers=_bearer(staff_user),
         json={
             "request_type": "staff_off",
-            "payload": {"staff_id": str(staff.id), "date": "2026-09-07", "override_type": "off"},
+            "payload": {"staff_id": str(staff.id), "date": "2030-09-09", "override_type": "off"},
             "target_staff_id": str(staff.id),
-            "target_date": "2026-09-07",
+            "target_date": "2030-09-09",
         },
     )
     assert res.status_code == 201, res.text

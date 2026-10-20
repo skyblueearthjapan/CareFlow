@@ -49,8 +49,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentActiveUser, DbDep, require_role
+from app.core.leave import LEAVE_TYPES
 from app.models.pending_request import PendingRequest
-from app.models.staff import StaffWeeklyOverride
+from app.models.staff import StaffShiftConfirmation, StaffWeeklyOverride
 from app.models.user import User, normalize_user_role
 from app.models.visit import Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
@@ -66,6 +67,7 @@ from app.services.pending_request_applier import (
     PendingRequestApplier,
     PendingRequestApplyError,
 )
+from app.services.staff_leave import is_past_leave_deadline
 
 router = APIRouter()
 
@@ -292,17 +294,31 @@ async def _ensure_staff_off_creatable(
     *,
     payload: PendingRequestV2Create,
     payload_dict: dict,
+    user: User,
 ) -> None:
-    """``staff_off`` の作成時重複ガード (mobile-leave-request-design.md §1-c).
+    """``staff_off`` の作成時の検証と重複の止め (休み設計 §2-3).
 
-    applier (`_apply_staff_off`) は upsert せず INSERT のみのため、同日に
-    pending 申請や既存 override があると **承認時に** IntegrityError→422 になる。
-    作成時に前倒しで 409 を返し、申請者 (モバイル) に即フィードバックする。
-    staff_id / 日付が特定できない payload は従来どおり素通し
-    (承認時の applier 検証に委ねる — 既存クライアント互換)。
+    * 種類 ``override_type`` は ``off`` / ``am_off`` / ``pm_off`` / ``paid_off`` (省略は ``off``)。
+      変更のお願い (``kind='change'``) だけ ``cancel`` (休みを取り消してほしい) も可。
+      それ以外は 422。``payload_dict`` に正規化した値を書き戻す。
+    * 職員本人の申請で、締め切り (前の月の 20 日 23:59 JST) を過ぎた・その月が確定済みなら
+      ``kind='change'`` (変更のお願い) として受け付ける。変更のお願いは理由 (``note``) が必須。
+    * 同じ日に申請中があれば 409 (種類によらない)。
+    * 同じ日に **休みの種類の** override があれば 409 (時間変更の日は止めない・中7)。
+      変更のお願いには当てない (登録済みの日が相手・M4)。``cancel`` はその日に休みが
+      あるときだけ作れる。
+    staff_id / 日付が特定できない payload は従来どおり素通し (承認時の検証に委ねる)。
     """
     if payload.request_type.value != RequestType.STAFF_OFF.value:
         return
+
+    override_type = str(payload_dict.get("override_type") or payload_dict.get("type") or "off")
+    kind = payload_dict.get("kind")
+    if kind not in (None, "change"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"申請の区分が不正です: {kind}",
+        )
 
     staff_id = _coerce_uuid(payload_dict.get("staff_id")) or payload.target_staff_id
     target: date | None = payload.target_date
@@ -312,6 +328,35 @@ async def _ensure_staff_off_creatable(
             target = date.fromisoformat(str(raw)) if raw else None
         except ValueError:
             target = None
+
+    if kind != "change" and user.role == "staff" and target is not None:
+        confirmed = False
+        if staff_id is not None:
+            confirmed = (
+                await db.scalar(
+                    select(StaffShiftConfirmation.id).where(
+                        StaffShiftConfirmation.staff_id == staff_id,
+                        StaffShiftConfirmation.month == target.replace(day=1),
+                    )
+                )
+            ) is not None
+        if confirmed or is_past_leave_deadline(target):
+            kind = "change"
+    if kind == "change":
+        payload_dict["kind"] = "change"
+        if not str(payload_dict.get("note") or "").strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="締め切り後・確定後の変更のお願いには理由を書いてください",
+            )
+    allowed = LEAVE_TYPES | {"cancel"} if kind == "change" else LEAVE_TYPES
+    if override_type not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"休みの種類が不正です: {override_type}",
+        )
+    payload_dict["override_type"] = override_type
+
     if staff_id is None or target is None:
         return
 
@@ -331,10 +376,10 @@ async def _ensure_staff_off_creatable(
             detail="この日は既に休み申請中です",
         )
 
-    # applier `_date_to_iso` と同一規約: isocalendar + weekday() (0=月曜)
+    # applier と同じ規約: isocalendar + weekday() (0=月曜)
     iso = target.isocalendar()
-    existing = await db.scalar(
-        select(StaffWeeklyOverride.id)
+    existing_type = await db.scalar(
+        select(StaffWeeklyOverride.override_type)
         .where(
             StaffWeeklyOverride.staff_id == staff_id,
             StaffWeeklyOverride.iso_year == iso.year,
@@ -343,10 +388,16 @@ async def _ensure_staff_off_creatable(
         )
         .limit(1)
     )
-    if existing is not None:
+    has_leave = existing_type in LEAVE_TYPES
+    if override_type == "cancel" and not has_leave:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="この日に取り消す休みはありません",
+        )
+    if has_leave and kind != "change":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="この日は既に休み・時間変更が登録されています",
+            detail="この日は既に休みが登録されています",
         )
 
 
@@ -419,7 +470,7 @@ async def create_pending_request(
     _enforce_staff_self_scope(user, payload)
     _enforce_reschedule_scope_required(payload)
     payload_dict = await _enforce_payload_validation(db, user, payload)
-    await _ensure_staff_off_creatable(db, payload=payload, payload_dict=payload_dict)
+    await _ensure_staff_off_creatable(db, payload=payload, payload_dict=payload_dict, user=user)
 
     row = _build_pending_request_row(
         requester_user_id=user.id,
@@ -502,7 +553,7 @@ async def create_and_apply_pending_request(
     """
     _enforce_reschedule_scope_required(payload)
     payload_dict = await _enforce_payload_validation(db, user, payload)
-    await _ensure_staff_off_creatable(db, payload=payload, payload_dict=payload_dict)
+    await _ensure_staff_off_creatable(db, payload=payload, payload_dict=payload_dict, user=user)
 
     # 同一 TX 内で作成 → applier → status 更新 → commit を実行する。
     # 注意: 行は **status='pending'** で初期化する。
@@ -523,7 +574,7 @@ async def create_and_apply_pending_request(
 
         # 業務反映 (失敗時は外側 except で rollback)
         applier = PendingRequestApplier()
-        await applier.apply(db, row)
+        await applier.apply(db, row, actor=user)
 
         # 反映完了 → approved に遷移 + applied_at をセット
         row.status = RequestStatus.APPROVED.value
@@ -732,7 +783,7 @@ async def _do_approve(
 
     applier = PendingRequestApplier()
     try:
-        await applier.apply(db, row)
+        await applier.apply(db, row, actor=user)
     except PendingRequestApplyError as exc:
         await db.rollback()
         raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc

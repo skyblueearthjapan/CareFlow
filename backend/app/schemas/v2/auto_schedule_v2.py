@@ -725,6 +725,8 @@ class StaffOffWeekRequest(BaseModel):
     to_staff_id: uuid.UUID | None = Field(
         default=None, description="引き受け先。None = その日の担当を全部「担当なし」へ戻す"
     )
+    # 休みの種類 (休み設計 §3-1)。半休は休みの時間帯にかかる訪問だけが動く。
+    leave_type: Literal["off", "am_off", "pm_off", "paid_off"] = "off"
     # NG スタッフ / 性別制限 (§7-2): 確認ダイアログで通したときだけ true で再送。
     acknowledge_constraint_warnings: bool = False
     # Wave U-3: 1 ユーザー操作 = 1 UUID (undo グループ化)。省略時は BE が採番する。
@@ -749,6 +751,8 @@ class StaffOffWeekResponse(BaseModel):
     )
     to_staff_id: uuid.UUID | None = None
     op_group_id: uuid.UUID = Field(description="「戻る」1 回で全部戻すためのグループ id")
+    # 本人が同行者に入っている休みの時間帯の訪問の数 (同行はそのまま・休み設計 §3-3 の 6)。
+    accompaniment_count: int = 0
 
 
 class CourseMoveWeekdayWeekOnlyRequest(BaseModel):
