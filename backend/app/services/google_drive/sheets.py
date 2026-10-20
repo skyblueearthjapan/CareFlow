@@ -36,8 +36,17 @@ SHEETS_URL = "https://sheets.googleapis.com/v4/spreadsheets"
 MIME_SPREADSHEET = "application/vnd.google-apps.spreadsheet"
 MIME_FOLDER = "application/vnd.google-apps.folder"
 
-#: セルの値。str は「=」で始まれば式、それ以外は文字。None は空のセル。
-CellValue = str | int | float | bool | None
+
+@dataclass(frozen=True)
+class Formula:
+    """数式のセル (例 ``Formula("=SUM(E5:AI5)")``)。数式になるのはこの型だけ。"""
+
+    expr: str
+
+
+#: セルの値。``str`` は「=」で始まっても**必ず文字のまま** (職員名などからの数式の注入を防ぐ)。
+#: 数式は ``Formula`` で渡す。None は空のセル。
+CellValue = str | int | float | bool | Formula | None
 
 
 @dataclass(frozen=True)
@@ -84,7 +93,8 @@ class SheetData:
 
     * ``title`` — シート名 (例「勤務表」「集計」)。1 つのファイルの中で重ならないこと。
     * ``rows`` — 行の並び。各行はセルの値の並び (``CellValue``)。A1 から左上詰めで書く。
-      行ごとに長さが違ってよい。数は数として書く (合計の式は「=SUM(E5:AI5)」のように文字で)。
+      行ごとに長さが違ってよい。数は数として書く。合計などの式は ``Formula("=SUM(E5:AI5)")``。
+      ふつうの ``str`` は「=」で始まっても文字のまま書く (式にはならない)。
     * ``formats`` — 書式をかける範囲 (後に書いたものが上書き)。
     * ``merges`` — 結合するセルの範囲。
     * ``column_widths`` — 列の幅 (列の番号 0 始まり → ピクセル)。
@@ -179,8 +189,8 @@ def _cell(value: CellValue) -> dict[str, Any]:
         return {"userEnteredValue": {"boolValue": value}}
     if isinstance(value, int | float):
         return {"userEnteredValue": {"numberValue": value}}
-    if value.startswith("="):
-        return {"userEnteredValue": {"formulaValue": value}}
+    if isinstance(value, Formula):
+        return {"userEnteredValue": {"formulaValue": value.expr}}
     return {"userEnteredValue": {"stringValue": value}}
 
 

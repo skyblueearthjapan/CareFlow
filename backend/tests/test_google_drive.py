@@ -24,6 +24,7 @@ from app.services.google_drive import (
     CellFormat,
     CellRange,
     FormatRange,
+    Formula,
     GoogleDriveReconnectRequiredError,
     SheetData,
     create_spreadsheet,
@@ -532,7 +533,11 @@ async def test_create_spreadsheet_requests(db, configured, google) -> None:
     sheets = [
         SheetData(
             title="勤務表",
-            rows=[["　10月", None, 160, "時間"], wide, [1, 2.5, "=SUM(A3:B3)", True]],
+            rows=[
+                ["　10月", None, 160, "時間"],
+                wide,
+                [1, 2.5, Formula("=SUM(A3:B3)"), True, '=HYPERLINK("x")'],
+            ],
             formats=[
                 FormatRange(
                     CellRange(0, 0, 1, 4),
@@ -576,6 +581,8 @@ async def test_create_spreadsheet_requests(db, configured, google) -> None:
     row2 = cells["rows"][2]["values"]
     assert row2[2] == {"userEnteredValue": {"formulaValue": "=SUM(A3:B3)"}}
     assert row2[3] == {"userEnteredValue": {"boolValue": True}}
+    # 「=」で始まるふつうの文字は式にならない (数式の注入を防ぐ)。
+    assert row2[4] == {"userEnteredValue": {"stringValue": '=HYPERLINK("x")'}}
     kinds = [next(iter(r)) for r in batch]
     assert kinds.count("repeatCell") == 2
     assert "updateBorders" in kinds and "mergeCells" in kinds
@@ -642,3 +649,11 @@ async def test_create_spreadsheet_rejects_bad_input_before_calling(db, configure
             ],
         )
     assert not any("drive/v3/files" in str(r.url) for r in google.requests)
+
+
+def test_cell_formula_only_from_formula_type() -> None:
+    from app.services.google_drive.sheets import _cell
+
+    assert _cell("=1+1") == {"userEnteredValue": {"stringValue": "=1+1"}}
+    assert _cell("+1") == {"userEnteredValue": {"stringValue": "+1"}}
+    assert _cell(Formula("=1+1")) == {"userEnteredValue": {"formulaValue": "=1+1"}}

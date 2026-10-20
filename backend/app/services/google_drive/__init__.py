@@ -17,6 +17,7 @@ from app.services.google_drive.sheets import (
     CellRange,
     CellValue,
     FormatRange,
+    Formula,
     SheetData,
     create_spreadsheet,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "CellRange",
     "CellValue",
     "FormatRange",
+    "Formula",
     "GoogleDriveError",
     "GoogleDriveNotConfiguredError",
     "GoogleDriveNotConnectedError",
