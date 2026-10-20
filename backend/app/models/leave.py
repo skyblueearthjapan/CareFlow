@@ -161,6 +161,8 @@ class LeaveCompareRun(Base):
     fetched_at: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
     # 差分の一覧。
     diffs: Mapped[list] = mapped_column(JSONBish, nullable=False, default=list)
+    # 照合のときに自動でそろえた sent_type (#3・#7・#12・#13・行の片付け)。
+    auto_updates: Mapped[list | None] = mapped_column(JSONBish, nullable=True)
     diff_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     planned_send_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"

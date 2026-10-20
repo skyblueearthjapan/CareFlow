@@ -957,11 +957,9 @@ async def save_compare_run(
     run = LeaveCompareRun(
         month=result.month,
         kaipoke_job_id=job_id,
-        # 使った材料の fetched_at と、自動でそろえた sent_type (#3・#7・#12・#13・行の片付け)。
-        fetched_at={
-            **result.fetched_at,
-            "auto_updates": [u.as_dict() for u in result.sent_type_updates],
-        },
+        fetched_at=result.fetched_at,
+        # 自動でそろえた sent_type (#3・#7・#12・#13・行の片付け)。
+        auto_updates=[u.as_dict() for u in result.sent_type_updates],
         diffs=[diff.as_dict() for diff in result.diffs],
         diff_count=result.diff_count,
         planned_send_count=result.planned_send_count,

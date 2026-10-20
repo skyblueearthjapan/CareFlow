@@ -109,6 +109,7 @@ class LeaveCompareRunRead(BaseModel):
     kaipoke_job_id: UUID | None = None
     fetched_at: dict[str, Any] | None = None
     diffs: list[dict[str, Any]] = Field(default_factory=list)
+    auto_updates: list[dict[str, Any]] | None = None
     diff_count: int
     planned_send_count: int
     unconfirmed_days: int

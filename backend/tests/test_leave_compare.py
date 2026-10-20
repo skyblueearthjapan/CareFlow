@@ -728,8 +728,7 @@ async def test_compare_month_saves_run_and_aligns_sent_type(db) -> None:
     assert set(saved.fetched_at["tasks"]) == {m.isoformat() for m in MONDAYS}
     # 自動でそろえた sent_type も残す。
     assert sorted(
-        (u["date"], u["case"], u["sent_type"], u["delete_row"])
-        for u in saved.fetched_at["auto_updates"]
+        (u["date"], u["case"], u["sent_type"], u["delete_row"]) for u in saved.auto_updates or []
     ) == [(d7.isoformat(), 7, "off", False), (d3.isoformat(), 3, None, True)]
 
     rows = {

@@ -242,6 +242,8 @@ def _create_tables() -> None:
         ),
         sa.Column("fetched_at", _json(), nullable=True),
         sa.Column("diffs", _json(), nullable=False),
+        # 照合のときに自動でそろえた sent_type (#3・#7・#12・#13・行の片付け)。
+        sa.Column("auto_updates", _json(), nullable=True),
         sa.Column("diff_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("planned_send_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("unconfirmed_days", sa.Integer(), nullable=False, server_default="0"),
