@@ -6,7 +6,9 @@
  *
  *   GET    /leave/month/{month}                 LeaveMonthView (管理者)
  *   GET    /leave/month/{month}/summary         LeaveMonthSummary (職員も可)
+ *   GET    /leave/month/{month}/kinmu-sheets    KinmuSheetRead[]
  *   POST   /leave/day                           LeaveDayInput → LeaveDayResult
+ *   POST   /leave/day/bulk                      LeaveDayBulkInput → LeaveDayBulkResult
  *   DELETE /leave/day?staff_id=&date=           LeaveCancelResult
  *   POST   /leave/requests/approve-batch        LeaveApproveBatchInput → LeaveApproveBatchResult
  *   POST   /leave/requests/{id}/approve         LeaveApproveInput → LeaveApproveResult
@@ -15,7 +17,7 @@
  *   PUT    /leave/closed-days                   OfficeClosedDayCreate → OfficeClosedDayRead
  *   DELETE /leave/closed-days/{date}            204
  *   PUT    /leave/months/{month}                LeaveMonthUpdate → LeaveMonthRead
- *   POST   /leave/month/{month}/confirm         LeaveConfirmResult
+ *   POST   /leave/month/{month}/confirm         LeaveConfirmInput → LeaveConfirmResult
  *
  * 日付は 'YYYY-MM-DD'、時刻は 'HH:MM:SS'、日時は ISO の文字列のまま扱う。
  */
@@ -176,10 +178,15 @@ export const leaveMonthSummarySchema = z.object({
   request_deadline: z.string(),
   confirmed: z.boolean(),
   confirmed_at: z.string().nullable().optional(),
-  /** 管理者だけ (職員には null)。 */
+  /**
+   * 管理者だけ (職員には null): 確定済みの人数と表の人数・申請中の件数 (メニューの未処理件数)・
+   * 必要休日数に足りない常勤の人数・カイポケで要対応の件数。
+   */
   confirmed_staff_count: z.number().int().nullable().optional(),
   staff_count: z.number().int().nullable().optional(),
   pending_count: z.number().int().nullable().optional(),
+  short_staff_count: z.number().int().nullable().optional(),
+  kaipoke_action_count: z.number().int().nullable().optional(),
 });
 export type LeaveMonthSummary = z.infer<typeof leaveMonthSummarySchema>;
 
@@ -208,8 +215,27 @@ export const leaveCancelResultSchema = z.object({
   staff_id: uuid,
   date: isoDate,
   cancelled_type: leaveTypeCodeSchema,
+  /** この休みで担当なしへ移した訪問の件数 (自動では戻らない)。 */
+  moved_visit_count: z.number().int().default(0),
 });
 export type LeaveCancelResult = z.infer<typeof leaveCancelResultSchema>;
+
+/** 「この日の全員に公休を入れる」(staff_ids を省くとサーバーが相手を決める)。 */
+export const leaveDayBulkInputSchema = z.object({
+  date: isoDate,
+  override_type: leaveTypeCodeSchema.default('off'),
+  staff_ids: z.array(uuid).max(200).nullable().optional(),
+  note: z.string().max(500).nullable().optional(),
+});
+export type LeaveDayBulkInput = z.input<typeof leaveDayBulkInputSchema>;
+
+export const leaveDayBulkResultSchema = z.object({
+  date: isoDate,
+  override_type: leaveTypeCodeSchema,
+  applied: z.array(leaveDayResultSchema),
+  moved_visit_count: z.number().int(),
+});
+export type LeaveDayBulkResult = z.infer<typeof leaveDayBulkResultSchema>;
 
 export const leaveApproveResultSchema = z.object({
   request_id: uuid,
@@ -252,6 +278,25 @@ export const leaveShortStaffSchema = z.object({
   required_holidays: z.number().int(),
   shortfall: z.number(),
 });
+
+/** 確定の本文 (任意)。staff_ids が無ければ表の全員。 */
+export const leaveConfirmInputSchema = z.object({
+  staff_ids: z.array(uuid).min(1).max(200).nullable().optional(),
+});
+export type LeaveConfirmInput = z.infer<typeof leaveConfirmInputSchema>;
+
+export const kinmuSheetSchema = z.object({
+  id: uuid,
+  month: isoDate,
+  kind: z.enum(['plan', 'final']),
+  version: z.number().int(),
+  drive_file_id: z.string().nullable().optional(),
+  url: z.string().nullable().optional(),
+  reason: z.string().nullable().optional(),
+  created_by: uuid.nullable().optional(),
+  created_at: z.string(),
+});
+export type KinmuSheet = z.infer<typeof kinmuSheetSchema>;
 
 export const leaveConfirmResultSchema = z.object({
   month: isoDate,

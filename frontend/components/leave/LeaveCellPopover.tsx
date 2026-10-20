@@ -66,7 +66,11 @@ export function LeaveCellPopover(props: LeaveCellPopoverProps) {
         collisionPadding={16}
         className="flex w-[min(360px,calc(100vw-32px))] flex-col gap-3 p-4 text-sm"
         aria-label={`${staff.name} ${fmtDayJp(day.date)}`}
-        onOpenAutoFocus={(e) => e.preventDefault()}
+        onCloseAutoFocus={(e) => {
+          // 閉じたら押したマスへ焦点を戻す (開いたときは Radix が最初のボタンへ焦点を移す)
+          e.preventDefault();
+          anchorRef.current.focus();
+        }}
       >
         <PopoverBody {...props} />
         <div className="flex justify-end">
@@ -166,12 +170,18 @@ function PopoverBody({
   }
 
   if (rest) {
+    // カイポケから来る休み・営業時間で送る休みのため、勤務しない曜日にも入れられる
     return (
       <>
         {title}
         <p className="text-sm text-text-secondary">
           もともと勤務しない曜日です（週の勤務の型）。休日に数えています。
         </p>
+        {pastNote}
+        <p className="text-xs text-text-muted">
+          休みを入れる（カイポケへは営業時間の休みとして送ります）
+        </p>
+        <TypeChoices current={null} busy={busy} onPick={onSetLeave} />
       </>
     );
   }

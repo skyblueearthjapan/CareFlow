@@ -20,9 +20,9 @@ vi.mock('@/lib/queries/dashboard', () => ({
 }));
 
 // 「M月の休み」のカード (休み・勤務表の月の API)
-const useLeaveMonth = vi.fn();
+const useLeaveMonthSummary = vi.fn();
 vi.mock('@/lib/queries/leave', () => ({
-  useLeaveMonth: (...a: unknown[]) => useLeaveMonth(...a),
+  useLeaveMonthSummary: (...a: unknown[]) => useLeaveMonthSummary(...a),
 }));
 
 import type { PerformanceMetrics, StaffPerformanceResponse } from '@/lib/schemas/dashboard';
@@ -149,17 +149,13 @@ beforeEach(() => {
   });
   useStaffPerformance.mockReset();
   useStaffPerformance.mockReturnValue({ data: PERF, isLoading: false, isError: false });
-  useLeaveMonth.mockReset();
-  useLeaveMonth.mockReturnValue({
+  useLeaveMonthSummary.mockReset();
+  useLeaveMonthSummary.mockReturnValue({
     data: {
-      pending: [{ id: 'p1' }, { id: 'p2' }],
-      staff: [
-        { id: 's1', is_full_time: true, shortfall: 2 },
-        { id: 's2', is_full_time: true, shortfall: 0 },
-        { id: 's3', is_full_time: false, shortfall: null },
-      ],
-      cells: [{ send_status: 'kaipoke_action' }, { send_status: 'sent' }],
-      confirmation: { confirmed: false },
+      confirmed: false,
+      pending_count: 2,
+      short_staff_count: 1,
+      kaipoke_action_count: 1,
     },
     isLoading: false,
     isError: false,
@@ -176,7 +172,7 @@ describe('管理者', () => {
     render(<DashboardPage />);
     const card = screen.getByTestId('leave-dashboard-card');
     expect(card).toHaveTextContent('申請中 2 件・足りない人 1 人・カイポケで要対応 1 件');
-    const month = String(useLeaveMonth.mock.calls[0]?.[0]);
+    const month = String(useLeaveMonthSummary.mock.calls[0]?.[0]);
     expect(month).toMatch(/^\d{4}-\d{2}$/);
     expect(card).toHaveTextContent(`${Number(month.slice(5))}月の休み`);
     expect(within(card).getByRole('link', { name: /休み・勤務表で開く/ })).toHaveAttribute(
@@ -351,7 +347,7 @@ describe('権限が分かる前', () => {
     expect(screen.queryByText('今週完了率')).not.toBeInTheDocument();
     expect(useStaffPerformance).not.toHaveBeenCalled();
     expect(screen.queryByTestId('leave-dashboard-card')).not.toBeInTheDocument();
-    expect(useLeaveMonth).not.toHaveBeenCalled();
+    expect(useLeaveMonthSummary).not.toHaveBeenCalled();
     expect(useDashboardTrend).toHaveBeenLastCalledWith(7, { enabled: false });
   });
 });

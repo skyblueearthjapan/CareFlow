@@ -20,11 +20,11 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { isAdminRole } from '@/lib/rbac';
-import { usePendingRequests } from '@/lib/queries/pending_requests';
+import { upcomingLeaveMonth } from '@/lib/leave-sheet';
+import { useLeaveMonthSummary } from '@/lib/queries/leave';
 
 /** メニューの未処理の休みの申請の件数を読み直す間隔 (60 秒に 1 回まで・PO 決定)。 */
 const LEAVE_PENDING_POLL_MS = 60_000;
-const LEAVE_PENDING_PARAMS = { request_type: 'staff_off', status: 'pending', limit: 1 } as const;
 
 interface SidebarProps {
   collapsed: boolean;
@@ -90,12 +90,9 @@ export function Sidebar({ collapsed }: SidebarProps) {
   const role = session?.user?.role;
   const width = collapsed ? 'w-[72px]' : 'w-[232px]';
   const isAdmin = isAdminRole(role);
-  // 「休み・勤務表」の未処理の申請の件数 (管理者のときだけ読む)
-  const leavePending = usePendingRequests(LEAVE_PENDING_PARAMS, {
-    enabled: isAdmin,
-    pollMs: LEAVE_PENDING_POLL_MS,
-  });
-  const leavePendingCount = isAdmin ? (leavePending.data?.total ?? 0) : 0;
+  // 「休み・勤務表」の未処理の申請の件数 = いま組んでいる月 (来月) の申請中 (管理者のときだけ読む)
+  const leaveSummary = useLeaveMonthSummary(upcomingLeaveMonth(), isAdmin, LEAVE_PENDING_POLL_MS);
+  const leavePendingCount = isAdmin ? (leaveSummary.data?.pending_count ?? 0) : 0;
 
   const items = NAV_ITEMS.filter((item) => {
     // strictAdmin = 管理者のみ表示。ロール二軸(mig 0069)以降アカウント権限は

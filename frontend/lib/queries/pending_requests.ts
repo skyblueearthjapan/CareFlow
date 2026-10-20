@@ -110,16 +110,13 @@ function buildListUrl(params: UsePendingRequestsParams): string {
  */
 export function usePendingRequests(
   params: UsePendingRequestsParams = {},
-  /** enabled = false で読まない・pollMs で読み直しの間隔 (その間は新しいものとして扱う)。 */
-  options: { enabled?: boolean; pollMs?: number } = {},
 ): UseQueryResult<Paginated<PendingRequestV2Read>, Error> {
   const { data: session, status } = useSession();
   const { accessToken, refreshToken } = authPair(session);
 
   return useQuery<Paginated<PendingRequestV2Read>, Error>({
     queryKey: [...PENDING_REQUESTS_KEY, 'list', params],
-    enabled: status === 'authenticated' && (options.enabled ?? true),
-    ...(options.pollMs ? { staleTime: options.pollMs, refetchInterval: options.pollMs } : {}),
+    enabled: status === 'authenticated',
     queryFn: async () => {
       const raw = await fetcher<{
         items: unknown[];

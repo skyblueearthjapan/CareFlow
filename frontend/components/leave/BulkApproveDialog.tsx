@@ -4,7 +4,7 @@
  * 「申請をまとめて承認」のダイアログ (モックの上の「申請をまとめて承認 N」)。
  * 外したものは申請中のまま残る。却下は 1 件ずつ (理由が要るため)。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -34,11 +34,17 @@ export function BulkApproveDialog({
   onApprove,
 }: BulkApproveDialogProps) {
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  // 開いた時点の一覧で固定する (読み直しで並びやチェックが変わらないように)
+  const [snapshot, setSnapshot] = useState<LeavePendingItem[]>([]);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
   useEffect(() => {
-    if (open) setChecked(new Set(items.map((i) => i.id)));
-  }, [open, items]);
+    if (!open) return;
+    setSnapshot(itemsRef.current);
+    setChecked(new Set(itemsRef.current.map((i) => i.id)));
+  }, [open]);
 
-  const sorted = [...items].sort(
+  const sorted = [...snapshot].sort(
     (a, b) => a.date.localeCompare(b.date) || a.staff_order - b.staff_order,
   );
 

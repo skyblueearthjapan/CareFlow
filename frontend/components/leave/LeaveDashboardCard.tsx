@@ -11,14 +11,16 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { monthNumber, upcomingLeaveMonth } from '@/lib/leave-sheet';
-import { useLeaveMonth } from '@/lib/queries/leave';
+import { useLeaveMonthSummary } from '@/lib/queries/leave';
 
 export function LeaveDashboardCard() {
   const month = upcomingLeaveMonth();
-  const q = useLeaveMonth(month);
+  // 月の軽い情報 (管理者向けの件数つき) を 1 回だけ読む
+  const q = useLeaveMonthSummary(month);
   const v = q.data;
-  const shortCount = v ? v.staff.filter((s) => s.is_full_time && (s.shortfall ?? 0) > 0).length : 0;
-  const kaipokeAction = v ? v.cells.filter((c) => c.send_status === 'kaipoke_action').length : 0;
+  const pendingCount = v?.pending_count ?? 0;
+  const shortCount = v?.short_staff_count ?? 0;
+  const kaipokeAction = v?.kaipoke_action_count ?? 0;
 
   return (
     <Card
@@ -34,14 +36,14 @@ export function LeaveDashboardCard() {
           <Skeleton className="h-4 w-48" />
         ) : (
           <span>
-            申請中 <b className="tnum">{v.pending.length}</b> 件・足りない人{' '}
+            申請中 <b className="tnum">{pendingCount}</b> 件・足りない人{' '}
             <b className={shortCount > 0 ? 'tnum text-warning-strong' : 'tnum'}>{shortCount}</b> 人
             {kaipokeAction > 0 && (
               <>
                 ・カイポケで要対応 <b className="tnum text-error">{kaipokeAction}</b> 件
               </>
             )}
-            {v.confirmation.confirmed && <span className="text-text-muted">（確定済み）</span>}
+            {v.confirmed && <span className="text-text-muted">（確定済み）</span>}
           </span>
         )}
       </div>

@@ -12,6 +12,7 @@ import { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
+  cellKey,
   fmtDayJp,
   fmtNum,
   groupPending,
@@ -27,7 +28,8 @@ export interface LeavePendingPanelProps {
   onModeChange: (m: 'date' | 'staff') => void;
   focusPending: boolean;
   onFocusPendingChange: (v: boolean) => void;
-  busy: boolean;
+  /** 書き込みが進行中・順番待ちのマス (そのマスの承認は押せない)。 */
+  busyCells: ReadonlySet<string>;
   onHighlight: (target: { staffId: string; date: string } | null) => void;
   onApprove: (item: LeavePendingItem) => void;
   onApproveMany: (items: LeavePendingItem[]) => void;
@@ -40,7 +42,7 @@ export function LeavePendingPanel({
   onModeChange,
   focusPending,
   onFocusPendingChange,
-  busy,
+  busyCells,
   onHighlight,
   onApprove,
   onApproveMany,
@@ -104,7 +106,7 @@ export function LeavePendingPanel({
             group={g}
             mode={mode}
             headNote={groupNote(g)}
-            busy={busy}
+            busyCells={busyCells}
             threshold={threshold}
             weekGenerated={(date) => dayByDate.get(date)?.week_generated ?? false}
             onHighlight={onHighlight}
@@ -147,7 +149,7 @@ interface GroupBoxProps {
   group: PendingGroup;
   mode: 'date' | 'staff';
   headNote: { title: string; note: string; warn: boolean };
-  busy: boolean;
+  busyCells: ReadonlySet<string>;
   threshold: number;
   weekGenerated: (date: string) => boolean;
   onHighlight: LeavePendingPanelProps['onHighlight'];
@@ -160,7 +162,7 @@ function GroupBox({
   group,
   mode,
   headNote,
-  busy,
+  busyCells,
   threshold,
   weekGenerated,
   onHighlight,
@@ -190,7 +192,7 @@ function GroupBox({
             type="button"
             size="sm"
             variant="outline"
-            disabled={busy}
+            disabled={group.items.some((it) => busyCells.has(cellKey(it.staff_id, it.date)))}
             onClick={() => onApproveMany(group.items)}
           >
             {mode === 'date' ? 'この日をまとめて承認' : 'この人をまとめて承認'}
@@ -260,7 +262,7 @@ function GroupBox({
                 <Button
                   type="button"
                   size="sm"
-                  disabled={busy}
+                  disabled={busyCells.has(cellKey(it.staff_id, it.date))}
                   aria-label={`${label} を承認`}
                   onClick={() => onApprove(it)}
                 >

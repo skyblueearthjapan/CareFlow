@@ -114,7 +114,7 @@ export function ClosedDaysDialog({
                     <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-warning-bg px-3 py-2 text-warning-strong">
                       <span>
                         {targets}{' '}
-                        人に公休を入れます（勤務しない曜日の人・申請中の人・休みが入っている人は除きます）
+                        人に公休を入れます（勤務しない曜日の人・非常勤の人・休職中の人・申請中の人・休みが入っている人は除きます）
                       </span>
                       <div className="flex gap-1">
                         <Button

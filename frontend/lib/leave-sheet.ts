@@ -100,12 +100,23 @@ export function fmtClock(value: string | null | undefined): string {
   return `${Number(h)}:${m}`;
 }
 
-/** ISO 日時 → 'M/D H:MM' (端末の時刻帯 = JST)。 */
+const JST_PARTS = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Asia/Tokyo',
+  month: 'numeric',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+/** ISO 日時 → 'M/D H:MM' (JST・端末の時刻帯によらない)。 */
 export function fmtDateTimeShort(iso: string | null | undefined): string {
   if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const part = (t: Intl.DateTimeFormatPartTypes) =>
+    JST_PARTS.formatToParts(d).find((p) => p.type === t)?.value ?? '';
+  return `${part('month')}/${part('day')} ${Number(part('hour'))}:${part('minute')}`;
 }
 
 export const cellKey = (staffId: string, date: string): string => `${staffId}|${date}`;

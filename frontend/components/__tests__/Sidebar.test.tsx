@@ -23,13 +23,13 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/dashboard',
 }));
 
-// メニューの未処理の休みの申請の件数
+// メニューの未処理の休みの申請の件数 (いま組んでいる月の summary の pending_count)
 let pendingTotal = 0;
 const pendingCalls: unknown[][] = [];
-vi.mock('@/lib/queries/pending_requests', () => ({
-  usePendingRequests: (...args: unknown[]) => {
+vi.mock('@/lib/queries/leave', () => ({
+  useLeaveMonthSummary: (...args: unknown[]) => {
     pendingCalls.push(args);
-    return { data: { items: [], total: pendingTotal, limit: 1, offset: 0 } };
+    return { data: { pending_count: pendingTotal } };
   },
 }));
 
@@ -99,17 +99,14 @@ describe('Sidebar — ロール別メニュー表示', () => {
     render(<Sidebar collapsed={false} />);
     expect(screen.queryByRole('link', { name: '休み・勤務表' })).not.toBeInTheDocument();
     // 管理者でなければ件数を読まない
-    expect(pendingCalls.every((c) => (c[1] as { enabled: boolean }).enabled === false)).toBe(true);
+    expect(pendingCalls.every((c) => c[1] === false)).toBe(true);
   });
 
   it('6. 未処理の休みの申請の件数 (60 秒に 1 回まで)・折りたたみでは点', () => {
     setRole('admin');
     pendingTotal = 3;
     const { unmount } = render(<Sidebar collapsed={false} />);
-    expect(pendingCalls[0]).toEqual([
-      { request_type: 'staff_off', status: 'pending', limit: 1 },
-      { enabled: true, pollMs: 60_000 },
-    ]);
+    expect(pendingCalls[0]).toEqual([expect.stringMatching(/^\d{4}-\d{2}$/), true, 60_000]);
     const link = screen.getByRole('link', { name: /休み・勤務表/ });
     expect(link).toHaveTextContent('3');
     expect(link).toHaveTextContent('未処理の申請 3 件');

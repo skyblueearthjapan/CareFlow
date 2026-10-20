@@ -244,7 +244,9 @@ describe('AdminPendingRequestsPage — 休みの行', () => {
     );
     render(<AdminPendingRequestsPage />);
     fireEvent.click(screen.getByRole('button', { name: '却下' }));
-    fireEvent.change(screen.getByLabelText(/却下理由/), { target: { value: '人手が足りないため' } });
+    fireEvent.change(screen.getByLabelText(/却下理由/), {
+      target: { value: '人手が足りないため' },
+    });
     fireEvent.click(screen.getByRole('button', { name: '却下する' }));
     expect(rejectMutate).toHaveBeenCalledWith(
       { id: 'req-1', rejection_reason: '人手が足りないため' },

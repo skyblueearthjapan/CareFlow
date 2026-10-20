@@ -63,7 +63,9 @@ import {
   usePutClosedDay,
   usePutLeaveMonth,
   useRejectLeaveRequest,
+  useKinmuSheets,
   useSetLeaveDay,
+  useSetLeaveDayBulk,
 } from '@/lib/queries/leave';
 import type {
   LeaveDayResult,
@@ -142,6 +144,7 @@ function LeaveSheetPage() {
   const qc = useQueryClient();
   // 書き込みは 1 件ずつ順に (並行の POST を出さない)。読み直しは落ち着いてから 1 回だけ。
   const setDay = useSetLeaveDay({ invalidate: false });
+  const setDayBulk = useSetLeaveDayBulk({ invalidate: false });
   const cancelDay = useCancelLeaveDay({ invalidate: false });
   const approveOne = useApproveLeaveRequest({ invalidate: false });
   const approveBatch = useApproveLeaveBatch({ invalidate: false });
@@ -223,9 +226,12 @@ function LeaveSheetPage() {
   const doCancelLeave = (staffId: string, date: string) =>
     enqueue([cellKey(staffId, date)], async () => {
       try {
-        await cancelDay.mutateAsync({ staff_id: staffId, date });
+        const r = await cancelDay.mutateAsync({ staff_id: staffId, date });
         toast.success(`取り消しました（${nameOf(staffId)}さん ${fmtDayJp(date)}）`, {
-          description: '担当なしへ移した訪問は自動では戻りません',
+          description:
+            r.moved_visit_count > 0
+              ? `担当なしへ移した訪問 ${r.moved_visit_count} 件は自動では戻りません`
+              : undefined,
         });
       } catch (e) {
         toast.error(leaveErrorMessage(e, '取り消せませんでした'));
@@ -293,15 +299,16 @@ function LeaveSheetPage() {
     });
 
   /**
-   * 「全員に公休を入れる」の相手: その日に勤務する常勤 (新人は含む)。
-   * 型で勤務しない曜日の人・非常勤・休職中・申請中・休みが入っている人は除く。
+   * 「全員に公休を入れる」の相手 (件数の表示用・実際の相手はサーバーが同じ決まりで決める):
+   * その日に勤務する在籍の常勤 (新人は含む)。型で勤務しない曜日の人・非常勤・休職中・
+   * 申請中・休みが入っている人は除く。
    */
   const fillTargets = useCallback(
     (date: string, v: LeaveMonthView | undefined) => {
       const day = dayByDate.get(date);
       if (!v || !day) return [];
       return v.staff.filter((s) => {
-        if (!s.is_full_time || s.status === 'on_leave') return false;
+        if (!s.is_full_time || s.status !== 'active') return false;
         if (s.off_weekdays.includes(day.weekday)) return false;
         const c = cellByKey.get(cellKey(s.id, date));
         return !c?.leave_type && !c?.pending;
@@ -316,26 +323,18 @@ function LeaveSheetPage() {
     enqueue(
       targets.map((s) => cellKey(s.id, date)),
       async () => {
-        const failed: string[] = [];
-        let moved = 0;
-        // 1 人ずつ順に入れる (同じ日の後始末が重ならないように)。失敗した人は名前と理由を出す。
-        for (const s of targets) {
-          try {
-            const r = await setDay.mutateAsync({ staff_id: s.id, date, leave_type: 'off' });
-            moved += r.moved_visit_count;
-          } catch (e) {
-            failed.push(`${s.name}さん: ${leaveErrorMessage(e, '入れられませんでした')}`);
-          }
-        }
-        const ok = targets.length - failed.length;
-        if (ok > 0) {
-          toast.success(`${fmtDayJp(date)} に ${ok} 人の公休を入れました`, {
-            description: moved > 0 ? `訪問 ${moved} 件を「担当なし」へ移しました` : undefined,
+        // 1 トランザクション・管理者への通知は 1 通 (相手はサーバーが決める)
+        try {
+          const r = await setDayBulk.mutateAsync({ date, override_type: 'off' });
+          toast.success(`${fmtDayJp(date)} に ${r.applied.length} 人の公休を入れました`, {
+            description:
+              r.moved_visit_count > 0
+                ? `訪問 ${r.moved_visit_count} 件を「担当なし」へ移しました`
+                : undefined,
           });
-        }
-        if (failed.length > 0) {
-          toast.error(`${failed.length} 人に公休を入れられませんでした`, {
-            description: failed.join(' / '),
+        } catch (e) {
+          toast.error(leaveErrorMessage(e, '公休を入れられませんでした'), {
+            description: '1 人でも入れられないと、全部やめます',
           });
         }
       },
@@ -622,7 +621,7 @@ function LeaveSheetPage() {
               onOpenCell={openCellFor}
             />
           </div>
-          <DriveCard />
+          <DriveCard month={month} />
         </>
       )}
 
@@ -833,9 +832,10 @@ function Legend() {
   );
 }
 
-/** 勤務表 (Google スプレッドシート) の置き場の接続の状態 (§7-3)。 */
-function DriveCard() {
+/** 勤務表 (Google スプレッドシート) の一覧と置き場の接続の状態 (§7-2・§7-3)。 */
+function DriveCard({ month }: { month: string }) {
   const drive = useGoogleDriveStatus();
+  const sheets = useKinmuSheets(month);
   const st = drive.data;
   const text = !st
     ? drive.isError
@@ -847,19 +847,54 @@ function DriveCard() {
         ? 'もう一度接続してください'
         : 'まだ接続していません';
   return (
-    <Card
-      className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm"
-      data-testid="drive-card"
-    >
-      <span className="text-text-secondary">
-        勤務表（Google スプレッドシート）の置き場：<b className="text-text-primary">{text}</b>
-      </span>
-      <Button asChild variant="outline" size="sm">
-        <Link href="/settings/google-drive">
-          Google ドライブの設定
-          <ExternalLink className="h-4 w-4" />
-        </Link>
-      </Button>
+    <Card className="space-y-2 p-3 text-sm" data-testid="drive-card">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-text-secondary">
+          勤務表（Google スプレッドシート）の置き場：<b className="text-text-primary">{text}</b>
+        </span>
+        <Button asChild variant="outline" size="sm">
+          <Link href="/settings/google-drive">
+            Google ドライブの設定
+            <ExternalLink className="h-4 w-4" />
+          </Link>
+        </Button>
+      </div>
+      <div data-testid="kinmu-sheets">
+        {sheets.isError ? (
+          <p className="text-text-muted">勤務表の一覧を読み込めませんでした</p>
+        ) : !sheets.data ? (
+          <p className="text-text-muted">勤務表の一覧を読み込んでいます</p>
+        ) : sheets.data.length === 0 ? (
+          <p className="text-text-muted">
+            {fmtMonthJp(month)}の勤務表はまだありません（確定すると予定版を作ります）
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {sheets.data.map((k) => (
+              <li key={k.id} className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-text-primary">
+                  {k.kind === 'plan' ? '予定版' : '確定版'} 第{k.version}版
+                </span>
+                <span className="text-xs text-text-muted">
+                  {fmtDateTimeShort(k.created_at)}
+                  {k.reason ? ` ・ ${k.reason}` : ''}
+                </span>
+                {k.url && (
+                  <a
+                    href={k.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-brand-primary underline-offset-2 hover:underline"
+                  >
+                    開く
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </Card>
   );
 }

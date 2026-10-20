@@ -17,6 +17,8 @@ import {
   leaveApproveResultSchema,
   leaveCancelResultSchema,
   leaveConfirmResultSchema,
+  kinmuSheetSchema,
+  leaveDayBulkResultSchema,
   leaveDayResultSchema,
   leaveMonthReadSchema,
   leaveMonthSummarySchema,
@@ -27,6 +29,9 @@ import {
   type LeaveApproveResult,
   type LeaveCancelResult,
   type LeaveConfirmResult,
+  type KinmuSheet,
+  type LeaveDayBulkInput,
+  type LeaveDayBulkResult,
   type LeaveDayInput,
   type LeaveDayResult,
   type LeaveMonthRead,
@@ -120,11 +125,15 @@ export function useLeaveMonth(month: string, enabled = true) {
   });
 }
 
-/** GET /month/{month}/summary — 祝日・事業所の休み・確定の状態 (職員も可)。 */
-export function useLeaveMonthSummary(month: string, enabled = true) {
+/**
+ * GET /month/{month}/summary — 祝日・事業所の休み・確定の状態 (職員も可)。
+ * pollMs を渡すとその間隔で読み直す (その間は新しいものとして扱う・メニューの件数は 60 秒)。
+ */
+export function useLeaveMonthSummary(month: string, enabled = true, pollMs?: number) {
   const { accessToken, refreshToken, ready } = useTokens();
   return useQuery<LeaveMonthSummary>({
     queryKey: leaveSummaryKey(month),
+    ...(pollMs ? { staleTime: pollMs, refetchInterval: pollMs } : {}),
     queryFn: async () => {
       const raw = await fetcher<unknown>(`${BASE}/month/${month}/summary`, {
         accessToken,
@@ -133,6 +142,42 @@ export function useLeaveMonthSummary(month: string, enabled = true) {
       return leaveMonthSummarySchema.parse(raw);
     },
     enabled: ready && enabled,
+  });
+}
+
+/** GET /month/{month}/kinmu-sheets — その月に作った勤務表 (予定版→確定版・版の新しい順)。 */
+export function useKinmuSheets(month: string, enabled = true) {
+  const { accessToken, refreshToken, ready } = useTokens();
+  return useQuery<KinmuSheet[]>({
+    queryKey: ['leave', 'kinmu-sheets', month],
+    queryFn: async () => {
+      const raw = await fetcher<unknown>(`${BASE}/month/${month}/kinmu-sheets`, {
+        accessToken,
+        refreshToken,
+      });
+      return kinmuSheetSchema.array().parse(raw);
+    },
+    enabled: ready && enabled,
+  });
+}
+
+/** POST /day/bulk — この日の全員に入れる (1 トランザクション・1 人でも入れられなければ全部やめる)。 */
+export function useSetLeaveDayBulk({ invalidate = true }: LeaveMutationOptions = {}) {
+  const { accessToken, refreshToken } = useTokens();
+  const qc = useQueryClient();
+  return useMutation<LeaveDayBulkResult, Error, LeaveDayBulkInput>({
+    mutationFn: async (input) => {
+      const raw = await fetcher<unknown>(`${BASE}/day/bulk`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+        accessToken,
+        refreshToken,
+      });
+      return leaveDayBulkResultSchema.parse(raw);
+    },
+    onSettled: () => {
+      if (invalidate) void invalidateAfterLeave(qc);
+    },
   });
 }
 

@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import { ApiError } from '@/lib/api-client';
+import type * as ReactQueryModule from '@tanstack/react-query';
 import type * as LeaveQueries from '@/lib/queries/leave';
 import { leaveMonthViewSchema, type LeaveMonthView } from '@/lib/schemas/leave';
 
@@ -40,6 +41,15 @@ vi.mock('@/components/ui/sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+// 読み直しは書き込みが落ち着いてから 1 回 (qcStub で数える)
+const qcStub = { invalidateQueries: vi.fn(() => Promise.resolve()) };
+vi.mock('@tanstack/react-query', async (importOriginal) => {
+  const actual = await importOriginal<typeof ReactQueryModule>();
+  return { ...actual, useQueryClient: () => qcStub };
+});
+
+let kinmuSheets: unknown[] = [];
+
 vi.mock('@/lib/queries/googleDrive', () => ({
   useGoogleDriveStatus: () => ({
     data: { status: 'connected', folder_name: '勤務表' },
@@ -54,6 +64,7 @@ function mutation() {
 }
 const m = {
   setDay: mutation(),
+  setDayBulk: mutation(),
   cancelDay: mutation(),
   approveOne: mutation(),
   approveBatch: mutation(),
@@ -67,6 +78,10 @@ vi.mock('@/lib/queries/leave', async (importOriginal) => {
   const actual = await importOriginal<typeof LeaveQueries>();
   return {
     leaveErrorMessage: actual.leaveErrorMessage,
+    leaveErrorRequestId: actual.leaveErrorRequestId,
+    invalidateAfterLeave: actual.invalidateAfterLeave,
+    useKinmuSheets: () => ({ data: kinmuSheets, isError: false }),
+    useSetLeaveDayBulk: () => m.setDayBulk,
     useLeaveMonth: (...args: unknown[]) => {
       monthCalls.push(args);
       return { data: args[1] === false ? undefined : view, isError: false, error: null };
@@ -120,11 +135,20 @@ beforeEach(() => {
   view = makeView();
   monthCalls.length = 0;
   for (const k of Object.keys(m) as (keyof typeof m)[]) m[k] = mutation();
+  qcStub.invalidateQueries.mockClear();
+  kinmuSheets = [];
+  m.setDayBulk.mutateAsync.mockResolvedValue({
+    date: '2026-11-30',
+    override_type: 'off',
+    applied: [{}, {}, {}],
+    moved_visit_count: 5,
+  });
   m.setDay.mutateAsync.mockResolvedValue(DAY_RESULT);
   m.cancelDay.mutateAsync.mockResolvedValue({
     staff_id: S1,
     date: '2026-11-10',
     cancelled_type: 'off',
+    moved_visit_count: 2,
   });
   m.approveOne.mutateAsync.mockResolvedValue({
     request_id: P1,
@@ -248,14 +272,16 @@ describe('表の描画', () => {
     render(<AdminLeavePage />);
     const head3 = document.querySelector('th[data-col="2026-11-03"]')!;
     expect(head3).toHaveAttribute('title', expect.stringContaining('文化の日'));
-    expect(within(head3 as HTMLElement).getByLabelText('文化の日')).toHaveTextContent('祝');
+    // 「祝」は見た目だけ・読み上げは名前 (sr-only)
+    expect(within(head3 as HTMLElement).getByText('文化の日')).toHaveClass('sr-only');
+    expect(within(head3 as HTMLElement).getByText('祝')).toHaveAttribute('aria-hidden');
     expect(head3.querySelector('.text-red-600')).toHaveTextContent('3');
     const head12 = document.querySelector('th[data-col="2026-11-12"]')!;
     expect(head12).toHaveTextContent('申2');
     const head30 = document.querySelector('th[data-col="2026-11-30"]')!;
-    expect(
-      within(head30 as HTMLElement).getByLabelText('事業所の休み 試験の休業'),
-    ).toBeInTheDocument();
+    expect(within(head30 as HTMLElement).getByText('事業所の休み 試験の休業')).toHaveClass(
+      'sr-only',
+    );
     const notes = screen.getByTestId('day-notes');
     expect(notes).toHaveTextContent('11/3（火） 文化の日');
     expect(notes).toHaveTextContent('11/23（月） 勤労感謝の日');
@@ -268,6 +294,7 @@ describe('表の描画', () => {
     expect(d10).toHaveTextContent('2');
     expect(d10).toHaveAttribute('data-warn', 'true');
     expect(d10.className).toContain('bg-warning-bg');
+    expect(within(d10).getByText('休み 2 人（重なっています）')).toHaveClass('sr-only');
     expect(screen.getByTestId('off-count-2026-11-11')).toHaveAttribute('data-warn', 'false');
     expect(screen.getByTestId('off-count-2026-11-11')).toHaveTextContent('');
   });
@@ -326,7 +353,7 @@ describe('表の描画', () => {
     expect(screen.getByTestId('confirm-badge')).toHaveTextContent('✓ 確定済み');
     expect(screen.getByTestId('confirm-badge')).toHaveTextContent('確定の後に休みを変えました');
     expect(screen.getByTestId('compare-status')).toHaveTextContent('差分 2 件');
-    expect(screen.getByTestId('compare-status')).toHaveTextContent('比べ直しが要ります');
+    expect(screen.getByTestId('compare-status')).toHaveTextContent('もう一度比べてください');
     expect(screen.getByTestId('status-line')).toHaveTextContent('勤務すべき時間数 168 時間');
   });
 
@@ -349,7 +376,8 @@ describe('押すと入るもの', () => {
     fireEvent.click(cellEl(S1, '2026-11-16'));
     fireEvent.click(cellEl(S1, '2026-11-17'));
     fireEvent.click(cellEl(S2, '2026-11-18'));
-    expect(m.setDay.mutateAsync).toHaveBeenCalledTimes(3);
+    // 1 件ずつ順に送る (並行の POST を出さない)
+    await waitFor(() => expect(m.setDay.mutateAsync).toHaveBeenCalledTimes(3));
     expect(m.setDay.mutateAsync).toHaveBeenNthCalledWith(1, {
       staff_id: S1,
       date: '2026-11-16',
@@ -397,7 +425,7 @@ describe('押すと入るもの', () => {
     fireEvent.click(cellEl(S1, '2026-11-14'));
     expect(m.setDay.mutateAsync).not.toHaveBeenCalled();
     expect(toast.info).toHaveBeenCalledWith(
-      '職員Aさんは土曜日がもともと勤務外です（休日に数えています）',
+      '職員Aさんは土曜日がもともと勤務外です（休日に数えています）。休みを入れるときは「選んで操作」でマスの小窓から入れてください',
     );
   });
 
@@ -410,7 +438,7 @@ describe('押すと入るもの', () => {
     expect(m.cancelDay.mutateAsync).toHaveBeenCalledWith({ staff_id: S1, date: '2026-11-10' });
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith('取り消しました（職員Aさん 11/10（火））', {
-        description: '担当なしへ移した訪問は自動では戻りません',
+        description: '担当なしへ移した訪問 2 件は自動では戻りません',
       }),
     );
   });
@@ -474,12 +502,22 @@ describe('マスの小窓', () => {
     });
   });
 
-  it('勤務しない曜日は説明だけ・週が未作成の日はそう出す', async () => {
+  it('勤務しない曜日にも小窓から休みを入れられる・週が未作成の日はそう出す', async () => {
     render(<AdminLeavePage />);
     fireEvent.click(cellEl(S1, '2026-11-14'));
     let pop = await popover();
     expect(pop).toHaveTextContent('もともと勤務しない曜日です');
-    expect(within(pop).queryByRole('group', { name: '休みの種類' })).not.toBeInTheDocument();
+    expect(pop).toHaveTextContent('カイポケへは営業時間の休みとして送ります');
+    fireEvent.click(within(pop).getByRole('button', { name: /^有給/ }));
+    expect(m.setDay.mutateAsync).toHaveBeenCalledWith({
+      staff_id: S1,
+      date: '2026-11-14',
+      leave_type: 'paid_off',
+    });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(cellEl(S1, '2026-11-14')).not.toBeDisabled());
+    fireEvent.click(cellEl(S1, '2026-11-15'));
+    pop = await popover();
     fireEvent.click(within(pop).getByRole('button', { name: '閉じる' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     fireEvent.click(cellEl(S1, '2026-11-18'));
@@ -660,8 +698,12 @@ describe('申請中の一覧', () => {
     render(<AdminLeavePage />);
     const panel = screen.getByRole('complementary', { name: '申請中の休み' });
     fireEvent.click(within(panel).getByRole('button', { name: 'この日をまとめて承認' }));
+    // どの申請で止まったかを職員名と日付で出す
     await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith('この申請は承認済みです', expect.anything()),
+      expect(toast.error).toHaveBeenCalledWith(
+        '職員Aさん 11/12（木）：この申請は承認済みです',
+        expect.anything(),
+      ),
     );
   });
 
@@ -767,23 +809,164 @@ describe('事業所の休み', () => {
     expect(within(dlg).getByRole('button', { name: '入れる' })).toBeDisabled();
   });
 
-  it('全員に公休を入れる: 勤務する人だけ 1 人ずつ', async () => {
+  it('全員に公休を入れる: 常勤・在籍・勤務する曜日の人だけ (新人は含む)・1 回の bulk で', async () => {
     view = makeView(closed);
     render(<AdminLeavePage />);
     fireEvent.click(screen.getByRole('button', { name: '事業所の休み' }));
     const dlg = await screen.findByRole('dialog', { name: '2026年11月の事業所の休み' });
     fireEvent.click(within(dlg).getByRole('button', { name: '全員に公休を入れる' }));
-    expect(dlg).toHaveTextContent('4 人に公休を入れます');
+    // 職員C (非常勤) は除く・職員D (新人) は含む
+    expect(dlg).toHaveTextContent(
+      '3 人に公休を入れます（勤務しない曜日の人・非常勤の人・休職中の人・申請中の人・休みが入っている人は除きます）',
+    );
     await act(async () => {
       fireEvent.click(within(dlg).getAllByRole('button', { name: '入れる' })[0]!);
     });
-    await waitFor(() => expect(m.setDay.mutateAsync).toHaveBeenCalledTimes(4));
-    expect(m.setDay.mutateAsync.mock.calls.map((c) => c[0].staff_id)).toEqual([S1, S2, S3, S4]);
-    expect(m.setDay.mutateAsync.mock.calls.every((c) => c[0].leave_type === 'off')).toBe(true);
     await waitFor(() =>
-      expect(toast.success).toHaveBeenCalledWith('11/30（月） に 4 人の公休を入れました', {
-        description: '訪問 8 件を「担当なし」へ移しました',
+      expect(m.setDayBulk.mutateAsync).toHaveBeenCalledWith({
+        date: '2026-11-30',
+        override_type: 'off',
       }),
+    );
+    expect(m.setDayBulk.mutateAsync).toHaveBeenCalledTimes(1);
+    expect(m.setDay.mutateAsync).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith('11/30（月） に 3 人の公休を入れました', {
+        description: '訪問 5 件を「担当なし」へ移しました',
+      }),
+    );
+  });
+
+  it('全員に公休を入れる: 休職中の人は数えない・失敗したら全部やめると出す', async () => {
+    view = makeView({
+      ...closed,
+      staff: makeView().staff.map((s) => (s.id === S2 ? { ...s, status: 'on_leave' } : s)),
+    });
+    m.setDayBulk.mutateAsync.mockRejectedValue(
+      new ApiError('API 409', 409, { detail: 'この日は申請中の人がいます' }),
+    );
+    render(<AdminLeavePage />);
+    fireEvent.click(screen.getByRole('button', { name: '事業所の休み' }));
+    const dlg = await screen.findByRole('dialog', { name: '2026年11月の事業所の休み' });
+    fireEvent.click(within(dlg).getByRole('button', { name: '全員に公休を入れる' }));
+    expect(dlg).toHaveTextContent('2 人に公休を入れます');
+    await act(async () => {
+      fireEvent.click(within(dlg).getAllByRole('button', { name: '入れる' })[0]!);
+    });
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('この日は申請中の人がいます', {
+        description: '1 人でも入れられないと、全部やめます',
+      }),
+    );
+  });
+});
+
+describe('続けて押す (連打)', () => {
+  it('書き込みは 1 件ずつ順に・進行中のマスは押せず薄い・読み直しは落ち着いてから 1 回', async () => {
+    let release: (() => void) | null = null;
+    m.setDay.mutateAsync.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(DAY_RESULT);
+        }),
+    );
+    render(<AdminLeavePage />);
+    stamp('公休');
+    fireEvent.click(cellEl(S1, '2026-11-16'));
+    fireEvent.click(cellEl(S1, '2026-11-16'));
+    fireEvent.click(cellEl(S1, '2026-11-17'));
+    // 並行の POST を出さない: 1 件目が終わるまで 2 件目は出ない
+    expect(m.setDay.mutateAsync).toHaveBeenCalledTimes(1);
+    expect(cellEl(S1, '2026-11-16')).toBeDisabled();
+    expect(cellEl(S1, '2026-11-16')).toHaveAttribute('aria-busy', 'true');
+    expect(cellEl(S1, '2026-11-16').className).toContain('opacity-40');
+    expect(cellEl(S1, '2026-11-17')).toBeDisabled();
+    await act(async () => release?.());
+    await waitFor(() => expect(m.setDay.mutateAsync).toHaveBeenCalledTimes(2));
+    expect(m.setDay.mutateAsync).toHaveBeenNthCalledWith(2, {
+      staff_id: S1,
+      date: '2026-11-17',
+      leave_type: 'off',
+    });
+    const leaveReloads = () =>
+      qcStub.invalidateQueries.mock.calls.filter(
+        (c: unknown[]) => JSON.stringify((c[0] as { queryKey: unknown }).queryKey) === '["leave"]',
+      ).length;
+    expect(leaveReloads()).toBe(0);
+    await act(async () => release?.());
+    await waitFor(() => expect(cellEl(S1, '2026-11-17')).not.toBeDisabled());
+    expect(leaveReloads()).toBe(1);
+    expect(cellEl(S1, '2026-11-16')).not.toBeDisabled();
+  });
+});
+
+describe('キーボードと光り', () => {
+  it('小窓を開くと最初のボタンへ焦点・閉じるとマスへ戻る・マスに aria-expanded', async () => {
+    render(<AdminLeavePage />);
+    const c = cellEl(S1, '2026-11-11');
+    expect(c).toHaveAttribute('aria-expanded', 'false');
+    expect(c).toHaveAttribute('aria-haspopup', 'dialog');
+    fireEvent.click(c);
+    const pop = await popover();
+    expect(c).toHaveAttribute('aria-expanded', 'true');
+    await waitFor(() => expect(pop.contains(document.activeElement)).toBe(true));
+    expect(document.activeElement?.tagName).toBe('BUTTON');
+    fireEvent.click(within(pop).getByRole('button', { name: '閉じる' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(document.activeElement).toBe(cellEl(S1, '2026-11-11'));
+  });
+
+  it('一覧に指を置くと同じ列のマスも枠で光り、見えない所ならマスへ寄せる', () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    render(<AdminLeavePage />);
+    fireEvent.mouseEnter(document.querySelector<HTMLElement>(`[data-request="${P1}"]`)!);
+    expect(cellEl(S3, '2026-11-12').className).toContain('ring-brand-primary');
+    expect(cellEl(S3, '2026-11-11').className).not.toContain('ring-1');
+    expect(scroll).toHaveBeenCalledWith({ block: 'nearest', inline: 'nearest' });
+  });
+
+  it('承認したら光りを消す', async () => {
+    render(<AdminLeavePage />);
+    const row = document.querySelector<HTMLElement>(`[data-request="${P1}"]`)!;
+    fireEvent.mouseEnter(row);
+    fireEvent.click(within(row).getByRole('button', { name: /を承認$/ }));
+    await waitFor(() =>
+      expect(cellEl(S1, '2026-11-12').className).not.toContain('ring-brand-primary-hover'),
+    );
+  });
+});
+
+describe('勤務表の一覧', () => {
+  it('その月の勤務表を予定版・確定版と版で出し、開ける', () => {
+    kinmuSheets = [
+      {
+        id: 'bbbbbbb1-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        month: '2026-11-01',
+        kind: 'plan',
+        version: 2,
+        drive_file_id: 'f',
+        url: 'https://docs.google.com/spreadsheets/d/x',
+        reason: null,
+        created_by: null,
+        created_at: '2026-10-20T01:00:00Z',
+      },
+    ];
+    render(<AdminLeavePage />);
+    const list = screen.getByTestId('kinmu-sheets');
+    expect(list).toHaveTextContent('予定版 第2版');
+    // 日時は JST (10/20 10:00)
+    expect(list).toHaveTextContent('10/20 10:00');
+    expect(within(list).getByRole('link', { name: /開く/ })).toHaveAttribute(
+      'href',
+      'https://docs.google.com/spreadsheets/d/x',
+    );
+  });
+
+  it('無ければそう出す', () => {
+    render(<AdminLeavePage />);
+    expect(screen.getByTestId('kinmu-sheets')).toHaveTextContent(
+      '2026年11月の勤務表はまだありません',
     );
   });
 });
@@ -796,6 +979,20 @@ describe('ほかの入口から開く', () => {
     const pop = await popover();
     expect(pop).toHaveTextContent('職員Aさん ・ 11/12（木）');
     expect(pop).toHaveTextContent('本人からの申請');
+  });
+
+  it('?staff=&date= が変わったら、月と小窓もそれに合わせる', async () => {
+    search = new URLSearchParams({ staff: S1, date: '2026-11-12' });
+    const { rerender } = render(<AdminLeavePage />);
+    expect(await popover()).toHaveTextContent('職員Aさん ・ 11/12（木）');
+    search = new URLSearchParams({ staff: S2, date: '2026-11-11' });
+    rerender(<AdminLeavePage />);
+    await waitFor(() =>
+      expect(screen.getByRole('dialog')).toHaveTextContent('職員Bさん ・ 11/11（水）'),
+    );
+    search = new URLSearchParams({ staff: S2, date: '2026-12-02' });
+    rerender(<AdminLeavePage />);
+    await waitFor(() => expect(monthCalls[monthCalls.length - 1]).toEqual(['2026-12', true]));
   });
 
   it('?date= の月で開く', () => {
