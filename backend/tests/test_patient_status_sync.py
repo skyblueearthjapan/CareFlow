@@ -443,7 +443,7 @@ async def test_pending_requests_rejected_and_admins_notified(db) -> None:
     db.add(_visit(patient, today + timedelta(days=1), start=time(9, 0)))
     req = PendingRequest(
         requester_user_id=requester.id,
-        request_type="visit_reschedule",
+        request_type="patient_reschedule",
         payload={},
         target_patient_id=patient.id,
         status="pending",

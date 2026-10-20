@@ -43,6 +43,12 @@ SexV2 = Literal["male", "female", "unknown"]
 # 無く、スタッフ編集ページの保存が 422 extra_forbidden で全滅していた (2026-08-31 是正)。
 QualificationV2 = Literal["看護師", "准看護師", "理学療法士", "作業療法士", "言語聴覚士"]
 
+# 休み・勤務表 (mig 0099・docs/plans/leave-and-kinmu-sheet-design-2026-10-20.md §2-2・§7-1)。
+# 常勤 / 非常勤 (必要休日数は常勤だけ)。
+EmploymentTypeV2 = Literal["full_time", "part_time"]
+# 勤務表の勤務形態の区分。
+WorkFormV2 = Literal["A", "B", "C", "D"]
+
 
 class StaffBase(BaseModel):
     """スタッフマスタ v2 基底スキーマ (§4.2 残す 9 項目)."""
@@ -77,6 +83,18 @@ class StaffBase(BaseModel):
         default=None, description="資格 (看護師 / 准看護師 / PT / OT / ST)。請求区分の判定に使う"
     )
 
+    # 休み・勤務表 (mig 0099)
+    employment_type: EmploymentTypeV2 = Field(
+        default="full_time", description="常勤 / 非常勤。非常勤は必要休日数の対象外"
+    )
+    work_form: WorkFormV2 | None = Field(default=None, description="勤務表の勤務形態の区分 A〜D")
+    admin_hours_per_day: float | None = Field(
+        default=None, ge=0, le=24, description="1 日の管理時間。空 = 管理者でない"
+    )
+    kinmu_title: str | None = Field(
+        default=None, max_length=64, description="勤務表の 1 行目に出す役職 (空なら職種)"
+    )
+
 
 class StaffCreate(StaffBase):
     """POST /api/v1/staff リクエスト (W1-BE2)."""
@@ -97,6 +115,10 @@ class StaffUpdate(BaseModel):
     note: str | None = None
     is_trainee: bool | None = None
     qualification: QualificationV2 | None = None
+    employment_type: EmploymentTypeV2 | None = None
+    work_form: WorkFormV2 | None = None
+    admin_hours_per_day: float | None = Field(default=None, ge=0, le=24)
+    kinmu_title: str | None = Field(default=None, max_length=64)
 
 
 class StaffRead(StaffBase):

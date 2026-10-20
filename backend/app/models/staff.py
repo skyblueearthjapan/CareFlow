@@ -16,11 +16,13 @@ from datetime import date, datetime, time
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     SmallInteger,
     String,
     Text,
@@ -60,6 +62,20 @@ class Staff(Base, TimestampMixin):
     )
     is_trainee: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # 休み・勤務表 (mig 0099・docs/plans/leave-and-kinmu-sheet-design-2026-10-20.md §2-2・§7-1)。
+    # 常勤 (full_time) / 非常勤 (part_time)。必要休日数は常勤だけ (非常勤は「対象外」)。
+    employment_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="full_time", server_default="full_time"
+    )
+    # 勤務表の勤務形態の区分 (A〜D)。
+    work_form: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    # 管理時間 (1 日あたりの時間)。NULL = 管理者でない。
+    admin_hours_per_day: Mapped[float | None] = mapped_column(
+        Numeric(4, 2, asdecimal=False), nullable=True
+    )
+    # 勤務表の 1 行目に出す役職 (任意。無ければ職種)。
+    kinmu_title: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -76,6 +92,14 @@ class Staff(Base, TimestampMixin):
 
     __table_args__ = (
         Index("ix_staff_status_office", "status", "primary_office_id"),
+        # mig 0099 と同じ CHECK (命名規約で ck_staff_<name> になる)。
+        CheckConstraint("employment_type IN ('full_time','part_time')", name="employment_type"),
+        CheckConstraint("work_form IS NULL OR work_form IN ('A','B','C','D')", name="work_form"),
+        CheckConstraint(
+            "admin_hours_per_day IS NULL OR "
+            "(admin_hours_per_day >= 0 AND admin_hours_per_day <= 24)",
+            name="admin_hours_per_day",
+        ),
         # W41 後続 cross-review HIGH#3: concurrent import で staff.code 重複が
         # silent に通る race を防ぐ partial UNIQUE INDEX. PostgreSQL では
         # ``deleted_at IS NULL AND code IS NOT NULL`` のみを対象にする
@@ -143,12 +167,25 @@ class StaffWeeklyOverride(Base, TimestampMixin):
     iso_year: Mapped[int] = mapped_column(Integer, nullable=False)
     iso_week: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     weekday: Mapped[int] = mapped_column(SmallInteger, nullable=False)
-    override_type: Mapped[str] = mapped_column(String(16), nullable=False)  # off / custom_time
+    # off / am_off / pm_off / paid_off (休み・app/core/leave.py の LEAVE_TYPES) / custom_time
+    override_type: Mapped[str] = mapped_column(String(16), nullable=False)
     start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 誰が入れた休みか (mig 0099・設計 §2-1): request (本人の申請を承認) / admin (管理者が
+    # 入れた) / kaipoke (照合でカイポケから取り込んだ)。
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="admin", server_default="admin"
+    )
+    # 承認元の申請 (申請が消えても休みは残る)。
+    pending_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("pending_requests.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     __table_args__ = (
+        CheckConstraint("source IN ('request','admin','kaipoke')", name="source"),
         UniqueConstraint(
             "staff_id", "iso_year", "iso_week", "weekday", name="uq_staff_week_override"
         ),

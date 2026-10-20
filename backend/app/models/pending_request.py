@@ -15,6 +15,7 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -34,8 +35,10 @@ JSONBish = JSONB().with_variant(JSON(), "sqlite")
 
 
 # request_type / status / scope の値域は v2 enums (`app/schemas/v2/enums.py`) と
-# 完全一致させる。本テーブルは ``String`` 列で保持し、CHECK 制約は migration 側で
-# 追加する (Postgres のみ、SQLite テストでは省略)。
+# 完全一致させる。本テーブルは ``String`` 列で保持する。
+# request_type の CHECK は mig0099 でアプリの 12 種に貼り直し、試験の DB (create_all) でも
+# 同じ CHECK が付くようモデルにも持つ (``ck_pending_requests_request_type``・設計 §8-1)。
+# status / scope の CHECK は migration (Postgres) 側だけ。
 _REQUEST_TYPE_VALUES: tuple[str, ...] = (
     "staff_off",
     "staff_event",
@@ -46,6 +49,9 @@ _REQUEST_TYPE_VALUES: tuple[str, ...] = (
     "patient_reschedule",
     "patient_special_week_on",
     "patient_special_week_off",
+    "staff_status_update",
+    "patient_status_update",
+    "patient_visit_add",
 )
 _REQUEST_STATUS_VALUES: tuple[str, ...] = ("pending", "approved", "rejected")
 _REQUEST_SCOPE_VALUES: tuple[str, ...] = ("one_time", "permanent")
@@ -121,6 +127,11 @@ class PendingRequest(Base, TimestampMixin):
     edited_payload: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
 
     __table_args__ = (
+        # 命名規約で ``ck_pending_requests_request_type`` になる (migration と同じ名前)。
+        CheckConstraint(
+            "request_type IN (" + ", ".join(f"'{v}'" for v in _REQUEST_TYPE_VALUES) + ")",
+            name="request_type",
+        ),
         Index("ix_pending_requests_status_created_at", "status", "created_at"),
         Index("ix_pending_requests_target_staff_status", "target_staff_id", "status"),
         Index("ix_pending_requests_target_patient_status", "target_patient_id", "status"),

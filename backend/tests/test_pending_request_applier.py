@@ -1023,15 +1023,14 @@ async def test_missing_required_params_raise(db) -> None:
 @pytest.mark.asyncio
 async def test_unknown_request_type_raises(db) -> None:
     user = await _make_user(db, "apl-unknown@example.com")
+    # request_type の CHECK (mig0099・モデルも同じ) で知らない種類は保存できないので、
+    # 保存せずに applier へ渡す。
     pr = PendingRequest(
         requester_user_id=user.id,
         request_type="unknown_type",
         payload={},
         status="pending",
     )
-    db.add(pr)
-    await db.commit()
-    await db.refresh(pr)
 
     applier = PendingRequestApplier()
     with pytest.raises(PendingRequestApplyError):
