@@ -15,7 +15,7 @@
 import * as React from 'react';
 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { AM_OFF_UNTIL, PM_OFF_FROM } from '@/lib/leave';
+import { LEAVE_TYPE_OF_LABEL, visitHitsLeave } from '@/lib/leave';
 import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { CockpitEventRead } from '@/lib/schemas/v2/cockpit';
 import type { StaffRead } from '@/lib/schemas/staff';
@@ -57,10 +57,8 @@ function isOffForEvent(
   endTime: string,
 ): boolean {
   if (!ov) return false;
-  if (ov.type === '休み' || ov.type === '有給') return true;
-  if (ov.type === '午前休') return startTime.slice(0, 5) < AM_OFF_UNTIL;
-  if (ov.type === '午後休') return endTime.slice(0, 5) > PM_OFF_FROM;
-  return false; // 時間変更は勤務そのものはあるので自動除外しない
+  // 時間変更は休みの種類に無い = 勤務そのものはあるので自動除外しない (visitHitsLeave が偽)。
+  return visitHitsLeave(LEAVE_TYPE_OF_LABEL[ov.type], startTime, endTime);
 }
 
 interface DayGroup {

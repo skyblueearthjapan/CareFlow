@@ -45,7 +45,7 @@ import {
   staffDayCountKey,
   type StaffDayCount,
 } from '@/lib/schedule/staffDayCount';
-import { leaveWindow } from '@/lib/leave';
+import { LEAVE_TYPE_OF_LABEL, leaveWindow } from '@/lib/leave';
 import { StaffDayCountBadge } from '../StaffDayCountBadge';
 import { parseHM } from '@/lib/scheduling/freeGaps';
 import {
@@ -390,14 +390,6 @@ export function snapXOffsetToMinutes(
 }
 
 /** 休み/時間変更の一言 (行の補足)。 */
-/** 休みの札 → `leaveWindow` の種類 (時間変更は勤務の時刻そのもの)。 */
-const LEAVE_TYPE_BY_LABEL: Record<string, string> = {
-  休み: 'off',
-  有給: 'paid_off',
-  午前休: 'am_off',
-  午後休: 'pm_off',
-};
-
 /**
  * 「働かない時間」[開始分, 終了分] の並び (設計 §5)。軸の端 (8:00〜19:00) を勤務の端とみなす。
  * 終日 = 全部 / 午前休 = 始まり〜13:00 / 午後休 = 12:30〜終わり / 時間変更 = 勤務の外。
@@ -411,7 +403,7 @@ export function offDutyRanges(off: WeekOverrideRead | null | undefined): [number
       ? off.start_time && off.end_time
         ? leaveWindow(null, off.start_time, off.end_time)
         : [axisStart, axisEnd]
-      : leaveWindow(LEAVE_TYPE_BY_LABEL[off.type] ?? 'off', axisStart, axisEnd);
+      : leaveWindow(LEAVE_TYPE_OF_LABEL[off.type] ?? 'off', axisStart, axisEnd);
   if (win === null) return [[TL_COCKPIT_START_MIN, TL_COCKPIT_END_MIN]];
   const ws = Math.max(TL_COCKPIT_START_MIN, parseHM(win[0]) ?? TL_COCKPIT_START_MIN);
   const we = Math.min(TL_COCKPIT_END_MIN, parseHM(win[1]) ?? TL_COCKPIT_END_MIN);
