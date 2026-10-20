@@ -252,7 +252,7 @@ def to_sheet_data(km: KinmuMonth, summary: HolidaySummary | None = None) -> list
 def summary_to_sheet_data(summary: HolidaySummary) -> SheetData:
     """「集計」シート: A1「休日取得数」・3 行目に「■YYYY年」と 1〜12 月・「合計」、職員の行・合計の行.
 
-    職員の行の合計・合計の行は式 (「対象外」の文字は SUM が数えない)。
+    職員の行の合計・合計の行は式。数えない職員 (「対象外」「休職」) の合計は式ではなくその文字。
     """
     width = 1 + len(summary.months) + 1
     last = width - 1
@@ -263,11 +263,15 @@ def summary_to_sheet_data(summary: HolidaySummary) -> SheetData:
         g.put(2, 1 + i, f"{m.month}月")
     g.put(2, last, "合計")
     r = 3
-    for name, values, _ in summary.rows:
+    for name, values, total in summary.rows:
         g.put(r, 0, name)
         for i, v in enumerate(values):
             g.put(r, 1 + i, v)
-        g.put(r, last, Formula(f"=SUM({a1(r, 1)}:{a1(r, last - 1)})"))
+        g.put(
+            r,
+            last,
+            total if isinstance(total, str) else Formula(f"=SUM({a1(r, 1)}:{a1(r, last - 1)})"),
+        )
         r += 1
     g.put(r, 0, "合計")
     for c in range(1, width):

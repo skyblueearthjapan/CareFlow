@@ -3,7 +3,8 @@
 * 型 (``staff_shifts``) は履歴を持たないので、過去の月もいまの型で計算する。
 * 確定版 (``with_actual=True``) の「予定」は、予定版を作ったときの写し
   (``kinmu_sheets.plan_snapshot``・最新の版) から作り、「実績」はいまの (照合を済ませた) 休みと
-  いまの型で作る。写しが無い月はいまの予定を使い、``plan_source='current'`` で知らせる。
+  いまの型で作る。写しが無い月・版が違うか壊れた写しの月はいまの予定を使い、
+  ``plan_source='current'`` で知らせる。
   予定版を作る側 (#13) は ``snapshot_plan(inputs.staff)`` を ``plan_snapshot`` に置く。
 """
 
@@ -23,6 +24,8 @@ from app.models.office import Office
 from app.models.staff import Staff, StaffSecondaryOffice, StaffShift
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.services.kinmu_sheet.build import (
+    NOT_APPLICABLE,
+    ON_LEAVE_NOTE,
     DayOverride,
     KinmuRules,
     KinmuStaffInput,
@@ -178,6 +181,7 @@ async def load_kinmu_inputs(
     snapshot = await _latest_plan_snapshot(db, days[0]) if with_actual else None
 
     inputs: list[KinmuStaffInput] = []
+    used_snapshot = False
     for s in staff:
         current = {
             d: DayOverride(r.override_type, r.start_time, r.end_time)
@@ -189,6 +193,7 @@ async def load_kinmu_inputs(
             snap = plan_from_snapshot(snapshot, str(s.id))
             if snap is not None:
                 plan_shifts, plan = snap
+                used_snapshot = True
         inputs.append(
             KinmuStaffInput(
                 key=str(s.id),
@@ -211,16 +216,17 @@ async def load_kinmu_inputs(
         required_hours=lm.required_hours if lm is not None else None,
         closed_days=await load_closed_days(db, month),
         staff=inputs,
-        plan_source="snapshot" if snapshot is not None else "current",
+        plan_source="snapshot" if used_snapshot else "current",
     )
 
 
 async def load_holiday_counts_by_month(
     db: AsyncSession, month: date, *, rules: KinmuRules | None = None
-) -> list[tuple[str, dict[date, float] | None]]:
+) -> list[tuple[str, dict[date, float] | str]]:
     """「集計」の材料: 勤務表の職員ごとの、その年の 1 月〜その月の休日数 (有給は数えない).
 
-    休みは 1 月 1 日〜その月の末日を 1 回で読む。非常勤は None (「対象外」)。
+    休みは 1 月 1 日〜その月の末日を 1 回で読む。勤務表とそろえて、休職は「休職」・非常勤は
+    「対象外」の文字 (休日数を数えない・``KinmuRules`` で切り替え)。
     """
     rules = rules or KinmuRules()
     upto = month_days(month)
@@ -230,10 +236,13 @@ async def load_holiday_counts_by_month(
     working = await load_working_weekdays(db, ids)
     rows = await load_overrides_between(db, first, upto[-1], ids)
     months = [date(first.year, m, 1) for m in range(1, upto[0].month + 1)]
-    out: list[tuple[str, dict[date, float] | None]] = []
+    out: list[tuple[str, dict[date, float] | str]] = []
     for s in staff:
+        if s.status == "on_leave" and rules.on_leave_all_off:
+            out.append((s.name, ON_LEAVE_NOTE))
+            continue
         if s.employment_type != "full_time" and not rules.part_time_marks:
-            out.append((s.name, None))
+            out.append((s.name, NOT_APPLICABLE))
             continue
         types = {d: r.override_type for d, r in rows.get(s.id, {}).items()}
         out.append(

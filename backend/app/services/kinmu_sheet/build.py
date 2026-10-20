@@ -151,6 +151,7 @@ class KinmuStaffRows:
     actual_total: float | None
     plan_fte: float | None
     admin_fte: float | None
+    #: 実績の常勤換算。シートには出さない (見本どおり)・参考の値。
     actual_fte: float | None
     holidays: HolidayCount | None
 
@@ -169,6 +170,7 @@ class KinmuMonth:
     plan_total: float
     actual_total: float | None
     plan_fte: float
+    #: 実績の合計の常勤換算。シートには出さない (見本どおり)・参考の値。
     actual_fte: float | None
 
 
@@ -176,7 +178,7 @@ class KinmuMonth:
 class HolidaySummary:
     """「集計」シート: その年の 1 月〜その月の、職員×月の休日取得数 (有給は数えない).
 
-    行の値が「対象外」の職員 (非常勤) は合計に入れない。
+    行の値が文字 (「対象外」= 非常勤・「休職」) の職員は合計に入れない。
     """
 
     year: int
@@ -424,21 +426,20 @@ def build_kinmu_month(
 
 
 def build_holiday_summary(
-    month: date, rows: Iterable[tuple[str, Mapping[date, float] | None]]
+    month: date, rows: Iterable[tuple[str, Mapping[date, float] | str]]
 ) -> HolidaySummary:
     """「集計」: その年の 1 月〜``month`` の、職員×月の休日取得数.
 
-    ``rows`` は (職員名, {月の 1 日: 休日数})。None の職員 (非常勤) は「対象外」。
+    ``rows`` は (職員名, {月の 1 日: 休日数})。数えない職員は休日数の代わりに文字
+    (``NOT_APPLICABLE`` =「対象外」・``ON_LEAVE_NOTE`` =「休職」) を渡し、その文字を書く。
     ``month`` より後の月は空 (None)。
     """
     upto = month.replace(day=1)
     months = [date(upto.year, m, 1) for m in range(1, 13)]
     out_rows: list[tuple[str, list[float | str | None], float | str]] = []
     for name, counts in rows:
-        if counts is None:
-            out_rows.append(
-                (name, [NOT_APPLICABLE if m <= upto else None for m in months], NOT_APPLICABLE)
-            )
+        if isinstance(counts, str):
+            out_rows.append((name, [counts if m <= upto else None for m in months], counts))
             continue
         values: list[float | str | None] = [
             float(counts.get(m, 0.0)) if m <= upto else None for m in months
@@ -491,19 +492,30 @@ def snapshot_plan(staff: Iterable[KinmuStaffInput]) -> dict[str, Any]:
 def plan_from_snapshot(
     snapshot: Mapping[str, Any], key: str
 ) -> tuple[dict[int, tuple[time, time]], dict[date, DayOverride]] | None:
-    """写しから職員 1 人の (型, 予定の休み)。写しに居ない職員は None."""
-    entry = snapshot.get("staff", {}).get(key)
-    if entry is None:
+    """写しから職員 1 人の (型, 予定の休み).
+
+    写しに居ない職員・``version`` が違う写し・壊れた写しは None (呼び出し側はいまの予定に落とす)。
+    """
+    if not isinstance(snapshot, Mapping) or snapshot.get("version") != _SNAPSHOT_VERSION:
         return None
-    shifts: dict[int, tuple[time, time]] = {}
-    for wd, (a, b) in entry["shifts"].items():
-        start, end = _time(a), _time(b)
-        if start is not None and end is not None:
-            shifts[int(wd)] = (start, end)
-    overrides = {
-        date.fromisoformat(d): DayOverride(o["type"], _time(o.get("start")), _time(o.get("end")))
-        for d, o in entry["overrides"].items()
-    }
+    staff = snapshot.get("staff", {})
+    entry = staff.get(key) if isinstance(staff, Mapping) else None
+    if not isinstance(entry, Mapping):
+        return None
+    try:
+        shifts: dict[int, tuple[time, time]] = {}
+        for wd, (a, b) in entry.get("shifts", {}).items():
+            start, end = _time(a), _time(b)
+            if start is not None and end is not None:
+                shifts[int(wd)] = (start, end)
+        overrides = {
+            date.fromisoformat(d): DayOverride(
+                o["type"], _time(o.get("start")), _time(o.get("end"))
+            )
+            for d, o in entry.get("overrides", {}).items()
+        }
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
     return shifts, overrides
 
 

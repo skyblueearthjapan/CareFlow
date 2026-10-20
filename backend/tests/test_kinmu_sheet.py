@@ -693,7 +693,7 @@ async def test_holiday_summary_part_time_is_not_applicable(db) -> None:
     _add_off(db, full, date(2026, 1, 1))  # 木 (ISO 2026-W01)
     await db.flush()
     rows = await load_holiday_counts_by_month(db, date(2026, 2, 10))
-    assert rows[1] == ("非常 次郎", None)
+    assert rows[1] == ("非常 次郎", "対象外")
     summary = build_holiday_summary(date(2026, 2, 1), rows)
     # 1 月: 土 5・日 4 ＋ 公休 1 = 10／2 月: 土 4・日 4 = 8
     assert summary.rows[0][1][:2] == [10.0, 8.0]
@@ -702,7 +702,28 @@ async def test_holiday_summary_part_time_is_not_applicable(db) -> None:
     assert summary.month_totals[:2] == [10.0, 8.0] and summary.grand_total == 18.0
     v = summary_to_sheet_data(summary).rows
     assert v[4][1] == "対象外"
+    assert v[4][13] == "対象外"  # 合計も式ではなく文字
     assert _evaluate(v, v[5][13]) == 18.0
+
+
+@pytest.mark.asyncio
+async def test_holiday_summary_on_leave_matches_kinmu(db) -> None:
+    """休職者は集計シートでも勤務表とそろえて「休職」(休日数を数えない)."""
+    s = _add_staff(db, "休職 花子", code="001", status="on_leave")
+    await db.flush()
+    for wd in range(5):
+        db.add(StaffShift(staff_id=s.id, weekday=wd, is_on=True))
+    await db.flush()
+    rows = await load_holiday_counts_by_month(db, date(2026, 2, 1))
+    assert rows == [("休職 花子", "休職")]
+    summary = build_holiday_summary(date(2026, 2, 1), rows)
+    v = summary_to_sheet_data(summary).rows
+    assert v[3][1] == "休職" and v[3][2] == "休職" and v[3][3] is None and v[3][13] == "休職"
+    assert summary.grand_total == 0
+    counted = await load_holiday_counts_by_month(
+        db, date(2026, 2, 1), rules=KinmuRules(on_leave_all_off=False)
+    )
+    assert counted[0][1] == {date(2026, 1, 1): 9.0, date(2026, 2, 1): 8.0}
 
 
 def test_to_sheet_data_includes_summary_sheet() -> None:
@@ -796,6 +817,42 @@ def test_snapshot_round_trip() -> None:
     assert got is not None
     assert got[0] == dict(s.shifts) and got[1] == dict(s.overrides)
     assert plan_from_snapshot(snap, "missing") is None
+
+
+@pytest.mark.parametrize(
+    "snap",
+    [
+        {"version": 2, "staff": {"S": {"shifts": {}, "overrides": {}}}},  # 版が違う
+        {"staff": {"S": {"shifts": {}, "overrides": {}}}},  # 版が無い
+        {"version": 1, "staff": []},  # staff が辞書でない
+        {"version": 1, "staff": {"S": "壊れた"}},
+        {"version": 1, "staff": {"S": {"shifts": {"0": ["9:xx", "18:00"]}}}},  # 時刻が読めない
+        {"version": 1, "staff": {"S": {"overrides": {"2026-10-05": {}}}}},  # type が無い
+        {"version": 1, "staff": {"S": {"overrides": {"10/5": {"type": "off"}}}}},  # 日付が読めない
+    ],
+)
+def test_snapshot_wrong_version_or_broken_is_none(snap) -> None:
+    assert plan_from_snapshot(snap, "S") is None
+
+
+def test_snapshot_without_keys_reads_as_empty() -> None:
+    assert plan_from_snapshot({"version": 1, "staff": {"S": {}}}, "S") == ({}, {})
+
+
+@pytest.mark.asyncio
+async def test_broken_snapshot_falls_back_to_current_plan(db) -> None:
+    staff = _add_staff(db, "壊れ 花子", code="001")
+    await db.flush()
+    for wd in range(5):
+        db.add(StaffShift(staff_id=staff.id, weekday=wd, is_on=True))
+    _add_off(db, staff, date(2026, 10, 5))
+    db.add(KinmuSheet(month=OCT, kind="plan", version=1, plan_snapshot={"version": 99}))
+    await db.flush()
+    inputs = await load_kinmu_inputs(db, OCT, with_actual=True)
+    assert inputs.plan_source == "current"
+    s = inputs.staff[0]
+    assert s.overrides == s.actual_overrides
+    assert date(2026, 10, 5) in s.overrides
 
 
 @pytest.mark.asyncio
