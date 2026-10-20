@@ -382,10 +382,27 @@ def _seed_baseline() -> None:
     )
 
 
+#: 同じ職員・同じ日の申請中の休みの申請は 1 件だけ (作成時の 409 の DB 側の守り)。
+_PENDING_STAFF_OFF_UNIQUE = "uq_pending_requests_staff_off_pending"
+_PENDING_STAFF_OFF_WHERE = "request_type = 'staff_off' AND status = 'pending'"
+
+
+def _create_pending_staff_off_unique() -> None:
+    op.create_index(
+        op.f(_PENDING_STAFF_OFF_UNIQUE),
+        "pending_requests",
+        ["target_staff_id", "target_date"],
+        unique=True,
+        postgresql_where=sa.text(_PENDING_STAFF_OFF_WHERE),
+        sqlite_where=sa.text(_PENDING_STAFF_OFF_WHERE),
+    )
+
+
 def upgrade() -> None:
     is_pg = _is_pg()
     _add_override_columns(is_pg)
     _set_request_type_check(_REQUEST_TYPES, name=_REQUEST_TYPE_CHECK)
+    _create_pending_staff_off_unique()
     _add_staff_columns()
     _create_tables()
     _seed_baseline()
@@ -400,6 +417,7 @@ def downgrade() -> None:
     """注意: 照合前の印・事業所の休み・照合の結果・勤務表の記録・Google の接続は失われる."""
     is_pg = _is_pg()
 
+    op.drop_index(op.f(_PENDING_STAFF_OFF_UNIQUE), table_name="pending_requests")
     op.drop_index(
         op.f("uq_google_drive_connections_singleton"), table_name="google_drive_connections"
     )

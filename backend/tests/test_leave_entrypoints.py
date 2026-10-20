@@ -226,6 +226,13 @@ async def test_conflict_rules(client, db) -> None:
         "/api/v1/pending-requests", headers=_bearer(user), json=_req(staff.id, d_leave, "off")
     )
     assert res.status_code == 409, res.text
+    # 今と同じ種類への変更のお願いは 422
+    res = await client.post(
+        "/api/v1/pending-requests",
+        headers=_bearer(user),
+        json=_req(staff.id, d_leave, "am_off", kind="change", note="同じ"),
+    )
+    assert res.status_code == 422, res.text
     # 変更のお願い (種類の変更) は休みの日でも作れる
     res = await client.post(
         "/api/v1/pending-requests",

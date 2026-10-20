@@ -22,6 +22,7 @@ from sqlalchemy import (
     Index,
     String,
     Text,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -136,4 +137,13 @@ class PendingRequest(Base, TimestampMixin):
         Index("ix_pending_requests_target_staff_status", "target_staff_id", "status"),
         Index("ix_pending_requests_target_patient_status", "target_patient_id", "status"),
         Index("ix_pending_requests_target_date_status", "target_date", "status"),
+        # 同じ職員・同じ日の申請中の休みの申請は 1 件だけ (mig 0099・休み設計 §2-3)。
+        Index(
+            "uq_pending_requests_staff_off_pending",
+            "target_staff_id",
+            "target_date",
+            unique=True,
+            postgresql_where=text("request_type = 'staff_off' AND status = 'pending'"),
+            sqlite_where=text("request_type = 'staff_off' AND status = 'pending'"),
+        ),
     )

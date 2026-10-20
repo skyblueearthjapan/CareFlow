@@ -404,6 +404,11 @@ async def _ensure_staff_off_creatable(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="この日に取り消す休みはありません",
         )
+    if kind == "change" and override_type == existing_type:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="今と同じ種類です。変えたい種類を選んでください",
+        )
     if has_leave and kind != "change":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
