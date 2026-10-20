@@ -19,6 +19,7 @@ from app.models.inbound_snapshot import InboundSnapshot
 from app.models.kaipoke_credential import KaipokeCredential
 from app.models.kaipoke_csv_snapshot import KaipokeCsvSnapshot
 from app.models.kaipoke_job import KaipokeJob, KaipokeJobItem
+from app.models.kaipoke_source_snapshot import KaipokeSourceSnapshot
 from app.models.notification import Notification
 from app.models.office import Office, OfficeCity
 from app.models.office_area_prompt_dismissal import OfficeAreaPromptDismissal
@@ -75,6 +76,7 @@ __all__ = [
     "InboundSnapshot",
     "KaipokeJob",
     "KaipokeJobItem",
+    "KaipokeSourceSnapshot",
     "Notification",
     "Office",
     "OfficeAreaPromptDismissal",
