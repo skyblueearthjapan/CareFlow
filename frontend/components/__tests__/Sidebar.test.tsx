@@ -23,13 +23,14 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/dashboard',
 }));
 
-// メニューの未処理の休みの申請の件数 (いま組んでいる月の summary の pending_count)
+// メニューの未処理の休みの申請の件数 (summary の pending_total = 月をまたいだ件数)
 let pendingTotal = 0;
 const pendingCalls: unknown[][] = [];
 vi.mock('@/lib/queries/leave', () => ({
   useLeaveMonthSummary: (...args: unknown[]) => {
     pendingCalls.push(args);
-    return { data: { pending_count: pendingTotal } };
+    // pending_count (その月だけ) は使わない
+    return { data: { pending_total: pendingTotal, pending_count: 0 } };
   },
 }));
 

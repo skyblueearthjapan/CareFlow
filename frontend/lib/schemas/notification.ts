@@ -16,6 +16,11 @@ export const notificationReadSchema = z.object({
   body: z.string().nullable().optional(),
   read_at: z.string().nullable().optional(),
   created_at: z.string(),
+  /** 発生源の種類と行 (休みの申請は leave_request・申請の id)。 */
+  reference_type: z.string().nullable().optional(),
+  reference_id: z.string().nullable().optional(),
+  /** 画面が開く先の材料。休みの通知は staff_id・date (YYYY-MM-DD)。 */
+  data: z.record(z.unknown()).nullable().optional(),
 });
 
 export const notificationListSchema = z.object({

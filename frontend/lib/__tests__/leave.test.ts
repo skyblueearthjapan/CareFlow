@@ -17,6 +17,8 @@ import {
   jstToday,
   leaveRequestDeadline,
   leaveWindow,
+  LEAVE_TYPE_OF_LABEL,
+  visitHitsLeave,
 } from '@/lib/leave';
 
 describe('休みの申請の締め切り (前の月の 20 日 23:59 JST)', () => {
@@ -167,5 +169,33 @@ describe('leaveWindow', () => {
   ];
   it.each(cases)('%s %j → %j', (type, [s, e], expected) => {
     expect(leaveWindow(type, s, e)).toEqual(expected);
+  });
+});
+
+describe('visitHitsLeave (バックエンドの visit_hits_leave と同じ)', () => {
+  it('終日の休みは常にかかる・休みでなければかからない', () => {
+    expect(visitHitsLeave('off', '09:00', '10:00')).toBe(true);
+    expect(visitHitsLeave('paid_off', null, null)).toBe(true);
+    expect(visitHitsLeave('custom_time', '09:00', '10:00')).toBe(false);
+    expect(visitHitsLeave(null, '09:00', '10:00')).toBe(false);
+  });
+
+  it('午前休は開始が 13:00 より前 (13:00 ちょうどは対象外)', () => {
+    expect(visitHitsLeave('am_off', '12:59', '14:00')).toBe(true);
+    expect(visitHitsLeave('am_off', '13:00', '14:00')).toBe(false);
+    expect(visitHitsLeave('am_off', '9:00:00', null)).toBe(true);
+    expect(visitHitsLeave('am_off', null, '12:00')).toBe(false);
+  });
+
+  it('午後休は終了が 12:30 より後 (ちょうどは対象外)・終了が空なら開始で決める', () => {
+    expect(visitHitsLeave('pm_off', '11:30', '12:31')).toBe(true);
+    expect(visitHitsLeave('pm_off', '11:30', '12:30')).toBe(false);
+    expect(visitHitsLeave('pm_off', '12:30', null)).toBe(true);
+    expect(visitHitsLeave('pm_off', '12:29', null)).toBe(false);
+  });
+
+  it('画面のラベルから種類へ', () => {
+    expect(LEAVE_TYPE_OF_LABEL['午前休']).toBe('am_off');
+    expect(LEAVE_TYPE_OF_LABEL['時間変更']).toBeUndefined();
   });
 });

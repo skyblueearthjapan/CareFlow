@@ -143,4 +143,37 @@ describe('Header — 最適化ルール設定ボタン (Phase G-88)', () => {
     );
     expect(at('2026-10-21T01:00:00Z', '日付の無い通知')).toBe('/admin/leave');
   });
+
+  it('7. 通知の data (staff_id・date) があればその人・その日のマスを開く', () => {
+    expect(
+      leaveSheetHrefFromNotice({
+        title: '職員Aさんから休みの申請（11/21 午後休）',
+        body: null,
+        created_at: '2026-10-21T01:00:00Z',
+        data: { staff_id: 's-1', date: '2026-11-21' },
+      }),
+    ).toBe('/admin/leave?month=2026-11&date=2026-11-21&staff=s-1');
+  });
+
+  it('8. 新しい申請・承認の通知にも管理者に「休み・勤務表で開く」を出す', async () => {
+    notifItems = ['leave_requested', 'leave_approved', 'leave_rejected'].map((type, i) => ({
+      id: `n-${i}`,
+      user_id: 'u-1',
+      type,
+      title: `通知${i}`,
+      body: null,
+      read_at: null,
+      created_at: '2026-10-21T01:00:00Z',
+      data: { staff_id: 's-1', date: '2026-11-0' + String(i + 1) },
+    }));
+    setRole('admin');
+    render(<Header onToggleSidebar={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '通知' }));
+    const links = await screen.findAllByRole('link', { name: '休み・勤務表で開く' });
+    expect(links.map((a) => a.getAttribute('href'))).toEqual([
+      '/admin/leave?month=2026-11&date=2026-11-01&staff=s-1',
+      '/admin/leave?month=2026-11&date=2026-11-02&staff=s-1',
+    ]);
+    notifItems = [];
+  });
 });
