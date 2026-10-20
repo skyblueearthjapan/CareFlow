@@ -123,6 +123,17 @@ AGENT_RELAY_SERVICE_TOKEN=__REPLACE_WITH_OPENSSL_RAND_HEX_32__
 # 中継へ 1 回頼むときの打ち切り (秒)。中継の中 (AGENT_KARTE_TIMEOUT=90) より少し長く。
 KARTE_SEAT_TIMEOUT_SECONDS=100
 
+# --- Google ドライブ (勤務表のスプレッドシート・docs/deployment/google-drive-setup.md) ---
+# 空のままなら「未設定」として動く (画面に準備の案内が出るだけ・ほかの機能は使える)。
+GOOGLE_DRIVE_CLIENT_ID=
+GOOGLE_DRIVE_CLIENT_SECRET=
+GOOGLE_DRIVE_REDIRECT_URI=https://carelink.kaipoke-api.net/api/v1/google-drive/callback
+# Picker (保存先フォルダを選ぶ) の API キーとアプリ ID (Cloud のプロジェクト番号)。
+GOOGLE_PICKER_API_KEY=
+GOOGLE_PICKER_APP_ID=
+# リフレッシュトークンの暗号化の鍵の元 (openssl rand -hex 32)。変えると接続し直し。
+GOOGLE_DRIVE_TOKEN_SECRET=__REPLACE_WITH_OPENSSL_RAND_HEX_32__
+
 # --- NextAuth (frontend) ---
 NEXTAUTH_URL=https://carelink.kaipoke-api.net
 NEXTAUTH_SECRET=__REPLACE_WITH_OPENSSL_RAND_BASE64_32__

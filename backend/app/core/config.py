@@ -130,6 +130,20 @@ class Settings(BaseSettings):
     # 中継へ 1 回頼むときの打ち切り (秒)。中継の中の打ち切り (AGENT_KARTE_TIMEOUT=90) より少し長く。
     karte_seat_timeout_seconds: int = Field(default=100)
 
+    # --- Google ドライブ (勤務表のスプレッドシート・docs/plans/leave-and-kinmu-sheet-design-2026-10-20.md §7-3) ---
+    # 手順は docs/deployment/google-drive-setup.md。クライアント ID・秘密・リダイレクト URI の
+    # どれかが空なら「未設定」として動き、画面に準備の案内を出す (接続の口は 409)。
+    google_drive_client_id: str = Field(default="")
+    google_drive_client_secret: str = Field(default="")
+    # 例 https://carelink.kaipoke-api.net/api/v1/google-drive/callback (Cloud の OAuth クライアントに登録した値と一字一句同じ)。
+    google_drive_redirect_uri: str = Field(default="")
+    # Google Picker (保存先フォルダを選ぶ) の API キーとアプリ ID (Cloud のプロジェクト番号)。
+    google_picker_api_key: str = Field(default="")
+    google_picker_app_id: str = Field(default="")
+    # リフレッシュトークンを Fernet で暗号化する鍵の元。未設定なら jwt_secret から導出する
+    # (kaipoke_cred_secret と同じ作法)。変えると保存済みのトークンは読めなくなり、接続し直しになる。
+    google_drive_token_secret: str | None = Field(default=None)
+
     @field_validator("cors_origins")
     @classmethod
     def _normalize_origins(cls, value: str) -> str:
