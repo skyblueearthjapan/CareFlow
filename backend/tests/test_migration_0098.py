@@ -76,6 +76,8 @@ def test_migration_0098_upgrade_downgrade(tmp_path: Path) -> None:
         "fetched_at",
         "job_id",
     }
+    indexes = {ix["name"] for ix in inspect(engine).get_indexes(_TABLE)}
+    assert "ix_kaipoke_source_snapshots_job" in indexes
     with engine.begin() as conn:
         _insert(conn, "a", "plan_csv")
         _insert(conn, "b", "actual_csv", "empty")
