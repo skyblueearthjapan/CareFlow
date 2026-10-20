@@ -3,6 +3,10 @@ import json, math, re, sys, html
 from collections import defaultdict
 from datetime import date, timedelta
 import openpyxl
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from solver import FULL_DAY_OFF  # noqa: E402  終日の休み (公休・有給) の定義は solver.py の 1 か所
 
 D = sys.argv[1]
 week = json.load(open(f"{D}/week.json", encoding="utf-8"))
@@ -67,13 +71,13 @@ for e in week["events"] or []:
         continue
     events[(e["date"], s["name"])].append((hm(e["start"]), hm(e["end"])))
 
-# 休み (週間シフト is_on=false or その週の off)
+# 休み (週間シフト is_on=false or その週の終日の休み = 公休・有給)
 off = set()
 for sh in week["shifts"] or []:
     if sh["is_on"] is False and sh["staff_id"] in staff:
         off.add((staff[sh["staff_id"]]["name"], sh["weekday"]))
 for o in week["weekly_overrides"] or []:
-    if o["override_type"] == "off" and o["staff_id"] in staff:
+    if o["override_type"] in FULL_DAY_OFF and o["staff_id"] in staff:
         off.add((staff[o["staff_id"]]["name"], o["weekday"]))
 
 def travel(a, b):

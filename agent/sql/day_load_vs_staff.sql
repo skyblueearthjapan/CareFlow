@@ -1,4 +1,4 @@
--- 日ごとの訪問件数（1 回 1 件）と出勤人数（勤務表の出勤日−終日休み。新人・マネージャーは別列）と 1 人あたり件数 | params: date_from, date_to
+-- 日ごとの訪問件数（1 回 1 件）と出勤人数（勤務表の出勤日−終日休み＝公休 off・有給 paid_off。半休は出勤に数えて別列にも。新人・マネージャーは別列。休みの列 staff_off・staff_paid_off は新人・マネージャーも数える）と 1 人あたり件数 | params: date_from, date_to
 with days as (
   select d::date as d from generate_series(:'date_from'::date, :'date_to'::date, interval '1 day') d
 ), vis as (
@@ -24,16 +24,17 @@ select days.d as visit_date,
        coalesce(vis.visits, 0) as visits_one_per_visit,
        coalesce(vis.unassigned_rows, 0) as unassigned_rows,
        count(duty.id) filter (where not duty.is_trainee and duty.role <> 'manager'
-                              and coalesce(duty.override_type, '') <> 'off') as staff_on_duty,
+                              and coalesce(duty.override_type, '') not in ('off', 'paid_off')) as staff_on_duty,
        count(duty.id) filter (where not duty.is_trainee and duty.role <> 'manager'
                               and duty.override_type in ('am_off', 'pm_off')) as staff_half_day,
        count(duty.id) filter (where duty.role = 'manager' and not duty.is_trainee
-                              and coalesce(duty.override_type, '') <> 'off') as managers_on_duty,
-       count(duty.id) filter (where duty.is_trainee and coalesce(duty.override_type, '') <> 'off') as trainees_on_duty,
-       count(duty.id) filter (where duty.override_type = 'off') as staff_off,
+                              and coalesce(duty.override_type, '') not in ('off', 'paid_off')) as managers_on_duty,
+       count(duty.id) filter (where duty.is_trainee and coalesce(duty.override_type, '') not in ('off', 'paid_off')) as trainees_on_duty,
+       count(duty.id) filter (where duty.override_type in ('off', 'paid_off')) as staff_off,
+       count(duty.id) filter (where duty.override_type = 'paid_off') as staff_paid_off,
        round(coalesce(vis.visits, 0)::numeric / nullif(count(duty.id) filter (
              where not duty.is_trainee and duty.role <> 'manager'
-               and coalesce(duty.override_type, '') <> 'off'), 0), 1) as visits_per_staff
+               and coalesce(duty.override_type, '') not in ('off', 'paid_off')), 0), 1) as visits_per_staff
 from days
 left join vis on vis.visit_date = days.d
 left join duty on duty.d = days.d

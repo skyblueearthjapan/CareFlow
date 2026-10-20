@@ -6,6 +6,8 @@ docs/tools/week-leveling/apply/generic/build_ops.py と同じ手順を、Excel �
   step 3  特別訪問週間の○を置く（拠点が違えば同じ拠点の M に置いて移す）… special-visit-place（＋ move-visit-week）
           今週だけ移動（コース・時刻）                         … move-visit-week（visit-move-week-only）
   step 4  コースに担当（日ごと・職員 1 人 = コース 1 つ）       … patch-course-staff（PATCH /courses）
+  step 5  明示の担当なし（主担当が空で manual_staff_override が真＝休みの時間帯から外した訪問など）に直接担当
+          … assign-staff-week（staff_id=案の担当）。印は外さない（外すとコースの担当＝休む方に読み替わる・休み設計 §3-2）
 build_ops.py との違い（お客様固有の決め打ちをやめた）:
   - コースのテンプレート ID は本番から読む（agent_extra.json）。使うのは 1 文字のコード（A〜E・M）だけ（臨時・M2 へは移さない）。
   - 「ある正規職員は月〜金だけ自拠点の A コース」→「正規の職員は、自分の拠点が開いている曜日は自分の拠点のコース」（config の拠点で決める）。
@@ -310,9 +312,12 @@ def build_plan(result: dict, week: dict, extra: dict | None = None, *, config: d
     ops: list[dict] = []
     expect: list[dict] = []
     overrides = {o["id"]: o for o in extra.get("manual_overrides") or []}
+    # 明示の担当なし: 主担当が空で手の上書きの印がある訪問。step 0 で外さず、最後に直接担当を付ける (step 5)
+    explicit_unassigned = {vid for vid, o in overrides.items() if not o.get("primary_staff_id")}
     for x in items:
         vid = x["visit"]["id"]
-        if x["kind"] in ("visit",) and vid in overrides and overrides[vid].get("primary_staff_id") != x["staff"]:
+        if (x["kind"] in ("visit",) and vid in overrides and vid not in explicit_unassigned
+                and overrides[vid].get("primary_staff_id") != x["staff"]):
             v = x["visit"]
             ops.append({"op": "assign-staff-week", "step": 0, "visit_id": vid, "staff_id": None,
                         "patient_id": v["patient_id"], "date": v["day"], "op_group_id": group_main,
@@ -411,6 +416,16 @@ def build_plan(result: dict, week: dict, extra: dict | None = None, *, config: d
                         "course": c, "course_id": course["id"], "course_template_id": course.get("template_id"),
                         "staff_id": None, "staff_code": None, "op_group_id": group_main,
                         "label": f"{day_label(dt)} {c} の担当を外す（訪問が無くなるため）"})
+
+    for x in sorted((x for x in items if x["kind"] == "visit" and x["visit"]["id"] in explicit_unassigned),
+                    key=lambda x: (x["visit"]["day"], x["start"])):
+        v = x["visit"]
+        if (cmap.get(v["day"]) or {}).get(x["staff"]) is None:
+            continue  # コースが決まらない日（blockers に出ている）
+        ops.append({"op": "assign-staff-week", "step": 5, "visit_id": v["id"], "staff_id": x["staff"],
+                    "patient_id": v["patient_id"], "date": v["day"], "op_group_id": group_main,
+                    "label": f"{day_label(date.fromisoformat(v['day']))} {v['patient']} {fmt(x['start'])} "
+                             f"→ {disp(staff[x['staff']]['name'])}（担当なしの訪問に直接付ける）"})
 
     warnings.extend(_simulate_moves(ops, raw, vis))
 

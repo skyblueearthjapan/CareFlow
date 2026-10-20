@@ -1,4 +1,4 @@
--- 担当が決まっていない訪問（主担当もコース担当も無い＝本当の担当なし。削除・取消・【検証】を除く） | params: date_from, date_to
+-- 担当が決まっていない訪問（主担当もコース担当も無い＝本当の担当なし。主担当が空で手の上書きの印がある「明示の担当なし」（半休の時間帯から外した訪問など・コースの担当に読み替えない）も含む。削除・取消・【検証】を除く） | params: date_from, date_to
 select v.id as visit_id, v.visit_date,
        (array['月','火','水','木','金','土','日'])[extract(isodow from v.visit_date)::int] as weekday_ja,
        to_char(v.start_time, 'HH24:MI') as start_jst, to_char(v.end_time, 'HH24:MI') as end_jst,
