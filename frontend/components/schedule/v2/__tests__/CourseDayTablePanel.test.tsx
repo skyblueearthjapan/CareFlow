@@ -35,6 +35,9 @@ const { dndState, mockToast } = vi.hoisted(() => ({
   },
 }));
 
+// ●未送信の帯 (SyncBar) はコースの表示でも出る (schedule-unit-switch 設計 D4)。
+// この試験は帯の中身を見ないので空にする (帯の試験は CourseDayTablePanel-cockpit が持つ)。
+vi.mock('@/components/schedule/v2/cockpit/SyncBar', () => ({ SyncBar: () => null }));
 vi.mock('@dnd-kit/core', () => ({
   useDroppable: () => ({ isOver: false, setNodeRef: vi.fn() }),
   useDraggable: () => ({
@@ -576,7 +579,7 @@ describe('CourseDayTablePanel (Wave 17 Phase B)', () => {
 
     // 負のケース: リストモードではペインスクロール (lg:overflow-y-auto) に戻り、
     // タブパネルに flex チェーンを付けない (無条件付与への退行を防ぐ)。
-    fireEvent.click(screen.getByTestId('course-day-mode-list'));
+    fireEvent.click(screen.getByTestId('schedule-view-list'));
     const listTabpanel = screen.getByTestId('course-day-table-list');
     expect(listTabpanel.className).not.toContain('lg:flex');
     expect((listTabpanel.parentElement as HTMLElement).className).toContain('lg:overflow-y-auto');

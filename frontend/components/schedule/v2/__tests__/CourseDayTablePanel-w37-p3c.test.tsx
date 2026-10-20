@@ -52,6 +52,9 @@ const { dndState, mockToast } = vi.hoisted(() => ({
   },
 }));
 
+// ●未送信の帯 (SyncBar) はコースの表示でも出る (schedule-unit-switch 設計 D4)。
+// この試験は帯の中身を見ないので空にする (帯の試験は CourseDayTablePanel-cockpit が持つ)。
+vi.mock('@/components/schedule/v2/cockpit/SyncBar', () => ({ SyncBar: () => null }));
 vi.mock('@dnd-kit/core', () => ({
   useDroppable: () => ({ isOver: false, setNodeRef: vi.fn() }),
   useDraggable: () => ({

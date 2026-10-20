@@ -57,6 +57,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  Columns3,
   HeartPulse,
   ListChecks,
   Loader2,
@@ -65,6 +66,7 @@ import {
   Route,
   Undo2,
   UserCheck,
+  UserRound,
   Wrench,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -266,6 +268,20 @@ import {
 } from '@/lib/scheduling/accompanimentFulfillment';
 import { PartnerCourseDialog } from './PartnerCourseDialog';
 import { cn } from '@/lib/utils';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { visitAccompaniments } from '@/lib/schemas/trainee_accompaniment';
+import {
+  countStaffDays,
+  isCountedVisit,
+  staffDayCountKey,
+  type DayCountCompanion,
+} from '@/lib/schedule/staffDayCount';
+import type {
+  ScheduleDay,
+  ScheduleUnit,
+  ScheduleView,
+  ScheduleViewState,
+} from '@/lib/schedule/scheduleViewState';
 import { useUIStore } from '@/lib/stores/ui';
 import { type TimelineRowMeta } from './CourseMoveTimeline';
 import { PatientCard, type PatientCardData } from './PatientCard';
@@ -504,6 +520,22 @@ export interface CourseDayTablePanelProps {
    * 未指定は従来どおり 'week'（部品の試験は週ビュー前提）。
    */
   initialTab?: number | 'week' | 'staff';
+  /**
+   * 開いたときの「見る単位 × 曜日/週 × 形」(schedule-unit-switch-design-2026-10-21.md §2)。
+   * 渡されたら initialTab より優先する (スケジュール画面は URL の値を渡す)。
+   */
+  initialViewState?: ScheduleViewState;
+  /** 見る単位・曜日・形が変わったとき (ページが URL と見出しの説明文に使う)。 */
+  onViewStateChange?: (state: ScheduleViewState) => void;
+  /** 上部折りたたみ時の「ツール」一時展開に足す道具 (例: コースの作業場)。 */
+  compactToolsExtra?: ReactNode;
+}
+
+/** 旧 initialTab → 見る単位 × 曜日/週 × 形 (部品の試験は initialTab を使い続ける)。 */
+function viewStateFromInitialTab(tab: number | 'week' | 'staff'): ScheduleViewState {
+  if (tab === 'staff') return { unit: 'staff', day: 'week', view: 'list' };
+  if (tab === 'week') return { unit: 'course', day: 'week', view: 'list' };
+  return { unit: 'course', day: tab, view: 'timeline' };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -516,7 +548,10 @@ export function CourseDayTablePanel({
   canEdit,
   onWeekChange,
   initialTab = 'week',
+  initialViewState,
+  onViewStateChange,
   compactExtra,
+  compactToolsExtra,
   onOfficeChange,
 }: CourseDayTablePanelProps) {
   const { isoYear, isoWeek } = useMemo(() => isoWeekFromLocalDate(weekStart), [weekStart]);
@@ -538,31 +573,67 @@ export function CourseDayTablePanel({
   const setShowCancelled = useUIStore((s) => s.setShowCancelledVisits);
   // 畳んだままでも Row1/Row2 のボタン群をその場で一時展開する (「ツール」).
   const [compactToolsOpen, setCompactToolsOpen] = useState(false);
+  // コンパクト表示の「その他 ▾」(一斉スタッフ未割当・非稼働を表示・拠点・D5)。
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  // 「コース／職員」の切り替えの初回案内 (D9)。この端末で一度［わかった］を押したら出さない。
+  const unitIntroSeen = useUIStore((s) => s.scheduleUnitIntroSeen);
+  const setUnitIntroSeen = useUIStore((s) => s.setScheduleUnitIntroSeen);
 
-  // ─── 曜日タブ state (Wave 18 Phase B-6: 'week' = 週間ビュー) ─────
-  // デフォルトは職員スケジュール ('staff'・PO 2026-10-13). 曜日別 (月-土)・週は各タブで切替.
-  // 'staff' = 職員スケジュール (スタッフ×曜日・イベント運用の家。
-  // kaipoke-event-two-way-design.md §6-c で週ビュー内サブモードから昇格)。
-  // 開いたときのタブは initialTab（スケジュール画面は 'staff'・PO 2026-10-13）。
-  const [activeTab, setActiveTab] = useState<number | 'week' | 'staff'>(initialTab);
+  // ─── 見る単位 × 曜日/週 × 形 (schedule-unit-switch-design-2026-10-21.md §2) ─────
+  // 曜日は 1 本 (コースと職員で同じ曜日を見る)。形は「曜日」と「週」で別々に覚える
+  // (今どおり: 曜日の既定はタイムライン・週の既定はリスト。コースと職員では同じ値を使う)。
+  // 既定は「職員・週・リスト」(今と同じ)。
+  // 旧 activeTab / weekdayViewMode / weekViewMode / staffViewMode / staffTimelineDay は
+  // ここから作る (盤面の分かれ道はそのまま読む)。
+  const [viewState, setViewState] = useState<{
+    unit: ScheduleUnit;
+    day: ScheduleDay;
+    dayView: ScheduleView;
+    weekView: ScheduleView;
+  }>(() => {
+    const init = initialViewState ?? viewStateFromInitialTab(initialTab);
+    return {
+      unit: init.unit,
+      day: init.day,
+      dayView: init.day === 'week' ? 'timeline' : init.view,
+      weekView: init.day === 'week' ? init.view : 'list',
+    };
+  });
+  const { unit, day: selectedDay } = viewState;
+  const view: ScheduleView = selectedDay === 'week' ? viewState.weekView : viewState.dayView;
+  const setUnit = (next: ScheduleUnit) => setViewState((s) => ({ ...s, unit: next }));
+  const setSelectedDay = (next: ScheduleDay) => setViewState((s) => ({ ...s, day: next }));
+  const setView = (next: ScheduleView) =>
+    setViewState((s) => (s.day === 'week' ? { ...s, weekView: next } : { ...s, dayView: next }));
+  useEffect(() => {
+    onViewStateChange?.({ unit, day: selectedDay, view });
+  }, [unit, selectedDay, view, onViewStateChange]);
+  /** 職員の週は時刻の軸が無い = 形は「リスト」だけ (D2)。 */
+  const isStaffWeek = unit === 'staff' && selectedDay === 'week';
+  const effectiveView: ScheduleView = isStaffWeek ? 'list' : view;
+  const activeTab: number | 'week' | 'staff' = unit === 'staff' ? 'staff' : selectedDay;
   const activeWeekday = typeof activeTab === 'number' ? activeTab : 0;
-
-  // ─── 2026-W20: 月-土タブの表示モード ─────────────────────────
-  // timeline = 縦タイムライン (T-1・時間比例カード / DnD 編集可能). 既定.
-  // list     = 時刻順 visit リスト (視覚言語統一).
-  //   docs/plans/schedule-timeline-redesign-design.md
-  // Phase 2 (2026-07): 旧 'table' (Excel 形式時刻グリッド) は撤去済み。
-  const [weekdayViewMode, setWeekdayViewMode] = useState<'list' | 'timeline'>('timeline');
-  // T-3: 週タブの見え方。overview=既存の全コース俯瞰(既定・全機能温存) / timeline=週タイムライン(全コース縦積み)。
-  // ラベルは overview="リスト" (PO指示 2026-07-08。内部値は据置)。
-  // 'staff' = スタッフ別 (カイポケ職員スケジュール同等・案B・PO要望 2026-07-26)。
-  // 旧 'staff' サブモードはトップレベルタブ「職員スケジュール」へ昇格済み (2026-08-20)。
-  const [weekViewMode, setWeekViewMode] = useState<'overview' | 'timeline'>('overview');
+  // timeline = 縦タイムライン (T-1) / list = 時刻順 visit リスト (月〜土)。
+  // (曜日の形は週を見ている間も覚えたまま = 旧 weekdayViewMode と同じく独立)。
+  const weekdayViewMode = viewState.dayView;
+  // 週: timeline = 週タイムライン / overview = 全コース俯瞰 (ラベル「リスト」)。
+  const weekViewMode: 'overview' | 'timeline' =
+    viewState.weekView === 'timeline' ? 'timeline' : 'overview';
+  // 職員: 曜日なら timeline / list (その曜日の列だけ)、週なら list (月〜土)。
+  const staffViewMode = effectiveView;
+  /** 職員タイムラインで見ている曜日 (0=月..5=土)。共通の曜日から作る。 */
+  const staffTimelineDay = typeof selectedDay === 'number' ? selectedDay : 0;
+  /** 職員の道具 (◎提案を見る) が対象にする曜日。 */
+  const staffDays = useMemo(
+    () => (typeof selectedDay === 'number' ? [selectedDay] : [0, 1, 2, 3, 4, 5]),
+    [selectedDay],
+  );
 
   // 一時展開した「ツール」はタブ/週を切り替えたら畳む (2026-08-23)。
   // 盤面のドラッグ開始でも畳む (handleDragStart)。
   useEffect(() => {
     setCompactToolsOpen(false);
+    setMoreMenuOpen(false);
   }, [activeTab, weekStart]);
 
   // ─── Master data ────────────────────────────────────────────────────
@@ -737,6 +808,12 @@ export function CourseDayTablePanel({
     const v = schedulingSettingsQuery.data?.values;
     return businessBlocksFromHours(v?.business_start, v?.business_end) ?? BUSINESS_BLOCKS;
   }, [schedulingSettingsQuery.data]);
+  /**
+   * 設定画面の「1コースの最大人数」(事業所全体で 1 つ)。件数の色と A〜E の定員に使う
+   * (schedule-unit-switch-design-2026-10-21.md §3・§4)。読めないときは null。
+   */
+  const maxPatientsPerCourse: number | null =
+    schedulingSettingsQuery.data?.values.max_patients_per_course ?? null;
 
   // ─── スタッフ数連動の有効定員 (週ビューのコース「休」/定員を auto-schedule と統一) ──
   // (office_id, weekday) → 稼働スタッフ数. A-E コースは effectiveCapacity で
@@ -3620,10 +3697,6 @@ export function CourseDayTablePanel({
   // ─── 週空間 Phase E「今週の運転席」(week-cockpit-design.md §3 結線) ───
   // 同期バー (SyncBar) で選択中の差分 1 件。盤面/タイムラインのゴーストの素。
   const [cockpitMarker, setCockpitMarker] = useState<CockpitMarker | null>(null);
-  // 職員スケジュールタブの見え方 (T-3 の週タブと同じ意匠)。
-  const [staffViewMode, setStaffViewMode] = useState<'list' | 'timeline'>('list');
-  /** タイムライン表示で見ている曜日 (0=月..5=土)。 */
-  const [staffTimelineDay, setStaffTimelineDay] = useState(0);
   /** スタッフ入れ替え (氏名 ⠿ DnD) の確認ダイアログ。 */
   const [staffSwap, setStaffSwap] = useState<StaffSwapPayload | null>(null);
   const [staffSwapRunning, setStaffSwapRunning] = useState(false);
@@ -4090,6 +4163,61 @@ export function CourseDayTablePanel({
       })),
     [overviewVisits, visitById, cockpitCourseLabel, serviceOverrideByVisitId],
   );
+
+  // ─── 職員の 1 日の件数 (schedule-unit-switch-design-2026-10-21.md §3・D6〜D8) ───
+  /** 同行 (訪問の accompaniments[] と旧 secondary_staff_id)。件数とは別に「＋同行 n」で数える。 */
+  const companionRefs = useMemo(() => {
+    const out: DayCountCompanion[] = [];
+    for (const v of weekVisits) {
+      for (const a of visitAccompaniments(v)) out.push({ staffId: a.staff_id, visitId: v.id });
+      const second = (v as { secondary_staff_id?: string | null }).secondary_staff_id;
+      if (second) out.push({ staffId: second, visitId: v.id });
+    }
+    return out;
+  }, [weekVisits]);
+  /** visit id → 2 名体制の組 (visit_group_id)。 */
+  const groupIdByVisitId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const v of weekVisits) {
+      const gid = (v as { visit_group_id?: string | null }).visit_group_id;
+      if (gid) m.set(v.id, gid);
+    }
+    return m;
+  }, [weekVisits]);
+  const staffDayCounts = useMemo(
+    () =>
+      countStaffDays(cockpitVisits, {
+        assignedStaffByTemplateWeekday,
+        companions: companionRefs,
+        groupIdByVisitId,
+      }),
+    [cockpitVisits, assignedStaffByTemplateWeekday, companionRefs, groupIdByVisitId],
+  );
+  /**
+   * 同行の薄いカード (D8): `${staffId}:${weekday}` → その職員が同行する訪問。
+   * 元の訪問は担当の行にそのまま出る (ここは読むだけ・動かせない)。
+   */
+  const companionVisitsByCell = useMemo(() => {
+    const byId = new Map(cockpitVisits.map((v) => [v.id, v]));
+    const m = new Map<string, TimelineVisit[]>();
+    const seen = new Set<string>();
+    for (const c of companionRefs) {
+      const v = byId.get(c.visitId);
+      if (!v || !isCountedVisit(v)) continue;
+      if (resolveVisitRowKey(v, assignedStaffByTemplateWeekday) === c.staffId) continue;
+      const dedupe = `${c.staffId}:${v.id}`;
+      if (seen.has(dedupe)) continue;
+      seen.add(dedupe);
+      const key = staffDayCountKey(c.staffId, v.weekday);
+      const arr = m.get(key) ?? [];
+      arr.push(v);
+      m.set(key, arr);
+    }
+    for (const arr of m.values()) {
+      arr.sort((a, b) => (a.start_time ?? '').localeCompare(b.start_time ?? ''));
+    }
+    return m;
+  }, [cockpitVisits, companionRefs, assignedStaffByTemplateWeekday]);
 
   /**
    * 盤面の「候補判定に効く形」の指紋 (H2 の取りこぼし対策)。
@@ -4671,7 +4799,7 @@ export function CourseDayTablePanel({
    * アウトはしない)。週 (リスト) は曜日ごとに 1 回 = 最大 6 回・直列。
    */
   const handleSeeSuggestions = useCallback(async () => {
-    const days = staffViewMode === 'timeline' ? [staffTimelineDay] : [0, 1, 2, 3, 4, 5];
+    const days = staffDays;
     const byDay = days
       // 当日以前は実績が入っている可能性があり付け替えられない (L5)。
       // 提案を出しても押せないので、そもそも調べない。
@@ -4716,20 +4844,13 @@ export function CourseDayTablePanel({
       }
     }
     if (failedDays > 0) toast.error(`${failedDays} 日ぶんは候補を調べられませんでした`);
-  }, [
-    staffViewMode,
-    staffTimelineDay,
-    unassignedBandsFor,
-    fetchAssignCandidates,
-    isoOfWeekday,
-    todayIsoJst,
-  ]);
+  }, [staffDays, unassignedBandsFor, fetchAssignCandidates, isoOfWeekday, todayIsoJst]);
 
   /** 「◎ 提案を見る」を押せる対象日があるか (L5: 全部が当日以前なら無効)。 */
-  const suggestDaysAllPast = useMemo(() => {
-    const days = staffViewMode === 'timeline' ? [staffTimelineDay] : [0, 1, 2, 3, 4, 5];
-    return days.every((d) => isoOfWeekday(d) <= todayIsoJst);
-  }, [staffViewMode, staffTimelineDay, isoOfWeekday, todayIsoJst]);
+  const suggestDaysAllPast = useMemo(
+    () => staffDays.every((d) => isoOfWeekday(d) <= todayIsoJst),
+    [staffDays, isoOfWeekday, todayIsoJst],
+  );
 
   /** バッジ / コース帯クリック → 提案ポップオーバーを開く。 */
   const handleSuggestCourse = useCallback(
@@ -5539,6 +5660,7 @@ export function CourseDayTablePanel({
         activeWeekday,
         staffCountFor(template.office_id, activeWeekday),
         courseCodesMax,
+        maxPatientsPerCourse,
       );
       const freeGaps = course ? (freeGapsByCourse.get(course.id) ?? []) : [];
 
@@ -5582,6 +5704,7 @@ export function CourseDayTablePanel({
     freeGapsByCourse,
     staffCountFor,
     courseCodesMax,
+    maxPatientsPerCourse,
     officeLatLngById,
     staffMap,
   ]);
@@ -5612,6 +5735,7 @@ export function CourseDayTablePanel({
         activeWeekday,
         staffCountFor(template.office_id, activeWeekday),
         courseCodesMax,
+        maxPatientsPerCourse,
       );
       const freeGaps = course ? (freeGapsByCourse.get(course.id) ?? []) : [];
       const staffEvents = assignedStaff
@@ -5649,6 +5773,7 @@ export function CourseDayTablePanel({
     staffEventsByStaff,
     staffCountFor,
     courseCodesMax,
+    maxPatientsPerCourse,
     staffByOffice,
   ]);
 
@@ -5687,9 +5812,15 @@ export function CourseDayTablePanel({
     (templateId: string, weekday: number): number => {
       const t = templates.find((tpl) => tpl.id === templateId);
       if (!t) return 0;
-      return effectiveCapacity(t, weekday, staffCountFor(t.office_id, weekday), courseCodesMax);
+      return effectiveCapacity(
+        t,
+        weekday,
+        staffCountFor(t.office_id, weekday),
+        courseCodesMax,
+        maxPatientsPerCourse,
+      );
     },
-    [templates, staffCountFor, courseCodesMax],
+    [templates, staffCountFor, courseCodesMax, maxPatientsPerCourse],
   );
 
   // 週タイムライン: そのコース×曜日が開講しているか (週リストの「休」と同じ和集合)。
@@ -5923,6 +6054,36 @@ export function CourseDayTablePanel({
     </div>
   );
 
+  // 一斉スタッフ未割当 / 非稼働を表示: ふつうの表示はタブの段、コンパクト表示は「その他 ▾」(D5)。
+  const unassignAllButton = (
+    <UnassignAllStaffButton
+      isoYear={isoYear}
+      isoWeek={isoWeek}
+      officeId={officeId}
+      disabled={!canEdit || isProcessing}
+    />
+  );
+  // 非稼働を表示 (患者ステータス連動 Phase 3・design §3-4)。
+  // ON にすると連動取消 (status_cancel) を打ち消し線つきで出す
+  // = 残骸点検用。非稼働のまま残っている予定は OFF でもバッジ付きで出る。
+  const showInactiveToggle = (
+    <Button
+      type="button"
+      size="sm"
+      variant={showInactive ? 'default' : 'ghost'}
+      onClick={() => setShowInactive(!showInactive)}
+      aria-pressed={showInactive}
+      title={
+        showInactive
+          ? '非稼働（入院中など）の患者様の取消済み予定も表示しています'
+          : '非稼働（入院中など）の患者様の取消済み予定も表示します'
+      }
+      data-testid="schedule-show-inactive-toggle"
+    >
+      {showInactive ? '非稼働を表示中' : '非稼働を表示'}
+    </Button>
+  );
+
   return (
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       {/* lg 以上は flex 高さチェーン (ページ非スクロール)。ツールバー等は固定行、
@@ -6019,6 +6180,8 @@ export function CourseDayTablePanel({
                     <ListChecks className="mr-1 h-4 w-4" aria-hidden />
                     週次ガイド
                   </Button>
+                  {/* コンパクト表示: 「コースの作業場」などページ上部の道具をここに入れる (D5)。 */}
+                  {headerCollapsed ? compactToolsExtra : null}
                 </div>
 
                 {/* 右グループ: その他操作 + 書き戻し系. */}
@@ -6174,125 +6337,205 @@ export function CourseDayTablePanel({
               </>
             ) : null}
 
-            {/* 曜日タブ (折りたたみ時は 2 段目の左) */}
+            {/* 見る単位 [コース｜職員] + 曜日タブ + [タイムライン｜リスト]
+                (schedule-unit-switch-design-2026-10-21.md D1・D2: コースでも職員でも
+                同じ場所・同じ順番・同じ言葉。折りたたみ時は 2 段目の左)。 */}
             <div
-              role="tablist"
-              aria-label="曜日タブ"
-              className="flex flex-wrap gap-1"
-              data-testid="course-day-tabs"
+              className="flex flex-wrap items-center gap-1.5"
+              data-testid="schedule-unit-day-view-row"
             >
-              {/* PO 2026-10-13: コーススケジュール（月〜土・週）と職員スケジュールを分けて見せる */}
-              <span
-                aria-hidden
-                className="self-center pr-1 text-[11px] font-semibold text-text-muted"
+              <div
+                role="group"
+                aria-label="見る単位"
+                className="inline-flex overflow-hidden rounded-md border-2 border-brand-primary"
+                data-testid="schedule-unit-switch"
               >
-                コース
-              </span>
-              {DISPLAY_WEEKDAYS.map((wd) => {
-                const selected = activeTab === wd;
-                // Phase G-45: 拠点 filter 選択時のみ、選択中の拠点が休業の曜日タブは
-                // 薄色 + 「(休)」表示 + tooltip. 全拠点モード (officeId=null) は
-                // 既存挙動 (= 何もしない).
-                const selectedOffice = officeId
-                  ? (offices.find((o) => o.id === officeId) ?? null)
-                  : null;
-                const officeNonOperating =
-                  selectedOffice != null &&
-                  Array.isArray(selectedOffice.operating_weekdays) &&
-                  !selectedOffice.operating_weekdays.includes(wd);
-                // スタッフ数連動 (auto-schedule 統一): 拠点 filter 選択時、当該曜日に
-                // 開講するコース (A-E 開講 or M定員>0) が 1 つも無ければ「休」扱い.
-                // (営業日でも staff 0 名なら A-E は全休 / M も静的定員 0 なら休.)
-                const hasOpenCourseOnDay =
-                  selectedOffice != null &&
-                  templates.some(
-                    (t) =>
-                      t.office_id === selectedOffice.id &&
-                      effectiveCapacity(t, wd, staffCountFor(t.office_id, wd), courseCodesMax) > 0,
+                {(
+                  [
+                    { key: 'course', label: 'コース', Icon: Columns3 },
+                    { key: 'staff', label: '職員', Icon: UserRound },
+                  ] as const
+                ).map(({ key, label, Icon }) => {
+                  const on = unit === key;
+                  // 同行モードの選択操作はコースの表示にしか無い (§2 同行モード)。
+                  const blocked = key === 'staff' && accompaniment.active;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() => setUnit(key)}
+                      disabled={blocked}
+                      title={
+                        blocked
+                          ? '同行モード中は「コース」の表示で選びます（職員の表示には同行の選択がありません）'
+                          : key === 'course'
+                            ? 'コースごとに、曜日と週の予定を見ます'
+                            : '職員ごとに、曜日と週の予定と、その日の訪問の件数を見ます'
+                      }
+                      data-testid={`schedule-unit-${key}`}
+                      className={cn(
+                        'inline-flex min-h-8 items-center gap-1 px-3 text-[13px] font-bold disabled:cursor-not-allowed disabled:opacity-50',
+                        on
+                          ? 'bg-brand-primary text-white'
+                          : 'bg-bg-base text-brand-primary-hover hover:bg-brand-primary-50',
+                      )}
+                    >
+                      <Icon className="h-4 w-4" aria-hidden />
+                      {label}
+                    </button>
                   );
-                const officeIsClosedOnDay =
-                  selectedOffice != null && (officeNonOperating || !hasOpenCourseOnDay);
-                const closedClasses = officeIsClosedOnDay && !selected ? ' opacity-50' : '';
-                const tooltipTitle = officeIsClosedOnDay
-                  ? officeNonOperating
-                    ? `${selectedOffice?.name ?? '拠点'} は ${WEEKDAY_LABELS[wd]} 曜日は休業日です`
-                    : `${selectedOffice?.name ?? '拠点'} は ${WEEKDAY_LABELS[wd]} 曜日に開講するコースがありません`
-                  : undefined;
-                return (
-                  <button
-                    key={wd}
-                    type="button"
-                    role="tab"
-                    aria-selected={selected}
-                    aria-controls={`course-day-panel-${wd}`}
-                    onClick={() => setActiveTab(wd)}
-                    data-testid={`course-day-tab-${wd}`}
-                    data-closed={officeIsClosedOnDay ? 'true' : 'false'}
-                    title={tooltipTitle}
-                    className={
-                      'rounded border px-3 py-1 text-xs font-semibold ' +
-                      (selected
-                        ? 'border-brand-primary bg-brand-primary text-white'
-                        : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted') +
-                      closedClasses
-                    }
-                  >
-                    {WEEKDAY_LABELS[wd]}
-                    {officeIsClosedOnDay ? (
-                      <span className="ml-1 text-[10px] opacity-70">(休)</span>
-                    ) : null}{' '}
-                    <span className="tnum text-[10px] opacity-80">
-                      {format(addDays(weekStart, wd), 'M/d')}
-                    </span>
-                  </button>
-                );
-              })}
-              {/* Wave 18 Phase B-6: 「週」タブ */}
-              <button
-                key="week"
-                type="button"
-                role="tab"
-                aria-selected={activeTab === 'week'}
-                aria-controls="course-week-overview-panel"
-                onClick={() => setActiveTab('week')}
-                data-testid="course-day-tab-week"
-                className={`rounded border px-3 py-1 text-xs font-semibold ${
-                  activeTab === 'week'
-                    ? 'border-brand-primary bg-brand-primary text-white'
-                    : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
-                }`}
+                })}
+              </div>
+              <span aria-hidden className="mx-1 h-6 w-px self-center bg-border-default" />
+              <div
+                role="tablist"
+                aria-label="曜日タブ"
+                className="flex flex-wrap gap-1"
+                data-testid="course-day-tabs"
               >
-                週
-              </button>
-              <span
-                aria-hidden
-                className="mx-2 h-6 w-px self-center bg-border-default"
-                data-testid="course-staff-tab-divider"
-              />
-              {/* 職員スケジュール (スタッフ×曜日・イベント運用の家)。カイポケの同名画面と
-                  同型。週ビュー内「スタッフ別」サブモードからの昇格 (2026-08-20)。 */}
-              <button
-                key="staff"
-                type="button"
-                role="tab"
-                aria-selected={activeTab === 'staff'}
-                aria-controls="course-staff-schedule-panel"
-                onClick={() => setActiveTab('staff')}
-                disabled={accompaniment.active}
-                title={
-                  accompaniment.active
-                    ? '同行モード中はタイムライン表示のみ使えます'
-                    : 'スタッフごとの週の予定とイベント（カイポケの職員スケジュールと同じ構造）'
-                }
-                data-testid="course-day-tab-staff"
-                className={`rounded border px-3 py-1 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
-                  activeTab === 'staff'
-                    ? 'border-brand-primary bg-brand-primary text-white'
-                    : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
-                }`}
+                {DISPLAY_WEEKDAYS.map((wd) => {
+                  const selected = selectedDay === wd;
+                  // Phase G-45: 拠点 filter 選択時のみ、選択中の拠点が休業の曜日タブは
+                  // 薄色 + 「(休)」表示 + tooltip. 全拠点モード (officeId=null) は
+                  // 既存挙動 (= 何もしない).
+                  const selectedOffice = officeId
+                    ? (offices.find((o) => o.id === officeId) ?? null)
+                    : null;
+                  const officeNonOperating =
+                    selectedOffice != null &&
+                    Array.isArray(selectedOffice.operating_weekdays) &&
+                    !selectedOffice.operating_weekdays.includes(wd);
+                  // スタッフ数連動 (auto-schedule 統一): 拠点 filter 選択時、当該曜日に
+                  // 開講するコース (A-E 開講 or M定員>0) が 1 つも無ければ「休」扱い.
+                  const hasOpenCourseOnDay =
+                    selectedOffice != null &&
+                    templates.some(
+                      (t) =>
+                        t.office_id === selectedOffice.id &&
+                        effectiveCapacity(
+                          t,
+                          wd,
+                          staffCountFor(t.office_id, wd),
+                          courseCodesMax,
+                          maxPatientsPerCourse,
+                        ) > 0,
+                    );
+                  const officeIsClosedOnDay =
+                    selectedOffice != null && (officeNonOperating || !hasOpenCourseOnDay);
+                  const closedClasses = officeIsClosedOnDay && !selected ? ' opacity-50' : '';
+                  const tooltipTitle = officeIsClosedOnDay
+                    ? officeNonOperating
+                      ? `${selectedOffice?.name ?? '拠点'} は ${WEEKDAY_LABELS[wd]} 曜日は休業日です`
+                      : `${selectedOffice?.name ?? '拠点'} は ${WEEKDAY_LABELS[wd]} 曜日に開講するコースがありません`
+                    : undefined;
+                  const isToday = isoOfWeekday(wd) === todayIsoJst;
+                  return (
+                    <button
+                      key={wd}
+                      type="button"
+                      role="tab"
+                      aria-selected={selected}
+                      aria-controls={
+                        unit === 'staff' ? 'course-staff-schedule-panel' : `course-day-panel-${wd}`
+                      }
+                      onClick={() => setSelectedDay(wd)}
+                      data-testid={`course-day-tab-${wd}`}
+                      data-closed={officeIsClosedOnDay ? 'true' : 'false'}
+                      title={tooltipTitle}
+                      className={
+                        'rounded border px-3 py-1 text-xs font-semibold ' +
+                        (selected
+                          ? 'border-brand-primary bg-brand-primary text-white'
+                          : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted') +
+                        closedClasses
+                      }
+                    >
+                      {WEEKDAY_LABELS[wd]}
+                      {officeIsClosedOnDay ? (
+                        <span className="ml-1 text-[10px] opacity-70">(休)</span>
+                      ) : null}{' '}
+                      <span className="tnum text-[10px] opacity-80">
+                        {format(addDays(weekStart, wd), 'M/d')}
+                      </span>
+                      {isToday ? (
+                        <span
+                          className="ml-1 text-[10px]"
+                          data-testid={`course-day-tab-today-${wd}`}
+                        >
+                          今日
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+                {/* Wave 18 Phase B-6: 「週」タブ */}
+                <button
+                  key="week"
+                  type="button"
+                  role="tab"
+                  aria-selected={selectedDay === 'week'}
+                  aria-controls={
+                    unit === 'staff' ? 'course-staff-schedule-panel' : 'course-week-overview-panel'
+                  }
+                  onClick={() => setSelectedDay('week')}
+                  data-testid="course-day-tab-week"
+                  className={`rounded border px-3 py-1 text-xs font-semibold ${
+                    selectedDay === 'week'
+                      ? 'border-brand-primary bg-brand-primary text-white'
+                      : 'border-border-default bg-bg-base text-text-secondary hover:bg-bg-muted'
+                  }`}
+                >
+                  週
+                </button>
+              </div>
+              <span aria-hidden className="mx-1 h-6 w-px self-center bg-border-default" />
+              {/* 形: タイムライン / リスト。職員の週は時刻の軸が無いのでリストだけ (D2)。 */}
+              <div
+                role="group"
+                aria-label="表示の形"
+                className="inline-flex overflow-hidden rounded border border-border-default text-xs"
               >
-                職員スケジュール
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setView('timeline')}
+                  aria-pressed={effectiveView === 'timeline'}
+                  disabled={isStaffWeek}
+                  title={
+                    isStaffWeek
+                      ? '職員の週は時刻の軸がありません（曜日を選ぶとタイムラインで見られます）'
+                      : unit === 'staff'
+                        ? '1日分を時間軸で見る（横=時刻・縦=担当。ドラッグで今週だけ動かせます）'
+                        : undefined
+                  }
+                  data-testid="schedule-view-timeline"
+                  className={
+                    effectiveView === 'timeline'
+                      ? 'bg-brand-primary px-2 py-1 text-white'
+                      : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted disabled:cursor-not-allowed disabled:opacity-50'
+                  }
+                >
+                  タイムライン
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setView('list')}
+                  aria-pressed={effectiveView === 'list'}
+                  // 同行モード中はリスト表示に選択操作が無いため切替を封じる。
+                  disabled={accompaniment.active}
+                  title={
+                    accompaniment.active ? '同行モード中はタイムライン表示のみ使えます' : undefined
+                  }
+                  data-testid="schedule-view-list"
+                  className={
+                    effectiveView === 'list'
+                      ? 'border-l border-border-default bg-brand-primary px-2 py-1 text-white'
+                      : 'border-l border-border-default bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted disabled:cursor-not-allowed disabled:opacity-50'
+                  }
+                >
+                  リスト
+                </button>
+              </div>
             </div>
 
             {/* 折りたたみ時はコンパクト行の週グループが W## を持つため二重表示を避ける。 */}
@@ -6300,288 +6543,59 @@ export function CourseDayTablePanel({
               <span className="tnum text-[11px] text-text-muted">{isoWeekLabel}</span>
             )}
 
-            {/* Row 2 右半: 表示モード + 二次操作 を 3 グループ (α/γ/δ) に分けて
-                縦区切り線で分離. ml-auto を持つ最初の見える要素で右寄せを担保 (= α が出ていれば α、
-                「週」タブで α 非表示時は γ にフォールバックして右寄せを維持).
-                Phase G-42: 旧 β group (= 固定枠戻 + 全件保存) は Row 1 右端へ移動. */}
             <div
               className="ml-auto flex flex-wrap items-center gap-3"
               data-testid="course-day-row2-right-toolbar"
             >
-              {/* Group α: タイムライン/リスト切替 (「週」タブ時は非表示). */}
-              {typeof activeTab === 'number' ? (
-                <div
-                  role="group"
-                  aria-label="月-土タブ 表示モード切替"
-                  className="inline-flex overflow-hidden rounded border border-border-default text-xs"
+              {/* RB (PO決定 2026-07-08): 全ロール常時表示・編集ボタンは disabled。
+                  自動スタッフ割当 + 一斉スタッフ未割当 (割当⇄リセットの対操作) + 同行。
+                  コンパクト表示では一斉スタッフ未割当を「その他 ▾」へ (D5)。 */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  onClick={handleAssignStaff}
+                  disabled={!canEdit || assignStaffOnlyMut.isPending}
+                  data-testid="assign-staff-only-button"
                 >
-                  <button
-                    type="button"
-                    onClick={() => setWeekdayViewMode('timeline')}
-                    aria-pressed={weekdayViewMode === 'timeline'}
-                    data-testid="course-day-mode-timeline"
-                    className={
-                      weekdayViewMode === 'timeline'
-                        ? 'bg-brand-primary px-2 py-1 text-white'
-                        : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
-                    }
-                  >
-                    タイムライン
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setWeekdayViewMode('list')}
-                    aria-pressed={weekdayViewMode === 'list'}
-                    // 同行モード中はリスト表示に選択操作が無いため切替を封じる。
-                    disabled={accompaniment.active}
-                    title={
-                      accompaniment.active
-                        ? '同行モード中はタイムライン表示のみ使えます'
-                        : undefined
-                    }
-                    data-testid="course-day-mode-list"
-                    className={
-                      weekdayViewMode === 'list'
-                        ? 'bg-brand-primary px-2 py-1 text-white'
-                        : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted disabled:cursor-not-allowed disabled:opacity-50'
-                    }
-                  >
-                    リスト
-                  </button>
-                </div>
-              ) : activeTab === 'staff' ? (
-                /* 職員スケジュールタブ: 表示切替 + 出所チップ + イベント/カイポケの入口。 */
-                <div className="inline-flex flex-wrap items-center gap-1.5">
-                  {/* 表示切替 (T-3 の週タブと同じ意匠)。 */}
-                  <div
-                    role="group"
-                    aria-label="職員スケジュール 表示モード切替"
-                    className="inline-flex overflow-hidden rounded border border-border-default text-xs"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setStaffViewMode('list')}
-                      aria-pressed={staffViewMode === 'list'}
-                      data-testid="staff-tab-mode-list"
-                      className={
-                        staffViewMode === 'list'
-                          ? 'bg-brand-primary px-2 py-1 text-white'
-                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
-                      }
-                    >
-                      リスト
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setStaffViewMode('timeline')}
-                      aria-pressed={staffViewMode === 'timeline'}
-                      data-testid="staff-tab-mode-timeline"
-                      title="1日分を時間軸で見る（横=時刻・縦=担当。ドラッグで今週だけ動かせます）"
-                      className={
-                        staffViewMode === 'timeline'
-                          ? 'bg-brand-primary px-2 py-1 text-white'
-                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
-                      }
-                    >
-                      タイムライン
-                    </button>
-                  </div>
-                  {/* 取消を表示 (PO 判断 2026-10-04)。リスト盤だけ。既定 OFF = 取消済みの
-                      訪問を隠す。ON で打ち消し線つきで出し「取消をやめる」を使えるようにする。 */}
-                  {staffViewMode === 'list' ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={showCancelled ? 'default' : 'ghost'}
-                      onClick={() => setShowCancelled(!showCancelled)}
-                      aria-pressed={showCancelled}
-                      title={
-                        showCancelled
-                          ? '取消済みの訪問（今週だけ取消など）も表示しています'
-                          : '取消済みの訪問（今週だけ取消など）も表示します'
-                      }
-                      data-testid="staff-tab-show-cancelled-toggle"
-                    >
-                      {showCancelled ? '取消を表示中' : '取消を表示'}
-                    </Button>
-                  ) : null}
-                  {/* 出所チップ: この週の予定が「どこから来たか」の内訳。 */}
-                  <span
-                    className="inline-flex flex-wrap items-center gap-1 text-[10px] text-text-muted"
-                    data-testid="staff-tab-source-chips"
-                    title="この週の予定の出所（型どおり / 今週だけ / カイポケ由来 / 固定イベント）"
-                  >
-                    <span className="rounded bg-bg-muted px-1 py-px">
-                      型どおり {cockpitSourceCounts.pattern}
-                    </span>
-                    <span className="rounded bg-bg-muted px-1 py-px">
-                      今週だけ {cockpitSourceCounts.weekOnly}
-                    </span>
-                    <span className="rounded bg-bg-muted px-1 py-px">
-                      カイポケ由来 {cockpitSourceCounts.imported}
-                    </span>
-                    <span className="rounded bg-bg-muted px-1 py-px">
-                      🔒固定 {cockpitSourceCounts.fixed}
-                    </span>
-                  </span>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="default"
-                    disabled={!canEdit}
-                    onClick={() =>
-                      setSlotEventState({
-                        staffId: null,
-                        date: format(weekStart, 'yyyy-MM-dd'),
-                        startHM: '09:00',
-                        endHM: '10:00',
-                      })
-                    }
-                    data-testid="staff-tab-add-event"
-                    title="スタッフの打合せ・イベントを追加（複数スタッフ一括可）"
-                  >
-                    ＋イベント
-                  </Button>
-                  {/* 「担当なし」からの投入提案 (Phase 2-B)。保留プールの
-                      「効果を表示」と同じ on-demand — 押したときだけ調べる。 */}
+                  {assignStaffOnlyMut.isPending ? (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
+                  ) : (
+                    <UserCheck className="mr-1 h-4 w-4" aria-hidden />
+                  )}
+                  自動スタッフ割当
+                </Button>
+                {headerCollapsed ? null : unassignAllButton}
+                {/* 同行モード (§7.1)。active なスタッフが 1 人以上・編集権限ありのときのみ。 */}
+                {accompaniment.available && (
                   <Button
                     type="button"
                     size="sm"
                     variant="outline"
-                    disabled={!canEdit || suggestDaysAllPast}
-                    onClick={() => void handleSeeSuggestions()}
-                    data-testid="staff-tab-see-suggestions"
-                    title={
-                      suggestDaysAllPast
-                        ? '当日以前は担当を付け替えられないため、提案は出せません（明日以降の予定のみ）'
-                        : staffViewMode === 'timeline'
-                          ? 'この日の「担当なし」コースを引き受けられる人を調べます'
-                          : 'この週の「担当なし」コースを引き受けられる人を調べます'
-                    }
+                    onClick={() => {
+                      // 同行の選択操作 (コース列ヘッダ/訪問カードのクリック) は
+                      // タイムライン表示にのみ結線されている。開始時に表示を
+                      // タイムラインへ切り替える (PO報告 2026-07-12)。
+                      // 職員の表示には同行の選択操作が無いため「コース・週」へ移る (§2)。
+                      setViewState((s) => ({
+                        unit: 'course',
+                        day: s.unit === 'staff' ? 'week' : s.day,
+                        dayView: 'timeline',
+                        weekView: 'timeline',
+                      }));
+                      accompaniment.enter();
+                    }}
+                    disabled={accompaniment.active}
+                    data-testid="accompaniment-enter-button"
+                    title="スタッフが他スタッフの訪問に同行する設定を編集します"
                   >
-                    ◎ 提案を見る
+                    👥 同行
                   </Button>
-                  {/* 「⇩ カイポケ取込」「⇧ カイポケ送信」(イベント専用の旧ダイアログ) は
-                      同期ストリップ (SyncBar) に集約したためツールバーから撤去
-                      (2026-08-23・方向性A)。ダイアログ自体は当面残置 (未使用)。 */}
-                </div>
-              ) : (
-                /* T-3: 「週」タブ時は タイムライン / リスト の切替を出す (縦スペース不消費). */
-                <div
-                  role="group"
-                  aria-label="週タブ 表示モード切替"
-                  className="inline-flex items-center gap-2"
-                >
-                  <div className="inline-flex overflow-hidden rounded border border-border-default text-xs">
-                    <button
-                      type="button"
-                      onClick={() => setWeekViewMode('timeline')}
-                      aria-pressed={weekViewMode === 'timeline'}
-                      data-testid="course-week-mode-timeline"
-                      className={
-                        weekViewMode === 'timeline'
-                          ? 'bg-brand-primary px-2 py-1 text-white'
-                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted'
-                      }
-                    >
-                      タイムライン
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setWeekViewMode('overview')}
-                      aria-pressed={weekViewMode === 'overview'}
-                      // 同行モード中はリスト表示に選択操作が無いため切替を封じる。
-                      disabled={accompaniment.active}
-                      title={
-                        accompaniment.active
-                          ? '同行モード中はタイムライン表示のみ使えます'
-                          : undefined
-                      }
-                      data-testid="course-week-mode-overview"
-                      className={
-                        weekViewMode === 'overview'
-                          ? 'bg-brand-primary px-2 py-1 text-white'
-                          : 'bg-bg-base px-2 py-1 text-text-secondary hover:bg-bg-muted disabled:cursor-not-allowed disabled:opacity-50'
-                      }
-                    >
-                      コース別
-                    </button>
-                    {/* 旧「スタッフ別」サブモードはトップレベルタブ
-                        「職員スケジュール」へ昇格 (2026-08-20)。 */}
-                  </div>
-                </div>
-              )}
+                )}
+              </div>
 
-              {/* RB (PO決定 2026-07-08): γ/δ も全ロール常時表示・編集ボタンは disabled。 */}
-              {
-                <>
-                  {/* α / γ 間の区切り線 (α 表示時のみ).
-                      Phase G-42: β group (= 固定枠戻 + 全件保存) を Row 1 へ移動した結果、
-                      残る区切りは α/γ と γ/δ の 2 本. */}
-                  {activeTab !== 'week' ? (
-                    <span
-                      aria-hidden
-                      className="h-5 w-px bg-border-default"
-                      data-testid="course-day-button-divider"
-                    />
-                  ) : null}
-
-                  {/* Group γ: 自動スタッフ割当 + リセット.
-                      2026-07: 「自動スタッフ割付」を「自動スタッフ割当」に改称し
-                      Row 1 から一斉スタッフ未割当の左隣へ移動 (割当⇄リセットの対操作を隣接).
-                      Wave U-3 の 戻る/進むは Row 2 (週の操作の行) へ移設
-                      (PO指示 2026-08-21: 空き行の活用でタブ行を 2 行に収める)。 */}
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="default"
-                      onClick={handleAssignStaff}
-                      disabled={!canEdit || assignStaffOnlyMut.isPending}
-                      data-testid="assign-staff-only-button"
-                    >
-                      {assignStaffOnlyMut.isPending ? (
-                        <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden />
-                      ) : (
-                        <UserCheck className="mr-1 h-4 w-4" aria-hidden />
-                      )}
-                      自動スタッフ割当
-                    </Button>
-                    <UnassignAllStaffButton
-                      isoYear={isoYear}
-                      isoWeek={isoWeek}
-                      officeId={officeId}
-                      disabled={!canEdit || isProcessing}
-                    />
-                    {/* 同行モード (§7.1)。active なスタッフが 1 人以上・編集権限ありのときのみ。 */}
-                    {accompaniment.available && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          // 同行の選択操作 (コース列ヘッダ/訪問カードのクリック) は
-                          // タイムライン表示にのみ結線されている。一覧/リスト表示のまま
-                          // モードに入ると「押しても何も起きない」ため、開始時に両タブの
-                          // 表示を強制的にタイムラインへ切り替える (PO報告 2026-07-12)。
-                          setWeekViewMode('timeline');
-                          setWeekdayViewMode('timeline');
-                          // 職員スケジュールタブには同行の選択操作が無いため週タブへ退避
-                          setActiveTab((t) => (t === 'staff' ? 'week' : t));
-                          accompaniment.enter();
-                        }}
-                        disabled={accompaniment.active}
-                        data-testid="accompaniment-enter-button"
-                        title="スタッフが他スタッフの訪問に同行する設定を編集します"
-                      >
-                        👥 同行
-                      </Button>
-                    )}
-                  </div>
-                </>
-              }
-
-              {/* 折りたたみ時のみ: 戻る/進む (Row 2 から移設) + 拠点フィルタ (ページ上部 Card から移設). */}
+              {/* 折りたたみ時のみ: 戻る/進む + 「その他 ▾」(一斉スタッフ未割当・非稼働を表示・拠点・D5)。 */}
               {headerCollapsed ? (
                 <>
                   <span
@@ -6590,48 +6604,56 @@ export function CourseDayTablePanel({
                     data-testid="course-day-button-divider"
                   />
                   {undoRedoButtons}
-                  {onOfficeChange ? (
-                    <label className="flex items-center gap-1 text-xs text-text-secondary">
-                      拠点
-                      <select
-                        value={officeId ?? ''}
-                        onChange={(e) =>
-                          onOfficeChange(e.target.value === '' ? null : e.target.value)
-                        }
-                        className="rounded border border-border-default bg-bg-base px-1.5 py-1 text-xs"
-                        aria-label="拠点フィルタ"
-                        data-testid="schedule-compact-office-select"
+                  <Popover open={moreMenuOpen} onOpenChange={setMoreMenuOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        title="一斉スタッフ未割当・非稼働を表示・拠点"
+                        data-testid="schedule-more-menu"
                       >
-                        <option value="">全拠点</option>
-                        {offices.map((o) => (
-                          <option key={o.id} value={o.id}>
-                            {o.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  ) : null}
+                        その他
+                        <ChevronDown className="ml-1 h-4 w-4" aria-hidden />
+                      </Button>
+                    </PopoverTrigger>
+                    {/* 閉じても中身は残す (forceMount): 一斉スタッフ未割当の確認ダイアログは
+                        この中の部品が持っているため、閉じたときに消すと確認が出せなくなる。 */}
+                    <PopoverContent
+                      forceMount
+                      align="end"
+                      className="flex w-auto flex-col items-stretch gap-2 p-3 data-[state=closed]:hidden"
+                      data-testid="schedule-more-menu-content"
+                    >
+                      {unassignAllButton}
+                      {showInactiveToggle}
+                      {onOfficeChange ? (
+                        <label className="flex items-center gap-1 text-xs text-text-secondary">
+                          拠点
+                          <select
+                            value={officeId ?? ''}
+                            onChange={(e) =>
+                              onOfficeChange(e.target.value === '' ? null : e.target.value)
+                            }
+                            className="rounded border border-border-default bg-bg-base px-1.5 py-1 text-xs"
+                            aria-label="拠点フィルタ"
+                            data-testid="schedule-compact-office-select"
+                          >
+                            <option value="">全拠点</option>
+                            {offices.map((o) => (
+                              <option key={o.id} value={o.id}>
+                                {o.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                    </PopoverContent>
+                  </Popover>
                 </>
-              ) : null}
-
-              {/* 非稼働を表示 (患者ステータス連動 Phase 3・design §3-4)。
-                  ON にすると連動取消 (status_cancel) を打ち消し線つきで出す
-                  = 残骸点検用。非稼働のまま残っている予定は OFF でもバッジ付きで出る。 */}
-              <Button
-                type="button"
-                size="sm"
-                variant={showInactive ? 'default' : 'ghost'}
-                onClick={() => setShowInactive(!showInactive)}
-                aria-pressed={showInactive}
-                title={
-                  showInactive
-                    ? '非稼働（入院中など）の患者様の取消済み予定も表示しています'
-                    : '非稼働（入院中など）の患者様の取消済み予定も表示します'
-                }
-                data-testid="schedule-show-inactive-toggle"
-              >
-                {showInactive ? '非稼働を表示中' : '非稼働を表示'}
-              </Button>
+              ) : (
+                showInactiveToggle
+              )}
 
               {/* 上部折りたたみトグル (PO 要望 2026-08-23)。ツールバー右端に常設。 */}
               <Button
@@ -6640,6 +6662,7 @@ export function CourseDayTablePanel({
                 variant="ghost"
                 onClick={() => {
                   setCompactToolsOpen(false);
+                  setMoreMenuOpen(false);
                   setHeaderCollapsed(!headerCollapsed);
                 }}
                 aria-pressed={headerCollapsed}
@@ -6659,6 +6682,38 @@ export function CourseDayTablePanel({
                 {headerCollapsed ? '上部を表示' : 'コンパクト表示'}
               </Button>
             </div>
+
+            {isStaffWeek ? (
+              <p
+                className="basis-full text-xs text-text-secondary"
+                data-testid="schedule-staff-week-hint"
+              >
+                職員の週は、時刻の軸のない「リスト」で見ます。時刻で見たいときは曜日を選んでください。
+              </p>
+            ) : null}
+
+            {/* 初めて開いたときだけの案内 (D9)。［わかった］でこの端末では二度と出さない。 */}
+            {unitIntroSeen ? null : (
+              <div
+                role="note"
+                className="flex basis-full flex-wrap items-center gap-2 rounded border border-brand-primary-light bg-brand-primary-50 px-3 py-1.5 text-xs text-text-primary"
+                data-testid="schedule-unit-intro"
+              >
+                <span>
+                  新しく「コース」と「職員」を切り替えられるようになりました。曜日・週と「タイムライン／リスト」は、どちらでも同じ場所にあります。職員では、その日の訪問の件数も見られます。
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto"
+                  onClick={() => setUnitIntroSeen(true)}
+                  data-testid="schedule-unit-intro-ok"
+                >
+                  わかった
+                </Button>
+              </div>
+            )}
           </div>
         </Card>
 
@@ -6697,6 +6752,108 @@ export function CourseDayTablePanel({
                 : 'lg:overflow-y-auto',
             )}
           >
+            {/* 同期バー (Phase E): ●未送信 / 🔄突合 を盤面の上に常駐させる
+                — 押した瞬間に目に入る位置 (PO指摘 2026-08-21)。旧
+                KaipokeReconcilePanel はここに吸収された。
+                コースでも職員でも出す (D4)。職員の表示では同じ行に「職員の道具」を並べる (D3)。 */}
+            <SyncBar
+              className="lg:shrink-0"
+              weekStartIso={weekStartIso}
+              canEdit={canEdit}
+              staffIdByName={staffIdByName}
+              staffNameById={staffNameById}
+              onSelectDiff={setCockpitMarker}
+              onUnsentChange={setUnsentKeys}
+              reloadKey={syncReloadKey}
+              extra={
+                unit === 'staff' ? (
+                  <div
+                    className="inline-flex flex-wrap items-center gap-1.5"
+                    role="group"
+                    aria-label="職員の道具"
+                    data-testid="staff-tools"
+                  >
+                    <span className="text-[12px] font-bold text-text-secondary">職員の道具</span>
+                    {/* 取消を表示 (PO 判断 2026-10-04)。リスト盤だけ。既定 OFF = 取消済みの
+                        訪問を隠す。ON で打ち消し線つきで出し「取消をやめる」を使えるようにする。 */}
+                    {staffViewMode === 'list' ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={showCancelled ? 'default' : 'ghost'}
+                        onClick={() => setShowCancelled(!showCancelled)}
+                        aria-pressed={showCancelled}
+                        title={
+                          showCancelled
+                            ? '取消済みの訪問（今週だけ取消など）も表示しています'
+                            : '取消済みの訪問（今週だけ取消など）も表示します'
+                        }
+                        data-testid="staff-tab-show-cancelled-toggle"
+                      >
+                        {showCancelled ? '取消を表示中' : '取消を表示'}
+                      </Button>
+                    ) : null}
+                    {/* 出所チップ: この週の予定が「どこから来たか」の内訳。 */}
+                    <span
+                      className="inline-flex flex-wrap items-center gap-1 text-[10px] text-text-muted"
+                      data-testid="staff-tab-source-chips"
+                      title="この週の予定の出所（型どおり / 今週だけ / カイポケ由来 / 固定イベント）"
+                    >
+                      <span className="rounded bg-bg-base px-1 py-px">
+                        型どおり {cockpitSourceCounts.pattern}
+                      </span>
+                      <span className="rounded bg-bg-base px-1 py-px">
+                        今週だけ {cockpitSourceCounts.weekOnly}
+                      </span>
+                      <span className="rounded bg-bg-base px-1 py-px">
+                        カイポケ由来 {cockpitSourceCounts.imported}
+                      </span>
+                      <span className="rounded bg-bg-base px-1 py-px">
+                        🔒固定 {cockpitSourceCounts.fixed}
+                      </span>
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="default"
+                      disabled={!canEdit}
+                      onClick={() =>
+                        setSlotEventState({
+                          staffId: null,
+                          date: format(weekStart, 'yyyy-MM-dd'),
+                          startHM: '09:00',
+                          endHM: '10:00',
+                        })
+                      }
+                      data-testid="staff-tab-add-event"
+                      title="スタッフの打合せ・イベントを追加（複数スタッフ一括可）"
+                    >
+                      ＋イベント
+                    </Button>
+                    {/* 「担当なし」からの投入提案 (Phase 2-B)。保留プールの
+                        「効果を表示」と同じ on-demand — 押したときだけ調べる。 */}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={!canEdit || suggestDaysAllPast}
+                      onClick={() => void handleSeeSuggestions()}
+                      data-testid="staff-tab-see-suggestions"
+                      title={
+                        suggestDaysAllPast
+                          ? '当日以前は担当を付け替えられないため、提案は出せません（明日以降の予定のみ）'
+                          : typeof selectedDay === 'number'
+                            ? 'この日の「担当なし」コースを引き受けられる人を調べます'
+                            : 'この週の「担当なし」コースを引き受けられる人を調べます'
+                      }
+                    >
+                      ◎ 提案を見る
+                    </Button>
+                  </div>
+                ) : null
+              }
+            />
+
             {/* 職員スケジュール (スタッフ×曜日・イベント運用の家・2026-08-20 昇格)。
                 投影 = 訪問/コース (読むだけ) / 正典 = イベント (＋で追加・帯クリックで編集)。 */}
             {activeTab === 'staff' ? (
@@ -6707,19 +6864,6 @@ export function CourseDayTablePanel({
                 data-testid="course-staff-schedule-panel"
                 className="space-y-2"
               >
-                {/* 同期バー (Phase E): ●未送信 / 🔄突合 を盤面の上に常駐させる
-                    — 押した瞬間に目に入る位置 (PO指摘 2026-08-21)。旧
-                    KaipokeReconcilePanel はここに吸収された。 */}
-                <SyncBar
-                  weekStartIso={weekStartIso}
-                  canEdit={canEdit}
-                  staffIdByName={staffIdByName}
-                  staffNameById={staffNameById}
-                  onSelectDiff={setCockpitMarker}
-                  onUnsentChange={setUnsentKeys}
-                  reloadKey={syncReloadKey}
-                />
-
                 {/* 盤面最上段の「全員（固定）」帯 (朝会など・source='fixed')。 */}
                 <FixedEventRow
                   events={fixedWeekEvents}
@@ -6752,7 +6896,9 @@ export function CourseDayTablePanel({
                     showInactive={showInactive}
                     weekStart={weekStart}
                     day={staffTimelineDay}
-                    onDayChange={setStaffTimelineDay}
+                    dayCounts={staffDayCounts}
+                    countLimit={maxPatientsPerCourse}
+                    companionVisitsByCell={companionVisitsByCell}
                     staffRows={staffTimelineRows}
                     visits={cockpitVisits}
                     events={staffEventsByStaff}
@@ -6813,6 +6959,11 @@ export function CourseDayTablePanel({
                   <StaffWeekBoard
                     showInactive={showInactive}
                     showCancelled={showCancelled}
+                    // 曜日を選んだときはその曜日の列だけ (D2)。
+                    onlyWeekday={typeof selectedDay === 'number' ? selectedDay : undefined}
+                    dayCounts={staffDayCounts}
+                    countLimit={maxPatientsPerCourse}
+                    companionVisitsByCell={companionVisitsByCell}
                     templates={templates}
                     officeNameById={officeNameById}
                     visits={cockpitVisits}
@@ -7010,7 +7161,7 @@ export function CourseDayTablePanel({
                     eventFramesByWeekday={staffEventFramesByWeekday}
                     // 週リストも「今週だけ取消」を打消線で見せる (status 付き)。
                     visits={cockpitVisits}
-                    onJumpToDay={(wd) => setActiveTab(wd)}
+                    onJumpToDay={(wd) => setSelectedDay(wd)}
                     staffEventsByStaff={staffEventsByStaff}
                     assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
                     staffMap={staffMap}
@@ -7018,6 +7169,7 @@ export function CourseDayTablePanel({
                     onPatientClick={handleOpenPatientDetail}
                     staffCountFor={staffCountFor}
                     courseCodesMax={courseCodesMax}
+                    maxPatientsPerCourse={maxPatientsPerCourse}
                     pfvCountFor={pfvCountFor}
                     managerCountFor={managerCountFor}
                     staffSummaryOffices={staffSummaryOffices}

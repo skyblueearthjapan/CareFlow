@@ -23,7 +23,8 @@
  *   - admin / manager: 全操作可
  *   - staff: 閲覧のみ
  */
-import { useMemo, useState } from 'react';
+import { Suspense, useCallback, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 
 import { RakusukeTitle } from '@/components/brand/Rakusuke';
 import { usePublishScreenContext } from '@/components/agent/screenContext';
@@ -39,12 +40,48 @@ import { isoWeekFromLocalDate } from '@/lib/format/isoWeek';
 import { useSession } from 'next-auth/react';
 import { isAdminRole } from '@/lib/rbac';
 import { useUIStore } from '@/lib/stores/ui';
+import {
+  parseScheduleViewParams,
+  writeScheduleViewParams,
+  type ScheduleUnit,
+  type ScheduleViewState,
+} from '@/lib/schedule/scheduleViewState';
+
+/** 見出しの説明文 (見る単位に合わせる・schedule-unit-switch-design-2026-10-21.md §2)。 */
+const SUBTITLE_BY_UNIT: Record<ScheduleUnit, string> = {
+  course: 'コースごとに、曜日と週の予定を見ます。',
+  staff: '職員ごとに、曜日と週の予定と、その日の訪問の件数を見ます。',
+};
 
 // ─────────────────────────────────────────────────────────────────────────
 // Page
 // ─────────────────────────────────────────────────────────────────────────
 
 export default function SchedulePage() {
+  // useSearchParams を使うため Suspense で包む (打刻履歴 /records と同じ)。
+  return (
+    <Suspense fallback={null}>
+      <SchedulePageInner />
+    </Suspense>
+  );
+}
+
+function SchedulePageInner() {
+  const searchParams = useSearchParams();
+  // 見る単位 × 曜日/週 × 形は URL の ?unit&day&view に残す (再読み込み・ブックマーク用)。
+  // 無いときは今と同じ「職員・週・リスト」。
+  const [initialViewState] = useState<ScheduleViewState>(() =>
+    // 試験など App Router の外では null になりうるので空の値で読む。
+    parseScheduleViewParams(searchParams ?? new URLSearchParams()),
+  );
+  const [unit, setUnit] = useState<ScheduleUnit>(initialViewState.unit);
+  const handleViewStateChange = useCallback((next: ScheduleViewState) => {
+    setUnit(next.unit);
+    // 他のクエリは残す (records/page.tsx と同じ流儀)。
+    const params = new URLSearchParams(window.location.search);
+    writeScheduleViewParams(params, next);
+    window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+  }, []);
   const { data: session } = useSession();
   const role = session?.user?.role ?? 'staff';
   const canEdit = isAdminRole(role);
@@ -86,11 +123,7 @@ export default function SchedulePage() {
     >
       {headerCollapsed ? null : (
         <header className="space-y-1 lg:shrink-0" data-testid="schedule-page-header">
-          <RakusukeTitle
-            pose="calendar"
-            title="スケジュール"
-            subtitle="(曜日 × コース) テーブルで週次スケジュールを管理します。"
-          />
+          <RakusukeTitle pose="calendar" title="スケジュール" subtitle={SUBTITLE_BY_UNIT[unit]} />
         </header>
       )}
 
@@ -152,7 +185,10 @@ export default function SchedulePage() {
         canEdit={canEdit}
         onWeekChange={setWeekStart}
         onOfficeChange={setOfficeId}
-        initialTab="staff"
+        initialViewState={initialViewState}
+        onViewStateChange={handleViewStateChange}
+        // コンパクト表示では「コースの作業場」を「ツール」の一時展開に入れる (D5)。
+        compactToolsExtra={headerCollapsed ? <TemplateWorkspaceLink canEdit={canEdit} /> : null}
         compactExtra={
           headerCollapsed ? (
             <>

@@ -372,14 +372,14 @@ describe('CourseDayTablePanel — 上部折りたたみ (コンパクト表示)'
     // 曜日タブ行は残る.
     expect(screen.getByTestId('course-day-tab-row')).toBeInTheDocument();
     expect(screen.getByTestId('course-day-tabs')).toBeInTheDocument();
-    expect(screen.getByTestId('course-day-tab-staff')).toBeInTheDocument();
+    expect(screen.getByTestId('schedule-unit-staff')).toBeInTheDocument();
 
     // 戻る / 進む はコンパクト行に 1 つずつだけ存在する (重複しない).
     expect(screen.getAllByTestId('schedule-undo-button')).toHaveLength(1);
     expect(screen.getAllByTestId('schedule-redo-button')).toHaveLength(1);
 
     // 表示切替 (既定タブ = 週) も残る.
-    expect(screen.getByTestId('course-week-mode-overview')).toBeInTheDocument();
+    expect(screen.getByTestId('schedule-view-list')).toBeInTheDocument();
 
     // 週切替と拠点フィルタがコンパクト行に出る.
     expect(screen.getByTestId('schedule-compact-week-nav')).toBeInTheDocument();

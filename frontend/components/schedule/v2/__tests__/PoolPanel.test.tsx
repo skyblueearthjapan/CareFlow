@@ -603,8 +603,7 @@ describe('PoolGroupedByWeekday — 新人同行による②カード消滅', () 
   }
 
   // slot 0 だけ配置済み (= ②カードが出る初期状態)。
-  const baseAssigned = () =>
-    new Map<string, Set<0 | 1>>([['p-multi', new Set<0 | 1>([0])]]);
+  const baseAssigned = () => new Map<string, Set<0 | 1>>([['p-multi', new Set<0 | 1>([0])]]);
   // 患者 p-multi は月曜コース c1 (template t1) に単独配置されている。
   const placed = new Map<string, FulfillmentVisit[]>([
     ['p-multi', [{ id: 'v1', courseId: 'c1', courseTemplateId: 't1', weekday: 0 }]],
