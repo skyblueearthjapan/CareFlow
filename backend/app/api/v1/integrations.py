@@ -3747,7 +3747,11 @@ def _hhmm(t) -> str:
 
 
 def _events_covered_dates(result: dict[str, Any]) -> set[date] | None:
-    """RPA result の week_dates → date 集合 (無ければ None = 全日カバー扱い)。"""
+    """RPA result の week_dates → date 集合 (キーが無ければ None = 全日カバー扱い)。
+
+    空の一覧 (どの日も表示できなかった) は None にしない: 空の集合 = どの日も確かめて
+    いないので、その週の取込では何も削除しない (照合の covered_dates とそろえる)。
+    """
     raw = result.get("week_dates")
     if not isinstance(raw, list):
         return None
@@ -3757,7 +3761,7 @@ def _events_covered_dates(result: dict[str, Any]) -> set[date] | None:
             out.add(date.fromisoformat(str(x)))
         except ValueError:
             continue
-    return out or None
+    return out
 
 
 def _events_plan_to_read(plan, conflicts=None) -> EventsInboundPreviewRead:

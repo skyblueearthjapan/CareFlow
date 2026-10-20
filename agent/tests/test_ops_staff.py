@@ -152,6 +152,14 @@ def test_off_week_verify_half_day_checks_only_the_record():
         {"id": "v3", "status": "planned", "primary_staff_id": S2, "start_time": "14:00:00", "end_time": "14:35:00"},
     ]
     assert impl.verify(api, o) == ["2026-10-15 に まだ本人が主担当の午後休の時間帯の予定が 1 件あります"]
+    # 主担当が空でも、印 (明示の担当なし) が無くコースの担当が本人なら本人の予定として数える
+    api.routes["/visits"] = [
+        {"id": "v4", "status": "planned", "primary_staff_id": None, "manual_staff_override": False,
+         "course_id": C1, "start_time": "14:00:00", "end_time": "14:35:00"},
+        {"id": "v5", "status": "planned", "primary_staff_id": None, "manual_staff_override": True,
+         "course_id": C1, "start_time": "15:00:00", "end_time": "15:35:00"},
+    ]
+    assert impl.verify(api, o) == ["2026-10-15 に まだ本人が主担当の午後休の時間帯の予定が 1 件あります"]
     api.routes[f"/staff/{S1}/overrides"] = [{"id": OV, "date": "2026-10-15", "type": "休み"}]
     assert impl.verify(api, o)[0] == "2026-10-15 の午後休が登録されていません"
 

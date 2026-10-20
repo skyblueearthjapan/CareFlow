@@ -1084,7 +1084,7 @@ async def compare_month(db: AsyncSession, job_id: uuid.UUID) -> LeaveCompareRun 
     except Exception as exc:  # noqa: BLE001 — 黙って失わない (ジョブは completed で残る)
         logger.exception("leave compare failed for job %s", job_id)
         await db.rollback()
-        await record_compare_error(job_id, f"照合の差分を作れませんでした: {str(exc)[:300]}")
+        await record_compare_error(job_id, f"照合の差分を作れませんでした（{type(exc).__name__}）")
         return None
 
 
@@ -1159,7 +1159,10 @@ async def run_leave_compare_job(
         except BaseException as exc:
             # compare_month の外側で落ちた (取り消し・セッションの破損など): completed のまま
             # 結果も compare_error も無いと画面が「比べています」で止まるので必ず書く。
-            await record_compare_error(job_id, f"照合の差分を作れませんでした: {str(exc)[:300]}")
+            logger.exception("leave compare crashed for job %s", job_id)
+            await record_compare_error(
+                job_id, f"照合の差分を作れませんでした（{type(exc).__name__}）"
+            )
             raise
         if run is None:
             # 材料は取れたのに結果が無い (ジョブの記録が足りないなど): 理由が無ければ書く。

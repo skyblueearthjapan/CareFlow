@@ -233,6 +233,16 @@ async def oauth_callback(
         except GoogleDriveError:
             previous_account = None
 
+    new_email = account.email if account else None
+    old_email = previous_account.email if previous_account else None
+    will_revoke = bool(old_token is not None and old_email and new_email and old_email != new_email)
+    if old_token is not None and not will_revoke and (new_email is None or old_email is None):
+        # どちらかのアカウントが読めず、違うアカウントか分からないので前のトークンは残す。
+        logger.warning(
+            "google drive: previous refresh token kept (account unreadable: new=%s old=%s)",
+            new_email is not None,
+            old_email is not None,
+        )
     row = await save_connection(db, refresh_token=tokens.refresh_token, user_id=user.id)
     db.add(
         AuditLog(
@@ -246,18 +256,19 @@ async def oauth_callback(
                 "connected_by": str(user.id),
                 "folder_id": row.folder_id,
                 "account": account.email if account else None,
+                # 前の接続のトークンを取り消すか (違うアカウントと分かったときだけ・
+                # 取り消しは commit の後。前の接続が無ければ None)。
+                "previous_revoked": will_revoke if old_token is not None else None,
             },
         )
     )
-    new_email = account.email if account else None
-    old_email = previous_account.email if previous_account else None
     if previous is not None and new_email != old_email:
         await notify_connection_changed(
             db, account=_account_label(account), by=_user_label(user) or "管理者"
         )
     await db.commit()
 
-    if old_token is not None and old_email and new_email and old_email != new_email:
+    if will_revoke and old_token is not None:
         # 取り消せなくても新しい接続は成功のまま (記録だけ残す)。
         if not await revoke_token(old_token):
             logger.warning("google drive: previous refresh token was not revoked")

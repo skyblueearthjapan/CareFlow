@@ -895,7 +895,8 @@ def test_events_covered_dates_parses_week_dates() -> None:
     from app.api.v1.integrations import _events_covered_dates
 
     assert _events_covered_dates({}) is None
-    assert _events_covered_dates({"week_dates": []}) is None
+    # 空の一覧 = どの日も確かめていない (全日カバー扱いにしない・何も削除しない)
+    assert _events_covered_dates({"week_dates": []}) == set()
     got = _events_covered_dates({"week_dates": ["2026-09-01", "bad", "2026-09-02"]})
     assert got == {date(2026, 9, 1), date(2026, 9, 2)}
 

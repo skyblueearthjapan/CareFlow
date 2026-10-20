@@ -387,6 +387,10 @@ class _Builder:
                 continue
             week = {monday + timedelta(days=i) for i in range(6)}
             if snap.covered_dates is None:
+                # 画面に出た日が分からない (RPA が week_dates を返さなかった) 週は、週の全部の
+                # 日を表に出たとみなして使う。休みの照合 (leave_compare) は同じ週を「未確認」に
+                # するが、あちらは実績の記録・送信を止める安全側の判定で、受け入れ枠は読むだけの
+                # 見込み (間違えても書き込まない) なので、staff_events より新しい材料を優先する。
                 week_covered = week
             else:
                 week_covered = {

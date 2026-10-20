@@ -421,7 +421,12 @@ def build_plan(result: dict, week: dict, extra: dict | None = None, *, config: d
                     key=lambda x: (x["visit"]["day"], x["start"])):
         v = x["visit"]
         if (cmap.get(v["day"]) or {}).get(x["staff"]) is None:
-            continue  # コースが決まらない日（blockers に出ている）
+            # コースが決まらない日（blockers に出ている）: 担当を付けないので、黙らずに知らせる
+            warnings.append(
+                f"{day_label(date.fromisoformat(v['day']))} {v['patient']} {fmt(x['start'])}: "
+                "コースが決まらないため、担当なしのままです"
+            )
+            continue
         ops.append({"op": "assign-staff-week", "step": 5, "visit_id": v["id"], "staff_id": x["staff"],
                     "patient_id": v["patient_id"], "date": v["day"], "op_group_id": group_main,
                     "label": f"{day_label(date.fromisoformat(v['day']))} {v['patient']} {fmt(x['start'])} "
