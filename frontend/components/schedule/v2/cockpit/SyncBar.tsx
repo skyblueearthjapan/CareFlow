@@ -165,6 +165,11 @@ export interface SyncBarProps {
   /** RPA が空いていれば自動で 1 回だけ同期確認を始める。 */
   autoStartReconcile?: boolean;
   className?: string;
+  /**
+   * 帯と同じ行の右に並べる道具 (職員の表示の「職員の道具」・
+   * schedule-unit-switch-design-2026-10-21.md D3)。
+   */
+  extra?: React.ReactNode;
 }
 
 interface UnsentRow {
@@ -300,6 +305,7 @@ export function SyncBar({
   reloadKey = 0,
   autoStartReconcile = false,
   className,
+  extra,
 }: SyncBarProps) {
   const todayIso = todayIsoJst();
 
@@ -901,6 +907,12 @@ export function SyncBar({
         >
           🔄 同期確認
         </Button>
+        {extra ? (
+          <>
+            <span aria-hidden className="h-5 w-px bg-border-default" />
+            {extra}
+          </>
+        ) : null}
       </div>
 
       {rec.error ? (

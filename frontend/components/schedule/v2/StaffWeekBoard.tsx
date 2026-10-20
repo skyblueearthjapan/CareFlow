@@ -28,7 +28,13 @@ import type { StaffRead } from '@/lib/schemas/staff';
 import type { CockpitEventRead } from '@/lib/schemas/v2/cockpit';
 import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
 import { classifyVisitDisplay, VISIT_DISPLAY_CLASS } from '@/lib/schedule/visitVisibility';
-import { resolveVisitRowKey } from '@/lib/schedule/staffDayCount';
+import {
+  resolveVisitRowKey,
+  staffDayCountKey,
+  weekVisitTotal,
+  type StaffDayCount,
+} from '@/lib/schedule/staffDayCount';
+import { StaffDayCountBadge } from './StaffDayCountBadge';
 
 import { compareByStaffCode } from '@/lib/kana-sort';
 import { genderPalette } from '@/lib/scheduling/timeline';
@@ -175,6 +181,22 @@ export interface StaffWeekBoardProps {
    * 連動取消 (source='status_cancel') は `showInactive` が受け持つ (こちらでは出さない)。
    */
   showCancelled?: boolean;
+  /**
+   * 曜日を選んだときはその曜日の列だけを出す (0=月..5=土・
+   * schedule-unit-switch-design-2026-10-21.md D2)。未指定 = 月〜土。
+   */
+  onlyWeekday?: number;
+  /**
+   * 職員の 1 日の件数 (`countStaffDays` の結果・キーは `${rowKey}:${weekday}`)。
+   * 渡されたら各セルの先頭に「N件」を出す (D6)。
+   */
+  dayCounts?: Map<string, StaffDayCount>;
+  /** 件数の色の上限 (設定の「1コースの最大人数」)。null = 読めない → 色なし (D7)。 */
+  countLimit?: number | null;
+  /**
+   * 同行の薄いカード (`${staffId}:${weekday}` → 同行する訪問)。読むだけ・動かせない (D8)。
+   */
+  companionVisitsByCell?: Map<string, TimelineVisit[]>;
 }
 
 /** 「（担当なし）」行のキー (courseDnd の単一ソース)。 */
@@ -316,7 +338,16 @@ export function StaffWeekBoard({
   highlightStaffId,
   showInactive = false,
   showCancelled = false,
+  onlyWeekday,
+  dayCounts,
+  countLimit = null,
+  companionVisitsByCell,
 }: StaffWeekBoardProps) {
+  /** 出す曜日の列 (その曜日だけ / 月〜土)。 */
+  const shownWeekdays = React.useMemo(
+    () => (onlyWeekday != null ? [onlyWeekday] : [0, 1, 2, 3, 4, 5]),
+    [onlyWeekday],
+  );
   // ドラッグ中に実際に重なっているセル (`${rowKey}:${wd}`)。候補セルの
   // 淡い破線に対し、重なり中のセルだけ強く光らせる (PO指摘 2026-08-21)。
   const [dragOverCell, setDragOverCell] = React.useState<string | null>(null);
@@ -422,6 +453,24 @@ export function StaffWeekBoard({
     alwaysShowUnassignedRow,
   ]);
 
+  /** その曜日の訪問の合計 (担当なしを含む・列の見出し用)。 */
+  const dayTotal = (wd: number): number => {
+    let n = 0;
+    for (const rowKey of rowKeys) n += dayCounts?.get(staffDayCountKey(rowKey, wd))?.visits ?? 0;
+    return n;
+  };
+  /** その曜日に出勤する職員 (在籍・終日の休み/有給でない)。 */
+  const workingCount = (wd: number): number => {
+    let n = 0;
+    for (const [staffId, st] of staffMap) {
+      if (st.status !== 'active') continue;
+      const t = offByStaffWeekday?.get(`${staffId}:${wd}`)?.type;
+      if (t === '休み' || t === '有給') continue;
+      n += 1;
+    }
+    return n;
+  };
+
   if (rowKeys.length === 0) {
     return (
       <p className="px-3 py-6 text-center text-sm text-text-muted" data-testid="staff-week-empty">
@@ -438,12 +487,20 @@ export function StaffWeekBoard({
             <th className="sticky left-0 z-[1] min-w-[9rem] border-r border-border-default bg-bg-muted px-3 py-2 text-left font-medium text-text-secondary">
               職員氏名
             </th>
-            {WEEKDAY_LABELS.map((label, wd) => (
+            {shownWeekdays.map((wd) => (
               <th
-                key={label}
+                key={wd}
                 className="min-w-[11rem] border-r border-border-subtle px-2 py-2 text-left font-medium text-text-secondary"
               >
-                {format(addDays(weekStart, wd), 'M/d')}（{label}）
+                {format(addDays(weekStart, wd), 'M/d')}（{WEEKDAY_LABELS[wd]}）
+                {onlyWeekday != null && dayCounts ? (
+                  <span
+                    className="tnum block text-[11px] font-normal text-text-muted"
+                    data-testid={`staff-week-day-summary-${wd}`}
+                  >
+                    訪問 {dayTotal(wd)}件 / 出勤 {workingCount(wd)}人
+                  </span>
+                ) : null}
               </th>
             ))}
           </tr>
@@ -476,7 +533,17 @@ export function StaffWeekBoard({
                       {officeName}
                       {staff.is_trainee ? '・⚠新人' : ''}
                     </span>
-                  ) : (
+                  ) : null}
+                  {/* 週のリストでは氏名の下に「週 N件」(D6)。 */}
+                  {onlyWeekday == null && dayCounts ? (
+                    <span
+                      className="tnum block text-[11px] font-bold text-text-secondary"
+                      data-testid={`staff-week-total-${rowKey}`}
+                    >
+                      週 {weekVisitTotal(dayCounts, rowKey)}件
+                    </span>
+                  ) : null}
+                  {staff ? null : (
                     <span className="block text-[10px] text-warning-strong">
                       スタッフ未割当の訪問
                       {onCourseUnassignDrop || onVisitUnassignDrop ? (
@@ -487,7 +554,7 @@ export function StaffWeekBoard({
                     </span>
                   )}
                 </td>
-                {WEEKDAY_LABELS.map((_, wd) => {
+                {shownWeekdays.map((wd) => {
                   const byTpl = cellMap.get(`${rowKey}:${wd}`);
                   // コース塊は「最も早い訪問の開始時刻」順に並べる (PO 要望 2026-09-01:
                   // 複数コースを 1 人の同日に割り当てるとラベル順が優先されて時間順に
@@ -624,17 +691,30 @@ export function StaffWeekBoard({
                       }
                     >
                       <div className="space-y-1.5">
-                        {/* 休み/時間変更バッジ (weekly-space-design.md §4-2: 隠さず表示・貼り付け自体は止めない) */}
-                        {off ? (
-                          <div
-                            className="inline-flex items-center rounded bg-amber-100 px-1.5 py-px text-[10px] font-bold text-amber-800"
-                            title={off.note ?? undefined}
-                            data-testid={`staff-week-off-${rowKey}-${wd}`}
-                          >
-                            {off.type}
-                            {off.type === '時間変更' && off.start_time && off.end_time
-                              ? ` ${off.start_time}〜${off.end_time}`
-                              : ''}
+                        {/* 件数 (D6) + 休み/時間変更バッジ (weekly-space-design.md §4-2:
+                            隠さず表示・貼り付け自体は止めない)。 */}
+                        {dayCounts || off ? (
+                          <div className="flex flex-wrap items-center gap-1">
+                            {dayCounts ? (
+                              <StaffDayCountBadge
+                                count={dayCounts.get(staffDayCountKey(rowKey, wd))}
+                                limit={countLimit}
+                                unassigned={rowKey === UNASSIGNED_KEY}
+                                testId={`staff-day-count-${rowKey}-${wd}`}
+                              />
+                            ) : null}
+                            {off ? (
+                              <div
+                                className="inline-flex items-center rounded bg-amber-100 px-1.5 py-px text-[10px] font-bold text-amber-800"
+                                title={off.note ?? undefined}
+                                data-testid={`staff-week-off-${rowKey}-${wd}`}
+                              >
+                                {off.type}
+                                {off.type === '時間変更' && off.start_time && off.end_time
+                                  ? ` ${off.start_time}〜${off.end_time}`
+                                  : ''}
+                              </div>
+                            ) : null}
                           </div>
                         ) : null}
                         {/* カイポケ突合 (C1/Phase E): 差分ゴースト。
@@ -1061,6 +1141,22 @@ export function StaffWeekBoard({
                             </div>
                           );
                         })}
+                        {/* 同行の薄いカード (D8): 読むだけ・ドラッグしない。元の訪問は担当の行にある。 */}
+                        {(companionVisitsByCell?.get(`${rowKey}:${wd}`) ?? []).map((cv) => (
+                          <div
+                            key={`acc-${cv.id}`}
+                            className="rounded border border-dashed border-border-default bg-bg-base px-1.5 py-0.5 text-[10px] text-text-muted opacity-80"
+                            title="同行（件数には入れません。動かすときは担当の行の訪問から）"
+                            data-testid={`staff-week-companion-${rowKey}-${cv.id}`}
+                          >
+                            <span className="mr-1 font-bold">同行</span>
+                            <span className="tnum mr-1">{hhmm(cv.start_time)}</span>
+                            {cv.patient_name ?? '（無名）'}
+                            {cv.course_label ? (
+                              <span className="ml-1 opacity-80">{cv.course_label}</span>
+                            ) : null}
+                          </div>
+                        ))}
                         {courses.length === 0 && events.length === 0 && !hasCellActions && (
                           <span className="text-[10px] text-text-muted">—</span>
                         )}
