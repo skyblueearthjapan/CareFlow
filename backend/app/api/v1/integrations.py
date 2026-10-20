@@ -557,11 +557,26 @@ async def _reconcile_latest_job(
     # smart-preview (統合プレビュー) も 2026-10-01 からバックグラウンドで決着させる。
     # 月を跨ぐ週は export 2 本の合間に RPA が idle に見えるので、同じく除外する。
     # こちらは自前の残骸判定 (_SMART_PREVIEW_STALE_MINUTES = 10 分) に揃える。
-    if _op in ("events-preview", "events-outbound", "plan-actual-compare", "smart-preview"):
+    # acceptance-refresh / leave-compare (kaipoke/sources.py の取り直し) と leave-outbound
+    # (休みの送信) も 1 本と 1 本の合間に RPA が idle に見えるので除外する。待ちと再試行で
+    # 30 分を超えうるので 120 分まで閉じない (共通の土台 §0-3)。
+    _long_ops = ("acceptance-refresh", "leave-compare", "leave-outbound")
+    if _op in (
+        "events-preview",
+        "events-outbound",
+        "plan-actual-compare",
+        "smart-preview",
+        *_long_ops,
+    ):
         _created = job.created_at
         if _created is not None and _created.tzinfo is None:
             _created = _created.replace(tzinfo=UTC)
-        _hold = _SMART_PREVIEW_STALE_MINUTES if _op == "smart-preview" else 30
+        if _op == "smart-preview":
+            _hold = _SMART_PREVIEW_STALE_MINUTES
+        elif _op in _long_ops:
+            _hold = 120
+        else:
+            _hold = 30
         if _created is not None and datetime.now(UTC) - _created < timedelta(minutes=_hold):
             return job
 

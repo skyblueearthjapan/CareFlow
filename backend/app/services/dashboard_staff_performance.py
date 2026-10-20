@@ -30,6 +30,9 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# 件名から休みのイベントかの予備の判定 (休みの正典は staff_weekly_overrides と
+# staff_shifts.is_on。カイポケ取り込みの休みは件名だけで staff_events に入るため件名でも除く)。
+from app.core.leave import is_leave_event
 from app.models.course import Course
 from app.models.office import Office
 from app.models.patient import Patient
@@ -65,39 +68,7 @@ OVERRIDE_AM_OFF = "am_off"
 OVERRIDE_PM_OFF = "pm_off"
 _LEAVE_OVERRIDE_TYPES = (OVERRIDE_OFF, OVERRIDE_AM_OFF, OVERRIDE_PM_OFF)
 
-#: 件名から休みと見なす語 (休みの正典に載っていないイベントの予備の判定)。
-#: 最後の「休」は総称 (「夏季休暇」など) — 下の除外語を取り除いてから当てる。
-LEAVE_TITLE_KEYWORDS: tuple[str, ...] = (
-    "休み",
-    "有給",
-    "年休",
-    "公休",
-    "代休",
-    "欠勤",
-    "忌引",
-    "病欠",
-    "午前休",
-    "午後休",
-    "休",
-)
-#: 「休」を含むが休みではない語 (勤務・業務の予定)。
-LEAVE_TITLE_EXCLUSIONS: tuple[str, ...] = ("休憩", "休日出勤", "休日当番", "休薬")
-
 LatLng = tuple[float, float]
-
-
-def is_leave_event(title: str | None) -> bool:
-    """件名から休み (休み・有給・公休・欠勤・午前休 など) のイベントか (予備の判定)。
-
-    休みの正典は ``staff_weekly_overrides`` と ``staff_shifts.is_on`` (集計の側で見る)。
-    ただしカイポケ取り込みでは休みが件名 (「休み」「有給」…) だけで ``staff_events`` に
-    入ってくるため、件名でも除く。「休憩」「休日出勤」「休日当番」「休薬」は休みでは
-    ない (会議・研修などの側に入る)。
-    """
-    text = title or ""
-    for word in LEAVE_TITLE_EXCLUSIONS:
-        text = text.replace(word, "")
-    return any(word in text for word in LEAVE_TITLE_KEYWORDS)
 
 
 def leave_window(kind: str | None) -> tuple[int, int] | None:
