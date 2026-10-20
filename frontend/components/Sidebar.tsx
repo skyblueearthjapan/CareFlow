@@ -20,6 +20,11 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { isAdminRole } from '@/lib/rbac';
+import { usePendingRequests } from '@/lib/queries/pending_requests';
+
+/** メニューの未処理の休みの申請の件数を読み直す間隔 (60 秒に 1 回まで・PO 決定)。 */
+const LEAVE_PENDING_POLL_MS = 60_000;
+const LEAVE_PENDING_PARAMS = { request_type: 'staff_off', status: 'pending', limit: 1 } as const;
 
 interface SidebarProps {
   collapsed: boolean;
@@ -84,6 +89,13 @@ export function Sidebar({ collapsed }: SidebarProps) {
   const { data: session } = useSession();
   const role = session?.user?.role;
   const width = collapsed ? 'w-[72px]' : 'w-[232px]';
+  const isAdmin = isAdminRole(role);
+  // 「休み・勤務表」の未処理の申請の件数 (管理者のときだけ読む)
+  const leavePending = usePendingRequests(LEAVE_PENDING_PARAMS, {
+    enabled: isAdmin,
+    pollMs: LEAVE_PENDING_POLL_MS,
+  });
+  const leavePendingCount = isAdmin ? (leavePending.data?.total ?? 0) : 0;
 
   const items = NAV_ITEMS.filter((item) => {
     // strictAdmin = 管理者のみ表示。ロール二軸(mig 0069)以降アカウント権限は
@@ -127,12 +139,13 @@ export function Sidebar({ collapsed }: SidebarProps) {
         <ul className="space-y-1">
           {items.map(({ href, label, icon: Icon }) => {
             const active = pathname?.startsWith(href);
+            const badge = href === '/admin/leave' ? leavePendingCount : 0;
             return (
               <li key={href}>
                 <Link
                   href={href}
                   className={cn(
-                    'flex h-11 items-center gap-3 rounded-md px-3 text-sm transition-colors',
+                    'relative flex h-11 items-center gap-3 rounded-md px-3 text-sm transition-colors',
                     active
                       ? 'bg-brand-primary-light text-brand-primary-hover font-medium'
                       : 'text-text-secondary hover:bg-bg-muted',
@@ -141,6 +154,20 @@ export function Sidebar({ collapsed }: SidebarProps) {
                 >
                   <Icon className="h-5 w-5 shrink-0" strokeWidth={1.75} />
                   {!collapsed && <span>{label}</span>}
+                  {badge > 0 &&
+                    (collapsed ? (
+                      <span
+                        data-testid="nav-badge-dot"
+                        className="absolute right-2 top-2 h-2 w-2 rounded-full bg-brand-primary"
+                      >
+                        <span className="sr-only">未処理の申請 {badge} 件</span>
+                      </span>
+                    ) : (
+                      <span className="ml-auto rounded-full bg-brand-primary px-2 text-xs font-bold leading-5 text-white tnum">
+                        <span aria-hidden>{badge > 99 ? '99+' : badge}</span>
+                        <span className="sr-only">未処理の申請 {badge} 件</span>
+                      </span>
+                    ))}
                 </Link>
               </li>
             );

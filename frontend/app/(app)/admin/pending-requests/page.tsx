@@ -50,7 +50,7 @@ import { StaffCombobox } from '@/components/master/StaffCombobox';
 import { isAdminRole } from '@/lib/rbac';
 import { LEAVE_TYPES } from '@/lib/leave';
 import { monthNumber, upcomingLeaveMonth } from '@/lib/leave-sheet';
-import { useLeaveMonthSummary } from '@/lib/queries/leave';
+import { invalidateAfterLeave, useLeaveMonthSummary } from '@/lib/queries/leave';
 import { usePatients } from '@/lib/queries/patients';
 import { useStaffList } from '@/lib/queries/staff';
 import {
@@ -347,9 +347,8 @@ export default function AdminPendingRequestsPage() {
           .join(' ');
         toast.success(`承認しました${what ? `（${what}）` : ''}`);
         if (row.request_type === 'staff_off') {
-          // 承認で休みの登録が変わる → 休みのデータ (職員ごと・週の盤面) を読み直す
-          void qc.invalidateQueries({ queryKey: ['staff-overrides'] });
-          void qc.invalidateQueries({ queryKey: ['staff-overrides-week'] });
+          // 承認で休みの登録と訪問が変わる → 休み・勤務表・職員ごとの休み・スケジュール系を読み直す
+          void invalidateAfterLeave(qc);
         }
       },
       onError: (err) => setActionError(err.message),
@@ -374,6 +373,7 @@ export default function AdminPendingRequestsPage() {
       { id: rejectTarget.id, rejection_reason: reason },
       {
         onSuccess: () => {
+          if (rejectTarget.request_type === 'staff_off') void invalidateAfterLeave(qc);
           setRejectTarget(null);
           setRejectReason('');
         },

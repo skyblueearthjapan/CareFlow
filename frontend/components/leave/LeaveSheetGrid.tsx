@@ -6,7 +6,7 @@
  * 名前の列を固定し、表の中だけ横にスクロールする (ページは横に広がらない)。
  * マスを押すと onCellClick (押すと入るもの／小窓はページが決める)。
  */
-import { useMemo, type CSSProperties } from 'react';
+import { memo, useMemo, type CSSProperties } from 'react';
 
 import { cn } from '@/lib/utils';
 import {
@@ -47,6 +47,11 @@ export interface LeaveSheetGridProps {
   highlight: { staffId: string; date: string } | null;
   /** その人の行を光らせる (?staff= で開いたとき)。 */
   highlightStaffId: string | null;
+  /** 書き込みが進行中・順番待ちのマス (押せなくして薄く出す)。 */
+  busyCells: ReadonlySet<string>;
+  /** 小窓を開いているマス (aria-expanded)。 */
+  expandedCell: string | null;
+  /** 変わらない関数を渡す (マスは memo)。 */
   onCellClick: (staffId: string, date: string, el: HTMLElement) => void;
 }
 
@@ -55,6 +60,8 @@ export function LeaveSheetGrid({
   focusPending,
   highlight,
   highlightStaffId,
+  busyCells,
+  expandedCell,
   onCellClick,
 }: LeaveSheetGridProps) {
   const cells = useMemo(
@@ -75,7 +82,7 @@ export function LeaveSheetGrid({
           <tr>
             <th
               scope="col"
-              className="sticky left-0 top-0 z-30 min-w-[132px] border-b border-r border-border-default bg-bg-base px-2 py-1 text-left text-xs font-medium text-text-secondary"
+              className="sticky left-0 z-30 min-w-[132px] border-b border-r border-border-default bg-bg-base px-2 py-1 text-left text-xs font-medium text-text-secondary"
             >
               職員
             </th>
@@ -84,7 +91,7 @@ export function LeaveSheetGrid({
             ))}
             <th
               scope="col"
-              className="sticky top-0 z-20 min-w-[180px] border-b border-border-default bg-bg-base px-2 py-1 text-left text-xs font-medium text-text-secondary"
+              className="min-w-[180px] border-b border-border-default bg-bg-base px-2 py-1 text-left text-xs font-medium text-text-secondary"
             >
               休日数（必要 {view.required_holidays} 日）
             </th>
@@ -121,7 +128,10 @@ export function LeaveSheetGrid({
                     cell={cells.get(cellKey(s.id, d.date))}
                     focusPending={focusPending}
                     highlighted={highlight?.staffId === s.id && highlight.date === d.date}
-                    onClick={(el) => onCellClick(s.id, d.date, el)}
+                    columnHighlighted={highlight?.date === d.date}
+                    busy={busyCells.has(cellKey(s.id, d.date))}
+                    expanded={expandedCell === cellKey(s.id, d.date)}
+                    onCellClick={onCellClick}
                   />
                 </td>
               ))}
@@ -155,7 +165,12 @@ export function LeaveSheetGrid({
                     : 'bg-bg-muted text-text-secondary',
                 )}
               >
-                {d.off_count || ''}
+                <span aria-hidden>{d.off_count || ''}</span>
+                {d.off_count > 0 && (
+                  <span className="sr-only">
+                    休み {d.off_count} 人{d.off_warn ? '（重なっています）' : ''}
+                  </span>
+                )}
               </td>
             ))}
             <td className="bg-bg-muted px-2 py-1 text-xs text-text-muted">
@@ -185,7 +200,7 @@ function DayHeader({ day, highlighted }: { day: LeaveMonthDay; highlighted: bool
       data-col={day.date}
       title={title || undefined}
       className={cn(
-        'sticky top-0 z-20 min-w-[44px] border-b border-r border-border-default bg-bg-base px-0 py-1 text-center align-top text-xs font-medium text-text-secondary',
+        'min-w-[44px] border-b border-r border-border-default bg-bg-base px-0 py-1 text-center align-top text-xs font-medium text-text-secondary',
         day.closed_label && 'border-t-4 border-t-border-strong bg-bg-muted',
         highlighted && 'bg-brand-primary-50',
       )}
@@ -197,16 +212,15 @@ function DayHeader({ day, highlighted }: { day: LeaveMonthDay; highlighted: bool
         {WEEKDAY_FROM_MON[day.weekday]}
       </span>
       {day.holiday_name && (
-        <span className="block text-xs text-red-600" aria-label={day.holiday_name}>
-          祝
+        <span className="block text-xs text-red-600">
+          <span aria-hidden>祝</span>
+          <span className="sr-only">{day.holiday_name}</span>
         </span>
       )}
       {day.closed_label && (
-        <span
-          className="block text-xs text-text-muted"
-          aria-label={`事業所の休み ${day.closed_label}`}
-        >
-          所休
+        <span className="block text-xs text-text-muted">
+          <span aria-hidden>所休</span>
+          <span className="sr-only">事業所の休み {day.closed_label}</span>
         </span>
       )}
       {day.pending_count > 0 && (
@@ -224,10 +238,24 @@ interface SheetCellProps {
   cell: LeaveMonthCell | undefined;
   focusPending: boolean;
   highlighted: boolean;
-  onClick: (el: HTMLElement) => void;
+  /** 一覧に指を置いた申請の日の列。 */
+  columnHighlighted: boolean;
+  busy: boolean;
+  expanded: boolean;
+  onCellClick: (staffId: string, date: string, el: HTMLElement) => void;
 }
 
-function SheetCell({ staff, day, cell, focusPending, highlighted, onClick }: SheetCellProps) {
+const SheetCell = memo(function SheetCell({
+  staff,
+  day,
+  cell,
+  focusPending,
+  highlighted,
+  columnHighlighted,
+  busy,
+  expanded,
+  onCellClick,
+}: SheetCellProps) {
   const leave = cell?.leave_type ?? null;
   const pending = cell?.pending ?? null;
   const rest = staff.off_weekdays.includes(day.weekday);
@@ -262,6 +290,7 @@ function SheetCell({ staff, day, cell, focusPending, highlighted, onClick }: She
   if (cell?.cancelled_after_approval) status.push('承認後に取り消し');
   if (cell?.send_status) status.push(SEND_STATUS_LABEL[cell.send_status]);
   if (showVisits) status.push(`訪問 ${visits} 件`);
+  if (busy) status.push('書き込み中');
 
   return (
     <button
@@ -270,7 +299,11 @@ function SheetCell({ staff, day, cell, focusPending, highlighted, onClick }: She
       data-leave={leave ?? undefined}
       data-pending={pending ? pending.override_type : undefined}
       aria-label={`${staff.name} ${fmtDayJp(day.date)}${status.length ? ` ${status.join('・')}` : ''}`}
-      onClick={(e) => onClick(e.currentTarget)}
+      aria-haspopup="dialog"
+      aria-expanded={expanded}
+      aria-busy={busy || undefined}
+      disabled={busy}
+      onClick={(e) => onCellClick(staff.id, day.date, e.currentTarget)}
       style={cell?.cancelled_after_approval && !leave ? STRIPES : undefined}
       className={cn(
         'relative block h-12 w-11 bg-bg-base p-0 text-xs font-bold text-brand-primary-hover transition-opacity',
@@ -284,7 +317,9 @@ function SheetCell({ staff, day, cell, focusPending, highlighted, onClick }: She
             : 'rounded ring-2 ring-inset ring-brand-primary'),
         pending && !leave && 'bg-brand-primary-50',
         focusPending && !pending && 'opacity-30',
+        columnHighlighted && !highlighted && !pending && 'ring-1 ring-inset ring-brand-primary',
         highlighted && 'opacity-100 ring-[3px] ring-inset ring-brand-primary-hover',
+        busy && 'cursor-wait opacity-40',
       )}
     >
       {(leave === 'am_off' || leave === 'pm_off') && (
@@ -315,7 +350,7 @@ function SheetCell({ staff, day, cell, focusPending, highlighted, onClick }: She
       )}
     </button>
   );
-}
+});
 
 /** 送信の状態の印 (照合前＝灰の丸・未送信＝白丸・要対応＝赤の「!」)。送信済みは出さない。 */
 function SendMark({ status }: { status: LeaveSendStatus }) {

@@ -19,6 +19,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
+import { useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -50,7 +51,9 @@ import {
 } from '@/lib/leave-sheet';
 import { useGoogleDriveStatus } from '@/lib/queries/googleDrive';
 import {
+  invalidateAfterLeave,
   leaveErrorMessage,
+  leaveErrorRequestId,
   useApproveLeaveBatch,
   useApproveLeaveRequest,
   useCancelLeaveDay,
@@ -119,9 +122,10 @@ function LeaveSheetPage() {
   const params = useSearchParams();
   const linkStaff = params.get('staff');
   const linkDate = params.get('date');
+  const linkMonth = params.get('month');
 
   const [month, setMonth] = useState<string>(
-    () => parseMonthParam(params.get('month')) ?? parseMonthParam(linkDate) ?? upcomingLeaveMonth(),
+    () => parseMonthParam(linkMonth) ?? parseMonthParam(linkDate) ?? upcomingLeaveMonth(),
   );
   const monthQuery = useLeaveMonth(month, isAdmin);
   const view = monthQuery.data;
@@ -135,24 +139,18 @@ function LeaveSheetPage() {
   const [closedOpen, setClosedOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
 
-  const setDay = useSetLeaveDay();
-  const cancelDay = useCancelLeaveDay();
-  const approveOne = useApproveLeaveRequest();
-  const approveBatch = useApproveLeaveBatch();
-  const reject = useRejectLeaveRequest();
+  const qc = useQueryClient();
+  // 書き込みは 1 件ずつ順に (並行の POST を出さない)。読み直しは落ち着いてから 1 回だけ。
+  const setDay = useSetLeaveDay({ invalidate: false });
+  const cancelDay = useCancelLeaveDay({ invalidate: false });
+  const approveOne = useApproveLeaveRequest({ invalidate: false });
+  const approveBatch = useApproveLeaveBatch({ invalidate: false });
+  const reject = useRejectLeaveRequest({ invalidate: false });
   const putClosed = usePutClosedDay();
   const deleteClosed = useDeleteClosedDay();
   const putMonth = usePutLeaveMonth();
   const confirmMonth = useConfirmLeaveMonth();
-  const [filling, setFilling] = useState(false);
   const [confirming, setConfirming] = useState(false);
-
-  const busy =
-    setDay.isPending ||
-    cancelDay.isPending ||
-    approveOne.isPending ||
-    approveBatch.isPending ||
-    reject.isPending;
 
   const staffById = useMemo(() => new Map((view?.staff ?? []).map((s) => [s.id, s])), [view]);
   const dayByDate = useMemo(() => new Map((view?.days ?? []).map((d) => [d.date, d])), [view]);
@@ -164,6 +162,43 @@ function LeaveSheetPage() {
 
   const nameOf = useCallback((staffId: string) => staffById.get(staffId)?.name ?? '', [staffById]);
 
+  // ── 書き込みの順番待ち ───────────────────────────────────────────────
+  /** 書き込みが進行中・順番待ちのマス (押せなくして薄く出す)。 */
+  const [busyCells, setBusyCells] = useState<ReadonlySet<string>>(() => new Set());
+  const busyRef = useRef(new Set<string>());
+  const queueRef = useRef<{ keys: string[]; run: () => Promise<void> }[]>([]);
+  const drainingRef = useRef(false);
+
+  const drain = async (): Promise<void> => {
+    if (drainingRef.current) return;
+    drainingRef.current = true;
+    const done: string[] = [];
+    try {
+      for (let job = queueRef.current.shift(); job; job = queueRef.current.shift()) {
+        // 各仕事は自分で成功・失敗のトーストを出す
+        await job.run().catch(() => undefined);
+        done.push(...job.keys);
+      }
+      await invalidateAfterLeave(qc).catch(() => undefined);
+    } finally {
+      for (const k of done) busyRef.current.delete(k);
+      setBusyCells(new Set(busyRef.current));
+      drainingRef.current = false;
+      // 読み直しのあいだに押されたものがあれば続ける
+      if (queueRef.current.length > 0) void drain();
+    }
+  };
+
+  /** 書き込みを順番待ちに入れる。そのマスが進行中なら何もしない (連打)。 */
+  const enqueue = (keys: string[], run: () => Promise<void>): boolean => {
+    if (keys.some((k) => busyRef.current.has(k))) return false;
+    for (const k of keys) busyRef.current.add(k);
+    setBusyCells(new Set(busyRef.current));
+    queueRef.current.push({ keys, run });
+    void drain();
+    return true;
+  };
+
   // 月を変えたら小窓・光りを閉じる
   const changeMonth = (delta: number) => {
     setPop(null);
@@ -172,80 +207,101 @@ function LeaveSheetPage() {
   };
 
   // ── 操作 ──────────────────────────────────────────────────────────────
-  const doSetLeave = (staffId: string, date: string, type: LeaveTypeCode) => {
-    setDay
-      .mutateAsync({ staff_id: staffId, date, leave_type: type })
-      .then((r) => {
+  const doSetLeave = (staffId: string, date: string, type: LeaveTypeCode) =>
+    enqueue([cellKey(staffId, date)], async () => {
+      try {
+        const r = await setDay.mutateAsync({ staff_id: staffId, date, leave_type: type });
         const desc = describeResult(r);
         toast.success(`${nameOf(staffId)}さん ${fmtDayJp(date)} を${LEAVE_LABEL[type]}にしました`, {
           description: desc || undefined,
         });
-      })
-      .catch((e: unknown) => toast.error(leaveErrorMessage(e, '休みを入れられませんでした')));
-  };
+      } catch (e) {
+        toast.error(leaveErrorMessage(e, '休みを入れられませんでした'));
+      }
+    });
 
-  const doCancelLeave = (staffId: string, date: string) => {
-    cancelDay
-      .mutateAsync({ staff_id: staffId, date })
-      .then(() =>
+  const doCancelLeave = (staffId: string, date: string) =>
+    enqueue([cellKey(staffId, date)], async () => {
+      try {
+        await cancelDay.mutateAsync({ staff_id: staffId, date });
         toast.success(`取り消しました（${nameOf(staffId)}さん ${fmtDayJp(date)}）`, {
           description: '担当なしへ移した訪問は自動では戻りません',
-        }),
-      )
-      .catch((e: unknown) => toast.error(leaveErrorMessage(e, '取り消せませんでした')));
-  };
+        });
+      } catch (e) {
+        toast.error(leaveErrorMessage(e, '取り消せませんでした'));
+      }
+    });
 
-  const doApprove = (item: LeavePendingItem, overrideType: LeaveTypeCode | null = null) => {
-    approveOne
-      .mutateAsync({ id: item.id, override_type: overrideType })
-      .then((r) => {
+  const doApprove = (item: LeavePendingItem, overrideType: LeaveTypeCode | null = null) =>
+    enqueue([cellKey(item.staff_id, item.date)], async () => {
+      try {
+        const r = await approveOne.mutateAsync({ id: item.id, override_type: overrideType });
+        setHighlight(null);
         const label = LEAVE_LABEL[r.override_type];
         toast.success(`承認しました（${item.staff_name}さん ${fmtDayJp(item.date)} ${label}）`, {
           description: [r.result ? describeResult(r.result) : '', '本人へ通知しました']
             .filter(Boolean)
             .join('。'),
         });
-      })
-      .catch((e: unknown) => toast.error(leaveErrorMessage(e, '承認できませんでした')));
-  };
+      } catch (e) {
+        toast.error(leaveErrorMessage(e, '承認できませんでした'));
+      }
+    });
 
   const doApproveMany = (ids: string[]) => {
-    if (ids.length === 0) return;
-    approveBatch
-      .mutateAsync(ids)
-      .then((r) => {
-        setBulkOpen(false);
-        toast.success(`${r.approved.length} 件を承認し、本人へ通知しました`, {
-          description:
-            r.moved_visit_count > 0
-              ? `訪問 ${r.moved_visit_count} 件を「担当なし」へ移しました（通知を見てください）`
-              : undefined,
-        });
-      })
-      .catch((e: unknown) =>
-        toast.error(leaveErrorMessage(e, 'まとめて承認できませんでした'), {
-          description: '1 件でも承認できないと、まとめて承認は全部やめます',
-        }),
-      );
+    const items = ids
+      .map((id) => pendingById.get(id))
+      .filter((x): x is LeavePendingItem => x !== undefined);
+    if (items.length === 0) return;
+    const byId = new Map(items.map((i) => [i.id, i]));
+    enqueue(
+      items.map((i) => cellKey(i.staff_id, i.date)),
+      async () => {
+        try {
+          const r = await approveBatch.mutateAsync(items.map((i) => i.id));
+          setBulkOpen(false);
+          setHighlight(null);
+          toast.success(`${r.approved.length} 件を承認し、本人へ通知しました`, {
+            description:
+              r.moved_visit_count > 0
+                ? `訪問 ${r.moved_visit_count} 件を「担当なし」へ移しました（通知を見てください）`
+                : undefined,
+          });
+        } catch (e) {
+          const msg = leaveErrorMessage(e, 'まとめて承認できませんでした');
+          const rid = leaveErrorRequestId(e);
+          const it = rid ? byId.get(rid) : undefined;
+          toast.error(it ? `${it.staff_name}さん ${fmtDayJp(it.date)}：${msg}` : msg, {
+            description: '1 件でも承認できないと、まとめて承認は全部やめます',
+          });
+        }
+      },
+    );
   };
 
-  const doReject = (item: LeavePendingItem, reason: string) => {
-    reject
-      .mutateAsync({ id: item.id, reason })
-      .then(() => {
+  const doReject = (item: LeavePendingItem, reason: string) =>
+    enqueue([cellKey(item.staff_id, item.date)], async () => {
+      try {
+        await reject.mutateAsync({ id: item.id, reason });
         setPop(null);
         toast.success(
           `却下して本人へ通知しました（${item.staff_name}さん ${fmtDayJp(item.date)}）`,
         );
-      })
-      .catch((e: unknown) => toast.error(leaveErrorMessage(e, '却下できませんでした')));
-  };
+      } catch (e) {
+        toast.error(leaveErrorMessage(e, '却下できませんでした'));
+      }
+    });
 
+  /**
+   * 「全員に公休を入れる」の相手: その日に勤務する常勤 (新人は含む)。
+   * 型で勤務しない曜日の人・非常勤・休職中・申請中・休みが入っている人は除く。
+   */
   const fillTargets = useCallback(
     (date: string, v: LeaveMonthView | undefined) => {
       const day = dayByDate.get(date);
       if (!v || !day) return [];
       return v.staff.filter((s) => {
+        if (!s.is_full_time || s.status === 'on_leave') return false;
         if (s.off_weekdays.includes(day.weekday)) return false;
         const c = cellByKey.get(cellKey(s.id, date));
         return !c?.leave_type && !c?.pending;
@@ -254,33 +310,36 @@ function LeaveSheetPage() {
     [dayByDate, cellByKey],
   );
 
-  const doFillAll = async (date: string) => {
+  const doFillAll = (date: string) => {
     const targets = fillTargets(date, view);
     if (targets.length === 0) return;
-    setFilling(true);
-    const failed: string[] = [];
-    let moved = 0;
-    // 1 人ずつ順に入れる (同じ日の後始末が重ならないように)。失敗した人は名前と理由を出す。
-    for (const s of targets) {
-      try {
-        const r = await setDay.mutateAsync({ staff_id: s.id, date, leave_type: 'off' });
-        moved += r.moved_visit_count;
-      } catch (e) {
-        failed.push(`${s.name}さん: ${leaveErrorMessage(e, '入れられませんでした')}`);
-      }
-    }
-    setFilling(false);
-    const ok = targets.length - failed.length;
-    if (ok > 0) {
-      toast.success(`${fmtDayJp(date)} に ${ok} 人の公休を入れました`, {
-        description: moved > 0 ? `訪問 ${moved} 件を「担当なし」へ移しました` : undefined,
-      });
-    }
-    if (failed.length > 0) {
-      toast.error(`${failed.length} 人に公休を入れられませんでした`, {
-        description: failed.join(' / '),
-      });
-    }
+    enqueue(
+      targets.map((s) => cellKey(s.id, date)),
+      async () => {
+        const failed: string[] = [];
+        let moved = 0;
+        // 1 人ずつ順に入れる (同じ日の後始末が重ならないように)。失敗した人は名前と理由を出す。
+        for (const s of targets) {
+          try {
+            const r = await setDay.mutateAsync({ staff_id: s.id, date, leave_type: 'off' });
+            moved += r.moved_visit_count;
+          } catch (e) {
+            failed.push(`${s.name}さん: ${leaveErrorMessage(e, '入れられませんでした')}`);
+          }
+        }
+        const ok = targets.length - failed.length;
+        if (ok > 0) {
+          toast.success(`${fmtDayJp(date)} に ${ok} 人の公休を入れました`, {
+            description: moved > 0 ? `訪問 ${moved} 件を「担当なし」へ移しました` : undefined,
+          });
+        }
+        if (failed.length > 0) {
+          toast.error(`${failed.length} 人に公休を入れられませんでした`, {
+            description: failed.join(' / '),
+          });
+        }
+      },
+    );
   };
 
   const doConfirm = async (requiredHours: number | null | undefined) => {
@@ -308,7 +367,12 @@ function LeaveSheetPage() {
   };
 
   // ── マスを押す ────────────────────────────────────────────────────────
-  const onCellClick = (staffId: string, date: string, el: HTMLElement) => {
+  // 表のマスは memo なので、渡す関数は変えない (中身は ref で最新にする)
+  const cellClickRef = useRef<(staffId: string, date: string, el: HTMLElement) => void>(
+    () => undefined,
+  );
+  cellClickRef.current = (staffId, date, el) => {
+    if (busyRef.current.has(cellKey(staffId, date))) return;
     const cell = cellByKey.get(cellKey(staffId, date));
     // 押すと入るもの: 申請中のマスは上書きせず小窓を出す
     if (stamp !== 'pointer' && !cell?.pending) {
@@ -321,7 +385,7 @@ function LeaveSheetPage() {
       const d = dayByDate.get(date);
       if (s && d && !leave && s.off_weekdays.includes(d.weekday)) {
         toast.info(
-          `${s.name}さんは${WEEKDAY_FROM_MON[d.weekday]}曜日がもともと勤務外です（休日に数えています）`,
+          `${s.name}さんは${WEEKDAY_FROM_MON[d.weekday]}曜日がもともと勤務外です（休日に数えています）。休みを入れるときは「選んで操作」でマスの小窓から入れてください`,
         );
         return;
       }
@@ -331,6 +395,19 @@ function LeaveSheetPage() {
     }
     setPop({ staffId, date, anchor: el });
   };
+  const onCellClick = useCallback(
+    (staffId: string, date: string, el: HTMLElement) => cellClickRef.current(staffId, date, el),
+    [],
+  );
+
+  // 一覧に指を置いたら、表のマスと列を光らせ、見えない所ならマスまで寄せる
+  const onHighlight = useCallback((target: { staffId: string; date: string } | null) => {
+    setHighlight(target);
+    if (!target) return;
+    document
+      .querySelector<HTMLElement>(`[data-cell="${cellKey(target.staffId, target.date)}"]`)
+      ?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, []);
 
   const openCellFor = (item: LeavePendingItem) => {
     const el = document.querySelector<HTMLElement>(
@@ -341,10 +418,23 @@ function LeaveSheetPage() {
     setPop({ staffId: item.staff_id, date: item.date, anchor: el });
   };
 
-  // ?staff=&date= で開いたとき: そのマスの小窓を開く (1 回だけ)
+  // ?staff=&date= (または ?month=) が変わったら、月と小窓もそれに合わせる
+  const linkKey = `${linkStaff ?? ''}|${linkDate ?? ''}|${linkMonth ?? ''}`;
+  const prevLinkKey = useRef(linkKey);
   const linkHandled = useRef(false);
   useEffect(() => {
+    if (prevLinkKey.current === linkKey) return;
+    prevLinkKey.current = linkKey;
+    const m = parseMonthParam(linkMonth) ?? parseMonthParam(linkDate);
+    if (m) setMonth(m);
+    setPop(null);
+    linkHandled.current = false;
+  }, [linkKey, linkMonth, linkDate]);
+
+  // ?staff=&date= で開いたとき: そのマスの小窓を開く (リンクごとに 1 回)
+  useEffect(() => {
     if (linkHandled.current || !view || !linkStaff) return;
+    if (view.month.slice(0, 7) !== month) return;
     linkHandled.current = true;
     if (linkDate && linkDate.slice(0, 7) === month) {
       const el = document.querySelector<HTMLElement>(
@@ -359,7 +449,7 @@ function LeaveSheetPage() {
     document
       .querySelector<HTMLElement>(`[data-staff-row="${linkStaff}"]`)
       ?.scrollIntoView?.({ block: 'nearest' });
-  }, [view, linkStaff, linkDate, month]);
+  }, [view, linkStaff, linkDate, month, linkKey]);
 
   // ── 描画 ──────────────────────────────────────────────────────────────
   if (sessionStatus === 'loading') return null;
@@ -434,7 +524,7 @@ function LeaveSheetPage() {
             <Button
               type="button"
               variant="outline"
-              disabled={!view || view.pending.length === 0 || busy}
+              disabled={!view || view.pending.length === 0 || busyCells.size > 0}
               onClick={() => setBulkOpen(true)}
             >
               申請をまとめて承認
@@ -513,6 +603,8 @@ function LeaveSheetPage() {
                 focusPending={focusPending}
                 highlight={highlight}
                 highlightStaffId={linkStaff}
+                busyCells={busyCells}
+                expandedCell={pop ? cellKey(pop.staffId, pop.date) : null}
                 onCellClick={onCellClick}
               />
               <Legend />
@@ -523,8 +615,8 @@ function LeaveSheetPage() {
               onModeChange={setGroupMode}
               focusPending={focusPending}
               onFocusPendingChange={setFocusPending}
-              busy={busy}
-              onHighlight={setHighlight}
+              busyCells={busyCells}
+              onHighlight={onHighlight}
               onApprove={(it) => doApprove(it)}
               onApproveMany={(items) => doApproveMany(items.map((i) => i.id))}
               onOpenCell={openCellFor}
@@ -547,7 +639,7 @@ function LeaveSheetPage() {
           )}
           offWarnThreshold={view.off_warn_threshold}
           today={view.today}
-          busy={busy}
+          busy={busyCells.has(cellKey(pop.staffId, pop.date))}
           onClose={() => setPop(null)}
           onSetLeave={(t) => {
             setPop(null);
@@ -583,7 +675,7 @@ function LeaveSheetPage() {
             firstDay={view.days[0]?.date ?? `${month}-01`}
             lastDay={view.days[view.days.length - 1]?.date ?? `${month}-01`}
             closedDays={view.closed_days}
-            busy={putClosed.isPending || deleteClosed.isPending || filling}
+            busy={putClosed.isPending || deleteClosed.isPending || busyCells.size > 0}
             fillTargetCount={(d) => fillTargets(d, view).length}
             onAdd={(date, label) =>
               putClosed
@@ -597,13 +689,13 @@ function LeaveSheetPage() {
                 .then(() => toast.success(`${fmtDayJp(date)} の事業所の休みを消しました`))
                 .catch((e: unknown) => toast.error(leaveErrorMessage(e, '消せませんでした')))
             }
-            onFillAll={(date) => void doFillAll(date)}
+            onFillAll={doFillAll}
           />
           <BulkApproveDialog
             open={bulkOpen}
             onOpenChange={setBulkOpen}
             items={view.pending}
-            busy={approveBatch.isPending}
+            busy={busyCells.size > 0}
             onApprove={doApproveMany}
           />
         </>
@@ -669,7 +761,7 @@ function StatusLine({ view }: { view: LeaveMonthView }) {
           ? `カイポケと比べた：${fmtDateTimeShort(cmp.last_compared_at)}`
           : 'まだカイポケと比べていません'}
         {cmp.last_compared_at && cmp.diff_count != null && ` ・ 差分 ${cmp.diff_count} 件`}
-        {cmp.changed_since_compare && ' ・ その後に休みを変えました（比べ直しが要ります）'}
+        {cmp.changed_since_compare && ' ・ その後に休みを変えました（もう一度比べてください）'}
         {cmp.baseline_pending_count > 0 && ` ・ 照合前の休み ${cmp.baseline_pending_count} 件`}
       </span>
     </div>
@@ -752,7 +844,7 @@ function DriveCard() {
     : st.status === 'connected'
       ? `接続済み${st.folder_name ? `（保存先：${st.folder_name}）` : '（保存先のフォルダが未設定）'}`
       : st.status === 'needs_reconnect'
-        ? '接続し直しが要ります'
+        ? 'もう一度接続してください'
         : 'まだ接続していません';
   return (
     <Card

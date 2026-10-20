@@ -76,11 +76,35 @@ function useTokens() {
   };
 }
 
-/** 休みが動いたあとに読み直すもの。 */
-function invalidateAfterLeave(qc: QueryClient): void {
-  void qc.invalidateQueries({ queryKey: LEAVE_KEY });
-  void qc.invalidateQueries({ queryKey: ['staff-overrides'] });
+/**
+ * まとめて承認の失敗の `detail.request_id` (どの申請で止まったか)。無ければ null。
+ */
+export function leaveErrorRequestId(e: unknown): string | null {
+  if (e instanceof ApiError && e.body && typeof e.body === 'object' && 'detail' in e.body) {
+    const detail = (e.body as { detail: unknown }).detail;
+    if (detail && typeof detail === 'object' && 'request_id' in detail) {
+      const id = (detail as { request_id: unknown }).request_id;
+      if (typeof id === 'string') return id;
+    }
+  }
+  return null;
+}
+
+/** 休みが動いたあとに読み直すもの (月の表・職員ごとの休み・スケジュール系)。 */
+export async function invalidateAfterLeave(qc: QueryClient): Promise<void> {
   invalidateScheduleAll(qc);
+  await Promise.all([
+    qc.invalidateQueries({ queryKey: LEAVE_KEY }),
+    qc.invalidateQueries({ queryKey: ['staff-overrides'] }),
+  ]);
+}
+
+/**
+ * 書き込みの hooks の選び方。`invalidate: false` なら読み直しは呼び出し側が
+ * (続けて押したときに落ち着いてから 1 回だけ) 行う。
+ */
+export interface LeaveMutationOptions {
+  invalidate?: boolean;
 }
 
 /** GET /month/{month} — 月×全職員 (管理者)。 */
@@ -113,7 +137,7 @@ export function useLeaveMonthSummary(month: string, enabled = true) {
 }
 
 /** POST /day — 休みを入れる・種類を変える。 */
-export function useSetLeaveDay() {
+export function useSetLeaveDay({ invalidate = true }: LeaveMutationOptions = {}) {
   const { accessToken, refreshToken } = useTokens();
   const qc = useQueryClient();
   return useMutation<LeaveDayResult, Error, LeaveDayInput>({
@@ -126,12 +150,14 @@ export function useSetLeaveDay() {
       });
       return leaveDayResultSchema.parse(raw);
     },
-    onSettled: () => invalidateAfterLeave(qc),
+    onSettled: () => {
+      if (invalidate) void invalidateAfterLeave(qc);
+    },
   });
 }
 
 /** DELETE /day?staff_id=&date= — 休みを取り消す (担当なしへ移した訪問は戻さない)。 */
-export function useCancelLeaveDay() {
+export function useCancelLeaveDay({ invalidate = true }: LeaveMutationOptions = {}) {
   const { accessToken, refreshToken } = useTokens();
   const qc = useQueryClient();
   return useMutation<LeaveCancelResult, Error, { staff_id: string; date: string }>({
@@ -144,12 +170,14 @@ export function useCancelLeaveDay() {
       });
       return leaveCancelResultSchema.parse(raw);
     },
-    onSettled: () => invalidateAfterLeave(qc),
+    onSettled: () => {
+      if (invalidate) void invalidateAfterLeave(qc);
+    },
   });
 }
 
 /** POST /requests/{id}/approve — 1 件を承認 (override_type で種類を変えて承認)。 */
-export function useApproveLeaveRequest() {
+export function useApproveLeaveRequest({ invalidate = true }: LeaveMutationOptions = {}) {
   const { accessToken, refreshToken } = useTokens();
   const qc = useQueryClient();
   return useMutation<
@@ -167,14 +195,13 @@ export function useApproveLeaveRequest() {
       return leaveApproveResultSchema.parse(raw);
     },
     onSettled: () => {
-      invalidateAfterLeave(qc);
-      void qc.invalidateQueries({ queryKey: ['pending-requests'] });
+      if (invalidate) void invalidateAfterLeave(qc);
     },
   });
 }
 
 /** POST /requests/approve-batch — まとめて承認 (1 件でも失敗したら全部やめる)。 */
-export function useApproveLeaveBatch() {
+export function useApproveLeaveBatch({ invalidate = true }: LeaveMutationOptions = {}) {
   const { accessToken, refreshToken } = useTokens();
   const qc = useQueryClient();
   return useMutation<LeaveApproveBatchResult, Error, string[]>({
@@ -188,14 +215,13 @@ export function useApproveLeaveBatch() {
       return leaveApproveBatchResultSchema.parse(raw);
     },
     onSettled: () => {
-      invalidateAfterLeave(qc);
-      void qc.invalidateQueries({ queryKey: ['pending-requests'] });
+      if (invalidate) void invalidateAfterLeave(qc);
     },
   });
 }
 
 /** POST /requests/{id}/reject — 却下 (理由は必須・本人へ通知)。 */
-export function useRejectLeaveRequest() {
+export function useRejectLeaveRequest({ invalidate = true }: LeaveMutationOptions = {}) {
   const { accessToken, refreshToken } = useTokens();
   const qc = useQueryClient();
   return useMutation<LeaveRejectResult, Error, { id: string; reason: string }>({
@@ -209,8 +235,7 @@ export function useRejectLeaveRequest() {
       return leaveRejectResultSchema.parse(raw);
     },
     onSettled: () => {
-      void qc.invalidateQueries({ queryKey: LEAVE_KEY });
-      void qc.invalidateQueries({ queryKey: ['pending-requests'] });
+      if (invalidate) void invalidateAfterLeave(qc);
     },
   });
 }

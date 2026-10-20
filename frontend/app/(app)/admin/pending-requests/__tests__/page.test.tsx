@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 
 import type * as ReactQueryModule from '@tanstack/react-query';
+import type * as LeaveQueries from '@/lib/queries/leave';
 import type { UsePendingRequestsParams } from '@/lib/queries/pending_requests';
 
 const qcStub = { invalidateQueries: vi.fn() };
@@ -77,7 +78,8 @@ let summaryStub: SummaryStub = {
   isError: false,
 };
 const summaryCalls: unknown[][] = [];
-vi.mock('@/lib/queries/leave', () => ({
+vi.mock('@/lib/queries/leave', async (importOriginal) => ({
+  invalidateAfterLeave: (await importOriginal<typeof LeaveQueries>()).invalidateAfterLeave,
   useLeaveMonthSummary: (...args: unknown[]) => {
     summaryCalls.push(args);
     return summaryStub;
@@ -87,6 +89,7 @@ vi.mock('@/lib/queries/leave', () => ({
 const listCalls: UsePendingRequestsParams[] = [];
 let listItems: unknown[] = [];
 const approveMutate = vi.fn();
+const rejectMutate = vi.fn();
 vi.mock('@/lib/queries/pending_requests', () => ({
   usePendingRequests: (params: UsePendingRequestsParams) => {
     listCalls.push(params);
@@ -103,7 +106,7 @@ vi.mock('@/lib/queries/pending_requests', () => ({
     };
   },
   useApproveRequest: () => ({ mutate: approveMutate, isPending: false }),
-  useRejectRequest: () => ({ mutate: vi.fn(), isPending: false }),
+  useRejectRequest: () => ({ mutate: rejectMutate, isPending: false }),
 }));
 
 import { toast } from '@/components/ui/sonner';
@@ -227,7 +230,26 @@ describe('AdminPendingRequestsPage — 休みの行', () => {
 
     expect(approveMutate).toHaveBeenCalledWith('req-1', expect.anything());
     expect(toast.success).toHaveBeenCalledWith('承認しました（職員Aさん 11/12（木） 午後休）');
+    // 休み・勤務表・職員ごとの休み・スケジュール系 (週の盤面・訪問) を読み直す
+    expect(qcStub.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['leave'] });
     expect(qcStub.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['staff-overrides'] });
     expect(qcStub.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['staff-overrides-week'] });
+    expect(qcStub.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['visits'] });
+  });
+
+  it('休みの申請を却下したら休み・勤務表も読み直す', () => {
+    listItems = [leaveRow('req-1', '2026-11-12', {})];
+    rejectMutate.mockImplementation((_v: unknown, opts: { onSuccess?: () => void }) =>
+      opts.onSuccess?.(),
+    );
+    render(<AdminPendingRequestsPage />);
+    fireEvent.click(screen.getByRole('button', { name: '却下' }));
+    fireEvent.change(screen.getByLabelText(/却下理由/), { target: { value: '人手が足りないため' } });
+    fireEvent.click(screen.getByRole('button', { name: '却下する' }));
+    expect(rejectMutate).toHaveBeenCalledWith(
+      { id: 'req-1', rejection_reason: '人手が足りないため' },
+      expect.anything(),
+    );
+    expect(qcStub.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['leave'] });
   });
 });
