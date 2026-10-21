@@ -967,3 +967,118 @@ describe('StaffWeekBoard — 非稼働患者', () => {
     expect(screen.getByTestId('staff-week-visit-inactive-res1')).toHaveTextContent('一時休止');
   });
 });
+
+describe('StaffWeekBoard — 1 日だけの表示 (PO 指摘 2026-10-21)', () => {
+  const dayEvents = new Map<string, EventRead[]>([
+    [
+      STAFF_1,
+      [
+        {
+          id: '00000000-0000-4000-8000-00000000e101',
+          date: '2026-07-20',
+          title: '面談',
+          start_time: '13:00',
+          end_time: '13:30',
+          type: 'イベント',
+          note: null,
+        } as EventRead,
+      ],
+    ],
+  ]);
+  const dayVisits: WeekOverviewVisit[] = [
+    visit({ id: 'd1', patient_name: '利用者A', weekday: 0, start_time: '09:00' }),
+    visit({
+      id: 'd2',
+      patient_name: '利用者B',
+      weekday: 0,
+      start_time: '11:00',
+      course_template_id: TPL_B,
+      primary_staff_id: STAFF_1,
+    }),
+  ];
+
+  function renderDay(onlyWeekday?: number) {
+    return render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={dayVisits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={dayEvents}
+        weekStart={WEEK_START}
+        onPatientClick={vi.fn()}
+        alwaysShowUnassignedRow
+        onlyWeekday={onlyWeekday}
+        dayCounts={new Map([[`${STAFF_1}:0`, { visits: 2, patients: 2, companions: 1 }]])}
+        countLimit={6}
+      />,
+    );
+  }
+
+  it('氏名の列は 200px に固め、残りをその日の列へ (週の 6 列は今のまま)', () => {
+    renderDay(0);
+    const table = screen.getByTestId('staff-week-board').querySelector('table')!;
+    expect(table.dataset.layout).toBe('day');
+    expect(table.className).toContain('table-fixed');
+    expect(table.className).toContain('w-full');
+    expect(screen.getByTestId('staff-week-col-name').style.width).toBe('200px');
+    cleanup();
+
+    renderDay(undefined);
+    const weekTable = screen.getByTestId('staff-week-board').querySelector('table')!;
+    expect(weekTable.dataset.layout).toBe('week');
+    expect(screen.queryByTestId('staff-week-col-name')).not.toBeInTheDocument();
+  });
+
+  it('件数のバッジは氏名の列 (行の頭) に出し、セルの先頭には出さない', () => {
+    renderDay(0);
+    const nameCell = screen.getByTestId(`staff-week-row-${STAFF_1}`).querySelector('td')!;
+    const badge = screen.getByTestId(`staff-day-count-${STAFF_1}-0`);
+    expect(nameCell.contains(badge)).toBe(true);
+    expect(badge).toHaveTextContent('2件');
+    expect(badge).toHaveTextContent('＋同行 1');
+    expect(screen.getByTestId(`staff-week-cell-${STAFF_1}-0`).contains(badge)).toBe(false);
+    // 担当なしの行も同じ形 (行の頭に「担当なし N件」)。
+    const unNameCell = screen.getByTestId('staff-week-row-__unassigned__').querySelector('td')!;
+    expect(unNameCell).toContainElement(screen.getByTestId('staff-day-count-__unassigned__-0'));
+  });
+
+  it('管理者 (onEventClick あり) でもイベントのボタンは横に並ぶ (w-full にしない)', () => {
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={dayVisits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={dayEvents}
+        weekStart={WEEK_START}
+        onPatientClick={vi.fn()}
+        onEventClick={vi.fn()}
+        onlyWeekday={0}
+      />,
+    );
+    const btn = screen.getByTestId('staff-week-event-00000000-0000-4000-8000-00000000e101');
+    expect(btn.tagName).toBe('BUTTON');
+    expect(btn.className).toContain('inline-flex');
+    expect(btn.className).not.toContain('w-full');
+    expect(btn.parentElement?.className).toContain('flex-wrap');
+  });
+
+  it('コースはカードを横に並べて折り返し、イベントはその上に 1 行で横並び', () => {
+    renderDay(0);
+    const cell = screen.getByTestId(`staff-week-cell-${STAFF_1}-0`);
+    const cards = within(cell).getByTestId(`staff-week-course-cards-${STAFF_1}-0`);
+    expect(cards.className).toContain('grid');
+    expect(cards.className).toContain('repeat(auto-fill,minmax(min(260px,100%),1fr))');
+    expect(within(cards).getByTestId(`staff-week-course-card-${TPL_A}-0`)).toBeInTheDocument();
+    expect(within(cards).getByTestId(`staff-week-course-card-${TPL_B}-0`)).toBeInTheDocument();
+    const ev = within(cell).getByTestId(`staff-week-events-${STAFF_1}-0`);
+    expect(ev.className).toContain('flex-wrap');
+    // イベントの並びはカードの並びより上。
+    expect(ev.compareDocumentPosition(cards) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // ドロップ先のセル (testid / droppable) はそのまま。
+    expect(cell.tagName).toBe('TD');
+  });
+});

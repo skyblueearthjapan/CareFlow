@@ -160,6 +160,11 @@ export interface VisitMovePayload {
   toStart: string | null;
   /** 担当変更を伴うときだけ入る。null = （担当なし）へ。undefined = 担当変更なし。 */
   toStaffId?: string | null;
+  /**
+   * 曜日を変えるときだけ入る (0=月..5=土・職員の週タイムライン)。undefined = 同じ曜日。
+   * 1 日タイムラインは曜日をまたがないので入れない。
+   */
+  toWeekday?: number;
 }
 
 /**

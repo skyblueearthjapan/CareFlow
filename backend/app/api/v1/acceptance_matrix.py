@@ -81,8 +81,9 @@ async def get_strict_acceptance(
     db: DbDep,
     user: Annotated[User, Depends(require_role("admin", "staff"))],
     office_id: Annotated[
-        UUID, Query(description="拠点 ID (担い手の候補を絞る。訪問の行は絞らない)")
-    ],
+        UUID | None,
+        Query(description="拠点 ID (担い手の候補を絞る。訪問の行は絞らない。省略=全拠点)"),
+    ] = None,
     plan_only: Annotated[
         bool,
         Query(description="開発用: すべての日をカイポケの予定で見る (本番では使えない)"),

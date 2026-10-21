@@ -6,6 +6,7 @@
  * 正典: docs/plans/acceptance-strict-design-2026-10-20.md §5-1。
  * サーバーの「職員×日×時台の入れる」を、担い手・見る週・休みの扱いでここで集計する
  * (切り替えのたびに問い合わせ直さない)。毎週の上書きは自動より優先し、角に「手」の印。
+ * 表の向きは縦 (行 = 時刻・列 = 曜日) が既定。横にも切り替えられ、選んだ向きはこのブラウザに残す。
  */
 import { useMemo, useState, type ReactNode } from 'react';
 
@@ -62,7 +63,7 @@ export interface RefreshApi {
 
 export interface StrictAcceptanceBoardProps {
   data: StrictPayload;
-  /** 管理者だけ: 毎週の上書き。 */
+  /** 管理者だけ: 毎週の上書き。「全て」(全拠点) のときは使わず、拠点を選ぶよう案内する。 */
   edit?: OverrideEditApi;
   /** 管理者だけ: 取り直し。 */
   refresh?: RefreshApi;
@@ -76,6 +77,20 @@ const MARK_STYLE: Record<Mark, string> = {
   '×': 'bg-bg-base text-text-muted border-border-default',
   '－': 'bg-bg-muted text-text-muted border-border-default',
 };
+
+/** 表の向き。縦 = 行が時刻・列が曜日 (既定)、横 = 行が曜日・列が時刻。 */
+type Orientation = 'vertical' | 'horizontal';
+const ORIENT_STORAGE_KEY = 'acceptance.strict.orientation';
+
+function readOrientation(): Orientation {
+  try {
+    return window.localStorage.getItem(ORIENT_STORAGE_KEY) === 'horizontal'
+      ? 'horizontal'
+      : 'vertical';
+  } catch {
+    return 'vertical';
+  }
+}
 
 const PRESETS: { key: Preset; label: string }[] = [
   { key: 'staff', label: '職員だけ' },
@@ -151,6 +166,79 @@ export function StrictAcceptanceBoard({
     });
 
   const selectedCell = sel ? summary.cells.get(sel) : undefined;
+  const [orient, setOrient] = useState<Orientation>(readOrientation);
+  const chooseOrient = (o: Orientation) => {
+    setOrient(o);
+    try {
+      window.localStorage.setItem(ORIENT_STORAGE_KEY, o);
+    } catch {
+      // 残せなくても切り替えは使える
+    }
+  };
+
+  const countedNote = (wd: number) => {
+    const counted = summary.countedByWeekday.get(wd) ?? 0;
+    return counted !== nWeeks ? (
+      <span className="block text-xs text-text-secondary">（{counted} 週で判定）</span>
+    ) : null;
+  };
+
+  /** 1 マス (どちらの向きでも同じ中身・同じ動き)。 */
+  const renderCell = (wd: number, h: number) => {
+    const key = cellKey(wd, h);
+    const auto = summary.cells.get(key);
+    if (!auto) return <td key={key} />;
+    const eff = effectiveMark(auto, overrides.get(key));
+    return (
+      <td key={key} className="p-0.5">
+        <button
+          type="button"
+          aria-pressed={sel === key}
+          aria-label={`${DOW[wd]}曜 ${h}時台 ${eff.mark} ${auto.counted} 週のうち ${auto.ok} 週空き${eff.manual ? '（手で上書き）' : ''}`}
+          onClick={() => setSel(key)}
+          className={cn(
+            'relative w-full rounded border px-1 py-1.5 text-center',
+            MARK_STYLE[eff.mark],
+            sel === key && 'ring-2 ring-teal-600',
+          )}
+        >
+          <span className="block text-base font-bold leading-none">{eff.mark}</span>
+          <span className="block text-xs">
+            {auto.mark === '－' ? '－' : `${auto.ok}/${auto.counted}週`}
+          </span>
+          {eff.manual && (
+            <span
+              data-testid={eff.conflict ? 'manual-conflict' : 'manual'}
+              className={cn(
+                'absolute right-0.5 top-0.5 rounded px-0.5 text-xs leading-none',
+                eff.conflict ? 'bg-rose-600 text-white' : 'bg-slate-500 text-white',
+              )}
+            >
+              手
+            </span>
+          )}
+        </button>
+      </td>
+    );
+  };
+  const allOffices = data.office_id === null;
+  // 「全て」のときは主担当の拠点ごとにまとめる (拠点の一覧の順・一覧に無い人は最後)。
+  const staffGroups = useMemo(() => {
+    if (!allOffices) return [{ key: 'one', name: null as string | null, staff: data.staff }];
+    const offices = data.offices ?? [];
+    const known = new Set(offices.map((o) => o.id));
+    const groups = offices.map((o) => ({
+      key: o.id,
+      name: o.name as string | null,
+      staff: data.staff.filter((s) => s.office_id === o.id),
+    }));
+    groups.push({
+      key: 'other',
+      name: 'ほかの拠点',
+      staff: data.staff.filter((s) => !s.office_id || !known.has(s.office_id)),
+    });
+    return groups.filter((g) => g.staff.length > 0);
+  }, [allOffices, data.offices, data.staff]);
 
   return (
     <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)_320px]">
@@ -158,19 +246,30 @@ export function StrictAcceptanceBoard({
       <Card className="space-y-4 p-4 text-sm no-print">
         <section className="space-y-2">
           <h3 className="font-bold text-text-primary">担い手</h3>
-          <div className="flex flex-wrap gap-1.5">
-            {data.staff.map((s) => (
-              <ToggleButton key={s.id} pressed={selected.has(s.id)} onClick={() => toggle(s.id)}>
-                {s.name}
-                {s.kind !== 'staff' && (
-                  <small className="ml-1 text-xs">{KIND_LABELS[s.kind]}</small>
-                )}
-              </ToggleButton>
-            ))}
-            {data.staff.length === 0 && (
-              <p className="text-xs text-text-secondary">この拠点に職員がいません。</p>
-            )}
-          </div>
+          {staffGroups.map((g) => (
+            <div key={g.key} className="space-y-1">
+              {g.name && <h4 className="text-xs font-medium text-text-secondary">{g.name}</h4>}
+              <div className="flex flex-wrap gap-1.5">
+                {g.staff.map((s) => (
+                  <ToggleButton
+                    key={s.id}
+                    pressed={selected.has(s.id)}
+                    onClick={() => toggle(s.id)}
+                  >
+                    {s.name}
+                    {s.kind !== 'staff' && (
+                      <small className="ml-1 text-xs">{KIND_LABELS[s.kind]}</small>
+                    )}
+                  </ToggleButton>
+                ))}
+              </div>
+            </div>
+          ))}
+          {data.staff.length === 0 && (
+            <p className="text-xs text-text-secondary">
+              {allOffices ? '職員がいません。' : 'この拠点に職員がいません。'}
+            </p>
+          )}
           <div className="flex flex-wrap gap-1.5">
             {PRESETS.map((p) => (
               <Button
@@ -291,82 +390,91 @@ export function StrictAcceptanceBoard({
             </span>
           )}
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr>
-                <th className="w-20" />
+        <div className="flex items-center gap-1.5 text-xs no-print" aria-label="表の向き">
+          <span className="text-text-secondary">表の向き</span>
+          <ToggleButton pressed={orient === 'vertical'} onClick={() => chooseOrient('vertical')}>
+            縦（時刻×曜日）
+          </ToggleButton>
+          <ToggleButton
+            pressed={orient === 'horizontal'}
+            onClick={() => chooseOrient('horizontal')}
+          >
+            横（曜日×時刻）
+          </ToggleButton>
+        </div>
+        {orient === 'vertical' ? (
+          <div
+            data-testid="grid-vertical"
+            className="max-h-[75vh] overflow-auto print:max-h-none print:overflow-visible"
+          >
+            <table className="w-full min-w-[22rem] table-fixed border-collapse text-sm">
+              <thead>
+                <tr>
+                  <th className="sticky left-0 top-0 z-20 w-12 bg-bg-base" />
+                  {summary.weekdays.map((wd) => (
+                    <th
+                      key={wd}
+                      scope="col"
+                      className="sticky top-0 z-10 bg-bg-base px-0.5 py-1 text-center font-medium"
+                    >
+                      {DOW[wd]}
+                      {countedNote(wd)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
                 {summary.hours.map((h) => (
-                  <th key={h} className="px-1 py-1 text-center font-medium">
-                    {h}時台
-                  </th>
+                  <tr key={h}>
+                    <th
+                      scope="row"
+                      className="sticky left-0 z-10 w-12 bg-bg-base px-0.5 py-1 text-left text-xs font-medium"
+                    >
+                      {h}時台
+                    </th>
+                    {summary.weekdays.map((wd) => renderCell(wd, h))}
+                  </tr>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {summary.weekdays.map((wd) => {
-                const counted = summary.countedByWeekday.get(wd) ?? 0;
-                return (
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div data-testid="grid-horizontal" className="overflow-x-auto">
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr>
+                  <th className="w-20" />
+                  {summary.hours.map((h) => (
+                    <th key={h} scope="col" className="px-1 py-1 text-center font-medium">
+                      {h}時台
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {summary.weekdays.map((wd) => (
                   <tr key={wd}>
                     <th scope="row" className="px-1 py-1 text-left font-medium">
                       {DOW[wd]}
-                      {counted !== nWeeks && (
-                        <span className="block text-xs text-text-secondary">
-                          （{counted} 週で判定）
-                        </span>
-                      )}
+                      {countedNote(wd)}
                     </th>
-                    {summary.hours.map((h) => {
-                      const key = cellKey(wd, h);
-                      const auto = summary.cells.get(key);
-                      if (!auto) return <td key={h} />;
-                      const eff = effectiveMark(auto, overrides.get(key));
-                      return (
-                        <td key={h} className="p-0.5">
-                          <button
-                            type="button"
-                            aria-pressed={sel === key}
-                            aria-label={`${DOW[wd]}曜 ${h}時台 ${eff.mark} ${auto.counted} 週のうち ${auto.ok} 週空き${eff.manual ? '（手で上書き）' : ''}`}
-                            onClick={() => setSel(key)}
-                            className={cn(
-                              'relative w-full rounded border px-1 py-1.5 text-center',
-                              MARK_STYLE[eff.mark],
-                              sel === key && 'ring-2 ring-teal-600',
-                            )}
-                          >
-                            <span className="block text-base font-bold leading-none">
-                              {eff.mark}
-                            </span>
-                            <span className="block text-xs">
-                              {auto.mark === '－' ? '－' : `${auto.ok}/${auto.counted}週`}
-                            </span>
-                            {eff.manual && (
-                              <span
-                                data-testid={eff.conflict ? 'manual-conflict' : 'manual'}
-                                className={cn(
-                                  'absolute right-0.5 top-0.5 rounded px-0.5 text-xs leading-none',
-                                  eff.conflict
-                                    ? 'bg-rose-600 text-white'
-                                    : 'bg-slate-500 text-white',
-                                )}
-                              >
-                                手
-                              </span>
-                            )}
-                          </button>
-                        </td>
-                      );
-                    })}
+                    {summary.hours.map((h) => renderCell(wd, h))}
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         <Card className="space-y-2 p-4 text-sm">
           <h3 className="font-bold">この表の見方</h3>
           <p>{text.intro}</p>
+          {allOffices && (
+            <p>
+              「全て」では、全拠点の職員のうち、誰か 1
+              人でも入れれば、その週は入れられるとしています。
+            </p>
+          )}
           <ul className="space-y-1">
             <li>
               <b>○ 受け入れられる</b> … {text.ok}
@@ -410,7 +518,9 @@ export function StrictAcceptanceBoard({
             ok={selectedCell.ok}
             counted={selectedCell.counted}
             override={overrides.get(cellKey(selectedCell.weekday, selectedCell.hour))}
-            edit={edit}
+            // うっかり全拠点まとめて変えないよう、「全て」では操作させない。
+            edit={allOffices ? undefined : edit}
+            editHint={allOffices && !!edit}
           />
         )}
         {data.sources.dropped_events > 0 && (
@@ -435,6 +545,7 @@ function CellDetailPanel({
   counted,
   override,
   edit,
+  editHint,
 }: {
   data: StrictPayload;
   selected: ReadonlySet<string>;
@@ -447,6 +558,7 @@ function CellDetailPanel({
   counted: number;
   override: StrictOverride | undefined;
   edit?: OverrideEditApi;
+  editHint: boolean;
 }) {
   const [note, setNote] = useState(override?.note ?? '');
   const weeks = cellDetail(data, selected, nWeeks, mode, weekday, hour);
@@ -467,6 +579,11 @@ function CellDetailPanel({
           自動の判定は {autoMark} {ok}/{counted} 週。手で {overrideMark(override.status)}{' '}
           にしています
           {override.note ? `（理由: ${override.note}）` : ''}
+        </p>
+      )}
+      {editHint && (
+        <p className="rounded border border-border-default p-2 text-xs text-text-secondary">
+          毎週の手での上書きは、拠点を選ぶと調整できます。
         </p>
       )}
       {edit && (

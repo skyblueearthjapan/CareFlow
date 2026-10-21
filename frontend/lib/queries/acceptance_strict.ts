@@ -3,7 +3,7 @@
 /**
  * 受け入れ枠 (数週続けて空いているか) の読み込みと取り直し。
  *
- * - GET  /api/v1/acceptance-matrix/strict?office_id=…           職員×日×時台の「入れる」
+ * - GET  /api/v1/acceptance-matrix/strict?office_id=…           職員×日×時台の「入れる」(office_id 省略=全拠点)
  * - POST /api/v1/acceptance-matrix/strict/refresh               カイポケから取り直す (admin)
  * - GET  /api/v1/acceptance-matrix/strict/refresh/latest        動いている取り直し
  *
@@ -43,16 +43,26 @@ function useAuth() {
   };
 }
 
+/**
+ * ``allOffices`` のときは office_id を付けない (全拠点の担い手をまとめて見る)。
+ * そうでないときは ``officeId`` が決まるまで読まない。``enabled`` が偽の間も読まない。
+ */
 export function useStrictAcceptance(
   officeId: string | null,
-  { planOnly = false }: { planOnly?: boolean } = {},
+  {
+    planOnly = false,
+    allOffices = false,
+    enabled = true,
+  }: { planOnly?: boolean; allOffices?: boolean; enabled?: boolean } = {},
 ): UseQueryResult<StrictPayload, Error> {
   const { status, accessToken, refreshToken } = useAuth();
+  const target = allOffices ? null : officeId;
   return useQuery<StrictPayload, Error>({
-    queryKey: [...STRICT_KEY, { officeId, planOnly }],
-    enabled: status === 'authenticated' && !!officeId,
+    queryKey: [...STRICT_KEY, { officeId: target, planOnly }],
+    enabled: enabled && status === 'authenticated' && (allOffices || !!officeId),
     queryFn: async () => {
-      const usp = new URLSearchParams({ office_id: officeId ?? '' });
+      const usp = new URLSearchParams();
+      if (target) usp.set('office_id', target);
       if (planOnly) usp.set('plan_only', 'true');
       const raw = await fetcher<unknown>(`${STRICT_PATH}?${usp.toString()}`, {
         accessToken,

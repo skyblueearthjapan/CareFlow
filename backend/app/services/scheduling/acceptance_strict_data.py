@@ -195,6 +195,7 @@ class _Candidate:
     name: str
     kind: str
     updated_at: datetime | None
+    office_id: uuid.UUID | None = None
 
 
 def staff_kind(role: str | None, is_trainee: bool) -> str:
@@ -206,10 +207,10 @@ def staff_kind(role: str | None, is_trainee: bool) -> str:
     return "staff"
 
 
-async def load_candidates(db: AsyncSession, office_id: uuid.UUID) -> list[_Candidate]:
-    """拠点に属する (主担当拠点か兼務) 在籍中の職員。名前の順。"""
+async def load_candidates(db: AsyncSession, office_ids: list[uuid.UUID]) -> list[_Candidate]:
+    """拠点 (複数可) に属する (主担当拠点か兼務) 在籍中の職員。名前の順。"""
     secondary = select(StaffSecondaryOffice.staff_id).where(
-        StaffSecondaryOffice.office_id == office_id
+        StaffSecondaryOffice.office_id.in_(office_ids)
     )
     rows = (
         await db.scalars(
@@ -217,7 +218,7 @@ async def load_candidates(db: AsyncSession, office_id: uuid.UUID) -> list[_Candi
             .where(
                 Staff.deleted_at.is_(None),
                 Staff.status == "active",
-                or_(Staff.primary_office_id == office_id, Staff.id.in_(secondary)),
+                or_(Staff.primary_office_id.in_(office_ids), Staff.id.in_(secondary)),
             )
             .order_by(Staff.name, Staff.id)
         )
@@ -228,6 +229,7 @@ async def load_candidates(db: AsyncSession, office_id: uuid.UUID) -> list[_Candi
             name=s.name,
             kind=staff_kind(s.role, bool(s.is_trainee)),
             updated_at=s.updated_at,
+            office_id=s.primary_office_id,
         )
         for s in rows
     ]
@@ -513,21 +515,44 @@ async def _fingerprint(
     return int(row[0] or 0), row[1]
 
 
+async def _load_offices(db: AsyncSession, office_id: uuid.UUID | None) -> list[Office]:
+    """``office_id`` 指定ならその拠点、``None`` なら削除されていない全拠点 (拠点一覧と同じ順)。"""
+    if office_id is not None:
+        office = await db.get(Office, office_id)
+        if office is None or office.deleted_at is not None:
+            raise OfficeNotFoundError(str(office_id))
+        return [office]
+    return list(
+        (
+            await db.scalars(
+                select(Office)
+                .where(Office.deleted_at.is_(None))
+                .order_by(Office.code.asc().nulls_last(), Office.created_at.asc())
+            )
+        ).all()
+    )
+
+
 async def build_strict_core(
     db: AsyncSession,
-    office_id: uuid.UUID,
+    office_id: uuid.UUID | None,
     *,
     today: date | None = None,
     plan_only: bool = False,
     cap: int = CAP,
 ) -> dict[str, Any]:
-    """§4-1 の応答のうち、材料から計算する部分 (担い手・日・マス・材料の鮮度)。"""
-    office = await db.get(Office, office_id)
-    if office is None or office.deleted_at is not None:
-        raise OfficeNotFoundError(str(office_id))
+    """§4-1 の応答のうち、材料から計算する部分 (担い手・日・マス・材料の鮮度)。
+
+    ``office_id`` が ``None`` なら全拠点 (削除されていないもの) の担い手をまとめて候補にする。
+    曜日は各拠点の営業曜日を合わせたもの。
+    """
+    offices = await _load_offices(db, office_id)
+    office_names = {o.id: o.name for o in offices}
     today = today or jst_today()
     mondays = view_mondays(today)
-    weekdays = sorted({int(w) for w in (office.operating_weekdays or []) if 0 <= int(w) <= 6})
+    weekdays = sorted(
+        {int(w) for o in offices for w in (o.operating_weekdays or []) if 0 <= int(w) <= 6}
+    )
     first_day, last_day = mondays[-1], mondays[0] + timedelta(days=6)
     days = [
         mondays[-1] + timedelta(days=i)
@@ -536,7 +561,7 @@ async def build_strict_core(
     ]
     config = await load_scheduling_config(db)
     rules = StrictRules.from_config(config, cap=cap)
-    candidates = await load_candidates(db, office_id)
+    candidates = await load_candidates(db, list(office_names)) if office_names else []
     candidate_ids = [c.id for c in candidates]
     shifts = (
         (await db.scalars(select(StaffShift).where(StaffShift.staff_id.in_(candidate_ids)))).all()
@@ -576,13 +601,15 @@ async def build_strict_core(
         StaffWeeklyOverride.iso_year.in_({y for y, _ in weeks}),
     )
     key = (
+        # 全拠点 (None) と各拠点がぶつからないよう、見た拠点の並びもキーに入れる。
         office_id,
+        tuple(office_names.items()),
         today,
         plan_only,
         cap,
         tuple(weekdays),
         config,
-        tuple((c.id, c.name, c.kind, c.updated_at) for c in candidates),
+        tuple((c.id, c.name, c.kind, c.updated_at, c.office_id) for c in candidates),
         tuple(sorted((s.staff_id, s.weekday, s.is_on, s.start_time, s.end_time) for s in shifts)),
         tuple(
             sorted((str(r.id), r.kind, r.period_start, r.status, r.fetched_at) for r in snap_meta)
@@ -635,7 +662,8 @@ async def build_strict_core(
     )
     usable = [r for r in snap_meta if r.status in _USABLE]
     core: dict[str, Any] = {
-        "office_id": str(office_id),
+        "office_id": str(office_id) if office_id is not None else None,
+        "offices": [{"id": str(oid), "name": name} for oid, name in office_names.items()],
         "today": today.isoformat(),
         "plan_only": plan_only,
         "weekdays": weekdays,
@@ -654,6 +682,7 @@ async def build_strict_core(
                 "name": c.name,
                 "kind": c.kind,
                 "default_selected": c.kind == "staff",
+                "office_id": str(c.office_id) if c.office_id else None,
             }
             for c in candidates
         ],
@@ -755,15 +784,34 @@ def job_view(job: KaipokeJob) -> dict[str, Any]:
     }
 
 
-async def load_standing_overrides(db: AsyncSession, office_id: uuid.UUID) -> list[dict[str, Any]]:
-    """毎週の上書き (``acceptance_calendar``)。「10:00」の上書き = 10 時台のマス。"""
-    rows = (
-        await db.scalars(
-            select(AcceptanceCalendar)
-            .where(AcceptanceCalendar.office_id == office_id)
-            .order_by(AcceptanceCalendar.weekday, AcceptanceCalendar.time_slot)
-        )
-    ).all()
+async def load_standing_overrides(
+    db: AsyncSession, office_ids: list[uuid.UUID]
+) -> list[dict[str, Any]]:
+    """毎週の上書き (``acceptance_calendar``)。「10:00」の上書き = 10 時台のマス。
+
+    拠点が複数 (全拠点) のときは、すべての拠点で同じ (曜日・時台・状態) の上書きだけを返す
+    (全拠点まとめての上書き)。メモは先の拠点のもの。
+    """
+    if not office_ids:
+        return []
+    rows = list(
+        (
+            await db.scalars(
+                select(AcceptanceCalendar)
+                .where(AcceptanceCalendar.office_id.in_(office_ids))
+                .order_by(AcceptanceCalendar.weekday, AcceptanceCalendar.time_slot)
+            )
+        ).all()
+    )
+    if len(office_ids) > 1:
+        order = {oid: i for i, oid in enumerate(office_ids)}
+        seen: dict[tuple[int, time, str], set[uuid.UUID]] = defaultdict(set)
+        firsts: dict[tuple[int, time, str], AcceptanceCalendar] = {}
+        for r in sorted(rows, key=lambda r: (r.weekday, r.time_slot, order[r.office_id])):
+            k = (r.weekday, r.time_slot, r.status)
+            seen[k].add(r.office_id)
+            firsts.setdefault(k, r)
+        rows = [r for k, r in firsts.items() if len(seen[k]) == len(office_ids)]
     return [
         {
             "weekday": r.weekday,
@@ -778,7 +826,7 @@ async def load_standing_overrides(db: AsyncSession, office_id: uuid.UUID) -> lis
 
 async def build_strict_payload(
     db: AsyncSession,
-    office_id: uuid.UUID,
+    office_id: uuid.UUID | None,
     *,
     today: date | None = None,
     plan_only: bool = False,
@@ -788,7 +836,9 @@ async def build_strict_payload(
     core = await build_strict_core(db, office_id, today=today, plan_only=plan_only, cap=cap)
     job = await latest_refresh_job(db)
     payload = dict(core)
-    payload["overrides"] = await load_standing_overrides(db, office_id)
+    payload["overrides"] = await load_standing_overrides(
+        db, [uuid.UUID(o["id"]) for o in core["offices"]]
+    )
     payload["sources"] = {**core["sources"], "last_job": job_view(job) if job else None}
     return payload
 

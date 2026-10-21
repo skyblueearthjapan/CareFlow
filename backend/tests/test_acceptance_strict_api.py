@@ -133,9 +133,10 @@ async def _snap(
     await db.flush()
 
 
-async def _core(db, office: Office, **kw) -> dict:
+async def _core(db, office: Office | None, **kw) -> dict:
     await db.commit()
-    return await data.build_strict_core(db, office.id, today=kw.pop("today", TODAY), **kw)
+    office_id = office.id if office else None
+    return await data.build_strict_core(db, office_id, today=kw.pop("today", TODAY), **kw)
 
 
 def _cell(core: dict, staff: Staff, d: date) -> dict:
@@ -386,6 +387,35 @@ async def test_candidates_by_office_and_kind(db) -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_candidates_all_offices_when_office_omitted(db) -> None:
+    office = await _office(db)
+    other = await _office(db, "TSUGA")
+    gone = await _office(db, "GONE")
+    gone.deleted_at = datetime(2026, 1, 1, tzinfo=UTC)
+    await _staff(db, office, "職員A")
+    await _staff(db, office, "マネA", role="manager")
+    await _staff(db, other, "職員B")
+    await _staff(db, other, "新人B", trainee=True)
+    await _staff(db, gone, "職員C")  # 削除された拠点の人は入らない
+    single = await _core(db, office)
+    core = await _core(db, None)
+    assert core["office_id"] is None
+    assert [o["name"] for o in core["offices"]] == ["拠点INAGE", "拠点TSUGA"]
+    kinds = {s["name"]: (s["kind"], s["default_selected"], s["office_id"]) for s in core["staff"]}
+    assert kinds == {
+        "職員A": ("staff", True, str(office.id)),
+        "マネA": ("manager", False, str(office.id)),
+        "職員B": ("staff", True, str(other.id)),
+        "新人B": ("trainee", False, str(other.id)),
+    }
+    # 拠点を指定したときの結果は変わらない (覚えの取り違えも無い)。
+    again = await _core(db, office)
+    assert again == single
+    assert {s["name"] for s in single["staff"]} == {"職員A", "マネA"}
+    assert single["office_id"] == str(office.id)
+
+
 def test_today_switches_at_jst_midnight() -> None:
     assert data.jst_today(datetime(2026, 10, 19, 14, 59, tzinfo=UTC)) == date(2026, 10, 19)
     assert data.jst_today(datetime(2026, 10, 19, 15, 0, tzinfo=UTC)) == date(2026, 10, 20)
@@ -479,6 +509,54 @@ async def test_strict_api_admin_and_staff_rounding(client, db) -> None:
     assert (
         await client.get(url.replace(str(office.id), str(uuid.uuid4())), headers=_bearer(admin))
     ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_strict_api_all_offices_and_common_overrides(client, db) -> None:
+    admin, staff_user = await _user(db, "admin"), await _user(db, "staff")
+    office = await _office(db)
+    other = await _office(db, "TSUGA")
+    a = await _staff(db, office, "職員A")
+    b = await _staff(db, other, "職員B")
+    await _snap(
+        db,
+        "plan_csv",
+        date(2026, 10, 1),
+        [_row(1, "09:00", "09:35", "職員A"), _row(1, "10:00", "10:35", "職員B")],
+    )
+    db.add(
+        StaffWeeklyOverride(
+            staff_id=b.id, iso_year=2026, iso_week=43, weekday=2, override_type="paid_off"
+        )
+    )
+    for o in (office, other):  # 全拠点まとめての上書き
+        db.add(
+            AcceptanceCalendar(
+                office_id=o.id, weekday=1, time_slot=time(9, 0), status="unavailable", notes="会議"
+            )
+        )
+    db.add(  # 片方の拠点だけの上書きは「全て」には出さない
+        AcceptanceCalendar(
+            office_id=office.id, weekday=0, time_slot=time(10, 0), status="available", notes=None
+        )
+    )
+    await db.commit()
+    url = "/api/v1/acceptance-matrix/strict"
+    res = await client.get(url, headers=_bearer(admin))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["office_id"] is None
+    assert {s["id"] for s in body["staff"]} == {str(a.id), str(b.id)}
+    assert set(body["cells"]) == {str(a.id), str(b.id)}
+    assert body["overrides"] == [
+        {"weekday": 1, "hour": 9, "time_slot": "09:00:00", "status": "unavailable", "note": "会議"}
+    ]
+    assert body["cells"][str(b.id)]["2026-10-21"]["real"]["why"] == "有給（らく助）"
+    one = (await client.get(f"{url}?office_id={office.id}", headers=_bearer(admin))).json()
+    assert [s["id"] for s in one["staff"]] == [str(a.id)]
+    assert len(one["overrides"]) == 2
+    rounded = (await client.get(url, headers=_bearer(staff_user))).json()
+    assert rounded["cells"][str(b.id)]["2026-10-21"]["real"]["why"] == "休み"
 
 
 @pytest.mark.asyncio
