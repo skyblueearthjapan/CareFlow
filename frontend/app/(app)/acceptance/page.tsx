@@ -9,6 +9,7 @@
  *
  * 担い手・休みの扱い・見る週は画面で集計する (サーバーに問い合わせ直さない)。
  * 毎週の手での上書きは自動より優先し、角に「手」の印。取り直しは管理者だけ。
+ * 拠点は「全て」(既定・office_id を付けない) か各拠点。選んだものはこのブラウザに残す。
  */
 import { useEffect, useState } from 'react';
 
@@ -30,6 +31,7 @@ import { useOffices } from '@/lib/queries/offices';
 import { isAdminRole } from '@/lib/rbac';
 
 const IS_DEV = process.env.NODE_ENV !== 'production';
+const OFFICE_STORAGE_KEY = 'acceptance.strict.officeId';
 
 export default function AcceptanceMatrixPage() {
   const { data: session } = useSession();
@@ -37,14 +39,35 @@ export default function AcceptanceMatrixPage() {
 
   const officesQuery = useOffices({ limit: 50 });
   const offices = officesQuery.allOffices;
-  const [officeId, setOfficeId] = useState<string | null>(null);
+  /** null = 全て (全拠点)。 */
+  const [storedOfficeId, setStoredOfficeId] = useState<string | null>(null);
   useEffect(() => {
-    const first = offices[0];
-    if (!officeId && first) setOfficeId(first.id);
-  }, [officeId, offices]);
+    try {
+      setStoredOfficeId(window.localStorage.getItem(OFFICE_STORAGE_KEY) || null);
+    } catch {
+      // 読めないときは「全て」のまま
+    }
+  }, []);
+  // 残っていた拠点が一覧に無ければ「全て」で見る。
+  const officeId =
+    storedOfficeId && (offices.length === 0 || offices.some((o) => o.id === storedOfficeId))
+      ? storedOfficeId
+      : null;
+  const chooseOffice = (id: string | null) => {
+    setStoredOfficeId(id);
+    try {
+      if (id) window.localStorage.setItem(OFFICE_STORAGE_KEY, id);
+      else window.localStorage.removeItem(OFFICE_STORAGE_KEY);
+    } catch {
+      // 残せなくても画面はそのまま使える
+    }
+  };
   const [planOnly, setPlanOnly] = useState(false);
 
-  const query = useStrictAcceptance(officeId, { planOnly: IS_DEV && planOnly });
+  const query = useStrictAcceptance(officeId, {
+    planOnly: IS_DEV && planOnly,
+    allOffices: officeId === null,
+  });
   const jobQuery = useStrictRefreshJob();
   const startRefresh = useStartStrictRefresh();
   const setStanding = useSetStandingOverride();
@@ -70,10 +93,11 @@ export default function AcceptanceMatrixPage() {
           拠点
           <select
             value={officeId ?? ''}
-            onChange={(e) => setOfficeId(e.target.value || null)}
+            onChange={(e) => chooseOffice(e.target.value || null)}
             className="rounded border border-border-default bg-bg-base px-2 py-1 text-sm"
             aria-label="拠点"
           >
+            <option value="">全て</option>
             {offices.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.name}
@@ -104,10 +128,10 @@ export default function AcceptanceMatrixPage() {
       )}
       {query.data && (
         <StrictAcceptanceBoard
-          key={`${query.data.office_id}-${query.data.plan_only ? 'plan' : 'real'}`}
+          key={`${query.data.office_id ?? 'all'}-${query.data.plan_only ? 'plan' : 'real'}`}
           data={query.data}
           edit={
-            canEdit && officeId
+            canEdit
               ? {
                   busy: setStanding.isPending || clearStanding.isPending,
                   set: ({ weekday, hour, status, note }) =>

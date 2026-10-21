@@ -62,7 +62,7 @@ export interface RefreshApi {
 
 export interface StrictAcceptanceBoardProps {
   data: StrictPayload;
-  /** 管理者だけ: 毎週の上書き。 */
+  /** 管理者だけ: 毎週の上書き。「全て」(全拠点) のときは使わず、拠点を選ぶよう案内する。 */
   edit?: OverrideEditApi;
   /** 管理者だけ: 取り直し。 */
   refresh?: RefreshApi;
@@ -151,6 +151,24 @@ export function StrictAcceptanceBoard({
     });
 
   const selectedCell = sel ? summary.cells.get(sel) : undefined;
+  const allOffices = data.office_id === null;
+  // 「全て」のときは主担当の拠点ごとにまとめる (拠点の一覧の順・一覧に無い人は最後)。
+  const staffGroups = useMemo(() => {
+    if (!allOffices) return [{ key: 'one', name: null as string | null, staff: data.staff }];
+    const offices = data.offices ?? [];
+    const known = new Set(offices.map((o) => o.id));
+    const groups = offices.map((o) => ({
+      key: o.id,
+      name: o.name as string | null,
+      staff: data.staff.filter((s) => s.office_id === o.id),
+    }));
+    groups.push({
+      key: 'other',
+      name: 'ほかの拠点',
+      staff: data.staff.filter((s) => !s.office_id || !known.has(s.office_id)),
+    });
+    return groups.filter((g) => g.staff.length > 0);
+  }, [allOffices, data.offices, data.staff]);
 
   return (
     <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)_320px]">
@@ -158,19 +176,30 @@ export function StrictAcceptanceBoard({
       <Card className="space-y-4 p-4 text-sm no-print">
         <section className="space-y-2">
           <h3 className="font-bold text-text-primary">担い手</h3>
-          <div className="flex flex-wrap gap-1.5">
-            {data.staff.map((s) => (
-              <ToggleButton key={s.id} pressed={selected.has(s.id)} onClick={() => toggle(s.id)}>
-                {s.name}
-                {s.kind !== 'staff' && (
-                  <small className="ml-1 text-xs">{KIND_LABELS[s.kind]}</small>
-                )}
-              </ToggleButton>
-            ))}
-            {data.staff.length === 0 && (
-              <p className="text-xs text-text-secondary">この拠点に職員がいません。</p>
-            )}
-          </div>
+          {staffGroups.map((g) => (
+            <div key={g.key} className="space-y-1">
+              {g.name && <h4 className="text-xs font-medium text-text-secondary">{g.name}</h4>}
+              <div className="flex flex-wrap gap-1.5">
+                {g.staff.map((s) => (
+                  <ToggleButton
+                    key={s.id}
+                    pressed={selected.has(s.id)}
+                    onClick={() => toggle(s.id)}
+                  >
+                    {s.name}
+                    {s.kind !== 'staff' && (
+                      <small className="ml-1 text-xs">{KIND_LABELS[s.kind]}</small>
+                    )}
+                  </ToggleButton>
+                ))}
+              </div>
+            </div>
+          ))}
+          {data.staff.length === 0 && (
+            <p className="text-xs text-text-secondary">
+              {allOffices ? '職員がいません。' : 'この拠点に職員がいません。'}
+            </p>
+          )}
           <div className="flex flex-wrap gap-1.5">
             {PRESETS.map((p) => (
               <Button
@@ -367,6 +396,12 @@ export function StrictAcceptanceBoard({
         <Card className="space-y-2 p-4 text-sm">
           <h3 className="font-bold">この表の見方</h3>
           <p>{text.intro}</p>
+          {allOffices && (
+            <p>
+              「全て」では、全拠点の職員のうち、誰か 1
+              人でも入れれば、その週は入れられるとしています。
+            </p>
+          )}
           <ul className="space-y-1">
             <li>
               <b>○ 受け入れられる</b> … {text.ok}
@@ -410,7 +445,9 @@ export function StrictAcceptanceBoard({
             ok={selectedCell.ok}
             counted={selectedCell.counted}
             override={overrides.get(cellKey(selectedCell.weekday, selectedCell.hour))}
-            edit={edit}
+            // うっかり全拠点まとめて変えないよう、「全て」では操作させない。
+            edit={allOffices ? undefined : edit}
+            editHint={allOffices && !!edit}
           />
         )}
         {data.sources.dropped_events > 0 && (
@@ -435,6 +472,7 @@ function CellDetailPanel({
   counted,
   override,
   edit,
+  editHint,
 }: {
   data: StrictPayload;
   selected: ReadonlySet<string>;
@@ -447,6 +485,7 @@ function CellDetailPanel({
   counted: number;
   override: StrictOverride | undefined;
   edit?: OverrideEditApi;
+  editHint: boolean;
 }) {
   const [note, setNote] = useState(override?.note ?? '');
   const weeks = cellDetail(data, selected, nWeeks, mode, weekday, hour);
@@ -467,6 +506,11 @@ function CellDetailPanel({
           自動の判定は {autoMark} {ok}/{counted} 週。手で {overrideMark(override.status)}{' '}
           にしています
           {override.note ? `（理由: ${override.note}）` : ''}
+        </p>
+      )}
+      {editHint && (
+        <p className="rounded border border-border-default p-2 text-xs text-text-secondary">
+          毎週の手での上書きは、拠点を選ぶと調整できます。
         </p>
       )}
       {edit && (

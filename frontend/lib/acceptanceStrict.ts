@@ -49,7 +49,9 @@ const jobSchema = z.object({
 });
 
 export const strictPayloadSchema = z.object({
-  office_id: z.string(),
+  /** null = 全拠点 (担い手は全拠点の職員)。 */
+  office_id: z.string().nullable(),
+  offices: z.array(z.object({ id: z.string(), name: z.string() })).optional(),
   today: z.string(),
   plan_only: z.boolean().optional(),
   weekdays: z.array(z.number()),
@@ -70,6 +72,8 @@ export const strictPayloadSchema = z.object({
       name: z.string(),
       kind: z.enum(['staff', 'manager', 'trainee']),
       default_selected: z.boolean(),
+      /** 主担当の拠点 (「全て」のときチップを拠点ごとにまとめる)。 */
+      office_id: z.string().nullable().optional(),
     }),
   ),
   days: z.array(
