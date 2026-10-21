@@ -54,5 +54,13 @@
   - 「この休みを送る」（1 件だけ急いで送る・設計 #6）
   - 受け入れ枠で covered_dates が NULL のときの扱い
 
+## 6-2. 同じ日の 2 回目の本番（c23fdf31・migration なし・13:13 JST）
+- 受け入れ枠: 初回の取り直し（8 週・14 本すべて ok）を済ませた／「全て・稲毛・都賀」（全ては上書き操作不可）／縦長の表（行＝時刻・列＝曜日・［縦｜横］）。
+- 職員スケジュール: 曜日リストの見た目（氏名 200px・件数は氏名の下・コースのカードを横に並べる）／職員の週タイムライン（ドラッグ・曜日またぎはコースを付け替え）。
+- 訪問モニターの午前休・午後休・有給の札／照合の失敗の文を日本語だけに／試験の名前を仮の名前へ（808＋α か所）。
+- pg_dump: `/opt/carelink/backups/pre-deploy-schedule2-20261021-0413.sql.gz`（UTC）。ログ `/opt/carelink/backups/deploy-1021b.log`。
+- GitHub CI を直して backend の全試験が動くようにした（alembic_version を広く作る・requirements.txt を入れる・往復は直近 3 本・上限 45 分）。残り: 整形の検査（black/ruff format）は前から赤い／SQLite の「SQL statements in progress」で揺れる試験がある。
+- PO に画面で見てもらうこと: 2 名体制の訪問を曜日またぎで動かしたときの相方の担当／1024〜1280px での受け入れ枠の縦の表。
+
 ## 7. 台帳
 - `.omc/plans/leave-acceptance-impl-ledger.md`（レーンごとの経過・持ち越し）。
