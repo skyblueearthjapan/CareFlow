@@ -247,6 +247,47 @@ export function StaffWeekTimeline({
     onVisitMove(payload);
   };
 
+  /** `${rowKey}:${weekday}` → その日のイベント (今週だけ外したものを除く)。ドラッグ中も同じ参照。 */
+  const eventsByCell = React.useMemo(() => {
+    const m = new Map<string, TimelineEvent[]>();
+    if (!events) return m;
+    for (const [staffId, list] of events) {
+      for (const ev of list) {
+        if (ev.cancelled_at) continue;
+        const wd = WEEKDAYS.find((d) => dayIso(d) === ev.date);
+        if (wd === undefined) continue;
+        const key = staffDayCountKey(staffId, wd);
+        const arr = m.get(key) ?? [];
+        arr.push(ev);
+        m.set(key, arr);
+      }
+    }
+    return m;
+  }, [events, dayIso]);
+
+  // マス (SwtCell・React.memo) へ渡す手は参照を変えない = ドラッグ中に表全体を描き直さない。
+  const handleDropRef = React.useRef(handleDrop);
+  handleDropRef.current = handleDrop;
+  const onDropCell = React.useCallback(
+    (e: React.DragEvent<HTMLDivElement>, rowKey: string, wd: number) =>
+      handleDropRef.current(e, rowKey, wd),
+    [],
+  );
+  const onBarDragStart = React.useCallback((data: DragData) => {
+    dragRef.current = data;
+    setDragging(data.visitId);
+  }, []);
+  const onBarDragEnd = React.useCallback(() => {
+    setDragging(null);
+    setOverCell(null);
+  }, []);
+  const onVisitClickRef = React.useRef(onVisitClick);
+  onVisitClickRef.current = onVisitClick;
+  const onVisitClickStable = React.useCallback(
+    (v: TimelineVisit) => onVisitClickRef.current?.(v),
+    [],
+  );
+
   return (
     <SyncedHScroll data-testid="staff-week-timeline">
       <div
@@ -335,216 +376,38 @@ export function StaffWeekTimeline({
               </div>
               {WEEKDAYS.map((wd) => {
                 const cellKey = staffDayCountKey(rowKey, wd);
-                const cellVisits = visitsByCell.get(cellKey) ?? [];
-                const companions = companionVisitsByCell?.get(cellKey) ?? [];
-                const iso = dayIso(wd);
-                const cellEvents = isUnassigned
-                  ? []
-                  : (events?.get(rowKey) ?? []).filter((ev) => ev.date === iso && !ev.cancelled_at);
-                const off = isUnassigned ? undefined : offByStaffWeekday?.get(`${rowKey}:${wd}`);
-                // レーン: 訪問と同行の帯を同じ並びに (重ならないように)。
-                const items = [
-                  ...cellVisits.flatMap((v) => {
-                    const sp = spanOf(v.start_time, v.end_time);
-                    return sp ? [{ id: v.id, ...sp, visit: v, companion: false }] : [];
-                  }),
-                  ...companions.flatMap((v) => {
-                    const sp = spanOf(v.start_time, v.end_time);
-                    return sp ? [{ id: `acc:${v.id}`, ...sp, visit: v, companion: true }] : [];
-                  }),
-                ];
-                const lanes = assignLanes(items);
-                const laneCount = Math.max(
-                  1,
-                  ...items.map((it) => (lanes.get(it.id)?.lane ?? 0) + 1),
-                );
-                const eventTop = TRACK_PAD;
-                const barTop0 = TRACK_PAD + (cellEvents.length > 0 ? EVENT_H + 2 : 0);
-                const height = barTop0 + laneCount * LANE_STEP + TRACK_PAD;
-                const droppable = canDropOn(rowKey, wd);
-                const past = isPastDay(wd);
+                const cellVisits = visitsByCell.get(cellKey) ?? EMPTY_VISITS;
                 return (
-                  <div
+                  <SwtCell
                     key={wd}
-                    className={cn(
-                      'relative border-b border-r border-border-subtle',
-                      iso === todayIso && 'bg-brand-primary-50/60',
-                      highlightStaffId === rowKey && 'bg-brand-primary-50',
-                    )}
-                    data-testid={`swt-cell-wrap-${rowKey}-${wd}`}
-                  >
-                    {/* 角の件数 */}
-                    {dayCounts ? (
-                      <div className="flex justify-end px-1 pt-0.5">
-                        <StaffDayCountBadge
-                          count={dayCounts.get(cellKey)}
-                          limit={countLimit}
-                          unassigned={isUnassigned}
-                          testId={`staff-day-count-${rowKey}-${wd}`}
-                        />
-                      </div>
-                    ) : null}
-                    {/* 時間軸 (= 落とし先) */}
-                    <div
-                      className={cn(
-                        'relative mx-1 mb-1 rounded-sm',
-                        dragging &&
-                          droppable &&
-                          'outline-dashed outline-1 outline-brand-primary/40',
-                        overCell === cellKey &&
-                          'bg-brand-primary/15 outline outline-2 outline-brand-primary',
-                      )}
-                      style={{
-                        height,
-                        backgroundImage:
-                          'linear-gradient(90deg, var(--border-subtle) 1px, transparent 1px)',
-                        backgroundSize: `${(60 / TOTAL_MIN) * 100}% 100%`,
-                      }}
-                      data-droppable-id={buildStaffWeekTimelineCellId(rowKey, wd)}
-                      data-droppable={droppable ? 'true' : 'false'}
-                      data-testid={`swt-cell-${rowKey}-${wd}`}
-                      title={
-                        past
-                          ? '今日より前の日は動かせません'
-                          : row.isTrainee
-                            ? '新人は担当にできません（同行で割り当ててください）'
-                            : undefined
-                      }
-                      onDragOver={
-                        droppable
-                          ? (e) => {
-                              if (!e.dataTransfer?.types?.includes(SWT_VISIT_DND_MIME)) return;
-                              e.preventDefault();
-                              e.dataTransfer.dropEffect = 'move';
-                              setOverCell(cellKey);
-                            }
-                          : undefined
-                      }
-                      onDragLeave={() => setOverCell((c) => (c === cellKey ? null : c))}
-                      onDrop={(e) => handleDrop(e, rowKey, wd)}
-                    >
-                      {/* 働かない時間だけ斜線 (終日休みはマス全体) */}
-                      {offDutyRanges(off).map(([s, e2]) => (
-                        <div
-                          key={`off-${s}`}
-                          aria-hidden
-                          className="pointer-events-none absolute inset-y-0"
-                          style={{
-                            left: `${pct(s)}%`,
-                            width: `${wpct(e2 - s)}%`,
-                            backgroundImage: HATCH,
-                          }}
-                          data-testid={`swt-off-shade-${rowKey}-${wd}`}
-                        />
-                      ))}
-                      {/* イベント = 緑の細い帯 */}
-                      {cellEvents.flatMap((ev) => {
-                        const sp = spanOf(ev.start_time, ev.end_time);
-                        if (!sp) return [];
-                        return [
-                          <div
-                            key={`ev-${ev.id}`}
-                            className="pointer-events-auto absolute rounded-sm"
-                            style={{
-                              top: eventTop,
-                              height: EVENT_H,
-                              left: `${pct(sp.startMin)}%`,
-                              width: `${Math.max(wpct(sp.endMin - sp.startMin), 1)}%`,
-                              background: 'var(--sched-event-bar)',
-                            }}
-                            title={`${hhmm(sp.startMin)}〜${hhmm(sp.endMin)} ${ev.title || ev.type}`}
-                            data-testid={`swt-event-${ev.id}`}
-                          />,
-                        ];
-                      })}
-                      {items.map((it) => {
-                        const top = barTop0 + (lanes.get(it.id)?.lane ?? 0) * LANE_STEP;
-                        const v = it.visit;
-                        const label = `${hhmm(it.startMin)}〜${hhmm(it.endMin)} ${v.patient_name ?? '（無名）'}${
-                          v.course_label ? ` ${v.course_label}` : ''
-                        }`;
-                        const style: React.CSSProperties = {
-                          top,
-                          height: BAR_H,
-                          left: `${pct(it.startMin)}%`,
-                          width: `${Math.max(wpct(it.endMin - it.startMin), 1.5)}%`,
-                        };
-                        if (it.companion) {
-                          return (
-                            <div
-                              key={it.id}
-                              className="pointer-events-none absolute rounded-sm border border-dashed opacity-70"
-                              style={{
-                                ...style,
-                                borderColor: 'var(--border-strong)',
-                                background: 'var(--bg-base)',
-                              }}
-                              title={`同行 ${label}（件数には入れません）`}
-                              data-testid={`swt-companion-${rowKey}-${v.id}`}
-                            />
-                          );
-                        }
-                        const pal = genderPalette(v.patient_sex);
-                        const grabbable = canEdit && !past;
-                        return (
-                          <div
-                            key={it.id}
-                            role="button"
-                            tabIndex={0}
-                            aria-label={label}
-                            className={cn(
-                              'absolute rounded-sm border border-l-[3px]',
-                              grabbable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer',
-                              dragging === v.id && 'opacity-40',
-                            )}
-                            style={{
-                              ...style,
-                              background: pal.bg,
-                              borderColor: pal.ln,
-                              borderLeftColor: pal.bar,
-                            }}
-                            title={grabbable ? label : `${label}（今日より前の日は動かせません）`}
-                            draggable={grabbable}
-                            aria-disabled={grabbable ? undefined : true}
-                            onDragStart={
-                              grabbable
-                                ? (e) => {
-                                    const track = e.currentTarget.parentElement;
-                                    const tr = track?.getBoundingClientRect();
-                                    const br = e.currentTarget.getBoundingClientRect();
-                                    const pxPerMin = tr && tr.width > 0 ? tr.width / TOTAL_MIN : 0;
-                                    const grabMin =
-                                      pxPerMin > 0 && Number.isFinite(e.clientX)
-                                        ? Math.max(0, (e.clientX - br.left) / pxPerMin)
-                                        : 0;
-                                    const data: DragData = { visitId: v.id, grabMin };
-                                    dragRef.current = data;
-                                    e.dataTransfer?.setData(
-                                      SWT_VISIT_DND_MIME,
-                                      JSON.stringify(data),
-                                    );
-                                    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-                                    setDragging(v.id);
-                                  }
-                                : undefined
-                            }
-                            onDragEnd={() => {
-                              setDragging(null);
-                              setOverCell(null);
-                            }}
-                            onClick={() => onVisitClick?.(v)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                onVisitClick?.(v);
-                              }
-                            }}
-                            data-testid={`swt-visit-${v.id}`}
-                          />
-                        );
-                      })}
-                    </div>
-                  </div>
+                    rowKey={rowKey}
+                    wd={wd}
+                    isTrainee={row.isTrainee === true}
+                    cellVisits={cellVisits}
+                    companions={companionVisitsByCell?.get(cellKey) ?? EMPTY_VISITS}
+                    cellEvents={eventsByCell.get(cellKey) ?? EMPTY_EVENTS}
+                    off={isUnassigned ? undefined : offByStaffWeekday?.get(`${rowKey}:${wd}`)}
+                    count={dayCounts?.get(cellKey)}
+                    showCount={dayCounts != null}
+                    countLimit={countLimit}
+                    isToday={dayIso(wd) === todayIso}
+                    past={isPastDay(wd)}
+                    droppable={canDropOn(rowKey, wd)}
+                    canEdit={canEdit}
+                    highlighted={highlightStaffId === rowKey}
+                    dragActive={dragging != null}
+                    draggingVisitId={
+                      dragging != null && cellVisits.some((v) => v.id === dragging)
+                        ? dragging
+                        : null
+                    }
+                    isOver={overCell === cellKey}
+                    onDropCell={onDropCell}
+                    onOverCell={setOverCell}
+                    onBarDragStart={onBarDragStart}
+                    onBarDragEnd={onBarDragEnd}
+                    onVisitClick={onVisitClickStable}
+                  />
                 );
               })}
             </React.Fragment>
@@ -554,3 +417,250 @@ export function StaffWeekTimeline({
     </SyncedHScroll>
   );
 }
+
+const EMPTY_VISITS: TimelineVisit[] = [];
+const EMPTY_EVENTS: TimelineEvent[] = [];
+
+interface SwtCellProps {
+  rowKey: string;
+  wd: number;
+  isTrainee: boolean;
+  cellVisits: TimelineVisit[];
+  companions: TimelineVisit[];
+  cellEvents: TimelineEvent[];
+  off: WeekOverrideRead | undefined;
+  count: StaffDayCount | undefined;
+  showCount: boolean;
+  countLimit: number | null;
+  isToday: boolean;
+  past: boolean;
+  droppable: boolean;
+  canEdit: boolean;
+  highlighted: boolean;
+  /** どれかの帯をつかんでいる (落とせるマスに点線を出す)。 */
+  dragActive: boolean;
+  /** このマスの帯をつかんでいるときだけその id (それ以外は null = 描き直さない)。 */
+  draggingVisitId: string | null;
+  isOver: boolean;
+  onDropCell: (e: React.DragEvent<HTMLDivElement>, rowKey: string, wd: number) => void;
+  onOverCell: React.Dispatch<React.SetStateAction<string | null>>;
+  onBarDragStart: (data: DragData) => void;
+  onBarDragEnd: () => void;
+  onVisitClick: (v: TimelineVisit) => void;
+}
+
+/** 1 マス (職員 × 曜日)。React.memo = ドラッグ中は変わったマスだけ描き直す。 */
+const SwtCell = React.memo(function SwtCell({
+  rowKey,
+  wd,
+  isTrainee,
+  cellVisits,
+  companions,
+  cellEvents,
+  off,
+  count,
+  showCount,
+  countLimit,
+  isToday,
+  past,
+  droppable,
+  canEdit,
+  highlighted,
+  dragActive,
+  draggingVisitId,
+  isOver,
+  onDropCell,
+  onOverCell,
+  onBarDragStart,
+  onBarDragEnd,
+  onVisitClick,
+}: SwtCellProps) {
+  const cellKey = staffDayCountKey(rowKey, wd);
+  // レーン: 訪問と同行の帯を同じ並びに (重ならないように)。
+  const items = [
+    ...cellVisits.flatMap((v) => {
+      const sp = spanOf(v.start_time, v.end_time);
+      return sp ? [{ id: v.id, ...sp, visit: v, companion: false }] : [];
+    }),
+    ...companions.flatMap((v) => {
+      const sp = spanOf(v.start_time, v.end_time);
+      return sp ? [{ id: `acc:${v.id}`, ...sp, visit: v, companion: true }] : [];
+    }),
+  ];
+  const lanes = assignLanes(items);
+  const laneCount = Math.max(1, ...items.map((it) => (lanes.get(it.id)?.lane ?? 0) + 1));
+  const eventTop = TRACK_PAD;
+  const barTop0 = TRACK_PAD + (cellEvents.length > 0 ? EVENT_H + 2 : 0);
+  const height = barTop0 + laneCount * LANE_STEP + TRACK_PAD;
+  return (
+    <div
+      className={cn(
+        'relative border-b border-r border-border-subtle',
+        isToday && 'bg-brand-primary-50/60',
+        highlighted && 'bg-brand-primary-50',
+      )}
+      data-testid={`swt-cell-wrap-${rowKey}-${wd}`}
+    >
+      {/* 角の件数 */}
+      {showCount ? (
+        <div className="flex justify-end px-1 pt-0.5">
+          <StaffDayCountBadge
+            count={count}
+            limit={countLimit}
+            unassigned={rowKey === UNASSIGNED_ROW_KEY}
+            testId={`staff-day-count-${rowKey}-${wd}`}
+          />
+        </div>
+      ) : null}
+      {/* 時間軸 (= 落とし先) */}
+      <div
+        className={cn(
+          'relative mx-1 mb-1 rounded-sm',
+          dragActive && droppable && 'outline-dashed outline-1 outline-brand-primary/40',
+          isOver && 'bg-brand-primary/15 outline outline-2 outline-brand-primary',
+        )}
+        style={{
+          height,
+          backgroundImage: 'linear-gradient(90deg, var(--border-subtle) 1px, transparent 1px)',
+          backgroundSize: `${(60 / TOTAL_MIN) * 100}% 100%`,
+        }}
+        data-droppable-id={buildStaffWeekTimelineCellId(rowKey, wd)}
+        data-droppable={droppable ? 'true' : 'false'}
+        data-testid={`swt-cell-${rowKey}-${wd}`}
+        title={
+          past
+            ? '今日より前の日は動かせません'
+            : isTrainee
+              ? '新人は担当にできません（同行で割り当ててください）'
+              : undefined
+        }
+        onDragOver={
+          droppable
+            ? (e) => {
+                if (!e.dataTransfer?.types?.includes(SWT_VISIT_DND_MIME)) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (!isOver) onOverCell(cellKey);
+              }
+            : undefined
+        }
+        onDragLeave={() => onOverCell((c) => (c === cellKey ? null : c))}
+        onDrop={(e) => onDropCell(e, rowKey, wd)}
+      >
+        {/* 働かない時間だけ斜線 (終日休みはマス全体) */}
+        {offDutyRanges(off).map(([s, e2]) => (
+          <div
+            key={`off-${s}`}
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0"
+            style={{
+              left: `${pct(s)}%`,
+              width: `${wpct(e2 - s)}%`,
+              backgroundImage: HATCH,
+            }}
+            data-testid={`swt-off-shade-${rowKey}-${wd}`}
+          />
+        ))}
+        {/* イベント = 緑の細い帯 */}
+        {cellEvents.flatMap((ev) => {
+          const sp = spanOf(ev.start_time, ev.end_time);
+          if (!sp) return [];
+          return [
+            <div
+              key={`ev-${ev.id}`}
+              className="pointer-events-auto absolute rounded-sm"
+              style={{
+                top: eventTop,
+                height: EVENT_H,
+                left: `${pct(sp.startMin)}%`,
+                width: `${Math.max(wpct(sp.endMin - sp.startMin), 1)}%`,
+                background: 'var(--sched-event-bar)',
+              }}
+              title={`${hhmm(sp.startMin)}〜${hhmm(sp.endMin)} ${ev.title || ev.type}`}
+              data-testid={`swt-event-${ev.id}`}
+            />,
+          ];
+        })}
+        {items.map((it) => {
+          const top = barTop0 + (lanes.get(it.id)?.lane ?? 0) * LANE_STEP;
+          const v = it.visit;
+          const label = `${hhmm(it.startMin)}〜${hhmm(it.endMin)} ${v.patient_name ?? '（無名）'}${
+            v.course_label ? ` ${v.course_label}` : ''
+          }`;
+          const style: React.CSSProperties = {
+            top,
+            height: BAR_H,
+            left: `${pct(it.startMin)}%`,
+            width: `${Math.max(wpct(it.endMin - it.startMin), 1.5)}%`,
+          };
+          if (it.companion) {
+            return (
+              <div
+                key={it.id}
+                className="pointer-events-none absolute rounded-sm border border-dashed opacity-70"
+                style={{
+                  ...style,
+                  borderColor: 'var(--border-strong)',
+                  background: 'var(--bg-base)',
+                }}
+                title={`同行 ${label}（件数には入れません）`}
+                data-testid={`swt-companion-${rowKey}-${v.id}`}
+              />
+            );
+          }
+          const pal = genderPalette(v.patient_sex);
+          const grabbable = canEdit && !past;
+          return (
+            <div
+              key={it.id}
+              role="button"
+              tabIndex={0}
+              aria-label={label}
+              className={cn(
+                'absolute rounded-sm border border-l-[3px]',
+                grabbable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer',
+                draggingVisitId === v.id && 'opacity-40',
+              )}
+              style={{
+                ...style,
+                background: pal.bg,
+                borderColor: pal.ln,
+                borderLeftColor: pal.bar,
+              }}
+              title={grabbable ? label : `${label}（今日より前の日は動かせません）`}
+              draggable={grabbable}
+              aria-disabled={grabbable ? undefined : true}
+              onDragStart={
+                grabbable
+                  ? (e) => {
+                      const track = e.currentTarget.parentElement;
+                      const tr = track?.getBoundingClientRect();
+                      const br = e.currentTarget.getBoundingClientRect();
+                      const pxPerMin = tr && tr.width > 0 ? tr.width / TOTAL_MIN : 0;
+                      const grabMin =
+                        pxPerMin > 0 && Number.isFinite(e.clientX)
+                          ? Math.max(0, (e.clientX - br.left) / pxPerMin)
+                          : 0;
+                      const data: DragData = { visitId: v.id, grabMin };
+                      e.dataTransfer?.setData(SWT_VISIT_DND_MIME, JSON.stringify(data));
+                      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+                      onBarDragStart(data);
+                    }
+                  : undefined
+              }
+              onDragEnd={onBarDragEnd}
+              onClick={() => onVisitClick(v)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onVisitClick(v);
+                }
+              }}
+              data-testid={`swt-visit-${v.id}`}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+});
