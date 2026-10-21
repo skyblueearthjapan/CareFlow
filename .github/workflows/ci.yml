@@ -119,6 +119,11 @@ jobs:
           done
           echo "postgres not ready"; exit 1
 
+      # 空の DB では alembic が version_num を varchar(32) で作り、長い revision 名で止まる
+      # （本番は広げてある）。先に広い表を作っておく。
+      - name: Create wide alembic_version table
+        run: PGPASSWORD=carelink psql -h localhost -U carelink -d carelink_ci -c "CREATE TABLE IF NOT EXISTS alembic_version (version_num varchar(255) NOT NULL PRIMARY KEY);"
+
       - name: Alembic upgrade head
         run: alembic upgrade head
 

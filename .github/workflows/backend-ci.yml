@@ -126,6 +126,12 @@ jobs:
           done
           echo "postgres not ready"; exit 1
 
+      # 空の DB では alembic が version_num を varchar(32) で作り、32 文字を超える
+      # revision 名（0012_v2_courses_and_visit_extension など）で止まる。本番は広げて
+      # あるので、CI でも先に広い表を作っておく。
+      - name: Create wide alembic_version table
+        run: PGPASSWORD=carelink psql -h localhost -U carelink -d carelink_test -c "CREATE TABLE IF NOT EXISTS alembic_version (version_num varchar(255) NOT NULL PRIMARY KEY);"
+
       - name: Alembic upgrade head
         run: alembic upgrade head
 
@@ -191,6 +197,10 @@ jobs:
             echo "waiting for postgres ($i)"; sleep 2
           done
           echo "postgres not ready"; exit 1
+
+      # test ジョブと同じ理由（version_num の幅）。
+      - name: Create wide alembic_version table
+        run: PGPASSWORD=carelink psql -h localhost -U carelink -d carelink_smoke -c "CREATE TABLE IF NOT EXISTS alembic_version (version_num varchar(255) NOT NULL PRIMARY KEY);"
 
       - name: Alembic upgrade head
         run: alembic upgrade head
