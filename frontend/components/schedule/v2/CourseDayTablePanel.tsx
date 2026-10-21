@@ -191,6 +191,7 @@ import {
 // ─── 週空間 Phase E「今週の運転席」(docs/plans/week-cockpit-design.md §3) ───
 // 部品は FE-A/FE-B が作成済み。ここ (FE-C) は結線だけを行う。
 import { SyncBar } from './cockpit/SyncBar';
+import { StaffWeekTimeline } from './cockpit/StaffWeekTimeline';
 import { FixedEventRow } from './cockpit/FixedEventRow';
 import { VisitActionMenu } from './cockpit/VisitActionMenu';
 import { SubstitutePanel } from './cockpit/SubstitutePanel';
@@ -611,9 +612,9 @@ export function CourseDayTablePanel({
   useEffect(() => {
     onViewStateChange?.({ unit, day: selectedDay, view });
   }, [unit, selectedDay, view, onViewStateChange]);
-  /** 職員の週は時刻の軸が無い = 形は「リスト」だけ (D2)。 */
+  // 職員の週もタイムライン (StaffWeekTimeline・PO 決定 2026-10-21) を持つので、形はそのまま。
   const isStaffWeek = unit === 'staff' && selectedDay === 'week';
-  const effectiveView: ScheduleView = isStaffWeek ? 'list' : view;
+  const effectiveView: ScheduleView = view;
   const activeTab: number | 'week' | 'staff' = unit === 'staff' ? 'staff' : selectedDay;
   const activeWeekday = typeof activeTab === 'number' ? activeTab : 0;
   // timeline = 縦タイムライン (T-1) / list = 時刻順 visit リスト (月〜土)。
@@ -3995,6 +3996,10 @@ export function CourseDayTablePanel({
             old_start_time: startHM,
             new_weekday: weekday,
             new_start_time: startHM,
+            // 移動先の曜日の同じコースへ (無いと course_id が元の曜日のまま残る)。
+            ...(courseTemplateByCourseId.get(v.course_id ?? '')
+              ? { new_course_template_id: courseTemplateByCourseId.get(v.course_id ?? '') }
+              : {}),
             op_group_id: opGroupId,
             ...ackFlag(acknowledge),
           });
@@ -4450,7 +4455,15 @@ export function CourseDayTablePanel({
       toStartHM: string,
       opGroupId: string,
       acknowledge = false,
+      // 職員の週タイムラインから曜日をまたいで落としたときだけ (同じ時刻でも曜日は動かす)。
+      toWeekday?: number,
+      /**
+       * 制約の確認 (422) を通して送り直し、動いたあとに続ける処理 (担当の付け替え)。
+       * 確認を挟むと呼び出し側の続きは走らないので、ここで引き継ぐ。
+       */
+      afterAcknowledged?: () => Promise<void>,
     ): Promise<boolean> => {
+      const crossWeekday = toWeekday !== undefined && toWeekday !== visit.weekday;
       const oldStart = (visit.start_time ?? '').slice(0, 5);
       if (!oldStart) {
         toast.error('この訪問の開始時刻が不明なため移動できません');
@@ -4463,8 +4476,11 @@ export function CourseDayTablePanel({
           patient_id: visit.patient_id,
           old_weekday: visit.weekday,
           old_start_time: oldStart,
-          new_weekday: visit.weekday,
+          new_weekday: toWeekday ?? visit.weekday,
           new_start_time: toStartHM,
+          // 曜日をまたぐときは移動先の曜日の同じコースへ付け替える (無いと course_id が
+          // 元の曜日のまま残り、NG/性別の確認も通らない・BE schedule_v2 の move)。
+          ...(crossWeekday ? { new_course_template_id: visit.course_template_id } : {}),
           op_group_id: opGroupId,
           ...ackFlag(acknowledge),
         });
@@ -4473,8 +4489,9 @@ export function CourseDayTablePanel({
           toast.warning('移動対象の訪問が見つかりませんでした');
           return false;
         }
+        const wdLabel = crossWeekday ? `${'月火水木金土'[toWeekday] ?? ''}曜 ` : '';
         toast.success(
-          `${visit.patient_name ?? 'この訪問'} を ${toStartHM} へ移動しました（今週のみ）`,
+          `${visit.patient_name ?? 'この訪問'} を ${wdLabel}${toStartHM} へ移動しました（今週のみ）`,
           { cancel: { label: '元に戻す', onClick: () => void handleUndo() } },
         );
         return true;
@@ -4484,7 +4501,9 @@ export function CourseDayTablePanel({
           placementConstraintConfirm.capture(
             err,
             async () => {
-              await moveVisitWeekOnly(visit, toStartHM, opGroupId, true);
+              if (await moveVisitWeekOnly(visit, toStartHM, opGroupId, true, toWeekday)) {
+                await afterAcknowledged?.();
+              }
             },
             MOVE_CONSTRAINT_TEXT,
           )
@@ -4511,15 +4530,25 @@ export function CourseDayTablePanel({
    * toStaffId が無ければ assign を呼ばない)。両方なら同一 op_group_id。
    */
   const handleTimelineVisitMove = async (payload: VisitMovePayload) => {
-    const { visit, toStart, toStaffId } = payload;
+    const { visit, toStart, toStaffId, toWeekday } = payload;
     const opGroupId = crypto.randomUUID();
-    if (toStart != null) {
-      const ok = await moveVisitWeekOnly(visit, toStart, opGroupId);
+    // 職員の週タイムライン: 曜日だけ変わったときも move を呼ぶ (時刻は今のまま)。
+    const moved = toStart != null || toWeekday !== undefined;
+    // 曜日をまたぐとコースが付け替わり、BE は担当をそのコースの担当にする。落とした行の
+    // 担当に必ず合わせ直す (部品は曜日が変わると toStaffId を必ず入れる)。同じ組 = 戻る 1 回。
+    const assign =
+      toStaffId !== undefined
+        ? () =>
+            doAssignVisitStaff(visit.id, toStaffId, { opGroupId, silent: moved }).then(() => {
+              invalidateCockpitBoard();
+            })
+        : undefined;
+    if (moved) {
+      const startHM = toStart ?? payload.fromStart;
+      const ok = await moveVisitWeekOnly(visit, startHM, opGroupId, false, toWeekday, assign);
       if (!ok) return;
     }
-    if (toStaffId !== undefined) {
-      await doAssignVisitStaff(visit.id, toStaffId, { opGroupId, silent: toStart != null });
-    }
+    if (assign) await assign();
     invalidateCockpitBoard();
   };
 
@@ -6505,13 +6534,12 @@ export function CourseDayTablePanel({
                   type="button"
                   onClick={() => setView('timeline')}
                   aria-pressed={effectiveView === 'timeline'}
-                  disabled={isStaffWeek}
                   title={
-                    isStaffWeek
-                      ? '職員の週は時刻の軸がありません（曜日を選ぶとタイムラインで見られます）'
-                      : unit === 'staff'
-                        ? '1日分を時間軸で見る（横=時刻・縦=担当。ドラッグで今週だけ動かせます）'
-                        : undefined
+                    unit !== 'staff'
+                      ? undefined
+                      : isStaffWeek
+                        ? '週を職員×曜日の小さな時間軸で見る（帯をドラッグで今週だけ動かせます）'
+                        : '1日分を時間軸で見る（横=時刻・縦=担当。ドラッグで今週だけ動かせます）'
                   }
                   data-testid="schedule-view-timeline"
                   className={
@@ -6704,15 +6732,6 @@ export function CourseDayTablePanel({
                 {headerCollapsed ? '上部を表示' : 'コンパクト表示'}
               </Button>
             </div>
-
-            {isStaffWeek ? (
-              <p
-                className="basis-full text-xs text-text-secondary"
-                data-testid="schedule-staff-week-hint"
-              >
-                職員の週は、時刻の軸のない「リスト」で見ます。時刻で見たいときは曜日を選んでください。
-              </p>
-            ) : null}
 
             {/* 初めて開いたときだけの案内 (D9)。［わかった］でこの端末では二度と出さない。 */}
             {unitIntroSeen ? null : (
@@ -6913,7 +6932,26 @@ export function CourseDayTablePanel({
                   />
                 ) : null}
 
-                {staffViewMode === 'timeline' ? (
+                {staffViewMode === 'timeline' && isStaffWeek ? (
+                  <StaffWeekTimeline
+                    weekStart={weekStart}
+                    staffRows={staffTimelineRows}
+                    visits={cockpitVisits}
+                    events={staffEventsByStaff}
+                    offByStaffWeekday={offByStaffWeekday}
+                    assignedStaffByTemplateWeekday={assignedStaffByTemplateWeekday}
+                    dayCounts={staffDayCounts}
+                    countLimit={maxPatientsPerCourse}
+                    companionVisitsByCell={companionVisitsByCell}
+                    todayIso={todayIsoJst}
+                    canEdit={canEdit}
+                    showInactive={showInactive}
+                    highlightStaffId={highlightStaffId}
+                    onVisitClick={(visit) => setTimelineMenuVisit(visit)}
+                    // 1 日タイムラインと同じ結線 (move → assign・同じ op_group_id・戻るで戻せる)。
+                    onVisitMove={(payload) => void handleTimelineVisitMove(payload)}
+                  />
+                ) : staffViewMode === 'timeline' ? (
                   <StaffTimelineView
                     showInactive={showInactive}
                     weekStart={weekStart}
