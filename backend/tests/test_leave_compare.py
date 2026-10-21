@@ -823,7 +823,7 @@ async def test_last_compared_at_is_taken_before_reading_leaves(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_compare_month_failure_is_recorded_on_job(db, monkeypatch) -> None:
+async def test_compare_month_failure_is_recorded_on_job(db, monkeypatch, caplog) -> None:
     job = await sources.start_source_job(
         db, op=OP_LEAVE_COMPARE, week_start=MONDAYS[0], user_id=None, params={"month": "2026-10"}
     )
@@ -837,9 +837,13 @@ async def test_compare_month_failure_is_recorded_on_job(db, monkeypatch) -> None
     assert await lc.compare_month(db, job_id) is None
     refreshed = await db.get(KaipokeJob, job_id, populate_existing=True)
     assert refreshed is not None and refreshed.status == "completed"
-    # 画面に出す文は例外の型の名前だけ (中身はログへ・L5 再確認 LOW)
-    assert "RuntimeError" in refreshed.result_summary["compare_error"]
+    # 画面に出す文は日本語の案内だけ (例外の型の名前と中身はログへ・2026-10-21)
+    assert refreshed.result_summary["compare_error"] == lc.COMPARE_ERROR_MESSAGE
+    assert "RuntimeError" not in refreshed.result_summary["compare_error"]
     assert "こわれた" not in refreshed.result_summary["compare_error"]
+    logged = [r for r in caplog.records if r.name == lc.logger.name and r.exc_info]
+    assert logged and "RuntimeError" in logged[-1].getMessage()
+    assert "こわれた" in str(logged[-1].exc_info[1])
     assert refreshed.result_summary["done"] == 0  # 段階 0 の記録は残す
     assert (await db.scalars(select(LeaveCompareRun))).all() == []
 

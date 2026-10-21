@@ -356,8 +356,9 @@ async def test_compare_failure_always_records_error(db, monkeypatch, where) -> N
         with pytest.raises(RuntimeError):
             await leave_compare.run_leave_compare_job(job_id=job.id, plan=[], client=None)
     fresh = await db.get(KaipokeJob, job.id, populate_existing=True)
-    # 画面に出す文には例外の型の名前だけ (中身はログへ)
-    assert "RuntimeError" in fresh.result_summary["compare_error"]
+    # 画面に出す文は日本語の案内だけ (例外の型の名前と中身はログへ・2026-10-21)
+    assert fresh.result_summary["compare_error"] == leave_compare.COMPARE_ERROR_MESSAGE
+    assert "RuntimeError" not in fresh.result_summary["compare_error"]
     assert "壊れた材料" not in fresh.result_summary["compare_error"]
 
 
