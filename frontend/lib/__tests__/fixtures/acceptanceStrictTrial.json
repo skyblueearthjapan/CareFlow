@@ -3,7 +3,7 @@
     "office_id": "office-trial",
     "offices": [
       {
-        "id": "office-trial",
+        "id": "260cca7a-3ab1-5c6e-8416-7a866f043fc4",
         "name": "試験拠点"
       }
     ],
@@ -68,28 +68,28 @@
         "name": "職員A",
         "kind": "staff",
         "default_selected": true,
-        "office_id": "office-trial"
+        "office_id": "260cca7a-3ab1-5c6e-8416-7a866f043fc4"
       },
       {
         "id": "B",
         "name": "職員B",
         "kind": "staff",
         "default_selected": true,
-        "office_id": "office-trial"
+        "office_id": "260cca7a-3ab1-5c6e-8416-7a866f043fc4"
       },
       {
         "id": "C",
         "name": "職員C",
         "kind": "staff",
         "default_selected": true,
-        "office_id": "office-trial"
+        "office_id": "260cca7a-3ab1-5c6e-8416-7a866f043fc4"
       },
       {
         "id": "D",
         "name": "職員D",
         "kind": "staff",
         "default_selected": true,
-        "office_id": "office-trial"
+        "office_id": "260cca7a-3ab1-5c6e-8416-7a866f043fc4"
       }
     ],
     "days": [

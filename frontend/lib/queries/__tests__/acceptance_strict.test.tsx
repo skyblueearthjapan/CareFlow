@@ -50,4 +50,14 @@ describe('useStrictAcceptance', () => {
       '/api/v1/acceptance-matrix/strict?office_id=office-1',
     );
   });
+
+  it('enabled が偽の間は「全て」でも読まない', async () => {
+    const { result } = renderHook(
+      () => useStrictAcceptance(null, { allOffices: true, enabled: false }),
+      { wrapper },
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(result.current.fetchStatus).toBe('idle');
+    expect(fetcher as Mock).not.toHaveBeenCalled();
+  });
 });

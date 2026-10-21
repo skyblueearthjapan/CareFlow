@@ -156,12 +156,7 @@ async def test_frontend_trial_fixture_is_current(db) -> None:
     payload = {
         **core,
         "office_id": "office-trial",
-        "offices": [{**o, "id": "office-trial"} for o in core["offices"]],
-        "staff": [
-            {**s, "id": keep[s["id"]], "office_id": "office-trial"}
-            for s in core["staff"]
-            if s["id"] in keep
-        ],
+        "staff": [{**s, "id": keep[s["id"]]} for s in core["staff"] if s["id"] in keep],
         "cells": {keep[sid]: cells for sid, cells in core["cells"].items() if sid in keep},
         "overrides": [],
         "sources": {**core["sources"], "last_job": None},

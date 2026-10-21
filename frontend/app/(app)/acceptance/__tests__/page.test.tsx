@@ -77,4 +77,18 @@ describe('AcceptanceMatrixPage の拠点', () => {
     expect((screen.getByLabelText('拠点') as HTMLSelectElement).value).toBe('');
     expect(lastCall()[1].allOffices).toBe(true);
   });
+
+  it('残した拠点を読み終えるまでは読み込まない (最初の描画で「全て」を読まない)', () => {
+    window.localStorage.setItem('acceptance.strict.officeId', 'office-1');
+    render(<AcceptanceMatrixPage />);
+    const calls = (useStrictAcceptance as Mock).mock.calls as [
+      string | null,
+      { allOffices?: boolean; enabled?: boolean },
+    ][];
+    expect(calls[0]?.[1].enabled).toBe(false);
+    // 読み込みを許したのは、残した拠点に決まってからだけ。
+    const enabledCalls = calls.filter(([, o]) => o.enabled);
+    expect(enabledCalls.length).toBeGreaterThan(0);
+    expect(enabledCalls.every(([id, o]) => id === 'office-1' && !o.allOffices)).toBe(true);
+  });
 });

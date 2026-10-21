@@ -41,12 +41,15 @@ export default function AcceptanceMatrixPage() {
   const offices = officesQuery.allOffices;
   /** null = 全て (全拠点)。 */
   const [storedOfficeId, setStoredOfficeId] = useState<string | null>(null);
+  // 残した拠点を読み終えるまでは読み込まない (先に「全て」の重い計算を走らせないため)。
+  const [storageRead, setStorageRead] = useState(false);
   useEffect(() => {
     try {
       setStoredOfficeId(window.localStorage.getItem(OFFICE_STORAGE_KEY) || null);
     } catch {
       // 読めないときは「全て」のまま
     }
+    setStorageRead(true);
   }, []);
   // 残っていた拠点が一覧に無ければ「全て」で見る。
   const officeId =
@@ -67,6 +70,7 @@ export default function AcceptanceMatrixPage() {
   const query = useStrictAcceptance(officeId, {
     planOnly: IS_DEV && planOnly,
     allOffices: officeId === null,
+    enabled: storageRead,
   });
   const jobQuery = useStrictRefreshJob();
   const startRefresh = useStartStrictRefresh();

@@ -407,7 +407,7 @@ export function StrictAcceptanceBoard({
             data-testid="grid-vertical"
             className="max-h-[75vh] overflow-auto print:max-h-none print:overflow-visible"
           >
-            <table className="w-full table-fixed border-collapse text-sm">
+            <table className="w-full min-w-[22rem] table-fixed border-collapse text-sm">
               <thead>
                 <tr>
                   <th className="sticky left-0 top-0 z-20 w-12 bg-bg-base" />

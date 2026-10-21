@@ -45,17 +45,21 @@ function useAuth() {
 
 /**
  * ``allOffices`` のときは office_id を付けない (全拠点の担い手をまとめて見る)。
- * そうでないときは ``officeId`` が決まるまで読まない。
+ * そうでないときは ``officeId`` が決まるまで読まない。``enabled`` が偽の間も読まない。
  */
 export function useStrictAcceptance(
   officeId: string | null,
-  { planOnly = false, allOffices = false }: { planOnly?: boolean; allOffices?: boolean } = {},
+  {
+    planOnly = false,
+    allOffices = false,
+    enabled = true,
+  }: { planOnly?: boolean; allOffices?: boolean; enabled?: boolean } = {},
 ): UseQueryResult<StrictPayload, Error> {
   const { status, accessToken, refreshToken } = useAuth();
   const target = allOffices ? null : officeId;
   return useQuery<StrictPayload, Error>({
     queryKey: [...STRICT_KEY, { officeId: target, planOnly }],
-    enabled: status === 'authenticated' && (allOffices || !!officeId),
+    enabled: enabled && status === 'authenticated' && (allOffices || !!officeId),
     queryFn: async () => {
       const usp = new URLSearchParams();
       if (target) usp.set('office_id', target);

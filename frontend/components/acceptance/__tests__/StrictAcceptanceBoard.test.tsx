@@ -168,6 +168,9 @@ describe('StrictAcceptanceBoard', () => {
       .map((th) => th.textContent);
     expect(cols.slice(1).map((t) => t?.slice(0, 1))).toEqual(['月', '火']);
     expect(within(grid).getAllByRole('rowheader')[0]).toHaveTextContent('9時台');
+    // 狭い画面ではマスをつぶさず、外側で横に流す。
+    expect(grid).toHaveClass('overflow-auto');
+    expect(within(grid).getByRole('table')).toHaveClass('min-w-[22rem]');
     expect(screen.getByRole('button', { name: '縦（時刻×曜日）' })).toHaveAttribute(
       'aria-pressed',
       'true',
