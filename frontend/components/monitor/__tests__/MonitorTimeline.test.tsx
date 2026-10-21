@@ -4,6 +4,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 
 import type { EventRead } from '@/lib/schemas/staff-events';
+import { minutesToHm } from '@/lib/format/actualTime';
+import { AM_OFF_UNTIL, PM_OFF_FROM } from '@/lib/leave';
+
+import { TL_START_MIN, hmToMinutes, minutesToPct } from '../constants';
 
 import { MonitorTimeline, monitorRowKey } from '../MonitorTimeline';
 import { makeRow, makeVisit } from './fixtures';
@@ -571,6 +575,55 @@ describe('MonitorTimeline — 行 = 職員', () => {
     expect(screen.getByTestId(`monitor-row-sub-${key}`).textContent).toContain(
       '時間変更 10:00–15:00',
     );
+  });
+
+  const renderOverride = (kind: string) => {
+    cleanup();
+    const row = makeRow({
+      visits: [],
+      day_override: { kind, start_time: null, end_time: null, reason: null },
+    });
+    render(
+      <MonitorTimeline
+        rows={[row]}
+        selectedRowKey={null}
+        selectedVisitId={null}
+        nowMinutes={-1}
+        onSelectRow={vi.fn()}
+        onSelectVisit={vi.fn()}
+      />,
+    );
+    return monitorRowKey(row);
+  };
+  const pct = (hm: string) => `${minutesToPct(hmToMinutes(hm))}%`;
+
+  it('有給は「有給」の札と終日の帯 (2026-10-21)', () => {
+    const key = renderOverride('paid_off');
+    expect(screen.getByTestId(`monitor-row-sub-${key}`).textContent).toContain('有給');
+    const band = screen.getByTestId(`monitor-offduty-${key}`);
+    expect(band.textContent).toBe('有給（終日）');
+    expect(band.style.left).toBe(pct(minutesToHm(TL_START_MIN)));
+  });
+
+  it('午前休は「午前休」の札と、始まりから午後の勤務の始まりまでの帯だけ', () => {
+    const key = renderOverride('am_off');
+    expect(screen.getByTestId(`monitor-row-sub-${key}`).textContent).toContain('午前休');
+    const bands = screen.getAllByTestId(`monitor-offduty-${key}`);
+    expect(bands).toHaveLength(1);
+    expect(bands[0]!.textContent).toBe('午前休');
+    expect(bands[0]!.style.left).toBe(pct(minutesToHm(TL_START_MIN)));
+    expect(bands[0]!.style.width).toBe(
+      `${minutesToPct(hmToMinutes(AM_OFF_UNTIL)) - minutesToPct(TL_START_MIN)}%`,
+    );
+  });
+
+  it('午後休は「午後休」の札と、休みの始まりから終わりまでの帯だけ', () => {
+    const key = renderOverride('pm_off');
+    expect(screen.getByTestId(`monitor-row-sub-${key}`).textContent).toContain('午後休');
+    const bands = screen.getAllByTestId(`monitor-offduty-${key}`);
+    expect(bands).toHaveLength(1);
+    expect(bands[0]!.textContent).toBe('午後休');
+    expect(bands[0]!.style.left).toBe(pct(PM_OFF_FROM));
   });
 
   it('拠点をまたぐ次の訪問の前に「→ 都賀へ」を出す', () => {
