@@ -58,10 +58,10 @@ function data(over: Partial<AssignCandidatesRead> = {}): AssignCandidatesRead {
         course_label: '稲毛C',
         visits: [],
         candidates: [
-          candidate(TAKANASHI, '髙梨 桂子', 'ok', [], 3),
+          candidate(TAKANASHI, '職員B 桂子', 'ok', [], 3),
           candidate(KUMAZAWA, '熊澤 妙子', 'ok', [], 1),
-          candidate(UDAGAWA, '宇田川 優莉', 'warn', ['13:30 が重なる']),
-          candidate(KAWANA, '川名 千恵', 'ng', ['この日は休みです']),
+          candidate(UDAGAWA, '職員D 秋子', 'warn', ['13:30 が重なる']),
+          candidate(KAWANA, '職員A 千恵', 'ng', ['この日は休みです']),
         ],
       },
     ],
@@ -108,10 +108,10 @@ describe('summarizeAssignCandidates', () => {
   it('◎ は whole_ok_staff_ids が正・1 グループでも ng があれば ×・並びは ◎→△→×', () => {
     const rows = summarizeAssignCandidates(data());
     expect(rows.map((r) => [r.name, r.status])).toEqual([
-      ['髙梨 桂子', 'ok'], // score 3 が先
+      ['職員B 桂子', 'ok'], // score 3 が先
       ['熊澤 妙子', 'ok'],
-      ['宇田川 優莉', 'warn'],
-      ['川名 千恵', 'ng'],
+      ['職員D 秋子', 'warn'],
+      ['職員A 千恵', 'ng'],
     ]);
   });
 
@@ -145,7 +145,7 @@ describe('AssignSuggestionPopover', () => {
   it('② ◎ は理由 + [このコースを割り当てる]・押すと親へ staffId が飛ぶ', () => {
     const h = renderPopover();
     const ok = screen.getByTestId(`assign-suggestion-ok-${TAKANASHI}`);
-    expect(ok).toHaveTextContent('髙梨 桂子');
+    expect(ok).toHaveTextContent('職員B 桂子');
     expect(ok).toHaveTextContent('空き・稲毛');
     fireEvent.click(screen.getByTestId(`assign-suggestion-apply-${TAKANASHI}`));
     expect(h.onAssignCourse).toHaveBeenCalledWith(TAKANASHI);
@@ -196,7 +196,7 @@ describe('AssignSuggestionPopover', () => {
             ...base.groups[0]!,
             // 1 人ずつなら全員 ok。丸ごとは誰も無理 (訪問同士が重なっている)。
             candidates: [
-              candidate(TAKANASHI, '髙梨 桂子', 'ok', [], 3),
+              candidate(TAKANASHI, '職員B 桂子', 'ok', [], 3),
               candidate(KUMAZAWA, '熊澤 妙子', 'ok', [], 1),
             ],
           },

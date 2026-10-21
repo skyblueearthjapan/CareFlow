@@ -18,8 +18,8 @@ const P_TAKAOKA = '00000000-0000-4000-8000-0000000000e2';
 const STAFF_1 = '00000000-0000-4000-8000-000000000001';
 
 const candidates = [
-  { patient_id: P_ITO, patient_name: '伊藤　花子', hint: '月/木 午前', service_minutes: 35 },
-  { patient_id: P_TAKAOKA, patient_name: '高岡　一郎', hint: null, service_minutes: null },
+  { patient_id: P_ITO, patient_name: '利用者I　花子', hint: '月/木 午前', service_minutes: 35 },
+  { patient_id: P_TAKAOKA, patient_name: '職員E　一郎', hint: null, service_minutes: null },
 ];
 
 function renderDialog(props: Partial<React.ComponentProps<typeof AddVisitDialog>> = {}) {
@@ -29,7 +29,7 @@ function renderDialog(props: Partial<React.ComponentProps<typeof AddVisitDialog>
     <AddVisitDialog
       open
       onOpenChange={onOpenChange}
-      staff={{ id: STAFF_1, name: '宇田川　優莉' }}
+      staff={{ id: STAFF_1, name: '職員D　秋子' }}
       date="2026-09-14"
       poolCandidates={candidates}
       onSubmit={onSubmit}
@@ -75,7 +75,7 @@ describe('AddVisitDialog — 所要時間 (PO 決定 12)', () => {
 
   it('③ 5 分刻みの外の基本時間も選択肢に出る (昇順)', () => {
     renderDialog({
-      poolCandidates: [{ patient_id: P_ITO, patient_name: '伊藤　花子', service_minutes: 32 }],
+      poolCandidates: [{ patient_id: P_ITO, patient_name: '利用者I　花子', service_minutes: 32 }],
     });
     fireEvent.change(screen.getByTestId('add-visit-patient'), { target: { value: P_ITO } });
 

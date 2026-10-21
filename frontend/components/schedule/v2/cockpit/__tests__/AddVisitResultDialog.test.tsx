@@ -47,7 +47,7 @@ function renderDialog(rows: AddVisitResultRow[], onUndo?: () => void) {
     <AddVisitResultDialog
       open
       onOpenChange={onOpenChange}
-      patientName="伊藤"
+      patientName="利用者I"
       rows={rows}
       onUndo={onUndo}
     />,

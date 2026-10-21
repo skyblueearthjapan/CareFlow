@@ -91,7 +91,7 @@ describe('予実比較スキーマ (寛容さ)', () => {
 
   it('by_staff の untyped / multi_same_day も読む (古い BE では欠ける)', () => {
     const r = PlanActualByStaffSchema.parse({
-      staff: '唐鎌',
+      staff: '職員K',
       counts: { 一致: 1, 実績のみ: 1 },
       duplicates: 0,
       untyped: 1,

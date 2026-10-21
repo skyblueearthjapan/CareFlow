@@ -31,8 +31,8 @@ SUNDAY = date(2026, 7, 26)
 # 未来週 (ゲートブロックの検証用)。2100-01-04 = 月曜。
 FUTURE_MONDAY = date(2100, 1, 4)
 
-STAFF_A = "宇田川　優莉"
-STAFF_B = "川名　千恵"
+STAFF_A = "職員D　秋子"
+STAFF_B = "職員A　千恵"
 UNKNOWN_STAFF = "菅野　頼子"  # 楽スケ未登録
 
 PREVIEW_URL = "/api/v1/integrations/events-inbound-preview"
@@ -177,19 +177,19 @@ async def _seed_real_apply(db, week_start: date = WEEK_START) -> None:
 
 def _default_tasks() -> list[dict[str, Any]]:
     return [
-        # 宇田川: 月曜の休み (終日イベント)
+        # 職員D: 月曜の休み (終日イベント)
         _task(STAFF_A, "4601519", WEEK_START, "09:00", "18:00", "休み", "690499216"),
-        # 川名: 火曜のケア会議
+        # 職員A: 火曜のケア会議
         _task(
             STAFF_B,
             "4465191",
             date(2026, 7, 21),
             "09:30",
             "10:30",
-            "ケア会議：青栁あい様",
+            "ケア会議：利用者Aあい様",
             "695430472",
         ),
-        # 川名: 土曜のメモ系 (00:00〜00:00・PO確定で取り込む)
+        # 職員A: 土曜のメモ系 (00:00〜00:00・PO確定で取り込む)
         _task(
             STAFF_B,
             "4465191",
@@ -678,7 +678,7 @@ async def _seed_visit(db, staff_id, *, d, start_h, end_h, status_val="planned"):
     from app.models import Patient
     from app.models.visit import Visit
 
-    p = Patient(code=f"P-EC-{start_h}{status_val[:2]}", name="朝倉　美夢", status="active")
+    p = Patient(code=f"P-EC-{start_h}{status_val[:2]}", name="職員F　冬子", status="active")
     db.add(p)
     await db.flush()
     v = Visit(
@@ -702,7 +702,7 @@ async def test_preview_reports_visit_conflicts(client, db, stub_kaipoke) -> None
     seeded = await _seed_staff(db)
     admin = await _make_admin(db)
 
-    # 宇田川の月曜: 9:00-18:00 休みイベント × 10:00-11:00 の訪問 = 重なり
+    # 職員Dの月曜: 9:00-18:00 休みイベント × 10:00-11:00 の訪問 = 重なり
     await _seed_visit(db, seeded["a"].id, d=WEEK_START, start_h=10, end_h=11)
     # キャンセル済み訪問は対象外
     await _seed_visit(
@@ -724,7 +724,7 @@ async def test_preview_reports_visit_conflicts(client, db, stub_kaipoke) -> None
     assert c["staffName"] == STAFF_A
     assert c["date"] == WEEK_START.isoformat()
     assert c["eventTitle"] == "休み"
-    assert c["patientName"] == "朝倉　美夢"
+    assert c["patientName"] == "職員F　冬子"
     assert c["visitStart"] == "10:00"
     assert c["visitEnd"] == "11:00"
 
@@ -754,7 +754,7 @@ async def test_apply_reports_visit_conflicts(client, db, stub_kaipoke) -> None:
     )
     assert result["added"] == 1  # 取り込みは行われる
     assert len(result["conflicts"]) == 1
-    assert result["conflicts"][0]["patientName"] == "朝倉　美夢"
+    assert result["conflicts"][0]["patientName"] == "職員F　冬子"
 
 
 # --- 7. 汎用 reconcile との競合 (週空間C1・2026-08-21 の 409 障害) -------------
@@ -957,7 +957,7 @@ async def test_absorb_manual_event_keeps_single_row(client, db, stub_kaipoke) ->
     seeded = await _seed_staff(db)
     await _seed_real_apply(db)
     admin = await _make_admin(db)
-    manual = await _seed_local_event(db, seeded["b"].id, title="ケア　会議：青栁あい様")
+    manual = await _seed_local_event(db, seeded["b"].id, title="ケア　会議：利用者Aあい様")
 
     stub_kaipoke.tasks = _default_tasks()
     body = await _preview(client, admin)
@@ -967,7 +967,7 @@ async def test_absorb_manual_event_keeps_single_row(client, db, stub_kaipoke) ->
     assert body["deletes"] == 0  # 手入力行は delete 候補にならない
     absorbed = next(c for c in body["changes"] if c["action"] == "absorb")
     assert absorbed["externalId"] == CARE_MEETING_KEY
-    assert absorbed["beforeTitle"] == "ケア　会議：青栁あい様"
+    assert absorbed["beforeTitle"] == "ケア　会議：利用者Aあい様"
 
     result = await _apply(client, admin, body["changes"], dry_run=False)
     assert result["absorbed"] == 1
@@ -979,7 +979,7 @@ async def test_absorb_manual_event_keeps_single_row(client, db, stub_kaipoke) ->
     await db.refresh(manual)
     assert manual.source == "kaipoke"
     assert manual.external_id == CARE_MEETING_KEY
-    assert manual.title == "ケア会議：青栁あい様"  # カイポケ表記で上書き (収束のため)
+    assert manual.title == "ケア会議：利用者Aあい様"  # カイポケ表記で上書き (収束のため)
     assert manual.event_type == "event"
 
     # 収束: 2 回目のプレビューで差分ゼロ
@@ -1016,7 +1016,7 @@ async def test_absorb_preserves_cancelled_at(client, db, stub_kaipoke) -> None:
     await _seed_real_apply(db)
     admin = await _make_admin(db)
     manual = await _seed_local_event(
-        db, seeded["b"].id, title="ケア会議：青栁あい様", cancelled=True
+        db, seeded["b"].id, title="ケア会議：利用者Aあい様", cancelled=True
     )
     before_cancelled = manual.cancelled_at
 
@@ -1054,7 +1054,7 @@ async def test_fixed_row_is_not_an_absorb_candidate(db) -> None:
     await _seed_local_event(
         db,
         seeded["b"].id,
-        title="ケア会議：青栁あい様",
+        title="ケア会議：利用者Aあい様",
         source="fixed",
         external_id=fixed_external_id(_uuid.uuid4(), CARE_MEETING_DAY),
     )
@@ -1073,7 +1073,7 @@ async def test_absorb_skipped_when_end_differs(client, db, stub_kaipoke) -> None
     seeded = await _seed_staff(db)
     await _seed_real_apply(db)
     admin = await _make_admin(db)
-    manual = await _seed_local_event(db, seeded["b"].id, title="ケア会議：青栁あい様", end_h=11)
+    manual = await _seed_local_event(db, seeded["b"].id, title="ケア会議：利用者Aあい様", end_h=11)
 
     stub_kaipoke.tasks = _default_tasks()
     body = await _preview(client, admin)
@@ -1097,7 +1097,7 @@ async def test_absorb_preserves_event_type(client, db, stub_kaipoke) -> None:
     await _seed_real_apply(db)
     admin = await _make_admin(db)
     manual = await _seed_local_event(
-        db, seeded["b"].id, title="ケア会議：青栁あい様", event_type="training"
+        db, seeded["b"].id, title="ケア会議：利用者Aあい様", event_type="training"
     )
 
     stub_kaipoke.tasks = _default_tasks()
@@ -1135,7 +1135,7 @@ async def test_absorb_dry_run_writes_nothing(client, db, stub_kaipoke) -> None:
     seeded = await _seed_staff(db)
     await _seed_real_apply(db)
     admin = await _make_admin(db)
-    manual = await _seed_local_event(db, seeded["b"].id, title="ケア会議：青栁あい様")
+    manual = await _seed_local_event(db, seeded["b"].id, title="ケア会議：利用者Aあい様")
 
     stub_kaipoke.tasks = _default_tasks()
     body = await _preview(client, admin)

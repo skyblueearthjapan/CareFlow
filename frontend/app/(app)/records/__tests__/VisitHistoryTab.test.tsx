@@ -78,7 +78,7 @@ vi.mock('@/lib/queries/offices', () => ({
   useOffices: () => ({ offices: [{ id: 'of-1', name: '都賀' }], allOffices: [] }),
 }));
 vi.mock('@/lib/queries/staff', () => ({
-  useStaffList: () => ({ data: [{ id: 'st-1', name: '川名 幸子' }] }),
+  useStaffList: () => ({ data: [{ id: 'st-1', name: '職員A 幸子' }] }),
 }));
 vi.mock('@/lib/queries/patients', () => ({
   usePatients: () => ({ data: { items: [] }, isLoading: false }),
@@ -102,9 +102,9 @@ function makeRow(over: Record<string, unknown> = {}) {
     start_time: '13:00:00',
     end_time: '13:40:00',
     planned_staff_id: 'st-1',
-    planned_staff_name: '川名 幸子',
+    planned_staff_name: '職員A 幸子',
     actual_staff_id: 'st-1',
-    actual_staff_name: '川名 幸子',
+    actual_staff_name: '職員A 幸子',
     // 03:56Z = JST 12:56、04:40Z = JST 13:40。
     arrival_at: '2026-09-29T03:56:00Z',
     departure_at: '2026-09-29T04:40:00Z',
@@ -153,7 +153,7 @@ function makeAdjustedRow(over: Record<string, unknown> = {}) {
         kind: 'arrival',
         reason_label: 'インターホン待ち',
         reason_text: null,
-        by_name: '川名 幸子',
+        by_name: '職員A 幸子',
         created_at: '2026-09-29T04:10:00Z',
       },
     ],
@@ -433,7 +433,7 @@ describe('VisitHistoryTab — 表', () => {
     render(<VisitHistoryTab />);
     const none = within(screen.getByTestId('history-row-v-none'));
     expect(none.getByText('打刻なし')).toBeInTheDocument();
-    expect(none.getByText('（予定: 川名 幸子）')).toBeInTheDocument();
+    expect(none.getByText('（予定: 職員A 幸子）')).toBeInTheDocument();
     expect(
       within(screen.getByTestId('history-row-v-future')).getByText('これから'),
     ).toBeInTheDocument();
@@ -460,7 +460,7 @@ describe('VisitHistoryTab — 表', () => {
         checkin_source: 'manual',
         match_status: 'review',
         state: 'no_departure',
-        remarks: ['退出なし', '代行（予定: 川名 幸子）', 'QRなし', '場所 要確認'],
+        remarks: ['退出なし', '代行（予定: 職員A 幸子）', 'QRなし', '場所 要確認'],
       }),
     ]);
     render(<VisitHistoryTab />);
@@ -470,8 +470,8 @@ describe('VisitHistoryTab — 表', () => {
 
     const sub = within(screen.getByTestId('history-row-v-sub'));
     expect(sub.getByText('中村 彩')).toBeInTheDocument();
-    expect(sub.getByText('予定: 川名 幸子')).toBeInTheDocument();
-    expect(sub.getByText('代行')).toHaveAttribute('title', '代行（予定: 川名 幸子）');
+    expect(sub.getByText('予定: 職員A 幸子')).toBeInTheDocument();
+    expect(sub.getByText('代行')).toHaveAttribute('title', '代行（予定: 職員A 幸子）');
     expect(sub.getByText('退出なし')).toBeInTheDocument();
     expect(sub.getByText('QRなし')).toBeInTheDocument();
     expect(sub.getByText('場所 要確認')).toBeInTheDocument();
@@ -502,7 +502,7 @@ describe('VisitHistoryTab — 表', () => {
     const heads = screen.getAllByTestId('history-group-row');
     expect(heads).toHaveLength(2);
     expect(heads[0]).toHaveTextContent('中村 彩2 件 ・ 打刻あり 1 件');
-    expect(heads[1]).toHaveTextContent('川名 幸子1 件 ・ 打刻あり 1 件');
+    expect(heads[1]).toHaveTextContent('職員A 幸子1 件 ・ 打刻あり 1 件');
 
     // 見出し → その看護師の行、の順に並ぶ。
     // 明細行は role="button" なので、表の行は DOM から拾う。
@@ -541,7 +541,7 @@ describe('VisitHistoryTab — 表', () => {
     const heads = screen.getAllByTestId('history-group-row');
     // 1 ページ目: 先頭は完結、末尾は次のページへ続きうる。
     expect(heads[0]).toHaveTextContent('中村 彩1 件');
-    expect(heads[1]).toHaveTextContent('川名 幸子このページに 1 件');
+    expect(heads[1]).toHaveTextContent('職員A 幸子このページに 1 件');
   });
 
   it('0 件は空状態（らく助）を出し、表は描かない', () => {
@@ -574,7 +574,7 @@ describe('VisitHistoryTab — 詳細・出力', () => {
       makeRow({
         actual_staff_name: '中村 彩',
         is_substitute: true,
-        remarks: ['代行（予定: 川名 幸子）'],
+        remarks: ['代行（予定: 職員A 幸子）'],
       }),
     ]);
     render(<VisitHistoryTab />);
@@ -588,7 +588,7 @@ describe('VisitHistoryTab — 詳細・出力', () => {
     expect(dlg.getByText('13:40')).toBeInTheDocument();
     expect(dlg.getByText('予定 40 分')).toBeInTheDocument();
     expect(dlg.getByText('QR 読み取り')).toBeInTheDocument();
-    expect(dlg.getByTestId('history-detail-remarks')).toHaveTextContent('代行（予定: 川名 幸子）');
+    expect(dlg.getByTestId('history-detail-remarks')).toHaveTextContent('代行（予定: 職員A 幸子）');
     expect(dlg.getByText('QR 読取時刻')).toBeInTheDocument();
     expect(screen.getByTestId('history-detail-dialog')).not.toHaveTextContent('調整後');
     expect(dlg.queryByTestId('history-detail-adjustments')).not.toBeInTheDocument();
@@ -753,7 +753,7 @@ describe('VisitHistoryTab — 時刻の調整の表示', () => {
       SUMMARY,
       [
         { label: '中村 彩', count: 4, with_arrival: 3 },
-        { label: '川名 幸子', count: 116, with_arrival: 32 },
+        { label: '職員A 幸子', count: 116, with_arrival: 32 },
       ],
     );
     render(<VisitHistoryTab />);
@@ -761,7 +761,7 @@ describe('VisitHistoryTab — 時刻の調整の表示', () => {
     const heads = screen.getAllByTestId('history-group-row');
     expect(heads[0]).toHaveTextContent('中村 彩4 件 ・ 打刻あり 3 件');
     // 次のページへ続く見出しでも、全体の件数なので書き分けない。
-    expect(heads[1]).toHaveTextContent('川名 幸子116 件 ・ 打刻あり 32 件');
+    expect(heads[1]).toHaveTextContent('職員A 幸子116 件 ・ 打刻あり 32 件');
     expect(heads[1]).not.toHaveTextContent('このページに');
   });
 
@@ -772,7 +772,7 @@ describe('VisitHistoryTab — 時刻の調整の表示', () => {
     render(<VisitHistoryTab />);
     fireEvent.click(button('看護師別'));
     expect(screen.getByTestId('history-group-row')).toHaveTextContent(
-      '川名 幸子このページに 1 件 ・ 打刻あり 1 件',
+      '職員A 幸子このページに 1 件 ・ 打刻あり 1 件',
     );
   });
 });
@@ -803,7 +803,7 @@ describe('VisitHistoryTab — 詳細から実績の時刻を合わせる', () =>
     expect(dlg.getByText('調整後（読取 13:06）')).toBeInTheDocument();
     const history = dlg.getByTestId('history-detail-adjustments');
     expect(history).toHaveTextContent('9/29 13:10');
-    expect(history).toHaveTextContent('川名 幸子');
+    expect(history).toHaveTextContent('職員A 幸子');
     expect(history).toHaveTextContent('到着 読取 13:06 → 12:56');
     expect(history).toHaveTextContent('理由: インターホン待ち');
 
@@ -858,7 +858,7 @@ describe('VisitHistoryTab — 詳細から実績の時刻を合わせる', () =>
             reason_code: null,
             reason_label: null,
             reason_text: null,
-            by_name: '川名 幸子',
+            by_name: '職員A 幸子',
             created_at: '2026-09-29T04:10:00Z',
           },
         ],

@@ -16,7 +16,7 @@ function karte(over: Partial<KarteSettings> = {}): KarteSettings {
     seat_user_id: null,
     seat_known: false,
     seats: [
-      { user_id: 'u-1', name: '今泉', me: true, state: 'ok' },
+      { user_id: 'u-1', name: '職員J', me: true, state: 'ok' },
       { user_id: 'u-2', name: '佐藤', me: false, state: 'missing' },
     ],
     ...over,
@@ -37,7 +37,7 @@ afterEach(() => {
 describe('KarteSeatSection', () => {
   it('ChatGPT にサインインしている管理者だけを選べる', async () => {
     render(<KarteSeatSection engines={admin()} />);
-    expect(await screen.findByRole('radio', { name: /今泉/ })).not.toBeChecked();
+    expect(await screen.findByRole('radio', { name: /職員J/ })).not.toBeChecked();
     expect(screen.queryByRole('radio', { name: /佐藤/ })).not.toBeInTheDocument();
     expect(screen.getByText(/まだ選んでいません/)).toBeInTheDocument();
     expect(screen.getAllByText(/Gemini で作ります/).length).toBeGreaterThan(0);
@@ -47,9 +47,9 @@ describe('KarteSeatSection', () => {
   it('選ぶと保存して、選んだ席に印が付く', async () => {
     const a = admin();
     render(<KarteSeatSection engines={a} />);
-    fireEvent.click(await screen.findByRole('radio', { name: /今泉/ }));
+    fireEvent.click(await screen.findByRole('radio', { name: /職員J/ }));
     await waitFor(() => expect(a.setKarte).toHaveBeenCalledWith({ seat_user_id: 'u-1' }));
-    await waitFor(() => expect(screen.getByRole('radio', { name: /今泉/ })).toBeChecked());
+    await waitFor(() => expect(screen.getByRole('radio', { name: /職員J/ })).toBeChecked());
   });
 
   it('前に選んだ方がサインアウトしていても見せ、Gemini で作ると添える', async () => {
@@ -66,7 +66,7 @@ describe('KarteSeatSection', () => {
     fireEvent.click(await screen.findByRole('radio', { name: /録音した本人/ }));
     await waitFor(() => expect(a.setKarte).toHaveBeenCalledWith({ mode: 'presser' }));
     await waitFor(() =>
-      expect(screen.queryByRole('radio', { name: /今泉/ })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('radio', { name: /職員J/ })).not.toBeInTheDocument(),
     );
   });
 
@@ -74,7 +74,7 @@ describe('KarteSeatSection', () => {
     const a = admin();
     a.setKarte.mockRejectedValueOnce(new Error('その方は ChatGPT にサインインしていません'));
     render(<KarteSeatSection engines={a} />);
-    fireEvent.click(await screen.findByRole('radio', { name: /今泉/ }));
+    fireEvent.click(await screen.findByRole('radio', { name: /職員J/ }));
     expect(await screen.findByRole('alert')).toHaveTextContent('サインインしていません');
   });
 
@@ -113,7 +113,7 @@ describe('KarteSeatSection', () => {
       seats: [
         {
           user_id: 'u-1',
-          name: '今泉',
+          name: '職員J',
           me: true,
           state: 'ok',
           engines: { codex: { state: 'missing' }, claude: { state: 'ok' } },

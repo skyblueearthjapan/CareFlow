@@ -33,8 +33,8 @@ function makeReq(over: Partial<PendingRequestV2Read> = {}): PendingRequestV2Read
     id: '12121212-1212-1212-1212-121212121212',
     request_type: 'patient_create',
     payload: {
-      name: '青柳 あい',
-      patient_name: '青柳 あい',
+      name: '利用者A あい',
+      patient_name: '利用者A あい',
       code: 'P-1042',
       kana: 'アオヤギ アイ',
       sex: 'female',

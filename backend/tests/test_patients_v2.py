@@ -180,7 +180,7 @@ async def test_create_patient_visit_category_defaults_to_psychiatric(client, db)
 
 @pytest.mark.asyncio
 async def test_patch_patient_visit_category_to_general(client, db) -> None:
-    """PATCH で「一般」に切り替えられる (兼行様・近藤様の運用)。"""
+    """PATCH で「一般」に切り替えられる (利用者C様・利用者K様の運用)。"""
     admin = await _make_user(db, "v2-vc-patch@example.com", "admin")
     res = await client.post(
         "/api/v1/patients",

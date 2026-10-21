@@ -37,8 +37,8 @@ const STAFF_X = '00000000-0000-4000-8000-0000000000ff'; // staffRows に無い�
 const TRACK_WIDTH = 660;
 
 const rows: StaffTimelineRow[] = [
-  { staffId: STAFF_1, name: '宇田川　優莉', office: '稲毛' },
-  { staffId: STAFF_2, name: '髙梨　桂子', office: '都賀' },
+  { staffId: STAFF_1, name: '職員D　秋子', office: '稲毛' },
+  { staffId: STAFF_2, name: '職員B　桂子', office: '都賀' },
   { staffId: UNASSIGNED_ROW_KEY, name: '（担当なし）' },
 ];
 
@@ -139,13 +139,13 @@ describe('StaffTimelineView — 描画', () => {
     renderView();
 
     // 氏名の全角スペースは jsdom 側で正規化されるため姓で照合する
-    expect(screen.getByTestId(`tl-lane-${STAFF_1}`)).toHaveTextContent('宇田川');
-    expect(screen.getByTestId(`tl-lane-${STAFF_2}`)).toHaveTextContent('髙梨');
+    expect(screen.getByTestId(`tl-lane-${STAFF_1}`)).toHaveTextContent('職員D');
+    expect(screen.getByTestId(`tl-lane-${STAFF_2}`)).toHaveTextContent('職員B');
     expect(screen.getByTestId(`tl-lane-${UNASSIGNED_ROW_KEY}`)).toHaveTextContent('（担当なし）');
 
     const bar = screen.getByTestId('tl-bar-v1');
     expect(bar.tagName).toBe('BUTTON');
-    expect(bar.getAttribute('aria-label')).toBe('10:00〜10:30 山田　太郎 担当 宇田川　優莉');
+    expect(bar.getAttribute('aria-label')).toBe('10:00〜10:30 山田　太郎 担当 職員D　秋子');
     expect(bar).not.toHaveAttribute('aria-disabled');
     // 8:00 起点 660分 → 10:00 は 120/660
     expect(bar.style.left).toBe(`${(120 / 660) * 100}%`);
@@ -676,7 +676,7 @@ describe('StaffTimelineView — スタッフ入れ替え (氏名 ⠿ DnD)', () =
     const ghost = dt.setDragImage.mock.calls[0]?.[0] as HTMLElement;
     expect(ghost).toBeInstanceOf(HTMLElement);
     // 氏名 + 拠点 + 何が起きるか を載せる (既定のスナップショットでは分からない)
-    expect(ghost.textContent).toContain('宇田川');
+    expect(ghost.textContent).toContain('職員D');
     expect(ghost.textContent).toContain('稲毛');
     expect(ghost.textContent).toContain('予定を入れ替え');
   });
@@ -736,7 +736,7 @@ describe('StaffTimelineView — スタッフ入れ替え (氏名 ⠿ DnD)', () =
     expect(grip).toHaveAttribute('role', 'button');
     expect(grip).toHaveAttribute('tabindex', '0');
     expect(grip.getAttribute('aria-label')).toBe(
-      '宇田川　優莉さんの予定を入れ替える(ドラッグ、または Enter で相手を選ぶ)',
+      '職員D　秋子さんの予定を入れ替える(ドラッグ、または Enter で相手を選ぶ)',
     );
 
     // span role="button" はブラウザが Enter を click に変換しない → keyDown で開く

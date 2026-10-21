@@ -78,10 +78,10 @@ def test_w25_manager_not_duplicated_to_non_m_course() -> None:
     Bug #1 の再現条件: manager を fixed_staff_by_course に含め、
     かつ当日勤務しているシナリオ。
     """
-    manager = _make_staff("川名-manager", role="manager")
+    manager = _make_staff("職員A-manager", role="manager")
     s1 = _make_staff("本名-S1")
-    s2 = _make_staff("高岡-S2")
-    s3 = _make_staff("宇田川-S3")
+    s2 = _make_staff("職員E-S2")
+    s3 = _make_staff("職員D-S3")
     s4 = _make_staff("熊澤-S4")
 
     # 月曜: A, B, C, D, E, M の 6 コース
@@ -125,9 +125,9 @@ def test_w25_manager_not_duplicated_when_not_working_that_day() -> None:
     manager が free_staff に残って E 等に割当てられてしまう問題を修正。
     """
     # manager は月曜のみ勤務
-    manager = _make_staff("川名-manager", role="manager", work_days=frozenset([0]))
+    manager = _make_staff("職員A-manager", role="manager", work_days=frozenset([0]))
     s1 = _make_staff("本名-S1", work_days=frozenset(range(6)))
-    s2 = _make_staff("高岡-S2", work_days=frozenset(range(6)))
+    s2 = _make_staff("職員E-S2", work_days=frozenset(range(6)))
 
     # 火曜 (weekday=1): M コース (manager は非勤務) + A, B コース
     weekday = 1
@@ -190,7 +190,7 @@ async def test_w25_staff_assigned_course_staff_excluded_from_free(db) -> None:
     )
     takaoka = Staff(
         code="W25-TAKAOKA",
-        name="高岡 真由美",
+        name="職員E 由美",
         sex="female",
         role="staff",
         status="active",

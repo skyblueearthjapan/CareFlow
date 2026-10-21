@@ -27,7 +27,7 @@ describe('Phase G-86 — patientCreateSchema の code 任意化', () => {
   });
 
   it('code 入力あり → 従来どおりその値を保持 (前後空白は trim)', () => {
-    const parsed = patientCreateSchema.parse({ code: ' P-1042 ', name: '青柳 あい' });
+    const parsed = patientCreateSchema.parse({ code: ' P-1042 ', name: '利用者A あい' });
     expect(parsed.code).toBe('P-1042');
   });
 

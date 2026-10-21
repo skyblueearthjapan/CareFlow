@@ -101,9 +101,15 @@ function item(id: string, dateIso: string) {
       date: dom,
       start_time: '10:00',
       end_time: '11:00',
-      staff1: '川名',
+      staff1: '職員A',
     },
-    after: { user_name: '田中', date: dom, start_time: '10:30', end_time: '11:30', staff1: '川名' },
+    after: {
+      user_name: '田中',
+      date: dom,
+      start_time: '10:30',
+      end_time: '11:30',
+      staff1: '職員A',
+    },
     include: true,
     comment: null,
     created_at: '',
@@ -140,7 +146,7 @@ function _filled(dateIso: string, overrides: Record<string, string> = {}) {
     date: String(Number.parseInt(dateIso.slice(8, 10), 10)),
     start_time: '10:00',
     end_time: '11:00',
-    staff1: '川名',
+    staff1: '職員A',
     ...overrides,
   });
 }
@@ -213,8 +219,8 @@ function visitDiff() {
       kind: 'visit',
       action: 'update',
       externalId: DIFF_VISIT,
-      title: '久須見',
-      patient_name: '久須見',
+      title: '利用者D',
+      patient_name: '利用者D',
       start: '10:30',
       end: '11:15',
       beforeStart: '10:00',
@@ -256,7 +262,7 @@ function eventDiff() {
       beforeEnd: null,
       after: {
         staff_id: null,
-        staff_name: '髙梨',
+        staff_name: '職員B',
         date: FUTURE_DAY,
         start: '13:00',
         end: '14:00',
@@ -422,14 +428,14 @@ describe('SyncBar — ⇩ カイポケから取り込む', () => {
     const rows = screen.getAllByTestId('sync-in-row');
     expect(rows).toHaveLength(2);
     // 「誰が・何が・どう変わる」の 1 文
-    expect(rows[0]).toHaveTextContent('久須見 様 10:30');
+    expect(rows[0]).toHaveTextContent('利用者D 様 10:30');
     expect(rows[0]).toHaveTextContent('担当 熊澤 → 佐藤');
     expect(rows[0]).toHaveTextContent('カイポケ側で変わっている');
     expect(rows[1]).toHaveTextContent('カイポケにだけある');
 
     // 選ぶまで詳細は出さない
     expect(screen.queryByTestId('diff-detail-card')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /久須見/ }));
+    fireEvent.click(screen.getByRole('button', { name: /利用者D/ }));
     expect(await screen.findByTestId('diff-detail-card')).toBeInTheDocument();
     await waitFor(() =>
       expect(onSelectDiff).toHaveBeenCalledWith(expect.objectContaining({ kind: 'visit' })),
@@ -932,7 +938,7 @@ describe('SyncBar — 🔄 同期確認', () => {
       staffQualifications: [
         {
           staffId: null,
-          name: '川名　千恵',
+          name: '職員A　千恵',
           kaipokeQualification: '准看護師',
           rakusukeQualification: null,
           status: 'ambiguous',
@@ -1049,7 +1055,7 @@ describe('SyncBar — 非稼働患者', () => {
       inactive_groups: [
         {
           patient_id: 'p1',
-          patient_name: '小湊',
+          patient_name: '利用者B',
           status: 'admitted',
           status_label: '入院中',
           count: 4,
@@ -1062,7 +1068,7 @@ describe('SyncBar — 非稼働患者', () => {
     await openOutPanel();
 
     const line = screen.getByTestId('sync-out-inactive-group');
-    expect(line).toHaveTextContent('小湊 様 入院中の取消 4 件');
+    expect(line).toHaveTextContent('利用者B 様 入院中の取消 4 件');
     expect(line).not.toHaveTextContent('送信対象外');
     expect(screen.queryByTestId('sync-out-inactive-residue')).toBeNull();
   });
@@ -1073,7 +1079,7 @@ describe('SyncBar — 非稼働患者', () => {
       inactive_groups: [
         {
           patient_id: 'p1',
-          patient_name: '小湊',
+          patient_name: '利用者B',
           status: 'admitted',
           status_label: '入院中',
           count: 4,
@@ -1086,7 +1092,7 @@ describe('SyncBar — 非稼働患者', () => {
     await openOutPanel();
 
     const line = screen.getByTestId('sync-out-inactive-group');
-    expect(line).toHaveTextContent('小湊 様 入院中の取消 1 件');
+    expect(line).toHaveTextContent('利用者B 様 入院中の取消 1 件');
     expect(line).toHaveTextContent('（うち過去 3 件は送信対象外）');
   });
 
@@ -1136,7 +1142,7 @@ describe('SyncBar — 非稼働患者', () => {
     expect(row).toHaveTextContent('非稼働患者の行（削除候補）');
 
     // 行を選ぶと詳細カードにステータスのバッジが出る。
-    fireEvent.click(within(row).getByText(/久須見/));
+    fireEvent.click(within(row).getByText(/利用者D/));
     expect(screen.getByTestId('diff-detail-inactive')).toHaveTextContent('入院中');
   });
 

@@ -542,7 +542,7 @@ function makeCrossOffice(over: Partial<CrossOfficeNotice> = {}): CrossOfficeNoti
     course_code: 'A',
     course_office_name: '都賀拠点',
     staff_id: 'b2222222-2222-2222-2222-222222222222',
-    staff_name: '宇田川優莉',
+    staff_name: '職員D秋子',
     staff_office_name: '稲毛拠点',
     ...over,
   };
@@ -553,8 +553,8 @@ function makeSwap(over: Partial<RescueSwapNotice> = {}): RescueSwapNotice {
     course_id: 'c1111111-1111-1111-1111-111111111111',
     weekday: 1,
     course_code: 'B',
-    before_staff_name: '高岡スタッフ',
-    after_staff_name: '宇田川優莉',
+    before_staff_name: '職員Eスタッフ',
+    after_staff_name: '職員D秋子',
     ...over,
   };
 }
@@ -625,7 +625,7 @@ describe('AssignWarningDialog — 4段ソルバ Stage 2 + v2.0 新Stage 3 notice
     const row = screen.getByTestId('assign-cross-office-row');
     expect(row).toHaveTextContent('月');
     expect(row).toHaveTextContent('A');
-    expect(row).toHaveTextContent('宇田川優莉');
+    expect(row).toHaveTextContent('職員D秋子');
     expect(row).toHaveTextContent('稲毛拠点');
     expect(row).toHaveTextContent('都賀拠点');
   });
@@ -660,8 +660,8 @@ describe('AssignWarningDialog — 4段ソルバ Stage 2 + v2.0 新Stage 3 notice
     expect(row).toBeInTheDocument();
     expect(row).toHaveTextContent('火');
     expect(row).toHaveTextContent('B');
-    expect(row).toHaveTextContent('高岡スタッフ');
-    expect(row).toHaveTextContent('宇田川優莉');
+    expect(row).toHaveTextContent('職員Eスタッフ');
+    expect(row).toHaveTextContent('職員D秋子');
   });
 
   it('0件のセクションは描画しない', () => {

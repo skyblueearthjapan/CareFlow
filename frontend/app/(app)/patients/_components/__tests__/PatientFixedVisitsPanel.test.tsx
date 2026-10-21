@@ -1561,7 +1561,7 @@ describe('PatientFixedVisitsPanel', () => {
         status: 'planned',
         // BE の許可リスト (_RESET_DELETABLE_SOURCES) に含まれる = 作り直しで消える側.
         source: 'auto',
-        staff_name: '高岡',
+        staff_name: '職員E',
         created_at: '2026-09-01T00:00:00',
         updated_at: '2026-09-01T00:00:00',
         ...over,
@@ -1636,7 +1636,7 @@ describe('PatientFixedVisitsPanel', () => {
       setupMocks({
         reads: [],
         visits: [
-          makeVisit({ id: '00000000-0000-0000-0000-0000000000a1', staff_name: '高岡' }),
+          makeVisit({ id: '00000000-0000-0000-0000-0000000000a1', staff_name: '職員E' }),
           makeVisit({
             id: '00000000-0000-0000-0000-0000000000a2',
             visit_date: '2026-09-15',
@@ -1647,7 +1647,7 @@ describe('PatientFixedVisitsPanel', () => {
             id: '00000000-0000-0000-0000-0000000000a3',
             visit_date: '2026-09-16',
             source: 'manual_week',
-            staff_name: '髙梨',
+            staff_name: '職員B',
           }),
         ],
       });
@@ -1660,14 +1660,16 @@ describe('PatientFixedVisitsPanel', () => {
 
       const removed = await screen.findByTestId('pfv-scope-removed');
       expect(removed).toHaveTextContent('消える予定 1 件');
-      expect(screen.getByTestId('pfv-scope-removed-list')).toHaveTextContent('9/14(月) 09:30 高岡');
+      expect(screen.getByTestId('pfv-scope-removed-list')).toHaveTextContent(
+        '9/14(月) 09:30 職員E',
+      );
 
       const prot = screen.getByTestId('pfv-scope-protected');
       expect(prot).toHaveTextContent('保護される予定 2 件');
       expect(prot).toHaveTextContent('今週のみ・取込・実施済み/手動');
       const protList = screen.getByTestId('pfv-scope-protected-list');
       expect(protList).toHaveTextContent('熊澤');
-      expect(protList).toHaveTextContent('髙梨');
+      expect(protList).toHaveTextContent('職員B');
 
       // 型は月曜 1 件のみ。月曜 (9/14) は保護日ではないので作られる。
       expect(screen.getByTestId('pfv-scope-created')).toHaveTextContent('作られる予定 1 件');

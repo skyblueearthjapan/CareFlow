@@ -184,11 +184,11 @@ def test_duplicate_flag_on_actual_side() -> None:
 
 
 def _omata_case():
-    """2026-07-29 小俣様の実データ形: 正の実績 + 職種未設定の実績 (時刻違い)。"""
-    plan = _csv(_row(staff1="看護A", day=29, patient="小俣 本名", start="16:25", end="17:00"))
+    """2026-07-29 利用者E様の実データ形: 正の実績 + 職種未設定の実績 (時刻違い)。"""
+    plan = _csv(_row(staff1="看護A", day=29, patient="利用者E 本名", start="16:25", end="17:00"))
     actual = _csv(
-        _row(staff1="看護A", day=29, patient="小俣 本名", start="16:25", end="17:00"),
-        _row(staff1="看護A", day=29, patient="小俣 本名", start="16:00", end="16:35", job1=""),
+        _row(staff1="看護A", day=29, patient="利用者E 本名", start="16:25", end="17:00"),
+        _row(staff1="看護A", day=29, patient="利用者E 本名", start="16:00", end="16:35", job1=""),
     )
     return _report(plan, actual)
 
@@ -359,8 +359,8 @@ def _grade_case(**kwargs: Any):
 
 
 def test_assistant_nurse_with_nurse_service_is_tagged() -> None:
-    """高岡(准看護師) の行にサービス内容「…・正看」→ 資格不整合."""
-    report = _grade_case(staff1="高岡 真由美", job1="准看護師", service=SVC_NURSE)
+    """職員E(准看護師) の行にサービス内容「…・正看」→ 資格不整合."""
+    report = _grade_case(staff1="職員E 由美", job1="准看護師", service=SVC_NURSE)
     entry = _only(report)
     assert TAG_GRADE in entry.tags
     assert "サービス内容が担当者の資格と合っていません" in entry.advice
@@ -372,14 +372,14 @@ def test_assistant_nurse_with_nurse_service_is_tagged() -> None:
 
 
 def test_nurse_with_assistant_service_is_tagged() -> None:
-    """髙梨(看護師) の行にサービス内容「…・准看」→ 資格不整合."""
-    entry = _only(_grade_case(staff1="髙梨 桂子", job1="看護師", service=SVC_ASSISTANT))
+    """職員B(看護師) の行にサービス内容「…・准看」→ 資格不整合."""
+    entry = _only(_grade_case(staff1="職員B 桂子", job1="看護師", service=SVC_ASSISTANT))
     assert TAG_GRADE in entry.tags
 
 
 def test_assistant_nurse_alone_with_assistant_service_is_not_tagged() -> None:
     """准看 1 名だけ × 「…・准看」は正しい組み合わせ → タグなし."""
-    entry = _only(_grade_case(staff1="高岡 真由美", job1="准看護師", service=SVC_ASSISTANT))
+    entry = _only(_grade_case(staff1="職員E 由美", job1="准看護師", service=SVC_ASSISTANT))
     assert TAG_GRADE not in entry.tags
     assert entry.tags == []
 
@@ -388,9 +388,9 @@ def test_nurse_with_assistant_accompanying_and_nurse_service_is_not_tagged() -> 
     """正看(職員1) + 准看(職員2) × 「…・正看」→ 正看が関わるので正しい."""
     entry = _only(
         _grade_case(
-            staff1="髙梨 桂子",
+            staff1="職員B 桂子",
             job1="看護師",
-            staff2="高岡 真由美",
+            staff2="職員E 由美",
             job2="准看護師",
             service=SVC_NURSE,
         )
@@ -402,9 +402,9 @@ def test_assistant_primary_with_nurse_accompanying_and_assistant_service_is_tagg
     """准看(職員1) + 正看(職員2) × 「…・准看」→ 正看が関わるので 正看 が正 → タグ."""
     entry = _only(
         _grade_case(
-            staff1="高岡 真由美",
+            staff1="職員E 由美",
             job1="准看護師",
-            staff2="髙梨 桂子",
+            staff2="職員B 桂子",
             job2="看護師",
             service=SVC_ASSISTANT,
         )
@@ -414,7 +414,7 @@ def test_assistant_primary_with_nurse_accompanying_and_assistant_service_is_tagg
 
 def test_unknown_job_is_not_tagged() -> None:
     """職種が空 / 看護師でも准看護師でもない (PT 等) → 判断材料が無いのでタグなし."""
-    untyped = _only(_grade_case(staff1="高岡 真由美", job1="", service=SVC_ASSISTANT))
+    untyped = _only(_grade_case(staff1="職員E 由美", job1="", service=SVC_ASSISTANT))
     assert TAG_GRADE not in untyped.tags
     pt = _only(_grade_case(staff1="理学 太郎", job1="理学療法士", service=SVC_ASSISTANT))
     assert TAG_GRADE not in pt.tags
@@ -424,7 +424,7 @@ def test_grade_mismatch_on_plan_only_row_is_tagged() -> None:
     """片側 (予定のみ) の行でも立つ = 予定・実績の両方を見ている."""
     plan = _csv(
         _row(
-            staff1="高岡 真由美",
+            staff1="職員E 由美",
             job1="准看護師",
             day=3,
             patient="山田 太郎",
@@ -442,14 +442,14 @@ def test_grade_mismatch_on_plan_only_row_is_tagged() -> None:
 def test_long_term_care_rows_are_not_grade_tagged() -> None:
     """(m4) 介護保険の行は対象外 — 正看/准看の区分は医療保険の話."""
     entry = _only(
-        _grade_case(staff1="高岡 真由美", job1="准看護師", service=SVC_NURSE, business="介護保険")
+        _grade_case(staff1="職員E 由美", job1="准看護師", service=SVC_NURSE, business="介護保険")
     )
     assert TAG_GRADE not in entry.tags
 
 
 def test_html_shows_the_grade_mismatch_chip_and_column() -> None:
     html_text = render_plan_actual_html(
-        _grade_case(staff1="高岡 真由美", job1="准看護師", service=SVC_NURSE)
+        _grade_case(staff1="職員E 由美", job1="准看護師", service=SVC_NURSE)
     )
     assert TAG_GRADE in html_text
     assert "サービス内容の請求区分（正看／准看）が" in html_text  # 読み方の項目

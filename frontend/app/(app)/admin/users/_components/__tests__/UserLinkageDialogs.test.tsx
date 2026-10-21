@@ -17,7 +17,7 @@ const { mockCreate, mockUpdate, hooks } = vi.hoisted(() => ({
   mockUpdate: vi.fn(),
   hooks: {
     staffList: [
-      { id: 'staff-1', name: '川名 千恵', code: 'S001', deleted_at: null },
+      { id: 'staff-1', name: '職員A 千恵', code: 'S001', deleted_at: null },
       { id: 'staff-2', name: '佐藤 花子', code: 'S002', deleted_at: null },
       { id: 'staff-3', name: '田中 一郎', code: 'S003', deleted_at: null },
     ] as unknown[],

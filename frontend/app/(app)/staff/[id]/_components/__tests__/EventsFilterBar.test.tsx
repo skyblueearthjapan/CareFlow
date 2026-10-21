@@ -118,12 +118,12 @@ describe('EventsFilterBar — 検索', () => {
     });
     expect(onChange).not.toHaveBeenCalled();
 
-    fireEvent.change(input, { target: { value: ' 面談 松岡 ' } });
+    fireEvent.change(input, { target: { value: ' 面談 職員G ' } });
     act(() => {
       vi.advanceTimersByTime(400);
     });
     expect(onChange).toHaveBeenCalledTimes(1);
-    expect(onChange.mock.calls[0][0]).toMatchObject({ q: '面談 松岡' });
+    expect(onChange.mock.calls[0][0]).toMatchObject({ q: '面談 職員G' });
   });
 });
 

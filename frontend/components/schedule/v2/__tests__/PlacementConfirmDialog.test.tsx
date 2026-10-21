@@ -86,7 +86,7 @@ function renderDialog(over: Partial<PlacementConfirmDialogProps> = {}) {
       }}
       target={{
         weekday: 3,
-        staffName: '宇田川 優莉',
+        staffName: '職員D 秋子',
         courseOptions: [OPT_A],
         defaultTemplateId: TPL_A,
       }}
@@ -109,7 +109,7 @@ describe('PlacementConfirmDialog — 曜日の警告', () => {
     renderDialog({
       target: {
         weekday: 0,
-        staffName: '宇田川 優莉',
+        staffName: '職員D 秋子',
         courseOptions: [OPT_A],
         defaultTemplateId: TPL_A,
       },
@@ -200,7 +200,7 @@ describe('PlacementConfirmDialog — 既定の開始時刻', () => {
 describe('PlacementConfirmDialog — コース候補 0 / 1 / 2 件', () => {
   it('0 件: 受け皿の M すら無いことを告げて配置不可', () => {
     const { onConfirm } = renderDialog({
-      target: { weekday: 3, staffName: '宇田川 優莉', courseOptions: [], defaultTemplateId: null },
+      target: { weekday: 3, staffName: '職員D 秋子', courseOptions: [], defaultTemplateId: null },
     });
     expect(screen.getByTestId('pcd-course-none').textContent).toContain(
       '受け皿になるコース（M）が見つかりません',
@@ -231,7 +231,7 @@ describe('PlacementConfirmDialog — コース候補 0 / 1 / 2 件', () => {
     renderDialog({
       target: {
         weekday: 3,
-        staffName: '宇田川 優莉',
+        staffName: '職員D 秋子',
         courseOptions: [{ templateId: 'tpl-M', label: 'M（担当なし枠）', officeName: '稲毛' }],
         defaultTemplateId: 'tpl-M',
         crossOfficeExcluded: true,
@@ -259,7 +259,7 @@ describe('PlacementConfirmDialog — コース候補 0 / 1 / 2 件', () => {
     const { onConfirm } = renderDialog({
       target: {
         weekday: 3,
-        staffName: '宇田川 優莉',
+        staffName: '職員D 秋子',
         courseOptions: [OPT_A, OPT_B],
         defaultTemplateId: null,
       },

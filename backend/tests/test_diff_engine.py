@@ -244,8 +244,8 @@ def test_normalize_names_merges_spacing_variants() -> None:
 
 def test_normalize_names_staff_diff_becomes_edit_not_pair() -> None:
     """氏名スペース差 + 担当違い → delete+add ではなく edit 1 件に畳まれる."""
-    cur = CSV_HEADER + _kaipoke_row(user="今井　康敦", staff1="宇田川　優莉", svc="A")
-    opt = CSV_HEADER + _kaipoke_row(user="今井 康敦", staff1="髙梨桂子", svc="A")
+    cur = CSV_HEADER + _kaipoke_row(user="今井　康敦", staff1="職員D　秋子", svc="A")
+    opt = CSV_HEADER + _kaipoke_row(user="今井 康敦", staff1="職員B桂子", svc="A")
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
     )
@@ -273,8 +273,8 @@ def test_date_change_prefers_nearest_day() -> None:
 
 def test_normalize_names_merges_kanji_variants() -> None:
     """異体字 (髙/高) 差も同一人物に束ねる (レビュー指摘: マスタ突合の正規化へ委譲)."""
-    cur = CSV_HEADER + _kaipoke_row(user="髙梨　太郎", svc="A", start="09:00", end="10:00")
-    opt = CSV_HEADER + _kaipoke_row(user="高梨太郎", svc="A", start="09:00", end="10:00")
+    cur = CSV_HEADER + _kaipoke_row(user="職員B　太郎", svc="A", start="09:00", end="10:00")
+    opt = CSV_HEADER + _kaipoke_row(user="職員B太郎", svc="A", start="09:00", end="10:00")
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
     )
@@ -287,9 +287,9 @@ def test_normalize_names_merges_kanji_variants() -> None:
 
 
 def test_normalize_names_ignores_staff_spacing_variants() -> None:
-    """担当者名「髙梨桂子」(らく助) と「髙梨　桂子」(カイポケ) は同一人物 → 偽 edit を出さない."""
-    cur = CSV_HEADER + _kaipoke_row(user="前川　心愛", staff1="髙梨　桂子", svc="A")
-    opt = CSV_HEADER + _kaipoke_row(user="前川　心愛", staff1="髙梨桂子", svc="A")
+    """担当者名「職員B桂子」(らく助) と「職員B　桂子」(カイポケ) は同一人物 → 偽 edit を出さない."""
+    cur = CSV_HEADER + _kaipoke_row(user="利用者H　夏子", staff1="職員B　桂子", svc="A")
+    opt = CSV_HEADER + _kaipoke_row(user="利用者H　夏子", staff1="職員B桂子", svc="A")
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
     )
@@ -298,8 +298,8 @@ def test_normalize_names_ignores_staff_spacing_variants() -> None:
 
 def test_normalize_names_still_detects_real_staff_change() -> None:
     """正規化しても別人への担当変更は edit として検出される."""
-    cur = CSV_HEADER + _kaipoke_row(user="前川　心愛", staff1="髙梨　桂子", svc="A")
-    opt = CSV_HEADER + _kaipoke_row(user="前川　心愛", staff1="宇田川　優莉", svc="A")
+    cur = CSV_HEADER + _kaipoke_row(user="利用者H　夏子", staff1="職員B　桂子", svc="A")
+    opt = CSV_HEADER + _kaipoke_row(user="利用者H　夏子", staff1="職員D　秋子", svc="A")
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
     )
@@ -307,9 +307,9 @@ def test_normalize_names_still_detects_real_staff_change() -> None:
 
 
 def test_normalize_names_merges_maki_variant() -> None:
-    """患者名の異体字 槇/槙 (「槇 恵」vs「槙　恵」) は同一人物として束ねる."""
-    cur = CSV_HEADER + _kaipoke_row(user="槙　恵", svc="A", start="12:00", end="12:35")
-    opt = CSV_HEADER + _kaipoke_row(user="槇 恵", svc="A", start="12:00", end="12:35")
+    """患者名の異体字 槇/槙 (「槇田 一郎」vs「槙田　一郎」) は同一人物として束ねる."""
+    cur = CSV_HEADER + _kaipoke_row(user="槙田　一郎", svc="A", start="12:00", end="12:35")
+    opt = CSV_HEADER + _kaipoke_row(user="槇田 一郎", svc="A", start="12:00", end="12:35")
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
     )
@@ -342,8 +342,8 @@ def test_general_patient_not_matched_to_psychiatric_service() -> None:
     Pass2 が結んでしまい、差分なしの edit すら出ない (= 送っても直らない) か
     中身のない edit になっていた。
     """
-    cur = CSV_HEADER + _kaipoke_row(user="兼行　様", svc=PSY_NURSE)
-    opt = CSV_HEADER + _kaipoke_row(user="兼行　様", svc=GEN_NURSE)
+    cur = CSV_HEADER + _kaipoke_row(user="利用者C　様", svc=PSY_NURSE)
+    opt = CSV_HEADER + _kaipoke_row(user="利用者C　様", svc=GEN_NURSE)
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
     )
@@ -361,8 +361,8 @@ def test_general_patient_with_staff_change_is_not_edit() -> None:
 
     担当だけ見れば edit だが、サービス内容が違う行は edit では直せない。
     """
-    cur = CSV_HEADER + _kaipoke_row(user="兼行　様", staff1="宇田川　優莉", svc=PSY_NURSE)
-    opt = CSV_HEADER + _kaipoke_row(user="兼行　様", staff1="川名　千恵", svc=GEN_NURSE)
+    cur = CSV_HEADER + _kaipoke_row(user="利用者C　様", staff1="職員D　秋子", svc=PSY_NURSE)
+    opt = CSV_HEADER + _kaipoke_row(user="利用者C　様", staff1="職員A　千恵", svc=GEN_NURSE)
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
     )
@@ -370,7 +370,7 @@ def test_general_patient_with_staff_change_is_not_edit() -> None:
         f"edit に化けた: {[(c.action, c.staff1_from, c.staff1_to) for c in corrections]}"
     )
     add = next(c for c in corrections if c.action == "add")
-    assert add.staff1_to == "川名　千恵"
+    assert add.staff1_to == "職員A　千恵"
     assert add.service_type == GEN_NURSE
 
 
@@ -418,7 +418,7 @@ def test_service_prefix_growth_still_matches() -> None:
 # ===========================================================================
 # 請求区分 (正看/准看) が変わる行の扱い (2026-09-11)
 #
-# 2026-09-03 W37 送信の実害: 担当を 髙梨(正看) → 高岡(准看) に変えた行が
+# 2026-09-03 W37 送信の実害: 担当を 職員B(正看) → 職員E(准看) に変えた行が
 # ``edit`` として送られ、カイポケ側は **担当だけ入れ替わってサービス内容は
 # 正看のまま** 残った (6 件・請求に影響)。カイポケの編集ダイアログはサービス
 # 内容を変更できない (設計 §3-1)。
@@ -448,17 +448,17 @@ def test_service_grade_helper() -> None:
 
 
 def test_grade_change_staff_swap_stays_edit_with_optimized_service() -> None:
-    """(a) 髙梨(正看) → 高岡(准看)・同じ日/同じ時刻 → edit 1 件.
+    """(a) 職員B(正看) → 職員E(准看)・同じ日/同じ時刻 → edit 1 件.
 
     印が立ち、``service_type`` は **らく助側 (准看)**、``service_type_from`` は
     **カイポケ現況**。送る値を現況側のままにすると、RPA の再追加で古い資格が
     書き戻されて請求が狂う。
     """
     cur = CSV_HEADER + _kaipoke_row(
-        user="齋藤　様", staff1="髙梨　桂子", svc=PSY_BARE, start="09:30", end="10:05"
+        user="齋藤　様", staff1="職員B　桂子", svc=PSY_BARE, start="09:30", end="10:05"
     )
     opt = CSV_HEADER + _kaipoke_row(
-        user="齋藤　様", staff1="高岡　真由美", svc=PSY_ASSISTANT, start="09:30", end="10:05"
+        user="齋藤　様", staff1="職員E　由美", svc=PSY_ASSISTANT, start="09:30", end="10:05"
     )
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
@@ -470,13 +470,13 @@ def test_grade_change_staff_swap_stays_edit_with_optimized_service() -> None:
     assert edit.grade_change is True
     assert edit.service_type == PSY_ASSISTANT, "送るサービス内容はらく助側でなければならない"
     assert edit.service_type_from == PSY_BARE, "復旧用に現況の値を残すこと"
-    assert edit.staff1_from == "髙梨　桂子"
-    assert edit.staff1_to == "高岡　真由美"
+    assert edit.staff1_from == "職員B　桂子"
+    assert edit.staff1_to == "職員E　由美"
 
 
 def test_grade_change_assistant_to_nurse_stays_edit_with_optimized_service() -> None:
-    """(b) 逆向き (高岡 准看 → 熊澤 正看) も edit 1 件・らく助側の値."""
-    cur = CSV_HEADER + _kaipoke_row(user="岡村　様", staff1="高岡　真由美", svc=PSY_ASSISTANT)
+    """(b) 逆向き (職員E 准看 → 熊澤 正看) も edit 1 件・らく助側の値."""
+    cur = CSV_HEADER + _kaipoke_row(user="岡村　様", staff1="職員E　由美", svc=PSY_ASSISTANT)
     opt = CSV_HEADER + _kaipoke_row(user="岡村　様", staff1="熊澤　真理奈", svc=PSY_BARE)
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
@@ -494,8 +494,8 @@ def test_suffixed_grade_pair_same_slot_becomes_single_edit() -> None:
     放っておくと **対になっていない delete+add** になり、add だけ失敗すると
     予定が消える (9/7 週の本番 21 件がこの形)。担当も一緒に直る。
     """
-    cur = CSV_HEADER + _kaipoke_row(user="齋藤　様", staff1="髙梨　桂子", svc=PSY_NURSE)
-    opt = CSV_HEADER + _kaipoke_row(user="齋藤　様", staff1="高岡　真由美", svc=PSY_ASSISTANT)
+    cur = CSV_HEADER + _kaipoke_row(user="齋藤　様", staff1="職員B　桂子", svc=PSY_NURSE)
+    opt = CSV_HEADER + _kaipoke_row(user="齋藤　様", staff1="職員E　由美", svc=PSY_ASSISTANT)
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
     )
@@ -506,14 +506,14 @@ def test_suffixed_grade_pair_same_slot_becomes_single_edit() -> None:
     assert edit.grade_change is True
     assert edit.service_type == PSY_ASSISTANT
     assert edit.service_type_from == PSY_NURSE
-    assert edit.staff1_from == "髙梨　桂子"
-    assert edit.staff1_to == "高岡　真由美"
+    assert edit.staff1_from == "職員B　桂子"
+    assert edit.staff1_to == "職員E　由美"
 
 
 def test_suffixed_grade_pair_same_staff_same_time_becomes_single_edit() -> None:
     """(a'') 担当も時刻も同じで区分だけ違う行も 1 件の edit (放置すると直らない)."""
-    cur = CSV_HEADER + _kaipoke_row(user="齋藤　様", staff1="高岡　真由美", svc=PSY_NURSE)
-    opt = CSV_HEADER + _kaipoke_row(user="齋藤　様", staff1="高岡　真由美", svc=PSY_ASSISTANT)
+    cur = CSV_HEADER + _kaipoke_row(user="齋藤　様", staff1="職員E　由美", svc=PSY_NURSE)
+    opt = CSV_HEADER + _kaipoke_row(user="齋藤　様", staff1="職員E　由美", svc=PSY_ASSISTANT)
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
     )
@@ -542,8 +542,8 @@ def test_suffixed_grade_pair_with_different_start_stays_delete_add() -> None:
 
 def test_suffixed_grade_pair_not_merged_when_flag_is_off() -> None:
     """門が閉じている (flag_grade_change=False) 間は従来どおり delete+add・印なし."""
-    cur = CSV_HEADER + _kaipoke_row(user="齋藤　様", staff1="髙梨　桂子", svc=PSY_NURSE)
-    opt = CSV_HEADER + _kaipoke_row(user="齋藤　様", staff1="高岡　真由美", svc=PSY_ASSISTANT)
+    cur = CSV_HEADER + _kaipoke_row(user="齋藤　様", staff1="職員B　桂子", svc=PSY_NURSE)
+    opt = CSV_HEADER + _kaipoke_row(user="齋藤　様", staff1="職員E　由美", svc=PSY_ASSISTANT)
     corrections = compare_schedules_from_content(
         cur,
         opt,
@@ -557,9 +557,9 @@ def test_suffixed_grade_pair_not_merged_when_flag_is_off() -> None:
 
 
 def test_same_grade_staff_change_stays_edit() -> None:
-    """(c) 区分が変わらない担当変更 (髙梨 → 川名・どちらも正看) は印を立てない."""
-    cur = CSV_HEADER + _kaipoke_row(user="園田　様", staff1="髙梨　桂子", svc=PSY_NURSE)
-    opt = CSV_HEADER + _kaipoke_row(user="園田　様", staff1="川名　千恵", svc=PSY_NURSE)
+    """(c) 区分が変わらない担当変更 (職員B → 職員A・どちらも正看) は印を立てない."""
+    cur = CSV_HEADER + _kaipoke_row(user="園田　様", staff1="職員B　桂子", svc=PSY_NURSE)
+    opt = CSV_HEADER + _kaipoke_row(user="園田　様", staff1="職員A　千恵", svc=PSY_NURSE)
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
     )
@@ -567,7 +567,7 @@ def test_same_grade_staff_change_stays_edit() -> None:
     assert corrections[0].grade_change is False
     assert corrections[0].service_type == PSY_NURSE
     assert corrections[0].service_type_from == ""
-    assert corrections[0].staff1_to == "川名　千恵"
+    assert corrections[0].staff1_to == "職員A　千恵"
 
 
 def test_time_only_change_same_grade_stays_edit() -> None:
@@ -590,7 +590,7 @@ def test_date_change_with_grade_change_keeps_action_and_takes_optimized_service(
     """
     cur = CSV_HEADER + _kaipoke_row(user="藤江　様", date="3", svc=PSY_BARE, start="12:00")
     opt = CSV_HEADER + _kaipoke_row(
-        user="藤江　様", date="4", svc=PSY_ASSISTANT, staff1="高岡　真由美", start="12:00"
+        user="藤江　様", date="4", svc=PSY_ASSISTANT, staff1="職員E　由美", start="12:00"
     )
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
@@ -618,10 +618,10 @@ def test_date_change_same_grade_stays_date_change() -> None:
 def test_time_change_with_grade_change_keeps_edit_and_takes_optimized_service() -> None:
     """(g) 担当変更 + 時刻変更 + 区分変更 → edit のまま・印あり・らく助側の値."""
     cur = CSV_HEADER + _kaipoke_row(
-        user="武藤　様", staff1="髙梨　桂子", svc=PSY_BARE, start="09:00", end="09:35"
+        user="武藤　様", staff1="職員B　桂子", svc=PSY_BARE, start="09:00", end="09:35"
     )
     opt = CSV_HEADER + _kaipoke_row(
-        user="武藤　様", staff1="高岡　真由美", svc=PSY_ASSISTANT, start="11:00", end="11:35"
+        user="武藤　様", staff1="職員E　由美", svc=PSY_ASSISTANT, start="11:00", end="11:35"
     )
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
@@ -636,10 +636,10 @@ def test_time_change_with_grade_change_keeps_edit_and_takes_optimized_service() 
 def test_end_time_only_change_with_grade_change_keeps_edit() -> None:
     """(g') 終了時刻だけ動く行も同じ扱い (edit・印あり・らく助側の値)."""
     cur = CSV_HEADER + _kaipoke_row(
-        user="武藤　様", staff1="髙梨　桂子", svc=PSY_BARE, start="09:00", end="09:35"
+        user="武藤　様", staff1="職員B　桂子", svc=PSY_BARE, start="09:00", end="09:35"
     )
     opt = CSV_HEADER + _kaipoke_row(
-        user="武藤　様", staff1="高岡　真由美", svc=PSY_ASSISTANT, start="09:00", end="10:05"
+        user="武藤　様", staff1="職員E　由美", svc=PSY_ASSISTANT, start="09:00", end="10:05"
     )
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
@@ -656,8 +656,8 @@ def test_inbound_direction_never_flags_or_rewrites_service() -> None:
     らく助は訪問ごとのサービス内容を持たないので、取り込み方向では意味が無い。
     向きの指定は ``local_diff`` が渡す。
     """
-    cur = CSV_HEADER + _kaipoke_row(user="武藤　様", staff1="髙梨　桂子", svc=PSY_BARE)
-    opt = CSV_HEADER + _kaipoke_row(user="武藤　様", staff1="高岡　真由美", svc=PSY_ASSISTANT)
+    cur = CSV_HEADER + _kaipoke_row(user="武藤　様", staff1="職員B　桂子", svc=PSY_BARE)
+    opt = CSV_HEADER + _kaipoke_row(user="武藤　様", staff1="職員E　由美", svc=PSY_ASSISTANT)
     corrections = compare_schedules_from_content(
         cur,
         opt,
@@ -674,8 +674,8 @@ def test_inbound_direction_never_flags_or_rewrites_service() -> None:
 
 def test_event_rows_without_service_are_not_flagged() -> None:
     """サービス内容が空の行 (イベント) は区分不明 → 印なし."""
-    cur = CSV_HEADER + _kaipoke_row(user="朝会", business="個別業務", svc="", staff1="髙梨　桂子")
-    opt = CSV_HEADER + _kaipoke_row(user="朝会", business="個別業務", svc="", staff1="高岡　真由美")
+    cur = CSV_HEADER + _kaipoke_row(user="朝会", business="個別業務", svc="", staff1="職員B　桂子")
+    opt = CSV_HEADER + _kaipoke_row(user="朝会", business="個別業務", svc="", staff1="職員E　由美")
     corrections = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True
     )
@@ -694,10 +694,10 @@ def test_rpa_payload_carries_grade_change_and_service_type_from() -> None:
     )
 
     cur = CSV_HEADER + _kaipoke_row(
-        user="齋藤　様", staff1="髙梨　桂子", svc=PSY_BARE, start="09:30", end="10:05"
+        user="齋藤　様", staff1="職員B　桂子", svc=PSY_BARE, start="09:30", end="10:05"
     )
     opt = CSV_HEADER + _kaipoke_row(
-        user="齋藤　様", staff1="高岡　真由美", svc=PSY_ASSISTANT, start="09:30", end="10:05"
+        user="齋藤　様", staff1="職員E　由美", svc=PSY_ASSISTANT, start="09:30", end="10:05"
     )
     correction = compare_schedules_from_content(
         cur, opt, target_week_start=1, target_week_end=7, normalize_names=True

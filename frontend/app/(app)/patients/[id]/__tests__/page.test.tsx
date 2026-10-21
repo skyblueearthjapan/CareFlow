@@ -88,7 +88,7 @@ vi.mock('@/lib/queries/visit-recordings', () => ({
           patient_id: 'patient-0001',
           patient_name: '山田 花子',
           staff_id: 'st-1',
-          staff_name: '川名 幸子',
+          staff_name: '職員A 幸子',
           recorded_at: '2026-09-17T05:08:00Z',
           status: 'summarized',
           summary_text: '「足が重い」との訴え。',

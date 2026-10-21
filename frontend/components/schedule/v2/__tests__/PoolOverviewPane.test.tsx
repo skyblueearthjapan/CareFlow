@@ -552,14 +552,14 @@ describe('PoolOverviewPane', () => {
               patient_id: 'p1',
               status: 'admitted',
               status_label: '入院中',
-              message: '小湊 花子様は入院中のため予定に入れられません',
+              message: '利用者B 花子様は入院中のため予定に入れられません',
               patient_name: null,
             },
             {
               patient_id: 'p2',
               status: 'suspended',
               status_label: '一時休止',
-              message: '藤原 太郎様は一時休止のため予定に入れられません',
+              message: '利用者F 太郎様は一時休止のため予定に入れられません',
               patient_name: null,
             },
           ],
@@ -567,11 +567,11 @@ describe('PoolOverviewPane', () => {
       },
     );
 
-    render(<PoolOverviewPane {...BASE_PROPS} patients={[makePatient('p1', '小湊')]} />);
+    render(<PoolOverviewPane {...BASE_PROPS} patients={[makePatient('p1', '利用者B')]} />);
     fireEvent.click(screen.getByTestId('pool-overview-compute-button'));
 
     expect(mockToast.warning).toHaveBeenCalledWith(
-      '小湊 花子様は入院中のため除外しました（ほか 1 名）',
+      '利用者B 花子様は入院中のため除外しました（ほか 1 名）',
     );
   });
 
@@ -585,7 +585,7 @@ describe('PoolOverviewPane', () => {
       },
     );
 
-    render(<PoolOverviewPane {...BASE_PROPS} patients={[makePatient('p1', '小湊')]} />);
+    render(<PoolOverviewPane {...BASE_PROPS} patients={[makePatient('p1', '利用者B')]} />);
     fireEvent.click(screen.getByTestId('pool-overview-compute-button'));
 
     expect(mockToast.warning).not.toHaveBeenCalled();

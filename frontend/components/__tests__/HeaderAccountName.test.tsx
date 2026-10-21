@@ -38,8 +38,8 @@ describe('Header — アカウントの名前', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('名前があれば名前を出す', async () => {
-    openMenuWith({ displayName: '今泉 勇二', username: 'a001', email: 'boss@x.jp' });
-    expect(await screen.findByText('今泉 勇二')).toBeInTheDocument();
+    openMenuWith({ displayName: '職員J 次郎', username: 'a001', email: 'boss@x.jp' });
+    expect(await screen.findByText('職員J 次郎')).toBeInTheDocument();
   });
 
   it('名前が空ならログイン ID を大文字で出す', async () => {

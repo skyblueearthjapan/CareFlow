@@ -24,7 +24,7 @@ function staff(id: string, name: string, isTrainee = true): StaffRead {
 
 function baseProps(over: Partial<AccompanimentBarProps> = {}): AccompanimentBarProps {
   return {
-    staffOptions: [staff('s1', '髙梨'), staff('s2', '川名')],
+    staffOptions: [staff('s1', '職員B'), staff('s2', '職員A')],
     selectedStaffId: 's1',
     onSelectStaff: vi.fn(),
     targetMode: 'course',
@@ -83,7 +83,7 @@ describe('AccompanimentBar', () => {
     render(
       <AccompanimentBar
         {...baseProps({
-          staffOptions: [staff('s1', '髙梨'), staff('g1', '熊澤', false)],
+          staffOptions: [staff('s1', '職員B'), staff('g1', '熊澤', false)],
         })}
       />,
     );
@@ -91,7 +91,7 @@ describe('AccompanimentBar', () => {
     // 一般スタッフが候補に出る (旧実装は is_trainee のみだった)。
     expect(within(select).getByRole('option', { name: '熊澤' })).toBeInTheDocument();
     // 新人はバッジ付き + 先頭グループ。
-    expect(within(select).getByRole('option', { name: '髙梨（新人）' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: '職員B（新人）' })).toBeInTheDocument();
     const groups = select.querySelectorAll('optgroup');
     expect(Array.from(groups).map((g) => g.getAttribute('label'))).toEqual(['新人', 'スタッフ']);
   });

@@ -289,7 +289,7 @@ describe('MonitorDetailPanel', () => {
           kind: 'arrival',
           reason_label: 'インターホン待ち',
           reason_text: null,
-          by_name: '川名 幸子',
+          by_name: '職員A 幸子',
           created_at: '2026-09-18T04:10:00Z',
         },
       ],
@@ -304,7 +304,7 @@ describe('MonitorDetailPanel', () => {
     expect(box.textContent).toContain('時刻の調整');
     expect(box.textContent).toContain('到着 12:56（読取 13:06）');
     expect(box.textContent).toContain('理由: インターホン待ち');
-    expect(box.textContent).toContain('川名 幸子 9/18 13:10');
+    expect(box.textContent).toContain('職員A 幸子 9/18 13:10');
     // 文言ルール (PO): 「直す」「修正」「補正」は使わない。モニターは閲覧のみ。
     expect(screen.getByTestId('monitor-detail-visit').textContent).not.toMatch(/直す|修正|補正/);
     expect(screen.queryByRole('button', { name: /保存|合わせる/ })).toBeNull();

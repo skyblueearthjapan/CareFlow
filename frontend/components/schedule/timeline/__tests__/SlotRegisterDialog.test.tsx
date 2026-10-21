@@ -19,7 +19,7 @@ const ctx = (over: Partial<SlotRegisterContext> = {}): SlotRegisterContext => ({
 });
 
 const patients: SlotPatientOption[] = [
-  { id: 'p1', name: '青柳 あい', defaultDurationMin: 45, shortage: 2 },
+  { id: 'p1', name: '利用者A あい', defaultDurationMin: 45, shortage: 2 },
   { id: 'p2', name: '佐藤 二郎', defaultDurationMin: 60, shortage: 1 },
 ];
 
@@ -82,13 +82,19 @@ describe('SlotRegisterDialog', () => {
   it('枠の担当を NG 指定している患者はセレクトに ⛔NG が付く', () => {
     renderDialog({
       patients: [
-        { id: 'p1', name: '青柳 あい', defaultDurationMin: 45, shortage: 2, ngWithSlotStaff: true },
+        {
+          id: 'p1',
+          name: '利用者A あい',
+          defaultDurationMin: 45,
+          shortage: 2,
+          ngWithSlotStaff: true,
+        },
         { id: 'p2', name: '佐藤 二郎', defaultDurationMin: 60, shortage: 1 },
       ],
     });
     const select = screen.getByTestId('slot-register-patient-select');
     const opts = Array.from(select.querySelectorAll('option')).map((o) => o.textContent ?? '');
-    expect(opts.some((t) => t.startsWith('⛔NG 青柳 あい'))).toBe(true);
+    expect(opts.some((t) => t.startsWith('⛔NG 利用者A あい'))).toBe(true);
     expect(opts.some((t) => t.includes('⛔NG 佐藤 二郎'))).toBe(false);
     // 未選択のうちは警告帯を出さない。
     expect(screen.queryByTestId('slot-register-ng-warning')).not.toBeInTheDocument();
@@ -97,14 +103,20 @@ describe('SlotRegisterDialog', () => {
   it('NG 患者を選ぶと警告帯が出る (ブロックはしない)', () => {
     renderDialog({
       patients: [
-        { id: 'p1', name: '青柳 あい', defaultDurationMin: 45, shortage: 2, ngWithSlotStaff: true },
+        {
+          id: 'p1',
+          name: '利用者A あい',
+          defaultDurationMin: 45,
+          shortage: 2,
+          ngWithSlotStaff: true,
+        },
       ],
     });
     fireEvent.change(screen.getByTestId('slot-register-patient-select'), {
       target: { value: 'p1' },
     });
     const warn = screen.getByTestId('slot-register-ng-warning');
-    expect(warn).toHaveTextContent('青柳 あい');
+    expect(warn).toHaveTextContent('利用者A あい');
     expect(warn).toHaveTextContent('田中 一郎さん');
     expect(warn).toHaveTextContent('NGスタッフに指定しています');
     // 確定ボタンは無効化しない (通せる = 確認は BE の 422 → 確認ダイアログ)。

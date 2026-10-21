@@ -243,7 +243,7 @@ async def test_smart_apply_dry_run_writes_nothing(client, db, stub_kaipoke) -> N
     assert tue.start_time == time(10, 0)
 
 
-# --- 日跨ぎ date_change (2026-09-11 久須見様の事故の根治) ---------------------
+# --- 日跨ぎ date_change (2026-09-11 利用者D様の事故の根治) ---------------------
 # 差分パート (打刻あり日) と置換パート (打刻なし日) の境界を **またぐ** date_change。
 # 差分シートは週全体で作られるため、移動元と移動先が別パートの担当になり得る。
 

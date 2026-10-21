@@ -101,7 +101,7 @@ async def _seed(db, staff: Staff) -> None:
         day="2026-08-14",
         start="15:00",
         end="16:00",
-        title="面談 松岡",
+        title="面談 職員G",
         note="ご自宅にて",
     )
     await _add_event(
@@ -158,7 +158,7 @@ async def test_q_matches_title_and_note(client, db) -> None:
 
     # note 側のヒット (title には「自宅」が無い)
     res = await client.get(f"/api/v1/staff/{staff.id}/events?q=ご自宅", headers=headers)
-    assert _titles(res) == ["面談 松岡"]
+    assert _titles(res) == ["面談 職員G"]
 
     # 前後の空白は無視 / 0 件は空配列
     res = await client.get(f"/api/v1/staff/{staff.id}/events?q=%20%20", headers=headers)
@@ -255,7 +255,7 @@ async def test_hide_regular_is_driven_by_defaults_table(client, db) -> None:
 
     同じデータ・同じリクエストでも、``staff_event_defaults`` に「朝会」を
     登録した瞬間に manual の「朝会」が hide_regular で消える。逆に defaults に
-    「面談 松岡」を入れればそれも消える = 判定はテーブル駆動。
+    「面談 職員G」を入れればそれも消える = 判定はテーブル駆動。
     """
     admin = await _make_user(db, "evf-hide2@example.com", "admin")
     staff = await _make_staff(db)
@@ -281,7 +281,7 @@ async def test_hide_regular_is_driven_by_defaults_table(client, db) -> None:
     assert "朝会" not in after
     assert set(after) == {
         "カンファレンス",
-        "面談 松岡",
+        "面談 職員G",
         "研修：基本マナー",
         "鈴木乃愛様 担当者会議",
     }
@@ -293,12 +293,12 @@ async def test_hide_regular_is_driven_by_defaults_table(client, db) -> None:
             weekday=4,
             start_time=time(15, 0),
             end_time=time(16, 0),
-            title="面談 松岡",
+            title="面談 職員G",
         )
     )
     await db.commit()
     after2 = _titles(await client.get(url, headers=headers))
-    assert "面談 松岡" not in after2
+    assert "面談 職員G" not in after2
 
     # hide_regular なしなら全件のまま (defaults は既定表示に影響しない)
     plain = await client.get(f"/api/v1/staff/{staff.id}/events", headers=headers)
@@ -339,7 +339,7 @@ async def test_filters_combine_with_range(client, db) -> None:
         headers=headers,
     )
     assert res.status_code == 200
-    assert _titles(res) == ["鈴木乃愛様 担当者会議", "研修：基本マナー", "面談 松岡"]
+    assert _titles(res) == ["鈴木乃愛様 担当者会議", "研修：基本マナー", "面談 職員G"]
 
     res = await client.get(
         f"/api/v1/staff/{staff.id}/events?q=会議&hide_regular=true&type=event",

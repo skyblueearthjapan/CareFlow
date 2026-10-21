@@ -7,7 +7,7 @@ import {
 } from '@/components/schedule/timeline/TimelineMoveDialog';
 
 const ctx = (over: Partial<TimelineMoveContext> = {}): TimelineMoveContext => ({
-  patientName: '青柳 あい',
+  patientName: '利用者A あい',
   fromLabel: '稲毛A',
   toLabel: '稲毛B',
   weekdayLabel: '月',
@@ -30,7 +30,7 @@ function renderDialog(over: Partial<Parameters<typeof TimelineMoveDialog>[0]> = 
 describe('TimelineMoveDialog', () => {
   it('文脈 (患者名・時刻・コース変更) を表示する', () => {
     renderDialog();
-    expect(screen.getByText('青柳 あい')).toBeInTheDocument();
+    expect(screen.getByText('利用者A あい')).toBeInTheDocument();
     expect(screen.getByText('09:30')).toBeInTheDocument();
     expect(screen.getByText('13:15')).toBeInTheDocument();
     expect(screen.getByText('稲毛A')).toBeInTheDocument();

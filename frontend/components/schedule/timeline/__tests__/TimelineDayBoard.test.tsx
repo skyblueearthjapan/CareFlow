@@ -338,7 +338,7 @@ describe('TimelineDayBoard', () => {
       <TlVisitDragGhost
         visit={visit({
           id: 'g1',
-          patient_name: '青柳 あい',
+          patient_name: '利用者A あい',
           patient_sex: 'female',
           start_time: '09:30:00',
           end_time: '10:15:00',
@@ -348,7 +348,7 @@ describe('TimelineDayBoard', () => {
     );
     const ghost = screen.getByTestId('tl-drag-ghost');
     expect(ghost.style.background).toContain('female');
-    expect(screen.getByText('青柳 あい')).toBeInTheDocument();
+    expect(screen.getByText('利用者A あい')).toBeInTheDocument();
     expect(screen.getByText(/09:30・45分/)).toBeInTheDocument();
     // ピン表示はカード右上に打ち込む CornerPushPin (PO要望 2026-07-08)。
     expect(ghost.querySelector('[data-icon="corner-push-pin"]')).not.toBeNull();

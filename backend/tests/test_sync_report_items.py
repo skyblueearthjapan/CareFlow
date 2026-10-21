@@ -146,7 +146,7 @@ def test_row_content_shape_from_sheet_item() -> None:
             "date": "9",
             "start_time": "10:00",
             "end_time": "10:35",
-            "staff1": "高岡　花子",
+            "staff1": "職員E　花子",
             "staff2": "",
             "service_type": "精神基本療養費Ⅰ・正看",
             "user_name": "山田　太郎",
@@ -165,7 +165,7 @@ def test_row_content_shape_from_sheet_item() -> None:
     assert content["reason"] is None and content["reason_label"] is None
     assert set(content["before"]) == {"date", "start", "end", "staff1", "staff2", "service"}
     assert content["before"]["staff1"] == "熊澤　妙子"
-    assert content["after"]["staff1"] == "高岡　花子"
+    assert content["after"]["staff1"] == "職員E　花子"
     assert content["ref"] == {"sheet_item_id": str(item.id), "visit_id": None}
 
 
@@ -217,7 +217,7 @@ def test_replace_contents_days_skips_and_trainee_solo() -> None:
         week_start=week,
         sunday_skipped=2,
         skipped=[_FakeSkip("患者を名寄せできません", "未知　患者", "看護A", "2026-07-08", "11:00")],
-        trainee_solo={"髙梨　桂子": 1},
+        trainee_solo={"職員B　桂子": 1},
         per_day={
             week: {"wiped": 3, "inserted": 2},
             week + timedelta(days=1): {"wiped": 0, "inserted": 1},
@@ -246,7 +246,7 @@ def test_replace_contents_days_skips_and_trainee_solo() -> None:
     assert solo == {
         "kind": "trainee_solo",
         "direction": "inbound",
-        "staff_name": "髙梨　桂子",
+        "staff_name": "職員B　桂子",
         "count": 1,
     }
 
@@ -287,7 +287,7 @@ def test_executor_name_prefers_username_then_staff_then_email() -> None:
             self.name = name
 
     assert sri.executor_name(_U(username="s001")) == "s001"
-    assert sri.executor_name(_U(staff=_S("川名　太郎"))) == "川名　太郎"
+    assert sri.executor_name(_U(staff=_S("職員A　太郎"))) == "職員A　太郎"
     assert sri.executor_name(_U(email="admin-01@example.com")) == "admin-01"
     assert sri.executor_name(_U()) == ""
     assert sri.executor_name(None) == ""
@@ -812,7 +812,7 @@ async def test_replace_inbound_writes_day_and_skip_items(client, db, stub_kaipok
 
     seeded = await _seed_week(db)
     await _seed_course(db, office=seeded["office"], staff=seeded["staff"], weekday=1, code="A")
-    trainee = Staff(name="髙梨　桂子", role="staff", primary_office_id=seeded["office"].id)
+    trainee = Staff(name="職員B　桂子", role="staff", primary_office_id=seeded["office"].id)
     trainee.is_trainee = True
     db.add(trainee)
     await db.commit()
@@ -821,7 +821,7 @@ async def test_replace_inbound_writes_day_and_skip_items(client, db, stub_kaipok
     stub_kaipoke.export_by_month[MONTH] = _kaipoke_csv(
         _kp_row(date(2026, 7, 7), time(14, 0), time(14, 35)),  # 火: 正常
         _kp_row(date(2026, 7, 8), time(11, 0), time(11, 35), patient_name="未知　患者"),
-        _kp_row(date(2026, 7, 9), time(12, 0), time(12, 35), staff_name="髙梨　桂子"),
+        _kp_row(date(2026, 7, 9), time(12, 0), time(12, 35), staff_name="職員B　桂子"),
         _kp_row(date(2026, 7, 12), time(9, 0), time(9, 30)),  # 日曜 → 対象外
     )
 
@@ -856,7 +856,7 @@ async def test_replace_inbound_writes_day_and_skip_items(client, db, stub_kaipok
     assert skip.content["user_name"] == "未知　患者"
     assert skip.status == "skipped" and skip.error_msg == skip.content["reason_label"]
     solo = next(i for i in items if i.content["kind"] == "trainee_solo")
-    assert solo.content["staff_name"] == "髙梨　桂子" and solo.content["count"] == 1
+    assert solo.content["staff_name"] == "職員B　桂子" and solo.content["count"] == 1
 
     job = await db.scalar(select(KaipokeJob).where(KaipokeJob.id == job_id))
     assert job.result_summary["report_meta"]["op_label"] == "カイポケから置換取込"
@@ -870,7 +870,7 @@ async def test_apply_events_writes_event_items(client, db, stub_kaipoke) -> None
     from app.models.staff import Staff
 
     admin = await _make_admin(db, "sri-events-in@example.com")
-    staff = Staff(name="川名　太郎", role="staff")
+    staff = Staff(name="職員A　太郎", role="staff")
     db.add(staff)
     await db.commit()
     await db.refresh(staff)
@@ -886,7 +886,7 @@ async def test_apply_events_writes_event_items(client, db, stub_kaipoke) -> None
                     "action": "add",
                     "externalId": "111:222:2026-09-09",
                     "staffId": str(staff.id),
-                    "staffName": "川名　太郎",
+                    "staffName": "職員A　太郎",
                     "date": "2026-09-09",
                     "start": "09:00",
                     "end": "09:15",
@@ -896,7 +896,7 @@ async def test_apply_events_writes_event_items(client, db, stub_kaipoke) -> None
                     "action": "update",
                     "externalId": "111:333:2026-09-10",
                     "staffId": str(staff.id),
-                    "staffName": "川名　太郎",
+                    "staffName": "職員A　太郎",
                     "date": "2026-09-10",
                     "start": "10:00",
                     "end": "11:00",

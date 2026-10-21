@@ -75,7 +75,7 @@ const BASE = {
   patient_id: 'p-1',
   patient_name: '山田 花子',
   staff_id: 'st-1',
-  staff_name: '川名 幸子',
+  staff_name: '職員A 幸子',
   office_id: 'of-1',
   office_name: '都賀',
   recorded_at: '2026-09-17T05:08:00Z',
@@ -273,13 +273,13 @@ describe('RecordDetailDialog', () => {
 
     mockRecording({
       transcript_json: [
-        { speaker: '川名 看護師', start: 0, text: 'こんにちは。' },
+        { speaker: '職員A 看護師', start: 0, text: 'こんにちは。' },
         { speaker: '山田 花子', start: 6, text: '足が重くてね。' },
       ],
     });
     renderDialog();
     const segs = screen.getByTestId('record-transcript-segments');
-    expect(segs).toHaveTextContent('川名 看護師');
+    expect(segs).toHaveTextContent('職員A 看護師');
     expect(segs).toHaveTextContent('00:06');
     expect(segs).toHaveTextContent('足が重くてね。');
   });

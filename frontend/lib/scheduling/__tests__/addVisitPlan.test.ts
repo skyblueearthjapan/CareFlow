@@ -103,7 +103,7 @@ describe('groupDatesByIsoWeek', () => {
     expect(groupDatesByIsoWeek([])).toEqual([]);
   });
 
-  it('伊藤様のケース (6 日付) は 4 週に分かれる', () => {
+  it('利用者I様のケース (6 日付) は 4 週に分かれる', () => {
     const groups = groupDatesByIsoWeek([
       '2026-09-14',
       '2026-09-17',

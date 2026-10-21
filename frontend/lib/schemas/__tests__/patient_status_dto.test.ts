@@ -20,7 +20,7 @@ describe('boardVisitSchema — source / patient_status', () => {
   const base = {
     visit_id: UUID_A,
     patient_id: UUID_B,
-    patient_name: '小湊 太郎',
+    patient_name: '利用者B 太郎',
     service_minutes: 35,
     start_time: '09:30',
     end_time: '10:05',
@@ -112,7 +112,7 @@ describe('unsentSummaryReadSchema — inactive_groups / inactive_residue', () =>
       inactive_groups: [
         {
           patient_id: UUID_B,
-          patient_name: '小湊 太郎',
+          patient_name: '利用者B 太郎',
           status: 'admitted',
           status_label: '入院中',
           count: 4,
@@ -123,7 +123,7 @@ describe('unsentSummaryReadSchema — inactive_groups / inactive_residue', () =>
     });
     expect(parsed.inactive_groups).toHaveLength(1);
     expect(parsed.inactive_groups[0]).toMatchObject({
-      patient_name: '小湊 太郎',
+      patient_name: '利用者B 太郎',
       count: 4,
       sendable_count: 1,
     });
@@ -138,7 +138,7 @@ describe('unsentSummaryReadSchema — inactive_groups / inactive_residue', () =>
         { patient_id: UUID_B, patient_name: 42, status: null, count: 'x' },
         {
           patient_id: 'p2',
-          patient_name: '藤原 花子',
+          patient_name: '利用者F 花子',
           status_label: '一時休止',
           count: 2,
           sendable_count: 2,
@@ -149,7 +149,7 @@ describe('unsentSummaryReadSchema — inactive_groups / inactive_residue', () =>
     expect(parsed.inactive_groups[0]).toMatchObject({ patient_name: '', count: 0 });
     // sendable_count 欠落は 0 (旧 BE 応答)。
     expect(parsed.inactive_groups[0]!.sendable_count).toBe(0);
-    expect(parsed.inactive_groups[1]).toMatchObject({ patient_name: '藤原 花子', count: 2 });
+    expect(parsed.inactive_groups[1]).toMatchObject({ patient_name: '利用者F 花子', count: 2 });
   });
 
   it('既定の空配列はパースごとに別インスタンス (共有して書き換わらない)', () => {

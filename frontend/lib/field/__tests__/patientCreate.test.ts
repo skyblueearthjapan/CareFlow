@@ -91,7 +91,7 @@ describe('buildProposedVisits', () => {
 
 describe('buildPatientCreatePayload', () => {
   const karte: KarteInput = {
-    name: '青柳 あい',
+    name: '利用者A あい',
     code: 'P-1042',
     kana: 'アオヤギ アイ',
     sex: 'female',
@@ -117,8 +117,8 @@ describe('buildPatientCreatePayload', () => {
     const pv = [{ weekday: 0, start_time: '10:00', duration_min: 60, course_code: 'A' }];
     const p = buildPatientCreatePayload(karte, schedule, pv);
     expect(p.code).toBe('P-1042');
-    expect(p.name).toBe('青柳 あい');
-    expect(p.patient_name).toBe('青柳 あい'); // ApprovePanel ヘッドライン用。
+    expect(p.name).toBe('利用者A あい');
+    expect(p.patient_name).toBe('利用者A あい'); // ApprovePanel ヘッドライン用。
     expect(p.kana).toBe('アオヤギ アイ');
     expect(p.sex).toBe('female');
     expect(p.insurance).toBe('medical');

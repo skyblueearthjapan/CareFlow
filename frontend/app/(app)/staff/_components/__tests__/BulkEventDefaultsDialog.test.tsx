@@ -59,7 +59,7 @@ const bulkMutate = vi.fn();
 function setup(opts: { templates?: unknown[] } = {}) {
   (useStaffList as unknown as Mock).mockReturnValue({
     data: [
-      { id: A, name: '川名 千恵', kana: 'カワナ チエ', code: 's001', status: 'active' },
+      { id: A, name: '職員A 千恵', kana: 'カワナ チエ', code: 's001', status: 'active' },
       { id: B, name: '熊澤 妙子', kana: 'クマザワ タエコ', code: 's002', status: 'active' },
       { id: C, name: '退職 太郎', kana: 'タイショク タロウ', code: 's003', status: 'retired' },
     ],
@@ -96,7 +96,7 @@ function setup(opts: { templates?: unknown[] } = {}) {
       {
         id: 'tpl-personal',
         staff_id: A,
-        title: '面談 松岡',
+        title: '面談 職員G',
         event_type: 'event',
         start_time: null,
         end_time: null,

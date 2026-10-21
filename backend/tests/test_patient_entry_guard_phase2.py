@@ -1075,7 +1075,7 @@ async def test_pool_bulk_apply_excludes_non_active(client, db) -> None:
     """非稼働の placements は落とし、200 + excluded_patients + warnings で返す."""
     admin = await _make_user(db, email="g-pba@example.com")
     office = await _make_office(db)
-    inactive = await _make_patient(db, code="G-PBA", status=INACTIVE, office=office, name="小湊")
+    inactive = await _make_patient(db, code="G-PBA", status=INACTIVE, office=office, name="利用者B")
 
     sim = await client.post(
         "/api/v1/schedule/v2/pool-bulk-simulate",
@@ -1135,7 +1135,7 @@ async def test_pool_bulk_apply_mixed_batch_applies_active_only(client, db) -> No
     office = await _make_office(db)
     active = await _make_patient(db, code="G-PBA-MIX-A", status="active", office=office)
     inactive = await _make_patient(
-        db, code="G-PBA-MIX-B", status=INACTIVE, office=office, name="小湊"
+        db, code="G-PBA-MIX-B", status=INACTIVE, office=office, name="利用者B"
     )
 
     sim = await client.post(

@@ -238,7 +238,7 @@ describe('EngineSettingsSheet', () => {
       providers: ['codex', 'claude'],
       seats: [
         {
-          name: '今泉',
+          name: '職員J',
           me: true,
           engines: { codex: { state: 'ok' }, claude: { state: 'missing' } },
         },
@@ -255,7 +255,7 @@ describe('EngineSettingsSheet', () => {
     fireEvent.click(open);
     const table = await screen.findByRole('table');
     const rows = within(table).getAllByRole('row');
-    expect(rows[1]).toHaveTextContent('今泉（あなた）');
+    expect(rows[1]).toHaveTextContent('職員J（あなた）');
     expect(rows[1]).toHaveTextContent('サインインしています');
     expect(rows[2]).toHaveTextContent('佐藤');
     expect(rows[2]).toHaveTextContent('使えないつなぎ方になっています');

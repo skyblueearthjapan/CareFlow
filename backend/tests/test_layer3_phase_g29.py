@@ -390,7 +390,7 @@ async def test_manager_fallback_e2e_with_real_W21_scenario(db) -> None:  # noqa:
     # manager 1 名
     manager = Staff(
         code="G29-7-M1",
-        name="G29-7 manager 川名",
+        name="G29-7 manager 職員A",
         sex="female",
         role="manager",
         status="active",

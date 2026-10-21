@@ -81,7 +81,7 @@ const impactReactivate = statusImpactSchema.parse({
 const patientFixture = {
   id: PID,
   code: 'P001',
-  name: '小湊',
+  name: '利用者B',
   status: 'admitted',
   created_at: '2026-09-01T00:00:00',
   updated_at: '2026-09-09T00:00:00',
@@ -135,7 +135,7 @@ function renderDialog(over: Partial<React.ComponentProps<typeof PatientStatusCha
   const props = {
     open: true,
     patientId: PID,
-    patientName: '小湊',
+    patientName: '利用者B',
     fromStatus: 'active' as const,
     toStatus: 'admitted' as const,
     onCancel: vi.fn(),
@@ -168,7 +168,7 @@ describe('PatientStatusChangeDialog — 非稼働化 (deactivate)', () => {
   it('見出しと影響件数を表示する', () => {
     renderDialog();
     expect(screen.getByTestId('patient-status-headline')).toHaveTextContent(
-      '小湊様を入院中にします',
+      '利用者B様を入院中にします',
     );
     expect(screen.getByTestId('patient-status-cancel-total')).toHaveTextContent(
       '取消する予定 9 件',
@@ -408,7 +408,7 @@ describe('PatientStatusChangeDialog — 復帰 (reactivate)', () => {
   it('週別の作成件数と再生成チェック (既定 ON) を出す', () => {
     renderDialog({ fromStatus: 'admitted', toStatus: 'active' });
     expect(screen.getByTestId('patient-status-headline')).toHaveTextContent(
-      '小湊様を稼働中に戻します',
+      '利用者B様を稼働中に戻します',
     );
     expect(screen.getByTestId('patient-status-regen-total')).toHaveTextContent('作る予定 8 件');
     expect(screen.getByTestId('patient-status-impact')).toHaveTextContent('9/21週 2 件');

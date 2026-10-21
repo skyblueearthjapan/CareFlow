@@ -50,7 +50,7 @@ const staffMap = new Map<string, StaffRead>([
     STAFF_1,
     {
       id: STAFF_1,
-      name: '宇田川　優莉',
+      name: '職員D　秋子',
       primary_office_id: OFFICE_ID,
       is_trainee: false,
       status: 'active',
@@ -62,7 +62,7 @@ const visits = [
   {
     id: 'v1',
     patient_id: 'p1',
-    patient_name: '朝倉　美夢',
+    patient_name: '職員F　冬子',
     weekday: 0,
     course_template_id: TPL_A,
     start_time: '09:00',

@@ -67,7 +67,7 @@ async def test_build_fixed_assignments_includes_staff_assigned_for_manager(db) -
 
     manager = Staff(
         code="G26-M1",
-        name="G26 manager 川名",
+        name="G26 manager 職員A",
         sex="female",
         role="manager",
         status="active",
@@ -417,9 +417,9 @@ async def test_build_fixed_assignments_preserves_admin_manual_M_assignment(db) -
     ``_build_fixed_assignments`` がそれを上書きしないこと.
 
     シナリオ:
-      - manager 川名 / staff 田中 (manager 以外) を作成
+      - manager 職員A / staff 田中 (manager 以外) を作成
       - M course を status='staff_assigned' + assigned_staff_id=田中 で fixture 作成
-        (= 川名さん休暇日に admin が UI から田中に手動変更した状態)
+        (= 職員Aさん休暇日に admin が UI から田中に手動変更した状態)
       - ``_build_fixed_assignments`` 実行 → M course id が結果 dict に含まれない
         (= manager で上書きしない / W25 fix の admin 手動割付保護と整合)
     """
@@ -429,7 +429,7 @@ async def test_build_fixed_assignments_preserves_admin_manual_M_assignment(db) -
 
     manager = Staff(
         code="G26S1-M1",
-        name="G26S1 manager 川名",
+        name="G26S1 manager 職員A",
         sex="female",
         role="manager",
         status="active",

@@ -96,7 +96,7 @@ describe('compareAdminUsers — 並び順', () => {
 describe('AdminUsersPage — 名前の列', () => {
   beforeEach(() => {
     hooks.usersItems = [
-      user('u-a', 'a001', 'boss@x.jp', { role: 'admin', display_name: '今泉 勇二' }),
+      user('u-a', 'a001', 'boss@x.jp', { role: 'admin', display_name: '職員J 次郎' }),
       user('u-s', 's001', null),
     ];
   });
@@ -108,7 +108,7 @@ describe('AdminUsersPage — 名前の列', () => {
     expect(within(rows[0]).getByText('S001')).toBeInTheDocument();
     expect(within(rows[0]).getAllByText('--').length).toBeGreaterThan(0);
     expect(within(rows[1]).getByText('A001')).toBeInTheDocument();
-    expect(within(rows[1]).getByText('今泉 勇二')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('職員J 次郎')).toBeInTheDocument();
   });
 });
 
@@ -143,14 +143,14 @@ describe('ダイアログ — 名前の入力', () => {
     const { rerender } = render(<UserEditDialog target={target} onClose={() => {}} />);
     const name = screen.getByLabelText('名前（画面に出す呼び名）');
     expect(name).toHaveValue('');
-    fireEvent.change(name, { target: { value: '川名 千恵' } });
+    fireEvent.change(name, { target: { value: '職員A 千恵' } });
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
     expect(mockUpdate).toHaveBeenLastCalledWith({
       id: 'u-1',
-      payload: expect.objectContaining({ display_name: '川名 千恵' }),
+      payload: expect.objectContaining({ display_name: '職員A 千恵' }),
     });
 
-    const named = { ...target, display_name: '川名 千恵' };
+    const named = { ...target, display_name: '職員A 千恵' };
     rerender(<UserEditDialog target={named} onClose={() => {}} />);
     fireEvent.change(screen.getByLabelText('名前（画面に出す呼び名）'), {
       target: { value: '  ' },

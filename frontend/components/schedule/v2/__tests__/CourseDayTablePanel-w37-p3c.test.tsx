@@ -1035,7 +1035,7 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         { id: 'tpl-M', office_id: 'office-honten', label: 'M', ...baseTpl },
       ],
       staff: [
-        { id: SW_STAFF, name: '宇田川 優莉', primary_office_id: 'office-honten', status: 'active' },
+        { id: SW_STAFF, name: '職員D 秋子', primary_office_id: 'office-honten', status: 'active' },
       ],
       courses: [
         {
@@ -1326,7 +1326,7 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         { id: 'tpl-B2', office_id: 'office-b', label: 'B', ...baseTpl },
       ],
       staff: [
-        { id: SW_STAFF, name: '宇田川 優莉', primary_office_id: 'office-honten', status: 'active' },
+        { id: SW_STAFF, name: '職員D 秋子', primary_office_id: 'office-honten', status: 'active' },
       ],
       courses: [
         {
@@ -1640,13 +1640,13 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
   // 週ビューは列でコースが確定している = その曜日の担当も決まっている。
   // 行スタッフを持たない (staffId=null) からと「（担当なし）」と出すのは事実と違う。
   it('WTL-8. 週ビューのドロップでも、確認モーダルはその曜日の担当者名を出す', async () => {
-    setupStaffWeek({ tickets: [makeTicket({ weekday: 0 })] }); // tpl-A の木(3) は 宇田川
+    setupStaffWeek({ tickets: [makeTicket({ weekday: 0 })] }); // tpl-A の木(3) は 職員D
     await act(async () => {
       await dndState.capturedHandlers.onDragEnd!(
         dropOnWeekTimelineCol(`special-ticket:${MARK_ID}`, 'tpl-A', 3, '10:15'),
       );
     });
-    expect(screen.getByTestId('pcd-target').textContent).toContain('宇田川 優莉');
+    expect(screen.getByTestId('pcd-target').textContent).toContain('職員D 秋子');
   });
 
   it('WTL-9. canEdit=false では週ビューに droppable のレイヤを 1 つも描かない', () => {

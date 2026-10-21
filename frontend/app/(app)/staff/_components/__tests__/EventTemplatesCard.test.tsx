@@ -70,7 +70,12 @@ const createMutate = vi.fn();
 const updateMutate = vi.fn();
 const reorderMutate = vi.fn();
 
-function setup(rows: unknown[], history: unknown[] = [], canEdit = true, scope = SHARED_TEMPLATE_SCOPE) {
+function setup(
+  rows: unknown[],
+  history: unknown[] = [],
+  canEdit = true,
+  scope = SHARED_TEMPLATE_SCOPE,
+) {
   (useEventTemplates as unknown as Mock).mockReturnValue({
     data: rows,
     isLoading: false,
@@ -114,14 +119,14 @@ describe('EventTemplatesCard — 一覧', () => {
     setup([
       tpl({ id: 'b', title: '社内研修', event_type: 'training', sort_order: 1 }),
       tpl({ id: 'a', title: 'カンファレンス', sort_order: 0 }),
-      tpl({ id: 'p', title: '面談 松岡', staff_id: STAFF_ID, is_shared: false, sort_order: 0 }),
+      tpl({ id: 'p', title: '面談 職員G', staff_id: STAFF_ID, is_shared: false, sort_order: 0 }),
     ]);
     const items = screen.getAllByRole('listitem');
     expect(items).toHaveLength(2);
     expect(items[0]!.textContent).toContain('カンファレンス');
     expect(items[0]!.textContent).toContain('13:00〜14:00');
     expect(items[1]!.textContent).toContain('社内研修');
-    expect(screen.queryByText('面談 松岡')).toBeNull();
+    expect(screen.queryByText('面談 職員G')).toBeNull();
   });
 
   it('1b. 時刻が無いひな形は「時間はその場で入力」と出る', () => {
@@ -134,7 +139,7 @@ describe('EventTemplatesCard — 一覧', () => {
     setup(
       [
         tpl({ id: 'a', title: 'カンファレンス' }),
-        tpl({ id: 'p', title: '面談 松岡', staff_id: STAFF_ID, is_shared: false }),
+        tpl({ id: 'p', title: '面談 職員G', staff_id: STAFF_ID, is_shared: false }),
       ],
       [],
       true,
@@ -142,7 +147,7 @@ describe('EventTemplatesCard — 一覧', () => {
     );
     const items = screen.getAllByRole('listitem');
     expect(items).toHaveLength(1);
-    expect(items[0]!.textContent).toContain('面談 松岡');
+    expect(items[0]!.textContent).toContain('面談 職員G');
   });
 });
 
@@ -184,7 +189,7 @@ describe('EventTemplatesCard — 並べ替え', () => {
 describe('EventTemplatesCard — 履歴から追加', () => {
   const HISTORY = [
     {
-      title: '面談 松岡',
+      title: '面談 職員G',
       count: 5,
       last_date: '2026-09-01',
       last_start_time: '14:00',
@@ -192,7 +197,7 @@ describe('EventTemplatesCard — 履歴から追加', () => {
       event_type: 'event',
     },
     {
-      title: '打合せ：川名',
+      title: '打合せ：職員A',
       count: 2,
       last_date: '2026-08-10',
       last_start_time: null,
@@ -211,11 +216,11 @@ describe('EventTemplatesCard — 履歴から追加', () => {
     expect(rows).toHaveLength(2);
     expect(rows[0]!.textContent).toContain('× 5回　直近 9/1 14:00〜15:00');
 
-    fireEvent.click(screen.getByTestId('event-template-history-add-面談 松岡'));
+    fireEvent.click(screen.getByTestId('event-template-history-add-面談 職員G'));
     await waitFor(() => expect(createMutate).toHaveBeenCalledTimes(1));
     expect(createMutate.mock.calls[0]![0]).toEqual({
       staff_id: null,
-      title: '面談 松岡',
+      title: '面談 職員G',
       event_type: 'event',
       start_time: '14:00',
       end_time: '15:00',
@@ -227,10 +232,10 @@ describe('EventTemplatesCard — 履歴から追加', () => {
   it('5b. 時刻の無い履歴は時刻 null で作成する', async () => {
     setup([], HISTORY);
     fireEvent.click(screen.getByTestId('event-template-history-toggle'));
-    fireEvent.click(screen.getByTestId('event-template-history-add-打合せ：川名'));
+    fireEvent.click(screen.getByTestId('event-template-history-add-打合せ：職員A'));
     await waitFor(() => expect(createMutate).toHaveBeenCalledTimes(1));
     expect(createMutate.mock.calls[0]![0]).toMatchObject({
-      title: '打合せ：川名',
+      title: '打合せ：職員A',
       start_time: null,
       end_time: null,
     });

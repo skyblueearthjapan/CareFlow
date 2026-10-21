@@ -112,17 +112,17 @@ describe('WeekTimelineBoard 同行モード', () => {
         visits={[wv({ id: 'a', weekday: 0 })]}
         accompaniment={makeBinding({
           active: false,
-          visitBadgeName: (id) => (id === 'a' ? ['髙梨'] : []),
-          courseBadgeName: (cid) => (cid === 't1:0' ? ['川名'] : []),
+          visitBadgeName: (id) => (id === 'a' ? ['職員B'] : []),
+          courseBadgeName: (cid) => (cid === 't1:0' ? ['職員A'] : []),
         })}
       />,
     );
-    expect(screen.getByTestId('wtl-accompaniment-badge-a').textContent).toContain('髙梨');
+    expect(screen.getByTestId('wtl-accompaniment-badge-a').textContent).toContain('職員B');
     // コース同行はスタッフ名の右隣に 👥短縮チップで併記 (別行に積まない=高さ不変・PO要望)。
-    // 「同行: 川名」の全文は title 属性に保持する。
+    // 「同行: 職員A」の全文は title 属性に保持する。
     const courseAcc = screen.getByTestId('wtl-course-accompaniment-t1-0');
-    expect(courseAcc.textContent).toContain('川名');
-    expect(courseAcc.getAttribute('title')).toBe('同行: 川名');
+    expect(courseAcc.textContent).toContain('職員A');
+    expect(courseAcc.getAttribute('title')).toBe('同行: 職員A');
     // モード外では選択ヘッダ (button) は出ない。
     expect(screen.queryByTestId('wtl-course-header-t1-0')).toBeNull();
   });
@@ -130,7 +130,7 @@ describe('WeekTimelineBoard 同行モード', () => {
   it('個別同行バッジは赤い画鋲があれば左へ避ける', () => {
     const acc = makeBinding({
       active: false,
-      visitBadgeName: () => ['髙梨'],
+      visitBadgeName: () => ['職員B'],
     });
     const cls = (v: WeekOverviewVisit) => {
       const { unmount } = render(
@@ -151,16 +151,16 @@ describe('WeekTimelineBoard 同行モード', () => {
         visits={[wv({ id: 'a', weekday: 0 })]}
         accompaniment={makeBinding({
           active: false,
-          visitBadgeName: (id) => (id === 'a' ? ['髙梨', '川名'] : []),
-          courseBadgeName: (cid) => (cid === 't1:0' ? ['熊澤', '青柳'] : []),
+          visitBadgeName: (id) => (id === 'a' ? ['職員B', '職員A'] : []),
+          courseBadgeName: (cid) => (cid === 't1:0' ? ['熊澤', '利用者A'] : []),
         })}
       />,
     );
     const badge = screen.getByTestId('wtl-accompaniment-badge-a');
-    expect(badge.textContent).toContain('髙梨・川名');
-    expect(badge.getAttribute('title')).toBe('同行: 髙梨・川名');
+    expect(badge.textContent).toContain('職員B・職員A');
+    expect(badge.getAttribute('title')).toBe('同行: 職員B・職員A');
     expect(screen.getByTestId('wtl-course-accompaniment-t1-0').getAttribute('title')).toBe(
-      '同行: 熊澤・青柳',
+      '同行: 熊澤・利用者A',
     );
   });
 

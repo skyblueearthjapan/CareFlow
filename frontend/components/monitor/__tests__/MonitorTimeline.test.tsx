@@ -1059,7 +1059,7 @@ describe('MonitorTimeline — 打刻の実時刻の併記 (お客様要望 2026-
           kind: 'arrival',
           reason_label: 'インターホン待ち',
           reason_text: null,
-          by_name: '川名 幸子',
+          by_name: '職員A 幸子',
           created_at: '2026-09-18T04:10:00Z',
         },
       ],
@@ -1090,7 +1090,7 @@ describe('MonitorTimeline — 打刻の実時刻の併記 (お客様要望 2026-
     );
     const badge = screen.getByTestId(`monitor-bar-adjusted-${v.visit_id}`);
     expect(badge.textContent).toBe('調整');
-    const detail = '到着 12:56（読取 13:06）・インターホン待ち・川名 幸子 9/18 13:10';
+    const detail = '到着 12:56（読取 13:06）・インターホン待ち・職員A 幸子 9/18 13:10';
     expect(badge.getAttribute('title')).toBe(detail);
     const title = screen.getByTestId(`monitor-bar-plan-${v.visit_id}`).getAttribute('title');
     expect(title).toContain('｜打刻: 12:56–13:31');

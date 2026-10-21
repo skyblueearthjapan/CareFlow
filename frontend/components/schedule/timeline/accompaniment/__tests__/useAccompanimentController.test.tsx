@@ -39,7 +39,7 @@ function constraintError() {
           patient_id: 'p1',
           patient_name: '山田 太郎',
           staff_id: 's1',
-          staff_name: '髙梨',
+          staff_name: '職員B',
         },
       ],
     },
@@ -75,7 +75,7 @@ function setup(
       isoYear: 2026,
       isoWeek: 29,
       canEdit: true,
-      staffOptions: [staff('s1', '髙梨')],
+      staffOptions: [staff('s1', '職員B')],
       weekVisits,
       resolveCourseId: (t, wd) => `${t}:${wd}`,
       weekdayDateLabel: (wd) => `d${wd}`,
@@ -322,7 +322,7 @@ describe('useAccompanimentController', () => {
   it('スタッフ切替は選択・既定チェック・対象の二択をすべて初期化する', () => {
     const weekVisits = [visit({ visitId: 'v1', courseId: 'c1' })];
     const { result } = setup(
-      { staffOptions: [staff('s1', '髙梨'), staff('g1', '熊澤', false)] },
+      { staffOptions: [staff('s1', '職員B'), staff('g1', '熊澤', false)] },
       weekVisits,
     );
     act(() => result.current.enter());
@@ -375,7 +375,7 @@ describe('useAccompanimentController', () => {
         {
           id: 'l1',
           trainee_staff_id: 's1',
-          staff_name: '髙梨',
+          staff_name: '職員B',
           kind: 'trainee',
           target_type: 'visit',
           source: 'manual',
@@ -393,7 +393,7 @@ describe('useAccompanimentController', () => {
         {
           id: 'l3',
           trainee_staff_id: 'g1',
-          staff_name: '青柳',
+          staff_name: '利用者A',
           kind: 'support',
           target_type: 'course',
           source: 'manual',
@@ -403,8 +403,8 @@ describe('useAccompanimentController', () => {
       isLoading: false,
     } as unknown as ReturnType<typeof queries.useTraineeAccompaniments>);
     const { result } = setup();
-    expect(result.current.binding.visitBadgeName('v1')).toEqual(['熊澤', '髙梨']);
-    expect(result.current.binding.courseBadgeName('c1')).toEqual(['青柳']);
+    expect(result.current.binding.visitBadgeName('v1')).toEqual(['熊澤', '職員B']);
+    expect(result.current.binding.courseBadgeName('c1')).toEqual(['利用者A']);
     expect(result.current.binding.visitBadgeName('v9')).toEqual([]);
   });
 });

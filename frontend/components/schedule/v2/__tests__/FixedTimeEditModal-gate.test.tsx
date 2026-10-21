@@ -27,7 +27,7 @@ vi.mock('@/components/patients/PatientStatusChangeDialog', () => ({
 
 // 氏名解決 (usePatient) もネットワークに出さない。
 vi.mock('@/lib/queries/patients', () => ({
-  usePatient: () => ({ data: { id: 'p1', name: '小湊 花子' } }),
+  usePatient: () => ({ data: { id: 'p1', name: '利用者B 花子' } }),
 }));
 
 const masterMutateAsync = vi.fn();
@@ -52,7 +52,7 @@ const WARNING = {
   code: 'same_address_cluster',
   message: '同住所の訪問が離れています',
   patient_id: PATIENT_ID,
-  patient_name: '小湊 花子',
+  patient_name: '利用者B 花子',
   weekday: 0,
   current_time: '10:00',
   suggested_time: '09:30',
@@ -67,7 +67,7 @@ function notActive() {
       status: 'admitted',
       status_label: '入院中',
       can_override: true,
-      message: '小湊 花子様は入院中のため予定に入れられません',
+      message: '利用者B 花子様は入院中のため予定に入れられません',
     },
   });
 }
@@ -94,7 +94,7 @@ describe('FixedTimeEditModal × PatientNotActiveGate (実配線)', () => {
 
     expect(await screen.findByTestId('patient-not-active-gate')).toBeInTheDocument();
     expect(screen.getByTestId('patient-not-active-message')).toHaveTextContent(
-      '小湊 花子様は入院中のため予定に入れられません',
+      '利用者B 花子様は入院中のため予定に入れられません',
     );
 
     // 「稼働中にして続ける」で Phase 1 の復帰ダイアログへ渡る。

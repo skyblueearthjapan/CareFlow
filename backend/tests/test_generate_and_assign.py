@@ -57,7 +57,7 @@ async def _seed_office_staff_courses(db) -> dict[str, Any]:
 
     s1 = Staff(
         code="HON-01",
-        name="宇田川",
+        name="職員D",
         role="staff",
         status="active",
         primary_office_id=office.id,
@@ -78,7 +78,7 @@ async def _seed_office_staff_courses(db) -> dict[str, Any]:
     )
     s4 = Staff(
         code="HON-04",
-        name="高岡",
+        name="職員E",
         role="staff",
         status="active",
         primary_office_id=office.id,

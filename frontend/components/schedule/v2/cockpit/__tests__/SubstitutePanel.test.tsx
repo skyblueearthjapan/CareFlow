@@ -58,7 +58,7 @@ function cand(staffId: string, name: string, status: 'ok' | 'warn' | 'ng', score
 }
 
 const DATA = {
-  absent_staff: { id: STAFF_OFF, name: '川名' },
+  absent_staff: { id: STAFF_OFF, name: '職員A' },
   date: '2026-08-20',
   weekday: 3,
   groups: [
@@ -67,7 +67,7 @@ const DATA = {
       course_label: '稲毛A',
       visits: [visit(VISIT_1, '佐々木 様'), visit(VISIT_2, '中村 様')],
       candidates: [
-        cand(CAND_OK, '髙梨', 'ok', 12.5),
+        cand(CAND_OK, '職員B', 'ok', 12.5),
         cand(CAND_WARN, '熊澤', 'warn'),
         cand(CAND_NG, '鈴木', 'ng'),
       ],
@@ -93,7 +93,7 @@ function renderPanel(over: Partial<React.ComponentProps<typeof SubstitutePanel>>
   const handlers = { onClose: vi.fn(), onApply: vi.fn() };
   render(
     <SubstitutePanel
-      staff={{ id: STAFF_OFF, name: '川名' }}
+      staff={{ id: STAFF_OFF, name: '職員A' }}
       date="2026-08-20"
       {...handlers}
       {...over}
@@ -111,7 +111,7 @@ describe('SubstitutePanel', () => {
   it('見出しと「予定 N件（コース …）は担当なしに戻します」が出る', () => {
     renderPanel();
     expect(screen.getByTestId('substitute-panel')).toHaveTextContent(
-      '川名さんを 8/20(木) 休みにします',
+      '職員Aさんを 8/20(木) 休みにします',
     );
     const summary = screen.getByTestId('substitute-summary');
     expect(summary).toHaveTextContent('予定 2件');
@@ -128,7 +128,7 @@ describe('SubstitutePanel', () => {
   it('コースを丸ごと引き受けられる人だけを出す (◎ 以外は出さない)', () => {
     renderPanel();
     expect(screen.getByTestId(`substitute-cand-${CAND_OK}`)).toHaveTextContent(
-      '髙梨さんに割り当てる',
+      '職員Bさんに割り当てる',
     );
     expect(screen.getByTestId(`substitute-cand-${CAND_OK}`)).toHaveTextContent('空き');
     expect(screen.queryByTestId(`substitute-cand-${CAND_WARN}`)).toBeNull();
@@ -151,8 +151,8 @@ describe('SubstitutePanel', () => {
             course_id: COURSE_2,
             course_label: '都賀B',
             visits: [visit(VISIT_3, '高橋 様')],
-            // 髙梨はこちらでは △ → 丸ごとは引き受けられない
-            candidates: [cand(CAND_OK, '髙梨', 'warn')],
+            // 職員Bはこちらでは △ → 丸ごとは引き受けられない
+            candidates: [cand(CAND_OK, '職員B', 'warn')],
           },
         ],
       },

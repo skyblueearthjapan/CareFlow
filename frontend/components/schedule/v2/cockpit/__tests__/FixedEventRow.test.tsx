@@ -24,7 +24,7 @@ const MON = '2026-08-17';
 
 const staffMap = new Map<string, StaffRead>([
   [S1, { id: S1, name: '職員A' } as StaffRead],
-  [S2, { id: S2, name: '髙梨' } as StaffRead],
+  [S2, { id: S2, name: '職員B' } as StaffRead],
   [S3, { id: S3, name: '熊澤' } as StaffRead],
 ]);
 
@@ -91,7 +91,7 @@ describe('FixedEventRow', () => {
     expect(band).toHaveTextContent('08:30');
     expect(band).toHaveTextContent('朝会');
     expect(band).toHaveTextContent('休:熊澤');
-    expect(band).toHaveTextContent('今週 髙梨除外');
+    expect(band).toHaveTextContent('今週 職員B除外');
   });
 
   it('帯クリックで「今週だけ外す」「戻す」が onExclude へ', () => {
@@ -208,7 +208,7 @@ describe('FixedEventRow', () => {
       />,
     );
     expect(screen.getByTestId('fixed-event-band-0-12:30')).toHaveTextContent('休:職員A');
-    expect(screen.getByTestId('fixed-event-band-0-12:30')).toHaveTextContent('髙梨');
+    expect(screen.getByTestId('fixed-event-band-0-12:30')).toHaveTextContent('職員B');
     expect(screen.getByTestId('fixed-event-band-0-12:00')).not.toHaveTextContent('休:');
     expect(screen.getByTestId('fixed-event-band-0-16:00')).toHaveTextContent('休:熊澤');
   });

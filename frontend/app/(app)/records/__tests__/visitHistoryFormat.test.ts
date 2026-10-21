@@ -121,12 +121,12 @@ describe('remarkBadges', () => {
     expect(
       remarkBadges({
         state: 'no_departure',
-        remarks: ['退出なし', '予定外の訪問', '代行（予定: 川名 幸子）', 'QRなし'],
+        remarks: ['退出なし', '予定外の訪問', '代行（予定: 職員A 幸子）', 'QRなし'],
       }),
     ).toEqual([
       { label: '退出なし', tone: 'warning' },
       { label: '予定外', tone: 'unplanned', full: '予定外の訪問' },
-      { label: '代行', tone: 'info', full: '代行（予定: 川名 幸子）' },
+      { label: '代行', tone: 'info', full: '代行（予定: 職員A 幸子）' },
       { label: 'QRなし', tone: 'muted' },
     ]);
   });

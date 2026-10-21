@@ -144,7 +144,7 @@ function makeBoard(): BoardResponse {
                 {
                   visit_id: VISIT_ID,
                   patient_id: PATIENT_ID,
-                  patient_name: '青柳 あい',
+                  patient_name: '利用者A あい',
                   patient_kana: 'アオヤギ アイ',
                   insurance: 'med' as const,
                   service_minutes: 60,
@@ -285,7 +285,7 @@ function makePatient(): PatientRead {
   return {
     id: PATIENT_ID,
     code: 'P-1042',
-    name: '青柳 あい',
+    name: '利用者A あい',
     kana: 'アオヤギ アイ',
     sex: 'female',
     status: 'admitted',
@@ -405,7 +405,7 @@ describe('/m 現場ボード (実データ)', () => {
   it('患者カード click でカルテシートが開く (患者詳細の実 API 値)', () => {
     setSession('admin');
     render(<FieldBoardPage />);
-    fireEvent.click(screen.getByText('青柳 あい'));
+    fireEvent.click(screen.getByText('利用者A あい'));
     expect(screen.getByText(/患者コード: P-1042/)).toBeInTheDocument();
   });
 
@@ -762,9 +762,9 @@ describe('/m 現場ボード 頭数ゲート', () => {
 // 実装1: 閲覧の情報拡充 (ステータス/性別制限/複数スタッフ/主担当拠点/週訪問回数/日曜)。
 // 実装2: 編集機能 (manager/admin のみ編集ボタン・staff は閲覧専用・PATCH 呼び出し)。
 
-/** 患者カードを開いてカルテシートを表示する (月曜「青柳 あい」)。 */
+/** 患者カードを開いてカルテシートを表示する (月曜「利用者A あい」)。 */
 function openKarte() {
-  fireEvent.click(screen.getByText('青柳 あい'));
+  fireEvent.click(screen.getByText('利用者A あい'));
 }
 
 describe('/m カルテ 閲覧の情報拡充', () => {
@@ -845,7 +845,7 @@ describe('/m カルテ 編集ボタンの認可', () => {
     render(<FieldBoardPage />);
     openKarte();
     // カルテシートが開いた (ボードカード + シート見出しで氏名が 2 箇所に出る)。
-    expect(screen.getAllByText('青柳 あい').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('利用者A あい').length).toBeGreaterThanOrEqual(2);
     expect(screen.queryByRole('button', { name: 'カルテを編集' })).not.toBeInTheDocument();
   });
 });
@@ -869,16 +869,16 @@ describe('/m カルテ 編集 → 保存', () => {
 
     // 編集フォームが出る (氏名フィールドに初期値)。
     const nameInput = screen.getByLabelText('氏名') as HTMLInputElement;
-    expect(nameInput.value).toBe('青柳 あい');
+    expect(nameInput.value).toBe('利用者A あい');
 
     // 氏名を変更して保存。
-    fireEvent.change(nameInput, { target: { value: '青柳 あい (更新)' } });
+    fireEvent.change(nameInput, { target: { value: '利用者A あい (更新)' } });
     fireEvent.click(screen.getByRole('button', { name: /カルテを保存/ }));
 
     await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
     const submitted = mutate.mock.calls[0][0] as Record<string, unknown>;
     // 主要フィールドが期待値で渡る。
-    expect(submitted.name).toBe('青柳 あい (更新)');
+    expect(submitted.name).toBe('利用者A あい (更新)');
     expect(submitted.code).toBe('P-1042');
     expect(submitted.status).toBe('admitted');
     expect(submitted.sex_restriction).toBe('female_only');

@@ -25,7 +25,7 @@ import { formatStatusChangeMessage, usePatientStatusGate } from '../usePatientSt
 const PID = '00000000-0000-0000-0000-000000000001';
 
 function values(status: PatientFormValues['status']): PatientFormValues {
-  return { ...emptyPatientFormValues, name: '小湊', code: 'P001', status };
+  return { ...emptyPatientFormValues, name: '利用者B', code: 'P001', status };
 }
 
 function result(over: Record<string, unknown> = {}) {
@@ -33,7 +33,7 @@ function result(over: Record<string, unknown> = {}) {
     patient: {
       id: PID,
       code: 'P001',
-      name: '小湊',
+      name: '利用者B',
       status: 'admitted',
       created_at: '2026-09-01T00:00:00',
       updated_at: '2026-09-09T00:00:00',
@@ -46,7 +46,7 @@ function result(over: Record<string, unknown> = {}) {
 
 function setup(initialStatus: string) {
   return renderHook(() =>
-    usePatientStatusGate({ patientId: PID, patientName: '小湊', initialStatus }),
+    usePatientStatusGate({ patientId: PID, patientName: '利用者B', initialStatus }),
   );
 }
 
@@ -198,7 +198,7 @@ describe('usePatientStatusGate — 確認ダイアログ', () => {
     const { result: hook } = renderHook(() =>
       usePatientStatusGate({
         patientId: PID,
-        patientName: '小湊',
+        patientName: '利用者B',
         initialStatus: 'active',
         onStatusChanged,
       }),
@@ -255,7 +255,7 @@ describe('formatStatusChangeMessage', () => {
       patient: {
         id: PID,
         code: 'P001',
-        name: '小湊',
+        name: '利用者B',
         status: 'active',
         created_at: '2026-09-01T00:00:00',
         updated_at: '2026-09-09T00:00:00',

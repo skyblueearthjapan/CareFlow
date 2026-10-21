@@ -63,7 +63,7 @@ function makePatient(): PatientRead {
   return {
     id: PATIENT_ID,
     code: 'P-1042',
-    name: '青柳 あい',
+    name: '利用者A あい',
     kana: 'アオヤギ アイ',
     sex: 'female',
     status: 'admitted',
@@ -152,10 +152,10 @@ describe('PatientManageSheet list ビュー', () => {
   it('検索語を入力すると候補リストが表示される', () => {
     renderSheet();
     fireEvent.change(screen.getByLabelText('既存のお客様を検索'), {
-      target: { value: '青柳' },
+      target: { value: '利用者A' },
     });
     // 候補に患者名 + コードが出る。
-    expect(screen.getByText('青柳 あい')).toBeInTheDocument();
+    expect(screen.getByText('利用者A あい')).toBeInTheDocument();
     expect(screen.getByText('P-1042')).toBeInTheDocument();
   });
 });
@@ -204,25 +204,25 @@ describe('PatientManageSheet 検索編集フロー (edit)', () => {
     setPatient(makePatient());
     renderSheet();
     fireEvent.change(screen.getByLabelText('既存のお客様を検索'), {
-      target: { value: '青柳' },
+      target: { value: '利用者A' },
     });
     // 候補 (氏名) をタップ → edit モードへ。
-    fireEvent.click(screen.getByText('青柳 あい'));
+    fireEvent.click(screen.getByText('利用者A あい'));
 
     // edit モードのフォーム: 氏名/コードに初期値、保存ボタンは「カルテを保存」。
     const nameInput = screen.getByLabelText('氏名') as HTMLInputElement;
-    expect(nameInput.value).toBe('青柳 あい');
+    expect(nameInput.value).toBe('利用者A あい');
     expect((screen.getByLabelText('患者コード') as HTMLInputElement).value).toBe('P-1042');
     expect(screen.getByText('患者コード（必須）')).toBeInTheDocument();
 
     // 氏名を変更して保存 → useUpdatePatient (PATCH) が呼ばれる。
-    fireEvent.change(nameInput, { target: { value: '青柳 あい (更新)' } });
+    fireEvent.change(nameInput, { target: { value: '利用者A あい (更新)' } });
     fireEvent.click(screen.getByRole('button', { name: /カルテを保存/ }));
 
     expect(updateMutate).toHaveBeenCalledTimes(1);
     expect(createMutate).not.toHaveBeenCalled();
     const values = updateMutate.mock.calls[0]![0] as Record<string, unknown>;
-    expect(values.name).toBe('青柳 あい (更新)');
+    expect(values.name).toBe('利用者A あい (更新)');
     expect(values.code).toBe('P-1042');
   });
 });

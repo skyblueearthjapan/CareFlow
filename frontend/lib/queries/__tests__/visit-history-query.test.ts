@@ -181,7 +181,7 @@ describe('parseVisitHistory', () => {
               kind: 'arrival',
               reason_label: 'インターホン待ち',
               reason_text: null,
-              by_name: '川名 幸子',
+              by_name: '職員A 幸子',
               created_at: '2026-09-29T04:10:00Z',
             },
           ],
@@ -193,7 +193,7 @@ describe('parseVisitHistory', () => {
       arrival_adjusted: true,
       departure_manual: false,
       adjust_allowed: true,
-      adjustments: [{ kind: 'arrival', reason_label: 'インターホン待ち', by_name: '川名 幸子' }],
+      adjustments: [{ kind: 'arrival', reason_label: 'インターホン待ち', by_name: '職員A 幸子' }],
     });
   });
 
@@ -241,13 +241,13 @@ describe('parseVisitHistory', () => {
       parseVisitHistory({
         items: [row],
         groups: [
-          { label: '川名 幸子', count: 120, with_arrival: 32 },
+          { label: '職員A 幸子', count: 120, with_arrival: 32 },
           { label: '中村 彩', count: 4 },
           { count: 1 },
         ],
       }).groups,
     ).toEqual([
-      { label: '川名 幸子', count: 120, with_arrival: 32 },
+      { label: '職員A 幸子', count: 120, with_arrival: 32 },
       { label: '中村 彩', count: 4, with_arrival: 0 },
     ]);
   });

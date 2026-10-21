@@ -62,7 +62,7 @@ vi.mock('@/components/patients/PatientStatusChangeDialog', () => ({
 
 // ── 氏名取得 (usePatient) はネットワークに出ないようスタブ。
 vi.mock('@/lib/queries/patients', () => ({
-  usePatient: () => ({ data: { id: 'p1', name: '小湊 花子' } }),
+  usePatient: () => ({ data: { id: 'p1', name: '利用者B 花子' } }),
 }));
 
 import { toast } from '@/components/ui/sonner';
@@ -89,7 +89,7 @@ function notActiveError(overrides: Record<string, unknown> = {}): ApiError {
       status: 'admitted',
       status_label: '入院中',
       can_override: true,
-      message: '小湊 花子様は入院中のため予定に入れられません',
+      message: '利用者B 花子様は入院中のため予定に入れられません',
       ...overrides,
     },
   });
@@ -185,8 +185,8 @@ describe('extractPatientNotActiveDetail', () => {
 
 describe('patientNameFromMessage', () => {
   it('「◯◯様は…」から氏名を拾う', () => {
-    expect(patientNameFromMessage('小湊 花子様は入院中のため予定に入れられません')).toBe(
-      '小湊 花子',
+    expect(patientNameFromMessage('利用者B 花子様は入院中のため予定に入れられません')).toBe(
+      '利用者B 花子',
     );
   });
   it('様が無ければ null', () => {
@@ -223,7 +223,7 @@ describe('PatientNotActiveGate — runGuarded', () => {
     // ❶ 案内ダイアログ
     expect(await screen.findByTestId('patient-not-active-gate')).toBeInTheDocument();
     expect(screen.getByTestId('patient-not-active-message')).toHaveTextContent(
-      '小湊 花子様は入院中のため予定に入れられません',
+      '利用者B 花子様は入院中のため予定に入れられません',
     );
 
     // ❷ 「稼働中にして続ける」→ ステータス変更ダイアログ (toStatus=active)
@@ -231,7 +231,7 @@ describe('PatientNotActiveGate — runGuarded', () => {
     expect(await screen.findByTestId('stub-status-dialog')).toBeInTheDocument();
     expect(screen.getByTestId('stub-status-to')).toHaveTextContent('active');
     expect(screen.getByTestId('stub-status-from')).toHaveTextContent('admitted');
-    expect(screen.getByTestId('stub-status-name')).toHaveTextContent('小湊 花子');
+    expect(screen.getByTestId('stub-status-name')).toHaveTextContent('利用者B 花子');
 
     // ❸ onDone → 再実行して resolve
     await user.click(screen.getByRole('button', { name: 'スタブ: 稼働中にした' }));
@@ -383,7 +383,7 @@ describe('PatientNotActiveGate — runGuarded', () => {
     // 後からの方は即座に reject、ダイアログは最初の患者のまま。
     await waitFor(() => expect(screen.getAllByTestId('multi-err')).toHaveLength(1));
     expect(screen.getByTestId('patient-not-active-message')).toHaveTextContent(
-      '小湊 花子様は入院中のため予定に入れられません',
+      '利用者B 花子様は入院中のため予定に入れられません',
     );
     expect(other).toHaveBeenCalledTimes(1);
 

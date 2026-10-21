@@ -107,7 +107,9 @@ function constraint422(): ApiError {
   return new ApiError('Unprocessable Entity', 422, {
     detail: {
       code: 'constraint_confirmation_required',
-      warnings: [{ kind: 'ng_staff', patient_id: PATIENT, patient_name: '伊藤', staff_id: 's1' }],
+      warnings: [
+        { kind: 'ng_staff', patient_id: PATIENT, patient_name: '利用者I', staff_id: 's1' },
+      ],
     },
   });
 }

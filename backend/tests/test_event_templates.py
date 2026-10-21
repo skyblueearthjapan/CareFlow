@@ -365,7 +365,7 @@ async def test_history_suggestions_aggregates_and_orders(client, db):
     await _make_event(
         db,
         staff,
-        title="  面談 松岡  ",  # trim して集約される
+        title="  面談 職員G  ",  # trim して集約される
         day=today - timedelta(days=5),
         start=time(14, 0),
         end=time(15, 0),
@@ -373,7 +373,7 @@ async def test_history_suggestions_aggregates_and_orders(client, db):
     await _make_event(
         db,
         staff,
-        title="面談 松岡",
+        title="面談 職員G",
         day=today - timedelta(days=1),
         start=time(9, 30),
         end=time(10, 30),
@@ -383,7 +383,7 @@ async def test_history_suggestions_aggregates_and_orders(client, db):
     res = await client.get(f"{BASE}/history-suggestions", headers=_bearer(admin))
     assert res.status_code == 200, res.text
     items = res.json()
-    assert [i["title"] for i in items] == ["カンファレンス", "面談 松岡"]
+    assert [i["title"] for i in items] == ["カンファレンス", "面談 職員G"]
     assert items[0]["count"] == 3
     assert items[1]["count"] == 2
     # 直近 1 件の情報を返す。
@@ -401,7 +401,9 @@ async def test_history_suggestions_excludes_fixed_defaults_and_existing(client, 
     today = date.today()
 
     # (a) source='fixed' は除外。
-    await _make_event(db, staff, title="展開済み固定", day=today - timedelta(days=3), source="fixed")
+    await _make_event(
+        db, staff, title="展開済み固定", day=today - timedelta(days=3), source="fixed"
+    )
     # (b) staff_event_defaults のタイトルに一致する行は除外 (テーブル駆動)。
     db.add(
         StaffEventDefault(

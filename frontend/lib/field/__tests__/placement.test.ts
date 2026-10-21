@@ -256,7 +256,7 @@ describe('buildPatientVisitAddPayload', () => {
 
 describe('buildPatientCreatePlacementPayload', () => {
   const karte: KarteInput = {
-    name: '青柳 あい',
+    name: '利用者A あい',
     code: 'P-1042',
     kana: '',
     sex: '',
@@ -281,7 +281,7 @@ describe('buildPatientCreatePlacementPayload', () => {
   it('patient_create payload に placement/warnings/override_reason を足す', () => {
     const p = buildPatientCreatePlacementPayload(karte, schedule, [visit], extras());
     expect(p.code).toBe('P-1042');
-    expect(p.name).toBe('青柳 あい');
+    expect(p.name).toBe('利用者A あい');
     expect(p.proposed_visits).toEqual([visit]);
     expect(p.placement).toBeTruthy();
     expect(p.warnings).toEqual([]);

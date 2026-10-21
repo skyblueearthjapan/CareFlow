@@ -35,7 +35,7 @@ const WD_CODES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
 
 const ITO: AddVisitPatientOption = {
   id: PATIENT_ID,
-  name: '伊藤',
+  name: '利用者I',
   status: 'active',
   primary_office_id: OFFICE_A,
   lat: 35.6,
@@ -61,7 +61,7 @@ function slot(over: Partial<ProposeSlotItem> & { weekday: number }): ProposeSlot
     weekday_code: WD_CODES[over.weekday] ?? 'Mon',
     course_code: 'A',
     course_label: '稲毛A',
-    staff_name: '髙梨',
+    staff_name: '職員B',
     start_time: '12:00',
     end_time: '12:35',
     score: 1,
@@ -92,7 +92,7 @@ function visit(over: Partial<VisitLite> & { id: string; visit_date: string }): V
     start_time: '09:30',
     end_time: '10:05',
     primary_staff_id: null,
-    staff_name: '高岡',
+    staff_name: '職員E',
     status: 'planned',
     source: 'auto',
     ...over,
@@ -196,7 +196,7 @@ describe('AddVisitAnywhereDialog', () => {
 
     // BE の 1 位 (稲毛A) が p0 = 既定選択。score が高い稲毛C を繰り上げない。
     const row = await screen.findByTestId('ava-row-2026-09-14');
-    expect(row).toHaveTextContent('稲毛A（髙梨）');
+    expect(row).toHaveTextContent('稲毛A（職員B）');
     expect(row).toHaveTextContent('稲毛C（熊澤）');
     const labels = Array.from(row.querySelectorAll('label')).map((el) => el.textContent ?? '');
     expect(labels[0]).toContain('稲毛A');

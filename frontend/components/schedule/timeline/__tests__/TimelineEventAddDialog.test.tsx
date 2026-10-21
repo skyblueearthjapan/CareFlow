@@ -86,7 +86,7 @@ const SHARED_TEMPLATE = {
 const PERSONAL_TEMPLATE = {
   id: 'tpl-personal',
   staff_id: 's-1',
-  title: '面談 松岡',
+  title: '面談 職員G',
   event_type: 'training' as const,
   start_time: null,
   end_time: null,
@@ -226,7 +226,7 @@ describe('TimelineEventAddDialog — ひな形 / ☆保存 / 📌固定 (Wave 2-
     fireEvent.click(screen.getByTestId('tl-event-submit'));
     await waitFor(() => expect(mockCreateForStaff).toHaveBeenCalledTimes(1));
     expect(mockCreateForStaff.mock.calls[0]![0].payload).toEqual(
-      expect.objectContaining({ title: '面談 松岡', start_time: '14:00', end_time: '15:00' }),
+      expect.objectContaining({ title: '面談 職員G', start_time: '14:00', end_time: '15:00' }),
     );
   });
 

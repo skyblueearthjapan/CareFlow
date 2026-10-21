@@ -16,16 +16,16 @@ import type { CockpitMarker } from '../reconcileMarkers';
 const STAFF_A = '00000000-0000-4000-8000-0000000000a1';
 const STAFF_B = '00000000-0000-4000-8000-0000000000b2';
 const staffNameById = new Map([
-  [STAFF_A, '川名'],
-  [STAFF_B, '髙梨'],
+  [STAFF_A, '職員A'],
+  [STAFF_B, '職員B'],
 ]);
 
 const UPDATE: CockpitMarker = {
   kind: 'visit',
   action: 'update',
   externalId: 'i1',
-  title: '伊藤 様',
-  patient_name: '伊藤 様',
+  title: '利用者I 様',
+  patient_name: '利用者I 様',
   course_label: '稲毛B',
   start: '16:00',
   end: '17:00',
@@ -33,7 +33,7 @@ const UPDATE: CockpitMarker = {
   beforeEnd: '16:00',
   before: {
     staff_id: STAFF_A,
-    staff_name: '川名',
+    staff_name: '職員A',
     date: '2026-08-18',
     start: '15:00',
     end: '16:00',
@@ -41,7 +41,7 @@ const UPDATE: CockpitMarker = {
   },
   after: {
     staff_id: STAFF_B,
-    staff_name: '髙梨',
+    staff_name: '職員B',
     date: '2026-08-18',
     start: '16:00',
     end: '17:00',
