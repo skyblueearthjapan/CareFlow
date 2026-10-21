@@ -203,13 +203,25 @@ describe('StaffWeekTimeline — ドラッグ', () => {
     expect(p.toWeekday).toBeUndefined();
   });
 
-  it('別の曜日・別の時刻: toWeekday と toStart', () => {
+  it('別の曜日・別の時刻: toWeekday と toStart、同じ行でも落とした行の担当を載せる', () => {
     const { onVisitMove } = renderView();
     dragTo('v1', A, 3, 60);
     const p = onVisitMove.mock.calls[0]![0];
     expect(p.toWeekday).toBe(3);
     expect(p.toStart).toBe('09:00');
-    expect('toStaffId' in p).toBe(false);
+    // 曜日をまたぐとコースが付け替わり担当も変わるので、行の担当へ合わせ直す。
+    expect(p.toStaffId).toBe(A);
+  });
+
+  it('担当なしの行で曜日だけ変える: toStaffId = null (外す)', () => {
+    const { onVisitMove } = renderView({
+      visits: [visit({ id: 'u1', primary_staff_id: null, manual_staff_override: true })],
+    });
+    dragTo('u1', UNASSIGNED_ROW_KEY, 2, 120);
+    const p = onVisitMove.mock.calls[0]![0];
+    expect(p.toWeekday).toBe(2);
+    expect(p.toStart).toBeNull();
+    expect(p.toStaffId).toBeNull();
   });
 
   it('担当なしの行へ: toStaffId = null', () => {

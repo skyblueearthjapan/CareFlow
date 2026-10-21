@@ -236,7 +236,11 @@ export function StaffWeekTimeline({
       toStart: toStartHM !== fromStart ? toStartHM : null,
     };
     if (wd !== visit.weekday) payload.toWeekday = wd;
-    if (rowKey !== fromKey) payload.toStaffId = rowKey === UNASSIGNED_ROW_KEY ? null : rowKey;
+    // 曜日をまたぐとコースが付け替わり担当もそのコースの担当になるので、同じ行のままでも
+    // 落とした行の担当を必ず載せる (担当なしの行なら外す)。
+    if (rowKey !== fromKey || wd !== visit.weekday) {
+      payload.toStaffId = rowKey === UNASSIGNED_ROW_KEY ? null : rowKey;
+    }
     if (payload.toStart === null && payload.toWeekday === undefined && !('toStaffId' in payload)) {
       return;
     }

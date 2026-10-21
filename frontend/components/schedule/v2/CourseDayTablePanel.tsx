@@ -3996,6 +3996,10 @@ export function CourseDayTablePanel({
             old_start_time: startHM,
             new_weekday: weekday,
             new_start_time: startHM,
+            // 移動先の曜日の同じコースへ (無いと course_id が元の曜日のまま残る)。
+            ...(courseTemplateByCourseId.get(v.course_id ?? '')
+              ? { new_course_template_id: courseTemplateByCourseId.get(v.course_id ?? '') }
+              : {}),
             op_group_id: opGroupId,
             ...ackFlag(acknowledge),
           });
@@ -4453,7 +4457,13 @@ export function CourseDayTablePanel({
       acknowledge = false,
       // 職員の週タイムラインから曜日をまたいで落としたときだけ (同じ時刻でも曜日は動かす)。
       toWeekday?: number,
+      /**
+       * 制約の確認 (422) を通して送り直し、動いたあとに続ける処理 (担当の付け替え)。
+       * 確認を挟むと呼び出し側の続きは走らないので、ここで引き継ぐ。
+       */
+      afterAcknowledged?: () => Promise<void>,
     ): Promise<boolean> => {
+      const crossWeekday = toWeekday !== undefined && toWeekday !== visit.weekday;
       const oldStart = (visit.start_time ?? '').slice(0, 5);
       if (!oldStart) {
         toast.error('この訪問の開始時刻が不明なため移動できません');
@@ -4468,6 +4478,9 @@ export function CourseDayTablePanel({
           old_start_time: oldStart,
           new_weekday: toWeekday ?? visit.weekday,
           new_start_time: toStartHM,
+          // 曜日をまたぐときは移動先の曜日の同じコースへ付け替える (無いと course_id が
+          // 元の曜日のまま残り、NG/性別の確認も通らない・BE schedule_v2 の move)。
+          ...(crossWeekday ? { new_course_template_id: visit.course_template_id } : {}),
           op_group_id: opGroupId,
           ...ackFlag(acknowledge),
         });
@@ -4476,10 +4489,7 @@ export function CourseDayTablePanel({
           toast.warning('移動対象の訪問が見つかりませんでした');
           return false;
         }
-        const wdLabel =
-          toWeekday !== undefined && toWeekday !== visit.weekday
-            ? `${'月火水木金土'[toWeekday] ?? ''}曜 `
-            : '';
+        const wdLabel = crossWeekday ? `${'月火水木金土'[toWeekday] ?? ''}曜 ` : '';
         toast.success(
           `${visit.patient_name ?? 'この訪問'} を ${wdLabel}${toStartHM} へ移動しました（今週のみ）`,
           { cancel: { label: '元に戻す', onClick: () => void handleUndo() } },
@@ -4491,7 +4501,9 @@ export function CourseDayTablePanel({
           placementConstraintConfirm.capture(
             err,
             async () => {
-              await moveVisitWeekOnly(visit, toStartHM, opGroupId, true, toWeekday);
+              if (await moveVisitWeekOnly(visit, toStartHM, opGroupId, true, toWeekday)) {
+                await afterAcknowledged?.();
+              }
             },
             MOVE_CONSTRAINT_TEXT,
           )
@@ -4522,14 +4534,21 @@ export function CourseDayTablePanel({
     const opGroupId = crypto.randomUUID();
     // 職員の週タイムライン: 曜日だけ変わったときも move を呼ぶ (時刻は今のまま)。
     const moved = toStart != null || toWeekday !== undefined;
+    // 曜日をまたぐとコースが付け替わり、BE は担当をそのコースの担当にする。落とした行の
+    // 担当に必ず合わせ直す (部品は曜日が変わると toStaffId を必ず入れる)。同じ組 = 戻る 1 回。
+    const assign =
+      toStaffId !== undefined
+        ? () =>
+            doAssignVisitStaff(visit.id, toStaffId, { opGroupId, silent: moved }).then(() => {
+              invalidateCockpitBoard();
+            })
+        : undefined;
     if (moved) {
       const startHM = toStart ?? payload.fromStart;
-      const ok = await moveVisitWeekOnly(visit, startHM, opGroupId, false, toWeekday);
+      const ok = await moveVisitWeekOnly(visit, startHM, opGroupId, false, toWeekday, assign);
       if (!ok) return;
     }
-    if (toStaffId !== undefined) {
-      await doAssignVisitStaff(visit.id, toStaffId, { opGroupId, silent: moved });
-    }
+    if (assign) await assign();
     invalidateCockpitBoard();
   };
 
