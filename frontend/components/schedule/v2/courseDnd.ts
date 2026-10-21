@@ -158,6 +158,29 @@ export function parseStaffWeekCellDroppableId(
   return { rowKey, weekday };
 }
 
+/**
+ * 職員の週タイムライン (`StaffWeekTimeline`) のマス droppable 名の接頭辞。
+ * `swt-cell:{rowKey}:{weekday}` — rowKey = staffId または `UNASSIGNED_ROW_KEY`。
+ * 訪問の帯は HTML5 DnD (`SWT_VISIT_DND_MIME`) で運び、落とした横の位置から時刻を決める
+ * (dnd-kit のリゾルバ = `resolveDropTarget` には載せない・⭐/プールは受けない)。
+ */
+export const SWT_CELL_DND_PREFIX = 'swt-cell:';
+/** 職員の週タイムラインで訪問の帯を運ぶ MIME。 */
+export const SWT_VISIT_DND_MIME = 'application/x-rakusuke-swt-visit';
+
+/** rowKey + weekday → 職員の週タイムラインのマスの droppable 名。 */
+export function buildStaffWeekTimelineCellId(rowKey: string, weekday: number): string {
+  return `${SWT_CELL_DND_PREFIX}${rowKey}:${weekday}`;
+}
+
+/** `swt-cell:` 名 → `{ rowKey, weekday }`。それ以外・壊れた名前は null。 */
+export function parseStaffWeekTimelineCellId(
+  id: string,
+): { rowKey: string; weekday: number } | null {
+  if (!id.startsWith(SWT_CELL_DND_PREFIX)) return null;
+  return parseStaffWeekCellDroppableId(SW_CELL_DND_PREFIX + id.slice(SWT_CELL_DND_PREFIX.length));
+}
+
 /** リゾルバに渡す矩形 (dnd-kit の `ClientRect` の必要な部分だけ)。 */
 export interface DropRectLike {
   top: number;
