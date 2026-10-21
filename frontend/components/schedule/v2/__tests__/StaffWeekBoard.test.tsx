@@ -1044,6 +1044,28 @@ describe('StaffWeekBoard — 1 日だけの表示 (PO 指摘 2026-10-21)', () =>
     expect(unNameCell).toContainElement(screen.getByTestId('staff-day-count-__unassigned__-0'));
   });
 
+  it('管理者 (onEventClick あり) でもイベントのボタンは横に並ぶ (w-full にしない)', () => {
+    render(
+      <StaffWeekBoard
+        templates={templates}
+        officeNameById={new Map([[OFFICE_ID, '稲毛']])}
+        visits={dayVisits}
+        assignedStaffByTemplateWeekday={assigned}
+        staffMap={staffMap}
+        staffEventsByStaff={dayEvents}
+        weekStart={WEEK_START}
+        onPatientClick={vi.fn()}
+        onEventClick={vi.fn()}
+        onlyWeekday={0}
+      />,
+    );
+    const btn = screen.getByTestId('staff-week-event-00000000-0000-4000-8000-00000000e101');
+    expect(btn.tagName).toBe('BUTTON');
+    expect(btn.className).toContain('inline-flex');
+    expect(btn.className).not.toContain('w-full');
+    expect(btn.parentElement?.className).toContain('flex-wrap');
+  });
+
   it('コースはカードを横に並べて折り返し、イベントはその上に 1 行で横並び', () => {
     renderDay(0);
     const cell = screen.getByTestId(`staff-week-cell-${STAFF_1}-0`);

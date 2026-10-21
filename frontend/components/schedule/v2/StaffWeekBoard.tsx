@@ -904,7 +904,11 @@ export function StaffWeekBoard({
                                 type="button"
                                 onClick={() => onEventClick(ev, rowKey)}
                                 // イベント緑トークンで統一 (PO確定 2026-07-26)。
-                                className="block w-full rounded border border-l-[3px] px-1.5 py-0.5 text-left text-[11px] font-medium hover:brightness-95 focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
+                                // 1 日だけのときは横に並べる (block w-full だと 1 行ずつ縦に積まれる)。
+                                className={cn(
+                                  'rounded border border-l-[3px] px-1.5 py-0.5 text-left text-[11px] font-medium hover:brightness-95 focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary',
+                                  isDay ? 'inline-flex w-auto items-center' : 'block w-full',
+                                )}
                                 style={chipStyle}
                                 title={
                                   cancelled
