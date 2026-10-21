@@ -9,6 +9,7 @@
   - **未設定**: Google Cloud の設定と VPS の `GOOGLE_DRIVE_TOKEN_SECRET`。手順は `docs/deployment/google-drive-setup.md`。
   - つなぐまでは勤務表は「未作成」として記録され、つないだあと「作る」で作れる。
 - 受け入れ枠の厳密な計算（直近 4/6/8 週・○△・マネージャーと新人を除く）。正典: `acceptance-strict-design-2026-10-20.md`。
+  - **初回は人の操作が要る**: 新しい表 `kaipoke_source_snapshots` は空で出したため、画面の「8 週ぶんをすべて取り直す」を 1 回押すまでは全部「－」（判定できません）。17〜18 時台は避ける。
 - スケジュールの［コース｜職員］の切り替え（案B・コンパクト表示対応）と、職員ごとの「N件（M名）・満杯・超過」。正典: `schedule-unit-switch-design-2026-10-21.md`。
   - 見本: https://claude.ai/artifact/HQAttXMjxTRN9YWJTQ16kE
 
