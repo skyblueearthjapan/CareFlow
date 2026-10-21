@@ -62,5 +62,52 @@
 - GitHub CI を直して backend の全試験が動くようにした（alembic_version を広く作る・requirements.txt を入れる・往復は直近 3 本・上限 45 分）。残り: 整形の検査（black/ruff format）は前から赤い／SQLite の「SQL statements in progress」で揺れる試験がある。
 - PO に画面で見てもらうこと: 2 名体制の訪問を曜日またぎで動かしたときの相方の担当／1024〜1280px での受け入れ枠の縦の表。
 
+## 6-3. ★次のセッションの最初の仕事: Google ドライブの接続の準備の続き（PO と一緒に・jev-hands で操作）
+PO が「続きお願いします」と言ったら、ここから始める。手順の正典は `docs/deployment/google-drive-setup.md`。
+
+**進め方**
+- PO の PC の Chrome を jev-hands（スキル `jev-pc-use`）で操作する。
+- パスワード・規約への同意・秘密の値の貼り付けは、PO 本人にしてもらう。
+
+**決まっていること（10-21 PO）**
+- Google アカウントは `yuji.imaizumi@thousands.jp`（Workspace の組織 thousands.jp）。
+- 同意画面の対象は「内部」（今は thousands.jp のアカウントだけ）。別の事業所に出すときは「外部」に切り替えて「本番にする」。
+- Google Cloud のプロジェクトは `rakusuke-kinmu`（プロジェクト ID も同じ）。
+
+**済んだこと（10-21）**
+1. プロジェクト `rakusuke-kinmu` を作った。
+2. API を有効にした: Google Drive API・Google Sheets API・Google Picker API。
+3. 同意画面（Google Auth Platform → ブランディング）を作った。
+   - アプリ名「らく助」、サポートのメールと連絡先は yuji.imaizumi@thousands.jp、対象は「内部」。
+   - ポリシーへの同意と「作成」は PO が押した。
+
+**途中で止まったこと（確かめてから続ける）**
+4. データアクセス（`https://console.cloud.google.com/auth/scopes?project=rakusuke-kinmu`）に `https://www.googleapis.com/auth/drive.file` を足す。
+   - 手動の欄に入れて「テーブルに追加」まで進めた。
+   - 右のパネルの「更新」と、ページの「Save」は PO が押す途中で、ほかの仕事で中断した。
+   - **保存されていない見込み。** 「非機密のスコープ」に drive.file が出ているかをまず確かめ、無ければやり直す。
+   - jev-hands の注意: 右のパネルの「更新」は画面の下でタスクバーに隠れ、押せない（"covered by another window"）。PO に押してもらうか、Chrome を縮めてから押す。
+   - 「スコープを追加または削除」は jev の安全確認に引っかかるので、`allow_sensitive=true` が要る。開くだけのボタン。
+
+**残り**
+5. 認証情報 → OAuth クライアント ID を作る。
+   - 種類は「ウェブ アプリケーション」。
+   - 承認済みのリダイレクト URI は `https://carelink.kaipoke-api.net/api/v1/google-drive/callback` を 1 つだけ。
+   - クライアント ID とシークレットは、PO が控える（チャット・git に書かない）。
+6. 認証情報 → API キーを作る。
+   - アプリケーションの制限は HTTP リファラーで `https://carelink.kaipoke-api.net/*`。
+   - API の制限は Google Picker API だけ。
+7. 「IAM と管理 → 設定」でプロジェクト番号を控える（`GOOGLE_PICKER_APP_ID`）。
+8. VPS の `/opt/carelink/.env` に値を入れる。
+   - 入れる名前: `GOOGLE_DRIVE_CLIENT_ID`・`GOOGLE_DRIVE_CLIENT_SECRET`・`GOOGLE_DRIVE_REDIRECT_URI`・`GOOGLE_PICKER_API_KEY`・`GOOGLE_PICKER_APP_ID`・`GOOGLE_DRIVE_TOKEN_SECRET`。
+   - 秘密の値は PO が VPS で直接貼る。`GOOGLE_DRIVE_TOKEN_SECRET` は VPS で `openssl rand -hex 32` で作り、画面に出さずにファイルへ書く。
+   - そのあと backend を `--no-deps --force-recreate` で作り直す。
+9. 戻り先の確認: ログイン中のブラウザーで `https://carelink.kaipoke-api.net/api/v1/google-drive/callback?error=access_denied` を開き、「許可されませんでした」と出ること（手順書 §6）。
+10. 管理者で「設定 → Google ドライブ」から接続し、共有ドライブのフォルダを選ぶ。置き場（共有ドライブとフォルダ）は PO に確認する。
+11. その月の勤務表を「作る」（休み・勤務表の画面の rebuild の plan）で 1 本作り、ドライブにできるか確かめる。
+
+**注意**
+Google Cloud の画面に「2 段階認証プロセス（2SV）を有効にする（2026-10-20 から義務化）」と出ていた。yuji.imaizumi@thousands.jp で 2 段階認証が無効だと、Cloud コンソールに入れなくなるおそれがある。PO に有効にしてもらう。
+
 ## 7. 台帳
 - `.omc/plans/leave-acceptance-impl-ledger.md`（レーンごとの経過・持ち越し）。
