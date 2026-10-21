@@ -23,7 +23,7 @@ const WEEK_START = new Date(2026, 7, 17); // 2026-08-17 (月)
 const MON = '2026-08-17';
 
 const staffMap = new Map<string, StaffRead>([
-  [S1, { id: S1, name: '川名' } as StaffRead],
+  [S1, { id: S1, name: '職員A' } as StaffRead],
   [S2, { id: S2, name: '髙梨' } as StaffRead],
   [S3, { id: S3, name: '熊澤' } as StaffRead],
 ]);
@@ -137,7 +137,7 @@ describe('FixedEventRow', () => {
         onExclude={vi.fn()}
       />,
     );
-    expect(screen.getByTestId('fixed-event-band-0-08:30')).toHaveTextContent('休:川名');
+    expect(screen.getByTestId('fixed-event-band-0-08:30')).toHaveTextContent('休:職員A');
     // 午後の帯は休み扱いにならず、参加者として残る
     const pm = screen.getByTestId('fixed-event-band-0-15:00');
     expect(pm).not.toHaveTextContent('休:');
@@ -207,7 +207,7 @@ describe('FixedEventRow', () => {
         onExclude={vi.fn()}
       />,
     );
-    expect(screen.getByTestId('fixed-event-band-0-12:30')).toHaveTextContent('休:川名');
+    expect(screen.getByTestId('fixed-event-band-0-12:30')).toHaveTextContent('休:職員A');
     expect(screen.getByTestId('fixed-event-band-0-12:30')).toHaveTextContent('髙梨');
     expect(screen.getByTestId('fixed-event-band-0-12:00')).not.toHaveTextContent('休:');
     expect(screen.getByTestId('fixed-event-band-0-16:00')).toHaveTextContent('休:熊澤');

@@ -41,7 +41,7 @@ DAY = date(2026, 10, 14)  # 水曜
 DAY_MONDAY = date(2026, 10, 12)  # スポーツの日 (祝日・月曜)
 SUNDAY = date(2026, 10, 18)
 STAFF = uuid.uuid4()
-NAME = "山田　花子"
+NAME = "職員　A"
 SHIFT = (time(9, 0), time(18, 0))
 MONDAYS = [date(2026, 9, 28), date(2026, 10, 5), date(2026, 10, 12), date(2026, 10, 19)] + [
     date(2026, 10, 26)
