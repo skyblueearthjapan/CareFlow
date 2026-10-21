@@ -150,7 +150,7 @@ async def test_bulk_creates_all_combinations(client, db) -> None:
     """N名 × N曜日 の全組を 1 回で作る (モック 変更A のプレビュー件数と一致)."""
     admin = await _make_user(db, email="bulk-1@example.com")
     a = await _make_staff(db, name="職員A 千恵")
-    b = await _make_staff(db, name="熊澤 妙子")
+    b = await _make_staff(db, name="職員L 良子")
 
     res = await client.post(
         _BULK_URL, headers=_bearer(admin), json=_payload([a.id, b.id], [0, 1, 2])

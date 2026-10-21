@@ -83,13 +83,13 @@ describe('AccompanimentBar', () => {
     render(
       <AccompanimentBar
         {...baseProps({
-          staffOptions: [staff('s1', '職員B'), staff('g1', '熊澤', false)],
+          staffOptions: [staff('s1', '職員B'), staff('g1', '職員L', false)],
         })}
       />,
     );
     const select = screen.getByTestId('accompaniment-staff-select');
     // 一般スタッフが候補に出る (旧実装は is_trainee のみだった)。
-    expect(within(select).getByRole('option', { name: '熊澤' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: '職員L' })).toBeInTheDocument();
     // 新人はバッジ付き + 先頭グループ。
     expect(within(select).getByRole('option', { name: '職員B（新人）' })).toBeInTheDocument();
     const groups = select.querySelectorAll('optgroup');

@@ -678,7 +678,7 @@ async def _seed_visit(db, staff_id, *, d, start_h, end_h, status_val="planned"):
     from app.models import Patient
     from app.models.visit import Visit
 
-    p = Patient(code=f"P-EC-{start_h}{status_val[:2]}", name="職員F　冬子", status="active")
+    p = Patient(code=f"P-EC-{start_h}{status_val[:2]}", name="利用者AG　冬子", status="active")
     db.add(p)
     await db.flush()
     v = Visit(
@@ -724,7 +724,7 @@ async def test_preview_reports_visit_conflicts(client, db, stub_kaipoke) -> None
     assert c["staffName"] == STAFF_A
     assert c["date"] == WEEK_START.isoformat()
     assert c["eventTitle"] == "休み"
-    assert c["patientName"] == "職員F　冬子"
+    assert c["patientName"] == "利用者AG　冬子"
     assert c["visitStart"] == "10:00"
     assert c["visitEnd"] == "11:00"
 
@@ -754,7 +754,7 @@ async def test_apply_reports_visit_conflicts(client, db, stub_kaipoke) -> None:
     )
     assert result["added"] == 1  # 取り込みは行われる
     assert len(result["conflicts"]) == 1
-    assert result["conflicts"][0]["patientName"] == "職員F　冬子"
+    assert result["conflicts"][0]["patientName"] == "利用者AG　冬子"
 
 
 # --- 7. 汎用 reconcile との競合 (週空間C1・2026-08-21 の 409 障害) -------------

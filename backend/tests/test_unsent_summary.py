@@ -1696,7 +1696,7 @@ async def _seed_unassigned_outbound_sheet(db, user: User, week_start: date) -> C
             CorrectionSheetItem(
                 sheet_id=sheet.id, action="add", before=_empty(), after=_side(0, "10:00", "-")
             ),
-            # 担当を消す変更 (カイポケの熊澤を '-' で上書き) → 送らない
+            # 担当を消す変更 (カイポケの職員Lを '-' で上書き) → 送らない
             CorrectionSheetItem(
                 sheet_id=sheet.id,
                 action="edit",

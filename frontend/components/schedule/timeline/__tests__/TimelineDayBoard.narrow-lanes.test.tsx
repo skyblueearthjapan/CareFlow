@@ -124,7 +124,7 @@ describe('TimelineDayBoard — 重なりカードの氏名 (§2-B1)', () => {
       visit({
         id: 'sa1',
         patient_id: 'pa',
-        patient_name: '安永 一',
+        patient_name: '利用者O 一',
         start_time: '16:00:00',
         end_time: '16:35:00',
         same_address_group_id: 'g1',
@@ -132,7 +132,7 @@ describe('TimelineDayBoard — 重なりカードの氏名 (§2-B1)', () => {
       visit({
         id: 'sa2',
         patient_id: 'pb',
-        patient_name: '菅原 二',
+        patient_name: '利用者P 二',
         start_time: '16:00:00',
         end_time: '16:35:00',
         same_address_group_id: 'g1',
@@ -143,7 +143,7 @@ describe('TimelineDayBoard — 重なりカードの氏名 (§2-B1)', () => {
     const box = screen.getByTestId('tl-pair-pair:sa1:sa2');
     expect(box.style.width).toContain('50%');
     const row = screen.getByTestId('tl-visit-sa1');
-    const name = within(row).getByText('安永 一');
+    const name = within(row).getByText('利用者O 一');
     expect(name.className).toContain('text-[11px]');
     expect(name.className).toContain('line-clamp-2');
     expect(within(row).queryByText(/16:00・35分/)).toBeNull();
@@ -153,21 +153,21 @@ describe('TimelineDayBoard — 重なりカードの氏名 (§2-B1)', () => {
     renderVisits([
       visit({
         id: 'sa1',
-        patient_name: '安永 一',
+        patient_name: '利用者O 一',
         start_time: '16:00:00',
         end_time: '16:35:00',
         same_address_group_id: 'g1',
       }),
       visit({
         id: 'sa2',
-        patient_name: '菅原 二',
+        patient_name: '利用者P 二',
         start_time: '16:00:00',
         end_time: '16:35:00',
         same_address_group_id: 'g1',
       }),
     ]);
     const row = screen.getByTestId('tl-visit-sa1');
-    const name = within(row).getByText('安永 一');
+    const name = within(row).getByText('利用者O 一');
     expect(name.className).toContain('text-[12px]');
     expect(name.className).toContain('truncate');
     expect(within(row).getByText(/16:00・35分/)).toBeInTheDocument();

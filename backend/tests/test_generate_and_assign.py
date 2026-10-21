@@ -71,7 +71,7 @@ async def _seed_office_staff_courses(db) -> dict[str, Any]:
     )
     s3 = Staff(
         code="HON-03",
-        name="熊澤",
+        name="職員L",
         role="staff",
         status="active",
         primary_office_id=office.id,

@@ -265,7 +265,7 @@ function constraintError(): ApiError {
           patient_id: V1.patient_id,
           patient_name: '田中 太郎',
           staff_id: '22222222-2222-4222-8222-222222222222',
-          staff_name: '熊澤 妙子',
+          staff_name: '職員L 良子',
           note: 'ご家族からの申し出',
         },
       ],
@@ -353,7 +353,7 @@ describe('CourseDayTablePanel — NG スタッフ / 性別制限の確認フロ�
     // 警告内容 (NG スタッフ + メモ) がそのまま出る。
     const row = screen.getByTestId('constraint-override-warning-row');
     expect(row).toHaveAttribute('data-kind', 'ng_staff');
-    expect(row).toHaveTextContent('熊澤 妙子さんは田中 太郎様のNGスタッフです');
+    expect(row).toHaveTextContent('職員L 良子さんは田中 太郎様のNGスタッフです');
     // 確認前は成功トーストを出さない。
     expect(mockToast.success).not.toHaveBeenCalled();
   });

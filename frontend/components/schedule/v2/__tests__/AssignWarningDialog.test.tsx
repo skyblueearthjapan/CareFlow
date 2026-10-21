@@ -530,7 +530,7 @@ function makeMobilized(over: Partial<StageAssignmentNotice> = {}): StageAssignme
     weekday: 0,
     course_code: 'B',
     staff_id: 'a2222222-2222-2222-2222-222222222222',
-    staff_name: '熊澤妙子',
+    staff_name: '職員L良子',
     ...over,
   };
 }
@@ -594,7 +594,7 @@ describe('AssignWarningDialog — 4段ソルバ Stage 2 + v2.0 新Stage 3 notice
     expect(row).toBeInTheDocument();
     expect(row).toHaveTextContent('月');
     expect(row).toHaveTextContent('B');
-    expect(row).toHaveTextContent('熊澤妙子');
+    expect(row).toHaveTextContent('職員L良子');
   });
 
   it('crossOfficeNotices を渡すと警告系セクションが描画される（行は常時表示）', () => {

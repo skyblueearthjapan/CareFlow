@@ -14,12 +14,12 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { AddVisitDialog, DURATION_OPTIONS } from '../AddVisitDialog';
 
 const P_ITO = '00000000-0000-4000-8000-0000000000e1';
-const P_TAKAOKA = '00000000-0000-4000-8000-0000000000e2';
+const P_STAFF_E = '00000000-0000-4000-8000-0000000000e2';
 const STAFF_1 = '00000000-0000-4000-8000-000000000001';
 
 const candidates = [
   { patient_id: P_ITO, patient_name: '利用者I　花子', hint: '月/木 午前', service_minutes: 35 },
-  { patient_id: P_TAKAOKA, patient_name: '職員E　一郎', hint: null, service_minutes: null },
+  { patient_id: P_STAFF_E, patient_name: '職員E　一郎', hint: null, service_minutes: null },
 ];
 
 function renderDialog(props: Partial<React.ComponentProps<typeof AddVisitDialog>> = {}) {
@@ -69,7 +69,7 @@ describe('AddVisitDialog — 所要時間 (PO 決定 12)', () => {
 
   it('② 基本時間が無い患者は defaultMinutes のまま', () => {
     renderDialog({ defaultMinutes: 45 });
-    fireEvent.change(screen.getByTestId('add-visit-patient'), { target: { value: P_TAKAOKA } });
+    fireEvent.change(screen.getByTestId('add-visit-patient'), { target: { value: P_STAFF_E } });
     expect((screen.getByTestId('add-visit-minutes') as HTMLSelectElement).value).toBe('45');
   });
 

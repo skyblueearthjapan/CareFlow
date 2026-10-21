@@ -182,7 +182,7 @@ describe('タイムライン — 退出未記録と手入力の印', () => {
   it('過去の日の退出未記録は今まで伸ばさず「退出未記録」、手で入れた到着は「手入力」', () => {
     const missing = pastNoDeparture();
     const manual = makeVisit({
-      patient_name: '伊東 誠',
+      patient_name: '利用者Z 誠',
       start_time: '10:00',
       end_time: '10:45',
       phase: 'done',
@@ -215,7 +215,7 @@ describe('タイムライン — 退出未記録と手入力の印', () => {
 describe('未訪問の記録の後に到着を手で入れた訪問', () => {
   const v = () =>
     makeVisit({
-      patient_name: '伊東 誠',
+      patient_name: '利用者Z 誠',
       start_time: '10:00',
       end_time: '10:45',
       phase: 'done',

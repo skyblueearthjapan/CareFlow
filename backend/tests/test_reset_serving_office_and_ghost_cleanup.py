@@ -57,7 +57,7 @@ async def test_reset_cross_office_saturday_pfv_is_generated(db) -> None:
     # 主拠点 = 都賀 の患者.
     p = Patient(
         code="BUGB-P",
-        name="清水政憲 (主拠点都賀)",
+        name="利用者AC (主拠点都賀)",
         status="active",
         lat=35.65,
         lng=140.10,
@@ -206,7 +206,7 @@ async def test_reset_deletes_inactive_patient_ghost_visit_but_protects_manual(db
     # 非稼働患者 (suspended) の旧再生成 visit (削除対象).
     p_suspended = Patient(
         code="BUGA-SUS",
-        name="田中妙子 (suspended)",
+        name="田中良子 (suspended)",
         status="suspended",
         lat=35.66,
         lng=140.11,
@@ -215,7 +215,7 @@ async def test_reset_deletes_inactive_patient_ghost_visit_but_protects_manual(db
     # 非稼働患者 (pending) の手動 visit (保護対象).
     p_pending = Patient(
         code="BUGA-PEND",
-        name="福島千春 (pending)",
+        name="利用者AD (pending)",
         status="pending",
         lat=35.67,
         lng=140.12,

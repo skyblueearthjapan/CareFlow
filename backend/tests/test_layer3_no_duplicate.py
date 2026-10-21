@@ -82,7 +82,7 @@ def test_w25_manager_not_duplicated_to_non_m_course() -> None:
     s1 = _make_staff("本名-S1")
     s2 = _make_staff("職員E-S2")
     s3 = _make_staff("職員D-S3")
-    s4 = _make_staff("熊澤-S4")
+    s4 = _make_staff("職員L-S4")
 
     # 月曜: A, B, C, D, E, M の 6 コース
     weekday = 0
@@ -188,18 +188,18 @@ async def test_w25_staff_assigned_course_staff_excluded_from_free(db) -> None:
         status="active",
         primary_office_id=office.id,
     )
-    takaoka = Staff(
-        code="W25-TAKAOKA",
+    staff_e = Staff(
+        code="W25-STAFF_E",
         name="職員E 由美",
         sex="female",
         role="staff",
         status="active",
         primary_office_id=office.id,
     )
-    db.add_all([honna, takaoka])
+    db.add_all([honna, staff_e])
     await db.flush()
 
-    for staff in [honna, takaoka]:
+    for staff in [honna, staff_e]:
         db.add(StaffShift(staff_id=staff.id, weekday=0, is_on=True))
     await db.flush()
 

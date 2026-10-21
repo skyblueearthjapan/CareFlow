@@ -32,9 +32,9 @@ TUE = date(2026, 7, 7)
 
 
 def _single_row() -> KaipokeCsvRow:
-    # 実CSVの先頭行を再現: 職員D　秋子(看護師) → 職員F　冬子 / 医療保険 / 精神基本療養費Ⅰ・正看
+    # 実CSVの先頭行を再現: 職員D　秋子(看護師) → 利用者AG　冬子 / 医療保険 / 精神基本療養費Ⅰ・正看
     return KaipokeCsvRow(
-        patient_name="職員F　冬子",
+        patient_name="利用者AG　冬子",
         visit_date=date(2026, 7, 1),  # 水曜
         start_time=time(10, 0),
         end_time=time(10, 35),
@@ -60,7 +60,7 @@ def test_row_to_cells_matches_real_format() -> None:
     assert cells[8] == "訪問看護ステーションよりより"  # 事業所名
     assert cells[9] == "1"  # 日付
     assert cells[10] == "水"  # 曜日 (2026-07-01 は水)
-    assert cells[11] == "職員F　冬子"  # 利用者
+    assert cells[11] == "利用者AG　冬子"  # 利用者
     assert cells[12] == "医療保険"  # 業務種別
     assert cells[13] == "精神基本療養費Ⅰ・正看"  # サービス内容
     assert cells[14] == "10:00" and cells[15] == "10:35"  # 時間
@@ -101,7 +101,7 @@ def test_generated_csv_parses_back_via_diff_engine() -> None:
     entries = _parse_kaipoke_rows(parsed)
     assert len(entries) == 1
     e = entries[0]
-    assert e.user_name == "職員F　冬子"
+    assert e.user_name == "利用者AG　冬子"
     assert e.date == "1"
     assert e.business_type == "医療保険"
     assert e.service_type == "精神基本療養費Ⅰ・正看"

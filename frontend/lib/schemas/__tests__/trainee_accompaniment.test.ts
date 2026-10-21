@@ -119,7 +119,7 @@ describe('kind / staff_name の追随', () => {
         {
           id: UUID,
           trainee_staff_id: UUID,
-          staff_name: '熊澤',
+          staff_name: '職員L',
           kind: 'support',
           target_type: 'visit',
           source: 'manual',
@@ -128,7 +128,7 @@ describe('kind / staff_name の追随', () => {
       ],
     });
     expect(parsed.items[0]!.kind).toBe('support');
-    expect(accompanimentStaffName(parsed.items[0]!)).toBe('熊澤');
+    expect(accompanimentStaffName(parsed.items[0]!)).toBe('職員L');
   });
 
   it('旧デプロイ (kind/staff_name なし) でも壊れず trainee_staff_name に落ちる', () => {
@@ -222,11 +222,11 @@ describe('visitAccompaniments (確定#5 複数名 + 旧単数フォールバッ�
       visitAccompaniments({
         accompaniments: [
           { staff_id: 'a', staff_name: '職員B', kind: 'trainee' },
-          { staff_id: 'b', staff_name: '熊澤', kind: 'support' },
+          { staff_id: 'b', staff_name: '職員L', kind: 'support' },
         ],
         accompaniment: { staff_id: 'a', staff_name: '職員B' },
       }).map((a) => a.staff_name),
-    ).toEqual(['職員B', '熊澤']);
+    ).toEqual(['職員B', '職員L']);
   });
 
   it('accompaniments が無い旧レスポンスは単数へフォールバック', () => {

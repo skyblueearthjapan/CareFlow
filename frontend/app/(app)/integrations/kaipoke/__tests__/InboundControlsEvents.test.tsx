@@ -99,7 +99,7 @@ const SMART_PLAN: SmartInboundPreview = {
     skipped: [
       {
         reason: '患者を名寄せできません（らく助未登録の可能性）',
-        userName: '高尾　幸子',
+        userName: '利用者AE　幸子',
         staffName: '職員A　千恵',
         date: '2026-07-24',
         start: '10:00',

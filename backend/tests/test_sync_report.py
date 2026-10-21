@@ -44,7 +44,7 @@ WEEK_START = date(2026, 9, 7)  # 月曜
 
 def _row(
     start: str = "16:00",
-    user: str = "熊澤 花子",
+    user: str = "職員L 花子",
     outcome: str = "success",
     reason: str | None = None,
 ) -> RowChange:
@@ -60,7 +60,7 @@ def _row(
         outcome=outcome,
         outcome_label=label,
         outcome_tag=tag,
-        change_text="16:00 熊澤 → 17:15 職員B",
+        change_text="16:00 職員L → 17:15 職員B",
         reason=reason,
         reason_label=("旧行が残ったまま新行が追加された（二重登録の疑い）" if reason else None),
     )
@@ -73,7 +73,7 @@ def _report(
     attention_count: int = 0,
     detail_level: str = "full",
     reason_codes: list[tuple[str, str]] | None = None,
-    patient: str = "熊澤 花子",
+    patient: str = "職員L 花子",
 ) -> SyncReport:
     rows = [_row(start=f"{9 + i % 9:02d}:00", user=patient) for i in range(day_rows)]
     day = DaySection(date=WEEK_START.isoformat(), weekday="月", label="9/7（月）", rows=rows)
@@ -115,7 +115,7 @@ def _report(
             ReplaceSkip(
                 date=WEEK_START.isoformat(),
                 start="10:00",
-                user_name="山岡",
+                user_name="利用者S",
                 staff_name="看護A",
                 reason="patient_not_found",
                 reason_label="カイポケ側に利用者が見つからない",
@@ -184,9 +184,9 @@ def test_render_print_rules_cover_break_and_thead():
 
 
 def test_change_text_wraps_only_at_the_arrow():
-    """「16:00 熊澤 → 17:15 職員B」の各辺は nowrap (狭い列で全行が 2 行になるのを防ぐ)。"""
+    """「16:00 職員L → 17:15 職員B」の各辺は nowrap (狭い列で全行が 2 行になるのを防ぐ)。"""
     out = render_sync_report_html(_report())
-    assert '<span class="nw">16:00 熊澤</span> → <span class="nw">17:15 職員B</span>' in out
+    assert '<span class="nw">16:00 職員L</span> → <span class="nw">17:15 職員B</span>' in out
     assert "td.chg .nw{white-space:nowrap}" in out
     # 変更内容だけ可変幅、他は固定幅
     assert 'style="min-width:52mm">変更内容' in out
@@ -240,10 +240,10 @@ def test_render_escapes_patient_names():
 
 def test_change_text_shows_only_changed_fields():
     txt = change_text(
-        {"start": "16:00", "end": "16:35", "staff1": "熊澤", "service": "精神"},
+        {"start": "16:00", "end": "16:35", "staff1": "職員L", "service": "精神"},
         {"start": "17:15", "end": "16:35", "staff1": "職員B", "service": "精神"},
     )
-    assert txt == "16:00 熊澤 → 17:15 職員B"
+    assert txt == "16:00 職員L → 17:15 職員B"
     # 変化なし → 空
     assert change_text({"start": "16:00"}, {"start": "16:00"}) == ""
     # サービス内容が変わったときは出す
@@ -278,7 +278,7 @@ def _row_content(day: date, start: str, user: str, outcome: str, **extra) -> dic
         "end": "16:35",
         "user_name": user,
         "action": "edit",
-        "before": {"start": start, "staff1": "熊澤"},
+        "before": {"start": start, "staff1": "職員L"},
         "after": {"start": "17:15", "staff1": "職員B"},
         "outcome": outcome,
         "ref": {},
@@ -308,7 +308,7 @@ async def test_report_endpoint_json_counts_and_html(client, db):
                 job_id=job.id,
                 seq=1,
                 status="success",
-                content=_row_content(WEEK_START, "09:00", "山岡 太郎", "success"),
+                content=_row_content(WEEK_START, "09:00", "利用者S 太郎", "success"),
             ),
             KaipokeJobItem(
                 job_id=job.id,
@@ -352,7 +352,7 @@ async def test_report_endpoint_json_counts_and_html(client, db):
     assert body["conclusionTone"] == "red"
     assert body["exclusions"][0]["reason"] == "unassigned"
     assert len(body["days"]) == 1  # 除外行は日セクションに出さない
-    assert body["days"][0]["rows"][0]["changeText"].startswith("09:00 熊澤 → 17:15 職員B")
+    assert body["days"][0]["rows"][0]["changeText"].startswith("09:00 職員L → 17:15 職員B")
     assert body["html"] and "送信結果報告" in body["html"]
 
     res_html = await client.get(
@@ -447,7 +447,7 @@ async def test_report_endpoint_summary_only_from_result_details(client, db):
                 "success": 1,
                 "failed": 1,
                 "details": [
-                    {"date": "7", "user": "山岡 太郎", "action": "add", "status": "success"},
+                    {"date": "7", "user": "利用者S 太郎", "action": "add", "status": "success"},
                     {
                         "date": 8,
                         "user": "清水 花子",
@@ -592,7 +592,7 @@ async def test_items_with_unknown_or_empty_kind_are_ignored(client, db):
                 job_id=job.id,
                 seq=1,
                 status="completed",
-                content=_row_content(WEEK_START, "09:00", "山岡 太郎", "success"),
+                content=_row_content(WEEK_START, "09:00", "利用者S 太郎", "success"),
             ),
             # 空 content / 未知の kind は明細にも件数にも混ぜない
             KaipokeJobItem(job_id=job.id, seq=2, status="completed", content={}),
@@ -711,7 +711,7 @@ async def test_summary_only_resolves_day_numbers_across_a_month_boundary(client,
         result_summary={
             "result": {
                 "details": [
-                    {"date": "31", "user": "山岡 太郎", "action": "add", "status": "success"},
+                    {"date": "31", "user": "利用者S 太郎", "action": "add", "status": "success"},
                     {"date": 1, "user": "清水 花子", "action": "add", "status": "success"},
                     {"date": 20, "user": "圏外 次郎", "action": "add", "status": "success"},
                 ]
@@ -837,7 +837,7 @@ async def test_conclusion_points_to_details_only_when_attention_list_is_empty(cl
                 job_id=job.id,
                 seq=1,
                 status="completed",
-                content=_row_content(WEEK_START, "09:00", "山岡 太郎", "success"),
+                content=_row_content(WEEK_START, "09:00", "利用者S 太郎", "success"),
             ),
             KaipokeJobItem(
                 job_id=job.id,

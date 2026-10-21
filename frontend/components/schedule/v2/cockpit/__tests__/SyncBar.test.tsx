@@ -227,7 +227,7 @@ function visitDiff() {
       beforeEnd: '10:45',
       before: {
         staff_id: null,
-        staff_name: '熊澤',
+        staff_name: '職員L',
         date: FUTURE_DAY,
         start: '10:00',
         end: '10:45',
@@ -429,7 +429,7 @@ describe('SyncBar — ⇩ カイポケから取り込む', () => {
     expect(rows).toHaveLength(2);
     // 「誰が・何が・どう変わる」の 1 文
     expect(rows[0]).toHaveTextContent('利用者D 様 10:30');
-    expect(rows[0]).toHaveTextContent('担当 熊澤 → 佐藤');
+    expect(rows[0]).toHaveTextContent('担当 職員L → 佐藤');
     expect(rows[0]).toHaveTextContent('カイポケ側で変わっている');
     expect(rows[1]).toHaveTextContent('カイポケにだけある');
 
@@ -966,7 +966,7 @@ describe('SyncBar — 🔄 同期確認', () => {
         kaipokeOnly: ['新井'],
         rakusukeOnly: [],
       },
-      staff: { matched: 5, notationDiff: [], kaipokeOnly: [], rakusukeOnly: ['熊澤'] },
+      staff: { matched: 5, notationDiff: [], kaipokeOnly: [], rakusukeOnly: ['職員L'] },
     };
     renderBar();
     await openCheckPanel();
@@ -978,7 +978,7 @@ describe('SyncBar — 🔄 同期確認', () => {
     const res = screen.getByTestId('sync-master-result');
     expect(res).toHaveTextContent('患者: 一致 12');
     expect(res).toHaveTextContent('カイポケ「高橋」⇔らく助「髙橋」');
-    expect(res).toHaveTextContent('らく助のみ（当月のカイポケスケジュールに未出現）: 熊澤');
+    expect(res).toHaveTextContent('らく助のみ（当月のカイポケスケジュールに未出現）: 職員L');
     fireEvent.click(screen.getByTestId('sync-master-button'));
     expect(reconcileStub.runMasterReconcile).toHaveBeenCalled();
   });

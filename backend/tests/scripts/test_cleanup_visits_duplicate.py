@@ -81,7 +81,7 @@ def test_select_keeper_prefers_manual_over_auto() -> None:
 
     g = _DuplicateGroup(
         patient_id=pid,
-        patient_name="石塚 麻衣",
+        patient_name="利用者U 麻衣",
         visit_date=date(2026, 5, 4),
         start_time=time(10, 0),
         visits=[visit_auto_old, visit_manual_new, visit_auto_mid],
@@ -165,7 +165,7 @@ async def test_scan_finds_duplicates_only(_engine, db) -> None:
     from app.models.visit import Visit
 
     # patient
-    p1 = Patient(code="W34-001", name="石塚 麻衣", status="active")
+    p1 = Patient(code="W34-001", name="利用者U 麻衣", status="active")
     p2 = Patient(code="W34-002", name="単独 患者", status="active")
     db.add_all([p1, p2])
     await db.commit()
@@ -291,7 +291,7 @@ async def test_scan_finds_duplicates_only(_engine, db) -> None:
     g_a = by_time[time(10, 0)]
     assert len(g_a.visits) == 3
     assert g_a.patient_id == p1.id
-    assert g_a.patient_name == "石塚 麻衣"
+    assert g_a.patient_name == "利用者U 麻衣"
 
     # グループ A の keeper は manual のはず
     keeper_a = g_a.select_keeper()

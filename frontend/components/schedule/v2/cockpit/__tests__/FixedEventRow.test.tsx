@@ -25,7 +25,7 @@ const MON = '2026-08-17';
 const staffMap = new Map<string, StaffRead>([
   [S1, { id: S1, name: '職員A' } as StaffRead],
   [S2, { id: S2, name: '職員B' } as StaffRead],
-  [S3, { id: S3, name: '熊澤' } as StaffRead],
+  [S3, { id: S3, name: '職員L' } as StaffRead],
 ]);
 
 function ev(id: string, staffId: string, over: Partial<CockpitEventRead> = {}): CockpitEventRead {
@@ -90,7 +90,7 @@ describe('FixedEventRow', () => {
     expect(band).toHaveTextContent('🔒');
     expect(band).toHaveTextContent('08:30');
     expect(band).toHaveTextContent('朝会');
-    expect(band).toHaveTextContent('休:熊澤');
+    expect(band).toHaveTextContent('休:職員L');
     expect(band).toHaveTextContent('今週 職員B除外');
   });
 
@@ -210,7 +210,7 @@ describe('FixedEventRow', () => {
     expect(screen.getByTestId('fixed-event-band-0-12:30')).toHaveTextContent('休:職員A');
     expect(screen.getByTestId('fixed-event-band-0-12:30')).toHaveTextContent('職員B');
     expect(screen.getByTestId('fixed-event-band-0-12:00')).not.toHaveTextContent('休:');
-    expect(screen.getByTestId('fixed-event-band-0-16:00')).toHaveTextContent('休:熊澤');
+    expect(screen.getByTestId('fixed-event-band-0-16:00')).toHaveTextContent('休:職員L');
   });
 
   it('固定イベントの無い曜日は「—」', () => {

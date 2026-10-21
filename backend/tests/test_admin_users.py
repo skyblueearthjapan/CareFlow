@@ -198,11 +198,11 @@ async def test_staff_cannot_create_user_manager_alias_can(client, db) -> None:
 # /audit-logs RBAC seeding contract (W5-F follow-up, issue #16)
 #
 # The /audit-logs endpoint is admin-only by design (see backend/app/api/v1/
-# audit_logs.py — `Depends(require_role("admin"))`). When chie.kawana
+# audit_logs.py — `Depends(require_role("admin"))`). When staff.a
 # reported a 403 from /audit-logs in 2026-05, the root cause was NOT a bug
 # in the RBAC code — it was that the production user row carried role
 # `"manager"` (not `"admin"`). The 管理者 sheet in Sample 2 lists
-# `chie.kawana` with role=manager, and `import_users.py::_norm_role` keeps
+# `staff.a` with role=manager, and `import_users.py::_norm_role` keeps
 # any value that's already in USER_ROLES, so manager stays manager.
 #
 # These two tests pin the contract so that:

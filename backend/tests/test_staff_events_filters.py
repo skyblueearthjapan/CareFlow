@@ -119,7 +119,7 @@ async def _seed(db, staff: Staff) -> None:
         day="2026-08-21",
         start="16:00",
         end="17:00",
-        title="鈴木乃愛様 担当者会議",
+        title="利用者R様 担当者会議",
         note="草野中学校",
     )
 
@@ -141,7 +141,7 @@ async def test_no_params_is_backward_compatible(client, db) -> None:
     assert len(body) == 6
     assert [r["date"] for r in body] == sorted(r["date"] for r in body)
     assert body[0]["title"] == "朝会"
-    assert body[-1]["title"] == "鈴木乃愛様 担当者会議"
+    assert body[-1]["title"] == "利用者R様 担当者会議"
 
 
 @pytest.mark.asyncio
@@ -152,9 +152,9 @@ async def test_q_matches_title_and_note(client, db) -> None:
     await _seed(db, staff)
     headers = _bearer(admin)
 
-    res = await client.get(f"/api/v1/staff/{staff.id}/events?q=鈴木", headers=headers)
+    res = await client.get(f"/api/v1/staff/{staff.id}/events?q=利用者R", headers=headers)
     assert res.status_code == 200
-    assert _titles(res) == ["鈴木乃愛様 担当者会議"]
+    assert _titles(res) == ["利用者R様 担当者会議"]
 
     # note 側のヒット (title には「自宅」が無い)
     res = await client.get(f"/api/v1/staff/{staff.id}/events?q=ご自宅", headers=headers)
@@ -283,7 +283,7 @@ async def test_hide_regular_is_driven_by_defaults_table(client, db) -> None:
         "カンファレンス",
         "面談 職員G",
         "研修：基本マナー",
-        "鈴木乃愛様 担当者会議",
+        "利用者R様 担当者会議",
     }
 
     # 任意のタイトルで同じことが起きる (朝会は特別扱いされていない)
@@ -339,13 +339,13 @@ async def test_filters_combine_with_range(client, db) -> None:
         headers=headers,
     )
     assert res.status_code == 200
-    assert _titles(res) == ["鈴木乃愛様 担当者会議", "研修：基本マナー", "面談 職員G"]
+    assert _titles(res) == ["利用者R様 担当者会議", "研修：基本マナー", "面談 職員G"]
 
     res = await client.get(
         f"/api/v1/staff/{staff.id}/events?q=会議&hide_regular=true&type=event",
         headers=headers,
     )
-    assert _titles(res) == ["鈴木乃愛様 担当者会議"]
+    assert _titles(res) == ["利用者R様 担当者会議"]
 
 
 @pytest.mark.asyncio

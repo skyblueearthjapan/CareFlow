@@ -107,7 +107,7 @@ function makeTicket(over: Record<string, unknown> = {}) {
     },
     patient: {
       id: PATIENT_ID,
-      name: '中尾 要太',
+      name: '利用者L 太郎',
       code: 'P-001',
       sex: 'male',
       sex_restriction: null,
@@ -162,7 +162,7 @@ describe('SpecialVisitPoolSection', () => {
 
     expect(screen.getByTestId('special-visit-pool-section')).toBeTruthy();
     const card = screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`);
-    expect(card.textContent).toContain('中尾 要太');
+    expect(card.textContent).toContain('利用者L 太郎');
     expect(card.textContent).toContain('P-001');
     expect(card.textContent).toContain('⭐');
     expect(screen.getByTestId(`special-visit-ticket-kind-${MARK_ID}`).textContent).toContain(
@@ -260,7 +260,7 @@ describe('SpecialVisitPoolSection', () => {
     const card = screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`);
     expect(card.getAttribute('aria-roledescription')).toBe('draggable');
     expect(card.getAttribute('data-drag-disabled')).toBe('false');
-    expect(card.getAttribute('title')).toBe('中尾 要太 様の配置先を探す');
+    expect(card.getAttribute('title')).toBe('利用者L 太郎 様の配置先を探す');
   });
 
   // 曜日ゲート撤去 (§2-4) の本命: 表示中の曜日と違うチケットでも掴める。
@@ -270,7 +270,7 @@ describe('SpecialVisitPoolSection', () => {
     renderSection(true);
     const card = screen.getByTestId(`special-visit-ticket-card-${MARK_ID}`);
     expect(card.getAttribute('data-drag-disabled')).toBe('false');
-    expect(card.getAttribute('title')).toBe('中尾 要太 様の配置先を探す');
+    expect(card.getAttribute('title')).toBe('利用者L 太郎 様の配置先を探す');
     // クリック導線は残るので「操作できない」とは読ませない (a11y)。
     expect(card.getAttribute('aria-disabled')).toBeNull();
   });
@@ -340,7 +340,7 @@ describe('SpecialVisitPoolSection', () => {
     renderSection();
     expect(screen.queryByTestId('svw-dialog-stub')).toBeNull();
     fireEvent.click(screen.getByTestId(`special-visit-ticket-calendar-${MARK_ID}`));
-    expect(screen.getByTestId('svw-dialog-stub').textContent).toContain('中尾 要太');
+    expect(screen.getByTestId('svw-dialog-stub').textContent).toContain('利用者L 太郎');
     expect(screen.queryByTestId('patient-detail-stub')).toBeNull();
   });
 });

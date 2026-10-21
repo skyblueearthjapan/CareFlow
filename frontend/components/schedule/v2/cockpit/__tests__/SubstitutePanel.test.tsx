@@ -68,7 +68,7 @@ const DATA = {
       visits: [visit(VISIT_1, '佐々木 様'), visit(VISIT_2, '中村 様')],
       candidates: [
         cand(CAND_OK, '職員B', 'ok', 12.5),
-        cand(CAND_WARN, '熊澤', 'warn'),
+        cand(CAND_WARN, '職員L', 'warn'),
         cand(CAND_NG, '鈴木', 'ng'),
       ],
     },

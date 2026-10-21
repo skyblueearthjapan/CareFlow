@@ -152,7 +152,7 @@ describe('WeekTimelineBoard 同行モード', () => {
         accompaniment={makeBinding({
           active: false,
           visitBadgeName: (id) => (id === 'a' ? ['職員B', '職員A'] : []),
-          courseBadgeName: (cid) => (cid === 't1:0' ? ['熊澤', '利用者A'] : []),
+          courseBadgeName: (cid) => (cid === 't1:0' ? ['職員L', '利用者A'] : []),
         })}
       />,
     );
@@ -160,7 +160,7 @@ describe('WeekTimelineBoard 同行モード', () => {
     expect(badge.textContent).toContain('職員B・職員A');
     expect(badge.getAttribute('title')).toBe('同行: 職員B・職員A');
     expect(screen.getByTestId('wtl-course-accompaniment-t1-0').getAttribute('title')).toBe(
-      '同行: 熊澤・利用者A',
+      '同行: 職員L・利用者A',
     );
   });
 

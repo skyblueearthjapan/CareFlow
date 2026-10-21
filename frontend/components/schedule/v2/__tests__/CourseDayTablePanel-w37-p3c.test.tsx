@@ -848,7 +848,7 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
       },
       patient: {
         id: PATIENT_UUID,
-        name: '中尾 要太',
+        name: '利用者L 太郎',
         code: 'P-001',
         sex: 'male',
         sex_restriction: null,
@@ -897,7 +897,7 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
       payload: { course_template_id: 'tpl-A', start_time: '10:15' },
     });
     expect(mockToast.success).toHaveBeenCalledWith(
-      '中尾 要太 様を 月曜 10:15 に配置しました（この週のみ・固定化しません）',
+      '利用者L 太郎 様を 月曜 10:15 に配置しました（この週のみ・固定化しません）',
     );
   });
 
@@ -978,9 +978,9 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
               {
                 kind: 'ng_staff',
                 patient_id: PATIENT_UUID,
-                patient_name: '中尾 要太',
+                patient_name: '利用者L 太郎',
                 staff_id: '77777777-7777-4777-8777-777777777777',
-                staff_name: '熊澤 妙子',
+                staff_name: '職員L 良子',
                 note: null,
               },
             ],
@@ -1090,7 +1090,7 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
       payload: { course_template_id: 'tpl-A', start_time: '09:00', weekday: 3 },
     });
     expect(mockToast.success).toHaveBeenCalledWith(
-      '中尾 要太 様の 月曜の追加枠を 木曜 09:00 に配置しました（この週のみ）',
+      '利用者L 太郎 様の 月曜の追加枠を 木曜 09:00 に配置しました（この週のみ）',
     );
   });
 

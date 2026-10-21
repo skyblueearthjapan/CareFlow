@@ -111,7 +111,7 @@ function renderDialog(props: Partial<AddVisitAnywhereDialogProps> = {}) {
     isoWeek: 37,
     patients: [ITO],
     poolPatientIds: new Set<string>(),
-    staffOptions: [{ id: 'staff-1', name: '熊澤' }],
+    staffOptions: [{ id: 'staff-1', name: '職員L' }],
     offices: [
       { id: OFFICE_A, name: '稲毛' },
       { id: OFFICE_B, name: '都賀' },
@@ -165,7 +165,7 @@ describe('AddVisitAnywhereDialog', () => {
             // BE のランキング順 = この配列順。score では並べ替えない。
             slots: [
               slot({ weekday: 0, course_label: '稲毛A', score: 0.4 }),
-              slot({ weekday: 0, course_label: '稲毛C', staff_name: '熊澤', score: 0.9 }),
+              slot({ weekday: 0, course_label: '稲毛C', staff_name: '職員L', score: 0.9 }),
             ],
           })
         : response({ iso_week: 39, slots: [slot({ weekday: 1, course_label: '稲毛B' })] }),
@@ -197,7 +197,7 @@ describe('AddVisitAnywhereDialog', () => {
     // BE の 1 位 (稲毛A) が p0 = 既定選択。score が高い稲毛C を繰り上げない。
     const row = await screen.findByTestId('ava-row-2026-09-14');
     expect(row).toHaveTextContent('稲毛A（職員B）');
-    expect(row).toHaveTextContent('稲毛C（熊澤）');
+    expect(row).toHaveTextContent('稲毛C（職員L）');
     const labels = Array.from(row.querySelectorAll('label')).map((el) => el.textContent ?? '');
     expect(labels[0]).toContain('稲毛A');
     expect(labels[1]).toContain('稲毛C');
@@ -210,7 +210,7 @@ describe('AddVisitAnywhereDialog', () => {
       req.office_ids[0] === OFFICE_B
         ? response({
             slots: [
-              slot({ weekday: 0, office_id: OFFICE_B, course_label: '都賀A', staff_name: '熊澤' }),
+              slot({ weekday: 0, office_id: OFFICE_B, course_label: '都賀A', staff_name: '職員L' }),
             ],
           })
         : response({ excluded_summary: [{ reason: 'capacity_full', count: 2, weekday: 0 }] }),

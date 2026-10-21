@@ -116,7 +116,7 @@ async def test_already_linked_staff_is_skipped(_engine, db) -> None:
 
     db.add(
         User(
-            email="chie.kawana@thousands.jp",
+            email="staff.a@thousands.jp",
             password_hash=hash_password("existing-pw-01"),
             role="manager",
             staff_id=staff.id,
@@ -131,7 +131,7 @@ async def test_already_linked_staff_is_skipped(_engine, db) -> None:
     await db.rollback()
     users = await _alive_users(db)
     assert len(users) == 1
-    assert users[0].email == "chie.kawana@thousands.jp"
+    assert users[0].email == "staff.a@thousands.jp"
 
 
 @pytest.mark.asyncio

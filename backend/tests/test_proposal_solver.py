@@ -82,14 +82,14 @@ def test_course_total_non_aligned_same_address_uses_floor() -> None:
 def test_scan_block_respects_same_address_pair_90min_occupancy() -> None:
     """課題1 (スロット配置): 同住所2名ペア (16:00 同start → 90分占有 16:00-17:30) の
     最中には候補を出さない. 旧実装は前 visit の生 end_time (16:35) を起点にして 16:45 等
-    ペア占有内に候補を提案していた (= 植田 月16:45 の症状). 占有終端 17:30 を起点にする
+    ペア占有内に候補を提案していた (= 利用者AA 月16:45 の症状). 占有終端 17:30 を起点にする
     ことで占有内の候補が消える.
     """
     existing = [
-        ExistingVisit(time(16, 0), time(16, 35), *BASE, service_minutes=35, patient_id="安永"),
-        ExistingVisit(time(16, 0), time(16, 35), *BASE, service_minutes=35, patient_id="菅原"),
+        ExistingVisit(time(16, 0), time(16, 35), *BASE, service_minutes=35, patient_id="利用者O"),
+        ExistingVisit(time(16, 0), time(16, 35), *BASE, service_minutes=35, patient_id="利用者P"),
     ]
-    cand = Candidate(*P_1_4KM, service_minutes=35, time_type="終日", patient_id="植田")
+    cand = Candidate(*P_1_4KM, service_minutes=35, time_type="終日", patient_id="利用者AA")
     slots = find_available_slots_for_candidate(existing, cand, lunch_window=None, weekday=0)
     for s in slots:
         assert not (time(16, 0) <= s.start < time(17, 30)), (

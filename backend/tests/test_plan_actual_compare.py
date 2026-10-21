@@ -183,7 +183,7 @@ def test_duplicate_flag_on_actual_side() -> None:
 # --- 2a. 職種未設定 / 同日複数 ---------------------------------------------
 
 
-def _omata_case():
+def _patient_e_case():
     """2026-07-29 利用者E様の実データ形: 正の実績 + 職種未設定の実績 (時刻違い)。"""
     plan = _csv(_row(staff1="看護A", day=29, patient="利用者E 本名", start="16:25", end="17:00"))
     actual = _csv(
@@ -195,7 +195,7 @@ def _omata_case():
 
 def test_untyped_actual_row_is_tagged_and_both_rows_are_multi_same_day() -> None:
     """職種が空の実績行 = 画面の赤い「未」。時刻が違うので重複には掛からない。"""
-    report = _omata_case()
+    report = _patient_e_case()
     entries = {e.category: e for d in report.days for e in d.entries}
     assert set(entries) == {CAT_MATCH, CAT_ACTUAL_ONLY}
 
@@ -221,7 +221,7 @@ def test_untyped_actual_row_is_tagged_and_both_rows_are_multi_same_day() -> None
 
 
 def test_untyped_and_multi_are_counted_per_staff() -> None:
-    report = _omata_case()
+    report = _patient_e_case()
     assert [s.staff for s in report.by_staff] == ["看護A"]
     s = report.by_staff[0]
     assert s.untyped == 1
@@ -289,7 +289,7 @@ def test_csv_without_the_job_column_is_not_reported_as_untyped() -> None:
 
 
 def test_html_shows_the_new_chips_and_the_updated_caveat() -> None:
-    html_text = render_plan_actual_html(_omata_case())
+    html_text = render_plan_actual_html(_patient_e_case())
     assert "職種未設定" in html_text
     assert "同日複数" in html_text
     assert "職種が未設定（画面で「未」）の実績行は CSV に含まれます" in html_text

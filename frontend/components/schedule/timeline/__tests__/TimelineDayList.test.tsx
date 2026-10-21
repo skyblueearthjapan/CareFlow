@@ -142,8 +142,8 @@ describe('TimelineDayList', () => {
           course({
             key: 'c1',
             visits: [
-              v({ key: 'sa1', patient_name: '安永 一', same_address_group_id: 'g1' }),
-              v({ key: 'sa2', patient_name: '菅原 二', same_address_group_id: 'g1' }),
+              v({ key: 'sa1', patient_name: '利用者O 一', same_address_group_id: 'g1' }),
+              v({ key: 'sa2', patient_name: '利用者P 二', same_address_group_id: 'g1' }),
               v({ key: 'solo', patient_name: '田中 三' }),
             ],
           }),

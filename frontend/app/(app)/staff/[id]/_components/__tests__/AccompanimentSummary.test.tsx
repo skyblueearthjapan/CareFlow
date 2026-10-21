@@ -22,7 +22,7 @@ const mutateAsync = vi.fn();
 const COURSE_LINK = {
   id: 'l-course',
   trainee_staff_id: 'g1',
-  staff_name: '熊澤',
+  staff_name: '職員L',
   kind: 'support',
   target_type: 'course',
   source: 'manual',
@@ -32,7 +32,7 @@ const COURSE_LINK = {
 const VISIT_LINK = {
   id: 'l-visit',
   trainee_staff_id: 'g1',
-  staff_name: '熊澤',
+  staff_name: '職員L',
   kind: 'support',
   target_type: 'visit',
   source: 'manual',
@@ -131,7 +131,7 @@ describe('AccompanimentSummary', () => {
               patient_id: 'p1',
               patient_name: '山田 太郎',
               staff_id: 'g1',
-              staff_name: '熊澤',
+              staff_name: '職員L',
             },
           ],
         },

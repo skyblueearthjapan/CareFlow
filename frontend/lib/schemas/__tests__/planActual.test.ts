@@ -57,7 +57,7 @@ describe('予実比較スキーマ (寛容さ)', () => {
       counts: { 一致: 480, 相違: 3 },
       by_staff: [
         {
-          staff: '熊澤',
+          staff: '職員L',
           counts: { 一致: 40, 実績のみ: 1 },
           duplicates: 2,
           total: 43,
@@ -67,7 +67,7 @@ describe('予実比較スキーマ (寛容さ)', () => {
       error: null,
     });
     expect(r.plan_rows).toBe(500);
-    expect(r.by_staff[0]!.staff).toBe('熊澤');
+    expect(r.by_staff[0]!.staff).toBe('職員L');
     expect(r.by_staff[0]!.counts['一致']).toBe(40);
     expect(r.by_staff[0]!.duplicates).toBe(2);
     expect(r.by_staff[0]!.total).toBe(43);
@@ -100,7 +100,7 @@ describe('予実比較スキーマ (寛容さ)', () => {
     });
     expect(r.untyped).toBe(1);
     expect(r.multi_same_day).toBe(2);
-    expect(PlanActualByStaffSchema.parse({ staff: '熊澤' }).untyped).toBeUndefined();
+    expect(PlanActualByStaffSchema.parse({ staff: '職員L' }).untyped).toBeUndefined();
   });
 
   it('events_skipped も件数として読める', () => {

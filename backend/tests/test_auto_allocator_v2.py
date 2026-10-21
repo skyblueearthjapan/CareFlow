@@ -577,9 +577,9 @@ async def test_run_v2_pipeline_diff_add_suppresses_conflicting_proposal(db) -> N
     (pool_visits から除去 + unassigned 計上) になり、 endpoint が二重 surface しない.
 
     井上型 (PFV 無し・weekly_pattern 無しだが、 手動配置の実 Visit が火 16:00 に存在) と
-    中尾型 (PFV 無し・weekly_pattern で火 16:00 固定希望の pool 患者) を同拠点に置く。
-    ① の注入で井上の実 Visit が g94 段 b の衝突相手に入り、 g94 が中尾を提案不可に判定。
-    G-100 で中尾は pool_visits からも除去され、 unassigned_patients に計上される。
+    利用者L型 (PFV 無し・weekly_pattern で火 16:00 固定希望の pool 患者) を同拠点に置く。
+    ① の注入で井上の実 Visit が g94 段 b の衝突相手に入り、 g94 が利用者Lを提案不可に判定。
+    G-100 で利用者Lは pool_visits からも除去され、 unassigned_patients に計上される。
     """
     from datetime import date
 
@@ -587,10 +587,10 @@ async def test_run_v2_pipeline_diff_add_suppresses_conflicting_proposal(db) -> N
     db.add(office)
     await db.flush()
 
-    # 中尾型: PFV 無し・希望のみ (火 16:00 固定) の pool 患者.
-    nakao = Patient(
-        code="NAKAO",
-        name="中尾型",
+    # 利用者L型: PFV 無し・希望のみ (火 16:00 固定) の pool 患者.
+    patient_l = Patient(
+        code="PATIENT_L",
+        name="利用者L型",
         status="active",
         lat=35.66,
         lng=140.12,
@@ -611,7 +611,7 @@ async def test_run_v2_pipeline_diff_add_suppresses_conflicting_proposal(db) -> N
         primary_office_id=office.id,
         weekly_pattern=None,
     )
-    db.add_all([nakao, inoue])
+    db.add_all([patient_l, inoue])
     await db.flush()
 
     # 井上の手動配置 実 Visit (火 16:00-17:00, W20 火曜 = 2026-05-12). PFV 非対応 = before
@@ -643,8 +643,8 @@ async def test_run_v2_pipeline_diff_add_suppresses_conflicting_proposal(db) -> N
     )
 
     pool_codes = {v.patient_code for v in result["pool_visits"]}
-    # 中尾は衝突拒否され pool_visits から除去される (= 二重 surface しない).
-    assert "NAKAO" not in pool_codes, (
+    # 利用者Lは衝突拒否され pool_visits から除去される (= 二重 surface しない).
+    assert "PATIENT_L" not in pool_codes, (
         f"既存実 visit と同時刻の固定提案は pool_visits から除去されるべき: {pool_codes}"
     )
 
@@ -655,7 +655,7 @@ async def test_run_v2_pipeline_diff_add_suppresses_conflicting_proposal(db) -> N
         return getattr(u, "patient_id", None)
 
     un_pids = {_pid(u) for u in result["unassigned_patients"]}
-    assert nakao.id in un_pids, "提案不可の中尾は unassigned_patients に計上されるべき"
+    assert patient_l.id in un_pids, "提案不可の利用者Lは unassigned_patients に計上されるべき"
 
 
 @pytest.mark.asyncio
@@ -2725,7 +2725,7 @@ def test_backward_blame_pool_proposal_before_pinned_fixed() -> None:
     再現: A = 15:30 開始・実働 35 分の pool 提案 (→ 16:05 占有終了), B = 16:00 固定で
     pinned な既存 visit (source_kind="fixed"), 5km 離れて travel >= 5 分. forward は
     (A,B) ペアで B の固定開始 16:00 に間に合わない shortage を検出するが、 B は動かせない
-    ため A を未割当にする (= 植田/菅原 ケース).
+    ため A を未割当にする (= 利用者AA/利用者P ケース).
     """
     from app.services.scheduling.auto_allocator_v2 import (
         SHORTAGE_THRESHOLD_MIN,
@@ -8347,7 +8347,7 @@ async def test_g92_diff_add_fallback_reason_not_hardcoded_time_conflict(db) -> N
 async def test_g93_diff_add_partial_shortage_proposes_only_missing_slot(db) -> None:
     """① 部分不足: PFV あり週3希望で 2 配置済 → 不足 1 スロットだけ提案 (P070 再現).
 
-    P070 植田弥生 (稲毛) の再現:
+    P070 利用者AA弥生 (稲毛) の再現:
       - 希望 週3 (Mon/Wed/Fri), PFV (mode='normal') 2 件 (Wed/Fri).
       - 今週すでに Wed/Fri に visit 配置済 (status='planned').
       - Mon は PFV 無し → preferred 提案として 1 スロットだけ出るべき.
@@ -8933,9 +8933,9 @@ async def test_g93_diff_add_frequency_only_pattern_uses_pfv_weekdays_only(db) ->
 
 @pytest.mark.asyncio
 async def test_g94_diff_add_count_satisfied_fixed_weekday_mismatch_not_proposed(db) -> None:
-    """① 過剰提案防止: 固定曜日 ≠ 希望曜日でも希望回数を満たせば提案しない (小宮再現).
+    """① 過剰提案防止: 固定曜日 ≠ 希望曜日でも希望回数を満たせば提案しない (利用者AB再現).
 
-    小宮啓子の再現: 固定枠 (水/木/金) と weekly 希望曜日 (火) がズレている.
+    利用者AB啓子の再現: 固定枠 (水/木/金) と weekly 希望曜日 (火) がズレている.
     frequency_per_week=3 で今週すでに 3 件 (水/木/金) 配置済 → 回数は充足.
     G-93 の曜日判定だけだと希望曜日 (火) が未配置 = 不足扱いで過剰提案されるが、
     G-94 の回数充足チェックで除外される.
@@ -8949,7 +8949,7 @@ async def test_g94_diff_add_count_satisfied_fixed_weekday_mismatch_not_proposed(
     )  # Tue/Wed/Thu/Fri
     p = Patient(
         code="G94-MISMATCH",
-        name="小宮型",
+        name="利用者AB型",
         status="active",
         lat=35.65,
         lng=140.10,
@@ -9003,9 +9003,9 @@ async def test_g94_diff_add_count_satisfied_fixed_weekday_mismatch_not_proposed(
 
 @pytest.mark.asyncio
 async def test_g94_diff_add_count_short_still_proposed(db) -> None:
-    """② 本当に不足: frequency 未充足なら従来通り不足曜日を提案する (植田再現).
+    """② 本当に不足: frequency 未充足なら従来通り不足曜日を提案する (利用者AA再現).
 
-    植田弥生の再現: 週3希望 (Mon/Wed/Fri), PFV 2 件 (Wed/Fri), 今週 2 件配置済.
+    利用者AA弥生の再現: 週3希望 (Mon/Wed/Fri), PFV 2 件 (Wed/Fri), 今週 2 件配置済.
     frequency_per_week は未設定だが desired_wds (= Mon/Wed/Fri = 3) を回数フォール
     バックに使うため、 placed 2 < desired 3 で回数充足せず、 不足曜日 (Mon) が提案
     される. G-94 の回数チェックが「本当に不足」な患者を誤除外しないことを検証する.
@@ -9017,7 +9017,7 @@ async def test_g94_diff_add_count_short_still_proposed(db) -> None:
     office = await _seed_g92_office(db, name="g94-short", staffed_weekdays=[0, 2, 4])
     p = Patient(
         code="G94-SHORT",
-        name="植田型",
+        name="利用者AA型",
         status="active",
         lat=35.65,
         lng=140.10,
@@ -9117,8 +9117,8 @@ def _g94_make_visit(
 def test_g94_double_booking_fixed_pool_proposal_unassigned() -> None:
     """③ 固定の pool 提案が同コース他患者と同時刻 → 提案不可 (未割当 + time_conflict).
 
-    中尾 16:00 (pool, 固定) が井上 16:00 (既存, 同コース C) と重なる. 固定は
-    ずらせないため提案不可. 返り値に中尾 visit の id が入り、 diff_add_conflict
+    利用者L 16:00 (pool, 固定) が井上 16:00 (既存, 同コース C) と重なる. 固定は
+    ずらせないため提案不可. 返り値に利用者L visit の id が入り、 diff_add_conflict
     warning が emit される (= 後段で fixed_time_conflict / G-92 time_conflict に整合).
     """
     office_id = uuid.uuid4()
@@ -9131,7 +9131,7 @@ def test_g94_double_booking_fixed_pool_proposal_unassigned() -> None:
         course_code="C",
     )
     pool_fixed = _g94_make_visit(
-        patient_name="中尾",
+        patient_name="利用者L",
         office_id=office_id,
         weekday=0,
         start=time(16, 0),
@@ -9163,7 +9163,7 @@ def test_g94_double_booking_fixed_pool_proposal_unassigned() -> None:
 def test_g94_double_booking_flex_pool_proposal_shifted() -> None:
     """④ 幅のある希望の pool 提案は衝突しない最早時刻へずれて衝突回避する.
 
-    中尾 (pool, 時間帯 16:00-18:00) が井上 16:00-16:30 (既存, 同コース C) と
+    利用者L (pool, 時間帯 16:00-18:00) が井上 16:00-16:30 (既存, 同コース C) と
     重なる. 幅があるため衝突しない最早時刻 (16:30 + buffer を 5 分切り上げ) へ
     ずれ、 提案は維持される (未割当にならない).
     """
@@ -9177,7 +9177,7 @@ def test_g94_double_booking_flex_pool_proposal_shifted() -> None:
         course_code="C",
     )
     pool_flex = _g94_make_visit(
-        patient_name="中尾",
+        patient_name="利用者L",
         office_id=office_id,
         weekday=0,
         start=time(16, 0),
@@ -9214,7 +9214,7 @@ def test_g94_double_booking_flex_pool_proposal_shifted() -> None:
 def test_g94_double_booking_no_conflict_no_change() -> None:
     """⑤ 衝突が無ければ何もしない (誤検出しない).
 
-    同コース C に井上 16:00-16:30 と中尾 17:00-17:30 (非重複). 何も変えず、
+    同コース C に井上 16:00-16:30 と利用者L 17:00-17:30 (非重複). 何も変えず、
     未割当も warning も出ない.
     """
     office_id = uuid.uuid4()
@@ -9227,7 +9227,7 @@ def test_g94_double_booking_no_conflict_no_change() -> None:
         course_code="C",
     )
     pool_ok = _g94_make_visit(
-        patient_name="中尾",
+        patient_name="利用者L",
         office_id=office_id,
         weekday=0,
         start=time(17, 0),
@@ -9250,16 +9250,16 @@ def test_g94_double_booking_no_conflict_no_change() -> None:
 
 # ---------------------------------------------------------------------------
 # Phase G-95 (修正1 段 b): course_code を問わない (office, weekday) 横断照合.
-# PFV 無し・weekly_pattern のみ の患者 (中尾型) の pool 提案は course_code=None で
+# PFV 無し・weekly_pattern のみ の患者 (利用者L型) の pool 提案は course_code=None で
 # 生成され、 別 code で placed された既存 visit (井上型) と段 a (同 code 照合) では
 # 突き合わされない. 段 b でこの取りこぼしを塞ぐ.
 # ---------------------------------------------------------------------------
 
 
 def test_g95_stage_b_preferred_only_fixed_pool_unassigned_cross_course() -> None:
-    """① PFV 無し希望のみ (中尾型) の固定 pool が別 course の既存 placed と同時刻 → 提案不可.
+    """① PFV 無し希望のみ (利用者L型) の固定 pool が別 course の既存 placed と同時刻 → 提案不可.
 
-    中尾 (pool, course_code=None, 固定 16:00) が井上 (既存, course='C', 16:00-16:30)
+    利用者L (pool, course_code=None, 固定 16:00) が井上 (既存, course='C', 16:00-16:30)
     と同 (office, weekday) で同時刻. 段 a は course_code=None を除外するため素通り
     するが、 段 b が (office, weekday) 横断で照合し、 固定はずらせないため提案不可
     (未割当 + diff_add_conflict = time_conflict 整合).
@@ -9274,7 +9274,7 @@ def test_g95_stage_b_preferred_only_fixed_pool_unassigned_cross_course() -> None
         course_code="C",  # 稲毛 C コース placed.
     )
     pool_fixed = _g94_make_visit(
-        patient_name="中尾",
+        patient_name="利用者L",
         office_id=office_id,
         weekday=1,
         start=time(16, 0),
@@ -9304,7 +9304,7 @@ def test_g95_stage_b_preferred_only_fixed_pool_unassigned_cross_course() -> None
 def test_g95_stage_b_preferred_only_flex_pool_shifted_cross_course() -> None:
     """① (幅あり版) 希望のみ幅あり pool は別 course の既存 placed と同時刻 → ずれて回避.
 
-    中尾 (pool, course_code=None, 時間帯 16:00-18:00) が井上 (既存, course='C',
+    利用者L (pool, course_code=None, 時間帯 16:00-18:00) が井上 (既存, course='C',
     16:00-16:30) と同時刻. 幅があるため段 b で衝突しない最早時刻へずれる (未割当に
     ならず提案維持).
     """
@@ -9318,7 +9318,7 @@ def test_g95_stage_b_preferred_only_flex_pool_shifted_cross_course() -> None:
         course_code="C",
     )
     pool_flex = _g94_make_visit(
-        patient_name="中尾",
+        patient_name="利用者L",
         office_id=office_id,
         weekday=1,
         start=time(16, 0),
@@ -9350,7 +9350,7 @@ def test_g95_stage_b_preferred_only_flex_pool_shifted_cross_course() -> None:
 def test_g95_stage_b_no_double_process_after_stage_a() -> None:
     """① (ガード) 段 a で動かした pool 提案を段 b で二重処理しない.
 
-    井上 (既存, course='C', 16:00) と中尾 (pool, course='C', 時間帯 16:00-18:00) は
+    井上 (既存, course='C', 16:00) と利用者L (pool, course='C', 時間帯 16:00-18:00) は
     同 course で段 a がずらす. 段 b は ``stage_a_handled_ids`` で除外するため、
     シフト warning は 1 回のみ.
     """
@@ -9364,7 +9364,7 @@ def test_g95_stage_b_no_double_process_after_stage_a() -> None:
         course_code="C",
     )
     pool_flex = _g94_make_visit(
-        patient_name="中尾",
+        patient_name="利用者L",
         office_id=office_id,
         weekday=1,
         start=time(16, 0),
@@ -9395,9 +9395,9 @@ def test_g95_stage_b_no_double_process_after_stage_a() -> None:
 def test_g95_existing_same_address_pair_90min_occupancy_for_next_pool() -> None:
     """② 既存同住所ペア (35 分 placed) 直後の pool 提案は 90 分占有起点で計算する.
 
-    安永 (16:00-16:35) ・菅原 (16:35-17:10) が同住所の既存ペア (両者固定で時刻不一致
+    利用者O (16:00-16:35) ・利用者P (16:35-17:10) が同住所の既存ペア (両者固定で時刻不一致
     のため ``_align_same_address_pair_to_same_time`` は揃えず 90 分底上げが効かない =
-    実 service 長のまま). 植田 (pool, 異住所近接) が後続. 旧実装は prev (菅原) の
+    実 service 長のまま). 利用者AA (pool, 異住所近接) が後続. 旧実装は prev (利用者P) の
     end_time=17:10 起点 (17:10+移動+バッファ ≒ 17:20) で、 ペアの 90 分占有 (16:00 起点
     = 17:30) が反映されない. 修正後は anchor=16:00 → 16:00+90=17:30 起点 → ≒ 17:39.
     """
@@ -9405,88 +9405,88 @@ def test_g95_existing_same_address_pair_90min_occupancy_for_next_pool() -> None:
     # 同住所ペア (園生町 想定): 同住所バケット + 別患者 + 連続配置 (16:00 / 16:35).
     # 両者固定で時刻不一致のため align は揃えられず 90 分底上げが効かない (= 既存
     # placed ペアと同じ「実 35 分占有」状態を再現).
-    yasunaga = _make_visit(
-        lat=35.65, lng=140.10, office_id=office_id, start_h=16, start_m=0, patient_name="安永"
+    patient_o = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=16, start_m=0, patient_name="利用者O"
     )
-    yasunaga.end_time = time(16, 35)
-    yasunaga.service_minutes = 35
-    yasunaga.course_code = "D"
-    yasunaga.time_type = "固定"
-    yasunaga.preferred_start = "16:00"
-    sugawara = _make_visit(
-        lat=35.65, lng=140.10, office_id=office_id, start_h=16, start_m=35, patient_name="菅原"
+    patient_o.end_time = time(16, 35)
+    patient_o.service_minutes = 35
+    patient_o.course_code = "D"
+    patient_o.time_type = "固定"
+    patient_o.preferred_start = "16:00"
+    patient_p = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=16, start_m=35, patient_name="利用者P"
     )
-    sugawara.end_time = time(17, 10)
-    sugawara.service_minutes = 35
-    sugawara.course_code = "D"
-    sugawara.time_type = "固定"
-    sugawara.preferred_start = "16:35"
+    patient_p.end_time = time(17, 10)
+    patient_p.service_minutes = 35
+    patient_p.course_code = "D"
+    patient_p.time_type = "固定"
+    patient_p.preferred_start = "16:35"
     # 後続 pool 患者 (異住所だが近接 = 移動 1 分; 幅あり): earliest が 90 分占有起点に
     # なるか. 近接座標にすることで「移動時間で勝手に押し出された」のではなく
     # 「90 分占有底上げで押し出された」ことを切り分ける.
-    ueda = _make_visit(
-        lat=35.652, lng=140.10, office_id=office_id, start_h=17, start_m=10, patient_name="植田"
+    patient_aa = _make_visit(
+        lat=35.652, lng=140.10, office_id=office_id, start_h=17, start_m=10, patient_name="利用者AA"
     )
-    ueda.end_time = time(17, 40)
-    ueda.service_minutes = 30
-    ueda.course_code = "D"
-    ueda.time_type = "時間帯"
-    ueda.preferred_start = "16:00"
-    ueda.preferred_end = "18:00"
+    patient_aa.end_time = time(17, 40)
+    patient_aa.service_minutes = 30
+    patient_aa.course_code = "D"
+    patient_aa.time_type = "時間帯"
+    patient_aa.preferred_start = "16:00"
+    patient_aa.preferred_end = "18:00"
 
     warnings: list[V2Warning] = []
-    apply_travel_corrections([yasunaga, sugawara, ueda], warnings=warnings)
+    apply_travel_corrections([patient_o, patient_p, patient_aa], warnings=warnings)
 
-    # 植田の起点は anchor 16:00 + 90 = 17:30 (+ 移動 1 分 + バッファ + 5 分切り上げ)
-    # なので 17:30 以降. 旧実装は prev (菅原) end 17:10 起点で 17:20 だったため、
+    # 利用者AAの起点は anchor 16:00 + 90 = 17:30 (+ 移動 1 分 + バッファ + 5 分切り上げ)
+    # なので 17:30 以降. 旧実装は prev (利用者P) end 17:10 起点で 17:20 だったため、
     # 17:30 以降は 90 分占有底上げ (16:00 起点) が効いた証拠.
-    assert ueda.start_time >= time(17, 30), (
-        f"既存ペア 90 分占有起点 (17:30) 以降に配置されるべき: {ueda.start_time}"
+    assert patient_aa.start_time >= time(17, 30), (
+        f"既存ペア 90 分占有起点 (17:30) 以降に配置されるべき: {patient_aa.start_time}"
     )
 
 
 def test_g95_existing_same_address_pair_pushes_pool_over_window_unassigned() -> None:
     """② 既存ペア 90 分占有で固定 pool が物理不可 → 提案不可 (未割当化).
 
-    既存ペア 安永 (16:00-16:35) ・菅原 (16:35-17:10) の 90 分占有起点 = 16:00+90=17:30.
-    後続 pool 植田 は固定 17:20 希望. 近接座標 (移動 1 分) なので 90 分底上げが無ければ
-    prev (菅原) end 17:10 + 1 + 8 = 17:19 で 17:20 固定に間に合う. しかし 90 分占有起点
+    既存ペア 利用者O (16:00-16:35) ・利用者P (16:35-17:10) の 90 分占有起点 = 16:00+90=17:30.
+    後続 pool 利用者AA は固定 17:20 希望. 近接座標 (移動 1 分) なので 90 分底上げが無ければ
+    prev (利用者P) end 17:10 + 1 + 8 = 17:19 で 17:20 固定に間に合う. しかし 90 分占有起点
     17:30 では 17:30+1+8=17:39 が 17:20 を超過 (shortage 19 ≥ 5) → 物理不可で
     course_code=None + 未割当 (= 90 分占有底上げが効いた証拠).
     """
     office_id = uuid.uuid4()
-    yasunaga = _make_visit(
-        lat=35.65, lng=140.10, office_id=office_id, start_h=16, start_m=0, patient_name="安永"
+    patient_o = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=16, start_m=0, patient_name="利用者O"
     )
-    yasunaga.end_time = time(16, 35)
-    yasunaga.service_minutes = 35
-    yasunaga.course_code = "D"
-    yasunaga.time_type = "固定"
-    yasunaga.preferred_start = "16:00"
-    sugawara = _make_visit(
-        lat=35.65, lng=140.10, office_id=office_id, start_h=16, start_m=35, patient_name="菅原"
+    patient_o.end_time = time(16, 35)
+    patient_o.service_minutes = 35
+    patient_o.course_code = "D"
+    patient_o.time_type = "固定"
+    patient_o.preferred_start = "16:00"
+    patient_p = _make_visit(
+        lat=35.65, lng=140.10, office_id=office_id, start_h=16, start_m=35, patient_name="利用者P"
     )
-    sugawara.end_time = time(17, 10)
-    sugawara.service_minutes = 35
-    sugawara.course_code = "D"
-    sugawara.time_type = "固定"
-    sugawara.preferred_start = "16:35"
+    patient_p.end_time = time(17, 10)
+    patient_p.service_minutes = 35
+    patient_p.course_code = "D"
+    patient_p.time_type = "固定"
+    patient_p.preferred_start = "16:35"
     # 後続 pool: 固定 17:20 希望.
-    ueda = _make_visit(
-        lat=35.652, lng=140.10, office_id=office_id, start_h=17, start_m=20, patient_name="植田"
+    patient_aa = _make_visit(
+        lat=35.652, lng=140.10, office_id=office_id, start_h=17, start_m=20, patient_name="利用者AA"
     )
-    ueda.end_time = time(17, 50)
-    ueda.service_minutes = 30
-    ueda.course_code = "D"
-    ueda.time_type = "固定"
-    ueda.preferred_start = "17:20"
+    patient_aa.end_time = time(17, 50)
+    patient_aa.service_minutes = 30
+    patient_aa.course_code = "D"
+    patient_aa.time_type = "固定"
+    patient_aa.preferred_start = "17:20"
 
     warnings: list[V2Warning] = []
-    unassigned = apply_travel_corrections([yasunaga, sugawara, ueda], warnings=warnings)
+    unassigned = apply_travel_corrections([patient_o, patient_p, patient_aa], warnings=warnings)
 
     # 90 分占有 (17:30 起点) で 17:20 固定に間に合わず物理不可 → course_code=None + 未割当.
-    assert id(ueda) in unassigned, "90 分占有起点で固定時刻に届かず提案不可 (未割当)"
-    assert ueda.course_code is None
+    assert id(patient_aa) in unassigned, "90 分占有起点で固定時刻に届かず提案不可 (未割当)"
+    assert patient_aa.course_code is None
     assert any(w.type == "travel_time_shortage" for w in warnings), [w.type for w in warnings]
 
 
@@ -9536,28 +9536,28 @@ def test_g95_no_existing_pair_occupancy_unchanged_for_normal_next() -> None:
 
 
 def test_g96_stage_b_existing_pair_90min_blocks_fixed_pool_unassigned() -> None:
-    """① 植田型: 段 b が既存同住所ペアの 90 分占有を見て固定 pool を提案不可にする.
+    """① 利用者AA型: 段 b が既存同住所ペアの 90 分占有を見て固定 pool を提案不可にする.
 
-    既存同住所ペア 安永 (16:00-16:35) ・菅原 (16:00-16:35; 同時刻同住所) が course='D'
-    で placed. 植田 (pool, course='E' = 別 course, 固定 16:45) が同 (office, weekday).
+    既存同住所ペア 利用者O (16:00-16:35) ・利用者P (16:00-16:35; 同時刻同住所) が course='D'
+    で placed. 利用者AA (pool, course='E' = 別 course, 固定 16:45) が同 (office, weekday).
     段 a は別 course なので照合せず素通り. 段 b は (office, weekday) 横断で照合し、
-    修正A により安永の占有を実 end 16:35 ではなく 90 分占有終端 (16:00+90=17:30) で
-    評価する. 植田 16:45-17:15 は 16:00-17:30 と重なり、 固定でずらせないため提案不可
+    修正A により利用者Oの占有を実 end 16:35 ではなく 90 分占有終端 (16:00+90=17:30) で
+    評価する. 利用者AA 16:45-17:15 は 16:00-17:30 と重なり、 固定でずらせないため提案不可
     (未割当 + diff_add_conflict). 修正前は実 end 16:35 しか見ず 16:45 は非重複で
     提案されてしまっていた.
     """
     office_id = uuid.uuid4()
     # 既存同住所ペア (同時刻 16:00; 同住所バケット; 別患者).
-    yasunaga = _g94_make_visit(
-        patient_name="安永",
+    patient_o = _g94_make_visit(
+        patient_name="利用者O",
         office_id=office_id,
         weekday=1,
         start=time(16, 0),
         service_minutes=35,  # 16:00-16:35.
         course_code="D",
     )
-    sugawara = _g94_make_visit(
-        patient_name="菅原",
+    patient_p = _g94_make_visit(
+        patient_name="利用者P",
         office_id=office_id,
         weekday=1,
         start=time(16, 0),
@@ -9565,8 +9565,8 @@ def test_g96_stage_b_existing_pair_90min_blocks_fixed_pool_unassigned() -> None:
         course_code="D",
     )
     # 段 b 検査対象 pool (別 course, 固定 16:45, 希望 〜17:15).
-    ueda = _g94_make_visit(
-        patient_name="植田",
+    patient_aa = _g94_make_visit(
+        patient_name="利用者AA",
         office_id=office_id,
         weekday=1,
         start=time(16, 45),
@@ -9575,42 +9575,42 @@ def test_g96_stage_b_existing_pair_90min_blocks_fixed_pool_unassigned() -> None:
         time_type="固定",
         preferred_start="16:45",
     )
-    after_visits = [yasunaga, sugawara, ueda]
+    after_visits = [patient_o, patient_p, patient_aa]
     warnings: list[V2Warning] = []
     unassign = _g94_resolve_cross_patient_double_booking(
         after_visits,
-        pool_visit_ids={id(ueda)},  # 安永/菅原 は既存確定 (pool でない).
+        pool_visit_ids={id(patient_aa)},  # 利用者O/利用者P は既存確定 (pool でない).
         warnings=warnings,
         office_name_by_id={office_id: "テスト拠点"},
     )
     # 90 分占有 (17:30) を見て固定 16:45 は提案不可 (= 16:45 にならない).
-    assert id(ueda) in unassign, "既存ペア 90 分占有で固定 pool は提案不可 (未割当)"
-    assert id(yasunaga) not in unassign and id(sugawara) not in unassign, "既存ペアは不変"
+    assert id(patient_aa) in unassign, "既存ペア 90 分占有で固定 pool は提案不可 (未割当)"
+    assert id(patient_o) not in unassign and id(patient_p) not in unassign, "既存ペアは不変"
     assert any(
-        w.type == "diff_add_conflict" and ueda.patient_id in (w.affected_patient_ids or [])
+        w.type == "diff_add_conflict" and patient_aa.patient_id in (w.affected_patient_ids or [])
         for w in warnings
     ), f"time_conflict 整合 warning が emit される: {[w.type for w in warnings]}"
     # read-only: 既存ペアの時刻は不変.
-    assert yasunaga.start_time == time(16, 0)
-    assert sugawara.start_time == time(16, 0)
-    # 植田の時刻は書き換えられない (固定でずらせない).
-    assert ueda.start_time == time(16, 45)
+    assert patient_o.start_time == time(16, 0)
+    assert patient_p.start_time == time(16, 0)
+    # 利用者AAの時刻は書き換えられない (固定でずらせない).
+    assert patient_aa.start_time == time(16, 45)
 
 
 def test_g99_stage_b_injected_existing_visit_blocks_fixed_pool() -> None:
     """Phase G-99 (懸念①): after_visits に載っていない当週実 visit を
     ``extra_existing_visits`` で注入すると、 同時刻の固定 pool 提案が提案不可になる.
 
-    中尾 (pool, 固定 16:00, course_code=None = PFV 無し希望のみ) が、 井上 (既存実
+    利用者L (pool, 固定 16:00, course_code=None = PFV 無し希望のみ) が、 井上 (既存実
     visit 16:00, 別 course C) と同 (office, weekday) で重なる. ただし井上は PFV 非対応
     の手動配置等で before ローダ (legacy) に載らず after_visits に存在しない状況を再現.
-    井上を ``extra_existing_visits`` で渡すと段 b が衝突を検出し、 固定の中尾は提案不可
-    (未割当) になる. 注入しない場合 (=修正前) は衝突が見えず中尾がすり抜ける.
+    井上を ``extra_existing_visits`` で渡すと段 b が衝突を検出し、 固定の利用者Lは提案不可
+    (未割当) になる. 注入しない場合 (=修正前) は衝突が見えず利用者Lがすり抜ける.
     """
     office_id = uuid.uuid4()
-    # 中尾: PFV 無し希望のみの固定 pool 提案 (course_code=None).
-    nakao = _g94_make_visit(
-        patient_name="中尾",
+    # 利用者L: PFV 無し希望のみの固定 pool 提案 (course_code=None).
+    patient_l = _g94_make_visit(
+        patient_name="利用者L",
         office_id=office_id,
         weekday=1,
         start=time(16, 0),
@@ -9633,33 +9633,33 @@ def test_g99_stage_b_injected_existing_visit_blocks_fixed_pool() -> None:
         lng=140.10,
     )
 
-    # 修正前相当 (注入なし): 衝突が見えず中尾は提案不可にならない (= バグ).
+    # 修正前相当 (注入なし): 衝突が見えず利用者Lは提案不可にならない (= バグ).
     warnings_no_inject: list[V2Warning] = []
     unassign_no_inject = _g94_resolve_cross_patient_double_booking(
-        [nakao],
-        pool_visit_ids={id(nakao)},
+        [patient_l],
+        pool_visit_ids={id(patient_l)},
         warnings=warnings_no_inject,
         office_name_by_id={office_id: "テスト拠点"},
     )
-    assert id(nakao) not in unassign_no_inject, (
-        "注入なしでは既存実 visit が見えず中尾がすり抜ける (= 修正前の挙動を再現)"
+    assert id(patient_l) not in unassign_no_inject, (
+        "注入なしでは既存実 visit が見えず利用者Lがすり抜ける (= 修正前の挙動を再現)"
     )
 
-    # 修正後 (注入あり): 段 b が井上との衝突を検出し中尾を提案不可にする.
+    # 修正後 (注入あり): 段 b が井上との衝突を検出し利用者Lを提案不可にする.
     warnings: list[V2Warning] = []
     unassign = _g94_resolve_cross_patient_double_booking(
-        [nakao],
-        pool_visit_ids={id(nakao)},
+        [patient_l],
+        pool_visit_ids={id(patient_l)},
         warnings=warnings,
         office_name_by_id={office_id: "テスト拠点"},
         extra_existing_visits=[inoue],
     )
-    assert id(nakao) in unassign, "注入された既存実 visit と同時刻の固定 pool は提案不可"
+    assert id(patient_l) in unassign, "注入された既存実 visit と同時刻の固定 pool は提案不可"
     assert any(
-        w.type == "diff_add_conflict" and nakao.patient_id in (w.affected_patient_ids or [])
+        w.type == "diff_add_conflict" and patient_l.patient_id in (w.affected_patient_ids or [])
         for w in warnings
     ), f"time_conflict 整合 warning が emit される: {[w.type for w in warnings]}"
-    assert nakao.start_time == time(16, 0), "固定 pool の時刻は書き換えない"
+    assert patient_l.start_time == time(16, 0), "固定 pool の時刻は書き換えない"
 
 
 def test_g96_stage_b_pool_vs_pool_same_time_second_shifts() -> None:
@@ -9791,7 +9791,7 @@ def test_g96_stage_b_pool_vs_pool_fixed_second_unassigned() -> None:
 def test_g96_stage_b_non_conflicting_proposals_unchanged() -> None:
     """③ 既存の非衝突提案は不変 (誤発火しない / 既存挙動を壊さない).
 
-    既存 井上 (course='C', 16:00-16:30) と pool 中尾 (course=None, 固定 17:00-17:30,
+    既存 井上 (course='C', 16:00-16:30) と pool 利用者L (course=None, 固定 17:00-17:30,
     非重複). 同住所ペアでもない. 段 b は何も変えず未割当も warning も出さない.
     """
     office_id = uuid.uuid4()
@@ -9804,7 +9804,7 @@ def test_g96_stage_b_non_conflicting_proposals_unchanged() -> None:
         course_code="C",
     )
     pool_ok = _g94_make_visit(
-        patient_name="中尾",
+        patient_name="利用者L",
         office_id=office_id,
         weekday=1,
         start=time(17, 0),

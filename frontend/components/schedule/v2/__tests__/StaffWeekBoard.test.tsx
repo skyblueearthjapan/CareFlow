@@ -68,8 +68,8 @@ function visit(partial: Partial<WeekOverviewVisit> & { id: string }): WeekOvervi
 }
 
 const visits: WeekOverviewVisit[] = [
-  visit({ id: 'v1', patient_name: '職員F　冬子', weekday: 0, start_time: '09:00' }),
-  visit({ id: 'v2', patient_name: '川田　春菜', weekday: 0, start_time: '10:30' }),
+  visit({ id: 'v1', patient_name: '利用者AG　冬子', weekday: 0, start_time: '09:00' }),
+  visit({ id: 'v2', patient_name: '利用者AF　春菜', weekday: 0, start_time: '10:30' }),
   // 火曜はコースBを職員B(新人)が担当
   visit({ id: 'v3', patient_name: '小川　文代', weekday: 1, course_template_id: TPL_B }),
   // 水曜のコースBは担当なし
@@ -499,8 +499,8 @@ describe('StaffWeekBoard', () => {
         templates={templates}
         officeNameById={new Map([[OFFICE_ID, '稲毛']])}
         visits={[
-          { ...visit({ id: 'v1', patient_name: '職員F　冬子' }), status: 'cancelled' },
-          visit({ id: 'v2', patient_name: '川田　春菜', start_time: '10:30' }),
+          { ...visit({ id: 'v1', patient_name: '利用者AG　冬子' }), status: 'cancelled' },
+          visit({ id: 'v2', patient_name: '利用者AF　春菜', start_time: '10:30' }),
         ]}
         assignedStaffByTemplateWeekday={assigned}
         staffMap={staffMap}
@@ -526,7 +526,7 @@ describe('StaffWeekBoard', () => {
         officeNameById={new Map([[OFFICE_ID, '稲毛']])}
         visits={[
           {
-            ...visit({ id: 'v1', patient_name: '職員F　冬子', source: 'manual_cancel' }),
+            ...visit({ id: 'v1', patient_name: '利用者AG　冬子', source: 'manual_cancel' }),
             status: 'cancelled',
           },
           // 取込の削除など source を問わず取消は隠す。
@@ -534,7 +534,7 @@ describe('StaffWeekBoard', () => {
             ...visit({ id: 'v3', patient_name: '浜野　一郎', start_time: '13:00' }),
             status: 'cancelled',
           },
-          visit({ id: 'v2', patient_name: '川田　春菜', start_time: '10:30' }),
+          visit({ id: 'v2', patient_name: '利用者AF　春菜', start_time: '10:30' }),
         ]}
         assignedStaffByTemplateWeekday={assigned}
         staffMap={staffMap}
@@ -591,8 +591,8 @@ describe('StaffWeekBoard', () => {
       kind: 'visit' as const,
       action: 'update' as const,
       externalId: 'diff-1',
-      title: '職員F　冬子',
-      patient_name: '職員F　冬子',
+      title: '利用者AG　冬子',
+      patient_name: '利用者AG　冬子',
       start: '11:00',
       end: '11:30',
       beforeStart: '09:00',
@@ -930,7 +930,7 @@ describe('StaffWeekBoard — 非稼働患者', () => {
         templates={templates}
         officeNameById={new Map([[OFFICE_ID, '稲毛']])}
         visits={[
-          visit({ id: 'v1', patient_name: '職員F　冬子', weekday: 0, start_time: '09:00' }),
+          visit({ id: 'v1', patient_name: '利用者AG　冬子', weekday: 0, start_time: '09:00' }),
           visit({
             id: 'sc1',
             patient_name: '利用者B　太郎',

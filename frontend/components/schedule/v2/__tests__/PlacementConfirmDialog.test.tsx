@@ -77,7 +77,7 @@ function renderDialog(over: Partial<PlacementConfirmDialogProps> = {}) {
       onOpenChange={onOpenChange}
       subject={{
         kind: 'special',
-        patientName: '中尾 要太',
+        patientName: '利用者L 太郎',
         patientId: PATIENT_ID,
         markId: MARK_ID,
         ticketWeekday: 3, // 木

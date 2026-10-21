@@ -62,7 +62,7 @@ const visits = [
   {
     id: 'v1',
     patient_id: 'p1',
-    patient_name: '職員F　冬子',
+    patient_name: '利用者AG　冬子',
     weekday: 0,
     course_template_id: TPL_A,
     start_time: '09:00',

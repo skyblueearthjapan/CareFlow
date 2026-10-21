@@ -113,7 +113,7 @@ describe('useAccompanimentController', () => {
   });
 
   it('新人でない一般スタッフも同行者に選べる (一般化)', () => {
-    const { result } = setup({ staffOptions: [staff('g1', '熊澤', false)] });
+    const { result } = setup({ staffOptions: [staff('g1', '職員L', false)] });
     expect(result.current.available).toBe(true);
     act(() => result.current.enter());
     expect(result.current.bar?.selectedStaffId).toBe('g1');
@@ -322,7 +322,7 @@ describe('useAccompanimentController', () => {
   it('スタッフ切替は選択・既定チェック・対象の二択をすべて初期化する', () => {
     const weekVisits = [visit({ visitId: 'v1', courseId: 'c1' })];
     const { result } = setup(
-      { staffOptions: [staff('s1', '職員B'), staff('g1', '熊澤', false)] },
+      { staffOptions: [staff('s1', '職員B'), staff('g1', '職員L', false)] },
       weekVisits,
     );
     act(() => result.current.enter());
@@ -384,7 +384,7 @@ describe('useAccompanimentController', () => {
         {
           id: 'l2',
           trainee_staff_id: 'g1',
-          trainee_staff_name: '熊澤',
+          trainee_staff_name: '職員L',
           kind: 'support',
           target_type: 'visit',
           source: 'manual',
@@ -403,7 +403,7 @@ describe('useAccompanimentController', () => {
       isLoading: false,
     } as unknown as ReturnType<typeof queries.useTraineeAccompaniments>);
     const { result } = setup();
-    expect(result.current.binding.visitBadgeName('v1')).toEqual(['熊澤', '職員B']);
+    expect(result.current.binding.visitBadgeName('v1')).toEqual(['職員B', '職員L']);
     expect(result.current.binding.courseBadgeName('c1')).toEqual(['利用者A']);
     expect(result.current.binding.visitBadgeName('v9')).toEqual([]);
   });

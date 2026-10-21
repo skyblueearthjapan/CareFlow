@@ -137,7 +137,7 @@ def test_row_content_shape_from_sheet_item() -> None:
             "date": "9",
             "start_time": "09:00",
             "end_time": "09:35",
-            "staff1": "熊澤　妙子",
+            "staff1": "職員L　良子",
             "staff2": "",
             "service_type": "精神基本療養費Ⅰ・正看",
             "user_name": "山田　太郎",
@@ -164,7 +164,7 @@ def test_row_content_shape_from_sheet_item() -> None:
     assert content["outcome"] == "pending"
     assert content["reason"] is None and content["reason_label"] is None
     assert set(content["before"]) == {"date", "start", "end", "staff1", "staff2", "service"}
-    assert content["before"]["staff1"] == "熊澤　妙子"
+    assert content["before"]["staff1"] == "職員L　良子"
     assert content["after"]["staff1"] == "職員E　花子"
     assert content["ref"] == {"sheet_item_id": str(item.id), "visit_id": None}
 

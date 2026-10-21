@@ -449,7 +449,7 @@ async def test_assign_already_assigned_empty_course_not_locked(db) -> None:
     db.add(inage)
     await db.flush()
 
-    udagawa = Staff(
+    staff_d = Staff(
         code="G28-6-S1",
         name="G28-6 職員D",
         sex="female",
@@ -457,10 +457,10 @@ async def test_assign_already_assigned_empty_course_not_locked(db) -> None:
         status="active",
         primary_office_id=inage.id,
     )
-    db.add(udagawa)
+    db.add(staff_d)
     await db.flush()
     for wd in range(7):
-        db.add(StaffShift(staff_id=udagawa.id, weekday=wd, is_on=True))
+        db.add(StaffShift(staff_id=staff_d.id, weekday=wd, is_on=True))
 
     # 同曜日 (月 = weekday=0) に
     #   - 稲毛 A (visits=3, course_fixed, assigned_staff_id=None)
@@ -480,7 +480,7 @@ async def test_assign_already_assigned_empty_course_not_locked(db) -> None:
         weekday=0,
         code="M2",
         course_status=COURSE_STATUS_STAFF_ASSIGNED,
-        assigned_staff_id=udagawa.id,  # ← 過去のゴミ assign
+        assigned_staff_id=staff_d.id,  # ← 過去のゴミ assign
         office_id=inage.id,
     )
     db.add_all([course_a, course_m2_empty_locked])
@@ -511,8 +511,8 @@ async def test_assign_already_assigned_empty_course_not_locked(db) -> None:
             )
         ).all()
     }
-    assert refreshed[course_a.id].assigned_staff_id == udagawa.id, (
+    assert refreshed[course_a.id].assigned_staff_id == staff_d.id, (
         f"稲毛 A (visits=3) に職員Dが流れていない (G-28 H1 fix 不発 — "
         f"W25 fix 経路で空 M2 が fixed_staff_by_course に再注入され職員Dがロックされた可能性): "
-        f"got={refreshed[course_a.id].assigned_staff_id}, expected={udagawa.id}"
+        f"got={refreshed[course_a.id].assigned_staff_id}, expected={staff_d.id}"
     )

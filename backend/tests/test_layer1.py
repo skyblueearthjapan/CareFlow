@@ -1023,7 +1023,7 @@ async def test_w35_auto_skipped_when_manual_exists_same_key(db) -> None:
         weekly_pattern=_pattern(_entry("Wed", "10:30", "11:30")),
     )
 
-    # 同キー (Wed 10:30) に manual visit を事前投入 (石塚さんシナリオ)
+    # 同キー (Wed 10:30) に manual visit を事前投入 (利用者Uさんシナリオ)
     manual_visit = Visit(
         patient_id=patient.id,
         visit_date=date(2026, 5, 6),  # Week 19 の水曜
