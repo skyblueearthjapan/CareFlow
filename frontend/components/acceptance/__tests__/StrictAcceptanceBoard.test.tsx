@@ -2,7 +2,7 @@
  * StrictAcceptanceBoard — 受け入れ枠 (PC) の画面 (設計書 §5-1・§7-4)。
  */
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { makePayload } from '@/lib/__tests__/fixtures/acceptanceStrictPayload';
 
@@ -13,6 +13,8 @@ function cell(label: RegExp) {
 }
 
 describe('StrictAcceptanceBoard', () => {
+  beforeEach(() => window.localStorage.clear());
+
   it('チップを押すと結果が変わる (問い合わせ直さない)', () => {
     render(<StrictAcceptanceBoard data={makePayload()} />);
     expect(cell(/^火曜 15時台 × /)).toBeInTheDocument();
@@ -109,4 +111,106 @@ describe('StrictAcceptanceBoard', () => {
     expect(screen.getByText('時間の無い予定 3 件（メモなど）は見ていません')).toBeInTheDocument();
     expect(container.textContent).not.toMatch(/(?<!取り)直す|修正/);
   });
+
+  it('「全て」: 職員のチップを拠点ごとにまとめ、説明に一言足す', () => {
+    const base = makePayload();
+    const data = {
+      ...base,
+      office_id: null,
+      offices: [
+        { id: 'o1', name: '拠点イ' },
+        { id: 'o2', name: '拠点ロ' },
+      ],
+      staff: base.staff.map((s) => ({ ...s, office_id: s.id === 'b' ? 'o2' : 'o1' })),
+    };
+    render(<StrictAcceptanceBoard data={data} />);
+    const first = screen.getByRole('heading', { name: '拠点イ' }).parentElement!;
+    const second = screen.getByRole('heading', { name: '拠点ロ' }).parentElement!;
+    expect(within(first).getByRole('button', { name: /職員A/ })).toBeInTheDocument();
+    expect(within(first).queryByRole('button', { name: /職員B/ })).toBeNull();
+    expect(within(second).getByRole('button', { name: /職員B/ })).toBeInTheDocument();
+    expect(screen.getByText(/全拠点の職員のうち、誰か 1 人でも入れれば/)).toBeInTheDocument();
+  });
+
+  it('拠点を指定したときは拠点の見出しを出さない', () => {
+    render(<StrictAcceptanceBoard data={makePayload()} />);
+    expect(screen.queryByText(/全拠点の職員のうち/)).toBeNull();
+    expect(screen.queryByRole('heading', { level: 4 })).toBeNull();
+  });
+
+  it('「全て」では毎週の上書きを操作させず、拠点を選ぶよう案内する', () => {
+    const edit = { busy: false, set: vi.fn(), clear: vi.fn() };
+    render(<StrictAcceptanceBoard data={{ ...makePayload(), office_id: null }} edit={edit} />);
+    fireEvent.click(cell(/^月曜 14時台/));
+    const panel = screen.getByLabelText('マスの内訳');
+    expect(within(panel).getByText(/拠点を選ぶと調整できます/)).toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: /手で/ })).toBeNull();
+    expect(within(panel).queryByRole('button', { name: '手の上書きを外す' })).toBeNull();
+    expect(within(panel).queryByLabelText('上書きの理由')).toBeNull();
+  });
+
+  it('拠点を選んでいるときは毎週の上書きを操作できる', () => {
+    const edit = { busy: false, set: vi.fn(), clear: vi.fn() };
+    render(<StrictAcceptanceBoard data={makePayload()} edit={edit} />);
+    fireEvent.click(cell(/^月曜 14時台/));
+    const panel = screen.getByLabelText('マスの内訳');
+    expect(within(panel).queryByText(/拠点を選ぶと調整できます/)).toBeNull();
+    fireEvent.click(within(panel).getByRole('button', { name: '手で × にする' }));
+    expect(edit.set).toHaveBeenCalledWith(expect.objectContaining({ weekday: 0, hour: 14 }));
+  });
+
+  it('表の向き: 既定は縦 (行 = 時刻・列 = 曜日)', () => {
+    render(<StrictAcceptanceBoard data={makePayload()} />);
+    const grid = screen.getByTestId('grid-vertical');
+    expect(screen.queryByTestId('grid-horizontal')).toBeNull();
+    const cols = within(grid)
+      .getAllByRole('columnheader')
+      .map((th) => th.textContent);
+    expect(cols.slice(1).map((t) => t?.slice(0, 1))).toEqual(['月', '火']);
+    expect(within(grid).getAllByRole('rowheader')[0]).toHaveTextContent('9時台');
+    // 狭い画面ではマスをつぶさず、外側で横に流す。
+    expect(grid).toHaveClass('overflow-auto');
+    expect(within(grid).getByRole('table')).toHaveClass('min-w-[22rem]');
+    expect(screen.getByRole('button', { name: '縦（時刻×曜日）' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+
+  it('表の向き: 切り替えると横になり、選んだ向きを残す', () => {
+    const { unmount } = render(<StrictAcceptanceBoard data={makePayload()} />);
+    fireEvent.click(screen.getByRole('button', { name: '横（曜日×時刻）' }));
+    const grid = screen.getByTestId('grid-horizontal');
+    expect(screen.queryByTestId('grid-vertical')).toBeNull();
+    expect(within(grid).getAllByRole('rowheader')[0]).toHaveTextContent('月');
+    expect(within(grid).getAllByRole('columnheader')[1]).toHaveTextContent('9時台');
+    expect(window.localStorage.getItem('acceptance.strict.orientation')).toBe('horizontal');
+    unmount();
+    render(<StrictAcceptanceBoard data={makePayload()} />);
+    expect(screen.getByTestId('grid-horizontal')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '縦（時刻×曜日）' }));
+    expect(screen.getByTestId('grid-vertical')).toBeInTheDocument();
+    expect(window.localStorage.getItem('acceptance.strict.orientation')).toBe('vertical');
+  });
+
+  it.each(['縦（時刻×曜日）', '横（曜日×時刻）'])(
+    'マスを押したときの動きはどちらの向きでも同じ (%s)',
+    (label) => {
+      const edit = { busy: false, set: vi.fn(), clear: vi.fn() };
+      render(<StrictAcceptanceBoard data={makePayload()} edit={edit} />);
+      fireEvent.click(screen.getByRole('button', { name: label }));
+      expect(screen.getAllByTestId('manual')).toHaveLength(1);
+      expect(screen.getAllByTestId('manual-conflict')).toHaveLength(1);
+      const target = cell(/^月曜 14時台 ○ .*手で上書き/);
+      fireEvent.click(target);
+      expect(target).toHaveAttribute('aria-pressed', 'true');
+      const panel = screen.getByLabelText('マスの内訳');
+      expect(within(panel).getByRole('heading', { name: '月曜 14時台' })).toBeInTheDocument();
+      expect(
+        within(panel).getByText(/自動の判定は × 0\/3 週。手で ○ にしています/),
+      ).toBeInTheDocument();
+      fireEvent.click(within(panel).getByRole('button', { name: '手の上書きを外す' }));
+      expect(edit.clear).toHaveBeenCalledWith({ weekday: 0, hour: 14 });
+    },
+  );
 });

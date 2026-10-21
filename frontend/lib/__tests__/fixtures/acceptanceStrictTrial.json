@@ -1,6 +1,12 @@
 {
   "payload": {
     "office_id": "office-trial",
+    "offices": [
+      {
+        "id": "260cca7a-3ab1-5c6e-8416-7a866f043fc4",
+        "name": "試験拠点"
+      }
+    ],
     "today": "2026-10-20",
     "plan_only": true,
     "weekdays": [0, 1, 2, 3, 4, 5],
@@ -61,25 +67,29 @@
         "id": "A",
         "name": "職員A",
         "kind": "staff",
-        "default_selected": true
+        "default_selected": true,
+        "office_id": "260cca7a-3ab1-5c6e-8416-7a866f043fc4"
       },
       {
         "id": "B",
         "name": "職員B",
         "kind": "staff",
-        "default_selected": true
+        "default_selected": true,
+        "office_id": "260cca7a-3ab1-5c6e-8416-7a866f043fc4"
       },
       {
         "id": "C",
         "name": "職員C",
         "kind": "staff",
-        "default_selected": true
+        "default_selected": true,
+        "office_id": "260cca7a-3ab1-5c6e-8416-7a866f043fc4"
       },
       {
         "id": "D",
         "name": "職員D",
         "kind": "staff",
-        "default_selected": true
+        "default_selected": true,
+        "office_id": "260cca7a-3ab1-5c6e-8416-7a866f043fc4"
       }
     ],
     "days": [

@@ -53,7 +53,8 @@ def _load(name: str) -> dict:
 async def seed_trial(db, *, tasks_from_events: bool = False) -> Office:
     """試算の材料を入れる。``tasks_from_events`` なら kaipoke の予定を段階 0 の表 (tasks) に置く。"""
     m = _load("materials.json")
-    office = Office(name="試験拠点", code="TRIAL")
+    # 拠点の id も決めておく (画面の試験の材料に職員の主担当拠点がそのまま載る)。
+    office = Office(id=_sid("office"), name="試験拠点", code="TRIAL")
     db.add(office)
     await db.flush()
     for s in m["staff"]:
