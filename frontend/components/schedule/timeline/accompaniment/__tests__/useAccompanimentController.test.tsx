@@ -375,7 +375,7 @@ describe('useAccompanimentController', () => {
         {
           id: 'l1',
           trainee_staff_id: 's1',
-          staff_name: '職員B',
+          staff_name: '職員L',
           kind: 'trainee',
           target_type: 'visit',
           source: 'manual',
@@ -384,7 +384,7 @@ describe('useAccompanimentController', () => {
         {
           id: 'l2',
           trainee_staff_id: 'g1',
-          trainee_staff_name: '職員L',
+          trainee_staff_name: '職員B',
           kind: 'support',
           target_type: 'visit',
           source: 'manual',
