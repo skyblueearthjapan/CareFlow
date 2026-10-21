@@ -93,7 +93,7 @@ vi.mock('@/lib/queries/offices', () => ({
 }));
 
 vi.mock('@/lib/queries/staff', () => ({
-  useStaffList: () => ({ data: [{ id: 'staff-1', name: '熊澤' }] }),
+  useStaffList: () => ({ data: [{ id: 'staff-1', name: '職員L' }] }),
 }));
 
 vi.mock('@/lib/queries/fieldBoard', () => ({
@@ -410,7 +410,7 @@ describe('SpecialVisitPlaceLauncher', () => {
             patient_id: PATIENT_ID,
             patient_name: '山田 太郎',
             staff_id: 'staff-1',
-            staff_name: '熊澤',
+            staff_name: '職員L',
             note: null,
           },
         ],

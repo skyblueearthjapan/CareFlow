@@ -32,7 +32,8 @@ import {
 import { cn } from '@/lib/utils';
 import type { MonitorStaffRow, MonitorVisit } from '@/lib/schemas/monitor';
 import type { EventRead } from '@/lib/schemas/staff-events';
-import { actualTimeParts } from '@/lib/format/actualTime';
+import { actualTimeParts, minutesToHm } from '@/lib/format/actualTime';
+import { LEAVE_LABEL_OF_TYPE, LEAVE_TYPES, leaveWindow } from '@/lib/leave';
 import { genderPalette } from '@/lib/scheduling/timeline';
 import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
 import { classifyVisitDisplay, type VisitDisplayKind } from '@/lib/schedule/visitVisibility';
@@ -434,8 +435,8 @@ export function MonitorTimeline({
         const hasUnplanned = row.visits.some((v) => v.is_unplanned);
         const override = row.day_override ?? null;
         const overrideText =
-          override?.kind === 'off'
-            ? '休み'
+          override && LEAVE_TYPES.has(override.kind)
+            ? LEAVE_LABEL_OF_TYPE[override.kind]
             : override?.kind === 'custom_time'
               ? `時間変更 ${override.start_time ?? ''}–${override.end_time ?? ''}`
               : null;
@@ -719,7 +720,7 @@ export function MonitorTimeline({
   );
 }
 
-/** 休み (終日) / 時間変更 (勤務時間の外側) のハッチ帯。 */
+/** 休み (終日・半休は休みの時間帯だけ) / 時間変更 (勤務時間の外側) のハッチ帯。 */
 function OffDutyBands({
   override,
   trackH,
@@ -730,20 +731,30 @@ function OffDutyBands({
   rowKey: string;
 }) {
   const bands: { from: number; to: number; label: string | null }[] = [];
-  if (override.kind === 'off') {
-    bands.push({ from: TL_START_MIN, to: TL_END_MIN, label: '休み（終日）' });
-  } else if (override.kind === 'custom_time' && override.start_time && override.end_time) {
-    const s = hmToMinutes(override.start_time);
-    const e = hmToMinutes(override.end_time);
-    if (s > TL_START_MIN) bands.push({ from: TL_START_MIN, to: s, label: null });
-    if (e < TL_END_MIN) bands.push({ from: e, to: TL_END_MIN, label: null });
+  const reason = override.reason ? `（${override.reason}）` : '';
+  let title: string;
+  if (LEAVE_TYPES.has(override.kind)) {
+    const label = LEAVE_LABEL_OF_TYPE[override.kind] ?? '';
+    title = `${label}${reason}`;
+    // タイムラインの幅のうち働ける時間の外側が休みの時間帯。null = 終日の休み。
+    const work = leaveWindow(override.kind, minutesToHm(TL_START_MIN), minutesToHm(TL_END_MIN));
+    if (work === null) {
+      bands.push({ from: TL_START_MIN, to: TL_END_MIN, label: `${label}（終日）` });
+    } else {
+      const s = hmToMinutes(work[0]);
+      const e = hmToMinutes(work[1]);
+      if (s > TL_START_MIN) bands.push({ from: TL_START_MIN, to: s, label });
+      if (e < TL_END_MIN) bands.push({ from: e, to: TL_END_MIN, label });
+    }
+  } else {
+    title = `時間変更 ${override.start_time ?? ''}–${override.end_time ?? ''}${reason}`;
+    if (override.kind === 'custom_time' && override.start_time && override.end_time) {
+      const s = hmToMinutes(override.start_time);
+      const e = hmToMinutes(override.end_time);
+      if (s > TL_START_MIN) bands.push({ from: TL_START_MIN, to: s, label: null });
+      if (e < TL_END_MIN) bands.push({ from: e, to: TL_END_MIN, label: null });
+    }
   }
-  const title =
-    override.kind === 'off'
-      ? `休み${override.reason ? `（${override.reason}）` : ''}`
-      : `時間変更 ${override.start_time ?? ''}–${override.end_time ?? ''}${
-          override.reason ? `（${override.reason}）` : ''
-        }`;
   return (
     <>
       {bands.map((b, i) => {

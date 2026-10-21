@@ -89,7 +89,7 @@ function progressText(status: CompareJobStatus | undefined, total: number | null
     case 'done':
       return '比べ終わりました';
     case 'compare_failed':
-      return `比べられませんでした${status.compare_error ? `：${status.compare_error}` : ''}`;
+      return `比べられませんでした${status.compare_error ? `。${status.compare_error}` : ''}`;
     case 'failed':
       return `カイポケから取り直せませんでした${job.error ? `：${job.error}` : ''}`;
     case 'cancelled':

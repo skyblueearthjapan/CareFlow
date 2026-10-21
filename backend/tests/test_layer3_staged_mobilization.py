@@ -10,7 +10,7 @@
     観点5: 回帰 (新人除外 全Stage / 1日1コース / Gini は manager_mobilized 除外 /
             βスキップ削除 = weeks_ago=1 が weight 1.0 で効く)
     観点6: W28 実況再現 (2 staff + 2 manager + 前週全埋め → 4/4割当・動員2・緩和0・
-            宇田川は Stage 1 の hungarian で入る = Q3 全廃)
+            職員Dは Stage 1 の hungarian で入る = Q3 全廃)
     観点7: エンドポイントレスポンス (新フィールドのスキーマ・空配列デフォルト)
 
 新人除外・1日1コース原則・決定性 (乱数/時刻禁止) を全 Stage で維持することを守る.
@@ -130,7 +130,7 @@ def test_stage2_triggered_only_on_shortage_day() -> None:
 def test_stage2_manager_rotation_is_history_driven_not_uuid_fixed() -> None:
     """2 名の manager + 履歴で、 動員が履歴 β コストにより交代する.
 
-    旧 greedy は UUID 昇順固定で常に同じ manager を選んだ (川名/熊澤の偏り). Stage 2 の
+    旧 greedy は UUID 昇順固定で常に同じ manager を選んだ (職員A/職員Lの偏り). Stage 2 の
     ハンガリアンは履歴 (前週同コードの β ソフトペナルティ) を反映するため、 前週その
     manager が担当したコードは避けられ、 もう一方の manager が選ばれる (= 同等ローテ).
     v2.0: Q3 ハード除外は全廃したが、 β ソフトペナルティ (weeks_ago=1 が weight 1.0) が
@@ -599,10 +599,10 @@ def test_w28_scenario_full_week_reproduction() -> None:
     """設計書 §11 の W28 月曜シナリオ再現 (Q3 全廃版).
 
     コース A,B,C,D (月). 前週 W27 履歴:
-        宇田川(U)={A,B,C,D}, 高岡(T)={A,B,C}, 熊澤(K)={A,C,D}, 川名(N)={}.
+        職員D(U)={A,B,C,D}, 職員E(T)={A,B,C}, 職員L(K)={A,C,D}, 職員A(N)={}.
     期待: 4/4 割当・manager_mobilized 2 件・cross_office 0 件・1 回の solve で完了.
-        - Stage1: 宇田川・高岡が各 1 コース (Q3 全廃で宇田川も hungarian で入る)
-        - Stage2: 熊澤・川名を動員して残り 2 コースを埋める
+        - Stage1: 職員D・職員Eが各 1 コース (Q3 全廃で職員Dも hungarian で入る)
+        - Stage2: 職員L・職員Aを動員して残り 2 コースを埋める
         - Stage3: 未割当なし → 発動しない (緩和 0)
     """
     assigner = Layer3Assigner()
@@ -611,27 +611,27 @@ def test_w28_scenario_full_week_reproduction() -> None:
     course_c = _make_course(code="C", weekday=0)
     course_d = _make_course(code="D", weekday=0)
 
-    udagawa = _make_staff(name="udagawa")  # 正規
-    takaoka = _make_staff(name="takaoka")  # 正規
-    kumazawa = _make_staff(role="manager", name="kumazawa")
-    kawana = _make_staff(role="manager", name="kawana")
+    staff_d = _make_staff(name="staff_d")  # 正規
+    staff_e = _make_staff(name="staff_e")  # 正規
+    staff_l = _make_staff(role="manager", name="staff_l")
+    staff_a = _make_staff(role="manager", name="staff_a")
 
     history = [
-        (1, "A", udagawa.staff_id),
-        (1, "B", udagawa.staff_id),
-        (1, "C", udagawa.staff_id),
-        (1, "D", udagawa.staff_id),
-        (1, "A", takaoka.staff_id),
-        (1, "B", takaoka.staff_id),
-        (1, "C", takaoka.staff_id),
-        (1, "A", kumazawa.staff_id),
-        (1, "C", kumazawa.staff_id),
-        (1, "D", kumazawa.staff_id),
+        (1, "A", staff_d.staff_id),
+        (1, "B", staff_d.staff_id),
+        (1, "C", staff_d.staff_id),
+        (1, "D", staff_d.staff_id),
+        (1, "A", staff_e.staff_id),
+        (1, "B", staff_e.staff_id),
+        (1, "C", staff_e.staff_id),
+        (1, "A", staff_l.staff_id),
+        (1, "C", staff_l.staff_id),
+        (1, "D", staff_l.staff_id),
     ]
 
     result = assigner.solve(
         [course_a, course_b, course_c, course_d],
-        [udagawa, takaoka, kumazawa, kawana],
+        [staff_d, staff_e, staff_l, staff_a],
         history=history,
     )
 
@@ -648,20 +648,20 @@ def test_w28_scenario_full_week_reproduction() -> None:
     assert via_counts.get("cross_office", 0) == 0, f"越境が発生: {via_counts}"
     assert result.rescue_swaps == []
 
-    # 宇田川は Stage 1 の hungarian で入る (前週全担当でも Q3 除外されない).
-    udagawa_assign = [a for a in result.assignments if a.staff_id == udagawa.staff_id]
-    assert len(udagawa_assign) == 1
-    assert udagawa_assign[0].via == "hungarian"
+    # 職員Dは Stage 1 の hungarian で入る (前週全担当でも Q3 除外されない).
+    staff_d_assign = [a for a in result.assignments if a.staff_id == staff_d.staff_id]
+    assert len(staff_d_assign) == 1
+    assert staff_d_assign[0].via == "hungarian"
 
-    # 高岡も Stage 1 hungarian (前週未担当の D が最安).
-    takaoka_assign = [a for a in result.assignments if a.staff_id == takaoka.staff_id]
-    assert len(takaoka_assign) == 1
-    assert takaoka_assign[0].course_code == "D"
-    assert takaoka_assign[0].via == "hungarian"
+    # 職員Eも Stage 1 hungarian (前週未担当の D が最安).
+    staff_e_assign = [a for a in result.assignments if a.staff_id == staff_e.staff_id]
+    assert len(staff_e_assign) == 1
+    assert staff_e_assign[0].course_code == "D"
+    assert staff_e_assign[0].via == "hungarian"
 
-    # 動員は 2 名の manager (熊澤・川名).
+    # 動員は 2 名の manager (職員L・職員A).
     mobilized_ids = {a.staff_id for a in result.assignments if a.via == "manager_mobilized"}
-    assert mobilized_ids == {kumazawa.staff_id, kawana.staff_id}
+    assert mobilized_ids == {staff_l.staff_id, staff_a.staff_id}
 
 
 def test_w28_scenario_via_distribution_is_stable() -> None:
@@ -720,10 +720,10 @@ def test_stage_assignment_notice_schema_shape() -> None:
         weekday=0,
         course_code="A",
         staff_id=UUID("22222222-2222-2222-2222-222222222222"),
-        staff_name="熊澤　妙子",
+        staff_name="職員L　良子",
     )
     assert notice.course_code == "A"
-    assert notice.staff_name == "熊澤　妙子"
+    assert notice.staff_name == "職員L　良子"
     assert notice.weekday == 0
 
 
@@ -737,7 +737,7 @@ def test_cross_office_notice_schema_shape() -> None:
         course_code="A",
         course_office_name="都賀",
         staff_id=UUID("22222222-2222-2222-2222-222222222222"),
-        staff_name="宇田川　優莉",
+        staff_name="職員D　秋子",
         staff_office_name="稲毛",
     )
     assert notice.course_office_name == "都賀"
@@ -753,11 +753,11 @@ def test_rescue_swap_notice_schema_shape() -> None:
         course_id=UUID("11111111-1111-1111-1111-111111111111"),
         weekday=3,
         course_code="B",
-        before_staff_name="高岡",
-        after_staff_name="宇田川　優莉",
+        before_staff_name="職員E",
+        after_staff_name="職員D　秋子",
     )
-    assert notice.before_staff_name == "高岡"
-    assert notice.after_staff_name == "宇田川　優莉"
+    assert notice.before_staff_name == "職員E"
+    assert notice.after_staff_name == "職員D　秋子"
 
 
 async def test_mobilization_notices_exclude_review_sent_assignments() -> None:

@@ -206,7 +206,7 @@ import { PoolCandidateList } from '../PoolCandidateList';
 
 const PATIENT = {
   id: '22222222-2222-4222-8222-222222222222',
-  name: '中尾 要太',
+  name: '利用者L 太郎',
   address: '千葉県千葉市花見川区検見川町1-52',
   lat: 35.66,
   lng: 140.12,
@@ -1565,7 +1565,7 @@ describe('特別訪問週間モード (specialTicket)', () => {
     act(() => opts.onSuccess());
     expect(mockToast.success).toHaveBeenCalledTimes(1);
     const msg = mockToast.success.mock.calls[0][0] as string;
-    expect(msg).toContain('中尾 要太');
+    expect(msg).toContain('利用者L 太郎');
     expect(msg).toContain('木曜');
     expect(msg).toContain('14:00');
     expect(msg).toContain('この週のみ・固定化しません');
@@ -1638,7 +1638,7 @@ describe('NG スタッフ / 性別制限の確認フロー (§7-2)', () => {
           {
             kind: 'ng_staff',
             patient_id: PATIENT.id,
-            patient_name: '中尾 要太',
+            patient_name: '利用者L 太郎',
             staff_id: '77777777-7777-4777-8777-777777777777',
             staff_name: '山田',
             note: null,
@@ -1843,7 +1843,7 @@ describe('F-1/F-2: 候補 0 件の出口 (担当なし M)', () => {
           {
             kind: 'ng_staff',
             patient_id: PATIENT.id,
-            patient_name: '中尾 要太',
+            patient_name: '利用者L 太郎',
             staff_id: '77777777-7777-4777-8777-777777777777',
             staff_name: '山田',
             note: null,

@@ -296,7 +296,7 @@ async def test_replace_not_blocked_when_cancelled_slot_gone_from_kaipoke(db) -> 
     """事務がカイポケ側で既に消した枠 = 置換しても復活しない → 止めない。
 
     seed の火曜は 10:00。カイポケ現況 (既定の ``_entries()``) は 火 14:00 / 金 09:00 で
-    10:00 の行が無い = 本番 W38 の 小湊様 と同じ形。
+    10:00 の行が無い = 本番 W38 の 利用者B様 と同じ形。
     """
     seeded = await _seed_week(db)
     await _cancel(db, seeded["tue"])

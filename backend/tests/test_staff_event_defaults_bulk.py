@@ -149,8 +149,8 @@ def _payload(staff_ids, weekdays, **over) -> dict:
 async def test_bulk_creates_all_combinations(client, db) -> None:
     """N名 × N曜日 の全組を 1 回で作る (モック 変更A のプレビュー件数と一致)."""
     admin = await _make_user(db, email="bulk-1@example.com")
-    a = await _make_staff(db, name="川名 千恵")
-    b = await _make_staff(db, name="熊澤 妙子")
+    a = await _make_staff(db, name="職員A 千恵")
+    b = await _make_staff(db, name="職員L 良子")
 
     res = await client.post(
         _BULK_URL, headers=_bearer(admin), json=_payload([a.id, b.id], [0, 1, 2])
@@ -170,7 +170,7 @@ async def test_bulk_creates_all_combinations(client, db) -> None:
 async def test_bulk_skips_duplicates(client, db) -> None:
     """同一 (staff, 曜日, 開始, 終了, タイトル) は作らない — 2 回押しても増えない."""
     admin = await _make_user(db, email="bulk-2@example.com")
-    a = await _make_staff(db, name="高岡 真由美")
+    a = await _make_staff(db, name="職員E 由美")
     # 1 件だけ手動で先に登録しておく (タイトルは前後空白付きでも同一とみなす)
     await _make_default(db, a, weekday=1, title=" 朝会 ".strip())
 
@@ -222,7 +222,7 @@ async def test_bulk_dedupes_input_and_accepts_blocking_note(client, db) -> None:
 async def test_bulk_rejects_invalid_staff_all_or_nothing(client, db) -> None:
     """存在しない / 休職スタッフが 1 件でも混ざれば 422 で全体棄却 (半分登録しない)."""
     admin = await _make_user(db, email="bulk-4@example.com")
-    ok = await _make_staff(db, name="宇田川 優莉")
+    ok = await _make_staff(db, name="職員D 秋子")
     gone = await _make_staff(db, name="退職 太郎", status="retired")
 
     res = await client.post(_BULK_URL, headers=_bearer(admin), json=_payload([ok.id, gone.id], [0]))
@@ -237,7 +237,7 @@ async def test_bulk_rejects_invalid_staff_all_or_nothing(client, db) -> None:
 
 async def test_bulk_validation_errors(client, db) -> None:
     admin = await _make_user(db, email="bulk-5@example.com")
-    a = await _make_staff(db, name="髙梨 桂子")
+    a = await _make_staff(db, name="職員B 桂子")
 
     # end <= start は 422 (逆転も同時刻も不可)
     for start, end in (("10:00", "09:00"), ("09:00", "09:00")):
@@ -267,7 +267,7 @@ async def test_bulk_validation_errors(client, db) -> None:
 
 
 async def test_bulk_rbac(client, db) -> None:
-    a = await _make_staff(db, name="小西 彩稀")
+    a = await _make_staff(db, name="職員C 春子")
     member = await _make_user(db, email="bulk-6@example.com", role="staff", staff_id=a.id)
 
     res = await client.post(_BULK_URL, headers=_bearer(member), json=_payload([a.id], [0]))

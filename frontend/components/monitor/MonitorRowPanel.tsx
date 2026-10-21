@@ -11,6 +11,7 @@
  */
 import { X } from 'lucide-react';
 
+import { LEAVE_LABEL_OF_TYPE, LEAVE_TYPES } from '@/lib/leave';
 import { cn } from '@/lib/utils';
 import type { MonitorStaffRow, MonitorVisit, NearbyPatient } from '@/lib/schemas/monitor';
 
@@ -63,8 +64,8 @@ export function MonitorRowPanel({
             {[
               row.staff_id == null ? '担当が決まっていない訪問' : (row.office_name ?? '所属なし'),
               `訪問 ${row.visits.length}件`,
-              override?.kind === 'off'
-                ? `休み${override.reason ? `（${override.reason}）` : ''}`
+              override && LEAVE_TYPES.has(override.kind)
+                ? `${LEAVE_LABEL_OF_TYPE[override.kind]}${override.reason ? `（${override.reason}）` : ''}`
                 : override?.kind === 'custom_time'
                   ? `時間変更 ${override.start_time ?? ''}–${override.end_time ?? ''}`
                   : null,

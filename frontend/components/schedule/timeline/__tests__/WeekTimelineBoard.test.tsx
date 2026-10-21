@@ -83,18 +83,18 @@ describe('WeekTimelineBoard (全コース縦積み)', () => {
         visits={[]}
         staffByWeekday={(tid, wd) =>
           wd === 0
-            ? { name: '川名 千恵', sex: 'female' }
+            ? { name: '職員A 千恵', sex: 'female' }
             : wd === 1
               ? { name: '田中 一郎', sex: 'male' }
               : null
         }
       />,
     );
-    expect(screen.getByText('川名 千恵')).toBeInTheDocument();
+    expect(screen.getByText('職員A 千恵')).toBeInTheDocument();
     expect(screen.getByText('田中 一郎')).toBeInTheDocument();
     // アバターは頭文字 + 性別色 (女性=female パレット)。
     const avatarF = screen.getByTestId('wtl-staff-avatar-t1-0');
-    expect(avatarF.textContent).toBe('川');
+    expect(avatarF.textContent).toBe('職');
     expect(avatarF.style.background).toBe(genderPalette('female').bg);
     const avatarM = screen.getByTestId('wtl-staff-avatar-t1-1');
     expect(avatarM.textContent).toBe('田');

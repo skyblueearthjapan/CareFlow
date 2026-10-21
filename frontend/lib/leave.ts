@@ -192,3 +192,8 @@ export const LEAVE_TYPE_OF_LABEL: Readonly<Record<string, LeaveType>> = {
   午前休: 'am_off',
   午後休: 'pm_off',
 };
+
+/** 種類 → 画面の休みのラベル (LEAVE_TYPE_OF_LABEL の逆)。 */
+export const LEAVE_LABEL_OF_TYPE: Readonly<Record<string, string>> = Object.fromEntries(
+  Object.entries(LEAVE_TYPE_OF_LABEL).map(([label, type]) => [type, label]),
+);

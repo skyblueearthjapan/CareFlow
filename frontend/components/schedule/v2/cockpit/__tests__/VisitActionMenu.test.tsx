@@ -65,8 +65,8 @@ function renderMenu(overrides: Partial<React.ComponentProps<typeof VisitActionMe
     <VisitActionMenu
       visit={BASE_VISIT}
       staffOptions={[
-        { id: STAFF_A, name: '川名' },
-        { id: STAFF_B, name: '髙梨' },
+        { id: STAFF_A, name: '職員A' },
+        { id: STAFF_B, name: '職員B' },
       ]}
       isPast={false}
       defaultOpen
@@ -218,7 +218,7 @@ describe('VisitActionMenu', () => {
             candidates: [
               {
                 staff_id: SUGGEST_A,
-                name: '髙梨 桂子',
+                name: '職員B 桂子',
                 sex: 'female',
                 office_name: '稲毛',
                 status: 'ok',
@@ -228,7 +228,7 @@ describe('VisitActionMenu', () => {
               },
               {
                 staff_id: SUGGEST_B,
-                name: '川名 千恵',
+                name: '職員A 千恵',
                 sex: 'female',
                 office_name: '稲毛',
                 status: 'warn',

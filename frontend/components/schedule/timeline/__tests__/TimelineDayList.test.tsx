@@ -76,7 +76,7 @@ describe('TimelineDayList', () => {
             visits: [
               v({
                 key: 'a',
-                patient_name: '青柳 あい',
+                patient_name: '利用者A あい',
                 duration_min: 35,
                 address: '稲毛区小仲台2-5',
               }),
@@ -85,7 +85,7 @@ describe('TimelineDayList', () => {
         ]}
       />,
     );
-    expect(screen.getByText('青柳 あい')).toBeInTheDocument();
+    expect(screen.getByText('利用者A あい')).toBeInTheDocument();
     expect(screen.getByText('35 分')).toBeInTheDocument();
     expect(screen.getByText(/稲毛区小仲台/)).toBeInTheDocument();
   });
@@ -142,8 +142,8 @@ describe('TimelineDayList', () => {
           course({
             key: 'c1',
             visits: [
-              v({ key: 'sa1', patient_name: '安永 一', same_address_group_id: 'g1' }),
-              v({ key: 'sa2', patient_name: '菅原 二', same_address_group_id: 'g1' }),
+              v({ key: 'sa1', patient_name: '利用者O 一', same_address_group_id: 'g1' }),
+              v({ key: 'sa2', patient_name: '利用者P 二', same_address_group_id: 'g1' }),
               v({ key: 'solo', patient_name: '田中 三' }),
             ],
           }),
@@ -211,7 +211,7 @@ describe('TimelineDayList', () => {
           courses={[
             course({
               key: 'c1',
-              visits: [v({ key: 'a', visit_id: 'vis-a', patient_name: '青柳 あい' })],
+              visits: [v({ key: 'a', visit_id: 'vis-a', patient_name: '利用者A あい' })],
             }),
           ]}
           onPatientClick={onPatientClick}
@@ -219,7 +219,7 @@ describe('TimelineDayList', () => {
         />,
       );
       screen.getByTestId('tdl-delete-visit-a').click();
-      expect(onDelete).toHaveBeenCalledWith('vis-a', '青柳 あい');
+      expect(onDelete).toHaveBeenCalledWith('vis-a', '利用者A あい');
       expect(onPatientClick).not.toHaveBeenCalled();
     });
 
@@ -250,14 +250,14 @@ describe('TimelineDayList', () => {
           courses={[
             course({
               key: 'c1',
-              visits: [v({ key: 'a', source: 'manual_week', patient_name: '青柳 あい' })],
+              visits: [v({ key: 'a', source: 'manual_week', patient_name: '利用者A あい' })],
             }),
           ]}
           onPromoteWeekOnly={onPromote}
         />,
       );
       screen.getByTestId('tdl-week-only-chip-a').click();
-      expect(onPromote).toHaveBeenCalledWith('p-a', '青柳 あい');
+      expect(onPromote).toHaveBeenCalledWith('p-a', '利用者A あい');
       confirmSpy.mockRestore();
     });
 
@@ -346,17 +346,17 @@ describe('TimelineDayList', () => {
           courses={[
             course({
               key: 'tpl-A:0',
-              visits: [v({ key: 'a', visit_id: 'vis-a', patient_name: '青柳 あい' })],
+              visits: [v({ key: 'a', visit_id: 'vis-a', patient_name: '利用者A あい' })],
             }),
           ]}
           accompaniment={makeBinding({
-            visitBadgeName: (id) => (id === 'vis-a' ? ['髙梨'] : []),
+            visitBadgeName: (id) => (id === 'vis-a' ? ['職員B'] : []),
           })}
         />,
       );
       const chip = screen.getByTestId('tdl-accompaniment-a');
-      expect(chip).toHaveTextContent('髙梨');
-      expect(chip.getAttribute('title')).toBe('同行: 髙梨');
+      expect(chip).toHaveTextContent('職員B');
+      expect(chip.getAttribute('title')).toBe('同行: 職員B');
     });
 
     it('コース見出し: courseBadgeName があれば見出しに「👥新人名」チップ', () => {
@@ -372,13 +372,13 @@ describe('TimelineDayList', () => {
           ]}
           accompaniment={makeBinding({
             // resolveCourseId('tpl-A', 0) = 'tpl-A:0'.
-            courseBadgeName: (cid) => (cid === 'tpl-A:0' ? ['川名'] : []),
+            courseBadgeName: (cid) => (cid === 'tpl-A:0' ? ['職員A'] : []),
           })}
         />,
       );
       const chip = screen.getByTestId('tdl-course-accompaniment-tpl-A:0');
-      expect(chip).toHaveTextContent('川名');
-      expect(chip.getAttribute('title')).toBe('同行: 川名');
+      expect(chip).toHaveTextContent('職員A');
+      expect(chip.getAttribute('title')).toBe('同行: 職員A');
     });
 
     it('複数名の同行は「・」連結で全員をチップに出す (確定#5)', () => {
@@ -387,17 +387,17 @@ describe('TimelineDayList', () => {
           courses={[
             course({
               key: 'tpl-A:0',
-              visits: [v({ key: 'a', visit_id: 'vis-a', patient_name: '青柳 あい' })],
+              visits: [v({ key: 'a', visit_id: 'vis-a', patient_name: '利用者A あい' })],
             }),
           ]}
           accompaniment={makeBinding({
-            visitBadgeName: (id) => (id === 'vis-a' ? ['髙梨', '川名'] : []),
+            visitBadgeName: (id) => (id === 'vis-a' ? ['職員B', '職員A'] : []),
           })}
         />,
       );
       const chip = screen.getByTestId('tdl-accompaniment-a');
-      expect(chip).toHaveTextContent('髙梨・川名');
-      expect(chip.getAttribute('title')).toBe('同行: 髙梨・川名');
+      expect(chip).toHaveTextContent('職員B・職員A');
+      expect(chip.getAttribute('title')).toBe('同行: 職員B・職員A');
     });
 
     it('accompaniment 未指定ならチップを出さない', () => {
@@ -430,8 +430,8 @@ describe('TimelineDayList', () => {
           ]}
           accompaniment={makeBinding({
             active: true,
-            visitBadgeName: () => ['髙梨'],
-            courseBadgeName: () => ['川名'],
+            visitBadgeName: () => ['職員B'],
+            courseBadgeName: () => ['職員A'],
           })}
         />,
       );

@@ -327,14 +327,14 @@ async def test_item_id_falls_back_to_date_time_and_name(client, db) -> None:
     """●未送信の 'cached' シートは visit_id を持たない → 日付+時刻+氏名で解決する."""
     admin = await _make_user(db, email="vso-6@example.com", role="admin")
     # カイポケ側は異体字 + 全角スペース、らく助側は半角スペース = 正規化で一致する。
-    patient = await _make_patient(db, code="VSO-6", name="髙梨 桂子")
+    patient = await _make_patient(db, code="VSO-6", name="髙橋 桂子")
     target = _future_day()
     visit = await _make_visit(db, patient=patient, visit_date=target, start=time(14, 0))
     item = await _make_item(
         db,
         week_start=_monday_of(target),
         action="delete",
-        user_name="高梨　桂子",
+        user_name="高橋　桂子",
         day=target.day,
         start_time="14:00",
     )

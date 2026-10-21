@@ -23,7 +23,7 @@ const STAFF_1 = '00000000-0000-4000-8000-000000000001';
 
 const staff = {
   id: STAFF_1,
-  name: '宇田川　優莉',
+  name: '職員D　秋子',
   sex: 'female',
 } as unknown as StaffRead;
 
@@ -58,7 +58,7 @@ describe('イベントのスタッフ枠', () => {
   it('① 日リスト: スタッフ枠グループが出る (休み + 📝メモ)', () => {
     render(<TimelineDayList courses={[]} staffFrames={frames} />);
     const frame = screen.getByTestId(`day-list-staff-frame-${STAFF_1}`);
-    expect(within(frame).getByText(/優莉/)).toBeInTheDocument();
+    expect(within(frame).getByText(/秋子/)).toBeInTheDocument();
     expect(within(frame).getByText(/イベント 2件/)).toBeInTheDocument();
     expect(within(frame).getByText('休み')).toBeInTheDocument();
     expect(within(frame).getByText(/09:00〜18:00/)).toBeInTheDocument();
@@ -70,7 +70,7 @@ describe('イベントのスタッフ枠', () => {
     render(<TimelineDayBoard columns={[]} staffFrames={frames} weekdayLabel="火" />);
     expect(screen.getByTestId(`tl-staff-frame-header-${STAFF_1}`)).toBeInTheDocument();
     const header = screen.getByTestId(`tl-staff-frame-header-${STAFF_1}`);
-    expect(within(header).getByText(/優莉/)).toBeInTheDocument();
+    expect(within(header).getByText(/秋子/)).toBeInTheDocument();
     expect(within(header).getByText('2件')).toBeInTheDocument();
     // 本体列 (イベント帯 + 📝チップ)
     const body = screen.getByTestId(`tl-staff-frame-${STAFF_1}`);
@@ -115,7 +115,7 @@ describe('イベントのスタッフ枠', () => {
     // カイポケ取込で担当になったコースが（未割当）に見えてはいけない (PO報告 2026-07-26)。
     const trainee = {
       id: STAFF_1,
-      name: '髙梨桂子',
+      name: '職員B桂子',
       is_trainee: true,
     } as unknown as StaffRead;
     const col = {
@@ -134,7 +134,7 @@ describe('イベントのスタッフ枠', () => {
     render(<TimelineDayBoard columns={[col]} weekdayLabel="水" onChangeAssignedStaff={vi.fn()} />);
     const select = screen.getByTestId('tl-staff-select-tpl-e:2') as HTMLSelectElement;
     expect(select.value).toBe(STAFF_1);
-    expect(screen.getByText(/髙梨桂子（新人）/)).toBeInTheDocument();
+    expect(screen.getByText(/職員B桂子（新人）/)).toBeInTheDocument();
   });
 
   it('③ 週リスト: グリッド先頭に「イベント」専用行が出る', () => {
@@ -163,7 +163,7 @@ describe('イベントのスタッフ枠', () => {
     expect(screen.getByTestId('course-week-overview-row-header-events')).toBeInTheDocument();
     const cell = screen.getByTestId('course-week-overview-events-cell-1');
     // 2イベント (休み + 📝) それぞれの行にスタッフ名が出る
-    expect(within(cell).getAllByText(/優莉/).length).toBe(2);
+    expect(within(cell).getAllByText(/秋子/).length).toBe(2);
     expect(within(cell).getByText(/09:00-18:00 休み/)).toBeInTheDocument();
     // 火曜以外のセルは空
     const monCell = screen.getByTestId('course-week-overview-events-cell-0');

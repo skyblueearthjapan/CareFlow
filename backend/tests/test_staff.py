@@ -139,7 +139,7 @@ async def test_staff_list_and_get_include_qualification(client, db) -> None:
 @pytest.mark.asyncio
 async def test_staff_patch_accepts_qualification(client, db) -> None:
     """編集フォームが送る qualification を PATCH が受理・保存する (2026-08-31: 422 extra_forbidden の是正)。"""
-    s = Staff(name="小西 テスト", is_trainee=True)
+    s = Staff(name="職員C テスト", is_trainee=True)
     db.add(s)
     await db.commit()
     await db.refresh(s)

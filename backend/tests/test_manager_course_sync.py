@@ -82,7 +82,7 @@ async def test_sync_creates_m_template_for_first_manager(db) -> None:
     office = await _make_office(db)
     mgr = Staff(
         code="MGR-01",
-        name="川名",
+        name="職員A",
         role="manager",
         status="active",
         primary_office_id=office.id,
@@ -111,7 +111,7 @@ async def test_sync_creates_m_and_m2_for_two_managers(db) -> None:
     office = await _make_office(db)
     mgr1 = Staff(
         code="MGR-01",
-        name="川名",
+        name="職員A",
         role="manager",
         status="active",
         primary_office_id=office.id,
@@ -141,7 +141,7 @@ async def test_sync_skips_when_m_already_exists(db) -> None:
     office = await _make_office(db)
     mgr = Staff(
         code="MGR-01",
-        name="川名",
+        name="職員A",
         role="manager",
         status="active",
         primary_office_id=office.id,
@@ -170,7 +170,7 @@ async def test_sync_soft_deletes_m_when_manager_retired(db) -> None:
     office = await _make_office(db)
     mgr = Staff(
         code="MGR-01",
-        name="川名",
+        name="職員A",
         role="manager",
         status="active",
         primary_office_id=office.id,
@@ -251,7 +251,7 @@ async def test_post_staff_manager_creates_m_template(client, db) -> None:
         headers=_bearer(admin),
         json={
             "code": "MGR-01",
-            "name": "川名 千恵",
+            "name": "職員A 千恵",
             "role": "manager",
             "status": "active",
             "primary_office_id": str(office.id),
@@ -301,7 +301,7 @@ async def test_pending_applier_staff_create_manager_syncs_m(db) -> None:
         scope="permanent",
         status="pending",
         payload={
-            "name": "川名 千恵",
+            "name": "職員A 千恵",
             "role": "manager",
             "status": "active",
             "primary_office_id": str(office.id),
@@ -325,7 +325,7 @@ async def test_pending_applier_status_update_to_retired_syncs_m(db) -> None:
     office = await _make_office(db)
     mgr = Staff(
         code="MGR-01",
-        name="川名",
+        name="職員A",
         role="manager",
         status="active",
         primary_office_id=office.id,

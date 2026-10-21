@@ -53,9 +53,9 @@ def test_redact_email_keeps_only_domain() -> None:
 
 
 def test_redact_name_keeps_first_char() -> None:
-    out = redact({"name": "青栁あかり"})
+    out = redact({"name": "利用者Aあかり"})
     # First char preserved, remaining chars replaced with full-width circles.
-    assert out["name"].startswith("青")
+    assert out["name"].startswith("利")
     assert "◯" in out["name"]
     assert "あ" not in out["name"]
 

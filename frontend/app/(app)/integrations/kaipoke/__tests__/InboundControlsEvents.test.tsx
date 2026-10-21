@@ -42,7 +42,7 @@ const EVENTS_PLAN: EventsInboundPreview = {
       action: 'add',
       externalId: '690499216:4601519:2026-07-20',
       staffId: '11111111-1111-4111-8111-111111111111',
-      staffName: '宇田川　優莉',
+      staffName: '職員D　秋子',
       date: '2026-07-20',
       start: '09:00',
       end: '18:00',
@@ -53,7 +53,7 @@ const EVENTS_PLAN: EventsInboundPreview = {
       action: 'add',
       externalId: '674969993:4465191:2026-07-25',
       staffId: '22222222-2222-4222-8222-222222222222',
-      staffName: '川名　千恵',
+      staffName: '職員A　千恵',
       date: '2026-07-25',
       start: '00:00',
       end: '00:00',
@@ -64,11 +64,11 @@ const EVENTS_PLAN: EventsInboundPreview = {
       action: 'update',
       externalId: '695430472:4465191:2026-07-21',
       staffId: '22222222-2222-4222-8222-222222222222',
-      staffName: '川名　千恵',
+      staffName: '職員A　千恵',
       date: '2026-07-21',
       start: '10:00',
       end: '11:00',
-      title: 'ケア会議：青栁あい様',
+      title: 'ケア会議：利用者Aあい様',
       isMemo: false,
       beforeStart: '09:30',
       beforeEnd: '10:30',
@@ -99,13 +99,13 @@ const SMART_PLAN: SmartInboundPreview = {
     skipped: [
       {
         reason: '患者を名寄せできません（らく助未登録の可能性）',
-        userName: '高尾　幸子',
-        staffName: '川名　千恵',
+        userName: '利用者AE　幸子',
+        staffName: '職員A　千恵',
         date: '2026-07-24',
         start: '10:00',
       },
     ],
-    traineeSolo: [{ staffName: '髙梨　桂子', count: 17 }],
+    traineeSolo: [{ staffName: '職員B　桂子', count: 17 }],
     ngConflicts: [],
   },
 };
@@ -157,7 +157,7 @@ describe('InboundControls — smart-inbound', () => {
     const section = screen.getByTestId('events-plan-section');
     expect(section).toBeInTheDocument();
     expect(screen.getByText('休み')).toBeInTheDocument();
-    expect(screen.getByText('ケア会議：青栁あい様')).toBeInTheDocument();
+    expect(screen.getByText('ケア会議：利用者Aあい様')).toBeInTheDocument();
     // update 行は before → after の時刻を併記
     expect(screen.getByText(/09:30〜10:30 → 10:00〜11:00/)).toBeInTheDocument();
     // メモ系は 📝 表示 (サマリチップ + 行の2箇所)
@@ -179,7 +179,7 @@ describe('InboundControls — smart-inbound', () => {
           action: 'absorb',
           externalId: '690499216:4601519:2026-07-20',
           staffId: '11111111-1111-4111-8111-111111111111',
-          staffName: '宇田川　優莉',
+          staffName: '職員D　秋子',
           date: '2026-07-20',
           start: '09:00',
           end: '09:15',

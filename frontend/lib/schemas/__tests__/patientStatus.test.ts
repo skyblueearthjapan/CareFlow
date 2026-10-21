@@ -30,7 +30,7 @@ describe('statusChangeResultSchema は BE の PatientV2Read (null あり) を受
       patient: {
         id: PID,
         code: 'P027',
-        name: '藤原',
+        name: '利用者F',
         kana: null,
         sex: 'female',
         status: 'active',
@@ -152,7 +152,7 @@ describe('statusChangeResultSchema', () => {
       patient: {
         id: PID,
         code: 'P001',
-        name: '小湊',
+        name: '利用者B',
         status: 'admitted',
         created_at: '2026-09-01T00:00:00',
         updated_at: '2026-09-09T00:00:00',
@@ -178,7 +178,7 @@ describe('statusChangeResultSchema', () => {
       patient: {
         id: PID,
         code: 'P001',
-        name: '小湊',
+        name: '利用者B',
         status: 'active',
         created_at: '2026-09-01T00:00:00',
         updated_at: '2026-09-09T00:00:00',

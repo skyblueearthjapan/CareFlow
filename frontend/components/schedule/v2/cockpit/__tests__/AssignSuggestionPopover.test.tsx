@@ -22,10 +22,10 @@ import type { AssignCandidatesRead } from '@/lib/schemas/v2/cockpit';
 const COURSE_ID = '00000000-0000-4000-8000-0000000000c1';
 const VISIT_1 = '00000000-0000-4000-8000-0000000000v1';
 const VISIT_2 = '00000000-0000-4000-8000-0000000000v2';
-const TAKANASHI = '00000000-0000-4000-8000-000000000001';
-const KUMAZAWA = '00000000-0000-4000-8000-000000000002';
-const UDAGAWA = '00000000-0000-4000-8000-000000000003';
-const KAWANA = '00000000-0000-4000-8000-000000000004';
+const STAFF_B = '00000000-0000-4000-8000-000000000001';
+const STAFF_L = '00000000-0000-4000-8000-000000000002';
+const STAFF_D = '00000000-0000-4000-8000-000000000003';
+const STAFF_A = '00000000-0000-4000-8000-000000000004';
 
 function candidate(
   staffId: string,
@@ -58,16 +58,16 @@ function data(over: Partial<AssignCandidatesRead> = {}): AssignCandidatesRead {
         course_label: '稲毛C',
         visits: [],
         candidates: [
-          candidate(TAKANASHI, '髙梨 桂子', 'ok', [], 3),
-          candidate(KUMAZAWA, '熊澤 妙子', 'ok', [], 1),
-          candidate(UDAGAWA, '宇田川 優莉', 'warn', ['13:30 が重なる']),
-          candidate(KAWANA, '川名 千恵', 'ng', ['この日は休みです']),
+          candidate(STAFF_B, '職員B 桂子', 'ok', [], 3),
+          candidate(STAFF_L, '職員L 良子', 'ok', [], 1),
+          candidate(STAFF_D, '職員D 秋子', 'warn', ['13:30 が重なる']),
+          candidate(STAFF_A, '職員A 千恵', 'ng', ['この日は休みです']),
         ],
       },
     ],
     warnings: [],
-    whole_ok_staff_ids: [TAKANASHI, KUMAZAWA],
-    whole_ok_by_course: { [COURSE_ID]: [TAKANASHI, KUMAZAWA] },
+    whole_ok_staff_ids: [STAFF_B, STAFF_L],
+    whole_ok_by_course: { [COURSE_ID]: [STAFF_B, STAFF_L] },
     ...over,
   } as AssignCandidatesRead;
 }
@@ -108,16 +108,16 @@ describe('summarizeAssignCandidates', () => {
   it('◎ は whole_ok_staff_ids が正・1 グループでも ng があれば ×・並びは ◎→△→×', () => {
     const rows = summarizeAssignCandidates(data());
     expect(rows.map((r) => [r.name, r.status])).toEqual([
-      ['髙梨 桂子', 'ok'], // score 3 が先
-      ['熊澤 妙子', 'ok'],
-      ['宇田川 優莉', 'warn'],
-      ['川名 千恵', 'ng'],
+      ['職員B 桂子', 'ok'], // score 3 が先
+      ['職員L 良子', 'ok'],
+      ['職員D 秋子', 'warn'],
+      ['職員A 千恵', 'ng'],
     ]);
   });
 
   it('whole_ok に入っていない ok は △ (1件ずつなら可) に落ちる', () => {
-    const rows = summarizeAssignCandidates(data({ whole_ok_staff_ids: [TAKANASHI] }));
-    expect(rows.find((r) => r.staffId === KUMAZAWA)?.status).toBe('warn');
+    const rows = summarizeAssignCandidates(data({ whole_ok_staff_ids: [STAFF_B] }));
+    expect(rows.find((r) => r.staffId === STAFF_L)?.status).toBe('warn');
   });
 
   it('複数グループ: 理由は重複を除いて合算し、score は合計する', () => {
@@ -127,9 +127,9 @@ describe('summarizeAssignCandidates', () => {
       groups: [base.groups[0]!, base.groups[0]!],
       whole_ok_staff_ids: [],
     });
-    const udagawa = rows.find((r) => r.staffId === UDAGAWA);
-    expect(udagawa?.reasons).toEqual(['13:30 が重なる']);
-    expect(rows.find((r) => r.staffId === TAKANASHI)?.score).toBe(6);
+    const staff_d = rows.find((r) => r.staffId === STAFF_D);
+    expect(staff_d?.reasons).toEqual(['13:30 が重なる']);
+    expect(rows.find((r) => r.staffId === STAFF_B)?.score).toBe(6);
   });
 });
 
@@ -144,19 +144,19 @@ describe('AssignSuggestionPopover', () => {
 
   it('② ◎ は理由 + [このコースを割り当てる]・押すと親へ staffId が飛ぶ', () => {
     const h = renderPopover();
-    const ok = screen.getByTestId(`assign-suggestion-ok-${TAKANASHI}`);
-    expect(ok).toHaveTextContent('髙梨 桂子');
+    const ok = screen.getByTestId(`assign-suggestion-ok-${STAFF_B}`);
+    expect(ok).toHaveTextContent('職員B 桂子');
     expect(ok).toHaveTextContent('空き・稲毛');
-    fireEvent.click(screen.getByTestId(`assign-suggestion-apply-${TAKANASHI}`));
-    expect(h.onAssignCourse).toHaveBeenCalledWith(TAKANASHI);
+    fireEvent.click(screen.getByTestId(`assign-suggestion-apply-${STAFF_B}`));
+    expect(h.onAssignCourse).toHaveBeenCalledWith(STAFF_B);
   });
 
   it('② △ は理由だけ・割当ボタンを出さない (「1件ずつなら可」)', () => {
     renderPopover();
-    const warn = screen.getByTestId(`assign-suggestion-warn-${UDAGAWA}`);
+    const warn = screen.getByTestId(`assign-suggestion-warn-${STAFF_D}`);
     expect(warn).toHaveTextContent('13:30 が重なる');
     expect(warn).toHaveTextContent('1件ずつなら可');
-    expect(screen.queryByTestId(`assign-suggestion-apply-${UDAGAWA}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`assign-suggestion-apply-${STAFF_D}`)).not.toBeInTheDocument();
   });
 
   it('③ × は既定で折りたたみ・トグルで開く', () => {
@@ -165,7 +165,7 @@ describe('AssignSuggestionPopover', () => {
     const toggle = screen.getByTestId('assign-suggestion-ng-toggle');
     expect(toggle).toHaveTextContent('× 休み・NG・資格不可 1名を表示');
     fireEvent.click(toggle);
-    expect(screen.getByTestId(`assign-suggestion-ng-${KAWANA}`)).toHaveTextContent(
+    expect(screen.getByTestId(`assign-suggestion-ng-${STAFF_A}`)).toHaveTextContent(
       'この日は休みです',
     );
   });
@@ -183,7 +183,7 @@ describe('AssignSuggestionPopover', () => {
     expect(screen.getByTestId('assign-suggestion-no-whole')).toHaveTextContent(
       'コースを丸ごと引き受けられる人はいません',
     );
-    expect(screen.queryByTestId(`assign-suggestion-apply-${TAKANASHI}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`assign-suggestion-apply-${STAFF_B}`)).not.toBeInTheDocument();
   });
 
   it('④c 理由なしの △ しか居ない = コース内の時間が重なっている、と言い分ける (L3)', () => {
@@ -196,8 +196,8 @@ describe('AssignSuggestionPopover', () => {
             ...base.groups[0]!,
             // 1 人ずつなら全員 ok。丸ごとは誰も無理 (訪問同士が重なっている)。
             candidates: [
-              candidate(TAKANASHI, '髙梨 桂子', 'ok', [], 3),
-              candidate(KUMAZAWA, '熊澤 妙子', 'ok', [], 1),
+              candidate(STAFF_B, '職員B 桂子', 'ok', [], 3),
+              candidate(STAFF_L, '職員L 良子', 'ok', [], 1),
             ],
           },
         ],
@@ -251,13 +251,13 @@ describe('AssignSuggestionPopover', () => {
     fireEvent.click(screen.getByTestId('assign-suggestion-close'));
     expect(h.onClose).toHaveBeenCalledTimes(1);
     // 2-D: 候補行 hover → タイムライン/リストのハイライト。
-    fireEvent.mouseEnter(screen.getByTestId(`assign-suggestion-ok-${KUMAZAWA}`));
-    expect(h.onHoverCandidate).toHaveBeenLastCalledWith(KUMAZAWA);
+    fireEvent.mouseEnter(screen.getByTestId(`assign-suggestion-ok-${STAFF_L}`));
+    expect(h.onHoverCandidate).toHaveBeenLastCalledWith(STAFF_L);
   });
 
   it('⑥ 実行中 (submitting) は割当ボタンを押させない', () => {
     renderPopover({ submitting: true });
-    expect(screen.getByTestId(`assign-suggestion-apply-${TAKANASHI}`)).toBeDisabled();
+    expect(screen.getByTestId(`assign-suggestion-apply-${STAFF_B}`)).toBeDisabled();
   });
 
   it('⑦ M1: course_id ではなく「担当なし行の訪問」を visit_ids で問い合わせる', () => {

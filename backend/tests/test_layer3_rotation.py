@@ -65,8 +65,8 @@ def _make_course(weekday: int, code: str) -> CourseAssignmentTarget:
 
 def test_w16_fixed_manager_assignment_pinned_to_m_course() -> None:
     """role='manager' のスタッフが M コースに固定で割当てられる (W16)."""
-    manager = _make_staff("M-川名", role="manager")
-    s1 = _make_staff("S1-宇田川")
+    manager = _make_staff("M-職員A", role="manager")
+    s1 = _make_staff("S1-職員D")
     s2 = _make_staff("S2-本名")
 
     # 月曜の A / B / M コース
@@ -95,8 +95,8 @@ def test_w16_fixed_manager_assignment_pinned_to_m_course() -> None:
 
 def test_w16_fixed_tsuga_staff_pinned_to_a_course() -> None:
     """都賀 staff (固定) が A コースに固定割当される (W16)."""
-    tsuga = _make_staff("S0-関谷")
-    s1 = _make_staff("S1-宇田川")
+    tsuga = _make_staff("S0-職員N")
+    s1 = _make_staff("S1-職員D")
     s2 = _make_staff("S2-本名")
 
     c_a = _make_course(weekday=0, code="A")
@@ -224,28 +224,28 @@ async def _seed_w16_offices_and_staff(db) -> dict[str, object]:
     db.add_all([inage, tsuga])
     await db.flush()
 
-    # 川名 (本店 manager)
-    kawana = Staff(
+    # 職員A (本店 manager)
+    staff_a = Staff(
         code="MGR-001",
-        name="川名 千恵",
+        name="職員A 千恵",
         sex="female",
         role="manager",
         status="active",
         primary_office_id=inage.id,
     )
-    # 関谷 (都賀 staff)
-    sekiya = Staff(
+    # 職員N (都賀 staff)
+    staff_n = Staff(
         code="TSUGA-01",
-        name="関谷 公佑",
+        name="職員N 一郎",
         sex="male",
         role="staff",
         status="active",
         primary_office_id=tsuga.id,
     )
     # 本店 staff 4 名
-    udagawa = Staff(
+    staff_d = Staff(
         code="HON-01",
-        name="宇田川",
+        name="職員D",
         sex="female",
         role="staff",
         status="active",
@@ -259,36 +259,36 @@ async def _seed_w16_offices_and_staff(db) -> dict[str, object]:
         status="active",
         primary_office_id=inage.id,
     )
-    kumazawa = Staff(
+    staff_l = Staff(
         code="HON-03",
-        name="熊澤",
+        name="職員L",
         sex="female",
         role="staff",
         status="active",
         primary_office_id=inage.id,
     )
-    takaoka = Staff(
+    staff_e = Staff(
         code="HON-04",
-        name="高岡",
+        name="職員E",
         sex="female",
         role="staff",
         status="active",
         primary_office_id=inage.id,
     )
-    db.add_all([kawana, sekiya, udagawa, honna, kumazawa, takaoka])
+    db.add_all([staff_a, staff_n, staff_d, honna, staff_l, staff_e])
     await db.flush()
 
     # 全員 月-金 (+ 土) 勤務
-    for staff in [kawana, sekiya, udagawa, honna, kumazawa, takaoka]:
+    for staff in [staff_a, staff_n, staff_d, honna, staff_l, staff_e]:
         for wd in range(6):
             db.add(StaffShift(staff_id=staff.id, weekday=wd, is_on=True))
     await db.flush()
     return {
         "inage": inage,
         "tsuga": tsuga,
-        "kawana": kawana,
-        "sekiya": sekiya,
-        "honten_staff": [udagawa, honna, kumazawa, takaoka],
+        "staff_a": staff_a,
+        "staff_n": staff_n,
+        "honten_staff": [staff_d, honna, staff_l, staff_e],
     }
 
 
@@ -360,11 +360,11 @@ async def test_w16_assign_pins_manager_to_m_course(db) -> None:
     result = await assigner.assign(db, iso_year=W16_ISO_YEAR, iso_week=W16_ISO_WEEK)
     await db.commit()
 
-    # M コースには 川名 が固定割当される
+    # M コースには 職員A が固定割当される
     m_course = next(c for c in courses if c.code == "M" and c.office_id == seeds["inage"].id)
     m_assignment = next((a for a in result.assignments if a.course_id == m_course.id), None)
     assert m_assignment is not None
-    assert m_assignment.staff_id == seeds["kawana"].id
+    assert m_assignment.staff_id == seeds["staff_a"].id
 
 
 @pytest.mark.asyncio
@@ -384,7 +384,7 @@ async def test_w16_assign_pins_tsuga_staff_to_tsuga_a_course(db) -> None:
     tsuga_a = next(c for c in courses if c.code == "A" and c.office_id == seeds["tsuga"].id)
     tsuga_a_assignment = next((a for a in result.assignments if a.course_id == tsuga_a.id), None)
     assert tsuga_a_assignment is not None
-    assert tsuga_a_assignment.staff_id == seeds["sekiya"].id
+    assert tsuga_a_assignment.staff_id == seeds["staff_n"].id
 
 
 @pytest.mark.asyncio

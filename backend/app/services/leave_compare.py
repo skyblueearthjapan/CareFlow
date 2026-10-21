@@ -1082,10 +1082,16 @@ async def compare_month(db: AsyncSession, job_id: uuid.UUID) -> LeaveCompareRun 
         )
         return await save_compare_run(db, result=result, job_id=job_id, user_id=user_id)
     except Exception as exc:  # noqa: BLE001 — 黙って失わない (ジョブは completed で残る)
-        logger.exception("leave compare failed for job %s", job_id)
+        # 型の名前と中身はログだけへ (画面には日本語の案内だけを出す)。
+        logger.exception("leave compare failed for job %s: %s", job_id, type(exc).__name__)
         await db.rollback()
-        await record_compare_error(job_id, f"照合の差分を作れませんでした（{type(exc).__name__}）")
+        await record_compare_error(job_id, COMPARE_ERROR_MESSAGE)
         return None
+
+
+#: 照合に失敗したときに画面へ出す案内 (画面が「比べられませんでした。」に続けて出す)。
+#: 例外の型の名前・中身は入れない (ログに残す)。
+COMPARE_ERROR_MESSAGE: Final = "少し時間をおいてもう一度お試しください。続くときはお知らせください"
 
 
 async def record_compare_error(job_id: uuid.UUID, message: str) -> None:
@@ -1159,16 +1165,15 @@ async def run_leave_compare_job(
         except BaseException as exc:
             # compare_month の外側で落ちた (取り消し・セッションの破損など): completed のまま
             # 結果も compare_error も無いと画面が「比べています」で止まるので必ず書く。
-            logger.exception("leave compare crashed for job %s", job_id)
-            await record_compare_error(
-                job_id, f"照合の差分を作れませんでした（{type(exc).__name__}）"
-            )
+            logger.exception("leave compare crashed for job %s: %s", job_id, type(exc).__name__)
+            await record_compare_error(job_id, COMPARE_ERROR_MESSAGE)
             raise
         if run is None:
             # 材料は取れたのに結果が無い (ジョブの記録が足りないなど): 理由が無ければ書く。
             fresh = await db.get(KaipokeJob, job_id, populate_existing=True)
             if fresh is not None and not (fresh.result_summary or {}).get("compare_error"):
-                await record_compare_error(job_id, "照合の差分を作れませんでした")
+                logger.warning("leave compare produced no result for job %s", job_id)
+                await record_compare_error(job_id, COMPARE_ERROR_MESSAGE)
         return run
 
 

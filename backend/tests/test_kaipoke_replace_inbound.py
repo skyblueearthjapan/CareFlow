@@ -239,7 +239,7 @@ async def test_replace_skips_and_trainee_warning(client, db, stub_kaipoke) -> No
     """名寄せ不可の患者は skipped。新人担当1は取り込み + ⚠traineeSolo 警告
     (方針転換 PO確定 2026-07-26: カイポケの現実を受け入れる)。"""
     seeded = await _seed_week(db)
-    trainee = Staff(name="髙梨　桂子", role="staff", primary_office_id=seeded["office"].id)
+    trainee = Staff(name="職員B　桂子", role="staff", primary_office_id=seeded["office"].id)
     trainee.is_trainee = True
     db.add(trainee)
     await db.commit()
@@ -248,7 +248,7 @@ async def test_replace_skips_and_trainee_warning(client, db, stub_kaipoke) -> No
     stub_kaipoke.by_month[MONTH] = _csv(
         _kp_row(date(2026, 7, 7), time(10, 0), time(10, 35)),  # 正常
         _kp_row(date(2026, 7, 8), time(11, 0), time(11, 35), patient_name="未知　患者"),
-        _kp_row(date(2026, 7, 9), time(12, 0), time(12, 35), staff_name="髙梨　桂子"),
+        _kp_row(date(2026, 7, 9), time(12, 0), time(12, 35), staff_name="職員B　桂子"),
     )
 
     res = await _post_replace(client, admin, week_start=WEEK_START, dry_run=True)
@@ -258,7 +258,7 @@ async def test_replace_skips_and_trainee_warning(client, db, stub_kaipoke) -> No
     reasons = [s["reason"] for s in body["skipped"]]
     assert any("患者を名寄せできません" in r for r in reasons)
     assert not any("新人" in r for r in reasons)  # 新人は skipped に出ない
-    assert body["traineeSolo"] == [{"staffName": "髙梨　桂子", "count": 1}]
+    assert body["traineeSolo"] == [{"staffName": "職員B　桂子", "count": 1}]
 
     # 実適用: 新人が primary の visit が実際に作られる
     res2 = await _post_replace(client, admin, week_start=WEEK_START, dry_run=False)

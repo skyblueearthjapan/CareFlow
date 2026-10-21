@@ -81,7 +81,7 @@ vi.mock('@/lib/queries/offices', () => ({
   useOffices: () => ({ offices: [{ id: 'of-1', name: '都賀' }], allOffices: [] }),
 }));
 vi.mock('@/lib/queries/staff', () => ({
-  useStaffList: () => ({ data: [{ id: 'st-1', name: '川名 幸子' }] }),
+  useStaffList: () => ({ data: [{ id: 'st-1', name: '職員A 幸子' }] }),
 }));
 vi.mock('@/lib/queries/patients', () => ({
   usePatients: () => ({ data: { items: [] }, isLoading: false }),
@@ -108,7 +108,7 @@ function makeRecording(over: Record<string, unknown> = {}) {
     patient_id: 'p-1',
     patient_name: '山田 花子',
     staff_id: 'st-1',
-    staff_name: '川名 幸子',
+    staff_name: '職員A 幸子',
     office_id: 'of-1',
     office_name: '都賀',
     recorded_at: '2026-09-17T05:08:00Z',

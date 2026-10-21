@@ -169,7 +169,7 @@ def test_pair_group_absorbs_name_spacing_and_service_suffix():
             ReconRow(
                 start="09:00",
                 end="09:35",
-                staff1="小西彩稀",
+                staff1="職員C春子",
                 staff2="",
                 service="精神基本療養費Ⅰ・正看",
             )
@@ -178,7 +178,7 @@ def test_pair_group_absorbs_name_spacing_and_service_suffix():
             ReconRow(
                 start="09:00",
                 end="09:35",
-                staff1="小西　彩稀",
+                staff1="職員C　春子",
                 staff2="",
                 service="精神基本療養費Ⅰ・正看・複数名",
             )

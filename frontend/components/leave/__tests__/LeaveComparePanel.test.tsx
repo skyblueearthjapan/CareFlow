@@ -615,10 +615,13 @@ describe('カイポケと比べる', () => {
 
   it('比べられなかった・取り直せなかったら理由を出す', () => {
     setLatest(null, { job: { ...job('running').job } });
-    jobStatus = job('completed', { state: 'compare_failed', compare_error: 'ValueError' });
+    jobStatus = job('completed', {
+      state: 'compare_failed',
+      compare_error: '少し時間をおいてもう一度お試しください。続くときはお知らせください',
+    });
     const { unmount } = render(<LeaveComparePanel month="2026-11" recordActuals={readiness} />);
     expect(screen.getByTestId('compare-progress')).toHaveTextContent(
-      '比べられませんでした：ValueError',
+      '比べられませんでした。少し時間をおいてもう一度お試しください。続くときはお知らせください',
     );
     unmount();
     setLatest(null, { job: { ...job('running').job } });

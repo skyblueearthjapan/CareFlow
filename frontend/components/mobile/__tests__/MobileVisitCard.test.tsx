@@ -74,24 +74,24 @@ describe('MobileVisitCard 新人同行表示', () => {
       accompaniment: { staff_id: 'staff-trainee-1', staff_name: '新人 一郎' },
       accompaniments: [
         { staff_id: 'staff-trainee-1', staff_name: '新人 一郎', kind: 'trainee' },
-        { staff_id: 'staff-support-1', staff_name: '熊澤 二郎', kind: 'support' },
+        { staff_id: 'staff-support-1', staff_name: '職員L 二郎', kind: 'support' },
       ],
     });
     render(<MobileVisitCard visit={visit} />);
     expect(screen.getByTestId('mobile-visit-accompaniment').textContent).toContain(
-      '同行: 新人 一郎・熊澤 二郎',
+      '同行: 新人 一郎・職員L 二郎',
     );
   });
 
   it('accompaniments[] が無い旧レスポンスは単数 accompaniment にフォールバックする', () => {
     setSession('staff-senior-1');
     const visit = makeVisit({
-      accompaniment: { staff_id: 'staff-support-1', staff_name: '熊澤 二郎' },
+      accompaniment: { staff_id: 'staff-support-1', staff_name: '職員L 二郎' },
       accompaniments: undefined,
     });
     render(<MobileVisitCard visit={visit} />);
     expect(screen.getByTestId('mobile-visit-accompaniment').textContent).toContain(
-      '同行: 熊澤 二郎',
+      '同行: 職員L 二郎',
     );
   });
 });

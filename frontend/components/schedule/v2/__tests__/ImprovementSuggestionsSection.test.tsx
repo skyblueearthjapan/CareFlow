@@ -80,7 +80,7 @@ import type { PatientRead } from '@/lib/schemas/patient';
 
 const PATIENT = {
   id: '22222222-2222-4222-8222-222222222222',
-  name: '中尾 要太',
+  name: '利用者L 太郎',
   weekly_pattern: null,
 } as unknown as PatientRead;
 
@@ -425,7 +425,7 @@ describe('ImprovementSuggestionsSection', () => {
     // W3 UI改善: チップ型の双方向表示 (患者名 + from/to チップ)。
     // X (表示中患者) の移動: 月09:00 → 月14:00.
     const moveX = screen.getByTestId('improvement-swap-move-x');
-    expect(moveX).toHaveTextContent('中尾 要太 様');
+    expect(moveX).toHaveTextContent('利用者L 太郎 様');
     expect(moveX).toHaveTextContent('月 09:00');
     expect(moveX).toHaveTextContent('月 14:00');
     // Y (counterpart) の移動: 月14:00 → 月09:00.
@@ -568,7 +568,7 @@ describe('ImprovementSuggestionsSection', () => {
                 {
                   kind: 'gender',
                   patient_id: PATIENT.id,
-                  patient_name: '中尾 要太',
+                  patient_name: '利用者L 太郎',
                   staff_id: '55555555-5555-4555-8555-555555555555',
                   staff_name: '山本 三郎',
                   note: null,
@@ -590,7 +590,7 @@ describe('ImprovementSuggestionsSection', () => {
     const dialog = await screen.findByTestId('constraint-override-confirm');
     expect(dialog).toHaveTextContent('それでも採用しますか？');
     expect(screen.getByTestId('constraint-override-warning-row')).toHaveTextContent(
-      '山本 三郎さんは中尾 要太様の性別制限に適合しません',
+      '山本 三郎さんは利用者L 太郎様の性別制限に適合しません',
     );
     expect(mockToast.error).not.toHaveBeenCalled();
 
@@ -623,7 +623,7 @@ describe('ImprovementSuggestionsSection', () => {
                 {
                   kind: 'ng_staff',
                   patient_id: PATIENT.id,
-                  patient_name: '中尾 要太',
+                  patient_name: '利用者L 太郎',
                   staff_id: '55555555-5555-4555-8555-555555555555',
                   staff_name: '山本 三郎',
                   note: null,
@@ -655,19 +655,19 @@ describe('ImprovementSuggestionsSection', () => {
 
   it('15. swap カード: 移動先/移動元の担当名を「担当: ◯◯」で表示する', () => {
     const swap = makeSwapSuggestion();
-    swap.current = { ...swap.current, staff_name: '熊澤 妙子' };
+    swap.current = { ...swap.current, staff_name: '職員L 良子' };
     swap.candidate = { ...swap.candidate, staff_name: '山本 三郎' };
     mocks.suggestionsResult = { data: makeResponse([swap]), isLoading: false, isError: false };
     renderSection();
 
-    // X: current (熊澤) → candidate (山本) — 移動先の担当が読める。
+    // X: current (職員L) → candidate (山本) — 移動先の担当が読める。
     const moveX = screen.getByTestId('improvement-swap-move-x');
-    expect(moveX).toHaveTextContent('担当: 熊澤 妙子');
+    expect(moveX).toHaveTextContent('担当: 職員L 良子');
     expect(moveX).toHaveTextContent('担当: 山本 三郎');
-    // Y: candidate のコース (山本) → current のコース (熊澤).
+    // Y: candidate のコース (山本) → current のコース (職員L).
     const moveY = screen.getByTestId('improvement-swap-move-y');
     expect(moveY).toHaveTextContent('担当: 山本 三郎');
-    expect(moveY).toHaveTextContent('担当: 熊澤 妙子');
+    expect(moveY).toHaveTextContent('担当: 職員L 良子');
   });
 
   it('15b. staff_name が null なら担当表記を出さない (旧 BE 互換)', () => {
@@ -720,11 +720,11 @@ describe('CourseMoveTimeline (UI 統一)', () => {
         weekday: 0,
         course_code: 'A',
         course_label: '稲A',
-        staff_name: '熊澤 妙子',
+        staff_name: '職員L 良子',
         visits: [
           {
             patient_id: PATIENT.id,
-            patient_name: '中尾 要太',
+            patient_name: '利用者L 太郎',
             start_time: '09:00',
             end_time: '09:30',
           },
@@ -746,7 +746,7 @@ describe('CourseMoveTimeline (UI 統一)', () => {
     renderSection();
     const timeline = screen.getByTestId('course-move-timeline-single');
     // 移動元 (打消し) 行と挿入 (← ここへ移動) 行が同居する.
-    expect(timeline).toHaveTextContent('コース内の動き（稲A・熊澤 妙子）');
+    expect(timeline).toHaveTextContent('コース内の動き（稲A・職員L 良子）');
     expect(timeline).toHaveTextContent('別の 患者 様');
     expect(timeline).toHaveTextContent('← ここへ移動');
   });

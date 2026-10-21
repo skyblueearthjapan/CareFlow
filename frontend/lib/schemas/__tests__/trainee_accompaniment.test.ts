@@ -23,7 +23,7 @@ describe('traineeAccompanimentsResponseSchema', () => {
         {
           id: UUID,
           trainee_staff_id: UUID,
-          trainee_staff_name: '髙梨',
+          trainee_staff_name: '職員B',
           target_type: 'course',
           source: 'default',
           course: { id: UUID, weekday: 0, code: 'A', office_id: UUID, template_id: UUID },
@@ -32,7 +32,7 @@ describe('traineeAccompanimentsResponseSchema', () => {
         {
           id: '00000000-0000-0000-0000-000000000002',
           trainee_staff_id: UUID,
-          trainee_staff_name: '髙梨',
+          trainee_staff_name: '職員B',
           target_type: 'visit',
           source: 'manual',
           course: null,
@@ -50,7 +50,7 @@ describe('source の追随 (取込由来 / 未知値)', () => {
   const item = (source: unknown) => ({
     id: UUID,
     trainee_staff_id: UUID,
-    trainee_staff_name: '髙梨',
+    trainee_staff_name: '職員B',
     target_type: 'visit' as const,
     source,
     visit: { id: UUID, date: '2026-09-16' },
@@ -119,7 +119,7 @@ describe('kind / staff_name の追随', () => {
         {
           id: UUID,
           trainee_staff_id: UUID,
-          staff_name: '熊澤',
+          staff_name: '職員L',
           kind: 'support',
           target_type: 'visit',
           source: 'manual',
@@ -128,7 +128,7 @@ describe('kind / staff_name の追随', () => {
       ],
     });
     expect(parsed.items[0]!.kind).toBe('support');
-    expect(accompanimentStaffName(parsed.items[0]!)).toBe('熊澤');
+    expect(accompanimentStaffName(parsed.items[0]!)).toBe('職員L');
   });
 
   it('旧デプロイ (kind/staff_name なし) でも壊れず trainee_staff_name に落ちる', () => {
@@ -137,7 +137,7 @@ describe('kind / staff_name の追随', () => {
         {
           id: UUID,
           trainee_staff_id: UUID,
-          trainee_staff_name: '髙梨',
+          trainee_staff_name: '職員B',
           target_type: 'visit',
           source: 'manual',
           visit: { id: UUID, date: '2026-08-18' },
@@ -145,7 +145,7 @@ describe('kind / staff_name の追随', () => {
       ],
     });
     expect(parsed.items[0]!.kind ?? null).toBeNull();
-    expect(accompanimentStaffName(parsed.items[0]!)).toBe('髙梨');
+    expect(accompanimentStaffName(parsed.items[0]!)).toBe('職員B');
   });
 });
 
@@ -221,17 +221,17 @@ describe('visitAccompaniments (確定#5 複数名 + 旧単数フォールバッ�
     expect(
       visitAccompaniments({
         accompaniments: [
-          { staff_id: 'a', staff_name: '髙梨', kind: 'trainee' },
-          { staff_id: 'b', staff_name: '熊澤', kind: 'support' },
+          { staff_id: 'a', staff_name: '職員B', kind: 'trainee' },
+          { staff_id: 'b', staff_name: '職員L', kind: 'support' },
         ],
-        accompaniment: { staff_id: 'a', staff_name: '髙梨' },
+        accompaniment: { staff_id: 'a', staff_name: '職員B' },
       }).map((a) => a.staff_name),
-    ).toEqual(['髙梨', '熊澤']);
+    ).toEqual(['職員B', '職員L']);
   });
 
   it('accompaniments が無い旧レスポンスは単数へフォールバック', () => {
     expect(
-      visitAccompaniments({ accompaniment: { staff_id: 'a', staff_name: '髙梨' } }),
+      visitAccompaniments({ accompaniment: { staff_id: 'a', staff_name: '職員B' } }),
     ).toHaveLength(1);
     expect(visitAccompaniments({ accompaniments: [], accompaniment: null })).toEqual([]);
     expect(visitAccompaniments({})).toEqual([]);

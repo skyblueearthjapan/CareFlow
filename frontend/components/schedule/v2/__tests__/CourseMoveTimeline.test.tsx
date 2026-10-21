@@ -24,7 +24,7 @@ import {
 
 const srcCourse = {
   course_label: '稲A',
-  staff_name: '熊澤 妙子',
+  staff_name: '職員L 良子',
   visits: [
     {
       patient_id: 'p-target',
@@ -69,7 +69,7 @@ describe('CourseMoveTimeline (T-4 意匠統一)', () => {
     expect(screen.getByText('← ここへ移動')).toBeInTheDocument();
     expect(screen.getByText('移動元')).toBeInTheDocument();
     expect(screen.getAllByText(/様$/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/コース内の動き（稲A・熊澤 妙子）/)).toBeInTheDocument();
+    expect(screen.getByText(/コース内の動き（稲A・職員L 良子）/)).toBeInTheDocument();
   });
 
   it('patientMetaById 指定時: 行が性別ウォッシュ (var(--sched-*)) のカード行になる', () => {

@@ -59,8 +59,8 @@ const bulkMutate = vi.fn();
 function setup(opts: { templates?: unknown[] } = {}) {
   (useStaffList as unknown as Mock).mockReturnValue({
     data: [
-      { id: A, name: '川名 千恵', kana: 'カワナ チエ', code: 's001', status: 'active' },
-      { id: B, name: '熊澤 妙子', kana: 'クマザワ タエコ', code: 's002', status: 'active' },
+      { id: A, name: '職員A 千恵', kana: 'カワナ チエ', code: 's001', status: 'active' },
+      { id: B, name: '職員L 良子', kana: 'クマザワ タエコ', code: 's002', status: 'active' },
       { id: C, name: '退職 太郎', kana: 'タイショク タロウ', code: 's003', status: 'retired' },
     ],
   });
@@ -96,7 +96,7 @@ function setup(opts: { templates?: unknown[] } = {}) {
       {
         id: 'tpl-personal',
         staff_id: A,
-        title: '面談 松岡',
+        title: '面談 職員G',
         event_type: 'event',
         start_time: null,
         end_time: null,
@@ -111,7 +111,7 @@ function setup(opts: { templates?: unknown[] } = {}) {
   (useManyStaffShifts as unknown as Mock).mockReturnValue({
     byStaffId: new Map([
       [A, shifts('09:00')],
-      // 熊澤さんは土曜だけ 10:00 出勤 → 月〜土 では対象外・月〜金なら対象。
+      // 職員Lさんは土曜だけ 10:00 出勤 → 月〜土 では対象外・月〜金なら対象。
       [
         B,
         shifts('09:00', [0, 1, 2, 3, 4]).map((s) =>
@@ -202,7 +202,7 @@ describe('BulkEventDefaultsDialog — ひな形 / ☀選択', () => {
 
   it('5. ☀ は選択中の曜日すべてで 09:00 以前に出勤する人だけを選ぶ', async () => {
     setup();
-    // 月〜土 (既定) → 土曜 10:00 出勤の熊澤さんは外れる。
+    // 月〜土 (既定) → 土曜 10:00 出勤の職員Lさんは外れる。
     fireEvent.click(screen.getByTestId('bulk-select-early'));
     expect(screen.getByTestId('bulk-preview').textContent).toContain('1名 × 6曜日 = 6件');
 

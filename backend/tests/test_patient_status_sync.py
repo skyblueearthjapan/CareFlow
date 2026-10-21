@@ -79,7 +79,7 @@ async def _office(db, name: str = "status-office") -> Office:
 async def _patient(db, office: Office, *, code: str = "PS-001", status: str = "active") -> Patient:
     patient = Patient(
         code=code,
-        name="小湊 花子",
+        name="利用者B 花子",
         status=status,
         lat=35.65,
         lng=140.10,

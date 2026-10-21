@@ -26,8 +26,8 @@ const WEEK_START = '2026-08-17'; // 月
 const STAFF_A = '00000000-0000-4000-8000-0000000000a1';
 const STAFF_B = '00000000-0000-4000-8000-0000000000b2';
 const staffIdByName = new Map([
-  ['川名', STAFF_A],
-  ['髙梨', STAFF_B],
+  ['職員A', STAFF_A],
+  ['職員B', STAFF_B],
 ]);
 
 function item(
@@ -62,8 +62,8 @@ describe('correctionItemToMarker', () => {
     const m = correctionItemToMarker(
       item(
         'edit',
-        { ...BASE, date: '18', start_time: '09:00', end_time: '10:00', staff1: '川名' },
-        { ...BASE, date: '18', start_time: '09:30', end_time: '10:30', staff1: '髙梨' },
+        { ...BASE, date: '18', start_time: '09:00', end_time: '10:00', staff1: '職員A' },
+        { ...BASE, date: '18', start_time: '09:30', end_time: '10:30', staff1: '職員B' },
         '2026-08-18',
       ),
       { weekStartIso: WEEK_START, staffIdByName },
@@ -75,7 +75,7 @@ describe('correctionItemToMarker', () => {
     expect(m!.course_label).toBe('身体介護');
     expect(m!.before).toEqual({
       staff_id: STAFF_A,
-      staff_name: '川名',
+      staff_name: '職員A',
       date: '2026-08-18',
       start: '09:00',
       end: '10:00',
@@ -83,7 +83,7 @@ describe('correctionItemToMarker', () => {
     });
     expect(m!.after).toEqual({
       staff_id: STAFF_B,
-      staff_name: '髙梨',
+      staff_name: '職員B',
       date: '2026-08-18',
       start: '09:30',
       end: '10:30',
@@ -98,8 +98,8 @@ describe('correctionItemToMarker', () => {
     const m = correctionItemToMarker(
       item(
         'date_change',
-        { ...BASE, date: '18', start_time: '09:00', end_time: '10:00', staff1: '川名' },
-        { ...BASE, date: '20', start_time: '09:00', end_time: '10:00', staff1: '川名' },
+        { ...BASE, date: '18', start_time: '09:00', end_time: '10:00', staff1: '職員A' },
+        { ...BASE, date: '20', start_time: '09:00', end_time: '10:00', staff1: '職員A' },
         '2026-08-20',
       ),
       { weekStartIso: WEEK_START, staffIdByName },
@@ -130,7 +130,7 @@ describe('correctionItemToMarker', () => {
         date: '19',
         start_time: '13:00',
         end_time: '14:00',
-        staff1: '川名',
+        staff1: '職員A',
       }),
       { weekStartIso: WEEK_START, staffIdByName },
     );
@@ -141,7 +141,7 @@ describe('correctionItemToMarker', () => {
     const del = correctionItemToMarker(
       item(
         'delete',
-        { ...BASE, date: '21', start_time: '16:00', end_time: '16:45', staff1: '髙梨' },
+        { ...BASE, date: '21', start_time: '16:00', end_time: '16:45', staff1: '職員B' },
         null,
       ),
       { weekStartIso: WEEK_START, staffIdByName },
@@ -180,8 +180,8 @@ describe('toMarkersByCell', () => {
     const m = correctionItemToMarker(
       item(
         'date_change',
-        { ...BASE, date: '18', start_time: '09:00', end_time: '10:00', staff1: '川名' },
-        { ...BASE, date: '20', start_time: '09:00', end_time: '10:00', staff1: '髙梨' },
+        { ...BASE, date: '18', start_time: '09:00', end_time: '10:00', staff1: '職員A' },
+        { ...BASE, date: '20', start_time: '09:00', end_time: '10:00', staff1: '職員B' },
         '2026-08-20',
       ),
       { weekStartIso: WEEK_START, staffIdByName },
@@ -206,7 +206,7 @@ describe('eventChangeToMarker / unsentEventToMarker', () => {
       action: 'update',
       externalId: '111:22:2026-08-18',
       staffId: STAFF_A,
-      staffName: '川名',
+      staffName: '職員A',
       date: '2026-08-18',
       start: '09:00',
       end: '09:30',
@@ -217,7 +217,7 @@ describe('eventChangeToMarker / unsentEventToMarker', () => {
     expect(m.kind).toBe('event');
     expect(m.before).toEqual({
       staff_id: STAFF_A,
-      staff_name: '川名',
+      staff_name: '職員A',
       date: '2026-08-18',
       start: '08:30',
       end: '09:00',
@@ -231,7 +231,7 @@ describe('eventChangeToMarker / unsentEventToMarker', () => {
     const base = {
       id: '00000000-0000-4000-8000-0000000000e1',
       staff_id: STAFF_A,
-      staff_name: '川名',
+      staff_name: '職員A',
       date: '2026-08-18',
       start_time: '13:00',
       end_time: '14:00',

@@ -90,12 +90,12 @@ def _make_fixture_xlsx(tmp_path: Path) -> Path:
         ws.cell(row=3, column=start_col + 3).value = "複数"
         ws.cell(row=3, column=start_col + 4).value = "条件"
 
-    # Row 4: データ行 (Mon: 田中太郎, Tue: 前川双子)
+    # Row 4: データ行 (Mon: 田中太郎, Tue: 利用者H双子)
     ws.cell(row=4, column=1).value = time(9, 30)
     ws.cell(row=4, column=2).value = "田中太郎"
     ws.cell(row=4, column=3).value = "千葉県千葉市稲毛区園生町1-1"
     ws.cell(row=4, column=6).value = time(9, 30)
-    ws.cell(row=4, column=7).value = "前川双子"
+    ws.cell(row=4, column=7).value = "利用者H双子"
     ws.cell(row=4, column=8).value = "千葉県千葉市美浜区磯辺5-1"
     ws.cell(row=4, column=11).value = time(9, 30)  # 水曜 (稲毛不可) → データあっても無視
 
@@ -186,11 +186,11 @@ class TestParseSheet:
         xlsx_path = _make_fixture_xlsx(tmp_path)
         sections = parse_sheet(xlsx_path)
         block = sections[0].course_blocks[0]
-        # Mon: 田中太郎, 鈴木花子 / Tue: 前川双子
+        # Mon: 田中太郎, 鈴木花子 / Tue: 利用者H双子
         names = {v.name for v in block.visits}
         assert "田中太郎" in names
         assert "鈴木花子" in names
-        assert "前川双子" in names
+        assert "利用者H双子" in names
 
     def test_condition_captured(self, tmp_path: Path) -> None:
         xlsx_path = _make_fixture_xlsx(tmp_path)

@@ -1234,7 +1234,7 @@ async def test_apply_skips_rpa_unsupported_and_sends_the_rest(client, db, stub_k
     # 精神科 (送れる) の患者 = 既定シード。一般 (送れない) の患者を足す。
     general = Patient(
         code="PT-UNSENT-GEN",
-        name="兼行　様",
+        name="利用者C　様",
         status="active",
         insurance="medical",
         primary_office_id=seeded["office"].id,
@@ -1300,7 +1300,7 @@ async def test_apply_skips_rpa_unsupported_and_sends_the_rest(client, db, stub_k
 # ===========================================================================
 
 
-async def _seed_general_patient(db, seeded, *, name: str = "兼行　様") -> Patient:
+async def _seed_general_patient(db, seeded, *, name: str = "利用者C　様") -> Patient:
     """一般 (visit_category='general') の患者 = らく助の add が RPA 未対応になる。"""
     p = Patient(
         code=f"PT-PAIR-{name}",
@@ -1696,7 +1696,7 @@ async def _seed_unassigned_outbound_sheet(db, user: User, week_start: date) -> C
             CorrectionSheetItem(
                 sheet_id=sheet.id, action="add", before=_empty(), after=_side(0, "10:00", "-")
             ),
-            # 担当を消す変更 (カイポケの熊澤を '-' で上書き) → 送らない
+            # 担当を消す変更 (カイポケの職員Lを '-' で上書き) → 送らない
             CorrectionSheetItem(
                 sheet_id=sheet.id,
                 action="edit",
@@ -2128,7 +2128,7 @@ async def test_unsent_item_carries_grade_change_and_service_type_from(
         csv_text=(
             ",".join(HEADER)
             + "\r\n"
-            + _kaipoke_csv_row(day=week_start.day, staff1="高岡　真由美", service=PSY_BARE_SVC)
+            + _kaipoke_csv_row(day=week_start.day, staff1="職員E　由美", service=PSY_BARE_SVC)
             + "\r\n"
         ),
         source_op="test",
@@ -2188,7 +2188,7 @@ async def test_unsent_item_without_grade_change_has_empty_marks(
         csv_text=(
             ",".join(HEADER)
             + "\r\n"
-            + _kaipoke_csv_row(day=week_start.day, staff1="高岡　真由美", service=PSY_NURSE_SVC)
+            + _kaipoke_csv_row(day=week_start.day, staff1="職員E　由美", service=PSY_NURSE_SVC)
             + "\r\n"
         ),
         source_op="test",
@@ -2238,7 +2238,7 @@ async def test_reverse_sheet_flags_grade_change_and_sends_rakusuke_service(
         }
 
     # inbound: before=らく助 (准看) / after=カイポケ (正看)
-    inbound_before = _side(PSY_ASSISTANT_SVC, "高岡　真由美")
+    inbound_before = _side(PSY_ASSISTANT_SVC, "職員E　由美")
     inbound_after = _side(PSY_NURSE_SVC, STAFF_NAME)
     db.add(
         CorrectionSheetItem(
@@ -2331,7 +2331,7 @@ async def test_unsent_item_not_flagged_while_rpa_gate_is_closed(
         csv_text=(
             ",".join(HEADER)
             + "\r\n"
-            + _kaipoke_csv_row(day=week_start.day, staff1="高岡　真由美", service=PSY_BARE_SVC)
+            + _kaipoke_csv_row(day=week_start.day, staff1="職員E　由美", service=PSY_BARE_SVC)
             + "\r\n"
         ),
         source_op="test",
@@ -2376,7 +2376,7 @@ async def test_reverse_sheet_not_flagged_while_rpa_gate_is_closed(
                 "date": str(week_start.day),
                 "start_time": "10:00",
                 "end_time": "10:35",
-                "staff1": "高岡　真由美",
+                "staff1": "職員E　由美",
                 "staff2": "",
                 "service_type": PSY_ASSISTANT_SVC,
                 "business_type": "医療保険",

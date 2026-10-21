@@ -94,7 +94,7 @@ async def _seed(db) -> dict:
     p4 = Patient(  # 特別訪問週間の○ (固定枠なし → service_minutes)
         code="P4", name="高橋", status="active", weekly_pattern={"service_minutes": 40}
     )
-    p5 = Patient(code="P5", name="伊藤", status="active")  # 希望未設定 → プール外
+    p5 = Patient(code="P5", name="利用者I", status="active")  # 希望未設定 → プール外
     db.add_all([p1, p2, p3, p4, p5])
     await db.flush()
 

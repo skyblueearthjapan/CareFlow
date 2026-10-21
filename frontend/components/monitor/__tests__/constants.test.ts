@@ -341,7 +341,7 @@ describe('実績時刻 (actualArrivalIso / actualDepartureIso / adjustmentNotes)
             kind: 'arrival',
             reason_label: 'その他',
             reason_text: '駐車場が遠かった',
-            by_name: '川名 幸子',
+            by_name: '職員A 幸子',
             created_at: '2026-09-18T04:10:00Z',
           },
         ],
@@ -355,8 +355,8 @@ describe('実績時刻 (actualArrivalIso / actualDepartureIso / adjustmentNotes)
         readAt: '13:06',
         manual: false,
         reason: 'その他・駐車場が遠かった',
-        by: '川名 幸子 9/18 13:10',
-        text: '到着 12:56（読取 13:06）・その他・駐車場が遠かった・川名 幸子 9/18 13:10',
+        by: '職員A 幸子 9/18 13:10',
+        text: '到着 12:56（読取 13:06）・その他・駐車場が遠かった・職員A 幸子 9/18 13:10',
       },
     ]);
   });

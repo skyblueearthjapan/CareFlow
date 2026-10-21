@@ -49,7 +49,7 @@ function planActualJob(over: Record<string, unknown> = {}) {
       plan_rows: 500,
       actual_rows: 498,
       counts: { 一致: 480, 時刻ズレ: 12, 担当違い: 0, 相違: 0, 予定のみ: 0, 実績のみ: 3, 重複: 2 },
-      by_staff: [{ staff: '熊澤', counts: { 一致: 40 }, duplicates: 0, total: 40 }],
+      by_staff: [{ staff: '職員L', counts: { 一致: 40 }, duplicates: 0, total: 40 }],
     },
     created_at: '2026-09-01T01:00:00Z',
     completed_at: '2026-09-01T01:02:00Z',

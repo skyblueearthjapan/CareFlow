@@ -202,7 +202,7 @@ async def test_build_fixed_assignments_skips_empty_M_course(db) -> None:  # noqa
     manager 1 名で _build_fixed_assignments を実行し、 月M のみ固定対象、
     火M は対象外 (= result に含まれない) であることを確認する.
 
-    本番再現: 「稲毛 M2 (火) visits=0」 に宇田川さんが取られて他コースが
+    本番再現: 「稲毛 M2 (火) visits=0」 に職員Dさんが取られて他コースが
     NULL になる現象の修正検証.
     """
     inage = Office(name="G28-3 稲毛事業所", lat=35.6383, lng=140.1041)
@@ -211,7 +211,7 @@ async def test_build_fixed_assignments_skips_empty_M_course(db) -> None:  # noqa
 
     manager = Staff(
         code="G28-3-M1",
-        name="G28-3 manager 宇田川",
+        name="G28-3 manager 職員D",
         sex="female",
         role="manager",
         status="active",
@@ -439,32 +439,32 @@ async def test_assign_already_assigned_empty_course_not_locked(db) -> None:
     圧迫しないことを検証.
 
     本番再現シナリオ (2026-W21):
-      - 過去の自動割付で M2 (visits=0) に宇田川を assign 済の状態のまま残っている
+      - 過去の自動割付で M2 (visits=0) に職員Dを assign 済の状態のまま残っている
       - 再実行時に W25 fix が空 M2 を ``fixed_staff_by_course`` に注入
-      - 結果: 宇田川が他コースに使えず NULL 化
+      - 結果: 職員Dが他コースに使えず NULL 化
     修正後:
-      - M2 (visits=0) は W25 fix で skip → 宇田川は visits ありの稲毛 A に流れる
+      - M2 (visits=0) は W25 fix で skip → 職員Dは visits ありの稲毛 A に流れる
     """
     inage = Office(name="G28-6 稲毛事業所", lat=35.6383, lng=140.1041)
     db.add(inage)
     await db.flush()
 
-    udagawa = Staff(
+    staff_d = Staff(
         code="G28-6-S1",
-        name="G28-6 宇田川",
+        name="G28-6 職員D",
         sex="female",
         role="staff",
         status="active",
         primary_office_id=inage.id,
     )
-    db.add(udagawa)
+    db.add(staff_d)
     await db.flush()
     for wd in range(7):
-        db.add(StaffShift(staff_id=udagawa.id, weekday=wd, is_on=True))
+        db.add(StaffShift(staff_id=staff_d.id, weekday=wd, is_on=True))
 
     # 同曜日 (月 = weekday=0) に
     #   - 稲毛 A (visits=3, course_fixed, assigned_staff_id=None)
-    #   - 稲毛 M2 (visits=0, staff_assigned, assigned_staff_id=宇田川) ← W25 fix で再注入される問題対象
+    #   - 稲毛 M2 (visits=0, staff_assigned, assigned_staff_id=職員D) ← W25 fix で再注入される問題対象
     course_a = Course(
         iso_year=TEST_ISO_YEAR,
         iso_week=TEST_ISO_WEEK,
@@ -480,7 +480,7 @@ async def test_assign_already_assigned_empty_course_not_locked(db) -> None:
         weekday=0,
         code="M2",
         course_status=COURSE_STATUS_STAFF_ASSIGNED,
-        assigned_staff_id=udagawa.id,  # ← 過去のゴミ assign
+        assigned_staff_id=staff_d.id,  # ← 過去のゴミ assign
         office_id=inage.id,
     )
     db.add_all([course_a, course_m2_empty_locked])
@@ -511,8 +511,8 @@ async def test_assign_already_assigned_empty_course_not_locked(db) -> None:
             )
         ).all()
     }
-    assert refreshed[course_a.id].assigned_staff_id == udagawa.id, (
-        f"稲毛 A (visits=3) に宇田川が流れていない (G-28 H1 fix 不発 — "
-        f"W25 fix 経路で空 M2 が fixed_staff_by_course に再注入され宇田川がロックされた可能性): "
-        f"got={refreshed[course_a.id].assigned_staff_id}, expected={udagawa.id}"
+    assert refreshed[course_a.id].assigned_staff_id == staff_d.id, (
+        f"稲毛 A (visits=3) に職員Dが流れていない (G-28 H1 fix 不発 — "
+        f"W25 fix 経路で空 M2 が fixed_staff_by_course に再注入され職員Dがロックされた可能性): "
+        f"got={refreshed[course_a.id].assigned_staff_id}, expected={staff_d.id}"
     )

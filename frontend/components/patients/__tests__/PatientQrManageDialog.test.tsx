@@ -64,7 +64,7 @@ function setup(status: StatusOverrides = {}) {
     <PatientQrManageDialog
       open
       onOpenChange={vi.fn()}
-      patient={{ id: 'patient-1', name: '篠原 千晶', code: 'P-0123' }}
+      patient={{ id: 'patient-1', name: '利用者G 明美', code: 'P-0123' }}
     />,
   );
   return { user, mutateAsync };
@@ -82,11 +82,11 @@ describe('PatientQrManageDialog', () => {
   });
 
   it('今の版・発行日・最後に読めた日 (JST・職員名)・印刷への導線を出す', () => {
-    setup({ last_scanned_at: '2026-10-13T00:35:00Z', last_scanned_staff_name: '熊澤' });
+    setup({ last_scanned_at: '2026-10-13T00:35:00Z', last_scanned_staff_name: '職員L' });
 
-    expect(screen.getByText(/篠原 千晶 様/)).toBeInTheDocument();
+    expect(screen.getByText(/利用者G 明美 様/)).toBeInTheDocument();
     expect(screen.getByTestId('qr-manage-version')).toHaveTextContent('第3版（10/7 発行）');
-    expect(screen.getByTestId('qr-manage-last-scan')).toHaveTextContent('10/13 09:35 熊澤さん');
+    expect(screen.getByTestId('qr-manage-last-scan')).toHaveTextContent('10/13 09:35 職員Lさん');
     expect(screen.getByRole('link', { name: 'QRを印刷する' })).toHaveAttribute(
       'href',
       '/patients/qr-print?mode=single&patient=patient-1',

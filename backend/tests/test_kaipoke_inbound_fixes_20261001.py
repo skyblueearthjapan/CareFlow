@@ -401,7 +401,7 @@ async def _seed_trainee_accompaniment(db, seeded, *, source: str) -> tuple[Any, 
     from app.models.accompaniment import Accompaniment
     from app.models.staff import Staff
 
-    trainee = Staff(name="小西　新人", role="staff", primary_office_id=seeded["office"].id)
+    trainee = Staff(name="職員C　新人", role="staff", primary_office_id=seeded["office"].id)
     trainee.qualification = "看護師"
     trainee.is_trainee = True
     db.add(trainee)
@@ -423,7 +423,7 @@ def _staff2_clear_item(seeded) -> dict:
         "patient_id": seeded["patient"].id,
         "visit_id": seeded["tue"].id,
         "action": "edit",
-        "before": _side(7, "10:00", "10:35", staff2="小西　新人"),
+        "before": _side(7, "10:00", "10:35", staff2="職員C　新人"),
         "after": _side(7, "10:00", "10:35", staff2=""),
     }
 
@@ -448,7 +448,7 @@ async def test_staff2_clear_removes_import_accompaniment(db, dry_run: bool) -> N
         now=NOW,
     )
     assert summary.updated == 1, [r.detail for r in summary.results]
-    assert "同行「小西　新人」を外しました" in summary.results[0].detail
+    assert "同行「職員C　新人」を外しました" in summary.results[0].detail
     await db.flush()
     remaining = await db.scalar(select(Accompaniment).where(Accompaniment.id == acc_id))
     assert (remaining is None) is (not dry_run)

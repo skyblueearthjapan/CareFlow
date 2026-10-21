@@ -47,8 +47,8 @@ const USAGE = {
   // BE は Decimal を文字列で返すことがある（契約どおり許容する）。
   cost_usd: '1.2345',
   by_staff: [
-    { staff_id: 'st-1', staff_name: '熊澤', recordings: 20, minutes: 300, cost_usd: 0.6 },
-    { staff_id: 'st-2', staff_name: '小西', recordings: 22, minutes: 318, cost_usd: 0.6345 },
+    { staff_id: 'st-1', staff_name: '職員L', recordings: 20, minutes: 300, cost_usd: 0.6 },
+    { staff_id: 'st-2', staff_name: '職員C', recordings: 22, minutes: 318, cost_usd: 0.6345 },
   ],
   by_status: { summarized: 40, failed: 2 },
   failed: 2,
@@ -96,8 +96,8 @@ describe('VoiceUsageCard', () => {
 
     // スタッフ別の小表。明細は 4 桁（$0.00 に潰れると比較できない）。
     const table = screen.getByTestId('voice-usage-by-staff');
-    expect(table).toHaveTextContent('熊澤');
-    expect(table).toHaveTextContent('小西');
+    expect(table).toHaveTextContent('職員L');
+    expect(table).toHaveTextContent('職員C');
     expect(table).toHaveTextContent('$0.6345');
 
     // 失敗は 0 でなければ出す

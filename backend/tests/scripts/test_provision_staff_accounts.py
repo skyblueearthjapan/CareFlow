@@ -108,15 +108,15 @@ async def test_idempotent_rerun_creates_zero(_engine, db) -> None:
 
 @pytest.mark.asyncio
 async def test_already_linked_staff_is_skipped(_engine, db) -> None:
-    """A staff already linked to an account is skipped (川名 S001 scenario)."""
-    staff = Staff(code="S001", name="川名 千恵", role="staff")
+    """A staff already linked to an account is skipped (職員A S001 scenario)."""
+    staff = Staff(code="S001", name="職員A 千恵", role="staff")
     db.add(staff)
     await db.commit()
     await db.refresh(staff)
 
     db.add(
         User(
-            email="chie.kawana@thousands.jp",
+            email="staff.a@thousands.jp",
             password_hash=hash_password("existing-pw-01"),
             role="manager",
             staff_id=staff.id,
@@ -131,7 +131,7 @@ async def test_already_linked_staff_is_skipped(_engine, db) -> None:
     await db.rollback()
     users = await _alive_users(db)
     assert len(users) == 1
-    assert users[0].email == "chie.kawana@thousands.jp"
+    assert users[0].email == "staff.a@thousands.jp"
 
 
 @pytest.mark.asyncio
@@ -178,7 +178,7 @@ async def test_role_and_only_code_filters(_engine, db) -> None:
     """Default excludes manager staff; --all-roles + --only-code narrow scope."""
     db.add_all(
         [
-            Staff(code="S001", name="川名 千恵", role="manager"),
+            Staff(code="S001", name="職員A 千恵", role="manager"),
             Staff(code="S002", name="佐藤 花子", role="staff"),
             Staff(code="S003", name="鈴木 太郎", role="staff"),
         ]

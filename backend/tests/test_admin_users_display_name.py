@@ -30,7 +30,9 @@ def _bearer(user: User) -> dict[str, str]:
 
 
 def test_schema_trims_and_blank_becomes_none() -> None:
-    assert AdminUserCreate(username="a1", display_name="  今泉　勇二  ").display_name == "今泉　勇二"
+    assert (
+        AdminUserCreate(username="a1", display_name="  職員J　次郎  ").display_name == "職員J　次郎"
+    )
     assert AdminUserUpdate(display_name="   ").display_name is None
     assert AdminUserUpdate(display_name=None).display_name is None
     assert AdminUserCreate(username="a1").display_name is None

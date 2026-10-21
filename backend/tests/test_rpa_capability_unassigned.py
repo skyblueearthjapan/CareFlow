@@ -46,7 +46,7 @@ def test_unassigned_actions_with_blank_staff(action: str, staff1: str) -> None:
 
 @pytest.mark.parametrize("action", ["add", "edit", "date_change"])
 def test_assigned_actions_are_not_unassigned(action: str) -> None:
-    assert is_unassigned_item(action, _after("熊澤　看護師")) is False
+    assert is_unassigned_item(action, _after("職員L　看護師")) is False
 
 
 def test_delete_is_never_unassigned() -> None:
@@ -64,14 +64,14 @@ def test_unassigned_item_ids_picks_only_blank_staff() -> None:
     items = [
         _Item("a", "add", _after("-")),
         _Item("b", "edit", _after("")),
-        _Item("c", "add", _after("熊澤　看護師")),
+        _Item("c", "add", _after("職員L　看護師")),
         _Item("d", "delete", _after("-")),
     ]
     assert unassigned_item_ids(items) == {"a", "b"}
 
 
 def test_unassigned_item_ids_is_empty_when_all_assigned() -> None:
-    items = [_Item("a", "add", _after("熊澤　看護師")), _Item("b", "delete", _after("田中"))]
+    items = [_Item("a", "add", _after("職員L　看護師")), _Item("b", "delete", _after("田中"))]
     assert unassigned_item_ids(items) == set()
 
 
@@ -86,7 +86,7 @@ def test_paired_delete_is_skipped_with_the_unassigned_add() -> None:
     """同じ (日, 開始時刻, 患者) の delete は担当なし add の道連れで外す。"""
     items = [
         _Item("add", "add", after=_after("-")),
-        _Item("del", "delete", before=_after("熊澤　看護師")),
+        _Item("del", "delete", before=_after("職員L　看護師")),
     ]
     assert unassigned_item_ids(items) == {"add", "del"}
 
@@ -95,7 +95,7 @@ def test_paired_delete_matches_across_name_variants() -> None:
     """氏名のゆれ (空白/異体字) でペアを取り逃がさない (正規化して突合)。"""
     items = [
         _Item("add", "add", after={**_after("-"), "user_name": "山田 花子"}),
-        _Item("del", "delete", before={**_after("熊澤"), "user_name": "山田　花子"}),
+        _Item("del", "delete", before={**_after("職員L"), "user_name": "山田　花子"}),
     ]
     assert unassigned_item_ids(items) == {"add", "del"}
 
@@ -104,7 +104,7 @@ def test_unrelated_delete_is_not_dragged_in() -> None:
     """別の訪問の delete は巻き添えにしない (ガードの過剰適用を防ぐ)。"""
     items = [
         _Item("add", "add", after=_after("-", day="3", start="10:00")),
-        _Item("del", "delete", before=_after("熊澤", day="4", start="15:00")),
+        _Item("del", "delete", before=_after("職員L", day="4", start="15:00")),
     ]
     assert unassigned_item_ids(items) == {"add"}
 
@@ -113,7 +113,7 @@ def test_pair_key_unresolvable_does_not_block_everything() -> None:
     """日付/時刻/氏名が欠けた担当なし行はペア判定をしない (delete は素通し)。"""
     items = [
         _Item("add", "add", after={"staff1": "-"}),
-        _Item("del", "delete", before=_after("熊澤")),
+        _Item("del", "delete", before=_after("職員L")),
     ]
     assert unassigned_item_ids(items) == {"add"}
 

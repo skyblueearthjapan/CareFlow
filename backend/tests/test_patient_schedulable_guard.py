@@ -86,7 +86,7 @@ async def test_ensure_returns_patient_when_active(db) -> None:
     ],
 )
 async def test_ensure_raises_422_for_non_active(db, status: str, label: str) -> None:
-    patient = await _make_patient(db, code=f"GUARD-{status}", status=status, name="小湊")
+    patient = await _make_patient(db, code=f"GUARD-{status}", status=status, name="利用者B")
     with pytest.raises(HTTPException) as exc:
         await ensure_patient_schedulable(db, patient.id)
     assert exc.value.status_code == 422
@@ -96,7 +96,7 @@ async def test_ensure_raises_422_for_non_active(db, status: str, label: str) -> 
     assert detail["status"] == status
     assert detail["status_label"] == label
     assert detail["can_override"] is True
-    assert detail["message"] == f"小湊様は{label}のため予定に入れられません"
+    assert detail["message"] == f"利用者B様は{label}のため予定に入れられません"
 
 
 @pytest.mark.asyncio

@@ -193,7 +193,7 @@ describe('StageB 新規カルテ登録', () => {
   it('カルテ入力 + 採用枠選択 → pending patient_create を payload 付きで作成', () => {
     renderSheet();
     // カルテ項目。
-    fireEvent.change(screen.getByLabelText('氏名'), { target: { value: '青柳 あい' } });
+    fireEvent.change(screen.getByLabelText('氏名'), { target: { value: '利用者A あい' } });
     fireEvent.change(screen.getByLabelText('患者コード'), { target: { value: 'P-1042' } });
     fireEvent.change(screen.getByLabelText('フリガナ'), { target: { value: 'アオヤギ アイ' } });
     fireEvent.change(screen.getByLabelText('性別'), { target: { value: 'female' } });
@@ -218,7 +218,7 @@ describe('StageB 新規カルテ登録', () => {
     };
     expect(arg.request_type).toBe('patient_create');
     const p = arg.payload;
-    expect(p.name).toBe('青柳 あい');
+    expect(p.name).toBe('利用者A あい');
     expect(p.code).toBe('P-1042');
     expect(p.kana).toBe('アオヤギ アイ');
     expect(p.sex).toBe('female');
@@ -245,7 +245,7 @@ describe('StageB 新規カルテ登録', () => {
 
   it('採用枠ゼロでは作成しない (ボタン無効でクリックしても mutate されない)', () => {
     renderSheet();
-    fireEvent.change(screen.getByLabelText('氏名'), { target: { value: '青柳 あい' } });
+    fireEvent.change(screen.getByLabelText('氏名'), { target: { value: '利用者A あい' } });
     fireEvent.change(screen.getByLabelText('患者コード'), { target: { value: 'P-1042' } });
     // 採用せずに作成ボタン (無効) を押す。
     fireEvent.click(screen.getByText('提案を作成（承認へ）'));

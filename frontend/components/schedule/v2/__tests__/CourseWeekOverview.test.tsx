@@ -458,7 +458,7 @@ describe('CourseWeekOverview (B-6)', () => {
       {
         id: 'v1',
         patient_id: 'p1',
-        patient_name: '青柳',
+        patient_name: '利用者A',
         weekday: 0,
         course_template_id: 'tpl-A',
         start_time: '09:30',
@@ -499,7 +499,7 @@ describe('CourseWeekOverview (B-6)', () => {
       {
         id: 'v1',
         patient_id: 'p1',
-        patient_name: '青柳',
+        patient_name: '利用者A',
         weekday: 0,
         course_template_id: 'tpl-A',
         start_time: '09:30',
@@ -640,15 +640,15 @@ describe('CourseWeekOverview (B-6)', () => {
           onJumpToDay={vi.fn()}
           staffCountFor={fullStaff}
           accompaniment={makeBinding({
-            visitBadgeName: (id) => (id === 'v-acc' ? ['髙梨'] : []),
+            visitBadgeName: (id) => (id === 'v-acc' ? ['職員B'] : []),
           })}
         />,
       );
       const dot = screen.getByTestId('course-week-overview-accompaniment-v-acc');
       expect(dot).toHaveTextContent('👥');
       // 省スペース最優先: 名前は出さず title のみ。
-      expect(dot).not.toHaveTextContent('髙梨');
-      expect(dot.getAttribute('title')).toBe('同行: 髙梨');
+      expect(dot).not.toHaveTextContent('職員B');
+      expect(dot.getAttribute('title')).toBe('同行: 職員B');
     });
 
     it('コース丸ごと: courseBadgeName があればセル上部に極小 👥 (title に新人名)', () => {
@@ -661,13 +661,13 @@ describe('CourseWeekOverview (B-6)', () => {
           staffCountFor={fullStaff}
           accompaniment={makeBinding({
             // resolveCourseId('tpl-A', 0) = 'tpl-A:0'.
-            courseBadgeName: (cid) => (cid === 'tpl-A:0' ? ['川名'] : []),
+            courseBadgeName: (cid) => (cid === 'tpl-A:0' ? ['職員A'] : []),
           })}
         />,
       );
       const chip = screen.getByTestId('course-week-overview-course-accompaniment-tpl-A-0');
       expect(chip).toHaveTextContent('👥');
-      expect(chip.getAttribute('title')).toBe('同行: 川名');
+      expect(chip.getAttribute('title')).toBe('同行: 職員A');
     });
 
     it('複数名の同行は title に「・」連結で全員を出す (確定#5)', () => {
@@ -679,12 +679,12 @@ describe('CourseWeekOverview (B-6)', () => {
           onJumpToDay={vi.fn()}
           staffCountFor={fullStaff}
           accompaniment={makeBinding({
-            visitBadgeName: (id) => (id === 'v-acc' ? ['髙梨', '川名'] : []),
+            visitBadgeName: (id) => (id === 'v-acc' ? ['職員B', '職員A'] : []),
           })}
         />,
       );
       const dot = screen.getByTestId('course-week-overview-accompaniment-v-acc');
-      expect(dot.getAttribute('title')).toBe('同行: 髙梨・川名');
+      expect(dot.getAttribute('title')).toBe('同行: 職員B・職員A');
     });
 
     it('accompaniment 未指定なら 👥 を出さない (他利用箇所を壊さない)', () => {
@@ -711,8 +711,8 @@ describe('CourseWeekOverview (B-6)', () => {
           staffCountFor={fullStaff}
           accompaniment={makeBinding({
             active: true,
-            visitBadgeName: () => ['髙梨'],
-            courseBadgeName: () => ['川名'],
+            visitBadgeName: () => ['職員B'],
+            courseBadgeName: () => ['職員A'],
           })}
         />,
       );

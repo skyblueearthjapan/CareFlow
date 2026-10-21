@@ -848,7 +848,7 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
       },
       patient: {
         id: PATIENT_UUID,
-        name: '中尾 要太',
+        name: '利用者L 太郎',
         code: 'P-001',
         sex: 'male',
         sex_restriction: null,
@@ -897,7 +897,7 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
       payload: { course_template_id: 'tpl-A', start_time: '10:15' },
     });
     expect(mockToast.success).toHaveBeenCalledWith(
-      '中尾 要太 様を 月曜 10:15 に配置しました（この週のみ・固定化しません）',
+      '利用者L 太郎 様を 月曜 10:15 に配置しました（この週のみ・固定化しません）',
     );
   });
 
@@ -978,9 +978,9 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
               {
                 kind: 'ng_staff',
                 patient_id: PATIENT_UUID,
-                patient_name: '中尾 要太',
+                patient_name: '利用者L 太郎',
                 staff_id: '77777777-7777-4777-8777-777777777777',
-                staff_name: '熊澤 妙子',
+                staff_name: '職員L 良子',
                 note: null,
               },
             ],
@@ -1035,7 +1035,7 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         { id: 'tpl-M', office_id: 'office-honten', label: 'M', ...baseTpl },
       ],
       staff: [
-        { id: SW_STAFF, name: '宇田川 優莉', primary_office_id: 'office-honten', status: 'active' },
+        { id: SW_STAFF, name: '職員D 秋子', primary_office_id: 'office-honten', status: 'active' },
       ],
       courses: [
         {
@@ -1090,7 +1090,7 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
       payload: { course_template_id: 'tpl-A', start_time: '09:00', weekday: 3 },
     });
     expect(mockToast.success).toHaveBeenCalledWith(
-      '中尾 要太 様の 月曜の追加枠を 木曜 09:00 に配置しました（この週のみ）',
+      '利用者L 太郎 様の 月曜の追加枠を 木曜 09:00 に配置しました（この週のみ）',
     );
   });
 
@@ -1326,7 +1326,7 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
         { id: 'tpl-B2', office_id: 'office-b', label: 'B', ...baseTpl },
       ],
       staff: [
-        { id: SW_STAFF, name: '宇田川 優莉', primary_office_id: 'office-honten', status: 'active' },
+        { id: SW_STAFF, name: '職員D 秋子', primary_office_id: 'office-honten', status: 'active' },
       ],
       courses: [
         {
@@ -1640,13 +1640,13 @@ describe('CourseDayTablePanel — W37 Phase 3-C', () => {
   // 週ビューは列でコースが確定している = その曜日の担当も決まっている。
   // 行スタッフを持たない (staffId=null) からと「（担当なし）」と出すのは事実と違う。
   it('WTL-8. 週ビューのドロップでも、確認モーダルはその曜日の担当者名を出す', async () => {
-    setupStaffWeek({ tickets: [makeTicket({ weekday: 0 })] }); // tpl-A の木(3) は 宇田川
+    setupStaffWeek({ tickets: [makeTicket({ weekday: 0 })] }); // tpl-A の木(3) は 職員D
     await act(async () => {
       await dndState.capturedHandlers.onDragEnd!(
         dropOnWeekTimelineCol(`special-ticket:${MARK_ID}`, 'tpl-A', 3, '10:15'),
       );
     });
-    expect(screen.getByTestId('pcd-target').textContent).toContain('宇田川 優莉');
+    expect(screen.getByTestId('pcd-target').textContent).toContain('職員D 秋子');
   });
 
   it('WTL-9. canEdit=false では週ビューに droppable のレイヤを 1 つも描かない', () => {

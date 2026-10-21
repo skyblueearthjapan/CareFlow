@@ -37,7 +37,7 @@ const staffMap = new Map<string, StaffRead>([
     STAFF_1,
     {
       id: STAFF_1,
-      name: '宇田川　優莉',
+      name: '職員D　秋子',
       primary_office_id: OFFICE_ID,
       is_trainee: false,
       status: 'active',
@@ -47,7 +47,7 @@ const staffMap = new Map<string, StaffRead>([
     STAFF_2,
     {
       id: STAFF_2,
-      name: '髙梨　桂子',
+      name: '職員B　桂子',
       primary_office_id: OFFICE_ID,
       is_trainee: true,
       status: 'active',
@@ -68,9 +68,9 @@ function visit(partial: Partial<WeekOverviewVisit> & { id: string }): WeekOvervi
 }
 
 const visits: WeekOverviewVisit[] = [
-  visit({ id: 'v1', patient_name: '朝倉　美夢', weekday: 0, start_time: '09:00' }),
-  visit({ id: 'v2', patient_name: '川田　春菜', weekday: 0, start_time: '10:30' }),
-  // 火曜はコースBを髙梨(新人)が担当
+  visit({ id: 'v1', patient_name: '利用者AG　冬子', weekday: 0, start_time: '09:00' }),
+  visit({ id: 'v2', patient_name: '利用者AF　春菜', weekday: 0, start_time: '10:30' }),
+  // 火曜はコースBを職員B(新人)が担当
   visit({ id: 'v3', patient_name: '小川　文代', weekday: 1, course_template_id: TPL_B }),
   // 水曜のコースBは担当なし
   visit({ id: 'v4', patient_name: '担当無　太郎', weekday: 2, course_template_id: TPL_B }),
@@ -127,10 +127,10 @@ describe('StaffWeekBoard', () => {
   it('① スタッフ行にコース見出しと訪問明細 (時刻+患者名) が常時表示される', () => {
     renderBoard();
     const row = screen.getByTestId(`staff-week-row-${STAFF_1}`);
-    expect(within(row).getByText(/優莉/)).toBeInTheDocument();
+    expect(within(row).getByText(/秋子/)).toBeInTheDocument();
     const monCell = screen.getByTestId(`staff-week-cell-${STAFF_1}-0`);
     expect(within(monCell).getByText('稲毛 A')).toBeInTheDocument();
-    expect(within(monCell).getByText(/美夢/)).toBeInTheDocument();
+    expect(within(monCell).getByText(/冬子/)).toBeInTheDocument();
     expect(within(monCell).getByText(/09:00〜10:35/)).toBeInTheDocument();
     // 列ヘッダに日付
     expect(screen.getByText('7/20（月）')).toBeInTheDocument();
@@ -499,8 +499,8 @@ describe('StaffWeekBoard', () => {
         templates={templates}
         officeNameById={new Map([[OFFICE_ID, '稲毛']])}
         visits={[
-          { ...visit({ id: 'v1', patient_name: '朝倉　美夢' }), status: 'cancelled' },
-          visit({ id: 'v2', patient_name: '川田　春菜', start_time: '10:30' }),
+          { ...visit({ id: 'v1', patient_name: '利用者AG　冬子' }), status: 'cancelled' },
+          visit({ id: 'v2', patient_name: '利用者AF　春菜', start_time: '10:30' }),
         ]}
         assignedStaffByTemplateWeekday={assigned}
         staffMap={staffMap}
@@ -526,7 +526,7 @@ describe('StaffWeekBoard', () => {
         officeNameById={new Map([[OFFICE_ID, '稲毛']])}
         visits={[
           {
-            ...visit({ id: 'v1', patient_name: '朝倉　美夢', source: 'manual_cancel' }),
+            ...visit({ id: 'v1', patient_name: '利用者AG　冬子', source: 'manual_cancel' }),
             status: 'cancelled',
           },
           // 取込の削除など source を問わず取消は隠す。
@@ -534,7 +534,7 @@ describe('StaffWeekBoard', () => {
             ...visit({ id: 'v3', patient_name: '浜野　一郎', start_time: '13:00' }),
             status: 'cancelled',
           },
-          visit({ id: 'v2', patient_name: '川田　春菜', start_time: '10:30' }),
+          visit({ id: 'v2', patient_name: '利用者AF　春菜', start_time: '10:30' }),
         ]}
         assignedStaffByTemplateWeekday={assigned}
         staffMap={staffMap}
@@ -545,7 +545,7 @@ describe('StaffWeekBoard', () => {
     );
     expect(screen.queryByTestId('staff-week-visit-v1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('staff-week-visit-v3')).not.toBeInTheDocument();
-    expect(screen.queryByText(/朝倉/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/職員F/)).not.toBeInTheDocument();
     // 取消していない訪問はそのまま出る。
     expect(screen.getByTestId('staff-week-visit-v2')).toHaveAttribute('draggable', 'true');
   });
@@ -591,8 +591,8 @@ describe('StaffWeekBoard', () => {
       kind: 'visit' as const,
       action: 'update' as const,
       externalId: 'diff-1',
-      title: '朝倉　美夢',
-      patient_name: '朝倉　美夢',
+      title: '利用者AG　冬子',
+      patient_name: '利用者AG　冬子',
       start: '11:00',
       end: '11:30',
       beforeStart: '09:00',
@@ -885,17 +885,17 @@ describe('StaffWeekBoard — 非稼働患者', () => {
   it('連動取消は既定で出さず、showInactive=true で打ち消し線つきで出す', () => {
     const statusCancel = visit({
       id: 'sc1',
-      patient_name: '小湊　太郎',
+      patient_name: '利用者B　太郎',
       source: 'status_cancel',
       status: 'cancelled',
       patient_status: 'admitted',
     });
     renderWith([statusCancel]);
-    expect(screen.queryByText(/小湊/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/利用者B/)).not.toBeInTheDocument();
 
     cleanup();
     renderWith([statusCancel], true);
-    expect(screen.getByText(/小湊/)).toBeInTheDocument();
+    expect(screen.getByText(/利用者B/)).toBeInTheDocument();
     expect(screen.getByTestId('staff-week-visit-inactive-sc1')).toHaveTextContent('取消（連動）');
   });
 
@@ -907,7 +907,7 @@ describe('StaffWeekBoard — 非稼働患者', () => {
         visits={[
           visit({
             id: 'sc1',
-            patient_name: '小湊　太郎',
+            patient_name: '利用者B　太郎',
             source: 'status_cancel',
             status: 'cancelled',
             patient_status: 'admitted',
@@ -920,7 +920,7 @@ describe('StaffWeekBoard — 非稼働患者', () => {
         showCancelled
       />,
     );
-    expect(screen.queryByText(/小湊/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/利用者B/)).not.toBeInTheDocument();
   });
 
   it('連動取消の行には操作メニューを出さない (もう無い予定なので触らせない)', () => {
@@ -930,10 +930,10 @@ describe('StaffWeekBoard — 非稼働患者', () => {
         templates={templates}
         officeNameById={new Map([[OFFICE_ID, '稲毛']])}
         visits={[
-          visit({ id: 'v1', patient_name: '朝倉　美夢', weekday: 0, start_time: '09:00' }),
+          visit({ id: 'v1', patient_name: '利用者AG　冬子', weekday: 0, start_time: '09:00' }),
           visit({
             id: 'sc1',
-            patient_name: '小湊　太郎',
+            patient_name: '利用者B　太郎',
             source: 'status_cancel',
             status: 'cancelled',
             patient_status: 'admitted',
@@ -958,7 +958,7 @@ describe('StaffWeekBoard — 非稼働患者', () => {
     renderWith([
       visit({
         id: 'res1',
-        patient_name: '藤原　花子',
+        patient_name: '利用者F　花子',
         source: 'auto',
         status: 'planned',
         patient_status: 'suspended',

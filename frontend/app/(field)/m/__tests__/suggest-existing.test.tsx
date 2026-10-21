@@ -48,7 +48,7 @@ function makePatient(): PatientRead {
   return {
     id: PATIENT_ID,
     code: 'P-1042',
-    name: '青柳 あい',
+    name: '利用者A あい',
     kana: 'アオヤギ アイ',
     sex: 'female',
     status: 'active',
@@ -121,16 +121,16 @@ describe('SuggestSheet 既存患者の紐付け', () => {
   it('検索 → 候補選択でプリフィル + 紐付け表示', () => {
     renderSheet();
     fireEvent.click(screen.getByText('既存のお客様'));
-    // 検索語を入れると候補が出る (usePatients がモックで青柳を返す)。
+    // 検索語を入れると候補が出る (usePatients がモックで利用者Aを返す)。
     fireEvent.change(screen.getByLabelText('既存のお客様を検索'), {
-      target: { value: '青柳' },
+      target: { value: '利用者A' },
     });
     // 候補リストの患者コード。
     expect(screen.getByText('P-1042')).toBeInTheDocument();
     // 候補をクリックして紐付け。
-    fireEvent.click(screen.getByText('青柳 あい'));
+    fireEvent.click(screen.getByText('利用者A あい'));
     // 紐付けバナー。
-    expect(screen.getByText('青柳 あい 様 を紐付け中')).toBeInTheDocument();
+    expect(screen.getByText('利用者A あい 様 を紐付け中')).toBeInTheDocument();
     // 住所がプリフィルされる (input の value)。
     expect(screen.getByDisplayValue('千葉市稲毛区小仲台6-2-1')).toBeInTheDocument();
   });
@@ -139,9 +139,9 @@ describe('SuggestSheet 既存患者の紐付け', () => {
     renderSheet();
     fireEvent.click(screen.getByText('既存のお客様'));
     fireEvent.change(screen.getByLabelText('既存のお客様を検索'), {
-      target: { value: '青柳' },
+      target: { value: '利用者A' },
     });
-    fireEvent.click(screen.getByText('青柳 あい'));
+    fireEvent.click(screen.getByText('利用者A あい'));
     fireEvent.click(screen.getByText('自動提案する'));
 
     expect(mutate).toHaveBeenCalledTimes(1);
@@ -180,13 +180,13 @@ describe('SuggestSheet 既存患者の紐付け', () => {
     renderSheet();
     fireEvent.click(screen.getByText('既存のお客様'));
     fireEvent.change(screen.getByLabelText('既存のお客様を検索'), {
-      target: { value: '青柳' },
+      target: { value: '利用者A' },
     });
-    fireEvent.click(screen.getByText('青柳 あい'));
-    expect(screen.getByText('青柳 あい 様 を紐付け中')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('利用者A あい'));
+    expect(screen.getByText('利用者A あい 様 を紐付け中')).toBeInTheDocument();
     // [変更] で解除 → 検索ボックスに戻る。
     fireEvent.click(screen.getByText('変更'));
-    expect(screen.queryByText('青柳 あい 様 を紐付け中')).not.toBeInTheDocument();
+    expect(screen.queryByText('利用者A あい 様 を紐付け中')).not.toBeInTheDocument();
     expect(screen.getByLabelText('既存のお客様を検索')).toBeInTheDocument();
   });
 });

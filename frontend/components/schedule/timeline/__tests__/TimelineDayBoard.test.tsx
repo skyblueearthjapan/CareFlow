@@ -269,7 +269,7 @@ describe('TimelineDayBoard', () => {
               visit({
                 id: 'sa1',
                 patient_id: 'pa',
-                patient_name: '安永 一',
+                patient_name: '利用者O 一',
                 start_time: '16:00:00',
                 end_time: '16:35:00',
                 same_address_group_id: 'g1',
@@ -277,7 +277,7 @@ describe('TimelineDayBoard', () => {
               visit({
                 id: 'sa2',
                 patient_id: 'pb',
-                patient_name: '菅原 二',
+                patient_name: '利用者P 二',
                 start_time: '16:00:00',
                 end_time: '16:35:00',
                 same_address_group_id: 'g1',
@@ -293,8 +293,8 @@ describe('TimelineDayBoard', () => {
     expect(box).toBeInTheDocument();
     // 90分占有 (16:00→17:30) の高さ = durationToHeight(90) 相当。
     expect(box.style.height).toBe(`${durationToHeight(90) - 3}px`);
-    expect(screen.getByText('安永 一')).toBeInTheDocument();
-    expect(screen.getByText('菅原 二')).toBeInTheDocument();
+    expect(screen.getByText('利用者O 一')).toBeInTheDocument();
+    expect(screen.getByText('利用者P 二')).toBeInTheDocument();
     expect(screen.getByText(/同住所 90分占有/)).toBeInTheDocument();
   });
 
@@ -338,7 +338,7 @@ describe('TimelineDayBoard', () => {
       <TlVisitDragGhost
         visit={visit({
           id: 'g1',
-          patient_name: '青柳 あい',
+          patient_name: '利用者A あい',
           patient_sex: 'female',
           start_time: '09:30:00',
           end_time: '10:15:00',
@@ -348,7 +348,7 @@ describe('TimelineDayBoard', () => {
     );
     const ghost = screen.getByTestId('tl-drag-ghost');
     expect(ghost.style.background).toContain('female');
-    expect(screen.getByText('青柳 あい')).toBeInTheDocument();
+    expect(screen.getByText('利用者A あい')).toBeInTheDocument();
     expect(screen.getByText(/09:30・45分/)).toBeInTheDocument();
     // ピン表示はカード右上に打ち込む CornerPushPin (PO要望 2026-07-08)。
     expect(ghost.querySelector('[data-icon="corner-push-pin"]')).not.toBeNull();
@@ -444,14 +444,14 @@ describe('TimelineDayBoard', () => {
     render(
       <TlPairDragGhost
         visits={[
-          visit({ id: 'g1', patient_name: '安永 一', patient_sex: 'female' }),
-          visit({ id: 'g2', patient_name: '菅原 二', patient_sex: 'male' }),
+          visit({ id: 'g1', patient_name: '利用者O 一', patient_sex: 'female' }),
+          visit({ id: 'g2', patient_name: '利用者P 二', patient_sex: 'male' }),
         ]}
       />,
     );
     expect(screen.getByTestId('tl-pair-drag-ghost')).toBeInTheDocument();
-    expect(screen.getByText('安永 一')).toBeInTheDocument();
-    expect(screen.getByText('菅原 二')).toBeInTheDocument();
+    expect(screen.getByText('利用者O 一')).toBeInTheDocument();
+    expect(screen.getByText('利用者P 二')).toBeInTheDocument();
     expect(screen.getByText(/同住所 2名セット/)).toBeInTheDocument();
   });
 
