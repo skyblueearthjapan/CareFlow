@@ -1222,6 +1222,9 @@ describe('実績の行の「時刻を合わせる」(設計 §7-3)', () => {
   });
 
   it('ボタンからシートを開き、「10分前」→「12:56 に合わせる」で保存する', async () => {
+    // 到着の上限は「いまの時刻」(2026-10-19)。読み取りの直後 (JST 13:08) に開く。
+    // 固定しないと、実際の時計が 13:06 より前の時間帯に流すと合わせられる範囲が無くなる。
+    vi.setSystemTime(new Date('2026-06-30T04:08:00Z'));
     adjustMutate.mockResolvedValueOnce(ADJUSTED);
     setVisit(adjustableVisit());
     render(<MobileVisitDetailPage />);
