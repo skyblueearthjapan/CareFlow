@@ -180,11 +180,15 @@ vi.mock('../cockpit/SyncBar', () => ({
   SyncBar: ({
     onSelectDiff,
     onUnsentChange,
+    extra,
   }: {
     onSelectDiff: (m: unknown) => void;
     onUnsentChange?: (keys: Set<string>) => void;
+    // 職員の表示では帯と同じ行に「職員の道具」が載る (schedule-unit-switch 設計 D3)。
+    extra?: React.ReactNode;
   }) => (
     <>
+      {extra}
       <button
         type="button"
         data-testid="stub-report-unsent"
@@ -665,7 +669,7 @@ function renderStaffTab() {
       <CourseDayTablePanel weekStart={WEEK_START} officeId={null} canEdit={true} />
     </QueryClientProvider>,
   );
-  fireEvent.click(screen.getByTestId('course-day-tab-staff'));
+  fireEvent.click(screen.getByTestId('schedule-unit-staff'));
   /** 週セレクタを動かす代わりに weekStart prop を差し替える (H1 の検証用)。 */
   const setWeek = (weekStart: Date) =>
     view.rerender(
@@ -759,7 +763,9 @@ function setupUnassignedHooks(mondayIso: string = MONDAY_ISO) {
 
 /** タイムラインへ切り替え、佐藤 ⠿ → 鈴木 の入れ替え確認ダイアログを開く。 */
 async function openSwapDialog() {
-  fireEvent.click(screen.getByTestId('staff-tab-mode-timeline'));
+  // 職員の週は時刻の軸が無いので、曜日を選んでからタイムラインにする。
+  fireEvent.click(screen.getByTestId('course-day-tab-0'));
+  fireEvent.click(screen.getByTestId('schedule-view-timeline'));
   const dt = makeDataTransfer();
   fireEvent.dragStart(screen.getByTestId(`tl-swap-grip-${STAFF_1}`), { dataTransfer: dt });
   fireEvent.drop(screen.getByTestId(`tl-name-${STAFF_2}`), { dataTransfer: dt });
@@ -896,7 +902,9 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
   it('(k2) 「（担当なし）」行の＋訪問は日付だけ埋めて担当なしで開く (§1 欠陥 4)', async () => {
     setupUnassignedHooks();
     renderStaffTab();
-    fireEvent.click(screen.getByTestId('staff-tab-mode-timeline'));
+    // 職員の週は時刻の軸が無いので、曜日を選んでからタイムラインにする。
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    fireEvent.click(screen.getByTestId('schedule-view-timeline'));
 
     fireEvent.click(screen.getByTestId('tl-add-visit-__unassigned__'));
 
@@ -1070,16 +1078,66 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     await vi.waitFor(() => expect(mockToast.success).toHaveBeenCalled());
   });
 
+  it('(u1) 職員の週はタイムラインを押せず理由を出す・曜日を選ぶとその列だけ・件数を出す', () => {
+    setupHooks();
+    renderStaffTab();
+
+    expect(screen.getByTestId('schedule-unit-staff')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('schedule-view-timeline')).toBeDisabled();
+    expect(screen.getByTestId('schedule-staff-week-hint')).toBeInTheDocument();
+    // 職員の道具は ●未送信の帯の行に並ぶ (D3)。
+    expect(screen.getByTestId('staff-tools')).toBeInTheDocument();
+    // 週のリストは月〜土の 6 列。
+    expect(screen.getAllByTestId(/^staff-week-cell-__unassigned__-\d$/)).toHaveLength(6);
+
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    fireEvent.click(screen.getByTestId('schedule-view-list'));
+    expect(screen.queryByTestId('schedule-staff-week-hint')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId(/^staff-week-cell-__unassigned__-\d$/)).toHaveLength(1);
+    expect(screen.getByTestId('staff-week-day-summary-0')).toHaveTextContent(
+      /訪問 \d+件 \/ 出勤 \d+人/,
+    );
+    expect(screen.getByTestId('staff-day-count-__unassigned__-0')).toHaveTextContent('担当なし');
+
+    // コースへ切り替えても同じ曜日 (曜日は 1 本)。職員の道具は消える。
+    fireEvent.click(screen.getByTestId('schedule-unit-course'));
+    expect(screen.getByTestId('course-day-tab-0')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByTestId('staff-tools')).not.toBeInTheDocument();
+  });
+
+  it('(u3) ●未送信の帯はコースの表示でも出る (D4)・職員の道具は職員だけ', () => {
+    setupHooks();
+    renderStaffTab();
+    expect(screen.getByTestId('stub-report-unsent')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('schedule-unit-course'));
+    expect(screen.getByTestId('stub-report-unsent')).toBeInTheDocument();
+    expect(screen.queryByTestId('staff-tools')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    expect(screen.getByTestId('stub-report-unsent')).toBeInTheDocument();
+  });
+
+  it('(u2) 初回の案内は［わかった］で消え、端末に覚える', () => {
+    useUIStore.setState({ scheduleUnitIntroSeen: false });
+    setupHooks();
+    renderStaffTab();
+    fireEvent.click(screen.getByTestId('schedule-unit-intro-ok'));
+    expect(screen.queryByTestId('schedule-unit-intro')).not.toBeInTheDocument();
+    expect(useUIStore.getState().scheduleUnitIntroSeen).toBe(true);
+  });
+
   it('(c) 表示切替 [リスト|タイムライン] が効く', () => {
     setupHooks();
     renderStaffTab();
 
     expect(screen.getByTestId('staff-week-board')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('staff-tab-mode-timeline'));
+    // 職員の週は時刻の軸が無いので、曜日を選んでからタイムラインにする。
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    fireEvent.click(screen.getByTestId('schedule-view-timeline'));
     expect(screen.getByTestId('staff-timeline-view')).toBeInTheDocument();
     expect(screen.queryByTestId('staff-week-board')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('staff-tab-mode-list'));
+    fireEvent.click(screen.getByTestId('course-day-tab-week'));
     expect(screen.getByTestId('staff-week-board')).toBeInTheDocument();
   });
 
@@ -1161,7 +1219,9 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     expect(screen.getByTestId('staff-week-visit-cancelled-v3')).toHaveTextContent('取消');
 
     // タイムライン表示ではトグルを出さない (リスト盤だけの切替)。
-    fireEvent.click(screen.getByTestId('staff-tab-mode-timeline'));
+    // 職員の週は時刻の軸が無いので、曜日を選んでからタイムラインにする。
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    fireEvent.click(screen.getByTestId('schedule-view-timeline'));
     expect(screen.queryByTestId('staff-tab-show-cancelled-toggle')).not.toBeInTheDocument();
     useUIStore.setState({ showCancelledVisits: false });
   });
@@ -1209,7 +1269,9 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
     });
     setupHooks({ visits: SWAP_VISITS, keepStaff: true });
     renderStaffTab();
-    fireEvent.click(screen.getByTestId('staff-tab-mode-timeline'));
+    // 職員の週は時刻の軸が無いので、曜日を選んでからタイムラインにする。
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    fireEvent.click(screen.getByTestId('schedule-view-timeline'));
 
     expect(screen.getByTestId(`tl-swap-grip-${STAFF_1}`)).toBeInTheDocument();
     expect(screen.queryByTestId(`tl-swap-grip-${STAFF_2}`)).not.toBeInTheDocument();
@@ -1374,7 +1436,9 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
   it('(h) タイムラインの行アクション「🛌 休みにする」で SubstitutePanel が開く', async () => {
     setupHooks();
     renderStaffTab();
-    fireEvent.click(screen.getByTestId('staff-tab-mode-timeline'));
+    // 職員の週は時刻の軸が無いので、曜日を選んでからタイムラインにする。
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    fireEvent.click(screen.getByTestId('schedule-view-timeline'));
 
     expect(screen.queryByTestId('substitute-panel')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId(`tl-off-action-${STAFF_1}`));
@@ -1384,7 +1448,9 @@ describe('CourseDayTablePanel — 職員スケジュールタブ (運転席・FE
   it('(h2) タイムラインの「＋訪問」は日付と担当を埋めて＋訪問モーダルを開く', async () => {
     setupHooks();
     renderStaffTab();
-    fireEvent.click(screen.getByTestId('staff-tab-mode-timeline'));
+    // 職員の週は時刻の軸が無いので、曜日を選んでからタイムラインにする。
+    fireEvent.click(screen.getByTestId('course-day-tab-0'));
+    fireEvent.click(screen.getByTestId('schedule-view-timeline'));
 
     fireEvent.click(screen.getByTestId(`tl-add-visit-${STAFF_2}`));
     expect(await screen.findByTestId('add-visit-anywhere-dialog')).toBeInTheDocument();

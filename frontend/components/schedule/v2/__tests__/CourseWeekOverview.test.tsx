@@ -156,6 +156,23 @@ describe('CourseWeekOverview (B-6)', () => {
     expect(screen.getByTestId('course-week-overview-name-v-2')).toHaveTextContent('佐藤');
   });
 
+  it('上限は設定の「1コースの最大人数」から読む (schedule-unit-switch 設計 §4)', () => {
+    const tpl = makeTemplate('tpl-A', 'A', 'o1');
+    render(
+      <CourseWeekOverview
+        templates={[tpl]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={[]}
+        onJumpToDay={vi.fn()}
+        staffCountFor={fullStaff}
+        maxPatientsPerCourse={7}
+      />,
+    );
+    expect(screen.getByTestId('course-week-overview-capacity-tpl-A-0')).toHaveTextContent(
+      '0 名 / 上限 7',
+    );
+  });
+
   it('スタッフ数連動: A-E は staff_count 不足の曜日で「休」表示・容量バッジは出ない', () => {
     // D コース (index=3) は staffCount<4 で休. staffCount=3 を返すスタブで月曜を休に.
     const tplD: CourseTemplateRead = makeTemplate('tpl-D', 'D', 'o1');

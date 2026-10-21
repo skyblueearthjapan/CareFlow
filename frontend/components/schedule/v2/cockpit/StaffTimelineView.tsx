@@ -40,6 +40,13 @@ import type { WeekOverrideRead } from '@/lib/queries/staff-overrides';
 import type { EventRead } from '@/lib/schemas/staff-events';
 import { InactiveVisitBadge } from '@/components/schedule/InactiveVisitBadge';
 import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
+import {
+  resolveVisitRowKey as resolveRowKey,
+  staffDayCountKey,
+  type StaffDayCount,
+} from '@/lib/schedule/staffDayCount';
+import { LEAVE_TYPE_OF_LABEL, leaveWindow } from '@/lib/leave';
+import { StaffDayCountBadge } from '../StaffDayCountBadge';
 import { parseHM } from '@/lib/scheduling/freeGaps';
 import {
   assignLanes,
@@ -172,9 +179,11 @@ export interface StaffSwapPayload {
 export interface StaffTimelineViewProps {
   /** 対象週の月曜。 */
   weekStart: Date;
-  /** 表示する曜日 (0=月..5=土)。 */
+  /**
+   * 表示する曜日 (0=月..5=土)。曜日の切り替えは画面のタブの段が受け持つ
+   * (schedule-unit-switch-design-2026-10-21.md §2・ここには曜日ボタンを置かない)。
+   */
   day: number;
-  onDayChange: (day: number) => void;
   staffRows: StaffTimelineRow[];
   /** その日の全訪問 (weekday が違うものは無視する)。 */
   visits: TimelineVisit[];
@@ -237,13 +246,17 @@ export interface StaffTimelineViewProps {
    * true = 連動取消 (source='status_cancel') も打ち消し線つきで描く。既定 false。
    */
   showInactive?: boolean;
+  /** 職員の 1 日の件数 (`countStaffDays`・キーは `${rowKey}:${weekday}`)。氏名の横に出す (D6)。 */
+  dayCounts?: Map<string, StaffDayCount>;
+  /** 件数の色の上限 (設定の「1コースの最大人数」)。null = 色なし (D7)。 */
+  countLimit?: number | null;
+  /** 同行の薄いバー (`${staffId}:${weekday}` → 同行する訪問)。読むだけ・動かせない (D8)。 */
+  companionVisitsByCell?: Map<string, TimelineVisit[]>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
 // 定数・純関数
 // ─────────────────────────────────────────────────────────────────────────
-
-const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
 
 const TOTAL_MIN = TL_COCKPIT_END_MIN - TL_COCKPIT_START_MIN;
 const HOUR_COUNT = Math.round(TOTAL_MIN / 60);
@@ -347,22 +360,14 @@ function applyStaffSwapDragImage(dt: DataTransfer, name: string, office?: string
 }
 
 /**
- * 訪問の行帰属。StaffWeekBoard の cellMap と**同じ規則**:
+ * 訪問の行帰属。StaffWeekBoard と**同じ規則** (単一の出所 = `lib/schedule/staffDayCount.ts`):
  * 訪問自身の primary を最優先 → （manual でなければ）コース担当 → 「（担当なし）」。
- * (臨時テンプレは複数スタッフの臨N コースを束ねるため primary が正。
- *  primary 空＋manual 真は「明示の担当なし」= コース担当に読み替えない・休み設計 §3-2)
  */
 export function resolveVisitRowKey(
   visit: TimelineVisit,
   assignedStaffByTemplateWeekday?: Map<string, string>,
 ): string {
-  return (
-    visit.primary_staff_id ??
-    (visit.manual_staff_override
-      ? undefined
-      : assignedStaffByTemplateWeekday?.get(`${visit.course_template_id}:${visit.weekday}`)) ??
-    UNASSIGNED_ROW_KEY
-  );
+  return resolveRowKey(visit, assignedStaffByTemplateWeekday);
 }
 
 /**
@@ -385,6 +390,29 @@ export function snapXOffsetToMinutes(
 }
 
 /** 休み/時間変更の一言 (行の補足)。 */
+/**
+ * 「働かない時間」[開始分, 終了分] の並び (設計 §5)。軸の端 (8:00〜19:00) を勤務の端とみなす。
+ * 終日 = 全部 / 午前休 = 始まり〜13:00 / 午後休 = 12:30〜終わり / 時間変更 = 勤務の外。
+ */
+export function offDutyRanges(off: WeekOverrideRead | null | undefined): [number, number][] {
+  if (!off) return [];
+  const axisStart = hhmm(TL_COCKPIT_START_MIN);
+  const axisEnd = hhmm(TL_COCKPIT_END_MIN);
+  const win =
+    off.type === '時間変更'
+      ? off.start_time && off.end_time
+        ? leaveWindow(null, off.start_time, off.end_time)
+        : [axisStart, axisEnd]
+      : leaveWindow(LEAVE_TYPE_OF_LABEL[off.type] ?? 'off', axisStart, axisEnd);
+  if (win === null) return [[TL_COCKPIT_START_MIN, TL_COCKPIT_END_MIN]];
+  const ws = Math.max(TL_COCKPIT_START_MIN, parseHM(win[0]) ?? TL_COCKPIT_START_MIN);
+  const we = Math.min(TL_COCKPIT_END_MIN, parseHM(win[1]) ?? TL_COCKPIT_END_MIN);
+  const out: [number, number][] = [];
+  if (ws > TL_COCKPIT_START_MIN) out.push([TL_COCKPIT_START_MIN, ws]);
+  if (we < TL_COCKPIT_END_MIN) out.push([Math.max(we, TL_COCKPIT_START_MIN), TL_COCKPIT_END_MIN]);
+  return out;
+}
+
 function offLabel(off: WeekOverrideRead): string {
   if (off.type === '時間変更') {
     return `時間変更 ${(off.start_time ?? '').slice(0, 5)}〜${(off.end_time ?? '').slice(0, 5)}`;
@@ -420,10 +448,19 @@ interface PlacedGhost {
   top: number;
 }
 
+/** 同行の薄いバー (読むだけ)。 */
+interface PlacedCompanion {
+  visit: TimelineVisit;
+  startMin: number;
+  endMin: number;
+  top: number;
+}
+
 interface RowLayout {
   row: StaffTimelineRow;
   bars: PlacedBar[];
   ghosts: PlacedGhost[];
+  companions: PlacedCompanion[];
   heightPx: number;
 }
 
@@ -450,7 +487,6 @@ interface DragState {
 export function StaffTimelineView({
   weekStart,
   day,
-  onDayChange,
   staffRows,
   visits,
   events,
@@ -473,6 +509,9 @@ export function StaffTimelineView({
   onSuggestCourse,
   highlightStaffId,
   showInactive = false,
+  dayCounts,
+  countLimit = null,
+  companionVisitsByCell,
 }: StaffTimelineViewProps) {
   const dayIso = React.useMemo(
     () => format(addDays(weekStart, day), 'yyyy-MM-dd'),
@@ -811,11 +850,18 @@ export function StaffTimelineView({
 
     return rows.map((row) => {
       const items = (byRow.get(row.staffId) ?? []).slice().sort((a, b) => a.startMin - b.startMin);
-      const blocks: TimelineBlock[] = items.map((it) => ({
-        id: it.id,
-        startMin: it.startMin,
-        endMin: it.endMin,
-      }));
+      // 同行の薄いバーも同じレーンに並べる (訪問と重ならないように)。
+      const accItems = (companionVisitsByCell?.get(`${row.staffId}:${day}`) ?? []).flatMap((v) => {
+        const startMin = parseHM(v.start_time);
+        if (startMin === null) return [];
+        const endRaw = parseHM(v.end_time);
+        const endMin =
+          endRaw !== null && endRaw > startMin ? endRaw : startMin + DEFAULT_DURATION_MIN;
+        return [{ id: `acc:${v.id}`, startMin, endMin, visit: v }];
+      });
+      const blocks: TimelineBlock[] = [...items, ...accItems]
+        .map((it) => ({ id: it.id, startMin: it.startMin, endMin: it.endMin }))
+        .sort((a, b) => a.startMin - b.startMin);
       const placement = assignLanes(blocks);
       let maxLane = 0;
       const bars: PlacedBar[] = items.map((item) => {
@@ -823,15 +869,33 @@ export function StaffTimelineView({
         maxLane = Math.max(maxLane, lane + 1);
         return { item, top: LANE_PAD + lane * LANE_STEP };
       });
+      const companions: PlacedCompanion[] = accItems.map((a) => {
+        const lane = placement.get(a.id)?.lane ?? 0;
+        maxLane = Math.max(maxLane, lane + 1);
+        return {
+          visit: a.visit,
+          startMin: a.startMin,
+          endMin: a.endMin,
+          top: LANE_PAD + lane * LANE_STEP,
+        };
+      });
       const rawGhosts = ghostsByRow.get(row.staffId) ?? [];
       const ghosts: PlacedGhost[] = rawGhosts.map((g, i) => ({
         ...g,
         top: LANE_PAD + (maxLane + i) * LANE_STEP,
       }));
       const laneTotal = Math.max(1, maxLane + ghosts.length);
-      return { row, bars, ghosts, heightPx: laneTotal * LANE_STEP + LANE_PAD * 2 - 4 };
+      return {
+        row,
+        bars,
+        ghosts,
+        companions,
+        heightPx: laneTotal * LANE_STEP + LANE_PAD * 2 - 4,
+      };
     });
   }, [
+    companionVisitsByCell,
+    day,
     rows,
     dayVisits,
     events,
@@ -1012,31 +1076,11 @@ export function StaffTimelineView({
       data-testid="staff-timeline-view"
       aria-label="職員タイムライン"
     >
-      {/* 曜日切替 */}
+      {/* 操作の案内 (曜日の切り替えは画面のタブの段へ移した)。 */}
       <div
         className="flex flex-wrap items-center gap-1 border-b px-2 py-1.5"
         style={{ borderColor: 'var(--border-default)', background: 'var(--bg-muted)' }}
       >
-        {WEEKDAY_LABELS.map((label, i) => {
-          const d = addDays(weekStart, i);
-          const on = i === day;
-          return (
-            <button
-              key={label}
-              type="button"
-              onClick={() => onDayChange(i)}
-              aria-pressed={on}
-              className="rounded px-2.5 py-0.5 text-xs font-bold"
-              style={{
-                background: on ? 'var(--brand-primary, #e15a7f)' : 'var(--bg-base)',
-                color: on ? '#fff' : 'var(--text-secondary)',
-                border: `1px solid ${on ? 'var(--brand-primary, #e15a7f)' : 'var(--border-default)'}`,
-              }}
-            >
-              {label} <span className="tabular-nums">{format(d, 'M/d')}</span>
-            </button>
-          );
-        })}
         <span className="ml-auto text-[11px]" style={{ color: 'var(--text-muted)' }}>
           バーを横にドラッグ=時刻(15分刻み) / 別の行へ=担当変更 / クリック=メニュー
           {onStaffSwap && canEdit && !isPast
@@ -1121,7 +1165,7 @@ export function StaffTimelineView({
           )}
 
           {/* スタッフ行 */}
-          {layouts.map(({ row, bars, ghosts, heightPx }) => {
+          {layouts.map(({ row, bars, ghosts, companions, heightPx }) => {
             // 元の行は光らせない (担当が変わるときだけ移動先を示す)。
             const isDropTarget =
               drag?.moved === true &&
@@ -1194,7 +1238,17 @@ export function StaffTimelineView({
                       />
                     ) : null}
                     <span className="min-w-0 flex-1">
-                      {row.name}
+                      <span className="flex flex-wrap items-center gap-1">
+                        {row.name}
+                        {dayCounts ? (
+                          <StaffDayCountBadge
+                            count={dayCounts.get(staffDayCountKey(row.staffId, day))}
+                            limit={countLimit}
+                            unassigned={row.staffId === UNASSIGNED_ROW_KEY}
+                            testId={`staff-day-count-${row.staffId}-${day}`}
+                          />
+                        ) : null}
+                      </span>
                       <small
                         className="block text-xs font-normal"
                         style={{ color: 'var(--text-muted)' }}
@@ -1310,18 +1364,47 @@ export function StaffTimelineView({
                   style={{
                     ...trackBg,
                     minHeight: heightPx,
-                    ...(row.off
-                      ? {
-                          backgroundImage:
-                            'repeating-linear-gradient(135deg, transparent 0 6px, var(--sched-offduty-hatch) 6px 7px)',
-                        }
-                      : null),
                     ...(isDropTarget ? { backgroundColor: 'var(--info-bg)' } : null),
                     ...(isHighlighted && !isDropTarget
                       ? { backgroundColor: 'rgba(225,90,127,0.08)' }
                       : null),
                   }}
                 >
+                  {/* 休み・半休・時間変更は「働かない時間」だけを塗る (設計 §5)。 */}
+                  {offDutyRanges(row.off).map(([s, e]) => (
+                    <div
+                      key={`off-${s}`}
+                      aria-hidden
+                      className="pointer-events-none absolute inset-y-0"
+                      style={{
+                        left: `${leftPct(s)}%`,
+                        width: `${widthPct(e - s)}%`,
+                        backgroundImage:
+                          'repeating-linear-gradient(135deg, transparent 0 6px, var(--sched-offduty-hatch) 6px 7px)',
+                      }}
+                      data-testid={`tl-off-shade-${row.staffId}`}
+                    />
+                  ))}
+                  {companions.map(({ visit: cv, startMin: cs, endMin: ce, top: ct }) => (
+                    <div
+                      key={`acc-${cv.id}`}
+                      className="pointer-events-none absolute overflow-hidden rounded border border-dashed px-1.5 py-0.5 text-[11px] leading-tight opacity-80"
+                      style={{
+                        top: ct,
+                        height: BAR_H,
+                        left: `${leftPct(cs)}%`,
+                        width: `${widthPct(ce - cs)}%`,
+                        borderColor: 'var(--border-strong)',
+                        background: 'var(--bg-base)',
+                        color: 'var(--text-muted)',
+                      }}
+                      title="同行（件数には入れません。動かすときは担当の行の訪問から）"
+                      data-testid={`tl-companion-${row.staffId}-${cv.id}`}
+                    >
+                      <span className="block font-bold">同行 {hhmm(cs)}</span>
+                      <span className="block truncate">{cv.patient_name ?? '（無名）'}</span>
+                    </div>
+                  ))}
                   {bars.map(({ item, top }) => (
                     <Bar
                       key={item.id}

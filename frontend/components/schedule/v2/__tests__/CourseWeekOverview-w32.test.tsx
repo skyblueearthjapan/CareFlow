@@ -183,8 +183,8 @@ describe('CourseWeekOverview 担当スタッフ名表示 (Wave 32)', () => {
     );
 
     const capEl = screen.getByTestId('course-week-overview-capacity-tpl-W32-D-0');
-    // W32 fix (37eb867): 上限ラベルは UI 上 "上限 6" 固定で表示する仕様.
-    //   DB の capacity 値は内部判定 (満杯 warning 色) には使うが、文言は固定.
-    expect(capEl).toHaveTextContent('3 名 / 上限 6');
+    // schedule-unit-switch 設計 §4 (2026-10-21): 文言は色の判定と同じ定員を出す
+    //   (旧 W32 の「上限 6」固定をやめた)。staffCountFor 無し = 静的 capacity_mon (7)。
+    expect(capEl).toHaveTextContent('3 名 / 上限 7');
   });
 });

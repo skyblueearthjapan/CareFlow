@@ -21,6 +21,7 @@ import {
   COURSE_CODES_MAX,
   capacityForWeekday,
   effectiveCapacity,
+  maxPatientsPerCourseOr,
   type CourseTemplateRead,
 } from '@/lib/schemas/v2/course_template';
 import type { EventRead } from '@/lib/schemas/staff-events';
@@ -42,8 +43,6 @@ import type { AccompanimentBinding } from '../timeline/accompaniment/types';
 
 const WEEKDAYS = [0, 1, 2, 3, 4, 5] as const;
 const WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土'] as const;
-// G-54: 1 スタッフあたりの受入可能患者数 (1 コース = 6 名). 受入可能数 = 出勤スタッフ全員 × 6.
-const CAPACITY_PER_STAFF = 6;
 
 /** CourseWeekOverview が必要とする 1 セル分の visit 表示データ. */
 export interface WeekOverviewVisit {
@@ -180,12 +179,18 @@ export interface CourseWeekOverviewProps {
   /**
    * スタッフ数連動 (auto-schedule 統一): (office_id, weekday) → 稼働スタッフ数.
    * A-E コースの「休」/定員はこの値で判定する
-   * (`effectiveCapacity`: index < min(staffCount, courseCodesMax) なら定員6, else 0).
+   * (`effectiveCapacity`: index < min(staffCount, courseCodesMax) なら定員 = 設定の最大人数, else 0).
    * 未指定時は 0 を返すフォールバックで全 A-E が「休」になる (= API 未取得時).
    */
   staffCountFor?: (officeId: string, weekday: number) => number;
   /** A-E 発行上限 (API 由来の course_codes_max. 省略時は COURSE_CODES_MAX=5). */
   courseCodesMax?: number;
+  /**
+   * 設定画面の「1コースの最大人数」(`scheduling_settings.max_patients_per_course`)。
+   * A-E の定員・「上限 N」・受入可能数 (出勤 × N) に使う。読めないときは既定 6
+   * (schedule-unit-switch-design-2026-10-21.md §4)。
+   */
+  maxPatientsPerCourse?: number | null;
   /**
    * PO 2026-07-09: (template_id, weekday) → 固定訪問 (PFV) 件数。
    * スタッフ数連動が「休」(cap=0) でも PFV があるか visit が実在するセルは「休」で
@@ -294,6 +299,7 @@ export function CourseWeekOverview({
   onPatientClick,
   staffCountFor,
   courseCodesMax = COURSE_CODES_MAX,
+  maxPatientsPerCourse,
   pfvCountFor,
   managerCountFor,
   staffSummaryOffices,
@@ -303,6 +309,8 @@ export function CourseWeekOverview({
   dndEnabled = false,
   showInactive = false,
 }: CourseWeekOverviewProps) {
+  // G-54: 1 スタッフあたりの受入可能患者数 (1 コース = 設定の最大人数). 受入可能数 = 出勤スタッフ全員 × N.
+  const perCourse = maxPatientsPerCourseOr(maxPatientsPerCourse);
   // 新人同行 (§7.2): 選択UIはタイムライン専用のため、週リストは inactive バッジのみ出す。
   const accInactive = accompaniment != null && !accompaniment.active;
   // 患者ステータス連動の取消 (source='status_cancel') は盤面から消す
@@ -407,7 +415,7 @@ export function CourseWeekOverview({
             });
             // G-54: 受入可能患者数 = 出勤スタッフ全員(全拠点 S + M) × 6.
             const totalStaff = officePartsAll.reduce((acc, p) => acc + p.s + p.m, 0);
-            const acceptCapacity = totalStaff * CAPACITY_PER_STAFF;
+            const acceptCapacity = totalStaff * perCourse;
             // 当該曜日に S も M も 0 の拠点は省略 (出勤がある拠点のみ表示).
             const officeParts = officePartsAll.filter((p) => p.s > 0 || p.m > 0);
             return (
@@ -515,7 +523,13 @@ export function CourseWeekOverview({
                   // A-E を staff_count で開講判定 (M系は静的 capacity). staffCountFor が
                   // 無い (= 旧呼出 / API 未配線) 場合は従来通り静的 capacity を使う.
                   const cap = staffCountFor
-                    ? effectiveCapacity(tpl, wd, staffCountFor(tpl.office_id, wd), courseCodesMax)
+                    ? effectiveCapacity(
+                        tpl,
+                        wd,
+                        staffCountFor(tpl.office_id, wd),
+                        courseCodesMax,
+                        perCourse,
+                      )
                     : capacityForWeekday(tpl, wd);
                   const visitList = cellMap.get(`${tpl.id}:${wd}`) ?? [];
                   // 枠の埋まり具合 (定員バッジ / 残N枠 / 休判定) はトグルに依らない件数。
@@ -787,7 +801,7 @@ export function CourseWeekOverview({
                               )}
                               data-testid={`course-week-overview-capacity-${tpl.id}-${wd}`}
                             >
-                              {occupantCount} 名 / 上限 6
+                              {occupantCount} 名 / 上限 {cap > 0 ? cap : perCourse}
                             </span>
                             <span className="flex shrink-0 items-center gap-1">
                               {/* 新人同行のコース表示はスタッフ名行へ移設 (PO要望 2026-07-12)。 */}

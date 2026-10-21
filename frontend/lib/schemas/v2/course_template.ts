@@ -120,7 +120,7 @@ export function courseCodeIndex(label: string | null | undefined): number | null
 /**
  * 週ビューの「休」/定員判定をスタッフ数連動にした有効定員.
  *
- *   - A-E コース: ``courseCodeIndex < min(staffCount, codesMax)`` なら開講 (定員6),
+ *   - A-E コース: ``courseCodeIndex < min(staffCount, codesMax)`` なら開講 (定員 = 設定の「1コースの最大人数」),
  *     それ以外は「休」(定員0). auto_allocator_v2 Stage 4 と同一ロジック.
  *   - M系 (M, M2..): 従来通り course_template の静的 capacity_<曜日> を使う.
  *
@@ -128,12 +128,15 @@ export function courseCodeIndex(label: string | null | undefined): number | null
  * @param weekday    0=Mon..6=Sun.
  * @param staffCount 当該 (拠点×曜日) の稼働スタッフ数 (API 由来. 未取得は 0).
  * @param codesMax   A-E 発行上限 (API 由来. 省略時は COURSE_CODES_MAX=5).
+ * @param perCourse  A-E の定員 = 設定画面の「1コースの最大人数」
+ *                   (`scheduling_settings.max_patients_per_course`)。読めないときは既定 6。
  */
 export function effectiveCapacity(
   tpl: CourseTemplateRead,
   weekday: number,
   staffCount: number,
   codesMax: number = COURSE_CODES_MAX,
+  perCourse?: number | null,
 ): number {
   const idx = courseCodeIndex(tpl.label);
   if (idx === null) {
@@ -141,5 +144,15 @@ export function effectiveCapacity(
     return capacityForWeekday(tpl, weekday);
   }
   const opens = idx < Math.min(staffCount, codesMax);
-  return opens ? 6 : 0;
+  return opens ? maxPatientsPerCourseOr(perCourse) : 0;
+}
+
+/** 設定の「1コースの最大人数」の既定 (BE の scheduling_settings の既定と同じ)。 */
+export const DEFAULT_MAX_PATIENTS_PER_COURSE = 6;
+
+/** 設定の値 → 使う定員 (読めない・不正なら既定 6)。 */
+export function maxPatientsPerCourseOr(perCourse: number | null | undefined): number {
+  return perCourse != null && Number.isFinite(perCourse) && perCourse > 0
+    ? perCourse
+    : DEFAULT_MAX_PATIENTS_PER_COURSE;
 }

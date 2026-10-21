@@ -29,12 +29,18 @@ type UIState = {
    * 連動取消 (status_cancel) は従来どおり「非稼働を表示」が受け持つ。
    */
   showCancelledVisits: boolean;
+  /**
+   * スケジュール画面の「コース／職員」切り替えの初回案内を閉じたか
+   * (schedule-unit-switch-design-2026-10-21.md D9)。［わかった］で true・以後この端末では出さない。
+   */
+  scheduleUnitIntroSeen: boolean;
   setSidebarCollapsed: (v: boolean) => void;
   applySidebarAutoCollapse: () => void;
   setDensity: (v: 'compact' | 'comfortable') => void;
   setScheduleHeaderCollapsed: (v: boolean) => void;
   setShowInactiveVisits: (v: boolean) => void;
   setShowCancelledVisits: (v: boolean) => void;
+  setScheduleUnitIntroSeen: (v: boolean) => void;
 };
 
 export const useUIStore = create<UIState>()(
@@ -46,6 +52,7 @@ export const useUIStore = create<UIState>()(
       sidebarAutoCollapsedApplied: false,
       showInactiveVisits: false,
       showCancelledVisits: false,
+      scheduleUnitIntroSeen: false,
       setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
       applySidebarAutoCollapse: () =>
         set((s) =>
@@ -57,6 +64,7 @@ export const useUIStore = create<UIState>()(
       setScheduleHeaderCollapsed: (v) => set({ scheduleHeaderCollapsed: v }),
       setShowInactiveVisits: (v) => set({ showInactiveVisits: v }),
       setShowCancelledVisits: (v) => set({ showCancelledVisits: v }),
+      setScheduleUnitIntroSeen: (v) => set({ scheduleUnitIntroSeen: v }),
     }),
     {
       name: 'carelink-ui',
@@ -67,6 +75,7 @@ export const useUIStore = create<UIState>()(
         sidebarAutoCollapsedApplied: s.sidebarAutoCollapsedApplied,
         showInactiveVisits: s.showInactiveVisits,
         showCancelledVisits: s.showCancelledVisits,
+        scheduleUnitIntroSeen: s.scheduleUnitIntroSeen,
       }),
     },
   ),

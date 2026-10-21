@@ -102,14 +102,12 @@ afterEach(() => {
 function renderView(over: Partial<React.ComponentProps<typeof StaffTimelineView>> = {}) {
   const onVisitClick = vi.fn();
   const onVisitMove = vi.fn<[VisitMovePayload], void>();
-  const onDayChange = vi.fn();
   const onEventClick = vi.fn();
   const onStaffSwap = vi.fn<[StaffSwapPayload], void>();
   render(
     <StaffTimelineView
       weekStart={WEEK_START}
       day={0}
-      onDayChange={onDayChange}
       staffRows={rows}
       visits={[visit({ id: 'v1' })]}
       canEdit
@@ -120,7 +118,7 @@ function renderView(over: Partial<React.ComponentProps<typeof StaffTimelineView>
       {...over}
     />,
   );
-  return { onVisitClick, onVisitMove, onDayChange, onEventClick, onStaffSwap };
+  return { onVisitClick, onVisitMove, onEventClick, onStaffSwap };
 }
 
 /** jsdom は DataTransfer 非実装なので、必要な API だけの替え玉を作る。 */
@@ -197,10 +195,72 @@ describe('StaffTimelineView — 描画', () => {
     expect(screen.getByTestId(`tl-lane-${UNASSIGNED_ROW_KEY}`)).toBeInTheDocument();
   });
 
-  it('曜日ボタンで onDayChange が呼ばれる', () => {
-    const { onDayChange } = renderView();
-    fireEvent.click(screen.getByRole('button', { name: /水 8\/19/ }));
-    expect(onDayChange).toHaveBeenCalledWith(2);
+  it('曜日ボタンは出さない (曜日の切り替えは画面のタブの段・schedule-unit-switch 設計 §2)', () => {
+    renderView();
+    expect(screen.queryByRole('button', { name: /水 8\/19/ })).not.toBeInTheDocument();
+  });
+
+  it('件数を氏名の横に出し、同行は薄いバー (動かせない) と「＋同行」で別に出す', () => {
+    const v = visit({ id: 'v1' });
+    renderView({
+      visits: [v],
+      dayCounts: new Map([
+        [`${STAFF_1}:0`, { visits: 6, patients: 5, companions: 0 }],
+        [`${STAFF_2}:0`, { visits: 0, patients: 0, companions: 1 }],
+      ]),
+      countLimit: 6,
+      companionVisitsByCell: new Map([[`${STAFF_2}:0`, [v]]]),
+    });
+    const badge = screen.getByTestId(`staff-day-count-${STAFF_1}-0`);
+    expect(badge).toHaveTextContent('6件（5名） 満杯');
+    expect(screen.getByTestId(`staff-day-count-${STAFF_2}-0-companions`)).toHaveTextContent(
+      '＋同行 1',
+    );
+    const acc = screen.getByTestId(`tl-companion-${STAFF_2}-v1`);
+    expect(acc).toHaveTextContent('同行 10:00');
+    expect(acc.className).toContain('pointer-events-none');
+    expect(screen.getByTestId(`staff-day-count-${UNASSIGNED_ROW_KEY}-0`)).toHaveTextContent(
+      '担当なし 0件',
+    );
+  });
+
+  it.each([
+    ['午前休', null, null, [['0%', '45.45']]],
+    ['午後休', null, null, [['40.9', '59.0']]],
+    ['休み', null, null, [['0%', '100%']]],
+    [
+      '時間変更',
+      '10:00',
+      '15:00',
+      [
+        ['0%', '18.18'],
+        ['63.6', '36.3'],
+      ],
+    ],
+  ] as const)('%s は働かない時間だけを塗る', (type, start, end, want) => {
+    renderView({
+      staffRows: [
+        {
+          ...rows[0]!,
+          off: {
+            id: 'o1',
+            staff_id: STAFF_1,
+            date: '2026-08-17',
+            weekday: 0,
+            type,
+            start_time: start,
+            end_time: end,
+            note: null,
+          },
+        },
+      ],
+    });
+    const shades = screen.getAllByTestId(`tl-off-shade-${STAFF_1}`);
+    expect(shades).toHaveLength(want.length);
+    shades.forEach((el, i) => {
+      expect(el.style.left.startsWith(want[i]![0].replace('%', ''))).toBe(true);
+      expect(el.style.width.startsWith(want[i]![1].replace('%', ''))).toBe(true);
+    });
   });
 
   it('全員（固定）帯を先頭に描く', () => {

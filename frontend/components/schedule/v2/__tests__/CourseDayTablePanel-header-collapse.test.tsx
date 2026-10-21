@@ -22,7 +22,7 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // ─── hoisted 変数 ──────────────────────────────────────────────────────────
@@ -336,6 +336,11 @@ function collapse() {
   fireEvent.click(screen.getByTestId('schedule-header-collapse-toggle'));
 }
 
+/** コンパクト表示の「その他 ▾」を開く (一斉スタッフ未割当・非稼働を表示・拠点・D5)。 */
+function openMore() {
+  fireEvent.click(screen.getByTestId('schedule-more-menu'));
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
 describe('CourseDayTablePanel — 上部折りたたみ (コンパクト表示)', () => {
@@ -372,17 +377,18 @@ describe('CourseDayTablePanel — 上部折りたたみ (コンパクト表示)'
     // 曜日タブ行は残る.
     expect(screen.getByTestId('course-day-tab-row')).toBeInTheDocument();
     expect(screen.getByTestId('course-day-tabs')).toBeInTheDocument();
-    expect(screen.getByTestId('course-day-tab-staff')).toBeInTheDocument();
+    expect(screen.getByTestId('schedule-unit-staff')).toBeInTheDocument();
 
     // 戻る / 進む はコンパクト行に 1 つずつだけ存在する (重複しない).
     expect(screen.getAllByTestId('schedule-undo-button')).toHaveLength(1);
     expect(screen.getAllByTestId('schedule-redo-button')).toHaveLength(1);
 
     // 表示切替 (既定タブ = 週) も残る.
-    expect(screen.getByTestId('course-week-mode-overview')).toBeInTheDocument();
+    expect(screen.getByTestId('schedule-view-list')).toBeInTheDocument();
 
-    // 週切替と拠点フィルタがコンパクト行に出る.
+    // 週切替はコンパクト行・拠点フィルタは「その他 ▾」の中に出る.
     expect(screen.getByTestId('schedule-compact-week-nav')).toBeInTheDocument();
+    openMore();
     expect(screen.getByTestId('schedule-compact-office-select')).toBeInTheDocument();
 
     // トグルのラベルは「上部を表示」へ.
@@ -482,6 +488,7 @@ describe('CourseDayTablePanel — 上部折りたたみ (コンパクト表示)'
   it('HC-7. 畳んだ状態の拠点フィルタが onOfficeChange を呼ぶ', () => {
     renderPanel();
     collapse();
+    openMore();
 
     const select = screen.getByTestId('schedule-compact-office-select');
     fireEvent.change(select, { target: { value: 'office-tsuga' } });
@@ -512,6 +519,56 @@ describe('CourseDayTablePanel — 上部折りたたみ (コンパクト表示)'
       'aria-expanded',
       'true',
     );
+  });
+
+  it('HC-9. 「その他 ▾」の一斉スタッフ未割当: メニューは閉じ、確認ダイアログは残る', () => {
+    renderPanel();
+    collapse();
+    openMore();
+    expect(screen.getByTestId('schedule-more-menu-content')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('unassign-all-staff-button'));
+    // 確認を出すときにメニューは閉じる (確認ダイアログは Popover の外に置いてある)。
+    expect(screen.queryByTestId('schedule-more-menu-content')).not.toBeInTheDocument();
+    expect(screen.getByTestId('unassign-all-staff-confirm')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'キャンセル' }));
+    expect(screen.queryByTestId('unassign-all-staff-confirm')).not.toBeInTheDocument();
+  });
+
+  it('HC-10. 「その他 ▾」は Esc で閉じ、焦点はメニューの中 → ボタンへ戻る', async () => {
+    renderPanel();
+    collapse();
+    const trigger = screen.getByTestId('schedule-more-menu');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    openMore();
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    const content = screen.getByTestId('schedule-more-menu-content');
+    // 開くと焦点はメニューの中へ移る (Radix Popover)。
+    await waitFor(() => expect(content.contains(document.activeElement)).toBe(true));
+
+    fireEvent.keyDown(content, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByTestId('schedule-more-menu-content')).not.toBeInTheDocument(),
+    );
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
+  it('HC-11. 曜日を切り替えたら「ツール」と「その他 ▾」を畳む (職員の表示でも)', () => {
+    renderPanel();
+    collapse();
+    fireEvent.click(screen.getByTestId('schedule-unit-staff'));
+
+    fireEvent.click(screen.getByTestId('schedule-compact-tools-button'));
+    expect(screen.getByTestId('schedule-compact-tools-popover')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('course-day-tab-1'));
+    expect(screen.queryByTestId('schedule-compact-tools-popover')).not.toBeInTheDocument();
+
+    openMore();
+    expect(screen.getByTestId('schedule-more-menu-content')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('course-day-tab-2'));
+    expect(screen.queryByTestId('schedule-more-menu-content')).not.toBeInTheDocument();
   });
 });
 
@@ -557,6 +614,9 @@ describe('CourseDayTablePanel — トグル「非稼働を表示」', () => {
   it('SI-3. 畳んだ (コンパクト) 状態でもトグルは残る', () => {
     renderPanel();
     collapse();
+    // コンパクト表示では「その他 ▾」の中 (D5)。
+    expect(screen.queryByTestId('schedule-show-inactive-toggle')).not.toBeInTheDocument();
+    openMore();
 
     expect(screen.getAllByTestId('schedule-show-inactive-toggle')).toHaveLength(1);
   });
