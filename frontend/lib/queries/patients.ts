@@ -151,6 +151,9 @@ export interface PrepareFormPayloadOptions {
  *   氏名だけ直したつもりの保存が他画面/他人の設定した上書きを黙って消す。
  *   Create では空欄を送らない (undefined → `dropUndefined` で脱落)。
  *
+ * - 住所 2 つ (設計 2026-10-22 §4-1): 「別の場所」で訪問先が空なら「同じ」に戻す、
+ *   「同じ」なら訪問先 = 保険証の住所、保険証の住所が空で訪問先だけあれば「別の場所」。
+ *
  * Clear-vs-unchanged semantics (PATCH only):
  * If `initial` is provided and a previously set field is now empty, we emit
  * explicit `null` so the backend clears the column. Without `initial`
@@ -195,8 +198,30 @@ export function prepareFormPayload(
     kaipoke_service_content = nextOverride === '' ? null : nextOverride;
   }
 
+  // 住所 2 つ (設計 2026-10-22 §4-1)。サーバーと同じきまりで送る中身をそろえる。
+  // 値は zodResolver の transform で undefined になり得るため ?? '' で揃える。
+  const insuranceAddress = (values.insurance_address ?? '').trim();
+  let visitAddress = (values.address ?? '').trim();
+  let visitSame = values.visit_same_as_insurance !== false;
+  // 2. 「別の場所」で訪問先が空 → 「同じ」に戻す。
+  if (!visitSame && !visitAddress) visitSame = true;
+  // 1. 「同じ」→ 訪問先は保険証の住所を写す (位置はフォームが保険証の住所から求めたもの)。
+  if (visitSame && insuranceAddress) visitAddress = insuranceAddress;
+  // 4. 保険証の住所が空で訪問先だけある → 推測で埋めず「別の場所」扱い。
+  if (!insuranceAddress && visitAddress) visitSame = false;
+  // 保険証の住所を空にした (PATCH) ときだけ null で消す。Create の空欄は送らない。
+  const insurance_address =
+    insuranceAddress !== ''
+      ? insuranceAddress
+      : initial && (initial.insurance_address ?? '').trim() !== ''
+        ? null
+        : undefined;
+
   const payload: Record<string, unknown> = {
     ...rest,
+    address: visitAddress,
+    insurance_address,
+    visit_same_as_insurance: visitSame,
     weekly_pattern,
     special_weekly_pattern,
     kaipoke_service_content,

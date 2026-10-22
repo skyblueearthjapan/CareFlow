@@ -163,6 +163,16 @@ const clearableOverrideString = z
   .optional()
   .transform((v) => (v === '' ? null : v));
 
+/**
+ * 保険証の住所 (設計 2026-10-22)。空にしたことを PATCH で伝えるため `null` を通す
+ * (`prepareFormPayload` が「前は入っていて、いま空」のときだけ null を入れる)。
+ * 空文字は undefined (送らない) に畳む。
+ */
+const clearableAddressString = z
+  .union([z.string().trim().max(255), z.null()])
+  .optional()
+  .transform((v) => (v === '' ? undefined : v));
+
 const optionalEnum = <T extends readonly [string, ...string[]]>(values: T) =>
   z
     .union([z.enum(values as unknown as [string, ...string[]]), z.literal('')])
@@ -338,7 +348,15 @@ export const patientBaseSchema = z.object({
   visit_category: visitCategoryEnum.default('psychiatric'),
   /** カイポケ「サービス内容」の上書き (空 = 自動判定に任せる) */
   kaipoke_service_content: clearableOverrideString,
+  /** 実際の訪問先の住所 (QR の判定・移動・地図はここで計算する。設計 2026-10-22 §3) */
   address: optionalNullableString,
+  /**
+   * 保険証の住所 (レセプト・カイポケと同じ)。座標は持たない。職員への応答では常に null。
+   * 空にしたときは null で消す (PATCH)。旧 BE では欠ける (undefined)。
+   */
+  insurance_address: clearableAddressString,
+  /** 実際の訪問先は保険証の住所と同じか (既定 true)。旧 BE では欠ける。 */
+  visit_same_as_insurance: z.boolean().optional(),
   lat: z.preprocess(
     (v) => (v === '' || v === null || v === undefined ? undefined : v),
     z.coerce.number().min(-90).max(90).optional(),
@@ -425,7 +443,15 @@ export const patientUpdateSchema = z.object({
       v === '' || v === undefined ? undefined : (v as (typeof VISIT_CATEGORY_OPTIONS)[number]),
     ),
   kaipoke_service_content: clearableOverrideString,
+  /** 実際の訪問先の住所 (QR の判定・移動・地図はここで計算する。設計 2026-10-22 §3) */
   address: optionalNullableString,
+  /**
+   * 保険証の住所 (レセプト・カイポケと同じ)。座標は持たない。職員への応答では常に null。
+   * 空にしたときは null で消す (PATCH)。旧 BE では欠ける (undefined)。
+   */
+  insurance_address: clearableAddressString,
+  /** 実際の訪問先は保険証の住所と同じか (既定 true)。旧 BE では欠ける。 */
+  visit_same_as_insurance: z.boolean().optional(),
   lat: z.preprocess(
     (v) => (v === '' || v === null || v === undefined ? undefined : v),
     z.coerce.number().min(-90).max(90).optional(),
@@ -526,6 +552,11 @@ export type PatientFormValues = {
   visit_category: (typeof VISIT_CATEGORY_OPTIONS)[number];
   /** カイポケ「サービス内容」の上書き (空 = 自動判定) */
   kaipoke_service_content: string;
+  /** 保険証の住所 (レセプト・カイポケと同じ)。 */
+  insurance_address: string;
+  /** 実際の訪問先は保険証の住所と同じか。true のとき `address` は保険証の住所を写す。 */
+  visit_same_as_insurance: boolean;
+  /** 実際の訪問先の住所。 */
   address: string;
   lat: string;
   lng: string;
@@ -547,6 +578,8 @@ export const emptyPatientFormValues: PatientFormValues = {
   insurance: '',
   visit_category: 'psychiatric',
   kaipoke_service_content: '',
+  insurance_address: '',
+  visit_same_as_insurance: true,
   address: '',
   lat: '',
   lng: '',
@@ -660,6 +693,8 @@ export function patientReadToFormValues(p: PatientRead): PatientFormValues {
     ),
     kaipoke_service_content:
       (p as { kaipoke_service_content?: string | null }).kaipoke_service_content ?? '',
+    insurance_address: p.insurance_address ?? '',
+    visit_same_as_insurance: visitSameAsInsurance(p),
     address: p.address ?? '',
     lat: p.lat !== undefined && p.lat !== null ? String(p.lat) : '',
     lng: p.lng !== undefined && p.lng !== null ? String(p.lng) : '',
@@ -673,5 +708,45 @@ export function patientReadToFormValues(p: PatientRead): PatientFormValues {
     note: p.note ?? '',
     weekly_pattern: coerceWeeklyPattern(p.weekly_pattern),
     special_week: !!p.special_weekly_pattern,
+  };
+}
+
+/**
+ * 応答から「訪問先は保険証の住所と同じか」を決める (設計 2026-10-22 §4-1)。
+ * 保険証の住所が空で訪問先だけあるときは「別の場所」(推測で埋めない)。
+ * 旧 BE で値が欠けるときは「同じ」とみなす。
+ */
+export function visitSameAsInsurance(
+  p: Pick<PatientRead, 'address' | 'insurance_address' | 'visit_same_as_insurance'>,
+): boolean {
+  const insurance = (p.insurance_address ?? '').trim();
+  const visit = (p.address ?? '').trim();
+  if (!insurance) return !visit;
+  return p.visit_same_as_insurance !== false;
+}
+
+/**
+ * 一覧・詳細の「住所」の見え方 (設計 2026-10-22 §4-2)。管理者の画面だけで使う
+ * (職員への応答は insurance_address が null なので、札が誤って出ないよう呼び出し側で絞る)。
+ *
+ * - `visitIsSeparate`: 訪問先が保険証の住所と別 → 「訪問先は別」の札。
+ * - `insuranceMissing`: 保険証の住所が未記入 → 「保険証の住所 未記入」の札。
+ *   応答にキー自体が無い (旧 BE) ときは分からないので出さない。
+ */
+export function patientAddressView(
+  p: Pick<PatientRead, 'address' | 'insurance_address' | 'visit_same_as_insurance'>,
+): {
+  insuranceAddress: string | null;
+  visitAddress: string | null;
+  visitIsSeparate: boolean;
+  insuranceMissing: boolean;
+} {
+  const insuranceAddress = (p.insurance_address ?? '').trim() || null;
+  const visitAddress = (p.address ?? '').trim() || null;
+  return {
+    insuranceAddress,
+    visitAddress,
+    visitIsSeparate: insuranceAddress !== null && !visitSameAsInsurance(p),
+    insuranceMissing: p.insurance_address !== undefined && insuranceAddress === null,
   };
 }
