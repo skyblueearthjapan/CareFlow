@@ -57,7 +57,7 @@ vi.mock('@/components/AddressGeocodeField', () => ({
 
 // ─── Mock 住所 → 位置 (「同じ」のときに保険証の住所から求める) ──────────────
 vi.mock('@/lib/queries/geocoding', () => ({
-  useGeocodeOnAddressChange: vi.fn(),
+  useGeocode: vi.fn(),
 }));
 
 // ─── Mock OfficeCombobox ──────────────────────────────────────────────────────
@@ -153,7 +153,7 @@ import {
   useDismissAreaPrompt,
 } from '@/lib/queries/offices';
 import { toast } from '@/components/ui/sonner';
-import { useGeocodeOnAddressChange } from '@/lib/queries/geocoding';
+import { useGeocode } from '@/lib/queries/geocoding';
 import { prepareFormPayload } from '@/lib/queries/patients';
 import {
   emptyPatientFormValues,
@@ -174,12 +174,8 @@ function makeSession() {
 
 function setupMocks(mutateAsync: Mock = vi.fn().mockResolvedValue(null)) {
   (useSession as Mock).mockReturnValue(makeSession());
-  (useGeocodeOnAddressChange as Mock).mockReturnValue({
-    data: null,
-    error: null,
-    isLoading: false,
-    refresh: vi.fn(),
-  });
+  // 既定: 位置を求める問い合わせは返ってこない (調べている途中のまま)。
+  (useGeocode as Mock).mockReturnValue({ mutate: vi.fn() });
   // W-7: 選択拠点名の解決に使うため combobox の option id と一致させて offices を返す。
   (useOffices as Mock).mockReturnValue({
     offices: [
@@ -848,50 +844,176 @@ describe('PatientForm — W12-FE 住所→拠点自動判定', () => {
       expect(screen.getByText(/移動時間、ならし、地図のリンクは/)).toBeInTheDocument();
     });
 
-    it('「同じ」: 保険証の住所を打ち直すと、写した表示と位置が追従する', async () => {
+    /** 「こてはし台」を含む住所だけ位置が見つかる。 */
+    function mockGeocode() {
+      (useGeocode as Mock).mockReturnValue({
+        mutate: (
+          req: { address: string },
+          cb: { onSuccess: (r: unknown) => void; onError: (e: Error) => void },
+        ) => {
+          if (req.address.includes('こてはし台')) {
+            cb.onSuccess({ lat: 35.6712, lng: 140.0712, cached: true, address_hash: 'h' });
+          } else {
+            cb.onError(new Error('404'));
+          }
+        },
+      });
+    }
+    function position() {
+      return screen.getByTestId('visit-same-position').textContent ?? '';
+    }
+    async function clickSave() {
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: '保存' }));
+      });
+      await flushDebounceAndMutation(0);
+    }
+    function typeName() {
+      act(() => {
+        fireEvent.change(screen.getByLabelText(/氏名/), { target: { value: 'テスト患者' } });
+      });
+    }
+    const INSURANCE_READ = {
+      id: '11111111-1111-4111-8111-111111111111',
+      code: 'P901',
+      name: '青木 一郎',
+      status: 'active',
+      visit_category: 'psychiatric',
+      special_week_active: [],
+      ng_staff_count: 0,
+      created_at: '2026-10-22T00:00:00Z',
+      updated_at: '2026-10-22T00:00:00Z',
+    };
+
+    it('「同じ」: 保険証の住所を打ち直すと表示が追従し、位置が決まるまでは古い位置を見せない', async () => {
       setupMocks();
-      (useGeocodeOnAddressChange as Mock).mockImplementation((address: string) => ({
-        data: address.includes('こてはし台')
-          ? {
-              address,
-              lat: 35.6712,
-              lng: 140.0712,
-              formatted_address: null,
-              cached: true,
-              address_hash: `h:${address}`,
-            }
-          : null,
-        error: null,
-        isLoading: false,
-        refresh: vi.fn(),
-      }));
+      mockGeocode();
       const onSubmit = vi.fn().mockResolvedValue(undefined);
       render(<PatientForm onSubmit={onSubmit} />);
 
       expect(screen.getByTestId('visit-same-pane').textContent).toContain('保険証の住所が空です');
 
       typeInto('insurance-address-input', INSURANCE);
-      const pane = screen.getByTestId('visit-same-pane');
-      expect(pane.textContent).toContain(INSURANCE);
-      expect(pane.textContent).toContain('位置 35.6712・140.0712（住所から自動）');
-      const link = within(pane).getByRole('link', { name: '地図で見る' });
+      expect(screen.getByTestId('visit-same-pane').textContent).toContain(INSURANCE);
+      expect(position()).toContain('位置が未確定（調べています…）');
+      await flushDebounceAndMutation(900);
+      expect(position()).toContain('位置 35.6712・140.0712（住所から自動）');
+      const link = within(screen.getByTestId('visit-same-pane')).getByRole('link', {
+        name: '地図で見る',
+      });
       expect(link.getAttribute('href')).toContain(encodeURIComponent(INSURANCE));
 
+      // 打ち直した直後は、前の住所の位置を「住所から自動」と出さない。
       typeInto('insurance-address-input', `${INSURANCE} グリーンハイツ101`);
       expect(screen.getByTestId('visit-same-pane').textContent).toContain(
         `${INSURANCE} グリーンハイツ101`,
       );
+      expect(position()).toContain('位置が未確定（調べています…）');
+      await flushDebounceAndMutation(900);
+      expect(position()).toContain('（住所から自動）');
 
-      typeInto('insurance-address-input', INSURANCE);
-      act(() => {
-        fireEvent.change(screen.getByLabelText(/氏名/), { target: { value: 'テスト患者' } });
+      typeName();
+      await clickSave();
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      const values = onSubmit.mock.calls[0]?.[0] as PatientFormValues;
+      expect(prepareFormPayload(values)).toMatchObject({
+        insurance_address: `${INSURANCE} グリーンハイツ101`,
+        address: `${INSURANCE} グリーンハイツ101`,
+        visit_same_as_insurance: true,
+        lat: 35.6712,
+        lng: 140.0712,
       });
-      const values = await submitAndGetValues(onSubmit);
-      expect(values.visit_same_as_insurance).toBe(true);
-      expect(values.address).toBe(INSURANCE);
-      const payload = prepareFormPayload(values);
-      expect(payload).toMatchObject({
-        insurance_address: INSURANCE,
+    });
+
+    it('「同じ」: 位置が見つからないと lat/lng を空にして「未確定」と出し、保存を止める', async () => {
+      setupMocks();
+      mockGeocode();
+      const onSubmit = vi.fn().mockResolvedValue(undefined);
+      render(
+        <PatientForm
+          onSubmit={onSubmit}
+          defaultValues={patientReadToFormValues({
+            ...INSURANCE_READ,
+            insurance_address: INSURANCE,
+            visit_same_as_insurance: true,
+            address: INSURANCE,
+            lat: 35.6712,
+            lng: 140.0712,
+          } as unknown as PatientRead)}
+        />,
+      );
+      expect(position()).toContain('（住所から自動）');
+
+      typeInto('insurance-address-input', '千葉県どこにもない町1-2-3');
+      await flushDebounceAndMutation(900);
+      expect(position()).toContain('位置が未確定（見つかりませんでした）');
+
+      await clickSave();
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(screen.getByTestId('same-position-block').textContent).toContain(
+        '保険証の住所の位置が決まっていません',
+      );
+      // 「別の場所」にすると止まらない (別の場所の緯度・経度で送れる)。lat/lng は空になっている。
+      act(() => {
+        fireEvent.click(separateButton());
+      });
+      expect(screen.queryByTestId('same-position-block')).not.toBeInTheDocument();
+      await clickSave();
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      const values = onSubmit.mock.calls[0]?.[0] as PatientFormValues;
+      expect(prepareFormPayload(values).lat).toBeUndefined();
+    });
+
+    it('「同じ」: 位置を調べている途中は保存を止め、決まったら送れる', async () => {
+      setupMocks();
+      mockGeocode();
+      const onSubmit = vi.fn().mockResolvedValue(undefined);
+      render(<PatientForm onSubmit={onSubmit} />);
+      typeName();
+      typeInto('insurance-address-input', INSURANCE);
+
+      await clickSave();
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(screen.getByTestId('same-position-block').textContent).toContain(
+        '少し待ってから、もう一度押してください',
+      );
+
+      await flushDebounceAndMutation(900);
+      expect(screen.queryByTestId('same-position-block')).not.toBeInTheDocument();
+      await clickSave();
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+
+    it('別 → 同じ: 別の場所の位置は送らず、保険証の住所の位置が決まるまで保存を止める', async () => {
+      setupMocks();
+      mockGeocode();
+      const onSubmit = vi.fn().mockResolvedValue(undefined);
+      render(
+        <PatientForm
+          onSubmit={onSubmit}
+          defaultValues={patientReadToFormValues({
+            ...INSURANCE_READ,
+            insurance_address: INSURANCE,
+            visit_same_as_insurance: false,
+            address: VISIT,
+            lat: 35.6461,
+            lng: 140.1093,
+          } as unknown as PatientRead)}
+        />,
+      );
+      act(() => {
+        fireEvent.click(sameButton());
+      });
+      expect(position()).toContain('位置が未確定（調べています…）');
+      await clickSave();
+      expect(onSubmit).not.toHaveBeenCalled();
+
+      await flushDebounceAndMutation(900);
+      expect(position()).toContain('位置 35.6712・140.0712（住所から自動）');
+      await clickSave();
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      const values = onSubmit.mock.calls[0]?.[0] as PatientFormValues;
+      expect(prepareFormPayload(values)).toMatchObject({
         address: INSURANCE,
         visit_same_as_insurance: true,
         lat: 35.6712,
@@ -899,13 +1021,41 @@ describe('PatientForm — W12-FE 住所→拠点自動判定', () => {
       });
     });
 
+    it('同じ → 別: 訪問先の欄は今の住所と位置が入った状態で始まる (開いたままの保存は止めない)', async () => {
+      setupMocks();
+      const onSubmit = vi.fn().mockResolvedValue(undefined);
+      render(
+        <PatientForm
+          onSubmit={onSubmit}
+          defaultValues={patientReadToFormValues({
+            ...INSURANCE_READ,
+            insurance_address: INSURANCE,
+            visit_same_as_insurance: true,
+            address: INSURANCE,
+            lat: 35.6712,
+            lng: 140.0712,
+          } as unknown as PatientRead)}
+        />,
+      );
+      // 開いた時点の位置は、その住所の位置として決まっている → そのまま保存できる。
+      await clickSave();
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+
+      act(() => {
+        fireEvent.click(separateButton());
+      });
+      expect((screen.getByTestId('address-input') as HTMLInputElement).value).toBe(INSURANCE);
+      await clickSave();
+      const values = onSubmit.mock.calls[1]?.[0] as PatientFormValues;
+      expect(Number(values.lat)).toBe(35.6712);
+      expect(Number(values.lng)).toBe(140.0712);
+    });
+
     it('「別の場所」: 訪問先の住所の欄が出て、入れた訪問先がそのまま送られる', async () => {
       setupMocks();
       const onSubmit = vi.fn().mockResolvedValue(undefined);
       render(<PatientForm onSubmit={onSubmit} />);
-      act(() => {
-        fireEvent.change(screen.getByLabelText(/氏名/), { target: { value: 'テスト患者' } });
-      });
+      typeName();
       typeInto('insurance-address-input', INSURANCE);
 
       act(() => {
@@ -927,18 +1077,17 @@ describe('PatientForm — W12-FE 住所→拠点自動判定', () => {
       });
     });
 
-    it('同じ → 別 → 訪問先を空のまま保存すると「同じ」に戻って送られる', async () => {
+    it('同じ → 別 → 訪問先を空にして保存すると「同じ」に戻って送られる', async () => {
       setupMocks();
       const onSubmit = vi.fn().mockResolvedValue(undefined);
       render(<PatientForm onSubmit={onSubmit} />);
-      act(() => {
-        fireEvent.change(screen.getByLabelText(/氏名/), { target: { value: 'テスト患者' } });
-      });
+      typeName();
       typeInto('insurance-address-input', INSURANCE);
       act(() => {
         fireEvent.click(separateButton());
       });
-      expect((screen.getByTestId('address-input') as HTMLInputElement).value).toBe('');
+      expect((screen.getByTestId('address-input') as HTMLInputElement).value).toBe(INSURANCE);
+      typeInto('address-input', '');
 
       const values = await submitAndGetValues(onSubmit);
       expect(prepareFormPayload(values)).toMatchObject({

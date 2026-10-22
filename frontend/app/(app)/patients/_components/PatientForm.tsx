@@ -48,7 +48,7 @@ import {
   useAddOfficeAreaCity,
   useDismissAreaPrompt,
 } from '@/lib/queries/offices';
-import { useGeocodeOnAddressChange } from '@/lib/queries/geocoding';
+import { useGeocode } from '@/lib/queries/geocoding';
 import { googleMapsPlaceUrl } from '@/lib/maps';
 import type { OfficeResolveResponse } from '@/lib/schemas/office';
 import { toast } from '@/components/ui/sonner';
@@ -153,12 +153,76 @@ export function PatientForm({
     }
   }, [visitSame, watchedInsuranceAddress, getValues, setValue]);
 
-  /** 「別の場所」で入れた訪問先。「同じ」へ切り替えて戻したときに元に戻す。 */
-  const separateVisitRef = React.useRef<Pick<PatientFormValues, 'address' | 'lat' | 'lng'>>(
+  /**
+   * 「別の場所」で入れた訪問先。「同じ」へ切り替えて戻したときに元に戻す。
+   * null のときは今の住所と位置のまま「別の場所」を始める (欄を空にしない)。
+   */
+  const separateVisitRef = React.useRef<Pick<PatientFormValues, 'address' | 'lat' | 'lng'> | null>(
     defaultValues && defaultValues.visit_same_as_insurance === false
       ? { address: defaultValues.address, lat: defaultValues.lat, lng: defaultValues.lng }
-      : { address: '', lat: '', lng: '' },
+      : null,
   );
+
+  // 「同じ」のときの位置: どの保険証の住所について決まったか (古い座標を「住所から自動」と見せない)。
+  // 開いた時点で「同じ」かつ位置がある方は、その住所の位置として決まっている扱い。
+  const trimmedInsurance = (watchedInsuranceAddress ?? '').trim();
+  const [samePosition, setSamePosition] = React.useState<{
+    for: string;
+    status: 'ok' | 'loading' | 'notfound';
+  }>(() =>
+    defaultValues &&
+    defaultValues.visit_same_as_insurance !== false &&
+    defaultValues.lat !== '' &&
+    defaultValues.lng !== ''
+      ? { for: (defaultValues.insurance_address ?? '').trim(), status: 'ok' }
+      : { for: '', status: 'loading' },
+  );
+  const samePositionRef = React.useRef(samePosition);
+  samePositionRef.current = samePosition;
+  const [positionBlockMessage, setPositionBlockMessage] = React.useState<string | null>(null);
+  const geocodeMut = useGeocode();
+  const geocodeTargetRef = React.useRef<string | null>(null);
+
+  React.useEffect(() => {
+    geocodeTargetRef.current = visitSame ? trimmedInsurance : null;
+    if (!visitSame || !trimmedInsurance) return;
+    const cur = samePositionRef.current;
+    if (cur.for === trimmedInsurance && cur.status !== 'loading') return;
+    setSamePosition({ for: trimmedInsurance, status: 'loading' });
+    const target = trimmedInsurance;
+    const timer = setTimeout(() => {
+      geocodeMut.mutate(
+        { address: target },
+        {
+          onSuccess: (res) => {
+            if (geocodeTargetRef.current !== target) return;
+            setValue('lat', String(res.lat), { shouldValidate: true, shouldDirty: true });
+            setValue('lng', String(res.lng), { shouldValidate: true, shouldDirty: true });
+            setSamePosition({ for: target, status: 'ok' });
+          },
+          onError: () => {
+            if (geocodeTargetRef.current !== target) return;
+            // 見つからない → 古い位置を送らないよう空にする。
+            setValue('lat', '', { shouldDirty: true });
+            setValue('lng', '', { shouldDirty: true });
+            setSamePosition({ for: target, status: 'notfound' });
+          },
+        },
+      );
+    }, 800);
+    return () => clearTimeout(timer);
+    // geocodeMut は hook の間は同じものとして扱う (毎回の描画で求め直さない)。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visitSame, trimmedInsurance, setValue]);
+
+  const sameStatus: 'ok' | 'loading' | 'notfound' =
+    samePosition.for === trimmedInsurance ? samePosition.status : 'loading';
+  /** 「同じ」で保険証の住所があるのに位置が決まっていない (保存を止める)。 */
+  const samePositionPending = visitSame && trimmedInsurance !== '' && sameStatus !== 'ok';
+
+  React.useEffect(() => {
+    if (!samePositionPending) setPositionBlockMessage(null);
+  }, [samePositionPending]);
 
   const switchVisitSame = (same: boolean) => {
     if (same === visitSame) return;
@@ -169,25 +233,20 @@ export function PatientForm({
         lat: getValues('lat') ?? '',
         lng: getValues('lng') ?? '',
       };
-      // 位置は保険証の住所から求め直す (別の場所の位置を残さない)。
+      // 位置は保険証の住所から求め直す (別の場所の位置を送らない)。決まるまで保存は止まる。
       setValue('lat', '', opts);
       setValue('lng', '', opts);
+      setSamePosition({ for: '', status: 'loading' });
     } else {
       const prev = separateVisitRef.current;
-      setValue('address', prev.address, opts);
-      setValue('lat', prev.lat, opts);
-      setValue('lng', prev.lng, opts);
+      if (prev) {
+        setValue('address', prev.address, opts);
+        setValue('lat', prev.lat, opts);
+        setValue('lng', prev.lng, opts);
+      }
     }
     setValue('visit_same_as_insurance', same, opts);
   };
-
-  const applySameGeocode = React.useCallback(
-    (lat: string, lng: string) => {
-      setValue('lat', lat, { shouldValidate: true, shouldDirty: true });
-      setValue('lng', lng, { shouldValidate: true, shouldDirty: true });
-    },
-    [setValue],
-  );
 
   const insuranceMissing =
     !(watchedInsuranceAddress ?? '').trim() && !visitSame && !!(watchedAddress ?? '').trim();
@@ -296,6 +355,15 @@ export function PatientForm({
   // ── /W12-FE ────────────────────────────────────────────────────────────────
 
   const submitHandler: SubmitHandler<PatientFormValues> = async (values) => {
+    // 「同じ」で保険証の住所の位置が決まっていないまま送らない (古い・別の場所の位置を防ぐ)。
+    if (samePositionPending) {
+      setPositionBlockMessage(
+        sameStatus === 'loading'
+          ? '保険証の住所の位置を調べています。少し待ってから、もう一度押してください。'
+          : '保険証の住所の位置が決まっていません。住所を確かめるか、『別の場所』で緯度・経度を入れてください。',
+      );
+      return;
+    }
     await onSubmit(values);
   };
 
@@ -414,8 +482,7 @@ export function PatientForm({
             address={watchedInsuranceAddress ?? ''}
             lat={watchedLat ?? ''}
             lng={watchedLng ?? ''}
-            onGeocoded={applySameGeocode}
-            disabled={submitting}
+            status={sameStatus}
           />
         ) : (
           <div className="space-y-2" data-testid="visit-separate-pane">
@@ -443,6 +510,11 @@ export function PatientForm({
             ) : null}
           </div>
         )}
+        {positionBlockMessage ? (
+          <p className="text-xs text-error" data-testid="same-position-block">
+            {positionBlockMessage}
+          </p>
+        ) : null}
         {(errors.insurance_address?.message ||
           errors.address?.message ||
           errors.lat?.message ||
@@ -724,48 +796,26 @@ interface SameAsInsurancePaneProps {
   address: string;
   lat: string;
   lng: string;
-  onGeocoded: (lat: string, lng: string) => void;
-  disabled?: boolean;
+  /** 位置がいまの保険証の住所について決まっているか (PatientForm が求める)。 */
+  status: 'ok' | 'loading' | 'notfound';
 }
 
 /**
- * 「保険証の住所と同じ」のときの訪問先 (入力はできない)。保険証の住所から位置を
- * 自動で求めて lat/lng に入れる (AddressGeocodeField と同じ仕組み・サーバーは geocode しない)。
+ * 「保険証の住所と同じ」のときの訪問先 (入力はできない)。位置は PatientForm が
+ * 保険証の住所から求めて lat/lng に入れる (サーバーは geocode しない)。
+ * いまの住所について決まっていない位置は「住所から自動」と見せない。
  */
-function SameAsInsurancePane({
-  address,
-  lat,
-  lng,
-  onGeocoded,
-  disabled,
-}: SameAsInsurancePaneProps) {
-  const {
-    data: geo,
-    error,
-    isLoading,
-  } = useGeocodeOnAddressChange(address, 800, {
-    enabled: !disabled,
-  });
-  const lastAppliedHashRef = React.useRef<string | null>(null);
-  React.useEffect(() => {
-    if (!geo || geo.address_hash === lastAppliedHashRef.current) return;
-    lastAppliedHashRef.current = geo.address_hash;
-    onGeocoded(String(geo.lat), String(geo.lng));
-  }, [geo, onGeocoded]);
-
+function SameAsInsurancePane({ address, lat, lng, status }: SameAsInsurancePaneProps) {
   const trimmed = address.trim();
   const mapUrl = googleMapsPlaceUrl(trimmed);
   const latNum = Number(lat);
   const lngNum = Number(lng);
-  const hasPosition =
-    lat !== '' && lng !== '' && Number.isFinite(latNum) && Number.isFinite(lngNum);
-  const position = isLoading
-    ? '位置を調べています…'
-    : hasPosition
+  const position =
+    status === 'ok' && lat !== '' && lng !== ''
       ? `位置 ${latNum.toFixed(4)}・${lngNum.toFixed(4)}（住所から自動）`
-      : error
-        ? '住所から位置が見つかりませんでした'
-        : '位置はまだありません';
+      : status === 'notfound'
+        ? '位置が未確定（見つかりませんでした）'
+        : '位置が未確定（調べています…）';
 
   return (
     <div
@@ -775,7 +825,10 @@ function SameAsInsurancePane({
       {trimmed ? (
         <>
           <span className="font-medium text-text-primary">{trimmed}</span>
-          <span className="text-xs text-text-muted">
+          <span
+            className={`text-xs ${status === 'notfound' ? 'text-warning-strong' : 'text-text-muted'}`}
+            data-testid="visit-same-position"
+          >
             {position}
             {mapUrl ? (
               <a
