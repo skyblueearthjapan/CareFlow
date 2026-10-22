@@ -88,7 +88,9 @@ def _need(op: dict, *keys: str) -> list[str]:
 PATIENT_UPDATE_FIELDS = {
     "kana": "ふりがな",
     "sex": "性別",
-    "address": "住所",
+    "insurance_address": "保険証の住所",
+    "visit_same_as_insurance": "訪問先は保険証の住所と同じ",
+    "address": "訪問先の住所",
     "lat": "緯度",
     "lng": "経度",
     "insurance": "保険区分",
@@ -118,6 +120,9 @@ class PatientUpdate(Op):
     送った項目だけが変わる（_model_dump_for_orm(partial=True)＝exclude_unset・patients.py:85-109）。
     明示の null は「消す」（visit_category だけは null 不可で 422・schemas/v2/patient.py:310）。
     住所を変えても座標は自動では変わらない（PATCH は setattr だけ）→ lat/lng も一緒に送る。
+    住所は 2 つ（2026-10-22）: insurance_address＝保険証の住所（座標なし）・address/lat/lng＝実際の訪問先。
+    visit_same_as_insurance が true のあいだ、サーバーは address を保険証の住所にそろえる
+    （services/patient_address.py）→ 訪問先だけを別の場所にするなら visit_same_as_insurance: false も送る。
     op: {"op":"patient-update","patient_id":"…","changes":{"sex_restriction":"female_only"},"label":"…"}
     """
 
@@ -145,6 +150,12 @@ class PatientUpdate(Op):
             errs.append("insurance は medical / care / null")
         if "requires_multiple_staff" in ch and not isinstance(ch["requires_multiple_staff"], bool):
             errs.append("requires_multiple_staff は true / false")
+        if "visit_same_as_insurance" in ch and not isinstance(ch["visit_same_as_insurance"], bool):
+            errs.append("visit_same_as_insurance は true / false（null は不可）")
+        if ("address" in ch and "insurance_address" not in ch
+                and ch.get("visit_same_as_insurance") is not False):
+            errs.append("訪問先の住所だけを変えるときは visit_same_as_insurance: false も一緒に"
+                        "（「保険証の住所と同じ」のあいだは、訪問先が保険証の住所にそろえられて変わらない）")
         if "address" in ch and not ({"lat", "lng"} <= set(ch)):
             errs.append("住所を変えるときは lat / lng も一緒に（PATCH は座標を作り直さない。座標は患者画面の住所欄が POST /geocode で入れる＝rk post-read の許可外 → 住所の変更は画面で行うか、PO の了承を得た座標を入れる）")
         return errs
@@ -158,8 +169,9 @@ class PatientUpdate(Op):
 
     def inverse(self, op, before):
         fields = dict(before.get("fields") or {})
-        if fields.get("visit_category") is None:
-            fields.pop("visit_category", None)  # null は送れない（列は NOT NULL なので元も null ではない）
+        for k in ("visit_category", "visit_same_as_insurance"):
+            if fields.get(k) is None:
+                fields.pop(k, None)  # null は送れない（列は NOT NULL なので元も null ではない）
         if not fields:
             return None
         return [{
@@ -794,7 +806,11 @@ class PatientCreate(Op):
             errs.append(f"使えない項目 {sorted(unknown)}（API が黙って捨てる）")
         if p.get("status", "active") not in PATIENT_STATUSES:
             errs.append("status は active / suspended / admitted / pending / cancelled")
-        if p.get("address") and (p.get("lat") is None or p.get("lng") is None):
+        # 訪問先 (address) の住所に座標が要る。「保険証の住所と同じ」なら保険証の住所が訪問先になる。
+        visit = p.get("address")
+        if not (visit and p.get("visit_same_as_insurance") is False):
+            visit = p.get("insurance_address") or visit
+        if visit and (p.get("lat") is None or p.get("lng") is None):
             errs.append("住所があるなら lat / lng も（座標が無いと移動時間・同じ建物の判定ができない。座標は画面の住所欄が POST /geocode で入れる＝rk post-read の許可外 → PO の了承を得た座標を入れるか、登録は画面で）")
         if p.get("weekly_pattern") is not None:
             errs += [f"weekly_pattern: {e}" for e in PreferenceUpdate().validate(

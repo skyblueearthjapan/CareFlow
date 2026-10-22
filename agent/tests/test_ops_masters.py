@@ -145,10 +145,31 @@ def test_patient_update_mapping_and_roundtrip():
     ({"visit_category": None}, "visit_category"),
     ({"address": "千葉市"}, "lat"),
     ({"foo": 1}, "変えられる項目ではありません"),
+    ({"address": "千葉市", "lat": 35.6, "lng": 140.1}, "visit_same_as_insurance: false"),
+    ({"visit_same_as_insurance": None}, "visit_same_as_insurance は true / false"),
 ])
 def test_patient_update_validate_rejects(changes, word):
     errs = PatientUpdate().validate({"patient_id": PID, "changes": changes})
     assert any(word in e for e in errs), errs
+
+
+@pytest.mark.parametrize("changes", [
+    # 訪問先だけを別の場所へ（座標つき）
+    {"address": "千葉市", "lat": 35.6, "lng": 140.1, "visit_same_as_insurance": False},
+    # 保険証の住所だけ（座標のきまりは訪問先にだけかかる）
+    {"insurance_address": "千葉市稲毛区"},
+    {"visit_same_as_insurance": True},
+])
+def test_patient_update_two_addresses_accepted(changes):
+    assert PatientUpdate().validate({"patient_id": PID, "changes": changes}) == []
+
+
+def test_patient_update_inverse_drops_null_same_flag():
+    inv = PatientUpdate().inverse(
+        {"patient_id": PID, "changes": {"visit_same_as_insurance": False}},
+        {"fields": {"visit_same_as_insurance": None}},
+    )
+    assert inv is None
 
 
 # --- patient-status -------------------------------------------------------------
@@ -388,3 +409,17 @@ def test_patient_create():
     assert impl.check_response(op, {"id": "new", "name": "試験 花子"}) == []
     assert impl.check_response(op, {}) != []
     assert impl.inverse(op, snap) is None and impl.undoable is False
+
+
+def test_patient_create_two_addresses_need_coords_for_visit():
+    impl = PatientCreate()
+    base = {"name": "新規 太郎", "primary_office_id": OFFICE}
+    # 「保険証の住所と同じ」→ 保険証の住所が訪問先になるので座標が要る
+    assert any("lat" in e for e in impl.validate(
+        {"patient": {**base, "insurance_address": "千葉市", "visit_same_as_insurance": True}}))
+    assert impl.validate({"patient": {**base, "insurance_address": "千葉市", "lat": 35.6, "lng": 140.1}}) == []
+    # 「別の場所」でも訪問先が空ならサーバーが「同じ」に戻す → 座標が要る
+    assert any("lat" in e for e in impl.validate(
+        {"patient": {**base, "insurance_address": "千葉市", "visit_same_as_insurance": False}}))
+    assert impl.validate({"patient": {**base, "insurance_address": "千葉市", "visit_same_as_insurance": False,
+                                      "address": "別の場所", "lat": 35.6, "lng": 140.1}}) == []
