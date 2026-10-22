@@ -179,7 +179,7 @@ export default function CheckinSettingsPage() {
               <SliderField
                 id="match-m"
                 label="「一致」とみなす距離"
-                description="登録住所からこの距離以内なら「一致」と判定します。"
+                description="訪問先の住所からこの距離以内なら「一致」と判定します。"
                 value={draft.match_m}
                 min={CHECKIN_RANGES.match_m.min}
                 max={CHECKIN_RANGES.match_m.max}

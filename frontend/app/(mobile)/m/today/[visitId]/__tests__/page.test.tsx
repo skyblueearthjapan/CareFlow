@@ -427,7 +427,7 @@ describe('QR チェックイン モバイル — 到着→訪問中→退出フ�
     fireEvent.click(screen.getByText('__scan__'));
     await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
     expect(checkInMutate).not.toHaveBeenCalled();
-    expect(screen.getByText('登録住所と一致')).toBeInTheDocument();
+    expect(screen.getByText('訪問先の住所と一致')).toBeInTheDocument();
 
     // 「到着を記録する」で単一 POST。
     fireEvent.click(screen.getByText('到着を記録する'));
@@ -617,7 +617,7 @@ describe('QR チェックイン モバイル — mismatch 理由必須 + 単一P
     fireEvent.click(screen.getByText('QRで到着を記録'));
     fireEvent.click(screen.getByText('__scan__'));
     await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
-    expect(screen.getByText('登録住所と不一致（300m超）')).toBeInTheDocument();
+    expect(screen.getByText('訪問先の住所と不一致（300m超）')).toBeInTheDocument();
     expect(checkInMutate).not.toHaveBeenCalled();
 
     // 理由未入力で記録 → POST されずエラートースト。
@@ -655,7 +655,7 @@ describe('QR チェックイン モバイル — プレビューしきい値の�
     fireEvent.click(screen.getByText('QRで到着を記録'));
     fireEvent.click(screen.getByText('__scan__'));
     await waitFor(() => expect(screen.getByText('到着の確認')).toBeInTheDocument());
-    expect(screen.getByText('登録住所と不一致（500m超）')).toBeInTheDocument();
+    expect(screen.getByText('訪問先の住所と不一致（500m超）')).toBeInTheDocument();
   });
 });
 

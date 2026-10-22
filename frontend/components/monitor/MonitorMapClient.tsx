@@ -60,10 +60,7 @@ const numIcon = (color: string, selected: boolean, num: number) =>
 const pillIcon = (color: string, selected: boolean, label: string) => {
   // label 幅を文字種で近似 (ASCII≈7px / 全角「・」等≈12px @12px font)。
   // レビュー指摘: length×6 固定だと全角混在でアンカーが数 px ずれるため文字種考慮に。
-  const w = Math.max(
-    30,
-    [...label].reduce((s, c) => s + (c.charCodeAt(0) > 127 ? 12 : 7), 0) + 14,
-  );
+  const w = Math.max(30, [...label].reduce((s, c) => s + (c.charCodeAt(0) > 127 ? 12 : 7), 0) + 14);
   return L.divIcon({
     className: '',
     iconSize: [w + 4, 24],
@@ -193,7 +190,11 @@ export default function MonitorMapClient({
         <Polyline
           key={`seg-${i}`}
           positions={[s.a, s.b]}
-          pathOptions={{ color: '#2563eb' /* = --map-route; SVG属性のためvar()不可、tokens.cssと同期 */, weight: 3.5, opacity: 0.9 }}
+          pathOptions={{
+            color: '#2563eb' /* = --map-route; SVG属性のためvar()不可、tokens.cssと同期 */,
+            weight: 3.5,
+            opacity: 0.9,
+          }}
         />
       ))}
 
@@ -249,7 +250,7 @@ export default function MonitorMapClient({
             <Popup>
               <b>{selected.patient_name ?? '—'} さん宅（予定）</b>
               <br />
-              登録住所
+              訪問先の住所
             </Popup>
           </Marker>
           <Marker
@@ -261,7 +262,7 @@ export default function MonitorMapClient({
               {selected.arrival.distance_m != null && (
                 <>
                   <br />
-                  登録住所から {Math.round(selected.arrival.distance_m)}m
+                  訪問先の住所から {Math.round(selected.arrival.distance_m)}m
                 </>
               )}
             </Popup>
@@ -271,14 +272,18 @@ export default function MonitorMapClient({
               [selected.patient_lat, selected.patient_lng],
               [selected.arrival.lat as number, selected.arrival.lng as number],
             ]}
-            pathOptions={{ color: '#dc2626' /* = --error; SVG属性のためvar()不可、tokens.cssと同期 */, dashArray: '6', weight: 2.5 }}
+            pathOptions={{
+              color: '#dc2626' /* = --error; SVG属性のためvar()不可、tokens.cssと同期 */,
+              dashArray: '6',
+              weight: 2.5,
+            }}
           />
           {nearby.map((n) => (
             <Marker key={n.patient_id} position={[n.lat, n.lng]} icon={nearIcon()}>
               <Popup>
                 {n.name} 様宅？
                 <br />
-                GPSから {formatDistance(n.distance_m)}（近隣の登録住所）
+                GPSから {formatDistance(n.distance_m)}（近隣の訪問先の住所）
               </Popup>
             </Marker>
           ))}
