@@ -181,7 +181,19 @@ class PatientV2Base(BaseModel):
     )
 
     # 連絡先
-    address: str | None = Field(default=None, description="距離計算ベースの住所")
+    # 2026-10-22 (docs/plans/patient-two-addresses-design-2026-10-22.md §3):
+    # address / lat / lng は「実際の訪問先」。保険証の住所は insurance_address (座標なし)。
+    # 保存のきまりは app.services.patient_address (同じなら address = insurance_address)。
+    insurance_address: str | None = Field(
+        default=None,
+        max_length=255,
+        description="保険証の住所 (レセプト・カイポケと同じ)。職員への応答では null",
+    )
+    visit_same_as_insurance: bool = Field(
+        default=True,
+        description="実際の訪問先は保険証の住所と同じか (true なら address を保険証の住所にそろえる)",
+    )
+    address: str | None = Field(default=None, description="実際の訪問先の住所 (距離計算ベース)")
     lat: float | None = Field(default=None, ge=-90, le=90, description="距離計算用緯度")
     lng: float | None = Field(default=None, ge=-180, le=180, description="距離計算用経度")
 
@@ -284,6 +296,9 @@ class PatientV2Update(BaseModel):
     kana: str | None = Field(default=None, max_length=120)
     sex: SexV2 | None = None
     status: PatientStatusV2 | None = None
+    insurance_address: str | None = Field(default=None, max_length=255)
+    # None = 未指定 (PATCH で touch しない)。明示的な null は 422 (下の validator)。
+    visit_same_as_insurance: bool | None = None
     address: str | None = None
     lat: float | None = Field(default=None, ge=-90, le=90)
     lng: float | None = Field(default=None, ge=-180, le=180)
@@ -316,6 +331,13 @@ class PatientV2Update(BaseModel):
             raise ValueError(
                 "visit_category に null は指定できません "
                 "(未変更ならキーごと省略 / 既定に戻すなら 'psychiatric' を指定)"
+            )
+        if (
+            "visit_same_as_insurance" in self.model_fields_set
+            and self.visit_same_as_insurance is None
+        ):
+            raise ValueError(
+                "visit_same_as_insurance に null は指定できません (未変更ならキーごと省略)"
             )
         return self
 
