@@ -21,6 +21,7 @@ import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
+import { patientUpdateSchema } from '@/lib/schemas/patient';
 import type { PatientFormValues, PatientRead } from '@/lib/schemas/patient';
 
 vi.mock('@/lib/queries/patients', async () => ({
@@ -255,6 +256,9 @@ describe('PatientManageSheet 検索編集フロー (edit)', () => {
       NEXT,
     );
     expect(values.insurance_address).toBe(NEXT);
+    // 位置が求められなかったので、前の位置は送らない (サーバーが求め直す)。
+    expect(values.lat).toBe('');
+    expect(patientUpdateSchema.parse(prepareFormPayload(values, values)).lat).toBeUndefined();
     expect(prepareFormPayload(values)).toMatchObject({
       insurance_address: NEXT,
       address: NEXT,
