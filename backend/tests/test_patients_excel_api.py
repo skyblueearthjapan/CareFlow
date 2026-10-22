@@ -3981,7 +3981,8 @@ async def test_import_delete_flag_cleans_ng_staff_and_same_address_links(client,
 
 def _build_legacy_workbook_bytes_without_ng_column(*, patient_rows: list[dict]) -> bytes:
     """NG スタッフ列を持たない旧形式 (delete_flag までの列数) の workbook を作る."""
-    legacy_columns = [c for c in PATIENT_COLUMNS if c["key"] != "ng_staff_codes"]
+    # NG スタッフ列 (とその後に足した列) より前 = delete_flag までの列.
+    legacy_columns = PATIENT_COLUMNS[: PATIENT_COL_INDEX["delete_flag"] + 1]
     assert str(legacy_columns[-1]["key"]) == "delete_flag"  # 新列は必ず末尾である前提
     legacy_index = {str(c["key"]): i for i, c in enumerate(legacy_columns)}
     wb = Workbook()

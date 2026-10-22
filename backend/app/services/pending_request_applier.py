@@ -57,6 +57,7 @@ from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
 from app.schemas.v2.enums import RequestScope, RequestStatus, RequestType
 from app.services.geocoding.client import geocode_address
 from app.services.manager_course_sync import sync_manager_course_templates
+from app.services.patient_address import normalize_patient_addresses
 from app.services.patient_code import generate_next_patient_code
 from app.services.proposed_visits_pfv import (
     ProposedVisitsError,
@@ -455,6 +456,13 @@ async def _apply_patient_create(
         except Exception as exc:  # noqa: BLE001 - best-effort: 患者作成はブロックしない
             logger.warning("patient_create geocode failed (best-effort, skipped): %s", exc)
 
+    # 2 つの住所 (設計 2026-10-22 §4-4): 入力の住所を保険証の住所とし、訪問先は同じにする。
+    addresses = normalize_patient_addresses(
+        insurance_address=payload.get("insurance_address") or address,
+        address=address,
+        visit_same_as_insurance=True,
+    )
+
     def _build_patient(code_value: str) -> Patient:
         return Patient(
             code=code_value,
@@ -463,7 +471,9 @@ async def _apply_patient_create(
             sex=payload.get("sex"),
             status=str(payload.get("status") or "active"),
             insurance=payload.get("insurance"),
-            address=address,
+            insurance_address=addresses.insurance_address,
+            visit_same_as_insurance=addresses.visit_same_as_insurance,
+            address=addresses.address,
             lat=lat,
             lng=lng,
             primary_office_id=primary_office_id,

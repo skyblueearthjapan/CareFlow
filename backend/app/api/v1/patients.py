@@ -47,6 +47,7 @@ from app.schemas.patient_status import (
 )
 from app.schemas.v2.patient import PatientStatusV2
 from app.services.geocoding.hash import normalize_address
+from app.services.patient_address import apply_patient_address_rules
 from app.services.patient_code import generate_next_patient_code
 from app.services.patient_status_sync import (
     apply_status_change,
@@ -164,6 +165,17 @@ async def _attach_ng_staff_count(db, patient: Patient) -> Patient:
     return patient
 
 
+def _read_for_role(user: User, patient: Patient) -> Patient | PatientRead:
+    """職員 (staff) には保険証の住所を返さない (管理者だけ・設計 2026-10-22 §4-2).
+
+    ORM の属性は書き換えない (セッションを汚さない)。応答 DTO を作って null にする。
+    """
+    if normalize_user_role(user.role) == "admin":
+        return patient
+    read = PatientRead.model_validate(patient, from_attributes=True)
+    return read.model_copy(update={"insurance_address": None})
+
+
 def _escape_like(text: str) -> str:
     """LIKE のワイルドカード (% / _) を文字として検索させる (staff_events.py と同じ)."""
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -183,7 +195,7 @@ async def list_patients(
         str | None,
         Query(max_length=100, description="氏名 / かなの部分一致 (任意)"),
     ] = None,
-) -> list[Patient]:
+) -> list[Patient | PatientRead]:
     if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
@@ -214,10 +226,10 @@ async def list_patients(
     stmt = stmt.limit(limit).offset(offset)
     rows = (await db.execute(stmt)).all()
 
-    out: list[Patient] = []
+    out: list[Patient | PatientRead] = []
     for patient, ng_count in rows:
         patient.ng_staff_count = int(ng_count or 0)  # type: ignore[attr-defined]
-        out.append(patient)
+        out.append(_read_for_role(user, patient))
     return out
 
 
@@ -226,7 +238,7 @@ async def get_patient(
     patient_id: UUID,
     db: DbDep,
     user: CurrentActiveUser,
-) -> Patient:
+) -> Patient | PatientRead:
     if normalize_user_role(user.role) not in {"admin", "staff"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
 
@@ -251,7 +263,7 @@ async def get_patient(
         )
         if in_scope is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    return await _attach_ng_staff_count(db, patient)
+    return _read_for_role(user, await _attach_ng_staff_count(db, patient))
 
 
 @router.post(
@@ -272,6 +284,7 @@ async def create_patient(
     auto_code = not data.get("code")
     if not auto_code:
         patient = Patient(**data)
+        apply_patient_address_rules(patient)
         db.add(patient)
         await _commit_or_409(db)
         await db.refresh(patient)
@@ -282,6 +295,7 @@ async def create_patient(
     for _ in range(_PATIENT_CODE_RETRY_MAX):
         data["code"] = await generate_next_patient_code(db)
         patient = Patient(**data)
+        apply_patient_address_rules(patient)
         db.add(patient)
         try:
             await db.commit()
@@ -323,6 +337,8 @@ async def update_patient(
 
     for field, value in data.items():
         setattr(patient, field, value)
+    # 保存後の値で 2 つの住所のきまりを当てる (部分更新でも同じ)。
+    apply_patient_address_rules(patient)
 
     if status_changes:
         await apply_status_change(

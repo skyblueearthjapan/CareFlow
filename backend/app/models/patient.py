@@ -80,9 +80,21 @@ class Patient(Base, TimestampMixin):
         server_default="psychiatric",
     )
 
+    # address / lat / lng は「実際の訪問先」(QR・移動・ならしが読む場所)。
     address: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lat: Mapped[float | None] = mapped_column(Numeric(10, 7), nullable=True)
     lng: Mapped[float | None] = mapped_column(Numeric(10, 7), nullable=True)
+    # 保険証の住所 (レセプト・カイポケと同じ)。座標は持たない。migration 0100 で追加。
+    # 保存のきまりは ``app.services.patient_address`` (docs/plans/patient-two-addresses-
+    # design-2026-10-22.md §4-1)。
+    insurance_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 訪問先は保険証の住所と同じか。true なら address に insurance_address を写す。
+    visit_same_as_insurance: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=sa.true(),
+    )
 
     primary_office_id: Mapped[uuid.UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
