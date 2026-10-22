@@ -689,13 +689,19 @@ function KarteEditSheet({
     let lng = initial.lng;
     let primaryOfficeId = initial.primary_office_id;
     const trimmedAddress = address.trim();
+    if (addressChanged) {
+      // 住所が変わったのに古い位置を送らない (設計 2026-10-22)。求められなければ lat/lng は
+      // 送らず、サーバーが位置を求め直す (求められなければ 422 で知らせる)。
+      lat = '';
+      lng = '';
+    }
     if (addressChanged && trimmedAddress.length >= 5) {
       try {
         const geo = await geocodeMut.mutateAsync({ address: trimmedAddress });
         lat = String(geo.lat);
         lng = String(geo.lng);
       } catch {
-        // ジオコード失敗 → lat/lng は据え置き (best-effort)。
+        // ジオコード失敗 → lat/lng は送らない (上で空にした)。
       }
       try {
         const resolved = await resolveMut.mutateAsync(trimmedAddress);
