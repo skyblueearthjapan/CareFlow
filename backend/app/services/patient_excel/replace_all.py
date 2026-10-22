@@ -50,6 +50,7 @@ from app.services.patient_excel.importer import (
     SEX_ANY_TO_EN,
     SEX_RESTRICTION_ANY_TO_EN,
     STATUS_ANY_TO_EN,
+    VISIT_SAME_MISMATCH_MESSAGE,
     _build_ng_staff_change,
     _load_ng_staff_by_patient,
     _load_staff_by_code,
@@ -60,8 +61,11 @@ from app.services.patient_excel.importer import (
     apply_ng_staff_updates,
     cleanup_soft_deleted_patient_links,
     excel_address_updates,
+    excel_visit_coords,
     has_address_columns,
     read_patient_header,
+    resolve_excel_visit_coords,
+    visit_same_mismatch,
 )
 from app.services.patient_excel.importer import (
     _parse_weekly_row as _parse_weekly_row_replace,  # noqa: E402
@@ -310,6 +314,20 @@ def _parse_patient_row_replace(
             visit_same_mark = _read_visit_same_mark(cells["visit_same_as_insurance"])
         except ValueError as exc:
             errors.append(f"列「訪問先は保険証と同じ」は ○ か空にしてください: {exc}")
+        if visit_same_mismatch(
+            visit_same_mark, parsed.get("address"), parsed.get("insurance_address")
+        ):
+            errors.append(VISIT_SAME_MISMATCH_MESSAGE)
+
+    def _visit_coords(updates: dict[str, Any], current: Patient | None) -> dict[str, Any]:
+        # 完全置換: 行の緯度経度の空セルは「空」= 訪問先が変われば位置を求める。
+        return excel_visit_coords(
+            updates=updates,
+            current=current,
+            row_lat=parsed.get("lat"),
+            row_lng=parsed.get("lng"),
+            row_number=row_number,
+        )
 
     def _address_updates(current: Patient | None) -> dict[str, Any]:
         if has_address_cols:
@@ -491,7 +509,9 @@ def _parse_patient_row_replace(
             )
             update_dict["code"] = patient_code
 
-        for orm_attr, new_val in _address_updates(existing_patient).items():
+        address_updates = _address_updates(existing_patient)
+        update_dict.update(_visit_coords(address_updates, existing_patient))
+        for orm_attr, new_val in address_updates.items():
             changes.append(
                 PatientExcelChange(
                     field=orm_attr,
@@ -597,7 +617,9 @@ def _parse_patient_row_replace(
                 new_value=None,
             )
         ]
-        for orm_attr, new_val in _address_updates(resurrect_target).items():
+        address_updates = _address_updates(resurrect_target)
+        coords_mark = _visit_coords(address_updates, resurrect_target)
+        for orm_attr, new_val in address_updates.items():
             changes_for_view.append(
                 PatientExcelChange(
                     field=orm_attr,
@@ -648,6 +670,7 @@ def _parse_patient_row_replace(
                 "_op": "resurrect",
                 "_patient_id": resurrect_id,
                 "_updates": updates,
+                **coords_mark,
                 **ng_op_dict,
             },
         )
@@ -666,7 +689,9 @@ def _parse_patient_row_replace(
         if val is None:
             continue  # default に任せる
         new_dict[orm_attr] = val
-    new_dict.update(_address_updates(None))
+    new_address_updates = _address_updates(None)
+    new_dict.update(new_address_updates)
+    new_dict.update(_visit_coords(new_address_updates, None))
 
     changes_for_view = [
         PatientExcelChange(field=k, old_value=None, new_value=_serializable(new_dict[k]))
@@ -1405,6 +1430,9 @@ async def parse_and_diff_replace_all(
             weekly = _parse_weekly_from_patient_cells(row_cells)
             if weekly is not None:
                 weekly_from_patient_sheet[diff_row.patient_id] = weekly
+
+    # 訪問先が変わった行の位置 (2026-10-22): 求められない行はエラー (= 全体を止める)。
+    await resolve_excel_visit_coords(db, patient_rows, patient_ops, weekly_from_patient_sheet)
 
     # ---- Excel に無い alive 既存患者 = soft delete 対象 ----
     patients_to_soft_delete: list[Patient] = [

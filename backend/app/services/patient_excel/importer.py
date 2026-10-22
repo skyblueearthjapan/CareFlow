@@ -44,7 +44,13 @@ from app.schemas.v2.patient_excel import (
 )
 from app.services.office_assigner import PreloadedOfficeCities, load_office_cities_index
 from app.services.office_labels import office_code_short_pairs
-from app.services.patient_address import normalize_patient_addresses
+from app.services.patient_address import (
+    VisitGeocodeError,
+    geocode_visit_address,
+    normalize_patient_addresses,
+    same_address_text,
+    visit_coords_needed,
+)
 from app.services.patient_excel.schema import (
     DEFAULT_TIME_TYPE,
     INSURANCE_JA_TO_EN,
@@ -287,6 +293,9 @@ def excel_address_updates(
             same = False
     else:
         same = visit_same_mark
+        # ○ が空でも 2 つの住所が同じ文字なら「同じ」とみなす。
+        if not same and same_address_text(address, insurance_address):
+            same = True
     desired = normalize_patient_addresses(
         insurance_address=insurance_address,
         address=address,
@@ -303,6 +312,100 @@ def excel_address_updates(
     if desired == baseline:
         return {}
     return {k: v for k, v in values.items() if getattr(current, k, None) != v}
+
+
+VISIT_SAME_MISMATCH_MESSAGE = "○ を外すか、訪問先の住所を保険証の住所に合わせてください"
+
+
+def visit_same_mismatch(
+    visit_same_mark: bool | None, address_cell: str | None, insurance_address: str | None
+) -> bool:
+    """○ の行で、書かれた「訪問先の住所」が「保険証の住所」と違う (行エラーにする)."""
+    return bool(
+        visit_same_mark
+        and address_cell
+        and insurance_address
+        and not same_address_text(address_cell, insurance_address)
+    )
+
+
+def excel_visit_coords(
+    *,
+    updates: dict[str, Any],
+    current: Patient | None,
+    row_lat: Any,
+    row_lng: Any,
+    row_number: int,
+) -> dict[str, Any]:
+    """訪問先が変わる行の位置の扱い (op に足す ``_`` 付きの印).
+
+    訪問先が空になる → ``_clear_coords`` (lat/lng も空)。訪問先が変わり、行の緯度経度が
+    保存済みと同じ (または空) → ``_geocode_address`` (:func:`resolve_excel_visit_coords` で
+    位置を求める)。``row_lat`` / ``row_lng`` は取込方式を当てた後の行の値。
+    """
+    if "address" not in updates:
+        return {}
+    new_address = updates["address"]
+    old_address = current.address if current is not None else None
+    mark: dict[str, Any] = {
+        "_row_number": row_number,
+        "_old_coords": (current.lat, current.lng) if current is not None else (None, None),
+    }
+    if new_address is None:
+        return {**mark, "_clear_coords": True} if old_address else {}
+    if visit_coords_needed(
+        new_address=new_address,
+        old_address=old_address,
+        requested_lat=row_lat,
+        requested_lng=row_lng,
+        old_lat=current.lat if current is not None else None,
+        old_lng=current.lng if current is not None else None,
+    ):
+        return {**mark, "_geocode_address": new_address}
+    return {}
+
+
+async def resolve_excel_visit_coords(
+    db: AsyncSession,
+    patient_rows: list[PatientExcelImportRow],
+    patient_ops: list[dict[str, Any]],
+    weekly_updates: dict[UUID, Any] | None = None,
+) -> None:
+    """``excel_visit_coords`` の印を処理する (プレビューでも同じく求める).
+
+    位置を求められない行はエラーにし、その行の op (と希望の更新) を外す。
+    """
+    rows_by_number = {r.row_number: r for r in patient_rows}
+    for op in list(patient_ops):
+        row_number = op.pop("_row_number", None)
+        old_lat, old_lng = op.pop("_old_coords", (None, None))
+        clear = op.pop("_clear_coords", False)
+        address = op.pop("_geocode_address", None)
+        if row_number is None:
+            continue
+        row = rows_by_number[row_number]
+        if clear:
+            lat, lng = None, None
+        else:
+            try:
+                lat, lng = await geocode_visit_address(db, address)
+            except VisitGeocodeError as exc:
+                row.operation = "error"
+                row.error_message = str(exc)
+                row.changes = []
+                patient_ops.remove(op)
+                if weekly_updates is not None and row.patient_id is not None:
+                    weekly_updates.pop(row.patient_id, None)
+                continue
+        target = op["_updates"] if op.get("_op") == "resurrect" else op
+        row.changes = [c for c in row.changes if c.field not in ("lat", "lng")]
+        for field, old, new in (("lat", old_lat, lat), ("lng", old_lng, lng)):
+            target[field] = new
+            row.changes.append(
+                PatientExcelChange(
+                    field=field, old_value=_serializable(old), new_value=_serializable(new)
+                )
+            )
 
 
 def _cell_or_current(parsed: dict[str, Any], key: str, current: Any) -> Any:
@@ -746,6 +849,14 @@ def _parse_patient_row(
             visit_same_mark = _read_visit_same_mark(cells["visit_same_as_insurance"])
         except ValueError as exc:
             errors.append(f"列「{VISIT_SAME_AS_INSURANCE_HEADER}」は ○ か空にしてください: {exc}")
+        insurance_for_check = _cell_or_current(
+            parsed,
+            "insurance_address",
+            existing_patient.insurance_address if existing_patient is not None else None,
+        )
+        address_cell = parsed["address"][1] if parsed.get("address") else None
+        if visit_same_mismatch(visit_same_mark, address_cell, insurance_for_check):
+            errors.append(VISIT_SAME_MISMATCH_MESSAGE)
 
     # patient_code (現在値と diff したいので raw を保持)
     if _is_blank(raw_code):
@@ -973,14 +1084,22 @@ def _parse_patient_row(
             }
             # 2 つの住所 (address / insurance_address / visit_same_as_insurance) は
             # 保存のきまりを通して決める (空セル = 旧値維持)。
-            for orm_attr, new_val in excel_address_updates(
+            address_updates = excel_address_updates(
                 address=_cell_or_current(parsed, "address", resurrect_target.address),
                 insurance_address=_cell_or_current(
                     parsed, "insurance_address", resurrect_target.insurance_address
                 ),
                 visit_same_mark=visit_same_mark,
                 current=resurrect_target,
-            ).items():
+            )
+            coords_mark = excel_visit_coords(
+                updates=address_updates,
+                current=resurrect_target,
+                row_lat=_cell_or_current(parsed, "lat", resurrect_target.lat),
+                row_lng=_cell_or_current(parsed, "lng", resurrect_target.lng),
+                row_number=row_number,
+            )
+            for orm_attr, new_val in address_updates.items():
                 changes_for_view.append(
                     PatientExcelChange(
                         field=orm_attr,
@@ -1052,6 +1171,7 @@ def _parse_patient_row(
                     "_patient_id": resurrect_id,
                     "_updates": updates,
                     **ng_op_dict,
+                    **coords_mark,
                 },
             )
 
@@ -1082,12 +1202,20 @@ def _parse_patient_row(
                 # CLEAR は新規時は単に「None で INSERT」と等価.
                 new_dict[k] = val
         # 2 つの住所は保存のきまりを通す。
+        new_address_updates = excel_address_updates(
+            address=_cell_or_current(parsed, "address", None),
+            insurance_address=_cell_or_current(parsed, "insurance_address", None),
+            visit_same_mark=visit_same_mark,
+            current=None,
+        )
+        new_dict.update(new_address_updates)
         new_dict.update(
-            excel_address_updates(
-                address=_cell_or_current(parsed, "address", None),
-                insurance_address=_cell_or_current(parsed, "insurance_address", None),
-                visit_same_mark=visit_same_mark,
+            excel_visit_coords(
+                updates=new_address_updates,
                 current=None,
+                row_lat=new_dict.get("lat"),
+                row_lng=new_dict.get("lng"),
+                row_number=row_number,
             )
         )
         # Phase G-49: 拠点コード空欄の新規患者は住所から自動割当 (UI 挙動と一致).
@@ -1168,14 +1296,24 @@ def _parse_patient_row(
         "note": "note",
     }
     # 2 つの住所は保存のきまりを通して決める (空セル = 触らない)。
-    for orm_attr, new_val in excel_address_updates(
+    address_updates = excel_address_updates(
         address=_cell_or_current(parsed, "address", existing_patient.address),
         insurance_address=_cell_or_current(
             parsed, "insurance_address", existing_patient.insurance_address
         ),
         visit_same_mark=visit_same_mark,
         current=existing_patient,
-    ).items():
+    )
+    update_dict.update(
+        excel_visit_coords(
+            updates=address_updates,
+            current=existing_patient,
+            row_lat=_cell_or_current(parsed, "lat", existing_patient.lat),
+            row_lng=_cell_or_current(parsed, "lng", existing_patient.lng),
+            row_number=row_number,
+        )
+    )
+    for orm_attr, new_val in address_updates.items():
         changes.append(
             PatientExcelChange(
                 field=orm_attr,
@@ -2430,6 +2568,10 @@ async def parse_and_diff(
             weekly = _parse_weekly_from_patient_cells(row_cells)
             if weekly is not None:
                 weekly_from_patient_sheet[diff_row.patient_id] = weekly
+
+    # 訪問先が変わった行の位置 (2026-10-22): 求められない行はここでエラーにする
+    # (PFV シートの新規患者の紐付けより前に op を外すため)。
+    await resolve_excel_visit_coords(db, patient_rows, patient_ops, weekly_from_patient_sheet)
 
     # PFV シートが patient_code 経由で新規患者をリンクできるよう、
     # patient_code → patient_id の lookup を構築する。新規患者は

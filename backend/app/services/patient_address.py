@@ -7,15 +7,35 @@
 * ``visit_same_as_insurance`` = 訪問先は保険証の住所と同じか。
 
 作成・更新 (PATCH)・Excel 取込・スマホの患者追加申請・エージェント経由は、すべて
-:func:`normalize_patient_addresses` を通す (保存後の値で判定する)。座標は触らない
-(要求に来た値を使う。サーバーで geocode し直さない)。
+:func:`normalize_patient_addresses` を通す (保存後の値で判定する)。
+
+座標 (2026-10-22 レビュー): きまりの結果、訪問先 ``address`` が保存済みの値から変わったのに
+要求に新しい lat/lng が無い (来ていない・保存済みと同じ) ときは、サーバーで位置を求める
+(:func:`geocode_visit_address`・控え優先 → Google)。求められなければ 422 / 行エラー。
+``address`` が空になるときは lat/lng も空にする。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.models.patient import Patient
+from app.services.geocoding.cached import geocode_with_cache
+from app.services.geocoding.client import GeocodingServiceError
+from app.services.geocoding.hash import normalize_address
+
+VISIT_GEOCODE_FAILED_MESSAGE = (
+    "訪問先の住所から位置が見つかりませんでした。緯度・経度を入れてください。"
+)
+
+
+class VisitGeocodeError(Exception):
+    """訪問先の住所から位置を求められなかった (該当なし・キー未設定・通信・上限)."""
+
+    def __init__(self) -> None:
+        super().__init__(VISIT_GEOCODE_FAILED_MESSAGE)
 
 
 @dataclass(frozen=True)
@@ -69,3 +89,47 @@ def apply_patient_address_rules(patient: Patient) -> None:
     patient.insurance_address = result.insurance_address
     patient.address = result.address
     patient.visit_same_as_insurance = result.visit_same_as_insurance
+
+
+def same_address_text(a: str | None, b: str | None) -> bool:
+    """2 つの住所が同じ文字か (NFKC・空白をそろえて比べる。どちらかが空なら False)."""
+    na = normalize_address(a) if a else ""
+    nb = normalize_address(b) if b else ""
+    return bool(na) and na == nb
+
+
+def _float_or_none(value: object) -> float | None:
+    return None if value is None else float(value)  # type: ignore[arg-type]
+
+
+def visit_coords_needed(
+    *,
+    new_address: str | None,
+    old_address: str | None,
+    requested_lat: object,
+    requested_lng: object,
+    old_lat: object,
+    old_lng: object,
+) -> bool:
+    """訪問先の位置をサーバーで求めるか.
+
+    訪問先が空でなく、保存済み (新規は空) から変わり、要求に新しい lat/lng が無い
+    (どちらか来ていない・保存済みと同じ) とき True。
+    """
+    if not _clean(new_address) or same_address_text(new_address, old_address):
+        return False
+    req = (_float_or_none(requested_lat), _float_or_none(requested_lng))
+    if None in req:
+        return True
+    return req == (_float_or_none(old_lat), _float_or_none(old_lng))
+
+
+async def geocode_visit_address(db: AsyncSession, address: str) -> tuple[float, float]:
+    """訪問先の住所の位置 (``/geocode`` と同じ控え優先). 求められなければ VisitGeocodeError."""
+    try:
+        hit = await geocode_with_cache(db, address)
+    except (ValueError, GeocodingServiceError) as exc:
+        raise VisitGeocodeError() from exc
+    if hit is None:
+        raise VisitGeocodeError()
+    return hit.lat, hit.lng

@@ -60,6 +60,9 @@ from app.services.patient_excel.schema import (
     WEEKLY_COL_INDEX,
 )
 
+# 新しい方・訪問先の変わった方の位置はサーバーが求める (2026-10-22) → 試験では偽物。
+pytestmark = pytest.mark.usefixtures("fake_visit_geocode")
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
