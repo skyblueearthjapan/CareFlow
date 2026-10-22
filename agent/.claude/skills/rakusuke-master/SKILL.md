@@ -107,7 +107,7 @@ description: らく助のマスター（毎週の型の元になる情報）を�
 ```
 
 他の op の形（必須の項目）:
-- `patient-update`: `patient_id`・`changes`（例 `{"sex_restriction": "female_only"}`）。住所は 2 つ: `insurance_address`（保険証の住所・座標なし）と `address`/`lat`/`lng`（実際の訪問先）。「保険証の住所と同じ」（`visit_same_as_insurance: true`）のあいだは訪問先が保険証の住所にそろう。訪問先だけを別の場所にするなら `visit_same_as_insurance: false` と `address`・`lat`/`lng` を一緒に（座標のきまりは訪問先にだけかかる）
+- `patient-update`: `patient_id`・`changes`（例 `{"sex_restriction": "female_only"}`）。住所は 2 つ: `insurance_address`（保険証の住所・座標なし）と `address`/`lat`/`lng`（実際の訪問先）。「保険証の住所と同じ」（`visit_same_as_insurance: true`）のあいだは訪問先が保険証の住所にそろう。訪問先だけを別の場所にするなら `visit_same_as_insurance: false` と `address`・`lat`/`lng` を一緒に（座標のきまりは訪問先にだけかかる）。訪問先が変わって新しい `lat`/`lng` が無いとサーバーが住所から位置を求め、見つからなければ 422。今が「同じ」の方の保険証の住所を変えるとき・「同じ」に戻すときも、確かめた `lat`/`lng` を添えるのが望ましい
 - `patient-status`: `patient_id`・`to_status`（active/suspended/admitted/pending/cancelled）・終了なら `remove_schedule`（true/false 必須）・任意 `from_date`・`special_period_action`・`regenerate`・`note`
 - `preference-update`: `patient_id`・`weekly_pattern`（全体）
 - `ng-staff-update`: `patient_id`・`staff_id`・`action`（add/remove）・任意 `note`
