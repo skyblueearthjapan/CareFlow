@@ -19,11 +19,14 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
-import type { PatientRead } from '@/lib/schemas/patient';
+import type { PatientFormValues, PatientRead } from '@/lib/schemas/patient';
 
-vi.mock('@/lib/queries/patients', () => ({
+vi.mock('@/lib/queries/patients', async () => ({
+  // 送る中身のきまり (住所 2 つ) は本物で確かめる。
+  prepareFormPayload: (await vi.importActual<Record<string, unknown>>('@/lib/queries/patients'))
+    .prepareFormPayload,
   usePatients: vi.fn(),
   usePatient: vi.fn(),
   useCreatePatient: vi.fn(),
@@ -48,6 +51,7 @@ vi.mock('@/lib/queries/offices', () => ({
 }));
 
 import {
+  prepareFormPayload,
   usePatients,
   usePatient,
   useCreatePatient,
@@ -224,5 +228,54 @@ describe('PatientManageSheet 検索編集フロー (edit)', () => {
     const values = updateMutate.mock.calls[0]![0] as Record<string, unknown>;
     expect(values.name).toBe('利用者A あい (更新)');
     expect(values.code).toBe('P-1042');
+  });
+
+  // 住所 2 つ (設計 2026-10-22)
+  async function editAddress(patient: PatientRead, next: string) {
+    setPatient(patient);
+    renderSheet();
+    fireEvent.change(screen.getByLabelText('既存のお客様を検索'), {
+      target: { value: '利用者A' },
+    });
+    fireEvent.click(screen.getByText('利用者A あい'));
+    fireEvent.change(screen.getByLabelText('ご住所'), { target: { value: next } });
+    fireEvent.click(screen.getByRole('button', { name: /カルテを保存/ }));
+    await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
+    return updateMutate.mock.calls[0]![0] as PatientFormValues;
+  }
+
+  it('訪問先が「保険証の住所と同じ」の方: 直した住所は保険証の住所にも入り、送る中身で戻らない', async () => {
+    const NEXT = '千葉市稲毛区園生町1-2-3';
+    const values = await editAddress(
+      {
+        ...makePatient(),
+        insurance_address: '千葉市稲毛区小仲台6-2-1',
+        visit_same_as_insurance: true,
+      } as PatientRead,
+      NEXT,
+    );
+    expect(values.insurance_address).toBe(NEXT);
+    expect(prepareFormPayload(values)).toMatchObject({
+      insurance_address: NEXT,
+      address: NEXT,
+      visit_same_as_insurance: true,
+    });
+  });
+
+  it('訪問先が「別の場所」の方: 直した住所は訪問先だけ (保険証の住所は変えない)', async () => {
+    const NEXT = '千葉市稲毛区園生町1-2-3';
+    const values = await editAddress(
+      {
+        ...makePatient(),
+        insurance_address: '千葉市花見川区こてはし台9-9-9',
+        visit_same_as_insurance: false,
+      } as PatientRead,
+      NEXT,
+    );
+    expect(prepareFormPayload(values)).toMatchObject({
+      insurance_address: '千葉市花見川区こてはし台9-9-9',
+      address: NEXT,
+      visit_same_as_insurance: false,
+    });
   });
 });

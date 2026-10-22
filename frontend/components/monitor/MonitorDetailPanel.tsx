@@ -705,7 +705,7 @@ function VisitDetail({
           <Kv k="滞在時間" v={stay} />
           <Kv k="到着ズレ" v={delay} />
           {dist != null && (
-            <Kv k="登録住所からの距離" v={`${Math.round(dist)}m`} vColor={distColor} />
+            <Kv k="訪問先の住所からの距離" v={`${Math.round(dist)}m`} vColor={distColor} />
           )}
           {acc != null && <Kv k="GPS精度" v={`±${Math.round(acc)}m`} />}
           {visit.distance_to_next_m != null && (

@@ -467,7 +467,7 @@ function AdhocPreviewCard({
 
       <p className="text-xs text-text-muted">
         {located
-          ? `登録住所から${matchM}m以内なら「一致」として記録されます。判定は記録後に確認できます。`
+          ? `訪問先の住所から${matchM}m以内なら「一致」として記録されます。判定は記録後に確認できます。`
           : '位置情報を取得できませんでした。このまま記録できます。'}
       </p>
       {!located && geoErrorHint(geo.errorCode) && (

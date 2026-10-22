@@ -8,7 +8,11 @@
 import { describe, it, expect } from 'vitest';
 
 import { prepareFormPayload } from '@/lib/queries/patients';
-import { emptyPatientFormValues, type PatientFormValues } from '@/lib/schemas/patient';
+import {
+  emptyPatientFormValues,
+  patientUpdateSchema,
+  type PatientFormValues,
+} from '@/lib/schemas/patient';
 
 function values(overrides: Partial<PatientFormValues> = {}): PatientFormValues {
   return { ...emptyPatientFormValues, name: 'テスト患者', ...overrides };
@@ -71,5 +75,77 @@ describe('prepareFormPayload — visit_category (訪問看護区分)', () => {
     expect(prepareFormPayload(values({ visit_category: 'general' })).visit_category).toBe(
       'general',
     );
+  });
+});
+
+describe('prepareFormPayload — 住所 2 つ (設計 2026-10-22 §4-1)', () => {
+  const INS = '千葉県千葉市花見川区こてはし台9-9-9';
+  const VISIT = '千葉県千葉市稲毛区園生町99-9';
+
+  it('1. 「同じ」→ 訪問先は保険証の住所を写す', () => {
+    const out = prepareFormPayload(
+      values({ insurance_address: INS, visit_same_as_insurance: true, address: '古い住所' }),
+    );
+    expect(out).toMatchObject({
+      insurance_address: INS,
+      address: INS,
+      visit_same_as_insurance: true,
+    });
+  });
+
+  it('2. 「別の場所」で訪問先が空 → 「同じ」に戻す', () => {
+    const out = prepareFormPayload(
+      values({ insurance_address: INS, visit_same_as_insurance: false, address: '  ' }),
+    );
+    expect(out).toMatchObject({ address: INS, visit_same_as_insurance: true });
+  });
+
+  it('3. 「別の場所」で訪問先あり → そのまま', () => {
+    const out = prepareFormPayload(
+      values({ insurance_address: INS, visit_same_as_insurance: false, address: VISIT }),
+    );
+    expect(out).toMatchObject({
+      insurance_address: INS,
+      address: VISIT,
+      visit_same_as_insurance: false,
+    });
+  });
+
+  it('4. 保険証の住所が空で訪問先だけ → 推測で埋めず「別の場所」扱い', () => {
+    const out = prepareFormPayload(
+      values({ insurance_address: '', visit_same_as_insurance: true, address: VISIT }),
+    );
+    expect(out.insurance_address).toBeUndefined();
+    expect(out).toMatchObject({ address: VISIT, visit_same_as_insurance: false });
+  });
+
+  it('更新: 入っていた保険証の住所を空にしたら null で消す (変わらなければ送らない)', () => {
+    const initial = values({ insurance_address: INS, address: INS });
+    const cleared = prepareFormPayload(
+      values({ insurance_address: '', visit_same_as_insurance: false, address: VISIT }),
+      initial,
+    );
+    expect(cleared.insurance_address).toBeNull();
+    const untouched = prepareFormPayload(values({ insurance_address: '' }), values());
+    expect(untouched.insurance_address).toBeUndefined();
+  });
+
+  it('更新の schema を通しても 2 つの値が残る (落とされない)', () => {
+    const parsed = patientUpdateSchema.parse(
+      prepareFormPayload(
+        values({
+          code: 'P902',
+          insurance_address: INS,
+          visit_same_as_insurance: false,
+          address: VISIT,
+        }),
+        values({ code: 'P902' }),
+      ),
+    );
+    expect(parsed).toMatchObject({
+      insurance_address: INS,
+      address: VISIT,
+      visit_same_as_insurance: false,
+    });
   });
 });

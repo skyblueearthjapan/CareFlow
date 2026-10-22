@@ -183,16 +183,16 @@ function matchInfo(
 } {
   switch (s) {
     case 'match':
-      return { label: '登録住所と一致', variant: 'success', hint: '位置を確認しました。' };
+      return { label: '訪問先の住所と一致', variant: 'success', hint: '位置を確認しました。' };
     case 'review':
       return {
         label: `要確認（${matchM}〜${reviewM}m）`,
         variant: 'warning',
-        hint: '登録住所からやや離れています。',
+        hint: '訪問先の住所からやや離れています。',
       };
     case 'mismatch':
       return {
-        label: `登録住所と不一致（${reviewM}m超）`,
+        label: `訪問先の住所と不一致（${reviewM}m超）`,
         variant: 'destructive',
         hint: '別の場所で測位された可能性があります。',
       };
@@ -867,7 +867,7 @@ function MobileVisitDetailPageInner() {
       setSignOpen(false);
       if (updated.latest_checkin?.match_status === 'mismatch') {
         toast.warning('訪問を完了しました', {
-          description: '登録住所から離れた位置で記録されました',
+          description: '訪問先の住所から離れた位置で記録されました',
         });
       } else {
         toast.success('訪問を完了しました');
@@ -941,7 +941,7 @@ function MobileVisitDetailPageInner() {
       const serverStatus = updated.latest_checkin?.match_status;
       const base = mode === 'arrival' ? '到着を記録しました' : '訪問を完了しました';
       if (serverStatus === 'mismatch') {
-        toast.warning(base, { description: '登録住所から離れた位置で記録されました' });
+        toast.warning(base, { description: '訪問先の住所から離れた位置で記録されました' });
       } else {
         toast.success(base);
       }

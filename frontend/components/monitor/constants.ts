@@ -86,7 +86,7 @@ export const STATUS_LABEL: Record<DisplayStatus, string> = {
 
 /** 詳細パネルの判定見出し (文言のみ。アイコンは DetailPanel 側で status→lucide マッピング)。 */
 export const STATUS_JUDGE: Record<DisplayStatus, string> = {
-  match: '登録住所と一致',
+  match: '訪問先の住所と一致',
   review: '要確認（遅延／距離）',
   mismatch: '場所違いの可能性',
   inprogress: '訪問中',

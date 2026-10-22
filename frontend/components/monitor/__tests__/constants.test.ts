@@ -19,10 +19,18 @@ import {
   minutesToPct,
   officeTagTone,
   rowMatchesOffice,
+  STATUS_JUDGE,
   substituteTitle,
   visitOfficeId,
 } from '../constants';
 import { makeRow, makeVisit } from './fixtures';
+
+describe('STATUS_JUDGE の文言 (設計 2026-10-22)', () => {
+  it('QR の判定は「訪問先の住所」と比べる (「登録住所」とは言わない)', () => {
+    expect(STATUS_JUDGE.match).toBe('訪問先の住所と一致');
+    expect(Object.values(STATUS_JUDGE).join('')).not.toContain('登録住所');
+  });
+});
 
 describe('displayStatus', () => {
   it('missing/future/awaiting は phase をそのまま反映', () => {

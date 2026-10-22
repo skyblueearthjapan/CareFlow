@@ -1,14 +1,15 @@
 /**
  * Patient detail (Phase 3-2 + 3-7 delete confirm).
  *
- * Sections: 基本情報 / 連絡先 / 保険 / 訪問条件 / 備考.
+ * Sections: 基本情報 / 住所 / 保険 / 訪問条件 / 備考.
+ * 住所は「保険証の住所」と「実際の訪問先」の 2 行 (設計 2026-10-22)。保険証の住所と札は管理者だけ。
  * Edit/Delete buttons gated by role (admin/manager edit, admin delete).
  */
 'use client';
 
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { useSession } from 'next-auth/react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -43,6 +44,7 @@ import {
   normalizePatientSex,
   normalizePatientSexRestriction,
   normalizePatientStatus,
+  patientAddressView,
   type PatientRead,
   type WeekdayKey,
 } from '@/lib/schemas/patient';
@@ -54,6 +56,7 @@ import { PatientQrManageDialog } from '@/components/patients/PatientQrManageDial
 import { LocationDriftNotice } from '@/components/patients/LocationDriftNotice';
 import { usePatientLocationDrift } from '@/lib/queries/patientLocation';
 import { isAdminRole } from '@/lib/rbac';
+import { googleMapsPlaceUrl } from '@/lib/maps';
 
 export default function PatientDetailPage() {
   const params = useParams<{ id: string }>();
@@ -140,6 +143,13 @@ export default function PatientDetailPage() {
     );
   }
 
+  // 住所 2 つ (設計 2026-10-22)。職員への応答は insurance_address が null なので、
+  // 保険証の住所の行と札は管理者だけに出す。
+  const addressView = patientAddressView(data);
+  const visitMapUrl = canEdit ? googleMapsPlaceUrl(addressView.visitAddress) : null;
+  const visitSameAsInsurance =
+    canEdit && addressView.insuranceAddress !== null && !addressView.visitIsSeparate;
+
   const handleDelete = async () => {
     try {
       await deleteMutation.mutateAsync(id);
@@ -177,6 +187,22 @@ export default function PatientDetailPage() {
                 data-testid="badge-multiple-staff"
               >
                 2 名対応
+              </span>
+            ) : null}
+            {canEdit && addressView.visitIsSeparate ? (
+              <span
+                className="inline-block rounded bg-success-bg px-2 py-0.5 text-xs font-medium text-success"
+                data-testid="badge-visit-separate"
+              >
+                訪問先は別
+              </span>
+            ) : null}
+            {canEdit && addressView.insuranceMissing ? (
+              <span
+                className="inline-block rounded bg-warning-bg px-2 py-0.5 text-xs font-medium text-warning-strong"
+                data-testid="badge-insurance-missing"
+              >
+                保険証の住所 未記入
               </span>
             ) : null}
           </div>
@@ -261,12 +287,35 @@ export default function PatientDetailPage() {
       </Card>
 
       <Card className="p-5 space-y-3">
-        <h2 className="font-serif text-lg font-bold text-text-primary">連絡先</h2>
+        <h2 className="font-serif text-lg font-bold text-text-primary">住所</h2>
         <DetailGrid
           rows={[
-            ['住所', data.address ?? '--'],
-            ['緯度', data.lat != null ? String(data.lat) : '--'],
-            ['経度', data.lng != null ? String(data.lng) : '--'],
+            ...(canEdit
+              ? ([
+                  [
+                    '保険証の住所',
+                    addressView.insuranceAddress ?? (
+                      <span className="text-warning-strong">未記入（レセプトに使う住所です）</span>
+                    ),
+                  ],
+                ] as const)
+              : []),
+            [
+              '実際の訪問先',
+              <>
+                {visitSameAsInsurance ? '保険証の住所と同じ' : (addressView.visitAddress ?? '--')}
+                {visitMapUrl ? (
+                  <a
+                    href={visitMapUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="ml-3 text-xs text-brand-primary underline"
+                  >
+                    地図で見る
+                  </a>
+                ) : null}
+              </>,
+            ],
           ]}
         />
         {canEdit && !data.deleted_at && (
@@ -397,7 +446,7 @@ function WeeklyPatternView({ raw }: WeeklyPatternViewProps) {
 }
 
 interface DetailGridProps {
-  rows: ReadonlyArray<readonly [string, string]>;
+  rows: ReadonlyArray<readonly [string, ReactNode]>;
 }
 
 function DetailGrid({ rows }: DetailGridProps) {

@@ -2,7 +2,8 @@
  * Shared form for new/edit patient pages.
  *
  * - react-hook-form + zodResolver(patientFormSchema)
- * - Sections: 基本情報 / 連絡先 / 保険・拠点 / 訪問条件 / 週間パターン / 備考
+ * - Sections: 基本情報 / 住所 / 保険・拠点 / 訪問条件 / 週間パターン / 備考
+ * - 住所は「保険証の住所」と「実際の訪問先」の 2 つ (設計 2026-10-22)。
  * - Re-used by `patients/new/page.tsx` and `patients/[id]/edit/page.tsx`.
  *
  * v2 (W1-BE1): backend は §4.1 の 16 項目のみ受け付ける。
@@ -47,6 +48,8 @@ import {
   useAddOfficeAreaCity,
   useDismissAreaPrompt,
 } from '@/lib/queries/offices';
+import { useGeocodeOnAddressChange } from '@/lib/queries/geocoding';
+import { googleMapsPlaceUrl } from '@/lib/maps';
 import type { OfficeResolveResponse } from '@/lib/schemas/office';
 import { toast } from '@/components/ui/sonner';
 
@@ -114,6 +117,7 @@ export function PatientForm({
     control,
     reset,
     setValue,
+    getValues,
     watch,
     formState: { errors, isDirty },
   } = form;
@@ -134,6 +138,60 @@ export function PatientForm({
 
   const watchedAddress = watch('address');
   const watchedName = watch('name');
+  const watchedInsuranceAddress = watch('insurance_address');
+  const visitSame = watch('visit_same_as_insurance') !== false;
+  const watchedLat = watch('lat');
+  const watchedLng = watch('lng');
+
+  // ── 住所 2 つ (設計 2026-10-22 §4-1) ──────────────────────────────────────────
+  // 「同じ」の間は訪問先 = 保険証の住所。拠点の自動判定・送る中身は訪問先 (address) を見る。
+  React.useEffect(() => {
+    if (!visitSame) return;
+    const next = watchedInsuranceAddress ?? '';
+    if ((getValues('address') ?? '') !== next) {
+      setValue('address', next, { shouldDirty: true });
+    }
+  }, [visitSame, watchedInsuranceAddress, getValues, setValue]);
+
+  /** 「別の場所」で入れた訪問先。「同じ」へ切り替えて戻したときに元に戻す。 */
+  const separateVisitRef = React.useRef<Pick<PatientFormValues, 'address' | 'lat' | 'lng'>>(
+    defaultValues && defaultValues.visit_same_as_insurance === false
+      ? { address: defaultValues.address, lat: defaultValues.lat, lng: defaultValues.lng }
+      : { address: '', lat: '', lng: '' },
+  );
+
+  const switchVisitSame = (same: boolean) => {
+    if (same === visitSame) return;
+    const opts = { shouldDirty: true } as const;
+    if (same) {
+      separateVisitRef.current = {
+        address: getValues('address') ?? '',
+        lat: getValues('lat') ?? '',
+        lng: getValues('lng') ?? '',
+      };
+      // 位置は保険証の住所から求め直す (別の場所の位置を残さない)。
+      setValue('lat', '', opts);
+      setValue('lng', '', opts);
+    } else {
+      const prev = separateVisitRef.current;
+      setValue('address', prev.address, opts);
+      setValue('lat', prev.lat, opts);
+      setValue('lng', prev.lng, opts);
+    }
+    setValue('visit_same_as_insurance', same, opts);
+  };
+
+  const applySameGeocode = React.useCallback(
+    (lat: string, lng: string) => {
+      setValue('lat', lat, { shouldValidate: true, shouldDirty: true });
+      setValue('lng', lng, { shouldValidate: true, shouldDirty: true });
+    },
+    [setValue],
+  );
+
+  const insuranceMissing =
+    !(watchedInsuranceAddress ?? '').trim() && !visitSame && !!(watchedAddress ?? '').trim();
+  const separateMapUrl = googleMapsPlaceUrl(watchedAddress);
 
   // ── 特別訪問週間 (special-visit-week) ────────────────────────────────────────
   // 編集モード (= patientId が渡されている既存患者) でのみ導線を出す。
@@ -297,20 +355,109 @@ export function PatientForm({
       </Card>
 
       <Card className="p-5 space-y-4">
-        <h2 className="font-serif text-lg font-bold text-text-primary">連絡先</h2>
-        <AddressGeocodeField
-          mode="rhf"
-          formMethods={form}
-          addressFieldName="address"
-          latFieldName="lat"
-          lngFieldName="lng"
-          disabled={submitting}
-        />
-        {(errors.address?.message || errors.lat?.message || errors.lng?.message) && (
+        <h2 className="font-serif text-lg font-bold text-text-primary">住所</h2>
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="font-medium text-text-secondary">保険証の住所</span>
+          <Input
+            {...register('insurance_address')}
+            data-testid="insurance-address-input"
+            placeholder="例: 千葉県千葉市花見川区こてはし台1-2-3"
+            disabled={submitting}
+          />
+          <span className="text-xs text-text-muted">
+            レセプトに使う住所です。カイポケと同じ住所を入れます。
+          </span>
+        </label>
+        {insuranceMissing ? (
+          <p
+            className="rounded-md border border-border-warning bg-warning-bg px-3 py-2 text-xs text-warning-strong"
+            data-testid="insurance-address-missing"
+          >
+            ⚠
+            保険証の住所が未記入です。レセプトに使う住所なので、カイポケと同じ住所を入れてください。
+          </p>
+        ) : null}
+
+        <div className="flex flex-col gap-1 text-sm">
+          <span className="font-medium text-text-secondary">実際の訪問先</span>
+          <div
+            role="group"
+            aria-label="実際の訪問先"
+            className="inline-flex w-fit max-w-full divide-x divide-border-default overflow-hidden rounded-md border border-border-default"
+          >
+            {(
+              [
+                [true, '保険証の住所と同じ'],
+                [false, '別の場所'],
+              ] as const
+            ).map(([same, label]) => (
+              <button
+                key={label}
+                type="button"
+                aria-pressed={visitSame === same}
+                onClick={() => switchVisitSame(same)}
+                disabled={submitting}
+                className={`px-3 py-1.5 text-sm ${
+                  visitSame === same
+                    ? 'bg-brand-primary/10 font-bold text-brand-primary'
+                    : 'bg-bg-base text-text-primary hover:bg-bg-muted'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {visitSame ? (
+          <SameAsInsurancePane
+            address={watchedInsuranceAddress ?? ''}
+            lat={watchedLat ?? ''}
+            lng={watchedLng ?? ''}
+            onGeocoded={applySameGeocode}
+            disabled={submitting}
+          />
+        ) : (
+          <div className="space-y-2" data-testid="visit-separate-pane">
+            <AddressGeocodeField
+              mode="rhf"
+              formMethods={form}
+              addressFieldName="address"
+              latFieldName="lat"
+              lngFieldName="lng"
+              addressLabel="訪問先の住所"
+              disabled={submitting}
+            />
+            <p className="text-xs text-text-muted">
+              入院・施設・ご家族の家など、実際に伺う場所。空のまま保存すると「保険証の住所と同じ」に戻ります。
+            </p>
+            {separateMapUrl ? (
+              <a
+                href={separateMapUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-brand-primary underline"
+              >
+                地図で見る
+              </a>
+            ) : null}
+          </div>
+        )}
+        {(errors.insurance_address?.message ||
+          errors.address?.message ||
+          errors.lat?.message ||
+          errors.lng?.message) && (
           <p className="text-xs text-error">
-            {errors.address?.message ?? errors.lat?.message ?? errors.lng?.message}
+            {errors.insurance_address?.message ??
+              errors.address?.message ??
+              errors.lat?.message ??
+              errors.lng?.message}
           </p>
         )}
+        <p className="rounded-md bg-info-bg px-3 py-2 text-xs text-info-strong">
+          ⓘ QR の「場所違い」の判定、移動時間、ならし、地図のリンクは、
+          <b>実際の訪問先</b>で計算します。
+        </p>
       </Card>
 
       <Card className="p-5 space-y-4">
@@ -570,6 +717,82 @@ export function PatientForm({
         />
       ) : null}
     </form>
+  );
+}
+
+interface SameAsInsurancePaneProps {
+  address: string;
+  lat: string;
+  lng: string;
+  onGeocoded: (lat: string, lng: string) => void;
+  disabled?: boolean;
+}
+
+/**
+ * 「保険証の住所と同じ」のときの訪問先 (入力はできない)。保険証の住所から位置を
+ * 自動で求めて lat/lng に入れる (AddressGeocodeField と同じ仕組み・サーバーは geocode しない)。
+ */
+function SameAsInsurancePane({
+  address,
+  lat,
+  lng,
+  onGeocoded,
+  disabled,
+}: SameAsInsurancePaneProps) {
+  const {
+    data: geo,
+    error,
+    isLoading,
+  } = useGeocodeOnAddressChange(address, 800, {
+    enabled: !disabled,
+  });
+  const lastAppliedHashRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!geo || geo.address_hash === lastAppliedHashRef.current) return;
+    lastAppliedHashRef.current = geo.address_hash;
+    onGeocoded(String(geo.lat), String(geo.lng));
+  }, [geo, onGeocoded]);
+
+  const trimmed = address.trim();
+  const mapUrl = googleMapsPlaceUrl(trimmed);
+  const latNum = Number(lat);
+  const lngNum = Number(lng);
+  const hasPosition =
+    lat !== '' && lng !== '' && Number.isFinite(latNum) && Number.isFinite(lngNum);
+  const position = isLoading
+    ? '位置を調べています…'
+    : hasPosition
+      ? `位置 ${latNum.toFixed(4)}・${lngNum.toFixed(4)}（住所から自動）`
+      : error
+        ? '住所から位置が見つかりませんでした'
+        : '位置はまだありません';
+
+  return (
+    <div
+      className="flex flex-col gap-0.5 rounded-md border border-dashed border-border-default bg-bg-muted/40 px-3 py-2 text-sm"
+      data-testid="visit-same-pane"
+    >
+      {trimmed ? (
+        <>
+          <span className="font-medium text-text-primary">{trimmed}</span>
+          <span className="text-xs text-text-muted">
+            {position}
+            {mapUrl ? (
+              <a
+                href={mapUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-3 text-brand-primary underline"
+              >
+                地図で見る
+              </a>
+            ) : null}
+          </span>
+        </>
+      ) : (
+        <span className="text-text-muted">（保険証の住所が空です。訪問先の位置は作れません）</span>
+      )}
+    </div>
   );
 }
 

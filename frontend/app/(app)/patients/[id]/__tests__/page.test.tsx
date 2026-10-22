@@ -516,7 +516,7 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
 
   const DRIFT = { distance_m: 441, suggested_lat: 35.604, suggested_lng: 140.1, scans: 6, days: 3 };
 
-  it('14. 管理者には登録の位置のずれのお知らせが連絡先に出る', () => {
+  it('14. 管理者には登録の位置のずれのお知らせが住所に出る', () => {
     setupMocks({ role: 'admin', locationDrift: DRIFT });
 
     renderPage();
@@ -534,5 +534,84 @@ describe('PatientDetailPage — W37 Phase 3-D', () => {
 
     expect(screen.queryByTestId('location-drift-notice')).not.toBeInTheDocument();
     expect(usePatientLocationDrift).toHaveBeenCalledWith(PATIENT_ID, { enabled: false });
+  });
+
+  // ─── 住所 2 つ (設計 2026-10-22・モック patient-two-addresses-mock の「詳細」) ───
+  describe('住所 (保険証の住所・実際の訪問先)', () => {
+    const INS = '千葉県千葉市花見川区こてはし台9-9-9';
+    const VISIT = '千葉県千葉市稲毛区園生町99-9';
+
+    function addressCard(): HTMLElement {
+      return screen.getByRole('heading', { level: 2, name: '住所' }).parentElement as HTMLElement;
+    }
+
+    it('同じ: 2 行で「保険証の住所と同じ」・札なし', () => {
+      setupMocks({
+        patientOverrides: { insurance_address: INS, visit_same_as_insurance: true, address: INS },
+      });
+      renderPage();
+
+      expect(screen.queryByRole('heading', { level: 2, name: '連絡先' })).not.toBeInTheDocument();
+      const card = addressCard();
+      expect(card).toHaveTextContent(`保険証の住所${INS}`);
+      expect(card).toHaveTextContent('実際の訪問先保険証の住所と同じ');
+      expect(card.querySelector('a')?.getAttribute('href')).toContain(encodeURIComponent(INS));
+      expect(screen.queryByTestId('badge-visit-separate')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('badge-insurance-missing')).not.toBeInTheDocument();
+    });
+
+    it('別: 訪問先の住所を出し、名前の横に「訪問先は別」', () => {
+      setupMocks({
+        patientOverrides: {
+          insurance_address: INS,
+          visit_same_as_insurance: false,
+          address: VISIT,
+        },
+      });
+      renderPage();
+
+      const card = addressCard();
+      expect(card).toHaveTextContent(`保険証の住所${INS}`);
+      expect(card).toHaveTextContent(`実際の訪問先${VISIT}`);
+      expect(card.querySelector('a')?.getAttribute('href')).toContain(encodeURIComponent(VISIT));
+      expect(screen.getByTestId('badge-visit-separate')).toHaveTextContent('訪問先は別');
+    });
+
+    it('保険証の住所が空: 「未記入」と札を出す (訪問先は別の札は出さない)', () => {
+      setupMocks({
+        patientOverrides: {
+          insurance_address: null,
+          visit_same_as_insurance: false,
+          address: VISIT,
+        },
+      });
+      renderPage();
+
+      const card = addressCard();
+      expect(card).toHaveTextContent('保険証の住所未記入（レセプトに使う住所です）');
+      expect(card).toHaveTextContent(`実際の訪問先${VISIT}`);
+      expect(screen.getByTestId('badge-insurance-missing')).toHaveTextContent(
+        '保険証の住所 未記入',
+      );
+      expect(screen.queryByTestId('badge-visit-separate')).not.toBeInTheDocument();
+    });
+
+    it('職員: 保険証の住所の行も札も出さず、訪問先だけ', () => {
+      setupMocks({
+        role: 'staff',
+        patientOverrides: {
+          insurance_address: null,
+          visit_same_as_insurance: false,
+          address: VISIT,
+        },
+      });
+      renderPage();
+
+      const card = addressCard();
+      expect(card).not.toHaveTextContent('保険証の住所');
+      expect(card).toHaveTextContent(`実際の訪問先${VISIT}`);
+      expect(screen.queryByTestId('badge-visit-separate')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('badge-insurance-missing')).not.toBeInTheDocument();
+    });
   });
 });
