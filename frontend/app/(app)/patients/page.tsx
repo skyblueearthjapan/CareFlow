@@ -28,6 +28,7 @@ import {
   normalizePatientInsurance,
   normalizePatientSex,
   normalizePatientStatus,
+  patientAddressView,
 } from '@/lib/schemas/patient';
 import { formatStatusSince } from '@/lib/format/patientStatus';
 import { usePatients } from '@/lib/queries/patients';
@@ -345,13 +346,33 @@ export default function PatientsPage() {
                     p.insurance as string | null | undefined,
                   );
                   const statusNorm = normalizePatientStatus(p.status as string | null | undefined);
+                  // 住所の札 (設計 2026-10-22)。住所の列は無いので名前の下に付ける。管理者だけ。
+                  const addressView = canCreate ? patientAddressView(p) : null;
                   return (
                     <tr
                       key={p.id}
                       className="border-b border-border-default last:border-0 hover:bg-bg-muted/30"
                     >
                       <td className="px-3 py-2 tnum">{p.code}</td>
-                      <td className="px-3 py-2 font-medium text-text-primary">{p.name}</td>
+                      <td className="px-3 py-2 font-medium text-text-primary">
+                        {p.name}
+                        {addressView?.visitIsSeparate ? (
+                          <span
+                            className="mt-0.5 block w-fit rounded bg-success-bg px-2 text-xs font-medium text-success"
+                            data-testid="badge-visit-separate"
+                          >
+                            訪問先は別
+                          </span>
+                        ) : null}
+                        {addressView?.insuranceMissing ? (
+                          <span
+                            className="mt-0.5 block w-fit rounded bg-warning-bg px-2 text-xs font-medium text-warning-strong"
+                            data-testid="badge-insurance-missing"
+                          >
+                            保険証の住所 未記入
+                          </span>
+                        ) : null}
+                      </td>
                       <td className="px-3 py-2 text-text-secondary">{p.kana ?? '--'}</td>
                       <td className="px-3 py-2 text-text-secondary">
                         {sexNorm ? SEX_LABEL[sexNorm] : '--'}

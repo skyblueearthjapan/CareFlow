@@ -121,3 +121,55 @@ describe('患者マスタ ステータスタブ', () => {
     expect(screen.getByText('一時休止の患者様はいません')).toBeInTheDocument();
   });
 });
+
+describe('患者マスタ 住所の札 (設計 2026-10-22)', () => {
+  const INS = '千葉県千葉市花見川区こてはし台9-9-9';
+  const rows = [
+    {
+      ...makePatient('1', '青木 一郎', 'active'),
+      insurance_address: INS,
+      visit_same_as_insurance: true,
+      address: INS,
+    },
+    {
+      ...makePatient('2', '山田 花子', 'active'),
+      insurance_address: INS,
+      visit_same_as_insurance: false,
+      address: '千葉県千葉市稲毛区園生町99-9',
+    },
+    {
+      ...makePatient('3', '佐藤 次郎', 'active'),
+      insurance_address: null,
+      visit_same_as_insurance: false,
+      address: '千葉県千葉市美浜区磯辺9-9-9',
+    },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.history.replaceState(null, '', '/patients');
+  });
+
+  it('管理者: 訪問先が別の方に「訪問先は別」、保険証の住所が空の方に「未記入」を名前の下に付ける', () => {
+    setup(rows);
+    render(<PatientsPage />);
+    const rowOf = (name: string) => screen.getByText(name).closest('tr') as HTMLElement;
+
+    expect(rowOf('青木 一郎')).not.toHaveTextContent('訪問先は別');
+    expect(rowOf('青木 一郎')).not.toHaveTextContent('未記入');
+    expect(rowOf('山田 花子')).toHaveTextContent('訪問先は別');
+    expect(rowOf('佐藤 次郎')).toHaveTextContent('保険証の住所 未記入');
+    expect(rowOf('佐藤 次郎')).not.toHaveTextContent('訪問先は別');
+  });
+
+  it('職員: 札を出さない', () => {
+    setup(rows);
+    (useSession as Mock).mockReturnValue({
+      data: { user: { role: 'staff' } },
+      status: 'authenticated',
+    });
+    render(<PatientsPage />);
+    expect(screen.queryByTestId('badge-visit-separate')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('badge-insurance-missing')).not.toBeInTheDocument();
+  });
+});
