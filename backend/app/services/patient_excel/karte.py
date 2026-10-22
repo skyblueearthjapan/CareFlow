@@ -31,7 +31,7 @@ from uuid import UUID
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import FormulaRule
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -88,6 +88,9 @@ KARTE_TEMPLATE_PATH: Path = Path(__file__).resolve().parent / "templates" / "kar
 
 # 拠点コード → 自動表示用ラベル (B6). 「{office_label}（自動）」.
 OFFICE_AUTO_SUFFIX: str = "（自動）"
+
+# 住所 (D6) に添える保険証の住所の頭 (訪問先が別のときだけ・取込では読み飛ばす).
+KARTE_INSURANCE_PREFIX: str = "保険証："
 
 # 月..日 の 7 列を B..H に割り当てる (固定訪問スケジュール / 希望曜日).
 # B=2 .. H=8. WEEKDAY_LABELS (月火水木金土日) と同順.
@@ -310,9 +313,15 @@ def build_karte_workbook(
         if patient.insurance
         else None
     )
-    # B6: 拠点 (自動表示). D6: 住所.
+    # B6: 拠点 (自動表示). D6: 住所 (実際の訪問先)。訪問先が保険証の住所と別のときは
+    # 改行して「保険証：…」を添える (取込では読み飛ばす・設計 2026-10-22 §4-4)。
     ws["B6"].value = f"{office_label}{OFFICE_AUTO_SUFFIX}" if office_label else None
     ws["D6"].value = patient.address
+    if not patient.visit_same_as_insurance and patient.insurance_address:
+        ws[
+            "D6"
+        ].value = f"{patient.address or ''}\n{KARTE_INSURANCE_PREFIX}{patient.insurance_address}"
+        ws["D6"].alignment = Alignment(vertical="center", wrap_text=True)
 
     # ---- 訪問条件 (weekly_pattern) ----
     wp: dict[str, Any] = patient.weekly_pattern if isinstance(patient.weekly_pattern, dict) else {}
@@ -423,6 +432,18 @@ def _read_cell_str(ws: Worksheet, ref: str) -> str | None:
     if isinstance(v, time):
         return f"{v.hour:02d}:{v.minute:02d}"
     return str(v).strip() or None
+
+
+def _visit_address_from_cell(value: str | None) -> str | None:
+    """D6 から訪問先の住所だけを取り出す (添えた「保険証：…」の行は読まない)."""
+    if value is None:
+        return None
+    lines = [
+        line.strip()
+        for line in value.splitlines()
+        if line.strip() and not line.strip().startswith(KARTE_INSURANCE_PREFIX)
+    ]
+    return " ".join(lines) or None
 
 
 def _strip_office_auto_suffix(label: str | None) -> str | None:
@@ -542,7 +563,7 @@ def parse_karte_workbook(
     status = _read_cell_str(ws, "D5")
     insurance = _read_cell_str(ws, "F5")
     office_label = _read_cell_str(ws, "B6")
-    address = _read_cell_str(ws, "D6")
+    address = _visit_address_from_cell(_read_cell_str(ws, "D6"))
     frequency_per_week = _read_cell_str(ws, "B9")
     visit_frequency = _read_cell_str(ws, "D9")
     service_label = _read_cell_str(ws, "B12")
@@ -574,7 +595,11 @@ def parse_karte_workbook(
     ws_p.title = SHEET_PATIENTS
 
     # 患者マスタ ヘッダー (1 行目).
+    # カルテには「訪問先は保険証と同じ」の欄が無いので、その見出しは書かない
+    # (= 古い形式として取り込み、保険証の住所と「同じ」を変えない)。
     for col_idx, col_def in enumerate(PATIENT_COLUMNS, start=1):
+        if col_def["key"] == "visit_same_as_insurance":
+            continue
         ws_p.cell(row=1, column=col_idx, value=str(col_def["header"]))
 
     patient_values: dict[str, object | None] = {

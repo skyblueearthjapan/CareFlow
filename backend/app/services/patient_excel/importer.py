@@ -44,6 +44,7 @@ from app.schemas.v2.patient_excel import (
 )
 from app.services.office_assigner import PreloadedOfficeCities, load_office_cities_index
 from app.services.office_labels import office_code_short_pairs
+from app.services.patient_address import normalize_patient_addresses
 from app.services.patient_excel.schema import (
     DEFAULT_TIME_TYPE,
     INSURANCE_JA_TO_EN,
@@ -71,6 +72,7 @@ from app.services.patient_excel.schema import (
     TIME_TYPE_VALUES,
     VISIT_FREQUENCY_JA_TO_EN,
     VISIT_FREQUENCY_VALUES,
+    VISIT_SAME_AS_INSURANCE_HEADER,
     WEEKDAY_EN_LIST,
     WEEKDAY_LABEL_TO_INT,
     WEEKLY_COL_INDEX,
@@ -222,6 +224,94 @@ def _hhmm_to_time(s: str) -> time:
 
 def _row_is_empty(row: tuple[Any, ...]) -> bool:
     return all(_is_blank(v) for v in row)
+
+
+# ---------------------------------------------------------------------------
+# 2 つの住所 (保険証の住所・実際の訪問先) — docs/plans/patient-two-addresses-design-2026-10-22.md
+# ---------------------------------------------------------------------------
+
+_ADDRESS_ATTRS: tuple[str, ...] = ("insurance_address", "address", "visit_same_as_insurance")
+
+
+def has_address_columns(header_row: tuple[Any, ...] | None) -> bool:
+    """患者シートが「訪問先は保険証と同じ」の列を持つ新しい形式か (見出しで見る)."""
+    idx = PATIENT_COL_INDEX["visit_same_as_insurance"]
+    if not header_row or idx >= len(header_row):
+        return False
+    return _read_str(header_row[idx]) == VISIT_SAME_AS_INSURANCE_HEADER
+
+
+def read_patient_header(ws: Any) -> tuple[Any, ...]:
+    """患者シートの 1 行目 (見出し) を返す."""
+    return next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+
+
+def _read_visit_same_mark(value: Any) -> bool:
+    """「訪問先は保険証と同じ」セル: ○ = 同じ / 空 = 別. 失敗時は ValueError."""
+    if _is_blank(value):
+        return False
+    s = str(value).strip()
+    if s in ("○", "〇"):
+        return True
+    if s == "×":
+        return False
+    return bool(_read_bool(value))
+
+
+def excel_address_updates(
+    *,
+    address: str | None,
+    insurance_address: str | None,
+    visit_same_mark: bool | None,
+    current: Patient | None,
+) -> dict[str, Any]:
+    """Excel 1 行の 2 つの住所を保存のきまりに通し、ORM に書く値を返す.
+
+    ``address`` / ``insurance_address`` は取込方式 (通常 = 空セルは維持 / 完全置換 = 空は
+    NULL) を当てた後の値。``visit_same_mark`` が None = 列の無い古い形式: 今の「同じ」を
+    保ち、訪問先の住所が書き換えられていたら「別」にする (保険証の住所へ戻されて
+    編集が消えないように)。
+
+    新規 (``current`` None) は 3 列すべてを返す。既存は、きまりを当てた今の値と
+    変わらなければ空 (古いデータの食い違いを Excel の往復で書き換えない)、
+    変わるなら今の値と違う列だけを返す。
+    """
+    if visit_same_mark is None:
+        same = True if current is None else bool(current.visit_same_as_insurance)
+        current_address = None if current is None else current.address
+        if (
+            address
+            and address != (current_address or "").strip()
+            and address != (insurance_address or "").strip()
+        ):
+            same = False
+    else:
+        same = visit_same_mark
+    desired = normalize_patient_addresses(
+        insurance_address=insurance_address,
+        address=address,
+        visit_same_as_insurance=same,
+    )
+    values = {attr: getattr(desired, attr) for attr in _ADDRESS_ATTRS}
+    if current is None:
+        return values
+    baseline = normalize_patient_addresses(
+        insurance_address=current.insurance_address,
+        address=current.address,
+        visit_same_as_insurance=current.visit_same_as_insurance,
+    )
+    if desired == baseline:
+        return {}
+    return {k: v for k, v in values.items() if getattr(current, k, None) != v}
+
+
+def _cell_or_current(parsed: dict[str, Any], key: str, current: Any) -> Any:
+    """通常取込の文字列セル: 空セル (None) = 今の値 / CLEAR = None / SET = 値."""
+    v = parsed.get(key)
+    if v is None:
+        return current
+    tag, val = v
+    return None if tag == "CLEAR" else val
 
 
 # ---------------------------------------------------------------------------
@@ -521,6 +611,7 @@ def _parse_patient_row(
     staff_by_code: dict[str, Staff] | None = None,
     ng_staff_by_patient: dict[UUID, set[UUID]] | None = None,
     staff_code_by_id: dict[UUID, str] | None = None,
+    has_address_cols: bool = False,
 ) -> tuple[PatientExcelImportRow, dict[str, Any] | None]:
     """1 行を差分行に変換する.
 
@@ -638,8 +729,8 @@ def _parse_patient_row(
     parsed: dict[str, Any] = {}
     errors: list[str] = []
 
-    # name / kana / address / note: 文字列系
-    for k in ("name", "kana", "address", "note"):
+    # name / kana / address / insurance_address / note: 文字列系
+    for k in ("name", "kana", "address", "insurance_address", "note"):
         v = cells[k]
         if _is_blank(v):
             parsed[k] = None
@@ -647,6 +738,14 @@ def _parse_patient_row(
             parsed[k] = ("CLEAR", None)
         else:
             parsed[k] = ("SET", _read_str(v))
+
+    # 訪問先は保険証と同じ (○ / 空)。列の無い古い形式は None (= 今の値を保つ)。
+    visit_same_mark: bool | None = None
+    if has_address_cols:
+        try:
+            visit_same_mark = _read_visit_same_mark(cells["visit_same_as_insurance"])
+        except ValueError as exc:
+            errors.append(f"列「{VISIT_SAME_AS_INSURANCE_HEADER}」は ○ か空にしてください: {exc}")
 
     # patient_code (現在値と diff したいので raw を保持)
     if _is_blank(raw_code):
@@ -725,7 +824,9 @@ def _parse_patient_row(
     if _is_blank(raw_office):
         parsed["primary_office_id"] = None
         if office_index is not None:
-            addr_for_office = _read_str(cells.get("address"))
+            addr_for_office = _read_str(cells.get("address")) or _read_str(
+                cells.get("insurance_address")
+            )
             auto_office_id = office_index.resolve_office_id(addr_for_office)
     elif is_magic_clear(raw_office):
         parsed["primary_office_id"] = ("CLEAR", None)
@@ -791,6 +892,9 @@ def _parse_patient_row(
                     missing.append("patient_code")
                 continue
             v = parsed.get(parsed_key)
+            if spec_key == "address" and (v is None or v[0] == "CLEAR"):
+                # 訪問先の住所が空でも、保険証の住所があれば訪問先は「同じ」になる。
+                v = parsed.get("insurance_address")
             if v is None or (isinstance(v, tuple) and v[0] == "CLEAR"):
                 missing.append(spec_key)
         if missing:
@@ -859,7 +963,6 @@ def _parse_patient_row(
                 "sex": "sex",
                 "status": "status",
                 "insurance": "insurance",
-                "address": "address",
                 "lat": "lat",
                 "lng": "lng",
                 "primary_office_id": "primary_office_id",
@@ -868,6 +971,24 @@ def _parse_patient_row(
                 "requires_multiple_staff": "requires_multiple_staff",
                 "note": "note",
             }
+            # 2 つの住所 (address / insurance_address / visit_same_as_insurance) は
+            # 保存のきまりを通して決める (空セル = 旧値維持)。
+            for orm_attr, new_val in excel_address_updates(
+                address=_cell_or_current(parsed, "address", resurrect_target.address),
+                insurance_address=_cell_or_current(
+                    parsed, "insurance_address", resurrect_target.insurance_address
+                ),
+                visit_same_mark=visit_same_mark,
+                current=resurrect_target,
+            ).items():
+                changes_for_view.append(
+                    PatientExcelChange(
+                        field=orm_attr,
+                        old_value=_serializable(getattr(resurrect_target, orm_attr, None)),
+                        new_value=_serializable(new_val),
+                    )
+                )
+                updates[orm_attr] = new_val
             for parsed_key, orm_attr in field_map_resurrect.items():
                 v = parsed.get(parsed_key)
                 if v is None:
@@ -951,7 +1072,7 @@ def _parse_patient_row(
         }
         # 必須以外も含めて値をフラット化.
         for k, v in parsed.items():
-            if k in ("code",):
+            if k in ("code", "address", "insurance_address"):
                 continue
             if v is None:
                 # 空セル: 触らない (新規時は default に任せる).
@@ -960,6 +1081,15 @@ def _parse_patient_row(
                 tag, val = v
                 # CLEAR は新規時は単に「None で INSERT」と等価.
                 new_dict[k] = val
+        # 2 つの住所は保存のきまりを通す。
+        new_dict.update(
+            excel_address_updates(
+                address=_cell_or_current(parsed, "address", None),
+                insurance_address=_cell_or_current(parsed, "insurance_address", None),
+                visit_same_mark=visit_same_mark,
+                current=None,
+            )
+        )
         # Phase G-49: 拠点コード空欄の新規患者は住所から自動割当 (UI 挙動と一致).
         # 明示コードがあれば上の loop で既にセット済 (auto では上書きしない).
         if auto_office_id is not None and "primary_office_id" not in new_dict:
@@ -1029,7 +1159,6 @@ def _parse_patient_row(
         "sex": "sex",
         "status": "status",
         "insurance": "insurance",
-        "address": "address",
         "lat": "lat",
         "lng": "lng",
         "primary_office_id": "primary_office_id",
@@ -1038,6 +1167,23 @@ def _parse_patient_row(
         "requires_multiple_staff": "requires_multiple_staff",
         "note": "note",
     }
+    # 2 つの住所は保存のきまりを通して決める (空セル = 触らない)。
+    for orm_attr, new_val in excel_address_updates(
+        address=_cell_or_current(parsed, "address", existing_patient.address),
+        insurance_address=_cell_or_current(
+            parsed, "insurance_address", existing_patient.insurance_address
+        ),
+        visit_same_mark=visit_same_mark,
+        current=existing_patient,
+    ).items():
+        changes.append(
+            PatientExcelChange(
+                field=orm_attr,
+                old_value=_serializable(getattr(existing_patient, orm_attr, None)),
+                new_value=_serializable(new_val),
+            )
+        )
+        update_dict[orm_attr] = new_val
     for parsed_key, orm_attr in field_map.items():
         v = parsed.get(parsed_key)
         if v is None:
@@ -2243,6 +2389,8 @@ async def parse_and_diff(
 
     # ---- 患者シート ----
     ws_p = wb[SHEET_PATIENTS]
+    # 2026-10-22: 「保険証の住所」「訪問先は保険証と同じ」の列があるか (古い形式は無い)。
+    has_address_cols = has_address_columns(read_patient_header(ws_p))
     patient_rows: list[PatientExcelImportRow] = []
     patient_ops: list[dict[str, Any]] = []
     already_seen_codes: set[str] = set()
@@ -2266,6 +2414,7 @@ async def parse_and_diff(
             staff_by_code=staff_by_code,
             ng_staff_by_patient=ng_staff_by_patient,
             staff_code_by_id=staff_code_by_id,
+            has_address_cols=has_address_cols,
         )
         patient_rows.append(diff_row)
         if op is not None:

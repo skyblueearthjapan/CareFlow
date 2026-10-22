@@ -68,6 +68,7 @@ from app.services.patient_excel.schema import (
     STATUS_EN_TO_JA,
     TIME_TYPE_GREYOUT_VALUES,
     VISIT_FREQUENCY_EN_TO_JA,
+    VISIT_SAME_MARK,
     build_office_code_short_maps,
     course_token,
     weekdays_en_to_yesno_cells,
@@ -333,6 +334,9 @@ def _write_patient_row(
         "delete_flag": None,
         # NG スタッフ: 無ければ空セル (= import 側で「維持」).
         "ng_staff_codes": ((ng_staff_codes_by_patient or {}).get(patient.id) or None),
+        # 2 つの住所 (2026-10-22): 保険証の住所と「訪問先は保険証と同じ」(○ / 空 = 別).
+        "insurance_address": patient.insurance_address,
+        "visit_same_as_insurance": VISIT_SAME_MARK if patient.visit_same_as_insurance else None,
     }
     for col_key, col_idx in PATIENT_COL_INDEX.items():
         ws.cell(row=row_idx, column=col_idx + 1, value=values.get(col_key))

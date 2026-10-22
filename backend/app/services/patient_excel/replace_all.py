@@ -56,8 +56,12 @@ from app.services.patient_excel.importer import (
     _merge_weekly_pattern,
     _parse_ng_staff_cell,
     _parse_weekly_from_patient_cells,
+    _read_visit_same_mark,
     apply_ng_staff_updates,
     cleanup_soft_deleted_patient_links,
+    excel_address_updates,
+    has_address_columns,
+    read_patient_header,
 )
 from app.services.patient_excel.importer import (
     _parse_weekly_row as _parse_weekly_row_replace,  # noqa: E402
@@ -219,6 +223,7 @@ def _parse_patient_row_replace(
     staff_by_code: dict[str, Staff] | None = None,
     ng_staff_by_patient: dict[UUID, set[UUID]] | None = None,
     staff_code_by_id: dict[UUID, str] | None = None,
+    has_address_cols: bool = False,
 ) -> tuple[PatientExcelImportRow, dict[str, Any] | None]:
     """1 行をパースして差分行 + apply 用 op を返す.
 
@@ -236,6 +241,10 @@ def _parse_patient_row_replace(
       いない古いバックアップを取り込むと NG 設定が全消しになる事故が起きる.
       NG は「このスタッフを絶対に当ててはいけない」という安全側の情報なので、
       暗黙の消失は許容できない (weekly_pattern の全消し事故防止と同じ判断).
+
+    **2 つの住所** (2026-10-22): 新しい形式 (「訪問先は保険証と同じ」列あり) は保険証の
+    住所の空セル = NULL・○ が無い = 別の場所。列の無い古い形式は保険証の住所と「同じ」を
+    変えない (古いバックアップで保険証の住所を消さない)。どちらも保存のきまりを通す.
     """
     staff_by_code = staff_by_code if staff_by_code is not None else {}
     ng_staff_by_patient = ng_staff_by_patient if ng_staff_by_patient is not None else {}
@@ -293,6 +302,26 @@ def _parse_patient_row_replace(
     # 文字列系
     for k in ("name", "kana", "address", "note"):
         parsed[k] = _read_str(cells[k])
+    # 2 つの住所: 古い形式 (列なし) は保険証の住所と「同じ」を変えない (None = 今の値)。
+    visit_same_mark: bool | None = None
+    if has_address_cols:
+        parsed["insurance_address"] = _read_str(cells["insurance_address"])
+        try:
+            visit_same_mark = _read_visit_same_mark(cells["visit_same_as_insurance"])
+        except ValueError as exc:
+            errors.append(f"列「訪問先は保険証と同じ」は ○ か空にしてください: {exc}")
+
+    def _address_updates(current: Patient | None) -> dict[str, Any]:
+        if has_address_cols:
+            insurance = parsed.get("insurance_address")
+        else:
+            insurance = current.insurance_address if current is not None else None
+        return excel_address_updates(
+            address=parsed.get("address"),
+            insurance_address=insurance,
+            visit_same_mark=visit_same_mark,
+            current=current,
+        )
 
     # patient_code (新規時は必須).
     parsed["code"] = patient_code
@@ -354,7 +383,9 @@ def _parse_patient_row_replace(
     if _is_blank(raw_office):
         parsed["primary_office_id"] = None
         if office_index is not None:
-            auto_office_id = office_index.resolve_office_id(_read_str(cells.get("address")))
+            auto_office_id = office_index.resolve_office_id(
+                _read_str(cells.get("address")) or parsed.get("insurance_address")
+            )
     else:
         oc = _read_str(raw_office)
         office = offices_by_code.get(oc) if oc else None
@@ -418,7 +449,7 @@ def _parse_patient_row_replace(
         "sex": "sex",
         "status": "status",
         "insurance": "insurance",
-        "address": "address",
+        # address / insurance_address / visit_same_as_insurance は _address_updates で決める。
         "lat": "lat",
         "lng": "lng",
         "primary_office_id": "primary_office_id",
@@ -459,6 +490,16 @@ def _parse_patient_row_replace(
                 )
             )
             update_dict["code"] = patient_code
+
+        for orm_attr, new_val in _address_updates(existing_patient).items():
+            changes.append(
+                PatientExcelChange(
+                    field=orm_attr,
+                    old_value=_serializable(getattr(existing_patient, orm_attr, None)),
+                    new_value=_serializable(new_val),
+                )
+            )
+            update_dict[orm_attr] = new_val
 
         for parsed_key, orm_attr in field_map.items():
             new_val = parsed.get(parsed_key)
@@ -520,9 +561,12 @@ def _parse_patient_row_replace(
     missing: list[str] = []
     if not patient_code:
         missing.append("patient_code")
-    for spec_key in ("name", "sex", "status", "address"):
+    for spec_key in ("name", "sex", "status"):
         if parsed.get(spec_key) is None:
             missing.append(spec_key)
+    # 訪問先の住所が空でも、保険証の住所があれば訪問先は「同じ」になる。
+    if parsed.get("address") is None and parsed.get("insurance_address") is None:
+        missing.append("address")
     if missing:
         return (
             PatientExcelImportRow(
@@ -553,6 +597,15 @@ def _parse_patient_row_replace(
                 new_value=None,
             )
         ]
+        for orm_attr, new_val in _address_updates(resurrect_target).items():
+            changes_for_view.append(
+                PatientExcelChange(
+                    field=orm_attr,
+                    old_value=_serializable(getattr(resurrect_target, orm_attr, None)),
+                    new_value=_serializable(new_val),
+                )
+            )
+            updates[orm_attr] = new_val
         for parsed_key, orm_attr in field_map.items():
             new_val = parsed.get(parsed_key)
             old_val = getattr(resurrect_target, orm_attr, None)
@@ -613,6 +666,7 @@ def _parse_patient_row_replace(
         if val is None:
             continue  # default に任せる
         new_dict[orm_attr] = val
+    new_dict.update(_address_updates(None))
 
     changes_for_view = [
         PatientExcelChange(field=k, old_value=None, new_value=_serializable(new_dict[k]))
@@ -1309,6 +1363,8 @@ async def parse_and_diff_replace_all(
 
     # ---- patient sheet ----
     ws_p = wb[SHEET_PATIENTS]
+    # 2026-10-22: 「保険証の住所」「訪問先は保険証と同じ」の列があるか (古い形式は無い)。
+    has_address_cols = has_address_columns(read_patient_header(ws_p))
     patient_rows: list[PatientExcelImportRow] = []
     patient_ops: list[dict[str, Any]] = []
     already_seen_codes: set[str] = set()
@@ -1332,6 +1388,7 @@ async def parse_and_diff_replace_all(
             staff_by_code=staff_by_code,
             ng_staff_by_patient=ng_staff_by_patient,
             staff_code_by_id=staff_code_by_id,
+            has_address_cols=has_address_cols,
         )
         patient_rows.append(diff_row)
         if op is not None:

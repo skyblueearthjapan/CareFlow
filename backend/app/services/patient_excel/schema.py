@@ -110,6 +110,11 @@ BOOL_JA_TO_BOOL: Final[dict[str, bool]] = {"はい": True, "いいえ": False}
 # 〇 = 選択, × = 非選択. import 側は 〇/はい/TRUE/1/yes を選択扱い (後方互換).
 WEEKDAY_MARK_VALUES: Final[tuple[str, ...]] = ("〇", "×")
 
+# 2026-10-22: 「訪問先は保険証と同じ」列。○ = 同じ / 空 = 別の場所。
+VISIT_SAME_MARK: Final = "○"
+VISIT_SAME_MARK_VALUES: Final[tuple[str, ...]] = (VISIT_SAME_MARK,)
+VISIT_SAME_AS_INSURANCE_HEADER: Final = "訪問先は保険証と同じ"
+
 # ---------------------------------------------------------------------------
 # Phase G-49: 入力性向上のための dropdown 値レンジ
 # ---------------------------------------------------------------------------
@@ -322,7 +327,9 @@ PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
     {"key": "sex", "header": "性別", "width": 10, "dropdown": SEX_JA_VALUES},
     {"key": "status", "header": "ステータス", "width": 12, "dropdown": STATUS_JA_VALUES},
     {"key": "insurance", "header": "保険区分", "width": 12, "dropdown": INSURANCE_JA_VALUES},
-    {"key": "address", "header": "住所", "width": 32, "dropdown": None},
+    # 2026-10-22: address は「実際の訪問先」。見出しを「住所」から変えた (列位置で読むので
+    # 古い見出しのファイルもそのまま取り込める)。保険証の住所は末尾の列。
+    {"key": "address", "header": "訪問先の住所", "width": 32, "dropdown": None},
     {"key": "lat", "header": "緯度", "width": 12, "dropdown": None},
     {"key": "lng", "header": "経度", "width": 12, "dropdown": None},
     {"key": "office_code", "header": "拠点コード", "width": 12, "dropdown": None},
@@ -428,6 +435,17 @@ PATIENT_COLUMNS: Final[list[dict[str, object]]] = [
         "header": "NGスタッフコード (カンマ区切り, 解除は <CLEAR>)",
         "width": 32,
         "dropdown": None,
+    },
+    # ---- 2 つの住所 (docs/plans/patient-two-addresses-design-2026-10-22.md §4-4) ----
+    # 保険証の住所 (レセプト・カイポケと同じ)。空セル = 維持 / ``<CLEAR>`` = 消す。
+    # 訪問先は保険証と同じ: ○ = 同じ / 空 = 別の場所 (この列がある新しい形式のときだけ)。
+    # この 2 列が無い古い形式のファイルは、保険証の住所と「同じ」を変えない。
+    {"key": "insurance_address", "header": "保険証の住所", "width": 32, "dropdown": None},
+    {
+        "key": "visit_same_as_insurance",
+        "header": VISIT_SAME_AS_INSURANCE_HEADER,
+        "width": 18,
+        "dropdown": VISIT_SAME_MARK_VALUES,
     },
 ]
 
