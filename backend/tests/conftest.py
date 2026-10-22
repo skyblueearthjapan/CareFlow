@@ -107,3 +107,29 @@ async def test_user(db) -> User:
     await db.commit()
     await db.refresh(user)
     return user
+
+
+#: ``fake_visit_geocode`` が返す位置 (患者の訪問先の位置をサーバーで求める経路の試験用)。
+FAKE_VISIT_LAT_LNG = (35.6, 140.1)
+
+
+@pytest.fixture
+def fake_visit_geocode(monkeypatch) -> list[str]:
+    """訪問先の住所 → 位置 (Google) を偽物に差し替える. 呼ばれた住所の一覧を返す.
+
+    2026-10-22: 訪問先が変わったのに座標が無いとき、API・Excel 取込はサーバーで位置を
+    求める (``app.services.geocoding.cached``)。試験では外へ出さない。
+    """
+    from app.services.geocoding.client import GeocodeResult
+
+    calls: list[str] = []
+
+    async def _fake(address: str, **kwargs) -> GeocodeResult:
+        calls.append(address)
+        lat, lng = FAKE_VISIT_LAT_LNG
+        return GeocodeResult(
+            lat=lat, lng=lng, formatted_address=address, place_id="fake", status="OK"
+        )
+
+    monkeypatch.setattr("app.services.geocoding.cached.geocode_address", _fake)
+    return calls

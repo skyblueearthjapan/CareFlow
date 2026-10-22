@@ -112,6 +112,14 @@ PATIENT_UPDATE_FORBIDDEN = {
 }
 
 
+#: 2 つの住所と訪問先の位置（サーバーが互いにそろえる）。
+_ADDRESS_KEYS = ("insurance_address", "visit_same_as_insurance", "address", "lat", "lng")
+_ADDRESS_422_HINT = (
+    "訪問先を別の場所にするなら visit_same_as_insurance: false・address・lat/lng を一緒に。"
+    "位置が見つからないときは確かめた lat/lng を入れる"
+)
+
+
 @register
 class PatientUpdate(Op):
     """患者マスターの基本項目を変える（女性限定・2 名体制・拠点・住所・保険 など）。
@@ -119,10 +127,13 @@ class PatientUpdate(Op):
     API: PATCH /patients/{patient_id}（backend/app/api/v1/patients.py:278・admin・PatientUpdate extra=forbid）。
     送った項目だけが変わる（_model_dump_for_orm(partial=True)＝exclude_unset・patients.py:85-109）。
     明示の null は「消す」（visit_category だけは null 不可で 422・schemas/v2/patient.py:310）。
-    住所を変えても座標は自動では変わらない（PATCH は setattr だけ）→ lat/lng も一緒に送る。
     住所は 2 つ（2026-10-22）: insurance_address＝保険証の住所（座標なし）・address/lat/lng＝実際の訪問先。
     visit_same_as_insurance が true のあいだ、サーバーは address を保険証の住所にそろえる
-    （services/patient_address.py）→ 訪問先だけを別の場所にするなら visit_same_as_insurance: false も送る。
+    （services/patient_address.py）→ 訪問先だけを別の場所にするなら visit_same_as_insurance: false も送る
+    （「同じ」のまま違う address を送ると 422）。
+    訪問先が変わったのに新しい lat/lng が無いと、サーバーが住所から位置を求める（求められなければ 422）。
+    → 今が「同じ」の方の insurance_address を変えるとき・visit_same_as_insurance: true に戻すときも、
+      確かめた lat/lng を一緒に送るのが望ましい（必須ではない。今の「同じ／別」は snapshot で読める）。
     op: {"op":"patient-update","patient_id":"…","changes":{"sex_restriction":"female_only"},"label":"…"}
     """
 
@@ -163,9 +174,22 @@ class PatientUpdate(Op):
     def request(self, op):
         return ("PATCH", f"/patients/{op['patient_id']}", dict(op["changes"]))
 
+    def execute(self, api, op):
+        try:
+            return super().execute(api, op)
+        except ApiError as e:
+            detail = e.body.get("detail") if isinstance(e.body, dict) else None
+            if e.status == 422 and isinstance(detail, str) and "訪問先" in detail:
+                raise ApiError(422, f"{detail}（{_ADDRESS_422_HINT}）") from e
+            raise
+
     def snapshot(self, api, op):
         p = api.get(f"/patients/{op['patient_id']}")
-        return {"name": p.get("name"), "fields": {k: p.get(k) for k in op["changes"]}}
+        keys = set(op["changes"])
+        if keys & set(_ADDRESS_KEYS):
+            # サーバーが訪問先と位置もそろえる → 戻すときのために 5 つとも写しておく。
+            keys |= set(_ADDRESS_KEYS)
+        return {"name": p.get("name"), "fields": {k: p.get(k) for k in keys}}
 
     def inverse(self, op, before):
         fields = dict(before.get("fields") or {})

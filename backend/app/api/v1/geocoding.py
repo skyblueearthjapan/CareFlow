@@ -18,12 +18,10 @@ Two routes:
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import DbDep, require_role
 from app.models.geocoding_cache import GeocodingCache
@@ -34,12 +32,11 @@ from app.schemas.geocoding import (
     GeocodeResponse,
     GeocodingCacheRead,
 )
+from app.services.geocoding.cached import geocode_with_cache
 from app.services.geocoding.client import (
     GeocodingQuotaExceeded,
     GeocodingServiceError,
-    geocode_address,
 )
-from app.services.geocoding.hash import address_hash, normalize_address
 
 logger = logging.getLogger(__name__)
 
@@ -59,39 +56,20 @@ async def geocode(
 ) -> GeocodeResponse:
     """Cache-first geocode lookup.
 
-    Flow:
+    Flow (``app.services.geocoding.cached.geocode_with_cache`` と共通):
       1. Normalize + sha256 the address.
       2. SELECT GeocodingCache by hash. On HIT (and not ``force_refresh``)
          return immediately with ``cached=True``.
       3. Call Google Maps. On success, upsert the cache row and return
          with ``cached=False``.
     """
-    normalized = normalize_address(payload.address)
-    if not normalized:
+    try:
+        hit = await geocode_with_cache(db, payload.address, force_refresh=payload.force_refresh)
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="address must contain non-whitespace characters",
-        )
-
-    addr_hash = address_hash(payload.address)
-
-    cached_row = await db.scalar(
-        select(GeocodingCache).where(GeocodingCache.address_hash == addr_hash)
-    )
-
-    if cached_row is not None and not payload.force_refresh:
-        return GeocodeResponse(
-            lat=float(cached_row.lat),
-            lng=float(cached_row.lng),
-            formatted_address=cached_row.address,
-            place_id=None,
-            cached=True,
-            address_hash=addr_hash,
-        )
-
-    # MISS or forced refresh — call upstream.
-    try:
-        result = await geocode_address(normalized)
+        ) from exc
     except GeocodingQuotaExceeded as exc:
         # Tell the client to wait one minute before retrying. We don't have
         # a precise reset-time from Google, so use a conservative constant.
@@ -106,54 +84,21 @@ async def geocode(
             detail=f"Geocoding service error: {exc}",
         ) from exc
 
-    if result is None:
+    if hit is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No geocoding result for the given address",
         )
-
-    # Upsert: update existing row in place when force_refresh hit, else insert.
-    now = datetime.now(UTC)
-    if cached_row is not None:
-        cached_row.lat = result.lat
-        cached_row.lng = result.lng
-        cached_row.address = result.formatted_address or normalized
-        cached_row.provider = "google"
-        cached_row.looked_up_at = now
-    else:
-        cached_row = GeocodingCache(
-            address_hash=addr_hash,
-            address=result.formatted_address or normalized,
-            lat=result.lat,
-            lng=result.lng,
-            provider="google",
-            looked_up_at=now,
-        )
-        db.add(cached_row)
-
-    try:
+    if not hit.cached:
         await db.commit()
-    except IntegrityError:
-        # Another concurrent request inserted the same hash — re-fetch and
-        # use that row instead of bubbling a 500 to the user.
-        await db.rollback()
-        existing = await db.scalar(
-            select(GeocodingCache).where(GeocodingCache.address_hash == addr_hash)
-        )
-        if existing is None:
-            raise HTTPException(  # noqa: B904
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to persist geocoding result",
-            )
-        cached_row = existing
 
     return GeocodeResponse(
-        lat=float(cached_row.lat),
-        lng=float(cached_row.lng),
-        formatted_address=cached_row.address,
-        place_id=result.place_id or None,
-        cached=False,
-        address_hash=addr_hash,
+        lat=hit.lat,
+        lng=hit.lng,
+        formatted_address=hit.formatted_address,
+        place_id=hit.place_id,
+        cached=hit.cached,
+        address_hash=hit.address_hash,
     )
 
 

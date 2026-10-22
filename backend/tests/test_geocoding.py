@@ -35,7 +35,8 @@ def _bearer(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-GEOCODE_PATH = "app.api.v1.geocoding.geocode_address"
+# 位置を求める処理は app.services.geocoding.cached に切り出した (患者の訪問先と共通).
+GEOCODE_PATH = "app.services.geocoding.cached.geocode_address"
 
 
 # --- /geocode -------------------------------------------------------------

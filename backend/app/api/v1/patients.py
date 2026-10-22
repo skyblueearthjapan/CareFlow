@@ -47,7 +47,13 @@ from app.schemas.patient_status import (
 )
 from app.schemas.v2.patient import PatientStatusV2
 from app.services.geocoding.hash import normalize_address
-from app.services.patient_address import apply_patient_address_rules
+from app.services.patient_address import (
+    VisitGeocodeError,
+    apply_patient_address_rules,
+    geocode_visit_address,
+    same_address_text,
+    visit_coords_needed,
+)
 from app.services.patient_code import generate_next_patient_code
 from app.services.patient_status_sync import (
     apply_status_change,
@@ -176,6 +182,50 @@ def _read_for_role(user: User, patient: Patient) -> Patient | PatientRead:
     return read.model_copy(update={"insurance_address": None})
 
 
+_SAME_BUT_DIFFERENT_ADDRESS_MESSAGE = (
+    "訪問先が保険証の住所と同じになっています。別の場所にするときは『別の場所』を選んでください。"
+)
+
+_ADDRESS_FIELDS = ("insurance_address", "address", "visit_same_as_insurance", "lat", "lng")
+
+
+async def _settle_visit_address(
+    db,
+    patient: Patient,
+    data: dict,
+    *,
+    old_address: str | None,
+    old_lat: object,
+    old_lng: object,
+) -> None:
+    """2 つの住所のきまりを当て、訪問先の位置をそろえる (設計 2026-10-22 §4-1).
+
+    訪問先が変わったのに要求に新しい lat/lng が無ければ、サーバーで位置を求める
+    (控え優先 → Google)。求められなければ 422。訪問先が空になったら lat/lng も空にする。
+    """
+    apply_patient_address_rules(patient)
+    if patient.address is None:
+        if old_address:
+            patient.lat = None
+            patient.lng = None
+        return
+    if not visit_coords_needed(
+        new_address=patient.address,
+        old_address=old_address,
+        requested_lat=data.get("lat"),
+        requested_lng=data.get("lng"),
+        old_lat=old_lat,
+        old_lng=old_lng,
+    ):
+        return
+    try:
+        patient.lat, patient.lng = await geocode_visit_address(db, patient.address)
+    except VisitGeocodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
 def _escape_like(text: str) -> str:
     """LIKE のワイルドカード (% / _) を文字として検索させる (staff_events.py と同じ)."""
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -278,6 +328,10 @@ async def create_patient(
     _user: Annotated[User, Depends(require_role("admin"))],
 ) -> Patient:
     data = _model_dump_for_orm(payload, partial=False)
+    # 2 つの住所のきまりと訪問先の位置を先に決める (自動採番のやり直しで求め直さない)。
+    probe = Patient(**data)
+    await _settle_visit_address(db, probe, data, old_address=None, old_lat=None, old_lng=None)
+    data.update({k: getattr(probe, k) for k in _ADDRESS_FIELDS})
 
     # Phase G-86: code が空 / None なら自動採番する。
     # 手入力 code はそのまま使い、衝突時は従来どおり 409 (_commit_or_409)。
@@ -335,10 +389,30 @@ async def update_patient(
     new_status = data.pop("status", None) if "status" in data else None
     status_changes = new_status is not None and new_status != patient.status
 
+    # 「同じ」のまま訪問先だけ違う値が来た (古い画面など) → 黙って捨てずに 422。
+    if (
+        "address" in data
+        and patient.visit_same_as_insurance
+        and data.get("visit_same_as_insurance", True)
+    ):
+        insurance = data.get("insurance_address", patient.insurance_address)
+        if (
+            (insurance or "").strip()
+            and (data["address"] or "").strip()
+            and not same_address_text(data["address"], insurance)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=_SAME_BUT_DIFFERENT_ADDRESS_MESSAGE,
+            )
+
+    old_address, old_lat, old_lng = patient.address, patient.lat, patient.lng
     for field, value in data.items():
         setattr(patient, field, value)
-    # 保存後の値で 2 つの住所のきまりを当てる (部分更新でも同じ)。
-    apply_patient_address_rules(patient)
+    # 保存後の値で 2 つの住所のきまりを当て、訪問先の位置をそろえる (部分更新でも同じ)。
+    await _settle_visit_address(
+        db, patient, data, old_address=old_address, old_lat=old_lat, old_lng=old_lng
+    )
 
     if status_changes:
         await apply_status_change(

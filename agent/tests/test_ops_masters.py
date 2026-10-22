@@ -172,6 +172,46 @@ def test_patient_update_inverse_drops_null_same_flag():
     assert inv is None
 
 
+class _AddressApi:
+    """住所まわりだけの小さな偽物: GET は今の患者、PATCH は決まった 422 を返す。"""
+
+    def __init__(self, detail=None):
+        self.detail = detail
+        self.patient = {"name": "患者", "insurance_address": "保険証の住所", "visit_same_as_insurance": True,
+                        "address": "保険証の住所", "lat": 35.6, "lng": 140.1, "note": "備考"}
+
+    def get(self, path, params=None):
+        return dict(self.patient)
+
+    def call(self, method, path, body=None):
+        raise ApiError(422, {"detail": self.detail})
+
+
+def test_patient_update_snapshot_keeps_all_address_fields_for_undo():
+    impl = PatientUpdate()
+    op = {"patient_id": PID, "changes": {"insurance_address": "引っ越し先"}, "label": "保険証の住所"}
+    before = impl.snapshot(_AddressApi(), op)
+    assert set(before["fields"]) == {"insurance_address", "visit_same_as_insurance", "address", "lat", "lng"}
+    [inv] = impl.inverse(op, before)
+    assert inv["changes"]["address"] == "保険証の住所" and inv["changes"]["lat"] == 35.6
+    assert impl.validate(inv) == []  # 戻しの案も検査を通る
+    # 住所に関係しない変更はその項目だけ
+    assert set(impl.snapshot(_AddressApi(), {"patient_id": PID, "changes": {"note": "x"}})["fields"]) == {"note"}
+
+
+def test_patient_update_explains_address_422():
+    impl = PatientUpdate()
+    op = {"patient_id": PID, "changes": {"insurance_address": "どこか"}}
+    msg = "訪問先の住所から位置が見つかりませんでした。緯度・経度を入れてください。"
+    with pytest.raises(ApiError) as ei:
+        impl.execute(_AddressApi(msg), op)
+    assert ei.value.status == 422 and msg in str(ei.value) and "visit_same_as_insurance" in str(ei.value)
+    # 住所と関係ない 422 はそのまま
+    with pytest.raises(ApiError) as ei:
+        impl.execute(_AddressApi("別の理由"), op)
+    assert "visit_same_as_insurance" not in str(ei.value)
+
+
 # --- patient-status -------------------------------------------------------------
 
 

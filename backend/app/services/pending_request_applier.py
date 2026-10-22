@@ -57,7 +57,7 @@ from app.models.visit import VISIT_STATUS_CANCELLED, VISIT_STATUS_PLANNED, Visit
 from app.schemas.v2.enums import RequestScope, RequestStatus, RequestType
 from app.services.geocoding.client import geocode_address
 from app.services.manager_course_sync import sync_manager_course_templates
-from app.services.patient_address import normalize_patient_addresses
+from app.services.patient_address import normalize_patient_addresses, same_address_text
 from app.services.patient_code import generate_next_patient_code
 from app.services.proposed_visits_pfv import (
     ProposedVisitsError,
@@ -439,29 +439,33 @@ async def _apply_patient_create(
 
     primary_office_id = _coerce_uuid(payload.get("primary_office_id"))
 
+    # 2 つの住所 (設計 2026-10-22 §4-4): 入力の住所を保険証の住所とし、訪問先は同じにする。
+    # 保険証の住所が別に来て、入力の住所と違うときだけ訪問先は「別」。
+    address = payload.get("address")
+    insurance_address = payload.get("insurance_address")
+    addresses = normalize_patient_addresses(
+        insurance_address=insurance_address or address,
+        address=address,
+        visit_same_as_insurance=not (
+            insurance_address and address and not same_address_text(address, insurance_address)
+        ),
+    )
+
     # 座標: payload に lat/lng が明示されていればそれを優先 (再 geocode しない)。
-    # 未指定 (None) かつ address があれば、患者 INSERT 前に住所を best-effort で
-    # ジオコードして lat/lng を補完する (モバイル経路では lat/lng=null で申請されるため)。
+    # 未指定 (None) かつ訪問先 (きまりを当てた後の address) があれば、患者 INSERT 前に
+    # best-effort でジオコードして lat/lng を補完する (モバイル経路では lat/lng=null で申請されるため)。
     # ジオコード失敗 / 例外時は lat/lng を None のままにして患者作成は続行する
     # (同一 TX・例外は握り潰してログのみ)。
     lat = payload.get("lat")
     lng = payload.get("lng")
-    address = payload.get("address")
-    if lat is None and lng is None and address and str(address).strip():
+    if lat is None and lng is None and addresses.address:
         try:
-            geo = await geocode_address(str(address))
+            geo = await geocode_address(addresses.address)
             if geo is not None:
                 lat = geo.lat
                 lng = geo.lng
         except Exception as exc:  # noqa: BLE001 - best-effort: 患者作成はブロックしない
             logger.warning("patient_create geocode failed (best-effort, skipped): %s", exc)
-
-    # 2 つの住所 (設計 2026-10-22 §4-4): 入力の住所を保険証の住所とし、訪問先は同じにする。
-    addresses = normalize_patient_addresses(
-        insurance_address=payload.get("insurance_address") or address,
-        address=address,
-        visit_same_as_insurance=True,
-    )
 
     def _build_patient(code_value: str) -> Patient:
         return Patient(

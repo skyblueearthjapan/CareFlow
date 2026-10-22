@@ -33,6 +33,9 @@ from app.services.patient_excel.schema import (
 )
 from app.services.pending_request_applier import PendingRequestApplier
 
+# 訪問先が変わると、座標が無ければサーバーが位置を求める → 試験では偽物 (conftest)。
+pytestmark = pytest.mark.usefixtures("fake_visit_geocode")
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -68,8 +71,10 @@ async def _make_patient(db, **overrides) -> Patient:
 
 
 async def _reload(db, patient_id) -> Patient:
-    db.expire_all()
-    p = await db.scalar(select(Patient).where(Patient.id == patient_id))
+    # 他の行 (利用者など) は期限切れにしない: その患者だけ読み直す。
+    p = await db.scalar(
+        select(Patient).where(Patient.id == patient_id).execution_options(populate_existing=True)
+    )
     assert p is not None
     return p
 
@@ -479,11 +484,15 @@ async def test_excel_export_and_roundtrip(client, db) -> None:
     summary = res.json()["summary"]
     assert summary["patients_update"] == 0 and summary["patients_error"] == 0, res.text
 
-    # 「別」の方に ○ を付ける → 訪問先は保険証の住所になる。
+    # 「別」の方に ○ を付ける → 訪問先は保険証の住所になる (訪問先の欄は空 = 書き換えない)。
+    # ○ のまま訪問先の欄に別の住所が残っていると行エラー (下の試験)。
     wb = load_workbook(BytesIO(exported))
-    wb[SHEET_PATIENTS].cell(row=r_diff, column=col["visit_same_as_insurance"], value="○")
-    # 「同じ」の方の保険証の住所を変える → 訪問先もそろう。
-    wb[SHEET_PATIENTS].cell(row=r_same, column=col["insurance_address"], value="引っ越し先")
+    ws = wb[SHEET_PATIENTS]
+    ws.cell(row=r_diff, column=col["visit_same_as_insurance"], value="○")
+    ws.cell(row=r_diff, column=col["address"]).value = None
+    # 「同じ」の方の保険証の住所を変える → 訪問先もそろい、位置は求め直す。
+    ws.cell(row=r_same, column=col["insurance_address"], value="引っ越し先")
+    ws.cell(row=r_same, column=col["address"], value="引っ越し先")
     buf = BytesIO()
     wb.save(buf)
     res = await _upload(client, admin, buf.getvalue(), dry_run=False)
@@ -503,6 +512,7 @@ async def test_excel_export_and_roundtrip(client, db) -> None:
         "引っ越し先",
         True,
     )
+    assert (float(d.lat), float(s.lat)) == (35.6, 35.6)  # 訪問先が変わった 2 名とも求め直す
 
 
 @pytest.mark.asyncio
@@ -635,3 +645,336 @@ def test_karte_shows_insurance_address_when_different_and_reads_back_visit_only(
     p.address = "保険証の住所"
     ws = build_karte_workbook(patient=p, fixed_visits=[], offices=[], course_templates=[]).active
     assert ws["D6"].value == "保険証の住所"
+
+
+# ---------------------------------------------------------------------------
+# 6. 訪問先の位置をサーバーで求める網 (2026-10-22 レビュー)
+# ---------------------------------------------------------------------------
+
+_NOT_FOUND = "訪問先の住所から位置が見つかりませんでした。緯度・経度を入れてください。"
+
+
+def _geocode_finds_nothing(monkeypatch) -> None:
+    async def _none(address: str, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.geocoding.cached.geocode_address", _none)
+
+
+@pytest.mark.asyncio
+async def test_patch_insurance_only_regeocodes_visit_when_same(
+    client, db, fake_visit_geocode
+) -> None:
+    admin = await _make_user(db, "geo-patch1@example.com")
+    p = await _make_patient(
+        db,
+        code="P-GEO-1",
+        insurance_address="旧住所",
+        address="旧住所",
+        visit_same_as_insurance=True,
+        lat=35.0,
+        lng=140.0,
+    )
+    res = await client.patch(
+        f"/api/v1/patients/{p.id}", headers=_bearer(admin), json={"insurance_address": "新住所"}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert (body["address"], body["lat"], body["lng"]) == ("新住所", 35.6, 140.1)
+    assert fake_visit_geocode == ["新住所"]
+
+
+@pytest.mark.asyncio
+async def test_patch_coords_equal_to_saved_are_treated_as_missing(
+    client, db, fake_visit_geocode
+) -> None:
+    """古い座標をそのまま送ってきた (画面が座標を作り直していない) → サーバーが求める."""
+    admin = await _make_user(db, "geo-patch1b@example.com")
+    p = await _make_patient(
+        db,
+        code="P-GEO-1B",
+        insurance_address="旧住所",
+        address="旧住所",
+        visit_same_as_insurance=True,
+        lat=35.0,
+        lng=140.0,
+    )
+    res = await client.patch(
+        f"/api/v1/patients/{p.id}",
+        headers=_bearer(admin),
+        json={"insurance_address": "新住所", "lat": 35.0, "lng": 140.0},
+    )
+    assert res.status_code == 200, res.text
+    assert (res.json()["lat"], res.json()["lng"]) == (35.6, 140.1)
+
+
+@pytest.mark.asyncio
+async def test_patch_geocode_not_found_is_422(client, db, monkeypatch) -> None:
+    _geocode_finds_nothing(monkeypatch)
+    admin = await _make_user(db, "geo-patch2@example.com")
+    p = await _make_patient(
+        db,
+        code="P-GEO-2",
+        insurance_address="旧住所",
+        address="旧住所",
+        visit_same_as_insurance=True,
+        lat=35.0,
+        lng=140.0,
+    )
+    pid = p.id
+    res = await client.patch(
+        f"/api/v1/patients/{pid}",
+        headers=_bearer(admin),
+        json={"insurance_address": "どこにもない"},
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"] == _NOT_FOUND
+    after = await _reload(db, pid)
+    assert (after.insurance_address, after.address, float(after.lat)) == ("旧住所", "旧住所", 35.0)
+
+
+@pytest.mark.asyncio
+async def test_patch_same_with_different_address_is_422(client, db) -> None:
+    admin = await _make_user(db, "geo-patch3@example.com")
+    p = await _make_patient(
+        db,
+        code="P-GEO-3",
+        insurance_address="保険証の住所",
+        address="保険証の住所",
+        visit_same_as_insurance=True,
+    )
+    pid = p.id
+    res = await client.patch(
+        f"/api/v1/patients/{pid}",
+        headers=_bearer(admin),
+        json={"address": "別の場所", "lat": 35.5, "lng": 140.5},
+    )
+    assert res.status_code == 422, res.text
+    assert "『別の場所』を選んでください" in res.json()["detail"]
+    # 同じ文字 (空白の違いだけ) なら通る。
+    res = await client.patch(
+        f"/api/v1/patients/{pid}", headers=_bearer(admin), json={"address": " 保険証の住所 "}
+    )
+    assert res.status_code == 200, res.text
+
+
+@pytest.mark.asyncio
+async def test_patch_different_to_same_without_coords_regeocodes(
+    client, db, fake_visit_geocode
+) -> None:
+    admin = await _make_user(db, "geo-patch4@example.com")
+    p = await _make_patient(
+        db,
+        code="P-GEO-4",
+        insurance_address="保険証の住所",
+        address="別の場所",
+        visit_same_as_insurance=False,
+        lat=35.0,
+        lng=140.0,
+    )
+    res = await client.patch(
+        f"/api/v1/patients/{p.id}", headers=_bearer(admin), json={"visit_same_as_insurance": True}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert (body["address"], body["lat"], body["lng"]) == ("保険証の住所", 35.6, 140.1)
+    assert fake_visit_geocode == ["保険証の住所"]
+
+
+@pytest.mark.asyncio
+async def test_patch_clearing_both_addresses_clears_coords(client, db) -> None:
+    admin = await _make_user(db, "geo-patch5@example.com")
+    p = await _make_patient(
+        db,
+        code="P-GEO-5",
+        insurance_address="保険証の住所",
+        address="保険証の住所",
+        visit_same_as_insurance=True,
+        lat=35.0,
+        lng=140.0,
+    )
+    pid = p.id
+    # 保険証の住所だけ消す → 訪問先は残す (きまり 4)・位置も残す。
+    res = await client.patch(
+        f"/api/v1/patients/{pid}", headers=_bearer(admin), json={"insurance_address": None}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert (body["address"], body["lat"], body["visit_same_as_insurance"]) == (
+        "保険証の住所",
+        35.0,
+        False,
+    )
+    # 訪問先も消す → 位置も空にする。
+    res = await client.patch(
+        f"/api/v1/patients/{pid}", headers=_bearer(admin), json={"address": None}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert (body["address"], body["lat"], body["lng"]) == (None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_create_without_coords_geocodes_and_not_found_is_422(
+    client, db, monkeypatch, fake_visit_geocode
+) -> None:
+    admin = await _make_user(db, "geo-create@example.com")
+    res = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json={"name": "座標 なし", "insurance_address": "千葉市稲毛区9-9"},
+    )
+    assert res.status_code == 201, res.text
+    assert (res.json()["lat"], res.json()["lng"]) == (35.6, 140.1)
+
+    _geocode_finds_nothing(monkeypatch)
+    res = await client.post(
+        "/api/v1/patients",
+        headers=_bearer(admin),
+        json={"name": "見つからない", "insurance_address": "どこにもない"},
+    )
+    assert res.status_code == 422, res.text
+    assert res.json()["detail"] == _NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_pending_create_geocodes_visit_address_not_insurance(db, monkeypatch) -> None:
+    from app.services.geocoding.client import GeocodeResult
+
+    calls: list[str] = []
+
+    async def _fake(address: str, **kwargs) -> GeocodeResult:
+        calls.append(address)
+        return GeocodeResult(
+            lat=35.7, lng=140.3, formatted_address=address, place_id="f", status="OK"
+        )
+
+    monkeypatch.setattr("app.services.pending_request_applier.geocode_address", _fake)
+    user = await _make_user(db, "geo-pending@example.com")
+    pr = PendingRequest(
+        requester_user_id=user.id,
+        request_type="patient_create",
+        payload={
+            "code": "P-GEO-PR",
+            "name": "申請 次郎",
+            "status": "active",
+            "insurance_address": "保険証の住所",
+            "address": "実際の訪問先",
+        },
+        status="pending",
+    )
+    db.add(pr)
+    await db.commit()
+    await db.refresh(pr)
+    await PendingRequestApplier().apply(db, pr)
+    await db.commit()
+
+    row = await db.scalar(select(Patient).where(Patient.code == "P-GEO-PR"))
+    assert row is not None
+    assert (row.insurance_address, row.address, row.visit_same_as_insurance) == (
+        "保険証の住所",
+        "実際の訪問先",
+        False,
+    )
+    assert calls == ["実際の訪問先"]
+    assert (float(row.lat), float(row.lng)) == (35.7, 140.3)
+
+
+@pytest.mark.asyncio
+async def test_excel_same_mark_with_different_visit_is_row_error(client, db) -> None:
+    admin = await _make_user(db, "geo-xl1@example.com")
+    p = await _make_patient(
+        db,
+        code="P-GEO-XL1",
+        insurance_address="保険証の住所",
+        address="保険証の住所",
+        visit_same_as_insurance=True,
+    )
+    pid = p.id
+    content = _xlsx(
+        PATIENT_COLUMNS,
+        [
+            {
+                "patient_code": "P-GEO-XL1",
+                "address": "別の場所",
+                "insurance_address": "保険証の住所",
+                "visit_same_as_insurance": "○",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content, dry_run=True)
+    assert res.status_code == 200, res.text
+    [row] = res.json()["patient_rows"]
+    assert row["operation"] == "error"
+    assert "○ を外すか、訪問先の住所を保険証の住所に合わせてください" in row["error_message"]
+    assert (await _reload(db, pid)).address == "保険証の住所"
+
+
+@pytest.mark.asyncio
+async def test_excel_blank_mark_with_same_text_is_same(client, db) -> None:
+    admin = await _make_user(db, "geo-xl2@example.com")
+    content = _xlsx(
+        PATIENT_COLUMNS,
+        [
+            {
+                "patient_code": "P-GEO-XL2",
+                "name": "同じ文字",
+                "sex": "女性",
+                "status": "稼働",
+                "address": "千葉市稲毛区１－１",
+                "insurance_address": "千葉市稲毛区1-1",
+            }
+        ],
+    )
+    res = await _upload(client, admin, content, dry_run=False)
+    assert res.status_code == 200, res.text
+    assert res.json()["summary"]["patients_new"] == 1, res.text
+    p = await db.scalar(select(Patient).where(Patient.code == "P-GEO-XL2"))
+    assert p is not None
+    assert (p.address, p.visit_same_as_insurance) == ("千葉市稲毛区1-1", True)
+    assert (float(p.lat), float(p.lng)) == (35.6, 140.1)
+
+
+@pytest.mark.asyncio
+async def test_excel_changed_visit_geocodes_and_failure_is_row_error_in_preview(
+    client, db, monkeypatch, fake_visit_geocode
+) -> None:
+    admin = await _make_user(db, "geo-xl3@example.com")
+    p = await _make_patient(
+        db,
+        code="P-GEO-XL3",
+        insurance_address="旧住所",
+        address="旧住所",
+        visit_same_as_insurance=True,
+        lat=35.0,
+        lng=140.0,
+    )
+    pid = p.id
+    row = {
+        "patient_code": "P-GEO-XL3",
+        "insurance_address": "新住所",
+        "visit_same_as_insurance": "○",
+        "lat": 35.0,  # 保存済みと同じ = 新しい座標ではない
+        "lng": 140.0,
+    }
+    # プレビューで、求めた位置が変更として見える。
+    res = await _upload(client, admin, _xlsx(PATIENT_COLUMNS, [row]), dry_run=True)
+    assert res.status_code == 200, res.text
+    [r] = res.json()["patient_rows"]
+    assert r["operation"] == "update"
+    changes = {c["field"]: c["new_value"] for c in r["changes"]}
+    assert changes["address"] == "新住所" and changes["lat"] == 35.6 and changes["lng"] == 140.1
+
+    res = await _upload(client, admin, _xlsx(PATIENT_COLUMNS, [row]), dry_run=False)
+    assert res.status_code == 200, res.text
+    after = await _reload(db, pid)
+    assert (after.address, float(after.lat), float(after.lng)) == ("新住所", 35.6, 140.1)
+
+    # 求められない → 行エラー (プレビューで分かる)・何も変えない。
+    _geocode_finds_nothing(monkeypatch)
+    row2 = {**row, "insurance_address": "どこにもない", "lat": None, "lng": None}
+    res = await _upload(client, admin, _xlsx(PATIENT_COLUMNS, [row2]), dry_run=False)
+    assert res.status_code == 200, res.text
+    [r] = res.json()["patient_rows"]
+    assert r["operation"] == "error" and r["error_message"] == _NOT_FOUND
+    assert (await _reload(db, pid)).insurance_address == "新住所"
