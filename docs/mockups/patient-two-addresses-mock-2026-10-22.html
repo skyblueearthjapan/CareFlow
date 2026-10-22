@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>患者マスターの住所 2 つ</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap">
+<style>
+/* 患者マスターに「保険証の住所」と「実際の訪問先」を置くモック。上で画面と状態を切り替える */
+:root{
+  --bg:#f6f3f4; --card:#ffffff; --fg:#2a2326; --sub:#6f6468; --line:#e8dfe2; --field:#fbf9fa;
+  --accent:#e15a7f; --accent-soft:#fdecf1; --ok:#2f8a5b; --ok-soft:#e8f5ee; --warn:#b7791f; --warn-soft:#fff6e5;
+  --info:#2563eb; --info-soft:#eaf1fe;
+  --font:"Noto Sans JP","Hiragino Sans","Yu Gothic UI",sans-serif;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:14px;line-height:1.6}
+.wrap{max-width:1080px;margin:0 auto;padding:20px 16px 48px;display:grid;gap:16px}
+h1{font-size:20px;margin:0}
+.lead{margin:4px 0 0;color:var(--sub);max-width:76ch}
+.sample{display:inline-block;font-size:11px;background:var(--warn-soft);color:var(--warn);border-radius:4px;padding:1px 6px;margin-left:6px;vertical-align:2px}
+
+.controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+.ctl{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:grid;gap:8px}
+.ctl h2{font-size:13px;margin:0;color:var(--sub);font-weight:500;letter-spacing:.04em}
+.seg{display:flex;flex-wrap:wrap;gap:6px}
+.seg button{font:inherit;font-size:13px;border:1px solid var(--line);background:#fff;color:var(--fg);border-radius:999px;padding:5px 12px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
+.seg button:focus-visible,.toggle button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.stage{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start}
+@media (max-width:860px){.stage{grid-template-columns:minmax(0,1fr)}}
+.screen{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px;display:grid;gap:12px}
+.crumb{font-size:12px;color:var(--sub)}
+.page-title{font-size:18px;font-weight:700;margin:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;display:grid;gap:12px}
+.card h3{font-size:16px;margin:0;font-weight:700}
+.card.dim{opacity:.55}
+.card.dim h3::after{content:"（いまのまま）";font-size:12px;color:var(--sub);font-weight:400;margin-left:6px}
+.card.focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+@media (max-width:640px){.grid2{grid-template-columns:minmax(0,1fr)}}
+.f{display:grid;gap:4px;min-width:0}
+.f label,.f .lab{font-size:13px;font-weight:500}
+.f .hint{font-size:12px;color:var(--sub)}
+input[type=text]{font:inherit;width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fff;color:var(--fg)}
+input[type=text]:focus{outline:2px solid var(--accent);outline-offset:0;border-color:var(--accent)}
+input[readonly]{background:var(--field);color:var(--sub)}
+.req{color:var(--accent);margin-left:2px}
+
+.toggle{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:#fff;width:fit-content;max-width:100%}
+.toggle button{font:inherit;font-size:13px;border:0;background:#fff;color:var(--fg);padding:7px 14px;cursor:pointer}
+.toggle button+button{border-left:1px solid var(--line)}
+.toggle button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);font-weight:700}
+.same-box{border:1px dashed var(--line);border-radius:8px;padding:9px 11px;background:var(--field);display:grid;gap:2px}
+.same-box .addr{font-weight:500}
+.same-box .meta,.pos{font-size:12px;color:var(--sub)}
+.coords{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.notice{border-radius:8px;padding:8px 11px;font-size:13px;display:flex;gap:8px;align-items:flex-start}
+.notice.warn{background:var(--warn-soft);color:#7a4f10}
+.notice.info{background:var(--info-soft);color:#1e3a8a}
+.badge{display:inline-block;font-size:11.5px;border-radius:999px;padding:1px 9px;font-weight:700;white-space:nowrap}
+.b-visit{background:var(--ok-soft);color:var(--ok)}
+.b-warn{background:var(--warn-soft);color:var(--warn)}
+.link{color:var(--info);text-decoration:underline;font-size:13px;cursor:pointer}
+.dl{display:grid;grid-template-columns:120px minmax(0,1fr);gap:8px 12px;margin:0}
+.dl dt{color:var(--sub);font-size:13px}
+.dl dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.btns{display:flex;justify-content:flex-end;gap:8px}
+.btn{font:inherit;border-radius:8px;padding:7px 16px;border:1px solid var(--line);background:#fff;cursor:default}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
+
+table.list{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:13px}
+.list th,.list td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.list th{background:var(--field);color:var(--sub);font-weight:500}
+.list td .sub{color:var(--sub);font-size:12px}
+.tablewrap{overflow-x:auto}
+
+.side{display:grid;gap:10px}
+.side .ctl p{margin:0;font-size:13px;color:var(--sub)}
+.side ul{margin:0;padding-left:18px;font-size:13px;display:grid;gap:4px}
+[hidden]{display:none !important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>患者マスターの住所を 2 つに<span class="sample">見本・架空の方</span></h1>
+    <p class="lead">「連絡先」のカードを「住所」に作り替え、<b>保険証の住所</b>と<b>実際の訪問先</b>を並べます。訪問先は「保険証の住所と同じ」をボタン 1 つで選べます。QR の判定・移動・地図は訪問先で計算します。</p>
+  </header>
+
+  <div class="controls">
+    <div class="ctl">
+      <h2>画面</h2>
+      <div class="seg" data-group="view">
+        <button aria-pressed="true" data-v="edit">編集</button>
+        <button aria-pressed="false" data-v="detail">詳細</button>
+        <button aria-pressed="false" data-v="list">一覧</button>
+      </div>
+    </div>
+    <div class="ctl">
+      <h2>この方の状態</h2>
+      <div class="seg" data-group="case">
+        <button aria-pressed="true" data-v="same">訪問先は同じ</button>
+        <button aria-pressed="false" data-v="diff">訪問先が別</button>
+        <button aria-pressed="false" data-v="noins">保険証の住所が未記入</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="screen">
+      <!-- 編集 -->
+      <section data-view="edit">
+        <div style="display:grid;gap:12px">
+          <div class="crumb">患者 ＞ 山田 花子 様 ＞ 編集</div>
+          <div class="card dim"><h3>基本情報</h3></div>
+
+          <div class="card focus" aria-label="住所">
+            <h3>住所</h3>
+
+            <div class="f">
+              <label for="ins">保険証の住所</label>
+              <input type="text" id="ins" value="千葉県千葉市花見川区こてはし台9-9-9 グリーンハイツ101">
+              <span class="hint">レセプトに使う住所です。カイポケと同じ住所を入れます。</span>
+            </div>
+            <div class="notice warn" data-show="noins" hidden>⚠ 保険証の住所が未記入です。レセプトに使う住所なので、カイポケと同じ住所を入れてください。</div>
+
+            <div class="f">
+              <span class="lab">実際の訪問先</span>
+              <div class="toggle" role="group" aria-label="実際の訪問先">
+                <button type="button" aria-pressed="true" data-visit="same">保険証の住所と同じ</button>
+                <button type="button" aria-pressed="false" data-visit="diff">別の場所</button>
+              </div>
+            </div>
+
+            <div class="same-box" data-visit-pane="same">
+              <span class="addr" id="sameAddr"></span>
+              <span class="meta">位置 35.67・140.07（住所から自動）　<span class="link">地図で見る</span></span>
+            </div>
+
+            <div data-visit-pane="diff" hidden style="display:grid;gap:10px">
+              <div class="f">
+                <label for="visit">訪問先の住所<span class="req">*</span></label>
+                <input type="text" id="visit" value="千葉県千葉市稲毛区園生町99-9 障がい者グループホームさくら">
+                <span class="hint">入院・施設・ご家族の家など、実際に伺う場所。空のまま保存すると「保険証の住所と同じ」に戻ります。</span>
+              </div>
+              <div class="coords">
+                <div class="f"><label>緯度</label><input type="text" readonly value="35.6461（自動）"></div>
+                <div class="f"><label>経度</label><input type="text" readonly value="140.1093（自動）"></div>
+              </div>
+              <span class="link" style="width:fit-content">地図で見る</span>
+            </div>
+
+            <div class="notice info">ⓘ QR の「場所違い」の判定、移動時間、ならし、地図のリンクは、<b>実際の訪問先</b>で計算します。</div>
+          </div>
+
+          <div class="card dim"><h3>保険・拠点</h3></div>
+          <div class="card dim"><h3>訪問条件</h3></div>
+          <div class="btns"><span class="btn">キャンセル</span><span class="btn primary">保存</span></div>
+        </div>
+      </section>
+
+      <!-- 詳細 -->
+      <section data-view="detail" hidden>
+        <div style="display:grid;gap:12px">
+          <div class="crumb">患者 ＞ 山田 花子 様</div>
+          <p class="page-title">山田 花子 様 <span class="badge b-visit" data-show="diff" hidden>訪問先は別</span><span class="badge b-warn" data-show="noins" hidden>保険証の住所 未記入</span></p>
+          <div class="card dim"><h3>基本情報</h3></div>
+          <div class="card focus">
+            <h3>住所</h3>
+            <dl class="dl">
+              <dt>保険証の住所</dt>
+              <dd><span data-hide="noins">千葉県千葉市花見川区こてはし台9-9-9 グリーンハイツ101</span><span data-show="noins" hidden style="color:var(--warn)">未記入（レセプトに使う住所です）</span></dd>
+              <dt>実際の訪問先</dt>
+              <dd>
+                <span data-hide="diff">保険証の住所と同じ　<span class="link">地図で見る</span></span>
+                <span data-show="diff" hidden>千葉県千葉市稲毛区園生町99-9 障がい者グループホームさくら　<span class="link">地図で見る</span></span>
+              </dd>
+            </dl>
+            <div class="notice warn" data-show="diff" hidden>⚠ QR が登録の位置から離れた場所で読まれています（いまの「位置のずれ」の知らせ。訪問先の位置について出ます）</div>
+          </div>
+          <div class="card dim"><h3>保険・拠点</h3></div>
+        </div>
+      </section>
+
+      <!-- 一覧 -->
+      <section data-view="list" hidden>
+        <div style="display:grid;gap:12px">
+          <div class="crumb">患者</div>
+          <div class="tablewrap">
+          <table class="list">
+            <thead><tr><th>コード</th><th>氏名</th><th>訪問先の住所</th><th>状態</th></tr></thead>
+            <tbody>
+              <tr><td>P901</td><td>青木 一郎 様</td><td>千葉市稲毛区小仲台9-9-9</td><td>稼働中</td></tr>
+              <tr id="row"><td>P902</td><td>山田 花子 様<br>
+                <span class="badge b-visit" data-show="diff" hidden>訪問先は別</span><span class="badge b-warn" data-show="noins" hidden>保険証の住所 未記入</span></td>
+                <td><span data-hide="diff">千葉市花見川区こてはし台9-9-9</span><span data-show="diff" hidden>千葉市稲毛区園生町99-9<br><span class="sub">保険証：千葉市花見川区こてはし台9-9-9</span></span></td><td>稼働中</td></tr>
+              <tr><td>P903</td><td>佐藤 次郎 様</td><td>千葉市美浜区磯辺9-9-9</td><td>稼働中</td></tr>
+            </tbody>
+          </table>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <aside class="side">
+      <div class="ctl">
+        <h2>決まりごと</h2>
+        <ul>
+          <li>いまの住所は全員「保険証の住所」に入り、訪問先は「同じ」で始まる。見た目も動きも変わらない。</li>
+          <li>「同じ」のとき、保険証の住所を直すと訪問先も一緒に変わる。</li>
+          <li>「別の場所」で訪問先が空なら、保存のときに「同じ」に戻る。</li>
+          <li>保険証の住所が空なら、空のまま「未記入」と知らせる（推測で埋めない）。</li>
+          <li>住所は管理者だけに見える（いまと同じ）。職員のスマホには訪問先だけ。</li>
+        </ul>
+      </div>
+      <div class="ctl">
+        <h2>文言も変えるところ</h2>
+        <p>QR まわりの「登録住所」→「訪問先の住所」（QR 設定・スマホの訪問・QR 読み取り・訪問モニター）。</p>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+const state = { view: "edit", kase: "same", visit: "same" };
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+
+function render() {
+  $$("[data-view]").forEach(el => { el.hidden = el.dataset.view !== state.view; });
+  const diff = state.visit === "diff", noins = state.kase === "noins";
+  $$("[data-show]").forEach(el => {
+    el.hidden = !((el.dataset.show === "diff" && diff) || (el.dataset.show === "noins" && noins));
+  });
+  $$("[data-hide]").forEach(el => {
+    el.hidden = (el.dataset.hide === "diff" && diff) || (el.dataset.hide === "noins" && noins);
+  });
+  $$("[data-visit]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.visit === state.visit)));
+  $$("[data-visit-pane]").forEach(p => { p.hidden = p.dataset.visitPane !== state.visit; });
+  const ins = $("#ins");
+  if (noins && ins.dataset.filled !== "0") { ins.dataset.keep = ins.value; ins.value = ""; ins.dataset.filled = "0"; }
+  if (!noins && ins.dataset.filled === "0") { ins.value = ins.dataset.keep || ""; ins.dataset.filled = "1"; }
+  $("#sameAddr").textContent = ins.value.trim() || "（保険証の住所が空です。訪問先の位置は作れません）";
+}
+
+$$(".seg").forEach(seg => seg.addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  $$("button", seg).forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+  if (seg.dataset.group === "view") state.view = b.dataset.v;
+  else { state.kase = b.dataset.v; state.visit = b.dataset.v === "diff" ? "diff" : "same"; }
+  render();
+}));
+$$("[data-visit]").forEach(b => b.addEventListener("click", () => {
+  state.visit = b.dataset.visit;
+  if (state.kase !== "noins") {
+    state.kase = state.visit;
+    $$('[data-group="case"] button').forEach(x => x.setAttribute("aria-pressed", String(x.dataset.v === state.kase)));
+  }
+  render();
+}));
+$("#ins").addEventListener("input", render);
+render();
+</script>
+</body>
+</html>
