@@ -727,6 +727,10 @@ function KarteEditSheet({
       sex,
       status,
       insurance,
+      // 住所 2 つ (設計 2026-10-22): 訪問先が「保険証の住所と同じ」の方は、ここで直した住所を
+      // 保険証の住所にも入れる (そうしないと送る中身で保険証の住所に戻ってしまう)。
+      // 「別の場所」の方は訪問先だけが変わる。
+      ...(initial.visit_same_as_insurance ? { insurance_address: trimmedAddress } : {}),
       address: trimmedAddress,
       lat,
       lng,
