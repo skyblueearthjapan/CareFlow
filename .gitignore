@@ -87,3 +87,7 @@ _secrets/
 
 # 週のならし: 事業所ごとの設定 (職員コード・サーバー)
 /docs/tools/week-leveling/config.local.json
+
+# 並行作業: 頭どうしの作業ボードと、Claude Code の作業用の写し
+/.parallel/
+.claude/worktrees/
