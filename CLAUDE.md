@@ -26,7 +26,7 @@ git status --short --branch
 ### サブ（worktree・1 つの作業だけ）
 - 渡された 1 つの作業だけをする。範囲の外に気づいたら、直さずに作業ボードへ書く。
 - 任せるのは実装とテストまで。自分のブランチにだけコミットする。
-- GitHub へは自分のブランチだけ push してよい（`git push origin wt/<日付>-<作業名>`）。develop・main・ほかのブランチを checkout / merge / push しない。
+- GitHub へは自分のブランチだけ push してよい（`git push origin <自分のブランチ>`）。develop・main・ほかのブランチを checkout / merge / push しない。
 - 終わったら「完了の書き方」のとおり作業ボードに書いて止まる。
 
 ## 作業ボード（頭どうしの連絡）
@@ -50,10 +50,11 @@ git status --short --branch
 ## git の禁止事項（全員）
 - `git stash` を使わない。stash は全 worktree で共有され、2026-08-17 に別の頭の変更が流れ込む事故が起きた。一時退避は WIP コミットで行う。
 - `--no-verify` を使わない。`git reset --hard`・強制 push は、PO の了承なしにしない。
-- 同じブランチを 2 つの worktree で使わない（git が許さない）。ブランチ名は `wt/<日付>-<作業名>`。
+- 同じブランチを 2 つの worktree で使わない（git が許さない）。サブのブランチは Orca が `wt/<作業の要約>` と付ける（元は `origin/develop`）。
 
 ## worktree で動かすとき
-- git 管理外のものは写しに入らない。最初に `cd frontend && pnpm install` と `cd backend && uv sync --no-install-project` を流す（素の `uv sync` は依存が入らない）。
+- git 管理外のものは写しに入らない。Orca が写しを作るときに `pnpm install --frozen-lockfile`（frontend）と `uv sync --no-install-project`（backend）を自動で流す。入っていなければ同じコマンドを手で流す（素の `uv sync` は依存が入らない）。
+- 写しの場所は `C:\Users\imaizumi.LINEWORKS-NET\orca\workspaces\` の下（リポジトリの外）。
 - 開発サーバーのポートは頭ごとに分ける（メイン：frontend 3000・backend 8000／サブ：3001・8001）。
 - Docker Desktop は閉じておく（箱の試験のときだけ開く）。
 - `.secret/`・`.env` を写しにコピーしない。要るときはメインに頼む。
