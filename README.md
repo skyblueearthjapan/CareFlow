@@ -39,7 +39,9 @@ CareFlow/
 │   ├── plans/         # 実装計画（D1〜D5 + クロスレビュー + Codex）
 │   │   └── wave/      # Wave 単位の実装計画書 (W1〜W5)
 │   └── audit/         # 既存システム再調査（INV-1〜5 + レビュー）
+├── agent/             # らく助エージェント（Claude/Codex CLI 共通の約束・ペルソナ・道具 rk・中継 relay）
 ├── Sampledata/        # 参考用サンプルデータ（.gitignore で除外）
+├── CLAUDE.md          # エージェント共通の決まり（進め方・コミット・並行作業）
 └── README.md
 ```
 
