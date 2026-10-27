@@ -34,7 +34,7 @@ def _rig(tmp_path, states):
     rig.svc.engines.forget = lambda *a, **k: None
     made = []
 
-    def factory(session_id, key, provider):
+    def factory(session_id, key, provider, fmt="v1"):
         s = FakeKarteSession()
         made.append((key, provider, s))
         return s
@@ -122,7 +122,7 @@ def test_claude_stream_through_drafter(tmp_path):
          "result": "ok"},
     ]
     rig = _rig(tmp_path, {(K1, "claude"): "ok"})
-    rig.karte.session_factory = lambda sid, key, prov: FakeSession(
+    rig.karte.session_factory = lambda sid, key, prov, fmt="v1": FakeSession(
         lines, ClaudeNormalizer(allowed_key_sources={"none"}, check_model=False, clock=lambda: 0.0))
     r = asyncio.run(rig.karte.draft(BODY))
     assert r["ok"], r
@@ -133,7 +133,7 @@ def test_claude_api_key_source_is_refused(tmp_path):
     lines = [{"type": "system", "subtype": "init", "session_id": "s-1", "model": "claude-opus-5-5",
               "apiKeySource": "ANTHROPIC_API_KEY", "tools": [], "mcp_servers": []}]
     rig = _rig(tmp_path, {(K1, "claude"): "ok"})
-    rig.karte.session_factory = lambda sid, key, prov: FakeSession(
+    rig.karte.session_factory = lambda sid, key, prov, fmt="v1": FakeSession(
         lines, ClaudeNormalizer(allowed_key_sources={"none"}, check_model=False, clock=lambda: 0.0))
     r = asyncio.run(rig.karte.draft(BODY))
     assert r["ok"] is False and r["kind"] == "signed_out"
