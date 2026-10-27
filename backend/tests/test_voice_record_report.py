@@ -286,8 +286,12 @@ def test_v1_record_renders_exactly_as_before() -> None:
     assert '<td class="sec">01:05</td><td class="sp">看護師</td><td>こんにちは</td>' in html_doc
 
 
-def test_v2_summary_renders_body_as_escaped_plain_text() -> None:
-    body = "褥瘡の痛み [0:03]\n- 血圧 132/78 [0:00]\n<script>alert(1)</script>"
+def test_v2_summary_renders_markdown_with_everything_escaped() -> None:
+    body = (
+        "# 訪問記録\n褥瘡の痛み [0:03]\n- **血圧** 132/78 [12:05]\n  - 座位\n"
+        "1. 足浴\n| 項目 | 値 |\n|---|---|\n| SpO2 | 97 |\n"
+        "<script>alert(1)</script> <b>x</b> [押して](javascript:alert(1)) **閉じない"
+    )
     html_doc = render_visit_record_html(
         _rec(
             summary={"format": "v2", "body": body, "facts": {"vitals": {"血圧": "132/78"}}},
@@ -295,10 +299,68 @@ def test_v2_summary_renders_body_as_escaped_plain_text() -> None:
             prompt_version="v2",
         )
     )
-    assert '<p class="pre">褥瘡の痛み [0:03]\n- 血圧 132/78 [0:00]\n&lt;script&gt;' in html_doc
-    assert "<script>alert" not in html_doc
+    assert "<h3>訪問記録</h3>" in html_doc
+    assert '<p>褥瘡の痛み <span class="tm">0:03 ごろ</span></p>' in html_doc
+    assert (
+        '<ul><li><strong>血圧</strong> 132/78 <span class="tm">12:05 ごろ</span>'
+        "<ul><li>座位</li></ul></li></ul>"
+    ) in html_doc
+    assert '<ol><li value="1">足浴</li></ol>' in html_doc
+    assert "<th>項目</th><th>値</th>" in html_doc and "<td>SpO2</td><td>97</td>" in html_doc
+    # AI の文は HTML として通さない (タグ・リンクは文字のまま)。
+    assert "<script>alert" not in html_doc and "<b>x</b>" not in html_doc
+    assert "&lt;script&gt;alert(1)&lt;/script&gt; &lt;b&gt;x&lt;/b&gt;" in html_doc
+    assert "[押して](javascript:alert(1))" in html_doc and "<a " not in html_doc
+    assert "**閉じない" in html_doc
     # v2 の内部のキー (format / body / facts) を見出しとして出さない。
     assert "<h3>format</h3>" not in html_doc and "<h3>facts</h3>" not in html_doc
+
+
+def test_v2_vitals_and_needs_check_on_top() -> None:
+    html_doc = render_visit_record_html(
+        _rec(
+            summary={
+                "format": "v2",
+                "body": "本文",
+                "facts": {
+                    "vitals": {"血圧": "132/78", "体温": "", "脈拍": "", "SpO2": "97", "血糖": ""},
+                    "handover": [],
+                    "next": "",
+                    "needs_check": [
+                        {"text": "薬の量<i>", "time": "5:10"},
+                        {"text": "時刻なし", "time": ""},
+                    ],
+                },
+            },
+            summary_text="本文",
+        )
+    )
+    assert '<td class="k">血圧</td><td>132/78</td>' in html_doc
+    assert '<td class="k">SpO2</td><td>97</td>' in html_doc
+    assert '<td class="k">体温</td>' not in html_doc
+    assert "<h3>【要確認】</h3>" in html_doc
+    assert '<li>薬の量&lt;i&gt;<span class="tm">5:10 ごろ</span></li>' in html_doc
+    assert "<li>時刻なし</li>" in html_doc
+    # 上から バイタル → 要確認 → 本文。
+    assert html_doc.index("バイタル") < html_doc.index("【要確認】") < html_doc.index("<p>本文</p>")
+
+
+def test_v2_appended_summary_text_is_printed() -> None:
+    """現場の追記は summary_text にだけ足される (edited_at なし) → 紙にも出る。"""
+    html_doc = render_visit_record_html(
+        _rec(
+            summary={"format": "v2", "body": "AI の本文", "facts": {}},
+            summary_text="AI の本文\n\n追記: 夕方に再訪",
+        )
+    )
+    assert "追記: 夕方に再訪" in html_doc
+
+
+def test_v2_css_only_for_v2_records() -> None:
+    assert ".tm{" not in render_visit_record_html(_rec(summary=_SUMMARY))
+    assert ".tm{" in render_visit_record_html(
+        _rec(summary={"format": "v2", "body": "x", "facts": {}}, summary_text="x")
+    )
 
 
 def test_v2_manual_edit_still_wins() -> None:
@@ -310,6 +372,16 @@ def test_v2_manual_edit_still_wins() -> None:
         )
     )
     assert "人が直した本文" in html_doc and "AI の本文" not in html_doc
+    # 書き換えた本文も同じ読み取りで出す (facts は出さない)。
+    html_doc = render_visit_record_html(
+        _rec(
+            summary={"format": "v2", "body": "AI", "facts": {"vitals": {"血圧": "1/2"}}},
+            summary_text="- 書き換え [1:00]",
+            summary_edited_at=datetime(2026, 9, 17, 16, 0, tzinfo=UTC),
+        )
+    )
+    assert '<ul><li>書き換え <span class="tm">1:00 ごろ</span></li></ul>' in html_doc
+    assert '<td class="k">血圧</td>' not in html_doc
 
 
 def test_v2_transcript_prefers_fixed_lines_and_reads_start() -> None:
