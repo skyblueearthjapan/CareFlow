@@ -1,6 +1,6 @@
 # 2026-10-27 セッション引き継ぎ（訪問の音声記録 v2：文字起こし・補正・まとめを分ける／長い録音を区切る／見せ方／マイク）
 
-このセッションでは、訪問の音声記録を v2 に作り替えた。**ブランチ `feature/voice-record-v2` を PO の了承で develop へ push 済み（`5390e082`）・本番は未反映**（本番は別に了承を取る）。
+このセッションでは、訪問の音声記録を v2 に作り替えた。**PO の了承で develop へ push し（`6f13311b`）、同じく了承を得て本番へ反映した（2026-10-27 07:47〜07:58 UTC・alembic 0101）**。記録は §6。
 正典の設計は `docs/plans/visit-voice-record-v2-design-2026-10-27.md`（§8 に P0 の実測と P1b の確かめ）。
 
 ## 0. 再開したら最初に確かめること
@@ -32,7 +32,7 @@
 - レビュー：P5（frontend）・backend P1〜P3＋P1b・P4＋手当て の 3 回。高の指摘は backend の 1 件（長さの無い webm が区切られない）で、手当て済み。中・低も手当て済み（残りは §4）。
 - 費用：P0 と P1b の確かめで Vertex に計 約 1.14 ドル（約 170 円）。すべて作り物の音声。
 
-## 3. 本番に出すとき（PO の了承を 2 回：develop への push・本番への反映）
+## 3. 本番に出すとき（PO の了承を 2 回：develop への push・本番への反映）※ 10-27 に実施済み（§6）。次に出すときの手順として残す
 1. **VPS のディスクの空きを確かめる**（backend の箱が約 630 MB 増える）。
 2. pg_dump を取る。
 3. backend の箱を作り直す（ffmpeg が入る）。agent の箱も作り直す（relay の v2）。frontend も作り直す。
@@ -54,3 +54,14 @@
 ## 5. 並行作業の試し運転で分かったこと（CLAUDE.md に反映済み）
 - サブの写しは `orca worktree create`、片づけは `orca worktree rm --worktree branch:<ブランチ> --json`。rm の後も `git worktree list` に prunable で残ることがあり、`git worktree prune` と `git branch -d` で消えた。
 - pre-commit は本体の `.git/hooks/pre-commit` で写しにも効いた。pre-commit は未コミットの変更を一時的に外して戻すため、並行に作業していると改行（CRLF/LF）が変わることがある（prettier で落ちたら整形し直す）。
+
+## 6. 本番の作業の記録（2026-10-27・UTC）
+- 事前：ディスク 97 GB 中 69 GB 使用・空き 29 GB。録音は 0 件（処理中なし）。本番は `76c7253a`・alembic 0100。
+- pg_dump：`/opt/carelink/backups/pre-deploy-voice-v2-20261027-0747.sql.gz`（5.6 MB）。ログ `/opt/carelink/backups/deploy-voice-v2.log`。
+- develop を `6f13311b` まで fast-forward → backend・frontend を build → `up -d --no-deps --force-recreate backend frontend` → `docker exec carelink-backend alembic upgrade head`（0100→0101、単一 head）→ agent-relay・agent-sandbox を build・up。
+- 確かめ：
+  - 列 `transcript_fixed_json`(jsonb)・`job_token`(uuid) あり。箱の ffmpeg/ffprobe 7.1.5。`VOICE_AI_PROVIDER=vertex`・`gemini-2.5-flash`・SA 鍵が読めてトークンが取れる。
+  - healthz（内側 18001・公開）200、`/agent-relay/healthz` 200、全コンテナ healthy。
+  - **本番の backend の箱の中で、DB に書かずに流れを通した**（作り物の 56 分の webm）：5 つに区切れた → 1 つ目（約 12 分）を ① 259 行 → ② 補正 ok → ③ STOP・本文 1,391 字・時刻 83 個・バイタル 4 項目。約 0.06 ドル・91 秒。試しのファイルは箱と VPS から消した。
+- 現場へ：frontend が変わったので、PC は Ctrl+Shift+R、スマホはアプリを開き直す（Service Worker のキャッシュ）。
+- **まだ**：実際の訪問の録音での 1 件目（実機）。§4 の実機の確かめと看護師の読み比べ。
