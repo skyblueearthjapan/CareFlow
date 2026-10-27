@@ -112,9 +112,14 @@ class VisitRecording(Base, TimestampMixin):
     )
 
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # セグメント (開始秒・話者・本文) の配列。
+    # セグメント (開始秒・話者・本文) の配列。v2 では ① の **直す前** の行
+    # (``{start, end, speaker, text}``)。
     transcript_json: Mapped[list | None] = mapped_column(JSONBish, nullable=True)
-    # 構造化要約 (主訴・様子 / バイタル / 処置・ケア / 申し送り / 次回 / free)。
+    # ② 補正で **直した** 行 (形は transcript_json と同じ・migration 0101)。補正が
+    # 1 区切りも通らなかった・v1 の記録は NULL (画面は transcript_json を出す)。
+    transcript_fixed_json: Mapped[list | None] = mapped_column(JSONBish, nullable=True)
+    # 要約。v1 = 構造化 (主訴・様子 / バイタル / 処置・ケア / 申し送り / 次回 / free)、
+    # v2 = ``{"format": "v2", "body": 本文 (Markdown), "facts": {...}}``。
     summary: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)
     summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 

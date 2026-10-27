@@ -42,6 +42,8 @@ class VisitRecordingRead(BaseModel):
     # 一覧では省略 (詳細のみ)。
     transcript: str | None = None
     transcript_json: list[Any] | None = None
+    # ② 補正で直した行 (0101)。NULL = 直せなかった / v1 の記録。
+    transcript_fixed_json: list[Any] | None = None
 
     summary: dict[str, Any] | None = None
     summary_text: str | None = None
@@ -111,7 +113,8 @@ class VisitRecordingReportRead(BaseModel):
     ``format=json`` ではこの形で **記録のメタと HTML を同梱** する
     (``sync_report`` と同じ作法 — 画面がメタも HTML も 1 回で取れるように)。
 
-    ``recording`` は **全文 (``transcript`` / ``transcript_json``) を含まない**
+    ``recording`` は **全文 (``transcript`` / ``transcript_json`` / ``transcript_fixed_json``)
+    を含まない**
     (一覧と同じ作法)。同じ会話が ``html`` に入っているので 1 応答に 2 回載せない。
     全文が要る画面は ``html`` を使うか詳細 (``GET /visit-recordings/{id}``) を叩く。
     """

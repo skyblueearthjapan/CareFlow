@@ -1,6 +1,12 @@
-"""Async Vertex AI (Gemini) client for visit voice transcription + summary.
+"""Async Vertex AI (Gemini) client for visit voice records.
 
-設計書 `docs/plans/visit-voice-record-design-2026-09-17.md` §1-i / §10-1 / §10-4。
+設計書 `docs/plans/visit-voice-record-design-2026-09-17.md` §1-i / §10-1 / §10-4、
+v2 (① 文字起こし・② 補正・③ まとめを分ける) は
+`docs/plans/visit-voice-record-v2-design-2026-10-27.md` §3。
+
+* ``transcribe_lines`` — ① 音声 → 発言の行の JSON (答えの文字と ``finishReason`` を返す)。
+* ``generate_text`` — ② ③ 文字だけの呼び出し。
+* ``transcribe_plain`` — らく助エージェントへの声の入力 (別物)。
 
 作法は `app/services/kaipoke_client.py` に揃える:
   * 専用ラッパ (ルータ/ジョブに生の httpx を漏らさない)
@@ -21,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -47,7 +52,9 @@ else:
 DEFAULT_LOCATION = "asia-northeast1"
 DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_TIMEOUT_SECONDS = 240.0
-DEFAULT_MAX_OUTPUT_TOKENS = 8192
+#: 2.5 Flash の出力の上限。① は長い訪問でも切れにくいように一番上まで取る
+#: (切れたら ``transcribe.py`` が最後の行の時刻から続きを頼む)。
+DEFAULT_MAX_OUTPUT_TOKENS = 65535
 DEFAULT_TEMPERATURE = 0.2
 
 #: inlineData で送れる音声の上限 (これを超えたら将来 GCS 経由にする)。
@@ -72,13 +79,14 @@ def clear_token_cache() -> None:
 
 
 #: VoiceAiError.kind に使う値。
-ERROR_KINDS = ("auth", "timeout", "http", "parse", "too_large")
+ERROR_KINDS = ("auth", "timeout", "http", "parse", "too_large", "incomplete")
 
 
 class VoiceAiError(RuntimeError):
     """Raised for every failure of the voice AI call.
 
-    `kind` is one of: auth | timeout | http | parse | too_large.
+    `kind` is one of: auth | timeout | http | parse | too_large | incomplete
+    (incomplete = ① が上限で切れ続けて最後まで読めなかった)。
     """
 
     def __init__(
@@ -96,25 +104,28 @@ class VoiceAiError(RuntimeError):
 
 
 @dataclass
-class VoiceAiResult:
-    """One successful transcription + summary."""
+class ModelReply:
+    """One successful ``generateContent`` call (the model's text + what it cost)."""
 
-    transcript: str
-    transcript_segments: list[dict[str, Any]]
-    summary: dict[str, Any]
-    summary_text: str
+    text: str
+    finish_reason: str | None
     tokens_in: int
     tokens_out: int
     cost_usd: Decimal
     model: str
-    prompt_version: str
     raw_usage: dict[str, Any] = field(default_factory=dict)
 
 
+#: v2 の要約 (``summary['format']``)。本文は ``summary['body']``。
+SUMMARY_FORMAT_V2 = "v2"
+
+
 def render_summary_text(summary: dict[str, Any] | None) -> str:
-    """Render the summary JSON as a human-readable bullet list (記録の貼り付け用)."""
+    """Render the summary as text (記録の貼り付け用)。v2 は本文そのまま・v1 は見出し付きの箇条書き。"""
     if not summary:
         return ""
+    if summary.get("format") == SUMMARY_FORMAT_V2:
+        return str(summary.get("body") or "").strip()
     lines: list[str] = []
 
     def _bullets(title: str, value: Any) -> None:
@@ -209,22 +220,43 @@ class VertexVoiceClient:
 
     # --- Public surface ---------------------------------------------------
 
-    async def transcribe_and_summarize(
+    async def transcribe_lines(
         self,
         audio_bytes: bytes,
         mime_type: str,
         prompt: str,
-    ) -> VoiceAiResult:
-        """Send one audio file + prompt, return the parsed transcript/summary."""
+    ) -> ModelReply:
+        """① 音声 + 指示 → 発言の行の JSON 配列 (文字のまま返す・読むのは ``transcribe.py``)。
+
+        上限 (``maxOutputTokens``) で切れたかは ``finish_reason == "MAX_TOKENS"`` で分かる。
+        続きを頼むのは呼び出し側 (1 リクエスト = 1 回の原則は変えない)。
+        """
         if len(audio_bytes) > MAX_INLINE_AUDIO_BYTES:
             raise VoiceAiError(
                 "too_large",
                 f"audio is {len(audio_bytes)} bytes (inline limit {MAX_INLINE_AUDIO_BYTES})",
             )
-
-        body = self._build_body(audio_bytes, mime_type, prompt)
+        config = self._generation_config(
+            response_mime_type="application/json",
+            response_schema=prompts.transcript_schema(),
+        )
+        body = self._build_body(audio_bytes, mime_type, prompt, config)
         payload = await self._post(body)
-        return self._parse_result(payload)
+        return self._reply(payload, has_audio=True)
+
+    async def generate_text(
+        self,
+        prompt: str,
+        *,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    ) -> ModelReply:
+        """② ③ 文字だけの呼び出し (同じ Vertex 東京・同じモデル)。答えは平文のまま返す。"""
+        body = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": self._generation_config(max_output_tokens=max_output_tokens),
+        }
+        payload = await self._post(body)
+        return self._reply(payload, has_audio=False)
 
     async def transcribe_plain(
         self,
@@ -243,18 +275,40 @@ class VertexVoiceClient:
                 "too_large",
                 f"audio is {len(audio_bytes)} bytes (inline limit {MAX_INLINE_AUDIO_BYTES})",
             )
-        body = self._build_body(audio_bytes, mime_type, prompt)
-        body["generationConfig"] = {
-            "maxOutputTokens": max_output_tokens,
-            "thinkingConfig": {"thinkingBudget": 0},
-            "temperature": 0.0,
-        }
+        body = self._build_body(
+            audio_bytes,
+            mime_type,
+            prompt,
+            {
+                "maxOutputTokens": max_output_tokens,
+                "thinkingConfig": {"thinkingBudget": 0},
+                "temperature": 0.0,
+            },
+        )
         payload = await self._post(body)
         return _extract_text(payload).strip()
 
     # --- Internals --------------------------------------------------------
 
-    def _build_body(self, audio_bytes: bytes, mime_type: str, prompt: str) -> dict[str, Any]:
+    @staticmethod
+    def _generation_config(
+        *,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+        response_mime_type: str | None = None,
+        response_schema: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        config: dict[str, Any] = {"maxOutputTokens": max_output_tokens}
+        if response_mime_type:
+            config["responseMimeType"] = response_mime_type
+        if response_schema is not None:
+            config["responseSchema"] = response_schema
+        config["thinkingConfig"] = {"thinkingBudget": 0}
+        config["temperature"] = DEFAULT_TEMPERATURE
+        return config
+
+    def _build_body(
+        self, audio_bytes: bytes, mime_type: str, prompt: str, generation_config: dict[str, Any]
+    ) -> dict[str, Any]:
         return {
             "contents": [
                 {
@@ -270,13 +324,7 @@ class VertexVoiceClient:
                     ],
                 }
             ],
-            "generationConfig": {
-                "maxOutputTokens": DEFAULT_MAX_OUTPUT_TOKENS,
-                "responseMimeType": "application/json",
-                "responseSchema": prompts.response_schema(),
-                "thinkingConfig": {"thinkingBudget": 0},
-                "temperature": DEFAULT_TEMPERATURE,
-            },
+            "generationConfig": generation_config,
         }
 
     def _credentials_file(self) -> str:
@@ -368,38 +416,24 @@ class VertexVoiceClient:
             raise VoiceAiError("parse", "vertex ai response was not a JSON object")
         return payload
 
-    def _parse_result(self, payload: dict[str, Any]) -> VoiceAiResult:
+    def _reply(self, payload: dict[str, Any], *, has_audio: bool) -> ModelReply:
         text = _extract_text(payload)
-        if not text.strip():
-            raise VoiceAiError("parse", "vertex ai returned no text part", body=payload)
-        try:
-            data = json.loads(text)
-        except ValueError as exc:
-            raise VoiceAiError("parse", f"model output was not JSON: {exc}", body=text) from exc
-        if not isinstance(data, dict):
-            raise VoiceAiError("parse", "model output was not a JSON object", body=text)
-
-        summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
-        segments_raw = data.get("transcript_segments")
-        segments: list[dict[str, Any]] = []
-        if isinstance(segments_raw, list):
-            segments = [s for s in segments_raw if isinstance(s, dict)]
+        candidates = payload.get("candidates") or []
+        first = candidates[0] if isinstance(candidates, list) and candidates else {}
+        finish = first.get("finishReason") if isinstance(first, dict) else None
 
         usage = payload.get("usageMetadata") or {}
         if not isinstance(usage, dict):
             usage = {}
-        audio_in, text_in = split_prompt_tokens(usage)
+        audio_in, text_in = split_prompt_tokens(usage, has_audio=has_audio)
 
-        return VoiceAiResult(
-            transcript=str(data.get("transcript") or ""),
-            transcript_segments=segments,
-            summary=summary,
-            summary_text=render_summary_text(summary),
+        return ModelReply(
+            text=text,
+            finish_reason=str(finish) if finish else None,
             tokens_in=audio_in + text_in,
             tokens_out=output_tokens(usage),
-            cost_usd=estimate_cost_usd(self._model, usage),
+            cost_usd=estimate_cost_usd(self._model, usage, has_audio=has_audio),
             model=self._model,
-            prompt_version=prompts.PROMPT_VERSION,
             raw_usage=usage,
         )
 

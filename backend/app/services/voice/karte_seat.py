@@ -2,11 +2,14 @@
 
 設計: ``docs/plans/karte-via-seat-2026-10-13.md`` (PO 2026-10-13)。
 
-* 文字起こし + 聞き間違いの補正は今までどおり Vertex AI 東京の Gemini (``jobs.py``)。
-  その結果の **文字起こしの文** だけを中継のサーバーどうしの口 (``POST /svc/karte/draft``) に渡し、
-  要約 (``summary``) を作り直してもらう。
+* 文字起こし (①) と聞き違いの補正 (②) は Vertex AI 東京の Gemini (``jobs.py``)。
+  **直した文字起こし** (``[m:ss] 看護師: …`` の行) だけを中継のサーバーどうしの口
+  (``POST /svc/karte/draft``) に渡し、③ のまとめを席で書いてもらう
+  (v2: ``docs/plans/visit-voice-record-v2-design-2026-10-27.md`` §3 P3)。
+* 頼むのは ``format: "v2"`` (本文の Markdown ＋ 事実)。v2 を知らない前の中継が v1 の
+  ``summary`` (6 欄) で答えても受ける (v1 の形のまま保存する)。
 * 拠点の機能の旗 ``karte_via_seat`` が ON の拠点だけ。OFF なら呼ばない (今までと同じ)。
-* どこかで失敗したら (席がサインアウト・上限・打ち切り・中継が落ちている・形が違う) **Gemini の要約をそのまま使う**。
+* どこかで失敗したら (席がサインアウト・上限・打ち切り・中継が落ちている・形が違う) **Gemini の v2 で書く**。
   カルテは止めない。理由は ``SeatDraftError.kind`` → ``visit_recordings.error_kind`` に ``seat_<kind>``。
 * 中継へ送るのは文字起こしと **名前の無い文脈** (性別・訪問日時・職種) だけ。患者名・職員名は送らない
   (文字起こしの中で呼ばれた呼称はそのまま残る)。ログに本文は書かない。
@@ -28,7 +31,7 @@ from app.models.patient import Patient
 from app.models.staff import Staff
 from app.models.visit import Visit
 from app.models.visit_recording import VisitRecording
-from app.services.voice import prompts
+from app.services.voice import prompts, summary
 from app.services.voice.vertex_client import render_summary_text
 
 logger = logging.getLogger(__name__)
@@ -41,6 +44,8 @@ SEAT_PROVIDER = SEAT_PROVIDERS["codex"]
 #: 中継の合言葉のヘッダー (agent/relay/service_port.py と同じ)。
 TOKEN_HEADER = "X-Rakusuke-Service-Token"
 DRAFT_PATH = "/svc/karte/draft"
+#: 中継へ頼む答えの形。
+DRAFT_FORMAT = "v2"
 
 _SEX_JA = {"male": "男性", "female": "女性"}
 
@@ -107,8 +112,20 @@ async def build_context(db: AsyncSession, row: VisitRecording) -> dict[str, str]
     return ctx
 
 
+def _v2_summary(data: dict[str, Any]) -> dict[str, Any]:
+    """v2 の答え (``body`` ＋ ``facts``) → 保存する ``summary``。本文が空なら parse。
+
+    中継が事実のブロックを本文に残したまま返しても、ここでもう一度読み分ける。
+    """
+    body, facts_in_body = summary.split_reply(str(data.get("body") or ""))
+    if not body:
+        raise SeatDraftError("parse")
+    facts = data.get("facts") if isinstance(data.get("facts"), dict) else facts_in_body
+    return summary.build_summary(body, facts)
+
+
 def _normalize_summary(raw: Any) -> dict[str, Any]:
-    """中継の答えを Gemini の要約と同じ形にそろえる (足りない項目は空・余計な項目は捨てる)。"""
+    """v1 の答えを今までの要約の形にそろえる (足りない項目は空・余計な項目は捨てる)。"""
     if not isinstance(raw, dict) or not any(k in raw for k in prompts.SUMMARY_SECTIONS):
         raise SeatDraftError("parse")
     out: dict[str, Any] = {}
@@ -140,6 +157,7 @@ async def request_draft(
     timeout = float(getattr(settings, "karte_seat_timeout_seconds", 100) or 100)
     body = {
         "recording_id": str(recording_id),
+        "format": DRAFT_FORMAT,
         "transcript": transcript,
         "context": context,
         "presser_user_id": str(presser_user_id) if presser_user_id else None,
@@ -166,12 +184,15 @@ async def request_draft(
     if not data.get("ok"):
         kind = str(data.get("kind") or "failed")
         raise SeatDraftError("".join(c for c in kind if c.isalnum() or c == "_")[:24] or "failed")
-    summary = _normalize_summary(data.get("summary"))
+    if "body" in data:
+        drafted = _v2_summary(data)
+    else:
+        drafted = _normalize_summary(data.get("summary"))
     model = data.get("model")
     version = data.get("prompt_version")
     return SeatDraft(
-        summary=summary,
-        summary_text=render_summary_text(summary),
+        summary=drafted,
+        summary_text=render_summary_text(drafted),
         model=str(model)[:64] if model else None,
         prompt_version=str(version)[:16] if version else None,
         provider=SEAT_PROVIDERS.get(str(data.get("provider") or "codex"), SEAT_PROVIDER),

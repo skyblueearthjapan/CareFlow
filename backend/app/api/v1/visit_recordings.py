@@ -256,6 +256,7 @@ def _serialize(
         "audio_bytes": row.audio_bytes,
         "transcript": row.transcript if include_transcript else None,
         "transcript_json": row.transcript_json if include_transcript else None,
+        "transcript_fixed_json": row.transcript_fixed_json if include_transcript else None,
         "summary": row.summary,
         "summary_text": row.summary_text,
         "summary_edited_by": row.summary_edited_by,
@@ -823,7 +824,7 @@ async def get_visit_recording_report(
     応答には ``Cache-Control: no-store`` を付ける。
 
     ``format=json`` の ``recording`` は **全文 (``transcript`` /
-    ``transcript_json``) を省く** — 同じ本文が ``html`` に入っているので、
+    ``transcript_json`` / ``transcript_fixed_json``) を省く** — 同じ本文が ``html`` に入っているので、
     1 応答に会話を 2 回載せない (一覧が全文を返さないのと同じ作法)。全文が要る
     画面は ``html`` を使うか、詳細 (``GET /visit-recordings/{id}``) を叩く。
     """
@@ -839,7 +840,12 @@ async def get_visit_recording_report(
 
     # ``_serialize_one(..., include_transcript=False)`` と同じ中身。名前解決
     # (患者 / スタッフ / 拠点) を 2 度引かないために dict を複製して落とす。
-    recording = {**payload, "transcript": None, "transcript_json": None}
+    recording = {
+        **payload,
+        "transcript": None,
+        "transcript_json": None,
+        "transcript_fixed_json": None,
+    }
     response.headers["Cache-Control"] = _NO_STORE["Cache-Control"]
     return VisitRecordingReportRead(
         recording=VisitRecordingRead.model_validate(recording),

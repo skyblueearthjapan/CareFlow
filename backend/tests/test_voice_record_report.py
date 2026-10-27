@@ -267,3 +267,62 @@ def test_unlinked_recording_renders_without_patient() -> None:
     html_doc = render_visit_record_html(_rec(patient_name=None, status="unlinked"))
     assert "患者 未紐付け" in html_doc
     assert "紐付け待ち" in html_doc
+
+
+# ---------------------------------------------------------------------------
+# 音声記録 v2 (docs/plans/visit-voice-record-v2-design-2026-10-27.md §3 P3)
+
+
+def test_v1_record_renders_exactly_as_before() -> None:
+    """v1 の記録 (format の無い要約・start_sec の行) の見た目は変わらない。"""
+    html_doc = render_visit_record_html(
+        _rec(
+            summary=_SUMMARY,
+            transcript_json=[{"speaker": "看護師", "start_sec": 65, "text": "こんにちは"}],
+        )
+    )
+    assert "<h3>主訴・様子</h3><ul><li>膝の痛みが続くとの訴え</li>" in html_doc
+    assert '<td class="k">血圧</td><td>128/76</td>' in html_doc
+    assert '<td class="sec">01:05</td><td class="sp">看護師</td><td>こんにちは</td>' in html_doc
+
+
+def test_v2_summary_renders_body_as_escaped_plain_text() -> None:
+    body = "褥瘡の痛み [0:03]\n- 血圧 132/78 [0:00]\n<script>alert(1)</script>"
+    html_doc = render_visit_record_html(
+        _rec(
+            summary={"format": "v2", "body": body, "facts": {"vitals": {"血圧": "132/78"}}},
+            summary_text=body,
+            prompt_version="v2",
+        )
+    )
+    assert '<p class="pre">褥瘡の痛み [0:03]\n- 血圧 132/78 [0:00]\n&lt;script&gt;' in html_doc
+    assert "<script>alert" not in html_doc
+    # v2 の内部のキー (format / body / facts) を見出しとして出さない。
+    assert "<h3>format</h3>" not in html_doc and "<h3>facts</h3>" not in html_doc
+
+
+def test_v2_manual_edit_still_wins() -> None:
+    html_doc = render_visit_record_html(
+        _rec(
+            summary={"format": "v2", "body": "AI の本文", "facts": {}},
+            summary_text="人が直した本文",
+            summary_edited_at=datetime(2026, 9, 17, 16, 0, tzinfo=UTC),
+        )
+    )
+    assert "人が直した本文" in html_doc and "AI の本文" not in html_doc
+
+
+def test_v2_transcript_prefers_fixed_lines_and_reads_start() -> None:
+    html_doc = render_visit_record_html(
+        _rec(
+            transcript_json=[{"start": 3, "end": 5, "speaker": "患者", "text": "じょくそう"}],
+            transcript_fixed_json=[{"start": 3, "end": 5, "speaker": "患者", "text": "褥瘡"}],
+        )
+    )
+    assert '<td class="sec">00:03</td><td class="sp">患者</td><td>褥瘡</td>' in html_doc
+    assert "じょくそう" not in html_doc
+    # 直した行が無ければ直す前の行。
+    html_doc = render_visit_record_html(
+        _rec(transcript_json=[{"start": 3, "end": 5, "speaker": "患者", "text": "じょくそう"}])
+    )
+    assert "<td>じょくそう</td>" in html_doc

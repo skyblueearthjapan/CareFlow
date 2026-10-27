@@ -54,7 +54,9 @@ def _int(value: Any) -> int:
         return 0
 
 
-def split_prompt_tokens(usage_metadata: Mapping[str, Any] | None) -> tuple[int, int]:
+def split_prompt_tokens(
+    usage_metadata: Mapping[str, Any] | None, *, has_audio: bool = True
+) -> tuple[int, int]:
     """Split prompt tokens into (audio_tokens, text_tokens).
 
     Uses `promptTokensDetails` when available. When the breakdown is missing
@@ -63,6 +65,9 @@ def split_prompt_tokens(usage_metadata: Mapping[str, Any] | None) -> tuple[int, 
     audio part, and audio is the more expensive modality, so guessing "text"
     would under-report the bill. An estimate that is too high is noticed;
     one that is too low is not.
+
+    ``has_audio=False`` (② 補正・③ まとめの文字だけの呼び出し) では、内訳が無いときの
+    ``promptTokenCount`` を文字の値段で数える (音声を 1 つも送っていないため)。
     """
     usage = usage_metadata or {}
     details = usage.get("promptTokensDetails") or usage.get("prompt_tokens_details") or []
@@ -79,7 +84,11 @@ def split_prompt_tokens(usage_metadata: Mapping[str, Any] | None) -> tuple[int, 
             else:
                 text += count
     if audio == 0 and text == 0:
-        audio = _int(usage.get("promptTokenCount", usage.get("prompt_token_count")))
+        total = _int(usage.get("promptTokenCount", usage.get("prompt_token_count")))
+        if has_audio:
+            audio = total
+        else:
+            text = total
     return audio, text
 
 
@@ -91,10 +100,12 @@ def output_tokens(usage_metadata: Mapping[str, Any] | None) -> int:
     return total
 
 
-def estimate_cost_usd(model: str, usage_metadata: Mapping[str, Any] | None) -> Decimal:
+def estimate_cost_usd(
+    model: str, usage_metadata: Mapping[str, Any] | None, *, has_audio: bool = True
+) -> Decimal:
     """Estimate the USD cost of one generateContent call."""
     prices = price_table(model)
-    audio_in, text_in = split_prompt_tokens(usage_metadata)
+    audio_in, text_in = split_prompt_tokens(usage_metadata, has_audio=has_audio)
     out = output_tokens(usage_metadata)
 
     million = Decimal(1_000_000)

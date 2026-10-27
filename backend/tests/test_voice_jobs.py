@@ -1,23 +1,24 @@
-"""音声記録の文字起こしジョブ (``app.services.voice.jobs``) のテスト.
+"""音声記録のジョブ (``app.services.voice.jobs``) のテスト — v2 の 3 段.
 
-正典設計書: ``docs/plans/visit-voice-record-design-2026-09-17.md`` §10-4。
+正典設計書: ``docs/plans/visit-voice-record-design-2026-09-17.md`` §10-4、
+v2 は ``docs/plans/visit-voice-record-v2-design-2026-10-27.md`` §3・§4・§6。
 
 AI は ``vertex_client.set_test_client()`` で偽クライアントに差し替える
 (ネットワーク・認証情報を一切使わない)。網羅:
 
-* 成功 → ``summarized`` + 保存列 (transcript/summary/cost/model) + 通知 1 行。
-* ``timeout`` は 1 回だけ再実行して 2 回目で成功する (合計 2 回)。
-* ``429`` は ``RATE_LIMIT_BACKOFF_SECONDS`` 待ってから 1 回だけ再実行する。
-* ``parse`` は再実行せず ``failed`` + 日本語の固定文言 + ``error_kind='parse'``。
-* クライアントが作れない (設定ミス) → ``failed`` + ``error_kind='config'``。
-* ``VOICE_AI_PROVIDER='none'`` は何もしない (status 据え置き・呼び出し 0 回)。
-* 音声ファイルが消えている → ``failed`` + ``audio file missing``。
-* 20 MB 超 → ``failed`` + ``too_large: ...``。
+* 成功 → ① 行 → ② 直した行 → ③ v2 の要約。保存列・費用の合計・通知 1 行。
+* ① 上限で切れたら続きを頼む (重なりは捨てる)・4 回で読み切れなければ ``incomplete``。
+* ① ``timeout`` は 1 回だけ再実行・``429`` は待ってから 1 回・``parse`` は再実行しない。
+* ① 声が無い (行 0) → ``transcript_empty``。
+* ② 全部失敗しても止めない (元の行でまとめへ)・検査に通らない区切りは元の行。
+* ③ 本文が空 → ``summary_parse``・呼び出し失敗 → ``summary_<kind>``。
+* クライアントが作れない・provider=none・音声が無い・20 MB 超・削除済み/処理中。
 * 患者未紐付けの行は ``unlinked`` を維持したまま要約を保存する。
 """
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -31,53 +32,79 @@ from app.core.security import hash_password
 from app.models import Notification, Patient, Staff, User
 from app.models.visit_recording import VisitRecording
 from app.services.voice import jobs, vertex_client
-from app.services.voice.vertex_client import VoiceAiError, VoiceAiResult
+from app.services.voice.vertex_client import ModelReply, VoiceAiError
 
-SUMMARY = {
-    "主訴・様子": ["だるさの訴えあり"],
-    "バイタル": {"血圧": "132/78", "体温": "36.7", "脈拍": "", "SpO2": "98", "血糖": ""},
-    "処置・ケア": ["褥瘡の包交を実施"],
-    "申し送り": [],
-    "次回": "",
-    "free": "",
+LINES = [
+    {"start": 0, "end": 2.5, "speaker": "看護師", "text": "今日の体調はいかがですか。"},
+    {"start": 3, "end": 5, "speaker": "患者", "text": "じょくそうが少し痛いです。"},
+]
+FIXED_ANSWER = "[0:00] 看護師: 今日の体調はいかがですか。\n[0:03] 患者: 褥瘡が少し痛いです。"
+FACTS = {
+    "vitals": {"血圧": "132/78"},
+    "handover": ["褥瘡の痛みを主治医へ"],
+    "next": "",
+    "needs_check": [{"text": "痛みの場所", "time": "0:03"}],
 }
+SUMMARY_ANSWER = (
+    "褥瘡の痛みの訴えあり [0:03]。\n\n```json\n" + json.dumps(FACTS, ensure_ascii=False) + "\n```"
+)
 
 
-def _result() -> VoiceAiResult:
-    return VoiceAiResult(
-        transcript="看護師: 今日の体調はいかがですか。",
-        transcript_segments=[{"speaker": "看護師", "start_sec": 0, "text": "体調は?"}],
-        summary=dict(SUMMARY),
-        summary_text="【主訴・様子】\n・だるさの訴えあり",
-        tokens_in=1200,
-        tokens_out=300,
-        cost_usd=Decimal("0.0021"),
+def _reply(text: str, *, finish: str | None = "STOP", cost: str = "0.001") -> ModelReply:
+    return ModelReply(
+        text=text,
+        finish_reason=finish,
+        tokens_in=1000,
+        tokens_out=200,
+        cost_usd=Decimal(cost),
         model="gemini-2.5-flash",
-        prompt_version="v1",
-        raw_usage={"promptTokenCount": 1200},
+        raw_usage={},
     )
 
 
-class _FakeVoiceClient:
-    """``transcribe_and_summarize`` の戻りを台本で差し込む偽クライアント。"""
+def _lines_reply(lines=LINES, *, finish: str | None = "STOP") -> ModelReply:
+    return _reply(json.dumps(lines, ensure_ascii=False), finish=finish)
 
-    def __init__(self, *script: object) -> None:
-        self._script = list(script)
-        self.calls: list[tuple[bytes, str, str]] = []
+
+def _default_text(prompt: str) -> ModelReply:
+    if "校正係" in prompt:
+        return _reply(FIXED_ANSWER)
+    return _reply(SUMMARY_ANSWER)
+
+
+class _FakeVoiceClient:
+    """① は台本 (``audio``)、② ③ は関数 (``text``: 指示文 → 答え or 例外) で返す偽クライアント。"""
+
+    def __init__(self, *audio: object, text=None) -> None:
+        self._audio = list(audio)
+        self._text = text or _default_text
+        self.audio_calls: list[tuple[bytes, str, str]] = []
+        self.text_calls: list[str] = []
         self.closed = 0
 
     @property
     def model(self) -> str:
         return "gemini-2.5-flash"
 
-    async def transcribe_and_summarize(
-        self, audio_bytes: bytes, mime_type: str, prompt: str
-    ) -> VoiceAiResult:
-        self.calls.append((audio_bytes, mime_type, prompt))
-        item = self._script.pop(0) if self._script else _result()
+    async def transcribe_lines(self, audio_bytes: bytes, mime_type: str, prompt: str):
+        self.audio_calls.append((audio_bytes, mime_type, prompt))
+        item = self._audio.pop(0) if self._audio else _lines_reply()
         if isinstance(item, Exception):
             raise item
-        return item  # type: ignore[return-value]
+        return item
+
+    async def generate_text(self, prompt: str, **_kw):
+        self.text_calls.append(prompt)
+        item = self._text(prompt)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def correction_prompts(self) -> list[str]:
+        return [p for p in self.text_calls if "校正係" in p]
+
+    def summary_prompts(self) -> list[str]:
+        return [p for p in self.text_calls if "校正係" not in p]
 
     async def aclose(self) -> None:
         self.closed += 1
@@ -145,33 +172,47 @@ async def seeded(db, voice_env):
 
 
 @pytest.mark.asyncio
-async def test_success_saves_columns_and_notifies(db, seeded) -> None:
+async def test_success_runs_three_stages_and_saves_columns(db, seeded) -> None:
     row, user, patient, _audio = seeded
-    fake = _install(_FakeVoiceClient(_result()))
+    fake = _install(_FakeVoiceClient(_lines_reply()))
 
     await jobs.run_transcribe_job(row.id)
 
     await db.refresh(row)
     assert row.status == "summarized"
-    assert row.transcript.startswith("看護師:")
-    assert row.transcript_json == [{"speaker": "看護師", "start_sec": 0, "text": "体調は?"}]
-    assert row.summary["主訴・様子"] == ["だるさの訴えあり"]
-    assert row.summary_text.startswith("【主訴・様子】")
+    # 直す前の行 / 直した行 / 文字列は直した行から。
+    assert row.transcript_json == LINES
+    assert [line["text"] for line in row.transcript_fixed_json] == [
+        "今日の体調はいかがですか。",
+        "褥瘡が少し痛いです。",
+    ]
+    assert row.transcript_fixed_json[1]["start"] == 3 and row.transcript_fixed_json[1]["end"] == 5
+    assert row.transcript == "看護師: 今日の体調はいかがですか。\n患者: 褥瘡が少し痛いです。"
+    # v2 の要約 (本文 + 事実)。
+    assert row.summary["format"] == "v2"
+    assert row.summary["body"] == "褥瘡の痛みの訴えあり [0:03]。"
+    assert row.summary_text == row.summary["body"]
+    assert row.summary["facts"]["vitals"]["血圧"] == "132/78"
+    assert row.summary["facts"]["needs_check"] == [{"text": "痛みの場所", "time": "0:03"}]
     assert row.provider == "vertex"
     assert row.model == "gemini-2.5-flash"
-    assert row.prompt_version == "v1"
-    assert row.tokens_in == 1200
-    assert row.tokens_out == 300
-    assert Decimal(str(row.cost_usd)) == Decimal("0.0021")
-    assert row.error_message is None
+    assert row.prompt_version == "v2"
+    # 3 回分 (① 1 回・② 1 区切り・③ 1 回) の合計。
+    assert row.tokens_in == 3000
+    assert row.tokens_out == 600
+    assert Decimal(str(row.cost_usd)) == Decimal("0.003")
+    assert row.error_message is None and row.error_kind is None
 
-    # 1 コールで音声と MIME がそのまま渡り、プロンプトに文脈が載る。
-    assert len(fake.calls) == 1
-    audio_bytes, mime, prompt = fake.calls[0]
-    assert audio_bytes == b"fake-audio-bytes"
-    assert mime == "audio/webm"
-    assert patient.name in prompt
-    assert "録音 花子" in prompt
+    # ① 音声と MIME がそのまま渡り、指示文に文脈が載る。
+    assert len(fake.audio_calls) == 1
+    audio_bytes, mime, prompt = fake.audio_calls[0]
+    assert audio_bytes == b"fake-audio-bytes" and mime == "audio/webm"
+    assert patient.name in prompt and "録音 花子" in prompt and "（長さ 2:00）" in prompt
+    # ② には直す前の行、③ には直した行が渡る。
+    (fix_prompt,) = fake.correction_prompts()
+    assert "[0:03] 患者: じょくそうが少し痛いです。" in fix_prompt
+    (sum_prompt,) = fake.summary_prompts()
+    assert "[0:03] 患者: 褥瘡が少し痛いです。" in sum_prompt and "じょくそう" not in sum_prompt
     assert fake.closed == 1
 
     notes = (await db.scalars(select(Notification).where(Notification.user_id == user.id))).all()
@@ -185,14 +226,81 @@ async def test_success_saves_columns_and_notifies(db, seeded) -> None:
 
 
 @pytest.mark.asyncio
-async def test_timeout_is_retried_once_then_succeeds(db, seeded) -> None:
+async def test_cut_answer_is_continued_from_last_line(db, seeded) -> None:
+    """上限で切れたら最後の完全な行の時刻から続きを頼み、重なった行は捨てる。"""
     row, _user, _patient, _audio = seeded
-    fake = _install(_FakeVoiceClient(VoiceAiError("timeout", "deadline"), _result()))
+    cut = (
+        json.dumps(LINES, ensure_ascii=False)[:-1]
+        + ', {"start": 6, "end": 8, "speaker": "看護師", "text": "途中で'
+    )
+    rest = [
+        LINES[1],  # 続きの読み直しで同じ行がもう一度来る → 捨てる
+        {"start": 6, "end": 8, "speaker": "看護師", "text": "お薬は飲めていますか。"},
+        {"start": 9, "end": 10, "speaker": "患者", "text": "はい。"},
+    ]
+    fake = _install(_FakeVoiceClient(_reply(cut, finish="MAX_TOKENS"), _lines_reply(rest)))
 
     await jobs.run_transcribe_job(row.id)
 
     await db.refresh(row)
-    assert len(fake.calls) == 2
+    assert row.status == "summarized"
+    assert len(fake.audio_calls) == 2
+    assert "0:03（3 秒）から最後までの部分だけ" in fake.audio_calls[1][2]
+    assert "[0:03] 患者: じょくそうが少し痛いです。" in fake.audio_calls[1][2]  # 直前の行を見せる
+    assert [line["text"] for line in row.transcript_json] == [
+        "今日の体調はいかがですか。",
+        "じょくそうが少し痛いです。",
+        "お薬は飲めていますか。",
+        "はい。",
+    ]
+    assert row.tokens_in == 4000  # ① 2 回 + ② + ③
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_continuation_limit_fails_as_incomplete(db, seeded) -> None:
+    row, _user, _patient, _audio = seeded
+    replies = [
+        _lines_reply(
+            [{"start": i * 10, "end": i * 10 + 2, "speaker": "看護師", "text": f"話{i}"}],
+            finish="MAX_TOKENS",
+        )
+        for i in range(6)
+    ]
+    fake = _install(_FakeVoiceClient(*replies))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert len(fake.audio_calls) == 5  # 最初 + 続き 4 回
+    assert row.status == "failed"
+    assert row.error_kind == "incomplete"
+    assert row.error_message == jobs.AI_FAILED_MESSAGE
+    assert fake.text_calls == []
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_cut_without_complete_line_fails(db, seeded) -> None:
+    row, _user, _patient, _audio = seeded
+    _install(_FakeVoiceClient(_reply('[{"start": 0, "end": 1, "spea', finish="MAX_TOKENS")))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert row.status == "failed" and row.error_kind == "incomplete"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_timeout_is_retried_once_then_succeeds(db, seeded) -> None:
+    row, _user, _patient, _audio = seeded
+    fake = _install(_FakeVoiceClient(VoiceAiError("timeout", "deadline"), _lines_reply()))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert len(fake.audio_calls) == 2
     assert row.status == "summarized"
     assert row.error_message is None
     await db.rollback()
@@ -205,7 +313,7 @@ async def test_unlinked_keeps_status_and_saves_summary(db, seeded) -> None:
     row.patient_id = None
     row.status = "unlinked"
     await db.commit()
-    _install(_FakeVoiceClient(_result()))
+    _install(_FakeVoiceClient(_lines_reply()))
 
     await jobs.run_transcribe_job(row.id)
 
@@ -213,6 +321,54 @@ async def test_unlinked_keeps_status_and_saves_summary(db, seeded) -> None:
     assert row.status == "unlinked"
     assert row.summary_text is not None
     assert row.transcript is not None
+    await db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# ② 補正は失敗しても止めない
+
+
+@pytest.mark.asyncio
+async def test_correction_failure_keeps_raw_lines_and_continues(db, seeded) -> None:
+    row, _user, _patient, _audio = seeded
+
+    def text(prompt: str):
+        if "校正係" in prompt:
+            return VoiceAiError("parse", "auth trouble")  # 再試行しない種別
+        return _reply(SUMMARY_ANSWER)
+
+    fake = _install(_FakeVoiceClient(_lines_reply(), text=text))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert row.status == "summarized" and row.error_kind is None
+    assert row.transcript_fixed_json is None
+    assert row.transcript == "看護師: 今日の体調はいかがですか。\n患者: じょくそうが少し痛いです。"
+    (sum_prompt,) = fake.summary_prompts()
+    assert "[0:03] 患者: じょくそうが少し痛いです。" in sum_prompt
+    assert row.tokens_in == 2000  # 失敗した呼び出しは数えない
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_correction_that_fails_the_check_uses_raw_lines(db, seeded) -> None:
+    """答えが要約になっている (文字数が半分未満) → 直す前の行で進む。"""
+    row, _user, _patient, _audio = seeded
+
+    def text(prompt: str):
+        if "校正係" in prompt:
+            return _reply("[0:00] 看護師: 体調")
+        return _reply(SUMMARY_ANSWER)
+
+    _install(_FakeVoiceClient(_lines_reply(), text=text))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert row.status == "summarized"
+    assert row.transcript_fixed_json is None
+    assert "じょくそう" in row.transcript
     await db.rollback()
 
 
@@ -228,7 +384,7 @@ async def test_parse_error_fails_without_retry(db, seeded) -> None:
     await jobs.run_transcribe_job(row.id)
 
     await db.refresh(row)
-    assert len(fake.calls) == 1  # parse は再実行しない
+    assert len(fake.audio_calls) == 1  # parse は再実行しない
     assert row.status == "failed"
     # 画面に出るのは日本語の固定文言。AI の生メッセージは漏らさない。
     assert row.error_message == jobs.AI_FAILED_MESSAGE
@@ -242,10 +398,78 @@ async def test_parse_error_fails_without_retry(db, seeded) -> None:
 
 
 @pytest.mark.asyncio
+async def test_unreadable_transcript_answer_is_parse_failure(db, seeded) -> None:
+    row, _user, _patient, _audio = seeded
+    _install(_FakeVoiceClient(_reply("JSON ではない答え")))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert row.status == "failed" and row.error_kind == "parse"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_silent_recording_fails_as_transcript_empty(db, seeded) -> None:
+    row, _user, _patient, _audio = seeded
+    fake = _install(_FakeVoiceClient(_lines_reply([])))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert row.status == "failed"
+    assert row.error_kind == jobs.ERROR_KIND_EMPTY_TRANSCRIPT
+    assert row.error_message == jobs.EMPTY_TRANSCRIPT_MESSAGE
+    assert fake.text_calls == []
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_summary_without_body_fails_as_summary_parse(db, seeded) -> None:
+    row, user, _patient, _audio = seeded
+
+    def text(prompt: str):
+        if "校正係" in prompt:
+            return _reply(FIXED_ANSWER)
+        return _reply("```json\n" + json.dumps(FACTS, ensure_ascii=False) + "\n```")
+
+    _install(_FakeVoiceClient(_lines_reply(), text=text))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert row.status == "failed"
+    assert row.error_kind == "summary_parse"
+    assert row.error_message == jobs.AI_FAILED_MESSAGE
+    assert row.summary is None and row.transcript is None
+    assert (await db.scalar(select(Notification.id).where(Notification.user_id == user.id))) is None
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_summary_timeout_is_retried_once_then_fails(db, seeded) -> None:
+    row, _user, _patient, _audio = seeded
+
+    def text(prompt: str):
+        if "校正係" in prompt:
+            return _reply(FIXED_ANSWER)
+        return VoiceAiError("timeout", "slow")
+
+    fake = _install(_FakeVoiceClient(_lines_reply(), text=text))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert len(fake.summary_prompts()) == 2  # 1 回だけ再実行
+    assert row.status == "failed" and row.error_kind == "summary_timeout"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
 async def test_missing_audio_file_fails(db, seeded) -> None:
     row, _user, _patient, audio = seeded
     Path(audio).unlink()
-    fake = _install(_FakeVoiceClient(_result()))
+    fake = _install(_FakeVoiceClient())
 
     await jobs.run_transcribe_job(row.id)
 
@@ -253,7 +477,7 @@ async def test_missing_audio_file_fails(db, seeded) -> None:
     assert row.status == "failed"
     assert row.error_message == jobs.AUDIO_MISSING_MESSAGE
     assert row.error_kind == jobs.ERROR_KIND_AUDIO_MISSING
-    assert fake.calls == []
+    assert fake.audio_calls == []
     await db.rollback()
 
 
@@ -262,7 +486,7 @@ async def test_too_large_audio_fails(db, seeded, monkeypatch) -> None:
     """inline 上限超過は AI を呼ばずに ``too_large`` で failed."""
     row, _user, _patient, _audio = seeded
     monkeypatch.setattr(jobs, "MAX_INLINE_AUDIO_BYTES", 4)
-    fake = _install(_FakeVoiceClient(_result()))
+    fake = _install(_FakeVoiceClient())
 
     await jobs.run_transcribe_job(row.id)
 
@@ -270,7 +494,7 @@ async def test_too_large_audio_fails(db, seeded, monkeypatch) -> None:
     assert row.status == "failed"
     assert row.error_message == jobs.TOO_LARGE_MESSAGE
     assert row.error_kind == jobs.ERROR_KIND_TOO_LARGE
-    assert fake.calls == []
+    assert fake.audio_calls == []
     await db.rollback()
 
 
@@ -285,13 +509,13 @@ async def test_rate_limited_call_waits_then_retries_once(db, seeded, monkeypatch
 
     monkeypatch.setattr(jobs.asyncio, "sleep", _fake_sleep)
     fake = _install(
-        _FakeVoiceClient(VoiceAiError("http", "rate limited", status_code=429), _result())
+        _FakeVoiceClient(VoiceAiError("http", "rate limited", status_code=429), _lines_reply())
     )
 
     await jobs.run_transcribe_job(row.id)
 
     await db.refresh(row)
-    assert len(fake.calls) == 2
+    assert len(fake.audio_calls) == 2
     assert slept == [jobs.RATE_LIMIT_BACKOFF_SECONDS]
     assert row.status == "summarized"
     await db.rollback()
@@ -318,13 +542,13 @@ async def test_provider_none_is_noop(db, seeded, monkeypatch) -> None:
     row, _user, _patient, _audio = seeded
     monkeypatch.setenv("VOICE_AI_PROVIDER", "none")
     get_settings.cache_clear()
-    fake = _install(_FakeVoiceClient(_result()))
+    fake = _install(_FakeVoiceClient())
 
     await jobs.run_transcribe_job(row.id)
 
     await db.refresh(row)
     assert row.status == "uploaded"
-    assert fake.calls == []
+    assert fake.audio_calls == []
     assert row.transcript is None
     await db.rollback()
 
@@ -335,12 +559,12 @@ async def test_deleted_or_transcribing_rows_are_skipped(db, seeded) -> None:
     row, _user, _patient, _audio = seeded
     row.status = "transcribing"
     await db.commit()
-    fake = _install(_FakeVoiceClient(_result()))
+    fake = _install(_FakeVoiceClient())
 
     await jobs.run_transcribe_job(row.id)
     await db.refresh(row)
     assert row.status == "transcribing"
-    assert fake.calls == []
+    assert fake.audio_calls == []
 
     row.status = "uploaded"
     row.deleted_at = datetime.now(UTC)
@@ -348,5 +572,5 @@ async def test_deleted_or_transcribing_rows_are_skipped(db, seeded) -> None:
     await jobs.run_transcribe_job(row.id)
     await db.refresh(row)
     assert row.status == "uploaded"
-    assert fake.calls == []
+    assert fake.audio_calls == []
     await db.rollback()

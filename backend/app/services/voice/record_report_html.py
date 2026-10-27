@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 
 from app.services.kaipoke.report_css import REPORT_CSS
 from app.services.voice.prompts import VITAL_KEYS
+from app.services.voice.vertex_client import SUMMARY_FORMAT_V2
 
 #: 報告書の時刻は常に日本時間 (コンテナは UTC で動いているので、``astimezone()``
 #: = プロセスのローカル TZ に任せると 9 時間ずれる)。
@@ -257,6 +258,14 @@ def _summary_section(rec: dict[str, Any]) -> str:
             if summary_text
             else '<div class="box warn">要約は削除されています。</div>'
         )
+    elif isinstance(summary, dict) and summary.get("format") == SUMMARY_FORMAT_V2:
+        # v2 (本文は Markdown)。見た目の作り込み (見出し・表・時刻) は P4。今は平文で出す。
+        v2_body = str(summary.get("body") or "").strip() or summary_text
+        body = (
+            f'<p class="pre">{_e(v2_body)}</p>'
+            if v2_body
+            else '<div class="box warn">要約はまだありません。</div>'
+        )
     elif isinstance(summary, dict) and (rendered := _summary_from_json(summary)):
         body = rendered
     elif summary_text:
@@ -275,7 +284,8 @@ def _summary_section(rec: dict[str, Any]) -> str:
 
 
 def _transcript_section(rec: dict[str, Any]) -> str:
-    segments = rec.get("transcript_json")
+    # v2: 直した行があればそちら (無ければ直す前の行・v1 の記録は transcript_json だけ)。
+    segments = rec.get("transcript_fixed_json") or rec.get("transcript_json")
     rows: list[str] = []
     if isinstance(segments, list):
         for seg in segments:
@@ -284,8 +294,9 @@ def _transcript_section(rec: dict[str, Any]) -> str:
             text = str(seg.get("text") or "").strip()
             if not text:
                 continue
+            start = seg.get("start_sec", seg.get("start"))  # v1 = start_sec / v2 = start
             rows.append(
-                f'<tr><td class="sec">{_e(_mmss(seg.get("start_sec")))}</td>'
+                f'<tr><td class="sec">{_e(_mmss(start))}</td>'
                 f'<td class="sp">{_e(seg.get("speaker") or "不明")}</td>'
                 f"<td>{_e(text)}</td></tr>"
             )

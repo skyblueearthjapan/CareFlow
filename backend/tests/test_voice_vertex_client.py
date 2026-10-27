@@ -127,18 +127,22 @@ def _client(handler, *, model: str = "gemini-2.5-flash") -> VertexVoiceClient:
 # --- Happy path -----------------------------------------------------------
 
 
-async def test_transcribe_and_summarize_success() -> None:
+async def test_transcribe_lines_success() -> None:
+    """① 音声 + 指示 → 行の JSON の文字 (読むのは transcribe.py)・上限は 65535・費用は音声の値段。"""
     seen: dict = {}
+    lines = [{"start": 0, "end": 2.5, "speaker": "看護師", "text": "今日の体調はいかがですか。"}]
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["url"] = str(request.url)
         seen["auth"] = request.headers.get("authorization")
         seen["content_type"] = request.headers.get("content-type")
         seen["body"] = json.loads(request.content)
-        return httpx.Response(200, json=_ok_payload())
+        payload = _ok_payload(json.dumps(lines, ensure_ascii=False))
+        payload["candidates"][0]["finishReason"] = "STOP"
+        return httpx.Response(200, json=payload)
 
     client = _client(handler)
-    result = await client.transcribe_and_summarize(b"\x00audio-bytes", "audio/webm", "PROMPT")
+    result = await client.transcribe_lines(b"\x00audio-bytes", "audio/webm", "PROMPT")
     await client.aclose()
 
     # エンドポイント (東京・publishers/google/models/{model}:generateContent)
@@ -158,22 +162,61 @@ async def test_transcribe_and_summarize_success() -> None:
     gen = body["generationConfig"]
     assert gen["responseMimeType"] == "application/json"
     assert gen["thinkingConfig"]["thinkingBudget"] == 0
-    assert gen["maxOutputTokens"] == 8192
-    assert gen["responseSchema"] == prompts.response_schema()
+    assert gen["temperature"] == 0.2
+    assert gen["maxOutputTokens"] == 65535
+    assert gen["responseSchema"] == prompts.transcript_schema()
 
-    assert result.transcript.startswith("看護師:")
-    # dict でない要素は落ちる。
-    assert len(result.transcript_segments) == 2
-    assert result.transcript_segments[1]["speaker"] == "患者"
-    assert result.summary["バイタル"]["血圧"] == "132/78"
+    assert json.loads(result.text) == lines
+    assert result.finish_reason == "STOP"
     assert result.model == "gemini-2.5-flash"
-    assert result.prompt_version == prompts.PROMPT_VERSION
     assert result.tokens_in == 820
     assert result.tokens_out == 264
     assert result.raw_usage == SAMPLE_USAGE
     # 800 * 1.00 + 20 * 0.30 + 264 * 2.50 (per 1M)
     assert result.cost_usd == Decimal("0.001466")
-    assert "【バイタル】" in result.summary_text
+
+
+async def test_transcribe_lines_reports_max_tokens_and_keeps_cut_text() -> None:
+    """上限で切れた答えも投げずに返す (続きを頼むのは呼び出し側)。"""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        payload = _ok_payload('[{"start": 0, "end": 1, "speaker": "看護師", "text": "途')
+        payload["candidates"][0]["finishReason"] = "MAX_TOKENS"
+        return httpx.Response(200, json=payload)
+
+    client = _client(handler)
+    result = await client.transcribe_lines(b"audio", "audio/webm", "p")
+    await client.aclose()
+    assert result.finish_reason == "MAX_TOKENS"
+    assert result.text.startswith('[{"start": 0')
+
+
+async def test_generate_text_sends_text_only_and_bills_text() -> None:
+    """② ③ 文字だけ: 音声を付けない・JSON に縛らない・内訳が無ければ文字の値段で数える。"""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json=_ok_payload(
+                "下書きです", usage={"promptTokenCount": 1000, "candidatesTokenCount": 100}
+            ),
+        )
+
+    client = _client(handler)
+    result = await client.generate_text("直してください")
+    await client.aclose()
+
+    parts = seen["body"]["contents"][0]["parts"]
+    assert parts == [{"text": "直してください"}]
+    gen = seen["body"]["generationConfig"]
+    assert "responseSchema" not in gen and "responseMimeType" not in gen
+    assert gen["maxOutputTokens"] == 65535 and gen["temperature"] == 0.2
+    assert gen["thinkingConfig"]["thinkingBudget"] == 0
+    assert result.text == "下書きです"
+    # 1000 * 0.30 + 100 * 2.50 (per 1M)
+    assert result.cost_usd == Decimal("0.000550")
 
 
 async def test_access_token_is_cached_across_calls(
@@ -183,8 +226,8 @@ async def test_access_token_is_cached_across_calls(
         return httpx.Response(200, json=_ok_payload())
 
     client = _client(handler)
-    await client.transcribe_and_summarize(b"a", "audio/webm", "p")
-    await client.transcribe_and_summarize(b"b", "audio/webm", "p")
+    await client.transcribe_lines(b"a", "audio/webm", "p")
+    await client.transcribe_lines(b"b", "audio/webm", "p")
     await client.aclose()
 
     assert len(fake_google_auth.calls) == 1
@@ -207,7 +250,7 @@ async def test_access_token_is_cached_across_client_instances(
 
     for _ in range(3):
         client = _client(handler)
-        await client.transcribe_and_summarize(b"a", "audio/webm", "p")
+        await client.transcribe_lines(b"a", "audio/webm", "p")
         await client.aclose()
 
     assert len(fake_google_auth.calls) == 1
@@ -230,7 +273,7 @@ async def test_5xx_raises_http_without_retrying_here() -> None:
 
     client = _client(handler)
     with pytest.raises(VoiceAiError) as exc:
-        await client.transcribe_and_summarize(b"audio", "audio/webm", "p")
+        await client.transcribe_lines(b"audio", "audio/webm", "p")
     await client.aclose()
 
     assert exc.value.kind == "http"
@@ -246,7 +289,7 @@ async def test_429_surfaces_status_code_for_the_job_layer() -> None:
 
     client = _client(handler)
     with pytest.raises(VoiceAiError) as exc:
-        await client.transcribe_and_summarize(b"audio", "audio/webm", "p")
+        await client.transcribe_lines(b"audio", "audio/webm", "p")
     await client.aclose()
 
     assert exc.value.kind == "http"
@@ -262,7 +305,7 @@ async def test_timeout_raises_timeout_without_retrying_here() -> None:
 
     client = _client(handler)
     with pytest.raises(VoiceAiError) as exc:
-        await client.transcribe_and_summarize(b"audio", "audio/webm", "p")
+        await client.transcribe_lines(b"audio", "audio/webm", "p")
     await client.aclose()
 
     assert exc.value.kind == "timeout"
@@ -277,12 +320,12 @@ async def test_401_raises_auth_and_drops_cached_token(
 
     client = _client(handler)
     with pytest.raises(VoiceAiError) as exc:
-        await client.transcribe_and_summarize(b"audio", "audio/webm", "p")
+        await client.transcribe_lines(b"audio", "audio/webm", "p")
 
     assert exc.value.kind == "auth"
     # この SA キーのキャッシュだけ捨てる → 次の呼び出しは取り直す。
     with pytest.raises(VoiceAiError):
-        await client.transcribe_and_summarize(b"audio", "audio/webm", "p")
+        await client.transcribe_lines(b"audio", "audio/webm", "p")
     await client.aclose()
     assert len(fake_google_auth.calls) == 2
 
@@ -293,22 +336,24 @@ async def test_non_json_http_body_raises_parse() -> None:
 
     client = _client(handler)
     with pytest.raises(VoiceAiError) as exc:
-        await client.transcribe_and_summarize(b"audio", "audio/webm", "p")
+        await client.transcribe_lines(b"audio", "audio/webm", "p")
     await client.aclose()
 
     assert exc.value.kind == "parse"
 
 
-async def test_model_text_that_is_not_json_raises_parse() -> None:
+async def test_model_text_is_returned_as_is() -> None:
+    """答えの文字の読み取りはこの層ではしない (transcribe.py / summary.py の仕事)。"""
+
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=_ok_payload("これは JSON ではありません"))
 
     client = _client(handler)
-    with pytest.raises(VoiceAiError) as exc:
-        await client.transcribe_and_summarize(b"audio", "audio/webm", "p")
+    result = await client.generate_text("p")
     await client.aclose()
 
-    assert exc.value.kind == "parse"
+    assert result.text == "これは JSON ではありません"
+    assert result.finish_reason is None
 
 
 async def test_missing_candidates_raises_parse() -> None:
@@ -317,7 +362,7 @@ async def test_missing_candidates_raises_parse() -> None:
 
     client = _client(handler)
     with pytest.raises(VoiceAiError) as exc:
-        await client.transcribe_and_summarize(b"audio", "audio/webm", "p")
+        await client.transcribe_lines(b"audio", "audio/webm", "p")
     await client.aclose()
 
     assert exc.value.kind == "parse"
@@ -332,9 +377,7 @@ async def test_audio_over_20mb_raises_too_large() -> None:
 
     client = _client(handler)
     with pytest.raises(VoiceAiError) as exc:
-        await client.transcribe_and_summarize(
-            b"\x00" * (MAX_INLINE_AUDIO_BYTES + 1), "audio/webm", "p"
-        )
+        await client.transcribe_lines(b"\x00" * (MAX_INLINE_AUDIO_BYTES + 1), "audio/webm", "p")
     await client.aclose()
 
     assert exc.value.kind == "too_large"
@@ -353,7 +396,7 @@ async def test_missing_credentials_path_raises_auth(monkeypatch: pytest.MonkeyPa
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
     with pytest.raises(VoiceAiError) as exc:
-        await client.transcribe_and_summarize(b"audio", "audio/webm", "p")
+        await client.transcribe_lines(b"audio", "audio/webm", "p")
     await client.aclose()
 
     assert exc.value.kind == "auth"
@@ -376,6 +419,16 @@ def test_estimate_cost_without_details_bills_prompt_as_audio() -> None:
     usage = {"promptTokenCount": 1000, "candidatesTokenCount": 100}
     # 1000 * 1.00 + 100 * 2.50 (per 1M)
     assert pricing.estimate_cost_usd("gemini-2.5-flash", usage) == Decimal("0.001250")
+
+
+def test_estimate_cost_text_only_bills_prompt_as_text() -> None:
+    """② ③ (音声を送らない呼び出し) は、内訳が無いとき文字の値段で数える。"""
+    usage = {"promptTokenCount": 1000, "candidatesTokenCount": 100}
+    # 1000 * 0.30 + 100 * 2.50 (per 1M)
+    assert pricing.estimate_cost_usd("gemini-2.5-flash", usage, has_audio=False) == Decimal(
+        "0.000550"
+    )
+    assert pricing.split_prompt_tokens(usage, has_audio=False) == (0, 1000)
 
 
 def test_estimate_cost_counts_thoughts_tokens() -> None:
@@ -418,6 +471,11 @@ def test_render_summary_text_formats_sections_and_skips_empty() -> None:
     # 空欄の項目は出さない。
     assert "・脈拍:" not in text  # 測定値が無い項目は出さない
     assert "【備考】" not in text
+
+
+def test_render_summary_text_v2_returns_body() -> None:
+    summary = {"format": "v2", "body": "  腰の痛みは楽 [0:09]\n- 血圧 132/78 [0:03]  ", "facts": {}}
+    assert render_summary_text(summary) == "腰の痛みは楽 [0:09]\n- 血圧 132/78 [0:03]"
 
 
 def test_render_summary_text_handles_empty_and_free_text() -> None:

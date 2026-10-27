@@ -43,8 +43,13 @@ from app.middleware.audit import _skips_body_buffering
 from app.models import AuditLog, Office, Patient, Staff, User, Visit
 from app.models.visit_recording import VisitRecording
 from app.services.checkin.judge import JST
-from app.services.voice.jobs import STALE_ERROR_MESSAGE, _save_result, reap_stale_jobs
-from app.services.voice.vertex_client import VoiceAiResult
+from app.services.voice.jobs import (
+    STALE_ERROR_MESSAGE,
+    _Draft,
+    _save_result,
+    _Usage,
+    reap_stale_jobs,
+)
 
 
 def _bearer(user: User) -> dict[str, str]:
@@ -1498,6 +1503,23 @@ async def test_retry_does_not_touch_manual_summary(
     await db.rollback()
 
 
+def _save_args(*, summary: dict, summary_text: str) -> dict:
+    """``_save_result`` に渡す、AI の結果 1 件ぶんの引数 (① の行・③ の下書き・費用)。"""
+    return {
+        "raw_lines": [{"start": 0, "end": 1.5, "speaker": "看護師", "text": "体調は?"}],
+        "fixed_lines": None,
+        "draft": _Draft(
+            summary=summary,
+            summary_text=summary_text,
+            provider="vertex",
+            model="gemini-2.5-flash",
+            prompt_version="v2",
+        ),
+        "usage": _Usage(tokens_in=100, tokens_out=20, cost_usd=Decimal("0.0001")),
+        "transcribe_model": "gemini-2.5-flash",
+    }
+
+
 @pytest.mark.asyncio
 async def test_save_result_stashes_manual_summary(db, audio_dir, staff_user) -> None:
     """AI が書き直す瞬間 (``_save_result``) に人手修正を previous_manual へ退避する.
@@ -1517,22 +1539,15 @@ async def test_save_result_stashes_manual_summary(db, audio_dir, staff_user) -> 
         summary_edited_at=edited_at,
     )
 
-    result = VoiceAiResult(
-        transcript="看護師: 体調はいかがですか。",
-        transcript_segments=[{"speaker": "看護師", "start_sec": 0, "text": "体調は?"}],
+    result = _save_args(
         # AI が previous_manual というキーを返してきても退避が勝つこと。
         summary={"free": "AI の書き直し", "previous_manual": "AI の嘘"},
         summary_text="【主訴・様子】\n・変化なし",
-        tokens_in=100,
-        tokens_out=20,
-        cost_usd=Decimal("0.0001"),
-        model="gemini-2.5-flash",
-        prompt_version="v1",
     )
     row.reviewed_by = user.id
     row.reviewed_at = datetime.now(UTC)
     await db.commit()
-    await _save_result(db, row, result)
+    await _save_result(db, row, **result)
     await db.refresh(row)
 
     # AI の結果で上書きされる。
@@ -1554,7 +1569,7 @@ async def test_save_result_stashes_manual_summary(db, audio_dir, staff_user) -> 
     row.summary_edited_by = user.id
     row.summary_edited_at = datetime.now(UTC)
     await db.commit()
-    await _save_result(db, row, result)
+    await _save_result(db, row, **result)
     await db.refresh(row)
     assert row.summary["previous_manual"]["summary_text"] == "2 回目の人手修正"
     await db.rollback()
@@ -1568,21 +1583,7 @@ async def test_save_result_without_manual_edit_has_no_previous(db, audio_dir, st
     """人手修正が無い行では previous_manual を作らない."""
     staff, _user = staff_user
     row = await _seed_recording(db, staff.id, status="transcribing")
-    await _save_result(
-        db,
-        row,
-        VoiceAiResult(
-            transcript="a",
-            transcript_segments=[],
-            summary={"free": "AI"},
-            summary_text="AI",
-            tokens_in=1,
-            tokens_out=1,
-            cost_usd=Decimal("0.0001"),
-            model="m",
-            prompt_version="v1",
-        ),
-    )
+    await _save_result(db, row, **_save_args(summary={"free": "AI"}, summary_text="AI"))
     await db.refresh(row)
     assert "previous_manual" not in (row.summary or {})
     await db.rollback()
@@ -1926,3 +1927,53 @@ async def test_usage_defaults_to_current_month(client, db, audio_dir, staff_user
     assert body["recordings"] == 1
     assert body["cost_usd"] == 0.0
     await db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# 音声記録 v2: 直した文字起こし (0101)
+
+
+@pytest.mark.asyncio
+async def test_detail_returns_fixed_lines_and_report_json_omits_them(
+    client, db, audio_dir, staff_user
+) -> None:
+    staff, user = staff_user
+    raw = [{"start": 3, "end": 5, "speaker": "患者", "text": "じょくそう"}]
+    fixed = [{"start": 3, "end": 5, "speaker": "患者", "text": "褥瘡"}]
+    row = await _seed_recording(
+        db,
+        staff.id,
+        status="summarized",
+        transcript="患者: 褥瘡",
+        transcript_json=raw,
+        transcript_fixed_json=fixed,
+        summary={"format": "v2", "body": "褥瘡の訴え [0:03]", "facts": {}},
+        summary_text="褥瘡の訴え [0:03]",
+    )
+
+    res = await client.get(f"/api/v1/visit-recordings/{row.id}", headers=_bearer(user))
+    assert res.status_code == 200, res.text
+    assert res.json()["transcript_json"] == raw
+    assert res.json()["transcript_fixed_json"] == fixed
+
+    res = await client.get("/api/v1/visit-recordings", headers=_bearer(user))
+    assert res.json()["items"][0]["transcript_fixed_json"] is None  # 一覧では省く
+
+    res = await client.get(f"/api/v1/visit-recordings/{row.id}/report", headers=_bearer(user))
+    body = res.json()
+    assert body["recording"]["transcript_fixed_json"] is None
+    assert "<td>褥瘡</td>" in body["html"] and "褥瘡の訴え [0:03]" in body["html"]
+    await db.rollback()
+
+
+def test_migration_0101_chain_and_column() -> None:
+    """0101 は 0100 から派生し、単一 head で、transcript_fixed_json を add/drop する."""
+    backend_root = Path(__file__).resolve().parent.parent
+    cfg = Config(str(backend_root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(backend_root / "alembic"))
+    script = ScriptDirectory.from_config(cfg)
+    rev = script.get_revision("0101_voice_transcript_fixed")
+    assert rev.down_revision == "0100_patient_insurance_address"
+    assert len(list(script.get_heads())) == 1
+    source = Path(rev.path).read_text(encoding="utf-8")
+    assert '"transcript_fixed_json"' in source and "drop_column" in source
