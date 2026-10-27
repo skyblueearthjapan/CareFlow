@@ -35,7 +35,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 import os
 import re
 import uuid
@@ -194,6 +196,41 @@ def _max_audio_minutes(max_bytes: int) -> int:
 
 def _too_large_detail(max_bytes: int) -> str:
     return f"録音が大きすぎます（約 {_max_audio_minutes(max_bytes)} 分まで。32kbps で計算）"
+
+
+#: 端末が添えるマイクの設定 (``track.getSettings()``) のうち、ログに残す項目 (音声記録 v2 §3 P5)。
+_MIC_SETTING_KEYS: tuple[str, ...] = (
+    "echoCancellation",
+    "noiseSuppression",
+    "autoGainControl",
+    "sampleRate",
+    "channelCount",
+)
+_MIC_SETTINGS_MAX_CHARS = 2000
+
+
+def _mic_settings_for_log(raw: str | None) -> dict[str, bool | int | float] | None:
+    """``mic_settings`` (JSON の文字列) から、決まった項目の数値と真偽だけを拾う。
+
+    DB には入れずログに 1 行だけ残す。長すぎる・JSON でない・オブジェクトでないものは捨てる
+    (受領そのものは止めない)。文字列などの値は端末の言いなりでログに書かないため捨てる。
+    """
+    if not raw or len(raw) > _MIC_SETTINGS_MAX_CHARS:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    picked: dict[str, bool | int | float] = {}
+    for key in _MIC_SETTING_KEYS:
+        value = data.get(key)
+        if isinstance(value, bool):
+            picked[key] = value
+        elif isinstance(value, (int, float)) and math.isfinite(value):
+            picked[key] = value
+    return picked or None
 
 
 async def _names_for(
@@ -384,6 +421,7 @@ async def create_visit_recording(
     patient_id: Annotated[str | None, Form()] = None,
     device_mime: Annotated[str | None, Form()] = None,
     client_id: Annotated[str | None, Form()] = None,
+    mic_settings: Annotated[str | None, Form()] = None,
 ) -> dict[str, Any]:
     if user.staff_id is None:
         raise HTTPException(
@@ -568,6 +606,15 @@ async def create_visit_recording(
         _discard_audio()
         raise
     await db.refresh(row)
+
+    mic = _mic_settings_for_log(mic_settings)
+    if mic is not None:
+        # 効いたマイクの設定 (端末が track.getSettings() で読んだ値)。DB には入れない。
+        logger.info(
+            "voice: mic settings recording_id=%s %s",
+            row.id,
+            json.dumps(mic, sort_keys=True),
+        )
 
     # 受領のついでに残骸を掃除する (専用 cron を増やさない・設計 §10-4)。
     # **リクエストのセッションでは回さない**: 掃除は自前で commit するので、

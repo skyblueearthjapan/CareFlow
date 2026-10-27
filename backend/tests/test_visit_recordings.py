@@ -26,6 +26,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -1930,7 +1932,7 @@ async def test_usage_defaults_to_current_month(client, db, audio_dir, staff_user
 
 
 # ---------------------------------------------------------------------------
-# 音声記録 v2: 直した文字起こし (0101)
+# 音声記録 v2: 直した文字起こし (0101) と mic_settings のログ
 
 
 @pytest.mark.asyncio
@@ -1963,6 +1965,52 @@ async def test_detail_returns_fixed_lines_and_report_json_omits_them(
     body = res.json()
     assert body["recording"]["transcript_fixed_json"] is None
     assert "<td>褥瘡</td>" in body["html"] and "褥瘡の訴え [0:03]" in body["html"]
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_upload_logs_mic_settings_numbers_and_flags_only(
+    client, db, audio_dir, staff_user, caplog
+) -> None:
+    _staff, user = staff_user
+    mic = {
+        "echoCancellation": True,
+        "noiseSuppression": False,
+        "autoGainControl": True,
+        "sampleRate": 48000,
+        "channelCount": 1,
+        "deviceId": "secret-device-id",
+        "groupId": "g",
+        "latency": "<script>",
+    }
+    with caplog.at_level(logging.INFO, logger="app.api.v1.visit_recordings"):
+        res = await _post_recording(client, user, mic_settings=json.dumps(mic))
+    assert res.status_code == 202, res.text
+    lines = [r.getMessage() for r in caplog.records if "mic settings" in r.getMessage()]
+    assert len(lines) == 1
+    assert res.json()["id"] in lines[0]
+    assert (
+        '{"autoGainControl": true, "channelCount": 1, "echoCancellation": true, '
+        '"noiseSuppression": false, "sampleRate": 48000}'
+    ) in lines[0]
+    assert "secret-device-id" not in lines[0] and "<script>" not in lines[0]
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    ["not json", "[1, 2]", json.dumps({"sampleRate": "48000"}), "x" * 2001],
+)
+async def test_upload_ignores_bad_mic_settings(
+    client, db, audio_dir, staff_user, caplog, value
+) -> None:
+    """壊れた・長すぎる・数値でない mic_settings は捨てる (受領は止めない)。"""
+    _staff, user = staff_user
+    with caplog.at_level(logging.INFO, logger="app.api.v1.visit_recordings"):
+        res = await _post_recording(client, user, mic_settings=value)
+    assert res.status_code == 202, res.text
+    assert not [r for r in caplog.records if "mic settings" in r.getMessage()]
     await db.rollback()
 
 
