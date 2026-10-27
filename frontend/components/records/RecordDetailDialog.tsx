@@ -16,7 +16,16 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useSession } from 'next-auth/react';
-import { AlertTriangle, Check, Link2, Pencil, RotateCcw, Trash2 } from 'lucide-react';
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Link2,
+  Pencil,
+  RotateCcw,
+  Trash2,
+} from 'lucide-react';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -26,19 +35,22 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui/sonner';
 import { PatientCombobox } from '@/components/master/PatientCombobox';
-import { AuthedAudioPlayer } from '@/components/records/AuthedAudioPlayer';
+import { AuthedAudioPlayer, type AudioSeekRequest } from '@/components/records/AuthedAudioPlayer';
 import { RecordReportButton } from '@/components/records/RecordReportButton';
+import { VoiceV2Summary } from '@/components/records/VoiceV2Summary';
 import {
   formatDurationSec,
   formatOffset,
   formatRecordDateTime,
   isPlainObject,
+  isV2Summary,
   parseTranscriptSegments,
   recordStatusMeta,
   speakerTone,
   summaryDisplayMode,
   summarySectionLabel,
   summaryToText,
+  type TranscriptSegment,
 } from '@/components/records/recordFormat';
 import { apiErrorMessage } from '@/lib/api/errorMessage';
 import { isAdminRole } from '@/lib/rbac';
@@ -93,6 +105,34 @@ function SummarySection({ label, value }: { label: string; value: unknown }) {
       <h4 className="text-xs font-bold tracking-wide text-text-muted">{label}</h4>
       <p className="mt-1 whitespace-pre-wrap text-sm text-text-primary">{text}</p>
     </section>
+  );
+}
+
+/** 話者ラベル付きの文字起こしの行。 */
+function SegmentList({ segments }: { segments: TranscriptSegment[] }) {
+  return (
+    <div
+      className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1"
+      data-testid="record-transcript-segments"
+    >
+      {segments.map((seg, i) => (
+        <div key={i} className="space-y-0.5">
+          <div className="flex items-center gap-2">
+            <span
+              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${speakerTone(
+                seg.speaker,
+              )}`}
+            >
+              {seg.speaker ?? '不明'}
+            </span>
+            {formatOffset(seg.offsetSec) && (
+              <span className="tnum text-xs text-text-muted">{formatOffset(seg.offsetSec)}</span>
+            )}
+          </div>
+          <p className="text-sm text-text-primary">{seg.text}</p>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -155,6 +195,10 @@ export function RecordDetailDialog({
   const [relinking, setRelinking] = useState(false);
   const [nextPatientId, setNextPatientId] = useState('');
   const [confirming, setConfirming] = useState<null | 'retry' | 'delete'>(null);
+  // v2: 本文の時刻を押したときの再生位置・文字起こしの開閉と、整えた行／元の行の切り替え。
+  const [seekRequest, setSeekRequest] = useState<AudioSeekRequest | null>(null);
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [showOriginal, setShowOriginal] = useState(false);
 
   // 記録が変わったら編集状態を畳む（別の記録の下書きが残らないように）。
   useEffect(() => {
@@ -162,6 +206,9 @@ export function RecordDetailDialog({
     setRelinking(false);
     setConfirming(null);
     setNextPatientId('');
+    setSeekRequest(null);
+    setTranscriptOpen(false);
+    setShowOriginal(false);
   }, [recordingId]);
 
   const isOwner = !!rec?.staff_id && !!myStaffId && rec.staff_id === myStaffId;
@@ -179,7 +226,19 @@ export function RecordDetailDialog({
     () => (rec ? parseTranscriptSegments(rec.transcript_json) : null),
     [rec],
   );
+  const fixedSegments = useMemo(
+    () => (rec ? parseTranscriptSegments(rec.transcript_fixed_json) : null),
+    [rec],
+  );
   const summaryMode = rec ? summaryDisplayMode(rec) : 'empty';
+  // v2 の記録（要約が v2 か、整えた文字起こしがある）。v1 は今の表示のまま。
+  const isV2 = !!rec && (isV2Summary(rec.summary) || fixedSegments !== null);
+  // 音声が消えた記録（保持期間切れ・has_audio=false）では時刻を押せない文字にする。
+  const onSeek =
+    rec && rec.has_audio !== false
+      ? (sec: number) => setSeekRequest((prev) => ({ sec, nonce: (prev?.nonce ?? 0) + 1 }))
+      : null;
+  const shownSegments = fixedSegments && !showOriginal ? fixedSegments : segments;
 
   async function saveSummary() {
     if (!rec) return;
@@ -375,7 +434,13 @@ export function RecordDetailDialog({
                 <div className="space-y-3" data-testid="record-summary-view">
                   {/* 描き方の規則は `summaryDisplayMode` に 1 本化（モバイルの
                       `VisitRecordCard` と同じ）。手修正済み = 本文、未編集 = JSON 構造。 */}
-                  {summaryMode === 'text' ? (
+                  {summaryMode === 'v2' || summaryMode === 'v2-edited' ? (
+                    <VoiceV2Summary
+                      rec={rec}
+                      onSeek={onSeek}
+                      edited={summaryMode === 'v2-edited'}
+                    />
+                  ) : summaryMode === 'text' ? (
                     <p
                       className="whitespace-pre-wrap text-sm text-text-primary"
                       data-testid="record-summary-text"
@@ -441,6 +506,7 @@ export function RecordDetailDialog({
                   accessToken={accessToken}
                   caption={audioCaption(rec)}
                   durationSec={rec.duration_sec ?? null}
+                  seekRequest={seekRequest}
                 />
               ) : (
                 <p className="text-sm text-text-muted">音声はありません。</p>
@@ -451,31 +517,62 @@ export function RecordDetailDialog({
               <h3 className="mb-2 font-serif text-base font-bold text-text-primary">
                 文字起こし全文
               </h3>
-              {segments ? (
+              {isV2 && (shownSegments || rec?.transcript) ? (
+                // v2: 文字起こしは畳んでおく（整えた行が既定・元の行へ切り替えられる）。
                 <div
-                  className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1"
-                  data-testid="record-transcript-segments"
+                  className="flex min-h-0 flex-1 flex-col gap-2"
+                  data-testid="record-transcript-v2"
                 >
-                  {segments.map((seg, i) => (
-                    <div key={i} className="space-y-0.5">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${speakerTone(
-                            seg.speaker,
-                          )}`}
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 self-start text-sm text-brand-primary hover:text-brand-primary-hover"
+                    aria-expanded={transcriptOpen}
+                    data-testid="record-transcript-toggle"
+                    onClick={() => setTranscriptOpen((v) => !v)}
+                  >
+                    {transcriptOpen ? (
+                      <ChevronDown className="h-4 w-4" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4" />
+                    )}
+                    {transcriptOpen ? '文字起こしを畳む' : '文字起こしを開く'}
+                  </button>
+                  {transcriptOpen && fixedSegments && segments && (
+                    <div className="flex gap-1" role="group" aria-label="文字起こしの種類">
+                      {[
+                        { original: false, label: '整えた文字起こし' },
+                        { original: true, label: '元の文字起こし' },
+                      ].map((o) => (
+                        <button
+                          key={o.label}
+                          type="button"
+                          aria-pressed={showOriginal === o.original}
+                          onClick={() => setShowOriginal(o.original)}
+                          className={
+                            showOriginal === o.original
+                              ? 'rounded-full border border-brand-primary bg-brand-primary-light px-2.5 py-0.5 text-xs font-semibold text-brand-primary-hover'
+                              : 'rounded-full border border-border-default bg-bg-base px-2.5 py-0.5 text-xs text-text-secondary'
+                          }
                         >
-                          {seg.speaker ?? '不明'}
-                        </span>
-                        {formatOffset(seg.offsetSec) && (
-                          <span className="tnum text-xs text-text-muted">
-                            {formatOffset(seg.offsetSec)}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-sm text-text-primary">{seg.text}</p>
+                          {o.label}
+                        </button>
+                      ))}
                     </div>
-                  ))}
+                  )}
+                  {transcriptOpen &&
+                    (shownSegments ? (
+                      <SegmentList segments={shownSegments} />
+                    ) : (
+                      <p
+                        className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded-md bg-bg-muted p-3 text-sm text-text-primary"
+                        data-testid="record-transcript-plain"
+                      >
+                        {rec?.transcript}
+                      </p>
+                    ))}
                 </div>
+              ) : segments ? (
+                <SegmentList segments={segments} />
               ) : rec?.transcript ? (
                 <p
                   className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded-md bg-bg-muted p-3 text-sm text-text-primary"

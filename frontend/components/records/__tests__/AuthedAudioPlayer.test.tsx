@@ -83,6 +83,37 @@ describe('AuthedAudioPlayer', () => {
     expect(screen.getByText(/--:--/)).toBeInTheDocument();
   });
 
+  it('seekRequest でその位置へ動かして再生する（読み込み前の頼みは読めた時に）', async () => {
+    const play = vi
+      .spyOn(HTMLMediaElement.prototype, 'play')
+      .mockImplementation(() => Promise.resolve());
+    const { rerender } = render(
+      <AuthedAudioPlayer
+        recordingId="rec-seek"
+        accessToken="tok"
+        durationSec={900}
+        seekRequest={{ sec: 710, nonce: 1 }}
+      />,
+    );
+    const el = (await screen.findByTestId('records-audio-element')) as HTMLAudioElement;
+    setDuration(el, 900);
+    fireEvent.loadedMetadata(el);
+    expect(el.currentTime).toBe(710);
+    expect(play).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <AuthedAudioPlayer
+        recordingId="rec-seek"
+        accessToken="tok"
+        durationSec={900}
+        seekRequest={{ sec: 30, nonce: 2 }}
+      />,
+    );
+    expect(el.currentTime).toBe(30);
+    expect(play).toHaveBeenCalledTimes(2);
+    play.mockRestore();
+  });
+
   it('410 は保持期間切れとして理由を出す', async () => {
     fetchMock.mockResolvedValue({ ok: false, status: 410, blob: async () => new Blob() });
     render(<AuthedAudioPlayer recordingId="rec-1" accessToken="tok" />);

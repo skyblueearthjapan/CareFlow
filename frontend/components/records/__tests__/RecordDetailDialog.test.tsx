@@ -62,7 +62,9 @@ vi.mock('@/lib/queries/patients', () => ({
 // 音声プレーヤーは blob を fetch するので、ここでは差し替える
 // （単体は AuthedAudioPlayer 側の責務・ここでは act 警告の雑音を作らない）。
 vi.mock('@/components/records/AuthedAudioPlayer', () => ({
-  AuthedAudioPlayer: () => <div data-testid="records-audio-player" />,
+  AuthedAudioPlayer: (p: { seekRequest?: { sec: number } | null }) => (
+    <div data-testid="records-audio-player" data-seek={p.seekRequest?.sec ?? ''} />
+  ),
 }));
 
 import { toast } from '@/components/ui/sonner';
@@ -282,5 +284,119 @@ describe('RecordDetailDialog', () => {
     expect(segs).toHaveTextContent('職員A 看護師');
     expect(segs).toHaveTextContent('00:06');
     expect(segs).toHaveTextContent('足が重くてね。');
+  });
+
+  // ── v2（設計 v2 §3 P4）: バイタル・要確認・本文・畳んだ文字起こし ──
+
+  const V2 = {
+    prompt_version: 'v2',
+    summary: {
+      format: 'v2',
+      body: '# 訪問記録\n\n- 血圧 132/78 [12:05]\n- <script>alert(1)</script>',
+      facts: {
+        vitals: { 血圧: '132/78', 体温: '', 脈拍: '', SpO2: '97', 血糖: '' },
+        handover: [],
+        next: '',
+        needs_check: [{ text: '薬の量【要確認】', time: '5:10' }],
+      },
+    },
+    summary_text: '# 訪問記録\n\n- 血圧 132/78 [12:05]\n- <script>alert(1)</script>',
+    transcript: '元の全文',
+    transcript_json: [{ speaker: '看護師', start: 0, text: 'けつあつはかります' }],
+    transcript_fixed_json: [{ speaker: '看護師', start: 0, text: '血圧を測ります' }],
+  };
+
+  it('v2: 語られたバイタルだけ・要確認（時刻つき）・本文を出す', () => {
+    mockRecording(V2);
+    renderDialog();
+    const vitals = screen.getByTestId('voice-v2-vitals');
+    expect(vitals).toHaveTextContent('血圧');
+    expect(vitals).toHaveTextContent('SpO2');
+    expect(vitals).not.toHaveTextContent('体温');
+    expect(vitals).not.toHaveTextContent('血糖');
+    expect(screen.getByTestId('voice-v2-needs-check')).toHaveTextContent('薬の量');
+    expect(screen.getByTestId('voice-v2-needs-check')).toHaveTextContent('5:10 ごろ');
+    expect(screen.getByTestId('voice-v2-body')).toHaveTextContent('<script>alert(1)</script>');
+    expect(document.querySelector('[data-testid="voice-v2-body"] script')).toBeNull();
+    // v1 の見出し（主訴・様子）は出ない。
+    expect(screen.queryByText('主訴・様子')).toBeNull();
+  });
+
+  it('v2: 時刻を押すと 15 秒前の位置を音声プレーヤーへ渡す', () => {
+    mockRecording(V2);
+    renderDialog();
+    fireEvent.click(screen.getByRole('button', { name: '12:05 ごろから聞く' }));
+    expect(screen.getByTestId('records-audio-player')).toHaveAttribute('data-seek', '710');
+    fireEvent.click(screen.getByRole('button', { name: '5:10 ごろから聞く' }));
+    expect(screen.getByTestId('records-audio-player')).toHaveAttribute('data-seek', '295');
+  });
+
+  it('v2: 音声が消えた記録では時刻を押せない', () => {
+    mockRecording({ ...V2, has_audio: false });
+    renderDialog();
+    expect(screen.queryByRole('button', { name: /ごろから聞く/ })).toBeNull();
+    expect(screen.getByText('12:05 ごろ')).toBeInTheDocument();
+  });
+
+  it('v2: 文字起こしは畳んであり、整えた行が既定・元の行へ切り替えられる', () => {
+    mockRecording(V2);
+    renderDialog();
+    expect(screen.queryByTestId('record-transcript-segments')).toBeNull();
+    fireEvent.click(screen.getByTestId('record-transcript-toggle'));
+    expect(screen.getByTestId('record-transcript-segments')).toHaveTextContent('血圧を測ります');
+    fireEvent.click(screen.getByRole('button', { name: '元の文字起こし' }));
+    expect(screen.getByTestId('record-transcript-segments')).toHaveTextContent(
+      'けつあつはかります',
+    );
+    fireEvent.click(screen.getByRole('button', { name: '整えた文字起こし' }));
+    expect(screen.getByTestId('record-transcript-segments')).toHaveTextContent('血圧を測ります');
+  });
+
+  it('v2: 整えた行が無ければ元の行だけ（切り替えは出さない）', () => {
+    mockRecording({ ...V2, transcript_fixed_json: null });
+    renderDialog();
+    fireEvent.click(screen.getByTestId('record-transcript-toggle'));
+    expect(screen.getByTestId('record-transcript-segments')).toHaveTextContent(
+      'けつあつはかります',
+    );
+    expect(screen.queryByRole('button', { name: '元の文字起こし' })).toBeNull();
+  });
+
+  it('v2 を人手で直した後は summary_text を同じ読み取りで出し、facts は出さない', () => {
+    mockRecording({
+      ...V2,
+      summary_text: '## 直した本文\n- **むくみ** あり [3:00]',
+      summary_edited_at: '2026-10-27T02:00:00Z',
+    });
+    renderDialog();
+    expect(screen.getByRole('heading', { name: '直した本文' })).toBeInTheDocument();
+    expect(screen.getByText('むくみ').closest('strong')).not.toBeNull();
+    expect(screen.getByRole('button', { name: '3:00 ごろから聞く' })).toBeInTheDocument();
+    expect(screen.queryByTestId('voice-v2-vitals')).toBeNull();
+    expect(screen.queryByTestId('voice-v2-needs-check')).toBeNull();
+  });
+
+  it('v2: 現場の追記（summary_text だけに足され edited_at なし）も本文に出る', () => {
+    mockRecording({ ...V2, summary_text: `${V2.summary_text}\n\n追記: 夕方に再訪` });
+    renderDialog();
+    expect(screen.getByTestId('voice-v2-body')).toHaveTextContent('追記: 夕方に再訪');
+    expect(screen.getByTestId('voice-v2-vitals')).toBeInTheDocument();
+  });
+
+  it('v2 の「編集」の初期値は本文（summary_text）', () => {
+    mockRecording(V2);
+    renderDialog();
+    fireEvent.click(screen.getByTestId('record-summary-edit'));
+    expect(screen.getByLabelText('要約')).toHaveValue(V2.summary_text);
+  });
+
+  it('v1 の記録は文字起こしを畳まず、切り替えも出さない（今の表示のまま）', () => {
+    mockRecording({
+      transcript_json: [{ speaker: '看護師', start_sec: 6, text: 'こんにちは。' }],
+    });
+    renderDialog();
+    expect(screen.queryByTestId('record-transcript-toggle')).toBeNull();
+    expect(screen.getByTestId('record-transcript-segments')).toHaveTextContent('00:06');
+    expect(screen.queryByTestId('voice-v2-summary')).toBeNull();
   });
 });

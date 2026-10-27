@@ -45,7 +45,18 @@ interface AuthedAudioPlayerProps {
    * **サーバが知っている長さ**を保険として使う（レビュー M-4）。
    */
   durationSec?: number | null;
+  /**
+   * 本文の時刻を押したときの再生位置（秒・v2 §3 P4）。`nonce` が変わるたびに
+   * その位置へ動かして再生する（同じ時刻を 2 度押しても効くように）。
+   */
+  seekRequest?: AudioSeekRequest | null;
   className?: string;
+}
+
+/** 外から再生位置を動かす頼み（`nonce` は押すたびに変える）。 */
+export interface AudioSeekRequest {
+  sec: number;
+  nonce: number;
 }
 
 export function AuthedAudioPlayer({
@@ -53,6 +64,7 @@ export function AuthedAudioPlayer({
   accessToken,
   caption,
   durationSec,
+  seekRequest,
   className,
 }: AuthedAudioPlayerProps) {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
@@ -62,6 +74,8 @@ export function AuthedAudioPlayer({
   const [current, setCurrent] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  /** 音声を読み込む前に押された再生位置（読み込めたら動かして再生する）。 */
+  const pendingSeekRef = useRef<number | null>(null);
 
   /** `el.duration` が読めないときに使う、サーバが知っている長さ。 */
   const fallbackDuration =
@@ -121,6 +135,15 @@ export function AuthedAudioPlayer({
     // ストリーミング録音は el.duration が Infinity/NaN になる → 記録側の長さに落とす。
     const known = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : fallbackDuration;
     setDuration(known);
+    const pending = pendingSeekRef.current;
+    if (pending !== null) {
+      pendingSeekRef.current = null;
+      el.currentTime = pending;
+      setCurrent(pending);
+      lastPositionByRecording.set(recordingId, pending);
+      void el.play()?.catch(() => undefined);
+      return;
+    }
     const saved = lastPositionByRecording.get(recordingId);
     if (saved && known > 0 && saved < known) {
       el.currentTime = saved;
@@ -155,6 +178,23 @@ export function AuthedAudioPlayer({
     },
     [recordingId],
   );
+
+  // 本文の時刻を押した → その位置から再生（まだ読み込み中なら読めた時に動かす）。
+  useEffect(() => {
+    if (!seekRequest) return;
+    const sec = Math.max(0, seekRequest.sec);
+    const el = audioRef.current;
+    if (!el) {
+      pendingSeekRef.current = sec;
+      return;
+    }
+    el.currentTime = sec;
+    setCurrent(sec);
+    lastPositionByRecording.set(recordingId, sec);
+    void el.play()?.catch(() => undefined);
+    // nonce が変わったときだけ動かす（同じ頼みで再生し直さない）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seekRequest?.nonce]);
 
   if (error) {
     return (
