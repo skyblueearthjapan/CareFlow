@@ -29,6 +29,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TZ=UTC \
     PATH="/usr/local/bin:${PATH}"
 
+# ffmpeg: 長い訪問の録音を区切って文字起こしに送る (app/services/voice/audio_split.py・
+# 音声記録 v2 設計 §8 P1b)。端末の形式 (mp4/AAC・webm/Opus) を読み直して MP3 にする。
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
+
 # Non-root user
 RUN groupadd --system app && useradd --system --gid app --home /app --shell /usr/sbin/nologin app
 
