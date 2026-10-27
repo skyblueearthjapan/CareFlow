@@ -67,6 +67,8 @@ export const visitRecordingReadSchema = z.object({
   audio_bytes: z.number().nullable().optional(),
   transcript: z.string().nullable().optional(),
   transcript_json: z.unknown().nullable().optional(),
+  // v2 の ② 補正で整えた行（0101）。null = 整えられなかった / v1 の記録。
+  transcript_fixed_json: z.unknown().nullable().optional(),
   summary: visitRecordingSummarySchema.nullable().optional(),
   summary_text: z.string().nullable().optional(),
   // 人手で要約を直した痕跡（0087 で追加・PC の `/records` だけが書き込む）。

@@ -7,6 +7,7 @@
  */
 
 import type { VisitRecordingRead } from '@/lib/queries/visit-recordings';
+import { markdownFirstLine, parseTimeLabel } from '@/components/records/voiceMarkdownParser';
 
 export type RecordBadgeVariant = 'secondary' | 'success' | 'warning' | 'info' | 'destructive';
 
@@ -88,10 +89,7 @@ export function isPlainObject(v: unknown): v is Record<string, unknown> {
  * 無ければ状態に応じた代替文（文字起こし中 / 失敗 / 要紐付け）、それも無ければ「—」。
  */
 export function summaryFirstLine(rec: VisitRecordingRead): string {
-  const line = (rec.summary_text ?? '')
-    .split('\n')
-    .map((l) => l.trim())
-    .find((l) => l !== '');
+  const line = summaryTextFirstLine(rec);
   if (line) return line;
   switch (rec.status) {
     case 'transcribing':
@@ -107,6 +105,81 @@ export function summaryFirstLine(rec: VisitRecordingRead): string {
 }
 
 /**
+ * 要約の本文の 1 行目（無ければ空文字）。v1 は `summary_text` の先頭の非空行、
+ * v2 は Markdown の記号と時刻を除いた最初の意味のある行（見出しより本文を先に）。
+ */
+export function summaryTextFirstLine(
+  rec: Pick<VisitRecordingRead, 'summary' | 'summary_text'>,
+): string {
+  if (isV2Summary(rec.summary)) {
+    return markdownFirstLine(rec.summary_text || v2Body(rec.summary));
+  }
+  return (
+    (rec.summary_text ?? '')
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l !== '') ?? ''
+  );
+}
+
+// ---------------------------------------------------------------------------
+// v2 の要約（設計 v2 §3 P3・P4）: {"format":"v2","body": Markdown,"facts":{…}}
+
+/** バイタルの項目（backend `prompts.VITAL_KEYS` と同じ順）。 */
+export const VITAL_KEYS = ['血圧', '体温', '脈拍', 'SpO2', '血糖'] as const;
+
+/** `summary` が v2 の形か。v1（今までの記録）は 6 欄の形のまま。 */
+export function isV2Summary(summary: unknown): summary is Record<string, unknown> {
+  return isPlainObject(summary) && summary.format === 'v2';
+}
+
+/** v2 の本文（Markdown）。 */
+export function v2Body(summary: unknown): string {
+  return isV2Summary(summary) && typeof summary.body === 'string' ? summary.body : '';
+}
+
+export interface V2NeedsCheck {
+  text: string;
+  /** 元の発言の時刻（経過秒）。読めなければ null。 */
+  sec: number | null;
+}
+
+export interface V2Facts {
+  /** 語られた項目だけ（[項目, 値]）。 */
+  vitals: Array<[string, string]>;
+  needsCheck: V2NeedsCheck[];
+}
+
+/** v2 の `facts` の寛容な読み取り（形が崩れていても落とさない）。 */
+export function v2Facts(summary: unknown): V2Facts {
+  const facts = isV2Summary(summary) && isPlainObject(summary.facts) ? summary.facts : {};
+  const rawVitals = isPlainObject(facts.vitals) ? facts.vitals : {};
+  const keys: string[] = [
+    ...VITAL_KEYS,
+    ...Object.keys(rawVitals).filter((k) => !(VITAL_KEYS as readonly string[]).includes(k)),
+  ];
+  const vitals: Array<[string, string]> = [];
+  for (const k of keys) {
+    const v = rawVitals[k];
+    if (typeof v !== 'string' && typeof v !== 'number') continue;
+    const text = String(v).trim();
+    if (text !== '') vitals.push([k, text]);
+  }
+  const needsCheck: V2NeedsCheck[] = [];
+  const rawChecks = Array.isArray(facts.needs_check) ? facts.needs_check : [];
+  for (const item of rawChecks) {
+    if (isPlainObject(item)) {
+      const text = typeof item.text === 'string' ? item.text.trim() : '';
+      const time = typeof item.time === 'string' ? item.time : null;
+      if (text) needsCheck.push({ text, sec: parseTimeLabel(time) });
+    } else if (typeof item === 'string' && item.trim() !== '') {
+      needsCheck.push({ text: item.trim(), sec: null });
+    }
+  }
+  return { vitals, needsCheck };
+}
+
+/**
  * 要約の描き方（PC `/records` とモバイル `VisitRecordCard` で**共通の 1 規則**）。
  *
  *   1. `summary_edited_at` があれば `summary_text`（人が直した本文）を平文で出す
@@ -118,12 +191,19 @@ export function summaryFirstLine(rec: VisitRecordingRead): string {
  * 片方の画面だけ規則を変えると「PC では直した要約、モバイルでは古い要約」に
  * なるため、判定はここ 1 箇所に置く。
  */
-export type SummaryDisplayMode = 'text' | 'json' | 'empty';
+export type SummaryDisplayMode = 'text' | 'json' | 'empty' | 'v2' | 'v2-edited';
 
 export function summaryDisplayMode(
   rec: Pick<VisitRecordingRead, 'summary' | 'summary_text' | 'summary_edited_at'>,
 ): SummaryDisplayMode {
   const hasText = !!rec.summary_text && rec.summary_text.trim() !== '';
+  // v2: 未編集 = バイタル・要確認・本文。人手で直した後は `summary_text` が正で、
+  // 同じ読み取りで本文だけを出す（AI の facts は古いので出さない）。空にしたのも
+  // 人の判断なので、AI の本文へは戻さない（A4 と同じ規則）。
+  if (isV2Summary(rec.summary)) {
+    if (rec.summary_edited_at) return hasText ? 'v2-edited' : 'empty';
+    return hasText || v2Body(rec.summary).trim() !== '' ? 'v2' : 'empty';
+  }
   const hasJson = !!rec.summary && Object.keys(rec.summary).length > 0;
   if (rec.summary_edited_at && hasText) return 'text';
   if (hasJson) return 'json';
@@ -141,6 +221,7 @@ export function summaryToText(rec: VisitRecordingRead): string {
   if (rec.summary_text && rec.summary_text.trim() !== '') return rec.summary_text;
   const summary = rec.summary;
   if (!summary) return '';
+  if (isV2Summary(summary)) return v2Body(summary);
   const blocks: string[] = [];
   for (const [key, value] of Object.entries(summary)) {
     const label = summarySectionLabel(key);
