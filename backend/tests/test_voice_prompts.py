@@ -69,7 +69,9 @@ def test_transcript_schema_shape() -> None:
     assert schema["type"] == "array"
     item = schema["items"]
     assert set(item["required"]) == {"start", "end", "speaker", "text"}
-    assert item["properties"]["start"]["type"] == "number"
+    # P0: "分:秒" の文字で頼む (秒の数値だと 2.5 Flash の時刻が当てにならない)。
+    assert item["properties"]["start"]["type"] == "string"
+    assert item["properties"]["end"]["type"] == "string"
     assert item["properties"]["speaker"]["enum"] == list(prompts.SPEAKER_LABELS)
 
     allowed = {"object", "array", "string", "number", "integer", "boolean"}

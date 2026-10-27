@@ -53,7 +53,7 @@ from app.models.visit_recording import (
     VisitRecording,
 )
 from app.services.checkin.judge import JST
-from app.services.voice import correction, karte_seat, prompts, summary, transcribe
+from app.services.voice import audio_split, correction, karte_seat, prompts, summary, transcribe
 from app.services.voice.vertex_client import (
     MAX_INLINE_AUDIO_BYTES,
     ModelReply,
@@ -216,36 +216,76 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
             logger.warning("voice: 音声ファイルを読めません (%s): %s", audio_path, exc)
             await _mark_failed(db, row, AUDIO_MISSING_MESSAGE, kind=ERROR_KIND_AUDIO_MISSING)
             return
-        if len(audio_bytes) > MAX_INLINE_AUDIO_BYTES:
+        # 長い録音は区切る (P1b・設計 §8)。区切れないとき (短い・ffmpeg が無い・読めない) は 1 本で送る。
+        try:
+            pieces = await audio_split.split_audio(audio_path)
+        except audio_split.AudioSplitError as exc:
             logger.warning(
-                "voice: audio is %d bytes (inline limit %d・recording_id=%s)",
-                len(audio_bytes),
-                MAX_INLINE_AUDIO_BYTES,
+                "voice: 録音を区切れないため 1 本で送ります (recording_id=%s): %s",
                 recording_id,
+                exc,
             )
-            await _mark_failed(db, row, TOO_LARGE_MESSAGE, kind=ERROR_KIND_TOO_LARGE)
-            return
-
-        # ① 文字起こし
-        async def ask_audio(prompt: str) -> ModelReply:
-            return usage.add(
-                await _call_with_retry(
-                    lambda: client.transcribe_lines(audio_bytes, mime, prompt), recording_id
+            pieces = None
+        if pieces is None:
+            if len(audio_bytes) > MAX_INLINE_AUDIO_BYTES:
+                logger.warning(
+                    "voice: audio is %d bytes (inline limit %d・recording_id=%s)",
+                    len(audio_bytes),
+                    MAX_INLINE_AUDIO_BYTES,
+                    recording_id,
                 )
-            )
+                await _mark_failed(db, row, TOO_LARGE_MESSAGE, kind=ERROR_KIND_TOO_LARGE)
+                return
+            pieces = [
+                audio_split.Piece(start=0.0, end=duration or 0.0, data=audio_bytes, mime=mime)
+            ]
+            whole = True
+        else:
+            whole = False
 
-        def build_prompt(from_sec: float | None, before: Sequence[dict[str, Any]]) -> str:
-            return prompts.build_transcribe_prompt(
-                patient_name,
-                staff_name,
-                visit_date,
-                duration_sec=duration,
-                from_sec=from_sec,
-                before=before,
+        # ① 文字起こし (区切りごとに読み、区切りの始まりの分だけ時刻をずらしてつなぐ)
+        async def transcribe_piece(
+            piece: audio_split.Piece, carry: Sequence[dict[str, Any]]
+        ) -> list[dict[str, Any]]:
+            piece_duration = duration if whole else piece.duration
+
+            async def ask_audio(prompt: str) -> ModelReply:
+                return usage.add(
+                    await _call_with_retry(
+                        lambda: client.transcribe_lines(piece.data, piece.mime, prompt),
+                        recording_id,
+                    )
+                )
+
+            def build_prompt(from_sec: float | None, before: Sequence[dict[str, Any]]) -> str:
+                return prompts.build_transcribe_prompt(
+                    patient_name,
+                    staff_name,
+                    visit_date,
+                    duration_sec=piece_duration,
+                    from_sec=from_sec,
+                    before=before,
+                    carry=carry,
+                )
+
+            lines = await transcribe.transcribe(
+                ask_audio, build_prompt, duration_sec=piece_duration
             )
+            return [
+                {
+                    **line,
+                    "start": round(line["start"] + piece.start, 1),
+                    "end": round(line["end"] + piece.start, 1),
+                }
+                for line in lines
+            ]
 
         try:
-            raw_lines = await transcribe.transcribe(ask_audio, build_prompt, duration_sec=duration)
+            raw_lines: list[dict[str, Any]] = []
+            for piece in pieces:
+                raw_lines.extend(await transcribe_piece(piece, raw_lines))
+                if not whole:
+                    await _touch(db, row)
         except VoiceAiError as exc:
             # 生メッセージは log にだけ残す (画面は固定文言・種別は error_kind)。
             logger.warning(

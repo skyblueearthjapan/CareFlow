@@ -31,7 +31,7 @@ from app.core.config import get_settings
 from app.core.security import hash_password
 from app.models import Notification, Patient, Staff, User
 from app.models.visit_recording import VisitRecording
-from app.services.voice import jobs, vertex_client
+from app.services.voice import audio_split, jobs, vertex_client
 from app.services.voice.vertex_client import ModelReply, VoiceAiError
 
 LINES = [
@@ -115,6 +115,8 @@ def voice_env(tmp_path, monkeypatch):
     """``VOICE_AI_PROVIDER=vertex`` + 音声置き場を tmp_path にする。"""
     monkeypatch.setenv("VOICE_AI_PROVIDER", "vertex")
     monkeypatch.setenv("VISIT_AUDIO_DIR", str(tmp_path / "visit_audio"))
+    # ffmpeg の有無で結果が変わらないように、既定は「区切らない」(区切る試験は下で差し替える)。
+    monkeypatch.setattr(audio_split, "available", lambda: False)
     get_settings.cache_clear()
     yield tmp_path
     vertex_client.set_test_client(None)
@@ -573,4 +575,66 @@ async def test_deleted_or_transcribing_rows_are_skipped(db, seeded) -> None:
     await db.refresh(row)
     assert row.status == "uploaded"
     assert fake.audio_calls == []
+    await db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# 長い録音を区切る (P1b)
+
+
+@pytest.mark.asyncio
+async def test_long_recording_is_read_piece_by_piece_and_times_are_shifted(
+    db, seeded, monkeypatch
+) -> None:
+    """区切りごとに ① を頼み、区切りの始まりの分だけ時刻をずらしてつなぐ。"""
+    row, _user, _patient, _audio = seeded
+    pieces = [
+        audio_split.Piece(start=0.0, end=700.0, data=b"piece-1"),
+        audio_split.Piece(start=700.0, end=1500.0, data=b"piece-2"),
+    ]
+
+    async def fake_split(_path):
+        return pieces
+
+    monkeypatch.setattr(audio_split, "split_audio", fake_split)
+    second = [
+        {"start": "0:02", "end": "0:04", "speaker": "看護師", "text": "では足の運動をしましょう。"},
+        {"start": "1:10", "end": "1:12", "speaker": "患者", "text": "はい。"},
+    ]
+    fake = _install(_FakeVoiceClient(_lines_reply(), _lines_reply(second)))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert row.status == "summarized"
+    assert [(c[0], c[1]) for c in fake.audio_calls] == [
+        (b"piece-1", "audio/mpeg"),
+        (b"piece-2", "audio/mpeg"),
+    ]
+    # 2 つ目の区切りの指示: 長さはその区切りの分・前の区切りの終わりを時刻なしで見せる。
+    second_prompt = fake.audio_calls[1][2]
+    assert "（長さ 13:20）" in second_prompt
+    assert "長い録音の途中の部分" in second_prompt
+    assert "  患者: じょくそうが少し痛いです。" in second_prompt
+    assert [line["start"] for line in row.transcript_json] == [0, 3, 702.0, 770.0]
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_split_failure_falls_back_to_the_whole_recording(db, seeded, monkeypatch) -> None:
+    """区切れない (ffmpeg が音声を読めない) ときは 1 本で送る。"""
+    row, _user, _patient, audio = seeded
+
+    async def broken(_path):
+        raise audio_split.AudioSplitError("Invalid data")
+
+    monkeypatch.setattr(audio_split, "split_audio", broken)
+    fake = _install(_FakeVoiceClient())
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert row.status == "summarized"
+    assert fake.audio_calls[0][0] == audio.read_bytes()
+    assert fake.audio_calls[0][1] == "audio/webm"
     await db.rollback()
