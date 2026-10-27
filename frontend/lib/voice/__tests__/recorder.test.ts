@@ -24,15 +24,19 @@ import {
   MAX_RECORDING_MS,
   MIME_CANDIDATES,
   VoiceRecorder,
+  buildAudioConstraints,
   buildOrphanRecording,
   discardChunkSession,
   formatElapsed,
   isRecordingSupported,
   listOrphanChunkSessions,
+  openMicStream,
   pickMimeType,
   purgeStaleChunks,
   recordingUnsupportedReason,
 } from '@/lib/voice/recorder';
+import { LEVEL_SAMPLE_MS } from '@/lib/voice/level-meter';
+import { installFakeAudioContext } from './fakeAudio';
 
 type DataHandler = (ev: { data: Blob }) => void;
 
@@ -373,5 +377,201 @@ describe('前回の録音の残骸 (H-2)', () => {
 
     expect(removed).toBe(1);
     expect(await buildOrphanRecording('sess-new')).not.toBeNull();
+  });
+});
+
+// -- v2 P5: マイクの制約・効いた値・音量メーター ------------------------------
+
+/** 制約つきの getUserMedia を差し込む。`settings` は track.getSettings() の戻り値。 */
+function installMic(options: {
+  supported?: MediaTrackSupportedConstraints;
+  settings?: MediaTrackSettings;
+  failWith?: string;
+}) {
+  const stream = {
+    getTracks: () => [{ stop: vi.fn() }],
+    getAudioTracks: () => [{ getSettings: () => options.settings ?? {} }],
+  };
+  const getUserMedia = vi.fn(async (c: MediaStreamConstraints) => {
+    if (options.failWith && c.audio !== true) {
+      const err = new Error('制約で失敗');
+      err.name = options.failWith;
+      throw err;
+    }
+    return stream;
+  });
+  Object.defineProperty(navigator, 'mediaDevices', {
+    configurable: true,
+    value: { getUserMedia, getSupportedConstraints: () => options.supported ?? {} },
+  });
+  return { getUserMedia };
+}
+
+describe('buildAudioConstraints（制約の選び分け）', () => {
+  it('autoGainControl を名乗る端末は、自動ゲインだけを効かせる', () => {
+    expect(buildAudioConstraints({ autoGainControl: true })).toEqual({
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: true,
+    });
+  });
+
+  it('名乗らない端末（iPhone Safari）は 3 つとも true にする', () => {
+    const ios = {
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    };
+    expect(buildAudioConstraints({ echoCancellation: true })).toEqual(ios);
+    expect(buildAudioConstraints(null)).toEqual(ios);
+  });
+});
+
+describe('openMicStream', () => {
+  it('Android 系は自動ゲインの制約で getUserMedia を呼ぶ', async () => {
+    const { getUserMedia } = installMic({ supported: { autoGainControl: true } });
+    await openMicStream();
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(getUserMedia.mock.calls[0]![0]).toEqual({
+      audio: buildAudioConstraints({ autoGainControl: true }),
+    });
+  });
+
+  it('iPhone 系は echoCancellation を true にした制約で呼ぶ', async () => {
+    const { getUserMedia } = installMic({ supported: {} });
+    await openMicStream();
+    expect(getUserMedia.mock.calls[0]![0]).toEqual({ audio: buildAudioConstraints(null) });
+  });
+
+  it('getSupportedConstraints が無い端末も iPhone と同じ制約にする', async () => {
+    const getUserMedia = vi.fn(async () => ({ getTracks: () => [] }));
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    await openMicStream();
+    expect(getUserMedia).toHaveBeenCalledWith({ audio: buildAudioConstraints(null) });
+  });
+
+  it('制約で失敗したら audio: true でやり直す', async () => {
+    const { getUserMedia } = installMic({ failWith: 'OverconstrainedError' });
+    await openMicStream();
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect(getUserMedia.mock.calls[1]![0]).toEqual({ audio: true });
+  });
+
+  it('許可の拒否はやり直さずにそのまま投げる', async () => {
+    const { getUserMedia } = installMic({ failWith: 'NotAllowedError' });
+    await expect(openMicStream()).rejects.toMatchObject({ name: 'NotAllowedError' });
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('VoiceRecorder の効いたマイク設定', () => {
+  it('track.getSettings() の 5 項目を結果に載せる（ほかの項目は持ち出さない）', async () => {
+    installMic({
+      supported: { autoGainControl: true },
+      settings: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: true,
+        sampleRate: 48000,
+        channelCount: 1,
+        deviceId: 'mic-device-id',
+      },
+    });
+    const rec = new VoiceRecorder();
+    await rec.start();
+    instances[0]!.emit('a');
+    const result = await rec.stop();
+    expect(result.micSettings).toEqual({
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: true,
+      sampleRate: 48000,
+      channelCount: 1,
+    });
+    rec.dispose();
+  });
+
+  it('getSettings が無い端末では null（録音はできる）', async () => {
+    const rec = new VoiceRecorder();
+    await rec.start();
+    instances[0]!.emit('a');
+    const result = await rec.stop();
+    expect(result.micSettings).toBeNull();
+    expect(result.blob.size).toBeGreaterThan(0);
+  });
+
+  it('退避したチャンクにも設定を焼き込み、残骸から拾える', async () => {
+    installFakeIndexedDB();
+    resetVoiceDbForTest();
+    installMic({ settings: { autoGainControl: true, sampleRate: 44100 } });
+    const rec = new VoiceRecorder();
+    await rec.start();
+    instances[0]!.emit('a');
+    await new Promise((r) => setTimeout(r, 0));
+    const orphan = await buildOrphanRecording(rec.sessionId);
+    expect(orphan?.micSettings).toEqual({ autoGainControl: true, sampleRate: 44100 });
+    rec.dispose();
+  });
+});
+
+describe('VoiceRecorder の音量メーター', () => {
+  let audio: ReturnType<typeof installFakeAudioContext>;
+
+  beforeEach(() => {
+    audio = installFakeAudioContext();
+  });
+
+  afterEach(() => {
+    audio.uninstall();
+  });
+
+  it('録音中は段階を状態に流し、一時停止で消して、停止で AudioContext を閉じる', async () => {
+    vi.useFakeTimers();
+    const rec = new VoiceRecorder();
+    await rec.start();
+    expect(audio.created).toBe(1);
+    audio.amplitude = 0.1;
+    vi.advanceTimersByTime(LEVEL_SAMPLE_MS);
+    expect(rec.getState().level).toBe('ok');
+
+    rec.pause();
+    expect(rec.getState().level).toBeNull();
+    const reads = audio.reads;
+    vi.advanceTimersByTime(3000);
+    expect(audio.reads).toBe(reads);
+
+    rec.resume();
+    audio.amplitude = 0.01;
+    vi.advanceTimersByTime(LEVEL_SAMPLE_MS);
+    expect(rec.getState().level).toBe('quiet');
+
+    instances[0]!.emit('a');
+    vi.useRealTimers();
+    await rec.stop();
+    expect(audio.closed).toBe(1);
+    expect(rec.getState().level).toBeNull();
+  });
+
+  it('破棄（dispose）でも AudioContext を閉じる', async () => {
+    const rec = new VoiceRecorder();
+    await rec.start();
+    rec.dispose();
+    expect(audio.closed).toBe(1);
+  });
+
+  it('AudioContext が作れない端末でもメーター無しで録音を続ける', async () => {
+    audio.failCreate = true;
+    const rec = new VoiceRecorder();
+    await rec.start();
+    expect(rec.getState().status).toBe('recording');
+    expect(rec.getState().level ?? null).toBeNull();
+    instances[0]!.emit('a');
+    const result = await rec.stop();
+    expect(result.blob.size).toBeGreaterThan(0);
   });
 });

@@ -242,6 +242,7 @@ async function persistPending(
       blob: item.result.blob,
       consent: item.consent,
       clientId: item.clientId,
+      micSettings: item.result.micSettings ?? null,
     });
   } catch {
     return false;

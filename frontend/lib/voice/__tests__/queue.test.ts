@@ -418,3 +418,86 @@ describe('確定 4xx の退避 (C-3: 破棄を不可逆にしない)', () => {
     expect(await countFailedVoice(STAFF)).toBe(0);
   });
 });
+
+// -- v2 P5: 効いたマイクの設定 ------------------------------------------------
+
+describe('mic_settings（効いたマイクの設定）', () => {
+  const settings = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    sampleRate: 48000,
+    channelCount: 1,
+  };
+
+  it('控えに残し、送信の FormData に JSON の文字列で添える', async () => {
+    await enqueueVoice({
+      staffId: STAFF,
+      visitId: 'visit-1',
+      patientId: 'pat-1',
+      recordedAt: '2026-10-27T01:00:00.000Z',
+      durationSec: 60,
+      mimeType: 'audio/mp4',
+      blob: new Blob(['audio']),
+      consent: true,
+      micSettings: settings,
+    });
+    expect((await listVoice(STAFF))[0]!.micSettings).toEqual(settings);
+    const fetchMock = mockFetch(202);
+
+    await flushVoiceQueue(STAFF, { accessToken: 'token' });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const raw = (init.body as FormData).get('mic_settings');
+    expect(typeof raw).toBe('string');
+    expect(JSON.parse(raw as string)).toEqual(settings);
+  });
+
+  it('設定を持たない古い控えもそのまま送れる（mic_settings は付けない）', async () => {
+    // P5 より前に積んだ行（micSettings の項目そのものが無い）。
+    await idbPut(PENDING_STORE, {
+      id: 'old-1',
+      clientId: null,
+      staffId: STAFF,
+      visitId: 'visit-1',
+      patientId: 'pat-1',
+      recordedAt: '2026-10-01T01:00:00.000Z',
+      durationSec: 30,
+      mimeType: 'audio/webm;codecs=opus',
+      blob: new Blob(['audio']),
+      consent: true,
+      attempts: 0,
+      lastError: null,
+      queuedAt: 1,
+    });
+    const fetchMock = mockFetch(202);
+
+    const res = await flushVoiceQueue(STAFF, { accessToken: 'token' });
+
+    expect(res.sent).toBe(1);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const form = init.body as FormData;
+    expect(form.get('mic_settings')).toBeNull();
+    expect(form.get('visit_id')).toBe('visit-1');
+  });
+
+  it('送れなかった録音を再送に戻しても設定は落ちない', async () => {
+    await enqueueVoice({
+      staffId: STAFF,
+      recordedAt: '2026-10-27T01:00:00.000Z',
+      durationSec: 60,
+      mimeType: 'audio/mp4',
+      blob: new Blob(['audio']),
+      consent: true,
+      micSettings: settings,
+    });
+    mockFetch(400, DETAIL_400);
+    await flushVoiceQueue(STAFF, { accessToken: 'token' });
+    const failed = await listFailedVoice(STAFF);
+    expect(failed).toHaveLength(1);
+
+    expect(await requeueFailedVoice(failed[0]!.id)).toBe(true);
+
+    expect((await listVoice(STAFF))[0]!.micSettings).toEqual(settings);
+  });
+});
