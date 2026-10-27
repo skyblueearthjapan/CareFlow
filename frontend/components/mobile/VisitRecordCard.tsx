@@ -20,6 +20,8 @@ import { toast } from '@/components/ui/sonner';
 import { AuthedAudio } from '@/components/mobile/AuthedAudio';
 import { RakusukeWorking } from '@/components/brand/Rakusuke';
 import { summaryDisplayMode } from '@/components/records/recordFormat';
+import { VoiceV2Summary } from '@/components/records/VoiceV2Summary';
+import type { AudioSeekRequest } from '@/components/records/AuthedAudioPlayer';
 import { formatElapsed } from '@/lib/voice/recorder';
 import { useUpdateRecording, type VisitRecordingRead } from '@/lib/queries/visit-recordings';
 
@@ -116,7 +118,17 @@ export function VisitRecordCard({ recording }: VisitRecordCardProps) {
   const accessToken = session?.accessToken ?? null;
   const [showAudio, setShowAudio] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
+  const [seekRequest, setSeekRequest] = useState<AudioSeekRequest | null>(null);
   const update = useUpdateRecording(recording.id);
+  // v2 の本文の時刻を押す → 音声を開いて、その 15 秒前から再生する。
+  // 音声が消えた記録（has_audio=false）では押せない文字にする。
+  const onSeek =
+    recording.has_audio !== false
+      ? (sec: number) => {
+          setShowAudio(true);
+          setSeekRequest((prev) => ({ sec, nonce: (prev?.nonce ?? 0) + 1 }));
+        }
+      : null;
 
   const meta = statusMeta(recording.status);
   const summaryEntries = recording.summary ? Object.entries(recording.summary) : [];
@@ -172,7 +184,21 @@ export function VisitRecordCard({ recording }: VisitRecordCardProps) {
       {/* 描き方の規則は PC の詳細ダイアログと 1 本化（`summaryDisplayMode`）。
           手修正済み（`summary_edited_at`）なら本文、未編集なら JSON の構造表示。
           片方だけ規則を変えると「PC では直した要約・モバイルでは古い要約」になる。 */}
-      {summaryMode === 'text' ? (
+      {summaryMode === 'v2' || summaryMode === 'v2-edited' ? (
+        <div className="space-y-1">
+          <VoiceV2Summary
+            rec={recording}
+            onSeek={onSeek}
+            edited={summaryMode === 'v2-edited'}
+            vitalColumns={2}
+          />
+          {recording.summary_edited_at && (
+            <p className="text-xs text-text-muted" data-testid="visit-record-summary-edited">
+              手修正あり（{fmtDateTime(recording.summary_edited_at)}）
+            </p>
+          )}
+        </div>
+      ) : summaryMode === 'text' ? (
         <div className="space-y-1">
           <p className="whitespace-pre-wrap text-sm text-text-primary">{recording.summary_text}</p>
           {recording.summary_edited_at && (
@@ -215,7 +241,13 @@ export function VisitRecordCard({ recording }: VisitRecordCardProps) {
         )}
       </div>
 
-      {showAudio && <AuthedAudio recordingId={recording.id} accessToken={accessToken} />}
+      {showAudio && (
+        <AuthedAudio
+          recordingId={recording.id}
+          accessToken={accessToken}
+          seekRequest={seekRequest}
+        />
+      )}
 
       {showTranscript && recording.transcript && (
         <p

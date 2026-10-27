@@ -115,6 +115,81 @@ describe('VisitRecordCard', () => {
     expect(screen.queryByText('主訴・様子')).not.toBeInTheDocument();
   });
 
+  // ── v2（設計 v2 §3 P4）: PC と同じ部品で本文・バイタル・要確認 ──
+
+  const V2_BODY = '# 訪問記録\n\n- **血圧** 132/78 [12:05]\n- <b>タグ</b>';
+  const v2 = (over: Partial<VisitRecordingRead> = {}) =>
+    makeRecording({
+      summary: {
+        format: 'v2',
+        body: V2_BODY,
+        facts: {
+          vitals: { 血圧: '132/78', 体温: '', 脈拍: '', SpO2: '', 血糖: '' },
+          handover: [],
+          next: '',
+          needs_check: [{ text: '薬の量', time: '5:10' }],
+        },
+      },
+      summary_text: V2_BODY,
+      ...over,
+    });
+
+  it('v2: バイタル（語られた項目だけ）・要確認・本文を出し、タグは文字のまま', () => {
+    const { container } = render(<VisitRecordCard recording={v2()} />);
+
+    expect(screen.getByTestId('voice-v2-vitals')).toHaveTextContent('132/78');
+    expect(screen.getByTestId('voice-v2-vitals')).not.toHaveTextContent('体温');
+    expect(screen.getByTestId('voice-v2-needs-check')).toHaveTextContent('薬の量');
+    expect(screen.getByTestId('voice-v2-body')).toHaveTextContent('<b>タグ</b>');
+    expect(container.querySelector('b')).toBeNull();
+    expect(screen.queryByText('主訴・様子')).not.toBeInTheDocument();
+  });
+
+  it('v2: 時刻を押すと音声を開く', async () => {
+    (globalThis as unknown as { fetch: unknown }).fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      blob: async () => new Blob(['a'], { type: 'audio/webm' }),
+    }));
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => 'blob:m'),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    render(<VisitRecordCard recording={v2()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '12:05 ごろから聞く' }));
+    expect(await screen.findByTestId('authed-audio')).toBeInTheDocument();
+  });
+
+  it('v2: 現場の追記（summary_text だけに足される）も本文に出る', () => {
+    render(<VisitRecordCard recording={v2({ summary_text: `${V2_BODY}\n\n追記: 夕方に再訪` })} />);
+
+    expect(screen.getByTestId('voice-v2-body')).toHaveTextContent('追記: 夕方に再訪');
+  });
+
+  it('v2: 音声が消えた記録では時刻を押せない', () => {
+    render(<VisitRecordCard recording={v2({ has_audio: false })} />);
+
+    expect(screen.queryByRole('button', { name: /ごろから聞く/ })).toBeNull();
+    expect(screen.getByText('12:05 ごろ')).toBeInTheDocument();
+  });
+
+  it('v2 を人手で直した後は summary_text を同じ読み取りで出す', () => {
+    render(
+      <VisitRecordCard
+        recording={v2({
+          summary_text: '- 書き換えた本文 [1:00]',
+          summary_edited_at: '2026-10-27T02:00:00.000Z',
+        })}
+      />,
+    );
+
+    expect(screen.getByText('書き換えた本文')).toBeInTheDocument();
+    expect(screen.queryByTestId('voice-v2-vitals')).toBeNull();
+    expect(screen.getByTestId('visit-record-summary-edited')).toBeInTheDocument();
+  });
+
   it('文字起こし中: スケルトンとらく助の一言を出す', () => {
     render(
       <VisitRecordCard recording={makeRecording({ status: 'transcribing', summary: null })} />,

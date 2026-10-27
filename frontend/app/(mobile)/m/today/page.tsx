@@ -25,6 +25,7 @@ import { PatientPickerSheet } from '@/components/mobile/PatientPickerSheet';
 import { QrScanner } from '@/components/mobile/QrScanner';
 import { VoiceFailedSheet } from '@/components/mobile/VoiceFailedSheet';
 import { RakusukeNote } from '@/components/brand/Rakusuke';
+import { summaryTextFirstLine } from '@/components/records/recordFormat';
 import { extractQrToken } from '@/lib/qr-token';
 import { classifyVisitDisplay } from '@/lib/schedule/visitVisibility';
 import { foldStaffEvents } from '@/lib/schedule/foldStaffEvents';
@@ -82,8 +83,9 @@ function fmtDateTime(iso: string | null | undefined): string {
 
 /** 要約の 1 行目 (まだ無ければ状態の言葉)。 */
 function summaryLine(r: VisitRecordingRead): string {
-  const text = (r.summary_text ?? '').trim();
-  if (text) return text.split('\n')[0] ?? '';
+  // v2 は Markdown の記号と時刻を除いた最初の意味のある行（PC の一覧と同じ規則）。
+  const line = summaryTextFirstLine(r);
+  if (line) return line;
   return r.status === 'failed' ? '要約に失敗しました' : 'らく助が文字起こし中です';
 }
 

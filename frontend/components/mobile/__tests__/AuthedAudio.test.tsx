@@ -7,7 +7,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 vi.mock('@/lib/queries/visit-recordings', () => ({
   recordingAudioUrl: (id: string) => `/api/v1/visit-recordings/${id}/audio`,
@@ -44,6 +44,21 @@ describe('AuthedAudio', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('/api/v1/visit-recordings/rec-1/audio');
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer token-1');
+  });
+
+  it('seekRequest の位置から再生する（読み込み前の頼みは読めた時に）', async () => {
+    mockFetch();
+    const play = vi
+      .spyOn(HTMLMediaElement.prototype, 'play')
+      .mockImplementation(() => Promise.resolve());
+    render(
+      <AuthedAudio recordingId="rec-1" accessToken="t" seekRequest={{ sec: 290, nonce: 1 }} />,
+    );
+    const el = (await screen.findByTestId('authed-audio')) as HTMLAudioElement;
+    fireEvent.loadedMetadata(el);
+    expect(el.currentTime).toBe(290);
+    expect(play).toHaveBeenCalledTimes(1);
+    play.mockRestore();
   });
 
   it('トークンが更新されても取り直さない (M-2)', async () => {

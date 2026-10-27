@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 
 import { recordingAudioUrl } from '@/lib/queries/visit-recordings';
+import type { AudioSeekRequest } from '@/components/records/AuthedAudioPlayer';
 
 /** 再生速度の選択肢（現場は「速く聞き返す」需要が中心）。 */
 const SPEEDS = [1.0, 1.5] as const;
@@ -23,14 +24,23 @@ interface AuthedAudioProps {
   /** `visit_recordings.id`。 */
   recordingId: string;
   accessToken: string | null;
+  /** 要約の時刻を押したときの再生位置（`nonce` が変わるたびに動かして再生する）。 */
+  seekRequest?: AudioSeekRequest | null;
   className?: string;
 }
 
-export function AuthedAudio({ recordingId, accessToken, className }: AuthedAudioProps) {
+export function AuthedAudio({
+  recordingId,
+  accessToken,
+  seekRequest,
+  className,
+}: AuthedAudioProps) {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [speed, setSpeed] = useState<number>(1.0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  /** 音声を読み込む前に押された再生位置（読み込めたら動かして再生する）。 */
+  const pendingSeekRef = useRef<number | null>(null);
 
   // トークンは ref に置き、effect の依存には入れない（レビュー M-2）。
   // NextAuth は 55 分ごとにセッションを更新するので、依存に入れると**再生中に
@@ -73,6 +83,29 @@ export function AuthedAudio({ recordingId, accessToken, className }: AuthedAudio
     if (audioRef.current) audioRef.current.playbackRate = speed;
   }, [speed, objectUrl]);
 
+  useEffect(() => {
+    if (!seekRequest) return;
+    const sec = Math.max(0, seekRequest.sec);
+    const el = audioRef.current;
+    if (!el) {
+      pendingSeekRef.current = sec;
+      return;
+    }
+    el.currentTime = sec;
+    void el.play()?.catch(() => undefined);
+    // nonce が変わったときだけ動かす（同じ頼みで再生し直さない）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seekRequest?.nonce]);
+
+  function onLoadedMetadata() {
+    const el = audioRef.current;
+    const pending = pendingSeekRef.current;
+    if (!el || pending === null) return;
+    pendingSeekRef.current = null;
+    el.currentTime = pending;
+    void el.play()?.catch(() => undefined);
+  }
+
   if (error) {
     return <p className={`text-sm text-text-muted ${className ?? ''}`}>{error}</p>;
   }
@@ -87,7 +120,14 @@ export function AuthedAudio({ recordingId, accessToken, className }: AuthedAudio
   return (
     <div className={`space-y-2 ${className ?? ''}`}>
       {/* eslint-disable-next-line jsx-a11y/media-has-caption -- 音声記録（字幕は文字起こしが担う） */}
-      <audio ref={audioRef} src={objectUrl} controls className="w-full" data-testid="authed-audio">
+      <audio
+        ref={audioRef}
+        src={objectUrl}
+        controls
+        className="w-full"
+        data-testid="authed-audio"
+        onLoadedMetadata={onLoadedMetadata}
+      >
         お使いの端末では音声を再生できません。
       </audio>
       <div className="flex items-center gap-2">
