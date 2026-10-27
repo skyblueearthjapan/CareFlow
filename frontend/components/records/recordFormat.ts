@@ -109,9 +109,12 @@ export function summaryFirstLine(rec: VisitRecordingRead): string {
  * v2 は Markdown の記号と時刻を除いた最初の意味のある行（見出しより本文を先に）。
  */
 export function summaryTextFirstLine(
-  rec: Pick<VisitRecordingRead, 'summary' | 'summary_text'>,
+  rec: Pick<VisitRecordingRead, 'summary' | 'summary_text'> &
+    Partial<Pick<VisitRecordingRead, 'summary_edited_at'>>,
 ): string {
   if (isV2Summary(rec.summary)) {
+    // 人が書き換えた記録は summary_text だけが正（空にしたら AI の本文へ戻さない）。
+    if (rec.summary_edited_at) return markdownFirstLine(rec.summary_text ?? '');
     return markdownFirstLine(rec.summary_text || v2Body(rec.summary));
   }
   return (

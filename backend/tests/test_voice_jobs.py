@@ -19,6 +19,7 @@ AI は ``vertex_client.set_test_client()`` で偽クライアントに差し替�
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -699,4 +700,64 @@ async def test_job_stops_when_the_row_was_reaped_meanwhile(db, seeded) -> None:
     assert row.status == "failed"
     assert row.error_kind == "stale"
     assert fake.text_calls == []  # ② ③ へ進まない
+    await db.rollback()
+
+
+class _Interrupting(_FakeVoiceClient):
+    """① の答えを返した直後に、別の誰かが行を書き換える (掃除→再試行・削除)。"""
+
+    def __init__(self, row_id, change) -> None:
+        super().__init__()
+        self._row_id = row_id
+        self._change = change
+
+    async def transcribe_lines(self, audio_bytes, mime_type, prompt):
+        reply = await super().transcribe_lines(audio_bytes, mime_type, prompt)
+        factory = jobs.get_session_factory()
+        async with factory() as other:
+            found = await other.get(VisitRecording, self._row_id)
+            self._change(found)
+            await other.commit()
+        return reply
+
+
+@pytest.mark.asyncio
+async def test_job_stops_when_a_retry_took_the_row_over(db, seeded) -> None:
+    """掃除の後に再試行した別の処理が transcribing に戻しても、古い処理はやめて何も書かない。"""
+    row, _user, _patient, _audio = seeded
+    other_token = uuid.uuid4()
+
+    def retried(found) -> None:
+        found.status = "transcribing"
+        found.job_token = other_token
+
+    fake = _install(_Interrupting(row.id, retried))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert row.status == "transcribing"  # 新しい処理の行のまま (failed に書き換えない)
+    assert row.job_token == other_token
+    assert row.summary is None
+    assert fake.text_calls == []
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_job_stops_when_the_row_is_deleted_meanwhile(db, seeded) -> None:
+    """処理中に削除された記録には書かず、通知も出さない。"""
+    row, user, _patient, _audio = seeded
+
+    def deleted(found) -> None:
+        found.deleted_at = datetime.now(UTC)
+
+    fake = _install(_Interrupting(row.id, deleted))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert row.summary is None
+    assert fake.text_calls == []
+    notes = (await db.scalars(select(Notification).where(Notification.user_id == user.id))).all()
+    assert notes == []
     await db.rollback()

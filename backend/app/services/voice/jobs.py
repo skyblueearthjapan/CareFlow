@@ -54,6 +54,7 @@ from app.models.visit_recording import (
 )
 from app.services.checkin.judge import JST
 from app.services.voice import audio_split, correction, karte_seat, prompts, summary, transcribe
+from app.services.voice.errors import JobSupersededError
 from app.services.voice.vertex_client import (
     MAX_INLINE_AUDIO_BYTES,
     ModelReply,
@@ -159,7 +160,7 @@ async def run_transcribe_job(recording_id: uuid.UUID) -> None:
     try:
         async with factory() as db:
             await _transcribe_one(db, recording_id, settings)
-    except _SupersededError:
+    except JobSupersededError:
         logger.info(
             "voice: recording_id=%s は処理中でなくなった (stale 掃除・削除) ためやめました",
             recording_id,
@@ -207,6 +208,9 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
     row.status = RECORDING_STATUS_TRANSCRIBING
     row.error_message = None
     row.error_kind = None
+    # この処理の印。_touch はこの印の行だけを進めるので、掃除の後に再試行した処理や
+    # 削除とぶつかったら、古い処理はそこでやめる (レビュー: 二重実行)。
+    row.job_token = uuid.uuid4()
     await db.commit()
 
     usage = _Usage()
@@ -223,7 +227,9 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
             audio_bytes = await asyncio.to_thread(audio_path.read_bytes)
         except OSError as exc:
             logger.warning("voice: 音声ファイルを読めません (%s): %s", audio_path, exc)
-            await _mark_failed(db, row, AUDIO_MISSING_MESSAGE, kind=ERROR_KIND_AUDIO_MISSING)
+            await _mark_failed(
+                db, row, AUDIO_MISSING_MESSAGE, kind=ERROR_KIND_AUDIO_MISSING, owned=True
+            )
             return
         # 長い録音は区切る (P1b・設計 §8)。区切れないとき (短い・ffmpeg が無い・読めない) は 1 本で送る。
         try:
@@ -247,7 +253,9 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
                     MAX_INLINE_AUDIO_BYTES,
                     recording_id,
                 )
-                await _mark_failed(db, row, TOO_LARGE_MESSAGE, kind=ERROR_KIND_TOO_LARGE)
+                await _mark_failed(
+                    db, row, TOO_LARGE_MESSAGE, kind=ERROR_KIND_TOO_LARGE, owned=True
+                )
                 return
             pieces = [
                 audio_split.Piece(start=0.0, end=duration or 0.0, data=audio_bytes, mime=mime)
@@ -309,11 +317,16 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
                 recording_id,
                 exc,
             )
-            await _mark_failed(db, row, AI_FAILED_MESSAGE, kind=exc.kind, usage=usage)
+            await _mark_failed(db, row, AI_FAILED_MESSAGE, kind=exc.kind, usage=usage, owned=True)
             return
         if not raw_lines:
             await _mark_failed(
-                db, row, EMPTY_TRANSCRIPT_MESSAGE, kind=ERROR_KIND_EMPTY_TRANSCRIPT, usage=usage
+                db,
+                row,
+                EMPTY_TRANSCRIPT_MESSAGE,
+                kind=ERROR_KIND_EMPTY_TRANSCRIPT,
+                usage=usage,
+                owned=True,
             )
             return
         await _touch(db, row)
@@ -348,7 +361,12 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
                 exc,
             )
             await _mark_failed(
-                db, row, AI_FAILED_MESSAGE, kind=SUMMARY_ERROR_PREFIX + exc.kind, usage=usage
+                db,
+                row,
+                AI_FAILED_MESSAGE,
+                kind=SUMMARY_ERROR_PREFIX + exc.kind,
+                usage=usage,
+                owned=True,
             )
             return
     finally:
@@ -370,14 +388,10 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
     await _notify_summary_ready(db, row, patient_name=patient_name)
 
 
-class _SupersededError(Exception):
-    """この処理の行がもう ``transcribing`` でない (stale 掃除で failed・削除など)。"""
-
-
 async def _touch(db: AsyncSession, row: VisitRecording) -> None:
     """呼び出しごとに ``updated_at`` を進める (長い録音でも stale 掃除に倒されないように).
 
-    ``transcribing`` の行だけを進め、0 行なら :class:`_SupersededError` を投げてやめる
+    ``transcribing`` の行だけを進め、0 行なら :class:`JobSupersededError` を投げてやめる
     (掃除の後に再試行した処理と二重に走らせない)。② は 3 つ同時に呼ぶので、
     処理の本体とは別の短いセッションで書く。
     """
@@ -389,12 +403,14 @@ async def _touch(db: AsyncSession, row: VisitRecording) -> None:
             .where(
                 VisitRecording.id == row.id,
                 VisitRecording.status == RECORDING_STATUS_TRANSCRIBING,
+                VisitRecording.job_token == row.job_token,
+                VisitRecording.deleted_at.is_(None),
             )
             .values(updated_at=datetime.now(UTC))
         )
         await touch_db.commit()
     if result.rowcount == 0:
-        raise _SupersededError(str(row.id))
+        raise JobSupersededError(str(row.id))
 
 
 async def _make_draft(
@@ -588,11 +604,20 @@ async def _mark_failed(
     *,
     kind: str,
     usage: _Usage | None = None,
+    owned: bool = False,
 ) -> None:
     """``failed`` へ倒す。``message`` は画面用の日本語・``kind`` は機械用の種別。
 
     ``usage`` があれば、そこまでに使った費用も残す (失敗した録音の費用が月の合計から漏れないように)。
     """
+    if owned:
+        # 処理を始めた後の失敗は、まだこの処理が行を受け持っているときだけ書く
+        # (再試行した新しい処理の行を failed に書き換えない)。
+        try:
+            await _touch(db, row)
+        except JobSupersededError:
+            logger.info("voice: recording_id=%s は受け持ちが替わったため失敗を書きません", row.id)
+            return
     if usage is not None and (usage.tokens_in or usage.tokens_out):
         row.tokens_in = usage.tokens_in
         row.tokens_out = usage.tokens_out

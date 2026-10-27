@@ -529,6 +529,26 @@ async def test_admin_retry_resets_status(client, db, audio_dir, staff_user, admi
 
 
 @pytest.mark.asyncio
+async def test_admin_retry_refuses_while_transcribing(
+    client, db, audio_dir, staff_user, admin_user
+) -> None:
+    """処理中に再処理を押すと 2 つの処理が同じ録音を書くので 409 で断る。"""
+    _staff, user = staff_user
+    created = (await _post_recording(client, user)).json()
+    row = await db.scalar(select(VisitRecording).where(VisitRecording.id == UUID(created["id"])))
+    row.status = "transcribing"
+    await db.commit()
+
+    res = await client.post(
+        f"/api/v1/visit-recordings/{created['id']}/retry", headers=_bearer(admin_user)
+    )
+    assert res.status_code == 409, res.text
+    await db.refresh(row)
+    assert row.status == "transcribing"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
 async def test_admin_delete_soft_deletes_and_unlinks(
     client, db, audio_dir, staff_user, admin_user
 ) -> None:

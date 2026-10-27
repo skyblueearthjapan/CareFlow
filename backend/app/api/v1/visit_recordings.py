@@ -73,6 +73,7 @@ from app.models.staff import Staff
 from app.models.user import User, normalize_user_role
 from app.models.visit import VISIT_STATUS_CANCELLED, Visit
 from app.models.visit_recording import (
+    RECORDING_STATUS_TRANSCRIBING,
     RECORDING_STATUS_UNLINKED,
     RECORDING_STATUS_UPLOADED,
     VisitRecording,
@@ -1109,6 +1110,13 @@ async def retry_visit_recording(
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
             detail="音声が残っていないため再処理できません",
+        )
+    if row.status == RECORDING_STATUS_TRANSCRIBING:
+        # 処理中に押すと 2 つの処理が同じ録音を同時に書く (費用も 2 倍)。終わるか、
+        # 止まった処理が stale 掃除で failed になってから押してもらう。
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="処理中のため再処理できません。終わるまでお待ちください",
         )
     # 人手修正の退避 (``summary['previous_manual']``) と ``summary_edited_*`` の
     # クリアは **ここではやらない**。再処理を頼んだだけでは要約はまだ変わらず、

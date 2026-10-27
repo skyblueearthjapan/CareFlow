@@ -9,10 +9,12 @@ Create Date: 2026-10-27
 * ``visit_recordings.transcript_fixed_json`` JSONB NULL — ② 補正で直した行
   (``[{start, end, speaker, text}]``・``transcript_json`` と同じ形)。
 * ``transcript_json`` は ① の **直す前** の行のまま (列は変えない)。
+* ``visit_recordings.job_token`` UUID NULL — 今この行を受け持っている AI 処理の印
+  (stale 掃除の後の再試行・処理中の削除とぶつかったら、古い処理をやめさせる)。
 
 データ: 何も入れない (今までの記録 = v1 は NULL のまま。画面は ``transcript_json`` を出す)。
 
-downgrade は列を drop する。
+downgrade は 2 つの列を drop する。
 """
 
 # ruff: noqa: I001
@@ -43,7 +45,18 @@ def upgrade() -> None:
             comment="② 補正で直した行 (transcript_json は直す前)",
         ),
     )
+    uuid_type = postgresql.UUID(as_uuid=True) if is_pg else sa.Uuid()
+    op.add_column(
+        "visit_recordings",
+        sa.Column(
+            "job_token",
+            uuid_type,
+            nullable=True,
+            comment="今この行を受け持っている AI 処理の印",
+        ),
+    )
 
 
 def downgrade() -> None:
+    op.drop_column("visit_recordings", "job_token")
     op.drop_column("visit_recordings", "transcript_fixed_json")

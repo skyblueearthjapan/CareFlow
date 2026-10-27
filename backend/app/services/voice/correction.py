@@ -21,6 +21,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from app.services.voice import prompts
+from app.services.voice.errors import JobSupersededError
 from app.services.voice.vertex_client import ModelReply
 
 logger = logging.getLogger(__name__)
@@ -139,6 +140,8 @@ async def correct_lines(
         async with gate:
             try:
                 reply = await ask(prompts.build_correction_prompt(part, index, len(parts)))
+            except JobSupersededError:
+                raise  # 受け持ちが替わった: 残りの区切りを AI に送らない
             except Exception as exc:  # noqa: BLE001 — その区切りは元の行で続ける
                 logger.info(
                     "voice: 補正の区切り %d/%d が失敗 %s (recording_id=%s)",

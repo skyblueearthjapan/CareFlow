@@ -139,6 +139,12 @@ describe('recordFormat の v2', () => {
     ).toBe('【主訴】');
   });
 
+  it('一覧の 1 行目: 人が本文を空にした v2 は AI の本文へ戻さない', () => {
+    const edited = rec({ summary_text: '', summary_edited_at: '2026-10-27T02:00:00Z' });
+    // 状態に応じた代替文（空の 1 行目）になり、AI の本文の 1 行目は出ない。
+    expect(summaryFirstLine(edited)).not.toBe('状態は安定しています');
+  });
+
   it('描き方: v2 / 人手で直した v2 / 空にした v2', () => {
     expect(summaryDisplayMode(rec())).toBe('v2');
     expect(summaryDisplayMode(rec({ summary_edited_at: '2026-10-27T02:00:00Z' }))).toBe(

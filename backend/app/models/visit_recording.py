@@ -118,6 +118,9 @@ class VisitRecording(Base, TimestampMixin):
     # ② 補正で **直した** 行 (形は transcript_json と同じ・migration 0101)。補正が
     # 1 区切りも通らなかった・v1 の記録は NULL (画面は transcript_json を出す)。
     transcript_fixed_json: Mapped[list | None] = mapped_column(JSONBish, nullable=True)
+    # 今この行を受け持っている AI 処理の印 (migration 0101)。処理の開始で新しくし、
+    # 処理は呼び出しごとに「自分の印のままか」を確かめる (掃除→再試行の二重実行を防ぐ)。
+    job_token: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     # 要約。v1 = 構造化 (主訴・様子 / バイタル / 処置・ケア / 申し送り / 次回 / free)、
     # v2 = ``{"format": "v2", "body": 本文 (Markdown), "facts": {...}}``。
     summary: Mapped[dict | None] = mapped_column(JSONBish, nullable=True)

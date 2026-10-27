@@ -92,6 +92,8 @@ export function AuthedAudioPlayer({
   useEffect(() => {
     let created: string | null = null;
     let cancelled = false;
+    // 前の記録で押した時刻を持ち越さない（記録を切り替えたら捨てる）。
+    pendingSeekRef.current = null;
     setObjectUrl(null);
     setError(null);
     setPlaying(false);

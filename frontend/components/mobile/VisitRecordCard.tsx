@@ -220,7 +220,11 @@ export function VisitRecordCard({ recording }: VisitRecordCardProps) {
           type="button"
           variant="outline"
           size="sm"
-          onClick={() => setShowAudio((v) => !v)}
+          onClick={() => {
+            // 閉じたら押した時刻を捨てる（開き直したときに勝手に再生しない）。
+            if (showAudio) setSeekRequest(null);
+            setShowAudio((v) => !v);
+          }}
           disabled={recording.has_audio === false}
         >
           <Volume2 className="h-4 w-4" />
