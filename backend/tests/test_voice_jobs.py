@@ -593,8 +593,8 @@ async def test_long_recording_is_read_piece_by_piece_and_times_are_shifted(
         audio_split.Piece(start=700.0, end=1500.0, data=b"piece-2"),
     ]
 
-    async def fake_split(_path):
-        return pieces
+    async def fake_split(_path, fallback_duration=None):
+        return audio_split.SplitResult(pieces, 1500.0)
 
     monkeypatch.setattr(audio_split, "split_audio", fake_split)
     second = [
@@ -625,7 +625,7 @@ async def test_split_failure_falls_back_to_the_whole_recording(db, seeded, monke
     """区切れない (ffmpeg が音声を読めない) ときは 1 本で送る。"""
     row, _user, _patient, audio = seeded
 
-    async def broken(_path):
+    async def broken(_path, fallback_duration=None):
         raise audio_split.AudioSplitError("Invalid data")
 
     monkeypatch.setattr(audio_split, "split_audio", broken)
@@ -637,4 +637,66 @@ async def test_split_failure_falls_back_to_the_whole_recording(db, seeded, monke
     assert row.status == "summarized"
     assert fake.audio_calls[0][0] == audio.read_bytes()
     assert fake.audio_calls[0][1] == "audio/webm"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_transcript_stopped_by_safety_is_not_treated_as_complete(db, seeded) -> None:
+    """SAFETY などで途中で止まった答えを読み切ったとして扱わない。費用は残す。"""
+    row, _user, _patient, _audio = seeded
+    _install(_FakeVoiceClient(_lines_reply(finish="SAFETY")))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert row.status == "failed"
+    assert row.error_kind == "blocked"
+    assert row.tokens_in == 1000 and row.cost_usd == Decimal("0.001")
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_summary_cut_by_the_limit_fails_and_keeps_the_cost(db, seeded) -> None:
+    row, _user, _patient, _audio = seeded
+
+    def text(prompt: str):
+        if "校正係" in prompt:
+            return _reply(FIXED_ANSWER)
+        return _reply(SUMMARY_ANSWER, finish="MAX_TOKENS")
+
+    _install(_FakeVoiceClient(text=text))
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert row.status == "failed"
+    assert row.error_kind == "summary_cut"
+    assert row.tokens_in == 3000  # ① + ② + ③ の費用が残る
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_job_stops_when_the_row_was_reaped_meanwhile(db, seeded) -> None:
+    """処理中に stale 掃除で failed に倒されたら、続きを頼まず結果も書き戻さない。"""
+    row, _user, _patient, _audio = seeded
+
+    class _Reaped(_FakeVoiceClient):
+        async def transcribe_lines(self, audio_bytes, mime_type, prompt):
+            reply = await super().transcribe_lines(audio_bytes, mime_type, prompt)
+            factory = jobs.get_session_factory()
+            async with factory() as other:
+                found = await other.get(VisitRecording, row.id)
+                found.status = "failed"
+                found.error_kind = "stale"
+                await other.commit()
+            return reply
+
+    fake = _install(_Reaped())
+
+    await jobs.run_transcribe_job(row.id)
+
+    await db.refresh(row)
+    assert row.status == "failed"
+    assert row.error_kind == "stale"
+    assert fake.text_calls == []  # ② ③ へ進まない
     await db.rollback()

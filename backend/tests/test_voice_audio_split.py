@@ -15,6 +15,7 @@ from app.services.voice.audio_split import (
     SEARCH_SEC,
     SPLIT_OVER_SEC,
     AudioSplitError,
+    parse_last_time,
     parse_silences,
     plan_cuts,
 )
@@ -59,7 +60,7 @@ def test_every_piece_is_long_enough() -> None:
 
 
 class _FakeFfmpeg:
-    def __init__(self, duration: float, silences: str = "", fail_cut: bool = False) -> None:
+    def __init__(self, duration: float | str, silences: str = "", fail_cut: bool = False) -> None:
         self.duration = duration
         self.silences = silences
         self.fail_cut = fail_cut
@@ -90,8 +91,10 @@ def ffmpeg(monkeypatch):
 @pytest.mark.asyncio
 async def test_split_audio_cuts_long_recording_into_mp3_pieces(ffmpeg, tmp_path: Path) -> None:
     fake = ffmpeg(_FakeFfmpeg(1800.0, SILENCE_LOG))
-    pieces = await audio_split.split_audio(tmp_path / "rec.webm")
+    result = await audio_split.split_audio(tmp_path / "rec.webm")
+    pieces = result.pieces
     assert pieces is not None
+    assert result.duration == 1800.0
     assert [(p.start, p.end) for p in pieces] == [(0.0, 591.5), (591.5, 1200.0), (1200.0, 1800.0)]
     assert all(p.mime == "audio/mpeg" for p in pieces)
     assert pieces[1].data == b"mp3:591.50"
@@ -101,14 +104,17 @@ async def test_split_audio_cuts_long_recording_into_mp3_pieces(ffmpeg, tmp_path:
 @pytest.mark.asyncio
 async def test_split_audio_leaves_short_recording_whole(ffmpeg, tmp_path: Path) -> None:
     fake = ffmpeg(_FakeFfmpeg(600.0))
-    assert await audio_split.split_audio(tmp_path / "rec.webm") is None
+    result = await audio_split.split_audio(tmp_path / "rec.webm")
+    assert result.pieces is None
+    assert result.duration == 600.0
     assert fake.cuts == []
 
 
 @pytest.mark.asyncio
 async def test_split_audio_without_ffmpeg_sends_whole(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(audio_split, "available", lambda: False)
-    assert await audio_split.split_audio(tmp_path / "rec.webm") is None
+    result = await audio_split.split_audio(tmp_path / "rec.webm")
+    assert result.pieces is None and result.duration is None
 
 
 @pytest.mark.asyncio
@@ -125,5 +131,39 @@ async def test_unreadable_duration_raises(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(audio_split, "available", lambda: True)
     monkeypatch.setattr(audio_split, "_run", broken)
+    with pytest.raises(AudioSplitError):
+        await audio_split.split_audio(tmp_path / "rec.webm")
+
+
+def test_parse_last_time_reads_the_final_progress() -> None:
+    log = "size=N/A time=00:12:00.50 bitrate=N/A\rsize=N/A time=00:56:27.80 bitrate=N/A\n"
+    assert parse_last_time(log) == 3387.8
+    assert parse_last_time("no progress") is None
+
+
+@pytest.mark.asyncio
+async def test_webm_without_duration_uses_what_ffmpeg_read(ffmpeg, tmp_path: Path) -> None:
+    """端末の MediaRecorder の webm は長さを持たない (ffprobe は N/A)。ffmpeg が最後まで読んだ時刻で区切る。"""
+    fake = ffmpeg(_FakeFfmpeg("N/A", SILENCE_LOG + "size=N/A time=00:30:00.00 bitrate=N/A\n"))
+    result = await audio_split.split_audio(tmp_path / "rec.webm", fallback_duration=120.0)
+    assert result.duration == 1800.0
+    assert result.pieces is not None and len(result.pieces) == 3
+    assert len(fake.cuts) == 3
+
+
+@pytest.mark.asyncio
+async def test_webm_without_any_length_falls_back_to_the_device_value(
+    ffmpeg, tmp_path: Path
+) -> None:
+    no_progress = "".join(line for line in SILENCE_LOG.splitlines(True) if "time=" not in line)
+    ffmpeg(_FakeFfmpeg("N/A", no_progress))
+    result = await audio_split.split_audio(tmp_path / "rec.webm", fallback_duration=1800.0)
+    assert result.duration == 1800.0
+    assert result.pieces is not None and len(result.pieces) == 3
+
+
+@pytest.mark.asyncio
+async def test_no_length_anywhere_raises(ffmpeg, tmp_path: Path) -> None:
+    ffmpeg(_FakeFfmpeg("N/A", ""))
     with pytest.raises(AudioSplitError):
         await audio_split.split_audio(tmp_path / "rec.webm")

@@ -25,6 +25,8 @@ from app.services.voice.vertex_client import ModelReply, VoiceAiError
 
 #: 1 件で続きを頼む回数の上限 (最初の 1 回 + 4 回)。
 MAX_CONTINUATIONS = 4
+#: 読み切った (STOP・不明) か、上限で切れた (続きを頼む) 答えだけを使う。
+_FINISHED_OR_CUT = frozenset({None, "STOP", "MAX_TOKENS"})
 
 #: 続きの読み直しで「同じ行」とみなす時刻の差 (秒)。
 _SAME_LINE_SEC = 2.0
@@ -157,6 +159,9 @@ async def transcribe(
     for part in range(MAX_CONTINUATIONS + 1):
         prompt = build_prompt(None if part == 0 else from_sec, items)
         reply = await ask(prompt)
+        if reply.finish_reason not in _FINISHED_OR_CUT:
+            # SAFETY などで途中で止まった答えを「読み切った」として扱わない (会話の後半が黙って消える)。
+            raise VoiceAiError("blocked", f"transcript stopped by {reply.finish_reason}")
         cut = reply.finish_reason == "MAX_TOKENS"
         got, readable = parse_items(reply.text)
         if not readable and not cut:

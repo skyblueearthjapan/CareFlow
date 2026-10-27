@@ -121,6 +121,8 @@ def timed_lines_text(lines: Sequence[dict[str, Any]]) -> str:
     out: list[str] = []
     for line in lines:
         text = " ".join(str(line.get("text") or "").split())
+        # データの区切りの印 (TRANSCRIPT_BEGIN/END) を本文で作らせない。
+        text = text.replace("<<<", "＜＜＜").replace(">>>", "＞＞＞")
         speaker = str(line.get("speaker") or "不明")
         out.append(f"[{clock(line.get('start'))}] {speaker}: {text}")
     return "\n".join(out)

@@ -1964,7 +1964,9 @@ async def test_detail_returns_fixed_lines_and_report_json_omits_them(
     res = await client.get(f"/api/v1/visit-recordings/{row.id}/report", headers=_bearer(user))
     body = res.json()
     assert body["recording"]["transcript_fixed_json"] is None
-    assert "<td>褥瘡</td>" in body["html"] and "褥瘡の訴え [0:03]" in body["html"]
+    # A4 は整えた行の文字起こしを出し、本文の時刻は「ごろ」の文字にする (v2 P4)。
+    assert "<td>褥瘡</td>" in body["html"]
+    assert "褥瘡の訴え" in body["html"] and "0:03 ごろ" in body["html"]
     await db.rollback()
 
 

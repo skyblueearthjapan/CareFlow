@@ -159,6 +159,11 @@ async def run_transcribe_job(recording_id: uuid.UUID) -> None:
     try:
         async with factory() as db:
             await _transcribe_one(db, recording_id, settings)
+    except _SupersededError:
+        logger.info(
+            "voice: recording_id=%s は処理中でなくなった (stale 掃除・削除) ためやめました",
+            recording_id,
+        )
     except Exception:  # noqa: BLE001 — 黙って死なせない (ログだけ残してジョブは落とさない)
         logger.exception("voice: 文字起こしジョブが落ちました (recording_id=%s)", recording_id)
 
@@ -207,7 +212,11 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
     usage = _Usage()
 
     async def ask_text(prompt: str) -> ModelReply:
-        return usage.add(await _call_with_retry(lambda: client.generate_text(prompt), recording_id))
+        reply = usage.add(
+            await _call_with_retry(lambda: client.generate_text(prompt), recording_id)
+        )
+        await _touch(db, row)
+        return reply
 
     try:
         try:
@@ -218,7 +227,11 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
             return
         # 長い録音は区切る (P1b・設計 §8)。区切れないとき (短い・ffmpeg が無い・読めない) は 1 本で送る。
         try:
-            pieces = await audio_split.split_audio(audio_path)
+            split = await audio_split.split_audio(audio_path, fallback_duration=duration)
+            pieces = split.pieces
+            if split.duration:
+                # 端末の値より ffmpeg が読んだ長さを信じる (端末の値が短いと後ろの行を捨ててしまう)。
+                duration = split.duration
         except audio_split.AudioSplitError as exc:
             logger.warning(
                 "voice: 録音を区切れないため 1 本で送ります (recording_id=%s): %s",
@@ -250,12 +263,14 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
             piece_duration = duration if whole else piece.duration
 
             async def ask_audio(prompt: str) -> ModelReply:
-                return usage.add(
+                reply = usage.add(
                     await _call_with_retry(
                         lambda: client.transcribe_lines(piece.data, piece.mime, prompt),
                         recording_id,
                     )
                 )
+                await _touch(db, row)
+                return reply
 
             def build_prompt(from_sec: float | None, before: Sequence[dict[str, Any]]) -> str:
                 return prompts.build_transcribe_prompt(
@@ -294,10 +309,12 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
                 recording_id,
                 exc,
             )
-            await _mark_failed(db, row, AI_FAILED_MESSAGE, kind=exc.kind)
+            await _mark_failed(db, row, AI_FAILED_MESSAGE, kind=exc.kind, usage=usage)
             return
         if not raw_lines:
-            await _mark_failed(db, row, EMPTY_TRANSCRIPT_MESSAGE, kind=ERROR_KIND_EMPTY_TRANSCRIPT)
+            await _mark_failed(
+                db, row, EMPTY_TRANSCRIPT_MESSAGE, kind=ERROR_KIND_EMPTY_TRANSCRIPT, usage=usage
+            )
             return
         await _touch(db, row)
 
@@ -330,7 +347,9 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
                 recording_id,
                 exc,
             )
-            await _mark_failed(db, row, AI_FAILED_MESSAGE, kind=SUMMARY_ERROR_PREFIX + exc.kind)
+            await _mark_failed(
+                db, row, AI_FAILED_MESSAGE, kind=SUMMARY_ERROR_PREFIX + exc.kind, usage=usage
+            )
             return
     finally:
         try:
@@ -338,6 +357,7 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
         except Exception:  # noqa: BLE001 — 後始末の失敗で結果を捨てない
             logger.exception("voice: クライアントの close に失敗 (recording_id=%s)", recording_id)
 
+    await _touch(db, row)  # 掃除で failed に倒されていたら書き戻さない
     await _save_result(
         db,
         row,
@@ -350,10 +370,31 @@ async def _transcribe_one(db: AsyncSession, recording_id: uuid.UUID, settings) -
     await _notify_summary_ready(db, row, patient_name=patient_name)
 
 
+class _SupersededError(Exception):
+    """この処理の行がもう ``transcribing`` でない (stale 掃除で failed・削除など)。"""
+
+
 async def _touch(db: AsyncSession, row: VisitRecording) -> None:
-    """段の区切りで ``updated_at`` を進める (3 段で長くなっても stale 掃除に倒されないように)。"""
-    row.updated_at = datetime.now(UTC)
-    await db.commit()
+    """呼び出しごとに ``updated_at`` を進める (長い録音でも stale 掃除に倒されないように).
+
+    ``transcribing`` の行だけを進め、0 行なら :class:`_SupersededError` を投げてやめる
+    (掃除の後に再試行した処理と二重に走らせない)。② は 3 つ同時に呼ぶので、
+    処理の本体とは別の短いセッションで書く。
+    """
+    del db  # 本体のセッションは並行に使えない
+    factory = get_session_factory()
+    async with factory() as touch_db:
+        result = await touch_db.execute(
+            update(VisitRecording)
+            .where(
+                VisitRecording.id == row.id,
+                VisitRecording.status == RECORDING_STATUS_TRANSCRIBING,
+            )
+            .values(updated_at=datetime.now(UTC))
+        )
+        await touch_db.commit()
+    if result.rowcount == 0:
+        raise _SupersededError(str(row.id))
 
 
 async def _make_draft(
@@ -404,6 +445,10 @@ async def _make_draft(
     reply = await ask_text(
         prompts.build_summary_prompt(lines, patient_name, staff_name, visit_date)
     )
+    if reply.finish_reason not in (None, "STOP"):
+        # 途中で止まった下書きを看護記録として出さない。
+        kind = "cut" if reply.finish_reason == "MAX_TOKENS" else "blocked"
+        raise VoiceAiError(kind, f"summary stopped by {reply.finish_reason}")
     drafted = summary.read_reply(reply.text)
     return _Draft(
         summary=drafted,
@@ -536,8 +581,22 @@ async def _save_result(
     await db.commit()
 
 
-async def _mark_failed(db: AsyncSession, row: VisitRecording, message: str, *, kind: str) -> None:
-    """``failed`` へ倒す。``message`` は画面用の日本語・``kind`` は機械用の種別。"""
+async def _mark_failed(
+    db: AsyncSession,
+    row: VisitRecording,
+    message: str,
+    *,
+    kind: str,
+    usage: _Usage | None = None,
+) -> None:
+    """``failed`` へ倒す。``message`` は画面用の日本語・``kind`` は機械用の種別。
+
+    ``usage`` があれば、そこまでに使った費用も残す (失敗した録音の費用が月の合計から漏れないように)。
+    """
+    if usage is not None and (usage.tokens_in or usage.tokens_out):
+        row.tokens_in = usage.tokens_in
+        row.tokens_out = usage.tokens_out
+        row.cost_usd = usage.cost_usd
     row.status = RECORDING_STATUS_FAILED
     row.error_message = message
     row.error_kind = kind[:32]

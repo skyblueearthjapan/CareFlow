@@ -43,12 +43,21 @@ PIECE_BITRATE = "32k"
 #: ffmpeg 1 回の時間の上限 (秒)。
 RUN_TIMEOUT_SEC = 180.0
 
+_PROGRESS_TIME = re.compile(r"time=\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)")
 _SILENCE_START = re.compile(r"silence_start:\s*(-?[0-9.]+)")
 _SILENCE_END = re.compile(r"silence_end:\s*(-?[0-9.]+)")
 
 
 class AudioSplitError(Exception):
     """ffmpeg が使えるのに読めなかった (壊れた音声など)。"""
+
+
+@dataclass(frozen=True)
+class SplitResult:
+    """``pieces`` が ``None`` なら 1 本で送る。``duration`` は ffmpeg が読んだ長さ (分からなければ None)。"""
+
+    pieces: list[Piece] | None
+    duration: float | None
 
 
 @dataclass(frozen=True)
@@ -77,13 +86,30 @@ async def _run(args: list[str], timeout: float = RUN_TIMEOUT_SEC) -> tuple[int, 
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
     except TimeoutError:
-        proc.kill()
+        _kill(proc)
         await proc.wait()
         raise AudioSplitError(f"{args[0]} timed out after {timeout:.0f}s") from None
+    except BaseException:
+        # 止められた (サーバーの停止など) ときも ffmpeg を残さない。
+        _kill(proc)
+        raise
     return proc.returncode or 0, out, err
 
 
-async def probe_duration(path: Path) -> float:
+def _kill(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
+async def probe_duration(path: Path) -> float | None:
+    """ffprobe が読んだ長さ。端末の MediaRecorder の webm は長さを持たず ``N/A`` になるので None。
+
+    Raises:
+        AudioSplitError: ffprobe がファイルを読めない。
+    """
     rc, out, err = await _run(
         [
             "ffprobe",
@@ -96,12 +122,14 @@ async def probe_duration(path: Path) -> float:
             str(path),
         ]
     )
+    if rc != 0:
+        raise AudioSplitError(f"ffprobe could not read the file (rc={rc}): {err[-300:]!r}")
     try:
         value = float(out.decode("ascii", "replace").strip())
     except ValueError:
-        value = 0.0
-    if rc != 0 or not math.isfinite(value) or value <= 0:
-        raise AudioSplitError(f"ffprobe could not read the duration (rc={rc}): {err[-300:]!r}")
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
     return value
 
 
@@ -123,7 +151,18 @@ def parse_silences(stderr: str) -> list[tuple[float, float]]:
     return out
 
 
-async def detect_silences(path: Path) -> list[tuple[float, float]]:
+def parse_last_time(stderr: str) -> float | None:
+    """ffmpeg の進み具合 (``time=00:56:27.80``) の最後 = 最後まで読んだ長さ。"""
+    found = _PROGRESS_TIME.findall(stderr)
+    if not found:
+        return None
+    hours, minutes, seconds = found[-1]
+    value = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    return value if value > 0 else None
+
+
+async def detect_silences(path: Path) -> tuple[list[tuple[float, float]], float | None]:
+    """``(無音の区間, 最後まで読んだ長さ)``。長さは ffprobe が読めない webm の代わりに使う。"""
     rc, _out, err = await _run(
         [
             "ffmpeg",
@@ -141,7 +180,8 @@ async def detect_silences(path: Path) -> list[tuple[float, float]]:
     )
     if rc != 0:
         raise AudioSplitError(f"ffmpeg silencedetect failed (rc={rc}): {err[-300:]!r}")
-    return parse_silences(err.decode("utf-8", "replace"))
+    text = err.decode("utf-8", "replace")
+    return parse_silences(text), parse_last_time(text)
 
 
 def plan_cuts(duration: float, silences: list[tuple[float, float]]) -> list[float]:
@@ -202,21 +242,28 @@ async def cut_piece(path: Path, start: float, end: float) -> bytes:
     return out
 
 
-async def split_audio(path: Path) -> list[Piece] | None:
-    """区切った音声を返す。切らなくてよい (短い・ffmpeg が無い) ときは ``None``。
+async def split_audio(path: Path, fallback_duration: float | None = None) -> SplitResult:
+    """区切った音声を返す。切らなくてよい (短い・ffmpeg が無い) ときは ``pieces=None``。
+
+    長さは ffprobe → (読めなければ) ffmpeg が最後まで読んだ時刻 → 端末の値 の順に使う。
+    端末の MediaRecorder の webm は長さを持たないため (レビュー: Android の長い録音が区切られない)。
 
     Raises:
-        AudioSplitError: ffmpeg はあるのに音声を読めない・切れない。
+        AudioSplitError: ffmpeg はあるのに音声を読めない・切れない・長さがどこからも分からない。
     """
     if not available():
         logger.warning("voice: ffmpeg / ffprobe が無いため録音を区切らずに送ります")
-        return None
-    duration = await probe_duration(path)
-    if duration <= SPLIT_OVER_SEC:
-        return None
-    cuts = plan_cuts(duration, await detect_silences(path))
+        return SplitResult(None, None)
+    probed = await probe_duration(path)
+    if probed is not None and probed <= SPLIT_OVER_SEC:
+        return SplitResult(None, probed)
+    silences, read_to = await detect_silences(path)
+    duration = probed or read_to or fallback_duration
+    if not duration:
+        raise AudioSplitError("the duration could not be read")
+    cuts = plan_cuts(duration, silences)
     if not cuts:
-        return None
+        return SplitResult(None, duration)
     bounds = [0.0, *cuts, duration]
     pieces: list[Piece] = []
     for start, end in zip(bounds, bounds[1:], strict=False):
@@ -227,4 +274,4 @@ async def split_audio(path: Path) -> list[Piece] | None:
         len(pieces),
         ", ".join(f"{c:.0f}" for c in cuts),
     )
-    return pieces
+    return SplitResult(pieces, duration)
