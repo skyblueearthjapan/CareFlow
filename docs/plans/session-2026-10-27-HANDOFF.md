@@ -1,12 +1,12 @@
 # 2026-10-27 セッション引き継ぎ（訪問の音声記録 v2：文字起こし・補正・まとめを分ける／長い録音を区切る／見せ方／マイク）
 
-このセッションでは、訪問の音声記録を v2 に作り替えた。**ブランチ `feature/voice-record-v2` にコミット済み・develop へは未 push・本番は未反映**。
+このセッションでは、訪問の音声記録を v2 に作り替えた。**ブランチ `feature/voice-record-v2` を PO の了承で develop へ push 済み（`5390e082`）・本番は未反映**（本番は別に了承を取る）。
 正典の設計は `docs/plans/visit-voice-record-v2-design-2026-10-27.md`（§8 に P0 の実測と P1b の確かめ）。
 
 ## 0. 再開したら最初に確かめること
-- `git status --short --branch` → `feature/voice-record-v2`（最後は `85f4d23d` 以降）。`origin/develop` は `e54abd99` のまま。
+- `git status --short --branch` → `feature/voice-record-v2`。`origin/develop` = このブランチ（`5390e082` 以降）。
 - このブランチには、PO が先に入れた `79c94ec9`（CLAUDE.md の試し運転の反映）・`540439c3`（uv.lock を pyproject に合わせる）・README の試し運転（`1a0a2d92`）も乗っている。develop へ出すときはまとめて出る。
-- 作業ボード `.parallel/BOARD.md` の「メイン：音声記録 v2」の行は作業中のまま。push の了承が出たら「済」へ移す。
+- 作業ボード `.parallel/BOARD.md` の「メイン：音声記録 v2」の行は「済」へ移した（develop へ push 済み・本番は未反映）。
 
 ## 1. 何を変えたか（PO 了承 2026-10-27）
 | 段 | 内容 | 主なファイル |
