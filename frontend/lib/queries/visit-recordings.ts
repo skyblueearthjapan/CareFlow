@@ -30,6 +30,7 @@ import { z } from 'zod';
 
 import { fetcher } from '@/lib/api/fetcher';
 import { audioFileName, VISIT_RECORDINGS_PATH } from '@/lib/voice/queue';
+import type { MicSettings } from '@/lib/voice/recorder';
 
 /** 状態（設計 §10-2）。`unlinked` は患者未紐付けの表示用。 */
 export type VisitRecordingStatus =
@@ -244,6 +245,8 @@ export interface UploadRecordingVariables {
   durationSec: number;
   consent: boolean;
   deviceMime?: string | null;
+  /** 効いたマイクの設定（v2 P5）。`mic_settings` として添える。無ければ送らない。 */
+  micSettings?: MicSettings | null;
   /**
    * 端末側の一意キー（レビュー M-B）。キュー投入（`enqueueVoice` の id）と
    * **同じ値**を渡す。同じ音声がキュー経由と直接送信の両方で届いても、BE が
@@ -292,6 +295,7 @@ function uploadRecording(
   form.append('consent', vars.consent ? 'true' : 'false');
   if (mime) form.append('device_mime', mime);
   if (vars.clientId) form.append('client_id', vars.clientId);
+  if (vars.micSettings) form.append('mic_settings', JSON.stringify(vars.micSettings));
 
   return new Promise<VisitRecordingRead>((resolve, reject) => {
     const xhr = new XMLHttpRequest();

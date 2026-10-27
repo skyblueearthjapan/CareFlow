@@ -121,8 +121,26 @@ export function createLevelMeter(
   } catch {
     return null;
   }
-  // iOS は作った直後に suspended のことがある。起こせなくても録音は続ける。
-  if (ctx.state === 'suspended') void ctx.resume?.().catch(() => undefined);
+  // 古い WebKit は出口につながっていない AnalyserNode が 0 しか返さない。音量 0 で
+  // 出口へつなぐ（スピーカーからは鳴らない）。つなげなくても測れる端末は多いので続ける。
+  try {
+    const mute = ctx.createGain();
+    mute.gain.value = 0;
+    analyser.connect(mute);
+    mute.connect(ctx.destination);
+  } catch {
+    /* 出口につなげない端末 */
+  }
+
+  // iOS は作った直後や電話の割り込みで suspended / interrupted になる。起こせなくても録音は続ける。
+  const wake = () => {
+    try {
+      void ctx.resume?.()?.catch(() => undefined);
+    } catch {
+      /* 起こせない */
+    }
+  };
+  if (ctx.state !== 'running') wake();
 
   const buf = new Float32Array(analyser.fftSize);
   const peaks = new PeakWindow();
@@ -131,6 +149,11 @@ export function createLevelMeter(
   let closed = false;
 
   const sample = () => {
+    // 動いていない間は 0 しか読めない。「音が入っていません」と誤って出さず、段階は出さない。
+    if (ctx.state !== 'running') {
+      wake();
+      return;
+    }
     try {
       analyser.getFloatTimeDomainData(buf);
     } catch {
@@ -159,6 +182,7 @@ export function createLevelMeter(
       last = null;
     },
     resume() {
+      if (ctx.state !== 'running') wake();
       run();
     },
     close() {
@@ -170,7 +194,11 @@ export function createLevelMeter(
       } catch {
         /* 既に切れている */
       }
-      void ctx.close?.().catch(() => undefined);
+      try {
+        void ctx.close?.()?.catch(() => undefined);
+      } catch {
+        /* 閉じられなくても録音の停止は止めない */
+      }
     },
   };
 }

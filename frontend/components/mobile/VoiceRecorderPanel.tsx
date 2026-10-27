@@ -549,6 +549,7 @@ export function VoiceRecorderPanel({
         durationSec: result.durationSec,
         consent: resultConsent,
         deviceMime: result.mimeType,
+        micSettings: result.micSettings ?? null,
         // キュー投入と同じキー（レビュー M-B）。両方届いても BE が 1 件に畳む。
         clientId,
         onProgress: setUploadRatio,

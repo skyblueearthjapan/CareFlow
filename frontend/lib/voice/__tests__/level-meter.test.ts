@@ -139,4 +139,28 @@ describe('createLevelMeter', () => {
     vi.advanceTimersByTime(5000);
     expect(audio.reads).toBe(reads);
   });
+
+  it('AudioContext が動いていない間（iOS の suspended）は段階を出さず、起こそうとする', () => {
+    audio.initialState = 'suspended';
+    const onLevel = vi.fn();
+    createLevelMeter({} as MediaStream, onLevel);
+    audio.amplitude = 0;
+    vi.advanceTimersByTime(3000);
+    // 0 しか読めない間に「音が入っていません」と出さない。
+    expect(onLevel).not.toHaveBeenCalled();
+    expect(audio.reads).toBe(0);
+    expect(audio.resumes).toBeGreaterThan(1);
+
+    // 動き出したら測り始める。
+    audio.last!.state = 'running';
+    audio.amplitude = 0.1;
+    vi.advanceTimersByTime(LEVEL_SAMPLE_MS);
+    expect(onLevel).toHaveBeenLastCalledWith('ok');
+  });
+
+  it('close がその場で投げても外へ漏らさない', () => {
+    audio.throwOnClose = true;
+    const meter = createLevelMeter({} as MediaStream, vi.fn())!;
+    expect(() => meter.close()).not.toThrow();
+  });
 });

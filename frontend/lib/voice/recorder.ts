@@ -519,16 +519,25 @@ export class VoiceRecorder {
    * 段階が変わったときだけ状態を流す（毎回流すと画面が 10 回/秒描き直す）。
    */
   private startMeter(stream: MediaStream): void {
-    this.meter = createLevelMeter(stream, (level) => {
-      if (this.state.status !== 'recording') return;
-      this.emit({ ...this.state, level });
-    });
+    try {
+      this.meter = createLevelMeter(stream, (level) => {
+        if (this.state.status !== 'recording') return;
+        this.emit({ ...this.state, level });
+      });
+    } catch {
+      // メーターは録音に関係しない。作れなければ出さずに録音を続ける。
+      this.meter = null;
+    }
   }
 
   private closeMeter(): void {
     const meter = this.meter;
     this.meter = null;
-    meter?.close();
+    try {
+      meter?.close();
+    } catch {
+      // 閉じるときの例外で停止（stop）を止めない。
+    }
   }
 
   private tick(): void {
