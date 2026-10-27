@@ -33,6 +33,7 @@ import {
 } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/sonner';
 import { CheckInButton } from '@/components/mobile/CheckInButton';
+import { VoiceLevelMeter } from '@/components/mobile/VoiceLevelMeter';
 import { RakusukeNote } from '@/components/brand/Rakusuke';
 import {
   buildOrphanRecording,
@@ -42,6 +43,7 @@ import {
   recordingUnsupportedReason,
   type AutoStopReason,
   type OrphanChunkSession,
+  type MicSettings,
   type VoiceRecorder,
   type VoiceRecordingResult,
 } from '@/lib/voice/recorder';
@@ -61,6 +63,7 @@ import {
 } from '@/lib/voice/session';
 import { audioFileName, enqueueVoice, flushVoiceQueue, newVoiceClientId } from '@/lib/voice/queue';
 import { approxMinutes, formatBytes, VISIT_AUDIO_MAX_BYTES } from '@/lib/voice/constants';
+import type { MicLevel } from '@/lib/voice/level-meter';
 import { useUploadRecording } from '@/lib/queries/visit-recordings';
 
 /** 同意の説明ダイアログを一度でも読んだか（端末ごと）。 */
@@ -133,6 +136,8 @@ interface SaveInput {
    * 保存に失敗した瞬間に端末から音声が丸ごと消える。
    */
   sessionId?: string | null;
+  /** 効いたマイクの設定（v2 P5）。取り込みには無い。 */
+  micSettings?: MicSettings | null;
 }
 
 /** 説明ダイアログを読んだか（プライベートブラウズでは常に false）。 */
@@ -239,6 +244,10 @@ export function VoiceRecorderPanel({
   const [gatedAction, setGatedAction] = useState<GatedAction>('record');
   const [elapsedSec, setElapsedSec] = useState(() => voice.recorder?.getState().elapsedSec ?? 0);
   const [paused, setPaused] = useState(() => voice.recorder?.getState().status === 'paused');
+  /** 音量の目安（v2 P5）。メーターを作れない端末では null のまま。 */
+  const [level, setLevel] = useState<MicLevel | null>(
+    () => voice.recorder?.getState().level ?? null,
+  );
   const [result, setResult] = useState<VoiceRecordingResult | null>(
     () => voice.pending?.result ?? null,
   );
@@ -313,6 +322,7 @@ export function VoiceRecorderPanel({
     setResult(null);
     setStartedAtIso(null);
     setElapsedSec(0);
+    setLevel(null);
     setSaveError(null);
     setUploadRatio(null);
     // 同意は録音ごとに取り直す（レビュー M-5）。
@@ -369,6 +379,7 @@ export function VoiceRecorderPanel({
       unsubRef.current = recorder.subscribe((s) => {
         setElapsedSec(s.elapsedSec);
         setPaused(s.status === 'paused');
+        setLevel(s.level ?? null);
       });
       // 停止処理の途中で繋ぎ直したなら、止まり切ったところで review へ。
       if (recorder.getState().status === 'stopping') {
@@ -444,6 +455,7 @@ export function VoiceRecorderPanel({
         return;
       }
       const { blob, mimeType, durationSec, recordedAt, consent: consentValue } = input;
+      const micSettings = input.micSettings ?? null;
       const link = input.link ?? voice.link;
       // review 経由なら既に確定している。取り込みなど review を通らない経路はここで。
       const cid = input.clientId ?? newVoiceClientId();
@@ -460,6 +472,7 @@ export function VoiceRecorderPanel({
         blob,
         consent: consentValue,
         clientId: cid,
+        micSettings,
       });
       if (!entry) {
         // 端末に残せていない = 「後で自動送信」は嘘になる（レビュー C-1）。
@@ -468,6 +481,7 @@ export function VoiceRecorderPanel({
           blob,
           mimeType,
           durationSec,
+          micSettings,
         };
         setResult(recovered);
         setStartedAtIso(recordedAt);
@@ -591,6 +605,7 @@ export function VoiceRecorderPanel({
     unsubRef.current = recorder.subscribe((s) => {
       setElapsedSec(s.elapsedSec);
       setPaused(s.status === 'paused');
+      setLevel(s.level ?? null);
     });
     try {
       await recorder.start();
@@ -726,6 +741,7 @@ export function VoiceRecorderPanel({
         // チャンクを消すのは**積めたときだけ**（レビュー N-2）。積めないまま消すと
         // 拾い直せる唯一の控えが無くなる。
         sessionId: orphan.sessionId,
+        micSettings: recovered.micSettings ?? null,
       });
       setOrphan(null);
     } finally {
@@ -817,6 +833,7 @@ export function VoiceRecorderPanel({
               />
             ))}
           </div>
+          {!paused && <VoiceLevelMeter level={level} />}
           <div className="flex gap-2">
             <Button
               type="button"
@@ -888,6 +905,7 @@ export function VoiceRecorderPanel({
                     link: resultLink ?? undefined,
                     clientId,
                     sessionId: result.sessionId,
+                    micSettings: result.micSettings ?? null,
                   })
                 }
               >
@@ -937,6 +955,7 @@ export function VoiceRecorderPanel({
                   link: resultLink ?? undefined,
                   clientId,
                   sessionId: result.sessionId,
+                  micSettings: result.micSettings ?? null,
                 })
               }
             >

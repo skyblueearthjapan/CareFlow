@@ -23,7 +23,7 @@
  *   L-A 保存ボタン経由の flush は `interactive` (タブ跨ぎロックを待たない)
  */
 import * as React from 'react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 vi.mock('next-auth/react', () => ({
@@ -83,6 +83,7 @@ import {
 } from '@/lib/voice/recorder';
 import { rescueVoiceSessions, resetVoiceSessionsForTest } from '@/lib/voice/session';
 import { VoiceRecorderPanel } from '@/components/mobile/VoiceRecorderPanel';
+import { installFakeAudioContext } from '@/lib/voice/__tests__/fakeAudio';
 
 const asMock = (fn: unknown) => fn as unknown as ReturnType<typeof vi.fn>;
 
@@ -689,5 +690,74 @@ describe('録音サイズの上限 (BE 受領上限 20 MiB)', () => {
     fireEvent.click(screen.getByRole('button', { name: /録音を始める/ }));
 
     expect(await screen.findByText(/約 20 分で自動保存します/)).toBeInTheDocument();
+  });
+});
+
+// -- v2 P5: 音量の目安と効いたマイクの設定 ------------------------------------
+
+describe('VoiceRecorderPanel の音量の目安 (v2 P5)', () => {
+  let audio: ReturnType<typeof installFakeAudioContext>;
+
+  beforeEach(() => {
+    audio = installFakeAudioContext();
+  });
+
+  afterEach(() => {
+    audio.uninstall();
+  });
+
+  async function startRecording() {
+    window.localStorage.setItem('rakusuke:voice-consent-seen', '1');
+    renderPanel();
+    fireEvent.click(screen.getByLabelText('患者様に録音の了承を得ています'));
+    fireEvent.click(screen.getByRole('button', { name: /録音を始める/ }));
+    await screen.findByRole('button', { name: /停止・保存/ });
+  }
+
+  it('録音中に段階の文言を出し、一時停止中は消す', async () => {
+    await startRecording();
+    audio.amplitude = 0.01;
+    expect(
+      await screen.findByText('声が小さいようです。スマホを話す人に近づけてください'),
+    ).toBeInTheDocument();
+
+    audio.amplitude = 0.1;
+    // 直近 1.6 秒の最大値で決めるので、大きくなる向きはすぐ変わる。
+    expect(await screen.findByText('聞こえています')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /一時停止/ }));
+    expect(screen.queryByTestId('voice-level-meter')).not.toBeInTheDocument();
+  });
+
+  it('破棄すると AudioContext を閉じる', async () => {
+    await startRecording();
+    fireEvent.click(screen.getByRole('button', { name: /停止・保存/ }));
+    fireEvent.click(await screen.findByRole('button', { name: '破棄する' }));
+    await waitFor(() => expect(audio.closed).toBe(1));
+  });
+
+  it('AudioContext が作れない端末ではメーターを出さずに録音を続ける', async () => {
+    audio.failCreate = true;
+    await startRecording();
+    expect(screen.getByTestId('voice-timer')).toBeInTheDocument();
+    expect(screen.queryByTestId('voice-level-meter')).not.toBeInTheDocument();
+  });
+
+  it('効いたマイクの設定をキューへ渡す', async () => {
+    const settings = { autoGainControl: true, echoCancellation: true, sampleRate: 48000 };
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn(async () => ({
+          getTracks: () => [],
+          getAudioTracks: () => [{ getSettings: () => settings }],
+        })),
+        getSupportedConstraints: () => ({}),
+      },
+    });
+    await recordAndStop();
+    fireEvent.click(await screen.findByRole('button', { name: /保存して文字起こしへ/ }));
+    await waitFor(() => expect(enqueueVoice).toHaveBeenCalled());
+    expect(asMock(enqueueVoice).mock.calls[0]![0]).toMatchObject({ micSettings: settings });
   });
 });

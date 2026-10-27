@@ -28,6 +28,7 @@ import { useSession } from 'next-auth/react';
 
 import { toast } from '@/components/ui/sonner';
 import { FAILED_STORE, idbDelete, idbGetAll, idbPut, PENDING_STORE } from '@/lib/voice/idb';
+import type { MicSettings } from '@/lib/voice/recorder';
 
 /** `POST /api/v1/visit-recordings`（multipart・設計 §10-3）。 */
 export const VISIT_RECORDINGS_PATH = '/api/v1/visit-recordings';
@@ -50,6 +51,11 @@ export interface PendingVoice {
   mimeType: string;
   blob: Blob;
   consent: boolean;
+  /**
+   * 効いたマイクの設定（v2 P5）。送信時に `mic_settings`（JSON 文字列）として添える。
+   * 取り込み・残骸・P5 より前に積んだ控えには無い（無ければ送らない）。
+   */
+  micSettings?: MicSettings | null;
   attempts: number;
   lastError?: string | null;
   /** Epoch ms — キュー投入時刻（表示・順序用。失効には使わない）。 */
@@ -251,6 +257,7 @@ export async function requeueFailedVoice(id: string): Promise<boolean> {
     mimeType: row.mimeType,
     blob: row.blob,
     consent: row.consent,
+    micSettings: row.micSettings ?? null,
     attempts: 0,
     lastError: null,
     queuedAt: Date.now(),
@@ -391,6 +398,8 @@ function buildForm(entry: PendingVoice): FormData {
   // 端末側の一意キー（レビュー H-4）。再送が重なっても BE 側で 1 件に畳める。
   // UUID を作れなかった端末では付けない（衝突する値を重複判定に使わせない・M-C）。
   if (entry.clientId) form.append('client_id', entry.clientId);
+  // 効いたマイクの設定（v2 P5）。サーバはログに残すだけ。旧い控えには無い。
+  if (entry.micSettings) form.append('mic_settings', JSON.stringify(entry.micSettings));
   return form;
 }
 

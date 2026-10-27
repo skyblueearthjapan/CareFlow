@@ -20,6 +20,7 @@ import {
   ORPHAN_CHUNK_MAX_AGE_MS,
 } from '@/lib/voice/constants';
 import { CHUNK_STORE, idbDeleteMany, idbGetAll, idbPut } from '@/lib/voice/idb';
+import { createLevelMeter, type LevelMeter, type MicLevel } from '@/lib/voice/level-meter';
 
 /** 10 秒ごとにチャンクを受け取る（設計 §2-2）。 */
 export const CHUNK_TIMESLICE_MS = 10_000;
@@ -54,6 +55,25 @@ export interface VoiceRecorderState {
   warned: boolean;
   /** ここまでに受け取った音声の累積バイト数。 */
   bytes: number;
+  /**
+   * 直近 1.6 秒の音量の段階（v2 P5）。メーターを作れない端末・一時停止中・
+   * 録音前後は null（画面はメーターを出さない）。
+   */
+  level?: MicLevel | null;
+}
+
+/**
+ * 実際に効いたマイクの設定（`track.getSettings()` の抜き出し・v2 P5）。
+ *
+ * 頼んだ制約が効くかは端末次第なので、効いた値をサーバのログに残して後から
+ * 「音が小さい録音はどの端末・どの設定か」を確かめられるようにする。
+ */
+export interface MicSettings {
+  echoCancellation?: boolean;
+  noiseSuppression?: boolean;
+  autoGainControl?: boolean;
+  sampleRate?: number;
+  channelCount?: number;
 }
 
 export interface VoiceRecordingResult {
@@ -61,6 +81,8 @@ export interface VoiceRecordingResult {
   blob: Blob;
   mimeType: string;
   durationSec: number;
+  /** 効いたマイクの設定（取れない端末・取り込み・旧い控えでは null / 無し）。 */
+  micSettings?: MicSettings | null;
 }
 
 /**
@@ -109,6 +131,78 @@ interface ChunkRecord {
   visitId?: string | null;
   patientId?: string | null;
   patientName?: string | null;
+  /** 効いたマイクの設定（v2 P5）。旧レコードには無い。 */
+  micSettings?: MicSettings | null;
+}
+
+/**
+ * `getUserMedia` に渡す音声の制約（v2 P5）。
+ *
+ * `autoGainControl` を名乗る端末（Android Chrome など）は、エコー除去・雑音除去を
+ * 切って自動ゲインだけを効かせる（会話をそのまま録るため）。名乗らない端末
+ * （iPhone Safari・ホーム画面アプリ）は **echoCancellation を true にしたときだけ**
+ * 自動ゲインを含む音声処理が働くので、3 つとも true にする。
+ */
+export function buildAudioConstraints(
+  supported: MediaTrackSupportedConstraints | null | undefined,
+): MediaTrackConstraints {
+  if (supported?.autoGainControl) {
+    return {
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: true,
+    };
+  }
+  return {
+    channelCount: 1,
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  };
+}
+
+function supportedConstraints(): MediaTrackSupportedConstraints | null {
+  try {
+    return navigator.mediaDevices.getSupportedConstraints?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 制約つきでマイクを取る。制約で失敗したら `audio: true` でやり直す。
+ *
+ * 許可の拒否（NotAllowedError / SecurityError）はやり直さない — 同じ答えが返るだけで、
+ * 端末によってはもう一度許可を尋ねてしまう。
+ */
+export async function openMicStream(): Promise<MediaStream> {
+  const audio = buildAudioConstraints(supportedConstraints());
+  try {
+    return await navigator.mediaDevices.getUserMedia({ audio });
+  } catch (err) {
+    const name = err instanceof Error ? err.name : '';
+    if (name === 'NotAllowedError' || name === 'SecurityError') throw err;
+    return navigator.mediaDevices.getUserMedia({ audio: true });
+  }
+}
+
+/** 効いたマイクの設定を読む（読めなければ null）。 */
+export function readMicSettings(stream: MediaStream | null | undefined): MicSettings | null {
+  try {
+    const track = stream?.getAudioTracks?.()[0];
+    const raw = track?.getSettings?.();
+    if (!raw) return null;
+    const out: MicSettings = {};
+    if (typeof raw.echoCancellation === 'boolean') out.echoCancellation = raw.echoCancellation;
+    if (typeof raw.noiseSuppression === 'boolean') out.noiseSuppression = raw.noiseSuppression;
+    if (typeof raw.autoGainControl === 'boolean') out.autoGainControl = raw.autoGainControl;
+    if (typeof raw.sampleRate === 'number') out.sampleRate = raw.sampleRate;
+    if (typeof raw.channelCount === 'number') out.channelCount = raw.channelCount;
+    return Object.keys(out).length > 0 ? out : null;
+  } catch {
+    return null;
+  }
 }
 
 /** この端末で使える録音 MIME。どれも非対応なら空文字（ブラウザ既定に任せる）。 */
@@ -195,6 +289,8 @@ export class VoiceRecorder {
   private wakeLock: WakeLockLike | null = null;
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private visibilityHandler: (() => void) | null = null;
+  private meter: LevelMeter | null = null;
+  private micSettings: MicSettings | null = null;
 
   /** メモリ上の控え（IndexedDB が使えない端末はこちらが正）。 */
   private chunks: Blob[] = [];
@@ -240,8 +336,9 @@ export class VoiceRecorder {
     if (!isRecordingSupported()) {
       throw new Error('この端末では録音できません');
     }
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await openMicStream();
     this.stream = stream;
+    this.micSettings = readMicSettings(stream);
     this.mimeType = pickMimeType();
     const options: MediaRecorderOptions = { audioBitsPerSecond: AUDIO_BITS_PER_SECOND };
     if (this.mimeType) options.mimeType = this.mimeType;
@@ -264,6 +361,7 @@ export class VoiceRecorder {
         visitId: this.opts.visitId ?? null,
         patientId: this.opts.patientId ?? null,
         patientName: this.opts.patientName ?? null,
+        micSettings: this.micSettings,
       };
       // 退避は best-effort（メモリ上の控えが正）。`idbPut` は失敗で reject するので、
       // ここで必ず受けて unhandled rejection にしない。
@@ -279,7 +377,8 @@ export class VoiceRecorder {
     this.accumulatedMs = 0;
     this.bytes = 0;
     this.sizeWarned = false;
-    this.emit({ status: 'recording', elapsedSec: 0, warned: false, bytes: 0 });
+    this.emit({ status: 'recording', elapsedSec: 0, warned: false, bytes: 0, level: null });
+    this.startMeter(stream);
 
     this.wakeLock = await requestWakeLock();
     this.installVisibilityGuard();
@@ -295,7 +394,8 @@ export class VoiceRecorder {
       return;
     }
     this.accumulatedMs += Date.now() - this.startedAt;
-    this.emit({ ...this.state, status: 'paused' });
+    this.meter?.pause();
+    this.emit({ ...this.state, status: 'paused', level: null });
   }
 
   /** 一時停止からの再開。 */
@@ -307,6 +407,7 @@ export class VoiceRecorder {
       return;
     }
     this.startedAt = Date.now();
+    this.meter?.resume();
     this.emit({ ...this.state, status: 'recording' });
   }
 
@@ -323,7 +424,8 @@ export class VoiceRecorder {
     if (this.state.status === 'recording') {
       this.accumulatedMs += Date.now() - this.startedAt;
     }
-    this.emit({ ...this.state, status: 'stopping' });
+    this.closeMeter();
+    this.emit({ ...this.state, status: 'stopping', level: null });
     this.clearTimers();
 
     this.stopPromise = new Promise<VoiceRecordingResult>((resolve, reject) => {
@@ -342,6 +444,7 @@ export class VoiceRecorder {
   /** ストリーム / Wake Lock / タイマーを手放す（画面を離れるときに必ず呼ぶ）。 */
   dispose(): void {
     this.clearTimers();
+    this.closeMeter();
     this.releaseWakeLock();
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
@@ -362,6 +465,7 @@ export class VoiceRecorder {
    */
   private async finalize(): Promise<VoiceRecordingResult> {
     this.releaseWakeLock();
+    this.closeMeter();
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
 
@@ -371,7 +475,13 @@ export class VoiceRecorder {
     const blob = new Blob(parts, { type: mimeType });
     const durationSec = Math.max(0, Math.round(this.accumulatedMs / 1000));
     this.emit({ ...this.state, status: 'stopped', elapsedSec: durationSec });
-    return { sessionId: this.sessionId, blob, mimeType, durationSec };
+    return {
+      sessionId: this.sessionId,
+      blob,
+      mimeType,
+      durationSec,
+      micSettings: this.micSettings,
+    };
   }
 
   private async readPersistedChunks(): Promise<Blob[]> {
@@ -402,6 +512,23 @@ export class VoiceRecorder {
         void this.autoStop('size_limit');
       }
     }
+  }
+
+  /**
+   * 音量メーターを付ける（v2 P5）。作れない端末では付けずに録音だけ続ける。
+   * 段階が変わったときだけ状態を流す（毎回流すと画面が 10 回/秒描き直す）。
+   */
+  private startMeter(stream: MediaStream): void {
+    this.meter = createLevelMeter(stream, (level) => {
+      if (this.state.status !== 'recording') return;
+      this.emit({ ...this.state, level });
+    });
+  }
+
+  private closeMeter(): void {
+    const meter = this.meter;
+    this.meter = null;
+    meter?.close();
   }
 
   private tick(): void {
@@ -559,6 +686,7 @@ export async function buildOrphanRecording(
   const list = rows.filter((r) => r.sessionId === sessionId).sort((a, b) => a.index - b.index);
   if (list.length === 0) return null;
   const mimeType = list[0]?.mimeType || list[0]?.blob?.type || 'audio/webm';
+  const micSettings = list.find((r) => r.micSettings)?.micSettings ?? null;
   const blob = new Blob(
     list.map((r) => r.blob),
     { type: mimeType },
@@ -568,6 +696,7 @@ export async function buildOrphanRecording(
     blob,
     mimeType,
     durationSec: list.length * Math.round(CHUNK_TIMESLICE_MS / 1000),
+    micSettings,
   };
 }
 
