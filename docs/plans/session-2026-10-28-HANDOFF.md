@@ -17,7 +17,7 @@
 - レビュー 1 回（重大なし）。中 1 件（全部の問いに同じ文を返していた）と低 3 件は手当て済み。
 
 ## 3. 残り・気になる点
-- **本番への反映は未**（develop への push と本番への反映は、それぞれ PO の了承が要る）。反映は中継の箱だけ：`$A build agent-relay && $A up -d agent-relay`（手順は `session-2026-10-13-agent-HANDOFF.md` §5）。migration なし。
-- 本番の止まった会話は、カードの選択肢を押すか「止める」で動く。
+- **本番へ反映済み**（PO 了承 2026-10-28）：develop `505fa1f0` → pg_dump `/opt/carelink/backups/pre-deploy-agent-typed-answer-20261028-0453.sql.gz`（UTC）→ `$A build agent-relay && $A up -d agent-relay`（中継の箱だけ・migration なし）。`carelink-agent` healthy・`/agent-relay/healthz` と `/api/v1/healthz` 200。作り直しで止まっていた会話の CLI は終わった（次に送ると続きから始まる）。
+- 実際の会話で、カードの答え待ちに入力欄から送って続きが動くかは、まだ確かめていない。
 - Codex が選択肢の外の答え（自由記述）をどう扱うかは、本番の Codex で一度確かめる。
 - `agent/relay/service.py` の `import os` が未使用（前から・今回とは無関係）。
