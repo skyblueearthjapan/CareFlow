@@ -66,6 +66,29 @@ def test_sessions_are_owner_only(tmp_path):
         assert c.post(f"/agent-relay/sessions/{sid}/messages", json={"text": "x"}, headers=H2).status_code == 404
 
 
+def test_typed_message_answers_the_waiting_question(tmp_path):
+    """質問カードが答え待ちのとき、入力欄の文はそのカードへの答えになる（10-28 に止まった会話の再発防止）。"""
+    rig = Rig(tmp_path)
+    with _client(rig) as c:
+        sid = c.post("/agent-relay/sessions", json={}, headers=H).json()["id"]
+        c.post(f"/agent-relay/sessions/{sid}/messages", json={"text": "色を聞いて"}, headers=H)
+        evs = _wait(rig, sid, lambda es: any(e["type"] == "question" for e in es))
+        q = next(e for e in evs if e["type"] == "question")
+        r = c.post(f"/agent-relay/sessions/{sid}/messages", json={"text": "青がいいです"}, headers=H)
+        assert r.status_code == 200
+        evs = _wait(rig, sid, lambda es: any(e["type"] == "turn.end" for e in es))
+        ans = next(e for e in evs if e["type"] == "question.answered")
+        assert ans["question_id"] == q["question_id"] and ans["typed"] is True
+        assert list(ans["answers"].values()) == ["青がいいです"]
+        runner = rig.by_session[sid]
+        sent = runner.sent[-1]["response"]["response"]["updatedInput"]["answers"]
+        assert list(sent.values()) == ["青がいいです"]
+        # カードはもう閉じている → ボタンで答えても 409
+        r = c.post(f"/agent-relay/sessions/{sid}/answers", json={"question_id": q["question_id"], "choice": "赤"},
+                   headers=H)
+        assert r.status_code == 409
+
+
 def test_conversation_question_and_sse(tmp_path):
     rig = Rig(tmp_path)
     with _client(rig) as c:

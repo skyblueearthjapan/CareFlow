@@ -155,6 +155,42 @@ def test_recommended_label_is_shown_in_japanese_and_answer_maps_back(tmp_path):
     assert replies == [(7, {"answers": {"pick": {"answers": ["この案で反映する (Recommended)"]}}})]
 
 
+def test_open_question_lists_the_waiting_native_question(tmp_path):
+    s = CodexSession(["x"], str(tmp_path), {}, work_dir=str(tmp_path))
+    assert s.open_question() is None
+    out = s.norm.feed({"id": 9, "method": "item/tool/requestUserInput", "params": {"questions": [
+        {"id": "cond", "header": "条件", "question": "この条件で作りますか？", "options": [
+            {"label": "作る", "description": ""}]}]}})
+    q = next(e for e in out if e["type"] == "question")
+    s._questions[q["question_id"]] = {}
+    assert s.open_question() == (q["question_id"], ["この条件で作りますか？"])
+
+
+def test_typed_text_answers_only_the_first_shown_question(tmp_path):
+    """入力欄の文の答え（service._answer_with_text と同じ渡し方）: 最初の問いだけ・秘密の問いは空・質問は閉じる。"""
+    s = CodexSession(["x"], str(tmp_path), {}, work_dir=str(tmp_path))
+    s.thread_id = "th"
+    msg = {"id": 11, "method": "item/tool/requestUserInput", "params": {"questions": [
+        {"id": "cond", "header": "条件", "question": "この条件で作りますか？", "options": [{"label": "作る"}]},
+        {"id": "apply", "header": "反映", "question": "反映しますか？", "options": [{"label": "はい"}]},
+        {"id": "pw", "question": "合言葉", "isSecret": True}]}}
+    replies = []
+
+    async def fake_reply(rid, result=None, error=None):
+        replies.append((rid, result))
+
+    async def go():
+        s._reply = fake_reply  # type: ignore[method-assign]
+        await s._on_request(msg)
+        qid, keys = s.open_question()
+        assert keys == ["この条件で作りますか？", "反映しますか？"] and s.waiting_question
+        await s.answer(qid, {keys[0]: "良いです。"})
+        assert not s.waiting_question and s.open_question() is None and qid not in s.norm.questions
+
+    asyncio.run(go())
+    assert replies == [(11, {"answers": {"cond": {"answers": ["良いです。"]}, "pw": {"answers": []}}})]
+
+
 def test_recommended_in_text_choices():
     c = text_choices("どれにしますか？\n1. この案で反映する（Recommended）\n2. やめる")
     assert [o["label"] for o in c["options"]] == ["この案で反映する（おすすめ）", "やめる"]

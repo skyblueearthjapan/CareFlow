@@ -335,6 +335,14 @@ class _CodexProtocol:
             return
         await self._start_turn(inputs)
 
+    def open_question(self) -> tuple[str, list[str]] | None:
+        """答え待ちの質問（最初の 1 つ）と、その問いの文。入力欄の文をそのまま答えにするため。"""
+        for qid in self._questions:
+            q = self.norm.questions.get(qid)
+            if q and q.get("kind") == "native":
+                return qid, list(q["ids"])
+        return None
+
     async def answer(self, question_id: str, answers: dict[str, Any] | str) -> None:
         q = self.norm.questions.get(question_id)
         if q is None:

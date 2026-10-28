@@ -123,6 +123,7 @@ class QuestionAnswered(TypedDict):
     answers: dict[str, str]
     user_id: str
     device: str
+    typed: NotRequired[bool]  # 入力欄の文を答えにした（カードのボタンでなく）
 
 
 class Plan(TypedDict):

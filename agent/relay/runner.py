@@ -192,6 +192,7 @@ class AgentSession(Protocol):
     def busy(self) -> bool: ...
     @property
     def waiting_question(self) -> bool: ...
+    def open_question(self) -> tuple[str, list[str]] | None: ...
 
 
 class _Base:
@@ -209,6 +210,13 @@ class _Base:
     @property
     def waiting_question(self) -> bool:
         return bool(self._questions)
+
+    def open_question(self) -> tuple[str, list[str]] | None:
+        """答え待ちの質問（最初の 1 つ）と、その問いの文。入力欄の文をそのまま答えにするため。"""
+        for qid, req in self._questions.items():
+            qs = ((req.get("request") or {}).get("input") or {}).get("questions") or []
+            return qid, [str(q.get("question", "")) for q in qs if isinstance(q, dict)]
+        return None
 
     async def _write(self, obj: dict) -> None:
         raise NotImplementedError

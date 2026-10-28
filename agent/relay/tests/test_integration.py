@@ -72,6 +72,11 @@ def test_plan_ref_approval_request_and_no_code_to_browser(tmp_path):
         assert c.post(f"/agent-relay/sessions/{sid}/messages", json={"text": "休みの案を"}, headers=H).status_code == 200
         tok = {RELAY_TOKEN_HEADER: rig.by_session[sid].rk_token}
         assert cp.post("/rk/plans", json={"plan": plan()}, headers=tok).status_code == 200
+        # 取った会話は最初に色を聞く → 先にカードで答えておく（答え待ちの間の文はカードの答えになるため）
+        q = next(e for e in _wait(rig, sid, lambda es: any(e["type"] == "question" for e in es))
+                 if e["type"] == "question")
+        assert c.post(f"/agent-relay/sessions/{sid}/answers", json={"question_id": q["question_id"], "choice": "青"},
+                      headers=H).status_code == 200
         evs = _wait(rig, sid, lambda es: any(e["type"] == "approval.request" for e in es))
         req = next(e for e in evs if e["type"] == "approval.request")
         assert req["kind"] == "apply" and req["version"] == 1 and req["plan_id"]

@@ -680,11 +680,37 @@ class RelayService:
         if session.get("title") in ("", "新しい相談"):
             self.store.update_session(session["id"], title=text.splitlines()[0][:40])
         cli_text = f"【案 {plan_ref} について】{text}" if plan_ref is not None else text
+        if await self._answer_with_text(session, user, text, cli_text, device):
+            return e or {}
         line = context_line(context)
         if line:
             cli_text = f"{line}\n{cli_text}"
         await self._send_cli(session, cli_text)
         return e or {}
+
+    async def _answer_with_text(self, session: dict, user: User, text: str, cli_text: str, device: str) -> bool:
+        """質問カードが答え待ちのとき、入力欄の文をそのカードへの答えにする。
+
+        CLI は答えが来るまで止まっていて、追加の指示（steer）を読まない。答えにしないと会話が止まったままになる。
+        画面のカードは最初の問いだけを出すので、ボタンと同じく最初の問いにだけ答える。
+        画面に見せる答えは入力した文（text）、CLI へは案の番号つきの文（cli_text）。
+        """
+        live = self.live.get(session["id"])
+        if live is None or not live.runner.waiting_question:
+            return False
+        open_q = live.runner.open_question()
+        if open_q is None or not open_q[1]:
+            return False
+        qid, keys = open_q
+        try:
+            await live.runner.answer(qid, {keys[0]: cli_text})
+        except (KeyError, ValueError):
+            return False
+        live.last_send = live.last_active = time.monotonic()
+        self.store.update_session(session["id"], last_active_at=self.now())
+        self.bus.emit(session["id"], {"type": "question.answered", "question_id": qid, "answers": {keys[0]: text},
+                                      "user_id": user.id, "device": device, "typed": True})
+        return True
 
     async def _send_cli(self, session: dict, text: str) -> None:
         live = await self._ensure_live(session)
