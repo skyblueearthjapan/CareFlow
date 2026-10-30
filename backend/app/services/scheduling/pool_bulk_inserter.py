@@ -368,6 +368,7 @@ def _usable_pair_slots(
       コースに担当がいない (``_PAIR_BLOCKING_WARNINGS``).
     - どちらかのコースにひな形 (course_template) が無い. 固定訪問の 2 行 (slot_index 0/1)
       にコースを書けず、週の生成で 2 人目が同じコースに寄ってしまうため.
+    - 2 つのコースの担当が同じ人 (または担当がいない). 1 人で 2 人分にはならないため.
     """
     out: list[ProposedSlot] = []
     for ps in results:
@@ -380,6 +381,12 @@ def _usable_pair_slots(
         if primary is None or partner is None:
             continue
         if primary.course_template_id is None or partner.course_template_id is None:
+            continue
+        if (
+            primary.assigned_staff_id is None
+            or partner.assigned_staff_id is None
+            or primary.assigned_staff_id == partner.assigned_staff_id
+        ):
             continue
         out.append(ps)
     return out

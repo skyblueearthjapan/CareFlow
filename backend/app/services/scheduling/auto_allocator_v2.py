@@ -10070,12 +10070,24 @@ async def reset_visits_to_fixed(
 
     v2_visits_reset: list[V2Visit] = []
     v2_meta_reset: list[dict[str, Any]] = []
+    # 2 名で訪問の方の 2 人目 (slot_index=1) は 1 人目 (slot_index=0) の時刻・長さで作る
+    # (Layer1 と同じ. 古いデータで 2 行の時刻が違っても 1 人目にそろえる).
+    _slot0_pfv_by_day: dict[tuple[UUID, int], PatientFixedVisit] = {
+        (_pfv0.patient_id, _pfv0.weekday): _pfv0 for _pfv0 in pfv_list if _pfv0.slot_index == 0
+    }
     for pfv in pfv_list:
         patient = patients_by_id.get(pfv.patient_id)
         if patient is None or patient.primary_office_id is None:
             continue
-        end_t = _add_minutes(pfv.start_time, pfv.duration_min)
-        if end_t <= pfv.start_time:
+        pfv_start = pfv.start_time
+        pfv_duration = pfv.duration_min
+        if patient.requires_multiple_staff and pfv.slot_index == 1:
+            _pfv0_same_day = _slot0_pfv_by_day.get((pfv.patient_id, pfv.weekday))
+            if _pfv0_same_day is not None:
+                pfv_start = _pfv0_same_day.start_time
+                pfv_duration = _pfv0_same_day.duration_min
+        end_t = _add_minutes(pfv_start, pfv_duration)
+        if end_t <= pfv_start:
             continue
         # Bug B: serving office (sub_office > course_template office > primary) を
         # 使う. 旧実装は primary_office_id 固定で、 cross-office PFV (主拠点 休業日
@@ -10157,7 +10169,7 @@ async def reset_visits_to_fixed(
                     "patient_id": patient.id,
                     "office_id": office_id,
                     "weekday": pfv.weekday,
-                    "start_time": pfv.start_time,
+                    "start_time": pfv_start,
                     "end_time": end_t,
                     "course": course,
                     "staff_id": staff_id,
@@ -10175,11 +10187,11 @@ async def reset_visits_to_fixed(
         if mode == "auto" and not pfv.is_pinned:
             tt_for_corr = _extract_time_type_for_weekday(patient, pfv.weekday) or "時間帯"
             ps_raw, pe_raw = _extract_preferred_window_for_weekday(patient, pfv.weekday)
-            ps_str = ps_raw if ps_raw else _fmt_hhmm(pfv.start_time)
+            ps_str = ps_raw if ps_raw else _fmt_hhmm(pfv_start)
             pe_str = pe_raw
         else:
             tt_for_corr = "固定"
-            ps_str = _fmt_hhmm(pfv.start_time)
+            ps_str = _fmt_hhmm(pfv_start)
             pe_str = None
         # Phase G-21 W1: pinned PFV は補正対象外 (= is_pinned=True で fence).
         # mode='legacy' (= 全 PFV を pinned 扱い) でも安全策として True にして
@@ -10191,13 +10203,13 @@ async def reset_visits_to_fixed(
             patient_name=patient.name,
             patient_code=patient.code,
             weekday=pfv.weekday,
-            start_time=pfv.start_time,
+            start_time=pfv_start,
             end_time=end_t,
-            service_minutes=pfv.duration_min,
+            service_minutes=pfv_duration,
             lat=float(patient.lat),
             lng=float(patient.lng),
             office_id=office_id,
-            am_pm="am" if pfv.start_time.hour < NOON_HOUR else "pm",
+            am_pm="am" if pfv_start.hour < NOON_HOUR else "pm",
             source_kind="fixed",
             course_code=course_code_str,
             time_type=tt_for_corr,
@@ -10212,7 +10224,7 @@ async def reset_visits_to_fixed(
                 "patient_id": patient.id,
                 "office_id": office_id,
                 "weekday": pfv.weekday,
-                "start_time": pfv.start_time,
+                "start_time": pfv_start,
                 "end_time": end_t,
                 "course": course,
                 "staff_id": staff_id,
@@ -10247,39 +10259,87 @@ async def reset_visits_to_fixed(
     visits_to_skip_protected = 0
     visits_to_skip_conflict = 0
     new_visits_with_staff: list[tuple[Visit, UUID]] = []
-    # 2 名で訪問の方 (requires_multiple_staff): 同じ曜日に slot_index 0 と 1 の両方がそろう枠は
-    # Layer1 (_expand_fixed_visits_to_visits) と同じく 2 件の訪問を同じ visit_group_id で結び、
-    # required_staff_count=2 にする. 以前は visit_group_id=None の 2 件になり、同じ患者・日・
-    # 時刻の一意の決まり (uq_visits_pds_group_active) にぶつかっていた. 片方だけの枠と
-    # 1 名の方は従来どおり (visit_group_id=None・required_staff_count=1).
-    _slots_by_day: dict[tuple[UUID, int], set[int]] = {}
+
+    # 2 名で訪問の方 (requires_multiple_staff): Layer1 (_expand_fixed_visits_to_visits) と同じく
+    # 同じ曜日に slot_index 0 と 1 の両方がそろう枠だけを、2 件の訪問 (同じ visit_group_id・
+    # required_staff_count=2) にする. 2 件とも 1 人目 (slot 0) の時刻 (mode="auto" では補正後)
+    # で作る. 2 人目だけ別のコースで補正されて時刻がずれると、組が割れる・片方だけ残るため.
+    # どちらかが作れない (物理不可能・保護 visit と衝突) ときは 2 件とも作らない.
+    # 片方の枠しか無い曜日は作らず警告を出す (保留プールで 2 人目が足りないと分かる).
+    # 1 名の方・slot_index 2 以降は従来どおり (visit_group_id=None・required_staff_count=1).
+    def _resolve_reset_times(meta: dict[str, Any]) -> tuple[time, time] | None:
+        """補正後の (開始, 終了). 補正で物理不可能なら None."""
+        idx = meta["v2_index"]
+        if idx is None:
+            # 座標欠落: 補正なしでそのまま INSERT (旧仕様).
+            return meta["start_time"], meta["end_time"]
+        _v2 = v2_visits_reset[idx]
+        if id(_v2) in travel_unassigned_ids_reset or _v2.course_code is None:
+            return None
+        return _v2.start_time, _v2.end_time
+
+    def _is_pair_slot_meta(meta: dict[str, Any]) -> bool:
+        return bool(meta.get("multi")) and (meta.get("slot_index") or 0) in (0, 1)
+
+    pair_slot_meta: dict[tuple[UUID, int], dict[int, dict[str, Any]]] = {}
     for meta in v2_meta_reset:
-        if meta.get("multi"):
-            _slots_by_day.setdefault((meta["patient_id"], meta["weekday"]), set()).add(
-                meta.get("slot_index", 0) or 0
+        if _is_pair_slot_meta(meta):
+            pair_slot_meta.setdefault((meta["patient_id"], meta["weekday"]), {}).setdefault(
+                meta.get("slot_index") or 0, meta
             )
-    pair_days = {k for k, slots in _slots_by_day.items() if {0, 1} <= slots}
-    pair_group_ids: dict[tuple[UUID, date, time], UUID] = {}
+    pair_days = {k for k, slots in pair_slot_meta.items() if {0, 1} <= set(slots)}
+    pair_group_ids: dict[tuple[UUID, date], UUID] = {}
+    pair_warned_days: set[tuple[UUID, int]] = set()
     protected_by_pds: dict[tuple[UUID, date, time], Visit] = {
         (k[0], k[1], k[2]): v for k, v in protected_existing_keys.items()
     }
+
+    def _reset_patient_label(pid: UUID) -> str:
+        _p = patients_by_id.get(pid)
+        return _p.name if _p is not None and _p.name else f"patient_id={pid}"
+
     for meta in v2_meta_reset:
-        v2_idx = meta["v2_index"]
-        if v2_idx is None:
-            # 座標欠落: 補正なしでそのまま INSERT (旧仕様).
-            corrected_start_r: time = meta["start_time"]
-            corrected_end_r: time = meta["end_time"]
+        day_key = (meta["patient_id"], meta["weekday"])
+        is_pair_row = False
+        if _is_pair_slot_meta(meta):
+            if day_key not in pair_days:
+                # Layer1 と同じ: 1 人分の訪問にしない (保留プールで 2 人目が足りないと出る).
+                if day_key not in pair_warned_days:
+                    pair_warned_days.add(day_key)
+                    warnings.append(
+                        f"{_reset_patient_label(meta['patient_id'])} 様 "
+                        f"({_weekday_jp(meta['weekday'])}): 2 名で訪問の方ですが、"
+                        "固定訪問が 1 人分しか無いため訪問を作りません. "
+                        "保留プールで 2 人目を決めてください"
+                    )
+                visits_to_skip_conflict += 1
+                continue
+            is_pair_row = True
+            slot_metas = pair_slot_meta[day_key]
+            times0 = _resolve_reset_times(slot_metas[0])
+            times1 = _resolve_reset_times(slot_metas[1])
+            if times0 is None or times1 is None:
+                if day_key not in pair_warned_days:
+                    pair_warned_days.add(day_key)
+                    warnings.append(
+                        f"{_reset_patient_label(meta['patient_id'])} 様 "
+                        f"({_weekday_jp(meta['weekday'])}): 2 名の組の片方が補正で物理不可能と"
+                        "判定されたため、2 件とも reset INSERT スキップ"
+                    )
+                visits_to_skip_conflict += 1
+                continue
+            # 2 人目も 1 人目の (補正後の) 時刻にそろえる.
+            corrected_start_r, corrected_end_r = times0
         else:
-            v2 = v2_visits_reset[v2_idx]
-            if id(v2) in travel_unassigned_ids_reset or v2.course_code is None:
+            times = _resolve_reset_times(meta)
+            if times is None:
                 warnings.append(
                     f"patient_id={meta['patient_id']}: {_weekday_jp(meta['weekday'])} "
                     f"の補正で物理不可能と判定されたため reset INSERT スキップ"
                 )
                 visits_to_skip_conflict += 1
                 continue
-            corrected_start_r = v2.start_time
-            corrected_end_r = v2.end_time
+            corrected_start_r, corrected_end_r = times
         visit_date = date.fromordinal(week_monday.toordinal() + meta["weekday"])
         # M-2 恒久対策 (Wave U-3): 同 (patient_id, visit_date) に生存 manual_week visit
         # がある日は再生成をスキップする（「この週だけの決定」が型スロットを上書き）。
@@ -10300,8 +10360,8 @@ async def reset_visits_to_fixed(
         # CareFlow 本番バグ修正 (Option A): 保護対象 active visit (status='confirmed' /
         # source='manual' / status='completed' 等) と unique key 衝突する場合は
         # INSERT スキップ + warning. PFV 由来 INSERT は visit_group_id=None 固定
-        # (2 名の組だけは下の pair_group_id. 同じ患者・日・時刻の保護 visit があれば 2 件とも作らない).
-        is_pair_row = (meta["patient_id"], meta["weekday"]) in pair_days
+        # (2 名の組だけは下の pair_group_id. 2 件とも 1 人目の時刻なので、同じ患者・日・時刻の
+        # 保護 visit があれば 2 件とも作らない).
         pds_key = (meta["patient_id"], visit_date, corrected_start_r)
         protect_key: tuple[UUID, date, time, UUID | None] = (*pds_key, None)
         existing_protected = (
@@ -10329,7 +10389,11 @@ async def reset_visits_to_fixed(
             inserted_visits += 1
             continue
         course_for_meta: Course | None = meta["course"]
-        pair_group_id = pair_group_ids.setdefault(pds_key, uuid.uuid4()) if is_pair_row else None
+        pair_group_id = (
+            pair_group_ids.setdefault((meta["patient_id"], visit_date), uuid.uuid4())
+            if is_pair_row
+            else None
+        )
         new_visit = Visit(
             patient_id=meta["patient_id"],
             visit_date=visit_date,

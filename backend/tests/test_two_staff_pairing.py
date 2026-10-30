@@ -214,6 +214,26 @@ def test_no_pair_when_partner_blocked_emits_no_pair_slot() -> None:
     assert any(e.reason == "no_pair_slot" for e in exclusions), exclusions
 
 
+def test_same_staff_two_courses_no_pair() -> None:
+    """2 つのコースの担当が同じ人なら組にしない (1 人で 2 人分にはならない) + no_pair_slot."""
+    oid = uuid4()
+    same = uuid4()
+    buckets = {
+        (oid, 0, "A"): _bucket(oid, "A", [], assigned_staff_id=same),
+        (oid, 0, "B"): _bucket(oid, "B", [], assigned_staff_id=same),
+    }
+    exclusions: list[ExcludedReasonSummary] = []
+    results = _compute(buckets, _candidate(), exclusions_out=exclusions)
+    assert results == []
+    assert any(e.reason == "no_pair_slot" for e in exclusions), exclusions
+
+    # 3 つ目のコースが別の人なら、そのコースとの組だけができる.
+    buckets[(oid, 0, "C")] = _bucket(oid, "C", [], assigned_staff_id=uuid4())
+    results = _compute(buckets, _candidate())
+    assert results
+    assert all("C" in {ps.course_code, ps.partner_course_code} for ps in results)
+
+
 def test_single_course_no_pair_slot() -> None:
     """開講コースが 1 つなら相方が作れず候補 0 件 + no_pair_slot (片肺提案は出さない)."""
     oid = uuid4()
@@ -342,7 +362,7 @@ def test_pair_partner_absent_warns() -> None:
         # primary (A): 割付済・出勤中
         (oid, 0, "A"): _bucket(oid, "A", [], staff_absent=False, assigned_staff_id=sid),
         # partner (B): 割付済だが非番
-        (oid, 0, "B"): _bucket(oid, "B", [], staff_absent=True, assigned_staff_id=sid),
+        (oid, 0, "B"): _bucket(oid, "B", [], staff_absent=True, assigned_staff_id=uuid4()),
     }
     results = _compute(buckets, _candidate())
     assert results, "ペアが成立するはず"
@@ -358,7 +378,7 @@ def test_pair_partner_sex_mismatch_warns() -> None:
         # primary (A): 女性スタッフ・女性制限あり患者 → primary は適合
         (oid, 0, "A"): _bucket(oid, "A", [], staff_sex="female", assigned_staff_id=sid),
         # partner (B): 男性スタッフ → 女性制限に不適合
-        (oid, 0, "B"): _bucket(oid, "B", [], staff_sex="male", assigned_staff_id=sid),
+        (oid, 0, "B"): _bucket(oid, "B", [], staff_sex="male", assigned_staff_id=uuid4()),
     }
     # sex_restriction="female" の候補 (女性スタッフのみ可)
     cand = CandidateInput(

@@ -4066,6 +4066,19 @@ async def pool_bulk_apply_endpoint(
                         ),
                     },
                 )
+            # simulate の後に担当が変わり、2 つのコースが同じ人になった組は置かない
+            # (1 人で 2 人分にはならない).
+            if _c0.assigned_staff_id is not None and _c0.assigned_staff_id == _c1.assigned_staff_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "code": "two_staff_same_staff",
+                        "message": (
+                            f"{pl.patient_name} 様の 2 名のコースの担当が同じ人です。"
+                            "もう一度シミュレーションしてください"
+                        ),
+                    },
+                )
             _pair_templates[(pl.patient_id, pl.weekday)] = (_c0.template_id, _c1.template_id)
     for _c, _pids in _patients_by_course.values():
         _w = await collect_constraint_warnings_for_patients(db, course=_c, patient_ids=_pids)

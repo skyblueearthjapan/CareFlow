@@ -1379,6 +1379,13 @@ def _enumerate_pair_slots(
                 y_code, y_bucket, y_existing, y_lunch, y_starts, y_cap = items[yi]
                 if not (x_cap and y_cap):
                     continue
+                # 2 つのコースの担当が同じ人なら 1 人で 2 人分にはならないので組にしない
+                # (担当がいないコースは staff_unassigned の警告で知らせる).
+                if (
+                    x_bucket.assigned_staff_id is not None
+                    and x_bucket.assigned_staff_id == y_bucket.assigned_staff_id
+                ):
+                    continue
                 for anchor in sorted(x_starts | y_starts, key=_time_to_min):
                     x_ok = anchor in x_starts or slot_fits_exact(
                         x_existing,
