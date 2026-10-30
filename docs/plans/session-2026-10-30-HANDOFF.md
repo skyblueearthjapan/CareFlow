@@ -51,7 +51,7 @@ PO の相談（10/30）：患者マスタの「隔週」が週の生成に効か
 
 ## 8. 本番の作業の記録（2026-10-30・時刻は UTC）
 
-- 事前：本番 505fa1f0・alembic 0101。カイポケのロボットは止まっていた。ディスク空き 33 GB。11/26 前後の週の訪問 967 件・取消 6・2 名 1・固定訪問の枠 173（10/26〜12/5）。
+- 事前：本番 505fa1f0・alembic 0101。カイポケのロボットは止まっていた。ディスク空き 33 GB。10/26〜12/5 の訪問 967 件・取消 6・2 名 1、固定訪問の枠 173。
 - 10:49 pg_dump：`/opt/carelink/backups/pre-deploy-visit-frequency-20261030-1049.sql.gz`（6.9 MB・gunzip -t 済み）。
 - develop を 71f996db まで fast-forward → backend・frontend を build → **入れ替えの前に** `run --rm --no-deps backend alembic upgrade head`（0101→0102・単一 head・既存 173 枠はすべて every）→ `up -d --no-deps --force-recreate backend frontend` → agent-relay・agent-sandbox を build・up（`-p carelink-agent`・agent.prod.env）。
 - 確認：healthz 内側・公開・/agent-relay とも 200、全コンテナ healthy。訪問・取消・2 名・枠の件数は前と同じ。エージェントの SQL 5 本が本番で通った。`/schedule/v2/visit-frequency-week` と患者の visit-frequency-preview が応答。入れ替えの後の backend に 5xx・Traceback なし。
