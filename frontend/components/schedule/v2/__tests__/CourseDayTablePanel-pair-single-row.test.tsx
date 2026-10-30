@@ -101,6 +101,44 @@ describe('resolvePairPartnerCourse', () => {
     expect(got?.id).toBe('cB');
   });
 
+  it('1 人目のコースが無い (担当なしの行) ときは、訪問日 (day) を渡せば同じ引き方をする', () => {
+    const unassigned = { ...pairVisit, course_id: null };
+    const day = { weekday: 0, isoYear: 2026, isoWeek: 45 };
+    // slot 1 のひな形のコース
+    expect(
+      resolvePairPartnerCourse({
+        visit: unassigned,
+        pfvs: [{ mode: 'normal', weekday: 0, slot_index: 1, course_template_id: 'tB' }],
+        specialWeek: false,
+        templates,
+        courses: [cA, cB],
+        day,
+      })?.id,
+    ).toBe('cB');
+    // slot 1 が無ければ 2 人目の担当のその日のコース (拠点の優先なし・記号の順)
+    const otherOffice = course({ id: 'cX', code: 'A', office_id: 'o2', assigned_staff_id: 'sB' });
+    expect(
+      resolvePairPartnerCourse({
+        visit: unassigned,
+        pfvs: [],
+        specialWeek: false,
+        templates,
+        courses: [cA, otherOffice, cB],
+        day,
+      })?.id,
+    ).toBe('cX');
+    // day を渡さなければ今までどおり null (日の盤面は 1 人目のコースの訪問だけ)
+    expect(
+      resolvePairPartnerCourse({
+        visit: unassigned,
+        pfvs: [],
+        specialWeek: false,
+        templates,
+        courses: [cA, cB],
+      }),
+    ).toBe(null);
+  });
+
   it('2 行の組 (visit_group_id あり)・1 名・2 人目なしで slot 1 も無いときは null', () => {
     const base = { visit: pairVisit, pfvs: [], specialWeek: false, templates, courses: [cA, cB] };
     expect(

@@ -463,6 +463,8 @@ function cmpCodeUnits(a: string, b: string): number {
  *   2. 1 で引けなければ、その日のコースのうち担当が secondary_staff_id の人のコース
  *      (1 人目のコースと同じ拠点を先に、コースの記号・id の順)。
  * どちらでも引けない・1 人目のコースと同じなら null。
+ * 1 人目のコースが無い (担当なしの行) 訪問は、``day`` (訪問日の曜日と ISO 週) を渡したとき
+ * だけ同じ引き方をする (backend も訪問日で引き、拠点の優先なしでコースの記号・id の順)。
  */
 export function resolvePairPartnerCourse(args: {
   visit: {
@@ -479,10 +481,28 @@ export function resolvePairPartnerCourse(args: {
   specialWeek: boolean;
   templates: CourseTemplateRead[];
   courses: CourseV2Read[];
+  day?: { weekday: number; isoYear: number; isoWeek: number };
 }): CourseV2Read | null {
-  const { visit, pfvs, specialWeek, templates, courses } = args;
+  const { visit, pfvs, specialWeek, templates, courses, day } = args;
   if ((visit.required_staff_count ?? 1) < 2 || visit.visit_group_id) return null;
-  const primary = visit.course_id ? courses.find((c) => c.id === visit.course_id) : undefined;
+  const found = visit.course_id ? courses.find((c) => c.id === visit.course_id) : undefined;
+  const primary = found
+    ? {
+        id: found.id,
+        office_id: found.office_id,
+        iso_year: found.iso_year,
+        iso_week: found.iso_week,
+        weekday: found.weekday,
+      }
+    : !visit.course_id && day
+      ? {
+          id: null,
+          office_id: null,
+          iso_year: day.isoYear,
+          iso_week: day.isoWeek,
+          weekday: day.weekday,
+        }
+      : null;
   if (!primary) return null;
   const { iso_year: isoYear, iso_week: isoWeek, weekday } = primary;
   const mode = specialWeek && pfvs.some((p) => p.mode === 'special') ? 'special' : 'normal';
@@ -1780,6 +1800,15 @@ export function CourseDayTablePanel({
     () => allPatients.filter((p) => p.status === 'active' && offWeekPatientIds.has(p.id)),
     [allPatients, offWeekPatientIds],
   );
+  // 週のタブの「この週はお休み」は拠点の絞り込みに合わせる (主担当拠点で見る。
+  // 主担当拠点の分からない方は外さない)。
+  const weekOffWeekPatients = useMemo(
+    () =>
+      officeId
+        ? offWeekPatients.filter((p) => !p.primary_office_id || p.primary_office_id === officeId)
+        : offWeekPatients,
+    [offWeekPatients, officeId],
+  );
 
   const patientShortageById = useMemo(() => {
     const m = new Map<string, { desired: number; actual: number; shortage: number }>();
@@ -1953,8 +1982,62 @@ export function CourseDayTablePanel({
       const key = `${tplId}:${v.weekday}`;
       m.set(key, (m.get(key) ?? 0) + 1);
     }
+    // 1 人目のコースが無い (担当なしの行の) 2 名で訪問も、2 人目のコースが引ければ数える
+    // (overviewVisits はコースの無い訪問を持たないので、週の予定から直接見る)。
+    for (const v of weekVisits) {
+      if (v.course_id || !v.visit_date || !pairSecondaryOf(v)) continue;
+      const display = classifyVisitDisplay(
+        {
+          source: v.source,
+          status: v.status,
+          patient_status: patientStatusOfVisit(v),
+          visit_date: v.visit_date,
+          patient_status_since: patientStatusSinceOfVisit(v),
+        },
+        { showInactive: false },
+      );
+      if (display === 'hidden') continue;
+      const d = new Date(v.visit_date + 'T00:00:00');
+      const weekday = (d.getDay() + 6) % 7;
+      if (weekday > 5) continue;
+      const patient = patientById.get(v.patient_id) as
+        | { special_week_active?: Array<{ iso_year: number; iso_week: number }> | null }
+        | undefined;
+      const specialWeek = (patient?.special_week_active ?? []).some(
+        (r) => r.iso_year === isoYear && r.iso_week === isoWeek,
+      );
+      const pfvIdx = pfvPatientIds.indexOf(v.patient_id);
+      const partner = resolvePairPartnerCourse({
+        visit: v,
+        pfvs: pfvIdx >= 0 ? (pfvQueries[pfvIdx]?.data ?? []) : [],
+        specialWeek,
+        templates,
+        courses,
+        day: { weekday, isoYear, isoWeek },
+      });
+      if (!partner) continue;
+      const tplId = courseTemplateByCourseId.get(partner.id);
+      if (!tplId) continue;
+      const key = `${tplId}:${weekday}`;
+      m.set(key, (m.get(key) ?? 0) + 1);
+    }
     return m;
-  }, [overviewVisits, pairPartnerCourseByVisitId, courseTemplateByCourseId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    overviewVisits,
+    pairPartnerCourseByVisitId,
+    courseTemplateByCourseId,
+    weekVisits,
+    patientById,
+    patientStatusOfVisit,
+    patientStatusSinceOfVisit,
+    templates,
+    courses,
+    isoYear,
+    isoWeek,
+    pfvPatientIds,
+    pfvQueriesDepKey,
+  ]);
 
   const officeNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -7447,13 +7530,13 @@ export function CourseDayTablePanel({
               >
                 {/* 訪問頻度 (設計 2026-10-30 §4): この週がお休みの週の方を薄く添える
                     (週の予定から消えたように見せない)。保留プールの「お休みの週」と同じ方。 */}
-                {offWeekPatients.length > 0 ? (
+                {weekOffWeekPatients.length > 0 ? (
                   <p
                     className="shrink-0 text-[11px] text-text-muted"
                     data-testid="week-off-week-note"
                   >
                     この週はお休み：
-                    {offWeekPatients
+                    {weekOffWeekPatients
                       .map(
                         (p) =>
                           `${p.name}（${offWeekLabel(coerceWeeklyPattern(p.weekly_pattern))}）`,

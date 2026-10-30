@@ -597,4 +597,29 @@ describe('CourseDayTablePanel — 訪問頻度と保留プール (visit-frequenc
     expect(note.textContent).toContain('隔週 次郎（隔週・お休みの週）');
     expect(note.textContent).not.toContain('隔週 花子');
   });
+
+  it('週のタブの「この週はお休み」は拠点の絞り込みに合わせる', () => {
+    setupHooks({
+      templates: [COMMON_TPL],
+      courses: [COMMON_COURSE],
+      visits: [visitOf('v-ab', AB_PID, '2026-05-26')],
+      patients: PATIENTS.map((p) =>
+        p.id === OFF_PID ? { ...p, primary_office_id: 'office-other' } : p,
+      ),
+    });
+    mockFrequencyWeek.mockReturnValue({
+      data: {
+        week_start: '2026-05-25',
+        items: [
+          { patient_id: AB_PID, off_week: false, desired_count: 1 },
+          { patient_id: OFF_PID, off_week: true, desired_count: 0 },
+        ],
+      },
+      isLoading: false,
+    });
+    renderPanel();
+    fireEvent.click(screen.getByTestId('course-day-tab-week'));
+    // 表示中の拠点 (office-honten) と違う拠点の方は出さない。
+    expect(screen.queryByTestId('week-off-week-note')).toBeNull();
+  });
 });
