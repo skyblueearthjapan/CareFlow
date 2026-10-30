@@ -5,7 +5,8 @@
       逆走査 union の重複排除 / 決定性 / delta = 2 コース合計 / no_pair_slot 理由.
     - pfv_validator: V7 (multi_staff_incomplete_pair 警告) / V3 (slot1 衝突・同一患者例外).
     - scope_optimizer (D-5): 2 名体制 PFV が movable に入らない + excluded.two_staff 会計.
-    - pool_bulk (D-6): 2 名体制患者が two_staff_pending で unplaced.
+    - pool_bulk (D-6 解除・PO 決定 2026-10-30): 2 名そろう組が無ければ no_pair で unplaced
+      (組が作れるときは tests/test_pool_bulk_two_staff.py).
 
 純ロジック部は DB 非依存 (座標は千葉市近辺, test_propose_slots_p1 と整合).
 DB 部はローカル SQLite のみ (本番 DB 禁止).
@@ -723,13 +724,13 @@ async def test_scope_single_staff_moves_baseline(client, db) -> None:
 
 
 # ---------------------------------------------------------------------------
-# pool_bulk D-6 (2 名体制患者は two_staff_pending で unplaced)
+# pool_bulk (2 名体制患者はコースが 1 つしか無ければ no_pair で unplaced)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_bulk_two_staff_pending(client, db) -> None:
-    """一括投入は v1 で 2 名体制を対象外: two_staff_pending で unplaced に明示分離する (D-6)."""
+async def test_bulk_two_staff_no_pair_with_single_course(client, db) -> None:
+    """コースが 1 つしか無いと 2 名の組ができない: 片方だけは置かず no_pair で unplaced."""
     admin = await _make_user(db, email="2s-bulk@example.com")
     office = Office(name="稲", code="INAGE")
     db.add(office)
@@ -777,6 +778,5 @@ async def test_bulk_two_staff_pending(client, db) -> None:
     body = res.json()
     assert not body["placements"]
     assert any(
-        u["patient_id"] == str(p.id) and u["reason"] == "two_staff_pending"
-        for u in body["unplaced"]
+        u["patient_id"] == str(p.id) and u["reason"] == "no_pair" for u in body["unplaced"]
     ), body["unplaced"]

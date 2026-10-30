@@ -691,4 +691,60 @@ describe('BulkPoolInsertDialog (W-2)', () => {
     // ヒント行に「ずらして入る手」の趣旨が統合されている。
     expect(screen.getByTestId('bulk-pool-insert-overcap-hint')).toHaveTextContent('ずらして入る手');
   });
+  // ── 2 名で訪問の方 (2026-10-30 PO 決定) ───────────────────────────────────
+
+  it('2 名の組は 1 件として両方のコースと担当 2 人の名前を出し、apply にそのまま送る', async () => {
+    const pair = {
+      seq: 1,
+      patient_id: 'p-1',
+      patient_name: '患者 A',
+      weekday: 0,
+      course_code: 'A',
+      office_id: OFFICE_ID,
+      start_time: '10:10:00',
+      service_minutes: 30,
+      delta_minutes: 6,
+      warnings: [],
+      staff_name: '佐藤',
+      partner_course_code: 'B',
+      partner_staff_name: '鈴木',
+    };
+    mocks.simulateAsync.mockResolvedValue(makeSimulateResult({ placements: [pair] }));
+    mocks.applyAsync.mockResolvedValue({ applied_patients: 1, applied_slots: 1, warnings: [] });
+    render(<BulkPoolInsertDialog {...BASE_PROPS} />);
+
+    await waitFor(() => expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument());
+    expect(screen.getAllByTestId('bulk-pool-insert-placement-row')).toHaveLength(1);
+    const row = screen.getByTestId('bulk-pool-insert-placement-pair');
+    expect(row).toHaveTextContent('月曜日 A・Bコース 10:10（2 名：佐藤・鈴木）');
+
+    fireEvent.click(screen.getByTestId('bulk-pool-insert-confirm-checkbox'));
+    fireEvent.click(screen.getByTestId('bulk-pool-insert-apply-button'));
+    await waitFor(() => expect(mocks.applyAsync).toHaveBeenCalledTimes(1));
+    expect(mocks.applyAsync.mock.calls[0][0].placements[0]).toMatchObject({
+      course_code: 'A',
+      partner_course_code: 'B',
+    });
+  });
+
+  it('1 名の方の行は今までどおり 1 コースで、2 名の表示は出さない', async () => {
+    mocks.simulateAsync.mockResolvedValue(makeSimulateResult());
+    render(<BulkPoolInsertDialog {...BASE_PROPS} />);
+
+    await waitFor(() => expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument());
+    expect(screen.getByTestId('bulk-pool-insert-placement-row')).toHaveTextContent(
+      '月曜日 Bコース 10:15',
+    );
+    expect(screen.queryByTestId('bulk-pool-insert-placement-pair')).not.toBeInTheDocument();
+  });
+
+  it('no_pair の投入不能行に「2 名そろう時間がありません」を出す', async () => {
+    mocks.simulateAsync.mockResolvedValue(
+      makeSimulateResult({ unplaced: [unplacedNeutralEntry('no_pair')] }),
+    );
+    render(<BulkPoolInsertDialog {...BASE_PROPS} />);
+
+    await waitFor(() => expect(screen.getByTestId('bulk-pool-insert-preview')).toBeInTheDocument());
+    expect(screen.getByText('2 名そろう時間がありません')).toBeInTheDocument();
+  });
 });

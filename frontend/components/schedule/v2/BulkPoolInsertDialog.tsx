@@ -83,8 +83,8 @@ const BULK_EXTRA_REASON_LABEL: Record<string, string> = {
   // BE (place-and-fix / pool-bulk-simulate) の拠点フィルタ reason.
   no_primary_office: '主担当拠点が未設定',
   office_mismatch: '他拠点の患者',
-  // W-12a (D-6): 一括投入は v1 で 2名体制を対象外 (個別提案から配置)。
-  two_staff_pending: '2名体制（個別提案から配置してください）',
+  // 2 名で訪問の方 (2026-10-30 PO 決定): 同じ時刻に 2 人そろう組が無い。
+  no_pair: '2 名そろう時間がありません',
 };
 
 function bulkReasonLabel(reason: string): string {
@@ -1013,9 +1013,21 @@ function PlacementRow({ placement: p }: { placement: PoolBulkPlacement }) {
           </Badge>
         ) : null}
       </div>
-      <div className="tnum mt-0.5 text-[10px] text-text-muted">
-        {fmtWd(p.weekday)}曜日 {p.course_code}コース {trimSeconds(p.start_time)}
-      </div>
+      {p.partner_course_code ? (
+        // 2 名で訪問の方: 2 コースで同じ時刻に入る 1 件として、担当 2 人の名前を並べる。
+        <div
+          className="tnum mt-0.5 text-[10px] text-text-muted"
+          data-testid="bulk-pool-insert-placement-pair"
+        >
+          {fmtWd(p.weekday)}曜日 {p.course_code}・{p.partner_course_code}コース{' '}
+          {trimSeconds(p.start_time)}（2 名：
+          {[p.staff_name ?? '担当なし', p.partner_staff_name ?? '担当なし'].join('・')}）
+        </div>
+      ) : (
+        <div className="tnum mt-0.5 text-[10px] text-text-muted">
+          {fmtWd(p.weekday)}曜日 {p.course_code}コース {trimSeconds(p.start_time)}
+        </div>
+      )}
       {p.warnings.length > 0 ? (
         <div className="mt-0.5 flex flex-wrap gap-1">
           {p.warnings.map((w) => (

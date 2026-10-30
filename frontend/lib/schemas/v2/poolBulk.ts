@@ -56,6 +56,15 @@ export const poolBulkPlacementSchema = z.object({
   delta_minutes: z.number().nullable().optional().default(null),
   /** propose-slots と同一語彙の警告コード (staff_absent 等). */
   warnings: z.array(z.string()).catch([]),
+  /** course_code のコースの担当 (未設定は null). */
+  staff_name: z.string().nullable().optional().default(null),
+  /**
+   * 2 名で訪問の方 (2026-10-30 PO 決定): 同じ時刻に入る 2 人目のコース。1 名の方は null。
+   * apply へそのまま送り返す (落とすと BE が 422 two_staff_partner_required)。
+   */
+  partner_course_code: z.string().nullable().optional().default(null),
+  /** 2 人目のコースの担当 (1 名の方は null). */
+  partner_staff_name: z.string().nullable().optional().default(null),
 });
 export type PoolBulkPlacement = z.infer<typeof poolBulkPlacementSchema>;
 

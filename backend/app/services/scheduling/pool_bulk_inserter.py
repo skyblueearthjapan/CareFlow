@@ -5,7 +5,7 @@
 保留プールの患者列を **逐次シミュレーション** で 1 人ずつ決定論的にメモリ内バケットへ積む:
 
   1. ``load_week_course_buckets`` で現状バケットを 1 回ロード → scope_optimizer の
-     ``_copy_bucket`` パターンで可変コピー (メモリ内シミュレーション状態).
+     ``_sim_copy_bucket`` で可変コピー (メモリ内シミュレーション状態).
   2. 各患者に ``compute_all_proposed_slots`` を 1 回実行して候補数・最良 delta・投入可能
      曜日数を採取 (= pool-overview と同一計算).
   3. D-1 ハイブリッド順序で患者列を確定:
@@ -64,7 +64,7 @@ from app.services.scheduling.schedule_health import (
 )
 
 # scope_optimizer の可変バケット操作 (append + start 昇順 sort). import 再利用のみ.
-from app.services.scheduling.scope_optimizer import _copy_bucket, _insert_visit
+from app.services.scheduling.scope_optimizer import _insert_visit
 from app.services.scheduling.visit_frequency import (
     desired_count_for_week,
     frequency_applies,
@@ -155,6 +155,11 @@ class BulkPlacement:
     service_minutes: int
     delta_minutes: float | None
     warnings: list[str]
+    # 2 名で訪問の方 (PO 決定 2026-10-30): 同じ時刻に別のコースへ 2 人目を置く.
+    # 1 名の方は partner_* が None のまま (従来どおり).
+    staff_name: str | None = None
+    partner_course_code: str | None = None
+    partner_staff_name: str | None = None
 
 
 @dataclass
@@ -323,6 +328,8 @@ def _ensure_delta(
     """不足曜日の先頭候補に delta が付いていない (DELTA_EVAL_LIMIT 圏外) 場合、その候補
     だけ追加で厳密 delta を計算する (compute_exact_marginal 1 回/曜日. _marginal_cost_minutes
     を再利用). 既に付いていれば何もしない (in-place 更新).
+
+    2 名の組 (partner_course_code あり) は、propose-slots と同じく 2 コースの合計にする.
     """
     if ps.marginal_cost_minutes is not None:
         return
@@ -330,9 +337,62 @@ def _ensure_delta(
     if bucket is None:
         return
     existing = _to_existing_visits(bucket)
-    ps.marginal_cost_minutes = _marginal_cost_minutes(
-        existing, ps.start, ps.end, candidate, config=config
-    )
+    delta = _marginal_cost_minutes(existing, ps.start, ps.end, candidate, config=config)
+    if ps.partner_course_code is not None:
+        pbucket = buckets.get((ps.office_id, ps.weekday, ps.partner_course_code))
+        if pbucket is not None:
+            delta += _marginal_cost_minutes(
+                _to_existing_visits(pbucket), ps.start, ps.end, candidate, config=config
+            )
+    ps.marginal_cost_minutes = delta
+
+
+# 2 名の組で「その人が行けない」を表す警告 (propose-slots と同じ語彙). 個別提案では
+# 警告で出すだけだが、一括投入は人が 1 件ずつ見ないので、どちらか 1 人でも当たる組は使わない.
+_PAIR_BLOCKING_WARNINGS: frozenset[str] = frozenset(
+    {"staff_absent", "staff_sex_mismatch", "staff_unassigned"}
+)
+
+
+def _usable_pair_slots(
+    results: list[ProposedSlot],
+    buckets: dict[tuple[UUID, int, str], _CourseBucket],
+) -> list[ProposedSlot]:
+    """2 名の組の候補から、一括投入で置いてよいものだけを残す (並びは保つ).
+
+    ``compute_all_proposed_slots`` は 2 名で訪問の方に組 (同じ時刻・別のコース) だけを返し、
+    NG スタッフ・NG 曜日・イベントと重なる時刻・定員・勤務の時間はそこで除いている.
+    ここではさらに次の組を除く:
+
+    - どちらかの人が休み (非番・当週の休み・半休の時間帯)・性別の決まりに合わない・
+      コースに担当がいない (``_PAIR_BLOCKING_WARNINGS``).
+    - どちらかのコースにひな形 (course_template) が無い. 固定訪問の 2 行 (slot_index 0/1)
+      にコースを書けず、週の生成で 2 人目が同じコースに寄ってしまうため.
+    """
+    out: list[ProposedSlot] = []
+    for ps in results:
+        if ps.partner_course_code is None:
+            continue
+        if _PAIR_BLOCKING_WARNINGS.intersection(ps.warnings):
+            continue
+        primary = buckets.get((ps.office_id, ps.weekday, ps.course_code))
+        partner = buckets.get((ps.office_id, ps.weekday, ps.partner_course_code))
+        if primary is None or partner is None:
+            continue
+        if primary.course_template_id is None or partner.course_template_id is None:
+            continue
+        out.append(ps)
+    return out
+
+
+def _pair_unplaced_reason(excl: list[ExcludedReasonSummary]) -> str:
+    """2 名で訪問の方が 1 枠も入らないときの理由.
+
+    希望曜日がすべて NG 曜日なら ``ng_weekday``、それ以外は ``no_pair`` (2 名そろう時間がない).
+    """
+    if excl and all(e.reason == "ng_weekday" for e in excl):
+        return "ng_weekday"
+    return "no_pair"
 
 
 def _weekday_exclusion_reason(
@@ -409,13 +469,17 @@ def _insert_placement(
     patient: Patient,
     candidate: CandidateInput,
     ps: ProposedSlot,
+    *,
+    course_code: str | None = None,
 ) -> None:
     """採用枠を模擬バケットへ仮追加する (scope_optimizer._insert_visit パターン).
 
     仮 visit は ``load_week_course_buckets`` が生成する既存 visit と同形の V2Visit で作り、
     次の患者のソルバ走査に既存訪問として見える (容量調停の実体). DB には書かない.
+    ``course_code`` を渡すとそのコースへ入れる (2 名の組の 2 人目用. 既定は ps のコース).
     """
-    key = (ps.office_id, ps.weekday, ps.course_code)
+    code = course_code if course_code is not None else ps.course_code
+    key = (ps.office_id, ps.weekday, code)
     bucket = buckets[key]
     am_pm = "am" if ps.start.hour < NOON_HOUR else "pm"
     v = V2Visit(
@@ -431,12 +495,22 @@ def _insert_placement(
         office_id=ps.office_id,
         am_pm=am_pm,  # type: ignore[arg-type]
         source_kind="pool",
-        course_code=ps.course_code,
+        course_code=code,
         assigned_staff_id=bucket.assigned_staff_id,
         sex_restriction=candidate.sex_restriction,
         requires_multiple_staff=candidate.requires_multiple_staff,
     )
     _insert_visit(bucket, v)
+
+
+def _sim_copy_bucket(b: _CourseBucket) -> _CourseBucket:
+    """模擬バケット用のコピー (visits リストだけ複製・ほかの項目はすべて引き継ぐ).
+
+    scope_optimizer ``_copy_bucket`` は一部の項目だけを写すため、コースのひな形
+    (2 名の組の固定訪問に要る)・担当のイベント・半休が落ちて、個別提案 (pool-overview) と
+    違う計算になっていた. 一括投入では全項目を引き継ぎ、個別提案と同じ物差しにそろえる.
+    """
+    return replace(b, visits=list(b.visits))
 
 
 def _flatten_with_staff(
@@ -489,7 +563,7 @@ async def simulate_pool_bulk_insert(
         db, iso_year=iso_year, iso_week=iso_week, office_ids=office_ids
     )
     sim: dict[tuple[UUID, int, str], _CourseBucket] = {
-        key: _copy_bucket(b) for key, b in buckets.items()
+        key: _sim_copy_bucket(b) for key, b in buckets.items()
     }
 
     result = PoolBulkResult(office_name_by_id=office_name_by_id)
@@ -563,13 +637,8 @@ async def simulate_pool_bulk_insert(
                 BulkUnplaced(patient_id=pid, patient_name=patient.name, reason="office_mismatch")
             )
             continue
-        # W-12a (D-6): 2 名体制患者は v1 では一括投入の対象外 (ペアの一括原子挿入は後続).
-        # no_primary_office と同じ入口フィルタ流儀で明示分離する (黙って片肺配置しない).
-        if bool(patient.requires_multiple_staff):
-            result.unplaced.append(
-                BulkUnplaced(patient_id=pid, patient_name=patient.name, reason="two_staff_pending")
-            )
-            continue
+        # 2 名で訪問の方 (PO 決定 2026-10-30): 以前は一括の対象外 (two_staff_pending) だった.
+        # いまは同じ時刻に 2 人そろう組を探して置く (_usable_pair_slots). 片方だけは置かない.
         # 訪問頻度 (§3-3): 隔週・月の第何週のお休みの週は入れない (黙って落とさず理由を残す).
         if frequency_applies(patient, week_start) and _desired(patient) == 0:
             result.unplaced.append(
@@ -597,6 +666,8 @@ async def simulate_pool_bulk_insert(
             office_code_by_id=office_code_by_id,
             config=config,
         )
+        if candidate.requires_multiple_staff:
+            results = _usable_pair_slots(results, sim)
         weekdays = {ps.weekday for ps in results}
         best_delta = results[0].marginal_cost_minutes if results else None
         order_infos.append((patient, candidate, len(results), best_delta, len(weekdays)))
@@ -630,6 +701,9 @@ async def simulate_pool_bulk_insert(
             config=config,
             exclusions_out=excl,
         )
+        is_pair = candidate.requires_multiple_staff
+        if is_pair:
+            results = _usable_pair_slots(results, sim)
         best = _best_by_weekday(results)
 
         # 既に sim 内でこの患者が投入済みの曜日を除外 (同曜日への二重投入防止).
@@ -644,7 +718,11 @@ async def simulate_pool_bulk_insert(
             _ensure_delta(ps, sim, candidate, config=config)
 
         desired = _desired(patient)
-        current_placed = sum(1 for b in sim.values() for v in b.visits if v.patient_id == pid)
+        if is_pair:
+            # 2 名の方は 1 回の訪問が 2 行 (2 コース) になるので、曜日の数で数える.
+            current_placed = len(already_placed_weekdays)
+        else:
+            current_placed = sum(1 for b in sim.values() for v in b.visits if v.patient_id == pid)
         shortage = max(0, desired - current_placed)
         if shortage == 0:
             # 既に希望回数を満たしている (プール対象外). 何もしない.
@@ -668,6 +746,8 @@ async def simulate_pool_bulk_insert(
         for ps in chosen:
             seq += 1
             _insert_placement(sim, patient, candidate, ps)
+            if is_pair and ps.partner_course_code is not None:
+                _insert_placement(sim, patient, candidate, ps, course_code=ps.partner_course_code)
             result.placements.append(
                 BulkPlacement(
                     seq=seq,
@@ -680,6 +760,9 @@ async def simulate_pool_bulk_insert(
                     service_minutes=candidate.service_minutes,
                     delta_minutes=ps.marginal_cost_minutes,
                     warnings=list(ps.warnings),
+                    staff_name=ps.staff_name,
+                    partner_course_code=ps.partner_course_code if is_pair else None,
+                    partner_staff_name=ps.partner_staff_name if is_pair else None,
                 )
             )
         if chosen:
@@ -687,7 +770,7 @@ async def simulate_pool_bulk_insert(
 
         if n_place == 0:
             # 1 枠も入らない (= 候補ゼロ). excl は results 空時に集約済み.
-            reason = _pick_reason(excl)
+            reason = _pair_unplaced_reason(excl) if is_pair else _pick_reason(excl)
             result.unplaced.append(
                 BulkUnplaced(patient_id=pid, patient_name=patient.name, reason=reason)
             )
@@ -697,6 +780,9 @@ async def simulate_pool_bulk_insert(
             target_wds = candidate.preferred_weekdays or frozenset(range(7))
             reasons: dict[int, str] = {}
             for wd in sorted(wd for wd in target_wds if wd not in covered):
+                if is_pair:
+                    reasons[wd] = "ng_weekday" if wd in candidate.ng_weekdays else "no_pair"
+                    continue
                 reasons[wd] = _weekday_exclusion_reason(
                     sim,
                     office_name_by_id,

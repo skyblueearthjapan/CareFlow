@@ -3766,6 +3766,9 @@ async def pool_bulk_simulate_endpoint(
                 service_minutes=p.service_minutes,
                 delta_minutes=p.delta_minutes,
                 warnings=p.warnings,
+                staff_name=p.staff_name,
+                partner_course_code=p.partner_course_code,
+                partner_staff_name=p.partner_staff_name,
             )
             for p in result.placements
         ],
@@ -3823,6 +3826,60 @@ def _parse_placement_start(s: str) -> time_cls:
     return time_cls(h, m, sec)
 
 
+async def _write_pool_bulk_pair_slots(
+    db: AsyncSession,
+    *,
+    patient_id: UUID,
+    pair_placements: list[PoolBulkPlacement],
+    templates: dict[tuple[UUID, int], tuple[UUID, UUID]],
+) -> None:
+    """2 名の組の固定訪問を 2 行 (slot_index 0/1) にそろえる (pool-bulk-apply 用).
+
+    ``apply_individual_proposal`` が slot_index=0 の時刻と長さを書いた後に呼ぶ.
+    slot_index=0 には 1 人目のコース、slot_index=1 には 2 人目のコースのひな形を書き、
+    slot_index=1 の時刻・長さ・訪問する週は slot_index=0 と同じにする.
+    """
+    weekdays = sorted({pl.weekday for pl in pair_placements})
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(
+                PatientFixedVisit.patient_id == patient_id,
+                PatientFixedVisit.mode == "normal",
+                PatientFixedVisit.weekday.in_(weekdays),
+                PatientFixedVisit.slot_index.in_((0, 1)),
+            )
+        )
+    ).all()
+    by_key = {(r.weekday, r.slot_index): r for r in rows}
+    for pl in pair_placements:
+        tpl0, tpl1 = templates[(patient_id, pl.weekday)]
+        slot0 = by_key.get((pl.weekday, 0))
+        if slot0 is None:
+            # apply_individual_proposal が書いた直後なので通常は起きない.
+            raise ValueError(f"{pl.patient_name} 様の固定訪問 (1 人目) が見つかりません")
+        slot0.course_template_id = tpl0
+        slot1 = by_key.get((pl.weekday, 1))
+        if slot1 is None:
+            db.add(
+                PatientFixedVisit(
+                    patient_id=patient_id,
+                    mode="normal",
+                    weekday=pl.weekday,
+                    slot_index=1,
+                    start_time=slot0.start_time,
+                    duration_min=slot0.duration_min,
+                    course_template_id=tpl1,
+                    visit_week=slot0.visit_week,
+                )
+            )
+        else:
+            slot1.start_time = slot0.start_time
+            slot1.duration_min = slot0.duration_min
+            slot1.course_template_id = tpl1
+            slot1.visit_week = slot0.visit_week
+    await db.flush()
+
+
 @router.post(
     "/v2/pool-bulk-apply",
     response_model=PoolBulkApplyResponse,
@@ -3855,6 +3912,10 @@ async def pool_bulk_apply_endpoint(
       検査する (途中の 422 は部分適用になるため)。違反があれば 1 人も適用せず
       ``code=constraint_confirmation_required`` の 422、
       ``acknowledge_constraint_warnings`` 付きの再送で全適用 + 管理者へお知らせ。
+    - **2 名で訪問の方** (PO 決定 2026-10-30): ``partner_course_code`` 付きの placement は
+      固定訪問を slot_index 0/1 の 2 行 (別のコースのひな形・同じ時刻) にし、週の作り直しで
+      同じ visit_group_id の 2 件 (required_staff_count=2) になる. 2 人目のコースも
+      NG スタッフ / 性別の事前検査に入れる. 片方だけの placement は 422.
     """
     config = await load_scheduling_config(db)
 
@@ -3911,6 +3972,45 @@ async def pool_bulk_apply_endpoint(
         if _bp is not None:
             ensure_weekday_not_ng(_bp, pl.weekday)
 
+    # 2-c. 2 名で訪問の方 (PO 決定 2026-10-30): simulate は 2 人目のコース (partner_course_code)
+    # を付けて返す. 片方だけの枠や、simulate 後に「2 名で訪問」が変わった古い placements は
+    # 1 人も適用する前に 422 にする (片方だけの訪問を作らない).
+    for pl in target_placements:
+        _bp = _bulk_patients.get(pl.patient_id)
+        if _bp is None:
+            continue
+        _multi = bool(_bp.requires_multiple_staff)
+        if _multi and not pl.partner_course_code:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "two_staff_partner_required",
+                    "message": (
+                        f"{pl.patient_name} 様は 2 名で訪問の方です。2 人目のコースが無いため"
+                        "置けません。もう一度シミュレーションしてください"
+                    ),
+                },
+            )
+        if not _multi and pl.partner_course_code:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "two_staff_not_required",
+                    "message": (
+                        f"{pl.patient_name} 様は 2 名で訪問の方ではなくなりました。"
+                        "もう一度シミュレーションしてください"
+                    ),
+                },
+            )
+        if pl.partner_course_code and pl.partner_course_code == pl.course_code:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "two_staff_same_course",
+                    "message": f"{pl.patient_name} 様の 2 人目が同じコースになっています",
+                },
+            )
+
     # 3. NG スタッフ / 性別制限の事前一括検査 (§7-2)。simulate は NG 枠を提案しないが
     # (ba7c1da)、simulate 後に NG が登録されると **古い placements の apply が素通り**
     # する (state_token は PFV 指紋のみで NG 行を含まない)。患者ごとの適用ループに
@@ -3921,7 +4021,11 @@ async def pool_bulk_apply_endpoint(
     # 一括解決する (N+1 禁止)。
     _cw: list[ConstraintWarning] = []
     _cw_by_course: list[tuple[Course, list[ConstraintWarning]]] = []
-    _pl_keys = {(pl.office_id, pl.course_code, pl.weekday) for pl in target_placements}
+    _pl_keys = {(pl.office_id, pl.course_code, pl.weekday) for pl in target_placements} | {
+        (pl.office_id, pl.partner_course_code, pl.weekday)
+        for pl in target_placements
+        if pl.partner_course_code
+    }
     _week_courses = list(
         (
             await db.scalars(
@@ -3936,13 +4040,33 @@ async def pool_bulk_apply_endpoint(
     )
     _course_by_key = {(c.office_id, c.code, c.weekday): c for c in _week_courses}
     _patients_by_course: dict[UUID, tuple[Course, list[UUID]]] = {}
+    # 2 名の組は 2 人目のコースも NG スタッフ / 性別の決まりで見る.
+    # 2 行の固定訪問にコースを書くため、両方のコースのひな形 (template_id) を控える.
+    _pair_templates: dict[tuple[UUID, int], tuple[UUID, UUID]] = {}
     for pl in target_placements:
-        _c = _course_by_key.get((pl.office_id, pl.course_code, pl.weekday))
-        if _c is None:
-            continue  # その週にコース実体が無い = 担当も居ない (fail-open)
-        _bucket = _patients_by_course.setdefault(_c.id, (_c, []))[1]
-        if pl.patient_id not in _bucket:
-            _bucket.append(pl.patient_id)
+        _codes = [pl.course_code] + ([pl.partner_course_code] if pl.partner_course_code else [])
+        for _code in _codes:
+            _c = _course_by_key.get((pl.office_id, _code, pl.weekday))
+            if _c is None:
+                continue  # その週にコース実体が無い = 担当も居ない (fail-open)
+            _bucket = _patients_by_course.setdefault(_c.id, (_c, []))[1]
+            if pl.patient_id not in _bucket:
+                _bucket.append(pl.patient_id)
+        if pl.partner_course_code:
+            _c0 = _course_by_key.get((pl.office_id, pl.course_code, pl.weekday))
+            _c1 = _course_by_key.get((pl.office_id, pl.partner_course_code, pl.weekday))
+            if _c0 is None or _c1 is None or _c0.template_id is None or _c1.template_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "code": "two_staff_course_missing",
+                        "message": (
+                            f"{pl.patient_name} 様の 2 名のコースが見つかりません。"
+                            "もう一度シミュレーションしてください"
+                        ),
+                    },
+                )
+            _pair_templates[(pl.patient_id, pl.weekday)] = (_c0.template_id, _c1.template_id)
     for _c, _pids in _patients_by_course.values():
         _w = await collect_constraint_warnings_for_patients(db, course=_c, patient_ids=_pids)
         if _w:
@@ -3990,6 +4114,19 @@ async def pool_bulk_apply_endpoint(
             )
             p_name = name_by_patient.get(patient_id, str(patient_id))
             warnings.extend(f"{p_name}: {w}" for w in result.get("warnings", []))
+
+            # 2 名で訪問の方: 個別提案の 2 名の組の採用 (PoolCandidateList の A 経路) と同じ形で
+            # 固定訪問を 2 行にする = 同じ曜日・時刻・長さで slot_index=0 (1 人目のコース) と
+            # slot_index=1 (2 人目のコース). 週の作り直しが 2 行を同じ visit_group_id の
+            # 2 件の訪問 (required_staff_count=2) にする.
+            pair_pls = [pl for pl in pls if pl.partner_course_code]
+            if pair_pls:
+                await _write_pool_bulk_pair_slots(
+                    db,
+                    patient_id=patient_id,
+                    pair_placements=pair_pls,
+                    templates=_pair_templates,
+                )
 
             # 今週 visits を PFV から再生成する (reset_visits_to_fixed の 1 患者版).
             office_ids = await resolve_reset_office_ids(db, patient_id)

@@ -10161,6 +10161,8 @@ async def reset_visits_to_fixed(
                     "end_time": end_t,
                     "course": course,
                     "staff_id": staff_id,
+                    "slot_index": pfv.slot_index,
+                    "multi": bool(patient.requires_multiple_staff),
                 }
             )
             continue
@@ -10214,6 +10216,8 @@ async def reset_visits_to_fixed(
                 "end_time": end_t,
                 "course": course,
                 "staff_id": staff_id,
+                "slot_index": pfv.slot_index,
+                "multi": bool(patient.requires_multiple_staff),
             }
         )
 
@@ -10243,6 +10247,22 @@ async def reset_visits_to_fixed(
     visits_to_skip_protected = 0
     visits_to_skip_conflict = 0
     new_visits_with_staff: list[tuple[Visit, UUID]] = []
+    # 2 名で訪問の方 (requires_multiple_staff): 同じ曜日に slot_index 0 と 1 の両方がそろう枠は
+    # Layer1 (_expand_fixed_visits_to_visits) と同じく 2 件の訪問を同じ visit_group_id で結び、
+    # required_staff_count=2 にする. 以前は visit_group_id=None の 2 件になり、同じ患者・日・
+    # 時刻の一意の決まり (uq_visits_pds_group_active) にぶつかっていた. 片方だけの枠と
+    # 1 名の方は従来どおり (visit_group_id=None・required_staff_count=1).
+    _slots_by_day: dict[tuple[UUID, int], set[int]] = {}
+    for meta in v2_meta_reset:
+        if meta.get("multi"):
+            _slots_by_day.setdefault((meta["patient_id"], meta["weekday"]), set()).add(
+                meta.get("slot_index", 0) or 0
+            )
+    pair_days = {k for k, slots in _slots_by_day.items() if {0, 1} <= slots}
+    pair_group_ids: dict[tuple[UUID, date, time], UUID] = {}
+    protected_by_pds: dict[tuple[UUID, date, time], Visit] = {
+        (k[0], k[1], k[2]): v for k, v in protected_existing_keys.items()
+    }
     for meta in v2_meta_reset:
         v2_idx = meta["v2_index"]
         if v2_idx is None:
@@ -10279,15 +10299,18 @@ async def reset_visits_to_fixed(
             continue
         # CareFlow 本番バグ修正 (Option A): 保護対象 active visit (status='confirmed' /
         # source='manual' / status='completed' 等) と unique key 衝突する場合は
-        # INSERT スキップ + warning. PFV 由来 INSERT は visit_group_id=None 固定.
-        protect_key: tuple[UUID, date, time, UUID | None] = (
-            meta["patient_id"],
-            visit_date,
-            corrected_start_r,
-            None,
+        # INSERT スキップ + warning. PFV 由来 INSERT は visit_group_id=None 固定
+        # (2 名の組だけは下の pair_group_id. 同じ患者・日・時刻の保護 visit があれば 2 件とも作らない).
+        is_pair_row = (meta["patient_id"], meta["weekday"]) in pair_days
+        pds_key = (meta["patient_id"], visit_date, corrected_start_r)
+        protect_key: tuple[UUID, date, time, UUID | None] = (*pds_key, None)
+        existing_protected = (
+            protected_by_pds.get(pds_key)
+            if is_pair_row
+            else protected_existing_keys.get(protect_key)
         )
-        if protect_key in protected_existing_keys:
-            existing = protected_existing_keys[protect_key]
+        if existing_protected is not None:
+            existing = existing_protected
             patient_obj = patients_by_id.get(meta["patient_id"])
             patient_name = (
                 patient_obj.name
@@ -10306,6 +10329,7 @@ async def reset_visits_to_fixed(
             inserted_visits += 1
             continue
         course_for_meta: Course | None = meta["course"]
+        pair_group_id = pair_group_ids.setdefault(pds_key, uuid.uuid4()) if is_pair_row else None
         new_visit = Visit(
             patient_id=meta["patient_id"],
             visit_date=visit_date,
@@ -10314,7 +10338,8 @@ async def reset_visits_to_fixed(
             type="regular",
             status="planned",
             source="reset_v2",
-            required_staff_count=1,
+            required_staff_count=2 if is_pair_row else 1,
+            visit_group_id=pair_group_id,
             course_id=(course_for_meta.id if course_for_meta is not None else None),
             note=f"reset_to_fixed_v2 iso_year={iso_year} iso_week={iso_week}",
         )
