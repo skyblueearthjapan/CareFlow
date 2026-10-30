@@ -39,6 +39,8 @@ def visit_dict(v) -> dict:
         "win": list(v.win),
         "time_type": v.time_type,
         "female_only": v.female_only,
+        "male_only": v.male_only,
+        "ng_weekdays": sorted(v.ng_weekdays),
         "ng": sorted(v.ng),
         "cur_staff": v.cur_staff,
         "cur_course": v.cur_course,

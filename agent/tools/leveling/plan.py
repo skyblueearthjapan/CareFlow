@@ -39,6 +39,8 @@ RULES = [
     ("同じ建物の 2 名（90 分の枠）", ("同じ建物の 2 名",)),
     ("NG の職員", ("NG の職員",)),
     ("女性限定", ("女性限定に男性",)),
+    ("男性限定", ("男性限定に女性",)),
+    ("NG 曜日（訪問しない曜日）に足さない", ("NG 曜日に訪問を足した",)),
     ("希望の時間帯", ("希望の範囲外",)),
     ("5 分刻み", ("5 分刻み",)),
     ("昼休み（30 分は必ず・45 分をなるべく）", ("昼休み",)),
@@ -132,6 +134,9 @@ def unplaced_reason(v: dict, staff: list[dict], counts: Counter, cap: int, allow
             continue
         if v["female_only"] and s["sex"] == "male":
             why["女性限定"] += 1
+            continue
+        if v.get("male_only") and s["sex"] == "female":
+            why["男性限定"] += 1
             continue
         a, b = s["shift"][wd]
         end_limit = max(b, 18 * 60) if s["manager"] else b

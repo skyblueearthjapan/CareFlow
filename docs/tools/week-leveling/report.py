@@ -183,6 +183,10 @@ def check(d, out, cap_regular: int, allow_over: int) -> tuple[list[str], list[st
                         errors.append(f"{day} {s.name}: NG の職員")
                     if v.female_only and s.sex == "male":
                         errors.append(f"{day} {s.name}: 女性限定に男性")
+                    if getattr(v, "male_only", False) and s.sex == "female":
+                        errors.append(f"{day} {s.name}: 男性限定に女性")
+                    if v.new and v.day.weekday() in getattr(v, "ng_weekdays", ()):
+                        errors.append(f"{day} {s.name}: NG 曜日に訪問を足した")
                     if v.time_fixed and t + off != v.fixed_start:
                         errors.append(f"{day} {s.name}: 完全固定（赤ピン）の時刻が動いた {fmt(t + off)}")
                     elif not (v.win[0] <= t + off <= v.win[1]):
@@ -401,7 +405,7 @@ def write_excel(
         [[e] for e in errors]
         or [
             [
-                "問題なし（人数・勤務時刻・休み・予定・移動・NG・女性限定・希望の範囲・5 分刻み・昼休み・同じ建物の枠）"
+                "問題なし（人数・勤務時刻・休み・予定・移動・NG・女性限定・男性限定・NG 曜日・希望の範囲・5 分刻み・昼休み・同じ建物の枠）"
             ]
         ],
         [90],
@@ -542,7 +546,7 @@ h3 {{ font-size:11.5px; margin:3mm 2mm 1mm; }} ul {{ margin:0 2mm; padding-left:
 .pr {{ font-size:8.5px; color:#0b6e5e; font-weight:normal; }} .em {{ color:#9c9087; }} .dr {{ color:#b00; margin-top:2mm; }}
 </style></head><body>
 <h1>{e(title)} — 案（まだ反映していません）</h1>
-<div class="note">決まり: 曜日は変えない／完全固定（赤ピン）の訪問 {sum(1 for v in visits if v.time_fixed)} 件は曜日・時刻とも動かさない（担当は動く）／固定の時刻 → 希望の範囲内／正規の人数上限／勤務時刻を守る（マネージャーはあふれの受け皿）／NG・女性限定は絶対／同じ建物の 2 名は 1 人で 90 分枠／昼休み 11:30〜13:30 に 45 分（入らない日だけ 30 分・予定の時間は昼休みに数えない）／移動は直線 20km/h＋ゆとり 8 分。
+<div class="note">決まり: 曜日は変えない／完全固定（赤ピン）の訪問 {sum(1 for v in visits if v.time_fixed)} 件は曜日・時刻とも動かさない（担当は動く）／固定の時刻 → 希望の範囲内／正規の人数上限／勤務時刻を守る（マネージャーはあふれの受け皿）／NG・女性限定・男性限定は絶対／NG 曜日には足さない／同じ建物の 2 名は 1 人で 90 分枠／昼休み 11:30〜13:30 に 45 分（入らない日だけ 30 分・予定の時間は昼休みに数えない）／移動は直線 20km/h＋ゆとり 8 分。
 札: <span class="tg t">時刻 →</span> 元の時刻／<span class="tg s">今 ○○</span> 今の担当／<span class="tg x">拠点またぎ</span>／<span class="tg o">勤務超え</span>／<span class="tg r">前回と同じ</span>／<span class="tg j">Jev 要確認</span></div>
 {conditions_page(conditions)}{diag_page(diag) if diag else ""}{"".join(pages)}
 </body></html>""",

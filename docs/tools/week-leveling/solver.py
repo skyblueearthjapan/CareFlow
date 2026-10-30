@@ -2,7 +2,9 @@
 
 決まりの正典 = docs/plans/week-leveling-rules-2026-10-02.md
   * アプリの既定: 直線 20km/h・別住所へ 8 分・昼休み 11:30〜13:30 (45 分を目指し、入らない日だけ 30 分)・5 分刻み・
-    始点 (事業所/自宅) からの移動は数えない・NG と女性限定は絶対・ローテーション。
+    始点 (事業所/自宅) からの移動は数えない・NG と女性限定・男性限定は絶対・ローテーション。
+  * NG 曜日 (weekly_pattern.ng_weekdays・PO 2026-10-30「全経路で守る」): 曜日は変えないので、
+    NG 曜日に訪問を足すのは特別訪問週間の○だけ。○の日が NG 曜日なら足さない (skipped に入れる)。
   * PO 2026-10-02: 曜日は変えない／固定の時刻が第 1、だめなら希望の範囲の中／正規は 1 日 cap_regular 名まで／
     勤務時刻を守る (マネージャーはあふれの受け皿で、必要なら勤務時刻を超えて受ける)／同住所 2 名は 1 人で 90 分枠。
   * 誰が正規・マネージャーで、どの拠点を回るかは config (職員コード) で決める。コードに名前を書かない。
@@ -126,6 +128,8 @@ class Visit:
     cur_course: str | None
     new: bool = False  # 特別訪問週間の○から足す訪問 (まだ週に無い。fixed_start は希望の範囲の始め)
     time_fixed: bool = False  # 赤ピン (完全固定) の枠の訪問: 曜日・時刻を動かさない (担当は自由)
+    male_only: bool = False  # 性別制限「男性のみ」: 女性の職員に付けない (女性限定と同じく絶対)
+    ng_weekdays: frozenset[int] = frozenset()  # NG 曜日 (0=月)。この曜日に訪問を足さない
 
 
 @dataclass
@@ -159,6 +163,24 @@ class Staff:
     code: str = ""
     events: dict[int, list[tuple[int, int]]] = field(default_factory=dict)  # 曜日 -> [(開始, 終了)] 前後 15 分込み
     raw_events: dict[int, list[tuple[int, int]]] = field(default_factory=dict)  # 予定そのものの時間 (昼休みの判定)
+
+
+WEEKDAY_CODES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def ng_weekdays_of(wp) -> frozenset[int]:
+    """weekly_pattern.ng_weekdays (["Mon", ...] / 0〜6) → 曜日の集合。読めない値は無視。
+
+    アプリの ``app.services.scheduling.ng_weekdays.ng_weekdays_of`` と同じ読み方
+    (この道具はアプリを import しないので写しを持つ)。"""
+    raw = (wp or {}).get("ng_weekdays") if isinstance(wp, dict) else None
+    out = set()
+    for x in raw if isinstance(raw, list) else []:
+        if isinstance(x, int) and not isinstance(x, bool) and 0 <= x <= 6:
+            out.add(x)
+        elif isinstance(x, str) and x in WEEKDAY_CODES:
+            out.add(WEEKDAY_CODES.index(x))
+    return frozenset(out)
 
 
 def pref_window(wp: dict, dur: int) -> tuple[str, tuple[int, int] | None]:
@@ -306,6 +328,8 @@ def load(path, hist_path, config: dict, opts: dict | None = None):
                 time_type=tt,
                 loc=(float(p["lat"]), float(p["lng"])),
                 female_only=p["sex_restriction"] == "female_only",
+                male_only=p["sex_restriction"] == "male_only",
+                ng_weekdays=ng_weekdays_of(wp),
                 ng=ng[p["id"]],
                 # 訪問の主担当が無ければコースの担当 (アプリの表示の正典)。主担当が空で manual_staff_override が
                 # 真なら「明示の担当なし」(休みの時間帯から外した訪問・休み設計 §3-2) なのでコースの担当に読み替えない
@@ -323,8 +347,8 @@ def load(path, hist_path, config: dict, opts: dict | None = None):
         for m in d.get("special_marks") or []:
             p = pats[m["patient_id"]]
             day = monday + timedelta(days=m["weekday"])
-            if (p["id"], day) in has_day:
-                skipped_marks.append(m["id"])
+            if (p["id"], day) in has_day or day.weekday() in ng_weekdays_of(p["weekly_pattern"]):
+                skipped_marks.append(m["id"])  # その日に訪問がある日 / NG 曜日は足さない
                 continue
             dur = int(m["duration_min"])
             tt, win = pref_window(p["weekly_pattern"] or {}, dur)
@@ -343,6 +367,8 @@ def load(path, hist_path, config: dict, opts: dict | None = None):
                     time_type=tt,
                     loc=(float(p["lat"]), float(p["lng"])),
                     female_only=p["sex_restriction"] == "female_only",
+                    male_only=p["sex_restriction"] == "male_only",
+                    ng_weekdays=ng_weekdays_of(p["weekly_pattern"]),
                     ng=ng[p["id"]],
                     cur_staff=None,
                     cur_course=None,
@@ -470,6 +496,8 @@ def allowed(st: Staff, job: Job) -> bool:
         if st.id in v.ng:
             return False
         if v.female_only and st.sex == "male":
+            return False
+        if v.male_only and st.sex == "female":
             return False
     return True
 

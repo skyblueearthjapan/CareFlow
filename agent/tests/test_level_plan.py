@@ -247,3 +247,17 @@ def test_check_line_lists_all_details_up_to_ten():
                        "details": [f"入らない {i}" for i in range(13)]})
     assert "入らない 9" in many and "入らない 10" not in many and many.endswith("／ほか 3 件")
     assert check_line({"rule": "NG", "ok": True, "errors": 0, "warnings": 0, "details": []}) == "○ NG"
+
+
+def test_unplaced_reason_counts_male_only_as_hard():
+    """性別制限「男性のみ」: 女性の職員は「男性限定」で数え、時刻の理由に混ぜない (2026-10-30)."""
+    from tools.leveling.plan import RULES, unplaced_reason
+
+    v = {
+        "day": "2026-10-12", "win": [9 * 60, 9 * 60], "dur": 35, "ng": [],
+        "female_only": False, "male_only": True, "patient": "p0",
+    }
+    staff = [{"id": "SF", "off": [], "shift": {"0": [9 * 60, 18 * 60]}, "sex": "female", "manager": False}]
+    reason = unplaced_reason(v, staff, Counter(), 6, 0)
+    assert "男性限定" in "".join(reason)
+    assert ("男性限定", ("男性限定に女性",)) in RULES
