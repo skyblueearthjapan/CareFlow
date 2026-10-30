@@ -68,6 +68,12 @@ from app.services.scheduling.guards import patient_not_active_detail
 from app.services.scheduling.layer1_expander import _is_special_week_active
 from app.services.scheduling.pfv_validator import validate_pfv_changes
 from app.services.scheduling.visit_frequency import frequency_rule_active, pfv_visits_in_week
+from app.services.scheduling.visit_week_carry import (
+    carried_visit_week as _carried_visit_week,
+)
+from app.services.scheduling.visit_week_carry import (
+    load_visit_week_by_slot as _load_visit_week_by_slot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -305,45 +311,6 @@ async def _load_pfv_pin_partition(
     pinned_slots = {(r.weekday, r.slot_index) for r in rows if r.is_pinned}
     movability_by_wd_start = {(r.weekday, r.start_time): r.movability for r in rows}
     return pinned_slots, movability_by_wd_start
-
-
-async def _load_visit_week_by_slot(
-    db: AsyncSession, *, patient_id: UUID, mode: str
-) -> dict[tuple[int, int], str]:
-    """(weekday, slot_index) → 訪問する週 (0102). 行を置き換えても A/B を引き継ぐために使う."""
-    rows = (
-        await db.execute(
-            select(
-                PatientFixedVisit.weekday,
-                PatientFixedVisit.slot_index,
-                PatientFixedVisit.visit_week,
-            ).where(
-                PatientFixedVisit.patient_id == patient_id,
-                PatientFixedVisit.mode == mode,
-            )
-        )
-    ).all()
-    return {(wd, si): vw or "every" for wd, si, vw in rows}
-
-
-def _carried_visit_week(
-    visit_week_by_slot: dict[tuple[int, int], str], *, weekday: int, slot_index: int
-) -> str:
-    """訪問する週を省略した枠に引き継ぐ値 (0102・旧 FE 互換).
-
-    1. 同じ (曜日, slot) の既存行があれば、その値。
-    2. 無い (曜日を動かした・新しい曜日) ときは、同じ slot の既存行がすべて同じ値なら
-       その値 (例: 枠が全部 B の方の B の枠を別の曜日へ動かしても B のまま)。
-    3. 同じ slot の既存行の値がばらばら (A と B が混ざる) か、既存行が無いときは 'every'
-       (どちらとも決められないので毎回にし、患者マスタで選び直してもらう)。
-    """
-    exact = visit_week_by_slot.get((weekday, slot_index))
-    if exact is not None:
-        return exact
-    same_slot = {vw for (_wd, si), vw in visit_week_by_slot.items() if si == slot_index}
-    if len(same_slot) == 1:
-        return next(iter(same_slot))
-    return "every"
 
 
 async def _load_off_week_slots_to_keep(

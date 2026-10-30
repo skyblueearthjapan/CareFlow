@@ -67,7 +67,7 @@ from app.services.scheduling.schedule_health import (
 from app.services.scheduling.scope_optimizer import _copy_bucket, _insert_visit
 from app.services.scheduling.visit_frequency import (
     desired_count_for_week,
-    frequency_rule_active,
+    frequency_applies,
     pfv_slots,
 )
 
@@ -123,7 +123,8 @@ def _desired_weekly_visits(
     if not (n > 0):
         return 0
     base = min(7, int(n))
-    if week_start is None:
+    # 特別週の決まりが効いている週は頻度で間引かない (週の生成とそろえる).
+    if week_start is None or not frequency_applies(patient, week_start):
         return base
     adjusted = desired_count_for_week(
         wp,
@@ -515,7 +516,7 @@ async def simulate_pool_bulk_insert(
     # 訪問頻度 (§3-3): 隔週・月の第何週の患者は、この週に当たる枠で希望回数を数える.
     # 頻度の決まりが効く患者の通常の枠だけを 1 クエリで読む (毎週の患者は読まない).
     week_start = date.fromisocalendar(iso_year, iso_week, 1)
-    freq_ids = [p.id for p in patient_rows if frequency_rule_active(p.weekly_pattern)]
+    freq_ids = [p.id for p in patient_rows if frequency_applies(p, week_start)]
     fixed_by_patient: dict[UUID, list[PatientFixedVisit]] = {}
     if freq_ids:
         for row in (
@@ -570,7 +571,7 @@ async def simulate_pool_bulk_insert(
             )
             continue
         # 訪問頻度 (§3-3): 隔週・月の第何週のお休みの週は入れない (黙って落とさず理由を残す).
-        if frequency_rule_active(patient.weekly_pattern) and _desired(patient) == 0:
+        if frequency_applies(patient, week_start) and _desired(patient) == 0:
             result.unplaced.append(
                 BulkUnplaced(patient_id=pid, patient_name=patient.name, reason="off_week")
             )

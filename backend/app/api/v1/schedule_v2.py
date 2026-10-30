@@ -309,9 +309,14 @@ from app.services.scheduling.unblock_search import (
 )
 from app.services.scheduling.visit_frequency import (
     desired_count_for_week,
-    frequency_rule_active,
+    frequency_applies,
     is_patient_visit_week,
     pfv_slots,
+)
+from app.services.scheduling.visit_week_carry import (
+    carried_visit_week,
+    load_visit_week_by_slot,
+    visit_week_by_slot_of,
 )
 from app.services.staff_leave import StaffLeaveError, apply_staff_leave, settle_leave_unassign
 
@@ -2500,6 +2505,9 @@ async def update_fixed_time_master_endpoint(
                 )
 
         if pfv_row is None:
+            # 0102: 新しい曜日の枠は、同じ slot の既存行の訪問する週を引き継ぐ
+            # (枠が全部 B の方なら B. ばらばら・既存行なしは every).
+            _vw_by_slot = await load_visit_week_by_slot(db, patient_id=payload.patient_id)
             pfv_row = PatientFixedVisit(
                 patient_id=payload.patient_id,
                 mode="normal",
@@ -2507,6 +2515,7 @@ async def update_fixed_time_master_endpoint(
                 start_time=start_t,
                 duration_min=duration_min,
                 slot_index=0,
+                visit_week=carried_visit_week(_vw_by_slot, weekday=payload.weekday, slot_index=0),
             )
             db.add(pfv_row)
         else:
@@ -3082,7 +3091,9 @@ async def _frequency_adjusted_required_days(
 ) -> int:
     """propose-slots の必要日数に訪問頻度を当てる (毎週の患者はそのまま)."""
     patient = await db.scalar(select(Patient).where(Patient.id == patient_id))
-    if patient is None or not frequency_rule_active(patient.weekly_pattern):
+    week_start = date.fromisocalendar(iso_year, iso_week, 1)
+    # 特別週の決まりが効いている週は頻度で間引かない (週の生成とそろえる).
+    if patient is None or not frequency_applies(patient, week_start):
         return required_days
     rows = (
         await db.scalars(
@@ -3095,7 +3106,7 @@ async def _frequency_adjusted_required_days(
     adjusted = desired_count_for_week(
         patient.weekly_pattern,
         required_days,
-        date.fromisocalendar(iso_year, iso_week, 1),
+        week_start,
         pfv_slots(rows, requires_multiple_staff=bool(patient.requires_multiple_staff)),
     )
     return required_days if adjusted is None else adjusted
@@ -3480,7 +3491,8 @@ async def pool_overview_endpoint(
     # 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): 隔週・月の第何週の患者の
     # お休みの週は候補を出さない. 頻度の決まりが効く患者の通常の枠だけを 1 回で読む.
     _week_start = date.fromisocalendar(payload.iso_year, payload.iso_week, 1)
-    _freq_ids = [p.id for p in patient_rows if frequency_rule_active(p.weekly_pattern)]
+    # 特別週の決まりが効いている週の患者は間引かない (週の生成とそろえる).
+    _freq_ids = [p.id for p in patient_rows if frequency_applies(p, _week_start)]
     _freq_slots: dict[UUID, list[tuple[int, str]]] = defaultdict(list)
     if _freq_ids:
         for _row in (
@@ -3507,7 +3519,7 @@ async def pool_overview_endpoint(
         if patient is None:
             continue  # 存在しない / 削除済み患者は俯瞰対象外 (黙って除外).
 
-        if pid in _freq_slots or frequency_rule_active(patient.weekly_pattern):
+        if frequency_applies(patient, _week_start):
             if not is_patient_visit_week(
                 patient.weekly_pattern, _week_start, _freq_slots.get(pid) or None
             ):
@@ -5871,6 +5883,7 @@ async def _insert_target_pfv(
     existing_by_ws: dict[tuple[int, int], PatientFixedVisit] = {
         (r.weekday, r.slot_index): r for r in existing_rows
     }
+    _vw_by_slot = visit_week_by_slot_of(existing_rows)
 
     # --- 再検証入力 (最終形): 既存行を base に、insert 対象 slot を差し替え/追加する ---
     desired: dict[tuple[int, int], PatientFixedVisitV2Base] = {
@@ -5948,6 +5961,8 @@ async def _insert_target_pfv(
                     start_time=start,
                     duration_min=service_minutes,
                     course_template_id=course,
+                    # 0102: 新しい曜日の枠は同じ slot の既存行の訪問する週を引き継ぐ.
+                    visit_week=carried_visit_week(_vw_by_slot, weekday=wd, slot_index=slot_index),
                 )
             )
 

@@ -65,6 +65,7 @@ from app.services.proposed_visits_pfv import (
     apply_proposed_visits_as_normal_pfv,
 )
 from app.services.scheduling.config import load_scheduling_config
+from app.services.scheduling.visit_week_carry import carried_visit_week, load_visit_week_by_slot
 from app.services.staff_leave import (
     StaffLeaveError,
     apply_staff_leave,
@@ -696,6 +697,13 @@ async def _apply_visit_add_permanent(
 
     # ターゲット upsert: 対象 weekday の slot_index=0 行のみ置換.
     # slot_index=1 / 他 weekday には一切触れない (multi-staff 患者の 2 コース目を保全).
+    # 0102: 置き換える行 (同じ曜日・slot 0) の訪問する週を引き継ぐ. 新しい曜日は同じ slot の
+    # 既存行がすべて同じ値ならその値 (ばらばら・既存行なしは every). 消す前に読む.
+    carried_vw = carried_visit_week(
+        await load_visit_week_by_slot(db, patient_id=patient_id),
+        weekday=new_weekday,
+        slot_index=0,
+    )
     if existing_slot0 is not None:
         await db.delete(existing_slot0)
         # UNIQUE (patient_id, mode, weekday, slot_index) 制約に同 TX 内で再 INSERT
@@ -711,6 +719,7 @@ async def _apply_visit_add_permanent(
             duration_min=new_duration,
             course_template_id=course_template_id,
             slot_index=0,
+            visit_week=carried_vw,
         )
     )
     await db.flush()

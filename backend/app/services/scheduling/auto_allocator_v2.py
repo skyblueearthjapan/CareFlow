@@ -84,12 +84,13 @@ from app.services.scheduling.course_staff_mirror import mirror_course_staff_to_v
 from app.services.scheduling.visit_frequency import (
     desired_count_for_week,
     filter_pfv_rows_for_week,
-    frequency_rule_active,
+    frequency_applies,
     is_patient_visit_week,
     pfv_slots,
     pfv_visits_in_week,
     visit_weekdays_for_week,
 )
+from app.services.scheduling.visit_week_carry import carried_visit_week, visit_week_by_slot_of
 
 # 2026-10-13 (PO): メモが 「【検証】」 で始まる訪問は試しに入れたもの. 今週の実際の
 # 訪問として数えない (= プールの回数判定 / G-21 Before の既存 DB Visit 経路).
@@ -1967,10 +1968,10 @@ def _frequency_allowed_weekdays(
     """訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): その週に予定を作ってよい曜日.
 
     枠のある患者はその週に訪問する枠の曜日だけ、枠の無い患者は曜日ごとの判定
-    (``visit_weekdays_for_week``)。毎週・設定不足・週が分からないときは ``None``
-    (= 曜日を絞らない・挙動不変)。
+    (``visit_weekdays_for_week``)。毎週・設定不足・週が分からない・特別週の決まりが
+    効いている週 (週の生成とそろえる) は ``None`` (= 曜日を絞らない・挙動不変)。
     """
-    if week_start is None or not frequency_rule_active(patient.weekly_pattern):
+    if week_start is None or not frequency_applies(patient, week_start):
         return None
     return visit_weekdays_for_week(
         patient.weekly_pattern, week_start, _generating_slots(patient, list(normal_rows or []))
@@ -2059,7 +2060,7 @@ def _g94_desired_count(
         desired_wds = _g93_desired_weekdays(patient, fixed_rows, config=config)
         if desired_wds:
             base = len(desired_wds)
-    if week_start is None:
+    if week_start is None or not frequency_applies(patient, week_start):
         return base
     return desired_count_for_week(
         patient.weekly_pattern,
@@ -6046,7 +6047,7 @@ async def _load_before_visits_v2(
         _freq_week_start = None
 
     def _pfv_off_this_week(pfv: PatientFixedVisit, patient: Patient) -> bool:
-        if _freq_week_start is None:
+        if _freq_week_start is None or not frequency_applies(patient, _freq_week_start):
             return False
         return not pfv_visits_in_week(patient.weekly_pattern, pfv, _freq_week_start)
 
@@ -7551,7 +7552,7 @@ async def run_v2_pipeline(
     except ValueError:
         _freq_week_start = None
     _freq_patients = (
-        {p.id: p for p in patients_by_id.values() if frequency_rule_active(p.weekly_pattern)}
+        {p.id: p for p in patients_by_id.values() if frequency_applies(p, _freq_week_start)}
         if _freq_week_start is not None
         else {}
     )
@@ -7667,6 +7668,7 @@ async def run_v2_pipeline(
             if (
                 _pp is not None
                 and _freq_week_start is not None
+                and frequency_applies(_pp, _freq_week_start)
                 and not pfv_visits_in_week(_pp.weekly_pattern, _pfv, _freq_week_start)
             ):
                 continue
@@ -10375,6 +10377,8 @@ async def apply_individual_proposal(
     )
     existing = list(existing_rows.all())
     existing_by_wd: dict[int, PatientFixedVisit] = {p.weekday: p for p in existing}
+    # 0102: 消す前の訪問する週 (新しい曜日の枠に引き継ぐ).
+    existing_visit_week_by_slot = visit_week_by_slot_of(existing)
 
     # Phase G-21 final H1: 既存 PFV に pinned (is_pinned=True) が含まれていれば
     # apply-individual で上書き / 削除させない. apply-individual は提案に応じて
@@ -10631,6 +10635,10 @@ async def apply_individual_proposal(
                 start_time=st,
                 duration_min=dur,
                 slot_index=0,
+                # 0102: 曜日を動かした枠も、同じ slot の既存行の訪問する週を引き継ぐ.
+                visit_week=carried_visit_week(
+                    existing_visit_week_by_slot, weekday=wd, slot_index=0
+                ),
             )
             db.add(new_pfv)
             await db.flush()

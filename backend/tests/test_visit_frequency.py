@@ -1093,3 +1093,152 @@ async def test_every_week_patient_is_unchanged(db) -> None:
     assert plan.skipped.get("visit_frequency", 0) == 0
     copied = sorted(it.target_date.weekday() for it in plan.items if it.patient_id == ev.id)
     assert copied == [1, 4]
+
+
+# ---------------------------------------------------------------------------
+# 特別週の決まりが効いている週は、自動割当・プール・エージェントも頻度で間引かない
+# (週の生成・前の週のコピーとそろえる)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_auto_allocator_does_not_thin_special_week_patient(db) -> None:
+    from app.api.v1.agent import _desired_per_week
+    from app.services.scheduling.auto_allocator_v2 import (
+        _g93_desired_weekdays,
+        _g94_desired_count,
+        run_v2_pipeline,
+    )
+    from app.services.scheduling.pool_bulk_inserter import _desired_weekly_visits
+    from app.services.scheduling.visit_frequency import frequency_applies
+
+    office, _tpl = await _office_with_staff(db, "VF-special")
+    off = ANCHOR + timedelta(weeks=1)  # B の週 (隔週・枠 every → お休み)
+    y, w = _iso(off)
+    sp = await _patient(
+        db, "VF-SPA", _biweekly(frequency_per_week=1), [(0, "every")], office=office
+    )
+    sp.special_week_active = [{"iso_year": y, "iso_week": w}]
+    plain = await _patient(
+        db, "VF-SPN", _biweekly(frequency_per_week=1), [(0, "every")], office=office
+    )
+    await db.commit()
+
+    assert frequency_applies(sp, off) is False
+    assert frequency_applies(sp, ANCHOR) is True
+    assert frequency_applies(plain, off) is True
+
+    rows = list(
+        (
+            await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == sp.id))
+        ).all()
+    )
+    assert _g94_desired_count(sp, rows, week_start=off) == 1
+    assert _g93_desired_weekdays(sp, rows, week_start=off) == {0}
+    assert _desired_weekly_visits(sp, week_start=off, fixed_rows=rows) == 1
+    assert _g94_desired_count(plain, rows, week_start=off) == 0
+
+    result = await run_v2_pipeline(
+        db, iso_year=y, iso_week=w, office_ids=[office.id], mode="diff_add"
+    )
+    pool_ids = {v.patient_id for v in result["pool_visits"]}
+    assert sp.id in pool_ids  # 特別週の方は頻度で間引かない
+    assert plain.id not in pool_ids  # 同じ設定でも特別週でない方はお休み
+    # エージェントの希望回数は weekly_pattern で数えるので、特別週の方は週を渡さない側で 1
+    assert _desired_per_week(sp.weekly_pattern) == 1
+
+
+# ---------------------------------------------------------------------------
+# 行を作り直す経路でも訪問する週 (A/B) を引き継ぐ
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_individual_proposal_carries_visit_week(db) -> None:
+    """提案の採用: 同じ曜日は行をそのまま、曜日を動かした枠は同じ slot の値 (B) を引き継ぐ."""
+    from app.services.scheduling.auto_allocator_v2 import apply_individual_proposal
+
+    office, _tpl = await _office_with_staff(db, "VF-adopt")
+    p = await _patient(db, "VF-ADP", _biweekly(), [(1, "B"), (3, "B")], office=office)
+    await db.commit()
+
+    await apply_individual_proposal(
+        db,
+        patient_id=p.id,
+        visit_plans=[
+            {"weekday": 1, "start_time": time(11, 0), "duration_min": 35},
+            {"weekday": 4, "start_time": time(10, 0), "duration_min": 35},  # 木 → 金へ
+        ],
+    )
+    await db.commit()
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit)
+            .where(PatientFixedVisit.patient_id == p.id)
+            .order_by(PatientFixedVisit.weekday)
+        )
+    ).all()
+    assert [(r.weekday, r.visit_week) for r in rows] == [(1, "B"), (4, "B")]
+
+
+@pytest.mark.asyncio
+async def test_pending_visit_add_carries_visit_week(db) -> None:
+    """申請の取り込み (固定の枠を足す・置き換える) で A/B を引き継ぐ."""
+    from app.models.pending_request import PendingRequest
+    from app.services.pending_request_applier import PendingRequestApplier
+
+    u = User(email="vf-pending@example.com", password_hash=hash_password("pw"), role="admin")
+    db.add(u)
+    p = await _patient(db, "VF-PEN", _biweekly(), [(0, "A"), (2, "A")])
+    await db.commit()
+
+    async def _apply(payload: dict) -> None:
+        pr = PendingRequest(
+            request_type="patient_visit_add",
+            payload={"patient_id": str(p.id), **payload},
+            requester_user_id=u.id,
+            target_patient_id=p.id,
+            status="pending",
+        )
+        db.add(pr)
+        await db.commit()
+        await PendingRequestApplier().apply(db, pr)
+        await db.commit()
+
+    # 同じ曜日の置き換え (月 A → 月 A のまま)
+    await _apply(
+        {
+            "proposed_visits": [{"weekday": 0, "start_time": "11:00", "duration_min": 40}],
+            "warnings": [{"level": "red", "code": "time_overlap", "message": "重複"}],
+            "override_reason": "時刻を合わせる",
+        }
+    )
+    # 新しい曜日 (金): 同じ slot の既存行がすべて A → A
+    await _apply({"proposed_visits": [{"weekday": 4, "start_time": "14:00", "duration_min": 30}]})
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit)
+            .where(PatientFixedVisit.patient_id == p.id)
+            .order_by(PatientFixedVisit.weekday)
+        )
+    ).all()
+    assert [(r.weekday, r.start_time, r.visit_week) for r in rows] == [
+        (0, time(11, 0), "A"),
+        (2, time(10, 0), "A"),
+        (4, time(14, 0), "A"),
+    ]
+
+
+def test_carried_visit_week_rules() -> None:
+    from app.services.scheduling.visit_week_carry import carried_visit_week, visit_week_by_slot_of
+
+    rows = [
+        PatientFixedVisit(mode="normal", weekday=1, slot_index=0, visit_week="A"),
+        PatientFixedVisit(mode="normal", weekday=4, slot_index=0, visit_week="B"),
+        PatientFixedVisit(mode="normal", weekday=4, slot_index=1, visit_week="B"),
+    ]
+    m = visit_week_by_slot_of(rows)
+    assert carried_visit_week(m, weekday=1, slot_index=0) == "A"
+    assert carried_visit_week(m, weekday=2, slot_index=0) == "every"  # A と B が混ざる
+    assert carried_visit_week(m, weekday=2, slot_index=1) == "B"
+    assert carried_visit_week({}, weekday=2, slot_index=0) == "every"

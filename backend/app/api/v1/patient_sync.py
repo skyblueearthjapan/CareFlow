@@ -59,6 +59,7 @@ from app.schemas.v2.patient_sync import (
     SyncWeekToFixedSummary,
 )
 from app.services.scheduling.auto_allocator_v2 import _address_bucket
+from app.services.scheduling.visit_week_carry import carried_visit_week, visit_week_by_slot_of
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +330,12 @@ def _apply_sync_changes(
                 course_template_id=change.new.course_template_id,
                 is_pinned=inherit_pin,
                 movability=inherit_mov,
+                # 0102: 新しい曜日の枠は同じ slot の既存行の訪問する週を引き継ぐ.
+                visit_week=carried_visit_week(
+                    visit_week_by_slot_of(existing_by_wd.values()),
+                    weekday=change.new.weekday,
+                    slot_index=0,
+                ),
             )
             db.add(new_pfv)
         elif change.operation == "update":
@@ -560,6 +567,12 @@ async def sync_week_visits_to_fixed_endpoint(
                     duration_min=change.new.duration_min,
                     slot_index=0,
                     course_template_id=change.new.course_template_id,
+                    # 0102: 新しい曜日の枠は同じ slot の既存行の訪問する週を引き継ぐ.
+                    visit_week=carried_visit_week(
+                        visit_week_by_slot_of(existing_by_wd.values()),
+                        weekday=change.new.weekday,
+                        slot_index=0,
+                    ),
                 )
                 db.add(new_pfv)
             elif change.operation == "update":

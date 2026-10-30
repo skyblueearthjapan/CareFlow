@@ -188,6 +188,41 @@ def frequency_rule_active(weekly_pattern: Any) -> bool:
     )
 
 
+def is_special_week_active_on(special_week_active: Any, week_start: date) -> bool:
+    """``patients.special_week_active`` (``[{iso_year, iso_week}]``) にその週が入っているか.
+
+    ``layer1_expander._is_special_week_active`` と同じ判定を、週の月曜の日付で行う。
+    """
+    if not isinstance(special_week_active, list):
+        return False
+    iso = monday_of(week_start).isocalendar()
+    for item in special_week_active:
+        if not isinstance(item, dict):
+            continue
+        try:
+            iy = int(item.get("iso_year"))  # type: ignore[arg-type]
+            iw = int(item.get("iso_week"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if iy == iso.year and iw == iso.week:
+            return True
+    return False
+
+
+def frequency_applies(patient: Any, week_start: date | None) -> bool:
+    """その週、この患者を頻度の決まりで間引くか.
+
+    ``frequency_rule_active`` に加えて、特別週の決まりが効いている週
+    (``special_week_active`` にその週がある) は間引かない (週の生成・前の週のコピーと
+    そろえる)。``week_start`` が ``None`` のときは特別週を見ない。
+    """
+    if not frequency_rule_active(getattr(patient, "weekly_pattern", None)):
+        return False
+    if week_start is None:
+        return True
+    return not is_special_week_active_on(getattr(patient, "special_week_active", None), week_start)
+
+
 _WEEKDAY_CODES: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
@@ -445,11 +480,13 @@ __all__ = [
     "VISIT_FREQUENCIES",
     "desired_count_for_week",
     "filter_pfv_rows_for_week",
+    "frequency_applies",
     "frequency_rule_active",
     "frequency_status",
     "is_a_week",
     "is_patient_visit_week",
     "is_slot_visit_week",
+    "is_special_week_active_on",
     "monday_of",
     "normalize_slot_visit_week",
     "normalize_visit_weeks",
