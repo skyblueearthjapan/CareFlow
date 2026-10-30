@@ -120,11 +120,19 @@ def test_nth_weekday_and_monthly_boundaries() -> None:
     assert is_slot_visit_week(wp, "every", date(2026, 11, 30), 3) is True
     # 月次では枠の A/B は見ない
     assert is_slot_visit_week(wp, "B", date(2026, 11, 2), 3) is True
-    # 枠を渡さない患者単位: その週の 7 日のどれかが第 1/3 週なら訪問の週
-    assert is_patient_visit_week(wp, date(2026, 11, 23)) is False  # 11/23〜29 = 第 4 週
-    assert is_patient_visit_week(wp, date(2026, 11, 30)) is True  # 12/1〜 が第 1 週
-    # 枠の無い方は希望曜日で判定: 10/26 の週は日 11/1 が第 1 週でも、木 10/29 は第 5 週
-    assert is_patient_visit_week(wp, date(2026, 10, 26)) is True
+    # 枠も希望曜日も無い患者単位: その週の **月曜の日付** で判定する
+    # (7 日のどれかで判定すると、月の境目の週が 2 週続けて訪問の週になるため)
+    assert is_patient_visit_week(wp, date(2026, 11, 23)) is False  # 月 11/23 = 第 4 週
+    assert is_patient_visit_week(wp, date(2026, 11, 30)) is False  # 月 11/30 = 第 5 週
+    assert is_patient_visit_week(wp, date(2026, 12, 7)) is True  # 月 12/7 = 第 1 週
+    assert is_patient_visit_week(wp, date(2026, 10, 26)) is False  # 月 10/26 = 第 4 週
+    assert is_patient_visit_week(wp, date(2026, 11, 2)) is True  # 月 11/2 = 第 1 週
+    # 第 1 週だけの方が、月の境目で 2 週続けて訪問の週にならない
+    first_only = _monthly("1")
+    hits = [
+        is_patient_visit_week(first_only, date(2026, 11, 23) + timedelta(weeks=k)) for k in range(4)
+    ]
+    assert hits == [False, False, True, False]  # 11/23・11/30・12/7・12/14
     assert (
         is_patient_visit_week(_monthly("1,3", preferred_weekdays=["Thu"]), date(2026, 10, 26))
         is False
@@ -720,3 +728,368 @@ async def test_visit_frequency_preview_endpoint(client, db) -> None:
     assert body["frequency_status"] == "missing_anchor"
     assert body["slots_source"] == "preferred_weekdays"
     assert body["upcoming_visit_dates"] == ["2026-11-04", "2026-11-11"]
+
+
+# ---------------------------------------------------------------------------
+# レビューの指摘への手当て (段 1 の 2 回目)
+# ---------------------------------------------------------------------------
+
+
+def _ab_pattern(**extra: Any) -> dict:
+    """隔週・希望 火金 午前 (枠は 火=A・金=B で持たせる)."""
+    return _biweekly(preferred_weekdays=["Tue", "Fri"], time_type="午前", **extra)
+
+
+def _pool_weekdays(result: dict, patient_id) -> set[int]:
+    return {v.weekday for v in result["pool_visits"] if v.patient_id == patient_id}
+
+
+def _planned(patient: Patient, d: date, start: time = time(13, 0)) -> Visit:
+    return Visit(
+        patient_id=patient.id,
+        visit_date=d,
+        start_time=start,
+        end_time=time(start.hour, 35),
+        type="regular",
+        status=VISIT_STATUS_PLANNED,
+        source="auto",
+        required_staff_count=1,
+    )
+
+
+def test_visit_weekdays_for_week_and_generating_slots() -> None:
+    from app.services.scheduling.visit_frequency import pfv_slots, visit_weekdays_for_week
+
+    wp = _biweekly()
+    off = ANCHOR + timedelta(weeks=1)
+    slots = [(1, "A"), (4, "B")]
+    assert visit_weekdays_for_week(wp, ANCHOR, slots) == frozenset({1})
+    assert visit_weekdays_for_week(wp, off, slots) == frozenset({4})
+    # 枠の無い隔週: A の週は 7 日・B の週は空
+    assert visit_weekdays_for_week(wp, ANCHOR) == frozenset(range(7))
+    assert visit_weekdays_for_week(wp, off) == frozenset()
+    # 枠の無い月次: 曜日ごと (11/30 の週: 月 11/30 = 第 5・火 12/1〜 = 第 1)
+    assert visit_weekdays_for_week(_monthly("1"), date(2026, 11, 30)) == frozenset(range(1, 7))
+    # 毎週・設定不足は None (絞らない)
+    assert visit_weekdays_for_week({}, ANCHOR, slots) is None
+    assert visit_weekdays_for_week(_biweekly(anchor=None), ANCHOR, slots) is None
+
+    rows = [
+        PatientFixedVisit(mode="normal", weekday=1, slot_index=0, visit_week="A"),
+        PatientFixedVisit(mode="normal", weekday=4, slot_index=1, visit_week="every"),
+        PatientFixedVisit(mode="special", weekday=2, slot_index=0, visit_week="every"),
+    ]
+    assert pfv_slots(rows) == [(1, "A"), (4, "every")]
+    assert pfv_slots(rows, requires_multiple_staff=True) == [(1, "A"), (4, "every")]
+    # 1 名の方は slot 1 を数えない (週の生成が slot 1 を無視するのとそろえる)
+    assert pfv_slots(rows, requires_multiple_staff=False) == [(1, "A")]
+
+
+def test_desired_count_ignores_slot1_for_single_staff() -> None:
+    from app.services.scheduling.auto_allocator_v2 import _g94_desired_count
+    from app.services.scheduling.pool_bulk_inserter import _desired_weekly_visits
+
+    rows = [
+        PatientFixedVisit(mode="normal", weekday=1, slot_index=0, visit_week="A"),
+        # 1 名の方に誤って残った slot 1 (週の生成は作らない)
+        PatientFixedVisit(mode="normal", weekday=4, slot_index=1, visit_week="every"),
+    ]
+    off = ANCHOR + timedelta(weeks=1)
+    single = Patient(
+        code="VF-S1",
+        name="single",
+        status="active",
+        weekly_pattern=_biweekly(),
+        requires_multiple_staff=False,
+    )
+    assert _g94_desired_count(single, rows, week_start=ANCHOR) == 1
+    assert _g94_desired_count(single, rows, week_start=off) == 0
+    single.weekly_pattern = _biweekly(frequency_per_week=2)
+    assert _desired_weekly_visits(single, week_start=ANCHOR, fixed_rows=rows) == 1
+    assert _desired_weekly_visits(single, week_start=off, fixed_rows=rows) == 0
+
+
+@pytest.mark.asyncio
+async def test_full_optimize_proposes_only_this_weeks_ab_slot(db) -> None:
+    """隔週・火=A・金=B・希望 火金: A の週に金を、B の週に火を提案しない (全面最適化)."""
+    from app.services.scheduling.auto_allocator_v2 import run_v2_pipeline
+
+    office, _tpl = await _office_with_staff(db, "VF-full")
+    ab = await _patient(db, "VF-FAB", _ab_pattern(), [(1, "A"), (4, "B")], office=office)
+    await db.commit()
+
+    for k, expected in ((0, {1}), (1, {4})):
+        y, w = _iso(ANCHOR + timedelta(weeks=k))
+        result = await run_v2_pipeline(
+            db, iso_year=y, iso_week=w, office_ids=[office.id], mode="full_optimize"
+        )
+        assert _pool_weekdays(result, ab.id) == expected
+
+
+@pytest.mark.asyncio
+async def test_diff_add_proposes_only_this_weeks_ab_slot(db) -> None:
+    """差分追加: 固定枠の候補も、希望へのフォールバック (G-92) も、その週の枠の曜日だけ."""
+    from app.services.scheduling.auto_allocator_v2 import run_v2_pipeline
+
+    office, _tpl = await _office_with_staff(db, "VF-diff")
+    ab = await _patient(db, "VF-DAB", _ab_pattern(), [(1, "A"), (4, "B")], office=office)
+    await db.commit()
+
+    for k, expected in ((0, {1}), (1, {4})):
+        y, w = _iso(ANCHOR + timedelta(weeks=k))
+        result = await run_v2_pipeline(
+            db, iso_year=y, iso_week=w, office_ids=[office.id], mode="diff_add"
+        )
+        assert _pool_weekdays(result, ab.id) == expected
+        before_wds = {v.weekday for v in result["before_visits"] if v.patient_id == ab.id}
+        assert before_wds <= expected
+
+
+@pytest.mark.asyncio
+async def test_monthly_no_slot_patient_is_judged_per_weekday(db) -> None:
+    """枠の無い月次 (第 1 週・希望 月木): 11/30 の週は月 11/30 (第 5) を作らず木 12/3 だけ."""
+    from app.services.scheduling.auto_allocator_v2 import run_v2_pipeline
+
+    office, _tpl = await _office_with_staff(db, "VF-mon")
+    mo = await _patient(
+        db,
+        "VF-MON",
+        _monthly("1", preferred_weekdays=["Mon", "Thu"], time_type="午前"),
+        office=office,
+    )
+    await db.commit()
+    y, w = _iso(date(2026, 11, 30))
+    for mode in ("diff_add", "full_optimize"):
+        result = await run_v2_pipeline(
+            db, iso_year=y, iso_week=w, office_ids=[office.id], mode=mode
+        )
+        assert {v.weekday for v in result["before_visits"] if v.patient_id == mo.id} == {3}
+        assert _pool_weekdays(result, mo.id) == {3}
+
+
+@pytest.mark.asyncio
+async def test_from_week_keeps_other_week_slots(client, db) -> None:
+    """A の週の訪問から枠を作り直しても B の枠は消えない (一括も同じ・毎週の方は今までどおり)."""
+    headers = await _admin(db)
+    ab = await _patient(db, "VF-FW", _biweekly(), [(1, "A"), (4, "B")])
+    every = await _patient(db, "VF-FWE", None, [(1, "every"), (4, "every")])
+    for p in (ab, every):
+        db.add(_planned(p, ANCHOR + timedelta(days=1), time(11, 0)))  # 火
+    await db.commit()
+    y, w = _iso(ANCHOR)
+
+    resp = await client.post(
+        f"/api/v1/patients/{ab.id}/fixed-visits/from-week",
+        params={"iso_year": y, "iso_week": w},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    got = {(r["weekday"], r["visit_week"], r["start_time"][:5]) for r in resp.json()}
+    assert got == {(1, "A", "11:00"), (4, "B", "10:00")}
+
+    resp = await client.post(
+        "/api/v1/patients/fixed-visits/from-week-bulk",
+        params={"iso_year": y, "iso_week": w},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == ab.id))
+    ).all()
+    assert {(r.weekday, r.visit_week) for r in rows} == {(1, "A"), (4, "B")}
+    # 毎週の方は今までどおり (週の訪問に無い金の枠は作り直しで消える)
+    rows_e = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == every.id))
+    ).all()
+    assert {(r.weekday, r.visit_week) for r in rows_e} == {(1, "every")}
+
+
+@pytest.mark.asyncio
+async def test_put_carries_visit_week_when_weekday_moves(client, db) -> None:
+    headers = await _admin(db)
+    p = await _patient(db, "VF-MV", _biweekly(), [(4, "B")])
+    await db.commit()
+    url = f"/api/v1/patients/{p.id}/fixed-visits"
+    # 旧 FE: 金 (B) を木へ動かす (visit_week を送らない) → 同じ slot が全部 B なので B
+    put = await client.put(
+        url,
+        json={"mode": "normal", "items": [{"weekday": 3, "start_time": "10:00"}]},
+        headers=headers,
+    )
+    assert put.status_code == 200, put.text
+    assert [(i["weekday"], i["visit_week"]) for i in put.json()["items"]] == [(3, "B")]
+
+
+@pytest.mark.asyncio
+async def test_pattern_change_keeps_visit_week(client, db) -> None:
+    headers = await _admin(db)
+    p = await _patient(db, "VF-PC", _biweekly(), [(0, "B")])
+    off = ANCHOR + timedelta(weeks=1)
+    v = _planned(p, off, time(10, 0))
+    db.add(v)
+    await db.commit()
+    y, w = _iso(off)
+    res = await client.post(
+        "/api/v1/schedule/fix-or-pattern",
+        headers=headers,
+        json={
+            "mode": "pattern_change",
+            "visit_id": str(v.id),
+            "new_weekday": 2,
+            "new_start_time": "14:00",
+            "new_duration_min": 35,
+            "iso_year": y,
+            "iso_week": w,
+        },
+    )
+    assert res.status_code == 200, res.text
+    rows = (
+        await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == p.id))
+    ).all()
+    assert [(r.weekday, r.visit_week) for r in rows] == [(2, "B")]
+
+
+@pytest.mark.asyncio
+async def test_two_staff_slots_must_share_visit_week(client, db) -> None:
+    headers = await _admin(db)
+    p = await _patient(db, "VF-2S", _biweekly())
+    p.requires_multiple_staff = True
+    await db.commit()
+    url = f"/api/v1/patients/{p.id}/fixed-visits"
+
+    def _items(vw0: str, vw1: str) -> list[dict]:
+        return [
+            {"weekday": 1, "start_time": "10:00", "slot_index": 0, "visit_week": vw0},
+            {"weekday": 1, "start_time": "10:00", "slot_index": 1, "visit_week": vw1},
+        ]
+
+    bad = await client.put(url, json={"mode": "normal", "items": _items("A", "B")}, headers=headers)
+    assert bad.status_code == 422, bad.text
+    detail = str(bad.json()["detail"])
+    assert "そろえて" in detail
+    assert "火" in detail
+    ok = await client.put(url, json={"mode": "normal", "items": _items("B", "B")}, headers=headers)
+    assert ok.status_code == 200, ok.text
+
+
+@pytest.mark.asyncio
+async def test_copy_week_copies_no_slot_frequency_patients_on_visit_weekdays(db) -> None:
+    from app.services.scheduling.copy_week import build_copy_plan
+
+    office, _tpl = await _office_with_staff(db, "VF-copy2")
+    bi = await _patient(db, "VF-CN", _biweekly(), office=office)
+    mo = await _patient(db, "VF-CM", _monthly("1"), office=office)
+    source = ANCHOR  # 11/2 の週 (A・第 1 週)
+    db.add(_planned(bi, source + timedelta(days=2)))  # 水 11/4
+    db.add(_planned(mo, source))  # 月 11/2 (第 1 月曜)
+    db.add(_planned(mo, source + timedelta(days=3)))  # 木 11/5 (第 1 木曜)
+    await db.commit()
+
+    async def _plan(target: date):
+        return await build_copy_plan(
+            db,
+            source_monday=source,
+            target_monday=target,
+            exclude_visit_ids=set(),
+            fill_from_fixed=False,
+            today=source,
+        )
+
+    # B の週 (11/9): 隔週の方は写さない. 月次 (月 11/9・木 11/12 = 第 2) も写さない
+    plan = await _plan(source + timedelta(weeks=1))
+    assert plan.skipped["visit_frequency"] == 3
+    assert plan.items == []
+    # A の週 (11/16): 隔週の方は写す. 月次 (第 3) は写さない
+    plan = await _plan(source + timedelta(weeks=2))
+    assert [(it.patient_id, it.target_date) for it in plan.items] == [(bi.id, date(2026, 11, 18))]
+    # 11/30 の週 (A): 月 11/30 (第 5) は写さず、木 12/3 (第 1) だけ写す
+    plan = await _plan(date(2026, 11, 30))
+    assert {(it.patient_id, it.target_date) for it in plan.items} == {
+        (bi.id, date(2026, 12, 2)),
+        (mo.id, date(2026, 12, 3)),
+    }
+
+
+@pytest.mark.asyncio
+async def test_visit_frequency_preview_forbidden_for_staff(client, db) -> None:
+    u = User(email="vf-staff@example.com", password_hash=hash_password("pw"), role="staff")
+    db.add(u)
+    p = await _patient(db, "VF-403", _biweekly(), [(1, "A")])
+    await db.commit()
+    await db.refresh(u)
+    token = create_access_token(subject=u.id, role=u.role, staff_id=u.staff_id)
+    resp = await client.get(
+        f"/api/v1/patients/{p.id}/visit-frequency-preview",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.asyncio
+async def test_special_week_is_not_thinned_by_frequency(db) -> None:
+    """特別週の方は、頻度でお休みの週でも特別週の枠から作る (頻度を当てない)."""
+    from app.services.scheduling.layer1_expander import Layer1Expander
+
+    off = ANCHOR + timedelta(weeks=1)
+    y, w = _iso(off)
+    p = await _patient(db, "VF-SP", _biweekly(), [(0, "A")])
+    p.special_week_active = [{"iso_year": y, "iso_week": w}]
+    db.add(
+        PatientFixedVisit(
+            patient_id=p.id,
+            mode="special",
+            weekday=2,
+            start_time=time(10, 0),
+            duration_min=35,
+            visit_week="every",
+        )
+    )
+    await db.commit()
+    res = await Layer1Expander().expand_week(db, iso_year=y, iso_week=w)
+    await db.commit()
+    assert [v.visit_date for v in await _live_visits(db, p.id, off)] == [off + timedelta(days=2)]
+    assert p.id not in res.frequency_off_week_patient_ids
+
+
+@pytest.mark.asyncio
+async def test_every_week_patient_is_unchanged(db) -> None:
+    """毎週の方は、枠に A/B が入っていても (見ない) 週の生成・コピー・プールが今までどおり."""
+    from app.services.scheduling.auto_allocator_v2 import run_v2_pipeline
+    from app.services.scheduling.copy_week import build_copy_plan
+    from app.services.scheduling.layer1_expander import Layer1Expander
+    from app.services.scheduling.pool_bulk_inserter import _desired_weekly_visits
+
+    office, tpl = await _office_with_staff(db, "VF-every")
+    wp = {"preferred_weekdays": ["Tue", "Fri"], "time_type": "午前", "frequency_per_week": 2}
+    ev = await _patient(db, "VF-EV", wp, [(1, "B"), (4, "A")], office=office, template=tpl)
+    await db.commit()
+    rows = list(
+        (
+            await db.scalars(select(PatientFixedVisit).where(PatientFixedVisit.patient_id == ev.id))
+        ).all()
+    )
+
+    for k in range(2):
+        monday = ANCHOR + timedelta(weeks=k)
+        y, w = _iso(monday)
+        result = await run_v2_pipeline(
+            db, iso_year=y, iso_week=w, office_ids=[office.id], mode="full_optimize"
+        )
+        assert _pool_weekdays(result, ev.id) == {1, 4}
+        assert _desired_weekly_visits(ev, week_start=monday, fixed_rows=rows) == 2
+        res = await Layer1Expander().expand_week(db, iso_year=y, iso_week=w)
+        await db.commit()
+        assert [v.visit_date.weekday() for v in await _live_visits(db, ev.id, monday)] == [1, 4]
+        assert ev.id not in res.frequency_off_week_patient_ids
+
+    plan = await build_copy_plan(
+        db,
+        source_monday=ANCHOR,
+        target_monday=ANCHOR + timedelta(weeks=2),
+        exclude_visit_ids=set(),
+        fill_from_fixed=False,
+        today=ANCHOR,
+    )
+    assert plan.skipped.get("visit_frequency", 0) == 0
+    copied = sorted(it.target_date.weekday() for it in plan.items if it.patient_id == ev.id)
+    assert copied == [1, 4]

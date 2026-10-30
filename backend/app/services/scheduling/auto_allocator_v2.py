@@ -88,6 +88,7 @@ from app.services.scheduling.visit_frequency import (
     is_patient_visit_week,
     pfv_slots,
     pfv_visits_in_week,
+    visit_weekdays_for_week,
 )
 
 # 2026-10-13 (PO): メモが 「【検証】」 で始まる訪問は試しに入れたもの. 今週の実際の
@@ -1947,6 +1948,35 @@ def _extract_fixed_visits_for_patient(
     return out
 
 
+def _generating_slots(patient: Patient, rows: list[PatientFixedVisit]) -> list[tuple[int, str]]:
+    """通常の枠のうち、週の生成で訪問を作る枠を ``(曜日, visit_week)`` にする.
+
+    1 名の患者は slot 0 だけ (週の生成が slot 1 を無視するのとそろえる)。
+    """
+    return pfv_slots(
+        rows,
+        requires_multiple_staff=bool(getattr(patient, "requires_multiple_staff", False)),
+    )
+
+
+def _frequency_allowed_weekdays(
+    patient: Patient,
+    normal_rows: list[PatientFixedVisit] | None,
+    week_start: date | None,
+) -> frozenset[int] | None:
+    """訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): その週に予定を作ってよい曜日.
+
+    枠のある患者はその週に訪問する枠の曜日だけ、枠の無い患者は曜日ごとの判定
+    (``visit_weekdays_for_week``)。毎週・設定不足・週が分からないときは ``None``
+    (= 曜日を絞らない・挙動不変)。
+    """
+    if week_start is None or not frequency_rule_active(patient.weekly_pattern):
+        return None
+    return visit_weekdays_for_week(
+        patient.weekly_pattern, week_start, _generating_slots(patient, list(normal_rows or []))
+    )
+
+
 def _g93_desired_weekdays(
     patient: Patient,
     fixed_rows: list[PatientFixedVisit] | None,
@@ -1974,16 +2004,15 @@ def _g93_desired_weekdays(
     """
     wds: set[int] = set()
     rows = list(fixed_rows or [])
-    if week_start is not None and frequency_rule_active(patient.weekly_pattern):
-        # 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): お休みの週は希望曜日なし.
-        # 訪問の週は、その週に当たる枠の曜日だけを数える.
-        if not is_patient_visit_week(patient.weekly_pattern, week_start, pfv_slots(rows) or None):
-            return wds
-        rows = filter_pfv_rows_for_week(patient.weekly_pattern, rows, week_start)
     for wd, _st, _sm in _extract_fixed_visits_for_patient(rows):
         wds.add(wd)
     for wd, _st, _sm, _tt, _ps, _pe in _extract_weekly_entries(patient, config=config):
         wds.add(wd)
+    # 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): お休みの週は希望曜日なし.
+    # 訪問の週は、その週に訪問する枠の曜日 (枠の無い方は曜日ごとの判定) だけを残す.
+    allowed = _frequency_allowed_weekdays(patient, rows, week_start)
+    if allowed is not None:
+        wds &= allowed
     return wds
 
 
@@ -2033,7 +2062,10 @@ def _g94_desired_count(
     if week_start is None:
         return base
     return desired_count_for_week(
-        patient.weekly_pattern, base, week_start, pfv_slots(fixed_rows or []) or None
+        patient.weekly_pattern,
+        base,
+        week_start,
+        _generating_slots(patient, fixed_rows or []) or None,
     )
 
 
@@ -2198,8 +2230,14 @@ def build_visits_for_pool(
     office_name_by_id: dict[UUID, str] | None = None,
     warnings: list[V2Warning] | None = None,
     config: SchedulingConfig | None = None,
+    allowed_weekdays_by_patient: dict[UUID, frozenset[int]] | None = None,
 ) -> list[V2Visit]:
     """段階 1〜2 中間: 各患者の希望を V2Visit に展開する.
+
+    訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): ``allowed_weekdays_by_patient``
+    に載っている患者は、その曜日の候補だけを作る (固定枠・希望の両方の分岐で).
+    載っていない患者 (毎週・設定不足) は曜日を絞らない. 作る前に絞るので、絞った曜日の
+    拠点休業の警告も出ない.
 
     ``use_fixed_as_source=True`` の場合は ``fixed_by_patient`` を優先し、
     weekly_pattern より固定枠のスケジュールを使う (機能 D の再生成).
@@ -2245,6 +2283,11 @@ def build_visits_for_pool(
     for patient in patients:
         if patient.lat is None or patient.lng is None or patient.primary_office_id is None:
             continue
+        _allowed_wds = (
+            allowed_weekdays_by_patient.get(patient.id)
+            if allowed_weekdays_by_patient is not None
+            else None
+        )
         addr = patient.address
         area = _extract_area_label(addr)
         sex_r = patient.sex_restriction
@@ -2321,6 +2364,8 @@ def build_visits_for_pool(
             if entries_fixed:
                 used_fixed = True
                 for wd, st, sm in entries_fixed:
+                    if _allowed_wds is not None and wd not in _allowed_wds:
+                        continue  # 訪問頻度: この週に訪問しない曜日
                     ov = overlay.get((patient.id, wd))
                     if ov is not None:
                         st_eff = ov.new_start
@@ -2408,6 +2453,8 @@ def build_visits_for_pool(
             # 2 件目以降の entry を skip する.
             emitted_pinned_wds: set[int] = set()
             for wd, st, sm, tt, ps_str, pe_str in entries:
+                if _allowed_wds is not None and wd not in _allowed_wds:
+                    continue  # 訪問頻度: この週に訪問しない曜日 (A/B の枠・第何週)
                 # Phase G-30.1: weekly_pattern 由来でも、 同 (patient_id, weekday) に
                 # pinned PFV があれば PFV ベースに切替える (= start_time /
                 # duration / time_type を PFV から取る). G-30 で is_pinned=True の
@@ -6237,9 +6284,16 @@ async def _load_before_visits_v2(
             week_start=_freq_week_start,
         )
         entries = _extract_weekly_entries(patient, config=config)
+        # 訪問頻度 (§3-3): 曜日ごとに判定する (月の第何週は曜日の日付で第 N 週が変わる.
+        # 枠のある隔週は、その週に訪問する枠の曜日だけ). 毎週の患者は None で絞らない.
+        _allowed_wds = _frequency_allowed_weekdays(
+            patient, pfv_rows_by_patient.get(patient.id), _freq_week_start
+        )
         for wd, st, sm, tt_raw, ps_raw, pe_raw in entries:
             key = (patient.id, wd, 0)
             if key in chosen:
+                continue
+            if _allowed_wds is not None and wd not in _allowed_wds:
                 continue
             if desired_n is not None and chosen_count_by_patient[patient.id] >= desired_n:
                 break
@@ -7502,6 +7556,10 @@ async def run_v2_pipeline(
         else {}
     )
     off_week_patient_ids: set[UUID] = set()
+    # 訪問頻度: 曜日の絞り込み (固定枠の候補・希望の候補・G-92 の希望フォールバックの全部に
+    # 当てる). 枠のある方は「その週に訪問する枠の曜日」だけ、枠の無い方は曜日ごとの判定.
+    # 例: 隔週・火=A・金=B・希望 火金 → A の週は火だけ (金を提案しない).
+    freq_allowed_wds: dict[UUID, frozenset[int]] = {}
     if _freq_patients:
         _freq_rows: dict[UUID, list[PatientFixedVisit]] = defaultdict(list)
         for _pfv in (
@@ -7514,8 +7572,13 @@ async def run_v2_pipeline(
         ).all():
             _freq_rows[_pfv.patient_id].append(_pfv)
         for _pid, _p in _freq_patients.items():
+            _allowed = _frequency_allowed_weekdays(_p, _freq_rows.get(_pid, []), _freq_week_start)
+            if _allowed is not None:
+                freq_allowed_wds[_pid] = _allowed
             if not is_patient_visit_week(
-                _p.weekly_pattern, _freq_week_start, pfv_slots(_freq_rows.get(_pid, [])) or None
+                _p.weekly_pattern,
+                _freq_week_start,
+                _generating_slots(_p, _freq_rows.get(_pid, [])) or None,
             ):
                 off_week_patient_ids.add(_pid)
         if off_week_patient_ids:
@@ -7650,6 +7713,7 @@ async def run_v2_pipeline(
         office_name_by_id=office_name_by_id,
         warnings=warnings,
         config=config,
+        allowed_weekdays_by_patient=freq_allowed_wds or None,
     )
     if pool_patients_orphan_fixed and orphan_fixed_by_patient:
         # CareFlow #102 Fix A: orphan PFV の course_template_id -> course label
@@ -7690,6 +7754,7 @@ async def run_v2_pipeline(
             office_name_by_id=office_name_by_id,
             warnings=warnings,
             config=config,
+            allowed_weekdays_by_patient=freq_allowed_wds or None,
         )
         # Phase G-92: 固定訪問スケジュール由来の候補は pool_origin="fixed" を立てる.
         # 固定が 3 条件 (時間不適合 / 定員オーバー / 時間衝突) で入らない場合に
@@ -7715,6 +7780,7 @@ async def run_v2_pipeline(
                 # (固定候補展開で既に office_closed 等は emit 済).
                 warnings=None,
                 config=config,
+                allowed_weekdays_by_patient=freq_allowed_wds or None,
             )
             for _v in pool_visits_fallback:
                 _v.pool_origin = "preferred"

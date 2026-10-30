@@ -497,7 +497,7 @@ async def get_visit_frequency_preview(
             )
         )
     ).all()
-    slots = pfv_slots(rows)
+    slots = pfv_slots(rows, requires_multiple_staff=bool(patient.requires_multiple_staff))
     source: Literal["fixed_visits", "preferred_weekdays", "none"] = "fixed_visits"
     if not slots:
         raw_days = wp.get("preferred_weekdays")

@@ -371,6 +371,7 @@ async def week_context(
     # 訪問頻度: 隔週・月の第何週の患者は、この週に当たる通常の枠で希望回数を数える.
     freq_ids = [p.id for p in active_patients if frequency_rule_active(p.weekly_pattern)]
     freq_id_set = set(freq_ids)
+    _multi_by_id = {p.id: bool(p.requires_multiple_staff) for p in active_patients}
     freq_slots: dict[UUID, list[tuple[int, str]]] = defaultdict(list)
     if freq_ids:
         for f in (
@@ -381,7 +382,9 @@ async def week_context(
                 )
             )
         ).all():
-            freq_slots[f.patient_id].extend(pfv_slots([f]))
+            freq_slots[f.patient_id].extend(
+                pfv_slots([f], requires_multiple_staff=_multi_by_id.get(f.patient_id))
+            )
     for p in active_patients:
         desired = _desired_per_week(p.weekly_pattern, week_start=monday, slots=freq_slots.get(p.id))
         actual = count_by_patient.get(p.id, 0)

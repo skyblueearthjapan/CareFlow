@@ -1073,6 +1073,8 @@ async def _remove_schedule(
                 "sub_office_id": str(r.sub_office_id) if r.sub_office_id else None,
                 "is_pinned": bool(r.is_pinned),
                 "movability": r.movability,
+                # 0102: 訪問する週 (毎回/A/B). 戻すときに隔週の A/B を失わないため.
+                "visit_week": r.visit_week or "every",
             }
             for r in rows
         ]

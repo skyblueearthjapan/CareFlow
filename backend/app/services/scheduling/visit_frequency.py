@@ -277,8 +277,11 @@ def is_patient_visit_week(
 
     * 隔週: A の週だけ True (B の枠を知らないため。枠を知っている呼び出し側は
       ``slots`` を渡すか ``is_slot_visit_week`` を使うこと)。
-    * 月次: 希望の曜日 (``entries`` の曜日、無ければ ``preferred_weekdays``。どちらも
-      無ければ週の 7 日) のどれかの日付が visit_weeks の第 N 週に当たれば True。
+    * 月次: 希望の曜日 (``entries`` の曜日、無ければ ``preferred_weekdays``) のどれかの
+      日付が visit_weeks の第 N 週に当たれば True。希望の曜日も無いときは **その週の
+      月曜の日付だけ** で判定する (7 日のどれかで判定すると、月の境目の週が前の月の
+      第 5 週と次の月の第 1 週の 2 回続けて訪問の週になるため。例: 第 1 週だけの方で
+      11/30 (月) の週は 12/1〜 が第 1 週でも、月曜 11/30 が第 5 週なのでお休み)。
     """
     if not frequency_rule_active(weekly_pattern):
         return True
@@ -288,8 +291,37 @@ def is_patient_visit_week(
     wp = _as_pattern(weekly_pattern)
     if visit_frequency_of(wp) == FREQ_BIWEEKLY:
         return is_slot_visit_week(wp, SLOT_A, week_start, 0)
-    days = pattern_weekdays(wp) or list(range(7))
+    days = pattern_weekdays(wp) or [0]
     return any(is_slot_visit_week(wp, SLOT_EVERY, week_start, wd) for wd in days)
+
+
+def visit_weekdays_for_week(
+    weekly_pattern: Any,
+    week_start: date,
+    slots: Iterable[tuple[int, Any]] | None = None,
+) -> frozenset[int] | None:
+    """その週に訪問してよい曜日 (0=月〜6=日). 頻度の決まりが効かない患者は ``None``.
+
+    * 枠 (``slots`` = 通常の枠の ``(曜日, visit_week)``) がある患者: その週に訪問する
+      枠の曜日だけ (例: 隔週・火=A・金=B → A の週は {火}・B の週は {金})。
+      枠の無い曜日 (希望だけの曜日) は入れない。
+    * 枠の無い患者: 曜日ごとに ``is_slot_visit_week(wp, "every", 週, 曜日)`` で判定する
+      (隔週は A の週なら 7 日すべて・B の週は空。月次はその曜日の日付の第 N 週)。
+
+    ``None`` (毎週・設定不足) のときは、呼び出し側は曜日を絞らない (挙動不変)。
+    """
+    if not frequency_rule_active(weekly_pattern):
+        return None
+    slot_list = list(slots) if slots is not None else []
+    if slot_list:
+        return frozenset(
+            int(wd)
+            for wd, vw in slot_list
+            if is_slot_visit_week(weekly_pattern, vw, week_start, int(wd))
+        )
+    return frozenset(
+        wd for wd in range(7) if is_slot_visit_week(weekly_pattern, SLOT_EVERY, week_start, wd)
+    )
 
 
 def desired_count_for_week(
@@ -360,9 +392,27 @@ def pfv_slot(row: Any) -> tuple[int, str]:
     return int(row.weekday), normalize_slot_visit_week(getattr(row, "visit_week", None))
 
 
-def pfv_slots(rows: Iterable[Any], *, mode: str = "normal") -> list[tuple[int, str]]:
-    """``mode`` の行だけを ``(曜日, visit_week)`` の並びにする."""
-    return [pfv_slot(r) for r in rows if getattr(r, "mode", "normal") == mode]
+def pfv_slots(
+    rows: Iterable[Any],
+    *,
+    mode: str = "normal",
+    requires_multiple_staff: bool | None = None,
+) -> list[tuple[int, str]]:
+    """``mode`` の行だけを ``(曜日, visit_week)`` の並びにする.
+
+    ``requires_multiple_staff=False`` (1 名の患者) のときは ``slot_index=0`` の行だけを
+    使う。週の生成 (``layer1_expander._expand_fixed_visits_to_visits``) は 1 名の患者の
+    slot 1 の行を無視するので、数える側もそろえる (slot 1 だけの曜日を回数に入れない)。
+    ``True`` (2 名体制) と ``None`` (呼び出し側が患者を知らない) は全部の行を使う。
+    """
+    out: list[tuple[int, str]] = []
+    for r in rows:
+        if getattr(r, "mode", "normal") != mode:
+            continue
+        if requires_multiple_staff is False and (getattr(r, "slot_index", 0) or 0) != 0:
+            continue
+        out.append(pfv_slot(r))
+    return out
 
 
 def pfv_visits_in_week(weekly_pattern: Any, row: Any, week_start: date) -> bool:
@@ -413,4 +463,5 @@ __all__ = [
     "upcoming_visit_dates",
     "validate_biweekly_anchor",
     "visit_frequency_of",
+    "visit_weekdays_for_week",
 ]

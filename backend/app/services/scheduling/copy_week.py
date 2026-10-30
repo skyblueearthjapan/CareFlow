@@ -10,7 +10,8 @@
 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3.5): 隔週・月の第何週の患者
 (設定が足りている方) は写す元の訪問を **写さない** (写すと週の並びがずれる)。代わりに、
 写す先の週が訪問の週なら、固定訪問の枠から週生成と同じ決まりで作る (「補う」の指定に
-かかわらず必ず。お休みの週は何も作らない)。
+かかわらず必ず。お休みの週は何も作らない)。通常の枠が無い方は従来どおり写すが、写す先の
+日付の曜日がその週に訪問しない曜日 (隔週のお休みの週・第 N 週の外) の訪問は写さない。
 
 確認画面 (preview) と実行は **同じ ``build_copy_plan``** を通る。どのコースへ入れるか
 (担当の決まったコースへ入れてよいかの検査を含む) も計画の段階で決めるので、表示と
@@ -64,7 +65,11 @@ from app.services.scheduling.layer1_expander import (
     _get_or_create_course_for_template_week_l1,
     _is_special_week_active,
 )
-from app.services.scheduling.visit_frequency import frequency_rule_active, pfv_visits_in_week
+from app.services.scheduling.visit_frequency import (
+    frequency_rule_active,
+    is_slot_visit_week,
+    pfv_visits_in_week,
+)
 
 #: 写す元として選べる範囲 (写す先の週から何週前まで)。§4-2 の「過去 8 週」。
 MAX_WEEKS_BACK = 8
@@ -378,6 +383,23 @@ async def build_copy_plan(
 
     # 1) 1 行ずつの理由
     target_iso = target_monday.isocalendar()
+    # 訪問頻度: 通常の固定訪問の枠を持つ隔週・月の第何週の患者 (= 枠から作る方).
+    # 枠の無い方は写す (写す先の日付の曜日がその週に訪問する曜日のときだけ)。
+    freq_patient_ids = [
+        pid for pid, p in patients.items() if frequency_rule_active(p.weekly_pattern)
+    ]
+    freq_with_slots: set[UUID] = set()
+    if freq_patient_ids:
+        freq_with_slots = set(
+            (
+                await db.scalars(
+                    select(PatientFixedVisit.patient_id).where(
+                        PatientFixedVisit.patient_id.in_(freq_patient_ids),
+                        PatientFixedVisit.mode == "normal",
+                    )
+                )
+            ).all()
+        )
     own_reason: dict[UUID, str | None] = {}
     candidates: dict[UUID, CopyItem] = {}
     for v in source_visits:
@@ -396,10 +418,19 @@ async def build_copy_plan(
             or not is_schedulable_status(patient.status)
         ):
             reason = "inactive_patient"
-        elif frequency_rule_active(patient.weekly_pattern) and not _is_special_week_active(
-            patient, target_iso.year, target_iso.week
+        elif (
+            frequency_rule_active(patient.weekly_pattern)
+            and not _is_special_week_active(patient, target_iso.year, target_iso.week)
+            and (
+                patient.id in freq_with_slots
+                or not is_slot_visit_week(
+                    patient.weekly_pattern, "every", target_monday, target_date.weekday()
+                )
+            )
         ):
-            # 隔週・月の第何週の方は写さない (写す先が訪問の週なら枠から作る)。
+            # 隔週・月の第何週の方で、通常の枠がある方は写さない (写す先が訪問の週なら
+            # 枠から作る)。枠の無い方は、写す先の日付の曜日がその週に訪問しない曜日
+            # (隔週のお休みの週・第 N 週の外) のときだけ写さない (それ以外は従来どおり写す)。
             # 写す先が特別週 (特別週パターン) の方は頻度を見ないので従来どおり写す。
             reason = "visit_frequency"
         elif v.id in excluded:

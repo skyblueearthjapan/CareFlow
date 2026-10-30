@@ -1001,6 +1001,8 @@ async def test_end_removes_future_visits_and_fixed_visits(db) -> None:
     assert audit.actor_user_id == admin.id
     assert len(audit.before["rows"]) == 3
     assert {r["mode"] for r in audit.before["rows"]} == {"normal", "special"}
+    # 0102: 訪問する週 (毎回/A/B) も控える (戻すときに隔週の A/B を失わない)
+    assert {r["visit_week"] for r in audit.before["rows"]} == {"every"}
 
 
 @pytest.mark.asyncio

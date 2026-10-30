@@ -125,7 +125,15 @@ def _desired_weekly_visits(
     base = min(7, int(n))
     if week_start is None:
         return base
-    adjusted = desired_count_for_week(wp, base, week_start, pfv_slots(fixed_rows or []))
+    adjusted = desired_count_for_week(
+        wp,
+        base,
+        week_start,
+        pfv_slots(
+            fixed_rows or [],
+            requires_multiple_staff=bool(getattr(patient, "requires_multiple_staff", False)),
+        ),
+    )
     return base if adjusted is None else adjusted
 
 

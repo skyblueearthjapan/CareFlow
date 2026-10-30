@@ -3096,7 +3096,7 @@ async def _frequency_adjusted_required_days(
         patient.weekly_pattern,
         required_days,
         date.fromisocalendar(iso_year, iso_week, 1),
-        pfv_slots(rows),
+        pfv_slots(rows, requires_multiple_staff=bool(patient.requires_multiple_staff)),
     )
     return required_days if adjusted is None else adjusted
 
@@ -3491,7 +3491,14 @@ async def pool_overview_endpoint(
                 )
             )
         ).all():
-            _freq_slots[_row.patient_id].extend(pfv_slots([_row]))
+            _freq_slots[_row.patient_id].extend(
+                pfv_slots(
+                    [_row],
+                    requires_multiple_staff=bool(
+                        patient_by_id[_row.patient_id].requires_multiple_staff
+                    ),
+                )
+            )
 
     items: list[PoolOverviewItem] = []
     # 重複 id は 1 回だけ計算する (unique_ids は入力順保存の dedup).

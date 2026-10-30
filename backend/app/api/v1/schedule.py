@@ -425,6 +425,9 @@ async def fix_or_pattern(
             preserved_ct_id = old_fv.course_template_id if old_fv is not None else None
             # Phase E-5 (項目 ⑥B): sub_office_id も引継ぎ.
             preserved_sub_office_id = old_fv.sub_office_id if old_fv is not None else None
+            # 0102 (訪問頻度): 枠の「訪問する週」(毎回/A/B) も引き継ぐ. 行を作り直すと
+            # 既定の 'every' に戻り、隔週の B の枠が毎週の A に化けるため.
+            preserved_visit_week = (old_fv.visit_week or "every") if old_fv is not None else "every"
 
             await db.execute(
                 delete(PatientFixedVisit).where(
@@ -455,6 +458,8 @@ async def fix_or_pattern(
                 slot_index=0,
                 # Phase E-5 (項目 ⑥B): 旧 PFV の sub_office_id を引継ぎ.
                 sub_office_id=preserved_sub_office_id,
+                # 0102: 旧 PFV の訪問する週を引継ぎ.
+                visit_week=preserved_visit_week,
             )
             db.add(new_fv)
             await db.flush()
@@ -1074,19 +1079,25 @@ async def place_and_fix(
             # PO 決定 (2026-08-09): 完全固定 (旧 pinned) の 422 ブロックは撤廃。
             # 人手の配置変更は常に正当 (FE が「これは完全固定です」確認を出す)。
             # 置換前の完全固定判断は下の INSERT で引き継ぐ。
-            prior_movability_paf: dict[int, str] = {
-                row.slot_index: row.movability
-                for row in (
-                    await db.scalars(
-                        select(PatientFixedVisit).where(
-                            PatientFixedVisit.patient_id == body.patient_id,
-                            PatientFixedVisit.mode == fv_mode,
-                            PatientFixedVisit.weekday == body.weekday,
-                            PatientFixedVisit.slot_index.in_(slot_targets),
-                        )
+            _prior_rows_paf = (
+                await db.scalars(
+                    select(PatientFixedVisit).where(
+                        PatientFixedVisit.patient_id == body.patient_id,
+                        PatientFixedVisit.mode == fv_mode,
+                        PatientFixedVisit.weekday == body.weekday,
+                        PatientFixedVisit.slot_index.in_(slot_targets),
                     )
-                ).all()
+                )
+            ).all()
+            prior_movability_paf: dict[int, str] = {
+                row.slot_index: row.movability for row in _prior_rows_paf
             }
+            # 0102 (訪問頻度): 枠の「訪問する週」(毎回/A/B) も置換前の行から引き継ぐ.
+            # 無い slot は同じ曜日のほかの slot の値 (2 名体制は同じ曜日でそろえる).
+            prior_visit_week_paf: dict[int, str] = {
+                row.slot_index: row.visit_week or "every" for row in _prior_rows_paf
+            }
+            _fallback_visit_week_paf = next(iter(prior_visit_week_paf.values()), "every")
             await db.execute(
                 delete(PatientFixedVisit).where(
                     PatientFixedVisit.patient_id == body.patient_id,
@@ -1112,6 +1123,7 @@ async def place_and_fix(
                     slot_index=slot_idx,
                     movability="locked" if _mov == "locked" else "unknown",
                     is_pinned=(_mov == "locked"),
+                    visit_week=prior_visit_week_paf.get(slot_idx, _fallback_visit_week_paf),
                 )
                 db.add(fv)
                 new_fvs.append(fv)

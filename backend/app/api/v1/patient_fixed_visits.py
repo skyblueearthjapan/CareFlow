@@ -67,6 +67,7 @@ from app.services.scheduling.config import load_scheduling_config
 from app.services.scheduling.guards import patient_not_active_detail
 from app.services.scheduling.layer1_expander import _is_special_week_active
 from app.services.scheduling.pfv_validator import validate_pfv_changes
+from app.services.scheduling.visit_frequency import frequency_rule_active, pfv_visits_in_week
 
 logger = logging.getLogger(__name__)
 
@@ -323,6 +324,57 @@ async def _load_visit_week_by_slot(
         )
     ).all()
     return {(wd, si): vw or "every" for wd, si, vw in rows}
+
+
+def _carried_visit_week(
+    visit_week_by_slot: dict[tuple[int, int], str], *, weekday: int, slot_index: int
+) -> str:
+    """訪問する週を省略した枠に引き継ぐ値 (0102・旧 FE 互換).
+
+    1. 同じ (曜日, slot) の既存行があれば、その値。
+    2. 無い (曜日を動かした・新しい曜日) ときは、同じ slot の既存行がすべて同じ値なら
+       その値 (例: 枠が全部 B の方の B の枠を別の曜日へ動かしても B のまま)。
+    3. 同じ slot の既存行の値がばらばら (A と B が混ざる) か、既存行が無いときは 'every'
+       (どちらとも決められないので毎回にし、患者マスタで選び直してもらう)。
+    """
+    exact = visit_week_by_slot.get((weekday, slot_index))
+    if exact is not None:
+        return exact
+    same_slot = {vw for (_wd, si), vw in visit_week_by_slot.items() if si == slot_index}
+    if len(same_slot) == 1:
+        return next(iter(same_slot))
+    return "every"
+
+
+async def _load_off_week_slots_to_keep(
+    db: AsyncSession, *, patient: Patient, mode: str, week_monday: date
+) -> tuple[list[UUID], set[tuple[int, int]]]:
+    """週の訪問から枠を作り直すとき、その週に訪問しない枠 (残す枠) を返す.
+
+    訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): 隔週・月の第何週の患者
+    (設定が足りている方) は、A の週の訪問から作り直しても B の枠を消さない (逆も同じ).
+    B の枠はその週に訪問が無いのが正しいため、週の訪問に無いことを「消えた」と読まない.
+    作り直すのは、その週に訪問する枠 (A・毎回・第 N 週に当たる曜日) だけ.
+    残す枠の (曜日, slot) に同じ週の訪問があっても、残す枠を優先して INSERT しない
+    (赤ピンの行と同じ扱い・UNIQUE 衝突を避ける).
+
+    毎週の患者・設定不足の患者・特別週の枠 (mode='special') は空 (挙動不変).
+
+    Returns:
+        (残す行の id, 残す行の (weekday, slot_index))。
+    """
+    if mode != "normal" or not frequency_rule_active(patient.weekly_pattern):
+        return [], set()
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(
+                PatientFixedVisit.patient_id == patient.id,
+                PatientFixedVisit.mode == mode,
+            )
+        )
+    ).all()
+    keep = [r for r in rows if not pfv_visits_in_week(patient.weekly_pattern, r, week_monday)]
+    return [r.id for r in keep], {(r.weekday, r.slot_index) for r in keep}
 
 
 async def _insert_pfv_from_visits(
@@ -711,9 +763,34 @@ async def apply_put_fixed_visits(
             detail=constraint_confirmation_detail(_cw),
         )
 
-    # 0102: 訪問する週を省略した item は、同じ (曜日, slot) の既存行の値を引き継ぐ
-    # (旧 FE が送らなくても A/B が消えない). 新しい枠は 'every'.
+    # 0102: 訪問する週を省略した item は既存行の値を引き継ぐ (旧 FE が送らなくても A/B が
+    # 消えない). 決め方は _carried_visit_week (同じ曜日・slot → 同じ slot で 1 つの値 → every).
     _visit_week_by_slot = await _load_visit_week_by_slot(db, patient_id=patient_id, mode=body.mode)
+    _resolved_visit_weeks: list[str] = [
+        item.visit_week
+        if item.visit_week is not None
+        else _carried_visit_week(
+            _visit_week_by_slot, weekday=item.weekday, slot_index=item.slot_index
+        )
+        for item in validation.corrected_items
+    ]
+    # 0102: 2 名体制の方は、同じ曜日の slot 0 と slot 1 の訪問する週をそろえる.
+    # ずれると週の生成 (曜日ごとに 2 名で 1 回) と前の週のコピー (slot ごと) で
+    # 作る訪問が食い違うため、保存の段階で止める.
+    if body.mode == "normal" and bool(patient.requires_multiple_staff):
+        _vw_by_wd: dict[int, set[str]] = {}
+        for item, vw in zip(validation.corrected_items, _resolved_visit_weeks, strict=True):
+            _vw_by_wd.setdefault(item.weekday, set()).add(vw)
+        _mismatch = sorted(wd for wd, vws in _vw_by_wd.items() if len(vws) > 1)
+        if _mismatch:
+            _names = "・".join("月火水木金土日"[wd] for wd in _mismatch)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"2 名で訪問する方は、同じ曜日の 2 つの枠の「訪問する週」を"
+                    f"そろえてください（{_names}曜日）。"
+                ),
+            )
 
     # 1 TX: 当該 (patient_id, mode) を DELETE → INSERT
     await db.execute(
@@ -724,7 +801,7 @@ async def apply_put_fixed_visits(
     )
     # P2-A: INSERT には validation.corrected_items (V6 で pinned 行の movability を
     # 'locked' 矯正済み) を使う. body.items をそのまま使うと矯正が DB に反映されない.
-    for item in validation.corrected_items:
+    for item, _vw in zip(validation.corrected_items, _resolved_visit_weeks, strict=True):
         db.add(
             PatientFixedVisit(
                 patient_id=patient_id,
@@ -744,12 +821,8 @@ async def apply_put_fixed_visits(
                 # P2-A (§1.3): 可動域フラグを運搬. 省略すると保存のたび 'unknown' に
                 # 戻る (P0-2 の is_pinned BLOCKER と同型の罠). 必ず引き継ぐこと.
                 movability=item.movability,
-                # 0102: 訪問する週 (省略は既存行の値・新しい枠は every).
-                visit_week=(
-                    item.visit_week
-                    if item.visit_week is not None
-                    else _visit_week_by_slot.get((item.weekday, item.slot_index), "every")
-                ),
+                # 0102: 訪問する週 (省略は既存行から引き継ぐ・_carried_visit_week).
+                visit_week=_vw,
             )
         )
 
@@ -946,15 +1019,20 @@ async def from_week_bulk(
         visit_week_by_slot = await _load_visit_week_by_slot(
             db, patient_id=patient.id, mode=effective_mode
         )
+        # 訪問頻度: その週に訪問しない枠 (隔週の B の枠など) は消さずに残す.
+        keep_ids, keep_slots = await _load_off_week_slots_to_keep(
+            db, patient=patient, mode=effective_mode, week_monday=week_monday
+        )
 
         # 既存削除 — ただし pinned 行 (is_pinned=True) は残す (ピン消失防止).
-        await db.execute(
-            delete(PatientFixedVisit).where(
-                PatientFixedVisit.patient_id == patient.id,
-                PatientFixedVisit.mode == effective_mode,
-                PatientFixedVisit.is_pinned.is_(False),
-            )
+        _del = delete(PatientFixedVisit).where(
+            PatientFixedVisit.patient_id == patient.id,
+            PatientFixedVisit.mode == effective_mode,
+            PatientFixedVisit.is_pinned.is_(False),
         )
+        if keep_ids:
+            _del = _del.where(PatientFixedVisit.id.not_in(keep_ids))
+        await db.execute(_del)
 
         # INSERT (C-1: multi-staff slot 0/1 対応 / U-0: pinned slot skip + movability 引継ぎ)
         await _insert_pfv_from_visits(
@@ -962,7 +1040,7 @@ async def from_week_bulk(
             patient=patient,
             mode=effective_mode,
             visit_rows=visit_rows,
-            pinned_slots=pinned_slots,
+            pinned_slots=pinned_slots | keep_slots,
             movability_by_wd_start=movability_by_wd_start,
             visit_week_by_slot=visit_week_by_slot,
         )
@@ -1061,15 +1139,20 @@ async def from_week(
     visit_week_by_slot = await _load_visit_week_by_slot(
         db, patient_id=patient_id, mode=effective_mode
     )
+    # 訪問頻度: その週に訪問しない枠 (隔週の B の枠など) は消さずに残す.
+    keep_ids, keep_slots = await _load_off_week_slots_to_keep(
+        db, patient=patient, mode=effective_mode, week_monday=week_monday
+    )
 
     # 1 TX: 非 pinned 行のみ削除 → INSERT (pinned 行は残す = ピン消失防止)
-    await db.execute(
-        delete(PatientFixedVisit).where(
-            PatientFixedVisit.patient_id == patient_id,
-            PatientFixedVisit.mode == effective_mode,
-            PatientFixedVisit.is_pinned.is_(False),
-        )
+    _del = delete(PatientFixedVisit).where(
+        PatientFixedVisit.patient_id == patient_id,
+        PatientFixedVisit.mode == effective_mode,
+        PatientFixedVisit.is_pinned.is_(False),
     )
+    if keep_ids:
+        _del = _del.where(PatientFixedVisit.id.not_in(keep_ids))
+    await db.execute(_del)
 
     # INSERT (C-1: multi-staff slot 0/1 対応 / U-0: pinned slot skip + movability 引継ぎ)
     await _insert_pfv_from_visits(
@@ -1077,7 +1160,7 @@ async def from_week(
         patient=patient,
         mode=effective_mode,
         visit_rows=visit_rows,
-        pinned_slots=pinned_slots,
+        pinned_slots=pinned_slots | keep_slots,
         movability_by_wd_start=movability_by_wd_start,
         visit_week_by_slot=visit_week_by_slot,
     )
