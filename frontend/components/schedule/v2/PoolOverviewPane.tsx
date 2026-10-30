@@ -35,7 +35,8 @@ import {
   type PoolGroupedByWeekdayProps,
   type PoolCardSlotInfo,
 } from './PoolPanel';
-import type { PatientRead } from '@/lib/schemas/patient';
+import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
+import { offWeekLabel } from '@/lib/scheduling/visit-frequency';
 import type { ExcludedPatient, PoolOverviewItem } from '@/lib/schemas/v2/poolOverview';
 
 /** pool-overview API 上限 */
@@ -73,6 +74,11 @@ function compareByEffect(
 ): number {
   const ia = overviewByPatient.get(a.id);
   const ib = overviewByPatient.get(b.id);
+
+  // 隔週・月の第何週のお休みの週の方は最後へ (入れる必要がない)。
+  const offA = ia?.off_week ? 1 : 0;
+  const offB = ib?.off_week ? 1 : 0;
+  if (offA !== offB) return offA - offB;
 
   const countA = ia?.candidate_count ?? 1; // 未計算は「有効」として手前に
   const countB = ib?.candidate_count ?? 1;
@@ -134,6 +140,7 @@ const NO_SLOT_SHORT_REASON: Record<string, string> = {
   lunch_window: '昼休みの時間帯',
   course_closed: 'その曜日にコースが無い',
   no_pair_slot: '2 名で入れる組が無い',
+  off_week: 'この週はお休みの週（隔週・月の第何週）',
 };
 
 export function noSlotShortReason(reason: string | null | undefined): string {
@@ -212,6 +219,16 @@ export interface PoolOverviewPaneProps extends Omit<PoolGroupedByWeekdayProps, '
    * 既存の入口 (患者詳細ダイアログで詰まり解消探索を自動発火) を親から渡す。未指定なら案内を出さない。
    */
   onOpenUnblock?: (patientId: string) => void;
+  /**
+   * 訪問頻度 (biweekly-monthly-design-2026-10-30.md §4): 効果を計算した結果を親へ渡す
+   * (off_week の方を保留プールの「足りない」から外し、「お休みの週」として薄く出すため)。
+   */
+  onOverviewItems?: (items: PoolOverviewItem[]) => void;
+  /**
+   * 訪問頻度: この週がお休みの週と分かった方 (隔週・月の第何週)。1 名以上のとき
+   * 「お休みの週 N名」を薄く出す (消えたように見せない)。
+   */
+  offWeekPatients?: PatientRead[];
 }
 
 /**
@@ -242,6 +259,8 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
       unregisteredPatients = [],
       onClickUnregisteredPatient,
       onOpenUnblock,
+      onOverviewItems,
+      offWeekPatients = [],
     }: PoolOverviewPaneProps,
     ref,
   ) {
@@ -280,6 +299,7 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
         },
         {
           onSuccess: (res) => {
+            onOverviewItems?.(res?.items ?? []);
             if (truncated) {
               toast.warning(
                 `プール患者が ${ids.length} 名います。先頭 ${POOL_OVERVIEW_LIMIT} 名のみ計算しました。`,
@@ -294,7 +314,7 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
           },
         },
       );
-    }, [patients, isoYear, isoWeek, officeId, computeOverview]);
+    }, [patients, isoYear, isoWeek, officeId, computeOverview, onOverviewItems]);
 
     // Stage P-3: CourseDayTablePanel の「プール投入」ボタンから外部トリガーできるよう
     // imperative handle を設定する。ユーザーがボタンを押した扱いで計算を起動する。
@@ -310,6 +330,18 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
     const augmentedRenderCard = React.useCallback(
       (patient: PatientRead, slotInfo: PoolCardSlotInfo) => {
         const item = overviewByPatient.get(patient.id);
+        // 訪問頻度: お休みの週の方は「投入先なし」(警告) ではなく薄い注記にする。
+        if (item?.off_week) {
+          return (
+            <div className="opacity-70" data-testid="pool-overview-off-week">
+              {renderCard(patient, slotInfo)}
+              <p className="px-1 pb-1 pt-0.5 text-[11px] text-text-muted">
+                {offWeekLabel(coerceWeeklyPattern(patient.weekly_pattern))}
+                （この週は入れなくて大丈夫です）
+              </p>
+            </div>
+          );
+        }
         const showDelta = item != null && item.best_delta_minutes != null;
         const showNoSlot = item != null && item.candidate_count === 0;
 
@@ -377,6 +409,45 @@ export const PoolOverviewPane = React.forwardRef<PoolOverviewPaneHandle, PoolOve
           <Layers className="mr-1 h-3 w-3" aria-hidden />
           一括投入
         </Button>
+        {/* 訪問頻度 (設計 2026-10-30 §4): この週がお休みの週の方 (薄く・消えたように見せない). */}
+        {offWeekPatients.length > 0 ? (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-6 px-2 text-[11px] text-text-muted"
+                data-testid="pool-off-week-chip"
+              >
+                お休みの週 {offWeekPatients.length}名
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              side="bottom"
+              sideOffset={4}
+              className="w-72 p-3"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              data-testid="pool-off-week-popover"
+            >
+              <p className="mb-2 text-xs text-text-muted">
+                隔週・月の第何週の設定で、この週はお休みの方です。保留プールの「足りない」には数えません。
+              </p>
+              <ul className="space-y-0.5">
+                {offWeekPatients.map((p) => (
+                  <li key={p.id} className="px-2 py-0.5 text-xs text-text-primary">
+                    {p.name}
+                    <span className="ml-1 text-text-muted">
+                      {offWeekLabel(coerceWeeklyPattern(p.weekly_pattern))}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </PopoverContent>
+          </Popover>
+        ) : null}
         {/* W-3: 希望未登録チップ (N>=1 のときのみ表示). */}
         {unregisteredPatients.length > 0 ? (
           <Popover>

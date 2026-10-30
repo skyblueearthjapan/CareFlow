@@ -168,6 +168,8 @@ export const EXCLUDED_REASON_LABEL: Record<string, string> = {
   pair_blocked: '同住所ペアの設定（同時間帯NG）',
   // W-12a (D-2): 2名体制で slot0 は入るが、同時刻に相方コースが全滅した曜日.
   no_pair_slot: '同時刻に入れる2コースの組が見つかりません',
+  // 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): 隔週・月の第何週のお休みの週.
+  off_week: '隔週・月の第何週のお休みの週',
 };
 
 function excludedReasonLabel(reason: string): string {

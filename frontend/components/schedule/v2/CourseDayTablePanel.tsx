@@ -242,6 +242,7 @@ import {
 import { AssignSuggestionPopover } from './cockpit/AssignSuggestionPopover';
 import type { SuggestionBadgeMap, SuggestionBadgeState } from './cockpit/suggestionBadge';
 import type { CockpitEventRead } from '@/lib/schemas/v2/cockpit';
+import type { PoolOverviewItem } from '@/lib/schemas/v2/poolOverview';
 import { ChangeScopeChoice } from '@/components/schedule/v2/ChangeScopeChoice';
 import {
   parseTlColDroppableId,
@@ -1556,22 +1557,47 @@ export function CourseDayTablePanel({
   //
   // patientShortageById: 各 patient の不足数 (= 希望 - 配置済) のマップ.
   // PatientCard の不足バッジ表示に直接渡す.
+  // 訪問頻度 (biweekly-monthly-design-2026-10-30.md §4): 効果を計算した結果
+  // (pool-overview の off_week) で、この週がお休みの週と分かった方。希望 0 として
+  // 「足りない」から外し、プールの上に「お休みの週 N名」と薄く出す (消えたように見せない)。
+  // 週が変わったら消す。計算し直しで結果に出なかった方 (プールから外れた方) は保つ。
+  const [offWeekPatientIds, setOffWeekPatientIds] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    setOffWeekPatientIds(new Set());
+  }, [isoYear, isoWeek]);
+  const handlePoolOverviewItems = useCallback((items: PoolOverviewItem[]) => {
+    setOffWeekPatientIds((prev) => {
+      const next = new Set(prev);
+      for (const it of items) {
+        if (it.off_week) next.add(it.patient_id);
+        else next.delete(it.patient_id);
+      }
+      return next;
+    });
+  }, []);
+  const offWeekPatients = useMemo(
+    () => allPatients.filter((p) => offWeekPatientIds.has(p.id)),
+    [allPatients, offWeekPatientIds],
+  );
+
   const patientShortageById = useMemo(() => {
     const m = new Map<string, { desired: number; actual: number; shortage: number }>();
     for (const p of allPatients) {
-      const desired = getDesiredWeeklyVisitCount(p);
+      const desired = getDesiredWeeklyVisitCount(p, { offWeek: offWeekPatientIds.has(p.id) });
       if (desired === 0) continue;
       const actual = countWeekVisits(weekVisits, p.id);
       const shortage = Math.max(0, desired - actual);
       m.set(p.id, { desired, actual, shortage });
     }
     return m;
-  }, [allPatients, weekVisits]);
+  }, [allPatients, weekVisits, offWeekPatientIds]);
 
   const poolPatients = useMemo(() => {
     return allPatients
       .filter((p) => {
         if (p.status !== 'active') return false;
+        // 訪問頻度: この週がお休みの週の方は候補にしない (「お休みの週 N名」に出す).
+        if (offWeekPatientIds.has(p.id)) return false;
         const isMultiStaff =
           (p as { requires_multiple_staff?: boolean | null }).requires_multiple_staff === true;
         // 複数体制患者は slot 単位判定 (PoolGroupedByWeekday に委譲). 常に候補.
@@ -1583,7 +1609,7 @@ export function CourseDayTablePanel({
         return info.shortage > 0;
       })
       .slice(0, 200);
-  }, [allPatients, patientShortageById]);
+  }, [allPatients, patientShortageById, offWeekPatientIds]);
 
   // W-3: 希望未登録 active 患者 (weekly_pattern 未設定 / frequency_per_week<=0)。
   // プールには載らないが存在する患者を可視化するための安全網。
@@ -7405,6 +7431,8 @@ export function CourseDayTablePanel({
                * 「配置の確認」モーダルが問い直す。掴めるか否かは canEdit のみ。
                */
               unregisteredPatients={unregisteredActivePatients}
+              offWeekPatients={offWeekPatients}
+              onOverviewItems={handlePoolOverviewItems}
               onClickUnregisteredPatient={handleOpenPoolPatientDetail}
               onOpenUnblock={(pid) => handleOpenPoolPatientDetail(pid, { autoUnblock: true })}
               renderCard={(p, slotInfo) => {

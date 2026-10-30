@@ -61,6 +61,11 @@ export const poolOverviewItemSchema = z.object({
   best_delta_minutes: z.number().nullable().optional().default(null),
   candidate_count: z.number().int().default(0),
   top_excluded_reason: z.string().nullable().optional().default(null),
+  /**
+   * 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): 隔週・月の第何週で、
+   * この週は訪問しない週 (候補を出さない・top_excluded_reason='off_week')。旧 BE は欠落 → false。
+   */
+  off_week: z.boolean().optional().default(false),
 });
 export type PoolOverviewItem = z.infer<typeof poolOverviewItemSchema>;
 

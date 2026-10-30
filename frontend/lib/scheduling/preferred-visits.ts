@@ -31,8 +31,18 @@ import { coerceWeeklyPattern, type PatientRead } from '@/lib/schemas/patient';
  *   getDesiredWeeklyVisitCount({ weekly_pattern: { frequency_per_week: 3 } }) // → 3
  *   getDesiredWeeklyVisitCount({ weekly_pattern: null })                      // → 0
  */
-export function getDesiredWeeklyVisitCount(patient: Pick<PatientRead, 'weekly_pattern'>): number {
+export function getDesiredWeeklyVisitCount(
+  patient: Pick<PatientRead, 'weekly_pattern'>,
+  opts?: {
+    /**
+     * 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): この週が隔週・月の第何週の
+     * お休みの週 (pool-overview の off_week) なら希望は 0 (足りないと数えない)。
+     */
+    offWeek?: boolean;
+  },
+): number {
   if (patient.weekly_pattern == null) return 0;
+  if (opts?.offWeek) return 0;
   const wp = coerceWeeklyPattern(patient.weekly_pattern);
   // coerceWeeklyPattern は frequency_per_week=null/undefined のとき 1 にデフォルトする.
   // ここでは 「希望未設定」 を区別したいので raw を直接見る.
