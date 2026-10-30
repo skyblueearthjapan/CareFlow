@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections import defaultdict
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as time_cls
@@ -305,6 +306,12 @@ from app.services.scheduling.scope_optimizer import (
 from app.services.scheduling.unblock_search import (
     compute_plan_id,
     search_unblock_plans,
+)
+from app.services.scheduling.visit_frequency import (
+    desired_count_for_week,
+    frequency_rule_active,
+    is_patient_visit_week,
+    pfv_slots,
 )
 from app.services.staff_leave import StaffLeaveError, apply_staff_leave, settle_leave_unassign
 
@@ -3065,6 +3072,35 @@ def _proposed_to_item(p: ProposedSlot) -> ProposeSlotItem:
     )
 
 
+async def _frequency_adjusted_required_days(
+    db: DbDep,
+    *,
+    patient_id: UUID,
+    iso_year: int,
+    iso_week: int,
+    required_days: int,
+) -> int:
+    """propose-slots の必要日数に訪問頻度を当てる (毎週の患者はそのまま)."""
+    patient = await db.scalar(select(Patient).where(Patient.id == patient_id))
+    if patient is None or not frequency_rule_active(patient.weekly_pattern):
+        return required_days
+    rows = (
+        await db.scalars(
+            select(PatientFixedVisit).where(
+                PatientFixedVisit.patient_id == patient_id,
+                PatientFixedVisit.mode == "normal",
+            )
+        )
+    ).all()
+    adjusted = desired_count_for_week(
+        patient.weekly_pattern,
+        required_days,
+        date.fromisocalendar(iso_year, iso_week, 1),
+        pfv_slots(rows),
+    )
+    return required_days if adjusted is None else adjusted
+
+
 @router.post(
     "/v2/propose-slots",
     response_model=ProposeSlotsResponse,
@@ -3195,6 +3231,16 @@ async def propose_slots_endpoint(
         required_days = payload.frequency_per_week
     else:
         required_days = len(preferred_weekday_ints)
+    # 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): 既存患者で週が分かるので、
+    # 隔週・月の第何週のお休みの週は必要日数 0 (その週に当たる枠の曜日数が上限).
+    if payload.existing_patient_id is not None:
+        required_days = await _frequency_adjusted_required_days(
+            db,
+            patient_id=payload.existing_patient_id,
+            iso_year=payload.iso_year,
+            iso_week=payload.iso_week,
+            required_days=required_days,
+        )
     cov = compute_coverage(
         normal_proposed,
         requested_weekdays=preferred_weekday_ints,
@@ -3431,12 +3477,44 @@ async def pool_overview_endpoint(
     ).all()
     patient_by_id: dict[UUID, Patient] = {p.id: p for p in patient_rows}
 
+    # 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): 隔週・月の第何週の患者の
+    # お休みの週は候補を出さない. 頻度の決まりが効く患者の通常の枠だけを 1 回で読む.
+    _week_start = date.fromisocalendar(payload.iso_year, payload.iso_week, 1)
+    _freq_ids = [p.id for p in patient_rows if frequency_rule_active(p.weekly_pattern)]
+    _freq_slots: dict[UUID, list[tuple[int, str]]] = defaultdict(list)
+    if _freq_ids:
+        for _row in (
+            await db.scalars(
+                select(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id.in_(_freq_ids),
+                    PatientFixedVisit.mode == "normal",
+                )
+            )
+        ).all():
+            _freq_slots[_row.patient_id].extend(pfv_slots([_row]))
+
     items: list[PoolOverviewItem] = []
     # 重複 id は 1 回だけ計算する (unique_ids は入力順保存の dedup).
     for pid in unique_ids:
         patient = patient_by_id.get(pid)
         if patient is None:
             continue  # 存在しない / 削除済み患者は俯瞰対象外 (黙って除外).
+
+        if pid in _freq_slots or frequency_rule_active(patient.weekly_pattern):
+            if not is_patient_visit_week(
+                patient.weekly_pattern, _week_start, _freq_slots.get(pid) or None
+            ):
+                items.append(
+                    PoolOverviewItem(
+                        patient_id=pid,
+                        best_slot=None,
+                        best_delta_minutes=None,
+                        candidate_count=0,
+                        top_excluded_reason="off_week",
+                        off_week=True,
+                    )
+                )
+                continue
 
         candidate = _patient_to_pool_candidate(patient)
         if candidate is None:
@@ -4387,6 +4465,7 @@ def _pfv_to_base(row: PatientFixedVisit) -> PatientFixedVisitV2Base:
         slot_index=row.slot_index,
         is_pinned=row.is_pinned,
         movability=row.movability,
+        visit_week=row.visit_week,
     )
 
 

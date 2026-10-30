@@ -81,6 +81,14 @@ from app.services.scheduling.constants import (
     SAME_ADDRESS_TOLERANCE,
 )
 from app.services.scheduling.course_staff_mirror import mirror_course_staff_to_visits
+from app.services.scheduling.visit_frequency import (
+    desired_count_for_week,
+    filter_pfv_rows_for_week,
+    frequency_rule_active,
+    is_patient_visit_week,
+    pfv_slots,
+    pfv_visits_in_week,
+)
 
 # 2026-10-13 (PO): メモが 「【検証】」 で始まる訪問は試しに入れたもの. 今週の実際の
 # 訪問として数えない (= プールの回数判定 / G-21 Before の既存 DB Visit 経路).
@@ -1944,6 +1952,7 @@ def _g93_desired_weekdays(
     fixed_rows: list[PatientFixedVisit] | None,
     *,
     config: SchedulingConfig | None = None,
+    week_start: date | None = None,
 ) -> set[int]:
     """Phase G-93 (部分不足プール): 患者の「希望週内スロット曜日」集合を返す.
 
@@ -1964,7 +1973,14 @@ def _g93_desired_weekdays(
     曜日のみを返す (不足スロットの時刻展開は build_visits_for_pool 側で行う).
     """
     wds: set[int] = set()
-    for wd, _st, _sm in _extract_fixed_visits_for_patient(fixed_rows or []):
+    rows = list(fixed_rows or [])
+    if week_start is not None and frequency_rule_active(patient.weekly_pattern):
+        # 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): お休みの週は希望曜日なし.
+        # 訪問の週は、その週に当たる枠の曜日だけを数える.
+        if not is_patient_visit_week(patient.weekly_pattern, week_start, pfv_slots(rows) or None):
+            return wds
+        rows = filter_pfv_rows_for_week(patient.weekly_pattern, rows, week_start)
+    for wd, _st, _sm in _extract_fixed_visits_for_patient(rows):
         wds.add(wd)
     for wd, _st, _sm, _tt, _ps, _pe in _extract_weekly_entries(patient, config=config):
         wds.add(wd)
@@ -1976,6 +1992,7 @@ def _g94_desired_count(
     fixed_rows: list[PatientFixedVisit] | None,
     *,
     config: SchedulingConfig | None = None,
+    week_start: date | None = None,
 ) -> int | None:
     """Phase G-94 (修正1 過剰提案): 患者の「今週訪問を希望している回数」を返す.
 
@@ -1996,18 +2013,28 @@ def _g94_desired_count(
       3. どちらも得られない (frequency 未設定 かつ 希望曜日 0) なら ``None`` を
          返し、 呼び出し側は回数チェックを skip して従来の曜日判定に委ねる.
 
+    訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): ``week_start`` を渡すと、
+    隔週・月の第何週のお休みの週は 0 を返す. 訪問の週は、その週に当たる枠の曜日数を
+    上限にする. 毎週の患者 (・設定不足の患者) は従来どおり.
+
     Returns:
-        希望回数 (>= 1) または ``None`` (回数を確定できない場合).
+        希望回数 (>= 1)・お休みの週は 0・または ``None`` (回数を確定できない場合).
     """
+    base: int | None = None
     pattern = patient.weekly_pattern
     if isinstance(pattern, dict):
         raw = pattern.get("frequency_per_week")
         if isinstance(raw, int) and 1 <= raw <= 7:
-            return raw
-    desired_wds = _g93_desired_weekdays(patient, fixed_rows, config=config)
-    if desired_wds:
-        return len(desired_wds)
-    return None
+            base = raw
+    if base is None:
+        desired_wds = _g93_desired_weekdays(patient, fixed_rows, config=config)
+        if desired_wds:
+            base = len(desired_wds)
+    if week_start is None:
+        return base
+    return desired_count_for_week(
+        patient.weekly_pattern, base, week_start, pfv_slots(fixed_rows or []) or None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -5964,6 +5991,18 @@ async def _load_before_visits_v2(
     # 価値順位を上げて優先採用するため、上位採用後は下位経路を skip する.
     chosen: dict[tuple[UUID, int, int], V2Visit] = {}
 
+    # 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): 経路 2/3 (固定訪問の表) は
+    # この週に訪問しない枠 (隔週のお休みの週・月の第何週の外) を「入っている」扱いしない.
+    try:
+        _freq_week_start: date | None = date.fromisocalendar(iso_year, iso_week, 1)
+    except ValueError:
+        _freq_week_start = None
+
+    def _pfv_off_this_week(pfv: PatientFixedVisit, patient: Patient) -> bool:
+        if _freq_week_start is None:
+            return False
+        return not pfv_visits_in_week(patient.weekly_pattern, pfv, _freq_week_start)
+
     def _make_v2_visit_from_pfv(pfv: PatientFixedVisit, patient: Patient) -> V2Visit | None:
         if patient.lat is None or patient.lng is None:
             return None
@@ -6125,6 +6164,8 @@ async def _load_before_visits_v2(
         key = (pfv.patient_id, pfv.weekday, pfv.slot_index)
         if key in chosen:
             continue
+        if _pfv_off_this_week(pfv, patient):
+            continue
         v2v = _make_v2_visit_from_pfv(pfv, patient)
         if v2v is not None:
             # Phase G-45: 拠点休業日 skip (Before 経路 2 = pinned PFV).
@@ -6152,6 +6193,8 @@ async def _load_before_visits_v2(
             continue
         key = (pfv.patient_id, pfv.weekday, pfv.slot_index)
         if key in chosen:
+            continue
+        if _pfv_off_this_week(pfv, patient):
             continue
         v2v = _make_v2_visit_from_pfv(pfv, patient)
         if v2v is not None:
@@ -6187,7 +6230,12 @@ async def _load_before_visits_v2(
             continue
         if patient.primary_office_id is None:
             continue
-        desired_n = _g94_desired_count(patient, pfv_rows_by_patient.get(patient.id), config=config)
+        desired_n = _g94_desired_count(
+            patient,
+            pfv_rows_by_patient.get(patient.id),
+            config=config,
+            week_start=_freq_week_start,
+        )
         entries = _extract_weekly_entries(patient, config=config)
         for wd, st, sm, tt_raw, ps_raw, pe_raw in entries:
             key = (patient.id, wd, 0)
@@ -7322,7 +7370,9 @@ async def run_v2_pipeline(
             _placed_n = placed_count_by_patient.get(p.id, 0)
             if _placed_n <= 0:
                 continue
-            _desired_n = _g94_desired_count(p, all_fixed_by_patient.get(p.id), config=config)
+            _desired_n = _g94_desired_count(
+                p, all_fixed_by_patient.get(p.id), config=config, week_start=week_monday
+            )
             if _desired_n is not None and _placed_n >= _desired_n:
                 count_satisfied_patient_ids.add(p.id)
 
@@ -7361,10 +7411,14 @@ async def run_v2_pipeline(
             # visit 件数で満たしていれば「希望曜日が未配置」でも不足ではない (= フロント
             # poolPatients の回数ベース判定と整合). desired_count が確定できる場合のみ
             # 充足判定し、 充足済 (desired <= placed) なら partial_short から除外する.
-            desired_count = _g94_desired_count(p, all_fixed_by_patient.get(p.id), config=config)
+            desired_count = _g94_desired_count(
+                p, all_fixed_by_patient.get(p.id), config=config, week_start=week_monday
+            )
             if desired_count is not None and placed_count_by_patient.get(p.id, 0) >= desired_count:
                 continue
-            desired_wds = _g93_desired_weekdays(p, all_fixed_by_patient.get(p.id), config=config)
+            desired_wds = _g93_desired_weekdays(
+                p, all_fixed_by_patient.get(p.id), config=config, week_start=week_monday
+            )
             uncovered = desired_wds - placed_slots_by_patient.get(p.id, set())
             if uncovered:
                 partial_short_patient_ids.add(p.id)
@@ -7435,6 +7489,51 @@ async def run_v2_pipeline(
             for pfv in orphan_pfv_rows.all():
                 orphan_fixed_by_patient.setdefault(pfv.patient_id, []).append(pfv)
 
+    # 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): 隔週・月の第何週の患者は、
+    # お休みの週は pool に入れない (= 予定を作り直さない・提案しない). 訪問の週は、
+    # その週に当たる固定訪問の枠だけを展開する. 毎週の患者 (・設定不足の患者) は不変.
+    try:
+        _freq_week_start: _date_cls | None = _date_cls.fromisocalendar(iso_year, iso_week, 1)
+    except ValueError:
+        _freq_week_start = None
+    _freq_patients = (
+        {p.id: p for p in patients_by_id.values() if frequency_rule_active(p.weekly_pattern)}
+        if _freq_week_start is not None
+        else {}
+    )
+    off_week_patient_ids: set[UUID] = set()
+    if _freq_patients:
+        _freq_rows: dict[UUID, list[PatientFixedVisit]] = defaultdict(list)
+        for _pfv in (
+            await db.scalars(
+                select(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id.in_(list(_freq_patients.keys())),
+                    PatientFixedVisit.mode == "normal",
+                )
+            )
+        ).all():
+            _freq_rows[_pfv.patient_id].append(_pfv)
+        for _pid, _p in _freq_patients.items():
+            if not is_patient_visit_week(
+                _p.weekly_pattern, _freq_week_start, pfv_slots(_freq_rows.get(_pid, [])) or None
+            ):
+                off_week_patient_ids.add(_pid)
+        if off_week_patient_ids:
+            pool_patients = [p for p in pool_patients if p.id not in off_week_patient_ids]
+            pool_patients_no_fixed = [
+                p for p in pool_patients_no_fixed if p.id not in off_week_patient_ids
+            ]
+            pool_patients_orphan_fixed = [
+                p for p in pool_patients_orphan_fixed if p.id not in off_week_patient_ids
+            ]
+        for _pid in list(orphan_fixed_by_patient.keys()):
+            _p = _freq_patients.get(_pid)
+            if _p is None:
+                continue
+            orphan_fixed_by_patient[_pid] = filter_pfv_rows_for_week(
+                _p.weekly_pattern, orphan_fixed_by_patient[_pid], _freq_week_start
+            )
+
     # W41 v2 拡張 (今週限定オーバーレイ): pending_edits を (patient_id, weekday) → Overlay の
     # マップに変換. PFV / weekly_pattern の読み込み時に Python オブジェクトレベルで上書きする.
     # DB / SQLAlchemy セッションには触らない.
@@ -7500,6 +7599,14 @@ async def run_v2_pipeline(
             )
         )
         for _pfv in _pfv_rows.all():
+            # 訪問頻度: この週に訪問しない枠 (隔週の B の枠など) は凍結 emit しない.
+            _pp = patients_by_id.get(_pfv.patient_id)
+            if (
+                _pp is not None
+                and _freq_week_start is not None
+                and not pfv_visits_in_week(_pp.weekly_pattern, _pfv, _freq_week_start)
+            ):
+                continue
             pinned_pfv_by_patient_for_pool.setdefault(_pfv.patient_id, []).append(_pfv)
     # Phase G-31: weekly_pattern + pinned PFV 経路でも PFV.course_template_id
     # から course_code を引いて V2Visit.course_code に流すため、 template_id ->
@@ -9636,6 +9743,15 @@ async def reset_visits_to_fixed(
         )
     )
     pfv_list = list(pfv_rows.all())
+    # 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): この週に訪問しない枠
+    # (隔週のお休みの週・B の週の A の枠・月の第何週の外) からは作り直さない.
+    # 漏らすと、お休みの週に予定が復活する. 毎週の患者・設定不足の患者は全部の枠を使う.
+    pfv_list = [
+        pfv
+        for pfv in pfv_list
+        if pfv.patient_id not in patients_by_id
+        or pfv_visits_in_week(patients_by_id[pfv.patient_id].weekly_pattern, pfv, week_monday)
+    ]
 
     # CareFlow 本番バグ修正 (Bug B): PFV ごとの「実際に担当する拠点 (serving office)」を
     # 解決する map を構築する. 1860-1906 (Phase E-5 / G-33) と同じ優先順位

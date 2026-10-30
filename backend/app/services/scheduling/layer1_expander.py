@@ -59,6 +59,13 @@ from app.models.special_visit import (
 )
 from app.models.staff import Staff
 from app.models.visit import VISIT_SOURCE_MANUAL_WEEK, Visit
+from app.services.scheduling.visit_frequency import (
+    frequency_rule_active,
+    frequency_status,
+    is_patient_visit_week,
+    is_slot_visit_week,
+    pfv_visits_in_week,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +179,10 @@ async def _expand_patient_fixed_visits(
     W37 Phase 2-B: ``slot_index`` を entry に含めて返す. 上位ロジック
     (``_expand_fixed_visits_to_visits``) が ``requires_multiple_staff`` に応じて
     slot 0/1 をどう扱うかを決める.
+
+    訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): 通常の枠 (mode='normal') は
+    ``week_monday`` の週が訪問の週でない枠を返さない (隔週のお休みの週・月の第何週の外)。
+    特別週の枠 (mode='special') には頻度の決まりを当てない。
     """
     rows = (
         await db.scalars(
@@ -184,6 +195,8 @@ async def _expand_patient_fixed_visits(
 
     entries: list[dict] = []
     for fv in rows:
+        if not pfv_visits_in_week(patient.weekly_pattern, fv, week_monday):
+            continue
         entries.append(
             {
                 "weekday": fv.weekday,
@@ -604,6 +617,11 @@ class Layer1Result:
     special_week_applied_count: int = 0
     # W37 hotfix C-2: multi-staff 片側欠けの保留リスト.
     unplaced_multi_staff_patients: list[UnplacedMultiStaffEntry] = field(default_factory=list)
+    # 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3):
+    #   frequency_off_week_patient_ids = 頻度でこの週はお休みの患者 (訪問も保留プールも無し).
+    #   frequency_incomplete = 設定不足で毎週作った患者 (patient_id, "missing_anchor" 等).
+    frequency_off_week_patient_ids: list[UUID] = field(default_factory=list)
+    frequency_incomplete: list[tuple[UUID, str]] = field(default_factory=list)
 
     @property
     def visits_created_count(self) -> int:
@@ -811,6 +829,11 @@ class Layer1Expander:
         is_special = _is_special_week_active(patient, iso_year, iso_week)
         mode = "special" if is_special else "normal"
 
+        # 訪問頻度の設定不足 (隔週の起点なし・第何週なし) は毎週作り、知らせるため控える.
+        _fstatus = frequency_status(patient.weekly_pattern)
+        if _fstatus != "ok":
+            result.frequency_incomplete.append((patient.id, _fstatus))
+
         # 固定枠チェック
         if await _has_fixed_visits(db, patient.id, mode):
             # 固定枠ベースで展開
@@ -820,6 +843,9 @@ class Layer1Expander:
                 mode=mode,
                 week_monday=week_monday,
             )
+            if not fixed_entries:
+                # 枠はあるが、頻度でこの週に当たる枠が 1 つも無い (お休みの週).
+                result.frequency_off_week_patient_ids.append(patient.id)
             # 特別訪問週間 (§5): 退避された曜日の固定訪問は生成しない.
             skip_weekdays = await _displaced_weekdays(
                 db, patient_id=patient.id, iso_year=iso_year, iso_week=iso_week
@@ -847,6 +873,27 @@ class Layer1Expander:
         if special_applied:
             result.special_week_applied_count += 1
 
+        # 訪問頻度 (§3-3): 枠の無い患者. entries があれば曜日ごとに (その曜日の日付で)
+        # 判定し、無ければ希望曜日 (無ければ週の 7 日) で患者単位に判定する. お休みの週は
+        # 訪問も保留プールも作らない (特別週のパターンを当てた週は頻度を見ない).
+        freq_active = not special_applied and frequency_rule_active(patient.weekly_pattern)
+        freq_entries: list[dict] | None = None
+        if freq_active and _has_confirmed_entries(pattern):
+            freq_entries = [
+                e
+                for e in _entries_from_pattern(pattern)
+                if (wd := _resolve_weekday(e.get("weekday"))) is not None
+                and is_slot_visit_week(patient.weekly_pattern, "every", week_monday, wd)
+            ]
+            if not freq_entries:
+                result.frequency_off_week_patient_ids.append(patient.id)
+                return []
+        elif freq_active:
+            # 希望曜日 (無ければ週の 7 日) のどれかが訪問の週に当たるか (pattern_weekdays).
+            if not is_patient_visit_week(patient.weekly_pattern, week_monday):
+                result.frequency_off_week_patient_ids.append(patient.id)
+                return []
+
         if not _has_confirmed_entries(pattern):
             # 新規患者 / 確定パターン未設定 → 保留プールへ
             result.pool.append(
@@ -859,7 +906,7 @@ class Layer1Expander:
             )
             return []
 
-        entries = _entries_from_pattern(pattern)
+        entries = freq_entries if freq_entries is not None else _entries_from_pattern(pattern)
         return await self._expand_entries_to_visits(
             db,
             patient=patient,

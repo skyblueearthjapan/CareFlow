@@ -30,7 +30,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import time
+from datetime import date, time
 from uuid import UUID
 
 from sqlalchemy import select
@@ -65,6 +65,11 @@ from app.services.scheduling.schedule_health import (
 
 # scope_optimizer の可変バケット操作 (append + start 昇順 sort). import 再利用のみ.
 from app.services.scheduling.scope_optimizer import _copy_bucket, _insert_visit
+from app.services.scheduling.visit_frequency import (
+    desired_count_for_week,
+    frequency_rule_active,
+    pfv_slots,
+)
 
 # 上限 (pool-overview の POOL_OVERVIEW_MAX_PATIENTS と同値). 超過は API 層で 422.
 POOL_BULK_MAX_PATIENTS: int = 50
@@ -89,12 +94,21 @@ def _delta_key(d: float | None) -> float:
     return d if d is not None else _INF
 
 
-def _desired_weekly_visits(patient: Patient) -> int:
+def _desired_weekly_visits(
+    patient: Patient,
+    *,
+    week_start: date | None = None,
+    fixed_rows: list[PatientFixedVisit] | None = None,
+) -> int:
     """希望週訪問回数 (frequency_per_week, 1..7). 未設定/無効は 0.
 
     FE ``preferred-visits.ts:getDesiredWeeklyVisitCount`` と同一契約:
         - weekly_pattern 無し / frequency_per_week=0・無効値 → 0 (= pool 対象外)
         - それ以外 → min(7, floor(frequency_per_week))
+
+    訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): ``week_start`` を渡すと、
+    隔週・月の第何週のお休みの週は 0 (足りないと出さない)。``fixed_rows`` (通常の枠) を
+    渡すと、その週に当たる枠の曜日数を上限にする。
     """
     wp = patient.weekly_pattern if isinstance(patient.weekly_pattern, dict) else None
     if not wp:
@@ -108,7 +122,11 @@ def _desired_weekly_visits(patient: Patient) -> int:
         return 0
     if not (n > 0):
         return 0
-    return min(7, int(n))
+    base = min(7, int(n))
+    if week_start is None:
+        return base
+    adjusted = desired_count_for_week(wp, base, week_start, pfv_slots(fixed_rows or []))
+    return base if adjusted is None else adjusted
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +504,27 @@ async def simulate_pool_bulk_insert(
         patient_rows = []
     patient_by_id: dict[UUID, Patient] = {p.id: p for p in patient_rows}
 
+    # 訪問頻度 (§3-3): 隔週・月の第何週の患者は、この週に当たる枠で希望回数を数える.
+    # 頻度の決まりが効く患者の通常の枠だけを 1 クエリで読む (毎週の患者は読まない).
+    week_start = date.fromisocalendar(iso_year, iso_week, 1)
+    freq_ids = [p.id for p in patient_rows if frequency_rule_active(p.weekly_pattern)]
+    fixed_by_patient: dict[UUID, list[PatientFixedVisit]] = {}
+    if freq_ids:
+        for row in (
+            await db.scalars(
+                select(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id.in_(freq_ids),
+                    PatientFixedVisit.mode == "normal",
+                )
+            )
+        ).all():
+            fixed_by_patient.setdefault(row.patient_id, []).append(row)
+
+    def _desired(patient: Patient) -> int:
+        return _desired_weekly_visits(
+            patient, week_start=week_start, fixed_rows=fixed_by_patient.get(patient.id)
+        )
+
     # 座標未登録患者は投入不能 (no_coordinates). 順序算出/配置からは外す.
     orderable: list[tuple[Patient, CandidateInput]] = []
     for pid in unique_ids:
@@ -520,6 +559,12 @@ async def simulate_pool_bulk_insert(
         if bool(patient.requires_multiple_staff):
             result.unplaced.append(
                 BulkUnplaced(patient_id=pid, patient_name=patient.name, reason="two_staff_pending")
+            )
+            continue
+        # 訪問頻度 (§3-3): 隔週・月の第何週のお休みの週は入れない (黙って落とさず理由を残す).
+        if frequency_rule_active(patient.weekly_pattern) and _desired(patient) == 0:
+            result.unplaced.append(
+                BulkUnplaced(patient_id=pid, patient_name=patient.name, reason="off_week")
             )
             continue
         candidate = candidate_of(patient)
@@ -589,7 +634,7 @@ async def simulate_pool_bulk_insert(
         for ps in best.values():
             _ensure_delta(ps, sim, candidate, config=config)
 
-        desired = _desired_weekly_visits(patient)
+        desired = _desired(patient)
         current_placed = sum(1 for b in sim.values() for v in b.visits if v.patient_id == pid)
         shortage = max(0, desired - current_placed)
         if shortage == 0:

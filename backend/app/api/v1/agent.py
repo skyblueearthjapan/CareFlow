@@ -47,6 +47,12 @@ from app.models.staff import (
 from app.models.user import User
 from app.models.visit import Visit
 from app.models.visit_staff_assignment import VisitStaffAssignment
+from app.services.scheduling.visit_frequency import (
+    desired_count_for_week,
+    frequency_rule_active,
+    is_patient_visit_week,
+    pfv_slots,
+)
 
 router = APIRouter()
 
@@ -99,8 +105,26 @@ def _wall(dt: datetime) -> datetime:
     return dt
 
 
-def _desired_per_week(weekly_pattern: Any) -> int:
-    """frontend getDesiredWeeklyVisitCount と同じ (0 = 希望未設定 → プール対象外)."""
+def _desired_per_week(
+    weekly_pattern: Any,
+    *,
+    week_start: date | None = None,
+    slots: list[tuple[int, str]] | None = None,
+) -> int:
+    """frontend getDesiredWeeklyVisitCount と同じ (0 = 希望未設定 → プール対象外).
+
+    訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): ``week_start`` を渡すと
+    隔週・月の第何週のお休みの週は 0。``slots`` (通常の枠の (曜日, visit_week)) を
+    渡すと、その週に当たる枠の曜日数を上限にする。
+    """
+    base = _desired_per_week_base(weekly_pattern)
+    if week_start is None or base == 0:
+        return base
+    adjusted = desired_count_for_week(weekly_pattern, base, week_start, slots)
+    return base if adjusted is None else adjusted
+
+
+def _desired_per_week_base(weekly_pattern: Any) -> int:
     if not isinstance(weekly_pattern, dict):
         return 0
     raw = weekly_pattern.get("frequency_per_week")
@@ -344,12 +368,32 @@ async def week_context(
     ).all()
     pool: list[dict] = []
     pool_ids: set[UUID] = set()
+    # 訪問頻度: 隔週・月の第何週の患者は、この週に当たる通常の枠で希望回数を数える.
+    freq_ids = [p.id for p in active_patients if frequency_rule_active(p.weekly_pattern)]
+    freq_id_set = set(freq_ids)
+    freq_slots: dict[UUID, list[tuple[int, str]]] = defaultdict(list)
+    if freq_ids:
+        for f in (
+            await db.scalars(
+                select(PatientFixedVisit).where(
+                    PatientFixedVisit.patient_id.in_(freq_ids),
+                    PatientFixedVisit.mode == "normal",
+                )
+            )
+        ).all():
+            freq_slots[f.patient_id].extend(pfv_slots([f]))
     for p in active_patients:
-        desired = _desired_per_week(p.weekly_pattern)
+        desired = _desired_per_week(p.weekly_pattern, week_start=monday, slots=freq_slots.get(p.id))
         actual = count_by_patient.get(p.id, 0)
         multi = bool(p.requires_multiple_staff)
         if not multi and (desired == 0 or actual >= desired):
             continue
+        if (
+            multi
+            and p.id in freq_id_set
+            and not is_patient_visit_week(p.weekly_pattern, monday, freq_slots.get(p.id) or None)
+        ):
+            continue  # 隔週・月の第何週のお休みの週 (2 名体制でもプールに出さない)
         pool_ids.add(p.id)
         pool.append(
             {
@@ -618,6 +662,7 @@ async def week_context(
                 "sub_office_id": _s(f.sub_office_id),
                 "is_pinned": bool(f.is_pinned),
                 "movability": f.movability,
+                "visit_week": f.visit_week,
             }
             for f in fixed_visits
         ],

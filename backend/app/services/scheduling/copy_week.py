@@ -7,6 +7,11 @@
 ない (#2)。固定訪問 (``patient_fixed_visits``) には書き込まない (#3)。読むのは
 「固定訪問に無い」目印と、任意の「固定訪問から補う」だけ。
 
+訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3.5): 隔週・月の第何週の患者
+(設定が足りている方) は写す元の訪問を **写さない** (写すと週の並びがずれる)。代わりに、
+写す先の週が訪問の週なら、固定訪問の枠から週生成と同じ決まりで作る (「補う」の指定に
+かかわらず必ず。お休みの週は何も作らない)。
+
 確認画面 (preview) と実行は **同じ ``build_copy_plan``** を通る。どのコースへ入れるか
 (担当の決まったコースへ入れてよいかの検査を含む) も計画の段階で決めるので、表示と
 実行の件数がズレない (patient_status_sync と同じ方針)。
@@ -59,6 +64,7 @@ from app.services.scheduling.layer1_expander import (
     _get_or_create_course_for_template_week_l1,
     _is_special_week_active,
 )
+from app.services.scheduling.visit_frequency import frequency_rule_active, pfv_visits_in_week
 
 #: 写す元として選べる範囲 (写す先の週から何週前まで)。§4-2 の「過去 8 週」。
 MAX_WEEKS_BACK = 8
@@ -138,6 +144,8 @@ class MissingFixed:
     end_time: time
     visits: int
     entries: list[PatientFixedVisit]
+    # 隔週・月の第何週の患者で、写す代わりに枠から作る行 (補うの指定に関係なく作る)
+    by_frequency: bool = False
 
 
 @dataclass
@@ -156,6 +164,8 @@ class CopyPlan:
     cleared_course_ids: set[UUID] = field(default_factory=set)
     existing: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     missing_fixed: list[MissingFixed] = field(default_factory=list)
+    # 隔週・月の第何週の患者の、写す代わりに枠から作る行 (missing_fixed には入れない)
+    frequency_fixed: list[MissingFixed] = field(default_factory=list)
     missing_patients_without_visits: int = 0
     fill_from_fixed: bool = False
 
@@ -367,6 +377,7 @@ async def build_copy_plan(
     plan.excluded_ids = excluded
 
     # 1) 1 行ずつの理由
+    target_iso = target_monday.isocalendar()
     own_reason: dict[UUID, str | None] = {}
     candidates: dict[UUID, CopyItem] = {}
     for v in source_visits:
@@ -385,6 +396,12 @@ async def build_copy_plan(
             or not is_schedulable_status(patient.status)
         ):
             reason = "inactive_patient"
+        elif frequency_rule_active(patient.weekly_pattern) and not _is_special_week_active(
+            patient, target_iso.year, target_iso.week
+        ):
+            # 隔週・月の第何週の方は写さない (写す先が訪問の週なら枠から作る)。
+            # 写す先が特別週 (特別週パターン) の方は頻度を見ないので従来どおり写す。
+            reason = "visit_frequency"
         elif v.id in excluded:
             reason = "user_excluded"
         elif target_date < today:
@@ -448,8 +465,9 @@ async def build_copy_plan(
 
     # ----- 写す元の週に無かった固定訪問 (補う候補) -----
     await _plan_missing_fixed(db, plan, today=today, live_after=kept)
-    if fill_from_fixed:
-        plan.fill_items = _fill_items(plan.missing_fixed)
+    plan.fill_items = _fill_items(
+        [*(plan.missing_fixed if fill_from_fixed else []), *plan.frequency_fixed]
+    )
 
     # ----- 置き場所 (コース) と担当の検査 (H-1 / M-6 / M-2) -----
     await _place_items(db, plan, kept=kept)
@@ -518,7 +536,15 @@ async def _plan_missing_fixed(
     without_visits: set[UUID] = set()
     for patient in active:
         mode = "special" if _is_special_week_active(patient, iso.year, iso.week) else "normal"
-        rows = [fv for fv in pfv_by_patient.get(patient.id, []) if fv.mode == mode]
+        # 訪問頻度: 写す先の週に訪問しない枠 (隔週のお休みの週・月の第何週の外) は
+        # 「無い」と数えず、作りもしない (特別週の枠には当てない)。
+        rows = [
+            fv
+            for fv in pfv_by_patient.get(patient.id, [])
+            if fv.mode == mode
+            and pfv_visits_in_week(patient.weekly_pattern, fv, plan.target_monday)
+        ]
+        by_frequency = mode == "normal" and frequency_rule_active(patient.weekly_pattern)
         if not rows:
             continue
         multi = bool(patient.requires_multiple_staff)
@@ -537,17 +563,20 @@ async def _plan_missing_fixed(
             if end_min >= 24 * 60:
                 continue
             chosen = [slots[0], slots[1]] if multi else [slots[0]]
-            plan.missing_fixed.append(
-                MissingFixed(
-                    patient=patient,
-                    weekday=weekday,
-                    target_date=target_date,
-                    start_time=start,
-                    end_time=time(end_min // 60, end_min % 60),
-                    visits=len(chosen),
-                    entries=chosen,
-                )
+            missing = MissingFixed(
+                patient=patient,
+                weekday=weekday,
+                target_date=target_date,
+                start_time=start,
+                end_time=time(end_min // 60, end_min % 60),
+                visits=len(chosen),
+                entries=chosen,
+                by_frequency=by_frequency,
             )
+            if by_frequency:
+                plan.frequency_fixed.append(missing)
+                continue
+            plan.missing_fixed.append(missing)
             if patient.id not in copied_patients:
                 without_visits.add(patient.id)
     plan.missing_patients_without_visits = len(without_visits)

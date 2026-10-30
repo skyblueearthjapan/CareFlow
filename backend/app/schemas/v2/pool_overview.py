@@ -94,6 +94,12 @@ class PoolOverviewItem(BaseModel):
         default=None,
         description="candidate_count=0 のとき除外理由集約の最多 reason. それ以外は null",
     )
+    # 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): 隔週・月の第何週の
+    # お休みの週は希望回数 0 = 入れる候補を出さない (top_excluded_reason='off_week').
+    off_week: bool = Field(
+        default=False,
+        description="隔週・月の第何週で、この週は訪問しない週 (候補を出さない)",
+    )
 
 
 class PoolOverviewResponse(BaseModel):

@@ -109,6 +109,8 @@ class CopySkipCounts(BaseModel):
     occupied_day: int = 0
     # 写す先の日付が今日より前
     past_day: int = 0
+    # 隔週・月の第何週の患者 (写さず、写す先が訪問の週なら固定訪問の枠から作る)
+    visit_frequency: int = 0
 
 
 class NotInFixedItem(BaseModel):
