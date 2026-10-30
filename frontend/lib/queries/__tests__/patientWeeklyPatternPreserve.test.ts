@@ -128,3 +128,38 @@ describe('weeklyPatternToWire', () => {
     expect(out.biweekly_anchor).toBeNull();
   });
 });
+
+describe('NG 曜日の往復 (2026-10-30・全経路で守る)', () => {
+  const RAW = {
+    frequency_per_week: 2,
+    visit_frequency: 'biweekly',
+    biweekly_anchor: '2026-11-02',
+    preferred_weekdays: ['Tue', 'Fri'],
+    service_minutes: 35,
+    time_type: '固定',
+    preferred_start: '10:00',
+    entries: ENTRIES,
+    some_future_key: { nested: true },
+  };
+
+  it('読んだ ng_weekdays はそのまま送り、ほかのキーも残す', () => {
+    const out = roundTrip({ ...RAW, ng_weekdays: ['Sun'] });
+    expect(out.ng_weekdays).toEqual(['Sun']);
+    expect(out.entries).toEqual(ENTRIES);
+    expect(out.some_future_key).toEqual({ nested: true });
+  });
+
+  it('NG 曜日を変えたら変えた値だけを重ねる', () => {
+    const out = roundTrip({ ...RAW, ng_weekdays: ['Sun'] }, (v) => {
+      v.weekly_pattern = { ...v.weekly_pattern, ng_weekdays: ['Mon', 'Sun'] };
+    });
+    expect(out.ng_weekdays).toEqual(['Mon', 'Sun']);
+    expect(out.biweekly_anchor).toBe('2026-11-02');
+    expect(out.entries).toEqual(ENTRIES);
+  });
+
+  it('NG 曜日の無い方は、開いて保存しただけでキーを足さない', () => {
+    const out = roundTrip(RAW);
+    expect(out).not.toHaveProperty('ng_weekdays');
+  });
+});

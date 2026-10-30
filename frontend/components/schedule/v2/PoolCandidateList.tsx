@@ -170,6 +170,8 @@ export const EXCLUDED_REASON_LABEL: Record<string, string> = {
   no_pair_slot: '同時刻に入れる2コースの組が見つかりません',
   // 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3): 隔週・月の第何週のお休みの週.
   off_week: '隔週・月の第何週のお休みの週',
+  // NG 曜日 (2026-10-30): 希望曜日が患者マスタの NG 曜日 (訪問しない曜日) に当たる.
+  ng_weekday: 'NG 曜日（訪問しない曜日）',
 };
 
 function excludedReasonLabel(reason: string): string {

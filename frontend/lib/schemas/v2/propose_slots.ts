@@ -140,7 +140,8 @@ export type ProposeCoverage = z.infer<typeof proposeCoverageSchema>;
 
 /**
  * P-1b: 候補 0 件時の除外理由サマリ 1 件。
- * reason 語彙: capacity_full / lunch_window / travel_shortage / no_gap / course_closed。
+ * reason 語彙: capacity_full / lunch_window / travel_shortage / no_gap / course_closed /
+ * pair_blocked / no_pair_slot / ng_weekday (NG 曜日・2026-10-30)。
  * 未知値も文字列のままパースする (寛容パース)。旧BE未送出 → [] で扱う。
  */
 export const excludedSummaryItemSchema = z.object({

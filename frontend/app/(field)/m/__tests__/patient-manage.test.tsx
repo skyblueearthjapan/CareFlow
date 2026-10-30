@@ -338,4 +338,37 @@ describe('KarteEditSheet weekly_pattern の保存 (読んだ dict を保つ)', (
     expect(wp.entries).toEqual(SOURCE_WP.entries);
     expect(wp.custom_note_key).toEqual({ keep: true });
   });
+
+  it('NG 曜日: 選んだ曜日を月→日の順で書き、ほかのキー (entries・知らないキー) を残す', async () => {
+    const wp = await openAndSave(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'NG 曜日 金曜' }));
+      fireEvent.click(screen.getByRole('button', { name: 'NG 曜日 月曜' }));
+      // 希望曜日 (火・金) と重なった金はやわらかく知らせる.
+      expect(screen.getByTestId('ng-weekday-conflict').textContent).toContain('金');
+    });
+    expect(wp.ng_weekdays).toEqual(['Mon', 'Fri']);
+    expect(wp.entries).toEqual(SOURCE_WP.entries);
+    expect(wp.custom_note_key).toEqual({ keep: true });
+    expect(wp.biweekly_anchor).toBe('2026-11-02');
+  });
+
+  it('NG 曜日を持つ方: 開いて保存しただけなら NG 曜日はそのまま', async () => {
+    setPatient({
+      ...makePatient(),
+      weekly_pattern: { ...SOURCE_WP, ng_weekdays: ['Sun'] },
+    } as unknown as PatientRead);
+    renderSheet();
+    fireEvent.change(screen.getByLabelText('既存のお客様を検索'), {
+      target: { value: '利用者A' },
+    });
+    fireEvent.click(screen.getByText('利用者A あい'));
+    expect(screen.getByRole('button', { name: 'NG 曜日 日曜' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    fireEvent.click(screen.getByRole('button', { name: /カルテを保存/ }));
+    await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
+    const values = updateMutate.mock.calls[0]![0] as PatientFormValues;
+    const wp = prepareFormPayload(values).weekly_pattern as Record<string, unknown>;
+    expect(wp).toEqual({ ...SOURCE_WP, ng_weekdays: ['Sun'] });
+  });
 });

@@ -81,6 +81,12 @@ import {
   parseVisitWeeks,
   snapToMonday,
 } from '@/lib/scheduling/visit-frequency';
+import {
+  ngWeekdayConflictText,
+  ngWeekdayConflicts,
+  ngWeekdaysLabel,
+  sortWeekdays,
+} from '@/lib/scheduling/ng-weekdays';
 import { PatientStatusChangeDialog } from '@/components/patients/PatientStatusChangeDialog';
 import { usePatientStatusGate } from '@/lib/hooks/usePatientStatusGate';
 import { useGuardedMutation } from '@/components/schedule/v2/patientNotActiveGateContext';
@@ -449,6 +455,24 @@ export function KarteSheet({
         </KSec>
 
         {wp && (
+          <KSec title="NG 曜日（訪問しない曜日）" icon={<Calendar size={12} />}>
+            <div data-testid="karte-ng-weekdays" style={{ fontSize: 13, color: _INK2 }}>
+              {ngWeekdaysLabel(wp.ng_weekdays)}
+            </div>
+            {(() => {
+              const t = ngWeekdayConflictText(
+                ngWeekdayConflicts(wp.preferred_weekdays, wp.ng_weekdays),
+              );
+              return t ? (
+                <div style={{ fontSize: 11, color: '#8a5a00', marginTop: 4, lineHeight: 1.5 }}>
+                  {t}
+                </div>
+              ) : null;
+            })()}
+          </KSec>
+        )}
+
+        {wp && (
           <KSec title="希望曜日" icon={<Calendar size={12} />}>
             <div style={{ display: 'flex', gap: 5 }}>
               {WEEKDAY_KEYS.map((d) => {
@@ -666,6 +690,8 @@ function KarteEditSheet({
     for (const d of WEEKDAY_KEYS) m[d] = wp0.preferred_weekdays.includes(d);
     return m;
   });
+  // NG 曜日 (訪問しない曜日・PO 決定 2026-10-30)。元が空 (null) で何も選ばなければ null のまま。
+  const [ngWeekdays, setNgWeekdays] = useState<WeekdayKey[]>(() => wp0.ng_weekdays ?? []);
   const [serviceMinutes, setServiceMinutes] = useState(wp0.service_minutes);
   const [timeType, setTimeType] = useState<(typeof TIME_TYPE_OPTIONS)[number]>(wp0.time_type);
   // 希望時刻は、元が空 (null) なら空のまま保つ。開いて保存しただけで 09:00 / 12:00 を
@@ -784,6 +810,8 @@ function KarteEditSheet({
       biweekly_anchor: biweeklyAnchor,
       visit_weeks: sameWeeks ? wp0.visit_weeks : formatVisitWeeks(visitWeeks),
       preferred_weekdays,
+      ng_weekdays:
+        ngWeekdays.length === 0 && wp0.ng_weekdays === null ? null : sortWeekdays(ngWeekdays),
       service_minutes: serviceMinutes,
       time_type: timeType,
       preferred_start: showTimeRange ? preferredStart : null,
@@ -1200,6 +1228,44 @@ function KarteEditSheet({
               );
             })}
           </div>
+        </Field>
+
+        <Field label="NG 曜日（訪問しない曜日）">
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {WEEKDAY_KEYS.map((d) => {
+              const on = ngWeekdays.includes(d);
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() =>
+                    setNgWeekdays((s) => (s.includes(d) ? s.filter((x) => x !== d) : [...s, d]))
+                  }
+                  aria-pressed={on}
+                  aria-label={`NG 曜日 ${DOW_JA[d]}曜`}
+                  style={{ ...chip, ...(on ? chipOn : {}) }}
+                >
+                  {DOW_JA[d]}
+                </button>
+              );
+            })}
+          </div>
+          {(() => {
+            const t = ngWeekdayConflictText(
+              ngWeekdayConflicts(
+                WEEKDAY_KEYS.filter((d) => weekdays[d]),
+                ngWeekdays,
+              ),
+            );
+            return t ? (
+              <div
+                data-testid="ng-weekday-conflict"
+                style={{ fontSize: 11, color: '#8a5a00', marginTop: 6, lineHeight: 1.5 }}
+              >
+                {t}
+              </div>
+            ) : null;
+          })()}
         </Field>
 
         <Field label="サービス時間">

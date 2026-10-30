@@ -414,6 +414,7 @@ const EXCLUDED_REASON_LABEL_JA: Record<string, string> = {
   no_pair_slot: '2名体制の相方枠が無い',
   no_gap: '空き時間が無い',
   course_closed: 'コースが稼働していない',
+  ng_weekday: 'NG 曜日（訪問しない曜日）',
 };
 
 export function excludedReasonLabel(code: string): string {

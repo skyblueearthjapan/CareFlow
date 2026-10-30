@@ -141,6 +141,7 @@ const NO_SLOT_SHORT_REASON: Record<string, string> = {
   course_closed: 'その曜日にコースが無い',
   no_pair_slot: '2 名で入れる組が無い',
   off_week: 'この週はお休みの週（隔週・月の第何週）',
+  ng_weekday: '希望曜日が NG 曜日（訪問しない曜日）',
 };
 
 export function noSlotShortReason(reason: string | null | undefined): string {

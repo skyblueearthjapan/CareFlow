@@ -34,6 +34,11 @@ import {
   snapToMonday,
   toYmd,
 } from '@/lib/scheduling/visit-frequency';
+import {
+  ngWeekdayConflictText,
+  ngWeekdayConflicts,
+  toggleNgWeekday,
+} from '@/lib/scheduling/ng-weekdays';
 
 interface WeeklyPatternEditorProps {
   value: WeeklyPattern;
@@ -70,6 +75,9 @@ export function WeeklyPatternEditor({
   };
 
   const showTimeRange = value.time_type === '時間帯' || value.time_type === '固定';
+  const ngConflictText = ngWeekdayConflictText(
+    ngWeekdayConflicts(value.preferred_weekdays, value.ng_weekdays),
+  );
 
   // サービス時間プルダウン候補 (5 分刻み 15〜180)。
   // 既存値が候補に無い (将来の非 5 分値など) 場合は防御的にその値を差し込み、
@@ -150,6 +158,52 @@ export function WeeklyPatternEditor({
           })}
         </div>
       </Field>
+
+      {/* NG 曜日 (PO 決定 2026-10-30「画面に出して全経路で守る」)。提案・保留プール・
+          自動割当・ならし・今週だけの移動/追加・固定訪問の枠は、この曜日を使わない。 */}
+      <div
+        className="flex flex-col gap-1 text-sm"
+        role="group"
+        aria-label="NG 曜日（訪問しない曜日）"
+      >
+        <span className="font-medium text-text-secondary">
+          NG 曜日（訪問しない曜日）
+          <span className="ml-2 text-xs font-normal text-text-muted">
+            この曜日には予定を入れません（提案・自動割当・移動でも使いません）
+          </span>
+        </span>
+        <div className="flex flex-wrap gap-3 pt-1">
+          {WEEKDAY_KEYS.map((day) => {
+            const id = `ng-${day}`;
+            return (
+              <label
+                key={day}
+                htmlFor={id}
+                className="inline-flex items-center gap-1.5 text-sm text-text-primary"
+              >
+                <Checkbox
+                  id={id}
+                  disabled={disabled}
+                  checked={(value.ng_weekdays ?? []).includes(day)}
+                  onCheckedChange={() =>
+                    update('ng_weekdays', toggleNgWeekday(value.ng_weekdays, day))
+                  }
+                  aria-label={`NG 曜日 ${WEEKDAY_LABELS_JA[day]}`}
+                />
+                {WEEKDAY_LABELS_JA[day]}
+              </label>
+            );
+          })}
+        </div>
+        {ngConflictText ? (
+          <p
+            className="rounded border border-amber-500/60 bg-amber-50 px-2 py-1 text-xs text-amber-900"
+            data-testid="ng-weekday-conflict"
+          >
+            {ngConflictText}
+          </p>
+        ) : null}
+      </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <Field

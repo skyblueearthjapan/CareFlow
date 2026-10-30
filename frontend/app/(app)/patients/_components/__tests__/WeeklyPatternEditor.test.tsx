@@ -104,3 +104,36 @@ describe('WeeklyPatternEditor — 訪問頻度', () => {
     await waitFor(() => expect(lastPreviewParams().preferred_weekdays).toEqual(['Tue', 'Fri']));
   });
 });
+
+describe('WeeklyPatternEditor — NG 曜日', () => {
+  beforeEach(() => {
+    mockPreview.mockReset();
+    mockPreview.mockReturnValue({ isError: false, data: undefined });
+  });
+
+  it('7 つの切り替えで NG 曜日を月→日の順に持ち、全部外すと null に戻す', () => {
+    render(<Harness initial={BASE} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'NG 曜日 金' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'NG 曜日 月' }));
+    expect(latest.ng_weekdays).toEqual(['Mon', 'Fri']);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'NG 曜日 月' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'NG 曜日 金' }));
+    expect(latest.ng_weekdays).toBeNull();
+  });
+
+  it('希望曜日と重なったらやわらかく知らせる', () => {
+    render(<Harness initial={{ ...BASE, preferred_weekdays: ['Tue', 'Thu'] }} />);
+    expect(screen.queryByTestId('ng-weekday-conflict')).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'NG 曜日 木' }));
+    expect(screen.getByTestId('ng-weekday-conflict').textContent).toBe(
+      '希望曜日の 木 は NG 曜日にも入っています。NG 曜日が優先され、その曜日には予定を入れません。',
+    );
+  });
+
+  it('保存済みの NG 曜日にチェックが付いている', () => {
+    render(<Harness initial={{ ...BASE, ng_weekdays: ['Sun'] }} />);
+    expect(screen.getByRole('checkbox', { name: 'NG 曜日 日' }).getAttribute('aria-checked')).toBe(
+      'true',
+    );
+  });
+});
