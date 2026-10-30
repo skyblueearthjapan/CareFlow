@@ -146,6 +146,8 @@ from app.schemas.v2.pool_overview import (
     PoolOverviewItem,
     PoolOverviewRequest,
     PoolOverviewResponse,
+    VisitFrequencyWeekItem,
+    VisitFrequencyWeekResponse,
 )
 from app.schemas.v2.propose_slots import (
     WEEKDAY_CODE_TO_INT,
@@ -274,6 +276,7 @@ from app.services.scheduling.pfv_validator import (
     validate_pfv_changes,
 )
 from app.services.scheduling.pool_bulk_inserter import (
+    _desired_weekly_visits,
     compute_bulk_state_token,
     simulate_pool_bulk_insert,
 )
@@ -311,6 +314,7 @@ from app.services.scheduling.visit_frequency import (
     desired_count_for_week,
     frequency_applies,
     is_patient_visit_week,
+    monday_of,
     pfv_slots,
 )
 from app.services.scheduling.visit_week_carry import (
@@ -3426,6 +3430,61 @@ def _pick_top_excluded_reason(excluded: list[ExcludedReasonSummary]) -> str | No
     # 最多 count → 同数は優先度が高い (index が小さい) reason を選ぶ.
     best = max(excluded, key=lambda e: (e.count, -_priority_index(e.reason)))
     return best.reason
+
+
+@router.get(
+    "/v2/visit-frequency-week",
+    response_model=VisitFrequencyWeekResponse,
+    status_code=status.HTTP_200_OK,
+    summary="訪問頻度: その週にお休みの週の患者と、その週の希望回数 (read-only)",
+)
+async def visit_frequency_week_endpoint(
+    db: DbDep,
+    _user: Annotated[User, Depends(require_role("admin"))],
+    week_start: Annotated[date, Query(description="週の日付 (月曜以外はその週の月曜に寄せる)")],
+) -> VisitFrequencyWeekResponse:
+    """保留プールが最初の表示から「お休みの週」と希望回数を正しく数えるための軽い API.
+
+    biweekly-monthly-design-2026-10-30.md §3-3 / §4。隔週・月の第何週で、その週に頻度の
+    決まりが効く患者 (``frequency_applies``) だけを返す。``off_week`` は通常の枠で
+    ``is_patient_visit_week``、``desired_count`` は一括投入 (``pool_bulk_inserter``) と
+    同じ ``_desired_weekly_visits`` (その週に当たる枠の曜日数を上限・1 名の方は slot 0 だけ)。
+    毎週の方は返さない (画面は今までどおり frequency_per_week で数える)。DB は変えない。
+    """
+    monday = monday_of(week_start)
+    candidates = (
+        await db.scalars(
+            select(Patient).where(
+                Patient.deleted_at.is_(None),
+                Patient.weekly_pattern.is_not(None),
+            )
+        )
+    ).all()
+    patients = [p for p in candidates if frequency_applies(p, monday)]
+    if not patients:
+        return VisitFrequencyWeekResponse(week_start=monday.isoformat(), items=[])
+
+    rows_by_patient: dict[UUID, list[PatientFixedVisit]] = defaultdict(list)
+    for row in (
+        await db.scalars(
+            select(PatientFixedVisit).where(
+                PatientFixedVisit.patient_id.in_([p.id for p in patients]),
+                PatientFixedVisit.mode == "normal",
+            )
+        )
+    ).all():
+        rows_by_patient[row.patient_id].append(row)
+
+    items: list[VisitFrequencyWeekItem] = []
+    for p in patients:
+        rows = rows_by_patient.get(p.id, [])
+        slots = pfv_slots(rows, requires_multiple_staff=bool(p.requires_multiple_staff))
+        off_week = not is_patient_visit_week(p.weekly_pattern, monday, slots or None)
+        desired = 0 if off_week else _desired_weekly_visits(p, week_start=monday, fixed_rows=rows)
+        items.append(
+            VisitFrequencyWeekItem(patient_id=p.id, off_week=off_week, desired_count=desired)
+        )
+    return VisitFrequencyWeekResponse(week_start=monday.isoformat(), items=items)
 
 
 @router.post(

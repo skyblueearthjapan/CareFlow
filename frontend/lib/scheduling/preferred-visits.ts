@@ -39,6 +39,13 @@ export function getDesiredWeeklyVisitCount(
      * お休みの週 (pool-overview の off_week) なら希望は 0 (足りないと数えない)。
      */
     offWeek?: boolean;
+    /**
+     * 訪問頻度の週ごとの判定 (GET /schedule/v2/visit-frequency-week の 1 件)。
+     * 渡すと、お休みの週は 0、訪問する週は desired_count (その週に当たる枠の曜日数を
+     * 上限にした数) を上限にする。毎週の方は API が返さないので undefined のまま
+     * (今までどおり frequency_per_week で数える)。
+     */
+    frequencyWeek?: { off_week: boolean; desired_count: number } | null;
   },
 ): number {
   if (patient.weekly_pattern == null) return 0;
@@ -50,7 +57,13 @@ export function getDesiredWeeklyVisitCount(
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return 0;
   // coerceWeeklyPattern が 1..7 にクランプしているので max 7.
-  return Math.min(7, Math.max(0, wp.frequency_per_week));
+  const base = Math.min(7, Math.max(0, wp.frequency_per_week));
+  const fw = opts?.frequencyWeek;
+  if (fw) {
+    if (fw.off_week) return 0;
+    return Math.max(0, Math.min(base, fw.desired_count));
+  }
+  return base;
 }
 
 /**

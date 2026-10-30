@@ -24,7 +24,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -463,6 +463,15 @@ async def get_visit_frequency_preview(
     visit_weeks: Annotated[
         str | None, Query(description="保存前の値で試す: 第何週 (例 1,3)")
     ] = None,
+    preferred_weekdays: Annotated[
+        str | None,
+        Query(
+            description=(
+                "保存前の値で試す: 希望の曜日 (例 Tue,Fri・空文字は曜日なし)。"
+                "固定訪問の通常の枠が無い方のときだけ使う"
+            )
+        ),
+    ] = None,
 ) -> PatientVisitFrequencyPreview:
     """患者マスタの頻度の下に「次の訪問」を並べるための読み取り専用 API.
 
@@ -500,7 +509,10 @@ async def get_visit_frequency_preview(
     slots = pfv_slots(rows, requires_multiple_staff=bool(patient.requires_multiple_staff))
     source: Literal["fixed_visits", "preferred_weekdays", "none"] = "fixed_visits"
     if not slots:
-        raw_days = wp.get("preferred_weekdays")
+        raw_days: Any = wp.get("preferred_weekdays")
+        if preferred_weekdays is not None:
+            # 保存前の希望曜日 (枠の無い方だけ。枠のある方は枠の曜日を正とする).
+            raw_days = [c.strip() for c in preferred_weekdays.split(",") if c.strip()]
         slots = [
             (_WEEKDAY_CODES.index(code), "every")
             for code in (raw_days if isinstance(raw_days, list) else [])

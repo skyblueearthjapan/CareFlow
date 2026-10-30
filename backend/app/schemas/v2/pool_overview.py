@@ -115,6 +115,36 @@ class PoolOverviewResponse(BaseModel):
     )
 
 
+class VisitFrequencyWeekItem(BaseModel):
+    """``GET /v2/visit-frequency-week`` の 1 件 (頻度の決まりが効く患者だけ)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    patient_id: uuid.UUID
+    off_week: bool = Field(..., description="この週はお休みの週 (訪問しない)")
+    desired_count: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "この週の希望回数 (お休みの週は 0。訪問する週は、その週に当たる枠の曜日数を"
+            "上限にする。保留プールの「足りない」の数え方とそろえる)"
+        ),
+    )
+
+
+class VisitFrequencyWeekResponse(BaseModel):
+    """``GET /v2/visit-frequency-week`` レスポンス.
+
+    隔週・月の第何週の患者のうち、その週に頻度の決まりが効く方だけを返す
+    (毎週の方・設定が足りない方・特別週の方は入らない = 今までどおり)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    week_start: str = Field(..., description="週の月曜 (YYYY-MM-DD)")
+    items: list[VisitFrequencyWeekItem] = Field(default_factory=list)
+
+
 __all__ = [
     "POOL_OVERVIEW_MAX_PATIENTS",
     "ExcludedPatient",
@@ -122,4 +152,6 @@ __all__ = [
     "PoolOverviewItem",
     "PoolOverviewRequest",
     "PoolOverviewResponse",
+    "VisitFrequencyWeekItem",
+    "VisitFrequencyWeekResponse",
 ]

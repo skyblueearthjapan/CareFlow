@@ -188,6 +188,11 @@ export function useUpdateFixedVisits(
       void qc.invalidateQueries({
         queryKey: ['visit-frequency-preview', patientId],
       });
+      // 保留プールの週ごとの頻度の判定も枠の A/B で変わる
+      // (キーは poolOverview.ts の VISIT_FREQUENCY_WEEK_KEY と同じ)。
+      void qc.invalidateQueries({
+        queryKey: ['patients', 'visit-frequency-week'],
+      });
     },
   });
 }
@@ -218,6 +223,10 @@ export function useDeleteFixedVisits(
       });
       void qc.invalidateQueries({
         queryKey: FIXED_VISITS_KEY(patientId),
+      });
+      // 枠が無くなると保留プールの週ごとの頻度の判定も変わる。
+      void qc.invalidateQueries({
+        queryKey: ['patients', 'visit-frequency-week'],
       });
     },
   });

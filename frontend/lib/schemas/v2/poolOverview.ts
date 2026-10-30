@@ -94,3 +94,23 @@ export const poolOverviewResponseSchema = z.object({
   excluded_patients: z.array(excludedPatientSchema).catch([]).default([]),
 });
 export type PoolOverviewResponse = z.infer<typeof poolOverviewResponseSchema>;
+
+/**
+ * GET /api/v1/schedule/v2/visit-frequency-week の 1 件 (訪問頻度・保留プール用)。
+ *
+ * 隔週・月の第何週で、その週に頻度の決まりが効く患者だけが来る (毎週の方は来ない)。
+ * - off_week: この週はお休みの週 (希望 0)。
+ * - desired_count: この週の希望回数 (その週に当たる枠の曜日数を上限にした数)。
+ */
+export const visitFrequencyWeekItemSchema = z.object({
+  patient_id: z.string(),
+  off_week: z.boolean().catch(false),
+  desired_count: z.number().int().min(0).catch(0),
+});
+export type VisitFrequencyWeekItem = z.infer<typeof visitFrequencyWeekItemSchema>;
+
+export const visitFrequencyWeekResponseSchema = z.object({
+  week_start: z.string().catch(''),
+  items: z.array(visitFrequencyWeekItemSchema).catch([]).default([]),
+});
+export type VisitFrequencyWeekResponse = z.infer<typeof visitFrequencyWeekResponseSchema>;

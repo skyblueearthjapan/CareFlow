@@ -108,3 +108,39 @@ describe('getShortageCount', () => {
     expect(getShortageCount(patient, [], 'p1')).toBe(2);
   });
 });
+
+describe('getDesiredWeeklyVisitCount — 訪問頻度の週ごとの判定 (visit-frequency-week)', () => {
+  const ab = {
+    weekly_pattern: {
+      frequency_per_week: 2,
+      visit_frequency: 'biweekly',
+      biweekly_anchor: '2026-11-02',
+    },
+  };
+
+  it('隔週・火=A・金=B・週 2 回: 訪問する週は枠の曜日数 (1) を上限にする', () => {
+    expect(
+      getDesiredWeeklyVisitCount(ab, { frequencyWeek: { off_week: false, desired_count: 1 } }),
+    ).toBe(1);
+  });
+
+  it('お休みの週は 0', () => {
+    expect(
+      getDesiredWeeklyVisitCount(ab, { frequencyWeek: { off_week: true, desired_count: 0 } }),
+    ).toBe(0);
+  });
+
+  it('判定が無い (毎週の方・読み込み前) は frequency_per_week のまま', () => {
+    expect(getDesiredWeeklyVisitCount(ab, { frequencyWeek: null })).toBe(2);
+    expect(getDesiredWeeklyVisitCount({ weekly_pattern: { frequency_per_week: 3 } })).toBe(3);
+  });
+
+  it('希望未設定の方は判定があっても 0 (プールに載せない)', () => {
+    expect(
+      getDesiredWeeklyVisitCount(
+        { weekly_pattern: { visit_frequency: 'biweekly' } },
+        { frequencyWeek: { off_week: false, desired_count: 1 } },
+      ),
+    ).toBe(0);
+  });
+});

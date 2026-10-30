@@ -1242,3 +1242,89 @@ def test_carried_visit_week_rules() -> None:
     assert carried_visit_week(m, weekday=2, slot_index=0) == "every"  # A と B が混ざる
     assert carried_visit_week(m, weekday=2, slot_index=1) == "B"
     assert carried_visit_week({}, weekday=2, slot_index=0) == "every"
+
+
+# ---------------------------------------------------------------------------
+# 段 2 のレビュー: 保留プールが最初の表示から頻度を数える (visit-frequency-week)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_visit_frequency_week_ab_tue_fri(client, db) -> None:
+    """隔週・火=A・金=B・週 2 回 → どの週も希望 1 (毎週「1 足りない」にしない)."""
+    headers = await _admin(db)
+    ab = await _patient(db, "VF-W-AB", _biweekly(frequency_per_week=2), [(1, "A"), (4, "B")])
+    a_only = await _patient(db, "VF-W-A", _biweekly(frequency_per_week=1), [(1, "A")])
+    every = await _patient(db, "VF-W-EV", {"frequency_per_week": 2}, [(1, "every")])
+    no_anchor = await _patient(db, "VF-W-NA", _biweekly(None, frequency_per_week=2), [(1, "A")])
+    await db.commit()
+
+    def _by_id(body: dict) -> dict[str, dict]:
+        return {it["patient_id"]: it for it in body["items"]}
+
+    for weeks, a_off in ((0, False), (1, True)):
+        # 水曜を渡してもその週の月曜に寄せる
+        day = ANCHOR + timedelta(weeks=weeks, days=2)
+        resp = await client.get(
+            "/api/v1/schedule/v2/visit-frequency-week",
+            params={"week_start": day.isoformat()},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["week_start"] == (ANCHOR + timedelta(weeks=weeks)).isoformat()
+        got = _by_id(body)
+        assert got[str(ab.id)] == {"patient_id": str(ab.id), "off_week": False, "desired_count": 1}
+        assert got[str(a_only.id)]["off_week"] is a_off
+        assert got[str(a_only.id)]["desired_count"] == (0 if a_off else 1)
+        # 毎週の方・起点の無い方は返さない (画面は今までどおり数える)
+        assert str(every.id) not in got
+        assert str(no_anchor.id) not in got
+
+
+@pytest.mark.asyncio
+async def test_visit_frequency_week_forbidden_for_staff(client, db) -> None:
+    u = User(email="vf-staff-w@example.com", password_hash=hash_password("pw"), role="staff")
+    db.add(u)
+    await db.commit()
+    await db.refresh(u)
+    token = create_access_token(subject=u.id, role=u.role, staff_id=u.staff_id)
+    resp = await client.get(
+        "/api/v1/schedule/v2/visit-frequency-week",
+        params={"week_start": ANCHOR.isoformat()},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_visit_frequency_preview_uses_unsaved_preferred_weekdays(client, db) -> None:
+    """枠の無い方は保存前の希望曜日で並べる。枠のある方は枠の曜日のまま."""
+    headers = await _admin(db)
+    no_slot = await _patient(db, "VF-PRE-W", _biweekly(preferred_weekdays=["Wed"]))
+    with_slot = await _patient(db, "VF-PRE-S", _biweekly(), [(1, "A")])
+    await db.commit()
+    url = f"/api/v1/patients/{no_slot.id}/visit-frequency-preview"
+    resp = await client.get(
+        url,
+        params={"from_date": "2026-11-02", "count": 2, "preferred_weekdays": "Mon,Thu"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["slots_source"] == "preferred_weekdays"
+    assert body["upcoming_visit_dates"] == ["2026-11-02", "2026-11-05"]
+    # 空文字 = 曜日なし
+    resp = await client.get(
+        url, params={"from_date": "2026-11-02", "preferred_weekdays": ""}, headers=headers
+    )
+    assert resp.json()["slots_source"] == "none"
+    assert resp.json()["upcoming_visit_dates"] == []
+    # 枠のある方には効かない
+    resp = await client.get(
+        f"/api/v1/patients/{with_slot.id}/visit-frequency-preview",
+        params={"from_date": "2026-11-02", "count": 1, "preferred_weekdays": "Fri"},
+        headers=headers,
+    )
+    assert resp.json()["slots_source"] == "fixed_visits"
+    assert resp.json()["upcoming_visit_dates"] == ["2026-11-03"]

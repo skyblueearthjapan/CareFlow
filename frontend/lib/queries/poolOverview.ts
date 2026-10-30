@@ -11,15 +11,22 @@
  *   - 寛容パース: レスポンスは `poolOverviewResponseSchema` (items 欠落→[] 等) でパース。
  *   - BE が並行実装中のため 422 / 5xx が返っても呼出側の onError toast で処理する。
  */
-import { useMutation, type UseMutationResult } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQuery,
+  type UseMutationResult,
+  type UseQueryResult,
+} from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 
 import { fetcher } from '@/lib/api/fetcher';
 import {
   poolOverviewRequestSchema,
   poolOverviewResponseSchema,
+  visitFrequencyWeekResponseSchema,
   type PoolOverviewRequest,
   type PoolOverviewResponse,
+  type VisitFrequencyWeekResponse,
 } from '@/lib/schemas/v2/poolOverview';
 
 const POOL_OVERVIEW_PATH = '/api/v1/schedule/v2/pool-overview';
@@ -49,6 +56,44 @@ export function usePoolOverviewMutation(): UseMutationResult<
         refreshToken,
       });
       return poolOverviewResponseSchema.parse(result);
+    },
+  });
+}
+
+const VISIT_FREQUENCY_WEEK_PATH = '/api/v1/schedule/v2/visit-frequency-week';
+
+/**
+ * 訪問頻度の週ごとの判定のキー。`['patients']` の下に置き、患者の保存
+ * (PATIENTS_KEY の無効化) で一緒に取り直す。固定訪問の枠の保存でも無効化する。
+ */
+export const VISIT_FREQUENCY_WEEK_KEY = ['patients', 'visit-frequency-week'] as const;
+
+/**
+ * GET /api/v1/schedule/v2/visit-frequency-week?week_start=YYYY-MM-DD (admin・読み取りのみ)。
+ *
+ * 保留プールが最初の表示から、隔週・月の第何週のお休みの週の方を「足りない」に
+ * 数えず、訪問する週の希望回数を枠の曜日数で数えるために使う
+ * (biweekly-monthly-design-2026-10-30.md §3-3 / §4)。
+ * 失敗 (403 など) のときは今までどおりの数え方にもどるだけにする (retry しない)。
+ */
+export function useVisitFrequencyWeek(
+  weekStart: string | null | undefined,
+  opts?: { enabled?: boolean },
+): UseQueryResult<VisitFrequencyWeekResponse, Error> {
+  const { data: session, status } = useSession();
+  const accessToken = session?.accessToken ?? null;
+  const refreshToken = session?.refreshToken ?? null;
+  return useQuery<VisitFrequencyWeekResponse, Error>({
+    queryKey: [...VISIT_FREQUENCY_WEEK_KEY, weekStart ?? '__none__'],
+    enabled: status === 'authenticated' && !!weekStart && (opts?.enabled ?? true),
+    retry: false,
+    queryFn: async () => {
+      const qs = new URLSearchParams({ week_start: weekStart ?? '' });
+      const raw = await fetcher<unknown>(`${VISIT_FREQUENCY_WEEK_PATH}?${qs.toString()}`, {
+        accessToken,
+        refreshToken,
+      });
+      return visitFrequencyWeekResponseSchema.parse(raw);
     },
   });
 }

@@ -242,7 +242,8 @@ import {
 import { AssignSuggestionPopover } from './cockpit/AssignSuggestionPopover';
 import type { SuggestionBadgeMap, SuggestionBadgeState } from './cockpit/suggestionBadge';
 import type { CockpitEventRead } from '@/lib/schemas/v2/cockpit';
-import type { PoolOverviewItem } from '@/lib/schemas/v2/poolOverview';
+import { useVisitFrequencyWeek } from '@/lib/queries/poolOverview';
+import type { PoolOverviewItem, VisitFrequencyWeekItem } from '@/lib/schemas/v2/poolOverview';
 import { ChangeScopeChoice } from '@/components/schedule/v2/ChangeScopeChoice';
 import {
   parseTlColDroppableId,
@@ -1557,16 +1558,29 @@ export function CourseDayTablePanel({
   //
   // patientShortageById: 各 patient の不足数 (= 希望 - 配置済) のマップ.
   // PatientCard の不足バッジ表示に直接渡す.
-  // 訪問頻度 (biweekly-monthly-design-2026-10-30.md §4): 効果を計算した結果
-  // (pool-overview の off_week) で、この週がお休みの週と分かった方。希望 0 として
+  // 訪問頻度 (biweekly-monthly-design-2026-10-30.md §3-3 / §4): 週ごとの判定を
+  // 最初の表示から取る (GET visit-frequency-week)。お休みの週の方は希望 0 として
   // 「足りない」から外し、プールの上に「お休みの週 N名」と薄く出す (消えたように見せない)。
+  // 訪問する週の希望回数は、その週に当たる枠の曜日数を上限にする
+  // (例: 隔週・火=A・金=B・週 2 回 → どの週も希望 1)。毎週の方は返らない (今までどおり)。
+  const frequencyWeekQuery = useVisitFrequencyWeek(weekStartStr, { enabled: canEdit });
+  const frequencyWeekById = useMemo(() => {
+    const m = new Map<string, VisitFrequencyWeekItem>();
+    // 週を切り替えた直後の前の週の結果は使わない。
+    if (frequencyWeekQuery.data?.week_start !== weekStartStr) return m;
+    for (const it of frequencyWeekQuery.data.items) m.set(it.patient_id, it);
+    return m;
+  }, [frequencyWeekQuery.data, weekStartStr]);
+  // 2 つ目の手がかり: 効果を計算した結果 (pool-overview の off_week)。
   // 週が変わったら消す。計算し直しで結果に出なかった方 (プールから外れた方) は保つ。
-  const [offWeekPatientIds, setOffWeekPatientIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [overviewOffWeekIds, setOverviewOffWeekIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   useEffect(() => {
-    setOffWeekPatientIds(new Set());
+    setOverviewOffWeekIds(new Set());
   }, [isoYear, isoWeek]);
   const handlePoolOverviewItems = useCallback((items: PoolOverviewItem[]) => {
-    setOffWeekPatientIds((prev) => {
+    setOverviewOffWeekIds((prev) => {
       const next = new Set(prev);
       for (const it of items) {
         if (it.off_week) next.add(it.patient_id);
@@ -1575,22 +1589,33 @@ export function CourseDayTablePanel({
       return next;
     });
   }, []);
+  const offWeekPatientIds = useMemo<ReadonlySet<string>>(() => {
+    const ids = new Set(overviewOffWeekIds);
+    for (const it of frequencyWeekById.values()) {
+      if (it.off_week) ids.add(it.patient_id);
+    }
+    return ids;
+  }, [overviewOffWeekIds, frequencyWeekById]);
+  // 保留プールの候補と同じく稼働中の方だけを「お休みの週」に出す。
   const offWeekPatients = useMemo(
-    () => allPatients.filter((p) => offWeekPatientIds.has(p.id)),
+    () => allPatients.filter((p) => p.status === 'active' && offWeekPatientIds.has(p.id)),
     [allPatients, offWeekPatientIds],
   );
 
   const patientShortageById = useMemo(() => {
     const m = new Map<string, { desired: number; actual: number; shortage: number }>();
     for (const p of allPatients) {
-      const desired = getDesiredWeeklyVisitCount(p, { offWeek: offWeekPatientIds.has(p.id) });
+      const desired = getDesiredWeeklyVisitCount(p, {
+        offWeek: offWeekPatientIds.has(p.id),
+        frequencyWeek: frequencyWeekById.get(p.id) ?? null,
+      });
       if (desired === 0) continue;
       const actual = countWeekVisits(weekVisits, p.id);
       const shortage = Math.max(0, desired - actual);
       m.set(p.id, { desired, actual, shortage });
     }
     return m;
-  }, [allPatients, weekVisits, offWeekPatientIds]);
+  }, [allPatients, weekVisits, offWeekPatientIds, frequencyWeekById]);
 
   const poolPatients = useMemo(() => {
     return allPatients
