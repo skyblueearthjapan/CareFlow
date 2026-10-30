@@ -1970,4 +1970,54 @@ describe('PatientFixedVisitsPanel — 訪問する週 (A/B)', () => {
     expect(call.items).toHaveLength(2);
     expect(call.items.map((it) => it.visit_week)).toEqual(['A', 'A']);
   });
+
+  it('VW-4. 隔週の方の every は「Aの週（既定）」と出す (値は every のまま)', async () => {
+    setupMocks({ reads: [pfvRead(0, 'every')] });
+    render(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        weeklyPattern={
+          { visit_frequency: 'biweekly', biweekly_anchor: '2026-11-02' } as unknown as WeeklyPattern
+        }
+      />,
+    );
+    const select = (await screen.findByTestId('pfv-visit-week-1')) as HTMLSelectElement;
+    const labels = Array.from(select.options).map((o) => [o.value, o.textContent]);
+    expect(labels).toEqual([
+      ['every', 'Aの週（既定）'],
+      ['A', 'Aの週'],
+      ['B', 'Bの週'],
+    ]);
+    expect(select.textContent).not.toMatch(/毎回/);
+  });
+
+  it('VW-5. フォームの保存前の頻度が保存済みと違うときだけ「先に患者を保存して」と添える', () => {
+    setupMocks({ reads: [pfvRead(0, 'every')] });
+    const saved = { visit_frequency: null } as unknown as WeeklyPattern;
+    const { rerender } = render(
+      <PatientFixedVisitsPanel patientId={PATIENT_ID} weeklyPattern={saved} />,
+    );
+    // 比べる値が無い (詳細画面など) → 出さない
+    expect(screen.queryByTestId('pfv-frequency-unsaved-note')).toBeNull();
+    // 未設定と毎週は同じ扱い → 出さない
+    rerender(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        weeklyPattern={saved}
+        pendingVisitFrequency="every"
+      />,
+    );
+    expect(screen.queryByTestId('pfv-frequency-unsaved-note')).toBeNull();
+    // 隔週に変えて未保存 → 出す
+    rerender(
+      <PatientFixedVisitsPanel
+        patientId={PATIENT_ID}
+        weeklyPattern={saved}
+        pendingVisitFrequency="biweekly"
+      />,
+    );
+    expect(screen.getByTestId('pfv-frequency-unsaved-note').textContent).toBe(
+      '頻度を変えたときは、先に患者を保存してから枠の訪問する週を合わせてください',
+    );
+  });
 });

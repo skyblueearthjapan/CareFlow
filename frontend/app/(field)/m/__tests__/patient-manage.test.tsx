@@ -283,3 +283,59 @@ describe('PatientManageSheet 検索編集フロー (edit)', () => {
     });
   });
 });
+
+// 訪問頻度 (biweekly-monthly-design-2026-10-30.md §2-4・段 2 のレビュー):
+// 開いて保存しただけで weekly_pattern の entries・知らないキーを消さず、
+// 空の希望時刻に 09:00 / 12:00 を書かない。
+describe('KarteEditSheet weekly_pattern の保存 (読んだ dict を保つ)', () => {
+  const SOURCE_WP = {
+    frequency_per_week: 2,
+    visit_frequency: 'biweekly',
+    biweekly_anchor: '2026-11-02',
+    preferred_weekdays: ['Tue', 'Fri'],
+    service_minutes: 35,
+    time_type: '時間帯',
+    entries: [
+      { weekday: 'Tue', start: '10:00' },
+      { weekday: 'Fri', start: '14:00' },
+    ],
+    custom_note_key: { keep: true },
+  };
+
+  async function openAndSave(change?: () => void) {
+    setPatient({ ...makePatient(), weekly_pattern: SOURCE_WP } as unknown as PatientRead);
+    renderSheet();
+    fireEvent.change(screen.getByLabelText('既存のお客様を検索'), {
+      target: { value: '利用者A' },
+    });
+    fireEvent.click(screen.getByText('利用者A あい'));
+    change?.();
+    fireEvent.click(screen.getByRole('button', { name: /カルテを保存/ }));
+    await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
+    const values = updateMutate.mock.calls[0]![0] as PatientFormValues;
+    return prepareFormPayload(values).weekly_pattern as Record<string, unknown>;
+  }
+
+  it('何も変えずに保存 → 読んだ dict のまま (entries・知らないキーが残り、時刻を足さない)', async () => {
+    const wp = await openAndSave();
+    expect(wp).toEqual(SOURCE_WP);
+    expect(wp).not.toHaveProperty('preferred_start');
+    expect(wp).not.toHaveProperty('preferred_end');
+  });
+
+  it('空の希望時刻は「未設定」と出し、選んだ欄だけを書く', async () => {
+    const wp = await openAndSave(() => {
+      const start = screen.getByLabelText('希望開始時刻') as HTMLSelectElement;
+      const end = screen.getByLabelText('希望終了時刻') as HTMLSelectElement;
+      expect(start.value).toBe('');
+      expect(end.value).toBe('');
+      expect(start.options[0]!.textContent).toBe('未設定');
+      fireEvent.change(start, { target: { value: start.options[1]!.value } });
+    });
+    expect(typeof wp.preferred_start).toBe('string');
+    expect(wp.preferred_start).not.toBe('');
+    expect(wp).not.toHaveProperty('preferred_end');
+    expect(wp.entries).toEqual(SOURCE_WP.entries);
+    expect(wp.custom_note_key).toEqual({ keep: true });
+  });
+});

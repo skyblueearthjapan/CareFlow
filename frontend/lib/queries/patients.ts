@@ -397,6 +397,11 @@ export interface VisitFrequencyPreviewParams {
   visit_frequency: 'every' | 'biweekly' | 'monthly' | null;
   biweekly_anchor: string | null;
   visit_weeks: string | null;
+  /**
+   * 保存前の希望曜日 (例 ['Tue','Fri'])。固定訪問の通常の枠が無い方のときだけ backend が
+   * 使う (枠のある方は枠の曜日が正)。省略 (undefined) は保存済みの希望曜日で並べる。
+   */
+  preferred_weekdays?: readonly string[];
 }
 
 /** `['patients']` の下に置かない (患者の保存で無駄に取り直さない)。 */
@@ -420,9 +425,17 @@ export function useVisitFrequencyPreview(
   const freq = params.visit_frequency ?? 'every';
   const anchor = params.biweekly_anchor ?? '';
   const weeks = params.visit_weeks ?? '';
+  const weekdays = params.preferred_weekdays ? params.preferred_weekdays.join(',') : null;
 
   return useQuery<PatientVisitFrequencyPreview, Error>({
-    queryKey: [...VISIT_FREQUENCY_PREVIEW_KEY, id ?? '__none__', freq, anchor, weeks],
+    queryKey: [
+      ...VISIT_FREQUENCY_PREVIEW_KEY,
+      id ?? '__none__',
+      freq,
+      anchor,
+      weeks,
+      weekdays ?? '__saved__',
+    ],
     enabled: status === 'authenticated' && !!id && gate,
     retry: false,
     queryFn: async () => {
@@ -431,6 +444,7 @@ export function useVisitFrequencyPreview(
         biweekly_anchor: anchor,
         visit_weeks: weeks,
       });
+      if (weekdays !== null) qs.set('preferred_weekdays', weekdays);
       const raw = await fetcher<unknown>(
         `/api/v1/patients/${id}/visit-frequency-preview?${qs.toString()}`,
         { accessToken, refreshToken },

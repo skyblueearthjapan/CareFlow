@@ -77,6 +77,10 @@ export default function EditPatientPage() {
 
   // sticky bar 用: フォームの isDirty 状態と外部操作ハンドル
   const [isFormDirty, setIsFormDirty] = useState(false);
+  // 訪問頻度: フォームの保存前の頻度 (固定訪問の枠の欄の注意書き用)。
+  const [formVisitFrequency, setFormVisitFrequency] = useState<string | null | undefined>(
+    undefined,
+  );
   const formHandleRef = useRef<PatientFormHandle>(null);
 
   const handleBeforeNavigate = useCallback(() => {
@@ -203,6 +207,7 @@ export default function EditPatientPage() {
         onDirtyChange={setIsFormDirty}
         formRef={formHandleRef}
         patientId={id}
+        onVisitFrequencyChange={setFormVisitFrequency}
       />
 
       <PatientFixedVisitsPanel
@@ -211,6 +216,7 @@ export default function EditPatientPage() {
         primaryOfficeId={patient.primary_office_id}
         requiresMultipleStaff={patient.requires_multiple_staff === true}
         patientStatus={patient.status}
+        pendingVisitFrequency={formVisitFrequency}
       />
 
       <PatientStatusChangeDialog {...statusGate.dialogProps} />

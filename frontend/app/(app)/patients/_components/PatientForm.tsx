@@ -88,6 +88,12 @@ interface PatientFormProps {
    * (新規作成画面では undefined → 非表示。保存後に設定してもらう).
    */
   patientId?: string;
+  /**
+   * 訪問頻度 (biweekly-monthly-design-2026-10-30.md §4): フォームの頻度
+   * (weekly_pattern.visit_frequency・保存前) が変わるたびに呼ばれる。
+   * 編集画面が固定訪問の枠の欄に「先に患者を保存して」と添えるために使う。
+   */
+  onVisitFrequencyChange?: (visitFrequency: string | null) => void;
 }
 
 export function PatientForm({
@@ -100,6 +106,7 @@ export function PatientForm({
   onDirtyChange,
   formRef,
   patientId,
+  onVisitFrequencyChange,
 }: PatientFormProps) {
   const form = useForm<PatientFormValues>({
     // `patientFormSchema` matches the structured/checkbox shape react-hook-form
@@ -371,6 +378,12 @@ export function PatientForm({
   React.useEffect(() => {
     onDirtyChange?.(isDirty);
   }, [isDirty, onDirtyChange]);
+
+  // 保存前の頻度を親へ知らせる (固定訪問の枠の欄の注意書き用)。
+  const watchedVisitFrequency = watch('weekly_pattern')?.visit_frequency ?? null;
+  React.useEffect(() => {
+    onVisitFrequencyChange?.(watchedVisitFrequency);
+  }, [watchedVisitFrequency, onVisitFrequencyChange]);
 
   // 外部から submit / reset を呼べるように ref を公開する
   React.useImperativeHandle(formRef, () => ({

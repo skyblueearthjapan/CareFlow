@@ -247,6 +247,8 @@ function VisitFrequencyDetailBody({
       visit_frequency: freq,
       biweekly_anchor: snapToMonday(value.biweekly_anchor),
       visit_weeks: formatVisitWeeks(weeks),
+      // 枠の無い方は保存前の希望曜日で並べる (枠のある方には backend が使わない)。
+      preferred_weekdays: value.preferred_weekdays,
     },
     400,
   );

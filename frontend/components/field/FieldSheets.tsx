@@ -668,8 +668,10 @@ function KarteEditSheet({
   });
   const [serviceMinutes, setServiceMinutes] = useState(wp0.service_minutes);
   const [timeType, setTimeType] = useState<(typeof TIME_TYPE_OPTIONS)[number]>(wp0.time_type);
-  const [preferredStart, setPreferredStart] = useState(wp0.preferred_start ?? '09:00');
-  const [preferredEnd, setPreferredEnd] = useState(wp0.preferred_end ?? '12:00');
+  // 希望時刻は、元が空 (null) なら空のまま保つ。開いて保存しただけで 09:00 / 12:00 を
+  // 書かない (人が選んだときだけ値を入れる)。空は選択欄で「未設定」と出す。
+  const [preferredStart, setPreferredStart] = useState<string | null>(wp0.preferred_start);
+  const [preferredEnd, setPreferredEnd] = useState<string | null>(wp0.preferred_end);
 
   // フックは順序固定で両モードぶん用意し、保存時に mode で使い分ける
   // (create では update を呼ばず、edit では create を呼ばない)。
@@ -1235,10 +1237,11 @@ function KarteEditSheet({
             <Field label="希望開始時刻" flex>
               <select
                 style={cfInput}
-                value={preferredStart}
+                value={preferredStart ?? ''}
                 aria-label="希望開始時刻"
-                onChange={(e) => setPreferredStart(e.target.value)}
+                onChange={(e) => setPreferredStart(e.target.value || null)}
               >
+                <option value="">未設定</option>
                 {SUGGEST_TIME_OPTIONS.map((t) => (
                   <option key={t} value={t}>
                     {t}
@@ -1250,10 +1253,11 @@ function KarteEditSheet({
               <Field label="希望終了時刻" flex>
                 <select
                   style={cfInput}
-                  value={preferredEnd}
+                  value={preferredEnd ?? ''}
                   aria-label="希望終了時刻"
-                  onChange={(e) => setPreferredEnd(e.target.value)}
+                  onChange={(e) => setPreferredEnd(e.target.value || null)}
                 >
+                  <option value="">未設定</option>
                   {SUGGEST_TIME_OPTIONS.map((t) => (
                     <option key={t} value={t}>
                       {t}

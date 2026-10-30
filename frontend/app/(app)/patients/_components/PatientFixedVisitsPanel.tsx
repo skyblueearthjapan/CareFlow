@@ -220,8 +220,10 @@ type DayRows = Record<number, DayRow>;
 
 type PfvVisitWeek = 'every' | 'A' | 'B';
 
+// 訪問する週の欄は隔週の方にだけ出す (showVisitWeek)。隔週の方の 'every' は A の週に
+// 訪問するので「Aの週（既定）」と出す (値は 'every' のまま・ほかの画面の「毎回」はそのまま)。
 const VISIT_WEEK_LABELS: Record<PfvVisitWeek, string> = {
-  every: '毎回',
+  every: 'Aの週（既定）',
   A: 'Aの週',
   B: 'Bの週',
 };
@@ -1374,8 +1376,8 @@ function ModePanel({
       )}
       {showVisitWeek && !isLoading ? (
         <p className="text-xs text-text-muted" data-testid="pfv-visit-week-help">
-          隔週の方です。患者マスタの「起点の週」が A の週、その次の週が B の週です。「毎回」の枠は A
-          の週に訪問します。
+          隔週の方です。患者マスタの「起点の週」が A の週、その次の週が B
+          の週です。「Aの週（既定）」の枠は A の週に訪問します。
         </p>
       ) : null}
 
@@ -1679,6 +1681,12 @@ export interface PatientFixedVisitsPanelProps {
    * 保存の反映先を「型だけ」に固定する (BE も 422 で止める)。
    */
   patientStatus?: string | null;
+  /**
+   * 訪問頻度 (biweekly-monthly-design-2026-10-30.md §4): 編集画面のフォームの
+   * 保存前の頻度。保存済みの頻度と違うときは「先に患者を保存して」と添える
+   * (枠の「訪問する週」は保存済みの頻度で出すため)。undefined は比べない。
+   */
+  pendingVisitFrequency?: string | null;
 }
 
 export function PatientFixedVisitsPanel({
@@ -1690,8 +1698,13 @@ export function PatientFixedVisitsPanel({
   isoYear,
   isoWeek,
   patientStatus,
+  pendingVisitFrequency,
 }: PatientFixedVisitsPanelProps) {
   const { data: session } = useSession();
+  // 未設定 (null) は毎週と同じなので every にそろえて比べる。
+  const frequencyUnsaved =
+    pendingVisitFrequency !== undefined &&
+    (pendingVisitFrequency ?? 'every') !== (weeklyPattern?.visit_frequency ?? 'every');
   const role = session?.user?.role;
   const readonly = readOnly === true || !isAdminRole(role);
 
@@ -1728,6 +1741,14 @@ export function PatientFixedVisitsPanel({
           <span className="text-xs text-text-muted bg-bg-muted rounded px-2 py-0.5">閲覧のみ</span>
         )}
       </div>
+      {frequencyUnsaved ? (
+        <p
+          className="rounded-md border border-amber-500/60 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+          data-testid="pfv-frequency-unsaved-note"
+        >
+          頻度を変えたときは、先に患者を保存してから枠の訪問する週を合わせてください
+        </p>
+      ) : null}
 
       <Tabs defaultValue="normal">
         <TabsList>
