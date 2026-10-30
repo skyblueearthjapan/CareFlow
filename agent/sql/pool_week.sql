@@ -7,9 +7,24 @@ with wk as (
   select p.id as patient_id,
          case when p.weekly_pattern->>'visit_frequency' in ('biweekly', 'monthly')
               then p.weekly_pattern->>'visit_frequency' else 'every' end as freq,
-         case when p.weekly_pattern->>'biweekly_anchor' ~ '^\d{4}-\d{2}-\d{2}$'
-               and extract(isodow from (p.weekly_pattern->>'biweekly_anchor')::date) = 1
-              then (p.weekly_pattern->>'biweekly_anchor')::date end as anchor,
+         case when extract(isodow from ad.anchor_d) = 1 then ad.anchor_d end as anchor,
+         -- 枠の無い月の第何週の方の曜日: entries の曜日、無ければ preferred_weekdays、無ければ月曜（backend pattern_weekdays と同じ）
+         coalesce(
+           nullif(array(select distinct x.d from (
+                    select case when jsonb_typeof(e->'weekday') = 'number' and e->>'weekday' ~ '^[0-6]$' then (e->>'weekday')::int
+                                when jsonb_typeof(e->'weekday') = 'string'
+                                  then array_position(array['Mon','Tue','Wed','Thu','Fri','Sat','Sun'], e->>'weekday') - 1 end as d
+                    from jsonb_array_elements(case when jsonb_typeof(p.weekly_pattern->'entries') = 'array'
+                                                   then p.weekly_pattern->'entries' else '[]'::jsonb end) e
+                    where jsonb_typeof(e) = 'object') x where x.d is not null), '{}'),
+           nullif(array(select distinct x.d from (
+                    select case when jsonb_typeof(e) = 'number' and e #>> '{}' ~ '^[0-6]$' then (e #>> '{}')::int
+                                when jsonb_typeof(e) = 'string'
+                                  then array_position(array['Mon','Tue','Wed','Thu','Fri','Sat','Sun'], e #>> '{}') - 1 end as d
+                    from jsonb_array_elements(case when jsonb_typeof(p.weekly_pattern->'preferred_weekdays') = 'array'
+                                                   then p.weekly_pattern->'preferred_weekdays' else '[]'::jsonb end) e) x
+                  where x.d is not null), '{}'),
+           array[0]) as pattern_days,
          array(select x::int from regexp_split_to_table(
                  translate(coalesce(p.weekly_pattern->>'visit_weeks', ''), '１２３４５，、　', '12345,,,'), '[,;\s]+') x
                where x ~ '^[1-5]$') as nth_weeks,
@@ -20,7 +35,15 @@ with wk as (
                from jsonb_array_elements_text(case when jsonb_typeof(p.weekly_pattern->'ng_weekdays') = 'array'
                                                    then p.weekly_pattern->'ng_weekdays' else '[]'::jsonb end) d
                where d in ('Mon','Tue','Wed','Thu','Fri','Sat','Sun')) as ng_ja
-  from patients p, wk
+  from patients p
+  -- 起点の週: YYYY-MM-DD で、ありうる日付だけ date にする（2026-02-30 などは無いのと同じ。クエリ全体を止めない）
+  cross join lateral (
+    select case when a.s ~ '^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$' and a.s !~ '^0000'
+                then case when substr(a.s, 9, 2)::int <= extract(day from make_date(substr(a.s, 1, 4)::int, substr(a.s, 6, 2)::int, 1)
+                                                                       + interval '1 month - 1 day')::int
+                          then a.s::date end end as anchor_d
+    from (select p.weekly_pattern->>'biweekly_anchor' as s) a
+  ) ad, wk
 ), fs as (
   select fq.*,
          case when fq.freq = 'biweekly' and fq.anchor is null then 'missing_anchor'
@@ -46,9 +69,10 @@ with wk as (
          (p.weekly_pattern->>'frequency_per_week')::int as base,
          (select count(*) from slot s where s.patient_id = p.id) as slot_days,
          (select count(*) from slot s where s.patient_id = p.id and s.visits) as visit_days,
-         -- 枠の無い方: 隔週は A の週だけ・月の第何週はその週の月曜の日付で判定（backend と同じ）
+         -- 枠の無い方: 隔週は A の週だけ・月の第何週は希望の曜日のどれかの日付が第 N 週に当たるか（backend is_patient_visit_week と同じ）
          case when fa.freq = 'biweekly' then (((wk.mon - fa.anchor) / 7) % 2) = 0
-              else ((extract(day from wk.mon)::int - 1) / 7 + 1) = any(fa.nth_weeks) end as visit_week_no_slot
+              else exists (select 1 from unnest(fa.pattern_days) d
+                           where ((extract(day from wk.mon + d)::int - 1) / 7 + 1) = any(fa.nth_weeks)) end as visit_week_no_slot
   from patients p join fa on fa.patient_id = p.id, wk
   where p.deleted_at is null and p.status = 'active' and p.name not like '【検証】%'
     and (p.weekly_pattern->>'frequency_per_week') ~ '^[0-9]+$'

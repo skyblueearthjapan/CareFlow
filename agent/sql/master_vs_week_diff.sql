@@ -7,16 +7,22 @@ with wk as (
   select p.id as patient_id,
          case when p.weekly_pattern->>'visit_frequency' in ('biweekly', 'monthly')
               then p.weekly_pattern->>'visit_frequency' else 'every' end as freq,
-         case when p.weekly_pattern->>'biweekly_anchor' ~ '^\d{4}-\d{2}-\d{2}$'
-               and extract(isodow from (p.weekly_pattern->>'biweekly_anchor')::date) = 1
-              then (p.weekly_pattern->>'biweekly_anchor')::date end as anchor,
+         case when extract(isodow from ad.anchor_d) = 1 then ad.anchor_d end as anchor,
          array(select x::int from regexp_split_to_table(
                  translate(coalesce(p.weekly_pattern->>'visit_weeks', ''), '１２３４５，、　', '12345,,,'), '[,;\s]+') x
                where x ~ '^[1-5]$') as nth_weeks,
          exists (select 1 from jsonb_array_elements(case when jsonb_typeof(p.special_week_active::jsonb) = 'array'
                                                          then p.special_week_active::jsonb else '[]'::jsonb end) e
                  where e->>'iso_year' = wk.iy::text and e->>'iso_week' = wk.iw::text) as special_on
-  from patients p, wk
+  from patients p
+  -- 起点の週: YYYY-MM-DD で、ありうる日付だけ date にする（2026-02-30 などは無いのと同じ。クエリ全体を止めない）
+  cross join lateral (
+    select case when a.s ~ '^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$' and a.s !~ '^0000'
+                then case when substr(a.s, 9, 2)::int <= extract(day from make_date(substr(a.s, 1, 4)::int, substr(a.s, 6, 2)::int, 1)
+                                                                       + interval '1 month - 1 day')::int
+                          then a.s::date end end as anchor_d
+    from (select p.weekly_pattern->>'biweekly_anchor' as s) a
+  ) ad, wk
   where p.deleted_at is null and p.status = 'active' and p.name not like '【検証】%'
 ), fa as (
   select fq.*,
