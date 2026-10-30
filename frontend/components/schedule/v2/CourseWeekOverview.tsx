@@ -242,6 +242,12 @@ export interface CourseWeekOverviewProps {
    * true = 連動取消 (source='status_cancel') も打ち消し線つきで描く。既定 false。
    */
   showInactive?: boolean;
+  /**
+   * 2 名で訪問を 1 行で持つ訪問の、2 人目のコースの件数 (`${template.id}:${weekday}` → 件数)。
+   * 訪問は 1 人目のコースの 1 行だけなので、2 人目のコースのセルの「n 名 / 上限」「残N枠」に
+   * 足して数える (日の盤面の薄い写しと同じ数え方)。患者の名前の並びには出さない。
+   */
+  pairLinkedCountByCell?: Map<string, number>;
 }
 
 /**
@@ -308,6 +314,7 @@ export function CourseWeekOverview({
   accompaniment,
   dndEnabled = false,
   showInactive = false,
+  pairLinkedCountByCell,
 }: CourseWeekOverviewProps) {
   // G-54: 1 スタッフあたりの受入可能患者数 (1 コース = 設定の最大人数). 受入可能数 = 出勤スタッフ全員 × N.
   const perCourse = maxPatientsPerCourseOr(maxPatientsPerCourse);
@@ -533,7 +540,10 @@ export function CourseWeekOverview({
                     : capacityForWeekday(tpl, wd);
                   const visitList = cellMap.get(`${tpl.id}:${wd}`) ?? [];
                   // 枠の埋まり具合 (定員バッジ / 残N枠 / 休判定) はトグルに依らない件数。
-                  const occupantCount = countedByCell.get(`${tpl.id}:${wd}`) ?? 0;
+                  // 2 名で訪問の 2 人目としてこのコースに入る分も足す (1 行の訪問の写し)。
+                  const pairLinkedCount = pairLinkedCountByCell?.get(`${tpl.id}:${wd}`) ?? 0;
+                  const occupantCount =
+                    (countedByCell.get(`${tpl.id}:${wd}`) ?? 0) + pairLinkedCount;
                   // 新人同行 (§7.2): このセル (template×weekday) がコース丸ごと同行の
                   // 対象なら、上部に極小 👥 を出す (名前は title のみ・高さ/幅は増やさない)。
                   const courseAccName = accInactive
@@ -800,8 +810,21 @@ export function CourseWeekOverview({
                                   : 'bg-bg-muted text-text-muted',
                               )}
                               data-testid={`course-week-overview-capacity-${tpl.id}-${wd}`}
+                              title={
+                                pairLinkedCount > 0
+                                  ? `うち ${pairLinkedCount} 名は 2 名で訪問の 2 人目（訪問は 1 人目のコースに出ます）`
+                                  : undefined
+                              }
                             >
                               {occupantCount} 名 / 上限 {cap > 0 ? cap : perCourse}
+                              {pairLinkedCount > 0 ? (
+                                <span
+                                  className="ml-0.5 text-text-muted"
+                                  data-testid={`course-week-overview-pair-linked-${tpl.id}-${wd}`}
+                                >
+                                  （2 人目 {pairLinkedCount}）
+                                </span>
+                              ) : null}
                             </span>
                             <span className="flex shrink-0 items-center gap-1">
                               {/* 新人同行のコース表示はスタッフ名行へ移設 (PO要望 2026-07-12)。 */}

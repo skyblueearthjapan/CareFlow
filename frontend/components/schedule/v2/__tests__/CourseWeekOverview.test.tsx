@@ -156,6 +156,46 @@ describe('CourseWeekOverview (B-6)', () => {
     expect(screen.getByTestId('course-week-overview-name-v-2')).toHaveTextContent('佐藤');
   });
 
+  it('2 名で訪問の 2 人目のコースの分も件数と残り枠に数える (1 行の訪問の写し)', () => {
+    const tplA = makeTemplate('tpl-A', 'A', 'o1');
+    const tplB = makeTemplate('tpl-B', 'B', 'o1');
+    const visits: WeekOverviewVisit[] = [
+      {
+        id: 'v-pair',
+        patient_id: 'p-1',
+        patient_name: '二人',
+        weekday: 0,
+        course_template_id: 'tpl-A',
+        start_time: null,
+      },
+    ];
+    render(
+      <CourseWeekOverview
+        templates={[tplA, tplB]}
+        officeNameById={new Map([['o1', '本店']])}
+        visits={visits}
+        onJumpToDay={vi.fn()}
+        staffCountFor={fullStaff}
+        pairLinkedCountByCell={new Map([['tpl-B:0', 1]])}
+      />,
+    );
+    // 1 人目のコース: 今までどおり 1 名。
+    expect(screen.getByTestId('course-week-overview-capacity-tpl-A-0')).toHaveTextContent(
+      '1 名 / 上限 6',
+    );
+    // 2 人目のコース: 名前の並びには出さず、件数と残り枠に数える。
+    const badgeB = screen.getByTestId('course-week-overview-capacity-tpl-B-0');
+    expect(badgeB).toHaveTextContent('1 名 / 上限 6');
+    expect(screen.getByTestId('course-week-overview-pair-linked-tpl-B-0')).toHaveTextContent(
+      '2 人目 1',
+    );
+    expect(screen.getByTestId('course-week-overview-remaining-tpl-B-0')).toHaveAttribute(
+      'data-remaining',
+      '5',
+    );
+    expect(screen.queryByTestId('course-week-overview-pair-linked-tpl-A-0')).toBeNull();
+  });
+
   it('上限は設定の「1コースの最大人数」から読む (schedule-unit-switch 設計 §4)', () => {
     const tpl = makeTemplate('tpl-A', 'A', 'o1');
     render(

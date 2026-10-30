@@ -243,6 +243,7 @@ import { AssignSuggestionPopover } from './cockpit/AssignSuggestionPopover';
 import type { SuggestionBadgeMap, SuggestionBadgeState } from './cockpit/suggestionBadge';
 import type { CockpitEventRead } from '@/lib/schemas/v2/cockpit';
 import { useVisitFrequencyWeek } from '@/lib/queries/poolOverview';
+import { offWeekLabel } from '@/lib/scheduling/visit-frequency';
 import type { PoolOverviewItem, VisitFrequencyWeekItem } from '@/lib/schemas/v2/poolOverview';
 import { ChangeScopeChoice } from '@/components/schedule/v2/ChangeScopeChoice';
 import {
@@ -1938,6 +1939,22 @@ export function CourseDayTablePanel({
     patientStatusSinceOfVisit,
     visitDisplayOf,
   ]);
+
+  // 2 名で訪問の 1 行: 2 人目のコースのセル (template×曜日) の件数 (週リストの「n 名 / 上限」)。
+  // 日の盤面の薄い写しと同じく、2 人目のコースの埋まり具合にも数える。
+  const pairLinkedCountByCell = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const v of overviewVisits) {
+      if (classifyVisitDisplay(v, { showInactive: false }) === 'hidden') continue;
+      const partner = pairPartnerCourseByVisitId.get(v.id);
+      if (!partner) continue;
+      const tplId = courseTemplateByCourseId.get(partner.id);
+      if (!tplId) continue;
+      const key = `${tplId}:${v.weekday}`;
+      m.set(key, (m.get(key) ?? 0) + 1);
+    }
+    return m;
+  }, [overviewVisits, pairPartnerCourseByVisitId, courseTemplateByCourseId]);
 
   const officeNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -7428,6 +7445,22 @@ export function CourseDayTablePanel({
                   weekViewMode === 'overview' && 'lg:flex lg:min-h-0 lg:flex-1 lg:flex-col',
                 )}
               >
+                {/* 訪問頻度 (設計 2026-10-30 §4): この週がお休みの週の方を薄く添える
+                    (週の予定から消えたように見せない)。保留プールの「お休みの週」と同じ方。 */}
+                {offWeekPatients.length > 0 ? (
+                  <p
+                    className="shrink-0 text-[11px] text-text-muted"
+                    data-testid="week-off-week-note"
+                  >
+                    この週はお休み：
+                    {offWeekPatients
+                      .map(
+                        (p) =>
+                          `${p.name}（${offWeekLabel(coerceWeeklyPattern(p.weekly_pattern))}）`,
+                      )
+                      .join('、')}
+                  </p>
+                ) : null}
                 {weekViewMode === 'timeline' ? (
                   /* T-3改: 週タイムライン (全コース縦積み・縦スクロールで一元閲覧). */
                   <WeekTimelineBoard
@@ -7472,6 +7505,7 @@ export function CourseDayTablePanel({
                     // 設計 §2-1 Phase 2: 週リストのセルも受け皿に。時間軸が無いので
                     // 必ず「配置の確認」モーダルでコース(表示のみ)と時刻を決める。
                     dndEnabled={canEdit && !accompaniment.active}
+                    pairLinkedCountByCell={pairLinkedCountByCell}
                   />
                 )}
               </div>

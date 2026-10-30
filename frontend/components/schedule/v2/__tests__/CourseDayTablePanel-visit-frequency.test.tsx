@@ -9,7 +9,7 @@
  *   - 毎週の方は今までどおり frequency_per_week で数える。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 const { dndState, mockToast } = vi.hoisted(() => ({
@@ -584,5 +584,17 @@ describe('CourseDayTablePanel — 訪問頻度と保留プール (visit-frequenc
     renderPanel();
     expect(screen.queryByTestId('pool-off-week-chip')).toBeNull();
     expect(screen.getByTestId(`patient-card-shortage-badge-${OFF_PID}`)).toBeTruthy();
+  });
+
+  it('週のタブでも、この週がお休みの週の方を薄く添える (設計 §4)', () => {
+    setupWeek([
+      { patient_id: AB_PID, off_week: false, desired_count: 1 },
+      { patient_id: OFF_PID, off_week: true, desired_count: 0 },
+    ]);
+    renderPanel();
+    fireEvent.click(screen.getByTestId('course-day-tab-week'));
+    const note = screen.getByTestId('week-off-week-note');
+    expect(note.textContent).toContain('隔週 次郎（隔週・お休みの週）');
+    expect(note.textContent).not.toContain('隔週 花子');
   });
 });
